@@ -6,7 +6,6 @@
 #include "shared/OrdersDay.hpp"
 
 #include <atomic>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -52,7 +51,6 @@ struct Asset {
   // 核心数据
   // ========================================
   std::vector<AssetItem> items;
-  std::vector<misc::Ymd> all_dates; // 扫描得到的所有已知交易日
 
   // ========================================
   // 全库帧目录: [日][资产] 一格一个 FrameRef + 每天的编码账目
@@ -84,7 +82,7 @@ struct Asset {
     size_t orders_missing = 0;  // 其中没有帧的
     size_t archive_missing = 0; // 其中归档也没有的 (归档按天存, 要么全缺要么不缺)
   };
-  std::map<misc::Ymd, DateGap> date_gaps; // date -> 缺口; 只含回测区间内的天
+  std::vector<DateGap> date_gaps; // 与 backtest.days 逐行对齐; 空 = 待重算
 
   // ========================================
   // 按资产统计 (Encode 缺失表 / Table 的 Days·Orders·Orders%)
@@ -172,23 +170,35 @@ struct Asset {
   } archive;
 
   // ========================================
-  // 回测覆盖 (按需计算)
+  // 回测日历 (覆盖分析产出): 交易日历 ∩ [start, end], 一天一行
   // ========================================
+  // 编码 / 特征计算 / 覆盖判定共用的唯一日期轴. 两源有无按行对齐, 缺失 / 可编 /
+  // 需下载都是行上的谓词, 不另存集合.
+  struct BacktestDay {
+    misc::Ymd date = 0;
+    bool binary = false;  // 日文件里至少一帧
+    bool archive = false; // 归档有这天
+
+    bool missing() const { return !binary; }
+    bool can_encode() const { return !binary && archive; }
+    bool need_download() const { return !binary && !archive; }
+  };
   struct {
-    misc::Ymd start = 0; // 回测起始日 (来自配置)
-    misc::Ymd end = 0;   // 回测结束日 (来自配置)
+    misc::Ymd start = 0;           // 回测起始日 (来自配置)
+    misc::Ymd end = 0;             // 回测结束日 (来自配置)
+    std::vector<BacktestDay> days; // 升序
 
-    // 基准: 回测区间内应有的交易日 (归档存在时取归档, 否则取二进制库)
-    std::set<misc::Ymd> required_dates;
-
-    // 二进制库覆盖情况
-    std::set<misc::Ymd> covered_dates; // 已编码
-    std::set<misc::Ymd> missing_dates; // 缺失
-
-    // 缺失日对应的归档可用性
-    std::set<misc::Ymd> can_encode;    // 归档有, 可直接编码
-    std::set<misc::Ymd> need_download; // 归档也没有, 需下载
+    template <typename Pred>
+    size_t count(Pred pred) const {
+      size_t n = 0;
+      for (const BacktestDay &day : days)
+        n += pred(day) ? 1 : 0;
+      return n;
+    }
   } backtest;
+
+  // 回测日历的日期列: 编码 producer 与特征计算的日期轴
+  std::vector<misc::Ymd> backtest_dates() const;
 
   // ========================================
   // 方法
@@ -207,9 +217,9 @@ struct Asset {
       const std::string &archive_extension,
       std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
 
-  // 覆盖分析 (扫描完成或配置变更后调用): 回测区间内哪些交易日有/缺/可编/
-  // 需下载. required_dates 的基准 = 基本面交易日历 (assetinfo.stock_days).
-  // 纯集合运算, 几百个日期, 同步跑完. 区间内的条数/体积 (要遍历帧目录)
+  // 覆盖分析 (扫描完成或配置变更后调用): 建回测日历 —— 行 = 基本面交易日历
+  // (assetinfo.stock_days) ∩ [start, end], 每行标两源有无.
+  // 几百个日期, 同步跑完. 区间内的条数/体积 (要遍历帧目录)
   // 归 coro_compute_coverage_statistics 那趟一起算.
   void compute_backtest_coverage(misc::Ymd start, misc::Ymd end,
                                  const AssetInfo &assetinfo);

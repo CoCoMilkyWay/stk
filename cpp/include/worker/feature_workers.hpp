@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -146,15 +147,16 @@ private:
 // ============================================================================
 // PHASE 2 WORKERS —— 四角色统一签名: void xxx_worker(WorkerCtx)
 //
-// sched 主要 TS 用 (预取只读 global_ids 定位帧), 其余角色不碰 ——
-// 统一签名换来统一 launch (见 ComputeService).
-// orders = 开算时取的帧目录快照 (ComputeService 持有到全部 worker 退出), 预取与
-// TS 凭它定位帧, 不碰 Asset 上随重扫描换代的那一份.
+// sched 只 TS 用, 其余角色不碰 —— 统一签名换来统一 launch (见 ComputeService).
+// dates = 回测日期轴 (Asset::backtest_dates), 四角色的 date_idx 都是它的下标.
+// orders = 开算时切好的帧目录 (OrdersCatalog::slice: 行 = dates, 列 = universe 子轴),
+// ComputeService 持有到全部 worker 退出; orders.at(date_idx, sub) 直接定址.
 // worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做日志/stats 下标.
 // ============================================================================
 struct WorkerCtx {
   int worker_id;
   SharedData &data;
+  std::span<const misc::Ymd> dates;
   const OrdersCatalog &orders;
   GlobalFeatureStore &store;
   TsSchedule &sched;
@@ -164,7 +166,7 @@ struct WorkerCtx {
 
 // 预取: 顺日期把当天日文件里 universe 的帧读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
 //       门控 = 领先最慢 TS (query_ts_days_done) 不超过 pool slots + 余量.
-//       资产集 = universe 子轴 (sched.global_ids).
+//       资产集 = universe 子轴 (orders 的一行).
 void prefetch_worker(WorkerCtx ctx);
 
 // 时序: 逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量 (日期主序遍历);

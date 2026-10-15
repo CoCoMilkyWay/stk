@@ -50,7 +50,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
 
   // Launch encoding in background thread
   encoding_thread_ = std::async(std::launch::async, [this]() {
-    const size_t target_dates = data_.asset.backtest.required_dates.size();
+    const size_t target_dates = data_.asset.backtest.days.size();
     assert(target_dates > 0 && "编码前必须先完成回测区间覆盖扫描");
 
     std::cout << "\n=== Encoding Started ===\n"
@@ -170,8 +170,8 @@ void EncodingService::stop_encoding() {
 EncodingProgress EncodingService::get_progress() const {
   EncodingProgress prog;
   prog.total_assets = data_.asset.items.size();
-  prog.total_dates = data_.asset.backtest.required_dates.size();
-  prog.encoded_dates = data_.asset.backtest.covered_dates.size();
+  prog.total_dates = data_.asset.backtest.days.size();
+  prog.encoded_dates = data_.asset.binary.backtest_order_days;
   prog.completed_assets = 0;
 
   // 扫描时已按回测区间累加好. 这里每帧都会被 Encode 页调一次, 逐帧遍历

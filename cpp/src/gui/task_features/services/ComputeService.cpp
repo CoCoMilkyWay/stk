@@ -46,18 +46,12 @@ void ComputeService::start_compute(ComputeConfig config) {
 
   // Launch compute in background thread
   compute_thread_ = std::async(std::launch::async, [this]() {
-    // Filter dates to backtest period only
+    // 计算日期轴 = 回测日历 (交易日历 ∩ 回测区间), 与编码同一条轴: binary/archive 缺日也要落一份默认张量.
     const misc::Ymd backtest_start = data_.config.start_date;
     const misc::Ymd backtest_end = data_.config.end_date;
-
-    // 计算日期轴以交易日历为准: binary/archive 缺日也要落一份默认张量.
-    std::vector<misc::Ymd> backtest_dates;
-    backtest_dates.reserve(data_.asset.backtest.required_dates.size());
-    for (const misc::Ymd date : data_.asset.backtest.required_dates) {
-      if (date >= backtest_start && date <= backtest_end) {
-        backtest_dates.push_back(date);
-      }
-    }
+    assert(data_.asset.backtest.start == backtest_start && data_.asset.backtest.end == backtest_end &&
+           "回测日历与配置区间不符 (改配置后没重算覆盖?)");
+    const std::vector<misc::Ymd> backtest_dates = data_.asset.backtest_dates();
     assert(!backtest_dates.empty() && "回测区间内无交易日, 不应触发特征计算");
 
     // 核布局: 预取 → TS → CS → IO 四个 stage, 全部 pin 死 (见 StageLayout)
@@ -99,14 +93,14 @@ void ComputeService::start_compute(ComputeConfig config) {
     //
     // 条数是扫描时随日文件目录一并读好的 (见 Asset::coro_scan_binary_database),
     // 这里直接累加, 不必再碰文件系统.
-    // 帧目录日主序: 按天推进, 天内扫子轴 (内层 资产 × 日期 是百万量级)
-    // 快照取一次, 持有到全部 worker 退出 (随 WorkerCtx 下发)
-    const std::shared_ptr<const OrdersCatalog> orders = data_.asset.orders();
+    // 帧目录切成 回测日 × 子轴 (行 = backtest_dates 下标, 列 = 子轴下标), 持有到
+    // 全部 worker 退出 (随 WorkerCtx 下发), 不碰 Asset 上随重扫描换代的那一份.
+    const OrdersCatalog orders = data_.asset.orders()->slice(backtest_dates, uni.ids);
     std::vector<size_t> weights(num_assets, 0);
-    for (const misc::Ymd date : backtest_dates) {
-      const size_t didx = orders->day_idx(date);
+    for (size_t d = 0; d < backtest_dates.size(); ++d) {
+      const std::span<const FrameRef> row = orders.row(d);
       for (size_t sub = 0; sub < num_assets; ++sub)
-        weights[sub] += orders->at(didx, uni.global(sub)).head.count;
+        weights[sub] += row[sub].head.count;
     }
 
     std::vector<std::pair<size_t, size_t>> asset_workloads; // (sub, weight)
@@ -135,11 +129,6 @@ void ComputeService::start_compute(ComputeConfig config) {
         axis_codes[sub] = asset_axis().code(uni.global(sub));
       data_.fund_pool.build(axis_codes, backtest_dates);
     }
-
-    // Temporarily replace all_dates with backtest_dates for workers
-    // Save original dates and restore after computation
-    std::vector<misc::Ymd> original_dates = std::move(data_.asset.all_dates);
-    data_.asset.all_dates = backtest_dates;
 
     // 回测全量重算: 显式清本 universe 的特征库 (清库是调用方的决定, 不是
     // store 构造的副作用; 别的 universe 的库不碰 —— 按目录分片, 见 Config)
@@ -173,7 +162,7 @@ void ComputeService::start_compute(ComputeConfig config) {
     // 四角色同签名 (WorkerCtx, 见 feature_workers.hpp), 调度面 sched 随 ctx
     // 带入, 只有 TS 用. 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
     stats_ = std::make_unique<ComputeStats>(static_cast<size_t>(L.num_ts));
-    progress_ = std::make_unique<FeatureProgress>(*feature_store_, *ts_schedule_, *stats_, data_.asset.all_dates);
+    progress_ = std::make_unique<FeatureProgress>(*feature_store_, *ts_schedule_, *stats_, backtest_dates);
     workers_.clear();
     workers_.reserve(static_cast<size_t>(L.total_threads()));
 
@@ -193,12 +182,12 @@ void ComputeService::start_compute(ComputeConfig config) {
       return nullptr;
     };
 
-    auto launch = [this, cat = orders.get()](int core, WorkerFn fn) {
-      workers_.push_back(std::async(std::launch::async, [this, cat, core, fn]() {
+    auto launch = [this, &backtest_dates, &orders](int core, WorkerFn fn) {
+      workers_.push_back(std::async(std::launch::async, [this, &backtest_dates, &orders, core, fn]() {
         if (misc::Affinity::supported()) {
           misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
         }
-        fn({core, data_, *cat, *feature_store_, *ts_schedule_, cancel_flag_, *stats_});
+        fn({core, data_, backtest_dates, orders, *feature_store_, *ts_schedule_, cancel_flag_, *stats_});
       }));
     };
 
@@ -209,14 +198,11 @@ void ComputeService::start_compute(ComputeConfig config) {
     // Wait for completion
     for (auto &worker : workers_)
       worker.wait();
-    // 仪表盘引用 store/sched/all_dates, 必须先于它们的复原/析构停掉
+    // 仪表盘引用 store/sched/backtest_dates, 必须先于它们的析构停掉
     progress_->stop();
     progress_.reset();
     stats_.reset();
     workers_.clear();
-
-    // Restore original all_dates
-    data_.asset.all_dates = std::move(original_dates);
 
     // Cleanup feature store + TS 调度面 (cores 随之析构)
     feature_store_.reset();

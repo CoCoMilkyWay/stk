@@ -748,8 +748,8 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     ImGui::Spacing();
 
     // Check prerequisites
-    const bool archive_in_range = !asset.backtest.required_dates.empty() &&
-                                  asset.backtest.need_download.empty();
+    const bool archive_in_range = !asset.backtest.days.empty() &&
+                                  asset.backtest.count([](const Asset::BacktestDay &d) { return d.need_download(); }) == 0;
 
     bool file_check_ok = file_check_result.was_run() &&
                          (file_check_result.passed || !file_check_result.archive_dir_exists);
@@ -948,7 +948,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
         // 分母都是回测区间内的交易日 (日历为准), 不是各自库扫出来的天数 ——
         // 后者做分母的话, 缺的那些天连同分母一起消失, 永远是 100%.
-        const size_t required_days = asset.backtest.required_dates.size();
+        const size_t required_days = asset.backtest.days.size();
 
         // ========================================================================
         // Archives Tab
@@ -956,11 +956,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
         if (ImGui::BeginTabItem("Archives")) {
           ImGui::Spacing();
 
-          size_t archive_days_in_backtest = 0;
-          for (const auto &date : asset.backtest.required_dates) {
-            if (asset.archive.dates.count(date))
-              archive_days_in_backtest++;
-          }
+          const size_t archive_days_in_backtest = asset.backtest.count([](const Asset::BacktestDay &d) { return d.archive; });
 
           ImGui::Text("Database Path:");
           ImGui::SameLine();

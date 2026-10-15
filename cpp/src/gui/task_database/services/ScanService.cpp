@@ -144,7 +144,7 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
   status_ = ScanStatus::ComputingCoverage;
   co_await Coro::Yield(io_);
 
-  // required_dates 的 ground truth = 基本面交易日历 (调用方保证基本面 Ready:
+  // 回测日历的 ground truth = 基本面交易日历 (调用方保证基本面 Ready:
   // StateManager::initialize / TriggerRefreshFlow 只在 Ready 后触发扫描)
   assert(!data_.assetinfo.get_stock_days().empty() && "基本面日历未就绪, 不应触发扫描");
   data_.asset.compute_backtest_coverage(backtest_start, backtest_end, data_.assetinfo);
@@ -174,23 +174,23 @@ awaitable<void> ScanService::coro_scan(ScanMode mode) {
   result.archive.exists = data_.asset.archive.exists;
   result.archive.path = data_.asset.archive.path;
 
-  result.required_dates = data_.asset.backtest.required_dates.size();
-  result.binary_coverage = data_.asset.backtest.covered_dates.size();
-  for (const auto &date : data_.asset.backtest.required_dates) {
-    if (data_.asset.binary.dates.count(date))
-      result.binary.available_dates.push_back(date);
-    if (data_.asset.archive.dates.count(date))
-      result.archive.available_dates.push_back(date);
+  const auto &days = data_.asset.backtest.days;
+  result.required_dates = days.size();
+  for (const Asset::BacktestDay &day : days) {
+    if (day.binary)
+      result.binary.available_dates.push_back(day.date);
+    if (day.archive)
+      result.archive.available_dates.push_back(day.date);
+    if (day.missing())
+      result.missing_dates.push_back(day.date);
+    if (day.can_encode())
+      result.missing_can_encode.push_back(day.date);
+    if (day.need_download())
+      result.missing_no_archive.push_back(day.date);
   }
+  result.binary_coverage = result.binary.available_dates.size();
   result.binary.total_dates = result.binary.available_dates.size();
   result.archive.total_dates = result.archive.available_dates.size();
-
-  result.missing_dates.assign(data_.asset.backtest.missing_dates.begin(),
-                              data_.asset.backtest.missing_dates.end());
-  result.missing_can_encode.assign(data_.asset.backtest.can_encode.begin(),
-                                   data_.asset.backtest.can_encode.end());
-  result.missing_no_archive.assign(data_.asset.backtest.need_download.begin(),
-                                   data_.asset.backtest.need_download.end());
 
   // Decision Tree (覆盖判定以交易日历为 ground truth, 不再看 archive/binary 的 min/max 区间)
   assert(result.required_dates > 0 && "回测区间内无交易日 (config 日期错误?)");

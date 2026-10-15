@@ -235,6 +235,10 @@ struct OrdersCatalog {
   // 不存在返回 kNoDay (row / at 对它自然给空)
   size_t day_idx(misc::Ymd date) const;
 
+  // 切片: 行 = dates (升序; 本目录没有的天给空行), 列 = ids (A 轴下标, 越界给空格子).
+  // 特征计算按 回测日 × universe 子轴 开算, worker 凭 (日期轴下标, 子轴下标) 直接定址.
+  OrdersCatalog slice(std::span<const misc::Ymd> dates, std::span<const uint32_t> ids) const;
+
   std::span<const FrameRef> row(size_t didx) const {
     if (didx >= days.size())
       return {};

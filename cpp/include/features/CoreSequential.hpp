@@ -82,11 +82,14 @@ public:
 
   // 收盘: 末分钟 (收盘集合竞价 → L1 254) 没有后续 tick 触发 roll, 这里逐分钟补齐到 254 并结算;
   // 标签: 分钟档尾部 / 收盘档 / 到期的开盘档 (见 LabelReturn::day_end), 结清的日 ts_close.
+  // 末尾归零重采样器与分钟缓冲: begin_day / end_day 成对即一日完整生命周期.
   void end_day(GlobalFeatureStore &store) {
     while (tick2min_.finish())
       run_minute();
     dag_.LabelReturn.day_end(label_writer(), day_releaser(store));
     dag_.at_day_end();
+    tick2min_.reset();
+    dag_.minute_data.clear();
   }
 
   // 无数据日 (缺 binary) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟 onMinute / 标签日历),
@@ -94,17 +97,11 @@ public:
   void empty_day(misc::Ymd date, const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
     begin_day(date, day);
     end_day(store);
-    reset();
   }
 
   // 回测区间末 (最后一日 end_day 之后): 悬挂日全部按最后盘口结算并归还句柄
   void finish_all(GlobalFeatureStore &store) {
     dag_.LabelReturn.finish_all(label_writer(), day_releaser(store));
-  }
-
-  void reset() {
-    tick2min_.reset();
-    dag_.minute_data.clear();
   }
 
   void compute_and_store() noexcept {

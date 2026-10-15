@@ -312,3 +312,18 @@ size_t OrdersCatalog::day_idx(misc::Ymd date) const {
   const auto it = std::lower_bound(days.begin(), days.end(), date);
   return it != days.end() && *it == date ? static_cast<size_t>(it - days.begin()) : kNoDay;
 }
+
+OrdersCatalog OrdersCatalog::slice(std::span<const misc::Ymd> dates_, std::span<const uint32_t> ids) const {
+  assert(std::is_sorted(dates_.begin(), dates_.end()) && "OrdersCatalog::slice: 日期须升序");
+  OrdersCatalog out({dates_.begin(), dates_.end()}, ids.size());
+  for (size_t d = 0; d < out.days.size(); ++d) {
+    const size_t src = day_idx(out.days[d]);
+    if (src == kNoDay)
+      continue;
+    out.records[d] = records[src];
+    FrameRef *row = out.frames.data() + d * out.width;
+    for (size_t c = 0; c < ids.size(); ++c)
+      row[c] = at(src, ids[c]);
+  }
+  return out;
+}

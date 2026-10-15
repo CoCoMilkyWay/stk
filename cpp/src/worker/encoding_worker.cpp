@@ -67,8 +67,60 @@ namespace {
 constexpr size_t kAssetsPerBatch = 64;
 
 // 包内文件名, 下标即 L2::Member
-std::array<const std::string *, L2::kMemberCount> member_files(const Config &config) {
+using MemberFiles = std::array<const std::string *, L2::kMemberCount>;
+MemberFiles member_files(const Config &config) {
   return {&config.csv_market_order, &config.csv_market_trade, &config.csv_market_data};
+}
+
+// 增量新鲜度规则: 日文件存在且不老于归档 → 它的结局可信.
+//   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读帧;
+//   - 归档被重下/修复过 → mtime 变新 → 日文件判过期, 整天重编覆盖.
+bool day_file_fresh(const std::string &orders_dir, const std::string &archive_path, misc::Ymd date) {
+  std::error_code ec;
+  std::filesystem::file_time_type archive_mtime = std::filesystem::last_write_time(archive_path, ec);
+  if (ec)
+    archive_mtime = {};
+  const auto day_mtime = std::filesystem::last_write_time(orders_day_path(orders_dir, date), ec);
+  return !ec && day_mtime >= archive_mtime;
+}
+
+// 列举结果按资产归并: 同一资产的委托/成交/行情条目在包里是分开的三条.
+// 全市场下不能拿 ipo/退市区间去盲试 (那会对当天包里没有的资产各发一次 unrar,
+// 每次重走三万条目的包头), 列举拿到的就是当天真实 universe, 再按 A 轴过滤掉
+// ETF/基金 (轴只含股票).
+std::unordered_map<size_t, EncodeTask> group_by_asset(const std::vector<misc::ArchiveEntry> &entries,
+                                                      const MemberFiles &files, const AssetAxis &axis, misc::Ymd date) {
+  std::unordered_map<size_t, EncodeTask> by_asset;
+  for (const auto &entry : entries) {
+    // "20260803/000001.SZ/逐笔委托.csv" → code_ex, filename
+    const size_t first = entry.path.find('/');
+    if (first == std::string::npos)
+      continue;
+    const size_t second = entry.path.find('/', first + 1);
+    if (second == std::string::npos)
+      continue;
+
+    const std::string code_ex = entry.path.substr(first + 1, second - first - 1);
+    const std::string filename = entry.path.substr(second + 1);
+
+    // 行情.csv 不编码落盘, 但要读进来做准入校验 (见 L2_Validator.hpp)
+    size_t m = 0;
+    while (m < L2::kMemberCount && filename != *files[m])
+      ++m;
+    if (m == L2::kMemberCount)
+      continue; // 委托队列.csv 等历史遗留文件
+
+    // 代码变更前的日子, 归档里是老代码, 轴上只有新代码 — 换回来才认得出
+    // (见 config::CODE_CHANGES). 无变更记录时 current_code 原样返回.
+    const size_t asset_id = axis.find(config::current_code(code_ex, date));
+    if (asset_id == axis.size())
+      continue; // 非股票 (ETF/基金) 或轴外代码
+
+    EncodeTask &task = by_asset[asset_id];
+    task.asset_id = asset_id;
+    task.member[m] = {entry.index, entry.size};
+  }
+  return by_asset;
 }
 
 } // namespace
@@ -89,22 +141,13 @@ void encoding_producer(SharedData &data,
   // 空账目 — 与其跑完再排查, 不如开跑前就断在这里
   assert(!axis.empty() && "A 轴为空 (基本面未就绪?), 编码无从进行");
   assert(worker_count > 0 && "encoding_producer: worker_count 必须为正");
+  const MemberFiles files = member_files(data.config);
 
-  // 编码范围 = 回测区间 (config.start_date / end_date), 与特征计算一致.
-  // all_dates 是 binary ∪ archive 的全集, 不收窄会去编回测区间外的天
-  // (见 ComputeService 对 all_dates 的同类过滤).
-  const misc::Ymd bt_start = data.config.start_date;
-  const misc::Ymd bt_end = data.config.end_date;
-  std::vector<misc::Ymd> dates;
-  dates.reserve(data.asset.all_dates.size());
-  for (const misc::Ymd d : data.asset.all_dates)
-    if (d >= bt_start && d <= bt_end)
-      dates.push_back(d);
-
-  // 与 GUI 口径保持一致: producer 只处理回测区间内的日期, 这里把进度条收窄
-  // 到实际会经过的天数.
-  if (progress && dates.size() != data.asset.all_dates.size())
-    progress->set_summary_total(dates.size(), true);
+  // 编码日期轴 = 回测日历 (交易日历 ∩ 回测区间), 与特征计算同一条轴; 进度条总量
+  // (EncodingService) 也是它. 归档缺的天在列举处按 Missing 跳过.
+  const std::vector<misc::Ymd> dates = data.asset.backtest_dates();
+  assert(data.asset.backtest.start == data.config.start_date && data.asset.backtest.end == data.config.end_date &&
+         "回测日历与配置区间不符 (改配置后没重算覆盖?)");
 
   const size_t total_days = dates.size();
 
@@ -116,19 +159,8 @@ void encoding_producer(SharedData &data,
     const std::string archive_path = Utils::generate_archive_path(
         data.config.archive_dir, date, config::ARCHIVE_EXTENSION);
 
-    // 增量新鲜度规则: 日文件存在且不老于归档 → 它的结局可信.
-    //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读帧;
-    //   - 归档被重下/修复过 → mtime 变新 → 日文件判过期, 整天重编覆盖.
     const std::string &orders_dir = data.config.orders_dir;
-    bool prev_fresh = false;
-    if (skip_existing) {
-      std::error_code ec;
-      std::filesystem::file_time_type archive_mtime = std::filesystem::last_write_time(archive_path, ec);
-      if (ec)
-        archive_mtime = {};
-      const auto day_mtime = std::filesystem::last_write_time(orders_day_path(orders_dir, date), ec);
-      prev_fresh = !ec && day_mtime >= archive_mtime;
-    }
+    bool prev_fresh = skip_existing && day_file_fresh(orders_dir, archive_path, date);
 
     // 上一轮的日文件 (见 shared/OrdersDay.hpp). 三处用它: 整天快路径看
     // complete, 下面的逐资产过滤看目录里的帧与墓碑, 新日文件从它 adopt 旧帧.
@@ -149,13 +181,8 @@ void encoding_producer(SharedData &data,
     }
 
     // ------------------------------------------------------------------
-    // 列举 — 当日包里"实际有哪些资产、每个文件多大"
-    //
-    // 全市场下不能拿 ipo/退市区间去盲试: 那会对当天包里没有的资产各发一次
-    // unrar (每次重走三万条目的包头). 先列举拿到当天真实 universe, 再按
-    // A 轴过滤掉 ETF/基金 (轴只含股票).
-    //
-    // 尺寸在这一步就要拿到 —— worker 靠它在 unrar p 的输出流上切分边界.
+    // 列举 — 当日包里"实际有哪些资产、每个文件多大". 尺寸在这一步就要
+    // 拿到 —— worker 靠它在 unrar p 的输出流上切分边界.
     // ------------------------------------------------------------------
     std::vector<misc::ArchiveEntry> entries;
     const misc::ArchiveListStatus list_status =
@@ -181,39 +208,7 @@ void encoding_producer(SharedData &data,
       continue;
     }
 
-    // 同一资产的委托/成交/行情条目在包里是分开的三条, 先按资产归并
-    const auto files = member_files(data.config);
-    std::unordered_map<size_t, EncodeTask> by_asset;
-
-    for (const auto &entry : entries) {
-      // "20260803/000001.SZ/逐笔委托.csv" → code_ex, filename
-      const size_t first = entry.path.find('/');
-      if (first == std::string::npos)
-        continue;
-      const size_t second = entry.path.find('/', first + 1);
-      if (second == std::string::npos)
-        continue;
-
-      const std::string code_ex = entry.path.substr(first + 1, second - first - 1);
-      const std::string filename = entry.path.substr(second + 1);
-
-      // 行情.csv 不编码落盘, 但要读进来做准入校验 (见 L2_Validator.hpp)
-      size_t m = 0;
-      while (m < L2::kMemberCount && filename != *files[m])
-        ++m;
-      if (m == L2::kMemberCount)
-        continue; // 委托队列.csv 等历史遗留文件
-
-      // 代码变更前的日子, 归档里是老代码, 轴上只有新代码 — 换回来才认得出
-      // (见 config::CODE_CHANGES). 无变更记录时 current_code 原样返回.
-      const size_t asset_id = axis.find(config::current_code(code_ex, date));
-      if (asset_id == axis.size())
-        continue; // 非股票 (ETF/基金) 或轴外代码
-
-      EncodeTask &task = by_asset[asset_id];
-      task.asset_id = asset_id;
-      task.member[m] = {entry.index, entry.size};
-    }
+    const std::unordered_map<size_t, EncodeTask> by_asset = group_by_asset(entries, files, axis, date);
 
     // 断点续跑: 旧日文件 (新鲜的话) 里已有结局的资产不重编 —— 帧或墓碑原样
     // 搬进新日文件.
@@ -343,6 +338,116 @@ struct ReadPlan {
   std::vector<StreamSlot> slots;
 };
 
+// 一批的读取计划, 跨批复用容量. plans[0] 是连成一段的大流, 其后每条是一个
+// 不相邻资产的小流.
+//
+// 按归档序排是必须的: unrar p 的输出顺序是归档顺序, 与名单顺序无关 (已实测).
+// 排错了就会拿 A 的尺寸去切 B 的字节, 静默产出垃圾.
+//
+// 流式切分假定"同一资产的几块在归档序上连成一段" — 包按 date/ASSET/ 目录
+// 逐个写入时天然成立, 但修补过的归档会把补的文件追加到包尾, 于是同一资产的
+// 几块在条目序上隔了上万条. 连成一段的资产共用 plans[0] 一条大流; 不相邻的
+// 每个单独一条小流 (plans[1..]), 多付一次 unrar 固定开销, 但这种资产一天
+// 最多个位数, 无关紧要. 判据是"首尾跨度等于块数": 一个资产有 1~3 块, 连成
+// 一段当且仅当 last - first + 1 == count.
+struct BatchPlan {
+  std::vector<ReadPlan> plans;
+
+  void build(const SharedData &data, const EncodeBatch &batch, const MemberFiles &files) {
+    order_.clear();
+    for (size_t t = 0; t < batch.tasks.size(); ++t)
+      for (size_t m = 0; m < L2::kMemberCount; ++m)
+        if (batch.tasks[t].member[m].size > 0)
+          order_.emplace_back(batch.tasks[t].member[m].index, StreamSlot{t, static_cast<L2::Member>(m)});
+    std::sort(order_.begin(), order_.end(),
+              [](const auto &a, const auto &b) { return a.first < b.first; });
+
+    constexpr size_t kNone = static_cast<size_t>(-1);
+    std::vector<size_t> first_pos(batch.tasks.size(), kNone);
+    std::vector<size_t> last_pos(batch.tasks.size(), kNone);
+    std::vector<size_t> slot_count(batch.tasks.size(), 0);
+    for (size_t i = 0; i < order_.size(); ++i) {
+      const size_t t = order_[i].second.task_idx;
+      if (first_pos[t] == kNone)
+        first_pos[t] = i;
+      last_pos[t] = i;
+      ++slot_count[t];
+    }
+    size_t n_plans = 1;
+    plan_of_.assign(batch.tasks.size(), 0);
+    for (size_t t = 0; t < batch.tasks.size(); ++t) {
+      assert(slot_count[t] > 0 && "encoding_worker: 任务没有委托成员 (producer 应已滤掉)");
+      if (last_pos[t] - first_pos[t] + 1 != slot_count[t])
+        plan_of_[t] = n_plans++;
+    }
+
+    plans.resize(n_plans);
+    for (ReadPlan &plan : plans) {
+      plan.paths.clear();
+      plan.sizes.clear();
+      plan.slots.clear();
+    }
+    for (const auto &[archive_index, slot] : order_) {
+      const EncodeTask &task = batch.tasks[slot.task_idx];
+      const AssetItem &asset = data.asset.items[task.asset_id];
+      // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
+      const std::string asset_full =
+          config::archive_code(asset.asset_code + "." + asset.exchange, batch.date);
+      const size_t m = static_cast<size_t>(slot.member);
+      ReadPlan &plan = plans[plan_of_[slot.task_idx]];
+      plan.paths.push_back(misc::dense(batch.date) + "/" + asset_full + "/" + *files[m]);
+      plan.sizes.push_back(task.member[m].size);
+      plan.slots.push_back(slot);
+    }
+
+#ifndef NDEBUG
+    // 剔除不相邻者之后, 相邻性在每条计划里是按构造保证的 (剔除只会拉近剩余
+    // 元素, 不会往中间插新东西). 万一还破 — 一个资产会被 begin/finish 两次,
+    // 第二次把第一次的产物覆盖成半截数据, 完全无声, 与其信任不如当场炸.
+    std::vector<bool> closed(batch.tasks.size(), false);
+    for (const ReadPlan &plan : plans) {
+      for (size_t i = 0; i < plan.slots.size(); ++i) {
+        const size_t t = plan.slots[i].task_idx;
+        assert(!closed[t] && "encoding_worker: 读取计划里仍有不相邻的资产, 切分会错位");
+        if (i + 1 == plan.slots.size() || plan.slots[i + 1].task_idx != t)
+          closed[t] = true;
+      }
+    }
+#endif
+  }
+
+private:
+  std::vector<std::pair<size_t, StreamSlot>> order_; // (归档序, slot)
+  std::vector<size_t> plan_of_;                      // 批内下标 → 计划下标
+};
+
+// 天粒度账本记一笔结局 (DayIndex::settle). 当天最后一笔 → rec.complete 定案,
+// 出账本, 返回该天 (调用方锁外 commit); 否则返回空. 没留下结局的 ⇒
+// rec.complete = 0, 下次增量必须重新列举补齐.
+std::shared_ptr<DayJob> settle_in_day(EncodeStats &stats, const EncodeBatch &batch, misc::ProgressHandle &progress_handle,
+                                      L2::Outcome outcome, uint32_t check_flags, const FrameRef &ref) {
+  std::lock_guard<std::mutex> lock(stats.days_mutex);
+  DayJob &job = *batch.day;
+  job.index.settle(outcome, check_flags, ref);
+
+  std::shared_ptr<DayJob> finished;
+  if (++job.done == job.total) {
+    job.index.rec.complete = job.index.rec.errors() == 0 ? 1 : 0;
+    const size_t erased = stats.days_inflight.erase(batch.date);
+    assert(erased == 1 && "settle_in_day: 本天未在账本注册");
+    (void)erased;
+    finished = batch.day;
+    progress_handle.bump_summary();
+  }
+  // 附注跟着最老的在编天走 (多天在飞时以它为准)
+  if (!stats.days_inflight.empty()) {
+    const auto &[day, oldest] = *stats.days_inflight.begin();
+    progress_handle.set_summary_note(std::to_string(day) + ": " + std::to_string(oldest->done) + "/" +
+                                     std::to_string(oldest->total) + " assets");
+  }
+  return finished;
+}
+
 } // namespace
 
 void encoding_worker(SharedData &data,
@@ -368,12 +473,8 @@ void encoding_worker(SharedData &data,
 
   Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] Started");
 
-  const auto files = member_files(data.config);
-
-  // 归档序排好的读取计划, 跨批复用容量
-  std::vector<std::pair<size_t, StreamSlot>> order; // (归档序, slot)
-  std::vector<size_t> plan_of;                      // 批内下标 → 计划下标
-  std::vector<ReadPlan> plans;
+  const MemberFiles files = member_files(data.config);
+  BatchPlan batch_plan;
 
   EncodeBatch batch;
   while (!cancel_flag->load() && queue.pop(batch)) {
@@ -383,79 +484,7 @@ void encoding_worker(SharedData &data,
     if (batch.tasks.empty())
       continue;
 
-    // 批内所有成员按归档序排成读取计划.
-    //
-    // 这一步是必须的: unrar p 的输出顺序是归档顺序, 与名单顺序无关 (已实测).
-    // 排错了就会拿 A 的尺寸去切 B 的字节, 静默产出垃圾.
-    //
-    // 流式切分假定"同一资产的几块在归档序上连成一段" — 包按 date/ASSET/ 目录
-    // 逐个写入时天然成立, 但修补过的归档会把补的文件追加到包尾, 于是同一资产的
-    // 几块在条目序上隔了上万条. 连成一段的资产共用 plans[0] 一条大流; 不相邻的
-    // 每个单独一条小流 (plans[1..]), 多付一次 unrar 固定开销, 但这种资产一天
-    // 最多个位数, 无关紧要. 判据是"首尾跨度等于块数": 一个资产有 1~3 块, 连成
-    // 一段当且仅当 last - first + 1 == count.
-    {
-      order.clear();
-      for (size_t t = 0; t < batch.tasks.size(); ++t)
-        for (size_t m = 0; m < L2::kMemberCount; ++m)
-          if (batch.tasks[t].member[m].size > 0)
-            order.emplace_back(batch.tasks[t].member[m].index, StreamSlot{t, static_cast<L2::Member>(m)});
-      std::sort(order.begin(), order.end(),
-                [](const auto &a, const auto &b) { return a.first < b.first; });
-
-      constexpr size_t kNone = static_cast<size_t>(-1);
-      std::vector<size_t> first_pos(batch.tasks.size(), kNone);
-      std::vector<size_t> last_pos(batch.tasks.size(), kNone);
-      std::vector<size_t> slot_count(batch.tasks.size(), 0);
-      for (size_t i = 0; i < order.size(); ++i) {
-        const size_t t = order[i].second.task_idx;
-        if (first_pos[t] == kNone)
-          first_pos[t] = i;
-        last_pos[t] = i;
-        ++slot_count[t];
-      }
-      size_t n_plans = 1;
-      plan_of.assign(batch.tasks.size(), 0);
-      for (size_t t = 0; t < batch.tasks.size(); ++t) {
-        assert(slot_count[t] > 0 && "encoding_worker: 任务没有委托成员 (producer 应已滤掉)");
-        if (last_pos[t] - first_pos[t] + 1 != slot_count[t])
-          plan_of[t] = n_plans++;
-      }
-
-      plans.resize(n_plans);
-      for (ReadPlan &plan : plans) {
-        plan.paths.clear();
-        plan.sizes.clear();
-        plan.slots.clear();
-      }
-      for (const auto &[archive_index, slot] : order) {
-        const EncodeTask &task = batch.tasks[slot.task_idx];
-        const AssetItem &asset = data.asset.items[task.asset_id];
-        // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
-        const std::string asset_full =
-            config::archive_code(asset.asset_code + "." + asset.exchange, batch.date);
-        const size_t m = static_cast<size_t>(slot.member);
-        ReadPlan &plan = plans[plan_of[slot.task_idx]];
-        plan.paths.push_back(misc::dense(batch.date) + "/" + asset_full + "/" + *files[m]);
-        plan.sizes.push_back(task.member[m].size);
-        plan.slots.push_back(slot);
-      }
-
-#ifndef NDEBUG
-      // 剔除不相邻者之后, 相邻性在每条计划里是按构造保证的 (剔除只会拉近剩余
-      // 元素, 不会往中间插新东西). 万一还破 — 一个资产会被 begin/finish 两次,
-      // 第二次把第一次的产物覆盖成半截数据, 完全无声, 与其信任不如当场炸.
-      std::vector<bool> closed(batch.tasks.size(), false);
-      for (const ReadPlan &plan : plans) {
-        for (size_t i = 0; i < plan.slots.size(); ++i) {
-          const size_t t = plan.slots[i].task_idx;
-          assert(!closed[t] && "encoding_worker: 读取计划里仍有不相邻的资产, 切分会错位");
-          if (i + 1 == plan.slots.size() || plan.slots[i + 1].task_idx != t)
-            closed[t] = true;
-        }
-      }
-#endif
-    }
+    batch_plan.build(data, batch, files);
 
     // 流式消费: 每个文件到达就地解析, 一个资产的几块都喂完就落盘.
     // 一次只持有一个文件的字节 — 批可以开得很大而内存不涨.
@@ -468,9 +497,7 @@ void encoding_worker(SharedData &data,
     // 的天在附注里永远排不到前面.
     std::vector<char> retired(batch.tasks.size(), 0);
 
-    // 天粒度账本: 本天记一笔结局 (DayIndex::settle), 清零则整天收工 (汇总
-    // days +1) 并 commit 日文件. 没留下结局的 ⇒ rec.complete = 0, 下次增量
-    // 必须重新列举补齐.
+    // 销账: 批内记一笔, 天粒度账本记一笔 (settle_in_day), 当天清零则 commit 日文件.
     auto retire_task = [&](size_t task_idx, L2::Outcome outcome, uint32_t check_flags, const FrameRef &ref) {
       assert(!retired[task_idx] && "retire_task: 同一任务销账两次");
       retired[task_idx] = 1;
@@ -478,27 +505,7 @@ void encoding_worker(SharedData &data,
       progress_handle.update(done_in_batch, batch.tasks.size(), std::to_string(batch.date));
       stats.outcomes[static_cast<size_t>(outcome)].fetch_add(1);
 
-      std::shared_ptr<DayJob> finished;
-      {
-        std::lock_guard<std::mutex> lock(stats.days_mutex);
-        DayJob &job = *batch.day;
-        job.index.settle(outcome, check_flags, ref);
-
-        if (++job.done == job.total) {
-          job.index.rec.complete = job.index.rec.errors() == 0 ? 1 : 0;
-          const size_t erased = stats.days_inflight.erase(batch.date);
-          assert(erased == 1 && "retire_task: 本天未在账本注册");
-          (void)erased;
-          finished = batch.day;
-          progress_handle.bump_summary();
-        }
-        // 附注跟着最老的在编天走 (多天在飞时以它为准)
-        if (!stats.days_inflight.empty()) {
-          const auto &[day, oldest] = *stats.days_inflight.begin();
-          progress_handle.set_summary_note(std::to_string(day) + ": " + std::to_string(oldest->done) + "/" +
-                                           std::to_string(oldest->total) + " assets");
-        }
-      }
+      const std::shared_ptr<DayJob> finished = settle_in_day(stats, batch, progress_handle, outcome, check_flags, ref);
       // 出错的天照样 commit —— complete=0 让增量重来 (已有结局的帧那时原样
       // 搬过去), 而界面在重跑之前就能说清楚那天错在哪. fdatasync 几 GB 不该
       // 压在锁里: 此刻当天全部任务已销账, 不会再有人往这个 writer 追加.
@@ -544,7 +551,7 @@ void encoding_worker(SharedData &data,
 
     // plans[0] 是连成一段的大流, 其后每条是一个不相邻资产的小流 —— 同一个循环.
     // 到达先后在资产内无所谓 (finish 统一合并排序).
-    for (const ReadPlan &plan : plans) {
+    for (const ReadPlan &plan : batch_plan.plans) {
       if (plan.slots.empty())
         continue;
       TraceN("StreamPlan");

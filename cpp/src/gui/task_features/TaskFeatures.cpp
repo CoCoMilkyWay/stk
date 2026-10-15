@@ -167,7 +167,7 @@ TaskHandle CreateFeaturesTask() {
         data.taskstate.database.all_json_ready &&
         data.taskstate.database.binary_scanned &&
         data.asset.binary.exists &&
-        !data.asset.backtest.required_dates.empty() &&
+        !data.asset.backtest.days.empty() &&
         !data.taskstate.database.l2_scan_inflight;
     const bool has_selection = (data.feature.selection.primary_feature_idx() >= 0);
     fs.has_selection = has_selection;

@@ -488,7 +488,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
       if (cur_sec != SIZE_MAX)
         commit_second(cur_sec); // 收尾: 最后一秒
     }
-    lob.clear(); // 归还干净簿 (下次 bind 断言)
+    lob.unbind(); // 归还干净簿 (下次 bind 断言)
 
     for (uint8_t v : sec_data)
       slot.data_valid_count += v;

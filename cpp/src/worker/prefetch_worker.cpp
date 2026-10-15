@@ -5,11 +5,11 @@
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <string>
 #include <thread>
-#include <vector>
 
 void prefetch_worker(WorkerCtx ctx) {
   const int worker_id = ctx.worker_id;
@@ -23,7 +23,7 @@ void prefetch_worker(WorkerCtx ctx) {
   TraceValue(worker_id);
   TraceThread(("prefetch_worker_" + std::to_string(worker_id)).c_str());
 
-  const size_t total_dates = data.asset.all_dates.size();
+  const size_t total_dates = ctx.dates.size();
 
   // 窗口 = TS 在飞跨度上限 (pool slots) + 超前余量: 保证最快 TS 到达前缓存已暖
   const size_t window_days = store.query_slots() + 2;
@@ -33,9 +33,6 @@ void prefetch_worker(WorkerCtx ctx) {
   // 只为把帧拖进 page cache, 内容即弃 (decode 在 TS worker 内联)
   DayReader reader;
 
-  // 当天要读的帧, 跨日复用容量
-  std::vector<FrameRef> refs;
-
   size_t cumulative_bytes = 0;
   size_t completed_dates = 0;
 
@@ -44,7 +41,7 @@ void prefetch_worker(WorkerCtx ctx) {
       break;
 
     TraceN("DateLoop");
-    const misc::Ymd date = data.asset.all_dates[date_idx];
+    const misc::Ymd date = ctx.dates[date_idx];
     TraceTextS(misc::dense(date).c_str());
 
     // 门控: 领先最慢 TS 不超过窗口
@@ -61,22 +58,13 @@ void prefetch_worker(WorkerCtx ctx) {
         break;
     }
 
-    // 日期 → 帧目录行下标, 一天查一次 (与 sequential_worker 同姿态)
-    const size_t didx = ctx.orders.day_idx(date);
-
     {
       TraceN("ReadFiles");
-      // 资产集 = universe 子轴 (sched.global_ids): TS 只 decode 这些. reader 按偏移
-      // 排序、首尾相接的帧并成一段顺序读 —— universe 覆盖全市场时就是整个数据区
-      // 一段段读完.
-      refs.clear();
-      for (const uint32_t global_id : ctx.sched.global_ids) {
-        const FrameRef &ref = ctx.orders.at(didx, global_id);
-        if (!ref.empty())
-          refs.push_back(ref);
-      }
-
-      if (!refs.empty()) {
+      // 资产集 = universe 子轴 (帧目录切片的一行): TS 只 decode 这些. reader 按偏移
+      // 排序、首尾相接的帧并成一段顺序读 (空格子跳过) —— universe 覆盖全市场时就是
+      // 整个数据区一段段读完.
+      const std::span<const FrameRef> refs = ctx.orders.row(date_idx);
+      if (std::any_of(refs.begin(), refs.end(), [](const FrameRef &ref) { return !ref.empty(); })) {
         const bool found = reader.open(data.config.orders_dir, date);
         assert(found && "prefetch: 扫描登记过的日文件打不开");
         (void)found;

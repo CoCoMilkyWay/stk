@@ -1,4 +1,3 @@
-#include "shared/SharedData.hpp"
 #include "worker/feature_workers.hpp"
 
 #include "features/Backend/FeatureStore.hpp"
@@ -12,7 +11,6 @@
 
 void crosssectional_worker(WorkerCtx ctx) {
   const int worker_id = ctx.worker_id;
-  SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
   // 本核发布槽 (单写者): work = 累计已扫秒格, idle_ms = 累计干等毫秒;
@@ -23,7 +21,7 @@ void crosssectional_worker(WorkerCtx ctx) {
   TraceValue(worker_id);
   TraceThread(("cs_worker_" + std::to_string(worker_id)).c_str());
 
-  const size_t total_dates = data.asset.all_dates.size();
+  const size_t total_dates = ctx.dates.size();
   size_t completed_dates = 0;
   size_t timeslots_done = 0;
 
@@ -33,11 +31,11 @@ void crosssectional_worker(WorkerCtx ctx) {
   CoreCrosssection core(store);
 
   // Date-first traversal
-  for (size_t date_idx = 0; date_idx < data.asset.all_dates.size(); ++date_idx) {
+  for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
     if (cancel_requested.load(std::memory_order_relaxed))
       break;
     TraceN("DateLoop");
-    const misc::Ymd date = data.asset.all_dates[date_idx];
+    const misc::Ymd date = ctx.dates[date_idx];
     TraceTextS(misc::dense(date).c_str());
 
     // 按日门控: 阻塞至全部 TS 写完本日, 返回后两层张量整体可读.

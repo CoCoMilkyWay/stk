@@ -1,4 +1,3 @@
-#include "shared/SharedData.hpp"
 #include "worker/feature_workers.hpp"
 
 #include "features/Backend/FeatureStore.hpp"
@@ -12,7 +11,6 @@
 
 void io_worker(WorkerCtx ctx) {
   const int worker_id = ctx.worker_id;
-  SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
   // 本核发布槽 (单写者): work = 已落盘字节, idle_ms = 累计等 CS_DONE 毫秒; 天数另计 io_days
@@ -23,7 +21,7 @@ void io_worker(WorkerCtx ctx) {
   TraceValue(worker_id);
   TraceThread(("io_worker_" + std::to_string(worker_id)).c_str());
 
-  const size_t total_dates = data.asset.all_dates.size();
+  const size_t total_dates = ctx.dates.size();
   size_t flush_count = 0;
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to flush");

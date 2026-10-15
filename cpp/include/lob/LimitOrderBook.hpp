@@ -48,7 +48,7 @@ public:
   //======================================================================================
 
   // LOB 是可换绑的工作区: 簿状态 (档位数组/订单池/桶表/位图/TOB) 全部日内瞬态
-  // (每天 clear()), 不含任何跨日状态 —— 跨日状态 (DAG 暖历史 + Fund 状态机 +
+  // (每天 unbind() 归零), 不含任何跨日状态 —— 跨日状态 (DAG 暖历史 + Fund 状态机 +
   // 分钟缓冲 + TickData) 全在 per-asset 的 CoreSequential 里, 经 bind() 换绑.
   //   回测: 每 worker 一个工作区, 资产串行复用 (页面/cache/TLB 常驻, 稳态零扩容);
   //   实盘: 每资产一个工作区, 启动时 bind 一次.
@@ -62,12 +62,14 @@ public:
     init_sentinel_levels();
   }
 
-  // 换绑资产. 前置条件: 簿是干净的 (刚构造或已 clear()).
+  // 生命周期 (成对): bind → begin_day → { begin_frame → process_batch | process… } → end_day → unbind
+  //   GUI 重放无特征侧: bind(sink) → begin_frame → process… → unbind
+  // 换绑资产. 前置条件: 未绑定 (刚构造或已 unbind(), 簿因此是干净的).
   // 每单内部的时序编排 (update_depth → 特征 → update_lob) 是本类的不变量,
   // 特征侧只是一个可换绑的出口 —— 这是回测/实盘一致性的一部分.
   void bind(CoreSequential *core, size_t asset_id, L2::ExchangeType exchange_type) {
     assert(core && "bind: null core");
-    assert(order_table_.size() == 0 && "bind: book not clean");
+    assert(!bound() && "bind: 上一个资产没 unbind");
     core_ = core;
     asset_id_ = asset_id;
     exchange_type_ = exchange_type;
@@ -80,7 +82,7 @@ public:
   // 指针在回测热路径上是被完美预测的分支). 撮合/簿维护逐字节同一条路径.
   void bind(TickData *sink, size_t asset_id, L2::ExchangeType exchange_type) {
     assert(sink && "bind: null sink");
-    assert(order_table_.size() == 0 && "bind: book not clean");
+    assert(!bound() && "bind: 上一个资产没 unbind");
     core_ = nullptr;
     asset_id_ = asset_id;
     exchange_type_ = exchange_type;
@@ -88,9 +90,11 @@ public:
     tick_data_ = sink;
   }
 
+  bool bound() const { return tick_data_ != &detached_; }
+
   // 当前绑定资产的 TickData (归 core 所有)
   TickData &tick_data() {
-    assert(tick_data_ && "tick_data: LOB not bound");
+    assert(bound() && "tick_data: LOB not bound");
     return *tick_data_;
   }
 
@@ -126,6 +130,7 @@ public:
   }
 
   void end_day(GlobalFeatureStore &store) {
+    assert(core_ && "end_day: LOB not bound");
     core_->end_day(store);
   }
 
@@ -172,14 +177,14 @@ public:
   // PUBLIC API: Utilities
   //======================================================================================
 
-  // 设置当日档位索引基准 (分), 随帧而来 (见 begin_frame). 必须在 clear() 之后、喂第一条
+  // 设置当日档位索引基准 (分), 随帧而来 (见 begin_frame). 必须在 bind() 之后、喂第一条
   // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的档位下标会指向别的价格.
   HOT_NOINLINE void set_price_base(uint32_t price_base) {
     price_base_ = price_base;
     LOB_feature_ref().price_base = price_base;
   }
 
-  // 当日事件数 (解码后已知). clear() 之后、第一条订单之前调用: 委托表按 2× 事件数定长, 小票的表
+  // 当日事件数 (解码后已知). bind() 之后、第一条订单之前调用: 委托表按 2× 事件数定长, 小票的表
   // 小到进 L2, 换日只清这一段. 不调用 (实盘, 事件数未知) 则用整张预留表.
   HOT_NOINLINE void reserve_orders(size_t events) {
     order_table_.reserve(events);
@@ -192,8 +197,10 @@ public:
     reserve_orders(view.head.count);
   }
 
-  // Complete reset
-  HOT_NOINLINE void clear() {
+  // 解绑: 簿归零 (档位/委托表/TOB/节流游标 + 写出口的 LOB_Feature), 写出口退回 detached_.
+  // bind 的对端 —— 归还干净工作区, 下一个资产才能 bind.
+  HOT_NOINLINE void unbind() {
+    assert(bound() && "unbind: LOB not bound");
     price_levels_.fill(nullptr); // Reset direct array (all nullptr)
     level_storage_.clear();
     order_table_.clear();
@@ -230,10 +237,8 @@ public:
 #if DEBUG_ANOMALY_PRINT
     debug_.printed_anomalies.clear();
 #endif
-
-    // Reset feature state for new day (无特征侧绑定时无事可做)
-    if (core_)
-      core_->reset();
+    core_ = nullptr;
+    tick_data_ = &detached_;
 
     // Reinitialize sentinel levels
     init_sentinel_levels();
