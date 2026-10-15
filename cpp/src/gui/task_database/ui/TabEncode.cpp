@@ -973,7 +973,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
           ImGui::SameLine();
           if (required_days > 0) {
             ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu trading days, %.1f%%)",
-                               asset.backtest.start.c_str(), asset.backtest.end.c_str(),
+                               misc::dense(asset.backtest.start).c_str(), misc::dense(asset.backtest.end).c_str(),
                                archive_days_in_backtest, required_days,
                                100.0 * archive_days_in_backtest / required_days);
           } else {
@@ -1019,7 +1019,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
           ImGui::SameLine();
           if (required_days > 0) {
             ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu/%zu trading days, %.1f%%)",
-                               asset.backtest.start.c_str(), asset.backtest.end.c_str(),
+                               misc::dense(asset.backtest.start).c_str(), misc::dense(asset.backtest.end).c_str(),
                                order_days_in_backtest, required_days,
                                100.0 * order_days_in_backtest / required_days);
           } else {

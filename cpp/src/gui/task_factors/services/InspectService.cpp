@@ -212,8 +212,8 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     return true;
   }
   std::string ckey = req.scope.features_dir + "|" + std::to_string(req.scope.uni.hash) + "|cap" + std::to_string(req.max_impact);
-  for (const std::string &m : req.scope.months)
-    ckey += "|" + m;
+  for (const misc::Ym m : req.scope.months)
+    ckey += "|" + std::to_string(m);
   const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.uni.size());
   total_.store(days, std::memory_order_relaxed);
   done_.store(0, std::memory_order_relaxed);
