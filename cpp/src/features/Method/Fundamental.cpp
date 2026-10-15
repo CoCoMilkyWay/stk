@@ -1,6 +1,7 @@
 // fund — 日频 PIT 基本面实现 (qmt pit.cpp + def/ 链路移植)
 //
 // 结构: Pool::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
+//                     全部 15 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
 //       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与 qmt 批量扫描逐日等价:
 //                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红 365 日滑窗 + 3 年双阈值,
 //                       预亏/营收区间 = "d < max{off : on ≤ d}" (区间并集的流式形式), 行业 replay, trading_st 连续计数
@@ -10,6 +11,7 @@
 #include "features/Method/Fundamental.hpp"
 
 #include "features/Operator/TS/Fund/Fund.hpp" // Fund::Out 输出行布局
+#include "fundamental/Scan.hpp"
 #include "misc/date.hpp"
 #include "misc/parquet.hpp"
 
@@ -24,8 +26,6 @@
 #include <iterator>
 #include <limits>
 #include <map>
-#include <mutex>
-#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -38,6 +38,11 @@ namespace fund {
 namespace {
 
 namespace pq = misc::pq;
+using fundamental::Append;
+using fundamental::Part;
+using fundamental::Rows;
+using fundamental::Sink;
+using misc::Ymd;
 
 constexpr float NaNF = std::numeric_limits<float>::quiet_NaN();
 constexpr float InfF = std::numeric_limits<float>::infinity();
@@ -67,16 +72,8 @@ inline float sum_nan0(std::initializer_list<float> xs) {
 // 首选缺失 → 回退
 inline float first_finite(float a, float b) { return std::isfinite(a) ? a : b; }
 
-inline int year_of(std::int32_t yyyymmdd) { return yyyymmdd / 10000; }
-inline int month_of(std::int32_t yyyymmdd) { return yyyymmdd / 100 % 100; }
-
-inline std::string ymd_str(std::int32_t v) {
-  if (v <= 0)
-    return {};
-  char buf[9];
-  std::snprintf(buf, sizeof(buf), "%08d", v);
-  return std::string(buf, 8);
-}
+inline int year_of(Ymd d) { return d / 10000; }
+inline int month_of(Ymd d) { return d / 100 % 100; }
 
 // SW2021 一级行业表 (SW2021_L1_NAMES / sw2021_l1_name_to_id) 见 Fundamental.hpp
 
@@ -84,38 +81,39 @@ inline std::string ymd_str(std::int32_t v) {
 // 轴 + 静态 meta
 // ============================================================================
 struct Axes {
-  std::vector<std::string> dates; // "YYYYMMDD" 升序, 全交易日历截到 today
+  std::vector<Ymd> dates; // 升序, 全交易日历截到 today
   std::vector<std::chrono::sys_days> date_days;
-  std::unordered_map<std::string, int> date_idx;
-  std::unordered_map<std::string, int> code_idx; // "000001.SZ" → a
+  int n_a_ = 0;
 
   int n_d() const { return static_cast<int>(dates.size()); }
-  int n_a() const { return static_cast<int>(code_idx.size()); }
+  int n_a() const { return n_a_; }
 
+  // min{i : dates[i] >= d}; 无 → n_d
+  int lower(Ymd d) const {
+    return static_cast<int>(std::lower_bound(dates.begin(), dates.end(), d) - dates.begin());
+  }
+  // d 是交易日 → 其下标; 否则 -1
+  int exact(Ymd d) const {
+    const int i = lower(d);
+    return (i < n_d() && dates[static_cast<std::size_t>(i)] == d) ? i : -1;
+  }
   // max{i : dates[i] <= d}; d < dates[0] → -1 (事件 visible → 上一交易日)
-  int floor_date(std::string_view d) const {
-    auto it = std::upper_bound(dates.begin(), dates.end(), d);
-    return static_cast<int>(std::distance(dates.begin(), it)) - 1;
+  int floor(Ymd d) const {
+    return static_cast<int>(std::upper_bound(dates.begin(), dates.end(), d) - dates.begin()) - 1;
   }
 };
 
 struct Meta {
-  // 与 codes 同序; sys_days + valid 位 (list_date 缺失 = 永未上市)
-  std::vector<std::chrono::sys_days> list_day;
-  std::vector<std::uint8_t> has_list;
-  std::vector<std::chrono::sys_days> delist_day;
-  std::vector<std::uint8_t> has_delist;
-  std::vector<std::string> list_date_str; // "YYYYMMDD" (上市前事件截断用)
-  std::vector<std::uint8_t> main_board;   // list_sector == 1
+  // 与 codes 同序; 0 = 缺失 (list 缺失 = 永未上市)
+  std::vector<Ymd> list, delist;
+  std::vector<std::chrono::sys_days> list_day, delist_day; // 同上, 仅 != 0 时有效
+  std::vector<std::uint8_t> main_board;                    // list_sector == 1
 };
 
 // 上市日在 D 轴的 lower_bound; 无 list_date → n_d (永未上市)
 int get_list_d(int a, const Axes &axes, const Meta &meta) {
-  if (!meta.has_list[static_cast<std::size_t>(a)])
-    return axes.n_d();
-  const std::string &ld = meta.list_date_str[static_cast<std::size_t>(a)];
-  auto it = std::lower_bound(axes.dates.begin(), axes.dates.end(), ld);
-  return static_cast<int>(std::distance(axes.dates.begin(), it));
+  const Ymd ld = meta.list[static_cast<std::size_t>(a)];
+  return ld ? axes.lower(ld) : axes.n_d();
 }
 
 // ============================================================================
@@ -304,97 +302,62 @@ struct Data {
 namespace {
 
 // ============================================================================
-// row 定位 memo (qmt GridRowMemo / EventRowMemo)
+// vd 日 → D 轴 row (qmt GridRowMemo / EventRowMemo 合一)
+//   Exact: 须是交易日 (网格);  Floor: 落到 ≤ 它的最近交易日 (事件)
+//   再按 cutoff 平移 (row = idx − cutoff), 越界 / 缺失 → -1. 行按日成块, 只在换日时查一次.
 // ============================================================================
-class GridRowMemo {
+enum class Snap { Exact,
+                  Floor };
+
+class RowOf {
 public:
-  GridRowMemo(const Axes &axes, int cutoff) : axes_(axes), cutoff_(cutoff) {}
-  int row(std::int32_t ymd) {
-    auto it = memo_.find(ymd);
-    if (it != memo_.end())
-      return it->second;
-    int r = -1;
-    auto di = axes_.date_idx.find(ymd_str(ymd));
-    if (di != axes_.date_idx.end()) {
-      int cand = di->second - cutoff_;
-      if (cand >= 0 && cand < axes_.n_d())
-        r = cand;
+  RowOf(const Axes &axes, Snap snap, int cutoff) : axes_(axes), snap_(snap), cutoff_(cutoff) {}
+  int operator()(Ymd d) {
+    if (d != last_) {
+      last_ = d;
+      row_ = resolve(d);
     }
-    memo_.emplace(ymd, r);
-    return r;
+    return row_;
   }
 
 private:
-  const Axes &axes_;
-  int cutoff_;
-  std::unordered_map<std::int32_t, int> memo_;
-};
-
-class EventRowMemo {
-public:
-  EventRowMemo(const Axes &axes, int cutoff) : axes_(axes), cutoff_(cutoff) {}
-  int row(std::int32_t ymd) {
-    auto it = memo_.find(ymd);
-    if (it != memo_.end())
-      return it->second;
-    int r = -1;
-    std::string s = ymd_str(ymd);
-    if (!s.empty()) {
-      int v_idx = axes_.floor_date(s);
-      if (v_idx >= 0) {
-        int cand = v_idx - cutoff_;
-        if (cand >= 0 && cand < axes_.n_d())
-          r = cand;
-      }
-    }
-    memo_.emplace(ymd, r);
-    return r;
+  int resolve(Ymd d) const {
+    if (d <= 0)
+      return -1;
+    const int i = snap_ == Snap::Exact ? axes_.exact(d) : axes_.floor(d);
+    const int r = i - cutoff_;
+    return (i >= 0 && r >= 0 && r < axes_.n_d()) ? r : -1;
   }
-
-private:
   const Axes &axes_;
+  Snap snap_;
   int cutoff_;
-  std::unordered_map<std::int32_t, int> memo_;
+  Ymd last_ = -1;
+  int row_ = -1;
 };
 
-inline int lookup_a(const Axes &axes, std::string_view code) {
-  if (code.empty())
-    return -1;
-  auto it = axes.code_idx.find(std::string(code));
-  return it == axes.code_idx.end() ? -1 : it->second;
-}
+// 事件命中 (资产, 事件); 段序归约后 = (ym, 文件内) 序
+template <class Ev>
+struct Hit {
+  std::uint32_t a;
+  Ev ev;
+};
+template <class Ev>
+using Hits = Append<Hit<Ev>>;
 
-// per-月 parquet 并行驱动 (qmt parallel_parse_months)
-template <class Body>
-void parallel_parse_months(
-    const std::vector<std::pair<std::string, std::filesystem::path>> &files,
-    Body body) {
-  std::size_t n = files.size();
-  if (n == 0)
-    return;
-  unsigned nt = std::thread::hardware_concurrency();
-  if (nt == 0)
-    nt = 1;
-  if (static_cast<std::size_t>(nt) > n)
-    nt = static_cast<unsigned>(n);
-  std::atomic<std::size_t> next{0};
-  auto worker = [&]() {
-    for (;;) {
-      std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
-      if (i >= n)
-        break;
-      pq::TableView v(pq::read_table(files[i].second));
-      if (v.rows() == 0)
-        continue;
-      body(v);
-    }
-  };
-  std::vector<std::thread> ts;
-  ts.reserve(nt);
-  for (unsigned t = 0; t < nt; ++t)
-    ts.emplace_back(worker);
-  for (auto &t : ts)
-    t.join();
+// 命中 → per-A 事件链 (v 升序; 同 v 保持段序 —— 结果与线程调度无关)
+template <class Ev>
+std::vector<std::vector<Ev>> to_chains(const Hits<Ev> &h, int n_a) {
+  std::vector<std::size_t> counts(static_cast<std::size_t>(n_a), 0);
+  for (const Hit<Ev> &x : h.v)
+    ++counts[x.a];
+  std::vector<std::vector<Ev>> out(static_cast<std::size_t>(n_a));
+  for (std::size_t a = 0; a < out.size(); ++a)
+    out[a].reserve(counts[a]);
+  for (const Hit<Ev> &x : h.v)
+    out[x.a].push_back(x.ev);
+  for (auto &c : out)
+    std::stable_sort(c.begin(), c.end(), [](const Ev &x, const Ev &y) { return x.v < y.v; });
+  return out;
 }
 
 // 网格 per-A forward fill: finite 记 last; NaN 用 last 填; +inf 保留标记
@@ -412,17 +375,19 @@ void grid_ffill(std::vector<float> &grid, int n_a, int n_d) {
   }
 }
 
-template <class Ev>
-void sort_events(std::vector<std::vector<Ev>> &chains) {
-  for (auto &c : chains)
-    std::stable_sort(c.begin(), c.end(),
-                     [](const Ev &x, const Ev &y) { return x.v < y.v; });
-}
-
 // ============================================================================
 // itf 构建 (qmt pit.cpp 各 itf_* 移植; cutoff 语义逐一保持)
 // ============================================================================
-void build_grids(const Axes &axes, PitPool &p) {
+// 网格表 (5 张): fold 直写 p 的全 D 轴网格. 同一 (a, row) 只来自唯一一个源日期 (row = idx − cutoff
+// 是双射) ⇒ 分片写集不相交, 免锁 (Sink). add 登记, Scan::run 之后 finish 做 ffill.
+struct GridScan {
+  Part<Sink> bar, shares, limit, status, margin;
+  void add(fundamental::Scan &scan, const Axes &axes, PitPool &p);
+  void finish(const Axes &axes, PitPool &p) const;
+};
+
+void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
+  using fundamental::spec;
   const std::size_t n = static_cast<std::size_t>(axes.n_a()) *
                         static_cast<std::size_t>(axes.n_d());
   const std::size_t n_d = static_cast<std::size_t>(axes.n_d());
@@ -448,123 +413,113 @@ void build_grids(const Axes &axes, PitPool &p) {
   p.is_margin.assign(n, 0);
 
   // ---- cn_stock_real_bar1d: close CUTOFF=-1; pre_close / adjust_factor CUTOFF=0 (盘前可知: 交易所公布前收, 除权事先公告) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_real_bar1d"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col close = v.col("close"), pre = v.col("pre_close"), adj = v.col("adjust_factor");
-                          GridRowMemo memo(axes, -1), memo0(axes, 0);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            const std::int32_t ymd = date.yyyymmdd(i);
-                            const std::size_t base = static_cast<std::size_t>(a) * n_d;
-                            int row = memo.row(ymd);
-                            if (row >= 0)
-                              p.close[base + static_cast<std::size_t>(row)] = positive_or_inf(close.f32(i));
-                            int row0 = memo0.row(ymd);
-                            if (row0 >= 0) {
-                              p.pre_close[base + static_cast<std::size_t>(row0)] = positive_or_inf(pre.f32(i));
-                              p.adj_factor[base + static_cast<std::size_t>(row0)] = positive_or_inf(adj.f32(i));
-                            }
-                          }
-                        });
+  scan.add(bar, spec("cn_stock_real_bar1d"), {"close", "pre_close", "adjust_factor"}, Sink{},
+           [&axes, &p, n_d](const Rows &r, Sink &) {
+             const pq::Col close = r.col("close"), pre = r.col("pre_close"), adj = r.col("adjust_factor");
+             RowOf row_of(axes, Snap::Exact, -1), row0_of(axes, Snap::Exact, 0);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               const std::uint32_t a = r.id(i);
+               if (a == fundamental::Ids::kNone)
+                 continue;
+               const std::size_t base = static_cast<std::size_t>(a) * n_d;
+               const int row = row_of(r.date(i));
+               if (row >= 0)
+                 p.close[base + static_cast<std::size_t>(row)] = positive_or_inf(close.f32(i));
+               const int row0 = row0_of(r.date(i));
+               if (row0 >= 0) {
+                 p.pre_close[base + static_cast<std::size_t>(row0)] = positive_or_inf(pre.f32(i));
+                 p.adj_factor[base + static_cast<std::size_t>(row0)] = positive_or_inf(adj.f32(i));
+               }
+             }
+           });
 
   // ---- cn_stock_shares (CUTOFF=0: 按生效日记账, 除权日与 adj_factor 同日变动, 盘前公告可知;
   //      曾误按 -1 → 送转/除权日股本滞后一天而价格已调整, mcap/换手率当日错位) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_shares"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col ts = v.col("total_shares"), fs = v.col("a_float_shares");
-                          GridRowMemo memo(axes, 0);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
-                            p.total_shares[off] = positive_or_inf(ts.f32(i));
-                            p.a_float_shares[off] = positive_or_inf(fs.f32(i));
-                          }
-                        });
+  scan.add(shares, spec("cn_stock_shares"), {"total_shares", "a_float_shares"}, Sink{},
+           [&axes, &p, n_d](const Rows &r, Sink &) {
+             const pq::Col ts = r.col("total_shares"), fs = r.col("a_float_shares");
+             RowOf row_of(axes, Snap::Exact, 0);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == fundamental::Ids::kNone)
+                 continue;
+               const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
+               p.total_shares[off] = positive_or_inf(ts.f32(i));
+               p.a_float_shares[off] = positive_or_inf(fs.f32(i));
+             }
+           });
 
   // ---- cn_stock_limit_price (CUTOFF=0: date=T 行即 T 当日适用涨跌停, 由 pre_close(T) 推出,
   //      盘前可知, 同 pre_close/adj_factor; 曾误按 -1 解析 → 全列滞后一天, 涨跌停次日必被打穿) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_limit_price"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col up = v.col("upper_limit"), dn = v.col("lower_limit");
-                          GridRowMemo memo(axes, 0);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
-                            p.lim_up[off] = positive_or_inf(up.f32(i));
-                            p.lim_dn[off] = positive_or_inf(dn.f32(i));
-                          }
-                        });
+  scan.add(limit, spec("cn_stock_limit_price"), {"upper_limit", "lower_limit"}, Sink{},
+           [&axes, &p, n_d](const Rows &r, Sink &) {
+             const pq::Col up = r.col("upper_limit"), dn = r.col("lower_limit");
+             RowOf row_of(axes, Snap::Exact, 0);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == fundamental::Ids::kNone)
+                 continue;
+               const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
+               p.lim_up[off] = positive_or_inf(up.f32(i));
+               p.lim_dn[off] = positive_or_inf(dn.f32(i));
+             }
+           });
 
   // ---- cn_stock_status (CUTOFF=0, 4 态派生; 不 ffill) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_status"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col st_c = v.col("st_status"), rw_c = v.col("is_risk_warning");
-                          pq::Col sp_c = v.col("suspended");
-                          GridRowMemo memo(axes, 0);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
-                            int st = st_c.i32(i, 0), rw = rw_c.i32(i, 0), sp = sp_c.i32(i, 0);
-                            // 4 态派生: st 1/2 优先; 否则 risk_warning=1 → 3 (退市整理期)
-                            p.st_status[off] = (st == 1)   ? std::int8_t{1}
-                                               : (st == 2) ? std::int8_t{2}
-                                               : (rw != 0) ? std::int8_t{3}
-                                                           : std::int8_t{0};
-                            p.suspended[off] = (sp != 0) ? std::uint8_t{1} : std::uint8_t{0};
-                          }
-                        });
+  scan.add(status, spec("cn_stock_status"), {"st_status", "is_risk_warning", "suspended"}, Sink{},
+           [&axes, &p, n_d](const Rows &r, Sink &) {
+             const pq::Col st_c = r.col("st_status"), rw_c = r.col("is_risk_warning");
+             const pq::Col sp_c = r.col("suspended");
+             RowOf row_of(axes, Snap::Exact, 0);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == fundamental::Ids::kNone)
+                 continue;
+               const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
+               const int st = st_c.i32(i, 0), rw = rw_c.i32(i, 0), sp = sp_c.i32(i, 0);
+               // 4 态派生: st 1/2 优先; 否则 risk_warning=1 → 3 (退市整理期)
+               p.st_status[off] = (st == 1)   ? std::int8_t{1}
+                                  : (st == 2) ? std::int8_t{2}
+                                  : (rw != 0) ? std::int8_t{3}
+                                              : std::int8_t{0};
+               p.suspended[off] = (sp != 0) ? std::uint8_t{1} : std::uint8_t{0};
+             }
+           });
 
   // ---- cn_stock_margin_trading_detail (CUTOFF=-1; 不 ffill): date=T 行是 T 日盘后余额/流量
   //      (余额差 = 当行买入-偿还, 已验证), 交易所 T+1 盘前公布 → T+1 起可用;
   //      曾误按 0 解析 = 盘中用当日盘后数据 (未来函数) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_margin_trading_detail"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col fb = v.col("financing_balance");
-                          pq::Col sb = v.col("securities_lending_balance");
-                          pq::Col fp = v.col("financing_purchase"), fr = v.col("financing_repayment");
-                          pq::Col ss = v.col("securities_lending_sales_quantity");
-                          pq::Col sr = v.col("securities_lending_repayment_quantity");
-                          GridRowMemo memo(axes, -1);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
-                            p.is_margin[off] = 1;
-                            p.fin_balance[off] = non_negative_or_inf(fb.f32(i));
-                            p.sec_balance[off] = non_negative_or_inf(sb.f32(i));
-                            p.fin_purchase[off] = non_negative_or_inf(fp.f32(i));
-                            p.fin_repayment[off] = non_negative_or_inf(fr.f32(i));
-                            p.sec_sales_qty[off] = non_negative_or_inf(ss.f32(i));
-                            p.sec_repay_qty[off] = non_negative_or_inf(sr.f32(i));
-                          }
-                        });
+  scan.add(margin, spec("cn_stock_margin_trading_detail"),
+           {"financing_balance", "securities_lending_balance", "financing_purchase", "financing_repayment",
+            "securities_lending_sales_quantity", "securities_lending_repayment_quantity"},
+           Sink{}, [&axes, &p, n_d](const Rows &r, Sink &) {
+             const pq::Col fb = r.col("financing_balance");
+             const pq::Col sb = r.col("securities_lending_balance");
+             const pq::Col fp = r.col("financing_purchase"), fr = r.col("financing_repayment");
+             const pq::Col ss = r.col("securities_lending_sales_quantity");
+             const pq::Col sr = r.col("securities_lending_repayment_quantity");
+             RowOf row_of(axes, Snap::Exact, -1);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == fundamental::Ids::kNone)
+                 continue;
+               const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
+               p.is_margin[off] = 1;
+               p.fin_balance[off] = non_negative_or_inf(fb.f32(i));
+               p.sec_balance[off] = non_negative_or_inf(sb.f32(i));
+               p.fin_purchase[off] = non_negative_or_inf(fp.f32(i));
+               p.fin_repayment[off] = non_negative_or_inf(fr.f32(i));
+               p.sec_sales_qty[off] = non_negative_or_inf(ss.f32(i));
+               p.sec_repay_qty[off] = non_negative_or_inf(sr.f32(i));
+             }
+           });
+}
 
+void GridScan::finish(const Axes &axes, PitPool &p) const {
   grid_ffill(p.close, axes.n_a(), axes.n_d());
   grid_ffill(p.pre_close, axes.n_a(), axes.n_d());
   grid_ffill(p.adj_factor, axes.n_a(), axes.n_d());
@@ -574,96 +529,108 @@ void build_grids(const Axes &axes, PitPool &p) {
   grid_ffill(p.lim_dn, axes.n_a(), axes.n_d());
 }
 
-void build_events(const Axes &axes, PitPool &p) {
-  const std::size_t n_a = static_cast<std::size_t>(axes.n_a());
-  p.ttm.assign(n_a, {});
-  p.balance.assign(n_a, {});
-  p.income_annual.assign(n_a, {});
-  p.income_ytd.assign(n_a, {});
-  p.cashflow_ytd.assign(n_a, {});
-  p.nonrecur.assign(n_a, {});
-  p.dividend.assign(n_a, {});
-  p.forecast.assign(n_a, {});
-  p.industry_component.assign(n_a, {});
-  p.industry_change.assign(n_a, {});
-  std::vector<std::mutex> mu(n_a);
+// 事件表 (9 张): fold 只产命中 (Hits, 段内追加), Scan::run 之后 finish 按资产分桶成链 (v 升序).
+// 原先逐资产一把 mutex + 追加顺序随线程调度漂移; 现在零锁且同 v 事件的先后确定.
+struct IncomeHits {
+  Hits<YtdEv<INC_COUNT>> ytd;
+  Hits<FinancialIncomeAnnualEv> annual;
+  void merge(IncomeHits &&o) {
+    ytd.merge(std::move(o.ytd));
+    annual.merge(std::move(o.annual));
+  }
+};
+
+struct EventScan {
+  Part<Hits<FinancialTtmEv>> ttm;
+  Part<Hits<FinancialBalanceEv>> balance;
+  Part<IncomeHits> income;
+  Part<Hits<YtdEv<CF_COUNT>>> cashflow;
+  Part<Hits<NonrecurEv>> nonrecur;
+  Part<Hits<DividendEv>> dividend;
+  Part<Hits<ForecastEv>> forecast;
+  Part<Hits<IndustryEv>> component, change;
+  void add(fundamental::Scan &scan, const Axes &axes);
+  void finish(int n_a, PitPool &p) &&;
+};
+
+void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
+  using fundamental::spec;
+  constexpr std::uint32_t kNone = fundamental::Ids::kNone;
 
   // ---- cn_stock_financial_ttm_shift (CUTOFF=-1; shift=0 主记录 + shift=4 配对) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_financial_ttm_shift"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col shift = v.col("shift"), rd = v.col("report_date");
-                          pq::Col rev = v.col("total_operating_revenue_ttm");
-                          pq::Col np = v.col("net_profit_to_parent_shareholders_ttm");
-                          pq::Col npa = v.col("net_profit_ttm");
-                          pq::Col cf = v.col("net_cffoa_ttm");
-                          std::int64_t nr = v.rows();
+  scan.add(ttm, spec("cn_stock_financial_ttm_shift"),
+           {"shift", "report_date", "total_operating_revenue_ttm", "net_profit_to_parent_shareholders_ttm",
+            "net_profit_ttm", "net_cffoa_ttm"},
+           Hits<FinancialTtmEv>{}, [&axes](const Rows &r, Hits<FinancialTtmEv> &h) {
+             const pq::Col shift = r.col("shift"), rd = r.col("report_date");
+             const pq::Col rev = r.col("total_operating_revenue_ttm");
+             const pq::Col np = r.col("net_profit_to_parent_shareholders_ttm");
+             const pq::Col npa = r.col("net_profit_ttm");
+             const pq::Col cf = r.col("net_cffoa_ttm");
+             const std::int64_t nr = r.size();
+             auto key_of = [&](std::int64_t i, std::uint32_t a) {
+               return static_cast<std::int64_t>(r.date(i)) * (axes.n_a() + 1) + a;
+             };
 
-                          std::unordered_map<std::int64_t, float> shift4_cf;
-                          shift4_cf.reserve(static_cast<std::size_t>(nr) / 32 + 1);
-                          for (std::int64_t i = 0; i < nr; ++i) {
-                            if (shift.i32(i, -1) != 4)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            std::int64_t key =
-                                static_cast<std::int64_t>(date.yyyymmdd(i)) * (axes.n_a() + 1) + a;
-                            shift4_cf[key] = cf.f32(i);
-                          }
+             std::unordered_map<std::int64_t, float> shift4_cf;
+             shift4_cf.reserve(static_cast<std::size_t>(nr) / 32 + 1);
+             for (std::int64_t i = 0; i < nr; ++i) {
+               const std::uint32_t a = r.id(i);
+               if (shift.i32(i, -1) != 4 || a == kNone)
+                 continue;
+               shift4_cf[key_of(i, a)] = cf.f32(i);
+             }
 
-                          EventRowMemo memo(axes, -1);
-                          for (std::int64_t i = 0; i < nr; ++i) {
-                            if (shift.i32(i, -1) != 0)
-                              continue;
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            FinancialTtmEv ev;
-                            ev.v = row;
-                            ev.report_date = rd.yyyymmdd(i);
-                            ev.total_operating_revenue_ttm = rev.f32(i);
-                            ev.net_profit_to_parent_shareholders_ttm = np.f32(i);
-                            ev.net_profit_ttm = npa.f32(i);
-                            ev.net_cffoa_ttm = cf.f32(i);
-                            std::int64_t key =
-                                static_cast<std::int64_t>(date.yyyymmdd(i)) * (axes.n_a() + 1) + a;
-                            auto it = shift4_cf.find(key);
-                            ev.net_cffoa_ttm_shift4 = (it != shift4_cf.end()) ? it->second : NaNF;
-                            std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-                            p.ttm[static_cast<std::size_t>(a)].push_back(ev);
-                          }
-                        });
+             RowOf row_of(axes, Snap::Floor, -1);
+             for (std::int64_t i = 0; i < nr; ++i) {
+               if (shift.i32(i, -1) != 0)
+                 continue;
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == kNone)
+                 continue;
+               FinancialTtmEv ev;
+               ev.v = row;
+               ev.report_date = rd.yyyymmdd(i);
+               ev.total_operating_revenue_ttm = rev.f32(i);
+               ev.net_profit_to_parent_shareholders_ttm = np.f32(i);
+               ev.net_profit_ttm = npa.f32(i);
+               ev.net_cffoa_ttm = cf.f32(i);
+               auto it = shift4_cf.find(key_of(i, a));
+               ev.net_cffoa_ttm_shift4 = (it != shift4_cf.end()) ? it->second : NaNF;
+               h.push({a, ev});
+             }
+           });
 
   // ---- cn_stock_financial_balance_general_pit (CUTOFF=-1; 全报告期入) ----
-  parallel_parse_months(
-      pq::list_month_files("cn_stock_financial_balance_general_pit"),
-      [&](const pq::TableView &v) {
-        pq::Col date = v.col("date"), inst = v.col("instrument");
-        pq::Col rd = v.col("report_date");
-        pq::Col tep = v.col("total_equity_to_parent_shareholders");
-        pq::Col ta = v.col("total_assets");
-        pq::Col tl = v.col("total_liabilities"), ncl = v.col("total_noncurr_liabilities");
-        pq::Col stb = v.col("shortterm_borrowings"), ncl1y = v.col("noncurr_liabilities_due_within_1y");
-        pq::Col ltb = v.col("longterm_borrowings"), bonds = v.col("bonds_payable");
-        pq::Col ca = v.col("total_current_assets"), cl = v.col("total_current_liabilities");
-        pq::Col cash = v.col("moneytary_assets"), inv = v.col("inventories");
-        pq::Col ar = v.col("accounts_receivable"), ap = v.col("accounts_payable");
+  scan.add(
+      balance, spec("cn_stock_financial_balance_general_pit"),
+      {"report_date", "total_equity_to_parent_shareholders", "total_assets", "total_liabilities",
+       "total_noncurr_liabilities", "shortterm_borrowings", "noncurr_liabilities_due_within_1y",
+       "longterm_borrowings", "bonds_payable", "total_current_assets", "total_current_liabilities",
+       "moneytary_assets", "inventories", "accounts_receivable", "accounts_payable", "fixed_assets",
+       "fixed_assets_sum", "construction_in_progress", "construction_in_progress_sum", "intangible_assets",
+       "goodwill", "minority_interests"},
+      Hits<FinancialBalanceEv>{}, [&axes](const Rows &r, Hits<FinancialBalanceEv> &h) {
+        const pq::Col rd = r.col("report_date");
+        const pq::Col tep = r.col("total_equity_to_parent_shareholders");
+        const pq::Col ta = r.col("total_assets");
+        const pq::Col tl = r.col("total_liabilities"), ncl = r.col("total_noncurr_liabilities");
+        const pq::Col stb = r.col("shortterm_borrowings"), ncl1y = r.col("noncurr_liabilities_due_within_1y");
+        const pq::Col ltb = r.col("longterm_borrowings"), bonds = r.col("bonds_payable");
+        const pq::Col ca = r.col("total_current_assets"), cl = r.col("total_current_liabilities");
+        const pq::Col cash = r.col("moneytary_assets"), inv = r.col("inventories");
+        const pq::Col ar = r.col("accounts_receivable"), ap = r.col("accounts_payable");
         // 2018 报表格式后 fixed_assets / construction_in_progress 半数为空, 值在 *_sum (固定资产合计 / 在建工程合计); 旧年份反之
-        pq::Col fa = v.col("fixed_assets"), fa_sum = v.col("fixed_assets_sum");
-        pq::Col cip = v.col("construction_in_progress"), cip_sum = v.col("construction_in_progress_sum");
-        pq::Col ia = v.col("intangible_assets"), gw = v.col("goodwill");
-        pq::Col mi = v.col("minority_interests");
-        EventRowMemo memo(axes, -1);
-        for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-          int row = memo.row(date.yyyymmdd(i));
-          if (row < 0)
-            continue;
-          int a = lookup_a(axes, inst.str(i));
-          if (a < 0)
+        const pq::Col fa = r.col("fixed_assets"), fa_sum = r.col("fixed_assets_sum");
+        const pq::Col cip = r.col("construction_in_progress"), cip_sum = r.col("construction_in_progress_sum");
+        const pq::Col ia = r.col("intangible_assets"), gw = r.col("goodwill");
+        const pq::Col mi = r.col("minority_interests");
+        RowOf row_of(axes, Snap::Floor, -1);
+        for (std::int64_t i = 0; i < r.size(); ++i) {
+          const int row = row_of(r.date(i));
+          const std::uint32_t a = r.id(i);
+          if (row < 0 || a == kNone)
             continue;
           FinancialBalanceEv ev;
           ev.v = row;
@@ -682,31 +649,29 @@ void build_events(const Axes &axes, PitPool &p) {
           ev.fixed_cip = sum_nan0({first_finite(fa_sum.f32(i), fa.f32(i)), first_finite(cip_sum.f32(i), cip.f32(i))});
           ev.intang_gw = sum_nan0({ia.f32(i), gw.f32(i)});
           ev.minority_interests = mi.f32(i);
-          std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-          p.balance[static_cast<std::size_t>(a)].push_back(ev);
+          h.push({a, ev});
         }
       });
 
   // ---- cn_stock_financial_income_general_pit (CUTOFF=-1; 年报链 ni_raw + 全报告期 YTD 链) ----
-  parallel_parse_months(
-      pq::list_month_files("cn_stock_financial_income_general_pit"),
-      [&](const pq::TableView &v) {
-        pq::Col date = v.col("date"), inst = v.col("instrument");
-        pq::Col fqi = v.col("fs_quarter_index"), rd = v.col("report_date");
-        pq::Col np = v.col("net_profit_to_parent_shareholders");
-        pq::Col rev = v.col("total_operating_revenue"), cogs = v.col("operating_costs");
-        pq::Col cost = v.col("total_operating_costs"), op = v.col("operating_profit");
-        pq::Col tp = v.col("total_profit"), fie = v.col("fin_interest_expense"), fe = v.col("finance_expense");
-        pq::Col tax = v.col("income_tax_expense"), npa = v.col("net_profit"), eps = v.col("eps_basic");
-        EventRowMemo memo(axes, -1);
-        for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-          int row = memo.row(date.yyyymmdd(i));
-          if (row < 0)
+  scan.add(
+      income, spec("cn_stock_financial_income_general_pit"),
+      {"fs_quarter_index", "report_date", "net_profit_to_parent_shareholders", "total_operating_revenue",
+       "operating_costs", "total_operating_costs", "operating_profit", "total_profit", "fin_interest_expense",
+       "finance_expense", "income_tax_expense", "net_profit", "eps_basic"},
+      IncomeHits{}, [&axes](const Rows &r, IncomeHits &h) {
+        const pq::Col fqi = r.col("fs_quarter_index"), rd = r.col("report_date");
+        const pq::Col np = r.col("net_profit_to_parent_shareholders");
+        const pq::Col rev = r.col("total_operating_revenue"), cogs = r.col("operating_costs");
+        const pq::Col cost = r.col("total_operating_costs"), op = r.col("operating_profit");
+        const pq::Col tp = r.col("total_profit"), fie = r.col("fin_interest_expense"), fe = r.col("finance_expense");
+        const pq::Col tax = r.col("income_tax_expense"), npa = r.col("net_profit"), eps = r.col("eps_basic");
+        RowOf row_of(axes, Snap::Floor, -1);
+        for (std::int64_t i = 0; i < r.size(); ++i) {
+          const int row = row_of(r.date(i));
+          const std::uint32_t a = r.id(i);
+          if (row < 0 || a == kNone)
             continue;
-          int a = lookup_a(axes, inst.str(i));
-          if (a < 0)
-            continue;
-          const std::size_t ai = static_cast<std::size_t>(a);
           YtdEv<INC_COUNT> ev;
           ev.v = row;
           ev.report_date = rd.yyyymmdd(i);
@@ -721,31 +686,30 @@ void build_events(const Axes &axes, PitPool &p) {
           ev.x[inc_np] = npa.f32(i);
           ev.x[inc_np_parent] = np.f32(i);
           ev.x[inc_eps] = eps.f32(i);
-          std::lock_guard<std::mutex> lk(mu[ai]);
-          p.income_ytd[ai].push_back(ev);
+          h.ytd.push({a, ev});
           if (fqi.i32(i, -1) == 4)
-            p.income_annual[ai].push_back({ev.v, ev.report_date, ev.x[inc_np_parent]});
+            h.annual.push({a, {ev.v, ev.report_date, ev.x[inc_np_parent]}});
         }
       });
 
   // ---- cn_stock_financial_cashflow_general_pit (CUTOFF=-1; 全报告期 YTD 链) ----
-  parallel_parse_months(
-      pq::list_month_files("cn_stock_financial_cashflow_general_pit"),
-      [&](const pq::TableView &v) {
-        pq::Col date = v.col("date"), inst = v.col("instrument");
-        pq::Col rd = v.col("report_date");
-        pq::Col ocf = v.col("net_cffoa"), icf = v.col("net_cffia"), fcf = v.col("net_cfffa");
-        pq::Col net = v.col("netinc_in_cce"), capex = v.col("cash_paid_for_filt_assets");
-        pq::Col div = v.col("cash_paid_for_dividends_profits_interests");
-        pq::Col dep = v.col("depreciation_of_fa_oga_pba"), am_ia = v.col("amorization_of_intangible_assets");
-        pq::Col am_ld = v.col("amortization_of_longterm_deferred_expenses");
-        EventRowMemo memo(axes, -1);
-        for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-          int row = memo.row(date.yyyymmdd(i));
-          if (row < 0)
-            continue;
-          int a = lookup_a(axes, inst.str(i));
-          if (a < 0)
+  scan.add(
+      cashflow, spec("cn_stock_financial_cashflow_general_pit"),
+      {"report_date", "net_cffoa", "net_cffia", "net_cfffa", "netinc_in_cce", "cash_paid_for_filt_assets",
+       "cash_paid_for_dividends_profits_interests", "depreciation_of_fa_oga_pba",
+       "amorization_of_intangible_assets", "amortization_of_longterm_deferred_expenses"},
+      Hits<YtdEv<CF_COUNT>>{}, [&axes](const Rows &r, Hits<YtdEv<CF_COUNT>> &h) {
+        const pq::Col rd = r.col("report_date");
+        const pq::Col ocf = r.col("net_cffoa"), icf = r.col("net_cffia"), fcf = r.col("net_cfffa");
+        const pq::Col net = r.col("netinc_in_cce"), capex = r.col("cash_paid_for_filt_assets");
+        const pq::Col div = r.col("cash_paid_for_dividends_profits_interests");
+        const pq::Col dep = r.col("depreciation_of_fa_oga_pba"), am_ia = r.col("amorization_of_intangible_assets");
+        const pq::Col am_ld = r.col("amortization_of_longterm_deferred_expenses");
+        RowOf row_of(axes, Snap::Floor, -1);
+        for (std::int64_t i = 0; i < r.size(); ++i) {
+          const int row = row_of(r.date(i));
+          const std::uint32_t a = r.id(i);
+          if (row < 0 || a == kNone)
             continue;
           YtdEv<CF_COUNT> ev;
           ev.v = row;
@@ -757,142 +721,118 @@ void build_events(const Axes &axes, PitPool &p) {
           ev.x[cf_capex] = capex.f32(i);
           ev.x[cf_div] = div.f32(i);
           ev.x[cf_da] = sum_nan0({dep.f32(i), am_ia.f32(i), am_ld.f32(i)});
-          std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-          p.cashflow_ytd[static_cast<std::size_t>(a)].push_back(ev);
+          h.push({a, ev});
         }
       });
 
   // ---- cn_stock_financial_notes_shift (CUTOFF=-1; shift=0 非经常性损益 TTM) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_financial_notes_shift"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col shift = v.col("shift"), rd = v.col("report_date");
-                          pq::Col nr_owner = v.col("nonrecurring_income_to_owner_ttm");
-                          EventRowMemo memo(axes, -1);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            if (shift.i32(i, -1) != 0)
-                              continue;
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            NonrecurEv ev{row, rd.yyyymmdd(i), nr_owner.f32(i)};
-                            std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-                            p.nonrecur[static_cast<std::size_t>(a)].push_back(ev);
-                          }
-                        });
+  scan.add(nonrecur, spec("cn_stock_financial_notes_shift"),
+           {"shift", "report_date", "nonrecurring_income_to_owner_ttm"}, Hits<NonrecurEv>{},
+           [&axes](const Rows &r, Hits<NonrecurEv> &h) {
+             const pq::Col shift = r.col("shift"), rd = r.col("report_date");
+             const pq::Col nr_owner = r.col("nonrecurring_income_to_owner_ttm");
+             RowOf row_of(axes, Snap::Floor, -1);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               if (shift.i32(i, -1) != 0)
+                 continue;
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == kNone)
+                 continue;
+               h.push({a, {row, rd.yyyymmdd(i), nr_owner.f32(i)}});
+             }
+           });
 
-  // ---- cn_stock_dividend (CUTOFF=-1; v ← publish_date) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_dividend"),
-                        [&](const pq::TableView &v) {
-                          pq::Col vd = v.col("publish_date"), inst = v.col("instrument");
-                          pq::Col rd = v.col("report_date");
-                          pq::Col cash_b = v.col("cash_before_tax");
-                          pq::Col cash = v.col("cash_after_tax");
-                          EventRowMemo memo(axes, -1);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int row = memo.row(vd.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            DividendEv ev;
-                            ev.v = row;
-                            ev.report_date = rd.yyyymmdd(i);
-                            ev.cash_before_tax = cash_b.f32(i);
-                            ev.cash_after_tax = cash.f32(i);
-                            ev.amt_pre = 0.0f; // build 末尾标注
-                            ev.amt_after = NaNF;
-                            std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-                            p.dividend[static_cast<std::size_t>(a)].push_back(ev);
-                          }
-                        });
+  // ---- cn_stock_dividend (CUTOFF=-1; v ← publish_date = vd) ----
+  scan.add(dividend, spec("cn_stock_dividend"), {"report_date", "cash_before_tax", "cash_after_tax"},
+           Hits<DividendEv>{}, [&axes](const Rows &r, Hits<DividendEv> &h) {
+             const pq::Col rd = r.col("report_date");
+             const pq::Col cash_b = r.col("cash_before_tax");
+             const pq::Col cash = r.col("cash_after_tax");
+             RowOf row_of(axes, Snap::Floor, -1);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == kNone)
+                 continue;
+               DividendEv ev;
+               ev.v = row;
+               ev.report_date = rd.yyyymmdd(i);
+               ev.cash_before_tax = cash_b.f32(i);
+               ev.cash_after_tax = cash.f32(i);
+               ev.amt_pre = 0.0f; // build 末尾标注
+               ev.amt_after = NaNF;
+               h.push({a, ev});
+             }
+           });
 
-  // ---- forecast (Tushare, CUTOFF=-1; ts_code / "YYYYMMDD" string 列) ----
-  parallel_parse_months(pq::list_month_files("forecast"),
-                        [&](const pq::TableView &v) {
-                          pq::Col vd = v.col("ann_date"), inst = v.col("ts_code");
-                          pq::Col ed = v.col("end_date"), type = v.col("type");
-                          pq::Col lpn = v.col("last_parent_net");
-                          EventRowMemo memo(axes, -1);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            int row = memo.row(vd.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            ForecastEv ev;
-                            ev.v = row;
-                            ev.end_date = ed.yyyymmdd(i);
-                            std::string_view t = type.str(i);
-                            ev.type = (t == "首亏")   ? ForecastType::FirstLoss
-                                      : (t == "续亏") ? ForecastType::ContinueLoss
-                                                      : ForecastType::Other;
-                            ev.last_parent_net = lpn.f32(i);
-                            std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-                            p.forecast[static_cast<std::size_t>(a)].push_back(ev);
-                          }
-                        });
+  // ---- forecast (Tushare, CUTOFF=-1; vd = ann_date, 键 = ts_code, "YYYYMMDD" string 列) ----
+  scan.add(forecast, spec("forecast"), {"end_date", "type", "last_parent_net"}, Hits<ForecastEv>{},
+           [&axes](const Rows &r, Hits<ForecastEv> &h) {
+             const pq::Col ed = r.col("end_date"), type = r.col("type");
+             const pq::Col lpn = r.col("last_parent_net");
+             RowOf row_of(axes, Snap::Floor, -1);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == kNone)
+                 continue;
+               ForecastEv ev;
+               ev.v = row;
+               ev.end_date = ed.yyyymmdd(i);
+               const std::string_view t = type.str(i);
+               ev.type = (t == "首亏")   ? ForecastType::FirstLoss
+                         : (t == "续亏") ? ForecastType::ContinueLoss
+                                         : ForecastType::Other;
+               ev.last_parent_net = lpn.f32(i);
+               h.push({a, ev});
+             }
+           });
 
   // ---- cn_stock_industry_component / change (CUTOFF=-1, sw2021 L1) ----
-  parallel_parse_months(pq::list_month_files("cn_stock_industry_component"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col ind = v.col("industry"), l1 = v.col("industry_level1_name");
-                          EventRowMemo memo(axes, -1);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            if (ind.str(i) != "sw2021")
-                              continue;
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            IndustryEv ev{row, sw2021_l1_name_to_id(l1.str(i))};
-                            std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-                            p.industry_component[static_cast<std::size_t>(a)].push_back(ev);
-                          }
-                        });
-  parallel_parse_months(pq::list_month_files("cn_stock_industry_change"),
-                        [&](const pq::TableView &v) {
-                          pq::Col date = v.col("date"), inst = v.col("instrument");
-                          pq::Col ind = v.col("industry"), lvl = v.col("industry_level");
-                          pq::Col flag = v.col("change_flag"), name = v.col("industry_name");
-                          EventRowMemo memo(axes, -1);
-                          for (std::int64_t i = 0, nr = v.rows(); i < nr; ++i) {
-                            if (ind.str(i) != "sw2021")
-                              continue;
-                            if (lvl.i32(i, 0) != 1)
-                              continue;
-                            if (flag.i32(i, -1) != 1)
-                              continue;
-                            int row = memo.row(date.yyyymmdd(i));
-                            if (row < 0)
-                              continue;
-                            int a = lookup_a(axes, inst.str(i));
-                            if (a < 0)
-                              continue;
-                            IndustryEv ev{row, sw2021_l1_name_to_id(name.str(i))};
-                            std::lock_guard<std::mutex> lk(mu[static_cast<std::size_t>(a)]);
-                            p.industry_change[static_cast<std::size_t>(a)].push_back(ev);
-                          }
-                        });
+  scan.add(component, spec("cn_stock_industry_component"), {"industry", "industry_level1_name"},
+           Hits<IndustryEv>{}, [&axes](const Rows &r, Hits<IndustryEv> &h) {
+             const pq::Col ind = r.col("industry"), l1 = r.col("industry_level1_name");
+             RowOf row_of(axes, Snap::Floor, -1);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               if (ind.str(i) != "sw2021")
+                 continue;
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == kNone)
+                 continue;
+               h.push({a, {row, sw2021_l1_name_to_id(l1.str(i))}});
+             }
+           });
+  scan.add(change, spec("cn_stock_industry_change"), {"industry", "industry_level", "change_flag", "industry_name"},
+           Hits<IndustryEv>{}, [&axes](const Rows &r, Hits<IndustryEv> &h) {
+             const pq::Col ind = r.col("industry"), lvl = r.col("industry_level");
+             const pq::Col flag = r.col("change_flag"), name = r.col("industry_name");
+             RowOf row_of(axes, Snap::Floor, -1);
+             for (std::int64_t i = 0; i < r.size(); ++i) {
+               if (ind.str(i) != "sw2021" || lvl.i32(i, 0) != 1 || flag.i32(i, -1) != 1)
+                 continue;
+               const int row = row_of(r.date(i));
+               const std::uint32_t a = r.id(i);
+               if (row < 0 || a == kNone)
+                 continue;
+               h.push({a, {row, sw2021_l1_name_to_id(name.str(i))}});
+             }
+           });
+}
 
-  sort_events(p.ttm);
-  sort_events(p.balance);
-  sort_events(p.income_annual);
-  sort_events(p.income_ytd);
-  sort_events(p.cashflow_ytd);
-  sort_events(p.nonrecur);
-  sort_events(p.dividend);
-  sort_events(p.forecast);
-  sort_events(p.industry_component);
-  sort_events(p.industry_change);
+void EventScan::finish(int n_a, PitPool &p) && {
+  IncomeHits inc = std::move(income).take();
+  p.ttm = to_chains(std::move(ttm).take(), n_a);
+  p.balance = to_chains(std::move(balance).take(), n_a);
+  p.income_ytd = to_chains(inc.ytd, n_a);
+  p.income_annual = to_chains(inc.annual, n_a);
+  p.cashflow_ytd = to_chains(std::move(cashflow).take(), n_a);
+  p.nonrecur = to_chains(std::move(nonrecur).take(), n_a);
+  p.dividend = to_chains(std::move(dividend).take(), n_a);
+  p.forecast = to_chains(std::move(forecast).take(), n_a);
+  p.industry_component = to_chains(std::move(component).take(), n_a);
+  p.industry_change = to_chains(std::move(change).take(), n_a);
 }
 
 // ============================================================================
@@ -1022,17 +962,8 @@ int find_forecast_off_d(const ForecastEv &fe,
       break;
     }
   }
-  int Y = year_of(fe.end_date);
-  int deadline_d = -1;
-  if (Y > 0) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%04d0430", Y + 1);
-    auto it = std::lower_bound(axes.dates.begin(), axes.dates.end(),
-                               std::string(buf));
-    deadline_d = (it == axes.dates.end())
-                     ? n_d
-                     : static_cast<int>(std::distance(axes.dates.begin(), it));
-  }
+  const int Y = year_of(fe.end_date);
+  const int deadline_d = Y > 0 ? axes.lower((Y + 1) * 10000 + 430) : -1;
   int off = n_d;
   if (financial_d >= 0)
     off = std::min(off, financial_d);
@@ -1043,16 +974,11 @@ int find_forecast_off_d(const ForecastEv &fe,
 
 // D 轴日 d 的年份
 inline int year_of_d(const Axes &axes, int d) {
-  return std::stoi(axes.dates[static_cast<std::size_t>(d)].substr(0, 4));
+  return year_of(axes.dates[static_cast<std::size_t>(d)]);
 }
 
 // 首个年份 ≥ y 的 D 轴下标; 无 → n_d
-int first_d_of_year(const Axes &axes, int y) {
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%04d0101", y);
-  auto it = std::lower_bound(axes.dates.begin(), axes.dates.end(), std::string(buf));
-  return static_cast<int>(std::distance(axes.dates.begin(), it));
-}
+inline int first_d_of_year(const Axes &axes, int y) { return axes.lower(y * 10000 + 101); }
 
 } // namespace
 
@@ -1063,9 +989,7 @@ Pool::Pool() = default;
 Pool::~Pool() = default;
 
 int Pool::date_index(const std::string &yyyymmdd) const {
-  const auto &idx = data().axes.date_idx;
-  auto it = idx.find(yyyymmdd);
-  return it == idx.end() ? -1 : it->second;
+  return data().axes.exact(misc::parse_ymd(yyyymmdd));
 }
 
 void Pool::build(const std::vector<std::string> &codes,
@@ -1079,89 +1003,71 @@ void Pool::build(const std::vector<std::string> &codes,
   Meta &meta = data->meta;
   PitPool &pit = data->pit;
 
-  // ---- D 轴: all_trading_days (market_code='CN', 截到 today) ----
-  {
-    const std::string today = misc::today_yyyymmdd();
-    std::set<std::string> trading;
-    for (auto &[ym, path] : pq::list_month_files("all_trading_days")) {
-      pq::TableView v(pq::read_table(path));
-      if (v.rows() == 0)
-        continue;
-      pq::Col date = v.col("date");
-      pq::Col mc = v.col("market_code");
-      for (std::int64_t i = 0, n = v.rows(); i < n; ++i) {
-        if (mc.str(i) != "CN")
-          continue;
-        std::string s = ymd_str(date.yyyymmdd(i));
-        if (s.empty() || s > today)
-          continue;
-        trading.insert(std::move(s));
-      }
-    }
-    assert(!trading.empty() && "all_trading_days 无 CN 行 (基本面未同步?)");
-    axes.dates.assign(trading.begin(), trading.end());
-    axes.date_days.reserve(axes.dates.size());
-    axes.date_idx.reserve(axes.dates.size());
-    for (std::size_t i = 0; i < axes.dates.size(); ++i) {
-      axes.date_days.push_back(misc::parse_yyyymmdd(axes.dates[i]));
-      axes.date_idx.emplace(axes.dates[i], static_cast<int>(i));
-    }
-  }
+  const fundamental::Catalog cat;
 
-  // ---- A 轴: AssetAxis codes ("000001.SZ") ----
-  axes.code_idx.reserve(codes.size());
-  for (std::size_t i = 0; i < codes.size(); ++i)
-    axes.code_idx.emplace(codes[i], static_cast<int>(i));
+  // ---- D 轴: all_trading_days (market_code='CN', 截到 today) ----
+  axes.dates = fundamental::calendar(cat, misc::today_ymd());
+  axes.date_days.reserve(axes.dates.size());
+  for (const Ymd d : axes.dates)
+    axes.date_days.push_back(misc::to_days(d));
+
+  // ---- A 轴: AssetAxis codes ("000001.SZ"); 月度表里轴外的代码 → kNone 跳过 ----
+  fundamental::Ids ids(fundamental::Ids::Miss::Skip);
+  for (const auto &c : codes)
+    ids.add(c);
+  axes.n_a_ = static_cast<int>(ids.size());
   const int n_a = axes.n_a();
   const int n_d = axes.n_d();
-  assert(static_cast<std::size_t>(n_a) == codes.size() && "AssetAxis code 重复");
 
   // ---- 回测日必须全部命中交易日历; 首回测日决定网格切片起点 ----
   int first_d = n_d;
   for (const auto &s : dates) {
-    auto it = axes.date_idx.find(s);
-    assert(it != axes.date_idx.end() && "回测日不在交易日历里");
-    first_d = std::min(first_d, it->second);
+    const int d = axes.exact(misc::parse_ymd(s));
+    assert(d >= 0 && "回测日不在交易日历里");
+    first_d = std::min(first_d, d);
   }
 
   // ---- 静态 meta: cn_stock_basic_info (_meta) ----
+  meta.list.assign(static_cast<std::size_t>(n_a), 0);
+  meta.delist.assign(static_cast<std::size_t>(n_a), 0);
   meta.list_day.assign(static_cast<std::size_t>(n_a), {});
-  meta.has_list.assign(static_cast<std::size_t>(n_a), 0);
   meta.delist_day.assign(static_cast<std::size_t>(n_a), {});
-  meta.has_delist.assign(static_cast<std::size_t>(n_a), 0);
-  meta.list_date_str.assign(static_cast<std::size_t>(n_a), {});
   meta.main_board.assign(static_cast<std::size_t>(n_a), 0);
   {
-    auto bi_path = pq::meta_path("cn_stock_basic_info");
-    assert(std::filesystem::exists(bi_path) && "cn_stock_basic_info 缺失");
-    pq::TableView bi(pq::read_table(bi_path));
+    const fundamental::Shard *bi_shard = cat.find("cn_stock_basic_info", 0);
+    assert(bi_shard && "cn_stock_basic_info 缺失");
+    pq::TableView bi(pq::read_table(bi_shard->path, {"instrument", "list_date", "delist_date", "list_sector"}));
     pq::Col ins = bi.col("instrument");
     pq::Col ld = bi.col("list_date");
     pq::Col dd = bi.col("delist_date");
     pq::Col ls = bi.col("list_sector");
     for (std::int64_t i = 0, n = bi.rows(); i < n; ++i) {
-      int a = lookup_a(axes, ins.str(i));
-      if (a < 0)
+      const std::uint32_t a = ids.find(ins.str(i));
+      if (a == fundamental::Ids::kNone)
         continue;
-      std::size_t ai = static_cast<std::size_t>(a);
-      std::int32_t l = ld.yyyymmdd(i);
-      if (l > 0) {
-        meta.list_day[ai] = misc::parse_yyyymmdd_int(l);
-        meta.has_list[ai] = 1;
-        meta.list_date_str[ai] = ymd_str(l);
-      }
-      std::int32_t dl = dd.yyyymmdd(i);
-      if (dl > 0) {
-        meta.delist_day[ai] = misc::parse_yyyymmdd_int(dl);
-        meta.has_delist[ai] = 1;
-      }
-      meta.main_board[ai] = (ls.i32(i, 0) == 1) ? 1 : 0;
+      const Ymd l = std::max(ld.yyyymmdd(i), 0), dl = std::max(dd.yyyymmdd(i), 0);
+      meta.list[a] = l;
+      meta.delist[a] = dl;
+      if (l)
+        meta.list_day[a] = misc::to_days(l);
+      if (dl)
+        meta.delist_day[a] = misc::to_days(dl);
+      meta.main_board[a] = (ls.i32(i, 0) == 1) ? 1 : 0;
     }
   }
 
-  // ---- PIT 池: 全 D 轴网格 + 事件链 ----
-  build_grids(axes, pit);
-  build_events(axes, pit);
+  // ---- PIT 池: 15 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
+  {
+    fundamental::Scan scan(cat, ids, std::max(1u, std::thread::hardware_concurrency()));
+    GridScan grids;
+    EventScan events;
+    grids.add(scan, axes, pit);
+    events.add(scan, axes);
+    std::atomic<std::size_t> done{0};
+    scan.run(done);
+    grids.finish(axes, pit);
+    std::move(events).finish(n_a, pit);
+  }
 
   // ---- 分红事件标注公告日股本快照 (需全史网格, 在切片之前) ----
   for (int a = 0; a < n_a; ++a) {
@@ -1259,8 +1165,8 @@ struct State {
     mc_thr = mb ? 5e8f : 3e8f;
 
     int stock_warmup_d = n_d;
-    if (meta.has_list[ai])
-      stock_warmup_d = first_d_of_year(axes, std::stoi(meta.list_date_str[ai].substr(0, 4)) + 3);
+    if (meta.list[ai])
+      stock_warmup_d = first_d_of_year(axes, year_of(meta.list[ai]) + 3);
     warmup_d = std::max(D.axes_warmup_d, stock_warmup_d);
 
     // 触发区间 (forecast v 升序 → on 升序); 年报预亏 (首亏/续亏, 12 月末报告期)
@@ -1278,7 +1184,7 @@ struct State {
       if (mb) {
         const int end_y = year_of(e.end_date);
         if (end_y >= 2021 && e.v >= 1 && e.v < n_d &&
-            axes.dates[static_cast<std::size_t>(e.v - 1)] >= "20210101")
+            axes.dates[static_cast<std::size_t>(e.v - 1)] >= 20210101)
           revenue_trig.push_back({e.v, off, (end_y >= 2024) ? 3e8f : 1e8f});
       }
     }
@@ -1502,12 +1408,12 @@ struct State {
     // 上市龄 / 退市龄 (日历日; 未上市/未退市 = NaN)
     const auto day = axes.date_days[static_cast<std::size_t>(d)];
     float lage = NaNF, dage = NaNF;
-    if (meta.has_list[ai]) {
+    if (meta.list[ai]) {
       const float age = static_cast<float>((day - meta.list_day[ai]).count());
       if (age >= 0.0f)
         lage = age;
     }
-    if (meta.has_delist[ai]) {
+    if (meta.delist[ai]) {
       const float age = static_cast<float>((day - meta.delist_day[ai]).count());
       if (age >= 0.0f)
         dage = age;

@@ -175,19 +175,24 @@ stk/
 │   │   │   ├── Operator.hpp                                # 📐 算子元数据 / 定义 (ParamMeta / OperatorDef, 编译期注册)
 │   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
 │   │   │   └── spectral/IIRBandpass.hpp                    # 📐 因果 IIR 带通
-│   │   ├── api/                                            # 🌐 数据源 API
-│   │   │   ├── bigquant/                                   # 🌐 BigQuant (dai / pipeline / spec)
-│   │   │   └── tushare/                                    # 🌐 Tushare (http / parse / pipeline / spec)
+│   │   ├── api/                                            # 🌐 数据源 API (只管传输 + 单窗口 fetch)
+│   │   │   ├── bigquant/                                   # 🌐 BigQuant (dai / fetch / audit)
+│   │   │   └── tushare/                                    # 🌐 Tushare (http / parse / fetch)
+│   │   ├── fundamental/                                    # 📊 日频基本面数据集 (两数据源同一套)
+│   │   │   ├── Spec.hpp                                    # 📊   SPECS: Shape × Pick × src (Dai / Tu)
+│   │   │   ├── Store.hpp                                   # 📊   Catalog (一次目录遍历) + 分片状态 + 拉取计划
+│   │   │   ├── Sync.hpp                                    # 📊   写侧 pending / sync<Src>: plan → fetch → put
+│   │   │   └── Scan.hpp                                    # 📊   读侧分段并行 map-reduce (AssetInfo / fund::Pool 共用)
 │   │   ├── mining/                                         # ⛏️ 数据挖掘 (特征 → 因子) 设计文档
 │   │   └── misc/                                           # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                     # 🔧 日志 / STL 容器格式化打印
 │   │       ├── format.hpp                                  # 🔧 定宽数值格式化 (UI 表格 / 日志对齐)
 │   │       ├── timer.hpp / profiler.hpp                    # 🔧 计时器 / 性能剖析
 │   │       ├── progress_single.hpp / progress_parallel.hpp # 🔧 单行 / 多线程进度条
-│   │       ├── affinity.hpp / schedule.hpp                 # 🔧 CPU 亲和性 / 月度调度器 (bigquant + tushare 共用)
+│   │       ├── affinity.hpp                                # 🔧 CPU 亲和性
 │   │       ├── archive.hpp / parquet.hpp                   # 🔧 归档操作 / Parquet 读写
 │   │       ├── fs.hpp / file_check.hpp                     # 🔧 文件系统 / 归档完整性校验
-│   │       ├── date.hpp / cross_platform.hpp               # 🔧 YYYYMMDD 日历运算 / Win-Linux-Mac 兼容层
+│   │       ├── date.hpp / cross_platform.hpp               # 🔧 Ymd / Ym (int32) 日历运算 / Win-Linux-Mac 兼容层
 │   │       ├── system_metrics.hpp                          # 🔧 系统监控采集 (CPU / 内存 / 磁盘)
 │   │       └── VariableMonitor.hpp                         # 🔧 变量值监控
 │   ├── src/                                                # 💾 源文件实现 (对应 include/)
@@ -195,7 +200,7 @@ stk/
 │   │   ├── factor/op_check.cpp                             # 💾 三后端对拍 CLI (独立 target)
 │   │   ├── factor/op_check_gpu.cu                          # 💾 GPU 后端 CUDA 实现 (FACTOR_CUDA ON 时入链)
 │   │   ├── factor/op_check_gpu_stub.cpp                    # 💾 GPU stub (未开 CUDA)
-│   │   ├── api/ codec/ shared/ misc/ worker/ features/     # 💾 对应模块实现
+│   │   ├── api/ fund/ codec/ shared/ misc/ worker/ feat/   # 💾 对应模块实现
 │   │   ├── gui/Gui.cpp / Tasks.cpp                         # 💾 GUI 主循环 / 任务注册
 │   │   ├── gui/Run_OpenGL.cpp                              # 💾 OpenGL 后端入口
 │   │   └── gui/Run_Vulkan.cpp                              # 💾 Vulkan 后端入口

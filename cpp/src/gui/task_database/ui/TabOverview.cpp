@@ -3,16 +3,17 @@
 // AssetInfo 由 FundamentalService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
 //
 // 逐表清单的两半信息各有出处, 谁也不抄谁:
-//   静态元描述 (增量键 / 抓法 / 就绪 / 说明) — 直接遍历 bigquant::SPECS +
-//     tushare::SPECS, spec 加一张表这里自动多一行, 不存在漏配.
+//   静态元描述 (增量键 / 抓法 / 就绪 / 说明) — 直接遍历 fundamental::SPECS
+//     (按 src 分两张清单), spec 加一张表这里自动多一行, 不存在漏配.
 //   本地落盘状态 (分片数 / 最新月 / 体积 / 落盘时刻) — FundamentalState::tables,
 //     工作线程扫好的快照, 按表名关联; 渲染帧内零 IO.
 #include "gui/task_database/ui/TabOverview.hpp"
-#include "api/bigquant/spec.hpp"
-#include "api/tushare/spec.hpp"
+#include "fundamental/Spec.hpp"
 #include "imgui.h"
+#include "misc/date.hpp"
 
 #include <cstdint>
+#include <string>
 
 namespace GUI::Database {
 
@@ -37,21 +38,17 @@ ImVec4 status_color(FundamentalStatus s) {
   return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
 }
 
-// FetchKind × FetchFreq → 抓法一词 (与 bigquant::fetch 的 SQL 模板一一对应)
-const char *fetch_name(bigquant::FetchKind k, bigquant::FetchFreq f) {
-  if (f == bigquant::FetchFreq::MonthFirst)
+// Shape × Pick × src → 抓法一词 (与 fetch 的取行方式一一对应)
+const char *fetch_name(const fundamental::Spec &s) {
+  using fundamental::Pick;
+  if (s.pick == Pick::First)
     return "月初";
-  switch (k) {
-  case bigquant::FetchKind::Static:
-    return "整刷";
-  case bigquant::FetchKind::Partition:
-    return "分区";
-  case bigquant::FetchKind::Where:
-    return "条件";
-  case bigquant::FetchKind::Snapshot:
+  if (s.pick == Pick::Last)
     return "快照";
-  }
-  return "-";
+  if (s.shape == fundamental::Shape::Meta)
+    return "整刷";
+  const auto *dai = std::get_if<fundamental::Dai>(&s.src);
+  return dai && dai->partition ? "分区" : "条件";
 }
 
 void text_bytes(std::uint64_t b) {
@@ -174,11 +171,11 @@ void text_wrapped_disabled(const char *s) {
 //   scanned=false: 首轮同步还没跑完, 落盘列一律留白 —— 此时把整张表标成
 //     missing 是误报, 只是还没人去扫盘.
 //   stat == nullptr (scanned=true): 本地确实一个文件都没有.
-//   meta_single: Static/Snapshot 表落 _meta/ 单文件, 没有"分片/最新月"的概念.
-void table_row(const std::string &name, const std::string &key,
-               const char *fetch, int avail_hour, const std::string &desc,
-               bool meta_single, bool scanned, const TableFileStat *stat,
+//   Shape::Meta: 落 _meta/ 单文件, 没有"分片/最新月"的概念.
+void table_row(const fundamental::Spec &spec, bool scanned, const TableFileStat *stat,
                const AuditTableStat *audit, std::int64_t weekly) {
+  const std::string &name = spec.name;
+  const bool meta_single = spec.shape == fundamental::Shape::Meta;
   ImGui::TableNextRow();
 
   ImGui::TableNextColumn();
@@ -188,13 +185,13 @@ void table_row(const std::string &name, const std::string &key,
     ImGui::TextUnformatted(name.c_str());
 
   ImGui::TableNextColumn();
-  ImGui::TextUnformatted(key.empty() ? "-" : key.c_str());
+  ImGui::TextUnformatted(spec.vd.empty() ? "-" : spec.vd.c_str());
 
   ImGui::TableNextColumn();
-  ImGui::TextUnformatted(fetch);
+  ImGui::TextUnformatted(fetch_name(spec));
 
   ImGui::TableNextColumn();
-  ImGui::Text("%02d:00", avail_hour);
+  ImGui::Text("%02d:00", spec.avail_hour);
 
   ImGui::TableNextColumn();
   if (!scanned)
@@ -207,9 +204,7 @@ void table_row(const std::string &name, const std::string &key,
     ImGui::Text("%zu", stat->months);
 
   ImGui::TableNextColumn();
-  ImGui::TextUnformatted(stat && !stat->last_month.empty()
-                             ? stat->last_month.c_str()
-                             : "-");
+  ImGui::TextUnformatted(stat && stat->last_month ? misc::dash_ym(stat->last_month).c_str() : "-");
 
   ImGui::TableNextColumn();
   if (stat)
@@ -224,7 +219,7 @@ void table_row(const std::string &name, const std::string &key,
   audit_cells(audit, weekly);
 
   ImGui::TableNextColumn();
-  ImGui::TextUnformatted(desc.c_str());
+  ImGui::TextUnformatted(spec.desc.c_str());
 }
 
 // 数据集总量 (只统计 SPECS 里在册的表, 目录里的历史遗留文件不计)
@@ -236,14 +231,7 @@ struct Totals {
 
 Totals count_totals(const FundamentalState &state) {
   Totals t;
-  for (const auto &spec : bigquant::SPECS) {
-    ++t.listed;
-    if (const TableFileStat *s = state.find_table(spec.name)) {
-      ++t.present;
-      t.bytes += s->bytes;
-    }
-  }
-  for (const auto &spec : tushare::SPECS) {
+  for (const fundamental::Spec &spec : fundamental::SPECS) {
     ++t.listed;
     if (const TableFileStat *s = state.find_table(spec.name)) {
       ++t.present;
@@ -401,9 +389,9 @@ void RenderTabOverview(
     ImGui::SameLine(0.0f, 24.0f);
     ImGui::Text("Trading days: %zu", state.trading_days_count);
 
-    if (!state.date_range_start.empty()) {
-      ImGui::Text("Calendar range: %s ~ %s", state.date_range_start.c_str(),
-                  state.date_range_end.c_str());
+    if (state.date_range_start) {
+      ImGui::Text("Calendar range: %s ~ %s", misc::dash(state.date_range_start).c_str(),
+                  misc::dash(state.date_range_end).c_str());
     }
     if (!state.last_update.empty()) {
       ImGui::TextDisabled("Last build: %s", state.last_update.c_str());
@@ -462,14 +450,9 @@ void RenderTabOverview(
 
   if (ImGui::BeginTable("FundBigQuantTables", kTableColumns, kTableFlags)) {
     setup_columns();
-    for (const bigquant::TableSpec &spec : bigquant::SPECS) {
-      const bool meta_single = spec.kind == bigquant::FetchKind::Static ||
-                               spec.kind == bigquant::FetchKind::Snapshot;
-      table_row(spec.name, spec.visible_date,
-                fetch_name(spec.kind, spec.freq), spec.avail_hour, spec.desc,
-                meta_single, scanned, state.find_table(spec.name),
-                audit.find_table(spec.name), weekly);
-    }
+    for (const fundamental::Spec &spec : fundamental::SPECS)
+      if (fundamental::from<fundamental::Dai>(spec))
+        table_row(spec, scanned, state.find_table(spec.name), audit.find_table(spec.name), weekly);
     ImGui::EndTable();
   }
 
@@ -478,11 +461,9 @@ void RenderTabOverview(
 
   if (ImGui::BeginTable("FundTushareTables", kTableColumns, kTableFlags)) {
     setup_columns();
-    for (const tushare::InterfaceSpec &spec : tushare::SPECS) {
-      table_row(spec.name, spec.visible_date, "条件", spec.avail_hour,
-                spec.desc, /*meta_single=*/false, scanned,
-                state.find_table(spec.name), nullptr, weekly);
-    }
+    for (const fundamental::Spec &spec : fundamental::SPECS)
+      if (fundamental::from<fundamental::Tu>(spec))
+        table_row(spec, scanned, state.find_table(spec.name), nullptr, weekly);
     ImGui::EndTable();
   }
 }

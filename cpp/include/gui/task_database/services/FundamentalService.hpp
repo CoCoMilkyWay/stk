@@ -1,8 +1,10 @@
 // Fundamental Service - 基本面数据 sync (BigQuant DAI + Tushare HTTP)
 // 数据落地 = output/fundamental/YYYY-MM/*.parquet
-// (api/bigquant + api/tushare 月度分片 + _meta 单文件, 水位增量, 常量见 shared/Config.hpp)
+// (fundamental/ 月度分片 + _meta 单文件, 水位增量, 常量见 shared/Config.hpp)
 // AssetInfo 从 parquet 构建内存结构.
 #pragma once
+
+#include "misc/date.hpp"
 
 #include <atomic>
 #include <boost/asio/awaitable.hpp>
@@ -46,15 +48,15 @@ inline const char *GetFundamentalStatusName(FundamentalStatus s) {
   return "Unknown";
 }
 
-// 单表本地落盘状态 — 工作线程扫一遍 output/fundamental/ 得到, 渲染帧只读不做 IO.
+// 单表本地落盘状态 — 工作线程由 fundamental::Catalog 得到, 渲染帧只读不做 IO.
 // 静态元描述 (增量键 / 抓法 / 就绪时点 / 中文说明) 不在这里重复: Overview 直接
-// 遍历 bigquant::SPECS + tushare::SPECS, 按 name 关联本结构.
+// 遍历 fundamental::SPECS, 按 name 关联本结构.
 struct TableFileStat {
-  std::string name;       // = parquet 文件名 = spec.name
-  std::size_t months = 0; // 已落月度分片数; _meta 单文件表恒 0
-  std::string last_month; // 最新分片 "YYYY-MM"; _meta 单文件表为空
+  std::string name;        // = parquet 文件名 = spec.name
+  std::size_t months = 0;  // 已落月度分片数; _meta 单文件表恒 0
+  misc::Ym last_month = 0; // 最新分片; _meta 单文件表为 0
   std::uint64_t bytes = 0;
-  std::string mtime; // 最后落盘时刻 "MM-DD HH:MM"; 一个文件都没有则为空
+  std::string mtime; // 最后落盘时刻 "MM-DD HH:MM"
 };
 
 struct FundamentalState {
@@ -72,8 +74,8 @@ struct FundamentalState {
   std::size_t stock_count = 0;        // stock_info 条数
   std::size_t factor_stock_count = 0; // 有复权因子序列的股票数
   std::size_t trading_days_count = 0; // 交易日历天数
-  std::string date_range_start;       // D 轴范围 "YYYY-MM-DD"
-  std::string date_range_end;
+  misc::Ymd date_range_start = 0;     // D 轴范围
+  misc::Ymd date_range_end = 0;
 
   // 逐表落盘状态 (Error 时也填 — 正是要看清哪张表缺)
   std::vector<TableFileStat> tables;
@@ -91,11 +93,11 @@ public:
   FundamentalService(boost::asio::io_context &io, SharedData &data)
       : io_(io), data_(data) {}
 
-  // pending 判定 → [bigquant::update → tushare::update] → 重建 AssetInfo
+  // pending 判定 → [sync<Dai> → sync<Tu>] → 重建 AssetInfo
   // (pending 全 fresh ⇒ 零网络直接本地构建; 启动与手动 Update 共用)
   awaitable<void> update_all();
 
-  // Confirm 态的弹窗回答: proceed=true 照常 bigquant::update, false 跳过 BigQuant
+  // Confirm 态的弹窗回答: proceed=true 照常 sync<Dai>, false 跳过 BigQuant
   // (Tushare / 本地构建照常). 只在 Confirm 态可调, 每轮只回答一次.
   void confirm(bool proceed);
 

@@ -27,6 +27,7 @@
 //   Latest<T, K>: 按 key 取最大 —— 扫描时的 offer 与段间的 merge 是同一个操作; key == 0 = 从无
 //   PerId<M>    : 每资产一个 M, 逐元素 merge
 //   Append<T>   : 段间按段序拼接
+//   Sink        : 无归约 —— fold 直写共享输出 (调用方保证各分片写集不相交)
 //
 // 调度: 全部登记表的段混在一张任务表里, 按段内字节数降序 (重段先跑, 不留长尾), 原子游标取活.
 // 读盘: 只解 cols + vd + 资产键列; 键列以字典落地, 每文件只对字典项查一次 Ids, 逐行退化成数组下标.
@@ -68,6 +69,10 @@ struct Append {
   std::vector<T> v;
   void push(const T &x) { v.push_back(x); }
   void merge(Append &&o) { v.insert(v.end(), std::make_move_iterator(o.v.begin()), std::make_move_iterator(o.v.end())); }
+};
+
+struct Sink {
+  void merge(Sink &&) {}
 };
 
 // ---------------------------------------------------------------------------

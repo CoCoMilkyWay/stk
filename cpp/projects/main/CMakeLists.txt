@@ -201,17 +201,19 @@ set(SOURCES
     ../../src/misc/fs.cpp
     ../../src/misc/logging.cpp
     ../../src/misc/parquet.cpp
-    ../../src/misc/schedule.cpp
     ../../src/misc/system_metrics.cpp
     # api
     ../../src/api/bigquant/audit.cpp
     ../../src/api/bigquant/dai.cpp
-    ../../src/api/bigquant/pipeline.cpp
-    ../../src/api/bigquant/spec.cpp
+    ../../src/api/bigquant/fetch.cpp
+    ../../src/api/tushare/fetch.cpp
     ../../src/api/tushare/http.cpp
     ../../src/api/tushare/parse.cpp
-    ../../src/api/tushare/pipeline.cpp
-    ../../src/api/tushare/spec.cpp
+    # fundamental
+    ../../src/fundamental/Scan.cpp
+    ../../src/fundamental/Spec.cpp
+    ../../src/fundamental/Store.cpp
+    ../../src/fundamental/Sync.cpp
     # codec
     ../../src/codec/binary_decoder_L2.cpp
     ../../src/codec/binary_encoder_L2.cpp
@@ -320,17 +322,20 @@ set(HEADERS
     ../../include/misc/profiler.hpp
     ../../include/misc/progress_parallel.hpp
     ../../include/misc/progress_single.hpp
-    ../../include/misc/schedule.hpp
     ../../include/misc/system_metrics.hpp
     ../../include/misc/timer.hpp
     # api
+    ../../include/api/bigquant/audit.hpp
     ../../include/api/bigquant/dai.hpp
-    ../../include/api/bigquant/pipeline.hpp
-    ../../include/api/bigquant/spec.hpp
+    ../../include/api/bigquant/fetch.hpp
+    ../../include/api/tushare/fetch.hpp
     ../../include/api/tushare/http.hpp
     ../../include/api/tushare/parse.hpp
-    ../../include/api/tushare/pipeline.hpp
-    ../../include/api/tushare/spec.hpp
+    # fundamental
+    ../../include/fundamental/Scan.hpp
+    ../../include/fundamental/Spec.hpp
+    ../../include/fundamental/Store.hpp
+    ../../include/fundamental/Sync.hpp
     # codec
     ../../include/codec/binary_decoder_L2.hpp
     ../../include/codec/binary_encoder_L2.hpp
@@ -710,16 +715,18 @@ set_source_files_properties(
     ../../src/misc/format.cpp
     ../../src/misc/fs.cpp
     ../../src/misc/parquet.cpp
-    ../../src/misc/schedule.cpp
     # api
     ../../src/api/bigquant/audit.cpp
     ../../src/api/bigquant/dai.cpp
-    ../../src/api/bigquant/pipeline.cpp
-    ../../src/api/bigquant/spec.cpp
+    ../../src/api/bigquant/fetch.cpp
+    ../../src/api/tushare/fetch.cpp
     ../../src/api/tushare/http.cpp
     ../../src/api/tushare/parse.cpp
-    ../../src/api/tushare/pipeline.cpp
-    ../../src/api/tushare/spec.cpp
+    # fundamental
+    ../../src/fundamental/Scan.cpp
+    ../../src/fundamental/Spec.cpp
+    ../../src/fundamental/Store.cpp
+    ../../src/fundamental/Sync.cpp
     # codec
     ../../src/codec/json_config.cpp
     # features

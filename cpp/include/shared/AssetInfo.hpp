@@ -20,9 +20,9 @@ struct StockInfo {
   static constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
   // 静态字段 (cn_stock_basic_info + cn_stock_industry_component)
-  std::string name;        // 逐日 PIT 简称 (cn_stock_instruments), 退市股回落 basic_info
-  misc::Ymd ipo_date = 0;  // 0 = 未知
-  misc::Ymd out_date = 0;  // 0 = 在市
+  std::string name;       // 逐日 PIT 简称 (cn_stock_instruments), 退市股回落 basic_info
+  misc::Ymd ipo_date = 0; // 0 = 未知
+  misc::Ymd out_date = 0; // 0 = 在市
   std::string ind_code;
   std::string ind_name;
 

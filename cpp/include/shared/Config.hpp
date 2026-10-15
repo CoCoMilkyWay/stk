@@ -32,7 +32,7 @@ struct Config {
   std::string csv_market_order = "逐笔委托.csv";
 
   // 基本面联网同步开关: false 时启动只本地构建 AssetInfo (零网络, 不碰 BigQuant/Tushare).
-  //   配额耗尽 / 离线时关掉即可绕过 bigquant::update 的 assert; 本地 parquet 仍照常消费.
+  //   配额耗尽 / 离线时关掉即可绕过 sync<Dai> 的 assert; 本地 parquet 仍照常消费.
   bool network_sync = true;
 
   // 交易税佣 (比率, 不分日期, 统一按现行标准): 标签 (LabelReturn) 是毛收益不含它, 消费端事后扣 (Inspect 图 1 按钮).
@@ -162,7 +162,7 @@ inline constexpr const char *TUSHARE_TOKEN = "6b5ea435a4626b1eeedefb2115bcf9e84f
 //   超时 = 单次连接+读写整体时长; 重试 = RETRY_MAX 次额外重试, 线性间隔
 inline constexpr const char *BIGQUANT_FLIGHT_URI = "grpc+tcp://bigquant.com:17010";
 inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
-// 周配额 preflight: 剩余比例 < 该值时同步前弹窗确认 (bigquant::update 不自己判, 由 GUI 决定)
+// 周配额 preflight: 剩余比例 < 该值时同步前弹窗确认 (sync<Dai> 不自己判, 由 GUI 决定)
 inline constexpr double BIGQUANT_QUOTA_CONFIRM_RATIO = 0.3;
 
 inline constexpr const char *TUSHARE_HTTP_HOST = "api.tushare.pro";

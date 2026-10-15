@@ -116,7 +116,7 @@ State state(const Spec &s, const Shard *sh, Ym m, Ymd today) {
     return State::Open;
   // 冻结 = 写盘日 ≥ 月末 + lookback: 写盘时该月已出 lookback 窗口, "整月行 + 全部回填" 才都已入盘
   return write_date(*sh) >= misc::add_days(misc::last_day(m), ::config::PIPELINE_LOOKBACK_DAYS) ? State::Frozen
-                                                                                               : State::Stale;
+                                                                                                : State::Stale;
 }
 
 std::vector<Task> plan(const Spec &s, const Catalog &cat, Ymd today) {
