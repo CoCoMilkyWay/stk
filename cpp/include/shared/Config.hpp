@@ -166,6 +166,8 @@ inline constexpr const char *BIGQUANT_FLIGHT_URI = "grpc+tcp://bigquant.com:1701
 inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
 // 周配额 preflight: 剩余比例 < 该值时同步前弹窗确认 (BigQuant sync 不自己判, 由 GUI 决定)
 inline constexpr double BIGQUANT_QUOTA_CONFIRM_RATIO = 0.3;
+// Daily 表 (分钟线, 单日 ~1200 万 cell): 每天开拉前重取配额, 剩余比例 < 该值即跳过余下各天 (不弹窗)
+inline constexpr double BIGQUANT_QUOTA_DAILY_RATIO = 0.2;
 
 inline constexpr const char *TUSHARE_HTTP_HOST = "api.tushare.pro";
 inline constexpr const char *TUSHARE_HTTP_PORT = "80";  // 走 80, 省掉 SSL 依赖

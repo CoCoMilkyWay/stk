@@ -37,8 +37,7 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 struct OrderFlowService::Impl {
   UniverseAxis uni; // 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
   FeatureRead reader;
-  DayReader day;            // 当天日文件 (重放请求凭帧目录快照定位)
-  L2::FrameDecoder decoder; // 对仗 sequential_worker 的 reader + decoder
+  L2::FrameDecoder decoder; // 对仗 sequential_worker 的 decoder (日文件 reader 按请求现开)
   LimitOrderBook lob;       // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
   TickData tick_data;       // 无特征侧绑定的盘口写出口
   FeatureRead::DayColumns l1_cols, l0_cols, uni_cols;
@@ -397,12 +396,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   L2::FrameView view;
   if (!ref.empty()) {
     TraceN("OF_Decode");
-    DayReader &day = impl_->day;
-    const bool found = day.open(data_->config.orders_dir, req.date);
-    assert(found && "OrderFlow: 帧目录登记过的日文件打不开");
-    (void)found;
-    view = day.get(ref, impl_->decoder);
-    day.close(); // 解出来的在 decoder 缓冲里, fd 已无用
+    view = DayReader(data_->config.orders_dir, req.date).get(ref, impl_->decoder); // 解出来的在 decoder 缓冲里, fd 随即关掉
   }
 
   if (view.head.count > 0) {

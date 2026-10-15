@@ -43,7 +43,9 @@ std::int64_t run(typename Src::Client &client, const Task &t) {
 }
 
 std::string label(const Task &t) {
-  const std::string at = t.spec->name + " " + (t.ym == 0 ? "_meta" : misc::dash_ym(t.ym));
+  const std::string at = t.spec->name + " " +
+                         (t.spec->shape == Shape::Daily ? misc::dash(t.w.lo) : t.ym == 0 ? "_meta"
+                                                                                         : misc::dash_ym(t.ym));
   switch (t.how) {
   case Write::Replace:
     return at;

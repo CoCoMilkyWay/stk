@@ -108,11 +108,10 @@ private:
 
 // 列举/编码的全局计数 — 汇总进度与收尾统计用
 struct EncodeStats {
-  std::atomic<size_t> pairs_listed{0};               // 待编码 (asset, date) 对
-  std::atomic<size_t> pairs_skipped{0};              // 产物新鲜, 逐个跳过
-  std::atomic<size_t> days_skipped{0};               // 整天完成标记命中, 连列举都免了
-  std::atomic<size_t> days_corrupt{0};               // 包头损坏, 整天列举不出来
-  std::atomic<size_t> outcomes[L2::kOutcomeCount]{}; // 本轮销账的各结局对数, 下标即 L2::Outcome
+  std::atomic<size_t> pairs_listed{0};  // 待编码 (asset, date) 对
+  std::atomic<size_t> pairs_skipped{0}; // 产物新鲜, 逐个跳过
+  std::atomic<size_t> days_skipped{0};  // 整天完成标记命中, 连列举都免了
+  std::atomic<size_t> days_corrupt{0};  // 包头损坏, 整天列举不出来
   std::mutex assets_mutex;
   std::unordered_set<size_t> assets_with_work;
 
@@ -122,6 +121,10 @@ struct EncodeStats {
   // 最老在编天的资产进度.
   std::mutex days_mutex;
   std::map<misc::Ymd, std::shared_ptr<DayJob>> days_inflight;
+
+  // 本轮销账的结局 + 判据, 与当天账目同一笔 tally (settle_in_day 里成对记);
+  // days_mutex 保护, 全部 worker 退出后才读.
+  DayRecord run;
 };
 
 // producer: 逐天 [列举 → 增量过滤 → 切批 → 推批].

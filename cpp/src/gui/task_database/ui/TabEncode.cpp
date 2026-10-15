@@ -250,15 +250,16 @@ struct DateRow {
   size_t expected = 0; // 当天本该有产物的标的数
   size_t missing = 0;  // 其中没有的 — 排序键
   size_t no_archive = 0;
-  size_t skipped = 0;
   size_t corrupt = 0;
   size_t invalid = 0;
   size_t todo = 0;                // 缺口里账目解释不掉的部分 = 还没编到
   const DayRecord *rec = nullptr; // 判据明细 (指进调用方持有的帧目录快照); 没编过这天就是 null
 };
 
-DateRow make_date_row(const OrdersCatalog &orders, misc::Ymd date,
-                      const Asset::DateGap &gap, DateDim dim) {
+DateRow make_date_row(const OrdersCatalog &orders, const Asset &asset, size_t bidx, DateDim dim) {
+  assert(asset.date_gaps.size() == asset.backtest.days.size() && bidx < asset.date_gaps.size() && "By Date: date_gaps 未与回测日历对齐");
+  const misc::Ymd date = asset.backtest.days[bidx].date;
+  const Asset::DateGap &gap = asset.date_gaps[bidx];
   DateRow row;
   row.date = date;
   row.expected = gap.expected;
@@ -273,16 +274,15 @@ DateRow make_date_row(const OrdersCatalog &orders, misc::Ymd date,
   if (const size_t didx = orders.day_idx(date); didx != OrdersCatalog::kNoDay) {
     const DayRecord &rec = orders.records[didx];
     row.rec = &rec;
-    row.skipped = rec.count(L2::Outcome::Tombstone);
     row.corrupt = rec.count(L2::Outcome::Corrupt);
     row.invalid = rec.count(L2::Outcome::Invalid);
   }
 
-  // 账目的分母是归档里有委托文件的资产, 缺口的分母是"已上市未退市未停牌"的
-  // 日历口径 — 两者不严格相等, 所以这里是相减兜底而不是精确配平. 减不掉的
-  // 那部分就是"有源、没出错、只是还没编到".
+  // 账目的分母是归档里有委托文件的资产, 缺口的分母是"已上市未退市未停牌非墓碑"
+  // 的日历口径 — 两者不严格相等, 所以这里是相减兜底而不是精确配平. 减不掉的
+  // 那部分就是"有源、没出错、只是还没编到". 墓碑不在缺口里, 不参与解释.
   const size_t explained =
-      row.no_archive + row.skipped + row.corrupt + row.invalid;
+      row.no_archive + row.corrupt + row.invalid;
   row.todo = row.missing > explained ? row.missing - explained : 0;
   return row;
 }
@@ -315,8 +315,6 @@ std::vector<DateColumnSpec> build_date_columns(const DateTableView &view) {
       &DateRow::no_archive);
   add(view.has_unaccounted, "todo", "有归档、编码器也没报错, 只是还没编到\n跑一遍增量即可补齐",
       &DateRow::todo);
-  add(view.has_skipped, "skip", "记了墓碑 (日文件目录里没有帧的条目)\n源数据不足以编码 (停牌 / 文件只有表头), 不是错误",
-      &DateRow::skipped);
   add(view.has_corrupt, "corrupt", "源 CSV 坏行, 或归档流中途断掉\n数据源侧的问题, 得修包",
       &DateRow::corrupt);
   add(view.has_invalid, "invalid", "准入校验未过的标的数\n右边各列是它按判据的拆解 (一个标的可命中多条)",
@@ -334,25 +332,23 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, const OrdersCata
   view.check_columns.clear();
   view.has_no_archive = false;
   view.has_unaccounted = false;
-  view.has_skipped = false;
   view.has_corrupt = false;
   view.has_invalid = false;
 
   size_t check_totals[L2::kCheckBitCount] = {};
-  std::vector<std::pair<misc::Ymd, size_t>> ranked; // (日期, 缺口)
+  std::vector<std::pair<size_t, size_t>> ranked; // (回测日历行, 缺口); 行序 = 日期序
 
-  for (const auto &[date, gap] : asset.date_gaps) {
-    const DateRow row = make_date_row(orders, date, gap, dim);
+  for (size_t bidx = 0; bidx < asset.date_gaps.size(); ++bidx) {
+    const DateRow row = make_date_row(orders, asset, bidx, dim);
     if (row.missing == 0)
       continue;
-    ranked.emplace_back(date, row.missing);
+    ranked.emplace_back(bidx, row.missing);
 
     if (dim == DateDim::Archive)
       continue; // 只有"缺失"一种原因, 不出原因列
 
     view.has_no_archive |= row.no_archive > 0;
     view.has_unaccounted |= row.todo > 0;
-    view.has_skipped |= row.skipped > 0;
     view.has_corrupt |= row.corrupt > 0;
     view.has_invalid |= row.invalid > 0;
     if (row.rec)
@@ -394,11 +390,8 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
   sync_date_view(view, asset, *orders, dim);
 
   size_t asset_days = 0;
-  for (const misc::Ymd date : view.rows) {
-    auto it = asset.date_gaps.find(date);
-    assert(it != asset.date_gaps.end() && "By Date: 行里的日期不在 date_gaps 中");
-    asset_days += make_date_row(*orders, date, it->second, dim).missing;
-  }
+  for (const size_t bidx : view.rows)
+    asset_days += make_date_row(*orders, asset, bidx, dim).missing;
 
   ImGui::Text("Days with gaps:");
   ImGui::SameLine();
@@ -454,14 +447,12 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
     specs->SpecsDirty = false;
   }
 
-  for (const misc::Ymd date : view.rows) {
-    auto gap_it = asset.date_gaps.find(date);
-    assert(gap_it != asset.date_gaps.end() && "By Date: 行里的日期不在 date_gaps 中");
-    const DateRow row = make_date_row(*orders, date, gap_it->second, dim);
+  for (const size_t bidx : view.rows) {
+    const DateRow row = make_date_row(*orders, asset, bidx, dim);
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(misc::dense(date).c_str());
+    ImGui::TextUnformatted(misc::dense(row.date).c_str());
 
     ImGui::TableNextColumn();
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%zu / %zu", row.missing, row.expected);

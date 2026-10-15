@@ -1,5 +1,6 @@
 #include "fundamental/Store.hpp"
 
+#include "fundamental/Scan.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 #include "shared/Config.hpp"
@@ -8,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <ctime>
+#include <utility>
 
 namespace fundamental {
 
@@ -43,6 +45,19 @@ fs::path path(std::string_view name, Ym ym) {
   return root() / (ym == 0 ? std::string("_meta") : misc::dash_ym(ym)) / (std::string(name) + ".parquet");
 }
 
+// Daily 的日文件路径: <name>/YYYY-MM/YYYY-MM-DD.parquet
+fs::path day_path(std::string_view name, Ymd d) {
+  assert(d > 0);
+  return root() / std::string(name) / misc::dash_ym(misc::ym_of(d)) / (misc::dash(d) + ".parquet");
+}
+
+bool is_daily(std::string_view name) {
+  for (const Spec &s : SPECS)
+    if (s.shape == Shape::Daily && s.name == name)
+      return true;
+  return false;
+}
+
 bool closed(Ym m, Ymd today) {
   return misc::last_day(m) < misc::add_days(today, -::config::PIPELINE_LOOKBACK_DAYS);
 }
@@ -73,6 +88,8 @@ Window window(const Spec &s, Ym m, const Now &now) {
 State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
   if (!sh)
     return State::Missing;
+  if (s.shape == Shape::Daily)
+    return State::Frozen; // 只拉到 horizon (昨天) ⇒ 落盘即整日
   if (s.shape == Shape::Meta) {
     const bool fresh = s.vd.empty() ? write_date(*sh) == now.today
                                     : mark(s, *sh) >= horizon(s.avail_hour, now);
@@ -143,7 +160,22 @@ Catalog::Catalog() {
     if (!d.is_directory())
       continue;
     const std::string dir = d.path().filename().string();
-    // 数据集只有 "_meta" 和 "YYYY-MM" 两种目录; 其余 (pool 等) 不是本流水线产物
+    // Daily 表的目录 <name>/YYYY-MM/YYYY-MM-DD.parquet
+    if (is_daily(dir)) {
+      for (const fs::directory_entry &md : fs::directory_iterator(d.path())) {
+        const Ym m = misc::parse_ym(md.path().filename().string());
+        assert(md.is_directory() && m > 0 && "Catalog: Daily 表目录下只应有 YYYY-MM 子目录");
+        for (const fs::directory_entry &f : fs::directory_iterator(md.path())) {
+          if (f.path().extension() != ".parquet")
+            continue;
+          const Ymd day = misc::parse_ymd(f.path().stem().string());
+          assert(day > 0 && misc::ym_of(day) == m && "Catalog: Daily 文件名须为所属月内的 YYYY-MM-DD");
+          by_name_[dir].push_back({m, f.path(), f.file_size(), f.last_write_time(), day});
+        }
+      }
+      continue;
+    }
+    // 其余数据集只有 "_meta" 和 "YYYY-MM" 两种目录; 再其余 (pool 等) 不是本流水线产物
     const Ym m = dir == "_meta" ? 0 : misc::parse_ym(dir);
     if (dir != "_meta" && m == 0)
       continue;
@@ -154,7 +186,7 @@ Catalog::Catalog() {
     }
   }
   for (auto &[name, v] : by_name_)
-    std::sort(v.begin(), v.end(), [](const Shard &a, const Shard &b) { return a.ym < b.ym; });
+    std::sort(v.begin(), v.end(), [](const Shard &a, const Shard &b) { return std::pair(a.ym, a.day) < std::pair(b.ym, b.day); });
 }
 
 const std::vector<Shard> &Catalog::shards(std::string_view name) const {
@@ -168,9 +200,26 @@ const Shard *Catalog::find(std::string_view name, Ym m) const {
   return (it != v.end() && it->ym == m) ? &*it : nullptr;
 }
 
+const Shard *Catalog::find_day(std::string_view name, Ymd d) const {
+  const std::vector<Shard> &v = shards(name);
+  const auto it = std::lower_bound(v.begin(), v.end(), d, [](const Shard &s, Ymd x) { return s.day < x; });
+  return (it != v.end() && it->day == d) ? &*it : nullptr;
+}
+
 std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now) {
   assert(::config::PIPELINE_START_DATE > 0 && ::config::PIPELINE_START_DATE <= now.today);
   std::vector<Slot> out;
+  if (s.shape == Shape::Daily) {
+    if (cat.shards("all_trading_days").empty())
+      return out; // 日历未入盘 (首轮同步前): 本轮无槽, 下轮再排
+    for (const Ymd d : calendar(cat, horizon(s.avail_hour, now))) {
+      if (d < ::config::PIPELINE_START_DATE)
+        continue;
+      const Shard *sh = cat.find_day(s.name, d);
+      out.push_back({misc::ym_of(d), sh, state(s, sh, misc::ym_of(d), now), {d, d}});
+    }
+    return out;
+  }
   for (const Ym m : slots(s, now)) {
     const Shard *sh = cat.find(s.name, m);
     out.push_back({m, sh, state(s, sh, m, now), window(s, m, now)});
@@ -217,6 +266,12 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
   const Spec &s = *t.spec;
   assert((t.ym == 0) == (s.shape == Shape::Meta) && "put: 分片与表形态不符");
+  if (s.shape == Shape::Daily) {
+    assert(t.how == Write::Replace && t.w.lo == t.w.hi && misc::ym_of(t.w.lo) == t.ym && "put: Daily 只整日 Replace");
+    assert(tbl->num_rows() > 0 && "put: Daily 交易日 0 行 (远端未入库)");
+    pq::write_table_atomic(day_path(s.name, t.w.lo), tbl);
+    return;
+  }
   const fs::path p = path(s.name, t.ym);
   switch (t.how) {
   case Write::Replace:

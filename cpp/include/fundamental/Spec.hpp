@@ -35,15 +35,18 @@ using misc::Ymd;
 // 落盘形态
 //   Month: output/fundamental/YYYY-MM/<name>.parquet, 行按 vd 归月 (0 行月也落文件 = 拉过)
 //   Meta : output/fundamental/_meta/<name>.parquet 单文件整刷
+//   Daily: output/fundamental/<name>/YYYY-MM/YYYY-MM-DD.parquet, 一交易日一文件 (vd 为分钟时间戳, 单日即大表)
 enum class Shape { Month,
-                   Meta };
+                   Meta,
+                   Daily };
 
 // 每个分片窗口内取哪些行 (以 vd 为准)
 //   All: 全部
 //   Day: 只留一天 —— Month 取最早 (MIN, 月初快照), Meta 取最晚 (MAX, 真盘前快照); 方向由 Shape 定
 //
-// Shape × Snap 四种皆合法; 另有 (SPECS 静态初始化期逐行断言):
+// Month / Meta × Snap 四种皆合法; 另有 (SPECS 静态初始化期逐行断言):
 //   vd 空 ⇒ Meta·All;  Tu ⇒ Month·All;  Bq{Partition} ⇒ vd == "date" (服务端分区列)
+//   Daily ⇒ Bq{Partition}·All·avail_hour=24 (日文件落盘即冻结, 只拉到昨天才保证整日完整)
 enum class Snap { All,
                   Day };
 
@@ -53,11 +56,12 @@ enum class Snap { All,
 enum class Prune { Where,
                    Partition };
 
-// BigQuant DAI. 远端表名 = Spec::name (FROM 子句)
+// BigQuant DAI. 远端表名 (FROM 子句) = table, 空 = Spec::name
 struct Bq {
   using Client = bigquant::Client;
   static constexpr std::string_view key = "instrument"; // 资产键列
   Prune prune;
+  std::string table = {};
 };
 
 // Tushare HTTP
@@ -74,7 +78,7 @@ struct Tu {
 };
 
 struct Spec {
-  std::string name; // 表名 = parquet 文件名
+  std::string name; // 本地表名 = parquet 文件名 (Daily: 目录名)
   std::string vd;   // 因果安全可见日列; 空 = 无日期维度 (仅 Meta·All)
   Shape shape;
   Snap snap;
@@ -82,7 +86,7 @@ struct Spec {
                   //   0 = 排程提前入库; 9/10 = 真盘前; 20 = 盘后批; 24 = 全天涓流, 次日才完整
   std::variant<Bq, Tu> src;
   std::string desc;                   // 表内容一句话 (GUI Database → Overview)
-  std::vector<std::string> drop = {}; // 不落盘的列: vd 之后才回填的未来信息 (两源同一步剥离)
+  std::vector<std::string> drop = {}; // 不落盘的列: vd 之后才回填的未来信息 / 远端存储分区列 (两源同一步剥离)
 };
 
 // 资产键列 (两源同为 "000001.SZ" 形)
@@ -110,6 +114,7 @@ enum class Write { Replace,
 //   Append: w.lo 已抬到水位 + 1
 //   Splice: days 升序非空, w = [首日, 末日], 同属 ym 分片; 仅 Bq
 //   Snap::Day 表只 Replace (MIN / MAX 须看整窗)
+//   Shape::Daily: w = [该日, 该日], ym = 该日所属月, 只 Replace
 struct Task {
   const Spec *spec = nullptr; // 指向 SPECS 的一行
   Ym ym = 0;                  // 0 = _meta

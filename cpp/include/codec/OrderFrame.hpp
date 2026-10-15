@@ -71,12 +71,18 @@ public:
   FrameDecoder(const FrameDecoder &) = delete;
   FrameDecoder &operator=(const FrameDecoder &) = delete;
 
+  // 压好的帧在内存里的落脚处: 日文件读端把 size 字节读进来, 再交给 decode. 与
+  // FrameEncoder::encode 产出的帧字节对仗 —— 两侧的压缩字节都归编解码器所有, 跟着
+  // 线程走, 不跟着日文件走. 下一次 frame_buffer 前有效.
+  char *frame_buffer(size_t size);
+
   // 返回的逐笔在内部缓冲里, 下一次 decode 前有效. 帧与目录不符直接断言.
   FrameView decode(const Frame &frame);
 
 private:
   // 只增不缩, 同 FrameEncoder
-  std::vector<Order> orders_;
+  std::vector<char> frame_;   // 压好的帧 (读端读进来)
+  std::vector<Order> orders_; // 解开的逐笔
   ZSTD_DCtx_s *ctx_ = nullptr;
 };
 

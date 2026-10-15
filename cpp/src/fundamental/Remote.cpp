@@ -75,23 +75,27 @@ std::string ident(std::string_view c) { return "\"" + std::string(c) + "\""; }
 
 bigquant::Query select(const Spec &s, std::string_view cols, Window w, std::string_view tail) {
   assert(from<Bq>(s) && "select: 表不来自 BigQuant");
-  std::string sql = "SELECT " + std::string(cols) + " FROM " + s.name;
+  const std::string &table = std::get<Bq>(s.src).table.empty() ? s.name : std::get<Bq>(s.src).table;
+  std::string sql = "SELECT " + std::string(cols) + " FROM " + table;
   if (s.vd.empty()) {
     assert(w.lo == 0 && w.hi == 0 && "select: vd 空的表无窗口");
     return {sql + std::string(tail), {}};
   }
   assert(w.lo > 0 && w.lo <= w.hi && "select: 窗口须非空");
   const std::string vd = ident(s.vd);
-  const std::string rng = vd + " >= " + quoted(w.lo) + " AND " + vd + " <= " + quoted(w.hi);
+  // Daily 的 vd 是分钟时间戳, "<= 'hi'" 只到 hi 当日 00:00 ⇒ 半开 [lo, hi + 1) (分区 filters 同放宽到次日)
+  const bool minute = s.shape == Shape::Daily;
+  const Ymd end = minute ? misc::add_days(w.hi, 1) : w.hi;
+  const std::string rng = vd + " >= " + quoted(w.lo) + " AND " + vd + (minute ? " < " : " <= ") + quoted(end);
   sql += " WHERE " + rng;
   if (s.snap == Snap::Day) {
     const bool month = s.shape == Shape::Month;
     const std::string group = month ? " GROUP BY strftime(" + vd + ", '%Y-%m')" : "";
-    sql += " AND " + vd + " IN (SELECT " + (month ? "MIN" : "MAX") + "(" + vd + ") FROM " + s.name + " WHERE " + rng + group + ")";
+    sql += " AND " + vd + " IN (SELECT " + (month ? "MIN" : "MAX") + "(" + vd + ") FROM " + table + " WHERE " + rng + group + ")";
   }
   bigquant::Filters f;
   if (std::get<Bq>(s.src).prune == Prune::Partition)
-    f = {{"date", {misc::dash(w.lo), misc::dash(w.hi)}}};
+    f = {{"date", {misc::dash(w.lo), misc::dash(end)}}};
   return {sql + std::string(tail), std::move(f)};
 }
 

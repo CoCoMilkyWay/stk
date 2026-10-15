@@ -23,7 +23,6 @@
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
 #include "misc/date.hpp"
-#include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
 #include "shared/Config.hpp"
@@ -40,7 +39,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
-#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -167,18 +165,26 @@ struct Job {
 };
 
 // 逐任务 sync::run (与 AuditService 逐单元 audit::run 同形): 计步进 job.steps_*, 取消在任务间生效
-// (在飞的查询不可中断)
+// (在飞的查询不可中断). gate 非空: 每个任务开跑前判一次, false ⇒ 跳过余下全部任务
 template <class Src>
 void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &client,
-              const std::vector<fundamental::Task> &tasks, const char *tag) {
+              const std::vector<fundamental::Task> &tasks, const char *tag,
+              const std::function<bool()> &gate = {}) {
   std::cout << "[" << tag << ".sync] " << tasks.size() << " task(s) from " << config::PIPELINE_START_DATE
             << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
             << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
   job.steps_done = 0;
   job.steps_total = tasks.size();
+  bool gated = false;
   for (const fundamental::Task &t : tasks) {
     if (cancel.load(std::memory_order_relaxed))
       break;
+    if (gate && !gate()) {
+      gated = true;
+      std::cout << "[" << tag << ".sync] gate closed, skip remaining "
+                << tasks.size() - job.steps_done.load(std::memory_order_relaxed) << " task(s)" << std::endl;
+      break;
+    }
     const std::string label = fundamental::sync::label(t);
     job.set_message(std::string("同步 ") + tag + ": " + label);
     std::cout << "[" << tag << ".sync] " << label << " ... " << std::flush;
@@ -187,12 +193,14 @@ void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &c
     job.steps_done.fetch_add(1, std::memory_order_relaxed);
   }
   job.steps_total = 0;
-  std::cout << "[" << tag << ".sync] " << (cancel.load(std::memory_order_relaxed) ? "cancelled" : "done") << std::endl;
+  std::cout << "[" << tag << ".sync] "
+            << (cancel.load(std::memory_order_relaxed) ? "cancelled" : gated ? "stopped (gate)"
+                                                                             : "done")
+            << std::endl;
 }
 
 // 外来写者的 parquet 以本库原样重写 (每轮开头, 先于 sync / 构建; 见 misc::pq::renative):
-//   基本面分片经 fundamental::renative; 分钟线 output/cn_stock_bar1m_c/YYYY-MM/YYYY-MM-DD.parquet
-//   (fetch.py 打包落地, 无 Store 归属) 直走 misc::pq. 判定只读 footer; 并行, 重的先跑, 取消在文件间生效
+//   Catalog 全部分片 (含 Daily 分钟线) 经 fundamental::renative. 判定只读 footer; 并行, 重的先跑, 取消在文件间生效
 void renative_all(Job &job, const std::atomic<bool> &cancel) {
   struct File {
     std::uint64_t bytes;
@@ -203,11 +211,6 @@ void renative_all(Job &job, const std::atomic<bool> &cancel) {
   for (const auto &[name, shards] : cat.all())
     for (const fundamental::Shard &sh : shards)
       files.push_back({sh.bytes, [&sh] { return fundamental::renative(sh); }});
-  const std::filesystem::path m1 = misc::git_root() / "output" / "cn_stock_bar1m_c";
-  if (std::filesystem::exists(m1))
-    for (const std::filesystem::directory_entry &e : std::filesystem::recursive_directory_iterator(m1))
-      if (e.is_regular_file() && e.path().extension() == ".parquet")
-        files.push_back({e.file_size(), [p = e.path()] { return pq::renative(p); }});
   std::sort(files.begin(), files.end(), [](const File &a, const File &b) { return a.bytes > b.bytes; });
 
   job.steps_done = 0;
@@ -782,9 +785,13 @@ awaitable<void> FundamentalService::run(bool with_network) {
       take_quota();
       // plan 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 空计划, 不拉数据
       job->set_message("plan 判定 (水位/dedup 窗口)");
-      const std::vector<fundamental::Task> bq_tasks = fundamental::sync::plan<fundamental::Bq>(cat, now);
+      // Daily (分钟线) 单拆一组放到最后, 用普通表剩下的配额
+      std::vector<fundamental::Task> bq_tasks, daily_tasks;
+      for (fundamental::Task &t : fundamental::sync::plan<fundamental::Bq>(cat, now))
+        (t.spec->shape == fundamental::Shape::Daily ? daily_tasks : bq_tasks).push_back(std::move(t));
       const std::vector<fundamental::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(cat, now);
       bool need_bq = !bq_tasks.empty();
+      bool declined = false; // 弹窗拒绝 ⇒ 本轮 BigQuant 一律不拉 (含分钟线)
       if (need_bq) {
         // 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)
         const double left = 1.0 - static_cast<double>(job->quota.used) /
@@ -795,6 +802,7 @@ awaitable<void> FundamentalService::run(bool with_network) {
           while (decision->load(std::memory_order_acquire) == 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
           need_bq = decision->load(std::memory_order_acquire) == 1;
+          declined = !need_bq;
         }
       }
       if (need_bq) {
@@ -804,6 +812,14 @@ awaitable<void> FundamentalService::run(bool with_network) {
       if (!ts_tasks.empty() && !cancel->load(std::memory_order_relaxed)) {
         tushare::Client ts;
         sync_all<fundamental::Tu>(*job, *cancel, ts, ts_tasks, "tushare");
+      }
+      if (!daily_tasks.empty() && !declined && !cancel->load(std::memory_order_relaxed)) {
+        // 一天约 1200 万 cell: 每天开拉前重取配额 (探针不耗配额), 剩余 < 阈值即跳过余下各天
+        sync_all<fundamental::Bq>(*job, *cancel, bq, daily_tasks, "bigquant.daily", [&job, &take_quota]() {
+          take_quota();
+          return 1.0 - static_cast<double>(job->quota.used) / static_cast<double>(job->quota.weekly) >=
+                 config::BIGQUANT_QUOTA_DAILY_RATIO;
+        });
       }
     }
     // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)

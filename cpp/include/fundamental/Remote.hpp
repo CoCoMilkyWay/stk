@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace fundamental {
 
@@ -30,7 +29,9 @@ std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Task &t)
 //   schema = select(s, "*", w, " LIMIT 0")
 //   指纹   = select(s, "strftime(..) AS g, ..", w, " GROUP BY 1")
 //
-// 窗口谓词: vd ∈ [w.lo, w.hi]; Snap::Day 再只留每个分片窗口内 MIN (Month, 子查询按月分组) / MAX (Meta, 整窗) 那天.
+// 窗口谓词: vd ∈ [w.lo, w.hi]; Shape::Daily (vd 为分钟时间戳) 为 [w.lo, w.hi + 1);
+//   Snap::Day 再只留每个分片窗口内 MIN (Month, 子查询按月分组) / MAX (Meta, 整窗) 那天.
+// FROM = Bq::table (空 = Spec::name).
 //   vd 空 → 无 WHERE (w 须为 {0, 0}).
 // Prune::Partition 附服务端裁剪 filters {"date": [lo, hi]} (DAI 对分区表必须带, 否则拒绝); Where 空.
 // 日期: Ymd (内部 dash 成 DAI 接受的 "YYYY-MM-DD").

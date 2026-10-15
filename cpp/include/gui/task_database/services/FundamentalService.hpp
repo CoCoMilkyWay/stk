@@ -53,7 +53,7 @@ inline const char *GetFundamentalStatusName(FundamentalStatus s) {
 // 遍历 fundamental::SPECS, 按 name 关联本结构.
 struct TableFileStat {
   std::string name;        // = parquet 文件名 = spec.name
-  std::size_t months = 0;  // 已落月度分片数; _meta 单文件表恒 0
+  std::size_t months = 0;  // 已落月度分片数 (Daily: 日文件数); _meta 单文件表恒 0
   misc::Ym last_month = 0; // 最新分片; _meta 单文件表为 0
   std::uint64_t bytes = 0;
   std::string mtime; // 最后落盘时刻 "MM-DD HH:MM"

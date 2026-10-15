@@ -13,25 +13,12 @@ namespace L2 {
 // ============================================================================
 
 // Fast integer parsing (avoids std::stoul/stoull overhead)
-static inline uint32_t fast_parse_u32(std::string_view s) {
-  if (s.empty())
-    return 0;
-  uint32_t val = 0;
+template <typename T>
+static inline T fast_parse(std::string_view s) {
+  T val = 0;
   for (char c : s) {
     if (c >= '0' && c <= '9') {
-      val = val * 10 + (c - '0');
-    }
-  }
-  return val;
-}
-
-static inline uint64_t fast_parse_u64(std::string_view s) {
-  if (s.empty())
-    return 0;
-  uint64_t val = 0;
-  for (char c : s) {
-    if (c >= '0' && c <= '9') {
-      val = val * 10 + (c - '0');
+      val = val * 10 + static_cast<T>(c - '0');
     }
   }
   return val;
@@ -99,26 +86,18 @@ static inline int market_of(std::string_view stock_code) {
   return -1;
 }
 
-// Order type determination based on exchange rules
-static inline L2::OrderType determine_order_type(char csv_order_type, char csv_trade_code,
-                                                 bool is_trade, bool is_shenzhen) {
-  if (is_trade) {
-    // Trade: cancel(1) or taker(3)
-    return (is_shenzhen && csv_trade_code == 'C') ? L2::OrderType::CANCEL : L2::OrderType::TAKER;
-  }
+// 委托: 深市全是挂单; 沪市 D/d = 撤单, 其余 (A/a) = 挂单
+static inline L2::OrderType order_type_of(const CSVOrder &csv, bool szse) {
+  return (!szse && (csv.order_type == 'D' || csv.order_type == 'd')) ? L2::OrderType::CANCEL : L2::OrderType::MAKER;
+}
 
-  // Order: all maker(0) for SZSE; maker(0) or cancel(1) for SSE
-  if (is_shenzhen) {
-    return L2::OrderType::MAKER; // SZSE orders are all maker
-  } else {
-    // SSE: A/a=add/maker, D/d=delete/cancel
-    return (csv_order_type == 'A' || csv_order_type == 'a') ? L2::OrderType::MAKER : (csv_order_type == 'D' || csv_order_type == 'd') ? L2::OrderType::CANCEL
-                                                                                                                                      : L2::OrderType::MAKER;
-  }
+// 成交: 深市成交代码 C = 撤单, 其余 = 主动成交
+static inline L2::OrderType order_type_of(const CSVTrade &csv, bool szse) {
+  return (szse && csv.trade_code == 'C') ? L2::OrderType::CANCEL : L2::OrderType::TAKER;
 }
 
 // Order direction: false=bid(B), true=ask(S)
-static inline L2::OrderDirection determine_order_direction(char side_flag) {
+static inline L2::OrderDirection dir_of(char side_flag) {
   return (side_flag == 'S' || side_flag == 's') ? L2::OrderDirection::ASK : L2::OrderDirection::BID;
 }
 
@@ -240,12 +219,10 @@ static void parse_order_line(std::string_view line, bool szse, std::vector<CSVOr
   }
 
   CSVOrder order = {};
-  order.date = fast_parse_u32(fields[2]);
-  order.time = fast_parse_u32(fields[3]);
+  order.time = fast_parse<uint32_t>(fields[3]);
   if (order.time >= kAuctionCloseTime)
     return; // 盘后固定价格交易, 见 kAuctionCloseTime
-  order.order_id = fast_parse_u64(fields[4]);
-  order.exchange_order_id = fast_parse_u64(fields[5]);
+  order.exchange_order_id = fast_parse<uint64_t>(fields[5]);
 
   if (market_of(fields[0]) != (szse ? 1 : 0)) {
     ++bad_lines;
@@ -284,31 +261,28 @@ static void parse_trade_line(std::string_view line, bool szse, std::vector<CSVTr
   }
 
   CSVTrade trade = {};
-  trade.date = fast_parse_u32(fields[2]);
-  trade.time = fast_parse_u32(fields[3]);
+  trade.time = fast_parse<uint32_t>(fields[3]);
   if (trade.time >= kAuctionCloseTime)
     return; // 盘后固定价格交易, 见 kAuctionCloseTime
-  trade.trade_id = fast_parse_u64(fields[4]);
 
   if (market_of(fields[0]) != (szse ? 1 : 0)) {
     ++bad_lines;
     return;
   }
 
-  // Parse trade code and BS flag (format differs by exchange)
-  if (szse) {
-    trade.trade_code = !fields[5].empty() ? fields[5][0] : '0';
-    trade.bs_flag = !fields[7].empty() ? fields[7][0] : ' ';
-  } else {
-    trade.trade_code = '0'; // SSE doesn't use trade_code
-    trade.bs_flag = !fields[7].empty() ? fields[7][0] : ' ';
-  }
-  trade.dummy_code = ' '; // Unused
+  // Parse trade code (SSE doesn't use it)
+  trade.trade_code = (szse && !fields[5].empty()) ? fields[5][0] : '0';
 
   trade.price = OrderEncoder::parse_price_to_fen(fields[8]);
   trade.volume = OrderEncoder::parse_volume(fields[9]);
-  trade.ask_order_id = fast_parse_u64(fields[10]);
-  trade.bid_order_id = fast_parse_u64(fields[11]);
+  trade.ask_order_id = fast_parse<uint64_t>(fields[10]);
+  trade.bid_order_id = fast_parse<uint64_t>(fields[11]);
+
+  // BS flag: 深市撤单的源字段为空, 按非零 id 侧补齐 —— 之后与委托的 order_side 同一解法
+  trade.bs_flag = !fields[7].empty() ? fields[7][0] : ' ';
+  if (szse && (trade.bs_flag == ' ' || trade.bs_flag == '\0'))
+    trade.bs_flag = (trade.bid_order_id != 0) ? 'B' : 'S';
+
   if (price_is_scientific(fields[8]))
     ++sci_count;
 
@@ -340,7 +314,7 @@ bool OrderEncoder::parse_market_tail(const char *data, size_t len, MarketSummary
     return false;
 
   // 从尾部往前逐行回扫. 停牌日的 行情.csv 只有表头, 回扫到表头就停 —— 表头
-  // 的"自然日"列不含数字, fast_parse_u32 给 0, 以此与数据行区分.
+  // 的"自然日"列不含数字, fast_parse 给 0, 以此与数据行区分.
   //
   // 但"最后一行"不等于"收盘行": 部分板块收盘后还会再推若干行占位快照, 其当日
   // 累计量与成交额都是 0. 取到这种行, 当日累计量就成了 0, 逐笔累加与它的差恰好
@@ -362,7 +336,7 @@ bool OrderEncoder::parse_market_tail(const char *data, size_t len, MarketSummary
 
     const std::string_view line(line_begin, static_cast<size_t>(line_end - line_begin));
     std::string_view fields[kCsvFields];
-    if (split_csv_line(line, fields) >= kMarketFieldCount && fast_parse_u32(fields[kMarketDate]) != 0) {
+    if (split_csv_line(line, fields) >= kMarketFieldCount && fast_parse<uint32_t>(fields[kMarketDate]) != 0) {
       const auto cum_volume = parse_numeric_field(fields[kMarketCumVolume], 1);
       if (cum_volume != 0 || !have_fallback) {
         summary.valid = true;
@@ -394,47 +368,29 @@ bool OrderEncoder::parse_market_tail(const char *data, size_t len, MarketSummary
 Order OrderEncoder::csv_to_order(const CSVOrder &csv, uint32_t price_base, bool szse) {
   Order order = {};
   order.tick = parse_tick(csv.time);
-
-  // Order attributes
-  order.order_type = determine_order_type(csv.order_type, '0', false, szse);
-  order.order_dir = determine_order_direction(csv.order_side);
+  order.order_type = order_type_of(csv, szse);
+  order.order_dir = dir_of(csv.order_side);
   order.price = park_price(csv.price, price_base);
   order.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
 
-  // Order IDs (only one side is set based on direction)
-  if (order.order_dir == L2::OrderDirection::BID) { // Bid
-    order.bid_order_id = clamp_to_bound(csv.exchange_order_id, ORDER_ID_BOUND);
-    order.ask_order_id = 0;
-  } else { // Ask
-    order.bid_order_id = 0;
-    order.ask_order_id = clamp_to_bound(csv.exchange_order_id, ORDER_ID_BOUND);
-  }
-
+  // 委托只有本方一侧 id
+  const uint32_t id = clamp_to_bound(csv.exchange_order_id, ORDER_ID_BOUND);
+  order.bid_order_id = order.order_dir == L2::OrderDirection::BID ? id : 0;
+  order.ask_order_id = order.order_dir == L2::OrderDirection::ASK ? id : 0;
   return order;
 }
 
 Order OrderEncoder::csv_to_trade(const CSVTrade &csv, uint32_t price_base, bool szse) {
   Order order = {};
   order.tick = parse_tick(csv.time);
-
-  // Trade attributes
-  order.order_type = determine_order_type('0', csv.trade_code, true, szse);
-
-  // Direction: for SZSE cancellation (bs_flag empty), infer from bid_order_id
-  if (szse && (csv.bs_flag == ' ' || csv.bs_flag == '\0')) {
-    char effective_side = (csv.bid_order_id != 0) ? 'B' : 'S';
-    order.order_dir = determine_order_direction(effective_side);
-  } else {
-    order.order_dir = determine_order_direction(csv.bs_flag);
-  }
-
+  order.order_type = order_type_of(csv, szse);
+  order.order_dir = dir_of(csv.bs_flag);
   order.price = park_price(csv.price, price_base);
   order.volume = clamp_to_bound(csv.volume, VOLUME_BOUND);
 
-  // Trade has both order IDs
+  // 成交两侧 id 都有
   order.bid_order_id = clamp_to_bound(csv.bid_order_id, ORDER_ID_BOUND);
   order.ask_order_id = clamp_to_bound(csv.ask_order_id, ORDER_ID_BOUND);
-
   return order;
 }
 
@@ -442,16 +398,19 @@ Order OrderEncoder::csv_to_trade(const CSVTrade &csv, uint32_t price_base, bool 
 // Section 4: Frame Order (时刻 → 优先级 → 源序)
 // ============================================================================
 
-// 帧序键: [tick 32bit][优先级 2bit][orders_ 下标 30bit]. tick 的整数序即时间序
-// (见 make_tick). 下标兜底使键两两不等, 排序结果与 std::sort 的实现无关 —— 同一
-// 份输入永远编出同一个帧. 优先级 maker → taker → cancel.
+// 帧序键: [tick 32bit][优先级 2bit][源序下标 30bit]. 源序 = 委托在前, 成交在后.
+// tick 的整数序即时间序 (见 make_tick). 下标兜底使键两两不等, 排序结果与 std::sort
+// 的实现无关 —— 同一份输入永远编出同一个帧. 优先级 maker → taker → cancel.
+// 键直接从中间结构算, 与 csv_to_order / csv_to_trade 同一套 tick / 类型解法.
 constexpr size_t kFrameKeyIndexBits = 30;
 
-static inline uint64_t frame_key(const Order &o, size_t idx) {
-  const uint64_t priority = o.order_type == MAKER ? 0 : o.order_type == TAKER ? 1
-                                                    : o.order_type == CANCEL  ? 2
-                                                                              : 3;
-  return (uint64_t(o.tick) << 32) | (priority << kFrameKeyIndexBits) | idx;
+template <typename CSV>
+static inline uint64_t frame_key(const CSV &csv, bool szse, size_t idx) {
+  const OrderType type = order_type_of(csv, szse);
+  const uint64_t priority = type == MAKER ? 0 : type == TAKER ? 1
+                                            : type == CANCEL  ? 2
+                                                              : 3;
+  return (uint64_t(OrderEncoder::parse_tick(csv.time)) << 32) | (priority << kFrameKeyIndexBits) | idx;
 }
 
 // ============================================================================
@@ -462,7 +421,6 @@ OrderEncoder::OrderEncoder(size_t est_orders) {
   // 解析/合并中间结果 (每个 worker 复用一份, 见 hpp)
   csv_orders_.reserve(est_orders);
   csv_trades_.reserve(est_orders);
-  orders_.reserve(est_orders * 2);
   keys_.reserve(est_orders * 2);
   sorted_.reserve(est_orders * 2);
 }
@@ -476,7 +434,6 @@ void OrderEncoder::begin(const std::string &code_ex) {
 
   csv_orders_.clear();
   csv_trades_.clear();
-  orders_.clear();
   keys_.clear();
   sorted_.clear();
   bad_line_count_ = 0;
@@ -555,24 +512,27 @@ Outcome OrderEncoder::finish(const std::string &tag) {
     return Outcome::Invalid;
   }
 
-  // 转换 (源序: 委托在前, 成交在后) → 排键 → 按键收拢成帧序.
-  // 排 8 字节的键而不是 20 字节的 Order, 比较只是一次整数比较.
-  for (const auto &csv : csv_orders_)
-    orders_.push_back(csv_to_order(csv, report_.price_base, szse_));
-  for (const auto &csv : csv_trades_)
-    orders_.push_back(csv_to_trade(csv, report_.price_base, szse_));
-
-  const size_t n = orders_.size();
+  // 排键 (源序: 委托在前, 成交在后) → 按键序就地转换成帧序.
+  // 排 8 字节的键而不是 20 字节的 Order, 比较只是一次整数比较; 转换直接写进
+  // sorted_, 不经源序的 Order 中间缓冲.
+  const size_t n_orders = csv_orders_.size();
+  const size_t n_trades = csv_trades_.size();
+  const size_t n = n_orders + n_trades;
   assert(n < (size_t(1) << kFrameKeyIndexBits) && "finish: 单日逐笔条数装不进帧序键的下标段");
   keys_.resize(n);
-  for (size_t i = 0; i < n; ++i)
-    keys_[i] = frame_key(orders_[i], i);
+  for (size_t i = 0; i < n_orders; ++i)
+    keys_[i] = frame_key(csv_orders_[i], szse_, i);
+  for (size_t i = 0; i < n_trades; ++i)
+    keys_[n_orders + i] = frame_key(csv_trades_[i], szse_, n_orders + i);
   std::sort(keys_.begin(), keys_.end());
 
   constexpr uint64_t kIndexMask = (uint64_t(1) << kFrameKeyIndexBits) - 1;
   sorted_.resize(n);
-  for (size_t i = 0; i < n; ++i)
-    sorted_[i] = orders_[keys_[i] & kIndexMask];
+  for (size_t i = 0; i < n; ++i) {
+    const size_t idx = keys_[i] & kIndexMask;
+    sorted_[i] = idx < n_orders ? csv_to_order(csv_orders_[idx], report_.price_base, szse_)
+                                : csv_to_trade(csv_trades_[idx - n_orders], report_.price_base, szse_);
+  }
 
   return Outcome::Ok;
 }

@@ -30,9 +30,6 @@ void prefetch_worker(WorkerCtx ctx) {
 
   Logger::log("worker_" + std::to_string(worker_id), "Prefetch started: " + std::to_string(total_dates) + " dates, window " + std::to_string(window_days));
 
-  // 只为把帧拖进 page cache, 内容即弃 (decode 在 TS worker 内联)
-  DayReader reader;
-
   size_t cumulative_bytes = 0;
   size_t completed_dates = 0;
 
@@ -63,13 +60,10 @@ void prefetch_worker(WorkerCtx ctx) {
       // 资产集 = universe 子轴 (帧目录切片的一行): TS 只 decode 这些. reader 按偏移
       // 排序、首尾相接的帧并成一段顺序读 (空格子跳过) —— universe 覆盖全市场时就是
       // 整个数据区一段段读完.
+      // 只为把帧拖进 page cache, 内容即弃 (decode 在 TS worker 内联).
       const std::span<const FrameRef> refs = ctx.orders.row(date_idx);
       if (std::any_of(refs.begin(), refs.end(), [](const FrameRef &ref) { return !ref.empty(); })) {
-        const bool found = reader.open(data.config.orders_dir, date);
-        assert(found && "prefetch: 扫描登记过的日文件打不开");
-        (void)found;
-        cumulative_bytes += reader.prefetch(refs);
-        reader.close();
+        cumulative_bytes += DayReader(data.config.orders_dir, date).prefetch(refs);
         stat.work.store(cumulative_bytes, std::memory_order_relaxed);
       }
     }

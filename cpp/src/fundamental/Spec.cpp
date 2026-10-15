@@ -16,6 +16,9 @@ std::vector<Spec> checked(std::vector<Spec> v) {
     assert((!s.vd.empty() || (s.shape == Shape::Meta && s.snap == Snap::All)) && "SPECS: vd 空只允许 Meta·All");
     assert((!from<Tu>(s) || (s.shape == Shape::Month && s.snap == Snap::All)) && "SPECS: Tushare 只有 Month·All");
     assert((!from<Bq>(s) || std::get<Bq>(s.src).prune == Prune::Where || s.vd == "date") && "SPECS: 分区表的 vd 须是 date");
+    assert((s.shape != Shape::Daily || (from<Bq>(s) && std::get<Bq>(s.src).prune == Prune::Partition &&
+                                        s.snap == Snap::All && s.avail_hour == 24)) &&
+           "SPECS: Daily 只有 Bq{Partition}·All·avail_hour=24");
     for (const std::string &c : s.drop)
       assert(c != s.vd && c != key_col(s) && "SPECS: drop 不能剥 vd / 键列");
   }
@@ -105,6 +108,11 @@ const std::vector<Spec> SPECS = checked({
      "TTM 三表 185 列 × shift 同期偏移: 归母净利 / 营收 / 经营现金流 TTM"},
     {"cn_stock_financial_notes_shift",          "date",         Month, All, 20, Bq{Partition},
      "财报附注 76 列 × shift: 非经常性损益明细 (政府补助/公允价值变动/债务重组)"},
+    // bar1m: 远端截面表 cn_stock_bar1m_c (按日截面存储; cn_stock_bar1m 按标的存储, 全市场单日要扫遍所有标的).
+    //   单日 ~130 万行 × 9 列 ≈ 1200 万 cell: 排在 DAI 段最后, 每天开拉前重判周配额 (见 FundamentalService).
+    //   __PARTITION__ = 远端存储分区列, 非数据.
+    {"bar1m",                                   "date",         Daily, All, 24, Bq{Partition, "cn_stock_bar1m_c"},
+     "全市场不复权 1 分钟线 OHLC/量/额 + adjust_factor (一交易日一文件)", {"__PARTITION__"}},
 
     // ======================== Tushare ========================
     // avail_hour=24: 公告当日全天涓流发布, 次日才视为完整 (增量水位永不吃半天).

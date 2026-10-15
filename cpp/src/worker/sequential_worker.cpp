@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -87,16 +88,16 @@ void sequential_worker(WorkerCtx ctx) {
       const auto &asset = data.asset.items[sched.global_ids[asset_id]];
       // "CODE.EX": universe::Pool / AssetAxis 的键 (asset_code 单独是 6 位, 查池查不到 → cs_valid 全 0)
       sched.cores[asset_id] =
-          std::make_unique<CoreSequential>(data.fund_pool, data.universe_pool, asset.asset_code + "." + asset.exchange, asset_id, worker_id);
+          std::make_unique<CoreSequential>(data.fund_pool, data.universe_pool, asset.code_ex(), asset_id, worker_id);
     }
   }
 
-  // 每 worker 一对 reader + decoder (非每资产): get 是按 (asset, date) 一帧的
-  // 无状态操作, 且 worker 内资产串行 —— 解码结果在下一次 get 前已被
-  // process_batch 消费完, 零拷贝契约天然满足. 缓冲跨资产/跨日复用, 自动长到本
-  // worker 最忙资产的单日条数后稳定 (零分配稳态); 当天日文件的 fd 由 reader
-  // 持有, 一天只 open 一次.
-  DayReader reader;
+  // 每 worker 一个 decoder (非每资产): get 是按 (asset, date) 一帧的无状态操作,
+  // 且 worker 内资产串行 —— 解码结果在下一次 get 前已被 run_frame 消费完, 零拷贝
+  // 契约天然满足. 帧字节与逐笔两块缓冲都在 decoder 里, 跨资产/跨日复用, 自动长到
+  // 本 worker 最忙资产的单日条数后稳定 (零分配稳态). reader 只是当天日文件的 fd,
+  // 换天才重建 (领养回填会切到旧日, 回来再切回).
+  std::optional<DayReader> reader;
   L2::FrameDecoder decoder;
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
@@ -137,28 +138,25 @@ void sequential_worker(WorkerCtx ctx) {
     L2::FrameView view;
     {
       TraceN("DecodeOrders");
-      const bool found = reader.open(data.config.orders_dir, date);
-      assert(found && "sequential_worker: 扫描登记过的日文件打不开");
-      (void)found;
-      view = reader.get(ref, decoder);
+      if (!reader || reader->date() != date)
+        reader.emplace(data.config.orders_dir, date);
+      view = reader->get(ref, decoder);
     }
     const size_t order_num = view.head.count;
 
-    lob.begin_frame(view);
-
-    // Batch processing: zero-overhead inlined loop (process_impl inlined into process_batch)
+    // Batch processing: zero-overhead inlined loop (process_impl inlined into run_frame)
     size_t order_invalid_cnt = 0;
     {
       TraceN("ProcessLobs");
       TraceValue(order_num);
-      order_invalid_cnt = lob.process_batch(view);
+      order_invalid_cnt = lob.run_frame(view);
     }
 
     // 编码期准入校验 (L2::LobUnusable) 已拦下 LOB 抵扣不动的记录, 走到这里即校验漏判
     assert(order_invalid_cnt <= 100 && "sequential_worker: LOB 无效条数超阈值 (准入校验漏判?)");
 
     Logger::log("worker_" + std::to_string(worker_id),
-                std::to_string(date) + " asset:" + std::to_string(asset_id) + " " + asset.asset_code + "." + asset.exchange + " " + asset.asset_name +
+                std::to_string(date) + " asset:" + std::to_string(asset_id) + " " + asset.code_ex() + " " + asset.asset_name +
                     " decoded=" + std::to_string(order_num) +
                     " order_invalid=" + std::to_string(order_invalid_cnt) +
                     " tob_invalid=" + std::to_string(lob.get_tob_invalid_count()) +

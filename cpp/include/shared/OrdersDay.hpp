@@ -33,33 +33,51 @@
 //
 // 两端互逆:
 //
-//   DayWriter(dir, date)                                   DayReader::open(dir, date)
+//   DayWriter(dir, date)                                   DayReader(dir, date)
 //   DayWriter::put(asset_id, FrameEncoder, View) → Ref     DayReader::get(Ref, FrameDecoder) → View
 //   DayWriter::commit(DayIndex)                            DayReader::index() → DayIndex
+//   DayWriter::adopt(DayReader, refs)                      DayReader::prefetch(refs)
 //   DayIndex::settle (写端记账)                             DayIndex::check (读写两端对账)
+//
+// 两端都是构造即定天、一天一个对象; 帧字节的缓冲归 FrameEncoder / FrameDecoder
+// (跟线程走), 日文件对象本身不留跨天状态.
 //
 // 目录键用 A 轴下标而非 "000001.SZ": 轴 append-only 且自校验 (见 AssetAxis),
 // 下标恒定.
 
-// orders/YYYY/MM/YYYYMMDD<ext>: 一天的路径 ↔ 目录下全部日文件 (升序), 互逆.
-// 编码中的 .tmp 与放错位置的文件不认.
+// 一天的源与产物, 路径成对:
+//   archive/YYYY/YYYYMM/YYYYMMDD.rar   一天的源 (编码读)
+//   orders/YYYY/MM/YYYYMMDD.bin        一天的产物 (编码写, 特征读)
+// orders_days 是 orders_day_path 的逆: 目录下全部日文件 (升序), 编码中的 .tmp 与
+// 放错位置的文件不认.
+std::string archive_day_path(const std::string &dir, misc::Ymd date);
 std::string orders_day_path(const std::string &dir, misc::Ymd date);
 std::vector<misc::Ymd> orders_days(const std::string &dir);
 
 // 一个 (资产, 当天) 的帧在日文件里的位置 —— 日文件的目录项, 也是 OrdersCatalog
 // 的格子. 与 L2::Frame 对仗: 内存指针换成文件偏移, 再带上目录键.
 //
-// size 为 0 就是空: 在目录里是墓碑 (那天这个资产的源数据为空, 有结局没数据,
-// 其余字段皆 0), 在 OrdersCatalog 里还包括"没编过". 编出来的帧至少有一条逐笔
-// (空的走墓碑, 见 OrderEncoder::finish), 所以这个判据不会误伤.
+// 三态, 由 (size, offset) 判:
+//   帧    size > 0
+//   墓碑  size = 0, offset = 0         有结局没数据 (那天这个资产的源数据为空, 其余字段皆 0)
+//   缺席  size = 0, offset = kAbsent   没有结局 (没编过 / Corrupt / Invalid / 不在包里)
+// 目录里只有帧与墓碑; 缺席只出现在 OrdersCatalog 里 (默认构造即缺席). 编出来的帧
+// 至少有一条逐笔 (空的走墓碑, 见 OrderEncoder::finish), 所以 size 判据不会误伤.
 struct FrameRef {
-  uint64_t offset = 0;   // 帧在日文件中的字节偏移
-  uint32_t asset_id = 0; // A 轴下标 (== Asset::items 下标)
-  uint32_t size = 0;     // 帧字节数
-  L2::FrameHead head;    // 条数 + 档位基准, 同 L2::Frame::head
+  static constexpr uint64_t kAbsent = UINT64_MAX;
 
+  uint64_t offset = kAbsent; // 帧在日文件中的字节偏移
+  uint32_t asset_id = 0;     // A 轴下标 (== Asset::items 下标)
+  uint32_t size = 0;         // 帧字节数
+  L2::FrameHead head;        // 条数 + 档位基准, 同 L2::Frame::head
+
+  // 没有帧 (墓碑或缺席)
   bool empty() const {
     return size == 0;
+  }
+  // 有结局没数据
+  bool tombstone() const {
+    return size == 0 && offset == 0;
   }
 };
 static_assert(sizeof(FrameRef) == 24, "日文件目录项必须紧凑无填充");
@@ -130,27 +148,30 @@ struct DayIndex {
 
 // 一天的日文件读端.
 //
+// 构造即 open (同 DayWriter 构造即建 .tmp), 析构 close. 日文件必须存在 —— 调用方
+// 凭帧目录 / 增量新鲜度判定确认过才来读, 打不开直接 assert.
+//
 // 帧的位置/条数/档位基准都在 FrameRef 里, get 凭它 pread 一帧, 不再读任何头;
-// index 只在要账目或目录时才读 (头 + 尾部目录, 一次 open 两次 pread).
+// index 只在要账目或目录时才读 (头 + 尾部目录, 两次 pread).
 // 一个 reader 一个 fd, 多线程各持一个并发 pread, 无锁.
 class DayReader {
 public:
-  DayReader() = default;
+  DayReader(const std::string &dir, misc::Ymd date);
   ~DayReader();
 
   DayReader(const DayReader &) = delete;
   DayReader &operator=(const DayReader &) = delete;
 
-  // 文件不存在返回 false (那天从没编过). 与当前已开的是同一天则什么都不做.
-  bool open(const std::string &dir, misc::Ymd date);
-  void close();
+  misc::Ymd date() const {
+    return date_;
+  }
 
   // 存在但不自洽直接 assert —— 日文件只经 rename 整体落地, 不自洽只可能是盘坏或
   // 被外部改写.
   const DayIndex &index();
 
-  // 一帧 pread + 解码. 返回的逐笔在 dec 的缓冲里, 下一次 dec.decode 前有效.
-  // ref 不能是空的.
+  // 一帧 pread 进 dec 的帧缓冲 + 解码. 返回的逐笔在 dec 的缓冲里, 下一次
+  // dec.decode 前有效 (与本 reader 的寿命无关). ref 必须有帧.
   L2::FrameView get(const FrameRef &ref, L2::FrameDecoder &dec);
 
   // 整段读: refs 的帧按偏移排好, 首尾相接的并成一段 (≤ 16MB) 一次 pread, 逐段
@@ -163,12 +184,11 @@ public:
   size_t prefetch(std::span<const FrameRef> refs);
 
 private:
-  std::string dir_;
-  misc::Ymd date_ = 0;
-  int fd_ = -1;
+  misc::Ymd date_;
+  int fd_;
   bool indexed_ = false;
   DayIndex index_;
-  std::vector<char> buf_;
+  std::vector<char> buf_;       // 整段读的缓冲 (read_runs)
   std::vector<uint32_t> order_; // 按偏移排序的 refs 下标, 并段用
 };
 
@@ -215,7 +235,9 @@ private:
 // 密集 = 日数 × 资产数 × 24B ≈ 400MB, 定址 O(1). 每次扫描整体重建成一份新的,
 // 建好后只读, 以快照发布 (见 Asset::orders) —— 读者持有期间内容不变, 与重扫描
 // 并发安全. 一次重建是几百次读日文件头 + 目录, 百毫秒量级. 扫描之后新上市的
-// 资产 (AssetLoader 追加) 下标 ≥ width, at 对越界返回空格子.
+// 资产 (AssetLoader 追加) 下标 ≥ width, at 对越界返回缺席格子.
+//
+// 格子三态 (见 FrameRef): 帧 / 墓碑 / 缺席 —— 与编码器的结局同源, 覆盖统计直接读.
 struct OrdersCatalog {
   std::vector<misc::Ymd> days;    // 有日文件的天, 升序
   std::vector<DayRecord> records; // 每天的账目, 与 days 对齐
@@ -226,7 +248,7 @@ struct OrdersCatalog {
 
   OrdersCatalog() = default;
 
-  // 定形: 行 = days, 每行 width 格; 格子全空, 账目全零
+  // 定形: 行 = days, 每行 width 格; 格子全缺席, 账目全零
   OrdersCatalog(std::vector<misc::Ymd> days, size_t width);
 
   // 读第 didx 天的日文件账目 + 目录, 灌进那一行. 行与行不相交, 不同 didx 可并发.
@@ -235,7 +257,7 @@ struct OrdersCatalog {
   // 不存在返回 kNoDay (row / at 对它自然给空)
   size_t day_idx(misc::Ymd date) const;
 
-  // 切片: 行 = dates (升序; 本目录没有的天给空行), 列 = ids (A 轴下标, 越界给空格子).
+  // 切片: 行 = dates (升序; 本目录没有的天给缺席行), 列 = ids (A 轴下标, 越界给缺席格子).
   // 特征计算按 回测日 × universe 子轴 开算, worker 凭 (日期轴下标, 子轴下标) 直接定址.
   OrdersCatalog slice(std::span<const misc::Ymd> dates, std::span<const uint32_t> ids) const;
 
@@ -246,7 +268,7 @@ struct OrdersCatalog {
   }
 
   const FrameRef &at(size_t didx, size_t asset_id) const {
-    static constexpr FrameRef kEmpty{};
-    return didx < days.size() && asset_id < width ? frames[didx * width + asset_id] : kEmpty;
+    static constexpr FrameRef kAbsentCell{};
+    return didx < days.size() && asset_id < width ? frames[didx * width + asset_id] : kAbsentCell;
   }
 };

@@ -40,6 +40,11 @@ struct AssetItem {
   // 构造
   AssetItem() = default;
   AssetItem(size_t id, std::string code, std::string name, std::string exch, misc::Ymd start, misc::Ymd end);
+
+  // "000001.SZ": A 轴 / universe::Pool / 归档目录的键
+  std::string code_ex() const {
+    return asset_code + "." + exchange;
+  }
 };
 
 // ============================================================================
@@ -92,7 +97,7 @@ struct Asset {
   // 扫描时清空, 首次渲染时算一次.
   //
   // 缺口口径与 date_stats 完全一致 (同一次遍历产出): 分母是"本该有逐笔"的
-  // 交易日 —— 已上市未退市, 排除北交所与当日停牌. 不能拿帧目录当分母,
+  // 交易日 —— 已上市未退市, 排除北交所 / 当日停牌 / 墓碑. 不能拿帧目录当分母,
   // 它只有有日文件的天, 减出来的缺失恒为 0.
   static constexpr size_t kMissingSample = 10; // 每资产留几个缺失日期给 UI
 
@@ -230,7 +235,9 @@ struct Asset {
   // 分母 = 当日"本该有逐笔"的标的: 已上市未退市, 且排除
   //   - 北交所 (L2 archive 从不覆盖 .BJ)
   //   - 当日全天停牌 (suspended, 无逐笔可编码)
-  // 这两项不剔掉的话全市场完整性会被压到 ~94%, 掩盖真实缺口.
+  //   - 墓碑 (编码器判定当天源数据为空, 帧目录格子三态之一)
+  // 前两项不剔掉的话全市场完整性会被压到 ~94%, 掩盖真实缺口; 剔掉墓碑后缺失
+  // 只剩重跑增量能补回来的那部分.
   //
   // 全库帧目录只在这里遍历一趟 (按天段并行): 每资产 total_days /
   // total_orders, 全库与回测区间的条数/体积, encoded_assets.
@@ -248,16 +255,3 @@ private:
   mutable std::mutex orders_mutex_;
   std::shared_ptr<const OrdersCatalog> orders_ = std::make_shared<const OrdersCatalog>();
 };
-
-// ============================================================================
-// 工具函数
-// ============================================================================
-
-namespace Utils {
-// archive/YYYY/YYYYMM/YYYYMMDD<ext>
-inline std::string generate_archive_path(const std::string &base_dir, misc::Ymd date, const std::string &extension) {
-  const std::string d = misc::dense(date);
-  return base_dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + extension;
-}
-
-} // namespace Utils

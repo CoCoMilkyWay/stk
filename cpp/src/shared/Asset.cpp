@@ -513,7 +513,12 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
         if (k.delist_date && job.date >= k.delist_date)
           continue;
 
-        const bool has_orders = !cat->at(job.didx, i).empty();
+        // 墓碑 = 编码器判定当天源数据为空, 与基本面停牌同义: 不在分母里. 缺失因此
+        // 只剩缺席 (没编过 / Corrupt / Invalid), 即重跑增量能补回来的那部分.
+        const FrameRef &cell = cat->at(job.didx, i);
+        if (cell.tombstone())
+          continue;
+        const bool has_orders = !cell.empty();
 
         if (ds) {
           ds->total_assets++;

@@ -41,6 +41,8 @@ ImVec4 status_color(FundamentalStatus s) {
 
 // Shape × Snap × src → 抓法一词 (与 fetch 的取行方式一一对应)
 const char *fetch_name(const fundamental::Spec &s) {
+  if (s.shape == fundamental::Shape::Daily)
+    return "逐日";
   const bool month = s.shape == fundamental::Shape::Month;
   if (s.snap == fundamental::Snap::Day)
     return month ? "月初" : "快照";
@@ -528,7 +530,7 @@ void RenderTabOverview(
   text_wrapped_disabled(
       "增量键 = 因果安全可见日列, 水位按它记, 只拉该列大于水位的新行  |  "
       "抓法: 分区=date 分区裁剪, 条件=SQL WHERE 事件列, 月初=窗口内最早一天, "
-      "快照=窗口内最新一天, 整刷=无 date 全量  |  "
+      "快照=窗口内最新一天, 整刷=无 date 全量, 逐日=一交易日一文件 (分片=天数)  |  "
       "就绪 = 服务端当日数据完整的时点: 00:00 提前排程, 09:00 真盘前, "
       "10:00 盘前, 20:00 盘后批, 24:00 次日");
 

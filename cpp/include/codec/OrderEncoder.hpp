@@ -27,33 +27,29 @@ inline constexpr size_t kMemberCount = 3;
 // ============================================================================
 //
 // 纯 POD: 代码 / 交易所列不进结构 —— 沪深由 begin 一次定下, 逐行只校验代码列的
-// 后缀与之相符 (不符即坏行).
+// 后缀与之相符 (不符即坏行). 只收下游 (校验 / 转换) 真正读的列, 两结构同序排布.
 
 // Order data (逐笔委托)
 struct CSVOrder {
-  uint32_t date;
-  uint32_t time;
-  uint64_t order_id;          // Internal ID (for data validation)
-  uint64_t exchange_order_id; // Exchange ID (actual order ID)
-  char order_type;            // SSE: A=add, D=delete; SZSE: varies
-  char order_side;            // B=bid, S=ask
+  uint32_t time;              // HHMMSSmmm
   uint32_t price;             // in 0.01 RMB units
   uint32_t volume;            // in shares
+  char order_type;            // SSE: A=add, D=delete; SZSE: varies
+  char order_side;            // B=bid, S=ask
+  uint64_t exchange_order_id; // 本方委托号
 };
 
 // Trade data (逐笔成交)
 struct CSVTrade {
-  uint32_t date;
-  uint32_t time;
-  uint64_t trade_id;
-  char trade_code; // SZSE: 0=trade, C=cancel; SSE: unused
-  char dummy_code; // unused
-  char bs_flag;    // B=buy, S=sell, empty=cancel
-  uint32_t price;  // in 0.01 RMB units
-  uint32_t volume; // in shares
-  uint64_t ask_order_id;
-  uint64_t bid_order_id;
+  uint32_t time;         // HHMMSSmmm
+  uint32_t price;        // in 0.01 RMB units
+  uint32_t volume;       // in shares
+  char trade_code;       // SZSE: 0=trade, C=cancel; SSE: '0'
+  char bs_flag;          // B=buy, S=sell; 深市撤单 (源为空) 解析时按非零 id 侧补齐
+  uint64_t ask_order_id; // 卖方委托号
+  uint64_t bid_order_id; // 买方委托号
 };
+static_assert(sizeof(CSVOrder) == 24 && sizeof(CSVTrade) == 32, "CSV 中间结构必须紧凑");
 
 // Calculate max value from bitwidth
 constexpr uint64_t bitwidth_to_max(uint8_t bitwidth) {
@@ -172,8 +168,7 @@ private:
   // 这几个 vector 只 clear 不释放, 容量涨到峰值后就不再 malloc.
   std::vector<CSVOrder> csv_orders_;
   std::vector<CSVTrade> csv_trades_;
-  std::vector<Order> orders_;  // 转换产物, 源序 (委托在前, 成交在后)
-  std::vector<uint64_t> keys_; // 排序键: 时刻 (10ms) | 优先级 | orders_ 下标, 见 finish
+  std::vector<uint64_t> keys_; // 排序键: 时刻 (10ms) | 优先级 | 源序下标 (委托在前, 成交在后), 见 finish
   std::vector<Order> sorted_;  // 帧序, orders() 的产物
 
   // 当前资产的市场 (begin 定下): 深市 = true. 逐行代码列的后缀必须与之相符.

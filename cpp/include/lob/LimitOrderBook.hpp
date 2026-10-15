@@ -62,7 +62,7 @@ public:
     init_sentinel_levels();
   }
 
-  // 生命周期 (成对): bind → begin_day → { begin_frame → process_batch | process… } → end_day → unbind
+  // 生命周期 (成对): bind → begin_day → run_frame → end_day → unbind
   //   GUI 重放无特征侧: bind(sink) → begin_frame → process… → unbind
   // 换绑资产. 前置条件: 未绑定 (刚构造或已 unbind(), 簿因此是干净的).
   // 每单内部的时序编排 (update_depth → 特征 → update_lob) 是本类的不变量,
@@ -162,8 +162,9 @@ public:
     return process_impl(order);
   }
 
-  // 整帧喂入 (回测: process_impl 内联进循环), 返回无效条数. begin_frame 的后半.
-  HOT_INLINE size_t process_batch(const L2::FrameView &view) {
+  // 整帧喂入 (回测): begin_frame + process_impl 内联进循环, 返回无效条数.
+  HOT_INLINE size_t run_frame(const L2::FrameView &view) {
+    begin_frame(view);
     size_t invalid_count = 0;
     for (size_t i = 0; i < view.head.count; ++i) {
       if (!process_impl(view.orders[i])) [[unlikely]] {
@@ -190,8 +191,8 @@ public:
     order_table_.reserve(events);
   }
 
-  // 一帧 (解码产物) 的前置: 档位基准 + 委托表定长. 帧里的逐笔随后经
-  // process_batch(view) 整帧或 process 逐条喂入 —— FrameDecoder::decode 的对端.
+  // 一帧 (解码产物) 的前置: 档位基准 + 委托表定长. 帧里的逐笔随后经 process 逐条
+  // 喂入 (重放); 回测走 run_frame 整帧. FrameDecoder::decode 的对端.
   void begin_frame(const L2::FrameView &view) {
     set_price_base(view.head.price_base);
     reserve_orders(view.head.count);

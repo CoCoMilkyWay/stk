@@ -15,7 +15,7 @@
 #include <vector>
 
 // ============================================================================
-// Store — 本地数据集 output/fundamental/{YYYY-MM, _meta}/<name>.parquet
+// Store — 本地数据集 output/fundamental/{YYYY-MM, _meta}/<name>.parquet + <name>/YYYY-MM/YYYY-MM-DD.parquet (Daily)
 //
 // Catalog: 一次目录遍历的本地清单 (表名 → 分片). sync / audit / 构建 / Overview 全只读它.
 // read / put: 本地唯一读点 / 唯一写点 (路径只在 Store 内拼).
@@ -36,6 +36,9 @@
 //   Meta:
 //     Missing  无文件 / Stale 不新鲜 → 整刷; Frozen 新鲜 → 不动
 //     新鲜 = vd 空: 写盘日 == today; 否则: mark ≥ horizon
+//   Daily (槽位 = all_trading_days 里 [start, horizon] 的交易日; 日历未入盘 → 无槽):
+//     Missing  无文件                                        → 拉该日, 覆盖
+//     Frozen   有文件                                        → 不动 (avail_hour=24 ⇒ 只拉到昨天, 落盘即整日)
 //   (右列动作 = todo; dedup 节流在 sync::plan)
 //
 // 配额按返回 cell 数计 ⇒ 增量稳态下每表每天只为新增的一天数据付费一次;
@@ -58,16 +61,19 @@ struct Shard {
   std::filesystem::path path;
   std::uint64_t bytes = 0;
   std::filesystem::file_time_type mtime{};
+  Ymd day = 0; // Daily: 该日; 其余 0
 };
 
 class Catalog {
 public:
   Catalog(); // 遍历 output/fundamental 一次 (目录缺失 → assert)
 
-  // name 的全部分片, ym 升序 (_meta 片 ym = 0 排最前); 无 → 空
+  // name 的全部分片, (ym, day) 升序 (_meta 片 ym = 0 排最前); 无 → 空
   const std::vector<Shard> &shards(std::string_view name) const;
   // Month: m 那一片; Meta: m = 0; 无 → nullptr
   const Shard *find(std::string_view name, Ym m) const;
+  // Daily: d 那一片; 无 → nullptr
+  const Shard *find_day(std::string_view name, Ymd d) const;
   // 含目录里不在 SPECS 的历史遗留表
   const std::map<std::string, std::vector<Shard>, std::less<>> &all() const { return by_name_; }
 
@@ -81,7 +87,8 @@ enum class State { Missing,
                    Frozen };
 
 // 一个分片槽 = 槽位 × 盘上分片 × 状态 × 整段窗口 (Shard 是盘上有什么, Slot 是该有什么)
-//   w: Meta = [start, horizon] (vd 空 → {0, 0}); Month = [max(月初, start), 关月 ? 月末 : min(月末, horizon)]
+//   w: Meta = [start, horizon] (vd 空 → {0, 0}); Month = [max(月初, start), 关月 ? 月末 : min(月末, horizon)];
+//      Daily = [该日, 该日] (ym = 该日所属月)
 struct Slot {
   Ym ym = 0;                 // 0 = _meta
   const Shard *sh = nullptr; // 指向 Catalog; nullptr = 盘上没有 (Missing)
@@ -89,7 +96,7 @@ struct Slot {
   Window w;
 };
 
-// s 的全部槽位: Meta = {0}; Month = [ym(PIPELINE_START_DATE), ym(today)] 升序
+// s 的全部槽位: Meta = {0}; Month = [ym(PIPELINE_START_DATE), ym(today)] 升序; Daily = 交易日升序
 std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now);
 
 // ledger 中 Frozen 的 Month 槽 (ym 升序) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
@@ -109,6 +116,7 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
 // 本地唯一写点: 按 t.how 落 t.ym 分片 (见 Write)
 //   Splice: 分片须已存在; tbl 的 vd 须全在 t.days 里, 追加在保留段之后;
 //           列按名合并 (某侧全 null 的 NA 列 / 缺列提升为另一侧类型)
+//   Daily: 落 w.lo 那日的文件; 0 行 → assert (交易日远端未入库, 落盘即冻结不可留空文件)
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
 
 // 外来写者的分片 (远端 pyarrow / 换版前的本库, 见 misc::pq::foreign_writer) 以本库原样重写; 本库写的 → 不动.

@@ -14,6 +14,7 @@
 #include <array>
 #include <cassert>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -156,24 +157,23 @@ void encoding_producer(SharedData &data,
     TraceN("ProducerDay");
     TraceTextS(misc::dense(date).c_str());
 
-    const std::string archive_path = Utils::generate_archive_path(
-        data.config.archive_dir, date, config::ARCHIVE_EXTENSION);
+    const std::string archive_path = archive_day_path(data.config.archive_dir, date);
 
     const std::string &orders_dir = data.config.orders_dir;
-    bool prev_fresh = skip_existing && day_file_fresh(orders_dir, archive_path, date);
 
-    // 上一轮的日文件 (见 shared/OrdersDay.hpp). 三处用它: 整天快路径看
-    // complete, 下面的逐资产过滤看目录里的帧与墓碑, 新日文件从它 adopt 旧帧.
-    DayReader prev;
-    if (prev_fresh)
-      prev_fresh = prev.open(orders_dir, date);
+    // 上一轮的日文件 (见 shared/OrdersDay.hpp), 新鲜才认 (新鲜 ⇒ 存在). 三处用它:
+    // 整天快路径看 complete, 下面的逐资产过滤看目录里的帧与墓碑, 新日文件从它
+    // adopt 旧帧.
+    std::optional<DayReader> prev;
+    if (skip_existing && day_file_fresh(orders_dir, archive_path, date))
+      prev.emplace(orders_dir, date);
 
     // 整天快路径 — 必须在列举之前: 下面那次 unrar l 要在机械盘上走完整条包头
     // 链 (实测 0.2~2.5s), 光"确认无事可做"就是几秒一天.
     //
     // 出错的天同样会留下日文件 (供界面按日拆解原因), 所以判据是 complete 项
     // 而不是文件在不在 —— 只有整天齐备才能跳过.
-    if (prev_fresh && prev.index().rec.complete) {
+    if (prev && prev->index().rec.complete) {
       stats.days_skipped.fetch_add(1);
       if (progress)
         progress->bump_summary(1, false); // 秒回的一天, 不参与 ETA 速率
@@ -225,10 +225,10 @@ void encoding_producer(SharedData &data,
 
       ++day.rec.total;
 
-      if (prev_fresh) {
-        if (const FrameRef *old = prev.index().find(asset_id)) {
+      if (prev) {
+        if (const FrameRef *old = prev->index().find(asset_id)) {
           stats.pairs_skipped.fetch_add(1);
-          day.settle(old->empty() ? L2::Outcome::Tombstone : L2::Outcome::Ok, 0, *old);
+          day.settle(old->tombstone() ? L2::Outcome::Tombstone : L2::Outcome::Ok, 0, *old);
           continue;
         }
       }
@@ -261,8 +261,9 @@ void encoding_producer(SharedData &data,
     // 偏移), worker 再往后追加新编的帧.
     auto job = std::make_shared<DayJob>(orders_dir, date);
     job->index = std::move(day);
-    job->writer.adopt(prev, job->index.refs);
-    prev.close();
+    if (prev)
+      job->writer.adopt(*prev, job->index.refs);
+    prev.reset();
 
     if (tasks.empty()) {
       // 包里没活 (旧日文件不齐备, 但缺的那些这回不在包里了) 也是完成了一天 —
@@ -391,8 +392,7 @@ struct BatchPlan {
       const EncodeTask &task = batch.tasks[slot.task_idx];
       const AssetItem &asset = data.asset.items[task.asset_id];
       // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
-      const std::string asset_full =
-          config::archive_code(asset.asset_code + "." + asset.exchange, batch.date);
+      const std::string asset_full = config::archive_code(asset.code_ex(), batch.date);
       const size_t m = static_cast<size_t>(slot.member);
       ReadPlan &plan = plans[plan_of_[slot.task_idx]];
       plan.paths.push_back(misc::dense(batch.date) + "/" + asset_full + "/" + *files[m]);
@@ -421,7 +421,7 @@ private:
   std::vector<size_t> plan_of_;                      // 批内下标 → 计划下标
 };
 
-// 天粒度账本记一笔结局 (DayIndex::settle). 当天最后一笔 → rec.complete 定案,
+// 天粒度账本记一笔结局 (DayIndex::settle), 本轮总账 (EncodeStats::run) 同一笔. 当天最后一笔 → rec.complete 定案,
 // 出账本, 返回该天 (调用方锁外 commit); 否则返回空. 没留下结局的 ⇒
 // rec.complete = 0, 下次增量必须重新列举补齐.
 std::shared_ptr<DayJob> settle_in_day(EncodeStats &stats, const EncodeBatch &batch, misc::ProgressHandle &progress_handle,
@@ -429,6 +429,7 @@ std::shared_ptr<DayJob> settle_in_day(EncodeStats &stats, const EncodeBatch &bat
   std::lock_guard<std::mutex> lock(stats.days_mutex);
   DayJob &job = *batch.day;
   job.index.settle(outcome, check_flags, ref);
+  stats.run.tally(outcome, check_flags);
 
   std::shared_ptr<DayJob> finished;
   if (++job.done == job.total) {
@@ -503,7 +504,6 @@ void encoding_worker(SharedData &data,
       retired[task_idx] = 1;
       ++done_in_batch;
       progress_handle.update(done_in_batch, batch.tasks.size(), std::to_string(batch.date));
-      stats.outcomes[static_cast<size_t>(outcome)].fetch_add(1);
 
       const std::shared_ptr<DayJob> finished = settle_in_day(stats, batch, progress_handle, outcome, check_flags, ref);
       // 出错的天照样 commit —— complete=0 让增量重来 (已有结局的帧那时原样
@@ -522,8 +522,7 @@ void encoding_worker(SharedData &data,
 
       uint32_t check_flags = 0;
       FrameRef ref{};
-      const L2::Outcome outcome =
-          encoder.finish(std::to_string(batch.date) + " " + asset.asset_code + "." + asset.exchange);
+      const L2::Outcome outcome = encoder.finish(std::to_string(batch.date) + " " + asset.code_ex());
       switch (outcome) {
       case L2::Outcome::Ok:
         ref = batch.day->writer.put(task.asset_id, framer, encoder.orders());
@@ -567,7 +566,7 @@ void encoding_worker(SharedData &data,
             }
             if (!fed_any) {
               const AssetItem &asset = data.asset.items[batch.tasks[slot.task_idx].asset_id];
-              encoder.begin(asset.asset_code + "." + asset.exchange);
+              encoder.begin(asset.code_ex());
               progress_handle.set_label(asset.asset_code + " " + asset.asset_name);
               fed_any = true;
             }

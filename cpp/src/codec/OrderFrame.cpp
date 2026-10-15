@@ -58,6 +58,12 @@ FrameDecoder::~FrameDecoder() {
   ZSTD_freeDCtx(ctx_);
 }
 
+char *FrameDecoder::frame_buffer(size_t size) {
+  if (frame_.size() < size)
+    frame_.resize(size);
+  return frame_.data();
+}
+
 FrameView FrameDecoder::decode(const Frame &frame) {
   assert(frame.size > 0 && frame.head.count > 0 && "decode: 墓碑没有帧");
   const size_t raw_size = size_t(frame.head.count) * sizeof(Order);

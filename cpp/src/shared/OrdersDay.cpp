@@ -29,6 +29,11 @@ constexpr size_t kRunCap = size_t(16) << 20;
 // 路径
 // ============================================================================
 
+std::string archive_day_path(const std::string &dir, misc::Ymd date) {
+  const std::string d = misc::dense(date);
+  return dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + config::ARCHIVE_EXTENSION;
+}
+
 std::string orders_day_path(const std::string &dir, misc::Ymd date) {
   const std::string d = misc::dense(date);
   return dir + "/" + d.substr(0, 4) + "/" + d.substr(4, 2) + "/" + d + config::BINARY_EXTENSION;
@@ -107,33 +112,16 @@ const FrameRef *DayIndex::find(size_t asset_id) const {
 // DayReader
 // ============================================================================
 
+DayReader::DayReader(const std::string &dir, misc::Ymd date)
+    : date_(date), fd_(file_open_read(orders_day_path(dir, date).c_str())) {
+  assert(fd_ >= 0 && "日文件打不开 (登记过却不存在: 扫描 / 增量判定之后有人在动 orders?)");
+}
+
 DayReader::~DayReader() {
-  close();
-}
-
-bool DayReader::open(const std::string &dir, misc::Ymd date) {
-  if (fd_ >= 0 && date == date_ && dir == dir_)
-    return true;
-  close();
-  fd_ = file_open_read(orders_day_path(dir, date).c_str());
-  if (fd_ < 0)
-    return false;
-  dir_ = dir;
-  date_ = date;
-  return true;
-}
-
-void DayReader::close() {
-  if (fd_ >= 0)
-    file_close(fd_);
-  fd_ = -1;
-  dir_.clear();
-  date_ = 0;
-  indexed_ = false;
+  file_close(fd_);
 }
 
 const DayIndex &DayReader::index() {
-  assert(fd_ >= 0 && "DayReader::index: 未 open");
   if (indexed_)
     return index_;
 
@@ -162,14 +150,12 @@ const DayIndex &DayReader::index() {
 }
 
 L2::FrameView DayReader::get(const FrameRef &ref, L2::FrameDecoder &dec) {
-  assert(fd_ >= 0 && "DayReader::get: 未 open");
   assert(!ref.empty() && "DayReader::get: 空格子没有帧");
-  if (buf_.size() < ref.size)
-    buf_.resize(ref.size);
-  const size_t got = file_pread(fd_, buf_.data(), ref.size, ref.offset);
+  char *const bytes = dec.frame_buffer(ref.size);
+  const size_t got = file_pread(fd_, bytes, ref.size, ref.offset);
   assert(got == ref.size && "DayReader::get: 帧越过日文件末尾 (目录与文件不符)");
   (void)got;
-  return dec.decode({buf_.data(), ref.size, ref.head});
+  return dec.decode({bytes, ref.size, ref.head});
 }
 
 // refs 在回调里可以被改 (adopt 就地改写偏移): 段的划分只读尚未回调过的项.
@@ -182,7 +168,6 @@ void DayReader::read_runs(std::span<const FrameRef> refs, const RunFn &fn) {
             [&refs](uint32_t a, uint32_t b) { return refs[a].offset < refs[b].offset; });
 
   for (size_t i = 0; i < order_.size();) {
-    assert(fd_ >= 0 && "DayReader::read_runs: 有帧要读但未 open");
     const uint64_t begin = refs[order_[i]].offset;
     uint64_t end = begin + refs[order_[i]].size;
     size_t j = i + 1;
@@ -293,16 +278,11 @@ OrdersCatalog::OrdersCatalog(std::vector<misc::Ymd> days_, size_t width_)
 
 void OrdersCatalog::fill_day(size_t didx, const std::string &dir) {
   assert(didx < days.size() && "OrdersCatalog::fill_day: 行越界");
-  DayReader reader;
-  const bool found = reader.open(dir, days[didx]);
-  assert(found && "日文件在列举与 open 之间消失 (扫描期间有人在动 orders?)");
-  (void)found;
+  DayReader reader(dir, days[didx]);
   const DayIndex &index = reader.index();
   records[didx] = index.rec;
   FrameRef *row = frames.data() + didx * width;
-  for (const FrameRef &ref : index.refs) {
-    if (ref.empty())
-      continue;
+  for (const FrameRef &ref : index.refs) { // 帧与墓碑都进格子; 目录里没有的保持缺席
     assert(ref.asset_id < width && "日文件目录里的 A 轴下标超出帧目录宽度");
     row[ref.asset_id] = ref;
   }
@@ -315,7 +295,7 @@ size_t OrdersCatalog::day_idx(misc::Ymd date) const {
 
 OrdersCatalog OrdersCatalog::slice(std::span<const misc::Ymd> dates_, std::span<const uint32_t> ids) const {
   assert(std::is_sorted(dates_.begin(), dates_.end()) && "OrdersCatalog::slice: 日期须升序");
-  OrdersCatalog out({dates_.begin(), dates_.end()}, ids.size());
+  OrdersCatalog out(std::vector<misc::Ymd>(dates_.begin(), dates_.end()), ids.size());
   for (size_t d = 0; d < out.days.size(); ++d) {
     const size_t src = day_idx(out.days[d]);
     if (src == kNoDay)

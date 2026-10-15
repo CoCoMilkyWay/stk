@@ -117,7 +117,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
 
     // 源损坏的都被跳过留在了日志里 (从不 abort): 醒目提示一下, 修完源文件
     // 直接重跑增量即可 —— 这些 (资产, 日期) 既没有产物也没有完成标记.
-    const size_t pairs_corrupt = stats.outcomes[size_t(L2::Outcome::Corrupt)].load();
+    const size_t pairs_corrupt = stats.run.count(L2::Outcome::Corrupt);
     const size_t days_corrupt = stats.days_corrupt.load();
     if (pairs_corrupt > 0 || days_corrupt > 0) {
       std::cout << "CORRUPT SOURCE: " << pairs_corrupt << " (asset, date) pairs + " << days_corrupt
@@ -128,7 +128,7 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
 
     // 准入校验未过的同理: 逐笔流本身缺片 (见 codec/L2_Validator.hpp), 数据源
     // 侧的问题, 编码器无从修复. 核查/换源之后重跑增量即可.
-    const size_t pairs_invalid = stats.outcomes[size_t(L2::Outcome::Invalid)].load();
+    const size_t pairs_invalid = stats.run.count(L2::Outcome::Invalid);
     if (pairs_invalid > 0) {
       std::cout << "INVALID DATA: " << pairs_invalid << " (asset, date) pairs failed validation — grep '[INVALID' in "
                 << data_.config.log_dir << "/encoding.log, check source, then re-run incremental\n"
