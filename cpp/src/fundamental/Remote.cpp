@@ -10,22 +10,15 @@ namespace fundamental {
 
 namespace {
 
-std::string quoted(Ymd d) { return "'" + misc::dash(d) + "'"; }
-
-// Splice 的按日谓词 (日键与 audit 指纹组键同形)
-std::string in_days(const Spec &s, const std::vector<Ymd> &days) {
-  std::string in;
-  for (Ymd d : days)
-    in += (in.empty() ? "" : ", ") + quoted(d);
-  return " AND strftime(" + ident(s.vd) + ", '%Y-%m-%d') IN (" + in + ")";
-}
+std::string literal(std::string_view v) { return "'" + std::string(v) + "'"; }
+std::string literal(Ymd d) { return literal(misc::dash(d)); }
 
 std::vector<bigquant::Query> queries(const Spec &s, const Bq &, const Task &t) {
-  return {select(s, "*", t.w, t.how == Write::Splice ? in_days(s, t.days) : "")};
+  return {select(s, "*", t.w, t.how == Write::Splice ? key_filter(s, t.keys) : "")};
 }
 
 std::vector<tushare::Query> queries(const Spec &, const Tu &src, const Task &t) {
-  assert(t.how != Write::Splice && "fetch: Tushare 无按日修补");
+  assert(t.how != Write::Splice && "fetch: Tushare 无精确修补");
   std::vector<tushare::Query> out;
   if (src.day_params.empty()) {
     out.push_back({src.api, {{"start_date", misc::dense(t.w.lo)}, {"end_date", misc::dense(t.w.hi)}}, src.num});
@@ -55,10 +48,11 @@ template <class Src>
 std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Task &t) {
   const Spec &s = *t.spec;
   assert(from<Src>(s) && "fetch: 表与 client 的数据源不符");
-  assert((t.how == Write::Replace || s.snap == Snap::All) && "fetch: Snap::Day 表只整段 Replace (MIN / MAX 须看整窗)");
-  assert((t.how != Write::Splice ||
-          (!t.days.empty() && t.w.lo == t.days.front() && t.w.hi == t.days.back())) &&
-         "fetch: Splice 的窗口须 = [首日, 末日]");
+  assert((t.how != Write::Append || s.snap == Snap::All) && "fetch: Snap::Day 表无水位增量 (MIN / MAX 须看整窗)");
+  assert((t.how != Write::Splice || !t.keys.empty()) && "fetch: Splice 的 keys 为空");
+  for ([[maybe_unused]] const std::string &k : t.keys)
+    assert(grain_of(k) != Grain::Month && key_day(k) >= t.w.lo && key_day(k) <= t.w.hi &&
+           "fetch: Splice 键须为 Day / Asset 级且在窗口内");
   std::vector<std::shared_ptr<arrow::Table>> parts;
   for (const auto &q : queries(s, std::get<Src>(s.src), t))
     parts.push_back(client.query(q));
@@ -73,6 +67,37 @@ template std::shared_ptr<arrow::Table> fetch<Tu>(tushare::Client &, const Task &
 
 std::string ident(std::string_view c) { return "\"" + std::string(c) + "\""; }
 
+std::string group_expr(const Spec &s, Grain g) {
+  assert(!s.vd.empty() && "group_expr: vd 空的表无组键");
+  const std::string day = "strftime(" + ident(s.vd) + ", '%Y-%m-%d')";
+  switch (g) {
+  case Grain::Month:
+    return "strftime(" + ident(s.vd) + ", '%Y-%m')";
+  case Grain::Day:
+    return day;
+  case Grain::Asset:
+    return day + " || '|' || " + ident(key_col(s));
+  }
+  assert(false && "group_expr: 未知粒度");
+  return {};
+}
+
+std::string key_filter(const Spec &s, const std::vector<std::string> &keys) {
+  assert(!keys.empty() && "key_filter: keys 为空");
+  std::string in[3];
+  for (const std::string &k : keys) {
+    std::string &v = in[static_cast<int>(grain_of(k))];
+    v += (v.empty() ? "" : ", ") + literal(k);
+  }
+  std::string any;
+  for (const Grain g : {Grain::Month, Grain::Day, Grain::Asset}) {
+    const std::string &v = in[static_cast<int>(g)];
+    if (!v.empty())
+      any += (any.empty() ? "" : " OR ") + group_expr(s, g) + " IN (" + v + ")";
+  }
+  return " AND (" + any + ")";
+}
+
 bigquant::Query select(const Spec &s, std::string_view cols, Window w, std::string_view tail) {
   assert(from<Bq>(s) && "select: 表不来自 BigQuant");
   const std::string &table = std::get<Bq>(s.src).table.empty() ? s.name : std::get<Bq>(s.src).table;
@@ -86,7 +111,7 @@ bigquant::Query select(const Spec &s, std::string_view cols, Window w, std::stri
   // Daily 的 vd 是分钟时间戳, "<= 'hi'" 只到 hi 当日 00:00 ⇒ 半开 [lo, hi + 1) (分区 filters 同放宽到次日)
   const bool minute = s.shape == Shape::Daily;
   const Ymd end = minute ? misc::add_days(w.hi, 1) : w.hi;
-  const std::string rng = vd + " >= " + quoted(w.lo) + " AND " + vd + (minute ? " < " : " <= ") + quoted(end);
+  const std::string rng = vd + " >= " + literal(w.lo) + " AND " + vd + (minute ? " < " : " <= ") + literal(end);
   sql += " WHERE " + rng;
   if (s.snap == Snap::Day) {
     const bool month = s.shape == Shape::Month;

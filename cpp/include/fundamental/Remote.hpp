@@ -8,14 +8,15 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fundamental {
 
 // ============================================================================
 // Remote — Task → 远端查询 → Table (Store::put 的对偶上游). 两源同骨架, 按 Src 分派:
 //   queries(s, src, t)    : Task → Query 列表 (纯函数, .cpp 内)
-//                           Bq 恒 1 条 (= select(s, "*", t.w); Splice 另接 " AND strftime(vd) IN (days)",
-//                              日键与 audit 指纹组键同形); Tu 区间接口 1 条 / 逐日接口窗口内逐日 × day_params
+//                           Bq 恒 1 条 (= select(s, "*", t.w); Splice 另接 key_filter(s, t.keys),
+//                              与 audit 定位同一谓词); Tu 区间接口 1 条 / 逐日接口窗口内逐日 × day_params
 //   fetch<Src>(client, t) : 逐条 query → 按序拼接 → 剥 Spec::drop
 //   sync::run 因而只有一句 put(t, fetch<Src>(client, t)).
 // ============================================================================
@@ -25,9 +26,9 @@ std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Task &t)
 // ============================================================================
 // DAI SQL 唯一构造点 — fetch 与 Audit 只差 SELECT 什么、尾部接什么:
 //   fetch  = select(s, "*", t.w)
-//   Splice = select(s, "*", [首日, 末日], " AND strftime(vd) IN (..)")
+//   Splice = select(s, "*", 槽整窗, key_filter(s, keys))
 //   schema = select(s, "*", w, " LIMIT 0")
-//   指纹   = select(s, "strftime(..) AS g, ..", w, " GROUP BY 1")
+//   指纹   = select(s, group_expr(g) AS g, .., w, [key_filter(s, 父键)] GROUP BY 1)
 //
 // 窗口谓词: vd ∈ [w.lo, w.hi]; Shape::Daily (vd 为分钟时间戳) 为 [w.lo, w.hi + 1);
 //   Snap::Day 再只留每个分片窗口内 MIN (Month, 子查询按月分组) / MAX (Meta, 整窗) 那天.
@@ -40,5 +41,12 @@ bigquant::Query select(const Spec &s, std::string_view cols, Window w, std::stri
 
 // SQL 标识符加双引号 (select 与 Audit 指纹列共用)
 std::string ident(std::string_view c);
+
+// g 级组键的 SQL 表达式 (与本地 group_key 逐字同形; Asset = 日 || '|' || 资产键列)
+std::string group_expr(const Spec &s, Grain g);
+
+// " AND (组键 ∈ keys)": keys 按粒度分组, 各组 group_expr IN (..) 以 OR 相连 (keys 空 → assert).
+//   audit 定位 (父键收窄) 与 Splice 修复 (替换键) 共用 —— 定位到哪些行, 就只拉哪些行
+std::string key_filter(const Spec &s, const std::vector<std::string> &keys);
 
 } // namespace fundamental

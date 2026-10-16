@@ -35,7 +35,7 @@
 //                                                             Snap::Day 且 W > 0 → 月初快照已入盘, 不动
 //   Meta:
 //     Missing  无文件 / Stale 不新鲜 → 整刷; Frozen 新鲜 → 不动
-//     新鲜 = vd 空: 写盘日 == today; 否则: mark ≥ horizon
+//     新鲜 = vd 空: 写盘时刻 ≥ horizon 日 avail_hour 点 (当日新股随其他表同点入盘); 否则: mark ≥ horizon
 //   Daily (槽位 = all_trading_days 里 [start, horizon] 的交易日; 日历未入盘 → 无槽):
 //     Missing  无文件                                        → 拉该日, 覆盖
 //     Frozen   有文件                                        → 不动 (avail_hour=24 ⇒ 只拉到昨天, 落盘即整日)
@@ -114,8 +114,9 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
                                    const std::vector<std::string> &dict = {});
 
 // 本地唯一写点: 按 t.how 落 t.ym 分片 (见 Write)
-//   Splice: 分片须已存在; tbl 的 vd 须全在 t.days 里, 追加在保留段之后;
-//           列按名合并 (某侧全 null 的 NA 列 / 缺列提升为另一侧类型)
+//   Splice: 分片须已存在; 组键 ∈ t.keys 的旧行换成 tbl (tbl 每行须命中 t.keys);
+//           新行插回所属日的行块 (布局同整拉的 "按日成块"); 列序 / 列型同旧分片
+//           (全 null 的 NA 列按新行提升), 新行带新列 → assert
 //   Daily: 落 w.lo 那日的文件; 0 行 → assert (交易日远端未入库, 落盘即冻结不可留空文件)
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
 

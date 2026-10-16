@@ -102,25 +102,38 @@ struct Window {
   Ymd lo = 0, hi = 0;
 };
 
+// 组键粒度 (audit 逐级定位 ↔ Splice 替换键, 同一键形):
+//   Month "YYYY-MM" ⊃ Day "YYYY-MM-DD" ⊃ Asset "YYYY-MM-DD|<资产键>" —— 父键 = 子键前缀
+//   远端 SQL 表达式 = Remote::group_expr, 本地 = group_key, 两侧逐字同形
+enum class Grain { Month,
+                   Day,
+                   Asset };
+
+// 行 (vd = d, 资产键 = asset) 在 g 级的组键; Asset 级 asset 空 → assert
+std::string group_key(Grain g, Ymd d, std::string_view asset = {});
+// 组键 → 粒度 / 所属日 (Month 键 → 0) / 所属月; 形不符 → assert
+Grain grain_of(std::string_view key);
+Ymd key_day(std::string_view key);
+Ym key_ym(std::string_view key);
+
 // 落盘方式 (单文件 tmp+rename 原子; 0 行也落文件 = 拉过)
 //   Replace: 覆盖整个分片
 //   Append : 追加在末尾 (水位增量)
-//   Splice : 分片里 vd ∈ days 的行换成新行, 其余天原样 (按日修补)
+//   Splice : 分片里组键 ∈ keys 的行换成新行, 其余行原样 (精确修补)
 enum class Write { Replace,
                    Append,
                    Splice };
 
 // 一次抓取 = 表 × 分片 × 窗口 × 写法; sync::run = put(t, fetch(client, t))
-//   Append: w.lo 已抬到水位 + 1
-//   Splice: days 升序非空, w = [首日, 末日], 同属 ym 分片; 仅 Bq
-//   Snap::Day 表只 Replace (MIN / MAX 须看整窗)
+//   Append: w.lo 已抬到水位 + 1; Snap::Day 表无 Append (快照须看整窗)
+//   Splice: keys 升序去重非空, Day / Asset 级, 同属 ym 分片; w = 槽整窗 (Snap::Day 的 MIN 子查询照看整窗); 仅 Bq
 //   Shape::Daily: w = [该日, 该日], ym = 该日所属月, 只 Replace
 struct Task {
   const Spec *spec = nullptr; // 指向 SPECS 的一行
   Ym ym = 0;                  // 0 = _meta
   Window w;
   Write how = Write::Replace;
-  std::vector<Ymd> days = {}; // 仅 Splice
+  std::vector<std::string> keys = {}; // 仅 Splice
 };
 
 extern const std::vector<Spec> SPECS;

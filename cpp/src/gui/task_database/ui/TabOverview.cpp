@@ -156,14 +156,14 @@ void audit_cells(const std::string &name, const AuditTableStat *a, const AuditVi
       *audit_table = name;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("只核这张表的全部冻结月 (两轮), 覆盖该表状态; 不改盘\n"
+      ImGui::SetTooltip("只核这张表的全部冻结月 (月扫描 + 逐级定位), 覆盖该表状态; 不改盘\n"
                         "同步 / 核对 / 修复进行中或未开联网不可用");
     ImGui::SameLine();
-    const std::size_t done = std::min(a->rows_months, a->content_months);
-    ImGui::TextColored(done >= a->frozen_months ? kOk : kWarn, "%zu/%zu", done, a->frozen_months);
+    ImGui::TextColored(a->audited_months >= a->frozen_months ? kOk : kWarn, "%zu/%zu", a->audited_months,
+                       a->frozen_months);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("已核 rows %zu / content %zu / 冻结 %zu 月\n最近核对 %s", a->rows_months,
-                        a->content_months, a->frozen_months, a->audited() ? a->updated.c_str() : "-");
+      ImGui::SetTooltip("已核 %zu / 冻结 %zu 月\n最近核对 %s", a->audited_months, a->frozen_months,
+                        a->audited() ? a->updated.c_str() : "-");
   }
   if (!a->audited()) {
     dash_cells(4);
@@ -192,7 +192,7 @@ void audit_cells(const std::string &name, const AuditTableStat *a, const AuditVi
       *repair_table = name;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("只重拉有差异的 %zu 天 (涉及 %zu 月, 其中 %zu 月须整月: 月初快照表 / 只定位到月)\n"
+      ImGui::SetTooltip("只重拉定位到的组 (%zu 天, 涉及 %zu 月, 其中 %zu 月只定位到月须整月)\n"
                         "→ 只复核这些月 → 重建 AssetInfo\n"
                         "不可取消; 同步 / 核对 / 修复进行中或未开联网不可用",
                         a->bad_days, a->bad_months, a->whole_months);
@@ -200,7 +200,7 @@ void audit_cells(const std::string &name, const AuditTableStat *a, const AuditVi
   }
   text_cells(a->repair_cells, weekly);
   if (a->repair_cells > 0 && ImGui::IsItemHovered())
-    ImGui::SetTooltip("有差异的日: 远端行 × 列; 整月 %zu 月: 整月远端行 × 列", a->whole_months);
+    ImGui::SetTooltip("每个定位组 (日 / 资产): 远端行 × 列; 整月 %zu 月: 整月远端行 × 列", a->whole_months);
 
   ImGui::TableNextColumn();
   text_cells(a->full_cells, weekly);
@@ -300,11 +300,9 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
   ImGui::Spacing();
   ImGui::SeparatorText("Audit (BigQuant 远端 vs 本地冻结月)");
 
-  std::size_t pend_rows = 0, pend_content = 0; // 未核的 (表·月) 逐轮
-  for (const AuditTableStat &t : a.tables) {
-    pend_rows += t.frozen_months - std::min(t.rows_months, t.frozen_months);
-    pend_content += t.frozen_months - std::min(t.content_months, t.frozen_months);
-  }
+  std::size_t pend = 0; // 未核的 表·月
+  for (const AuditTableStat &t : a.tables)
+    pend += t.frozen_months - std::min(t.audited_months, t.frozen_months);
 
   if (v.active && a.op == AuditOp::Audit) {
     if (ImGui::Button("Cancel audit", ImVec2(220.0f, 0.0f)))
@@ -315,22 +313,21 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
       *audit_clicked = true;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("全部表全部冻结月, 两轮全部重核\n"
-                        "两轮: 先逐月行数 (补录 / 删除), 再逐列内容指纹 (改值)\n"
-                        "表间轮转乱序; 不一致的月自动按日下钻\n"
-                        "只报告不改盘; 每单元覆盖该表状态文件里的 (月, 轮), 只留最新状态\n"
+      ImGui::SetTooltip("全部表全部冻结月重核\n"
+                        "先逐月指纹扫描 (行数 + 逐列内容), 不一致的月自动逐级定位到 日 / 资产\n"
+                        "表间轮转乱序; 只报告不改盘; 每单元覆盖该表状态文件里的月, 只留最新状态\n"
                         "单表核对见清单 \"核对\" 列; 同步 / 修复进行中 / 未开联网不可用");
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(disable_audit || pend_rows + pend_content == 0);
+    ImGui::BeginDisabled(disable_audit || pend == 0);
     if (ImGui::Button("Audit incre", ImVec2(160.0f, 0.0f)))
       *audit_incr_clicked = true;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("增量: 跳过状态里已核的 (月, 轮), 只核新冻结 / 上次没跑完的\n"
-                        "待核 rows %zu / content %zu 表·月\n"
+      ImGui::SetTooltip("增量: 跳过状态里已核的月, 只核新冻结 / 上次没跑完的\n"
+                        "待核 %zu 表·月\n"
                         "已核月的远端晚到回填测不出, 需要时用 Audit all 或单表 audit",
-                        pend_rows, pend_content);
+                        pend);
     }
   }
 
@@ -364,14 +361,13 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
     ImGui::TextDisabled("读取逐表状态 ...");
     return;
   }
-  std::size_t audited = 0, bad_tables = 0, rows_m = 0, content_m = 0, frozen_m = 0;
+  std::size_t audited = 0, bad_tables = 0, audited_m = 0, frozen_m = 0;
   std::int64_t repair = 0, full = 0;
   std::string updated;
   for (const AuditTableStat &t : a.tables) {
     audited += t.audited() ? 1 : 0;
     bad_tables += t.bad_days > 0 ? 1 : 0;
-    rows_m += t.rows_months;
-    content_m += t.content_months;
+    audited_m += t.audited_months;
     frozen_m += t.frozen_months;
     repair += t.repair_cells;
     full += t.full_cells;
@@ -381,9 +377,7 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
     ImGui::TextDisabled("尚无核对记录");
     return;
   }
-  const bool covered = rows_m >= frozen_m && content_m >= frozen_m;
-  ImGui::TextColored(covered ? kOk : kWarn, "已核 rows %zu / content %zu / 冻结 %zu 表·月", rows_m,
-                     content_m, frozen_m);
+  ImGui::TextColored(audited_m >= frozen_m ? kOk : kWarn, "已核 %zu / 冻结 %zu 表·月", audited_m, frozen_m);
   ImGui::SameLine(0.0f, 12.0f);
   ImGui::TextDisabled("(最近核对 %s)", updated.c_str());
   ImGui::SameLine(0.0f, 24.0f);
@@ -402,9 +396,9 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
   text_wrapped_disabled(
       "问题天数 = 任一不一致的日 / (本地天数 + 远端独有天数)  |  "
       "行差 = 远端比本地多 (+, 晚到回填) / 少 (−, 删除), 占比按本地总行数  |  "
-      "修复 / 全表流量 = 重拉有差异的日 / 全部已核月 的 cells (行 × 列), 括号内占周配额  |  "
+      "修复 / 全表流量 = 重拉定位到的组 / 全部已核月 的 cells (行 × 列), 括号内占周配额  |  "
       "核对 = audit 只核该表全部冻结月, 右侧 已核 / 冻结 月  |  "
-      "sync = 只重拉该表有差异的日 (月初快照表 / 只定位到月的整月), 复核这些月, 完成后重建 AssetInfo");
+      "sync = 只重拉该表定位到的 日 / 资产 (只定位到月的整月), 复核这些月, 完成后重建 AssetInfo");
 }
 
 } // namespace

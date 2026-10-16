@@ -5,10 +5,14 @@
 #include "misc/parquet.hpp"
 #include "shared/Config.hpp"
 
+#include <arrow/array.h>
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <ctime>
+#include <iterator>
+#include <map>
 #include <utility>
 
 namespace fundamental {
@@ -36,6 +40,19 @@ Ymd horizon(int avail_hour, const Now &now) {
 }
 
 Ymd write_date(const Shard &sh) { return ymd_of(local_tm(sh.mtime)); }
+
+// 本地 d 日 hour 点 → file_clock (与 Shard::mtime 同钟); hour = 24 → 次日 0 点 (mktime 归一)
+fs::file_time_type local_at(Ymd d, int hour) {
+  std::tm tm{};
+  tm.tm_year = d / 10000 - 1900;
+  tm.tm_mon = d / 100 % 100 - 1;
+  tm.tm_mday = d % 100;
+  tm.tm_hour = hour;
+  tm.tm_isdst = -1;
+  const std::time_t tt = std::mktime(&tm);
+  assert(tt != -1 && "local_at: mktime 失败");
+  return std::chrono::clock_cast<fs::file_time_type::clock>(std::chrono::system_clock::from_time_t(tt));
+}
 
 fs::path root() { return misc::git_root() / "output" / "fundamental"; }
 
@@ -91,8 +108,8 @@ State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
   if (s.shape == Shape::Daily)
     return State::Frozen; // 只拉到 horizon (昨天) ⇒ 落盘即整日
   if (s.shape == Shape::Meta) {
-    const bool fresh = s.vd.empty() ? write_date(*sh) == now.today
-                                    : mark(s, *sh) >= horizon(s.avail_hour, now);
+    const Ymd hz = horizon(s.avail_hour, now);
+    const bool fresh = s.vd.empty() ? sh->mtime >= local_at(hz, s.avail_hour) : mark(s, *sh) >= hz;
     return fresh ? State::Frozen : State::Stale;
   }
   if (!closed(m, now.today))
@@ -102,47 +119,109 @@ State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
                                                                                                 : State::Stale;
 }
 
-// p 里 vd ∈ days 的行删掉, tbl 追加在末尾, 其余天原样; 原子重写 (见 put)
-void splice(const Spec &s, const fs::path &p, const std::vector<Ymd> &days, const std::shared_ptr<arrow::Table> &tbl) {
+// t 的逐行 vd (YYYYMMDD) 与逐行是否命中 keys (Day 键整日命中, Asset 键按 日|资产 命中)
+void hits(const Spec &s, const arrow::Table &t, const std::vector<std::string> &keys, std::vector<Ymd> &d,
+          std::vector<char> &hit) {
+  const auto vd = t.GetColumnByName(s.vd);
+  assert(vd && "put: Splice 缺 vd 列");
+  d.clear();
+  std::vector<Ymd> part;
+  for (const auto &chunk : vd->chunks()) {
+    pq::Col(chunk).yyyymmdd_all(part);
+    d.insert(d.end(), part.begin(), part.end());
+  }
+  const bool by_asset =
+      std::any_of(keys.begin(), keys.end(), [](const std::string &k) { return grain_of(k) == Grain::Asset; });
+  std::vector<std::string_view> asset;
+  if (by_asset) {
+    const auto key = t.GetColumnByName(std::string(key_col(s)));
+    assert(key && "put: Splice 缺资产键列");
+    for (const auto &chunk : key->chunks()) {
+      const pq::Col k(chunk);
+      for (std::int64_t i = 0; i < chunk->length(); ++i)
+        asset.push_back(k.str(i));
+    }
+  }
+  auto in = [&](const std::string &k) { return std::binary_search(keys.begin(), keys.end(), k); };
+  hit.assign(d.size(), 0);
+  for (std::size_t i = 0; i < d.size(); ++i) {
+    assert(d[i] > 0 && "put: Splice 行的 vd 为 null");
+    hit[i] = in(group_key(Grain::Day, d[i])) || (by_asset && in(group_key(Grain::Asset, d[i], asset[i])));
+  }
+}
+
+// p 里组键 ∈ keys 的行删掉, tbl 的行按日归位后原子重写 (见 put):
+//   新行插在旧分片该日行块之后; 旧分片无该日 → 前一日行块之后, 无前一日 → 最前; 同位多日按日升序
+//   ⇒ 布局与整拉同为 "按日成块". 列序 / 列型同旧分片 (全 null 的 NA 列按新行提升), 新行不得带新列
+void splice(const Spec &s, const fs::path &p, const std::vector<std::string> &keys,
+            const std::shared_ptr<arrow::Table> &tbl) {
   assert(s.shape == Shape::Month && "put: Splice 只用于月分片");
   assert(fs::exists(p) && "put: Splice 的分片须已存在");
-  assert(std::is_sorted(days.begin(), days.end()) && "put: Splice 的 days 须升序");
-  auto in_days = [&](Ymd d) { return std::binary_search(days.begin(), days.end(), d); };
-  auto vds = [&](const arrow::Table &t) {
-    const auto c = t.GetColumnByName(s.vd);
-    assert(c && "put: Splice 缺 vd 列");
-    std::vector<Ymd> out, d;
-    for (const auto &chunk : c->chunks()) {
-      pq::Col(chunk).yyyymmdd_all(d);
-      out.insert(out.end(), d.begin(), d.end());
-    }
-    return out;
-  };
-  for ([[maybe_unused]] Ymd d : vds(*tbl))
-    assert(in_days(d) && "put: Splice 新行的 vd 不在替换日内");
-
-  // 保留段 = 旧分片里 vd ∉ days 的连续行 (零拷贝 Slice)
+  assert(std::is_sorted(keys.begin(), keys.end()) && std::adjacent_find(keys.begin(), keys.end()) == keys.end() &&
+         "put: Splice 的 keys 须升序去重");
+  std::vector<Ymd> nd, od;
+  std::vector<char> nhit, ohit;
+  hits(s, *tbl, keys, nd, nhit);
+  for ([[maybe_unused]] char h : nhit)
+    assert(h && "put: Splice 新行不在替换键内");
   const auto old = pq::read_table(p);
-  const std::vector<Ymd> od = vds(*old);
-  std::vector<std::shared_ptr<arrow::Table>> parts;
+  hits(s, *old, keys, od, ohit);
   const std::int64_t n = static_cast<std::int64_t>(od.size());
+
+  // 新行按日成段, 每段的插入位 at = 插在旧行 at 之前
+  std::map<Ymd, std::int64_t> last; // 旧分片各日末行
+  for (std::int64_t i = 0; i < n; ++i)
+    last[od[i]] = i;
+  auto anchor = [&](Ymd d) -> std::int64_t {
+    auto it = last.lower_bound(d);
+    if (it != last.end() && it->first == d)
+      return it->second + 1;
+    return it == last.begin() ? 0 : std::prev(it)->second + 1;
+  };
+  struct Run {
+    std::int64_t at;
+    Ymd day;
+    std::int64_t start, len;
+  };
+  std::vector<Run> runs;
+  for (std::int64_t j = 0; j < static_cast<std::int64_t>(nd.size());) {
+    std::int64_t k = j;
+    while (k < static_cast<std::int64_t>(nd.size()) && nd[k] == nd[j])
+      ++k;
+    runs.push_back({anchor(nd[j]), nd[j], j, k - j});
+    j = k;
+  }
+  std::stable_sort(runs.begin(), runs.end(),
+                   [](const Run &a, const Run &b) { return std::pair(a.at, a.day) < std::pair(b.at, b.day); });
+
+  // 首段放旧分片 0 行切片 ⇒ 合并后列序 = 旧分片
+  std::vector<std::shared_ptr<arrow::Table>> parts{old->Slice(0, 0)};
+  std::size_t r = 0;
+  auto place = [&](std::int64_t at) {
+    for (; r < runs.size() && runs[r].at == at; ++r)
+      parts.push_back(tbl->Slice(runs[r].start, runs[r].len));
+  };
   for (std::int64_t i = 0; i < n;) {
-    if (in_days(od[i])) {
+    place(i);
+    if (ohit[i]) {
       ++i;
       continue;
     }
-    std::int64_t j = i;
-    while (j < n && !in_days(od[j]))
+    std::int64_t j = i + 1;
+    while (j < n && !ohit[j] && !(r < runs.size() && runs[r].at == j))
       ++j;
     parts.push_back(old->Slice(i, j - i));
     i = j;
   }
-  parts.push_back(tbl);
+  place(n);
+  assert(r == runs.size());
   arrow::ConcatenateTablesOptions opt;
   opt.unify_schemas = true;
   auto joined = arrow::ConcatenateTables(parts, opt);
   assert(joined.ok() && "put: Splice 新旧 schema 无法合并");
-  pq::write_table_atomic(p, std::move(joined).ValueUnsafe());
+  auto out = std::move(joined).ValueUnsafe();
+  assert(out->num_columns() == old->num_columns() && "put: Splice 新行带本地分片没有的列 (远端 schema 变了, 整月重拉)");
+  pq::write_table_atomic(p, out);
 }
 
 } // namespace
@@ -281,9 +360,10 @@ void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
     pq::append_table_atomic(p, tbl);
     return;
   case Write::Splice:
-    assert(!t.days.empty() && misc::ym_of(t.days.front()) == t.ym && misc::ym_of(t.days.back()) == t.ym &&
-           "put: Splice 的 days 须非空且同属 ym");
-    splice(s, p, t.days, tbl);
+    assert(!t.keys.empty() && "put: Splice 的 keys 为空");
+    for ([[maybe_unused]] const std::string &k : t.keys)
+      assert(grain_of(k) != Grain::Month && key_ym(k) == t.ym && "put: Splice 键须为 Day / Asset 级且同属 ym");
+    splice(s, p, t.keys, tbl);
     return;
   }
   assert(false && "put: 未知写法");

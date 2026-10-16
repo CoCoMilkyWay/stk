@@ -28,7 +28,7 @@ namespace GUI::Database {
 namespace {
 
 namespace fs = std::filesystem;
-using fundamental::audit::Pass;
+using fundamental::Grain;
 
 // output/fundamental/_audit/ (逐表状态 <表>.tsv); 不放 output/log: 特征计算开跑会整删 log_dir
 fs::path log_dir() {
@@ -46,10 +46,9 @@ std::string stamp(std::time_t t) {
   return buf;
 }
 
-// 一个不一致格 (Rows 轮: column / cell / local / remote 为 "-"; 统计只用到前几列, 原值留给人看)
+// 一个不一致格 (只差 n: column / cell / local / remote 为 "-"; 统计只用到前几列, 原值留给人看)
 struct LogRow {
-  std::string group; // "YYYY-MM-DD" / 回落 "YYYY-MM"; 前 7 位 = 所属月
-  bool rows = false; // pass == rows
+  std::string group; // 定位组键 (Month / Day / Asset 级); 前 7 位 = 所属月, 前 10 位 = 所属日
   std::int64_t local_n = 0;
   std::int64_t remote_n = 0;
   std::string column = "-";
@@ -58,15 +57,22 @@ struct LogRow {
   std::string remote = "-";
 };
 
-// Diff → 缓存行: Rows 一行; Content 每个不一致格一行
+// Diff → 缓存行: 只差 n 一行; 否则每个不一致格一行
 void append_rows(std::vector<LogRow> &out, const fundamental::audit::Diff &d) {
-  const bool rows = d.pass == Pass::Rows;
   if (d.cells.empty()) {
-    out.push_back({d.group, rows, d.local_n, d.remote_n});
+    out.push_back({d.group, d.local_n, d.remote_n});
     return;
   }
   for (const fundamental::audit::Diff::Cell &c : d.cells)
-    out.push_back({d.group, rows, d.local_n, d.remote_n, c.column, c.sum ? "s" : "nn", c.local, c.remote});
+    out.push_back({d.group, d.local_n, d.remote_n, c.column, c.sum ? "s" : "nn", c.local, c.remote});
+}
+
+// 组 → (本地 n, 远端 n): 同组多格的行只计一次
+std::map<std::string, std::pair<std::int64_t, std::int64_t>> group_n(const std::vector<LogRow> &rows) {
+  std::map<std::string, std::pair<std::int64_t, std::int64_t>> out;
+  for (const LogRow &r : rows)
+    out[r.group] = {r.local_n, r.remote_n};
+  return out;
 }
 
 // 已核月的本地清点 (分母 + 流量), 取自核对当时的分片
@@ -93,35 +99,33 @@ MonthInv count_month(const fundamental::Spec &s, const fundamental::Shard &sh) {
 
 struct MonthRec {
   MonthInv inv;
-  std::string rows_at;    // Rows 轮核对时刻 "YYYY-MM-DD HH:MM"; 空 = 未跑
-  std::string content_at; // Content 轮同上
+  std::string audited_at; // 核对时刻 "YYYY-MM-DD HH:MM"; 空 = 未核
 };
 
-// 一表的核对状态: 每个 (月, 轮) 只留最近一次核对的结论
+// 一表的核对状态: 每月只留最近一次核对的结论
 struct TableBook {
   std::map<std::string, MonthRec> months; // "YYYY-MM" (组键前 7 位同形)
   std::vector<LogRow> rows;
 };
 using Books = std::map<std::string, TableBook>; // 表名 → 状态
 
-// 一单元跑完: 覆盖该表 (单元各月, 轮) 的清点 / 核对时刻 / 差异格
+// 一单元跑完: 覆盖该表单元各月的清点 / 核对时刻 / 差异格
 void apply(TableBook &t, const fundamental::audit::Unit &u, const std::vector<fundamental::audit::Diff> &diffs,
            const std::string &at) {
-  const bool rows = u.pass == Pass::Rows;
   std::set<std::string> keys;
   for (const fundamental::Slot &sl : u.months) {
     const std::string key = misc::dash_ym(sl.ym);
     MonthRec &m = t.months[key];
     m.inv = count_month(*u.spec, *sl.sh);
-    (rows ? m.rows_at : m.content_at) = at;
+    m.audited_at = at;
     keys.insert(key);
   }
-  std::erase_if(t.rows, [&](const LogRow &r) { return r.rows == rows && keys.contains(r.group.substr(0, 7)); });
+  std::erase_if(t.rows, [&](const LogRow &r) { return keys.contains(r.group.substr(0, 7)); });
   for (const auto &d : diffs)
     append_rows(t.rows, d);
 }
 
-// 分片重拉过: 这些月两轮的旧结论一并作废 (待复核)
+// 分片重拉过: 这些月的旧结论作废 (待复核)
 void forget(TableBook &t, const std::set<std::string> &keys) {
   for (const std::string &k : keys)
     t.months.erase(k);
@@ -140,22 +144,20 @@ std::vector<std::string> split_tab(const std::string &line) {
 }
 
 // 状态文件 <表>.tsv (# 起头为注释):
-//   month \t YYYY-MM \t rows 核对时刻 \t content 核对时刻 (- = 未跑) \t 本地行 \t 本地天数 \t 列数
+//   month \t YYYY-MM \t 核对时刻 (- = 未核) \t 本地行 \t 本地天数 \t 列数
 //         \t 问题天数 \t 行差+ \t 行差−   (末三列由 diff 导出, 只供人看, load 不读)
-//   diff  \t 组 \t rows|content \t local_n \t remote_n \t 列 \t nn|s \t 本地 \t 远端
+//   diff  \t 组 \t local_n \t remote_n \t 列 \t nn|s \t 本地 \t 远端
 void save(const std::string &name, const TableBook &t) {
   struct MonthSum {
     std::set<std::string> bad;
     std::int64_t added = 0, removed = 0;
   };
   std::map<std::string, MonthSum> sum;
-  for (const LogRow &r : t.rows) {
-    MonthSum &s = sum[r.group.substr(0, 7)];
-    s.bad.insert(r.group);
-    if (r.rows) {
-      s.added += std::max<std::int64_t>(0, r.remote_n - r.local_n);
-      s.removed += std::max<std::int64_t>(0, r.local_n - r.remote_n);
-    }
+  for (const auto &[g, n] : group_n(t.rows)) {
+    MonthSum &s = sum[g.substr(0, 7)];
+    s.bad.insert(g.substr(0, 10));
+    s.added += std::max<std::int64_t>(0, n.second - n.first);
+    s.removed += std::max<std::int64_t>(0, n.first - n.second);
   }
   auto at = [](const std::string &s) { return s.empty() ? std::string("-") : s; };
 
@@ -165,12 +167,12 @@ void save(const std::string &name, const TableBook &t) {
     std::ofstream out(tmp);
     assert(out && "audit: 状态文件无法写入");
     out << "# " << name << "\n"
-        << "# month\tym\trows_at\tcontent_at\tlocal_rows\tlocal_days\tcols\tbad_days\tadded\tremoved\n"
-        << "# diff\tgroup\tpass\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
+        << "# month\tym\taudited_at\tlocal_rows\tlocal_days\tcols\tbad_days\tadded\tremoved\n"
+        << "# diff\tgroup\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
     for (const auto &[ym, m] : t.months) {
       const auto s = sum.find(ym);
       const bool bad = s != sum.end();
-      out << "month\t" << ym << '\t' << at(m.rows_at) << '\t' << at(m.content_at) << '\t' << m.inv.rows << '\t'
+      out << "month\t" << ym << '\t' << at(m.audited_at) << '\t' << m.inv.rows << '\t'
           << m.inv.days << '\t' << m.inv.cols << '\t' << (bad ? s->second.bad.size() : 0) << '\t'
           << (bad ? s->second.added : 0) << '\t' << (bad ? s->second.removed : 0) << '\n';
     }
@@ -179,8 +181,8 @@ void save(const std::string &name, const TableBook &t) {
       rows.push_back(&r);
     std::stable_sort(rows.begin(), rows.end(), [](const LogRow *x, const LogRow *y) { return x->group < y->group; });
     for (const LogRow *r : rows)
-      out << "diff\t" << r->group << '\t' << (r->rows ? "rows" : "content") << '\t' << r->local_n << '\t'
-          << r->remote_n << '\t' << r->column << '\t' << r->cell << '\t' << r->local << '\t' << r->remote << '\n';
+      out << "diff\t" << r->group << '\t' << r->local_n << '\t' << r->remote_n << '\t' << r->column << '\t'
+          << r->cell << '\t' << r->local << '\t' << r->remote << '\n';
     out.flush();
     assert(out && "audit: 状态文件写入失败");
   }
@@ -206,17 +208,16 @@ Books load_book() {
         continue;
       const std::vector<std::string> f = split_tab(line);
       if (f[0] == "month") {
-        assert(f.size() == 10 && "audit: 状态 month 行列数不符");
+        assert(f.size() == 9 && "audit: 状态 month 行列数不符");
         assert(misc::parse_ym(f[1]) > 0 && "audit: 状态 month 行月份不符");
         MonthRec &m = t.months[f[1]];
-        m.rows_at = f[2] == "-" ? "" : f[2];
-        m.content_at = f[3] == "-" ? "" : f[3];
-        m.inv = {std::stoll(f[4]), std::stoll(f[5]), std::stoll(f[6])};
+        m.audited_at = f[2] == "-" ? "" : f[2];
+        m.inv = {std::stoll(f[3]), std::stoll(f[4]), std::stoll(f[5])};
         continue;
       }
-      assert(f[0] == "diff" && f.size() == 9 && "audit: 状态行格式不符");
-      assert((f[2] == "rows" || f[2] == "content") && "audit: 状态 pass 列不符");
-      t.rows.push_back({f[1], f[2] == "rows", std::stoll(f[3]), std::stoll(f[4]), f[5], f[6], f[7], f[8]});
+      assert(f[0] == "diff" && f.size() == 8 && "audit: 状态行格式不符");
+      fundamental::grain_of(f[1]); // 组键形不符 → assert
+      t.rows.push_back({f[1], std::stoll(f[2]), std::stoll(f[3]), f[4], f[5], f[6], f[7]});
     }
   }
   return b;
@@ -246,32 +247,30 @@ AuditTableStat stat_of(const std::string &name, const TableBook &t, std::size_t 
   for (const auto &[ym, m] : t.months) {
     a.st.local_days += m.inv.days;
     a.st.local_rows += m.inv.rows;
-    a.st.rows_months += !m.rows_at.empty();
-    a.st.content_months += !m.content_at.empty();
-    a.st.updated = std::max({a.st.updated, m.rows_at, m.content_at});
+    a.st.audited_months += !m.audited_at.empty();
+    a.st.updated = std::max(a.st.updated, m.audited_at);
   }
-  // 修复粒度 = audit::fix_day (与 repair 同一来源): 能定位到日 → 只重拉那几天; 否则整月
-  const fundamental::Spec &spec = fundamental::spec(name);
+  for (const LogRow &r : t.rows)
+    if (r.column != "-")
+      a.col_days[r.column].insert(r.group.substr(0, 10));
+  // 修复粒度 = 定位组 (与 audit::repair 同一来源): Month 键整月 Replace, Day / Asset 键只拉该组; 流量 = 组远端行 × 列
   std::set<std::string> whole;
-  std::map<std::string, std::int64_t> day_n; // 日 → 远端行数
-  for (const LogRow &r : t.rows) {
-    a.bad.insert(r.group);
-    a.months.insert(r.group.substr(0, 7));
-    if (fundamental::audit::fix_day(spec, r.group) == 0)
-      whole.insert(r.group.substr(0, 7));
-    else
-      day_n[r.group] = r.remote_n;
-    if (r.rows) {
-      a.row_bad.insert(r.group);
-      if (r.local_n == 0)
-        ++a.st.remote_only_days;
-      a.st.added += std::max<std::int64_t>(0, r.remote_n - r.local_n);
-      a.st.removed += std::max<std::int64_t>(0, r.local_n - r.remote_n);
-      a.delta[r.group.substr(0, 7)] += r.remote_n - r.local_n;
-    } else {
-      a.content_bad.insert(r.group);
-      a.col_days[r.column].insert(r.group);
-    }
+  for (const auto &[g, n] : group_n(t.rows)) {
+    const auto [local_n, remote_n] = n;
+    const std::string ym = g.substr(0, 7), day = g.substr(0, 10);
+    const Grain grain = fundamental::grain_of(g);
+    a.bad.insert(day);
+    a.months.insert(ym);
+    (local_n != remote_n ? a.row_bad : a.content_bad).insert(day);
+    if (grain == Grain::Month)
+      whole.insert(ym);
+    if (grain == Grain::Day && local_n == 0)
+      ++a.st.remote_only_days;
+    a.st.added += std::max<std::int64_t>(0, remote_n - local_n);
+    a.st.removed += std::max<std::int64_t>(0, local_n - remote_n);
+    a.delta[ym] += remote_n - local_n;
+    assert(t.months.contains(ym) && "audit: 差异月无清点");
+    a.st.repair_cells += remote_n * t.months.at(ym).inv.cols;
   }
 
   AuditTableStat &st = a.st;
@@ -286,18 +285,6 @@ AuditTableStat stat_of(const std::string &name, const TableBook &t, std::size_t 
   for (const auto &[ym, m] : t.months) {
     const auto d = a.delta.find(ym);
     st.full_cells += (m.inv.rows + (d == a.delta.end() ? 0 : d->second)) * m.inv.cols;
-  }
-  for ([[maybe_unused]] const std::string &ym : a.months)
-    assert(t.months.contains(ym) && "audit: 差异月无清点");
-  for (const std::string &ym : whole) {
-    const MonthInv &m = t.months.at(ym).inv;
-    const auto d = a.delta.find(ym);
-    st.repair_cells += (m.rows + (d == a.delta.end() ? 0 : d->second)) * m.cols;
-  }
-  for (const auto &[day, n] : day_n) {
-    const std::string ym = day.substr(0, 7);
-    if (!whole.contains(ym))
-      st.repair_cells += n * t.months.at(ym).inv.cols;
   }
 
   constexpr std::size_t kTop = 3;
@@ -446,26 +433,25 @@ bool AuditService::load() {
   return true;
 }
 
-// audit::plan (table 空 = 全部表, 否则只该表; incremental = 跳过状态里已核的 (月, 轮))
-//   → 逐单元 audit::run, 每单元覆盖该 (表, 月, 轮)
+// audit::plan (table 空 = 全部表, 否则只该表; incremental = 跳过状态里已核的月)
+//   → 逐单元 audit::run (月扫描 + 逐级定位), 每单元覆盖该 (表, 月)
 bool AuditService::audit(const std::string &table, bool incremental) {
   Book &bk = *book_;
   const fundamental::Now now = fundamental::now();
   const fundamental::Catalog cat;
   bigquant::Client client;
   bk.start_quota(client);
-  // 已核 = 状态里该 (月, 轮) 有核对时刻 (plan 在开跑前算完, 之后 books 的改动不影响)
-  auto done = [&](const std::string &name, misc::Ym ym, Pass pass) {
+  // 已核 = 状态里该月有核对时刻 (plan 在开跑前算完, 之后 books 的改动不影响)
+  auto done = [&](const std::string &name, misc::Ym ym) {
     const auto t = bk.books.find(name);
     if (t == bk.books.end())
       return false;
     const auto m = t->second.months.find(misc::dash_ym(ym));
-    return m != t->second.months.end() && !(pass == Pass::Rows ? m->second.rows_at : m->second.content_at).empty();
+    return m != t->second.months.end() && !m->second.audited_at.empty();
   };
   const auto units = fundamental::audit::plan(
-      cat, now, static_cast<unsigned>(std::time(nullptr)),
-      [&](const fundamental::Spec &sp, misc::Ym ym, Pass pass) {
-        return (table.empty() || sp.name == table) && !(incremental && done(sp.name, ym, pass));
+      cat, now, static_cast<unsigned>(std::time(nullptr)), [&](const fundamental::Spec &sp, misc::Ym ym) {
+        return (table.empty() || sp.name == table) && !(incremental && done(sp.name, ym));
       });
   bk.start(units.size());
   const std::string scope = (table.empty() ? "全部表" : table) + (incremental ? " (增量)" : "");
@@ -480,7 +466,7 @@ bool AuditService::audit(const std::string &table, bool incremental) {
   return !cancelled;
 }
 
-// table 的差异: audit::repair → 逐任务 sync::run (Splice 按日 / Replace 整月) → 这些月旧结论作废 → plan(keep = 这些月) 两轮复核
+// table 的差异: audit::repair → 逐任务 sync::run (Splice 日·资产 / Replace 整月) → 这些月旧结论作废 → plan(keep = 这些月) 复核
 bool AuditService::repair(const std::string &table) {
   Book &bk = *book_;
   const fundamental::Spec &s = fundamental::spec(table);
@@ -495,7 +481,7 @@ bool AuditService::repair(const std::string &table) {
   std::set<std::string> keys; // 有差异的月 "YYYY-MM"
   std::set<int> years;
   {
-    // 差异 → 修复任务 (整月 Replace / 按日 Splice, 见 audit::repair)
+    // 定位键 → 修复任务 (整月 Replace / 日·资产 Splice, 见 audit::repair)
     const fundamental::Catalog cat;
     const std::vector<fundamental::Task> tasks =
         fundamental::audit::repair(s, fundamental::frozen(s, cat, fundamental::now()), groups);
@@ -503,8 +489,8 @@ bool AuditService::repair(const std::string &table) {
       keys.insert(misc::dash_ym(t.ym));
       years.insert(t.ym / 100);
     }
-    // 重拉月 + 复核单元 (一表 × 一年 × 一轮)
-    bk.start(tasks.size() + 2 * years.size());
+    // 重拉月 + 复核单元 (一表 × 一年)
+    bk.start(tasks.size() + years.size());
     for (const fundamental::Task &t : tasks) {
       if (cancel_.load(std::memory_order_relaxed))
         return false;
@@ -523,8 +509,8 @@ bool AuditService::repair(const std::string &table) {
   const fundamental::Catalog cat;
   const auto units = fundamental::audit::plan(
       cat, fundamental::now(), static_cast<unsigned>(std::time(nullptr)),
-      [&](const fundamental::Spec &sp, misc::Ym ym, Pass) { return &sp == &s && keys.contains(misc::dash_ym(ym)); });
-  assert(units.size() == 2 * years.size() && "repair: 复核单元数不符");
+      [&](const fundamental::Spec &sp, misc::Ym ym) { return &sp == &s && keys.contains(misc::dash_ym(ym)); });
+  assert(units.size() == years.size() && "repair: 复核单元数不符");
   for (const fundamental::audit::Unit &u : units) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;

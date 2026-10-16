@@ -51,8 +51,12 @@ std::string label(const Task &t) {
     return at;
   case Write::Append:
     return at + " +[" + misc::dense(t.w.lo) + "..]";
-  case Write::Splice:
-    return at + " ~[" + std::to_string(t.days.size()) + " 天]";
+  case Write::Splice: {
+    std::size_t day = 0, asset = 0;
+    for (const std::string &k : t.keys)
+      ++(grain_of(k) == Grain::Day ? day : asset);
+    return at + " ~[" + std::to_string(day) + " 日 + " + std::to_string(asset) + " 资产]";
+  }
   }
   assert(false && "sync::label: 未知写法");
   return at;

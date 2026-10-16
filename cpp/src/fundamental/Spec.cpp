@@ -128,6 +128,44 @@ const std::vector<Spec> SPECS = checked({
 });
 // clang-format on
 
+std::string group_key(Grain g, Ymd d, std::string_view asset) {
+  assert(d > 0 && "group_key: 日为空");
+  switch (g) {
+  case Grain::Month:
+    return misc::dash_ym(misc::ym_of(d));
+  case Grain::Day:
+    return misc::dash(d);
+  case Grain::Asset:
+    assert(!asset.empty() && "group_key: 资产键为空");
+    return misc::dash(d) + "|" + std::string(asset);
+  }
+  assert(false && "group_key: 未知粒度");
+  return {};
+}
+
+Grain grain_of(std::string_view key) {
+  if (key.size() == 7)
+    return Grain::Month;
+  if (key.size() == 10)
+    return Grain::Day;
+  assert(key.size() > 11 && key[10] == '|' && "grain_of: 组键不是 YYYY-MM[-DD[|资产]]");
+  return Grain::Asset;
+}
+
+Ymd key_day(std::string_view key) {
+  if (grain_of(key) == Grain::Month)
+    return 0;
+  const Ymd d = misc::parse_ymd(key.substr(0, 10));
+  assert(d > 0 && "key_day: 组键日期不符");
+  return d;
+}
+
+Ym key_ym(std::string_view key) {
+  const Ym m = misc::parse_ym(key.substr(0, 7));
+  assert(m > 0 && "key_ym: 组键月份不符");
+  return m;
+}
+
 const Spec &spec(std::string_view name) {
   for (const Spec &s : SPECS)
     if (s.name == name)
