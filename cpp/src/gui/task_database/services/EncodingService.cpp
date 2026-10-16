@@ -148,15 +148,20 @@ void EncodingService::start_encoding(int num_workers, bool skip_existing) {
   });
 }
 
-void EncodingService::stop_encoding() {
+void EncodingService::request_cancel() {
   if (status_ != EncodingStatus::Running) {
     return;
   }
 
-  cancel_flag_.store(true);
+  if (cancel_flag_.exchange(true))
+    return;
   if (queue_)
     queue_->close(); // 唤醒被背压堵住的 producer 与等批的 worker
   std::cout << "[Encoding] Cancelling..." << std::endl;
+}
+
+void EncodingService::stop_encoding() {
+  request_cancel();
 
   // Wait for encoding thread to finish (which will also wait for workers)
   if (encoding_thread_.valid()) {

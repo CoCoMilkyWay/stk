@@ -77,12 +77,14 @@ public:
 
   // Lifecycle (changed to non-coroutine, uses background threads)
   void start_encoding(int num_workers, bool skip_existing);
-  void stop_encoding();
+  void request_cancel(); // 不阻塞 (GUI 线程调)
+  void stop_encoding();  // request_cancel + 等收尾
 
   // Query
   EncodingStatus get_status() const { return status_; }
   EncodingProgress get_progress() const;
   bool is_running() const { return status_ == EncodingStatus::Running; }
+  bool is_cancelling() const { return cancel_flag_.load(); }
   bool is_idle() const {
     return status_ == EncodingStatus::Idle ||
            status_ == EncodingStatus::Completed ||

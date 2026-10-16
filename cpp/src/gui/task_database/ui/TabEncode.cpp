@@ -664,10 +664,11 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
     // Start/Stop button
     if (is_running) {
-      if (ImGui::Button("Stop Encoding", ImVec2(150, 0))) {
-        // Trigger stop (non-blocking)
-        // service->stop_encoding() should be called from coroutine context
-      }
+      const bool cancelling = encoding_service->is_cancelling();
+      ImGui::BeginDisabled(cancelling);
+      if (ImGui::Button(cancelling ? "Cancelling..." : "Stop Encoding", ImVec2(150, 0)))
+        encoding_service->request_cancel();
+      ImGui::EndDisabled();
       ImGui::SameLine();
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Encoding in progress...");
     } else {
@@ -906,10 +907,11 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
       // Stop button
       ImGui::SetCursorPosX(center_x - 75);
-      if (ImGui::Button("Stop Encoding", ImVec2(150, 40))) {
-        // Trigger stop
-        // service->stop_encoding() should be called from coroutine context
-      }
+      const bool cancelling = encoding_service->is_cancelling();
+      ImGui::BeginDisabled(cancelling);
+      if (ImGui::Button(cancelling ? "Cancelling..." : "Stop Encoding", ImVec2(150, 40)))
+        encoding_service->request_cancel();
+      ImGui::EndDisabled();
 
       ImGui::End();
     }
