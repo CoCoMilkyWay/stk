@@ -14,10 +14,10 @@
 // =============================================================================
 
 #include "factor/Check.hpp"
-#include "misc/exec.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp"
+#include "misc/exec.hpp"
 
 #include <algorithm>
 #include <chrono>

@@ -5,7 +5,6 @@
 #include "factor/Dag.hpp"
 #include "factor/EvalCpu.hpp"
 #include "factor/EvalGpu.hpp"
-#include "misc/exec.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Search/Cpu.hpp"
 #include "factor/Search/Grid.hpp"
@@ -13,6 +12,7 @@
 #include "features/Backend/FeatureRead.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/cross_platform.hpp" // memory_usage
+#include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 

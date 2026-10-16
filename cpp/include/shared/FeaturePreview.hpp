@@ -21,9 +21,9 @@ class FeatureRead;
 //
 //   轮 = 一个抽样日 (全区间日期固定种子洗牌取前 kPvRounds 个 → 无偏覆盖);
 //   轮首单线程读共享三列 lim_dn / lim_up / ts_valid (笼快照 + 门控列, 轮内各块共用);
-//   轮内按特征分块 (每块 kPvBlockCols 列), 一波常驻线程抢块: 各自 load_day_columns →
+//   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自 load_day_columns →
 //     私有 DayBatchPlane 转置 (has_valid=false: 门控按各特征自己的 valid_type 在扫描侧判);
-//     每特征槽一轮只被一个线程写, 轮末栅栏隔开相邻轮 → 累积器无锁无归约;
+//     每特征槽一轮只被一个任务写, 每轮一次 dispatch 隔开相邻轮 → 累积器无锁无归约;
 //   每 (轮, 特征) 按洗牌资产序旋转抽 kPvAssetsPerRound 个资产:
 //     有效值 → 该特征小 KLL (累积);  逐资产整日序列 (缺/门控 ffill, 不填 0) → DayPSD
 //     (日内去均值 + Hann) → Parseval 归一 (除当日总功率, 每 bin = 方差占比, 跨特征绝对可比)
@@ -85,7 +85,7 @@ struct FeaturePreview : Published {
                        std::vector<misc::Ym> month_keys,
                        size_t n_features, size_t n_assets);
 
-  // 轮训构建 (轮内多线程抢特征块: IO + 扫描 + 块末发布; 轮末栅栏); 被取消返回 false
+  // 轮训构建 (轮内特征块一块一任务: IO + 扫描 + 块末发布; 每轮一次 dispatch); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
 
   void clear();

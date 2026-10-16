@@ -23,6 +23,7 @@
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
 #include "misc/date.hpp"
+#include "misc/exec.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
 #include "shared/Config.hpp"
@@ -216,20 +217,15 @@ void renative_all(Job &job, const std::atomic<bool> &cancel) {
   job.steps_done = 0;
   job.steps_total = files.size();
   job.set_message("重写外来写者的 parquet");
-  std::atomic<std::size_t> next{0}, rewritten{0};
-  auto worker = [&] {
-    for (std::size_t i; !cancel.load(std::memory_order_relaxed) &&
-                        (i = next.fetch_add(1, std::memory_order_relaxed)) < files.size();) {
-      if (files[i].renative())
-        rewritten.fetch_add(1, std::memory_order_relaxed);
-      job.steps_done.fetch_add(1, std::memory_order_relaxed);
-    }
-  };
-  std::vector<std::thread> ts;
-  for (unsigned t = 0; t < std::max(1u, std::thread::hardware_concurrency()); ++t)
-    ts.emplace_back(worker);
-  for (std::thread &t : ts)
-    t.join();
+  std::atomic<std::size_t> rewritten{0};
+  misc::exec::ForkJoin ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+  ex.tasks(static_cast<int>(files.size()), [&](int i, int) {
+    if (cancel.load(std::memory_order_relaxed))
+      return;
+    if (files[static_cast<std::size_t>(i)].renative())
+      rewritten.fetch_add(1, std::memory_order_relaxed);
+    job.steps_done.fetch_add(1, std::memory_order_relaxed);
+  });
   job.steps_total = 0;
   std::cout << "[renative] " << rewritten << "/" << files.size() << " file(s) rewritten" << std::endl;
 }

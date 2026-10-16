@@ -61,11 +61,9 @@ void check_axis(const std::vector<uint32_t> &global_ids) {
   (void)global_ids;
 }
 
-ThreadLayout thread_layout(size_t A) {
-  const size_t n_blocks = (A + kAssetBlock - 1) / kAssetBlock;
+size_t thread_count(size_t A) {
   const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
-  const size_t n_threads = std::min(n_hw, std::max(kDaysPerBatch, n_blocks));
-  return {n_threads, std::min(n_threads, kDaysPerBatch)};
+  return std::min(n_hw, std::max(kDaysPerBatch, n_asset_blocks(A)));
 }
 
 } // namespace analysis

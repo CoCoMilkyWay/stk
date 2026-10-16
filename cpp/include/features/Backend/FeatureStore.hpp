@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FeatureStoreConfig.hpp" // 含落盘编码选型 FeatureCodec / CODEC_ENABLED
+#include "misc/exec.hpp"
 #include "misc/logging.hpp"
 #include <algorithm>
 #include <atomic>
@@ -235,30 +236,16 @@ public:
     std::cout << "Allocating physical pages...\n";
     auto start = std::chrono::steady_clock::now();
 
-    // Parallel allocation using multiple threads
-    const size_t num_threads = std::min<size_t>(pool_size_, std::thread::hardware_concurrency());
-    std::vector<std::thread> threads;
+    // Parallel allocation: 一槽一任务
     std::atomic<size_t> progress_counter{0};
-
-    auto allocate_slot = [&](size_t i) {
+    misc::exec::ForkJoin ex(static_cast<int>(std::min<size_t>(pool_size_, std::thread::hardware_concurrency())));
+    ex.tasks(static_cast<int>(pool_size_), [&](int i, int) {
       pool_[i].allocate(num_assets_);
       pool_[i].reset(num_assets_); // memset 清零 = 坐实物理页 + FREE 态不变量: 拿来即写
 
       const size_t completed = ++progress_counter;
       std::cout << "  " << completed << "/" << pool_size_ << " slots\r" << std::flush;
-    };
-
-    for (size_t tid = 0; tid < num_threads; ++tid) {
-      threads.emplace_back([&, tid]() {
-        for (size_t i = tid; i < pool_size_; i += num_threads) {
-          allocate_slot(i);
-        }
-      });
-    }
-
-    for (auto &t : threads) {
-      t.join();
-    }
+    });
 
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     std::cout << "\nPhysical allocation complete in " << elapsed << " ms\n";

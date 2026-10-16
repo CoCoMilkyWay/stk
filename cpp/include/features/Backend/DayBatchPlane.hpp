@@ -13,7 +13,8 @@
 // ============================================================================
 // DayBatchPlane: 天批平面 —— 分批流式分析 (Dist / Transform) 共用的 IO 骨架
 // ============================================================================
-// 天是流式维度: 每批 days 个天, 抢单天并行 load_day_columns [T][列][A] → 转置进资产主序批平面
+// 天是流式维度: 每批 days 个天, 单天一任务并行 load_day_columns [T][列][A] → 转置进资产主序批平面
+// IO 暂存按批内天位 j 分槽 (与线程无关): 同批每天一个任务, 槽天然独占
 //   data[c][a][j][t]   c = 值列, a = 资产, j = 批内天, t = 有效行 (level_valid_rows, 末哨兵行不进平面)
 // 每资产每列一段连续 days×VR (TS 扫描友好); 某 (j, t) 的截面列则按 asset_stride 跨步取 (CS gather).
 //
@@ -29,8 +30,8 @@ struct DayBatchPlane {
 
   size_t A = 0, level = 0, VR = 0, days = 0, n_cols = 0;
   std::vector<feature_storage_t> data;          // [n_cols][A][days][VR]
-  std::vector<FeatureRead::DayColumns> staging; // [n_io] 每 IO 线程一份 [T][列][A] 暂存
-  std::vector<uint64_t> nan_seen;               // [n_io] 本批真 NaN 数 (值列 0), 批末调用方收走并清零
+  std::vector<FeatureRead::DayColumns> staging; // [days] 每批内天位一份 [T][列][A] 暂存
+  std::vector<uint64_t> nan_seen;               // [days] 本批真 NaN 数 (值列 0), 批末调用方收走并清零
 
   size_t asset_stride() const { return days * VR; }
 
@@ -45,29 +46,29 @@ struct DayBatchPlane {
     return data.data() + (c * A * days + j) * VR + t;
   }
 
-  // 幂等容量准备. n_io = 参与 IO 的线程数 (≤ days 才有意义), max_columns = 值列 + 可选 valid 列 的上界
-  void prepare(size_t A_, size_t level_, size_t days_, size_t n_cols_, size_t n_io, size_t max_columns) {
+  // 幂等容量准备. max_columns = 值列 + 可选 valid 列 的上界
+  void prepare(size_t A_, size_t level_, size_t days_, size_t n_cols_, size_t max_columns) {
     TraceN("PlanePrepare");
-    assert(A_ > 0 && days_ > 0 && n_cols_ > 0 && n_io > 0);
+    assert(A_ > 0 && days_ > 0 && n_cols_ > 0);
     A = A_;
     level = level_;
     VR = level_valid_rows(level_);
     days = days_;
     n_cols = n_cols_;
     data.resize(n_cols * A * days * VR);
-    staging.resize(n_io);
+    staging.resize(days);
     for (auto &s : staging)
       s.preallocate(A, level, max_columns);
-    nan_seen.assign(n_io, 0);
+    nan_seen.assign(days, 0);
   }
 
-  // 一天: 读 columns (值列... [+ valid 列]) → 转置进批内第 j 天. tid 选 staging/nan_seen 槽 (每线程独占).
+  // 一天: 读 columns (值列... [+ valid 列]) → 转置进批内第 j 天 (staging/nan_seen 同取第 j 槽).
   // has_valid: columns 末列是 ts_valid 门控列, 按 valid_type 判 (编码见 Meta.hpp); 否则全部视为有效.
   void load_day(const FeatureRead &reader, misc::Ymd date, const std::vector<size_t> &columns,
-                bool has_valid, L2::ValidType valid_type, size_t j, size_t tid) {
-    assert(j < days && tid < staging.size());
+                bool has_valid, L2::ValidType valid_type, size_t j) {
+    assert(j < days);
     assert(columns.size() == n_cols + (has_valid ? 1 : 0));
-    FeatureRead::DayColumns &st = staging[tid];
+    FeatureRead::DayColumns &st = staging[j];
     {
       TraceN("LoadDay");
       reader.load_day_columns(date, columns, st);
@@ -94,10 +95,10 @@ struct DayBatchPlane {
         }
       }
     }
-    nan_seen[tid] += nans;
+    nan_seen[j] += nans;
   }
 
-  // 批末: 收走全部 IO 线程的真 NaN 账目并清零
+  // 批末: 收走全部天位的真 NaN 账目并清零
   uint64_t take_nan_seen() {
     uint64_t total = 0;
     for (uint64_t &n : nan_seen) {

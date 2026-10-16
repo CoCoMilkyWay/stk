@@ -21,19 +21,19 @@ class FeatureRead;
 //
 // 发布协议 (单调收敛, UI 画已发布快照; 与 Transform 同一 flow):
 //
-//   worker (DistService 单线程编排; build 起一波 n_threads 常驻线程, 每批三道栅栏):
+//   worker (DistService 单线程编排; build 用 Runtime 常驻 ForkJoin, 每相一次 ex.tasks, 返回即栅栏):
 //     for 每批 kDaysPerBatch 个抽样天:
-//       Phase IO:   抢单天并行载入 → 资产主序批平面 [A][批天][分钟] (DayBatchPlane, 与 Transform 共用:
+//       Phase IO:   单天一任务并行载入 → 资产主序批平面 [A][批天][分钟] (DayBatchPlane, 与 Transform 共用:
 //                   f16; valid 门控与真 NaN 折叠成统一哨兵, NaN 就地记账)
 //       ── 栅栏 ──
-//       Phase 扫描: 抢 kAssetBlock 个活跃资产一块, 全在锁外:
+//       Phase 扫描: kAssetBlock 个活跃资产一任务, 全在锁外:
 //                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本 (shard)
 //                   + 全量样本 → 该资产私有 sketch → 顺手导出整条 AssetLine (PDF/矩/W2) 到 staging.
 //                   活跃资产一视同仁 —— 每批覆盖 universe × 批内天, 收敛维度只有天,
 //                   跑完即 universe × 全区间的终态 (UI 只画其中固定随机子集的折线)
 //       ── 栅栏 ──
-//       Phase 归约: shard 两两并行归约 (log2 步) → shard 0 并入 Runtime 累加器 (全程锁外)
-//       ── 栅栏 (completion, 单线程): 累加器导出 PdfSnap 成品 (锁外) → 短锁 swap 发布 + 进度 + epoch ──
+//       Phase 归约: shard 两两并行归约 (log2 步, analysis::reduce_tree) → shard 0 = 全程累加器 (全程锁外)
+//       ── 栅栏 ── 批末 (单线程): 累加器导出 PdfSnap 成品 (锁外) → 短锁 swap 发布 + 进度 + epoch
 //
 //   universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 UniverseAxis) ——
 //     平面 / lines / sketch 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.

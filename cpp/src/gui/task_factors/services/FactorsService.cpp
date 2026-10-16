@@ -613,9 +613,7 @@ bool FactorsService::run(FactorsRequest &req) {
 
   if (!req.evaluate)
     return true;
-  if (!ex_)
-    ex_ = std::make_unique<misc::exec::ForkJoin>(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
-  return evaluate(req, *ex_);
+  return evaluate(req, misc::exec::ensure(ex_, static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))));
 }
 
 // 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)

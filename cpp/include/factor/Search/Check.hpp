@@ -10,12 +10,12 @@
 // =============================================================================
 
 #include "factor/Check.hpp"
-#include "misc/exec.hpp"
 #include "factor/Search/Contract.hpp"
 #include "factor/Search/Cpu.hpp"
 #include "factor/Stat/Check.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp"
+#include "misc/exec.hpp"
 
 #include <chrono>
 #include <cmath>

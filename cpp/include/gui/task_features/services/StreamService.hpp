@@ -4,7 +4,7 @@
 //   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req (以 ReadScope 开头: 月份表 + universe
 //     子轴 + 库目录, worker 不碰 config) → Request(): 覆盖挂起请求 + 取消在跑
 //   - worker 线程 run: FeatureRead → Derived::reset(target, req) → target.build()
-//     (build 内部自己起一波常驻线程分批流式, 批末发布; 新请求/Cancel 置 cancel_, 抢任务处检查后放弃)
+//     (build 内部用 Runtime 常驻 ForkJoin 分批流式, 批末发布; 新请求/Cancel 置 cancel_, 每个任务开头检查后放弃)
 //   - UI 渲染持 target.mutex 读快照; 进度走原子, 免锁
 //
 // 生命周期 (随任务): 进 Features 任务输入就绪即 Start(data); 切走 tab 只 RequestCancel

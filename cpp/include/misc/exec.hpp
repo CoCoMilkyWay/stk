@@ -17,6 +17,7 @@
 #include <cassert>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -143,5 +144,12 @@ private:
   void *ctx_ = nullptr;
   std::atomic<int> pending_{0};
 };
+
+// 常驻池按需 (重) 建: 空或线程数不符才建 (宿主跨请求存活, 首个 dispatch 的线程自当 tid 0)
+inline ForkJoin &ensure(std::unique_ptr<ForkJoin> &ex, int threads) {
+  if (!ex || ex->threads() != std::max(1, threads))
+    ex = std::make_unique<ForkJoin>(threads);
+  return *ex;
+}
 
 } // namespace misc::exec

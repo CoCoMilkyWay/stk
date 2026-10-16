@@ -1,6 +1,5 @@
 #include "fundamental/Scan.hpp"
-
-#include <thread>
+#include "misc/exec.hpp"
 
 namespace fundamental {
 
@@ -71,17 +70,9 @@ Scan::Scan(const Catalog &cat, const Ids &ids, std::size_t threads) : cat_(cat),
 
 void Scan::run(std::atomic<std::size_t> &done) {
   std::sort(jobs_.begin(), jobs_.end(), [](const Job &a, const Job &b) { return a.bytes > b.bytes; });
-  std::atomic<std::size_t> next{0};
-  auto worker = [this, &next, &done] {
-    Scratch x;
-    for (std::size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < jobs_.size();)
-      jobs_[i].body(x, done);
-  };
-  std::vector<std::thread> ts;
-  for (std::size_t t = 0; t < std::min(threads_, jobs_.size()); ++t)
-    ts.emplace_back(worker);
-  for (std::thread &t : ts)
-    t.join();
+  misc::exec::ForkJoin ex(static_cast<int>(std::min(threads_, std::max<std::size_t>(1, jobs_.size()))));
+  std::vector<Scratch> xs(static_cast<std::size_t>(ex.threads())); // 按 tid
+  ex.tasks(static_cast<int>(jobs_.size()), [&](int i, int tid) { jobs_[static_cast<std::size_t>(i)].body(xs[static_cast<std::size_t>(tid)], done); });
   jobs_.clear();
 }
 

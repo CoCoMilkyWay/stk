@@ -4,6 +4,8 @@
 #include "math/distribution/KLLcache.hpp"
 #include "math/spectral/DayPSD.hpp"
 #include "misc/date.hpp"
+#include "misc/exec.hpp"
+#include "misc/profiler.hpp"
 #include "shared/AssetAxis.hpp" // UniverseAxis
 
 #include <algorithm>
@@ -165,10 +167,27 @@ void clear_slots(std::vector<KLLcache> &slots);
 // 子轴 → 全局轴映射必须升序去重非空 (UniverseAxis::ids)
 void check_axis(const std::vector<uint32_t> &global_ids);
 
-// 一波常驻线程: 扫描块数封顶; IO 每批最多 kDaysPerBatch 个任务, 只有前 n_io 个线程参与 IO
-struct ThreadLayout {
-  size_t n_threads, n_io;
-};
-ThreadLayout thread_layout(size_t A);
+inline size_t n_asset_blocks(size_t A) { return (A + kAssetBlock - 1) / kAssetBlock; }
+// 执行器线程数: 硬件并发, 按 max(批天数, 扫描块数) 封顶 (多出的线程每相都空转)
+size_t thread_count(size_t A);
+
+// ---- 批内并行 (misc/exec.hpp): build = 一串相, 每相一次 ex.tasks (返回即栅栏), 相间代码单线程 ----
+// 执行器常驻 Runtime (misc::exec::ensure, 跨 build 存活, worker 线程自当 tid 0)
+// shard (每 tid 一份) 两两并行归约到 shards[0] (log2 步, 每步一次 dispatch): shards[0] = 全程累加器 (不清), 其余清零.
+// Shard 提供 merge_from(const Shard &) / clear_agg()
+template <class Shard>
+void reduce_tree(misc::exec::ForkJoin &ex, std::vector<Shard> &shards) {
+  const size_t n = shards.size();
+  for (size_t step = 1; step < n; step <<= 1) {
+    const size_t pairs = (n - step + 2 * step - 1) / (2 * step); // dst = 0, 2·step, 4·step, … 且 dst + step < n
+    ex.tasks(static_cast<int>(pairs), [&](int k, int) {
+      TraceN("Reduce");
+      Shard &dst = shards[2 * step * static_cast<size_t>(k)];
+      Shard &src = shards[2 * step * static_cast<size_t>(k) + step];
+      dst.merge_from(src);
+      src.clear_agg();
+    });
+  }
+}
 
 } // namespace analysis

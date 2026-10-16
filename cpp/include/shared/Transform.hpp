@@ -33,17 +33,19 @@ class FeatureRead;
 //   今天用截至昨日的轮廓, 再把今天并入). 全部因果, 不用未来值.
 //   CS 段: 每个 (天, 分钟) 截面一列, 有效资产子集 dense 化 → cs::column_fn (Tf, Method) 原地.
 //
-// 流式 (对仗 Dist.hpp): 天是流式维度, 每批 kDaysPerBatch 天, 从前往后:
-//   Phase IO:   抢单天并行载入 → DayBatchPlane [列][A][批天][VR] (f16, 无效 = 哨兵 NaN)
+// 流式 (对仗 Dist.hpp): 天是流式维度, 每批 kDaysPerBatch 天, 从前往后; 每相一次 ex.tasks (Runtime 常驻 ForkJoin), 返回即栅栏:
+//   Phase IO:   单天一任务并行载入 → DayBatchPlane [列][A][批天][VR] (f16, 无效 = 哨兵 NaN)
 //   ── 栅栏 ──
-//   Phase TS:   抢资产块; 每 (资产, 天): 上面的 TS 链 → out_ [A][批天][VR] (float, NaN = 缺/预热)
+//   Phase TS:   资产块一任务; 每 (资产, 天): 上面的 TS 链 → out_ [A][批天][VR] (float, NaN = 缺/预热)
 //   ── 栅栏 ──
-//   Phase CS:   抢截面列块 (天×分钟); 每列 gather 有效子集 → column_fn → scatter 回 out_
+//   Phase CS:   截面列块 (天×分钟) 一任务; 每列 gather 有效子集 → column_fn → scatter 回 out_
 //   ── 栅栏 ──
-//   Phase 统计: 抢资产块; 每资产: 全量输出 → 该资产累积 sketch → 导出 AssetLine (PDF/矩);
+//   Phase 统计: 资产块一任务; 每资产: 全量输出 → 该资产累积 sketch → 导出 AssetLine (PDF/矩);
 //               并且逐天 ADF/KPSS (通过率累积)、逐天 PSD 与 ACF/PACF (算术平均累积) ——
 //               全资产, 无子集上限; 焦点资产额外攒 全程 原始/输出序列 + TOD 轮廓 (UI 序列视图)
-//   ── 栅栏 (completion, 单线程): 短锁 swap 发布 + 进度 + epoch ──
+//   ── 栅栏 ──
+//   Phase 归约: analysis::reduce_tree → shard 0 = 全程累加器
+//   ── 栅栏 ── 批末 (单线程): 短锁 swap 发布 + 进度 + epoch
 //   首帧 = 一批的 IO + 三段计算 (几十 ms), 与总区间长度无关; 视图逐批收敛.
 //
 // UI: 每帧持 mutex 读快照; 改任何参数 = 新请求 (取消在跑, 从第一天重来) —— 海量数据下

@@ -2,10 +2,10 @@
 #include "gui/task_factors/services/InspectService.hpp"
 
 #include "factor/EvalCpu.hpp"
-#include "misc/exec.hpp"
 #include "factor/Stat/Cpu.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp"
+#include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 

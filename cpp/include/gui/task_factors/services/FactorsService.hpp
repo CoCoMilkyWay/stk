@@ -44,12 +44,12 @@
 #pragma once
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
-#include "misc/exec.hpp"
 #include "factor/Expr.hpp"
 #include "factor/Search/Contract.hpp" // Score / Objective (看板 score / util 与 Search 同一份目标)
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
 #include "gui/util/Worker.hpp"
+#include "misc/exec.hpp"
 #include "shared/Analysis.hpp" // ReadScope
 #include "shared/Feature.hpp"  // Feature::Metadata
 

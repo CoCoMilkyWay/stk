@@ -8,10 +8,10 @@
 
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Dag.hpp"
-#include "misc/exec.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / MiniPdf
-#include "shared/Analysis.hpp"                          // AggPdf
+#include "misc/exec.hpp"
+#include "shared/Analysis.hpp" // AggPdf
 
 #include <atomic>
 #include <cstdint>

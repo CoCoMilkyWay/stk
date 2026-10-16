@@ -11,9 +11,9 @@
 // =============================================================================
 
 #include "factor/Contract.hpp"
+#include "misc/exec.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -128,22 +128,8 @@ inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
     std::mt19937 r(seeds[static_cast<size_t>(s)]);
     detail::fill_seg(p, g, pr, s * kSegLen, (s + 1) * kSegLen, A, r);
   };
-  const int threads = std::min<int>(nseg, static_cast<int>(std::max<unsigned>(1, std::thread::hardware_concurrency())));
-  if (threads <= 1) {
-    for (int s = 0; s < nseg; ++s)
-      seg(s);
-    return;
-  }
-  std::atomic<int> next{0};
-  std::vector<std::thread> th;
-  th.reserve(static_cast<size_t>(threads));
-  for (int i = 0; i < threads; ++i)
-    th.emplace_back([&] {
-      for (int s; (s = next.fetch_add(1, std::memory_order_relaxed)) < nseg;)
-        seg(s);
-    });
-  for (std::thread &t : th)
-    t.join();
+  misc::exec::ForkJoin ex(std::min<int>(nseg, static_cast<int>(std::max<unsigned>(1, std::thread::hardware_concurrency()))));
+  ex.tasks(nseg, [&](int s, int) { seg(s); });
 }
 
 // 截面池掩码: 每 (段, 资产) 一个常量 (真实池按日增删), 约 60% 在池; v 恒 0 不用.

@@ -9,7 +9,6 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
-#include <functional>
 #include <random>
 #include <thread>
 
@@ -121,29 +120,6 @@ static float pair_rho(double sxy, double sx, double sy, double sxx, double syy, 
   return static_cast<float>(std::clamp(r, -1.0, 1.0));
 }
 
-// 一波线程跑 n_tasks 个任务 (抢任务). 相关矩阵按天分三相 (IO / 秩 / 累加), 每相一波:
-// 整个构建也就 3 × kCorrDays 次起线程 (几十 ms), 换掉一套跨相栅栏状态机
-static void parallel_for(size_t n_tasks, size_t n_threads, const std::atomic<bool> &cancel,
-                         const std::function<void(size_t, size_t)> &fn) {
-  if (n_tasks == 0)
-    return;
-  const size_t n = std::min(n_threads, n_tasks);
-  std::atomic<size_t> next{0};
-  std::vector<std::thread> threads;
-  threads.reserve(n);
-  for (size_t t = 0; t < n; ++t)
-    threads.emplace_back([&, t] {
-      for (;;) {
-        const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-        if (i >= n_tasks || cancel.load(std::memory_order_relaxed))
-          return;
-        fn(i, t);
-      }
-    });
-  for (auto &th : threads)
-    th.join();
-}
-
 static size_t worker_threads() {
   return std::max<size_t>(1, std::thread::hardware_concurrency());
 }
@@ -154,15 +130,17 @@ static size_t worker_threads() {
 // ============================================================================
 
 // IO 侧双缓冲: 算第 d 天 (秩 + 累加, 吃满全部核) 的同时, 后台线程把第 d+1 天读进另一份 ——
-// 磁盘等待不再让 CPU 空转; IO 自己的门控循环也并行抢块.
+// 磁盘等待不再让 CPU 空转; IO 自己的门控循环也按特征块并行.
+// 两个常驻池: ex = 计算 (秩 / 累加, worker 线程 dispatch), io = 预读 (预读线程 dispatch), 两者并发互不重入
 struct SlicePlane {
   size_t F = 0, A = 0, S = 0, VR = 0, n_threads = 0;
+  std::unique_ptr<misc::exec::ForkJoin> ex, io;
 
   struct RawBuf {
     std::vector<size_t> slice_t;                  // [S] 切片行号 (>= VR = 越界, 整片作废)
     std::vector<feature_storage_t> raw;           // [S][F][A] 门控后的原值 (无效 = 哨兵 NaN)
     std::vector<float> gate;                      // [S][A] 当日 ts_valid 值 (逐特征按自己的 valid_type 判)
-    std::vector<FeatureRead::DayColumns> staging; // [n_io] IO 暂存
+    std::vector<FeatureRead::DayColumns> staging; // [io 线程数] IO 暂存 (按 io tid)
     FeatureRead::DayColumns meta_day;
   };
   RawBuf bufs[2];
@@ -170,7 +148,7 @@ struct SlicePlane {
 
   std::vector<float> R, M, R2;                 // [S][F][A] 标准化中位秩 / 掩码 / 秩平方 (bufs[cur] 的)
   std::vector<uint8_t> row_ok;                 // [S][F] 该 (切片, 特征) 是否参与
-  std::vector<std::vector<uint64_t>> sort_buf; // [n_threads][A] 排序键
+  std::vector<std::vector<uint64_t>> sort_buf; // [n_threads][A] 排序键 (按 ex tid)
 
   void prepare(size_t F_, size_t A_, size_t S_, size_t level) {
     TraceN("CorrPlanePrepare");
@@ -180,12 +158,15 @@ struct SlicePlane {
     VR = level_valid_rows(level);
     n_threads = worker_threads();
     cur = 0;
+    const size_t n_io = std::min(n_threads, (F + kCorrBlockCols - 1) / kCorrBlockCols);
+    misc::exec::ensure(ex, static_cast<int>(n_threads));
+    misc::exec::ensure(io, static_cast<int>(n_io));
 
     for (RawBuf &b : bufs) {
       b.slice_t.assign(S, VR);
       b.raw.assign(S * F * A, kInvalid16);
       b.gate.assign(S * A, 0.0f);
-      b.staging.resize(std::min(n_threads, (F + kCorrBlockCols - 1) / kCorrBlockCols));
+      b.staging.resize(n_io);
       for (auto &st : b.staging)
         st.preallocate(A, level, kCorrBlockCols);
       b.meta_day.preallocate(A, level, 1);
@@ -205,7 +186,7 @@ struct SlicePlane {
   const float *R2s(size_t s) const { return R2.data() + s * F * A; }
   const uint8_t *ok(size_t s) const { return row_ok.data() + s * F; }
 
-  // 相 1: IO (并行抢特征块) —— 逐块读列文件, 就地按 ts_valid 门控抽出 b.slice_t 指定的 S 个切片.
+  // 相 1: IO (特征块一任务, io 池) —— 逐块读列文件, 就地按 ts_valid 门控抽出 b.slice_t 指定的 S 个切片.
   // 只写 b 自己的内存, 可与另一缓冲上的 rank / 累加并发跑 (FeatureRead 并发只读)
   void load(RawBuf &b, FeatureRead &reader, misc::Ymd date,
             const std::vector<uint32_t> &cols, const std::vector<L2::ValidType> &vts,
@@ -227,8 +208,10 @@ struct SlicePlane {
     }
 
     const size_t n_blocks = (F + kCorrBlockCols - 1) / kCorrBlockCols;
-    parallel_for(n_blocks, b.staging.size(), cancel, [&](size_t blk, size_t tid) {
-      const size_t f0 = blk * kCorrBlockCols, f1 = std::min(f0 + kCorrBlockCols, F);
+    io->tasks(static_cast<int>(n_blocks), [&](int blk, int tid) {
+      if (cancel.load(std::memory_order_relaxed))
+        return;
+      const size_t f0 = static_cast<size_t>(blk) * kCorrBlockCols, f1 = std::min(f0 + kCorrBlockCols, F);
       std::vector<size_t> cs;
       cs.reserve(f1 - f0);
       for (size_t f = f0; f < f1; ++f)
@@ -258,12 +241,14 @@ struct SlicePlane {
     });
   }
 
-  // 相 2: 对 bufs[cur] 做秩变换 (并行抢 (切片, 特征) 格; 粒度细, 尾部不空转)
+  // 相 2: 对 bufs[cur] 做秩变换 ((切片, 特征) 格一任务, ex 池; 粒度细, 尾部不空转)
   void rank(const std::atomic<bool> &cancel) {
     TraceN("CorrRank");
     const RawBuf &b = bufs[cur];
-    parallel_for(S * F, n_threads, cancel, [&](size_t sf, size_t tid) {
-      const size_t o = sf * A;
+    ex->tasks(static_cast<int>(S * F), [&](int sf, int tid) {
+      if (cancel.load(std::memory_order_relaxed))
+        return;
+      const size_t o = static_cast<size_t>(sf) * A;
       row_ok[sf] = rank_slice(b.raw.data() + o, A, sort_buf[tid].data(), R.data() + o,
                               M.data() + o, R2.data() + o)
                        ? 1
@@ -384,12 +369,15 @@ bool Correlation::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     // ---- 相 2: 秩变换 ----
     pl.rank(cancel);
 
-    // ---- 相 3: 累加 (并行抢矩阵行; 行 i 只被一个线程写, 免 shard 免归约) ----
+    // ---- 相 3: 累加 (矩阵行一任务; 行 i 只被一个任务写, 免 shard 免归约) ----
     // 只跑上三角 (j > i), 同一趟把转置位一并填上 (sx/sxx 非对称, 两侧都要).
     // 任务粒度 = 单行: 行 i 的工作量 ∝ F - i, 动态抢任务即可摊平
     {
       TraceN("CorrAccum");
-      parallel_for(F, pl.n_threads, cancel, [&](size_t i, size_t /*tid*/) {
+      pl.ex->tasks(static_cast<int>(F), [&](int row, int) {
+        if (cancel.load(std::memory_order_relaxed))
+          return;
+        const size_t i = static_cast<size_t>(row);
         for (size_t s = 0; s < S; ++s) {
           const uint8_t *ok = pl.ok(s);
           if (!ok[i])
@@ -496,9 +484,11 @@ struct CorrPair::Runtime {
     std::vector<uint64_t> key;                                           // [A]
     std::array<double, kCorrLags> sxy{}, sx{}, sy{}, sxx{}, syy{}, np{}; // 线程私有累加
   };
-  std::vector<DayBuf> bufs; // [n_threads]
+  std::vector<DayBuf> bufs; // [n_threads] 按 tid
+  std::unique_ptr<misc::exec::ForkJoin> ex;
 
-  void prepare(size_t A_, size_t level, size_t n_threads) {
+  // 返回执行器
+  misc::exec::ForkJoin &prepare(size_t A_, size_t level, size_t n_threads) {
     A = A_;
     VR = level_valid_rows(level);
     bufs.resize(n_threads);
@@ -522,6 +512,7 @@ struct CorrPair::Runtime {
       b.syy = {};
       b.np = {};
     }
+    return misc::exec::ensure(ex, static_cast<int>(n_threads));
   }
 };
 
@@ -559,12 +550,14 @@ bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   total.store(dates.size(), std::memory_order_release);
 
   const size_t n_threads = std::min(worker_threads(), dates.size());
-  rt.prepare(A_, level, n_threads);
+  misc::exec::ForkJoin &ex = rt.prepare(A_, level, n_threads);
   const size_t A = rt.A, VR = rt.VR;
   const std::vector<size_t> day_cols{col_a, col_b, meta_col_};
 
-  // 全部天并行抢 (每线程一套缓冲 + 累加器); 悬停即触发, 请求换得很快 → 日内也查取消
-  parallel_for(dates.size(), n_threads, cancel, [&](size_t d, size_t tid) {
+  // 一天一任务 (每 tid 一套缓冲 + 累加器); 悬停即触发, 请求换得很快 → 日内也查取消
+  ex.tasks(static_cast<int>(dates.size()), [&](int d, int tid) {
+    if (cancel.load(std::memory_order_relaxed))
+      return;
     Runtime::DayBuf &b = rt.bufs[tid];
     reader.load_day_columns(dates[d], day_cols, b.day);
 
@@ -762,11 +755,14 @@ bool CorrLag::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
     pl.rank(cancel);
 
-    // 累加 (并行抢行 i; 行 i 的全部 (i, j > i) × lag 只被一个线程写).
+    // 累加 (行 i 一任务; 行 i 的全部 (i, j > i) × lag 只被一个任务写).
     // 每 lag 把窗内所有 (t, t + lag) 切片对都用上; 只累 Σ R_i R_j 与 Σ m_i m_j (见头注释)
     {
       TraceN("CorrLagAccum");
-      parallel_for(F, pl.n_threads, cancel, [&](size_t i, size_t /*tid*/) {
+      pl.ex->tasks(static_cast<int>(F), [&](int row, int) {
+        if (cancel.load(std::memory_order_relaxed))
+          return;
+        const size_t i = static_cast<size_t>(row);
         for (size_t k = 0; k < kCorrLags; ++k) {
           const int lag = CorrPair::lag_of(k);
           const size_t t0 = lag < 0 ? static_cast<size_t>(-lag) : 0;
