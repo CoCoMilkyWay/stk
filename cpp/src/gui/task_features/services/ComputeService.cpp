@@ -33,7 +33,8 @@ void ComputeService::Request(ComputeConfig config) {
 }
 
 bool ComputeService::run(ComputeConfig &config) {
-  const StageLayout layout = StageLayout::make(static_cast<int>(misc::Affinity::core_count()), config.prefetch_share_io);
+  // 核布局: 预取 → TS → CS → IO 四个 stage, 全部 pin 死 (见 StageLayout)
+  const StageLayout L = StageLayout::make(static_cast<int>(misc::Affinity::core_count()), config.prefetch_share_io);
 
   // Enable High Performance Mode: GUI low-refresh, compute owns cores
   data_.EnableHighPerformanceMode();
@@ -48,8 +49,6 @@ bool ComputeService::run(ComputeConfig &config) {
   const std::vector<misc::Ymd> backtest_dates = data_.asset.backtest_dates();
   assert(!backtest_dates.empty() && "回测区间内无交易日, 不应触发特征计算");
 
-  // 核布局: 预取 → TS → CS → IO 四个 stage, 全部 pin 死 (见 StageLayout)
-  const StageLayout &L = layout;
   const std::string stage_summary = L.summary();
 
   std::cout << "\n=== Phase 2: Feature Computation ===\n"
