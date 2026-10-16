@@ -377,7 +377,7 @@ static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t p
 
 static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap) {
   auto &ui = of.ui;
-  const OrderFlow::Depth &dp = of.depth_front_slot();
+  const OrderFlow::Depth &dp = of.depth.front_slot();
 
   if (dp.asset_idx == SIZE_MAX) {
     ImGui::TextDisabled("Waiting for depth replay...");
@@ -783,7 +783,7 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
     ++uni.filter_epoch;
 
   // 候选数 / 锚点日
-  const OrderFlow::Universe::Slot &slot = uni.front_slot();
+  const OrderFlow::Universe::Slot &slot = uni.slots.front_slot();
   ImGui::SameLine();
   if (slot.gen == uni.gen && !slot.meta.empty()) {
     ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "%zu/%zu",
@@ -818,7 +818,7 @@ static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
   int pos = in_candidates ? static_cast<int>(it - uni.candidates.begin()) : 0;
 
   // candidates 可能建于上一代槽 (新代在途), ST 标记按当前 front 槽尽力显示
-  const auto &meta_now = uni.front_slot().meta;
+  const auto &meta_now = uni.slots.front_slot().meta;
   const uint8_t rw = asset_idx < meta_now.size() ? meta_now[asset_idx].risk_warn : 0;
   const auto &asset = data.asset.items[asset_idx];
   char overlay[256];
@@ -885,7 +885,7 @@ static void RenderStatusBar(const OrderFlow &of) {
 
   // Depth 重放状态
   ImGui::SameLine();
-  const OrderFlow::Depth &dp = of.depth_front_slot();
+  const OrderFlow::Depth &dp = of.depth.front_slot();
   if (dp.gen != ui.depth_gen) {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L0: replaying...]");
   } else if (dp.has_data) {
@@ -966,14 +966,8 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // ==========================================================================
   // 帧首: 背槽发布 ack → 翻 front (先翻面后清 pending, worker 等 pending 清)
   // ==========================================================================
-  if (of.depth_pending.load(std::memory_order_acquire)) {
-    of.depth_front.store(1 - of.depth_front.load(std::memory_order_relaxed), std::memory_order_release);
-    of.depth_pending.store(false, std::memory_order_release);
-  }
-  if (of.universe.pending.load(std::memory_order_acquire)) {
-    of.universe.front.store(1 - of.universe.front.load(std::memory_order_relaxed), std::memory_order_release);
-    of.universe.pending.store(false, std::memory_order_release);
-  }
+  of.depth.ack();
+  of.universe.slots.ack();
 
   // ==========================================================================
   // 期望态检测 → 请求 (gen++ 即"停止消费旧代", 发布追上后自动恢复渲染)
@@ -1044,7 +1038,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
 
   // 候选重建 (槽换代 或 筛选条件变)
   {
-    const OrderFlow::Universe::Slot &slot = uni.front_slot();
+    const OrderFlow::Universe::Slot &slot = uni.slots.front_slot();
     if (slot.gen == uni.gen && slot.meta.size() == num_assets && !uni.matches(slot.gen))
       uni.rebuild_candidates(slot, asset_boards);
   }
@@ -1064,7 +1058,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // 图1 用 front 槽实际渲染的特征层 (换层在途时与旧槽数据配对)
   static Cat2Snapshot s_cat2_depth, s_cat2_l1;
   EffectiveCat2Snapshot(data, 1, s_cat2_l1);
-  EffectiveCat2Snapshot(data, static_cast<size_t>(of.depth_front_slot().feat_level), s_cat2_depth);
+  EffectiveCat2Snapshot(data, static_cast<size_t>(of.depth.front_slot().feat_level), s_cat2_depth);
 
   // ==========================================================================
   // LAYOUT
@@ -1087,7 +1081,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // 无边框: 与 L0Chart 同 padding, 两图 plot 区域上下像素级对齐
   ImGui::BeginChild("DepthPanel", ImVec2(OrderFlowConst::DEPTH_PANEL_WIDTH, -1), false);
   {
-    const OrderFlow::Depth &dp = of.depth_front_slot();
+    const OrderFlow::Depth &dp = of.depth.front_slot();
     if (dp.has_data && ui.l0_anchor_tick != SIZE_MAX) {
       const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.l0_anchor_tick));
       RenderDepthPanel(of, dp, plot_idx);

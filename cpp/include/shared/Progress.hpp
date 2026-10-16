@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -17,6 +18,7 @@
 //
 // Published = 进度 + 发布快照锁 (worker 短锁写, UI 渲染帧内持锁读)
 // PrefixPub = 免锁单调前缀发布字 (流式 K 线)
+// PingPong  = 免锁双槽整体发布 + 进度面 (OrderFlow 盘口 / 资产状态)
 // ============================================================================
 enum class Phase : uint8_t { Idle,
                              Scanning,
@@ -79,4 +81,34 @@ struct PrefixPub {
     points = static_cast<size_t>(w & 0xFFFFFFFF);
   }
   std::atomic<uint64_t> pub{0};
+};
+
+// PingPong — 双槽整体发布 (单写 worker / 单读 GUI, 免锁): worker 等 writable() → 写 back() → commit();
+// GUI 帧首 ack() 翻面. pending 未 ack 期间 worker 不碰任何槽. 自带进度面 (worker 骨架的 board)
+template <class Slot>
+struct PingPong : Progress {
+  Slot slot[2];
+  std::atomic<int> front{0};
+  std::atomic<bool> pending{false};
+
+  const Slot &front_slot() const { return slot[front.load(std::memory_order_acquire)]; }
+  bool writable() const { return !pending.load(std::memory_order_acquire); }
+  Slot &back() {
+    assert(writable() && "背槽未 ack");
+    return slot[1 - front.load(std::memory_order_acquire)];
+  }
+  void commit() { pending.store(true, std::memory_order_release); }
+  void ack() { // GUI: 先翻面后清 pending (worker 等 pending 清)
+    if (!pending.load(std::memory_order_acquire))
+      return;
+    front.store(1 - front.load(std::memory_order_relaxed), std::memory_order_release);
+    pending.store(false, std::memory_order_release);
+  }
+  void clear() {
+    slot[0].clear();
+    slot[1].clear();
+    front.store(0, std::memory_order_relaxed);
+    pending.store(false, std::memory_order_relaxed);
+    idle();
+  }
 };

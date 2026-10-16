@@ -3,6 +3,7 @@
 
 #include "codec/OrderFrame.hpp"
 #include "features/Backend/FeatureRead.hpp"
+#include "gui/util/Worker.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
 #include "shared/AssetAxis.hpp" // UniverseAxis
@@ -14,6 +15,8 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <optional>
+#include <thread>
 
 namespace GUI::Features {
 
@@ -28,33 +31,116 @@ enum UniCol : size_t { UNI_META = 0,
                        UNI_DELIST_AGE,
                        UNI_INDUSTRY };
 constexpr size_t UNIVERSE_COL_COUNT = 5;
+
+// ============================================================================
+// worker 私有常驻资源 (首个请求时在 worker 线程建, 稳态零分配)
+// ============================================================================
+
+// 特征库读端: 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
+struct LibRead {
+  UniverseAxis uni;
+  FeatureRead reader;
+  std::vector<size_t> columns; // 选列缓冲
+
+  explicit LibRead(SharedData &data)
+      : uni(universe_axis(data.config, data.asset.items.size())),
+        reader(data.config.FeatureUniverseDir(), uni.size(), uni.hash) {}
+};
+
+// 背槽待 GUI ack (帧首翻面, 无 cv 信号): 限时睡轮询; false = 等待中被新请求 / Stop 打断
+template <class Slot>
+bool await_back(const PingPong<Slot> &pp, const std::atomic<bool> &cancel) {
+  while (!pp.writable()) {
+    if (cancel.load(std::memory_order_relaxed))
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return true;
+}
 } // namespace
 
 // ============================================================================
-// Impl — worker 线程私有常驻资源 (稳态零分配)
+// 三个 worker (gui/util/Worker.hpp): board = SharedData 里各自的发布面
 // ============================================================================
 
-struct OrderFlowService::Impl {
-  UniverseAxis uni; // 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
-  FeatureRead reader;
-  L2::FrameDecoder decoder; // 对仗 sequential_worker 的 decoder (日文件 reader 按请求现开)
-  LimitOrderBook lob;       // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
-  TickData tick_data;       // 无特征侧绑定的盘口写出口
-  FeatureRead::DayColumns l1_cols, l0_cols, uni_cols;
-  OrderFlow::Depth::HeatmapScratch scratch;
-  std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
-  std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
-  std::vector<size_t> columns;   // 选列缓冲
+class OrderFlowService::KlineWorker : public Worker<KlineWorker, KlineReq> {
+  friend Worker<KlineWorker, KlineReq>;
 
-  Impl(const std::string &features_dir, UniverseAxis uni_)
-      : uni(std::move(uni_)),
-        reader(features_dir, uni.size(), uni.hash),
-        lob(L2::LOB_ORDER_CAPACITY) {
-    const size_t A = uni.size();
-    l1_cols.preallocate(A, 1, 5 + OrderFlowConst::MAX_FEATURES); // OHLC 4 + ts_valid + 特征
-    l0_cols.preallocate(A, 0, 1 + OrderFlowConst::MAX_FEATURES); // ts_valid + 特征
-    uni_cols.preallocate(A, 1, UNIVERSE_COL_COUNT);              // 资产筛选状态列
-  }
+public:
+  static constexpr const char *kName = "OF_KlineWorker";
+  explicit KlineWorker(SharedData &data) : data_(data) { Start(); }
+  ~KlineWorker() { Stop(); }
+
+private:
+  struct Res {
+    LibRead lib;
+    FeatureRead::DayColumns cols; // OHLC 4 + ts_valid + 特征
+    explicit Res(SharedData &data) : lib(data) { cols.preallocate(lib.uni.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
+  };
+  static constexpr Phase kStart = Phase::Running;
+  Progress &board() { return data_.orderflow.kline; }
+  bool run(KlineReq &req);
+  bool step(size_t d); // 装一天并发布; false = 库判废
+
+  SharedData &data_;
+  std::optional<Res> res_;
+  KlineReq cur_{};
+  size_t sub_ = 0;                   // 选中资产的子轴下标 (run 映射一次)
+  double y_min_ = 0.0, y_max_ = 0.0; // OHLC 运行范围
+  std::vector<float> feat_min_, feat_max_;
+};
+
+class OrderFlowService::DepthWorker : public Worker<DepthWorker, DepthReq> {
+  friend Worker<DepthWorker, DepthReq>;
+
+public:
+  static constexpr const char *kName = "OF_DepthWorker";
+  explicit DepthWorker(SharedData &data) : data_(data) { Start(); }
+  ~DepthWorker() { Stop(); }
+
+private:
+  struct Res {
+    LibRead lib;
+    L2::FrameDecoder decoder;                 // 对仗 sequential_worker 的 decoder (日文件 reader 按请求现开)
+    LimitOrderBook lob;                       // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
+    TickData tick_data;                       // 无特征侧绑定的盘口写出口
+    FeatureRead::DayColumns l1_cols, l0_cols; // ts_valid + VWAP / 特征
+    OrderFlow::Depth::HeatmapScratch scratch;
+    std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
+    std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
+    explicit Res(SharedData &data) : lib(data), lob(L2::LOB_ORDER_CAPACITY) {
+      l1_cols.preallocate(lib.uni.size(), 1, 1 + OrderFlowConst::MAX_FEATURES);
+      l0_cols.preallocate(lib.uni.size(), 0, 1 + OrderFlowConst::MAX_FEATURES);
+    }
+  };
+  static constexpr Phase kStart = Phase::Running;
+  Progress &board() { return data_.orderflow.depth; }
+  bool run(DepthReq &req); // 重放 + 构建 + 背槽发布
+
+  SharedData &data_;
+  std::optional<Res> res_;
+};
+
+class OrderFlowService::UniverseWorker : public Worker<UniverseWorker, UniverseReq> {
+  friend Worker<UniverseWorker, UniverseReq>;
+
+public:
+  static constexpr const char *kName = "OF_UniverseWorker";
+  explicit UniverseWorker(SharedData &data) : data_(data) { Start(); }
+  ~UniverseWorker() { Stop(); }
+
+private:
+  struct Res {
+    LibRead lib;
+    FeatureRead::DayColumns cols; // 资产筛选状态列
+    explicit Res(SharedData &data) : lib(data) { cols.preallocate(lib.uni.size(), 1, UNIVERSE_COL_COUNT); }
+  };
+  static constexpr Phase kStart = Phase::Running;
+  Progress &board() { return data_.orderflow.universe.slots; }
+  bool run(UniverseReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
+
+  SharedData &data_;
+  std::optional<Res> res_;
 };
 
 // ============================================================================
@@ -68,22 +154,17 @@ OrderFlowService::~OrderFlowService() {
 }
 
 void OrderFlowService::Start(SharedData &data) {
-  if (thread_.joinable())
+  if (kline_)
     return;
-  data_ = &data;
-  stop_.store(false, std::memory_order_relaxed);
-  thread_ = std::thread(&OrderFlowService::worker_loop, this);
+  kline_ = std::make_unique<KlineWorker>(data);
+  depth_ = std::make_unique<DepthWorker>(data);
+  universe_ = std::make_unique<UniverseWorker>(data);
 }
 
-void OrderFlowService::Stop() {
-  if (!thread_.joinable())
-    return;
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    stop_.store(true, std::memory_order_relaxed);
-  }
-  req_cv_.notify_all();
-  thread_.join();
+void OrderFlowService::Stop() { // worker 析构即 Stop (join)
+  kline_.reset();
+  depth_.reset();
+  universe_.reset();
 }
 
 // ============================================================================
@@ -91,97 +172,30 @@ void OrderFlowService::Stop() {
 // ============================================================================
 
 void OrderFlowService::RequestKline(uint32_t gen, size_t asset_idx, std::vector<int> feats, bool rescan_dates) {
+  assert(kline_ && "Request 先于 Start");
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_kline_ = KlineReq{gen, asset_idx, std::move(feats), rescan_dates};
-  }
-  req_cv_.notify_all();
+  kline_->Request(KlineReq{gen, asset_idx, std::move(feats), rescan_dates});
 }
 
 void OrderFlowService::RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, int feat_level, std::vector<int> feats) {
+  assert(depth_ && "Request 先于 Start");
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
   assert(feat_level == 0 || feat_level == 1);
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_depth_ = DepthReq{gen, date, asset_idx, feat_level, std::move(feats)};
-  }
-  req_cv_.notify_all();
+  depth_->Request(DepthReq{gen, date, asset_idx, feat_level, std::move(feats)});
 }
 
 void OrderFlowService::RequestUniverse(uint32_t gen, misc::Ymd date) {
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_universe_ = UniverseReq{gen, date};
-  }
-  req_cv_.notify_all();
-}
-
-// ============================================================================
-// Worker loop — Depth 重放优先, Kline 逐日流式垫底, 每步之间轮询新请求
-// ============================================================================
-
-void OrderFlowService::worker_loop() {
-  OrderFlow &of = data_->orderflow;
-  impl_ = std::make_unique<Impl>(data_->config.FeatureUniverseDir(),
-                                 universe_axis(data_->config, data_->asset.items.size()));
-
-  while (true) {
-    std::optional<KlineReq> kreq;
-    std::optional<DepthReq> dreq;
-    std::optional<UniverseReq> ureq;
-    {
-      std::unique_lock<std::mutex> lock(req_mutex_);
-      auto has_work = [&] {
-        return stop_.load(std::memory_order_relaxed) || pending_kline_.has_value() ||
-               (pending_depth_.has_value() && !of.depth_pending.load(std::memory_order_acquire)) ||
-               (pending_universe_.has_value() && !of.universe.pending.load(std::memory_order_acquire)) ||
-               (kline_active_ && kline_next_day_ < of.kline.dates.size());
-      };
-      if (!has_work()) {
-        if (pending_depth_.has_value() || pending_universe_.has_value()) // 背槽待 GUI ack: 无 cv 信号, 限时睡
-          req_cv_.wait_for(lock, std::chrono::milliseconds(2), has_work);
-        else
-          req_cv_.wait(lock, has_work);
-      }
-      if (stop_.load(std::memory_order_relaxed))
-        return;
-      if (pending_kline_) {
-        kreq = std::move(pending_kline_);
-        pending_kline_.reset();
-      }
-      if (pending_depth_ && !of.depth_pending.load(std::memory_order_acquire)) {
-        dreq = std::move(pending_depth_);
-        pending_depth_.reset();
-      }
-      if (pending_universe_ && !of.universe.pending.load(std::memory_order_acquire)) {
-        ureq = std::move(pending_universe_);
-        pending_universe_.reset();
-      }
-    }
-
-    // 取出的请求必须全部执行 —— 已从 pending_ 摘走, 丢掉就永久丢失
-    // (GUI 侧期望态已更新, 不会重发 → 发布代永远追不上请求代)
-    if (kreq)
-      kline_begin(*kreq);
-    if (ureq)
-      universe_build(*ureq); // 资产选择依赖它, 先于 depth
-    if (dreq)
-      depth_build(*dreq);
-
-    // 流式垫底: 仅在无按需请求时推进 (下一轮轮询即可被新请求打断)
-    if (!ureq && !dreq && kline_active_)
-      kline_active_ = kline_step();
-  }
+  assert(universe_ && "Request 先于 Start");
+  universe_->Request(UniverseReq{gen, date});
 }
 
 // ============================================================================
 // 日期扫描: features/<universe>/YYYY/MM/DD 有整层文件的日, 升序
 // ============================================================================
 
-void OrderFlowService::scan_dates(std::vector<misc::Ymd> &out) const {
+namespace {
+void scan_dates(const std::string &dir, std::vector<misc::Ymd> &out) {
   TraceN("OF_ScanDates");
-  const std::string dir = data_->config.FeatureUniverseDir();
 
   // 目录不在 / 遍历中途被并发删库 (FeatureRead::wipe_dir) → ec 置位, 该层迭代器即 end
   std::error_code ec;
@@ -207,107 +221,118 @@ void OrderFlowService::scan_dates(std::vector<misc::Ymd> &out) const {
   }
   std::sort(out.begin(), out.end());
 }
+} // namespace
 
 // ============================================================================
 // Kline: 换代 + 逐日流式
 // ============================================================================
 
-void OrderFlowService::kline_begin(const KlineReq &req) {
+bool OrderFlowService::KlineWorker::run(KlineReq &req) {
   TraceN("OF_KlineBegin");
-  OrderFlow::Kline &k = data_->orderflow.kline;
+  if (!res_)
+    res_.emplace(data_);
+  OrderFlow::Kline &k = data_.orderflow.kline;
 
   // 此刻 GUI 请求代 == req.gen, 发布代 == 旧代 → GUI 不读 kline, dates/数组可安全重建
   if (req.rescan || k.dates.empty()) {
-    impl_->reader.revive(); // 重扫 = 库换代 (重算清库/判废后新库落地), 判废解除
+    k.begin(Phase::Scanning);
+    res_->lib.reader.revive(); // 重扫 = 库换代 (重算清库/判废后新库落地), 判废解除
     k.dates.clear();
-    scan_dates(k.dates);
+    scan_dates(data_.config.FeatureUniverseDir(), k.dates);
   }
 
-  kline_cur_ = req;
-  kline_next_day_ = 0;
-  kline_active_ = !k.dates.empty();
-  kline_y_min_ = (std::numeric_limits<double>::max)();
-  kline_y_max_ = std::numeric_limits<double>::lowest();
-  kline_feat_min_.assign(req.feats.size(), (std::numeric_limits<float>::max)());
-  kline_feat_max_.assign(req.feats.size(), std::numeric_limits<float>::lowest());
+  cur_ = std::move(req);
+  y_min_ = (std::numeric_limits<double>::max)();
+  y_max_ = std::numeric_limits<double>::lowest();
+  feat_min_.assign(cur_.feats.size(), (std::numeric_limits<float>::max)());
+  feat_max_.assign(cur_.feats.size(), std::numeric_limits<float>::lowest());
 
-  k.begin_generation(req.gen, req.asset, req.feats.size());
+  k.begin_generation(cur_.gen, cur_.asset, cur_.feats.size());
   k.reserve_capacity(); // 发布前完成: 之后 data() 恒稳定
 
   // 请求侧 asset 是全局轴下标, 特征列按 universe 子轴索引. 不在子轴内 (初始
   // 默认选中 / 换 universe 后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
   // 列可读, 直接发布"完整但空"的一代 —— 与全轴时代读到恒零列的语义一致.
-  kline_sub_ = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
-  if (kline_sub_ >= impl_->uni.size()) {
-    k.pub.store(OrderFlow::Kline::pack(req.gen, k.dates.size(), 0), std::memory_order_release);
-    kline_active_ = false;
+  sub_ = res_->lib.uni.sub_of(static_cast<uint32_t>(cur_.asset));
+  if (sub_ >= res_->lib.uni.size()) {
+    k.pub.store(OrderFlow::Kline::pack(cur_.gen, k.dates.size(), 0), std::memory_order_release);
+    return true;
   }
+
+  k.begin(Phase::Running, k.dates.size());
+  for (size_t d = 0; d < k.dates.size(); ++d) {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false; // 一天一步: 新请求在天与天之间打断
+    if (!step(d))
+      return false; // 特征库被判废删除 (字段表改了): 停流, 别把空转的陈旧列喂进 K 线; 重算后 needs_rescan 自愈
+    k.publish(1);
+  }
+  return true;
 }
 
-bool OrderFlowService::kline_step() {
+bool OrderFlowService::KlineWorker::step(size_t d) {
   TraceN("OF_KlineDay");
-  OrderFlow::Kline &k = data_->orderflow.kline;
-  const size_t d = kline_next_day_;
+  OrderFlow::Kline &k = data_.orderflow.kline;
   assert(d < k.dates.size());
+  LibRead &lib = res_->lib;
+  const FeatureRead::DayColumns &dc = res_->cols;
 
   // 选列: [open, high, low, close, ts_valid, 特征...] — L1 逐列文件, 每日只碰 n 个小文件
-  auto &cols = impl_->columns;
+  auto &cols = lib.columns;
   cols.assign({L1_Field::open, L1_Field::high, L1_Field::low,
                L1_Field::close, L1_Field::ts_valid});
-  for (int f : kline_cur_.feats)
+  for (int f : cur_.feats)
     cols.push_back(static_cast<size_t>(f));
-  impl_->reader.load_day_columns(k.dates[d], cols, impl_->l1_cols);
-  if (impl_->reader.stale())
-    return false; // 特征库被判废删除 (字段表改了): 停流, 别把空转的陈旧列喂进 K 线; 重算后 needs_rescan 自愈
+  lib.reader.load_day_columns(k.dates[d], cols, res_->cols);
+  if (lib.reader.stale())
+    return false;
 
-  // 选中资产的子轴下标 (kline_begin 映射并保证在轴内, 否则不会流式到这)
-  const size_t a = kline_sub_;
-  assert(a < impl_->uni.size());
+  // 选中资产的子轴下标 (run 映射并保证在轴内, 否则不会流式到这)
+  const size_t a = sub_;
+  assert(a < lib.uni.size());
   const double x0 = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
-  const size_t nf = kline_cur_.feats.size();
+  const size_t nf = cur_.feats.size();
 
   for (size_t m = 0; m < level_valid_rows(1); ++m) {
-    if (!fmeta::data_valid(static_cast<float>(impl_->l1_cols.get(m, 4, a))))
+    if (!fmeta::data_valid(static_cast<float>(dc.get(m, 4, a))))
       continue;
 
-    const double o = static_cast<double>(impl_->l1_cols.get(m, 0, a));
-    const double h = static_cast<double>(impl_->l1_cols.get(m, 1, a));
-    const double l = static_cast<double>(impl_->l1_cols.get(m, 2, a));
-    const double c = static_cast<double>(impl_->l1_cols.get(m, 3, a));
+    const double o = static_cast<double>(dc.get(m, 0, a));
+    const double h = static_cast<double>(dc.get(m, 1, a));
+    const double l = static_cast<double>(dc.get(m, 2, a));
+    const double c = static_cast<double>(dc.get(m, 3, a));
 
     k.x.push_back(x0 + static_cast<double>(m));
     k.open.push_back(o);
     k.high.push_back(h);
     k.low.push_back(l);
     k.close.push_back(c);
-    kline_y_min_ = std::min(kline_y_min_, l);
-    kline_y_max_ = std::max(kline_y_max_, h);
+    y_min_ = std::min(y_min_, l);
+    y_max_ = std::max(y_max_, h);
 
     for (size_t i = 0; i < nf; ++i) {
-      const float v = static_cast<float>(impl_->l1_cols.get(m, 5 + i, a));
+      const float v = static_cast<float>(dc.get(m, 5 + i, a));
       if (v != v) // NaN
         continue;
       k.feat[i].x.push_back(x0 + static_cast<double>(m));
       k.feat[i].y.push_back(static_cast<double>(v));
-      kline_feat_min_[i] = std::min(kline_feat_min_[i], v);
-      kline_feat_max_[i] = std::max(kline_feat_max_[i], v);
+      feat_min_[i] = std::min(feat_min_[i], v);
+      feat_max_[i] = std::max(feat_max_[i], v);
     }
   }
 
   // 发布: 先各数组计数/范围 (release), 后 pub word (release) — GUI acquire 读 pub 即见全量
-  if (kline_y_min_ <= kline_y_max_) {
-    k.y_min.store(kline_y_min_, std::memory_order_relaxed);
-    k.y_max.store(kline_y_max_, std::memory_order_relaxed);
+  if (y_min_ <= y_max_) {
+    k.y_min.store(y_min_, std::memory_order_relaxed);
+    k.y_max.store(y_max_, std::memory_order_relaxed);
   }
   for (size_t i = 0; i < nf; ++i) {
-    k.feat_y_min[i].store(kline_feat_min_[i], std::memory_order_relaxed);
-    k.feat_y_max[i].store(kline_feat_max_[i], std::memory_order_relaxed);
+    k.feat_y_min[i].store(feat_min_[i], std::memory_order_relaxed);
+    k.feat_y_max[i].store(feat_max_[i], std::memory_order_relaxed);
     k.feat_n[i].store(k.feat[i].x.size(), std::memory_order_release);
   }
-  k.pub.store(OrderFlow::Kline::pack(kline_cur_.gen, d + 1, k.x.size()), std::memory_order_release);
-
-  ++kline_next_day_;
-  return kline_next_day_ < k.dates.size();
+  k.pub.store(OrderFlow::Kline::pack(cur_.gen, d + 1, k.x.size()), std::memory_order_release);
+  return true;
 }
 
 // ============================================================================
@@ -316,36 +341,40 @@ bool OrderFlowService::kline_step() {
 //   取首个 ts_valid 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
 // ============================================================================
 
-void OrderFlowService::universe_build(const UniverseReq &req) {
+bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
+  if (!res_)
+    res_.emplace(data_);
+  PingPong<OrderFlow::Universe::Slot> &pp = data_.orderflow.universe.slots;
+  if (!await_back(pp, cancel_))
+    return false;
   TraceN("OF_UniverseBuild");
-  OrderFlow &of = data_->orderflow;
-  auto &uni = of.universe;
-  assert(!uni.pending.load(std::memory_order_acquire) && "universe_build: 背槽未 ack");
+  LibRead &lib = res_->lib;
+  lib.reader.revive(); // 新请求 = 重读库 (重算后新库已落地), 判废解除
 
-  OrderFlow::Universe::Slot &slot = uni.slot[1 - uni.front.load(std::memory_order_acquire)];
+  OrderFlow::Universe::Slot &slot = pp.back();
   slot.clear();
   slot.gen = req.gen;
   slot.date = req.date;
 
   // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 特征列 = 子轴,
   // 子轴外的资产恒 has_data = false (自然被候选过滤掉)
-  slot.meta.assign(data_->asset.items.size(), OrderFlow::Universe::Meta{});
+  slot.meta.assign(data_.asset.items.size(), OrderFlow::Universe::Meta{});
 
-  auto &cols = impl_->columns;
+  auto &cols = lib.columns;
   cols.assign({static_cast<size_t>(L1_Field::ts_valid), static_cast<size_t>(L1_Field::st_level),
                static_cast<size_t>(L1_Field::list_age), static_cast<size_t>(L1_Field::delist_age),
                static_cast<size_t>(L1_Field::ind_l1)});
   assert(cols.size() == UNIVERSE_COL_COUNT);
-  impl_->reader.load_day_columns(req.date, cols, impl_->uni_cols);
+  lib.reader.load_day_columns(req.date, cols, res_->cols);
 
   // 时间外层 / 资产内层 (布局 [T][n][A_sub]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
-  const FeatureRead::DayColumns &c = impl_->uni_cols;
-  const size_t A = impl_->uni.size();
+  const FeatureRead::DayColumns &c = res_->cols;
+  const size_t A = lib.uni.size();
   assert(A == c.A);
   size_t remaining = A;
   for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
     for (size_t a = 0; a < A; ++a) {
-      OrderFlow::Universe::Meta &meta = slot.meta[impl_->uni.global(a)];
+      OrderFlow::Universe::Meta &meta = slot.meta[lib.uni.global(a)];
       if (meta.has_data) // 已取到当日状态 (日频广播, 后续分钟同值)
         continue;
       if (!fmeta::data_valid(static_cast<float>(c.get(m, UNI_META, a))))
@@ -370,19 +399,25 @@ void OrderFlowService::universe_build(const UniverseReq &req) {
     }
   }
 
-  uni.pending.store(true, std::memory_order_release);
+  pp.commit();
+  return true;
 }
 
 // ============================================================================
 // Depth: 日文件逐笔重放 → 秒级快照 → plot/heatmap → 背槽发布
 // ============================================================================
 
-void OrderFlowService::depth_build(const DepthReq &req) {
+bool OrderFlowService::DepthWorker::run(DepthReq &req) {
+  if (!res_)
+    res_.emplace(data_);
+  PingPong<OrderFlow::Depth> &pp = data_.orderflow.depth;
+  if (!await_back(pp, cancel_))
+    return false;
   TraceN("OF_DepthBuild");
-  OrderFlow &of = data_->orderflow;
-  assert(!of.depth_pending.load(std::memory_order_acquire) && "depth_build: 背槽未 ack");
+  Res &res = *res_;
+  res.lib.reader.revive(); // 新请求 = 重读库 (重算后新库已落地), 判废解除
 
-  OrderFlow::Depth &slot = of.depth[1 - of.depth_front.load(std::memory_order_acquire)];
+  OrderFlow::Depth &slot = pp.back();
   slot.clear();
   slot.gen = req.gen;
   slot.date = req.date;
@@ -390,26 +425,26 @@ void OrderFlowService::depth_build(const DepthReq &req) {
 
   // ---- 重放当天日文件里这个资产的帧 (无帧 = 停牌/未编码, 发布空槽) ----
   // 帧目录快照定位 (与 TS worker 同一条路); 快照与重扫描并发安全, 本请求期间持有.
-  const AssetItem &asset = data_->asset.items[req.asset];
-  const std::shared_ptr<const OrdersCatalog> orders = data_->asset.orders();
+  const AssetItem &asset = data_.asset.items[req.asset];
+  const std::shared_ptr<const OrdersCatalog> orders = data_.asset.orders();
   const FrameRef &ref = orders->at(orders->day_idx(req.date), req.asset);
   L2::FrameView view;
   if (!ref.empty()) {
     TraceN("OF_Decode");
-    view = DayReader(data_->config.orders_dir, req.date).get(ref, impl_->decoder); // 解出来的在 decoder 缓冲里, fd 随即关掉
+    view = DayReader(data_.config.orders_dir, req.date).get(ref, res.decoder); // 解出来的在 decoder 缓冲里, fd 随即关掉
   }
 
   if (view.head.count > 0) {
     const size_t order_num = view.head.count;
     slot.order_count = order_num;
 
-    LimitOrderBook &lob = impl_->lob;
-    lob.bind(&impl_->tick_data, req.asset, asset.exchange_type); // 无特征侧绑定
+    LimitOrderBook &lob = res.lob;
+    lob.bind(&res.tick_data, req.asset, asset.exchange_type); // 无特征侧绑定
     lob.begin_frame(view);
 
-    auto &sec_slot = impl_->sec_slot;
-    auto &sec_data = impl_->sec_data;
-    auto &scratch = impl_->scratch;
+    auto &sec_slot = res.sec_slot;
+    auto &sec_data = res.sec_data;
+    auto &scratch = res.scratch;
     sec_slot.assign(level_valid_rows(0), -1);
     sec_data.assign(level_valid_rows(0), 0);
     slot.ticks.reserve(level_valid_rows(0));
@@ -418,7 +453,7 @@ void OrderFlowService::depth_build(const DepthReq &req) {
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
     constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
     constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手
-    const LOB_Feature &lf = impl_->tick_data.lob;
+    const LOB_Feature &lf = res.tick_data.lob;
 
     // 秒末全簿快照 → 热力图 (只提交出过有效盘口快照的秒; 全档, 不限近端 30 档)
     auto commit_second = [&](size_t t) {
@@ -496,21 +531,21 @@ void OrderFlowService::depth_build(const DepthReq &req) {
 
   // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
   // 可读, VWAP / overlay 留空 (盘口重放走日文件, 不受 universe 约束, 上面照常构建)
-  const size_t depth_sub = impl_->uni.sub_of(static_cast<uint32_t>(req.asset));
+  const size_t depth_sub = res.lib.uni.sub_of(static_cast<uint32_t>(req.asset));
 
   // ---- 分钟 VWAP 阶梯: L1 特征列 vwap, 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----
-  if (depth_sub < impl_->uni.size()) {
+  if (depth_sub < res.lib.uni.size()) {
     TraceN("OF_DepthVwap");
-    auto &cols = impl_->columns;
+    auto &cols = res.lib.columns;
     cols.assign({static_cast<size_t>(L1_Field::ts_valid), static_cast<size_t>(L1_Field::vwap)});
-    impl_->reader.load_day_columns(req.date, cols, impl_->l1_cols);
+    res.lib.reader.load_day_columns(req.date, cols, res.l1_cols);
     auto &px = slot.plot.vwap_x;
     auto &py = slot.plot.vwap_y;
     for (size_t m = 0; m < level_valid_rows(1); ++m) {
-      if (!fmeta::data_valid(static_cast<float>(impl_->l1_cols.get(m, 0, depth_sub))))
+      if (!fmeta::data_valid(static_cast<float>(res.l1_cols.get(m, 0, depth_sub))))
         continue;
       px.push_back(static_cast<double>(L1_to_L0(m)));
-      py.push_back(static_cast<double>(impl_->l1_cols.get(m, 1, depth_sub)));
+      py.push_back(static_cast<double>(res.l1_cols.get(m, 1, depth_sub)));
     }
     if (!px.empty()) {
       px.push_back(px.back() + 60.0);
@@ -520,17 +555,17 @@ void OrderFlowService::depth_build(const DepthReq &req) {
 
   // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + ts_valid 选列读, 与图2 同源指标;
   //      L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒 → 只取当日日内段) ----
-  if (!req.feats.empty() && depth_sub < impl_->uni.size()) {
+  if (!req.feats.empty() && depth_sub < res.lib.uni.size()) {
     TraceN("OF_DepthFeats");
     assert(req.feat_level == 0 || req.feat_level == 1);
     const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(L0_Field::ts_valid)
                                                 : static_cast<size_t>(L1_Field::ts_valid);
-    auto &cols = impl_->columns;
+    auto &cols = res.lib.columns;
     cols.assign({meta_col});
     for (int f : req.feats)
       cols.push_back(static_cast<size_t>(f));
-    FeatureRead::DayColumns &day_cols = req.feat_level == 0 ? impl_->l0_cols : impl_->l1_cols;
-    impl_->reader.load_day_columns(req.date, cols, day_cols);
+    FeatureRead::DayColumns &day_cols = req.feat_level == 0 ? res.l0_cols : res.l1_cols;
+    res.lib.reader.load_day_columns(req.date, cols, day_cols);
 
     const size_t a = depth_sub;
     slot.n_feat = req.feats.size();
@@ -558,7 +593,8 @@ void OrderFlowService::depth_build(const DepthReq &req) {
   }
 
   // ---- 背槽整体发布 (GUI 帧首 ack 翻面) ----
-  of.depth_pending.store(true, std::memory_order_release);
+  pp.commit();
+  return true;
 }
 
 } // namespace GUI::Features

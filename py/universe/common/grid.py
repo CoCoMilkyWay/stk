@@ -2,7 +2,8 @@
 
 日频截面 (pivot) 按 date 精确落行: P 行 = P 收盘截面 (收盘时排名并成交, 视为同时).
 事件 (ev_rows / event_ffill) 在 P 可用 ⟺ 可见日 < P: P 日公告多在盘后, 收盘调仓时拿不到 → 行 = 首个 > 可见日的交易日
-(searchsorted right). 与 cpp fund::Pool 事件表 CUTOFF=-1 同一条界 (cpp 的行是 D, 这里的行是 P = D-1, 再晚一天).
+(searchsorted right), 比 cpp fund::Pool 事件表 CUTOFF=-1 (P 日公告 D 盘中可用) 晚一天.
+例外: 按生效日记账、事先公告的状态类事件 (行业) 当日生效 (same_day, 同 pivot 的 searchsorted left).
 """
 
 import numpy as np
@@ -49,11 +50,14 @@ class Grid:
         """日频表 → float32 网格, 缺格沿时间前向填充."""
         return ffill_rows(self.pivot(df, col, np.float32, np.nan))
 
-    def event_ffill(self, df: pd.DataFrame, date_col: str, col: str) -> np.ndarray:
+    def event_ffill(
+        self, df: pd.DataFrame, date_col: str, col: str, same_day: bool = False
+    ) -> np.ndarray:
         """事件表 → float32 网格, 同格后到者覆盖, 沿时间前向填充; 事件前 NaN. 不在列上的标的忽略."""
         df = df.dropna(subset=["instrument"])
         df = df[df["instrument"].isin(self.insts)].sort_values(date_col, kind="stable")
-        r, c = self.ev_rows(df[date_col]), self.cols(df["instrument"])
+        rows = self.rows if same_day else self.ev_rows
+        r, c = rows(df[date_col]), self.cols(df["instrument"])
         keep = r < self.n_d
         arr = self.empty(np.float32, np.nan)
         arr[r[keep], c[keep]] = df[col].to_numpy(np.float32)[keep]

@@ -1,29 +1,24 @@
-// OrderFlowService — OrderFlow 的单 worker 线程编排 (对仗 DistService)
+// OrderFlowService — OrderFlow 三路请求的编排外观: Kline / Depth / Universe 各一个 worker (gui/util/Worker.hpp), 三路并行
 //
 // 线程模型 (发布协议见 shared/OrderFlow.hpp 头注释):
 //   - GUI 线程: 每帧把期望态快照 (asset / anchor date / 选中特征) 交给 Request*;
-//     变化检测与 gen 递增在 GUI 侧, 服务侧只管"照单执行最新一代" (新请求覆盖旧的)
-//   - worker 线程: 两类工作交错 —
-//       Depth 重放 (延迟敏感, 优先): decode 帧 → LOB 逐笔重放 → 秒级快照 →
-//         plot/heatmap 构建 → 背槽整体发布 (pending 未 ack 时等 GUI 翻面)
-//       Universe 逐日状态 (延迟敏感): 锚点日的 L1 filter 列选读 → 全资产 PIT
-//         状态 (ST / 在市 / 行业) → 背槽整体发布 (供 GUI 资产筛选)
-//       Kline 流式 (吞吐型): 逐日选列读 (OHLC + ts_valid + 特征) → 抽选中资产 →
-//         追加 + 单调前缀发布; 每天之间轮询新请求, 随时被新代打断
+//     变化检测与 gen 递增在 GUI 侧, 服务侧只管"照单执行最新一代" (新请求覆盖旧的, 在跑的被打断)
+//   - 三个 worker 线程, 私有常驻资源 (reader / 缓冲) 首个请求时在 worker 线程建:
+//       Depth 重放: decode 帧 → LOB 逐笔重放 → 秒级快照 → plot/heatmap 构建 → 背槽整体发布
+//       Universe 逐日状态: 锚点日的 L1 filter 列选读 → 全资产 PIT 状态 (ST / 在市 / 行业)
+//         → 背槽整体发布 (供 GUI 资产筛选)
+//       Kline 流式: 逐日选列读 (OHLC + ts_valid + 特征) → 抽选中资产 → 追加 + 单调前缀发布;
+//         天与天之间可被新代打断
+//     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
-// 生命周期: 进 OrderFlow tab Start (幂等); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (join).
+// 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
+//           切出 Features 任务 Destroy → Stop (析构 join).
 #pragma once
 
 #include "misc/date.hpp"
 
-#include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <thread>
 #include <vector>
 
 struct SharedData;
@@ -44,7 +39,7 @@ public:
   void RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, int feat_level, std::vector<int> feats);
   void RequestUniverse(uint32_t gen, misc::Ymd date);
 
-  bool is_running() const { return thread_.joinable(); }
+  bool is_running() const { return kline_ != nullptr; }
 
 private:
   struct KlineReq {
@@ -65,33 +60,13 @@ private:
     misc::Ymd date;
   };
 
-  struct Impl; // worker 线程私有常驻资源 (reader / decoder / LOB / 缓冲)
+  class KlineWorker;    // 逐日流式 + 前缀发布
+  class DepthWorker;    // 重放 + 构建 + 背槽发布
+  class UniverseWorker; // 逐日 filter 列 → 全资产状态 + 背槽发布
 
-  void worker_loop();
-  void scan_dates(std::vector<misc::Ymd> &out) const;
-  void kline_begin(const KlineReq &req);
-  bool kline_step();                           // 装一天并发布; 返回是否还有下一天
-  void depth_build(const DepthReq &req);       // 重放 + 构建 + 背槽发布
-  void universe_build(const UniverseReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
-
-  SharedData *data_ = nullptr;
-  std::thread thread_;
-
-  std::mutex req_mutex_;
-  std::condition_variable req_cv_;
-  std::optional<KlineReq> pending_kline_;
-  std::optional<DepthReq> pending_depth_;
-  std::optional<UniverseReq> pending_universe_;
-  std::atomic<bool> stop_{false};
-
-  // ---- worker 线程私有 ----
-  std::unique_ptr<Impl> impl_;
-  KlineReq kline_cur_{};
-  size_t kline_sub_ = 0; // 选中资产的子轴下标 (kline_begin 映射一次)
-  bool kline_active_ = false;
-  size_t kline_next_day_ = 0;
-  double kline_y_min_ = 0.0, kline_y_max_ = 0.0; // OHLC 运行范围
-  std::vector<float> kline_feat_min_, kline_feat_max_;
+  std::unique_ptr<KlineWorker> kline_;
+  std::unique_ptr<DepthWorker> depth_;
+  std::unique_ptr<UniverseWorker> universe_;
 };
 
 } // namespace GUI::Features

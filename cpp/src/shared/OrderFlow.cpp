@@ -52,6 +52,7 @@ void OrderFlow::Kline::reserve_capacity() {
 }
 
 void OrderFlow::Kline::clear() {
+  idle();
   pub.store(0, std::memory_order_release);
   for (auto &n : feat_n)
     n.store(0, std::memory_order_release);
@@ -380,10 +381,7 @@ void OrderFlow::Universe::rebuild_candidates(const Slot &s, const std::vector<in
 }
 
 void OrderFlow::Universe::clear() {
-  slot[0].clear();
-  slot[1].clear();
-  front.store(0, std::memory_order_relaxed);
-  pending.store(false, std::memory_order_relaxed);
+  slots.clear();
   st_filter.clear();
   listed_filter = {0};
   board_filter.clear();
@@ -589,10 +587,7 @@ void OrderFlow::UI::clear() {
 
 void OrderFlow::clear() {
   kline.clear();
-  depth[0].clear();
-  depth[1].clear();
-  depth_front.store(0, std::memory_order_relaxed);
-  depth_pending.store(false, std::memory_order_relaxed);
+  depth.clear();
   universe.clear();
   heatmap_colored.clear();
   depth_profile.clear();

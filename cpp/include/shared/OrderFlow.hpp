@@ -1,4 +1,4 @@
-// OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 单写 worker 线程 / 单读 GUI 线程, 免锁)
+// OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
 // OrderFlow
 // ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (L1 分钟频)
@@ -12,14 +12,15 @@
 //   Kline: 每日尾 feat_n[i] / y range (release) → pub word [gen|days|points] (release, shared/Progress.hpp PrefixPub);
 //          GUI acquire 读 pub, 只画已发布前缀; gen != 请求代 = 正在重建, 不画.
 //          数组 reserve 满容量后只 push_back → data() 恒稳定, 前缀读安全.
-//   Depth: worker 写背槽 → depth_pending = true; GUI 帧首 ack (pending=false, front^=1);
+//   Depth / Universe: PingPong (shared/Progress.hpp) — worker 写背槽 → commit; GUI 帧首 ack 翻面;
 //          pending 未 ack 期间 worker 不碰任何槽.
+// 三块各带进度面 (Kline 自身 / PingPong), 是各自 worker 的 board.
 #pragma once
 
 #include "codec/L2_DataType.hpp"  // L2::LOB_DEPTH
 #include "features/TimeIndex.hpp" // L0_ROWS / L1_ROWS (稳定形状常量, 不依赖字段表)
 #include "misc/date.hpp"
-#include "shared/Progress.hpp" // PrefixPub
+#include "shared/Progress.hpp" // PrefixPub / PingPong
 
 #include <array>
 #include <atomic>
@@ -97,7 +98,7 @@ struct OrderFlow {
   // ==========================================================================
   // Kline (图2) — 单资产全回测: K线 + 多特征, 逐日流式, 单调前缀发布
   // ==========================================================================
-  struct Kline : PrefixPub {
+  struct Kline : Progress, PrefixPub { // 进度 done/total = 天
     // ---- worker 写 / GUI 前缀读 ----
     std::vector<misc::Ymd> dates; // 回测区间全部特征日 (换代时随 rescan 重扫; gen 匹配期间稳定)
     size_t asset_idx = SIZE_MAX;
@@ -234,10 +235,7 @@ struct OrderFlow {
     void clear();
   };
 
-  Depth depth[2];
-  std::atomic<int> depth_front{0};        // GUI ack 时翻转
-  std::atomic<bool> depth_pending{false}; // worker 置位 / GUI ack
-  const Depth &depth_front_slot() const { return depth[depth_front.load(std::memory_order_acquire)]; }
+  PingPong<Depth> depth;
 
   // ==========================================================================
   // Universe (资产选择) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
@@ -262,10 +260,7 @@ struct OrderFlow {
       std::vector<Meta> meta; // [A] 与 AssetAxis 同序 (asset_idx 直接下标)
       void clear();
     };
-    Slot slot[2];
-    std::atomic<int> front{0};
-    std::atomic<bool> pending{false};
-    const Slot &front_slot() const { return slot[front.load(std::memory_order_acquire)]; }
+    PingPong<Slot> slots;
 
     // ---- 筛选条件 (GUI; 空集 = 该维不筛, 对仗 DATABASE/TABLE) ----
     std::set<int> st_filter;        // risk_warn 取值 0..3

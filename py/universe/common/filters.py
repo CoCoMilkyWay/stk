@@ -1,6 +1,6 @@
 """退市风险类 TS 排除位 (移植 ~/work/qmt 的 filters), 每个返回 bool 网格 (P 日 × 标的), True = 剔除.
 
-全部在 P 日判定, 事件按可见日 < P 回放 (P 日公告次一 P 起生效, 见 grid.py). 阈值默认 = qmt 口径, 脚本可按需覆盖.
+全部在 P 日判定, 事件按可见日 < P 回放 (P 日公告次一 P 起生效; 行业按生效日当日生效, 见 grid.py). 阈值默认 = qmt 口径, 脚本可按需覆盖.
   trading_st   连续 W 个交易日 (close < 1 ∨ 市值 < 板块阈值) —— 面值/市值退市预警, 比交易所 20 日线提前, 换可执行退出窗口
   profit_st    年报预告预亏 (end_date 为 12 月 ∧ type ∈ {首亏, 续亏} ∧ 上年归母净利 < 0), ann_date 起生效,
                至正式年报 PIT 首次可见或次年 4/30 终止 (取早)
@@ -220,7 +220,7 @@ def industry_id(g: Grid, months: list[str]) -> tuple[np.ndarray, list[str]]:
         set(names) <= SW2021_L1_ALL
     ), f"数据里有申万 2021 一级表外的行业名: {set(names) - SW2021_L1_ALL}"
     ev["id"] = ev["name"].map({n: i for i, n in enumerate(names)})  # 事件前 NaN = 未知
-    return g.event_ffill(ev, "date", "id"), names
+    return g.event_ffill(ev, "date", "id", same_day=True), names
 
 
 def industry_bad(ind: np.ndarray, names: list[str], whitelist: set[str]) -> np.ndarray:
