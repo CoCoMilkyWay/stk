@@ -2,7 +2,7 @@
 #include "gui/task_factors/services/InspectService.hpp"
 
 #include "factor/EvalCpu.hpp"
-#include "factor/Exec.hpp"
+#include "misc/exec.hpp"
 #include "factor/Stat/Cpu.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp"
@@ -90,7 +90,7 @@ struct TailSink {
 
 // 计算 flow 的状态 (worker 私有, 跨请求存活; 分级见头文件)
 struct InspectService::Flow {
-  factor::exec::ForkJoin ex;
+  misc::exec::ForkJoin ex;
   // S 作用域
   std::string scope_key; // features_dir | 子轴 hash | 月份表; 空 = 未装载
   std::vector<misc::Ymd> dates;

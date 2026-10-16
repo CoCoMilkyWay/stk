@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// 执行器: 算子 / 流程层唯一的并行抽象 (CPU 侧)
+// 执行器: 全仓唯一的批内并行抽象 (CPU 侧; 因子算子 / 流式分析 / 扫描 同一份). 后台单线程见 gui/util/Worker.hpp
 // =============================================================================
 //   核与 flow 只写两句话: "把 [0,T) 行切给 fn(t0, t1, tid)" (rows) / "n 个任务给 fn(i, tid)" (tasks); 谁出线程由调用方选:
 //     Serial    单线程内联, 零开销. 搜索场景: 因子间并行由上层每线程一个因子, 算子内严禁再起线程.
@@ -21,7 +21,7 @@
 #include <thread>
 #include <vector>
 
-namespace factor::exec {
+namespace misc::exec {
 
 struct Serial {
   int threads() const { return 1; }
@@ -144,4 +144,4 @@ private:
   std::atomic<int> pending_{0};
 };
 
-} // namespace factor::exec
+} // namespace misc::exec

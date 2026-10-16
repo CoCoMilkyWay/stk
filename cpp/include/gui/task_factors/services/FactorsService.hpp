@@ -44,7 +44,7 @@
 #pragma once
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
-#include "factor/Exec.hpp"
+#include "misc/exec.hpp"
 #include "factor/Expr.hpp"
 #include "factor/Search/Contract.hpp" // Score / Objective (看板 score / util 与 Search 同一份目标)
 #include "factor/Stat/Contract.hpp"
@@ -218,10 +218,10 @@ private:
   Progress &board() { return *this; }
   bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
-  bool evaluate(const FactorsRequest &req, factor::exec::ForkJoin &ex); // false = 取消
+  bool evaluate(const FactorsRequest &req, misc::exec::ForkJoin &ex); // false = 取消
 
   FeatureTable feats_;
-  std::unique_ptr<factor::exec::ForkJoin> ex_; // 首个 evaluate 懒建, 随 worker 活
+  std::unique_ptr<misc::exec::ForkJoin> ex_; // 首个 evaluate 懒建, 随 worker 活
   std::atomic<int> broken_{0};
 };
 

@@ -8,7 +8,7 @@
 
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Dag.hpp"
-#include "factor/Exec.hpp"
+#include "misc/exec.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / MiniPdf
 #include "shared/Analysis.hpp"                          // AggPdf
@@ -61,7 +61,7 @@ struct LabelsHost {
   std::vector<std::vector<uint16_t>> ry; // [hi][T·A]
   factor::stat::Labels L;
 };
-void prep_labels(factor::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::Workspace &w, LabelsHost &out);
+void prep_labels(misc::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::Workspace &w, LabelsHost &out);
 // 未预处理的契约视图 (ry 空; GPU 会话自己预处理)
 factor::stat::Labels labels_raw(const Loaded &L);
 
@@ -73,7 +73,7 @@ void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded 
 // 逐天并行读 (ex 抢单): 特征列 (L.feat_codes) + (with_labels) L.hd 的标签列 (+ with_costs 冲击成本列) + ts_valid + cs_valid 一次 load_day_columns,
 // 门控后散进平面; with_index 再加读 close 列, 顺带出 L.index (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘).
 // 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). 每天 prog.publish(1)
-bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, factor::exec::ForkJoin &ex,
+bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, misc::exec::ForkJoin &ex,
                  std::atomic<bool> &cancel, Progress &prog, bool with_labels = true, bool with_costs = false, bool with_index = false);
 
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN)
@@ -83,7 +83,7 @@ void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::st
 float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
 // 可秩率 (%): 逐行 = 所在并列块 (同 r16) 不超过 ⌈nv / kGroups⌉ 只的格数 / nv (nv = 该行 m ∧ gate 格数; 整行 kRankNone → 0),
 // 沿 nv ≥ 1 的行取均值. rx = 该因子的 r16 [T][A] (rank_x 出)
-float rank_pct_of(factor::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A);
+float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A);
 
 // 满档一腿只数 (Stat 契约【持仓口径】的 cap, Labels::cap) = 池内 (cs.m) 平均每行有效票数 / kGroups: 池宽决定, 与因子无关. Run / Search / Inspect 同一份
 double n_full_of(const Loaded &L);
@@ -103,7 +103,7 @@ struct XDist {
 // 两趟, 每趟条带并行: 每线程一份 KLL + 缓冲批量 addBatch, 末尾合并进线程 0 那份.
 //   趟 1: 全体样本 → 矩 + 截尾范围 [lo, hi]; 同趟逐行: 截面均值 (series) + 各组 min / max → 相邻组边界中点, 各组和 / 数
 //   趟 2: 只收 [lo, hi] 内样本 → pdf
-void x_dist(factor::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o);
+void x_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o);
 
 // 看板迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
@@ -113,7 +113,7 @@ void ic_mini_pdfs(const factor::stat::Row *rows, int H, int T, MiniPdf *out);
 // 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份),
 // Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c) + cover) → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), cover = Σ(有秩 ∧ 成本有效) / Σ 有秩.
 // w = Stat CPU 工作区 (ensure 过 C = ft.costs.size()). 须 with_costs 装过 (L.costs.size() == ft.costs.size()); 无金额档 → out 空
-void cost_tiers(factor::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
+void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
                 std::vector<CostTier> &out);
 
 } // namespace GUI::Factors

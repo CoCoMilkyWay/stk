@@ -14,7 +14,7 @@
 // =============================================================================
 
 #include "factor/Check.hpp"
-#include "factor/Exec.hpp"
+#include "misc/exec.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp"
@@ -207,7 +207,7 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   using Clock = std::chrono::steady_clock;
   const Span s{d.T, d.A};
   const int H = d.hd.n;
-  factor::exec::ForkJoin ex(threads);
+  misc::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
   w.ensure(d.A, H, 0, ex.threads());
   std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(s.n()));

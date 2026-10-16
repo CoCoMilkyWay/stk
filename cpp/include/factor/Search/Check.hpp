@@ -10,7 +10,7 @@
 // =============================================================================
 
 #include "factor/Check.hpp"
-#include "factor/Exec.hpp"
+#include "misc/exec.hpp"
 #include "factor/Search/Contract.hpp"
 #include "factor/Search/Cpu.hpp"
 #include "factor/Stat/Check.hpp"
@@ -101,7 +101,7 @@ inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, Re
   const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
   assert(row0 >= 0 && rows >= 1 && row0 + rows <= T);
   const factor::stat::Span all{T, A}, s{rows, A, row0, t_lo};
-  factor::exec::ForkJoin ex(threads);
+  misc::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
   w.ensure(A, H, 0, ex.threads());
   std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(all.n()));

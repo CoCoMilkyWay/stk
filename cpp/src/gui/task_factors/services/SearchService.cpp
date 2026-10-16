@@ -5,7 +5,7 @@
 #include "factor/Dag.hpp"
 #include "factor/EvalCpu.hpp"
 #include "factor/EvalGpu.hpp"
-#include "factor/Exec.hpp"
+#include "misc/exec.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Search/Cpu.hpp"
 #include "factor/Search/Grid.hpp"
@@ -148,7 +148,7 @@ enum class Rc : uint8_t { Ok,
 
 // worker 私有的常驻件 (线程池 + CPU 工作区; 跨请求存活, ensure 幂等)
 struct SearchService::Flow {
-  factor::exec::ForkJoin ex;
+  misc::exec::ForkJoin ex;
   factor::cpu::Pool pool;
   std::vector<factor::cpu::ParScratch> sc;
   factor::cpu::stat::Workspace w;

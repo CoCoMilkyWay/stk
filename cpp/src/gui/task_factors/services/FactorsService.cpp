@@ -614,7 +614,7 @@ bool FactorsService::run(FactorsRequest &req) {
   if (!req.evaluate)
     return true;
   if (!ex_)
-    ex_ = std::make_unique<factor::exec::ForkJoin>(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+    ex_ = std::make_unique<misc::exec::ForkJoin>(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
   return evaluate(req, *ex_);
 }
 
@@ -774,7 +774,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
 }
 
 // 装载 + 评估 (worker 线程; 返回 false = 取消)
-bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin &ex) {
+bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &ex) {
   TraceN("FactorsEvaluate");
   // 有效权重行 → Expr (scan 已校验过, 这里必成功) → 一张共享 DAG (F.roots[k] ↔ idx[k])
   std::vector<size_t> idx;

@@ -5,7 +5,7 @@
 // =============================================================================
 //   定位: 挖掘无 GPU 时的评估路径, 与 GPU 后端对拍 (无 golden, 两边必须 match). 不 include Gpu.cuh.
 //
-//   【分层】算子 = 行核 (Host.hpp) + 流程 (本文件), 无线程 / 无分配 / 无所有权; 谁出线程由 Exec 定 (factor/Exec.hpp).
+//   【分层】算子 = 行核 (Host.hpp) + 流程 (本文件), 无线程 / 无分配 / 无所有权; 谁出线程由 Exec 定 (misc/exec.hpp).
 //   与 Stat/Gpu.cuh 同名同参序 (契约【视图】Plane / Batch / Labels / Span; 出口 Accum[H]):
 //     rank_x_rows / rank_y_rows   行区间核 [t0,t1) (单线程, 绝对 t)
 //     prep_label    ry[T][A]                                     ← exec.rows(rank_y_rows)
@@ -61,7 +61,7 @@ inline void rank_y_rows(const Label &lb, int t0, int t1, int A, uint16_t *ry, Sc
 }
 
 // -----------------------------------------------------------------------------
-// 流程 (Exec 出线程, 见 factor/Exec.hpp)
+// 流程 (Exec 出线程, 见 misc/exec.hpp)
 // -----------------------------------------------------------------------------
 
 // 调用方持有; ensure 幂等 (形状对得上零分配). C = 金额档数 (只 cost_rows 用; 不算成本给 0)

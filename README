@@ -151,7 +151,6 @@ stk/
 │   │   │   ├── OpTable.hpp                                 # 🧬 算子真相表 X-macro (命名 域_核_窗), 三后端同名展开; 行序 = 全局 idx; Stat 不入表
 │   │   │   ├── Expr.hpp                                    # 🧬 因子表达式 codec: 前缀式 ↔ 树 + 静态校验; 裸键名 d / k / k2 = 自由参数 (模板 vs 具体实例 instance_of); 不合法是正常输入 → false + 原因 (不断言)
 │   │   │   ├── Dag.hpp                                     # 🧬 Expr → 去重 DAG + 槽复用计划; 多 Expr 合一 (跨因子共享); 只管结构, 不含并行
-│   │   │   ├── Exec.hpp                                    # 🧬 执行器 (CPU 唯一并行抽象): Serial / ForkJoin, 核只写 fn(t0, t1, tid), 两者逐位一致
 │   │   │   ├── EvalCpu.hpp                                 # 🧬 DAG 的 CPU evaluator + 宿主槽池
 │   │   │   ├── EvalGpu.hpp                                 # 🧬 DAG 的 GPU evaluator (头文件无 CUDA 依赖) + 设备槽池, 中间量不落宿主
 │   │   │   ├── StreamHist.hpp                              # 🧬 流式后端分桶直方图 (序统计族)
@@ -194,6 +193,7 @@ stk/
 │   │       ├── format.hpp                                  # 🔧 定宽数值格式化 (UI 表格 / 日志对齐)
 │   │       ├── timer.hpp / profiler.hpp                    # 🔧 计时器 / 性能剖析
 │   │       ├── progress_single.hpp / progress_parallel.hpp # 🔧 单行 / 多线程进度条
+│   │       ├── exec.hpp                                    # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin, rows(t0, t1, tid) / tasks(i, tid), 两者逐位一致
 │   │       ├── affinity.hpp                                # 🔧 CPU 亲和性
 │   │       ├── archive.hpp / parquet.hpp                   # 🔧 归档操作 / Parquet 读写
 │   │       ├── fs.hpp / file_check.hpp                     # 🔧 文件系统 / 归档完整性校验

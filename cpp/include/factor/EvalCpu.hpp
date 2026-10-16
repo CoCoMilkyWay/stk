@@ -4,7 +4,7 @@
 // 因子 DAG 的 CPU evaluator: 按 Dag 的槽计划跑 factor::cpu::{ts,cs} 算子 (整张量批算)
 // =============================================================================
 //   Pool          按 n_slots 预分配的宿主平面 (跨因子复用, 只 ensure 不清: 契约是后端写满每格)
-//   run_node      一个算子节点, 并行由 Exec 定 (factor/Exec.hpp): Serial = 整平面一次调算子 (搜索: 因子间并行由上层起线程);
+//   run_node      一个算子节点, 并行由 Exec 定 (misc/exec.hpp): Serial = 整平面一次调算子 (搜索: 因子间并行由上层起线程);
 //                 ForkJoin = 节点内切满核 (Run / Inspect: 共享 DAG 顺序走节点). 与 Dag 计划解耦.
 //                 切法按算子的 (T 窗, A 域) 选, 结果与单线程**逐位一致** (不是近似):
 //                   CS (ALL / GROUP)      行独立 → 按 t 任意切

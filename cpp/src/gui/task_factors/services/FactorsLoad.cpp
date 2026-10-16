@@ -59,7 +59,7 @@ void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded 
   factor::stat::assert_holds(L.hd);
 }
 
-bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, factor::exec::ForkJoin &ex,
+bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, misc::exec::ForkJoin &ex,
                  std::atomic<bool> &cancel, Progress &prog, bool with_labels, bool with_costs, bool with_index) {
   TraceN("FactorsLoad");
   assert(static_cast<int>(dates.size()) == L.days);
@@ -291,7 +291,7 @@ float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n) {
   return 100.f * static_cast<float>(c) / static_cast<float>(g);
 }
 
-float rank_pct_of(factor::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A) {
+float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A) {
   const int nt = ex.threads();
   std::vector<double> sum(static_cast<size_t>(nt), 0.0);
   std::vector<long long> rows(static_cast<size_t>(nt), 0);
@@ -344,7 +344,7 @@ double n_full_of(const Loaded &L) {
   return nf;
 }
 
-void prep_labels(factor::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::Workspace &w, LabelsHost &out) {
+void prep_labels(misc::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::Workspace &w, LabelsHost &out) {
   const size_t H = static_cast<size_t>(L.hd.n);
   assert(L.labels.size() == H && "标签未装 (with_labels)");
   out.ry.assign(H, std::vector<uint16_t>(L.n()));
@@ -365,7 +365,7 @@ factor::stat::Labels labels_raw(const Loaded &L) {
   return out;
 }
 
-void cost_tiers(factor::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
+void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
                 std::vector<CostTier> &out) {
   const int C = static_cast<int>(ft.costs.size()), H = L.hd.n;
   assert(lc && L.costs.size() == static_cast<size_t>(C) && "成本平面未装 (with_costs)");
@@ -387,7 +387,7 @@ void cost_tiers(factor::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, 
   }
 }
 
-void x_dist(factor::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o) {
+void x_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o) {
   constexpr int K = factor::stat::kGroups;
   constexpr size_t kBuf = 4096;
   const int nt = ex.threads();
