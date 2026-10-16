@@ -4,49 +4,17 @@
 // AssetInfo 从 parquet 构建内存结构.
 #pragma once
 
+#include "gui/util/Worker.hpp"
 #include "misc/date.hpp"
+#include "shared/AssetInfo.hpp"
 
 #include <atomic>
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
-struct SharedData;
-
 namespace GUI::Database {
-
-using boost::asio::awaitable;
-
-enum class FundamentalStatus {
-  Idle,     // 未加载
-  Updating, // 联网同步 parquet 中 (bigquant + tushare)
-  Confirm,  // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, 工作线程挂起等弹窗决定
-  Building, // parquet → AssetInfo 构建中
-  Ready,    // AssetInfo 就绪
-  Error     // 本地 parquet 缺失 (需先联网同步)
-};
-
-inline const char *GetFundamentalStatusName(FundamentalStatus s) {
-  switch (s) {
-  case FundamentalStatus::Idle:
-    return "Idle";
-  case FundamentalStatus::Updating:
-    return "Updating";
-  case FundamentalStatus::Confirm:
-    return "Confirm";
-  case FundamentalStatus::Building:
-    return "Building";
-  case FundamentalStatus::Ready:
-    return "Ready";
-  case FundamentalStatus::Error:
-    return "Error";
-  }
-  return "Unknown";
-}
 
 // 单表本地落盘状态 — 工作线程由 fundamental::Catalog 得到, 渲染帧只读不做 IO.
 // 静态元描述 (增量键 / 抓法 / 就绪时点 / 中文说明) 不在这里重复: Overview 直接
@@ -59,66 +27,75 @@ struct TableFileStat {
   std::string mtime; // 最后落盘时刻 "MM-DD HH:MM"
 };
 
+// 展示字段 (worker 持 mutex 写, UI 持 mutex 读); 阶段与计步在进度面上
 struct FundamentalState {
-  FundamentalStatus status = FundamentalStatus::Idle;
   std::string message;     // 当前阶段说明 (工作线程实时更新)
-  std::string last_update; // 最近一次构建完成时刻
+  std::string last_update; // 最近一次构建成功时刻
 
-  // BigQuant 周配额 (preflight 结果, 单位 cell; Overview 常显 + Confirm 态弹窗)
+  // BigQuant 周配额 (preflight 结果, 单位 cell; Overview 常显 + 待确认弹窗)
   //   每轮联网同步开头取一次, BigQuant 同步后再取一次; 未联网的轮次沿用上次
   std::int64_t quota_weekly = 0;
   std::int64_t quota_used = 0;
   std::string quota_time; // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
 
-  // 构建结果统计 (Ready 后有效)
+  // 构建结果统计 (最近一次构建成功的)
   std::size_t stock_count = 0;        // stock_info 条数
   std::size_t factor_stock_count = 0; // 有复权因子序列的股票数
   std::size_t trading_days_count = 0; // 交易日历天数
   misc::Ymd date_range_start = 0;     // D 轴范围
   misc::Ymd date_range_end = 0;
 
-  // 逐表落盘状态 (Error 时也填 — 正是要看清哪张表缺)
+  // 逐表落盘状态 (构建失败也填 — 正是要看清哪张表缺)
   std::vector<TableFileStat> tables;
 
   // tables 里 name == 的那条; 缺失返回 nullptr
   const TableFileStat *find_table(const std::string &name) const;
 };
 
+struct FundamentalRequest {
+  uint64_t seq = 0; // 请求代 (StateManager 发), 交接原样带回
+  bool with_network = false;
+};
+
+// 交接件: ok = false ⇒ 本地 parquet 缺失 (需先联网同步), assetinfo 空
+struct FundamentalResult {
+  uint64_t seq = 0;
+  bool ok = false;
+  AssetInfo assetinfo;
+};
+
 // ============================================================================
-// FundamentalService — GUI 协程侧薄壳: 抓取/构建全在独立工作线程 (阻塞网络 +
-//   parquet IO), 协程轮询进度; SharedData::assetinfo 的替换只发生在 io 线程.
+// FundamentalService — 基本面 sync + AssetInfo 构建 (单 worker; 阻塞网络 + parquet IO)
+//
+// 线程模型 (gui/util/Worker.hpp, 随对象):
+//   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::assetinfo (只在 GUI 线程替换)
+//   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> → [逐任务 sync::run (bq) → (ts)] → 构建 → post
+//               (两份计划皆空 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
+//   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;
+//               state 持 mutex 读; confirm_pending = 配额待确认 (worker 挂起等 confirm)
 // ============================================================================
-class FundamentalService {
+class FundamentalService : public Worker<FundamentalService, FundamentalRequest>, public Published {
+  friend Worker<FundamentalService, FundamentalRequest>;
+
 public:
-  FundamentalService(boost::asio::io_context &io, SharedData &data)
-      : io_(io), data_(data) {}
+  static constexpr const char *kName = "FundamentalWorker";
+  FundamentalService(); // 末尾 Start
+  ~FundamentalService() { Stop(); }
 
-  // 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> → [逐任务 sync::run (bq) → (ts)] → 重建 AssetInfo
-  // (两份计划皆空 ⇒ 零网络直接本地构建; 启动与手动 Update 共用)
-  awaitable<void> update_all();
-
-  // Confirm 态的弹窗回答: proceed=true 照常同步 BigQuant, false 跳过 BigQuant
-  // (Tushare / 本地构建照常). 只在 Confirm 态可调, 每轮只回答一次.
+  // 待确认的弹窗回答: proceed=true 照常同步 BigQuant, false 跳过 BigQuant
+  // (Tushare / 本地构建照常). 只在 confirm_pending 时可调, 每轮只回答一次.
   void confirm(bool proceed);
 
-  // 当前任务的查询跑完即停, 余下同步任务全部跳过 (本地构建照常); 与 AuditService::cancel 同义
-  void cancel();
-
-  const FundamentalState &get_state() const { return state_; }
-  bool is_ready() const { return state_.status == FundamentalStatus::Ready; }
-  bool is_busy() const { return busy_; }
+  FundamentalState state;                    // UI 持 mutex 读
+  std::atomic<bool> confirm_pending{false};  // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, worker 挂起等弹窗
+  Mailbox<FundamentalResult> handoff;        // worker 每轮收尾 post, StateManager 帧首 take
 
 private:
-  awaitable<void> run(bool with_network);
+  static constexpr Phase kStart = Phase::Scanning;
+  Progress &board() { return *this; }
+  bool run(FundamentalRequest &req);
 
-  boost::asio::io_context &io_;
-  SharedData &data_;
-  FundamentalState state_;
-  std::atomic<bool> busy_ = false;
-  // 弹窗决定 → 工作线程: 0 = 未答, 1 = 继续, 2 = 跳过 BigQuant.
-  // shared_ptr 随 detached 线程存活 (与 Job 同理), 每轮 run 新建.
-  std::shared_ptr<std::atomic<int>> decision_;
-  std::shared_ptr<std::atomic<bool>> cancel_; // 同上, 每轮 run 新建
+  std::atomic<int> decision_{0}; // 弹窗决定 → worker: 0 = 未答, 1 = 继续, 2 = 跳过 BigQuant
 };
 
 } // namespace GUI::Database

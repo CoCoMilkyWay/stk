@@ -1,5 +1,6 @@
 // Tab Compute Implementation
 #include "gui/task_features/ui/TabCompute.hpp"
+#include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
 #include "misc/affinity.hpp"
 #include "shared/Asset.hpp"
@@ -14,9 +15,8 @@
 namespace GUI::Features {
 
 void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/, Config &config) {
-  const auto status = service->get_status();
-  const bool is_running = status == ComputeStatus::Running;
-  const bool is_cancelling = service->is_cancelling();
+  const bool is_running = service->busy();
+  const bool is_cancelling = service->cancelling();
 
   // ========================================================================
   // State Machine Logic
@@ -65,33 +65,15 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Status");
   ImGui::Spacing();
 
-  const char *status_text = "Idle";
-  ImVec4 status_color = ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-
-  switch (status) {
-  case ComputeStatus::Running:
-    status_text = is_cancelling ? "Cancelling" : "Running";
-    status_color = is_cancelling ? ImVec4(1.0f, 0.5f, 0.0f, 1.0f) : ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
-    break;
-  case ComputeStatus::Completed:
-    status_text = "Completed";
-    status_color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
-    break;
-  case ComputeStatus::Cancelled:
-    status_text = "Cancelled";
-    status_color = ImVec4(1.0f, 0.5f, 0.0f, 1.0f);
-    break;
-  case ComputeStatus::Error:
-    status_text = "Error";
-    status_color = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
-    break;
-  default:
-    break;
-  }
-
-  ImGui::TextColored(status_color, "%s", status_text);
+  if (is_cancelling)
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelling");
+  else
+    TextPhase(service->phase.load(std::memory_order_acquire));
 
   if (is_running) {
+    ImGui::SameLine();
+    ImGui::Text("%zu / %zu days", service->done.load(std::memory_order_relaxed),
+                service->total.load(std::memory_order_relaxed));
     ImGui::SameLine();
     ImGui::TextDisabled("(GUI throttled, compute owns cores)");
   }
@@ -375,7 +357,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     if (is_cancelling) {
       ImGui::TextWrapped("Cancelling at date boundary...");
     } else if (ImGui::Button("Cancel Compute", ImVec2(200, 30))) {
-      service->request_cancel();
+      service->RequestCancel();
     }
   }
 
@@ -456,7 +438,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
         ImGui::Button("Cancelling...", ImVec2(160, 28));
         ImGui::EndDisabled();
       } else if (ImGui::Button("Cancel Compute", ImVec2(160, 28))) {
-        service->request_cancel();
+        service->RequestCancel();
       }
     }
 

@@ -1,11 +1,9 @@
 #pragma once
 
-#include "boost/asio/awaitable.hpp"
 #include "codec/L2_DataType.hpp"
 #include "misc/date.hpp"
 #include "shared/OrdersDay.hpp"
 
-#include <atomic>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -14,10 +12,12 @@
 #include <vector>
 
 // 前向声明
-namespace GUI::Database {
-class ScanThreadPool;
+namespace misc::exec {
+class ForkJoin;
 }
 struct AssetInfo;
+struct AssetScan;
+struct Progress;
 
 // ============================================================================
 // 单资产
@@ -93,8 +93,7 @@ struct Asset {
   // 按资产统计 (Encode 缺失表 / Table 的 Days·Orders·Orders%)
   // ========================================
   // 全库编完之后帧目录是满的 (资产数 × 交易日数, 五百万量级), 在 GUI
-  // 里逐帧重算这些计数会把帧时间拖到几百毫秒. 与 date_stats 同样的惰性缓存:
-  // 扫描时清空, 首次渲染时算一次.
+  // 里逐帧重算这些计数会把帧时间拖到几百毫秒. 与 date_stats 同一趟扫描算好, 随产物换进.
   //
   // 缺口口径与 date_stats 完全一致 (同一次遍历产出): 分母是"本该有逐笔"的
   // 交易日 —— 已上市未退市, 排除北交所 / 当日停牌 / 墓碑. 不能拿帧目录当分母,
@@ -122,18 +121,12 @@ struct Asset {
     }
   };
   std::vector<AssetStats> asset_stats; // 按 asset_id 索引; 空 = 待重算
-  uint64_t asset_stats_generation = 0; // 每次重算 +1, 驱动 GUI 表格视图失效
-
-  // 扫描进度 (GUI 轮询), 各阶段轮流用. 单位随阶段变: binary 扫描是天
-  // (一天一个线程池任务), archive 扫描是月, coverage 是交易日.
-  // 阶段开头自己置总量; 置 0 表示"这一段不值得报进度", 界面显示裸标签.
-  std::atomic<size_t> scan_days_done{0};
-  std::atomic<size_t> scan_days_total{0};
+  uint64_t asset_stats_generation = 0; // 每次换进 +1, 驱动 GUI 表格视图失效
 
   // ========================================
   // 二进制库元数据
   // ========================================
-  struct {
+  struct Binary {
     bool scanned = false; // 是否已完成扫描
     bool exists = false;  // 二进制库目录是否存在
     std::string path;     // 二进制库根目录
@@ -143,7 +136,7 @@ struct Asset {
     misc::Ymd max_date = 0;    // 已编码日期的最晚
     std::set<misc::Ymd> dates; // 所有已完整编码的日期
 
-    // 统计 (由 coro_compute_coverage_statistics 的逐资产遍历算出)
+    // 统计 (由 compute_coverage_statistics 的逐资产遍历算出)
     size_t encoded_assets = 0; // 至少有一天有编码数据的资产数
 
     // 全库统计
@@ -159,7 +152,7 @@ struct Asset {
   // ========================================
   // 归档库元数据
   // ========================================
-  struct {
+  struct Archive {
     bool scanned = false; // 是否已完成扫描
     bool exists = false;  // 归档目录是否存在
     std::string path;     // 归档根目录
@@ -188,7 +181,7 @@ struct Asset {
     bool can_encode() const { return !binary && archive; }
     bool need_download() const { return !binary && !archive; }
   };
-  struct {
+  struct Backtest {
     misc::Ymd start = 0;           // 回测起始日 (来自配置)
     misc::Ymd end = 0;             // 回测结束日 (来自配置)
     std::vector<BacktestDay> days; // 升序
@@ -206,28 +199,18 @@ struct Asset {
   std::vector<misc::Ymd> backtest_dates() const;
 
   // ========================================
-  // 方法
+  // 扫描 (Scan worker 线程, 同步): 一趟扫完就把三个页面要的数据全部备齐 (覆盖判定 /
+  // 每资产条数体积 / 完整性), 之后 Encode、Table、Browser 直接读缓存, 不各自重算.
+  // 四步同一形状: 只读本对象 (items / 上一版两源缓存) + 只写 AssetScan, 批内并行走 ex.tasks,
+  // 进度 begin(阶段, 总量) / publish(1). 产物由 GUI 帧首 adopt 整体换进 —— 中途页面看到的是上一版完整结果.
   // ========================================
-  // 扫描 (协程异步): 一趟扫完就把三个页面要的数据全部备齐 (覆盖判定 /
-  // 每资产条数体积 / 完整性), 之后 Encode、Table、Browser 直接读缓存,
-  // 不各自重算.
-  boost::asio::awaitable<void> coro_scan_binary_database(
-      boost::asio::io_context &io,
-      const std::string &orders_dir,
-      std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
+  void scan_binary(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const;
+  static void scan_archive(AssetScan &out, const std::string &archive_dir, const std::string &archive_extension,
+                           misc::exec::ForkJoin &ex, Progress &p);
 
-  boost::asio::awaitable<void> coro_scan_archive_database(
-      boost::asio::io_context &io,
-      const std::string &archive_dir,
-      const std::string &archive_extension,
-      std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
-
-  // 覆盖分析 (扫描完成或配置变更后调用): 建回测日历 —— 行 = 基本面交易日历
-  // (assetinfo.stock_days) ∩ [start, end], 每行标两源有无.
-  // 几百个日期, 同步跑完. 区间内的条数/体积 (要遍历帧目录)
-  // 归 coro_compute_coverage_statistics 那趟一起算.
-  void compute_backtest_coverage(misc::Ymd start, misc::Ymd end,
-                                 const AssetInfo &assetinfo);
+  // 覆盖分析: 建回测日历 —— 行 = 基本面交易日历 (assetinfo.stock_days) ∩ [start, end], 每行标两源有无 (out 的两源缓存).
+  // 几百个日期, 单线程. 区间内的条数/体积 (要遍历帧目录) 归 compute_coverage_statistics 那趟一起算.
+  static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, misc::Ymd end, const AssetInfo &assetinfo);
 
   // 按日统计 (Browser 完整性 / Table 的 Orders% / Encode 的缺失表,
   // 同一份统计一次算完)
@@ -242,16 +225,25 @@ struct Asset {
   // 全库帧目录只在这里遍历一趟 (按天段并行): 每资产 total_days /
   // total_orders, 全库与回测区间的条数/体积, encoded_assets.
   //
-  // 交易日 × 资产的双重遍历 (885 × 5800 量级) 切成连续的交易日段扔进线程池,
-  // 每段各自累加, 结束后按段的先后顺序合并 (缺失日期样本要保持时间序);
-  // GUI 线程只轮询等待. 结果先算在局部, 算完一次性换进来 —— 中途打开页面
-  // 看到的是"上一版或没有", 不会是半成品.
-  boost::asio::awaitable<void> coro_compute_coverage_statistics(
-      boost::asio::io_context &io,
-      const AssetInfo &assetinfo,
-      std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool);
+  // 交易日 × 资产的双重遍历 (885 × 5800 量级) 切成连续的交易日段 (一段一个 task),
+  // 每段各自累加, 结束后按段的先后顺序合并 (缺失日期样本要保持时间序).
+  void compute_coverage_statistics(AssetScan &out, const AssetInfo &assetinfo, misc::exec::ForkJoin &ex, Progress &p) const;
+
+  // GUI 线程: 一趟扫描的产物整体换进 (帧目录随之发布)
+  void adopt(AssetScan &&scan);
 
 private:
   mutable std::mutex orders_mutex_;
   std::shared_ptr<const OrdersCatalog> orders_ = std::make_shared<const OrdersCatalog>();
+};
+
+// 一趟扫描的全部产物 = Asset 里扫描负责的那几块 + 帧目录快照 (Scan worker 私有算出, Asset::adopt 换进)
+struct AssetScan {
+  Asset::Binary binary;
+  Asset::Archive archive;
+  Asset::Backtest backtest;
+  std::shared_ptr<const OrdersCatalog> orders = std::make_shared<const OrdersCatalog>();
+  std::unordered_map<misc::Ymd, Asset::DateStats> date_stats;
+  std::vector<Asset::DateGap> date_gaps;
+  std::vector<Asset::AssetStats> asset_stats;
 };

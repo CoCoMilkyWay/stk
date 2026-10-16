@@ -2,211 +2,150 @@
 #include "gui/task_database/services/EncodingService.hpp"
 #include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
+#include "misc/progress_parallel.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/encoding_worker.hpp"
 
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cassert>
+#include <chrono>
+#include <future>
 #include <iostream>
+#include <memory>
+#include <vector>
 
 namespace GUI::Database {
 
 EncodingService::EncodingService(SharedData &data)
     : data_(data) {
-  // Scan operations now in Asset class
+  Start();
 }
 
-EncodingService::~EncodingService() = default;
-
-void EncodingService::start_encoding(int num_workers, bool skip_existing) {
-  if (status_ == EncodingStatus::Running)
-    return;
-
-  status_ = EncodingStatus::Running;
-  cancel_flag_.store(false);
-  num_workers_ = num_workers;
-  skip_existing_ = skip_existing;
-  start_time_ = std::chrono::steady_clock::now();
+// 异常不捕获 (fail fast). 取消也 post 交接: 日文件可能已被 rename 换掉, 须重扫
+bool EncodingService::run(EncodeRequest &req) {
+  assert(req.workers > 0 && "encoding: workers 须 > 0");
+  const auto start_time = std::chrono::steady_clock::now();
+  const size_t target_dates = data_.asset.backtest.days.size();
+  assert(target_dates > 0 && "编码前必须先完成回测区间覆盖扫描");
+  // 大内存假设 (不为小机器妥协): 各 worker 并发解压+解码的工作集要装得下.
+  assert(physical_ram_bytes() >= (size_t(16) << 30) &&
+         "encoding 需要 ≥16GB 物理内存");
 
   // Enable High Performance Mode: GUI low-refresh, workers own cores
   data_.EnableHighPerformanceMode();
   std::cout << "[High Performance Mode] Enabled - GUI low-refresh\n"
             << std::endl;
 
-  // 大内存假设 (不为小机器妥协): 各 worker 并发解压+解码的工作集要装得下.
-  assert(physical_ram_bytes() >= (size_t(16) << 30) &&
-         "encoding 需要 ≥16GB 物理内存");
-
-  // 编码会 rename 换掉日文件, 帧目录快照里的偏移随之作废: 先撤下, 收尾的重扫描
-  // (scan_callback_) 再发布新的.
+  // 编码会 rename 换掉日文件, 帧目录快照里的偏移随之作废: 先撤下, 收尾交接后的重扫描再发布新的.
   data_.asset.publish_orders(std::make_shared<const OrdersCatalog>());
 
+  begin(Phase::Running, target_dates);
+
+  std::cout << "\n=== Encoding Started ===\n"
+            << "Workers: " << req.workers << " | Assets: " << data_.asset.items.size()
+            << " | Backtest dates: " << target_dates << "\n"
+            << std::endl;
+
+  // Initialize logger for all encoding workers (shared log file)
+  Logger::init(data_.config.log_dir);
+  Logger::reg("encoding");
+
+  std::cout << "Encoding: 逐笔二进制生成中 (按天流水: 列举 → 并行解码)...\n"
+            << std::endl;
+
+  // ------------------------------------------------------------------
+  // 流水线: producer 按天 [列举 → 推元数据批], worker 每批自己 unrar +
+  // 解码. 解压在 worker 侧并行 — 单条 unrar 流喂不满几十个核, 归档在
+  // NVMe 上多路并发直读也没有寻道代价 (见 encoding_worker.hpp).
+  // ------------------------------------------------------------------
   // 容量即流水深度: ~85 批/天, 256 ≈ 领先 2-3 天. 批是纯元数据, 队列本身
   // 不占什么内存.
-  queue_ = std::make_unique<BatchQueue>(256);
+  BatchQueue queue(256);
+  // 汇总行以天为单位, 总量 = 回测区间交易日;
+  // 附注显示最老在编天的资产进度, 由 producer/worker 维护.
+  misc::ParallelProgress progress(req.workers, 100, "days");
+  progress.set_summary_total(target_dates, true);
 
-  // Launch encoding in background thread
-  encoding_thread_ = std::async(std::launch::async, [this]() {
-    const size_t target_dates = data_.asset.backtest.days.size();
-    assert(target_dates > 0 && "编码前必须先完成回测区间覆盖扫描");
+  EncodeStats stats;
 
-    std::cout << "\n=== Encoding Started ===\n"
-              << "Workers: " << num_workers_ << " | Assets: " << data_.asset.items.size()
-              << " | Backtest dates: " << target_dates << "\n"
-              << std::endl;
+  std::vector<std::future<void>> workers;
+  workers.reserve(req.workers);
+  for (int i = 0; i < req.workers; ++i) {
+    workers.push_back(std::async(std::launch::async, [this, i, &queue, &stats, &progress]() {
+      encoding_worker(data_, queue, &cancel_, stats, i, progress.get_handle(i));
+    }));
+  }
 
-    // Initialize logger for all encoding workers (shared log file)
-    Logger::init(data_.config.log_dir);
-    Logger::reg("encoding");
-
-    std::cout << "Encoding: 逐笔二进制生成中 (按天流水: 列举 → 并行解码)...\n"
-              << std::endl;
-
-    // ------------------------------------------------------------------
-    // 流水线: producer 按天 [列举 → 推元数据批], worker 每批自己 unrar +
-    // 解码. 解压在 worker 侧并行 — 单条 unrar 流喂不满几十个核, 归档在
-    // NVMe 上多路并发直读也没有寻道代价 (见 encoding_worker.hpp).
-    // ------------------------------------------------------------------
-    // 汇总行以天为单位, 总量 = 回测区间交易日;
-    // 附注显示最老在编天的资产进度, 由 producer/worker 维护.
-    progress_ = std::make_shared<misc::ParallelProgress>(num_workers_, 100, "days");
-    progress_->set_summary_total(target_dates, true);
-
-    EncodeStats stats;
-
-    workers_.clear();
-    workers_.reserve(num_workers_);
-    for (int i = 0; i < num_workers_; ++i) {
-      workers_.push_back(std::async(std::launch::async, [this, i, &stats]() {
-        encoding_worker(data_, *queue_, &cancel_flag_, stats, i, progress_->get_handle(i));
-      }));
-    }
-
-    auto producer = std::async(std::launch::async, [this, &stats]() {
-      encoding_producer(data_, *queue_, &cancel_flag_, skip_existing_, stats,
-                        static_cast<size_t>(num_workers_), progress_.get());
-    });
-
-    producer.wait();
-    queue_->close();
-
-    for (auto &worker : workers_)
-      worker.wait();
-    progress_->stop();
-    workers_.clear();
-
-    // Finalize
-    const size_t pairs = stats.pairs_listed.load();
-    const size_t skipped = stats.pairs_skipped.load();
-    const size_t days_skipped = stats.days_skipped.load();
-    status_ = cancel_flag_.load() ? EncodingStatus::Cancelled : EncodingStatus::Completed;
-
-    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                             std::chrono::steady_clock::now() - start_time_)
-                             .count();
-
-    std::cout << "\n=== Encoding " << (status_ == EncodingStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
-              << "Encoded: " << pairs << " (asset, date) pairs across "
-              << stats.assets_with_work.size() << " assets in " << elapsed << "s"
-              << (skipped > 0 ? " (" + std::to_string(skipped) + " pairs already encoded, skipped)" : "")
-              << (days_skipped > 0 ? " (" + std::to_string(days_skipped) + " days skipped via completion marker)" : "")
-              << std::endl;
-
-    // 源损坏的都被跳过留在了日志里 (从不 abort): 醒目提示一下, 修完源文件
-    // 直接重跑增量即可 —— 这些 (资产, 日期) 既没有产物也没有完成标记.
-    const size_t pairs_corrupt = stats.run.count(L2::Outcome::Corrupt);
-    const size_t days_corrupt = stats.days_corrupt.load();
-    if (pairs_corrupt > 0 || days_corrupt > 0) {
-      std::cout << "CORRUPT SOURCE: " << pairs_corrupt << " (asset, date) pairs + " << days_corrupt
-                << " whole days skipped — grep '[CORRUPT' in " << data_.config.log_dir
-                << "/encoding.log, repair, then re-run incremental\n"
-                << std::endl;
-    }
-
-    // 准入校验未过的同理: 逐笔流本身缺片 (见 codec/L2_Validator.hpp), 数据源
-    // 侧的问题, 编码器无从修复. 核查/换源之后重跑增量即可.
-    const size_t pairs_invalid = stats.run.count(L2::Outcome::Invalid);
-    if (pairs_invalid > 0) {
-      std::cout << "INVALID DATA: " << pairs_invalid << " (asset, date) pairs failed validation — grep '[INVALID' in "
-                << data_.config.log_dir << "/encoding.log, check source, then re-run incremental\n"
-                << std::endl;
-    }
-
-    // Trigger scan callback after encoding completion
-    // (扫描整体重建, 每天重读一遍日文件目录, 不用在这里告诉它动过哪些天)
-    if (scan_callback_) {
-      scan_callback_();
-    }
-
-    // Disable High Performance Mode: GUI full-refresh
-    data_.DisableHighPerformanceMode();
-    std::cout << "\n[High Performance Mode] Disabled - GUI full-refresh\n"
-              << std::endl;
+  auto producer = std::async(std::launch::async, [this, &req, &queue, &stats, &progress]() {
+    encoding_producer(data_, queue, &cancel_, req.skip_existing, stats,
+                      static_cast<size_t>(req.workers), &progress);
   });
-}
 
-void EncodingService::request_cancel() {
-  if (status_ != EncodingStatus::Running) {
-    return;
+  // 盯流水: 汇总天数镜像进进度面; 见取消即 close 队列 (唤醒被背压堵住的 producer 与等批的 worker)
+  auto mirror = [this, &progress]() { publish(progress.summary_done() - done.load(std::memory_order_relaxed)); };
+  bool closed = false;
+  while (producer.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+    mirror();
+    if (!closed && cancel_.load(std::memory_order_relaxed)) {
+      queue.close();
+      closed = true;
+      std::cout << "[Encoding] Cancelling..." << std::endl;
+    }
+  }
+  queue.close();
+
+  for (auto &worker : workers)
+    worker.wait();
+  progress.stop();
+  mirror();
+
+  // Finalize
+  const size_t pairs = stats.pairs_listed.load();
+  const size_t skipped = stats.pairs_skipped.load();
+  const size_t days_skipped = stats.days_skipped.load();
+  const bool completed = !cancel_.load(std::memory_order_relaxed);
+
+  const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - start_time)
+                           .count();
+
+  std::cout << "\n=== Encoding " << (completed ? "Complete" : "Cancelled") << " ===\n"
+            << "Encoded: " << pairs << " (asset, date) pairs across "
+            << stats.assets_with_work.size() << " assets in " << elapsed << "s"
+            << (skipped > 0 ? " (" + std::to_string(skipped) + " pairs already encoded, skipped)" : "")
+            << (days_skipped > 0 ? " (" + std::to_string(days_skipped) + " days skipped via completion marker)" : "")
+            << std::endl;
+
+  // 源损坏的都被跳过留在了日志里 (从不 abort): 醒目提示一下, 修完源文件
+  // 直接重跑增量即可 —— 这些 (资产, 日期) 既没有产物也没有完成标记.
+  const size_t pairs_corrupt = stats.run.count(L2::Outcome::Corrupt);
+  const size_t days_corrupt = stats.days_corrupt.load();
+  if (pairs_corrupt > 0 || days_corrupt > 0) {
+    std::cout << "CORRUPT SOURCE: " << pairs_corrupt << " (asset, date) pairs + " << days_corrupt
+              << " whole days skipped — grep '[CORRUPT' in " << data_.config.log_dir
+              << "/encoding.log, repair, then re-run incremental\n"
+              << std::endl;
   }
 
-  if (cancel_flag_.exchange(true))
-    return;
-  if (queue_)
-    queue_->close(); // 唤醒被背压堵住的 producer 与等批的 worker
-  std::cout << "[Encoding] Cancelling..." << std::endl;
-}
-
-void EncodingService::stop_encoding() {
-  request_cancel();
-
-  // Wait for encoding thread to finish (which will also wait for workers)
-  if (encoding_thread_.valid()) {
-    encoding_thread_.wait();
+  // 准入校验未过的同理: 逐笔流本身缺片 (见 codec/L2_Validator.hpp), 数据源
+  // 侧的问题, 编码器无从修复. 核查/换源之后重跑增量即可.
+  const size_t pairs_invalid = stats.run.count(L2::Outcome::Invalid);
+  if (pairs_invalid > 0) {
+    std::cout << "INVALID DATA: " << pairs_invalid << " (asset, date) pairs failed validation — grep '[INVALID' in "
+              << data_.config.log_dir << "/encoding.log, check source, then re-run incremental\n"
+              << std::endl;
   }
 
-  // Clear any remaining worker futures (though they should already be cleared in the encoding thread)
-  workers_.clear();
+  // Disable High Performance Mode: GUI full-refresh
+  data_.DisableHighPerformanceMode();
+  std::cout << "\n[High Performance Mode] Disabled - GUI full-refresh\n"
+            << std::endl;
+
+  // 交接 → StateManager 重扫 (扫描整体重建, 每天重读一遍日文件目录, 不用在这里告诉它动过哪些天)
+  handoff.post(req.seq);
+  return completed;
 }
 
-EncodingProgress EncodingService::get_progress() const {
-  EncodingProgress prog;
-  prog.total_assets = data_.asset.items.size();
-  prog.total_dates = data_.asset.backtest.days.size();
-  prog.encoded_dates = data_.asset.binary.backtest_order_days;
-  prog.completed_assets = 0;
-
-  // 扫描时已按回测区间累加好. 这里每帧都会被 Encode 页调一次, 逐帧遍历
-  // 帧目录 (资产数 × 交易日数, 五百万量级) 会把帧时间拖到几百毫秒.
-  prog.total_orders = data_.asset.binary.backtest_orders;
-
-  if (status_ == EncodingStatus::Running) {
-    prog.elapsed_seconds = std::chrono::duration<float>(
-                               std::chrono::steady_clock::now() - start_time_)
-                               .count();
-    prog.encoding_rate = prog.elapsed_seconds > 0 ? prog.completed_assets / prog.elapsed_seconds : 0;
-  }
-
-  return prog;
-}
-
-void EncodingService::run_file_check(const std::string &archive_base_dir) {
-  if (file_check_running_.load()) {
-    std::cout << "[File Check] Already running, please wait..." << std::endl;
-    return;
-  }
-
-  file_check_running_.store(true);
-  file_check_thread_ = std::async(std::launch::async, [this, archive_base_dir]() {
-    run_file_check_async(archive_base_dir);
-    file_check_running_.store(false);
-  });
-}
-
-void EncodingService::run_file_check_async(const std::string &archive_base_dir) {
+bool FileCheckService::run(std::string &archive_base_dir) {
   std::cout << "========================================\n"
             << "[File Check] Starting Archive Validation\n"
             << "========================================\n"
@@ -221,8 +160,11 @@ void EncodingService::run_file_check_async(const std::string &archive_base_dir) 
   // read+lseek pairs for a 3270-entry / 3.9GB archive). The archive store is
   // a single-actuator spinning disk, so probes run sequentially -- running
   // several concurrently thrashes the disk head (measured 359x slowdown).
-  auto progress = [](size_t done, size_t total, const std::string &path) {
-    std::cout << "[File Check]   (" << done << "/" << total << ") " << path << std::endl;
+  auto progress = [this](size_t n_done, size_t n_total, const std::string &path) {
+    if (n_done == 1)
+      begin(Phase::Scanning, n_total);
+    publish(1);
+    std::cout << "[File Check]   (" << n_done << "/" << n_total << ") " << path << std::endl;
   };
 
   FileCheck::FileCheckResult local_result =
@@ -232,8 +174,8 @@ void EncodingService::run_file_check_async(const std::string &archive_base_dir) 
     std::cout << "[File Check] ✗ Archive directory does not exist\n"
               << "[File Check] Will use built binaries instead\n"
               << "========================================" << std::endl;
-    file_check_result_ = local_result;
-    return;
+    handoff.post(std::move(local_result));
+    return true;
   }
 
   std::cout << "[File Check] ✓ Archive directory exists\n"
@@ -245,8 +187,8 @@ void EncodingService::run_file_check_async(const std::string &archive_base_dir) 
     std::cout << "[File Check] ✗ Some required commands are missing\n"
               << "[File Check] Please install: unrar, 7z, rar, gdb\n"
               << "========================================" << std::endl;
-    file_check_result_ = local_result;
-    return;
+    handoff.post(std::move(local_result));
+    return true;
   }
   std::cout << "[File Check] ✓ All required commands available\n"
             << std::endl;
@@ -307,7 +249,8 @@ void EncodingService::run_file_check_async(const std::string &archive_base_dir) 
   std::cout << "========================================" << std::endl;
 
   // Publish result once, atomically, at the end.
-  file_check_result_ = local_result;
+  handoff.post(std::move(local_result));
+  return true;
 }
 
 } // namespace GUI::Database

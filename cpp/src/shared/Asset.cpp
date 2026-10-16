@@ -1,51 +1,18 @@
 #include "shared/Asset.hpp"
-#include "gui/coro/CoroManager.hpp"
-#include "gui/task_database/infrastructure/ScanThreadPool.hpp"
+#include "misc/exec.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/AssetInfo.hpp"
+#include "shared/Progress.hpp"
 
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
-
+#include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <filesystem>
-#include <future>
 #include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-namespace {
-
-// 等一批线程池任务跑完, 期间每 50ms 让一次步给 GUI 渲染.
-// (重活全在线程池上, GUI 线程只轮询, 让步间隔可以放宽)
-boost::asio::awaitable<void> await_futures(boost::asio::io_context &io,
-                                           std::vector<std::future<void>> &futures) {
-  while (true) {
-    bool all_done = true;
-    for (auto &future : futures) {
-      if (future.valid() &&
-          future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
-        all_done = false;
-        break;
-      }
-    }
-    if (all_done)
-      break;
-    co_await Coro::Yield(io, std::chrono::milliseconds(50));
-  }
-
-  // get() 而不是只等 —— 任务里的异常要在这里炸出来, 不能吞在 future 里
-  for (auto &future : futures) {
-    if (future.valid())
-      future.get();
-  }
-}
-
-} // namespace
 
 // ============================================================================
 // AssetItem Implementation
@@ -75,44 +42,33 @@ void Asset::publish_orders(std::shared_ptr<const OrdersCatalog> catalog) {
   orders_ = std::move(catalog);
 }
 
+void Asset::adopt(AssetScan &&scan) {
+  binary = std::move(scan.binary);
+  archive = std::move(scan.archive);
+  backtest = std::move(scan.backtest);
+  publish_orders(std::move(scan.orders));
+  date_stats = std::move(scan.date_stats);
+  date_gaps = std::move(scan.date_gaps);
+  asset_stats = std::move(scan.asset_stats);
+  ++asset_stats_generation;
+}
+
 // ============================================================================
-// Binary Database Scan (Coroutine Version)
+// Binary Database Scan
 // ============================================================================
 
-boost::asio::awaitable<void> Asset::coro_scan_binary_database(
-    boost::asio::io_context &io,
-    const std::string &orders_dir,
-    std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
-
+void Asset::scan_binary(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const {
   namespace fs = std::filesystem;
 
-  // 统计缓存作废 —— 底下的帧目录正要被重建. 扫描末尾由
-  // coro_compute_coverage_statistics 一次重建 (见 ScanService Phase 5);
-  // 这中间 Table / Encode 页面按"空"渲染成 Waiting, 不给半旧的数.
-  date_stats.clear();
-  date_gaps.clear();
-  asset_stats.clear();
-
-  scan_days_done.store(0, std::memory_order_relaxed);
-  scan_days_total.store(0, std::memory_order_relaxed);
-
-  binary.scanned = true;
-  binary.path = orders_dir;
-  binary.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
-
-  // 整体重建帧目录, 不做增量 (见 OrdersCatalog). 新目录算在局部, 算完整份发布;
-  // 期间读者拿到的仍是上一份完整快照.
-  binary.dates.clear();
-  binary.min_date = 0;
-  binary.max_date = 0;
-  binary.total_orders = 0;
-  binary.orders_size_gb = 0.0;
-  binary.encoded_assets = 0; // 由 coro_compute_coverage_statistics 填
-
-  if (!binary.exists) {
-    publish_orders(std::make_shared<const OrdersCatalog>());
-    co_return;
-  }
+  // 整体重建帧目录, 不做增量 (见 OrdersCatalog); encoded_assets 由 compute_coverage_statistics 填
+  Binary &bin = out.binary;
+  bin = Binary{};
+  bin.scanned = true;
+  bin.path = orders_dir;
+  bin.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
+  out.orders = std::make_shared<const OrdersCatalog>();
+  if (!bin.exists)
+    return;
 
   // ------------------------------------------------------------------
   // 1. 行 = 全部日文件 (升序), 列 = items; 整块一次定形, 之后各天的任务只往
@@ -132,27 +88,20 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   };
   std::vector<DayOut> outs(n_days);
 
-  auto scan_day = [this, &orders_dir, &outs, &cat](size_t d) {
+  p.begin(Phase::Scanning, n_days);
+  ex.tasks(static_cast<int>(n_days), [&](int t, int) {
+    const size_t d = static_cast<size_t>(t);
     cat->fill_day(d, orders_dir);
-    DayOut &out = outs[d];
+    DayOut &o = outs[d];
     for (const FrameRef &ref : cat->row(d)) {
       if (ref.empty())
         continue;
-      out.orders += ref.head.count;
-      out.bytes += static_cast<double>(ref.size);
-      ++out.frames;
+      o.orders += ref.head.count;
+      o.bytes += static_cast<double>(ref.size);
+      ++o.frames;
     }
-    scan_days_done.fetch_add(1, std::memory_order_relaxed);
-  };
-
-  scan_days_total.store(n_days, std::memory_order_relaxed);
-
-  std::vector<std::future<void>> futures;
-  futures.reserve(n_days);
-  for (size_t d = 0; d < n_days; ++d)
-    futures.push_back(thread_pool->submit([&scan_day, d]() { scan_day(d); }));
-
-  co_await await_futures(io, futures);
+    p.publish(1);
+  });
 
   // ------------------------------------------------------------------
   // 3. 汇总 (按天, 几百项; 全库帧目录那趟遍历归 coverage 阶段)
@@ -160,158 +109,100 @@ boost::asio::awaitable<void> Asset::coro_scan_binary_database(
   size_t total_orders = 0;
   double total_bytes = 0.0;
   for (size_t d = 0; d < n_days; ++d) {
-    DayOut &out = outs[d];
-    total_orders += out.orders;
-    total_bytes += out.bytes;
+    const DayOut &o = outs[d];
+    total_orders += o.orders;
+    total_bytes += o.bytes;
     // 一帧都没有的日文件 (全是墓碑) 不算"有这天", 否则会把 min/max 区间往外撑
-    if (out.frames > 0)
-      binary.dates.insert(cat->days[d]);
+    if (o.frames > 0)
+      bin.dates.insert(cat->days[d]);
   }
-  publish_orders(std::move(cat));
+  out.orders = std::move(cat);
 
-  binary.total_orders = total_orders;
-  binary.orders_size_gb = static_cast<float>(total_bytes / (1024.0 * 1024.0 * 1024.0));
+  bin.total_orders = total_orders;
+  bin.orders_size_gb = static_cast<float>(total_bytes / (1024.0 * 1024.0 * 1024.0));
 
-  if (!binary.dates.empty()) {
-    binary.min_date = *binary.dates.begin();
-    binary.max_date = *binary.dates.rbegin();
+  if (!bin.dates.empty()) {
+    bin.min_date = *bin.dates.begin();
+    bin.max_date = *bin.dates.rbegin();
   }
-
-  co_return;
 }
 
 // ============================================================================
-// Archive Database Scan (Coroutine Version)
+// Archive Database Scan
 // ============================================================================
 
-boost::asio::awaitable<void> Asset::coro_scan_archive_database(
-    boost::asio::io_context &io,
-    const std::string &archive_dir,
-    const std::string &archive_extension,
-    std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
-
+void Asset::scan_archive(AssetScan &out, const std::string &archive_dir, const std::string &archive_extension,
+                         misc::exec::ForkJoin &ex, Progress &p) {
   namespace fs = std::filesystem;
 
-  // 同 binary 扫描: 统计缓存作废, 扫描末尾一次重建
-  date_stats.clear();
-  date_gaps.clear();
-  asset_stats.clear();
-
-  archive.scanned = true;
-  archive.path = archive_dir;
-  archive.exists = fs::exists(archive_dir) && fs::is_directory(archive_dir);
-
-  if (!archive.exists) {
-    archive.dates.clear();
-    archive.min_date = 0;
-    archive.max_date = 0;
-    archive.total_files = 0;
-    archive.total_size_gb = 0.0;
-    co_return;
-  }
-
-  // Month path structure
-  struct MonthPath {
-    std::string path;
-  };
+  Archive &arc = out.archive;
+  arc = Archive{};
+  arc.scanned = true;
+  arc.path = archive_dir;
+  arc.exists = fs::exists(archive_dir) && fs::is_directory(archive_dir);
+  if (!arc.exists)
+    return;
 
   // Collect all month paths (archive_dir/YYYY/YYYYMM/).
-  // 与 binary 扫描同理: 按年切只有十来个任务, 按月切才喂得满线程池.
-  std::vector<MonthPath> month_paths;
+  // 与 binary 扫描同理: 按年切只有十来个任务, 按月切才喂得满执行器.
+  std::vector<std::string> month_paths;
   for (const auto &year_entry : fs::directory_iterator(archive_dir)) {
     if (!year_entry.is_directory())
       continue;
     for (const auto &month_entry : fs::directory_iterator(year_entry.path())) {
       if (!month_entry.is_directory())
         continue;
-      month_paths.push_back({month_entry.path().string()});
+      month_paths.push_back(month_entry.path().string());
     }
   }
 
-  // Shared result accumulator
-  struct ScanResult {
-    std::mutex mutex;
-    std::set<misc::Ymd> archive_dates;
-    size_t total_files = 0;
-    float total_size = 0.0;
+  // 一月一格 (task 下标即格), 段间不相交免锁; 收尾按月序合并
+  struct MonthOut {
+    std::set<misc::Ymd> dates;
+    size_t files = 0;
+    double bytes = 0.0;
   };
-  auto result = std::make_shared<ScanResult>();
+  std::vector<MonthOut> outs(month_paths.size());
 
-  // Lambda for scanning a single month (runs in thread pool)
-  auto scan_month = [&archive_extension, result, this](const MonthPath &month_path) {
-    std::set<misc::Ymd> local_dates;
-    size_t local_files = 0;
-    float local_size = 0.0;
-
-    try {
-      for (const auto &file_entry : fs::directory_iterator(month_path.path)) {
-        if (!file_entry.is_regular_file())
-          continue;
-
-        const std::string ext = file_entry.path().extension().string();
-        if (ext == archive_extension) {
-          const std::string filename = file_entry.path().stem().string();
-          if (const misc::Ymd date = filename.size() == 8 ? misc::parse_ymd(filename) : 0) {
-            local_dates.insert(date);
-            local_files++;
-            try {
-              local_size += static_cast<float>(fs::file_size(file_entry.path()));
-            } catch (...) {
-            }
-          }
-        }
+  p.begin(Phase::Scanning, month_paths.size());
+  ex.tasks(static_cast<int>(month_paths.size()), [&](int m, int) {
+    MonthOut &o = outs[static_cast<size_t>(m)];
+    for (const auto &file_entry : fs::directory_iterator(month_paths[static_cast<size_t>(m)])) {
+      if (!file_entry.is_regular_file() || file_entry.path().extension().string() != archive_extension)
+        continue;
+      const std::string filename = file_entry.path().stem().string();
+      if (const misc::Ymd date = filename.size() == 8 ? misc::parse_ymd(filename) : 0) {
+        o.dates.insert(date);
+        ++o.files;
+        o.bytes += static_cast<double>(file_entry.file_size());
       }
-    } catch (...) {
     }
+    p.publish(1);
+  });
 
-    // Merge into shared result
-    {
-      std::lock_guard<std::mutex> lock(result->mutex);
-      result->archive_dates.insert(local_dates.begin(), local_dates.end());
-      result->total_files += local_files;
-      result->total_size += local_size;
-    }
-
-    scan_days_done.fetch_add(1, std::memory_order_relaxed);
-  };
-
-  // Submit all month scan tasks to thread pool
-  scan_days_done.store(0, std::memory_order_relaxed);
-  scan_days_total.store(month_paths.size(), std::memory_order_relaxed);
-
-  std::vector<std::future<void>> futures;
-  futures.reserve(month_paths.size());
-  for (const auto &month_path : month_paths) {
-    futures.push_back(thread_pool->submit([scan_month, month_path]() { scan_month(month_path); }));
+  double total_bytes = 0.0;
+  for (MonthOut &o : outs) {
+    arc.dates.merge(o.dates);
+    arc.total_files += o.files;
+    total_bytes += o.bytes;
   }
+  arc.total_size_gb = static_cast<float>(total_bytes / (1024.0 * 1024.0 * 1024.0));
 
-  co_await await_futures(io, futures);
-
-  // Merge results into Asset
-  archive.dates = result->archive_dates;
-  archive.total_files = result->total_files;
-  archive.total_size_gb = result->total_size / (1024.0 * 1024.0 * 1024.0);
-
-  if (!archive.dates.empty()) {
-    archive.min_date = *archive.dates.begin();
-    archive.max_date = *archive.dates.rbegin();
-  } else {
-    archive.min_date = 0;
-    archive.max_date = 0;
+  if (!arc.dates.empty()) {
+    arc.min_date = *arc.dates.begin();
+    arc.max_date = *arc.dates.rbegin();
   }
-
-  co_return;
 }
 
 // ============================================================================
 // Backtest Coverage Analysis
 // ============================================================================
 
-void Asset::compute_backtest_coverage(misc::Ymd start, misc::Ymd end,
-                                      const AssetInfo &assetinfo) {
-  backtest.start = start;
-  backtest.end = end;
-  backtest.days.clear();
+void Asset::compute_backtest_coverage(AssetScan &out, misc::Ymd start, misc::Ymd end, const AssetInfo &assetinfo) {
+  Backtest &bt = out.backtest;
+  bt = Backtest{};
+  bt.start = start;
+  bt.end = end;
 
   // 行 = 基本面交易日历 (权威, archive 自身缺日也能发现); 调用方保证基本面 Ready (ScanService assert).
   // 两源未扫描 / 不存在时其日期集为空, 行上自然标"无".
@@ -319,13 +210,13 @@ void Asset::compute_backtest_coverage(misc::Ymd start, misc::Ymd end,
   assert(!stock_days.empty() && "基本面交易日历未就绪");
   for (const CalendarDay &day : stock_days)
     if (day.trading && day.date >= start && day.date <= end)
-      backtest.days.push_back({day.date, binary.dates.count(day.date) > 0, archive.dates.count(day.date) > 0});
-  assert(std::is_sorted(backtest.days.begin(), backtest.days.end(),
+      bt.days.push_back({day.date, out.binary.dates.count(day.date) > 0, out.archive.dates.count(day.date) > 0});
+  assert(std::is_sorted(bt.days.begin(), bt.days.end(),
                         [](const BacktestDay &a, const BacktestDay &b) { return a.date < b.date; }) &&
          "基本面交易日历须升序");
 
-  // 区间内有数据的天数 (区间内条数/体积要遍历帧目录, 归 coro_compute_coverage_statistics 那趟)
-  binary.backtest_order_days = backtest.count([](const BacktestDay &d) { return d.binary; });
+  // 区间内有数据的天数 (区间内条数/体积要遍历帧目录, 归 compute_coverage_statistics 那趟)
+  out.binary.backtest_order_days = bt.count([](const BacktestDay &d) { return d.binary; });
 }
 
 std::vector<misc::Ymd> Asset::backtest_dates() const {
@@ -340,22 +231,19 @@ std::vector<misc::Ymd> Asset::backtest_dates() const {
 // Coverage Statistics (Browser / Table / Encode 共用的一份统计)
 // ============================================================================
 
-boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
-    boost::asio::io_context &io,
-    const AssetInfo &assetinfo,
-    std::shared_ptr<GUI::Database::ScanThreadPool> thread_pool) {
+void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetinfo, misc::exec::ForkJoin &ex,
+                                        Progress &p) const {
   const auto &stock_info = assetinfo.get_stock_info();
   const auto &stock_days = assetinfo.get_stock_days();
   const auto &suspended = assetinfo.get_suspended();
+  const Backtest &bt = out.backtest;
 
-  // 全程算在局部, 最后一次性换进成员 —— 中途 UI 读到的是上一版完整结果
   std::unordered_map<misc::Ymd, DateStats> local_date_stats;
   std::vector<AssetStats> local_asset_stats(items.size());
 
-  std::vector<std::future<void>> futures;
-  const size_t n_workers = thread_pool->get_num_workers();
+  const size_t n_workers = static_cast<size_t>(ex.threads());
 
-  // 全库帧目录唯一的一趟遍历, 按连续的天段切给线程池 (日主序, 每段顺扫一块
+  // 全库帧目录唯一的一趟遍历, 按连续的天段切 (一段一个 task; 日主序, 每段顺扫一块
   // 连续内存): 每段一份每资产的全库口径两列 (Table 的 Days / Orders) 部分和,
   // 顺路把回测区间内的条数/体积按段累加. 结束后逐资产合并, 再数"至少有一天
   // 有数据"的资产.
@@ -365,34 +253,32 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     std::vector<size_t> days_by_asset;   // 有帧的天数
     std::vector<size_t> orders_by_asset; // 逐笔条数
   };
-  const std::shared_ptr<const OrdersCatalog> cat = orders(); // 整趟统计同一份快照
+  const std::shared_ptr<const OrdersCatalog> &cat = out.orders; // 本趟扫出 (或沿用) 的那份快照
   assert(cat->width <= items.size() && "帧目录宽于 items");
   const size_t n_days = cat->days.size();
   const size_t per_task = std::max<size_t>(1, (n_days + n_workers - 1) / n_workers);
   std::vector<RangeSum> range_sums((n_days + per_task - 1) / per_task);
-  for (size_t t = 0; t < range_sums.size(); ++t) {
-    const size_t begin = t * per_task;
+  ex.tasks(static_cast<int>(range_sums.size()), [&](int t, int) {
+    const size_t begin = static_cast<size_t>(t) * per_task;
     const size_t end = std::min(n_days, begin + per_task);
-    RangeSum *sum = &range_sums[t];
-    futures.push_back(thread_pool->submit([this, &cat, sum, begin, end]() {
-      sum->days_by_asset.assign(cat->width, 0);
-      sum->orders_by_asset.assign(cat->width, 0);
-      for (size_t d = begin; d < end; ++d) {
-        const bool in_range = cat->days[d] >= backtest.start && cat->days[d] <= backtest.end;
-        const std::span<const FrameRef> row = cat->row(d);
-        for (size_t i = 0; i < row.size(); ++i) {
-          if (row[i].empty())
-            continue; // 密集: 空格子不是"有数据的天"
-          ++sum->days_by_asset[i];
-          sum->orders_by_asset[i] += row[i].head.count;
-          if (in_range) {
-            sum->orders += row[i].head.count;
-            sum->bytes += static_cast<double>(row[i].size);
-          }
+    RangeSum &sum = range_sums[static_cast<size_t>(t)];
+    sum.days_by_asset.assign(cat->width, 0);
+    sum.orders_by_asset.assign(cat->width, 0);
+    for (size_t d = begin; d < end; ++d) {
+      const bool in_range = cat->days[d] >= bt.start && cat->days[d] <= bt.end;
+      const std::span<const FrameRef> row = cat->row(d);
+      for (size_t i = 0; i < row.size(); ++i) {
+        if (row[i].empty())
+          continue; // 密集: 空格子不是"有数据的天"
+        ++sum.days_by_asset[i];
+        sum.orders_by_asset[i] += row[i].head.count;
+        if (in_range) {
+          sum.orders += row[i].head.count;
+          sum.bytes += static_cast<double>(row[i].size);
         }
       }
-    }));
-  }
+    }
+  });
 
   // 每资产的常量先摊平: 交易所小写全码 / 上市 / 退市. 这些原先是在
   // 日期×资产的内循环里现算的, 五百万次 string 拼接 + map 查找.
@@ -423,8 +309,9 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     }
   }
 
-  const bool has_db_range = binary.min_date && binary.max_date;
-  const bool has_bt_range = backtest.start && backtest.end;
+  const Binary &bin = out.binary;
+  const bool has_db_range = bin.min_date && bin.max_date;
+  const bool has_bt_range = bt.start && bt.end;
 
   // 要算的交易日先挑出来 (区间外的不进任务, 进度分母也只数这些).
   // per-date 统计沿用全库范围; per-asset 缺口只看回测区间 —— 区间外没编
@@ -443,9 +330,9 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   size_t next_bidx = 0;
   for (const CalendarDay &day : stock_days) {
     const bool in_db_range =
-        !has_db_range || (day.date >= binary.min_date && day.date <= binary.max_date);
+        !has_db_range || (day.date >= bin.min_date && day.date <= bin.max_date);
     const bool in_backtest = has_bt_range && day.trading &&
-                             day.date >= backtest.start && day.date <= backtest.end;
+                             day.date >= bt.start && day.date <= bt.end;
     if (!in_db_range && !in_backtest)
       continue;
 
@@ -455,17 +342,16 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     job.bidx = in_backtest ? next_bidx++ : 0;
     job.in_db_range = in_db_range;
     job.in_backtest = in_backtest;
-    job.archive_has_day = in_backtest && backtest.days[job.bidx].archive;
-    assert((!in_backtest || backtest.days[job.bidx].date == day.date) && "回测日历与交易日历错位 (compute_backtest_coverage 没先跑?)");
+    job.archive_has_day = in_backtest && bt.days[job.bidx].archive;
+    assert((!in_backtest || bt.days[job.bidx].date == day.date) && "回测日历与交易日历错位 (compute_backtest_coverage 没先跑?)");
     jobs.push_back(job);
   }
-  assert(next_bidx == backtest.days.size() && "回测日历与交易日历错位");
-  std::vector<DateGap> local_date_gaps(backtest.days.size()); // 一天一格, 段间不相交, 免合并
+  assert(next_bidx == bt.days.size() && "回测日历与交易日历错位");
+  std::vector<DateGap> local_date_gaps(bt.days.size()); // 一天一格, 段间不相交, 免合并
 
   // 这个双重循环 (交易日 × 全部资产) 是整个 coverage 阶段唯一要等的部分,
   // 进度就报它. 上面那几趟 items 遍历相比之下可以忽略.
-  scan_days_done.store(0, std::memory_order_relaxed);
-  scan_days_total.store(jobs.size(), std::memory_order_relaxed);
+  p.begin(Phase::Running, jobs.size());
 
   // 按连续的交易日段切任务: 每段自己的 date_stats (按天, 段间不相交), date_gaps
   // 直接写各自那几格, 再加一份 per-asset 部分和, 结束后按段序合并 —— 缺失日期样本取的
@@ -479,8 +365,13 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
   std::vector<Chunk> chunks(n_chunks);
   const size_t per_chunk = jobs.empty() ? 1 : (jobs.size() + n_chunks - 1) / n_chunks;
 
-  auto run_chunk = [this, &cat, &jobs, &keys, &key_to_idx, &suspended, &local_date_gaps](size_t begin, size_t end, Chunk &out) {
-    out.asset_stats.assign(items.size(), AssetStats{});
+  ex.tasks(static_cast<int>(n_chunks), [&](int c, int) {
+    const size_t begin = static_cast<size_t>(c) * per_chunk;
+    const size_t end = std::min(jobs.size(), begin + per_chunk);
+    if (begin >= end)
+      return;
+    Chunk &ck = chunks[static_cast<size_t>(c)];
+    ck.asset_stats.assign(items.size(), AssetStats{});
     std::vector<uint8_t> susp(items.size(), 0); // 当日停牌位图, 按资产下标
 
     for (size_t j = begin; j < end; ++j) {
@@ -497,7 +388,7 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
         }
       }
 
-      DateStats *ds = job.in_db_range ? &out.date_stats[job.date] : nullptr;
+      DateStats *ds = job.in_db_range ? &ck.date_stats[job.date] : nullptr;
       // 一天一个条目, 哪怕零缺口 —— By Date 表要能说"这天检查过, 没事"
       DateGap *dg = job.in_backtest ? &local_date_gaps[job.bidx] : nullptr;
 
@@ -527,7 +418,7 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
         }
 
         if (job.in_backtest) {
-          AssetStats &st = out.asset_stats[i];
+          AssetStats &st = ck.asset_stats[i];
           st.expected_days++;
           dg->expected++;
           if (!has_orders) {
@@ -545,20 +436,9 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
         }
       }
 
-      scan_days_done.fetch_add(1, std::memory_order_relaxed);
+      p.publish(1);
     }
-  };
-
-  for (size_t c = 0; c < n_chunks; ++c) {
-    const size_t begin = c * per_chunk;
-    const size_t end = std::min(jobs.size(), begin + per_chunk);
-    if (begin >= end)
-      break;
-    Chunk *out = &chunks[c];
-    futures.push_back(thread_pool->submit([&run_chunk, begin, end, out]() { run_chunk(begin, end, *out); }));
-  }
-
-  co_await await_futures(io, futures);
+  });
 
   {
     size_t backtest_orders = 0;
@@ -575,9 +455,9 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     for (const AssetStats &st : local_asset_stats)
       if (st.total_days > 0)
         ++encoded_assets;
-    binary.backtest_orders = backtest_orders;
-    binary.backtest_orders_size_gb = static_cast<float>(backtest_bytes / (1024.0 * 1024.0 * 1024.0));
-    binary.encoded_assets = encoded_assets;
+    out.binary.backtest_orders = backtest_orders;
+    out.binary.backtest_orders_size_gb = static_cast<float>(backtest_bytes / (1024.0 * 1024.0 * 1024.0));
+    out.binary.encoded_assets = encoded_assets;
   }
 
   // 按段序合并. 段的 per-asset 部分和只有回测口径那几列, 全库口径两列已由
@@ -599,10 +479,7 @@ boost::asio::awaitable<void> Asset::coro_compute_coverage_statistics(
     }
   }
 
-  date_stats = std::move(local_date_stats);
-  date_gaps = std::move(local_date_gaps);
-  asset_stats = std::move(local_asset_stats);
-  ++asset_stats_generation;
-
-  co_return;
+  out.date_stats = std::move(local_date_stats);
+  out.date_gaps = std::move(local_date_gaps);
+  out.asset_stats = std::move(local_asset_stats);
 }

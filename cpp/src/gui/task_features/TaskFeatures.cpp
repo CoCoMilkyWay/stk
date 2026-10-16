@@ -69,8 +69,8 @@ struct TaskFeaturesState {
   // Corr: 切走只中断 (矩阵留在内存); 请求由 TabCorr 按"过滤行集变了"自发, 不走 StreamTabLifecycle
   bool corr_tab_was_active = false;
 
-  // Compute status tracking (to detect completion)
-  Features::ComputeStatus prev_compute_status = Features::ComputeStatus::Idle;
+  // Compute 进度面上一帧阶段 (忙 → 非忙 = 一轮收尾)
+  Phase prev_compute_phase = Phase::Idle;
 
   // 流式分析三件 (Dist / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
   bool streams_started = false;
@@ -154,9 +154,7 @@ TaskHandle CreateFeaturesTask() {
     fs.has_selection = has_selection;
 
     // Services 懒创建 (首次 Draw), 未创建 = 必然没在算
-    const bool compute_busy =
-        (state->compute_service &&
-         state->compute_service->get_status() == Features::ComputeStatus::Running);
+    const bool compute_busy = state->compute_service && state->compute_service->busy();
 
     if (!state->inputs_ready) {
       fs.status = TaskState::Features::Status::Waiting;
@@ -249,27 +247,15 @@ TaskHandle CreateFeaturesTask() {
                  : TaskStatus{TaskStatus::Kind::Warn, "selecting"};
 
     case TAB_COMPUTE: { // 全量特征计算
-      const bool running = state->compute_service &&
-                           state->compute_service->get_status() == Features::ComputeStatus::Running;
+      const bool running = state->compute_service && state->compute_service->busy();
       // 任一 reader (含 Factors 页) 判废删了当前 universe 的库 → 提示重算 (compute 开跑即撤销登记)
       if (!running && FeatureRead::dir_stale(data.config.FeatureUniverseDir()))
         return {TaskStatus::Kind::Warn, "stale"};
       if (!state->compute_service)
         return {};
-      switch (state->compute_service->get_status()) {
-      case Features::ComputeStatus::Running:
-        return {TaskStatus::Kind::Busy,
-                state->compute_service->is_cancelling() ? "cancelling" : "running"};
-      case Features::ComputeStatus::Completed:
-        return {TaskStatus::Kind::Ready, "done"};
-      case Features::ComputeStatus::Cancelled:
-        return {TaskStatus::Kind::Warn, "cancelled"};
-      case Features::ComputeStatus::Error:
-        return {TaskStatus::Kind::Error, "error"};
-      case Features::ComputeStatus::Idle:
-        break;
-      }
-      return {};
+      if (state->compute_service->cancelling())
+        return {TaskStatus::Kind::Busy, "cancelling"};
+      return ProgressStatus(*state->compute_service);
     }
 
     case TAB_TRANSFORM:
@@ -376,18 +362,17 @@ TaskHandle CreateFeaturesTask() {
       }
     }
 
-    // Handle trigger from UI (核布局由 start_compute 内部按机器核数推导)
+    // Handle trigger from UI (核布局由 ComputeService::run 按机器核数推导)
     if (state->compute_state.trigger_start) {
       state->compute_state.trigger_start = false;
-      state->compute_service->start_compute(state->compute_state.config);
+      state->compute_service->Request(state->compute_state.config);
     }
 
     // Detect compute completion and mark L1 for reload
     {
-      auto current_status = state->compute_service->get_status();
-      if (state->prev_compute_status == Features::ComputeStatus::Running &&
-          (current_status == Features::ComputeStatus::Completed ||
-           current_status == Features::ComputeStatus::Cancelled)) {
+      const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
+      if ((state->prev_compute_phase == Phase::Running) &&
+          (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
         // Compute just finished - OrderFlow 重扫日期 + 整体重拉; 预览重抽 (新库落盘)
         data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
         if (state->streams_started) {
@@ -395,7 +380,7 @@ TaskHandle CreateFeaturesTask() {
           Features::InvalidateCorrRequests(state->corr_ui_state); // 新库落盘: 相关矩阵同样作废
         }
       }
-      state->prev_compute_status = current_status;
+      state->prev_compute_phase = current_phase;
     }
 
     // Tab 锁定/使能已移到 Update (帧首, 无论选中都跑), 这里只管渲染与生命周期
@@ -452,13 +437,7 @@ TaskHandle CreateFeaturesTask() {
 
   // Destroy
   handle.Destroy = [state]() {
-    if (state->compute_service) {
-      if (state->compute_service->is_running()) {
-        state->compute_service->stop_compute();
-      }
-      state->compute_service.reset();
-    }
-
+    state->compute_service.reset();   // 析构 Stop(): 取消 + join worker
     state->orderflow_service.reset(); // 析构 Stop() join worker
     if (state->dist_service)
       state->dist_service->Shutdown(); // Reinit 复用 SharedData, 构建内存一并释放

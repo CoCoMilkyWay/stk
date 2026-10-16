@@ -12,11 +12,7 @@
 #include <parquet/metadata.h>
 
 #include <algorithm>
-#include <atomic>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cassert>
-#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -25,7 +21,6 @@
 #include <mutex>
 #include <set>
 #include <string>
-#include <thread>
 #include <utility>
 
 namespace GUI::Database {
@@ -107,7 +102,7 @@ struct TableBook {
   std::map<std::string, MonthRec> months; // "YYYY-MM" (组键前 7 位同形)
   std::vector<LogRow> rows;
 };
-using Book = std::map<std::string, TableBook>; // 表名 → 状态
+using Books = std::map<std::string, TableBook>; // 表名 → 状态
 
 // 一单元跑完: 覆盖该表 (单元各月, 轮) 的清点 / 核对时刻 / 差异格
 void apply(TableBook &t, const fundamental::audit::Unit &u, const std::vector<fundamental::audit::Diff> &diffs,
@@ -193,8 +188,8 @@ void save(const std::string &name, const TableBook &t) {
 }
 
 // log_dir 下全部 <表>.tsv (.tmp 残留不读)
-Book load_book() {
-  Book b;
+Books load_book() {
+  Books b;
   for (const auto &e : fs::directory_iterator(log_dir())) {
     if (e.path().extension() != ".tsv")
       continue;
@@ -323,7 +318,7 @@ AuditTableStat stat_of(const std::string &name, const TableBook &t, std::size_t 
 }
 
 // 逐表统计 (表名升序): 冻结清单里的表恒有一条, 另含有状态文件的表
-std::vector<AuditTableStat> aggregate(const Book &b, const std::map<std::string, std::size_t> &frozen) {
+std::vector<AuditTableStat> aggregate(const Books &b, const std::map<std::string, std::size_t> &frozen) {
   std::set<std::string> names;
   for (const auto &[name, n] : frozen)
     names.insert(name);
@@ -348,248 +343,195 @@ const AuditTableStat *AuditState::find_table(const std::string &name) const {
   return nullptr;
 }
 
-struct AuditService::Job {
-  std::atomic<bool> done = false;
-  std::atomic<bool> cancel = false;
-  Book book;                  // worker 独占 (开跑前由 next_job 承接上一轮; done 后只读)
-  std::mutex mu;              // 以下字段 worker 写, io 线程轮询读
-  std::size_t units_done = 0; // 已跑步数
-  std::size_t total = 0;
-  std::string current;
-  std::int64_t quota_start = -1;
-  std::int64_t quota_used = -1;
-  std::int64_t quota_weekly = 0;
+// worker 独占的核对状态 + 写口: 计步走进度面 (svc 即 Published), 展示字段持 svc.mutex 写进 svc.state
+struct AuditService::Book {
+  AuditService &svc;
+  Books books;                               // 表名 → 状态 (跨轮承接)
   std::map<std::string, std::size_t> frozen; // 每表冻结月数 (覆盖率分母)
-  std::vector<AuditTableStat> snapshot;      // aggregate(book, frozen)
-  std::size_t version = 0;                   // snapshot 每更新一次 +1
 
-  // 持 mu 调
+  // 统计快照 → state.tables (每单元后整份重算: 表数十张, 月数百, 远低于一次 DoGet)
   void publish() {
-    snapshot = aggregate(book, frozen);
-    ++version;
+    std::vector<AuditTableStat> snap = aggregate(books, frozen);
+    std::lock_guard lk(svc.mutex);
+    svc.state.tables = std::move(snap);
+    svc.publish();
   }
 
-  // 整写该表状态文件 + 发布 (写盘不持锁: book 只 worker 碰)
+  // 整写该表状态文件 + 发布 (写盘不持锁: books 只 worker 碰)
   void commit(const std::string &name) {
-    save(name, book.at(name));
-    std::lock_guard lk(mu);
+    save(name, books.at(name));
     publish();
+  }
+
+  void set_current(std::string s) {
+    std::lock_guard lk(svc.mutex);
+    svc.state.current = std::move(s);
   }
 
   void start_quota(bigquant::Client &client) {
     const bigquant::Quota q = client.quota();
-    std::lock_guard lk(mu);
-    quota_start = q.used;
-    quota_used = q.used;
-    quota_weekly = q.weekly;
+    std::lock_guard lk(svc.mutex);
+    svc.state.quota_start = q.used;
+    svc.state.quota_used = q.used;
+    svc.state.quota_weekly = q.weekly;
   }
 
-  // 一步跑完: 计步 + 配额
+  // 一步跑完: 配额 + 计步
   void step_done(bigquant::Client &client) {
     const bigquant::Quota q = client.quota();
-    std::lock_guard lk(mu);
-    ++units_done;
-    quota_used = q.used;
+    {
+      std::lock_guard lk(svc.mutex);
+      svc.state.quota_used = q.used;
+    }
+    svc.publish(1);
   }
 
   // 核一单元 → 覆盖该表状态
   void audit_unit(bigquant::Client &client, const fundamental::audit::Unit &u) {
     const std::string label = fundamental::audit::label(u);
-    {
-      std::lock_guard lk(mu);
-      current = label;
-    }
+    set_current(label);
     const auto diffs = fundamental::audit::run(client, u);
     if (!diffs.empty())
       std::cout << "[bigquant.audit] " << label << ": " << diffs.size() << " 处不一致" << std::endl;
-    apply(book[u.spec->name], u, diffs, stamp(std::time(nullptr)));
+    apply(books[u.spec->name], u, diffs, stamp(std::time(nullptr)));
     step_done(client);
     commit(u.spec->name);
   }
 
   // 开跑: 计划步数 + 覆盖率分母
   void start(std::size_t steps) {
-    auto fz = count_frozen();
-    std::lock_guard lk(mu);
-    total = steps;
-    frozen = std::move(fz);
+    frozen = count_frozen();
+    svc.begin(Phase::Running, steps);
     publish();
-  }
-
-  void finish() {
-    {
-      std::lock_guard lk(mu);
-      current.clear();
-    }
-    done = true;
   }
 };
 
-boost::asio::awaitable<void> AuditService::follow(std::shared_ptr<Job> job) {
-  std::size_t seen_version = 0;
-  auto sync = [this, &job, &seen_version]() {
-    std::lock_guard lk(job->mu);
-    state_.done = job->units_done;
-    state_.total = job->total;
-    state_.current = job->current;
-    state_.quota_start = job->quota_start;
-    state_.quota_used = job->quota_used;
-    state_.quota_weekly = job->quota_weekly;
-    if (job->version != seen_version) {
-      state_.tables = job->snapshot;
-      seen_version = job->version;
-    }
-  };
+AuditService::AuditService()
+    : book_(new Book{*this, {}, {}}) {
+  state.log_dir = log_dir().string();
+  Start();
+}
 
-  boost::asio::steady_timer timer(io_);
-  while (!job->done) {
-    sync();
-    timer.expires_after(std::chrono::milliseconds(200));
-    co_await timer.async_wait(boost::asio::use_awaitable);
+AuditService::~AuditService() { Stop(); }
+
+// 异常不捕获 (fail fast). 每轮必 post 一件交接 (取消也发: 状态文件可能已改)
+bool AuditService::run(AuditRequest &req) {
+  {
+    std::lock_guard lk(mutex);
+    state.op = req.op;
+    state.table = req.table;
+    state.incremental = req.incremental;
   }
-  sync();
+  bool completed = false;
+  switch (req.op) {
+  case AuditOp::Load:
+    completed = load();
+    break;
+  case AuditOp::Audit:
+    completed = audit(req.table, req.incremental);
+    break;
+  case AuditOp::Repair:
+    completed = repair(req.table);
+    break;
+  }
+  book_->set_current({});
+  handoff.post(req.seq);
+  return completed;
 }
 
-std::shared_ptr<AuditService::Job> AuditService::next_job() {
-  assert(job_ && job_->done && "audit: 上一轮未结束");
-  auto job = std::make_shared<Job>();
-  job->book = job_->book;
-  job->frozen = job_->frozen;
-  job_ = job;
-  return job;
+bool AuditService::load() {
+  book_->books = load_book();
+  book_->frozen = count_frozen();
+  book_->publish();
+  return true;
 }
 
-boost::asio::awaitable<void> AuditService::load() {
-  assert(state_.loading && !job_ && "audit: load 只在启动调一次");
-  auto job = std::make_shared<Job>();
-  job_ = job;
-  state_.log_dir = log_dir().string();
-
-  std::thread([job]() {
-    Book b = load_book();
-    auto fz = count_frozen();
-    std::lock_guard lk(job->mu);
-    job->book = std::move(b);
-    job->frozen = std::move(fz);
-    job->publish();
-    job->done = true;
-  }).detach();
-
-  co_await follow(job);
-  state_.loading = false;
+// audit::plan (table 空 = 全部表, 否则只该表; incremental = 跳过状态里已核的 (月, 轮))
+//   → 逐单元 audit::run, 每单元覆盖该 (表, 月, 轮)
+bool AuditService::audit(const std::string &table, bool incremental) {
+  Book &bk = *book_;
+  const fundamental::Now now = fundamental::now();
+  const fundamental::Catalog cat;
+  bigquant::Client client;
+  bk.start_quota(client);
+  // 已核 = 状态里该 (月, 轮) 有核对时刻 (plan 在开跑前算完, 之后 books 的改动不影响)
+  auto done = [&](const std::string &name, misc::Ym ym, Pass pass) {
+    const auto t = bk.books.find(name);
+    if (t == bk.books.end())
+      return false;
+    const auto m = t->second.months.find(misc::dash_ym(ym));
+    return m != t->second.months.end() && !(pass == Pass::Rows ? m->second.rows_at : m->second.content_at).empty();
+  };
+  const auto units = fundamental::audit::plan(
+      cat, now, static_cast<unsigned>(std::time(nullptr)),
+      [&](const fundamental::Spec &sp, misc::Ym ym, Pass pass) {
+        return (table.empty() || sp.name == table) && !(incremental && done(sp.name, ym, pass));
+      });
+  bk.start(units.size());
+  const std::string scope = (table.empty() ? "全部表" : table) + (incremental ? " (增量)" : "");
+  std::cout << "[bigquant.audit] " << scope << ": " << units.size() << " units" << std::endl;
+  for (const fundamental::audit::Unit &u : units) {
+    if (cancel_.load(std::memory_order_relaxed))
+      break;
+    bk.audit_unit(client, u);
+  }
+  const bool cancelled = cancel_.load(std::memory_order_relaxed);
+  std::cout << "[bigquant.audit] " << scope << ": " << (cancelled ? "cancelled" : "done") << std::endl;
+  return !cancelled;
 }
 
-boost::asio::awaitable<void> AuditService::run(std::string table, bool incremental) {
-  if (is_busy())
-    co_return;
-  auto job = next_job();
-  state_.op = AuditOp::Audit;
-  state_.table = table;
-  state_.incremental = incremental;
+// table 的差异: audit::repair → 逐任务 sync::run (Splice 按日 / Replace 整月) → 这些月旧结论作废 → plan(keep = 这些月) 两轮复核
+bool AuditService::repair(const std::string &table) {
+  Book &bk = *book_;
+  const fundamental::Spec &s = fundamental::spec(table);
+  std::vector<std::string> groups;
+  for (const LogRow &r : bk.books.at(table).rows)
+    groups.push_back(r.group);
+  assert(!groups.empty() && "repair: 该表无差异月");
 
-  // 异常不捕获 (fail fast)
-  std::thread([job, table, incremental]() {
-    const fundamental::Now now = fundamental::now();
+  bigquant::Client client;
+  bk.start_quota(client);
+
+  std::set<std::string> keys; // 有差异的月 "YYYY-MM"
+  std::set<int> years;
+  {
+    // 差异 → 修复任务 (整月 Replace / 按日 Splice, 见 audit::repair)
     const fundamental::Catalog cat;
-    bigquant::Client client;
-    job->start_quota(client);
-    // 已核 = 状态里该 (月, 轮) 有核对时刻 (plan 在开跑前算完, 之后 book 的改动不影响)
-    auto done = [&](const std::string &name, misc::Ym ym, Pass pass) {
-      const auto t = job->book.find(name);
-      if (t == job->book.end())
+    const std::vector<fundamental::Task> tasks =
+        fundamental::audit::repair(s, fundamental::frozen(s, cat, fundamental::now()), groups);
+    for (const fundamental::Task &t : tasks) {
+      keys.insert(misc::dash_ym(t.ym));
+      years.insert(t.ym / 100);
+    }
+    // 重拉月 + 复核单元 (一表 × 一年 × 一轮)
+    bk.start(tasks.size() + 2 * years.size());
+    for (const fundamental::Task &t : tasks) {
+      if (cancel_.load(std::memory_order_relaxed))
         return false;
-      const auto m = t->second.months.find(misc::dash_ym(ym));
-      return m != t->second.months.end() && !(pass == Pass::Rows ? m->second.rows_at : m->second.content_at).empty();
-    };
-    const auto units = fundamental::audit::plan(
-        cat, now, static_cast<unsigned>(std::time(nullptr)),
-        [&](const fundamental::Spec &sp, misc::Ym ym, Pass pass) {
-          return (table.empty() || sp.name == table) && !(incremental && done(sp.name, ym, pass));
-        });
-    job->start(units.size());
-    const std::string scope = (table.empty() ? "全部表" : table) + (incremental ? " (增量)" : "");
-    std::cout << "[bigquant.audit] " << scope << ": " << units.size() << " units" << std::endl;
-    for (const fundamental::audit::Unit &u : units) {
-      if (job->cancel.load(std::memory_order_relaxed))
-        break;
-      job->audit_unit(client, u);
+      const std::string label = fundamental::sync::label(t);
+      bk.set_current("重拉 " + label);
+      std::cout << "[bigquant.repair] " << label << " ... " << std::flush;
+      const std::int64_t rows = fundamental::sync::run<fundamental::Bq>(client, t);
+      std::cout << rows << " rows" << std::endl;
+      bk.step_done(client);
     }
-    std::cout << "[bigquant.audit] " << scope << ": "
-              << (job->cancel.load(std::memory_order_relaxed) ? "cancelled" : "done") << std::endl;
-    job->finish();
-  }).detach();
+  }
+  forget(bk.books.at(table), keys);
+  bk.commit(table);
 
-  co_await follow(job);
-  state_.op = AuditOp::None;
-  state_.table.clear();
-  state_.incremental = false;
-}
-
-boost::asio::awaitable<void> AuditService::repair(std::string table) {
-  if (is_busy())
-    co_return;
-  auto job = next_job();
-  state_.op = AuditOp::Repair;
-  state_.table = table;
-
-  std::thread([job, table]() {
-    const fundamental::Spec &s = fundamental::spec(table);
-    std::vector<std::string> groups;
-    for (const LogRow &r : job->book.at(table).rows)
-      groups.push_back(r.group);
-    assert(!groups.empty() && "repair: 该表无差异月");
-
-    bigquant::Client client;
-    job->start_quota(client);
-
-    std::set<std::string> keys; // 有差异的月 "YYYY-MM"
-    std::set<int> years;
-    {
-      // 差异 → 修复任务 (整月 Replace / 按日 Splice, 见 audit::repair)
-      const fundamental::Catalog cat;
-      const std::vector<fundamental::Task> tasks =
-          fundamental::audit::repair(s, fundamental::frozen(s, cat, fundamental::now()), groups);
-      for (const fundamental::Task &t : tasks) {
-        keys.insert(misc::dash_ym(t.ym));
-        years.insert(t.ym / 100);
-      }
-      // 重拉月 + 复核单元 (一表 × 一年 × 一轮)
-      job->start(tasks.size() + 2 * years.size());
-      for (const fundamental::Task &t : tasks) {
-        const std::string label = fundamental::sync::label(t);
-        {
-          std::lock_guard lk(job->mu);
-          job->current = "重拉 " + label;
-        }
-        std::cout << "[bigquant.repair] " << label << " ... " << std::flush;
-        const std::int64_t rows = fundamental::sync::run<fundamental::Bq>(client, t);
-        std::cout << rows << " rows" << std::endl;
-        job->step_done(client);
-      }
-    }
-    forget(job->book.at(table), keys);
-    job->commit(table);
-
-    // 重拉换了分片: 新清单
-    const fundamental::Catalog cat;
-    const auto units = fundamental::audit::plan(
-        cat, fundamental::now(), static_cast<unsigned>(std::time(nullptr)),
-        [&](const fundamental::Spec &sp, misc::Ym ym, Pass) { return &sp == &s && keys.contains(misc::dash_ym(ym)); });
-    assert(units.size() == 2 * years.size() && "repair: 复核单元数不符");
-    for (const fundamental::audit::Unit &u : units)
-      job->audit_unit(client, u);
-    std::cout << "[bigquant.repair] " << table << " done" << std::endl;
-    job->finish();
-  }).detach();
-
-  co_await follow(job);
-  state_.op = AuditOp::None;
-  state_.table.clear();
-}
-
-void AuditService::cancel() {
-  assert(is_running() && job_ && "audit: 只有核对可取消");
-  job_->cancel.store(true, std::memory_order_relaxed);
+  // 重拉换了分片: 新清单
+  const fundamental::Catalog cat;
+  const auto units = fundamental::audit::plan(
+      cat, fundamental::now(), static_cast<unsigned>(std::time(nullptr)),
+      [&](const fundamental::Spec &sp, misc::Ym ym, Pass) { return &sp == &s && keys.contains(misc::dash_ym(ym)); });
+  assert(units.size() == 2 * years.size() && "repair: 复核单元数不符");
+  for (const fundamental::audit::Unit &u : units) {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false;
+    bk.audit_unit(client, u);
+  }
+  std::cout << "[bigquant.repair] " << table << " done" << std::endl;
+  return true;
 }
 
 } // namespace GUI::Database

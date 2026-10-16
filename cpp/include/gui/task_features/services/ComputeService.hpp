@@ -1,24 +1,19 @@
 // Compute Service - Manages feature computation with multi-threaded workers
 // High-performance mode: Prefetch + TS workers + CS worker + IO worker
+// 线程模型 (gui/util/Worker.hpp, 随对象): 进度面 = 自身 (done/total = 已落盘天 / 回测交易日);
+//   store / 调度面 / 仪表盘全是 run 的局部, 一轮一建
 #pragma once
 
+#include "gui/util/Worker.hpp"
+
 #include <array>
-#include <atomic>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
-#include <future>
-#include <memory>
 #include <sstream>
 #include <string>
-#include <vector>
 
 // Forward declarations
 struct SharedData;
-class GlobalFeatureStore;
-struct TsSchedule;
-struct ComputeStats;
-class FeatureProgress;
 
 namespace GUI::Features {
 
@@ -115,7 +110,7 @@ struct StageLayout {
 };
 
 // ============================================================================
-// Compute Status
+// Compute Config (= 请求)
 // ============================================================================
 
 struct ComputeConfig {
@@ -126,55 +121,28 @@ struct ComputeConfig {
   bool prefetch_share_io = false;
 };
 
-enum class ComputeStatus {
-  Idle,
-  Running,
-  Completed,
-  Cancelled,
-  Error
-};
-
 // ============================================================================
 // Compute Service
 // ============================================================================
 
-class ComputeService {
-private:
-  SharedData &data_;
-
-  std::atomic<bool> cancel_flag_{false};
-  std::unique_ptr<ComputeStats> stats_;       // worker 发布的原子计数
-  std::unique_ptr<FeatureProgress> progress_; // 采样渲染线程 (5 行仪表盘)
-  std::vector<std::future<void>> workers_;
-  std::atomic<ComputeStatus> status_{ComputeStatus::Idle};
-
-  StageLayout layout_;
-  ComputeConfig config_;
-  std::chrono::steady_clock::time_point start_time_;
-
-  std::future<void> compute_thread_; // Background compute thread
-
-  // Feature store (allocated during compute)
-  std::unique_ptr<GlobalFeatureStore> feature_store_;
-
-  // TS 调度面: per-asset 处置权 / 认领游标 / cores (见 feature_workers.hpp)
-  std::unique_ptr<TsSchedule> ts_schedule_;
+class ComputeService : public Worker<ComputeService, ComputeConfig>, public Progress {
+  friend Worker<ComputeService, ComputeConfig>;
 
 public:
-  ComputeService(SharedData &data);
-  ~ComputeService();
+  static constexpr const char *kName = "ComputeWorker";
+  explicit ComputeService(SharedData &data); // 末尾 Start
+  ~ComputeService() { Stop(); }
 
-  // Lifecycle (background thread, non-blocking)
-  // 核布局由机器核数自动推导 (StageLayout::make), UI 只交 ComputeConfig
-  void start_compute(ComputeConfig config);
-  void request_cancel();
-  void stop_compute();
+  // 核布局由机器核数自动推导 (StageLayout::make), UI 只交 ComputeConfig; 先断言再转 Worker::Request
+  void Request(ComputeConfig config);
+  bool cancelling() const { return busy() && cancel_.load(std::memory_order_relaxed); }
 
-  // Query
-  ComputeStatus get_status() const { return status_.load(std::memory_order_relaxed); }
-  bool is_running() const { return get_status() == ComputeStatus::Running; }
-  bool is_cancelling() const { return cancel_flag_.load(std::memory_order_relaxed); }
-  bool is_idle() const { return get_status() == ComputeStatus::Idle || get_status() == ComputeStatus::Completed || get_status() == ComputeStatus::Cancelled; }
+private:
+  static constexpr Phase kStart = Phase::Running;
+  Progress &board() { return *this; }
+  bool run(ComputeConfig &config);
+
+  SharedData &data_;
 };
 
 } // namespace GUI::Features

@@ -11,41 +11,35 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <filesystem>
+#include <future>
 #include <iostream>
+#include <vector>
 
 namespace GUI::Features {
 
 static_assert(ComputeConfig::kMinPoolSlots == static_cast<int>(LabelReturn::MIN_POOL_SLOTS), "ComputeConfig::kMinPoolSlots 与 LabelReturn::MIN_POOL_SLOTS 不符");
 
 ComputeService::ComputeService(SharedData &data)
-    : data_(data) {}
-
-ComputeService::~ComputeService() {
-  if (is_running()) {
-    stop_compute();
-  }
+    : data_(data) {
+  Start();
 }
 
-void ComputeService::start_compute(ComputeConfig config) {
-  if (status_.load(std::memory_order_relaxed) == ComputeStatus::Running)
-    return;
+void ComputeService::Request(ComputeConfig config) {
   assert(config.pool_slots >= ComputeConfig::kMinPoolSlots && "pool slots 低于 LabelReturn::MIN_POOL_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
   assert(config.adopt_pct >= 0 && config.adopt_pct <= 100 && "adopt pct must be in [0, 100]");
+  Worker::Request(config);
+}
 
-  status_.store(ComputeStatus::Running, std::memory_order_relaxed);
-  cancel_flag_.store(false);
-  config_ = config;
-  layout_ = StageLayout::make(static_cast<int>(misc::Affinity::core_count()), config_.prefetch_share_io);
-  start_time_ = std::chrono::steady_clock::now();
+bool ComputeService::run(ComputeConfig &config) {
+  const StageLayout layout = StageLayout::make(static_cast<int>(misc::Affinity::core_count()), config.prefetch_share_io);
 
   // Enable High Performance Mode: GUI low-refresh, compute owns cores
   data_.EnableHighPerformanceMode();
   std::cout << "[High Performance Mode] Enabled - GUI low-refresh\n"
             << std::endl;
 
-  // Launch compute in background thread
-  compute_thread_ = std::async(std::launch::async, [this]() {
     // 计算日期轴 = 回测日历 (交易日历 ∩ 回测区间), 与编码同一条轴: binary/archive 缺日也要落一份默认张量.
     const misc::Ymd backtest_start = data_.config.start_date;
     const misc::Ymd backtest_end = data_.config.end_date;
@@ -55,20 +49,21 @@ void ComputeService::start_compute(ComputeConfig config) {
     assert(!backtest_dates.empty() && "回测区间内无交易日, 不应触发特征计算");
 
     // 核布局: 预取 → TS → CS → IO 四个 stage, 全部 pin 死 (见 StageLayout)
-    const StageLayout &L = layout_;
+    const StageLayout &L = layout;
     const std::string stage_summary = L.summary();
 
     std::cout << "\n=== Phase 2: Feature Computation ===\n"
               << stage_summary << "\n"
               << "Assets: " << data_.asset.items.size()
-              << " | Pool slots: " << config_.pool_slots
-              << " | Adopt pct: " << config_.adopt_pct << "%"
+              << " | Pool slots: " << config.pool_slots
+              << " | Adopt pct: " << config.adopt_pct << "%"
               << " | Backtest dates: " << backtest_dates.size()
               << " (" << backtest_start << " - " << backtest_end << ")\n"
               << std::endl;
 
     const unsigned int num_ts_workers = static_cast<unsigned int>(L.num_ts);
     const size_t total_dates = backtest_dates.size();
+    begin(Phase::Running, total_dates);
 
     // universe 子轴 = 特征管线的 A 轴 (见 AssetAxis.hpp 的 UniverseAxis):
     // 张量/调度/落盘全按子轴大小, 需要 items/码表时经 global_ids 映射.
@@ -91,7 +86,7 @@ void ComputeService::start_compute(ComputeConfig config) {
     // 随标的数走, 反而更歪. 运行期差距由 worker 间的处置权转移收敛
     // (见 sequential_worker 的 try_adopt), 这里只求起点均衡.
     //
-    // 条数是扫描时随日文件目录一并读好的 (见 Asset::coro_scan_binary_database),
+    // 条数是扫描时随日文件目录一并读好的 (见 Asset::scan_binary),
     // 这里直接累加, 不必再碰文件系统.
     // 帧目录切成 回测日 × 子轴 (行 = backtest_dates 下标, 列 = 子轴下标), 持有到
     // 全部 worker 退出 (随 WorkerCtx 下发), 不碰 Asset 上随重扫描换代的那一份.
@@ -112,13 +107,13 @@ void ComputeService::start_compute(ComputeConfig config) {
               [](const auto &a, const auto &b) { return a.second > b.second; });
 
     // Round-robin assignment: 降序轮询, 第 k 重的标的给 worker k % N
-    ts_schedule_ = std::make_unique<TsSchedule>(num_assets, num_ts_workers);
-    ts_schedule_->adopt_pct = static_cast<uint64_t>(config_.adopt_pct);
-    ts_schedule_->global_ids = uni.ids;
+    TsSchedule ts_schedule(num_assets, num_ts_workers);
+    ts_schedule.adopt_pct = static_cast<uint64_t>(config.adopt_pct);
+    ts_schedule.global_ids = uni.ids;
     for (size_t k = 0; k < asset_workloads.size(); ++k) {
       const auto &[sub, weight] = asset_workloads[k];
-      ts_schedule_->owner[sub].store(static_cast<int32_t>(k % num_ts_workers), std::memory_order_relaxed);
-      ts_schedule_->weight[sub] = weight;
+      ts_schedule.owner[sub].store(static_cast<int32_t>(k % num_ts_workers), std::memory_order_relaxed);
+      ts_schedule.weight[sub] = weight;
     }
 
     // Phase 2 前置: 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 算子在
@@ -137,10 +132,10 @@ void ComputeService::start_compute(ComputeConfig config) {
     FeatureRead::set_dir_stale(feature_dir, false);
 
     // Initialize global feature store
-    feature_store_ = std::make_unique<GlobalFeatureStore>(
+    GlobalFeatureStore feature_store(
         num_assets, num_ts_workers, uni.hash,
-        feature_dir, static_cast<size_t>(config_.pool_slots));
-    assert(feature_store_->query_slots() >= LabelReturn::MIN_POOL_SLOTS && "内存上限把池砍到 LabelReturn::MIN_POOL_SLOTS 之下, 会死锁");
+        feature_dir, static_cast<size_t>(config.pool_slots));
+    assert(feature_store.query_slots() >= LabelReturn::MIN_POOL_SLOTS && "内存上限把池砍到 LabelReturn::MIN_POOL_SLOTS 之下, 会死锁");
 
     // Clean up directories before compute
     namespace fs = std::filesystem;
@@ -161,10 +156,10 @@ void ComputeService::start_compute(ComputeConfig config) {
     // Launch workers: 统一 launch(core, fn) —— pin 到 core, worker_id = core.
     // 四角色同签名 (WorkerCtx, 见 feature_workers.hpp), 调度面 sched 随 ctx
     // 带入, 只有 TS 用. 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
-    stats_ = std::make_unique<ComputeStats>(static_cast<size_t>(L.num_ts));
-    progress_ = std::make_unique<FeatureProgress>(*feature_store_, *ts_schedule_, *stats_, backtest_dates);
-    workers_.clear();
-    workers_.reserve(static_cast<size_t>(L.total_threads()));
+    ComputeStats stats(static_cast<size_t>(L.num_ts));
+    FeatureProgress progress(feature_store, ts_schedule, stats, backtest_dates);
+    std::vector<std::future<void>> workers;
+    workers.reserve(static_cast<size_t>(L.total_threads()));
 
     using WorkerFn = void (*)(WorkerCtx);
     auto worker_fn = [](ComputeStage stage) -> WorkerFn {
@@ -182,12 +177,12 @@ void ComputeService::start_compute(ComputeConfig config) {
       return nullptr;
     };
 
-    auto launch = [this, &backtest_dates, &orders](int core, WorkerFn fn) {
-      workers_.push_back(std::async(std::launch::async, [this, &backtest_dates, &orders, core, fn]() {
+    auto launch = [&](int core, WorkerFn fn) {
+      workers.push_back(std::async(std::launch::async, [&, core, fn]() {
         if (misc::Affinity::supported()) {
           misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
         }
-        fn({core, data_, backtest_dates, orders, *feature_store_, *ts_schedule_, cancel_flag_, *stats_});
+        fn({core, data_, backtest_dates, orders, feature_store, ts_schedule, cancel_, stats});
       }));
     };
 
@@ -195,25 +190,26 @@ void ComputeService::start_compute(ComputeConfig config) {
       for (int i = 0; i < s.threads; ++i)
         launch(s.first_core + i, worker_fn(s.kind));
 
-    // Wait for completion
-    for (auto &worker : workers_)
-      worker.wait();
-    // 仪表盘引用 store/sched/backtest_dates, 必须先于它们的析构停掉
-    progress_->stop();
-    progress_.reset();
-    stats_.reset();
-    workers_.clear();
-
-    // Cleanup feature store + TS 调度面 (cores 随之析构)
-    feature_store_.reset();
-    ts_schedule_.reset();
+    // 等收尾: 已落盘天数镜像进进度面 (worker 自己查 cancel_, 这里只报一声)
+    auto mirror = [&]() { publish(stats.io_days.load(std::memory_order_relaxed) - done.load(std::memory_order_relaxed)); };
+    bool announced = false;
+    for (auto &worker : workers)
+      while (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+        mirror();
+        if (!announced && cancel_.load(std::memory_order_relaxed)) {
+          announced = true;
+          std::cout << "[Compute] Cancelling..." << std::endl;
+        }
+      }
+    mirror();
+    // 仪表盘引用 store/sched/backtest_dates, 必须先于它们的析构停掉 (局部逆序析构: 仪表盘 → 统计 → store → 调度面)
+    progress.stop();
 
     // Finalize
-    const ComputeStatus final_status = cancel_flag_.load(std::memory_order_relaxed) ? ComputeStatus::Cancelled : ComputeStatus::Completed;
-    status_.store(final_status, std::memory_order_relaxed);
+    const bool completed = !cancel_.load(std::memory_order_relaxed);
 
     std::cout << "\n=== Feature Computation "
-              << (final_status == ComputeStatus::Completed ? "Complete" : "Cancelled") << " ===\n"
+              << (completed ? "Complete" : "Cancelled") << " ===\n"
               << "Processed: " << total_dates << " dates\n"
               << std::endl;
 
@@ -221,27 +217,7 @@ void ComputeService::start_compute(ComputeConfig config) {
     data_.DisableHighPerformanceMode();
     std::cout << "[High Performance Mode] Disabled - GUI full-refresh\n"
               << std::endl;
-  });
-}
-
-void ComputeService::request_cancel() {
-  if (status_.load(std::memory_order_relaxed) != ComputeStatus::Running) {
-    return;
-  }
-
-  if (cancel_flag_.exchange(true, std::memory_order_relaxed)) {
-    return;
-  }
-  std::cout << "[Compute] Cancelling..." << std::endl;
-}
-
-void ComputeService::stop_compute() {
-  request_cancel();
-
-  // Wait for compute thread to finish
-  if (compute_thread_.valid()) {
-    compute_thread_.wait();
-  }
+    return completed;
 }
 
 } // namespace GUI::Features

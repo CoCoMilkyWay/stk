@@ -162,6 +162,9 @@ public:
   // 平均速率, ETA 会荒谬地乐观 (实测 82% 时报 53s, 实际还有半小时).
   void bump_summary(size_t n = 1, bool worked = true) { bump_summary_internal(n, worked); }
 
+  // 汇总累计数 (供外部进度面镜像)
+  size_t summary_done() const { return summary_done_.load(std::memory_order_relaxed); }
+
   // Stop refresh thread and finalize display
   void stop() {
     if (running_.exchange(false, std::memory_order_release)) {

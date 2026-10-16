@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
+#include <utility>
 
 // ============================================================================
 // Progress — 全部后台计算的进度面 (流式分析目标 / 因子服务 / K 线流 同一份)
@@ -19,6 +21,7 @@
 // Published = 进度 + 发布快照锁 (worker 短锁写, UI 渲染帧内持锁读)
 // PrefixPub = 免锁单调前缀发布字 (流式 K 线)
 // PingPong  = 免锁双槽整体发布 + 进度面 (OrderFlow 盘口 / 资产状态)
+// Mailbox   = 整件交接 (worker post → GUI 帧首 take, 所有权转到 GUI 线程; Database 流水线)
 // ============================================================================
 enum class Phase : uint8_t { Idle,
                              Scanning,
@@ -111,4 +114,25 @@ struct PingPong : Progress {
     pending.store(false, std::memory_order_relaxed);
     idle();
   }
+};
+
+// Mailbox — 单件交接 (单写 worker / 单读 GUI): worker 一轮收尾 post 一件, 未取走的旧件被覆盖 (最新覆盖旧的, 与 Worker 请求同义);
+// GUI 帧首 take 拿走所有权, 在 GUI 线程换进共享状态 (AssetInfo / 扫描产物只许在 GUI 线程替换). 锁每轮各碰一次, 不在热路径
+template <class T>
+class Mailbox {
+public:
+  void post(T v) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    slot_ = std::move(v);
+  }
+  std::optional<T> take() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::optional<T> out = std::move(slot_);
+    slot_.reset();
+    return out;
+  }
+
+private:
+  std::mutex mutex_;
+  std::optional<T> slot_;
 };

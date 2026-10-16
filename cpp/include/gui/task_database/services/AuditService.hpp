@@ -1,13 +1,17 @@
-// Audit Service - BigQuant 远端 vs 本地冻结月分片一致性核对 + 逐表修复
-// 口径见 fundamental/Audit.hpp; 网络 + parquet IO 全在独立工作线程, 协程轮询进度.
-//   run    : 一表 / 全部表核对, 只报告不改盘
-//   repair : 一表的差异 → audit::repair 任务 (按日 Splice; Snap::Day / 只定位到月 → 整月 Replace) → sync::run → 只复核这些月
+// Audit Service - BigQuant 远端 vs 本地冻结月分片一致性核对 + 逐表修复 (单 worker; 网络 + parquet IO)
+// 口径见 fundamental/Audit.hpp. 请求三种 (AuditOp), 同一 worker 串行:
+//   Load   : 读逐表状态 → 统计 (零网络, 零 parquet IO); StateManager 首个请求
+//   Audit  : 一表 / 全部表核对, 只报告不改盘; 取消在单元间生效 (在飞的 DoGet 不可中断)
+//   Repair : 一表的差异 → audit::repair 任务 (按日 Splice; Snap::Day / 只定位到月 → 整月 Replace) → sync::run → 只复核这些月
+//            UI 不给取消 (Stop 时在步间退出); 改了盘, StateManager 收到交接后重建 AssetInfo
 // 结果是逐表的 "当前状态" (不是变更日志) output/fundamental/_audit/<表>.tsv:
 //   每个 (月, 轮) 只留最近一次核对的结论; 每单元后只整写该表一个文件 (tmp + rename).
+// 线程模型 (gui/util/Worker.hpp, 随对象): 进度面 = 自身 (Published, done/total = 步), state 持 mutex 读;
+//   逐表状态 (book) worker 独占, 跨轮承接; 每轮收尾 handoff.post(请求代)
 #pragma once
 
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
+#include "gui/util/Worker.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -54,18 +58,23 @@ struct AuditTableStat {
   }
 };
 
-enum class AuditOp { None,
+enum class AuditOp { Load,
                      Audit,
                      Repair };
 
-struct AuditState {
-  bool loading = true; // 构造即 true: load 读完状态前不可核对 / 修复
-  AuditOp op = AuditOp::None;
+struct AuditRequest {
+  uint64_t seq = 0; // 请求代 (StateManager 发), 交接原样带回
+  AuditOp op = AuditOp::Load;
   std::string table;        // op 的对象表; 空 = 全部表 (仅 Audit)
   bool incremental = false; // Audit: 跳过已核的 (月, 轮)
-  std::size_t done = 0;     // 已跑步数 (核对单元; 修复 = 重拉月 + 复核单元)
-  std::size_t total = 0;    // 0 = 尚未规划完
-  std::string current;      // 当前步 (audit::label / sync::label)
+};
+
+// 展示字段 (worker 持 mutex 写, UI 持 mutex 读); 步数在进度面 (done/total, total = 0 ⇒ 尚未规划完)
+struct AuditState {
+  AuditOp op = AuditOp::Load; // 在跑 / 最近一轮的请求; 构造即 Load (StateManager 首个请求)
+  std::string table;
+  bool incremental = false;
+  std::string current; // 当前步 (audit::label / sync::label)
   // BigQuant 周配额 (单位 cell): 开跑时 / 最近一步后的 used; -1 = 未取
   std::int64_t quota_start = -1;
   std::int64_t quota_used = -1;
@@ -76,37 +85,28 @@ struct AuditState {
   const AuditTableStat *find_table(const std::string &name) const;
 };
 
-class AuditService {
+class AuditService : public Worker<AuditService, AuditRequest>, public Published {
+  friend Worker<AuditService, AuditRequest>;
+
 public:
-  explicit AuditService(boost::asio::io_context &io) : io_(io) {}
+  static constexpr const char *kName = "AuditWorker";
+  AuditService(); // 两者都在 .cpp: Book 不完整; 构造末尾 Start
+  ~AuditService();
 
-  // 启动调一次: 读逐表状态 → 统计 (零网络, 零 parquet IO)
-  boost::asio::awaitable<void> load();
-  // audit::plan (table 空 = 全部表, 否则只该表; incremental = 跳过状态里已核的 (月, 轮))
-  //   → 逐单元 audit::run, 每单元覆盖该 (表, 月, 轮); 忙则直接返回
-  boost::asio::awaitable<void> run(std::string table, bool incremental);
-  // table 的差异: audit::repair → 逐任务 sync::run (Splice 按日 / Replace 整月) → 这些月旧结论作废 → plan(keep = 这些月) 两轮复核.
-  // 不可取消; 忙则直接返回. 改了盘, 调用方随后须重建 AssetInfo
-  boost::asio::awaitable<void> repair(std::string table);
-  // 核对 (一表 / 全部): 当前单元的查询跑完即停 (在飞的 DoGet 不可中断)
-  void cancel();
-
-  const AuditState &get_state() const { return state_; }
-  bool is_running() const { return state_.op == AuditOp::Audit; }
-  bool is_repairing() const { return state_.op == AuditOp::Repair; }
-  bool is_busy() const { return state_.loading || state_.op != AuditOp::None; }
+  AuditState state;          // UI 持 mutex 读
+  Mailbox<uint64_t> handoff; // worker 每轮收尾 post 请求代, StateManager 帧首 take
 
 private:
-  struct Job;
+  struct Book; // 逐表核对状态 + 冻结月数 (worker 独占, 跨轮承接)
 
-  // 轮询 job 直到 done, 期间把快照同步进 state_
-  boost::asio::awaitable<void> follow(std::shared_ptr<Job> job);
-  // 新一轮的 job: 承接上一轮的缓存内容
-  std::shared_ptr<Job> next_job();
+  static constexpr Phase kStart = Phase::Running;
+  Progress &board() { return *this; }
+  bool run(AuditRequest &req);
+  bool load();
+  bool audit(const std::string &table, bool incremental);
+  bool repair(const std::string &table);
 
-  boost::asio::io_context &io_;
-  AuditState state_;
-  std::shared_ptr<Job> job_; // 最近一轮 (随 detached 线程存活); 下一轮从它承接缓存
+  std::unique_ptr<Book> book_;
 };
 
 } // namespace GUI::Database

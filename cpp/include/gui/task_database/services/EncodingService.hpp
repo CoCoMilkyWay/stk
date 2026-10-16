@@ -1,126 +1,60 @@
-// Encoding Service - Manages L2 binary database encoding from CSV archives
+// Encoding Service - CSV 归档 → L2 逐笔二进制 (按天流水: producer 列举 → worker 并行解码)
+//   + FileCheckService - 归档格式 / 结构 / 完整性核查 (顺序探测, 单盘)
+// 线程模型 (gui/util/Worker.hpp, 随对象): 进度面 = 自身 (done/total = 回测交易日 / 归档数);
+//   收尾 handoff.post 一件 (编码: 请求代, StateManager 收到即重扫; 核查: 结论, Encode 页帧首收)
+// 编码期间读 data_.asset (回测日历 / 资产表): StateManager 只在无扫描 / 同步在飞时发请求, 编码在飞时不发扫描
 #pragma once
 
+#include "gui/util/Worker.hpp"
 #include "misc/file_check.hpp"
-#include "misc/progress_parallel.hpp"
-#include <atomic>
-#include <functional>
-#include <future>
-#include <memory>
-#include <vector>
 
-// Forward declarations
+#include <cstdint>
+#include <string>
+
 struct SharedData;
-class BatchQueue;
 
 namespace GUI::Database {
 
-// ============================================================================
-// Encoding Status
-// ============================================================================
-
-enum class EncodingStatus {
-  Idle,
-
-  // Encoding phases
-  Running,
-
-  // Final states
-  Completed,
-  Cancelled,
-  Error
+struct EncodeRequest {
+  uint64_t seq = 0; // 请求代 (StateManager 发), 交接原样带回
+  int workers = 0;
+  bool skip_existing = true;
 };
 
-// ============================================================================
-// Encoding Progress (real-time stats)
-// ============================================================================
-
-struct EncodingProgress {
-  size_t total_assets = 0;
-  size_t completed_assets = 0;
-  size_t total_dates = 0;
-  size_t encoded_dates = 0;
-  size_t total_orders = 0;
-  float elapsed_seconds = 0.0;
-  float encoding_rate = 0.0; // Assets per second
-};
-
-// ============================================================================
-// Encoding Service
-// ============================================================================
-
-class EncodingService {
-private:
-  SharedData &data_;
-
-  std::atomic<bool> cancel_flag_{false};
-  std::shared_ptr<misc::ParallelProgress> progress_;
-  std::vector<std::future<void>> workers_;
-  EncodingStatus status_ = EncodingStatus::Idle;
-
-  int num_workers_ = 0;
-  bool skip_existing_ = true;
-  std::unique_ptr<BatchQueue> queue_; // 跨 stop_encoding 可见, 取消时要 close 唤醒生产者
-  std::chrono::steady_clock::time_point start_time_;
-
-  FileCheck::FileCheckResult file_check_result_; // Cache file check result
-
-  std::future<void> encoding_thread_;   // Background encoding thread
-  std::future<void> file_check_thread_; // Background file check thread
-  std::atomic<bool> file_check_running_{false};
-
-  std::function<void()> scan_callback_; // Callback to trigger scan after encoding
+class EncodingService : public Worker<EncodingService, EncodeRequest>, public Progress {
+  friend Worker<EncodingService, EncodeRequest>;
 
 public:
-  EncodingService(SharedData &data);
-  ~EncodingService(); // 定义在 cpp — BatchQueue 对头文件是不完整类型
+  static constexpr const char *kName = "EncodeWorker";
+  explicit EncodingService(SharedData &data); // 末尾 Start
+  ~EncodingService() { Stop(); }
 
-  // Lifecycle (changed to non-coroutine, uses background threads)
-  void start_encoding(int num_workers, bool skip_existing);
-  void request_cancel(); // 不阻塞 (GUI 线程调)
-  void stop_encoding();  // request_cancel + 等收尾
+  bool cancelling() const { return busy() && cancel_.load(std::memory_order_relaxed); }
 
-  // Query
-  EncodingStatus get_status() const { return status_; }
-  EncodingProgress get_progress() const;
-  bool is_running() const { return status_ == EncodingStatus::Running; }
-  bool is_cancelling() const { return cancel_flag_.load(); }
-  bool is_idle() const {
-    return status_ == EncodingStatus::Idle ||
-           status_ == EncodingStatus::Completed ||
-           status_ == EncodingStatus::Cancelled;
-  }
-
-  // Callback management
-  void set_scan_callback(std::function<void()> cb) {
-    scan_callback_ = cb;
-  }
-
-  // Status string helper (for GUI display)
-  const char *get_status_string() const {
-    switch (status_) {
-    case EncodingStatus::Idle:
-      return "Idle";
-    case EncodingStatus::Running:
-      return "Encoding...";
-    case EncodingStatus::Completed:
-      return "Completed";
-    case EncodingStatus::Cancelled:
-      return "Cancelled";
-    case EncodingStatus::Error:
-      return "Error";
-    default:
-      return "Unknown";
-    }
-  }
-
-  // File check (archive validation)
-  void run_file_check(const std::string &archive_base_dir);
-  bool is_file_check_running() const { return file_check_running_.load(); }
-  const FileCheck::FileCheckResult &get_file_check_result() const { return file_check_result_; }
+  Mailbox<uint64_t> handoff;
 
 private:
-  void run_file_check_async(const std::string &archive_base_dir);
+  static constexpr Phase kStart = Phase::Running;
+  Progress &board() { return *this; }
+  bool run(EncodeRequest &req);
+
+  SharedData &data_;
+};
+
+class FileCheckService : public Worker<FileCheckService, std::string>, public Progress {
+  friend Worker<FileCheckService, std::string>;
+
+public:
+  static constexpr const char *kName = "FileCheckWorker";
+  FileCheckService() { Start(); }
+  ~FileCheckService() { Stop(); }
+
+  Mailbox<FileCheck::FileCheckResult> handoff;
+
+private:
+  static constexpr Phase kStart = Phase::Scanning;
+  Progress &board() { return *this; }
+  bool run(std::string &archive_base_dir); // 不可取消 (unrar 探测逐个跑完)
 };
 
 } // namespace GUI::Database

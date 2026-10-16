@@ -1,12 +1,20 @@
-// Scan Service - Manages database scanning and coverage checking
+// Scan Service - L2 binary / archive 扫盘 + 回测区间覆盖检查 (单 worker)
+//
+// 线程模型 (gui/util/Worker.hpp, 随对象):
+//   - GUI 线程 (StateManager): Request({seq, mode}); 帧首 handoff.take() → Asset::adopt 换进 + 留存覆盖结论
+//   - worker:   run = [扫 binary → 扫 archive] (RescanStorage) → 回测日历 → 覆盖统计 → 判定, 产物整件 post
+//               只读 data_.asset / data_.assetinfo (StateManager 保证扫描在飞期间 GUI 不换它们)
+//   - UI:       进度面 = 自身 (Scanning: 扫盘 天 / 月; Running: 覆盖统计 交易日)
 #pragma once
 
+#include "gui/util/Worker.hpp"
 #include "misc/date.hpp"
+#include "misc/exec.hpp"
+#include "shared/Asset.hpp"
 
-#include <atomic>
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/io_context.hpp>
-#include <functional>
+#include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,29 +22,6 @@
 struct SharedData;
 
 namespace GUI::Database {
-
-using boost::asio::awaitable;
-using boost::asio::io_context;
-
-// ============================================================================
-// Scan Status
-// ============================================================================
-
-enum class ScanStatus {
-  Idle,
-
-  // Scan phases (fine-grained)
-  InitializingCheck,  // Starting scan coroutine
-  CheckingFileSystem, // Checking if directories exist
-  ScanningBinary,     // Scanning binary database
-  ScanningArchive,    // Scanning archive database
-  ComputingCoverage,  // Computing backtest coverage
-  AnalyzingStatus,    // Determining database status
-
-  // Final states
-  Completed,
-  Error
-};
 
 enum class ScanMode {
   RecomputeCoverage, // 只用已有 binary/archive 扫描缓存重算 backtest coverage
@@ -120,53 +105,36 @@ struct DatabaseCheckResult {
 // Scan Service
 // ============================================================================
 
-class ScanService {
-  // StateManager needs direct access to spawn coroutine
-  friend class StateManager;
+struct ScanRequest {
+  uint64_t seq = 0; // 请求代 (StateManager 发), 交接原样带回
+  ScanMode mode = ScanMode::RecomputeCoverage;
+};
 
-private:
-  SharedData &data_;
-  io_context &io_;
+// 交接件: scan 空 = 两库皆无 (NoData), Asset 不动
+struct ScanResult {
+  uint64_t seq = 0;
+  std::optional<AssetScan> scan;
+  DatabaseCheckResult check;
+};
 
-  std::atomic<bool> is_scanning_{false};
-  ScanStatus status_ = ScanStatus::Idle;
-  DatabaseCheckResult last_check_;
-  std::function<void()> on_complete_callback_;
+class ScanService : public Worker<ScanService, ScanRequest>, public Progress {
+  friend Worker<ScanService, ScanRequest>;
 
 public:
-  ScanService(SharedData &data, io_context &io);
+  static constexpr const char *kName = "ScanWorker";
+  explicit ScanService(SharedData &data); // 末尾 Start
+  ~ScanService() { Stop(); }
 
-  // ============================================================================
-  // Lifecycle
-  // ============================================================================
-
-  // Unified trigger entry (atomic protection, ignores concurrent requests)
-  void trigger_scan(ScanMode mode);
-
-  // Set callback to be called when scan completes
-  void set_on_complete(std::function<void()> callback) { on_complete_callback_ = std::move(callback); }
-
-  // ============================================================================
-  // Query
-  // ============================================================================
-
-  ScanStatus get_status() const { return status_; }
-  bool is_scanning() const { return is_scanning_.load(); }
-  bool is_idle() const {
-    return status_ == ScanStatus::Idle ||
-           status_ == ScanStatus::Completed ||
-           status_ == ScanStatus::Error;
-  }
-
-  const DatabaseCheckResult &get_last_check_result() const { return last_check_; }
-  const char *get_status_string() const;
+  Mailbox<ScanResult> handoff; // worker 每轮收尾 post, StateManager 帧首 take
 
 private:
-  // get_status_string 返回裸指针, 带进度的那两个阶段需要一块常驻缓冲
-  mutable char status_buf_[64] = {};
+  static constexpr Phase kStart = Phase::Scanning;
+  Progress &board() { return *this; }
+  bool run(ScanRequest &req);
 
-  // Complete scan flow (coroutine)
-  awaitable<void> coro_scan(ScanMode mode);
+  SharedData &data_;
+  // ---- worker 私有: 扫盘 (内核路径解析, 线程数按盘队列定) / 覆盖统计 (纯 CPU, 核数) 两个常驻执行器 ----
+  std::unique_ptr<misc::exec::ForkJoin> io_ex_, cpu_ex_;
 };
 
 } // namespace GUI::Database

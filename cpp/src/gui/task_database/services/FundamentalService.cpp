@@ -27,13 +27,10 @@
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
 #include "shared/Config.hpp"
-#include "shared/SharedData.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -140,50 +137,38 @@ std::vector<TableFileStat> collect_table_stats(const Catalog &cat) {
   return out;
 }
 
-// 工作线程 → 协程的进度/结果通道 (shared_ptr 持有, detached 线程安全退出)
+// worker 一轮的写口 + 产物: 计步走进度面 (svc 即 Published), 阶段说明持 svc.mutex 写进 svc.state
 struct Job {
-  std::atomic<bool> done = false;
-  std::atomic<std::size_t> steps_done{0};  // 同步: 已跑任务数; 构建: 并行扫描已完成的月分片数
-  std::atomic<std::size_t> steps_total{0}; // 0 = 当前不在计步阶段
-  // BigQuant 周配额 preflight: quota 先写, confirm_needed 后置 (release) ⇒ io 线程
-  // 看到 confirm_needed 即可读 quota; 工作线程随后挂起等 decision
+  FundamentalService &svc;
+  const std::atomic<bool> &cancel; // = Worker::cancel_ (UI 取消 / 新请求 / Stop)
   bigquant::Quota quota;
-  std::atomic<bool> confirm_needed = false;
-  std::mutex mu;
-  std::string message; // 阶段说明 (worker 写, io 线程轮询读)
-  bool ok = false;     // 构建是否成功 (false = 本地 parquet 缺失)
   AssetInfo assetinfo; // 构建产物
-  FundamentalState st; // 构建统计
+  FundamentalState st; // 构建统计 + 配额 (worker 私有, 收尾持锁写回)
 
   void set_message(std::string m) {
-    std::lock_guard lk(mu);
-    message = std::move(m);
-  }
-  std::string get_message() {
-    std::lock_guard lk(mu);
-    return message;
+    std::lock_guard lk(svc.mutex);
+    svc.state.message = std::move(m);
+    svc.publish();
   }
 };
 
-// 逐任务 sync::run (与 AuditService 逐单元 audit::run 同形): 计步进 job.steps_*, 取消在任务间生效
+// 逐任务 sync::run (与 AuditService 逐单元 audit::run 同形): 计步 = 进度面 Loading, 取消在任务间生效
 // (在飞的查询不可中断). gate 非空: 每个任务开跑前判一次, false ⇒ 跳过余下全部任务
 template <class Src>
-void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &client,
-              const std::vector<fundamental::Task> &tasks, const char *tag,
+void sync_all(Job &job, typename Src::Client &client, const std::vector<fundamental::Task> &tasks, const char *tag,
               const std::function<bool()> &gate = {}) {
   std::cout << "[" << tag << ".sync] " << tasks.size() << " task(s) from " << config::PIPELINE_START_DATE
             << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
             << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
-  job.steps_done = 0;
-  job.steps_total = tasks.size();
+  job.svc.begin(Phase::Loading, tasks.size());
   bool gated = false;
   for (const fundamental::Task &t : tasks) {
-    if (cancel.load(std::memory_order_relaxed))
+    if (job.cancel.load(std::memory_order_relaxed))
       break;
     if (gate && !gate()) {
       gated = true;
       std::cout << "[" << tag << ".sync] gate closed, skip remaining "
-                << tasks.size() - job.steps_done.load(std::memory_order_relaxed) << " task(s)" << std::endl;
+                << tasks.size() - job.svc.done.load(std::memory_order_relaxed) << " task(s)" << std::endl;
       break;
     }
     const std::string label = fundamental::sync::label(t);
@@ -191,18 +176,17 @@ void sync_all(Job &job, const std::atomic<bool> &cancel, typename Src::Client &c
     std::cout << "[" << tag << ".sync] " << label << " ... " << std::flush;
     const std::int64_t rows = fundamental::sync::run<Src>(client, t);
     std::cout << rows << " rows" << std::endl;
-    job.steps_done.fetch_add(1, std::memory_order_relaxed);
+    job.svc.publish(1);
   }
-  job.steps_total = 0;
   std::cout << "[" << tag << ".sync] "
-            << (cancel.load(std::memory_order_relaxed) ? "cancelled" : gated ? "stopped (gate)"
-                                                                             : "done")
+            << (job.cancel.load(std::memory_order_relaxed) ? "cancelled" : gated ? "stopped (gate)"
+                                                                                 : "done")
             << std::endl;
 }
 
 // 外来写者的 parquet 以本库原样重写 (每轮开头, 先于 sync / 构建; 见 misc::pq::renative):
 //   Catalog 全部分片 (含 Daily 分钟线) 经 fundamental::renative. 判定只读 footer; 并行, 重的先跑, 取消在文件间生效
-void renative_all(Job &job, const std::atomic<bool> &cancel) {
+void renative_all(Job &job) {
   struct File {
     std::uint64_t bytes;
     std::function<bool()> renative;
@@ -214,19 +198,17 @@ void renative_all(Job &job, const std::atomic<bool> &cancel) {
       files.push_back({sh.bytes, [&sh] { return fundamental::renative(sh); }});
   std::sort(files.begin(), files.end(), [](const File &a, const File &b) { return a.bytes > b.bytes; });
 
-  job.steps_done = 0;
-  job.steps_total = files.size();
+  job.svc.begin(Phase::Scanning, files.size());
   job.set_message("重写外来写者的 parquet");
   std::atomic<std::size_t> rewritten{0};
   misc::exec::ForkJoin ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
   ex.tasks(static_cast<int>(files.size()), [&](int i, int) {
-    if (cancel.load(std::memory_order_relaxed))
+    if (job.cancel.load(std::memory_order_relaxed))
       return;
     if (files[static_cast<std::size_t>(i)].renative())
       rewritten.fetch_add(1, std::memory_order_relaxed);
-    job.steps_done.fetch_add(1, std::memory_order_relaxed);
+    job.svc.publish(1);
   });
-  job.steps_total = 0;
   std::cout << "[renative] " << rewritten << "/" << files.size() << " file(s) rewritten" << std::endl;
 }
 
@@ -581,11 +563,9 @@ bool build_asset_info(Job &job, const Catalog &cat) {
              });
            });
 
-  job.steps_done = 0;
-  job.steps_total = scan.files();
+  job.svc.begin(Phase::Running, scan.files());
   job.set_message("构建 AssetInfo (并行扫描月度分片)");
-  scan.run(job.steps_done);
-  job.steps_total = 0;
+  scan.run(job.svc.done);
   job.set_message("构建 AssetInfo (归约 / 估值 / 因子)");
 
   // ======================== 归约阶段 (单线程) ========================
@@ -747,151 +727,100 @@ const TableFileStat *FundamentalState::find_table(const std::string &name) const
   return nullptr;
 }
 
-awaitable<void> FundamentalService::update_all() {
-  co_await run(/*with_network=*/data_.config.network_sync);
-}
+FundamentalService::FundamentalService() { Start(); }
 
-awaitable<void> FundamentalService::run(bool with_network) {
-  if (busy_.exchange(true))
-    co_return; // 已有一轮在跑
-
-  auto job = std::make_shared<Job>();
-  decision_ = std::make_shared<std::atomic<int>>(0);
-  cancel_ = std::make_shared<std::atomic<bool>>(false);
-  auto decision = decision_;
-  auto cancel = cancel_;
-  state_.status =
-      with_network ? FundamentalStatus::Updating : FundamentalStatus::Building;
-
-  // 阻塞网络 + parquet IO 全在工作线程; 协程只轮询. 异常不捕获 (fail fast).
-  std::thread([job, decision, cancel, with_network]() {
-    renative_all(*job, *cancel);
-    if (with_network) {
-      const fundamental::Now now = fundamental::now();
-      const Catalog cat; // 本轮开头的清单 (plan 只算这一次, sync 照单执行)
-      bigquant::Client bq;
-      // 配额探针不耗配额: 每轮都取, Overview 常显本周余额
-      auto take_quota = [&job, &bq]() {
-        job->quota = bigquant::preflight(bq);
-        job->st.quota_weekly = job->quota.weekly;
-        job->st.quota_used = job->quota.used;
-        job->st.quota_time = now_str();
-      };
-      job->set_message("preflight: BigQuant 周配额");
+// 异常不捕获 (fail fast). 取消只跳过同步, 构建照常 ⇒ 每轮必 post 一件交接
+bool FundamentalService::run(FundamentalRequest &req) {
+  Job job{*this, cancel_};
+  renative_all(job);
+  if (req.with_network) {
+    const fundamental::Now now = fundamental::now();
+    const Catalog cat; // 本轮开头的清单 (plan 只算这一次, sync 照单执行)
+    bigquant::Client bq;
+    // 配额探针不耗配额: 每轮都取, Overview 常显本周余额 (未联网的轮次沿用上次读数)
+    auto take_quota = [this, &job, &bq]() {
+      job.quota = bigquant::preflight(bq);
+      std::lock_guard lk(mutex);
+      state.quota_weekly = job.quota.weekly;
+      state.quota_used = job.quota.used;
+      state.quota_time = now_str();
+      publish();
+    };
+    job.set_message("preflight: BigQuant 周配额");
+    take_quota();
+    // plan 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 空计划, 不拉数据
+    job.set_message("plan 判定 (水位/dedup 窗口)");
+    // Daily (分钟线) 单拆一组放到最后, 用普通表剩下的配额
+    std::vector<fundamental::Task> bq_tasks, daily_tasks;
+    for (fundamental::Task &t : fundamental::sync::plan<fundamental::Bq>(cat, now))
+      (t.spec->shape == fundamental::Shape::Daily ? daily_tasks : bq_tasks).push_back(std::move(t));
+    const std::vector<fundamental::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(cat, now);
+    bool need_bq = !bq_tasks.empty();
+    bool declined = false; // 弹窗拒绝 ⇒ 本轮 BigQuant 一律不拉 (含分钟线)
+    if (need_bq) {
+      // 剩余 < 阈值 ⇒ 挂起等弹窗 (GUI 线程 confirm); 取消 (新请求 / Stop) 视同跳过
+      const double left = 1.0 - static_cast<double>(job.quota.used) /
+                                    static_cast<double>(job.quota.weekly);
+      if (left < config::BIGQUANT_QUOTA_CONFIRM_RATIO) {
+        job.set_message("等待确认: BigQuant 周配额不足");
+        decision_.store(0, std::memory_order_relaxed);
+        confirm_pending.store(true, std::memory_order_release);
+        while (decision_.load(std::memory_order_acquire) == 0 && !cancel_.load(std::memory_order_relaxed))
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        confirm_pending.store(false, std::memory_order_release);
+        need_bq = decision_.load(std::memory_order_acquire) == 1;
+        declined = !need_bq;
+      }
+    }
+    if (need_bq) {
+      sync_all<fundamental::Bq>(job, bq, bq_tasks, "bigquant");
       take_quota();
-      // plan 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 空计划, 不拉数据
-      job->set_message("plan 判定 (水位/dedup 窗口)");
-      // Daily (分钟线) 单拆一组放到最后, 用普通表剩下的配额
-      std::vector<fundamental::Task> bq_tasks, daily_tasks;
-      for (fundamental::Task &t : fundamental::sync::plan<fundamental::Bq>(cat, now))
-        (t.spec->shape == fundamental::Shape::Daily ? daily_tasks : bq_tasks).push_back(std::move(t));
-      const std::vector<fundamental::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(cat, now);
-      bool need_bq = !bq_tasks.empty();
-      bool declined = false; // 弹窗拒绝 ⇒ 本轮 BigQuant 一律不拉 (含分钟线)
-      if (need_bq) {
-        // 剩余 < 阈值 ⇒ 挂起等弹窗 (io 线程 confirm)
-        const double left = 1.0 - static_cast<double>(job->quota.used) /
-                                      static_cast<double>(job->quota.weekly);
-        if (left < config::BIGQUANT_QUOTA_CONFIRM_RATIO) {
-          job->set_message("等待确认: BigQuant 周配额不足");
-          job->confirm_needed.store(true, std::memory_order_release);
-          while (decision->load(std::memory_order_acquire) == 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-          need_bq = decision->load(std::memory_order_acquire) == 1;
-          declined = !need_bq;
-        }
-      }
-      if (need_bq) {
-        sync_all<fundamental::Bq>(*job, *cancel, bq, bq_tasks, "bigquant");
+    }
+    if (!ts_tasks.empty() && !cancel_.load(std::memory_order_relaxed)) {
+      tushare::Client ts;
+      sync_all<fundamental::Tu>(job, ts, ts_tasks, "tushare");
+    }
+    if (config::BIGQUANT_SYNC_DAILY && !daily_tasks.empty() && !declined &&
+        !cancel_.load(std::memory_order_relaxed)) {
+      // 一天约 1200 万 cell: 每天开拉前重取配额 (探针不耗配额), 剩余 < 阈值即跳过余下各天
+      sync_all<fundamental::Bq>(job, bq, daily_tasks, "bigquant.daily", [&job, &take_quota]() {
         take_quota();
-      }
-      if (!ts_tasks.empty() && !cancel->load(std::memory_order_relaxed)) {
-        tushare::Client ts;
-        sync_all<fundamental::Tu>(*job, *cancel, ts, ts_tasks, "tushare");
-      }
-      if (config::BIGQUANT_SYNC_DAILY && !daily_tasks.empty() && !declined &&
-          !cancel->load(std::memory_order_relaxed)) {
-        // 一天约 1200 万 cell: 每天开拉前重取配额 (探针不耗配额), 剩余 < 阈值即跳过余下各天
-        sync_all<fundamental::Bq>(*job, *cancel, bq, daily_tasks, "bigquant.daily", [&job, &take_quota]() {
-          take_quota();
-          return 1.0 - static_cast<double>(job->quota.used) / static_cast<double>(job->quota.weekly) >=
-                 config::BIGQUANT_QUOTA_DAILY_RATIO;
-        });
-      }
+        return 1.0 - static_cast<double>(job.quota.used) / static_cast<double>(job.quota.weekly) >=
+               config::BIGQUANT_QUOTA_DAILY_RATIO;
+      });
     }
-    // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)
-    const Catalog cat;
-    job->ok = build_asset_info(*job, cat);
-    job->st.tables = collect_table_stats(cat);
-    job->done = true;
-  }).detach();
-
-  boost::asio::steady_timer timer(io_);
-  while (!job->done) {
-    // 构建中实时把工作线程的阶段说明透给 UI
-    std::string msg = job->get_message();
-    // 配额确认: 工作线程挂起 ⇒ Confirm (弹窗); 回答后回到 Updating
-    if (job->confirm_needed.load(std::memory_order_acquire)) {
-      if (decision->load(std::memory_order_acquire) == 0) {
-        state_.status = FundamentalStatus::Confirm;
-        state_.quota_weekly = job->quota.weekly;
-        state_.quota_used = job->quota.used;
-      } else if (state_.status == FundamentalStatus::Confirm) {
-        state_.status = FundamentalStatus::Updating;
-      }
+  }
+  // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)
+  const Catalog cat;
+  FundamentalResult out;
+  out.seq = req.seq;
+  out.ok = build_asset_info(job, cat);
+  {
+    std::lock_guard lk(mutex);
+    state.tables = collect_table_stats(cat);
+    if (out.ok) {
+      state.stock_count = job.st.stock_count;
+      state.factor_stock_count = job.st.factor_stock_count;
+      state.trading_days_count = job.st.trading_days_count;
+      state.date_range_start = job.st.date_range_start;
+      state.date_range_end = job.st.date_range_end;
+      state.last_update = now_str();
+      state.message.clear();
+    } else {
+      state.message = "本地 parquet 缺失 — 点击 Update 联网同步";
     }
-    if (with_network && state_.status == FundamentalStatus::Updating &&
-        msg.starts_with("构建"))
-      state_.status = FundamentalStatus::Building;
-    // 计步阶段 (同步任务 / 并行扫描分片): 进度由 worker 的原子计数器给出 (逐步不再抢 message 锁)
-    const std::size_t total = job->steps_total.load(std::memory_order_relaxed);
-    if (total != 0) {
-      const std::size_t n =
-          std::min(job->steps_done.load(std::memory_order_relaxed), total);
-      msg += " " + std::to_string(n) + "/" + std::to_string(total);
-    }
-    state_.message = std::move(msg);
-    timer.expires_after(std::chrono::milliseconds(100));
-    co_await timer.async_wait(boost::asio::use_awaitable);
+    publish();
   }
-
-  // 本轮未联网 (quota_time 空) ⇒ 保留上次配额读数
-  if (job->st.quota_time.empty()) {
-    job->st.quota_weekly = state_.quota_weekly;
-    job->st.quota_used = state_.quota_used;
-    job->st.quota_time = state_.quota_time;
-  }
-  if (job->ok) {
-    // AssetInfo 替换只发生在 io 线程 (GUI 消费与此同线程, 无竞争)
-    data_.assetinfo = std::move(job->assetinfo);
-    state_ = job->st;
-    state_.status = FundamentalStatus::Ready;
-    state_.message.clear();
-    state_.last_update = now_str();
-  } else {
-    state_.tables = std::move(job->st.tables);
-    state_.quota_weekly = job->st.quota_weekly;
-    state_.quota_used = job->st.quota_used;
-    state_.quota_time = job->st.quota_time;
-    state_.status = FundamentalStatus::Error;
-    state_.message = "本地 parquet 缺失 — 点击 Update 联网同步";
-  }
-  decision_.reset();
-  cancel_.reset();
-  busy_ = false;
-}
-
-void FundamentalService::cancel() {
-  if (cancel_)
-    cancel_->store(true, std::memory_order_relaxed);
+  if (out.ok)
+    out.assetinfo = std::move(job.assetinfo);
+  handoff.post(std::move(out));
+  return true;
 }
 
 void FundamentalService::confirm(bool proceed) {
-  assert(state_.status == FundamentalStatus::Confirm && "confirm: 不在 Confirm 态");
-  assert(decision_ && decision_->load() == 0 && "confirm: 本轮已回答");
-  decision_->store(proceed ? 1 : 2, std::memory_order_release);
-  // 同帧退出 Confirm (io 线程 = GUI 线程), 不等协程下一次 100ms 轮询 — 否则弹窗会重开
-  state_.status = FundamentalStatus::Updating;
+  assert(confirm_pending.load(std::memory_order_acquire) && decision_.load() == 0 && "confirm: 不在待确认 / 本轮已回答");
+  decision_.store(proceed ? 1 : 2, std::memory_order_release);
+  confirm_pending.store(false, std::memory_order_release); // 同帧退出待确认, 弹窗不重开
 }
 
 } // namespace GUI::Database
