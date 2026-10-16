@@ -43,7 +43,7 @@ struct TaskState {
     // 便捷方法
     bool ready() const { return binary_pass && all_json_ready; }
 
-    // 内部握手信号 (防止并发操作)
+    // 流水线在飞 (StateManager 每帧写)
     bool json_update_inflight = false;
     bool l2_scan_inflight = false;
   } database;

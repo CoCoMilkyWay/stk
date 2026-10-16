@@ -22,21 +22,20 @@ namespace {
 
 constexpr ImVec4 kMissing = ImVec4(1.0f, 0.45f, 0.35f, 1.0f);
 
-ImVec4 status_color(FundamentalStatus s) {
-  switch (s) {
-  case FundamentalStatus::Ready:
-    return ImVec4(0.3f, 0.95f, 0.4f, 1.0f);
-  case FundamentalStatus::Updating:
-  case FundamentalStatus::Building:
-    return ImVec4(1.0f, 0.95f, 0.3f, 1.0f);
-  case FundamentalStatus::Confirm:
-    return ImVec4(1.0f, 0.6f, 0.2f, 1.0f);
-  case FundamentalStatus::Error:
-    return ImVec4(1.0f, 0.3f, 0.2f, 1.0f);
-  case FundamentalStatus::Idle:
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-  }
-  return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+// 一帧的核对视图 = 展示字段 + 进度面
+struct AuditView {
+  const AuditState &s;
+  bool active;  // Audit / Repair 在跑
+  bool loading; // 逐表状态尚未读完 (Load 未收尾)
+  std::size_t done, total;
+};
+
+// 进度条: 有总量给比例, 否则不确定条; 叠字 = 阶段名
+void progress_bar(const Progress &p, const char *overlay) {
+  const std::size_t total = p.total.load(std::memory_order_relaxed);
+  const float frac = total > 0 ? static_cast<float>(p.done.load(std::memory_order_relaxed)) / static_cast<float>(total)
+                               : -1.0f * static_cast<float>(ImGui::GetTime());
+  ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
 }
 
 // Shape × Snap × src → 抓法一词 (与 fetch 的取行方式一一对应)
@@ -140,16 +139,16 @@ void dash_cells(int n) {
 // Audit 五列. a == nullptr: 不参与核对 (Tushare / _meta 表)
 //   核对列: 单表 audit 小按钮 + 覆盖 (该表在跑则换成进度)
 //   修复流量列: 有差异月则前置 sync 小按钮
-void audit_cells(const std::string &name, const AuditTableStat *a, const AuditState &audit,
+void audit_cells(const std::string &name, const AuditTableStat *a, const AuditView &audit,
                  bool disable, std::string *audit_table, std::string *repair_table, std::int64_t weekly) {
   if (!a) {
     dash_cells(5);
     return;
   }
   ImGui::TableNextColumn();
-  const bool mine = audit.op != AuditOp::None && audit.table == name;
+  const bool mine = audit.active && audit.s.table == name;
   if (mine) {
-    ImGui::TextColored(kWarn, "%s %zu/%zu", audit.op == AuditOp::Repair ? "修复中" : "核对中", audit.done,
+    ImGui::TextColored(kWarn, "%s %zu/%zu", audit.s.op == AuditOp::Repair ? "修复中" : "核对中", audit.done,
                        audit.total);
   } else {
     ImGui::BeginDisabled(disable);
@@ -219,7 +218,7 @@ void text_wrapped_disabled(const char *s) {
 //   stat == nullptr (scanned=true): 本地确实一个文件都没有.
 //   Shape::Meta: 落 _meta/ 单文件, 没有"分片/最新月"的概念.
 void table_row(const fundamental::Spec &spec, bool scanned, const TableFileStat *stat,
-               const AuditTableStat *audit, const AuditState &audit_state, bool disable_audit,
+               const AuditTableStat *audit, const AuditView &audit_state, bool disable_audit,
                std::string *audit_table, std::string *repair_table, std::int64_t weekly) {
   const std::string &name = spec.name;
   const bool meta_single = spec.shape == fundamental::Shape::Meta;
@@ -294,9 +293,10 @@ constexpr ImGuiTableFlags kTableFlags =
     ImGuiTableFlags_NoSavedSettings;
 
 // Audit 区: 按钮 / 进度 / 配额消耗 / 总账 (逐表结果并入 Tables 清单)
-void audit_section(const AuditState &a, bool *audit_clicked, bool *audit_incr_clicked,
+void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_clicked,
                    bool *audit_cancel_clicked, bool disable_audit,
                    std::int64_t weekly) {
+  const AuditState &a = v.s;
   ImGui::Spacing();
   ImGui::SeparatorText("Audit (BigQuant 远端 vs 本地冻结月)");
 
@@ -306,7 +306,7 @@ void audit_section(const AuditState &a, bool *audit_clicked, bool *audit_incr_cl
     pend_content += t.frozen_months - std::min(t.content_months, t.frozen_months);
   }
 
-  if (a.op == AuditOp::Audit) {
+  if (v.active && a.op == AuditOp::Audit) {
     if (ImGui::Button("Cancel audit", ImVec2(220.0f, 0.0f)))
       *audit_cancel_clicked = true;
   } else {
@@ -334,14 +334,13 @@ void audit_section(const AuditState &a, bool *audit_clicked, bool *audit_incr_cl
     }
   }
 
-  const bool active = a.op != AuditOp::None;
   ImGui::SameLine(0.0f, 24.0f);
-  if (active && a.total == 0)
+  if (v.active && v.total == 0)
     ImGui::TextDisabled("规划中 ...");
-  else if (active)
+  else if (v.active)
     ImGui::Text("%s %s%s  %zu / %zu", a.op == AuditOp::Repair ? "修复" : "核对",
-                a.table.empty() ? "全部表" : a.table.c_str(), a.incremental ? " (增量)" : "", a.done,
-                a.total);
+                a.table.empty() ? "全部表" : a.table.c_str(), a.incremental ? " (增量)" : "", v.done,
+                v.total);
 
   if (a.quota_start >= 0) {
     ImGui::SameLine(0.0f, 24.0f);
@@ -355,13 +354,13 @@ void audit_section(const AuditState &a, bool *audit_clicked, bool *audit_incr_cl
   if (!a.log_dir.empty())
     ImGui::TextDisabled("逐表状态 <表>.tsv (逐月核对时刻 / 汇总 + 不一致格原值): %s", a.log_dir.c_str());
 
-  if (active && a.total > 0) {
-    const float frac = static_cast<float>(a.done) / static_cast<float>(a.total);
+  if (v.active && v.total > 0) {
+    const float frac = static_cast<float>(v.done) / static_cast<float>(v.total);
     ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), a.current.c_str());
   }
 
   // 逐表结果在下方 Tables 清单的 Audit 列; 这里只给总账
-  if (a.loading) {
+  if (v.loading) {
     ImGui::TextDisabled("读取逐表状态 ...");
     return;
   }
@@ -412,16 +411,25 @@ void audit_section(const AuditState &a, bool *audit_clicked, bool *audit_incr_cl
 
 void RenderTabOverview(
     const FundamentalState &state,
+    const Progress &progress,
+    const TaskStatus &status,
     bool *update_clicked,
     bool *update_cancel_clicked,
     bool disable_update_controls,
     const AuditState &audit,
+    const Progress &audit_progress,
     bool *audit_clicked,
     bool *audit_incr_clicked,
     bool *audit_cancel_clicked,
     bool disable_audit,
     std::string *audit_table,
     std::string *repair_table) {
+  const bool running = progress.busy();
+  const Phase phase = progress.phase.load(std::memory_order_acquire);
+  const AuditView av{audit, audit_progress.busy() && audit.op != AuditOp::Load,
+                     audit.op == AuditOp::Load && audit_progress.phase.load(std::memory_order_acquire) != Phase::Done,
+                     audit_progress.done.load(std::memory_order_relaxed),
+                     audit_progress.total.load(std::memory_order_relaxed)};
 
   ImGui::Spacing();
   ImGui::SeparatorText("Fundamental Data (BigQuant DAI + Tushare)");
@@ -429,18 +437,14 @@ void RenderTabOverview(
   // 状态行
   ImGui::Text("Status:");
   ImGui::SameLine();
-  ImGui::TextColored(status_color(state.status),
-                     "[%s]", GetFundamentalStatusName(state.status));
+  ImGui::TextColored(StatusColor(status.kind), "[%s]", status.text.c_str());
   if (!state.message.empty()) {
     ImGui::SameLine();
     ImGui::TextDisabled("%s", state.message.c_str());
   }
-  if (state.status == FundamentalStatus::Updating ||
-      state.status == FundamentalStatus::Building) {
-    // 不确定进度条 (总量未知: 水位增量按表滚动)
-    float t = static_cast<float>(ImGui::GetTime());
-    ImGui::ProgressBar(-1.0f * t, ImVec2(-1.0f, 0.0f), "syncing...");
-  }
+  // 阶段: scanning 外来写者重写 / loading 同步 (计步 = 任务) / running 构建 (计步 = 分片)
+  if (running)
+    progress_bar(progress, PhaseName(phase));
 
   // BigQuant 周配额余额 (配色阈值与 bigquant::preflight 终端输出一致)
   ImGui::Text("BigQuant 本周配额:");
@@ -463,8 +467,8 @@ void RenderTabOverview(
 
   ImGui::Spacing();
 
-  // 构建结果统计
-  if (state.status == FundamentalStatus::Ready) {
+  // 构建结果统计 (最近一次构建成功的)
+  if (!state.last_update.empty()) {
     ImGui::Text("Stocks: %zu", state.stock_count);
     ImGui::SameLine(0.0f, 24.0f);
     ImGui::Text("Adjust-factor series: %zu", state.factor_stock_count);
@@ -475,9 +479,7 @@ void RenderTabOverview(
       ImGui::Text("Calendar range: %s ~ %s", misc::dash(state.date_range_start).c_str(),
                   misc::dash(state.date_range_end).c_str());
     }
-    if (!state.last_update.empty()) {
-      ImGui::TextDisabled("Last build: %s", state.last_update.c_str());
-    }
+    ImGui::TextDisabled("Last build: %s", state.last_update.c_str());
   }
 
   ImGui::Spacing();
@@ -485,7 +487,7 @@ void RenderTabOverview(
   ImGui::Spacing();
 
   // 操作区 (与 audit_section 同形: 跑时按钮换成 Cancel)
-  if (state.status == FundamentalStatus::Updating) {
+  if (running) {
     if (ImGui::Button("Cancel sync", ImVec2(220.0f, 0.0f)))
       *update_cancel_clicked = true;
     if (ImGui::IsItemHovered())
@@ -503,7 +505,7 @@ void RenderTabOverview(
 
   // 周配额: Update 的 preflight 读数优先, 没有则用 Audit 自己取的
   const std::int64_t weekly = state.quota_weekly > 0 ? state.quota_weekly : audit.quota_weekly;
-  audit_section(audit, audit_clicked, audit_incr_clicked, audit_cancel_clicked, disable_audit, weekly);
+  audit_section(av, audit_clicked, audit_incr_clicked, audit_cancel_clicked, disable_audit, weekly);
 
   // ==========================================================================
   // 逐表清单 — 数据集里到底有什么, 各自落到哪一步
@@ -540,7 +542,7 @@ void RenderTabOverview(
     setup_columns();
     for (const fundamental::Spec &spec : fundamental::SPECS)
       if (fundamental::from<fundamental::Bq>(spec))
-        table_row(spec, scanned, state.find_table(spec.name), audit.find_table(spec.name), audit,
+        table_row(spec, scanned, state.find_table(spec.name), audit.find_table(spec.name), av,
                   disable_audit, audit_table, repair_table, weekly);
     ImGui::EndTable();
   }
@@ -552,7 +554,7 @@ void RenderTabOverview(
     setup_columns();
     for (const fundamental::Spec &spec : fundamental::SPECS)
       if (fundamental::from<fundamental::Tu>(spec))
-        table_row(spec, scanned, state.find_table(spec.name), nullptr, audit, disable_audit,
+        table_row(spec, scanned, state.find_table(spec.name), nullptr, av, disable_audit,
                   audit_table, repair_table, weekly);
     ImGui::EndTable();
   }

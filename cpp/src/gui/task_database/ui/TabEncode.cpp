@@ -1,8 +1,10 @@
 // Tab Encode Implementation
 #include "gui/task_database/ui/TabEncode.hpp"
+#include "gui/Tasks.hpp"
 #include "gui/task_database/models/SharedTypes.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
+#include "gui/task_database/services/StateManager.hpp"
 #include "imgui.h"
 #include "shared/Asset.hpp"
 
@@ -472,11 +474,10 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
 
 } // namespace
 
-void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_service, EncodeState &state, Asset &asset) {
-  if (!encoding_service || !scan_service) {
-    ImGui::TextDisabled("Services not initialized");
-    return;
-  }
+void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, FileCheckService &file_check_service,
+                     const ScanService &scan_service, EncodeState &state, Asset &asset) {
+  if (auto r = file_check_service.handoff.take())
+    state.file_check = std::move(*r);
 
   // Auto-detect max cores on first run
   if (state.num_workers <= 0) {
@@ -486,14 +487,15 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
     state.num_workers = max_workers;
   }
 
-  const bool is_running = encoding_service->is_running();
-  const auto status = encoding_service->get_status();
-  const auto progress = encoding_service->get_progress();
-  // 这两个返回的是引用, 别按值接 —— 里面的缺失日期/错误文件列表是几千条
+  // 在飞 (请求发出到交接收下), 不是进度面忙: 刚确认开跑那几帧 worker 还没摘请求, 全屏进度不能因此关掉
+  const bool is_running = sm.encoding();
+  // 开跑须同步 / 扫描都不在飞 (编码读 assetinfo / items / 回测日历)
+  const bool start_blocked = sm.syncing() || sm.scanning();
+  // 这两个按引用接 —— 里面的缺失日期/错误文件列表是几千条
   // std::string, 逐帧整份复制就是逐帧几千次分配
-  const auto &check_result = scan_service->get_last_check_result();
-  const auto &file_check_result = encoding_service->get_file_check_result();
-  const bool file_check_running = encoding_service->is_file_check_running();
+  const auto &check_result = sm.get_state().check;
+  const auto &file_check_result = state.file_check;
+  const bool file_check_running = file_check_service.busy();
 
   // ========================================================================
   // File Check (Archive Validation)
@@ -537,7 +539,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
     ImGui::BeginDisabled(file_check_running);
     if (ImGui::Button(file_check_running ? "Checking..." : "Run File Check", ImVec2(150, 0))) {
-      encoding_service->run_file_check(asset.archive.path);
+      file_check_service.Request(asset.archive.path);
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
@@ -555,8 +557,9 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
     // 状态一行说完, 解释挂在 hover 上 —— 这些说明每次都一样, 常驻会把
     // 下面的表挤下去
-    if (scan_service->is_scanning()) {
-      ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "%s", scan_service->get_status_string());
+    if (sm.scanning()) {
+      const std::string s = scan_service.busy() ? ProgressStatus(scan_service).text : "scanning";
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "%s", s.c_str());
     } else {
       // 每个 DatabaseStatus 都要有分支 —— 漏掉的会掉进 default 显示成
       // "没检查", 而它其实刚检查完.
@@ -664,10 +667,10 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
     // Start/Stop button
     if (is_running) {
-      const bool cancelling = encoding_service->is_cancelling();
+      const bool cancelling = encoding_service.cancelling();
       ImGui::BeginDisabled(cancelling);
       if (ImGui::Button(cancelling ? "Cancelling..." : "Stop Encoding", ImVec2(150, 0)))
-        encoding_service->request_cancel();
+        encoding_service.RequestCancel();
       ImGui::EndDisabled();
       ImGui::SameLine();
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Encoding in progress...");
@@ -676,6 +679,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       bool file_check_ok = file_check_result.was_run() &&
                            (file_check_result.passed || !file_check_result.archive_dir_exists);
 
+      ImGui::BeginDisabled(start_blocked);
       if (ImGui::Button("Start Encoding", ImVec2(150, 0))) {
         // 每次打开弹窗都要重新勾 —— 风险自负不跨会话累积
         state.skip_file_check_ack = false;
@@ -683,6 +687,9 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
         state.skip_archive_range_ack = false;
         state.show_confirm_dialog = true;
       }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && start_blocked)
+        ImGui::SetTooltip("基本面同步 / 覆盖扫描进行中");
 
       ImGui::SameLine();
       if (!file_check_result.was_run()) {
@@ -699,15 +706,7 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       ImGui::TextDisabled("|");
       ImGui::SameLine();
 
-      if (status == EncodingStatus::Completed) {
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Completed");
-      } else if (status == EncodingStatus::Cancelled) {
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Cancelled");
-      } else if (status == EncodingStatus::Error) {
-        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Error");
-      } else {
-        ImGui::TextDisabled("Idle");
-      }
+      TextPhase(encoding_service.phase.load(std::memory_order_acquire));
     }
 
     ImGui::Unindent();
@@ -825,11 +824,12 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
-    ImGui::BeginDisabled(!can_encode);
+    ImGui::BeginDisabled(!can_encode || start_blocked);
     if (ImGui::Button("Confirm and Start", ImVec2(button_width, 40))) {
       state.show_confirm_dialog = false;
       state.show_progress_fullscreen = true;
       state.trigger_start = true; // Signal TaskDatabase to start encoding
+      state.start_time = ImGui::GetTime();
     }
     ImGui::EndDisabled();
 
@@ -863,23 +863,13 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
       ImGui::Spacing();
       ImGui::Spacing();
 
-      // Assets Progress
-      float assets_progress = progress.total_assets > 0 ? (float)progress.completed_assets / progress.total_assets : 0.0f;
-      ImGui::SetCursorPosX(center_x - 200);
-      ImGui::Text("Assets: %zu / %zu (%.1f%%)",
-                  progress.completed_assets, progress.total_assets,
-                  assets_progress * 100.0f);
-      ImGui::SetCursorPosX(center_x - 200);
-      ImGui::ProgressBar(assets_progress, ImVec2(400, 30));
-
-      ImGui::Spacing();
-      ImGui::Spacing();
-
-      // Dates Progress
-      float dates_progress = progress.total_dates > 0 ? (float)progress.encoded_dates / progress.total_dates : 0.0f;
+      // Dates Progress (进度面: 汇总天数, 含增量跳过的天)
+      const size_t days_done = encoding_service.done.load(std::memory_order_relaxed);
+      const size_t days_total = encoding_service.total.load(std::memory_order_relaxed);
+      float dates_progress = days_total > 0 ? (float)days_done / days_total : 0.0f;
       ImGui::SetCursorPosX(center_x - 200);
       ImGui::Text("Trading Days: %zu / %zu (%.1f%%)",
-                  progress.encoded_dates, progress.total_dates,
+                  days_done, days_total,
                   dates_progress * 100.0f);
       ImGui::SetCursorPosX(center_x - 200);
       ImGui::ProgressBar(dates_progress, ImVec2(400, 30));
@@ -890,16 +880,17 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
       // Statistics
       // 条数只有跑过明细扫描才有值 (见 Asset::orders), 没有就不占一行
-      if (progress.total_orders > 0) {
+      if (asset.binary.backtest_orders > 0) {
         ImGui::SetCursorPosX(center_x - 150);
-        ImGui::Text("Total Orders: %zu", progress.total_orders);
+        ImGui::Text("Total Orders: %zu", asset.binary.backtest_orders);
       }
 
+      const double elapsed = ImGui::GetTime() - state.start_time;
       ImGui::SetCursorPosX(center_x - 150);
-      ImGui::Text("Elapsed Time: %.1f s", progress.elapsed_seconds);
+      ImGui::Text("Elapsed Time: %.1f s", elapsed);
 
       ImGui::SetCursorPosX(center_x - 150);
-      ImGui::Text("Encoding Rate: %.2f assets/s", progress.encoding_rate);
+      ImGui::Text("Encoding Rate: %.2f days/s", elapsed > 0.0 ? days_done / elapsed : 0.0);
 
       ImGui::Spacing();
       ImGui::Spacing();
@@ -907,16 +898,16 @@ void RenderTabEncode(EncodingService *encoding_service, ScanService *scan_servic
 
       // Stop button
       ImGui::SetCursorPosX(center_x - 75);
-      const bool cancelling = encoding_service->is_cancelling();
+      const bool cancelling = encoding_service.cancelling();
       ImGui::BeginDisabled(cancelling);
       if (ImGui::Button(cancelling ? "Cancelling..." : "Stop Encoding", ImVec2(150, 40)))
-        encoding_service->request_cancel();
+        encoding_service.RequestCancel();
       ImGui::EndDisabled();
 
       ImGui::End();
     }
-  } else if (state.show_progress_fullscreen && !is_running) {
-    // Encoding finished, close fullscreen view
+  } else if (state.show_progress_fullscreen && !is_running && !state.trigger_start) {
+    // Encoding finished (trigger 未消费 = 本帧刚确认, TaskDatabase 在本帧末发请求), close fullscreen view
     state.show_progress_fullscreen = false;
   }
 

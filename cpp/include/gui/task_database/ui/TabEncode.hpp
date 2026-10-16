@@ -2,14 +2,17 @@
 // Controls CSV→Binary conversion with worker management
 #pragma once
 
+#include "misc/file_check.hpp"
+
 #include <cstdint>
 #include <vector>
 
 // Forward declarations
 namespace GUI::Database {
+class StateManager;
 class EncodingService;
+class FileCheckService;
 class ScanService;
-struct EncodingProgress;
 } // namespace GUI::Database
 
 struct Asset;
@@ -83,15 +86,22 @@ struct EncodeState {
 
   // Trigger for starting encoding (set by UI, consumed by TaskDatabase)
   bool trigger_start = false;
+  double start_time = 0.0; // 确认开跑时刻 (ImGui::GetTime), 全屏进度的耗时起点
+
+  // 最近一次 File Check 结论 (FileCheckService 交接件, 本页帧首收)
+  FileCheck::FileCheckResult file_check;
 };
 
 // ============================================================================
 // Render Function
 // ============================================================================
 
+// sm: 覆盖结论 + 流水线在飞 (编码 / 扫描 / 同步); 服务: 进度面 + 请求 / 取消
 void RenderTabEncode(
-    EncodingService *encoding_service,
-    ScanService *scan_service,
+    const StateManager &sm,
+    EncodingService &encoding_service,
+    FileCheckService &file_check_service,
+    const ScanService &scan_service,
     EncodeState &state,
     Asset &asset);
 

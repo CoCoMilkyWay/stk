@@ -1,18 +1,27 @@
-// State Manager - Aggregates state and manages gatekeeper logic
-// Central coordinator for all database subsystems
+// State Manager - Database 流水线编排 (GUI 线程) + 解锁进度
+//
+// 四个 worker 服务 (基本面 / 扫描 / 编码 / 核对) 各自一条通道: 发请求带递增请求代, 交接件原样带回.
+//   在飞 = 发出代 != 收到代; 收到的不是最新代 = 陈旧件, 丢弃 (最新请求已在路上)
+// 共享状态 (assetinfo / asset.items / Asset 扫描产物) 只在 tick 里换进 (GUI 线程), 换进时机保证无 worker 正在读:
+//   基本面件: 扫描与编码都不在飞才收 (二者读 assetinfo / items) → 换 assetinfo → AssetLoader 重建 items → 请求覆盖扫描
+//   扫描件:   adopt 扫描产物 + 留存覆盖结论 (扫描只在基本面件收下后 / 编码收尾后发, 编码只在扫描不在飞时发)
+//   编码件:   请求 RescanStorage (日文件被 rename 换掉)
+//   核对件:   Repair 收尾 → refresh (改了分片, 重建 AssetInfo)
 #pragma once
 
-#include "gui/task_database/services/AssetLoader.hpp"
-#include "gui/task_database/services/FundamentalService.hpp"
+#include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
-#include <boost/asio/awaitable.hpp>
+
+#include <cstdint>
+#include <string>
 
 // Forward declaration
 struct SharedData;
 
 namespace GUI::Database {
 
-using boost::asio::awaitable;
+class FundamentalService;
+class EncodingService;
 
 // ============================================================================
 // Tab Access Control State
@@ -38,13 +47,12 @@ struct AggregatedState {
   // Tab access control
   TabAccessState tabs;
 
-  // Fundamental data status (BigQuant + Tushare → AssetInfo)
-  FundamentalStatus fundamental_status = FundamentalStatus::Idle;
+  bool fundamental_taken = false; // 收到过基本面交接件 (之前 = 首轮在跑)
+  bool fundamental_ok = false;    // 最近一件 ok (AssetInfo 已从 parquet 构建并换进)
+  DatabaseCheckResult check;      // 最近一件扫描交接的覆盖结论
 
   // Helper: fundamental data ready (AssetInfo built from parquet)
-  bool all_json_ready() const {
-    return fundamental_status == FundamentalStatus::Ready;
-  }
+  bool all_json_ready() const { return fundamental_ok; }
 };
 
 // ============================================================================
@@ -52,39 +60,49 @@ struct AggregatedState {
 // ============================================================================
 
 class StateManager {
-private:
-  SharedData &data_;
-  FundamentalService *fundamental_svc_;
-  ScanService *scan_svc_;
-  AggregatedState state_;
-
 public:
-  StateManager(SharedData &data, FundamentalService *fs, ScanService *scan)
-      : data_(data), fundamental_svc_(fs), scan_svc_(scan) {}
+  // 构造即发首批请求: 核对 Load + refresh
+  StateManager(SharedData &data, FundamentalService &fund, ScanService &scan, EncodingService &enc,
+               AuditService &audit);
 
-  // ============================================================================
-  // Lifecycle
-  // ============================================================================
+  // 每帧帧首 (GUI 线程): 收交接 → 换进共享状态 → 推下一站 → 刷解锁 + taskstate.database
+  void tick();
 
-  // Initialize: check all files and load data
-  awaitable<void> initialize();
+  // 唯一刷新链入口: 基本面同步 (联网按 config.network_sync) → AssetInfo/items 重建 → L2 覆盖扫描.
+  // GUI 启动、Overview Update、修复收尾都走这里, 不各写一份流程.
+  void refresh();
+  // 编码 / 核对请求 (调用方按 syncing / scanning / encoding / auditing 使能)
+  void encode(int workers, bool skip_existing);
+  void audit(AuditOp op, std::string table, bool incremental);
 
-  // 唯一刷新链: 基本面同步 -> AssetInfo/Asset items 重建 -> L2 覆盖扫描触发.
-  // GUI 启动、config 重建、Overview Update 都走这里, 不各写一份流程.
-  awaitable<void> sync_and_scan(ScanMode mode);
+  bool syncing() const { return fund_ch_.inflight(); }
+  bool scanning() const { return scan_ch_.inflight(); }
+  bool encoding() const { return enc_ch_.inflight(); }
+  bool auditing() const { return audit_ch_.inflight(); }
 
-  // ============================================================================
-  // State Management
-  // ============================================================================
-
-  // Refresh state from all services
-  void refresh_state();
-
-  // Get current aggregated state
   const AggregatedState &get_state() const { return state_; }
-
-  // Get tab access state (managed centrally)
   const TabAccessState &get_tab_access() const { return state_.tabs; }
+
+private:
+  struct Channel {
+    uint64_t sent = 0, taken = 0;
+    bool inflight() const { return sent != taken; }
+    uint64_t next() { return ++sent; }
+    bool latest(uint64_t seq) const { return seq == sent; } // 收件后: 是最新代
+  };
+
+  // 覆盖扫描请求; RecomputeCoverage 但扫描缓存与 config 路径不符 → 降级 RescanStorage
+  void scan(ScanMode mode);
+  void publish_task_state();
+
+  SharedData &data_;
+  FundamentalService &fund_;
+  ScanService &scan_;
+  EncodingService &enc_;
+  AuditService &audit_;
+  Channel fund_ch_, scan_ch_, enc_ch_, audit_ch_;
+  AuditOp audit_op_ = AuditOp::Load; // 最近一次核对请求的 op (收尾分流)
+  AggregatedState state_;
 };
 
 } // namespace GUI::Database

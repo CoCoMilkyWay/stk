@@ -17,7 +17,7 @@ namespace GUI::Database {
 class AssetLoader {
 public:
   // 基本面股票全量 → AssetAxis (append-only intern) → Asset::items (下标对齐).
-  // 前置: 基本面已就绪 (StateManager 的 update_all 先跑).
+  // 前置: 基本面已就绪 (StateManager 收下 ok 的基本面交接件后调).
   static void load(SharedData &data);
 
 private:

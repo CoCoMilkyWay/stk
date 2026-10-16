@@ -97,7 +97,6 @@ stk/
 │   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
 │   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / L2Database / Scan / Classifier / StateManager
-│   │   │   │   ├── infrastructure/ScanThreadPool.hpp # 🖥️ 扫描线程池
 │   │   │   │   └── ui/                               # 🖥️ TabOverview (基本面同步) / TabBrowser / TabTable / TabEncode / CrossSectionAnalysis
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面

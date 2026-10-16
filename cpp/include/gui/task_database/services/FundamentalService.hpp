@@ -86,9 +86,9 @@ public:
   // (Tushare / 本地构建照常). 只在 confirm_pending 时可调, 每轮只回答一次.
   void confirm(bool proceed);
 
-  FundamentalState state;                    // UI 持 mutex 读
-  std::atomic<bool> confirm_pending{false};  // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, worker 挂起等弹窗
-  Mailbox<FundamentalResult> handoff;        // worker 每轮收尾 post, StateManager 帧首 take
+  FundamentalState state;                   // UI 持 mutex 读
+  std::atomic<bool> confirm_pending{false}; // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, worker 挂起等弹窗
+  Mailbox<FundamentalResult> handoff;       // worker 每轮收尾 post, StateManager 帧首 take
 
 private:
   static constexpr Phase kStart = Phase::Scanning;

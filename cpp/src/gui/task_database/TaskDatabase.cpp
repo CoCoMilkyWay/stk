@@ -1,6 +1,5 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/coro/CoroManager.hpp"
 #include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
@@ -14,11 +13,8 @@
 #include "imgui.h"
 #include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 namespace GUI::Tasks {
@@ -33,6 +29,7 @@ private:
   std::unique_ptr<AuditService> audit_svc_;
   std::unique_ptr<ScanService> scan_svc_;
   std::unique_ptr<EncodingService> encoding_svc_;
+  std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<L2DatabaseService> l2_svc_;
   std::unique_ptr<StateManager> state_mgr_;
 
@@ -44,7 +41,6 @@ private:
   // Lifecycle
   bool is_expanded_ = false;
   bool initialized_ = false;
-  CoroManager *coro_mgr_ = nullptr;
   SharedData *data_ = nullptr; // Pointer to shared data
   Config *config_ = nullptr;   // Pointer to config for accessing backtest dates
   std::string config_dir_ = "../../config";
@@ -62,7 +58,6 @@ public:
   void Init(SharedData &data) {
     if (initialized_)
       return;
-    coro_mgr_ = &data.coromgr;
     data_ = &data;
     config_ = &data.config;
     InitializeServices(data);
@@ -77,11 +72,10 @@ public:
     is_expanded_ = false;
   }
 
-  // 每帧 (无论选中): 聚合服务状态 → taskstate.database (左栏标签/使能同帧读)
+  // 每帧 (无论选中): 收交接 / 推流水线 → taskstate.database (左栏标签/使能同帧读)
   void Update(SharedData & /*data*/) {
     if (state_mgr_)
-      state_mgr_->refresh_state();
-    UpdateTaskState();
+      state_mgr_->tick();
     // 配额确认弹窗放这里而非 Draw: 启动即后台同步, 用户可能根本没点开 Database,
     // 模态必须每帧都在 (工作线程此刻挂起, 不答就一直等)
     DrawQuotaConfirm();
@@ -90,11 +84,10 @@ public:
   // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO ⇒ 模态二选一, 答案回给
   // FundamentalService::confirm (工作线程据此走 / 跳过 BigQuant 同步)
   void DrawQuotaConfirm() {
-    if (!fundamental_svc_)
+    if (!fundamental_svc_ || !fundamental_svc_->confirm_pending.load(std::memory_order_acquire))
       return;
-    const auto &fs = fundamental_svc_->get_state();
-    if (fs.status != FundamentalStatus::Confirm)
-      return;
+    std::lock_guard lk(fundamental_svc_->mutex);
+    const auto &fs = fundamental_svc_->state;
     static constexpr const char *kId = "BigQuant 周配额不足##QuotaConfirm";
     if (!ImGui::IsPopupOpen(kId)) {
       ImGui::OpenPopup(kId);
@@ -172,8 +165,8 @@ public:
     assert(idx >= 0 && idx < 4);
     RenderUI(idx);
 
-    // Handle encoding trigger from UI (Encode tab 设置 trigger_start)
-    if (encode_state_.trigger_start && encoding_svc_ && !encoding_svc_->is_running()) {
+    // Handle encoding trigger from UI (Encode tab 设置 trigger_start; Start 按钮已按同一条件使能)
+    if (encode_state_.trigger_start) {
       encode_state_.trigger_start = false;
 
       int workers = encode_state_.num_workers;
@@ -183,107 +176,37 @@ public:
           workers = 8;
       }
 
-      // Start encoding in background thread (non-blocking)
-      encoding_svc_->start_encoding(workers, encode_state_.skip_existing);
+      if (!state_mgr_->syncing() && !state_mgr_->scanning() && !state_mgr_->encoding())
+        state_mgr_->encode(workers, encode_state_.skip_existing);
     }
   }
 
 private:
-  // Trigger unified refresh flow: sync fundamental parquet + rebuild AssetInfo
-  // A 轴/日历来自 parquet 数据源; 成功后补扫 L2 (日历可能延长, 覆盖判定要重算)
-  void TriggerRefreshFlow() {
-    auto &ts = data_->taskstate.database;
-    if (ts.json_update_inflight || ts.l2_scan_inflight || !state_mgr_)
-      return;
-
-    auto &io = coro_mgr_->GetIoContext();
-    ts.json_update_inflight = true;
-
-    boost::asio::co_spawn(
-        io,
-        [this]() -> boost::asio::awaitable<void> {
-          auto &ts = data_->taskstate.database;
-          struct FlagReset {
-            bool &flag;
-            ~FlagReset() { flag = false; }
-          } update_reset{ts.json_update_inflight};
-
-          co_await state_mgr_->sync_and_scan(ScanMode::RecomputeCoverage);
-          UpdateTaskState();
-        },
-        boost::asio::detached);
-  }
-
   void InitializeServices(SharedData &data) {
-    auto &io = coro_mgr_->GetIoContext();
-
-    // Create services (in dependency order)
-    fundamental_svc_ = std::make_unique<FundamentalService>(io, data);
-    audit_svc_ = std::make_unique<AuditService>(io);
-    // 上次核对结果: 读核对缓存 (零网络)
-    boost::asio::co_spawn(io, audit_svc_->load(), boost::asio::detached);
-    scan_svc_ = std::make_unique<ScanService>(data, io);
+    // Create services (in dependency order); 各自构造即起 worker
+    fundamental_svc_ = std::make_unique<FundamentalService>();
+    audit_svc_ = std::make_unique<AuditService>();
+    scan_svc_ = std::make_unique<ScanService>(data);
     encoding_svc_ = std::make_unique<EncodingService>(data);
+    filecheck_svc_ = std::make_unique<FileCheckService>();
     l2_svc_ = std::make_unique<L2DatabaseService>(data);
-    state_mgr_ = std::make_unique<StateManager>(data, fundamental_svc_.get(), scan_svc_.get());
-
-    // Set encoding completion callback to trigger scan
-    encoding_svc_->set_scan_callback([this]() {
-      scan_svc_->trigger_scan(ScanMode::RescanStorage);
-    });
-
-    // Set scan completion callback to update task state
-    scan_svc_->set_on_complete([this]() {
-      state_mgr_->refresh_state();
-      UpdateTaskState();
-    });
-
-    // Initialize: 本地 parquet → AssetInfo
-    // Non-blocking, user sees progress in terminal
-    boost::asio::co_spawn(
-        io,
-        [this]() -> boost::asio::awaitable<void> {
-          co_await state_mgr_->initialize();
-          // Update task state after initialization completes
-          UpdateTaskState();
-        },
-        boost::asio::detached);
+    // 构造即发首批请求 (核对 Load + 基本面 → 扫描); 进度在终端与各页
+    state_mgr_ = std::make_unique<StateManager>(data, *fundamental_svc_, *scan_svc_, *encoding_svc_, *audit_svc_);
   }
 
-  void UpdateTaskState() {
-    if (!data_)
-      return; // Init 前 (第一帧不会发生: Init 在 CreateAllTasks 里已跑)
-    auto &ts = data_->taskstate.database;
-
-    if (!state_mgr_ || !scan_svc_) {
-      ts.status = TaskState::Database::Status::Initializing;
-      return;
-    }
-
-    auto check_result = scan_svc_->get_last_check_result();
-    const auto &state = state_mgr_->get_state();
-
-    // Update flags
-    ts.binary_scanned = (check_result.status != DatabaseStatus::Unchecked);
-    ts.binary_pass = (check_result.status == DatabaseStatus::Pass);
-    ts.all_json_ready = state.all_json_ready();
-
-    // Update status (busy 态优先: 流水线顺序 基本面同步 → L2 扫描)
-    if (ts.json_update_inflight) {
-      ts.status = TaskState::Database::Status::Syncing;
-    } else if (ts.l2_scan_inflight || scan_svc_->is_scanning()) {
-      ts.status = TaskState::Database::Status::Scanning;
-    } else if (check_result.status == DatabaseStatus::Error ||
-               check_result.status == DatabaseStatus::NoData ||
-               check_result.status == DatabaseStatus::NeedArchive) {
-      ts.status = TaskState::Database::Status::Error;
-    } else if (check_result.status == DatabaseStatus::Unchecked) {
-      ts.status = TaskState::Database::Status::NotScanned;
-    } else if (check_result.status != DatabaseStatus::Pass || !state.all_json_ready()) {
-      ts.status = TaskState::Database::Status::Incomplete;
-    } else {
-      ts.status = TaskState::Database::Status::Ready;
-    }
+  // 基本面状态标签: 待确认 > 在跑 (进度面) > 在飞未起跑 / 件待收 > 最近一件结论
+  TaskStatus FundamentalStatus() const {
+    if (fundamental_svc_->confirm_pending.load(std::memory_order_acquire))
+      return {TaskStatus::Kind::Warn, "confirm quota"};
+    if (fundamental_svc_->busy())
+      return ProgressStatus(*fundamental_svc_);
+    if (state_mgr_->syncing())
+      return {TaskStatus::Kind::Busy, "syncing"};
+    if (state_mgr_->get_state().fundamental_ok)
+      return {TaskStatus::Kind::Ready, "done"};
+    if (state_mgr_->get_state().fundamental_taken)
+      return {TaskStatus::Kind::Error, "error"};
+    return {TaskStatus::Kind::Muted, "idle"};
   }
 
   // 任务行标签: taskstate.database.status → (Kind, text)
@@ -311,41 +234,33 @@ private:
 
   // Overview 子行标签: 基本面流水线状态 (BigQuant + Tushare → AssetInfo)
   TaskStatus OverviewStatus() const {
-    if (!fundamental_svc_)
+    if (!state_mgr_)
       return {TaskStatus::Kind::Muted, "initializing"};
-    if (audit_svc_ && audit_svc_->is_running())
-      return {TaskStatus::Kind::Busy, "auditing"};
-    if (audit_svc_ && audit_svc_->is_repairing())
-      return {TaskStatus::Kind::Busy, "repairing"};
-    switch (fundamental_svc_->get_state().status) {
-    case FundamentalStatus::Idle:
-      return {TaskStatus::Kind::Muted, "idle"};
-    case FundamentalStatus::Updating:
-      return {TaskStatus::Kind::Busy, "updating"};
-    case FundamentalStatus::Confirm:
-      return {TaskStatus::Kind::Warn, "confirm quota"};
-    case FundamentalStatus::Building:
-      return {TaskStatus::Kind::Busy, "building"};
-    case FundamentalStatus::Ready:
-      return {TaskStatus::Kind::Ready, "done"};
-    case FundamentalStatus::Error:
-      return {TaskStatus::Kind::Error, "error"};
+    if (audit_svc_->busy()) {
+      std::lock_guard lk(audit_svc_->mutex);
+      if (audit_svc_->state.op == AuditOp::Audit)
+        return {TaskStatus::Kind::Busy, "auditing"};
+      if (audit_svc_->state.op == AuditOp::Repair)
+        return {TaskStatus::Kind::Busy, "repairing"};
     }
-    return {};
+    return FundamentalStatus();
   }
 
   // Encode 子行标签: 编码进行中显示进度, 否则显示 L2 覆盖检查结果
-  TaskStatus EncodeStatus(const SharedData &data) const {
-    if (encoding_svc_ && encoding_svc_->is_running()) {
-      auto p = encoding_svc_->get_progress();
-      int pct = p.total_assets > 0 ? (int)(100 * p.completed_assets / p.total_assets) : 0;
-      return {TaskStatus::Kind::Busy, "encoding " + std::to_string(pct) + "%"};
-    }
-    if (data.taskstate.database.l2_scan_inflight || (scan_svc_ && scan_svc_->is_scanning()))
-      return {TaskStatus::Kind::Busy, "scanning"};
-    if (!scan_svc_)
+  TaskStatus EncodeStatus(const SharedData & /*data*/) const {
+    if (!state_mgr_)
       return {};
-    switch (scan_svc_->get_last_check_result().status) {
+    if (encoding_svc_->cancelling())
+      return {TaskStatus::Kind::Busy, "cancelling"};
+    if (encoding_svc_->busy())
+      return ProgressStatus(*encoding_svc_);
+    if (state_mgr_->encoding())
+      return {TaskStatus::Kind::Busy, "encoding"};
+    if (scan_svc_->busy())
+      return ProgressStatus(*scan_svc_);
+    if (state_mgr_->scanning())
+      return {TaskStatus::Kind::Busy, "scanning"};
+    switch (state_mgr_->get_state().check.status) {
     case DatabaseStatus::Unchecked:
       return {}; // 未扫描时任务行已有 not scanned, 子行不重复
     case DatabaseStatus::Pass:
@@ -366,11 +281,9 @@ private:
   // Table / Browser 子行标签: 纯浏览页, 状态跟随前置计算.
   // 前置 (基本面同步 / L2 扫描) 在跑 → 显示进行中; 解锁后 → done; 锁定且无在跑 → none
   TaskStatus BrowseStatus(const SharedData &data, bool can_access) const {
-    if (data.taskstate.database.json_update_inflight ||
-        (fundamental_svc_ && fundamental_svc_->is_busy()))
+    if (data.taskstate.database.json_update_inflight)
       return {TaskStatus::Kind::Busy, "syncing"};
-    if (data.taskstate.database.l2_scan_inflight ||
-        (scan_svc_ && scan_svc_->is_scanning()))
+    if (data.taskstate.database.l2_scan_inflight)
       return {TaskStatus::Kind::Busy, "scanning"};
     if (can_access)
       return {TaskStatus::Kind::Ready, "done"};
@@ -386,35 +299,17 @@ private:
     // 状态已在 Update (帧首) 刷新, 这里只读
     const auto &state = state_mgr_->get_state();
 
-    // Get database check result from scan service
-    auto check_result = scan_svc_->get_last_check_result();
+    const DatabaseCheckResult &check_result = state.check;
 
     // Status indicator at top (流水线顺序: 基本面 → L2)
-    const auto &fstate = fundamental_svc_->get_state();
+    const TaskStatus fstatus = FundamentalStatus();
     ImGui::Text("Fundamental: ");
     ImGui::SameLine();
-    switch (fstate.status) {
-    case FundamentalStatus::Ready:
-      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "[Ready]");
-      break;
-    case FundamentalStatus::Updating:
-    case FundamentalStatus::Building:
-      ImGui::TextColored(ImVec4(1.0f, 0.95f, 0.3f, 1.0f), "[%s]",
-                         GetFundamentalStatusName(fstate.status));
-      break;
-    case FundamentalStatus::Confirm:
-      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "[Confirm]");
+    ImGui::TextColored(StatusColor(fstatus.kind), "[%s]", fstatus.text.c_str());
+    if (fstatus.kind == TaskStatus::Kind::Warn || fstatus.kind == TaskStatus::Kind::Error) {
+      std::lock_guard lk(fundamental_svc_->mutex);
       ImGui::SameLine();
-      ImGui::TextDisabled("%s", fstate.message.c_str());
-      break;
-    case FundamentalStatus::Error:
-      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.0f, 1.0f), "[Error]");
-      ImGui::SameLine();
-      ImGui::TextDisabled("%s", fstate.message.c_str());
-      break;
-    case FundamentalStatus::Idle:
-      ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[Idle]");
-      break;
+      ImGui::TextDisabled("%s", fundamental_svc_->state.message.c_str());
     }
 
     ImGui::SameLine();
@@ -511,52 +406,48 @@ private:
     std::string audit_table;
     std::string repair_table;
 
-    auto &ts = data_->taskstate.database;
-    bool busy = ts.json_update_inflight || ts.l2_scan_inflight ||
-                fundamental_svc_->is_busy() || scan_svc_->is_scanning();
+    // 编码读着 assetinfo / items: 编码在飞时基本面件不收, Update 也不给点
+    const bool busy = state_mgr_->syncing() || state_mgr_->scanning() || state_mgr_->encoding();
     // 同步改写的正是被核对 / 修复的分片: 三者互斥
-    const bool auditing = audit_svc_->is_running() || audit_svc_->is_repairing();
-    const bool disable_audit = busy || audit_svc_->is_busy() || !data_->config.network_sync;
+    const bool auditing = state_mgr_->auditing();
+    const bool disable_audit = busy || auditing || !data_->config.network_sync;
+    const TaskStatus fstatus = FundamentalStatus();
 
-    RenderTabOverview(
-        fundamental_svc_->get_state(),
-        &update_clicked,
-        &update_cancel_clicked,
-        busy || auditing,
-        audit_svc_->get_state(),
-        &audit_clicked,
-        &audit_incr_clicked,
-        &audit_cancel_clicked,
-        disable_audit,
-        &audit_table,
-        &repair_table);
-
-    // Handle button events
-    if (update_clicked && !busy && !auditing) {
-      TriggerRefreshFlow();
+    {
+      // 展示字段持锁读 (worker 只短锁写)
+      std::scoped_lock lk(fundamental_svc_->mutex, audit_svc_->mutex);
+      RenderTabOverview(
+          fundamental_svc_->state,
+          *fundamental_svc_,
+          fstatus,
+          &update_clicked,
+          &update_cancel_clicked,
+          busy || auditing,
+          audit_svc_->state,
+          *audit_svc_,
+          &audit_clicked,
+          &audit_incr_clicked,
+          &audit_cancel_clicked,
+          disable_audit,
+          &audit_table,
+          &repair_table);
     }
+
+    // Handle button events (一帧至多一个请求)
+    if (update_clicked && !busy && !auditing)
+      state_mgr_->refresh();
     if (update_cancel_clicked)
-      fundamental_svc_->cancel();
-    if ((audit_clicked || audit_incr_clicked) && !disable_audit) {
-      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run({}, audit_incr_clicked),
-                            boost::asio::detached);
-    }
-    if (!audit_table.empty() && !disable_audit) {
-      boost::asio::co_spawn(coro_mgr_->GetIoContext(), audit_svc_->run(audit_table, false),
-                            boost::asio::detached);
-    }
+      fundamental_svc_->RequestCancel();
     if (audit_cancel_clicked)
-      audit_svc_->cancel();
-    // 修复改了分片: 跑完走一遍 Update (重建 AssetInfo → 补扫 L2)
-    if (!repair_table.empty() && !disable_audit) {
-      boost::asio::co_spawn(
-          coro_mgr_->GetIoContext(),
-          [this, repair_table]() -> boost::asio::awaitable<void> {
-            co_await audit_svc_->repair(repair_table);
-            TriggerRefreshFlow();
-          },
-          boost::asio::detached);
-    }
+      audit_svc_->RequestCancel();
+    if (disable_audit)
+      return;
+    if (audit_clicked || audit_incr_clicked)
+      state_mgr_->audit(AuditOp::Audit, {}, audit_incr_clicked);
+    else if (!audit_table.empty())
+      state_mgr_->audit(AuditOp::Audit, audit_table, false);
+    else if (!repair_table.empty()) // 修复改了分片: 收尾交接后 StateManager 走一遍 refresh (重建 AssetInfo → 补扫 L2)
+      state_mgr_->audit(AuditOp::Repair, repair_table, false);
   }
 
   void DrawTabTable() {
@@ -567,7 +458,7 @@ private:
   }
 
   void DrawTabBrowser() {
-    // date_stats 由扫描的 Phase 5 统一产出 (ScanService::coro_scan), 这里不再
+    // date_stats 由扫描的 Phase 5 统一产出 (ScanService::run → Asset::adopt), 这里不再
     // 惰性补算: 渲染帧里现算是双重遍历, 而且会跟扫描抢着写同一份统计.
     // 扫描没跑完时 date_stats 是空的, 表格照常渲染, 数字等扫描落地.
     RenderTabBrowser(
@@ -581,11 +472,7 @@ private:
   }
 
   void DrawTabEncode() {
-    if (!encoding_svc_ || !scan_svc_ || !data_) {
-      ImGui::TextDisabled("Services not initialized...");
-      return;
-    }
-    RenderTabEncode(encoding_svc_.get(), scan_svc_.get(), encode_state_, data_->asset);
+    RenderTabEncode(*state_mgr_, *encoding_svc_, *filecheck_svc_, *scan_svc_, encode_state_, data_->asset);
   }
 };
 
