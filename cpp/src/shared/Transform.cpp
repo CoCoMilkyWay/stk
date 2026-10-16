@@ -168,7 +168,7 @@ void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool 
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
 
-  begin_build();
+  publish();
 }
 
 // ============================================================================
@@ -225,7 +225,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   size_t pub_begin = 0;               // completion 私有推进 (每批恰好执行一次, 串行)
   Runtime::Shard &acc = rt.shards[0]; // 归约终点 = 全程累加器
 
-  auto publish = [&]() noexcept {
+  auto publish_batch = [&]() noexcept {
     TraceN("Publish");
     next_day.store(0, std::memory_order_relaxed);
     next_block.store(0, std::memory_order_relaxed);
@@ -266,7 +266,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       pacf_mean = pacf_snap;
       global = global_snap;
     }
-    publish_progress(bd);
+    publish(bd);
     pub_begin += kDaysPerBatch;
   };
 
@@ -275,7 +275,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   std::barrier cs_done(static_cast<ptrdiff_t>(n_threads), [&]() noexcept { next_block.store(0, std::memory_order_relaxed); });
   std::barrier stats_done(static_cast<ptrdiff_t>(n_threads));
   std::barrier reduce_step(static_cast<ptrdiff_t>(n_threads));
-  std::barrier reduce_done(static_cast<ptrdiff_t>(n_threads), publish);
+  std::barrier reduce_done(static_cast<ptrdiff_t>(n_threads), publish_batch);
 
   const bool do_cs = rt.cs_fn != nullptr;
   const bool neutral = p.cs_neutral();
@@ -549,5 +549,5 @@ void Transform::clear() {
   columns_.clear();
   months_.clear();
   global_ids_ = std::vector<uint32_t>{};
-  reset_idle();
+  idle();
 }

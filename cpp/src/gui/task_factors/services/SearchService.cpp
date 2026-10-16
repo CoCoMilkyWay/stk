@@ -175,67 +175,28 @@ bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, S
   return true;
 }
 
-void SearchService::Request(const SearchRequest &req) {
+SearchService::SearchService() { Start(); }
+SearchService::~SearchService() { Stop(); }
+
+bool SearchService::run(SearchRequest &req) {
+  pass_.store(0, std::memory_order_relaxed);
+  chunk_.store(0, std::memory_order_relaxed);
+  chunks_.store(0, std::memory_order_relaxed);
+  stage_.store(SearchStage::Scale, std::memory_order_relaxed);
   {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_ = req;
-    cancel_.store(true, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex);
+    result = SearchResult{};
+    result.file = req.file;
+    result.tmpl = req.tmpl;
+    result.backend = req.gpu ? "gpu" : "cpu";
   }
-  req_cv_.notify_all();
-  if (!thread_.joinable()) {
-    stop_.store(false, std::memory_order_relaxed);
-    thread_ = std::thread(&SearchService::worker_loop, this);
-  }
+  publish();
+  if (!flow_)
+    flow_ = std::make_unique<Flow>();
+  return evaluate(req, *flow_);
 }
 
-void SearchService::Stop() {
-  if (!thread_.joinable())
-    return;
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    stop_.store(true, std::memory_order_relaxed);
-    cancel_.store(true, std::memory_order_relaxed);
-  }
-  req_cv_.notify_all();
-  thread_.join();
-}
-
-void SearchService::worker_loop() {
-  TraceThread("SearchWorker");
-  Flow F;
-  while (true) {
-    SearchRequest req;
-    {
-      std::unique_lock<std::mutex> lock(req_mutex_);
-      req_cv_.wait(lock, [&] { return stop_.load() || pending_.has_value(); });
-      if (stop_.load())
-        return;
-      req = *pending_;
-      pending_.reset();
-      cancel_.store(false, std::memory_order_relaxed);
-    }
-    pass_.store(0, std::memory_order_relaxed);
-    done_.store(0, std::memory_order_relaxed);
-    total_.store(0, std::memory_order_relaxed);
-    chunk_.store(0, std::memory_order_relaxed);
-    chunks_.store(0, std::memory_order_relaxed);
-    stage_.store(SearchStage::Scale, std::memory_order_relaxed);
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      result = SearchResult{};
-      result.file = req.file;
-      result.tmpl = req.tmpl;
-      result.backend = req.gpu ? "gpu" : "cpu";
-    }
-    status_.store(SearchStatus::Loading, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
-    const bool ok = run(req, F);
-    status_.store(ok ? SearchStatus::Done : SearchStatus::Cancelled, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
-  }
-}
-
-bool SearchService::run(const SearchRequest &req, Flow &F) {
+bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
@@ -332,7 +293,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     ents.push_back(std::move(en));
     return id;
   };
-  const auto publish = [&] {
+  const auto publish_result = [&] {
     res.seconds = std::chrono::duration<double>(Clock::now() - t_start).count();
     for (int hi = 0; hi < H; ++hi) {
       std::vector<SearchCand> &cands = res.holds[static_cast<size_t>(hi)].cands;
@@ -354,8 +315,11 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       }
       std::stable_sort(cands.begin(), cands.end(), [](const SearchCand &a, const SearchCand &b) { return a.score > b.score; });
     }
-    std::lock_guard<std::mutex> lock(mutex);
-    result = res;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      result = res;
+    }
+    publish();
   };
   // ---- 作用域 / 日期 ----
   FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
@@ -405,7 +369,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     res.chunk_plan.push_back(SearchChunk{day1 - load0, (day1 - load0) * per_day * (L0 + (req.gpu ? 0.0 : 2.0 * H)) / (1024.0 * 1024.0)});
   }
   chunks_.store(n_chunks, std::memory_order_relaxed);
-  publish(); // 装载前先发布分块计划
+  publish_result(); // 装载前先发布分块计划
   constexpr double kMiB = 1024.0 * 1024.0;
   lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, nf, H, s0, L0, req.gpu ? 0.0 : Wc);
   lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", host_budget / kMiB,
@@ -430,14 +394,12 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     init_loaded(feats_, day1 - load0, A, cd.L);
     select_holds(feats_, holds, cd.L);
     cd.L.feat_codes = d0.feats;
-    status_.store(SearchStatus::Loading, std::memory_order_release);
-    total_.store(day1 - load0, std::memory_order_relaxed);
-    done_.store(0, std::memory_order_relaxed);
-    if (!load_planes(feats_, reader, cdates, cd.L, F.ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/false, /*with_index=*/false)) {
+    begin(Phase::Loading, static_cast<size_t>(day1 - load0));
+    if (!load_planes(feats_, reader, cdates, cd.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/false, /*with_index=*/false)) {
       if (reader.stale()) {
         res.message = "特征库判废 (子轴/字段表与当前不符), 需重算特征";
         lg("中止: %s", res.message.c_str());
-        publish();
+        publish_result();
         return Rc::Abort;
       }
       return Rc::Cancel;
@@ -454,7 +416,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         if (!err.empty()) {
           res.message = err;
           lg("中止: %s", err.c_str());
-          publish();
+          publish_result();
           return Rc::Abort;
         }
       }
@@ -560,7 +522,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
           factor::cpu::search::run(F.ex, B, L.cs.m.data(), req.frame, cd.span(), cd.lab.L, F.rx.data(), F.w, &out);
           ents[static_cast<size_t>(ids[k])].r.merge(out, H);
           sink_rows_cpu(ids[k], F.rx.data());
-          done_.fetch_add(1, std::memory_order_relaxed);
+          publish(1);
         }
       }
     }
@@ -642,7 +604,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
         if (sink && sink->n_rows > 0)
           factor::gpu::search_ranks(ss, k, sink->t_first, stride, sink->n_rows, sink->rows[static_cast<size_t>(sink->pos(id))].data());
       }
-      done_.fetch_add(C, std::memory_order_relaxed);
+      publish(static_cast<size_t>(C));
       b0 += static_cast<size_t>(C);
     }
     pool.release();
@@ -670,9 +632,8 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
           return rc;
         load_s += std::chrono::duration<double>(Clock::now() - t_load).count();
       }
-      status_.store(SearchStatus::Running, std::memory_order_release);
-      total_.store(static_cast<int>(ids.size()) * n_chunks, std::memory_order_relaxed);
-      done_.store(static_cast<int>(ids.size()) * ci, std::memory_order_relaxed);
+      begin(Phase::Running, ids.size() * static_cast<size_t>(n_chunks));
+      publish(ids.size() * static_cast<size_t>(ci)); // 前面的块已评完
       sink_begin(cd);
       if (!(req.gpu ? gpu_chunk(cd, ids) : cpu_chunk(cd, ids)))
         return Rc::Cancel;
@@ -701,8 +662,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
     lg("第 %d 趟完成: %d 候选 × %d 块, %.1fs (装载 %.1fs, 评估 %.1fs, %.1f ms/候选·块) | %s", pass, static_cast<int>(ids.size()), n_chunks, pass_s, load_s,
        pass_s - load_s, 1e3 * (pass_s - load_s) / (static_cast<double>(ids.size()) * n_chunks), per.c_str());
     res.n_pass = pass + 1;
-    publish();
-    epoch_.fetch_add(1, std::memory_order_relaxed);
+    publish_result();
     return Rc::Ok;
   };
   const auto handle = [&](Rc rc, bool &ret) {
@@ -847,7 +807,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       lg("  #%d %.4g @ %s", static_cast<int>(bi), bs[bi].best, at(bs[bi].best_id, hi).c_str());
   }
   if (n_branch == 0) {
-    publish();
+    publish_result();
     return abort_with("粗网格在任一持有期都无可用候选 (LS 与 IC 异号), 文件不动");
   }
 
@@ -1060,7 +1020,7 @@ bool SearchService::run(const SearchRequest &req, Flow &F) {
       n_eval += en.pass >= 0;
     lg("完成: 写入 %d 个权重, 共评 %d 候选, %d 趟", static_cast<int>(ws.size()), n_eval, res.n_pass);
   }
-  publish();
+  publish_result();
   return true;
 }
 

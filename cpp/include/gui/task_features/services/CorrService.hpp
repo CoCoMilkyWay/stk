@@ -32,7 +32,7 @@ public:
   // GUI 线程: 参数快照 + 取消在跑. rows = 特征表当前过滤后的 metadata 下标 (任意序)
   void RequestCompute(SharedData &data, const std::vector<int> &rows);
 
-  static constexpr const char *kWorkerName = "CorrWorker";
+  static constexpr const char *kName = "CorrWorker";
   static Correlation &target(SharedData &data);
   void reset(Correlation &corr, CorrRequest &req);
 };
@@ -42,7 +42,7 @@ class CorrLagService : public StreamService<CorrLagService, CorrRequest> {
 public:
   void RequestCompute(SharedData &data, const std::vector<int> &rows);
 
-  static constexpr const char *kWorkerName = "CorrLagWorker";
+  static constexpr const char *kName = "CorrLagWorker";
   static CorrLag &target(SharedData &data);
   void reset(CorrLag &lag, CorrRequest &req);
 };
@@ -60,7 +60,7 @@ public:
   // GUI 线程: 点热图格子触发 (col_a / col_b = metadata 下标, 必须不同)
   void RequestCompute(SharedData &data, uint32_t col_a, uint32_t col_b);
 
-  static constexpr const char *kWorkerName = "CorrPairWorker";
+  static constexpr const char *kName = "CorrPairWorker";
   static CorrPair &target(SharedData &data);
   void reset(CorrPair &pair, CorrPairRequest &req);
 };

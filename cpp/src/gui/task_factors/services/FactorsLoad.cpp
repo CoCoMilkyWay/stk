@@ -60,7 +60,7 @@ void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded 
 }
 
 bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, factor::exec::ForkJoin &ex,
-                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels, bool with_costs, bool with_index) {
+                 std::atomic<bool> &cancel, Progress &prog, bool with_labels, bool with_costs, bool with_index) {
   TraceN("FactorsLoad");
   assert(static_cast<int>(dates.size()) == L.days);
   assert(!with_costs || with_labels);
@@ -230,7 +230,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         }
       }
     }
-    done.fetch_add(1, std::memory_order_relaxed);
+    prog.publish(1);
   });
   if (cancel.load(std::memory_order_relaxed) || reader.stale())
     return false;

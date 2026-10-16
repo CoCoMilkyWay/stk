@@ -36,7 +36,7 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
   }
   // 焦点按新子轴 clamp: UI 槽位可能来自上一个 universe (切 universe 后子轴大小已变)
   req.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.uni.size()) - 1));
-  submit(std::move(req));
+  Request(std::move(req));
 }
 
 void TransformService::reset(Transform &tf, TransformRequest &req) {

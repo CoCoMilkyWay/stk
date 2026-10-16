@@ -20,7 +20,7 @@ public:
   // GUI 线程: 参数快照 + 取消在跑
   void RequestCompute(SharedData &data);
 
-  static constexpr const char *kWorkerName = "DistWorker";
+  static constexpr const char *kName = "DistWorker";
   static Dist &target(SharedData &data);
   void reset(Dist &dist, DistRequest &req);
 };

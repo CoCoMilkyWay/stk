@@ -642,7 +642,7 @@ static ImU32 psd_share_color(float v) {
 }
 
 // PSD 迷你图逐行缓存: 派生量 (谱重心 + 逐 bin 染色) 只在 preview 发布代
-// 变化时重算 (epoch 跨构建单调不归零, 见 StreamState), 帧间零计算直接画.
+// 变化时重算 (epoch 跨构建单调不归零, 见 shared/Progress.hpp), 帧间零计算直接画.
 struct PsdSparkCache {
   uint64_t epoch = UINT64_MAX;       // 计算时的 preview 发布代 (UINT64_MAX = 未算)
   float xm = 0.0f;                   // 谱重心 log10 周期 (log 轴下曲线面积中位, 见 rebuild_psd_spark)
@@ -974,8 +974,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
   // Preview 轮训进度 (Dist/PSD 两列逐轮收敛; 免锁读原子)
   {
-    const auto pv_status = data.preview.status.load(std::memory_order_relaxed);
-    if (pv_status == analysis::Status::Building) {
+    if (data.preview.busy()) {
       const int done = (int)data.preview.done.load(std::memory_order_relaxed);
       const int total = (int)data.preview.total.load(std::memory_order_relaxed);
       ImGui::SameLine();

@@ -334,7 +334,7 @@ void Correlation::reset_for_build(size_t lvl, std::vector<uint32_t> col_list,
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
 
-  begin_build();
+  publish();
 }
 
 // ============================================================================
@@ -453,7 +453,7 @@ bool Correlation::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         rho.swap(rt.pub_rho); // 尺寸恒相等 (reset 时对齐), swap 回来的就是上一份成品, 整体覆写
         pair_n.swap(rt.pub_n);
       }
-      publish_progress(1);
+      publish(1);
     }
     pl.flip(); // 预读好的那份成为下一天的计算缓冲
   }
@@ -476,7 +476,7 @@ void Correlation::clear() {
   months_.clear();
   A_ = 0;
   level = 0;
-  reset_idle();
+  idle();
 }
 
 // ============================================================================
@@ -545,7 +545,7 @@ void CorrPair::reset_for_build(size_t lvl, uint32_t a, uint32_t b, L2::ValidType
   pair_n.fill(0);
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
-  begin_build();
+  publish();
 }
 
 bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
@@ -627,7 +627,7 @@ bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         b.np[k] += an;
       }
     }
-    publish_progress(1); // 只推进度; 曲线末尾一次成型 (UI 也只在 Done 时画)
+    publish(1); // 只推进度; 曲线末尾一次成型 (UI 也只在 Done 时画)
   });
 
   if (cancel.load(std::memory_order_relaxed))
@@ -664,7 +664,7 @@ void CorrPair::clear() {
   months_.clear();
   A_ = 0;
   level = 0;
-  reset_idle();
+  idle();
 }
 
 // ============================================================================
@@ -720,7 +720,7 @@ void CorrLag::reset_for_build(size_t lvl, std::vector<uint32_t> col_list,
   rho_best.assign(F * F, kNaN);
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
-  begin_build();
+  publish();
 }
 
 bool CorrLag::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
@@ -848,7 +848,7 @@ bool CorrLag::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         lag_best.swap(rt.pub_lag);
         rho_best.swap(rt.pub_rho);
       }
-      publish_progress(1);
+      publish(1);
     }
     pl.flip();
   }
@@ -866,5 +866,5 @@ void CorrLag::clear() {
   months_.clear();
   A_ = 0;
   level = 0;
-  reset_idle();
+  idle();
 }

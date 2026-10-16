@@ -39,38 +39,18 @@ struct TaskFactorsState {
   Factors::OperatorsUIState operators_ui;
   bool operators_started = false; // 首次 Draw 载入本地 json, 没有才 Request 一次
   // 一轮结束检测 (Running → Done / Cancelled 那一帧把算子表落地 operators.json)
-  Factors::OperatorsStatus prev_operators_status = Factors::OperatorsStatus::Idle;
+  Phase prev_operators_phase = Phase::Idle;
 
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                        // 上次扫描的目录 (universe 切换 → 自动重扫)
   std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Optimize (与 factors_service 同建); 写了 weights 的那一轮结束 → 自动 Run
-  Factors::SearchStatus prev_search_status = Factors::SearchStatus::Idle;
+  Phase prev_search_phase = Phase::Idle;
 
-  std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (worker 懒起); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
+  std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (构造即起 worker); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
   std::unique_ptr<Factors::KlineService> kline_service;     // Inspect 右下选中标的的分钟 K 线流 (与 inspect_service 同生灭)
   Factors::InspectUIState inspect_ui;
 };
-
-static TaskStatus inspect_status(const Factors::InspectService &svc) {
-  switch (svc.status()) {
-  case Factors::InspectStatus::Loading: {
-    const int total = svc.total();
-    return {TaskStatus::Kind::Busy, "loading " + std::to_string(total > 0 ? 100 * svc.done() / total : 0) + "%"};
-  }
-  case Factors::InspectStatus::Running: {
-    const int total = svc.total();
-    return {TaskStatus::Kind::Busy, "running " + std::to_string(total > 0 ? 100 * svc.done() / total : 0) + "%"};
-  }
-  case Factors::InspectStatus::Done:
-    return {TaskStatus::Kind::Ready, "ok"};
-  case Factors::InspectStatus::Cancelled:
-    return {TaskStatus::Kind::Warn, "cancelled"};
-  case Factors::InspectStatus::Idle:
-    break;
-  }
-  return {};
-}
 
 // Factors 子页的作用域 (每帧从 config 取)
 static Factors::FactorsUIContext factors_context(const SharedData &data) {
@@ -83,30 +63,6 @@ static Factors::FactorsUIContext factors_context(const SharedData &data) {
   c.axis_ready = !data.asset.items.empty();
   c.assets = &data.asset.items;
   return c;
-}
-
-static TaskStatus factors_status(const Factors::FactorsService &svc) {
-  switch (svc.status()) {
-  case Factors::FactorsStatus::Scanning:
-    return {TaskStatus::Kind::Busy, "scanning"};
-  case Factors::FactorsStatus::Loading: {
-    const int total = svc.total();
-    return {TaskStatus::Kind::Busy, "loading " + std::to_string(total > 0 ? 100 * svc.done() / total : 0) + "%"};
-  }
-  case Factors::FactorsStatus::Running: {
-    const int total = svc.total();
-    return {TaskStatus::Kind::Busy, "running " + std::to_string(total > 0 ? 100 * svc.done() / total : 0) + "%"};
-  }
-  case Factors::FactorsStatus::Done:
-    if (svc.broken() > 0)
-      return {TaskStatus::Kind::Warn, std::to_string(svc.broken()) + " BROKEN"};
-    return {TaskStatus::Kind::Ready, "ok"};
-  case Factors::FactorsStatus::Cancelled:
-    return {TaskStatus::Kind::Warn, "cancelled"};
-  case Factors::FactorsStatus::Idle:
-    break;
-  }
-  return {};
 }
 
 TaskHandle CreateFactorsTask() {
@@ -124,8 +80,8 @@ TaskHandle CreateFactorsTask() {
   handle.Update = [state](SharedData &data) {
     // Optimize 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
     if (state->search_service && state->factors_service) {
-      const auto sst = state->search_service->status();
-      if (sst == Factors::SearchStatus::Done && state->prev_search_status == Factors::SearchStatus::Running) {
+      const Phase sst = state->search_service->phase.load(std::memory_order_acquire);
+      if (sst == Phase::Done && state->prev_search_phase == Phase::Running) {
         bool wrote = false;
         std::string file;
         {
@@ -141,53 +97,42 @@ TaskHandle CreateFactorsTask() {
           }
         }
       }
-      state->prev_search_status = sst;
+      state->prev_search_phase = sst;
     }
     if (!state->operators_service)
       return;
     auto &svc = *state->operators_service;
-    const auto st = svc.status();
-    const bool finished = st == Factors::OperatorsStatus::Done || st == Factors::OperatorsStatus::Cancelled;
-    if (finished && state->prev_operators_status == Factors::OperatorsStatus::Running)
+    const Phase st = svc.phase.load(std::memory_order_acquire);
+    const bool finished = st == Phase::Done || st == Phase::Cancelled;
+    if (finished && state->prev_operators_phase == Phase::Running)
       Factors::SaveOperatorTableJson(data.config.factor_dir, svc);
-    state->prev_operators_status = st;
+    state->prev_operators_phase = st;
   };
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx == -1 || idx < TAB_COUNT);
     if (idx == TAB_FACTORS) {
-      if (state->search_service) { // Optimize 在跑时 Factors 行显示它的进度 (Run 此时被禁)
+      if (state->search_service && state->search_service->busy()) { // Optimize 在跑时 Factors 行显示它的进度 (Run 此时被禁)
         const auto &ss = *state->search_service;
-        const auto sst = ss.status();
-        if (sst == Factors::SearchStatus::Loading || sst == Factors::SearchStatus::Running) {
-          const int total = ss.total();
-          return {TaskStatus::Kind::Busy, "optimizing " + std::to_string(total > 0 ? 100 * ss.done() / total : 0) + "%"};
-        }
+        const size_t total = ss.total.load(std::memory_order_relaxed);
+        return {TaskStatus::Kind::Busy, "optimizing " + std::to_string(total > 0 ? 100 * ss.done.load(std::memory_order_relaxed) / total : 0) + "%"};
       }
-      return state->factors_service ? factors_status(*state->factors_service) : TaskStatus{};
+      if (!state->factors_service)
+        return {};
+      const auto &fs = *state->factors_service;
+      if (fs.phase.load(std::memory_order_acquire) == Phase::Done && fs.broken() > 0)
+        return {TaskStatus::Kind::Warn, std::to_string(fs.broken()) + " BROKEN"};
+      return ProgressStatus(fs);
     }
     if (idx == TAB_INSPECT)
-      return state->inspect_service ? inspect_status(*state->inspect_service) : TaskStatus{};
+      return state->inspect_service ? ProgressStatus(*state->inspect_service) : TaskStatus{};
     // 任务行与 Operators 行同一状态
     if (!state->operators_service)
       return {};
     const auto &svc = *state->operators_service;
-    switch (svc.status()) {
-    case Factors::OperatorsStatus::Running: {
-      const int total = svc.total();
-      const int pct = total > 0 ? 100 * svc.done() / total : 0;
-      return {TaskStatus::Kind::Busy, "running " + std::to_string(pct) + "%"};
-    }
-    case Factors::OperatorsStatus::Done:
-      if (svc.failed() > 0)
-        return {TaskStatus::Kind::Error, std::to_string(svc.failed()) + " FAIL"};
-      return {TaskStatus::Kind::Ready, "all ok"};
-    case Factors::OperatorsStatus::Cancelled:
-      return {TaskStatus::Kind::Warn, "cancelled"};
-    case Factors::OperatorsStatus::Idle:
-      break;
-    }
-    return {};
+    if (svc.phase.load(std::memory_order_acquire) == Phase::Done && svc.failed() > 0)
+      return {TaskStatus::Kind::Error, std::to_string(svc.failed()) + " FAIL"};
+    return ProgressStatus(svc);
   };
 
   handle.Draw = [state](SharedData &data, int idx) {
@@ -280,7 +225,7 @@ TaskHandle CreateFactorsTask() {
     state->operators_service.reset(); // 析构 Stop() join worker
     state->operators_started = false;
     state->search_service.reset(); // 析构 Stop() join worker
-    state->prev_search_status = Factors::SearchStatus::Idle;
+    state->prev_search_phase = Phase::Idle;
     state->factors_service.reset();
     state->factors_scanned_dir.clear();
     state->kline_service.reset();   // 析构 Stop() join worker

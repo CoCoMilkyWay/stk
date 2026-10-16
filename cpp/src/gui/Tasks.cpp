@@ -9,6 +9,9 @@
 #include "imgui.h"
 #include "shared/SharedData.hpp"
 
+#include <cassert>
+#include <string>
+
 namespace GUI {
 
 // 全局唯一色表: 颜色只由 Kind 决定, 任务只产出 (Kind, text)
@@ -29,6 +32,36 @@ ImVec4 StatusColor(TaskStatus::Kind kind) {
   }
   return ImVec4(0.0f, 1.0f, 1.0f, 1.0f); // Cyan (不应到达)
 }
+
+TaskStatus::Kind PhaseKind(Phase p) {
+  switch (p) {
+  case Phase::Idle:
+    return TaskStatus::Kind::Muted;
+  case Phase::Scanning:
+  case Phase::Loading:
+  case Phase::Running:
+    return TaskStatus::Kind::Busy;
+  case Phase::Done:
+    return TaskStatus::Kind::Ready;
+  case Phase::Cancelled:
+    return TaskStatus::Kind::Warn;
+  }
+  assert(false && "unknown Phase");
+  return TaskStatus::Kind::None;
+}
+
+TaskStatus ProgressStatus(const Progress &p) {
+  const Phase ph = p.phase.load(std::memory_order_acquire);
+  if (ph == Phase::Idle)
+    return {};
+  std::string text = PhaseName(ph);
+  const size_t total = p.total.load(std::memory_order_relaxed);
+  if (p.busy() && total > 0)
+    text += " " + std::to_string(100 * p.done.load(std::memory_order_relaxed) / total) + "%";
+  return {PhaseKind(ph), std::move(text)};
+}
+
+void TextPhase(Phase p) { ImGui::TextColored(StatusColor(PhaseKind(p)), "%s", PhaseName(p)); }
 
 // 切换选中叶子: 跨任务时触发 OnCollapse/OnExpand, 同任务内切 tab 不触发
 void TaskTree::Select(int task_idx, int tab_idx) {

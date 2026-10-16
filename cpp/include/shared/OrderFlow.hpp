@@ -9,7 +9,7 @@
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
 // 发布协议 (无锁 SPSC):
-//   Kline: 每日尾 feat_n[i] / y range (release) → pub word [gen|days|points] (release);
+//   Kline: 每日尾 feat_n[i] / y range (release) → pub word [gen|days|points] (release, shared/Progress.hpp PrefixPub);
 //          GUI acquire 读 pub, 只画已发布前缀; gen != 请求代 = 正在重建, 不画.
 //          数组 reserve 满容量后只 push_back → data() 恒稳定, 前缀读安全.
 //   Depth: worker 写背槽 → depth_pending = true; GUI 帧首 ack (pending=false, front^=1);
@@ -19,6 +19,7 @@
 #include "codec/L2_DataType.hpp"  // L2::LOB_DEPTH
 #include "features/TimeIndex.hpp" // L0_ROWS / L1_ROWS (稳定形状常量, 不依赖字段表)
 #include "misc/date.hpp"
+#include "shared/Progress.hpp" // PrefixPub
 
 #include <array>
 #include <atomic>
@@ -96,19 +97,7 @@ struct OrderFlow {
   // ==========================================================================
   // Kline (图2) — 单资产全回测: K线 + 多特征, 逐日流式, 单调前缀发布
   // ==========================================================================
-  struct Kline {
-    // pub word: [gen:16][days:16][points:32]; gen 换代时 days/points 归零
-    static constexpr uint64_t pack(uint32_t gen, size_t days, size_t points) {
-      return (static_cast<uint64_t>(gen & 0xFFFF) << 48) |
-             (static_cast<uint64_t>(days & 0xFFFF) << 32) |
-             static_cast<uint64_t>(points & 0xFFFFFFFF);
-    }
-    static constexpr void unpack(uint64_t w, uint32_t &gen, size_t &days, size_t &points) {
-      gen = static_cast<uint32_t>(w >> 48);
-      days = static_cast<size_t>((w >> 32) & 0xFFFF);
-      points = static_cast<size_t>(w & 0xFFFFFFFF);
-    }
-
+  struct Kline : PrefixPub {
     // ---- worker 写 / GUI 前缀读 ----
     std::vector<misc::Ymd> dates; // 回测区间全部特征日 (换代时随 rescan 重扫; gen 匹配期间稳定)
     size_t asset_idx = SIZE_MAX;
@@ -118,8 +107,7 @@ struct OrderFlow {
     std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat; // 与 K线同 X 网格, 每特征独立点集 (跳过 NaN)
     size_t n_feat = 0;
 
-    // 发布面 (worker release / GUI acquire)
-    std::atomic<uint64_t> pub{0};
+    // 发布面 (worker release / GUI acquire; pub word 在 PrefixPub)
     std::array<std::atomic<size_t>, OrderFlowConst::MAX_FEATURES> feat_n{}; // 每特征已发布点数
     std::array<std::atomic<float>, OrderFlowConst::MAX_FEATURES> feat_y_min{}, feat_y_max{};
     std::atomic<double> y_min{0.0}, y_max{0.0}; // OHLC 已发布范围

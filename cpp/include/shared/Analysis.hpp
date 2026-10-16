@@ -8,12 +8,10 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -25,7 +23,8 @@ struct Config;
 // ============================================================================
 // 三者同一套契约:
 //   - 只在 L1 跑; A 轴 = universe 子轴 (槽位 = 子轴下标, 查 items 经 global_ids)
-//   - 状态面 StreamState: 进度原子 (UI 免锁读) + 发布快照锁 (worker 短锁写, UI 渲染帧内持锁读)
+//   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁 (worker 短锁写, UI 渲染帧内持锁读);
+//     reset_for_build 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
 //   - 发布成品: PdfSnap (KLL 导出好的 PDF 折线 + 矩), UI 零计算只画
 //   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排,
 //     Request 都以 ReadScope (月份表 + 子轴 + 库目录) 开头, GUI 线程解析, worker 不碰 config
@@ -44,40 +43,6 @@ inline constexpr size_t kAssetKllResolution = 128;   // 资产 PDF 网格 (细�
 inline constexpr size_t kAggKllCapacity = 512;       // 聚合槽 / 全局 sketch
 inline constexpr size_t kAggKllResolution = 256;     // 小面板 ~400px, 255 点 PDF 足够
 using DayPSD = math::spectral::DayPSD<kVR>;
-
-// ---- 状态面 ----
-enum class Status : uint8_t { Idle,
-                              Building,
-                              Done,
-                              Cancelled };
-
-struct StreamState {
-  std::atomic<Status> status{Status::Idle};
-  std::atomic<size_t> done{0}, total{0}; // 流式单位进度 (Dist/Transform = 天, Preview = 轮)
-  std::atomic<uint64_t> epoch{0};        // 数据每变一次 +1 (reset/clear/每次发布), 跨构建单调不归零 (UI 以此 autofit)
-  mutable std::mutex mutex;              // 发布快照锁
-
-  // worker: reset 末尾 / build 结束 / clear 末尾 各调一次
-  void begin_build() {
-    done.store(0, std::memory_order_relaxed);
-    total.store(0, std::memory_order_relaxed);
-    epoch.fetch_add(1, std::memory_order_release);
-    status.store(Status::Building, std::memory_order_release);
-  }
-  void end_build(bool completed) {
-    status.store(completed ? Status::Done : Status::Cancelled, std::memory_order_release);
-  }
-  void publish_progress(size_t n_done) {
-    done.fetch_add(n_done, std::memory_order_release);
-    epoch.fetch_add(1, std::memory_order_release);
-  }
-  void reset_idle() {
-    done.store(0, std::memory_order_relaxed);
-    total.store(0, std::memory_order_relaxed);
-    epoch.fetch_add(1, std::memory_order_release);
-    status.store(Status::Idle, std::memory_order_release);
-  }
-};
 
 // ---- 值账目 (Dist 完整性条 / Feature 表账目列 共用) ----
 struct Integrity {

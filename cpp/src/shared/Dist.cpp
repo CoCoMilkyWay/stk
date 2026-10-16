@@ -180,7 +180,7 @@ void Dist::reset_for_build(std::vector<size_t> cols, std::vector<misc::Ym> month
     rt_ = std::make_unique<Runtime>();
 
   agg_stride.store(1, std::memory_order_relaxed);
-  begin_build();
+  publish();
 }
 
 // ============================================================================
@@ -249,7 +249,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   size_t pub_begin = 0;               // completion 私有推进 (每批恰好执行一次, 串行)
   Runtime::Shard &acc = rt.shards[0]; // 归约终点 = 全程累加器
 
-  auto publish = [&]() noexcept {
+  auto publish_batch = [&]() noexcept {
     TraceN("Publish");
     next_day.store(0, std::memory_order_relaxed);
     next_block.store(0, std::memory_order_relaxed);
@@ -295,14 +295,14 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       global = global_snap;
       integrity = acc.integrity;
     }
-    publish_progress(bd);
+    publish(bd);
     pub_begin += kDaysPerBatch;
   };
 
   std::barrier io_done(static_cast<ptrdiff_t>(n_threads));
   std::barrier scan_done(static_cast<ptrdiff_t>(n_threads));
   std::barrier reduce_step(static_cast<ptrdiff_t>(n_threads));
-  std::barrier reduce_done(static_cast<ptrdiff_t>(n_threads), publish);
+  std::barrier reduce_done(static_cast<ptrdiff_t>(n_threads), publish_batch);
 
   auto worker = [&](size_t tid) {
     Runtime::Shard &sh = rt.shards[tid];
@@ -453,5 +453,5 @@ void Dist::clear() {
   months_.clear();
   global_ids_ = std::vector<uint32_t>{};
   agg_stride.store(1, std::memory_order_relaxed);
-  reset_idle();
+  idle();
 }

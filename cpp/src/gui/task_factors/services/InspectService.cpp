@@ -132,57 +132,18 @@ bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reloa
   return true;
 }
 
-void InspectService::Request(const InspectRequest &req) {
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_ = req;
-    cancel_.store(true, std::memory_order_relaxed);
-  }
-  req_cv_.notify_all();
-  if (!thread_.joinable()) {
-    stop_.store(false, std::memory_order_relaxed);
-    thread_ = std::thread(&InspectService::worker_loop, this);
-  }
-}
+InspectService::InspectService() { Start(); }
+InspectService::~InspectService() { Stop(); }
 
-void InspectService::Stop() {
-  if (!thread_.joinable())
-    return;
+bool InspectService::run(InspectRequest &req) {
   {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    stop_.store(true, std::memory_order_relaxed);
-    cancel_.store(true, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex); // 旧 result 不清: 页面继续整页画旧因子, 新结果发布时一次性覆盖 (不闪)
+    message.clear();
   }
-  req_cv_.notify_all();
-  thread_.join();
-}
-
-void InspectService::worker_loop() {
-  TraceThread("InspectWorker");
-  Flow F;
-  while (true) {
-    InspectRequest req;
-    {
-      std::unique_lock<std::mutex> lock(req_mutex_);
-      req_cv_.wait(lock, [&] { return stop_.load() || pending_.has_value(); });
-      if (stop_.load())
-        return;
-      req = *pending_;
-      pending_.reset();
-      cancel_.store(false, std::memory_order_relaxed);
-    }
-    done_.store(0, std::memory_order_relaxed);
-    total_.store(0, std::memory_order_relaxed);
-    {
-      std::lock_guard<std::mutex> lock(mutex); // 旧 result 不清: 页面继续整页画旧因子, 新结果发布时一次性覆盖 (不闪)
-      message.clear();
-    }
-    status_.store(InspectStatus::Loading, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
-    const bool ok = evaluate(req, F);
-    status_.store(ok ? InspectStatus::Done : InspectStatus::Cancelled, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
-  }
+  publish();
+  if (!flow_)
+    flow_ = std::make_unique<Flow>();
+  return evaluate(req, *flow_);
 }
 
 bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
@@ -215,8 +176,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   for (const misc::Ym m : req.scope.months)
     ckey += "|" + std::to_string(m);
   const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.uni.size());
-  total_.store(days, std::memory_order_relaxed);
-  done_.store(0, std::memory_order_relaxed);
+  begin(Phase::Loading, static_cast<size_t>(days));
   const auto stale_out = [&] {
     if (reader.stale()) { // 库换了, 缓存的一切不可信
       F.reset_scope();
@@ -229,7 +189,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     init_loaded(feats_, days, A, F.L);
     F.L.max_impact = static_cast<float>(req.max_impact);
     F.L.feat_codes = d.feats;
-    if (!load_planes(feats_, reader, dates, F.L, F.ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/true))
+    if (!load_planes(feats_, reader, dates, F.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/true))
       return stale_out();
     F.scope_key = ckey;
     F.dates = dates;
@@ -239,12 +199,12 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
       if (std::find(F.L.feat_codes.begin(), F.L.feat_codes.end(), c) == F.L.feat_codes.end())
         missing.push_back(c);
     if (missing.empty()) {
-      done_.store(days, std::memory_order_relaxed);
+      publish(static_cast<size_t>(days));
     } else {
       Loaded tmp;
       init_loaded(feats_, days, A, tmp);
       tmp.feat_codes = missing;
-      if (!load_planes(feats_, reader, dates, tmp, F.ex, cancel_, done_, /*with_labels=*/false))
+      if (!load_planes(feats_, reader, dates, tmp, F.ex, cancel_, *this, /*with_labels=*/false))
         return stale_out();
       for (size_t i = 0; i < missing.size(); ++i) {
         F.L.feat_codes.push_back(missing[i]);
@@ -289,14 +249,16 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.uni_index = L.index;
   res.n_hold = H;
   res.hd = L.hd;
-  const auto publish = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
+  const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
     res.scope.time = now_string();
     std::swap(res.pl, F.pl);
     {
       std::lock_guard<std::mutex> lock(mutex);
       std::swap(result, res);
+      ++result_gen;
     }
     F.pl = std::move(res.pl);
+    publish();
   };
 
   // ---- 数据检查 (与 FactorsService 同一套) ----
@@ -304,15 +266,13 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     check_leaf_domains(d, i, L, res.error);
     if (!res.error.empty()) {
       F.pl.clear(); // 无一级 / 无 rx
-      publish();
+      publish_result();
       return true;
     }
   }
 
   // ---- X: Dag 后序顺序走, 每节点全核 ----
-  status_.store(InspectStatus::Running, std::memory_order_release);
-  total_.store(d.n_ops + 2, std::memory_order_relaxed); // 节点 + 成本池化 + 评估
-  done_.store(0, std::memory_order_relaxed);
+  begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 成本池化 + 评估
   F.pool.prepare(d.n_slots, n);
   if (F.nsc.size() < static_cast<size_t>(nt))
     F.nsc.resize(static_cast<size_t>(nt));
@@ -332,7 +292,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     const Clock::time_point t0 = Clock::now();
     factor::cpu::run_node(F.ex, nd, in, F.pool.slots[static_cast<size_t>(nd.slot)], T, A, F.nsc, L.cs.m.data());
     res.eval_ms += ms_since(t0);
-    done_.fetch_add(1, std::memory_order_relaxed);
+    publish(1);
   }
 
   // ---- R: rank_x 一次 ----
@@ -365,7 +325,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   // ---- C: 换手成本 (FactorsLoad cost_tiers, 与 Run 同一份; 契约【换手成本】) ----
   factor::cpu::stat::leg_codes(F.ex, rx, s, F.lc.data());
   cost_tiers(F.ex, F.lc.data(), L, feats_, F.w, res.costs);
-  done_.fetch_add(1, std::memory_order_relaxed);
+  publish(1);
   if (cancelled())
     return false;
 
@@ -375,10 +335,10 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   factor::stat::Accum acc[factor::stat::kMaxHold];
   factor::cpu::stat::accum_rows(F.ex, s, rx, F.lab.L, F.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, thr, F.lab.L.cap});
   factor::stat::finish_all(acc, L.hd, res.hold.data());
-  done_.fetch_add(1, std::memory_order_relaxed);
+  publish(1);
   if (cancelled())
     return false;
-  publish();
+  publish_result();
   return true;
 }
 

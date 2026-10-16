@@ -166,8 +166,8 @@ void row_tooltip(const OperatorRow &r) {
 
 int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   int action = 0;
-  const OperatorsStatus st = svc.status();
-  const bool running = st == OperatorsStatus::Running;
+  const Phase st = svc.phase.load(std::memory_order_acquire);
+  const bool running = svc.busy();
 
   // ==========================================================================
   // 1. 张量 [times × assets] + Run / Cancel + 进度
@@ -228,19 +228,22 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   ImGui::SameLine();
   ImGui::Text("Status:");
   ImGui::SameLine();
-  const int done = svc.done(), total = svc.total(), failed = svc.failed();
+  const int done = static_cast<int>(svc.done.load(std::memory_order_relaxed)), total = static_cast<int>(svc.total.load(std::memory_order_relaxed)),
+            failed = svc.failed();
   switch (st) {
-  case OperatorsStatus::Idle:
+  case Phase::Idle:
+  case Phase::Scanning:
+  case Phase::Loading:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
     break;
-  case OperatorsStatus::Running:
+  case Phase::Running:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running %d/%d", done, total);
     break;
-  case OperatorsStatus::Done:
+  case Phase::Done:
     ImGui::TextColored(StatusColor(failed ? TaskStatus::Kind::Error : TaskStatus::Kind::Ready), "done %d/%d, %d FAIL",
                        done, total, failed);
     break;
-  case OperatorsStatus::Cancelled:
+  case Phase::Cancelled:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled %d/%d", done, total);
     break;
   }
@@ -275,7 +278,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   const int n_eval = (int)std::count_if(s_rows.begin(), s_rows.end(), [](const OperatorRow &r) { return !r.classified; });
   ImGui::Text("%d (SELF %d / ALL %d / GROUP %d + 评估 %d)", n, count_A(factor::A::SELF), count_A(factor::A::ALL), count_A(factor::A::GROUP),
               n_eval);
-  if (st != OperatorsStatus::Idle) {
+  if (st != Phase::Idle) {
     ImGui::SameLine();
     ImGui::TextDisabled(from_json ? "(from operators.json: %d × %d)" : "(last run: %d × %d)", cur.times, cur.A);
     if (from_json && ImGui::IsItemHovered())
@@ -286,7 +289,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
 
   // 列宽贴合: 发布代变了 (限速 0.5s) → 连发 2 帧 AutoAll (全行每帧都提交, 测量完整, 不必像 TabFeature 那样等 clipper)
   {
-    const uint64_t ep = svc.epoch();
+    const uint64_t ep = svc.epoch.load(std::memory_order_acquire);
     const double now = ImGui::GetTime();
     if (ui.fit_epoch != ep && (now - ui.fit_last_time >= 0.5 || !running)) {
       ui.fit_epoch = ep;
@@ -562,20 +565,6 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
 
 namespace {
 
-const char *status_name(OperatorsStatus st) {
-  switch (st) {
-  case OperatorsStatus::Idle:
-    return "idle";
-  case OperatorsStatus::Running:
-    return "running";
-  case OperatorsStatus::Done:
-    return "done";
-  case OperatorsStatus::Cancelled:
-    return "cancelled";
-  }
-  return "?";
-}
-
 const char *row_status_name(RowStatus st) {
   switch (st) {
   case RowStatus::Pending:
@@ -610,8 +599,8 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
     file << "{\n";
     file << " \"tensor\": {\"times\": " << cur.times << ", \"assets\": " << cur.A << "},\n";
     file << " \"gpu\": " << (gname ? json(gname).dump() : "false") << ",\n";
-    file << " \"status\": " << json(status_name(svc.status())).dump() << ", \"done\": " << svc.done()
-         << ", \"total\": " << svc.total() << ", \"failed\": " << svc.failed() << ",\n";
+    file << " \"status\": " << json(PhaseName(svc.phase.load())).dump() << ", \"done\": " << svc.done.load()
+         << ", \"total\": " << svc.total.load() << ", \"failed\": " << svc.failed() << ",\n";
     file << " \"tol\": {\"cpu_chk\": \"cpu 对 golden (OpTable 行 = stream; Search = Stat CPU + 分块 ≡ 整块; Stat 无): |Δ| ≤ 1e-5 + 1e-4·max(|a|,|b|), mask / 计数逐位相等\","
             " \"gpu_chk\": \"gpu 对 cpu: OpTable 行 |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 三四阶矩单独放宽); 评估算子 |Δ| ≤ 1e-5 + 1e-4·max\"},\n";
 
@@ -748,7 +737,7 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
 } // namespace
 
 bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc, OperatorsUIState &ui) {
-  assert(svc.status() == OperatorsStatus::Idle && "载入只在进页第一帧 (worker 未起) 做");
+  assert(svc.phase.load() == Phase::Idle && "载入只在进页第一帧 (一轮都没跑过) 做");
   const std::filesystem::path path = std::filesystem::path(factor_dir) / "operators.json";
   std::ifstream file(path);
   if (!file.is_open())
@@ -764,7 +753,7 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     if (!json_str_is(j, "status", "done")) // cancelled / running 的半截快照不吃
       return false;
     int total = 0, done = 0;
-    if (!json_int(j, "total", total) || !json_int(j, "done", done) || total != svc.total() || done != total)
+    if (!json_int(j, "total", total) || !json_int(j, "done", done) || total != static_cast<int>(svc.rows.size()) || done != total)
       return false;
     const auto tit = j.find("tensor");
     if (tit == j.end() || !tit->is_object() || !json_int(*tit, "times", req.times) || !json_int(*tit, "assets", req.A))

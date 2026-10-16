@@ -10,6 +10,7 @@
 #include "math/stationary/MADetrend.hpp"
 #include "math/stationary/TodProfile.hpp"
 #include "shared/Analysis.hpp"
+#include "shared/Progress.hpp"
 
 #include <array>
 #include <cstdint>
@@ -57,7 +58,7 @@ static constexpr size_t kTfMinStatSamples = 20; // 单日 ADF/KPSS 的最少有�
 static constexpr size_t kTfMaxLag = 40;         // 单日 ACF/PACF 最大滞后 (样本 = 分钟); 需有效样本 ≥ 4×lag
 static_assert(4 * kTfMaxLag <= analysis::kVR);
 
-struct Transform : analysis::StreamState {
+struct Transform : Published {
   using Season = math::stationary::TodProfile::Mode;
   static constexpr size_t kSeasonCount = 3;
 
@@ -157,7 +158,7 @@ struct Transform : analysis::StreamState {
   };
 
   // ==========================================================================
-  // State (进度/epoch/mutex 在 StreamState)
+  // State (进度/epoch/mutex 在 Published)
   // ==========================================================================
 
   Params params;                                            // 本次构建的参数快照 (reset 时定, UI 只读)

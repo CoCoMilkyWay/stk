@@ -1,4 +1,5 @@
 #include "gui/task_features/ui/Common.hpp"
+#include "gui/Tasks.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -10,41 +11,13 @@ namespace GUI::Features {
 // 状态面
 // ============================================================================
 
-const char *StatusText(analysis::Status s) {
-  switch (s) {
-  case analysis::Status::Idle:
-    return "Idle";
-  case analysis::Status::Building:
-    return "Building...";
-  case analysis::Status::Done:
-    return "Done";
-  case analysis::Status::Cancelled:
-    return "Cancelled";
-  }
-  return "?";
-}
-
-ImVec4 StatusColor(analysis::Status s) {
-  switch (s) {
-  case analysis::Status::Idle:
-    return ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // 灰
-  case analysis::Status::Building:
-    return ImVec4(0.2f, 0.7f, 1.0f, 1.0f); // 蓝
-  case analysis::Status::Done:
-    return ImVec4(0.2f, 0.8f, 0.4f, 1.0f); // 绿
-  case analysis::Status::Cancelled:
-    return ImVec4(0.9f, 0.6f, 0.2f, 1.0f); // 橙
-  }
-  return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-}
-
-int RenderStreamControl(const analysis::StreamState &st, const SharedData &data, const char *unit) {
-  const auto status = st.status.load(std::memory_order_acquire);
+int RenderStreamControl(const Progress &st, const SharedData &data, const char *unit) {
+  const Phase phase = st.phase.load(std::memory_order_acquire);
   const auto &sel = data.feature.selection;
   const bool is_l1 = sel.selected_level == static_cast<int>(analysis::kLevel);
   int action = 0;
 
-  ImGui::BeginDisabled(status == analysis::Status::Building || sel.primary_feature_idx() < 0 || !is_l1);
+  ImGui::BeginDisabled(st.busy() || sel.primary_feature_idx() < 0 || !is_l1);
   if (ImGui::Button("Compute"))
     action = 1;
   ImGui::EndDisabled();
@@ -59,7 +32,7 @@ int RenderStreamControl(const analysis::StreamState &st, const SharedData &data,
   ImGui::SameLine();
   ImGui::Text("Status: ");
   ImGui::SameLine(0, 0);
-  ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
+  TextPhase(phase);
   ImGui::SameLine(0, 0);
   ImGui::Text(" (%s %zu/%zu)", unit, st.done.load(std::memory_order_relaxed), st.total.load(std::memory_order_relaxed));
   return action;

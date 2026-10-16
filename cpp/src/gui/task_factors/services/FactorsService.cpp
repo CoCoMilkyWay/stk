@@ -596,72 +596,26 @@ void WriteFactorWeights(const std::string &factor_dir, std::string_view file, co
 // Service
 // ============================================================================
 
-void FactorsService::Request(const FactorsRequest &req) {
+bool FactorsService::run(FactorsRequest &req) {
+  std::vector<FactorRow> rs;
+  scan(req, rs);
+  int nb = 0;
+  for (const FactorRow &r : rs)
+    nb += !r.error.empty();
   {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_ = req;
-    cancel_.store(true, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex);
+    rows = std::move(rs);
+    current = req;
+    message.clear();
   }
-  req_cv_.notify_all();
-  if (!thread_.joinable()) {
-    stop_.store(false, std::memory_order_relaxed);
-    thread_ = std::thread(&FactorsService::worker_loop, this);
-  }
-}
+  broken_.store(nb, std::memory_order_relaxed);
+  publish();
 
-void FactorsService::Stop() {
-  if (!thread_.joinable())
-    return;
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    stop_.store(true, std::memory_order_relaxed);
-    cancel_.store(true, std::memory_order_relaxed);
-  }
-  req_cv_.notify_all();
-  thread_.join();
-}
-
-void FactorsService::worker_loop() {
-  TraceThread("FactorsWorker");
-  factor::exec::ForkJoin ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))); // 常驻, 随 worker 活
-  while (true) {
-    FactorsRequest req;
-    {
-      std::unique_lock<std::mutex> lock(req_mutex_);
-      req_cv_.wait(lock, [&] { return stop_.load() || pending_.has_value(); });
-      if (stop_.load())
-        return;
-      req = *pending_;
-      pending_.reset();
-      cancel_.store(false, std::memory_order_relaxed);
-    }
-    done_.store(0, std::memory_order_relaxed);
-    total_.store(0, std::memory_order_relaxed);
-    status_.store(FactorsStatus::Scanning, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
-
-    std::vector<FactorRow> rs;
-    scan(req, rs);
-    int nb = 0;
-    for (const FactorRow &r : rs)
-      nb += !r.error.empty();
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      rows = std::move(rs);
-      current = req;
-      message.clear();
-    }
-    broken_.store(nb, std::memory_order_relaxed);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
-
-    if (!req.evaluate) {
-      status_.store(FactorsStatus::Done, std::memory_order_release);
-      continue;
-    }
-    const bool ok = evaluate(req, ex);
-    status_.store(ok ? FactorsStatus::Done : FactorsStatus::Cancelled, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
-  }
+  if (!req.evaluate)
+    return true;
+  if (!ex_)
+    ex_ = std::make_unique<factor::exec::ForkJoin>(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+  return evaluate(req, *ex_);
 }
 
 // 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)
@@ -878,7 +832,6 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   }
 
   // ---- 装载 ----
-  status_.store(FactorsStatus::Loading, std::memory_order_release);
   FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty()) {
@@ -890,9 +843,8 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
   L.max_impact = static_cast<float>(req.max_impact);
 
-  total_.store(L.days, std::memory_order_relaxed);
-  done_.store(0, std::memory_order_relaxed);
-  if (!load_planes(feats_, reader, dates, L, ex, cancel_, done_, /*with_labels=*/true, /*with_costs=*/true)) {
+  begin(Phase::Loading, static_cast<size_t>(L.days));
+  if (!load_planes(feats_, reader, dates, L, ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true)) {
     if (reader.stale())
       finish_all_pending("特征库判废 (子轴/字段表与当前不符), 需重算特征");
     return false;
@@ -921,19 +873,16 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
   }
 
   // ---- 评估 ----
-  status_.store(FactorsStatus::Running, std::memory_order_release);
   {
-    int n_need = 0;
+    size_t n_need = 0;
     for (int i = 0; i < N; ++i)
       n_need += needed[static_cast<size_t>(i)] && F.nodes[static_cast<size_t>(i)].op >= 0;
-    total_.store(n_need, std::memory_order_relaxed); // Running 期进度 = 共享 DAG 的算子节点
-    done_.store(0, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t k = 0; k < idx.size(); ++k)
       if (runnable[k])
         rows[idx[k]].status = RowStatus::Running;
+    begin(Phase::Running, n_need); // Running 期进度 = 共享 DAG 的算子节点
   }
-  epoch_.fetch_add(1, std::memory_order_relaxed);
   const size_t n = L.n();
   const std::filesystem::path dir(req.factor_dir);
   std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
@@ -954,8 +903,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
         continue;
       if (F.nodes[static_cast<size_t>(i)].op >= 0) {
         node_ms[static_cast<size_t>(i)] = run_node(i);
-        done_.fetch_add(1, std::memory_order_relaxed);
-        epoch_.fetch_add(1, std::memory_order_relaxed);
+        publish(1);
       }
       if (!F.is_root(i))
         continue;
@@ -985,7 +933,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, factor::exec::ForkJoin 
           rows[idx[k]] = r;
         }
         write_back(dir / r.file, r);
-        epoch_.fetch_add(1, std::memory_order_relaxed);
+        publish();
       }
     }
     return true;

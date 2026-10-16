@@ -1,6 +1,6 @@
 """退市风险类 TS 排除位 (移植 ~/work/qmt 的 filters), 每个返回 bool 网格 (P 日 × 标的), True = 剔除.
 
-全部在 P 日判定, 事件按可见日 ≤ P 回放. 阈值默认 = qmt 口径, 脚本可按需覆盖.
+全部在 P 日判定, 事件按可见日 < P 回放 (P 日公告次一 P 起生效, 见 grid.py). 阈值默认 = qmt 口径, 脚本可按需覆盖.
   trading_st   连续 W 个交易日 (close < 1 ∨ 市值 < 板块阈值) —— 面值/市值退市预警, 比交易所 20 日线提前, 换可执行退出窗口
   profit_st    年报预告预亏 (end_date 为 12 月 ∧ type ∈ {首亏, 续亏} ∧ 上年归母净利 < 0), ann_date 起生效,
                至正式年报 PIT 首次可见或次年 4/30 终止 (取早)
@@ -82,10 +82,12 @@ def forecast_intervals(g: Grid, months: list[str]) -> pd.DataFrame:
     deadline = pd.to_datetime(
         (fc["end_date"].dt.year + 1).astype(str) + "-04-30"
     ).to_numpy()
-    off = np.where(np.isnat(seen), deadline, np.minimum(seen, deadline))
+    seen_row = np.full(len(fc), g.n_d)
+    has = ~np.isnat(seen)
+    seen_row[has] = g.ev_rows(seen[has])
     fc = fc.assign(
-        on_row=g.rows(fc["ann_date"]),
-        off_row=g.rows(off),
+        on_row=g.ev_rows(fc["ann_date"]),
+        off_row=np.minimum(seen_row, g.rows(deadline)),
         end_year=fc["end_date"].dt.year,
     )
     return fc[fc["on_row"] < fc["off_row"]]
@@ -145,7 +147,7 @@ def dividend_st(
     ni = g.empty(np.float32, np.nan)
     for inst, ev in inc.groupby("instrument", sort=False):
         c = g.col[inst]
-        rows = g.rows(ev["date"])
+        rows = g.ev_rows(ev["date"])
         rds, vals = (
             ev["report_date"].to_numpy(),
             ev["net_profit_to_parent_shareholders"].to_numpy(),
@@ -166,7 +168,7 @@ def dividend_st(
     sum3y = g.empty(np.float32, 0.0)
     for inst, ev in dv.groupby("instrument", sort=False):
         c = g.col[inst]
-        rows = g.rows(ev["publish_date"])
+        rows = g.ev_rows(ev["publish_date"])
         ann_y = ev["publish_date"].dt.year.to_numpy()
         rep_y = ev["report_date"].dt.year.to_numpy()
         cash = ev["cash_after_tax"].to_numpy()

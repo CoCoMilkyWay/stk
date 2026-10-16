@@ -24,7 +24,7 @@
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 视作唯一权重 (hold 0).
 //   同一具体规范串多行 (跨文件 / 同文件) → 后者标 dup (黄), 仍算 (共享 DAG 里是同一个根, Stat 也只算一次).
 //
-// 线程模型 (对仗 OperatorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 rows;
+// 线程模型 (gui/util/Worker.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 rows;
 // 进度走原子. evaluate = false 只扫描 (进页 / Add / Rescan), = true 扫描 + 装载 + 评估.
 //
 // 装载: 一次把所有有效因子用到的特征 (去重) + ts_valid / cs_valid + 全部持有期标签列读进宿主 (逐天并行 load_day_columns,
@@ -49,17 +49,15 @@
 #include "factor/Search/Contract.hpp" // Score / Objective (看板 score / util 与 Search 同一份目标)
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
-#include "shared/Analysis.hpp"                            // ReadScope
-#include "shared/Feature.hpp"                             // Feature::Metadata
+#include "gui/util/Worker.hpp"
+#include "shared/Analysis.hpp" // ReadScope
+#include "shared/Feature.hpp"  // Feature::Metadata
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
-#include <mutex>
-#include <optional>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 struct SharedData;
@@ -196,56 +194,35 @@ struct FactorRow {
 // 无 stat / stat 无该持有期 / n < 3 → ok = false. ric_pow 取契约默认
 factor::search::Score RowScore(const FactorRow &r, int hold);
 
-enum class FactorsStatus : uint8_t { Idle,
-                                     Scanning,
-                                     Loading,
-                                     Running,
-                                     Done,
-                                     Cancelled };
+// 进度面 = 自身 (Published): Scanning → (evaluate) Loading 期 done/total = 天 → Running 期 = 共享 DAG 算子节点
+class FactorsService : public Worker<FactorsService, FactorsRequest>, public Published {
+  friend Worker<FactorsService, FactorsRequest>;
 
-class FactorsService {
 public:
-  FactorsService() = default;
+  static constexpr const char *kName = "FactorsWorker";
+  FactorsService() { Start(); }
   ~FactorsService() { Stop(); }
-  FactorsService(const FactorsService &) = delete;
-  FactorsService &operator=(const FactorsService &) = delete;
 
-  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // worker 未起时 (进页) 调一次
+  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
   const FeatureTable &feats() const { return feats_; }
 
-  // GUI 线程
-  void Request(const FactorsRequest &req);
-  void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
-  void Stop();
-
-  // 进度 (原子, 免锁): Loading 期 done/total = 天; Running 期 = 因子
-  FactorsStatus status() const { return status_.load(std::memory_order_acquire); }
-  int done() const { return done_.load(std::memory_order_relaxed); }
-  int total() const { return total_.load(std::memory_order_relaxed); }
   int broken() const { return broken_.load(std::memory_order_relaxed); }
-  uint64_t epoch() const { return epoch_.load(std::memory_order_relaxed); }
 
-  // UI 持锁读
-  std::mutex mutex;
+  // UI 持 mutex 读
   std::vector<FactorRow> rows;
   FactorsRequest current;
   std::string message; // 本轮说明 (如 "特征库无数据"), 空 = 无
 
 private:
-  void worker_loop();
+  static constexpr Phase kStart = Phase::Scanning;
+  Progress &board() { return *this; }
+  bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
   bool evaluate(const FactorsRequest &req, factor::exec::ForkJoin &ex); // false = 取消
 
   FeatureTable feats_;
-  std::thread thread_;
-  std::mutex req_mutex_;
-  std::condition_variable req_cv_;
-  std::optional<FactorsRequest> pending_;
-  std::atomic<bool> cancel_{false};
-  std::atomic<bool> stop_{false};
-  std::atomic<FactorsStatus> status_{FactorsStatus::Idle};
-  std::atomic<int> done_{0}, total_{0}, broken_{0};
-  std::atomic<uint64_t> epoch_{0};
+  std::unique_ptr<factor::exec::ForkJoin> ex_; // 首个 evaluate 懒建, 随 worker 活
+  std::atomic<int> broken_{0};
 };
 
 // 英文名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]

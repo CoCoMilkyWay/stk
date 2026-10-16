@@ -25,7 +25,7 @@ public:
   // GUI 线程: 参数快照 + 取消在跑 (全 L1 非 META 特征, 不看选中)
   void RequestCompute(SharedData &data);
 
-  static constexpr const char *kWorkerName = "PreviewWorker";
+  static constexpr const char *kName = "PreviewWorker";
   static FeaturePreview &target(SharedData &data);
   void reset(FeaturePreview &pv, PreviewRequest &req);
 };

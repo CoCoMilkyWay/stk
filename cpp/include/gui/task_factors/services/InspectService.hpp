@@ -20,7 +20,7 @@
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
-// 线程模型 (对仗 FactorsService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; 新请求开跑不清旧 result: 页面继续整页画旧结果
+// 线程模型 (gui/util/Worker.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; 新请求开跑不清旧 result: 页面继续整页画旧结果
 // (旧因子, 头部文字一并), 新结果发布时一次性覆盖 (UI 持 mutex 读; 一级 Row 大 (~130B × H × T), UI 不拷, 持锁派生成日级序列后放手;
 // 发布 = 与 Flow 的 InspectPlanes 交换, 不分配). 进度走原子: Loading 期 done/total = 天; Running 期 = 算子节点 + 标签集.
 // 后端: 只 CPU (单因子一棵 Dag; GPU 留后).
@@ -29,15 +29,12 @@
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp"    // XDist
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope
-#include "shared/Analysis.hpp"                          // ReadScope / AggPdf
+#include "gui/util/Worker.hpp"
+#include "shared/Analysis.hpp" // ReadScope / AggPdf
 
-#include <atomic>
-#include <condition_variable>
 #include <cstdint>
-#include <mutex>
-#include <optional>
+#include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 struct SharedData;
@@ -99,52 +96,32 @@ struct InspectResult {
   const TailRow *tails_at(int hi) const { return pl.tails.data() + static_cast<size_t>(hi) * scope.T; }
 };
 
-enum class InspectStatus : uint8_t { Idle,
-                                     Loading,
-                                     Running,
-                                     Done,
-                                     Cancelled };
+// 进度面 = 自身 (Published): Loading 期 done/total = 天; Running 期 = 算子节点 + 成本 + 评估
+class InspectService : public Worker<InspectService, InspectRequest>, public Published {
+  friend Worker<InspectService, InspectRequest>;
 
-class InspectService {
 public:
-  InspectService() = default;
-  ~InspectService() { Stop(); }
-  InspectService(const InspectService &) = delete;
-  InspectService &operator=(const InspectService &) = delete;
+  static constexpr const char *kName = "InspectWorker";
+  InspectService(); // 两者都在 .cpp: Flow 不完整
+  ~InspectService();
 
-  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // worker 未起时 (进页) 调一次
+  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
   const FeatureTable &feats() const { return feats_; }
 
-  // GUI 线程
-  void Request(const InspectRequest &req);
-  void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
-  void Stop();
-
-  InspectStatus status() const { return status_.load(std::memory_order_acquire); }
-  int done() const { return done_.load(std::memory_order_relaxed); }
-  int total() const { return total_.load(std::memory_order_relaxed); }
-  uint64_t epoch() const { return epoch_.load(std::memory_order_relaxed); } // result 变了 +1
-
-  // UI 持锁读 (不拷 rows)
-  std::mutex mutex;
+  // UI 持 mutex 读 (不拷 rows)
   InspectResult result;
-  std::string message; // 本轮说明 (如 "特征库无数据"), 空 = 无
+  uint64_t result_gen = 0; // result 每换一次 +1 (UI 派生缓存键; epoch 随进度跳, 不能当键)
+  std::string message;     // 本轮说明 (如 "特征库无数据"), 空 = 无
 
 private:
   struct Flow;
-  void worker_loop();
+  static constexpr Phase kStart = Phase::Loading;
+  Progress &board() { return *this; }
+  bool run(InspectRequest &req);
   bool evaluate(const InspectRequest &req, Flow &F); // false = 取消
 
   FeatureTable feats_;
-  std::thread thread_;
-  std::mutex req_mutex_;
-  std::condition_variable req_cv_;
-  std::optional<InspectRequest> pending_;
-  std::atomic<bool> cancel_{false};
-  std::atomic<bool> stop_{false};
-  std::atomic<InspectStatus> status_{InspectStatus::Idle};
-  std::atomic<int> done_{0}, total_{0};
-  std::atomic<uint64_t> epoch_{0};
+  std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活 (S / Y 缓存跨请求)
 };
 
 } // namespace GUI::Factors

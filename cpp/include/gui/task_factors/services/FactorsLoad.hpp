@@ -72,9 +72,9 @@ void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded 
 
 // 逐天并行读 (ex 抢单): 特征列 (L.feat_codes) + (with_labels) L.hd 的标签列 (+ with_costs 冲击成本列) + ts_valid + cs_valid 一次 load_day_columns,
 // 门控后散进平面; with_index 再加读 close 列, 顺带出 L.index (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘).
-// 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). done 每天 +1
+// 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). 每天 prog.publish(1)
 bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, factor::exec::ForkJoin &ex,
-                 std::atomic<bool> &cancel, std::atomic<int> &done, bool with_labels = true, bool with_costs = false, bool with_index = false);
+                 std::atomic<bool> &cancel, Progress &prog, bool with_labels = true, bool with_costs = false, bool with_index = false);
 
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN)
 void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err);

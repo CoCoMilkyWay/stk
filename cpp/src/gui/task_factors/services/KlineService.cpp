@@ -30,62 +30,34 @@ struct KlineService::Impl {
   }
 };
 
-KlineService::KlineService() = default;
+KlineService::KlineService() { Start(); }
 KlineService::~KlineService() { Stop(); }
 
 void KlineService::Request(KlineRequest req) {
   assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.uni.size() && !req.dates.empty());
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_ = std::move(req);
-  }
-  req_cv_.notify_all();
-  if (!thread_.joinable()) {
-    stop_.store(false, std::memory_order_relaxed);
-    thread_ = std::thread(&KlineService::worker_loop, this);
-  }
+  Worker::Request(std::move(req));
 }
 
-void KlineService::Stop() {
-  if (!thread_.joinable())
-    return;
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    stop_.store(true, std::memory_order_relaxed);
+bool KlineService::run(KlineRequest &req) {
+  reset(std::move(req));
+  s_.begin(Phase::Running, cur_.dates.size());
+  for (size_t d = 0; d < cur_.dates.size(); ++d) {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false; // 一天一步: 新请求在天与天之间打断
+    if (!step(d))
+      return false; // 库判废: 停流 (Inspect 重算后新代重来)
+    s_.publish(1);
   }
-  req_cv_.notify_all();
-  thread_.join();
+  return true;
 }
 
-void KlineService::worker_loop() {
-  TraceThread("KlineWorker");
-  impl_ = std::make_unique<Impl>();
-  while (true) {
-    std::optional<KlineRequest> req;
-    {
-      std::unique_lock<std::mutex> lock(req_mutex_);
-      req_cv_.wait(lock, [&] { return stop_.load() || pending_.has_value() || active_; });
-      if (stop_.load())
-        return;
-      if (pending_) {
-        req = std::move(pending_);
-        pending_.reset();
-      }
-    }
-    if (req)
-      begin(std::move(*req));
-    if (active_)
-      active_ = step(); // 一天一步, 下一轮轮询即可被新请求打断
-  }
-}
-
-void KlineService::begin(KlineRequest &&req) {
+void KlineService::reset(KlineRequest &&req) {
   TraceN("KlineBegin");
   // 此刻 GUI 请求代 == req.gen ≠ 发布代 → GUI 不读前缀, 数组可整体重建
+  if (!impl_)
+    impl_ = std::make_unique<Impl>();
   impl_->ensure(req.scope);
   cur_ = std::move(req);
-  next_day_ = 0;
-  active_ = true;
   y_min_ = (std::numeric_limits<double>::max)();
   y_max_ = std::numeric_limits<double>::lowest();
   s_.pub.store(KlineStream::pack(cur_.gen, 0, 0), std::memory_order_release); // 先零计数再换代
@@ -96,16 +68,15 @@ void KlineService::begin(KlineRequest &&req) {
   }
 }
 
-bool KlineService::step() {
+bool KlineService::step(size_t d) {
   TraceN("KlineDay");
-  const size_t d = next_day_;
   assert(d < cur_.dates.size());
   FeatureRead &reader = *impl_->reader;
   auto &idx = impl_->idx;
   idx.assign(std::begin(cur_.col), std::end(cur_.col));
   reader.load_day_columns(cur_.dates[d], idx, impl_->cols);
   if (reader.stale())
-    return false; // 库判废: 停流 (Inspect 重算后新代重来)
+    return false;
   const size_t a = static_cast<size_t>(cur_.sub), VR = level_valid_rows(analysis::kLevel);
   const double x0 = static_cast<double>(d * VR);
   const FeatureRead::DayColumns &c = impl_->cols;
@@ -128,8 +99,7 @@ bool KlineService::step() {
     s_.y_max.store(y_max_, std::memory_order_relaxed);
   }
   s_.pub.store(KlineStream::pack(cur_.gen, d + 1, s_.x.size()), std::memory_order_release);
-  ++next_day_;
-  return next_day_ < cur_.dates.size();
+  return true;
 }
 
 } // namespace GUI::Factors

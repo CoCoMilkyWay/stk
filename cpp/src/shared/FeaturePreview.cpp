@@ -120,7 +120,7 @@ void FeaturePreview::reset_for_build(std::vector<size_t> feat_cols,
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
 
-  begin_build();
+  publish();
 }
 
 // ============================================================================
@@ -187,7 +187,7 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
       stop = true;
       return;
     }
-    publish_progress(1);
+    publish(1);
     if (++round < n_rounds)
       load_round(round);
   };
@@ -354,5 +354,5 @@ void FeaturePreview::clear() {
   valid_types_.clear();
   months_.clear();
   A_ = 0;
-  reset_idle();
+  idle();
 }

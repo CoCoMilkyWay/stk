@@ -1,8 +1,9 @@
 // Features 页三个流式分析 tab (Dist / Transform / Feature 表预览) 的公共 UI 件
-// 对仗 shared/Analysis.hpp: 状态面 (StreamState) / 值账目 (Integrity) 的展示都只有这一份
+// 对仗 shared/Analysis.hpp: 状态面 (Published) / 值账目 (Integrity) 的展示都只有这一份
 #pragma once
 
 #include "shared/Analysis.hpp"
+#include "shared/Progress.hpp"
 
 #include <cstddef>
 
@@ -11,13 +12,10 @@ struct SharedData;
 
 namespace GUI::Features {
 
-// ---- 状态面 ----
-const char *StatusText(analysis::Status s);
-ImVec4 StatusColor(analysis::Status s);
-
+// ---- 状态面 (阶段名/颜色走 gui/Tasks.hpp TextPhase) ----
 // Row: Compute | (仅 L1) | Cancel | Status: xxx (unit done/total)
-// 选中特征且 L1 且非 Building 才可 Compute. 返回值: 1 = Compute 按下, -1 = Cancel 按下, 0 = 无
-int RenderStreamControl(const analysis::StreamState &st, const SharedData &data, const char *unit);
+// 选中特征且 L1 且不忙才可 Compute. 返回值: 1 = Compute 按下, -1 = Cancel 按下, 0 = 无
+int RenderStreamControl(const Progress &st, const SharedData &data, const char *unit);
 
 // ---- 值账目 ----
 // 着色阈值 (Dist 完整性条 与 Feature 表账目列 共用)

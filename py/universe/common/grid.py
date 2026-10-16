@@ -1,7 +1,8 @@
 """Grid: 以有截面数据的交易日 (P 日) 为行、全部标的为列的 PIT 网格工具.
 
-事件在 P 可见 ⟺ 可见日 ≤ P; 可见日 → 行 = 首个 ≥ 它的交易日 (searchsorted left).
-与 qmt 的 CUTOFF=-1 同义 (row D 取 D-1 可见的数据; 这里直接以 P = D-1 为行).
+日频截面 (pivot) 按 date 精确落行: P 行 = P 收盘截面 (收盘时排名并成交, 视为同时).
+事件 (ev_rows / event_ffill) 在 P 可用 ⟺ 可见日 < P: P 日公告多在盘后, 收盘调仓时拿不到 → 行 = 首个 > 可见日的交易日
+(searchsorted right). 与 cpp fund::Pool 事件表 CUTOFF=-1 同一条界 (cpp 的行是 D, 这里的行是 P = D-1, 再晚一天).
 """
 
 import numpy as np
@@ -18,6 +19,10 @@ class Grid:
 
     def rows(self, dts) -> np.ndarray:
         return self.dates.searchsorted(pd.DatetimeIndex(dts).values, side="left")
+
+    def ev_rows(self, dts) -> np.ndarray:
+        """事件可见日 → 首个可用行 (首个 > 可见日的 P)."""
+        return self.dates.searchsorted(pd.DatetimeIndex(dts).values, side="right")
 
     def cols(self, insts) -> np.ndarray:
         c = self.col.reindex(insts)
@@ -48,7 +53,7 @@ class Grid:
         """事件表 → float32 网格, 同格后到者覆盖, 沿时间前向填充; 事件前 NaN. 不在列上的标的忽略."""
         df = df.dropna(subset=["instrument"])
         df = df[df["instrument"].isin(self.insts)].sort_values(date_col, kind="stable")
-        r, c = self.rows(df[date_col]), self.cols(df["instrument"])
+        r, c = self.ev_rows(df[date_col]), self.cols(df["instrument"])
         keep = r < self.n_d
         arr = self.empty(np.float32, np.nan)
         arr[r[keep], c[keep]] = df[col].to_numpy(np.float32)[keep]

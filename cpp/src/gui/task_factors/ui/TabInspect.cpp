@@ -1204,8 +1204,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUISta
   }
   if (fui.view_file.empty() || !ctx.axis_ready || isvc.feats().labels.empty())
     return false;
-  const InspectStatus st = isvc.status();
-  if (st == InspectStatus::Loading || st == InspectStatus::Running)
+  if (isvc.busy())
     return false;
   FactorRow row;
   if (!view_row(fsvc, fui.view_file, row) || !inspectable(row))
@@ -1294,8 +1293,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   // ---- 控件行 (各切换控件之间留宽间隔, 不然 "▸ 分层 ◂" 连成一片) ----
   constexpr float kCtlGap = 24.f;
   const FeatureTable &ft = isvc.feats();
-  const InspectStatus st = isvc.status();
-  const bool busy = st == InspectStatus::Loading || st == InspectStatus::Running;
+  const Phase st = isvc.phase.load(std::memory_order_acquire);
+  const bool busy = isvc.busy();
   const int n_hold = static_cast<int>(ft.labels.size());
   if (ui.hold_for != sel.key) { // 换了权重 → Hold 切到它搜出来的持有期 (手填权重无, 不动)
     ui.hold_for = sel.key;
@@ -1365,21 +1364,22 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   ImGui::SameLine();
   ImGui::Text("Status:");
   ImGui::SameLine();
-  const int done = isvc.done(), total = isvc.total();
+  const int done = static_cast<int>(isvc.done.load(std::memory_order_relaxed)), total = static_cast<int>(isvc.total.load(std::memory_order_relaxed));
   switch (st) {
-  case InspectStatus::Idle:
+  case Phase::Idle:
+  case Phase::Scanning:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
     break;
-  case InspectStatus::Loading:
+  case Phase::Loading:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "loading %d/%d days", done, total);
     break;
-  case InspectStatus::Running:
+  case Phase::Running:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running %d/%d nodes", done, total);
     break;
-  case InspectStatus::Done:
+  case Phase::Done:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
     break;
-  case InspectStatus::Cancelled:
+  case Phase::Cancelled:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled %d/%d", done, total);
     break;
   }
@@ -1414,7 +1414,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
       res_costs = res.costs;
       assert(res_holds.size() == static_cast<size_t>(n_hold));
     }
-    const uint64_t ep = isvc.epoch();
+    const uint64_t ep = isvc.result_gen;
     if (ep != ui.derived_epoch || sel_hold != ui.derived_sel || ui.absolute != ui.derived_abs) {
       ui.derived_epoch = ep;
       ui.derived_sel = sel_hold;

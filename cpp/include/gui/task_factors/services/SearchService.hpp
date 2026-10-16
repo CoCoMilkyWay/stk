@@ -24,23 +24,21 @@
 //             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + accum_rows), 不留根平面;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
 //
-// 线程模型 (对仗 InspectService): GUI 线程 Request 覆盖挂起请求 + 取消在跑 + 懒起 worker; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
+// 线程模型 (gui/util/Worker.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
 // 进度走原子: Loading 期 done/total = 块内天; Running 期 = 候选 × 块. 服务间互斥由 UI 保证 (Factors Run 与 Optimize 不同时跑: 都写因子文件).
 // 出错策略: 因子行 / 作用域不合是正常输入 → result.message; 契约不一致 → assert.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow
-#include "shared/Analysis.hpp"                          // ReadScope
+#include "gui/util/Worker.hpp"
+#include "shared/Analysis.hpp" // ReadScope
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <limits>
-#include <mutex>
-#include <optional>
+#include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 struct SharedData;
@@ -107,64 +105,46 @@ struct SearchResult {
   std::string message; // 结论 / 没算成的原因
 };
 
-enum class SearchStatus : uint8_t { Idle,
-                                    Loading,
-                                    Running,
-                                    Done,
-                                    Cancelled };
 // 搜索阶段 (UI 显示): 定尺度 (装块 0 + 阈值槽 σ) → 粗网格 → 局部模式搜索 → 相关性
 enum class SearchStage : uint8_t { Scale,
                                    Coarse,
                                    Refine,
                                    Corr };
 
-class SearchService {
-public:
-  SearchService() = default;
-  ~SearchService() { Stop(); }
-  SearchService(const SearchService &) = delete;
-  SearchService &operator=(const SearchService &) = delete;
+// 进度面 = 自身 (Published): Loading 期 done/total = 块内天; Running 期 = 候选 × 块
+class SearchService : public Worker<SearchService, SearchRequest>, public Published {
+  friend Worker<SearchService, SearchRequest>;
 
-  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // worker 未起时 (进页) 调一次
+public:
+  static constexpr const char *kName = "SearchWorker";
+  SearchService(); // 两者都在 .cpp: Flow 不完整
+  ~SearchService();
+
+  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
   const FeatureTable &feats() const { return feats_; }
 
-  // GUI 线程
-  void Request(const SearchRequest &req);
-  void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
-  void Stop();
-
-  SearchStatus status() const { return status_.load(std::memory_order_acquire); }
   SearchStage stage() const { return stage_.load(std::memory_order_relaxed); }
-  int level() const { return level_.load(std::memory_order_relaxed); } // 局部搜索轮 (Refine 期)
-  int alive() const { return alive_.load(std::memory_order_relaxed); } // 存活分支数 (Refine 期)
-  int pass() const { return pass_.load(std::memory_order_relaxed); }   // 当前趟 (0 = 粗)
-  int done() const { return done_.load(std::memory_order_relaxed); }   // Loading: 块内天; Running: 候选 × 块
-  int total() const { return total_.load(std::memory_order_relaxed); }
+  int level() const { return level_.load(std::memory_order_relaxed); }   // 局部搜索轮 (Refine 期)
+  int alive() const { return alive_.load(std::memory_order_relaxed); }   // 存活分支数 (Refine 期)
+  int pass() const { return pass_.load(std::memory_order_relaxed); }     // 当前趟 (0 = 粗)
   int chunk() const { return chunk_.load(std::memory_order_relaxed); }   // 本趟已过的块
   int chunks() const { return chunks_.load(std::memory_order_relaxed); } // 块数
-  uint64_t epoch() const { return epoch_.load(std::memory_order_relaxed); }
 
-  // UI 持锁读
-  std::mutex mutex;
+  // UI 持 mutex 读
   SearchResult result;
 
 private:
   struct Flow;
-  void worker_loop();
-  bool run(const SearchRequest &req, Flow &F); // false = 取消
+  static constexpr Phase kStart = Phase::Loading;
+  Progress &board() { return *this; }
+  bool run(SearchRequest &req);
+  bool evaluate(const SearchRequest &req, Flow &F); // false = 取消
 
   FeatureTable feats_;
-  std::thread thread_;
-  std::mutex req_mutex_;
-  std::condition_variable req_cv_;
-  std::optional<SearchRequest> pending_;
-  std::atomic<bool> cancel_{false};
-  std::atomic<bool> stop_{false};
-  std::atomic<SearchStatus> status_{SearchStatus::Idle};
+  std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活
   std::atomic<SearchStage> stage_{SearchStage::Scale};
   std::atomic<int> level_{0}, alive_{0};
-  std::atomic<int> pass_{0}, done_{0}, total_{0}, chunk_{0}, chunks_{0};
-  std::atomic<uint64_t> epoch_{0};
+  std::atomic<int> pass_{0}, chunk_{0}, chunks_{0};
 };
 
 } // namespace GUI::Factors

@@ -1,7 +1,8 @@
 // Tab Corr Implementation — 特征相关矩阵下三角热图 + 悬停对 lead-lag + 全矩阵 lag 峭点图
 #include "gui/task_features/ui/TabCorr.hpp"
+#include "gui/Tasks.hpp" // TextPhase
 #include "gui/task_features/services/CorrService.hpp"
-#include "gui/task_features/ui/Common.hpp" // 状态文本/颜色
+#include "gui/task_features/ui/Common.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "shared/SharedData.hpp"
 
@@ -200,11 +201,11 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
   std::lock_guard<std::mutex> lock(pair.mutex);
   // 请求在 RenderTabCorr 悬停处已提交; 这里只画. 未匹配 = worker 还没接到新对 (一帧内)
   const bool matched = (pair.col_a == ca && pair.col_b == cb && pair.level == corr.level);
-  const auto st = pair.status.load(std::memory_order_acquire);
+  const Phase st = pair.phase.load(std::memory_order_acquire);
   ImGui::Text("Lead-Lag: ");
   ImGui::SameLine(0, 0);
   if (matched) {
-    ImGui::TextColored(StatusColor(st), "%s", StatusText(st));
+    TextPhase(st);
     ImGui::SameLine();
     ImGui::TextDisabled("(天 %zu/%zu)", pair.done.load(std::memory_order_relaxed),
                         pair.total.load(std::memory_order_relaxed));
@@ -213,7 +214,7 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
   }
 
   // 图框常驻; 曲线只在该对算完 (Done) 后一次画出 —— 不做逐天增量渲染, 悬停换对时也不闪旧线
-  const bool ready = matched && st == analysis::Status::Done;
+  const bool ready = matched && st == Phase::Done;
   static std::vector<float> xs, ys; // GUI 单线程, 帧内复用
   xs.clear();
   ys.clear();
@@ -270,8 +271,9 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   }
 
   // ---- 1. 状态行 ----
-  const auto status = corr.status.load(std::memory_order_acquire);
-  ImGui::BeginDisabled(status == analysis::Status::Building);
+  const Phase status = corr.phase.load(std::memory_order_acquire);
+  const bool building = corr.busy();
+  ImGui::BeginDisabled(building);
   if (ImGui::Button("Compute"))
     service->RequestCompute(data, rows);
   ImGui::EndDisabled();
@@ -281,7 +283,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   ImGui::SameLine();
   ImGui::Text("Status: ");
   ImGui::SameLine(0, 0);
-  ImGui::TextColored(StatusColor(status), "%s", StatusText(status));
+  TextPhase(status);
   ImGui::SameLine(0, 0);
   ImGui::Text(" (天 %zu/%zu)", corr.done.load(std::memory_order_relaxed),
               corr.total.load(std::memory_order_relaxed));
@@ -290,7 +292,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   const size_t n = corr.n();
   if (n < 2) {
     ImGui::Separator();
-    if (status == analysis::Status::Building)
+    if (building)
       ImGui::TextDisabled("构建中: 第一天算完即出图...");
     else
       ImGui::TextDisabled("该层可算的特征不足 2 列 (L0 目前只有 ts_valid / cs_valid 两列); 或过滤后行集过窄.");
@@ -326,7 +328,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     // Done 后按终版补算一次
     const uint64_t ep = corr.epoch.load(std::memory_order_acquire);
     const bool stale = ui.cluster_n != n || ui.cluster_order.size() != n;
-    if (stale || (status != analysis::Status::Building && ui.cluster_epoch != ep)) {
+    if (stale || (!building && ui.cluster_epoch != ep)) {
       ui.cluster_order = cluster_order(corr.rho, n);
       ui.cluster_n = n;
       ui.cluster_epoch = ep;
@@ -343,7 +345,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
       ui.lag_req_rows.clear();
       ui.lag_req_level = -1;
     } else if (lag_matches(data.corr_lag, corr) &&
-               data.corr_lag.status.load(std::memory_order_acquire) == analysis::Status::Done) {
+               data.corr_lag.phase.load(std::memory_order_acquire) == Phase::Done) {
       ui.lag_req_rows = rows; // 上次算完的还能用 (行集没变), 不重算
       ui.lag_req_level = level;
     }
@@ -359,9 +361,8 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   std::unique_lock<std::mutex> lag_lock(data.corr_lag.mutex, std::defer_lock);
   if (ui.lag_mode) {
     lag_lock.lock();
-    const auto lst = data.corr_lag.status.load(std::memory_order_acquire);
     ImGui::SameLine();
-    ImGui::TextColored(StatusColor(lst), "%s", StatusText(lst));
+    TextPhase(data.corr_lag.phase.load(std::memory_order_acquire));
     ImGui::SameLine(0, 0);
     ImGui::TextDisabled(" (天 %zu/%zu)", data.corr_lag.done.load(std::memory_order_relaxed),
                         data.corr_lag.total.load(std::memory_order_relaxed));

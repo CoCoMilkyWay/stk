@@ -2,6 +2,7 @@
 
 #include "features/TimeIndex.hpp"
 #include "shared/Analysis.hpp"
+#include "shared/Progress.hpp"
 
 #include <array>
 #include <cstdint>
@@ -81,7 +82,7 @@ inline constexpr auto kTodBinStart = make_tod_bin_start();
 // 所以按总量自适应 stride 抽到这个量级即可, 图上看不出差别. 每资产的资产槽仍吃全量.
 static constexpr size_t kAggTargetSamples = size_t(32) << 20; // 32M
 
-struct Dist : analysis::StreamState {
+struct Dist : Published {
   using Integrity = analysis::Integrity;
 
   // 每资产一条线 (槽位 == 子轴下标) + 相对全局分位的 W2 偏移

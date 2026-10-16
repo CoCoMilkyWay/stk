@@ -26,7 +26,7 @@ void PreviewService::RequestCompute(SharedData &data) {
     req.valid_types.push_back(meta_list[i].valid_type);
   }
   assert(!req.feat_cols.empty());
-  submit(std::move(req));
+  Request(std::move(req));
 }
 
 void PreviewService::reset(FeaturePreview &pv, PreviewRequest &req) {

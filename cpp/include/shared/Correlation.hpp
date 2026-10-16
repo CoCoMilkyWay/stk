@@ -2,6 +2,7 @@
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
 #include "shared/Analysis.hpp"
+#include "shared/Progress.hpp"
 
 #include <array>
 #include <atomic>
@@ -66,7 +67,7 @@ static constexpr size_t kCorrLagWindow = kCorrLags; // CorrLag 每日连续窗�
 // 该层的切片行步长 (kCorrSliceMinutes 分钟折成层行数; L1 = 10, L0 = 600)
 size_t corr_slice_stride(size_t level);
 
-struct Correlation : analysis::StreamState {
+struct Correlation : Published {
   // ==========================================================================
   // 发布快照 (worker 日末短锁写; UI 渲染帧内持锁只读)
   // ==========================================================================
@@ -115,7 +116,7 @@ private:
 // 与矩阵同一套抽样日 (同种子同天数) 与同一套秩标准化; 切片取满 (不抽稀, 要分辨相邻期).
 // ============================================================================
 
-struct CorrPair : analysis::StreamState {
+struct CorrPair : Published {
   // 发布快照
   size_t level = 0;
   uint32_t col_a = UINT32_MAX, col_b = UINT32_MAX; // metadata 下标 (UI 核对当前选中对)
@@ -156,7 +157,7 @@ private:
 // 成本: ≈ 主矩阵的 2~3 倍 (Σ_lag (W-|lag|) × 2 个内积 vs S × 6 个内积), 故只在 UI 勾选时算.
 // ============================================================================
 
-struct CorrLag : analysis::StreamState {
+struct CorrLag : Published {
   // 发布快照 (cols 必须与 Correlation.cols 一致, UI 才能按同一显示序取值)
   size_t level = 0;
   std::vector<uint32_t> cols;

@@ -962,10 +962,10 @@ void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
 
 int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, const FactorsUIContext &ctx) {
   int action = 0;
-  const FactorsStatus st = svc.status();
-  const bool busy = st == FactorsStatus::Scanning || st == FactorsStatus::Loading || st == FactorsStatus::Running;
-  const SearchStatus sst = ss.status();
-  const bool sbusy = sst == SearchStatus::Loading || sst == SearchStatus::Running; // Optimize 在跑: 它要写因子文件, Run 让路
+  const Phase st = svc.phase.load(std::memory_order_acquire);
+  const bool busy = svc.busy();
+  const Phase sst = ss.phase.load(std::memory_order_acquire);
+  const bool sbusy = ss.busy(); // Optimize 在跑: 它要写因子文件, Run 让路
   const FeatureTable &ft = svc.feats();
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
@@ -1070,24 +1070,25 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::SameLine();
   ImGui::Text("Status:");
   ImGui::SameLine();
-  const int done = svc.done(), total = svc.total(), broken = svc.broken();
+  const int done = static_cast<int>(svc.done.load(std::memory_order_relaxed)), total = static_cast<int>(svc.total.load(std::memory_order_relaxed)),
+            broken = svc.broken();
   switch (st) {
-  case FactorsStatus::Idle:
+  case Phase::Idle:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
     break;
-  case FactorsStatus::Scanning:
+  case Phase::Scanning:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "scanning");
     break;
-  case FactorsStatus::Loading:
+  case Phase::Loading:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "loading %d/%d days", done, total);
     break;
-  case FactorsStatus::Running:
+  case Phase::Running:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running %d/%d nodes", done, total);
     break;
-  case FactorsStatus::Done:
+  case Phase::Done:
     ImGui::TextColored(StatusColor(broken ? TaskStatus::Kind::Warn : TaskStatus::Kind::Ready), "done, %d BROKEN", broken);
     break;
-  case FactorsStatus::Cancelled:
+  case Phase::Cancelled:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled %d/%d", done, total);
     break;
   }
@@ -1174,7 +1175,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       std::lock_guard<std::mutex> lock(ss.mutex);
       s_sr = ss.result;
     }
-    const int sdone = ss.done(), stotal = ss.total(), nc = ss.chunks();
+    const int sdone = static_cast<int>(ss.done.load(std::memory_order_relaxed)), stotal = static_cast<int>(ss.total.load(std::memory_order_relaxed)),
+              nc = ss.chunks();
     const int n_cand = s_sr.holds.empty() ? 0 : static_cast<int>(s_sr.holds[0].cands.size()); // 每 h 列的是同一批候选
     const ImVec4 busy = StatusColor(TaskStatus::Kind::Busy);
     // 评估行: "<阶段>: N 候选 × C 块 (done/total)" (单块不写块数)
@@ -1186,10 +1188,11 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         ImGui::TextColored(busy, "%s: %d 候选 (%d/%d)", phase.c_str(), cands, sdone, stotal);
     };
     switch (sst) {
-    case SearchStatus::Idle:
+    case Phase::Idle:
+    case Phase::Scanning:
       ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "空闲");
       break;
-    case SearchStatus::Loading: {
+    case Phase::Loading: {
       const int ci = ss.chunk();
       if (ss.stage() == SearchStage::Scale && stotal > 0 && sdone >= stotal) {
         ImGui::TextColored(busy, "准备: 计算阈值尺度 σ");
@@ -1202,7 +1205,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       }
       break;
     }
-    case SearchStatus::Running:
+    case Phase::Running:
       switch (ss.stage()) {
       case SearchStage::Scale:
       case SearchStage::Coarse:
@@ -1216,13 +1219,13 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         break;
       }
       break;
-    case SearchStatus::Done:
+    case Phase::Done:
       if (s_sr.wrote)
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "完成: 写入 %d 个权重 (%d 候选, %d 趟, %.0fs)", s_sr.n_weights, n_cand, s_sr.n_pass, s_sr.seconds);
       else
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "未写入: %s", s_sr.message.c_str());
       break;
-    case SearchStatus::Cancelled:
+    case Phase::Cancelled:
       ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "已取消");
       break;
     }
@@ -1501,7 +1504,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", factor::stat::hold_name(cur_hold).c_str());
 
   {
-    const uint64_t ep = svc.epoch();
+    const uint64_t ep = svc.epoch.load(std::memory_order_acquire);
     const double now = ImGui::GetTime();
     if (ui.fit_epoch != ep && (now - ui.fit_last_time >= 0.5 || !busy)) {
       ui.fit_epoch = ep;

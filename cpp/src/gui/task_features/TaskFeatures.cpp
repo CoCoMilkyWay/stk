@@ -81,38 +81,19 @@ struct TaskFeaturesState {
   std::string preview_universe;
   misc::Ymd preview_start = 0, preview_end = 0;
   // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
-  analysis::Status prev_preview_status = analysis::Status::Idle;
+  Phase prev_preview_phase = Phase::Idle;
   size_t prev_preview_done = 0;
 };
-
-// 流式 tab 的行状态: 构建中显示进度, 完成后 done, 取消 cancelled
-static TaskStatus StreamTaskStatus(const analysis::StreamState &st) {
-  switch (st.status.load(std::memory_order_relaxed)) {
-  case analysis::Status::Building: {
-    const size_t total = st.total.load(std::memory_order_relaxed);
-    const size_t done = st.done.load(std::memory_order_relaxed);
-    const int pct = total > 0 ? (int)(100 * done / total) : 0;
-    return {TaskStatus::Kind::Busy, "building " + std::to_string(pct) + "%"};
-  }
-  case analysis::Status::Done:
-    return {TaskStatus::Kind::Ready, "done"};
-  case analysis::Status::Cancelled:
-    return {TaskStatus::Kind::Warn, "cancelled"};
-  case analysis::Status::Idle:
-    break;
-  }
-  return {};
-}
 
 // 流式 tab 生命周期: 切进 (Idle/Cancelled 才重算, Done 直接复用) / 切走 (只中断在跑构建,
 // 内存与 worker 保留, 任务级回收在 OnCollapse). request 返回 void, stop 调 Service::RequestCancel
 template <class Request, class Stop>
-static void StreamTabLifecycle(bool open, bool &was_active, const analysis::StreamState &st,
+static void StreamTabLifecycle(bool open, bool &was_active, const Progress &st,
                                Request &&request, Stop &&stop) {
   if (open && !was_active) {
     was_active = true;
-    const auto s = st.status.load();
-    if (s == analysis::Status::Idle || s == analysis::Status::Cancelled)
+    const Phase p = st.phase.load(std::memory_order_acquire);
+    if (p == Phase::Idle || p == Phase::Cancelled)
       request();
   } else if (!open && was_active) {
     stop();
@@ -220,15 +201,15 @@ TaskHandle CreateFeaturesTask() {
 
     // 预览每跑完一轮 (done 增长) 就把特征表 (元数据 + 账目/值域) 落地
     // <FeatureUniverseDir>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
-    // done 回退 (新请求 begin_build 清零) 不落, 避免写出空表; Done 那一帧补一次 (空库 0 轮也有文件)
+    // done 回退 (新请求 begin 清零) 不落, 避免写出空表; Done 那一帧补一次 (空库 0 轮也有文件)
     {
-      const auto pv_status = data.preview.status.load(std::memory_order_acquire);
+      const Phase pv_phase = data.preview.phase.load(std::memory_order_acquire);
       const size_t pv_done = data.preview.done.load(std::memory_order_acquire);
       if (pv_done > state->prev_preview_done ||
-          (pv_status == analysis::Status::Done && state->prev_preview_status != analysis::Status::Done))
+          (pv_phase == Phase::Done && state->prev_preview_phase != Phase::Done))
         Features::SaveFeatureTableJson(data);
       state->prev_preview_done = pv_done;
-      state->prev_preview_status = pv_status;
+      state->prev_preview_phase = pv_phase;
     }
   };
 
@@ -292,13 +273,13 @@ TaskHandle CreateFeaturesTask() {
     }
 
     case TAB_TRANSFORM:
-      return StreamTaskStatus(data.transform);
+      return ProgressStatus(data.transform);
 
     case TAB_DISTRIBUTION:
-      return StreamTaskStatus(data.dist);
+      return ProgressStatus(data.dist);
 
     case TAB_CORRELATION:
-      return StreamTaskStatus(data.corr);
+      return ProgressStatus(data.corr);
 
     case TAB_ORDERFLOW: // 后台流式 worker 常驻 (背景常态, 灰色)
       if (state->orderflow_service && state->orderflow_service->is_running())

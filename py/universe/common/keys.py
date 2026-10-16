@@ -59,7 +59,7 @@ def _equity_mrq(ctx: Ctx) -> np.ndarray:
 
 
 def _cash_div(ctx: Ctx) -> np.ndarray:
-    """DY_WINDOW 内公告的税前分红总额 [元]; 公告日 publish_date 起入窗, +DY_WINDOW 起出窗."""
+    """DY_WINDOW 内公告的税前分红总额 [元]; 公告日 publish_date 次一 P 起入窗, +DY_WINDOW 同理出窗."""
     g = ctx.g
     dv = load_table(
         "cn_stock_dividend",
@@ -67,8 +67,8 @@ def _cash_div(ctx: Ctx) -> np.ndarray:
         ["instrument", "publish_date", "cash_before_tax"],
     )
     dv = dv[dv["instrument"].isin(g.insts) & (dv["cash_before_tax"] > 0)]
-    lo = g.rows(dv["publish_date"])
-    hi = g.rows(dv["publish_date"] + DY_WINDOW)
+    lo = g.ev_rows(dv["publish_date"])
+    hi = g.ev_rows(dv["publish_date"] + DY_WINDOW)
     cols = g.cols(dv["instrument"])
     amt = dv["cash_before_tax"].to_numpy() * ctx.shares[np.minimum(lo, g.n_d - 1), cols]
     cash = g.empty(np.float64, 0.0)

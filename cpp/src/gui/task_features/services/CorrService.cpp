@@ -40,7 +40,7 @@ Correlation &CorrService::target(SharedData &data) { return data.corr; }
 void CorrService::RequestCompute(SharedData &data, const std::vector<int> &rows) {
   CorrRequest req;
   if (MakeCorrRequest(data, rows, req))
-    submit(std::move(req));
+    Request(std::move(req));
 }
 
 void CorrService::reset(Correlation &corr, CorrRequest &req) {
@@ -57,7 +57,7 @@ CorrLag &CorrLagService::target(SharedData &data) { return data.corr_lag; }
 void CorrLagService::RequestCompute(SharedData &data, const std::vector<int> &rows) {
   CorrRequest req;
   if (MakeCorrRequest(data, rows, req))
-    submit(std::move(req));
+    Request(std::move(req));
 }
 
 void CorrLagService::reset(CorrLag &lag, CorrRequest &req) {
@@ -89,7 +89,7 @@ void CorrPairService::RequestCompute(SharedData &data, uint32_t col_a, uint32_t 
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
   if (req.scope.months.empty())
     return;
-  submit(std::move(req));
+  Request(std::move(req));
 }
 
 void CorrPairService::reset(CorrPair &pair, CorrPairRequest &req) {

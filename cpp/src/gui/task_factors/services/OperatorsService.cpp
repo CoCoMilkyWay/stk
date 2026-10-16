@@ -13,7 +13,6 @@
 #include "factor/OpTable.hpp"
 #include "factor/Search/Check.hpp"
 #include "factor/Stat/Check.hpp"
-#include "misc/profiler.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -403,27 +402,18 @@ OperatorsService::OperatorsService() {
   // 未跑之前也显示每算子默认参数, 表一打开 Operands 列就有实际值
   for (OperatorRow &r : rows)
     r.param = param_of(r);
+  Start();
 }
 
-void OperatorsService::Request(const OperatorsRequest &req) {
+void OperatorsService::Request(OperatorsRequest req) {
   assert(req.times >= factor::kSegLen && req.times % factor::kSegLen == 0 && req.A >= 2);
-  OperatorsRequest r = req;
-  // 时间戳做种子: 不做复现, 同一轮内所有算子共享同一张量 (run_op 都从 r.seed 造数)
-  r.seed = static_cast<unsigned>(std::chrono::system_clock::now().time_since_epoch().count());
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    pending_ = r;
-    cancel_.store(true, std::memory_order_relaxed);
-  }
-  req_cv_.notify_all();
-  if (!thread_.joinable()) {
-    stop_.store(false, std::memory_order_relaxed);
-    thread_ = std::thread(&OperatorsService::worker_loop, this);
-  }
+  // 时间戳做种子: 不做复现, 同一轮内所有算子共享同一张量 (run_op 都从 req.seed 造数)
+  req.seed = static_cast<unsigned>(std::chrono::system_clock::now().time_since_epoch().count());
+  Worker::Request(std::move(req));
 }
 
 void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed) {
-  assert(!thread_.joinable() && status_.load() == OperatorsStatus::Idle && "载入只在 worker 未起时做");
+  assert(phase.load() == Phase::Idle && "载入只在一轮都没跑过时做");
   assert(snap.size() == rows.size());
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -431,95 +421,63 @@ void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<Op
     current = req;
     from_json = true;
   }
-  done_.store(total(), std::memory_order_relaxed);
   failed_.store(failed, std::memory_order_relaxed);
-  status_.store(OperatorsStatus::Done, std::memory_order_release);
-  epoch_.fetch_add(1, std::memory_order_relaxed);
+  begin(Phase::Running, rows.size()); // 一轮瞬间跑完
+  publish(rows.size());
+  end(true);
 }
 
-void OperatorsService::Stop() {
-  if (!thread_.joinable())
-    return;
-  {
-    std::lock_guard<std::mutex> lock(req_mutex_);
-    stop_.store(true, std::memory_order_relaxed);
-    cancel_.store(true, std::memory_order_relaxed);
+bool OperatorsService::run(OperatorsRequest &req) {
+  // GPU 探测 + 首次热身 (CUDA 上下文初始化几百 ms, 不能算进首个算子的 gpu_ms)
+  if (factor::gpu::available() && !gpu_warmed_) {
+    factor::check::Plane x, o;
+    x.resize(factor::kSegLen), o.resize(factor::kSegLen);
+    factor::Param p;
+    factor::gpu::run_ts("TsAbs", x.v.data(), x.m.data(), nullptr, nullptr, nullptr, nullptr, o.v.data(),
+                        o.m.data(), factor::kSegLen, 1, p);
+    gpu_warmed_ = true;
   }
-  req_cv_.notify_all();
-  thread_.join();
-}
 
-void OperatorsService::worker_loop() {
-  TraceThread("OperatorsWorker");
-  while (true) {
-    OperatorsRequest req;
-    {
-      std::unique_lock<std::mutex> lock(req_mutex_);
-      req_cv_.wait(lock, [&] { return stop_.load() || pending_.has_value(); });
-      if (stop_.load())
-        return;
-      req = *pending_;
-      pending_.reset();
-      cancel_.store(false, std::memory_order_relaxed); // 与消费同临界区, 免竞争
+  // 全行复位 → Running
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    current = req;
+    from_json = false; // 这一轮是本进程算的
+    for (OperatorRow &r : rows) {
+      r.param = param_of(r);
+      r.status = RowStatus::Pending;
+      r.cpu_chk = {}, r.gpu_chk = {};
+      r.cpu_ms = 0, r.stream_ms = -1, r.gpu_ms = -1;
+      r.detail.clear();
     }
+  }
+  failed_.store(0, std::memory_order_relaxed);
+  begin(Phase::Running, rows.size());
 
-    // GPU 探测 + 首次热身 (CUDA 上下文初始化几百 ms, 不能算进首个算子的 gpu_ms)
-    if (factor::gpu::available() && !gpu_warmed_) {
-      factor::check::Plane x, o;
-      x.resize(factor::kSegLen), o.resize(factor::kSegLen);
-      factor::Param p;
-      factor::gpu::run_ts("TsAbs", x.v.data(), x.m.data(), nullptr, nullptr, nullptr, nullptr, o.v.data(),
-                          o.m.data(), factor::kSegLen, 1, p);
-      gpu_warmed_ = true;
-    }
-
-    // 全行复位 → Running
+  // 执行序 = 行序 (评估算子在前, 然后 OpTable 表序), 每行一个跑手, 不分种类.
+  // 一轮的输入缓存 / 输出缓冲 / GPU 会话都在 R 里, 轮末 (含取消) 析构释放
+  RoundCtx R(req, factor::gpu::available());
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      current = req;
-      from_json = false; // 这一轮是本进程算的
-      for (OperatorRow &r : rows) {
-        r.param = param_of(r);
-        r.status = RowStatus::Pending;
-        r.cpu_chk = {}, r.gpu_chk = {};
-        r.cpu_ms = 0, r.stream_ms = -1, r.gpu_ms = -1;
-        r.detail.clear();
-      }
+      rows[i].status = RowStatus::Running;
     }
-    done_.store(0, std::memory_order_relaxed);
-    failed_.store(0, std::memory_order_relaxed);
-    status_.store(OperatorsStatus::Running, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_relaxed);
+    publish();
 
-    // 执行序 = 行序 (评估算子在前, 然后 OpTable 表序), 每行一个跑手, 不分种类.
-    // 一轮的输入缓存 / 输出缓冲 / GPU 会话都在 R 里, 轮末 (含取消) 析构释放
-    bool cancelled = false;
-    RoundCtx R(req, factor::gpu::available());
-    for (size_t i = 0; i < rows.size(); ++i) {
-      if (cancel_.load(std::memory_order_relaxed)) {
-        cancelled = true;
-        break;
-      }
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        rows[i].status = RowStatus::Running;
-      }
-      epoch_.fetch_add(1, std::memory_order_relaxed);
-
-      OperatorRow r = rows[i]; // 静态列 + Running + 已复位的动态列; 只有本线程写 rows, 无锁读安全
-      runners_[i](R, r);
-      r.status = RowStatus::Done;
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        rows[i] = r;
-      }
-      done_.fetch_add(1, std::memory_order_relaxed);
-      if (!r.cpu_chk.ok() || (r.gpu_ms >= 0 && !r.gpu_chk.ok()))
-        failed_.fetch_add(1, std::memory_order_relaxed);
-      epoch_.fetch_add(1, std::memory_order_relaxed);
+    OperatorRow r = rows[i]; // 静态列 + Running + 已复位的动态列; 只有本线程写 rows, 无锁读安全
+    runners_[i](R, r);
+    r.status = RowStatus::Done;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      rows[i] = r;
     }
-    status_.store(cancelled ? OperatorsStatus::Cancelled : OperatorsStatus::Done, std::memory_order_release);
+    if (!r.cpu_chk.ok() || (r.gpu_ms >= 0 && !r.gpu_chk.ok()))
+      failed_.fetch_add(1, std::memory_order_relaxed);
+    publish(1);
   }
+  return true;
 }
 
 } // namespace GUI::Factors

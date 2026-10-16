@@ -1,13 +1,13 @@
 // OperatorsService — Factors→Operators 表的单 worker: 一张合成张量喂给 OpTable 全部算子,
 // 逐算子跑 cpu (挖掘向量) / stream (实盘流式) / gpu (CUDA, 编了才有), 对拍 + 计时, 算完一行发布一行.
 //
-// 线程模型 (对仗 task_features 的 StreamService, 但不读特征库, 故不套它):
-//   - GUI 线程: Request(req) 覆盖挂起请求 + 取消在跑 + 唤醒 (worker 懒起); RequestCancel 只中断
-//   - worker:   取最新请求 → 全行复位 Pending → 逐算子 Running → 算 → 持锁写回 Done, epoch++
+// 线程模型 (gui/util/Worker.hpp, 随对象):
+//   - GUI 线程: Request(req) 覆盖挂起请求 + 取消在跑; RequestCancel 只中断
+//   - worker:   run = 全行复位 Pending → 逐算子 Running → 算 → 持锁写回 Done, publish(1)
 //   - UI:       持 mutex 读 rows 快照; 进度走原子, 免锁
 //
 // 默认不自动跑: 进页先由 TabOperators 的 LoadOperatorTableJson 吃本地 operators.json (校验静态列
-// 与整轮完整性, 不过就删文件), 命中的话经 AdoptSnapshot 直接摆成 Done, worker 根本不起; 只有手动
+// 与整轮完整性, 不过就删文件), 命中的话经 AdoptSnapshot 直接摆成 Done, worker 空等; 只有手动
 // Run (或本地无有效快照) 才真算, 一轮结束由 TaskFactors 落盘.
 //
 // 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp, Stat/Check.hpp, Search/Check.hpp): PLAIN profile, 配方按算子,
@@ -21,14 +21,11 @@
 
 #include "factor/Check.hpp"
 #include "factor/Contract.hpp"
+#include "gui/util/Worker.hpp"
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
-#include <mutex>
-#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace GUI::Factors {
@@ -82,57 +79,39 @@ struct OperatorRow {
   std::string detail;                             // 跑手的附带文本 (表列放不下的: prep 耗时 / 二级汇总 / 候选得分), 悬停 e_name 看, 落盘 detail 键
 };
 
-enum class OperatorsStatus : uint8_t { Idle,
-                                       Running,
-                                       Done,
-                                       Cancelled };
+// 进度面 = 自身 (Published): done/total = 行
+class OperatorsService : public Worker<OperatorsService, OperatorsRequest>, public Published {
+  friend Worker<OperatorsService, OperatorsRequest>;
 
-class OperatorsService {
 public:
-  OperatorsService(); // 由 OpTable 展开静态行 (顺序 = 表序: TS 逐点 / TS 有窗 / CS)
+  static constexpr const char *kName = "OperatorsWorker";
+  OperatorsService(); // 由 OpTable 展开静态行 (顺序 = 表序: TS 逐点 / TS 有窗 / CS), 末尾 Start
   ~OperatorsService() { Stop(); }
-  OperatorsService(const OperatorsService &) = delete;
-  OperatorsService &operator=(const OperatorsService &) = delete;
 
-  // GUI 线程
-  void Request(const OperatorsRequest &req);
-  void RequestCancel() { cancel_.store(true, std::memory_order_relaxed); }
-  void Stop(); // join (幂等)
-  // 直接吃一份落盘快照当"已跑完"(进页载入 operators.json 用, 不起 worker, 不算不落盘):
-  // snap 由调用方从 rows 拷出后只填动态列 (静态列原样), 校验过了才进来; 仅允许 worker 未起时调.
+  // GUI 线程: 填时间戳种子后转 Worker::Request
+  void Request(OperatorsRequest req);
+  // 直接吃一份落盘快照当"已跑完"(进页载入 operators.json 用, 不算不落盘):
+  // snap 由调用方从 rows 拷出后只填动态列 (静态列原样), 校验过了才进来; 仅允许一轮都没跑过时调.
   void AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed);
 
-  // 进度 (原子, 免锁)
-  OperatorsStatus status() const { return status_.load(std::memory_order_acquire); }
-  int done() const { return done_.load(std::memory_order_relaxed); }
-  int total() const { return static_cast<int>(rows.size()); }
   int failed() const { return failed_.load(std::memory_order_relaxed); }
-  uint64_t epoch() const { return epoch_.load(std::memory_order_relaxed); }
 
-  // UI 持锁读; current = 正在跑 / 上次跑完的参数快照
-  std::mutex mutex;
+  // UI 持 mutex 读; current = 正在跑 / 上次跑完的参数快照
   std::vector<OperatorRow> rows;
   OperatorsRequest current;
   bool from_json = false; // 表内容来自本地 operators.json 载入 (非本进程算的), UI 标注用
 
 private:
+  static constexpr Phase kStart = Phase::Running;
+  Progress &board() { return *this; }
+  bool run(OperatorsRequest &req);
+
   // 每行一个跑手 (rows[i] ↔ runners_[i]): 只算动态列 (静态列 worker 不碰). OpTable 行 = 宏实例化的模板, 输入 / 输出缓冲 /
   // GPU 会话全从 RoundCtx 取 (一轮一份), 跑手内部不分配不造数: 计时外零 overhead; 评估算子行 = run_stat / run_search (自带造数, 只取 R.rq)
   using RunFn = void (*)(RoundCtx &, OperatorRow &);
   std::vector<RunFn> runners_;
 
-  void worker_loop();
-
-  std::thread thread_;
-  std::mutex req_mutex_;
-  std::condition_variable req_cv_;
-  std::optional<OperatorsRequest> pending_;
-  std::atomic<bool> cancel_{false};
-  std::atomic<bool> stop_{false};
-  std::atomic<OperatorsStatus> status_{OperatorsStatus::Idle};
-  std::atomic<int> done_{0};
   std::atomic<int> failed_{0};
-  std::atomic<uint64_t> epoch_{0};
   bool gpu_warmed_ = false; // 仅 worker 线程读写
 };
 

@@ -25,7 +25,7 @@ public:
   // focus = 序列快照焦点 (UI 滑条槽位 == 子轴下标, 内部按子轴大小 clamp)
   void RequestCompute(SharedData &data, const Transform::Params &params, int focus);
 
-  static constexpr const char *kWorkerName = "TransformWorker";
+  static constexpr const char *kName = "TransformWorker";
   static Transform &target(SharedData &data);
   void reset(Transform &tf, TransformRequest &req);
 };

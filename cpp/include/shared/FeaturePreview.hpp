@@ -2,6 +2,7 @@
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
 #include "shared/Analysis.hpp"
+#include "shared/Progress.hpp"
 
 #include <array>
 #include <atomic>
@@ -47,7 +48,7 @@ static constexpr size_t kPvMinSamples = 500;                        // 样本不
 static constexpr size_t kPvPsdPts = analysis::DayPSD::N / 2;        // 进谱 bin 数: k ∈ [1, N/2] (跳 DC), 周期 2~256 min
 static constexpr size_t kPvPsdK(size_t j) { return kPvPsdPts - j; } // Cell::psd[j] ↔ bin k (周期升序 = k 降序)
 
-struct FeaturePreview : analysis::StreamState {
+struct FeaturePreview : Published {
   // 每特征发布快照 (槽位 = 该层 metadata 下标; 非预览列 (META 类) 恒空)
   struct Cell : analysis::PdfSnap<kPvKllResolution> {
     uint32_t psd_n = 0;                 // 参与谱平均的 (资产, 天) 数 (含日内恒值日: 投占比全 0 的一票)
@@ -65,7 +66,7 @@ struct FeaturePreview : analysis::StreamState {
     uint32_t cage_miss = 0; // 笼外样本数
   };
 
-  // 发布快照 (进度/epoch/mutex 在 StreamState; done/total = 轮)
+  // 发布快照 (进度/epoch/mutex 在 Published; done/total = 轮)
   std::vector<Cell> cells; // [该层特征总数]
 
   // ==========================================================================
