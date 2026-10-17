@@ -195,7 +195,8 @@ private:
       std::cout << msg << std::endl;
     };
     data.config.Initialize();
-    data.feature.selection.pool = default_pool(data.config);
+    for (const TierId t : TIER_IDS)
+      data.feature.selection.libs[t] = default_lib(data.config, t);
     ts.initialized = true;
     last_commission = data.config.commission;
     last_stamp = data.config.stamp;

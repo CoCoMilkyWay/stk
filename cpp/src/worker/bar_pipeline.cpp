@@ -30,7 +30,7 @@ struct TierFeed<bar::Tier> {
   std::vector<Bar1mDay> ring; // 源环 (预取线程写, TS 经 pf_close / pf_ready 的 release/acquire 读)
 
   TierFeed(const PipelineArgs &args, const StoreRing &store)
-      : fund_panel(args.data.fund_panel), axis(args.lib.axis), dates(args.dates), ring(store.feed_ring_size()) {
+      : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), dates(args.dates), ring(store.feed_ring_size()) {
     assert(axis.size() == asset_axis().size() && "Bar 档 A 轴 = 全轴");
   }
 

@@ -444,17 +444,18 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
 
 bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req) {
   req = FactorsRequest{};
-  req.factor_dir = data.config.factor_dir + "/" + data.feature.selection.pool;
+  const std::string &pool = data.feature.selection.lib_of(TierId::Lob);
+  req.factor_dir = data.config.factor_dir + "/" + pool;
   req.evaluate = evaluate;
   req.gpu = gpu;
   if (!evaluate)
     return true;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
+  req.scope = analysis::read_scope(data.config, data.feature, TierId::Lob);
   if (req.scope.months.empty())
     return false;
-  req.pool = data.feature.selection.pool;
+  req.pool = pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   req.max_impact = data.config.max_impact;
@@ -830,14 +831,14 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   }
 
   // ---- 装载 ----
-  FeatureRead reader(req.scope.lib, &cancel_);
+  FeatureRead reader(req.scope.lib(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty()) {
     finish_all_pending("特征库在该区间无数据 (先算特征)");
     return true;
   }
   Loaded L;
-  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib.axis.size()), L);
+  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib().axis.size()), L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
   L.max_impact = static_cast<float>(req.max_impact);
 

@@ -31,8 +31,8 @@ struct TierFeed<lob::Tier> {
   std::vector<size_t> weights; // 区间内逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)
 
   TierFeed(const PipelineArgs &args, const StoreRing &)
-      : data(args.data), axis(args.lib.axis), dates(args.dates),
-        orders(args.data.asset.orders()->slice(args.dates, args.lib.axis.ids)), weights(axis.size(), 0) {
+      : data(args.data), axis(args.libs[TierId::Lob].axis), dates(args.dates),
+        orders(args.data.asset.orders()->slice(args.dates, axis.ids)), weights(axis.size(), 0) {
     // 票池逐日成员 (ComputeService 规划本库时 build: 并集 = 本库 A 轴, 逐日成员位 → Meta cs_valid)
     assert(data.pool_panel.axis().hash == axis.hash && std::ranges::equal(data.pool_panel.dates(), dates) && "票池与本库 A 轴 / 日期轴不符");
     for (size_t d = 0; d < dates.size(); ++d) {

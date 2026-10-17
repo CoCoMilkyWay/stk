@@ -9,11 +9,11 @@
 //         → 背槽整体发布 (供 GUI 资产筛选)
 //       Kline 流式: 逐日选列读 (OHLC + ts_valid; 特征逐源 (档, 层) 各读一次) → 抽选中资产 → 追加 + 单调前缀发布;
 //         天与天之间可被新代打断
-//   特征 overlay = ReadPlan (GUI 线程 analysis::read_plan 建: 主档 Lob 票池库, Bar 列旁读 all 库; 只用其源分组 + 门控)
+//   特征 overlay = ReadPlan (GUI 线程 analysis::read_plan 建: 主档 Lob 票池库, 旁读档列读该档库; 只用其源分组 + 门控)
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一个票池库: 换池 / 库重算后整体重建 (TaskFeatures).
+//           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一套库 (各档库名): 换库 / 库重算后整体重建 (TaskFeatures).
 #pragma once
 
 #include "features/Storage/DayBatchPlane.hpp" // ReadPlan
@@ -29,7 +29,7 @@ namespace GUI::Features {
 
 class OrderFlowService {
 public:
-  explicit OrderFlowService(std::string pool); // pool = 票池库名 (Lob 档; 状态列另读 Bar 库)
+  explicit OrderFlowService(PerTier<std::string> libs); // libs = 各档库名 (Selection::libs; 主档 Lob, 旁读 / 状态列读 Bar 库)
   ~OrderFlowService();
 
   // Lifecycle (幂等)
@@ -43,7 +43,7 @@ public:
   void RequestPick(uint32_t gen, misc::Ymd date);
 
   bool is_running() const { return kline_ != nullptr; }
-  const std::string &pool() const { return pool_; }
+  const PerTier<std::string> &libs() const { return libs_; }
 
 private:
   struct KlineReq {
@@ -69,7 +69,7 @@ private:
   class DepthLane; // 重放 + 构建 + 背槽发布
   class PickLane;  // 逐日 filter 列 → 全资产状态 + 背槽发布
 
-  std::string pool_;
+  PerTier<std::string> libs_;
   std::unique_ptr<KlineLane> kline_;
   std::unique_ptr<DepthLane> depth_;
   std::unique_ptr<PickLane> pick_;

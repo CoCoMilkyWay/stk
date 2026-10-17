@@ -10,7 +10,6 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
-#include <span>
 #include <string_view>
 
 namespace {
@@ -164,16 +163,9 @@ namespace {
 std::string lib_manifest(const std::string &dir) { return dir + "/lib.json"; }
 } // namespace
 
-TierId lib_tier(std::string_view name) {
-  if (name == Config::kAllTierDir)
-    return TierId::Bar;
-  pool_def(name); // 不是票池名 → assert
-  return TierId::Lob;
-}
-
 FeatureLib load_lib(const Config &cfg, std::string_view name) {
   FeatureLib lib;
-  lib.tier = lib_tier(name);
+  lib.tier = lib_def(name).tier;
   lib.name = name;
   lib.dir = cfg.FeatureLibDir(name);
   std::ifstream file(lib_manifest(lib.dir));
@@ -223,11 +215,16 @@ void save_lib(const FeatureLib &lib) {
   std::filesystem::rename(tmp, path); // 原子替换: 读端要么见旧清单要么见新清单
 }
 
-std::string default_pool(const Config &cfg) {
-  const std::span<const PoolDef> pools = feature_pools();
-  assert(!pools.empty() && "Bar 字段表没有票池列 (Pool 类 pool_*)");
-  for (const PoolDef &p : pools)
-    if (std::filesystem::exists(lib_manifest(cfg.FeatureLibDir(p.name))))
-      return p.name;
-  return pools.front().name;
+std::string default_lib(const Config &cfg, TierId tier) {
+  const char *first = nullptr;
+  for (const LibDef &d : feature_libs()) {
+    if (d.tier != tier)
+      continue;
+    if (std::filesystem::exists(lib_manifest(cfg.FeatureLibDir(d.name))))
+      return d.name;
+    if (!first)
+      first = d.name;
+  }
+  assert(first && "该档没有库 (库表)");
+  return first;
 }

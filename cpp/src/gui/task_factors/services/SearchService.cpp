@@ -159,17 +159,18 @@ struct SearchService::Flow {
 bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  req.factor_dir = data.config.factor_dir + "/" + data.feature.selection.pool;
+  const std::string &pool = data.feature.selection.lib_of(TierId::Lob);
+  req.factor_dir = data.config.factor_dir + "/" + pool;
   req.file = row.file;
   req.tmpl = row.tmpl;
   req.frame = row.frame;
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
+  req.scope = analysis::read_scope(data.config, data.feature, TierId::Lob);
   if (req.scope.months.empty())
     return false;
-  req.pool = data.feature.selection.pool;
+  req.pool = pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;
@@ -200,7 +201,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
-  const int A = static_cast<int>(req.scope.lib.axis.size());
+  const int A = static_cast<int>(req.scope.lib().axis.size());
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
   std::vector<int> holds;
   for (const LabelCol &lc : feats_.labels)
@@ -322,7 +323,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     publish();
   };
   // ---- 作用域 / 日期 ----
-  FeatureRead reader(req.scope.lib, &cancel_);
+  FeatureRead reader(req.scope.lib(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty())
     return abort_with("特征库在该区间无数据 (先算特征)");

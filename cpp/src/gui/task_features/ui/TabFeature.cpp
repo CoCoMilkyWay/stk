@@ -911,23 +911,18 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   const std::string cur_lib = sel.lib();
   ImGui::SetNextItemWidth(140);
   if (ImGui::BeginCombo("##lib", cur_lib.c_str())) {
-    const auto lib_item = [&](const char *name) {
-      const bool selected = cur_lib == name;
-      if (ImGui::Selectable(name, selected) && !selected) {
-        const TierId tier = lib_tier(name);
-        if (tier != sel.tier) {
+    for (const LibDef &d : feature_libs()) {
+      const bool selected = cur_lib == d.name;
+      if (ImGui::Selectable(d.name, selected) && !selected) {
+        if (d.tier != sel.tier) {
           sel.clear_filters(); // 换档 = 换字段表: 过滤作废; 选中是 ColRef (带档), 跨档保留
-          sel.tier = tier;
+          sel.tier = d.tier;
         }
-        if (tier == TierId::Lob)
-          sel.pool = name;
+        sel.libs[d.tier] = d.name;
       }
       if (selected)
         ImGui::SetItemDefaultFocus();
-    };
-    lib_item(Config::kAllTierDir);
-    for (const PoolDef &p : feature_pools())
-      lib_item(p.name);
+    }
     ImGui::EndCombo();
   }
   if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))

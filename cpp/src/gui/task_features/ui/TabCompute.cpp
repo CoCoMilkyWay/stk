@@ -110,9 +110,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   const StageLayout::Topology &topo = misc::Affinity::physical_cores();
   const int phys = static_cast<int>(topo.size());
 
-  for (size_t ti = 0; ti < TIER_COUNT; ++ti) {
-    const TierId tier = static_cast<TierId>(ti);
-    const StageLayout layout = StageLayout::make(topo, state.config.pf_cores[ti], state.config.cs_cores[ti], state.config.io_cores[ti]);
+  for (const TierId tier : TIER_IDS) {
+    const StageLayout layout = StageLayout::make(topo, state.config.pf_cores[tier], state.config.cs_cores[tier], state.config.io_cores[tier]);
 
     ImGui::Text("Stages %s (%d 物理核 / %u 逻辑 CPU):", tier_name(tier), layout.total_phys(), misc::Affinity::core_count());
     ImGui::Spacing();
@@ -152,16 +151,16 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Text("Pool Slots:");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(150);
-    if (ImGui::InputInt(("##ring_slots_" + id).c_str(), &state.config.ring_slots[ti], 1, 1)) {
-      if (state.config.ring_slots[ti] < ComputeConfig::kMinRingSlots)
-        state.config.ring_slots[ti] = ComputeConfig::kMinRingSlots;
+    if (ImGui::InputInt(("##ring_slots_" + id).c_str(), &state.config.ring_slots[tier], 1, 1)) {
+      if (state.config.ring_slots[tier] < ComputeConfig::kMinRingSlots)
+        state.config.ring_slots[tier] = ComputeConfig::kMinRingSlots;
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open; 宜 >= %d + 截面核 + 落盘核)",
                         ComputeConfig::kMinRingSlots, ComputeConfig::kMinRingSlots);
 
     // 预取 / 截面 / 落盘: 按日轮转, 每核独占一个物理核, 从时序让出; 三者之和至多 物理核 − 1 (至少留 1 个 TS 物理核)
-    int *const stage_cores[] = {&state.config.pf_cores[ti], &state.config.cs_cores[ti], &state.config.io_cores[ti]};
+    int *const stage_cores[] = {&state.config.pf_cores[tier], &state.config.cs_cores[tier], &state.config.io_cores[tier]};
     const char *const stage_labels[] = {"PF Cores:", "CS Cores:", "IO Cores:"};
     const char *const stage_ids[] = {"##pf_cores_", "##cs_cores_", "##io_cores_"};
     for (size_t k = 0; k < 3; ++k) {
@@ -394,12 +393,16 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   if (state.libs_dirty && !is_running) {
     state.libs_dirty = false;
     state.libs.clear();
-    state.libs.push_back(lib_status(config, Config::kAllTierDir));
-    for (const PoolDef &p : feature_pools())
-      state.libs.push_back(lib_status(config, p.name));
+    for (const LibDef &d : feature_libs())
+      state.libs.push_back(lib_status(config, d.name));
   }
-  // 票池库的成员来自 Bar 库: Bar 库落盘齐全才放行
-  const bool all_complete = !state.libs.empty() && state.libs.front().ready && state.libs.front().done == state.libs.front().days;
+  // 旁读档的库落盘齐全才放行本档 (票池库的成员来自 Bar 库)
+  PerTier<bool> tier_complete;
+  for (const TierId t : TIER_IDS)
+    tier_complete[t] = std::ranges::all_of(state.libs, [&](const LibStatus &s) { return s.tier != t || (s.ready && s.done == s.days); });
+  const auto sides_complete = [&](TierId t) {
+    return std::ranges::all_of(TIER_IDS, [&](TierId s) { return !tier_side(t, s) || tier_complete[s]; });
+  };
 
   if (ImGui::BeginTable("Libraries", 7,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
@@ -441,7 +444,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       else
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "partial");
       ImGui::TableNextColumn();
-      const bool blocked = state.ui_state != ComputeUIState::Idle || (s.tier == TierId::Lob && !all_complete);
+      const bool blocked = state.ui_state != ComputeUIState::Idle || !sides_complete(s.tier);
       ImGui::BeginDisabled(blocked);
       if (ImGui::SmallButton(("Compute##" + s.name).c_str())) {
         state.config.lib = s.name;
@@ -495,8 +498,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Separator();
     ImGui::Spacing();
 
-    const TierId lib_t = lib_tier(state.config.lib);
-    const size_t ti = static_cast<size_t>(lib_t);
+    const TierId lib_t = lib_def(state.config.lib).tier;
     const bool bar_tier = lib_t == TierId::Bar;
     ImGui::Text("Lib %s, %s:", state.config.lib.c_str(), bar_tier ? "Bar Tier Period" : "Backtest Period");
     ImGui::Indent();
@@ -508,8 +510,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Text("System Status:");
     ImGui::Indent();
     ImGui::BulletText("GUI entering low-refresh mode");
-    ImGui::BulletText("%s", StageLayout::make(topo, state.config.pf_cores[ti], state.config.cs_cores[ti], state.config.io_cores[ti]).summary().c_str());
-    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots[ti]);
+    ImGui::BulletText("%s", StageLayout::make(topo, state.config.pf_cores[lib_t], state.config.cs_cores[lib_t], state.config.io_cores[lib_t]).summary().c_str());
+    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots[lib_t]);
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 

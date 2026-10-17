@@ -1,5 +1,6 @@
 #pragma once
 
+#include "features/Storage/FeatureLevels.hpp" // PerTier
 #include "misc/date.hpp"
 
 #include <array>
@@ -303,8 +304,7 @@ template <class T>
 struct StageCtx {
   int worker_id;
   FeatureStore<T> &store;
-  const FeatureLib &lib;  // 本档库 (A 轴 = lib.axis, 目录 = lib.dir)
-  const FeatureLib &side; // CS 旁读档的库 (TierSide<T>; 无旁读列时不读)
+  const PerTier<FeatureLib> &libs; // 本档库 libs[T::kId] (A 轴 / 目录) + CS 旁读档的库 libs[TierSide<T>] (无旁读列时不读); 余档空
   std::span<const misc::Ymd> dates;
   const std::atomic<bool> &cancel;
   ComputeStats::Core &stat; // 本核发布槽 (单写者)
@@ -350,8 +350,7 @@ void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
 // ============================================================================
 struct PipelineArgs {
   SharedData &data;
-  const FeatureLib &lib;  // 本档库
-  const FeatureLib &side; // CS 旁读档的库 (无旁读档时任意)
+  const PerTier<FeatureLib> &libs; // 本档库 + CS 旁读档的库 (余档空), 见 StageCtx
   const std::vector<misc::Ymd> &dates;
   size_t ring_slots;
   uint64_t adopt_pct;

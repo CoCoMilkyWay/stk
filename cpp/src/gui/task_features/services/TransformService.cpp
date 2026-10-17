@@ -17,9 +17,6 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
     return;
 
   Req req;
-  req.scope = analysis::read_scope(data.config, sel.lib_of(feat->tier));
-  if (req.scope.months.empty())
-    return;
   req.spec.params = params;
   if (feat->level == L_day)
     req.spec.params.season = Transform::Season::None; // L_day 无日内轮廓
@@ -31,9 +28,10 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
     for (const char *code : {TF_STR(NEUTRAL_RANK_MCAP), TF_STR(NEUTRAL_RANK_INDUSTRY)})
       cols.push_back({TierId::Bar, static_cast<uint8_t>(L_min), static_cast<uint16_t>(all_meta.col_of(L_min, code))});
   }
-  req.spec.plan = analysis::read_plan(data.feature, feat->tier, feat->level, std::move(cols));
+  if (!analysis::read_request(data.config, data.feature, feat->level, std::move(cols), req.scope, req.spec.plan))
+    return;
   // 焦点按新库轴 clamp: UI 槽位可能来自上一个库 (切库后库轴大小已变)
-  req.spec.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.lib.axis.size()) - 1));
+  req.spec.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.lib().axis.size()) - 1));
   Request(std::move(req));
 }
 

@@ -25,10 +25,7 @@ bool MakeCorrRequest(SharedData &data, const std::vector<ColRef> &in, CorrReques
   size_t lvl = L_day; // 网格 = 最细层
   for (const ColRef &c : cols)
     lvl = std::min<size_t>(lvl, c.level);
-  const TierId main = Feature::main_tier(cols);
-  req.scope = analysis::read_scope(data.config, data.feature.selection.lib_of(main));
-  req.spec.plan = analysis::read_plan(data.feature, main, lvl, std::move(cols));
-  return !req.scope.months.empty();
+  return analysis::read_request(data.config, data.feature, lvl, std::move(cols), req.scope, req.spec.plan);
 }
 
 Corr &CorrService::target(SharedData &data) { return data.corr; }
@@ -60,12 +57,8 @@ CorrPair &CorrPairService::target(SharedData &data) { return data.corr_pair; }
 void CorrPairService::RequestCompute(SharedData &data, size_t level, const ColRef &a, const ColRef &b) {
   assert(a != b && level <= std::min(a.level, b.level));
   CorrRequest req;
-  const TierId main = Feature::main_tier({a, b});
-  req.scope = analysis::read_scope(data.config, data.feature.selection.lib_of(main));
-  if (req.scope.months.empty())
-    return;
-  req.spec.plan = analysis::read_plan(data.feature, main, level, {a, b}); // 按序: a 在前 (lag > 0 = a 领先)
-  Request(std::move(req));
+  if (analysis::read_request(data.config, data.feature, level, {a, b}, req.scope, req.spec.plan)) // 按序: a 在前 (lag > 0 = a 领先)
+    Request(std::move(req));
 }
 
 } // namespace GUI::Features

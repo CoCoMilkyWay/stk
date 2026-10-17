@@ -98,7 +98,7 @@ struct Preview : Published {
   // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回)
   void reset(analysis::ReadScope scope, Spec spec);
   // 轮训构建 (轮内特征块一块一任务: IO + 扫描 + 块末发布; 每轮一次 dispatch); 被取消返回 false
-  bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);
+  bool build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:

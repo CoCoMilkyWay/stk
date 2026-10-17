@@ -11,10 +11,10 @@ void PreviewService::RequestCompute(SharedData &data) {
   const auto &meta = data.feature.meta(tier);
 
   Req req;
-  req.scope = analysis::read_scope(data.config, data.feature.selection.lib());
+  req.scope = analysis::read_scope(data.config, data.feature, tier);
   if (req.scope.months.empty())
     return;
-  // price 笼: 涨跌停两列只在全局库, 两档一律 Bar 档旁读
+  // price 笼: 涨跌停两列只在 Bar 库 (Lob 主档经旁读)
   const auto &all_meta = data.feature.meta(TierId::Bar);
   req.spec.cage = {all_meta.col_of(L_day, "lim_dn"), all_meta.col_of(L_day, "lim_up")};
   req.spec.tier = tier;

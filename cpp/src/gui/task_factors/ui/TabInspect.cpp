@@ -504,7 +504,7 @@ void derive_axis(const InspectResult &res, int day, std::vector<int> &order, std
   gid.resize(order.size());
   r.resize(order.size());
   for (size_t i = 0; i < order.size(); ++i) {
-    gid[i] = res.read_scope.lib.axis.global(static_cast<size_t>(order[i]));
+    gid[i] = res.read_scope.lib().axis.global(static_cast<size_t>(order[i]));
     r[i] = mean[static_cast<size_t>(order[i])];
   }
 }
@@ -1445,7 +1445,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
         ui.ax_epoch = ep, ui.ax_day = day;
         derive_axis(res, day, ui.ax_order, ui.ax_gid, ui.ax_r);
       }
-      const LibAxis &axis = res.read_scope.lib.axis;
+      const LibAxis &axis = res.read_scope.lib().axis;
       size_t sub = axis.sub_of(ui.asset_gid); // 未选 / 不在本库轴内 → 光标日 R 最高者 (光标日无池内资产 → 全区间有效刻最多者), 结果一到就有 K 线
       if (sub >= axis.size()) {
         const int pick = !ui.ax_order.empty() ? ui.ax_order.front() : fallback_asset(res);

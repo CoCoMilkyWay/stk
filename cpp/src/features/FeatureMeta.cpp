@@ -15,6 +15,7 @@
 #include "features/Bar/FeatureCategoriesGenerated.hpp"
 #include "features/Lob/FeatureCategoriesGenerated.hpp"
 #include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
+#include "shared/Config.hpp" // Config::kAllTierDir (库表 [0])
 #include "shared/Feature.hpp"
 #include "shared/FeatureLib.hpp"
 
@@ -180,7 +181,7 @@ const TierMeta &tier_meta(TierId tier) {
 #undef GENERATE_TIER_META
 
 // ============================================================================
-// 票池 (FeatureLib.hpp 声明): Bar L_day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档库 <pool>
+// 库表 (FeatureLib.hpp 声明): [0] = all (Bar 档); 其余 = Bar L_day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档库 <pool>
 // ============================================================================
 namespace {
 constexpr std::string_view kPoolPrefix = "pool_";
@@ -190,24 +191,25 @@ constexpr bool is_pool(const FeatureMetadata &f) {
 constexpr std::span<const FeatureMetadata> kBarDay = bar::L_day_meta_detail::TABLE;
 constexpr size_t kPoolCount = std::count_if(kBarDay.begin(), kBarDay.end(), is_pool);
 static_assert(kPoolCount > 0, "Bar 字段表没有票池列 (Node/Bar/CS/Pool 的 pool_*)");
-constexpr std::array<PoolDef, kPoolCount> kPools = [] {
-  std::array<PoolDef, kPoolCount> out{};
-  size_t n = 0;
+constexpr std::array<LibDef, 1 + kPoolCount> kLibs = [] {
+  std::array<LibDef, 1 + kPoolCount> out{};
+  out[0] = {Config::kAllTierDir, TierId::Bar, SIZE_MAX};
+  size_t n = 1;
   for (size_t i = 0; i < kBarDay.size(); ++i)
     if (is_pool(kBarDay[i]))
-      out[n++] = {kBarDay[i].code + kPoolPrefix.size(), i};
+      out[n++] = {kBarDay[i].code + kPoolPrefix.size(), TierId::Lob, i};
   return out;
 }();
 } // namespace
 
-std::span<const PoolDef> feature_pools() { return kPools; }
+std::span<const LibDef> feature_libs() { return kLibs; }
 
-const PoolDef &pool_def(std::string_view name) {
-  for (const PoolDef &p : kPools)
-    if (name == p.name)
-      return p;
-  assert(false && "不是票池名 (Bar 库 pool_<pool> 列)");
-  return kPools.front();
+const LibDef &lib_def(std::string_view name) {
+  for (const LibDef &d : kLibs)
+    if (name == d.name)
+      return d;
+  assert(false && "不是库名 (all / Bar 库 pool_<pool> 列)");
+  return kLibs.front();
 }
 
 namespace feature_meta {

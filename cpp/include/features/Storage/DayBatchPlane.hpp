@@ -42,9 +42,8 @@ struct SegPlan {
 
 // 源 = 同 (档, 层) 的一组值列: 一天一次选列读 (cs 末位带该层 ts_valid), 行按 level_asof 投影到网格
 struct Source {
-  TierId tier = TierId::Lob;
+  TierId tier = TierId::Lob;  // 主档 = 同轴; 旁读档: 平面 a ← 该档轴 Readers::ids[tier][a]
   size_t level = L_min;
-  bool side = false;          // Bar 档旁读 (主档 Lob): 平面 a ← 全轴 Readers::ids[a]
   fmeta::ColumnSet cs;        // 值列 (+ 门控列)
   std::vector<uint32_t> slot; // [cs.n()] 值列 → 平面列
   std::vector<int32_t> row;   // [网格每日有效行] → 源行; -1 = 前一交易日末行
@@ -52,16 +51,22 @@ struct Source {
 };
 // 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan)
 struct ReadPlan {
-  size_t level = L_min;     // 网格层
-  std::vector<ColRef> cols; // [平面列]
+  TierId main = TierId::Lob; // 主档 (A 轴); 源档 = 主档或其旁读档
+  size_t level = L_min;      // 网格层
+  std::vector<ColRef> cols;  // [平面列]
   std::vector<Source> srcs;
   size_t n() const { return cols.size(); }
 };
-// 主库 / Bar 库 reader + 主轴 → 全轴映射 (旁读源用)
+// 库集各档 reader + 主轴 → 该档轴映射 (主档 nullptr = 同轴; 库集外档 nullptr)
 struct Readers {
-  const FeatureRead &main;
-  const FeatureRead &bar;
-  const uint32_t *ids;
+  TierId main = TierId::Lob;
+  PerTier<const FeatureRead *> rd{};
+  PerTier<const uint32_t *> ids{};
+  const FeatureRead &of(TierId t) const {
+    assert(rd[t] && "档不在库集内");
+    return *rd[t];
+  }
+  const FeatureRead &lib() const { return of(main); }
 };
 
 // IO 暂存 (按 io 池 tid): 每源 当日 + 承接日 选列张量 + 选列表 (稳态零分配)
@@ -73,13 +78,13 @@ struct IoSlot {
   std::vector<Buf> src; // [plan.srcs]
   std::vector<size_t> cols;
 
-  // max_cols: 单次读的值列上限 (分块读的平面传块宽)
-  void prepare(const ReadPlan &plan, size_t A, size_t A_bar, size_t max_cols) {
+  // As: 各档 A 轴长 (ReadScope::sizes); max_cols: 单次读的值列上限 (分块读的平面传块宽)
+  void prepare(const ReadPlan &plan, const PerTier<size_t> &As, size_t max_cols) {
     src.resize(plan.srcs.size());
     for (size_t i = 0; i < src.size(); ++i) {
       const Source &s = plan.srcs[i];
       const size_t n = std::min(s.cs.n(), max_cols) + s.cs.gated();
-      const size_t SA = s.side ? A_bar : A;
+      const size_t SA = As[s.tier];
       src[i].cur.preallocate(SA, s.level, n);
       if (s.carry)
         src[i].prev.preallocate(SA, s.level, n);
@@ -91,7 +96,7 @@ struct IoSlot {
 // 源一天 (当日 + 承接日) 选列读进暂存; io = 本次读列 (值列子集 [+ 门控列])
 inline void load_source(const Readers &rd, const Source &s, misc::Ymd date, misc::Ymd prev,
                         const std::vector<size_t> &io, IoSlot::Buf &b) {
-  const FeatureRead &reader = s.side ? rd.bar : rd.main;
+  const FeatureRead &reader = rd.of(s.tier);
   b.has_cur = date != 0;
   b.has_prev = s.carry && date != 0 && prev != 0;
   if (b.has_cur)
@@ -174,6 +179,7 @@ struct TsPlane {
         }
         TraceN("TransposeDay");
         const size_t nv = s.cs.n();
+        const uint32_t *ids = rd.ids[s.tier];
         for (size_t k = 0; k < nv; ++k) {
           const L2::ValidType vt = s.cs.vts[k];
           feature_storage_t *base = data.data() + (s.slot[k] * A * segs + j) * R + d * rpd; // + a * stride + t
@@ -191,7 +197,7 @@ struct TsPlane {
               const feature_storage_t *val = dc->col(k) + r * SA;
               const feature_storage_t *g = s.cs.gated() ? dc->col(nv) + r * SA : nullptr;
               for (size_t a = a0; a < a1; ++a) {
-                const size_t x = s.side ? rd.ids[a] : a;
+                const size_t x = ids ? ids[a] : a;
                 assert(x < SA);
                 base[a * stride + t] = fold_cell(val[x], g ? g + x : nullptr, vt);
               }
@@ -297,7 +303,7 @@ struct CsPlane {
             }
             const size_t SA = dc->A;
             const feature_storage_t *g = src.cs.gated() ? dc->col(bk.k1 - bk.k0) + r * SA : nullptr;
-            fold_row(dc->col(k - bk.k0) + r * SA, g, src.cs.vts[k], A, dst, src.side ? rd.ids : nullptr);
+            fold_row(dc->col(k - bk.k0) + r * SA, g, src.cs.vts[k], A, dst, rd.ids[src.tier]);
           }
         }
       }
@@ -329,13 +335,13 @@ struct Prefetch {
   Plane &front() { return buf[cur]; }
   Plane &back() { return buf[cur ^ 1]; }
 
-  // 幂等: 建 io 池 + 暂存 (A = 主轴, A_bar = Bar 全轴; max_cols 见 IoSlot::prepare); 两个平面的尺寸由调用方各自 prepare
-  void prepare(size_t n_io, const ReadPlan &plan, size_t A, size_t A_bar, size_t max_cols) {
+  // 幂等: 建 io 池 + 暂存 (As / max_cols 见 IoSlot::prepare); 两个平面的尺寸由调用方各自 prepare
+  void prepare(size_t n_io, const ReadPlan &plan, const PerTier<size_t> &As, size_t max_cols) {
     assert(!th.joinable());
     misc::exec::ensure(io, static_cast<int>(n_io));
     slots.resize(n_io);
     for (IoSlot &s : slots)
-      s.prepare(plan, A, A_bar, max_cols);
+      s.prepare(plan, As, max_cols);
     cur = 0;
   }
   // fn(Plane &, ForkJoin &io, std::vector<IoSlot> &)

@@ -154,12 +154,14 @@ public:
   // 节拍层: 有 L_sec 的档逐秒 (实盘 feed 按墙钟逐秒驱动), 无 L_sec 的档 (Bar, 分钟 K 源) 逐分钟
   static constexpr size_t kBeatLevel = T::kFirstLevel;
 
-  // axis = 本档库轴 (sub → global); side = 旁读档的库 (无旁读列时不读)
-  CoreCs(FeatureStore<T> &store, const LibAxis &axis, const FeatureLib &side)
-      : A_(store.query_A()), side_lib_(side), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
+  // libs[T::kId] = 本档库 (轴 sub → global); libs[旁读档] = 旁读档的库 (无旁读列时不读)
+  CoreCs(FeatureStore<T> &store, const PerTier<FeatureLib> &libs)
+      : A_(store.query_A()), libs_(libs), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
     if constexpr (Side::N > 0) {
       using S = typename TierSide<T>::type;
+      const LibAxis &axis = libs[T::kId].axis;
+      const FeatureLib &side = libs[S::kId];
       assert(side.tier == S::kId && axis.size() == A_);
       side_.resize(Side::N * level_rows(L_min) * A_);
       side_full_.resize(Side::N * level_rows(L_min) * side.axis.size());
@@ -300,9 +302,10 @@ private:
   void load_side_(misc::Ymd date) {
     using S = typename TierSide<T>::type;
     const LevelInfo &L = S::LEVELS[L_min];
-    const size_t T1 = L.rows, As = side_lib_.axis.size();
-    const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(side_lib_.dir, date), L_min), L, Side::kFields.data(), Side::N,
-                                                   side_full_.data(), As, side_lib_.axis.hash, side_scratch_);
+    const FeatureLib &side = libs_[S::kId];
+    const size_t T1 = L.rows, As = side.axis.size();
+    const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(side.dir, date), L_min), L, Side::kFields.data(), Side::N,
+                                                   side_full_.data(), As, side.axis.hash, side_scratch_);
     assert((st == FeatureDay::Status::Ok || st == FeatureDay::Status::Missing) && "旁读档库头不符 (轴 / 字段表变了), 先重算旁读档");
     if (st == FeatureDay::Status::Missing) {
       std::fill(side_.begin(), side_.end(), std::bit_cast<feature_storage_t>(fmeta::kNaNBits)); // fast-math TU: 不许浮点 NaN 字面量
@@ -336,7 +339,7 @@ private:
   Day day_{}; // 本日读写句柄, begin_day 换入 / end_day 交还
   size_t A_;
 
-  const FeatureLib &side_lib_;               // 旁读档库 (目录 + A 轴)
+  const PerTier<FeatureLib> &libs_;          // 本档 + 旁读档库 (目录 + A 轴)
   std::vector<feature_storage_t> side_;      // [N][T][A] 本日旁读列 (本档 A 轴)
   std::vector<feature_storage_t> side_full_; // [N][T][A_side] 读盘暂存
   std::vector<size_t> side_sub_;             // 本档 a → 旁读档 A 轴下标

@@ -15,8 +15,8 @@
 #include "features/FeaturesDefine.hpp" // FeatureDataType / ALL_TIERS
 #include "features/Method/TS.hpp"      // ts::TfId (FieldInfo.ts_tf)
 #include "features/TimeIndex.hpp"      // L_SEC_ROWS / L_MIN_ROWS / L_10MIN_ROWS / L_DAY_ROWS
+#include <array>
 #include <cassert>
-#include <compare>
 #include <cstddef>
 #include <cstdint>
 
@@ -45,6 +45,33 @@ inline constexpr const char *tier_name(TierId t) {
   ALL_TIERS(TIER_NAME_ONE)
 #undef TIER_NAME_ONE
   return "?";
+}
+#define TIER_ID_LIST(T, ns) TierId::T,
+inline constexpr std::array<TierId, TIER_COUNT> TIER_IDS{ALL_TIERS(TIER_ID_LIST)};
+#undef TIER_ID_LIST
+
+// 按档下标的数组: 一切 "本档 + 旁读档" 成对的东西 (库 / reader / 轴映射 / 按档配置) 都用它, 不设具名槽
+template <class X>
+struct PerTier {
+  std::array<X, TIER_COUNT> v{};
+  constexpr X &operator[](TierId t) { return v[static_cast<size_t>(t)]; }
+  constexpr const X &operator[](TierId t) const { return v[static_cast<size_t>(t)]; }
+  bool operator==(const PerTier &) const = default;
+};
+
+// 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读 side 档 (截面 / 分析读计划)
+namespace tier_of {
+#define TIER_OF_ONE(T, ns) inline constexpr TierId ns = TierId::T;
+ALL_TIERS(TIER_OF_ONE)
+#undef TIER_OF_ONE
+} // namespace tier_of
+inline constexpr bool tier_side(TierId main, TierId side) {
+#define TIER_SIDE_RT(ns, s)                            \
+  if (main == tier_of::ns && side == tier_of::s) \
+    return true;
+  TIER_SIDES(TIER_SIDE_RT)
+#undef TIER_SIDE_RT
+  return false;
 }
 
 // 层表项: 运行时按 (档, 层) 取 rows / field_count / fingerprint; 档缺的层 fields == nullptr (见 has_level)

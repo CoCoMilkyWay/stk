@@ -22,19 +22,19 @@ stk/
 │   │   │   ├── Asset.hpp / AssetInfo.hpp             # 📦 资产定义 / 元数据
 │   │   │   ├── AssetAxis.hpp                         # 📦 资产轴 (A 轴) 码表 + 库轴 LibAxis: Lob = 池轴 pool_axis / Bar = 全轴 full_axis
 │   │   │   ├── FeatureLib.hpp                        # 📦 特征库 = 库名 + 档 + A 轴 + 目录 + 日期轴
-│   │   │   │                                         #    · 库名定档: all → Bar 库; <pool> → Lob 库 (<pool> 来自 Bar 库 pool_<pool> 列)
+│   │   │   │                                         #    · 库表 feature_libs (LibDef = 库名 + 档 + 票池列): all → Bar 库; <pool> → Lob 库 (<pool> 来自 Bar 库 pool_<pool> 列)
 │   │   │   │                                         #    · 清单 lib.json: 写端 (ComputeService) 规划后落, 读端只读 ⇒ 两端口径一致; 无清单 = 未建库
 │   │   │   ├── Pool.hpp                              # 📦 pool::Panel 票池逐日成员 (日频 PIT, 与 fund::Panel 对仗)
 │   │   │   │                                         #    · 第 D 日成员 = Bar 库 D−1 收盘行的 pool_<pool> 列 → Lob 库 cs_valid
 │   │   │   │                                         #    · 池轴 = 日期轴内进过池的资产并集; 轴上资产全程算 TS, 日后进池不补历史
 │   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 多选 picked = set<ColRef> (跨层跨档; 切层 / 切档保留; 首个 = primary)
-│   │   │   │                                         #    · 主档 main_tier(cols): 任一列 Lob → Lob, 否则 Bar; Bar 列一律旁读
+│   │   │   │                                         #    · 选中库 libs = PerTier<库名> (每档一个); 主档 main_tier(cols) = 其余列皆可旁读的那一档 (TIER_SIDES)
 │   │   │   ├── OrderFlow.hpp                         # 📦 订单流数据: 两图 overlay 任意 ColRef, 点尾部对齐 (图1 x = 行末秒 − 1; 图2 x = 行末秒所在分钟)
 │   │   │   ├── Progress.hpp                          # 📦 后台计算进度面 (原子量, UI 免锁读) + 单调前缀发布 PrefixPub
 │   │   │   ├── Analysis.hpp                          # 📦 流式分析公共骨架 (进度 / epoch / 锁)
-│   │   │   │                                         #    · ReadScope = 主库 + Bar 库旁读; 只在 Bar 库的列 (涨跌停 / 市值 / 行业) 一律旁读
+│   │   │   │                                         #    · ReadScope = 主档库 + 旁读档库 (PerTier); 只在 Bar 库的列 (涨跌停 / 市值 / 行业) 一律旁读; read_request 统一请求构建
 │   │   │   │                                         #    · 多层统一: read_plan (ColRef → 网格层上的平面列) + plan_segs (段序) + Grid<L> / with_grid (网格编译期化)
-│   │   │   │                                         #    · build 签名统一 (reader, all, cancel); 价格笼等当日常量走同日读, 不走 as-of
+│   │   │   │                                         #    · build 签名统一 (PerTier<reader>, cancel); 价格笼等当日常量走同日读, 不走 as-of
 │   │   │   ├── Dist.hpp                              # 📦 分布分析: 月 / 周 / 日内 / 资产 四维; 网格 = 列自己的层
 │   │   │   ├── Corr.hpp                              # 📦 相关分析: 截面 Spearman 矩阵 + lead-lag; 网格 = 列集最细层 (粗层列 as-of 投影)
 │   │   │   ├── Transform.hpp                         # 📦 变换探索: 变换链 (math::Step, 与落盘截面列同源) + 平稳性诊断; 周期 / 带通单位 = 网格行
@@ -94,7 +94,7 @@ stk/
 │   │   │       ├── DayBatchPlane.hpp                 # 🧮 多段并行载入平面 TsPlane / CsPlane (Dist / Transform / Corr / Preview 共用)
 │   │   │       │                                     #    · 段 = 平面一个 j: 日内层 1 天, L_day 连续 255 个交易日
 │   │   │       │                                     #    · ReadPlan → 每 (档, 层) 一个 Source: 一天一次选列读 + column_set 门控 + level_asof 投影到网格行
-│   │   │       │                                     #    · Bar 源从全轴收拢到主轴 (旁读)
+│   │   │       │                                     #    · 旁读档源经 Readers::ids[档] 收拢到主轴
 │   │   │       ├── SparseCodec.hpp                   # 🧮 落盘编码: 稀疏位图 (默认)
 │   │   │       └── ZstdCodec.hpp                     # 🧮 落盘编码: zstd
 │   │   ├── worker/                                   # ⚡ 多线程工作流编排
@@ -155,7 +155,7 @@ stk/
 │   │   │   │   └── ui/                               # 🖥️ UI
 │   │   │   │       ├── Common.hpp                    # 🖥️ 流式 tab 公共件
 │   │   │   │       ├── TabFeature.hpp                # 🖥️ 特征表: 过滤 + 跨层跨档多选; 预览列按 (档, 层) 取
-│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: 库表 (all + 各票池), 每库一个 Compute 按钮; Bar 库未算完则 Lob 库禁用
+│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: 库表 (all + 各票池), 每库一个 Compute 按钮; 旁读档库未算完则本档库禁用
 │   │   │   │       ├── TabOrderFlow.hpp              # 🖥️ 订单流
 │   │   │   │       ├── TabDist.hpp                   # 🖥️ 分布 PDF
 │   │   │   │       ├── TabTransform.hpp              # 🖥️ 变换链 + 平稳性诊断

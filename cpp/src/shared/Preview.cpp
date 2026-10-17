@@ -60,7 +60,7 @@ struct Preview::Level {
 
 struct Preview::Runtime {
   std::array<std::unique_ptr<Level>, LEVEL_COUNT> lv; // 空 = 该层不跑
-  FeatureRead::DayColumns cage_day;                   // L_day [T][A_all] × {lim_dn, lim_up} (Bar 档旁读, 全轴)
+  FeatureRead::DayColumns cage_day;                   // L_day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 库轴)
   std::vector<uint32_t> asset_order;                  // [A] 固定种子洗牌 (轮间旋转取片)
   // ---- 线程私有 (按 tid; 各层共用) ----
   struct Shard {
@@ -83,7 +83,7 @@ struct Preview::LevelOf final : Preview::Level {
   std::vector<std::vector<float>> bufs; // [n_threads][R] 单 (资产, 段) 序列 (缺/门控 NaN → 谱前 ffill)
 
   // 容量准备: 每特征累积 + 块读计划 + 线程私有
-  void prepare(const ReadPlan &pv_plan, size_t A, size_t A_all, size_t n_threads) {
+  void prepare(const ReadPlan &pv_plan, size_t A, const PerTier<size_t> &As, size_t n_threads) {
     level = G::kLevel;
     rpd = G::kRowsPerDay;
     days = G::kDays;
@@ -94,13 +94,14 @@ struct Preview::LevelOf final : Preview::Level {
     cage_n.assign(n_pv, 0);
     cage_miss.assign(n_pv, 0);
     int_only.assign(n_pv, 1);
-    assert(pv_plan.srcs.size() == 1 && !pv_plan.srcs[0].side && "预览列 = 主档该层");
+    assert(pv_plan.srcs.size() == 1 && pv_plan.srcs[0].tier == pv_plan.main && "预览列 = 主档该层");
     const Source &src = pv_plan.srcs[0];
     blocks.clear();
     f0.clear();
     for (size_t b = 0; b < n_pv; b += kBlk) {
       const size_t e = std::min(b + kBlk, n_pv);
       ReadPlan bp;
+      bp.main = pv_plan.main;
       bp.level = pv_plan.level;
       bp.cols.assign(pv_plan.cols.begin() + b, pv_plan.cols.begin() + e);
       Source s = src;
@@ -123,7 +124,7 @@ struct Preview::LevelOf final : Preview::Level {
     ws.resize(n_threads);
     bufs.resize(n_threads);
     for (size_t i = 0; i < n_threads; ++i) {
-      io[i].prepare(blocks[0], A, A_all, kBlk);
+      io[i].prepare(blocks[0], As, kBlk);
       if (!ws[i])
         ws[i] = std::make_unique<PSD>();
       bufs[i].resize(R);
@@ -163,10 +164,10 @@ void Preview::reset(ReadScope scope, Spec sp) {
       continue;
     assert(p.level == l && std::is_sorted(p.cols.begin(), p.cols.end()));
     assert(p.cols.back().level == l && p.cols.back().col < sp.n_features[l]);
+    assert(p.main == sp.tier && p.main == scope.main);
   }
-  assert(sp.cage.size() == 2);
-  assert(scope.lib.axis.size() > 0 && !scope.months.empty());
-  assert(scope.bar.axis.size() > 0 && scope.lib.axis.ids.back() < scope.bar.axis.size());
+  assert(sp.cage.size() == 2 && scope.has(TierId::Bar) && "price 笼读 Bar 档");
+  assert(scope.lib().axis.size() > 0 && !scope.months.empty());
   std::lock_guard<std::mutex> lock(mutex);
 
   scope_ = std::move(scope);
@@ -191,14 +192,14 @@ void Preview::reset(ReadScope scope, Spec sp) {
 // Build (轮训: 轮 = 抽样日, 轮内按特征分块, 块末发布; 首帧 = 一块的 IO + 扫描)
 // ============================================================================
 
-bool Preview::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
+bool Preview::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("PreviewBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = scope_.lib.axis.size();
-  const size_t A_all = scope_.bar.axis.size();
+  const size_t A = scope_.lib().axis.size();
+  const PerTier<size_t> As = scope_.sizes();
   assert(A > 0 && "reset 先于 build");
-  const Readers rd{reader, all, scope_.lib.axis.ids.data()};
+  const Readers rd = scope_.readers(fr);
 
   // 线程数 = min(硬件并发, 最多块数): 块是抢任务单位, 多于块数的线程整轮空转
   size_t max_blocks = 1;
@@ -209,7 +210,7 @@ bool Preview::build(FeatureRead &reader, const FeatureRead &all, const std::atom
   rt.shards.resize(n_threads);
   for (Runtime::Shard &sh : rt.shards)
     sh.samples.reserve(kPvAssetsPerRound * TRADE_MINUTES_PER_DAY);
-  rt.cage_day.preallocate(A_all, L_day, 2);
+  rt.cage_day.preallocate(As[TierId::Bar], L_day, 2);
   rt.asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
 
   // 各层: 段序 (洗牌取前 kPvRounds 个, 无偏覆盖全区间, 轮序即收敛序) + 容量
@@ -221,10 +222,10 @@ bool Preview::build(FeatureRead &reader, const FeatureRead &all, const std::atom
       continue;
     rt.lv[l] = with_grid(l, [&](auto g) -> std::unique_ptr<Level> {
       auto lv = std::make_unique<LevelOf<decltype(g)>>();
-      lv->prepare(p, A, A_all, n_threads);
+      lv->prepare(p, A, As, n_threads);
       return lv;
     });
-    rt.lv[l]->plan = plan_segs(reader, scope_.months, l, DayOrder::Shuffle, kPvRounds);
+    rt.lv[l]->plan = plan_segs(rd.lib(), scope_.months, l, DayOrder::Shuffle, kPvRounds);
     n_rounds = std::max(n_rounds, rt.lv[l]->plan.size());
     n_total += rt.lv[l]->plan.size();
   }
@@ -266,13 +267,15 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
     // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
     TraceN("PreviewRoundIO");
     constexpr float kF16Rel = 1.0f / 1024.0f; // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
+    const uint32_t *cage_ids = rd.ids[TierId::Bar]; // nullptr = 主档即 Bar (同轴)
     for (size_t d = 0; d < days; ++d) {
       const misc::Ymd date = plan.dates[r * days + d];
       n_real += date != 0;
       if (date != 0)
-        rd.bar.load_day_columns(date, pv.spec.cage, rt.cage_day);
+        rd.of(TierId::Bar).load_day_columns(date, pv.spec.cage, rt.cage_day);
       for (size_t k = 0; k < n_draw; ++k) {
-        const size_t s = rd.ids[rt.asset_order[(a_off + k) % A]];
+        const size_t a = rt.asset_order[(a_off + k) % A];
+        const size_t s = cage_ids ? cage_ids[a] : a;
         const float dn = date ? static_cast<float>(rt.cage_day.col(0)[s]) : kNaN; // L_day 行 0 (当日常量)
         const float up = date ? static_cast<float>(rt.cage_day.col(1)[s]) : kNaN;
         cage_dn[k * days + d] = dn - (std::fabs(dn) * kF16Rel + kPxEps);

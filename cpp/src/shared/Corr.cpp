@@ -371,7 +371,7 @@ struct Engine {
 
   const PairSums &sums(size_t i, size_t j, size_t k) const { return acc[upper_index(i, j, F) * L + k]; }
 
-  void prepare(const CorrSpec &spec, size_t A_, size_t A_bar, const CorrPlan &p) {
+  void prepare(const CorrSpec &spec, size_t A_, const PerTier<size_t> &As, const CorrPlan &p) {
     TraceN("CorrPrepare");
     plan = p;
     F = spec.n();
@@ -392,7 +392,7 @@ struct Engine {
     lag_group = tile_pairs.size() >= 4 * n_threads ? L : 1;
 
     const size_t n_blk = (F + CsPlane::kBlockCols - 1) / CsPlane::kBlockCols + spec.plan.srcs.size() - 1; // 源列块数上界
-    pf.prepare(threads_for(days * n_blk), spec.plan, A, A_bar, CsPlane::kBlockCols);
+    pf.prepare(threads_for(days * n_blk), spec.plan, As, CsPlane::kBlockCols);
     for (CsPlane &pl : pf.buf)
       pl.prepare(A, spec.level(), days, S, F);
     rk.prepare(days * S * F, A);
@@ -407,15 +407,15 @@ struct Engine {
 
   // 抽样段 (洗牌取前 kCorrDays 个, 与 Dist / Preview 同一段序) 逐步流式; 每步末 publish_step() 写快照
   template <class Publish>
-  bool run(FeatureRead &reader, const FeatureRead &all, const ReadScope &scope, const CorrSpec &spec,
+  bool run(const PerTier<const FeatureRead *> &fr, const ReadScope &scope, const CorrSpec &spec,
            const CorrPlan &p, const std::atomic<bool> &cancel, Progress &board, Publish &&publish_step) {
-    const SegPlan sample = plan_segs(reader, scope.months, spec.level(), DayOrder::Shuffle, kCorrDays);
+    const Readers rd = scope.readers(fr);
+    const SegPlan sample = plan_segs(rd.lib(), scope.months, spec.level(), DayOrder::Shuffle, kCorrDays);
     const size_t n_days = sample.size();
     if (n_days == 0)
       return true; // 库为空: 直接 Done, 快照全空
     board.total.store(n_days, std::memory_order_release);
-    prepare(spec, scope.lib.axis.size(), scope.bar.axis.size(), p);
-    const Readers rd{reader, all, scope.lib.axis.ids.data()};
+    prepare(spec, scope.lib().axis.size(), scope.sizes(), p);
 
     // 第 d0 步的 IO (预读线程或本线程跑; 只写传入的平面, 切片行号随之填)
     const auto load = [&](size_t d0) {
@@ -544,7 +544,7 @@ Corr::~Corr() = default;
 void Corr::reset(ReadScope scope, Spec sp) {
   TraceN("CorrReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
+  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.lib().axis.size() > 0 && !scope.months.empty() && sp.plan.main == scope.main);
   assert(std::is_sorted(sp.plan.cols.begin(), sp.plan.cols.end()));
   assert(std::adjacent_find(sp.plan.cols.begin(), sp.plan.cols.end()) == sp.plan.cols.end());
   std::lock_guard<std::mutex> lock(mutex);
@@ -558,7 +558,7 @@ void Corr::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool Corr::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
+bool Corr::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("CorrBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -566,7 +566,7 @@ bool Corr::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<
   rt.pub.rho.assign(F * F, kNaN);
   rt.pub.pair_n.assign(F * F, 0);
   const Engine &eng = rt.eng;
-  return rt.eng.run(reader, all, scope_, spec, kMatrixPlan, cancel, *this, [&] {
+  return rt.eng.run(fr, scope_, spec, kMatrixPlan, cancel, *this, [&] {
     TraceN("CorrPublish");
     for (size_t i = 0; i < F; ++i) {
       rt.pub.rho[i * F + i] = 1.0f;
@@ -606,7 +606,7 @@ CorrLag::~CorrLag() = default;
 void CorrLag::reset(ReadScope scope, Spec sp) {
   TraceN("CorrLagReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
+  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.lib().axis.size() > 0 && !scope.months.empty() && sp.plan.main == scope.main);
   assert(std::is_sorted(sp.plan.cols.begin(), sp.plan.cols.end()));
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
@@ -618,7 +618,7 @@ void CorrLag::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool CorrLag::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
+bool CorrLag::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("CorrLagBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -626,7 +626,7 @@ bool CorrLag::build(FeatureRead &reader, const FeatureRead &all, const std::atom
   rt.pub.lag_best.assign(F * F, 0);
   rt.pub.rho_best.assign(F * F, kNaN);
   const Engine &eng = rt.eng;
-  return rt.eng.run(reader, all, scope_, spec, kLagPlan, cancel, *this, [&] {
+  return rt.eng.run(fr, scope_, spec, kLagPlan, cancel, *this, [&] {
     TraceN("CorrLagPublish");
     for (size_t i = 0; i < F; ++i) {
       rt.pub.lag_best[i * F + i] = 0;
@@ -681,7 +681,7 @@ CorrPair::~CorrPair() = default;
 
 void CorrPair::reset(ReadScope scope, Spec sp) {
   assert(sp.n() == 2 && sp.col(0) != sp.col(1));
-  assert(sp.level() < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
+  assert(sp.level() < LEVEL_COUNT && scope.lib().axis.size() > 0 && !scope.months.empty() && sp.plan.main == scope.main);
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
   spec = std::move(sp);
@@ -692,12 +692,12 @@ void CorrPair::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool CorrPair::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
+bool CorrPair::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("CorrPairBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
   const Engine &eng = rt.eng;
-  return rt.eng.run(reader, all, scope_, spec, kPairPlan, cancel, *this, [&] {
+  return rt.eng.run(fr, scope_, spec, kPairPlan, cancel, *this, [&] {
     // ρ(lag) = corr(A(t), B(t + lag)), lag > 0 = A 领先 B (A = 列 0 = 上三角行)
     for (size_t k = 0; k < kCorrLags; ++k) {
       const PairSums &s = eng.sums(0, 1, k);

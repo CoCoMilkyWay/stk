@@ -34,7 +34,7 @@ KlineService::KlineService() { Start(); }
 KlineService::~KlineService() { Stop(); }
 
 void KlineService::Request(KlineRequest req) {
-  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.lib.axis.size() && !req.dates.empty());
+  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.lib().axis.size() && !req.dates.empty());
   Service::Request(std::move(req));
 }
 

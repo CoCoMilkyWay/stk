@@ -12,13 +12,57 @@
 
 namespace analysis {
 
-ReadScope read_scope(const Config &cfg, std::string_view lib) {
+ReadScope read_scope(const Config &cfg, const Feature &feature, TierId main) {
   ReadScope s;
-  s.lib = load_lib(cfg, lib);
-  s.bar = load_lib(cfg, Config::kAllTierDir);
-  if (s.lib.ready() && s.bar.ready()) // 未建库 = 空范围 (请求方见 months 为空即放弃)
-    s.months = misc::months_between(cfg.start_date, cfg.end_date);
+  s.main = main;
+  bool ready = true;
+  for (const TierId t : TIER_IDS)
+    if (s.has(t)) {
+      s.libs[t] = load_lib(cfg, feature.selection.lib_of(t));
+      assert(s.libs[t].tier == t);
+      ready &= s.libs[t].ready();
+    }
+  if (!ready) // 未建库 = 空范围 (请求方见 months 为空即放弃)
+    return s;
+  s.months = misc::months_between(cfg.start_date, cfg.end_date);
+  const LibAxis &axis = s.lib().axis;
+  for (const TierId t : TIER_IDS)
+    if (t != main && s.has(t)) {
+      const LibAxis &side = s.libs[t].axis;
+      s.to[t].resize(axis.size());
+      for (size_t a = 0; a < axis.size(); ++a) {
+        s.to[t][a] = static_cast<uint32_t>(side.sub_of(axis.global(a)));
+        assert(s.to[t][a] < side.size() && "主档资产不在旁读档 A 轴内");
+      }
+    }
   return s;
+}
+
+PerTier<size_t> ReadScope::sizes() const {
+  PerTier<size_t> out;
+  for (const TierId t : TIER_IDS)
+    out[t] = libs[t].axis.size();
+  return out;
+}
+
+Readers ReadScope::readers(const PerTier<const FeatureRead *> &fr) const {
+  Readers rd{.main = main};
+  for (const TierId t : TIER_IDS)
+    if (has(t)) {
+      assert(fr[t] && "库集档缺 reader");
+      rd.rd[t] = fr[t];
+      rd.ids[t] = t == main ? nullptr : to[t].data();
+    }
+  return rd;
+}
+
+bool read_request(const Config &cfg, const Feature &feature, size_t level, std::vector<ColRef> cols, ReadScope &scope, ReadPlan &plan) {
+  const TierId main = Feature::main_tier(cols);
+  scope = read_scope(cfg, feature, main);
+  if (scope.months.empty())
+    return false;
+  plan = read_plan(feature, main, level, std::move(cols));
+  return true;
 }
 
 fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols) {
@@ -58,12 +102,13 @@ DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> 
 ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vector<ColRef> cols) {
   assert(!cols.empty() && level < LEVEL_COUNT);
   ReadPlan p;
+  p.main = main;
   p.level = level;
   p.cols = std::move(cols);
   std::map<std::pair<TierId, size_t>, std::vector<uint32_t>> groups; // (档, 层) → 平面列 (请求序)
   for (size_t c = 0; c < p.cols.size(); ++c) {
     const ColRef &r = p.cols[c];
-    assert((r.tier == main || r.tier == TierId::Bar) && "别档列只许 Bar 旁读");
+    assert((r.tier == main || tier_side(main, r.tier)) && "别档列只许旁读档");
     groups[{r.tier, r.level}].push_back(static_cast<uint32_t>(c));
   }
   const size_t rpd = level_valid_rows(level);
@@ -71,7 +116,6 @@ ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vecto
     Source s;
     s.tier = key.first;
     s.level = key.second;
-    s.side = key.first != main;
     std::vector<size_t> io;
     io.reserve(slot.size());
     for (const uint32_t c : slot)

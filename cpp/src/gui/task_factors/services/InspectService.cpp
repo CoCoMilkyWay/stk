@@ -123,10 +123,10 @@ bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reloa
   req.max_impact = data.config.max_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
+  req.scope = analysis::read_scope(data.config, data.feature, TierId::Lob);
   if (req.scope.months.empty())
     return false;
-  req.pool = data.feature.selection.pool;
+  req.pool = data.feature.selection.lib_of(TierId::Lob);
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;
@@ -166,16 +166,16 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
   // ---- S: 作用域 (标签 / 成本 / 门控 + 特征缓存) ----
-  FeatureRead reader(req.scope.lib, &cancel_);
+  FeatureRead reader(req.scope.lib(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty()) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;
   }
-  std::string ckey = req.scope.lib.dir + "|" + std::to_string(req.scope.lib.axis.hash) + "|cap" + std::to_string(req.max_impact);
+  std::string ckey = req.scope.lib().dir + "|" + std::to_string(req.scope.lib().axis.hash) + "|cap" + std::to_string(req.max_impact);
   for (const misc::Ym m : req.scope.months)
     ckey += "|" + std::to_string(m);
-  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib.axis.size());
+  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib().axis.size());
   begin(Phase::Loading, static_cast<size_t>(days));
   const auto stale_out = [&] {
     if (reader.stale()) { // 库换了, 缓存的一切不可信

@@ -1,6 +1,6 @@
 #include "shared/Feature.hpp"
-#include "shared/Config.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 
@@ -34,9 +34,9 @@ size_t Feature::Metadata::col_of(size_t level, const char *code) const {
 // Feature::Selection Implementation
 // ============================================================================
 
-std::string Feature::Selection::lib_of(TierId t) const {
-  assert(t == TierId::Bar || !pool.empty());
-  return t == TierId::Bar ? Config::kAllTierDir : pool;
+const std::string &Feature::Selection::lib_of(TierId t) const {
+  assert(!libs[t].empty() && "档的当前库未定 (TaskSettings 启动时按 default_lib 填)");
+  return libs[t];
 }
 
 std::vector<int> Feature::Selection::picked_at(TierId t, size_t level) const {
@@ -65,10 +65,12 @@ void Feature::Selection::clear() {
 // ============================================================================
 
 TierId Feature::main_tier(const std::vector<ColRef> &cols) {
+  assert(!cols.empty());
   for (const ColRef &c : cols)
-    if (c.tier == TierId::Lob)
-      return TierId::Lob;
-  return TierId::Bar;
+    if (std::all_of(cols.begin(), cols.end(), [&](const ColRef &d) { return d.tier == c.tier || tier_side(c.tier, d.tier); }))
+      return c.tier;
+  assert(false && "列集没有主档 (跨档列须是主档的旁读档, 见 TIER_SIDES)");
+  return cols.front().tier;
 }
 
 void Feature::clear() { selection.clear(); }

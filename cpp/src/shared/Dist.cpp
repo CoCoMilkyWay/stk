@@ -114,12 +114,12 @@ struct Dist::Runtime {
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
   // 容量准备 (幂等, 尺寸对得上零分配), 返回计算执行器
-  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, size_t A_bar, size_t n_months, size_t agg_stride) {
+  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, const PerTier<size_t> &As, size_t n_months, size_t agg_stride) {
     TraceN("DistPrepare"); // 首帧账目: 批平面 + 全资产 sketch + n_threads × 聚合 sketch
     const size_t n_threads = threads_for(n_asset_blocks(A));
     const size_t bs = batch_segs(plan.level), days = bs * seg_days(plan.level);
     const size_t asset_stride = bs * seg_rows(plan.level);
-    pf.prepare(threads_for(bs), plan, A, A_bar, SIZE_MAX);
+    pf.prepare(threads_for(bs), plan, As, SIZE_MAX);
     for (TsPlane &p : pf.buf)
       p.prepare(A, plan.level, bs, 1);
     assets.prepare(A);
@@ -150,18 +150,19 @@ Dist::~Dist() = default;
 void Dist::reset(ReadScope scope, Spec sp) {
   TraceN("DistReset");
   assert(sp.plan.n() == 1 && sp.plan.level == sp.plan.cols[0].level && "Dist 只接受单列, 网格 = 列自己的层");
-  check_axis(scope.lib.axis.ids);
+  assert(sp.plan.main == scope.main);
+  check_axis(scope.lib().axis.ids);
   std::lock_guard<std::mutex> lock(mutex);
 
-  const bool axis_changed = scope_.lib.axis.ids != scope.lib.axis.ids;
+  const bool axis_changed = scope_.lib().axis.ids != scope.lib().axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.lib.axis.size(); // A 轴 = 库轴
+  const size_t A = scope_.lib().axis.size(); // A 轴 = 库轴
 
   // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 库 / 区间变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
-  init_lines(snap.lines, scope_.lib.axis.ids);
+  init_lines(snap.lines, scope_.lib().axis.ids);
   if (snap.months.size() != scope_.months.size())
     snap.months.assign(scope_.months.size(), AggPdf{});
   if (snap.by_weekday.size() != 7)
@@ -177,16 +178,16 @@ void Dist::reset(ReadScope scope, Spec sp) {
 // Build (分批流式: 每批 IO → 扫描 → 归约 → 发布, 首帧与总区间长度无关)
 // ============================================================================
 
-bool Dist::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
+bool Dist::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = scope_.lib.axis.size(); // 库轴大小 (扫描/抽样预算/分母全按它)
+  const size_t A = scope_.lib().axis.size(); // 库轴大小 (扫描/抽样预算/分母全按它)
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
   const ReadPlan &rp = spec.plan;
   const size_t level = rp.level, rpd = level_valid_rows(level), R = seg_rows(level), BS = batch_segs(level);
   const size_t n_months = scope_.months.size();
-  const Readers rd{reader, all, scope_.lib.axis.ids.data()};
+  const Readers rd = scope_.readers(fr);
 
   // 预计算: 行 → 日内桶
   std::vector<uint8_t> tod_lut(rpd);
@@ -194,7 +195,7 @@ bool Dist::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<
     tod_lut[t] = static_cast<uint8_t>(tod_bin_of_row(level, t));
 
   // 段序: 洗牌后按总样本预算截断 (分批后平面只存一批, 内存不约束段数; 预算只是总时长旋钮)
-  const SegPlan plan = plan_segs(reader, scope_.months, level, DayOrder::Shuffle, std::max<size_t>(1, kMaxTotalSamples / (A * R)));
+  const SegPlan plan = plan_segs(rd.lib(), scope_.months, level, DayOrder::Shuffle, std::max<size_t>(1, kMaxTotalSamples / (A * R)));
   if (plan.size() == 0)
     return true;
   const size_t n_sel = plan.size();
@@ -206,7 +207,7 @@ bool Dist::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<
   while (agg_stride > 1 && rpd % agg_stride == 0)
     ++agg_stride; // 与日内行数互质: 整除会让每天固定落在同一批行上, 扭曲日内分布
 
-  misc::exec::ForkJoin &ex = rt.prepare(rp, A, scope_.bar.axis.size(), n_months, agg_stride);
+  misc::exec::ForkJoin &ex = rt.prepare(rp, A, scope_.sizes(), n_months, agg_stride);
   const size_t n_blocks = n_asset_blocks(A);
   rt.pub = snap; // 资产线的 asset / draw 标记 + 各槽尺寸随之带过去 (之后每批整体覆写)
   rt.pub.agg_stride = agg_stride;

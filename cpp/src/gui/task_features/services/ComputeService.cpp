@@ -29,7 +29,7 @@ ComputeService::ComputeService(SharedData &data)
 }
 
 void ComputeService::Request(ComputeConfig config) {
-  for (size_t t = 0; t < TIER_COUNT; ++t) {
+  for (const TierId t : TIER_IDS) {
     assert(config.ring_slots[t] >= ComputeConfig::kMinRingSlots && "ring slots 低于 LabelHold::MIN_RING_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
     assert(config.pf_cores[t] >= 1 && config.cs_cores[t] >= 1 && config.io_cores[t] >= 1 && "预取 / 截面 / 落盘各至少 1 核");
   }
@@ -44,21 +44,25 @@ bool ComputeService::run(ComputeConfig &config) {
   //   Lob (票池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
   //              × 票池并集 (Bar 库 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 Bar 库
   // 张量/调度/落盘全按本库 A 轴, 需要 items/码表时经 axis.global() 映射.
-  FeatureLib lib{.tier = lib_tier(config.lib), .name = config.lib, .dir = data_.config.FeatureLibDir(config.lib)};
-  FeatureLib side;
+  // 库集 = 本库 + 旁读档的当前库 (Selection::libs), 余档空
+  const LibDef &def = lib_def(config.lib);
+  PerTier<FeatureLib> libs;
+  for (const TierId s : TIER_IDS)
+    if (tier_side(def.tier, s))
+      libs[s] = load_lib(data_.config, data_.feature.selection.lib_of(s));
+  FeatureLib &lib = libs[def.tier];
+  lib = FeatureLib{.tier = def.tier, .name = config.lib, .dir = data_.config.FeatureLibDir(config.lib)};
   if (lib.tier == TierId::Lob) {
     assert(data_.asset.backtest.start == data_.config.start_date && data_.asset.backtest.end == data_.config.end_date &&
            "回测日历与配置区间不符 (改配置后没重算覆盖?)");
     lib.dates = data_.asset.backtest_dates();
-    side = load_lib(data_.config, Config::kAllTierDir);
-    data_.pool_panel = pool::Panel::build(side, pool_def(lib.name).col, lib.dates);
+    data_.pool_panel = pool::Panel::build(libs[TierId::Bar], def.pool_col, lib.dates);
     lib.axis = data_.pool_panel.axis();
   } else {
     for (const CalendarDay &day : data_.assetinfo.get_stock_days())
       if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data_.config.end_date)
         lib.dates.push_back(day.date);
     lib.axis = full_axis(data_.asset.items.size());
-    side = lib;
   }
   assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "日期轴为空 / 交易日历非升序, 不应触发特征计算");
   const std::vector<misc::Ymd> &dates = lib.dates;
@@ -98,8 +102,8 @@ bool ComputeService::run(ComputeConfig &config) {
   Logger::init(data_.config.log_dir);
 
   // 已落盘天数镜像进进度面
-  const size_t tier = static_cast<size_t>(lib.tier);
-  const PipelineArgs args{data_, lib, side, dates, static_cast<size_t>(config.ring_slots[tier]), static_cast<uint64_t>(config.adopt_pct),
+  const TierId tier = lib.tier;
+  const PipelineArgs args{data_, libs, dates, static_cast<size_t>(config.ring_slots[tier]), static_cast<uint64_t>(config.adopt_pct),
                           config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;

@@ -89,15 +89,15 @@ struct Transform::RuntimeOf final : Transform::Runtime {
   std::vector<Shard> shards; // [n_threads] 按 tid
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
-  // A = 库轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), A_all = 全轴 (旁读暂存),
+  // A = 库轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), As = 各档轴长 (源暂存),
   // 返回计算执行器
-  misc::exec::ForkJoin &prepare(size_t A, size_t A_all, const Spec &sp) {
+  misc::exec::ForkJoin &prepare(size_t A, const PerTier<size_t> &As, const Spec &sp) {
     TraceN("TransformPrepare");
     const Params &p = sp.params;
     const size_t BS = batch_segs(G::kLevel);
     const size_t n_threads = threads_for(n_asset_blocks(A));
 
-    pf.prepare(threads_for(BS), sp.plan, A, A_all, SIZE_MAX);
+    pf.prepare(threads_for(BS), sp.plan, As, SIZE_MAX);
     for (TsPlane &pl : pf.buf)
       pl.prepare(A, G::kLevel, BS, sp.plan.n());
     out.resize(A * BS * R);
@@ -152,24 +152,24 @@ void Transform::reset(ReadScope scope, Spec sp) {
   TraceN("TransformReset");
   assert(sp.plan.n() == (sp.params.cs_neutral() ? 3u : 1u));
   assert(sp.plan.level == sp.plan.cols[0].level && "网格 = 特征自己的层");
-  check_axis(scope.lib.axis.ids);
-  assert(scope.bar.axis.size() > 0 && scope.lib.axis.ids.back() < scope.bar.axis.size());
+  assert(sp.plan.main == scope.main);
+  check_axis(scope.lib().axis.ids);
   std::lock_guard<std::mutex> lock(mutex);
 
-  const bool axis_changed = scope_.lib.axis.ids != scope.lib.axis.ids;
+  const bool axis_changed = scope_.lib().axis.ids != scope.lib().axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.lib.axis.size(); // A 轴 = 库轴
+  const size_t A = scope_.lib().axis.size(); // A 轴 = 库轴
   assert(spec.focus < A && "序列焦点越界 (库轴下标)");
 
   // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 库轴变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
-  init_lines(snap.lines, scope_.lib.axis.ids);
+  init_lines(snap.lines, scope_.lib().axis.ids);
   if (snap.stat_lines.size() != A || axis_changed)
     snap.stat_lines.assign(A, StatLine{});
   for (size_t a = 0; a < A; ++a)
-    snap.stat_lines[a].asset = scope_.lib.axis.ids[a];
+    snap.stat_lines[a].asset = scope_.lib().axis.ids[a];
 
   publish();
 }
@@ -178,12 +178,12 @@ void Transform::reset(ReadScope scope, Spec sp) {
 // Build
 // ============================================================================
 
-bool Transform::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
-  return with_grid(spec.plan.level, [&](auto g) { return build_grid<decltype(g)>(reader, all, cancel); });
+bool Transform::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+  return with_grid(spec.plan.level, [&](auto g) { return build_grid<decltype(g)>(fr, cancel); });
 }
 
 template <class G>
-bool Transform::build_grid(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
+bool Transform::build_grid(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("TransformBuild");
   using Rt = RuntimeOf<G>;
   using PSD = typename G::PSD;
@@ -192,25 +192,25 @@ bool Transform::build_grid(FeatureRead &reader, const FeatureRead &all, const st
   Rt &rt = static_cast<Rt &>(*rt_);
   const Params &p = spec.params;
   const ReadPlan &rp = spec.plan;
-  const size_t A = scope_.lib.axis.size(); // 库轴大小
-  constexpr size_t VR = G::R;              // 段行数
+  const size_t A = scope_.lib().axis.size(); // 库轴大小
+  constexpr size_t VR = G::R;                // 段行数
   constexpr size_t BS = batch_segs(G::kLevel);
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
   const size_t stride = BS * VR; // out 每资产步长 (按满批)
-  const Readers rd{reader, all, scope_.lib.axis.ids.data()};
+  const Readers rd = scope_.readers(fr);
 
   // 段序: 升序 (TOD 轮廓跨天因果); max_days = 快速迭代预设, 只算区间头 N 段
-  const SegPlan plan = plan_segs(reader, scope_.months, G::kLevel, DayOrder::Sequential, p.max_days);
+  const SegPlan plan = plan_segs(rd.lib(), scope_.months, G::kLevel, DayOrder::Sequential, p.max_days);
   if (plan.size() == 0)
     return true;
   const size_t n_days = plan.size();
   total.store(n_days, std::memory_order_release);
 
-  misc::exec::ForkJoin &ex = rt.prepare(A, scope_.bar.axis.size(), spec);
+  misc::exec::ForkJoin &ex = rt.prepare(A, scope_.sizes(), spec);
   const size_t n_blocks = n_asset_blocks(A);
   rt.pub = snap;                 // 资产线 asset / draw 标记随之带过去 (之后每批整体覆写)
   for (size_t a = 0; a < A; ++a) // stats 每次 build 清零重累积, asset 得重贴
-    rt.stats[a].asset = scope_.lib.axis.ids[a];
+    rt.stats[a].asset = scope_.lib().axis.ids[a];
 
   // 焦点资产全程序列: 总天数此刻才知道, 就地分配 (NaN = 未到批, UI SkipNaN).
   // 写指针跨 swap 稳定: 首批发布把缓冲整体 swap 进 series, 之后经同一指针续写未发布段
@@ -253,7 +253,7 @@ bool Transform::build_grid(FeatureRead &reader, const FeatureRead &all, const st
       std::lock_guard<std::mutex> lock(mutex); // 短锁: 整体换新, 中间没有空态
       std::swap(snap, pub);
       if (b0 == 0) { // 首批: 全程缓冲换进来 (之前一直是旧图)
-        series.asset = scope_.lib.axis.ids[focus];
+        series.asset = scope_.lib().axis.ids[focus];
         series.level = G::kLevel;
         series.R = VR;
         series.raw.swap(rt.series_raw);

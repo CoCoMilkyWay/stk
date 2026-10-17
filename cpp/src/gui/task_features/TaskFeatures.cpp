@@ -255,9 +255,8 @@ TaskHandle CreateFeaturesTask() {
     case TAB_COMPUTE: { // 全量特征计算
       const bool running = state->compute_service && state->compute_service->busy();
       // 任一 reader (含 Factors 页) 判废删了某个库 → 提示重算 (该库 compute 开跑即撤销登记; 哪个库见 Compute 页库表)
-      const auto lib_stale = [&](std::string_view lib) { return FeatureRead::dir_stale(data.config.FeatureLibDir(lib)); };
-      if (!running && (lib_stale(Config::kAllTierDir) ||
-                       std::any_of(feature_pools().begin(), feature_pools().end(), [&](const PoolDef &p) { return lib_stale(p.name); })))
+      const auto lib_stale = [&](const LibDef &d) { return FeatureRead::dir_stale(data.config.FeatureLibDir(d.name)); };
+      if (!running && std::ranges::any_of(feature_libs(), lib_stale))
         return {TaskStatus::Kind::Warn, "stale"};
       if (!state->compute_service)
         return {};
@@ -293,7 +292,7 @@ TaskHandle CreateFeaturesTask() {
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
     if (!state->orderflow_service) {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.pool);
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.libs);
     }
     if (!state->dist_service) {
       state->dist_service = std::make_unique<Features::DistService>();
@@ -314,12 +313,12 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // OrderFlow 一代服务绑一个票池库 (worker 常驻 reader 持该库清单): 换池 / 库重算后整体重建 + 重扫
+    // OrderFlow 一代服务绑一组库 (每档一个, worker 常驻 reader 持各库清单): 换库 / 库重算后整体重建 + 重扫
     const auto renew_orderflow = [&] {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.pool);
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.libs);
       data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
     };
-    if (state->orderflow_service->pool() != data.feature.selection.pool)
+    if (state->orderflow_service->libs() != data.feature.selection.libs)
       renew_orderflow();
 
     // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (库 A 轴要它).

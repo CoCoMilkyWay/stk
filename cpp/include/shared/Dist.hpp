@@ -115,7 +115,7 @@ struct Dist : Published {
   // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 库轴变了才重建资产线
   void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式 (每批 IO → 扫描 → 归约 → 发布); 被取消返回 false
-  bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);
+  bool build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:

@@ -32,7 +32,7 @@ struct Feature;
 //   struct X : Published {
 //     struct Spec;  Spec spec;   本次构建的输入 (reset 持锁写; UI 持锁读 = 快照身份)
 //     struct Snap;  Snap snap;   发布成品 (批末持锁 swap; UI 渲染帧内持锁只画)
-//     void reset(ReadScope, Spec);  bool build(FeatureRead &, const FeatureRead &all, cancel);  void clear();
+//     void reset(ReadScope, Spec);  bool build(const PerTier<const FeatureRead *> &, cancel);  void clear();
 //   };
 // 同一条流水线, 只是配置不同:  段序 (SegPlan) + 读计划 (ReadPlan) → IO + 门控 + as-of 投影 (平面, features/Storage/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
@@ -199,13 +199,19 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 }
 
 // ---- 读取范围 (Request 公共头): GUI 线程从 config + 库清单解析, worker 只消费 ----
+// 库集 = 主档库 + 旁读档库 (TIER_SIDES; 涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径), 余档空
 struct ReadScope {
-  std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月); 主库或 Bar 库未建 → 空
-  FeatureLib lib;               // 主库 (档 / A 轴 / 目录, 与写端同一清单)
-  // Bar 档旁读 (涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 lib.axis.ids[a]
-  FeatureLib bar;
+  std::vector<misc::Ym> months;      // 升序 (config 区间覆盖的月); 库集任一未建 → 空
+  TierId main = TierId::Lob;         // 主档: A 轴 = libs[main].axis
+  PerTier<FeatureLib> libs;          // 档 / A 轴 / 目录, 与写端同一清单
+  PerTier<std::vector<uint32_t>> to; // 旁读档: 主轴 a → 该档轴下标; 主档 / 余档空
+
+  bool has(TierId t) const { return t == main || tier_side(main, t); } // 在库集内
+  const FeatureLib &lib() const { return libs[main]; }
+  PerTier<size_t> sizes() const;                                   // 各档 A 轴长
+  Readers readers(const PerTier<const FeatureRead *> &fr) const; // fr: 库集各档 reader
 };
-ReadScope read_scope(const Config &cfg, std::string_view lib); // lib = 库名 (见 FeatureLib.hpp)
+ReadScope read_scope(const Config &cfg, const Feature &feature, TierId main); // 各档库名 = feature.selection.lib_of(档)
 
 // ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
 template <class Spec>
@@ -225,9 +231,11 @@ struct DateList {
 };
 DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months);
 
-// GUI 线程: 一组 ColRef → 网格层 level 上的读计划. main = 主库档 (scope.lib.tier); 别档列只许 Bar (旁读).
+// GUI 线程: 一组 ColRef → 网格层 level 上的读计划. main = 主库档 (scope.main); 别档列只许旁读档 (tier_side).
 // 同 (档, 层) 的列并成一个源 (column_set 定门控), 源行 = level_asof(源层, level, t)
 ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vector<ColRef> cols);
+// 统一请求构建: 主档 = Feature::main_tier(cols) → 读取范围 + 读计划; 库集未建 → false (请求方放弃)
+bool read_request(const Config &cfg, const Feature &feature, size_t level, std::vector<ColRef> cols, ReadScope &scope, ReadPlan &plan);
 
 // ---- 段序 (全部流式分析唯一一份): 库内交易日按 seg_days(level) 连续成段, 再排段 ----
 //   Shuffle:    固定种子洗牌取前 limit 段 —— 无偏, 首批即覆盖全区间 (Dist / Preview / Corr*)

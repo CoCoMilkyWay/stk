@@ -84,12 +84,12 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    TierId tier = TierId::Lob;  // 当前浏览的档 (TabFeature 库选择: all → Bar, 票池 → Lob)
-    std::string pool;           // 当前票池 (Lob 档库名; 因子页恒用它, 选 all 时保留); 启动 = default_pool
+    TierId tier = TierId::Lob;  // 当前浏览的档 (TabFeature 库选择定: 选中库的档)
+    PerTier<std::string> libs;  // 每档当前库 (Bar: all; Lob: 票池, 因子页 / OrderFlow 恒用它; 切档保留); 启动 = default_lib
     int selected_level = L_min; // 当前浏览的层 (FeatureLevel: L_sec / L_min / L_10min / L_day), 默认 L_min
 
-    std::string lib_of(TierId t) const; // 档的库名: Bar → all, Lob → pool
-    std::string lib() const { return lib_of(tier); }
+    const std::string &lib_of(TierId t) const; // 档的当前库名
+    const std::string &lib() const { return lib_of(tier); }
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;
@@ -127,7 +127,7 @@ struct Feature {
     assert(c.col < list.size());
     return list[c.col];
   }
-  // 一组列的分析主档 (= 主库): 有 Lob 列 → Lob (Bar 列旁读), 否则 Bar
+  // 一组列的分析主档 (= 主库): 列集里的某档, 其余列的档都是它的旁读档 (tier_side); 找不到 → assert
   static TierId main_tier(const std::vector<ColRef> &cols);
 
   void clear();
