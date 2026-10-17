@@ -21,6 +21,7 @@ namespace GUI::Features {
 
 static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelLob::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
 static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelBar::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
+static_assert(TIER_COUNT == 2 && static_cast<size_t>(TierId::Lob) == 0 && static_cast<size_t>(TierId::Bar) == 1, "ComputeConfig 按档默认值按 Lob / Bar 序写死");
 
 ComputeService::ComputeService(SharedData &data)
     : data_(data) {
@@ -28,7 +29,10 @@ ComputeService::ComputeService(SharedData &data)
 }
 
 void ComputeService::Request(ComputeConfig config) {
-  assert(config.ring_slots >= ComputeConfig::kMinRingSlots && "ring slots 低于 LabelHold::MIN_RING_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
+  for (size_t t = 0; t < TIER_COUNT; ++t) {
+    assert(config.ring_slots[t] >= ComputeConfig::kMinRingSlots && "ring slots 低于 LabelHold::MIN_RING_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
+    assert(config.cs_cores[t] >= 1 && "截面至少 1 核");
+  }
   assert(config.adopt_pct >= 0 && config.adopt_pct <= 100 && "adopt pct must be in [0, 100]");
   Service::Request(config);
 }
@@ -94,7 +98,9 @@ bool ComputeService::run(ComputeConfig &config) {
   Logger::init(data_.config.log_dir);
 
   // 已落盘天数镜像进进度面
-  const PipelineArgs args{data_, lib, side, dates, static_cast<size_t>(config.ring_slots), static_cast<uint64_t>(config.adopt_pct), cancel_,
+  const size_t tier = static_cast<size_t>(lib.tier);
+  const PipelineArgs args{data_, lib, side, dates, static_cast<size_t>(config.ring_slots[tier]), static_cast<uint64_t>(config.adopt_pct),
+                          config.cs_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;
 #define TIER_PIPELINE(T, ns) \

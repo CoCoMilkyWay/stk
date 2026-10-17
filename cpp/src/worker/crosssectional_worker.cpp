@@ -7,9 +7,11 @@
 
 #include <cstdio>
 
-// 本核发布槽 (单写者): work = 累计已扫拍格, idle_ms = 累计干等毫秒; 天数前沿 = store.query_cs_done(), 渲染线程自取
+// 本核发布槽 (单写者): work = 累计已扫拍格, idle_us = 累计干等微秒; 天数前沿 = store.query_cs_done(), 渲染线程自取
+// 第 lane 核只做日 lane, lane + lanes, ... (CoreCs 日间无状态, 各核一个实例)
 template <class T>
-void cs_loop(const StageCtx<T> &ctx) {
+void cs_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes) {
+  assert(lane < lanes);
   const int worker_id = ctx.worker_id;
   FeatureStore<T> &store = ctx.store;
   const std::span<const misc::Ymd> dates = ctx.dates;
@@ -30,7 +32,7 @@ void cs_loop(const StageCtx<T> &ctx) {
   Core core(store, ctx.lib.axis, ctx.side);
 
   // Date-first traversal
-  for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
+  for (size_t date_idx = lane; date_idx < total_dates; date_idx += lanes) {
     if (cancel_requested.load(std::memory_order_relaxed))
       break;
     TraceN("DateLoop");
@@ -79,6 +81,6 @@ void cs_loop(const StageCtx<T> &ctx) {
     Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates processed");
 }
 
-#define CS_LOOP_INSTANTIATE(T, ns) template void cs_loop<ns::Tier>(const StageCtx<ns::Tier> &);
+#define CS_LOOP_INSTANTIATE(T, ns) template void cs_loop<ns::Tier>(const StageCtx<ns::Tier> &, size_t, size_t);
 ALL_TIERS(CS_LOOP_INSTANTIATE)
 #undef CS_LOOP_INSTANTIATE

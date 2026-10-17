@@ -125,14 +125,18 @@ void winsorize_quantile(float *x, std::size_t n, float lo_pct, float hi_pct) {
   std::size_t m = tmp.size();
   if (m < 2)
     return;
-  std::sort(tmp.begin(), tmp.end());
   std::size_t lo_k = static_cast<std::size_t>(std::floor(lo_pct * static_cast<double>(m - 1)));
   std::size_t hi_k = static_cast<std::size_t>(std::ceil(hi_pct * static_cast<double>(m - 1)));
   if (lo_k > m - 1)
     lo_k = m - 1;
   if (hi_k > m - 1)
     hi_k = m - 1;
-  float lo = tmp[lo_k], hi = tmp[hi_k];
+  assert(lo_k <= hi_k);
+  // 两个序统计量 = 全排序后的 tmp[lo_k] / tmp[hi_k]: 第二次只在 lo_k 右侧 (均 ≥ tmp[lo_k]) 选
+  std::nth_element(tmp.begin(), tmp.begin() + static_cast<std::ptrdiff_t>(lo_k), tmp.end());
+  const float lo = tmp[lo_k];
+  std::nth_element(tmp.begin() + static_cast<std::ptrdiff_t>(lo_k), tmp.begin() + static_cast<std::ptrdiff_t>(hi_k), tmp.end());
+  const float hi = tmp[hi_k];
   for (std::size_t i = 0; i < n; ++i) {
     float &v = x[i];
     if (!std::isfinite(v))
@@ -170,28 +174,31 @@ void z(float *x, std::size_t n) {
 }
 
 void pct_rank(float *x, std::size_t n) {
-  std::vector<std::size_t> &idx = scratch_idx(n);
+  // (值, 下标) 对排序: 比较不经 x[idx] 间接寻址; 并列组内次序不影响输出 (组内同一均秩)
+  thread_local std::vector<std::pair<float, std::size_t>> sv;
+  sv.clear();
+  sv.reserve(n);
   for (std::size_t i = 0; i < n; ++i) {
     if (std::isfinite(x[i]))
-      idx.push_back(i);
+      sv.emplace_back(x[i], i);
   }
-  if (idx.empty())
+  if (sv.empty())
     return;
 
-  std::sort(idx.begin(), idx.end(),
-            [&](std::size_t a, std::size_t b) { return x[a] < x[b]; });
+  std::sort(sv.begin(), sv.end(),
+            [](const std::pair<float, std::size_t> &a, const std::pair<float, std::size_t> &b) { return a.first < b.first; });
 
-  std::size_t m = idx.size();
+  std::size_t m = sv.size();
   std::size_t i = 0;
   while (i < m) {
     std::size_t j = i + 1;
-    while (j < m && x[idx[j]] == x[idx[i]])
+    while (j < m && sv[j].first == sv[i].first)
       ++j;
     float avg_rank = static_cast<float>(i + 1 + j) * 0.5f;
     float pct = (m > 1) ? (avg_rank - 1.0f) / static_cast<float>(m - 1)
                         : 0.5f;
     for (std::size_t k = i; k < j; ++k)
-      x[idx[k]] = pct;
+      x[sv[k].second] = pct;
     i = j;
   }
 }

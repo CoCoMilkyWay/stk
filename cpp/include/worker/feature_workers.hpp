@@ -22,18 +22,18 @@ template <class T>
 class FeatureStore;
 
 // ============================================================================
-// Stage Layout - 核布局: 按物理核分 stage, 由机器拓扑唯一推导 (worker 数不可配; 两档同一布局)
+// Stage Layout - 核布局: 按物理核分 stage, 由机器拓扑 + 截面核数 K (按档配, 见 ComputeConfig::cs_cores) 推导
 //
-//   [TS × (P − 2)] [CS] [IO + 预取]     P = 物理核数
+//   [TS × (P − 1 − K)] [CS × K] [IO + 预取]     P = 物理核数
 //
 // 超线程对布局透明: stage 只占物理核, 再展开到该核的逻辑 CPU ——
 //   TS:        每个逻辑 CPU 一个 worker, pin 单个逻辑 CPU (超线程吞吐全归 TS; 无超线程即每核一个)
-//   CS:        1 个 worker 独占一个物理核 (截面日后还要加, 留整核)
+//   CS:        K 个 worker 各独占一个物理核, 按日轮转 (日 d 归第 d % K 个; 截面日间无状态, 逐值与 K 无关)
 //   IO + 预取: 共一个物理核 (预取大部分时间阻塞在读盘 / 流控, 落盘大部分时间等截面), 两者都 pin 该核全部逻辑 CPU
 // CS / IO 不要落在 TS 物理核的超线程兄弟上: 同核争访存资源, 落盘慢数倍, 整条流水线被池子卡住.
 //
 // 全部线程 pin 死 —— 没有浮动线程抢占 pinned worker 的时间片.
-// worker_id = 全局序号 [TS 0..num_ts−1][CS][IO][预取] (TS 用作 frontier / stats 下标), 与 pin 的 CPU 号无关.
+// worker_id = 全局序号 [TS 0..num_ts−1][CS × K][IO][预取] (TS 用作 frontier / stats 下标), 与 pin 的 CPU 号无关.
 // stage 顺序 = UI 表格顺序 = 预取, TS..., CS, IO.
 // 进度不按行挂 worker: 仪表盘 (FeatureProgress) 自行采样, 见下.
 // ============================================================================
@@ -64,25 +64,26 @@ struct StageLayout {
   const Topology *topo = nullptr; // 进程级常驻 (physical_cores 的 static)
   int num_ts_phys = 0;            // TS 物理核数, 物理核 0..num_ts_phys-1
   int num_ts = 0;                 // TS worker 数 = 这些物理核上的逻辑 CPU 总数
+  int num_cs = 0;                 // CS worker 数 K = 物理核数, 物理核 num_ts_phys..num_ts_phys+K-1
 
   int total_phys() const { return static_cast<int>(topo->size()); }
-  int total_threads() const { return num_ts + 3; }
+  int total_threads() const { return num_ts + num_cs + 2; }
 
   Stage stage(ComputeStage kind) const {
-    const int cs = num_ts_phys, io = num_ts_phys + 1;
+    const int cs = num_ts_phys, io = num_ts_phys + num_cs;
     switch (kind) {
     case ComputeStage::Prefetch:
       return {kind, "预取 Prefetch", "顺日期备源 (Lob: 逐笔帧读进 page cache; Bar: 解码 bar1m 进源环), 领先最慢时序核不超过 ring slots + 2 天",
-              1, 0, num_ts + 2, io, io, true};
+              1, 0, num_ts + num_cs + 1, io, io, true};
     case ComputeStage::TS:
       return {kind, "时序 TS", "逐资产喂源 + DAG, 写 L0/L1 张量; 领跑核自动接手落后核的资产 (处置权转移)",
               num_ts, num_ts_phys, 0, 0, num_ts_phys - 1, false};
     case ComputeStage::CS:
-      return {kind, "截面 CS", "本日全部时序核写完后逐拍重放截面 (与实盘同一调用)",
-              1, 1, num_ts, cs, cs, false};
+      return {kind, "截面 CS", "本日全部时序核写完后逐拍重放截面 (与实盘同一调用); 多核按日轮转",
+              num_cs, num_cs, num_ts, cs, io - 1, false};
     case ComputeStage::IO:
       return {kind, "落盘 IO", "本日截面写完后逐层落盘, 清零交还 slot",
-              1, 1, num_ts + 1, io, io, false};
+              1, 1, num_ts + num_cs, io, io, false};
     }
     assert(false && "unknown compute stage");
     return {};
@@ -92,11 +93,11 @@ struct StageLayout {
     return {stage(ComputeStage::Prefetch), stage(ComputeStage::TS), stage(ComputeStage::CS), stage(ComputeStage::IO)};
   }
 
-  // stage 内第 i 个 worker pin 的逻辑 CPU: TS 单个逻辑 CPU (物理核序展开), 其余 = 所在物理核全部逻辑 CPU
+  // stage 内第 i 个 worker pin 的逻辑 CPU: TS 单个逻辑 CPU (物理核序展开), 其余 = 所在物理核 (第 i 个) 全部逻辑 CPU
   std::vector<unsigned int> cpus_of(const Stage &s, int i) const {
     assert(i >= 0 && i < s.threads);
     if (s.kind != ComputeStage::TS)
-      return (*topo)[static_cast<size_t>(s.first_phys)];
+      return (*topo)[static_cast<size_t>(s.first_phys + i)];
     for (int p = 0; p < num_ts_phys; ++p) {
       const std::vector<unsigned int> &cpus = (*topo)[static_cast<size_t>(p)];
       if (i < static_cast<int>(cpus.size()))
@@ -128,11 +129,13 @@ struct StageLayout {
     return os.str();
   }
 
-  static StageLayout make(const Topology &topo) {
+  static StageLayout make(const Topology &topo, int num_cs) {
+    assert(num_cs >= 1 && "截面至少 1 核");
     StageLayout l;
     l.topo = &topo;
-    l.num_ts_phys = static_cast<int>(topo.size()) - 2;
-    assert(l.num_ts_phys >= 1 && "物理核不足: 至少 TS + CS + (IO + 预取)");
+    l.num_cs = num_cs;
+    l.num_ts_phys = static_cast<int>(topo.size()) - 1 - num_cs;
+    assert(l.num_ts_phys >= 1 && "物理核不足: 至少 TS + CS × K + (IO + 预取)");
     for (int p = 0; p < l.num_ts_phys; ++p)
       l.num_ts += static_cast<int>(topo[static_cast<size_t>(p)].size());
     return l;
@@ -207,44 +210,37 @@ struct TsSchedule {
 //
 // worker 不再各持一行进度句柄: 各段已完成天数在 FeatureStore (query_*_done), TS 逐核
 // 前沿/持仓在 TsSchedule, worker 只发布统一的两件事 (ComputeStats::Core, 单写者,
-// 渲染线程只读): 单调工作量计数 work + 累计干等毫秒 idle_ms.
+// 渲染线程只读): 单调工作量计数 work + 累计干等微秒 idle_us.
 // FeatureProgress 的采样线程每 100ms 拉取全量状态, 原地重画固定 5 行:
 //
-//   [#######>            ]  48% 238/500 天 | 12m03s, ETA 13m10s (3.1s/天)
-//   预取 [▆] 251/500 20230811 812MB/s (1.2TB)
-//   时序 [▆█▇█▅█▇█▂█▇█...] 前沿 242..248/500 (20230805) Σ14.2M/s (28.4G单) 持仓 69..75
-//   截面 [▃] 240/500 (20230801) 8.2k格/s
-//   落盘 [▅] 238/500 20230801 95MB/s (0.9TB)
+//   [#######>            ]  48% 238/500 天 | 12m03s, ETA 13m10s (3.1s/天) | 最忙 落盘 98%
+//   预取 [▆] 忙 21% 251/500 20230811 812MB/s (1.2TB)
+//   时序 [▆█▇█▅█▇█▂█▇█...] 忙 均 35% 峰 52% 前沿 242..248/500 (20230805) 28.4G单 持仓 69..75
+//   截面 [▃] 忙 64% 240/500 (20230801) 8.2k格/s
+//   落盘 [▁] 忙 98% 238/500 20230801 95MB/s (0.9TB)
 //
-// 每类核心统一: 行首热力图, 每核 1 格 = 一个压力指标 t 的双重编码 ——
-// 块高 = 1−t (满 = 闲/健康, 空 = 压力大), 颜色 = t 白→红, 完全闲置 = 绿+满块.
-// 红色小矮柱 = 很费劲在满负荷工作. 后跟该类其余数值. 各类的压力指标:
+// 每核 1 格, 四类同一个指标 —— 忙碌占比 t (滑窗内不在干等的时间比例), 双重编码:
+// 块高 = 1−t (满 = 闲, 空 = 力竭), 颜色 = t 白→红, 基本全在干等 / 本段已完成 = 绿+满块.
+// 红色小矮柱 = 这个核在满负荷干活 (力竭); 某段整行红矮 = 该段是瓶颈, 上游各段随之变闲 (池满背压).
+// 行内 "忙" = 该段的忙碌占比 (多核段: 均 / 峰); 总行 "最忙" = 段均值最高的段.
 //
-//   预取 = 忙碌占比 (滑窗内非干等时间的比例; 基本全在流控干等 = 绿)
-//   时序 = 落后领跑的天数 / 池深         (领跑者满, 满红 = 差距吃满整个池子;
-//                                        基本全在池边干等 slot = 绿)
-//   截面 = 距时序前沿的积压天数 / 池深   (空红 = 积压吃满池子, 本核是瓶颈;
-//                                        追平前沿 = 绿)
-//   落盘 = 忙碌占比                      (基本全在等截面 close = 绿)
-//
-// 忙碌占比 = 1 − Δidle_ms/Δ墙钟 (滑窗): worker 把每次 sleep 干等的毫秒数
-// 累计进 idle_ms, 渲染线程滑窗轧差 —— 连续、无采样撞相位问题, 且不依赖
-// 带宽标定 (落盘一天一跳的粗粒度计数没法测瞬时带宽).
-// 总条以落盘天数为准 (端到端真完成). 逐核速度浓缩进 Σ, 逐核前沿 = 领跑
-// 前沿 − 颜色级 —— 谁是瓶颈一眼可见 (空 + 红).
+// 忙碌占比 = 1 − Δidle_us/Δ墙钟 (滑窗): worker 把每次干等实测的微秒数 (steady_clock, 含 sleep 超时余量)
+// 累计进 idle_us, 渲染线程滑窗轧差 —— 连续、无采样撞相位问题, 且不依赖
+// 带宽标定 (落盘一天一跳的粗粒度计数没法测瞬时带宽). 干等之外都算忙 (含时序池边领养回填).
+// 总条以落盘天数为准 (端到端真完成). 时序核间的进度差看 "前沿 最慢..领跑".
 // ============================================================================
 struct ComputeStats {
   // 每核一槽, 四类统一: work = 单调工作量 (预取=字节, 时序=源条数 (Lob 逐笔 / Bar 分钟 K),
-  // 截面=拍格, 落盘=字节), idle_ms = 累计干等毫秒 (每次 sleep 后累加)
+  // 截面=拍格, 落盘=字节), idle_us = 累计干等微秒 (每次 sleep 后按实测时长累加)
   struct alignas(64) Core {
     std::atomic<size_t> work{0};
-    std::atomic<size_t> idle_ms{0};
+    std::atomic<size_t> idle_us{0};
   };
   Core prefetch;
-  Core cs;
+  std::vector<Core> cs;
   Core io;
   std::vector<Core> ts;
-  explicit ComputeStats(size_t num_ts) : ts(num_ts) {}
+  ComputeStats(size_t num_ts, size_t num_cs) : cs(num_cs), ts(num_ts) {}
 };
 
 class FeatureProgress {
@@ -269,7 +265,7 @@ private:
   std::chrono::steady_clock::time_point start_time_;
 
   // 滑窗历史 (仅渲染线程触碰): work → 当前速率 (速度展示),
-  // idle_ms → 忙碌占比 (压力). 核序 = [预取, ts0..tsN-1, 截面, 落盘].
+  // idle_us → 忙碌占比 (压力). 核序 = [预取, ts0..tsN-1, 截面 cs0..csK-1, 落盘].
   std::vector<size_t> hist_work_; // [core][kWindow] 环形
   std::vector<size_t> hist_idle_; // [core][kWindow] 环形
   std::vector<long long> hist_ms_;
@@ -291,7 +287,7 @@ private:
 // (核按物理核分, 超线程透明, 见 StageLayout)
 //   预取 1 线程: 备源 —— 软源 (Lob: 只暖 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源环, TS 等 pf_ready); 与落盘共一个物理核
 //   时序 N 线程: TS 是资产局部纯函数 ⇒ 沿 A 维并行; 瓶颈, 其余物理核全给它 (每逻辑 CPU 一个; 处置权转移再平衡, 见 TsSchedule)
-//   截面 1 线程: CS 只读张量第 t 行, 要整个截面到齐 ⇒ 沿 T 逐拍串行; 独占一个物理核
+//   截面 K 线程: CS 只读张量第 t 行, 要整个截面到齐 ⇒ 日内沿 T 逐拍串行; 日间无状态 ⇒ 按日轮转 (日 d 归第 d % K 个); 各独占一个物理核
 //   落盘 1 线程: 逐列编码 + 写盘 (单线程须跟上落盘节奏, 见 FeatureDay)
 // 段间握手只经 FeatureStore 的各段已完成天数 (日环, 见 FeatureStore.hpp).
 //
@@ -312,7 +308,7 @@ struct StageCtx {
 };
 
 // 干等原语 (四角色共用): try_open() 为真即返回它; 否则 cancel → 返回空, 未 cancel → on_idle()
-// (干等时可做的活: 时序 = 领养回填, 其余无), sleep kIdleMs 并记入 idle_ms (仪表盘忙碌占比).
+// (干等时可做的活: 时序 = 领养回填, 其余无), sleep kIdleMs 并把实测睡眠时长记入 idle_us (仪表盘忙碌占比; on_idle 算忙).
 // 先试后查 cancel: 已就绪的照做 —— 落盘靠它在取消后刷完截面已关的日子.
 inline constexpr size_t kIdleMs = 10;
 
@@ -324,8 +320,10 @@ auto wait_open(const std::atomic<bool> &cancel, ComputeStats::Core &stat, TryOpe
     if (cancel.load(std::memory_order_relaxed))
       return decltype(try_open()){};
     on_idle();
+    const auto t0 = std::chrono::steady_clock::now();
     std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs));
-    stat.idle_ms.fetch_add(kIdleMs, std::memory_order_relaxed);
+    const auto slept = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0);
+    stat.idle_us.fetch_add(static_cast<size_t>(slept.count()), std::memory_order_relaxed);
   }
 }
 
@@ -334,11 +332,11 @@ auto wait_open(const std::atomic<bool> &cancel, ComputeStats::Core &stat, TryOpe
   return wait_open(cancel, stat, try_open, [] {});
 }
 
-// 截面: cs_try_open 等本日全部 TS 写完, 逐拍 compute_and_store (实盘同一调用), cs_close 交给 IO.
+// 截面: 第 lane 核 (共 lanes 核) 处理日 lane, lane + lanes, ...: cs_try_open 等本日全部 TS 写完, 逐拍 compute_and_store (实盘同一调用), cs_close 交给 IO.
 // 落盘: io_try_open 等本日截面写完, 逐层落盘, io_close 清零交还 slot, 直到全部日期刷完.
 // 档无关, 各自 TU 显式实例化两档 (预取 / 时序随档的源进档 TU, 见 feature_pipeline.hpp)
 template <class T>
-void cs_loop(const StageCtx<T> &ctx);
+void cs_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
 template <class T>
 void io_loop(const StageCtx<T> &ctx);
 
@@ -353,6 +351,7 @@ struct PipelineArgs {
   const std::vector<misc::Ymd> &dates;
   size_t ring_slots;
   uint64_t adopt_pct;
+  int cs_cores; // 截面核数 K (按日轮转, 见 StageLayout)
   const std::atomic<bool> &cancel;
   std::function<void(size_t)> on_io;
 };

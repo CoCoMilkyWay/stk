@@ -35,7 +35,7 @@ enum class ComputeUIState {
 };
 
 struct ComputeState {
-  // worker 数不可配: 核布局由机器核数唯一推导 (StageLayout::make)
+  // 核布局由机器核数 + 按档截面核数推导 (StageLayout::make)
   ComputeConfig config;
 
   // State machine

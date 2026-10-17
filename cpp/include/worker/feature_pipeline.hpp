@@ -51,7 +51,7 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed) {
   const int worker_id = ctx.worker_id;
   StoreRing &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 本核发布槽 (单写者): work = 累计备源字节, idle_ms = 累计流控干等毫秒
+  // 本核发布槽 (单写者): work = 累计备源字节, idle_us = 累计流控干等微秒
   ComputeStats::Core &stat = ctx.stat;
 
   TraceNS("PrefetchWorker", 5);
@@ -118,7 +118,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   TsSchedule &sched = role.sched;
   std::vector<std::unique_ptr<CoreOf<T>>> &cores = role.cores;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 本核发布槽 (单写者): work = 累计源条数, idle_ms = 累计干等毫秒;
+  // 本核发布槽 (单写者): work = 累计源条数, idle_us = 累计干等微秒;
   // 前沿/持仓在 store/sched 里, 渲染线程自取
   ComputeStats::Core &stat = ctx.stat;
 
@@ -366,10 +366,11 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
 template <class T>
 bool pipeline(const PipelineArgs &args) {
   // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
-  const StageLayout L = StageLayout::make(misc::Affinity::physical_cores());
+  const StageLayout L = StageLayout::make(misc::Affinity::physical_cores(), args.cs_cores);
   const std::vector<misc::Ymd> &dates = args.dates;
   const size_t num_assets = args.lib.axis.size();
   const size_t num_ts = static_cast<size_t>(L.num_ts);
+  const size_t num_cs = static_cast<size_t>(L.num_cs);
   assert(!dates.empty() && num_assets >= 1);
 
   std::cout << "\n=== Phase 2: Feature Computation (" << tier_name(T::kId) << ") ===\n"
@@ -404,7 +405,7 @@ bool pipeline(const PipelineArgs &args) {
 
   // 统一 launch(worker_id, cpus, fn): pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
   // 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
-  ComputeStats stats(num_ts);
+  ComputeStats stats(num_ts, num_cs);
   FeatureProgress progress(store, sched, stats, dates, TierFeed<T>::kUnit);
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
     return StageCtx<T>{worker_id, store, args.lib, args.side, dates, args.cancel, stat};
@@ -432,7 +433,7 @@ bool pipeline(const PipelineArgs &args) {
         launch(id, L.cpus_of(s, i), [&](int w) { ts_loop<T>(ctx(w, stats.ts[static_cast<size_t>(w)]), role); });
         break;
       case ComputeStage::CS:
-        launch(id, L.cpus_of(s, i), [&](int w) { cs_loop<T>(ctx(w, stats.cs)); });
+        launch(id, L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { cs_loop<T>(ctx(w, stats.cs[lane]), lane, num_cs); });
         break;
       case ComputeStage::IO:
         launch(id, L.cpus_of(s, i), [&](int w) { io_loop<T>(ctx(w, stats.io)); });

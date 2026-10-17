@@ -54,7 +54,7 @@ FeatureProgress::FeatureProgress(const StoreRing &store, const TsSchedule &sched
   assert(!dates_.empty() && "日期轴为空, 不应启动进度渲染");
   assert(stats_.ts.size() == sched_.frontier.size() && "stats 槽位数与 TS worker 数不符");
 
-  const size_t num_cores = stats_.ts.size() + 3; // [预取, ts..., 截面, 落盘]
+  const size_t num_cores = stats_.ts.size() + stats_.cs.size() + 2; // [预取, ts..., 截面..., 落盘]
   hist_work_.assign(num_cores * kWindow, 0);
   hist_idle_.assign(num_cores * kWindow, 0);
   hist_ms_.assign(kWindow, 0);
@@ -93,27 +93,28 @@ long long FeatureProgress::elapsed_ms() const {
 void FeatureProgress::render() {
   const size_t total = dates_.size();
   const size_t num_ts = sched_.frontier.size();
-  const size_t slots = store_.query_slots();
-  const size_t num_cores = num_ts + 3;
+  const size_t num_cs = stats_.cs.size();
+  const size_t io_core = 1 + num_ts + num_cs;
+  const size_t num_cores = io_core + 1;
   const long long now_ms = elapsed_ms();
 
   // ---- 采样 (原子读一轮快照; 各值间不要求一致, 展示用) ----
   const size_t pf_days = store_.query_pf_done();
-  const size_t ts_days = store_.query_ts_done(); // 全员计满的日数 (最慢前沿)
   const size_t cs_days = store_.query_cs_done();
   const size_t io_days = store_.query_io_done();
 
-  // 核序 = [预取, ts0..tsN-1, 截面, 落盘]: work + idle_ms 快照
+  // 核序 = [预取, ts0..tsN-1, 截面 cs0..csK-1, 落盘]: work + idle_us 快照
   std::vector<size_t> work(num_cores), idle(num_cores);
   auto snap = [&](size_t idx, const ComputeStats::Core &c) {
     work[idx] = c.work.load(std::memory_order_relaxed);
-    idle[idx] = c.idle_ms.load(std::memory_order_relaxed);
+    idle[idx] = c.idle_us.load(std::memory_order_relaxed);
   };
   snap(0, stats_.prefetch);
   for (size_t w = 0; w < num_ts; ++w)
     snap(1 + w, stats_.ts[w]);
-  snap(1 + num_ts, stats_.cs);
-  snap(2 + num_ts, stats_.io);
+  for (size_t k = 0; k < num_cs; ++k)
+    snap(1 + num_ts + k, stats_.cs[k]);
+  snap(io_core, stats_.io);
 
   std::vector<size_t> frontier(num_ts), holding(num_ts, 0);
   for (size_t w = 0; w < num_ts; ++w)
@@ -126,7 +127,7 @@ void FeatureProgress::render() {
   const size_t lead = *std::max_element(frontier.begin(), frontier.end());
   const size_t lag = *std::min_element(frontier.begin(), frontier.end());
 
-  // ---- 滑窗轧差: work → 当前速率 (速度展示), idle_ms → 忙碌占比 (压力) ----
+  // ---- 滑窗轧差: work → 当前速率 (速度展示), idle_us → 忙碌占比 (压力) ----
   const size_t slot = tick_ % kWindow;
   const size_t oldest = tick_ < kWindow ? 0 : (tick_ + 1) % kWindow;
   const double win_s = tick_ == 0 ? 0.0
@@ -136,7 +137,7 @@ void FeatureProgress::render() {
   for (size_t c = 0; c < num_cores; ++c) {
     if (win_s > 0.0) {
       rate[c] = static_cast<double>(work[c] - hist_work_[c * kWindow + oldest]) / win_s;
-      const double idle_s = static_cast<double>(idle[c] - hist_idle_[c * kWindow + oldest]) / 1000.0;
+      const double idle_s = static_cast<double>(idle[c] - hist_idle_[c * kWindow + oldest]) / 1e6;
       busy[c] = static_cast<float>(std::min(1.0, std::max(0.0, 1.0 - idle_s / win_s)));
     }
     hist_work_[c * kWindow + slot] = work[c];
@@ -146,8 +147,43 @@ void FeatureProgress::render() {
   ++tick_;
 
   // 完全闲置 (绿): 滑窗内基本全在干等. 干完活线程已退出的核 idle 不再累计,
-  // busy 会假读成 1, 由调用侧用 done 条件另行判绿.
+  // busy 会假读成 1, 由 done 条件另行判绿, 也不进段统计.
   constexpr float kIdleBusy = 0.05f;
+  std::vector<bool> done(num_cores, false);
+  done[0] = pf_days >= total;
+  for (size_t w = 0; w < num_ts; ++w)
+    done[1 + w] = frontier[w] >= total;
+  for (size_t k = 0; k < num_cs; ++k)
+    done[1 + num_ts + k] = cs_days >= total;
+  done[io_core] = io_days >= total;
+
+  // 段忙碌 = 段内未完成核的 均 / 峰
+  struct Load {
+    float mean = 0.0f, peak = 0.0f;
+  };
+  auto load_of = [&](size_t c0, size_t n) {
+    Load l;
+    size_t k = 0;
+    for (size_t c = c0; c < c0 + n; ++c) {
+      if (done[c])
+        continue;
+      l.mean += busy[c];
+      l.peak = std::max(l.peak, busy[c]);
+      ++k;
+    }
+    if (k > 0)
+      l.mean /= static_cast<float>(k);
+    return l;
+  };
+  const Load pf_load = load_of(0, 1), ts_load = load_of(1, num_ts), cs_load = load_of(1 + num_ts, num_cs), io_load = load_of(io_core, 1);
+  auto load_text = [](const Load &l, size_t n) {
+    char s[48];
+    if (n == 1)
+      snprintf(s, sizeof(s), "忙 %3.0f%%", l.mean * 100.0f);
+    else
+      snprintf(s, sizeof(s), "忙 均 %3.0f%% 峰 %3.0f%%", l.mean * 100.0f, l.peak * 100.0f);
+    return std::string(s);
+  };
 
   // ETA 标定: 首个落盘样本之后的增量
   if (first_io_ms_ < 0 && io_days > 0) {
@@ -189,57 +225,65 @@ void FeatureProgress::render() {
     }
     if (per_day_s > 0.0 && io_days < total)
       out << ", ETA " << fmt_duration(static_cast<long long>(per_day_s * static_cast<double>(total - io_days)));
+    // 最忙段 (段均值): ~100% = 该段力竭, 即流水线瓶颈
+    const std::pair<const char *, float> stage_load[] = {{"预取", pf_load.mean}, {"时序", ts_load.mean}, {"截面", cs_load.mean}, {"落盘", io_load.mean}};
+    const auto &[busiest, busiest_load] = *std::max_element(std::begin(stage_load), std::end(stage_load),
+                                                            [](const auto &a, const auto &b) { return a.second < b.second; });
+    if (tick_ > 1) {
+      snprintf(buf, sizeof(buf), " | 最忙 %s %.0f%%", busiest, busiest_load * 100.0f);
+      out << buf;
+    }
     out << "\033[K\n";
   }
 
-  // ---- 行2: 预取 —— 指标 = 忙碌占比; 基本全在流控干等 / 已读完 = 绿 ----
+  // 每核一格 = 忙碌占比 (见 feature_workers.hpp); 干等 / 本核已完成 = 绿
+  auto cells = [&](size_t c0, size_t n) {
+    for (size_t c = c0; c < c0 + n; ++c)
+      cell(out, busy[c], busy[c] < kIdleBusy || done[c]);
+    out << "\033[0m] ";
+  };
+
+  // ---- 行2: 预取 ----
   {
     out << "预取 [";
-    cell(out, busy[0], busy[0] < kIdleBusy || pf_days >= total);
-    out << "\033[0m] ";
-    snprintf(buf, sizeof(buf), "%zu/%zu %s %.0fMB/s (%.1fGB)",
+    cells(0, 1);
+    snprintf(buf, sizeof(buf), "%s %zu/%zu %s %.0fMB/s (%.1fGB)", load_text(pf_load, 1).c_str(),
              pf_days, total, pf_days > 0 ? misc::dense(dates_[pf_days - 1]).c_str() : "--------",
              rate[0] / 1e6, work[0] / 1e9);
     out << buf << "\033[K\n";
   }
 
-  // ---- 行3: 时序 —— 指标 = 落后领跑天数/池深 (领跑满/落后空红); 池边干等 = 绿 ----
+  // ---- 行3: 时序 (核间进度差看 前沿 最慢..领跑) ----
   {
     out << "时序 [";
-    for (size_t w = 0; w < num_ts; ++w) {
-      const size_t gap = lead - frontier[w];
-      cell(out, static_cast<float>(gap) / static_cast<float>(slots),
-           busy[1 + w] < kIdleBusy && frontier[w] < total);
-    }
-    out << "\033[0m] ";
+    cells(1, num_ts);
     const auto [hmin, hmax] = std::minmax_element(holding.begin(), holding.end());
-    snprintf(buf, sizeof(buf), "前沿 %zu..%zu/%zu (%s) %.2fG%s 持仓 %zu..%zu",
+    snprintf(buf, sizeof(buf), "%s 前沿 %zu..%zu/%zu (%s) %.2fG%s 持仓 %zu..%zu", load_text(ts_load, num_ts).c_str(),
              lag, lead, total, misc::dense(dates_[std::min(lead, total - 1)]).c_str(),
              static_cast<double>(sum_orders) / 1e9, unit_, *hmin, *hmax);
     out << buf << "\033[K\n";
   }
 
-  // ---- 行4: 截面 —— 指标 = 距时序前沿的积压/池深 (空红 = 瓶颈); 追平前沿 = 绿 ----
+  // ---- 行4: 截面 ----
   {
-    const size_t backlog = std::min(ts_days - std::min(ts_days, cs_days), slots);
+    double cs_rate = 0.0;
+    for (size_t k = 0; k < num_cs; ++k)
+      cs_rate += rate[1 + num_ts + k];
     out << "截面 [";
-    cell(out, static_cast<float>(backlog) / static_cast<float>(slots),
-         backlog == 0 || busy[1 + num_ts] < kIdleBusy);
-    out << "\033[0m] ";
-    snprintf(buf, sizeof(buf), "%zu/%zu (%s) %.1fk格/s",
+    cells(1 + num_ts, num_cs);
+    snprintf(buf, sizeof(buf), "%s %zu/%zu (%s) %.1fk格/s", load_text(cs_load, num_cs).c_str(),
              cs_days, total, misc::dense(dates_[std::min(cs_days, total - 1)]).c_str(),
-             rate[1 + num_ts] / 1e3);
+             cs_rate / 1e3);
     out << buf << "\033[K\n";
   }
 
-  // ---- 行5: 落盘 —— 指标 = 忙碌占比; 基本全在等截面 close / 已刷完 = 绿 ----
+  // ---- 行5: 落盘 ----
   {
     out << "落盘 [";
-    cell(out, busy[2 + num_ts], busy[2 + num_ts] < kIdleBusy || io_days >= total);
-    out << "\033[0m] ";
-    snprintf(buf, sizeof(buf), "%zu/%zu %s %.0fMB/s (%.1fGB)",
+    cells(io_core, 1);
+    snprintf(buf, sizeof(buf), "%s %zu/%zu %s %.0fMB/s (%.1fGB)", load_text(io_load, 1).c_str(),
              io_days, total, io_days > 0 ? misc::dense(dates_[io_days - 1]).c_str() : "--------",
-             rate[2 + num_ts] / 1e6, work[2 + num_ts] / 1e9);
+             rate[io_core] / 1e6, work[io_core] / 1e9);
     out << buf << "\033[K\n";
   }
 

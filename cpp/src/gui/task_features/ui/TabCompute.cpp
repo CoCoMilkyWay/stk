@@ -106,15 +106,21 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Configuration");
   ImGui::Spacing();
 
-  // 核布局: 机器物理核拓扑唯一推导, worker 数不可配 (见 StageLayout)
-  const StageLayout layout = StageLayout::make(misc::Affinity::physical_cores());
+  // 核布局: 机器物理核拓扑 + 按档截面核数推导, TS worker 数不可配 (见 StageLayout)
+  const StageLayout::Topology &topo = misc::Affinity::physical_cores();
+  const int max_cs_cores = static_cast<int>(topo.size()) - 2; // 至少留 1 个 TS 物理核 + 落盘核
 
-  ImGui::Text("Stages (%d 物理核 / %u 逻辑 CPU, auto):", layout.total_phys(), misc::Affinity::core_count());
-  ImGui::Spacing();
+  for (size_t ti = 0; ti < TIER_COUNT; ++ti) {
+    const TierId tier = static_cast<TierId>(ti);
+    const StageLayout layout = StageLayout::make(topo, state.config.cs_cores[ti]);
 
-  if (ImGui::BeginTable("StageLayout", 5,
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
-                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
+    ImGui::Text("Stages %s (%d 物理核 / %u 逻辑 CPU):", tier_name(tier), layout.total_phys(), misc::Affinity::core_count());
+    ImGui::Spacing();
+
+    if (!ImGui::BeginTable(("StageLayout##" + std::string(tier_name(tier))).c_str(), 5,
+                           ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
+                               ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings))
+      continue;
     ImGui::TableSetupColumn("Stage");
     ImGui::TableSetupColumn("线程");
     ImGui::TableSetupColumn("专核 (物理)");
@@ -141,18 +147,29 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       stage_row(stage);
 
     ImGui::EndTable();
-  }
 
-  ImGui::Spacing();
-  ImGui::Text("Pool Slots:");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(150);
-  if (ImGui::InputInt("##ring_slots", &state.config.ring_slots, 1, 1)) {
-    if (state.config.ring_slots < ComputeConfig::kMinRingSlots)
-      state.config.ring_slots = ComputeConfig::kMinRingSlots;
+    const std::string id = tier_name(tier);
+    ImGui::Text("Pool Slots:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    if (ImGui::InputInt(("##ring_slots_" + id).c_str(), &state.config.ring_slots[ti], 1, 1)) {
+      if (state.config.ring_slots[ti] < ComputeConfig::kMinRingSlots)
+        state.config.ring_slots[ti] = ComputeConfig::kMinRingSlots;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open; 截面 K 核宜 >= %d + K)",
+                        ComputeConfig::kMinRingSlots, ComputeConfig::kMinRingSlots + 1);
+
+    ImGui::Text("CS Cores:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    if (ImGui::InputInt(("##cs_cores_" + id).c_str(), &state.config.cs_cores[ti], 1, 1)) {
+      state.config.cs_cores[ti] = std::clamp(state.config.cs_cores[ti], 1, max_cs_cores);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(截面按日轮转, 每核独占一个物理核, 从时序让出; 时序是瓶颈的档用 1)");
+    ImGui::Spacing();
   }
-  ImGui::SameLine();
-  ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open)", ComputeConfig::kMinRingSlots);
 
   ImGui::Spacing();
   ImGui::Text("Adopt %%:");
@@ -470,7 +487,9 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Separator();
     ImGui::Spacing();
 
-    const bool bar_tier = lib_tier(state.config.lib) == TierId::Bar;
+    const TierId lib_t = lib_tier(state.config.lib);
+    const size_t ti = static_cast<size_t>(lib_t);
+    const bool bar_tier = lib_t == TierId::Bar;
     ImGui::Text("Lib %s, %s:", state.config.lib.c_str(), bar_tier ? "Bar Tier Period" : "Backtest Period");
     ImGui::Indent();
     ImGui::BulletText("Start: %s", misc::dash(bar_tier ? ::config::PIPELINE_START_DATE : config.start_date).c_str());
@@ -481,8 +500,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Text("System Status:");
     ImGui::Indent();
     ImGui::BulletText("GUI entering low-refresh mode");
-    ImGui::BulletText("%s", layout.summary().c_str());
-    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots);
+    ImGui::BulletText("%s", StageLayout::make(topo, state.config.cs_cores[ti]).summary().c_str());
+    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots[ti]);
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 

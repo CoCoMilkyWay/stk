@@ -9,7 +9,7 @@
 #include <filesystem>
 #include <string>
 
-// 本核发布槽 (单写者): work = 已落盘字节, idle_ms = 累计等截面 close 毫秒; 天数前沿 = store.query_io_done()
+// 本核发布槽 (单写者): work = 已落盘字节, idle_us = 累计等截面 close 微秒; 天数前沿 = store.query_io_done()
 template <class T>
 void io_loop(const StageCtx<T> &ctx) {
   const int worker_id = ctx.worker_id;
@@ -30,7 +30,7 @@ void io_loop(const StageCtx<T> &ctx) {
 
   FeatureDay::Scratch scratch; // 跨日复用, 稳态零分配
   // 循环顶不查 cancel (与其余三角色唯一的不同): 截面已 close 的日子刷完再走 ——
-  // wait_open 先试后查 cancel, 追平 cs_done 后才返回空. 不能和 ts_done 比:
+  // wait_open 先试后查 cancel, 刷到首个未截面的日才返回空. 不能和 ts_done 比:
   // CS 按 cancel 即退, 而某个 TS 可能之后才把在飞的一天计满, 等它就是死等.
   for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
     TraceN("FlushLoop");
