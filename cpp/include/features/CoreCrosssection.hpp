@@ -63,6 +63,8 @@ public:
   // day = 本日读写句柄 (store.cs_open, 已按日门控: 两层张量整体就绪)
   void set_day(const GlobalFeatureStore::Day &day) { day_ = day; }
 
+  // 每秒一调 (事件驱动): 实盘由 feed 层按墙钟逐秒调用, 回测按日门控后逐秒重放同一个调用.
+  // 不要改成"整日一次批量扫" —— 那样回测和实盘就成了两条代码路径, 逐值一致无从保证.
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
     TraceColor(C_Magenta);
@@ -96,9 +98,10 @@ public:
 private:
   template <size_t LVL>
   void run(size_t t) {
-    if constexpr (CsLevel<LVL>::kEmpty) // 层内暂无 CS 行: 节拍照走, 有效集也不必扫
+    if constexpr (CsLevel<LVL>::kEmpty) // 层内暂无 CS 行 (L0 目前如此, 预留层): 节拍照走, 有效集也不必扫
       return;
-    // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面
+    // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面.
+    // 虽是整日常量仍逐行读第 t 行: CS 在 t 的输入只许来自张量第 t 行 (行自足), 实盘逐秒推进时也成立 —— 别挪成每日向量
     constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::cs_valid) : size_t(L1_Field::cs_valid);
     const _Float16 *valid_flags = fstore::cs_col<LVL>(day_, t, VALID);
     valid_indices_.clear();

@@ -51,12 +51,12 @@ stk/
 │   │   │   ├── OrderFrame.hpp                        # 🔄 FrameEncoder ↔ FrameDecoder: 逐笔 ↔ zstd 帧
 │   │   │   ├── L2_Validator.hpp                      # 🔄 逐笔数据准入校验 (编码期)
 │   │   │   └── json_config.hpp                       # 🔄 JSON 配置解析
-│   │   ├── features/                                 # 🧮 特征工程 (两层时间尺度: L0 秒 / L1 分钟)
+│   │   ├── features/                                 # 🧮 特征工程 (两层时间尺度: L0 秒 / L1 分钟); 事件驱动, 回测 = 实盘逐值一致 (逐笔写 / 逐秒截面)
 │   │   │   ├── FeaturesDefine.hpp                    # 🧮 字段表格式 (NODE_ / FIELDS_ 行) + 元数据枚举
 │   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L0 ↔ L1, 交易时段常数
 │   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData, Trigger 触发域, 算子契约
 │   │   │   ├── ComputeGraph.hpp                      # 🧮 计算图 DAG (CMake 扫描算子文件生成 NodesGenerated.hpp)
-│   │   │   ├── CoreSequential.hpp                    # 🧮 单资产时序: tick → L0 → L1 + 标签
+│   │   │   ├── CoreSequential.hpp                    # 🧮 单资产时序: tick → L0 → L1 + 标签; 一致性保证
 │   │   │   ├── CoreCrosssection.hpp                  # 🧮 截面: L0 每秒 + L1 分钟
 │   │   │   ├── MetaFlag.hpp                          # 🧮 _meta 列编解码 (消费端不依赖 Meta 算子)
 │   │   │   ├── Operator/TS/                          # 🧮 时序算子: class + NODE_ / FIELDS_ 宏
@@ -67,7 +67,7 @@ stk/
 │   │   │       ├── FeatureStoreConfig.hpp            # 🧮 写端: 字段表 → 编译期层表
 │   │   │       ├── FeatureLevels.hpp                 # 🧮 读端运行时层表 (与字段表解耦, 增删特征不触发读侧重编)
 │   │   │       ├── FeatureDay.hpp                    # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录); codec 选型在此
-│   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 日张量池, TS / CS / IO 三段 open-close
+│   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 日张量池, TS / CS / IO 三段 open-close; 热路径只许指针算术
 │   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 单日按列选读 [n][T][A]; 删库与多 reader 并发安全
 │   │   │       ├── DayBatchPlane.hpp                 # 🧮 多日并行载入平面 (Dist / Transform 共用)
 │   │   │       ├── SparseCodec.hpp                   # 🧮 落盘编码: 稀疏位图 (默认)

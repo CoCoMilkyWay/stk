@@ -68,7 +68,8 @@ public:
     meta_.reset();
     // 当日池成员位: 日频 PIT 名单 (universe::Pool, 盘后 python 产出, 第 D 日由 ≤ D−1 数据定), 与 Fund 吃 fund_pool 同形
     meta_.begin_day(universe_pool_.in_pool(code_ex_, date));
-    // cs_valid: 当日池成员位, 整日常量, 与事件无关 → 盘前一次写满两层全部行 (池外不写, slot 清零即 0)
+    // cs_valid: 当日池成员位, 整日常量, 与事件无关 → 盘前一次写满两层全部行 (池外不写, slot 清零即 0).
+    // 逐行存而非每日一个标量: CS 在 t 只读张量第 t 行 (见 CoreCrosssection.hpp 一致性锚); L0 也写 (预留层, 见 FeaturesDefine.hpp ALL_LEVELS)
     if (const float cs = meta_.cs(); cs != 0.0f) {
       for (size_t t = 0; t < LEVELS[0].rows; ++t)
         fstore::ts_write<0>(day_, t, L0_Field::cs_valid, asset_id_, cs);
@@ -152,6 +153,8 @@ private:
       dag_.LabelReturn.minute_anchored(t, label_writer());
     }
 
+    // 逐笔写行, 同秒后一笔覆盖前一笔, 行终值 = 该秒最后一笔后的状态 (事件驱动: 实盘就是边到边写).
+    // 不要攒到秒末 / 日末再批量提交 —— 那是回测专属的形态, 会让回测与实盘走两条路.
     fstore::ts_write_row<0>(day_, t, asset_id_, dag_);
 
     // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, begin_day 已写)

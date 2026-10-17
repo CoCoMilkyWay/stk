@@ -82,6 +82,11 @@ inline constexpr size_t kDefaultPoolSlots = 4;
 // 被回收 —— 不需要 epoch / 每次访问的缓存验证. 数值一致性与调度形态无关, 由
 // 输入契约锚定 (见 CoreSequential.hpp / CoreCrosssection.hpp), 按日门控只是
 // 回测里的因果保证.
+//
+// 布局 [T][F][A] 服务于事件驱动的两个写读姿态: TS 每笔写一行 (t, *, a), CS 每秒
+// 读写 (t, f, *) 一段连续 A. 落盘的列主序只在 FeatureDay 里转换, 不反过来改内存布局.
+// 性能约束: TS / CS 热路径 (逐笔 / 逐秒) 只许指针算术 —— 无锁、无查找、无分配、无
+// 运行时校验 (只 assert); 状态机开销全压在每日一次的 open / close 上.
 // ============================================================================
 class GlobalFeatureStore {
 public:
