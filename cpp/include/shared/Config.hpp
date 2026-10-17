@@ -6,20 +6,13 @@
 #include <filesystem>
 #include <functional>
 #include <string>
-#include <vector>
+#include <string_view>
 
 struct Config {
 
   // Backtest/Analysis Period [start_date, end_date] (config.json 里存 "YYYY-MM-DD")
   misc::Ymd start_date = 20250101;
   misc::Ymd end_date = 20250201;
-
-  // Lob 档特征计算 universe: <config_dir>/universe/<name>.json (全市场不是 universe, 是 Bar 档 FeatureAllDir)
-  // (动态池逐日 diff, py/universe/<name>.py 产出, 见 shared/Universe.hpp). 特征管线的 A 轴 =
-  // 名单并集子轴 (见 AssetAxis.hpp 的 UniverseAxis): 张量/落盘/读端全部只含并集内资产, 当日
-  // 在不在池由 Meta 的 cs_valid 表达; 特征库按 universe 分目录 (FeatureUniverseDir);
-  // encode 不受影响 (始终全市场).
-  std::string universe = "micro";
 
   // Paths
   std::string archive_dir = "/mnt/dev/sde/A_stock/L2";
@@ -55,7 +48,6 @@ struct Config {
   // String buffers for GUI (max 512 chars for path)
   char start_date_buf[64] = "";
   char end_date_buf[64] = "";
-  char universe_buf[128] = "";
   char archive_dir_buf[512] = "";
   char orders_dir_buf[512] = "";
   char feature_dir_buf[512] = "";
@@ -89,21 +81,10 @@ struct Config {
   // Auto-sync: check file changes and debounced save
   void AutoSync();
 
-  // 动态池名单文件: <config_dir>/universe/<universe>.json (逐日 diff, 格式/回放见 shared/Universe.hpp).
-  std::string UniversePath() const;
-  // 回测区间 [start_date, end_date] 内进过池的代码并集 (升序去重) = 静态 A 轴; 等价于
-  // universe::Pool::load(UniversePath()).codes(start, end). 文件缺失/格式错/区间无名单 → assert.
-  std::vector<std::string> UniverseCodes() const;
-
-  // 特征库目录按 universe 分片: <feature_dir>/<universe>. 不同 universe 的库
-  // 并存, 切 universe 不清别人的库; 写读两端唯一的路径入口.
-  std::string FeatureUniverseDir() const {
-    assert(universe != kAllTierDir && "universe 名 all 已归 Bar 档 (FeatureAllDir), Lob 档不许用");
-    return feature_dir + "/" + universe;
-  }
-  // Bar 档 (All: 分钟 K + 基本面, 全市场 A 轴) 特征库: <feature_dir>/all, 与 universe 无关
+  // 特征库目录按库名分片: <feature_dir>/<lib>. 各库并存, 重算一个不清别人的库; 写读两端唯一的路径入口 (库名见 FeatureLib.hpp)
+  std::string FeatureLibDir(std::string_view lib) const { return feature_dir + "/" + std::string(lib); }
+  // Bar 档 (All: 分钟 K + 基本面, 全市场 A 轴) 的库名; 其余库名 = 选池名 (Lob 档)
   static constexpr const char *kAllTierDir = "all";
-  std::string FeatureAllDir() const { return feature_dir + "/" + kAllTierDir; }
 
 private:
   // Load config from JSON file

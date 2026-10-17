@@ -17,7 +17,7 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
   const size_t feat = static_cast<size_t>(sel.primary_feature_idx());
 
   Req req;
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
+  req.scope = analysis::read_scope(data.config, sel.lib());
   if (req.scope.months.empty())
     return;
   req.spec.params = params;
@@ -30,7 +30,7 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
                                          {all_meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_MCAP)),
                                           all_meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_INDUSTRY))});
   }
-  // 焦点按新子轴 clamp: UI 槽位可能来自上一个 universe (切 universe 后子轴大小已变)
+  // 焦点按新子轴 clamp: UI 槽位可能来自上一个库 (切库后子轴大小已变)
   req.spec.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.lib.uni.size()) - 1));
   Request(std::move(req));
 }

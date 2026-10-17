@@ -11,11 +11,12 @@
 
 namespace analysis {
 
-ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier) {
+ReadScope read_scope(const Config &cfg, std::string_view lib) {
   ReadScope s;
-  s.months = misc::months_between(cfg.start_date, cfg.end_date);
-  s.lib = feature_lib(cfg, num_assets, tier);
-  s.bar = feature_lib(cfg, num_assets, TierId::Bar);
+  s.lib = load_lib(cfg, lib);
+  s.bar = load_lib(cfg, Config::kAllTierDir);
+  if (s.lib.ready() && s.bar.ready()) // 未建库 = 空范围 (请求方见 months 为空即放弃)
+    s.months = misc::months_between(cfg.start_date, cfg.end_date);
   return s;
 }
 

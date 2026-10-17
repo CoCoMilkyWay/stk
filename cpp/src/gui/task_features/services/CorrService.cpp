@@ -29,7 +29,7 @@ bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest
 
   req.spec.level = lvl;
   req.spec.cols = analysis::column_set(data.feature, lvl, std::move(cols));
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
+  req.scope = analysis::read_scope(data.config, sel.lib());
   return !req.scope.months.empty();
 }
 
@@ -68,7 +68,7 @@ void CorrPairService::RequestCompute(SharedData &data, uint32_t col_a, uint32_t 
   CorrRequest req;
   req.spec.level = lvl;
   req.spec.cols = analysis::column_set(data.feature, lvl, {col_a, col_b}); // 按序: a 在前 (lag > 0 = a 领先)
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
+  req.scope = analysis::read_scope(data.config, sel.lib());
   if (req.scope.months.empty())
     return;
   Request(std::move(req));

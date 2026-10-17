@@ -8,9 +8,9 @@
 
 // ============================================================================
 // CoreLob: Lob 档单资产时序计算. LOB → L0 (tick, 秒索引) → resample → L1 (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
-//   与 CoreCrosssection 对仗: begin_day / compute_and_store (L0 节拍, 级联 L1) / end_day, 逐层 run<0> / close_minute
+//   与 CoreBar 对仗: compute_and_store = 本源单位 (逐笔) 先 advance 到所在分钟, 再进 DAG + 重采样器
 //   每笔: run<0>(t) 按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L0 行 + 标签回填
-//   分钟: close_minute(m) 调 onMinute 域, 写 L1 行; 只经 advance (时钟推进) 触发
+//   分钟: close_minute(m) 调 onMinute 域, 写 L1 行; 只经 CoreTs::advance (时钟推进) 触发
 //   顺序: 本笔先 advance 到本笔所在分钟 (逐分钟结算之前尚未结算的分钟), 再进 DAG (run<0> → accumulate).
 //   所以 L1 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态";
 //   onMinute 域只读 MinuteData / 分钟边界 (md.l1_index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
@@ -25,25 +25,19 @@
 //   实盘全市场推流, 写出的值相同. 回测结果可迁移到实盘全系于此条, 破了它一切
 //   重排立即失效. (算子输入面契约见 DataDefine.hpp)
 // ============================================================================
-// TickData 先于 CoreTs 基类构造 (base-from-member): dag_ / tick2min_ 引用它
-struct LobTick {
-  TickData tick_data_;
-};
-
-class CoreLob : private LobTick, public CoreTs<CoreLob, lob::Tier, lob::DAG> {
+class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   using Base = CoreTs<CoreLob, lob::Tier, lob::DAG>;
   friend Base;
 
 public:
-  // code_ex = "CODE.EX" (universe::Pool / AssetAxis 的键; 6 位裸码查池查不到 → cs_valid 全 0)
+  // asset_id = 本库 A 轴下标 (= universe::Pool 的子轴下标, 查当日成员位)
   CoreLob(const fund::Pool &fund_pool,
           const universe::Pool &universe_pool,
           const std::string &code_ex,
           size_t asset_id = 0,
           size_t core_id = 0)
-      : Base(asset_id, tick_data_, fund_pool, code_ex, asset_id),
+      : Base(asset_id, fund_pool, code_ex, asset_id),
         core_id_(core_id),
-        code_ex_(code_ex),
         universe_pool_(universe_pool),
         tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
@@ -51,17 +45,8 @@ public:
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
 
-  // 本资产的 L0 工作区: 自持而非引用 worker LOB 的 —— DAG 节点引用它 (终身
-  // 有效), LOB 经 bind() 把写出口换到这里. 资产因此可在 worker 间转移处置权
-  // (负载再平衡), 任意 worker 的 LOB 都能驱动本 core.
-  TickData &tick_data() { return tick_data_; }
-
-  // 无数据日 (缺 binary) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟 onMinute / 标签日历),
-  // 各节点按自身的无成交约定给值 —— 本类不认识"缺数据"这个概念, 不特判任何特征.
-  void empty_day(misc::Ymd date, const Day &day, Store &store) {
-    begin_day(date, day);
-    end_day(store);
-  }
+  // 本资产的 L0 工作区 (DAG_Root 自持, 见 LobGraph.hpp): LOB 经 bind() 把写出口换到这里
+  TickData &tick_data() { return dag_.tick_data; }
 
   // 每笔一调 (L0 节拍): 先把时钟推进到本笔所在分钟 (本笔尚未进任何节点 / meta_), 再让本笔进 DAG
   void compute_and_store() noexcept {
@@ -75,33 +60,11 @@ public:
     tick2min_.accumulate();
   }
 
-  // 时钟推进到 L1 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
-  //   回测: 由本资产下一笔 (compute_and_store) / 收盘 (end_source) 调.
-  //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCrosssection::compute_and_store(t):
-  //         CS 在分钟末级联读 L1 行 m, 不能等本资产下一笔才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
-  //   结算时刻不影响值 (见文件头), 两种触发写出同一行.
-  void advance(size_t m) noexcept {
-    while (tick2min_.roll(m)) {
-      TraceN("TS_Minute");
-      close_minute(dag_.minute_data.l1_index);
-    }
-  }
-
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日池成员位: 日频 PIT 名单 (universe::Pool, 盘后 python 产出, 第 D 日由 ≤ D−1 数据定), 与 Fund 吃 fund_pool 同形.
-  // 重采样器归零: begin_day / end_day 成对即一日完整生命周期.
-  float begin_source(misc::Ymd date) {
-    meta_.reset();
-    meta_.begin_day(universe_pool_.in_pool(code_ex_, date));
-    tick2min_.reset();
-    return meta_.cs();
-  }
-
-  // 收盘: 末分钟 (收盘集合竞价 → L1 254) 没有后续 tick 触发结算, 这里 advance 到收盘 (补齐到 254 含)
-  void end_source() { advance(TRADE_MINUTES_PER_DAY); }
-
-  float ts_valid_l1(bool traded) const { return meta_.l1(traded); }
+  // 当日在池: 选池 (universe::Pool, 第 D 日由 all 库 D−1 收盘行定), 与 Fund 吃 fund_pool 同形
+  bool member(misc::Ymd date) const { return universe_pool_.in_pool(asset_id_, date); }
+  ResamplerTick2Min &resampler() { return tick2min_; }
 
   // ---------------------------------------------------------------- L0 每笔 ----
   // 与 CoreCrosssection::run<LVL> 对仗: 本笔按触发域 onTaker|onMaker|onCancel → onTick → onDepth 进 DAG → 写 L0 行 + ts_valid,
@@ -149,10 +112,7 @@ private:
   }
 
   size_t core_id_;
-  std::string code_ex_;                 // "CODE.EX" (universe::Pool 的键)
-  const universe::Pool &universe_pool_; // 动态池逐日名单 (只读共享; begin_source 查 (code_ex_, date) → cs_valid)
+  const universe::Pool &universe_pool_; // 选池逐日成员 (只读共享; member 查 (asset_id_, date) → cs_valid)
 
   ResamplerTick2Min tick2min_;
-
-  MetaTracker meta_; // ts_valid / cs_valid 基建列状态机 (编码/累积语义见 Meta.hpp; begin_source 重置 + 给当日池成员位)
 };

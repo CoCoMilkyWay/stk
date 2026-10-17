@@ -20,12 +20,13 @@
 // FEATURE READER — 特征库 (目录 + 子轴期望 + 判废), 单日读委托 FeatureDay::read
 // ============================================================================
 // 时间轴: 落盘形状恒为满 (rows / field_count), 消费端时间轴一律 level_valid_rows(lvl).
-// A / axis_hash = universe 子轴大小 / 指纹 (UniverseAxis, 见 AssetAxis.hpp):
+// A / axis_hash = 库 A 轴大小 / 指纹 (UniverseAxis, 来自库清单, 见 FeatureLib.hpp):
 //   读端构造时带期望子轴 (A + hash), 逐文件精确比对, 不做兼容展宽.
-// 头不符 (格式版本 / 子轴 A / 指纹 / 字段表指纹) = 旧库, 已无法解释 → 就地判废:
-//   删掉整个 base_dir_ + 置 stale() + 拉起构建的取消旗 (构造时可传), 在跑的构建在既有
-//   取消检查点收工, 等用户点 compute 重算. 不断言: 改字段表 / 动态池名单变了 / 改回测
-//   区间 (子轴 = 区间内并集) 都是常规操作, 不该闪退; 特征库是纯派生数据, 删了重跑即可.
+// 头不符分两类:
+//   格式版本 / 字段表指纹 = 旧库, 已无法解释 → 就地判废: 删掉整个 base_dir_ + 置 stale() + 拉起构建的取消旗
+//     (构造时可传), 在跑的构建在既有取消检查点收工, 等用户点 compute 重算. 不断言: 改字段表是常规操作, 不该闪退.
+//   子轴 A / 指纹 = 本 reader 持的清单过期 (库已按新清单重算, 文件与新清单一致) → 只置 stale 空转, 不删库;
+//     请求方重读清单 (新请求 / 重建服务) 即自愈.
 //
 // API: load_day_columns(date, cols, DayColumns) — 单日选列 [n][T][A], 只读 n 列的载荷
 //      (缓冲挂在 DayColumns 里复用, 与写端 IO worker 的 FeatureDay::Scratch 对仗, 稳态零分配)
@@ -38,7 +39,7 @@ private:
     if (stale_.exchange(true, std::memory_order_relaxed))
       return;
     // 不用 Logger: 它未 init 时 std::exit(1), 而这里正是"进 Features 页" (compute 还没跑过) 的路径
-    std::cout << "[features] " << why << " → 删除特征库待重算: " << base_dir_ << std::endl;
+    std::cout << "[features] " << why << (wipe ? " → 删除特征库待重算: " : " → 本次读取作废: ") << base_dir_ << std::endl;
     if (wipe) {
       wipe_dir(base_dir_);
       set_dir_stale(base_dir_, true);
@@ -48,11 +49,11 @@ private:
   }
 
 public:
-  // lib = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一 feature_lib 推导)
+  // lib = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一清单; 须已建库)
   // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
   explicit FeatureRead(const FeatureLib &lib, std::atomic<bool> *abort = nullptr)
       : tier_(lib.tier), base_dir_(lib.dir), axis_A_(lib.uni.size()), axis_hash_(lib.uni.hash), abort_(abort) {
-    assert(axis_A_ > 0 && "期望子轴为空");
+    assert(axis_A_ > 0 && "期望子轴为空 (库未建: 先 lib.ready())");
   }
 
   // 删库. 多个 reader (各 service 每请求各一份, stale_ 不互通) 与 ComputeService 清库可能
@@ -133,7 +134,7 @@ public:
     Trace;
     assert(date > 0);
     assert(out.A > 0 && "Must preallocate() before load_day_columns()");
-    assert(out.A == axis_A_ && "调用方 A 与 reader 期望子轴不一致 (同一 universe_axis 推导, 不该发生)");
+    assert(out.A == axis_A_ && "调用方 A 与 reader 期望子轴不一致 (同一库清单, 不该发生)");
     assert(has_level(tier_, out.level) && "该档没有这一层");
     assert(!feature_indices.empty() && feature_indices.size() <= out.max_features);
     out.date = date;
@@ -145,8 +146,8 @@ public:
     // 文件缺失 = 库被外部清除: 另一 reader 判废删库, 或 ComputeService 重算
     // 前显式清库 (与读端并发; store 随即重建目录, 故 base_dir_ 是否存在不可
     // 作判据). 落盘侧 .tmp+rename 原子发布 + 末层 commit 标记 (has_date) 保证
-    // 正常库不会"目录在文件缺" → 一律判废空转收工, 重扫/重算后 revive.
-    if (st == FeatureDay::Status::Missing)
+    // 正常库不会"目录在文件缺" → 一律判废空转收工, 重扫/重算后 revive. 子轴不符 = 清单过期, 同样不删库.
+    if (st == FeatureDay::Status::Missing || st == FeatureDay::Status::AxisSize || st == FeatureDay::Status::AxisHash)
       mark_stale(FeatureDay::why(st), /*wipe=*/false);
     else if (st != FeatureDay::Status::Ok)
       mark_stale(FeatureDay::why(st), /*wipe=*/true);

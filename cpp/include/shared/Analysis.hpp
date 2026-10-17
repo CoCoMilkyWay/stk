@@ -8,7 +8,6 @@
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
-#include "shared/AssetAxis.hpp"  // UniverseAxis
 #include "shared/FeatureLib.hpp" // FeatureLib
 
 #include <algorithm>
@@ -172,14 +171,14 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
     lines[order[i]].draw = 1;
 }
 
-// ---- 读取范围 (Request 公共头): GUI 线程从 config 解析, worker 只消费 ----
+// ---- 读取范围 (Request 公共头): GUI 线程从 config + 库清单解析, worker 只消费 ----
 struct ReadScope {
-  std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月)
-  FeatureLib lib;               // 主库 (档 / A 轴 / 目录, 与写端同一 feature_lib 推导)
+  std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月); 主库或 all 库未建 → 空
+  FeatureLib lib;               // 主库 (档 / A 轴 / 目录, 与写端同一清单)
   // Bar 档旁读 (涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 lib.uni.ids[a]
   FeatureLib bar;
 };
-ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier);
+ReadScope read_scope(const Config &cfg, std::string_view lib); // lib = 库名 (见 FeatureLib.hpp)
 
 // ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
 template <class Spec>

@@ -2,6 +2,7 @@
 #include "gui/Tasks.hpp"
 #include "imgui.h"
 #include "misc/cross_platform.hpp"
+#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 #include <algorithm>
 #include <cassert>
@@ -12,7 +13,6 @@
 #include <iostream>
 #include <ranges>
 #include <string_view>
-#include <vector>
 
 namespace GUI::Tasks {
 namespace {
@@ -195,6 +195,7 @@ private:
       std::cout << msg << std::endl;
     };
     data.config.Initialize();
+    data.feature.selection.pool = default_pool(data.config);
     ts.initialized = true;
     last_commission = data.config.commission;
     last_stamp = data.config.stamp;
@@ -262,46 +263,6 @@ private:
           cfg.end_date = misc::parse_ymd(cfg.end_date_buf);
           assert(cfg.end_date);
           changed = true;
-        }
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("Universe");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("Lob 档特征计算 universe: <Config Dir>/universe/<name>.json (动态池逐日 diff)\n"
-                            "全市场是 Bar 档 (features/all), 不是 universe.\n"
-                            "只约束 Lob 档 Compute, encode 始终全市场.");
-        }
-        ImGui::TableNextColumn();
-        ImGui::SetNextItemWidth(-1);
-        // 下拉: <config_dir>/universe/*.json 的文件名 (去 .json). 只在展开
-        // 那一帧扫目录 —— 新建名单文件后重新展开即可见, 不用重启.
-        if (ImGui::BeginCombo("##universe", cfg.universe.c_str())) {
-          std::vector<std::string> names;
-          const std::filesystem::path dir = std::filesystem::path(cfg.config_dir) / "universe";
-          if (std::filesystem::is_directory(dir)) {
-            for (const auto &entry : std::filesystem::directory_iterator(dir)) {
-              if (entry.is_regular_file() && entry.path().extension() == ".json")
-                names.push_back(entry.path().stem().string());
-            }
-            std::sort(names.begin(), names.end());
-          }
-          // 当前值对应的文件已被删: 仍列出, 让用户看得见并能换掉
-          if (std::find(names.begin(), names.end(), cfg.universe) == names.end())
-            names.push_back(cfg.universe + " (missing)");
-
-          for (const std::string &name : names) {
-            const bool selected = (name == cfg.universe);
-            if (ImGui::Selectable(name.c_str(), selected) && !selected && !name.ends_with(" (missing)")) {
-              cfg.universe = name;
-              snprintf(cfg.universe_buf, sizeof(cfg.universe_buf), "%s", name.c_str());
-              changed = true;
-            }
-            if (selected)
-              ImGui::SetItemDefaultFocus();
-          }
-          ImGui::EndCombo();
         }
 
         ImGui::TableNextRow();
@@ -558,7 +519,7 @@ private:
     bool changed = false;
     if (ImGui::CollapsingHeader("数据库配置", ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::TextWrapped("encode 始终全市场日频, A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json);"
-                         " 特征计算的 universe 子集见上方回测周期栏.");
+                         " 特征库 (all / 各选池) 在 Features → Compute 页按库计算.");
       ImGui::Spacing();
 
       auto readonly_table = [](const char *table_id, auto draw_rows) {

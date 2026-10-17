@@ -1,4 +1,4 @@
-// Lob 档管线 (逐笔 → LOB 源, universe 子轴): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
+// Lob 档管线 (逐笔 → LOB 源, 选池并集子轴): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
 #include "worker/feature_pipeline.hpp"
 
 #include "codec/L2_DataType.hpp"
@@ -33,11 +33,8 @@ struct TierFeed<lob::Tier> {
   TierFeed(const PipelineArgs &args, const StoreRing &)
       : data(args.data), uni(args.lib.uni), dates(args.dates),
         orders(args.data.asset.orders()->slice(args.dates, args.lib.uni.ids)), weights(uni.size(), 0) {
-    // 动态池逐日名单 (与 universe_axis 同一文件: 并集 = 子轴, 逐日成员位 → Meta cs_valid).
-    // 区间每一天都必须出过名单, 否则是名单没跑到这段 —— 启动即死, 不要静默算出半截 cs_valid.
-    data.universe_pool = universe::Pool::load(data.config.UniversePath());
-    assert(std::all_of(dates.begin(), dates.end(), [&](misc::Ymd d) { return data.universe_pool.has_date(d); }) &&
-           "回测日不在动态池名单里: 重跑 py/universe/<name>.py 覆盖到 end_date");
+    // 选池逐日成员 (ComputeService 规划本库时 build: 并集 = 本库 A 轴, 逐日成员位 → Meta cs_valid)
+    assert(data.universe_pool.axis().hash == uni.hash && std::ranges::equal(data.universe_pool.dates(), dates) && "选池与本库 A 轴 / 日期轴不符");
     for (size_t d = 0; d < dates.size(); ++d) {
       const std::span<const FrameRef> row = orders.row(d);
       for (size_t sub = 0; sub < weights.size(); ++sub)
@@ -47,7 +44,6 @@ struct TierFeed<lob::Tier> {
 
   size_t weight(size_t sub) const { return weights[sub]; }
 
-  // "CODE.EX": universe::Pool / AssetAxis 的键 (asset_code 单独是 6 位, 查池查不到 → cs_valid 全 0)
   std::unique_ptr<CoreLob> make_core(size_t sub, int worker_id) const {
     const auto &asset = data.asset.items[uni.global(sub)];
     return std::make_unique<CoreLob>(data.fund_pool, data.universe_pool, asset.code_ex(), sub, static_cast<size_t>(worker_id));

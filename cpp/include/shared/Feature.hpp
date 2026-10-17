@@ -82,8 +82,11 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    TierId tier = TierId::Lob; // 当前浏览的档 (TabFeature 档选择; 分析页按它读对应特征库)
+    TierId tier = TierId::Lob; // 当前浏览的档 (TabFeature 库选择: all → Bar, 选池 → Lob; 分析页按 lib() 读对应特征库)
+    std::string pool;          // 当前选池 (Lob 档库名; 因子页恒用它, 选 all 时保留); 启动 = default_pool
     int selected_level = 1;    // 0=L0, 1=L1 (GUI 只在这两层选特征, 默认 L1)
+
+    std::string lib() const; // 当前库名: Bar → all, Lob → pool
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;

@@ -10,13 +10,15 @@
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <filesystem>
 #include <limits>
 #include <optional>
+#include <string>
 #include <thread>
+#include <tuple>
 
 namespace GUI::Features {
 
@@ -36,16 +38,27 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 // worker 私有常驻资源 (首个请求时在 worker 线程建, 稳态零分配)
 // ============================================================================
 
-// 特征库读端: 特征列 = 档 A 轴 (Lob: universe 子轴; Bar: 全轴); 请求侧资产是全局下标, 经 sub_of 映射
+// 特征库读端: 特征列 = 库 A 轴 (Lob: 选池并集子轴; Bar: 全轴); 请求侧资产是全局下标, 经 sub_of 映射
 struct LibRead {
   FeatureLib lib;
   const UniverseAxis &uni = lib.uni;
   FeatureRead reader;
   std::vector<size_t> columns; // 选列缓冲
 
-  LibRead(const SharedData &data, TierId tier)
-      : lib(feature_lib(data.config, data.asset.items.size(), tier)), reader(lib) {}
+  explicit LibRead(FeatureLib l) : lib(std::move(l)), reader(lib) {}
 };
+
+// 常驻资源按库清单建 (首个请求时, worker 线程); 任一库未建 → false (本请求放弃; 算完库后服务重建再来)
+template <class Res, class... Names>
+bool ensure_res(std::optional<Res> &res, const Config &cfg, Names... names) {
+  if (res)
+    return true;
+  std::array<FeatureLib, sizeof...(Names)> libs{load_lib(cfg, names)...};
+  if (!std::all_of(libs.begin(), libs.end(), [](const FeatureLib &l) { return l.ready(); }))
+    return false;
+  std::apply([&](auto &...l) { res.emplace(std::move(l)...); }, libs);
+  return true;
+}
 
 // 背槽待 GUI ack (帧首翻面, 无 cv 信号): 限时睡轮询; false = 等待中被新请求 / Stop 打断
 template <class Slot>
@@ -68,14 +81,14 @@ class OrderFlowService::KlineWorker : public Worker<KlineWorker, KlineReq> {
 
 public:
   static constexpr const char *kName = "OF_KlineWorker";
-  explicit KlineWorker(SharedData &data) : data_(data) { Start(); }
+  KlineWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
   ~KlineWorker() { Stop(); }
 
 private:
   struct Res {
     LibRead lib;
     FeatureRead::DayColumns cols; // OHLC 4 + ts_valid + 特征
-    explicit Res(SharedData &data) : lib(data, TierId::Lob) { cols.preallocate(lib.uni.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
+    explicit Res(FeatureLib l) : lib(std::move(l)) { cols.preallocate(lib.uni.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
   };
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.kline; }
@@ -83,6 +96,7 @@ private:
   bool step(size_t d); // 装一天并发布; false = 库判废
 
   SharedData &data_;
+  const std::string pool_; // 选池库名 (服务一代一个, 换池重建服务)
   std::optional<Res> res_;
   KlineReq cur_{};
   size_t sub_ = 0;                   // 选中资产的子轴下标 (run 映射一次)
@@ -95,7 +109,7 @@ class OrderFlowService::DepthWorker : public Worker<DepthWorker, DepthReq> {
 
 public:
   static constexpr const char *kName = "OF_DepthWorker";
-  explicit DepthWorker(SharedData &data) : data_(data) { Start(); }
+  DepthWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
   ~DepthWorker() { Stop(); }
 
 private:
@@ -108,7 +122,7 @@ private:
     OrderFlow::Depth::HeatmapScratch scratch;
     std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
     std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
-    explicit Res(SharedData &data) : lib(data, TierId::Lob), lob(L2::LOB_ORDER_CAPACITY) {
+    explicit Res(FeatureLib l) : lib(std::move(l)), lob(L2::LOB_ORDER_CAPACITY) {
       l1_cols.preallocate(lib.uni.size(), 1, 1 + OrderFlowConst::MAX_FEATURES);
       l0_cols.preallocate(lib.uni.size(), 0, 1 + OrderFlowConst::MAX_FEATURES);
     }
@@ -118,6 +132,7 @@ private:
   bool run(DepthReq &req); // 重放 + 构建 + 背槽发布
 
   SharedData &data_;
+  const std::string pool_;
   std::optional<Res> res_;
 };
 
@@ -126,15 +141,15 @@ class OrderFlowService::UniverseWorker : public Worker<UniverseWorker, UniverseR
 
 public:
   static constexpr const char *kName = "OF_UniverseWorker";
-  explicit UniverseWorker(SharedData &data) : data_(data) { Start(); }
+  UniverseWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
   ~UniverseWorker() { Stop(); }
 
 private:
   struct Res {
-    LibRead lib;                  // 只用其 universe 子轴 (候选范围)
+    LibRead lib;                  // 只用其选池并集子轴 (候选范围)
     LibRead bar;                  // 状态列在 Bar 档 (Fund 只在 Bar 库落盘)
     FeatureRead::DayColumns cols; // 资产筛选状态列 (全轴)
-    explicit Res(SharedData &data) : lib(data, TierId::Lob), bar(data, TierId::Bar) {
+    Res(FeatureLib l, FeatureLib b) : lib(std::move(l)), bar(std::move(b)) {
       cols.preallocate(bar.uni.size(), 1, UNIVERSE_COL_COUNT);
     }
   };
@@ -143,6 +158,7 @@ private:
   bool run(UniverseReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   SharedData &data_;
+  const std::string pool_;
   std::optional<Res> res_;
 };
 
@@ -150,7 +166,7 @@ private:
 // Lifecycle
 // ============================================================================
 
-OrderFlowService::OrderFlowService() = default;
+OrderFlowService::OrderFlowService(std::string pool) : pool_(std::move(pool)) {}
 
 OrderFlowService::~OrderFlowService() {
   Stop();
@@ -159,9 +175,9 @@ OrderFlowService::~OrderFlowService() {
 void OrderFlowService::Start(SharedData &data) {
   if (kline_)
     return;
-  kline_ = std::make_unique<KlineWorker>(data);
-  depth_ = std::make_unique<DepthWorker>(data);
-  universe_ = std::make_unique<UniverseWorker>(data);
+  kline_ = std::make_unique<KlineWorker>(data, pool_);
+  depth_ = std::make_unique<DepthWorker>(data, pool_);
+  universe_ = std::make_unique<UniverseWorker>(data, pool_);
 }
 
 void OrderFlowService::Stop() { // worker 析构即 Stop (join)
@@ -193,36 +209,15 @@ void OrderFlowService::RequestUniverse(uint32_t gen, misc::Ymd date) {
 }
 
 // ============================================================================
-// 日期扫描: features/<universe>/YYYY/MM/DD 有特征日文件的日, 升序
+// 日期扫描: 库清单日轴 (lib.json dates, 升序) 中已落盘的日
 // ============================================================================
 
 namespace {
 void scan_dates(const FeatureLib &lib, std::vector<misc::Ymd> &out) {
   TraceN("OF_ScanDates");
-
-  // 目录不在 / 遍历中途被并发删库 (FeatureRead::wipe_dir) → ec 置位, 该层迭代器即 end
-  std::error_code ec;
-  for (const auto &year_entry : std::filesystem::directory_iterator(lib.dir, ec)) {
-    if (!year_entry.is_directory() || year_entry.path().filename().string().size() != 4)
-      continue;
-    const std::string year = year_entry.path().filename().string();
-
-    for (const auto &month_entry : std::filesystem::directory_iterator(year_entry.path(), ec)) {
-      if (!month_entry.is_directory() || month_entry.path().filename().string().size() != 2)
-        continue;
-      const std::string month = month_entry.path().filename().string();
-
-      for (const auto &day_entry : std::filesystem::directory_iterator(month_entry.path(), ec)) {
-        if (!day_entry.is_directory() || day_entry.path().filename().string().size() != 2)
-          continue;
-        const misc::Ymd date = misc::parse_ymd(year + month + day_entry.path().filename().string());
-        assert(date && "特征目录 YYYY/MM/DD 非日期");
-        if (FeatureRead::has_date(lib.tier, lib.dir, date))
-          out.push_back(date);
-      }
-    }
-  }
-  std::sort(out.begin(), out.end());
+  for (const misc::Ymd date : lib.dates)
+    if (FeatureRead::has_date(lib.tier, lib.dir, date))
+      out.push_back(date);
 }
 } // namespace
 
@@ -232,8 +227,8 @@ void scan_dates(const FeatureLib &lib, std::vector<misc::Ymd> &out) {
 
 bool OrderFlowService::KlineWorker::run(KlineReq &req) {
   TraceN("OF_KlineBegin");
-  if (!res_)
-    res_.emplace(data_);
+  if (!ensure_res(res_, data_.config, pool_))
+    return false;
   OrderFlow::Kline &k = data_.orderflow.kline;
 
   // 此刻 GUI 请求代 == req.gen, 发布代 == 旧代 → GUI 不读 kline, dates/数组可安全重建
@@ -253,8 +248,8 @@ bool OrderFlowService::KlineWorker::run(KlineReq &req) {
   k.begin_generation(cur_.gen, cur_.asset, cur_.feats.size());
   k.reserve_capacity(); // 发布前完成: 之后 data() 恒稳定
 
-  // 请求侧 asset 是全局轴下标, 特征列按 universe 子轴索引. 不在子轴内 (初始
-  // 默认选中 / 换 universe 后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
+  // 请求侧 asset 是全局轴下标, 特征列按选池子轴索引. 不在子轴内 (初始
+  // 默认选中 / 换选池后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
   // 列可读, 直接发布"完整但空"的一代 —— 与全轴时代读到恒零列的语义一致.
   sub_ = res_->lib.uni.sub_of(static_cast<uint32_t>(cur_.asset));
   if (sub_ >= res_->lib.uni.size()) {
@@ -345,8 +340,8 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
 // ============================================================================
 
 bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
-  if (!res_)
-    res_.emplace(data_);
+  if (!ensure_res(res_, data_.config, pool_, Config::kAllTierDir))
+    return false;
   PingPong<OrderFlow::Universe::Slot> &pp = data_.orderflow.universe.slots;
   if (!await_back(pp, cancel_))
     return false;
@@ -413,8 +408,8 @@ bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
 // ============================================================================
 
 bool OrderFlowService::DepthWorker::run(DepthReq &req) {
-  if (!res_)
-    res_.emplace(data_);
+  if (!ensure_res(res_, data_.config, pool_))
+    return false;
   PingPong<OrderFlow::Depth> &pp = data_.orderflow.depth;
   if (!await_back(pp, cancel_))
     return false;

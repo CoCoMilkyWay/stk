@@ -12,13 +12,14 @@
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (析构 join).
+//           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一个选池库: 换池 / 库重算后整体重建 (TaskFeatures).
 #pragma once
 
 #include "misc/date.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 struct SharedData;
@@ -27,7 +28,7 @@ namespace GUI::Features {
 
 class OrderFlowService {
 public:
-  OrderFlowService();
+  explicit OrderFlowService(std::string pool); // pool = 选池库名 (Lob 档; 状态列另读 all 库)
   ~OrderFlowService();
 
   // Lifecycle (幂等)
@@ -40,6 +41,7 @@ public:
   void RequestUniverse(uint32_t gen, misc::Ymd date);
 
   bool is_running() const { return kline_ != nullptr; }
+  const std::string &pool() const { return pool_; }
 
 private:
   struct KlineReq {
@@ -64,6 +66,7 @@ private:
   class DepthWorker;    // 重放 + 构建 + 背槽发布
   class UniverseWorker; // 逐日 filter 列 → 全资产状态 + 背槽发布
 
+  std::string pool_;
   std::unique_ptr<KlineWorker> kline_;
   std::unique_ptr<DepthWorker> depth_;
   std::unique_ptr<UniverseWorker> universe_;

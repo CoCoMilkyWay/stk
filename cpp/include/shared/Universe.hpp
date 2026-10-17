@@ -1,48 +1,40 @@
 #pragma once
-// universe — 动态股票池 (日频 PIT 名单), Meta 的 cs_valid 数据源; 与 Fund 吃 fund::Pool 同形.
+// universe — 选池逐日成员 (日频 PIT), Lob 档 Meta 的 cs_valid 数据源; 与 Fund 吃 fund::Pool 同形.
 //
-//   名单由独立的 python 产出 (py/universe/<name>.py → <config_dir>/universe/<name>.json), 不与本项目耦合:
-//   选池可能要用特征, 而特征此刻还没算 (鸡生蛋), 所以盘后用基本面 parquet 另算, 这里只读结果.
-//
-//   JSON 格式 (py/universe/common/pipeline.py 写):
-//     {"YYYYMMDD": {"add": ["600000.SH", ...], "del": [...]}, ...}
-//   逐日相对前一交易日的 diff, 首日 add = 全量; 无变化的日子也有 (空 add/del), 缺键 = 该日没出名单.
-//   这里从空集按日回放:
-//     codes(first, last) 回测区间 [first, last] 内进过池的并集 (升序去重) = 静态 A 轴 (UniverseAxis: 张量列 / 落盘 / 读端).
-//                        只看张量覆盖的时间段, 不是名单全史 (名单从 2015 起, 全史并集会把轴撑大几倍).
-//                        TS 特征对轴上所有标的在区间内全程计算, 区间内日后进池不用补历史
-//     in_pool(code, D)   第 D 日成员位 → CoreLob::begin_day → MetaTracker::begin_day → cs_valid 整日常量
-//   PIT: 第 D 日名单由 ≤ D−1 数据定 (python 侧保证), 对本类只是 (资产, 日) 的 bool.
-//   全市场 (无名单) 不是票池: 那是 Bar 档 (features/all, 全 A 轴, 见 FeatureLevels.hpp TierId).
+//   选池本身是 Bar 档的 CS 算子 (Operator/Bar/CS/Universe/Pool.hpp, 每池一列 pool_<name>), 落在 all 库;
+//   Lob 档库 <name> 规划时 (ComputeService) 从 all 库读出:
+//     第 D 日成员 = all 库 D 的前一交易日 (all 库日期轴上的前一日) L1 末有效行 (254, 收盘) 的 pool_<name> 列 > 0.5
+//     axis()        日期轴内进过池的并集 (全局 id 升序) = Lob 库静态 A 轴 (UniverseAxis: 张量列 / 落盘 / 读端).
+//                   TS 特征对轴上所有标的在区间内全程计算, 区间内日后进池不用补历史
+//     in_pool(sub, D) 第 D 日成员位 (sub = axis 子轴下标) → CoreLob::member → MetaTracker → cs_valid 整日常量
+//   PIT: 第 D 日池由 D−1 收盘定, 对 Lob 档只是 (资产, 日) 的 bool.
+//   全市场不是票池: 那是 Bar 档 (all 库, 全 A 轴, 见 FeatureLib.hpp).
 #include "misc/date.hpp"
+#include "shared/AssetAxis.hpp" // UniverseAxis
 
+#include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <string>
-#include <string_view>
-#include <unordered_map>
+#include <span>
 #include <vector>
+
+struct FeatureLib;
 
 namespace universe {
 
 class Pool {
 public:
-  // 读 json 并回放. 文件缺失 / 格式不对 / add 已在池 / del 不在池 / 某日池空 / 日期键非升序 → assert
-  static Pool load(const std::filesystem::path &json_path);
+  // all 库 (bar) 的选池列 col → dates 逐日成员. D 不在 all 库日期轴 / 是其首日 / 前一日未落盘 / 并集为空 → assert
+  static Pool build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates);
 
-  // [first, last] (闭区间) 内进过池的代码并集, 升序去重; 区间内没有任何名单日 / 并集为空 → assert
-  std::vector<std::string> codes(misc::Ymd first, misc::Ymd last) const;
-  const std::vector<misc::Ymd> &dates() const; // 出过名单的日, 升序
-  bool has_date(misc::Ymd d) const;
-  // 第 D 日成员位. D 不在 dates() → assert (回测区间必须被名单覆盖, 见 ComputeService 的前置检查);
-  // code 不在并集 → false (轴上但从未进过池)
-  bool in_pool(std::string_view code, misc::Ymd d) const;
+  const UniverseAxis &axis() const { return axis_; }
+  const std::vector<misc::Ymd> &dates() const { return dates_; } // = build 的 dates
+  // 第 D 日成员位. D 不在 dates() → assert
+  bool in_pool(size_t sub, misc::Ymd d) const;
 
 private:
   std::vector<misc::Ymd> dates_;
-  std::vector<std::string> codes_;
-  std::unordered_map<std::string, uint32_t> code_idx_;
-  std::vector<uint8_t> member_; // [date_i * codes_.size() + code_i]
+  UniverseAxis axis_;
+  std::vector<uint8_t> member_; // [date_i * axis_.size() + sub]
 };
 
 } // namespace universe

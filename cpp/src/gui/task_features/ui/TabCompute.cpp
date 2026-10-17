@@ -1,10 +1,12 @@
 // Tab Compute Implementation
 #include "gui/task_features/ui/TabCompute.hpp"
+#include "features/Backend/FeatureRead.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
 #include "misc/affinity.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Config.hpp"
+#include "shared/FeatureLib.hpp"
 
 #include "imgui.h"
 
@@ -13,6 +15,22 @@
 #include <string>
 
 namespace GUI::Features {
+
+// 库清单 + 逐日 stat 已落盘 (以档内末层日文件为 commit 标记, 见 FeatureRead::has_date)
+static LibStatus lib_status(const Config &config, std::string_view name) {
+  const FeatureLib lib = load_lib(config, name);
+  LibStatus s{lib.name, lib.tier};
+  if (!lib.ready())
+    return s;
+  s.ready = true;
+  s.first = lib.dates.front();
+  s.last = lib.dates.back();
+  s.assets = lib.uni.size();
+  s.days = lib.dates.size();
+  s.done = static_cast<size_t>(std::count_if(lib.dates.begin(), lib.dates.end(),
+                                             [&](misc::Ymd d) { return FeatureRead::has_date(lib.tier, lib.dir, d); }));
+  return s;
+}
 
 void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/, Config &config) {
   const bool is_running = service->busy();
@@ -337,26 +355,80 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Spacing();
 
   // ========================================================================
-  // Section 4: Actions
+  // Section 4: Libraries (每库一行: 清单 / 落盘进度 / 判废, 各自 Compute)
   // ========================================================================
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Actions");
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Libraries");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Refresh"))
+    state.libs_dirty = true;
+  ImGui::SameLine();
+  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 选池: LOB 还原, 回测区间, 成员 = all 库 D−1 收盘 pool_* 列 → 先算 all)",
+                      misc::dash(::config::PIPELINE_START_DATE).c_str());
   ImGui::Spacing();
 
-  if (state.ui_state == ComputeUIState::Idle) {
-    if (ImGui::Button("Start Compute (Lob)", ImVec2(200, 30))) {
-      state.config.tier = TierId::Lob;
-      state.ui_state = ComputeUIState::ShowingPopup;
-      state.popup_frame_count = 0;
+  if (state.libs_dirty && !is_running) {
+    state.libs_dirty = false;
+    state.libs.clear();
+    state.libs.push_back(lib_status(config, Config::kAllTierDir));
+    for (const PoolDef &p : feature_pools())
+      state.libs.push_back(lib_status(config, p.name));
+  }
+  // 选池库的成员来自 all 库: all 落盘齐全才放行
+  const bool all_complete = !state.libs.empty() && state.libs.front().ready && state.libs.front().done == state.libs.front().days;
+
+  if (ImGui::BeginTable("Libraries", 7,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
+    ImGui::TableSetupColumn("库");
+    ImGui::TableSetupColumn("档");
+    ImGui::TableSetupColumn("区间");
+    ImGui::TableSetupColumn("资产");
+    ImGui::TableSetupColumn("已落盘");
+    ImGui::TableSetupColumn("状态");
+    ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    for (const LibStatus &s : state.libs) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", s.name.c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", tier_name(s.tier));
+      ImGui::TableNextColumn();
+      if (s.ready)
+        ImGui::Text("%s ~ %s", misc::dash(s.first).c_str(), misc::dash(s.last).c_str());
+      ImGui::TableNextColumn();
+      if (s.ready)
+        ImGui::Text("%zu", s.assets);
+      ImGui::TableNextColumn();
+      if (s.ready)
+        ImGui::Text("%zu / %zu", s.done, s.days);
+      ImGui::TableNextColumn();
+      const bool computing = is_running && state.config.lib == s.name;
+      if (computing)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "computing");
+      else if (FeatureRead::dir_stale(config.FeatureLibDir(s.name)))
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "stale");
+      else if (!s.ready)
+        ImGui::TextDisabled("未建");
+      else if (s.done == s.days)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
+      else
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "partial");
+      ImGui::TableNextColumn();
+      const bool blocked = state.ui_state != ComputeUIState::Idle || (s.tier == TierId::Lob && !all_complete);
+      ImGui::BeginDisabled(blocked);
+      if (ImGui::SmallButton(("Compute##" + s.name).c_str())) {
+        state.config.lib = s.name;
+        state.ui_state = ComputeUIState::ShowingPopup;
+        state.popup_frame_count = 0;
+      }
+      ImGui::EndDisabled();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Start Compute (Bar)", ImVec2(200, 30))) {
-      state.config.tier = TierId::Bar;
-      state.ui_state = ComputeUIState::ShowingPopup;
-      state.popup_frame_count = 0;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(Lob: LOB 还原, 本 universe; Bar: bar1m + 基本面, 全市场, %s 起)", misc::dash(::config::PIPELINE_START_DATE).c_str());
-  } else {
+    ImGui::EndTable();
+  }
+
+  if (state.ui_state != ComputeUIState::Idle) {
     if (is_cancelling) {
       ImGui::TextWrapped("Cancelling at date boundary...");
     } else if (ImGui::Button("Cancel Compute", ImVec2(200, 30))) {
@@ -398,8 +470,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Separator();
     ImGui::Spacing();
 
-    const bool bar_tier = state.config.tier == TierId::Bar;
-    ImGui::Text("%s:", bar_tier ? "Bar Tier Period" : "Backtest Period");
+    const bool bar_tier = lib_tier(state.config.lib) == TierId::Bar;
+    ImGui::Text("Lib %s, %s:", state.config.lib.c_str(), bar_tier ? "Bar Tier Period" : "Backtest Period");
     ImGui::Indent();
     ImGui::BulletText("Start: %s", misc::dash(bar_tier ? ::config::PIPELINE_START_DATE : config.start_date).c_str());
     ImGui::BulletText("End: %s", misc::dash(config.end_date).c_str());

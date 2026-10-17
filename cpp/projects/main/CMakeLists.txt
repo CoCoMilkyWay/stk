@@ -396,7 +396,7 @@ set(HEADERS
 
 # ============================================================================
 # 特征档 (tier) = 数据源, 一档一套节点表 / 字段表 / 特征库 (C++ 侧档注册见 FeaturesDefine.hpp TIER_LEVELS):
-#   Lob  Operator/Lob/{TS,CS}/<分类>/   L2 逐笔 → LOB 还原 (票池内; features/<universe>/)
+#   Lob  Operator/Lob/{TS,CS}/<分类>/   L2 逐笔 → LOB 还原 (选池内; features/<选池>/)
 #   Bar  Operator/Bar/{TS,CS}/<分类>/   分钟 K (bar1m, 非 LOB 还原) + 基本面 (全市场; features/all/)
 #   两档共用的算子类放 Operator/Common/<分类>/ (只许 class, 不许 NODE_ / FIELDS_), 各档算子文件 include 它再各写各的 NODE_ / FIELDS_.
 #

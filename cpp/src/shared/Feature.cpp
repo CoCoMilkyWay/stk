@@ -1,4 +1,5 @@
 #include "shared/Feature.hpp"
+#include "shared/Config.hpp"
 
 #include <cassert>
 #include <cstring>
@@ -32,6 +33,11 @@ size_t Feature::Metadata::col_of(size_t level, const char *code) const {
 // ============================================================================
 // Feature::Selection Implementation
 // ============================================================================
+
+std::string Feature::Selection::lib() const {
+  assert(tier == TierId::Bar || !pool.empty());
+  return tier == TierId::Bar ? Config::kAllTierDir : pool;
+}
 
 void Feature::Selection::clear() {
   filter_data_type.clear();

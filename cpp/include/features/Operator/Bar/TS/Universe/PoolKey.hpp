@@ -3,8 +3,8 @@
 // =============================================================================
 // PoolKey - 选池排序键 (compute=onMinute): 母集外 → NaN, 母集内 = 键值; CS 选池列 (CS/Universe/Pool.hpp) 在其上取前 N
 // =============================================================================
-//   母集 (原 py/universe 口径, 全部只看本资产代码 + 本资产 Fund 当日 PIT 口 + 本分钟价 → 资产局部纯函数):
-//     非北交所 ∧ 上市满 60 日历日 (list_age ≥ 60) ∧ 未退市 (delist_age 未定义) ∧ 非停牌 ∧ st_level == 0 (含退市整理期)
+//   母集 (全部只看本资产代码 + 本资产 Fund 当日 PIT 口 + 本分钟价 → 资产局部纯函数):
+//     在市 (Fund::in_market: 非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 上市满 60 日历日 (list_age ≥ 60) ∧ st_level == 0 (含退市整理期)
 //     ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0 ∧ 实时市值 > 0 ∧ 申万一级行业已知 (∈ 白名单)
 //   键 (升序 = 指标由低到高, 选池取低端 / 高端):
 //     size        mcap (亿元, 实时)
@@ -12,8 +12,8 @@
 //     pe          −NP_ttm / mcap   (= −EP; 亏损接在正 EP 的高端之后: PE 2 < 1000 < −1000 < −2)
 //     pb          −EQ_mrq / mcap   (= −BP)
 //     dy          dy_ttm           (近 365 日税前分红 / 总市值; 分母 = 昨收 × 当日股本, 见 Fundamental.cpp)
-//   选池日频: 交易日 D 的池 = D−1 收盘行 (L1 254) 的选池列 (shared/Universe.hpp 读全局库), 盘中各行 = "此刻调仓"的池.
-//   py 口径差: delist 只看已发生 (py 用静态 delist_date > D, 含未来信息); st_trading 窗口终点差一日; 键无暖机 (数据起点后一年内 PE/PB/DY 不全).
+//   选池日频: 交易日 D 的池 = D−1 收盘行 (L1 254) 的选池列 (shared/Universe.hpp 读 all 库), 盘中各行 = "此刻调仓"的池.
+//   delist 只看已发生 (不含未来信息); 键无暖机 (数据起点后一年内 PE/PB/DY 不全).
 //
 // 本 TU (bar_pipeline.cpp) precise-math: 母集判定依赖 NaN 比较语义 (list_age / delist_age / mcap 缺失 = NaN).
 // =============================================================================
@@ -44,8 +44,7 @@ public:
     constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
     const float mc = mcap_.back();
     const float ind = fund_[Fund::ind_l1];
-    const bool base = !bj_ && fund_[Fund::list_age] >= 60.0f && !(fund_[Fund::delist_age] >= 0.0f) &&
-                      fund_[Fund::is_susp] == 0.0f && fund_[Fund::st_level] == 0.0f &&
+    const bool base = Fund::in_market(fund_, bj_) && fund_[Fund::list_age] >= 60.0f && fund_[Fund::st_level] == 0.0f &&
                       fund_[Fund::st_trading] == 0.0f && fund_[Fund::st_profit] == 0.0f &&
                       fund_[Fund::st_revenue] == 0.0f && fund_[Fund::st_dividend] == 0.0f &&
                       mc > 0.0f && ind > 0.0f;

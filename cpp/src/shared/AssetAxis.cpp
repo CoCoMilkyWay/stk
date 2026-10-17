@@ -9,6 +9,9 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <span>
+#include <string_view>
 
 namespace {
 
@@ -140,35 +143,91 @@ UniverseAxis full_axis(std::size_t num_assets) {
   return uni;
 }
 
-UniverseAxis universe_axis(const Config &cfg, std::size_t num_assets) {
-  assert(num_assets > 0 && "资产轴为空");
+UniverseAxis sub_axis(std::vector<uint32_t> ids) {
   const AssetAxis &axis = asset_axis();
+  assert(!ids.empty() && "子轴为空");
+  assert(std::adjacent_find(ids.begin(), ids.end(), std::greater_equal<>()) == ids.end() && "子轴 ids 须升序去重");
+  assert(ids.back() < axis.size() && "子轴资产不在 A 轴上");
 
   UniverseAxis uni;
-  const std::vector<std::string> codes = cfg.UniverseCodes();
-  uni.ids.reserve(codes.size());
-  for (const std::string &code : codes) {
-    const std::size_t asset_id = axis.find(code);
-    assert(asset_id < num_assets && "universe 名单代码不在 A 轴上");
-    uni.ids.push_back(static_cast<uint32_t>(asset_id));
-  }
-  std::sort(uni.ids.begin(), uni.ids.end());
-  uni.ids.erase(std::unique(uni.ids.begin(), uni.ids.end()), uni.ids.end());
-  assert(!uni.ids.empty() && "universe 为空");
-
+  uni.ids = std::move(ids);
   uni.hash = kFnvOffset;
   for (const uint32_t a : uni.ids)
     uni.hash = fnv_append(uni.hash, axis.code(a));
   return uni;
 }
 
-FeatureLib feature_lib(const Config &cfg, std::size_t num_assets, TierId tier) {
-  switch (tier) {
-  case TierId::Lob:
-    return {tier, universe_axis(cfg, num_assets), cfg.FeatureUniverseDir()};
-  case TierId::Bar:
-    return {tier, full_axis(num_assets), cfg.FeatureAllDir()};
+// ============================================================================
+// 特征库清单 (见 FeatureLib.hpp): <dir>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...]}
+// ============================================================================
+namespace {
+std::string lib_manifest(const std::string &dir) { return dir + "/lib.json"; }
+} // namespace
+
+TierId lib_tier(std::string_view name) {
+  if (name == Config::kAllTierDir)
+    return TierId::Bar;
+  pool_def(name); // 不是选池名 → assert
+  return TierId::Lob;
+}
+
+FeatureLib load_lib(const Config &cfg, std::string_view name) {
+  FeatureLib lib;
+  lib.tier = lib_tier(name);
+  lib.name = name;
+  lib.dir = cfg.FeatureLibDir(name);
+  std::ifstream file(lib_manifest(lib.dir));
+  if (!file.is_open())
+    return lib; // 未建库
+
+  const nlohmann::json j = nlohmann::json::parse(file);
+  assert(j.at("tier").get<std::string>() == tier_name(lib.tier) && "库清单的档与库名不符");
+  lib.dates = j.at("dates").get<std::vector<misc::Ymd>>();
+  assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "库清单日期轴为空 / 非升序");
+
+  const AssetAxis &axis = asset_axis();
+  const auto &codes = j.at("codes");
+  std::vector<uint32_t> ids;
+  ids.reserve(codes.size());
+  for (const auto &c : codes) {
+    const std::size_t id = axis.find(c.get_ref<const std::string &>());
+    assert(id < axis.size() && "库清单代码不在 A 轴上");
+    ids.push_back(static_cast<uint32_t>(id));
   }
-  assert(false && "feature_lib: 未知档");
-  return {};
+  lib.uni = sub_axis(std::move(ids));
+  return lib;
+}
+
+void save_lib(const FeatureLib &lib) {
+  assert(lib.ready() && !lib.dates.empty() && "空库不落清单");
+  const AssetAxis &axis = asset_axis();
+  std::vector<std::string> codes;
+  codes.reserve(lib.uni.size());
+  for (const uint32_t a : lib.uni.ids)
+    codes.push_back(axis.code(a));
+
+  nlohmann::json j;
+  j["tier"] = tier_name(lib.tier);
+  j["dates"] = lib.dates;
+  j["codes"] = codes;
+
+  std::filesystem::create_directories(lib.dir);
+  const std::string path = lib_manifest(lib.dir);
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream file(tmp);
+    assert(file.is_open() && "save_lib: 临时文件打不开");
+    file << j.dump(0);
+    assert(file.good() && "save_lib: 写入失败");
+  }
+  std::filesystem::rename(tmp, path); // 原子替换: 读端要么见旧清单要么见新清单
+}
+
+std::string default_pool(const Config &cfg) {
+  const std::span<const PoolDef> pools = feature_pools();
+  assert(!pools.empty() && "Bar 字段表没有选池列 (Universe 类 pool_*)");
+  for (const PoolDef &p : pools)
+    if (std::filesystem::exists(lib_manifest(cfg.FeatureLibDir(p.name))))
+      return p.name;
+  return pools.front().name;
 }

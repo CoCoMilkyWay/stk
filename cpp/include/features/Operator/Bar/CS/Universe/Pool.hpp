@@ -4,8 +4,8 @@
 // Pool (CS) - 选池列: 每行 = "此刻按 PoolKey 调仓"的成员位 (1 = 入池, 0 = 不入; 截面 = cs_valid 在市集)
 // =============================================================================
 //   pool_<name> = Select{Low,High}400(key_*): 键有限值 (母集内) 中取低端 / 高端前 400, 并列按资产轴序先到先得 (方法见 Method/CS.hpp).
-//   列名 pool_<name> 的 <name> = config.universe 取值 (Lob 档特征库目录名), Lob 档交易日 D 的票池 = 本库 D−1 收盘行 (L1 254)
-//   的该列 (shared/Universe.hpp). 全部日频调仓 (原 py 周频的 pe / pb 池改为日频).
+//   列名 pool_<name> 的 <name> = Lob 档库名 (本类每列即一个库, 由 feature_pools 展开, 见 shared/FeatureLib.hpp),
+//   Lob 档交易日 D 的票池 = 本库 D−1 收盘行 (L1 254) 的该列 (shared/Universe.hpp). 全部日频调仓. 加一列即多一个库.
 // =============================================================================
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

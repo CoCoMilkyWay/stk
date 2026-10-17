@@ -15,9 +15,14 @@
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
 #include "shared/Analysis.hpp"
+#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
+
+#include <algorithm>
+#include <string>
+#include <string_view>
 
 namespace GUI::Tasks {
 
@@ -74,11 +79,12 @@ struct TaskFeaturesState {
 
   // 流式分析三件 (Dist / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
   bool streams_started = false;
-  // Auto-compute tracking (Dist / Transform 共用): 特征/层变了即重算 (无论当前在哪个 tab)
+  // Auto-compute tracking (Dist / Transform 共用): 特征/层/库变了即重算 (无论当前在哪个 tab)
   int prev_primary_feature_idx = -1;
   int prev_selected_level = 0;
-  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; universe / 日期区间变了自动重算 (快照做变更检测)
-  std::string preview_universe;
+  std::string prev_lib;
+  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库 / 日期区间变了自动重算 (快照做变更检测)
+  std::string preview_lib;
   misc::Ymd preview_start = 0, preview_end = 0;
   // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
   Phase prev_preview_phase = Phase::Idle;
@@ -198,7 +204,7 @@ TaskHandle CreateFeaturesTask() {
       state->tab_enabled[k] = !disable[k];
 
     // 预览每跑完一轮 (done 增长) 就把特征表 (元数据 + 账目/值域) 落地
-    // <FeatureUniverseDir>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
+    // <当前库目录>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
     // done 回退 (新请求 begin 清零) 不落, 避免写出空表; Done 那一帧补一次 (空库 0 轮也有文件)
     {
       const Phase pv_phase = data.preview.phase.load(std::memory_order_acquire);
@@ -248,8 +254,10 @@ TaskHandle CreateFeaturesTask() {
 
     case TAB_COMPUTE: { // 全量特征计算
       const bool running = state->compute_service && state->compute_service->busy();
-      // 任一 reader (含 Factors 页) 判废删了当前 universe 的库 → 提示重算 (compute 开跑即撤销登记)
-      if (!running && FeatureRead::dir_stale(data.config.FeatureUniverseDir()))
+      // 任一 reader (含 Factors 页) 判废删了某个库 → 提示重算 (该库 compute 开跑即撤销登记; 哪个库见 Compute 页库表)
+      const auto lib_stale = [&](std::string_view lib) { return FeatureRead::dir_stale(data.config.FeatureLibDir(lib)); };
+      if (!running && (lib_stale(Config::kAllTierDir) ||
+                       std::any_of(feature_pools().begin(), feature_pools().end(), [&](const PoolDef &p) { return lib_stale(p.name); })))
         return {TaskStatus::Kind::Warn, "stale"};
       if (!state->compute_service)
         return {};
@@ -285,7 +293,7 @@ TaskHandle CreateFeaturesTask() {
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
     if (!state->orderflow_service) {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>();
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.pool);
     }
     if (!state->dist_service) {
       state->dist_service = std::make_unique<Features::DistService>();
@@ -306,9 +314,18 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (universe 子轴要它).
+    // OrderFlow 一代服务绑一个选池库 (worker 常驻 reader 持该库清单): 换池 / 库重算后整体重建 + 重扫
+    const auto renew_orderflow = [&] {
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.pool);
+      data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
+    };
+    if (state->orderflow_service->pool() != data.feature.selection.pool)
+      renew_orderflow();
+
+    // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (库 A 轴要它).
     // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
     // Preview 起手即自动构建 (全 L1 特征轮训抽样, 不依赖选中); Dist / Transform 等选中特征
+    const std::string lib = data.feature.selection.lib();
     if (!state->streams_started && state->inputs_ready && !data.asset.items.empty()) {
       state->dist_service->Start(data);
       state->transform_service->Start(data);
@@ -318,19 +335,19 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service->Start(data);
       state->preview_service->RequestCompute(data);
       state->streams_started = true;
-      state->preview_universe = data.config.universe;
+      state->preview_lib = lib;
       state->preview_start = data.config.start_date;
       state->preview_end = data.config.end_date;
     } else if (state->streams_started &&
-               (state->preview_universe != data.config.universe ||
+               (state->preview_lib != lib ||
                 state->preview_start != data.config.start_date ||
                 state->preview_end != data.config.end_date)) {
-      // universe / 日期区间变了 → 预览重算 (特征库目录/文件列序都跟着 universe 走)
-      state->preview_universe = data.config.universe;
+      // 库 / 日期区间变了 → 预览重算 (特征库目录/文件列序都跟着库走)
+      state->preview_lib = lib;
       state->preview_start = data.config.start_date;
       state->preview_end = data.config.end_date;
       state->preview_service->RequestCompute(data);
-      // 相关矩阵也跟着 universe / 区间走: 清掉请求快照, TabCorr 下一帧自发重算
+      // 相关矩阵也跟着库 / 区间走: 清掉请求快照, TabCorr 下一帧自发重算
       Features::InvalidateCorrRequests(state->corr_ui_state);
     }
 
@@ -339,12 +356,13 @@ TaskHandle CreateFeaturesTask() {
     {
       auto &sel = data.feature.selection;
 
-      // Detect change
+      // Detect change (同档换选池: 字段表同, 选中下标不变, 但库变了)
       bool feature_changed = (sel.primary_feature_idx() != state->prev_primary_feature_idx);
       bool level_changed = (sel.selected_level != state->prev_selected_level);
+      bool lib_changed = (lib != state->prev_lib);
       bool has_valid_selection = (sel.primary_feature_idx() >= 0);
 
-      if ((feature_changed || level_changed) && has_valid_selection) {
+      if ((feature_changed || level_changed || lib_changed) && has_valid_selection) {
         // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L1 选择静默忽略)
         state->dist_service->RequestCompute(data);
         state->transform_service->RequestCompute(data, state->transform_ui_state.params,
@@ -353,12 +371,14 @@ TaskHandle CreateFeaturesTask() {
         // Update tracking
         state->prev_primary_feature_idx = sel.primary_feature_idx();
         state->prev_selected_level = sel.selected_level;
+        state->prev_lib = lib;
       }
 
       // Update tracking even if no change (initialization case)
       if (!feature_changed && state->prev_primary_feature_idx == -1) {
         state->prev_primary_feature_idx = sel.primary_feature_idx();
         state->prev_selected_level = sel.selected_level;
+        state->prev_lib = lib;
       }
     }
 
@@ -373,8 +393,9 @@ TaskHandle CreateFeaturesTask() {
       const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
       if ((state->prev_compute_phase == Phase::Running) &&
           (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
-        // Compute just finished - OrderFlow 重扫日期 + 整体重拉; 预览重抽 (新库落盘)
-        data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
+        // Compute just finished - OrderFlow 按新清单重建 + 重扫; 库表重扫; 预览重抽 (新库落盘)
+        renew_orderflow();
+        state->compute_state.libs_dirty = true;
         if (state->streams_started) {
           state->preview_service->RequestCompute(data);
           Features::InvalidateCorrRequests(state->corr_ui_state); // 新库落盘: 相关矩阵同样作废

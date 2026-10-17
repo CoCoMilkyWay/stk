@@ -2,7 +2,13 @@
 
 #include "features/DataDefine.hpp"
 #include "features/FeaturesDefine.hpp" // NODE_COMPUTE / NODE_FLUSH (TIER_DAG)
+#include "misc/date.hpp"
 #include <cassert>
+#include <string>
+
+namespace fund {
+class Pool;
+}
 
 // ============================================================================
 // Node: 算子实例 + 它的输出 Series. 算子只写 y[口], 推入缓冲由 Node 统一做. 两档构图端共用
@@ -64,13 +70,24 @@ struct Node<Op, 0> : Op {
   }
 };
 
+// 两档共有的源: 分钟 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
+struct Root {
+  MinuteData minute_data;      // L1 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
+  const fund::Pool &fund_pool; // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
+  std::string asset_code_;     // "CODE.EX"
+  size_t asset_id_;            // 档 A 轴下标
+  misc::Ymd date_ = 0;         // 当日 (at_day_start 设置)
+  Root(const fund::Pool &pool, const std::string &code, size_t asset_id)
+      : fund_pool(pool), asset_code_(code), asset_id_(asset_id) {}
+};
+
 } // namespace graph
 
 #define DAG_UNPAREN(...) __VA_ARGS__
 #define DAG_BRACE(...) {__VA_ARGS__}
 
 // ============================================================================
-// 档 DAG 公共体 (两档同一份). 档图头只写档特有的: 源 (DAG_Root, 输入成员 + 构造) 与标签类型 / 初始化,
+// 档 DAG 公共体 (两档同一份). 档图头只写档特有的: 源 (DAG_Root : graph::Root, 档特有输入) 与标签类型 / 初始化,
 // 然后 #define DAG_TIER <Tier> → TIER_DAG(LabelType, label 初始化实参...) → #undef DAG_TIER. 展开为:
 //   声明链  struct DAG_<name> : <Tier>_NODE_PREV_<name> { graph::Node<Op> name{inputs...}; };
 //           节点按 NodesGenerated.hpp 的拓扑序每个一层, 一层里只看得到更早的层 —— 输入引用了未排在前面的节点

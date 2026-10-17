@@ -1,122 +1,68 @@
 #include "shared/Universe.hpp"
-#include "nlohmann/json.hpp"
+#include "features/Backend/FeatureRead.hpp"
+#include "shared/FeatureLib.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <fstream>
-
-using json = nlohmann::json;
 
 namespace universe {
 
-namespace {
+Pool Pool::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
+  assert(bar.tier == TierId::Bar && bar.ready() && "选池源 = all 库 (先算 all)");
+  assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
+  constexpr size_t kLevel = 1;
+  constexpr size_t kCloseRow = level_valid_rows(kLevel) - 1; // L1 254 (收盘)
 
-// 名单元素必须是非空字符串数组 (可为空数组)
-void check_code_array(const json &arr) {
-  assert(arr.is_array() && "universe json: add/del 必须是数组");
-  for (const auto &c : arr) {
-    assert(c.is_string() && !c.get_ref<const std::string &>().empty() && "universe json: 代码必须是非空字符串 \"CODE.EX\"");
-    (void)c;
+  FeatureRead reader(bar);
+  FeatureRead::DayColumns dc;
+  const size_t As = bar.uni.size();
+  dc.preallocate(As, kLevel, 1);
+  const std::vector<size_t> cols{col};
+
+  // 全轴逐日成员位 [date_i][a_bar], 顺带记并集
+  std::vector<uint8_t> full(dates.size() * As, 0);
+  std::vector<uint8_t> seen(As, 0);
+  for (size_t i = 0; i < dates.size(); ++i) {
+    const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
+    assert(it != bar.dates.end() && *it == dates[i] && it != bar.dates.begin() && "回测日不在 all 库日期轴 (或是其首日): 重算 all 覆盖到 end_date");
+    const misc::Ymd prev = *(it - 1);
+    assert(reader.has_date(prev) && "all 库缺选池源日 (D−1): 先把 all 库算完");
+    reader.load_day_columns(prev, cols, dc);
+    assert(!reader.stale() && "all 库判废 (头不符): 重算 all");
+    const feature_storage_t *row = dc.col(0) + kCloseRow * As;
+    uint8_t *dst = full.data() + i * As;
+    for (size_t a = 0; a < As; ++a) {
+      dst[a] = static_cast<float>(row[a]) > 0.5f; // NaN (母集外) → 不在池 (本 TU precise-math)
+      seen[a] |= dst[a];
+    }
   }
-}
 
-} // namespace
-
-Pool Pool::load(const std::filesystem::path &json_path) {
-  std::ifstream file(json_path);
-  assert(file.is_open() && "universe 名单文件不存在: <config_dir>/universe/<name>.json (先跑 py/universe/<name>.py)");
-
-  json j;
-  file >> j;
-  assert(j.is_object() && !j.empty() && "universe json 必须是非空对象 {\"YYYYMMDD\": {\"add\": [...], \"del\": [...]}}");
+  std::vector<uint32_t> ids;
+  std::vector<size_t> pick; // 子轴 sub → all 库下标
+  for (size_t a = 0; a < As; ++a)
+    if (seen[a]) {
+      ids.push_back(bar.uni.global(a));
+      pick.push_back(a);
+    }
+  assert(!ids.empty() && "选池在回测区间内并集为空");
 
   Pool p;
-  // nlohmann::json 对象按键排序 (std::map), "YYYYMMDD" 字典序 = 时间序
-  p.dates_.reserve(j.size());
-  for (const auto &[key, day] : j.items()) {
-    const misc::Ymd date = key.size() == 8 ? misc::parse_ymd(key) : 0;
-    assert(date && "universe json: 日期键必须是 YYYYMMDD");
-    assert(day.is_object() && day.contains("add") && day.contains("del") && "universe json: 每日必须是 {\"add\": [...], \"del\": [...]}");
-    check_code_array(day["add"]);
-    check_code_array(day["del"]);
-    assert((p.dates_.empty() || p.dates_.back() < date) && "universe json: 日期键必须严格升序");
-    p.dates_.push_back(date);
-    for (const auto &c : day["add"])
-      p.codes_.push_back(c.get<std::string>());
-  }
-  // 并集 = 所有 add 过的代码 (del 只会删 add 过的)
-  std::sort(p.codes_.begin(), p.codes_.end());
-  p.codes_.erase(std::unique(p.codes_.begin(), p.codes_.end()), p.codes_.end());
-  assert(!p.codes_.empty() && "universe 并集为空");
-  p.code_idx_.reserve(p.codes_.size());
-  for (uint32_t i = 0; i < p.codes_.size(); ++i)
-    p.code_idx_.emplace(p.codes_[i], i);
-
-  // 回放: 第 i 日 = 第 i−1 日 + add − del
-  const size_t n_codes = p.codes_.size();
-  p.member_.assign(p.dates_.size() * n_codes, 0);
-  std::vector<uint8_t> cur(n_codes, 0);
-  size_t cur_n = 0;
-  size_t di = 0;
-  for (const auto &[date, day] : j.items()) {
-    for (const auto &c : day["del"]) {
-      const auto it = p.code_idx_.find(c.get_ref<const std::string &>());
-      assert(it != p.code_idx_.end() && cur[it->second] && "universe json: del 的代码不在前一日池里");
-      cur[it->second] = 0;
-      --cur_n;
-    }
-    for (const auto &c : day["add"]) {
-      const uint32_t idx = p.code_idx_.at(c.get_ref<const std::string &>());
-      assert(!cur[idx] && "universe json: add 的代码已在前一日池里");
-      cur[idx] = 1;
-      ++cur_n;
-    }
-    assert(cur_n > 0 && "universe json: 某日池空");
-    std::copy(cur.begin(), cur.end(), p.member_.begin() + static_cast<std::ptrdiff_t>(di * n_codes));
-    ++di;
-    (void)date;
-  }
+  p.dates_.assign(dates.begin(), dates.end());
+  p.axis_ = sub_axis(std::move(ids));
+  const size_t A = pick.size();
+  p.member_.resize(dates.size() * A);
+  for (size_t i = 0; i < dates.size(); ++i)
+    for (size_t s = 0; s < A; ++s)
+      p.member_[i * A + s] = full[i * As + pick[s]];
   return p;
 }
 
-std::vector<std::string> Pool::codes(misc::Ymd first, misc::Ymd last) const {
-  assert(first <= last && "universe::codes: 区间颠倒");
-  const auto lo = std::lower_bound(dates_.begin(), dates_.end(), first);
-  const auto hi = std::upper_bound(dates_.begin(), dates_.end(), last);
-  assert(lo < hi && "universe::codes: 回测区间内没有任何名单日 (重跑 py/universe/<name>.py 覆盖到 end_date)");
-
-  const size_t n_codes = codes_.size();
-  std::vector<uint8_t> seen(n_codes, 0);
-  for (auto it = lo; it != hi; ++it) {
-    const uint8_t *row = member_.data() + static_cast<size_t>(it - dates_.begin()) * n_codes;
-    for (size_t i = 0; i < n_codes; ++i)
-      seen[i] |= row[i];
-  }
-  std::vector<std::string> out;
-  for (size_t i = 0; i < n_codes; ++i)
-    if (seen[i])
-      out.push_back(codes_[i]); // codes_ 已升序
-  assert(!out.empty() && "universe::codes: 区间内并集为空");
-  return out;
-}
-
-const std::vector<misc::Ymd> &Pool::dates() const {
-  return dates_;
-}
-
-bool Pool::has_date(misc::Ymd d) const {
-  return std::binary_search(dates_.begin(), dates_.end(), d);
-}
-
-bool Pool::in_pool(std::string_view code, misc::Ymd d) const {
+bool Pool::in_pool(size_t sub, misc::Ymd d) const {
   const auto dit = std::lower_bound(dates_.begin(), dates_.end(), d);
-  assert(dit != dates_.end() && *dit == d && "universe: 该日没出名单 (回测区间超出名单覆盖, 重跑 py/universe)");
-  assert(code.find('.') != std::string_view::npos && "universe: 键是 \"CODE.EX\", 裸 6 位码永远查不到 (cs_valid 会全 0)");
-  const auto cit = code_idx_.find(std::string(code));
-  if (cit == code_idx_.end())
-    return false;
+  assert(dit != dates_.end() && *dit == d && "universe: 该日不在本库日期轴");
+  assert(sub < axis_.size());
   const size_t di = static_cast<size_t>(dit - dates_.begin());
-  return member_[di * codes_.size() + cit->second] != 0;
+  return member_[di * axis_.size() + sub] != 0;
 }
 
 } // namespace universe

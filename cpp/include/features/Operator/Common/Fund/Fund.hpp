@@ -134,6 +134,12 @@ public:
   Fund(const fund::Pool &pool, size_t asset_id, const misc::Ymd &date)
       : pool_(pool), date_(date), stream_(pool, asset_id) {}
 
+  // 当日在市可交易: 非北交所 ∧ 已上市 (list_age ≥ 0) ∧ 未退市 (delist_age 未定义) ∧ 当日非停牌 (盘前可知).
+  // 只许 precise-math TU 调 (NaN 比较语义; 违反本文件 fast-math 契约的唯一入口): Bar 档 cs_valid / PoolKey 母集
+  static bool in_market(const float (&y)[kCount], bool bj) {
+    return !bj && y[list_age] >= 0.0f && !(y[delist_age] >= 0.0f) && y[is_susp] == 0.0f;
+  }
+
   // onDay (盘前): 状态机推进到当日, 写 y; 之后每分钟 flush 原样广播
   void compute() {
     const int d = pool_.date_index(date_);

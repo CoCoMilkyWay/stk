@@ -55,8 +55,8 @@ struct TaskFactorsState {
 // Factors 子页的作用域 (每帧从 config 取)
 static Factors::FactorsUIContext factors_context(const SharedData &data) {
   Factors::FactorsUIContext c;
-  c.factor_dir = data.config.factor_dir + "/" + data.config.universe;
-  c.universe = data.config.universe;
+  c.factor_dir = data.config.factor_dir + "/" + data.feature.selection.pool;
+  c.universe = data.feature.selection.pool;
   c.start_date = data.config.start_date;
   c.end_date = data.config.end_date;
   c.sell_impact = data.config.sell_impact;

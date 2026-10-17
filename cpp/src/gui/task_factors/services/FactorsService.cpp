@@ -444,17 +444,17 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
 
 bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req) {
   req = FactorsRequest{};
-  req.factor_dir = data.config.factor_dir + "/" + data.config.universe;
+  req.factor_dir = data.config.factor_dir + "/" + data.feature.selection.pool;
   req.evaluate = evaluate;
   req.gpu = gpu;
   if (!evaluate)
     return true;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), TierId::Lob);
+  req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
   if (req.scope.months.empty())
     return false;
-  req.universe = data.config.universe;
+  req.universe = data.feature.selection.pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   req.max_impact = data.config.max_impact;

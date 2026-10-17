@@ -1,6 +1,5 @@
 #include "shared/Config.hpp"
 #include "nlohmann/json.hpp"
-#include "shared/Universe.hpp"
 #include <cassert>
 #include <fstream>
 
@@ -40,7 +39,6 @@ void Config::MarkDirty() {
 void Config::SyncStringBuffers() {
   snprintf(start_date_buf, sizeof(start_date_buf), "%s", misc::dash(start_date).c_str());
   snprintf(end_date_buf, sizeof(end_date_buf), "%s", misc::dash(end_date).c_str());
-  snprintf(universe_buf, sizeof(universe_buf), "%s", universe.c_str());
   snprintf(archive_dir_buf, sizeof(archive_dir_buf), "%s", archive_dir.c_str());
   snprintf(orders_dir_buf, sizeof(orders_dir_buf), "%s", orders_dir.c_str());
   snprintf(feature_dir_buf, sizeof(feature_dir_buf), "%s", feature_dir.c_str());
@@ -82,16 +80,6 @@ void Config::AutoSync() {
   }
 }
 
-std::string Config::UniversePath() const {
-  assert(universe != kAllTierDir && "universe 名 all 已归 Bar 档, Lob 档无此名单");
-  return (fs::path(config_dir) / "universe" / (universe + ".json")).string();
-}
-
-std::vector<std::string> Config::UniverseCodes() const {
-  // 并集只看张量覆盖的回测区间 [start_date, end_date]
-  return universe::Pool::load(UniversePath()).codes(start_date, end_date);
-}
-
 bool Config::LoadFromFile() {
   std::ifstream file(filepath);
   if (!file.is_open()) {
@@ -105,7 +93,6 @@ bool Config::LoadFromFile() {
   start_date = misc::parse_ymd(j.value("start_date", misc::dash(start_date)));
   end_date = misc::parse_ymd(j.value("end_date", misc::dash(end_date)));
   assert(start_date && end_date && "config.json: start_date / end_date 须为 YYYY-MM-DD");
-  universe = j.value("universe", universe);
   archive_dir = j.value("archive_dir", archive_dir);
   orders_dir = j.value("orders_dir", orders_dir);
   feature_dir = j.value("feature_dir", feature_dir);
@@ -146,7 +133,6 @@ bool Config::SaveToFile() {
   // Convert Config to JSON
   j["start_date"] = misc::dash(start_date);
   j["end_date"] = misc::dash(end_date);
-  j["universe"] = universe;
   j["archive_dir"] = archive_dir;
   j["orders_dir"] = orders_dir;
   j["feature_dir"] = feature_dir;

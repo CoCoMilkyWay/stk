@@ -73,13 +73,12 @@ private:
 AssetAxis &asset_axis();
 
 // ============================================================================
-// UniverseAxis — 特征管线的 A 轴 = universe 子轴
+// UniverseAxis — 特征库的 A 轴 (子轴)
 //
-// 由 config.universe + 全局 AssetAxis 唯一确定: ids = 名单在全局轴上的下标
-// (升序去重), hash = 按子轴顺序对码表做同一条 FNV 累积链 (fnv_append). 特征文件
-// 头存 (A_sub, hash): 写读两端各自从 config 推导同一子轴, 不符 = 名单/区间与
-// 特征库不一致 → 读端删库判废, 等重算 (见 FeatureRead). Bar 档 (features/all) 用全轴 full_axis: ids = [0, num_assets),
-// hash == asset_axis().hash_at(num_assets) (同一条链的前缀值).
+// ids = 库内资产在全局轴上的下标 (升序去重), hash = 按子轴顺序对码表做同一条 FNV 累积链 (fnv_append).
+// 写端规划 (Lob: 选池并集 sub_axis; Bar: 全轴 full_axis, hash == asset_axis().hash_at(num_assets), 同一条链的前缀值)
+// 后码表落库清单 (见 FeatureLib.hpp), 读端从清单重建同一子轴. 特征文件头存 (A_sub, hash), 不符 = 库内文件与清单
+// 不一致 → 读端删库判废, 等重算 (见 FeatureRead).
 //
 // 整条特征管线 (张量池 / 落盘 / 读端 / Dist / Transform / OrderFlow 特征读)
 // 一律用子轴下标 (sub); 需要查 items/码表/行业等全局资源时经 global() 映射.
@@ -100,11 +99,7 @@ struct UniverseAxis {
   }
 };
 
-// universe 子轴构建 (Lob 档): cfg.UniverseCodes()
-// (动态池逐日 diff 回放后的并集, 见 shared/Universe.hpp) 逐条按轴 find. 代码不在轴前缀 [0, num_assets) 内 →
-// assert: 名单写错宁可启动即死, 不要静默算出一个残缺 universe.
-// Compute (派活/落盘) 与 Dist/Transform/OrderFlow (读端) 共用, 各处永远同一子轴.
-struct Config;
-UniverseAxis universe_axis(const Config &cfg, std::size_t num_assets);
+// 子轴: ids 须升序去重且在全局轴内 (assert), hash 按子轴序走 FNV 链
+UniverseAxis sub_axis(std::vector<uint32_t> ids);
 // Bar 档 A 轴 = 全轴前缀 [0, num_assets)
 UniverseAxis full_axis(std::size_t num_assets);

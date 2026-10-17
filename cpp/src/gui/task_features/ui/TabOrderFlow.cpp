@@ -76,8 +76,8 @@ static void FormatDateShort(char *buf, size_t size, misc::Ymd date) {
 // 选中特征列 (当前层): 多选集合, 截断 MAX_FEATURES
 static std::vector<int> CollectFeats(const Feature::Selection &sel, int level) {
   std::vector<int> v;
-  if (sel.selected_level != level)
-    return v;
+  if (sel.tier != TierId::Lob || sel.selected_level != level)
+    return v; // OrderFlow 读选池库 (Lob 档), 选 all 库时的特征下标不属于它
   for (int f : sel.selected_features) {
     if (v.size() >= OrderFlowConst::MAX_FEATURES)
       break;

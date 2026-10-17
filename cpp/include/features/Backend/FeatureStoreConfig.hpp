@@ -1,9 +1,10 @@
 #pragma once
 
-#include "FeatureLevels.hpp"                // 稳定层: feature_storage_t / FieldInfo / LevelInfo / TierId
-#include "features/Bar/FieldsGenerated.hpp" // CMake 从算子文件汇总 (宏文本, 不含算子 #include): Bar_NODES(N) / Bar_L1_FIELDS(X)
+#include "FeatureLevels.hpp" // 稳定层: feature_storage_t / FieldInfo / LevelInfo / TierId
+// FieldsGenerated: CMake 从算子文件汇总 (宏文本, 不含算子 #include): <Tier>_NODES(N) / <Tier>_L*_FIELDS(X); 经 ALL_TIERS 拼名使用
+#include "features/Bar/FieldsGenerated.hpp" // IWYU pragma: keep
 #include "features/FeaturesDefine.hpp"
-#include "features/Lob/FieldsGenerated.hpp" // 同上: Lob_NODES(N) / Lob_L0_FIELDS(X) / Lob_L1_FIELDS(X)
+#include "features/Lob/FieldsGenerated.hpp" // IWYU pragma: keep
 #include "features/Method/TS.hpp"           // OP 行 Tf (FieldInfo.ts_tf → 指纹; RowWriter 落盘套用)
 #include "features/TimeIndex.hpp"
 #include <array>
@@ -33,12 +34,12 @@
 // 节点 flush 域 (OP 列的层 / 有效性标志由此推出; SRC_VALID_OP 在档命名空间内按名查到本档的)
 // ============================================================================
 #define NODE_FLUSH_ONE(name, type, args, ...) constexpr Trigger name = NODE_FLUSH(__VA_ARGS__);
-namespace lob::node_flush {
-Lob_NODES(NODE_FLUSH_ONE)
-} // namespace lob::node_flush
-namespace bar::node_flush {
-Bar_NODES(NODE_FLUSH_ONE)
-} // namespace bar::node_flush
+#define TIER_NODE_FLUSH(T, ns) \
+  namespace ns::node_flush {   \
+  T##_NODES(NODE_FLUSH_ONE)    \
+  }
+ALL_TIERS(TIER_NODE_FLUSH)
+#undef TIER_NODE_FLUSH
 #undef NODE_FLUSH_ONE
 
 // ============================================================================

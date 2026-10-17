@@ -11,7 +11,7 @@ void PreviewService::RequestCompute(SharedData &data) {
   assert(!meta_list.empty());
 
   Req req;
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
+  req.scope = analysis::read_scope(data.config, data.feature.selection.lib());
   if (req.scope.months.empty())
     return;
   req.spec.n_features = meta_list.size();

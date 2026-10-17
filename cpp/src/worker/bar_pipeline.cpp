@@ -54,12 +54,22 @@ struct TierFeed<bar::Tier> {
     return b;
   }
 
-  // 无工作区: 一个 asset-day = 本资产当日 255 行 (无 bar → 零事件日)
+  // 无工作区: 一个 asset-day = 本资产当日 255 行 (无 bar → 零事件日), 返回 bar 数
   struct Runner {
     const TierFeed &feed;
     Runner(TierFeed &f, int) : feed(f) {}
     size_t run(CoreBar &core, size_t sub, size_t d, const BarFeatureStore::Day &day, BarFeatureStore &store) {
-      core.run_day(feed.dates[d], day, feed.bars(d).asset(sub), store);
+      const misc::Ymd date = feed.dates[d];
+      const Bar1m *bars = feed.bars(d).asset(sub);
+      if (!bars) {
+        core.empty_day(date, day, store); // 无 bar1m = 零事件日: 与正常日同路径
+        return 0;
+      }
+
+      core.begin_day(date, day);
+      for (size_t m = 0; m < TRADE_MINUTES_PER_DAY; ++m)
+        core.compute_and_store(m, bars[m]);
+      core.end_day(store);
       return TRADE_MINUTES_PER_DAY;
     }
   };

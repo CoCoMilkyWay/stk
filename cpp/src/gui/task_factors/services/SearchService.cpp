@@ -159,17 +159,17 @@ struct SearchService::Flow {
 bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Optimize 只接模板解析过的因子");
   req = SearchRequest{};
-  req.factor_dir = data.config.factor_dir + "/" + data.config.universe;
+  req.factor_dir = data.config.factor_dir + "/" + data.feature.selection.pool;
   req.file = row.file;
   req.tmpl = row.tmpl;
   req.frame = row.frame;
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), TierId::Lob);
+  req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
   if (req.scope.months.empty())
     return false;
-  req.universe = data.config.universe;
+  req.universe = data.feature.selection.pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;

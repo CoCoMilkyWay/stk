@@ -889,15 +889,45 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   Feature::Selection &sel = feature.selection;
 
   // ==========================================================================
-  // Section 1: Level Selection
+  // Section 1: Library + Level (库 = all (Bar 档) / 各选池 (Lob 档); 分析页读所选库, 因子页读所选选池)
   // ==========================================================================
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Level:");
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Lib:");
+  ImGui::SameLine();
+  const std::string cur_lib = sel.lib();
+  ImGui::SetNextItemWidth(140);
+  if (ImGui::BeginCombo("##lib", cur_lib.c_str())) {
+    const auto lib_item = [&](const char *name) {
+      const bool selected = cur_lib == name;
+      if (ImGui::Selectable(name, selected) && !selected) {
+        const TierId tier = lib_tier(name);
+        if (tier != sel.tier) {
+          sel.clear(); // 换档 = 换字段表: 选中 / 过滤作废
+          sel.tier = tier;
+        }
+        if (tier == TierId::Lob)
+          sel.pool = name;
+      }
+      if (selected)
+        ImGui::SetItemDefaultFocus();
+    };
+    lib_item(Config::kAllTierDir);
+    for (const PoolDef &p : feature_pools())
+      lib_item(p.name);
+    ImGui::EndCombo();
+  }
+  if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))
+    sel.selected_level = static_cast<int>(last_level(sel.tier)); // 档缺该层 (Bar 无 L0)
+
+  ImGui::SameLine();
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Level:");
   ImGui::SameLine();
 
   bool level_changed = false;
   int prev_level = sel.selected_level;
 
+  ImGui::BeginDisabled(!has_level(sel.tier, 0));
   ImGui::RadioButton("L0", &sel.selected_level, 0);
+  ImGui::EndDisabled();
   ImGui::SameLine();
   ImGui::RadioButton("L1", &sel.selected_level, 1);
 
@@ -1359,7 +1389,7 @@ static double sig4(float v) {
 void SaveFeatureTableJson(SharedData &data) {
   using json = nlohmann::json;
   const Feature::Metadata &meta = data.feature.meta();
-  const std::filesystem::path dir = feature_lib(data.config, data.asset.items.size(), meta.tier).dir;
+  const std::filesystem::path dir = data.config.FeatureLibDir(data.feature.selection.lib());
 
   const std::filesystem::path path = dir / "features.json";
   std::filesystem::create_directories(path.parent_path());
@@ -1369,7 +1399,7 @@ void SaveFeatureTableJson(SharedData &data) {
     assert(file.is_open() && "features.json: 临时文件打不开");
     file << "{\n";
     file << " \"tier\": " << json(tier_name(meta.tier)).dump() << ",\n";
-    file << " \"universe\": " << json(dir.filename().string()).dump() << ",\n";
+    file << " \"lib\": " << json(dir.filename().string()).dump() << ",\n";
     file << " \"start_date\": " << json(misc::dash(data.config.start_date)).dump() << ",\n";
     file << " \"end_date\": " << json(misc::dash(data.config.end_date)).dump() << ",\n";
     file << " \"preview\": {\"level\": " << json(level_name(analysis::kLevel)).dump()
