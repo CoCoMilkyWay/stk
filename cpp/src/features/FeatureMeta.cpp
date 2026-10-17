@@ -108,13 +108,26 @@ static_assert(tiers_unique(), "跨档 TS / CS 列名重复 (因子层按名拼�
 // ============================================================================
 // Compile-time Metadata Generation: 每档每层一张表 (字段表行 + 层信息)
 // ============================================================================
-#define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                       \
-  {#code, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, SRC_TS_TF_##src, SRC_TS_METHOD_##src, SRC_CS_TF_##src, \
+// 节点文件取自 <Tier>_<LVL>_FILES (与字段表同一展开, CAT1 位 = 文件路径, 行序一致; 行数不等即模板推导失败)
+#define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                                \
+  {#code, SRC_VALID_##src, SRC_KIND_##src, cat_l1, nullptr, #cat_l2, SRC_TS_TF_##src, SRC_TS_METHOD_##src, SRC_CS_TF_##src, \
    SRC_CS_METHOD_##src, formula, name_en, name_cn, description, kLevel},
-#define GENERATE_METADATA_TABLE(T, ns, name, num, fields, psd)       \
-  namespace ns::name##_meta_detail {                                 \
-    constexpr uint8_t kLevel = num;                                  \
-    constexpr FeatureMetadata TABLE[] = {fields(GENERATE_METADATA)}; \
+#define GENERATE_FILE(code, file, ...) file,
+template <size_t N>
+constexpr std::array<FeatureMetadata, N> with_files(const FeatureMetadata (&base)[N], const char *const (&files)[N]) {
+  std::array<FeatureMetadata, N> out{};
+  for (size_t i = 0; i < N; ++i) {
+    out[i] = base[i];
+    out[i].file = files[i];
+  }
+  return out;
+}
+#define GENERATE_METADATA_TABLE(T, ns, name, num, fields, psd)                 \
+  namespace ns::name##_meta_detail {                                           \
+    constexpr uint8_t kLevel = num;                                            \
+    constexpr FeatureMetadata BASE[] = {fields(GENERATE_METADATA)};            \
+    constexpr const char *const FILES[] = {T##_##name##_FILES(GENERATE_FILE)}; \
+    constexpr auto TABLE = with_files(BASE, FILES);                            \
   }
 TIER_LEVELS(GENERATE_METADATA_TABLE)
 
@@ -162,6 +175,7 @@ const TierMeta &tier_meta(TierId tier) {
 } // namespace
 
 #undef GENERATE_METADATA
+#undef GENERATE_FILE
 #undef GENERATE_METADATA_TABLE
 #undef GENERATE_TIER_META
 

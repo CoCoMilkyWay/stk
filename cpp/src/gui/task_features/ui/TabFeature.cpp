@@ -1042,7 +1042,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   const float table_height = std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing(), ImGui::GetFrameHeight());
 
   // 表列序 (sort_column / 排序 switch 皆按此下标)
-  constexpr int kNumCols = 14;
+  constexpr int kNumCols = 15;
   if (ImGui::BeginTable("FeatureTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
@@ -1062,9 +1062,10 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                        // 8
     ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);          // 9
     ImGui::TableSetupColumn("PSD(intraday)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 10
-    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 11
-    ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 12
-    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                         // 13
+    ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthFixed);                                         // 11
+    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 12
+    ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 13
+    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                         // 14
     ImGui::TableSetupScrollFreeze(0, 1);                                                                       // Freeze header row
 
     // 贴合窗 (kFitFrames 帧) 全程全行提交, 但只在中段两帧真正请求贴合:
@@ -1083,7 +1084,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
     const char *headers[kNumCols] = {"Multi", "Code", "Valid", "Name CN", "Type", "Cat1", "Cat2",
-                                     "Stat", "Range", "Dist", "PSD (intraday)", "TS Norm", "CS Norm", "Deps"};
+                                     "Stat", "Range", "Dist", "PSD (intraday)", "File", "TS Norm", "CS Norm", "Deps"};
     const char *tooltips[kNumCols] = {
         "多选: 选择多个特征进行对比\n"
         "• 首个作为主特征",
@@ -1114,6 +1115,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "• 灰线 = 白噪声\n"
         "• 青刀 = 谱重心\n"
         "• 日频特征 = 地板线",
+        "节点文件: 定义该列 FIELDS_ 行的文件\n"
+        "• 悬停看完整路径",
         "时序归一化: SRC 列 TS(..., Tf, Method) 推出",
         "截面归一化: SRC 列 CS(..., Tf, Method) 推出",
         "直接依赖: 该特征计算所依赖的其他特征 code",
@@ -1219,13 +1222,16 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
               case 8: // Range: sd (var 单调等价)
                 cmp = cmp3(ca.var, cb.var);
                 break;
-              case 11: // TS Norm
+              case 11:
+                cmp = std::strcmp(fa.file, fb.file);
+                break;
+              case 12: // TS Norm
                 cmp = (int)fa.ts_method - (int)fb.ts_method;
                 break;
-              case 12: // CS Norm
+              case 13: // CS Norm
                 cmp = (int)fa.cs_method - (int)fb.cs_method;
                 break;
-              case 13:
+              case 14:
                 cmp = deps_list[a].compare(deps_list[b]);
                 break;
               }
@@ -1335,6 +1341,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::TableNextColumn();
       render_preview_psd(cell, f.code, (size_t)idx, pv_epoch);
       ImGui::PopID();
+
+      // Column: File (节点文件名; 悬停 = include/ 下完整路径)
+      ImGui::TableNextColumn();
+      const char *slash = std::strrchr(f.file, '/');
+      ImGui::TextUnformatted(slash ? slash + 1 : f.file);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", f.file);
 
       // Columns: TS Norm / CS Norm (SRC 推出的 Method; Tf 不显示; None 显 "-")
       ImGui::TableNextColumn();
@@ -1457,6 +1470,7 @@ void SaveFeatureTableJson(SharedData &data) {
                           {"sd", sig4(sd)}};
           }
         }
+        r["file"] = f.file;
         r["ts_norm"] = to_string(f.ts_method).en;
         r["cs_norm"] = to_string(f.cs_method).en;
         r["deps"] = split_deps(deps_list[i]);

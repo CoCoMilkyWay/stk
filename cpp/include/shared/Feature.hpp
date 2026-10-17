@@ -20,6 +20,7 @@ struct FeatureMetadata {
   L2::ValidType valid_type;  // ALL/DATA/DEPTH (由 SRC / 节点 flush 域推出)
   FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
   const char *cat_l1;        // Node/TS/<dir> or Node/CS/<dir>
+  const char *file;          // 定义该列的节点文件 (include/ 下相对路径, 如 features/Node/Bar/TS/Basic/Kline.hpp)
   const char *cat_l2;        // FIELDS row token (AUTO = GUI 值域自动探测; 其他 = 人工覆盖), generated into FeatureCategoryL2_ALL
   ts::TfId ts_tf;            // 由 SRC 推出: TS(..., Tf, Method) → 时序归一化 (Tf 已落盘套用, Method 占位); 非 TS 行 None
   ts::MethodId ts_method;
