@@ -33,9 +33,9 @@ struct FieldInfo {
   ts::TfId ts_tf; // OP 行落盘前套用的元素变换 (改变落盘值 → 进指纹); 非 OP 行 None
 };
 
-// 层表项: 运行时按层下标取 rows / width / offsets / fingerprint / 文件布局
+// 层表项: 运行时按层下标取 rows / width / offsets / fingerprint
 struct LevelInfo {
-  const char *level_name;  // "L0" / "L1": 文件名 features_<name>[_f<i>].zst
+  const char *level_name;  // "L0" / "L1": 文件名 features_<name>.bin
   size_t rows;             // T
   size_t width;            // F_total
   size_t field_count;      // 列数 (≤ width)
@@ -43,7 +43,6 @@ struct LevelInfo {
   const size_t *offsets;   // [field_count] 列下标 → 行内偏移
   uint64_t fingerprint;    // 字段表指纹
   const char *psd;         // 该层特征的推荐频谱 (GUI 元数据)
-  bool columnar;           // true: 每列一个文件 (按列选读); false: 整层一个文件
   bool xor_delta;          // true: 落盘前沿 T 轴 XOR 差分 (无损预变换, 提升 zstd 收益, 见 ALL_LEVELS)
 };
 
@@ -59,23 +58,51 @@ const LevelInfo &level_info(size_t lvl);
 // rows 用于缓冲区 / stride; 消费端迭代时间轴一律用本函数, 不要用 rows.
 inline size_t level_valid_rows(size_t lvl) { return level_info(lvl).rows - 1; }
 
-// 特征文件: <base>/YYYY/MM/DD/features_<LVL>.zst (整层) 或 features_<LVL>_f<i>.zst (逐列)
-// 头 = size_t × {T, F, A, axis_hash, table_fingerprint}
-constexpr size_t FEATURE_FILE_HEADER_WORDS = 5;
+// ============================================================================
+// 特征日文件 — <base>/YYYY/MM/DD/features_<LVL>.bin, 一天一层一个
+// ============================================================================
+//
+//   [FeatureFileHeader][ColRef × F][列载荷 × F]
+//
+//   头 + 目录定宽 (F = 该层存储列数 width, 编译期固定): 写端先空出, 逐列追加载荷,
+//   收工回填头 + 目录, .tmp → rename 原子发布. 读端一次拿头 + 目录, 按列 pread.
+//   列载荷 = 一列 [T][A] (xor_delta 层先沿 T 差分) 经 FeatureCodec 编码; 目录下标
+//   = 存储列 (宽 1 字段即字段 offsets[f]).
+//   A / axis_hash = universe 子轴 (列 → 资产映射靠子轴顺序, 不在文件里);
+//   fingerprint = 字段表指纹. 三者与读端期望不符 = 旧库, 读端判废.
+//
+// 与 orders 日文件 (shared/OrdersDay.hpp) 同形: 头 + 载荷 + 目录. 这里单写者顺序
+// 追加且 F 已知, 目录放前部; orders 多 worker 并发追加, 目录只能放尾部.
+struct FeatureFileHeader {
+  static constexpr uint64_t kMagic = 0x0000315941445446; // 'F','T','D','A','Y','1' 小端
+
+  uint64_t magic;
+  uint64_t T;
+  uint64_t F;
+  uint64_t A;
+  uint64_t axis_hash;
+  uint64_t fingerprint;
+};
+static_assert(sizeof(FeatureFileHeader) == 48, "特征日文件头必须定宽无填充");
+
+// 一列载荷在日文件里的位置
+struct ColRef {
+  uint64_t offset;
+  uint64_t size;
+};
+static_assert(sizeof(ColRef) == 16, "特征日文件目录项必须紧凑无填充");
+
 inline std::string feature_day_dir(const std::string &base, misc::Ymd date) {
   return base + "/" + misc::slash(date);
 }
 inline std::string feature_file(const std::string &day_dir, size_t lvl) {
-  return day_dir + "/features_" + level_info(lvl).level_name + ".zst";
-}
-inline std::string feature_column_file(const std::string &day_dir, size_t lvl, size_t col) {
-  return day_dir + "/features_" + level_info(lvl).level_name + "_f" + std::to_string(col) + ".zst";
+  return day_dir + "/features_" + level_info(lvl).level_name + ".bin";
 }
 
 // ============================================================================
 // T 轴 XOR 差分 (LEVELS[lvl].xor_delta 层的落盘预变换, 无损, 就地)
-//   编码 (写端, 压缩前): row[t] ^= row[t-1], t 从高往低; row = 文件内一个时间行
-//   (整层文件 F_total×A, 逐列文件 1×A). 解码 (读端, 解压后): 前缀 XOR, t 从低往高.
+//   编码 (写端, 压缩前): row[t] ^= row[t-1], t 从高往低; row = 一列载荷的一个时间行
+//   (A 个). 解码 (读端, 解压后): 前缀 XOR, t 从低往高.
 //   fp16 按位当 uint16 处理, 往返恒等 (含 NaN/Inf 位型).
 // ============================================================================
 static_assert(sizeof(feature_storage_t) == sizeof(uint16_t));

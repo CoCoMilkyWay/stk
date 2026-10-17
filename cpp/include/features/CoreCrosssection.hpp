@@ -39,7 +39,7 @@
 
 template <size_t LVL>
 struct CsLevel;
-#define CS_LEVEL_TRAITS(name, num, fields, rows, psd, columnar, xor_delta)                                  \
+#define CS_LEVEL_TRAITS(name, num, fields, rows, psd, xor_delta)                                  \
   template <>                                                                                               \
   struct CsLevel<num> {                                                                                     \
     static constexpr size_t kLevel = num;                                                                   \

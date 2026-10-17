@@ -84,7 +84,7 @@ constexpr bool kind_contiguous(const FieldInfo (&f)[N], FeatureDataType k) {
   return true;
 }
 
-#define GENERATE_LEVEL_FIELDS(name, num, fields, rows, psd, columnar, xor_delta)                     \
+#define GENERATE_LEVEL_FIELDS(name, num, fields, rows, psd, xor_delta)                     \
   inline constexpr FieldInfo name##_FIELD_INFO[] = {fields(FIELD_INFO_ONE)};                         \
   constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);                                \
   inline constexpr auto name##_FIELD_OFFSETS = field_offsets(name##_FIELD_INFO);                     \
@@ -115,7 +115,7 @@ struct FieldSource {
 #define SRCPORT_LABEL(code) ""
 #define SRCPORT_FLAG(code) ""
 #define FIELD_SOURCE_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src), SRC_DISPATCH(SRCPORT, code, src)},
-#define GENERATE_LEVEL_SOURCES(name, num, fields, rows, psd, columnar, xor_delta) \
+#define GENERATE_LEVEL_SOURCES(name, num, fields, rows, psd, xor_delta) \
   inline constexpr FieldSource name##_FIELD_SOURCE[] = {fields(FIELD_SOURCE_ONE)};
 ALL_LEVELS(GENERATE_LEVEL_SOURCES)
 
@@ -129,7 +129,7 @@ ALL_LEVELS(GENERATE_LEVEL_SOURCES)
 #define SRC_LEVEL_FLAG kLevel
 #define CHECK_FIELD_ONE(code, c1, c2, en, cn, desc, formula, src) \
   static_assert(SRC_LEVEL_##src == kLevel, "field level != source level: " #code);
-#define GENERATE_CHECK_LEVEL(name, num, fields, rows, psd, columnar, xor_delta) \
+#define GENERATE_CHECK_LEVEL(name, num, fields, rows, psd, xor_delta) \
   namespace name##_level_check {                                                \
     constexpr int kLevel = num;                                                 \
     fields(CHECK_FIELD_ONE)                                                     \
@@ -164,7 +164,7 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
   }
   return h;
 }
-#define GENERATE_FINGERPRINT(name, num, fields, rows, psd, columnar, xor_delta) \
+#define GENERATE_FINGERPRINT(name, num, fields, rows, psd, xor_delta) \
   constexpr uint64_t name##_FINGERPRINT = table_fingerprint(name##_FIELD_INFO);
 ALL_LEVELS(GENERATE_FINGERPRINT)
 
@@ -172,11 +172,11 @@ ALL_LEVELS(GENERATE_FINGERPRINT)
 // 层表: LEVELS[lvl] — 编译期版本 (写端定址折叠; LevelInfo 结构体在 FeatureLevels.hpp)
 // 运行时入口 level_info(lvl) 在 FeatureMeta.cpp 定义, 指向本表.
 // ============================================================================
-#define LEVEL_INFO_ONE(name, num, fields, rows, psd, columnar, xor_delta) \
-  {#name, rows, name##_TOTAL_WIDTH, name##_FIELD_COUNT, name##_FIELD_INFO, name##_FIELD_OFFSETS.data(), name##_FINGERPRINT, psd, columnar, xor_delta},
+#define LEVEL_INFO_ONE(name, num, fields, rows, psd, xor_delta) \
+  {#name, rows, name##_TOTAL_WIDTH, name##_FIELD_COUNT, name##_FIELD_INFO, name##_FIELD_OFFSETS.data(), name##_FINGERPRINT, psd, xor_delta},
 inline constexpr LevelInfo LEVELS[] = {ALL_LEVELS(LEVEL_INFO_ONE)};
 static_assert(std::size(LEVELS) == LEVEL_COUNT, "LEVELS 与 ALL_LEVELS 项数一致");
-#define CHECK_LEVEL_INDEX(name, num, fields, rows, psd, columnar, xor_delta) \
+#define CHECK_LEVEL_INDEX(name, num, fields, rows, psd, xor_delta) \
   static_assert(std::string_view(LEVELS[num].level_name) == #name, "ALL_LEVELS index must equal position");
 ALL_LEVELS(CHECK_LEVEL_INDEX)
 

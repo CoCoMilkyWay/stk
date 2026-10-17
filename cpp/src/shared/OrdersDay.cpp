@@ -158,21 +158,25 @@ L2::FrameView DayReader::get(const FrameRef &ref, L2::FrameDecoder &dec) {
   return dec.decode({bytes, ref.size, ref.head});
 }
 
-// refs 在回调里可以被改 (adopt 就地改写偏移): 段的划分只读尚未回调过的项.
-void DayReader::read_runs(std::span<const FrameRef> refs, const RunFn &fn) {
+std::span<const uint32_t> DayReader::by_offset(std::span<const FrameRef> refs) {
   order_.clear();
   for (size_t i = 0; i < refs.size(); ++i)
     if (!refs[i].empty())
       order_.push_back(static_cast<uint32_t>(i));
   std::sort(order_.begin(), order_.end(),
             [&refs](uint32_t a, uint32_t b) { return refs[a].offset < refs[b].offset; });
+  return order_;
+}
 
-  for (size_t i = 0; i < order_.size();) {
-    const uint64_t begin = refs[order_[i]].offset;
-    uint64_t end = begin + refs[order_[i]].size;
+// refs 在回调里可以被改 (adopt 就地改写偏移): 段的划分只读尚未回调过的项.
+void DayReader::read_runs(std::span<const FrameRef> refs, const RunFn &fn) {
+  const std::span<const uint32_t> order = by_offset(refs);
+  for (size_t i = 0; i < order.size();) {
+    const uint64_t begin = refs[order[i]].offset;
+    uint64_t end = begin + refs[order[i]].size;
     size_t j = i + 1;
-    while (j < order_.size() && refs[order_[j]].offset == end && end - begin + refs[order_[j]].size <= kRunCap)
-      end += refs[order_[j++]].size;
+    while (j < order.size() && refs[order[j]].offset == end && end - begin + refs[order[j]].size <= kRunCap)
+      end += refs[order[j++]].size;
 
     const size_t len = static_cast<size_t>(end - begin);
     if (buf_.size() < len)
@@ -180,14 +184,17 @@ void DayReader::read_runs(std::span<const FrameRef> refs, const RunFn &fn) {
     const size_t got = file_pread(fd_, buf_.data(), len, begin);
     assert(got == len && "DayReader::read_runs: 帧越过日文件末尾 (目录与文件不符)");
     (void)got;
-    fn(buf_.data(), len, begin, std::span<const uint32_t>(order_.data() + i, j - i));
+    fn(buf_.data(), len, begin, order.subspan(i, j - i));
     i = j;
   }
 }
 
 size_t DayReader::prefetch(std::span<const FrameRef> refs) {
   size_t bytes = 0;
-  read_runs(refs, [&bytes](const char *, size_t len, uint64_t, std::span<const uint32_t>) { bytes += len; });
+  for (const uint32_t k : by_offset(refs)) {
+    file_readahead(fd_, refs[k].offset, refs[k].size);
+    bytes += refs[k].size;
+  }
   return bytes;
 }
 

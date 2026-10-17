@@ -34,10 +34,12 @@
 // 两端互逆:
 //
 //   DayWriter(dir, date)                                   DayReader(dir, date)
-//   DayWriter::put(asset_id, FrameEncoder, View) → Ref     DayReader::get(Ref, FrameDecoder) → View
-//   DayWriter::commit(DayIndex)                            DayReader::index() → DayIndex
-//   DayWriter::adopt(DayReader, refs)                      DayReader::prefetch(refs)
+//   DayWriter::put(asset_id, FrameEncoder, View) → Ref     DayReader::get(Ref, FrameDecoder) → View     一帧
+//   DayWriter::adopt(DayReader, refs)                      DayReader::read_runs(refs, fn)               整段
+//   DayWriter::commit(DayIndex)                            DayReader::index() → DayIndex                账目 + 目录
 //   DayIndex::settle (写端记账)                             DayIndex::check (读写两端对账)
+//
+// DayReader::prefetch 不在表里: 只把帧交给内核预读, 字节不进用户态, 没有写端对端.
 //
 // 两端都是构造即定天、一天一个对象; 帧字节的缓冲归 FrameEncoder / FrameDecoder
 // (跟线程走), 日文件对象本身不留跨天状态.
@@ -176,20 +178,24 @@ public:
 
   // 整段读: refs 的帧按偏移排好, 首尾相接的并成一段 (≤ 16MB) 一次 pread, 逐段
   // 回调 fn(段字节, 段长, 段起点偏移, 段内各项在 refs 里的下标). 空项跳过.
-  // 字节在内部缓冲里, 只在回调期间有效. prefetch 与 DayWriter::adopt 共用.
+  // 字节在内部缓冲里, 只在回调期间有效. DayWriter::adopt 的对端.
   using RunFn = std::function<void(const char *bytes, size_t len, uint64_t begin, std::span<const uint32_t> run)>;
   void read_runs(std::span<const FrameRef> refs, const RunFn &fn);
 
-  // 只为把 refs 的帧拖进 page cache, 内容即弃. 返回读入字节数.
+  // 只为把 refs 的帧拖进 page cache: 按偏移升序交给内核预读, 不经用户态, 空项跳过.
+  // 异步, 返回时 IO 未必读完. 返回下发预读的字节数.
   size_t prefetch(std::span<const FrameRef> refs);
 
 private:
+  // refs 里有帧的项的下标, 按偏移升序; 结果在 order_ 里, 下一次调用前有效
+  std::span<const uint32_t> by_offset(std::span<const FrameRef> refs);
+
   misc::Ymd date_;
   int fd_;
   bool indexed_ = false;
   DayIndex index_;
   std::vector<char> buf_;       // 整段读的缓冲 (read_runs)
-  std::vector<uint32_t> order_; // 按偏移排序的 refs 下标, 并段用
+  std::vector<uint32_t> order_; // 按偏移排序的 refs 下标 (by_offset)
 };
 
 // 一天的日文件写端.

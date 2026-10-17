@@ -37,13 +37,13 @@ const LevelInfo &level_info(size_t lvl) {
 #define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                                        \
   {#code, SRC_WIDTH_##src, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, SRC_TS_TF_##src, SRC_TS_METHOD_##src, SRC_CS_TF_##src, \
    SRC_CS_METHOD_##src, formula, name_en, name_cn, description, kLevel},
-#define GENERATE_METADATA_TABLE(name, num, fields, rows, psd, columnar, xor_delta) \
+#define GENERATE_METADATA_TABLE(name, num, fields, rows, psd, xor_delta) \
   namespace name##_meta_detail {                                                   \
     constexpr uint8_t kLevel = num;                                                \
     constexpr FeatureMetadata TABLE[] = {fields(GENERATE_METADATA)};               \
   }
-#define METADATA_TABLE_PTR(name, num, fields, rows, psd, columnar, xor_delta) name##_meta_detail::TABLE,
-#define METADATA_TABLE_COUNT(name, num, fields, rows, psd, columnar, xor_delta) std::size(name##_meta_detail::TABLE),
+#define METADATA_TABLE_PTR(name, num, fields, rows, psd, xor_delta) name##_meta_detail::TABLE,
+#define METADATA_TABLE_COUNT(name, num, fields, rows, psd, xor_delta) std::size(name##_meta_detail::TABLE),
 
 namespace {
 ALL_LEVELS(GENERATE_METADATA_TABLE)

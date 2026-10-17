@@ -223,10 +223,10 @@ stk/
 └── output/                                                 # 📁 运行时输出 (与 cpp/ 同级)
     ├── orders/                                             # L2 编码 (逐笔委托 + 成交合并)
     │   └── YYYY/MM/YYYYMMDD.bin                            # 一天全市场一个: 每资产一个 zstd 帧 + 账目 + 尾部目录
-    ├── features/                                           # 特征张量库 (Float16, 按交易日全市场, 逐特征列)
-    │   └── YYYY/MM/DD/
-    │       ├── features_L0_f<f>.zst                        # L0 逐特征列 [T×A] (秒频)
-    │       └── features_L1_f<f>.zst                        # L1 逐特征列 [T×A] (分钟频, XOR 差分)
+    ├── features/                                           # 特征张量库 (Float16, 按交易日 universe 子轴)
+    │   └── <universe>/YYYY/MM/DD/
+    │       ├── features_L0.bin                             # L0 一天一个: 头 + 列目录 + 逐列载荷 [T×A] (秒频)
+    │       └── features_L1.bin                             # L1 一天一个: 同上 (分钟频, 逐列 XOR 差分)
     ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
     │   ├── _meta/<表>.parquet                              # Static / Snapshot 单文件整刷

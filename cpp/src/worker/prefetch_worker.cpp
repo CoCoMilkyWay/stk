@@ -16,7 +16,7 @@ void prefetch_worker(WorkerCtx ctx) {
   SharedData &data = ctx.data;
   GlobalFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 本核发布槽 (单写者): work = 累计读入字节, idle_ms = 累计门控干等毫秒
+  // 本核发布槽 (单写者): work = 累计下发预读字节, idle_ms = 累计门控干等毫秒
   ComputeStats::Core &stat = ctx.stats.prefetch;
 
   TraceNS("PrefetchWorker", 5);
@@ -58,9 +58,7 @@ void prefetch_worker(WorkerCtx ctx) {
     {
       TraceN("ReadFiles");
       // 资产集 = universe 子轴 (帧目录切片的一行): TS 只 decode 这些. reader 按偏移
-      // 排序、首尾相接的帧并成一段顺序读 (空格子跳过) —— universe 覆盖全市场时就是
-      // 整个数据区一段段读完.
-      // 只为把帧拖进 page cache, 内容即弃 (decode 在 TS worker 内联).
+      // 升序交给内核预读 (空格子跳过), 字节不进用户态 (decode 在 TS worker 内联).
       const std::span<const FrameRef> refs = ctx.orders.row(date_idx);
       if (std::any_of(refs.begin(), refs.end(), [](const FrameRef &ref) { return !ref.empty(); })) {
         cumulative_bytes += DayReader(data.config.orders_dir, date).prefetch(refs);

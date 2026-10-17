@@ -13,6 +13,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <io.h>
+#include <vector>
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
@@ -97,6 +98,36 @@ inline std::size_t file_pread(int fd, void *buf, std::size_t n, std::uint64_t of
     done += static_cast<std::size_t>(got);
   }
   return done;
+}
+
+// 把 [off, off + n) 交给内核预读进 page cache, 不拷进用户态. 异步: 返回时只是
+// 下发了 IO, 之后的 pread 撞上在途页会等它读完. 范围必须在文件内.
+// Linux 把单次 WILLNEED 截到 max(read_ahead_kb, max_sectors_kb), 所以按
+// read_ahead_kb 的默认值 (128KB) 分块下发. Windows 没有对等物, 退化成读进线程
+// 缓冲即弃.
+inline void file_readahead(int fd, std::uint64_t off, std::uint64_t n) {
+  constexpr std::uint64_t kChunk = std::uint64_t(128) << 10;
+#ifdef _WIN32
+  static thread_local std::vector<char> scratch(kChunk);
+#endif
+  for (std::uint64_t done = 0; done < n; done += kChunk) {
+    const std::uint64_t at = off + done;
+    const std::uint64_t len = n - done < kChunk ? n - done : kChunk;
+#ifdef _WIN32
+    const std::size_t got = file_pread(fd, scratch.data(), static_cast<std::size_t>(len), at);
+    assert(got == len && "file_readahead: 越过文件末尾");
+    (void)got;
+#elif defined(__APPLE__)
+    radvisory ra{static_cast<off_t>(at), static_cast<int>(len)};
+    const int rc = ::fcntl(fd, F_RDADVISE, &ra);
+    assert(rc != -1 && "fcntl(F_RDADVISE) 失败");
+    (void)rc;
+#else
+    const int rc = ::posix_fadvise(fd, static_cast<off_t>(at), static_cast<off_t>(len), POSIX_FADV_WILLNEED);
+    assert(rc == 0 && "posix_fadvise(WILLNEED) 失败");
+    (void)rc;
+#endif
+  }
 }
 
 inline std::size_t file_pwrite(int fd, const void *buf, std::size_t n, std::uint64_t off) {

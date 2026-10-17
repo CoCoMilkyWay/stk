@@ -186,7 +186,7 @@ struct SlicePlane {
   const float *R2s(size_t s) const { return R2.data() + s * F * A; }
   const uint8_t *ok(size_t s) const { return row_ok.data() + s * F; }
 
-  // 相 1: IO (特征块一任务, io 池) —— 逐块读列文件, 就地按 ts_valid 门控抽出 b.slice_t 指定的 S 个切片.
+  // 相 1: IO (特征块一任务, io 池) —— 逐块读列, 就地按 ts_valid 门控抽出 b.slice_t 指定的 S 个切片.
   // 只写 b 自己的内存, 可与另一缓冲上的 rank / 累加并发跑 (FeatureRead 并发只读)
   void load(RawBuf &b, FeatureRead &reader, misc::Ymd date,
             const std::vector<uint32_t> &cols, const std::vector<L2::ValidType> &vts,

@@ -262,14 +262,15 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 #define SRC_DISPATCH_II(prefix, code, kind, ...) prefix##_##kind(code __VA_OPT__(, ) __VA_ARGS__)
 
 // ----------------------------------------------------------------------------
-// 落盘层注册: X(name, index, fields_macro, rows, psd, columnar, xor_delta)
-//   L0    秒频 (T = L0_ROWS), 逐列落盘 (Dist/overlay 按列选读)
-//   L1    分钟频 (T = L1_ROWS), 逐列落盘 (Dist 全区间选列流式读)
+// 落盘层注册: X(name, index, fields_macro, rows, psd, xor_delta)
+//   L0    秒频 (T = L0_ROWS)
+//   L1    分钟频 (T = L1_ROWS)
+//   每层每天一个日文件, 内带列目录, 按列选读 (见 FeatureLevels.hpp)
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
 //   xor_delta = 落盘前沿 T 轴 XOR 差分 (无损, 见 FeatureStoreConfig.hpp):
 //     分钟频稠密层相邻行几乎相同, 差分后零字 ~60%, 喂给 SparseCodec (位图+字面);
 //     L0 事件稀疏本身就是大片零 (~62%), 差分反而打散, 不开
 // ----------------------------------------------------------------------------
-#define ALL_LEVELS(X)                                    \
-  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", true, false) \
-  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", true, true)
+#define ALL_LEVELS(X)                              \
+  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00", false) \
+  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00", true)

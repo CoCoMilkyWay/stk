@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FeatureLevels.hpp" // 稳定层: level_info / 文件布局 / FeatureCodec / CODEC_ENABLED (不依赖字段表, 增删特征不重编读端)
+#include "misc/cross_platform.hpp"
 #include "misc/profiler.hpp"
 #include <algorithm>
 #include <atomic>
@@ -10,7 +11,6 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <set>
@@ -18,12 +18,11 @@
 #include <vector>
 
 // ============================================================================
-// FEATURE READER - Hybrid Compressed Format
+// FEATURE READER — 特征日文件 (一天一层一个, 内带列目录; 格式见 FeatureLevels.hpp)
 // ============================================================================
-// Storage format (header = 5 × size_t: T, F, A, axis_hash, table_fingerprint), 每层按 LEVELS[lvl].columnar:
-//   逐列 (L0/L1):     features_<LVL>_f{idx}.zst [Header: T,1,A,h][FeatureCodec column]  (Dist 按列选读)
-// 载荷 = FeatureCodec (SparseCodec / ZstdCodec, 选型见 FeatureStoreConfig.hpp);
-// xor_delta 层解码后再前缀 XOR 还原.
+// 按列选读: 一次 open 拿头 + 目录, 所请求的列按偏移升序, 首尾相接的并成一段
+// (≤ kRunCap) 一次 pread, 逐列解码 (FeatureCodec) + xor_delta 层前缀 XOR 还原 +
+// 交织进 [T][n][A]. 全列 = 全部存储列, 同一条路径.
 //
 // 形状是编译期常量: 写端永远写满 (LEVELS[lvl].rows / width), 文件头的 T/F 只做
 // 校验, 不做"实际维度" —— 消费端时间轴一律 level_valid_rows(lvl).
@@ -35,9 +34,9 @@
 //   取消检查点收工, 等用户点 compute 重算. 不断言: 改字段表 / 动态池名单变了 / 改回测
 //   区间 (子轴 = 区间内并集) 都是常规操作, 不该闪退; 特征库是纯派生数据, 删了重跑即可.
 //
-// APIs (缓冲全部挂在张量结构里复用, 与写端 io_buf_/io_column_ 对仗, 稳态零分配):
-//   1. load_day(date, DayTensor)          - GUI: 单日整层 (L0/L1 同一套; 整层文件直读零中转)
-//   2. load_day_columns(date, cols, out)  - GUI overlay / Transform: 单日, 选列 (L0 逐列文件只碰 n 个)
+// APIs (缓冲全部挂在张量结构里复用, 与写端 io_buf_/io_column_/io_dir_ 对仗, 稳态零分配):
+//   1. load_day(date, DayTensor)          - GUI: 单日整层 (全部存储列)
+//   2. load_day_columns(date, cols, out)  - GUI overlay / Transform: 单日, 选列 (只读 n 列的载荷)
 //   3. load_month_columns()               - Dist/TimeSeries: 整月, 选列
 // ============================================================================
 
@@ -45,11 +44,17 @@ class FeatureRead {
 public:
   // 复用缓冲 (稳态零分配), 每个张量结构自带一份
   struct Scratch {
-    std::vector<uint8_t> zbuf;           // 编码载荷 (仅 CODEC_ENABLED 时用)
-    std::vector<feature_storage_t> tile; // 逐列交织 / 整层抽列中转
+    std::vector<ColRef> dir;             // 日文件目录 [F]
+    std::vector<size_t> cols;            // 本次要读的存储列 [n]
+    std::vector<uint32_t> order;         // cols 下标, 按载荷偏移升序 (并段用)
+    std::vector<uint8_t> zbuf;           // 一段载荷 (≤ kRunCap, 单列超限则为该列)
+    std::vector<feature_storage_t> tile; // 一列解码后 [T][A], 交织前中转
   };
 
 private:
+  // 首尾相接的列载荷并成一段读, 一段最多这么大
+  static constexpr size_t kRunCap = size_t(4) << 20;
+
   // 库判废: 记日志 + 删库 (wipe) + 置 stale + 拉起取消旗. 幂等 (多 IO 线程共用一个 reader).
   void mark_stale(const char *why, bool wipe) const {
     if (stale_.exchange(true, std::memory_order_relaxed))
@@ -64,21 +69,22 @@ private:
       abort_->store(true, std::memory_order_relaxed); // 复用取消信号: 构建循环的既有检查点即刻收工
   }
 
-  // 读一个特征文件到 dst (T×F 行, 每行 A 个): 头校验 (子轴精确匹配) + 载荷落地.
+  // 读日文件里 s.cols 那几列到 dst [T][n][A] (第 i 槽 = 存储列 s.cols[i]): 头校验
+  // (子轴精确匹配) + 目录 + 并段读 + 逐列解码交织.
   // 库已判废时空转 (dst 保持原样): 在跑的构建靠取消旗收工, 中途读到的内容一律丢弃.
-  void read_file(const std::string &filepath, size_t lvl, size_t F,
-                 feature_storage_t *dst, size_t A, Scratch &s) const {
+  void read_columns(const std::string &filepath, size_t lvl, feature_storage_t *dst, size_t A, Scratch &s) const {
     Trace;
     if (stale_.load(std::memory_order_relaxed))
       return;
-    const size_t T = level_info(lvl).rows;
-    constexpr size_t header_size = FEATURE_FILE_HEADER_WORDS * sizeof(size_t);
+    const auto &L = level_info(lvl);
+    const size_t T = L.rows, F = L.width, n = s.cols.size();
+    assert(A == axis_A_ && "调用方 A 与 reader 期望子轴不一致 (同一 universe_axis 推导, 不该发生)");
 
-    std::ifstream file(filepath, std::ios::binary);
-    if (!file.is_open()) {
+    const int fd = file_open_read(filepath.c_str());
+    if (fd < 0) {
       // 文件缺失 = 库被外部清除: 另一 reader 判废删库, 或 ComputeService 重算
       // 前显式清库 (与读端并发; store 随即重建目录, 故 base_dir_ 是否存在不可
-      // 作判据). 落盘侧 .tmp+rename 原子发布 + 末列 commit 标记 (has_date) 保证
+      // 作判据). 落盘侧 .tmp+rename 原子发布 + 末层 commit 标记 (has_date) 保证
       // 正常库不会"目录在文件缺" → 一律判废空转收工, 重扫/重算后 revive.
       mark_stale("特征库已被清除", /*wipe=*/false);
       return;
@@ -86,94 +92,92 @@ private:
 
     {
       TraceN("ReadHeader");
-      size_t header[FEATURE_FILE_HEADER_WORDS];
-      file.read(reinterpret_cast<char *>(header), header_size);
-      assert(file.gcount() == static_cast<std::streamsize>(header_size));
-
-      assert(header[0] == T && "T mismatch: 落盘形状恒为满 (LEVELS[lvl].rows)");
-      assert(header[1] == F && "F mismatch: 落盘形状恒为满");
-      assert(A == axis_A_ && "调用方 A 与 reader 期望子轴不一致 (同一 universe_axis 推导, 不该发生)");
+      FeatureFileHeader head{};
+      const size_t got = file_pread(fd, &head, sizeof(head), 0);
+      assert(got == sizeof(head) && "特征日文件短于头 (损坏)");
+      (void)got;
+      assert(head.magic == FeatureFileHeader::kMagic && "不是特征日文件 (magic 不符)");
       // 子轴 / 字段表与文件头不符 = 旧库: 不闪退, 删库判废, 等用户点 compute 重算 (纯派生数据)
-      if (header[2] != axis_A_) {
-        mark_stale("子轴大小不符 (特征库是旧 universe 名单/回测区间写的)", /*wipe=*/true);
+      const char *why = head.A != axis_A_                  ? "子轴大小不符 (特征库是旧 universe 名单/回测区间写的)"
+                        : head.axis_hash != axis_hash_     ? "子轴指纹不符 (特征库与当前 universe 名单/asset_axis.json 列序不一致)"
+                        : head.fingerprint != L.fingerprint ? "字段表指纹不符 (特征文件是旧字段表写的)"
+                                                            : nullptr;
+      if (why) {
+        file_close(fd);
+        mark_stale(why, /*wipe=*/true);
         return;
       }
-      if (static_cast<std::uint64_t>(header[3]) != axis_hash_) {
-        mark_stale("子轴指纹不符 (特征库与当前 universe 名单/asset_axis.json 列序不一致)", /*wipe=*/true);
-        return;
-      }
-      if (static_cast<std::uint64_t>(header[4]) != level_info(lvl).fingerprint) {
-        mark_stale("字段表指纹不符 (特征文件是旧字段表写的)", /*wipe=*/true);
-        return;
-      }
+      assert(head.T == T && head.F == F && "形状不符: 落盘形状恒为满 (LEVELS[lvl].rows / width)");
+
+      s.dir.resize(F);
+      const size_t dir_got = file_pread(fd, s.dir.data(), F * sizeof(ColRef), sizeof(head));
+      assert(dir_got == F * sizeof(ColRef) && "特征日文件目录读不全");
+      (void)dir_got;
     }
 
-    size_t payload_size;
-    {
-      TraceN("GetFileSize");
-      file.seekg(0, std::ios::end);
-      payload_size = static_cast<size_t>(file.tellg()) - header_size;
-      file.seekg(header_size, std::ios::beg);
+    s.order.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+      assert(s.cols[i] < F && "存储列越界");
+      s.order[i] = static_cast<uint32_t>(i);
     }
+    std::sort(s.order.begin(), s.order.end(),
+              [&s](uint32_t a, uint32_t b) { return s.dir[s.cols[a]].offset < s.dir[s.cols[b]].offset; });
 
-    const size_t raw_size = T * F * A * sizeof(feature_storage_t);
+    const size_t raw_size = T * A * sizeof(feature_storage_t);
+    s.tile.resize(T * A);
+    for (size_t i = 0; i < n;) {
+      const uint64_t begin = s.dir[s.cols[s.order[i]]].offset;
+      uint64_t end = begin + s.dir[s.cols[s.order[i]]].size;
+      size_t j = i + 1;
+      while (j < n && s.dir[s.cols[s.order[j]]].offset == end && end - begin + s.dir[s.cols[s.order[j]]].size <= kRunCap)
+        end += s.dir[s.cols[s.order[j++]]].size;
 
-    if constexpr (!CODEC_ENABLED) {
-      TraceN("ReadRaw"); // 无编码: 载荷直读进落点, 无中转
-      assert(payload_size == raw_size && "payload size mismatch");
-      file.read(reinterpret_cast<char *>(dst), payload_size);
-      assert(file.gcount() == static_cast<std::streamsize>(payload_size));
-    } else {
       {
-        TraceN("ReadPayload");
-        s.zbuf.resize(payload_size);
-        file.read(reinterpret_cast<char *>(s.zbuf.data()), payload_size);
-        assert(file.gcount() == static_cast<std::streamsize>(payload_size));
+        TraceN("ReadRun");
+        const size_t len = static_cast<size_t>(end - begin);
+        if (s.zbuf.size() < len)
+          s.zbuf.resize(len);
+        const size_t got = file_pread(fd, s.zbuf.data(), len, begin);
+        assert(got == len && "特征日文件载荷越过文件末尾 (目录与文件不符)");
+        (void)got;
       }
-      TraceN("CodecDecode");
-      FeatureCodec::decode(s.zbuf.data(), payload_size, dst, raw_size);
-    }
 
-    // T 轴 XOR 差分还原 (写端 disk_write 对 xor_delta 层压缩前编码)
-    if (level_info(lvl).xor_delta) {
-      TraceN("XorDeltaDecode");
-      xor_delta_decode(dst, T, F * A);
+      for (; i < j; ++i) {
+        const size_t slot = s.order[i];
+        const ColRef &ref = s.dir[s.cols[slot]];
+        const uint8_t *payload = s.zbuf.data() + (ref.offset - begin);
+        if constexpr (CODEC_ENABLED) {
+          TraceN("CodecDecode");
+          FeatureCodec::decode(payload, ref.size, s.tile.data(), raw_size);
+        } else {
+          assert(ref.size == raw_size && "payload size mismatch");
+          std::memcpy(s.tile.data(), payload, raw_size);
+        }
+        // T 轴 XOR 差分还原 (写端 write_level 对 xor_delta 层压缩前编码)
+        if (L.xor_delta) {
+          TraceN("XorDeltaDecode");
+          xor_delta_decode(s.tile.data(), T, A);
+        }
+        TraceN("InterleaveColumn");
+        for (size_t t = 0; t < T; ++t)
+          std::memcpy(dst + (t * n + slot) * A, s.tile.data() + t * A, A * sizeof(feature_storage_t));
+      }
     }
+    file_close(fd);
   }
 
-  // 装载原语: 某日某层的字段集合 → dst [T][n][A]. fields == nullptr 取全部列
-  // (n == field_count); 整层文件 + 全列时直读 dst, 零中转.
+  // 装载原语: 某日某层的字段集合 → dst [T][n][A]. fields == nullptr 取全部存储列
+  // (n == field_count, dst 为 [T][width][A], 宽字段各档按偏移排开).
   void load_fields(misc::Ymd date, size_t lvl, const size_t *fields, size_t n,
                    feature_storage_t *dst, size_t A, Scratch &s) const {
     const auto &L = level_info(lvl);
-    const std::string day_dir = feature_day_dir(base_dir_, date);
-    const size_t T = L.rows;
     assert(n <= L.field_count && (fields || n == L.field_count));
-
-    if (L.columnar) {
-      // 逐列文件: 列文件下标 == 字段下标 (columnar 层全部宽 1), 读一列交织一列
-      assert(L.width == L.field_count && "columnar level must be all width-1 fields");
-      s.tile.resize(T * A);
-      for (size_t i = 0; i < n; ++i) {
-        const size_t f = fields ? fields[i] : i;
-        read_file(feature_column_file(day_dir, lvl, f), lvl, 1, s.tile.data(), A, s);
-        TraceN("InterleaveColumn");
-        for (size_t t = 0; t < T; ++t)
-          std::memcpy(dst + (t * n + i) * A, s.tile.data() + t * A, A * sizeof(feature_storage_t));
-      }
-    } else if (!fields) {
-      read_file(feature_file(day_dir, lvl), lvl, L.width, dst, A, s); // 整层全列: 直读
-    } else {
-      // 整层文件选列: 读整天到 tile 再抽列
-      s.tile.resize(T * L.width * A);
-      read_file(feature_file(day_dir, lvl), lvl, L.width, s.tile.data(), A, s);
-      TraceN("ExtractFeatures");
-      for (size_t t = 0; t < T; ++t)
-        for (size_t i = 0; i < n; ++i) {
-          assert(L.fields[fields[i]].width == 1 && "column selection is per width-1 field");
-          std::memcpy(dst + (t * n + i) * A, s.tile.data() + (t * L.width + L.offsets[fields[i]]) * A, A * sizeof(feature_storage_t));
-        }
+    s.cols.resize(fields ? n : L.width);
+    for (size_t i = 0; i < s.cols.size(); ++i) {
+      assert((!fields || L.fields[fields[i]].width == 1) && "column selection is per width-1 field");
+      s.cols[i] = fields ? L.offsets[fields[i]] : i;
     }
+    read_columns(feature_file(feature_day_dir(base_dir_, date), lvl), lvl, dst, A, s);
   }
 
 public:
@@ -297,8 +301,7 @@ public:
   // ========================================================================
 
   // 单日选列张量 [T][n][A]: load_day 的选列版, 布局与 MonthTensor 的单日切片同构.
-  // 列宽必须为 1 (与 load_month_columns 同约束); L0/L1 逐列文件下只读 n 个列文件,
-  // dst 内存都只有 [T][n][A].
+  // 列宽必须为 1 (与 load_month_columns 同约束); 只读 n 列的载荷, dst 内存只有 [T][n][A].
   struct DayColumns {
     misc::Ymd date = 0;
     size_t level = 0;
@@ -377,11 +380,10 @@ public:
   // Utility Functions
   // ========================================================================
 
-  // 该日是否有特征文件 (以最后一层最后一列文件为准: IO worker 按层序落盘, 它在则全在)
+  // 该日是否有特征文件 (以最后一层的日文件为准: IO worker 按层序落盘, 它在则全在)
   static bool has_date(const std::string &base_dir, misc::Ymd date) {
     assert(date > 0);
-    const auto &L = level_info(LEVEL_COUNT - 1);
-    return std::filesystem::exists(feature_column_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1, L.width - 1));
+    return std::filesystem::exists(feature_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1));
   }
   bool has_date(misc::Ymd date) const { return has_date(base_dir_, date); }
 

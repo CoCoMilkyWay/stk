@@ -190,7 +190,7 @@ void OrderFlowService::RequestUniverse(uint32_t gen, misc::Ymd date) {
 }
 
 // ============================================================================
-// 日期扫描: features/<universe>/YYYY/MM/DD 有整层文件的日, 升序
+// 日期扫描: features/<universe>/YYYY/MM/DD 有特征日文件的日, 升序
 // ============================================================================
 
 namespace {
@@ -277,7 +277,7 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
   LibRead &lib = res_->lib;
   const FeatureRead::DayColumns &dc = res_->cols;
 
-  // 选列: [open, high, low, close, ts_valid, 特征...] — L1 逐列文件, 每日只碰 n 个小文件
+  // 选列: [open, high, low, close, ts_valid, 特征...] — L1 日文件, 每日只读 n 列的载荷
   auto &cols = lib.columns;
   cols.assign({L1_Field::open, L1_Field::high, L1_Field::low,
                L1_Field::close, L1_Field::ts_valid});

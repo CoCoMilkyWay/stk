@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FeatureStoreConfig.hpp" // 含落盘编码选型 FeatureCodec / CODEC_ENABLED
+#include "misc/cross_platform.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
 #include <algorithm>
@@ -166,9 +167,10 @@ private:
   // 领养资产的 core 构造/状态写入构成 happens-before). 负载再平衡的观测面.
   std::unique_ptr<std::atomic<uint32_t>[]> ts_frontier_;
 
-  // IO worker 专用复用缓冲 (单线程): 列抽取 / 头 + 压缩输出, 稳态零分配
+  // IO worker 专用复用缓冲 (单线程): 列抽取 / 编码输出 / 日文件目录, 稳态零分配
   std::vector<feature_storage_t> io_column_;
   std::vector<uint8_t> io_buf_;
+  std::vector<ColRef> io_dir_;
 
 public:
   // num_assets: universe 子轴大小; axis_hash: UniverseAxis::hash, 写进每个
@@ -397,43 +399,61 @@ public:
   size_t query_cs_days_done() const { return cs_days_done_.load(std::memory_order_relaxed); }
 
 private:
-  // Write file with header + compressed data
+  // 一层一天落一个日文件 (格式见 FeatureLevels.hpp): 头 + 目录空出, 逐列
+  // 抽列 → (XOR 差分) → 编码 → 追加, 收工回填头 + 目录.
   //
-  // header[3] = universe 子轴指纹 (UniverseAxis::hash): 列 → 资产的映射不存在
+  // 头的 axis_hash = universe 子轴指纹 (UniverseAxis::hash): 列 → 资产的映射不存在
   // 文件里, 全靠子轴顺序 (universe 名单 → 全局轴下标升序). 读端从同一 config
   // 推导同一子轴, O(1) 比对即确认列序一致; universe == "all" 时值等于全局轴
-  // 前缀 hash (hash_at(A)). 热路径 (解压/索引) 不受影响.
+  // 前缀 hash (hash_at(A)). fingerprint = 字段表指纹 (LEVELS[lvl].fingerprint):
+  // 字段表增删改列即变, 读旧文件判废而不是静默错位.
   //
-  // header[4] = 字段表指纹 (LEVELS[lvl].fingerprint): 字段表
-  // 增删改列即变, 读旧文件断言失败而不是静默错位.
-  // 返回文件字节数 (header + payload)
-  size_t write_file_with_header(const std::string &filepath, size_t T, size_t F, size_t A,
-                                uint64_t table_fp, const void *raw_data, size_t raw_size) {
-    const size_t header[FEATURE_FILE_HEADER_WORDS] = {T, F, A, static_cast<size_t>(axis_hash_), static_cast<size_t>(table_fp)};
+  // 原子发布: 写 .tmp 再同目录 rename (POSIX 原子) —— 半写文件不可能以正式名
+  // 存在. disk_write 按层序落盘, 最后一层的日文件因此兼任本日 commit 标记
+  // (FeatureRead::has_date 的判据): 它在则全日齐备, 中断只留 .tmp 残片.
+  // 返回文件字节数.
+  size_t write_level(const std::string &path, size_t lvl, const feature_storage_t *data) {
+    const auto &L = LEVELS[lvl];
+    const size_t T = L.rows, F = L.width, A = num_assets_;
+    const size_t raw_size = T * A * sizeof(feature_storage_t);
 
-    // 原子发布: 写 .tmp 再同目录 rename (POSIX 原子) —— 半写文件不可能以正式名
-    // 存在. disk_write 按层序落盘, 最后一层的最后一列文件因此兼任本日 commit 标记
-    // (FeatureRead::has_date 的判据): 它在则全日齐备, 中断只留 .tmp 残片.
-    const std::string tmp_path = filepath + ".tmp";
-    size_t payload = raw_size;
-    {
-      std::ofstream file(tmp_path, std::ios::binary);
-      assert(file.is_open());
-      file.write(reinterpret_cast<const char *>(header), sizeof(header));
+    const std::string tmp_path = path + ".tmp";
+    const int fd = file_open_trunc(tmp_path.c_str());
+    assert(fd >= 0 && "特征日文件 .tmp 建不出来");
 
-      if constexpr (!CODEC_ENABLED) {
-        // 无编码: 张量直写, 不过中转缓冲
-        file.write(reinterpret_cast<const char *>(raw_data), raw_size);
-      } else {
-        const size_t cap = FeatureCodec::bound(raw_size);
-        io_buf_.resize(cap); // 复用容量, 稳态零分配
-        payload = FeatureCodec::encode(raw_data, raw_size, io_buf_.data(), cap);
-        file.write(reinterpret_cast<const char *>(io_buf_.data()), payload);
+    io_column_.resize(T * A); // 复用容量, 稳态零分配
+    io_dir_.resize(F);
+    uint64_t end = sizeof(FeatureFileHeader) + F * sizeof(ColRef);
+    for (size_t f = 0; f < F; ++f) {
+      for (size_t t = 0; t < T; ++t)
+        std::memcpy(&io_column_[t * A], &data[(t * F + f) * A], A * sizeof(feature_storage_t));
+      if (L.xor_delta)
+        xor_delta_encode(io_column_.data(), T, A);
+
+      const void *payload = io_column_.data();
+      size_t size = raw_size;
+      if constexpr (CODEC_ENABLED) {
+        io_buf_.resize(FeatureCodec::bound(raw_size));
+        size = FeatureCodec::encode(io_column_.data(), raw_size, io_buf_.data(), io_buf_.size());
+        payload = io_buf_.data();
       }
-      assert(file.good());
+      const size_t written = file_pwrite(fd, payload, size, end);
+      assert(written == size && "特征日文件写入失败 (磁盘满?)");
+      (void)written;
+      io_dir_[f] = {end, size};
+      end += size;
     }
-    std::filesystem::rename(tmp_path, filepath);
-    return sizeof(header) + payload;
+
+    const FeatureFileHeader head{FeatureFileHeader::kMagic, T, F, A, axis_hash_, L.fingerprint};
+    const size_t head_written = file_pwrite(fd, &head, sizeof(head), 0);
+    const size_t dir_written = file_pwrite(fd, io_dir_.data(), F * sizeof(ColRef), sizeof(head));
+    assert(head_written == sizeof(head) && dir_written == F * sizeof(ColRef) && "特征日文件头 / 目录写入失败");
+    (void)head_written;
+    (void)dir_written;
+    file_close(fd);
+
+    std::filesystem::rename(tmp_path, path);
+    return end;
   }
 
   // 返回本日落盘总字节数
@@ -450,27 +470,9 @@ private:
     std::filesystem::create_directories(out_dir);
     auto t_after_mkdir = std::chrono::high_resolution_clock::now();
 
-    const size_t A = num_assets_;
     size_t bytes = 0;
-    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-      const auto &L = LEVELS[lvl];
-      if (L.columnar) {
-        // 逐列: 抽出每列 [T][A] 单独落盘 (Dist 按列选读)
-        io_column_.resize(L.rows * A); // 复用容量, 稳态零分配
-        for (size_t f = 0; f < L.width; ++f) {
-          for (size_t t = 0; t < L.rows; ++t)
-            std::memcpy(&io_column_[t * A], &slot->data[lvl][(t * L.width + f) * A], A * sizeof(feature_storage_t));
-          if (L.xor_delta)
-            xor_delta_encode(io_column_.data(), L.rows, A);
-          bytes += write_file_with_header(feature_column_file(out_dir, lvl, f), L.rows, 1, A, L.fingerprint, io_column_.data(), io_column_.size() * sizeof(feature_storage_t));
-        }
-      } else {
-        // 整层文件就地差分: slot 落盘后随即 reset (memset), 破坏张量无妨
-        if (L.xor_delta)
-          xor_delta_encode(slot->data[lvl], L.rows, L.width * A);
-        bytes += write_file_with_header(feature_file(out_dir, lvl), L.rows, L.width, A, L.fingerprint, slot->data[lvl], level_bytes(lvl, A));
-      }
-    }
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+      bytes += write_level(feature_file(out_dir, lvl), lvl, slot->data[lvl]);
 
     auto t_end = std::chrono::high_resolution_clock::now();
     auto mkdir_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_mkdir - t_before_mkdir).count();
@@ -500,7 +502,7 @@ namespace fstore {
 // 唯一真正需要逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
 template <size_t LVL>
 struct RowWriter;
-#define STORE_ROW_WRITER(name, num, fields, rows, psd, columnar, xor_delta)                                                  \
+#define STORE_ROW_WRITER(name, num, fields, rows, psd, xor_delta)                                                  \
   template <>                                                                                                                \
   struct RowWriter<num> {                                                                                                    \
     template <class DAG>                                                                                                     \
