@@ -74,8 +74,8 @@ struct FundamentalResult {
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;
 //               state 持 mutex 读; confirm_pending = 配额待确认 (worker 挂起等 confirm)
 // ============================================================================
-class FundamentalService : public Worker<FundamentalService, FundamentalRequest>, public Published {
-  friend Worker<FundamentalService, FundamentalRequest>;
+class FundamentalService : public Service<FundamentalService, FundamentalRequest>, public Published {
+  friend Service<FundamentalService, FundamentalRequest>;
 
 public:
   static constexpr const char *kName = "FundamentalWorker";

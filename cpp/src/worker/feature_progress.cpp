@@ -19,7 +19,7 @@ constexpr int kBarWidth = 28;
 constexpr int kRefreshMs = 100;
 constexpr size_t kWindow = 30; // 带宽滑窗 (tick 数, ~3s)
 
-// 块高: 8 档余裕 (空 = 压力大, 满 = 健康/闲)
+// 块高: 8 级余裕 (空 = 压力大, 满 = 健康/闲)
 const char *kBlocks[8] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
 
 // "12m34s" (与 progress_parallel 同款)
@@ -192,7 +192,7 @@ void FeatureProgress::render() {
     out << "\033[K\n";
   }
 
-  // ---- 行2: 预取 —— 指标 = 忙碌占比; 基本全在门控干等 / 已读完 = 绿 ----
+  // ---- 行2: 预取 —— 指标 = 忙碌占比; 基本全在流控干等 / 已读完 = 绿 ----
   {
     out << "预取 [";
     cell(out, busy[0], busy[0] < kIdleBusy || pf_days >= total);

@@ -3,7 +3,7 @@
 // =============================================================================
 // TradeSize - 大小单 · 成交维度 (compute=onTaker, flush=onMinute; feature_list.md 1.3 B 轴 + q 轴)
 // =============================================================================
-//   按单笔成交额分档, 阈值两组共 9 个 (math/distribution/SizeThresholds.hpp, 与 OrderQuad 同件), 一次分桶:
+//   按单笔成交额分桶, 阈值两组共 9 个 (math/distribution/SizeThresholds.hpp, 与 OrderQuad 同件), 一次分桶:
 //     B 轴 (固定金额)  4万 / 20万 / 100万 元 (Wind 口径 小/中/大/特大 的三条分界)
 //     q 轴 (本股分位)  本股前 5 个交易日单笔成交额分位 q ∈ {50,80,84,93,95,98}% (P84/P93/P98 ≙ 对数正态 +1.0/1.5/2.0σ);
 //                     每日一只 KLL (log 金额), reset 归档 + 各日 ICDF 分位取均值; 无历史 (首日) q 轴列 0.
@@ -11,7 +11,7 @@
 //     {amt,vol,n}_taker_{bid,ask}_ge_{B|q}  单笔成交额 ≥ 阈值 的主动买 / 主动卖 成交 额(元) / 量(股) / 笔  (每分钟增量)
 //     dlogp_taker_{bid,ask}_ge_{B|q}        单笔成交额 ≥ 阈值 的主动买 / 主动卖 成交 Σ 1e4·Δln(成交价) (相对上一笔任意成交; 基点)
 //                                           (大单推动涨幅: 华泰 072 early_active_bigorder_ret 用主动买口; 两口之和 = 不分向)
-//   "≥" 为嵌套集: 分档 = 相邻两档之差 (因子层做), 全体 = Flow 的 taker 列.
+//   "≥" 为嵌套集: 分桶 = 相邻两桶之差 (因子层做), 全体 = Flow 的 taker 列.
 //   实现: 每笔只落一个桶 (桶 = 满足的阈值个数 0..n), flush 时后缀和 → 每笔 O(1).
 //   Δln p 不自算: 复用 TakerRet 节点 (与 Flow dlogp_taker_* / Realized path_len 共享, 每笔 taker 只算一次 log).
 //   fp16 落盘: 额 / 量 / 笔 Log Tf; dlogp 原值 (基点).

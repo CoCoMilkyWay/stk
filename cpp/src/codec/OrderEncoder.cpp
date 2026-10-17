@@ -469,7 +469,7 @@ FrameView OrderEncoder::orders() const {
 
 Outcome OrderEncoder::finish(const std::string &tag) {
   // 源损坏优先于一切: 有坏行就整个 (资产, 日期) 作废, 不产出半真半假的
-  // 产物 —— 部分数据会静默污染下游特征. 日志带上标的与坏行数, 人工修好源
+  // 产物 —— 部分数据会静默污染下游特征. 日志带上资产与坏行数, 人工修好源
   // 文件后, 下次增量因为既无帧也无墓碑而自动重来.
   if (bad_line_count_ > 0) {
     Logger::log("encoding", "[CORRUPT SOURCE] " + tag + " has " +
@@ -479,7 +479,7 @@ Outcome OrderEncoder::finish(const std::string &tag) {
   }
 
   // 只拦"全空" (停牌日的纯表头文件) — 空帧会让下游把停牌日当有数据,
-  // 缺席 (墓碑) 才是正确语义. 低流动性但真实交易的标的 (如 ST 股单日几百笔)
+  // 缺席 (墓碑) 才是正确语义. 低流动性但真实交易的资产 (如 ST 股单日几百笔)
   // 是真实市场数据, 照常编码, 要不要用是特征/因子层的策略决定, 不在存储层砍.
   //
   // 与环境错误区分开: 这是"源数据本身为空"的确定性结论, 调用方应写墓碑,
@@ -492,10 +492,10 @@ Outcome OrderEncoder::finish(const std::string &tag) {
 
   // 准入校验 — 判据与经验依据见 L2_Validator.hpp.
   //
-  // 用中间结构而非转换后的 Order: 中间结构是源数据原样, 而转换会把价格折进档位
+  // 用中间结构而非转换后的 Order: 中间结构是源数据原样, 而转换会把价格折进价位
   // 窗口、把其余字段钳到位宽上界, 拿加工过的值去和快照对拍等于自己骗自己.
   //
-  // 也必须先于转换: 档位窗口的基准由校验算出, 转换要拿它折价.
+  // 也必须先于转换: 价位窗口的基准由校验算出, 转换要拿它折价.
   validator_.run(csv_orders_, csv_trades_, market_, report_);
 
   // 科学计数法价格在 parse_numeric_field 里被解析成 0, 校验器拿到的 CSVOrder 已无原始

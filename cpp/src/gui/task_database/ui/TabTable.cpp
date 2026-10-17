@@ -194,7 +194,7 @@ bool ValuationLess(float va, float vb) {
   return (ta != tb) ? (ta < tb) : (va < vb);
 }
 
-// 无效值 (NaN) 归到排序的最低档 (default_val)
+// 无效值 (NaN) 归到排序的最末 (default_val)
 float SortVal(float v, float default_val = -1e9) {
   return std::isfinite(v) ? v : default_val;
 }
@@ -209,7 +209,7 @@ bool GetCrossSectionValue(int col, const StockInfo *info, float &out) {
     return false;
 
   // 与 SortVal 同样的判据, 只是把无效值报成 false 而不是垫底值 ——
-  // 缺值的行不参与截面, 不能挤占最差那一档
+  // 缺值的行不参与截面, 不能挤占最差那一位
   auto finite = [&out](float v) {
     if (!std::isfinite(v))
       return false;
@@ -269,7 +269,7 @@ ImVec4 RampColorVec4(float p) {
 ImU32 RampColor(float p) { return ImGui::GetColorU32(RampColorVec4(p)); }
 
 // 用名次分位而不是数值归一化: 估值和市值都是重尾分布, 按 (v-min)/(max-min)
-// 染色的话几个极端值就把其余几千个标的全压成同一个颜色.
+// 染色的话几个极端值就把其余几千个资产全压成同一个颜色.
 void RebuildCrossSectionColors(TableView &view,
                                const std::vector<const StockInfo *> &infos) {
   const size_t n = view.rows.size();
@@ -478,7 +478,7 @@ void RenderFilterBar(
   }
 
   // ST/Listed/Board: 与 FEATURES/ORDERFLOW 共用控件 (gui/util/AssetFilter.hpp).
-  // ST 只有 0..2 (GetStLevel 口径, 无退市整理期档); Listed 看 out_date 是否为 0
+  // ST 只有 0..2 (GetStLevel 口径, 无退市整理期一级); Listed 看 out_date 是否为 0
   ImGui::SameLine();
   GUI::Filter::CommonFilters<BoardType>("Table", false, state.st_filter,
                                         state.listed_filter, state.board_filter);
@@ -594,7 +594,7 @@ void RenderDataTable(
 
       "板块 (Board)\n市场分类:\n- 沪市主板 (600/601/603/605)\n- 深市主板 (000/001/002/003/004)\n- 科创板 (688/689)\n- 创业板 (300/301/302/309)\n- 北交所 (43/83/87/88/92)",
 
-      "ST股 (Special Treatment)\n来源: cn_stock_status.st_status (逐日)\n\nST  = 特别处理 (连续两年亏损等), 涨跌幅限制 ±5%\n*ST = 退市风险警示 (风险更高一档)\n-   = 正常\n\n与 Name 列同源同日 (简称前缀 ↔ 本列取值 严格一致)",
+      "ST股 (Special Treatment)\n来源: cn_stock_status.st_status (逐日)\n\nST  = 特别处理 (连续两年亏损等), 涨跌幅限制 ±5%\n*ST = 退市风险警示 (风险更高一级)\n-   = 正常\n\n与 Name 列同源同日 (简称前缀 ↔ 本列取值 严格一致)",
 
       "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\nhover 单元格可看退市日期",
 
@@ -622,7 +622,7 @@ void RenderDataTable(
 
       "日均逐笔数 (Average Orders per Trading Day)\n所有已有逐笔数据交易日的平均记录数量 (委托+成交合并后)\n= Σ order_count / 有逐笔数据的交易日数\n\n说明:\n- 单位:条记录/日\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数取自日文件目录, 扫描时一并读到",
 
-      "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该标的\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Browser 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数"};
+      "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该资产\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Browser 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数"};
 
   for (int col = 0; col < 19; col++) {
     ImGui::TableSetColumnIndex(col);
@@ -874,7 +874,7 @@ void RenderDataTable(
     handle_column_click(17);
 
     // Col 18: Orders Coverage
-    // expected_days == 0 = 该标的在回测区间内本就不该有数据 (北交所 / 尚未
+    // expected_days == 0 = 该资产在回测区间内本就不该有数据 (北交所 / 尚未
     // 上市 / 已退市), 那不是缺口, 留空而不是 0%.
     ImGui::TableSetColumnIndex(18);
     if (hovered_col == 18) {
@@ -1023,7 +1023,7 @@ static void RenderNumericAnalysis(
       value = AverageOrdersPerDay(stats);
       is_valid = stats.total_days > 0;
       break;
-    case 18: // Orders% — 没有分母的标的不参与横截面
+    case 18: // Orders% — 没有分母的资产不参与横截面
       value = stats.orders_coverage_percent();
       is_valid = stats.expected_days > 0;
       break;

@@ -31,7 +31,7 @@ struct CorrUIState {
   bool abs_mode = false;  // true = |ρ| 单极 (只看强度), false = 带符号双极 (看方向)
   float threshold = 0.0f; // |ρ| < threshold 的格子按 0 画 (压掉噪声, 留出块结构)
   int order_mode = 0;     // 0 = 特征表序 (与 Feature 表对照), 1 = 相关性聚类 (块对角)
-  bool lag_mode = false;  // true = 按 lag_best 着色 (CorrLag), false = 按 ρ 着色 (Correlation)
+  bool lag_mode = false;  // true = 按 lag_best 着色 (CorrLag), false = 按 ρ 着色 (Corr)
 
   // ---- 聚类重排缓存 (选聚类序时自动算) ----
   std::vector<int> cluster_order; // [n] 显示序 → 矩阵下标

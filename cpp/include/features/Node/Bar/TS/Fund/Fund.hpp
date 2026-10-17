@@ -19,14 +19,14 @@
   X(ind_l1, CAT1, AUTO, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", TS(Fund, ind_l1, None, None))                                                                    \
   X(list_age, CAT1, AUTO, "List Age", "上市龄", "上市日历日数(未上市→NaN)", R"(D - D_{list})", TS(Fund, list_age, None, None))                                                                               \
   X(delist_age, CAT1, AUTO, "Delist Age", "退市龄", "退市日历日数(未退市→NaN)", R"(D - D_{delist})", TS(Fund, delist_age, None, None))                                                                       \
-  X(is_margin, CAT1, AUTO, "Is Margin", "两融标记", "当日是否融资融券标的", R"(\mathbf{1}_{\mathrm{margin}})", TS(Fund, is_margin, None, None))                                                              \
+  X(is_margin, CAT1, AUTO, "Is Margin", "两融标记", "当日是否融资融券资产", R"(\mathbf{1}_{\mathrm{margin}})", TS(Fund, is_margin, None, None))                                                              \
   X(is_susp, CAT1, AUTO, "Is Suspended", "停牌标记", "当日是否停牌", R"(\mathbf{1}_{\mathrm{susp}})", TS(Fund, is_susp, None, None))                                                                         \
   X(roe_ttm, CAT1, AUTO, "ROE TTM", "净资产收益率TTM", "归母净利TTM/归母权益TTM窗口5点均值×100", R"(\frac{NP^{TTM}}{\overline{EQ}_5} \times 100)", TS(Fund, roe_ttm, None, None))                            \
   X(roa_ttm, CAT1, AUTO, "ROA TTM", "总资产收益率TTM", "净利TTM(含少数)/总资产TTM窗口5点均值×100", R"(\frac{NP^{TTM}_{all}}{\overline{TA}_5} \times 100)", TS(Fund, roa_ttm, None, None))                    \
   X(dy_ttm, CAT1, AUTO, "Dividend Yield TTM", "股息率TTM", "近365日税前分红总额/总市值(公告日锚)", R"(\frac{\sum_{365d} Div}{MC_{D}})", TS(Fund, dy_ttm, None, None))                                        \
   X(cfo_chg_ttm, CAT1, AUTO, "CFO Change TTM", "现金流改善率TTM", "经营现金流TTM同比增量/市值(tanh封顶[-1,1])", R"(\tanh(\frac{CFO^{TTM}_0 - CFO^{TTM}_{-4Q}}{MC_{D}}))", TS(Fund, cfo_chg_ttm, None, None)) \
-  X(rz_bal, CAT1, AUTO, "Margin Buy Balance", "融资余额", "融资余额(亿元,非标的→NaN)", R"(\frac{Bal^{rz}_{D}}{10^{8}})", TS(Fund, rz_bal, None, None))                                                       \
-  X(rq_bal, CAT1, AUTO, "Margin Sell Balance", "融券余额", "融券余额(亿元,非标的→NaN)", R"(\frac{Bal^{rq}_{D}}{10^{8}})", TS(Fund, rq_bal, None, None))                                                      \
+  X(rz_bal, CAT1, AUTO, "Margin Buy Balance", "融资余额", "融资余额(亿元,非资产→NaN)", R"(\frac{Bal^{rz}_{D}}{10^{8}})", TS(Fund, rz_bal, None, None))                                                       \
+  X(rq_bal, CAT1, AUTO, "Margin Sell Balance", "融券余额", "融券余额(亿元,非资产→NaN)", R"(\frac{Bal^{rq}_{D}}{10^{8}})", TS(Fund, rq_bal, None, None))                                                      \
   X(st_profit, CAT1, AUTO, "ST Profit Warning", "预亏预警", "年报预亏状态机(首亏/续亏∧上年归母净利<0)", R"(\mathbf{1}_{\mathrm{st\_profit}})", TS(Fund, st_profit, None, None))                              \
   X(st_revenue, CAT1, AUTO, "ST Revenue Warning", "营收预警", "主板营收退市预警(预亏∧营收TTM<年度阈值)", R"(\mathbf{1}_{\mathrm{st\_revenue}})", TS(Fund, st_revenue, None, None))                           \
   X(st_dividend, CAT1, AUTO, "ST Dividend Warning", "分红预警", "主板分红不足预警(3年累计分红双阈值)", R"(\mathbf{1}_{\mathrm{st\_dividend}})", TS(Fund, st_dividend, None, None))                           \
@@ -39,10 +39,10 @@
   X(lim_dn, CAT1, AUTO, "Lower Limit Price", "跌停价", "当日适用跌停价(元, 无限制→NaN)", R"(P^{dn}_{D})", TS(Fund, lim_dn, None, None))                                                                      \
   X(pre_close, CAT1, AUTO, "Pre Close", "前收", "除权后前收盘价(元, 盘前可知); 隔夜收益=open/pre_close", R"(P^{pre}_{D})", TS(Fund, pre_close, None, None))                                                  \
   X(adj_factor, CAT1, AUTO, "Adjust Factor", "复权因子", "复权因子(盘前可知); 跨日价格拼接", R"(\mathrm{adj}_{D})", TS(Fund, adj_factor, None, None))                                                        \
-  X(rz_buy_amt, CAT1, AUTO, "Margin Buy Amount", "融资买入额", "融资买入额(亿元, 非标的→NaN)", R"(\frac{Buy^{rz}_{D}}{10^{8}})", TS(Fund, rz_buy_amt, None, None))                                           \
-  X(rz_repay_amt, CAT1, AUTO, "Margin Repay Amount", "融资偿还额", "融资偿还额(亿元, 非标的→NaN)", R"(\frac{Repay^{rz}_{D}}{10^{8}})", TS(Fund, rz_repay_amt, None, None))                                   \
-  X(rq_sell_vol, CAT1, AUTO, "Short Sell Volume", "融券卖出量", "融券卖出量(万股, 非标的→NaN)", R"(\frac{Sell^{rq}_{D}}{10^{4}})", TS(Fund, rq_sell_vol, None, None))                                        \
-  X(rq_repay_vol, CAT1, AUTO, "Short Repay Volume", "融券偿还量", "融券偿还量(万股, 非标的→NaN)", R"(\frac{Repay^{rq}_{D}}{10^{4}})", TS(Fund, rq_repay_vol, None, None))                                    \
+  X(rz_buy_amt, CAT1, AUTO, "Margin Buy Amount", "融资买入额", "融资买入额(亿元, 非资产→NaN)", R"(\frac{Buy^{rz}_{D}}{10^{8}})", TS(Fund, rz_buy_amt, None, None))                                           \
+  X(rz_repay_amt, CAT1, AUTO, "Margin Repay Amount", "融资偿还额", "融资偿还额(亿元, 非资产→NaN)", R"(\frac{Repay^{rz}_{D}}{10^{8}})", TS(Fund, rz_repay_amt, None, None))                                   \
+  X(rq_sell_vol, CAT1, AUTO, "Short Sell Volume", "融券卖出量", "融券卖出量(万股, 非资产→NaN)", R"(\frac{Sell^{rq}_{D}}{10^{4}})", TS(Fund, rq_sell_vol, None, None))                                        \
+  X(rq_repay_vol, CAT1, AUTO, "Short Repay Volume", "融券偿还量", "融券偿还量(万股, 非资产→NaN)", R"(\frac{Repay^{rq}_{D}}{10^{4}})", TS(Fund, rq_repay_vol, None, None))                                    \
   X(days_since_report, CAT1, AUTO, "Days Since Report", "财报距今", "距最近财报公告日历日数(无→NaN)", R"(D - D_{report})", TS(Fund, days_since_report, None, None))                                          \
   X(shares_yoy, CAT1, AUTO, "Shares YoY", "股本同比", "总股本/365日历日前总股本-1", R"(\frac{S^{total}_{D}}{S^{total}_{D-1y}} - 1)", TS(Fund, shares_yoy, None, None))                                       \
   FUND_ROW_BS(X, CAT1, bs_ta, "Total Assets", "总资产", "总资产", R"(TA)")                                                                                                                                   \

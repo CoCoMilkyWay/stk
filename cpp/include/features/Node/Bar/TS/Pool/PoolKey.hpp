@@ -12,7 +12,7 @@
 //     pe          −NP_ttm / mcap   (= −EP; 亏损接在正 EP 的高端之后: PE 2 < 1000 < −1000 < −2)
 //     pb          −EQ_mrq / mcap   (= −BP)
 //     dy          dy_ttm           (近 365 日税前分红 / 总市值; 分母 = 昨收 × 当日股本, 见 Fundamental.cpp)
-//   票池日频: 交易日 D 的池 = D−1 收盘行 (L1 254) 的票池列 (shared/Pool.hpp 读 all 库), 盘中各行 = "此刻调仓"的池.
+//   票池日频: 交易日 D 的池 = D−1 收盘行 (L1 254) 的票池列 (shared/Pool.hpp 读 Bar 库), 盘中各行 = "此刻调仓"的池.
 //   delist 只看已发生 (不含未来信息); 键无暖机 (数据起点后一年内 PE/PB/DY 不全).
 //
 // 本 TU (bar_pipeline.cpp) precise-math: 母集判定依赖 NaN 比较语义 (list_age / delist_age / mcap 缺失 = NaN).

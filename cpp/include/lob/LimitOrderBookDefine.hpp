@@ -48,7 +48,7 @@
 // CONSTANTS AND TYPES
 //========================================================================================
 
-// LOB reconstruction engine configuration
+// 订单簿 reconstruction engine configuration
 static constexpr size_t CACHE_LINE_SIZE = 64;
 
 // Core types
@@ -58,9 +58,9 @@ using OrderId = uint32_t;
 
 static constexpr uint32_t PRICE_RANGE_SIZE = static_cast<uint32_t>(UINT16_MAX) + 1; // 0-65535
 
-// 档位下标空间的两端: 低端 [1, LOB_DEPTH] 与高端 [kHighSentinelBegin, PRICE_RANGE_SIZE-1] 是
-// 构造期哨兵档 (垫满盘口, 见 init_sentinel_levels) + 编码期停靠档 (离盘口无穷远的报价, 见
-// OrderEncoder::park_price); 下标 0 是市价单 / 占位档. 三者都不是真实档.
+// 价位下标空间的两端: 低端 [1, LOB_DEPTH] 与高端 [kHighSentinelBegin, PRICE_RANGE_SIZE-1] 是
+// 构造期哨兵价位 (垫满盘口, 见 init_sentinel_levels) + 编码期停靠价位 (离盘口无穷远的报价, 见
+// OrderEncoder::park_price); 下标 0 是市价单 / 占位价位. 三者都不是真实价位.
 static constexpr Price kHighSentinelBegin = static_cast<Price>(PRICE_RANGE_SIZE - 1 - L2::LOB_DEPTH);
 constexpr bool is_real_level(Price index) { return index > L2::LOB_DEPTH && index < kHighSentinelBegin; }
 
@@ -68,10 +68,10 @@ constexpr bool is_real_level(Price index) { return index > L2::LOB_DEPTH && inde
 // --------------------------------------------------------------------------------
 // - TAKER成交价是最终真相, MAKER挂价可能不准确
 // - 不要尝试维护完全准确的TOB, TOB用最近的成交价定义, 如果吃空则顺延
-// - 所有Order都归属于某个Level (包括Level[0]特殊档位), Order 自带 Level*
-// - Order携带flags标记状态, 支持在Level间迁移 (改 Level* + 两档聚合量)
+// - 所有Order都归属于某个Level (包括Level[0]特殊价位), Order 自带 Level*
+// - Order携带flags标记状态, 支持在Level间迁移 (改 Level* + 两个价位的聚合量)
 // - 通过 order_table_ (开放寻址, 委托就地存槽) 实现 O(1) 定位, 建单/删除不另占探针
-// - 通过类似Cbuffer/Dequeue结构, 动态维护depth多档信息
+// - 通过类似Cbuffer/Dequeue结构, 动态维护depth多价位信息
 //
 //========================================================================================
 // CORE DATA STRUCTURES
@@ -82,21 +82,21 @@ constexpr bool is_real_level(Price index) { return index > L2::LOB_DEPTH && inde
 //    - 表长按当日事件数 reserve, 换日只清用过的前缀
 //
 // 2. price_levels_: array<Level*, PRICE_RANGE_SIZE>
-//    - 价格到Level的映射, 快速找到任意价格档位
-//    - Level[0]是特殊档位, 存放price=0的订单
+//    - 价格到Level的映射, 快速找到任意价格价位
+//    - Level[0]是特殊价位, 存放price=0的订单
 //
-// 3. Level: 价格档位聚合 (16 字节, 不持有委托队列)
-//    - Quantity net_quantity: 在档 qty 之和 (正=买压, 负=卖压)
-//    - uint32_t order_count: 在档委托数
+// 3. Level: 价格价位聚合 (16 字节, 不持有委托队列)
+//    - Quantity net_quantity: 该价位 qty 之和 (正=买压, 负=卖压)
+//    - uint32_t order_count: 该价位委托数
 //    - operations: attach(q), detach(q), adjust(delta)
 //
 // 4. Order: 委托 (32 字节, 存于 order_table_ 槽内)
 //    - Quantity qty: 有符号数量 (正=买方增加/卖方减少, 负=买方减少/卖方增加)
 //    - OrderId id: 订单唯一标识 (即哈希键)
-//    - Level *level: 所在档位
+//    - Level *level: 所在价位
 //    - OrderFlags flags: 订单状态标记
 //
-// Level[0] 特殊档位:
+// Level[0] 特殊价位:
 // --------------------------------------------------------------------------------
 // - 存放price=0的订单: SPECIAL_MAKER, ZERO_PRICE, UNKNOWN等
 // - 数量极少(<0.1%总订单数), 通常<10个订单
@@ -259,7 +259,7 @@ constexpr bool is_real_level(Price index) { return index > L2::LOB_DEPTH && inde
 // Level[0] scan:   O(n) where n < 10 typically              → negligible
 //
 //========================================================================================
-// N-档市场深度数据维护
+// N 价位市场深度数据维护
 //========================================================================================
 //
 // 订单(逐笔, 高频)+tob更新(时间过滤, 低频)驱动
@@ -272,7 +272,7 @@ constexpr bool is_real_level(Price index) { return index > L2::LOB_DEPTH && inde
 // 更新流程:
 //   1. 订单based(逐笔, 高频):
 //          每个订单(哪怕是双边撮合的taker)只会最多trigger一个add/remove level操作
-//          通过判断 depth_buffer_[0/-1].price 来判断价格是否在N-档范围内, 如果在, 用binary search做price -> index, 更新depth_buffer_
+//          通过判断 depth_buffer_[0/-1].price 来判断价格是否在N 价位范围内, 如果在, 用binary search做price -> index, 更新depth_buffer_
 //   2. tob更新based(时间过滤, 低频):
 //          tob 更新触发条件:
 //          - best_bid_ < best_ask_
@@ -302,13 +302,13 @@ enum class OrderRole : uint8_t {
 // CORE DATA STRUCTURES
 //========================================================================================
 
-// 价格档位: 只记聚合量与计数, 不持有委托队列 —— 委托本体在 OrderTable 里, 每条自带 Level*.
-// 抵扣模型不需要队内位置 (无时间优先撮合), 去掉队列后档位就是 16 字节, 相邻档同缓存行, 深度走扫更省.
+// 价格价位: 只记聚合量与计数, 不持有委托队列 —— 委托本体在 OrderTable 里, 每条自带 Level*.
+// 抵扣模型不需要队内位置 (无时间优先撮合), 去掉队列后价位就是 16 字节, 相邻价位同缓存行, 深度走扫更省.
 struct alignas(16) Level {
-  Price price; // 档位下标 (非绝对价, 见 LOB_Feature::price_base)
+  Price price; // 价位下标 (非绝对价, 见 LOB_Feature::price_base)
   uint16_t padding_ = 0;
-  Quantity net_quantity = 0; // 在档委托 qty 之和 (SIGNED: + 买压, - 卖压; 抵扣模型下可反号)
-  uint32_t order_count = 0;  // 在档委托数 (涨跌停封板可达十万级, 16 位不够)
+  Quantity net_quantity = 0; // 该价位委托 qty 之和 (SIGNED: + 买压, - 卖压; 抵扣模型下可反号)
+  uint32_t order_count = 0;  // 该价位委托数 (涨跌停封板可达十万级, 16 位不够)
 
   explicit Level(Price p) : price(p) {}
 
@@ -317,7 +317,7 @@ struct alignas(16) Level {
     net_quantity += q;
   }
   HOT_INLINE void detach(Quantity q) {
-    assert(order_count > 0 && "Level::detach: 空档");
+    assert(order_count > 0 && "Level::detach: 空价位");
     --order_count;
     net_quantity -= q;
   }
@@ -326,14 +326,14 @@ struct alignas(16) Level {
   HOT_INLINE bool empty() const { return order_count == 0; }
   HOT_INLINE bool has_visible_quantity() const { return net_quantity != 0; }
 };
-static_assert(sizeof(Level) == 16, "Level 应为 16 字节 (4 档一缓存行)");
+static_assert(sizeof(Level) == 16, "Level 应为 16 字节 (4 价位一缓存行)");
 
 // 委托: 就地存在 OrderTable 的槽里, id 即哈希键. 没有独立的池与位置表 —— 查到 id 就查到了委托本体.
 // orig_qty / timestamp 是委托维度与订单生命周期节点的全部输入 (节点不自建哈希表):
 //   orig_qty  建单时的量 (绝对值, 股). MAKER 建单 = 真实申报量; 占位单 (OUT_OF_ORDER,
 //             乱序到达) = 首笔量, 不是申报量 —— 消费方按 flags 区分, 见 LOB_Feature.
 //   timestamp 建单时刻, 用于挂单→成交 / 挂单→撤单 的用时
-//   level     所在档位 (nullptr = 槽刚被 OrderTable 预留、委托尚未建立)
+//   level     所在价位 (nullptr = 槽刚被 OrderTable 预留、委托尚未建立)
 // 32 字节: 两条委托一缓存行, 线性探测的下一槽多半已在行内.
 struct alignas(32) Order {
   OrderId id;             // 0 = 空槽, kTomb = 墓碑 (见 OrderTable)
@@ -350,7 +350,7 @@ static_assert(std::is_trivial_v<Order>, "OrderTable 用 memset 建/清槽, Order
 // 委托表: OrderId → Order, 开放寻址 + 线性探测, 委托就地存槽.
 //   查找 = 1 次探针 (通常 1 条缓存行); 建单 = 同一次探针里完成 (find_or_insert); 删除 = 就地打墓碑, 零探针.
 //   墓碑不搬槽 → Order* 整日稳定: process_impl 入口查好的指针可以跨 compute_and_store 复用.
-//   表长按当日事件数定 (reserve: ≥ 2× 事件数 → 计墓碑的负载 ≤ 0.5, 每笔至多建 1 条委托), 小票的表小到
+//   表长按当日事件数定 (reserve: ≥ 2× 事件数 → 计墓碑的负载 ≤ 0.5, 每笔至多建 1 条委托), 冷门资产的表小到
 //   能进 L2; clear 只清用过的前缀 —— 换日成本与当日工作量成比例, 不再是固定的整表 memset.
 //   id 直接取模做桶号: 沪市委托号按证券连续, 相邻委托落相邻槽, 零冲突; 深市按通道连续, 对单只股票近似均匀.
 class OrderTable {
@@ -459,7 +459,7 @@ private:
 };
 
 //========================================================================================
-// LOB FEATURE STRUCTURE
+// 订单簿 FEATURE STRUCTURE
 //========================================================================================
 
 // 订单簿逐笔特征流(用于高频因子计算)
@@ -482,12 +482,12 @@ struct LOB_Feature {
   float price = 0.0;   // 元, 绝对价 (已还原, 消费方直接用)
   uint32_t volume = 0; // 股
 
-  // depth_buffer 里 Level::price 是档位下标而非绝对价, 还原成分要加上这个基准.
+  // depth_buffer 里 Level::price 是价位下标而非绝对价, 还原成分要加上这个基准.
   // 低价股恒为 0. 来源是日文件目录项, 见 L2_DataType.hpp 的 kPriceIndexRange.
   uint32_t price_base = 0;
 
-  // 档位下标 → 绝对价 (元); 下标 0 (市价单 / 占位档) 无价 → 0. 下标空间只在这里还原,
-  // 消费方 (节点 / GUI / LOB 自身) 一律经它, 不自己拿 price_base 拼.
+  // 价位下标 → 绝对价 (元); 下标 0 (市价单 / 占位价位) 无价 → 0. 下标空间只在这里还原,
+  // 消费方 (节点 / GUI / 订单簿自身) 一律经它, 不自己拿 price_base 拼.
   float price_of(Price index) const { return index == 0 ? 0.0f : static_cast<float>(price_base + index) * 0.01f; }
   float price_of(const Level *level) const { return price_of(level->price); }
   static bool is_real(const Level *level) { return is_real_level(level->price); }
@@ -505,7 +505,7 @@ struct LOB_Feature {
 
   // 本笔事件两侧的委托状态 (下标 0=bid 1=ask), 委托维度 / 订单生命周期节点的唯一输入面 ——
   // 节点不自建 id 哈希表 (那会把 per-worker 的簿开销变成 per-asset ×5000).
-  // 快照取在 LOB 更新 *之前* (与 depth_buffer / price / volume 同相位, 见 process_impl 的调用序),
+  // 快照取在订单簿更新 *之前* (与 depth_buffer / price / volume 同相位, 见 process_impl 的调用序),
   // 所以 ord_rest 是本笔处理前的量 —— 要"含本笔"由消费方自己加 volume.
   //   ord_role 该侧角色, 分支判据全看它 (None / Resting / Aggressor, 见 OrderRole)
   //   ord_orig 申报量 (股; 仅 Resting 有值. ord_flag ∈ {OUT_OF_ORDER, ZERO_PRICE} 的占位单记的是首笔成交/撤单量而非申报量, 不可信;
@@ -513,7 +513,7 @@ struct LOB_Feature {
   //   ord_rest 处理前量 (股; Resting = 未成交余量, Aggressor = 本笔之前连续成交的累计量)
   //   ord_tick 挂单时刻 (仅 Resting; 与本结构 hour/minute/second/millisecond 同编码 h<<24|m<<16|s<<8|ms10)
   //   ord_flag 建单时的 OrderFlags (仅 Resting)
-  //   ord_price 委托所在档的绝对价 (元; 仅 Resting; Level[0] 市价单 / 占位单 = 0). 深市撤单事件 price=0, 撤单额只能由它得
+  //   ord_price 委托所在价位的绝对价 (元; 仅 Resting; Level[0] 市价单 / 占位单 = 0). 深市撤单事件 price=0, 撤单额只能由它得
   // 主动方已成交量: Resting (深交所, 委托记录先到) = ord_orig − ord_rest; Aggressor (沪市) = ord_rest.
   // 语义速查 (order_type, order_dir):
   //   (MAKER,  BID) [0]=本次新挂的买委托 (簿里还没有 → None, 建单在 update_lob 里)

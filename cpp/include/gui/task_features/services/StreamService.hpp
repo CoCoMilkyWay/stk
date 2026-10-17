@@ -1,4 +1,4 @@
-// StreamService — Features 页流式分析 (Dist / Transform / FeaturePreview / Corr*) 的 Worker 特化
+// StreamService — Features 页流式分析 (Dist / Transform / Preview / Corr*) 的 Service 特化
 //
 // 线程模型 (骨架见 gui/util/Service.hpp; 目标形状与发布协议见 shared/Analysis.hpp):
 //   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = analysis::Request<Target::Spec>
@@ -30,12 +30,12 @@ struct SharedData;
 namespace GUI::Features {
 
 template <class Derived, class Target>
-class StreamService : public Worker<Derived, analysis::Request<typename Target::Spec>> {
+class StreamService : public Service<Derived, analysis::Request<typename Target::Spec>> {
 public:
   using Req = analysis::Request<typename Target::Spec>;
 
 private:
-  using Base = Worker<Derived, Req>;
+  using Base = Service<Derived, Req>;
   friend Base;
 
 public:

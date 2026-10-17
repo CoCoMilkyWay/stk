@@ -27,7 +27,7 @@ struct Transform::Runtime {
 
   struct Plane {
     TsPlane main; // 主库 [特征][A][批天][VR]
-    TsPlane side; // Bar 档旁读 [mcap, ind][A][批天][VR] (已按 uni.ids 收拢到主轴; NeutralRank 时)
+    TsPlane side; // Bar 档旁读 [mcap, ind][A][批天][VR] (已按 lib.axis.ids 收拢到主轴; NeutralRank 时)
     void clear() {
       main.clear();
       side.clear();
@@ -202,7 +202,7 @@ bool Transform::build(FeatureRead &reader, const FeatureRead &all, const std::at
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
   const size_t stride = kDaysPerBatch * VR; // out 每资产步长 (按满批)
 
-  // 天序: 升序 (TOD 轮廓跨天因果); max_days = 快速迭代档, 只算区间头 N 天
+  // 天序: 升序 (TOD 轮廓跨天因果); max_days = 快速迭代预设, 只算区间头 N 天
   const DayPlan plan = plan_days(reader, scope_.months, DayOrder::Sequential, p.max_days);
   if (plan.size() == 0)
     return true;

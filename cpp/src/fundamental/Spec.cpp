@@ -49,7 +49,7 @@ const std::vector<Spec> SPECS = checked({
     {"holidays",                                "date",         Month, All, 0,  Bq{Partition},
      "节假日表 (与交易日历互补)"},
     {"cn_stock_instruments",                    "date",         Month, All, 20, Bq{Partition},
-     "逐日在册标的 + PIT 简称 (戴帽/改名当日即变)"},
+     "逐日在册资产 + PIT 简称 (戴帽/改名当日即变)"},
     // industry_component: 月初快照 (低频), 月内变动靠 industry_change 增量 cover.
     {"cn_stock_industry_component",             "date",         Month, Day, 20, Bq{Partition},
      "行业成分月初快照: 一/二/三级行业码与名"},
@@ -108,7 +108,7 @@ const std::vector<Spec> SPECS = checked({
      "TTM 三表 185 列 × shift 同期偏移: 归母净利 / 营收 / 经营现金流 TTM"},
     {"cn_stock_financial_notes_shift",          "date",         Month, All, 20, Bq{Partition},
      "财报附注 76 列 × shift: 非经常性损益明细 (政府补助/公允价值变动/债务重组)"},
-    // bar1m: 远端截面表 cn_stock_bar1m_c (按日截面存储; cn_stock_bar1m 按标的存储, 全市场单日要扫遍所有标的).
+    // bar1m: 远端截面表 cn_stock_bar1m_c (按日截面存储; cn_stock_bar1m 按资产存储, 全市场单日要扫遍所有资产).
     //   单日 ~130 万行 × 9 列 ≈ 1200 万 cell: 排在 DAI 段最后, 每天开拉前重判周配额 (见 FundamentalService).
     //   __PARTITION__ = 远端存储分区列, 非数据.
     {"bar1m",                                   "date",         Daily, All, 24, Bq{Partition, "cn_stock_bar1m_c"},

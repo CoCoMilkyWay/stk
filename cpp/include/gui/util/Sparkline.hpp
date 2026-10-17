@@ -1,6 +1,6 @@
 #pragma once
 
-// 表格格内迷你图 (Features 预览 Dist / PSD 列, Factors 看板 rIC / x 分布列共用)
+// 表格格内迷你图 (Features 预览 Dist / PSD 列, Factors 因子表 rIC / x 分布列共用)
 
 #include "imgui.h"
 

@@ -325,7 +325,7 @@ OperatorsService::OperatorsService() {
             "• 流程: 因子 x + 每持有期 h 一组 fp16 标签 y_h\n"
             "    ◦ → 每 (h, t) 的 rIC / 20 组和 / 顶底多空 / rAC\n"
             "    ◦ → 沿 t 汇总 (组沿 t 池化)\n"
-            "• 持有期集合 = Stat/Check.hpp kHolds (分钟档 / close / T+N)\n"
+            "• 持有期集合 = Stat/Check.hpp kHolds (分钟型 / close / T+N)\n"
             "• 标签统一超额 (减截面均值)\n"
             "• 两口径\n"
             "    ◦ CS: 每 t 截面 rank x, 任一组空行无效\n"
@@ -409,7 +409,7 @@ void OperatorsService::Request(OperatorsRequest req) {
   assert(req.times >= factor::kSegLen && req.times % factor::kSegLen == 0 && req.A >= 2);
   // 时间戳做种子: 不做复现, 同一轮内所有算子共享同一张量 (run_op 都从 req.seed 造数)
   req.seed = static_cast<unsigned>(std::chrono::system_clock::now().time_since_epoch().count());
-  Worker::Request(std::move(req));
+  Service::Request(std::move(req));
 }
 
 void OperatorsService::AdoptSnapshot(const OperatorsRequest &req, std::vector<OperatorRow> &&snap, int failed) {

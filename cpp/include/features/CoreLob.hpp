@@ -7,7 +7,7 @@
 #include "shared/Pool.hpp"
 
 // ============================================================================
-// CoreLob: Lob 档单资产时序计算. LOB → L0 (tick, 秒索引) → resample → L1 (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
+// CoreLob: Lob 档单资产时序计算. 订单簿 → L0 (tick, 秒索引) → resample → L1 (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
 //   与 CoreBar 对仗: compute_and_store = 本源单位 (逐笔) 先 advance 到所在分钟, 再进 DAG + 重采样器
 //   每笔: run<0>(t) 按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L0 行 + 标签回填
 //   分钟: close_minute(m) 调 onMinute 域, 写 L1 行; 只经 CoreTs::advance (时钟推进) 触发
@@ -16,8 +16,8 @@
 //   onMinute 域只读 MinuteData / 分钟边界 (md.l1_index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
 //   L1 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
 //   缺数据日 = 零事件日, 同一路径 (empty_day). 本类不读任何特征值, 不特判任何节点.
-//   ts_valid 只标"本分钟有成交", 标签分钟档 exit 仍只在有成交的分钟推进 (无成交无法平仓).
-//   Lob 档 (逐笔 → LOB 源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
+//   ts_valid 只标"本分钟有成交", 标签分钟型 exit 仍只在有成交的分钟推进 (无成交无法平仓).
+//   Lob 档 (逐笔 → 订单簿源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的逐笔流 + 日频 PIT
 //   (fund::Panel), 不读其他资产 / 全局状态 / CS 结果. 张量行 (t, f, a) 因此只由
@@ -45,7 +45,7 @@ public:
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
 
-  // 本资产的 L0 工作区 (DAG_Root 自持, 见 LobGraph.hpp): LOB 经 bind() 把写出口换到这里
+  // 本资产的 L0 工作区 (DAG_Root 自持, 见 LobGraph.hpp): 订单簿经 bind() 把写出口换到这里
   TickData &tick_data() { return dag_.tick_data; }
 
   // 每笔一调 (L0 节拍): 先把时钟推进到本笔所在分钟 (本笔尚未进任何节点 / meta_), 再让本笔进 DAG
@@ -62,12 +62,12 @@ public:
 
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日在池: 票池 (pool::Panel, 第 D 日由 all 库 D−1 收盘行定), 与 Fund 吃 fund_panel 同形
+  // 当日在池: 票池 (pool::Panel, 第 D 日由 Bar 库 D−1 收盘行定), 与 Fund 吃 fund_panel 同形
   bool member(misc::Ymd date) const { return pool_panel_.in_pool(asset_id_, date); }
   ResamplerTick2Min &resampler() { return tick2min_; }
 
   // ---------------------------------------------------------------- L0 每笔 ----
-  // 与 CoreCrosssection::run<LVL> 对仗: 本笔按触发域 onTaker|onMaker|onCancel → onTick → onDepth 进 DAG → 写 L0 行 + ts_valid,
+  // 与 CoreCs::run<LVL> 对仗: 本笔按触发域 onTaker|onMaker|onCancel → onTick → onDepth 进 DAG → 写 L0 行 + ts_valid,
   // 标签快照 / 锚定. L1 行走 CoreTs::close_minute (advance 内 roll 出 bar 后)
   template <size_t LVL>
   inline void run(size_t t) {
@@ -94,7 +94,7 @@ private:
     if (depth_updated) {
       dag_.run<Trigger::onDepth>();
 
-      // 标签: 盘口快照入环, 然后 L1 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟档行); 开盘价走分钟 bar (close_minute → minute_closed)
+      // 标签: 盘口快照入环, 然后 L1 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟型行); 开盘价走分钟 bar (close_minute → minute_closed)
       dag_.label.snapshot(t);
       dag_.label.minute_anchored(t, writer());
     }

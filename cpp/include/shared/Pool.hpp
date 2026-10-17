@@ -23,7 +23,7 @@ namespace pool {
 
 class Panel {
 public:
-  // Bar 库的票池列 col → dates 逐日成员. D 不在 all 库日期轴 / 是其首日 / 前一日未落盘 / 并集为空 → assert
+  // Bar 库的票池列 col → dates 逐日成员. D 不在 Bar 库日期轴 / 是其首日 / 前一日未落盘 / 并集为空 → assert
   static Panel build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates);
 
   const LibAxis &axis() const { return axis_; }

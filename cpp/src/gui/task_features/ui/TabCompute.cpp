@@ -147,12 +147,12 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Text("Pool Slots:");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(150);
-  if (ImGui::InputInt("##pool_slots", &state.config.pool_slots, 1, 1)) {
-    if (state.config.pool_slots < ComputeConfig::kMinPoolSlots)
-      state.config.pool_slots = ComputeConfig::kMinPoolSlots;
+  if (ImGui::InputInt("##ring_slots", &state.config.ring_slots, 1, 1)) {
+    if (state.config.ring_slots < ComputeConfig::kMinRingSlots)
+      state.config.ring_slots = ComputeConfig::kMinRingSlots;
   }
   ImGui::SameLine();
-  ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open)", ComputeConfig::kMinPoolSlots);
+  ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open)", ComputeConfig::kMinRingSlots);
 
   ImGui::Spacing();
   ImGui::Text("Adopt %%:");
@@ -362,7 +362,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   if (ImGui::SmallButton("Refresh"))
     state.libs_dirty = true;
   ImGui::SameLine();
-  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 票池: LOB 还原, 回测区间, 成员 = all 库 D−1 收盘 pool_* 列 → 先算 all)",
+  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 票池: 订单簿还原, 回测区间, 成员 = Bar 库 D−1 收盘 pool_* 列 → 先算 all)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str());
   ImGui::Spacing();
 
@@ -373,7 +373,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     for (const PoolDef &p : feature_pools())
       state.libs.push_back(lib_status(config, p.name));
   }
-  // 票池库的成员来自 all 库: all 落盘齐全才放行
+  // 票池库的成员来自 Bar 库: Bar 库落盘齐全才放行
   const bool all_complete = !state.libs.empty() && state.libs.front().ready && state.libs.front().done == state.libs.front().days;
 
   if (ImGui::BeginTable("Libraries", 7,
@@ -482,7 +482,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Indent();
     ImGui::BulletText("GUI entering low-refresh mode");
     ImGui::BulletText("%s", layout.summary().c_str());
-    ImGui::BulletText("Allocating %d pool slots", state.config.pool_slots);
+    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots);
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 

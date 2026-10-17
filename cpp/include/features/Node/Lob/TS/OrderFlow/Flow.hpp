@@ -7,7 +7,7 @@
 //     {amt,vol,n,dlogp}_taker_{bid,ask}  主动买 / 主动卖 成交 额 / 量 / 笔 / Σ 1e4·Δln(成交价) (基点, 复用 TakerRet;
 //                                        TradeSize 的 *_ge_{B|q} 是本口的 "≥ 阈值" 子集, 嵌套集的全体在这里)
 //     {amt,vol,n}_maker_{bid,ask}        新增委托 额 / 量 / 笔 (price=0 的市价单只计笔数与量)
-//     {amt,vol,n}_cancel_{bid,ask}       撤单 额 / 量 / 笔 (额 = 被撤委托所在档价 ord_price × 量: 深市撤单事件 price=0, 不能用事件价)
+//     {amt,vol,n}_cancel_{bid,ask}       撤单 额 / 量 / 笔 (额 = 被撤委托所在挂单价 ord_price × 量: 深市撤单事件 price=0, 不能用事件价)
 //     vol_maker_lim_{bid,ask}            以跌停价挂买 / 涨停价挂卖 的委托量 (彩票委托; 边界 = Fund 当日涨跌停, NaN → 0)
 //     vol_first30s                       分钟前 30 秒成交量 (后 30 秒 = vol_taker_bid + ask − 本口, 不单列)
 //   均价 (元, 不产 NaN):
@@ -96,7 +96,7 @@ public:
       break;
     }
     case L2::OrderType::CANCEL:
-      acc_[7][s] += lob.ord_price[s] * v, acc_[8][s] += v, acc_[9][s] += 1.0f; // 额用被撤委托的档价 (占位单无价 → 0)
+      acc_[7][s] += lob.ord_price[s] * v, acc_[8][s] += v, acc_[9][s] += 1.0f; // 额用被撤委托的挂单价 (占位单无价 → 0)
       break;
     default:
       break;

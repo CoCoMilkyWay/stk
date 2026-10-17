@@ -4,8 +4,8 @@
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
 //   Factors: <factor_dir>/<pool>/ 一因子一文件的整体面板. 进页只扫描解析 (任何时候可进); Run 才读特征库评估
 //     (要资产轴就绪), 结果回写各因子文件.
-//   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 标的 K 线). 行信息来自 FactorsService; 一级 Row 由自己的
-//     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中标的的分钟 K 线由 KlineService 逐日流式读.
+//   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 FactorsService; 一级 Row 由自己的
+//     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/FactorsService.hpp"
@@ -44,11 +44,11 @@ struct TaskFactorsState {
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                        // 上次扫描的目录 (票池切换 → 自动重扫)
-  std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Optimize (与 factors_service 同建); 写了 weights 的那一轮结束 → 自动 Run
+  std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Search (与 factors_service 同建); 写了 weights 的那一轮结束 → 自动 Run
   Phase prev_search_phase = Phase::Idle;
 
   std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (构造即起 worker); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
-  std::unique_ptr<Factors::KlineService> kline_service;     // Inspect 右下选中标的的分钟 K 线流 (与 inspect_service 同生灭)
+  std::unique_ptr<Factors::KlineService> kline_service;     // Inspect 右下选中资产的分钟 K 线流 (与 inspect_service 同生灭)
   Factors::InspectUIState inspect_ui;
 };
 
@@ -78,7 +78,7 @@ TaskHandle CreateFactorsTask() {
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
   // (与票池无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
-    // Optimize 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
+    // Search 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
     if (state->search_service && state->factors_service) {
       const Phase sst = state->search_service->phase.load(std::memory_order_acquire);
       if (sst == Phase::Done && state->prev_search_phase == Phase::Running) {
@@ -112,7 +112,7 @@ TaskHandle CreateFactorsTask() {
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx == -1 || idx < TAB_COUNT);
     if (idx == TAB_FACTORS) {
-      if (state->search_service && state->search_service->busy()) { // Optimize 在跑时 Factors 行显示它的进度 (Run 此时被禁)
+      if (state->search_service && state->search_service->busy()) { // Search 在跑时 Factors 行显示它的进度 (Run 此时被禁)
         const auto &ss = *state->search_service;
         const size_t total = ss.total.load(std::memory_order_relaxed);
         return {TaskStatus::Kind::Busy, "optimizing " + std::to_string(total > 0 ? 100 * ss.done.load(std::memory_order_relaxed) / total : 0) + "%"};
@@ -197,7 +197,7 @@ TaskHandle CreateFactorsTask() {
           fs.RequestCancel();
         } else if (action == 3) {
           Factors::SearchRequest req;
-          if (Factors::MakeSearchRequest(data, state->factors_ui.opt_row, state->factors_ui.backend == 1, req))
+          if (Factors::MakeSearchRequest(data, state->factors_ui.search_row, state->factors_ui.backend == 1, req))
             ss.Request(req);
         } else if (action == -3) {
           ss.RequestCancel();

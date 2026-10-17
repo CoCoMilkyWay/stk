@@ -12,7 +12,7 @@
 class FeatureRead;
 
 // ============================================================================
-// Correlation (特征两两相关矩阵, 逐抽样日流式; 公共骨架见 shared/Analysis.hpp)
+// Corr (特征两两相关矩阵, 逐抽样日流式; 公共骨架见 shared/Analysis.hpp)
 // ============================================================================
 // 口径 (为什么是这个口径, 而不是把全部 (分钟, 资产) 格子倒进一个池子):
 //
@@ -49,7 +49,7 @@ class FeatureRead;
 //   掩码差集上的稀疏和, 掩码相同 (等价类) 的对直接 O(1): x = y = 0, xx = yy = n = k.
 //   (秩本身是在各自有效集上排的, 不是在每对的交集上排 —— 逐对重排是 F²·A log A, 不可行;
 //    这是这里唯一的近似, 缺失率低时无感.)
-// 三个目标 (Correlation / CorrLag / CorrPair) 同一个引擎 (Corr.cpp), 只差配置:
+// 三个目标 (Corr / CorrLag / CorrPair) 同一个引擎 (Corr.cpp), 只差配置:
 //   切片布局 (等距抽稀 / 连续窗 / 取满) × lag 数 (1 / kCorrLags)
 //
 // 层: 跟随 UI 的 L0/L1 选择 (与 Dist/Transform 只跑 L1 不同, 这里没有 kLevel 硬编码).
@@ -82,7 +82,7 @@ struct CorrSpec {
   bool same(const CorrSpec &o) const { return level == o.level && cols.io == o.cols.io; }
 };
 
-struct Correlation : Published {
+struct Corr : Published {
   using Spec = CorrSpec;
   // 发布快照 (worker 每步短锁 swap; UI 渲染帧内持锁只读)
   struct Snap {
@@ -92,8 +92,8 @@ struct Correlation : Published {
   Spec spec;
   Snap snap;
 
-  Correlation();
-  ~Correlation();
+  Corr();
+  ~Corr();
 
   // 重置全部状态并进入 Building (列集/层变了旧矩阵下标全错位, 快照整体清)
   void reset(analysis::ReadScope scope, Spec spec);
@@ -155,7 +155,7 @@ private:
 // ============================================================================
 
 struct CorrLag : Published {
-  using Spec = CorrSpec; // 必须与 Correlation.spec 一致 (same), UI 才能按同一显示序取值
+  using Spec = CorrSpec; // 必须与 Corr.spec 一致 (same), UI 才能按同一显示序取值
   struct Snap {
     std::vector<int8_t> lag_best; // [n][n] |ρ| 最大的 lag (反对称; 对角 0; 样本不足 0)
     std::vector<float> rho_best;  // [n][n] 该 lag 上的 ρ (对称位为同值); NaN = 样本不足

@@ -114,7 +114,7 @@ static std::vector<int> cluster_order(const std::vector<float> &rho, size_t n) {
 // 只填下三角 (r >= c): 矩阵对称, 上三角是镜像, 画出来只占地方; 绘制侧按行画 r+1 格.
 // lag 图 (lag != nullptr): 值 = |ρ| 最大的 lag (0 中性色); |ρ_best| < 阈值 的对按 0 画 ——
 //   弱相关对的 argmax 是噪声, 不压掉整张图就是雪花.
-static void rebuild_disp(const Correlation &corr, const CorrLag *lag, CorrUIState &ui) {
+static void rebuild_disp(const Corr &corr, const CorrLag *lag, CorrUIState &ui) {
   const size_t n = corr.spec.n();
   ui.disp.assign(n * n, 0.0f);
   ui.n_blank = 0;
@@ -147,11 +147,11 @@ static void rebuild_disp(const Correlation &corr, const CorrLag *lag, CorrUIStat
 }
 
 // lag 快照能否与矩阵按同一下标读: 同层同列集 (列集变了未算完之前不匹配, UI 画空)
-static bool lag_matches(const CorrLag &lag, const Correlation &corr) {
+static bool lag_matches(const CorrLag &lag, const Corr &corr) {
   return lag.spec.same(corr.spec) && lag.snap.rho_best.size() == corr.snap.rho.size();
 }
 
-static uint64_t disp_key(const Correlation &corr, const CorrLag *lag, const CorrUIState &ui) {
+static uint64_t disp_key(const Corr &corr, const CorrLag *lag, const CorrUIState &ui) {
   uint64_t k = corr.epoch.load(std::memory_order_acquire);
   k = k * 1099511628211ull + corr.spec.n();
   k = k * 1099511628211ull + static_cast<uint64_t>(ui.order_mode);
@@ -168,7 +168,7 @@ static uint64_t disp_key(const Correlation &corr, const CorrLag *lag, const Corr
 // ============================================================================
 
 static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState &ui) {
-  const Correlation &corr = data.corr;
+  const Corr &corr = data.corr;
   const size_t n = corr.spec.n();
   if (ui.sel_i < 0 || ui.sel_j < 0 || (size_t)ui.sel_i >= n || (size_t)ui.sel_j >= n) {
     ImGui::TextDisabled("悬停热图任一格子: 自动算该对的 lead-lag 曲线");
@@ -251,7 +251,7 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
 void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
                    CorrLagService *lag_service, SharedData &data, CorrUIState &ui) {
   assert(service && pair_service && lag_service);
-  Correlation &corr = data.corr;
+  Corr &corr = data.corr;
 
   // ---- 行集跟随 Feature 表的过滤 (同一口径): 变了就重算 ----
   static std::vector<int> rows; // GUI 单线程, 帧内复用

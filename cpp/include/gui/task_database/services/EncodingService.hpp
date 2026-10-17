@@ -21,8 +21,8 @@ struct EncodeRequest {
   bool skip_existing = true;
 };
 
-class EncodingService : public Worker<EncodingService, EncodeRequest>, public Progress {
-  friend Worker<EncodingService, EncodeRequest>;
+class EncodingService : public Service<EncodingService, EncodeRequest>, public Progress {
+  friend Service<EncodingService, EncodeRequest>;
 
 public:
   static constexpr const char *kName = "EncodeWorker";
@@ -41,8 +41,8 @@ private:
   SharedData &data_;
 };
 
-class FileCheckService : public Worker<FileCheckService, std::string>, public Progress {
-  friend Worker<FileCheckService, std::string>;
+class FileCheckService : public Service<FileCheckService, std::string>, public Progress {
+  friend Service<FileCheckService, std::string>;
 
 public:
   static constexpr const char *kName = "FileCheckWorker";

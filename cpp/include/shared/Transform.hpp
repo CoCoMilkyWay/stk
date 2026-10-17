@@ -106,7 +106,7 @@ struct Transform : Published {
     NormMethod ts_norm = NormMethod::NONE;
     math::Step ts; // 按 math::normalize::GetMethod(ts_norm) 初始化
 
-    // 构建天数上限: 0 = 全区间; 否则只算区间头 N 天, 不往后算 (快速迭代档: 1/5/30)
+    // 构建天数上限: 0 = 全区间; 否则只算区间头 N 天, 不往后算 (快速迭代预设: 1/5/30)
     size_t max_days = 0;
 
     cs::TfId cs_tf = cs::TfId::None;

@@ -65,7 +65,7 @@ struct Data {
   std::vector<LabelHost> lab; // 按 hd 序
   Holds hd;
   int T = 0, A = 0;
-  double cap = 0.0; // 满档 = 池内平均每行格数 / kGroups (与 GUI n_full_of 同式)
+  double cap = 0.0; // 满仓 = 池内平均每行格数 / kGroups (与 GUI n_full_of 同式)
 };
 // d 的全部标签 + 各组预处理 ry → 契约 Labels (偏 off 格; ry 为空 = 未预处理)
 inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> &ry, size_t off = 0) {

@@ -11,7 +11,7 @@
 //
 // 【索引 (Index)】一个字母只表示一种时间/空间轴, 全表通用:
 //   τ = 逐笔事件 (tick, 含成交/委托/撤单)   c = Δ 秒网格格 (Realized)
-//   j = 盘口更新 (Book 事件型)              i = 盘口档位 (1..N)
+//   j = 盘口更新 (Book 事件型)              i = 盘口价位 (1..N)
 //   t = 分钟                                D = 交易日
 //
 // 【价格 (Price)】统一大写 P, 语境用上/下标区分, 不用 O/H/L/C 单字母 (O 已归订单流):
@@ -22,10 +22,10 @@
 //   VWAP^{s}(A)                   吃 s ∈ {B, A} 侧 A 元的成交均价 (冲击成本 / 标签共用)
 //   ε                             价格比较容差 (= kPxEps, 涨跌停判定共用)
 //
-// 【深度 (LOB Depth)】
+// 【深度 (订单簿 Depth)】
 //   符号结构:  {P, V}_{i,t}^{M,s}
 //   下标:
-//     i = 档位 (1,2,...,N)
+//     i = 价位 (1,2,...,N)
 //     t = 时刻
 //   上标:
 //     M = 固定 (Maker, 与订单流符号一致)
@@ -173,7 +173,7 @@ DEFINE_ENUM(NormMethod, NORM_METHODS)
 #undef ENUM_CASE
 #undef ENUM_ENTRY
 
-// L2::ValidType 定义在 codec, 只补 to_string
+// L2::ValidType 定义在 codec/, 只补 to_string
 inline constexpr EnumStr to_string(L2::ValidType t) {
   switch (t) {
   case L2::ValidType::ALL:
@@ -260,9 +260,9 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 
 // ----------------------------------------------------------------------------
 // 特征档 (tier) = 数据源. 一档一套节点表 / 字段表 / 特征库:
-//   Lob  Node/Lob/   L2 逐笔 → LOB 还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
-//   Bar  Node/Bar/   分钟 K (bar1m, 非 LOB 还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
-//   两档 TS / CS 列名全局唯一 (FeatureMeta.cpp 断言; 因子层按名拼接), META / LB 是各档基建列, 同名同语义.
+//   Lob  Node/Lob/   L2 逐笔 → 订单簿还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
+//   Bar  Node/Bar/   分钟 K (bar1m, 非订单簿还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
+//   两档 TS / CS 列名全局唯一 (FeatureMeta.cpp 断言; 因子层按名拼接), META 元列 / LB 标签列各档同名同语义.
 //   档间只许截面旁读 (TIER_SIDES): 时序是资产内纯函数, 不跨档; 同一列只在一档算 (Lob 要基本面就旁读 Bar, 不重算).
 //
 // 档注册: X(Tier, ns) —— Tier = CMake 生成宏前缀 / TierId 枚举名, ns = C++ 命名空间

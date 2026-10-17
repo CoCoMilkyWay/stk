@@ -54,7 +54,7 @@ void erase_stats(ojson &j) {
   j.erase("stats");
 }
 
-// 一个金额档的换手成本 ↔ JSON {amt, cover, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
+// 一个金额段的换手成本 ↔ JSON {amt, cover, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
 ojson cost_json(const CostTier &c, int n_hold) {
   ojson o;
   o["amt"] = c.amt;
@@ -83,7 +83,7 @@ bool load_cost(const json &o, int n_hold, CostTier &dst) {
   return true;
 }
 
-// 看板迷你 PDF ↔ JSON {lo, hi, y: [kMiniPdfPts]} (y 已归一到 [0, 1], 3 位小数够画)
+// 因子表迷你 PDF ↔ JSON {lo, hi, y: [kMiniPdfPts]} (y 已归一到 [0, 1], 3 位小数够画)
 ojson mini_pdf_json(const MiniPdf &p) {
   ojson o;
   o["lo"] = sig4(p.lo);
@@ -161,7 +161,7 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
   for (int k = 0; k < t.n_hold; ++k)
     if (!load_hold((*hit)[static_cast<size_t>(k)], t.hold[k]))
       return;
-  const auto cit = j.find("costs"); // [amt] 每档 cover + [n_hold] CostAcc (cost_json 的逆)
+  const auto cit = j.find("costs"); // [amt] 每金额段 cover + [n_hold] CostAcc (cost_json 的逆)
   if (cit == j.end() || !cit->is_array())
     return;
   t.costs.resize(cit->size());
@@ -230,7 +230,7 @@ ojson stat_json(const FactorRow &r) {
   return j;
 }
 
-// 一个 stat: 标量 (time / valid_pct / …) 首行, 其余结构值各一行 (holds 一行), costs 每金额档一行
+// 一个 stat: 标量 (time / valid_pct / …) 首行, 其余结构值各一行 (holds 一行), costs 每金额段一行
 std::string stat_block(const ojson &st) {
   if (!st.is_object())
     return st.dump();
@@ -436,7 +436,7 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
     for (const Cost &c : costs)
       if (c.amt == a)
         cc.col[c.is_buy ? factor::stat::kLong : factor::stat::kShort] = c.col;
-    assert(cc.col[factor::stat::kLong] != UINT32_MAX && cc.col[factor::stat::kShort] != UINT32_MAX && "冲击成本列不齐: 某金额档缺 buy 或 sell");
+    assert(cc.col[factor::stat::kLong] != UINT32_MAX && cc.col[factor::stat::kShort] != UINT32_MAX && "冲击成本列不齐: 某金额段缺 buy 或 sell");
     t.costs.push_back(cc);
   }
   return t;
@@ -847,7 +847,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
       finish_all_pending("特征库判废 (库轴/字段表与当前不符), 需重算特征");
     return false;
   }
-  const double n_full = n_full_of(L); // 满档 cap (池宽), 全部因子共用
+  const double n_full = n_full_of(L); // 满仓 cap (池宽), 全部因子共用
 
   // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
@@ -889,7 +889,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   std::vector<uint8_t> lc(n);                                              // 该根的腿码 (后端出), 评估与成本共用
   std::vector<CostTier> costs;                                             // [amt] 该根的换手成本 (cost_tiers, 两后端同一份宿主代码, 腿码由后端给)
   std::vector<factor::stat::Row> lrows(static_cast<size_t>(L.hd.n) * L.T); // 该根的一级 Row[H][T] (后端落地), 只给 ic_pdf
-  MiniPdf ic_pdf[factor::stat::kMaxHold], x_pdf;                           // 该根的看板小图 (ic_mini_pdfs / x_dist, 与 Inspect 同一组样本)
+  MiniPdf ic_pdf[factor::stat::kMaxHold], x_pdf;                           // 该根的因子表小图 (ic_mini_pdfs / x_dist, 与 Inspect 同一组样本)
   XDist xd;
 
   // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct, rank_pct) 填 hold[] + costs + 小图 → 发布该根的全部因子 (dup 共根)
@@ -944,12 +944,12 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
     LabelsHost lab;
     prep_labels(ex, L, w, lab);
     std::vector<uint16_t> rx(n); // r16(x), 评估与腿码共用
-    factor::cpu::Pool pool;
-    pool.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
+    factor::cpu::HostPool hp;
+    hp.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
     std::vector<factor::cpu::ParScratch> sc(static_cast<size_t>(ex.threads()));
     const auto plane_of = [&](int i) -> const factor::check::Plane * {
       const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-      return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
+      return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &hp.slots[static_cast<size_t>(nd.slot)];
     };
     return walk(
         "cpu",
@@ -959,7 +959,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
           for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
             in[a] = plane_of(nd.in[a]);
           const Clock::time_point t0 = Clock::now();
-          factor::cpu::run_node(ex, nd, in, pool.slots[static_cast<size_t>(nd.slot)], L.T, L.A, sc, L.cs.m.data());
+          factor::cpu::run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], L.T, L.A, sc, L.cs.m.data());
           return ms_since(t0);
         },
         [&](int i, factor::stat::Frame fr, float &valid_pct, float &rank_pct) {
@@ -987,15 +987,15 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   factor::gpu::StatSession *ss = factor::gpu::stat_open(L.T, L.A, labels_raw(L), nullptr);
   factor::cpu::stat::Workspace w; // 只给 cost_tiers (宿主成本代码与 CPU 后端同一份)
   w.ensure(L.A, L.hd.n, static_cast<int>(feats_.costs.size()), ex.threads());
-  factor::gpu::DevPool pool;
-  pool.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
+  factor::gpu::DevPool dp;
+  dp.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
   std::vector<uint8_t> mask(n);
   std::vector<uint16_t> rx(n); // r16(x) 拷回 (rank% / x_dist)
   std::vector<float> xv(n);    // 根输入值拷回 (x_dist; 叶直接用宿主平面)
   std::vector<uint8_t> xm(n);
   const auto dplane_of = [&](int i) -> const factor::gpu::DevPlane * {
     const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-    return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : pool.slots[static_cast<size_t>(nd.slot)];
+    return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : dp.slots[static_cast<size_t>(nd.slot)];
   };
   const bool ok = walk(
       "gpu",
@@ -1005,7 +1005,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
         const factor::gpu::DevPlane *in[3] = {};
         for (int a = 0; a < o.arity; ++a)
           in[a] = dplane_of(nd.in[a]);
-        factor::gpu::DevPlane *out = pool.slots[static_cast<size_t>(nd.slot)];
+        factor::gpu::DevPlane *out = dp.slots[static_cast<size_t>(nd.slot)];
         double ms = 0.0; // 纯 kernel (与 Operators 页 GPU 列同口径)
         if (o.a == factor::A::SELF)
           factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], out, L.T, L.A, nd.p, &ms);
@@ -1026,13 +1026,13 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
           const factor::check::Plane &xp = L.planes[static_cast<size_t>(xn.feat)];
           x_dist(ex, xp.v.data(), xp.m.data(), rx.data(), L.T, L.A, xd);
         } else {
-          factor::gpu::download(sess, pool.slots[static_cast<size_t>(xn.slot)], xv.data(), xm.data());
+          factor::gpu::download(sess, dp.slots[static_cast<size_t>(xn.slot)], xv.data(), xm.data());
           x_dist(ex, xv.data(), xm.data(), rx.data(), L.T, L.A, xd);
         }
         x_pdf = mini_pdf_of(xd.pdf);
         cost_tiers(ex, lc.data(), L, feats_, w, costs);
       });
-  pool.release();
+  dp.release();
   factor::gpu::stat_close(ss);
   factor::gpu::session_close(sess); // 上传的输入平面随会话释放
   return ok;

@@ -47,7 +47,7 @@ public:
   // CONSTRUCTOR & CONFIGURATION
   //======================================================================================
 
-  // LOB 是可换绑的工作区: 簿状态 (档位数组/订单池/桶表/位图/TOB) 全部日内瞬态
+  // 订单簿是可换绑的工作区: 簿状态 (价位数组/订单池/桶表/位图/TOB) 全部日内瞬态
   // (每天 unbind() 归零), 不含任何跨日状态 —— 跨日状态 (DAG 暖历史 + Fund 状态机 +
   // 分钟缓冲 + TickData) 全在 per-asset 的 CoreLob 里, 经 bind() 换绑.
   //   回测: 每 worker 一个工作区, 资产串行复用 (页面/cache/TLB 常驻, 稳态零扩容);
@@ -178,27 +178,27 @@ public:
   // PUBLIC API: Utilities
   //======================================================================================
 
-  // 设置当日档位索引基准 (分), 随帧而来 (见 begin_frame). 必须在 bind() 之后、喂第一条
-  // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的档位下标会指向别的价格.
+  // 设置当日价位索引基准 (分), 随帧而来 (见 begin_frame). 必须在 bind() 之后、喂第一条
+  // 订单之前调用 —— 一天之内不可改变, 否则簿里已有的价位下标会指向别的价格.
   HOT_NOINLINE void set_price_base(uint32_t price_base) {
     price_base_ = price_base;
     LOB_feature_ref().price_base = price_base;
   }
 
-  // 当日事件数 (解码后已知). bind() 之后、第一条订单之前调用: 委托表按 2× 事件数定长, 小票的表
+  // 当日事件数 (解码后已知). bind() 之后、第一条订单之前调用: 委托表按 2× 事件数定长, 冷门资产的表
   // 小到进 L2, 换日只清这一段. 不调用 (实盘, 事件数未知) 则用整张预留表.
   HOT_NOINLINE void reserve_orders(size_t events) {
     order_table_.reserve(events);
   }
 
-  // 一帧 (解码产物) 的前置: 档位基准 + 委托表定长. 帧里的逐笔随后经 process 逐条
+  // 一帧 (解码产物) 的前置: 价位基准 + 委托表定长. 帧里的逐笔随后经 process 逐条
   // 喂入 (重放); 回测走 run_frame 整帧. FrameDecoder::decode 的对端.
   void begin_frame(const L2::FrameView &view) {
     set_price_base(view.head.price_base);
     reserve_orders(view.head.count);
   }
 
-  // 解绑: 簿归零 (档位/委托表/TOB/节流游标 + 写出口的 LOB_Feature), 写出口退回 detached_.
+  // 解绑: 簿归零 (价位/委托表/TOB/节流游标 + 写出口的 LOB_Feature), 写出口退回 detached_.
   // bind 的对端 —— 归还干净工作区, 下一个资产才能 bind.
   HOT_NOINLINE void unbind() {
     assert(bound() && "unbind: LOB not bound");
@@ -245,8 +245,8 @@ public:
     init_sentinel_levels();
   }
 
-  // 全簿真实档位枚举 (GUI OrderFlow 重放用): 按价升序回调 f(price, net_qty).
-  // price 为绝对价 (元); 只给真实档 (见 is_real_level). net_qty 为股数, SIGNED: 买压 > 0, 卖压 < 0.
+  // 全簿真实价位枚举 (GUI OrderFlow 重放用): 按价升序回调 f(price, net_qty).
+  // price 为绝对价 (元); 只给真实价位 (见 is_real_level). net_qty 为股数, SIGNED: 买压 > 0, 卖压 < 0.
   template <typename F>
   void for_each_visible_level(F &&f) const {
     for (size_t p = visible_price_bitmap_.find_next(L2::LOB_DEPTH); p < kHighSentinelBegin;
@@ -284,12 +284,12 @@ private:
   //======================================================================================
 
   //------------------------------------------------------------------------------------
-  // Layer 1: Price Level Storage (价格档位基础层)
+  // Layer 1: Price Level Storage (价格价位基础层)
   //------------------------------------------------------------------------------------
   std::deque<Level> level_storage_;                      // All price levels (deque guarantees stable pointers)
   std::array<Level *, PRICE_RANGE_SIZE> price_levels_{}; // Direct array: Price -> Level* mapping for O(1) lookup (512 KB), initialized to all nullptr
 
-  // 当日档位索引基准 (分). 数组按 (绝对价 - 基准) 寻址, 见 price_to_index().
+  // 当日价位索引基准 (分). 数组按 (绝对价 - 基准) 寻址, 见 price_to_index().
   uint32_t price_base_ = 0;
 
   //------------------------------------------------------------------------------------
@@ -323,7 +323,7 @@ private:
   mutable bool tob_valid_ = false;     // Tick-by-tick TOB validity: false=invalid, true=valid
   mutable size_t tob_invalid_cnt_ = 0; // Tick-by-tick TOB invalid count
   mutable size_t tob_refresh_cnt_ = 0; // Tick-by-tick TOB invalid count
-  mutable size_t depth_seen_ = 0;      // 连续竞价段满 2N 档的盘口更新次数
+  mutable size_t depth_seen_ = 0;      // 连续竞价段满 2N 价位的盘口更新次数
   mutable size_t depth_crossed_ = 0;   // 其中买一 ≥ 卖一 被判交叉丢弃的次数
   mutable Price best_bid_ = 0;         // Tick-by-tick best bid (highest buy price with visible quantity)
   mutable Price best_ask_ = 0;         // Tick-by-tick best ask (lowest sell price with visible quantity)
@@ -398,16 +398,16 @@ private:
   CoreLob *core_ = nullptr;
 
   //======================================================================================
-  // LEVEL MANAGEMENT (价格档位基础操作)
+  // LEVEL MANAGEMENT (价格价位基础操作)
   //======================================================================================
 
-  // 绝对价 (分) → 档位数组下标.
+  // 绝对价 (分) → 价位数组下标.
   //
-  // 下标 0 是留给市价单/无价格档的特殊档位, 所以 price==0 原样透传, 不减基准;
+  // 下标 0 是留给市价单/无价格单的特殊价位, 所以 price==0 原样透传, 不减基准;
   // price_base_ 为 0 时折算退化成恒等.
   //
   // 上下夹紧只是越界护栏: 落盘时 park_price 已把价格折进窗口, 正常情况下这两个
-  // 分支走不到. 留着是因为一旦走到就是档位数组越界.
+  // 分支走不到. 留着是因为一旦走到就是价位数组越界.
   HOT_INLINE Price price_to_index(uint32_t price) const {
     if (price == 0) [[unlikely]]
       return 0;
@@ -667,7 +667,7 @@ private:
   }
 
   // Core: Upsert order (update existing or insert new)
-  // This is the heart of the LOB reconstruction engine
+  // This is the heart of the 订单簿 reconstruction engine
   //
   // Parameters:
   //   order_id        - Unique order identifier
@@ -711,7 +711,7 @@ private:
         // Record visibility state BEFORE removal
         const bool was_visible = level->has_visible_quantity();
 
-        // 出档 + 就地墓碑, 无需再探针
+        // 离开价位 + 就地墓碑, 无需再探针
         level->detach(old_qty);
         order_table_.erase(order);
 
@@ -796,7 +796,7 @@ private:
     }
   }
 
-  // Move: Relocate order from one price level to another (委托本体不动, 只改归属与两档聚合量)
+  // Move: Relocate order from one price level to another (委托本体不动, 只改归属与两个价位的聚合量)
   HOT_NOINLINE void order_move_to_price(
       Order *order,
       Price new_price) {
@@ -882,7 +882,7 @@ private:
 
   // Core order processing implementation (shared by single/batch interfaces)
   HOT_INLINE bool process_impl(const L2::Order &order_abs) {
-    // 帧里存的是绝对价 (分), 而档位数组只开了 kPriceIndexRange 档并按下标直接
+    // 帧里存的是绝对价 (分), 而价位数组只开了 kPriceIndexRange 个价位并按下标直接
     // 寻址. 在入口一次性折算, 函数体内此后所有价格比较与寻址都留在下标空间; 只有
     // 对外暴露的 LOB_feature_ref().price 用回绝对价.
     L2::Order order = order_abs;
@@ -1003,7 +1003,7 @@ private:
 
     for (size_t s = 0; s < 2; ++s) {
       if (const Order *o = loc_[s]) {
-        assert(o->level != nullptr && "在簿委托必有档位");
+        assert(o->level != nullptr && "在簿委托必有价位");
         const Quantity q = o->qty;
         lf.ord_role[s] = OrderRole::Resting;
         lf.ord_orig[s] = o->orig_qty;
@@ -1058,7 +1058,7 @@ private:
     return update_lob_deferred(order, loc, found, in_call_auction_, in_matching_period_);
   }
 
-  // Main LOB update logic (dispatches to MAKER/TAKER/CANCEL)
+  // Main 订单簿 update logic (dispatches to MAKER/TAKER/CANCEL)
   HOT_NOINLINE bool update_lob(const L2::Order &order) {
 #if DEBUG_ANOMALY_PRINT
     debug_.last_order = &order;
@@ -1252,7 +1252,7 @@ private:
   };
 
   //======================================================================================
-  // DEPTH BUFFER MANAGEMENT (N档深度缓冲区管理 - 订单+时间双驱动)
+  // DEPTH BUFFER MANAGEMENT (N 价位深度缓冲区管理 - 订单+时间双驱动)
   //======================================================================================
 
   // Binary search price in entire depth_buffer (descending order)
@@ -1354,9 +1354,9 @@ private:
 
   // ==== 集合竞价 depth 更新 (9:15-9:30 / 14:57-15:00) ====
   // 交叉簿 (bid1 可 ≥ ask1) 下 TOB 扫描与增量维护的单调性不变量全部失效: 每个节流点
-  // 整簿重建 —— 一次升序位图走扫分侧收集 (交叉区买卖档混排, 按 net_quantity 符号过滤),
-  // 随手完成预撮合 (最大成交量价位, 平局取失衡最小); 真实档不足 N 由两端哨兵垫满
-  // (与连续路径口径一致). O(可见档数), 每秒至多一次, 成本可忽略.
+  // 整簿重建 —— 一次升序位图走扫分侧收集 (交叉区买卖价位混排, 按 net_quantity 符号过滤),
+  // 随手完成预撮合 (最大成交量价位, 平局取失衡最小); 真实价位不足 N 由两端哨兵垫满
+  // (与连续路径口径一致). O(可见价位数), 每秒至多一次, 成本可忽略.
   HOT_NOINLINE bool update_depth_auction() {
     LOB_Feature &lf = LOB_feature_ref();
 
@@ -1381,7 +1381,7 @@ private:
     best_bid_ = auction_bids_.back()->price; // 交叉簿下可 ≥ best_ask_
     best_ask_ = auction_asks_.front()->price;
 
-    // ---- 重建 depth_buffer: 两侧各取近端 N 档, 不足由哨兵垫满 ----
+    // ---- 重建 depth_buffer: 两侧各取近端 N 个价位, 不足由哨兵垫满 ----
     auto &buf = lf.depth_buffer;
     buf.clear();
     {
@@ -1402,10 +1402,10 @@ private:
     depth_from_auction_ = true;
 
     // ---- 预撮合: 簿交叉时求最大成交量价位 ----
-    // 候选价 p ∈ 交叉区档价并集 (升序双指针); A(p) = Σ 卖量 (价 ≤ p) 单调升,
+    // 候选价 p ∈ 交叉区价位并集 (升序双指针); A(p) = Σ 卖量 (价 ≤ p) 单调升,
     // B(p) = Σ 买量 (价 ≥ p) 单调降 → matched = min(A,B) 单峰; 平局取 |B-A| 最小.
     if (best_bid_ > best_ask_) {
-      // 参与档: 买价 ≥ 卖1, 卖价 ≤ 买1
+      // 参与价位: 买价 ≥ 卖1, 卖价 ≤ 买1
       size_t bid_lo = 0;
       while (bid_lo < auction_bids_.size() && auction_bids_[bid_lo]->price < best_ask_)
         ++bid_lo;
@@ -1425,7 +1425,7 @@ private:
         const uint32_t pa = ai < ask_hi ? auction_asks_[ai]->price : UINT32_MAX;
         const uint32_t pb = bi < auction_bids_.size() ? auction_bids_[bi]->price : UINT32_MAX;
         const uint32_t p = std::min(pa, pb);
-        // A(p): 卖 ≤ p 全部计入 (含 p 档, 头为卖时在此消费)
+        // A(p): 卖 ≤ p 全部计入 (含 p 价位, 头为卖时在此消费)
         while (ai < ask_hi && auction_asks_[ai]->price <= p)
           A += -static_cast<int64_t>(auction_asks_[ai++]->net_quantity);
 
@@ -1437,7 +1437,7 @@ private:
           best_p = p;
         }
 
-        // B(下个候选): 评估后消费 p 档买头 (bid == p 计入本轮 B, 不计入更高价);
+        // B(下个候选): 评估后消费 p 价位买头 (bid == p 计入本轮 B, 不计入更高价);
         // 每轮至少消费一个头 (卖 ≤ p 或买 == p) —— 推进保证, 不然 p 不增长死循环
         while (bi < auction_bids_.size() && auction_bids_[bi]->price == p)
           B -= auction_bids_[bi++]->net_quantity;
@@ -1530,7 +1530,7 @@ private:
     // 交叉簿: 买一 ≥ 卖一. 报单乱序到达 / TOB 失效导致的瞬时错位, 此刻的簿不是真盘口.
     // 判定放在这里而不是下游节点里 —— 不算一次盘口更新, onDepth 整个域都不跑, 于是
     // "每个 onDepth tick, Depth 环必推一格" 对下游 (LabelLob 的 offset 回溯) 恒成立.
-    // 连续竞价段簿已单调, 两侧一档必是实档 (不足 2N 已在上面返回), 无需再筛哨兵.
+    // 连续竞价段簿已单调, 两侧最优价位必是真实价位 (不足 2N 已在上面返回), 无需再筛哨兵.
     ++depth_seen_;
     const Price bid1 = LOB_feature_ref().depth_buffer[L2::LOB_DEPTH]->price;
     const Price ask1 = LOB_feature_ref().depth_buffer[L2::LOB_DEPTH - 1]->price;
@@ -1679,7 +1679,7 @@ private:
     if (!should_log())
       return;
 
-    // Collect all reverse-sign orders (unmatched orders) — 档位不持队列, 扫全表筛归属 (调试路径)
+    // Collect all reverse-sign orders (unmatched orders) — 价位不持队列, 扫全表筛归属 (调试路径)
     std::vector<Order *> anomaly_orders;
     anomaly_orders.reserve(level->order_count); // Pre-allocate
 

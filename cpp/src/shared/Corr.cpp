@@ -523,18 +523,18 @@ struct Engine {
 } // namespace
 
 // ============================================================================
-// Correlation (矩阵: Strided × 同期)
+// Corr (矩阵: Strided × 同期)
 // ============================================================================
 
-struct Correlation::Runtime {
+struct Corr::Runtime {
   Engine eng;
   Snap pub; // 发布 staging (与快照 swap, 稳态零分配)
 };
 
-Correlation::Correlation() = default;
-Correlation::~Correlation() = default;
+Corr::Corr() = default;
+Corr::~Corr() = default;
 
-void Correlation::reset(ReadScope scope, Spec sp) {
+void Corr::reset(ReadScope scope, Spec sp) {
   TraceN("CorrReset");
   const size_t F = sp.n();
   assert(F >= 2 && sp.level < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
@@ -551,7 +551,7 @@ void Correlation::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool Correlation::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+bool Corr::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("CorrBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -575,7 +575,7 @@ bool Correlation::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   });
 }
 
-void Correlation::clear() {
+void Corr::clear() {
   std::lock_guard<std::mutex> lock(mutex);
   snap = Snap{};
   spec = Spec{};

@@ -16,7 +16,7 @@
 #include <vector>
 
 // ============================================================================
-// CoreCrosssection<T>: 截面计算 (CS worker), 档 T 有 L0 → L0 每秒 + L1 分钟边界级联; 无 L0 (Bar) → L1 每分钟
+// CoreCs<T>: 截面计算 (CS worker), 档 T 有 L0 → L0 每秒 + L1 分钟边界级联; 无 L0 (Bar) → L1 每分钟
 //   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L1) / end_day, 逐层 run<0> / run<1>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
@@ -28,9 +28,9 @@
 //   旁读列是上游档落盘的张量行, 与本档张量行同属"CS 只看张量行"的输入契约.
 //
 //   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + cs_valid) 看世界,
-//   看不到 tick / LOB / 事件到达顺序. TS 行是资产局部纯函数 (见 CoreLob.hpp),
+//   看不到 tick / 订单簿 / 事件到达顺序. TS 行是资产局部纯函数 (见 CoreLob.hpp),
 //   所以 CS 在 t 的输入对重放调度不变 —— 一致性由这个输入契约保证, 与"CS 是流式
-//   伴随还是整日后扫"无关. 回测按日门控 (cs_try_open 等全部 TS 写完, 见 FeatureStore.hpp),
+//   伴随还是整日后扫"无关. 回测按日流控 (cs_try_open 等全部 TS 写完, 见 FeatureStore.hpp),
 //   实盘由 feed 层按墙钟逐秒驱动 —— 两种调度下每行的输入相同, 输出逐值相同.
 //
 //   无回环: 特征层是单向 DAG (逐笔 → TS → 张量 → CS 列 = 终端输出, TS 不回读 CS).
@@ -146,7 +146,7 @@ struct CsSide<T, S> {
 };
 
 template <class T>
-class CoreCrosssection {
+class CoreCs {
 public:
   using Day = StoreDay<T>;
   using Side = CsSide<T>;
@@ -154,7 +154,7 @@ public:
   static constexpr size_t kBeatLevel = T::kFirstLevel;
 
   // axis = 本档库轴 (sub → global); side = 旁读档的库 (无旁读列时不读)
-  CoreCrosssection(FeatureStore<T> &store, const LibAxis &axis, const FeatureLib &side)
+  CoreCs(FeatureStore<T> &store, const LibAxis &axis, const FeatureLib &side)
       : A_(store.query_A()), side_lib_(side), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
     if constexpr (Side::N > 0) {
@@ -170,7 +170,7 @@ public:
     }
   }
 
-  // day = 本日读写句柄 (store.cs_try_open, 已按日门控: 各层张量整体就绪); end_day 交还
+  // day = 本日读写句柄 (store.cs_try_open, 已按日流控: 各层张量整体就绪); end_day 交还
   void begin_day(const Day &day, misc::Ymd date) {
     assert(day && !day_ && "begin_day / end_day 须成对");
     day_ = day;
@@ -183,7 +183,7 @@ public:
   }
 
   // 每节拍一调 (事件驱动; t = 节拍层 kBeatLevel 的行): 实盘由 feed 层按墙钟逐秒 (无 L0 的档逐分钟) 调用,
-  // 回测按日门控后逐拍重放同一个调用.
+  // 回测按日流控后逐拍重放同一个调用.
   // 不要改成"整日一次批量扫" —— 那样回测和实盘就成了两条代码路径, 逐值一致无从保证.
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
@@ -195,7 +195,7 @@ public:
         run<0>(t);
       }
       // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行).
-      // 读 L1 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日门控保证; 实盘须先对全部资产 CoreTs::advance(m + 1)
+      // 读 L1 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日流控保证; 实盘须先对全部资产 CoreTs::advance(m + 1)
       if (t % 60 == 59) {
         TraceN("CS_Minute");
         run<1>(L0_to_L1(t));

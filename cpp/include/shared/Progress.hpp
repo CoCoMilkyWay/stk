@@ -116,7 +116,7 @@ struct PingPong : Progress {
   }
 };
 
-// Mailbox — 单件交接 (单写 worker / 单读 GUI): worker 一轮收尾 post 一件, 未取走的旧件被覆盖 (最新覆盖旧的, 与 Worker 请求同义);
+// Mailbox — 单件交接 (单写 worker / 单读 GUI): worker 一轮收尾 post 一件, 未取走的旧件被覆盖 (最新覆盖旧的, 与 Service 请求同义);
 // GUI 帧首 take 拿走所有权, 在 GUI 线程换进共享状态 (AssetInfo / 扫描产物只许在 GUI 线程替换). 锁每轮各碰一次, 不在热路径
 template <class T>
 class Mailbox {

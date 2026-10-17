@@ -18,7 +18,7 @@ static constexpr uint64_t kHashMultiplier = 0x9E3779B97F4A7C15ull;
 void Validator::reset(size_t expected_makers) {
   // 负载因子上限 2/3 —— 线性探测在这个水位平均探测长度还在 2 附近, 再往下压
   // 只会让表白白翻倍: 表按当日实际委托数开, 但容量只增不减 (与 encoder 的
-  // 中间缓冲同策略), 每个 worker 迟早会撞上一个二十万笔的活跃标的.
+  // 中间缓冲同策略), 每个 worker 迟早会撞上一个二十万笔的活跃资产.
   size_t capacity = 1024;
   while (capacity * 2 < expected_makers * 3)
     capacity <<= 1;
@@ -118,7 +118,7 @@ void Validator::run(const std::vector<CSVOrder> &orders,
   //
   // 委托表里夹着撤单时 (委托类型 D), 必须等挂单全部入表后再处理 —— 撤单在
   // 时间上总是晚于它的挂单, 但判定不该依赖文件内的行序.
-  // 档位窗口要覆盖所有会落盘的价格, 所以委托和成交两张表都统计, 且在任何
+  // 价位窗口要覆盖所有会落盘的价格, 所以委托和成交两张表都统计, 且在任何
   // continue 之前 —— 被判为 lob_unusable 的记录照样会写进帧.
   uint32_t price_min = UINT32_MAX;
   uint32_t price_max = 0;
@@ -246,13 +246,13 @@ void Validator::run(const std::vector<CSVOrder> &orders,
       ++out.over_consumed;
   }
 
-  // ---- LOB 档位窗口 ----
+  // ---- 订单簿价位窗口 ----
   //
   // 窗口锚在成交带中心而不是委托价的下界: 委托流里混有离盘口极远、不可能成交
   // 的报价, 拿它们定基准会把真正的盘口挤出窗口. 成交带受涨跌停约束, 才是这只
-  // 标的当天有意义的价格区间; 把它摆在窗口正中, 两侧各留半个窗口.
+  // 资产当天有意义的价格区间; 把它摆在窗口正中, 两侧各留半个窗口.
   //
-  // 中心落在半窗以内时 base 取 0, 档位下标就等于绝对价, 低价标的因此不受平移
+  // 中心落在半窗以内时 base 取 0, 价位下标就等于绝对价, 低价资产因此不受平移
   // 影响.
   if (price_max != 0) {
     out.price_min = price_min;
@@ -330,7 +330,7 @@ static constexpr CheckMeta kCheckMeta[kCheckBitCount] = {
     {"sci", "price_scientific", "价格字段用了科学计数法 (如 1.7226e+006)\nparse_numeric_field 不认 'e', 高价股价格会被解析成 0\n源数据格式异常, 不该入库"},
     {"ovf", "field_overflow", "源数据字段超出 Order 位宽, 落盘会被静默截断"},
     {"lob", "lob_unusable", "LimitOrderBook 处理不了的记录\n数量为 0, 或定位 id 为 0"},
-    {"band", "trade_band_unfit", "当日成交带装不进 LOB 档位窗口\n只可能在无涨跌幅限制的新股上命中"},
+    {"band", "trade_band_unfit", "当日成交带装不进订单簿价位窗口\n只可能在无涨跌幅限制的新股上命中"},
     {"turn", "turnover_mismatch", "Σ(成交价×成交量) 与快照当日成交额之差超出取整残差\n已放行 int32 封顶/卡死与 uint32 回绕"},
     {"price", "price_mismatch", "最高/最低价与快照不符"},
 };

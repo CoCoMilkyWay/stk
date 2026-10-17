@@ -56,7 +56,7 @@ size_t last_level(TierId tier) {
 }
 
 // ============================================================================
-// 两档 TS / CS 列名唯一 (META / LB 是各档基建列, 同名同语义, 豁免)
+// 两档 TS / CS 列名唯一 (META 元列 / LB 标签列各档同名同语义, 豁免)
 // ============================================================================
 // 两档全部列按名 hash 排序后查同 hash 段 (两两比较 O(Fa·Fb·len) 会撞 constexpr 步数上限)
 namespace {
@@ -166,7 +166,7 @@ const TierMeta &tier_meta(TierId tier) {
 #undef GENERATE_TIER_META
 
 // ============================================================================
-// 票池 (FeatureLib.hpp 声明): Bar L1 的 Pool 类 CS 列 pool_<name> ↔ Lob 档库 <name>
+// 票池 (FeatureLib.hpp 声明): Bar L1 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档库 <pool>
 // ============================================================================
 namespace {
 constexpr std::string_view kPoolPrefix = "pool_";
@@ -192,7 +192,7 @@ const PoolDef &pool_def(std::string_view name) {
   for (const PoolDef &p : kPools)
     if (name == p.name)
       return p;
-  assert(false && "不是票池名 (all 库 pool_<name> 列)");
+  assert(false && "不是票池名 (Bar 库 pool_<pool> 列)");
   return kPools.front();
 }
 

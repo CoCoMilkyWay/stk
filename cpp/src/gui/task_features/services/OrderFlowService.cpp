@@ -76,13 +76,13 @@ bool await_back(const PingPong<Slot> &pp, const std::atomic<bool> &cancel) {
 // 三个 worker (gui/util/Service.hpp): board = SharedData 里各自的发布面
 // ============================================================================
 
-class OrderFlowService::KlineWorker : public Worker<KlineWorker, KlineReq> {
-  friend Worker<KlineWorker, KlineReq>;
+class OrderFlowService::KlineLane : public Service<KlineLane, KlineReq> {
+  friend Service<KlineLane, KlineReq>;
 
 public:
-  static constexpr const char *kName = "OF_KlineWorker";
-  KlineWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
-  ~KlineWorker() { Stop(); }
+  static constexpr const char *kName = "OF_KlineLane";
+  KlineLane(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
+  ~KlineLane() { Stop(); }
 
 private:
   struct Res {
@@ -104,13 +104,13 @@ private:
   std::vector<float> feat_min_, feat_max_;
 };
 
-class OrderFlowService::DepthWorker : public Worker<DepthWorker, DepthReq> {
-  friend Worker<DepthWorker, DepthReq>;
+class OrderFlowService::DepthLane : public Service<DepthLane, DepthReq> {
+  friend Service<DepthLane, DepthReq>;
 
 public:
-  static constexpr const char *kName = "OF_DepthWorker";
-  DepthWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
-  ~DepthWorker() { Stop(); }
+  static constexpr const char *kName = "OF_DepthLane";
+  DepthLane(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
+  ~DepthLane() { Stop(); }
 
 private:
   struct Res {
@@ -136,13 +136,13 @@ private:
   std::optional<Res> res_;
 };
 
-class OrderFlowService::PickWorker : public Worker<PickWorker, PickReq> {
-  friend Worker<PickWorker, PickReq>;
+class OrderFlowService::PickLane : public Service<PickLane, PickReq> {
+  friend Service<PickLane, PickReq>;
 
 public:
-  static constexpr const char *kName = "OF_PickWorker";
-  PickWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
-  ~PickWorker() { Stop(); }
+  static constexpr const char *kName = "OF_PickLane";
+  PickLane(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
+  ~PickLane() { Stop(); }
 
 private:
   struct Res {
@@ -175,9 +175,9 @@ OrderFlowService::~OrderFlowService() {
 void OrderFlowService::Start(SharedData &data) {
   if (kline_)
     return;
-  kline_ = std::make_unique<KlineWorker>(data, pool_);
-  depth_ = std::make_unique<DepthWorker>(data, pool_);
-  pick_ = std::make_unique<PickWorker>(data, pool_);
+  kline_ = std::make_unique<KlineLane>(data, pool_);
+  depth_ = std::make_unique<DepthLane>(data, pool_);
+  pick_ = std::make_unique<PickLane>(data, pool_);
 }
 
 void OrderFlowService::Stop() { // worker 析构即 Stop (join)
@@ -225,7 +225,7 @@ void scan_dates(const FeatureLib &lib, std::vector<misc::Ymd> &out) {
 // Kline: 换代 + 逐日流式
 // ============================================================================
 
-bool OrderFlowService::KlineWorker::run(KlineReq &req) {
+bool OrderFlowService::KlineLane::run(KlineReq &req) {
   TraceN("OF_KlineBegin");
   if (!ensure_res(res_, data_.config, pool_))
     return false;
@@ -268,7 +268,7 @@ bool OrderFlowService::KlineWorker::run(KlineReq &req) {
   return true;
 }
 
-bool OrderFlowService::KlineWorker::step(size_t d) {
+bool OrderFlowService::KlineLane::step(size_t d) {
   TraceN("OF_KlineDay");
   OrderFlow::Kline &k = data_.orderflow.kline;
   assert(d < k.dates.size());
@@ -339,7 +339,7 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
 //   取首个 ts_valid 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
 // ============================================================================
 
-bool OrderFlowService::PickWorker::run(PickReq &req) {
+bool OrderFlowService::PickLane::run(PickReq &req) {
   if (!ensure_res(res_, data_.config, pool_, Config::kAllTierDir))
     return false;
   PingPong<OrderFlow::Pick::Slot> &pp = data_.orderflow.pick.slots;
@@ -407,7 +407,7 @@ bool OrderFlowService::PickWorker::run(PickReq &req) {
 // Depth: 日文件逐笔重放 → 秒级快照 → plot/heatmap → 背槽发布
 // ============================================================================
 
-bool OrderFlowService::DepthWorker::run(DepthReq &req) {
+bool OrderFlowService::DepthLane::run(DepthReq &req) {
   if (!ensure_res(res_, data_.config, pool_))
     return false;
   PingPong<OrderFlow::Depth> &pp = data_.orderflow.depth;
@@ -455,7 +455,7 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
     constexpr float VOLUME_TO_LOT = 0.01f; // 股 → 手
     const LOB_Feature &lf = res.tick_data.lob;
 
-    // 秒末全簿快照 → 热力图 (只提交出过有效盘口快照的秒; 全档, 不限近端 30 档)
+    // 秒末全簿快照 → 热力图 (只提交出过有效盘口快照的秒; 全价位, 不限近端 30 个价位)
     auto commit_second = [&](size_t t) {
       if (sec_slot[t] < 0)
         return;
@@ -484,7 +484,7 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
         if (!lf.depth_updated)
           continue;
 
-        // 盘口顶无真实档 (纯哨兵): 本秒不出快照
+        // 盘口顶无真实价位 (纯哨兵): 本秒不出快照
         if (!LOB_Feature::is_real(lf.depth_buffer[N]) || !LOB_Feature::is_real(lf.depth_buffer[N - 1]))
           continue;
 
@@ -497,13 +497,13 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
           slot.ticks.back().tick_idx = t;
         }
         OrderFlow::Depth::Tick &tk = slot.ticks[static_cast<size_t>(si)];
-        // 竞价预撮合 (LOB 竞价分支产出; ref > 0 = 竞价且簿交叉, 其余恒 0)
+        // 竞价预撮合 (订单簿竞价分支产出; ref > 0 = 竞价且簿交叉, 其余恒 0)
         tk.ref_price = lf.auction_ref_price;
         tk.matched_amount = lf.auction_ref_price * static_cast<float>(lf.auction_matched_qty);
         tk.imbalance_amount = lf.auction_ref_price * static_cast<float>(lf.auction_imbalance);
         for (size_t k = 0; k < N; ++k) {
-          const Level *bl = lf.depth_buffer[N + k];     // 买 k+1 档
-          const Level *al = lf.depth_buffer[N - 1 - k]; // 卖 k+1 档
+          const Level *bl = lf.depth_buffer[N + k];     // 买 k+1 价位
+          const Level *al = lf.depth_buffer[N - 1 - k]; // 卖 k+1 价位
           const bool br = LOB_Feature::is_real(bl), ar = LOB_Feature::is_real(al);
           tk.bid_price[k] = br ? lf.price_of(bl) : NAN_F;
           tk.bid_volume[k] = br ? static_cast<float>(bl->net_quantity) * VOLUME_TO_LOT : 0.0f; // > 0

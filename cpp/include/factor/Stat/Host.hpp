@@ -8,10 +8,10 @@
 //     rank_row    精确并列均秩: key(a) → LSD 基数排序 (位宽按 n 自适应: n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟;
 //                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone. 标签行 = rank_row(KeyY)
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里
-//     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算; 满档 cap 进持仓口径);
+//     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算; 满仓 cap 进持仓口径);
 //                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和, branchless select;
 //                 逐格扩展 Ext (调用方专属的附加统计, 同一遍同一个 J; NoExt 编译期消掉, Inspect 尾部分层用)
-//     cost_row    一行 t 的换手成本 + cover, H 个持有期 × C 个金额档一遍 A 轴 (契约腿码 lc 逐格) → CostAcc[C][H] + cover[1 + C].
+//     cost_row    一行 t 的换手成本 + cover, H 个持有期 × C 个金额段一遍 A 轴 (契约腿码 lc 逐格) → CostAcc[C][H] + cover[1 + C].
 //                 Run (stat.costs) / Inspect 期限结构净线共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
@@ -141,7 +141,7 @@ inline void lag_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_rac = ok ? 1u : 0u;
 }
 
-// 换手成本 + cover (契约【换手成本】): lc = 本行腿码; lag[i] = t−h_i 行腿码 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首; cap = 满档
+// 换手成本 + cover (契约【换手成本】): lc = 本行腿码; lag[i] = t−h_i 行腿码 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首; cap = 满仓
 //   → acc[k·H + i] (腿计数, 新进者累建仓冲击; 本行先攒进 row 再按 max(腿样本数, cap) 折进加权和); cov[0] += 有秩格数, cov[1 + k] += 其中成本 k 有效
 //   (与 h 无关, 每行一次)
 inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const Cost *c, int C, int A, double cap, CostAcc *acc, long long *cov) {
@@ -188,7 +188,7 @@ struct NoExt {
   void cell(unsigned, bool, const float *) {}
 };
 
-// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首, cap = 满档 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
+// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首, cap = 满仓 → r 的 ric / mkt / grp / cnt / ls / ok. 调用方已排除段末尾部
 template <class Ext>
 inline void label_row(const uint16_t *rx, const Label &lb, int A, double cap, Row &r, Ext &ext) {
   unsigned long long s[kSums] = {};

@@ -3,7 +3,7 @@
 // =============================================================================
 // 因子 DAG 的 CPU evaluator: 按 Dag 的槽计划跑 factor::cpu::{ts,cs} 算子 (整张量批算)
 // =============================================================================
-//   Pool          按 n_slots 预分配的宿主平面 (跨因子复用, 只 ensure 不清: 契约是后端写满每格)
+//   HostPool      按 n_slots 预分配的宿主平面 (跨因子复用, 只 ensure 不清: 契约是后端写满每格)
 //   run_node      一个算子节点, 并行由 Exec 定 (misc/exec.hpp): Serial = 整平面一次调算子 (搜索: 因子间并行由上层起线程);
 //                 ForkJoin = 节点内切满核 (Run / Inspect: 共享 DAG 顺序走节点). 与 Dag 计划解耦.
 //                 切法按算子的 (T 窗, A 域) 选, 结果与单线程**逐位一致** (不是近似):
@@ -59,7 +59,7 @@ inline RunFn run_fn(int op) {
   return tbl[op];
 }
 
-struct Pool {
+struct HostPool {
   std::vector<check::Plane> slots;
   // 幂等: 槽数 / 形状对得上零分配
   void prepare(int n_slots, size_t n) {
@@ -153,16 +153,16 @@ inline void run_node(Exec &ex, const DagNode &nd, const check::Plane *const in[3
 // inputs[k] = 特征 feats[k] 的平面 ([T][A] SoA). 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方)
 // cs_gate: 截面池掩码 [T][A] (文件头); DAG 含 CS 节点时必填. 进度 / 计时 / 取消要逐节点的调用方自己走 run_node
 template <class Exec>
-inline const check::Plane *eval(Exec &ex, const Dag &d, const std::vector<const check::Plane *> &inputs, Pool &pool, std::vector<ParScratch> &sc,
+inline const check::Plane *eval(Exec &ex, const Dag &d, const std::vector<const check::Plane *> &inputs, HostPool &hp, std::vector<ParScratch> &sc,
                                 int T, int A, const uint8_t *cs_gate) {
   assert(inputs.size() == d.feats.size());
   const size_t n = static_cast<size_t>(T) * A;
   for (const check::Plane *p : inputs)
     assert(p && p->v.size() == n && p->m.size() == n);
-  pool.prepare(d.n_slots, n);
+  hp.prepare(d.n_slots, n);
   auto plane_of = [&](int node) -> const check::Plane * {
     const DagNode &nd = d.nodes[static_cast<size_t>(node)];
-    return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : &pool.slots[static_cast<size_t>(nd.slot)];
+    return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : &hp.slots[static_cast<size_t>(nd.slot)];
   };
   for (size_t i = 0; i < d.nodes.size(); ++i) {
     const DagNode &nd = d.nodes[i];
@@ -171,7 +171,7 @@ inline const check::Plane *eval(Exec &ex, const Dag &d, const std::vector<const 
     const check::Plane *in[3] = {};
     for (int a = 0; a < expr::kOps[nd.op].arity; ++a)
       in[a] = plane_of(nd.in[a]);
-    run_node(ex, nd, in, pool.slots[static_cast<size_t>(nd.slot)], T, A, sc, cs_gate);
+    run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], T, A, sc, cs_gate);
   }
   return plane_of(d.root());
 }

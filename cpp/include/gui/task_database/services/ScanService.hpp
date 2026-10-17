@@ -117,8 +117,8 @@ struct ScanResult {
   DatabaseCheckResult check;
 };
 
-class ScanService : public Worker<ScanService, ScanRequest>, public Progress {
-  friend Worker<ScanService, ScanRequest>;
+class ScanService : public Service<ScanService, ScanRequest>, public Progress {
+  friend Service<ScanService, ScanRequest>;
 
 public:
   static constexpr const char *kName = "ScanWorker";

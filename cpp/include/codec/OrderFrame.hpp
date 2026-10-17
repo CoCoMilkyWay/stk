@@ -14,19 +14,19 @@ namespace L2 {
 // 帧 — 一个 (资产, 当天) 的逐笔, 两种形态互逆
 // ============================================================================
 //
-//   FrameView  解开的: Order × count, 已按 (时刻, 优先级, 源序) 排好, 直接喂 LOB
+//   FrameView  解开的: Order × count, 已按 (时刻, 优先级, 源序) 排好, 直接喂订单簿
 //   Frame      压好的: 一个 zstd 帧, 解开就是 Order × count
 //
 //   FrameEncoder::encode(FrameView) → Frame        FrameDecoder::decode(Frame) → FrameView
 //
 // 两侧都只碰内存, 不碰 fd —— 帧进出日文件归 DayWriter / DayReader (见
 // shared/OrdersDay.hpp). FrameHead 随帧走: 编码侧来自准入校验, 解码侧来自日文件
-// 目录, 交给 LOB 把绝对价折成档位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
+// 目录, 交给订单簿把绝对价折成价位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
 
 // 帧的两项元数据, FrameView / Frame / FrameRef 共用同一份.
 struct FrameHead {
   uint32_t count = 0;      // 逐笔条数
-  uint32_t price_base = 0; // LOB 档位窗口基准 (分)
+  uint32_t price_base = 0; // 订单簿价位窗口基准 (分)
 };
 
 struct FrameView {

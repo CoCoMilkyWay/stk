@@ -19,16 +19,16 @@
 //   【目标】只评**排序能力**, 一次搜索针对一个固定持有期 h (调用方选), 不跨 h 比 (不同周期的每笔收益 / 执行方式不可公平折算), 不看成本
 //         (h ≥ 30m 时换手 ≈ 100%, 建仓冲击对参数几乎是常数, 减常数不改变 argmax; 成本 / 执行在选出因子之后独立处理):
 //         score = ls_period · ric.mean^ric_pow;  ls_period / rIC 任一 ≤ 0 或 n < 3 → −∞
-//         · ls_period  每期真实毛多空 (Stat 契约【持仓口径】: 不触发行记 0, 不足满档按只数 / cap 建仓; 固定 h 下年化系数是常数, 不乘).
+//         · ls_period  每期真实毛多空 (Stat 契约【持仓口径】: 不触发行记 0, 不足满仓按只数 / cap 建仓; 固定 h 下年化系数是常数, 不乘).
 //                      触发率 / 资金利用率已在持仓口径里定价, 不另设活跃度项 / 样本数 / 显著性硬阈值: 稀疏触发的候选 ls_period → 0,
-//                      10 行里挑出来的噪声赢不了; 超满档均分, 不奖励超出.
+//                      10 行里挑出来的噪声赢不了; 超满仓均分, 不奖励超出.
 //         · rIC        正则项: 要求全截面排序也成立, 不只尾部
 //         有意不进目标的: 成本 / 换手 / mono / 显著性 (ls.t, ric.ir) / 样本外 —— 搜索要快.
-//         同一份 score_of 两个入口: Search 吃 Result (Accum 先 finish), 因子看板吃 stat 里该 h 的 HoldStat —— Search 只在内部用分数挑候选,
+//         同一份 score_of 两个入口: Search 吃 Result (Accum 先 finish), 因子表吃 stat 里该 h 的 HoldStat —— Search 只在内部用分数挑候选,
 //         不往文件写结论.
 //   【方向】Search 自动定向 (score_signed): 因子取反 ⇒ rIC 精确变号, LS 两腿互换近似变号 (多腿吃 lv、空腿吃 sv, 两列不严格对称).
-//         ls / rIC 同号即可用: score = |ls|·|rIC|^ric_pow, sign = rIC 的号; 异号 → −∞. sign 落进 weights, 看板 / Inspect 评估
-//         根下插 TsNeg 的表达式 (Expr negated), 精确统计由 Run 在它上算. 看板 / 算子页仍用 score_of (只认正向).
+//         ls / rIC 同号即可用: score = |ls|·|rIC|^ric_pow, sign = rIC 的号; 异号 → −∞. sign 落进 weights, 因子表 / Inspect 评估
+//         根下插 TsNeg 的表达式 (Expr negated), 精确统计由 Run 在它上算. 因子表 / 算子表仍用 score_of (只认正向).
 //
 //   【多权重】一个模板在一个 h 下不止一个好参数 (粗网格的各局部峰各自模式搜索到一个最优). 终选: 各峰最优里 score ≥ (1 − kPlateau)·max 的
 //         为**高原集**; 其中按两两**截面相关**挑 ≤ kPicks 个 (pick_uncorrelated: 组内两两最大相关最小的组合, 不保证含 max) —— 要的是
@@ -118,7 +118,7 @@ struct Score {
   int sign = 1; // score_signed 定的方向 (+1 原样 / −1 取反); score_of 恒 +1
 };
 
-// 二级入口 (看板用: 该 h 的 HoldStat 已 finish); Search 的 Result 入口在下面, 先 finish 再走这一份
+// 二级入口 (因子表用: 该 h 的 HoldStat 已 finish); Search 的 Result 入口在下面, 先 finish 再走这一份
 inline Score score_of(const HoldStat &hs, const Objective &o) {
   Score s;
   if (hs.n < 3)

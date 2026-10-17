@@ -12,14 +12,14 @@
 class FeatureRead;
 
 // ============================================================================
-// FeaturePreview (特征表内联预览: 每特征 平均分布 + 平均单日频谱, 轮训抽样流式;
+// Preview (特征表内联预览: 每特征 平均分布 + 平均单日频谱, 轮训抽样流式;
 //                 公共骨架见 shared/Analysis.hpp)
 // ============================================================================
 // 目的: Feature 表每行尾部两个迷你曲线 (PDF / PSD), 全表一眼对比形态.
 // 与 Dist/Transform 维度反转 —— 那边单特征全数据, 这边全特征抽样数据:
 //
 //   轮 = 一个抽样日 (plan_days Shuffle 取前 kPvRounds 个 → 无偏覆盖);
-//   轮首单线程读共享列: Bar 档旁读 lim_dn / lim_up (笼快照, 按 uni.ids 取全轴) + 主库 ts_valid (门控行, 轮内各块共用);
+//   轮首单线程读共享列: Bar 档旁读 lim_dn / lim_up (笼快照, 按 lib.axis.ids 取全轴) + 主库 ts_valid (门控行, 轮内各块共用);
 //   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自读块列 →
 //     私有 TsPlane 转置 (外部门控 = 轮首那份 ts_valid, 各列按自己的 valid_type 折哨兵);
 //     每特征槽一轮只被一个任务写, 每轮一次 dispatch 隔开相邻轮 → 累积器无锁无归约;
@@ -47,7 +47,7 @@ static constexpr size_t kPvMinSamples = 500;                        // 样本不
 static constexpr size_t kPvPsdPts = analysis::DayPSD::N / 2;        // 进谱 bin 数: k ∈ [1, N/2] (跳 DC), 周期 2~256 min
 static constexpr size_t kPvPsdK(size_t j) { return kPvPsdPts - j; } // Cell::psd[j] ↔ bin k (周期升序 = k 降序)
 
-struct FeaturePreview : Published {
+struct Preview : Published {
   // 每特征发布快照 (槽位 = 该层 metadata 下标; 非预览列 (META 类) 恒空)
   struct Cell : analysis::PdfSnap<kPvKllResolution> {
     uint32_t psd_n = 0;                 // 参与谱平均的 (资产, 天) 数 (含日内恒值日: 投占比全 0 的一票)
@@ -77,8 +77,8 @@ struct FeaturePreview : Published {
   Spec spec;
   Snap snap;
 
-  FeaturePreview();
-  ~FeaturePreview();
+  Preview();
+  ~Preview();
 
   // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回)
   void reset(analysis::ReadScope scope, Spec spec);

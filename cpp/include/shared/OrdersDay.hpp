@@ -71,7 +71,7 @@ struct FrameRef {
   uint64_t offset = kAbsent; // 帧在日文件中的字节偏移
   uint32_t asset_id = 0;     // A 轴下标 (== Asset::items 下标)
   uint32_t size = 0;         // 帧字节数
-  L2::FrameHead head;        // 条数 + 档位基准, 同 L2::Frame::head
+  L2::FrameHead head;        // 条数 + 价位基准, 同 L2::Frame::head
 
   // 没有帧 (墓碑或缺席)
   bool empty() const {
@@ -102,7 +102,7 @@ struct DayRecord {
   // 条数严格相等 (读写两端都断言)
   uint32_t outcome[L2::kOutcomeCount] = {};
 
-  // 按 L2::Check 的位记"命中这一条判据的标的数". 一个标的可能同时命中多条,
+  // 按 L2::Check 的位记"命中这一条判据的资产数". 一个资产可能同时命中多条,
   // 所以这几列的和会大于 count(Invalid).
   uint32_t checks[L2::kCheckBitCount] = {};
 
@@ -153,7 +153,7 @@ struct DayIndex {
 // 构造即 open (同 DayWriter 构造即建 .tmp), 析构 close. 日文件必须存在 —— 调用方
 // 凭帧目录 / 增量新鲜度判定确认过才来读, 打不开直接 assert.
 //
-// 帧的位置/条数/档位基准都在 FrameRef 里, get 凭它 pread 一帧, 不再读任何头;
+// 帧的位置/条数/价位基准都在 FrameRef 里, get 凭它 pread 一帧, 不再读任何头;
 // index 只在要账目或目录时才读 (头 + 尾部目录, 两次 pread).
 // 一个 reader 一个 fd, 多线程各持一个并发 pread, 无锁.
 class DayReader {

@@ -25,7 +25,7 @@ struct Config;
 struct Feature;
 
 // ============================================================================
-// analysis — Features 页流式分析 (Dist / Transform / FeaturePreview / Correlation / CorrLag / CorrPair) 的公共骨架
+// analysis — Features 页流式分析 (Dist / Transform / Preview / Corr / CorrLag / CorrPair) 的公共骨架
 // ============================================================================
 // 六个目标同一个形状:
 //   struct X : Published {
@@ -104,7 +104,7 @@ struct Integrity {
     return false;
   }
 
-  // 门控不过的格子 (ts_valid 按 valid_type 判否): 两个账目源 (FeaturePreview / Dist) 都只把门控过的格子分到
+  // 门控不过的格子 (ts_valid 按 valid_type 判否): 两个账目源 (Preview / Dist) 都只把门控过的格子分到
   // valid / nan / ±inf, 其余即门控不过, 推导得出不另设计数器. 特征应稠密: 这一项比 nan 更要紧
   size_t n_invalid() const {
     assert(n_total >= n_valid + n_nan + n_pos_inf + n_neg_inf);
@@ -173,7 +173,7 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 
 // ---- 读取范围 (Request 公共头): GUI 线程从 config + 库清单解析, worker 只消费 ----
 struct ReadScope {
-  std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月); 主库或 all 库未建 → 空
+  std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月); 主库或 Bar 库未建 → 空
   FeatureLib lib;               // 主库 (档 / A 轴 / 目录, 与写端同一清单)
   // Bar 档旁读 (涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 lib.axis.ids[a]
   FeatureLib bar;

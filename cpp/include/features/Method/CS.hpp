@@ -13,7 +13,7 @@
 //     WinsorRank   winsor_mad(k=3) → z → pct_rank → 均值填充, 输出 ∈ [0,1]                    (= qmt factor_pipeline)
 //     NeutralRank  winsor_q(1%,99%) → 中性化 (行业 + log 市值 OLS 残差, FWL 等价: 行业组内 demean → 对 demean 后 log(mcap)
 //                  标量回归取残差, 行业 0 独立组) → z → pct_rank → 均值填充, 输出 ∈ [0,1]     (= qmt neutral_pipeline)
-//                  唯一需要上下文的方法 (kNeutral): Ctx 由 CoreCrosssection 每分钟准备一次, 全部 NeutralRank 行复用 (仅 L1)
+//                  唯一需要上下文的方法 (kNeutral): Ctx 由 CoreCs 每分钟准备一次, 全部 NeutralRank 行复用 (仅 L1)
 //     Demean       x − mean, 缺失 → 0.  去市场分量但保留截面离散度的时变 (z 会把每分钟离散度抹平成 1)
 //     Z            (x − mean)/sd (double 累加), 缺失 → 0.  保留量级信息 (全市场同向尖峰 rank 看不见)
 //     WinsorZ      winsor_mad(k=3) → z, 缺失 → 0.  稳健 z (= WinsorRank 去掉末尾 pct_rank)
@@ -24,7 +24,7 @@
 //   (中位数取法 / z 的 double 累加 / pct_rank 并列均秩 / 均值填充), 保证 qmt 因子效果可复现.
 //
 //   两种消费方式, 同一套 struct:
-//     编译期: CoreCrosssection 按字段表 CS(src, Tf, Method) 模板展开 (回测 / 实盘)
+//     编译期: CoreCs 按字段表 CS(src, Tf, Method) 模板展开 (回测 / 实盘)
 //     运行期: Transform 分析用 column_fn(TfId, MethodId) 取一次函数指针 (每个 (Tf, Method) 组合是一个
 //             静态实例化的 run<Tf, Method>, 内循环全内联), 每列一次间接调用. 探索里验证的变换 == 落盘截面列.
 // =============================================================================
@@ -146,6 +146,6 @@ ColumnFn column_fn(TfId tf, MethodId m);
 
 } // namespace cs
 
-// NeutralRank 上下文源列 (L1 字段 code): CoreCrosssection 每分钟按 L1_Field::<token> gather 一次
+// NeutralRank 上下文源列 (L1 字段 code): CoreCs 每分钟按 L1_Field::<token> gather 一次
 #define NEUTRAL_RANK_MCAP mcap
 #define NEUTRAL_RANK_INDUSTRY ind_l1

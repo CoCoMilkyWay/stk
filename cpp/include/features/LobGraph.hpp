@@ -7,14 +7,14 @@
 
 // ============================================================================
 // Lob 档 DAG (namespace lob; 与 BarGraph.hpp 对仗, 一个 TU 只许 include 其一). 公共体见 GraphNode.hpp TIER_DAG.
-// 源 = 逐笔 (TickData, LOB 还原写出) + 分钟 K (MinuteData, 由逐笔重采样) + 日频 PIT (fund::Panel).
+// 源 = 逐笔 (TickData, 订单簿还原写出) + 分钟 K (MinuteData, 由逐笔重采样) + 日频 PIT (fund::Panel).
 // ============================================================================
 namespace lob {
 
-// TickData 自持而非引用 worker LOB 的: DAG 节点引用它 (终身有效), LOB 经 bind() 把写出口换到这里 →
-// 资产可在 worker 间转移处置权 (负载再平衡), 任意 worker 的 LOB 都能驱动本资产
+// TickData 自持而非引用 worker 订单簿的: DAG 节点引用它 (终身有效), 订单簿经 bind() 把写出口换到这里 →
+// 资产可在 worker 间转移处置权 (负载再平衡), 任意 worker 的订单簿都能驱动本资产
 struct DAG_Root : graph::Root {
-  TickData tick_data; // L0 输入 (LOB 还原写出)
+  TickData tick_data; // L0 输入 (订单簿还原写出)
   using graph::Root::Root;
 };
 

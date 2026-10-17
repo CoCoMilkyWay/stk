@@ -11,7 +11,7 @@
 //           r16 工作区 rx[c][T][A] (u16). Stat 是 C = 1 的特例.
 //   【rank_rows】grid (T, C) 一行一 block (kRB = 512 线程, 每 SM 驻 2 块): 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上),
 //     排好写回 shared, 每个元素二分查 less / eq → r16. 无效键 = kNoKey 排最后, n = 首个 kNoKey 的位置.
-//     ITEMS (每线程元素数) 按 A 分三档 2 / 6 / 10 (A ≤ 1024 / 3072 / 5120), shared 6 / 18 / 30 KB.
+//     ITEMS (每线程元素数) 按 A 分三级 2 / 6 / 10 (A ≤ 1024 / 3072 / 5120), shared 6 / 18 / 30 KB.
 //     同一个核给因子批 (SrcX: 池内 g ∧ m) 与标签 (SrcY: fp16 平面, C = 1) 用, 只换行源; 行源 row(c, 行首) 给出取键器
 //     KeyX / KeyY (行视图, 与 Host.hpp 同名同形).
 //   【quant_rows】TS: 分位直接量化 (r16_quant), 逐格无关, grid (·, C).
@@ -126,7 +126,7 @@ __device__ __forceinline__ void lag_row(const uint16_t *rx, const uint16_t *rlag
   r.ok_rac = ok ? 1 : 0;
 }
 
-// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首, cap = 满档 → r 的 ric / mkt / grp / cnt / ls / ok (全 lane 同值). gs / gc = 本 warp 的分组槽,
+// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首, cap = 满仓 → r 的 ric / mkt / grp / cnt / ls / ok (全 lane 同值). gs / gc = 本 warp 的分组槽,
 // 连续调用间的槽复用由函数内首个 __syncwarp 保护. 调用方已排除段末尾部
 __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, int A, double cap, Row &r, float (*gs)[32], uint16_t (*gc)[32],
                                           int lane) {
@@ -182,7 +182,7 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, i
   factor::stat::finish_row(s, sm, gsd, gci, leg, cap, r);
 }
 
-// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; cap = 满档; tail = 段末尾部 (tail_masked)
+// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; cap = 满仓; tail = 段末尾部 (tail_masked)
 __device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, double cap, bool tail, float (*gs)[32],
                                         uint16_t (*gc)[32], int lane) {
   Row r;

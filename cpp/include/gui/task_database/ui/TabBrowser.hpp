@@ -11,7 +11,7 @@
 
 namespace GUI::Database {
 
-// 单只标的的一次除权除息 (复权因子变点)
+// 单只资产的一次除权除息 (复权因子变点)
 struct DividendEvent {
   std::string code;  // "sz.000001"
   std::string name;  // 简称, 基本面查不到时为空
@@ -50,13 +50,13 @@ struct LayerVisibility {
   bool show_completeness = true;   // Border: Green/Yellow/Red
 };
 
-// 黄色达到满饱和度所需的当日除权除息标的数.
+// 黄色达到满饱和度所需的当日除权除息资产数.
 //
 // 全市场口径下几乎每个交易日都有除权除息, 铺成实心黄会把下面三层全盖掉,
 // 所以黄色改成按当日事件数定 alpha 的叠加层: 到这个数就是满黄, 越少越透.
 inline constexpr float kDividendSaturationCount = 50.0f;
 
-// 只有 1~2 个标的时 alpha 趋 0 会彻底看不见, 给条下限
+// 只有 1~2 个资产时 alpha 趋 0 会彻底看不见, 给条下限
 inline constexpr float kDividendAlphaFloor = 0.15f;
 
 // Browser state

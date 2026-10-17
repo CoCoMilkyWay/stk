@@ -4,7 +4,7 @@
 // MicroPrice - 微观价格 (量加权中间价)
 // =============================================================================
 //   micro_price = (P_{1,t}^{M,A} · V_{1,t}^{M,B} + P_{1,t}^{M,B} · V_{1,t}^{M,A}) / (V_{1,t}^{M,B} + V_{1,t}^{M,A})
-//   集合竞价 (交叉簿): 一档量加权无意义, 取 LOB 预撮合参考价 (与 MidPrice 同口, 见彼处注释).
+//   集合竞价 (交叉簿): 最优价位量加权无意义, 取订单簿预撮合参考价 (与 MidPrice 同口, 见彼处注释).
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -35,7 +35,7 @@ public:
     float bid_qty = bid_qty_0_.back();
     float ask_qty = -ask_qty_0_.back(); // 卖方存负值
     const float denom = bid_qty + ask_qty;
-    // 两侧一档量皆为 0 (挂单全撤, 档位仍在): 权重退化, 取普通中间价 —— 仍是价格量纲, 不产 NaN 污染下游时间加权
+    // 两侧最优价位量皆为 0 (挂单全撤, 价位仍在): 权重退化, 取普通中间价 —— 仍是价格量纲, 不产 NaN 污染下游时间加权
     y[value] = denom > 0.0f ? (ask_price * bid_qty + bid_price * ask_qty) / denom : (bid_price + ask_price) * 0.5f;
   }
 

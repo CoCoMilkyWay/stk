@@ -3,15 +3,15 @@
 // =============================================================================
 // OrderLife - 订单生命周期 (compute=onTick, flush=onMinute; feature_list.md 1.5 前三行)
 // =============================================================================
-//   委托存续时长 age = 事件时刻 − 挂单时刻 (ms; 两者同为 LOB 的 h/m/s/ms10 编码, 午休不扣 —— 跨午休的单必 ≥ 300s, 不影响任何桶).
+//   委托存续时长 age = 事件时刻 − 挂单时刻 (ms; 两者同为订单簿的 h/m/s/ms10 编码, 午休不扣 —— 跨午休的单必 ≥ 300s, 不影响任何桶).
 //   输入面 = LOB_Feature::ord_* (语义见 LimitOrderBookDefine.hpp; 解码 ord_reliable 见 DataDefine.hpp), 只用可信的在簿委托
 //   (占位单的 ord_tick 是首笔成交/撤单时刻而非挂单时刻).
 //     {amt,vol,n}_fill_{bid,ask}_lt_τ    被动方委托 (被吃的那张, 侧 = 它的方向) 挂单→本笔成交 用时 < τ 的成交 额(元, 成交价) / 量(股) / 笔.
 //                                        只算被动方: 主动方在沪市不入簿无挂单时刻, 深市则恒 ≈ 0 —— 两所不可比, 它归 n_marketable.
-//     {amt,vol,n}_cancel_{bid,ask}_lt_τ  撤单委托 挂单→撤单 用时 < τ 的撤单 额(元, 委托档价 ord_price) / 量(股) / 笔 (τ=1s 即 开源 029 高频撤单率 分子).
+//     {amt,vol,n}_cancel_{bid,ask}_lt_τ  撤单委托 挂单→撤单 用时 < τ 的撤单 额(元, 委托挂单价 ord_price) / 量(股) / 笔 (τ=1s 即 开源 029 高频撤单率 分子).
 //     n_marketable_{bid,ask}             到达即成交的委托笔数 = 主动方首笔成交 (此前累计成交 f = 0: Aggressor ord_rest==0 / 深市 Resting ord_orig==ord_rest);
-//                                        一张主动单扫 k 档只计 1 (开源 029 广义市价比例 分子; 分母 = Flow n_maker_*).
-//   τ ∈ {1s, 10s, 60s, 300s}, "< τ" 为嵌套集 (分档 = 相邻差, 因子层做; 全体 = Flow 的 taker / cancel 口); 每笔只落一个桶
+//                                        一张主动单扫 k 个价位只计 1 (开源 029 广义市价比例 分子; 分母 = Flow n_maker_*).
+//   τ ∈ {1s, 10s, 60s, 300s}, "< τ" 为嵌套集 (分桶 = 相邻差, 因子层做; 全体 = Flow 的 taker / cancel 口); 每笔只落一个桶
 //   (首个 age < τ 的下标, 都不满足 = 4), flush 前缀和.
 //   fp16 落盘: 全部 Log Tf.
 // =============================================================================
@@ -122,7 +122,7 @@ private:
   X(vol_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Volume (age < " TE ")", SCN "委托快速" CN "量(<" TE ")", "分钟内" SCN "方委托 " DESC " 用时<" TE " 的" CN "量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E "," S R"(}| \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, vol_##e##_##side##_lt_##t, Log, None))        \
   X(n_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Count (age < " TE ")", SCN "委托快速" CN "笔数(<" TE ")", "分钟内" SCN "方委托 " DESC " 用时<" TE " 的" CN "笔数", R"(\#O_{\Delta t}^{)" E "," S R"(} \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, n_##e##_##side##_lt_##t, Log, None))
 
-// 一 τ 的 成交 (买 3 + 卖 3) + 撤单 (买 3 + 卖 3) = 12 行. 成交侧 = 被吃的被动委托方向, 额 = 成交价 × 量; 撤单额 = 委托档价 × 量
+// 一 τ 的 成交 (买 3 + 卖 3) + 撤单 (买 3 + 卖 3) = 12 行. 成交侧 = 被吃的被动委托方向, 额 = 成交价 × 量; 撤单额 = 委托挂单价 × 量
 #define ORDERLIFE_TAU_ROWS(X, CAT1, t, TE, TF)                                                          \
   ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "成交", "挂单→被吃成交", bid, "B", "Bid", "买", t, TE, TF) \
   ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "成交", "挂单→被吃成交", ask, "A", "Ask", "卖", t, TE, TF) \

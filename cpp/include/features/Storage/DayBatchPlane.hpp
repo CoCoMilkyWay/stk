@@ -141,7 +141,7 @@ struct TsPlane {
 };
 
 // ============================================================================
-// CsPlane: 天批 CS 视图 (Correlation / CorrLag / CorrPair) —— 每天只抽 slice_t 指定的 S 行
+// CsPlane: 天批 CS 视图 (Corr / CorrLag / CorrPair) —— 每天只抽 slice_t 指定的 S 行
 // ============================================================================
 // 行号 g = (j·S + s)·n_cols + c  ↔  data + g·A  (切片主序: 同一 (j, s) 的全部列相邻)
 struct CsPlane {

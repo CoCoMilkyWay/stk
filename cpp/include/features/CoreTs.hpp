@@ -20,7 +20,7 @@
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, l1, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
-//   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 开盘档 (T+N) 回填旧日张量, 旧日句柄持到结清才 ts_close.
+//   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 开盘型 (T+N) 回填旧日张量, 旧日句柄持到结清才 ts_close.
 //   档钩子 (Derived 实现):
 //     bool  member(misc::Ymd)  日开 (onDay 之后): 当日成员位 → cs_valid (Lob 票池 / Bar 在市)
 //     auto &resampler()        源 → MinuteData 的重采样器 (ResamplerTick2Min / ResamplerBar2Min: reset / roll)
@@ -31,7 +31,7 @@ public:
   using Store = FeatureStore<T>;
   using Day = typename Store::Day;
   using Label = decltype(Dag::label);
-  static constexpr size_t kMinPoolSlots = Label::MIN_POOL_SLOTS; // 池下限 (见 LabelHold)
+  static constexpr size_t kMinRingSlots = Label::MIN_RING_SLOTS; // 日环下限 (见 LabelHold)
 
   void begin_day(misc::Ymd date, const Day &day) {
     push_day(day);
@@ -61,7 +61,7 @@ public:
 
   // 时钟推进到 L1 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
   //   回测: 由本资产下一个源单位 (compute_and_store) / 收盘 (end_day) 调.
-  //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCrosssection::compute_and_store(t):
+  //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCs::compute_and_store(t):
   //         CS 在分钟末级联读 L1 行 m, 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
   //   结算时刻不影响值 (onMinute 域只读 MinuteData / 分钟边界), 两种触发写出同一行.
   void advance(size_t m) noexcept {
@@ -91,7 +91,7 @@ protected:
   Day day_{}; // 本日写句柄 (= days_[cur_]), 热路径直接用
   size_t asset_id_;
   Dag dag_;
-  MetaTracker meta_; // ts_valid / cs_valid 基建列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
+  MetaTracker meta_; // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
 
 private:
   static constexpr size_t kPendDays = Label::PEND_DAYS;
@@ -145,7 +145,7 @@ private:
       fstore::ts_write<1>(d, label_l1, kL1LabelBase + col + i, asset_id_, values[i]);
   }
 
-  // 基建列按名 / 标签列按类型 (LB) 在字段表里定位; 列数 / 连续性与标签配置对账
+  // 元列按名 / 标签列按类型 (LB) 在字段表里定位; 列数 / 连续性与标签配置对账
   static_assert(T::has(1), "TS 档必须有 L1 (分钟行 / 标签)");
   static constexpr std::span<const FieldInfo> kL1Fields{T::LEVELS[1].fields, T::LEVELS[1].field_count};
   static constexpr size_t kL1TsValid = field_of<T>(1, "ts_valid");
@@ -154,6 +154,6 @@ private:
   static_assert(count_of_kind(kL1Fields, FeatureDataType::LB) == Label::L1_LABEL_COUNT && kind_contiguous(kL1Fields, FeatureDataType::LB),
                 "L1 标签列须与标签配置 L1_LABEL_COUNT 等长且连续");
 
-  std::array<Day, kPendDays> days_{}; // 日句柄环 (开盘档跨日回填 / 延迟 ts_close)
+  std::array<Day, kPendDays> days_{}; // 日句柄环 (开盘型跨日回填 / 延迟 ts_close)
   size_t cur_ = kPendDays - 1;        // 首个 push_day 推到 0
 };

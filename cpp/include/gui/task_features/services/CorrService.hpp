@@ -18,16 +18,16 @@ namespace GUI::Features {
 using CorrRequest = analysis::Request<CorrSpec>;
 
 // GUI 线程: 由特征表过滤行集 (任意序) 解析出矩阵请求 (去 META, 升序去重, 门控列, 读取范围).
-// 非 META 列不足 2 (L0 现状) 或区间为空 → false (不提交). Correlation / CorrLag 同一口径
+// 非 META 列不足 2 (L0 现状) 或区间为空 → false (不提交). Corr / CorrLag 同一口径
 bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest &req);
 
-class CorrService : public StreamService<CorrService, Correlation> {
+class CorrService : public StreamService<CorrService, Corr> {
 public:
   // GUI 线程: 参数快照 + 取消在跑. rows = 特征表当前过滤后的 metadata 下标 (任意序)
   void RequestCompute(SharedData &data, const std::vector<int> &rows);
 
   static constexpr const char *kName = "CorrWorker";
-  static Correlation &target(SharedData &data);
+  static Corr &target(SharedData &data);
 };
 
 // 全矩阵 lead-lag 峭点 (与矩阵同一列集; UI 勾选才提交)

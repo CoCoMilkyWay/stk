@@ -1,4 +1,4 @@
-// Lob 档管线 (逐笔 → LOB 源, 池轴): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
+// Lob 档管线 (逐笔 → 订单簿源, 池轴): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
 #include "worker/feature_pipeline.hpp"
 
 #include "codec/L2_DataType.hpp"
@@ -68,7 +68,7 @@ struct TierFeed<lob::Tier> {
       const auto &asset = feed_.data.asset.items[feed_.axis.global(asset_id)];
       const FrameRef &ref = feed_.orders.at(date_idx, asset_id);
       if (ref.empty()) {
-        core.empty_day(date, day, store); // 缺二进制 = 零事件日: 与正常日同路径, 不绑 LOB
+        core.empty_day(date, day, store); // 缺二进制 = 零事件日: 与正常日同路径, 不绑订单簿
         return 0;
       }
 
@@ -76,7 +76,7 @@ struct TierFeed<lob::Tier> {
       lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_); // 追踪: 当前驱动核
       lob_.begin_day(date, day);                                    // 盘前: DAG reset + onDay (Fund 状态机推进到当日)
 
-      // 帧的位置/条数/档位基准都在扫描灌好的帧目录里, 不再读任何头; 同一天的
+      // 帧的位置/条数/价位基准都在扫描灌好的帧目录里, 不再读任何头; 同一天的
       // 资产共用 reader 里那一个 fd.
       L2::FrameView view;
       {
@@ -95,8 +95,8 @@ struct TierFeed<lob::Tier> {
         order_invalid_cnt = lob_.run_frame(view);
       }
 
-      // 编码期准入校验 (L2::LobUnusable) 已拦下 LOB 抵扣不动的记录, 走到这里即校验漏判
-      assert(order_invalid_cnt <= 100 && "Lob TS: LOB 无效条数超阈值 (准入校验漏判?)");
+      // 编码期准入校验 (L2::LobUnusable) 已拦下订单簿抵扣不动的记录, 走到这里即校验漏判
+      assert(order_invalid_cnt <= 100 && "Lob TS: 订单簿无效条数超阈值 (准入校验漏判?)");
 
       Logger::log("worker_" + std::to_string(worker_id_),
                   std::to_string(date) + " asset:" + std::to_string(asset_id) + " " + asset.code_ex() + " " + asset.asset_name +
@@ -114,9 +114,9 @@ struct TierFeed<lob::Tier> {
   private:
     TierFeed &feed_;
     int worker_id_;
-    // LOB 工作区: 每 worker 一个 (非每资产). 簿状态全部日内瞬态 (每个 asset-day bind…unbind),
+    // 订单簿工作区: 每 worker 一个 (非每资产). 簿状态全部日内瞬态 (每个 asset-day bind…unbind),
     // worker 内资产串行, 复用同一套页面 —— 跨资产 cache/TLB 常驻, 稳态零扩容;
-    // per-asset 常驻簿的 ~3MB/资产地板 (档位数组 + 池块粒度 + 桶表) 由此消失.
+    // per-asset 常驻簿的 ~3MB/资产地板 (价位数组 + 池块粒度 + 桶表) 由此消失.
     // 容量按最忙资产奢侈预留 (见 L2::LOB_ORDER_CAPACITY 注释).
     LimitOrderBook lob_;
     // 每 worker 一个 decoder (非每资产): get 是按 (asset, date) 一帧的无状态操作,

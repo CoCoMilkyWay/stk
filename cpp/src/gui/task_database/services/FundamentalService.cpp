@@ -140,7 +140,7 @@ std::vector<TableFileStat> collect_table_stats(const Catalog &cat) {
 // worker 一轮的写口 + 产物: 计步走进度面 (svc 即 Published), 阶段说明持 svc.mutex 写进 svc.state
 struct Job {
   FundamentalService &svc;
-  const std::atomic<bool> &cancel; // = Worker::cancel_ (UI 取消 / 新请求 / Stop)
+  const std::atomic<bool> &cancel; // = Service::cancel_ (UI 取消 / 新请求 / Stop)
   bigquant::Quota quota;
   AssetInfo assetinfo; // 构建产物
   FundamentalState st; // 构建统计 + 配额 (worker 私有, 收尾持锁写回)
@@ -212,7 +212,7 @@ void renative_all(Job &job) {
   std::cout << "[renative] " << rewritten << "/" << files.size() << " file(s) rewritten" << std::endl;
 }
 
-// 三档股息率的窗口长度 [日历日] 与年化除数 [年]
+// 三窗股息率的窗口长度 [日历日] 与年化除数 [年]
 constexpr int kDyWindows = 3;
 constexpr int kDyDays[kDyWindows] = {365, 1095, 1825};
 constexpr double kDyYears[kDyWindows] = {1.0, 3.0, 5.0};
@@ -554,7 +554,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
              const pq::Col cash = r.col("cash_before_tax");
              r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                if (d <= div_lo_min || d > today)
-                 return; // 最长窗口都不覆盖 → 三档都用不上
+                 return; // 最长窗口都不覆盖 → 三个窗口都用不上
                // 源里 625 行 cash_before_tax 是 null, 漏一个进求和就把该股 dy1y/3y/5y 全
                // 打成 NaN —— 判空统一走 bitmap (见文件上方约定 1).
                if (cash.null(i) || cash.f32(i) <= 0.0f)

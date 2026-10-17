@@ -337,7 +337,7 @@ double n_full_of(const Loaded &L) {
   for (size_t k = 0, n = L.n(); k < n; ++k)
     on += g[k] != 0;
   const double nf = static_cast<double>(on) / static_cast<double>(L.T) / factor::stat::kGroups;
-  assert(nf > 0.0 && "池内无有效票");
+  assert(nf > 0.0 && "池内无有效资产");
   return nf;
 }
 

@@ -56,7 +56,7 @@ struct Node : Impl {
   }
 };
 
-// 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 Depth 的 N 档数组, 由节点自己的 reset 清空); flush/reset 有才调
+// 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 Depth 的 N 价位数组, 由节点自己的 reset 清空); flush/reset 有才调
 template <class Impl>
 struct Node<Impl, 0> : Impl {
   using Impl::Impl;

@@ -17,8 +17,8 @@
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
-//         "costs": [{amt, cover, acc: [[CostAcc]…]}…],          //   每金额档 × 每持有期换手成本累加器 (Inspect 净线从它算)
-//         "ic_pdf": [{lo, hi, y}…], "x_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 看板小图空): 每持有期逐行 rIC 分布 / 根输入值分布 (MiniPdf)
+//         "costs": [{amt, cover, acc: [[CostAcc]…]}…],          //   每金额段 × 每持有期换手成本累加器 (Inspect 净线从它算)
+//         "ic_pdf": [{lo, hi, y}…], "x_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 因子表小图空): 每持有期逐行 rIC 分布 / 根输入值分布 (MiniPdf)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 视作唯一权重 (hold 0).
@@ -36,16 +36,16 @@
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node + 常驻 ForkJoin, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), HoldStat 是毛口径;
-// 换手成本 (lb_cost_* 每档, 买入按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (FactorsLoad cost_tiers, 两后端同一份宿主代码:
-// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 净线由 Inspect plot_term 在二级上现算, 看板 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
-// Config::sell_impact 只进公式不进文件. 看板的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
+// 换手成本 (lb_cost_* 每金额段, 买入按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (FactorsLoad cost_tiers, 两后端同一份宿主代码:
+// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 净线由 Inspect plot_term 在二级上现算, 因子表 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
+// Config::sell_impact 只进公式不进文件. 因子表的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
 #pragma once
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
 #include "factor/Expr.hpp"
-#include "factor/Search/Contract.hpp" // Score / Objective (看板 score / util 与 Search 同一份目标)
+#include "factor/Search/Contract.hpp" // Score / Objective (因子表 score / util 与 Search 同一份目标)
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
 #include "gui/util/Service.hpp"
@@ -76,7 +76,7 @@ struct LabelCol {
   uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_long_<name> / lb_short_<name>
 };
 struct CostCol {
-  int amt = 0;                            // 下单金额档 (万)
+  int amt = 0;                            // 下单金额段 (万)
   uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_cost_buy_<amt>w / lb_cost_sell_<amt>w
 };
 struct FeatureTable {
@@ -84,7 +84,7 @@ struct FeatureTable {
   uint32_t ts_col = 0;          // ts_valid 门控列 (特征输入)
   uint32_t cs_col = 0;          // cs_valid 门控列 (标签 + 截面门控平面)
   std::vector<LabelCol> labels; // 按 hold 升序; long / short 都齐才收
-  std::vector<CostCol> costs;   // 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每档攒 CostAcc; Search 不看成本)
+  std::vector<CostCol> costs;   // 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本)
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };
@@ -105,7 +105,7 @@ struct FactorsRequest {
   misc::Ymd start_date = 0, end_date = 0;
   bool gpu = false;
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 成本装载时生效)
-  std::string only_file;   // 非空 = 只评这个因子文件的权重 (Optimize 写完后), 其余行保留文件里的 stat
+  std::string only_file;   // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat
 };
 // evaluate 请求需要资产轴 (读特征库); 轴未就绪 (数据库未扫) → false
 bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req);
@@ -120,18 +120,18 @@ struct StatScope {
   misc::Ymd start_date = 0, end_date = 0;
   int days = 0, T = 0, A = 0;
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
-  double n_full = 0.0;     // 满档一腿只数 = 池内平均有效票数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
+  double n_full = 0.0;     // 满仓一腿只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
-// 一个金额档的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
+// 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
 // 两腿按真实换手扣, 每 (t, h) 行只有新进者 (t−h 不在该组) 付建仓冲击 + sell_impact; 均摊成本 cost(腿) 随 h 变 (h 越长留仓越多).
-// 买入冲击按 Config::max_impact 封顶后进 (装载时). 吃不满深度的格 (成本 NaN) 不计入 → 高档均值偏低, cover 把它亮出来.
-// Run 每因子每档都攒 (落 stat.costs), Inspect 期限结构净线从它算
+// 买入冲击按 Config::max_impact 封顶后进 (装载时). 吃不满深度的格 (成本 NaN) 不计入 → 大金额段均值偏低, cover 把它亮出来.
+// Run 每因子每金额段都攒 (落 stat.costs), Inspect 期限结构净线从它算
 struct CostTier {
   int amt = 0;                                            // 万 (= FeatureTable::costs[c].amt)
   factor::stat::CostAcc acc[factor::stat::kMaxHold] = {}; // [hd.n], 与 hold 同序
   float cover = 0.f;                                      // Σ 成本有效 / Σ rx 有效 (格数比, 不分组不分 h)
 };
-// 看板迷你 PDF: Inspect 同款 KLL PDF (AggPdf) 线性插值到 [lo, hi] 上等距 kMiniPdfPts 点, y 按峰值归一到 [0, 1]; lo == hi → 无 (不画)
+// 因子表迷你 PDF: Inspect 同款 KLL PDF (AggPdf) 线性插值到 [lo, hi] 上等距 kMiniPdfPts 点, y 按峰值归一到 [0, 1]; lo == hi → 无 (不画)
 inline constexpr int kMiniPdfPts = 32;
 struct MiniPdf {
   float lo = 0.f, hi = 0.f;
@@ -143,7 +143,7 @@ inline std::string row_key(std::string_view file, int widx) { return std::string
 // 一行 = 一个因子文件的一个权重 (weights[widx]); 文件级问题 (BROKEN / 模板未搜索) 的文件只出一行 widx = −1, 无可评估表达式.
 // 文件级字段 (file / name_* / expr_raw / tmpl / note / kind) 同文件各行相同
 struct FactorRow {
-  std::string file;    // 文件名 (不含目录) = 因子 (父) 身份 (edit_file / Optimize / 删除)
+  std::string file;    // 文件名 (不含目录) = 因子 (父) 身份 (edit_file / Search / 删除)
   int widx = -1;       // weights 下标; −1 = 文件级行
   int hold_src = 0;    // 该权重搜索时的持有期 (0 = 手填: 文件 expr 本身具体且无 weights, 视作唯一权重)
   int sign = 1;        // 该权重的方向 (weights[].sign); −1 → expr 是根下插了 TsNeg 的
@@ -167,7 +167,7 @@ struct FactorRow {
   float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsLoad valid_pct_of / rank_pct_of)
   int n_hold = 0;
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
-  std::vector<CostTier> costs;                         // [amt] = FeatureTable::costs 序, 每档 [n_hold] CostAcc (Inspect 净线从它算)
+  std::vector<CostTier> costs;                         // [amt] = FeatureTable::costs 序, 每金额段 [n_hold] CostAcc (Inspect 净线从它算)
   MiniPdf ic_pdf[factor::stat::kMaxHold];              // [hold] 逐行 rIC (ok 行) 分布, 与 Inspect 左下左半同一组样本
   MiniPdf x_pdf;                                       // 根输入值分布 (截尾, 与 Inspect 左下右半同一份 x_dist; 与持有期无关)
   const factor::stat::HoldStat *find_hold(int hold_m) const {
@@ -190,13 +190,13 @@ struct FactorRow {
   }
 };
 
-// 看板的目标分量 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的 每期真实毛 LS / rIC / score.
+// 因子表的目标分量 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的 每期真实毛 LS / rIC / score.
 // 无 stat / stat 无该持有期 / n < 3 → ok = false. ric_pow 取契约默认
 factor::search::Score RowScore(const FactorRow &r, int hold);
 
 // 进度面 = 自身 (Published): Scanning → (evaluate) Loading 期 done/total = 天 → Running 期 = 共享 DAG 算子节点
-class FactorsService : public Worker<FactorsService, FactorsRequest>, public Published {
-  friend Worker<FactorsService, FactorsRequest>;
+class FactorsService : public Service<FactorsService, FactorsRequest>, public Published {
+  friend Service<FactorsService, FactorsRequest>;
 
 public:
   static constexpr const char *kName = "FactorsWorker";
@@ -244,7 +244,7 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
 void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
 // 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 整个换成 ws (每项 {hold, sign, expr}, 无 stat; 调用方随后 Run 重算,
-// 看板 score / util 等全部由 stat 来), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
+// 因子表 score / util 等全部由 stat 来), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
 struct SearchWeight {
   int hold = 0;
   int sign = 1;     // ±1

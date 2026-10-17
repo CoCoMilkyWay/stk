@@ -19,9 +19,9 @@ namespace GUI::Features {
 // ============================================================================
 
 struct ComputeConfig {
-  // 池下限 = LabelHold::MIN_POOL_SLOTS (开盘档标签 T+N 跨日回填, 旧日 slot 持到结清; 少于此死锁), ComputeService.cpp static_assert 对账
-  static constexpr int kMinPoolSlots = 12;
-  int pool_slots = kMinPoolSlots + 2;
+  // 日环下限 = LabelHold::MIN_RING_SLOTS (开盘型标签 T+N 跨日回填, 旧日 slot 持到结清; 少于此死锁), ComputeService.cpp static_assert 对账
+  static constexpr int kMinRingSlots = 12;
+  int ring_slots = kMinRingSlots + 2;
   int adopt_pct = 50; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
   std::string lib;    // 算哪个库 (库名, 档由名定, 见 FeatureLib.hpp; Compute 页每库一个按钮)
 };
@@ -30,15 +30,15 @@ struct ComputeConfig {
 // Compute Service
 // ============================================================================
 
-class ComputeService : public Worker<ComputeService, ComputeConfig>, public Progress {
-  friend Worker<ComputeService, ComputeConfig>;
+class ComputeService : public Service<ComputeService, ComputeConfig>, public Progress {
+  friend Service<ComputeService, ComputeConfig>;
 
 public:
   static constexpr const char *kName = "ComputeWorker";
   explicit ComputeService(SharedData &data); // 末尾 Start
   ~ComputeService() { Stop(); }
 
-  // 核布局由机器核数自动推导 (StageLayout::make), UI 只交 ComputeConfig; 先断言再转 Worker::Request
+  // 核布局由机器核数自动推导 (StageLayout::make), UI 只交 ComputeConfig; 先断言再转 Service::Request
   void Request(ComputeConfig config);
   bool cancelling() const { return busy() && cancel_.load(std::memory_order_relaxed); }
 

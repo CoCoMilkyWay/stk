@@ -80,15 +80,15 @@ struct OperatorRow {
 };
 
 // 进度面 = 自身 (Published): done/total = 行
-class OperatorsService : public Worker<OperatorsService, OperatorsRequest>, public Published {
-  friend Worker<OperatorsService, OperatorsRequest>;
+class OperatorsService : public Service<OperatorsService, OperatorsRequest>, public Published {
+  friend Service<OperatorsService, OperatorsRequest>;
 
 public:
   static constexpr const char *kName = "OperatorsWorker";
   OperatorsService(); // 由 OpTable 展开静态行 (顺序 = 表序: TS 逐点 / TS 有窗 / CS), 末尾 Start
   ~OperatorsService() { Stop(); }
 
-  // GUI 线程: 填时间戳种子后转 Worker::Request
+  // GUI 线程: 填时间戳种子后转 Service::Request
   void Request(OperatorsRequest req);
   // 直接吃一份落盘快照当"已跑完"(进页载入 operators.json 用, 不算不落盘):
   // snap 由调用方从 rows 拷出后只填动态列 (静态列原样), 校验过了才进来; 仅允许一轮都没跑过时调.

@@ -8,10 +8,10 @@
 // 计算 flow (worker 私有 Flow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算:
 //   S  作用域   key = 特征库目录 | 库轴 hash | 月份 | 封顶  → dates, 截面门控, 毛标签 [H], 成本 [C], 库等权指数; 特征平面缓存 (作用域内读过的全留, 只增)
 //   Y  标签     随 S                                       → 毛 LabelsHost {ry[H], Labels} (FactorsLoad prep_labels, 一次常驻); 没有净标签集
-//   X  因子                                                → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
-//   R  rank_x                                              → 直接秩进 InspectPlanes::rx (随结果发布: 右上标的轴 / K 线着色);
+//   X  因子                                                → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (HostPool 常驻)
+//   R  rank_x                                              → 直接秩进 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
 //                                                            之前多跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
-//   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsService.hpp): 每金额档 × 每持有期一份换手成本 CostAcc (FactorsLoad
+//   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsService.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsLoad
 //                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: t ≥ h 的行逐格比 t−h 腿码, 两腿新进者
 //                                                            累建仓冲击; 一遍 [T][A], 无排序无标签). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::sell_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; sell_impact 只进均摊公式, 不进请求)
@@ -60,7 +60,7 @@ inline constexpr int kTails = 3;
 inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
 static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
 struct TailRow {
-  float sum[factor::stat::kLegs][kTails] = {};    // 两腿尾部做多超额 e 的持仓收益 Σe / max(cnt, cap_j) (cap_j = 满档 · kTailOfGroup[j]; 与 Row::grp 同口径)
+  float sum[factor::stat::kLegs][kTails] = {};    // 两腿尾部做多超额 e 的持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
   uint16_t cnt[factor::stat::kLegs][kTails] = {}; // 两腿尾部样本数
   float ls[kTails] = {};                          // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 Row::ls 同式; 尾空 → 该腿 0)
 };
@@ -69,7 +69,7 @@ struct TailRow {
 struct InspectPlanes {
   std::vector<factor::stat::Row> rows; // 一级 [hd.n][T], 只毛口径
   std::vector<TailRow> tails;          // 一级尾部 [hd.n][T], 与 rows 同布局, 只毛口径
-  std::vector<uint16_t> rx;            // r16(x) [T][A] (CS = 截面秩, TS = 自身分位; 只池内 g ∧ xm, kRankNone 无效): 右上标的轴排序 / K 线着色
+  std::vector<uint16_t> rx;            // r16(x) [T][A] (CS = 截面秩, TS = 自身分位; 只池内 g ∧ xm, kRankNone 无效): 右上资产轴排序 / K 线着色
   std::vector<uint16_t> rx_all;        // 同上但不看池 (g = xm): 池外段 (出 CS 池 / 当日无成交) 的秩, K 线淡色显示; 评估不用
   void clear() { rows.clear(), tails.clear(), rx.clear(), rx_all.clear(); }
 };
@@ -83,7 +83,7 @@ struct InspectResult {
   int n_hold = 0;
   factor::stat::Holds hd;                   // hd.h[hi]
   std::vector<CostTier> costs;              // [C] = FeatureTable::costs 序 (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
-  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 库轴 + 月份): 右下 K 线按它读库; uni 做库轴 ↔ 全局 id
+  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 库轴 + 月份): 右下 K 线按它读库; lib.axis 做库轴 ↔ 全局 id
   std::vector<float> lib_index;             // [T] 库等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   InspectPlanes pl;                         // 一级平面 (Row / 尾部 / 秩)
   std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径
@@ -97,8 +97,8 @@ struct InspectResult {
 };
 
 // 进度面 = 自身 (Published): Loading 期 done/total = 天; Running 期 = 算子节点 + 成本 + 评估
-class InspectService : public Worker<InspectService, InspectRequest>, public Published {
-  friend Worker<InspectService, InspectRequest>;
+class InspectService : public Service<InspectService, InspectRequest>, public Published {
+  friend Service<InspectService, InspectRequest>;
 
 public:
   static constexpr const char *kName = "InspectWorker";

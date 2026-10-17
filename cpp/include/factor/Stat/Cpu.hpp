@@ -16,7 +16,7 @@
 //                   DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (Inspect 尾部分层)
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     leg_codes     rx → 腿码 lc[T][A] (契约【换手成本】)
-//     cost_rows     lc × C 个金额档 → CostAcc[C][H] + cover[1 + C]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
+//     cost_rows     lc × C 个金额段 → CostAcc[C][H] + cover[1 + C]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
 //     Search/Cpu.hpp 对每个候选走 rank_x + accum_rows, 不另写流程.
 //   r16(x) 平面 rx / 腿码 lc 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H] / cover[tid][1 + C])
 //   由调用方持有, ensure 幂等 → 稳态零分配; 搜索每 worker 一份, 交互一份常驻.
@@ -64,7 +64,7 @@ inline void rank_y_rows(const Label &lb, int t0, int t1, int A, uint16_t *ry, Sc
 // 流程 (Exec 出线程, 见 misc/exec.hpp)
 // -----------------------------------------------------------------------------
 
-// 调用方持有; ensure 幂等 (形状对得上零分配). C = 金额档数 (只 cost_rows 用; 不算成本给 0)
+// 调用方持有; ensure 幂等 (形状对得上零分配). C = 金额段数 (只 cost_rows 用; 不算成本给 0)
 struct Workspace {
   std::vector<Scratch> sc;     // [tid]
   std::vector<Accum> acc;      // [tid][H]
@@ -166,7 +166,7 @@ inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *lc) 
 }
 
 // 换手成本 + cover (契约【换手成本】): lc × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖) + cov[1 + C] (覆盖; cov[0] = 有秩格数,
-// cov[1 + k] = 其中成本 k 有效). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次 cost_row (H × C 一遍 A 轴); cap = 满档 (持仓加权)
+// cov[1 + k] = 其中成本 k 有效). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次 cost_row (H × C 一遍 A 轴); cap = 满仓 (持仓加权)
 template <class Exec>
 inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &hd, const Cost *c, int C, double cap, Workspace &w, CostAcc *out,
                       long long *cov) {

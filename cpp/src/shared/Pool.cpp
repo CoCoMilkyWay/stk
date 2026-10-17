@@ -8,7 +8,7 @@
 namespace pool {
 
 Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
-  assert(bar.tier == TierId::Bar && bar.ready() && "票池源 = all 库 (先算 all)");
+  assert(bar.tier == TierId::Bar && bar.ready() && "票池源 = Bar 库 (先算 Bar 库)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
   constexpr size_t kLevel = 1;
   constexpr size_t kCloseRow = level_valid_rows(kLevel) - 1; // L1 254 (收盘)
@@ -24,11 +24,11 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   std::vector<uint8_t> seen(As, 0);
   for (size_t i = 0; i < dates.size(); ++i) {
     const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
-    assert(it != bar.dates.end() && *it == dates[i] && it != bar.dates.begin() && "回测日不在 all 库日期轴 (或是其首日): 重算 all 覆盖到 end_date");
+    assert(it != bar.dates.end() && *it == dates[i] && it != bar.dates.begin() && "回测日不在 Bar 库日期轴 (或是其首日): 重算 Bar 库覆盖到 end_date");
     const misc::Ymd prev = *(it - 1);
-    assert(reader.has_date(prev) && "all 库缺票池源日 (D−1): 先把 all 库算完");
+    assert(reader.has_date(prev) && "Bar 库缺票池源日 (D−1): 先把 Bar 库算完");
     reader.load_day_columns(prev, cols, dc);
-    assert(!reader.stale() && "all 库判废 (头不符): 重算 all");
+    assert(!reader.stale() && "Bar 库判废 (头不符): 重算 Bar 库");
     const feature_storage_t *row = dc.col(0) + kCloseRow * As;
     uint8_t *dst = full.data() + i * As;
     for (size_t a = 0; a < As; ++a) {
@@ -38,7 +38,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   }
 
   std::vector<uint32_t> ids;
-  std::vector<size_t> pick; // 库轴 sub → all 库下标
+  std::vector<size_t> pick; // 库轴 sub → Bar 库下标
   for (size_t a = 0; a < As; ++a)
     if (seen[a]) {
       ids.push_back(bar.axis.global(a));

@@ -4,13 +4,13 @@
 // LabelHold<Entry> - 持有期标签的档无关骨架 (LabelLob 盘口中间价 / LabelBar 分钟 VWAP 共用)
 // =============================================================================
 //   档只管 entry 怎么来 (Entry::px = 建仓价; Lob 另带冲击成本), 骨架管持有期组的全部日历与结算:
-//     open_at(l1, md)       有成交的分钟 bar 截开盘价 (开盘档 exit): 09:25 撮合 bar 的撮合价, 无撮合则首个连续竞价 bar 的
+//     open_at(l1, md)       有成交的分钟 bar 截开盘价 (开盘型 exit): 09:25 撮合 bar 的撮合价, 无撮合则首个连续竞价 bar 的
 //                           首笔成交价 (交易所开盘价定义). 返回该 bar 是否连续竞价 (可作 entry)
-//     emit_min(writer)      当日 entry 前缀推进后, 写出 exit 已到位的分钟档 (m, n): exit = entry[m+n] (同一基准, 相邻行精确伸缩)
-//     close_day(...)        收盘结算: 尾部行按收盘价建仓, 分钟档尾部 (exit 过收盘) / 收盘档全行 exit = 收盘价, 有开盘档则悬挂;
-//                           无成交 → 不写不悬挂. 之后开盘档到期结算
+//     emit_min(writer)      当日 entry 前缀推进后, 写出 exit 已到位的分钟型 (m, n): exit = entry[m+n] (同一基准, 相邻行精确伸缩)
+//     close_day(...)        收盘结算: 尾部行按收盘价建仓, 分钟型尾部 (exit 过收盘) / 收盘型全行 exit = 收盘价, 有开盘型则悬挂;
+//                           无成交 → 不写不悬挂. 之后开盘型到期结算
 //     day_begin / finish_all / reset   日历 / 区间末 / 每日重置
-//   开盘档 (T+N) 跨日回填: 日 D 的行 entry 存在悬挂槽里, 等到 D+N 日开盘才写 D 的张量 → D 的写句柄由 CoreTs 持到该日结清
+//   开盘型 (T+N) 跨日回填: 日 D 的行 entry 存在悬挂槽里, 等到 D+N 日开盘才写 D 的张量 → D 的写句柄由 CoreTs 持到该日结清
 //   (writer 带 days_ago). D+N 无开盘 (停牌 / 全日无成交) → 顺延到之后首个有开盘的日, 最多再等 N 日 (D+2N 仍无 → 最近一次收盘价).
 //   悬挂日环长 PEND_DAYS = 2·N_max + 1, 顶掉的槽必已结清 (断言).
 //   writer(col, n, l1, values, days_ago) 写 LB 块内偏移 col 起的 n 列; release(days_ago) = 该日全部组已写完, 写句柄可归还.
@@ -31,9 +31,9 @@ public:
   static constexpr size_t HOLD_COUNT = std::size(LABEL_KIND);
   static constexpr size_t GROUP_SIZE = 2; // 一个 hold 组: [long, short]
   static constexpr size_t hold_col(size_t h) { return h * GROUP_SIZE; }
-  static_assert(HOLD_COUNT <= 32, "开盘档结算位图用 uint32_t");
+  static_assert(HOLD_COUNT <= 32, "开盘型结算位图用 uint32_t");
 
-  // 开盘档最大 N: 日 D 的 T+N 组最晚在 D+2N 结算 → 同时悬挂 (张量未结清, 写句柄未归还) 的日数 ≤ PEND_DAYS (含当日)
+  // 开盘型最大 N: 日 D 的 T+N 组最晚在 D+2N 结算 → 同时悬挂 (张量未结清, 写句柄未归还) 的日数 ≤ PEND_DAYS (含当日)
   static constexpr size_t OPEN_MAX = [] {
     size_t m = 0;
     for (size_t h = 0; h < HOLD_COUNT; ++h)
@@ -48,9 +48,9 @@ public:
         return false;
     return true;
   }(),
-                "分钟档 / 开盘档的 n 须 ≥ 1");
-  // FeatureStore 池下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进 (CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
-  static constexpr size_t MIN_POOL_SLOTS = PEND_DAYS + 1;
+                "分钟型 / 开盘型的 n 须 ≥ 1");
+  // FeatureStore 日环下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进 (CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
+  static constexpr size_t MIN_RING_SLOTS = PEND_DAYS + 1;
 
   // 09:25 撮合 bar (L1 kAuctionL1) / 连续竞价 [kContOpenL1, kContCloseL1) = [09:30, 14:57) / 收盘竞价 (L1 252..254)
   static constexpr size_t kAuctionL1 = (L2::MORNING_MATCHING_START_HOUR * 60 + L2::MORNING_MATCHING_START_MINUTE) - MORNING_START_MIN;
@@ -83,10 +83,10 @@ public:
   }
 
 protected:
-  // 悬挂日槽: 一日的 entry (全部组共用) + 开盘档结算进度
+  // 悬挂日槽: 一日的 entry (全部组共用) + 开盘型结算进度
   struct Pend {
-    bool active = false;                // 有开盘档未结清 (写句柄未归还)
-    uint32_t open_mask = 0;             // 已结算的开盘档 (位 = h)
+    bool active = false;                // 有开盘型未结清 (写句柄未归还)
+    uint32_t open_mask = 0;             // 已结算的开盘型 (位 = h)
     size_t n_entry = 0;                 // 已定 entry 的行数 (行按锚点单调, 前缀)
     Entry entry[TRADE_MINUTES_PER_DAY]; // 各行 entry
   };
@@ -110,7 +110,7 @@ protected:
     return true;
   }
 
-  // 分钟档: 行 e 的 entry 到位 = 行 e−n 的 exit 到位, 每组游标 next_label_l1_ 顺序推进 (days_ago 恒 0)
+  // 分钟型: 行 e 的 entry 到位 = 行 e−n 的 exit 到位, 每组游标 next_label_l1_ 顺序推进 (days_ago 恒 0)
   template <class Writer>
   inline void emit_min(Writer &&writer) {
     const Pend &p = pend_[cur_];
@@ -150,7 +150,7 @@ protected:
         if (is_min)
           next_label_l1_[h] = TRADE_MINUTES_PER_DAY;
       }
-      p.active = kOpenMask != 0; // 有开盘档才悬挂
+      p.active = kOpenMask != 0; // 有开盘型才悬挂
     } else {
       p.active = false;
     }
@@ -179,7 +179,7 @@ private:
     return is_long ? (exit_px - entry_px) / entry_px : (entry_px - exit_px) / entry_px;
   }
 
-  // 开盘档到期结算 (close_day 尾 / finish_all): 遍历悬挂日 (老日先, 释放序随日序 —— FeatureStore 的"d+1 计满 ⇒ d 计满"),
+  // 开盘型到期结算 (close_day 尾 / finish_all): 遍历悬挂日 (老日先, 释放序随日序 —— FeatureStore 的"d+1 计满 ⇒ d 计满"),
   //   到期组写出, 结清的日 release(age). final = 区间末: 不管到期, 全部按最近一次收盘价结算
   template <class Writer, class Release>
   inline void settle_open(Writer &&writer, Release &&release, bool final) {
@@ -188,7 +188,7 @@ private:
       Pend &q = pend_[(cur_ + PEND_DAYS - age) % PEND_DAYS];
       if (!q.active) {
         if (age == 0 && !final)
-          release(age); // 当日不悬挂 (无成交 / 无开盘档): 句柄当日归还
+          release(age); // 当日不悬挂 (无成交 / 无开盘型): 句柄当日归还
         continue;
       }
       assert(has_last_ && "悬挂日必有 entry ⇒ 必有过成交 ⇒ last_close_ 有值");
@@ -216,7 +216,7 @@ private:
     }
   }
 
-  size_t next_label_l1_[HOLD_COUNT] = {}; // 分钟档: 各组下一个待写 L1 行 (收盘 / 开盘档不用)
+  size_t next_label_l1_[HOLD_COUNT] = {}; // 分钟型: 各组下一个待写 L1 行 (收盘 / 开盘型不用)
   float open_px_ = 0.0f;                  // 当日开盘价, open_ok_ = 已截到 (reset 清)
   bool open_ok_ = false;
 

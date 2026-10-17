@@ -9,8 +9,8 @@
 // 逐笔数据的准入校验 — 全部判据集中在这一个文件
 // ============================================================================
 //
-// 目的: 从逐笔委托还原订单簿之前, 先判断"这一天这个标的的逐笔流本身是否完整".
-// 数据源会缺片 (整段委托丢失 / 成交文件缺失 / 归档成员位腐烂), 而 LOB 引擎对
+// 目的: 从逐笔委托还原订单簿之前, 先判断"这一天这个资产的逐笔流本身是否完整".
+// 数据源会缺片 (整段委托丢失 / 成交文件缺失 / 归档成员位腐烂), 而订单簿引擎对
 // 缺片是沉默的 —— 它有一整套 corner case 机制 (OUT_OF_ORDER 预创建 / Level[0]
 // 暂存), 缺的订单会被当成"乱序到达"悄悄吸收, 产出一个看起来正常但实际错误的
 // 盘口. 所以判断必须在编码期、拿着原始 CSV 做, 不能留给下游.
@@ -41,8 +41,8 @@
 // 自然日=0、时间=9:26:00、价量与 id 全为 0 的记录. 不跳过的话
 // TradeBothMissing 会把 2025 年整个市场判死. 识别规则直接沿用 LimitOrderBook
 // 已验证过的那条 —— 价与量同时为 0. 不能放宽成"量为 0 就跳过": 市价单('1')
-// 与本方最优单('U') 是 price=0 而 volume>0 的正常记录 (LOB 的 SPECIAL_MAKER),
-// 反过来 volume=0 而 price≠0 则是 LOB 抵扣不动的坏记录, 该由 LobUnusable 抓.
+// 与本方最优单('U') 是 price=0 而 volume>0 的正常记录 (订单簿的 SPECIAL_MAKER),
+// 反过来 volume=0 而 price≠0 则是订单簿抵扣不动的坏记录, 该由 LobUnusable 抓.
 //
 // ----------------------------------------------------------------------------
 // 成本
@@ -70,9 +70,9 @@ struct CSVTrade;
 //   Corrupt:   源 CSV 有坏行 (字段错位/代码非法) 或归档流断, 多半是归档成员
 //              CRC 损坏. 不产出任何东西也不写墓碑 —— 跳过并留日志, 等人把源
 //              文件修好, 下次增量自动重来. 绝不能 abort: 这是几小时的批处理,
-//              一个坏标的不该让整轮白跑.
+//              一个坏资产不该让整轮白跑.
 //   Invalid:   行能解析, 但逐笔流本身不自洽或与快照对不上 (见下方判据).
-//              处置与 Corrupt 完全相同 —— 缺片的逐笔编成帧会让 LOB 沉默地重建出
+//              处置与 Corrupt 完全相同 —— 缺片的逐笔编成帧会让订单簿沉默地重建出
 //              错误盘口, 不如不落.
 enum class Outcome : uint8_t { Ok,
                                Tombstone,
@@ -149,10 +149,10 @@ enum Check : uint32_t {
   // exit(1) 那条路永远走不到: 编码期跳掉一个资产, 好过特征计算跑到一半整个
   // 进程退出.
   LobUnusable = 1u << 9,
-  // 当日成交带装不进 LOB 档位窗口 (kPriceIndexRange).
+  // 当日成交带装不进订单簿价位窗口 (kPriceIndexRange).
   //
   // 落在窗口外的委托被停靠到边缘是无损的: 它们离盘口极远, 不可能成交, 只承载
-  // "在买/卖方向上无穷远"这一个信息, 而边缘档位表达的正是这个. 但成交价一旦被
+  // "在买/卖方向上无穷远"这一个信息, 而边缘价位表达的正是这个. 但成交价一旦被
   // 停靠, 真实盘口就被扭曲了, 必须拦下.
   //
   // 涨跌停把单日成交带限制得远窄于窗口, 因此这条只可能在无涨跌幅限制的新股上
@@ -173,7 +173,7 @@ enum Check : uint32_t {
 
 // 判据位的元信息 — 下标即 Check 的移位量.
 //
-// 日文件账目 (见 shared/OrdersDay.hpp 的 DayRecord) 按位存命中标的数, Encode 页
+// 日文件账目 (见 shared/OrdersDay.hpp 的 DayRecord) 按位存命中资产数, Encode 页
 // 的按日分析表按位出列, 两边都要给这些位起名字. 名字集中在这一张表里, 加一
 // 条判据只改这一处.
 //
@@ -204,7 +204,7 @@ inline constexpr uint32_t kAuctionCloseTime = 150100000;
 // 的品种不适用这个界.
 inline constexpr int64_t kTurnoverToleranceFen = 100;
 
-// 部分 2023 行情 CSV 的"当日成交额"来自 int32 字段, 高成交额标的会封顶到
+// 部分 2023 行情 CSV 的"当日成交额"来自 int32 字段, 高成交额资产会封顶到
 // 2147483647 (INT32_MAX). 这个值不是可对拍真值, 只跳过 TurnoverMismatch, 其它
 // 校验照常跑.
 inline constexpr uint64_t kMarketTurnoverCapYuan = 2147483647ull;
@@ -233,12 +233,12 @@ struct ValidationReport {
   size_t trade_side_missing = 0;
   size_t over_consumed = 0;    // 委托流不完整时照常统计, 只是不置位
   size_t field_overflow = 0;   // 超出 Order 位宽的记录数
-  size_t lob_unusable = 0;     // LOB 抵扣不动的记录数
+  size_t lob_unusable = 0;     // 订单簿抵扣不动的记录数
   size_t price_scientific = 0; // 价格字段用了科学计数法的记录数
   bool strict_ledger = false;
 
-  // 当日非零价格的上下界 (分) 与由此定出的 LOB 索引基准. price_base 要跟着
-  // 帧一起记进日文件目录, 解码后交给 LOB 还原档位下标.
+  // 当日非零价格的上下界 (分) 与由此定出的订单簿索引基准. price_base 要跟着
+  // 帧一起记进日文件目录, 解码后交给订单簿还原价位下标.
   uint32_t price_min = 0;
   uint32_t price_max = 0;
   uint32_t price_base = 0;

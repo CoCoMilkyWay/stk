@@ -58,7 +58,7 @@ __attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
   return buf;
 }
 
-// 过程日志 <factor_dir>/log/<因子名>.log: 每次 Optimize 覆盖; 逐行即刷 (断言崩了也留得下); 行首 = 距开跑秒数.
+// 过程日志 <factor_dir>/log/<因子名>.log: 每次 Search 覆盖; 逐行即刷 (断言崩了也留得下); 行首 = 距开跑秒数.
 // 只记流程中间量 (分块 / 尺度 / 网格 / 分支演化 / 高原 / 相关), 终选结果看因子文件 weights
 struct RunLog {
   std::ofstream f;
@@ -149,7 +149,7 @@ enum class Rc : uint8_t { Ok,
 // worker 私有的常驻件 (线程池 + CPU 工作区; 跨请求存活, ensure 幂等)
 struct SearchService::Flow {
   misc::exec::ForkJoin ex;
-  factor::cpu::Pool pool;
+  factor::cpu::HostPool hp;
   std::vector<factor::cpu::ParScratch> sc;
   factor::cpu::stat::Workspace w;
   std::vector<uint16_t> rx; // 候选的 r16 [T][A] (块形, 候选间复用)
@@ -157,7 +157,7 @@ struct SearchService::Flow {
 };
 
 bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, SearchRequest &req) {
-  assert(!row.tmpl.empty() && "Optimize 只接模板解析过的因子");
+  assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
   req.factor_dir = data.config.factor_dir + "/" + data.feature.selection.pool;
   req.file = row.file;
@@ -217,11 +217,11 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     std::filesystem::create_directories(log_dir);
     prune_logs(req.factor_dir, log_dir);
     lg.f.open(log_dir / (std::filesystem::path(req.file).stem().string() + ".log"), std::ios::trunc);
-    assert(lg.f.is_open() && "Optimize log 打不开");
+    assert(lg.f.is_open() && "Search log 打不开");
     const std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-    lg("Optimize %s  @ %s", req.file.c_str(), ts);
+    lg("Search %s  @ %s", req.file.c_str(), ts);
     lg("模板: %s", req.tmpl.c_str());
     lg("后端 %s, 票池 %s, 区间 %s ~ %s", res.backend.c_str(), req.pool.c_str(), misc::dash(req.start_date).c_str(), misc::dash(req.end_date).c_str());
   }
@@ -494,10 +494,10 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         ptrs.push_back(&ents[static_cast<size_t>(ids[k])].e);
       const factor::Dag Fd = factor::build_forest(ptrs, /*keep_roots=*/false);
       assert(Fd.feats == d0.feats && "同结构候选的特征叶序必与基线一致 (平面下标按 d0.feats 装)");
-      F.pool.prepare(Fd.n_slots, n);
+      F.hp.prepare(Fd.n_slots, n);
       const auto plane_of = [&](int i) -> const factor::check::Plane * {
         const factor::DagNode &nd = Fd.nodes[static_cast<size_t>(i)];
-        return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.pool.slots[static_cast<size_t>(nd.slot)];
+        return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.hp.slots[static_cast<size_t>(nd.slot)];
       };
       for (int i = 0; i < static_cast<int>(Fd.nodes.size()); ++i) {
         if (cancelled())
@@ -509,7 +509,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         const factor::check::Plane *in[3] = {};
         for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
           in[a] = plane_of(nd.in[a]);
-        factor::cpu::run_node(F.ex, nd, in, F.pool.slots[static_cast<size_t>(nd.slot)], T, A, F.sc, L.cs.m.data());
+        factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, F.sc, L.cs.m.data());
         if (!Fd.is_root(i))
           continue;
         const factor::check::Plane *rp = plane_of(i);
@@ -544,7 +544,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       lab[hi] = label_of(L.labels[static_cast<size_t>(hi)], nullptr);
     factor::gpu::SearchSession *ss = factor::gpu::search_open(T, A, batch, hd, n_full_of(L));
     factor::gpu::search_load(ss, lab);
-    factor::gpu::DevPool pool;
+    factor::gpu::DevPool dp;
     std::vector<Result> out(static_cast<size_t>(batch));
     std::vector<const factor::gpu::DevPlane *> roots(static_cast<size_t>(batch));
     bool ok = true;
@@ -561,16 +561,16 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         assert(Fd.feats == d0.feats);
         size_t vfree = 0, vtotal = 0;
         factor::gpu::mem_info(&vfree, &vtotal);
-        const size_t grow = Fd.n_slots > static_cast<int>(pool.slots.size()) ? static_cast<size_t>(Fd.n_slots) - pool.slots.size() : 0;
+        const size_t grow = Fd.n_slots > static_cast<int>(dp.slots.size()) ? static_cast<size_t>(Fd.n_slots) - dp.slots.size() : 0;
         if (static_cast<double>(grow) * 5.0 * static_cast<double>(n) <= 0.9 * static_cast<double>(vfree))
           break;
         assert(C > 1 && "显存不够评一个候选: 块太大");
         C /= 2;
       }
-      pool.prepare(sess, Fd.n_slots);
+      dp.prepare(sess, Fd.n_slots);
       const auto plane_of = [&](int i) -> const factor::gpu::DevPlane * {
         const factor::DagNode &nd = Fd.nodes[static_cast<size_t>(i)];
-        return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : pool.slots[static_cast<size_t>(nd.slot)];
+        return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : dp.slots[static_cast<size_t>(nd.slot)];
       };
       for (int i = 0; i < static_cast<int>(Fd.nodes.size()); ++i) {
         if (cancelled()) {
@@ -584,7 +584,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         const factor::gpu::DevPlane *in[3] = {};
         for (int a = 0; a < o.arity; ++a)
           in[a] = plane_of(nd.in[a]);
-        factor::gpu::DevPlane *o_plane = pool.slots[static_cast<size_t>(nd.slot)];
+        factor::gpu::DevPlane *o_plane = dp.slots[static_cast<size_t>(nd.slot)];
         if (o.a == factor::A::SELF)
           factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], o_plane, T, A, nd.p);
         else
@@ -595,7 +595,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       for (int k = 0; k < C; ++k) {
         const factor::DagNode &rn = Fd.nodes[static_cast<size_t>(Fd.roots[static_cast<size_t>(k)])];
         assert(rn.op >= 0 && rn.slot >= 0);
-        roots[static_cast<size_t>(k)] = pool.slots[static_cast<size_t>(rn.slot)];
+        roots[static_cast<size_t>(k)] = dp.slots[static_cast<size_t>(rn.slot)];
       }
       factor::gpu::search_eval(ss, roots.data(), C, cs_gate, req.frame, cd.t0_abs, cd.t_lo, out.data());
       for (int k = 0; k < C; ++k) {
@@ -607,7 +607,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       publish(static_cast<size_t>(C));
       b0 += static_cast<size_t>(C);
     }
-    pool.release();
+    dp.release();
     factor::gpu::search_close(ss);
     factor::gpu::session_close(sess); // 上传的输入平面随会话释放
     return ok;
@@ -677,9 +677,9 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   //      上游自由参数取占位值, σ 只是坐标刻度, 粗网格 ±kSpan 单位 + 局部搜索兜得住) ----
   if (handle(load_chunk(0, chunks[0]), ret))
     return ret;
-  // ---- 满档只数 n_full (显示用): 块 0 池宽. 评估的 cap 逐块取该块的 n_full_of (CPU labels_raw / GPU search_open 同一份) ----
+  // ---- 满仓只数 n_full (显示用): 块 0 池宽. 评估的 cap 逐块取该块的 n_full_of (CPU labels_raw / GPU search_open 同一份) ----
   res.n_full = n_full_of(chunks[0].L);
-  lg("满档一腿 %.1f 只 (块 1 池内平均有效票数 / %d 组)", res.n_full, fs::kGroups);
+  lg("满仓一腿 %.1f 只 (块 1 池内平均有效资产数 / %d 组)", res.n_full, fs::kGroups);
   {
     std::vector<size_t> need; // 要尺度的槽
     std::vector<int> want;    // 对应输入节点在 d0 的下标
@@ -700,12 +700,12 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       const int T = L.T;
       const size_t n = L.n();
       const int last = *std::max_element(want.begin(), want.end());
-      F.pool.prepare(d0.n_slots, n);
+      F.hp.prepare(d0.n_slots, n);
       if (F.sc.size() < static_cast<size_t>(nt))
         F.sc.resize(static_cast<size_t>(nt));
       const auto plane_of = [&](int i) -> const factor::check::Plane * {
         const factor::DagNode &nd = d0.nodes[static_cast<size_t>(i)];
-        return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.pool.slots[static_cast<size_t>(nd.slot)];
+        return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.hp.slots[static_cast<size_t>(nd.slot)];
       };
       std::vector<double> sigma(need.size(), 0.0);
       for (int i = 0; i <= last; ++i) {
@@ -718,7 +718,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
           const factor::check::Plane *in[3] = {};
           for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
             in[a] = plane_of(nd.in[a]);
-          factor::cpu::run_node(F.ex, nd, in, F.pool.slots[static_cast<size_t>(nd.slot)], T, A, F.sc, L.cs.m.data());
+          factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, F.sc, L.cs.m.data());
         }
         for (size_t q = 0; q < need.size(); ++q) {
           if (want[q] != i)
@@ -1010,7 +1010,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     }
   }
   assert(!ws.empty());                              // n_branch > 0 ⇒ 至少一个 h 有高原集
-  WriteFactorWeights(req.factor_dir, req.file, ws); // 只写权重; 看板数据由随后的 Run 用同一份目标从 stat 算
+  WriteFactorWeights(req.factor_dir, req.file, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
   res.wrote = true;
   res.n_weights = static_cast<int>(ws.size());
   res.message = "weights 已写入 (" + std::to_string(ws.size()) + " 个权重, " + std::to_string(H) + " 个持有期), 自动 Run 重算 stat";

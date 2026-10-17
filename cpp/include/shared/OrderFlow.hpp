@@ -3,7 +3,7 @@
 // OrderFlow
 // ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (L1 分钟频)
 // │            worker 逐日流式 (从前往后, 每日一次选列读), GUI 画已发布前缀
-// ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放 LOB
+// ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
 // │            + 多特征 overlay (当前选中层逐列选读, L1 分钟映射到秒); 双槽 ping-pong 整体发布
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
@@ -61,7 +61,7 @@ constexpr float HEATMAP_LOG_THR_MIN = 3.0f;     // 1千元
 constexpr float HEATMAP_LOG_THR_MAX = 7.0f;     // 1千万元 (= AMOUNT_MAX_VISIBLE)
 constexpr float HEATMAP_LOG_THR_STEP = 0.1f;    // 自动阈值直方图分辨率 = 滑条显示精度
 constexpr float HEATMAP_LOG_THR_DEFAULT = 5.0f; // 无数据兜底 (10万元)
-constexpr float HEATMAP_AUTO_INK_RATIO = 0.60f; // 自动阈值目标: 着色档秒 / 有量档秒 (越大越密)
+constexpr float HEATMAP_AUTO_INK_RATIO = 0.60f; // 自动阈值目标: 着色价位秒 / 有量价位秒 (越大越密)
 
 // 日内时段边界 (L0 秒下标): 开盘竞价 [0,600) / 盘前5分钟 [600,900)
 // / 连续竞价 [900,15120) / 收盘竞价 [15120,15300)
@@ -141,7 +141,7 @@ struct OrderFlow {
     struct Tick {
       size_t tick_idx; // 交易秒下标 [0, 15300)
       float mid_price; // 竞价交叉秒 = 预撮合参考价, 其余 = (bid1+ask1)/2
-      // 集合竞价预撮合 (LOB update_depth 竞价分支): ref > 0 = 竞价且簿交叉, 其余恒 0
+      // 集合竞价预撮合 (订单簿 update_depth 竞价分支): ref > 0 = 竞价且簿交叉, 其余恒 0
       float ref_price;                                                   // 元
       float matched_amount;                                              // 元, 参考价位虚拟匹配额
       float imbalance_amount;                                            // 元, SIGNED: + 买剩, - 卖剩
@@ -162,7 +162,7 @@ struct OrderFlow {
       void clear();
     };
 
-    // 热力图 (全簿): 逐有效秒喂 LOB 全部可见档位 → 按价位合并矩形 (amount 不变则延长)
+    // 热力图 (全簿): 逐有效秒喂订单簿全部可见价位 → 按价位合并矩形 (amount 不变则延长)
     struct HeatmapMerged {
       struct Rect {
         size_t tick_start, tick_end;
@@ -206,7 +206,7 @@ struct OrderFlow {
     std::vector<Tick> ticks; // 按 tick_idx 升序
     Plot plot;
     HeatmapMerged merged;
-    // 当日自动热力图阈值 (log10 元): 载入新槽时 GUI 取作初值 → 色块浓度跨日/跨标的一致
+    // 当日自动热力图阈值 (log10 元): 载入新槽时 GUI 取作初值 → 色块浓度跨日/跨资产一致
     float auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
     // 特征线 (当前选中层, 与图2 同源): L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒
     std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat;
@@ -316,16 +316,16 @@ struct OrderFlow {
 
   // ==========================================================================
   // DepthProfile — GUI 线程私有: 锚点秒的全簿截面 → 纵向深度图 (图1右)
-  //   数据源 = 热力图合并矩形 (全簿, 不受 30 档限制): 每价位二分找覆盖锚点秒的矩形.
-  //   竞价交叉簿三态: 纯买区 (< 最低卖档) / 纯卖区 (> 最高买档) / 重合区 [ask_low, bid_top]
+  //   数据源 = 热力图合并矩形 (全簿, 不受 30 价位限制): 每价位二分找覆盖锚点秒的矩形.
+  //   竞价交叉簿三态: 纯买区 (< 最低卖价位) / 纯卖区 (> 最高买价位) / 重合区 [ask_low, bid_top]
   // ==========================================================================
   struct DepthProfile {
-    // 逐档净额 (价升序; amount SIGNED 元: + 买 - 卖)
+    // 逐价位净额 (价升序; amount SIGNED 元: + 买 - 卖)
     std::vector<double> price, amount;
     // 累计曲线 (万元): 买自最高买价向下累计, 卖自最低卖价向上累计 (各自独立点集)
     std::vector<double> bid_cum_x, bid_cum_y; // y = 价格降序
     std::vector<double> ask_cum_x, ask_cum_y; // y = 价格升序
-    double bid_top = 0, ask_low = 0;          // 最高买档价 / 最低卖档价 (交叉: ask_low < bid_top)
+    double bid_top = 0, ask_low = 0;          // 最高买价位价 / 最低卖价位价 (交叉: ask_low < bid_top)
     double cum_max = 0;                       // 两侧累计额最大值 (万元, X 轴范围)
 
     uint32_t gen = UINT32_MAX; // 绑定的 Depth 槽 gen
@@ -360,7 +360,7 @@ struct OrderFlow {
     misc::Ymd depth_date = 0;
 
     // 图2 X 域 (= 特征日数 × L1_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
-    // 只在域本身变了 (重扫日期) 才复位视野 —— 换标的不动 X
+    // 只在域本身变了 (重扫日期) 才复位视野 —— 换资产不动 X
     double l1_x_max = 0.0, l1_x_applied = 0.0;
     bool kline_rescan_pending = false; // 请求带 rescan (dates 正在重扫): 期间 dates 不可读
 
@@ -370,7 +370,7 @@ struct OrderFlow {
     double l0_y_min = 0.0, l0_y_max = 0.0; // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
 
     // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx
-    // (kline_gen, pub_days) 变才重算 — 流式追加 / 换标的 / 重扫日期 都被 gen 覆盖
+    // (kline_gen, pub_days) 变才重算 — 流式追加 / 换资产 / 重扫日期 都被 gen 覆盖
     std::vector<size_t> l1_missing_days;
     uint32_t l1_missing_days_gen = UINT32_MAX;
     size_t l1_missing_days_pub_days = 0;

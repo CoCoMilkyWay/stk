@@ -41,7 +41,7 @@ public:
     roa_ttm,     // [%]
     dy_ttm,      // [ratio]
     cfo_chg_ttm, // [-1,1]
-    rz_bal,      // [亿元] 融资余额 (非标的 → NaN)
+    rz_bal,      // [亿元] 融资余额 (非资产 → NaN)
     rq_bal,      // [亿元] 融券余额
     st_profit,   // 0/1
     st_revenue,  // 0/1

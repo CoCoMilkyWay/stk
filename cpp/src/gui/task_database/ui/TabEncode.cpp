@@ -28,7 +28,7 @@ const ImVec4 kPrereqBad(0.95f, 0.3f, 0.3f, 1.0f);
 
 // Confirm 弹窗里三条前置条件共用的一行: 标签 + 状态 + (不满足时) 同行一个
 // "风险自负"勾选. 勾上就地转绿 —— can_encode 立刻跟着放行, 不需要额外提示.
-// ack == nullptr 表示这条没有旁路 (如 File Check 的 N/A 档).
+// ack == nullptr 表示这条没有旁路 (如 File Check 的 N/A 项).
 void render_prereq_row(const char *name, bool ok, const char *status_label, bool *ack, const char *ack_id) {
   const bool bypassed = !ok && ack && *ack;
 
@@ -249,7 +249,7 @@ enum class DateDim { Archive,
 
 struct DateRow {
   misc::Ymd date = 0;
-  size_t expected = 0; // 当天本该有产物的标的数
+  size_t expected = 0; // 当天本该有产物的资产数
   size_t missing = 0;  // 其中没有的 — 排序键
   size_t no_archive = 0;
   size_t corrupt = 0;
@@ -319,7 +319,7 @@ std::vector<DateColumnSpec> build_date_columns(const DateTableView &view) {
       &DateRow::todo);
   add(view.has_corrupt, "corrupt", "源 CSV 坏行, 或归档流中途断掉\n数据源侧的问题, 得修包",
       &DateRow::corrupt);
-  add(view.has_invalid, "invalid", "准入校验未过的标的数\n右边各列是它按判据的拆解 (一个标的可命中多条)",
+  add(view.has_invalid, "invalid", "准入校验未过的资产数\n右边各列是它按判据的拆解 (一个资产可命中多条)",
       &DateRow::invalid);
 
   for (const size_t bit : view.check_columns) {
@@ -429,7 +429,7 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
     const char *label = column == 0 ? "Date" : (column == 1 ? "Miss" : columns[column - 2].abbr);
     const char *tooltip =
         column == 0 ? "交易日 (YYYYMMDD)"
-                    : (column == 1 ? "当天的缺口 / 当天本该有产物的标的数\n分母是已上市未退市、当日未停牌的标的 (北交所不计)"
+                    : (column == 1 ? "当天的缺口 / 当天本该有产物的资产数\n分母是已上市未退市、当日未停牌的资产 (北交所不计)"
                                    : columns[column - 2].desc);
     ImGui::TableHeader(label);
     if (ImGui::IsItemHovered()) {

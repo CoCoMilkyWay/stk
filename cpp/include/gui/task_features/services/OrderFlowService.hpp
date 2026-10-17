@@ -1,10 +1,10 @@
-// OrderFlowService — OrderFlow 三路请求的编排外观: Kline / Depth / Pick 各一个 worker (gui/util/Service.hpp), 三路并行
+// OrderFlowService — OrderFlow 三路请求的编排外观: Kline / Depth / Pick 各一条 lane (后台线程) (gui/util/Service.hpp), 三路并行
 //
 // 线程模型 (发布协议见 shared/OrderFlow.hpp 头注释):
 //   - GUI 线程: 每帧把期望态快照 (asset / anchor date / 选中特征) 交给 Request*;
 //     变化检测与 gen 递增在 GUI 侧, 服务侧只管"照单执行最新一代" (新请求覆盖旧的, 在跑的被打断)
 //   - 三个 worker 线程, 私有常驻资源 (reader / 缓冲) 首个请求时在 worker 线程建:
-//       Depth 重放: decode 帧 → LOB 逐笔重放 → 秒级快照 → plot/heatmap 构建 → 背槽整体发布
+//       Depth 重放: decode 帧 → 订单簿逐笔重放 → 秒级快照 → plot/heatmap 构建 → 背槽整体发布
 //       Pick 逐日状态: 锚点日的 L1 filter 列选读 → 全资产 PIT 状态 (ST / 在市 / 行业)
 //         → 背槽整体发布 (供 GUI 资产筛选)
 //       Kline 流式: 逐日选列读 (OHLC + ts_valid + 特征) → 抽选中资产 → 追加 + 单调前缀发布;
@@ -28,7 +28,7 @@ namespace GUI::Features {
 
 class OrderFlowService {
 public:
-  explicit OrderFlowService(std::string pool); // pool = 票池库名 (Lob 档; 状态列另读 all 库)
+  explicit OrderFlowService(std::string pool); // pool = 票池库名 (Lob 档; 状态列另读 Bar 库)
   ~OrderFlowService();
 
   // Lifecycle (幂等)
@@ -62,14 +62,14 @@ private:
     misc::Ymd date;
   };
 
-  class KlineWorker;    // 逐日流式 + 前缀发布
-  class DepthWorker;    // 重放 + 构建 + 背槽发布
-  class PickWorker; // 逐日 filter 列 → 全资产状态 + 背槽发布
+  class KlineLane;    // 逐日流式 + 前缀发布
+  class DepthLane;    // 重放 + 构建 + 背槽发布
+  class PickLane; // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   std::string pool_;
-  std::unique_ptr<KlineWorker> kline_;
-  std::unique_ptr<DepthWorker> depth_;
-  std::unique_ptr<PickWorker> pick_;
+  std::unique_ptr<KlineLane> kline_;
+  std::unique_ptr<DepthLane> depth_;
+  std::unique_ptr<PickLane> pick_;
 };
 
 } // namespace GUI::Features

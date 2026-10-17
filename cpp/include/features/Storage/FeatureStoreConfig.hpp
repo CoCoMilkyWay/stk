@@ -26,7 +26,7 @@
 //     <tier>::<LVL>_Field::<code>    列下标枚举
 //     <tier>::<LVL>_FINGERPRINT      字段表指纹 (落文件头)
 //   汇总成 <tier>::LEVELS[lvl] (LevelInfo, 按语义层号; 档缺的层 fields == nullptr), 编译期/运行时按层取 rows / field_count / fingerprint;
-//   <tier>::Tier = 写端基建 (FeatureStore / CoreCrosssection / fstore) 的档模板参数; TierSide<T>::type = 旁读档 (TIER_SIDES).
+//   <tier>::Tier = 写端基建 (FeatureStore / CoreCs / fstore) 的档模板参数; TierSide<T>::type = 旁读档 (TIER_SIDES).
 //   字段格式: X(code, cat_l1, cat_l2, name_en, name_cn, desc, formula, SRC)
 // ============================================================================
 
@@ -141,7 +141,7 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 //   FNV-1a 64 over "code:1:kind" 逐字段拼接 (顺序敏感; 1 = 已废的列宽, 恒折入以保旧库指纹)
 //   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelLob 的 entry / exit 定义) 时 +1, 旧库读取即判废而非静默错义
 // ============================================================================
-constexpr uint64_t kLabelSemver = 2; // 1: 分钟档 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准)
+constexpr uint64_t kLabelSemver = 2; // 1: 分钟型 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准)
 constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
   for (; *s; ++s)
     h = (h ^ static_cast<uint8_t>(*s)) * 0x100000001b3ULL;
@@ -224,7 +224,7 @@ constexpr size_t last_present(const std::array<LevelInfo, LEVEL_COUNT> &l) {
 #define GENERATE_TIER(T, ns)                                                           \
   namespace ns {                                                                       \
   inline constexpr std::array<LevelInfo, LEVEL_COUNT> LEVELS = tier_levels(TierId::T); \
-  /* 写端基建 (FeatureStore / CoreCrosssection / fstore) 的档模板参数 */               \
+  /* 写端基建 (FeatureStore / CoreCs / fstore) 的档模板参数 */               \
   struct Tier {                                                                        \
     static constexpr TierId kId = TierId::T;                                           \
     static constexpr const std::array<LevelInfo, LEVEL_COUNT> &LEVELS = ns::LEVELS;    \
@@ -250,7 +250,7 @@ struct TierSide {
 TIER_SIDES(TIER_SIDE_ONE)
 #undef TIER_SIDE_ONE
 
-// 档 T 的 lvl 层里 code 列的下标 (编译期按名定址, 供档模板化的基建取基建列 / 方法源列); 找不到 = field_count
+// 档 T 的 lvl 层里 code 列的下标 (编译期按名定址, 供档模板化的基建取元列 / 方法源列); 找不到 = field_count
 template <class T>
 constexpr size_t field_of(size_t lvl, std::string_view code) {
   const LevelInfo &L = T::LEVELS[lvl];

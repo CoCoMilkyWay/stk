@@ -1,4 +1,4 @@
-// Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: 因子文件 stats[i].holds[] 每档 = 按 hold_cols() 列序的数组
+// Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: 因子文件 stats[i].holds[] 每项 = 按 hold_cols() 列序的数组
 // (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 三个逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / leg_n,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).

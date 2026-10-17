@@ -42,7 +42,7 @@ inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : 
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
 struct TailExt {
   const int (*thr)[kTails];
-  double cap;                                   // 满档 (Labels::cap); 尾 j 的满档 = cap · kTailOfGroup[j]
+  double cap;                                   // 满仓 (Labels::cap); 尾 j 的满仓 = cap · kTailOfGroup[j]
   factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (样本数, 本腿标签和): ls 用
   double slv[kLegs][kTails] = {};               // 尾部 Σlv: 分层用
   void cell(unsigned x, bool ok, const float *y) {
@@ -98,7 +98,7 @@ struct InspectService::Flow {
   // Y 毛标签 [H]: ry = prep_label 常驻, lab.L 指向 L.labels + ry
   LabelsHost lab;
   // X / R / C / L 常驻缓冲
-  factor::cpu::Pool pool;
+  factor::cpu::HostPool hp;
   std::vector<factor::cpu::ParScratch> nsc;
   factor::cpu::stat::Workspace w;
   InspectPlanes pl;        // 一级平面, 发布时与 result.pl 交换
@@ -273,12 +273,12 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
 
   // ---- X: Dag 后序顺序走, 每节点全核 ----
   begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 成本池化 + 评估
-  F.pool.prepare(d.n_slots, n);
+  F.hp.prepare(d.n_slots, n);
   if (F.nsc.size() < static_cast<size_t>(nt))
     F.nsc.resize(static_cast<size_t>(nt));
   const auto plane_of = [&](int i) -> const factor::check::Plane * {
     const factor::DagNode &nd = d.nodes[static_cast<size_t>(i)];
-    return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.pool.slots[static_cast<size_t>(nd.slot)];
+    return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.hp.slots[static_cast<size_t>(nd.slot)];
   };
   for (int i = 0; i < N; ++i) {
     if (cancelled())
@@ -290,7 +290,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
       in[a] = plane_of(nd.in[a]);
     const Clock::time_point t0 = Clock::now();
-    factor::cpu::run_node(F.ex, nd, in, F.pool.slots[static_cast<size_t>(nd.slot)], T, A, F.nsc, L.cs.m.data());
+    factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, F.nsc, L.cs.m.data());
     res.eval_ms += ms_since(t0);
     publish(1);
   }

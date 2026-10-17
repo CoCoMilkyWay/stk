@@ -33,8 +33,8 @@ namespace GUI::Tasks {
 enum TabIdx {
   TAB_COMPUTE = 0,
   TAB_FEATURE,
-  TAB_CORRELATION,
-  TAB_DISTRIBUTION,
+  TAB_CORR,
+  TAB_DIST,
   TAB_TRANSFORM,
   TAB_ORDERFLOW,
   TAB_COUNT
@@ -144,7 +144,7 @@ TaskHandle CreateFeaturesTask() {
   };
 
   // 子项 (叶子) 名字, 顺序与 TabIdx 一致
-  handle.tabs = {"Compute", "Feature", "Correlation", "Distribution", "Transform", "OrderFlow"};
+  handle.tabs = {"Compute", "Feature", "Corr", "Dist", "Transform", "OrderFlow"};
 
   // Update: 每帧 (无论选中) 更新 taskstate.features + tab 锁定/使能 ——
   // 左栏标签/使能同帧读取, 不再依赖 "打开过 Features 页" 的上一帧缓存
@@ -195,8 +195,8 @@ TaskHandle CreateFeaturesTask() {
     const bool disable[TAB_COUNT] = {
         !inputs_ready || is_locked(TAB_COMPUTE),                        // Compute: needs scanned inputs
         is_locked(TAB_FEATURE),                                         // Feature: always accessible
-        !inputs_ready || is_locked(TAB_CORRELATION),                    // Correlation: 矩阵按过滤行集算, 不看选中
-        !inputs_ready || !has_selection || is_locked(TAB_DISTRIBUTION), // Distribution: needs inputs + selection
+        !inputs_ready || is_locked(TAB_CORR),                    // Corr: 矩阵按过滤行集算, 不看选中
+        !inputs_ready || !has_selection || is_locked(TAB_DIST), // Dist: needs inputs + selection
         !inputs_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs inputs + selection
         !inputs_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs scanned inputs
     };
@@ -269,10 +269,10 @@ TaskHandle CreateFeaturesTask() {
     case TAB_TRANSFORM:
       return ProgressStatus(data.transform);
 
-    case TAB_DISTRIBUTION:
+    case TAB_DIST:
       return ProgressStatus(data.dist);
 
-    case TAB_CORRELATION:
+    case TAB_CORR:
       return ProgressStatus(data.corr);
 
     case TAB_ORDERFLOW: // 后台流式 worker 常驻 (背景常态, 灰色)
@@ -413,12 +413,12 @@ TaskHandle CreateFeaturesTask() {
         [&] { state->transform_service->RequestCompute(data, state->transform_ui_state.params, state->transform_ui_state.focus); },
         [&] { Features::StopTabTransform(state->transform_service.get(), data); });
     StreamTabLifecycle(
-        idx == TAB_DISTRIBUTION, state->dist_tab_was_active, data.dist,
+        idx == TAB_DIST, state->dist_tab_was_active, data.dist,
         [&] { state->dist_service->RequestCompute(data); },
         [&] { Features::StopTabDist(state->dist_service.get(), data); });
     // Corr 的请求内容 (过滤行集) 只有 TabCorr 算得出 → 切回时清快照, 由它下一帧自发提交
     StreamTabLifecycle(
-        idx == TAB_CORRELATION, state->corr_tab_was_active, data.corr,
+        idx == TAB_CORR, state->corr_tab_was_active, data.corr,
         [&] { Features::InvalidateCorrRequests(state->corr_ui_state); },
         [&] {
           Features::StopTabCorr(state->corr_service.get(), state->corr_pair_service.get(),
@@ -440,10 +440,10 @@ TaskHandle CreateFeaturesTask() {
       Features::RenderTabTransform(state->transform_service.get(), data,
                                    state->transform_ui_state);
       break;
-    case TAB_DISTRIBUTION:
+    case TAB_DIST:
       Features::RenderTabDist(state->dist_service.get(), data, state->dist_ui_state);
       break;
-    case TAB_CORRELATION:
+    case TAB_CORR:
       Features::RenderTabCorr(state->corr_service.get(), state->corr_pair_service.get(),
                               state->corr_lag_service.get(), data, state->corr_ui_state);
       break;

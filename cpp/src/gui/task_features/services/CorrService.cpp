@@ -33,7 +33,7 @@ bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest
   return !req.scope.months.empty();
 }
 
-Correlation &CorrService::target(SharedData &data) { return data.corr; }
+Corr &CorrService::target(SharedData &data) { return data.corr; }
 
 void CorrService::RequestCompute(SharedData &data, const std::vector<int> &rows) {
   CorrRequest req;

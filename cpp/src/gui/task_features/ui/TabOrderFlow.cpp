@@ -50,7 +50,7 @@ static int L1TimeFormatter(double value, char *buff, int size, void *user_data) 
 }
 
 // 图1/图2 Y (价格) → 定宽 (右对齐补空格, 等宽字体下宽度恒定): 刻度文字宽度决定
-// 左侧留白, 换标的时价位数量级一变, plot 区域边界跟着挪 → X 像素映射看起来在抖
+// 左侧留白, 换资产时价位数量级一变, plot 区域边界跟着挪 → X 像素映射看起来在抖
 static int PriceFormatter(double value, char *buff, int size, void * /*user_data*/) {
   return std::snprintf(buff, size, "%8.2f", value);
 }
@@ -77,7 +77,7 @@ static void FormatDateShort(char *buf, size_t size, misc::Ymd date) {
 static std::vector<int> CollectFeats(const Feature::Selection &sel, int level) {
   std::vector<int> v;
   if (sel.tier != TierId::Lob || sel.selected_level != level)
-    return v; // OrderFlow 读票池库 (Lob 档), 选 all 库时的特征下标不属于它
+    return v; // OrderFlow 读票池库 (Lob 档), 选 Bar 库时的特征下标不属于它
   for (int f : sel.selected_features) {
     if (v.size() >= OrderFlowConst::MAX_FEATURES)
       break;
@@ -100,7 +100,7 @@ static const char *FeatName(const Feature &feature, const std::vector<const char
 // Feature Overlay Axes (仅特征信号; 两图自身的轴行为不受影响)
 //   price     → Y1: 与主图价格共轴 (NoFit, 不参与主图自动缩放)
 //   rank/flag → Y2: 固定 = 值域两头各留 10% 余量 (贴边线不压轴框); rank 值域 [0,1] → [-0.1, 1.1],
-//                flag 值域 = 该特征预览抽样的全局 min/max (换标的/换日不跳; 无预览退回该线自身范围),
+//                flag 值域 = 该特征预览抽样的全局 min/max (换资产/换日不跳; 无预览退回该线自身范围),
 //                整数跨度至少按 1 算; 多线同场取并集
 //   ratio/ret → Y3: 强制 0 轴居中, limit = max(|min|,|max|) → [-limit, +limit] (0 有语义: 差分/收益)
 //   ratio_pos/ratio_neg/raw/? → Y3: 同类共轴, 范围 = 各线 min/max 并集 (自动缩放)
@@ -237,7 +237,7 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
 // ============================================================================
 // Depth Panel Renderer (图1右: 锚点秒纵向深度图, 全簿 = 热力图截面)
 //   Y = 价格, 每帧同步图1视野 (严格对齐), 刻度显示相对基准价百分比
-//   逐档净额密堆横条 (像素空间, 100W cap; hover 高亮 + 数值) 与
+//   逐价位净额密堆横条 (像素空间, 100W cap; hover 高亮 + 数值) 与
 //   买卖累计曲线 (X 轴, 万元) 解耦, 各自看各自细节;
 //   竞价交叉簿三态: 纯买 / 纯卖 / 重合区 (过渡色带), 预撮合参考价横线
 // ============================================================================
@@ -279,20 +279,20 @@ static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t p
     ImDrawList *draw_list = ImPlot::GetPlotDrawList();
     const ImPlotRect limits = ImPlot::GetPlotLimits();
 
-    // 重合区带 (竞价交叉: 买卖档在 [ask_low, bid_top] 混排) — 过渡色打底
+    // 重合区带 (竞价交叉: 买卖价位在 [ask_low, bid_top] 混排) — 过渡色打底
     if (prof.ask_low > 0 && prof.bid_top > 0 && prof.ask_low < prof.bid_top) {
       const ImVec2 p0 = ImPlot::PlotToPixels(limits.X.Min, prof.bid_top);
       const ImVec2 p1 = ImPlot::PlotToPixels(limits.X.Max, prof.ask_low);
       draw_list->AddRectFilled(p0, p1, IM_COL32(230, 180, 60, 40));
     }
 
-    // 逐档净额横条: 密堆矩形 (档高 = 1 tick, 相邻档无缝), 像素空间自左向右,
+    // 逐价位净额横条: 密堆矩形 (价位高 = 1 tick, 相邻价位无缝), 像素空间自左向右,
     // 100W cap 满宽 —— 与 X 轴 (累计曲线) 解耦, 缩放曲线不影响柱子
     const ImVec2 plot_pos = ImPlot::GetPlotPos();
     const float plot_w = ImPlot::GetPlotSize().x;
     constexpr double HALF_TICK = OrderFlowConst::TICK_SIZE * 0.5;
 
-    // Hover: 鼠标价格落在哪个档 (价升序二分)
+    // Hover: 鼠标价格落在哪个价位 (价升序二分)
     int hovered = -1;
     if (ImPlot::IsPlotHovered()) {
       const double mp = ImPlot::GetPlotMousePos().y;
@@ -398,11 +398,11 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     const ImPlotCond cond = slot_changed ? ImPlotCond_Always : ImPlotCond_Once;
 
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
-    // X 是固定域 (全天交易秒), 只在首帧设一次 → 换标的/换日不动视野 (双击才复位)
+    // X 是固定域 (全天交易秒), 只在首帧设一次 → 换资产/换日不动视野 (双击才复位)
     ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(OrderFlowConst::L0_CAPACITY), ImPlotCond_Once);
     ImPlot::SetupAxisLimits(ImAxis_Y1, dp.plot.y_min_with_margin, dp.plot.y_max_with_margin, cond);
     ImPlot::SetupAxisFormat(ImAxis_X1, L0TimeFormatter);
-    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换标的不挪 plot 左边界
+    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换资产不挪 plot 左边界
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
     bool feat_fixed = false, feat_scale = false, feat_center = false;
@@ -519,7 +519,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
         ImPlot::PlotStairs("VWAP", dp.plot.vwap_x.data(), dp.plot.vwap_y.data(), static_cast<int>(dp.plot.vwap_x.size()), ImPlotItemFlags_NoFit);
       }
 
-      // 双击复位 = 新标的初始渲染的口径 (X 全天 + Y 带 margin); 否则 ImPlot 默认
+      // 双击复位 = 新资产初始渲染的口径 (X 全天 + Y 带 margin); 否则 ImPlot 默认
       // fit 会贴紧数据边缘, 与初始视图不一致且难操作. 必须在有 item 之后 (SetupLock 已发生)
       if (ImPlot::FitThisFrame()) {
         ImPlot::FitPointX(0.0);
@@ -597,7 +597,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
   OrderFlow::Kline::unpack(k.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_points);
   const bool ready = (pub_gen == (ui.kline_gen & 0xFFFF)); // 发布代追上请求代 = 数组前缀可读
 
-  // 换代在途 (拖动标的): 照画空图, 轴与视野原样留着 —— 撤掉整张图会闪.
+  // 换代在途 (拖动资产): 照画空图, 轴与视野原样留着 —— 撤掉整张图会闪.
   // 只有 dates 正在重扫 (rescan / 首帧) 时连 X 域和刻度都读不出来, 才出提示
   if (!ready && (ui.kline_rescan_pending || ui.l1_x_max <= 0.0)) {
     ImGui::TextDisabled("Preparing K-line stream...");
@@ -615,13 +615,13 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
 
   if (ImPlot::BeginPlot("##KLine", ImVec2(-1, height))) {
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
-    // X: 固定域 (0 ~ 全部特征日), 只在域本身变了 (重扫日期) 才复位 → 换标的 / 流式追加都不动视野
+    // X: 固定域 (0 ~ 全部特征日), 只在域本身变了 (重扫日期) 才复位 → 换资产 / 流式追加都不动视野
     const bool x_domain_changed = (ui.l1_x_applied != ui.l1_x_max);
     ui.l1_x_applied = ui.l1_x_max;
     ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(ui.l1_x_max, 1.0),
                             x_domain_changed ? ImPlotCond_Always : ImPlotCond_Once);
     ImPlot::SetupAxisFormat(ImAxis_X1, L1TimeFormatter, &k); // YY/MM/DD HH:MM (非重扫期 dates 稳定)
-    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter);      // 定宽: 换标的不挪 plot 左边界
+    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter);      // 定宽: 换资产不挪 plot 左边界
     // Y1: 发布范围变化 (换代 / 流式追加) 时跟随; 稳定后不再打扰
     if (pub_points > 0 && ui.l1_last_pub_days != pub_days) {
       ImPlot::SetupAxisLimits(ImAxis_Y1, k.y_min.load(std::memory_order_relaxed),
@@ -664,7 +664,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
 
     // 缺失日竖条: 已发布前缀里该资产无 data_valid 分钟的 day_idx → 淡黄色竖 stripe
     // (alpha 0.1) 打底, 画在 K 线之前以免遮挡. 缓存键 (kline_gen, pub_days), 流式
-    // 追加 / 换标的 / 重扫日期都使 gen 变 → 自动失效. 二分判定每日有无 K 线点.
+    // 追加 / 换资产 / 重扫日期都使 gen 变 → 自动失效. 二分判定每日有无 K 线点.
     if (ready && pub_days > 0) {
       const uint32_t cur_gen = ui.kline_gen & 0xFFFF;
       if (ui.l1_missing_days_gen != cur_gen || ui.l1_missing_days_pub_days != pub_days) {
@@ -763,7 +763,7 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
   auto &pick = of.pick;
 
   // ST/Listed/Board 与 DATABASE/TABLE 共用控件 (gui/util/AssetFilter.hpp);
-  // risk_warn 有 3=退市整理期, 所以 ST 要全 4 档
+  // risk_warn 有 3=退市整理期, 所以 ST 要全 4 个价位
   bool changed = GUI::Filter::CommonFilters<int>("of", true, pick.st_filter,
                                                  pick.listed_filter, pick.board_filter);
 
@@ -789,17 +789,17 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
     ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "%zu/%zu",
                        pick.candidates.size(), data.asset.items.size());
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s 通过筛选的标的数 / 总数\n"
+      ImGui::SetTooltip("%s 通过筛选的资产数 / 总数\n"
                         "• 状态取自当日 L1 落盘列 (ST / 上市 / 行业)\n"
-                        "• 当日无有效分钟的标的不列入 (无盘口可看)",
+                        "• 当日无有效分钟的资产不列入 (无盘口可看)",
                         misc::dash(slot.date).c_str());
   } else {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "loading...");
   }
 }
 
-// 标的选择 = 候选序位拖动条 (无下拉菜单): 条面覆盖显示 "代码-市场-名称[ST] 序位/总数",
-// 与筛选栏同行右侧; 滚轮在条上 ±1 档微调 (拖动条一像素可能跨多个标的)
+// 资产选择 = 候选序位拖动条 (无下拉菜单): 条面覆盖显示 "代码-市场-名称[ST] 序位/总数",
+// 与筛选栏同行右侧; 滚轮在条上 ±1 个价位微调 (拖动条一像素可能跨多个资产)
 static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
   auto &ui = of.ui;
   auto &pick = of.pick;
@@ -808,7 +808,7 @@ static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
   ImGui::SameLine();
   const int n = static_cast<int>(pick.candidates.size());
   if (n == 0) {
-    ImGui::TextDisabled("无符合筛选的标的");
+    ImGui::TextDisabled("无符合筛选的资产");
     return;
   }
 
@@ -842,7 +842,7 @@ static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
       pos = std::clamp(pos + (wheel > 0.0f ? 1 : -1), 0, n - 1);
       changed = true;
     }
-    ImGui::SetTooltip("切标的\n"
+    ImGui::SetTooltip("切资产\n"
                       "• 拖动: 按候选序 (市场 → 代码)\n"
                       "• 滚轮: ±1");
   }
@@ -893,7 +893,7 @@ static void RenderStatusBar(const OrderFlow &of) {
                        dp.ticks.size(), dp.merged.rect_count, dp.order_count);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("L0 当日盘口重放\n"
-                        "• 秒级盘口快照数 (LOB 逐笔重放)\n"
+                        "• 秒级盘口快照数 (订单簿逐笔重放)\n"
                         "• 热力图合并矩形数\n"
                         "• 当日逐笔条数");
   } else if (dp.asset_idx != SIZE_MAX) {
@@ -921,15 +921,15 @@ static void RenderHeatmapControls(OrderFlow &of) {
       ImGui::BeginTooltip();
       ImGui::Text("Log10(金额) 下限阈值");
       ImGui::Separator();
-      ImGui::Text("• 3.0 = 1千元 (显示所有 >= 1千的档位)");
+      ImGui::Text("• 3.0 = 1千元 (显示所有 >= 1千的价位)");
       ImGui::Text("• 4.0 = 1万元");
       ImGui::Text("• 5.0 = 10万元");
       ImGui::Text("• 6.0 = 100万元");
-      ImGui::Text("• 7.0 = 1000万元 (仅显示大额档位)");
+      ImGui::Text("• 7.0 = 1000万元 (仅显示大额价位)");
       ImGui::Separator();
       ImGui::TextWrapped("• 着色: [阈值, 1000万] 映射到 [透明, 完全实色]");
-      ImGui::TextWrapped("• 自动初值: 换日 / 换标的自动取当日初值");
-      ImGui::TextWrapped("    ◦ 按当日全簿 (档·秒) 加权金额分位取");
+      ImGui::TextWrapped("• 自动初值: 换日 / 换资产自动取当日初值");
+      ImGui::TextWrapped("    ◦ 按当日全簿 (价位·秒) 加权金额分位取");
       ImGui::TextWrapped("    ◦ 使着色面积占有量面积恒定 → 各日色块浓度观感一致");
       ImGui::EndTooltip();
     }
@@ -1043,7 +1043,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
       pick.rebuild_candidates(slot, asset_boards);
   }
 
-  // 初始标的: 候选里代码编号最小的 (默认筛选已排除退市/未上市; 仅首次自动选)
+  // 初始资产: 候选里代码编号最小的 (默认筛选已排除退市/未上市; 仅首次自动选)
   if (!ui.asset_initialized && !pick.candidates.empty()) {
     size_t best = pick.candidates.front();
     for (size_t i : pick.candidates) {

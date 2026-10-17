@@ -24,7 +24,7 @@ inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增
 
 // LimitOrderBook 委托表 (OrderTable) 初始预留: 槽数 = next_pow2(2 × 本值), 32 B/槽.
 //
-// LOB 是每 worker 一个的复用工作区 (非每资产常驻, 见 lob_pipeline.cpp), 所以
+// 订单簿是每 worker 一个的复用工作区 (非每资产常驻, 见 lob_pipeline.cpp), 所以
 // 按"最忙资产的单日逐笔数"奢侈预留 (每 worker 64MB, ×W 而非 ×A). 每日再按当日
 // 事件数 reserve_orders 收窄在用表长; 事件数超过预留时表会在空表状态下扩容 (不截断).
 inline constexpr size_t LOB_ORDER_CAPACITY = 1000000;
@@ -119,7 +119,7 @@ enum ValidType : uint8_t {
 // 时刻 tick: hour << 24 | minute << 16 | second << 8 | millisecond (10ms 单位).
 //
 // 逐笔全程只有这一种时间表示: 编码期 CSV 直接解析成 tick, 帧序键直接拿它当
-// 时刻段, LOB 直接拿它当节流/时段的游标. 每段一个字节且各段都远小于 256, 所以
+// 时刻段, 订单簿直接拿它当节流/时段的游标. 每段一个字节且各段都远小于 256, 所以
 // 整数序 = 时间序; (tick >> 16) = hour * 256 + minute, (tick >> 8) = 秒级游标.
 constexpr uint32_t make_tick(uint32_t hour, uint32_t minute, uint32_t second, uint32_t millisecond) {
   return hour << 24 | minute << 16 | second << 8 | millisecond;
@@ -139,7 +139,7 @@ constexpr uint8_t tick_millisecond(uint32_t tick) { return static_cast<uint8_t>(
 // 股的价格钳平; volume 给满 32bit, 交易所单笔申报上限是 100 万股. 这两个字段的
 // 富余都是位域凑数凑出来的, 不占额外空间.
 //
-// price 是绝对价 (分), 但已折进 LOB 的档位窗口: 窗口外的报价在落盘时就停靠到
+// price 是绝对价 (分), 但已折进订单簿的价位窗口: 窗口外的报价在落盘时就停靠到
 // 边缘, 见 OrderEncoder::park_price 与 kPriceIndexRange.
 struct Order {
   uint32_t volume;       // 股
@@ -158,15 +158,15 @@ struct Order {
 // 给位域另起了存储单元, 落盘格式就悄悄变了.
 static_assert(sizeof(Order) == 20, "Order 必须定宽 20 字节");
 
-// LOB 档位数组的窗口宽度 (分), 即 655.35 元.
+// 订单簿价位数组的窗口宽度 (分), 即 655.35 元.
 //
-// LimitOrderBook 拿价格当档位数组的下标直接索引, 数组不能开成绝对价的全域: 每
-// 个资产一个 LOB 且全部常驻, 五千多个实例按 65536 档算已是 3 GB 量级, 按千元级
-// 价格的全域开就是十几 GB. 所以窗口只覆盖单只标的一天的价格跨度, 按
+// LimitOrderBook 拿价格当价位数组的下标直接索引, 数组不能开成绝对价的全域: 每
+// 个资产一个订单簿且全部常驻, 五千多个实例按 65536 价位算已是 3 GB 量级, 按千元级
+// 价格的全域开就是十几 GB. 所以窗口只覆盖单只资产一天的价格跨度, 按
 // (price - price_base) 索引.
 //
 // 655.35 元的宽度对单日成交带绰绰有余 —— 涨跌停把它限制在前收盘的 ±20% 以内.
-// 下标 0 保留给市价单/无价格档 (LOB 的 Level[0]), 所以窗口的有效范围是
+// 下标 0 保留给市价单/无价格单 (订单簿的 Level[0]), 所以窗口的有效范围是
 // [base+1, base+kPriceIndexRange-1]; base 为 0 时下标就等于绝对价.
 inline constexpr uint32_t kPriceIndexRange = 65536;
 
@@ -176,7 +176,7 @@ inline constexpr uint32_t kPriceIndexGuard = 4096;
 // 一个 (资产, 当天) 一个 zstd 帧, 解开就是 Order × count (见 codec/OrderFrame.hpp).
 // 帧装在当天全市场的日文件里, 位置 / 条数 / price_base 记在日文件目录 (见
 // shared/OrdersDay.hpp). price_base 是该资产当天全部非零价格的下界 (分), 向下
-// 对齐; LOB 用它把绝对价折进 65536 档的直接索引数组: index = price - price_base.
+// 对齐; 订单簿用它把绝对价折进 65536 价位的直接索引数组: index = price - price_base.
 // 低价股恒为 0, 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
 
 //========================================================================================

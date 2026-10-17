@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// 因子表达式 codec: 文本 ↔ 树 (parse / to_string) + 静态校验
+// 因子表达式 解析 / 序列化: 文本 ↔ 树 (parse / to_string) + 静态校验
 // =============================================================================
 //   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = L1 字段 code 裸写, 参数命名):
 //     expr  := Op '(' [expr {',' expr}] {',' param} ')' | feature
@@ -613,7 +613,7 @@ inline bool parse(std::string_view src, const FeatureLookup &fl, Expr &out, std:
 //   TS: 根 = TsRankRoll(d = kTsNormD) (自身 kTsNormDays 日滚动分位; 整数天窗跨日 deseason)
 //   其他根 (含 TS 包 CS: 截面不再居中, β 漏) → false + err.
 //   再拦根输入的两种静态可判退化 (Stat 里必然全并列 / 20 组填不满, 评出来永远是空), 只读 OpTable out 列 + 树结构:
-//     离散值域 (dom_discrete: 0/1 掩码 / 符号 / 桶号, 分位只有几档) / 沿资产轴不变异 (varies_a = false: 每 t 截面全相同)
+//     离散值域 (dom_discrete: 0/1 掩码 / 符号 / 桶号, 分位只有几个取值) / 沿资产轴不变异 (varies_a = false: 每 t 截面全相同)
 //   因子文件 / 构建器都走这一个判据 (模板也判: TS 根的 d 须写死 kTsNormD, 裸 d 的占位值 1 过不了)
 
 // 节点值是否沿资产轴 a 变异 (结构推导): 特征叶变异; 算子节点 = 非截面广播 (out ≠ BCAST) 且任一输入变异
@@ -656,7 +656,7 @@ inline bool root_frame(const Expr &e, stat::Frame &out, std::string &err) {
   const int in = r.args[0];
   const Node &n = e.nodes[static_cast<size_t>(in)];
   if (n.op >= 0 && dom_discrete(kOps[n.op].out)) {
-    err = std::string("根的输入 ") + kOps[n.op].name + " 是离散值域 (0/1 掩码 / 符号 / 桶号), 分位只有几档 (退化); 先套窗口统计 (如 TsMeanRoll) 再归一";
+    err = std::string("根的输入 ") + kOps[n.op].name + " 是离散值域 (0/1 掩码 / 符号 / 桶号), 分位只有几个取值 (退化); 先套窗口统计 (如 TsMeanRoll) 再归一";
     return false;
   }
   if (!varies_a(e, in)) {

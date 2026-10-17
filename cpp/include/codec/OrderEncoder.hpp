@@ -127,17 +127,17 @@ public:
   static bool parse_market_tail(const char *data, size_t len, MarketSummary &summary);
 
   // Convert CSV structures to binary structures
-  // price_base 是 LOB 档位窗口的下沿, 落盘的价格都折进该窗口 (见 park_price).
+  // price_base 是订单簿价位窗口的下沿, 落盘的价格都折进该窗口 (见 park_price).
   static Order csv_to_order(const CSVOrder &csv, uint32_t price_base, bool szse);
   static Order csv_to_trade(const CSVTrade &csv, uint32_t price_base, bool szse);
 
-  // 把价格折进 LOB 档位窗口 [base+1, base+kPriceIndexRange-1], 窗口外一律停靠
+  // 把价格折进订单簿价位窗口 [base+1, base+kPriceIndexRange-1], 窗口外一律停靠
   // 到相应边缘; price 为 0 表示无价格 (市价单), 原样透传.
   //
-  // 窗口宽 655.35 元, 而单只标的一天的成交带受涨跌停约束远窄于此, 所以被停靠的
+  // 窗口宽 655.35 元, 而单只资产一天的成交带受涨跌停约束远窄于此, 所以被停靠的
   // 只有那些离盘口极远、根本不可能成交的报价. 对它们而言"具体是 9999 元还是
   // 999999 元"没有信息量, 只有"在买/卖方向上无穷远"这一件事是真的, 而这正是
-  // 边缘档位表达的含义. 统一在落盘时折算, 使帧与簿内档位一一对应, 挂单与
+  // 边缘价位表达的含义. 统一在落盘时折算, 使帧与簿内价位一一对应, 挂单与
   // 它后续的撤单也必然落到同一个价格上.
   static uint32_t park_price(uint32_t price, uint32_t price_base) {
     if (price == 0)
@@ -175,7 +175,7 @@ private:
   bool szse_ = false;
 
   // 当前资产累计的坏行数 (字段数不足 / 代码字段后缀与本资产市场不符). 非零即
-  // 判定源损坏, finish 报 Corrupt 并带上行数, 方便定位到具体标的.
+  // 判定源损坏, finish 报 Corrupt 并带上行数, 方便定位到具体资产.
   size_t bad_line_count_ = 0;
 
   // 当前资产累计的"价格字段用了科学计数法"的记录数 (见 Validator::PriceScientific).

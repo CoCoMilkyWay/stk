@@ -226,7 +226,7 @@ uint64_t DayWriter::append_bytes(const void *data, size_t size) {
   return off;
 }
 
-// 32 位的余量很宽: 最活跃的标的单日逐笔是百万量级, 一帧是几 MB.
+// 32 位的余量很宽: 最活跃的资产单日逐笔是百万量级, 一帧是几 MB.
 FrameRef DayWriter::put(size_t asset_id, L2::FrameEncoder &enc, const L2::FrameView &view) {
   assert(asset_id <= UINT32_MAX && "日文件目录: A 轴下标溢出 32 位");
   const L2::Frame frame = enc.encode(view);

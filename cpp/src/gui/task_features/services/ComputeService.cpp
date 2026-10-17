@@ -19,8 +19,8 @@
 
 namespace GUI::Features {
 
-static_assert(ComputeConfig::kMinPoolSlots == static_cast<int>(LabelLob::MIN_POOL_SLOTS), "ComputeConfig::kMinPoolSlots 与 LabelHold::MIN_POOL_SLOTS 不符");
-static_assert(ComputeConfig::kMinPoolSlots == static_cast<int>(LabelBar::MIN_POOL_SLOTS), "ComputeConfig::kMinPoolSlots 与 LabelHold::MIN_POOL_SLOTS 不符");
+static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelLob::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
+static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelBar::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
 
 ComputeService::ComputeService(SharedData &data)
     : data_(data) {
@@ -28,9 +28,9 @@ ComputeService::ComputeService(SharedData &data)
 }
 
 void ComputeService::Request(ComputeConfig config) {
-  assert(config.pool_slots >= ComputeConfig::kMinPoolSlots && "pool slots 低于 LabelHold::MIN_POOL_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
+  assert(config.ring_slots >= ComputeConfig::kMinRingSlots && "ring slots 低于 LabelHold::MIN_RING_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
   assert(config.adopt_pct >= 0 && config.adopt_pct <= 100 && "adopt pct must be in [0, 100]");
-  Worker::Request(config);
+  Service::Request(config);
 }
 
 // 两档同一流程: 规划本库 → fund_panel → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
@@ -38,8 +38,8 @@ bool ComputeService::run(ComputeConfig &config) {
   // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
   //   Bar (all)  交易日 [PIPELINE_START_DATE, end_date] × 全轴: 整段算, 不随回测窗口收窄; 无旁读档
   //   Lob (票池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
-  //              × 票池并集 (all 库 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 all 库
-  // 张量/调度/落盘全按本库 A 轴, 需要 items/码表时经 uni.global 映射.
+  //              × 票池并集 (Bar 库 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 Bar 库
+  // 张量/调度/落盘全按本库 A 轴, 需要 items/码表时经 axis.global() 映射.
   FeatureLib lib{.tier = lib_tier(config.lib), .name = config.lib, .dir = data_.config.FeatureLibDir(config.lib)};
   FeatureLib side;
   if (lib.tier == TierId::Lob) {
@@ -94,7 +94,7 @@ bool ComputeService::run(ComputeConfig &config) {
   Logger::init(data_.config.log_dir);
 
   // 已落盘天数镜像进进度面
-  const PipelineArgs args{data_, lib, side, dates, static_cast<size_t>(config.pool_slots), static_cast<uint64_t>(config.adopt_pct), cancel_,
+  const PipelineArgs args{data_, lib, side, dates, static_cast<size_t>(config.ring_slots), static_cast<uint64_t>(config.adopt_pct), cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;
 #define TIER_PIPELINE(T, ns) \

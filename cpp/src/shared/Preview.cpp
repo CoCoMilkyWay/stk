@@ -15,7 +15,7 @@ using namespace analysis;
 // 每轮一次 dispatch (返回即栅栏) 隔开相邻轮 → 每特征累积器无锁无 shard, 也不需要归约
 // ============================================================================
 
-struct FeaturePreview::Runtime {
+struct Preview::Runtime {
   // ---- 每特征累积 (跨轮) ----
   std::vector<KLLcache> klls;              // [n_preview] 每特征累积 sketch
   std::vector<Integrity> integ;            // [n_preview] 每特征累积账目
@@ -76,8 +76,8 @@ struct FeaturePreview::Runtime {
   }
 };
 
-FeaturePreview::FeaturePreview() = default;
-FeaturePreview::~FeaturePreview() = default;
+Preview::Preview() = default;
+Preview::~Preview() = default;
 
 // 日序列缺口前向填充. 填 0 的问题: 水平量 (价格 ~10 元) 固定分钟槽缺 → 一根 −值 尖刺, 能量比特征自身
 // 波动大几个数量级, 平铺全谱盖掉谱形 (全表水平类特征长一个样). ffill 让缺口成平台 (零变动, 对谱中性),
@@ -98,7 +98,7 @@ static void ffill_day(float *s, size_t n) {
 // Reset
 // ============================================================================
 
-void FeaturePreview::reset(ReadScope scope, Spec sp) {
+void Preview::reset(ReadScope scope, Spec sp) {
   TraceN("PreviewReset");
   const size_t n_pv = sp.cols.n();
   assert(n_pv > 0 && std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + n_pv));
@@ -126,7 +126,7 @@ void FeaturePreview::reset(ReadScope scope, Spec sp) {
 // Build (轮训: 轮 = 抽样日, 轮内按特征分块, 块末发布; 首帧 = 一块的 IO + 扫描)
 // ============================================================================
 
-bool FeaturePreview::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
+bool Preview::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
   TraceN("PreviewBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -297,7 +297,7 @@ bool FeaturePreview::build(FeatureRead &reader, const FeatureRead &all, const st
 // Clear
 // ============================================================================
 
-void FeaturePreview::clear() {
+void Preview::clear() {
   std::lock_guard<std::mutex> lock(mutex);
   // 必须 move 赋空容器: `= {}` 走 initializer_list 重载, 只清元素不还内存
   snap = Snap{};

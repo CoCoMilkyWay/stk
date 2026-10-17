@@ -5,18 +5,18 @@
 // =============================================================================
 //   全部状态列 = 时间加权均值 (状态量在两次盘口更新之间视为持有; 末状态持有到分钟末; 无盘口更新的分钟 = 末状态整分钟持有).
 //   某快照某列无定义 (深度不足 / 分母 0) → 该列该段时长不计权 (ok_ 位图), 分钟内全程无定义 → 见下方兜底约定.
-//     spread_l{1,5,10}       第 N 档 (a_N − b_N) / mid                          (基点; 单档, 非前 N 档累计; N=1 即相对价差)
+//     spread_l{1,5,10}       第 N 价位 (a_N − b_N) / mid                          (基点; 单价位, 非前 N 个价位累计; N=1 即相对价差)
 //     spread_w_{5,10}        Σ_{i≤N}(a_i−b_i)(q^A_i+q^B_i) / Σ(q^A_i+q^B_i) / mid  (基点, 量加权价差)
-//     qty_{bid,ask}_{1,5,10,all}   前 N 档量深度 (股; all = 全簿单侧挂单量, LOB 增量维护)
-//     amt_{bid,ask}_{1,5,10,all}   前 N 档金额深度 Σ p_i q_i (元; all = 全簿量 × 一档价 近似)
+//     qty_{bid,ask}_{1,5,10,all}   前 N 个价位量深度 (股; all = 全簿单侧挂单量, 订单簿增量维护)
+//     amt_{bid,ask}_{1,5,10,all}   前 N 个价位金额深度 Σ p_i q_i (元; all = 全簿量 × 最优价 近似)
 //     qty_eff_1              min(q^B_1, q^A_1) (有效深度, 逐快照取 min 后加权)
 //     obi_{1,5,10,all}       (Q^B_N − Q^A_N) / (Q^B_N + Q^A_N)   ∈ [−1, 1], 正 = 买方占优
-//     tlr_{bid,ask}_{1,5,10} Q_N / Q_all                          前 N 档占全簿比, 越大越易被击穿
-//     cost_{buy,sell}_{10w,100w,300w}  吃掉 A 元 (沿 30 档累计, 末档按比例) 的 VWAP 对 mid 偏离 (基点; 全簿不足 A → 余量假设在涨跌停价成交)
+//     tlr_{bid,ask}_{1,5,10} Q_N / Q_all                          前 N 个价位占全簿比, 越大越易被击穿
+//     cost_{buy,sell}_{10w,100w,300w}  吃掉 A 元 (沿 30 个价位累计, 末价位按比例) 的 VWAP 对 mid 偏离 (基点; 全簿不足 A → 余量假设在涨跌停价成交)
 //     micro                  量加权中间价 (元)
 //     mid                    中间价 (元)
 //   中间价变化率的事件型幂和 ({rv,rv_up,rv_dn,rm3,rm4,r_max,r_min}_mid) 在 Volatility/RealizedMid.hpp: 本节点只有时间加权状态量.
-//   一档为空 (价 ≤ 0) 的快照跳过 (持有上一状态).
+//   最优价位为空 (价 ≤ 0) 的快照跳过 (持有上一状态).
 //   【兜底约定】本节点不产 NaN: 下游多日拉取的序列要求无缺口、无跳变 (真实缺失由 ts_valid 列标注, 不靠 NaN).
 //     状态列 (价差 / 量额 / 失衡 / 占比 / 成本 / 价): 分钟内全程无定义 → 延续该列上一个有定义的分钟值 (last_, 跨日延续);
 //     价列 (micro / mid) 例外: 当日尚无有效盘口 → 用本分钟 bar 收盘价 (有成交 = 成交价, 09:25 即竞价撮合价; 无成交 = 日内携带价; 尚无成交 → 前收).
@@ -107,7 +107,7 @@ public:
     t_prev_ = t;
     has_state_ = true;
 
-    // ---- 一次扫描: 前 10 档累计深度 / 价差, 全 30 档吃单成本 ----
+    // ---- 一次扫描: 前 10 个价位累计深度 / 价差, 全 30 个价位吃单成本 ----
     const float mid = mid_.back();
     const float inv_mid = kBp / mid;
     ok_ = ~0ull; // 先全有效, 下面按分母逐口清位
@@ -146,7 +146,7 @@ public:
       if (ka < NCOST)
         ka = eat(cost_buy_10w, ka, pa, va, ea_pv, ea_v, mid, true);
     }
-    // 全簿吃不完: 余量假设在涨跌停价成交 (买吃卖盘 → 涨停, 卖吃买盘 → 跌停), 当一档无限量档位再吃一次即补齐剩余目标.
+    // 全簿吃不完: 余量假设在涨跌停价成交 (买吃卖盘 → 涨停, 卖吃买盘 → 跌停), 当一个无限量价位再吃一次即补齐剩余目标.
     // 边界 NaN (无限制股 / 缺失) → 比较恒 false → 不补 (与 Depth 同约)
     if (kb < NCOST && lim_dn_ > 0.0f)
       kb = eat(cost_sell_10w, kb, lim_dn_, LIMIT_FILL_QTY, eb_pv, eb_v, mid, false);
@@ -215,7 +215,7 @@ private:
   }
   inline void imbalance(size_t i, float qb, float qa) { ratio(i, qb - qa, qb + qa); }
   inline void weighted(size_t i, float ws, float wq, float inv_mid) { ratio(i, ws * inv_mid, wq); }
-  // 沿档位吃单: (pv, v) 累计已吃 金额 / 股数, 每到一个目标金额 (升序) 记一次 cost (末档按比例); 返回已到达目标数
+  // 沿价位吃单: (pv, v) 累计已吃 金额 / 股数, 每到一个目标金额 (升序) 记一次 cost (末价位按比例); 返回已到达目标数
   inline size_t eat(size_t base, size_t k, float p, float q, float &pv, float &v, float mid, bool buy) {
     if (p <= 0.0f || q <= 0.0f)
       return k;
@@ -262,7 +262,7 @@ private:
   X(tlr_##side##_5, CAT1, AUTO, "Top Level Ratio " S "5", "前5档" CN "占比", "分钟内" CN "前5档量占全簿" CN "量的时间加权均值(越大越易被击穿)", R"(\overline{\sum_{i \leq 5} V_{i}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", TS(Book, tlr_##side##_5, None, None)) \
   X(tlr_##side##_10, CAT1, AUTO, "Top Level Ratio " S "10", "前10档" CN "占比", "分钟内" CN "前10档量占全簿" CN "量的时间加权均值", R"(\overline{\sum_{i \leq 10} V_{i}^{M,)" S R"(} / V_{all}^{M,)" S R"(}}^{\,tw})", TS(Book, tlr_##side##_10, None, None))
 
-// 一个吃单方向 (dir token buy/sell, EN / CN 方向名, S = 被吃一侧中文, F1 / F2 = 公式中金额前后段) 的 3 个金额档
+// 一个吃单方向 (dir token buy/sell, EN / CN 方向名, S = 被吃一侧中文, F1 / F2 = 公式中金额前后段) 的 3 个金额段
 #define BOOK_COST_ROWS(X, CAT1, dir, EN, CN, S, F1, F2)                                                                                                                                                                                                                      \
   X(cost_##dir##_10w, CAT1, AUTO, "Impact Cost " EN " 100k", CN "冲击成本10万", "吃掉10万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→余量按涨跌停价成交", R"(\overline{)" F1 R"(10^5)" F2 R"(}^{\,tw} \times 10^4)", TS(Book, cost_##dir##_10w, None, None))   \
   X(cost_##dir##_100w, CAT1, AUTO, "Impact Cost " EN " 1M", CN "冲击成本100万", "吃掉100万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→余量按涨跌停价成交", R"(\overline{)" F1 R"(10^6)" F2 R"(}^{\,tw} \times 10^4)", TS(Book, cost_##dir##_100w, None, None)) \

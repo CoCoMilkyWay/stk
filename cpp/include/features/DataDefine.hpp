@@ -32,7 +32,7 @@ enum class Trigger : uint8_t {
 };
 
 //----------------------------------------------------------------------------------------
-// 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 档 = DepthSeries (Depth 的 bid_qty 等)
+// 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 个价位 = DepthSeries (Depth 的 bid_qty 等)
 //----------------------------------------------------------------------------------------
 using Series = CBuffer<float, L2::BLEN>;
 using DepthSeries = Series[L2::LOB_DEPTH];
@@ -41,8 +41,8 @@ using DepthSeries = Series[L2::LOB_DEPTH];
 // 不用 0 —— 0 是合法取值 (零收益 / 完全均衡), 消费端无法区分. 【fast-math 契约】只生产 NaN, 不 isnan.
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
-// 价格比较容差 (元): 档位价 / 委托价 / 成交价由整数分换算成 float, 与解析的涨跌停价可能差 1 ulp.
-// 涨跌停判定 (Depth 钳档 / Flow 彩票委托 / Valuation 触板标记) 统一用它, 不各写一个.
+// 价格比较容差 (元): 价位价 / 委托价 / 成交价由整数分换算成 float, 与解析的涨跌停价可能差 1 ulp.
+// 涨跌停判定 (Depth 钳价位 / Flow 彩票委托 / Valuation 触板标记) 统一用它, 不各写一个.
 inline constexpr float kPxEps = 1e-4f;
 
 //----------------------------------------------------------------------------------------
@@ -71,7 +71,7 @@ inline constexpr float kPxEps = 1e-4f;
 //   };
 //   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换, 先于 <Method>
 // 无状态 (静态函数), 无实例; 一行字段 CS(src_lvl, src, Tf, Method) = gather → Tf::apply → Method::apply → scatter,
-// CoreCrosssection 按字段表编译期展开 (与 TS 的 NODES 展开同构). 无效资产输出 0 由基建写.
+// CoreCs 按字段表编译期展开 (与 TS 的 NODES 展开同构). 无效资产输出 0 由基建写.
 // 方法依赖 NaN 语义 (isfinite): 实现在 src/features/Method/CS.cpp (precise-math TU), 头文件只声明.
 // 截面列文件按"算的是什么特征"命名 (= 源节点名), 不按方法命名; 一文件 = 该节点输出列的全部截面列.
 // 同一套 struct 另有运行期入口 cs::column_fn(TfId, MethodId) (Transform 分析用): 探索里验证的变换 == 落盘截面列.

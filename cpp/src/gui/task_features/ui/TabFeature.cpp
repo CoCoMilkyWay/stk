@@ -65,7 +65,7 @@ static const std::vector<FeatureMetadata> &get_current_level_features(const Feat
 // Cat2 自动探测 (值域启发, 与 Range 列同口径: 预览抽样 min/max):
 //   字段表 cat_l2 = AUTO (dummy) 的行按值域归类; 写了别的 token = 人类强行赋值,
 //   覆盖探测并绿字显示. 无预览 (L0 层 / 未就绪 / 无有效样本) → "?".
-//   price:     逐日笼内 (preview 主扫描随批判定, 见 FeaturePreview::Cell 笼账目):
+//   price:     逐日笼内 (preview 主扫描随批判定, 见 Preview::Cell 笼账目):
 //              每个抽样日每资产的有效值都落在该资产当日 [lim_dn, lim_up] 内
 //   flag:      有效值全整数 (±0, 1, 2, …; 主扫描随格判, Cell::int_only) 且 |min|,|max| < 1024
 //              (f16 格距 < 1 才分得出小数, 再往上什么都是整数, 判定失效); 先于 rank (0/1 的 CS 列不是 rank)
@@ -82,7 +82,7 @@ static bool cat2_overridden(const FeatureMetadata &f) {
   return std::strcmp(f.cat_l2, kCat2Dummy) != 0;
 }
 
-static const char *detect_cat2(const FeatureMetadata &f, const FeaturePreview::Cell &cell) {
+static const char *detect_cat2(const FeatureMetadata &f, const Preview::Cell &cell) {
   const analysis::Integrity &it = cell.integrity;
   if (it.n_valid == 0)
     return kCat2Unknown;
@@ -104,16 +104,16 @@ static const char *detect_cat2(const FeatureMetadata &f, const FeaturePreview::C
 }
 
 // (需持 preview 锁) 该层每行有效 Cat2 快照; out[i] 指向静态串或字段表串
-static void effective_cat2_snapshot(const Feature::Metadata &meta, const FeaturePreview &pv,
+static void effective_cat2_snapshot(const Feature::Metadata &meta, const Preview &pv,
                                     size_t level, std::vector<const char *> &out) {
   const auto &features = meta.features[level];
   out.resize(features.size());
 
   const bool preview_level = (level == analysis::kLevel);
-  static const FeaturePreview::Cell s_empty{};
+  static const Preview::Cell s_empty{};
   for (size_t i = 0; i < features.size(); ++i) {
     const FeatureMetadata &f = features[i];
-    const FeaturePreview::Cell &cell = (preview_level && i < pv.snap.cells.size()) ? pv.snap.cells[i] : s_empty;
+    const Preview::Cell &cell = (preview_level && i < pv.snap.cells.size()) ? pv.snap.cells[i] : s_empty;
     out[i] = cat2_overridden(f) ? f.cat_l2 : detect_cat2(f, cell);
   }
 }
@@ -121,13 +121,13 @@ static void effective_cat2_snapshot(const Feature::Metadata &meta, const Feature
 // 公开口 (见 TabFeature.hpp): 自加短锁, OrderFlow 两图 legend 标注 / flag 轴缩放用
 void EffectiveCat2Snapshot(SharedData &data, size_t level, Cat2Snapshot &out) {
   std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
-  const FeaturePreview &pv = data.preview;
+  const Preview &pv = data.preview;
   effective_cat2_snapshot(data.feature.meta(), pv, level, out.cat2);
   const size_t n = out.cat2.size();
   out.val_min.resize(n);
   out.val_max.resize(n);
   const bool preview_level = (level == analysis::kLevel);
-  static const FeaturePreview::Cell s_empty{};
+  static const Preview::Cell s_empty{};
   for (size_t i = 0; i < n; ++i) {
     const analysis::Integrity &it = (preview_level && i < pv.snap.cells.size()) ? pv.snap.cells[i].integrity : s_empty.integrity;
     out.val_min[i] = it.val_min;
@@ -547,7 +547,7 @@ static constexpr ImU32 kPsdCutColor = IM_COL32(80, 200, 255, 255); // 谱重心�
 // Dist 列 cell: PDF 迷你图 + hover 放大.
 // x 域 = 分位截尾 [P0.5, P99.5] (winsorize, 分位天然在数据范围内), 再强行含住 0 →
 // 全表同口径可比; 以 0 为界 x > 0 红 / x < 0 绿
-static void render_preview_dist(const FeaturePreview::Cell &cell, const char *code) {
+static void render_preview_dist(const Preview::Cell &cell, const char *code) {
   if (cell.n_pts < 2) {
     ImGui::TextDisabled("—");
     return;
@@ -581,7 +581,7 @@ static void render_preview_dist(const FeaturePreview::Cell &cell, const char *co
   }
 
   // 点列 = 截取段, 两端强行含住 0 (全表同口径可比); sparkline 按数据范围归一化 → 整格铺满.
-  // 补点高度: 0 在数据范围外 → 真空档, 贴底; 0 在范围内 (PDF x 是格中点, min == 0 时首点
+  // 补点高度: 0 在数据范围外 → 真空区, 贴底; 0 在范围内 (PDF x 是格中点, min == 0 时首点
   // 已在 0 右侧半格) → 端点质量的峰就压在 0 上, 平伸到 0 保持峰高, 否则 0 → 峰一根竖直跳变
   static std::vector<float> xs, ys; // GUI 单线程, 帧内复用
   xs.clear();
@@ -653,7 +653,7 @@ struct PsdSparkCache {
 };
 static std::vector<PsdSparkCache> s_psd_cache; // [metadata 下标] (非预览行早退不建)
 
-static void rebuild_psd_spark(PsdSparkCache &pc, const FeaturePreview::Cell &cell, uint64_t epoch) {
+static void rebuild_psd_spark(PsdSparkCache &pc, const Preview::Cell &cell, uint64_t epoch) {
   pc.epoch = epoch;
   constexpr size_t n = kPvPsdPts;
   // 谱重心 = 曲线在 log 周期轴下的面积中位: 权重 = 每 bin 占比 × bin 的 log 频率宽度 1/k (∫ P d ln f).
@@ -699,7 +699,7 @@ static void rebuild_psd_spark(PsdSparkCache &pc, const FeaturePreview::Cell &cel
 }
 
 // PSD 列 cell: log10 谱迷你图 (周期升序, 逐段占比染色) + hover 放大 (log 周期轴)
-static void render_preview_psd(const FeaturePreview::Cell &cell, const char *code, size_t idx, uint64_t epoch) {
+static void render_preview_psd(const Preview::Cell &cell, const char *code, size_t idx, uint64_t epoch) {
   if (cell.psd_n == 0) {
     ImGui::TextDisabled("—");
     return;
@@ -786,7 +786,7 @@ static void render_stat_cell(const analysis::Integrity &it) {
                       it.n_invalid(), it.n_nan, it.n_zero, it.n_neg_inf, it.n_pos_inf, it.n_total, it.n_valid);
 }
 
-static void render_range_cell(const FeaturePreview::Cell &cell) {
+static void render_range_cell(const Preview::Cell &cell) {
   const analysis::Integrity &it = cell.integrity;
   if (it.n_valid == 0) {
     ImGui::TextDisabled("—");
@@ -1141,9 +1141,9 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     // 持 preview 锁覆盖 排序 + 行循环 (账目列可排序, 比较器要读 cells; worker 只在块末短锁发布, 不会长等)
     std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
     const bool preview_level = (sel.selected_level == (int)analysis::kLevel);
-    static const FeaturePreview::Cell s_empty_cell{};
+    static const Preview::Cell s_empty_cell{};
     // 槽位 = metadata 下标; 非预览层 / 未就绪 → 空 cell
-    auto cell_of = [&](int i) -> const FeaturePreview::Cell & {
+    auto cell_of = [&](int i) -> const Preview::Cell & {
       return (preview_level && i < (int)data.preview.snap.cells.size()) ? data.preview.snap.cells[i] : s_empty_cell;
     };
 
@@ -1187,8 +1187,8 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
             std::sort(it, g_end, [&](int a, int b) {
               const FeatureMetadata &fa = features[a];
               const FeatureMetadata &fb = features[b];
-              const FeaturePreview::Cell &ca = cell_of(a);
-              const FeaturePreview::Cell &cb = cell_of(b);
+              const Preview::Cell &ca = cell_of(a);
+              const Preview::Cell &cb = cell_of(b);
               int cmp = 0;
               switch (ui_state.sort_column) {
               case 1:
@@ -1322,7 +1322,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         ImGui::TextUnformatted(s_eff_cat2[idx]);
 
       // Columns: Stat / Range 账目 + Dist / PSD 迷你图 (预览, 仅 L1; 槽位 = metadata 下标)
-      const FeaturePreview::Cell &cell = cell_of(idx);
+      const Preview::Cell &cell = cell_of(idx);
       ImGui::PushID(idx);
       ImGui::TableNextColumn();
       render_stat_cell(cell.integrity);
@@ -1434,7 +1434,7 @@ void SaveFeatureTableJson(SharedData &data) {
 
         // Stat / Range 与表格同口径 (百分比 / min -1sd +1sd max); 表格显示 "—" 的格子不落键
         if (preview_level && i < data.preview.snap.cells.size()) {
-          const FeaturePreview::Cell &cell = data.preview.snap.cells[i];
+          const Preview::Cell &cell = data.preview.snap.cells[i];
           const analysis::Integrity &it = cell.integrity;
           if (it.n_total > 0) {
             const float n_total = static_cast<float>(it.n_total);

@@ -14,7 +14,7 @@
 namespace GUI {
 
 // ============================================================================
-// Worker — GUI 后台计算的单线程骨架: 最新请求覆盖旧的 (全部 GUI 服务同一份)
+// Service — GUI 服务的后台单线程骨架: 最新请求覆盖旧的 (全部 GUI 服务同一份)
 // ============================================================================
 //   GUI 线程:  Request(r)       覆盖挂起请求 + 取消在跑 (不起线程)
 //              RequestCancel()  只中断在跑, 不丢挂起
@@ -31,18 +31,18 @@ namespace GUI {
 // worker 私有常驻件 (reader / 缓冲 / 线程池) 是 Derived 的成员, 只 worker 线程碰.
 // ============================================================================
 template <class Derived, class Req>
-class Worker {
+class Service {
 public:
-  Worker() = default;
-  ~Worker() { assert(!thread_.joinable() && "Derived 析构须先 Stop: worker 还在用派生类成员"); }
-  Worker(const Worker &) = delete;
-  Worker &operator=(const Worker &) = delete;
+  Service() = default;
+  ~Service() { assert(!thread_.joinable() && "Derived 析构须先 Stop: worker 还在用派生类成员"); }
+  Service(const Service &) = delete;
+  Service &operator=(const Service &) = delete;
 
   void Start() {
     if (thread_.joinable())
       return;
     stop_.store(false, std::memory_order_relaxed);
-    thread_ = std::thread(&Worker::loop, this);
+    thread_ = std::thread(&Service::loop, this);
   }
   void Stop() {
     if (!thread_.joinable())

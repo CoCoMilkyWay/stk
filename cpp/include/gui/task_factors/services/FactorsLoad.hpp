@@ -1,9 +1,9 @@
 // FactorsLoad — 因子评估的特征库装载层, FactorsService (全表 Run) 与 InspectService (单因子深看) 共用:
 //   Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 标签 [hold] + 冲击成本 [amt]), load_planes 逐天并行读特征库散进去;
-//   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率; n_full_of 满档只数;
+//   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率; n_full_of 满仓只数;
 //   cost_tiers 换手成本 (两服务同一份); prep_labels / labels_raw 标签的契约视图 (CPU 预处理过 / GPU 会话自己预处理; cap = n_full_of);
-//   x_dist 根输入值分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与看板小图同一组样本).
-// 两个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat (+ 看板小图); InspectService 一棵 DAG 留一级 Row[H][T].
+//   x_dist 根输入值分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本).
+// 两个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat (+ 因子表小图); InspectService 一棵 DAG 留一级 Row[H][T].
 #pragma once
 
 #include "factor/Check.hpp" // check::Plane
@@ -85,10 +85,10 @@ float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
 // 沿 nv ≥ 1 的行取均值. rx = 该因子的 r16 [T][A] (rank_x 出)
 float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A);
 
-// 满档一腿只数 (Stat 契约【持仓口径】的 cap, Labels::cap) = 池内 (cs.m) 平均每行有效票数 / kGroups: 池宽决定, 与因子无关. Run / Search / Inspect 同一份
+// 满仓一腿只数 (Stat 契约【持仓口径】的 cap, Labels::cap) = 池内 (cs.m) 平均每行有效资产数 / kGroups: 池宽决定, 与因子无关. Run / Search / Inspect 同一份
 double n_full_of(const Loaded &L);
 
-// 根输入值分布 (Inspect 左下右半图 / Run 落看板小图, 同一份): 样本 = 池内有效格 (rx 有效 ∧ 根输入有效), 组号 = grp_of(rx)
+// 根输入值分布 (Inspect 左下右半图 / Run 落因子表小图, 同一份): 样本 = 池内有效格 (rx 有效 ∧ 根输入有效), 组号 = grp_of(rx)
 // (与 Stat 同一组). 与持有期无关
 struct XDist {
   analysis::AggPdf pdf;                               // 截尾 [lo, hi] 内样本的 PDF (255 点全落在主体上, 重尾不压扁); 只画图, 矩不用它
@@ -105,14 +105,14 @@ struct XDist {
 //   趟 2: 只收 [lo, hi] 内样本 → pdf
 void x_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o);
 
-// 看板迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
+// 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
 // 逐行 rIC 分布: rows = 一级 Row[H][T] (LandRows / gpu stat_eval 落地), ok 行的 ric 进 KLL → AggPdf (n < 3 无, 与 Accum::finish 同口径) → out[H]
 void ic_mini_pdfs(const factor::stat::Row *rows, int H, int T, MiniPdf *out);
 
 // 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份),
 // Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c) + cover) → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), cover = Σ(有秩 ∧ 成本有效) / Σ 有秩.
-// w = Stat CPU 工作区 (ensure 过 C = ft.costs.size()). 须 with_costs 装过 (L.costs.size() == ft.costs.size()); 无金额档 → out 空
+// w = Stat CPU 工作区 (ensure 过 C = ft.costs.size()). 须 with_costs 装过 (L.costs.size() == ft.costs.size()); 无金额段 → out 空
 void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
                 std::vector<CostTier> &out);
 

@@ -2,8 +2,8 @@
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "factor/Check.hpp"           // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
 #include "factor/GpuRun.hpp"          // available / device_name
-#include "factor/Search/Contract.hpp" // 搜索窗 / 高原 / 终选常量: Optimize 提示
-#include "factor/Search/Grid.hpp"     // kLayerMax: Optimize 提示
+#include "factor/Search/Contract.hpp" // 搜索窗 / 高原 / 终选常量: Search 提示
+#include "factor/Search/Grid.hpp"     // kLayerMax: Search 提示
 #include "gui/Tasks.hpp"              // StatusColor
 #include "gui/util/Sparkline.hpp"     // ic~ / x~ 列迷你图
 
@@ -297,7 +297,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
   }
   if (n.op >= 0) {
     const factor::expr::OpInfo &o = factor::expr::kOps[n.op];
-    // 每个参数: [☐ 搜] [输入]; 勾上 = 自由参数 (源串打裸键名, 输入禁用, 由 Optimize 搜)
+    // 每个参数: [☐ 搜] [输入]; 勾上 = 自由参数 (源串打裸键名, 输入禁用, 由 Search 搜)
     const auto free_box = [&](const char *id, uint8_t bit) {
       ImGui::SameLine();
       bool f = (n.free & bit) != 0;
@@ -309,7 +309,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
         tip("自由参数开关\n"
             "• 勾上 = 自由参数\n"
             "    ◦ 表达式里写裸键名\n"
-            "    ◦ 值由 Optimize 在搜索窗内每个持有期搜出, 写进 weights\n"
+            "    ◦ 值由 Search 在搜索窗内每个持有期搜出, 写进 weights\n"
             "• 不勾 = 固定, 按右边的值");
       return f;
     };
@@ -367,7 +367,7 @@ bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
 //          悬停表按组出标题行, 主表列同序; 组底色 (bg) 主表列 / 悬停表行共用; 覆盖组只在主表 (无底色, 格子不弹悬停, 不进悬停表)
 //   col    非空 = 进主表 (列名), 空 = 只在悬停表
 //   desc / range / best  说明 / 取值范围 / 最优 (悬停表三列, 主表列提示也由它们拼); 文案压短, 悬停表宽度由它们定
-//   get    (HoldStat, 该行 FactorRow: 满档 cap = scope.n_full, 行级 val% / rank%) → double (整数计数也走这里, fmt 用 %.0f)
+//   get    (HoldStat, 该行 FactorRow: 满仓 cap = scope.n_full, 行级 val% / rank%) → double (整数计数也走这里, fmt 用 %.0f)
 //   grade  固定区间着色 (主表 / 悬停表共用, 不随样本变): line(差端, 好端) 线性 (好端 < 差端 即越小越好); band(a, b) 中点最好 → 两端差;
 //          区间外钳位到端色; 默认不着色 (诊断量 / 尺度随 h 变的)
 //   lag    样本 = ok_rac 行 (n_rac; rAC 系 / turn), 否则 ok 行 (n); 对应行数 < 3 → 空
@@ -386,7 +386,7 @@ enum class Group : uint8_t { Cover,
 struct GroupInfo {
   const char *name, *desc;
   ImVec4 bg; // 组底色 (淡)
-  bool tip;  // 进悬停表 + 主表带底色 + 格子弹悬停; false = 只在主表看板
+  bool tip;  // 进悬停表 + 主表带底色 + 格子弹悬停; false = 只在主表显示
 };
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
     {"覆盖", "有效 / 可秩 / 触发 / 利用", ImVec4(), false},
@@ -423,7 +423,7 @@ constexpr Metric kMetrics[] = {
      [](const HS &, const FR &r) { return static_cast<double>(r.rank_pct); }, line(60, 90)},
     {Group::Cover, "trig%", "trig%", "触发率 % = 至少一腿非空的行 / ok 行", "[0, 100]", "越大", "%.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::trigger_of(h); }, line(80, 90)},
-    {Group::Cover, "util%", "util%", "利用率 % = 触发行平均每腿只数 / 满档 cap", "[0, ∞)", "≈ 100", "%.1f",
+    {Group::Cover, "util%", "util%", "利用率 % = 触发行平均每腿只数 / 满仓 cap", "[0, ∞)", "≈ 100", "%.1f",
      [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
@@ -550,7 +550,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      true},
     {Frame, "frame",
      "口径 (由根算子定)\n"
-     "• 共同: 标签取超额 (减截面均值); 持仓口径: 一腿满档 cap 只, 不足按只数/cap 建仓, 超出均分, 空组 / 空腿记 0\n"
+     "• 共同: 标签取超额 (减截面均值); 持仓口径: 一腿满仓 cap 只, 不足按只数/cap 建仓, 超出均分, 空组 / 空腿记 0\n"
      "• CS = 截面\n"
      "    ◦ 根 CsRank / CsNormRank / CsZ\n"
      "    ◦ 每 t 截面 rank 分 20 组\n"
@@ -568,7 +568,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "    ◦ 权重不是模板的实例\n"
      "    ◦ 组 id 不合\n"
      "• 未搜索 灰: 模板含自由参数但还没 weights\n"
-     "    ◦ 不评; 高光它点 Optimize\n"
+     "    ◦ 不评; 高光它点 Search\n"
      "• ok 绿: 有 stat 且作用域一致 (本轮算的或文件读的)\n"
      "• file≠scope 黄: 文件 stat 是别的票池 / 区间算的\n"
      "• no stat: 从未评估\n"
@@ -715,7 +715,7 @@ std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const FR &r) {
 
 // Stat 列悬停: 精简头部 + 转置表 (行 = kMetrics 按组, 列 = 持有期), 有区间的指标按固定区间着色
 void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
-  ImGui::TextDisabled("%s%s | %s | %s %s..%s | 满档 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
+  ImGui::TextDisabled("%s%s | %s | %s %s..%s | 满仓 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
                       r.stat_from_file && !scope_matches(r, ctx) ? " (作用域≠当前)" : "", factor::stat::frame_name(r.frame), r.scope.pool.c_str(),
                       misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.scope.n_full, r.eval_ms);
   ImGui::TextDisabled("标签: 毛价格收益; 着色 (固定区间, 见列头): ");
@@ -806,7 +806,7 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
 }
 
 // 一行在选定持有期的目标分 (RowScore 的压缩; 不显示, 只挑父行代表权重; hold = 0 即无)
-struct OptCell {
+struct ScoreCell {
   int hold = 0;
   double score = 0.0; // −∞ = LS / rIC ≤ 0
 };
@@ -866,7 +866,7 @@ void mini_pdf_cell(const MiniPdf *p, const char *id, const char *title) {
   ImGui::EndTooltip();
 }
 
-// 固定列一格 (edit 列是勾选框, 在表循环里单独画); hold = 看板选定持有期 (ic~ 列)
+// 固定列一格 (edit 列是勾选框, 在表循环里单独画); hold = 因子表选定持有期 (ic~ 列)
 void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool editing, RowKind kind, int hold) {
   const bool ok = r.error.empty();
   const auto text = [&](const std::string &s, bool hi = false) {
@@ -965,7 +965,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   const Phase st = svc.phase.load(std::memory_order_acquire);
   const bool busy = svc.busy();
   const Phase sst = ss.phase.load(std::memory_order_acquire);
-  const bool sbusy = ss.busy(); // Optimize 在跑: 它要写因子文件, Run 让路
+  const bool sbusy = ss.busy(); // Search 在跑: 它要写因子文件, Run 让路
   const FeatureTable &ft = svc.feats();
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
@@ -1027,10 +1027,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   }
   if (ImGui::IsItemHovered())
     tip("表格 Stat 列显示哪个持有期\n"
-        "• 多权重因子的父行 = 该持有期下 score (每期真实 LS × rIC, 同 Optimize) 最高的权重\n"
+        "• 多权重因子的父行 = 该持有期下 score (每期真实 LS × rIC, 同 Search) 最高的权重\n"
         "• 不影响\n"
         "    ◦ Run: 一次算全部持有期\n"
-        "    ◦ Optimize: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
+        "    ◦ Search: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
         "• 悬停 Stat 列格子看全部持有期",
         factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen);
   ImGui::SameLine();
@@ -1046,7 +1046,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     tip(ctx.axis_ready ? "评估全目录\n"
                          "• 流程: 扫描 → 读特征库 → 逐权重 eval → Stat\n"
                          "• 结果回写各因子文件 stats[i]\n"
-                         "• 未搜索 (模板含自由参数而无 weights) 不评, 先 Optimize"
+                         "• 未搜索 (模板含自由参数而无 weights) 不评, 先 Search"
                        : "资产轴未就绪, 读不了特征库\n"
                          "• 先在 Database 页扫描");
   ImGui::SameLine();
@@ -1106,24 +1106,24 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
 
-  // ---- Optimize: 对高光行所在文件的模板搜全部自由参数, 搜索窗内每个持有期各搜 (不跨 h 比), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
-  //      (Search/Contract.hpp【目标】【多权重】); 结果整体替换文件 weights, 随后 TaskFactors 自动 Run (看板从新 stat 算) ----
+  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 搜索窗内每个持有期各搜 (不跨 h 比), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
+  //      (Search/Contract.hpp【目标】【多权重】); 结果整体替换文件 weights, 随后 TaskFactors 自动 Run (因子表从新 stat 算) ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
       if (r.key == ui.view_file)
         view_row = &r;
     const bool tmpl_ok = view_row && view_row->error.empty() && !view_row->tmpl.empty() && view_row->tmpl != view_row->expr; // 模板有自由参数
-    const bool can_opt = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && tmpl_ok;
-    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Optimize:");
+    const bool can_search = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && tmpl_ok;
+    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Search:");
     ImGui::SameLine();
-    if (!can_opt)
+    if (!can_search)
       ImGui::BeginDisabled();
-    if (ImGui::Button("Optimize", ImVec2(70, 0))) {
-      ui.opt_row = *view_row;
+    if (ImGui::Button("Search", ImVec2(70, 0))) {
+      ui.search_row = *view_row;
       action = 3;
     }
-    if (!can_opt)
+    if (!can_search)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       if (!view_row)
@@ -1137,7 +1137,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             "• 范围: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
             "• 目标 = 每期真实毛 LS × rIC\n"
             "    ◦ 只评排序能力: 不看成本, 不跨持有期比\n"
-            "    ◦ 真实 LS: 一腿满档 cap 只 (池内平均有效票数 / 20), 不足按只数/cap 建仓, 超出均分, 不触发记 0\n"
+            "    ◦ 真实 LS: 一腿满仓 cap 只 (池内平均有效资产数 / 20), 不足按只数/cap 建仓, 超出均分, 不触发记 0\n"
             "    ◦ 触发率 / 利用率已在 LS 里, 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
             "    ◦ 自动定向: LS 与 rIC 同负 → 取反计 (权重带 sign = -1)\n"
             "• 搜索\n"
@@ -1264,7 +1264,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         "    ◦ 时序口径: TsRankRoll(d=1275, 5 日)\n"
         "• 子槽: 缩进里选算子或特征\n"
         "    ◦ 参数 d / k / k2 手填\n"
-        "    ◦ 或勾前面的小框 = 自由参数 (表达式里写裸键名, 由 Optimize 搜)\n"
+        "    ◦ 或勾前面的小框 = 自由参数 (表达式里写裸键名, 由 Search 搜)\n"
         "• 下拉\n"
         "    ◦ 可打字过滤: 算子名 / 中文名 / 特征 code\n"
         "    ◦ GROUP 域的组 id 槽只列整数列算子 + 特征\n"
@@ -1300,7 +1300,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ui.add_err.clear();
   std::string canon;
   factor::stat::Frame frame = factor::stat::Frame::CS;
-  bool is_tmpl = false; // 有自由参数 (Add / Save 后是"未搜索", 要 Optimize)
+  bool is_tmpl = false; // 有自由参数 (Add / Save 后是"未搜索", 要 Search)
   if (complete) {
     factor::expr::Expr e;
     if (factor::expr::parse(src, ft.lookup(), e, ui.add_err) && factor::expr::root_frame(e, frame, ui.add_err)) {
@@ -1323,7 +1323,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextDisabled("[%s%s]", factor::stat::frame_name(frame), is_tmpl ? ", 模板" : "");
     if (ImGui::IsItemHovered())
       tip("%s%s", frame == factor::stat::Frame::CS ? "截面口径: 根是截面归一算子\n• 每 t 截面 rank → 20 组, 标签超额" : "时序口径: 根 TsRankRoll(5 日)\n• 自身分位直接分 20 组, 组可空, 标签超额",
-          is_tmpl ? "\n• 模板: 含自由参数\n    ◦ 写入后是\"未搜索\"\n    ◦ 高光它点 Optimize 搜出 weights" : "");
+          is_tmpl ? "\n• 模板: 含自由参数\n    ◦ 写入后是\"未搜索\"\n    ◦ 高光它点 Search 搜出 weights" : "");
   }
 
   // 两个名字: 非空且不合法 → 红字 (InputText 会改 buf, push/pop 必须用同一个判断结果)
@@ -1444,15 +1444,15 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // ==========================================================================
   // 3. 表
   // ==========================================================================
-  // 目标分 (不显示, 挑代表权重): 每行按选定持有期 (Hold) 从 stat 现算 (RowScore, 与 Optimize 同一份目标); 无 stat / 无该持有期 / n < 3 → hold = 0
-  static std::vector<OptCell> s_opt;
-  s_opt.assign(s_rows.size(), OptCell{});
+  // 目标分 (不显示, 挑代表权重): 每行按选定持有期 (Hold) 从 stat 现算 (RowScore, 与 Search 同一份目标); 无 stat / 无该持有期 / n < 3 → hold = 0
+  static std::vector<ScoreCell> s_score;
+  s_score.assign(s_rows.size(), ScoreCell{});
   if (cur_hold > 0)
     for (size_t i = 0; i < s_rows.size(); ++i) {
       const factor::search::Score sc = RowScore(s_rows[i], cur_hold);
       if (!sc.ok)
         continue;
-      OptCell &oc = s_opt[i];
+      ScoreCell &oc = s_score[i];
       oc.hold = cur_hold;
       oc.score = sc.score;
     }
@@ -1475,8 +1475,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         continue;
       if (first_ok < 0)
         first_ok = i;
-      const OptCell &oc = s_opt[static_cast<size_t>(i)];
-      if (oc.hold > 0 && std::isfinite(oc.score) && (g.rep < 0 || oc.score > s_opt[static_cast<size_t>(g.rep)].score))
+      const ScoreCell &oc = s_score[static_cast<size_t>(i)];
+      if (oc.hold > 0 && std::isfinite(oc.score) && (g.rep < 0 || oc.score > s_score[static_cast<size_t>(g.rep)].score))
         g.rep = i;
     }
     if (g.rep < 0)
@@ -1495,7 +1495,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         "    ◦ 名字前 ▸ 展开看全部权重, 子行标搜索时的持有期\n"
         "• 父行 / 未搜索行\n"
         "    ◦ 勾选: 编辑模板\n"
-        "    ◦ 点行: 高光 → Optimize / Inspect\n"
+        "    ◦ 点行: 高光 → Search / Inspect\n"
         "• 子行\n"
         "    ◦ 点行: 高光 → Inspect\n"
         "    ◦ 悬停 Stat 列: 看该权重全部持有期\n"

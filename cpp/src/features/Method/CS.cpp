@@ -412,7 +412,7 @@ void NeutralRank::apply(float *y, std::size_t n, const Ctx &c) {
   mean_fill(y, n);
 }
 
-// ---- 运行期分派表: 全组合静态实例化, 与 CoreCrosssection::run_one 同一条调用链 ----
+// ---- 运行期分派表: 全组合静态实例化, 与 CoreCs::run_one 同一条调用链 ----
 namespace {
 
 template <class Tf, class Method>

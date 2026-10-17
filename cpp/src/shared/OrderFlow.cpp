@@ -190,10 +190,10 @@ void OrderFlow::Depth::build_plot() {
   }
 }
 
-// 自动阈值 = 「档·秒」权重下 log10(净额) 的上分位数:
-//   权重 w = 矩形持续秒数 (档高恒 1 tick → w ∝ 该档在图上的着色面积),
+// 自动阈值 = 「价位·秒」权重下 log10(净额) 的上分位数:
+//   权重 w = 矩形持续秒数 (价位高恒 1 tick → w ∝ 该价位在图上的着色面积),
 //   自高额 bin 向低累计到总权重的 HEATMAP_AUTO_INK_RATIO 即停 → 着色面积 / 有量面积
-//   恒定, 故不同日/标的的色块浓度观感一致. 单趟 O(rect_count), 无分配.
+//   恒定, 故不同日/资产的色块浓度观感一致. 单趟 O(rect_count), 无分配.
 void OrderFlow::Depth::build_auto_threshold() {
   constexpr float THR_MIN = OrderFlowConst::HEATMAP_LOG_THR_MIN;
   constexpr float STEP = OrderFlowConst::HEATMAP_LOG_THR_STEP;
@@ -204,7 +204,7 @@ void OrderFlow::Depth::build_auto_threshold() {
   if (merged.rect_count == 0)
     return;
 
-  const float min_amount = std::pow(10.0f, THR_MIN); // 低于滑条下限的档永远不显示, 不计入总量
+  const float min_amount = std::pow(10.0f, THR_MIN); // 低于滑条下限的价位永远不显示, 不计入总量
   std::array<double, NBIN> hist{};
   double total = 0.0;
   for (const auto &level : merged.levels) {
@@ -534,9 +534,9 @@ void OrderFlow::DepthProfile::build(const Depth &src, size_t tick_idx) {
     price.push_back(p);
     amount.push_back(a);
     if (a > 0)
-      bid_top = p; // 价升序: 最终值 = 最高买档
+      bid_top = p; // 价升序: 最终值 = 最高买价位
     else if (ask_low == 0)
-      ask_low = p; // 首个卖档 = 最低卖价
+      ask_low = p; // 首个卖价位 = 最低卖价
   }
 
   // 累计曲线 (万元): 买自最高买价向下, 卖自最低卖价向上

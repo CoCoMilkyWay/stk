@@ -80,7 +80,7 @@ AssetAxis &asset_axis();
 // 后码表落库清单 (见 FeatureLib.hpp), 读端从清单重建同一库轴. 特征文件头存 (A_sub, hash), 不符 = 库内文件与清单
 // 不一致 → 读端删库判废, 等重算 (见 FeatureRead).
 //
-// 整条特征管线 (张量池 / 落盘 / 读端 / Dist / Transform / OrderFlow 特征读)
+// 整条特征管线 (日环 / 落盘 / 读端 / Dist / Transform / OrderFlow 特征读)
 // 一律用库轴下标 (sub); 需要查 items/码表/行业等全局资源时经 global() 映射.
 // ============================================================================
 struct LibAxis {

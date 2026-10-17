@@ -29,7 +29,7 @@ class FeatureStore;
 // 超线程对布局透明: stage 只占物理核, 再展开到该核的逻辑 CPU ——
 //   TS:        每个逻辑 CPU 一个 worker, pin 单个逻辑 CPU (超线程吞吐全归 TS; 无超线程即每核一个)
 //   CS:        1 个 worker 独占一个物理核 (截面日后还要加, 留整核)
-//   IO + 预取: 共一个物理核 (预取大部分时间阻塞在读盘 / 门控, 落盘大部分时间等截面), 两者都 pin 该核全部逻辑 CPU
+//   IO + 预取: 共一个物理核 (预取大部分时间阻塞在读盘 / 流控, 落盘大部分时间等截面), 两者都 pin 该核全部逻辑 CPU
 // CS / IO 不要落在 TS 物理核的超线程兄弟上: 同核争访存资源, 落盘慢数倍, 整条流水线被池子卡住.
 //
 // 全部线程 pin 死 —— 没有浮动线程抢占 pinned worker 的时间片.
@@ -72,7 +72,7 @@ struct StageLayout {
     const int cs = num_ts_phys, io = num_ts_phys + 1;
     switch (kind) {
     case ComputeStage::Prefetch:
-      return {kind, "预取 Prefetch", "顺日期备源 (Lob: 逐笔帧读进 page cache; Bar: 解码 bar1m 进源环), 领先最慢时序核不超过 pool slots + 2 天",
+      return {kind, "预取 Prefetch", "顺日期备源 (Lob: 逐笔帧读进 page cache; Bar: 解码 bar1m 进源环), 领先最慢时序核不超过 ring slots + 2 天",
               1, 0, num_ts + 2, io, io, true};
     case ComputeStage::TS:
       return {kind, "时序 TS", "逐资产喂源 + DAG, 写 L0/L1 张量; 领跑核自动接手落后核的资产 (处置权转移)",
@@ -154,7 +154,7 @@ struct StageLayout {
 // 一天吃成新的 lagger.
 //
 // 不要改成"自由领任务 (全局队列 / 每日游标)"或"按日窃取 (借一天, 次日归还)":
-//   各核专注自己的标的是刻意的 —— per-asset core 状态 (~百 KB, first-touch 在初始 owner 核)
+//   各核专注自己的资产是刻意的 —— per-asset core 状态 (~百 KB, first-touch 在初始 owner 核)
 //   跟着 owner 走, 换核才付冷启动. 日间负载噪声由池深吸收 (各核前沿可相差至多 P 天), 不搬资产;
 //   只有持续落后 (领跑者被池子卡住 且 对方落后 ≥ 2 天) 才永久转移处置权 —— 一次转移修正一次
 //   权重偏差, 之后不再换核. 自由领 / 按日窃取会把每次噪声都变成换核, 且偏差不收敛 (天天重复偷).
@@ -220,7 +220,7 @@ struct TsSchedule {
 // 块高 = 1−t (满 = 闲/健康, 空 = 压力大), 颜色 = t 白→红, 完全闲置 = 绿+满块.
 // 红色小矮柱 = 很费劲在满负荷工作. 后跟该类其余数值. 各类的压力指标:
 //
-//   预取 = 忙碌占比 (滑窗内非干等时间的比例; 基本全在门控干等 = 绿)
+//   预取 = 忙碌占比 (滑窗内非干等时间的比例; 基本全在流控干等 = 绿)
 //   时序 = 落后领跑的天数 / 池深         (领跑者满, 满红 = 差距吃满整个池子;
 //                                        基本全在池边干等 slot = 绿)
 //   截面 = 距时序前沿的积压天数 / 池深   (空红 = 积压吃满池子, 本核是瓶颈;
@@ -231,7 +231,7 @@ struct TsSchedule {
 // 累计进 idle_ms, 渲染线程滑窗轧差 —— 连续、无采样撞相位问题, 且不依赖
 // 带宽标定 (落盘一天一跳的粗粒度计数没法测瞬时带宽).
 // 总条以落盘天数为准 (端到端真完成). 逐核速度浓缩进 Σ, 逐核前沿 = 领跑
-// 前沿 − 颜色档 —— 谁是瓶颈一眼可见 (空 + 红).
+// 前沿 − 颜色级 —— 谁是瓶颈一眼可见 (空 + 红).
 // ============================================================================
 struct ComputeStats {
   // 每核一槽, 四类统一: work = 单调工作量 (预取=字节, 时序=源条数 (Lob 逐笔 / Bar 分钟 K),
@@ -351,7 +351,7 @@ struct PipelineArgs {
   const FeatureLib &lib;  // 本档库
   const FeatureLib &side; // CS 旁读档的库 (无旁读档时任意)
   const std::vector<misc::Ymd> &dates;
-  size_t pool_slots;
+  size_t ring_slots;
   uint64_t adopt_pct;
   const std::atomic<bool> &cancel;
   std::function<void(size_t)> on_io;

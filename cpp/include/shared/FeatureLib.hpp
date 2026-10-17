@@ -2,7 +2,7 @@
 
 // 特征库 = 名 + 档 + A 轴 + 目录 + 日期轴. 库名即目录名 (<feature_dir>/<name>/), 档由名定:
 //   all        Bar 档 (bar1m + 基本面), 全轴, 交易日 [PIPELINE_START_DATE, end_date]
-//   <pool>     Lob 档 (逐笔 → LOB), 池轴, 回测日历; <pool> = all 库票池列 pool_<pool> (feature_pools)
+//   <pool>     Lob 档 (逐笔 → 订单簿), 池轴, 回测日历; <pool> = Bar 库票池列 pool_<pool> (feature_pools)
 // 写端 (ComputeService) 规划后落清单 <dir>/lib.json (save_lib); 读端 (FeatureRead / ReadScope / 截面旁读) 只读清单 (load_lib),
 // 两端永远同一 (档, 轴, 日期轴). 无清单 = 未建库 (空轴, ready() == false).
 
@@ -17,7 +17,7 @@
 
 struct Config;
 
-// 票池: 库名 (列名去 pool_ 前缀) + all 库 L1 列下标. 定义在 FeatureMeta.cpp (由 Bar 字段表 Pool 类 pool_* 列展开)
+// 票池: 库名 (列名去 pool_ 前缀) + Bar 库 L1 列下标. 定义在 FeatureMeta.cpp (由 Bar 字段表 Pool 类 pool_* 列展开)
 struct PoolDef {
   const char *name;
   size_t col;

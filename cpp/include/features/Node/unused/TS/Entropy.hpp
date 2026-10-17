@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// ENTROPY - 前 N 档深度分布的香农熵: 0 极端集中, ln(N) 极端均匀
+// ENTROPY - 前 N 个价位深度分布的香农熵: 0 极端集中, ln(N) 极端均匀
 // =============================================================================
 //   H = -Σ π_i · log(π_i),  π_i = V_i / Σ V
 //   单侧节点: 只收一侧 qty; IS_BID 决定符号 (ask 存负值)
@@ -46,7 +46,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 家族行: side ∈ {a, b} (节点名), sd ∈ {ask, bid} (列名), S = 公式侧标 "A"/"B", en/cn = 侧名, n = 档数
+// 家族行: side ∈ {a, b} (节点名), sd ∈ {ask, bid} (列名), S = 公式侧标 "A"/"B", en/cn = 侧名, n = 价位数
 #define ENTROPY_FIELD(X, CAT1, side, sd, S, en, cn, n) \
   X(ent_##sd##_##n, CAT1, RAW, "Top " #n "-level " en " Shannon Entropy", cn "侧" #n "档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,)" S R"(} \log(\pi_{i,t}^{M,)" S R"(}), \quad \pi_{i,t}^{M,)" S R"(} = \frac{V_{i,t}^{M,)" S R"(}}{\sum_{j=1}^{N} V_{j,t}^{M,)" S R"(}}, \quad N = )" #n, TS(Entropy_##side##_##n, None, None))
 

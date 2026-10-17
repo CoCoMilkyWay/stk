@@ -116,10 +116,10 @@ enum class Kern { MAP,
 //   同一套枚举两头用: 子节点的 out 对父算子对应元的 in 逐元查 (parser, 不点算子名):
 //     严格域 (dom_strict: INT, 越界 = 算子内部 assert) → 子.out 须 ⊆ in (dom_sub), 特征叶按数据逐格查 (dom_holds);
 //     其余域是语义声明 (越界格按【退化】规则给中性值 / 饱和值), 不能静态否决 (Σ 正量的 out 只能写 REAL),
-//     只用于渲染签名与算子看板.
+//     只用于渲染签名与算子表.
 //   只表达能写成集合的约束 (y ≠ 0 / x > −1 之类写 REAL); out 只按算子自身声明, 不随输入推导
 //   (透传 Mask / Where / Delay 与取大取小写 REAL). 表格 / JSON 渲染用 dom_tex / dom_name.
-//   Expr 另用: 离散 (dom_discrete) 不能作因子归一算子的输入 (分位只有几档, 20 组填不满);
+//   Expr 另用: 离散 (dom_discrete) 不能作因子归一算子的输入 (分位只有几个取值, 20 组填不满);
 //   BCAST 抹掉截面变异 (每 t 全资产同值), 沿 A 变异按结构推 (Expr.hpp varies_a).
 enum class Dom { REAL,    // ℝ (首项 = 0: in[] 数组未写的元默认 REAL)
                  NONNEG,  // ℝ≥0 (含整数计数: ArgMax 等期数)

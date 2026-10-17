@@ -42,7 +42,7 @@ static double point_to_segment_dist_sq(double px, double py, double x1, double y
 // Hover 命中阈值 (绘图区归一化坐标的距离平方)
 constexpr double kHoverDistSq = 0.001;
 
-// 折线到鼠标的最近段距离平方 (归一化坐标).
+// 折线到鼠资产最近段距离平方 (归一化坐标).
 // PDF 的 x 网格等距 → x 方向超出命中半径的段不可能入选, 只扫鼠标 x 窗口内的段
 // (资产截面 5000 条线 × 127 段, 逐段全扫每帧 ~64 万次, 裁剪后 ~2 段/线)
 static double nearest_seg_dist_sq(const float *x, const float *y, size_t n,

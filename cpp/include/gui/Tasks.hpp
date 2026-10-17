@@ -31,7 +31,7 @@ struct TaskStatus {
 
 ImVec4 StatusColor(TaskStatus::Kind kind);
 
-// 后台进度 (shared/Progress.hpp) 的唯一展示口径, 全部 Worker 共用:
+// 后台进度 (shared/Progress.hpp) 的唯一展示口径, 全部 Service 共用:
 //   PhaseKind:      Idle 灰 / 忙 紫 / Done 绿 / Cancelled 黄
 //   ProgressStatus: 行标签 = 阶段名 (+ 有总量时百分比); Idle 无标签. 带业务结论的 Done (BROKEN / FAIL) 由调用方先判
 //   TextPhase:      tab 内一段彩色阶段名

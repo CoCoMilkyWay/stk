@@ -1,5 +1,5 @@
 // Factors→Factors: <factor_dir>/<pool>/ 下一因子一文件的整体面板. 顶部 = 作用域 / 后端 / 持有期 + Run / Cancel /
-// Rescan + 状态, 下一行 Optimize (高光因子的模板参数搜索: 进度 / 每持有期的终选); 中间 = 加因子构建器 (从根往里逐槽下拉选算子 / 特征,
+// Rescan + 状态, 下一行 Search (高光因子的模板参数搜索: 进度 / 每持有期的终选); 中间 = 加因子构建器 (从根往里逐槽下拉选算子 / 特征,
 // 参数手填或勾成自由参数, 即时校验); 下面 = 表 (一行一权重, 多权重因子折成父行 + 可展开的子行: BROKEN 红 + 原因, 有效行显示规范串 /
 // 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 模板载入构建器编辑, 点行高光 → 给 Inspect 页).
 #pragma once
@@ -21,7 +21,7 @@ struct BuildNode {
   std::string feat;            // 叶: 特征 code (空 = 未选)
   std::vector<BuildNode> args; // 算子: arity 个子槽
   factor::Param p;             // 算子参数 (选中时按 Check.hpp 默认表填, 之后手改)
-  uint8_t free = 0;            // 自由参数位 (expr::kFreeD / K / K2): 源串打裸键名, 由 Optimize 搜
+  uint8_t free = 0;            // 自由参数位 (expr::kFreeD / K / K2): 源串打裸键名, 由 Search 搜
 };
 
 struct FactorsUIState {
@@ -43,8 +43,8 @@ struct FactorsUIState {
   std::string view_file;
   bool view_defaulted = false;
   std::vector<std::string> expanded; // 展开的多权重因子文件
-  // Optimize (对象 = 高光行所在文件的模板, 搜索窗内全部持有期): 点下时把行拷给 opt_row (TaskFactors 据此建请求)
-  FactorRow opt_row;
+  // Search (对象 = 高光行所在文件的模板, 搜索窗内全部持有期): 点下时把行拷给 search_row (TaskFactors 据此建请求)
+  FactorRow search_row;
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
   // 表列宽贴合 (对仗 TabOperators)
@@ -69,7 +69,7 @@ struct FactorsUIContext {
 // 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
 void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
-// 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Optimize 高光行 (ui.opt_row), -3 = 取消 Optimize, 0 = 无
+// 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row), -3 = 取消 Search, 0 = 无
 int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors

@@ -208,7 +208,7 @@ static bool RenderPipeline(Transform::Params &p) {
                       "• 与回测 / 实盘 features/Method/CS.hpp 同一份代码\n"
                       "• NeutralRank 需 mcap + ind_l1 上下文列 (行业 + log 市值中性化)");
 
-  // 6. 构建天数档位: 只算区间头 N 天 (快速迭代), 不往后算
+  // 6. 构建天数预设: 只算区间头 N 天 (快速迭代), 不往后算
   ImGui::SameLine(0, 16);
   ImGui::Text("天数");
   ImGui::SameLine();

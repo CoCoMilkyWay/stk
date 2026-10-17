@@ -71,8 +71,8 @@ struct Asset {
   // 按日统计 (Browser 用, 加载 stock_info 后算一次)
   // ========================================
   struct DateStats {
-    size_t total_assets = 0;       // 当日已上市未退市的标的数
-    size_t assets_with_orders = 0; // 其中有逐笔数据的标的数
+    size_t total_assets = 0;       // 当日已上市未退市的资产数
+    size_t assets_with_orders = 0; // 其中有逐笔数据的资产数
   };
   std::unordered_map<misc::Ymd, DateStats> date_stats; // date -> 统计 (算一次后缓存)
 
@@ -83,7 +83,7 @@ struct Asset {
   // 一天缺一大片通常是那天的源出了事 (归档没下到 / 逐笔流缺片), 按资产看
   // 反而会摊成几百行各缺一天, 看不出来.
   struct DateGap {
-    size_t expected = 0;        // 当天本该有逐笔的标的数
+    size_t expected = 0;        // 当天本该有逐笔的资产数
     size_t orders_missing = 0;  // 其中没有帧的
     size_t archive_missing = 0; // 其中归档也没有的 (归档按天存, 要么全缺要么不缺)
   };
@@ -215,7 +215,7 @@ struct Asset {
   // 按日统计 (Browser 完整性 / Table 的 Orders% / Encode 的缺失表,
   // 同一份统计一次算完)
   //
-  // 分母 = 当日"本该有逐笔"的标的: 已上市未退市, 且排除
+  // 分母 = 当日"本该有逐笔"的资产: 已上市未退市, 且排除
   //   - 北交所 (L2 archive 从不覆盖 .BJ)
   //   - 当日全天停牌 (suspended, 无逐笔可编码)
   //   - 墓碑 (编码器判定当天源数据为空, 帧目录格子三态之一)

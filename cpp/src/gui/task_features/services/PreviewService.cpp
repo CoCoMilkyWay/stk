@@ -3,7 +3,7 @@
 
 namespace GUI::Features {
 
-FeaturePreview &PreviewService::target(SharedData &data) { return data.preview; }
+Preview &PreviewService::target(SharedData &data) { return data.preview; }
 
 void PreviewService::RequestCompute(SharedData &data) {
   // 预览只在 L1 上跑; 覆盖该层全部非 META 特征, 不看选中

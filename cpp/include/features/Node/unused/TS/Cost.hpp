@@ -1,13 +1,13 @@
 #pragma once
 
 // =============================================================================
-// COST (Impact Cost) - 冲击成本: 吃掉前 N 档的 VWAP 相对中间价的偏离
+// COST (Impact Cost) - 冲击成本: 吃掉前 N 个价位的 VWAP 相对中间价的偏离
 // =============================================================================
 //   cost_buy_N  = VWAP(ask[1:N]) / mid - 1   (买方, 正值)
 //   cost_sell_N = 1 - VWAP(bid[1:N]) / mid   (卖方, 正值)
 //   IS_BUY: true=吃 ask, false=吃 bid
 //   N=1 时 cost_buy_1 ≡ cost_sell_1 = (ask1−bid1)/(ask1+bid1) (相对半价差), 只落 buy 一列.
-//   当日尚无盘口 / 该侧 N 档皆空 / mid 无效 → NaN
+//   当日尚无盘口 / 该侧 N 个价位皆空 / mid 无效 → NaN
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -59,10 +59,10 @@ private:
 };
 
 // =============================================================================
-// CostAmt - 按金额吃单的冲击成本: 吃掉 A 元 (沿档位累计成交额, 末档按比例) 的 VWAP 相对中间价的偏离
+// CostAmt - 按金额吃单的冲击成本: 吃掉 A 元 (沿价位累计成交额, 末价位按比例) 的 VWAP 相对中间价的偏离
 // =============================================================================
 //   cost_buy_A  = VWAP(ask, 吃满 A 元) / mid - 1     cost_sell_A = 1 - VWAP(bid, 吃满 A 元) / mid
-//   全部 N 档金额不足 A / 当日尚无盘口 / mid 无效 → NaN.   开源 029 买入 / 卖出冲击成本 (10万 / 100万 / 300万)
+//   全部 N 个价位金额不足 A / 当日尚无盘口 / mid 无效 → NaN.   开源 029 买入 / 卖出冲击成本 (10万 / 100万 / 300万)
 // =============================================================================
 template <uint32_t AMT_WAN, bool IS_BUY, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class CostAmt {
@@ -94,7 +94,7 @@ public:
         continue;
       const float remain = TARGET - sum_pv;
       const float amt = p * v;
-      if (amt >= remain) { // 末档按比例
+      if (amt >= remain) { // 末价位按比例
         sum_v += remain / p;
         sum_pv = TARGET;
       } else {

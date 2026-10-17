@@ -50,7 +50,7 @@ struct TierFeed<bar::Tier> {
 
   const Bar1mDay &bars(size_t d) const {
     const Bar1mDay &b = ring[d % ring.size()];
-    assert(b.date == dates[d] && "源环格不是日 d (pf_ready 门控 / 环长不符)");
+    assert(b.date == dates[d] && "源环格不是日 d (pf_ready 流控 / 环长不符)");
     return b;
   }
 

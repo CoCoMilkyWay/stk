@@ -27,7 +27,7 @@
 //   size_t weight(sub) const            初始分配 / 领养挑最轻的权重
 //   std::unique_ptr<Core> make_core(sub, worker_id) const   初始 owner 在自己核上构造 (first-touch)
 //   size_t prefetch(d)                  预取线程备日 d 的源, 返回字节
-//   Runner(TierFeed &, worker_id)       每 TS worker 一份的工作区 (Lob: LOB + decoder + reader)
+//   Runner(TierFeed &, worker_id)       每 TS worker 一份的工作区 (Lob: 订单簿 + decoder + reader)
 //     size_t run(core, sub, d, day, store)   一个 asset-day (缺源 = 零事件日同路径), 返回源条数
 // 截面 / 落盘档无关 (cs_loop / io_loop, 各自 TU).
 // ============================================================================
@@ -45,13 +45,13 @@ struct TsRole {
   std::vector<std::unique_ptr<CoreOf<T>>> &cores;
 };
 
-// 预取: 顺日期备源. 门控 = store.pf_try_open (领先最慢 TS 不超过 P + 余量; 硬源的源环格由此可复用, 见 feed_ring_size).
+// 预取: 顺日期备源. 流控 = store.pf_try_open (领先最慢 TS 不超过 P + 余量; 硬源的源环格由此可复用, 见 feed_ring_size).
 template <class T>
 void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed) {
   const int worker_id = ctx.worker_id;
   StoreRing &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 本核发布槽 (单写者): work = 累计备源字节, idle_ms = 累计门控干等毫秒
+  // 本核发布槽 (单写者): work = 累计备源字节, idle_ms = 累计流控干等毫秒
   ComputeStats::Core &stat = ctx.stat;
 
   TraceNS("PrefetchWorker", 5);
@@ -107,7 +107,7 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed) {
 // 触发时机 = 领跑者在池边干等 slot (它已领先, 等待时间白白浪费, 正好拿来帮最慢者).
 //   victim 侧: 每天 (预算窗口按其前沿滚动) 最多让出自己持仓的 N% ——
 //              让完这波它下一轮几乎不再是最慢者, 也不会被过度掏空;
-//   leader 侧: 每天最多领养 (A 轴标的数 / worker 数) 的 N% —— 单核不会一天暴涨吃成新的 lagger.
+//   leader 侧: 每天最多领养 (A 轴资产数 / worker 数) 的 N% —— 单核不会一天暴涨吃成新的 lagger.
 template <class T>
 void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   using Store = FeatureStore<T>;
@@ -142,7 +142,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     return;
   }
 
-  // 档的工作区: 每 worker 一个 (非每资产), worker 内资产串行复用 (Lob: LOB + decoder + reader, 跨资产 cache/TLB 常驻)
+  // 档的工作区: 每 worker 一个 (非每资产), worker 内资产串行复用 (Lob: 订单簿 + decoder + reader, 跨资产 cache/TLB 常驻)
   typename TierFeed<T>::Runner runner(feed, worker_id);
 
   // Per-asset 跨日状态 (DAG 暖历史 + Fund 状态机 + 分钟缓冲 [+ TickData]), ~百 KB/资产.
@@ -173,7 +173,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   };
 
   // 处理一个 asset-day, 返回源条数. 主循环与领养回填共用 —— 两者只差句柄来自哪一天.
-  // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘档标签 (T+N) 跨日回填, 旧日句柄持到结清
+  // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘型标签 (T+N) 跨日回填, 旧日句柄持到结清
   // (见 CoreTs / LabelHold 文件头); 最后一日之后由 finish_all 全部结清.
   auto process_asset_day = [&](size_t asset_id, size_t date_idx, const Day &day) -> size_t {
     ++date_assets_processed;
@@ -335,7 +335,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
       }
       const size_t work = process_asset_day(asset_id, date_idx, day);
       if (date_idx + 1 == total_dates)
-        cores[asset_id]->finish_all(store); // 区间末: 悬挂的开盘档按最近收盘价结算, 旧日句柄全部归还
+        cores[asset_id]->finish_all(store); // 区间末: 悬挂的开盘型按最近收盘价结算, 旧日句柄全部归还
       date_work += work;
       cumulative_work += work;
       sched.done[asset_id].store(static_cast<int32_t>(date_idx), std::memory_order_release);
@@ -362,7 +362,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   }
 }
 
-// 管线: 张量池 → 档的源 → 初始分配 → 四角色按 StageLayout pin 死启动 (统一 launch) → 等收尾.
+// 管线: 日环 → 档的源 → 初始分配 → 四角色按 StageLayout pin 死启动 (统一 launch) → 等收尾.
 template <class T>
 bool pipeline(const PipelineArgs &args) {
   // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
@@ -375,18 +375,18 @@ bool pipeline(const PipelineArgs &args) {
   std::cout << "\n=== Phase 2: Feature Computation (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
             << "Assets: " << num_assets
-            << " | Pool slots: " << args.pool_slots
+            << " | Ring slots: " << args.ring_slots
             << " | Adopt pct: " << args.adopt_pct << "%"
             << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")\n"
             << std::endl;
 
-  FeatureStore<T> store(num_assets, args.lib.axis.hash, args.lib.dir, args.pool_slots);
-  assert(store.query_slots() >= CoreOf<T>::kMinPoolSlots && "内存上限把池砍到 MIN_POOL_SLOTS 之下, 会死锁");
+  FeatureStore<T> store(num_assets, args.lib.axis.hash, args.lib.dir, args.ring_slots);
+  assert(store.query_slots() >= CoreOf<T>::kMinRingSlots && "内存上限把日环砍到 MIN_RING_SLOTS 之下, 会死锁");
 
   TierFeed<T> feed(args, store);
 
-  // 初始分配: 按权重降序 + 轮询 —— 标的数每核严格均匀 (±1), 权重也近似均衡. 贪心 LPT 会把大量小标的堆到
-  // 少数核上 (标的数悬殊), 而每日固定开销 (decode/begin_day/分钟网格) 随标的数走, 反而更歪.
+  // 初始分配: 按权重降序 + 轮询 —— 资产数每核严格均匀 (±1), 权重也近似均衡. 贪心 LPT 会把大量小资产堆到
+  // 少数核上 (资产数悬殊), 而每日固定开销 (decode/begin_day/分钟网格) 随资产数走, 反而更歪.
   // 运行期差距由 worker 间的处置权转移收敛 (见 ts_loop 的 try_adopt), 这里只求起点均衡.
   TsSchedule sched(num_assets, num_ts);
   sched.adopt_pct = args.adopt_pct;

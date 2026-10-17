@@ -85,8 +85,8 @@ struct AuditState {
   const AuditTableStat *find_table(const std::string &name) const;
 };
 
-class AuditService : public Worker<AuditService, AuditRequest>, public Published {
-  friend Worker<AuditService, AuditRequest>;
+class AuditService : public Service<AuditService, AuditRequest>, public Published {
+  friend Service<AuditService, AuditRequest>;
 
 public:
   static constexpr const char *kName = "AuditWorker";
