@@ -9,6 +9,7 @@
 
 // ============================================================================
 // CoreCrosssection: 截面计算 (CS worker), L0 每秒 + L1 分钟边界级联
+//   与 CoreSequential 对仗: begin_day / compute_and_store (L0 节拍, 级联 L1) / end_day, 逐层 run<0> / run<1>
 //   字段表 CS(src_lvl, src, Tf, Method) 行由 CsLevel<LVL>::run 编译期展开 (与 fstore::RowWriter<LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
 //   算子契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
@@ -17,7 +18,7 @@
 //   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + cs_valid) 看世界,
 //   看不到 tick / LOB / 事件到达顺序. TS 行是资产局部纯函数 (见 CoreSequential.hpp),
 //   所以 CS 在 t 的输入对重放调度不变 —— 一致性由这个输入契约保证, 与"CS 是流式
-//   伴随还是整日后扫"无关. 回测按日门控 (cs_open 等全部 TS 写完, 见 FeatureStore.hpp),
+//   伴随还是整日后扫"无关. 回测按日门控 (cs_try_open 等全部 TS 写完, 见 FeatureStore.hpp),
 //   实盘由 feed 层按墙钟逐秒驱动 —— 两种调度下每行的输入相同, 输出逐值相同.
 //
 //   无回环: 特征层是单向 DAG (逐笔 → TS → 张量 → CS 列 = 终端输出, TS 不回读 CS).
@@ -60,19 +61,29 @@ public:
     valid_indices_.reserve(A_);
   }
 
-  // day = 本日读写句柄 (store.cs_open, 已按日门控: 两层张量整体就绪)
-  void set_day(const GlobalFeatureStore::Day &day) { day_ = day; }
+  // day = 本日读写句柄 (store.cs_try_open, 已按日门控: 两层张量整体就绪); end_day 交还
+  void begin_day(const GlobalFeatureStore::Day &day) {
+    assert(day && !day_ && "begin_day / end_day 须成对");
+    day_ = day;
+  }
+  void end_day() {
+    assert(day_ && "begin_day / end_day 须成对");
+    day_ = {};
+  }
 
   // 每秒一调 (事件驱动): 实盘由 feed 层按墙钟逐秒调用, 回测按日门控后逐秒重放同一个调用.
   // 不要改成"整日一次批量扫" —— 那样回测和实盘就成了两条代码路径, 逐值一致无从保证.
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
     TraceColor(C_Magenta);
+    assert(day_ && "compute_and_store: 本日未 begin_day");
     {
       TraceN("CS_Tick");
       run<0>(t);
     }
-    if (t % 60 == 59) { // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行)
+    // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行).
+    // 读 L1 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日门控保证; 实盘须先对全部资产 CoreSequential::advance(m + 1)
+    if (t % 60 == 59) {
       TraceN("CS_Minute");
       run<1>(L0_to_L1(t));
     }
@@ -141,7 +152,7 @@ private:
       col[valid_indices_[i]] = static_cast<feature_storage_t>(y[i]);
   }
 
-  GlobalFeatureStore::Day day_{}; // 本日读写句柄, set_day 换入
+  GlobalFeatureStore::Day day_{}; // 本日读写句柄, begin_day 换入 / end_day 交还
   size_t A_;
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)

@@ -52,7 +52,7 @@ FeatureProgress::FeatureProgress(const GlobalFeatureStore &store, const TsSchedu
     : store_(store), sched_(sched), stats_(stats), dates_(dates),
       start_time_(std::chrono::steady_clock::now()) {
   assert(!dates_.empty() && "日期轴为空, 不应启动进度渲染");
-  assert(stats_.ts.size() == store_.query_ts_workers() && "stats 槽位数与 TS worker 数不符");
+  assert(stats_.ts.size() == sched_.frontier.size() && "stats 槽位数与 TS worker 数不符");
 
   const size_t num_cores = stats_.ts.size() + 3; // [预取, ts..., 截面, 落盘]
   hist_work_.assign(num_cores * kWindow, 0);
@@ -92,16 +92,16 @@ long long FeatureProgress::elapsed_ms() const {
 
 void FeatureProgress::render() {
   const size_t total = dates_.size();
-  const size_t num_ts = store_.query_ts_workers();
+  const size_t num_ts = sched_.frontier.size();
   const size_t slots = store_.query_slots();
   const size_t num_cores = num_ts + 3;
   const long long now_ms = elapsed_ms();
 
   // ---- 采样 (原子读一轮快照; 各值间不要求一致, 展示用) ----
-  const size_t io_days = stats_.io_days.load(std::memory_order_relaxed);
-  const size_t cs_days = store_.query_cs_days_done();
-  const size_t ts_days = store_.query_ts_days_done(); // 全员计满的日数 (最慢前沿)
-  const size_t pf_days = stats_.prefetch_days.load(std::memory_order_relaxed);
+  const size_t pf_days = store_.query_pf_done();
+  const size_t ts_days = store_.query_ts_done(); // 全员计满的日数 (最慢前沿)
+  const size_t cs_days = store_.query_cs_done();
+  const size_t io_days = store_.query_io_done();
 
   // 核序 = [预取, ts0..tsN-1, 截面, 落盘]: work + idle_ms 快照
   std::vector<size_t> work(num_cores), idle(num_cores);
@@ -117,7 +117,7 @@ void FeatureProgress::render() {
 
   std::vector<size_t> frontier(num_ts), holding(num_ts, 0);
   for (size_t w = 0; w < num_ts; ++w)
-    frontier[w] = store_.ts_frontier(static_cast<int>(w));
+    frontier[w] = sched_.frontier[w].load(std::memory_order_acquire);
   for (const std::atomic<int32_t> &o : sched_.owner) {
     const int32_t w = o.load(std::memory_order_relaxed);
     if (w >= 0 && static_cast<size_t>(w) < num_ts)
@@ -232,7 +232,7 @@ void FeatureProgress::render() {
     out << buf << "\033[K\n";
   }
 
-  // ---- 行5: 落盘 —— 指标 = 忙碌占比; 基本全在等 CS_DONE / 已刷完 = 绿 ----
+  // ---- 行5: 落盘 —— 指标 = 忙碌占比; 基本全在等截面 close / 已刷完 = 绿 ----
   {
     out << "落盘 [";
     cell(out, busy[2 + num_ts], busy[2 + num_ts] < kIdleBusy || io_days >= total);

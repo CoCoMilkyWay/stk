@@ -10,25 +10,25 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <utility>
 #include <vector>
 
 // cores 的 unique_ptr 需要 CoreSequential 完整类型, 只在本 TU 实例化
 TsSchedule::TsSchedule(size_t num_assets, size_t num_workers)
     : owner(num_assets), claimed(num_assets), done(num_assets),
-      weight(num_assets, 0), cores(num_assets), adopt_window(num_workers) {
+      weight(num_assets, 0), cores(num_assets), frontier(num_workers), adopt_window(num_workers) {
   for (size_t i = 0; i < num_assets; ++i) {
     owner[i].store(-1, std::memory_order_relaxed);
     claimed[i].store(-1, std::memory_order_relaxed);
     done[i].store(-1, std::memory_order_relaxed);
   }
-  for (size_t w = 0; w < num_workers; ++w)
+  for (size_t w = 0; w < num_workers; ++w) {
+    frontier[w].store(0, std::memory_order_relaxed);
     adopt_window[w].store(0, std::memory_order_relaxed);
+  }
 }
 
 TsSchedule::~TsSchedule() = default;
@@ -67,7 +67,7 @@ void sequential_worker(WorkerCtx ctx) {
 
   if (my_asset_ids.empty()) {
     // 无资产 (资产数 < worker 数才会发生): 前沿报到底, 不挡任何人
-    store.ts_report_frontier(worker_id, total_dates);
+    sched.frontier[static_cast<size_t>(worker_id)].store(static_cast<uint32_t>(total_dates), std::memory_order_release);
     return;
   }
 
@@ -173,24 +173,25 @@ void sequential_worker(WorkerCtx ctx) {
   // 上限 = 平均每核持仓 (子轴大小 / worker 数) 的 adopt_pct%; 0 = 关闭领养.
   size_t adopted_today = 0;
   const size_t leader_cap =
-      (sched.adopt_pct == 0) ? 0 : std::max<size_t>(1, sched.owner.size() / store.query_ts_workers() * sched.adopt_pct / 100);
+      (sched.adopt_pct == 0) ? 0 : std::max<size_t>(1, sched.owner.size() / sched.frontier.size() * sched.adopt_pct / 100);
 
-  // 负载再平衡: 在池边干等 slot 时调用 (本 worker 已领先, 等待时间正好拿来
+  // 负载再平衡: 只在池边干等 slot 时调用 (本 worker 已领先满池深, 等待时间正好拿来
   // 帮落后者). 接手 victim 的最轻资产, 立刻回填落下的旧日期 —— 含 victim
   // 的"当天" (claim CAS 唯一裁决: victim 日循环还没轮到它就被本 worker 先
-  // claim 走, victim 见 owner 已变直接跳过, 当天即刻变轻). 旧日 slot 未计
-  // 满必为 BUSY, ts_open 直接命中; 回填后并入本 worker 日循环.
+  // claim 走, victim 见 owner 已变直接跳过, 当天即刻变轻). 旧日未计满 ⇒
+  // 仍在飞, ts_try_open 必得; 回填后并入本 worker 日循环 (永久转移, 不归还).
   // 两侧 N% 预算限量, 不会一下子掏空/吃撑.
+  // 触发条件 (池边干等 + 落后 ≥ 2 天) 与永久转移都是刻意的: 不要改成自由领 / 按日窃取 (理由见 TsSchedule).
   auto try_adopt = [&](size_t my_days_done) {
     if (adopted_today >= leader_cap)
       return;
 
     // 候选 victim: 所有落后 ≥ 2 天者 (1 天差是相位噪声), 按前沿升序逐个试
     // —— 最慢者预算耗尽/撞车时顺延帮第二慢者, 而不是空转干等.
-    // f ≥ 1 兼保证 victim 的 core 构造已通过前沿计数的 release/acquire 发布.
+    // f ≥ 1 兼保证 victim 的 core 构造已通过 frontier 的 release/acquire 发布.
     std::vector<std::pair<size_t, int>> laggers; // (前沿, worker)
-    for (int w = 0; w < static_cast<int>(store.query_ts_workers()); ++w) {
-      const size_t f = store.ts_frontier(w);
+    for (int w = 0; w < static_cast<int>(sched.frontier.size()); ++w) {
+      const size_t f = sched.frontier[static_cast<size_t>(w)].load(std::memory_order_acquire);
       if (w != worker_id && f >= 1 && my_days_done >= f + 2)
         laggers.emplace_back(f, w);
     }
@@ -244,12 +245,9 @@ void sequential_worker(WorkerCtx ctx) {
       ++adopted_today;
 
       // victim 可能正在算 pick 的在飞一天: 等它交割 (窗口 = 单个 asset-day)
-      while (sched.claimed[pick].load(std::memory_order_acquire) != sched.done[pick].load(std::memory_order_acquire)) {
-        if (cancel_requested.load(std::memory_order_relaxed))
-          return;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        stat.idle_ms.fetch_add(1, std::memory_order_relaxed);
-      }
+      auto settled = [&] { return sched.claimed[pick].load(std::memory_order_acquire) == sched.done[pick].load(std::memory_order_acquire); };
+      if (!wait_open(ctx, stat, settled))
+        return;
 
       const int32_t from = sched.done[pick].load(std::memory_order_acquire) + 1;
       const int32_t upto = static_cast<int32_t>(my_days_done) - 1; // 回填到本 worker 前沿
@@ -270,18 +268,13 @@ void sequential_worker(WorkerCtx ctx) {
           // 对手凭陈旧 owner 路标赢下在飞一天 (claim CAS 唯一裁决, 见日循环):
           // victim "查 owner → claim" 非原子, 其 claim 可落在上面等交割之后.
           // 等它交割, 从其 done 之后继续.
-          while (sched.claimed[pick].load(std::memory_order_acquire) != sched.done[pick].load(std::memory_order_acquire)) {
-            if (cancel_requested.load(std::memory_order_relaxed))
-              return;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            stat.idle_ms.fetch_add(1, std::memory_order_relaxed);
-          }
+          if (!wait_open(ctx, stat, settled))
+            return;
           d = sched.done[pick].load(std::memory_order_acquire) + 1;
           continue;
         }
-        const auto bday = store.ts_open(ctx.dates[static_cast<size_t>(d)], worker_id, cancel_requested);
-        if (!bday)
-          return;
+        const auto bday = store.ts_try_open(static_cast<size_t>(d));
+        assert(bday && "回填日未计满 ⇒ 仍在飞 (d < 本 worker 前沿 ≤ io_done + P), slot 必得");
         cumulative_orders += process_asset_day(pick, static_cast<size_t>(d), bday);
         stat.work.store(cumulative_orders, std::memory_order_relaxed);
         sched.done[pick].store(d, std::memory_order_release);
@@ -308,15 +301,13 @@ void sequential_worker(WorkerCtx ctx) {
 
     // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术.
     // 池满 = 本 worker 领先到把池子吃满 —— 干等的时间拿去领养最慢者的资产
-    // 并回填 (回填日必为 BUSY, 不占新 slot), 等 IO 释放后再继续本日.
-    auto day = store.ts_try_open(date, worker_id);
-    while (!day && !cancel_requested.load(std::memory_order_relaxed)) {
+    // 并回填 (回填日仍在飞, 不占新 slot), 等 IO 交还 slot 后再继续本日.
+    // 只有 sleep 算干等 (领养回填是干活, 见 wait_open).
+    GlobalFeatureStore::Day day;
+    {
       TraceN("PoolWait");
       TraceColor(C_Orange);
-      try_adopt(date_idx); // date_idx = 本 worker 已完成日数
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      stat.idle_ms.fetch_add(10, std::memory_order_relaxed); // 只有 sleep 算干等 (领养回填是干活)
-      day = store.ts_try_open(date, worker_id);
+      day = wait_open(ctx, stat, [&] { return store.ts_try_open(date_idx); }, [&] { try_adopt(date_idx); }); // date_idx = 本 worker 已完成日数
     }
     if (!day)
       break;
@@ -346,10 +337,7 @@ void sequential_worker(WorkerCtx ctx) {
     }
 
     // 本 worker 本日计完; 自报前沿 (release 发布本日全部 core 状态)
-    {
-      TraceN("StoreDone");
-      store.ts_report_frontier(worker_id, date_idx + 1);
-    }
+    sched.frontier[static_cast<size_t>(worker_id)].store(static_cast<uint32_t>(date_idx + 1), std::memory_order_release);
 
     completed_dates = date_idx + 1;
 

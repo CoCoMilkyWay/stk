@@ -64,10 +64,10 @@ struct StageLayout {
       return {kind, "时序 TS", "逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量; 领跑核自动接手落后核的资产 (处置权转移)",
               num_ts, num_ts, 0, num_ts - 1, false};
     case ComputeStage::CS:
-      return {kind, "截面 CS", "本日全部时序核写完后整日扫截面列",
+      return {kind, "截面 CS", "本日全部时序核写完后逐秒重放截面 (与实盘同一调用)",
               1, 1, num_ts, num_ts, false};
     case ComputeStage::IO:
-      return {kind, "落盘 IO", "摘 DONE slot 落盘并归还池",
+      return {kind, "落盘 IO", "本日截面写完后逐层落盘, 清零交还 slot",
               1, 1, num_ts + 1, num_ts + 1, false};
     }
     assert(false && "unknown compute stage");

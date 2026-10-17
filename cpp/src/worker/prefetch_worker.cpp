@@ -7,9 +7,7 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <string>
-#include <thread>
 
 void prefetch_worker(WorkerCtx ctx) {
   const int worker_id = ctx.worker_id;
@@ -25,10 +23,7 @@ void prefetch_worker(WorkerCtx ctx) {
 
   const size_t total_dates = ctx.dates.size();
 
-  // 窗口 = TS 在飞跨度上限 (pool slots) + 超前余量: 保证最快 TS 到达前缓存已暖
-  const size_t window_days = store.query_slots() + 2;
-
-  Logger::log("worker_" + std::to_string(worker_id), "Prefetch started: " + std::to_string(total_dates) + " dates, window " + std::to_string(window_days));
+  Logger::log("worker_" + std::to_string(worker_id), "Prefetch started: " + std::to_string(total_dates) + " dates");
 
   size_t cumulative_bytes = 0;
   size_t completed_dates = 0;
@@ -41,19 +36,15 @@ void prefetch_worker(WorkerCtx ctx) {
     const misc::Ymd date = ctx.dates[date_idx];
     TraceTextS(misc::dense(date).c_str());
 
-    // 门控: 领先最慢 TS 不超过窗口
+    // 门控: 领先最慢 TS 不超过窗口 (见 GlobalFeatureStore::pf_try_open)
+    bool open;
     {
       TraceN("GateWait");
       TraceColor(C_Orange);
-      while (date_idx > store.query_ts_days_done() + window_days) {
-        if (cancel_requested.load(std::memory_order_relaxed))
-          break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        stat.idle_ms.fetch_add(10, std::memory_order_relaxed);
-      }
-      if (cancel_requested.load(std::memory_order_relaxed))
-        break;
+      open = wait_open(ctx, stat, [&] { return store.pf_try_open(date_idx); });
     }
+    if (!open)
+      break;
 
     {
       TraceN("ReadFiles");
@@ -66,8 +57,8 @@ void prefetch_worker(WorkerCtx ctx) {
       }
     }
 
+    store.pf_close(date_idx);
     completed_dates = date_idx + 1;
-    ctx.stats.prefetch_days.store(completed_dates, std::memory_order_relaxed);
 
     TraceFrame;
   }

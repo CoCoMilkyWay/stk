@@ -132,7 +132,7 @@ bool ComputeService::run(ComputeConfig &config) {
 
   // Initialize global feature store
   GlobalFeatureStore feature_store(
-      num_assets, num_ts_workers, uni.hash,
+      num_assets, uni.hash,
       feature_dir, static_cast<size_t>(config.pool_slots));
   assert(feature_store.query_slots() >= LabelReturn::MIN_POOL_SLOTS && "内存上限把池砍到 LabelReturn::MIN_POOL_SLOTS 之下, 会死锁");
 
@@ -190,7 +190,7 @@ bool ComputeService::run(ComputeConfig &config) {
       launch(s.first_core + i, worker_fn(s.kind));
 
   // 等收尾: 已落盘天数镜像进进度面 (worker 自己查 cancel_, 这里只报一声)
-  auto mirror = [&]() { publish(stats.io_days.load(std::memory_order_relaxed) - done.load(std::memory_order_relaxed)); };
+  auto mirror = [&]() { publish(feature_store.query_io_done() - done.load(std::memory_order_relaxed)); };
   bool announced = false;
   for (auto &worker : workers)
     while (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {

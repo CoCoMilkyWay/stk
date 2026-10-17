@@ -1,7 +1,6 @@
 #pragma once
 
 #include "FeatureStoreConfig.hpp"
-#include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
 #include <algorithm>
@@ -15,8 +14,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 
@@ -61,47 +58,45 @@ inline size_t get_available_memory_bytes() {
 inline constexpr size_t kDefaultPoolSlots = 4;
 
 // ============================================================================
-// FEATURE STORE - 按日门控的张量池
+// FEATURE STORE - 日环张量池 (日流水线的唯一握手面)
 //
-// 并发模型 (回测): TS worker 是资产串行的 (一个资产写完一整天才换下一个),
-// "秒级流式伴随"在这种调度下没有可用的进度语义 —— 且 label / L1 分钟行都是
-// 向过去回填, 行级进度天然罩不住. 所以门控就是按日, 计数粒度是 asset-day:
+// 门控按日: TS worker 资产串行 (一个资产写完一整天才换下一个), 且 label / L1 分钟行
+// 向过去回填, 行级进度天然罩不住 —— 所以流水线单位是日, TS 计数粒度是 asset-day.
 //
-//   TS:  ts_open(date) → 句柄写 (纯指针算术, 无锁无验证) → 每资产 ts_close
-//   CS:  cs_open(date) 阻塞至本日 assets_done == num_assets (universe 子轴) → 整日扫 → cs_close
-//   IO:  io_try_open() 摘一个 DONE → 落盘 (FeatureDay::write, 池不碰格式) → io_close (reset → FREE)
+// 四段各持一个单调的已完成天数, 段间只靠它们握手 (Disruptor 式):
+//   预取 pf_done_ ─软→ 时序 ts_done_ ─→ 截面 cs_done_ ─→ 落盘 io_done_
+//                       ↑ 背压: 日 d 可开 ⇔ d < io_done_ + P ─────────┘
+// 截面 / 落盘按日序推进, 在飞日恒为连续区间 [io_done_, io_done_ + P), 日 d 占 pool_[d % P]
+// —— 无状态枚举 / 无锁 / 无查找; slot 由 io_close 清零后经 io_done_ 的 release 交还.
 //
-// 按资产计数 (而非按 worker close 计数) 使资产处置权可在 worker 间转移: 领跑
-// worker 可从落后 worker 接手资产并回填旧日期 (旧日 slot 未计满必为 BUSY,
-// ts_open 随时可再取句柄), 见 sequential_worker 的负载再平衡. 资产内日序由
-// 调度侧的 claim/done 原子保证, 因此 "d+1 日全资产计满 ⇒ d 日已计满" ——
-// 日完成天然单调, ts_days_done_ 只增.
+// 各段 open / close 同构 (try_open 非阻塞; 等待 / 取消是 worker 骨架的事, 见 feature_workers.hpp):
+//   PF: pf_try_open(d)  d ≤ ts_done_ + P + kPrefetchLead → 暖 page cache (不占 slot, TS 不等它) → pf_close
+//   TS: ts_try_open(d)  d < io_done_ + P → 句柄写 (纯指针算术) → 每 (asset, d) 一次 ts_close, 计满全轴 → ts_done_ + 1
+//   CS: cs_try_open(d)  本日计满全轴 → 逐秒扫 → cs_close → cs_done_ = d + 1
+//   IO: io_try_open(d)  d < cs_done_ → 落盘 (FeatureDay::write, 池不碰格式) → io_close (清零) → io_done_ = d + 1
 //
-// slot 生命周期: FREE → BUSY (首个 ts_open) → DONE (cs_close) → FLUSH → FREE.
-// 句柄在有效期内被状态机钉住 (TS 未计满不给 CS, CS 未 done 不给 IO), 不可能
-// 被回收 —— 不需要 epoch / 每次访问的缓存验证. 数值一致性与调度形态无关, 由
-// 输入契约锚定 (见 CoreSequential.hpp / CoreCrosssection.hpp), 按日门控只是
-// 回测里的因果保证.
+// TS 按 (asset, d) 计数 (而非按 worker) 使资产处置权可在 worker 间转移: 领跑 worker 可接手
+// 落后 worker 的资产并回填旧日 (旧日未计满 ⇒ 仍在飞, ts_try_open 必得), 见 TsSchedule.
+// 资产内日序由调度侧的 claim/done 原子保证, 因此 "d+1 日计满 ⇒ d 日已计满" —— ts_done_ 只增.
+// 开盘档标签 (T+N) 跨日回填: 旧日 ts_close 推迟到标签结清 (见 CoreSequential), 故 P ≥ LabelReturn::MIN_POOL_SLOTS.
+//
+// 句柄在有效期内被握手钉住 (TS 未计满不给 CS, CS 未 close 不给 IO, IO 未 close 不复用),
+// 不需要 epoch / 每次访问的验证. 数值一致性与调度形态无关, 由输入契约锚定
+// (见 CoreSequential.hpp / CoreCrosssection.hpp), 按日门控只是回测里的因果保证.
 //
 // 布局 [T][F][A] 服务于事件驱动的两个写读姿态: TS 每笔写一行 (t, *, a), CS 每秒
 // 读写 (t, f, *) 一段连续 A. 落盘的列主序只在 FeatureDay 里转换, 不反过来改内存布局.
 // 性能约束: TS / CS 热路径 (逐笔 / 逐秒) 只许指针算术 —— 无锁、无查找、无分配、无
-// 运行时校验 (只 assert); 状态机开销全压在每日一次的 open / close 上.
+// 运行时校验 (只 assert); 握手开销全压在每日一次的 open / close 上.
 // ============================================================================
 class GlobalFeatureStore {
 public:
-  enum class TensorState : uint8_t {
-    FREE = 0,  // 可分配
-    BUSY = 1,  // TS 写; TS 全部 close 后 CS 读写
-    DONE = 2,  // CS 完成, 待落盘
-    FLUSH = 3, // IO 落盘中
-  };
+  // 预取领先 TS 的余量 (天): 窗口 = 在飞跨度上限 P + 余量, 保证最快 TS 到达前缓存已暖
+  static constexpr size_t kPrefetchLead = 2;
 
-  // Per-date slot
+  // 日 d 的张量 (= pool_[d % P])
   struct Slot {
-    std::atomic<TensorState> state{TensorState::FREE};
     std::atomic<uint32_t> assets_done{0};             // == num_assets ⇒ 本日 TS 全部写完 (CS 放行)
-    misc::Ymd date = 0;                               // 0 = 未分配
     feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]
 
     void allocate(size_t num_assets) {
@@ -126,7 +121,6 @@ public:
     void reset(size_t num_assets) {
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
         std::memset(data[lvl], 0, level_bytes(lvl, num_assets));
-      date = 0;
       assets_done.store(0, std::memory_order_relaxed);
     }
 
@@ -142,6 +136,7 @@ public:
   struct Day {
     Slot *slot = nullptr;
     size_t A = 0;
+    size_t d = 0; // 回测日期轴下标 (WorkerCtx::dates), close 推进已完成天数用
     explicit operator bool() const { return slot != nullptr; }
   };
 
@@ -154,39 +149,33 @@ private:
   // Config
   const std::uint64_t axis_hash_; // universe 子轴指纹 (UniverseAxis::hash), 落进每个特征文件头
   const size_t num_assets_;       // A 维 = universe 子轴大小 (张量/落盘/门控全按它)
-  const size_t num_ts_workers_;
-  size_t pool_size_;
+  size_t pool_size_;              // P
   std::string output_dir_;
 
-  // Pool: 固定 slot 数组. 不需要 date→slot map / freelist / epoch ——
-  // slot 数由计算页配置, 线性扫 state 就是查找和空闲表.
+  // 日环: 日 d 占 pool_[d % P]. 不需要 date→slot map / freelist / epoch / 状态枚举 (见文件头)
   Slot *pool_ = nullptr;
-  std::mutex pool_mutex_; // 只串行化 ts_open 的查找/分配; 其余状态转移无锁
 
-  // 计满 num_assets 的日数 (单调, 见 ts_close), 预取门控用
-  std::atomic<size_t> ts_days_done_{0};
-  std::atomic<size_t> cs_days_done_{0};
+  // 各段已完成天数 (单调): 流水线的全部握手面, 进度面也只读它们
+  std::atomic<size_t> pf_done_{0};
+  std::atomic<size_t> ts_done_{0}; // 计满全轴的日数 (fetch_add, 见 ts_close)
+  std::atomic<size_t> cs_done_{0};
+  std::atomic<size_t> io_done_{0};
 
-  // Per-worker 已完成日数 (worker 自报, release; 领养方 acquire 读 —— 与被
-  // 领养资产的 core 构造/状态写入构成 happens-before). 负载再平衡的观测面.
-  std::unique_ptr<std::atomic<uint32_t>[]> ts_frontier_;
+  // 日 d 的句柄. 前置: d 在飞 (io_done_ ≤ d < io_done_ + P), 由各 try_open 的门控保证
+  Day day_at(size_t d) { return {&pool_[d % pool_size_], num_assets_, d}; }
 
 public:
   // num_assets: universe 子轴大小; axis_hash: UniverseAxis::hash, 写进每个
   // 特征文件头锁定"列 → 资产"映射 (读端从同一 config 推导同一子轴比对)
-  GlobalFeatureStore(size_t num_assets, size_t num_ts_workers,
+  GlobalFeatureStore(size_t num_assets,
                      std::uint64_t axis_hash,
                      const std::string &output_dir = "",
                      size_t pool_slots = kDefaultPoolSlots)
       : axis_hash_(axis_hash),
-        num_assets_(num_assets), num_ts_workers_(num_ts_workers),
+        num_assets_(num_assets),
         pool_size_(pool_slots) {
     assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");
     assert(num_assets_ >= 1 && "A 轴为空");
-
-    ts_frontier_ = std::make_unique<std::atomic<uint32_t>[]>(num_ts_workers_);
-    for (size_t w = 0; w < num_ts_workers_; ++w)
-      ts_frontier_[w].store(0, std::memory_order_relaxed);
 
     if (!output_dir.empty()) {
       output_dir_ = output_dir;
@@ -242,7 +231,7 @@ public:
     misc::exec::ForkJoin ex(static_cast<int>(std::min<size_t>(pool_size_, std::thread::hardware_concurrency())));
     ex.tasks(static_cast<int>(pool_size_), [&](int i, int) {
       pool_[i].allocate(num_assets_);
-      pool_[i].reset(num_assets_); // memset 清零 = 坐实物理页 + FREE 态不变量: 拿来即写
+      pool_[i].reset(num_assets_); // memset 清零 = 坐实物理页 + 空闲态不变量: 拿来即写
 
       const size_t completed = ++progress_counter;
       std::cout << "  " << completed << "/" << pool_size_ << " slots\r" << std::flush;
@@ -259,133 +248,74 @@ public:
     }
   }
 
-  // ===== TS WORKER API: open 按 (date), close 按 (asset, date) =====
+  // ===== PF: 不占 slot (只暖 page cache), 只有门控与进度 =====
 
-  // 非阻塞: 找到 / 分配本日 slot. 首个到达的 worker 分配 (FREE→BUSY), 其余
-  // 直接命中. 回填旧日期也走这里: 未计满的日子必为 BUSY, 直接命中, 不会重
-  // 分配. slot 在 flush 时已 reset (FREE 态不变量: 张量清零), 拿来即写.
-  // 池满返回空句柄 —— 调用方拿等待时间去干别的 (领跑者在池边领养回填).
-  Day ts_try_open(misc::Ymd date, int worker_id) {
-    assert(worker_id >= 0 && worker_id < static_cast<int>(num_ts_workers_));
-    std::unique_lock<std::mutex> lock(pool_mutex_);
-    // 本日已被其他 worker 打开 (领养回填的旧日期也从这里命中). 只匹配
-    // BUSY: 未计满的日子必为 BUSY, 已过 CS/IO 阶段的日子不可能再被打开;
-    // FLUSH 中的 slot date 正被 reset, 不可读.
-    for (size_t i = 0; i < pool_size_; ++i) {
-      Slot &s = pool_[i];
-      if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && s.date == date)
-        return {&s, num_assets_};
-    }
-    for (size_t i = 0; i < pool_size_; ++i) {
-      Slot &s = pool_[i];
-      if (s.state.load(std::memory_order_acquire) == TensorState::FREE) {
-        s.date = date;
-        s.state.store(TensorState::BUSY, std::memory_order_release);
-        Logger::log("worker_" + std::to_string(worker_id), "ts_open: " + std::to_string(date) + " → pool[" + std::to_string(i) + "]");
-        return {&s, num_assets_};
-      }
-    }
-    return {};
+  // 窗口 = TS 在飞跨度上限 P + 余量: 最快 TS 到达前缓存已暖
+  bool pf_try_open(size_t d) const { return d <= ts_done_.load(std::memory_order_relaxed) + pool_size_ + kPrefetchLead; }
+
+  void pf_close(size_t d) {
+    assert(d == pf_done_.load(std::memory_order_relaxed) && "pf_close: 日序乱");
+    pf_done_.store(d + 1, std::memory_order_relaxed);
   }
 
-  // 阻塞版: 池满则等 IO 释放 —— TS 超前于 CS/IO 的唯一背压点.
-  // (主循环不用它 —— 等待时间要拿去领养, 见 sequential_worker; 回填与
-  // 不需要边等边干活的调用方用这里.)
-  Day ts_open(misc::Ymd date, int worker_id, const std::atomic<bool> &cancel_requested) {
-    for (int waited = 0;; ++waited) {
-      if (cancel_requested.load(std::memory_order_relaxed))
-        return {};
-      Day day = ts_try_open(date, worker_id);
-      if (day)
-        return day;
-      if (waited == 0)
-        Logger::log("worker_" + std::to_string(worker_id), "Pool exhausted, waiting...");
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+  // ===== TS: open 按 d, close 按 (asset, d) =====
+
+  // 背压: 日 d 的 slot 须已由 d − P 落盘交还. 回填旧日也走这里 (旧日未计满 ⇒ 仍在飞, 必得).
+  // slot 在 io_close 已清零, 拿来即写. 空句柄 = 池满 —— 调用方拿等待时间去干别的 (领跑者在池边领养回填).
+  // acquire 与 io_close 的 release 配对 (清零先于复用).
+  Day ts_try_open(size_t d) {
+    const size_t io = io_done_.load(std::memory_order_acquire);
+    assert(d >= io && "ts_try_open: 日 d 已落盘 (调度侧日序乱)");
+    return d < io + pool_size_ ? day_at(d) : Day{};
   }
 
-  // 一个 (asset, date) 写完. 计数攒齐全轴 (universe 子轴) 后 cs_open 放行;
-  // release 与 cs_open 的 acquire 配对, 保证张量写入对 CS 可见.
+  // 一个 (asset, d) 写完. 计数攒齐全轴 (universe 子轴) 后 CS 放行;
+  // release 与 cs_try_open 的 acquire 配对, 保证张量写入对 CS 可见.
   // 缺 binary 的 asset-day 也要计 (张量保持默认值), 由当时的处置权持有者计.
   void ts_close(const Day &day) {
-    assert(day.slot);
+    assert(day);
     const uint32_t prev = day.slot->assets_done.fetch_add(1, std::memory_order_release);
     assert(prev < num_assets_ && "ts_close: 计数超过派活资产数 (重复计?)");
     if (prev + 1 == num_assets_) {
-      ts_days_done_.fetch_add(1, std::memory_order_relaxed);
-      Logger::log("store", "ts_day_done: " + std::to_string(day.slot->date));
+      ts_done_.fetch_add(1, std::memory_order_relaxed);
+      Logger::log("store", "ts_day_done: d=" + std::to_string(day.d));
     }
   }
 
-  // Worker 自报已完成日数 (领养观测面, release 兼发布 core 构造/状态)
-  void ts_report_frontier(int worker_id, size_t days_done) {
-    assert(worker_id >= 0 && worker_id < static_cast<int>(num_ts_workers_));
-    ts_frontier_[worker_id].store(static_cast<uint32_t>(days_done), std::memory_order_release);
+  // ===== CS: 每 d 一对 open/close =====
+
+  // 按日门控: 本日计满全轴才放行, 返回后两层张量整体可读 —— CS 内部不需要任何行级等待.
+  // 先验 slot 已轮到日 d (d < io_done_ + P): 否则 pool_[d % P] 还是已计满待落盘的 d − P, 计数会误放行.
+  Day cs_try_open(size_t d) {
+    assert(d == cs_done_.load(std::memory_order_relaxed) && "cs_try_open: 日序乱");
+    if (d >= io_done_.load(std::memory_order_acquire) + pool_size_)
+      return {};
+    const Day day = day_at(d);
+    return day.slot->assets_done.load(std::memory_order_acquire) == num_assets_ ? day : Day{};
   }
 
-  size_t ts_frontier(int worker_id) const {
-    assert(worker_id >= 0 && worker_id < static_cast<int>(num_ts_workers_));
-    return ts_frontier_[worker_id].load(std::memory_order_acquire);
-  }
-
-  // ===== CS WORKER API: 每 date 一对 open/close =====
-
-  // 按日门控: 阻塞至本日 slot 存在且 asset-day 计满. 返回后本日两层张量
-  // 整体可读 —— CS 内部不需要任何行级等待. 等待发生在日粒度, 轮询开销无所谓.
-  //
-  // 无锁 (与 io_try_open 同姿态; 锁只属于 ts_open 的分配互斥):
-  //   date 在 ts_open 的 release store(BUSY) 之前写完, acquire 观察到 BUSY 即可读;
-  //   BUSY→DONE 只由本 CS 线程自己做 (cs_close), 不存在读期状态漂移.
-  Day cs_try_open(misc::Ymd date) {
-    for (size_t i = 0; i < pool_size_; ++i) {
-      Slot &s = pool_[i];
-      if (s.state.load(std::memory_order_acquire) == TensorState::BUSY && s.date == date &&
-          s.assets_done.load(std::memory_order_acquire) == num_assets_)
-        return {&s, num_assets_};
-    }
-    return {};
-  }
-
-  Day cs_open(misc::Ymd date) {
-    size_t backoff_us = 100;
-    Day day = cs_try_open(date);
-    while (!day) {
-      std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
-      backoff_us = std::min<size_t>(backoff_us * 2, 1000);
-      day = cs_try_open(date);
-    }
-    return day;
-  }
-
-  // CS 写完本日全部截面列, slot 交给 IO (BUSY→DONE)
+  // CS 写完本日全部截面列, 交给 IO. release 与 io_try_open 的 acquire 配对
   void cs_close(const Day &day) {
-    assert(day.slot);
-    Logger::log("store", "cs_close: " + std::to_string(day.slot->date));
-    [[maybe_unused]] const TensorState prev = day.slot->state.exchange(TensorState::DONE, std::memory_order_acq_rel);
-    assert(prev == TensorState::BUSY && "cs_close: 状态机乱序");
-    cs_days_done_.fetch_add(1, std::memory_order_relaxed);
+    assert(day && day.d == cs_done_.load(std::memory_order_relaxed) && "cs_close: 日序乱");
+    cs_done_.store(day.d + 1, std::memory_order_release);
+    Logger::log("store", "cs_close: d=" + std::to_string(day.d));
   }
 
-  // ===== IO WORKER API: 每 date 一对 open/close =====
+  // ===== IO: 每 d 一对 open/close =====
 
-  // 非阻塞: CAS 摘一个 DONE slot (DONE→FLUSH), 空句柄 = 暂无可刷. 返回后本日两层张量
-  // 只归 IO 读 (落盘见 FeatureDay::write); 全程无锁.
-  Day io_try_open() {
-    for (size_t i = 0; i < pool_size_; ++i) {
-      TensorState expected = TensorState::DONE;
-      if (pool_[i].state.compare_exchange_strong(expected, TensorState::FLUSH, std::memory_order_acq_rel, std::memory_order_acquire))
-        return {&pool_[i], num_assets_};
-    }
-    return {};
+  // 截面已 close 的日才放行; 返回后本日两层张量只归 IO 读 (落盘见 FeatureDay::write)
+  Day io_try_open(size_t d) {
+    assert(d == io_done_.load(std::memory_order_relaxed) && "io_try_open: 日序乱");
+    return d < cs_done_.load(std::memory_order_acquire) ? day_at(d) : Day{};
   }
 
-  // 本日落盘完毕: reset 后归还 (FLUSH→FREE). release 与 ts_open 的 acquire 配对
+  // 本日落盘完毕: 清零后交还 (空闲态不变量: 张量 + 计数全零, 拿来即写).
+  // release 与 ts_try_open / cs_try_open 的 acquire 配对
   void io_close(const Day &day) {
-    assert(day.slot && day.slot->state.load(std::memory_order_relaxed) == TensorState::FLUSH && "io_close: 状态机乱序");
-    const misc::Ymd date = day.slot->date;
-    day.slot->reset(num_assets_); // 清张量 + date + 计数: FREE 态不变量
-    day.slot->state.store(TensorState::FREE, std::memory_order_release);
-    Logger::log("store", "io_close: " + std::to_string(date));
+    assert(day && day.d == io_done_.load(std::memory_order_relaxed) && "io_close: 日序乱");
+    day.slot->reset(num_assets_);
+    io_done_.store(day.d + 1, std::memory_order_release);
+    Logger::log("store", "io_close: d=" + std::to_string(day.d));
   }
 
   // ===== QUERY API =====
@@ -393,15 +323,16 @@ public:
   std::uint64_t query_axis_hash() const { return axis_hash_; } // universe 子轴指纹 (落进每个日文件头)
   size_t query_A() const { return num_assets_; }
   size_t query_slots() const { return pool_size_; }
-  size_t query_ts_workers() const { return num_ts_workers_; }
-  size_t query_ts_days_done() const { return ts_days_done_.load(std::memory_order_relaxed); } // asset-day 计满的日数
-  size_t query_cs_days_done() const { return cs_days_done_.load(std::memory_order_relaxed); }
+  size_t query_pf_done() const { return pf_done_.load(std::memory_order_relaxed); }
+  size_t query_ts_done() const { return ts_done_.load(std::memory_order_relaxed); } // 计满全轴的日数 (= 最慢 TS 前沿)
+  size_t query_cs_done() const { return cs_done_.load(std::memory_order_relaxed); }
+  size_t query_io_done() const { return io_done_.load(std::memory_order_relaxed); }
 };
 
 // ============================================================================
 // 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L0/L1),
 // 字段用 <LVL>_Field 枚举; 布局常量一律取 constexpr LEVELS[LVL] (单一事实源),
-// 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_open / cs_open
+// 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_try_open / cs_try_open
 // 定址一次), 每次调用只剩指针算术.
 //   ts_write<L>(day, t, field, a, value)   单资产单列 (TS: 列间跨步 A)
 //   ts_write_row<L>(day, t, a, dag)        按字段表 SRC 列写一行全部 OP 列

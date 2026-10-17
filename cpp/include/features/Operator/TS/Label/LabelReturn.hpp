@@ -38,7 +38,7 @@
 //   minute_anchored(t, writer)  L1 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
 //                               把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 同时写该行的冲击成本列;
 //                               行 e 捕获即是行 e−n 的分钟档 exit 到位, 顺带写分钟档 (e−n, n) 的标签.
-//   minute_closed(l1)           分钟 bar 结算后 (CoreSequential::run_minute, 只在有成交的分钟调): 只记开盘价 (开盘档 T+N 的 exit):
+//   minute_closed(l1)           分钟 bar 结算后 (CoreSequential::run<1>, 只在有成交的分钟调): 只记开盘价 (开盘档 T+N 的 exit):
 //                               09:25 撮合 bar 的撮合价, 无撮合则退首个连续竞价 bar 的首笔成交价 (交易所开盘价定义).
 //   day_begin / day_end         日历: 日期轴每一日各调一次 (无数据日也调, 由 CoreSequential 保证).
 //                               day_end 结算 分钟档尾部 (exit 过收盘 → 收盘价) + 收盘档 全行 + 开盘档 到期日 (见下), 并释放结清的日.

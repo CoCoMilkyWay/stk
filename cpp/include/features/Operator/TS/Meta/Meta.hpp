@@ -24,8 +24,8 @@
 #include <cstddef>
 
 // ts_valid 状态机: 同秒 (L0 行) / 同分钟 (L1 行) 多笔的 depth 位 OR 累积 + micro price 维护.
-// 逐笔覆盖写同一槽位, 最后一笔的累积值 = 该行终值 (免读改写). run_minute 在跨分钟的那笔
-// 进入 on_tick 之前调 (CoreSequential 顺序), 所以 l1() 读到的 min_depth_ 就是刚完结分钟的 OR.
+// 逐笔覆盖写同一槽位, 最后一笔的累积值 = 该行终值 (免读改写). run<1> 在跨分钟的那笔
+// 进入 on_tick 之前调 (CoreSequential::advance 顺序), 所以 l1() 读到的 min_depth_ 就是刚完结分钟的 OR.
 // cs(): 当日 cs_valid 值 = 在池 ? 1 : 0 (池成员位 begin_day 给, 日内不变; CoreSequential 盘前写满整列).
 class MetaTracker {
 public:
@@ -33,7 +33,7 @@ public:
   void begin_day(bool in_pool) { in_pool_ = in_pool; }
   float cs() const { return in_pool_ ? 1.0f : 0.0f; }
 
-  // 每笔一次 (run_tick 末尾, onDepth 已跑完): micro = MicroPrice 节点值 (单边盘口公式给 0);
+  // 每笔一次 (run<0> 末尾, onDepth 已跑完): micro = MicroPrice 节点值 (单边盘口公式给 0);
   // tick_price = 该笔事件价 (开盘竞价盘口未发布, 幅值退化为最近事件价, 首个盘口价一到永久切回)
   inline void on_tick(size_t t, bool depth_updated, float micro, float bid0, float ask0, float tick_price) {
     if (t != sec_) {

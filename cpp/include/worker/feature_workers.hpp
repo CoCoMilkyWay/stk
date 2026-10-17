@@ -30,12 +30,19 @@ class CoreSequential;
 // —— 让完这波 victim 下一轮几乎不再是最慢者, 也不会被掏空; 领跑者也不会
 // 一天吃成新的 lagger.
 //
-//   owner:   处置权路标 (领养 CAS victim→adopter; 原 owner 观察到即弃)
-//   claimed: 谁处理 (asset, d) 由 CAS claimed d-1→d 唯一裁决 (转移瞬间的
-//            双写/漏写由它兜底, owner 只是"该不该去试"的提示)
-//   done:    已完成日 didx, release 发布 core 状态 (接手方 acquire 后可续算)
+// 不要改成"自由领任务 (全局队列 / 每日游标)"或"按日窃取 (借一天, 次日归还)":
+//   各核专注自己的标的是刻意的 —— per-asset core 状态 (~百 KB, first-touch 在初始 owner 核)
+//   跟着 owner 走, 换核才付冷启动. 日间负载噪声由池深吸收 (各核前沿可相差至多 P 天), 不搬资产;
+//   只有持续落后 (领跑者被池子卡住 且 对方落后 ≥ 2 天) 才永久转移处置权 —— 一次转移修正一次
+//   权重偏差, 之后不再换核. 自由领 / 按日窃取会把每次噪声都变成换核, 且偏差不收敛 (天天重复偷).
 //
-// cores 由初始 owner 在自己核上构造 (first-touch); 领养方经 store 前沿计数的
+//   owner:    处置权路标 (领养 CAS victim→adopter; 原 owner 观察到即弃)
+//   claimed:  谁处理 (asset, d) 由 CAS claimed d-1→d 唯一裁决 (转移瞬间的
+//             双写/漏写由它兜底, owner 只是"该不该去试"的提示)
+//   done:     已完成日 didx, release 发布 core 状态 (接手方 acquire 后可续算)
+//   frontier: per-worker 已完成日数 (领养的观测面)
+//
+// cores 由初始 owner 在自己核上构造 (first-touch); 领养方经 frontier 的
 // release/acquire 链观察到构造完成后才会触碰.
 // ============================================================================
 struct TsSchedule {
@@ -49,6 +56,10 @@ struct TsSchedule {
   // sub → 全局轴下标 (UniverseAxis::ids 快照): worker 查 items/码表/bin 路径用.
   // ComputeService 启动前写好, 运行期只读.
   std::vector<uint32_t> global_ids;
+
+  // Per-worker 已完成日数 (worker 自报, release; 领养方 acquire 读 —— 与被领养资产的
+  // core 构造/状态写入构成 happens-before). 大小 = TS worker 数.
+  std::vector<std::atomic<uint32_t>> frontier;
 
   // Per-worker 被领养预算窗口: (victim 前沿 << 16) | 本窗已被领走数.
   // 前沿推进即换窗重置 —— "下一天最多能被领走多少个"的全局记账.
@@ -65,9 +76,9 @@ struct TsSchedule {
 // ============================================================================
 // 特征计算进度 —— 拉取式仪表盘 (总条 + 四类核心统一热力图 + 慢核明细)
 //
-// worker 不再各持一行进度句柄: 前沿/持仓等共享状态本就躺在 FeatureStore /
-// TsSchedule 里, worker 只发布统一的两件事 (ComputeStats::Core, 单写者,
-// 渲染线程只读): 单调工作量计数 work + 正在干等标志 blocked.
+// worker 不再各持一行进度句柄: 各段已完成天数在 FeatureStore (query_*_done), TS 逐核
+// 前沿/持仓在 TsSchedule, worker 只发布统一的两件事 (ComputeStats::Core, 单写者,
+// 渲染线程只读): 单调工作量计数 work + 累计干等毫秒 idle_ms.
 // FeatureProgress 的采样线程每 100ms 拉取全量状态, 原地重画固定 5 行:
 //
 //   [#######>            ]  48% 238/500 天 | 12m03s, ETA 13m10s (3.1s/天)
@@ -85,7 +96,7 @@ struct TsSchedule {
 //                                        基本全在池边干等 slot = 绿)
 //   截面 = 距时序前沿的积压天数 / 池深   (空红 = 积压吃满池子, 本核是瓶颈;
 //                                        追平前沿 = 绿)
-//   落盘 = 忙碌占比                      (基本全在等 CS_DONE = 绿)
+//   落盘 = 忙碌占比                      (基本全在等截面 close = 绿)
 //
 // 忙碌占比 = 1 − Δidle_ms/Δ墙钟 (滑窗): worker 把每次 sleep 干等的毫秒数
 // 累计进 idle_ms, 渲染线程滑窗轧差 —— 连续、无采样撞相位问题, 且不依赖
@@ -102,10 +113,8 @@ struct ComputeStats {
   };
   Core prefetch;
   Core cs;
-  Core io; // work = 已落盘字节
+  Core io;
   std::vector<Core> ts;
-  std::atomic<size_t> prefetch_days{0}; // 预取已完成天数 (work 是字节, 天数另计)
-  std::atomic<size_t> io_days{0};       // 已落盘天数 (work 是字节, 天数另计)
   explicit ComputeStats(size_t num_ts) : ts(num_ts) {}
 };
 
@@ -145,7 +154,14 @@ private:
 };
 
 // ============================================================================
-// PHASE 2 WORKERS —— 四角色统一签名: void xxx_worker(WorkerCtx)
+// PHASE 2 WORKERS —— 日流水线四角色, 统一签名 void xxx_worker(WorkerCtx), 统一骨架:
+//   for d in dates: wait_open(store.X_try_open(d)) → 干活 → store.X_close
+// 分核依据 = 两条一致性契约 (见 CoreSequential.hpp / CoreCrosssection.hpp):
+//   预取 1 核: 软前导, 只暖 page cache (TS 不等它)
+//   时序 N 核: TS 是资产局部纯函数 ⇒ 沿 A 维并行; 瓶颈, 其余核全给它 (处置权转移再平衡, 见 TsSchedule)
+//   截面 1 核: CS 只读张量第 t 行, 要整个截面到齐 ⇒ 沿 T 逐秒串行
+//   落盘 1 核: 逐列编码 + 写盘 (单核须跟上落盘节奏, 见 FeatureDay)
+// 段间握手只经 FeatureStore 的各段已完成天数 (日环, 见 FeatureStore.hpp).
 //
 // sched 只 TS 用, 其余角色不碰 —— 统一签名换来统一 launch (见 ComputeService).
 // dates = 回测日期轴 (Asset::backtest_dates), 四角色的 date_idx 都是它的下标.
@@ -164,17 +180,39 @@ struct WorkerCtx {
   ComputeStats &stats;
 };
 
+// 干等原语 (四角色共用): try_open() 为真即返回它; 否则 cancel → 返回空, 未 cancel → on_idle()
+// (干等时可做的活: 时序 = 领养回填, 其余无), sleep kIdleMs 并记入 idle_ms (仪表盘忙碌占比).
+// 先试后查 cancel: 已就绪的照做 —— 落盘靠它在取消后刷完截面已关的日子.
+inline constexpr size_t kIdleMs = 10;
+
+template <class TryOpen, class OnIdle>
+auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_open, OnIdle &&on_idle) {
+  for (;;) {
+    if (auto opened = try_open())
+      return opened;
+    if (ctx.cancel.load(std::memory_order_relaxed))
+      return decltype(try_open()){};
+    on_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs));
+    stat.idle_ms.fetch_add(kIdleMs, std::memory_order_relaxed);
+  }
+}
+
+template <class TryOpen>
+auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_open) {
+  return wait_open(ctx, stat, try_open, [] {});
+}
+
 // 预取: 顺日期把当天日文件里 universe 的帧读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
-//       门控 = 领先最慢 TS (query_ts_days_done) 不超过 pool slots + 余量.
-//       资产集 = universe 子轴 (orders 的一行).
+//       门控 = store.pf_try_open (领先最慢 TS 不超过 P + 余量). 资产集 = universe 子轴 (orders 的一行).
 void prefetch_worker(WorkerCtx ctx);
 
 // 时序: 逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量 (日期主序遍历);
-//       领跑核在池边领养落后核的资产并回填 (处置权转移, 见 TsSchedule).
+//       领跑核在池边干等时领养落后核的资产并回填 (wait_open 的 on_idle, 处置权转移见 TsSchedule).
 void sequential_worker(WorkerCtx ctx);
 
-// 截面: cs_open 等本日全部 TS 写完, 整日扫截面列, cs_close 交给 IO.
+// 截面: cs_try_open 等本日全部 TS 写完, 逐秒 compute_and_store (实盘同一调用), cs_close 交给 IO.
 void crosssectional_worker(WorkerCtx ctx);
 
-// 落盘: 摘 DONE slot 落盘并归还池 (FREE), 直到全部日期刷完.
+// 落盘: io_try_open 等本日截面写完, 逐层落盘, io_close 清零交还 slot, 直到全部日期刷完.
 void io_worker(WorkerCtx ctx);
