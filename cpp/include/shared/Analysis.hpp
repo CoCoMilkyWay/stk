@@ -208,7 +208,7 @@ struct ReadScope {
 
   bool has(TierId t) const { return t == main || tier_side(main, t); } // 在库集内
   const FeatureLib &lib() const { return libs[main]; }
-  PerTier<size_t> sizes() const;                                   // 各档 A 轴长
+  PerTier<size_t> sizes() const;                                 // 各档 A 轴长
   Readers readers(const PerTier<const FeatureRead *> &fr) const; // fr: 库集各档 reader
 };
 ReadScope read_scope(const Config &cfg, const Feature &feature, TierId main); // 各档库名 = feature.selection.lib_of(档)

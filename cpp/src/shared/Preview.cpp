@@ -266,7 +266,7 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
     // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
     // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
     TraceN("PreviewRoundIO");
-    constexpr float kF16Rel = 1.0f / 1024.0f; // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
+    constexpr float kF16Rel = 1.0f / 1024.0f;       // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
     const uint32_t *cage_ids = rd.ids[TierId::Bar]; // nullptr = 主档即 Bar (同轴)
     for (size_t d = 0; d < days; ++d) {
       const misc::Ymd date = plan.dates[r * days + d];

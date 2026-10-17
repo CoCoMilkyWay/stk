@@ -42,7 +42,7 @@ struct SegPlan {
 
 // 源 = 同 (档, 层) 的一组值列: 一天一次选列读 (cs 末位带该层 ts_valid), 行按 level_asof 投影到网格
 struct Source {
-  TierId tier = TierId::Lob;  // 主档 = 同轴; 旁读档: 平面 a ← 该档轴 Readers::ids[tier][a]
+  TierId tier = TierId::Lob; // 主档 = 同轴; 旁读档: 平面 a ← 该档轴 Readers::ids[tier][a]
   size_t level = L_min;
   fmeta::ColumnSet cs;        // 值列 (+ 门控列)
   std::vector<uint32_t> slot; // [cs.n()] 值列 → 平面列

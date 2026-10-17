@@ -66,7 +66,7 @@ ALL_TIERS(TIER_OF_ONE)
 #undef TIER_OF_ONE
 } // namespace tier_of
 inline constexpr bool tier_side(TierId main, TierId side) {
-#define TIER_SIDE_RT(ns, s)                            \
+#define TIER_SIDE_RT(ns, s)                      \
   if (main == tier_of::ns && side == tier_of::s) \
     return true;
   TIER_SIDES(TIER_SIDE_RT)

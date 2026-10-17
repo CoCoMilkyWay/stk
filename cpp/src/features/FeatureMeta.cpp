@@ -15,7 +15,7 @@
 #include "features/Bar/FeatureCategoriesGenerated.hpp"
 #include "features/Lob/FeatureCategoriesGenerated.hpp"
 #include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
-#include "shared/Config.hpp" // Config::kAllTierDir (库表 [0])
+#include "shared/Config.hpp"                       // Config::kAllTierDir (库表 [0])
 #include "shared/Feature.hpp"
 #include "shared/FeatureLib.hpp"
 
