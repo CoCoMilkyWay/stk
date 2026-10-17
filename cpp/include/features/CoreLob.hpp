@@ -30,7 +30,7 @@ class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   friend Base;
 
 public:
-  // asset_id = 本库 A 轴下标 (= pool::Panel 的子轴下标, 查当日成员位)
+  // asset_id = 本库 A 轴下标 (= pool::Panel 的库轴下标, 查当日成员位)
   CoreLob(const fund::Panel &fund_panel,
           const pool::Panel &pool_panel,
           const std::string &code_ex,

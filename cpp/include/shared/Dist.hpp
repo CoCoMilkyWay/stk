@@ -29,15 +29,15 @@ class FeatureRead;
 //       Phase 扫描: kAssetBlock 个活跃资产一任务, 全在锁外:
 //                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本 (shard)
 //                   + 全量样本 → 该资产私有 sketch → 顺手导出整条 AssetLine (PDF/矩/W2) 到 staging.
-//                   活跃资产一视同仁 —— 每批覆盖 universe × 批内天, 收敛维度只有天,
-//                   跑完即 universe × 全区间的终态 (UI 只画其中固定随机子集的折线)
+//                   活跃资产一视同仁 —— 每批覆盖 库轴 × 批内天, 收敛维度只有天,
+//                   跑完即 库轴 × 全区间的终态 (UI 只画其中固定随机子集的折线)
 //       ── 栅栏 ──
 //       Phase 归约: shard 两两并行归约 (log2 步, analysis::reduce_tree) → shard 0 = 全程累加器 (全程锁外)
 //       ── 栅栏 ── 批末 (单线程): 累加器导出 PdfSnap 成品 (锁外) → 短锁 swap 发布 + 进度 + epoch
 //
-//   universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 LibAxis) ——
-//     平面 / lines / sketch 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
-//     槽位 = 子轴下标; AssetLine.asset 存全局轴下标 (UI 查 items/行业用).
+//   A 轴 = 库轴 (与特征库文件列序一致, 见 LibAxis) ——
+//     平面 / lines / sketch 都只有库轴大小, 每个槽都是活跃资产, 不存在空列.
+//     槽位 = 库轴下标; AssetLine.asset 存全局轴下标 (UI 查 items/行业用).
 //
 //   UI (每帧): 持 mutex 渲染; 全部视图消费 PdfSnap 快照, 零计算零重建只画
 //     (增量收敛每批都作废 sketch 缓存, 拉模式会让 UI 每帧重建几百条 — 故推模式).
@@ -85,7 +85,7 @@ static constexpr size_t kAggTargetSamples = size_t(32) << 20; // 32M
 struct Dist : Published {
   using Integrity = analysis::Integrity;
 
-  // 每资产一条线 (槽位 == 子轴下标) + 相对全局分位的 W2 偏移
+  // 每资产一条线 (槽位 == 库轴下标) + 相对全局分位的 W2 偏移
   struct AssetLine : analysis::AssetLine {
     float w2 = -1.0f; // 均值校准 W2, 相对上一批末的全局分位 (逐批收敛); < 0 = 参考未就绪
   };
@@ -99,7 +99,7 @@ struct Dist : Published {
     std::vector<analysis::AggPdf> by_weekday; // [7]
     std::vector<analysis::AggPdf> by_tod;     // [kTodBins] 日内 10 分钟桶
     analysis::AggPdf global;                  // 全区间
-    std::vector<AssetLine> lines;             // [A_sub] 槽位 == 子轴下标, .asset = 全局轴下标
+    std::vector<AssetLine> lines;             // [A_sub] 槽位 == 库轴下标, .asset = 全局轴下标
     Integrity integrity;                      // 全区间
     // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局的 n 是抽样后的数, 资产线恒为全量
     size_t agg_stride = 1;
@@ -110,7 +110,7 @@ struct Dist : Published {
   Dist();
   ~Dist();
 
-  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), universe 变了才重建资产线
+  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 库轴变了才重建资产线
   void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式 (每批 IO → 扫描 → 归约 → 发布); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);

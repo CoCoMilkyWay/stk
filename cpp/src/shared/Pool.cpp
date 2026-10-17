@@ -38,7 +38,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   }
 
   std::vector<uint32_t> ids;
-  std::vector<size_t> pick; // 子轴 sub → all 库下标
+  std::vector<size_t> pick; // 库轴 sub → all 库下标
   for (size_t a = 0; a < As; ++a)
     if (seen[a]) {
       ids.push_back(bar.axis.global(a));

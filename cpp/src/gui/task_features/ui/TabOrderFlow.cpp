@@ -513,7 +513,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
-      // 分钟 VWAP 阶梯 (L1 特征列 vwap; universe 外 / 未算特征的资产无此线)
+      // 分钟 VWAP 阶梯 (L1 特征列 vwap; 库轴外 / 未算特征的资产无此线)
       if (!dp.plot.vwap_x.empty()) {
         ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
         ImPlot::PlotStairs("VWAP", dp.plot.vwap_x.data(), dp.plot.vwap_y.data(), static_cast<int>(dp.plot.vwap_x.size()), ImPlotItemFlags_NoFit);
@@ -760,12 +760,12 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
 // ============================================================================
 
 static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
-  auto &uni = of.universe;
+  auto &pick = of.pick;
 
   // ST/Listed/Board 与 DATABASE/TABLE 共用控件 (gui/util/AssetFilter.hpp);
   // risk_warn 有 3=退市整理期, 所以 ST 要全 4 档
-  bool changed = GUI::Filter::CommonFilters<int>("of", true, uni.st_filter,
-                                                 uni.listed_filter, uni.board_filter);
+  bool changed = GUI::Filter::CommonFilters<int>("of", true, pick.st_filter,
+                                                 pick.listed_filter, pick.board_filter);
 
   // 行业维自绘: 这里的键是数字 SW2021 一级 ID (0 = 未知), 与 TABLE 的字符串
   // 行业码不同源, 表在 fund::SW2021_L1_NAMES
@@ -777,17 +777,17 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
   }();
   ImGui::SameLine();
   changed |= GUI::Filter::MultiSelectCombo("Industry##ofInd", 140.0f, industry_items,
-                                           uni.industry_filter);
+                                           pick.industry_filter);
 
   if (changed)
-    ++uni.filter_epoch;
+    ++pick.filter_epoch;
 
   // 候选数 / 锚点日
-  const OrderFlow::Universe::Slot &slot = uni.slots.front_slot();
+  const OrderFlow::Pick::Slot &slot = pick.slots.front_slot();
   ImGui::SameLine();
-  if (slot.gen == uni.gen && !slot.meta.empty()) {
+  if (slot.gen == pick.gen && !slot.meta.empty()) {
     ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "%zu/%zu",
-                       uni.candidates.size(), data.asset.items.size());
+                       pick.candidates.size(), data.asset.items.size());
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s 通过筛选的标的数 / 总数\n"
                         "• 状态取自当日 L1 落盘列 (ST / 上市 / 行业)\n"
@@ -802,23 +802,23 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
 // 与筛选栏同行右侧; 滚轮在条上 ±1 档微调 (拖动条一像素可能跨多个标的)
 static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
   auto &ui = of.ui;
-  auto &uni = of.universe;
+  auto &pick = of.pick;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
   ImGui::SameLine();
-  const int n = static_cast<int>(uni.candidates.size());
+  const int n = static_cast<int>(pick.candidates.size());
   if (n == 0) {
     ImGui::TextDisabled("无符合筛选的标的");
     return;
   }
 
   // 当前选中是否在候选内 (切日期/改筛选后可能落选; 保留选中, 仅标注)
-  const auto it = std::find(uni.candidates.begin(), uni.candidates.end(), asset_idx);
-  const bool in_candidates = (it != uni.candidates.end());
-  int pos = in_candidates ? static_cast<int>(it - uni.candidates.begin()) : 0;
+  const auto it = std::find(pick.candidates.begin(), pick.candidates.end(), asset_idx);
+  const bool in_candidates = (it != pick.candidates.end());
+  int pos = in_candidates ? static_cast<int>(it - pick.candidates.begin()) : 0;
 
   // candidates 可能建于上一代槽 (新代在途), ST 标记按当前 front 槽尽力显示
-  const auto &meta_now = uni.slots.front_slot().meta;
+  const auto &meta_now = pick.slots.front_slot().meta;
   const uint8_t rw = asset_idx < meta_now.size() ? meta_now[asset_idx].risk_warn : 0;
   const auto &asset = data.asset.items[asset_idx];
   char overlay[256];
@@ -847,7 +847,7 @@ static void RenderAssetSlider(SharedData &data, OrderFlow &of) {
                       "• 滚轮: ±1");
   }
   if (changed)
-    ui.selected_asset_idx = static_cast<int>(uni.candidates[static_cast<size_t>(pos)]);
+    ui.selected_asset_idx = static_cast<int>(pick.candidates[static_cast<size_t>(pos)]);
 }
 
 // ============================================================================
@@ -967,7 +967,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // 帧首: 背槽发布 ack → 翻 front (先翻面后清 pending, worker 等 pending 清)
   // ==========================================================================
   of.depth.ack();
-  of.universe.slots.ack();
+  of.pick.slots.ack();
 
   // ==========================================================================
   // 期望态检测 → 请求 (gen++ 即"停止消费旧代", 发布追上后自动恢复渲染)
@@ -1013,40 +1013,40 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   }
 
   // ==========================================================================
-  // Universe: 锚点日的资产筛选状态 (先定日期, 再 apply filter)
+  // Pick: 锚点日的资产筛选状态 (先定日期, 再 apply filter)
   // ==========================================================================
-  auto &uni = of.universe;
+  auto &pick = of.pick;
 
   // 静态显示序 (市场 → 代码) + 板块表: 建一次
   static std::vector<int> asset_boards;
-  if (uni.display_order.size() != num_assets) {
+  if (pick.display_order.size() != num_assets) {
     std::vector<std::pair<std::string, std::string>> exch_code(num_assets);
     asset_boards.resize(num_assets);
     for (size_t i = 0; i < num_assets; ++i) {
       exch_code[i] = {data.asset.items[i].exchange, data.asset.items[i].asset_code};
       asset_boards[i] = static_cast<int>(GUI::Database::GetBoardType(data.asset.items[i].asset_code));
     }
-    uni.build_display_order(exch_code);
-    uni.cached_gen = UINT32_MAX; // 强制重建候选
+    pick.build_display_order(exch_code);
+    pick.cached_gen = UINT32_MAX; // 强制重建候选
   }
 
-  if (ui.l1_anchor_date && (rescan || uni.req_date != ui.l1_anchor_date)) {
-    uni.req_date = ui.l1_anchor_date;
-    ++uni.gen;
-    service->RequestUniverse(uni.gen, ui.l1_anchor_date);
+  if (ui.l1_anchor_date && (rescan || pick.req_date != ui.l1_anchor_date)) {
+    pick.req_date = ui.l1_anchor_date;
+    ++pick.gen;
+    service->RequestPick(pick.gen, ui.l1_anchor_date);
   }
 
   // 候选重建 (槽换代 或 筛选条件变)
   {
-    const OrderFlow::Universe::Slot &slot = uni.slots.front_slot();
-    if (slot.gen == uni.gen && slot.meta.size() == num_assets && !uni.matches(slot.gen))
-      uni.rebuild_candidates(slot, asset_boards);
+    const OrderFlow::Pick::Slot &slot = pick.slots.front_slot();
+    if (slot.gen == pick.gen && slot.meta.size() == num_assets && !pick.matches(slot.gen))
+      pick.rebuild_candidates(slot, asset_boards);
   }
 
   // 初始标的: 候选里代码编号最小的 (默认筛选已排除退市/未上市; 仅首次自动选)
-  if (!ui.asset_initialized && !uni.candidates.empty()) {
-    size_t best = uni.candidates.front();
-    for (size_t i : uni.candidates) {
+  if (!ui.asset_initialized && !pick.candidates.empty()) {
+    size_t best = pick.candidates.front();
+    for (size_t i : pick.candidates) {
       if (data.asset.items[i].asset_code < data.asset.items[best].asset_code)
         best = i;
     }

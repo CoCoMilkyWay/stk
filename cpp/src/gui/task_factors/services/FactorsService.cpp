@@ -138,7 +138,7 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
   };
   if (!json_str_is(run, "frame", factor::stat::frame_name(r.frame)))
     return;
-  if (!str(run, "universe", t.scope.universe) || !ymd(run, "start_date", t.scope.start_date) || !ymd(run, "end_date", t.scope.end_date) ||
+  if (!str(run, "universe", t.scope.pool) || !ymd(run, "start_date", t.scope.start_date) || !ymd(run, "end_date", t.scope.end_date) ||
       !str(run, "backend", t.scope.backend) || !str(j, "time", t.scope.time))
     return;
   if (!json_int(run, "days", t.scope.days) || !json_int(run, "T", t.scope.T) || !json_int(run, "A", t.scope.A))
@@ -195,7 +195,7 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
 // 顶层 run: 一轮评估内全部权重相同的口径 (time 每权重各自回写时取, 不进 run)
 ojson run_json(const FactorRow &r) {
   ojson j;
-  j["universe"] = r.scope.universe;
+  j["universe"] = r.scope.pool;
   j["start_date"] = misc::dash(r.scope.start_date);
   j["end_date"] = misc::dash(r.scope.end_date);
   j["days"] = r.scope.days;
@@ -298,7 +298,7 @@ void write_json(const std::filesystem::path &path, const ojson &j) {
 }
 
 // 评估后回写: 只动 stats[widx] + 顶层 run / 表头, 其他键 (expr / note / 人加的任何东西) 原样保留.
-// stats 与 weights 同长同序 (没评的位置 null); run / 表头与已有的不同 (换了区间 / universe / 后端…) → 别的权重的 stat 不再
+// stats 与 weights 同长同序 (没评的位置 null); run / 表头与已有的不同 (换了区间 / 票池 / 后端…) → 别的权重的 stat 不再
 // 对应 run, 一并清成 null (下次 Run 重算). 手填权重 (文件无 weights, hold_src = 0) 首次回写时补出 weights = [{hold 0, expr}]
 void write_back(const std::filesystem::path &path, const FactorRow &r) {
   assert(r.widx >= 0 && !r.expr.empty());
@@ -335,7 +335,7 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
 // 评估结果 → 行 (scope / 二级); hold = [n_hold]
 void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, double n_full, const factor::stat::HoldStat *hold,
                const std::vector<CostTier> &costs, const MiniPdf *ic_pdf, const MiniPdf &x_pdf, const char *backend) {
-  r.scope.universe = req.universe;
+  r.scope.pool = req.pool;
   r.scope.start_date = req.start_date;
   r.scope.end_date = req.end_date;
   r.scope.days = L.days, r.scope.T = L.T, r.scope.A = L.A;
@@ -454,7 +454,7 @@ bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, Factors
   req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
   if (req.scope.months.empty())
     return false;
-  req.universe = data.feature.selection.pool;
+  req.pool = data.feature.selection.pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   req.max_impact = data.config.max_impact;
@@ -844,7 +844,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   begin(Phase::Loading, static_cast<size_t>(L.days));
   if (!load_planes(feats_, reader, dates, L, ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true)) {
     if (reader.stale())
-      finish_all_pending("特征库判废 (子轴/字段表与当前不符), 需重算特征");
+      finish_all_pending("特征库判废 (库轴/字段表与当前不符), 需重算特征");
     return false;
   }
   const double n_full = n_full_of(L); // 满档 cap (池宽), 全部因子共用

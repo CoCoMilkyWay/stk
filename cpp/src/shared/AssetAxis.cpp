@@ -145,9 +145,9 @@ LibAxis full_axis(std::size_t num_assets) {
 
 LibAxis pool_axis(std::vector<uint32_t> ids) {
   const AssetAxis &table = asset_axis();
-  assert(!ids.empty() && "子轴为空");
-  assert(std::adjacent_find(ids.begin(), ids.end(), std::greater_equal<>()) == ids.end() && "子轴 ids 须升序去重");
-  assert(ids.back() < table.size() && "子轴资产不在 A 轴上");
+  assert(!ids.empty() && "库轴为空");
+  assert(std::adjacent_find(ids.begin(), ids.end(), std::greater_equal<>()) == ids.end() && "库轴 ids 须升序去重");
+  assert(ids.back() < table.size() && "库轴资产不在 A 轴上");
 
   LibAxis out;
   out.ids = std::move(ids);

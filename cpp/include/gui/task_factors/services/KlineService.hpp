@@ -1,7 +1,7 @@
 // KlineService — Factors→Inspect 右下图的单 worker: 对选中的一个标的, 沿 Inspect 结果的交易日逐日流式读 L1 分钟 OHLC (选列读, 每日只碰
 // 5 个小文件) → 追加 + 单调前缀发布, GUI 画已发布前缀 (发布协议 = shared/Progress.hpp PrefixPub, 与 shared/OrderFlow.hpp 的 Kline 同一份).
 // 每天之间查 cancel_: 拖标的随时打断, 新代从头流.
-// 请求 = (gen, 特征库作用域 (目录 + 子轴), 日期表, 子轴资产下标, 列号). gen 由 GUI 递增自持, 与发布面配对; 新请求覆盖旧的.
+// 请求 = (gen, 特征库作用域 (目录 + 库轴), 日期表, 库轴资产下标, 列号). gen 由 GUI 递增自持, 与发布面配对; 新请求覆盖旧的.
 // 线程模型 (gui/util/Service.hpp, 随对象). worker 只在 "GUI 请求代 ≠ 发布代" 时重建数组 (此刻 GUI 不读前缀), 免锁.
 #pragma once
 
@@ -18,9 +18,9 @@ namespace GUI::Factors {
 
 struct KlineRequest {
   uint32_t gen = 0;
-  analysis::ReadScope scope;    // features_dir + uni (reader 的期望子轴)
+  analysis::ReadScope scope;    // features_dir + uni (reader 的期望库轴)
   std::vector<misc::Ymd> dates; // = InspectResult::dates; x = 日下标 × kSegLen + 分钟
-  int sub = -1;                 // 子轴资产下标
+  int sub = -1;                 // 库轴资产下标
   uint32_t col[5] = {};         // L1 列号: open high low close ts_valid (FeatureTable 解析)
 };
 

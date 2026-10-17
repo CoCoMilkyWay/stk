@@ -30,7 +30,7 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
                                          {all_meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_MCAP)),
                                           all_meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_INDUSTRY))});
   }
-  // 焦点按新子轴 clamp: UI 槽位可能来自上一个库 (切库后子轴大小已变)
+  // 焦点按新库轴 clamp: UI 槽位可能来自上一个库 (切库后库轴大小已变)
   req.spec.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.lib.axis.size()) - 1));
   Request(std::move(req));
 }

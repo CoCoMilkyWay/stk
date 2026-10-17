@@ -2,7 +2,7 @@
 //   Operators: OpTable 全部算子对拍 + 计时. 不依赖特征库 / 数据库扫描 (合成张量), 故任何时候可进.
 //     首次进页默认不算: 先载入本地 operators.json 显示 (校验不过则删文件); 只有手动 Run —— 或本地无有效
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
-//   Factors: <factor_dir>/<universe>/ 一因子一文件的整体面板. 进页只扫描解析 (任何时候可进); Run 才读特征库评估
+//   Factors: <factor_dir>/<pool>/ 一因子一文件的整体面板. 进页只扫描解析 (任何时候可进); Run 才读特征库评估
 //     (要资产轴就绪), 结果回写各因子文件.
 //   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 标的 K 线). 行信息来自 FactorsService; 一级 Row 由自己的
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中标的的分钟 K 线由 KlineService 逐日流式读.
@@ -16,7 +16,7 @@
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "gui/task_factors/ui/TabInspect.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
-#include "shared/SharedData.hpp" // config.factor_dir / universe / 日期区间, feature.metadata, asset.items
+#include "shared/SharedData.hpp" // config.factor_dir / 票池 / 日期区间, feature.metadata, asset.items
 
 #include "imgui.h"
 
@@ -43,7 +43,7 @@ struct TaskFactorsState {
 
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
-  std::string factors_scanned_dir;                        // 上次扫描的目录 (universe 切换 → 自动重扫)
+  std::string factors_scanned_dir;                        // 上次扫描的目录 (票池切换 → 自动重扫)
   std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Optimize (与 factors_service 同建); 写了 weights 的那一轮结束 → 自动 Run
   Phase prev_search_phase = Phase::Idle;
 
@@ -56,7 +56,7 @@ struct TaskFactorsState {
 static Factors::FactorsUIContext factors_context(const SharedData &data) {
   Factors::FactorsUIContext c;
   c.factor_dir = data.config.factor_dir + "/" + data.feature.selection.pool;
-  c.universe = data.feature.selection.pool;
+  c.pool = data.feature.selection.pool;
   c.start_date = data.config.start_date;
   c.end_date = data.config.end_date;
   c.sell_impact = data.config.sell_impact;
@@ -76,7 +76,7 @@ TaskHandle CreateFactorsTask() {
   // 不设 OnCollapse: 切走任务 worker 继续跑完 (单线程 + ~90 行小结构, 左栏状态标签照常更新, 切回直接看表)
 
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
-  // (与 universe 无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
+  // (与票池无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
     // Optimize 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
     if (state->search_service && state->factors_service) {
@@ -162,7 +162,7 @@ TaskHandle CreateFactorsTask() {
     }
     case TAB_FACTORS:
     case TAB_INSPECT: {
-      // 首次进页: 字段表视图建一次 (编译期字段表, 不随运行变), 只扫描不算; universe 切换 → 目录变 → 自动重扫
+      // 首次进页: 字段表视图建一次 (编译期字段表, 不随运行变), 只扫描不算; 票池切换 → 目录变 → 自动重扫
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
         state->factors_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.meta(TierId::Lob)));

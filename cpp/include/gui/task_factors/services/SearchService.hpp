@@ -46,11 +46,11 @@ struct SharedData;
 namespace GUI::Factors {
 
 struct SearchRequest {
-  std::string factor_dir;                              // <factor_dir>/<universe> (落盘)
+  std::string factor_dir;                              // <factor_dir>/<pool> (落盘)
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
   analysis::ReadScope scope;
-  std::string universe;
+  std::string pool;
   misc::Ymd start_date = 0, end_date = 0;
   bool gpu = false;
 };

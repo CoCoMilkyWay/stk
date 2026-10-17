@@ -12,7 +12,7 @@
 //   Kline: 每日尾 feat_n[i] / y range (release) → pub word [gen|days|points] (release, shared/Progress.hpp PrefixPub);
 //          GUI acquire 读 pub, 只画已发布前缀; gen != 请求代 = 正在重建, 不画.
 //          数组 reserve 满容量后只 push_back → data() 恒稳定, 前缀读安全.
-//   Depth / Universe: PingPong (shared/Progress.hpp) — worker 写背槽 → commit; GUI 帧首 ack 翻面;
+//   Depth / Pick: PingPong (shared/Progress.hpp) — worker 写背槽 → commit; GUI 帧首 ack 翻面;
 //          pending 未 ack 期间 worker 不碰任何槽.
 // 三块各带进度面 (Kline 自身 / PingPong), 是各自 worker 的 board.
 #pragma once
@@ -154,7 +154,7 @@ struct OrderFlow {
     struct Plot {
       std::vector<double> x, mid_price, best_bid, best_ask;
       std::vector<size_t> tick_idx_map; // 秒下标 -> plot_idx (SIZE_MAX = 无), O(1) snap
-      // 分钟 VWAP 阶梯 (L1 特征列 vwap, 与标签 exit 同源; 只有 universe 内且当日已算特征的资产才有):
+      // 分钟 VWAP 阶梯 (L1 特征列 vwap, 与标签 exit 同源; 只有库轴内且当日已算特征的资产才有):
       // 逐有效分钟一点, X = 分钟起始秒, 末尾补一点 (末分钟末秒) 收口; 与 ticks 无关
       std::vector<double> vwap_x, vwap_y;
       double y_min = 0.0, y_max = 0.0;
@@ -238,12 +238,12 @@ struct OrderFlow {
   PingPong<Depth> depth;
 
   // ==========================================================================
-  // Universe (资产选择) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
+  // Pick (资产筛选) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
   //   状态源 = L1 落盘列 (Fund 节点日频广播): risk_warn / list_age / delist_age
   //   / industry_l1, 配合同层 ts_valid 判有效 —— 当日无有效分钟的资产读不到状态
   //   (落盘缓冲清零, 值全 0 会被误读成"正常在市"), 一律不进候选.
   // ==========================================================================
-  struct Universe {
+  struct Pick {
     // 单资产当日状态 (worker 写背槽, 发布后只读)
     struct Meta {
       uint8_t industry_l1 = 0; // SW2021 一级行业 ID (0 = 未知), 见 fund::SW2021_L1_NAMES
@@ -276,7 +276,7 @@ struct OrderFlow {
     uint64_t cached_epoch = UINT64_MAX;
     bool matches(uint32_t g) const { return cached_gen == g && cached_epoch == filter_epoch; }
 
-    // 请求快照 (GUI; 锚点日变 → gen++ → RequestUniverse)
+    // 请求快照 (GUI; 锚点日变 → gen++ → RequestPick)
     uint32_t gen = 0;
     misc::Ymd req_date = 0;
 
@@ -288,7 +288,7 @@ struct OrderFlow {
     void rebuild_candidates(const Slot &s, const std::vector<int> &boards);
 
     void clear();
-  } universe;
+  } pick;
 
   // ==========================================================================
   // HeatmapColored — GUI 线程私有: front Depth 槽 + 阈值 → 着色矩形

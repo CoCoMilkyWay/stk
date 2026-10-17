@@ -1,4 +1,4 @@
-// FactorsService — Factors→Factors 表的单 worker: 扫 <factor_dir>/<universe>/*.json 因子文件 → 解析 / 校验模板与权重表达式
+// FactorsService — Factors→Factors 表的单 worker: 扫 <factor_dir>/<pool>/*.json 因子文件 → 解析 / 校验模板与权重表达式
 // (factor/Expr.hpp) → (Run 时) 读特征库把因子输入 + 标签装成 [T = days·kSegLen][A] 平面 → 每权重 Expr → Dag →
 // CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行 + 回写该权重的 stat (stats[i]; expr / weights 不动).
 //
@@ -97,11 +97,11 @@ std::string now_string();
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) ----
 struct FactorsRequest {
-  std::string factor_dir; // <config.factor_dir>/<universe>
+  std::string factor_dir; // <config.factor_dir>/<pool>
   bool evaluate = false;  // false = 只扫描解析
   // 以下 evaluate 时才用
   analysis::ReadScope scope;
-  std::string universe;
+  std::string pool;
   misc::Ymd start_date = 0, end_date = 0;
   bool gpu = false;
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 成本装载时生效)
@@ -116,7 +116,7 @@ enum class FactorKind : uint8_t { Alpha,
                                   Beta };
 inline constexpr const char *kind_name(FactorKind k) { return k == FactorKind::Alpha ? "alpha" : "beta"; }
 struct StatScope {
-  std::string universe, backend, time;
+  std::string pool, backend, time;
   misc::Ymd start_date = 0, end_date = 0;
   int days = 0, T = 0, A = 0;
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)

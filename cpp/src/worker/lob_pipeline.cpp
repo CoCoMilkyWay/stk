@@ -1,4 +1,4 @@
-// Lob 档管线 (逐笔 → LOB 源, 票池并集子轴): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
+// Lob 档管线 (逐笔 → LOB 源, 池轴): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
 #include "worker/feature_pipeline.hpp"
 
 #include "codec/L2_DataType.hpp"
@@ -25,7 +25,7 @@ struct TierFeed<lob::Tier> {
   SharedData &data;
   const LibAxis &axis;
   std::span<const misc::Ymd> dates;
-  // 帧目录切成 日期 × 子轴 (行 = dates 下标, 列 = 子轴下标), 持有到全部 worker 退出,
+  // 帧目录切成 日期 × 库轴 (行 = dates 下标, 列 = 库轴下标), 持有到全部 worker 退出,
   // 不碰 Asset 上随重扫描换代的那一份; orders.at(date_idx, sub) 直接定址.
   const OrdersCatalog orders;
   std::vector<size_t> weights; // 区间内逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)

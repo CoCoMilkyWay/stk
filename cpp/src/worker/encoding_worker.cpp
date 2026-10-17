@@ -87,7 +87,7 @@ bool day_file_fresh(const std::string &orders_dir, const std::string &archive_pa
 
 // 列举结果按资产归并: 同一资产的委托/成交/行情条目在包里是分开的三条.
 // 全市场下不能拿 ipo/退市区间去盲试 (那会对当天包里没有的资产各发一次 unrar,
-// 每次重走三万条目的包头), 列举拿到的就是当天真实 universe, 再按 A 轴过滤掉
+// 每次重走三万条目的包头), 列举拿到的就是当天真实资产集, 再按 A 轴过滤掉
 // ETF/基金 (轴只含股票).
 std::unordered_map<size_t, EncodeTask> group_by_asset(const std::vector<misc::ArchiveEntry> &entries,
                                                       const MemberFiles &files, const AssetAxis &axis, misc::Ymd date) {

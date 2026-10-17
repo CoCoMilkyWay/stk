@@ -12,7 +12,7 @@
 namespace GUI::Factors {
 
 struct KlineService::Impl {
-  std::optional<FeatureRead> reader; // 作用域 (目录 + 子轴) 变了重建
+  std::optional<FeatureRead> reader; // 作用域 (目录 + 库轴) 变了重建
   std::string dir;
   uint64_t hash = 0;
   size_t A = 0;

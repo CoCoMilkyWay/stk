@@ -264,7 +264,7 @@ struct OrdersCatalog {
   size_t day_idx(misc::Ymd date) const;
 
   // 切片: 行 = dates (升序; 本目录没有的天给缺席行), 列 = ids (A 轴下标, 越界给缺席格子).
-  // 特征计算按 回测日 × universe 子轴 开算, worker 凭 (日期轴下标, 子轴下标) 直接定址.
+  // 特征计算按 回测日 × 库轴 开算, worker 凭 (日期轴下标, 库轴下标) 直接定址.
   OrdersCatalog slice(std::span<const misc::Ymd> dates, std::span<const uint32_t> ids) const;
 
   std::span<const FrameRef> row(size_t didx) const {

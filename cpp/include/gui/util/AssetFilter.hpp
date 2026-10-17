@@ -85,7 +85,7 @@ inline const std::vector<std::pair<int, std::string>> &ListedItems() {
 }
 
 // Board. T = BoardType (TABLE 直接存枚举) 或 int (ORDERFLOW 存底层值, 因为
-// 状态挂在 shared/ 层的 OrderFlow::Universe, 不该依赖 gui/ 层类型).
+// 状态挂在 shared/ 层的 OrderFlow::Pick, 不该依赖 gui/ 层类型).
 // 不含 BoardType::All 哨兵 —— 空集已经等价于全选.
 template <typename T>
 const std::vector<std::pair<T, std::string>> &BoardItems() {

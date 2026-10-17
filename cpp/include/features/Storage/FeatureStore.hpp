@@ -310,7 +310,7 @@ public:
     return d < io + pool_size_ ? day_at(d) : Day{};
   }
 
-  // 一个 (asset, d) 写完. 计数攒齐全轴 (universe 子轴) 后 CS 放行;
+  // 一个 (asset, d) 写完. 计数攒齐全轴 (库轴) 后 CS 放行;
   // release 与 cs_try_open 的 acquire 配对, 保证张量写入对 CS 可见.
   // 缺 binary 的 asset-day 也要计 (张量保持默认值), 由当时的处置权持有者计.
   void ts_close(const Day &day) {

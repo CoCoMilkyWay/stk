@@ -155,9 +155,9 @@ void Dist::reset(ReadScope scope, Spec sp) {
   const bool axis_changed = scope_.lib.axis.ids != scope.lib.axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.lib.axis.size(); // A 轴 = universe 子轴
+  const size_t A = scope_.lib.axis.size(); // A 轴 = 库轴
 
-  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. universe / 区间变了 (槽位含义已变) 才重建
+  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 库 / 区间变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
   init_lines(snap.lines, scope_.lib.axis.ids);
@@ -180,7 +180,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = scope_.lib.axis.size(); // universe 子轴大小 (扫描/抽样预算/分母全按它)
+  const size_t A = scope_.lib.axis.size(); // 库轴大小 (扫描/抽样预算/分母全按它)
   const size_t VR = kVR;
   assert(level_valid_rows(kLevel) == VR);
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
@@ -266,7 +266,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     const TsPlane &pl = rt.pf.front();
 
     // ------------------------------------------------------------------
-    // Phase 扫描: kAssetBlock 个资产一任务 (a = 子轴下标), 全在锁外, 聚合进本 tid 的 shard
+    // Phase 扫描: kAssetBlock 个资产一任务 (a = 库轴下标), 全在锁外, 聚合进本 tid 的 shard
     // ------------------------------------------------------------------
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];

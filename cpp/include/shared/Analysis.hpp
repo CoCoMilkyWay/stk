@@ -37,7 +37,7 @@ struct Feature;
 // 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Storage/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
 //   → 导出 staging Snap → 短锁 swap 发布
-//   - A 轴 = universe 子轴 (槽位 = 子轴下标, 查 items 经 global_ids); Dist / Transform / Preview 只在 L1 跑, Corr* 跟随层
+//   - A 轴 = 库轴 (槽位 = 库轴下标, 查 items 经 global_ids); Dist / Transform / Preview 只在 L1 跑, Corr* 跟随层
 //   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
 //     reset 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
 //   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排: Request = ReadScope + Spec,
@@ -153,7 +153,7 @@ using AggPdf = PdfSnap<kAggKllResolution>;
 // [0, n) 固定种子洗牌 (绘制子集 / 抽样序: 无偏且跨构建稳定)
 std::vector<uint32_t> shuffled_order(size_t n);
 
-// 每资产一条线 (槽位 == 子轴下标): asset = 全局轴下标 (UI 查 items), draw = PDF 折线绘制子集
+// 每资产一条线 (槽位 == 库轴下标): asset = 全局轴下标 (UI 查 items), draw = PDF 折线绘制子集
 struct AssetLine : AssetPdf {
   uint32_t asset = 0;
   uint8_t draw = 0;
@@ -215,7 +215,7 @@ DayPlan plan_days(const FeatureRead &reader, const std::vector<misc::Ym> &months
 // 槽数对得上就只 clear (KLL 保留 buffer 容量), 对不上才重建
 void prepare_slots(std::vector<KLLcache> &slots, size_t n, size_t capacity, size_t resolution);
 void clear_slots(std::vector<KLLcache> &slots);
-// 子轴 → 全局轴映射必须升序去重非空 (LibAxis::ids)
+// 库轴 → 全局轴映射必须升序去重非空 (LibAxis::ids)
 void check_axis(const std::vector<uint32_t> &global_ids);
 
 inline size_t n_asset_blocks(size_t A) { return (A + kAssetBlock - 1) / kAssetBlock; }

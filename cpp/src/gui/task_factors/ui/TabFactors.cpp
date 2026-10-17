@@ -356,9 +356,9 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
 // 该行选定持有期的汇总; 没有 → nullptr
 const factor::stat::HoldStat *hold_of(const FactorRow &r, int hold) { return r.has_stat ? r.find_hold(hold) : nullptr; }
 
-// 文件里的 stat 与当前作用域是否一致 (universe / 区间)
+// 文件里的 stat 与当前作用域是否一致 (票池 / 区间)
 bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
-  return r.scope.universe == ctx.universe && r.scope.start_date == ctx.start_date && r.scope.end_date == ctx.end_date;
+  return r.scope.pool == ctx.pool && r.scope.start_date == ctx.start_date && r.scope.end_date == ctx.end_date;
 }
 
 // ============================================================================
@@ -534,7 +534,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• beta: 风险暴露 (未实现, 留位)",
      true},
     {NameEn, "name_en",
-     "英文名 = 文件名主干: <factor_dir>/<universe>/<name_en>.json\n"
+     "英文名 = 文件名主干: <factor_dir>/<pool>/<name_en>.json\n"
      "• 仅 [A-Za-z0-9_], ≤63 字符\n"
      "• 点行高光 → Inspect 页单因子展示",
      true},
@@ -570,7 +570,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• 未搜索 灰: 模板含自由参数但还没 weights\n"
      "    ◦ 不评; 高光它点 Optimize\n"
      "• ok 绿: 有 stat 且作用域一致 (本轮算的或文件读的)\n"
-     "• file≠scope 黄: 文件 stat 是别的 universe / 区间算的\n"
+     "• file≠scope 黄: 文件 stat 是别的票池 / 区间算的\n"
      "• no stat: 从未评估\n"
      "• dup 黄: 与另一行同 hold 同一规范串",
      false},
@@ -716,7 +716,7 @@ std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const FR &r) {
 // Stat 列悬停: 精简头部 + 转置表 (行 = kMetrics 按组, 列 = 持有期), 有区间的指标按固定区间着色
 void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::TextDisabled("%s%s | %s | %s %s..%s | 满档 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
-                      r.stat_from_file && !scope_matches(r, ctx) ? " (作用域≠当前)" : "", factor::stat::frame_name(r.frame), r.scope.universe.c_str(),
+                      r.stat_from_file && !scope_matches(r, ctx) ? " (作用域≠当前)" : "", factor::stat::frame_name(r.frame), r.scope.pool.c_str(),
                       misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.scope.n_full, r.eval_ms);
   ImGui::TextDisabled("标签: 毛价格收益; 着色 (固定区间, 见列头): ");
   ImGui::SameLine(0, 0);
@@ -980,7 +980,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // ==========================================================================
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
-  ImGui::Text("%s  %s .. %s", ctx.universe.c_str(), misc::dash(ctx.start_date).c_str(), misc::dash(ctx.end_date).c_str());
+  ImGui::Text("%s  %s .. %s", ctx.pool.c_str(), misc::dash(ctx.start_date).c_str(), misc::dash(ctx.end_date).c_str());
   if (ImGui::IsItemHovered())
     tip("因子目录 %s\n"
         "• 作用域 = Feature 页所选票池 (Lob 库) + config 日期区间\n"

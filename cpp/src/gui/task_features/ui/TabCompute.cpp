@@ -179,7 +179,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
 
   ImGui::TextWrapped("按照日期, 切分多频率Tensor: {[T, F, A]_level0(tick), [T, F, A]_level1(minute)}_dayN");
   ImGui::Text("T (Time):    max = 100,000  (100K time indices per day (ms/s))");
-  ImGui::Text("A (Asset):   max = 1,000    (1K assets in universe)");
+  ImGui::Text("A (Asset):   max = 1,000    (1K assets per library)");
   ImGui::Text("F (Feature): max = 1,000    (all feature types combined)");
   ImGui::Text("特征子类型示例: F_TS: (600 时序特征) F_CS (250 截面特征) F_LB (50 标签) F_SH (50 共享中间值) F_META (50 元数据)");
   ImGui::Text("访问模式分析 (优化目标: 最小化总内存访问时间)");

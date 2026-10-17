@@ -1,11 +1,11 @@
-// OrderFlowService — OrderFlow 三路请求的编排外观: Kline / Depth / Universe 各一个 worker (gui/util/Service.hpp), 三路并行
+// OrderFlowService — OrderFlow 三路请求的编排外观: Kline / Depth / Pick 各一个 worker (gui/util/Service.hpp), 三路并行
 //
 // 线程模型 (发布协议见 shared/OrderFlow.hpp 头注释):
 //   - GUI 线程: 每帧把期望态快照 (asset / anchor date / 选中特征) 交给 Request*;
 //     变化检测与 gen 递增在 GUI 侧, 服务侧只管"照单执行最新一代" (新请求覆盖旧的, 在跑的被打断)
 //   - 三个 worker 线程, 私有常驻资源 (reader / 缓冲) 首个请求时在 worker 线程建:
 //       Depth 重放: decode 帧 → LOB 逐笔重放 → 秒级快照 → plot/heatmap 构建 → 背槽整体发布
-//       Universe 逐日状态: 锚点日的 L1 filter 列选读 → 全资产 PIT 状态 (ST / 在市 / 行业)
+//       Pick 逐日状态: 锚点日的 L1 filter 列选读 → 全资产 PIT 状态 (ST / 在市 / 行业)
 //         → 背槽整体发布 (供 GUI 资产筛选)
 //       Kline 流式: 逐日选列读 (OHLC + ts_valid + 特征) → 抽选中资产 → 追加 + 单调前缀发布;
 //         天与天之间可被新代打断
@@ -38,7 +38,7 @@ public:
   // GUI 线程: 期望态快照 (最新覆盖旧请求; gen 调用方递增自持, 与发布面配对)
   void RequestKline(uint32_t gen, size_t asset_idx, std::vector<int> feats, bool rescan_dates);
   void RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, int feat_level, std::vector<int> feats);
-  void RequestUniverse(uint32_t gen, misc::Ymd date);
+  void RequestPick(uint32_t gen, misc::Ymd date);
 
   bool is_running() const { return kline_ != nullptr; }
   const std::string &pool() const { return pool_; }
@@ -57,19 +57,19 @@ private:
     int feat_level;         // 特征所属层 (0=L0, 1=L1)
     std::vector<int> feats; // feat_level 层字段下标
   };
-  struct UniverseReq {
+  struct PickReq {
     uint32_t gen;
     misc::Ymd date;
   };
 
   class KlineWorker;    // 逐日流式 + 前缀发布
   class DepthWorker;    // 重放 + 构建 + 背槽发布
-  class UniverseWorker; // 逐日 filter 列 → 全资产状态 + 背槽发布
+  class PickWorker; // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   std::string pool_;
   std::unique_ptr<KlineWorker> kline_;
   std::unique_ptr<DepthWorker> depth_;
-  std::unique_ptr<UniverseWorker> universe_;
+  std::unique_ptr<PickWorker> pick_;
 };
 
 } // namespace GUI::Features

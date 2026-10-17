@@ -244,7 +244,7 @@ static bool RenderPipeline(Transform::Params &p) {
 
 static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, TransformUIState &ui) {
   TraceN("UI:Heatmap");
-  const size_t n = tf.snap.stat_lines.size(); // 全资产 (槽位 == 子轴下标)
+  const size_t n = tf.snap.stat_lines.size(); // 全资产 (槽位 == 库轴下标)
   if (n == 0) {
     ImGui::TextDisabled("资产: --");
     ImGui::Dummy(ImVec2(0, 34));
@@ -321,7 +321,7 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
 
 // ============================================================================
 // 序列视图: 焦点资产全程 (逐批增长) 原始 (+TOD 轮廓) | 链末输出
-// 快照只存焦点资产 (内存与 universe 大小无关); 换焦点 = 重跑构建 (与改参数同流程)
+// 快照只存焦点资产 (内存与 库轴大小无关); 换焦点 = 重跑构建 (与改参数同流程)
 // 两图轴永远互锁 (SetupAxisLinks): 任一图缩放/平移另一图跟随;
 // autofit 不能各图各 fit —— 手动求 原始/TOD/输出 数据并集写进链接值, 两图同视野
 // ============================================================================
@@ -427,7 +427,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   TraceN("UI:DistPSD");
   const float col_w = ImGui::GetContentRegionAvail().x / 3.0f;
   const size_t A = tf.snap.lines.size();
-  // 焦点槽位 == 子轴下标 (统计无子集, 与 lines 同轴)
+  // 焦点槽位 == 库轴下标 (统计无子集, 与 lines 同轴)
   const uint32_t focus_asset = ui.focus >= 0 && ui.focus < static_cast<int>(A) ? static_cast<uint32_t>(ui.focus) : UINT32_MAX;
 
   // 有数据才 fit (PDF 画的是总体线 + 绘制子集线, 二者任一就绪即算有). pending 只在 BeginPlot

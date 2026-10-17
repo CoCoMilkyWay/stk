@@ -4,7 +4,7 @@
 //   1. Compute | Cancel | Status (天进度) | 特征 | 完整性 (输入/输出有效率)
 //   2. 变换链 (与计算顺序一致): 季节 → 平稳化 → 带通 → TS 归一 → 截面 (Tf → Method)
 //      任何参数变了 = 新请求 (拖动中也刷, 按时间 gate 节流; 松手必刷)
-//   3. 资产焦点滑条 (全 universe 子轴, 无上限) + ADF/KPSS 逐天通过率热力条 (悬停详情, 点选焦点)
+//   3. 资产焦点滑条 (全 库轴, 无上限) + ADF/KPSS 逐天通过率热力条 (悬停详情, 点选焦点)
 //   4. 序列视图 (焦点资产全程, 逐批增长): 原始 (+TOD 轮廓) | 链末输出
 //      快照只存焦点资产 → 换焦点 = 自动重跑构建 (与改参数同一 dirty/节流通道)
 //      两图轴永远互锁 (缩放/平移同步); autofit = 两图数据并集同视野
@@ -38,7 +38,7 @@ struct TransformUIState {
   uint64_t last_epoch = 0; // 数据版本 (reset/clear/每批发布 +1), 跨构建单调, 不依赖 status 转移
   int last_focus = -1;
 
-  int focus = 0;         // 焦点槽位 == 子轴下标 (0..A_sub-1)
+  int focus = 0;         // 焦点槽位 == 库轴下标 (0..A_sub-1)
   int hovered_stat = -1; // 热力条悬停槽位
 
   // 序列两图 (原始/输出) 轴互锁: 链接值所有权在 UI (ImPlot::SetupAxisLinks),

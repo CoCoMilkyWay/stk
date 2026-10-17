@@ -2,7 +2,7 @@
 //
 // 线程模型 (骨架见 gui/util/Service.hpp; 目标形状与发布协议见 shared/Analysis.hpp):
 //   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = analysis::Request<Target::Spec>
-//     (ReadScope: 月份表 + universe 子轴 + 库目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
+//     (ReadScope: 月份表 + 库轴 + 库目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
 //     覆盖挂起请求 + 取消在跑
 //   - worker 线程 run: FeatureRead → target.reset(scope, spec) → target.build()
 //     (build 内部用 Runtime 常驻 ForkJoin 分批流式, 批末发布; 新请求/Cancel 置 cancel_, 每个任务开头检查后放弃)

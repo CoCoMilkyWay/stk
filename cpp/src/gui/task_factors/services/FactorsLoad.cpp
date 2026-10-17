@@ -95,7 +95,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         cols.push_back(c), vts.push_back(ft.cols[c].vt);
   if (with_index) {
     const FeatCol *fc = ft.find("lob_close");
-    assert(fc && "字段表缺 lob_close 列 (universe 指数)");
+    assert(fc && "字段表缺 lob_close 列 (库等权指数)");
     cols.push_back(fc->col), vts.push_back(fc->vt);
   }
   cols.push_back(ft.ts_col);
@@ -148,7 +148,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     if (reader.stale())
       return;
     // 当日有数据 = 该资产当日至少一分钟有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
-    // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的 universe 因此只看"真有行情"的格, 不与数据完整性耦合
+    // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合
     std::vector<uint8_t> &has = has_data[tid];
     std::fill(has.begin(), has.end(), uint8_t{0});
     for (size_t t = 0; t < VR; ++t) {

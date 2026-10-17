@@ -23,16 +23,16 @@
 namespace GUI::Features {
 
 // ============================================================================
-// Universe 状态列 (L1, Fund 节点日频广播; 顺序 = uni_cols 的列下标)
+// Pick 状态列 (L1, Fund 节点日频广播; 顺序 = pick_cols 的列下标)
 // ============================================================================
 
 namespace {
-enum UniCol : size_t { UNI_META = 0,
-                       UNI_RISK_WARN,
-                       UNI_LIST_AGE,
-                       UNI_DELIST_AGE,
-                       UNI_INDUSTRY };
-constexpr size_t UNIVERSE_COL_COUNT = 5;
+enum PickCol : size_t { PICK_META = 0,
+                       PICK_RISK_WARN,
+                       PICK_LIST_AGE,
+                       PICK_DELIST_AGE,
+                       PICK_INDUSTRY };
+constexpr size_t PICK_COL_COUNT = 5;
 
 // ============================================================================
 // worker 私有常驻资源 (首个请求时在 worker 线程建, 稳态零分配)
@@ -99,7 +99,7 @@ private:
   const std::string pool_; // 票池库名 (服务一代一个, 换池重建服务)
   std::optional<Res> res_;
   KlineReq cur_{};
-  size_t sub_ = 0;                   // 选中资产的子轴下标 (run 映射一次)
+  size_t sub_ = 0;                   // 选中资产的库轴下标 (run 映射一次)
   double y_min_ = 0.0, y_max_ = 0.0; // OHLC 运行范围
   std::vector<float> feat_min_, feat_max_;
 };
@@ -136,26 +136,26 @@ private:
   std::optional<Res> res_;
 };
 
-class OrderFlowService::UniverseWorker : public Worker<UniverseWorker, UniverseReq> {
-  friend Worker<UniverseWorker, UniverseReq>;
+class OrderFlowService::PickWorker : public Worker<PickWorker, PickReq> {
+  friend Worker<PickWorker, PickReq>;
 
 public:
-  static constexpr const char *kName = "OF_UniverseWorker";
-  UniverseWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
-  ~UniverseWorker() { Stop(); }
+  static constexpr const char *kName = "OF_PickWorker";
+  PickWorker(SharedData &data, const std::string &pool) : data_(data), pool_(pool) { Start(); }
+  ~PickWorker() { Stop(); }
 
 private:
   struct Res {
-    LibRead lib;                  // 只用其票池并集子轴 (候选范围)
+    LibRead lib;                  // 只用其池轴 (候选范围)
     LibRead bar;                  // 状态列在 Bar 档 (Fund 只在 Bar 库落盘)
     FeatureRead::DayColumns cols; // 资产筛选状态列 (全轴)
     Res(FeatureLib l, FeatureLib b) : lib(std::move(l)), bar(std::move(b)) {
-      cols.preallocate(bar.axis.size(), 1, UNIVERSE_COL_COUNT);
+      cols.preallocate(bar.axis.size(), 1, PICK_COL_COUNT);
     }
   };
   static constexpr Phase kStart = Phase::Running;
-  Progress &board() { return data_.orderflow.universe.slots; }
-  bool run(UniverseReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
+  Progress &board() { return data_.orderflow.pick.slots; }
+  bool run(PickReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   SharedData &data_;
   const std::string pool_;
@@ -177,13 +177,13 @@ void OrderFlowService::Start(SharedData &data) {
     return;
   kline_ = std::make_unique<KlineWorker>(data, pool_);
   depth_ = std::make_unique<DepthWorker>(data, pool_);
-  universe_ = std::make_unique<UniverseWorker>(data, pool_);
+  pick_ = std::make_unique<PickWorker>(data, pool_);
 }
 
 void OrderFlowService::Stop() { // worker 析构即 Stop (join)
   kline_.reset();
   depth_.reset();
-  universe_.reset();
+  pick_.reset();
 }
 
 // ============================================================================
@@ -203,9 +203,9 @@ void OrderFlowService::RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_i
   depth_->Request(DepthReq{gen, date, asset_idx, feat_level, std::move(feats)});
 }
 
-void OrderFlowService::RequestUniverse(uint32_t gen, misc::Ymd date) {
-  assert(universe_ && "Request 先于 Start");
-  universe_->Request(UniverseReq{gen, date});
+void OrderFlowService::RequestPick(uint32_t gen, misc::Ymd date) {
+  assert(pick_ && "Request 先于 Start");
+  pick_->Request(PickReq{gen, date});
 }
 
 // ============================================================================
@@ -248,7 +248,7 @@ bool OrderFlowService::KlineWorker::run(KlineReq &req) {
   k.begin_generation(cur_.gen, cur_.asset, cur_.feats.size());
   k.reserve_capacity(); // 发布前完成: 之后 data() 恒稳定
 
-  // 请求侧 asset 是全局轴下标, 特征列按票池子轴索引. 不在子轴内 (初始
+  // 请求侧 asset 是全局轴下标, 特征列按票池库轴索引. 不在库轴内 (初始
   // 默认选中 / 换票池后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
   // 列可读, 直接发布"完整但空"的一代 —— 与全轴时代读到恒零列的语义一致.
   sub_ = res_->lib.axis.sub_of(static_cast<uint32_t>(cur_.asset));
@@ -285,7 +285,7 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
   if (lib.reader.stale())
     return false;
 
-  // 选中资产的子轴下标 (run 映射并保证在轴内, 否则不会流式到这)
+  // 选中资产的库轴下标 (run 映射并保证在轴内, 否则不会流式到这)
   const size_t a = sub_;
   assert(a < lib.axis.size());
   const double x0 = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
@@ -334,36 +334,36 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
 }
 
 // ============================================================================
-// Universe: 锚点日的 L1 filter 列 → 全资产 PIT 状态 → 背槽发布
+// Pick: 锚点日的 L1 filter 列 → 全资产 PIT 状态 → 背槽发布
 //   Fund 是 onDay 算一次 / onMinute 原样广播, 故当日任一有效分钟的值即当日状态;
 //   取首个 ts_valid 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
 // ============================================================================
 
-bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
+bool OrderFlowService::PickWorker::run(PickReq &req) {
   if (!ensure_res(res_, data_.config, pool_, Config::kAllTierDir))
     return false;
-  PingPong<OrderFlow::Universe::Slot> &pp = data_.orderflow.universe.slots;
+  PingPong<OrderFlow::Pick::Slot> &pp = data_.orderflow.pick.slots;
   if (!await_back(pp, cancel_))
     return false;
-  TraceN("OF_UniverseBuild");
+  TraceN("OF_PickBuild");
   LibRead &lib = res_->lib;
   FeatureRead &reader = res_->bar.reader;
   reader.revive(); // 新请求 = 重读库 (重算后新库已落地), 判废解除
 
-  OrderFlow::Universe::Slot &slot = pp.back();
+  OrderFlow::Pick::Slot &slot = pp.back();
   slot.clear();
   slot.gen = req.gen;
   slot.date = req.date;
 
   // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 状态列 = Bar 档全轴 (下标即全局),
-  // 只填 universe 子轴内的资产, 子轴外恒 has_data = false (自然被候选过滤掉)
-  slot.meta.assign(data_.asset.items.size(), OrderFlow::Universe::Meta{});
+  // 只填库轴内的资产, 库轴外恒 has_data = false (自然被候选过滤掉)
+  slot.meta.assign(data_.asset.items.size(), OrderFlow::Pick::Meta{});
 
   auto &cols = lib.columns;
   cols.assign({static_cast<size_t>(bar::L1_Field::ts_valid), static_cast<size_t>(bar::L1_Field::st_level),
                static_cast<size_t>(bar::L1_Field::list_age), static_cast<size_t>(bar::L1_Field::delist_age),
                static_cast<size_t>(bar::L1_Field::ind_l1)});
-  assert(cols.size() == UNIVERSE_COL_COUNT);
+  assert(cols.size() == PICK_COL_COUNT);
   reader.load_day_columns(req.date, cols, res_->cols);
 
   // 时间外层 / 资产内层 (布局 [n][T][A]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
@@ -374,26 +374,26 @@ bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
   for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
     for (size_t a = 0; a < A; ++a) {
       const size_t g = lib.axis.global(a);
-      OrderFlow::Universe::Meta &meta = slot.meta[g];
+      OrderFlow::Pick::Meta &meta = slot.meta[g];
       if (meta.has_data) // 已取到当日状态 (日频广播, 后续分钟同值)
         continue;
-      if (!fmeta::data_valid(static_cast<float>(c.get(m, UNI_META, g))))
+      if (!fmeta::data_valid(static_cast<float>(c.get(m, PICK_META, g))))
         continue;
 
       meta.has_data = true;
       --remaining;
 
-      const float rw = static_cast<float>(c.get(m, UNI_RISK_WARN, g));
+      const float rw = static_cast<float>(c.get(m, PICK_RISK_WARN, g));
       meta.risk_warn = (rw >= 0.0f && rw <= 3.0f) ? static_cast<uint8_t>(rw + 0.5f) : 0;
 
-      const float ind = static_cast<float>(c.get(m, UNI_INDUSTRY, g));
+      const float ind = static_cast<float>(c.get(m, PICK_INDUSTRY, g));
       meta.industry_l1 = (ind >= 0.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT))
                              ? static_cast<uint8_t>(ind + 0.5f)
                              : 0;
 
       // list_age/delist_age: 非 NaN = 已上市/已退市 (>= 0 日历日), NaN = 未发生
-      const float lage = static_cast<float>(c.get(m, UNI_LIST_AGE, g));
-      const float dage = static_cast<float>(c.get(m, UNI_DELIST_AGE, g));
+      const float lage = static_cast<float>(c.get(m, PICK_LIST_AGE, g));
+      const float dage = static_cast<float>(c.get(m, PICK_DELIST_AGE, g));
       meta.delisted = !std::isnan(dage);
       meta.listed = !std::isnan(lage) && !meta.delisted;
     }
@@ -529,8 +529,8 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
     }
   }
 
-  // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
-  // 可读, VWAP / overlay 留空 (盘口重放走日文件, 不受 universe 约束, 上面照常构建)
+  // 请求侧 asset 是全局轴下标, 特征列按库轴索引; 不在库轴内 → 无特征列
+  // 可读, VWAP / overlay 留空 (盘口重放走日文件, 不受库轴约束, 上面照常构建)
   const size_t depth_sub = res.lib.axis.sub_of(static_cast<uint32_t>(req.asset));
 
   // ---- 分钟 VWAP 阶梯: L1 特征列 vwap, 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----

@@ -3,7 +3,7 @@
 // encode 的数据入口. 两条要点:
 //
 // 1. 列举 (list_archive): 某日 RAR 里"实际有哪些资产、每个文件多大"的唯一
-//    来源. encode 不再依赖人工 universe 名单, 必须先问包. `unrar l` 只读索引,
+//    来源. encode 不再依赖人工资产名单, 必须先问包. `unrar l` 只读索引,
 //    单包实测 ~0.3s.
 //
 // 2. 批量流式读取 (stream_archive_files): 不再把 CSV 落到磁盘再读回来.

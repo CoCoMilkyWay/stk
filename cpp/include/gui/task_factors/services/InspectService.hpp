@@ -6,7 +6,7 @@
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 Flow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算:
-//   S  作用域   key = 特征库目录 | 子轴 hash | 月份 | 封顶  → dates, 截面门控, 毛标签 [H], 成本 [C], universe 指数; 特征平面缓存 (作用域内读过的全留, 只增)
+//   S  作用域   key = 特征库目录 | 库轴 hash | 月份 | 封顶  → dates, 截面门控, 毛标签 [H], 成本 [C], 库等权指数; 特征平面缓存 (作用域内读过的全留, 只增)
 //   Y  标签     随 S                                       → 毛 LabelsHost {ry[H], Labels} (FactorsLoad prep_labels, 一次常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (Pool 常驻)
 //   R  rank_x                                              → 直接秩进 InspectPlanes::rx (随结果发布: 右上标的轴 / K 线着色);
@@ -45,11 +45,11 @@ struct InspectRequest {
   std::string file, expr; // 权重行 key (FactorRow::key = 文件#权重号) + 具体规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
   factor::stat::Frame frame = factor::stat::Frame::CS;
   analysis::ReadScope scope;
-  std::string universe;
+  std::string pool;
   misc::Ymd start_date = 0, end_date = 0;
   bool reload = false;     // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 装载时生效 → 进作用域缓存键)
-  std::string key() const { return file + "|" + expr + "|" + universe + "|" + std::to_string(start_date) + "|" + std::to_string(end_date); }
+  std::string key() const { return file + "|" + expr + "|" + pool + "|" + std::to_string(start_date) + "|" + std::to_string(end_date); }
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
@@ -83,8 +83,8 @@ struct InspectResult {
   int n_hold = 0;
   factor::stat::Holds hd;                   // hd.h[hi]
   std::vector<CostTier> costs;              // [C] = FeatureTable::costs 序 (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
-  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 子轴 + 月份): 右下 K 线按它读库; uni 做子轴 ↔ 全局 id
-  std::vector<float> uni_index;             // [T] universe 等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
+  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 库轴 + 月份): 右下 K 线按它读库; uni 做库轴 ↔ 全局 id
+  std::vector<float> lib_index;             // [T] 库等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   InspectPlanes pl;                         // 一级平面 (Row / 尾部 / 秩)
   std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径
   XDist xdist;                              // 根输入值分布 (全体 + 各组, 左下右半图)

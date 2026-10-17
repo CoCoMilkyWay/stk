@@ -5,7 +5,7 @@
 // (只在勾选时算) —— 分开才互不打断. 三者同一个 Spec (CorrSpec), 同一个引擎.
 //
 // 矩阵请求: 层 (跟随 UI 的 L0/L1) + 当前过滤后的行集 (去 META, 升序去重) (+ ts_valid 门控列).
-// 触发: 进 Corr tab / 过滤行集变了 / 层变了 / universe / 日期区间变了 / Compute 落了新库.
+// 触发: 进 Corr tab / 过滤行集变了 / 层变了 / 库 / 日期区间变了 / Compute 落了新库.
 #pragma once
 
 #include "gui/task_features/services/StreamService.hpp"

@@ -92,7 +92,7 @@ struct TailSink {
 struct InspectService::Flow {
   misc::exec::ForkJoin ex;
   // S 作用域
-  std::string scope_key; // features_dir | 子轴 hash | 月份表; 空 = 未装载
+  std::string scope_key; // features_dir | 库轴 hash | 月份表; 空 = 未装载
   std::vector<misc::Ymd> dates;
   Loaded L; // planes / feat_codes = 作用域内读过的特征 (只增; 每次评估前把当前 Dag::feats 换到前排); labels (毛) / costs / cs 常驻
   // Y 毛标签 [H]: ry = prep_label 常驻, lab.L 指向 L.labels + ry
@@ -126,7 +126,7 @@ bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reloa
   req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
   if (req.scope.months.empty())
     return false;
-  req.universe = data.feature.selection.pool;
+  req.pool = data.feature.selection.pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;
@@ -180,7 +180,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const auto stale_out = [&] {
     if (reader.stale()) { // 库换了, 缓存的一切不可信
       F.reset_scope();
-      publish_message("特征库判废 (子轴/字段表与当前不符), 需重算特征");
+      publish_message("特征库判废 (库轴/字段表与当前不符), 需重算特征");
     }
     return false;
   };
@@ -238,7 +238,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.file = req.file;
   res.expr = req.expr;
   res.frame = req.frame;
-  res.scope.universe = req.universe;
+  res.scope.pool = req.pool;
   res.scope.start_date = req.start_date;
   res.scope.end_date = req.end_date;
   res.scope.days = L.days, res.scope.T = T, res.scope.A = A;
@@ -246,7 +246,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.scope.n_full = F.lab.L.cap;
   res.dates = dates;
   res.read_scope = req.scope;
-  res.uni_index = L.index;
+  res.lib_index = L.index;
   res.n_hold = H;
   res.hd = L.hd;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)

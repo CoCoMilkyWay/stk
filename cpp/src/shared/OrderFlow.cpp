@@ -325,16 +325,16 @@ void OrderFlow::Depth::clear() {
 }
 
 // ============================================================================
-// OrderFlow::Universe Implementation
+// OrderFlow::Pick Implementation
 // ============================================================================
 
-void OrderFlow::Universe::Slot::clear() {
+void OrderFlow::Pick::Slot::clear() {
   gen = 0;
   date = 0;
   meta.clear();
 }
 
-bool OrderFlow::Universe::passes(const Meta &m, int board) const {
+bool OrderFlow::Pick::passes(const Meta &m, int board) const {
   // 前置: 当日无有效分钟 → 状态位全为落盘零值, 不可判读
   if (!m.has_data)
     return false;
@@ -358,7 +358,7 @@ bool OrderFlow::Universe::passes(const Meta &m, int board) const {
   return true;
 }
 
-void OrderFlow::Universe::build_display_order(
+void OrderFlow::Pick::build_display_order(
     const std::vector<std::pair<std::string, std::string>> &exch_code) {
   display_order.resize(exch_code.size());
   for (size_t i = 0; i < exch_code.size(); ++i)
@@ -368,7 +368,7 @@ void OrderFlow::Universe::build_display_order(
   });
 }
 
-void OrderFlow::Universe::rebuild_candidates(const Slot &s, const std::vector<int> &boards) {
+void OrderFlow::Pick::rebuild_candidates(const Slot &s, const std::vector<int> &boards) {
   assert(display_order.size() == boards.size() && "boards 与 display_order 不同长");
   candidates.clear();
   // 按 display_order 遍历 → 候选天然保持 市场 → 代码 序
@@ -380,7 +380,7 @@ void OrderFlow::Universe::rebuild_candidates(const Slot &s, const std::vector<in
   cached_epoch = filter_epoch;
 }
 
-void OrderFlow::Universe::clear() {
+void OrderFlow::Pick::clear() {
   slots.clear();
   st_filter.clear();
   listed_filter = {0};
@@ -588,7 +588,7 @@ void OrderFlow::UI::clear() {
 void OrderFlow::clear() {
   kline.clear();
   depth.clear();
-  universe.clear();
+  pick.clear();
   heatmap_colored.clear();
   depth_profile.clear();
   ui.clear();

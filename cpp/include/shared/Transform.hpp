@@ -51,9 +51,9 @@ class FeatureRead;
 // UI: 每帧持 mutex 读快照; 改任何参数 = 新请求 (取消在跑, 从第一天重来) —— 海量数据下
 //     交互仍即时, 因为每次都只等第一批.
 // 重算: reset 不清展示字段 (拖动调参时旧图留住), 首批 publish 整体覆盖 —— 与 Dist 同一约定.
-// universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 LibAxis) —— 平面 /
-//   out / lines / sketch / TOD 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
-//   槽位 = 子轴下标; AssetLine/StatLine 的 .asset 存全局轴下标 (UI 查 items 用).
+// A 轴 = 库轴 (与特征库文件列序一致, 见 LibAxis) —— 平面 /
+//   out / lines / sketch / TOD 都只有库轴大小, 每个槽都是活跃资产, 不存在空列.
+//   槽位 = 库轴下标; AssetLine/StatLine 的 .asset 存全局轴下标 (UI 查 items 用).
 // ============================================================================
 
 static constexpr size_t kTfMinStatSamples = 20; // 单日 ADF/KPSS 的最少有效样本
@@ -122,9 +122,9 @@ struct Transform : Published {
     bool cs_neutral() const { return cs::method_neutral(cs_method); }
   };
 
-  using AssetLine = analysis::AssetLine; // 每资产链末输出的累积分布 (槽位 == 子轴下标)
+  using AssetLine = analysis::AssetLine; // 每资产链末输出的累积分布 (槽位 == 库轴下标)
 
-  // 每资产 (槽位 == 子轴下标, 与 lines 对齐): 逐天平稳性检验累积
+  // 每资产 (槽位 == 库轴下标, 与 lines 对齐): 逐天平稳性检验累积
   struct StatLine {
     uint32_t asset = 0;  // 全局轴下标 (UI 查 items 用)
     uint32_t n_days = 0; // 参与检验的天数 (有效样本 ≥ kTfMinStatSamples)
@@ -135,7 +135,7 @@ struct Transform : Published {
   };
 
   // 焦点资产 全程 的序列快照 (UI 序列视图: 原始 vs 输出 + TOD 轮廓).
-  // 只存一个资产 → 内存 O(总天数 × VR), 与 universe 大小无关; 换焦点 = 重跑构建
+  // 只存一个资产 → 内存 O(总天数 × VR), 与 库轴大小无关; 换焦点 = 重跑构建
   // (与改参数同流程 —— 链末输出经过 CS 截面, 单资产无法离线重放).
   // 前缀发布零拷贝: raw/out 首批发布时整体 swap 进来, 之后 worker 锁外只写 [n_days·VR, ...) 段,
   // 短锁只推进 n_days / 日期 / TOD 轮廓; UI 只读前缀 [0, n_days·VR)
@@ -152,12 +152,12 @@ struct Transform : Published {
     Params params;
     fmeta::ColumnSet cols; // [特征] (+ 门控)
     fmeta::ColumnSet side; // Bar 档旁读 [mcap, ind_l1] (All 字段表下标; 仅 NeutralRank)
-    uint32_t focus = 0;    // 序列快照焦点 (子轴下标)
+    uint32_t focus = 0;    // 序列快照焦点 (库轴下标)
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   struct Snap {
-    std::vector<AssetLine> lines;                             // [A_sub] (槽位 == 子轴下标, .asset = 全局轴下标)
-    std::vector<StatLine> stat_lines;                         // [A_sub] 槽位 == 子轴下标 (与 lines 对齐)
+    std::vector<AssetLine> lines;                             // [A_sub] (槽位 == 库轴下标, .asset = 全局轴下标)
+    std::vector<StatLine> stat_lines;                         // [A_sub] 槽位 == 库轴下标 (与 lines 对齐)
     std::array<float, analysis::DayPSD::N_FREQS> psd_mean{};  // 逐 (资产, 天) 单日谱的算术平均 (逐批收敛)
     uint64_t psd_n = 0;                                       // 参与平均的 (资产, 天) 数
     std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{}; // 逐 (资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
@@ -173,7 +173,7 @@ struct Transform : Published {
   Transform();
   ~Transform();
 
-  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), universe 变了才重建资产线
+  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 库轴变了才重建资产线
   void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式; 被取消返回 false
   bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);

@@ -91,7 +91,7 @@ struct Transform::Runtime {
   std::vector<Shard> shards; // [n_threads] 按 tid
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
-  // A = universe 子轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), A_all = 全轴 (旁读暂存),
+  // A = 库轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), A_all = 全轴 (旁读暂存),
   // 返回计算执行器
   misc::exec::ForkJoin &prepare(size_t A, size_t A_all, const Spec &sp) {
     TraceN("TransformPrepare");
@@ -169,10 +169,10 @@ void Transform::reset(ReadScope scope, Spec sp) {
   const bool axis_changed = scope_.lib.axis.ids != scope.lib.axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.lib.axis.size(); // A 轴 = universe 子轴
-  assert(spec.focus < A && "序列焦点越界 (子轴下标)");
+  const size_t A = scope_.lib.axis.size(); // A 轴 = 库轴
+  assert(spec.focus < A && "序列焦点越界 (库轴下标)");
 
-  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. universe 变了 (槽位含义已变) 才重建
+  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 库轴变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
   init_lines(snap.lines, scope_.lib.axis.ids);
@@ -196,7 +196,7 @@ bool Transform::build(FeatureRead &reader, const FeatureRead &all, const std::at
   Runtime &rt = *rt_;
   const Params &p = spec.params;
   const fmeta::ColumnSet &cols = spec.cols;
-  const size_t A = scope_.lib.axis.size(); // universe 子轴大小
+  const size_t A = scope_.lib.axis.size(); // 库轴大小
   const size_t VR = kVR;
   assert(level_valid_rows(kLevel) == VR);
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
@@ -293,7 +293,7 @@ bool Transform::build(FeatureRead &reader, const FeatureRead &all, const std::at
     const TsPlane &side = rt.pf.front().side;
 
     // ------------------------------------------------------------------
-    // Phase TS: 每 (资产, 天) 一条因果链 → out_ (a = 子轴下标); kAssetBlock 个资产一任务
+    // Phase TS: 每 (资产, 天) 一条因果链 → out_ (a = 库轴下标); kAssetBlock 个资产一任务
     // ------------------------------------------------------------------
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];
@@ -400,7 +400,7 @@ bool Transform::build(FeatureRead &reader, const FeatureRead &all, const std::at
     }
 
     // ------------------------------------------------------------------
-    // Phase 统计: 每资产 sketch + ADF/KPSS/ACF/PSD + 序列快照 (全资产, 槽位 == 子轴下标); kAssetBlock 个资产一任务
+    // Phase 统计: 每资产 sketch + ADF/KPSS/ACF/PSD + 序列快照 (全资产, 槽位 == 库轴下标); kAssetBlock 个资产一任务
     // ------------------------------------------------------------------
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];

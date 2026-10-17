@@ -98,7 +98,7 @@ std::vector<uint32_t> shuffled_order(size_t n) {
 }
 
 void check_axis(const std::vector<uint32_t> &global_ids) {
-  assert(!global_ids.empty() && "universe 为空");
+  assert(!global_ids.empty() && "库轴为空");
   assert(std::is_sorted(global_ids.begin(), global_ids.end()) &&
          std::adjacent_find(global_ids.begin(), global_ids.end()) == global_ids.end() &&
          "global_ids 必须升序去重 (LibAxis::ids)");

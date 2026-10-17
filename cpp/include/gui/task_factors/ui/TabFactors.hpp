@@ -1,4 +1,4 @@
-// Factors→Factors: <factor_dir>/<universe>/ 下一因子一文件的整体面板. 顶部 = 作用域 / 后端 / 持有期 + Run / Cancel /
+// Factors→Factors: <factor_dir>/<pool>/ 下一因子一文件的整体面板. 顶部 = 作用域 / 后端 / 持有期 + Run / Cancel /
 // Rescan + 状态, 下一行 Optimize (高光因子的模板参数搜索: 进度 / 每持有期的终选); 中间 = 加因子构建器 (从根往里逐槽下拉选算子 / 特征,
 // 参数手填或勾成自由参数, 即时校验); 下面 = 表 (一行一权重, 多权重因子折成父行 + 可展开的子行: BROKEN 红 + 原因, 有效行显示规范串 /
 // 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 模板载入构建器编辑, 点行高光 → 给 Inspect 页).
@@ -57,8 +57,8 @@ struct FactorsUIState {
 
 // 当前 config 决定的作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域对比着色
 struct FactorsUIContext {
-  std::string factor_dir; // <factor_dir>/<universe>
-  std::string universe;
+  std::string factor_dir; // <factor_dir>/<pool>
+  std::string pool;
   misc::Ymd start_date = 0, end_date = 0;
   double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估

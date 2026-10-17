@@ -169,7 +169,7 @@ bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, S
   req.scope = analysis::read_scope(data.config, data.feature.selection.pool);
   if (req.scope.months.empty())
     return false;
-  req.universe = data.feature.selection.pool;
+  req.pool = data.feature.selection.pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;
@@ -223,7 +223,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     lg("Optimize %s  @ %s", req.file.c_str(), ts);
     lg("模板: %s", req.tmpl.c_str());
-    lg("后端 %s, 股票池 %s, 区间 %s ~ %s", res.backend.c_str(), req.universe.c_str(), misc::dash(req.start_date).c_str(), misc::dash(req.end_date).c_str());
+    lg("后端 %s, 票池 %s, 区间 %s ~ %s", res.backend.c_str(), req.pool.c_str(), misc::dash(req.start_date).c_str(), misc::dash(req.end_date).c_str());
   }
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
   const auto abort_with = [&](std::string msg) {
@@ -397,7 +397,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     begin(Phase::Loading, static_cast<size_t>(day1 - load0));
     if (!load_planes(feats_, reader, cdates, cd.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/false, /*with_index=*/false)) {
       if (reader.stale()) {
-        res.message = "特征库判废 (子轴/字段表与当前不符), 需重算特征";
+        res.message = "特征库判废 (库轴/字段表与当前不符), 需重算特征";
         lg("中止: %s", res.message.c_str());
         publish_result();
         return Rc::Abort;

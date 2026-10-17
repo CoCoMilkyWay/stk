@@ -26,9 +26,9 @@
 //   一次 pread, 逐列解码直写进 dst [n][T][A] (列主序 = 落盘单位, 无中转).
 //   列载荷 = 一列 [T][A] 经 FeatureCodec 编码; ColRef.delta = 该列是否沿 T 轴
 //   XOR 差分 (写端逐列按数据定, 见 write).
-//   A / axis_hash = universe 子轴 (列 → 资产映射靠子轴顺序, 不在文件里; 读端从同一
-//   config 推导同一子轴, O(1) 比对即确认列序一致); fingerprint = 字段表指纹.
-//   magic (含格式版本) / 子轴 / 指纹 与读端期望不符 = 旧库 → Status 告知, 由库判废.
+//   A / axis_hash = 库轴 (列 → 资产映射靠库轴顺序, 不在文件里; 读端从同一
+//   config 推导同一库轴, O(1) 比对即确认列序一致); fingerprint = 字段表指纹.
+//   magic (含格式版本) / 库轴 / 指纹 与读端期望不符 = 旧库 → Status 告知, 由库判废.
 //   形状是编译期常量: 写端永远写满 (rows / field_count), 文件头 T/F 只做校验.
 //   IO worker 按层序落盘, 最后一层的日文件兼任本日 commit 标记 (FeatureRead::has_date).
 //
@@ -88,8 +88,8 @@ struct FeatureDay {
     Ok,
     Missing,  // 文件不在 (库被外部清除)
     Format,   // magic 不符 (旧格式版本)
-    AxisSize, // 子轴大小不符
-    AxisHash, // 子轴指纹不符
+    AxisSize, // 库轴大小不符
+    AxisHash, // 库轴指纹不符
     Fields,   // 字段表指纹不符
   };
 
@@ -102,9 +102,9 @@ struct FeatureDay {
     case Status::Format:
       return "日文件格式版本不符 (特征库是旧格式写的)";
     case Status::AxisSize:
-      return "子轴大小不符 (特征库是旧 universe 名单/回测区间写的)";
+      return "库轴大小不符 (特征库是旧 库清单/回测区间写的)";
     case Status::AxisHash:
-      return "子轴指纹不符 (特征库与当前 universe 名单/asset_axis.json 列序不一致)";
+      return "库轴指纹不符 (特征库与当前库清单/asset_axis.json 列序不一致)";
     case Status::Fields:
       return "字段表指纹不符 (特征文件是旧字段表写的)";
     }
