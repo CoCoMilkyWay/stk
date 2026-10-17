@@ -11,28 +11,22 @@ void PreviewService::RequestCompute(SharedData &data) {
   const auto &meta_list = meta.features[analysis::kLevel];
   assert(!meta_list.empty());
 
-  PreviewRequest req;
+  Req req;
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
   if (req.scope.months.empty())
     return;
-  req.n_features = meta_list.size();
-  req.meta_col = meta.col_of(analysis::kLevel, "ts_valid");
-  req.lim_dn_col = meta.col_of(analysis::kLevel, "lim_dn");
-  req.lim_up_col = meta.col_of(analysis::kLevel, "lim_up");
+  req.spec.n_features = meta_list.size();
+  req.spec.lim_dn = meta.col_of(analysis::kLevel, "lim_dn");
+  req.spec.lim_up = meta.col_of(analysis::kLevel, "lim_up");
+  std::vector<size_t> cols;
   for (size_t i = 0; i < meta_list.size(); ++i) {
     if (meta_list[i].data_type == FeatureDataType::META)
       continue; // 元数据列不预览 (含 ts_valid 自身)
-    req.feat_cols.push_back(i);
-    req.valid_types.push_back(meta_list[i].valid_type);
+    cols.push_back(i);
   }
-  assert(!req.feat_cols.empty());
+  assert(!cols.empty());
+  req.spec.cols = analysis::column_set(data.feature, analysis::kLevel, std::move(cols));
   Request(std::move(req));
-}
-
-void PreviewService::reset(FeaturePreview &pv, PreviewRequest &req) {
-  pv.reset_for_build(std::move(req.feat_cols), std::move(req.valid_types), req.meta_col,
-                     req.lim_dn_col, req.lim_up_col,
-                     std::move(req.scope.months), req.n_features, req.scope.uni.size());
 }
 
 } // namespace GUI::Features

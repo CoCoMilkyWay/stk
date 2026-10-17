@@ -1,6 +1,5 @@
 #pragma once
 
-#include "codec/L2_DataType.hpp" // L2::ValidType
 #include "shared/Analysis.hpp"
 #include "shared/Progress.hpp"
 
@@ -19,10 +18,10 @@ class FeatureRead;
 // 目的: Feature 表每行尾部两个迷你曲线 (PDF / PSD), 全表一眼对比形态.
 // 与 Dist/Transform 维度反转 —— 那边单特征全数据, 这边全特征抽样数据:
 //
-//   轮 = 一个抽样日 (全区间日期固定种子洗牌取前 kPvRounds 个 → 无偏覆盖);
-//   轮首单线程读共享三列 lim_dn / lim_up / ts_valid (笼快照 + 门控列, 轮内各块共用);
-//   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自 load_day_columns →
-//     私有 DayBatchPlane 转置 (has_valid=false: 门控按各特征自己的 valid_type 在扫描侧判);
+//   轮 = 一个抽样日 (plan_days Shuffle 取前 kPvRounds 个 → 无偏覆盖);
+//   轮首单线程读共享列 lim_dn / lim_up (+ ts_valid) (笼快照 + 门控行, 轮内各块共用);
+//   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自读块列 →
+//     私有 TsPlane 转置 (外部门控 = 轮首那份 ts_valid, 各列按自己的 valid_type 折哨兵);
 //     每特征槽一轮只被一个任务写, 每轮一次 dispatch 隔开相邻轮 → 累积器无锁无归约;
 //   每 (轮, 特征) 按洗牌资产序旋转抽 kPvAssetsPerRound 个资产:
 //     有效值 → 该特征小 KLL (累积);  逐资产整日序列 (缺/门控 ffill, 不填 0) → DayPSD
@@ -66,38 +65,29 @@ struct FeaturePreview : Published {
     uint32_t cage_miss = 0; // 笼外样本数
   };
 
-  // 发布快照 (进度/epoch/mutex 在 Published; done/total = 轮)
-  std::vector<Cell> cells; // [该层特征总数]
-
-  // ==========================================================================
-  // Methods (worker 线程调用)
-  // ==========================================================================
+  struct Spec {
+    fmeta::ColumnSet cols;         // 预览特征列 (metadata 下标升序, 不含 META 类) (+ 门控)
+    size_t lim_dn = 0, lim_up = 0; // price 笼两列 (逐日笼内判定, 融合进主扫描)
+    size_t n_features = 0;         // 该层特征总数 (cells 尺寸)
+  };
+  // 发布快照 (进度/epoch/mutex 在 Published; done/total = 轮). 块末短锁拷贝该块 cells
+  struct Snap {
+    std::vector<Cell> cells; // [该层特征总数]
+  };
+  Spec spec;
+  Snap snap;
 
   FeaturePreview();
   ~FeaturePreview();
 
-  // 重置全部状态并进入 Building. feat_cols = 预览特征列 (metadata 下标, 升序,
-  // 不含 META 类), valid_types 与之平行; meta_col = "ts_valid" 门控列下标;
-  // lim_dn_col / lim_up_col = price 笼两列 (逐日笼内判定, 融合进主扫描);
-  // n_features = 该层特征总数 (cells 尺寸); n_assets = universe 子轴大小
-  void reset_for_build(std::vector<size_t> feat_cols, std::vector<L2::ValidType> valid_types,
-                       size_t meta_col, size_t lim_dn_col, size_t lim_up_col,
-                       std::vector<misc::Ym> month_keys,
-                       size_t n_features, size_t n_assets);
-
+  // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回)
+  void reset(analysis::ReadScope scope, Spec spec);
   // 轮训构建 (轮内特征块一块一任务: IO + 扫描 + 块末发布; 每轮一次 dispatch); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
-
   void clear();
 
 private:
-  struct Runtime; // worker 私有 (每特征 sketch/账目/谱累加, 轮共享列平面, 每线程 shard), 定义在 FeaturePreview.cpp
+  struct Runtime; // worker 私有 (每特征 sketch/账目/谱累加, 轮共享列, 每线程 shard), 定义在 FeaturePreview.cpp
   std::unique_ptr<Runtime> rt_;
-  // 构建参数 (reset 时定, build 全程只读)
-  std::vector<size_t> feat_cols_;
-  std::vector<L2::ValidType> valid_types_;
-  size_t meta_col_ = 0;
-  size_t lim_dn_col_ = 0, lim_up_col_ = 0; // price 笼两列
-  std::vector<misc::Ym> months_;           // 升序
-  size_t A_ = 0;                           // universe 子轴大小
+  analysis::ReadScope scope_; // reset 时定好, build 全程只读
 };

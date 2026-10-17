@@ -25,17 +25,18 @@ float period_to_freq(float period) { return 2.0f / period; }
 struct Transform::Runtime {
   static constexpr size_t kColBlock = 16; // CS 抢块粒度 (截面列数 = 批天 × VR)
 
-  DayBatchPlane plane;                           // 输入 [列][A][批天][VR] f16
+  Prefetch<TsPlane> pf;                          // 输入 [列][A][批天][VR] f16 ×2 + io 池
   std::vector<float> out;                        // 输出 [A][批天][VR] float (NaN = 缺/预热)
   std::vector<math::stationary::TodProfile> tod; // [A] 跨天 TOD 轮廓 (season 开时)
   math::spectral::IIRCoeffs iir;                 // 带通系数 (一次设计)
   math::stationary::FFDWeights ffd;              // 分数差分权重 (一次算)
   cs::ColumnFn cs_fn = nullptr;
 
-  std::vector<KLLcache> asset_klls;     // [A] 每资产累积 sketch
-  std::vector<AssetLine> lines_staging; // [A] 统计线程各写各槽, 批末与 lines 交换
-  std::vector<StatLine> stat_staging;   // [A] 全程累积 (发布时整体拷贝; .asset 由 build 起手贴)
-  SeriesSnap series_staging;            // 焦点资产全程序列 (build 起手按总天数分配, 逐批填)
+  AssetSketches assets;                      // [A] 每资产累积 sketch
+  std::vector<StatLine> stats;               // [A] 全程累积 (每批拷进 pub.stat_lines; .asset 由 build 起手贴)
+  Snap pub;                                  // 发布 staging (短锁与 snap swap)
+  std::vector<float> series_raw, series_out; // 焦点资产全程序列 (首批发布时 swap 进 series, 之后经稳定指针续写)
+  std::vector<float> tod_mean, tod_sd;       // [VR] 焦点资产 TOD 轮廓 staging (每批短锁拷进 series)
 
   // 每线程私有: 链中间量 + 批内累加器. 批末各 shard 并入 shard 0 (全程累加器, 不清), 其余清零
   struct Shard {
@@ -45,51 +46,51 @@ struct Transform::Runtime {
     std::vector<uint32_t> col_a; // A: dense → 资产下标
     std::vector<float> logmc;    // A: NeutralRank 上下文
     std::vector<float> industry; // A
-    std::vector<float> samples;  // 批天 × VR: 单资产本批全量有效输出 → sketch
+    std::vector<float> samples;  // 批天 × VR: 单资产本批全量有限输出 → sketch
     math::stationary::ADFWorkspace adf_ws;
     math::stationary::KPSSWorkspace kpss_ws;
-    std::unique_ptr<DayPSD> psd; // 大对象 (FFT 工作区), 堆上
+    std::unique_ptr<DayPSD> day_psd; // 大对象 (FFT 工作区), 堆上
     math::timeseries::ACFWorkspace acf_ws;
 
-    std::array<double, DayPSD::N_FREQS> psd_sum{};
+    PsdAcc psd;
     std::array<double, kTfMaxLag + 1> acf_sum{}, pacf_sum{};
-    uint64_t psd_n = 0, acf_n = 0;
+    uint64_t acf_n = 0;
     KLLcache global{kAggKllCapacity, kAggKllResolution};
-    Integrity integrity;
+    Integrity in, out;
 
     void merge_from(const Shard &o) {
-      for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
-        psd_sum[k] += o.psd_sum[k];
+      psd.merge_from(o.psd);
       for (size_t k = 0; k <= kTfMaxLag; ++k) {
         acf_sum[k] += o.acf_sum[k];
         pacf_sum[k] += o.pacf_sum[k];
       }
-      psd_n += o.psd_n;
       acf_n += o.acf_n;
       global.mergeWith(o.global);
-      integrity.n_total += o.integrity.n_total;
-      integrity.n_in_valid += o.integrity.n_in_valid;
-      integrity.n_out_valid += o.integrity.n_out_valid;
+      in.add(o.in);
+      out.add(o.out);
     }
     void clear_agg() {
-      psd_sum.fill(0.0);
+      psd.clear();
       acf_sum.fill(0.0);
       pacf_sum.fill(0.0);
-      psd_n = acf_n = 0;
+      acf_n = 0;
       global.clear();
-      integrity.clear();
+      in.clear();
+      out.clear();
     }
   };
   std::vector<Shard> shards; // [n_threads] 按 tid
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
-  // A = universe 子轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), 返回执行器
-  misc::exec::ForkJoin &prepare(size_t A, size_t n_cols, const Params &p) {
+  // A = universe 子轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), 返回计算执行器
+  misc::exec::ForkJoin &prepare(size_t A, const fmeta::ColumnSet &cols, const Params &p) {
     TraceN("TransformPrepare");
     const size_t VR = kVR;
-    const size_t n_threads = thread_count(A);
+    const size_t n_threads = threads_for(n_asset_blocks(A));
 
-    plane.prepare(A, kLevel, kDaysPerBatch, n_cols, n_cols + 1);
+    pf.prepare(threads_for(kDaysPerBatch), A, kLevel, cols.io.size());
+    for (TsPlane &pl : pf.buf)
+      pl.prepare(A, kLevel, kDaysPerBatch, cols.n());
     out.resize(A * kDaysPerBatch * VR);
 
     if (p.season != Season::None) {
@@ -107,9 +108,8 @@ struct Transform::Runtime {
       ffd.compute(p.st[0], static_cast<int>(p.st[1]));
     cs_fn = p.cs_enabled() ? cs::column_fn(p.cs_tf, p.cs_method) : nullptr;
 
-    prepare_slots(asset_klls, A, kAssetKllCapacity, kAssetKllResolution);
-    lines_staging.assign(A, AssetLine{});
-    stat_staging.assign(A, StatLine{});
+    assets.prepare(A);
+    stats.assign(A, StatLine{});
 
     shards.resize(n_threads);
     for (Shard &sh : shards) {
@@ -122,8 +122,8 @@ struct Transform::Runtime {
       sh.logmc.resize(A);
       sh.industry.resize(A);
       sh.samples.reserve(kDaysPerBatch * VR);
-      if (!sh.psd)
-        sh.psd = std::make_unique<DayPSD>();
+      if (!sh.day_psd)
+        sh.day_psd = std::make_unique<DayPSD>();
       sh.acf_ws.ensure(kTfMaxLag);
       sh.clear_agg();
     }
@@ -138,32 +138,26 @@ Transform::~Transform() = default;
 // Reset
 // ============================================================================
 
-void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                                std::vector<misc::Ym> month_keys,
-                                std::vector<uint32_t> global_ids, uint32_t series_focus) {
+void Transform::reset(ReadScope scope, Spec sp) {
   TraceN("TransformReset");
-  assert(cols.size() == 1u + (p.cs_neutral() ? 2u : 0u) + (has_valid ? 1u : 0u));
-  check_axis(global_ids);
+  assert(sp.cols.n() == 1u + (sp.params.cs_neutral() ? 2u : 0u));
+  check_axis(scope.uni.ids);
   std::lock_guard<std::mutex> lock(mutex);
 
-  params = p;
-  columns_ = std::move(cols);
-  has_valid_ = has_valid;
-  months_ = std::move(month_keys);
-  const bool axis_changed = global_ids_ != global_ids;
-  global_ids_ = std::move(global_ids);
-  const size_t A = global_ids_.size(); // A 轴 = universe 子轴
-  assert(series_focus < A && "序列焦点越界 (子轴下标)");
-  series_focus_ = series_focus;
+  const bool axis_changed = scope_.uni.ids != scope.uni.ids;
+  scope_ = std::move(scope);
+  spec = std::move(sp);
+  const size_t A = scope_.uni.size(); // A 轴 = universe 子轴
+  assert(spec.focus < A && "序列焦点越界 (子轴下标)");
 
   // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. universe 变了 (槽位含义已变) 才重建
-  if (lines.size() != A || axis_changed)
-    lines.assign(A, AssetLine{});
-  init_lines(lines, global_ids_);
-  if (stat_lines.size() != A || axis_changed)
-    stat_lines.assign(A, StatLine{});
+  if (snap.lines.size() != A || axis_changed)
+    snap.lines.assign(A, AssetLine{});
+  init_lines(snap.lines, scope_.uni.ids);
+  if (snap.stat_lines.size() != A || axis_changed)
+    snap.stat_lines.assign(A, StatLine{});
   for (size_t a = 0; a < A; ++a)
-    stat_lines[a].asset = global_ids_[a];
+    snap.stat_lines[a].asset = scope_.uni.ids[a];
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
 
@@ -176,81 +170,77 @@ void Transform::reset_for_build(const Params &p, std::vector<size_t> cols, bool 
 
 bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("TransformBuild");
-  assert(rt_ && "reset_for_build 先于 build");
+  assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const Params &p = params;
-  const size_t A = lines.size(); // universe 子轴大小
+  const Params &p = spec.params;
+  const fmeta::ColumnSet &cols = spec.cols;
+  const size_t A = scope_.uni.size(); // universe 子轴大小
   const size_t VR = kVR;
   assert(level_valid_rows(kLevel) == VR);
-  assert(A > 0 && A == global_ids_.size() && "reset_for_build 先于 build");
-  const size_t n_cols = columns_.size() - (has_valid_ ? 1 : 0);
+  assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
   const size_t stride = kDaysPerBatch * VR; // out 每资产步长 (按满批)
 
-  // 日期枚举 (全区间, 不抽样, 从前往后)
-  std::vector<misc::Ymd> dates = enumerate_dates(reader, months_).dates;
-  if (dates.empty())
+  // 天序: 升序 (TOD 轮廓跨天因果); max_days = 快速迭代档, 只算区间头 N 天
+  const DayPlan plan = plan_days(reader, scope_.months, DayOrder::Sequential, p.max_days);
+  if (plan.size() == 0)
     return true;
-  if (p.max_days > 0 && dates.size() > p.max_days)
-    dates.resize(p.max_days); // 快速迭代档: 只算区间头 N 天, 不往后算
-  const size_t n_days = dates.size();
+  const size_t n_days = plan.size();
   total.store(n_days, std::memory_order_release);
 
-  misc::exec::ForkJoin &ex = rt.prepare(A, n_cols, p);
+  misc::exec::ForkJoin &ex = rt.prepare(A, cols, p);
   const size_t n_blocks = n_asset_blocks(A);
-  rt.lines_staging = lines;      // asset / draw 标记随之带过去
-  for (size_t a = 0; a < A; ++a) // stat_staging 每次 build 清零重累积, asset 得重贴 (publish 整体覆盖 stat_lines)
-    rt.stat_staging[a].asset = global_ids_[a];
+  rt.pub = snap;                 // 资产线 asset / draw 标记随之带过去 (之后每批整体覆写)
+  for (size_t a = 0; a < A; ++a) // stats 每次 build 清零重累积, asset 得重贴
+    rt.stats[a].asset = scope_.uni.ids[a];
 
-  // 焦点资产全程序列快照: 总天数此刻才知道, 就地分配 (NaN = 未到批, UI SkipNaN)
-  const size_t focus = series_focus_;
-  {
-    SeriesSnap &ss = rt.series_staging;
-    ss.asset = global_ids_[focus];
-    ss.n_days = 0;
-    ss.raw.assign(n_days * VR, std::nanf(""));
-    ss.out.assign(n_days * VR, std::nanf(""));
-    ss.tod_mean.assign(VR, std::nanf(""));
-    ss.tod_sd.assign(VR, std::nanf(""));
-  }
+  // 焦点资产全程序列: 总天数此刻才知道, 就地分配 (NaN = 未到批, UI SkipNaN).
+  // 写指针跨 swap 稳定: 首批发布把缓冲整体 swap 进 series, 之后经同一指针续写未发布段
+  const float nan = std::nanf("");
+  const size_t focus = spec.focus;
+  rt.series_raw.assign(n_days * VR, nan);
+  rt.series_out.assign(n_days * VR, nan);
+  rt.tod_mean.assign(VR, nan);
+  rt.tod_sd.assign(VR, nan);
+  float *const series_raw = rt.series_raw.data();
+  float *const series_out = rt.series_out.data();
 
   // 链末输出 → 每资产步长
   auto out_row = [&](size_t a, size_t j) -> float * { return rt.out.data() + a * stride + j * VR; };
 
-  const float nan = std::nanf("");
   Runtime::Shard &acc = rt.shards[0]; // 归约终点 = 全程累加器
 
   auto publish_batch = [&](size_t b0, size_t bd) {
     TraceN("Publish");
-    acc.integrity.n_in_nan += rt.plane.take_nan_seen();
-
-    // 成品 (锁外算): 全局 PDF + 均值谱/相关
-    AggPdf global_snap;
-    global_snap.fill(acc.global, kMinAssetSamples);
-    std::array<float, DayPSD::N_FREQS> psd_snap{};
-    std::array<float, kTfMaxLag + 1> acf_snap{}, pacf_snap{};
-    if (acc.psd_n > 0)
-      for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
-        psd_snap[k] = static_cast<float>(acc.psd_sum[k] / static_cast<double>(acc.psd_n));
+    // 成品 (锁外算): 全局 PDF + 均值谱/相关 + 平稳性
+    Snap &pub = rt.pub;
+    pub.global.fill(acc.global, kMinAssetSamples);
+    for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
+      pub.psd_mean[k] = static_cast<float>(acc.psd.mean(k));
+    pub.psd_n = acc.psd.n;
+    pub.acf_mean.fill(0.0f);
+    pub.pacf_mean.fill(0.0f);
     if (acc.acf_n > 0)
       for (size_t k = 0; k <= kTfMaxLag; ++k) {
-        acf_snap[k] = static_cast<float>(acc.acf_sum[k] / static_cast<double>(acc.acf_n));
-        pacf_snap[k] = static_cast<float>(acc.pacf_sum[k] / static_cast<double>(acc.acf_n));
+        pub.acf_mean[k] = static_cast<float>(acc.acf_sum[k] / static_cast<double>(acc.acf_n));
+        pub.pacf_mean[k] = static_cast<float>(acc.pacf_sum[k] / static_cast<double>(acc.acf_n));
       }
-    rt.series_staging.n_days = b0 + bd;
-    rt.series_staging.date_begin = dates.front();
-    rt.series_staging.date_end = dates[b0 + bd - 1];
+    pub.acf_n = acc.acf_n;
+    pub.stat_lines = rt.stats;
+    pub.in = acc.in;
+    pub.out = acc.out;
     {
       std::lock_guard<std::mutex> lock(mutex); // 短锁: 整体换新, 中间没有空态
-      lines.swap(rt.lines_staging);
-      stat_lines = rt.stat_staging;
-      series = rt.series_staging; // 全程缓冲累积在 staging, 不能 swap 走 —— 整体拷贝 (单资产, ~MB 级)
-      integrity = acc.integrity;
-      psd_n = acc.psd_n;
-      acf_n = acc.acf_n;
-      psd_mean = psd_snap;
-      acf_mean = acf_snap;
-      pacf_mean = pacf_snap;
-      global = global_snap;
+      std::swap(snap, pub);
+      if (b0 == 0) { // 首批: 全程缓冲换进来 (之前一直是旧图)
+        series.asset = scope_.uni.ids[focus];
+        series.raw.swap(rt.series_raw);
+        series.out.swap(rt.series_out);
+      }
+      series.n_days = b0 + bd;
+      series.date_begin = plan.dates.front();
+      series.date_end = plan.dates[b0 + bd - 1];
+      series.tod_mean = rt.tod_mean; // [VR] 小件, 拷贝 (staging 下批续写)
+      series.tod_sd = rt.tod_sd;
     }
     publish(bd);
   };
@@ -258,34 +248,34 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   const bool do_cs = rt.cs_fn != nullptr;
   const bool neutral = p.cs_neutral();
 
+  // 批 b0 的 IO (预读线程或本线程跑; 只写传入的平面)
+  const auto load = [&](size_t b0) {
+    return [&, b0](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
+      pl.load_batch(io, slots, reader, plan.dates.data() + b0, std::min(kDaysPerBatch, n_days - b0), cols, cancel);
+    };
+  };
+  rt.pf.now(load(0));
+
   // ==========================================================================
-  // 批循环: 每批五相 (IO → TS → CS → 统计 → 归约), 每相一次 dispatch (返回即栅栏);
+  // 批循环: 下一批 IO 后台预读, 本批四相 (TS → CS → 统计 → 归约), 每相一次 dispatch (返回即栅栏);
   // 批末发布在本线程 (单线程, 天然串行)
   // ==========================================================================
   for (size_t b0 = 0; b0 < n_days; b0 += kDaysPerBatch) {
     const size_t bd = std::min(kDaysPerBatch, n_days - b0);
-
-    // ------------------------------------------------------------------
-    // Phase IO: 单天一任务 → 批平面第 j 天
-    // ------------------------------------------------------------------
-    ex.tasks(static_cast<int>(bd), [&](int j, int) {
-      if (!cancel.load(std::memory_order_relaxed))
-        rt.plane.load_day(reader, dates[b0 + j], columns_, has_valid_, L2::ValidType::DATA, j);
-    });
+    if (b0 + kDaysPerBatch < n_days)
+      rt.pf.issue(load(b0 + kDaysPerBatch)); // issue → wait 之间不许 return
+    const TsPlane &pl = rt.pf.front();
 
     // ------------------------------------------------------------------
     // Phase TS: 每 (资产, 天) 一条因果链 → out_ (a = 子轴下标); kAssetBlock 个资产一任务
     // ------------------------------------------------------------------
-    ex.tasks(static_cast<int>(n_blocks), [&](int blk, int tid) {
-      if (cancel.load(std::memory_order_relaxed))
-        return;
+    run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];
-      const size_t k0 = static_cast<size_t>(blk) * kAssetBlock;
-      const size_t k1 = std::min(k0 + kAssetBlock, A);
+      const auto [k0, k1] = asset_block(blk, A);
       TraceN("TSBlock");
       for (size_t a = k0; a < k1; ++a) {
         for (size_t j = 0; j < bd; ++j) {
-          const feature_storage_t *src = rt.plane.series(0, a, j);
+          const feature_storage_t *src = pl.series(0, a, j);
           float *x = sh.x.data();
           for (size_t t = 0; t < VR; ++t)
             x[t] = static_cast<float>(src[t]);
@@ -347,19 +337,17 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     // ------------------------------------------------------------------
     if (do_cs) {
       const size_t n_col = bd * VR;
-      ex.tasks(static_cast<int>((n_col + Runtime::kColBlock - 1) / Runtime::kColBlock), [&](int blk, int tid) {
-        if (cancel.load(std::memory_order_relaxed))
-          return;
+      run_phase(ex, (n_col + Runtime::kColBlock - 1) / Runtime::kColBlock, cancel, [&](size_t blk, size_t tid) {
         Runtime::Shard &sh = rt.shards[tid];
-        const size_t c0 = static_cast<size_t>(blk) * Runtime::kColBlock;
+        const size_t c0 = blk * Runtime::kColBlock;
         const size_t c1 = std::min(c0 + Runtime::kColBlock, n_col);
         TraceN("CSBlock");
         for (size_t c = c0; c < c1; ++c) {
           const size_t j = c / VR, t = c % VR;
           float *base = rt.out.data() + j * VR + t; // + a * stride
-          const size_t pstride = rt.plane.asset_stride();
-          const feature_storage_t *mc = neutral ? rt.plane.column(1, j, t) : nullptr;
-          const feature_storage_t *ind = neutral ? rt.plane.column(2, j, t) : nullptr;
+          const size_t pstride = pl.asset_stride();
+          const feature_storage_t *mc = neutral ? pl.column(1, j, t) : nullptr;
+          const feature_storage_t *ind = neutral ? pl.column(2, j, t) : nullptr;
           size_t n = 0;
           for (size_t a = 0; a < A; ++a) {
             const float v = base[a * stride];
@@ -388,31 +376,32 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     // ------------------------------------------------------------------
     // Phase 统计: 每资产 sketch + ADF/KPSS/ACF/PSD + 序列快照 (全资产, 槽位 == 子轴下标); kAssetBlock 个资产一任务
     // ------------------------------------------------------------------
-    ex.tasks(static_cast<int>(n_blocks), [&](int blk, int tid) {
-      if (cancel.load(std::memory_order_relaxed))
-        return;
+    run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];
-      const size_t k0 = static_cast<size_t>(blk) * kAssetBlock;
-      const size_t k1 = std::min(k0 + kAssetBlock, A);
+      const auto [k0, k1] = asset_block(blk, A);
       TraceN("StatBlock");
       for (size_t a = k0; a < k1; ++a) {
         sh.samples.clear();
         for (size_t j = 0; j < bd; ++j) {
           const float *row = out_row(a, j);
-          const feature_storage_t *src = rt.plane.series(0, a, j);
-          size_t n_in = 0;
+          const feature_storage_t *src = pl.series(0, a, j);
           for (size_t t = 0; t < VR; ++t) {
-            n_in += (src[t] == src[t]);
+            sh.in.add_cell(src[t]);
             const float v = row[t];
-            if (v == v)
-              sh.samples.push_back(v);
+            if (v != v) // 缺 / 预热 / 常数槽
+              continue;
+            if (std::isinf(v)) {
+              ++(v > 0.0f ? sh.out.n_pos_inf : sh.out.n_neg_inf);
+              continue;
+            }
+            sh.out.add_finite(v);
+            sh.samples.push_back(v);
           }
-          sh.integrity.n_in_valid += n_in;
 
-          // 焦点资产: 序列快照写进全程缓冲 (天偏移 = 批首 + 批内天)
+          // 焦点资产: 序列快照写进全程缓冲 (天偏移 = 批首 + 批内天; 未发布段, 锁外写)
           if (a == focus) {
-            float *snap_raw = rt.series_staging.raw.data() + (b0 + j) * VR;
-            float *snap_out = rt.series_staging.out.data() + (b0 + j) * VR;
+            float *snap_raw = series_raw + (b0 + j) * VR;
+            float *snap_out = series_out + (b0 + j) * VR;
             for (size_t t = 0; t < VR; ++t)
               snap_raw[t] = static_cast<float>(src[t]);
             std::copy_n(row, VR, snap_out);
@@ -427,7 +416,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
             const auto adf = math::stationary::adf_test({sh.y.data(), n}, 4, sh.adf_ws);
             const auto kpss = math::stationary::kpss_test({sh.y.data(), n}, -1, sh.kpss_ws);
             if (adf.valid && kpss.valid) {
-              StatLine &st = rt.stat_staging[a];
+              StatLine &st = rt.stats[a];
               ++st.n_days;
               st.adf_pass += adf.pvalue < 0.05f;
               st.kpss_pass += kpss.pvalue > 0.05f;
@@ -448,31 +437,25 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
             }
           }
           // 逐天 PSD
-          if (sh.psd->compute(row)) {
-            for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
-              sh.psd_sum[k] += sh.psd->power[k];
-            ++sh.psd_n;
-          }
+          if (sh.day_psd->compute(row))
+            sh.psd.add(*sh.day_psd);
         }
-        sh.integrity.n_total += bd * VR;
-        sh.integrity.n_out_valid += sh.samples.size();
+        sh.in.n_total += bd * VR;
+        sh.out.n_total += bd * VR;
         if (a == focus && p.season != Season::None) {
           const auto &slots = rt.tod[a].slots;
-          float *tm = rt.series_staging.tod_mean.data();
-          float *ts = rt.series_staging.tod_sd.data();
+          float *tm = rt.tod_mean.data();
+          float *ts = rt.tod_sd.data();
           for (size_t t = 0; t < VR; ++t) {
             tm[t] = slots[t].n >= math::stationary::TodProfile::kMinDays ? slots[t].mean : nan;
             ts[t] = slots[t].n >= math::stationary::TodProfile::kMinDays ? slots[t].sd() : nan;
           }
         }
 
-        // 每资产: 累积 sketch + 导出整条线到 staging (asset_klls/lines_staging 每资产单线程 → 无锁)
-        KLLcache &kll = rt.asset_klls[a];
-        if (!sh.samples.empty()) {
-          kll.addBatch(sh.samples.data(), sh.samples.size());
+        // 每资产: 累积 sketch + 导出整条线到 staging (每资产单线程 → 无锁)
+        rt.assets.add(a, sh.samples.data(), sh.samples.size(), rt.pub.lines[a]);
+        if (!sh.samples.empty())
           sh.global.addBatch(sh.samples.data(), sh.samples.size());
-        }
-        rt.lines_staging[a].fill(kll, kMinAssetSamples);
       }
     });
 
@@ -481,9 +464,11 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     // ------------------------------------------------------------------
     reduce_tree(ex, rt.shards);
 
+    rt.pf.wait();
     if (cancel.load(std::memory_order_relaxed))
       return false; // 半批不发布
     publish_batch(b0, bd);
+    rt.pf.flip();
   }
   return true;
 }
@@ -494,19 +479,10 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
 void Transform::clear() {
   std::lock_guard<std::mutex> lock(mutex);
-  // 必须 move 赋空容器: `= {}` 走 initializer_list 重载, 只清元素不还内存
-  lines = std::vector<AssetLine>{};
-  stat_lines = std::vector<StatLine>{};
+  snap = Snap{};
+  spec = Spec{};
   series = SeriesSnap{};
-  psd_mean.fill(0.0f);
-  acf_mean.fill(0.0f);
-  pacf_mean.fill(0.0f);
-  psd_n = acf_n = 0;
-  global = AggPdf{};
-  integrity.clear();
   rt_.reset(); // worker 已 join, 整体释放
-  columns_.clear();
-  months_.clear();
-  global_ids_ = std::vector<uint32_t>{};
+  scope_ = ReadScope{};
   idle();
 }

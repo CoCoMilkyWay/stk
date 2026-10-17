@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -76,14 +77,15 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
 }
 
 // 链路账目 (输入 → 链末输出), 与 Common 的值账目 RenderIntegrity 语义不同
-static void RenderChainIntegrity(const Transform::Integrity &it) {
-  if (it.n_total == 0) {
+static void RenderChainIntegrity(const analysis::Integrity &in, const analysis::Integrity &out) {
+  if (in.n_total == 0) {
     ImGui::TextDisabled("完整性: --");
     return;
   }
-  const float in_pct = 100.0f * static_cast<float>(it.n_in_valid) / static_cast<float>(it.n_total);
-  const float out_pct = 100.0f * static_cast<float>(it.n_out_valid) / static_cast<float>(it.n_total);
-  const float nan_pct = 100.0f * static_cast<float>(it.n_in_nan) / static_cast<float>(it.n_total);
+  assert(out.n_total == in.n_total);
+  const float in_pct = 100.0f * static_cast<float>(in.n_valid) / static_cast<float>(in.n_total);
+  const float out_pct = 100.0f * static_cast<float>(out.n_valid) / static_cast<float>(out.n_total);
+  const float nan_pct = in.nan_pct();
   ImGui::Text("完整性: 输入有效 %.1f%%  输出有效 %.1f%%  ", in_pct, out_pct);
   ImGui::SameLine(0, 0);
   ImGui::TextColored(nan_pct > 0.0f ? ImVec4(1.0f, 0.9f, 0.3f, 1.0f) : ImVec4(0.2f, 0.8f, 0.4f, 1.0f),
@@ -242,7 +244,7 @@ static bool RenderPipeline(Transform::Params &p) {
 
 static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, TransformUIState &ui) {
   TraceN("UI:Heatmap");
-  const size_t n = tf.stat_lines.size(); // 全资产 (槽位 == 子轴下标)
+  const size_t n = tf.snap.stat_lines.size(); // 全资产 (槽位 == 子轴下标)
   if (n == 0) {
     ImGui::TextDisabled("资产: --");
     ImGui::Dummy(ImVec2(0, 34));
@@ -252,7 +254,7 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
 
   // 滑条: 标签 = 全局资产下标.交易所.名字 (n_days 检验天数)
   {
-    const auto &st = tf.stat_lines[ui.focus];
+    const auto &st = tf.snap.stat_lines[ui.focus];
     const uint32_t a = st.asset; // 全局轴下标 (items 查询)
     char label[128];
     if (a < asset.items.size()) {
@@ -277,7 +279,7 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
   draw->AddText(ImVec2(pos.x, pos.y), IM_COL32(180, 180, 180, 255), "ADF");
   draw->AddText(ImVec2(pos.x, pos.y + cell_h + 2), IM_COL32(180, 180, 180, 255), "KPSS");
   for (size_t s = 0; s < n; ++s) {
-    const auto &st = tf.stat_lines[s];
+    const auto &st = tf.snap.stat_lines[s];
     const float x = x0 + s * cell_w;
     draw->AddRectFilled(ImVec2(x, pos.y), ImVec2(x + cell_w - 1, pos.y + cell_h), RateColor(st.adf_rate()));
     draw->AddRectFilled(ImVec2(x, pos.y + cell_h + 2), ImVec2(x + cell_w - 1, pos.y + 2 * cell_h + 2), RateColor(st.kpss_rate()));
@@ -297,7 +299,7 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
       const int s = static_cast<int>((m.x - x0) / cell_w);
       if (s >= 0 && s < static_cast<int>(n)) {
         ui.hovered_stat = s;
-        const auto &st = tf.stat_lines[s];
+        const auto &st = tf.snap.stat_lines[s];
         const uint32_t a = st.asset; // 全局轴下标 (items 查询)
         ImGui::BeginTooltip();
         if (a < asset.items.size())
@@ -345,7 +347,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
     };
     scan(sn.raw.data(), n_pts);
     scan(sn.out.data(), n_pts);
-    if (tf.params.season != Transform::Season::None)
+    if (tf.spec.params.season != Transform::Season::None)
       scan(sn.tod_mean.data(), kVR);
     if (lo <= hi) {
       const double margin = hi > lo ? 0.05 * (hi - lo) : 1.0;
@@ -380,7 +382,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
     if (has) {
       ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), 1.0f);
       ImPlot::PlotLine("##raw", sn.raw.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
-      if (tf.params.season != Transform::Season::None) {
+      if (tf.spec.params.season != Transform::Season::None) {
         // TOD 均值轮廓按天平铺叠在原始上 (截至末批的轮廓)
         tod_tile.resize(n_pts);
         const float *tm = sn.tod_mean.data();
@@ -424,29 +426,29 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
 static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float height, bool &bp_changed) {
   TraceN("UI:DistPSD");
   const float col_w = ImGui::GetContentRegionAvail().x / 3.0f;
-  const size_t A = tf.lines.size();
+  const size_t A = tf.snap.lines.size();
   // 焦点槽位 == 子轴下标 (统计无子集, 与 lines 同轴)
   const uint32_t focus_asset = ui.focus >= 0 && ui.focus < static_cast<int>(A) ? static_cast<uint32_t>(ui.focus) : UINT32_MAX;
 
   // 有数据才 fit (PDF 画的是总体线 + 绘制子集线, 二者任一就绪即算有). pending 只在 BeginPlot
   // 成功那帧消费: SetNextAxesToFit 在 BeginPlot 失败 (子窗 SkipItems / 被裁剪) 时会被 ImPlot 静默丢弃
-  bool pdf_has = tf.global.n_pts > 0;
+  bool pdf_has = tf.snap.global.n_pts > 0;
   if (ui.fit_pdf && !pdf_has)
-    for (const auto &ln : tf.lines)
+    for (const auto &ln : tf.snap.lines)
       if (ln.draw && ln.n_pts > 0) {
         pdf_has = true;
         break;
       }
   const bool fit_pdf = ui.fit_pdf && pdf_has;
-  const bool fit_acf = ui.fit_acf && tf.acf_n > 0;
+  const bool fit_acf = ui.fit_acf && tf.snap.acf_n > 0;
 
   // 左: 分布 (全局 + 绘制子集 + 焦点; 全部是 PdfSnap 成品, 零计算只画)
   ImGui::BeginChild("PDFPlot", ImVec2(col_w, height), true);
-  ImGui::Text("链末输出分布  n=%llu", static_cast<unsigned long long>(tf.global.n));
-  if (tf.global.n_pts > 0) {
+  ImGui::Text("链末输出分布  n=%llu", static_cast<unsigned long long>(tf.snap.global.n));
+  if (tf.snap.global.n_pts > 0) {
     ImGui::SameLine();
-    ImGui::TextDisabled("mean %.3g  sd %.3g  skew %.2f  kurt %.2f", tf.global.mean, tf.global.sd(),
-                        tf.global.skew, tf.global.kurt);
+    ImGui::TextDisabled("mean %.3g  sd %.3g  skew %.2f  kurt %.2f", tf.snap.global.mean, tf.snap.global.sd(),
+                        tf.snap.global.skew, tf.snap.global.kurt);
   }
   if (fit_pdf)
     ImPlot::SetNextAxesToFit();
@@ -454,7 +456,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     ui.fit_pdf &= !fit_pdf;
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel, ImPlotAxisFlags_NoLabel);
     for (size_t a = 0; a < A; ++a) {
-      const auto &ln = tf.lines[a];
+      const auto &ln = tf.snap.lines[a];
       if (!ln.draw || ln.n_pts == 0 || a == focus_asset)
         continue;
       ImVec4 c = AssetColor(a, A);
@@ -462,12 +464,12 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
       ImPlot::SetNextLineStyle(c, 0.8f);
       ImPlot::PlotLine("##a", ln.x.data(), ln.y.data(), static_cast<int>(ln.n_pts));
     }
-    if (tf.global.n_pts > 0) {
+    if (tf.snap.global.n_pts > 0) {
       ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1), 2.5f);
-      ImPlot::PlotLine("##global", tf.global.x.data(), tf.global.y.data(), static_cast<int>(tf.global.n_pts));
+      ImPlot::PlotLine("##global", tf.snap.global.x.data(), tf.snap.global.y.data(), static_cast<int>(tf.snap.global.n_pts));
     }
-    if (focus_asset < A && tf.lines[focus_asset].n_pts > 0)
-      PlotHighlightLine(tf.lines[focus_asset]);
+    if (focus_asset < A && tf.snap.lines[focus_asset].n_pts > 0)
+      PlotHighlightLine(tf.snap.lines[focus_asset]);
     ImPlot::EndPlot();
   }
   ImGui::EndChild();
@@ -476,21 +478,21 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
 
   // 中: PSD (x = 周期 分钟, log; y = log10 功率)
   ImGui::BeginChild("PSDPlot", ImVec2(col_w, height), true);
-  ImGui::Text("单日 PSD 均值  (%llu 资产·天)", static_cast<unsigned long long>(tf.psd_n));
+  ImGui::Text("单日 PSD 均值  (%llu 资产·天)", static_cast<unsigned long long>(tf.snap.psd_n));
   constexpr size_t NF = DayPSD::N_FREQS;
   static std::vector<float> px, py;
   px.resize(NF - 1);
   py.resize(NF - 1);
   for (size_t k = 1; k < NF; ++k) { // 跳 DC
     px[k - 1] = DayPSD::period_of(k);
-    const float v = tf.psd_mean[k];
+    const float v = tf.snap.psd_mean[k];
     py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
   // PSD 只 autofit y: x 是光标所在轴, 带通光标拖动 → 重算 → epoch 变 → x refit 会和光标共振
   // (轴跳光标跟着跳), 所以 x 固定默认视野 [2, N] 只由用户缩放; y 与其他图同规则 (BeginPlot 成功才消费).
   // 拖动中 (任一控件 active, 与下方请求节流的 released 同判据) 也不 fit y: y 每批 refit → y 刻度
   // 文本宽度变 → PlotRect 左边界横移 → x 刻度/光标像素位置抖 (x 范围其实没变). 松手后再消费 pending.
-  const bool fit_psd = ui.fit_psd && tf.psd_n > 0 && !ImGui::IsAnyItemActive();
+  const bool fit_psd = ui.fit_psd && tf.snap.psd_n > 0 && !ImGui::IsAnyItemActive();
   if (fit_psd)
     ImPlot::SetNextAxisToFit(ImAxis_Y1);
   // NoBoxSelect: 左键 (MapInputReverse 后 = box-select) 与带通光标 DragLineX 共用,
@@ -512,7 +514,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     }
     ImPlot::PopPlotClipRect();
 
-    if (tf.psd_n > 0) {
+    if (tf.snap.psd_n > 0) {
       ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 2.0f);
       ImPlot::PlotLine("##psd", px.data(), py.data(), static_cast<int>(NF - 1));
     }
@@ -549,7 +551,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     constexpr int NL = static_cast<int>(kTfMaxLag);
     const float cb = 1.96f / std::sqrt(static_cast<float>(kVR));
     const float cb_neg = -cb;
-    ImGui::Text("单日 ACF / PACF 均值  (%llu 资产·天)  参考带 ±%.3f", static_cast<unsigned long long>(tf.acf_n), cb);
+    ImGui::Text("单日 ACF / PACF 均值  (%llu 资产·天)  参考带 ±%.3f", static_cast<unsigned long long>(tf.snap.acf_n), cb);
     static std::array<float, kTfMaxLag> lags = [] {
       std::array<float, kTfMaxLag> l{};
       for (size_t i = 0; i < kTfMaxLag; ++i)
@@ -569,15 +571,15 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
         ImPlot::PlotInfLines("##cbp", &cb, 1, ImPlotInfLinesFlags_Horizontal);
         ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
         ImPlot::PlotInfLines("##cbn", &cb_neg, 1, ImPlotInfLinesFlags_Horizontal);
-        if (tf.acf_n > 0) {
+        if (tf.snap.acf_n > 0) {
           ImPlot::SetNextFillStyle(color);
           ImPlot::PlotBars("##v", lags.data(), v.data() + 1, NL, 0.6);
         }
         ImPlot::EndPlot();
       }
     };
-    plot("##ACF", "ACF", tf.acf_mean, ImVec4(0.3f, 0.7f, 1.0f, 0.9f));
-    plot("##PACF", "PACF", tf.pacf_mean, ImVec4(1.0f, 0.6f, 0.3f, 0.9f));
+    plot("##ACF", "ACF", tf.snap.acf_mean, ImVec4(0.3f, 0.7f, 1.0f, 0.9f));
+    plot("##PACF", "PACF", tf.snap.pacf_mean, ImVec4(1.0f, 0.6f, 0.3f, 0.9f));
     if (fit_acf && acf_drawn == 2)
       ui.fit_acf = false;
   }
@@ -623,7 +625,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   bool bp_changed = false;
   {
     std::lock_guard<std::mutex> lock(tf.mutex);
-    RenderChainIntegrity(tf.integrity);
+    RenderChainIntegrity(tf.snap.in, tf.snap.out);
     RenderFocusAndHeatmap(tf, data.asset, ui);
     RenderSeries(tf, data.asset, ui, plot_h);
     RenderDistAndPSD(tf, ui, plot_h, bp_changed);

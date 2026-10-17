@@ -33,8 +33,8 @@ void ComputeService::Request(ComputeConfig config) {
 }
 
 bool ComputeService::run(ComputeConfig &config) {
-  // 核布局: 预取 → TS → CS → IO 四个 stage, 全部 pin 死 (见 StageLayout)
-  const StageLayout L = StageLayout::make(static_cast<int>(misc::Affinity::core_count()), config.prefetch_share_io);
+  // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
+  const StageLayout L = StageLayout::make(misc::Affinity::physical_cores());
 
   // Enable High Performance Mode: GUI low-refresh, compute owns cores
   data_.EnableHighPerformanceMode();
@@ -152,7 +152,7 @@ bool ComputeService::run(ComputeConfig &config) {
   // Initialize logger for all workers (shared log file)
   Logger::init(data_.config.log_dir);
 
-  // Launch workers: 统一 launch(core, fn) —— pin 到 core, worker_id = core.
+  // Launch workers: 统一 launch(worker_id, cpus, fn) —— pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
   // 四角色同签名 (WorkerCtx, 见 feature_workers.hpp), 调度面 sched 随 ctx
   // 带入, 只有 TS 用. 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
   ComputeStats stats(static_cast<size_t>(L.num_ts));
@@ -176,18 +176,20 @@ bool ComputeService::run(ComputeConfig &config) {
     return nullptr;
   };
 
-  auto launch = [&](int core, WorkerFn fn) {
-    workers.push_back(std::async(std::launch::async, [&, core, fn]() {
+  auto launch = [&](int worker_id, std::vector<unsigned int> cpus, WorkerFn fn) {
+    workers.push_back(std::async(std::launch::async, [&, worker_id, cpus = std::move(cpus), fn]() {
       if (misc::Affinity::supported()) {
-        misc::Affinity::pin_to_core(static_cast<unsigned int>(core));
+        const bool pinned = misc::Affinity::pin_to_cores(cpus);
+        assert(pinned && "worker pin 失败");
+        (void)pinned;
       }
-      fn({core, data_, backtest_dates, orders, feature_store, ts_schedule, cancel_, stats});
+      fn({worker_id, data_, backtest_dates, orders, feature_store, ts_schedule, cancel_, stats});
     }));
   };
 
   for (const StageLayout::Stage &s : L.stages())
     for (int i = 0; i < s.threads; ++i)
-      launch(s.first_core + i, worker_fn(s.kind));
+      launch(s.first_worker + i, L.cpus_of(s, i), worker_fn(s.kind));
 
   // 等收尾: 已落盘天数镜像进进度面 (worker 自己查 cancel_, 这里只报一声)
   auto mirror = [&]() { publish(feature_store.query_io_done() - done.load(std::memory_order_relaxed)); };

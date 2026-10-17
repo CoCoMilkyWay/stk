@@ -6,23 +6,15 @@
 #include "gui/task_features/services/StreamService.hpp"
 #include "shared/Dist.hpp"
 
-#include <vector>
-
 namespace GUI::Features {
 
-struct DistRequest {
-  analysis::ReadScope scope;
-  std::vector<size_t> columns; // [值列 (+ valid 列)]
-};
-
-class DistService : public StreamService<DistService, DistRequest> {
+class DistService : public StreamService<DistService, Dist> {
 public:
   // GUI 线程: 参数快照 + 取消在跑
   void RequestCompute(SharedData &data);
 
   static constexpr const char *kName = "DistWorker";
   static Dist &target(SharedData &data);
-  void reset(Dist &dist, DistRequest &req);
 };
 
 } // namespace GUI::Features

@@ -157,17 +157,19 @@ private:
 // PHASE 2 WORKERS —— 日流水线四角色, 统一签名 void xxx_worker(WorkerCtx), 统一骨架:
 //   for d in dates: wait_open(store.X_try_open(d)) → 干活 → store.X_close
 // 分核依据 = 两条一致性契约 (见 CoreSequential.hpp / CoreCrosssection.hpp):
-//   预取 1 核: 软前导, 只暖 page cache (TS 不等它)
-//   时序 N 核: TS 是资产局部纯函数 ⇒ 沿 A 维并行; 瓶颈, 其余核全给它 (处置权转移再平衡, 见 TsSchedule)
-//   截面 1 核: CS 只读张量第 t 行, 要整个截面到齐 ⇒ 沿 T 逐秒串行
-//   落盘 1 核: 逐列编码 + 写盘 (单核须跟上落盘节奏, 见 FeatureDay)
+// (核按物理核分, 超线程透明, 见 StageLayout)
+//   预取 1 线程: 软前导, 只暖 page cache (TS 不等它); 与落盘共一个物理核
+//   时序 N 线程: TS 是资产局部纯函数 ⇒ 沿 A 维并行; 瓶颈, 其余物理核全给它 (每逻辑 CPU 一个; 处置权转移再平衡, 见 TsSchedule)
+//   截面 1 线程: CS 只读张量第 t 行, 要整个截面到齐 ⇒ 沿 T 逐秒串行; 独占一个物理核
+//   落盘 1 线程: 逐列编码 + 写盘 (单线程须跟上落盘节奏, 见 FeatureDay)
 // 段间握手只经 FeatureStore 的各段已完成天数 (日环, 见 FeatureStore.hpp).
 //
 // sched 只 TS 用, 其余角色不碰 —— 统一签名换来统一 launch (见 ComputeService).
 // dates = 回测日期轴 (Asset::backtest_dates), 四角色的 date_idx 都是它的下标.
 // orders = 开算时切好的帧目录 (OrdersCatalog::slice: 行 = dates, 列 = universe 子轴),
 // ComputeService 持有到全部 worker 退出; orders.at(date_idx, sub) 直接定址.
-// worker_id = pin 的核号; pin 由 launch 侧完成, worker 内只用它做日志/stats 下标.
+// worker_id = 全局 worker 序号 (TS 0..N−1 在前, 见 StageLayout), 与 pin 的 CPU 号无关; pin 由 launch 侧完成,
+// worker 内只用它做日志 / stats / frontier 下标.
 // ============================================================================
 struct WorkerCtx {
   int worker_id;

@@ -88,11 +88,10 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Configuration");
   ImGui::Spacing();
 
-  // 核布局: 机器核数唯一推导, worker 数不可配 (见 StageLayout)
-  const int max_cores = static_cast<int>(misc::Affinity::core_count());
-  const StageLayout layout = StageLayout::make(max_cores, state.config.prefetch_share_io);
+  // 核布局: 机器物理核拓扑唯一推导, worker 数不可配 (见 StageLayout)
+  const StageLayout layout = StageLayout::make(misc::Affinity::physical_cores());
 
-  ImGui::Text("Stages (%d cores, auto):", layout.total_cores);
+  ImGui::Text("Stages (%d 物理核 / %u 逻辑 CPU, auto):", layout.total_phys(), misc::Affinity::core_count());
   ImGui::Spacing();
 
   if (ImGui::BeginTable("StageLayout", 5,
@@ -100,8 +99,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("Stage");
     ImGui::TableSetupColumn("线程");
-    ImGui::TableSetupColumn("专核");
-    ImGui::TableSetupColumn("核号");
+    ImGui::TableSetupColumn("专核 (物理)");
+    ImGui::TableSetupColumn("物理核号");
     ImGui::TableSetupColumn("说明", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
 
@@ -125,11 +124,6 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
 
     ImGui::EndTable();
   }
-
-  ImGui::Spacing();
-  ImGui::Checkbox("预取与落盘共核##prefetch_share", &state.config.prefetch_share_io);
-  ImGui::SameLine();
-  ImGui::TextDisabled("(两者都 IO-bound, 共核把预取核让给 TS; 小核数机器建议勾选)");
 
   ImGui::Spacing();
   ImGui::Text("Pool Slots:");

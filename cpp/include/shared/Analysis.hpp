@@ -1,5 +1,6 @@
 #pragma once
 
+#include "features/MetaFlag.hpp" // fmeta::ColumnSet
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/spectral/DayPSD.hpp"
@@ -10,26 +11,36 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 class FeatureRead;
 struct Config;
+struct Feature;
 
 // ============================================================================
-// analysis — Features 页三个流式分析 (Dist / Transform / FeaturePreview) 的公共骨架
+// analysis — Features 页流式分析 (Dist / Transform / FeaturePreview / Correlation / CorrLag / CorrPair) 的公共骨架
 // ============================================================================
-// 三者同一套契约:
-//   - 只在 L1 跑; A 轴 = universe 子轴 (槽位 = 子轴下标, 查 items 经 global_ids)
-//   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁 (worker 短锁写, UI 渲染帧内持锁读);
-//     reset_for_build 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
-//   - 发布成品: PdfSnap (KLL 导出好的 PDF 折线 + 矩), UI 零计算只画
-//   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排,
-//     Request 都以 ReadScope (月份表 + 子轴 + 库目录) 开头, GUI 线程解析, worker 不碰 config
+// 六个目标同一个形状:
+//   struct X : Published {
+//     struct Spec;  Spec spec;   本次构建的输入 (reset 持锁写; UI 持锁读 = 快照身份)
+//     struct Snap;  Snap snap;   发布成品 (批末持锁 swap; UI 渲染帧内持锁只画)
+//     void reset(ReadScope, Spec);  bool build(FeatureRead &, cancel);  void clear();
+//   };
+// 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Backend/DayBatchPlane.hpp)
+//   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
+//   → 导出 staging Snap → 短锁 swap 发布
+//   - A 轴 = universe 子轴 (槽位 = 子轴下标, 查 items 经 global_ids); Dist / Transform / Preview 只在 L1 跑, Corr* 跟随层
+//   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
+//     reset 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
+//   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排: Request = ReadScope + Spec,
+//     GUI 线程解析, worker 不碰 config
 // ============================================================================
 namespace analysis {
 
@@ -76,6 +87,20 @@ struct Integrity {
     n_zero += (v == 0.0f);
     val_min = std::min(val_min, v);
     val_max = std::max(val_max, v);
+  }
+  // 平面一格入账 (哨兵口径见 features/Backend/DayBatchPlane.hpp; 纯位判, fast-math TU 包含也安全).
+  // n_total 由调用方按格数记; 返回 true = 有限值 (调用方收样本)
+  bool add_cell(_Float16 x) {
+    const uint16_t u = std::bit_cast<uint16_t>(x);
+    if ((u & 0x7C00u) != 0x7C00u) {
+      add_finite(static_cast<float>(x));
+      return true;
+    }
+    if ((u & 0x03FFu) == 0)
+      ++((u >> 15) ? n_neg_inf : n_pos_inf);
+    else
+      n_nan += (u == fmeta::kNaNBits);
+    return false;
   }
 
   // 门控不过的格子 (ts_valid 按 valid_type 判否): 两个账目源 (FeaturePreview / Dist) 都只把门控过的格子分到
@@ -153,12 +178,35 @@ struct ReadScope {
 };
 ReadScope read_scope(const Config &cfg, size_t num_assets);
 
+// ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
+template <class Spec>
+struct Request {
+  ReadScope scope;
+  Spec spec;
+};
+
+// GUI 线程: 该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid)
+fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols);
+
 // 库里实际存在的日期 (升序) + 每日所属月下标 (months 下标)
 struct DateList {
   std::vector<misc::Ymd> dates;
   std::vector<uint16_t> month;
 };
 DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months);
+
+// ---- 天序 (全部流式分析唯一一份) ----
+//   Shuffle:    固定种子洗牌取前 limit 天 —— 无偏, 首批即覆盖全区间 (Dist / Preview / Corr*)
+//   Sequential: 升序取前 limit 天 —— 因果 (Transform 的 TOD 轮廓跨天)
+enum class DayOrder : uint8_t { Shuffle,
+                                Sequential };
+struct DayPlan {
+  std::vector<misc::Ymd> dates;
+  std::vector<uint16_t> month;  // months 下标
+  std::vector<uint8_t> weekday; // Mon=0 .. Sun=6
+  size_t size() const { return dates.size(); }
+};
+DayPlan plan_days(const FeatureRead &reader, const std::vector<misc::Ym> &months, DayOrder order, size_t limit); // limit 0 = 全部
 
 // ---- 容量准备 / 线程布局 (幂等, 尺寸对得上零分配) ----
 // 槽数对得上就只 clear (KLL 保留 buffer 容量), 对不上才重建
@@ -168,11 +216,24 @@ void clear_slots(std::vector<KLLcache> &slots);
 void check_axis(const std::vector<uint32_t> &global_ids);
 
 inline size_t n_asset_blocks(size_t A) { return (A + kAssetBlock - 1) / kAssetBlock; }
-// 执行器线程数: 硬件并发, 按 max(批天数, 扫描块数) 封顶 (多出的线程每相都空转)
-size_t thread_count(size_t A);
+// 资产块 blk → [a0, a1)
+inline std::pair<size_t, size_t> asset_block(size_t blk, size_t A) {
+  const size_t a0 = blk * kAssetBlock;
+  return {a0, std::min(a0 + kAssetBlock, A)};
+}
+// 池线程数: 硬件并发, 按一相最多任务数封顶 (多出的线程每相都空转)
+size_t threads_for(size_t max_tasks);
 
-// ---- 批内并行 (misc/exec.hpp): build = 一串相, 每相一次 ex.tasks (返回即栅栏), 相间代码单线程 ----
+// ---- 批内并行 (misc/exec.hpp): build = 一串相, 每相一次 dispatch (返回即栅栏), 相间代码单线程 ----
 // 执行器常驻 Runtime (misc::exec::ensure, 跨 build 存活, worker 线程自当 tid 0)
+// 一相: n 个任务 fn(i, tid); 取消后剩余任务空转
+template <class Fn>
+void run_phase(misc::exec::ForkJoin &ex, size_t n, const std::atomic<bool> &cancel, Fn &&fn) {
+  ex.tasks(static_cast<int>(n), [&](int i, int tid) {
+    if (!cancel.load(std::memory_order_relaxed))
+      fn(static_cast<size_t>(i), static_cast<size_t>(tid));
+  });
+}
 // shard (每 tid 一份) 两两并行归约到 shards[0] (log2 步, 每步一次 dispatch): shards[0] = 全程累加器 (不清), 其余清零.
 // Shard 提供 merge_from(const Shard &) / clear_agg()
 template <class Shard>
@@ -189,5 +250,56 @@ void reduce_tree(misc::exec::ForkJoin &ex, std::vector<Shard> &shards) {
     });
   }
 }
+
+// ---- 共用累加器 ----
+
+// 每资产累积 sketch (Dist / Transform): 资产独占 (每资产单线程写), 免归约
+struct AssetSketches {
+  std::vector<KLLcache> klls; // [A] 全程累积
+
+  void prepare(size_t A) { prepare_slots(klls, A, kAssetKllCapacity, kAssetKllResolution); }
+  // 资产 a 本批样本入账 → 导出整条线; 返回该资产 sketch (调用方再派生, 如 W2)
+  const KLLcache &add(size_t a, const float *x, size_t n, AssetPdf &line) {
+    KLLcache &kll = klls[a];
+    if (n > 0)
+      kll.addBatch(x, n);
+    line.fill(kll, kMinAssetSamples);
+    return kll;
+  }
+  void clear() { klls = std::vector<KLLcache>{}; }
+};
+
+// 单日谱均值 (Transform / Preview): 线性域算术平均, 每 (资产, 天) 一票
+struct PsdAcc {
+  std::array<double, DayPSD::N_FREQS> sum{};
+  uint64_t n = 0;
+
+  // 绝对功率 (Transform: 看变换链改了多少能量分布)
+  void add(const DayPSD &psd) {
+    for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
+      sum[k] += psd.power[k];
+    ++n;
+  }
+  // Parseval 归一: 除以 [1, N/2] 总功率 (跳 DC) → 每 bin = 方差占比, 跨特征绝对可比 (Preview).
+  // 恒值日 total = 0 谱无定义, 投 "占比全 0" 一票 (曲线下沉 = 有动的天占比)
+  void add_share(const DayPSD &psd) {
+    double total = 0.0;
+    for (size_t k = 1; k <= DayPSD::N / 2; ++k)
+      total += psd.power[k];
+    if (total > 0.0) {
+      const double inv = 1.0 / total;
+      for (size_t k = 1; k <= DayPSD::N / 2; ++k)
+        sum[k] += psd.power[k] * inv;
+    }
+    ++n;
+  }
+  double mean(size_t k) const { return n > 0 ? sum[k] / static_cast<double>(n) : 0.0; }
+  void merge_from(const PsdAcc &o) {
+    for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
+      sum[k] += o.sum[k];
+    n += o.n;
+  }
+  void clear() { *this = PsdAcc{}; }
+};
 
 } // namespace analysis

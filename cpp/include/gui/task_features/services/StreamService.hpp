@@ -1,9 +1,10 @@
 // StreamService — Features 页流式分析 (Dist / Transform / FeaturePreview / Corr*) 的 Worker 特化
 //
-// 线程模型 (骨架见 gui/util/Worker.hpp; 发布协议见 shared/Analysis.hpp):
-//   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req (以 ReadScope 开头: 月份表 + universe
-//     子轴 + 库目录, worker 不碰 config) → Request(): 覆盖挂起请求 + 取消在跑
-//   - worker 线程 run: FeatureRead → Derived::reset(target, req) → target.build()
+// 线程模型 (骨架见 gui/util/Worker.hpp; 目标形状与发布协议见 shared/Analysis.hpp):
+//   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = analysis::Request<Target::Spec>
+//     (ReadScope: 月份表 + universe 子轴 + 库目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
+//     覆盖挂起请求 + 取消在跑
+//   - worker 线程 run: FeatureRead → target.reset(scope, spec) → target.build()
 //     (build 内部用 Runtime 常驻 ForkJoin 分批流式, 批末发布; 新请求/Cancel 置 cancel_, 每个任务开头检查后放弃)
 //   - UI 渲染持 target.mutex 读快照; 进度走原子, 免锁
 //
@@ -14,7 +15,6 @@
 // Derived 需提供:
 //   static constexpr const char *kName;             // 线程名
 //   static Target &target(SharedData &);            // 目标状态 (Published 派生: Dist / Transform / ...)
-//   void reset(Target &, Req &);                    // 调 target.reset_for_build(...)
 #pragma once
 
 #include "features/Backend/FeatureRead.hpp"
@@ -28,8 +28,12 @@ struct SharedData;
 
 namespace GUI::Features {
 
-template <class Derived, class Req>
-class StreamService : public Worker<Derived, Req> {
+template <class Derived, class Target>
+class StreamService : public Worker<Derived, analysis::Request<typename Target::Spec>> {
+public:
+  using Req = analysis::Request<typename Target::Spec>;
+
+private:
   using Base = Worker<Derived, Req>;
   friend Base;
 
@@ -56,10 +60,11 @@ private:
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return Derived::target(*data_); }
   bool run(Req &req) {
-    auto &target = Derived::target(*data_);
-    // reader 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退)
+    Target &target = Derived::target(*data_);
+    // reader 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退).
+    // reader 自持库目录拷贝, 之后 scope 可整体移交给目标
     FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &this->cancel_);
-    static_cast<Derived *>(this)->reset(target, req);
+    target.reset(std::move(req.scope), std::move(req.spec));
     return target.build(reader, this->cancel_) && !reader.stale();
   }
 

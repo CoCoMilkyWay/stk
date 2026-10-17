@@ -12,25 +12,23 @@ namespace GUI::Features {
 bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest &req) {
   const auto &sel = data.feature.selection;
   const size_t lvl = static_cast<size_t>(sel.selected_level);
-  const auto &meta = data.feature.metadata;
-  const auto &meta_list = meta.features[lvl];
+  const auto &meta_list = data.feature.metadata.features[lvl];
 
   req = CorrRequest{};
-  req.level = lvl;
-  req.meta_col = meta.col_of(lvl, "ts_valid");
+  std::vector<size_t> cols;
   for (int r : rows) {
     assert(r >= 0 && r < (int)meta_list.size());
     if (meta_list[r].data_type == FeatureDataType::META)
       continue; // ts_valid 自身不进矩阵 (它是门控不是特征)
-    req.cols.push_back(static_cast<uint32_t>(r));
+    cols.push_back(static_cast<size_t>(r));
   }
-  std::sort(req.cols.begin(), req.cols.end());
-  req.cols.erase(std::unique(req.cols.begin(), req.cols.end()), req.cols.end());
-  if (req.cols.size() < 2)
+  std::sort(cols.begin(), cols.end());
+  cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
+  if (cols.size() < 2)
     return false; // 该层可算的列不足 (L0 现状: 只有 ts_valid / cs_valid)
-  for (uint32_t c : req.cols)
-    req.valid_types.push_back(meta_list[c].valid_type);
 
+  req.spec.level = lvl;
+  req.spec.cols = analysis::column_set(data.feature, lvl, std::move(cols));
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
   return !req.scope.months.empty();
 }
@@ -41,11 +39,6 @@ void CorrService::RequestCompute(SharedData &data, const std::vector<int> &rows)
   CorrRequest req;
   if (MakeCorrRequest(data, rows, req))
     Request(std::move(req));
-}
-
-void CorrService::reset(Correlation &corr, CorrRequest &req) {
-  corr.reset_for_build(req.level, std::move(req.cols), std::move(req.valid_types), req.meta_col,
-                       std::move(req.scope.months), req.scope.uni.size());
 }
 
 // ============================================================================
@@ -60,11 +53,6 @@ void CorrLagService::RequestCompute(SharedData &data, const std::vector<int> &ro
     Request(std::move(req));
 }
 
-void CorrLagService::reset(CorrLag &lag, CorrRequest &req) {
-  lag.reset_for_build(req.level, std::move(req.cols), std::move(req.valid_types), req.meta_col,
-                      std::move(req.scope.months), req.scope.uni.size());
-}
-
 // ============================================================================
 // CorrPairService (单对 lead-lag)
 // ============================================================================
@@ -75,26 +63,15 @@ void CorrPairService::RequestCompute(SharedData &data, uint32_t col_a, uint32_t 
   assert(col_a != col_b);
   const auto &sel = data.feature.selection;
   const size_t lvl = static_cast<size_t>(sel.selected_level);
-  const auto &meta = data.feature.metadata;
-  const auto &meta_list = meta.features[lvl];
-  assert(col_a < meta_list.size() && col_b < meta_list.size());
+  assert(col_a < data.feature.metadata.features[lvl].size() && col_b < data.feature.metadata.features[lvl].size());
 
-  CorrPairRequest req;
-  req.level = lvl;
-  req.col_a = col_a;
-  req.col_b = col_b;
-  req.vt_a = meta_list[col_a].valid_type;
-  req.vt_b = meta_list[col_b].valid_type;
-  req.meta_col = meta.col_of(lvl, "ts_valid");
+  CorrRequest req;
+  req.spec.level = lvl;
+  req.spec.cols = analysis::column_set(data.feature, lvl, {col_a, col_b}); // 按序: a 在前 (lag > 0 = a 领先)
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
   if (req.scope.months.empty())
     return;
   Request(std::move(req));
-}
-
-void CorrPairService::reset(CorrPair &pair, CorrPairRequest &req) {
-  pair.reset_for_build(req.level, req.col_a, req.col_b, req.vt_a, req.vt_b, req.meta_col,
-                       std::move(req.scope.months), req.scope.uni.size());
 }
 
 } // namespace GUI::Features

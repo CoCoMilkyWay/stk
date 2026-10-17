@@ -14,7 +14,10 @@
 
 #include "codec/L2_DataType.hpp" // L2::ValidType (fmeta::valid)
 #include <bit>
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace fmeta {
 inline constexpr bool data_valid(float v) { return v != 0.0f; }
@@ -27,9 +30,25 @@ inline constexpr bool valid(float v, L2::ValidType vt) {
 }
 
 // 落盘 f16 值判定: 按位测, 不走浮点比较 —— -ffast-math TU 里 isnan/isfinite/x!=x 会被折成常量
-inline constexpr uint16_t kInvalidBits = 0x7E00u; // 消费端统一无效哨兵 (f16 qNaN)
+// 消费端两个哨兵 (都是 f16 qNaN, 热循环一次 v != v 一并跳过; 要分账时按位区分):
+inline constexpr uint16_t kInvalidBits = 0x7E00u; // 门控不过
+inline constexpr uint16_t kNaNBits = 0x7E01u;     // 门控过但值为 NaN (任意 NaN 位型归一到这里)
 inline bool nan(_Float16 x) { return (std::bit_cast<uint16_t>(x) & 0x7FFFu) > 0x7C00u; }
 inline bool finite(_Float16 x) { return (std::bit_cast<uint16_t>(x) & 0x7C00u) != 0x7C00u; }
+inline bool is_nan_sentinel(_Float16 x) { return std::bit_cast<uint16_t>(x) == kNaNBits; }
 // 特征值可进统计: 门控 (gate = 同层 ts_valid) 通过 且 有限
 inline bool keep(float gate, L2::ValidType vt, _Float16 x) { return valid(gate, vt) && finite(x); }
+
+// 消费端列描述 (流式分析 / 平面 IO 唯一一份): 值列 + 各自门控语义. 任一值列需门控才带同层 ts_valid (读列表末位);
+// 上下文列 (mcap / ind / lim 等) 就是 vt = ALL 的普通值列
+struct ColumnSet {
+  std::vector<size_t> io;         // 读列表: 值列 [n] (+ 门控列)
+  std::vector<L2::ValidType> vts; // [n] 各值列的门控语义
+  size_t n() const { return vts.size(); }
+  bool gated() const { return io.size() > vts.size(); }
+  size_t gate() const {
+    assert(gated());
+    return io.back();
+  }
+};
 } // namespace fmeta

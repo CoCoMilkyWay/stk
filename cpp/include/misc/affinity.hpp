@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cassert>
+#include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -26,7 +29,8 @@ public:
 #ifdef _WIN32
     return SetThreadAffinityMask(GetCurrentThread(), make_mask(cores)) != 0;
 #elif defined(__linux__)
-    return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), make_cpuset(cores)) == 0;
+    const cpu_set_t set = make_cpuset(cores);
+    return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &set) == 0;
 #else
     return false;
 #endif
@@ -44,7 +48,8 @@ public:
 #ifdef _WIN32
     return SetThreadAffinityMask(thread, make_mask(cores)) != 0;
 #elif defined(__linux__)
-    return pthread_setaffinity_np(thread, sizeof(cpu_set_t), make_cpuset(cores)) == 0;
+    const cpu_set_t set = make_cpuset(cores);
+    return pthread_setaffinity_np(thread, sizeof(cpu_set_t), &set) == 0;
 #else
     return false;
 #endif
@@ -54,6 +59,13 @@ public:
   static unsigned int core_count() {
     unsigned int count = std::thread::hardware_concurrency();
     return count > 0 ? count : 1;
+  }
+
+  // 物理核拓扑: [物理核][该核上的逻辑 CPU 号 (升序)], 物理核按首个逻辑号升序; 进程内只扫一次.
+  // Linux 读 sysfs thread_siblings_list; 其他平台一逻辑 CPU 当一物理核 (不区分超线程).
+  static const std::vector<std::vector<unsigned int>> &physical_cores() {
+    static const std::vector<std::vector<unsigned int>> cores = scan_physical_cores();
+    return cores;
   }
 
   // Check if affinity is supported
@@ -86,15 +98,47 @@ private:
     return mask;
   }
 #elif defined(__linux__)
-  static cpu_set_t *make_cpuset(const std::vector<unsigned int> &cores) {
-    static cpu_set_t cpuset;
+  // 按值返回: 各 worker 启动时并发 pin, 共享的 static cpuset 会互相覆盖
+  static cpu_set_t make_cpuset(const std::vector<unsigned int> &cores) {
+    cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     for (unsigned int core : cores) {
       CPU_SET(core, &cpuset);
     }
-    return &cpuset;
+    return cpuset;
   }
 #endif
+
+  static std::vector<std::vector<unsigned int>> scan_physical_cores() {
+    const unsigned int n = core_count();
+    std::vector<std::vector<unsigned int>> cores;
+    for (unsigned int cpu = 0; cpu < n; ++cpu) {
+      std::vector<unsigned int> siblings;
+#if defined(__linux__)
+      // 格式 "34,70" / "0-1" (升序区间列表)
+      std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
+      assert(f && "读不到 CPU 拓扑 (sysfs thread_siblings_list)");
+      unsigned int lo = 0, hi = 0;
+      while (f >> lo) {
+        hi = lo;
+        if (f.peek() == '-') {
+          f.get();
+          f >> hi;
+        }
+        for (unsigned int c = lo; c <= hi; ++c)
+          siblings.push_back(c);
+        if (f.peek() == ',')
+          f.get();
+      }
+#else
+      siblings.push_back(cpu);
+#endif
+      assert(!siblings.empty() && siblings.front() <= cpu && siblings.back() < n && "CPU 拓扑与在线逻辑 CPU 数不符");
+      if (siblings.front() == cpu)
+        cores.push_back(std::move(siblings));
+    }
+    return cores;
+  }
 };
 
 } // namespace misc

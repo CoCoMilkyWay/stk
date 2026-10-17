@@ -115,7 +115,7 @@ static std::vector<int> cluster_order(const std::vector<float> &rho, size_t n) {
 // lag 图 (lag != nullptr): 值 = |ρ| 最大的 lag (0 中性色); |ρ_best| < 阈值 的对按 0 画 ——
 //   弱相关对的 argmax 是噪声, 不压掉整张图就是雪花.
 static void rebuild_disp(const Correlation &corr, const CorrLag *lag, CorrUIState &ui) {
-  const size_t n = corr.n();
+  const size_t n = corr.spec.n();
   ui.disp.assign(n * n, 0.0f);
   ui.n_blank = 0;
 
@@ -132,7 +132,7 @@ static void rebuild_disp(const Correlation &corr, const CorrLag *lag, CorrUIStat
     const size_t i = static_cast<size_t>(ui.disp_order[r]);
     for (size_t c = 0; c <= r; ++c) {
       const size_t j = static_cast<size_t>(ui.disp_order[c]);
-      const float v = lag ? lag->rho_best[i * n + j] : corr.rho[i * n + j];
+      const float v = lag ? lag->snap.rho_best[i * n + j] : corr.snap.rho[i * n + j];
       if (v != v) {
         ++ui.n_blank;
         continue; // 已是 0
@@ -140,7 +140,7 @@ static void rebuild_disp(const Correlation &corr, const CorrLag *lag, CorrUIStat
       const float a = std::fabs(v);
       if (a < ui.threshold)
         continue;
-      ui.disp[r * n + c] = lag ? static_cast<float>(lag->lag_best[i * n + j])
+      ui.disp[r * n + c] = lag ? static_cast<float>(lag->snap.lag_best[i * n + j])
                                : (ui.abs_mode ? a : v);
     }
   }
@@ -148,12 +148,12 @@ static void rebuild_disp(const Correlation &corr, const CorrLag *lag, CorrUIStat
 
 // lag 快照能否与矩阵按同一下标读: 同层同列集 (列集变了未算完之前不匹配, UI 画空)
 static bool lag_matches(const CorrLag &lag, const Correlation &corr) {
-  return lag.level == corr.level && lag.cols == corr.cols && lag.rho_best.size() == corr.rho.size();
+  return lag.spec.same(corr.spec) && lag.snap.rho_best.size() == corr.snap.rho.size();
 }
 
 static uint64_t disp_key(const Correlation &corr, const CorrLag *lag, const CorrUIState &ui) {
   uint64_t k = corr.epoch.load(std::memory_order_acquire);
-  k = k * 1099511628211ull + corr.n();
+  k = k * 1099511628211ull + corr.spec.n();
   k = k * 1099511628211ull + static_cast<uint64_t>(ui.order_mode);
   k = k * 1099511628211ull + ui.cluster_epoch;
   k = k * 1099511628211ull + static_cast<uint64_t>(ui.abs_mode);
@@ -169,24 +169,24 @@ static uint64_t disp_key(const Correlation &corr, const CorrLag *lag, const Corr
 
 static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState &ui) {
   const Correlation &corr = data.corr;
-  const size_t n = corr.n();
+  const size_t n = corr.spec.n();
   if (ui.sel_i < 0 || ui.sel_j < 0 || (size_t)ui.sel_i >= n || (size_t)ui.sel_j >= n) {
     ImGui::TextDisabled("悬停热图任一格子: 自动算该对的 lead-lag 曲线");
     return;
   }
-  const auto &meta_list = data.feature.metadata.features[corr.level];
-  const uint32_t ca = corr.cols[ui.sel_i], cb = corr.cols[ui.sel_j];
+  const auto &meta_list = data.feature.metadata.features[corr.spec.level];
+  const uint32_t ca = corr.spec.col(ui.sel_i), cb = corr.spec.col(ui.sel_j);
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", meta_list[ca].code);
   ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", meta_list[cb].code);
   const size_t o = (size_t)ui.sel_i * n + ui.sel_j;
-  const float r0 = corr.rho[o];
+  const float r0 = corr.snap.rho[o];
   if (r0 == r0)
-    ImGui::Text("同期 ρ = %.3f  (n = %u)", r0, corr.pair_n[o]);
+    ImGui::Text("同期 ρ = %.3f  (n = %u)", r0, corr.snap.pair_n[o]);
   else
     ImGui::TextDisabled("同期 ρ: 样本不足");
   if (lag) {
-    if (lag->rho_best[o] == lag->rho_best[o])
-      ImGui::Text("lag 图: 峭点 lag = %+d, ρ = %.3f", (int)lag->lag_best[o], lag->rho_best[o]);
+    if (lag->snap.rho_best[o] == lag->snap.rho_best[o])
+      ImGui::Text("lag 图: 峭点 lag = %+d, ρ = %.3f", (int)lag->snap.lag_best[o], lag->snap.rho_best[o]);
     else
       ImGui::TextDisabled("lag 图: 样本不足");
   }
@@ -200,7 +200,8 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
   const CorrPair &pair = data.corr_pair;
   std::lock_guard<std::mutex> lock(pair.mutex);
   // 请求在 RenderTabCorr 悬停处已提交; 这里只画. 未匹配 = worker 还没接到新对 (一帧内)
-  const bool matched = (pair.col_a == ca && pair.col_b == cb && pair.level == corr.level);
+  const bool matched = pair.spec.n() == 2 && pair.spec.col(0) == ca && pair.spec.col(1) == cb &&
+                       pair.spec.level == corr.spec.level;
   const Phase st = pair.phase.load(std::memory_order_acquire);
   ImGui::Text("Lead-Lag: ");
   ImGui::SameLine(0, 0);
@@ -220,9 +221,9 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
   ys.clear();
   if (ready)
     for (size_t k = 0; k < kCorrLags; ++k)
-      if (pair.rho[k] == pair.rho[k]) {
+      if (pair.snap.rho[k] == pair.snap.rho[k]) {
         xs.push_back(static_cast<float>(CorrPair::lag_of(k)));
-        ys.push_back(pair.rho[k]);
+        ys.push_back(pair.snap.rho[k]);
       }
   if (ImPlot::BeginPlot("##leadlag", ImVec2(-1, 200), ImPlotFlags_NoLegend)) {
     // lag > 0 = 前者领先后者. 峰值不在 0 → 后者是前者的延迟/平滑副本;
@@ -289,7 +290,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
               corr.total.load(std::memory_order_relaxed));
 
   std::lock_guard<std::mutex> lock(corr.mutex);
-  const size_t n = corr.n();
+  const size_t n = corr.spec.n();
   if (n < 2) {
     ImGui::Separator();
     if (building)
@@ -298,7 +299,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
       ImGui::TextDisabled("该层可算的特征不足 2 列 (L0 目前只有 ts_valid / cs_valid 两列); 或过滤后行集过窄.");
     return;
   }
-  assert(corr.rho.size() == n * n);
+  assert(corr.snap.rho.size() == n * n);
 
   ImGui::SameLine();
   ImGui::TextDisabled("| %zu x %zu 特征", n, n);
@@ -329,7 +330,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     const uint64_t ep = corr.epoch.load(std::memory_order_acquire);
     const bool stale = ui.cluster_n != n || ui.cluster_order.size() != n;
     if (stale || (!building && ui.cluster_epoch != ep)) {
-      ui.cluster_order = cluster_order(corr.rho, n);
+      ui.cluster_order = cluster_order(corr.snap.rho, n);
       ui.cluster_n = n;
       ui.cluster_epoch = ep;
     } else if (ui.cluster_epoch != ep) {
@@ -388,7 +389,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   ImGui::Separator();
 
   // ---- 3. 热图 + 右侧选中对面板 ----
-  const auto &meta_list = data.feature.metadata.features[corr.level];
+  const auto &meta_list = data.feature.metadata.features[corr.spec.level];
   const float panel_w = 380.0f;
   const float avail_w = ImGui::GetContentRegionAvail().x;
   const float map_w = std::max(200.0f, avail_w - panel_w - ImGui::GetStyle().ItemSpacing.x);
@@ -442,21 +443,21 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
         if (cx >= 0 && cy >= 0 && cy < (long long)n && cx <= cy) {
           const size_t i = (size_t)ui.disp_order[(size_t)cy];
           const size_t j = (size_t)ui.disp_order[(size_t)cx];
-          const float r = corr.rho[i * n + j];
-          const uint32_t pn = corr.pair_n[i * n + j];
+          const float r = corr.snap.rho[i * n + j];
+          const uint32_t pn = corr.snap.pair_n[i * n + j];
           ImGui::BeginTooltip();
           ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s",
-                             meta_list[corr.cols[i]].code);
+                             meta_list[corr.spec.col(i)].code);
           ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s",
-                             meta_list[corr.cols[j]].code);
+                             meta_list[corr.spec.col(j)].code);
           if (r == r)
             ImGui::Text("rho = %+.3f   n = %u", r, pn);
           else
             ImGui::TextDisabled("样本不足 (n = %u)", pn);
           if (lag) {
-            const float rb = lag->rho_best[i * n + j];
+            const float rb = lag->snap.rho_best[i * n + j];
             if (rb == rb)
-              ImGui::Text("lag* = %+d   rho(lag*) = %+.3f", (int)lag->lag_best[i * n + j], rb);
+              ImGui::Text("lag* = %+d   rho(lag*) = %+.3f", (int)lag->snap.lag_best[i * n + j], rb);
             else
               ImGui::TextDisabled("lag 图: 样本不足");
           }
@@ -465,7 +466,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
             ui.sel_i = (int)i;
             ui.sel_j = (int)j;
             if (i != j)
-              pair_service->RequestCompute(data, corr.cols[i], corr.cols[j]);
+              pair_service->RequestCompute(data, corr.spec.col(i), corr.spec.col(j));
           }
         }
       }

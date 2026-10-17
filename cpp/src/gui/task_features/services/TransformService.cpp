@@ -16,32 +16,22 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
     return;
   const size_t feat = static_cast<size_t>(sel.primary_feature_idx());
   const auto &meta = data.feature.metadata;
-  const auto &meta_list = meta.features[analysis::kLevel];
-  assert(feat < meta_list.size());
 
-  TransformRequest req;
+  Req req;
   req.scope = analysis::read_scope(data.config, data.asset.items.size());
   if (req.scope.months.empty())
     return;
-  req.params = params;
-  req.columns = {feat};
+  req.spec.params = params;
+  std::vector<size_t> cols{feat};
   if (params.cs_neutral()) {
-    req.columns.push_back(meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_MCAP)));
-    req.columns.push_back(meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_INDUSTRY)));
+    cols.push_back(meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_MCAP)));
+    cols.push_back(meta.col_of(analysis::kLevel, TF_STR(NEUTRAL_RANK_INDUSTRY)));
   }
-  // valid 列: 按特征元数据的 valid_type 决定是否带 ts_valid 门控列 (恒为末列; L1 全列 ALL, L0 按 DATA / DEPTH)
-  if (meta_list[feat].valid_type != L2::ValidType::ALL) {
-    req.columns.push_back(meta.col_of(analysis::kLevel, "ts_valid"));
-    req.has_valid = true;
-  }
+  // 门控: 各列按自己的 valid_type, 任一需门控才带 ts_valid (L1 全列 ALL, L0 按 DATA / DEPTH)
+  req.spec.cols = analysis::column_set(data.feature, analysis::kLevel, std::move(cols));
   // 焦点按新子轴 clamp: UI 槽位可能来自上一个 universe (切 universe 后子轴大小已变)
-  req.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.uni.size()) - 1));
+  req.spec.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.uni.size()) - 1));
   Request(std::move(req));
-}
-
-void TransformService::reset(Transform &tf, TransformRequest &req) {
-  tf.reset_for_build(req.params, std::move(req.columns), req.has_valid, std::move(req.scope.months),
-                     std::move(req.scope.uni.ids), req.focus);
 }
 
 } // namespace GUI::Features

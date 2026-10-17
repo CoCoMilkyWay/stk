@@ -112,7 +112,7 @@ static void effective_cat2_snapshot(const Feature::Metadata &meta, const Feature
   static const FeaturePreview::Cell s_empty{};
   for (size_t i = 0; i < features.size(); ++i) {
     const FeatureMetadata &f = features[i];
-    const FeaturePreview::Cell &cell = (preview_level && i < pv.cells.size()) ? pv.cells[i] : s_empty;
+    const FeaturePreview::Cell &cell = (preview_level && i < pv.snap.cells.size()) ? pv.snap.cells[i] : s_empty;
     out[i] = cat2_overridden(f) ? f.cat_l2 : detect_cat2(f, cell);
   }
 }
@@ -128,7 +128,7 @@ void EffectiveCat2Snapshot(SharedData &data, size_t level, Cat2Snapshot &out) {
   const bool preview_level = (level == analysis::kLevel);
   static const FeaturePreview::Cell s_empty{};
   for (size_t i = 0; i < n; ++i) {
-    const analysis::Integrity &it = (preview_level && i < pv.cells.size()) ? pv.cells[i].integrity : s_empty.integrity;
+    const analysis::Integrity &it = (preview_level && i < pv.snap.cells.size()) ? pv.snap.cells[i].integrity : s_empty.integrity;
     out.val_min[i] = it.val_min;
     out.val_max[i] = it.val_max;
   }
@@ -1112,7 +1112,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     static const FeaturePreview::Cell s_empty_cell{};
     // 槽位 = metadata 下标; 非预览层 / 未就绪 → 空 cell
     auto cell_of = [&](int i) -> const FeaturePreview::Cell & {
-      return (preview_level && i < (int)data.preview.cells.size()) ? data.preview.cells[i] : s_empty_cell;
+      return (preview_level && i < (int)data.preview.snap.cells.size()) ? data.preview.snap.cells[i] : s_empty_cell;
     };
 
     // 排序: 主键恒为 cat_l1 (升序, 同组相邻). 组内次序:
@@ -1395,8 +1395,8 @@ void SaveFeatureTableJson(SharedData &data) {
         r["cat_l2"] = eff_cat2[i];
 
         // Stat / Range 与表格同口径 (百分比 / min -1sd +1sd max); 表格显示 "—" 的格子不落键
-        if (preview_level && i < data.preview.cells.size()) {
-          const FeaturePreview::Cell &cell = data.preview.cells[i];
+        if (preview_level && i < data.preview.snap.cells.size()) {
+          const FeaturePreview::Cell &cell = data.preview.snap.cells[i];
           const analysis::Integrity &it = cell.integrity;
           if (it.n_total > 0) {
             const float n_total = static_cast<float>(it.n_total);

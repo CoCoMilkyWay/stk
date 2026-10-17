@@ -1,7 +1,6 @@
 #include "shared/Dist.hpp"
 #include "features/Backend/DayBatchPlane.hpp"
 #include "features/Backend/FeatureRead.hpp"
-#include "misc/date.hpp"
 #include "misc/profiler.hpp"
 
 #include <cmath>
@@ -107,27 +106,22 @@ struct Dist::Runtime {
     }
   };
 
-  DayBatchPlane plane;                  // [A][批天][分钟] 资产主序批平面 (f16) + IO 暂存
-  std::vector<KLLcache> asset_klls;     // [A] 每资产累积 sketch
-  std::vector<AssetLine> lines_staging; // [A] 扫描线程各写各槽, 批末与 lines 交换
-  std::vector<AggPdf> months_snap;      // [n_months] 发布 staging (锁外填, 短锁 swap)
-  std::vector<AggPdf> weekday_snap;     // [7]
-  std::vector<AggPdf> tod_snap;         // [kTodBins]
-  W2Ref w2_ref;                         // 上一批末的全局分位参考 (批末发布更新, 扫描只读)
-  std::vector<Shard> shards;            // [n_threads] 按 tid
+  Prefetch<TsPlane> pf;      // [A][批天][分钟] 资产主序批平面 ×2 (f16) + io 池
+  AssetSketches assets;      // [A] 每资产累积 sketch
+  Snap pub;                  // 发布 staging (扫描线程各写各资产线, 批末导出聚合槽; 短锁与 snap swap)
+  W2Ref w2_ref;              // 上一批末的全局分位参考 (批末发布更新, 扫描只读)
+  std::vector<Shard> shards; // [n_threads] 按 tid
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
-  // 容量准备 (幂等, 尺寸对得上零分配), 返回执行器
-  misc::exec::ForkJoin &prepare(size_t A, size_t n_months, size_t n_cols, size_t agg_stride) {
+  // 容量准备 (幂等, 尺寸对得上零分配), 返回计算执行器
+  misc::exec::ForkJoin &prepare(size_t A, size_t n_months, size_t n_io_cols, size_t agg_stride) {
     TraceN("DistPrepare"); // 首帧账目: 批平面 + 全资产 sketch + n_threads × 聚合 sketch
-    const size_t n_threads = thread_count(A);
+    const size_t n_threads = threads_for(n_asset_blocks(A));
     const size_t asset_stride = kDaysPerBatch * kVR;
-    plane.prepare(A, kLevel, kDaysPerBatch, 1, n_cols);
-    prepare_slots(asset_klls, A, kAssetKllCapacity, kAssetKllResolution);
-    lines_staging.assign(A, AssetLine{});
-    months_snap.assign(n_months, AggPdf{});
-    weekday_snap.assign(7, AggPdf{});
-    tod_snap.assign(kTodBins, AggPdf{});
+    pf.prepare(threads_for(kDaysPerBatch), A, kLevel, n_io_cols);
+    for (TsPlane &p : pf.buf)
+      p.prepare(A, kLevel, kDaysPerBatch, 1);
+    assets.prepare(A);
     w2_ref = W2Ref{};
     shards.resize(n_threads);
     for (Shard &sh : shards) {
@@ -152,33 +146,29 @@ Dist::~Dist() = default;
 // Reset
 // ============================================================================
 
-void Dist::reset_for_build(std::vector<size_t> cols, std::vector<misc::Ym> month_keys,
-                           std::vector<uint32_t> global_ids) {
+void Dist::reset(ReadScope scope, Spec sp) {
   TraceN("DistReset");
-  assert(!cols.empty() && cols.size() <= 2 && "Dist 只接受值列 + 可选 valid 列");
-  check_axis(global_ids);
+  assert(sp.cols.n() == 1 && "Dist 只接受单值列 (+ 门控)");
+  check_axis(scope.uni.ids);
   std::lock_guard<std::mutex> lock(mutex);
 
-  columns_ = std::move(cols);
-  months_ = std::move(month_keys);
-  const bool axis_changed = global_ids_ != global_ids;
-  global_ids_ = std::move(global_ids);
-  const size_t A = global_ids_.size(); // A 轴 = universe 子轴
+  const bool axis_changed = scope_.uni.ids != scope.uni.ids;
+  scope_ = std::move(scope);
+  spec = std::move(sp);
+  const size_t A = scope_.uni.size(); // A 轴 = universe 子轴
 
   // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. universe / 区间变了 (槽位含义已变) 才重建
-  if (lines.size() != A || axis_changed)
-    lines.assign(A, AssetLine{});
-  init_lines(lines, global_ids_);
-  if (months.size() != months_.size())
-    months.assign(months_.size(), AggPdf{});
-  if (by_weekday.size() != 7)
-    by_weekday.assign(7, AggPdf{});
-  if (by_tod.size() != kTodBins)
-    by_tod.assign(kTodBins, AggPdf{});
+  if (snap.lines.size() != A || axis_changed)
+    snap.lines.assign(A, AssetLine{});
+  init_lines(snap.lines, scope_.uni.ids);
+  if (snap.months.size() != scope_.months.size())
+    snap.months.assign(scope_.months.size(), AggPdf{});
+  if (snap.by_weekday.size() != 7)
+    snap.by_weekday.assign(7, AggPdf{});
+  if (snap.by_tod.size() != kTodBins)
+    snap.by_tod.assign(kTodBins, AggPdf{});
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
-
-  agg_stride.store(1, std::memory_order_relaxed);
   publish();
 }
 
@@ -188,42 +178,25 @@ void Dist::reset_for_build(std::vector<size_t> cols, std::vector<misc::Ym> month
 
 bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
-  assert(rt_ && "reset_for_build 先于 build");
+  assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = lines.size(); // universe 子轴大小 (扫描/抽样预算/分母全按它)
+  const size_t A = scope_.uni.size(); // universe 子轴大小 (扫描/抽样预算/分母全按它)
   const size_t VR = kVR;
   assert(level_valid_rows(kLevel) == VR);
-  assert(A > 0 && A == global_ids_.size() && "reset_for_build 先于 build");
-  const size_t n_cols = columns_.size();
-  const bool has_valid = (n_cols > 1);
-  const size_t n_months = months_.size();
+  assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
+  const fmeta::ColumnSet &cols = spec.cols;
+  const size_t n_months = scope_.months.size();
 
   // 预计算: 分钟 → 日内桶 (L1)
   std::array<uint8_t, kVR> tod_lut{};
   for (size_t t = 0; t < VR; ++t)
     tod_lut[t] = static_cast<uint8_t>(tod_bin_of(t));
 
-  // ==========================================================================
-  // 日期枚举 + 自适应日抽样: 抽样天表 = 日期 → (星期, 月下标)
-  // ==========================================================================
-  DateList all = enumerate_dates(reader, months_);
-  if (all.dates.empty())
+  // 天序: 洗牌后按总样本预算截断 (分批后平面只存一批, 内存不约束天数; 预算只是总时长旋钮)
+  const DayPlan plan = plan_days(reader, scope_.months, DayOrder::Shuffle, std::max<size_t>(1, kMaxTotalSamples / (A * VR)));
+  if (plan.size() == 0)
     return true;
-
-  // 日抽样: 总样本预算 (分批后平面只存一批, 内存不再约束天数; 预算只是总时长旋钮)
-  size_t stride = (all.dates.size() * A * VR + kMaxTotalSamples - 1) / kMaxTotalSamples;
-  if (stride % 5 == 0)
-    ++stride; // 与交易周互质, 避免星期偏置
-
-  std::vector<misc::Ymd> dates;
-  std::vector<uint8_t> weekdays;
-  std::vector<uint16_t> day_month;
-  for (size_t i = 0; i < all.dates.size(); i += stride) {
-    weekdays.push_back(static_cast<uint8_t>(misc::weekday_of(all.dates[i])));
-    day_month.push_back(all.month[i]);
-    dates.push_back(all.dates[i]);
-  }
-  const size_t n_sel = dates.size();
+  const size_t n_sel = plan.size();
   total.store(n_sel, std::memory_order_release);
 
   // 聚合槽抽样 stride: 按总格子数 (有效样本的上界) 折到 kAggTargetSamples 量级.
@@ -231,22 +204,20 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   size_t agg_stride = std::max<size_t>(1, (n_sel * A * VR) / kAggTargetSamples);
   while (agg_stride > 1 && VR % agg_stride == 0)
     ++agg_stride; // 与日内分钟数互质: 整除会让每天固定落在同一批分钟上, 扭曲日内分布
-  this->agg_stride.store(agg_stride, std::memory_order_release);
 
-  misc::exec::ForkJoin &ex = rt.prepare(A, n_months, n_cols, agg_stride);
+  misc::exec::ForkJoin &ex = rt.prepare(A, n_months, cols.io.size(), agg_stride);
   const size_t n_blocks = n_asset_blocks(A);
-  rt.lines_staging = lines; // asset / draw 标记随之带过去
+  rt.pub = snap; // 资产线的 asset / draw 标记 + 各槽尺寸随之带过去 (之后每批整体覆写)
+  rt.pub.agg_stride = agg_stride;
 
   // ==========================================================================
-  // 批循环: 每批三相 (IO → 扫描 → 归约), 每相一次 dispatch (返回即栅栏);
+  // 批循环: 下一批 IO 后台预读, 本批两相 (扫描 → 归约), 每相一次 dispatch (返回即栅栏);
   // 批末发布在本线程 (单线程, 天然串行)
   // ==========================================================================
   Runtime::Shard &acc = rt.shards[0]; // 归约终点 = 全程累加器
 
   auto publish_batch = [&](size_t bd) {
     TraceN("Publish");
-    acc.integrity.n_nan += rt.plane.take_nan_seen();
-
     // 下一批的 W2 参考 = 本批后的全局分位 (滞后一批, 逐批收敛)
     const bool had_ref = rt.w2_ref.valid;
     rt.w2_ref = W2Ref{};
@@ -262,50 +233,44 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     if (!had_ref && rt.w2_ref.valid) {
       TraceN("W2Backfill");
       for (size_t a = 0; a < A; ++a) {
-        AssetLine &ln = rt.lines_staging[a];
+        AssetLine &ln = rt.pub.lines[a];
         if (ln.n_pts > 0)
-          ln.w2 = compute_w2(rt.asset_klls[a].exportICDF(), ln.mean, rt.w2_ref);
+          ln.w2 = compute_w2(rt.assets.klls[a].exportICDF(), ln.mean, rt.w2_ref);
       }
     }
     // 聚合槽成品 (锁外导出)
-    fill_slots(rt.months_snap, acc.months);
-    fill_slots(rt.weekday_snap, acc.by_weekday);
-    fill_slots(rt.tod_snap, acc.by_tod);
-    AggPdf global_snap;
-    global_snap.fill(acc.global, kMinAggSamples);
+    fill_slots(rt.pub.months, acc.months);
+    fill_slots(rt.pub.by_weekday, acc.by_weekday);
+    fill_slots(rt.pub.by_tod, acc.by_tod);
+    rt.pub.global.fill(acc.global, kMinAggSamples);
+    rt.pub.integrity = acc.integrity;
     {
       std::lock_guard<std::mutex> lock(mutex); // 短锁: 整体换新, 中间没有空态
-      lines.swap(rt.lines_staging);
-      months.swap(rt.months_snap);
-      by_weekday.swap(rt.weekday_snap);
-      by_tod.swap(rt.tod_snap);
-      global = global_snap;
-      integrity = acc.integrity;
+      std::swap(snap, rt.pub);
     }
     publish(bd);
   };
 
+  // 批 b0 的 IO (预读线程或本线程跑; 只写传入的平面)
+  const auto load = [&](size_t b0) {
+    return [&, b0](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
+      pl.load_batch(io, slots, reader, plan.dates.data() + b0, std::min(kDaysPerBatch, n_sel - b0), cols, cancel);
+    };
+  };
+  rt.pf.now(load(0));
+
   for (size_t b0 = 0; b0 < n_sel; b0 += kDaysPerBatch) {
     const size_t bd = std::min(kDaysPerBatch, n_sel - b0);
-
-    // ------------------------------------------------------------------
-    // Phase IO: 单天一任务 → 转置进批平面第 j 天 (天与天写不同段, 无重叠; 门控/NaN 分账在 plane 内)
-    // L1 门控只有 DATA 语义 (ts_valid 非 0; 编码见 Meta.hpp)
-    // ------------------------------------------------------------------
-    ex.tasks(static_cast<int>(bd), [&](int j, int) {
-      if (!cancel.load(std::memory_order_relaxed))
-        rt.plane.load_day(reader, dates[b0 + j], columns_, has_valid, L2::ValidType::DATA, j);
-    });
+    if (b0 + kDaysPerBatch < n_sel)
+      rt.pf.issue(load(b0 + kDaysPerBatch)); // issue → wait 之间不许 return
+    const TsPlane &pl = rt.pf.front();
 
     // ------------------------------------------------------------------
     // Phase 扫描: kAssetBlock 个资产一任务 (a = 子轴下标), 全在锁外, 聚合进本 tid 的 shard
     // ------------------------------------------------------------------
-    ex.tasks(static_cast<int>(n_blocks), [&](int blk, int tid) {
-      if (cancel.load(std::memory_order_relaxed))
-        return;
+    run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];
-      const size_t k0 = static_cast<size_t>(blk) * kAssetBlock;
-      const size_t k1 = std::min(k0 + kAssetBlock, A);
+      const auto [k0, k1] = asset_block(blk, A);
       TraceN("ScanBlock");
       for (size_t a = k0; a < k1; ++a) {
         sh.samples.clear();
@@ -318,18 +283,13 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         size_t agg_tick = 0;
 
         for (size_t i = 0; i < bd; ++i) {
-          const feature_storage_t *p = rt.plane.series(0, a, i);
+          const feature_storage_t *p = pl.series(0, a, i);
           const uint32_t day_begin = static_cast<uint32_t>(sh.agg_samples.size());
 
           for (size_t t = 0; t < VR; ++t) {
+            if (!sh.integrity.add_cell(p[t])) // 哨兵 / ±inf: 按位分账后跳过
+              continue;
             const float v = static_cast<float>(p[t]);
-            if (v != v) // 哨兵: valid 不过 或 真 NaN (已在 Phase IO 分账)
-              continue;
-            if (std::isinf(v)) {
-              ++(v > 0.0f ? sh.integrity.n_pos_inf : sh.integrity.n_neg_inf);
-              continue;
-            }
-            sh.integrity.add_finite(v);
             sh.samples.push_back(v); // 全量 → 该资产私有 sketch
 
             if (++agg_tick < agg_stride) // 聚合槽只吃 stride 抽样
@@ -348,7 +308,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
           if (sh.agg_samples.size() > day_begin)
             sh.day_groups.push_back({day_begin, static_cast<uint32_t>(sh.agg_samples.size()),
-                                     day_month[b0 + i], weekdays[b0 + i]});
+                                     plan.month[b0 + i], plan.weekday[b0 + i]});
         }
         if (cur_bin >= 0)
           sh.tod_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
@@ -368,13 +328,9 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
             sh.by_tod[r.bin].addBatch(s + r.begin, r.end - r.begin);
         }
 
-        // 每资产: 累积 sketch + 导出整条线到 staging (槽位 == 资产下标).
-        // asset_klls/lines_staging 是 worker 私有且每资产单线程 → 全程无锁
-        KLLcache &kll = rt.asset_klls[a];
-        if (!sh.samples.empty())
-          kll.addBatch(sh.samples.data(), sh.samples.size());
-        AssetLine &ln = rt.lines_staging[a];
-        ln.fill(kll, kMinAssetSamples);
+        // 每资产: 累积 sketch + 导出整条线到 staging (槽位 == 资产下标; 每资产单线程 → 全程无锁)
+        AssetLine &ln = rt.pub.lines[a];
+        const KLLcache &kll = rt.assets.add(a, sh.samples.data(), sh.samples.size(), ln);
         ln.w2 = (ln.n_pts > 0 && rt.w2_ref.valid) ? compute_w2(kll.exportICDF(), ln.mean, rt.w2_ref) : -1.0f;
       }
     });
@@ -384,9 +340,11 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     // ------------------------------------------------------------------
     reduce_tree(ex, rt.shards);
 
+    rt.pf.wait();
     if (cancel.load(std::memory_order_relaxed))
       return false; // 半批不发布
     publish_batch(bd);
+    rt.pf.flip();
   }
   return true;
 }
@@ -397,17 +355,9 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
 void Dist::clear() {
   std::lock_guard<std::mutex> lock(mutex);
-  // 必须 move 赋空容器: `= {}` 走 initializer_list 重载, 只清元素不还内存
-  months = std::vector<AggPdf>{};
-  by_weekday = std::vector<AggPdf>{};
-  by_tod = std::vector<AggPdf>{};
-  global = AggPdf{};
-  lines = std::vector<AssetLine>{};
-  integrity.clear();
+  snap = Snap{};
+  spec = Spec{};
   rt_.reset(); // worker 已 join, 整体释放
-  columns_.clear();
-  months_.clear();
-  global_ids_ = std::vector<uint32_t>{};
-  agg_stride.store(1, std::memory_order_relaxed);
+  scope_ = ReadScope{};
   idle();
 }

@@ -1,29 +1,15 @@
 #include "shared/Correlation.hpp"
+#include "features/Backend/DayBatchPlane.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "features/DataDefine.hpp" // kNaN (全库缺失值口径)
-#include "features/MetaFlag.hpp"   // fmeta::keep / kInvalidBits
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <cstring>
-#include <random>
-#include <thread>
 
 using namespace analysis;
-
-// 本 TU 编译在 -fno-fast-math 下 (NaN 口径要精确), 但那样浮点归约不许重结合 → 内积循环
-// 完全不向量化, 慢一个数量级. 热点内积的输入全是有限值 (秩 / 掩码, 无效槽恒 0), 局部
-// 放开重结合无风险 —— 放在内积所在复合语句开头
-#if defined(__clang__)
-#define CORR_FP_REASSOC _Pragma("clang fp reassociate(on)")
-#else
-#define CORR_FP_REASSOC
-#endif
-
-static const feature_storage_t kInvalid16 = std::bit_cast<feature_storage_t>(fmeta::kInvalidBits);
 
 size_t corr_slice_stride(size_t level) {
   const size_t vr = level_valid_rows(level);
@@ -31,681 +17,595 @@ size_t corr_slice_stride(size_t level) {
   return kCorrSliceMinutes * (vr / TRADE_MINUTES_PER_DAY);
 }
 
+namespace {
+
 // ============================================================================
-// 公共小件
+// 引擎配置: 三个目标只差这两项 (切片布局 × lag 数)
 // ============================================================================
+struct CorrPlan {
+  enum class Slices : uint8_t { Strided, // 矩阵: 日内等距抽稀, 相位逐日轮转 (尾片可越界, 整片作废)
+                                Window,  // lag 矩阵: 每日一段连续 kCorrLagWindow 行, 起点按天等距铺满日内
+                                Full };  // 单对: 取满 (要分辨相邻期)
+  Slices slices;
+  size_t lags; // 1 = 只同期; kCorrLags = ±kCorrMaxLag
 
-// 与矩阵一致的抽样日集合: 固定种子洗牌取前 kCorrDays 个.
-// 洗牌而非"每隔 k 天取一天" —— 等间隔抽天会锁死星期几, 把星期效应变成系统偏差.
-static std::vector<misc::Ymd> sample_days(const FeatureRead &reader,
-                                          const std::vector<misc::Ym> &months) {
-  std::vector<misc::Ymd> dates = enumerate_dates(reader, months).dates;
-  if (dates.empty())
-    return dates;
-  std::shuffle(dates.begin(), dates.end(), std::mt19937{0x5eed});
-  dates.resize(std::min(kCorrDays, dates.size()));
-  return dates;
+  int lag_at(size_t k) const { return lags == 1 ? 0 : CorrPair::lag_of(k); }
+
+  size_t n_slices(size_t level) const {
+    const size_t VR = level_valid_rows(level);
+    switch (slices) {
+    case Slices::Strided: {
+      const size_t stride = corr_slice_stride(level);
+      return (VR + stride - 1) / stride;
+    }
+    case Slices::Window:
+      assert(VR >= kCorrLagWindow);
+      return kCorrLagWindow;
+    case Slices::Full:
+      return VR;
+    }
+    return 0;
+  }
+  // 第 d 个抽样日 (共 n_days) 的 S 个切片行号
+  void fill_slices(size_t level, size_t d, size_t n_days, size_t *out) const {
+    const size_t VR = level_valid_rows(level), S = n_slices(level);
+    switch (slices) {
+    case Slices::Strided: {
+      const size_t stride = corr_slice_stride(level), off = d % stride;
+      for (size_t s = 0; s < S; ++s)
+        out[s] = off + s * stride;
+      return;
+    }
+    case Slices::Window: { // 抽样日本身已洗牌, 起点序无需再随机
+      const size_t start = d * (VR - S + 1) / n_days;
+      for (size_t s = 0; s < S; ++s)
+        out[s] = start + s;
+      return;
+    }
+    case Slices::Full:
+      for (size_t s = 0; s < S; ++s)
+        out[s] = s;
+      return;
+    }
+  }
+};
+constexpr CorrPlan kMatrixPlan{CorrPlan::Slices::Strided, 1};
+constexpr CorrPlan kLagPlan{CorrPlan::Slices::Window, kCorrLags};
+constexpr CorrPlan kPairPlan{CorrPlan::Slices::Full, kCorrLags};
+
+// lag 的切片对 (t, t + lag) 都落在 [0, S) 的 t 区间
+std::pair<size_t, size_t> lag_range(int lag, size_t S) {
+  const size_t t0 = lag < 0 ? static_cast<size_t>(-lag) : 0;
+  const size_t t1 = lag > 0 ? S - static_cast<size_t>(lag) : S;
+  return {t0, std::max(t0, t1)};
 }
 
-// float → 可按 uint32 比大小的键 (全序, 输入保证有限)
-static inline uint32_t sort_key(float v) {
-  const uint32_t u = std::bit_cast<uint32_t>(v);
-  return (u >> 31) ? ~u : (u | 0x80000000u);
+// 上三角 (i < j) 紧凑下标: 累加器按对存, 不浪费一半
+inline size_t upper_index(size_t i, size_t j, size_t F) {
+  assert(i < j && j < F);
+  return i * F - i * (i + 1) / 2 + (j - i - 1);
 }
 
-// 单 (切片, 特征) 的秩变换: 有效值 → 中位秩 → 标准化 (均值 0 / 单位方差, 在它自己的有效
-// 资产集上). 无效槽 R = M = R2 = 0. 标准化是"累加叉积 ≡ 逐切片算 ρ 再平均"的前提.
-// 并列必须取中位秩: flag 列大片 0/1, 用序号秩会凭空造出排序.
-// 返回 false = 该 (切片, 特征) 作废 (有效资产不足 / 全并列无方差), 调用方置 row_active = 0.
-// key 是调用方提供的 scratch ([A] 个, 高 32 位值键 + 低 32 位资产下标)
-static bool rank_slice(const feature_storage_t *raw, size_t A, uint64_t *key,
-                       float *R, float *M, float *R2) {
-  std::memset(R, 0, A * sizeof(float));
-  std::memset(M, 0, A * sizeof(float));
-  std::memset(R2, 0, A * sizeof(float));
+// ============================================================================
+// 累加量 (口径见 Correlation.hpp 头注释) + pairwise-complete ρ
+// ============================================================================
+struct PairSums {
+  double xy = 0, x = 0, y = 0, xx = 0, yy = 0, n = 0;
+};
 
-  size_t k = 0;
-  for (size_t a = 0; a < A; ++a) {
-    float v = static_cast<float>(raw[a]);
-    if (v != v) // 无效 (门控不过 / 真 NaN / ±inf) 在 IO 侧已折成哨兵 NaN
-      continue;
-    if (v == 0.0f)
-      v = 0.0f; // -0.0 归正: 位型与 +0.0 不同, 否则并列段被切开 (零在稀疏订单流列极常见)
-    key[k++] = (static_cast<uint64_t>(sort_key(v)) << 32) | static_cast<uint32_t>(a);
-  }
-  if (k < kCorrMinAssets)
-    return false;
-  std::sort(key, key + k);
-
-  // 中位秩: 值相等的一段共享该段下标的平均值. 秩用 0 基, 故均值恒为 (k-1)/2
-  // (与并列无关: 中位秩之和恒等于 0+1+...+(k-1)).
-  const double mean = 0.5 * static_cast<double>(k - 1);
-  double ss = 0.0;
-  for (size_t i = 0; i < k;) {
-    size_t j = i + 1;
-    while (j < k && (key[j] >> 32) == (key[i] >> 32))
-      ++j;
-    const double r = 0.5 * static_cast<double>(i + j - 1) - mean; // 段中位秩, 已去均值
-    ss += static_cast<double>(j - i) * r * r;
-    for (size_t q = i; q < j; ++q)
-      R[static_cast<uint32_t>(key[q])] = static_cast<float>(r);
-    i = j;
-  }
-  if (!(ss > 0.0))
-    return false; // 该切片内全并列: ρ 无定义
-
-  const float inv = static_cast<float>(std::sqrt(static_cast<double>(k) / ss)); // Σ R² == k
-  for (size_t q = 0; q < k; ++q) {
-    const uint32_t a = static_cast<uint32_t>(key[q]);
-    R[a] *= inv;
-    M[a] = 1.0f;
-    R2[a] = R[a] * R[a];
-  }
-  return true;
-}
-
-// pairwise-complete 相关 (累加量见 Correlation.hpp 头注释):
-//   mean_x = sx/n, mean_y = sy/n, 分子 = sxy - sx·sy/n, 分母 = √((sxx - sx²/n)(syy - sy²/n))
+// mean_x = x/n, mean_y = y/n, 分子 = xy - x·y/n, 分母 = √((xx - x²/n)(yy - y²/n))
 // 样本不足 / 任一侧无方差 → NaN (UI 画空格, 不画成 0)
-static float pair_rho(double sxy, double sx, double sy, double sxx, double syy, double n) {
-  if (n < static_cast<double>(kCorrMinPairN))
+float pair_rho(const PairSums &s) {
+  if (s.n < static_cast<double>(kCorrMinPairN))
     return kNaN;
-  const double vx = sxx - sx * sx / n;
-  const double vy = syy - sy * sy / n;
+  const double vx = s.xx - s.x * s.x / s.n;
+  const double vy = s.yy - s.y * s.y / s.n;
   if (!(vx > 0.0) || !(vy > 0.0))
     return kNaN;
-  const double r = (sxy - sx * sy / n) / std::sqrt(vx * vy);
+  const double r = (s.xy - s.x * s.y / s.n) / std::sqrt(vx * vy);
   return static_cast<float>(std::clamp(r, -1.0, 1.0));
 }
 
-static size_t worker_threads() {
-  return std::max<size_t>(1, std::thread::hardware_concurrency());
+// ============================================================================
+// xy 的寄存器分块微核: NI 行 i × NJ 行 j 的 v8 累加器常驻寄存器 (2×4 = 8 累加 + 6 载入 = 14 ymm),
+// 内层 = 切片 t × 资产向量 v; 尾部 hsum 一次.
+// 本 TU 是 -fno-fast-math (NaN 口径要精确), 这里输入全是有限值 (秩, 无效槽恒 0), 局部放开 FMA 融合
+// ============================================================================
+using v8 = float __attribute__((vector_size(32)));
+constexpr size_t kLanes = 8;
+constexpr size_t kTile = 8;    // 任务宏块: 8 × 8 特征
+constexpr size_t kChunkV = 16; // 资产维分块 (v8 个数 = 128 floats): 宏块 × 切片 的工作集驻留 L2
+
+inline float hsum(v8 v) {
+  float s = 0.0f;
+  for (size_t l = 0; l < kLanes; ++l)
+    s += v[l];
+  return s;
 }
 
-// ============================================================================
-// SlicePlane — 一天的 S 个切片 × F 特征 × A 资产: 门控后原值 → 标准化中位秩
-// (Correlation / CorrLag 共用; 切片在日内的行号由调用方给: 矩阵 = 等距抽稀, lag = 连续窗)
-// ============================================================================
-
-// IO 侧双缓冲: 算第 d 天 (秩 + 累加, 吃满全部核) 的同时, 后台线程把第 d+1 天读进另一份 ——
-// 磁盘等待不再让 CPU 空转; IO 自己的门控循环也按特征块并行.
-// 两个常驻池: ex = 计算 (秩 / 累加, worker 线程 dispatch), io = 预读 (预读线程 dispatch), 两者并发互不重入
-struct SlicePlane {
-  size_t F = 0, A = 0, S = 0, VR = 0, n_threads = 0;
-  std::unique_ptr<misc::exec::ForkJoin> ex, io;
-
-  struct RawBuf {
-    std::vector<size_t> slice_t;                  // [S] 切片行号 (>= VR = 越界, 整片作废)
-    std::vector<feature_storage_t> raw;           // [S][F][A] 门控后的原值 (无效 = 哨兵 NaN)
-    std::vector<float> gate;                      // [S][A] 当日 ts_valid 值 (逐特征按自己的 valid_type 判)
-    std::vector<FeatureRead::DayColumns> staging; // [io 线程数] IO 暂存 (按 io tid)
-    FeatureRead::DayColumns meta_day;
-  };
-  RawBuf bufs[2];
-  size_t cur = 0; // 本天计算用的缓冲; 另一份给预读
-
-  std::vector<float> R, M, R2;                 // [S][F][A] 标准化中位秩 / 掩码 / 秩平方 (bufs[cur] 的)
-  std::vector<uint8_t> row_ok;                 // [S][F] 该 (切片, 特征) 是否参与
-  std::vector<std::vector<uint64_t>> sort_buf; // [n_threads][A] 排序键 (按 ex tid)
-
-  void prepare(size_t F_, size_t A_, size_t S_, size_t level) {
-    TraceN("CorrPlanePrepare");
-    F = F_;
-    A = A_;
-    S = S_;
-    VR = level_valid_rows(level);
-    n_threads = worker_threads();
-    cur = 0;
-    const size_t n_io = std::min(n_threads, (F + kCorrBlockCols - 1) / kCorrBlockCols);
-    misc::exec::ensure(ex, static_cast<int>(n_threads));
-    misc::exec::ensure(io, static_cast<int>(n_io));
-
-    for (RawBuf &b : bufs) {
-      b.slice_t.assign(S, VR);
-      b.raw.assign(S * F * A, kInvalid16);
-      b.gate.assign(S * A, 0.0f);
-      b.staging.resize(n_io);
-      for (auto &st : b.staging)
-        st.preallocate(A, level, kCorrBlockCols);
-      b.meta_day.preallocate(A, level, 1);
+// xi / xj = 首切片首特征的块起点; row = 特征行步长, slice = 切片步长 (都按 v8 计)
+template <size_t NI, size_t NJ>
+void dot_block(const v8 *xi, const v8 *xj, size_t row, size_t slice, size_t n_t, size_t n_vec, float *out) {
+#if defined(__clang__)
+#pragma clang fp contract(fast)
+#endif
+  v8 acc[NI][NJ] = {};
+  for (size_t t = 0; t < n_t; ++t, xi += slice, xj += slice)
+    for (size_t v = 0; v < n_vec; ++v) {
+      v8 a[NI], b[NJ];
+      for (size_t ii = 0; ii < NI; ++ii)
+        a[ii] = xi[ii * row + v];
+      for (size_t jj = 0; jj < NJ; ++jj)
+        b[jj] = xj[jj * row + v];
+      for (size_t ii = 0; ii < NI; ++ii)
+        for (size_t jj = 0; jj < NJ; ++jj)
+          acc[ii][jj] += a[ii] * b[jj];
     }
-    R.assign(S * F * A, 0.0f);
-    M.assign(S * F * A, 0.0f);
-    R2.assign(S * F * A, 0.0f);
-    row_ok.assign(S * F, 0);
-    sort_buf.assign(n_threads, std::vector<uint64_t>(A));
+  for (size_t ii = 0; ii < NI; ++ii)
+    for (size_t jj = 0; jj < NJ; ++jj)
+      out[ii * 4 + jj] = hsum(acc[ii][jj]);
+}
+
+using DotFn = void (*)(const v8 *, const v8 *, size_t, size_t, size_t, size_t, float *);
+constexpr DotFn kDot[2][4] = {
+    {dot_block<1, 1>, dot_block<1, 2>, dot_block<1, 3>, dot_block<1, 4>},
+    {dot_block<2, 1>, dot_block<2, 2>, dot_block<2, 3>, dot_block<2, 4>},
+};
+
+// ============================================================================
+// RankPlane — 一步 (天批) 的全部 (天, 切片, 特征) 行: 门控后原值 → 标准化中位秩 + 位掩码 + 掩码等价类
+// ============================================================================
+// 行号 g 与 CsPlane 一致: g = (j·S + s)·F + f
+struct RankPlane {
+  size_t rows = 0, A = 0, Av = 0, W = 0; // Av = 每行 v8 数 (尾部 pad 恒 0), W = 每行掩码字数
+  std::vector<v8> R;                     // [rows][Av] 标准化中位秩 (Σ R = 0, Σ R² = k; 无效槽恒 0)
+  std::vector<uint64_t> bits;            // [rows][W] 有效位
+  std::vector<uint32_t> k;               // [rows] 有效资产数 (0 = 作废)
+  std::vector<uint64_t> hash;            // [rows] 掩码指纹 (k > 0 才有意义)
+  std::vector<uint32_t> cls;             // [rows] 掩码等价类 (同类 ⇔ 掩码逐位相同)
+  struct Key {
+    uint64_t h;
+    uint32_t k, row;
+  };
+  std::vector<Key> order;     // classify 暂存
+  std::vector<uint32_t> reps; // classify 暂存 (同指纹组内的代表行)
+
+  void prepare(size_t rows_, size_t A_) {
+    assert(A_ <= (size_t(1) << 16) && "排序键低 16 位存资产下标");
+    rows = rows_;
+    A = A_;
+    Av = (A + kLanes - 1) / kLanes;
+    W = (A + 63) / 64;
+    R.resize(rows * Av); // rank_row 逐行全覆写
+    bits.resize(rows * W);
+    k.assign(rows, 0);
+    hash.assign(rows, 0);
+    cls.assign(rows, 0);
+    order.reserve(rows);
+    reps.reserve(rows);
+  }
+  float *Rf(size_t g) { return reinterpret_cast<float *>(R.data() + g * Av); }
+  const float *Rf(size_t g) const { return reinterpret_cast<const float *>(R.data() + g * Av); }
+  const uint64_t *bits_of(size_t g) const { return bits.data() + g * W; }
+
+  // 单行秩变换: 有限值 → 中位秩 → 标准化 (在它自己的有效资产集上).
+  // 并列必须取中位秩: flag 列大片 0/1, 用序号秩会凭空造出排序.
+  // 有效资产不足 / 全并列无方差 → 作废 (k = 0, R 与掩码全 0). key / tmp = 调用方 scratch [A]
+  void rank_row(size_t g, const feature_storage_t *x, uint32_t *key, uint32_t *tmp) {
+    float *r = Rf(g);
+    uint64_t *b = bits.data() + g * W;
+    std::fill_n(r, Av * kLanes, 0.0f);
+    std::fill_n(b, W, uint64_t{0});
+    k[g] = 0;
+    // 键 = f16 可排序位型 (高 16) | 资产下标 (低 16): 哨兵 (门控不过 / NaN) 与 ±inf 不进秩
+    size_t n = 0;
+    for (size_t a = 0; a < A; ++a) {
+      uint16_t u = std::bit_cast<uint16_t>(x[a]);
+      if ((u & 0x7C00u) == 0x7C00u)
+        continue;
+      if (u == 0x8000u)
+        u = 0; // -0 归正: 位型与 +0 不同, 否则并列段被切开 (零在稀疏订单流列极常见)
+      const uint32_t s = (u & 0x8000u) ? (~u & 0xFFFFu) : (u | 0x8000u);
+      key[n++] = (s << 16) | static_cast<uint32_t>(a);
+      b[a >> 6] |= uint64_t{1} << (a & 63);
+    }
+    if (n < kCorrMinAssets) {
+      std::fill_n(b, W, uint64_t{0});
+      return;
+    }
+    const uint32_t *sorted = radix_hi16(key, tmp, n);
+
+    // 中位秩: 值相等的一段共享该段下标的平均值. 秩用 0 基, 均值恒为 (n-1)/2 (与并列无关)
+    const double mean = 0.5 * static_cast<double>(n - 1);
+    double ss = 0.0;
+    for (size_t i = 0; i < n;) {
+      size_t j = i + 1;
+      while (j < n && (sorted[j] >> 16) == (sorted[i] >> 16))
+        ++j;
+      const double rr = 0.5 * static_cast<double>(i + j - 1) - mean;
+      ss += static_cast<double>(j - i) * rr * rr;
+      i = j;
+    }
+    if (!(ss > 0.0)) { // 该切片内全并列: ρ 无定义
+      std::fill_n(b, W, uint64_t{0});
+      return;
+    }
+    const double inv = std::sqrt(static_cast<double>(n) / ss); // Σ R² == n
+    for (size_t i = 0; i < n;) {
+      size_t j = i + 1;
+      while (j < n && (sorted[j] >> 16) == (sorted[i] >> 16))
+        ++j;
+      const float rr = static_cast<float>((0.5 * static_cast<double>(i + j - 1) - mean) * inv);
+      for (size_t q = i; q < j; ++q)
+        r[sorted[q] & 0xFFFFu] = rr;
+      i = j;
+    }
+    uint64_t h = n;
+    for (size_t w = 0; w < W; ++w) {
+      h = (h ^ b[w]) * 0x9E3779B97F4A7C15ull;
+      h ^= h >> 29;
+    }
+    k[g] = static_cast<uint32_t>(n);
+    hash[g] = h;
   }
 
-  RawBuf &next() { return bufs[cur ^ 1]; } // 预读目标 (调用方先填它的 slice_t)
-  void flip() { cur ^= 1; }
-
-  const float *Rs(size_t s) const { return R.data() + s * F * A; }
-  const float *Ms(size_t s) const { return M.data() + s * F * A; }
-  const float *R2s(size_t s) const { return R2.data() + s * F * A; }
-  const uint8_t *ok(size_t s) const { return row_ok.data() + s * F; }
-
-  // 相 1: IO (特征块一任务, io 池) —— 逐块读列, 就地按 ts_valid 门控抽出 b.slice_t 指定的 S 个切片.
-  // 只写 b 自己的内存, 可与另一缓冲上的 rank / 累加并发跑 (FeatureRead 并发只读)
-  void load(RawBuf &b, FeatureRead &reader, misc::Ymd date,
-            const std::vector<uint32_t> &cols, const std::vector<L2::ValidType> &vts,
-            size_t meta_col, const std::atomic<bool> &cancel) {
-    TraceN("CorrIO");
-    assert(cols.size() == F && vts.size() == F && b.slice_t.size() == S);
-    const std::vector<size_t> meta_cols{meta_col};
-    reader.load_day_columns(date, meta_cols, b.meta_day);
-    for (size_t s = 0; s < S; ++s) {
-      const size_t t = b.slice_t[s];
-      float *dst = b.gate.data() + s * A;
-      if (t >= VR) { // 越界片: 门控值用不到, 值列那边整片作废
-        std::fill_n(dst, A, 0.0f);
+  // 两趟 8 位 LSD 基数排序 (只排高 16 位, 稳定); 全落一个桶的趟是恒等, 跳过. 返回结果所在缓冲
+  static const uint32_t *radix_hi16(uint32_t *key, uint32_t *tmp, size_t n) {
+    for (const unsigned shift : {16u, 24u}) {
+      uint32_t cnt[256] = {};
+      for (size_t i = 0; i < n; ++i)
+        ++cnt[(key[i] >> shift) & 0xFFu];
+      if (cnt[(key[0] >> shift) & 0xFFu] == n)
         continue;
+      uint32_t off = 0;
+      for (uint32_t &c : cnt) {
+        const uint32_t c0 = c;
+        c = off;
+        off += c0;
       }
-      const feature_storage_t *src = b.meta_day.col(0) + t * A;
-      for (size_t a = 0; a < A; ++a)
-        dst[a] = static_cast<float>(src[a]);
+      for (size_t i = 0; i < n; ++i)
+        tmp[cnt[(key[i] >> shift) & 0xFFu]++] = key[i];
+      std::swap(key, tmp);
     }
+    return key;
+  }
 
-    const size_t n_blocks = (F + kCorrBlockCols - 1) / kCorrBlockCols;
-    io->tasks(static_cast<int>(n_blocks), [&](int blk, int tid) {
-      if (cancel.load(std::memory_order_relaxed))
-        return;
-      const size_t f0 = static_cast<size_t>(blk) * kCorrBlockCols, f1 = std::min(f0 + kCorrBlockCols, F);
-      std::vector<size_t> cs;
-      cs.reserve(f1 - f0);
-      for (size_t f = f0; f < f1; ++f)
-        cs.push_back(cols[f]);
-      FeatureRead::DayColumns &st = b.staging[tid];
-      reader.load_day_columns(date, cs, st);
-
-      const size_t nb = f1 - f0;
-      for (size_t i = 0; i < nb; ++i) {
-        const L2::ValidType vt = vts[f0 + i];
-        for (size_t s = 0; s < S; ++s) {
-          const size_t t = b.slice_t[s];
-          feature_storage_t *dst = b.raw.data() + (s * F + f0 + i) * A;
-          if (t >= VR) {
-            std::fill_n(dst, A, kInvalid16);
-            continue;
+  // 掩码等价类 (单线程): 按 (指纹, k) 分组, 组内逐字比对定类 (指纹碰撞也不会错归)
+  void classify(size_t n_rows) {
+    TraceN("CorrClassify");
+    order.clear();
+    for (size_t g = 0; g < n_rows; ++g)
+      if (k[g] > 0)
+        order.push_back({hash[g], k[g], static_cast<uint32_t>(g)});
+    std::sort(order.begin(), order.end(), [](const Key &a, const Key &b) {
+      return a.h != b.h ? a.h < b.h : (a.k != b.k ? a.k < b.k : a.row < b.row);
+    });
+    uint32_t next = 0;
+    for (size_t i = 0; i < order.size();) {
+      size_t j = i + 1;
+      while (j < order.size() && order[j].h == order[i].h && order[j].k == order[i].k)
+        ++j;
+      reps.clear();
+      for (size_t q = i; q < j; ++q) {
+        const uint32_t g = order[q].row;
+        bool found = false;
+        for (const uint32_t rep : reps)
+          if (std::equal(bits_of(g), bits_of(g) + W, bits_of(rep))) {
+            cls[g] = cls[rep];
+            found = true;
+            break;
           }
-          const feature_storage_t *src = st.col(i) + t * A;
-          const float *g = b.gate.data() + s * A;
-          // 门控不过 / NaN / ±inf 一律折成哨兵: 热循环一次 v != v 就跳过
-          for (size_t a = 0; a < A; ++a)
-            dst[a] = fmeta::keep(g[a], vt, src[a]) ? src[a] : kInvalid16;
+        if (!found) {
+          cls[g] = next++;
+          reps.push_back(g);
         }
       }
-    });
+      i = j;
+    }
   }
 
-  // 相 2: 对 bufs[cur] 做秩变换 ((切片, 特征) 格一任务, ex 池; 粒度细, 尾部不空转)
-  void rank(const std::atomic<bool> &cancel) {
-    TraceN("CorrRank");
-    const RawBuf &b = bufs[cur];
-    ex->tasks(static_cast<int>(S * F), [&](int sf, int tid) {
-      if (cancel.load(std::memory_order_relaxed))
-        return;
-      const size_t o = static_cast<size_t>(sf) * A;
-      row_ok[sf] = rank_slice(b.raw.data() + o, A, sort_buf[tid].data(), R.data() + o,
-                              M.data() + o, R2.data() + o)
-                       ? 1
-                       : 0;
-    });
+  // 一个 (行 gi, 行 gj) 切片对的边际和: 行恒等式 Σ_own R = 0, Σ_own R² = k →
+  // 只需对掩码差集 (或交集, 取位少的一侧) 求稀疏和; 同类 (掩码相同) O(1)
+  void side(PairSums &s, size_t gi, size_t gj) const {
+    const uint32_t ki = k[gi], kj = k[gj];
+    if (cls[gi] == cls[gj]) {
+      s.xx += ki;
+      s.yy += kj;
+      s.n += ki;
+      return;
+    }
+    const uint64_t *bi = bits_of(gi), *bj = bits_of(gj);
+    uint32_t n_and = 0;
+    for (size_t w = 0; w < W; ++w)
+      n_and += static_cast<uint32_t>(std::popcount(bi[w] & bj[w]));
+    s.n += n_and;
+    cross(bi, bj, Rf(gi), ki, n_and, s.x, s.xx);
+    cross(bj, bi, Rf(gj), kj, n_and, s.y, s.yy);
+  }
+  // Σ_{own ∩ other} (R, R²): 交集位少 → 直接累交集; 否则 = 全集 (0, k) − 差集
+  void cross(const uint64_t *own, const uint64_t *other, const float *r, uint32_t k_own, uint32_t n_and,
+             double &x, double &xx) const {
+    const bool direct = 2 * n_and <= k_own;
+    double sx = 0.0, sxx = 0.0;
+    for (size_t w = 0; w < W; ++w)
+      for (uint64_t m = own[w] & (direct ? other[w] : ~other[w]); m; m &= m - 1) {
+        const double v = r[(w << 6) + static_cast<size_t>(std::countr_zero(m))];
+        sx += v;
+        sxx += v * v;
+      }
+    if (direct) {
+      x += sx;
+      xx += sxx;
+    } else {
+      x -= sx;
+      xx += static_cast<double>(k_own) - sxx;
+    }
   }
 };
 
 // ============================================================================
-// Correlation::Runtime — worker 私有 (UI 不看)
+// Engine — 三个目标共用: 天批流水线 (IO 预读 → 秩 → 等价类 → 累加 → 发布)
+// ============================================================================
+// 两个常驻池: ex = 计算 (worker 线程 dispatch), Prefetch 自带 io 池 (预读线程 dispatch), 两者并发互不重入.
+// 累加任务 = (8×8 特征宏块对 I ≤ J) × lag 组: 每个 (对, lag) 累加格只被一个任务写, 免 shard 免归约.
+struct Engine {
+  CorrPlan plan{};
+  size_t F = 0, A = 0, S = 0, days = 0, L = 0, P = 0;
+  Prefetch<CsPlane> pf;
+  RankPlane rk;
+  std::vector<PairSums> acc; // [P][L] 跨天累加
+  std::vector<double> diag;  // [F] Σ 有效资产数 (矩阵对角 pair_n)
+  std::vector<std::pair<uint32_t, uint32_t>> tile_pairs;
+  size_t lag_group = 1; // 每任务 lag 数: 宏块对够多 → 全部 lag 一任务 (工作集复用), 否则一 lag 一任务 (单对)
+  struct Scratch {
+    std::vector<uint32_t> key, tmp; // [A] 排序键
+  };
+  std::vector<Scratch> scratch; // [ex 线程数]
+  std::unique_ptr<misc::exec::ForkJoin> ex;
+
+  const PairSums &sums(size_t i, size_t j, size_t k) const { return acc[upper_index(i, j, F) * L + k]; }
+
+  void prepare(const CorrSpec &spec, size_t A_, const CorrPlan &p) {
+    TraceN("CorrPrepare");
+    plan = p;
+    F = spec.n();
+    A = A_;
+    S = p.n_slices(spec.level);
+    L = p.lags;
+    P = F * (F - 1) / 2;
+    assert(F >= 2 && A > 0);
+    days = std::clamp<size_t>(kCorrStepCells / (S * F * A), 1, kDaysPerBatch);
+
+    const size_t n_tiles = (F + kTile - 1) / kTile;
+    tile_pairs.clear();
+    for (uint32_t I = 0; I < n_tiles; ++I)
+      for (uint32_t J = I; J < n_tiles; ++J)
+        tile_pairs.emplace_back(I, J);
+    const size_t n_threads = threads_for(std::max(days * S * F, tile_pairs.size() * L));
+    misc::exec::ensure(ex, static_cast<int>(n_threads));
+    lag_group = tile_pairs.size() >= 4 * n_threads ? L : 1;
+
+    const size_t n_blk = (F + CsPlane::kBlockCols - 1) / CsPlane::kBlockCols;
+    pf.prepare(threads_for(days * n_blk), A, spec.level, std::min(F, CsPlane::kBlockCols));
+    for (CsPlane &pl : pf.buf)
+      pl.prepare(A, spec.level, days, S, F);
+    rk.prepare(days * S * F, A);
+    acc.assign(P * L, PairSums{});
+    diag.assign(F, 0.0);
+    scratch.resize(n_threads);
+    for (Scratch &sc : scratch) {
+      sc.key.resize(A);
+      sc.tmp.resize(A);
+    }
+  }
+
+  // 抽样日 (洗牌取前 kCorrDays 个, 与 Dist / Preview 同一天序) 逐步流式; 每步末 publish_step() 写快照
+  template <class Publish>
+  bool run(FeatureRead &reader, const ReadScope &scope, const CorrSpec &spec, const CorrPlan &p,
+           const std::atomic<bool> &cancel, Progress &board, Publish &&publish_step) {
+    const DayPlan sample = plan_days(reader, scope.months, DayOrder::Shuffle, kCorrDays);
+    const size_t n_days = sample.size();
+    if (n_days == 0)
+      return true; // 库为空: 直接 Done, 快照全空
+    board.total.store(n_days, std::memory_order_release);
+    prepare(spec, scope.uni.size(), p);
+
+    // 第 d0 步的 IO (预读线程或本线程跑; 只写传入的平面, 切片行号随之填)
+    const auto load = [&](size_t d0) {
+      return [&, d0](CsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
+        const size_t bd = std::min(days, n_days - d0);
+        for (size_t j = 0; j < bd; ++j)
+          plan.fill_slices(spec.level, d0 + j, n_days, pl.slice_t.data() + j * S);
+        pl.load_batch(io, slots, reader, sample.dates.data() + d0, bd, spec.cols, cancel);
+      };
+    };
+    pf.now(load(0));
+
+    for (size_t d0 = 0; d0 < n_days; d0 += days) {
+      const size_t bd = std::min(days, n_days - d0);
+      if (d0 + days < n_days)
+        pf.issue(load(d0 + days)); // issue → wait 之间不许 return
+      rank(pf.front(), bd, cancel);
+      accumulate(bd, cancel);
+      pf.wait();
+      if (cancel.load(std::memory_order_relaxed))
+        return false; // 半步不发布
+      publish_step();
+      board.publish(bd);
+      pf.flip();
+    }
+    return true;
+  }
+
+  // 相: 秩 (行一任务, 粒度细尾部不空转) → 等价类 + 对角账 (单线程)
+  void rank(const CsPlane &pl, size_t bd, const std::atomic<bool> &cancel) {
+    TraceN("CorrRank");
+    const size_t rows = bd * S * F;
+    run_phase(*ex, rows, cancel, [&](size_t g, size_t tid) {
+      Scratch &sc = scratch[tid];
+      rk.rank_row(g, pl.data.data() + g * A, sc.key.data(), sc.tmp.data());
+    });
+    if (cancel.load(std::memory_order_relaxed))
+      return;
+    rk.classify(rows);
+    for (size_t g = 0; g < rows; ++g)
+      diag[g % F] += rk.k[g];
+  }
+
+  // 相: 累加 ((宏块对, lag 组) 一任务)
+  void accumulate(size_t bd, const std::atomic<bool> &cancel) {
+    TraceN("CorrAccum");
+    const size_t n_groups = (L + lag_group - 1) / lag_group;
+    run_phase(*ex, tile_pairs.size() * n_groups, cancel, [&](size_t task, size_t) {
+      const auto [I, J] = tile_pairs[task / n_groups];
+      const size_t k0 = (task % n_groups) * lag_group;
+      accumulate_tile(I, J, k0, std::min(k0 + lag_group, L), bd);
+    });
+  }
+
+  // 宏块对 (I, J) × lag [k0, k1): 行 i ∈ I 在切片 t, 行 j ∈ J 在切片 t + lag, 只累 i < j
+  void accumulate_tile(size_t I, size_t J, size_t k0, size_t k1, size_t bd) {
+    const size_t i0 = I * kTile, i1 = std::min(i0 + kTile, F);
+    const size_t j0 = J * kTile, j1 = std::min(j0 + kTile, F);
+    const size_t row = rk.Av, slice = F * rk.Av;
+
+    // ---- xy: 资产分块 → lag → 微块, 微核内扫切片 (宏块 × 切片 × 128 资产的工作集跨 lag 复用) ----
+    for (size_t d = 0; d < bd; ++d)
+      for (size_t c0 = 0; c0 < rk.Av; c0 += kChunkV) {
+        const size_t nv = std::min(kChunkV, rk.Av - c0);
+        for (size_t k = k0; k < k1; ++k) {
+          const int lag = plan.lag_at(k);
+          const auto [t0, t1] = lag_range(lag, S);
+          if (t0 == t1)
+            continue;
+          const size_t ti = d * S + t0, tj = static_cast<size_t>(static_cast<ptrdiff_t>(ti) + lag);
+          const v8 *base_i = rk.R.data() + ti * slice + c0;
+          const v8 *base_j = rk.R.data() + tj * slice + c0;
+          for (size_t ib = i0; ib < i1; ib += 2) {
+            const size_t ni = std::min<size_t>(2, i1 - ib);
+            for (size_t jb = j0; jb < j1; jb += 4) {
+              const size_t nj = std::min<size_t>(4, j1 - jb);
+              if (jb + nj <= ib + 1)
+                continue; // 微块全在 j ≤ i 一侧
+              float out[8];
+              kDot[ni - 1][nj - 1](base_i + ib * row, base_j + jb * row, row, slice, t1 - t0, nv, out);
+              for (size_t ii = 0; ii < ni; ++ii)
+                for (size_t jj = 0; jj < nj; ++jj) {
+                  const size_t i = ib + ii, j = jb + jj;
+                  if (j > i)
+                    acc[upper_index(i, j, F) * L + k].xy += out[ii * 4 + jj];
+                }
+            }
+          }
+        }
+      }
+
+    // ---- 边际和 x / y / xx / yy / n: 两行都有效的切片对才累 (作废行 R 恒 0, xy 已自然跳过) ----
+    for (size_t d = 0; d < bd; ++d)
+      for (size_t k = k0; k < k1; ++k) {
+        const int lag = plan.lag_at(k);
+        const auto [t0, t1] = lag_range(lag, S);
+        for (size_t t = t0; t < t1; ++t) {
+          const size_t gi = (d * S + t) * F;
+          const size_t gj = static_cast<size_t>(static_cast<ptrdiff_t>(d * S + t) + lag) * F;
+          for (size_t i = i0; i < i1; ++i) {
+            if (!rk.k[gi + i])
+              continue;
+            for (size_t j = std::max(j0, i + 1); j < j1; ++j)
+              if (rk.k[gj + j])
+                rk.side(acc[upper_index(i, j, F) * L + k], gi + i, gj + j);
+          }
+        }
+      }
+  }
+};
+
+} // namespace
+
+// ============================================================================
+// Correlation (矩阵: Strided × 同期)
 // ============================================================================
 
 struct Correlation::Runtime {
-  SlicePlane plane;
-  size_t stride = 0;
-
-  // 跨天累加器 [F][F] (sx / sxx 非对称: [i][j] 是 "i 在 i∩j 上的和", 转置位是另一侧;
-  // 对角线不写 —— ρ_ii 恒为 1, 只有 npair 的对角线有意义 = 有效资产数)
-  std::vector<double> sxy, sx, sxx, npair;
-
-  std::vector<float> pub_rho; // [F][F] 发布 staging (与快照 swap, 稳态零分配)
-  std::vector<uint32_t> pub_n;
-
-  void prepare(size_t F, size_t A, size_t level) {
-    TraceN("CorrPrepare");
-    stride = corr_slice_stride(level);
-    const size_t VR = level_valid_rows(level);
-    plane.prepare(F, A, (VR + stride - 1) / stride, level);
-
-    sxy.assign(F * F, 0.0);
-    sx.assign(F * F, 0.0);
-    sxx.assign(F * F, 0.0);
-    npair.assign(F * F, 0.0);
-    pub_rho.assign(F * F, kNaN);
-    pub_n.assign(F * F, 0);
-  }
+  Engine eng;
+  Snap pub; // 发布 staging (与快照 swap, 稳态零分配)
 };
 
 Correlation::Correlation() = default;
 Correlation::~Correlation() = default;
 
-// ============================================================================
-// Reset
-// ============================================================================
-
-void Correlation::reset_for_build(size_t lvl, std::vector<uint32_t> col_list,
-                                  std::vector<L2::ValidType> valid_types, size_t meta_col,
-                                  std::vector<misc::Ym> month_keys, size_t n_assets) {
+void Correlation::reset(ReadScope scope, Spec sp) {
   TraceN("CorrReset");
-  assert(col_list.size() >= 2 && col_list.size() == valid_types.size());
-  assert(std::is_sorted(col_list.begin(), col_list.end()));
-  assert(std::adjacent_find(col_list.begin(), col_list.end()) == col_list.end());
-  assert(lvl < LEVEL_COUNT && n_assets > 0 && !month_keys.empty());
+  const size_t F = sp.n();
+  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.uni.size() > 0 && !scope.months.empty());
+  assert(std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + F));
+  assert(std::adjacent_find(sp.cols.io.begin(), sp.cols.io.begin() + F) == sp.cols.io.begin() + F);
   std::lock_guard<std::mutex> lock(mutex);
-
-  const size_t F = col_list.size();
-  level = lvl;
-  cols = std::move(col_list);
-  valid_types_ = std::move(valid_types);
-  meta_col_ = meta_col;
-  months_ = std::move(month_keys);
-  A_ = n_assets;
-
+  scope_ = std::move(scope);
+  spec = std::move(sp);
   // 列集/层变了旧矩阵下标全错位, 必须整体清 (与 Dist/Transform "旧图留住" 相反)
-  rho.assign(F * F, kNaN);
-  pair_n.assign(F * F, 0);
-
+  snap.rho.assign(F * F, kNaN);
+  snap.pair_n.assign(F * F, 0);
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
-
   publish();
 }
-
-// ============================================================================
-// Build (逐抽样日: IO → 秩 → 累加, 日末发布; 首帧 = 一天的 IO + 计算)
-// ============================================================================
 
 bool Correlation::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("CorrBuild");
-  assert(rt_ && A_ > 0 && cols.size() >= 2 && "reset_for_build 先于 build");
+  assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-
-  const std::vector<misc::Ymd> dates = sample_days(reader, months_);
-  if (dates.empty())
-    return true; // 库为空: 直接 Done, 热图全空格
-  total.store(dates.size(), std::memory_order_release);
-
-  const size_t F = cols.size();
-  rt.prepare(F, A_, level);
-  SlicePlane &pl = rt.plane;
-  const size_t S = pl.S, A = pl.A, stride = rt.stride;
-
-  // 相位逐日轮转: 跨天把 stride 个日内相位均匀覆盖, 消掉固定相位的残余偏置
-  // (尾片可越界: S 向上取整 + 相位偏移, SlicePlane 按 >= VR 整片作废)
-  const auto set_slices = [&](SlicePlane::RawBuf &b, size_t d) {
-    const size_t off = d % stride;
-    for (size_t s = 0; s < S; ++s)
-      b.slice_t[s] = off + s * stride;
-  };
-  const auto load = [&](SlicePlane::RawBuf &b, size_t d) {
-    pl.load(b, reader, dates[d], cols, valid_types_, meta_col_, cancel);
-  };
-
-  set_slices(pl.bufs[pl.cur], 0);
-  load(pl.bufs[pl.cur], 0);
-
-  for (size_t d = 0; d < dates.size(); ++d) {
-    if (cancel.load(std::memory_order_relaxed))
-      return false;
-
-    // ---- 预读下一天 (后台线程, 与本天的秩 / 累加并发; 日末 join) ----
-    std::thread prefetch;
-    if (d + 1 < dates.size()) {
-      set_slices(pl.next(), d + 1);
-      prefetch = std::thread([&, d] { load(pl.next(), d + 1); });
-    }
-
-    // ---- 相 2: 秩变换 ----
-    pl.rank(cancel);
-
-    // ---- 相 3: 累加 (矩阵行一任务; 行 i 只被一个任务写, 免 shard 免归约) ----
-    // 只跑上三角 (j > i), 同一趟把转置位一并填上 (sx/sxx 非对称, 两侧都要).
-    // 任务粒度 = 单行: 行 i 的工作量 ∝ F - i, 动态抢任务即可摊平
-    {
-      TraceN("CorrAccum");
-      pl.ex->tasks(static_cast<int>(F), [&](int row, int) {
-        if (cancel.load(std::memory_order_relaxed))
-          return;
-        const size_t i = static_cast<size_t>(row);
-        for (size_t s = 0; s < S; ++s) {
-          const uint8_t *ok = pl.ok(s);
-          if (!ok[i])
-            continue;
-          const float *Rs = pl.Rs(s), *Ms = pl.Ms(s), *R2s = pl.R2s(s);
-          const float *Ri = Rs + i * A, *Mi = Ms + i * A, *Ri2 = R2s + i * A;
-          float ni = 0;
-          for (size_t a = 0; a < A; ++a)
-            ni += Mi[a];
-          rt.npair[i * F + i] += ni; // 对角线只记有效资产数 (UI 悬停显示)
-          for (size_t j = i + 1; j < F; ++j) {
-            if (!ok[j])
-              continue;
-            const float *Rj = Rs + j * A, *Mj = Ms + j * A, *Rj2 = R2s + j * A;
-            // 六个点积一趟扫完 (A 连续, 放开重结合后向量化): 交集上的 Σxy / Σx / Σy / Σx² / Σy² / n.
-            // R 在无效槽恒为 0, 故 Σ R_i·m_j 天然只累交集
-            float axy = 0, ax = 0, ay = 0, axx = 0, ayy = 0, an = 0;
-            {
-              CORR_FP_REASSOC
-              for (size_t a = 0; a < A; ++a) {
-                axy += Ri[a] * Rj[a];
-                ax += Ri[a] * Mj[a];
-                ay += Rj[a] * Mi[a];
-                axx += Ri2[a] * Mj[a];
-                ayy += Rj2[a] * Mi[a];
-                an += Mi[a] * Mj[a];
-              }
-            }
-            rt.sxy[i * F + j] += axy;
-            rt.sx[i * F + j] += ax;
-            rt.sx[j * F + i] += ay;
-            rt.sxx[i * F + j] += axx;
-            rt.sxx[j * F + i] += ayy;
-            rt.npair[i * F + j] += an;
-          }
-        }
-      });
-    }
-
-    if (prefetch.joinable())
-      prefetch.join(); // 早于任何 return: 预读线程引用着本栈
-    if (cancel.load(std::memory_order_relaxed))
-      return false;
-
-    // ---- 日末发布: 锁外算成品, 短锁整体拷贝 ----
-    {
-      TraceN("CorrPublish");
-      for (size_t i = 0; i < F; ++i) {
-        rt.pub_rho[i * F + i] = 1.0f;
-        rt.pub_n[i * F + i] = static_cast<uint32_t>(rt.npair[i * F + i]);
-        for (size_t j = i + 1; j < F; ++j) {
-          const double n = rt.npair[i * F + j];
-          const float r = pair_rho(rt.sxy[i * F + j], rt.sx[i * F + j], rt.sx[j * F + i],
-                                   rt.sxx[i * F + j], rt.sxx[j * F + i], n);
-          rt.pub_rho[i * F + j] = rt.pub_rho[j * F + i] = r;
-          rt.pub_n[i * F + j] = rt.pub_n[j * F + i] = static_cast<uint32_t>(n);
-        }
+  const size_t F = spec.n();
+  rt.pub.rho.assign(F * F, kNaN);
+  rt.pub.pair_n.assign(F * F, 0);
+  const Engine &eng = rt.eng;
+  return rt.eng.run(reader, scope_, spec, kMatrixPlan, cancel, *this, [&] {
+    TraceN("CorrPublish");
+    for (size_t i = 0; i < F; ++i) {
+      rt.pub.rho[i * F + i] = 1.0f;
+      rt.pub.pair_n[i * F + i] = static_cast<uint32_t>(eng.diag[i]); // 对角只记有效资产数 (UI 悬停显示)
+      for (size_t j = i + 1; j < F; ++j) {
+        const PairSums &s = eng.sums(i, j, 0);
+        rt.pub.rho[i * F + j] = rt.pub.rho[j * F + i] = pair_rho(s);
+        rt.pub.pair_n[i * F + j] = rt.pub.pair_n[j * F + i] = static_cast<uint32_t>(s.n);
       }
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        rho.swap(rt.pub_rho); // 尺寸恒相等 (reset 时对齐), swap 回来的就是上一份成品, 整体覆写
-        pair_n.swap(rt.pub_n);
-      }
-      publish(1);
     }
-    pl.flip(); // 预读好的那份成为下一天的计算缓冲
-  }
-
-  return !cancel.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex);
+    std::swap(snap, rt.pub); // 尺寸恒相等, swap 回来的上一份成品下步整体覆写
+  });
 }
-
-// ============================================================================
-// Clear
-// ============================================================================
 
 void Correlation::clear() {
   std::lock_guard<std::mutex> lock(mutex);
-  // 必须 move 赋空容器: `= {}` 走 initializer_list 重载, 只清元素不还内存
-  cols = std::vector<uint32_t>{};
-  rho = std::vector<float>{};
-  pair_n = std::vector<uint32_t>{};
+  snap = Snap{};
+  spec = Spec{};
   rt_.reset(); // worker 已 join, 整体释放
-  valid_types_.clear();
-  months_.clear();
-  A_ = 0;
-  level = 0;
+  scope_ = ReadScope{};
   idle();
 }
 
 // ============================================================================
-// CorrPair::Runtime — 单对 lead-lag (只读两列; 并行单位 = 天, 每线程私有缓冲 + 累加器, 末尾归约)
+// CorrLag (全矩阵 lead-lag 峭点: Window × ±kCorrMaxLag)
 // ============================================================================
-// 按天并行而不是按相位并行: 一天的 IO + 秩 + 21 个 lag 内积全在一个线程里跑完, 没有相间栅栏,
-// 32 天扔给全部核抢 —— 单对只有两列, 每线程缓冲 ~VR×A×26B, 几 MB, 开得起.
-
-struct CorrPair::Runtime {
-  size_t A = 0, VR = 0;
-
-  struct DayBuf {
-    FeatureRead::DayColumns day;                                         // [3][T][A]: a / b / ts_valid
-    std::vector<feature_storage_t> raw_a, raw_b;                         // [VR][A] 门控后原值
-    std::vector<float> Ra, Ma, R2a, Rb, Mb, R2b;                         // [VR][A]
-    std::vector<uint8_t> ok_a, ok_b;                                     // [VR]
-    std::vector<uint64_t> key;                                           // [A]
-    std::array<double, kCorrLags> sxy{}, sx{}, sy{}, sxx{}, syy{}, np{}; // 线程私有累加
-  };
-  std::vector<DayBuf> bufs; // [n_threads] 按 tid
-  std::unique_ptr<misc::exec::ForkJoin> ex;
-
-  // 返回执行器
-  misc::exec::ForkJoin &prepare(size_t A_, size_t level, size_t n_threads) {
-    A = A_;
-    VR = level_valid_rows(level);
-    bufs.resize(n_threads);
-    for (DayBuf &b : bufs) {
-      b.day.preallocate(A, level, 3);
-      b.raw_a.assign(VR * A, kInvalid16);
-      b.raw_b.assign(VR * A, kInvalid16);
-      b.Ra.assign(VR * A, 0.0f);
-      b.Ma.assign(VR * A, 0.0f);
-      b.R2a.assign(VR * A, 0.0f);
-      b.Rb.assign(VR * A, 0.0f);
-      b.Mb.assign(VR * A, 0.0f);
-      b.R2b.assign(VR * A, 0.0f);
-      b.ok_a.assign(VR, 0);
-      b.ok_b.assign(VR, 0);
-      b.key.assign(A, 0);
-      b.sxy = {};
-      b.sx = {};
-      b.sy = {};
-      b.sxx = {};
-      b.syy = {};
-      b.np = {};
-    }
-    return misc::exec::ensure(ex, static_cast<int>(n_threads));
-  }
-};
-
-CorrPair::CorrPair() = default;
-CorrPair::~CorrPair() = default;
-
-void CorrPair::reset_for_build(size_t lvl, uint32_t a, uint32_t b, L2::ValidType vt_a,
-                               L2::ValidType vt_b, size_t meta_col,
-                               std::vector<misc::Ym> month_keys, size_t n_assets) {
-  assert(a != b && lvl < LEVEL_COUNT && n_assets > 0 && !month_keys.empty());
-  std::lock_guard<std::mutex> lock(mutex);
-  level = lvl;
-  col_a = a;
-  col_b = b;
-  vt_a_ = vt_a;
-  vt_b_ = vt_b;
-  meta_col_ = meta_col;
-  months_ = std::move(month_keys);
-  A_ = n_assets;
-  rho.fill(kNaN);
-  pair_n.fill(0);
-  if (!rt_)
-    rt_ = std::make_unique<Runtime>();
-  publish();
-}
-
-bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
-  TraceN("CorrPairBuild");
-  assert(rt_ && A_ > 0 && "reset_for_build 先于 build");
-  Runtime &rt = *rt_;
-
-  const std::vector<misc::Ymd> dates = sample_days(reader, months_); // 与矩阵同一套抽样日
-  if (dates.empty())
-    return true;
-  total.store(dates.size(), std::memory_order_release);
-
-  const size_t n_threads = std::min(worker_threads(), dates.size());
-  misc::exec::ForkJoin &ex = rt.prepare(A_, level, n_threads);
-  const size_t A = rt.A, VR = rt.VR;
-  const std::vector<size_t> day_cols{col_a, col_b, meta_col_};
-
-  // 一天一任务 (每 tid 一套缓冲 + 累加器); 悬停即触发, 请求换得很快 → 日内也查取消
-  ex.tasks(static_cast<int>(dates.size()), [&](int d, int tid) {
-    if (cancel.load(std::memory_order_relaxed))
-      return;
-    Runtime::DayBuf &b = rt.bufs[tid];
-    reader.load_day_columns(dates[d], day_cols, b.day);
-
-    // 门控 + 秩变换 (切片取满: lead-lag 要分辨相邻期, 不抽稀)
-    for (size_t t = 0; t < VR; ++t) {
-      if ((t & 15) == 0 && cancel.load(std::memory_order_relaxed))
-        return;
-      const feature_storage_t *sa = b.day.col(0) + t * A;
-      const feature_storage_t *sb = b.day.col(1) + t * A;
-      const feature_storage_t *sm = b.day.col(2) + t * A;
-      feature_storage_t *da = b.raw_a.data() + t * A, *db = b.raw_b.data() + t * A;
-      for (size_t a = 0; a < A; ++a) {
-        const float g = static_cast<float>(sm[a]);
-        da[a] = fmeta::keep(g, vt_a_, sa[a]) ? sa[a] : kInvalid16;
-        db[a] = fmeta::keep(g, vt_b_, sb[a]) ? sb[a] : kInvalid16;
-      }
-      b.ok_a[t] = rank_slice(b.raw_a.data() + t * A, A, b.key.data(), b.Ra.data() + t * A,
-                             b.Ma.data() + t * A, b.R2a.data() + t * A)
-                      ? 1
-                      : 0;
-      b.ok_b[t] = rank_slice(b.raw_b.data() + t * A, A, b.key.data(), b.Rb.data() + t * A,
-                             b.Mb.data() + t * A, b.R2b.data() + t * A)
-                      ? 1
-                      : 0;
-    }
-
-    // 逐 lag 累加: ρ(lag) = corr(A(t), B(t + lag)), lag > 0 = A 领先 B
-    for (size_t k = 0; k < kCorrLags; ++k) {
-      if (cancel.load(std::memory_order_relaxed))
-        return;
-      const int lag = lag_of(k);
-      const size_t t0 = lag < 0 ? static_cast<size_t>(-lag) : 0;
-      const size_t t1 = lag < 0 ? VR : VR - static_cast<size_t>(lag);
-      for (size_t t = t0; t < t1; ++t) {
-        const size_t tb = static_cast<size_t>(static_cast<ptrdiff_t>(t) + lag);
-        if (!b.ok_a[t] || !b.ok_b[tb])
-          continue;
-        const float *Ri = b.Ra.data() + t * A, *Mi = b.Ma.data() + t * A;
-        const float *Ri2 = b.R2a.data() + t * A;
-        const float *Rj = b.Rb.data() + tb * A, *Mj = b.Mb.data() + tb * A;
-        const float *Rj2 = b.R2b.data() + tb * A;
-        float axy = 0, ax = 0, ay = 0, axx = 0, ayy = 0, an = 0;
-        {
-          CORR_FP_REASSOC
-          for (size_t a = 0; a < A; ++a) {
-            axy += Ri[a] * Rj[a];
-            ax += Ri[a] * Mj[a];
-            ay += Rj[a] * Mi[a];
-            axx += Ri2[a] * Mj[a];
-            ayy += Rj2[a] * Mi[a];
-            an += Mi[a] * Mj[a];
-          }
-        }
-        b.sxy[k] += axy;
-        b.sx[k] += ax;
-        b.sy[k] += ay;
-        b.sxx[k] += axx;
-        b.syy[k] += ayy;
-        b.np[k] += an;
-      }
-    }
-    publish(1); // 只推进度; 曲线末尾一次成型 (UI 也只在 Done 时画)
-  });
-
-  if (cancel.load(std::memory_order_relaxed))
-    return false;
-
-  // 归约 + 发布
-  std::array<double, kCorrLags> sxy{}, sx{}, sy{}, sxx{}, syy{}, np{};
-  for (const Runtime::DayBuf &b : rt.bufs)
-    for (size_t k = 0; k < kCorrLags; ++k) {
-      sxy[k] += b.sxy[k];
-      sx[k] += b.sx[k];
-      sy[k] += b.sy[k];
-      sxx[k] += b.sxx[k];
-      syy[k] += b.syy[k];
-      np[k] += b.np[k];
-    }
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    for (size_t k = 0; k < kCorrLags; ++k) {
-      rho[k] = pair_rho(sxy[k], sx[k], sy[k], sxx[k], syy[k], np[k]);
-      pair_n[k] = static_cast<uint32_t>(np[k]);
-    }
-  }
-  epoch.fetch_add(1, std::memory_order_release);
-  return true;
-}
-
-void CorrPair::clear() {
-  std::lock_guard<std::mutex> lock(mutex);
-  rt_.reset();
-  col_a = col_b = UINT32_MAX;
-  rho.fill(kNaN);
-  pair_n.fill(0);
-  months_.clear();
-  A_ = 0;
-  level = 0;
-  idle();
-}
-
-// ============================================================================
-// CorrLag::Runtime — 全矩阵 lead-lag 峭点 (口径见 Correlation.hpp)
-// ============================================================================
-
-// 上三角 (i < j) 紧凑下标: 累加器按对存, 不浪费一半
-static inline size_t upper_index(size_t i, size_t j, size_t F) {
-  assert(i < j && j < F);
-  return i * F - i * (i + 1) / 2 + (j - i - 1);
-}
 
 struct CorrLag::Runtime {
-  SlicePlane plane; // S = kCorrLagWindow 个连续切片
-  size_t P = 0;     // 对数 F(F-1)/2
-
-  std::vector<double> sxy, np; // [P][kCorrLags]
-  std::vector<int8_t> pub_lag; // [F][F] 发布 staging
-  std::vector<float> pub_rho;
-
-  void prepare(size_t F, size_t A, size_t level) {
-    TraceN("CorrLagPrepare");
-    assert(level_valid_rows(level) >= kCorrLagWindow);
-    plane.prepare(F, A, kCorrLagWindow, level);
-    P = F * (F - 1) / 2;
-    sxy.assign(P * kCorrLags, 0.0);
-    np.assign(P * kCorrLags, 0.0);
-    pub_lag.assign(F * F, 0);
-    pub_rho.assign(F * F, kNaN);
-  }
+  Engine eng;
+  Snap pub;
 };
 
 CorrLag::CorrLag() = default;
 CorrLag::~CorrLag() = default;
 
-void CorrLag::reset_for_build(size_t lvl, std::vector<uint32_t> col_list,
-                              std::vector<L2::ValidType> valid_types, size_t meta_col,
-                              std::vector<misc::Ym> month_keys, size_t n_assets) {
+void CorrLag::reset(ReadScope scope, Spec sp) {
   TraceN("CorrLagReset");
-  assert(col_list.size() >= 2 && col_list.size() == valid_types.size());
-  assert(std::is_sorted(col_list.begin(), col_list.end()));
-  assert(lvl < LEVEL_COUNT && n_assets > 0 && !month_keys.empty());
+  const size_t F = sp.n();
+  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.uni.size() > 0 && !scope.months.empty());
+  assert(std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + F));
   std::lock_guard<std::mutex> lock(mutex);
-
-  const size_t F = col_list.size();
-  level = lvl;
-  cols = std::move(col_list);
-  valid_types_ = std::move(valid_types);
-  meta_col_ = meta_col;
-  months_ = std::move(month_keys);
-  A_ = n_assets;
-  lag_best.assign(F * F, 0);
-  rho_best.assign(F * F, kNaN);
+  scope_ = std::move(scope);
+  spec = std::move(sp);
+  snap.lag_best.assign(F * F, 0);
+  snap.rho_best.assign(F * F, kNaN);
   if (!rt_)
     rt_ = std::make_unique<Runtime>();
   publish();
@@ -713,149 +613,100 @@ void CorrLag::reset_for_build(size_t lvl, std::vector<uint32_t> col_list,
 
 bool CorrLag::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("CorrLagBuild");
-  assert(rt_ && A_ > 0 && cols.size() >= 2 && "reset_for_build 先于 build");
+  assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-
-  const std::vector<misc::Ymd> dates = sample_days(reader, months_); // 与矩阵同一套抽样日
-  if (dates.empty())
-    return true;
-  total.store(dates.size(), std::memory_order_release);
-
-  const size_t F = cols.size();
-  rt.prepare(F, A_, level);
-  SlicePlane &pl = rt.plane;
-  const size_t W = pl.S, A = pl.A, VR = pl.VR;
-
-  // 窗起点按天等距铺满日内 (抽样日本身已洗牌, 起点序无需再随机): 跨天覆盖全部日内位置
-  const auto set_slices = [&](SlicePlane::RawBuf &b, size_t d) {
-    const size_t start = d * (VR - W + 1) / dates.size();
-    for (size_t s = 0; s < W; ++s)
-      b.slice_t[s] = start + s;
-  };
-  const auto load = [&](SlicePlane::RawBuf &b, size_t d) {
-    pl.load(b, reader, dates[d], cols, valid_types_, meta_col_, cancel);
-  };
-  set_slices(pl.bufs[pl.cur], 0);
-  load(pl.bufs[pl.cur], 0);
-
-  for (size_t d = 0; d < dates.size(); ++d) {
-    if (cancel.load(std::memory_order_relaxed))
-      return false;
-
-    std::thread prefetch; // 预读下一天, 与本天计算并发 (同 Correlation::build)
-    if (d + 1 < dates.size()) {
-      set_slices(pl.next(), d + 1);
-      prefetch = std::thread([&, d] { load(pl.next(), d + 1); });
-    }
-
-    pl.rank(cancel);
-
-    // 累加 (行 i 一任务; 行 i 的全部 (i, j > i) × lag 只被一个任务写).
-    // 每 lag 把窗内所有 (t, t + lag) 切片对都用上; 只累 Σ R_i R_j 与 Σ m_i m_j (见头注释)
-    {
-      TraceN("CorrLagAccum");
-      pl.ex->tasks(static_cast<int>(F), [&](int row, int) {
-        if (cancel.load(std::memory_order_relaxed))
-          return;
-        const size_t i = static_cast<size_t>(row);
-        for (size_t k = 0; k < kCorrLags; ++k) {
-          const int lag = CorrPair::lag_of(k);
-          const size_t t0 = lag < 0 ? static_cast<size_t>(-lag) : 0;
-          const size_t t1 = lag < 0 ? W : W - static_cast<size_t>(lag);
-          for (size_t t = t0; t < t1; ++t) {
-            if (!pl.ok(t)[i])
+  const size_t F = spec.n();
+  rt.pub.lag_best.assign(F * F, 0);
+  rt.pub.rho_best.assign(F * F, kNaN);
+  const Engine &eng = rt.eng;
+  return rt.eng.run(reader, scope_, spec, kLagPlan, cancel, *this, [&] {
+    TraceN("CorrLagPublish");
+    for (size_t i = 0; i < F; ++i) {
+      rt.pub.lag_best[i * F + i] = 0;
+      rt.pub.rho_best[i * F + i] = 1.0f;
+      for (size_t j = i + 1; j < F; ++j) {
+        // 每对取 |ρ| 最大的 lag. 按 |lag| 递增扫 (0, -1, +1, -2, +2, ...), 平局留先到的 = 更靠近 0:
+        // 慢变列曲线平坦, 不该被浮点噪声指到两端
+        int best_k = -1;
+        float best_r = 0.0f;
+        for (size_t step = 0; step <= kCorrMaxLag; ++step)
+          for (int sgn = -1; sgn <= 1; sgn += 2) {
+            if (step == 0 && sgn > 0)
               continue;
-            const size_t tb = static_cast<size_t>(static_cast<ptrdiff_t>(t) + lag);
-            const float *Ri = pl.Rs(t) + i * A, *Mi = pl.Ms(t) + i * A;
-            const uint8_t *okb = pl.ok(tb);
-            const float *Rb = pl.Rs(tb), *Mb = pl.Ms(tb);
-            for (size_t j = i + 1; j < F; ++j) {
-              if (!okb[j])
-                continue;
-              const float *Rj = Rb + j * A, *Mj = Mb + j * A;
-              float axy = 0, an = 0;
-              {
-                CORR_FP_REASSOC
-                for (size_t a = 0; a < A; ++a) {
-                  axy += Ri[a] * Rj[a];
-                  an += Mi[a] * Mj[a];
-                }
-              }
-              const size_t o = upper_index(i, j, F) * kCorrLags + k;
-              rt.sxy[o] += axy;
-              rt.np[o] += an;
+            const size_t k = static_cast<size_t>(static_cast<int>(kCorrMaxLag) + sgn * static_cast<int>(step));
+            const float r = pair_rho(eng.sums(i, j, k));
+            if (r == r && (best_k < 0 || std::fabs(r) > std::fabs(best_r))) {
+              best_k = static_cast<int>(k);
+              best_r = r;
             }
           }
-        }
-      });
-    }
-
-    if (prefetch.joinable())
-      prefetch.join();
-    if (cancel.load(std::memory_order_relaxed))
-      return false;
-
-    // 日末发布: 每对取 |ρ| 最大的 lag; 反对称填转置位
-    {
-      TraceN("CorrLagPublish");
-      for (size_t i = 0; i < F; ++i) {
-        rt.pub_lag[i * F + i] = 0;
-        rt.pub_rho[i * F + i] = 1.0f;
-        for (size_t j = i + 1; j < F; ++j) {
-          const double *sxy = rt.sxy.data() + upper_index(i, j, F) * kCorrLags;
-          const double *np = rt.np.data() + upper_index(i, j, F) * kCorrLags;
-          int best_k = -1;
-          double best_r = 0.0;
-          // 按 |lag| 递增扫 (0, -1, +1, -2, +2, ...), 平局留先到的 = 更靠近 0:
-          // 慢变列曲线平坦, 不该被浮点噪声指到两端
-          for (size_t step = 0; step <= kCorrMaxLag; ++step) {
-            for (int sgn = -1; sgn <= 1; sgn += 2) {
-              if (step == 0 && sgn > 0)
-                continue;
-              const size_t k =
-                  static_cast<size_t>(static_cast<int>(kCorrMaxLag) + sgn * static_cast<int>(step));
-              if (np[k] < static_cast<double>(kCorrMinPairN))
-                continue;
-              const double r = std::clamp(sxy[k] / np[k], -1.0, 1.0);
-              if (best_k < 0 || std::fabs(r) > std::fabs(best_r)) {
-                best_k = static_cast<int>(k);
-                best_r = r;
-              }
-            }
-          }
-          int8_t lag = 0;
-          float r = kNaN;
-          if (best_k >= 0) {
-            lag = static_cast<int8_t>(CorrPair::lag_of(static_cast<size_t>(best_k)));
-            r = static_cast<float>(best_r);
-          }
-          rt.pub_lag[i * F + j] = lag;
-          rt.pub_lag[j * F + i] = static_cast<int8_t>(-lag);
-          rt.pub_rho[i * F + j] = rt.pub_rho[j * F + i] = r;
-        }
+        const int8_t lag = best_k >= 0 ? static_cast<int8_t>(CorrPair::lag_of(static_cast<size_t>(best_k))) : int8_t{0};
+        rt.pub.lag_best[i * F + j] = lag;
+        rt.pub.lag_best[j * F + i] = static_cast<int8_t>(-lag);
+        rt.pub.rho_best[i * F + j] = rt.pub.rho_best[j * F + i] = best_k >= 0 ? best_r : kNaN;
       }
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        lag_best.swap(rt.pub_lag);
-        rho_best.swap(rt.pub_rho);
-      }
-      publish(1);
     }
-    pl.flip();
-  }
-
-  return !cancel.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex);
+    std::swap(snap, rt.pub);
+  });
 }
 
 void CorrLag::clear() {
   std::lock_guard<std::mutex> lock(mutex);
-  cols = std::vector<uint32_t>{};
-  lag_best = std::vector<int8_t>{};
-  rho_best = std::vector<float>{};
+  snap = Snap{};
+  spec = Spec{};
   rt_.reset();
-  valid_types_.clear();
-  months_.clear();
-  A_ = 0;
-  level = 0;
+  scope_ = ReadScope{};
+  idle();
+}
+
+// ============================================================================
+// CorrPair (单对 lead-lag 曲线: Full × ±kCorrMaxLag; 列少 → 一步读多天, IO 按天并行)
+// ============================================================================
+
+struct CorrPair::Runtime {
+  Engine eng;
+  Snap pub;
+};
+
+CorrPair::CorrPair() = default;
+CorrPair::~CorrPair() = default;
+
+void CorrPair::reset(ReadScope scope, Spec sp) {
+  assert(sp.n() == 2 && sp.col(0) != sp.col(1));
+  assert(sp.level < LEVEL_COUNT && scope.uni.size() > 0 && !scope.months.empty());
+  std::lock_guard<std::mutex> lock(mutex);
+  scope_ = std::move(scope);
+  spec = std::move(sp);
+  snap.rho.fill(kNaN);
+  snap.pair_n.fill(0);
+  if (!rt_)
+    rt_ = std::make_unique<Runtime>();
+  publish();
+}
+
+bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+  TraceN("CorrPairBuild");
+  assert(rt_ && "reset 先于 build");
+  Runtime &rt = *rt_;
+  const Engine &eng = rt.eng;
+  return rt.eng.run(reader, scope_, spec, kPairPlan, cancel, *this, [&] {
+    // ρ(lag) = corr(A(t), B(t + lag)), lag > 0 = A 领先 B (A = 列 0 = 上三角行)
+    for (size_t k = 0; k < kCorrLags; ++k) {
+      const PairSums &s = eng.sums(0, 1, k);
+      rt.pub.rho[k] = pair_rho(s);
+      rt.pub.pair_n[k] = static_cast<uint32_t>(s.n);
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    std::swap(snap, rt.pub);
+  });
+}
+
+void CorrPair::clear() {
+  std::lock_guard<std::mutex> lock(mutex);
+  snap = Snap{};
+  spec = Spec{};
+  rt_.reset();
+  scope_ = ReadScope{};
   idle();
 }

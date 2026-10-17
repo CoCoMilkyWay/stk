@@ -33,9 +33,9 @@ class FeatureRead;
 //   今天用截至昨日的轮廓, 再把今天并入). 全部因果, 不用未来值.
 //   CS 段: 每个 (天, 分钟) 截面一列, 有效资产子集 dense 化 → cs::column_fn (Tf, Method) 原地.
 //
-// 流式 (对仗 Dist.hpp): 天是流式维度, 每批 kDaysPerBatch 天, 从前往后; 每相一次 ex.tasks (Runtime 常驻 ForkJoin), 返回即栅栏:
-//   Phase IO:   单天一任务并行载入 → DayBatchPlane [列][A][批天][VR] (f16, 无效 = 哨兵 NaN)
-//   ── 栅栏 ──
+// 流式 (对仗 Dist.hpp): 天是流式维度, 每批 kDaysPerBatch 天, 从前往后 (plan_days Sequential: TOD 轮廓因果);
+// 每相一次 dispatch (Runtime 常驻 ForkJoin), 返回即栅栏:
+//   IO (后台预读, 与上一批计算并发): 单天一任务 → TsPlane [列][A][批天][VR] (f16, 无效 = 哨兵 NaN; 各列按自己的 vt 门控)
 //   Phase TS:   资产块一任务; 每 (资产, 天): 上面的 TS 链 → out_ [A][批天][VR] (float, NaN = 缺/预热)
 //   ── 栅栏 ──
 //   Phase CS:   截面列块 (天×分钟) 一任务; 每列 gather 有效子集 → column_fn → scatter 回 out_
@@ -122,10 +122,6 @@ struct Transform : Published {
     bool cs_neutral() const { return cs::method_neutral(cs_method); }
   };
 
-  // ==========================================================================
-  // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
-  // ==========================================================================
-
   using AssetLine = analysis::AssetLine; // 每资产链末输出的累积分布 (槽位 == 子轴下标)
 
   // 每资产 (槽位 == 子轴下标, 与 lines 对齐): 逐天平稳性检验累积
@@ -141,65 +137,49 @@ struct Transform : Published {
   // 焦点资产 全程 的序列快照 (UI 序列视图: 原始 vs 输出 + TOD 轮廓).
   // 只存一个资产 → 内存 O(总天数 × VR), 与 universe 大小无关; 换焦点 = 重跑构建
   // (与改参数同流程 —— 链末输出经过 CS 截面, 单资产无法离线重放).
+  // 前缀发布零拷贝: raw/out 首批发布时整体 swap 进来, 之后 worker 锁外只写 [n_days·VR, ...) 段,
+  // 短锁只推进 n_days / 日期 / TOD 轮廓; UI 只读前缀 [0, n_days·VR)
   struct SeriesSnap {
     uint32_t asset = 0;                     // 焦点资产全局轴下标 (UI 查 items; 构建起手定)
-    size_t n_days = 0;                      // 已处理天数 (逐批递增至全程)
-    misc::Ymd date_begin = 0, date_end = 0; // 已处理区间首末日
+    size_t n_days = 0;                      // 已发布天数 (逐批递增至全程)
+    misc::Ymd date_begin = 0, date_end = 0; // 已发布区间首末日
     std::vector<float> raw;                 // [总天数 * VR] (f16 → float, NaN = 缺/未到批)
     std::vector<float> out;                 // [总天数 * VR] 链末输出 (NaN = 缺/预热/未到批)
-    std::vector<float> tod_mean, tod_sd;    // [VR] 截至末批的 TOD 轮廓 (season 关时不填)
+    std::vector<float> tod_mean, tod_sd;    // [VR] 截至末批的 TOD 轮廓 (season 关时全 NaN)
   };
 
-  // 链路账目 (输入 → 链末输出; 与 analysis::Integrity 的值账目语义不同, 不共用)
-  struct Integrity {
-    uint64_t n_total = 0;     // 格子数 (A × 天 × VR)
-    uint64_t n_in_valid = 0;  // 输入有效 (门控过 且 非 NaN)
-    uint64_t n_in_nan = 0;    // 输入真 NaN (门控过但值 NaN)
-    uint64_t n_out_valid = 0; // 链末有效输出 (差 = 预热/常数槽/CS 缺失)
-    void clear() { *this = Integrity{}; }
+  struct Spec {
+    Params params;
+    fmeta::ColumnSet cols; // [特征 (+ mcap, ind 若 NeutralRank)] (+ 门控)
+    uint32_t focus = 0;    // 序列快照焦点 (子轴下标)
   };
-
-  // ==========================================================================
-  // State (进度/epoch/mutex 在 Published)
-  // ==========================================================================
-
-  Params params;                                            // 本次构建的参数快照 (reset 时定, UI 只读)
-  std::vector<AssetLine> lines;                             // [A_sub] (槽位 == 子轴下标, .asset = 全局轴下标)
-  std::vector<StatLine> stat_lines;                         // [A_sub] 槽位 == 子轴下标 (与 lines 对齐)
-  SeriesSnap series;                                        // 焦点资产全程 (逐批增长)
-  std::array<float, analysis::DayPSD::N_FREQS> psd_mean{};  // 逐 (资产, 天) 单日谱的算术平均 (逐批收敛)
-  uint64_t psd_n = 0;                                       // 参与平均的 (资产, 天) 数
-  std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{}; // 逐 (资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
-  uint64_t acf_n = 0;                                       // 参与平均的 (资产, 天) 数 (有效样本 ≥ 4×kTfMaxLag)
-  analysis::AggPdf global;                                  // 全资产全区间链末输出
-  Integrity integrity;
-
-  // ==========================================================================
-  // Methods (worker 线程调用)
-  // ==========================================================================
+  // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
+  struct Snap {
+    std::vector<AssetLine> lines;                             // [A_sub] (槽位 == 子轴下标, .asset = 全局轴下标)
+    std::vector<StatLine> stat_lines;                         // [A_sub] 槽位 == 子轴下标 (与 lines 对齐)
+    std::array<float, analysis::DayPSD::N_FREQS> psd_mean{};  // 逐 (资产, 天) 单日谱的算术平均 (逐批收敛)
+    uint64_t psd_n = 0;                                       // 参与平均的 (资产, 天) 数
+    std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{}; // 逐 (资产, 天) 单日 ACF/PACF 的算术平均 (lag 0 = 1)
+    uint64_t acf_n = 0;                                       // 参与平均的 (资产, 天) 数 (有效样本 ≥ 4×kTfMaxLag)
+    analysis::AggPdf global;                                  // 全资产全区间链末有限输出
+    // 链路账目: 输入 = f16 源 (门控不过 / NaN / ±inf / 有限), 输出 = 链末 (NaN = 缺/预热/常数槽, 不分账)
+    analysis::Integrity in, out;
+  };
+  Spec spec;
+  Snap snap;
+  SeriesSnap series; // 焦点资产全程 (逐批增长, 前缀发布)
 
   Transform();
   ~Transform();
 
-  // 重置构建参数并进入 Building. cols = [特征列 (+ mcap, ind_l1 若 NeutralRank) (+ ts_valid 门控列)]
-  // global_ids = 子轴 → 全局轴映射 (UniverseAxis::ids); series_focus = 序列快照焦点 (子轴下标).
-  // 展示字段不清 (旧图留住), universe 变了才整体重建.
-  void reset_for_build(const Params &p, std::vector<size_t> cols, bool has_valid,
-                       std::vector<misc::Ym> month_keys,
-                       std::vector<uint32_t> global_ids, uint32_t series_focus);
-
+  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), universe 变了才重建资产线
+  void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式; 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
-
   void clear();
 
 private:
   struct Runtime; // worker 私有 (批平面 / TS 链状态 / 线程 shard), 定义在 Transform.cpp
   std::unique_ptr<Runtime> rt_;
-  // 构建参数 (UI 不看): reset 时定好, build 全程只读
-  std::vector<size_t> columns_;
-  bool has_valid_ = false;
-  std::vector<misc::Ym> months_;
-  std::vector<uint32_t> global_ids_; // 子轴 → 全局轴映射
-  uint32_t series_focus_ = 0;        // 序列快照焦点 (子轴下标)
+  analysis::ReadScope scope_; // reset 时定好, build 全程只读
 };

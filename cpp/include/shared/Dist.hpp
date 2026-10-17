@@ -21,11 +21,11 @@ class FeatureRead;
 //
 // 发布协议 (单调收敛, UI 画已发布快照; 与 Transform 同一 flow):
 //
-//   worker (DistService 单线程编排; build 用 Runtime 常驻 ForkJoin, 每相一次 ex.tasks, 返回即栅栏):
+//   worker (DistService 单线程编排; build 用 Runtime 常驻 ForkJoin, 每相一次 dispatch, 返回即栅栏):
+//     天序 = 洗牌 (plan_days Shuffle, 总样本预算截断): 首批即覆盖全区间
 //     for 每批 kDaysPerBatch 个抽样天:
-//       Phase IO:   单天一任务并行载入 → 资产主序批平面 [A][批天][分钟] (DayBatchPlane, 与 Transform 共用:
-//                   f16; valid 门控与真 NaN 折叠成统一哨兵, NaN 就地记账)
-//       ── 栅栏 ──
+//       IO (后台预读, 与上一批扫描并发): 单天一任务 → 资产主序批平面 [A][批天][分钟] (TsPlane, 与 Transform 共用:
+//                   f16; 门控不过 / 真 NaN 折成两种哨兵, 扫描按位分账)
 //       Phase 扫描: kAssetBlock 个活跃资产一任务, 全在锁外:
 //                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本 (shard)
 //                   + 全量样本 → 该资产私有 sketch → 顺手导出整条 AssetLine (PDF/矩/W2) 到 staging.
@@ -51,7 +51,7 @@ class FeatureRead;
 static constexpr size_t kMinSamples = 1000; // 全局 sketch 达到此样本数才作 W2 参考
 static constexpr int kW2Deciles = 19;       // W2 用的分位点: 5%, 10%, ..., 95%
 
-// 总样本预算: 超出则日抽样 (stride 与交易周互质避免星期偏置). 分批后平面只存一批,
+// 总样本预算: 超出则洗牌后截断天数 (洗牌不锁星期). 分批后平面只存一批,
 // 内存不再约束天数 —— 这个预算只是总扫描/IO 时长的旋钮, 5 年 × 5000 标的在预算内全量.
 static constexpr size_t kMaxTotalSamples = size_t(2) << 30;
 
@@ -90,41 +90,34 @@ struct Dist : Published {
     float w2 = -1.0f; // 均值校准 W2, 相对上一批末的全局分位 (逐批收敛); < 0 = 参考未就绪
   };
 
-  // ==========================================================================
+  struct Spec {
+    fmeta::ColumnSet cols; // 单值列 (+ 门控)
+  };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
-  // ==========================================================================
-  std::vector<analysis::AggPdf> months;     // [n_months] 月度漂移 (月键 = config 区间月份表, UI 自持)
-  std::vector<analysis::AggPdf> by_weekday; // [7]
-  std::vector<analysis::AggPdf> by_tod;     // [kTodBins] 日内 10 分钟桶
-  analysis::AggPdf global;                  // 全区间
-  std::vector<AssetLine> lines;             // [A_sub] 槽位 == 子轴下标, .asset = 全局轴下标
-  Integrity integrity;                      // 全区间
-  // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局的 n 是抽样后的数, 资产线恒为全量 ——
-  // UI 得把这个比例说出来, 免得两边的 n 并列看着矛盾.
-  std::atomic<size_t> agg_stride{1};
-
-  // ==========================================================================
-  // Methods (worker 线程调用)
-  // ==========================================================================
+  struct Snap {
+    std::vector<analysis::AggPdf> months;     // [n_months] 月度漂移 (月键 = config 区间月份表, UI 自持)
+    std::vector<analysis::AggPdf> by_weekday; // [7]
+    std::vector<analysis::AggPdf> by_tod;     // [kTodBins] 日内 10 分钟桶
+    analysis::AggPdf global;                  // 全区间
+    std::vector<AssetLine> lines;             // [A_sub] 槽位 == 子轴下标, .asset = 全局轴下标
+    Integrity integrity;                      // 全区间
+    // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局的 n 是抽样后的数, 资产线恒为全量
+    size_t agg_stride = 1;
+  };
+  Spec spec;
+  Snap snap;
 
   Dist();
   ~Dist();
 
-  // 重置构建参数并进入 Building. cols = [值列 (+ valid 列)]; global_ids = 子轴 → 全局轴映射
-  // (UniverseAxis::ids). 展示字段不清 (旧图留住), universe 变了才整体重建.
-  void reset_for_build(std::vector<size_t> cols, std::vector<misc::Ym> month_keys,
-                       std::vector<uint32_t> global_ids);
-
+  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), universe 变了才重建资产线
+  void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式 (每批 IO → 扫描 → 归约 → 发布); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
-
   void clear();
 
 private:
   struct Runtime; // worker 私有 (批平面 / sketch / staging / shard), 定义在 Dist.cpp
   std::unique_ptr<Runtime> rt_;
-  // 构建参数 (UI 不看): reset 时定好, build 全程只读
-  std::vector<size_t> columns_;
-  std::vector<misc::Ym> months_;
-  std::vector<uint32_t> global_ids_;
+  analysis::ReadScope scope_; // reset 时定好, build 全程只读
 };

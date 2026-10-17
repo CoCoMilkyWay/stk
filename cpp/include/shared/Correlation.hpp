@@ -1,6 +1,5 @@
 #pragma once
 
-#include "codec/L2_DataType.hpp" // L2::ValidType
 #include "shared/Analysis.hpp"
 #include "shared/Progress.hpp"
 
@@ -41,13 +40,17 @@ class FeatureRead;
 //   相邻分钟高度自相关, 抽稀几乎不损精度; F² × 样本数 是唯一的成本瓶颈.
 //
 // 数值: 每切片每特征的秩先标准化到 均值 0 / 单位方差 (在它自己的有效资产集上), 无效槽
-//   置 0 并另记掩码. 标准化之后, "把各切片的叉积累加起来再统一除" 恒等于 "逐切片算 ρ
+//   置 0 并另记位掩码. 标准化之后, "把各切片的叉积累加起来再统一除" 恒等于 "逐切片算 ρ
 //   再平均" —— 于是只需一套跨切片累加器, 不必每切片开方.
-//   缺失按 pairwise-complete 精确处理 (每对各自的交集均值/方差), 故累加四个量:
-//     sxy_ij = Σ R_i R_j     sx_ij = Σ R_i m_j (交集上 x 的和; sx_ji 对称位是 y 的和)
-//     sxx_ij = Σ R_i² m_j    n_ij  = Σ m_i m_j
+//   缺失按 pairwise-complete 精确处理 (每对各自的交集均值/方差), 累加六个量:
+//     xy = Σ R_i R_j (全资产, 交集外恒 0)       n = |m_i ∩ m_j|
+//     x  = Σ_{i∩j} R_i,  xx = Σ_{i∩j} R_i²      y / yy 对称
+//   只有 xy 是稠密内积 (寄存器分块 GEMM); 其余四个由行恒等式 Σ_i R = 0, Σ_i R² = k 化成
+//   掩码差集上的稀疏和, 掩码相同 (等价类) 的对直接 O(1): x = y = 0, xx = yy = n = k.
 //   (秩本身是在各自有效集上排的, 不是在每对的交集上排 —— 逐对重排是 F²·A log A, 不可行;
 //    这是这里唯一的近似, 缺失率低时无感.)
+// 三个目标 (Correlation / CorrLag / CorrPair) 同一个引擎 (Correlation.cpp), 只差配置:
+//   切片布局 (等距抽稀 / 连续窗 / 取满) × lag 数 (1 / kCorrLags)
 //
 // 层: 跟随 UI 的 L0/L1 选择 (与 Dist/Transform 只跑 L1 不同, 这里没有 kLevel 硬编码).
 //   L0 目前只有 ts_valid / cs_valid 两列, 非 META 列不足 2 → UI 不提交请求.
@@ -55,55 +58,53 @@ class FeatureRead;
 //   切走 tab → 只中断 (矩阵留在内存, 切回不重算); 切出 Features 任务 → clear() 释放.
 // ============================================================================
 
-static constexpr size_t kCorrDays = 32;         // 抽样日上限 (流式单位 = 天, 逐天发布收敛)
-static constexpr size_t kCorrSliceMinutes = 10; // 日内切片间隔 (分钟; L0 自动换算成秒步长)
-static constexpr size_t kCorrBlockCols = 16;    // 每次 load_day_columns 的特征列数
-static constexpr size_t kCorrMinAssets = 20;    // 单 (切片, 特征) 最少有效资产, 否则该切片该列作废
-static constexpr size_t kCorrMinPairN = 2000;   // 单对累计样本下限, 否则 ρ = NaN (UI 画空格)
-static constexpr size_t kCorrMaxLag = 10;       // lead-lag 半宽 (层行数: L1 = 分钟, L0 = 秒)
+static constexpr size_t kCorrDays = 32;                   // 抽样日上限 (流式单位 = 天, 逐步发布收敛)
+static constexpr size_t kCorrSliceMinutes = 10;           // 日内切片间隔 (分钟; L0 自动换算成秒步长)
+static constexpr size_t kCorrStepCells = size_t(8) << 20; // 单步 (天批) 切片格子预算 天×S×F×A: 列少 (Pair) 一步读多天, IO 按天并行
+static constexpr size_t kCorrMinAssets = 20;              // 单 (切片, 特征) 最少有效资产, 否则该切片该列作废
+static constexpr size_t kCorrMinPairN = 2000;             // 单对累计样本下限, 否则 ρ = NaN (UI 画空格)
+static constexpr size_t kCorrMaxLag = 10;                 // lead-lag 半宽 (层行数: L1 = 分钟, L0 = 秒)
 static constexpr size_t kCorrLags = 2 * kCorrMaxLag + 1;
 static constexpr size_t kCorrLagWindow = kCorrLags; // CorrLag 每日连续窗长 (行数): 每个 lag 至少 kCorrMaxLag+1 对切片
 
 // 该层的切片行步长 (kCorrSliceMinutes 分钟折成层行数; L1 = 10, L0 = 600)
 size_t corr_slice_stride(size_t level);
 
+// 三个目标共用的输入: 层 + 列描述 (矩阵 / lag: 升序去重 ≥ 2; 单对: {a, b} 按序)
+struct CorrSpec {
+  size_t level = 0;      // 所属层 (UI 切层后不误读旧快照)
+  fmeta::ColumnSet cols; // 值列 = 该层 metadata 下标 (+ 门控)
+  size_t n() const { return cols.n(); }
+  uint32_t col(size_t i) const {
+    assert(i < n());
+    return static_cast<uint32_t>(cols.io[i]);
+  }
+  bool same(const CorrSpec &o) const { return level == o.level && cols.io == o.cols.io; }
+};
+
 struct Correlation : Published {
-  // ==========================================================================
-  // 发布快照 (worker 日末短锁写; UI 渲染帧内持锁只读)
-  // ==========================================================================
-  size_t level = 0;             // 该矩阵所属层 (UI 切层后不误读旧矩阵)
-  std::vector<uint32_t> cols;   // [n] 该层 metadata 下标 (升序); n = 矩阵边长
-  std::vector<float> rho;       // [n][n] 平均截面 Spearman; NaN = 样本不足 / 无方差
-  std::vector<uint32_t> pair_n; // [n][n] 累计 pairwise 样本数 (切片 × 资产)
-
-  size_t n() const { return cols.size(); }
-
-  // ==========================================================================
-  // Methods (worker 线程调用)
-  // ==========================================================================
+  using Spec = CorrSpec;
+  // 发布快照 (worker 每步短锁 swap; UI 渲染帧内持锁只读)
+  struct Snap {
+    std::vector<float> rho;       // [n][n] 平均截面 Spearman; NaN = 样本不足 / 无方差
+    std::vector<uint32_t> pair_n; // [n][n] 累计 pairwise 样本数 (切片 × 资产); 对角 = 有效资产数
+  };
+  Spec spec;
+  Snap snap;
 
   Correlation();
   ~Correlation();
 
-  // 重置全部状态并进入 Building. cols = 参与矩阵的列 (metadata 下标, 升序去重, ≥ 2),
-  // valid_types 与之平行; meta_col = "ts_valid" 门控列下标; n_assets = universe 子轴大小
-  void reset_for_build(size_t lvl, std::vector<uint32_t> cols,
-                       std::vector<L2::ValidType> valid_types, size_t meta_col,
-                       std::vector<misc::Ym> month_keys, size_t n_assets);
-
-  // 逐抽样日构建 (日内切片累加, 日末发布); 被取消返回 false
+  // 重置全部状态并进入 Building (列集/层变了旧矩阵下标全错位, 快照整体清)
+  void reset(analysis::ReadScope scope, Spec spec);
+  // 逐抽样日构建 (日内切片累加, 每步发布); 被取消返回 false
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
-
   void clear();
 
 private:
-  struct Runtime; // worker 私有 (切片平面 + 累加器), 定义在 Correlation.cpp
+  struct Runtime; // worker 私有 (引擎 + 发布 staging), 定义在 Correlation.cpp
   std::unique_ptr<Runtime> rt_;
-  // 构建参数 (reset 时定, build 全程只读)
-  std::vector<L2::ValidType> valid_types_;
-  size_t meta_col_ = 0;
-  std::vector<misc::Ym> months_; // 升序
-  size_t A_ = 0;                 // universe 子轴大小
+  analysis::ReadScope scope_; // reset 时定好, build 全程只读
 };
 
 // ============================================================================
@@ -117,29 +118,27 @@ private:
 // ============================================================================
 
 struct CorrPair : Published {
-  // 发布快照
-  size_t level = 0;
-  uint32_t col_a = UINT32_MAX, col_b = UINT32_MAX; // metadata 下标 (UI 核对当前选中对)
-  std::array<float, kCorrLags> rho{};              // rho[kCorrMaxLag] = 同期; NaN = 样本不足
-  std::array<uint32_t, kCorrLags> pair_n{};
+  using Spec = CorrSpec; // cols = {a, b} (metadata 下标, UI 核对当前选中对)
+  struct Snap {
+    std::array<float, kCorrLags> rho{}; // rho[kCorrMaxLag] = 同期; NaN = 样本不足
+    std::array<uint32_t, kCorrLags> pair_n{};
+  };
+  Spec spec;
+  Snap snap;
 
   static int lag_of(size_t k) { return static_cast<int>(k) - static_cast<int>(kCorrMaxLag); }
 
   CorrPair();
   ~CorrPair();
 
-  void reset_for_build(size_t lvl, uint32_t a, uint32_t b, L2::ValidType vt_a, L2::ValidType vt_b,
-                       size_t meta_col, std::vector<misc::Ym> month_keys, size_t n_assets);
+  void reset(analysis::ReadScope scope, Spec spec);
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
   void clear();
 
 private:
   struct Runtime;
   std::unique_ptr<Runtime> rt_;
-  L2::ValidType vt_a_ = L2::ValidType::ALL, vt_b_ = L2::ValidType::ALL;
-  size_t meta_col_ = 0;
-  std::vector<misc::Ym> months_;
-  size_t A_ = 0;
+  analysis::ReadScope scope_;
 };
 
 // ============================================================================
@@ -151,35 +150,28 @@ private:
 //   故只算上三角 × 全部 lag, lag_best 反对称.
 // 抽样: 与矩阵同一套抽样日; 每日一段连续 kCorrLagWindow 行的窗 (起点逐日轮转), 窗内所有
 //   (t, t+lag) 切片对都累加. 连续窗是必要的 —— 抽稀切片分辨不了相邻期.
-// 数值: 与矩阵同一套秩标准化, 但只累 Σ R_i R_j 与 Σ m_i m_j, ρ ≈ sxy / n (省掉 pairwise-
-//   complete 的均值/方差修正 = 内积从 6 个减到 2 个; 缺失偏差对同一对的各 lag 几乎一致,
-//   argmax 不受影响). 这是诊断图, 精确 ρ 请看主矩阵与 CorrPair 曲线.
-// 成本: ≈ 主矩阵的 2~3 倍 (Σ_lag (W-|lag|) × 2 个内积 vs S × 6 个内积), 故只在 UI 勾选时算.
+// 数值: 与矩阵同一引擎同一套累加量 (精确 pairwise-complete ρ, 逐 lag).
+// 成本: ≈ 主矩阵的 Σ_lag (W-|lag|) / S 倍, 故只在 UI 勾选时算.
 // ============================================================================
 
 struct CorrLag : Published {
-  // 发布快照 (cols 必须与 Correlation.cols 一致, UI 才能按同一显示序取值)
-  size_t level = 0;
-  std::vector<uint32_t> cols;
-  std::vector<int8_t> lag_best; // [n][n] |ρ| 最大的 lag (反对称; 对角 0; 样本不足 0)
-  std::vector<float> rho_best;  // [n][n] 该 lag 上的 ρ (对称位为同值); NaN = 样本不足
-
-  size_t n() const { return cols.size(); }
+  using Spec = CorrSpec; // 必须与 Correlation.spec 一致 (same), UI 才能按同一显示序取值
+  struct Snap {
+    std::vector<int8_t> lag_best; // [n][n] |ρ| 最大的 lag (反对称; 对角 0; 样本不足 0)
+    std::vector<float> rho_best;  // [n][n] 该 lag 上的 ρ (对称位为同值); NaN = 样本不足
+  };
+  Spec spec;
+  Snap snap;
 
   CorrLag();
   ~CorrLag();
 
-  void reset_for_build(size_t lvl, std::vector<uint32_t> cols,
-                       std::vector<L2::ValidType> valid_types, size_t meta_col,
-                       std::vector<misc::Ym> month_keys, size_t n_assets);
+  void reset(analysis::ReadScope scope, Spec spec);
   bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
   void clear();
 
 private:
   struct Runtime;
   std::unique_ptr<Runtime> rt_;
-  std::vector<L2::ValidType> valid_types_;
-  size_t meta_col_ = 0;
-  std::vector<misc::Ym> months_;
-  size_t A_ = 0;
+  analysis::ReadScope scope_;
 };

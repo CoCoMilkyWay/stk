@@ -3,6 +3,7 @@
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Config.hpp"
+#include "shared/Feature.hpp"
 
 #include <numeric>
 #include <random>
@@ -18,6 +19,24 @@ ReadScope read_scope(const Config &cfg, size_t num_assets) {
   return s;
 }
 
+fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols) {
+  const auto &meta = feature.metadata;
+  const auto &list = meta.features[level];
+  assert(!cols.empty());
+  fmeta::ColumnSet cs;
+  cs.vts.reserve(cols.size());
+  bool gated = false;
+  for (const size_t c : cols) {
+    assert(c < list.size());
+    cs.vts.push_back(list[c].valid_type);
+    gated |= list[c].valid_type != L2::ValidType::ALL;
+  }
+  cs.io = std::move(cols);
+  if (gated)
+    cs.io.push_back(meta.col_of(level, "ts_valid"));
+  return cs;
+}
+
 DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months) {
   TraceN("EnumDates"); // 首帧账目: 每月一次目录迭代 + 每天一次 stat
   DateList out;
@@ -28,6 +47,26 @@ DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> 
     }
   }
   return out;
+}
+
+DayPlan plan_days(const FeatureRead &reader, const std::vector<misc::Ym> &months, DayOrder order, size_t limit) {
+  const DateList all = enumerate_dates(reader, months);
+  std::vector<uint32_t> idx(all.dates.size());
+  std::iota(idx.begin(), idx.end(), 0u);
+  if (order == DayOrder::Shuffle)
+    std::shuffle(idx.begin(), idx.end(), std::mt19937{0x5eed}); // 与 shuffled_order 同种子: 跨构建稳定
+  if (limit > 0 && idx.size() > limit)
+    idx.resize(limit);
+  DayPlan p;
+  p.dates.reserve(idx.size());
+  p.month.reserve(idx.size());
+  p.weekday.reserve(idx.size());
+  for (const uint32_t i : idx) {
+    p.dates.push_back(all.dates[i]);
+    p.month.push_back(all.month[i]);
+    p.weekday.push_back(static_cast<uint8_t>(misc::weekday_of(all.dates[i])));
+  }
+  return p;
 }
 
 void prepare_slots(std::vector<KLLcache> &slots, size_t n, size_t capacity, size_t resolution) {
@@ -61,9 +100,9 @@ void check_axis(const std::vector<uint32_t> &global_ids) {
   (void)global_ids;
 }
 
-size_t thread_count(size_t A) {
+size_t threads_for(size_t max_tasks) {
   const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
-  return std::min(n_hw, std::max(kDaysPerBatch, n_asset_blocks(A)));
+  return std::max<size_t>(1, std::min(n_hw, max_tasks));
 }
 
 } // namespace analysis

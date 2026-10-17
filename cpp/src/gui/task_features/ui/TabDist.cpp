@@ -129,7 +129,7 @@ static std::string format_month(misc::Ym m) { return misc::slash(misc::first_day
 
 // 槽数 (滑条范围). 月取 config 区间月份表 (构建前也有), 资产取 universe 子轴
 // (dist.lines, reset 时定; 首次构建前为空 → 滑条不显示)
-static int DimCount(const Dist &dist, const DistUIState &ui, int dim) {
+static int DimCount(const Dist::Snap &dist, const DistUIState &ui, int dim) {
   switch (dim) {
   case DIM_MONTH:
     return static_cast<int>(ui.months.size());
@@ -145,12 +145,12 @@ static int DimCount(const Dist &dist, const DistUIState &ui, int dim) {
 
 // 资产维焦点槽 = lines 下标 (子轴下标); 越界 (构建前 / universe 变小) 返回 -1.
 // 全局资产 (items 查询) 用 lines[槽].asset.
-static int FocusAssetOf(const Dist &dist, int focus) {
+static int FocusAssetOf(const Dist::Snap &dist, int focus) {
   return focus >= 0 && static_cast<size_t>(focus) < dist.lines.size() ? focus : -1;
 }
 
 // 聚合维度 (0-2) 的槽快照; 数据未就绪 (槽表还没建) 返回 nullptr. 资产维度走 lines 快照
-static const AggPdf *DimSlot(const Dist &dist, int dim, int i) {
+static const AggPdf *DimSlot(const Dist::Snap &dist, int dim, int i) {
   switch (dim) {
   case DIM_MONTH:
     return i < static_cast<int>(dist.months.size()) ? &dist.months[i] : nullptr;
@@ -163,7 +163,7 @@ static const AggPdf *DimSlot(const Dist &dist, int dim, int i) {
 }
 
 // 槽名 (不含样本数): "2024/01" / "Mon" / "09:15" / "000001 平安银行" (资产维 i = 子轴下标)
-static std::string DimName(const Dist &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
+static std::string DimName(const Dist::Snap &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
   switch (dim) {
   case DIM_MONTH:
     return format_month(ui.months[i]);
@@ -185,7 +185,7 @@ static std::string DimName(const Dist &dist, const DistUIState &ui, const Asset 
 }
 
 // 槽样本数 (0 = 尚无数据; 资产维 i = 子轴下标)
-static uint64_t DimSamples(const Dist &dist, int dim, int i) {
+static uint64_t DimSamples(const Dist::Snap &dist, int dim, int i) {
   if (dim == DIM_ASSETS) {
     const int s = FocusAssetOf(dist, i);
     return s >= 0 ? dist.lines[s].n : 0;
@@ -195,7 +195,7 @@ static uint64_t DimSamples(const Dist &dist, int dim, int i) {
 }
 
 // 滑条标签: "槽名 (n)" / "槽名"
-static std::string DimLabel(const Dist &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
+static std::string DimLabel(const Dist::Snap &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
   std::string label = DimName(dist, ui, asset, dim, i);
   const uint64_t n = DimSamples(dist, dim, i);
   if (n > 0)
@@ -227,11 +227,11 @@ static void RenderWindowControl(DistService *service, SharedData &data,
     ui.months = misc::months_between(data.config.start_date, data.config.end_date);
   }
   const int dim = ui.selected_dimension;
-  const int n = DimCount(dist, ui, dim);
+  const int n = DimCount(dist.snap, ui, dim);
   if (n > 0) {
     int &focus = ui.focus[dim];
     focus = std::clamp(focus, 0, n - 1);
-    const std::string label = DimLabel(dist, ui, data.asset, dim, focus);
+    const std::string label = DimLabel(dist.snap, ui, data.asset, dim, focus);
     ImGui::SetNextItemWidth(-1);
     ImGui::SliderInt("##Focus", &focus, 0, n - 1, label.c_str());
     ui.focus_active = ImGui::IsItemActive(); // 按住拖动中 → 该维度的图高亮焦点
@@ -358,7 +358,7 @@ static void DrawSelectedBorder() {
 
 // 聚合维度 (月/周/日内) PDF 面板: 每槽一条线, 离焦点越近越亮 (Hot colormap), 焦点线加粗置顶.
 // 消费 AggPdf 发布快照 (worker 批末导出成品), 零计算只画. 点击图 → 选中该维度 (滑条切过去).
-static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset, int dim,
+static void RenderPDFByDim(const Dist::Snap &dist, DistUIState &ui, const Asset &asset, int dim,
                            int &clicked_dimension) {
   char child_id[16];
   snprintf(child_id, sizeof(child_id), "PDFDim%d", dim);
@@ -472,7 +472,7 @@ static void RenderPDFByDim(const Dist &dist, DistUIState &ui, const Asset &asset
 // 资产截面: 高亮模式 = hover 到线/点, 或滑条按住中 (焦点 = ui.focus[DIM_ASSETS]); 高亮线置顶,
 // 其余线全资产压暗作背景; 松手/移开即恢复常态. 输出 hovered_line_out (无 hover → -1,
 // 详情面板回落到焦点资产)
-static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInfo &assetinfo,
+static void RenderAssetsPDF(const Dist::Snap &dist, const Asset &asset, const AssetInfo &assetinfo,
                             DistUIState &ui, int &clicked_dimension, int &hovered_line_out) {
   // Title with tooltip
   ImGui::TextUnformatted(kDimTitles[DIM_ASSETS]);
@@ -693,7 +693,7 @@ static void RenderAssetsPDF(const Dist &dist, const Asset &asset, const AssetInf
 // Asset Info Panel (left column): hover 优先, 否则焦点资产 (滑条)
 // ============================================================================
 
-static void RenderAssetInfo(const Dist &dist, const Asset &asset,
+static void RenderAssetInfo(const Dist::Snap &dist, const Asset &asset,
                             const AssetInfo &assetinfo, int hovered_line, int focus_asset) {
   // Use remaining height in parent
   float remaining_height = ImGui::GetContentRegionAvail().y;
@@ -826,6 +826,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   }
 
   auto &dist = data.dist;
+  const Dist::Snap &snap = dist.snap;
 
   // 流式维护 x/y range: epoch 变了 (= 数据变了) 就 autofit 一次, 稳态把缩放还给用户.
   // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧
@@ -843,7 +844,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Integrity (auto-fit height)
   float integrity_height = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y * 1.5;
   ImGui::BeginChild("IntegrityBar", ImVec2(0, integrity_height), true);
-  RenderIntegrity(dist.integrity);
+  RenderIntegrity(snap.integrity);
   ImGui::EndChild();
 
   // Window control (auto-fit height: 2 rows + padding)
@@ -860,7 +861,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   // Left column: Color Mode Selector + Asset Info (hover 优先, 否则焦点资产; 剩余空间)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
   RenderColorModeSelector(ui, data.asset, data.assetinfo);
-  RenderAssetInfo(dist, data.asset, data.assetinfo, ui.hovered_line, FocusAssetOf(dist, ui.focus[DIM_ASSETS]));
+  RenderAssetInfo(snap, data.asset, data.assetinfo, ui.hovered_line, FocusAssetOf(snap, ui.focus[DIM_ASSETS]));
   ImGui::EndChild();
 
   ImGui::NextColumn();
@@ -882,7 +883,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
   for (int dim = DIM_MONTH; dim <= DIM_TOD; ++dim) {
     if (dim != DIM_MONTH)
       ImGui::NextColumn();
-    RenderPDFByDim(dist, ui, data.asset, dim, clicked_dimension);
+    RenderPDFByDim(snap, ui, data.asset, dim, clicked_dimension);
   }
 
   ImGui::Columns(1);
@@ -891,7 +892,7 @@ void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui) {
 
   // Bottom: Assets PDF (outputs ui.hovered_line)
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(dist, data.asset, data.assetinfo, ui, clicked_dimension, ui.hovered_line);
+  RenderAssetsPDF(snap, data.asset, data.assetinfo, ui, clicked_dimension, ui.hovered_line);
   ImGui::EndChild();
 
   // 点图 → 选中该维度 (顶部滑条切到它的焦点)

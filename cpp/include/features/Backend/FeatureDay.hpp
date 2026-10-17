@@ -81,7 +81,7 @@ struct FeatureDay {
     std::vector<ColRef> dir;               // 日文件目录 [F]
     std::vector<uint32_t> order;           // 读: 所请求列下标, 按载荷偏移升序 (并段用)
     std::vector<uint8_t> buf;              // 写: 一列载荷; 读: 一段载荷 (≤ kRunCap, 单列超限则为该列)
-    std::vector<feature_storage_t> column; // 写: 抽出的一列 [T][A] (编码可就地改写)
+    std::vector<feature_storage_t> column; // 写: 抽出的相邻一组列 [nf][T][A] (编码可就地改写)
   };
 
   enum class Status : uint8_t {
@@ -111,7 +111,8 @@ struct FeatureDay {
     return "?";
   }
 
-  // 一层一天: layer [T][F][A] 逐列抽列 → 编码 → 追加, 收工回填头 + 目录, rename 发布. 返回文件字节数.
+  // 一层一天: layer [T][F][A] 按相邻列组抽列 → 逐列编码 → 追加, 收工回填头 + 目录, rename 发布. 返回文件字节数.
+  // 载荷与逐列抽取逐字节相同, 分组只改 layer 的读序.
   static size_t write(const std::string &path, size_t lvl, const feature_storage_t *layer, size_t A,
                       std::uint64_t axis_hash, Scratch &s) {
     TraceN("FeatureDayWrite");
@@ -122,19 +123,25 @@ struct FeatureDay {
     const int fd = file_open_trunc(tmp_path.c_str());
     assert(fd >= 0 && "特征日文件 .tmp 建不出来");
 
-    s.column.resize(T * A);
-    s.buf.resize(FeatureCodec::bound(T * A));
+    const size_t words = T * A;
+    const size_t group = std::clamp<size_t>(kGatherBytes / (words * sizeof(feature_storage_t)), 1, kGatherMaxCols);
+    s.column.resize(group * words);
+    s.buf.resize(FeatureCodec::bound(words));
     s.dir.resize(F);
     uint64_t end = sizeof(FeatureFileHeader) + F * sizeof(ColRef);
-    for (size_t f = 0; f < F; ++f) {
-      const bool delta = gather_(layer, T, F, A, f, s.column.data());
-      const size_t size = FeatureCodec::encode(s.column.data(), T, A, delta, s.buf.data(), s.buf.size());
-      assert(size <= UINT32_MAX && "单列载荷超 4GB");
-      const size_t written = file_pwrite(fd, s.buf.data(), size, end);
-      assert(written == size && "特征日文件写入失败 (磁盘满?)");
-      (void)written;
-      s.dir[f] = {end, static_cast<uint32_t>(size), delta ? 1u : 0u};
-      end += size;
+    bool delta[kGatherMaxCols];
+    for (size_t f0 = 0; f0 < F; f0 += group) {
+      const size_t nf = std::min(group, F - f0);
+      gather_(layer, T, F, A, f0, nf, s.column.data(), delta);
+      for (size_t j = 0; j < nf; ++j) {
+        const size_t size = FeatureCodec::encode(s.column.data() + j * words, T, A, delta[j], s.buf.data(), s.buf.size());
+        assert(size <= UINT32_MAX && "单列载荷超 4GB");
+        const size_t written = file_pwrite(fd, s.buf.data(), size, end);
+        assert(written == size && "特征日文件写入失败 (磁盘满?)");
+        (void)written;
+        s.dir[f0 + j] = {end, static_cast<uint32_t>(size), delta[j] ? 1u : 0u};
+        end += size;
+      }
     }
 
     const FeatureFileHeader head{FeatureFileHeader::kMagic, T, F, A, axis_hash, L.fingerprint};
@@ -224,29 +231,48 @@ private:
   // 首尾相接的列载荷并成一段读, 一段最多这么大
   static constexpr size_t kRunCap = size_t(4) << 20;
 
-  // 抽列 f (layer 行 t 的第 f 段) → col [T][A], 同一遍数原值 / T 轴差分的非零字:
-  // 差分零字更多才差分 (SparseCodec 载荷 ∝ 非零字数; 对 zstd 也是好代理)
-  static bool gather_(const feature_storage_t *layer, size_t T, size_t F, size_t A, size_t f, feature_storage_t *col) {
-    const uint16_t *src = reinterpret_cast<const uint16_t *>(layer) + f * A;
-    uint16_t *dst = reinterpret_cast<uint16_t *>(col);
-    const size_t stride = F * A;
-    size_t nz_raw = 0, nz_delta = 0;
-    for (size_t a = 0; a < A; ++a) {
-      const uint16_t v = src[a];
-      dst[a] = v;
-      nz_raw += v != 0;
-    }
-    nz_delta = nz_raw;
-    for (size_t t = 1; t < T; ++t) {
-      const uint16_t *row = src + t * stride, *prev = row - stride;
-      uint16_t *out = dst + t * A;
+  // 抽列分组: 一组相邻列的抽列缓冲上限 (组内列数 = 它 / 单列字节, 夹到 [1, kGatherMaxCols]).
+  // 每行这组列首尾相接, 一行一段顺序读 (预取器吃得到); 单列 [T][A] 跨距 F·A, 逐列抽是 T 次冷跳.
+  // 缓冲要留在 L2/L3 里给紧随的编码读; 单列就超限的层 (L0) 退化为逐列.
+  static constexpr size_t kGatherBytes = size_t(2) << 20;
+  static constexpr size_t kGatherMaxCols = 32;
+
+  // 抽相邻 nf 列 [f0, f0 + nf) → cols 第 j 段 [T][A] = 列 f0 + j, 同一遍数原值 / T 轴差分的非零字:
+  // delta[j] = 差分零字更多才差分 (SparseCodec 载荷 ∝ 非零字数; 对 zstd 也是好代理)
+  static void gather_(const feature_storage_t *layer, size_t T, size_t F, size_t A, size_t f0, size_t nf,
+                      feature_storage_t *cols, bool *delta) {
+    assert(nf >= 1 && nf <= kGatherMaxCols && f0 + nf <= F);
+    const uint16_t *src = reinterpret_cast<const uint16_t *>(layer) + f0 * A;
+    uint16_t *dst = reinterpret_cast<uint16_t *>(cols);
+    const size_t stride = F * A, words = T * A;
+    size_t nz_raw[kGatherMaxCols] = {}, nz_delta[kGatherMaxCols] = {};
+    for (size_t j = 0; j < nf; ++j) {
+      const uint16_t *row = src + j * A;
+      uint16_t *out = dst + j * words;
       for (size_t a = 0; a < A; ++a) {
         const uint16_t v = row[a];
         out[a] = v;
-        nz_raw += v != 0;
-        nz_delta += (v ^ prev[a]) != 0;
+        nz_raw[j] += v != 0;
+      }
+      nz_delta[j] = nz_raw[j];
+    }
+    for (size_t t = 1; t < T; ++t) {
+      for (size_t j = 0; j < nf; ++j) {
+        const uint16_t *row = src + t * stride + j * A;
+        uint16_t *out = dst + j * words + t * A;
+        const uint16_t *prev = out - A;
+        size_t raw = 0, dif = 0;
+        for (size_t a = 0; a < A; ++a) {
+          const uint16_t v = row[a];
+          out[a] = v;
+          raw += v != 0;
+          dif += (v ^ prev[a]) != 0;
+        }
+        nz_raw[j] += raw;
+        nz_delta[j] += dif;
       }
     }
-    return nz_delta < nz_raw;
+    for (size_t j = 0; j < nf; ++j)
+      delta[j] = nz_delta[j] < nz_raw[j];
   }
 };
