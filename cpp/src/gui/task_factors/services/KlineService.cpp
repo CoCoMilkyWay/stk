@@ -20,12 +20,13 @@ struct KlineService::Impl {
   std::vector<size_t> idx;
 
   void ensure(const analysis::ReadScope &sc) {
-    if (reader && dir == sc.lib.dir && hash == sc.lib.axis.hash && A == sc.lib.axis.size()) {
+    const FeatureLib &lib = sc.lib();
+    if (reader && dir == lib.dir && hash == lib.axis.hash && A == lib.axis.size()) {
       reader->revive(); // 新请求 = Inspect 刚读过库 (库已落地), 判废解除
       return;
     }
-    dir = sc.lib.dir, hash = sc.lib.axis.hash, A = sc.lib.axis.size();
-    reader.emplace(sc.lib);
+    dir = lib.dir, hash = lib.axis.hash, A = lib.axis.size();
+    reader.emplace(lib);
     cols.preallocate(A, L_min, 5);
   }
 };
