@@ -1008,7 +1008,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   const float table_height = std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing(), ImGui::GetFrameHeight());
 
   // 表列序 (sort_column / 排序 switch 皆按此下标)
-  constexpr int kNumCols = 15;
+  constexpr int kNumCols = 14;
   if (ImGui::BeginTable("FeatureTable", kNumCols,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable |
@@ -1019,19 +1019,18 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     // Table headers - fixed fit (auto shrink to content)
     ImGui::TableSetupColumn("Multi", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);         // 0
     ImGui::TableSetupColumn("Code", ImGuiTableColumnFlags_WidthFixed);                                         // 1
-    ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed);                                            // 2
-    ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed);                                        // 3
-    ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);                                      // 4
-    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);                                         // 5
-    ImGui::TableSetupColumn("Cat1", ImGuiTableColumnFlags_WidthFixed);                                         // 6
-    ImGui::TableSetupColumn("Cat2", ImGuiTableColumnFlags_WidthFixed);                                         // 7
-    ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                         // 8
-    ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                        // 9
-    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);          // 10
-    ImGui::TableSetupColumn("PSD(intraday)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 11
-    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 12
-    ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 13
-    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                         // 14
+    ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed);                                        // 2
+    ImGui::TableSetupColumn("Name CN", ImGuiTableColumnFlags_WidthFixed);                                      // 3
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);                                         // 4
+    ImGui::TableSetupColumn("Cat1", ImGuiTableColumnFlags_WidthFixed);                                         // 5
+    ImGui::TableSetupColumn("Cat2", ImGuiTableColumnFlags_WidthFixed);                                         // 6
+    ImGui::TableSetupColumn("Stat", ImGuiTableColumnFlags_WidthFixed);                                         // 7
+    ImGui::TableSetupColumn("Range", ImGuiTableColumnFlags_WidthFixed);                                        // 8
+    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);          // 9
+    ImGui::TableSetupColumn("PSD(intraday)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 10
+    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 11
+    ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 12
+    ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                         // 13
     ImGui::TableSetupScrollFreeze(0, 1);                                                                       // Freeze header row
 
     // 贴合窗 (kFitFrames 帧) 全程全行提交, 但只在中段两帧真正请求贴合:
@@ -1049,13 +1048,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
 
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"Multi", "Code", "W", "Valid", "Name CN", "Type", "Cat1", "Cat2",
+    const char *headers[kNumCols] = {"Multi", "Code", "Valid", "Name CN", "Type", "Cat1", "Cat2",
                                      "Stat", "Range", "Dist", "PSD (intraday)", "TS Norm", "CS Norm", "Deps"};
     const char *tooltips[kNumCols] = {
         "多选: 选择多个特征进行对比\n"
         "• 首个作为主特征",
         "代码: 特征的唯一标识符",
-        "宽度: 特征的维度数量",
         "有效粒度\n"
         "• ALL = 全部\n"
         "• DATA = 数据\n"
@@ -1165,38 +1163,35 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
                 cmp = strcmp(fa.code, fb.code);
                 break;
               case 2:
-                cmp = fa.width - fb.width;
-                break;
-              case 3:
                 cmp = (int)fa.valid_type - (int)fb.valid_type;
                 break;
-              case 4:
+              case 3:
                 cmp = strcmp(fa.name_cn, fb.name_cn);
                 break;
-              case 5:
+              case 4:
                 cmp = (int)fa.data_type - (int)fb.data_type;
                 break;
-              case 6:
+              case 5:
                 cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
                 break;
-              case 7:
+              case 6:
                 cmp = std::strcmp(s_eff_cat2[a], s_eff_cat2[b]);
                 break;
-              case 8: // Stat: invalid% (次键 nan%)
+              case 7: // Stat: invalid% (次键 nan%)
                 cmp = cmp3(ca.integrity.invalid_pct(), cb.integrity.invalid_pct());
                 if (cmp == 0)
                   cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
                 break;
-              case 9: // Range: sd (var 单调等价)
+              case 8: // Range: sd (var 单调等价)
                 cmp = cmp3(ca.var, cb.var);
                 break;
-              case 12: // TS Norm
+              case 11: // TS Norm
                 cmp = (int)fa.ts_method - (int)fb.ts_method;
                 break;
-              case 13: // CS Norm
+              case 12: // CS Norm
                 cmp = (int)fa.cs_method - (int)fb.cs_method;
                 break;
-              case 14:
+              case 13:
                 cmp = deps_list[a].compare(deps_list[b]);
                 break;
               }
@@ -1245,10 +1240,6 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       // Column: Code
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(f.code);
-
-      // Column: Width
-      ImGui::TableNextColumn();
-      ImGui::Text("%d", f.width);
 
       // Column: ValidType
       ImGui::TableNextColumn();
@@ -1397,7 +1388,6 @@ void SaveFeatureTableJson(SharedData &data) {
         nlohmann::ordered_json r;
         r["col"] = i;
         r["code"] = f.code;
-        r["w"] = f.width;
         r["valid"] = to_string(f.valid_type).en;
         r["name_cn"] = f.name_cn;
         r["type"] = to_string(f.data_type).en;

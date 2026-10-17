@@ -17,7 +17,6 @@
 
 struct FeatureMetadata {
   const char *code;          // tick_ret_z
-  uint8_t width;             // 1 (由 SRC 推出)
   L2::ValidType valid_type;  // ALL/DATA/DEPTH (由 SRC / 节点 flush 域推出)
   FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
   const char *cat_l1;        // Operator/TS/<dir> or Operator/CS/<dir>

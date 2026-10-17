@@ -367,7 +367,7 @@ bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
   assert(cols.size() == UNIVERSE_COL_COUNT);
   lib.reader.load_day_columns(req.date, cols, res_->cols);
 
-  // 时间外层 / 资产内层 (布局 [T][n][A_sub]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
+  // 时间外层 / 资产内层 (布局 [n][T][A_sub]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
   const FeatureRead::DayColumns &c = res_->cols;
   const size_t A = lib.uni.size();
   assert(A == c.A);

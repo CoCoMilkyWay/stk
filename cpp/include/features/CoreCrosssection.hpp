@@ -39,10 +39,11 @@
 
 template <size_t LVL>
 struct CsLevel;
-#define CS_LEVEL_TRAITS(name, num, fields, rows, psd, xor_delta)                                  \
+#define CS_LEVEL_TRAITS(name, num, fields, rows, psd)                                                       \
   template <>                                                                                               \
   struct CsLevel<num> {                                                                                     \
     static constexpr size_t kLevel = num;                                                                   \
+    static constexpr bool kEmpty = count_of_kind(name##_FIELD_INFO, FeatureDataType::CS) == 0;              \
     template <class Core>                                                                                   \
     [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) { \
       namespace FO = name##_Field;                                                                          \
@@ -95,6 +96,8 @@ public:
 private:
   template <size_t LVL>
   void run(size_t t) {
+    if constexpr (CsLevel<LVL>::kEmpty) // 层内暂无 CS 行: 节拍照走, 有效集也不必扫
+      return;
     // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面
     constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::cs_valid) : size_t(L1_Field::cs_valid);
     const _Float16 *valid_flags = fstore::cs_col<LVL>(day_, t, VALID);

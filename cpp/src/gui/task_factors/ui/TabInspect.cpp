@@ -52,6 +52,20 @@ void follow_limits(ImAxis ax, double lo, double hi) {
   ImPlot::SetupAxisLimits(ax, lo, hi, changed ? ImPlotCond_Always : ImPlotCond_Once);
 }
 
+// 0 钉在正中的可缩放视野: 目标半宽 half 变了才强设 [−half, half]; 否则取用户缩放 / 平移 / 双击 fit 后的 max(|lo|, |hi|) 重新对称到 0.
+// 经 SetupAxisLinks (ImPlot 在 EndPlot 回写交互后的范围), 不用 ImPlotCond_Always (会锁死交互). BeginPlot 后 Setup 阶段调
+void follow_centered(ImAxis ax, double half) {
+  struct Lim {
+    double target, lo, hi;
+  };
+  static std::unordered_map<ImGuiID, Lim> last; // 节点式容器: 元素地址跨 rehash 不变, 可作 link 指针
+  assert(GImPlot->CurrentPlot && half > 0.0);
+  Lim &l = last[ImHashData(&ax, sizeof(ax), GImPlot->CurrentPlot->ID)];
+  const double h = l.target != half ? half : std::max(std::abs(l.lo), std::abs(l.hi));
+  l = Lim{half, -h, h};
+  ImPlot::SetupAxisLinks(ax, &l.lo, &l.hi);
+}
+
 // AutoFit 的可缩放替身: 数据键 key 变了才让下一张图 (title) 对 axes 各 fit 一次; BeginPlot 前调
 void fit_on_change(const char *title, ImGuiID key, std::initializer_list<ImAxis> axes) {
   static std::unordered_map<ImGuiID, ImGuiID> last;
@@ -344,8 +358,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   if (cursor_day < 0 || cursor_day > d.days)
     cursor_day = d.days;
   char title[128];
-  std::snprintf(title, sizeof(title), "分层累计 (等效年化) %s  h=%s  mono %+.3f###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)",
-                factor::stat::hold_name(d.hs.hold).c_str(), d.hs.mono);
+  std::snprintf(title, sizeof(title), "分层累计 (等效年化) %s###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)");
   const int n = d.days + 1;
   float col_ratios[2] = {3.f, 1.f};
   LayerRange yr{};
@@ -855,31 +868,32 @@ void smooth_fit(const analysis::AggPdf &p, std::vector<float> &g) {
 //   时序: x = 时间铺满当前 x 轴, y = 值 [−max|s|, max|s|] → 当前 y 视野 (0 钉在纵向正中), 淡灰压在最底, NoFit (不动坐标自适应)
 //   分档: 组边界竖切 PDF, 每段组色填充 (决策边界); 图例一项, 一键开关
 //   图例序 = ImPlot 本帧首次登记序, 与画序解耦: 先 PlotDummy 按图例序登记, 再按画序 (时序 → 填充 → 线) 真画
-//   x: 给 x_fixed 则固定, 否则贴 PDF
+//   x: 0 恒钉在横向正中 (follow_centered); 目标半宽 = x_half, 给 0 则贴 PDF 两端 max |x|
 struct DistView {
   const char *title, *x_label, *series_label;
   const analysis::AggPdf &pdf;
   const std::vector<float> &series; // 时序 (行序)
   double mean;
-  const ImPlotRange *x_fixed = nullptr;
+  double x_half = 0.0;
   const XDist *bands = nullptr; // 非空 = 分档 (边界 / 组占比 / 组均)
 };
 void plot_dist(const DistView &v, const ImVec2 &size) {
   const ImGuiID key = ImHashData(v.pdf.y.data(), v.pdf.y.size() * sizeof(float), ImHashStr(v.title)); // 标题带矩 + PDF 本身
-  if (v.x_fixed)
-    fit_on_change(v.title, key, {ImAxis_Y1});
-  else
-    fit_on_change(v.title, key, {ImAxis_X1, ImAxis_Y1});
+  fit_on_change(v.title, key, {ImAxis_Y1});
   if (!ImPlot::BeginPlot(v.title, size, ImPlotFlags_NoMenus))
     return;
   CompactLegend cl;
-  ImPlot::SetupAxes(v.x_label, "density", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-  ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
-  if (v.x_fixed)
-    follow_limits(ImAxis_X1, v.x_fixed->Min, v.x_fixed->Max);
-  ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
   const analysis::AggPdf &p = v.pdf;
   const int np = static_cast<int>(p.n_pts);
+  ImPlot::SetupAxes(v.x_label, "density", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+  ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
+  {
+    double half = v.x_half;
+    if (half <= 0.0 && np > 0)
+      half = std::max(std::abs(static_cast<double>(p.x[0])), std::abs(static_cast<double>(p.x[static_cast<size_t>(np) - 1])));
+    follow_centered(ImAxis_X1, half > 0.0 ? half : 1.0); // 无 PDF / 退化在 0 点 → 单位半宽占位
+  }
+  ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
   const char *const kPdf = "PDF", *const kFit = "PDF 光滑拟合", *const kMean = "mean", *const kBands = "分档 G1~G20";
   const ImVec4 col_pdf(0.4f, 0.7f, 1.0f, 1.0f), col_fit(1.0f, 0.4f, 0.7f, 0.9f), col_mean(1.0f, 0.75f, 0.3f, 1.0f), col_ser(0.6f, 0.6f, 0.6f, 0.3f);
   const auto legend = [](const char *id, const ImVec4 &c) {
@@ -958,22 +972,20 @@ void plot_dist(const DistView &v, const ImVec2 &size) {
   ImPlot::EndPlot();
 }
 
-// 左下左半: rIC 分布 — 逐行 rank IC 当随机变量 (标题的矩与顶部 stat 行同一组样本); x 固定 ±0.5, 0 居中: 换持有期 / 因子时分布位置可直接比
+// 左下左半: rIC 分布 — 逐行 rank IC 当随机变量 (标题的矩与顶部 stat 行同一组样本); x 默认 ±0.5, 0 居中: 换持有期 / 因子时分布位置可直接比
 void plot_ic(const InspectDerived &d, const ImVec2 &size) {
-  static const ImPlotRange kX(-0.5, 0.5);
   char title[160];
-  std::snprintf(title, sizeof(title), "rIC 分布 (逐行 rank IC)  mean %+.4f  sd %.4f  skew %+.2f  kurt %+.2f  pos %.2f  n=%d###ic", d.hs.ric.mean,
-                d.hs.ric.sd, d.hs.ric.skew, d.hs.ric.kurt, d.hs.ric.pos, d.hs.n);
-  plot_dist({title, "IC", "rIC(t)", d.ic_pdf, d.ic_series, d.hs.ric.mean, &kX, nullptr}, size);
+  std::snprintf(title, sizeof(title), "rIC 分布 (逐行 rank IC)  sd %.4f  skew %+.2f  kurt %+.2f###ic", d.hs.ric.sd, d.hs.ric.skew, d.hs.ric.kurt);
+  plot_dist({title, "IC", "rIC(t)", d.ic_pdf, d.ic_series, d.hs.ric.mean, 0.5, nullptr}, size);
 }
 
-// 左下右半: 根输入分布 — 池内有效格的根输入值 (标题的矩 = 全体, 不截尾); PDF 已截尾 → x 贴 PDF 即按主体缩放; 时序 = 逐行截面均值; 组边界竖切分档
+// 左下右半: 根输入分布 — 池内有效格的根输入值 (标题的矩 = 全体, 不截尾); PDF 已截尾 → x 半宽贴 PDF 两端 max |x| 即按主体缩放 (0 居中); 时序 = 逐行截面均值; 组边界竖切分档
 void plot_xdist(const InspectDerived &d, const ImVec2 &size) {
   const XDist &x = d.xd;
   char title[160];
-  std::snprintf(title, sizeof(title), "根输入分布 (PDF 截 0.4%%~99.6%%)  mean %+.4g  sd %.4g  skew %+.2f  kurt %+.2f  n=%llu###xdist", x.mean, x.sd,
-                x.skew, x.kurt, static_cast<unsigned long long>(x.n));
-  plot_dist({title, "x", "X(t)", x.pdf, x.series, x.mean, nullptr, &x}, size);
+  std::snprintf(title, sizeof(title), "根输入分布 (PDF 截 0.4%%~99.6%%)  mean %+.4g  sd %.4g  skew %+.2f  kurt %+.2f###xdist", x.mean, x.sd, x.skew,
+                x.kurt);
+  plot_dist({title, "x", "X(t)", x.pdf, x.series, x.mean, 0.0, &x}, size);
 }
 
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
@@ -1481,20 +1493,21 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {
-    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产 (T=%d)  %s %s | value %.2f%%  rank %.2f%%  满档 %.1f  eval %.1f ms | 毛 (价格收益; 成本只进期限结构)%s",
-                        res_scope.universe.c_str(), misc::dash(res_scope.start_date).c_str(), misc::dash(res_scope.end_date).c_str(), res_scope.days, res_scope.A, res_scope.T,
-                        res_scope.backend.c_str(), res_scope.time.c_str(), res_valid, res_rank, res_scope.n_full, res_ms,
-                        match ? "" : "  (旧结果, 新请求计算中…)");
+    ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产  满档 %.1f%s", res_scope.universe.c_str(), misc::dash(res_scope.start_date).c_str(),
+                        misc::dash(res_scope.end_date).c_str(), res_scope.days, res_scope.A, res_scope.n_full, match ? "" : "  (旧结果, 新请求计算中…)");
+    if (ImGui::IsItemHovered())
+      tip("T=%d  %s %s\n"
+          "• value %.2f%%  rank %.2f%%\n"
+          "• eval %.1f ms",
+          res_scope.T, res_scope.backend.c_str(), res_scope.time.c_str(), res_valid, res_rank, res_ms);
     const factor::stat::HoldStat &h = ui.der.hs;
-    if (ui.der.valid && h.n >= 3)
-      ImGui::Text("h=%-5s n=%d/%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.2f%% SR %+.2f trig %.1f%% util %.2f "
-                  "(ok 行 %+.5f sd %.5f t %+.2f pos %.2f skew %+.2f kurt %+.2f) β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f "
-                  "skew %+.2f kurt %+.2f",
-                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_rac, h.n_all, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew,
-                  h.ric.kurt, 100.0 * factor::stat::ls_annual(h), factor::stat::sharpe_of(h), 100.0 * factor::stat::trigger_of(h),
-                  factor::stat::util_of(h, res_scope.n_full), h.ls.mean, h.ls.sd, h.ls.t, h.ls.pos, h.ls.skew, h.ls.kurt, h.beta, h.mono, h.rac.mean,
-                  h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
-    else
+    if (ui.der.valid && h.n >= 3) {
+      ImGui::Text("h=%-5s n=%d  rIC %+.4f t %+.2f pos %.2f | LS %+.2f%% SR %+.2f trig %.1f%% util %.2f β %+.3f | mono %+.3f | rAC %+.3f",
+                  factor::stat::hold_name(h.hold).c_str(), h.n, h.ric.mean, h.ric.t, h.ric.pos, 100.0 * factor::stat::ls_annual(h), factor::stat::sharpe_of(h),
+                  100.0 * factor::stat::trigger_of(h), factor::stat::util_of(h, res_scope.n_full), h.beta, h.mono, h.rac.mean);
+      if (ImGui::IsItemHovered())
+        tip("n = ok 行 %d  /  rAC 行 %d  /  全部行 %d", h.n, h.n_rac, h.n_all);
+    } else
       ImGui::TextDisabled("h=%s  n=%d (有效行不足, 无 stat)", factor::stat::hold_name(cur_hold).c_str(), h.n);
   } else {
     ImGui::TextDisabled("%s", busy ? "计算中…" : (ctx.axis_ready ? "尚未计算 (自动起算 / Compute)" : "资产轴未就绪, 先在 Database 页扫描"));
@@ -1558,12 +1571,13 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           "    ◦ 拖光标只换序, K 线不重载\n"
           "    ◦ 换 universe 子轴才重选");
     ImGui::SameLine();
-    ImGui::TextDisabled("| 色 = R(t) 组色, 阳线空心 / 阴线实心; 青 = 指数 滚动重锚 (1d); 黄 = 指数 首根重锚 (默认隐藏, 点图例)");
+    ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
       tip("K 线图例\n"
           "• 蜡烛色 = 该刻 R(t) 组色\n"
           "    ◦ G1 蓝 → 中段灰 → G20 橙\n"
           "    ◦ 淡 = 池外, 暗灰 = 无值\n"
+          "    ◦ 阳线空心 / 阴线实心\n"
           "• 青线 = 滚动重锚指数: 个股若跟着指数近期走应在的价\n"
           "    ◦ line_t = EMA_L(个股)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L})))\n"
           "    ◦ L = %d 分钟 (1 交易日), S = %d 分钟\n"

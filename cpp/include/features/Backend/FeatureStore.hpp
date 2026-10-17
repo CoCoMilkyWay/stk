@@ -1,7 +1,7 @@
 #pragma once
 
-#include "FeatureStoreConfig.hpp" // 含落盘编码选型 FeatureCodec / CODEC_ENABLED
-#include "misc/cross_platform.hpp"
+#include "FeatureStoreConfig.hpp"
+#include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
 #include <algorithm>
@@ -19,7 +19,6 @@
 #include <mutex>
 #include <string>
 #include <thread>
-#include <vector>
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -70,7 +69,7 @@ inline constexpr size_t kDefaultPoolSlots = 4;
 //
 //   TS:  ts_open(date) → 句柄写 (纯指针算术, 无锁无验证) → 每资产 ts_close
 //   CS:  cs_open(date) 阻塞至本日 assets_done == num_assets (universe 子轴) → 整日扫 → cs_close
-//   IO:  io_try_flush: 摘 DONE → 落盘 → reset → FREE
+//   IO:  io_try_open() 摘一个 DONE → 落盘 (FeatureDay::write, 池不碰格式) → io_close (reset → FREE)
 //
 // 按资产计数 (而非按 worker close 计数) 使资产处置权可在 worker 间转移: 领跑
 // worker 可从落后 worker 接手资产并回填旧日期 (旧日 slot 未计满必为 BUSY,
@@ -132,7 +131,7 @@ public:
     }
   };
 
-  // 日句柄 (TS/CS 同一形态): open 时定址一次, 之后所有读写是纯指针算术 ——
+  // 日句柄 (TS/CS/IO 同一形态): open 时定址一次, 之后所有读写是纯指针算术 ——
   // 热路径不再有字符串比较 / 原子验证 / slot 查找 (原先每 tick 4-6 次).
   // 空句柄 = 没拿到 (池满 / 本日未就绪), try_open 以此表示失败.
   struct Day {
@@ -144,7 +143,7 @@ public:
 private:
   // 某层一天张量字节数 [T][F][A]
   static constexpr size_t level_bytes(size_t lvl, size_t num_assets) {
-    return LEVELS[lvl].rows * LEVELS[lvl].width * num_assets * sizeof(feature_storage_t);
+    return LEVELS[lvl].rows * LEVELS[lvl].field_count * num_assets * sizeof(feature_storage_t);
   }
 
   // Config
@@ -166,11 +165,6 @@ private:
   // Per-worker 已完成日数 (worker 自报, release; 领养方 acquire 读 —— 与被
   // 领养资产的 core 构造/状态写入构成 happens-before). 负载再平衡的观测面.
   std::unique_ptr<std::atomic<uint32_t>[]> ts_frontier_;
-
-  // IO worker 专用复用缓冲 (单线程): 列抽取 / 编码输出 / 日文件目录, 稳态零分配
-  std::vector<feature_storage_t> io_column_;
-  std::vector<uint8_t> io_buf_;
-  std::vector<ColRef> io_dir_;
 
 public:
   // num_assets: universe 子轴大小; axis_hash: UniverseAxis::hash, 写进每个
@@ -224,7 +218,7 @@ public:
     std::cout << "Dimension Details:\n";
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
       const auto &L = LEVELS[lvl];
-      printf("  %-6s [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", L.level_name, L.rows, L.width, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
+      printf("  %-6s [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", L.level_name, L.rows, L.field_count, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
     }
 
     printf("\nPer-day tensor: %.2f MB | Pool size: %zu slots | Total: %.2f GB\n",
@@ -334,7 +328,7 @@ public:
   // 按日门控: 阻塞至本日 slot 存在且 asset-day 计满. 返回后本日两层张量
   // 整体可读 —— CS 内部不需要任何行级等待. 等待发生在日粒度, 轮询开销无所谓.
   //
-  // 无锁 (与 io_try_flush 同姿态; 锁只属于 ts_open 的分配互斥):
+  // 无锁 (与 io_try_open 同姿态; 锁只属于 ts_open 的分配互斥):
   //   date 在 ts_open 的 release store(BUSY) 之前写完, acquire 观察到 BUSY 即可读;
   //   BUSY→DONE 只由本 CS 线程自己做 (cs_close), 不存在读期状态漂移.
   Day cs_try_open(misc::Ymd date) {
@@ -367,123 +361,36 @@ public:
     cs_days_done_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  // ===== IO WORKER API =====
+  // ===== IO WORKER API: 每 date 一对 open/close =====
 
-  // 摘一个 DONE slot 落盘, reset 后归还 (FREE). 返回本日落盘字节数 (header + payload), 0 = 暂无可刷.
-  // CAS 摘取 + reset 后 release 发布, 与 ts_open 的 acquire 配对 —— 全程无锁.
-  size_t io_try_flush() {
-    Slot *slot = nullptr;
-    for (size_t i = 0; i < pool_size_ && !slot; ++i) {
+  // 非阻塞: CAS 摘一个 DONE slot (DONE→FLUSH), 空句柄 = 暂无可刷. 返回后本日两层张量
+  // 只归 IO 读 (落盘见 FeatureDay::write); 全程无锁.
+  Day io_try_open() {
+    for (size_t i = 0; i < pool_size_; ++i) {
       TensorState expected = TensorState::DONE;
       if (pool_[i].state.compare_exchange_strong(expected, TensorState::FLUSH, std::memory_order_acq_rel, std::memory_order_acquire))
-        slot = &pool_[i];
+        return {&pool_[i], num_assets_};
     }
-    if (!slot)
-      return 0;
+    return {};
+  }
 
-    const misc::Ymd date = slot->date;
-    const size_t bytes = disk_write(date, slot);
-    assert(bytes > 0);
-
-    slot->reset(num_assets_); // 清张量 + date + 计数: FREE 态不变量
-    slot->state.store(TensorState::FREE, std::memory_order_release);
-    Logger::log("store", "io_flush: " + std::to_string(date) + " complete");
-    return bytes;
+  // 本日落盘完毕: reset 后归还 (FLUSH→FREE). release 与 ts_open 的 acquire 配对
+  void io_close(const Day &day) {
+    assert(day.slot && day.slot->state.load(std::memory_order_relaxed) == TensorState::FLUSH && "io_close: 状态机乱序");
+    const misc::Ymd date = day.slot->date;
+    day.slot->reset(num_assets_); // 清张量 + date + 计数: FREE 态不变量
+    day.slot->state.store(TensorState::FREE, std::memory_order_release);
+    Logger::log("store", "io_close: " + std::to_string(date));
   }
 
   // ===== QUERY API =====
+  const std::string &query_dir() const { return output_dir_; } // 特征库目录 (日文件落在其下)
+  std::uint64_t query_axis_hash() const { return axis_hash_; } // universe 子轴指纹 (落进每个日文件头)
   size_t query_A() const { return num_assets_; }
   size_t query_slots() const { return pool_size_; }
   size_t query_ts_workers() const { return num_ts_workers_; }
   size_t query_ts_days_done() const { return ts_days_done_.load(std::memory_order_relaxed); } // asset-day 计满的日数
   size_t query_cs_days_done() const { return cs_days_done_.load(std::memory_order_relaxed); }
-
-private:
-  // 一层一天落一个日文件 (格式见 FeatureLevels.hpp): 头 + 目录空出, 逐列
-  // 抽列 → (XOR 差分) → 编码 → 追加, 收工回填头 + 目录.
-  //
-  // 头的 axis_hash = universe 子轴指纹 (UniverseAxis::hash): 列 → 资产的映射不存在
-  // 文件里, 全靠子轴顺序 (universe 名单 → 全局轴下标升序). 读端从同一 config
-  // 推导同一子轴, O(1) 比对即确认列序一致; universe == "all" 时值等于全局轴
-  // 前缀 hash (hash_at(A)). fingerprint = 字段表指纹 (LEVELS[lvl].fingerprint):
-  // 字段表增删改列即变, 读旧文件判废而不是静默错位.
-  //
-  // 原子发布: 写 .tmp 再同目录 rename (POSIX 原子) —— 半写文件不可能以正式名
-  // 存在. disk_write 按层序落盘, 最后一层的日文件因此兼任本日 commit 标记
-  // (FeatureRead::has_date 的判据): 它在则全日齐备, 中断只留 .tmp 残片.
-  // 返回文件字节数.
-  size_t write_level(const std::string &path, size_t lvl, const feature_storage_t *data) {
-    const auto &L = LEVELS[lvl];
-    const size_t T = L.rows, F = L.width, A = num_assets_;
-    const size_t raw_size = T * A * sizeof(feature_storage_t);
-
-    const std::string tmp_path = path + ".tmp";
-    const int fd = file_open_trunc(tmp_path.c_str());
-    assert(fd >= 0 && "特征日文件 .tmp 建不出来");
-
-    io_column_.resize(T * A); // 复用容量, 稳态零分配
-    io_dir_.resize(F);
-    uint64_t end = sizeof(FeatureFileHeader) + F * sizeof(ColRef);
-    for (size_t f = 0; f < F; ++f) {
-      for (size_t t = 0; t < T; ++t)
-        std::memcpy(&io_column_[t * A], &data[(t * F + f) * A], A * sizeof(feature_storage_t));
-      if (L.xor_delta)
-        xor_delta_encode(io_column_.data(), T, A);
-
-      const void *payload = io_column_.data();
-      size_t size = raw_size;
-      if constexpr (CODEC_ENABLED) {
-        io_buf_.resize(FeatureCodec::bound(raw_size));
-        size = FeatureCodec::encode(io_column_.data(), raw_size, io_buf_.data(), io_buf_.size());
-        payload = io_buf_.data();
-      }
-      const size_t written = file_pwrite(fd, payload, size, end);
-      assert(written == size && "特征日文件写入失败 (磁盘满?)");
-      (void)written;
-      io_dir_[f] = {end, size};
-      end += size;
-    }
-
-    const FeatureFileHeader head{FeatureFileHeader::kMagic, T, F, A, axis_hash_, L.fingerprint};
-    const size_t head_written = file_pwrite(fd, &head, sizeof(head), 0);
-    const size_t dir_written = file_pwrite(fd, io_dir_.data(), F * sizeof(ColRef), sizeof(head));
-    assert(head_written == sizeof(head) && dir_written == F * sizeof(ColRef) && "特征日文件头 / 目录写入失败");
-    (void)head_written;
-    (void)dir_written;
-    file_close(fd);
-
-    std::filesystem::rename(tmp_path, path);
-    return end;
-  }
-
-  // 返回本日落盘总字节数
-  size_t disk_write(misc::Ymd date, Slot *slot) {
-    assert(slot && date > 0);
-    const std::string date_str = std::to_string(date);
-
-    auto t_start = std::chrono::high_resolution_clock::now();
-    Logger::log("store", "disk_write: START " + date_str);
-
-    const std::string out_dir = feature_day_dir(output_dir_, date);
-
-    auto t_before_mkdir = std::chrono::high_resolution_clock::now();
-    std::filesystem::create_directories(out_dir);
-    auto t_after_mkdir = std::chrono::high_resolution_clock::now();
-
-    size_t bytes = 0;
-    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
-      bytes += write_level(feature_file(out_dir, lvl), lvl, slot->data[lvl]);
-
-    auto t_end = std::chrono::high_resolution_clock::now();
-    auto mkdir_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_mkdir - t_before_mkdir).count();
-    auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_after_mkdir).count();
-    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
-
-    Logger::log("store",
-                "disk_write: END " + date_str + " [mkdir:" + std::to_string(mkdir_ms) +
-                    "ms write:" + std::to_string(write_ms) + "ms total:" + std::to_string(total_ms) + "ms]");
-    return bytes;
-  }
 };
 
 // ============================================================================
@@ -491,10 +398,9 @@ private:
 // 字段用 <LVL>_Field 枚举; 布局常量一律取 constexpr LEVELS[LVL] (单一事实源),
 // 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_open / cs_open
 // 定址一次), 每次调用只剩指针算术.
-//   ts_write<L>(day, t, field, a, value)               单值
-//   ts_write_range<L>(day, t, f_begin, f_end, a, src)  字段闭区间 (可含宽字段) 按偏移连续写 src
-//   ts_write_row<L>(day, t, a, dag)                    按字段表 SRC 列写一行全部 OP 列
-//   cs_col<L>(day, t, field)                           某列 t 时刻全部资产的连续段 (CS 读源列 / 就地写目标列)
+//   ts_write<L>(day, t, field, a, value)   单资产单列 (TS: 列间跨步 A)
+//   ts_write_row<L>(day, t, a, dag)        按字段表 SRC 列写一行全部 OP 列
+//   cs_col<L>(day, t, field)               单列全部资产的连续段 (CS 读源列 / 就地写目标列)
 //   OP(node[, port], Tf, Method) → ts::Tf::apply(dag.node.last(port)); CS/LABEL/FLAG/META 不在 row 写
 // ============================================================================
 namespace fstore {
@@ -502,13 +408,12 @@ namespace fstore {
 // 唯一真正需要逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
 template <size_t LVL>
 struct RowWriter;
-#define STORE_ROW_WRITER(name, num, fields, rows, psd, xor_delta)                                                  \
+#define STORE_ROW_WRITER(name, num, fields, rows, psd)                                                                       \
   template <>                                                                                                                \
   struct RowWriter<num> {                                                                                                    \
     template <class DAG>                                                                                                     \
     [[gnu::always_inline]] static inline void write_row(feature_storage_t *row, size_t A, [[maybe_unused]] const DAG &dag) { \
       namespace FO = name##_Field;                                                                                           \
-      [[maybe_unused]] constexpr const auto &OFFS = name##_FIELD_OFFSETS;                                                    \
       fields(STORE_ROW_ONE)                                                                                                  \
     }                                                                                                                        \
   };
@@ -516,7 +421,7 @@ struct RowWriter;
 // OP(node, Tf, Method) / OP(node, port, Tf, Method): 落盘值 = ts::Tf::apply(节点输出). Method 占位未接入 (Method/TS.hpp ★)
 #define STORE_ROW_OP_3(node, tf, m) ts::tf::apply(dag.node.last())
 #define STORE_ROW_OP_4(node, port, tf, m) ts::tf::apply(dag.node.last(dag.node.port))
-#define STORE_ROW_OP(code, ...) row[OFFS[FO::code] * A] = SRC_OP_PICK(__VA_ARGS__, STORE_ROW_OP_4, STORE_ROW_OP_3, , )(__VA_ARGS__);
+#define STORE_ROW_OP(code, ...) row[FO::code * A] = SRC_OP_PICK(__VA_ARGS__, STORE_ROW_OP_4, STORE_ROW_OP_3, , )(__VA_ARGS__);
 #define STORE_ROW_CS(code, ...)
 #define STORE_ROW_LABEL(code)
 #define STORE_ROW_FLAG(code)
@@ -530,22 +435,13 @@ template <size_t LVL>
   assert(d.slot && d.slot->data[LVL] && "ts_row: day not open");
   assert(t < LEVELS[LVL].rows && "time index out of bounds");
   assert(a < d.A && "asset index out of bounds");
-  return d.slot->data[LVL] + (t * LEVELS[LVL].width) * d.A + a;
+  return d.slot->data[LVL] + (t * LEVELS[LVL].field_count) * d.A + a;
 }
 
 template <size_t LVL>
 [[gnu::always_inline]] inline void ts_write(const GlobalFeatureStore::Day &d, size_t t, size_t field, size_t a, float value) {
-  ts_row<LVL>(d, t, a)[LEVELS[LVL].offsets[field] * d.A] = value;
-}
-
-// 字段闭区间 [f_begin, f_end] (可含宽字段) 按偏移连续写 src[0 .. span), span = 区间总宽
-template <size_t LVL>
-[[gnu::always_inline]] inline void ts_write_range(const GlobalFeatureStore::Day &d, size_t t, size_t f_begin, size_t f_end, size_t a, const float *src) {
-  assert(f_begin <= f_end && "invalid field range");
-  feature_storage_t *row = ts_row<LVL>(d, t, a);
-  const size_t o_begin = LEVELS[LVL].offsets[f_begin], o_end = LEVELS[LVL].offsets[f_end] + LEVELS[LVL].fields[f_end].width;
-  for (size_t o = o_begin; o < o_end; ++o)
-    row[o * d.A] = src[o - o_begin];
+  assert(field < LEVELS[LVL].field_count && "field index out of bounds");
+  ts_row<LVL>(d, t, a)[field * d.A] = value;
 }
 
 template <size_t LVL, class DAG>
@@ -560,7 +456,7 @@ template <size_t LVL>
   assert(d.slot && d.slot->data[LVL] && "cs_col: day not open");
   assert(t < LEVELS[LVL].rows && "time index out of bounds");
   assert(field < LEVELS[LVL].field_count && "field index out of bounds");
-  return d.slot->data[LVL] + (t * LEVELS[LVL].width + LEVELS[LVL].offsets[field]) * d.A;
+  return d.slot->data[LVL] + (t * LEVELS[LVL].field_count + field) * d.A;
 }
 
 } // namespace fstore

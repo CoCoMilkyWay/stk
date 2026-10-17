@@ -3,7 +3,7 @@
 
 #include "factor/Stat/Cpu.hpp" // cost_rows
 #include "features/Backend/FeatureRead.hpp"
-#include "features/MetaFlag.hpp"                      // fmeta::valid
+#include "features/MetaFlag.hpp"                      // fmeta::valid / keep / finite
 #include "features/Operator/TS/Label/LabelReturn.hpp" // 只取 kContCloseL1 对账尾部界 (不含字段表)
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
@@ -124,7 +124,6 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   for (FeatureRead::DayColumns &dc : staging)
     dc.preallocate(A, kLevel, cols.size());
   std::vector<std::vector<uint8_t>> has_data(n_threads, std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交
-  const size_t nc = cols.size();
   // 指数: 逐天并行攒日内项 (isum / icnt [T]); 当日首笔的前价在前一天 (跨日), 记下首笔 / 末笔 [days][A] (0 = 无) 收尾串行补
   std::vector<double> isum;
   std::vector<int> icnt;
@@ -153,21 +152,21 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     std::vector<uint8_t> &has = has_data[tid];
     std::fill(has.begin(), has.end(), uint8_t{0});
     for (size_t t = 0; t < VR; ++t) {
-      const feature_storage_t *ts_gate = dc.data.data() + (t * nc + ts_i) * A;
+      const feature_storage_t *ts_gate = dc.col(ts_i) + t * A;
       for (size_t a = 0; a < A; ++a)
         has[a] |= fmeta::data_valid(static_cast<float>(ts_gate[a]));
     }
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      const feature_storage_t *ts_gate = dc.data.data() + (t * nc + ts_i) * A;
-      const feature_storage_t *cs_gate = dc.data.data() + (t * nc + cs_i) * A;
+      const feature_storage_t *ts_gate = dc.col(ts_i) + t * A;
+      const feature_storage_t *cs_gate = dc.col(cs_i) + t * A;
       for (size_t i = 0; i < nf; ++i) {
-        const feature_storage_t *src = dc.data.data() + (t * nc + i) * A;
+        const feature_storage_t *src = dc.col(i) + t * A;
         float *v = L.planes[i].v.data() + row;
         uint8_t *m = L.planes[i].m.data() + row;
         for (size_t a = 0; a < A; ++a) {
           const float x = static_cast<float>(src[a]);
-          const bool ok = fmeta::valid(static_cast<float>(ts_gate[a]), vts[i]) && std::isfinite(x);
+          const bool ok = fmeta::keep(static_cast<float>(ts_gate[a]), vts[i], src[a]);
           v[a] = ok ? x : 0.f;
           m[a] = ok;
         }
@@ -180,7 +179,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       if (with_index) {
         if (t == 0)
           std::fill(px[tid].begin(), px[tid].end(), 0.f);
-        const feature_storage_t *cl = dc.data.data() + (t * nc + close_i) * A;
+        const feature_storage_t *cl = dc.col(close_i) + t * A;
         double s = 0.0;
         int k = 0;
         for (size_t a = 0; a < A; ++a) {
@@ -205,12 +204,11 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       }
       for (size_t h = 0; h < H; ++h) {
         const size_t il = nf + 2 * h, is = il + 1;
-        const feature_storage_t *sl = dc.data.data() + (t * nc + il) * A;
-        const feature_storage_t *ss = dc.data.data() + (t * nc + is) * A;
+        const feature_storage_t *sl = dc.col(il) + t * A;
+        const feature_storage_t *ss = dc.col(is) + t * A;
         LabelPlane &lb = L.labels[h];
         for (size_t a = 0; a < A; ++a) {
-          const float lv = static_cast<float>(sl[a]), sv = static_cast<float>(ss[a]);
-          const bool ok = L.cs.m[row + a] && std::isfinite(lv) && std::isfinite(sv); // 池内且当日有数据
+          const bool ok = L.cs.m[row + a] && fmeta::finite(sl[a]) && fmeta::finite(ss[a]); // 池内且当日有数据
           lb.v[factor::stat::kLong][row + a] = ok ? std::bit_cast<uint16_t>(sl[a]) : 0;
           lb.v[factor::stat::kShort][row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           lb.m[row + a] = ok;
@@ -218,13 +216,12 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       }
       for (size_t c = 0; c < C; ++c) {
         const size_t ib = cost_i + 2 * c, is = ib + 1;
-        const feature_storage_t *sb = dc.data.data() + (t * nc + ib) * A;
-        const feature_storage_t *ss = dc.data.data() + (t * nc + is) * A;
+        const feature_storage_t *sb = dc.col(ib) + t * A;
+        const feature_storage_t *ss = dc.col(is) + t * A;
         CostPlane &cp = L.costs[c];
         for (size_t a = 0; a < A; ++a) {
-          const float b = static_cast<float>(sb[a]), s = static_cast<float>(ss[a]);
-          const bool ok = L.cs.m[row + a] && std::isfinite(b) && std::isfinite(s); // 池内且当日有数据; 吃不到 = NaN → 无效
-          cp.imp[factor::stat::kLong][row + a] = ok ? std::bit_cast<uint16_t>(b > L.max_impact ? cap : sb[a]) : 0;
+          const bool ok = L.cs.m[row + a] && fmeta::finite(sb[a]) && fmeta::finite(ss[a]); // 池内且当日有数据; 吃不到 = NaN → 无效
+          cp.imp[factor::stat::kLong][row + a] = ok ? std::bit_cast<uint16_t>(static_cast<float>(sb[a]) > L.max_impact ? cap : sb[a]) : 0;
           cp.imp[factor::stat::kShort][row + a] = ok ? std::bit_cast<uint16_t>(ss[a]) : 0;
           cp.m[row + a] = ok;
         }

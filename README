@@ -64,10 +64,11 @@ stk/
 │   │   │   ├── Operator/unused/                      # 🧮 未启用半成品
 │   │   │   ├── Method/                               # 🧮 CS / TS 变换方法 + Fundamental (日频 PIT 基本面源)
 │   │   │   └── Backend/                              # 🧮 特征存储后端
-│   │   │       ├── FeatureStoreConfig.hpp            # 🧮 写端: 字段表 → 编译期层表; codec 选型在此
+│   │   │       ├── FeatureStoreConfig.hpp            # 🧮 写端: 字段表 → 编译期层表
 │   │   │       ├── FeatureLevels.hpp                 # 🧮 读端运行时层表 (与字段表解耦, 增删特征不触发读侧重编)
-│   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16, worker 并发写
-│   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 按列选读 (单日 / 多日); 删库与多 reader 并发安全
+│   │   │       ├── FeatureDay.hpp                    # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录); codec 选型在此
+│   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 日张量池, TS / CS / IO 三段 open-close
+│   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 单日按列选读 [n][T][A]; 删库与多 reader 并发安全
 │   │   │       ├── DayBatchPlane.hpp                 # 🧮 多日并行载入平面 (Dist / Transform 共用)
 │   │   │       ├── SparseCodec.hpp                   # 🧮 落盘编码: 稀疏位图 (默认)
 │   │   │       └── ZstdCodec.hpp                     # 🧮 落盘编码: zstd
@@ -226,7 +227,7 @@ stk/
     ├── features/                                           # 特征张量库 (Float16, 按交易日 universe 子轴)
     │   └── <universe>/YYYY/MM/DD/
     │       ├── features_L0.bin                             # L0 一天一个: 头 + 列目录 + 逐列载荷 [T×A] (秒频)
-    │       └── features_L1.bin                             # L1 一天一个: 同上 (分钟频, 逐列 XOR 差分)
+    │       └── features_L1.bin                             # L1 一天一个: 同上 (分钟频); 两层都逐列自选是否 T 轴 XOR 差分
     ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
     │   ├── _meta/<表>.parquet                              # Static / Snapshot 单文件整刷

@@ -182,8 +182,9 @@ private:
   // LB 块内偏移 col 起的 n 个连续列写到 days_ago 天前那日的 L1 行 label_l1 (hold 组 [long, short] / 冲击成本列)
   inline void write_label(size_t col, size_t n, size_t label_l1, const float *values, size_t days_ago) {
     assert(n >= 1 && col + n <= LabelReturn::L1_LABEL_COUNT);
-    const size_t f = kL1LabelBase + col;
-    fstore::ts_write_range<1>(day_at(days_ago), label_l1, f, f + n - 1, asset_id_, values);
+    const GlobalFeatureStore::Day &d = day_at(days_ago);
+    for (size_t i = 0; i < n; ++i)
+      fstore::ts_write<1>(d, label_l1, kL1LabelBase + col + i, asset_id_, values[i]);
   }
 
   // ---------------------------------------------------------------- L1: 每分钟 ----

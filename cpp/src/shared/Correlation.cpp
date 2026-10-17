@@ -1,7 +1,7 @@
 #include "shared/Correlation.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "features/DataDefine.hpp" // kNaN (全库缺失值口径)
-#include "features/MetaFlag.hpp"   // fmeta::valid
+#include "features/MetaFlag.hpp"   // fmeta::keep / kInvalidBits
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 
@@ -23,9 +23,7 @@ using namespace analysis;
 #define CORR_FP_REASSOC
 #endif
 
-// 无效槽哨兵 (与 DayBatchPlane 同一个 f16 qNaN 位型)
-static constexpr uint16_t kInvalidBits = 0x7E00u;
-static const feature_storage_t kInvalid16 = std::bit_cast<feature_storage_t>(kInvalidBits);
+static const feature_storage_t kInvalid16 = std::bit_cast<feature_storage_t>(fmeta::kInvalidBits);
 
 size_t corr_slice_stride(size_t level) {
   const size_t vr = level_valid_rows(level);
@@ -202,7 +200,7 @@ struct SlicePlane {
         std::fill_n(dst, A, 0.0f);
         continue;
       }
-      const feature_storage_t *src = b.meta_day.data.data() + t * A;
+      const feature_storage_t *src = b.meta_day.col(0) + t * A;
       for (size_t a = 0; a < A; ++a)
         dst[a] = static_cast<float>(src[a]);
     }
@@ -229,13 +227,11 @@ struct SlicePlane {
             std::fill_n(dst, A, kInvalid16);
             continue;
           }
-          const feature_storage_t *src = st.data.data() + (t * nb + i) * A;
+          const feature_storage_t *src = st.col(i) + t * A;
           const float *g = b.gate.data() + s * A;
-          for (size_t a = 0; a < A; ++a) {
-            const float v = static_cast<float>(src[a]);
-            // 门控不过 / NaN / ±inf 一律折成哨兵: 热循环一次 v != v 就跳过
-            dst[a] = (fmeta::valid(g[a], vt) && std::isfinite(v)) ? src[a] : kInvalid16;
-          }
+          // 门控不过 / NaN / ±inf 一律折成哨兵: 热循环一次 v != v 就跳过
+          for (size_t a = 0; a < A; ++a)
+            dst[a] = fmeta::keep(g[a], vt, src[a]) ? src[a] : kInvalid16;
         }
       }
     });
@@ -477,7 +473,7 @@ struct CorrPair::Runtime {
   size_t A = 0, VR = 0;
 
   struct DayBuf {
-    FeatureRead::DayColumns day;                                         // [T][3][A]: a / b / ts_valid
+    FeatureRead::DayColumns day;                                         // [3][T][A]: a / b / ts_valid
     std::vector<feature_storage_t> raw_a, raw_b;                         // [VR][A] 门控后原值
     std::vector<float> Ra, Ma, R2a, Rb, Mb, R2b;                         // [VR][A]
     std::vector<uint8_t> ok_a, ok_b;                                     // [VR]
@@ -565,15 +561,14 @@ bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     for (size_t t = 0; t < VR; ++t) {
       if ((t & 15) == 0 && cancel.load(std::memory_order_relaxed))
         return;
-      const feature_storage_t *sa = b.day.data.data() + (t * 3 + 0) * A;
-      const feature_storage_t *sb = b.day.data.data() + (t * 3 + 1) * A;
-      const feature_storage_t *sm = b.day.data.data() + (t * 3 + 2) * A;
+      const feature_storage_t *sa = b.day.col(0) + t * A;
+      const feature_storage_t *sb = b.day.col(1) + t * A;
+      const feature_storage_t *sm = b.day.col(2) + t * A;
       feature_storage_t *da = b.raw_a.data() + t * A, *db = b.raw_b.data() + t * A;
       for (size_t a = 0; a < A; ++a) {
         const float g = static_cast<float>(sm[a]);
-        const float va = static_cast<float>(sa[a]), vb = static_cast<float>(sb[a]);
-        da[a] = (fmeta::valid(g, vt_a_) && std::isfinite(va)) ? sa[a] : kInvalid16;
-        db[a] = (fmeta::valid(g, vt_b_) && std::isfinite(vb)) ? sb[a] : kInvalid16;
+        da[a] = fmeta::keep(g, vt_a_, sa[a]) ? sa[a] : kInvalid16;
+        db[a] = fmeta::keep(g, vt_b_, sb[a]) ? sb[a] : kInvalid16;
       }
       b.ok_a[t] = rank_slice(b.raw_a.data() + t * A, A, b.key.data(), b.Ra.data() + t * A,
                              b.Ma.data() + t * A, b.R2a.data() + t * A)

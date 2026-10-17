@@ -13,6 +13,8 @@
 //   (CoreCrosssection gather / 因子层 CS 节点 / Stat), 不与 ts_valid 相与 (见 Meta.hpp)
 
 #include "codec/L2_DataType.hpp" // L2::ValidType (fmeta::valid)
+#include <bit>
+#include <cstdint>
 
 namespace fmeta {
 inline constexpr bool data_valid(float v) { return v != 0.0f; }
@@ -23,4 +25,11 @@ inline constexpr float pack(bool depth, float mag) { return depth ? -mag : mag; 
 inline constexpr bool valid(float v, L2::ValidType vt) {
   return vt == L2::ValidType::ALL || (vt == L2::ValidType::DEPTH ? depth_valid(v) : data_valid(v));
 }
+
+// 落盘 f16 值判定: 按位测, 不走浮点比较 —— -ffast-math TU 里 isnan/isfinite/x!=x 会被折成常量
+inline constexpr uint16_t kInvalidBits = 0x7E00u; // 消费端统一无效哨兵 (f16 qNaN)
+inline bool nan(_Float16 x) { return (std::bit_cast<uint16_t>(x) & 0x7FFFu) > 0x7C00u; }
+inline bool finite(_Float16 x) { return (std::bit_cast<uint16_t>(x) & 0x7C00u) != 0x7C00u; }
+// 特征值可进统计: 门控 (gate = 同层 ts_valid) 通过 且 有限
+inline bool keep(float gate, L2::ValidType vt, _Float16 x) { return valid(gate, vt) && finite(x); }
 } // namespace fmeta

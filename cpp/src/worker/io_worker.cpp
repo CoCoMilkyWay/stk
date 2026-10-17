@@ -1,11 +1,13 @@
 #include "worker/feature_workers.hpp"
 
+#include "features/Backend/FeatureDay.hpp"
 #include "features/Backend/FeatureStore.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <thread>
 
@@ -26,21 +28,27 @@ void io_worker(WorkerCtx ctx) {
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to flush");
 
+  FeatureDay::Scratch scratch; // 跨日复用, 稳态零分配
   size_t wait_count = 0;
   bool cancelled = false;
   while (flush_count < total_dates) {
     TraceN("FlushLoop");
     TraceValue(flush_count);
 
-    // Flush oldest CS_DONE tensor (one at a time, maintains date order)
-    size_t flushed_bytes = 0;
-    {
-      TraceN("TryFlush");
-      TraceColor(C_Red);
-      flushed_bytes = store.io_try_flush();
-    }
+    // 摘一个 CS 完成的日子, 按层序落盘 (最后一层 = 本日 commit 标记), 归还 slot
+    const GlobalFeatureStore::Day day = store.io_try_open();
+    if (day) {
+      size_t flushed_bytes = 0;
+      {
+        TraceN("FlushDay");
+        TraceColor(C_Red);
+        const std::string day_dir = feature_day_dir(store.query_dir(), day.slot->date);
+        std::filesystem::create_directories(day_dir);
+        for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+          flushed_bytes += FeatureDay::write(feature_file(day_dir, lvl), lvl, day.slot->data[lvl], day.A, store.query_axis_hash(), scratch);
+        store.io_close(day);
+      }
 
-    if (flushed_bytes > 0) {
       flush_count++;
       wait_count = 0;
       cumulative_bytes += flushed_bytes;

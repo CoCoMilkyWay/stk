@@ -1,7 +1,7 @@
 #pragma once
 
 #include "features/Backend/FeatureRead.hpp"
-#include "features/MetaFlag.hpp" // fmeta::valid
+#include "features/MetaFlag.hpp"
 #include "misc/profiler.hpp"
 
 #include <algorithm>
@@ -13,24 +13,23 @@
 // ============================================================================
 // DayBatchPlane: 天批平面 —— 分批流式分析 (Dist / Transform) 共用的 IO 骨架
 // ============================================================================
-// 天是流式维度: 每批 days 个天, 单天一任务并行 load_day_columns [T][列][A] → 转置进资产主序批平面
+// 天是流式维度: 每批 days 个天, 单天一任务并行 load_day_columns [列][T][A] → 转置进资产主序批平面
 // IO 暂存按批内天位 j 分槽 (与线程无关): 同批每天一个任务, 槽天然独占
 //   data[c][a][j][t]   c = 值列, a = 资产, j = 批内天, t = 有效行 (level_valid_rows, 末哨兵行不进平面)
 // 每资产每列一段连续 days×VR (TS 扫描友好); 某 (j, t) 的截面列则按 asset_stride 跨步取 (CS gather).
 //
-// valid 门控 (可选 ts_valid 列, 恒为 columns 末列) 不过 与 真 NaN 一并折叠成统一哨兵 kInvalidBits (f16 qNaN):
+// valid 门控 (可选 ts_valid 列, 恒为 columns 末列) 不过 与 真 NaN 一并折叠成统一哨兵 fmeta::kInvalidBits (f16 qNaN):
 // 二者的分账在 IO 就地做完 (这里还看得见 valid 列), 热扫描一次 v != v 就能跳过, 也不怕哨兵撞上数据里的 NaN.
-// 真 NaN 只记值列 0 (被分析的特征列); 附加列 (中性化上下文等) 同一门控, 不记账.
+// 真 NaN 只记值列 0 (被分析的特征列); 附加列 (中性化上下文等) 同一门控, 不记账. ±inf 原样放行 (下游另记).
 //
 // 容量准备幂等: 尺寸对得上零分配 (prewarm 与 build 共用).
 // ============================================================================
 struct DayBatchPlane {
-  static constexpr uint16_t kInvalidBits = 0x7E00u;
   static constexpr size_t kTransposeBlock = 64; // 转置按 64 资产一块: 块内写驻留在 64 条 cache line 上
 
   size_t A = 0, level = 0, VR = 0, days = 0, n_cols = 0;
   std::vector<feature_storage_t> data;          // [n_cols][A][days][VR]
-  std::vector<FeatureRead::DayColumns> staging; // [days] 每批内天位一份 [T][列][A] 暂存
+  std::vector<FeatureRead::DayColumns> staging; // [days] 每批内天位一份 [列][T][A] 暂存
   std::vector<uint64_t> nan_seen;               // [days] 本批真 NaN 数 (值列 0), 批末调用方收走并清零
 
   size_t asset_stride() const { return days * VR; }
@@ -74,8 +73,7 @@ struct DayBatchPlane {
       reader.load_day_columns(date, columns, st);
     }
     TraceN("TransposeDay");
-    const size_t n_total = columns.size();
-    const auto invalid = std::bit_cast<feature_storage_t>(kInvalidBits);
+    const auto invalid = std::bit_cast<feature_storage_t>(fmeta::kInvalidBits);
     const size_t stride = asset_stride();
     uint64_t nans = 0;
     for (size_t c = 0; c < n_cols; ++c) {
@@ -83,12 +81,12 @@ struct DayBatchPlane {
       for (size_t a0 = 0; a0 < A; a0 += kTransposeBlock) {
         const size_t a1 = std::min(a0 + kTransposeBlock, A);
         for (size_t t = 0; t < VR; ++t) {
-          const feature_storage_t *val = st.data.data() + (t * n_total + c) * A;
-          const feature_storage_t *valid = st.data.data() + (t * n_total + n_cols) * A; // has_valid 才读
+          const feature_storage_t *val = st.col(c) + t * A;
+          const feature_storage_t *valid = has_valid ? st.col(n_cols) + t * A : nullptr;
           for (size_t a = a0; a < a1; ++a) {
             const bool ok = !has_valid || fmeta::valid(static_cast<float>(valid[a]), valid_type);
             const feature_storage_t raw = val[a];
-            const bool is_nan = ok && !(raw == raw);
+            const bool is_nan = ok && fmeta::nan(raw);
             nans += (c == 0) & is_nan;
             base[a * stride + t] = (ok && !is_nan) ? raw : invalid;
           }
