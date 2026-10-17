@@ -82,15 +82,19 @@ struct TsPlane {
 
   // 一天 → 批内第 j 天: 读 cs.io 进 st, 逐列按自己的 vt 折叠哨兵并转置.
   // 门控行来源: cs 自带 (st 末列) / 调用方外给 gate ([T][A] 同层 ts_valid, 多块共用一次读) / 无 (全 ALL)
+  // ids: 平面资产 a ← 源库资产 ids[a] (All 档旁读: 源 = 全轴, st 按全轴 preallocate); nullptr = 同轴
   void load_day(const FeatureRead &reader, misc::Ymd date, const fmeta::ColumnSet &cs, size_t j,
-                FeatureRead::DayColumns &st, const feature_storage_t *gate = nullptr) {
+                FeatureRead::DayColumns &st, const feature_storage_t *gate = nullptr, const uint32_t *ids = nullptr) {
     assert(j < days && cs.n() == n_cols);
     assert(!(cs.gated() && gate));
+    assert(!(ids && gate) && "外给门控行在主轴上");
+    assert(ids ? st.A >= A : st.A == A);
     {
       TraceN("LoadDay");
       reader.load_day_columns(date, cs.io, st);
     }
     TraceN("TransposeDay");
+    const size_t SA = st.A;
     const feature_storage_t *g = cs.gated() ? st.col(n_cols) : gate;
     if (!g)
       for (const L2::ValidType vt : cs.vts)
@@ -104,11 +108,13 @@ struct TsPlane {
       for (size_t a0 = 0; a0 < A; a0 += kTransposeBlock) {
         const size_t a1 = std::min(a0 + kTransposeBlock, A);
         for (size_t t = 0; t < VR; ++t) {
-          const feature_storage_t *val = st.col(c) + t * A;
-          const feature_storage_t *gt = g ? g + t * A : nullptr;
+          const feature_storage_t *val = st.col(c) + t * SA;
+          const feature_storage_t *gt = g ? g + t * SA : nullptr;
           for (size_t a = a0; a < a1; ++a) {
-            const bool ok = !gt || fmeta::valid(static_cast<float>(gt[a]), vt);
-            const feature_storage_t raw = val[a];
+            const size_t s = ids ? ids[a] : a;
+            assert(s < SA);
+            const bool ok = !gt || fmeta::valid(static_cast<float>(gt[s]), vt);
+            const feature_storage_t raw = val[s];
             base[a * stride + t] = !ok ? invalid : (fmeta::nan(raw) ? nan : raw);
           }
         }
@@ -118,11 +124,12 @@ struct TsPlane {
 
   // 一批: 单天一任务 (io 池, 暂存按 tid; 只写本平面, 可与另一平面上的计算并发)
   void load_batch(misc::exec::ForkJoin &io, std::vector<IoSlot> &slots, const FeatureRead &reader,
-                  const misc::Ymd *dates, size_t bd, const fmeta::ColumnSet &cs, const std::atomic<bool> &cancel) {
+                  const misc::Ymd *dates, size_t bd, const fmeta::ColumnSet &cs, const std::atomic<bool> &cancel,
+                  const uint32_t *ids = nullptr) {
     assert(bd <= days && slots.size() >= static_cast<size_t>(io.threads()));
     io.tasks(static_cast<int>(bd), [&](int j, int tid) {
       if (!cancel.load(std::memory_order_relaxed))
-        load_day(reader, dates[j], cs, static_cast<size_t>(j), slots[tid].day);
+        load_day(reader, dates[j], cs, static_cast<size_t>(j), slots[tid].day, nullptr, ids);
     });
   }
 

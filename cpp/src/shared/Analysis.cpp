@@ -18,11 +18,17 @@ ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier) {
   // 与特征计算同一推导 (A 轴/文件列序/目录都由它定)
   s.uni = tier == TierId::Pool ? universe_axis(cfg, num_assets) : full_axis(num_assets);
   s.features_dir = tier == TierId::Pool ? cfg.FeatureUniverseDir() : cfg.FeatureAllDir();
+  s.all_uni = full_axis(num_assets);
+  s.all_dir = cfg.FeatureAllDir();
   return s;
 }
 
 fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols) {
-  const auto &meta = feature.meta();
+  return column_set(feature, feature.selection.tier, level, std::move(cols));
+}
+
+fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, std::vector<size_t> cols) {
+  const auto &meta = feature.meta(tier);
   const auto &list = meta.features[level];
   assert(!cols.empty());
   fmeta::ColumnSet cs;

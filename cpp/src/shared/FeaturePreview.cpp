@@ -24,7 +24,8 @@ struct FeaturePreview::Runtime {
   std::vector<uint8_t> int_only;           // [n_preview] flag 探测: 有效值至今全整数 (粘性)
   // ---- 轮共享只读 (轮首单线程载入, 块任务只读) ----
   std::vector<float> cage_dn, cage_up; // [n_draw][VR] 当轮抽样资产的笼快照 (NaN = 当日无值)
-  FeatureRead::DayColumns round;       // [T][A] × {lim_dn, lim_up (+ ts_valid)} (轮内各块共用, 免每块重读 ts_valid)
+  FeatureRead::DayColumns cage_day;    // [T][A_all] × {lim_dn, lim_up} (All 档旁读, 全轴)
+  FeatureRead::DayColumns round;       // [T][A] × {ts_valid} (门控时; 轮内各块共用, 免每块重读)
   std::vector<size_t> round_cols;
   std::vector<uint32_t> asset_order; // [A] 固定种子洗牌 (轮间旋转取片)
   // ---- 线程私有 (按 tid) ----
@@ -41,7 +42,7 @@ struct FeaturePreview::Runtime {
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
   // 容量准备 (幂等, 尺寸对得上零分配), 返回执行器
-  misc::exec::ForkJoin &prepare(const Spec &spec, size_t A) {
+  misc::exec::ForkJoin &prepare(const Spec &spec, size_t A, size_t A_all) {
     TraceN("PreviewPrepare");
     const size_t n_pv = spec.cols.n();
     prepare_slots(klls, n_pv, kPvKllCapacity, kPvKllResolution);
@@ -51,14 +52,13 @@ struct FeaturePreview::Runtime {
     cage_miss.assign(n_pv, 0);
     int_only.assign(n_pv, 1);
     const size_t n_draw = std::min(kPvAssetsPerRound, A);
-    cage_dn.assign(n_draw * kVR, kNaN); // 无笼档恒 NaN = 不受检
-    cage_up.assign(n_draw * kVR, kNaN);
+    cage_dn.resize(n_draw * kVR);
+    cage_up.resize(n_draw * kVR);
+    cage_day.preallocate(A_all, kLevel, 2);
     round_cols.clear();
-    if (spec.caged())
-      round_cols = {spec.lim_dn, spec.lim_up};
     if (spec.cols.gated())
       round_cols.push_back(spec.cols.gate());
-    round.preallocate(A, kLevel, 3);
+    round.preallocate(A, kLevel, 1);
     asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
     // 线程数 = min(硬件并发, 块数): 块是抢任务单位, 多于块数的线程整轮空转
     const size_t n_threads = threads_for((n_pv + kPvBlockCols - 1) / kPvBlockCols);
@@ -103,8 +103,9 @@ void FeaturePreview::reset(ReadScope scope, Spec sp) {
   const size_t n_pv = sp.cols.n();
   assert(n_pv > 0 && std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + n_pv));
   assert(sp.cols.io[n_pv - 1] < sp.n_features);
-  assert(sp.caged() ? (sp.lim_dn < sp.n_features && sp.lim_up < sp.n_features) : sp.lim_up == Spec::kNoCage);
+  assert(sp.cage.size() == 2);
   assert(scope.uni.size() > 0 && !scope.months.empty());
+  assert(scope.all_uni.size() > 0 && scope.uni.ids.back() < scope.all_uni.size());
   std::lock_guard<std::mutex> lock(mutex);
 
   scope_ = std::move(scope);
@@ -125,7 +126,7 @@ void FeaturePreview::reset(ReadScope scope, Spec sp) {
 // Build (轮训: 轮 = 抽样日, 轮内按特征分块, 块末发布; 首帧 = 一块的 IO + 扫描)
 // ============================================================================
 
-bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+bool FeaturePreview::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
   TraceN("PreviewBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -145,18 +146,18 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
   const size_t n_pv = cols.n();
   const size_t n_draw = std::min(kPvAssetsPerRound, A);
   const size_t n_blocks = (n_pv + kPvBlockCols - 1) / kPvBlockCols;
-  misc::exec::ForkJoin &ex = rt.prepare(spec, A);
+  const size_t A_all = scope_.all_uni.size();
+  const uint32_t *ids = scope_.uni.ids.data(); // 主轴 a → 全轴
+  misc::exec::ForkJoin &ex = rt.prepare(spec, A, A_all);
   const bool gated = cols.gated();
 
-  // 轮首共享 IO (单线程): lim_dn / lim_up (+ ts_valid) 一次读 →
-  // 抽样资产当日笼快照 (price 逐日判定融合进块扫描); ts_valid 原样留在 round 供各块平面门控
+  // 轮首共享 IO (单线程): All 档 lim_dn / lim_up 一次读 → 抽样资产当日笼快照 (price 逐日判定融合进块扫描);
+  // 主库 ts_valid (门控时) 原样留在 round 供各块平面门控
   auto load_round = [&](size_t r) {
     TraceN("PreviewRoundIO");
-    if (rt.round_cols.empty())
-      return; // 无笼且不门控: 轮首无共享列
-    reader.load_day_columns(plan.dates[r], rt.round_cols, rt.round);
-    if (!spec.caged())
-      return; // 笼快照恒 NaN (prepare 已填)
+    if (gated)
+      reader.load_day_columns(plan.dates[r], rt.round_cols, rt.round);
+    all.load_day_columns(plan.dates[r], spec.cage, rt.cage_day);
     // 笼外扩容差 (存快照时做, 热循环保持严格比较): 贴板成交价与 lim 两列来源不同
     // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
     // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
@@ -164,10 +165,10 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
     const size_t a_off = (r * n_draw) % A;    // 洗牌序旋转取片
     for (size_t k = 0; k < n_draw; ++k) {
       const size_t a = rt.asset_order[(a_off + k) % A];
-      const feature_storage_t *dn_p = rt.round.col(0) + a;
-      const feature_storage_t *up_p = rt.round.col(1) + a;
+      const feature_storage_t *dn_p = rt.cage_day.col(0) + ids[a];
+      const feature_storage_t *up_p = rt.cage_day.col(1) + ids[a];
       for (size_t t = 0; t < VR; ++t) {
-        const float dn = static_cast<float>(dn_p[t * A]), up = static_cast<float>(up_p[t * A]);
+        const float dn = static_cast<float>(dn_p[t * A_all]), up = static_cast<float>(up_p[t * A_all]);
         rt.cage_dn[k * VR + t] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
         rt.cage_up[k * VR + t] = up + (std::fabs(up) * kF16Rel + kPxEps);
       }
@@ -181,7 +182,7 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
   for (size_t r = 0; r < n_rounds; ++r) {
     load_round(r);
     const size_t a_off = (r * n_draw) % A;
-    const feature_storage_t *gate = gated ? rt.round.col(spec.caged() ? 2 : 0) : nullptr;
+    const feature_storage_t *gate = gated ? rt.round.col(0) : nullptr;
 
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];

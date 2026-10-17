@@ -150,7 +150,8 @@ struct Transform : Published {
 
   struct Spec {
     Params params;
-    fmeta::ColumnSet cols; // [特征 (+ mcap, ind 若 NeutralRank)] (+ 门控)
+    fmeta::ColumnSet cols; // [特征] (+ 门控)
+    fmeta::ColumnSet side; // All 档旁读 [mcap, ind_l1] (All 字段表下标; 仅 NeutralRank)
     uint32_t focus = 0;    // 序列快照焦点 (子轴下标)
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
@@ -175,7 +176,7 @@ struct Transform : Published {
   // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), universe 变了才重建资产线
   void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式; 被取消返回 false
-  bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
+  bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);
   void clear();
 
 private:

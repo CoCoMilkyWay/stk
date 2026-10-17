@@ -33,6 +33,7 @@ struct Feature;
 //     struct Spec;  Spec spec;   本次构建的输入 (reset 持锁写; UI 持锁读 = 快照身份)
 //     struct Snap;  Snap snap;   发布成品 (批末持锁 swap; UI 渲染帧内持锁只画)
 //     void reset(ReadScope, Spec);  bool build(FeatureRead &, cancel);  void clear();
+//     (要 All 档旁读列的目标改为 bool build(FeatureRead &, const FeatureRead &all, cancel))
 //   };
 // 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Backend/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
@@ -177,6 +178,9 @@ struct ReadScope {
   std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月)
   UniverseAxis uni;             // A 轴 (Pool: universe 子轴; All: 全轴), 文件列序/目录都由它定
   std::string features_dir;     // 特征库目录 (Pool: Config::FeatureUniverseDir; All: Config::FeatureAllDir)
+  // All 档旁读 (涨跌停 / 市值 / 行业等只在全局库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 uni.ids[a]
+  UniverseAxis all_uni; // 全轴
+  std::string all_dir;  // Config::FeatureAllDir
 };
 ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier);
 
@@ -187,7 +191,8 @@ struct Request {
   Spec spec;
 };
 
-// GUI 线程: 该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid)
+// GUI 线程: 该档该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid). 不给档 = 当前档
+fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, std::vector<size_t> cols);
 fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols);
 
 // 库里实际存在的日期 (升序) + 每日所属月下标 (months 下标)

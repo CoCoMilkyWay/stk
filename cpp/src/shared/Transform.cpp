@@ -25,7 +25,16 @@ float period_to_freq(float period) { return 2.0f / period; }
 struct Transform::Runtime {
   static constexpr size_t kColBlock = 16; // CS 抢块粒度 (截面列数 = 批天 × VR)
 
-  Prefetch<TsPlane> pf;                          // 输入 [列][A][批天][VR] f16 ×2 + io 池
+  struct Plane {
+    TsPlane main; // 主库 [特征][A][批天][VR]
+    TsPlane side; // All 档旁读 [mcap, ind][A][批天][VR] (已按 uni.ids 收拢到主轴; NeutralRank 时)
+    void clear() {
+      main.clear();
+      side.clear();
+    }
+  };
+  Prefetch<Plane> pf;                            // 输入 f16 ×2 + io 池
+  std::vector<IoSlot> side_slots;                // [io 线程数] All 全轴暂存 (NeutralRank 时)
   std::vector<float> out;                        // 输出 [A][批天][VR] float (NaN = 缺/预热)
   std::vector<math::stationary::TodProfile> tod; // [A] 跨天 TOD 轮廓 (season 开时)
   math::spectral::IIRCoeffs iir;                 // 带通系数 (一次设计)
@@ -82,15 +91,26 @@ struct Transform::Runtime {
   std::vector<Shard> shards; // [n_threads] 按 tid
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
-  // A = universe 子轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), 返回计算执行器
-  misc::exec::ForkJoin &prepare(size_t A, const fmeta::ColumnSet &cols, const Params &p) {
+  // A = universe 子轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), A_all = 全轴 (旁读暂存),
+  // 返回计算执行器
+  misc::exec::ForkJoin &prepare(size_t A, size_t A_all, const Spec &sp) {
     TraceN("TransformPrepare");
+    const Params &p = sp.params;
     const size_t VR = kVR;
     const size_t n_threads = threads_for(n_asset_blocks(A));
 
-    pf.prepare(threads_for(kDaysPerBatch), A, kLevel, cols.io.size());
-    for (TsPlane &pl : pf.buf)
-      pl.prepare(A, kLevel, kDaysPerBatch, cols.n());
+    const size_t n_io = threads_for(kDaysPerBatch);
+    pf.prepare(n_io, A, kLevel, sp.cols.io.size());
+    for (Plane &pl : pf.buf) {
+      pl.main.prepare(A, kLevel, kDaysPerBatch, sp.cols.n());
+      if (p.cs_neutral())
+        pl.side.prepare(A, kLevel, kDaysPerBatch, sp.side.n());
+    }
+    if (p.cs_neutral()) {
+      side_slots.resize(n_io);
+      for (IoSlot &s : side_slots)
+        s.prepare(A_all, kLevel, sp.side.io.size());
+    }
     out.resize(A * kDaysPerBatch * VR);
 
     if (p.season != Season::None) {
@@ -140,8 +160,10 @@ Transform::~Transform() = default;
 
 void Transform::reset(ReadScope scope, Spec sp) {
   TraceN("TransformReset");
-  assert(sp.cols.n() == 1u + (sp.params.cs_neutral() ? 2u : 0u));
+  assert(sp.cols.n() == 1u);
+  assert(sp.side.n() == (sp.params.cs_neutral() ? 2u : 0u));
   check_axis(scope.uni.ids);
+  assert(scope.all_uni.size() > 0 && scope.uni.ids.back() < scope.all_uni.size());
   std::lock_guard<std::mutex> lock(mutex);
 
   const bool axis_changed = scope_.uni.ids != scope.uni.ids;
@@ -168,7 +190,7 @@ void Transform::reset(ReadScope scope, Spec sp) {
 // Build
 // ============================================================================
 
-bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+bool Transform::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
   TraceN("TransformBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -187,7 +209,7 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   const size_t n_days = plan.size();
   total.store(n_days, std::memory_order_release);
 
-  misc::exec::ForkJoin &ex = rt.prepare(A, cols, p);
+  misc::exec::ForkJoin &ex = rt.prepare(A, scope_.all_uni.size(), spec);
   const size_t n_blocks = n_asset_blocks(A);
   rt.pub = snap;                 // 资产线 asset / draw 标记随之带过去 (之后每批整体覆写)
   for (size_t a = 0; a < A; ++a) // stats 每次 build 清零重累积, asset 得重贴
@@ -250,8 +272,11 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
   // 批 b0 的 IO (预读线程或本线程跑; 只写传入的平面)
   const auto load = [&](size_t b0) {
-    return [&, b0](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
-      pl.load_batch(io, slots, reader, plan.dates.data() + b0, std::min(kDaysPerBatch, n_days - b0), cols, cancel);
+    return [&, b0](Runtime::Plane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
+      const size_t bd = std::min(kDaysPerBatch, n_days - b0);
+      pl.main.load_batch(io, slots, reader, plan.dates.data() + b0, bd, cols, cancel);
+      if (neutral)
+        pl.side.load_batch(io, rt.side_slots, all, plan.dates.data() + b0, bd, spec.side, cancel, scope_.uni.ids.data());
     };
   };
   rt.pf.now(load(0));
@@ -264,7 +289,8 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
     const size_t bd = std::min(kDaysPerBatch, n_days - b0);
     if (b0 + kDaysPerBatch < n_days)
       rt.pf.issue(load(b0 + kDaysPerBatch)); // issue → wait 之间不许 return
-    const TsPlane &pl = rt.pf.front();
+    const TsPlane &pl = rt.pf.front().main;
+    const TsPlane &side = rt.pf.front().side;
 
     // ------------------------------------------------------------------
     // Phase TS: 每 (资产, 天) 一条因果链 → out_ (a = 子轴下标); kAssetBlock 个资产一任务
@@ -345,9 +371,9 @@ bool Transform::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         for (size_t c = c0; c < c1; ++c) {
           const size_t j = c / VR, t = c % VR;
           float *base = rt.out.data() + j * VR + t; // + a * stride
-          const size_t pstride = pl.asset_stride();
-          const feature_storage_t *mc = neutral ? pl.column(1, j, t) : nullptr;
-          const feature_storage_t *ind = neutral ? pl.column(2, j, t) : nullptr;
+          const size_t pstride = side.asset_stride();
+          const feature_storage_t *mc = neutral ? side.column(0, j, t) : nullptr;
+          const feature_storage_t *ind = neutral ? side.column(1, j, t) : nullptr;
           size_t n = 0;
           for (size_t a = 0; a < A; ++a) {
             const float v = base[a * stride];
