@@ -14,7 +14,7 @@
   {"hold":1001,"expr":"TsRankRoll(TsLogRatio(TsSumRoll(TsAdd(amt_taker_bid, amt_taker_ask), d=1048), TsSumRoll(TsAdd(amt_taker_bid, amt_taker_ask), d=30)), d=1275)"},
   {"hold":1001,"expr":"TsRankRoll(TsLogRatio(TsSumRoll(TsAdd(amt_taker_bid, amt_taker_ask), d=881), TsSumRoll(TsAdd(amt_taker_bid, amt_taker_ask), d=93)), d=1275)"}
  ],
- "run": {"universe":"micro","start_date":"2026-05-01","end_date":"2026-10-16","days":111,"T":28305,"A":623,"backend":"gpu","frame":"TS","max_impact":0.01,"n_full":17.65},
+ "run": {"pool":"micro","start_date":"2026-05-01","end_date":"2026-10-16","days":111,"T":28305,"A":623,"backend":"gpu","frame":"TS","max_impact":0.01,"n_full":17.65},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],
  "acc_cols": ["long.imp","long.n","long.e","long.wimp","long.we","short.imp","short.n","short.e","short.wimp","short.we","rows"],
  "stats": [

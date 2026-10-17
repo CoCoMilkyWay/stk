@@ -138,7 +138,7 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
   };
   if (!json_str_is(run, "frame", factor::stat::frame_name(r.frame)))
     return;
-  if (!str(run, "universe", t.scope.pool) || !ymd(run, "start_date", t.scope.start_date) || !ymd(run, "end_date", t.scope.end_date) ||
+  if (!str(run, "pool", t.scope.pool) || !ymd(run, "start_date", t.scope.start_date) || !ymd(run, "end_date", t.scope.end_date) ||
       !str(run, "backend", t.scope.backend) || !str(j, "time", t.scope.time))
     return;
   if (!json_int(run, "days", t.scope.days) || !json_int(run, "T", t.scope.T) || !json_int(run, "A", t.scope.A))
@@ -195,7 +195,7 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
 // 顶层 run: 一轮评估内全部权重相同的口径 (time 每权重各自回写时取, 不进 run)
 ojson run_json(const FactorRow &r) {
   ojson j;
-  j["universe"] = r.scope.pool;
+  j["pool"] = r.scope.pool;
   j["start_date"] = misc::dash(r.scope.start_date);
   j["end_date"] = misc::dash(r.scope.end_date);
   j["days"] = r.scope.days;
