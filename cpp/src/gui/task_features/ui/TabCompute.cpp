@@ -25,7 +25,7 @@ static LibStatus lib_status(const Config &config, std::string_view name) {
   s.ready = true;
   s.first = lib.dates.front();
   s.last = lib.dates.back();
-  s.assets = lib.uni.size();
+  s.assets = lib.axis.size();
   s.days = lib.dates.size();
   s.done = static_cast<size_t>(std::count_if(lib.dates.begin(), lib.dates.end(),
                                              [&](misc::Ymd d) { return FeatureRead::has_date(lib.tier, lib.dir, d); }));

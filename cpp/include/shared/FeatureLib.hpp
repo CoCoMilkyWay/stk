@@ -8,7 +8,7 @@
 
 #include "features/Storage/FeatureLevels.hpp" // TierId
 #include "misc/date.hpp"
-#include "shared/AssetAxis.hpp" // UniverseAxis
+#include "shared/AssetAxis.hpp" // LibAxis
 #include <cstddef>
 #include <span>
 #include <string>
@@ -30,10 +30,10 @@ TierId lib_tier(std::string_view name); // all → Bar, 票池名 → Lob, 其�
 struct FeatureLib {
   TierId tier = TierId::Lob;
   std::string name;             // 库名 (= 目录名)
-  UniverseAxis uni;             // A 轴: 张量列 / 文件列序 / 头指纹 (空 = 未建库)
+  LibAxis axis;             // A 轴: 张量列 / 文件列序 / 头指纹 (空 = 未建库)
   std::string dir;              // 库目录 (日文件落在其下)
   std::vector<misc::Ymd> dates; // 日期轴 (升序; 已落盘的是其子集, 见 FeatureRead::has_date)
-  bool ready() const { return uni.size() > 0; }
+  bool ready() const { return axis.size() > 0; }
 };
 FeatureLib load_lib(const Config &cfg, std::string_view name); // 读清单; 无清单 → 未建库 (tier / name / dir 仍有效)
 void save_lib(const FeatureLib &lib);                          // 写清单 (tmp + rename)

@@ -95,7 +95,7 @@ struct InspectUIState {
   bool derived_abs = false;
   InspectDerived der;
   // ---- 右上 标的 K 线 ----
-  uint32_t asset_gid = ~0u; // 选中标的 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.lib.uni.sub_of 找回, 不在子轴内 → 重选
+  uint32_t asset_gid = ~0u; // 选中标的 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.lib.axis.sub_of 找回, 不在子轴内 → 重选
   // 标的轴派生 (键: epoch / 光标日): 光标日各标的日内均 R 降序
   uint64_t ax_epoch = ~0ull;
   int ax_day = -1;

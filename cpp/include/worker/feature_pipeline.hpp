@@ -368,7 +368,7 @@ bool pipeline(const PipelineArgs &args) {
   // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
   const StageLayout L = StageLayout::make(misc::Affinity::physical_cores());
   const std::vector<misc::Ymd> &dates = args.dates;
-  const size_t num_assets = args.lib.uni.size();
+  const size_t num_assets = args.lib.axis.size();
   const size_t num_ts = static_cast<size_t>(L.num_ts);
   assert(!dates.empty() && num_assets >= 1);
 
@@ -380,7 +380,7 @@ bool pipeline(const PipelineArgs &args) {
             << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")\n"
             << std::endl;
 
-  FeatureStore<T> store(num_assets, args.lib.uni.hash, args.lib.dir, args.pool_slots);
+  FeatureStore<T> store(num_assets, args.lib.axis.hash, args.lib.dir, args.pool_slots);
   assert(store.query_slots() >= CoreOf<T>::kMinPoolSlots && "内存上限把池砍到 MIN_POOL_SLOTS 之下, 会死锁");
 
   TierFeed<T> feed(args, store);

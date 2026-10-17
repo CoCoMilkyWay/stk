@@ -48,17 +48,17 @@ bool ComputeService::run(ComputeConfig &config) {
     lib.dates = data_.asset.backtest_dates();
     side = load_lib(data_.config, Config::kAllTierDir);
     data_.pool_panel = pool::Panel::build(side, pool_def(lib.name).col, lib.dates);
-    lib.uni = data_.pool_panel.axis();
+    lib.axis = data_.pool_panel.axis();
   } else {
     for (const CalendarDay &day : data_.assetinfo.get_stock_days())
       if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data_.config.end_date)
         lib.dates.push_back(day.date);
-    lib.uni = full_axis(data_.asset.items.size());
+    lib.axis = full_axis(data_.asset.items.size());
     side = lib;
   }
   assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "日期轴为空 / 交易日历非升序, 不应触发特征计算");
   const std::vector<misc::Ymd> &dates = lib.dates;
-  const size_t num_assets = lib.uni.size();
+  const size_t num_assets = lib.axis.size();
   std::cout << "Lib " << lib.name << " (" << tier_name(lib.tier) << "): " << lib.dir << " → " << num_assets << " / "
             << data_.asset.items.size() << " assets\n"
             << std::endl;
@@ -74,7 +74,7 @@ bool ComputeService::run(ComputeConfig &config) {
   {
     std::vector<std::string> axis_codes(num_assets);
     for (size_t sub = 0; sub < num_assets; ++sub)
-      axis_codes[sub] = asset_axis().code(lib.uni.global(sub));
+      axis_codes[sub] = asset_axis().code(lib.axis.global(sub));
     data_.fund_panel.build(axis_codes, dates);
   }
 

@@ -200,7 +200,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
-  const int A = static_cast<int>(req.scope.lib.uni.size());
+  const int A = static_cast<int>(req.scope.lib.axis.size());
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
   std::vector<int> holds;
   for (const LabelCol &lc : feats_.labels)

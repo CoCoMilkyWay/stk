@@ -15,7 +15,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
 
   FeatureRead reader(bar);
   FeatureRead::DayColumns dc;
-  const size_t As = bar.uni.size();
+  const size_t As = bar.axis.size();
   dc.preallocate(As, kLevel, 1);
   const std::vector<size_t> cols{col};
 
@@ -41,14 +41,14 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   std::vector<size_t> pick; // 子轴 sub → all 库下标
   for (size_t a = 0; a < As; ++a)
     if (seen[a]) {
-      ids.push_back(bar.uni.global(a));
+      ids.push_back(bar.axis.global(a));
       pick.push_back(a);
     }
   assert(!ids.empty() && "票池在回测区间内并集为空");
 
   Panel p;
   p.dates_.assign(dates.begin(), dates.end());
-  p.axis_ = sub_axis(std::move(ids));
+  p.axis_ = pool_axis(std::move(ids));
   const size_t A = pick.size();
   p.member_.resize(dates.size() * A);
   for (size_t i = 0; i < dates.size(); ++i)

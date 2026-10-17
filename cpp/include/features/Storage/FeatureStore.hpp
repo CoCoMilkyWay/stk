@@ -205,7 +205,7 @@ private:
   static constexpr size_t level_bytes(size_t lvl, size_t num_assets) { return store_level_bytes<T>(lvl, num_assets); }
 
   // Config
-  const std::uint64_t axis_hash_; // A 轴指纹 (UniverseAxis::hash), 落进每个特征文件头
+  const std::uint64_t axis_hash_; // A 轴指纹 (LibAxis::hash), 落进每个特征文件头
   std::string output_dir_;
 
   // 日环: 日 d 占 pool_[d % P]. 不需要 date→slot map / freelist / epoch / 状态枚举 (见文件头)
@@ -215,7 +215,7 @@ private:
   Day day_at(size_t d) { return {&pool_[d % pool_size_], num_assets_, d}; }
 
 public:
-  // num_assets: 档 A 轴大小; axis_hash: UniverseAxis::hash, 写进每个
+  // num_assets: 档 A 轴大小; axis_hash: LibAxis::hash, 写进每个
   // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeatureLib 推导同一轴比对)
   FeatureStore(size_t num_assets,
                std::uint64_t axis_hash,

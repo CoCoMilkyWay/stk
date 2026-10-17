@@ -38,10 +38,10 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 // worker 私有常驻资源 (首个请求时在 worker 线程建, 稳态零分配)
 // ============================================================================
 
-// 特征库读端: 特征列 = 库 A 轴 (Lob: 票池并集子轴; Bar: 全轴); 请求侧资产是全局下标, 经 sub_of 映射
+// 特征库读端: 特征列 = 库轴 (Lob: 池轴; Bar: 全轴); 请求侧资产是全局下标, 经 sub_of 映射
 struct LibRead {
   FeatureLib lib;
-  const UniverseAxis &uni = lib.uni;
+  const LibAxis &axis = lib.axis;
   FeatureRead reader;
   std::vector<size_t> columns; // 选列缓冲
 
@@ -88,7 +88,7 @@ private:
   struct Res {
     LibRead lib;
     FeatureRead::DayColumns cols; // OHLC 4 + ts_valid + 特征
-    explicit Res(FeatureLib l) : lib(std::move(l)) { cols.preallocate(lib.uni.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
+    explicit Res(FeatureLib l) : lib(std::move(l)) { cols.preallocate(lib.axis.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
   };
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.kline; }
@@ -123,8 +123,8 @@ private:
     std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
     std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
     explicit Res(FeatureLib l) : lib(std::move(l)), lob(L2::LOB_ORDER_CAPACITY) {
-      l1_cols.preallocate(lib.uni.size(), 1, 1 + OrderFlowConst::MAX_FEATURES);
-      l0_cols.preallocate(lib.uni.size(), 0, 1 + OrderFlowConst::MAX_FEATURES);
+      l1_cols.preallocate(lib.axis.size(), 1, 1 + OrderFlowConst::MAX_FEATURES);
+      l0_cols.preallocate(lib.axis.size(), 0, 1 + OrderFlowConst::MAX_FEATURES);
     }
   };
   static constexpr Phase kStart = Phase::Running;
@@ -150,7 +150,7 @@ private:
     LibRead bar;                  // 状态列在 Bar 档 (Fund 只在 Bar 库落盘)
     FeatureRead::DayColumns cols; // 资产筛选状态列 (全轴)
     Res(FeatureLib l, FeatureLib b) : lib(std::move(l)), bar(std::move(b)) {
-      cols.preallocate(bar.uni.size(), 1, UNIVERSE_COL_COUNT);
+      cols.preallocate(bar.axis.size(), 1, UNIVERSE_COL_COUNT);
     }
   };
   static constexpr Phase kStart = Phase::Running;
@@ -251,8 +251,8 @@ bool OrderFlowService::KlineWorker::run(KlineReq &req) {
   // 请求侧 asset 是全局轴下标, 特征列按票池子轴索引. 不在子轴内 (初始
   // 默认选中 / 换票池后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
   // 列可读, 直接发布"完整但空"的一代 —— 与全轴时代读到恒零列的语义一致.
-  sub_ = res_->lib.uni.sub_of(static_cast<uint32_t>(cur_.asset));
-  if (sub_ >= res_->lib.uni.size()) {
+  sub_ = res_->lib.axis.sub_of(static_cast<uint32_t>(cur_.asset));
+  if (sub_ >= res_->lib.axis.size()) {
     k.pub.store(OrderFlow::Kline::pack(cur_.gen, k.dates.size(), 0), std::memory_order_release);
     return true;
   }
@@ -287,7 +287,7 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
 
   // 选中资产的子轴下标 (run 映射并保证在轴内, 否则不会流式到这)
   const size_t a = sub_;
-  assert(a < lib.uni.size());
+  assert(a < lib.axis.size());
   const double x0 = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
   const size_t nf = cur_.feats.size();
 
@@ -368,12 +368,12 @@ bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
 
   // 时间外层 / 资产内层 (布局 [n][T][A]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
   const FeatureRead::DayColumns &c = res_->cols;
-  const size_t A = lib.uni.size();
-  assert(res_->bar.uni.size() == c.A);
+  const size_t A = lib.axis.size();
+  assert(res_->bar.axis.size() == c.A);
   size_t remaining = A;
   for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
     for (size_t a = 0; a < A; ++a) {
-      const size_t g = lib.uni.global(a);
+      const size_t g = lib.axis.global(a);
       OrderFlow::Universe::Meta &meta = slot.meta[g];
       if (meta.has_data) // 已取到当日状态 (日频广播, 后续分钟同值)
         continue;
@@ -531,10 +531,10 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
 
   // 请求侧 asset 是全局轴下标, 特征列按子轴索引; 不在 universe 内 → 无特征列
   // 可读, VWAP / overlay 留空 (盘口重放走日文件, 不受 universe 约束, 上面照常构建)
-  const size_t depth_sub = res.lib.uni.sub_of(static_cast<uint32_t>(req.asset));
+  const size_t depth_sub = res.lib.axis.sub_of(static_cast<uint32_t>(req.asset));
 
   // ---- 分钟 VWAP 阶梯: L1 特征列 vwap, 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----
-  if (depth_sub < res.lib.uni.size()) {
+  if (depth_sub < res.lib.axis.size()) {
     TraceN("OF_DepthVwap");
     auto &cols = res.lib.columns;
     cols.assign({static_cast<size_t>(lob::L1_Field::ts_valid), static_cast<size_t>(lob::L1_Field::vwap)});
@@ -555,7 +555,7 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
 
   // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + ts_valid 选列读, 与图2 同源指标;
   //      L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒 → 只取当日日内段) ----
-  if (!req.feats.empty() && depth_sub < res.lib.uni.size()) {
+  if (!req.feats.empty() && depth_sub < res.lib.axis.size()) {
     TraceN("OF_DepthFeats");
     assert(req.feat_level == 0 || req.feat_level == 1);
     const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(lob::L0_Field::ts_valid)

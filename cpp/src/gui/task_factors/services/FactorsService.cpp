@@ -837,7 +837,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
     return true;
   }
   Loaded L;
-  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib.uni.size()), L);
+  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib.axis.size()), L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
   L.max_impact = static_cast<float>(req.max_impact);
 

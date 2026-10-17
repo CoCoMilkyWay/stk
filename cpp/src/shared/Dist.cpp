@@ -149,18 +149,18 @@ Dist::~Dist() = default;
 void Dist::reset(ReadScope scope, Spec sp) {
   TraceN("DistReset");
   assert(sp.cols.n() == 1 && "Dist 只接受单值列 (+ 门控)");
-  check_axis(scope.lib.uni.ids);
+  check_axis(scope.lib.axis.ids);
   std::lock_guard<std::mutex> lock(mutex);
 
-  const bool axis_changed = scope_.lib.uni.ids != scope.lib.uni.ids;
+  const bool axis_changed = scope_.lib.axis.ids != scope.lib.axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.lib.uni.size(); // A 轴 = universe 子轴
+  const size_t A = scope_.lib.axis.size(); // A 轴 = universe 子轴
 
   // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. universe / 区间变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
-  init_lines(snap.lines, scope_.lib.uni.ids);
+  init_lines(snap.lines, scope_.lib.axis.ids);
   if (snap.months.size() != scope_.months.size())
     snap.months.assign(scope_.months.size(), AggPdf{});
   if (snap.by_weekday.size() != 7)
@@ -180,7 +180,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = scope_.lib.uni.size(); // universe 子轴大小 (扫描/抽样预算/分母全按它)
+  const size_t A = scope_.lib.axis.size(); // universe 子轴大小 (扫描/抽样预算/分母全按它)
   const size_t VR = kVR;
   assert(level_valid_rows(kLevel) == VR);
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");

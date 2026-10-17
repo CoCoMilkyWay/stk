@@ -175,7 +175,7 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 struct ReadScope {
   std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月); 主库或 all 库未建 → 空
   FeatureLib lib;               // 主库 (档 / A 轴 / 目录, 与写端同一清单)
-  // Bar 档旁读 (涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 lib.uni.ids[a]
+  // Bar 档旁读 (涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 lib.axis.ids[a]
   FeatureLib bar;
 };
 ReadScope read_scope(const Config &cfg, std::string_view lib); // lib = 库名 (见 FeatureLib.hpp)
@@ -215,7 +215,7 @@ DayPlan plan_days(const FeatureRead &reader, const std::vector<misc::Ym> &months
 // 槽数对得上就只 clear (KLL 保留 buffer 容量), 对不上才重建
 void prepare_slots(std::vector<KLLcache> &slots, size_t n, size_t capacity, size_t resolution);
 void clear_slots(std::vector<KLLcache> &slots);
-// 子轴 → 全局轴映射必须升序去重非空 (UniverseAxis::ids)
+// 子轴 → 全局轴映射必须升序去重非空 (LibAxis::ids)
 void check_axis(const std::vector<uint32_t> &global_ids);
 
 inline size_t n_asset_blocks(size_t A) { return (A + kAssetBlock - 1) / kAssetBlock; }

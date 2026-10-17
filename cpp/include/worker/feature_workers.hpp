@@ -304,7 +304,7 @@ template <class T>
 struct StageCtx {
   int worker_id;
   FeatureStore<T> &store;
-  const FeatureLib &lib;  // 本档库 (A 轴 = lib.uni, 目录 = lib.dir)
+  const FeatureLib &lib;  // 本档库 (A 轴 = lib.axis, 目录 = lib.dir)
   const FeatureLib &side; // CS 旁读档的库 (TierSide<T>; 无旁读列时不读)
   std::span<const misc::Ymd> dates;
   const std::atomic<bool> &cancel;

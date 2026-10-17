@@ -73,23 +73,23 @@ private:
 AssetAxis &asset_axis();
 
 // ============================================================================
-// UniverseAxis — 特征库的 A 轴 (子轴)
+// LibAxis — 特征库的 A 轴 (子轴)
 //
 // ids = 库内资产在全局轴上的下标 (升序去重), hash = 按子轴顺序对码表做同一条 FNV 累积链 (fnv_append).
-// 写端规划 (Lob: 票池并集 sub_axis; Bar: 全轴 full_axis, hash == asset_axis().hash_at(num_assets), 同一条链的前缀值)
+// 写端规划 (Lob: 票池并集 pool_axis; Bar: 全轴 full_axis, hash == asset_axis().hash_at(num_assets), 同一条链的前缀值)
 // 后码表落库清单 (见 FeatureLib.hpp), 读端从清单重建同一子轴. 特征文件头存 (A_sub, hash), 不符 = 库内文件与清单
 // 不一致 → 读端删库判废, 等重算 (见 FeatureRead).
 //
 // 整条特征管线 (张量池 / 落盘 / 读端 / Dist / Transform / OrderFlow 特征读)
 // 一律用子轴下标 (sub); 需要查 items/码表/行业等全局资源时经 global() 映射.
 // ============================================================================
-struct UniverseAxis {
+struct LibAxis {
   std::vector<uint32_t> ids; // sub → global (升序去重, 非空)
   std::uint64_t hash = 0;    // 子轴码表累积 hash (特征文件头校验值)
 
   std::size_t size() const { return ids.size(); }
   uint32_t global(std::size_t sub) const {
-    assert(sub < ids.size() && "UniverseAxis::global: 子轴下标越界");
+    assert(sub < ids.size() && "LibAxis::global: 子轴下标越界");
     return ids[sub];
   }
   // global → sub (二分); 不在子轴内返回 size()
@@ -100,6 +100,6 @@ struct UniverseAxis {
 };
 
 // 子轴: ids 须升序去重且在全局轴内 (assert), hash 按子轴序走 FNV 链
-UniverseAxis sub_axis(std::vector<uint32_t> ids);
+LibAxis pool_axis(std::vector<uint32_t> ids);
 // Bar 档 A 轴 = 全轴前缀 [0, num_assets)
-UniverseAxis full_axis(std::size_t num_assets);
+LibAxis full_axis(std::size_t num_assets);

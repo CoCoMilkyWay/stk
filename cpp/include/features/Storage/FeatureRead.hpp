@@ -20,7 +20,7 @@
 // FEATURE READER — 特征库 (目录 + 子轴期望 + 判废), 单日读委托 FeatureDay::read
 // ============================================================================
 // 时间轴: 落盘形状恒为满 (rows / field_count), 消费端时间轴一律 level_valid_rows(lvl).
-// A / axis_hash = 库 A 轴大小 / 指纹 (UniverseAxis, 来自库清单, 见 FeatureLib.hpp):
+// A / axis_hash = 库 A 轴大小 / 指纹 (LibAxis, 来自库清单, 见 FeatureLib.hpp):
 //   读端构造时带期望子轴 (A + hash), 逐文件精确比对, 不做兼容展宽.
 // 头不符分两类:
 //   格式版本 / 字段表指纹 = 旧库, 已无法解释 → 就地判废: 删掉整个 base_dir_ + 置 stale() + 拉起构建的取消旗
@@ -52,7 +52,7 @@ public:
   // lib = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一清单; 须已建库)
   // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
   explicit FeatureRead(const FeatureLib &lib, std::atomic<bool> *abort = nullptr)
-      : tier_(lib.tier), base_dir_(lib.dir), axis_A_(lib.uni.size()), axis_hash_(lib.uni.hash), abort_(abort) {
+      : tier_(lib.tier), base_dir_(lib.dir), axis_A_(lib.axis.size()), axis_hash_(lib.axis.hash), abort_(abort) {
     assert(axis_A_ > 0 && "期望子轴为空 (库未建: 先 lib.ready())");
   }
 

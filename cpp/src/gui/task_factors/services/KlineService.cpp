@@ -20,11 +20,11 @@ struct KlineService::Impl {
   std::vector<size_t> idx;
 
   void ensure(const analysis::ReadScope &sc) {
-    if (reader && dir == sc.lib.dir && hash == sc.lib.uni.hash && A == sc.lib.uni.size()) {
+    if (reader && dir == sc.lib.dir && hash == sc.lib.axis.hash && A == sc.lib.axis.size()) {
       reader->revive(); // 新请求 = Inspect 刚读过库 (库已落地), 判废解除
       return;
     }
-    dir = sc.lib.dir, hash = sc.lib.uni.hash, A = sc.lib.uni.size();
+    dir = sc.lib.dir, hash = sc.lib.axis.hash, A = sc.lib.axis.size();
     reader.emplace(sc.lib);
     cols.preallocate(A, analysis::kLevel, 5);
   }
@@ -34,7 +34,7 @@ KlineService::KlineService() { Start(); }
 KlineService::~KlineService() { Stop(); }
 
 void KlineService::Request(KlineRequest req) {
-  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.lib.uni.size() && !req.dates.empty());
+  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.lib.axis.size() && !req.dates.empty());
   Worker::Request(std::move(req));
 }
 

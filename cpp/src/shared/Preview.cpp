@@ -104,8 +104,8 @@ void FeaturePreview::reset(ReadScope scope, Spec sp) {
   assert(n_pv > 0 && std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + n_pv));
   assert(sp.cols.io[n_pv - 1] < sp.n_features);
   assert(sp.cage.size() == 2);
-  assert(scope.lib.uni.size() > 0 && !scope.months.empty());
-  assert(scope.bar.uni.size() > 0 && scope.lib.uni.ids.back() < scope.bar.uni.size());
+  assert(scope.lib.axis.size() > 0 && !scope.months.empty());
+  assert(scope.bar.axis.size() > 0 && scope.lib.axis.ids.back() < scope.bar.axis.size());
   std::lock_guard<std::mutex> lock(mutex);
 
   scope_ = std::move(scope);
@@ -131,7 +131,7 @@ bool FeaturePreview::build(FeatureRead &reader, const FeatureRead &all, const st
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
   const size_t VR = kVR;
-  const size_t A = scope_.lib.uni.size();
+  const size_t A = scope_.lib.axis.size();
   assert(level_valid_rows(kLevel) == VR);
   assert(A > 0 && spec.cols.n() > 0 && "reset 先于 build");
 
@@ -146,8 +146,8 @@ bool FeaturePreview::build(FeatureRead &reader, const FeatureRead &all, const st
   const size_t n_pv = cols.n();
   const size_t n_draw = std::min(kPvAssetsPerRound, A);
   const size_t n_blocks = (n_pv + kPvBlockCols - 1) / kPvBlockCols;
-  const size_t A_all = scope_.bar.uni.size();
-  const uint32_t *ids = scope_.lib.uni.ids.data(); // 主轴 a → 全轴
+  const size_t A_all = scope_.bar.axis.size();
+  const uint32_t *ids = scope_.lib.axis.ids.data(); // 主轴 a → 全轴
   misc::exec::ForkJoin &ex = rt.prepare(spec, A, A_all);
   const bool gated = cols.gated();
 

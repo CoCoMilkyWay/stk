@@ -172,10 +172,10 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;
   }
-  std::string ckey = req.scope.lib.dir + "|" + std::to_string(req.scope.lib.uni.hash) + "|cap" + std::to_string(req.max_impact);
+  std::string ckey = req.scope.lib.dir + "|" + std::to_string(req.scope.lib.axis.hash) + "|cap" + std::to_string(req.max_impact);
   for (const misc::Ym m : req.scope.months)
     ckey += "|" + std::to_string(m);
-  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib.uni.size());
+  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib.axis.size());
   begin(Phase::Loading, static_cast<size_t>(days));
   const auto stale_out = [&] {
     if (reader.stale()) { // 库换了, 缓存的一切不可信

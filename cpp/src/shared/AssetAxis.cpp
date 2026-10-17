@@ -133,28 +133,28 @@ AssetAxis &asset_axis() {
   return instance;
 }
 
-UniverseAxis full_axis(std::size_t num_assets) {
+LibAxis full_axis(std::size_t num_assets) {
   assert(num_assets > 0 && "资产轴为空");
-  UniverseAxis uni;
-  uni.ids.resize(num_assets);
+  LibAxis out;
+  out.ids.resize(num_assets);
   for (std::size_t i = 0; i < num_assets; ++i)
-    uni.ids[i] = static_cast<uint32_t>(i);
-  uni.hash = asset_axis().hash_at(num_assets); // 同一条链的前缀值, 免重算
-  return uni;
+    out.ids[i] = static_cast<uint32_t>(i);
+  out.hash = asset_axis().hash_at(num_assets); // 同一条链的前缀值, 免重算
+  return out;
 }
 
-UniverseAxis sub_axis(std::vector<uint32_t> ids) {
-  const AssetAxis &axis = asset_axis();
+LibAxis pool_axis(std::vector<uint32_t> ids) {
+  const AssetAxis &table = asset_axis();
   assert(!ids.empty() && "子轴为空");
   assert(std::adjacent_find(ids.begin(), ids.end(), std::greater_equal<>()) == ids.end() && "子轴 ids 须升序去重");
-  assert(ids.back() < axis.size() && "子轴资产不在 A 轴上");
+  assert(ids.back() < table.size() && "子轴资产不在 A 轴上");
 
-  UniverseAxis uni;
-  uni.ids = std::move(ids);
-  uni.hash = kFnvOffset;
-  for (const uint32_t a : uni.ids)
-    uni.hash = fnv_append(uni.hash, axis.code(a));
-  return uni;
+  LibAxis out;
+  out.ids = std::move(ids);
+  out.hash = kFnvOffset;
+  for (const uint32_t a : out.ids)
+    out.hash = fnv_append(out.hash, table.code(a));
+  return out;
 }
 
 // ============================================================================
@@ -185,26 +185,26 @@ FeatureLib load_lib(const Config &cfg, std::string_view name) {
   lib.dates = j.at("dates").get<std::vector<misc::Ymd>>();
   assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "库清单日期轴为空 / 非升序");
 
-  const AssetAxis &axis = asset_axis();
+  const AssetAxis &table = asset_axis();
   const auto &codes = j.at("codes");
   std::vector<uint32_t> ids;
   ids.reserve(codes.size());
   for (const auto &c : codes) {
-    const std::size_t id = axis.find(c.get_ref<const std::string &>());
-    assert(id < axis.size() && "库清单代码不在 A 轴上");
+    const std::size_t id = table.find(c.get_ref<const std::string &>());
+    assert(id < table.size() && "库清单代码不在 A 轴上");
     ids.push_back(static_cast<uint32_t>(id));
   }
-  lib.uni = sub_axis(std::move(ids));
+  lib.axis = pool_axis(std::move(ids));
   return lib;
 }
 
 void save_lib(const FeatureLib &lib) {
   assert(lib.ready() && !lib.dates.empty() && "空库不落清单");
-  const AssetAxis &axis = asset_axis();
+  const AssetAxis &table = asset_axis();
   std::vector<std::string> codes;
-  codes.reserve(lib.uni.size());
-  for (const uint32_t a : lib.uni.ids)
-    codes.push_back(axis.code(a));
+  codes.reserve(lib.axis.size());
+  for (const uint32_t a : lib.axis.ids)
+    codes.push_back(table.code(a));
 
   nlohmann::json j;
   j["tier"] = tier_name(lib.tier);

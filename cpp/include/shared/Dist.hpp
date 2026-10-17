@@ -35,7 +35,7 @@ class FeatureRead;
 //       Phase 归约: shard 两两并行归约 (log2 步, analysis::reduce_tree) → shard 0 = 全程累加器 (全程锁外)
 //       ── 栅栏 ── 批末 (单线程): 累加器导出 PdfSnap 成品 (锁外) → 短锁 swap 发布 + 进度 + epoch
 //
-//   universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 UniverseAxis) ——
+//   universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 LibAxis) ——
 //     平面 / lines / sketch 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
 //     槽位 = 子轴下标; AssetLine.asset 存全局轴下标 (UI 查 items/行业用).
 //

@@ -27,7 +27,7 @@ void cs_loop(const StageCtx<T> &ctx) {
 
   // Initialize CoreCrosssection (manages buffers and 3-level computation)
   using Core = CoreCrosssection<T>;
-  Core core(store, ctx.lib.uni, ctx.side);
+  Core core(store, ctx.lib.axis, ctx.side);
 
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {

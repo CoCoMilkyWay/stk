@@ -153,19 +153,19 @@ public:
   // 节拍层: 有 L0 的档逐秒 (实盘 feed 按墙钟逐秒驱动), 无 L0 的档 (Bar, 分钟 K 源) 逐分钟
   static constexpr size_t kBeatLevel = T::kFirstLevel;
 
-  // uni = 本档 A 轴 (sub → global); side = 旁读档的库 (无旁读列时不读)
-  CoreCrosssection(FeatureStore<T> &store, const UniverseAxis &uni, const FeatureLib &side)
+  // axis = 本档库轴 (sub → global); side = 旁读档的库 (无旁读列时不读)
+  CoreCrosssection(FeatureStore<T> &store, const LibAxis &axis, const FeatureLib &side)
       : A_(store.query_A()), side_lib_(side), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
     if constexpr (Side::N > 0) {
       using S = typename TierSide<T>::type;
-      assert(side.tier == S::kId && uni.size() == A_);
+      assert(side.tier == S::kId && axis.size() == A_);
       side_.resize(Side::N * level_rows(1) * A_);
-      side_full_.resize(Side::N * level_rows(1) * side.uni.size());
+      side_full_.resize(Side::N * level_rows(1) * side.axis.size());
       side_sub_.resize(A_);
       for (size_t a = 0; a < A_; ++a) {
-        side_sub_[a] = side.uni.sub_of(uni.global(a));
-        assert(side_sub_[a] < side.uni.size() && "本档资产不在旁读档 A 轴内");
+        side_sub_[a] = side.axis.sub_of(axis.global(a));
+        assert(side_sub_[a] < side.axis.size() && "本档资产不在旁读档 A 轴内");
       }
     }
   }
@@ -285,9 +285,9 @@ private:
   void load_side_(misc::Ymd date) {
     using S = typename TierSide<T>::type;
     const LevelInfo &L = S::LEVELS[1];
-    const size_t T1 = L.rows, As = side_lib_.uni.size();
+    const size_t T1 = L.rows, As = side_lib_.axis.size();
     const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(side_lib_.dir, date), 1), L, Side::kFields.data(), Side::N,
-                                                   side_full_.data(), As, side_lib_.uni.hash, side_scratch_);
+                                                   side_full_.data(), As, side_lib_.axis.hash, side_scratch_);
     assert((st == FeatureDay::Status::Ok || st == FeatureDay::Status::Missing) && "旁读档库头不符 (轴 / 字段表变了), 先重算旁读档");
     if (st == FeatureDay::Status::Missing) {
       std::fill(side_.begin(), side_.end(), std::bit_cast<feature_storage_t>(fmeta::kNaNBits)); // fast-math TU: 不许浮点 NaN 字面量

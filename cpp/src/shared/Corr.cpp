@@ -408,7 +408,7 @@ struct Engine {
     if (n_days == 0)
       return true; // 库为空: 直接 Done, 快照全空
     board.total.store(n_days, std::memory_order_release);
-    prepare(spec, scope.lib.uni.size(), p);
+    prepare(spec, scope.lib.axis.size(), p);
 
     // 第 d0 步的 IO (预读线程或本线程跑; 只写传入的平面, 切片行号随之填)
     const auto load = [&](size_t d0) {
@@ -537,7 +537,7 @@ Correlation::~Correlation() = default;
 void Correlation::reset(ReadScope scope, Spec sp) {
   TraceN("CorrReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.lib.uni.size() > 0 && !scope.months.empty());
+  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
   assert(std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + F));
   assert(std::adjacent_find(sp.cols.io.begin(), sp.cols.io.begin() + F) == sp.cols.io.begin() + F);
   std::lock_guard<std::mutex> lock(mutex);
@@ -599,7 +599,7 @@ CorrLag::~CorrLag() = default;
 void CorrLag::reset(ReadScope scope, Spec sp) {
   TraceN("CorrLagReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.lib.uni.size() > 0 && !scope.months.empty());
+  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
   assert(std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + F));
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
@@ -674,7 +674,7 @@ CorrPair::~CorrPair() = default;
 
 void CorrPair::reset(ReadScope scope, Spec sp) {
   assert(sp.n() == 2 && sp.col(0) != sp.col(1));
-  assert(sp.level < LEVEL_COUNT && scope.lib.uni.size() > 0 && !scope.months.empty());
+  assert(sp.level < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
   spec = std::move(sp);

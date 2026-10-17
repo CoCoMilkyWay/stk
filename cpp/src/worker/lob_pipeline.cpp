@@ -23,7 +23,7 @@ struct TierFeed<lob::Tier> {
   static constexpr const char *kUnit = "单";
 
   SharedData &data;
-  const UniverseAxis &uni;
+  const LibAxis &axis;
   std::span<const misc::Ymd> dates;
   // 帧目录切成 日期 × 子轴 (行 = dates 下标, 列 = 子轴下标), 持有到全部 worker 退出,
   // 不碰 Asset 上随重扫描换代的那一份; orders.at(date_idx, sub) 直接定址.
@@ -31,10 +31,10 @@ struct TierFeed<lob::Tier> {
   std::vector<size_t> weights; // 区间内逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)
 
   TierFeed(const PipelineArgs &args, const StoreRing &)
-      : data(args.data), uni(args.lib.uni), dates(args.dates),
-        orders(args.data.asset.orders()->slice(args.dates, args.lib.uni.ids)), weights(uni.size(), 0) {
+      : data(args.data), axis(args.lib.axis), dates(args.dates),
+        orders(args.data.asset.orders()->slice(args.dates, args.lib.axis.ids)), weights(axis.size(), 0) {
     // 票池逐日成员 (ComputeService 规划本库时 build: 并集 = 本库 A 轴, 逐日成员位 → Meta cs_valid)
-    assert(data.pool_panel.axis().hash == uni.hash && std::ranges::equal(data.pool_panel.dates(), dates) && "票池与本库 A 轴 / 日期轴不符");
+    assert(data.pool_panel.axis().hash == axis.hash && std::ranges::equal(data.pool_panel.dates(), dates) && "票池与本库 A 轴 / 日期轴不符");
     for (size_t d = 0; d < dates.size(); ++d) {
       const std::span<const FrameRef> row = orders.row(d);
       for (size_t sub = 0; sub < weights.size(); ++sub)
@@ -45,7 +45,7 @@ struct TierFeed<lob::Tier> {
   size_t weight(size_t sub) const { return weights[sub]; }
 
   std::unique_ptr<CoreLob> make_core(size_t sub, int worker_id) const {
-    const auto &asset = data.asset.items[uni.global(sub)];
+    const auto &asset = data.asset.items[axis.global(sub)];
     return std::make_unique<CoreLob>(data.fund_panel, data.pool_panel, asset.code_ex(), sub, static_cast<size_t>(worker_id));
   }
 
@@ -65,7 +65,7 @@ struct TierFeed<lob::Tier> {
     // 一个 asset-day (缺 binary 则按零事件日走同一路径), 返回订单数
     size_t run(CoreLob &core, size_t asset_id, size_t date_idx, const LobFeatureStore::Day &day, LobFeatureStore &store) {
       const misc::Ymd date = feed_.dates[date_idx];
-      const auto &asset = feed_.data.asset.items[feed_.uni.global(asset_id)];
+      const auto &asset = feed_.data.asset.items[feed_.axis.global(asset_id)];
       const FrameRef &ref = feed_.orders.at(date_idx, asset_id);
       if (ref.empty()) {
         core.empty_day(date, day, store); // 缺二进制 = 零事件日: 与正常日同路径, 不绑 LOB

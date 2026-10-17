@@ -51,7 +51,7 @@ class FeatureRead;
 // UI: 每帧持 mutex 读快照; 改任何参数 = 新请求 (取消在跑, 从第一天重来) —— 海量数据下
 //     交互仍即时, 因为每次都只等第一批.
 // 重算: reset 不清展示字段 (拖动调参时旧图留住), 首批 publish 整体覆盖 —— 与 Dist 同一约定.
-// universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 UniverseAxis) —— 平面 /
+// universe: A 轴 = universe 子轴 (与特征库文件列序一致, 见 LibAxis) —— 平面 /
 //   out / lines / sketch / TOD 都只有子轴大小, 每个槽都是活跃资产, 不存在空列.
 //   槽位 = 子轴下标; AssetLine/StatLine 的 .asset 存全局轴下标 (UI 查 items 用).
 // ============================================================================
