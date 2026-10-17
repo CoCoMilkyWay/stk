@@ -4,7 +4,7 @@
 // LabelHold<Entry> - 持有期标签的档无关骨架 (LabelLob 盘口中间价 / LabelBar 分钟 VWAP 共用)
 // =============================================================================
 //   档只管 entry 怎么来 (Entry::px = 建仓价; Lob 另带冲击成本), 骨架管持有期组的全部日历与结算:
-//     open_at(l1, md)       有成交的分钟 bar 截开盘价 (开盘型 exit): 09:25 撮合 bar 的撮合价, 无撮合则首个连续竞价 bar 的
+//     open_at(t_min, md)       有成交的分钟 bar 截开盘价 (开盘型 exit): 09:25 撮合 bar 的撮合价, 无撮合则首个连续竞价 bar 的
 //                           首笔成交价 (交易所开盘价定义). 返回该 bar 是否连续竞价 (可作 entry)
 //     emit_min(writer)      当日 entry 前缀推进后, 写出 exit 已到位的分钟型 (m, n): exit = entry[m+n] (同一基准, 相邻行精确伸缩)
 //     close_day(...)        收盘结算: 尾部行按收盘价建仓, 分钟型尾部 (exit 过收盘) / 收盘型全行 exit = 收盘价, 有开盘型则悬挂;
@@ -13,7 +13,7 @@
 //   开盘型 (T+N) 跨日回填: 日 D 的行 entry 存在悬挂槽里, 等到 D+N 日开盘才写 D 的张量 → D 的写句柄由 CoreTs 持到该日结清
 //   (writer 带 days_ago). D+N 无开盘 (停牌 / 全日无成交) → 顺延到之后首个有开盘的日, 最多再等 N 日 (D+2N 仍无 → 最近一次收盘价).
 //   悬挂日环长 PEND_DAYS = 2·N_max + 1, 顶掉的槽必已结清 (断言).
-//   writer(col, n, l1, values, days_ago) 写 LB 块内偏移 col 起的 n 列; release(days_ago) = 该日全部组已写完, 写句柄可归还.
+//   writer(col, n, t_min, values, days_ago) 写 LB 块内偏移 col 起的 n 列; release(days_ago) = 该日全部组已写完, 写句柄可归还.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -52,11 +52,11 @@ public:
   // FeatureStore 日环下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进 (CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
   static constexpr size_t MIN_RING_SLOTS = PEND_DAYS + 1;
 
-  // 09:25 撮合 bar (L1 kAuctionL1) / 连续竞价 [kContOpenL1, kContCloseL1) = [09:30, 14:57) / 收盘竞价 (L1 252..254)
-  static constexpr size_t kAuctionL1 = (L2::MORNING_MATCHING_START_HOUR * 60 + L2::MORNING_MATCHING_START_MINUTE) - MORNING_START_MIN;
-  static constexpr size_t kContOpenL1 = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_START_MINUTE) - MORNING_START_MIN;
-  static constexpr size_t kContCloseL1 = MORNING_MINUTES + (AFTERNOON_END_MIN - AFTERNOON_START_MIN);
-  static_assert(kAuctionL1 == 10 && kContOpenL1 == 15 && kContCloseL1 == 252);
+  // 09:25 撮合 bar (L_min kAuctionMin) / 连续竞价 [kContOpenMin, kContCloseMin) = [09:30, 14:57) / 收盘竞价 (L_min 252..254)
+  static constexpr size_t kAuctionMin = (L2::MORNING_MATCHING_START_HOUR * 60 + L2::MORNING_MATCHING_START_MINUTE) - MORNING_START_MIN;
+  static constexpr size_t kContOpenMin = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_START_MINUTE) - MORNING_START_MIN;
+  static constexpr size_t kContCloseMin = MORNING_MINUTES + (AFTERNOON_END_MIN - AFTERNOON_START_MIN);
+  static_assert(kAuctionMin == 10 && kContOpenMin == 15 && kContCloseMin == 252);
 
   // ---- 日历 (日期轴每一日各调一次, 无数据日也调) ----
 
@@ -78,7 +78,7 @@ public:
   // 每日重置: 行游标 / 当日开盘归零
   inline void reset() {
     for (size_t h = 0; h < HOLD_COUNT; ++h)
-      next_label_l1_[h] = 0;
+      next_label_min_[h] = 0;
     open_ok_ = false;
   }
 
@@ -94,14 +94,14 @@ protected:
   Pend &today() { return pend_[cur_]; }
 
   // 有成交的分钟 bar 截开盘价; 返回该 bar 是否连续竞价
-  inline bool open_at(size_t l1, const MinuteData &md) {
-    if (l1 == kAuctionL1) {
+  inline bool open_at(size_t t_min, const MinuteData &md) {
+    if (t_min == kAuctionMin) {
       assert(!open_ok_ && "09:25 撮合 bar 之前不该有开盘价");
       open_px_ = md.close.back();
       open_ok_ = true;
       return false;
     }
-    if (l1 < kContOpenL1 || l1 >= kContCloseL1)
+    if (t_min < kContOpenMin || t_min >= kContCloseMin)
       return false;
     if (!open_ok_) {
       open_px_ = md.open.back();
@@ -110,7 +110,7 @@ protected:
     return true;
   }
 
-  // 分钟型: 行 e 的 entry 到位 = 行 e−n 的 exit 到位, 每组游标 next_label_l1_ 顺序推进 (days_ago 恒 0)
+  // 分钟型: 行 e 的 entry 到位 = 行 e−n 的 exit 到位, 每组游标 next_label_min_ 顺序推进 (days_ago 恒 0)
   template <class Writer>
   inline void emit_min(Writer &&writer) {
     const Pend &p = pend_[cur_];
@@ -118,7 +118,7 @@ protected:
     for (size_t h = 0; h < HOLD_COUNT; ++h) {
       if (LABEL_KIND[h] != HoldKind::MIN)
         continue;
-      for (size_t m = next_label_l1_[h]; m + LABEL_N[h] < p.n_entry; m = ++next_label_l1_[h]) {
+      for (size_t m = next_label_min_[h]; m + LABEL_N[h] < p.n_entry; m = ++next_label_min_[h]) {
         fill_values(p.entry[m], p.entry[m + LABEL_N[h]].px, values);
         writer(hold_col(h), GROUP_SIZE, m, static_cast<const float *>(values), size_t{0});
       }
@@ -143,12 +143,12 @@ protected:
         if (LABEL_KIND[h] == HoldKind::OPEN)
           continue;
         const bool is_min = LABEL_KIND[h] == HoldKind::MIN;
-        for (size_t m = is_min ? next_label_l1_[h] : 0; m < TRADE_MINUTES_PER_DAY; ++m) {
+        for (size_t m = is_min ? next_label_min_[h] : 0; m < TRADE_MINUTES_PER_DAY; ++m) {
           fill_values(p.entry[m], close_px, values);
           writer(hold_col(h), GROUP_SIZE, m, static_cast<const float *>(values), size_t{0});
         }
         if (is_min)
-          next_label_l1_[h] = TRADE_MINUTES_PER_DAY;
+          next_label_min_[h] = TRADE_MINUTES_PER_DAY;
       }
       p.active = kOpenMask != 0; // 有开盘型才悬挂
     } else {
@@ -216,8 +216,8 @@ private:
     }
   }
 
-  size_t next_label_l1_[HOLD_COUNT] = {}; // 分钟型: 各组下一个待写 L1 行 (收盘 / 开盘型不用)
-  float open_px_ = 0.0f;                  // 当日开盘价, open_ok_ = 已截到 (reset 清)
+  size_t next_label_min_[HOLD_COUNT] = {}; // 分钟型: 各组下一个待写 L_min 行 (收盘 / 开盘型不用)
+  float open_px_ = 0.0f;                   // 当日开盘价, open_ok_ = 已截到 (reset 清)
   bool open_ok_ = false;
 
   // 跨日状态 (reset 不清)

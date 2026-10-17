@@ -44,7 +44,7 @@ using ojson = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-constexpr size_t kLevel = analysis::kLevel; // 因子只在 L1 算
+constexpr size_t kLevel = analysis::kLevel; // 因子只在 L_min 算
 
 // 评估派生数据 (run + 表头 + stats): 只描述当前 weights, 权重整体换掉 / 清空时一起删
 void erase_stats(ojson &j) {
@@ -378,7 +378,7 @@ factor::expr::FeatureLookup FeatureTable::lookup() const {
 
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   FeatureTable t;
-  const auto &L1 = meta.features[kLevel];
+  const auto &L_min = meta.features[kLevel];
   t.ts_col = static_cast<uint32_t>(meta.col_of(kLevel, "ts_valid"));
   t.cs_col = static_cast<uint32_t>(meta.col_of(kLevel, "cs_valid"));
   struct Lab {
@@ -394,8 +394,8 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   std::vector<Lab> labs;
   std::vector<Cost> costs;
   std::set<int> holds, amts;
-  for (size_t i = 0; i < L1.size(); ++i) {
-    const FeatureMetadata &f = L1[i];
+  for (size_t i = 0; i < L_min.size(); ++i) {
+    const FeatureMetadata &f = L_min[i];
     FeatCol c;
     c.code = f.code;
     c.col = static_cast<uint32_t>(i);

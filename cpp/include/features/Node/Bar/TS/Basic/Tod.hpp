@@ -9,6 +9,6 @@
   X(amt_todz_##D##d, CAT1, AUTO, "Amount TOD Z " #D "d", "成交额同分钟z值" #D "日", "本分钟成交额对前" #D "日同分钟均值/标准差的z值(样本<3或σ=0→NaN)", R"(\frac{\mathrm{Amt}_t - \mu^{()" #D R"(d)}_{\mathrm{tod}(t)}}{\sigma^{()" #D R"(d)}_{\mathrm{tod}(t)}})", TS(Tod, amt_todz_##D##d, None, None)) \
   X(vol_todz_##D##d, CAT1, AUTO, "Volume TOD Z " #D "d", "成交量同分钟z值" #D "日", "本分钟成交量对前" #D "日同分钟均值/标准差的z值(样本<3或σ=0→NaN)", R"(\frac{\mathrm{Vol}_t - \mu^{()" #D R"(d)}_{\mathrm{tod}(t)}}{\sigma^{()" #D R"(d)}_{\mathrm{tod}(t)}})", TS(Tod, vol_todz_##D##d, None, None))
 
-#define FIELDS_L1_Tod(X, CAT1) \
-  TOD_ROWS(X, CAT1, 5)         \
+#define FIELDS_L_min_Tod(X, CAT1) \
+  TOD_ROWS(X, CAT1, 5)            \
   TOD_ROWS(X, CAT1, 10)

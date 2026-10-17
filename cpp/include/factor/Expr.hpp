@@ -3,7 +3,7 @@
 // =============================================================================
 // 因子表达式 解析 / 序列化: 文本 ↔ 树 (parse / to_string) + 静态校验
 // =============================================================================
-//   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = L1 字段 code 裸写, 参数命名):
+//   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = L_min 字段 code 裸写, 参数命名):
 //     expr  := Op '(' [expr {',' expr}] {',' param} ')' | feature
 //     param := key '=' number | key          key := 'd' | 'k' | 'k2'
 //   例:  CsRank(TsMeanRoll(TsLog(amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(amt), d))

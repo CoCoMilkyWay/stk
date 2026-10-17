@@ -6,9 +6,9 @@
 #include "math/sample/ResamplerBar2Min.hpp"
 
 // ============================================================================
-// CoreBar: Bar 档单资产时序计算 (源 = bar1m 分钟 K; 只有 L1). 日 / 分钟 / 标签骨架见 CoreTs.hpp
+// CoreBar: Bar 档单资产时序计算 (源 = bar1m 分钟 K; 只有 L_min). 日 / 分钟 / 标签骨架见 CoreTs.hpp
 //   与 CoreLob 对仗: compute_and_store = 本源单位 (分钟 m 的 bar1m) 先 advance 到分钟 m, 再收进重采样器
-//   L1 稠密: 255 行每行都跑 onMinute 并写; 无成交分钟 (volume 0 / 无 bar) 由 ResamplerBar2Min 出携带价 bar, 各节点按自身约定兜底.
+//   L_min 稠密: 255 行每行都跑 onMinute 并写; 无成交分钟 (volume 0 / 无 bar) 由 ResamplerBar2Min 出携带价 bar, 各节点按自身约定兜底.
 //   缺数据日 (无 bar1m) = 零事件日 (CoreTs::empty_day), 同一路径. 本类不读任何特征值, 不特判任何节点.
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的 bar1m + 日频 PIT (fund::Panel) + 本资产代码,
@@ -22,7 +22,7 @@ public:
   CoreBar(const fund::Panel &fund_panel, const std::string &code_ex, size_t asset_id)
       : Base(asset_id, fund_panel, code_ex, asset_id), bj_(code_ex.ends_with(".BJ")), bar2min_(dag_.minute_data) {}
 
-  // 每分钟一调 (L1 节拍): 先把时钟推进到分钟 m (逐根结算之前的分钟), 再把本分钟 bar1m 收进重采样器
+  // 每分钟一调 (L_min 节拍): 先把时钟推进到分钟 m (逐根结算之前的分钟), 再把本分钟 bar1m 收进重采样器
   void compute_and_store(size_t m, const Bar1m &bar) noexcept {
     advance(m);
     bar2min_.accumulate(bar);

@@ -3,8 +3,8 @@
 // =============================================================================
 // TickIndex - Tick 索引: 分钟内秒位置的正弦相位嵌入
 // =============================================================================
-//   tod_sec = sin(2π · (l0_index % 60) / 60)   (60 秒一周期, 相位连续可导, 频谱干净)
-//   tick_index = l0_index                   (原始索引 [0-15299])
+//   tod_sec = sin(2π · (sec_index % 60) / 60)   (60 秒一周期, 相位连续可导, 频谱干净)
+//   tick_index = sec_index                   (原始索引 [0-15299])
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -34,7 +34,7 @@ public:
   explicit TickIndex(const TickData &td) : td_(td) {}
 
   inline void compute() {
-    uint32_t idx = td_.l0_index;
+    uint32_t idx = td_.sec_index;
     y[tod_sec] = get_sec_phase_lut()[idx % 60];
     y[tick_index] = static_cast<float>(idx);
   }
@@ -46,5 +46,5 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_TickIndex(N) N(TickIndex, (TickIndex), (tick_data), onTick)
 
-#define FIELDS_L0_TickIndex(X, CAT1) \
+#define FIELDS_L_sec_TickIndex(X, CAT1) \
   X(tod_sec, CAT1, OSCILLATOR, "Time Sec Phase", "时间-秒相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{s}}))", TS(TickIndex, tod_sec, None, None))

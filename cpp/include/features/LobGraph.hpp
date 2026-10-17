@@ -14,7 +14,7 @@ namespace lob {
 // TickData 自持而非引用 worker 订单簿的: DAG 节点引用它 (终身有效), 订单簿经 bind() 把写出口换到这里 →
 // 资产可在 worker 间转移处置权 (负载再平衡), 任意 worker 的订单簿都能驱动本资产
 struct DAG_Root : graph::Root {
-  TickData tick_data; // L0 输入 (订单簿还原写出)
+  TickData tick_data; // L_sec 输入 (订单簿还原写出)
   using graph::Root::Root;
 };
 

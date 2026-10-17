@@ -23,16 +23,15 @@
 namespace GUI::Features {
 
 // ============================================================================
-// Pick 状态列 (L1, Fund 节点日频广播; 顺序 = pick_cols 的列下标)
+// Pick 状态列 (L_day 收盘行, Fund 节点日频; 顺序 = pick_cols 的列下标); 有无数据看 L_min ts_valid
 // ============================================================================
 
 namespace {
-enum PickCol : size_t { PICK_META = 0,
-                        PICK_RISK_WARN,
+enum PickCol : size_t { PICK_RISK_WARN = 0,
                         PICK_LIST_AGE,
                         PICK_DELIST_AGE,
                         PICK_INDUSTRY };
-constexpr size_t PICK_COL_COUNT = 5;
+constexpr size_t PICK_COL_COUNT = 4;
 
 // ============================================================================
 // worker 私有常驻资源 (首个请求时在 worker 线程建, 稳态零分配)
@@ -88,7 +87,7 @@ private:
   struct Res {
     LibRead lib;
     FeatureRead::DayColumns cols; // OHLC 4 + ts_valid + 特征
-    explicit Res(FeatureLib l) : lib(std::move(l)) { cols.preallocate(lib.axis.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
+    explicit Res(FeatureLib l) : lib(std::move(l)) { cols.preallocate(lib.axis.size(), L_min, 5 + OrderFlowConst::MAX_FEATURES); }
   };
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.kline; }
@@ -115,16 +114,16 @@ public:
 private:
   struct Res {
     LibRead lib;
-    L2::FrameDecoder decoder;                 // 对仗 Lob 管线 Runner 的 decoder (日文件 reader 按请求现开)
-    LimitOrderBook lob;                       // 奢侈容量, 常驻复用 (对仗 Lob 管线 Runner 的工作区)
-    TickData tick_data;                       // 无特征侧绑定的盘口写出口
-    FeatureRead::DayColumns l1_cols, l0_cols; // ts_valid + VWAP / 特征
+    L2::FrameDecoder decoder;                   // 对仗 Lob 管线 Runner 的 decoder (日文件 reader 按请求现开)
+    LimitOrderBook lob;                         // 奢侈容量, 常驻复用 (对仗 Lob 管线 Runner 的工作区)
+    TickData tick_data;                         // 无特征侧绑定的盘口写出口
+    FeatureRead::DayColumns min_cols, sec_cols; // ts_valid + VWAP / 特征
     OrderFlow::Depth::HeatmapScratch scratch;
     std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
     std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
     explicit Res(FeatureLib l) : lib(std::move(l)), lob(L2::LOB_ORDER_CAPACITY) {
-      l1_cols.preallocate(lib.axis.size(), 1, 1 + OrderFlowConst::MAX_FEATURES);
-      l0_cols.preallocate(lib.axis.size(), 0, 1 + OrderFlowConst::MAX_FEATURES);
+      min_cols.preallocate(lib.axis.size(), L_min, 1 + OrderFlowConst::MAX_FEATURES);
+      sec_cols.preallocate(lib.axis.size(), L_sec, 1 + OrderFlowConst::MAX_FEATURES);
     }
   };
   static constexpr Phase kStart = Phase::Running;
@@ -146,11 +145,13 @@ public:
 
 private:
   struct Res {
-    LibRead lib;                  // 只用其池轴 (候选范围)
-    LibRead bar;                  // 状态列在 Bar 档 (Fund 只在 Bar 库落盘)
-    FeatureRead::DayColumns cols; // 资产筛选状态列 (全轴)
+    LibRead lib;                       // 只用其池轴 (候选范围)
+    LibRead bar;                       // 状态列在 Bar 档 (Fund 只在 Bar 库落盘)
+    FeatureRead::DayColumns meta_cols; // L_min ts_valid (全轴)
+    FeatureRead::DayColumns cols;      // L_day 资产筛选状态列 (全轴)
     Res(FeatureLib l, FeatureLib b) : lib(std::move(l)), bar(std::move(b)) {
-      cols.preallocate(bar.axis.size(), 1, PICK_COL_COUNT);
+      meta_cols.preallocate(bar.axis.size(), L_min, 1);
+      cols.preallocate(bar.axis.size(), L_day, PICK_COL_COUNT);
     }
   };
   static constexpr Phase kStart = Phase::Running;
@@ -199,7 +200,7 @@ void OrderFlowService::RequestKline(uint32_t gen, size_t asset_idx, std::vector<
 void OrderFlowService::RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, int feat_level, std::vector<int> feats) {
   assert(depth_ && "Request 先于 Start");
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
-  assert(feat_level == 0 || feat_level == 1);
+  assert(feat_level == L_sec || feat_level == L_min);
   depth_->Request(DepthReq{gen, date, asset_idx, feat_level, std::move(feats)});
 }
 
@@ -275,10 +276,10 @@ bool OrderFlowService::KlineLane::step(size_t d) {
   LibRead &lib = res_->lib;
   const FeatureRead::DayColumns &dc = res_->cols;
 
-  // 选列: [lob_open, lob_high, lob_low, lob_close, ts_valid, 特征...] — L1 日文件, 每日只读 n 列的载荷
+  // 选列: [lob_open, lob_high, lob_low, lob_close, ts_valid, 特征...] — L_min 日文件, 每日只读 n 列的载荷
   auto &cols = lib.columns;
-  cols.assign({lob::L1_Field::lob_open, lob::L1_Field::lob_high, lob::L1_Field::lob_low,
-               lob::L1_Field::lob_close, lob::L1_Field::ts_valid});
+  cols.assign({lob::L_min_Field::lob_open, lob::L_min_Field::lob_high, lob::L_min_Field::lob_low,
+               lob::L_min_Field::lob_close, lob::L_min_Field::ts_valid});
   for (int f : cur_.feats)
     cols.push_back(static_cast<size_t>(f));
   lib.reader.load_day_columns(k.dates[d], cols, res_->cols);
@@ -288,10 +289,10 @@ bool OrderFlowService::KlineLane::step(size_t d) {
   // 选中资产的库轴下标 (run 映射并保证在轴内, 否则不会流式到这)
   const size_t a = sub_;
   assert(a < lib.axis.size());
-  const double x0 = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
+  const double x0 = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);
   const size_t nf = cur_.feats.size();
 
-  for (size_t m = 0; m < level_valid_rows(1); ++m) {
+  for (size_t m = 0; m < level_valid_rows(L_min); ++m) {
     if (!fmeta::data_valid(static_cast<float>(dc.get(m, 4, a))))
       continue;
 
@@ -334,7 +335,7 @@ bool OrderFlowService::KlineLane::step(size_t d) {
 }
 
 // ============================================================================
-// Pick: 锚点日的 L1 filter 列 → 全资产 PIT 状态 → 背槽发布
+// Pick: 锚点日的 L_min filter 列 → 全资产 PIT 状态 → 背槽发布
 //   Fund 是 onDay 算一次 / onMinute 原样广播, 故当日任一有效分钟的值即当日状态;
 //   取首个 ts_valid 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
 // ============================================================================
@@ -360,40 +361,41 @@ bool OrderFlowService::PickLane::run(PickReq &req) {
   slot.meta.assign(data_.asset.items.size(), OrderFlow::Pick::Meta{});
 
   auto &cols = lib.columns;
-  cols.assign({static_cast<size_t>(bar::L1_Field::ts_valid), static_cast<size_t>(bar::L1_Field::st_level),
-               static_cast<size_t>(bar::L1_Field::list_age), static_cast<size_t>(bar::L1_Field::delist_age),
-               static_cast<size_t>(bar::L1_Field::ind_l1)});
+  cols.assign({static_cast<size_t>(bar::L_min_Field::ts_valid)});
+  reader.load_day_columns(req.date, cols, res_->meta_cols);
+  cols.assign({static_cast<size_t>(bar::L_day_Field::st_level), static_cast<size_t>(bar::L_day_Field::list_age),
+               static_cast<size_t>(bar::L_day_Field::delist_age), static_cast<size_t>(bar::L_day_Field::ind_l1)});
   assert(cols.size() == PICK_COL_COUNT);
   reader.load_day_columns(req.date, cols, res_->cols);
 
-  // 时间外层 / 资产内层 (布局 [n][T][A]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
-  const FeatureRead::DayColumns &c = res_->cols;
+  // 时间外层 / 资产内层 (布局 [n][T][A]: 内层连续); 每资产首个有效分钟即判有数据, 全部判完即止; 状态取 L_day 行 0
+  const FeatureRead::DayColumns &v = res_->meta_cols, &c = res_->cols;
   const size_t A = lib.axis.size();
-  assert(res_->bar.axis.size() == c.A);
+  assert(res_->bar.axis.size() == c.A && v.A == c.A);
   size_t remaining = A;
-  for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
+  for (size_t m = 0; m < level_valid_rows(L_min) && remaining > 0; ++m) {
     for (size_t a = 0; a < A; ++a) {
       const size_t g = lib.axis.global(a);
       OrderFlow::Pick::Meta &meta = slot.meta[g];
-      if (meta.has_data) // 已取到当日状态 (日频广播, 后续分钟同值)
+      if (meta.has_data) // 已取到当日状态
         continue;
-      if (!fmeta::data_valid(static_cast<float>(c.get(m, PICK_META, g))))
+      if (!fmeta::data_valid(static_cast<float>(v.get(m, 0, g))))
         continue;
 
       meta.has_data = true;
       --remaining;
 
-      const float rw = static_cast<float>(c.get(m, PICK_RISK_WARN, g));
+      const float rw = static_cast<float>(c.get(0, PICK_RISK_WARN, g));
       meta.risk_warn = (rw >= 0.0f && rw <= 3.0f) ? static_cast<uint8_t>(rw + 0.5f) : 0;
 
-      const float ind = static_cast<float>(c.get(m, PICK_INDUSTRY, g));
+      const float ind = static_cast<float>(c.get(0, PICK_INDUSTRY, g));
       meta.industry_l1 = (ind >= 0.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT))
                              ? static_cast<uint8_t>(ind + 0.5f)
                              : 0;
 
       // list_age/delist_age: 非 NaN = 已上市/已退市 (>= 0 日历日), NaN = 未发生
-      const float lage = static_cast<float>(c.get(m, PICK_LIST_AGE, g));
-      const float dage = static_cast<float>(c.get(m, PICK_DELIST_AGE, g));
+      const float lage = static_cast<float>(c.get(0, PICK_LIST_AGE, g));
+      const float dage = static_cast<float>(c.get(0, PICK_DELIST_AGE, g));
       meta.delisted = !std::isnan(dage);
       meta.listed = !std::isnan(lage) && !meta.delisted;
     }
@@ -445,9 +447,9 @@ bool OrderFlowService::DepthLane::run(DepthReq &req) {
     auto &sec_slot = res.sec_slot;
     auto &sec_data = res.sec_data;
     auto &scratch = res.scratch;
-    sec_slot.assign(level_valid_rows(0), -1);
-    sec_data.assign(level_valid_rows(0), 0);
-    slot.ticks.reserve(level_valid_rows(0));
+    sec_slot.assign(level_valid_rows(L_sec), -1);
+    sec_data.assign(level_valid_rows(L_sec), 0);
+    slot.ticks.reserve(level_valid_rows(L_sec));
     slot.heatmap_begin(scratch);
 
     constexpr size_t N = OrderFlowConst::LOB_DEPTH;
@@ -473,7 +475,7 @@ bool OrderFlowService::DepthLane::run(DepthReq &req) {
       size_t cur_sec = SIZE_MAX;
       for (size_t i = 0; i < order_num; ++i) {
         const L2::Order &order = view.orders[i];
-        const size_t t = Clock_to_L0(L2::tick_hour(order.tick), L2::tick_minute(order.tick), L2::tick_second(order.tick)); // 钳在 [0, 15300)
+        const size_t t = Clock_to_L_sec(L2::tick_hour(order.tick), L2::tick_minute(order.tick), L2::tick_second(order.tick)); // 钳在 [0, 15300)
         if (t != cur_sec) {
           if (cur_sec != SIZE_MAX)
             commit_second(cur_sec); // 上一秒结束: 秒末终值全簿入热力图
@@ -533,19 +535,19 @@ bool OrderFlowService::DepthLane::run(DepthReq &req) {
   // 可读, VWAP / overlay 留空 (盘口重放走日文件, 不受库轴约束, 上面照常构建)
   const size_t depth_sub = res.lib.axis.sub_of(static_cast<uint32_t>(req.asset));
 
-  // ---- 分钟 VWAP 阶梯: L1 特征列 vwap, 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----
+  // ---- 分钟 VWAP 阶梯: L_min 特征列 vwap, 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口 ----
   if (depth_sub < res.lib.axis.size()) {
     TraceN("OF_DepthVwap");
     auto &cols = res.lib.columns;
-    cols.assign({static_cast<size_t>(lob::L1_Field::ts_valid), static_cast<size_t>(lob::L1_Field::vwap)});
-    res.lib.reader.load_day_columns(req.date, cols, res.l1_cols);
+    cols.assign({static_cast<size_t>(lob::L_min_Field::ts_valid), static_cast<size_t>(lob::L_min_Field::vwap)});
+    res.lib.reader.load_day_columns(req.date, cols, res.min_cols);
     auto &px = slot.plot.vwap_x;
     auto &py = slot.plot.vwap_y;
-    for (size_t m = 0; m < level_valid_rows(1); ++m) {
-      if (!fmeta::data_valid(static_cast<float>(res.l1_cols.get(m, 0, depth_sub))))
+    for (size_t m = 0; m < level_valid_rows(L_min); ++m) {
+      if (!fmeta::data_valid(static_cast<float>(res.min_cols.get(m, 0, depth_sub))))
         continue;
-      px.push_back(static_cast<double>(L1_to_L0(m)));
-      py.push_back(static_cast<double>(res.l1_cols.get(m, 1, depth_sub)));
+      px.push_back(static_cast<double>(L_min_to_L_sec(m)));
+      py.push_back(static_cast<double>(res.min_cols.get(m, 1, depth_sub)));
     }
     if (!px.empty()) {
       px.push_back(px.back() + 60.0);
@@ -554,17 +556,17 @@ bool OrderFlowService::DepthLane::run(DepthReq &req) {
   }
 
   // ---- 特征 overlay (与盘口独立: 当前选中层特征列 + ts_valid 选列读, 与图2 同源指标;
-  //      L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒 → 只取当日日内段) ----
+  //      L_sec = data_valid 秒; L_min = 有效分钟, X 映射分钟起始秒 → 只取当日日内段) ----
   if (!req.feats.empty() && depth_sub < res.lib.axis.size()) {
     TraceN("OF_DepthFeats");
-    assert(req.feat_level == 0 || req.feat_level == 1);
-    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(lob::L0_Field::ts_valid)
-                                                : static_cast<size_t>(lob::L1_Field::ts_valid);
+    assert(req.feat_level == L_sec || req.feat_level == L_min);
+    const size_t meta_col = req.feat_level == L_sec ? static_cast<size_t>(lob::L_sec_Field::ts_valid)
+                                                    : static_cast<size_t>(lob::L_min_Field::ts_valid);
     auto &cols = res.lib.columns;
     cols.assign({meta_col});
     for (int f : req.feats)
       cols.push_back(static_cast<size_t>(f));
-    FeatureRead::DayColumns &day_cols = req.feat_level == 0 ? res.l0_cols : res.l1_cols;
+    FeatureRead::DayColumns &day_cols = req.feat_level == L_sec ? res.sec_cols : res.min_cols;
     res.lib.reader.load_day_columns(req.date, cols, day_cols);
 
     const size_t a = depth_sub;
@@ -577,7 +579,7 @@ bool OrderFlowService::DepthLane::run(DepthReq &req) {
       const float meta = static_cast<float>(day_cols.get(r, 0, a));
       if (!fmeta::data_valid(meta))
         continue;
-      const double x = req.feat_level == 0 ? static_cast<double>(r) : static_cast<double>(L1_to_L0(r));
+      const double x = req.feat_level == L_sec ? static_cast<double>(r) : static_cast<double>(L_min_to_L_sec(r));
       for (size_t i = 0; i < req.feats.size(); ++i) {
         float v = static_cast<float>(day_cols.get(r, 1 + i, a));
         if (static_cast<size_t>(req.feats[i]) == meta_col)

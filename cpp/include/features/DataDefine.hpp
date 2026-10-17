@@ -28,7 +28,7 @@ enum class Trigger : uint8_t {
   onCancel, // 撤单
   onTick,   // 每笔订单 (增/删/改/成交)
   onDepth,  // 盘口更新 (depth_updated)
-  onMinute, // 分钟边界 (L1 每分钟一次, 含无成交分钟: 降频型节点对空分钟按自身约定归零 / 延续, 不产 NaN)
+  onMinute, // 分钟边界 (L_min 每分钟一次, 含无成交分钟: 降频型节点对空分钟按自身约定归零 / 延续, 不产 NaN)
 };
 
 //----------------------------------------------------------------------------------------
@@ -66,7 +66,7 @@ inline constexpr float kPxEps = 1e-4f;
 // CS COLUMN CONTRACT (截面列 = Node/<Tier>/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行, 无节点; 方法 = Method/CS.hpp, namespace cs)
 //----------------------------------------------------------------------------------------
 //   struct <Method> {
-//     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, 仅 L1)
+//     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, L_min / L_day; L_sec 不可)
 //     static void apply(float *y, size_t n[, const Ctx &]); // dense 列原地: 输入 = 有效资产子集的源列 (缺失 NaN), 输出 = 结果
 //   };
 //   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换, 先于 <Method>
@@ -78,21 +78,21 @@ inline constexpr float kPxEps = 1e-4f;
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------
-// TICK LEVEL (L0): Raw order book data
+// TICK LEVEL (L_sec): Raw order book data
 //----------------------------------------------------------------------------------------
 // Re-export LOB_Feature as part of the data hierarchy
 struct TickData {
   // Metadata
-  uint32_t asset_id{0}; // static: asset identifier
-  uint32_t core_id{0};  // static: core identifier
-  uint32_t l0_index{0}; // dynamic: current tick index (trading second index 0-?)
+  uint32_t asset_id{0};  // static: asset identifier
+  uint32_t core_id{0};   // static: core identifier
+  uint32_t sec_index{0}; // dynamic: current tick index (trading second index 0-?)
 
   LOB_Feature lob;
 };
 
-// 事件时刻: 交易时段毫秒 (l0_index × 1000 + ms; 分钟边界 = 60000 整数倍, 午休不计时). 时间加权节点 (Book / Realized) 共用.
+// 事件时刻: 交易时段毫秒 (sec_index × 1000 + ms; 分钟边界 = 60000 整数倍, 午休不计时). 时间加权节点 (Book / Realized) 共用.
 // 14:57-15:00 全部映射到哨兵秒 15299, ms 每秒回绕 → t 可倒退; 消费方对 uint32 差必须钳零 (t > t_prev ? t - t_prev : 0).
-inline uint32_t tick_ms(const TickData &td) { return td.l0_index * 1000u + td.lob.millisecond * 10u; }
+inline uint32_t tick_ms(const TickData &td) { return td.sec_index * 1000u + td.lob.millisecond * 10u; }
 
 // LOB_Feature::ord_* 解码 (字段语义见 LimitOrderBookDefine.hpp; OrderLife / OrderQuad / Moment / Flow 共用, 节点不各写一份):
 //   ord_reliable(lob, s)         该侧是可信的在簿委托: Resting 且非占位单 → ord_orig / ord_tick / ord_price 可信
@@ -116,13 +116,13 @@ inline bool ord_filled_before(const LOB_Feature &lob, size_t s, uint32_t &f) {
 }
 
 //----------------------------------------------------------------------------------------
-// MINUTE LEVEL (L1): Resampled from tick data
+// MINUTE LEVEL (L_min): Resampled from tick data
 //----------------------------------------------------------------------------------------
 struct MinuteData {
   // Metadata
-  uint32_t asset_id{0}; // static: asset identifier
-  uint32_t core_id{0};  // static: core identifier
-  uint32_t l1_index{0}; // dynamic: current minute index (trading minute index 0-254)
+  uint32_t asset_id{0};  // static: asset identifier
+  uint32_t core_id{0};   // static: core identifier
+  uint32_t min_index{0}; // dynamic: current minute index (trading minute index 0-254)
 
   // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对分钟下标访问)
   CBuffer<float, 240> open;

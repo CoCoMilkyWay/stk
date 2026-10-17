@@ -1,6 +1,6 @@
 #pragma once
 
-// Bar 档 Fund 节点 + 日频基本面落盘列 (类见 Node/Common/Fund/Fund.hpp)
+// Bar 档 Fund 节点 + 日频基本面落盘列 (L_day; 类见 Node/Common/Fund/Fund.hpp)
 #include "features/Node/Common/Fund/Fund.hpp"
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
@@ -15,7 +15,11 @@
 #define FUND_ROW_BS(X, CAT1, item, EN, CN, DESC, SYM) \
   X(item, CAT1, AUTO, EN " MRQ", CN "MRQ", DESC "(最近报告期, 亿元)", SYM R"(^{MRQ}_{D})", TS(Fund, item, None, None))
 
-#define FIELDS_L1_Fund(X, CAT1)                                                                                                                                                                              \
+// L_min 只留分钟截面中性化 (NeutralRank, 含 Lob 旁读) 要的行业上下文; 其余日频列只在 L_day
+#define FIELDS_L_min_Fund(X, CAT1) \
+  X(ind_l1, CAT1, AUTO, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", TS(Fund, ind_l1, None, None))
+
+#define FIELDS_L_day_Fund(X, CAT1)                                                                                                                                                                           \
   X(ind_l1, CAT1, AUTO, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", TS(Fund, ind_l1, None, None))                                                                    \
   X(list_age, CAT1, AUTO, "List Age", "上市龄", "上市日历日数(未上市→NaN)", R"(D - D_{list})", TS(Fund, list_age, None, None))                                                                               \
   X(delist_age, CAT1, AUTO, "Delist Age", "退市龄", "退市日历日数(未退市→NaN)", R"(D - D_{delist})", TS(Fund, delist_age, None, None))                                                                       \

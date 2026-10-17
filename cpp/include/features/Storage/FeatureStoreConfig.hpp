@@ -31,7 +31,7 @@
 // ============================================================================
 
 // ============================================================================
-// 节点 flush 域 (TS 列的层 / 有效性标志由此推出; SRC_VALID_TS 在档命名空间内按名查到本档的)
+// 节点 flush 域 (L_sec 的 TS 列有效性标志由此推出; SRC_VALID_TS 在档命名空间内按名查到本档的)
 // ============================================================================
 #define NODE_FLUSH_ONE(name, type, args, ...) constexpr Trigger name = NODE_FLUSH(__VA_ARGS__);
 #define TIER_NODE_FLUSH(T, ns) \
@@ -70,22 +70,27 @@ constexpr bool kind_contiguous(std::span<const FieldInfo> f, FeatureDataType k) 
   return true;
 }
 
-#define GENERATE_LEVEL_FIELDS(T, ns, name, num, fields, psd)                 \
-  namespace ns {                                                             \
-  inline constexpr FieldInfo name##_FIELD_INFO[] = {fields(FIELD_INFO_ONE)}; \
-  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);        \
-  namespace name##_Field {                                                   \
-    enum : size_t { fields(FIELD_CODE_ONE) };                                \
-  }                                                                          \
+#define GENERATE_LEVEL_FIELDS(T, ns, name, num, fields, psd)                  \
+  namespace ns::name##_info_detail {                                          \
+    constexpr size_t kLevel = num; /* SRC_VALID_TS 按层推有效性 */            \
+    inline constexpr FieldInfo TABLE[] = {fields(FIELD_INFO_ONE)};            \
+  }                                                                           \
+  namespace ns {                                                              \
+  inline constexpr const auto &name##_FIELD_INFO = name##_info_detail::TABLE; \
+  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);         \
+  namespace name##_Field {                                                    \
+    enum : size_t { fields(FIELD_CODE_ONE) };                                 \
+  }                                                                           \
   }
 TIER_LEVELS(GENERATE_LEVEL_FIELDS)
 
-// 档缺的层不许有列 (CMake 对每档都生成 L0/L1 两张表, 未登记的层应为空)
+// 档缺的层不许有列 (CMake 对每档都生成 L_sec/L_min/L_day 三张表, 未登记的层应为空)
 #define FIELD_COUNT_ONE(...) +1
 #define CELL_FIELD_COUNT(T, ns, name, num, fields, psd) +(TierId::T == tier ? ns::name##_FIELD_COUNT : 0)
 constexpr size_t registered_field_count(TierId tier) { return 0 TIER_LEVELS(CELL_FIELD_COUNT); }
-#define CHECK_TIER_FIELDS(T, ns)                                                                                      \
-  static_assert(0 T##_L0_FIELDS(FIELD_COUNT_ONE) T##_L1_FIELDS(FIELD_COUNT_ONE) == registered_field_count(TierId::T), \
+#define CHECK_TIER_FIELDS(T, ns)                                                                                           \
+  static_assert(0 T##_L_sec_FIELDS(FIELD_COUNT_ONE) T##_L_min_FIELDS(FIELD_COUNT_ONE) T##_L_day_FIELDS(FIELD_COUNT_ONE) == \
+                    registered_field_count(TierId::T),                                                                     \
                 "档 " #T " 有未在 TIER_LEVELS 登记的层的 FIELDS_ 行");
 ALL_TIERS(CHECK_TIER_FIELDS)
 #undef CHECK_TIER_FIELDS
@@ -121,17 +126,17 @@ TIER_LEVELS(GENERATE_LEVEL_SOURCES)
 
 // ============================================================================
 // 编译期一致性检查: 列所在层 == 来源允许的层
-//   TS → 节点 flush 域 (onMinute→L1, 其余→L0); CS/LABEL → L0/L1; FLAG 任意
+//   CS → 源层 == 本层 (截面只在本层节拍读本层行); TS 任意 (节拍取 Series 最新值, 见 Level); LABEL / FLAG 任意
 // ============================================================================
-#define SRC_LEVEL_TS(node, ...) level_of(node_flush::node)
-#define SRC_LEVEL_CS(...) kLevel
+#define SRC_LEVEL_TS(...) kLevel
+#define SRC_LEVEL_CS(ns, l, ...) l
 #define SRC_LEVEL_LABEL kLevel
 #define SRC_LEVEL_FLAG kLevel
 #define CHECK_FIELD_ONE(code, c1, c2, en, cn, desc, formula, src) \
   static_assert(SRC_LEVEL_##src == kLevel, "field level != source level: " #code);
 #define GENERATE_CHECK_LEVEL(T, ns, name, num, fields, psd) \
   namespace ns::name##_level_check {                        \
-    constexpr int kLevel = num;                             \
+    constexpr size_t kLevel = num;                          \
     fields(CHECK_FIELD_ONE)                                 \
   }
 TIER_LEVELS(GENERATE_CHECK_LEVEL)
@@ -237,7 +242,7 @@ constexpr size_t last_present(const std::array<LevelInfo, LEVEL_COUNT> &l) {
 ALL_TIERS(GENERATE_TIER)
 #undef GENERATE_TIER
 
-// 旁读档 (TIER_SIDES): TierSide<T>::type = T 的 L1 截面可读的档; 无 = void
+// 旁读档 (TIER_SIDES): TierSide<T>::type = T 的截面可读 (同层) 的档; 无 = void
 template <class T>
 struct TierSide {
   using type = void;
@@ -260,5 +265,6 @@ constexpr size_t field_of(size_t lvl, std::string_view code) {
   return L.field_count;
 }
 
-static_assert(level_rows(0) - 1 == TRADE_SECONDS_PER_DAY && level_rows(1) - 1 == TRADE_MINUTES_PER_DAY,
+static_assert(level_rows(L_sec) - 1 == TRADE_SECONDS_PER_DAY && level_rows(L_min) - 1 == TRADE_MINUTES_PER_DAY &&
+                  level_rows(L_day) - 1 == 1,
               "每层落盘 T 必须是 有效行数 + 1 哨兵行");

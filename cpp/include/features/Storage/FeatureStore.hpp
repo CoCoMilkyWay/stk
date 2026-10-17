@@ -60,7 +60,7 @@ inline constexpr size_t kDefaultRingSlots = 4;
 // ============================================================================
 // FEATURE STORE - 日环 (日流水线的唯一握手面)
 //
-// 流控按日: TS worker 资产串行 (一个资产写完一整天才换下一个), 且 label / L1 分钟行
+// 流控按日: TS worker 资产串行 (一个资产写完一整天才换下一个), 且 label / L_min 分钟行
 // 向过去回填, 行级进度天然罩不住 —— 所以流水线单位是日, TS 计数粒度是 asset-day.
 //
 // 四段各持一个单调的已完成天数, 段间只靠它们握手 (Disruptor 式):
@@ -380,7 +380,7 @@ using LobFeatureStore = FeatureStore<lob::Tier>;
 using BarFeatureStore = FeatureStore<bar::Tier>;
 
 // ============================================================================
-// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L0/L1), 档从日句柄推导,
+// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L_sec/L_min), 档从日句柄推导,
 // 字段用 <tier>::<LVL>_Field 枚举; 布局常量一律取 constexpr T::LEVELS[LVL] (单一事实源),
 // 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_try_open / cs_try_open
 // 定址一次), 每次调用只剩指针算术.

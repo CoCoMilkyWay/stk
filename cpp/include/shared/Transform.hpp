@@ -94,7 +94,7 @@ struct Transform : Published {
     Stationary stationary = Stationary::None;
     math::Step st; // 按 stationary_def(stationary) 初始化
 
-    // 带通 (IIR 因果, 天首复位). 通带用周期 (样本数 = L1 分钟) 表达, 与 PSD 轴一致: lo < hi
+    // 带通 (IIR 因果, 天首复位). 通带用周期 (样本数 = L_min 分钟) 表达, 与 PSD 轴一致: lo < hi
     bool bandpass = false;
     math::spectral::IIRType iir_type = math::spectral::IIRType::Butterworth;
     int iir_order = 2;

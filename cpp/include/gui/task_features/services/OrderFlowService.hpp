@@ -5,7 +5,7 @@
 //     变化检测与 gen 递增在 GUI 侧, 服务侧只管"照单执行最新一代" (新请求覆盖旧的, 在跑的被打断)
 //   - 三个 worker 线程, 私有常驻资源 (reader / 缓冲) 首个请求时在 worker 线程建:
 //       Depth 重放: decode 帧 → 订单簿逐笔重放 → 秒级快照 → plot/heatmap 构建 → 背槽整体发布
-//       Pick 逐日状态: 锚点日的 L1 filter 列选读 → 全资产 PIT 状态 (ST / 在市 / 行业)
+//       Pick 逐日状态: 锚点日的 L_min filter 列选读 → 全资产 PIT 状态 (ST / 在市 / 行业)
 //         → 背槽整体发布 (供 GUI 资产筛选)
 //       Kline 流式: 逐日选列读 (OHLC + ts_valid + 特征) → 抽选中资产 → 追加 + 单调前缀发布;
 //         天与天之间可被新代打断
@@ -47,14 +47,14 @@ private:
   struct KlineReq {
     uint32_t gen;
     size_t asset;
-    std::vector<int> feats; // L1 字段下标
+    std::vector<int> feats; // L_min 字段下标
     bool rescan;            // 重扫日期列表 (特征重算后)
   };
   struct DepthReq {
     uint32_t gen;
     misc::Ymd date;
     size_t asset;
-    int feat_level;         // 特征所属层 (0=L0, 1=L1)
+    int feat_level;         // 特征所属层 (0=L_sec, 1=L_min)
     std::vector<int> feats; // feat_level 层字段下标
   };
   struct PickReq {

@@ -13,7 +13,7 @@
 //     WinsorRank   winsor_mad(k=3) → z → pct_rank → 均值填充, 输出 ∈ [0,1]                    (= qmt factor_pipeline)
 //     NeutralRank  winsor_q(1%,99%) → 中性化 (行业 + log 市值 OLS 残差, FWL 等价: 行业组内 demean → 对 demean 后 log(mcap)
 //                  标量回归取残差, 行业 0 独立组) → z → pct_rank → 均值填充, 输出 ∈ [0,1]     (= qmt neutral_pipeline)
-//                  唯一需要上下文的方法 (kNeutral): Ctx 由 CoreCs 每分钟准备一次, 全部 NeutralRank 行复用 (仅 L1)
+//                  唯一需要上下文的方法 (kNeutral): Ctx 由 CoreCs 每拍准备一次, 全部 NeutralRank 行复用 (L_min / L_day, 取本层同名列)
 //     Demean       x − mean, 缺失 → 0.  去市场分量但保留截面离散度的时变 (z 会把每分钟离散度抹平成 1)
 //     Z            (x − mean)/sd (double 累加), 缺失 → 0.  保留量级信息 (全市场同向尖峰 rank 看不见)
 //     WinsorZ      winsor_mad(k=3) → z, 缺失 → 0.  稳健 z (= WinsorRank 去掉末尾 pct_rank)
@@ -146,6 +146,6 @@ ColumnFn column_fn(TfId tf, MethodId m);
 
 } // namespace cs
 
-// NeutralRank 上下文源列 (L1 字段 code): CoreCs 每分钟按 L1_Field::<token> gather 一次
+// NeutralRank 上下文源列 (字段 code, 本层同名列): CoreCs 每拍按 <LVL>_Field::<token> gather 一次
 #define NEUTRAL_RANK_MCAP mcap
 #define NEUTRAL_RANK_INDUSTRY ind_l1

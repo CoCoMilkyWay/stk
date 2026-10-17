@@ -7,7 +7,7 @@
 //        两档共用类; 节点实例 / 落盘列见 Node/{Pool,All}/TS/Fund/Fund.hpp
 // =============================================================================
 //   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.
-//   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L1 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
+//   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L_min 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
 //   盘中 tick 域节点 (Depth / Flow) 读 Fund.y[Fund.lim_up] 而非 Fund.out(): 盘口 / 委托 9:15 就开始,
 //   Fund 的 Series 要到首个分钟 flush 才有当日值; 涨跌停比较容差统一用 kPxEps (DataDefine.hpp).
 //
@@ -31,7 +31,7 @@ public:
     lim_up,         // [元] T 当日适用涨停价 (无限制 → NaN)
     lim_dn,         // [元] T 当日适用跌停价
     low_mc_thr,     // [亿元] 低市值阈值 (主板 5 / 其他 3)
-    // ---- 日频常量列 (Bar 档直接落盘, 与 FIELDS_L1_Fund 一一对应) ----
+    // ---- 日频常量列 (Bar 档直接落盘, 与 FIELDS_L_day_Fund 一一对应) ----
     ind_l1,      // SW2021 一级行业 ID (0=未知, 1..31)
     list_age,    // [日历日] 未上市 → NaN
     delist_age,  // [日历日] 未退市 → NaN

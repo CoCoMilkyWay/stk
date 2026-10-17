@@ -58,21 +58,21 @@ static constexpr size_t kMaxTotalSamples = size_t(2) << 30;
 // 日内桶: 按时钟 10 分钟对齐 (09:15-09:19 单独一桶 = 集合竞价; 午休不跨桶), 共 kTodBins 个.
 // 桶键 = 时钟分钟 / 10, 上下午各自连续编号 → 槽位紧凑无空洞.
 static constexpr size_t kTodBinMinutes = 10;
-constexpr size_t tod_bin_of(size_t l1) {
-  const ClockTime c = L1_to_Clock(l1);
+constexpr size_t tod_bin_of(size_t t_min) {
+  const ClockTime c = L_min_to_Clock(t_min);
   const size_t key = (static_cast<size_t>(c.hour) * 60 + c.minute) / kTodBinMinutes;
   constexpr size_t key_am0 = MORNING_START_MIN / kTodBinMinutes;
   constexpr size_t n_am = (MORNING_END_MIN - 1) / kTodBinMinutes - key_am0 + 1;
   constexpr size_t key_pm0 = AFTERNOON_START_MIN / kTodBinMinutes;
-  return l1 < MORNING_MINUTES ? key - key_am0 : n_am + key - key_pm0;
+  return t_min < MORNING_MINUTES ? key - key_am0 : n_am + key - key_pm0;
 }
 static constexpr size_t kTodBins = tod_bin_of(TRADE_MINUTES_PER_DAY - 1) + 1;
 static_assert(tod_bin_of(0) == 0 && tod_bin_of(MORNING_MINUTES) == tod_bin_of(MORNING_MINUTES - 1) + 1);
-// 桶首分钟 (L1 下标) → UI 标签 "HH:MM"
+// 桶首分钟 (L_min 下标) → UI 标签 "HH:MM"
 constexpr std::array<uint16_t, kTodBins> make_tod_bin_start() {
   std::array<uint16_t, kTodBins> s{};
-  for (size_t l1 = TRADE_MINUTES_PER_DAY; l1-- > 0;)
-    s[tod_bin_of(l1)] = static_cast<uint16_t>(l1);
+  for (size_t t_min = TRADE_MINUTES_PER_DAY; t_min-- > 0;)
+    s[tod_bin_of(t_min)] = static_cast<uint16_t>(t_min);
   return s;
 }
 inline constexpr auto kTodBinStart = make_tod_bin_start();

@@ -12,6 +12,8 @@ namespace GUI::Features {
 bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest &req) {
   const auto &sel = data.feature.selection;
   const size_t lvl = static_cast<size_t>(sel.selected_level);
+  if (lvl == L_day)
+    return false; // 日内 (lead-lag) 相关按日切片, L_day 一日一行无日内轴
   const auto &meta_list = data.feature.meta().features[lvl];
 
   req = CorrRequest{};
@@ -25,7 +27,7 @@ bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest
   std::sort(cols.begin(), cols.end());
   cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
   if (cols.size() < 2)
-    return false; // 该层可算的列不足 (L0 现状: 只有 ts_valid / cs_valid)
+    return false; // 该层可算的列不足 (L_sec 现状: 只有 ts_valid / cs_valid)
 
   req.spec.level = lvl;
   req.spec.cols = analysis::column_set(data.feature, lvl, std::move(cols));
@@ -63,6 +65,8 @@ void CorrPairService::RequestCompute(SharedData &data, uint32_t col_a, uint32_t 
   assert(col_a != col_b);
   const auto &sel = data.feature.selection;
   const size_t lvl = static_cast<size_t>(sel.selected_level);
+  if (lvl == L_day)
+    return; // 同 MakeCorrRequest: L_day 无日内轴
   assert(col_a < data.feature.meta().features[lvl].size() && col_b < data.feature.meta().features[lvl].size());
 
   CorrRequest req;

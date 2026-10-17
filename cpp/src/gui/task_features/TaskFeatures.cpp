@@ -324,7 +324,7 @@ TaskHandle CreateFeaturesTask() {
 
     // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (库 A 轴要它).
     // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
-    // Preview 起手即自动构建 (全 L1 特征轮训抽样, 不依赖选中); Dist / Transform 等选中特征
+    // Preview 起手即自动构建 (全 L_min 特征轮训抽样, 不依赖选中); Dist / Transform 等选中特征
     const std::string lib = data.feature.selection.lib();
     if (!state->streams_started && state->inputs_ready && !data.asset.items.empty()) {
       state->dist_service->Start(data);
@@ -363,7 +363,7 @@ TaskHandle CreateFeaturesTask() {
       bool has_valid_selection = (sel.primary_feature_idx() >= 0);
 
       if ((feature_changed || level_changed || lib_changed) && has_valid_selection) {
-        // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L1 选择静默忽略)
+        // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L_min 选择静默忽略)
         state->dist_service->RequestCompute(data);
         state->transform_service->RequestCompute(data, state->transform_ui_state.params,
                                                  state->transform_ui_state.focus);
@@ -388,7 +388,7 @@ TaskHandle CreateFeaturesTask() {
       state->compute_service->Request(state->compute_state.config);
     }
 
-    // Detect compute completion and mark L1 for reload
+    // Detect compute completion and mark L_min for reload
     {
       const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
       if ((state->prev_compute_phase == Phase::Running) &&

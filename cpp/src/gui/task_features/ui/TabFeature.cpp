@@ -64,7 +64,7 @@ static const std::vector<FeatureMetadata> &get_current_level_features(const Feat
 // ============================================================================
 // Cat2 自动探测 (值域启发, 与 Range 列同口径: 预览抽样 min/max):
 //   字段表 cat_l2 = AUTO (dummy) 的行按值域归类; 写了别的 token = 人类强行赋值,
-//   覆盖探测并绿字显示. 无预览 (L0 层 / 未就绪 / 无有效样本) → "?".
+//   覆盖探测并绿字显示. 无预览 (L_sec 层 / 未就绪 / 无有效样本) → "?".
 //   price:     逐日笼内 (preview 主扫描随批判定, 见 Preview::Cell 笼账目):
 //              每个抽样日每资产的有效值都落在该资产当日 [lim_dn, lim_up] 内
 //   flag:      有效值全整数 (±0, 1, 2, …; 主扫描随格判, Cell::int_only) 且 |min|,|max| < 1024
@@ -916,7 +916,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::EndCombo();
   }
   if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))
-    sel.selected_level = static_cast<int>(last_level(sel.tier)); // 档缺该层 (Bar 无 L0)
+    sel.selected_level = L_min; // 档缺该层 (Bar 无 L_sec, Lob 无 L_day); 两档都有 L_min
 
   ImGui::SameLine();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Level:");
@@ -925,11 +925,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   bool level_changed = false;
   int prev_level = sel.selected_level;
 
-  ImGui::BeginDisabled(!has_level(sel.tier, 0));
-  ImGui::RadioButton("L0", &sel.selected_level, 0);
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::RadioButton("L1", &sel.selected_level, 1);
+  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+    if (lvl > 0)
+      ImGui::SameLine();
+    ImGui::BeginDisabled(!has_level(sel.tier, lvl));
+    ImGui::RadioButton(level_name(lvl), &sel.selected_level, static_cast<int>(lvl));
+    ImGui::EndDisabled();
+  }
 
   level_changed = (sel.selected_level != prev_level);
 
@@ -1089,7 +1091,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "有效粒度\n"
         "• ALL = 全部\n"
         "• DATA = 数据\n"
-        "• DEPTH = 深度 (仅 L0)",
+        "• DEPTH = 深度 (仅 L_sec)",
         "中文名称: 特征的描述性名称",
         "数据类型\n"
         "• TS = 时序\n"
@@ -1321,7 +1323,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       else
         ImGui::TextUnformatted(s_eff_cat2[idx]);
 
-      // Columns: Stat / Range 账目 + Dist / PSD 迷你图 (预览, 仅 L1; 槽位 = metadata 下标)
+      // Columns: Stat / Range 账目 + Dist / PSD 迷你图 (预览, 仅 L_min; 槽位 = metadata 下标)
       const Preview::Cell &cell = cell_of(idx);
       ImGui::PushID(idx);
       ImGui::TableNextColumn();

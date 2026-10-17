@@ -5,10 +5,10 @@
 // =============================================================================
 //   标签 (lb_long_<h> / lb_short_<h>, 组见 Common/Label/LabelGroups.hpp, 与 Lob 档同名同组) = 纯价格收益, 不含冲击与税佣:
 //     做多: (exit − entry) / entry        做空: (entry − exit) / entry
-//   entry(m) = 行 m 之后首个有成交的连续竞价分钟 r ∈ [m+1, kContCloseL1) 的 VWAP (bar1m amount / volume):
+//   entry(m) = 行 m 之后首个有成交的连续竞价分钟 r ∈ [m+1, kContCloseMin) 的 VWAP (bar1m amount / volume):
 //     行 m 的特征在分钟 m 末才可知, 最早在分钟 m+1 内成交; 无成交分钟顺延 (稀疏 / 盘中停牌),
 //     09:30 前的行 (含 09:25 撮合) 顺延到开盘后首个有成交分钟; 集合竞价 bar 不作 entry (与 Lob 档"集合竞价簿不可成交"同约).
-//     之后再无连续竞价成交 (行 m ≥ kContCloseL1 − 1 / 尾盘无成交) → 收盘价建仓 (分钟 / 收盘型即建即平 = 0).
+//     之后再无连续竞价成交 (行 m ≥ kContCloseMin − 1 / 尾盘无成交) → 收盘价建仓 (分钟 / 收盘型即建即平 = 0).
 //   exit:
 //     MIN   行 m 持有 n 分钟 = entry(m+n) (同一基准, 相邻行精确伸缩, 与 Lob 档同构); m+n 过收盘 → 收盘价 (T0 当日平仓)
 //     CLOSE 当日收盘价 = 末个有成交 bar 的 close (有收盘竞价即撮合价)
@@ -18,7 +18,7 @@
 //   价格均为 bar1m 原始价 (不复权): 开盘型跨除权日的收益含除权缺口, 与 Lob 档同约.
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node), CoreTs 驱动, 接口与 LabelLob 对仗:
-//   minute_closed(l1, writer)   有成交的分钟 (onMinute 之后) 一调: 截开盘价, 连续竞价分钟的 VWAP 填给之前悬着的行 = 这些行的 entry,
+//   minute_closed(t_min, writer)   有成交的分钟 (onMinute 之后) 一调: 截开盘价, 连续竞价分钟的 VWAP 填给之前悬着的行 = 这些行的 entry,
 //                               行 e 的 entry 到位即行 e−n 的分钟型 exit 到位, 顺带写 (e−n, n).
 //   day_begin / day_end         日历: 日期轴每一日各调一次 (无数据日也调, 由 CoreTs 保证).
 //   finish_all                  回测区间末: 悬挂日全部按最近一次收盘价结算, 全部释放.
@@ -36,21 +36,21 @@ struct BarEntry {
 
 class LabelBar : public LabelHold<BarEntry> {
 public:
-  static constexpr size_t L1_LABEL_COUNT = HOLD_COUNT * GROUP_SIZE; // LB 块总列数
+  static constexpr size_t MIN_LABEL_COUNT = HOLD_COUNT * GROUP_SIZE; // LB 块总列数
 
   explicit LabelBar(const MinuteData &md) : md_(md) {}
 
-  // 有成交的分钟 bar 结算后 (CoreTs 只在有成交的分钟调). writer(col, n, l1, values, days_ago), 此处 days_ago 恒 0
+  // 有成交的分钟 bar 结算后 (CoreTs 只在有成交的分钟调). writer(col, n, t_min, values, days_ago), 此处 days_ago 恒 0
   template <class Writer>
-  inline void minute_closed(size_t l1, Writer &&writer) {
+  inline void minute_closed(size_t t_min, Writer &&writer) {
     last_px_ = md_.close.back(); // 当日末笔成交价 (收盘价候选)
     has_px_ = true;
-    if (!open_at(l1, md_))
+    if (!open_at(t_min, md_))
       return; // 集合竞价 bar 不作 entry
     const BarEntry e{md_.bid_amount.back() / static_cast<float>(md_.bid_volume.back())};
     Pend &p = today();
-    for (; p.n_entry < l1; ++p.n_entry)
-      p.entry[p.n_entry] = e; // 行 m < l1 (m+1 ≤ l1) 悬着的 entry 全部到位
+    for (; p.n_entry < t_min; ++p.n_entry)
+      p.entry[p.n_entry] = e; // 行 m < t_min (m+1 ≤ t_min) 悬着的 entry 全部到位
     emit_min(writer);
   }
 
@@ -88,4 +88,4 @@ private:
 #define LBAR_ROW_SHORT(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}_{entry}-P_{exit}}{\mathrm{VWAP}_{entry}})", name, kind, n)
 #define LBAR_GROUP(name, kind, n, X, CAT1) LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW_SHORT(name, kind, n, X, CAT1)
 
-#define FIELDS_L1_LabelBar(X, CAT1) LABEL_GROUPS(LBAR_GROUP, X, CAT1)
+#define FIELDS_L_min_LabelBar(X, CAT1) LABEL_GROUPS(LBAR_GROUP, X, CAT1)

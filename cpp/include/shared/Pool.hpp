@@ -3,7 +3,7 @@
 //
 //   票池本身是 Bar 档的截面列 (Node/Bar/CS/Pool/Pool.hpp, 每池一列 pool_<pool>), 落在 Bar 库;
 //   Lob 库 <pool> 规划时 (ComputeService) 从 Bar 库读出:
-//     第 D 日成员 = Bar 库 D 的前一交易日 (Bar 库日期轴上的前一日) L1 末有效行 (254, 收盘) 的 pool_<pool> 列 > 0.5
+//     第 D 日成员 = Bar 库 D 的前一交易日 (Bar 库日期轴上的前一日) L_day 行 (收盘) 的 pool_<pool> 列 > 0.5
 //     axis()        日期轴内进过池的并集 (全局 id 升序) = 池轴 (Lob 库静态库轴 LibAxis: 张量列 / 落盘 / 读端).
 //                   TS 特征对池轴上所有资产在区间内全程计算, 区间内日后进池不用补历史
 //     in_pool(sub, D) 第 D 日成员位 (sub = 池轴下标) → CoreLob::member → MetaTracker → cs_valid 整日常量

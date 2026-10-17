@@ -17,7 +17,7 @@
 
 struct Config;
 
-// 票池: 库名 (列名去 pool_ 前缀) + Bar 库 L1 列下标. 定义在 FeatureMeta.cpp (由 Bar 字段表 Pool 类 pool_* 列展开)
+// 票池: 库名 (列名去 pool_ 前缀) + Bar 库 L_day 列下标. 定义在 FeatureMeta.cpp (由 Bar 字段表 Pool 类 pool_* 列展开)
 struct PoolDef {
   const char *name;
   size_t col;

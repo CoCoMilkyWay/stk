@@ -1,6 +1,6 @@
 // Tab Feature - Feature Selection and Analysis Panel
 // Allows users to:
-//   1. Select feature level (L0/L1/L2)
+//   1. Select feature level (L_sec/L_min/L2)
 //   2. Filter features by multiple dimensions
 //   3. Select primary feature and secondary features for analysis
 //   4. (Future) View analysis results
@@ -70,7 +70,7 @@ void EffectiveCat2Snapshot(SharedData &data, size_t level, Cat2Snapshot &out);
 void FilteredFeatureIndices(SharedData &data, std::vector<int> &out);
 
 // 特征表落地 JSON (给人看, 一行一特征): <当前库目录>/features.json (两层全部行, 元数据下标序,
-// 不受过滤/排序影响; 表格可见列 + Stat / Range (仅 L1 有预览的行), 不落 Dist / PSD 曲线).
+// 不受过滤/排序影响; 表格可见列 + Stat / Range (仅 L_min 有预览的行), 不落 Dist / PSD 曲线).
 // 预览跑完 (Building → Done) 时由 TaskFeatures 调
 void SaveFeatureTableJson(SharedData &data);
 

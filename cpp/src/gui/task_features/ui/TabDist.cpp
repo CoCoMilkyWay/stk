@@ -171,7 +171,7 @@ static std::string DimName(const Dist::Snap &dist, const DistUIState &ui, const 
     return kWeekdayNames[i];
   case DIM_TOD: {
     char buf[8];
-    format_time_hm(buf, sizeof(buf), L1_to_Clock(kTodBinStart[i]));
+    format_time_hm(buf, sizeof(buf), L_min_to_Clock(kTodBinStart[i]));
     return buf;
   }
   case DIM_ASSETS: {

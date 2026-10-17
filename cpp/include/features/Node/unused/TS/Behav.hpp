@@ -30,7 +30,7 @@ public:
   explicit Behav(TickData &td) : td_(td) {}
 
   inline void compute() {
-    const uint32_t cur_sec = td_.l0_index;
+    const uint32_t cur_sec = td_.sec_index;
 
     // 按秒推进：当秒变化时，聚合上一秒的数据
     while (last_sec_ < cur_sec) {
@@ -161,7 +161,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Behav(N) N(Behav, (Behav), (tick_data), onTick, onMinute)
 
-#define FIELDS_L1_Behav(X, CAT1)                                                                                                                                                                                                                                                                                                             \
+#define FIELDS_L_min_Behav(X, CAT1)                                                                                                                                                                                                                                                                                                          \
   X(agg_bid, CAT1, RAW, "Bid Aggressiveness", "买单平均侵略性", "限价买单相对best bid的激进程度(降频)", R"(\frac{1}{\#O_W^{M,B,\mathrm{lmt}}}\sum_{i\in O_W^{M,B,\mathrm{lmt}}}\log\frac{P_i}{P_{1,\tau_i}^{M,B}}, \quad O_W^{M,B,\mathrm{lmt}}=\{i: \tau_i\in W, s_i=B, \mathrm{type}_i=\mathrm{limit}\})", TS(Behav, agg_bid, None, None)) \
   X(agg_ask, CAT1, RAW, "Ask Aggressiveness", "卖单平均侵略性", "限价卖单相对best ask的激进程度(降频)", R"(\frac{1}{\#O_W^{M,A,\mathrm{lmt}}}\sum_{i\in O_W^{M,A,\mathrm{lmt}}}\log\frac{P_{1,\tau_i}^{M,A}}{P_i}, \quad O_W^{M,A,\mathrm{lmt}}=\{i: \tau_i\in W, s_i=A, \mathrm{type}_i=\mathrm{limit}\})", TS(Behav, agg_ask, None, None)) \
   X(agg_diff, CAT1, RAW, "Aggressiveness Diff", "侵略性差", "买卖侵略性差值(降频)", R"(\bar{a}_W^{B} - \bar{a}_W^{A}, \quad \bar{a}_W^{s}=\frac{1}{\#O_W^{M,s,\mathrm{lmt}}}\sum_{i\in O_W^{M,s,\mathrm{lmt}}}\log\frac{P_i}{P_{1,\tau_i}^{M,s}}, \quad s \in \{B,A\})", TS(Behav, agg_diff, None, None))                                    \

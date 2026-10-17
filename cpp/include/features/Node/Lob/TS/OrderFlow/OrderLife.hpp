@@ -129,7 +129,7 @@ private:
   ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂单→撤单", bid, "B", "Bid", "买", t, TE, TF) \
   ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂单→撤单", ask, "A", "Ask", "卖", t, TE, TF)
 
-#define FIELDS_L1_OrderLife(X, CAT1)                                                                                                                                                                                                                                                  \
+#define FIELDS_L_min_OrderLife(X, CAT1)                                                                                                                                                                                                                                               \
   ORDERLIFE_TAU_ROWS(X, CAT1, 1s, "1s", R"(1\mathrm{s})")                                                                                                                                                                                                                             \
   ORDERLIFE_TAU_ROWS(X, CAT1, 10s, "10s", R"(10\mathrm{s})")                                                                                                                                                                                                                          \
   ORDERLIFE_TAU_ROWS(X, CAT1, 60s, "60s", R"(60\mathrm{s})")                                                                                                                                                                                                                          \

@@ -31,6 +31,6 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Trade(N) N(Trade, (Trade), (minute_data), onMinute)
 
-#define FIELDS_L1_Trade(X, CAT1)                                                                                 \
+#define FIELDS_L_min_Trade(X, CAT1)                                                                              \
   X(volume, CAT1, AUTO, "Volume", "成交量", "分钟成交量(股)", R"(\mathrm{Vol}_t)", TS(Trade, volume, Log, None)) \
   X(amount, CAT1, AUTO, "Amount", "成交额", "分钟成交额(元); 分钟 VWAP = amount / volume (因子层)", R"(\mathrm{Amt}_t)", TS(Trade, amount, Log, None))

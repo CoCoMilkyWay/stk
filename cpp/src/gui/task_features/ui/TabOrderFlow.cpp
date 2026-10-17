@@ -30,20 +30,20 @@ namespace GUI::Features {
 // ============================================================================
 
 // 图1 X (交易秒下标) → HH:MM:SS (缩放自适应: 默认刻度 + 逐值换算)
-static int L0TimeFormatter(double value, char *buff, int size, void * /*user_data*/) {
-  const size_t tick_idx = std::min(static_cast<size_t>(std::max(0.0, value)), OrderFlowConst::L0_CAPACITY);
-  const ClockTime ct = L0_to_Clock(tick_idx); // 15300 → 15:00:00 (右边界)
+static int SecTimeFormatter(double value, char *buff, int size, void * /*user_data*/) {
+  const size_t tick_idx = std::min(static_cast<size_t>(std::max(0.0, value)), OrderFlowConst::SEC_CAPACITY);
+  const ClockTime ct = L_sec_to_Clock(tick_idx); // 15300 → 15:00:00 (右边界)
   return std::snprintf(buff, size, "%02d:%02d:%02d", ct.hour, ct.minute, ct.second);
 }
 
-// 图2 X (day_idx * L1_CAPACITY + minute) → YY/MM/DD HH:MM (user_data = Kline, gen 配对期间 dates 稳定)
-static int L1TimeFormatter(double value, char *buff, int size, void *user_data) {
+// 图2 X (day_idx * MIN_CAPACITY + minute) → YY/MM/DD HH:MM (user_data = Kline, gen 配对期间 dates 稳定)
+static int MinTimeFormatter(double value, char *buff, int size, void *user_data) {
   const auto &k = *static_cast<const OrderFlow::Kline *>(user_data);
   if (k.dates.empty() || value < 0)
     return std::snprintf(buff, size, " ");
   const size_t d = std::min(k.day_idx_from_x(value), k.dates.size() - 1);
-  const size_t m = std::min(static_cast<size_t>(value) % OrderFlowConst::L1_CAPACITY, TRADE_MINUTES_PER_DAY);
-  const ClockTime ct = L1_to_Clock(m); // 255 → 15:00 (日右边界)
+  const size_t m = std::min(static_cast<size_t>(value) % OrderFlowConst::MIN_CAPACITY, TRADE_MINUTES_PER_DAY);
+  const ClockTime ct = L_min_to_Clock(m); // 255 → 15:00 (日右边界)
   const misc::Ymd date = k.dates[d];
   return std::snprintf(buff, size, "%02d/%02d/%02d %02d:%02d", date / 10000 % 100, date / 100 % 100, date % 100,
                        ct.hour, ct.minute);
@@ -269,8 +269,8 @@ static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t p
     ImPlot::SetupAxes(nullptr, nullptr, 0, ImPlotAxisFlags_Opposite | ImPlotAxisFlags_Lock);
     ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(prof.cum_max * 1.05, 1.0), cond);
     const auto &ui = of.ui;
-    if (ui.l0_y_min < ui.l0_y_max)
-      ImPlot::SetupAxisLimits(ImAxis_Y1, ui.l0_y_min, ui.l0_y_max, ImPlotCond_Always);
+    if (ui.sec_y_min < ui.sec_y_max)
+      ImPlot::SetupAxisLimits(ImAxis_Y1, ui.sec_y_min, ui.sec_y_max, ImPlotCond_Always);
     else
       ImPlot::SetupAxisLimits(ImAxis_Y1, dp.plot.y_min_with_margin, dp.plot.y_max_with_margin, cond);
     ImPlot::SetupAxisFormat(ImAxis_Y1, DepthPercentFormatter, &mark);
@@ -372,10 +372,10 @@ static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t p
 }
 
 // ============================================================================
-// L0 Plot Renderer (图1: front Depth 槽)
+// L_sec Plot Renderer (图1: front Depth 槽)
 // ============================================================================
 
-static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap) {
+static void RenderSecPlot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap) {
   auto &ui = of.ui;
   const OrderFlow::Depth &dp = of.depth.front_slot();
 
@@ -389,19 +389,19 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
   }
 
   // 新槽 (gen 变了) → 重置视图 + 热力图阈值回到当日自动初值 (之后尊重用户拖动)
-  const bool slot_changed = (ui.l0_last_gen != dp.gen);
-  ui.l0_last_gen = dp.gen;
+  const bool slot_changed = (ui.sec_last_gen != dp.gen);
+  ui.sec_last_gen = dp.gen;
   if (slot_changed)
     ui.log_amount_threshold = dp.auto_log_threshold;
 
-  if (ImPlot::BeginPlot("##L0Price", ImVec2(-1, -1))) {
+  if (ImPlot::BeginPlot("##SecPrice", ImVec2(-1, -1))) {
     const ImPlotCond cond = slot_changed ? ImPlotCond_Always : ImPlotCond_Once;
 
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
     // X 是固定域 (全天交易秒), 只在首帧设一次 → 换资产/换日不动视野 (双击才复位)
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(OrderFlowConst::L0_CAPACITY), ImPlotCond_Once);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(OrderFlowConst::SEC_CAPACITY), ImPlotCond_Once);
     ImPlot::SetupAxisLimits(ImAxis_Y1, dp.plot.y_min_with_margin, dp.plot.y_max_with_margin, cond);
-    ImPlot::SetupAxisFormat(ImAxis_X1, L0TimeFormatter);
+    ImPlot::SetupAxisFormat(ImAxis_X1, SecTimeFormatter);
     ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换资产不挪 plot 左边界
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
@@ -429,8 +429,8 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     // 当前 Y 视野快照 → 右侧深度面板每帧同步 (两图价格轴严格对齐)
     {
       const ImPlotRect lr = ImPlot::GetPlotLimits();
-      ui.l0_y_min = lr.Y.Min;
-      ui.l0_y_max = lr.Y.Max;
+      ui.sec_y_min = lr.Y.Min;
+      ui.sec_y_max = lr.Y.Max;
     }
 
     // ------------------------------------------------------------------
@@ -481,8 +481,8 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
 
       if (hovered_idx >= 0 && static_cast<size_t>(hovered_idx) < of.heatmap_colored.metadata.size()) {
         const auto &meta = of.heatmap_colored.metadata[hovered_idx];
-        const ClockTime t0 = L0_to_Clock(meta.tick_start);
-        const ClockTime t1 = L0_to_Clock(meta.tick_end); // 开区间右界 → 边界时刻
+        const ClockTime t0 = L_sec_to_Clock(meta.tick_start);
+        const ClockTime t1 = L_sec_to_Clock(meta.tick_end); // 开区间右界 → 边界时刻
         ImGui::SetTooltip("%.2f万元\n价格: %.2f\n%02d:%02d:%02d - %02d:%02d:%02d",
                           amount_to_wan(static_cast<float>(meta.amount_rmb)), meta.price,
                           t0.hour, t0.minute, t0.second, t1.hour, t1.minute, t1.second);
@@ -513,7 +513,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
-      // 分钟 VWAP 阶梯 (L1 特征列 vwap; 库轴外 / 未算特征的资产无此线)
+      // 分钟 VWAP 阶梯 (L_min 特征列 vwap; 库轴外 / 未算特征的资产无此线)
       if (!dp.plot.vwap_x.empty()) {
         ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
         ImPlot::PlotStairs("VWAP", dp.plot.vwap_x.data(), dp.plot.vwap_y.data(), static_cast<int>(dp.plot.vwap_x.size()), ImPlotItemFlags_NoFit);
@@ -523,7 +523,7 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       // fit 会贴紧数据边缘, 与初始视图不一致且难操作. 必须在有 item 之后 (SetupLock 已发生)
       if (ImPlot::FitThisFrame()) {
         ImPlot::FitPointX(0.0);
-        ImPlot::FitPointX(static_cast<double>(OrderFlowConst::L0_CAPACITY));
+        ImPlot::FitPointX(static_cast<double>(OrderFlowConst::SEC_CAPACITY));
         ImPlot::FitPointY(dp.plot.y_min_with_margin);
         ImPlot::FitPointY(dp.plot.y_max_with_margin);
       }
@@ -553,22 +553,22 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     // Anchor: 锚在秒级时间 (跨日/换资产稳定); DragLineX + 双击, 落点吸附有效秒
     // ------------------------------------------------------------------
     if (!dp.plot.x.empty()) {
-      if (ui.l0_anchor_tick == SIZE_MAX)
-        ui.l0_anchor_tick = dp.ticks.front().tick_idx; // 首次: 默认首个有效秒
+      if (ui.sec_anchor_tick == SIZE_MAX)
+        ui.sec_anchor_tick = dp.ticks.front().tick_idx; // 首次: 默认首个有效秒
 
-      double anchor_x = static_cast<double>(ui.l0_anchor_tick);
+      double anchor_x = static_cast<double>(ui.sec_anchor_tick);
       const bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
       const bool drag_active = ImGui::IsItemActive();
       if (drag_changed) // 拖动中跟手 (原样), 释放时吸附有效秒
-        ui.l0_anchor_tick = drag_active
-                                ? static_cast<size_t>(std::clamp(anchor_x, 0.0, static_cast<double>(OrderFlowConst::L0_CAPACITY - 1)))
-                                : dp.ticks[dp.snap_to_valid_plot_idx(anchor_x)].tick_idx;
+        ui.sec_anchor_tick = drag_active
+                                 ? static_cast<size_t>(std::clamp(anchor_x, 0.0, static_cast<double>(OrderFlowConst::SEC_CAPACITY - 1)))
+                                 : dp.ticks[dp.snap_to_valid_plot_idx(anchor_x)].tick_idx;
 
       if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
-        ui.l0_anchor_tick = dp.ticks[dp.snap_to_valid_plot_idx(ImPlot::GetPlotMousePos().x)].tick_idx;
+        ui.sec_anchor_tick = dp.ticks[dp.snap_to_valid_plot_idx(ImPlot::GetPlotMousePos().x)].tick_idx;
 
       // 当日该秒无数据 → 就近吸附取值 (锚点本身不动)
-      const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.l0_anchor_tick));
+      const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.sec_anchor_tick));
       if (plot_idx < dp.plot.x.size()) {
         const auto depth = dp.query_depth(plot_idx);
         if (depth.valid) {
@@ -585,10 +585,10 @@ static void RenderL0Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
 }
 
 // ============================================================================
-// L1 Plot Renderer (图2: Kline 已发布前缀)
+// L_min Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
-static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap, float height) {
+static void RenderMinPlot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap, float height) {
   auto &ui = of.ui;
   auto &k = of.kline;
 
@@ -599,7 +599,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
 
   // 换代在途 (拖动资产): 照画空图, 轴与视野原样留着 —— 撤掉整张图会闪.
   // 只有 dates 正在重扫 (rescan / 首帧) 时连 X 域和刻度都读不出来, 才出提示
-  if (!ready && (ui.kline_rescan_pending || ui.l1_x_max <= 0.0)) {
+  if (!ready && (ui.kline_rescan_pending || ui.min_x_max <= 0.0)) {
     ImGui::TextDisabled("Preparing K-line stream...");
     return;
   }
@@ -608,7 +608,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       ImGui::TextDisabled("No feature dates found");
       return;
     }
-    ui.l1_x_max = static_cast<double>(k.dates.size() * OrderFlowConst::L1_CAPACITY);
+    ui.min_x_max = static_cast<double>(k.dates.size() * OrderFlowConst::MIN_CAPACITY);
   } else {
     pub_days = pub_points = 0; // 旧代计数不可用于本帧 (数组正在重建)
   }
@@ -616,19 +616,19 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
   if (ImPlot::BeginPlot("##KLine", ImVec2(-1, height))) {
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
     // X: 固定域 (0 ~ 全部特征日), 只在域本身变了 (重扫日期) 才复位 → 换资产 / 流式追加都不动视野
-    const bool x_domain_changed = (ui.l1_x_applied != ui.l1_x_max);
-    ui.l1_x_applied = ui.l1_x_max;
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(ui.l1_x_max, 1.0),
+    const bool x_domain_changed = (ui.min_x_applied != ui.min_x_max);
+    ui.min_x_applied = ui.min_x_max;
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(ui.min_x_max, 1.0),
                             x_domain_changed ? ImPlotCond_Always : ImPlotCond_Once);
-    ImPlot::SetupAxisFormat(ImAxis_X1, L1TimeFormatter, &k); // YY/MM/DD HH:MM (非重扫期 dates 稳定)
-    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter);      // 定宽: 换资产不挪 plot 左边界
+    ImPlot::SetupAxisFormat(ImAxis_X1, MinTimeFormatter, &k); // YY/MM/DD HH:MM (非重扫期 dates 稳定)
+    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter);       // 定宽: 换资产不挪 plot 左边界
     // Y1: 发布范围变化 (换代 / 流式追加) 时跟随; 稳定后不再打扰
-    if (pub_points > 0 && ui.l1_last_pub_days != pub_days) {
+    if (pub_points > 0 && ui.min_last_pub_days != pub_days) {
       ImPlot::SetupAxisLimits(ImAxis_Y1, k.y_min.load(std::memory_order_relaxed),
                               k.y_max.load(std::memory_order_relaxed), ImPlotCond_Always);
     }
     if (ready)
-      ui.l1_last_pub_days = pub_days;
+      ui.min_last_pub_days = pub_days;
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
     const size_t nf = ready ? std::min(k.n_feat, ui.kline_feats.size()) : 0;
@@ -667,28 +667,28 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     // 追加 / 换资产 / 重扫日期都使 gen 变 → 自动失效. 二分判定每日有无 K 线点.
     if (ready && pub_days > 0) {
       const uint32_t cur_gen = ui.kline_gen & 0xFFFF;
-      if (ui.l1_missing_days_gen != cur_gen || ui.l1_missing_days_pub_days != pub_days) {
-        ui.l1_missing_days_gen = cur_gen;
-        ui.l1_missing_days_pub_days = pub_days;
-        ui.l1_missing_days.clear();
+      if (ui.min_missing_days_gen != cur_gen || ui.min_missing_days_pub_days != pub_days) {
+        ui.min_missing_days_gen = cur_gen;
+        ui.min_missing_days_pub_days = pub_days;
+        ui.min_missing_days.clear();
         const auto &xs = k.x;
         for (size_t d = 0; d < pub_days; ++d) {
-          const double lo = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
-          const double hi = lo + static_cast<double>(OrderFlowConst::L1_CAPACITY);
+          const double lo = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);
+          const double hi = lo + static_cast<double>(OrderFlowConst::MIN_CAPACITY);
           auto it = std::lower_bound(xs.begin(), xs.begin() + static_cast<long>(pub_points), lo);
           if (it == xs.begin() + static_cast<long>(pub_points) || *it >= hi)
-            ui.l1_missing_days.push_back(d);
+            ui.min_missing_days.push_back(d);
         }
       }
 
-      if (!ui.l1_missing_days.empty()) {
+      if (!ui.min_missing_days.empty()) {
         ImPlot::PushPlotClipRect();
         ImDrawList *draw_list = ImPlot::GetPlotDrawList();
         const ImPlotRect limits = ImPlot::GetPlotLimits();
         constexpr ImU32 col = IM_COL32(255, 240, 170, 26); // 淡黄, alpha 0.1
-        for (size_t d : ui.l1_missing_days) {
-          const double x0 = static_cast<double>(d * OrderFlowConst::L1_CAPACITY);
-          const double x1 = x0 + static_cast<double>(OrderFlowConst::L1_CAPACITY);
+        for (size_t d : ui.min_missing_days) {
+          const double x0 = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);
+          const double x1 = x0 + static_cast<double>(OrderFlowConst::MIN_CAPACITY);
           const ImVec2 p0 = ImPlot::PlotToPixels(x0, limits.Y.Min);
           const ImVec2 p1 = ImPlot::PlotToPixels(x1, limits.Y.Max);
           draw_list->AddRectFilled(p0, p1, col);
@@ -708,7 +708,7 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
       char label[128];
       const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.kline_feats[i]);
       ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
-      // 颜色按选中槽位取, 与图1 同一口径 (选中层 = L1 时两图特征列表逐项相同 → 同色)
+      // 颜色按选中槽位取, 与图1 同一口径 (选中层 = L_min 时两图特征列表逐项相同 → 同色)
       ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
       // price 类共用主图 Y1: NoFit 保证 K线自身的缩放口径不被特征撑大
       ImPlot::PlotStairs(FeatName(feature, snap.cat2, 1, ui.kline_feats[i], label, sizeof(label)),
@@ -721,32 +721,32 @@ static void RenderL1Plot(OrderFlow &of, const Feature &feature, const Cat2Snapsh
     // Anchor: 吸附日起点 → 驱动图1 (day, asset) 请求
     // ------------------------------------------------------------------
     {
-      double anchor_x = ui.l1_anchor_x;
+      double anchor_x = ui.min_anchor_x;
       const bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
       const bool drag_active = ImGui::IsItemActive();
 
       if (drag_changed) {
         if (drag_active) { // 拖动中跟手, 不动 anchor_date (释放才吸附日起点 → 触发图1 重放)
-          ui.l1_anchor_x = std::max(0.0, anchor_x);
+          ui.min_anchor_x = std::max(0.0, anchor_x);
         } else {
-          ui.l1_anchor_x = k.snap_to_day_start(anchor_x);
-          ui.l1_anchor_date = k.date_from_x(ui.l1_anchor_x);
+          ui.min_anchor_x = k.snap_to_day_start(anchor_x);
+          ui.min_anchor_date = k.date_from_x(ui.min_anchor_x);
         }
       }
       if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-        ui.l1_anchor_x = k.snap_to_day_start(ImPlot::GetPlotMousePos().x);
-        ui.l1_anchor_date = k.date_from_x(ui.l1_anchor_x);
+        ui.min_anchor_x = k.snap_to_day_start(ImPlot::GetPlotMousePos().x);
+        ui.min_anchor_date = k.date_from_x(ui.min_anchor_x);
       }
 
-      if (ui.l1_anchor_date && pub_points > 0) {
-        const auto it = std::lower_bound(k.x.begin(), k.x.begin() + static_cast<long>(pub_points), ui.l1_anchor_x);
+      if (ui.min_anchor_date && pub_points > 0) {
+        const auto it = std::lower_bound(k.x.begin(), k.x.begin() + static_cast<long>(pub_points), ui.min_anchor_x);
         double anchor_y = 0;
         if (it != k.x.begin() + static_cast<long>(pub_points))
           anchor_y = k.close[static_cast<size_t>(it - k.x.begin())];
 
         char date_buf[16];
-        FormatDateShort(date_buf, sizeof(date_buf), ui.l1_anchor_date);
-        ImPlot::Annotation(ui.l1_anchor_x, anchor_y, ImVec4(1, 0.5f, 0, 1),
+        FormatDateShort(date_buf, sizeof(date_buf), ui.min_anchor_date);
+        ImPlot::Annotation(ui.min_anchor_x, anchor_y, ImVec4(1, 0.5f, 0, 1),
                            ImVec2(5, -15), false, "%s", date_buf);
       }
     }
@@ -790,7 +790,7 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
                        pick.candidates.size(), data.asset.items.size());
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s 通过筛选的资产数 / 总数\n"
-                        "• 状态取自当日 L1 落盘列 (ST / 上市 / 行业)\n"
+                        "• 状态取自当日 L_min 落盘列 (ST / 上市 / 行业)\n"
                         "• 当日无有效分钟的资产不列入 (无盘口可看)",
                         misc::dash(slot.date).c_str());
   } else {
@@ -867,19 +867,19 @@ static void RenderStatusBar(const OrderFlow &of) {
   if (pub_gen == (ui.kline_gen & 0xFFFF) && !k.dates.empty()) {
     const bool streaming = pub_days < k.dates.size();
     ImGui::TextColored(streaming ? ImVec4(1.0f, 0.8f, 0.0f, 1.0f) : ImVec4(0.3f, 0.8f, 0.3f, 1.0f),
-                       "[L1: %zu/%zu days, %zu pts]", pub_days, k.dates.size(), pub_points);
+                       "[L_min: %zu/%zu days, %zu pts]", pub_days, k.dates.size(), pub_points);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("K线流式加载 (从前往后逐日)\n"
                         "• 已发布日数 / 总日数\n"
                         "• 有效分钟数");
   } else {
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L1: rebuilding]");
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L_min: rebuilding]");
   }
 
   ImGui::SameLine();
-  if (ui.l1_anchor_date) {
+  if (ui.min_anchor_date) {
     char date_buf[16];
-    FormatDateShort(date_buf, sizeof(date_buf), ui.l1_anchor_date);
+    FormatDateShort(date_buf, sizeof(date_buf), ui.min_anchor_date);
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Anchor: %s", date_buf);
   }
 
@@ -887,17 +887,17 @@ static void RenderStatusBar(const OrderFlow &of) {
   ImGui::SameLine();
   const OrderFlow::Depth &dp = of.depth.front_slot();
   if (dp.gen != ui.depth_gen) {
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L0: replaying...]");
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L_sec: replaying...]");
   } else if (dp.has_data) {
-    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L0: %zu snaps / %zu rects / %zu orders]",
+    ImGui::TextColored(ImVec4(0.3f, 0.6f, 0.9f, 1.0f), "[L_sec: %zu snaps / %zu rects / %zu orders]",
                        dp.ticks.size(), dp.merged.rect_count, dp.order_count);
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("L0 当日盘口重放\n"
+      ImGui::SetTooltip("L_sec 当日盘口重放\n"
                         "• 秒级盘口快照数 (订单簿逐笔重放)\n"
                         "• 热力图合并矩形数\n"
                         "• 当日逐笔条数");
   } else if (dp.asset_idx != SIZE_MAX) {
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "[L0: no data]");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "[L_sec: no data]");
   }
 }
 
@@ -976,14 +976,14 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  std::vector<int> l1_feats = CollectFeats(sel, 1);
-  if (rescan || ui.kline_asset != asset_idx || ui.kline_feats != l1_feats) {
+  std::vector<int> min_feats = CollectFeats(sel, 1);
+  if (rescan || ui.kline_asset != asset_idx || ui.kline_feats != min_feats) {
     ui.kline_asset = asset_idx;
-    ui.kline_feats = l1_feats;
+    ui.kline_feats = min_feats;
     ++ui.kline_gen;
-    ui.l1_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
-    ui.kline_rescan_pending = rescan || ui.l1_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
-    service->RequestKline(ui.kline_gen, asset_idx, std::move(l1_feats), rescan);
+    ui.min_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
+    ui.kline_rescan_pending = rescan || ui.min_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
+    service->RequestKline(ui.kline_gen, asset_idx, std::move(min_feats), rescan);
   }
 
   // Kline 发布状态 (anchor 默认值需要 dates)
@@ -994,22 +994,24 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   if (kline_ready)
     ui.kline_rescan_pending = false; // dates 已随新代落定
 
-  if (!ui.l1_anchor_date && kline_ready && !of.kline.dates.empty()) {
-    ui.l1_anchor_x = 0;
-    ui.l1_anchor_date = of.kline.dates.front();
+  if (!ui.min_anchor_date && kline_ready && !of.kline.dates.empty()) {
+    ui.min_anchor_x = 0;
+    ui.min_anchor_date = of.kline.dates.front();
   }
 
-  // 图1 特征 = 当前选中层的指标集 (L0/L1 皆可): 选 L1 时与图2 同源, 只取锚点日的日内段
-  std::vector<int> depth_feats = CollectFeats(sel, sel.selected_level);
-  if (ui.l1_anchor_date &&
-      (rescan || ui.depth_date != ui.l1_anchor_date || ui.depth_asset != asset_idx ||
-       ui.depth_feats != depth_feats || ui.depth_feat_level != sel.selected_level)) {
-    ui.depth_date = ui.l1_anchor_date;
+  // 图1 特征 = 当前选中层的指标集 (L_sec/L_min 皆可): 选 L_min 时与图2 同源, 只取锚点日的日内段
+  //   选 Bar 库时无图1 特征 (CollectFeats 空), 层按 L_min 发 (Bar 的 L_day 不属于票池库)
+  const int depth_level = sel.tier == TierId::Lob ? sel.selected_level : static_cast<int>(L_min);
+  std::vector<int> depth_feats = CollectFeats(sel, depth_level);
+  if (ui.min_anchor_date &&
+      (rescan || ui.depth_date != ui.min_anchor_date || ui.depth_asset != asset_idx ||
+       ui.depth_feats != depth_feats || ui.depth_feat_level != depth_level)) {
+    ui.depth_date = ui.min_anchor_date;
     ui.depth_asset = asset_idx;
     ui.depth_feats = depth_feats;
-    ui.depth_feat_level = sel.selected_level;
+    ui.depth_feat_level = depth_level;
     ++ui.depth_gen;
-    service->RequestDepth(ui.depth_gen, ui.l1_anchor_date, asset_idx, sel.selected_level, std::move(depth_feats));
+    service->RequestDepth(ui.depth_gen, ui.min_anchor_date, asset_idx, depth_level, std::move(depth_feats));
   }
 
   // ==========================================================================
@@ -1030,10 +1032,10 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     pick.cached_gen = UINT32_MAX; // 强制重建候选
   }
 
-  if (ui.l1_anchor_date && (rescan || pick.req_date != ui.l1_anchor_date)) {
-    pick.req_date = ui.l1_anchor_date;
+  if (ui.min_anchor_date && (rescan || pick.req_date != ui.min_anchor_date)) {
+    pick.req_date = ui.min_anchor_date;
     ++pick.gen;
-    service->RequestPick(pick.gen, ui.l1_anchor_date);
+    service->RequestPick(pick.gen, ui.min_anchor_date);
   }
 
   // 候选重建 (槽换代 或 筛选条件变)
@@ -1056,8 +1058,8 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
 
   // Cat2 有效值快照 (与 FEATURE 表同口径): 两图 legend 括号标注.
   // 图1 用 front 槽实际渲染的特征层 (换层在途时与旧槽数据配对)
-  static Cat2Snapshot s_cat2_depth, s_cat2_l1;
-  EffectiveCat2Snapshot(data, 1, s_cat2_l1);
+  static Cat2Snapshot s_cat2_depth, s_cat2_min;
+  EffectiveCat2Snapshot(data, 1, s_cat2_min);
   EffectiveCat2Snapshot(data, static_cast<size_t>(of.depth.front_slot().feat_level), s_cat2_depth);
 
   // ==========================================================================
@@ -1070,23 +1072,23 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const float chart_width = content_width - OrderFlowConst::DEPTH_PANEL_WIDTH - 10.0f;
 
   // ==========================================================================
-  // TOP: L0 秒级盘口 + 深度面板
+  // TOP: L_sec 秒级盘口 + 深度面板
   // ==========================================================================
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
-  ImGui::BeginChild("L0Chart", ImVec2(chart_width, -1), false);
-  RenderL0Plot(of, data.feature, s_cat2_depth);
+  ImGui::BeginChild("SecChart", ImVec2(chart_width, -1), false);
+  RenderSecPlot(of, data.feature, s_cat2_depth);
   ImGui::EndChild();
 
   ImGui::SameLine();
-  // 无边框: 与 L0Chart 同 padding, 两图 plot 区域上下像素级对齐
+  // 无边框: 与 SecChart 同 padding, 两图 plot 区域上下像素级对齐
   ImGui::BeginChild("DepthPanel", ImVec2(OrderFlowConst::DEPTH_PANEL_WIDTH, -1), false);
   {
     const OrderFlow::Depth &dp = of.depth.front_slot();
-    if (dp.has_data && ui.l0_anchor_tick != SIZE_MAX) {
-      const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.l0_anchor_tick));
+    if (dp.has_data && ui.sec_anchor_tick != SIZE_MAX) {
+      const size_t plot_idx = dp.snap_to_valid_plot_idx(static_cast<double>(ui.sec_anchor_tick));
       RenderDepthPanel(of, dp, plot_idx);
     } else {
-      ImGui::TextDisabled("No L0 data");
+      ImGui::TextDisabled("No L_sec data");
     }
   }
   ImGui::EndChild();
@@ -1103,7 +1105,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   RenderStatusBar(of);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
-  RenderL1Plot(of, data.feature, s_cat2_l1, kline_height);
+  RenderMinPlot(of, data.feature, s_cat2_min, kline_height);
 
   ImGui::EndChild(); // BottomSection
 }

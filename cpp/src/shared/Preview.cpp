@@ -24,7 +24,7 @@ struct Preview::Runtime {
   std::vector<uint8_t> int_only;           // [n_preview] flag 探测: 有效值至今全整数 (粘性)
   // ---- 轮共享只读 (轮首单线程载入, 块任务只读) ----
   std::vector<float> cage_dn, cage_up; // [n_draw][VR] 当轮抽样资产的笼快照 (NaN = 当日无值)
-  FeatureRead::DayColumns cage_day;    // [T][A_all] × {lim_dn, lim_up} (Bar 档旁读, 全轴)
+  FeatureRead::DayColumns cage_day;    // L_day [T][A_all] × {lim_dn, lim_up} (Bar 档旁读, 全轴)
   FeatureRead::DayColumns round;       // [T][A] × {ts_valid} (门控时; 轮内各块共用, 免每块重读)
   std::vector<size_t> round_cols;
   std::vector<uint32_t> asset_order; // [A] 固定种子洗牌 (轮间旋转取片)
@@ -54,7 +54,7 @@ struct Preview::Runtime {
     const size_t n_draw = std::min(kPvAssetsPerRound, A);
     cage_dn.resize(n_draw * kVR);
     cage_up.resize(n_draw * kVR);
-    cage_day.preallocate(A_all, kLevel, 2);
+    cage_day.preallocate(A_all, L_day, 2);
     round_cols.clear();
     if (spec.cols.gated())
       round_cols.push_back(spec.cols.gate());
@@ -165,10 +165,8 @@ bool Preview::build(FeatureRead &reader, const FeatureRead &all, const std::atom
     const size_t a_off = (r * n_draw) % A;    // 洗牌序旋转取片
     for (size_t k = 0; k < n_draw; ++k) {
       const size_t a = rt.asset_order[(a_off + k) % A];
-      const feature_storage_t *dn_p = rt.cage_day.col(0) + ids[a];
-      const feature_storage_t *up_p = rt.cage_day.col(1) + ids[a];
+      const float dn = static_cast<float>(rt.cage_day.col(0)[ids[a]]), up = static_cast<float>(rt.cage_day.col(1)[ids[a]]); // L_day 行 0 (当日常量)
       for (size_t t = 0; t < VR; ++t) {
-        const float dn = static_cast<float>(dn_p[t * A_all]), up = static_cast<float>(up_p[t * A_all]);
         rt.cage_dn[k * VR + t] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
         rt.cage_up[k * VR + t] = up + (std::fabs(up) * kF16Rel + kPxEps);
       }

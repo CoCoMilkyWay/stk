@@ -8,7 +8,7 @@
 //                  + cn_stock_real_bar1d (最新行 + 最新有效报价行) + cn_stock_status
 //   stock_factor ← cn_stock_real_bar1d.adjust_factor 变点序列 (分红/拆分事件日)
 //   mcap/pe_ttm/pb_mrq/ps_ttm/pcf_ttm/dy{1,3,5}y ← close × total_shares / 财务分母
-//                  (最新可见快照, 口径与 L1 特征表一致; 分钟实时版在特征表阶段算)
+//                  (最新可见快照, 口径与 L_min 特征表一致; 分钟实时版在特征表阶段算)
 //                  dy{1,3,5}y 另取 cn_stock_dividend 近 1/3/5 年公告, 年化
 //
 // 扫描架构: 六张月度大表 (real_bar1d / status / shares / financial_ttm_shift /
@@ -395,7 +395,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   fundamental::Scan scan(cat, ids, hw > 3 ? hw - 2 : 1);
 
   // 分红窗口: publish_date ∈ (today-N日, today] (锚定公告日, 非除权日 —
-  // 与 L1 dy_raw 同口径)
+  // 与 L_min dy_raw 同口径)
   Ymd div_lo[kDyWindows];
   for (int w = 0; w < kDyWindows; ++w)
     div_lo[w] = misc::add_days(today, -kDyDays[w]);
@@ -589,14 +589,14 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   }
 
   // ---- 估值快照 (MCAP/PE/PB/PS/PCF/DY) ← 最新 close × total_shares / 各分母 ----
-  //   口径与 L1 特征表一致 (qmt 移植): 分子统一为总市值 mcap = close × total_shares
+  //   口径与 L_min 特征表一致 (qmt 移植): 分子统一为总市值 mcap = close × total_shares
   //   (不复权真价); PE=mcap/归母净利TTM, PB=mcap/归母权益MRQ, PS=mcap/营业总收入TTM
   //   (≤0脏值→空), PCF=mcap/经营现金流净额TTM; 亏损/负权益/烧钱保留负值.
   //   DY1/3/5 = 近 1/3/5 年税前分红总额年化后 / mcap; 静态快照的股本恒为最新
-  //   快照, 故等价于 Σ每股分红/年数/close (L1 dy_raw 用公告日当时股本, 窗口内
+  //   快照, 故等价于 Σ每股分红/年数/close (L_min dy_raw 用公告日当时股本, 窗口内
   //   有增发时会有微差). 无效 → 留 NaN (Table 显示 "-").
   //
-  //   缺失语义 (与 L1 一致: 只标记, 不横截面填充 —— 展示层不放非该股真实值):
+  //   缺失语义 (与 L_min 一致: 只标记, 不横截面填充 —— 展示层不放非该股真实值):
   //     · mcap 算不出 (无有效成交价 / 无股本) → 该股估值列整片留空, 不留半成品;
   //     · 各分母独立回退到最后一个有效期次, 所以停止披露只影响到期次而非有无;
   //     · 仍为空的只剩两类结构性缺口 —— 2015-01 前退市 (整体在 PIPELINE_START_DATE

@@ -31,7 +31,7 @@ public:
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
   inline void compute() {
-    const uint32_t cur_sec = td_.l0_index;
+    const uint32_t cur_sec = td_.sec_index;
 
     // 按秒推进：当秒变化时，聚合上一秒的数据
     while (last_sec_ < cur_sec) {
@@ -118,7 +118,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Manip(N) N(Manip, (Manip), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
-#define FIELDS_L1_Manip(X, CAT1)                                                                                                                                                                                                                                                                                                                                                                                  \
+#define FIELDS_L_min_Manip(X, CAT1)                                                                                                                                                                                                                                                                                                                                                                               \
   X(ptc_ratio, CAT1, RATIO, "Pre-Trade Cancel Ratio", "成交前撤单比", "成交前T_pre内同向近价撤单占比(降频)", R"(\frac{\sum_{j\in O_W^{T}}\sum_{\tau=\tau_j-T_{\mathrm{pre}}}^{\tau_j}|O_{\tau}^{C,s_j}|}{\sum_{j\in O_W^{T}}|O_j|}, \quad O_W^{T}=\{j: \tau_j\in W, \mathrm{is\_trade}_j\})", TS(Manip, ptc_ratio, None, None))                                                                                   \
   X(fleet_ratio, CAT1, RATIO, "Fleeting Order Ratio", "闪单占比", "存活时间<Δ的订单量占比(降频)", R"(\frac{\sum_{i\in O_W^{M,\mathrm{fleet}}}|O_i|}{\sum_{i\in O_W^{M}}|O_i|}, \quad O_W^{M,\mathrm{fleet}}=\{i\in O_W^{M}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<\Delta\})", TS(Manip, fleet_ratio, None, None))                                                                                          \
   X(spoof_int, CAT1, RATIO, "Spoofing Intensity", "欺骗强度", "近端大额快速撤单占总撤单比例(降频)", R"(\frac{\sum_{i\in O_W^{C,\mathrm{spoof}}}|O_i|}{\sum_{i\in O_W^{C}}|O_i|}, \quad O_W^{C,\mathrm{spoof}}=\{i\in O_W^{C}: \tau_i^{\mathrm{cxl}}-\tau_i^{\mathrm{post}}<T_{\mathrm{fast}}, |P_i-P_{1,\tau_i}^{M}|\leq k\cdot\mathrm{tick}, |O_i|\geq q_{\mathrm{large}}\})", TS(Manip, spoof_int, None, None)) \

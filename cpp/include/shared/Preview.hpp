@@ -30,7 +30,7 @@ class FeatureRead;
 //   块末短锁发布该块 Cell (PDF 折线 + log10 谱) → 首帧 = 一块的 IO + 扫描 (几 ms),
 //   之后逐块逐轮收敛; 跑完全部轮即 Done, 不再耗后台.
 //
-// 只在 L1 跑 (L0 秒频单列单日 IO 过重; 表格 L0 行显示 "—").
+// 只在 L_min 跑 (L_sec 秒频单列单日 IO 过重; 表格 L_sec 行显示 "—").
 // A 轴 = 库轴; 抽样资产 = 库轴下标 (UI 不需要资产身份).
 // 重算: reset 清空 cells (预览是全表底图, 输入变了旧格子无参照意义), 逐块填回.
 // 生命周期: 进 Features 任务且输入就绪 → 起 worker + 自动构建 (不依赖选中特征);
@@ -67,7 +67,7 @@ struct Preview : Published {
 
   struct Spec {
     fmeta::ColumnSet cols;    // 预览特征列 (metadata 下标升序, 不含 META 类) (+ 门控)
-    std::vector<size_t> cage; // price 笼两列 {lim_dn, lim_up} (Bar 档旁读, All 字段表下标; 逐日笼内判定, 融合进主扫描)
+    std::vector<size_t> cage; // price 笼两列 {lim_dn, lim_up} (Bar 档旁读, All 的 L_day 字段表下标; 逐日笼内判定, 融合进主扫描)
     size_t n_features = 0;    // 该层特征总数 (cells 尺寸)
   };
   // 发布快照 (进度/epoch/mutex 在 Published; done/total = 轮). 块末短锁拷贝该块 cells

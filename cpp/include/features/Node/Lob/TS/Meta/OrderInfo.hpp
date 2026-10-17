@@ -3,7 +3,7 @@
 // =============================================================================
 // OrderInfo - 订单记录层: 当前笔的 price / timestamp(ms) / tickindex / volume(股) / dir(1=BID,-1=ASK)
 //   按触发域分别实例化为 Taker / Maker / Cancel 三个节点
-//   【勿删】计算图内无消费者, 但三组 L0 Series 被 UI 逐笔回放读取; 无落盘列.
+//   【勿删】计算图内无消费者, 但三组 L_sec Series 被 UI 逐笔回放读取; 无落盘列.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -24,7 +24,7 @@ public:
     const auto &lob = td_.lob;
     y[price] = lob.price;
     y[timestamp] = static_cast<float>(lob.hour * 3600000 + lob.minute * 60000 + lob.second * 1000 + lob.millisecond * 10);
-    y[tickindex] = static_cast<float>(td_.l0_index);
+    y[tickindex] = static_cast<float>(td_.sec_index);
     y[volume] = static_cast<float>(lob.volume);
     y[dir] = (lob.order_dir == L2::OrderDirection::BID) ? 1.0f : -1.0f;
   }

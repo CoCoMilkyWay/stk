@@ -21,7 +21,7 @@ public:
   explicit ToxicCr(TickData &td) : td_(td) {}
 
   inline void compute() {
-    const uint32_t cur_sec = td_.l0_index;
+    const uint32_t cur_sec = td_.sec_index;
 
     // 按秒推进: 当前槽入账 → 写指针前移 → 移出长/短窗口尾部 → 清新槽
     while (last_sec_ < cur_sec) {
@@ -65,5 +65,5 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_ToxicCr(N) N(ToxicCr, (ToxicCr), (tick_data), onTick, onMinute)
 
-#define FIELDS_L1_ToxicCr(X, CAT1) \
+#define FIELDS_L_min_ToxicCr(X, CAT1) \
   X(toxic_cr, CAT1, RATIO, "Toxic Cancel Ratio", "毒订单流撤单率", "短窗口撤单占长窗口撤单比例,检测高频撤单行为(降频)", R"(\frac{\sum_{\tau=t-5\mathrm{s}}^{t}|O_{\tau}^{C}|}{\sum_{\tau=t-60\mathrm{s}}^{t}|O_{\tau}^{C}|}, \quad |O_{\tau}^{C}|=|O_{\tau}^{C,B}|+|O_{\tau}^{C,A}|)", TS(ToxicCr, None, None))

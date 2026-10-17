@@ -10,8 +10,8 @@ namespace pool {
 Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
   assert(bar.tier == TierId::Bar && bar.ready() && "票池源 = Bar 库 (先算 Bar 库)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
-  constexpr size_t kLevel = 1;
-  constexpr size_t kCloseRow = level_valid_rows(kLevel) - 1; // L1 254 (收盘)
+  constexpr size_t kLevel = L_day;
+  constexpr size_t kCloseRow = 0; // L_day 唯一有效行 (收盘)
 
   FeatureRead reader(bar);
   FeatureRead::DayColumns dc;

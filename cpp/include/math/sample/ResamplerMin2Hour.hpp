@@ -7,12 +7,12 @@
 #include "features/DataDefine.hpp"
 
 //========================================================================================
-// HOUR LEVEL (L2): 由 MinuteData 重采样而来
+// HOUR LEVEL (L_hour): 由 MinuteData 重采样而来
 //========================================================================================
 struct HourData {
   uint32_t asset_id{0};
   uint32_t core_id{0};
-  uint32_t l2_index{0}; // dynamic: current hour index (trading hour 0-4)
+  uint32_t hour_index{0}; // dynamic: current hour index (trading hour 0-4)
 
   std::vector<float> open;
   std::vector<float> high;
@@ -24,16 +24,16 @@ struct HourData {
   std::vector<float> ask_amount;
 };
 
-// L1 (分钟 0-254) → L2 (交易小时 0-4):
+// L_min (分钟 0-254) → L_hour (交易小时 0-4):
 //   0:[09:15,10:00) 1:[10:00,11:00) 2:[11:00,11:30) 3:[13:00,14:00) 4:[14:00,15:00)
-inline constexpr size_t L1_to_L2(size_t l1) {
-  if (l1 < 45)
+inline constexpr size_t L_min_to_L_hour(size_t t_min) {
+  if (t_min < 45)
     return 0;
-  if (l1 < 105)
+  if (t_min < 105)
     return 1;
-  if (l1 < 135)
+  if (t_min < 135)
     return 2;
-  if (l1 < 195)
+  if (t_min < 195)
     return 3;
   return 4;
 }
@@ -42,7 +42,7 @@ inline constexpr size_t L1_to_L2(size_t l1) {
 // RESAMPLER: MINUTE -> HOUR
 //========================================================================================
 // 职责:
-// - 基于 l2_index 变化触发 emit hour bar
+// - 基于 hour_index 变化触发 emit hour bar
 // - 累积 OHLC + volume/amount
 //========================================================================================
 
@@ -56,16 +56,16 @@ public:
     if (input_.open.empty()) [[unlikely]]
       return false;
 
-    const size_t l2_index = L1_to_L2(input_.l1_index);
+    const size_t hour_index = L_min_to_L_hour(input_.min_index);
     bool emitted = false;
 
-    // 检测 l2_index 变化
-    if (l2_index != prev_l2_index_) [[unlikely]] {
-      if (prev_l2_index_ != SIZE_MAX && bar_open_ > 0.0f) {
+    // 检测 hour_index 变化
+    if (hour_index != prev_hour_index_) [[unlikely]] {
+      if (prev_hour_index_ != SIZE_MAX && bar_open_ > 0.0f) {
         emit();
         emitted = true;
       }
-      prev_l2_index_ = l2_index;
+      prev_hour_index_ = hour_index;
     }
 
     accumulate();
@@ -73,7 +73,7 @@ public:
   }
 
   void reset() noexcept {
-    prev_l2_index_ = SIZE_MAX;
+    prev_hour_index_ = SIZE_MAX;
     bar_open_ = bar_high_ = bar_low_ = bar_close_ = 0.0f;
     bar_bid_volume_ = bar_ask_volume_ = 0;
     bar_bid_amount_ = bar_ask_amount_ = 0.0f;
@@ -102,7 +102,7 @@ private:
   }
 
   void emit() noexcept {
-    output_.l2_index = static_cast<uint32_t>(prev_l2_index_);
+    output_.hour_index = static_cast<uint32_t>(prev_hour_index_);
 
     output_.open.push_back(bar_open_);
     output_.high.push_back(bar_high_);
@@ -125,7 +125,7 @@ private:
   const MinuteData &input_;
   HourData &output_;
 
-  size_t prev_l2_index_{SIZE_MAX};
+  size_t prev_hour_index_{SIZE_MAX};
   float bar_open_{0}, bar_high_{0}, bar_low_{0}, bar_close_{0};
   uint32_t bar_bid_volume_{0}, bar_ask_volume_{0};
   float bar_bid_amount_{0}, bar_ask_amount_{0};

@@ -6,7 +6,7 @@ namespace GUI::Features {
 Preview &PreviewService::target(SharedData &data) { return data.preview; }
 
 void PreviewService::RequestCompute(SharedData &data) {
-  // 预览只在 L1 上跑; 覆盖该层全部非 META 特征, 不看选中
+  // 预览只在 L_min 上跑; 覆盖该层全部非 META 特征, 不看选中
   const auto &meta_list = data.feature.meta().features[analysis::kLevel];
   assert(!meta_list.empty());
 
@@ -17,7 +17,7 @@ void PreviewService::RequestCompute(SharedData &data) {
   req.spec.n_features = meta_list.size();
   // price 笼: 涨跌停两列只在全局库, 两档一律 Bar 档旁读
   const auto &all_meta = data.feature.meta(TierId::Bar);
-  req.spec.cage = {all_meta.col_of(analysis::kLevel, "lim_dn"), all_meta.col_of(analysis::kLevel, "lim_up")};
+  req.spec.cage = {all_meta.col_of(L_day, "lim_dn"), all_meta.col_of(L_day, "lim_up")};
   std::vector<size_t> cols;
   for (size_t i = 0; i < meta_list.size(); ++i) {
     if (meta_list[i].data_type == FeatureDataType::META)

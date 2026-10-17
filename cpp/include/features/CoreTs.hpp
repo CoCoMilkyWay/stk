@@ -14,11 +14,11 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         end_day    advance 到收盘 → 标签收盘结算 → 日末 flush → 归零分钟缓冲
+//         end_day    advance 到收盘 → 写 L_day 收盘行 → 标签收盘结算 → 日末 flush → 归零分钟缓冲
 //         empty_day  无数据日 = 零事件日, 同一路径
-//   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: onMinute → 写 L1 行 + ts_valid → 有成交则标签 minute_closed
+//   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: onMinute → 写 L_min 行 + ts_valid → 有成交则标签 minute_closed
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
-//   标签: writer(col, n, l1, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
+//   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
 //   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 开盘型 (T+N) 回填旧日张量, 旧日句柄持到结清才 ts_close.
 //   档钩子 (Derived 实现):
@@ -44,9 +44,12 @@ public:
     dag_.label.day_begin();
   }
 
-  // 收盘: 末分钟 (收盘集合竞价 → L1 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含)
+  // 收盘: 末分钟 (收盘集合竞价 → L_min 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含),
+  // 再写 L_day 收盘行 (各节点 Series 最新值); 须在标签收盘结算之前 (day_end 可能 ts_close 本日)
   void end_day(Store &store) {
     advance(TRADE_MINUTES_PER_DAY);
+    if constexpr (T::has(L_day))
+      fstore::ts_write_row<L_day>(day_, 0, asset_id_, dag_);
     dag_.label.day_end(writer(), releaser(store));
     dag_.at_day_end();
     dag_.minute_data.clear();
@@ -59,15 +62,15 @@ public:
     end_day(store);
   }
 
-  // 时钟推进到 L1 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
+  // 时钟推进到 L_min 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
   //   回测: 由本资产下一个源单位 (compute_and_store) / 收盘 (end_day) 调.
   //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCs::compute_and_store(t):
-  //         CS 在分钟末级联读 L1 行 m, 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
+  //         CS 在分钟末级联读 L_min 行 m, 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
   //   结算时刻不影响值 (onMinute 域只读 MinuteData / 分钟边界), 两种触发写出同一行.
   void advance(size_t m) noexcept {
     while (self().resampler().roll(m)) {
       TraceN("TS_Minute");
-      close_minute(dag_.minute_data.l1_index);
+      close_minute(dag_.minute_data.min_index);
     }
   }
 
@@ -80,9 +83,9 @@ protected:
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id);
   }
 
-  // 标签回调 (L0 路径的分钟锚定也用)
+  // 标签回调 (L_sec 路径的分钟锚定也用)
   auto writer() {
-    return [this](size_t col, size_t n, size_t label_l1, const float *values, size_t days_ago) { write_label(col, n, label_l1, values, days_ago); };
+    return [this](size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) { write_label(col, n, label_min, values, days_ago); };
   }
   auto releaser(Store &store) {
     return [this, &store](size_t days_ago) { store.ts_close(day_at(days_ago)); };
@@ -98,14 +101,14 @@ private:
 
   Derived &self() { return static_cast<Derived &>(*this); }
 
-  // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 每分钟都跑 onMinute 并写整行 (L1 稠密); 有成交 = ts_valid 非零 + 标签
+  // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 每分钟都跑 onMinute 并写整行 (L_min 稠密); 有成交 = ts_valid 非零 + 标签
   void close_minute(size_t m) {
     const MinuteData &md = dag_.minute_data;
-    assert(!md.close.empty() && m == md.l1_index && "close_minute: MinuteData 末 bar 不是分钟 m");
+    assert(!md.close.empty() && m == md.min_index && "close_minute: MinuteData 末 bar 不是分钟 m");
     const bool traded = md.close.back() > 0 && (md.bid_volume.back() + md.ask_volume.back()) > 0;
     dag_.template run<Trigger::onMinute>();
-    fstore::ts_write_row<1>(day_, m, asset_id_, dag_);
-    fstore::ts_write<1>(day_, m, kL1TsValid, asset_id_, meta_.l1(traded));
+    fstore::ts_write_row<L_min>(day_, m, asset_id_, dag_);
+    fstore::ts_write<L_min>(day_, m, kMinTsValid, asset_id_, meta_.min_flag(traded));
     if (traded)
       dag_.label.minute_closed(m, writer());
   }
@@ -137,22 +140,22 @@ private:
     return d;
   }
 
-  // LB 块内偏移 col 起的 n 个连续列写到 days_ago 天前那日的 L1 行 label_l1
-  void write_label(size_t col, size_t n, size_t label_l1, const float *values, size_t days_ago) {
-    assert(n >= 1 && col + n <= Label::L1_LABEL_COUNT);
+  // LB 块内偏移 col 起的 n 个连续列写到 days_ago 天前那日的 L_min 行 label_min
+  void write_label(size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) {
+    assert(n >= 1 && col + n <= Label::MIN_LABEL_COUNT);
     const Day &d = day_at(days_ago);
     for (size_t i = 0; i < n; ++i)
-      fstore::ts_write<1>(d, label_l1, kL1LabelBase + col + i, asset_id_, values[i]);
+      fstore::ts_write<L_min>(d, label_min, kMinLabelBase + col + i, asset_id_, values[i]);
   }
 
   // 元列按名 / 标签列按类型 (LB) 在字段表里定位; 列数 / 连续性与标签配置对账
-  static_assert(T::has(1), "TS 档必须有 L1 (分钟行 / 标签)");
-  static constexpr std::span<const FieldInfo> kL1Fields{T::LEVELS[1].fields, T::LEVELS[1].field_count};
-  static constexpr size_t kL1TsValid = field_of<T>(1, "ts_valid");
-  static_assert(kL1TsValid < T::LEVELS[1].field_count, "L1 必须有 ts_valid 列");
-  static constexpr size_t kL1LabelBase = first_of_kind(kL1Fields, FeatureDataType::LB);
-  static_assert(count_of_kind(kL1Fields, FeatureDataType::LB) == Label::L1_LABEL_COUNT && kind_contiguous(kL1Fields, FeatureDataType::LB),
-                "L1 标签列须与标签配置 L1_LABEL_COUNT 等长且连续");
+  static_assert(T::has(L_min), "TS 档必须有 L_min (分钟行 / 标签)");
+  static constexpr std::span<const FieldInfo> kMinFields{T::LEVELS[L_min].fields, T::LEVELS[L_min].field_count};
+  static constexpr size_t kMinTsValid = field_of<T>(L_min, "ts_valid");
+  static_assert(kMinTsValid < T::LEVELS[L_min].field_count, "L_min 必须有 ts_valid 列");
+  static constexpr size_t kMinLabelBase = first_of_kind(kMinFields, FeatureDataType::LB);
+  static_assert(count_of_kind(kMinFields, FeatureDataType::LB) == Label::MIN_LABEL_COUNT && kind_contiguous(kMinFields, FeatureDataType::LB),
+                "L_min 标签列须与标签配置 MIN_LABEL_COUNT 等长且连续");
 
   std::array<Day, kPendDays> days_{}; // 日句柄环 (开盘型跨日回填 / 延迟 ts_close)
   size_t cur_ = kPendDays - 1;        // 首个 push_day 推到 0

@@ -21,7 +21,7 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
   if (req.scope.months.empty())
     return;
   req.spec.params = params;
-  // 门控: 各列按自己的 valid_type, 任一需门控才带 ts_valid (L1 全列 ALL, L0 按 DATA / DEPTH)
+  // 门控: 各列按自己的 valid_type, 任一需门控才带 ts_valid (L_min 全列 ALL, L_sec 按 DATA / DEPTH)
   req.spec.cols = analysis::column_set(data.feature, analysis::kLevel, {feat});
   // NeutralRank 上下文 (市值 / 行业) 只在全局库: 两档一律 Bar 档旁读
   if (params.cs_neutral()) {

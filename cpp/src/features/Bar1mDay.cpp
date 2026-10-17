@@ -13,8 +13,8 @@ namespace {
 
 constexpr int kAuctionStamp = 9 * 60 + 25; // 09:25 撮合 bar
 
-// bar 结束时间戳 (墙钟分钟) → L1 行
-size_t stamp_to_l1(int stamp) {
+// bar 结束时间戳 (墙钟分钟) → L_min 行
+size_t stamp_to_min(int stamp) {
   const int m = stamp == kAuctionStamp ? stamp : stamp - 1;
   if (m >= MORNING_START_MIN && m < MORNING_END_MIN)
     return static_cast<size_t>(m - MORNING_START_MIN);
@@ -64,7 +64,7 @@ void Bar1mDay::load(const fundamental::Catalog &cat, misc::Ymd d, size_t num_ass
     assert(c_date.yyyymmdd(i) == d && "bar1m: 分片内日期与文件名不符");
     const float vol = c_vol.f32(i);
     assert(vol >= 0.0f && vol <= static_cast<float>(std::numeric_limits<uint32_t>::max()) && "bar1m: volume 越界");
-    Bar1m &b = rows[a * TRADE_MINUTES_PER_DAY + stamp_to_l1(c_date.minute_of_day(i))];
+    Bar1m &b = rows[a * TRADE_MINUTES_PER_DAY + stamp_to_min(c_date.minute_of_day(i))];
     b.open = c_open.f32(i);
     b.high = c_high.f32(i);
     b.low = c_low.f32(i);

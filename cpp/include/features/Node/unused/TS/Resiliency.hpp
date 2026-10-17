@@ -37,7 +37,7 @@ public:
   }
 
   inline void compute() {
-    const uint32_t cur_sec = td_.l0_index;
+    const uint32_t cur_sec = td_.sec_index;
     while (last_sec_ < cur_sec) {
       flush_second_();
       ++last_sec_;
@@ -150,7 +150,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Resiliency(N) N(Resiliency, (Resiliency), (tick_data, DepthData.bid_qty, DepthData.ask_qty), onTick, onMinute)
 
-#define FIELDS_L1_Resiliency(X, CAT1)                                                                                                                                                                                                                                                                                                     \
+#define FIELDS_L_min_Resiliency(X, CAT1)                                                                                                                                                                                                                                                                                                  \
   X(resil_ratio_bid, CAT1, RATIO, "Bid Resiliency Ratio", "买侧韧性比", "买侧挂单量/消耗量,>1深度增长(降频)", R"(\frac{|O_W^{M,B}|}{|O_W^{T,B}|+|O_W^{C,B}|})", TS(Resiliency, resil_ratio_bid, None, None))                                                                                                                              \
   X(resil_ratio_ask, CAT1, RATIO, "Ask Resiliency Ratio", "卖侧韧性比", "卖侧挂单量/消耗量,>1深度增长(降频)", R"(\frac{|O_W^{M,A}|}{|O_W^{T,A}|+|O_W^{C,A}|})", TS(Resiliency, resil_ratio_ask, None, None))                                                                                                                              \
   X(resil_imb, CAT1, RATIO, "Resiliency Imbalance", "韧性失衡", "买卖韧性比差异(正=买侧恢复快)(降频)", R"(\frac{R^B-R^A}{R^B+R^A}, \quad R^s=\frac{|O_W^{M,s}|}{|O_W^{T,s}|+|O_W^{C,s}|})", TS(Resiliency, resil_imb, None, None))                                                                                                        \

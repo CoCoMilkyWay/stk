@@ -72,7 +72,7 @@ struct Node<Impl, 0> : Impl {
 
 // 两档共有的源: 分钟 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
 struct Root {
-  MinuteData minute_data;        // L1 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
+  MinuteData minute_data;        // L_min 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
   const fund::Panel &fund_panel; // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
   std::string asset_code_;       // "CODE.EX"
   size_t asset_id_;              // 档 A 轴下标

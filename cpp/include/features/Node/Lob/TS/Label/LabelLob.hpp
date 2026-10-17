@@ -35,24 +35,24 @@
 //                               入环 (materialize offset=1); 查询目标恰为当前秒 (还没结算) 时从环末现算
 //                               (offset=0). 与"每次更新都算"逐值一致, 计算次数从每笔盘口更新降到每活跃秒一次.
 //                               只有可成交簿记为活跃秒.
-//   minute_anchored(t, writer)  L1 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
+//   minute_anchored(t, writer)  L_min 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
 //                               把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 同时写该行的冲击成本列;
 //                               行 e 捕获即是行 e−n 的分钟型 exit 到位, 顺带写分钟型 (e−n, n) 的标签.
-//   minute_closed(l1, writer)   分钟 bar 结算后 (CoreTs::close_minute, 只在有成交的分钟调): 只记开盘价 (开盘型 T+N 的 exit,
+//   minute_closed(t_min, writer)   分钟 bar 结算后 (CoreTs::close_minute, 只在有成交的分钟调): 只记开盘价 (开盘型 T+N 的 exit,
 //                               见 LabelHold::open_at); entry 走 minute_anchored, 此处不写.
 //   day_begin / day_end         日历: 日期轴每一日各调一次 (无数据日也调, 由 CoreTs 保证).
 //                               day_end 结算 分钟型尾部 (exit 过收盘 → 收盘价) + 收盘型 全行 + 开盘型 到期日, 并释放结清的日.
 //   finish_all                  回测区间末: 悬挂日全部按 最近一次收盘价 结算 (持有到最后一日收盘), 全部释放.
 // 开盘型 (T+N) 跨日回填 / 悬挂日环 / 写句柄延迟归还见 Common/Label/LabelHold.hpp (两档同一骨架); 开盘价 = 集合竞价撮合价,
 //   单一价全额成交, 无价差无冲击.
-// 落盘列 (LB 块, 连续): [hold 组 × (long, short)] + [cost_buy × 各金额, cost_sell × 各金额]; writer(col, n, l1, values, days_ago)
+// 落盘列 (LB 块, 连续): [hold 组 × (long, short)] + [cost_buy × 各金额, cost_sell × 各金额]; writer(col, n, t_min, values, days_ago)
 //   写 LB 块内偏移 col 起的 n 列. 配置 (LABEL_GROUPS / LABEL_AMTS) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
 #include "features/Node/Common/Label/LabelGroups.hpp" // LABEL_GROUPS / HoldKind / LABEL_KIND / LABEL_N (两档共用)
 #include "features/Node/Common/Label/LabelHold.hpp"   // 持有期骨架 (两档共用)
-#include "features/TimeIndex.hpp"                     // L1_to_L0 (分钟锚定路径)
+#include "features/TimeIndex.hpp"                     // L_min_to_L_sec (分钟锚定路径)
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -74,7 +74,7 @@ struct LobSnapshot {
   float px = 0.0f;                       // 中间价 (建仓价); 0 = 双侧全空, 无价
   float cost_buy[LABEL_AMT_COUNT] = {};  // 吃 ask a 万: VWAP^A/mid − 1 (≥0); NaN = 吃不到 (该侧全空且无涨停价)
   float cost_sell[LABEL_AMT_COUNT] = {}; // 吃 bid a 万: 1 − VWAP^B/mid (≥0); NaN 同上
-  size_t l0_index = 0;
+  size_t sec_index = 0;
   bool valid = false;
 };
 
@@ -83,9 +83,9 @@ class LabelLob : public LabelHold<LobSnapshot> {
 
 public:
   static constexpr size_t AMT_COUNT = LABEL_AMT_COUNT;
-  static constexpr size_t COST_COL = HOLD_COUNT * GROUP_SIZE;     // 冲击成本列在 LB 块内的起始偏移
-  static constexpr size_t COST_COUNT = 2 * AMT_COUNT;             // [cost_buy × 各金额, cost_sell × 各金额]
-  static constexpr size_t L1_LABEL_COUNT = COST_COL + COST_COUNT; // LB 块总列数
+  static constexpr size_t COST_COL = HOLD_COUNT * GROUP_SIZE;      // 冲击成本列在 LB 块内的起始偏移
+  static constexpr size_t COST_COUNT = 2 * AMT_COUNT;              // [cost_buy × 各金额, cost_sell × 各金额]
+  static constexpr size_t MIN_LABEL_COUNT = COST_COL + COST_COUNT; // LB 块总列数
   static_assert([] {
     for (size_t a = 1; a < AMT_COUNT; ++a)
       if (LABEL_AMOUNT_WAN[a] <= LABEL_AMOUNT_WAN[a - 1])
@@ -93,7 +93,7 @@ public:
     return true;
   }(),
                 "LABEL_AMTS 须严格升序");
-  // 分钟型 exit 不看 bar: 行 m+n 的 entry 锚点 ≥ 14:57 (m+n ≥ kContCloseL1 − 1) 永不捕获 → 持有到收盘 (与 Stat tail_masked 同一条界).
+  // 分钟型 exit 不看 bar: 行 m+n 的 entry 锚点 ≥ 14:57 (m+n ≥ kContCloseMin − 1) 永不捕获 → 持有到收盘 (与 Stat tail_masked 同一条界).
 
   LabelLob(const TickData &td, const MinuteData &md,
            const DepthSeries &bid_price, const DepthSeries &ask_price,
@@ -109,30 +109,30 @@ public:
   // 可成交 = 连续竞价时段 (订单簿的 market_state); 集合竞价期的簿不入环, pending 清空 → minute_anchored 本次不推进.
   inline void snapshot(size_t t) {
     const bool ok = tradable();
-    if (pending_l0_ != kNoPending && (pending_l0_ != t || !ok))
+    if (pending_sec_ != kNoPending && (pending_sec_ != t || !ok))
       flush_pending(1);
     if (ok)
-      pending_l0_ = t;
+      pending_sec_ = t;
   }
 
-  // L1 分钟锚定 entry 捕获: 锚点 = 分钟 m 末 (= m+1 起始秒; 11:29 → 13:00:00), entry = 锚点+DELAY.
-  //   L1 行 m 的特征是分钟 m 结束时才可知的 (CoreLob 顺序), 所以标签只能从 m 末起算, 锚到 m 起始秒会前视一分钟.
-  //   entry 快照按行存进当日悬挂槽 (所有组共用): entry 秒完结 (entry_l0 < t) 且 [entry_l0 − 60, t − 1] 内有盘口才算捕获
+  // L_min 分钟锚定 entry 捕获: 锚点 = 分钟 m 末 (= m+1 起始秒; 11:29 → 13:00:00), entry = 锚点+DELAY.
+  //   L_min 行 m 的特征是分钟 m 结束时才可知的 (CoreLob 顺序), 所以标签只能从 m 末起算, 锚到 m 起始秒会前视一分钟.
+  //   entry 快照按行存进当日悬挂槽 (所有组共用): entry 秒完结 (entry_sec < t) 且 [entry_sec − 60, t − 1] 内有盘口才算捕获
   //   (锚点后无可成交簿 = 顺延中, 等下一活跃秒; 一直没有 → day_end 按收盘价建仓). 捕获即写该行的冲击成本列 (只依赖 entry 盘口).
   //   只在可成交更新上推进 (snapshot 刚把 pending 设为 t): 集合竞价期的更新什么都不做 —— 连续竞价已结束,
   //   悬着的行都是"持有到收盘", 留给 day_end 按收盘价结算. 不用时钟判 14:57.
-  //   分钟型标签: 行 e 的 entry 捕获 = 行 e−n 的 exit 到位 (同一条快照), 立即写 (e−n, n); 行按锚点单调, 每组游标 next_label_l1_ 顺序推进.
-  //   writer(col, n, label_l1, values, days_ago) 负责落盘 (此处 days_ago 恒 0).
+  //   分钟型标签: 行 e 的 entry 捕获 = 行 e−n 的 exit 到位 (同一条快照), 立即写 (e−n, n); 行按锚点单调, 每组游标 next_label_min_ 顺序推进.
+  //   writer(col, n, label_min, values, days_ago) 负责落盘 (此处 days_ago 恒 0).
   template <class Writer>
   inline void minute_anchored(size_t t, Writer &&writer) {
-    if (pending_l0_ != t)
+    if (pending_sec_ != t)
       return; // 本次更新不可成交 (集合竞价)
     Pend &p = today();
     while (p.n_entry < TRADE_MINUTES_PER_DAY) {
-      const size_t entry_l0 = L1_to_L0(p.n_entry + 1) + LABEL_DELAY_SECONDS; // 末分钟 254 → 15303 (盘后), 永不捕获 → day_end
-      if (entry_l0 >= t)
+      const size_t entry_sec = L_min_to_L_sec(p.n_entry + 1) + LABEL_DELAY_SECONDS; // 末分钟 254 → 15303 (盘后), 永不捕获 → day_end
+      if (entry_sec >= t)
         break; // entry 秒尚未完结: 同秒只消费最后一次盘口
-      const Snapshot *e = get_snapshot_tradable(entry_l0, t - 1);
+      const Snapshot *e = get_snapshot_tradable(entry_sec, t - 1);
       if (!e)
         break; // 锚点起至 t−1 无可成交簿 (09:25-09:30 空窗等), 顺延中
       p.entry[p.n_entry] = *e;
@@ -144,8 +144,8 @@ public:
 
   // 分钟 bar 结算 (CoreTs 只在有成交的分钟调): 只截开盘价 (开盘型 exit); entry 走盘口 (minute_anchored)
   template <class Writer>
-  inline void minute_closed(size_t l1, Writer &&) {
-    open_at(l1, md_);
+  inline void minute_closed(size_t t_min, Writer &&) {
+    open_at(t_min, md_);
   }
 
   // 收盘结算 (当日有无盘口皆调):
@@ -159,15 +159,15 @@ public:
   //   开盘型 到期日: 悬挂日 P (age = 今日 − P) 的 T+N 组, age ≥ N 且今日有开盘 → exit = 今日开盘价; age ≥ 2N 仍无 → 最近一次收盘.
   //   全日无可成交簿 (缺数据 / 停牌日): 分钟 / 收盘型无标签可写, 全行留 0, 当日不悬挂; 开盘型到期照常结算.
   //     标签列 ALL 不受 ts_valid 门控; 因子层 (FactorsLoad) 把"当日无任何成交"的 asset-day 剔出截面池门控, 这些 0 不进统计.
-  //   writer(col, n, l1, values, days_ago); release(days_ago) = 该日全部组已写完, 写句柄可归还.
+  //   writer(col, n, t_min, values, days_ago); release(days_ago) = 该日全部组已写完, 写句柄可归还.
   template <class Writer, class Release>
   inline void day_end(Writer &&writer, Release &&release) {
-    if (pending_l0_ != kNoPending)
+    if (pending_sec_ != kNoPending)
       flush_pending(0); // 最后一个可成交秒之后再无盘口更新: 环末就是它的终簿
-    const bool traded = last_l0_ != kNoPending;
+    const bool traded = last_sec_ != kNoPending;
     const float bar_close = md_.close.empty() ? 0.0f : md_.close.back();
     const float close_px = !traded ? 0.0f : bar_close > 0.0f ? bar_close
-                                                             : ring_[last_l0_ % RING_SIZE].px; // 全日无成交 (极罕见) → 最后可成交簿的中间价
+                                                             : ring_[last_sec_ % RING_SIZE].px; // 全日无成交 (极罕见) → 最后可成交簿的中间价
     // 锚点后再无可成交簿 (14:57 起的锚点 / 至收盘无盘口): 收盘价建仓, 冲击 0
     close_day(traded, close_px, at_price(close_px), writer, release, [&](size_t m, const Snapshot &e) { write_cost(m, e, writer); });
   }
@@ -177,8 +177,8 @@ public:
     LabelHold::reset();
     for (auto &snap : ring_)
       snap.valid = false;
-    pending_l0_ = kNoPending; // 昨日最后一个活跃秒不结算 (当日 ring 已整体作废)
-    last_l0_ = kNoPending;
+    pending_sec_ = kNoPending; // 昨日最后一个活跃秒不结算 (当日 ring 已整体作废)
+    last_sec_ = kNoPending;
   }
 
 private:
@@ -190,10 +190,10 @@ private:
 
   // 悬着的活跃秒结算入环: offset=1 在下一次盘口更新到来时 (Depth 环上一格 = 该秒终簿), offset=0 在收盘 (环末即该秒终簿)
   inline void flush_pending(size_t offset) {
-    Snapshot &s = ring_[pending_l0_ % RING_SIZE];
-    materialize(s, pending_l0_, offset);
-    last_l0_ = pending_l0_;
-    pending_l0_ = kNoPending;
+    Snapshot &s = ring_[pending_sec_ % RING_SIZE];
+    materialize(s, pending_sec_, offset);
+    last_sec_ = pending_sec_;
+    pending_sec_ = kNoPending;
   }
 
   // 单一价全额成交 (收盘竞价撮合价): 中间价 = px, 各金额段冲击 0
@@ -204,7 +204,7 @@ private:
     return s;
   }
 
-  // 环长: 只给 entry 捕获查 (get_snapshot 60s 回溯 + 顺延扫描到 t−1), 不需覆盖持有期; 条目按 l0_index 核对, 过长的盘口空窗只是多扫几格
+  // 环长: 只给 entry 捕获查 (get_snapshot 60s 回溯 + 顺延扫描到 t−1), 不需覆盖持有期; 条目按 sec_index 核对, 过长的盘口空窗只是多扫几格
   static constexpr size_t RING_SIZE = 1024;
 
   // 行 m 的冲击成本列 [cost_buy × 各金额, cost_sell × 各金额] (当日, days_ago 0)
@@ -221,8 +221,8 @@ private:
   // 从 Depth 环末尾回退 offset 格的盘口状态结算快照 (0 = 当前更新, 1 = 上一次更新):
   //   中间价 = (买一 + 卖一)/2; 一侧全空 (封板) 取另一侧 (= 涨跌停价); 双侧全空 → 0 (无价).
   //   冲击 = 吃 a 万的 VWAP 相对中间价 (余量按涨跌停价, 见 calc_vwap); 吃不到 (VWAP 0) 或无中间价 → NaN
-  void materialize(Snapshot &snap, size_t l0, size_t offset) const {
-    snap.l0_index = l0;
+  void materialize(Snapshot &snap, size_t t_sec, size_t offset) const {
+    snap.sec_index = t_sec;
     snap.valid = true;
     assert(bid_price_[0].size() > offset && ask_price_[0].size() > offset && "materialize: Depth 环深度不足 offset");
     const size_t k = bid_price_[0].size() - 1 - offset;
@@ -239,18 +239,18 @@ private:
     }
   }
 
-  // 指定 l0 时刻的快照; 深度不是每秒都更新, 向前找 ≤60s 内最近的有效快照
+  // 指定 t_sec 时刻的快照; 深度不是每秒都更新, 向前找 ≤60s 内最近的有效快照
   const Snapshot *get_snapshot(size_t target) const {
-    if (target == pending_l0_) { // 当前秒未结算: 从环末现算 (只有锚点查询走到, 频次 ~分钟级)
+    if (target == pending_sec_) { // 当前秒未结算: 从环末现算 (只有锚点查询走到, 频次 ~分钟级)
       materialize(scratch_, target, 0);
       return &scratch_;
     }
     const auto &s = ring_[target % RING_SIZE];
-    if (s.valid && s.l0_index == target)
+    if (s.valid && s.sec_index == target)
       return &s;
     for (size_t off = 1; off <= 60 && off <= target; ++off) {
       const auto &ss = ring_[(target - off) % RING_SIZE];
-      if (ss.valid && ss.l0_index == target - off)
+      if (ss.valid && ss.sec_index == target - off)
         return &ss;
     }
     return nullptr;
@@ -262,13 +262,13 @@ private:
   const Snapshot *get_snapshot_tradable(size_t target, size_t limit) const {
     if (const auto *s = get_snapshot(target))
       return s;
-    for (size_t l0 = target + 1; l0 <= limit; ++l0) {
-      if (l0 == pending_l0_) { // 当前秒未结算, 同 get_snapshot: 从环末现算
-        materialize(scratch_, l0, 0);
+    for (size_t t_sec = target + 1; t_sec <= limit; ++t_sec) {
+      if (t_sec == pending_sec_) { // 当前秒未结算, 同 get_snapshot: 从环末现算
+        materialize(scratch_, t_sec, 0);
         return &scratch_;
       }
-      const auto &s = ring_[l0 % RING_SIZE];
-      if (s.valid && s.l0_index == l0)
+      const auto &s = ring_[t_sec % RING_SIZE];
+      if (s.valid && s.sec_index == t_sec)
         return &s;
     }
     return nullptr;
@@ -310,13 +310,13 @@ private:
   static constexpr size_t kNoPending = SIZE_MAX;
 
   std::array<Snapshot, RING_SIZE> ring_; // 盘口快照环 (只收可成交簿)
-  size_t pending_l0_ = kNoPending;       // 当前活跃秒 (有可成交盘口更新, 尚未结算入环)
-  size_t last_l0_ = kNoPending;          // 当日最近一个已入环的活跃秒 (kNoPending = 全日尚无可成交簿)
+  size_t pending_sec_ = kNoPending;      // 当前活跃秒 (有可成交盘口更新, 尚未结算入环)
+  size_t last_sec_ = kNoPending;         // 当日最近一个已入环的活跃秒 (kNoPending = 全日尚无可成交簿)
   mutable Snapshot scratch_;             // pending 秒被查询时的现算暂存
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 行由配置生成, 顺序 = LB 块布局: L1 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序, 与 hold_col(h) 对应),
+// 行由配置生成, 顺序 = LB 块布局: L_min 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序, 与 hold_col(h) 对应),
 // 之后 [cost_buy × LABEL_AMTS, cost_sell × LABEL_AMTS] (与 COST_COL / write_cost 对应).
 // 每种 KIND 的描述片段 (英 / 中 在 LabelGroups.hpp; exit 备注 / 公式尾在此), 由 LABEL_ROW 按 kind token 拼接.
 // 备注统一三段: 平仓价 | 顺延规则 | 尾部规则 (收盘型无顺延 / 尾部)
@@ -342,4 +342,4 @@ private:
   X(lb_cost_sell_##a##w, CAT1, ratio_pos, "Entry Sell Impact " #a "w", "卖出冲击(" #a "万)", \
     "建仓卖出冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃bid " #a "万元, 成交VWAP相对中间价的折价. 边界: 全簿不足余量按跌停价成交, 买侧全空且无跌停价则NaN. 做空净收益=lb_short_*−本列−Config::sell_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LABEL)
 
-#define FIELDS_L1_LabelLob(X, CAT1) LABEL_GROUPS(LABEL_GROUP, X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)
+#define FIELDS_L_min_LabelLob(X, CAT1) LABEL_GROUPS(LABEL_GROUP, X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)

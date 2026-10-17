@@ -76,7 +76,7 @@ struct StageLayout {
       return {kind, "预取 Prefetch", "顺日期备源 (Lob: 逐笔帧读进 page cache; Bar: 解码 bar1m 进源环), 领先最慢时序核不超过 ring slots + 2 天",
               1, 0, num_ts + num_cs + 1, io, io, true};
     case ComputeStage::TS:
-      return {kind, "时序 TS", "逐资产喂源 + DAG, 写 L0/L1 张量; 领跑核自动接手落后核的资产 (处置权转移)",
+      return {kind, "时序 TS", "逐资产喂源 + DAG, 写 L_sec/L_min 张量; 领跑核自动接手落后核的资产 (处置权转移)",
               num_ts, num_ts_phys, 0, 0, num_ts_phys - 1, false};
     case ComputeStage::CS:
       return {kind, "截面 CS", "本日全部时序核写完后逐拍重放截面 (与实盘同一调用); 多核按日轮转",

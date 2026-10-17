@@ -1,8 +1,8 @@
 #pragma once
 
 // =============================================================================
-// DepthIndex - 盘口更新时对应的原始 tick 索引 (l0_index), 供 depth 域节点对齐用
-//   【勿删】计算图内无消费者, 但 L0 Series 被 UI 盘口回放读取 (depth 域 ↔ tick 时间轴对齐); 无落盘列.
+// DepthIndex - 盘口更新时对应的原始 tick 索引 (sec_index), 供 depth 域节点对齐用
+//   【勿删】计算图内无消费者, 但 L_sec Series 被 UI 盘口回放读取 (depth 域 ↔ tick 时间轴对齐); 无落盘列.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -15,7 +15,7 @@ public:
 
   explicit DepthIndex(const TickData &td) : td_(td) {}
 
-  inline void compute() { y[value] = static_cast<float>(td_.l0_index); }
+  inline void compute() { y[value] = static_cast<float>(td_.sec_index); }
 
 private:
   const TickData &td_;

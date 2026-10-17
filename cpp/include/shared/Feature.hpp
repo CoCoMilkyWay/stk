@@ -29,7 +29,7 @@ struct FeatureMetadata {
   const char *name_en;     // "Tick Return Z-score"
   const char *name_cn;     // "微小对数收益"
   const char *description; // "滚动窗口标准化..."
-  uint8_t level;           // 0=L0, 1=L1
+  uint8_t level;           // 0=L_sec, 1=L_min
 };
 
 // ============================================================================
@@ -68,7 +68,7 @@ struct Feature {
 
   struct Metadata {
     TierId tier = TierId::Lob;
-    std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1; 档缺的层为空)
+    std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (FeatureLevel; 档缺的层为空)
     std::vector<std::string> deps[LEVEL_COUNT];         // [level][i] = 该特征直接依赖的字段 code (分号分隔), 与 features 平行
     void init_from_compile_time(TierId t);              // Copy from constexpr arrays + resolve deps
 
@@ -82,9 +82,9 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    TierId tier = TierId::Lob; // 当前浏览的档 (TabFeature 库选择: all → Bar, 票池 → Lob; 分析页按 lib() 读对应特征库)
-    std::string pool;          // 当前票池 (Lob 档库名; 因子页恒用它, 选 all 时保留); 启动 = default_pool
-    int selected_level = 1;    // 0=L0, 1=L1 (GUI 只在这两层选特征, 默认 L1)
+    TierId tier = TierId::Lob;  // 当前浏览的档 (TabFeature 库选择: all → Bar, 票池 → Lob; 分析页按 lib() 读对应特征库)
+    std::string pool;           // 当前票池 (Lob 档库名; 因子页恒用它, 选 all 时保留); 启动 = default_pool
+    int selected_level = L_min; // FeatureLevel (L_sec / L_min / L_day), 默认 L_min
 
     std::string lib() const; // 当前库名: Bar → all, Lob → pool
 

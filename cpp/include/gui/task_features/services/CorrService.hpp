@@ -4,7 +4,7 @@
 // 三个独立 service: 矩阵重 (F² × 样本数), 单对 lead-lag 轻 (只读两列, 悬停即算), lag 矩阵更重
 // (只在勾选时算) —— 分开才互不打断. 三者同一个 Spec (CorrSpec), 同一个引擎.
 //
-// 矩阵请求: 层 (跟随 UI 的 L0/L1) + 当前过滤后的行集 (去 META, 升序去重) (+ ts_valid 门控列).
+// 矩阵请求: 层 (跟随 UI 的 L_sec/L_min) + 当前过滤后的行集 (去 META, 升序去重) (+ ts_valid 门控列).
 // 触发: 进 Corr tab / 过滤行集变了 / 层变了 / 库 / 日期区间变了 / Compute 落了新库.
 #pragma once
 
@@ -18,7 +18,7 @@ namespace GUI::Features {
 using CorrRequest = analysis::Request<CorrSpec>;
 
 // GUI 线程: 由特征表过滤行集 (任意序) 解析出矩阵请求 (去 META, 升序去重, 门控列, 读取范围).
-// 非 META 列不足 2 (L0 现状) 或区间为空 → false (不提交). Corr / CorrLag 同一口径
+// 非 META 列不足 2 (L_sec 现状) 或区间为空 → false (不提交). Corr / CorrLag 同一口径
 bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest &req);
 
 class CorrService : public StreamService<CorrService, Corr> {

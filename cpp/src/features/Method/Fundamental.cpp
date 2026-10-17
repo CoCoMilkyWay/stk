@@ -772,7 +772,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
              });
            });
 
-  // ---- cn_stock_industry_component / change (CUTOFF=-1, sw2021 L1) ----
+  // ---- cn_stock_industry_component / change (CUTOFF=-1, sw2021 L_min) ----
   scan.add(component, spec("cn_stock_industry_component"), {"industry", "industry_level1_name"},
            Hits<IndustryEv>{}, [&axes](const Rows &r, Hits<IndustryEv> &h) {
              const pq::Col ind = r.col("industry"), l1 = r.col("industry_level1_name");

@@ -70,7 +70,7 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
   if (sel.primary_feature_idx() >= 0 && sel.selected_level >= 0 && sel.selected_level < static_cast<int>(LEVEL_COUNT)) {
     const auto &meta = data.feature.meta().features[sel.selected_level];
     if (sel.primary_feature_idx() < static_cast<int>(meta.size()))
-      ImGui::Text("L%d %s", sel.selected_level, meta[sel.primary_feature_idx()].code);
+      ImGui::Text("%s %s", level_name(static_cast<size_t>(sel.selected_level)), meta[sel.primary_feature_idx()].code);
   } else {
     ImGui::TextDisabled("无特征");
   }

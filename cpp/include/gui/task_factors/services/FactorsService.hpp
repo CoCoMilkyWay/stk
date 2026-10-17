@@ -67,7 +67,7 @@ namespace GUI::Factors {
 // ---- 字段表视图 (GUI 线程从 Feature::Metadata 建一次, worker 只读) ----
 struct FeatCol {
   std::string code;
-  uint32_t col = 0; // L1 列下标
+  uint32_t col = 0; // L_min 列下标
   L2::ValidType vt = L2::ValidType::ALL;
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
 };
@@ -80,7 +80,7 @@ struct CostCol {
   uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_cost_buy_<amt>w / lb_cost_sell_<amt>w
 };
 struct FeatureTable {
-  std::vector<FeatCol> cols;    // 下标 = L1 列
+  std::vector<FeatCol> cols;    // 下标 = L_min 列
   uint32_t ts_col = 0;          // ts_valid 门控列 (特征输入)
   uint32_t cs_col = 0;          // cs_valid 门控列 (标签 + 截面门控平面)
   std::vector<LabelCol> labels; // 按 hold 升序; long / short 都齐才收

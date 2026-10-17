@@ -3,7 +3,7 @@
 // =============================================================================
 // Noise - 合成白噪声 (compute=onMinute): 诊断链路 (PSD / ACF / 归一化) 的参照列, 无信息量
 // =============================================================================
-//   gauss_t ~ N(0, 1) i.i.d., 确定性: 值 = hash(asset_id, date, l1_index) → Box-Muller.
+//   gauss_t ~ N(0, 1) i.i.d., 确定性: 值 = hash(asset_id, date, min_index) → Box-Muller.
 //   不依赖任何行情输入, 无跨分钟状态 → 重放任意重排逐值一致 (TS 纯函数契约). 永不 NaN.
 //   期望频谱: 每 bin 功率 = 1 (平线); ACF: lag ≥ 1 为 0.
 //   两档共用类; 节点实例 / 落盘列见 Node/{Pool,All}/TS/Basic/Noise.hpp (Pool 列名 lob_noise).
@@ -24,7 +24,7 @@ public:
   Noise(const MinuteData &md, const misc::Ymd &date) : md_(md), date_(date) {}
 
   inline void compute() {
-    const uint64_t h1 = mix(day_seed_ + md_.l1_index);
+    const uint64_t h1 = mix(day_seed_ + md_.min_index);
     const uint64_t h2 = mix(h1);
     const double u1 = (static_cast<double>(h1 >> 11) + 1.0) * 0x1.0p-53; // (0, 1]: log 不取 0
     const double u2 = static_cast<double>(h2 >> 11) * 0x1.0p-53;         // [0, 1)

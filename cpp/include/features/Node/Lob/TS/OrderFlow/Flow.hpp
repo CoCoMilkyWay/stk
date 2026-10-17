@@ -13,7 +13,7 @@
 //   均价 (元, 不产 NaN):
 //     vwap  Σamt_taker / Σvol_taker (无成交沿用上一有效值, 首日无历史取当日涨跌停中值); OrderFlow 图1 VWAP 线的来源
 //     twap  成交价时间加权 (末笔持有到分钟末; 无成交 → 退 vwap)
-//   不单列 (因子层做): 总额 / 量 / 笔 = 买 + 卖 按行求和; 开盘 / 收盘集合竞价成交 = 09:25 行 (l1=10) / 末行 (l1=254) 的 taker 口;
+//   不单列 (因子层做): 总额 / 量 / 笔 = 买 + 卖 按行求和; 开盘 / 收盘集合竞价成交 = 09:25 行 (t_min=10) / 末行 (t_min=254) 的 taker 口;
 //   K 线见 Basic/Kline.hpp.
 //   fp16 落盘: 额 / 量 / 笔 用 Log Tf; 价 / 基点 原值.
 //   只接 Fund.y[Fund.lim_up] / Fund.y[Fund.lim_dn] 两口 (非 Fund.out()): 委托 9:15 就开始, Fund 的 Series 要到首个分钟 flush 才有当日值 (与 Depth 同法).
@@ -72,7 +72,7 @@ public:
       const float p = lob.price;
       acc_[0][s] += p * v, acc_[1][s] += v, acc_[2][s] += 1.0f;
       acc_[3][s] += taker_dlogp_.back(); // TakerRet 同 tick 的 onTaker 域已 flush; 无效笔 = 0, 加零无影响
-      if (td_.l0_index % 60 < 30)
+      if (td_.sec_index % 60 < 30)
         vol_30a_ += v;
       if (p > 0.0f) { // 时间加权: 上一有效成交价持有到本笔 (哨兵秒内 ms 回绕 → 钳零, 同 Book)
         const uint32_t t = tick_ms(td_);
@@ -121,7 +121,7 @@ public:
     y[vwap] = vwap_last_;
 
     // twap: 末笔持有到分钟末; 当日尚无成交 (span 0) → 退 vwap (同源同刻, 不产 NaN)
-    const uint32_t t_end = (static_cast<uint32_t>(L1_to_L0(md_.l1_index)) + 60u) * 1000u;
+    const uint32_t t_end = (static_cast<uint32_t>(L_min_to_L_sec(md_.min_index)) + 60u) * 1000u;
     twap_acc_ += px_last_ * static_cast<float>(t_end > t_last_ ? t_end - t_last_ : 0u);
     const float span = static_cast<float>(t_end > t_start_ ? t_end - t_start_ : 0u);
     y[twap] = span > 0.0f && px_last_ > 0.0f ? twap_acc_ / span : vwap_last_;
@@ -175,7 +175,7 @@ private:
   X(dlogp_taker_bid, CAT1, AUTO, "Taker Bid Log-Price Change", "主动买成交价变动和", "分钟内主动买成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,B}])", TS(Flow, dlogp_taker_bid, None, None)) \
   X(dlogp_taker_ask, CAT1, AUTO, "Taker Ask Log-Price Change", "主动卖成交价变动和", "分钟内主动卖成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,A}])", TS(Flow, dlogp_taker_ask, None, None))
 
-#define FIELDS_L1_Flow(X, CAT1)                                                                                                                                                                                                                                          \
+#define FIELDS_L_min_Flow(X, CAT1)                                                                                                                                                                                                                                       \
   FLOW_EVENT_ROWS(X, CAT1, taker, "T", "Taker", "主动成交")                                                                                                                                                                                                              \
   FLOW_TAKER_DLOGP_ROWS(X, CAT1)                                                                                                                                                                                                                                         \
   FLOW_EVENT_ROWS(X, CAT1, maker, "M", "Maker", "新增委托")                                                                                                                                                                                                              \

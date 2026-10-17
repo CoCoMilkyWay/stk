@@ -3,8 +3,8 @@
 // =============================================================================
 // MinuteIndex - Minute 索引: 分钟索引的正弦相位嵌入
 // =============================================================================
-//   tod_min = sin(2π · l1_index / 60)   (60 分钟一周期, 相位连续可导, 频谱干净)
-//   minute_index = l1_index          (原始索引 [0-254])
+//   tod_min = sin(2π · min_index / 60)   (60 分钟一周期, 相位连续可导, 频谱干净)
+//   minute_index = min_index          (原始索引 [0-254])
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -23,7 +23,7 @@ public:
   explicit MinuteIndex(const MinuteData &md) : md_(md) {}
 
   void compute() {
-    float clock_min = static_cast<float>(md_.l1_index);
+    float clock_min = static_cast<float>(md_.min_index);
     y[tod_min] = std::sin(clock_min * MIN_PHASE_SCALE);
     y[minute_index] = clock_min;
   }
@@ -35,5 +35,5 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_MinuteIndex(N) N(MinuteIndex, (MinuteIndex), (minute_data), onMinute)
 
-#define FIELDS_L1_MinuteIndex(X, CAT1) \
+#define FIELDS_L_min_MinuteIndex(X, CAT1) \
   X(tod_min, CAT1, OSCILLATOR, "Time Min Phase", "时间-分钟相位", "用于因子组合", R"(\sin(\frac{2\pi t}{60\mathrm{m}}))", TS(MinuteIndex, tod_min, None, None))

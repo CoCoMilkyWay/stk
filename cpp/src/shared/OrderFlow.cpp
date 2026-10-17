@@ -39,7 +39,7 @@ void OrderFlow::Kline::begin_generation(uint32_t gen, size_t asset, size_t n_fea
 
 void OrderFlow::Kline::reserve_capacity() {
   // 满容量 = 日数 × 有效分钟数; 之后只 push_back → data() 恒稳定 (前缀读安全)
-  const size_t cap = dates.size() * level_valid_rows(1);
+  const size_t cap = dates.size() * level_valid_rows(L_min);
   x.reserve(cap);
   open.reserve(cap);
   high.reserve(cap);
@@ -128,7 +128,7 @@ OrderFlow::Depth::Snapshot OrderFlow::Depth::query_depth(size_t plot_idx) const 
   result.ask_volume = &tick.ask_volume;
   result.tick_idx = tick.tick_idx;
 
-  const ClockTime ct = L0_to_Clock(tick.tick_idx);
+  const ClockTime ct = L_sec_to_Clock(tick.tick_idx);
   result.time.hour = ct.hour;
   result.time.minute = ct.minute;
   result.time.second = ct.second;
@@ -143,7 +143,7 @@ void OrderFlow::Depth::build_plot() {
   plot.mid_price.reserve(ticks.size());
   plot.best_bid.reserve(ticks.size());
   plot.best_ask.reserve(ticks.size());
-  plot.tick_idx_map.assign(OrderFlowConst::L0_CAPACITY, SIZE_MAX);
+  plot.tick_idx_map.assign(OrderFlowConst::SEC_CAPACITY, SIZE_MAX);
 
   constexpr double NAN_D = std::numeric_limits<double>::quiet_NaN();
   double y_min = (std::numeric_limits<double>::max)();
@@ -152,7 +152,7 @@ void OrderFlow::Depth::build_plot() {
 
   for (size_t i = 0; i < ticks.size(); ++i) {
     const Tick &tick = ticks[i];
-    assert(tick.tick_idx < OrderFlowConst::L0_CAPACITY && "tick_idx out of intra-day range");
+    assert(tick.tick_idx < OrderFlowConst::SEC_CAPACITY && "tick_idx out of intra-day range");
 
     // 竞价交叉秒: bid/ask/spread 无意义 → NaN 断线不画, mid 已是预撮合参考价
     const bool crossed = tick.ref_price > 0.0f;

@@ -7,11 +7,11 @@
 #include <cstdio>
 
 // ============================================================================
-// 时间索引: Clock ↔ L0 (秒) ↔ L1 (分钟)
+// 时间索引: Clock ↔ L_sec (秒) ↔ L_min (分钟); L_day (日) 一日一行 = 收盘
 // ============================================================================
 // A股交易时段 (含集合竞价):
 //
-//   时段       时钟时间         分钟数    秒数      L0 范围        L1 范围
+//   时段       时钟时间         分钟数    秒数      L_sec 范围        L_min 范围
 //   ──────────────────────────────────────────────────────────────────────
 //   上午       09:15 - 11:30    135 min   8100 s    [0, 8099]      [0, 134]
 //   午休       11:30 - 13:00    (非交易, Clock 映射到 8100)
@@ -24,10 +24,11 @@
 constexpr size_t TRADE_MINUTES_PER_DAY = 255;
 constexpr size_t TRADE_SECONDS_PER_DAY = TRADE_MINUTES_PER_DAY * 60; // 15300
 constexpr size_t MORNING_MINUTES = 135;
-constexpr size_t MORNING_SECONDS = MORNING_MINUTES * 60; // 8100, 也是下午 L0 起点
+constexpr size_t MORNING_SECONDS = MORNING_MINUTES * 60; // 8100, 也是下午 L_sec 起点
 
-constexpr size_t L0_ROWS = TRADE_SECONDS_PER_DAY + 1; // 15301
-constexpr size_t L1_ROWS = TRADE_MINUTES_PER_DAY + 1; // 256
+constexpr size_t L_SEC_ROWS = TRADE_SECONDS_PER_DAY + 1; // 15301
+constexpr size_t L_MIN_ROWS = TRADE_MINUTES_PER_DAY + 1; // 256
+constexpr size_t L_DAY_ROWS = 1 + 1;                     // 2
 
 // 时钟分钟数 (hour*60+minute)
 constexpr uint16_t MORNING_START_MIN = L2::MORNING_CALL_AUCTION_START_HOUR * 60 + L2::MORNING_CALL_AUCTION_START_MINUTE;                   // 555 (09:15)
@@ -43,7 +44,7 @@ struct ClockTime {
 };
 
 // ---------------------------------------------------------------------------
-// Clock → L0: 编译期 1440 项 (hour, minute) → L0 分钟起始秒 LUT, 运行时 O(1) 查表 + 秒
+// Clock → L_sec: 编译期 1440 项 (hour, minute) → L_sec 分钟起始秒 LUT, 运行时 O(1) 查表 + 秒
 //   -1 = 盘前 (钳到 0); 午休 → 8100; 盘后 → 15299
 // ---------------------------------------------------------------------------
 namespace detail {
@@ -73,7 +74,7 @@ inline constexpr auto MINUTE_OFFSET_LUT = make_minute_offset_lut();
 } // namespace detail
 
 // 09:15:00→0, 11:29:59→8099, 13:00:00→8100, 14:59:59→15299
-inline constexpr size_t Clock_to_L0(uint8_t hour, uint8_t minute, uint8_t second) {
+inline constexpr size_t Clock_to_L_sec(uint8_t hour, uint8_t minute, uint8_t second) {
   const int16_t base = detail::MINUTE_OFFSET_LUT[hour * 60 + minute];
   const size_t clamped = base & ~(base >> 15); // branchless: 负数 (盘前) → 0
   const size_t result = clamped + second;
@@ -81,24 +82,24 @@ inline constexpr size_t Clock_to_L0(uint8_t hour, uint8_t minute, uint8_t second
 }
 
 // 0→0, 59→0, 60→1, 8099→134, 8100→135, 15299→254
-inline constexpr size_t L0_to_L1(size_t l0) {
-  return l0 < MORNING_SECONDS ? l0 / 60 : MORNING_MINUTES + (l0 - MORNING_SECONDS) / 60;
+inline constexpr size_t L_sec_to_L_min(size_t t_sec) {
+  return t_sec < MORNING_SECONDS ? t_sec / 60 : MORNING_MINUTES + (t_sec - MORNING_SECONDS) / 60;
 }
 
 // 分钟起始秒: 0→0, 134→8040, 135→8100, 254→15240
-inline constexpr size_t L1_to_L0(size_t l1) {
-  return l1 < MORNING_MINUTES ? l1 * 60 : MORNING_SECONDS + (l1 - MORNING_MINUTES) * 60;
+inline constexpr size_t L_min_to_L_sec(size_t t_min) {
+  return t_min < MORNING_MINUTES ? t_min * 60 : MORNING_SECONDS + (t_min - MORNING_MINUTES) * 60;
 }
 
 // 0→09:15:00, 8099→11:29:59, 8100→13:00:00, 15299→14:59:59
-inline constexpr ClockTime L0_to_Clock(size_t l0) {
-  const size_t total = l0 < MORNING_SECONDS ? MORNING_START_MIN * 60 + l0 : AFTERNOON_START_MIN * 60 + (l0 - MORNING_SECONDS);
+inline constexpr ClockTime L_sec_to_Clock(size_t t_sec) {
+  const size_t total = t_sec < MORNING_SECONDS ? MORNING_START_MIN * 60 + t_sec : AFTERNOON_START_MIN * 60 + (t_sec - MORNING_SECONDS);
   return {static_cast<uint8_t>(total / 3600), static_cast<uint8_t>((total % 3600) / 60), static_cast<uint8_t>(total % 60)};
 }
 
 // 0→09:15, 134→11:29, 135→13:00, 254→14:59
-inline constexpr ClockTime L1_to_Clock(size_t l1) {
-  const size_t total = l1 < MORNING_MINUTES ? MORNING_START_MIN + l1 : AFTERNOON_START_MIN + (l1 - MORNING_MINUTES);
+inline constexpr ClockTime L_min_to_Clock(size_t t_min) {
+  const size_t total = t_min < MORNING_MINUTES ? MORNING_START_MIN + t_min : AFTERNOON_START_MIN + (t_min - MORNING_MINUTES);
   return {static_cast<uint8_t>(total / 60), static_cast<uint8_t>(total % 60), 0};
 }
 
@@ -110,10 +111,10 @@ inline void format_time_hm(char *buf, size_t buf_size, const ClockTime &t) {
   std::snprintf(buf, buf_size, "%02d:%02d", t.hour, t.minute);
 }
 
-static_assert(Clock_to_L0(9, 15, 0) == 0);
-static_assert(Clock_to_L0(11, 29, 59) == 8099);
-static_assert(Clock_to_L0(13, 0, 0) == 8100);
-static_assert(Clock_to_L0(14, 56, 59) == 15299 - 180);
-static_assert(Clock_to_L0(14, 59, 59) == 15299);
-static_assert(L0_to_L1(8099) == 134 && L0_to_L1(8100) == 135 && L0_to_L1(15299) == 254);
-static_assert(L1_to_L0(135) == 8100 && L1_to_L0(254) == 15240);
+static_assert(Clock_to_L_sec(9, 15, 0) == 0);
+static_assert(Clock_to_L_sec(11, 29, 59) == 8099);
+static_assert(Clock_to_L_sec(13, 0, 0) == 8100);
+static_assert(Clock_to_L_sec(14, 56, 59) == 15299 - 180);
+static_assert(Clock_to_L_sec(14, 59, 59) == 15299);
+static_assert(L_sec_to_L_min(8099) == 134 && L_sec_to_L_min(8100) == 135 && L_sec_to_L_min(15299) == 254);
+static_assert(L_min_to_L_sec(135) == 8100 && L_min_to_L_sec(254) == 15240);

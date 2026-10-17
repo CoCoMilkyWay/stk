@@ -22,7 +22,7 @@
 //     单边簿 / 尚无盘口    订单簿不出 depth → 簿价 = 最近事件价 (限价委托价, 与 Meta 同法), 匹配 0, 未匹配同上
 //     阶段内零事件         二阶段继承一阶段末 (不可撤单, 簿态冻结); 一阶段 (全日至此无委托) 簿价 = pre_close, 量口 0
 //   计数口无事件自然为 0.
-//   不单列: 开盘成交量 / 额 = Flow 09:25 行 taker 口; 收盘竞价 14:57-15:00 = Flow 末行 (l1=254, 哨兵秒映射恰为该时段);
+//   不单列: 开盘成交量 / 额 = Flow 09:25 行 taker 口; 收盘竞价 14:57-15:00 = Flow 末行 (t_min=254, 哨兵秒映射恰为该时段);
 //   成交率 / 撤单率 / 涨跌幅 / 振幅 / 委比 = 因子层按口相除 (广发 海量level二 004, 长江 003, 广发 048 集合竞价族原料在此齐备).
 //   fp16 落盘: 量 / 笔 / 股 用 Log Tf (保号, qty_imb 可负); 价 原值.
 // =============================================================================
@@ -35,9 +35,9 @@
 #include <cstdint>
 
 class Auction {
-  static constexpr uint32_t PHASE_L0 = Clock_to_L0(9, 20, 0); // 𝒯₂ 起点
-  static constexpr uint32_t END_L0 = Clock_to_L0(9, 25, 0);   // 竞价结束, 之后状态冻结
-  static_assert(PHASE_L0 == 300 && END_L0 == 600);
+  static constexpr uint32_t PHASE_SEC = Clock_to_L_sec(9, 20, 0); // 𝒯₂ 起点
+  static constexpr uint32_t END_SEC = Clock_to_L_sec(9, 25, 0);   // 竞价结束, 之后状态冻结
+  static_assert(PHASE_SEC == 300 && END_SEC == 600);
 
 public:
   // 布局: 同口两阶段相邻 (auc1, auc2); 分侧口内层 (bid, ask) —— y[base + k·2 + s]; 单口 y[base + k]
@@ -79,10 +79,10 @@ public:
   Auction(const TickData &td, const float &pre_close) : td_(td), pre_close_(pre_close) {}
 
   inline void compute() {
-    const uint32_t l0 = td_.l0_index;
-    if (l0 >= END_L0) [[likely]]
-      return;                                // 09:25 起冻结 (收盘竞价 14:57-15:00 映射到哨兵秒, 亦在此外)
-    const size_t k = l0 >= PHASE_L0 ? 1 : 0; // 阶段下标
+    const uint32_t t_sec = td_.sec_index;
+    if (t_sec >= END_SEC) [[likely]]
+      return;                                    // 09:25 起冻结 (收盘竞价 14:57-15:00 映射到哨兵秒, 亦在此外)
+    const size_t k = t_sec >= PHASE_SEC ? 1 : 0; // 阶段下标
     const auto &lob = td_.lob;
     const size_t s = lob.order_dir == L2::OrderDirection::BID ? 0 : 1;
     const float v = static_cast<float>(lob.volume);
@@ -220,7 +220,7 @@ private:
   X(qty_match_auc##k, CAT1, AUTO, "Auction P" #k " Matched Qty", "竞价" K "阶段末匹配量", "开盘集合竞价" K "阶段(" T ")末参考价位的虚拟匹配量(股); 未交叉=0; 全日广播", R"(V^{match}_{j^{end}_)" #k R"(})", TS(Auction, qty_match_auc##k, Log, None))                                                      \
   X(qty_imb_auc##k, CAT1, AUTO, "Auction P" #k " Unmatched Qty", "竞价" K "阶段末未匹配量", "开盘集合竞价" K "阶段(" T ")末未匹配量(股, 正=买剩 负=卖剩): 交叉=参考价位买剩−卖剩, 未交叉=全簿买量−卖量; 全日广播", R"(V^{B}_{j^{end}_)" #k R"(} - V^{A}_{j^{end}_)" #k R"(})", TS(Auction, qty_imb_auc##k, Log, None))
 
-#define FIELDS_L1_Auction(X, CAT1)                                                                                                                                                                                                                                   \
+#define FIELDS_L_min_Auction(X, CAT1)                                                                                                                                                                                                                                \
   AUCTION_MAKER_ROWS(X, CAT1, 1, "一", "09:15-09:20")                                                                                                                                                                                                                \
   AUCTION_MAKER_ROWS(X, CAT1, 2, "二", "09:20-09:25")                                                                                                                                                                                                                \
   X(vol_cancel_bid_auc1, CAT1, AUTO, "Auction P1 Cancel Bid Volume", "竞价一阶段买撤单量", "开盘集合竞价一阶段(09:15-09:20)买撤单量(股; 09:20后不可撤单); 全日广播", R"(\sum_{\tau \in \mathcal{T}_1} |O_\tau^{C,B}|)", TS(Auction, vol_cancel_bid_auc1, Log, None)) \

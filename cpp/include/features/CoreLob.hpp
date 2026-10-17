@@ -7,14 +7,14 @@
 #include "shared/Pool.hpp"
 
 // ============================================================================
-// CoreLob: Lob 档单资产时序计算. 订单簿 → L0 (tick, 秒索引) → resample → L1 (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
+// CoreLob: Lob 档单资产时序计算. 订单簿 → L_sec (tick, 秒索引) → resample → L_min (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
 //   与 CoreBar 对仗: compute_and_store = 本源单位 (逐笔) 先 advance 到所在分钟, 再进 DAG + 重采样器
-//   每笔: run<0>(t) 按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L0 行 + 标签回填
-//   分钟: close_minute(m) 调 onMinute 域, 写 L1 行; 只经 CoreTs::advance (时钟推进) 触发
-//   顺序: 本笔先 advance 到本笔所在分钟 (逐分钟结算之前尚未结算的分钟), 再进 DAG (run<0> → accumulate).
-//   所以 L1 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态";
-//   onMinute 域只读 MinuteData / 分钟边界 (md.l1_index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
-//   L1 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
+//   每笔: run<L_sec>(t) 按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L_sec 行 + 标签回填
+//   分钟: close_minute(m) 调 onMinute 域, 写 L_min 行; 只经 CoreTs::advance (时钟推进) 触发
+//   顺序: 本笔先 advance 到本笔所在分钟 (逐分钟结算之前尚未结算的分钟), 再进 DAG (run<L_sec> → accumulate).
+//   所以 L_min 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态";
+//   onMinute 域只读 MinuteData / 分钟边界 (md.min_index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
+//   L_min 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
 //   缺数据日 = 零事件日, 同一路径 (empty_day). 本类不读任何特征值, 不特判任何节点.
 //   ts_valid 只标"本分钟有成交", 标签分钟型 exit 仍只在有成交的分钟推进 (无成交无法平仓).
 //   Lob 档 (逐笔 → 订单簿源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
@@ -45,18 +45,18 @@ public:
     dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
   }
 
-  // 本资产的 L0 工作区 (DAG_Root 自持, 见 LobGraph.hpp): 订单簿经 bind() 把写出口换到这里
+  // 本资产的 L_sec 工作区 (DAG_Root 自持, 见 LobGraph.hpp): 订单簿经 bind() 把写出口换到这里
   TickData &tick_data() { return dag_.tick_data; }
 
-  // 每笔一调 (L0 节拍): 先把时钟推进到本笔所在分钟 (本笔尚未进任何节点 / meta_), 再让本笔进 DAG
+  // 每笔一调 (L_sec 节拍): 先把时钟推进到本笔所在分钟 (本笔尚未进任何节点 / meta_), 再让本笔进 DAG
   void compute_and_store() noexcept {
     TraceN("TS");
     TraceColor(C_Cyan);
 
-    const size_t t = Clock_to_L0(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second);
-    dag_.tick_data.l0_index = static_cast<uint32_t>(t);
-    advance(L0_to_L1(t));
-    run<0>(t);
+    const size_t t = Clock_to_L_sec(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second);
+    dag_.tick_data.sec_index = static_cast<uint32_t>(t);
+    advance(L_sec_to_L_min(t));
+    run<L_sec>(t);
     tick2min_.accumulate();
   }
 
@@ -66,12 +66,12 @@ private:
   bool member(misc::Ymd date) const { return pool_panel_.in_pool(asset_id_, date); }
   ResamplerTick2Min &resampler() { return tick2min_; }
 
-  // ---------------------------------------------------------------- L0 每笔 ----
-  // 与 CoreCs::run<LVL> 对仗: 本笔按触发域 onTaker|onMaker|onCancel → onTick → onDepth 进 DAG → 写 L0 行 + ts_valid,
-  // 标签快照 / 锚定. L1 行走 CoreTs::close_minute (advance 内 roll 出 bar 后)
+  // ---------------------------------------------------------------- L_sec 每笔 ----
+  // 与 CoreCs::run<LVL> 对仗: 本笔按触发域 onTaker|onMaker|onCancel → onTick → onDepth 进 DAG → 写 L_sec 行 + ts_valid,
+  // 标签快照 / 锚定. L_min 行走 CoreTs::close_minute (advance 内 roll 出 bar 后)
   template <size_t LVL>
   inline void run(size_t t) {
-    static_assert(LVL == 0);
+    static_assert(LVL == L_sec);
     TraceN("TS_Tick");
     const auto &lob = dag_.tick_data.lob;
 
@@ -94,21 +94,21 @@ private:
     if (depth_updated) {
       dag_.run<Trigger::onDepth>();
 
-      // 标签: 盘口快照入环, 然后 L1 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟型行); 开盘价走分钟 bar (close_minute → minute_closed)
+      // 标签: 盘口快照入环, 然后 L_min 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟型行); 开盘价走分钟 bar (close_minute → minute_closed)
       dag_.label.snapshot(t);
       dag_.label.minute_anchored(t, writer());
     }
 
     // 逐笔写行, 同秒后一笔覆盖前一笔, 行终值 = 该秒最后一笔后的状态 (事件驱动: 实盘就是边到边写).
     // 不要攒到秒末 / 日末再批量提交 —— 那是回测专属的形态, 会让回测与实盘走两条路.
-    fstore::ts_write_row<0>(day_, t, asset_id_, dag_);
+    fstore::ts_write_row<L_sec>(day_, t, asset_id_, dag_);
 
     // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, begin_day 已写)
     // 盘口价只在 depth_updated 时取 (Depth 序列每日清空, 首次更新前为空环)
     meta_.on_tick(t, depth_updated, dag_.MicroPrice.last(),
                   depth_updated ? dag_.Depth.bid_price[0].back() : 0.0f,
                   depth_updated ? dag_.Depth.ask_price[0].back() : 0.0f, lob.price);
-    fstore::ts_write<0>(day_, t, lob::L0_Field::ts_valid, asset_id_, meta_.l0());
+    fstore::ts_write<L_sec>(day_, t, lob::L_sec_Field::ts_valid, asset_id_, meta_.sec_flag());
   }
 
   size_t core_id_;

@@ -187,7 +187,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   const fmeta::ColumnSet &cols = spec.cols;
   const size_t n_months = scope_.months.size();
 
-  // 预计算: 分钟 → 日内桶 (L1)
+  // 预计算: 分钟 → 日内桶 (L_min)
   std::array<uint8_t, kVR> tod_lut{};
   for (size_t t = 0; t < VR; ++t)
     tod_lut[t] = static_cast<uint8_t>(tod_bin_of(t));

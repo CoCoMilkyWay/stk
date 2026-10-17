@@ -231,7 +231,7 @@ private:
 
   // 抽列分组: 一组相邻列的抽列缓冲上限 (组内列数 = 它 / 单列字节, 夹到 [1, kGatherMaxCols]).
   // 每行这组列首尾相接, 一行一段顺序读 (预取器吃得到); 单列 [T][A] 跨距 F·A, 逐列抽是 T 次冷跳.
-  // 缓冲要留在 L2/L3 里给紧随的编码读; 单列就超限的层 (L0) 退化为逐列.
+  // 缓冲要留在 L2/L3 里给紧随的编码读; 单列就超限的层 (L_sec) 退化为逐列.
   static constexpr size_t kGatherBytes = size_t(2) << 20;
   static constexpr size_t kGatherMaxCols = 32;
 

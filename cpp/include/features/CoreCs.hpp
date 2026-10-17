@@ -16,14 +16,15 @@
 #include <vector>
 
 // ============================================================================
-// CoreCs<T>: 截面计算 (CS worker), 档 T 有 L0 → L0 每秒 + L1 分钟边界级联; 无 L0 (Bar) → L1 每分钟
-//   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L1) / end_day, 逐层 run<0> / run<1>
+// CoreCs<T>: 截面计算 (CS worker), 档 T 有 L_sec → L_sec 每秒 + L_min 分钟边界级联; 无 L_sec (Bar) → L_min 每分钟;
+//   末拍之后级联 L_day (收盘行, 档有该层才算)
+//   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L_min / L_day) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
-//   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
+//   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0); 源层 == 本层
 //   节点契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
-//   源列由 Method/CS.hpp 声明) 每分钟按需准备一次, 全部 NeutralRank 行复用; L0 用 NeutralRank = 编译错误.
+//   源列由 Method/CS.hpp 声明, 取本层同名列) 每拍按需准备一次, 全部 NeutralRank 行复用; L_sec 用 NeutralRank = 编译错误.
 //
-//   旁读 (TIER_SIDES): 源档 ns ≠ 本档的 L1 行 + 本档没有的 NeutralRank 上下文列 = 旁读列集 (CsSide, 编译期去重).
+//   旁读 (TIER_SIDES, 只在 L_min): 源档 ns ≠ 本档的行 + 本档没有的 NeutralRank 上下文列 = 旁读列集 (CsSide, 编译期去重).
 //   begin_day 从旁读档的库整日读入这些列 (按本档 A 轴取子集); 当日缺库 → 整日 NaN + 日志, 不等不算.
 //   旁读列是上游档落盘的张量行, 与本档张量行同属"CS 只看张量行"的输入契约.
 //
@@ -45,7 +46,7 @@
 // CsLevel<T, LVL>: 档 T 该层字段表里每个 CS(...) 行 → run: core.run_one<...>(t) / kRefs: 源列引用; 其他来源的行展开为空
 // (档缺的层无特化, run<LVL> 编译期跳过)
 // ============================================================================
-#define CS_RUN_CS(code, ns, src_lvl, s, tf, m) core.template run_one<kLevel, ns::Tier, src_lvl, ns::L##src_lvl##_Field::s, FO::code, cs::tf, cs::m>(t);
+#define CS_RUN_CS(code, ns, src_lvl, s, tf, m) core.template run_one<kLevel, ns::Tier, src_lvl, ns::src_lvl##_Field::s, FO::code, cs::tf, cs::m>(t);
 #define CS_RUN_TS(code, ...)
 #define CS_RUN_LABEL(code)
 #define CS_RUN_FLAG(code)
@@ -58,7 +59,7 @@ struct CsRef {
   size_t field;
   bool neutral; // 方法要 NeutralRank 上下文
 };
-#define CS_REF_CS(code, ns, src_lvl, s, tf, m) CsRef{ns::Tier::kId, src_lvl, ns::L##src_lvl##_Field::s, cs::m::kNeutral},
+#define CS_REF_CS(code, ns, src_lvl, s, tf, m) CsRef{ns::Tier::kId, src_lvl, ns::src_lvl##_Field::s, cs::m::kNeutral},
 #define CS_REF_TS(code, ...)
 #define CS_REF_LABEL(code)
 #define CS_REF_FLAG(code)
@@ -85,23 +86,23 @@ TIER_LEVELS(CS_LEVEL_TRAITS)
 #define CS_STR_(x) #x
 #define CS_STR(x) CS_STR_(x)
 
-// 档 T 的 NeutralRank 上下文列 (L1) 在不在本档; 不在 → 从旁读档取
-template <class T>
+// 档 T 的 LVL 层 NeutralRank 上下文列在不在本档; 不在 → 从旁读档取 (只许 L_min)
+template <class T, size_t LVL>
 constexpr bool owns_neutral_ctx() {
-  return T::has(1) && field_of<T>(1, CS_STR(NEUTRAL_RANK_MCAP)) < T::LEVELS[1].field_count &&
-         field_of<T>(1, CS_STR(NEUTRAL_RANK_INDUSTRY)) < T::LEVELS[1].field_count;
+  return T::has(LVL) && field_of<T>(LVL, CS_STR(NEUTRAL_RANK_MCAP)) < T::LEVELS[LVL].field_count &&
+         field_of<T>(LVL, CS_STR(NEUTRAL_RANK_INDUSTRY)) < T::LEVELS[LVL].field_count;
 }
-template <class T>
+template <class T, size_t LVL>
 constexpr bool uses_neutral() {
-  if constexpr (T::has(1)) {
-    for (const CsRef &r : CsLevel<T, 1>::kRefs)
+  if constexpr (T::has(LVL)) {
+    for (const CsRef &r : CsLevel<T, LVL>::kRefs)
       if (r.neutral)
         return true;
   }
   return false;
 }
 
-// 旁读列集: 档 T 的 L1 截面要读的旁读档 S (= TierSide<T>) L1 列下标 (升序去重). 无旁读档 → 空
+// 旁读列集: 档 T 的 L_min 截面要读的旁读档 S (= TierSide<T>) L_min 列下标 (升序去重). 无旁读档 → 空
 template <class T, class S = typename TierSide<T>::type>
 struct CsSide {
   static constexpr size_t N = 0;
@@ -110,17 +111,17 @@ struct CsSide {
 template <class T, class S>
   requires(!std::is_void_v<S>)
 struct CsSide<T, S> {
-  static constexpr size_t F = S::LEVELS[1].field_count;
+  static constexpr size_t F = S::LEVELS[L_min].field_count;
   static constexpr std::array<bool, F> kMask = [] {
     std::array<bool, F> m{};
-    if constexpr (T::has(1)) {
-      for (const CsRef &r : CsLevel<T, 1>::kRefs)
+    if constexpr (T::has(L_min)) {
+      for (const CsRef &r : CsLevel<T, L_min>::kRefs)
         if (r.tier == S::kId)
           m[r.field] = true;
     }
-    if (uses_neutral<T>() && !owns_neutral_ctx<T>()) {
-      m[field_of<S>(1, CS_STR(NEUTRAL_RANK_MCAP))] = true;
-      m[field_of<S>(1, CS_STR(NEUTRAL_RANK_INDUSTRY))] = true;
+    if (uses_neutral<T, L_min>() && !owns_neutral_ctx<T, L_min>()) {
+      m[field_of<S>(L_min, CS_STR(NEUTRAL_RANK_MCAP))] = true;
+      m[field_of<S>(L_min, CS_STR(NEUTRAL_RANK_INDUSTRY))] = true;
     }
     return m;
   }();
@@ -150,7 +151,7 @@ class CoreCs {
 public:
   using Day = StoreDay<T>;
   using Side = CsSide<T>;
-  // 节拍层: 有 L0 的档逐秒 (实盘 feed 按墙钟逐秒驱动), 无 L0 的档 (Bar, 分钟 K 源) 逐分钟
+  // 节拍层: 有 L_sec 的档逐秒 (实盘 feed 按墙钟逐秒驱动), 无 L_sec 的档 (Bar, 分钟 K 源) 逐分钟
   static constexpr size_t kBeatLevel = T::kFirstLevel;
 
   // axis = 本档库轴 (sub → global); side = 旁读档的库 (无旁读列时不读)
@@ -160,8 +161,8 @@ public:
     if constexpr (Side::N > 0) {
       using S = typename TierSide<T>::type;
       assert(side.tier == S::kId && axis.size() == A_);
-      side_.resize(Side::N * level_rows(1) * A_);
-      side_full_.resize(Side::N * level_rows(1) * side.axis.size());
+      side_.resize(Side::N * level_rows(L_min) * A_);
+      side_full_.resize(Side::N * level_rows(L_min) * side.axis.size());
       side_sub_.resize(A_);
       for (size_t a = 0; a < A_; ++a) {
         side_sub_[a] = side.axis.sub_of(axis.global(a));
@@ -182,43 +183,47 @@ public:
     day_ = {};
   }
 
-  // 每节拍一调 (事件驱动; t = 节拍层 kBeatLevel 的行): 实盘由 feed 层按墙钟逐秒 (无 L0 的档逐分钟) 调用,
+  // 每节拍一调 (事件驱动; t = 节拍层 kBeatLevel 的行): 实盘由 feed 层按墙钟逐秒 (无 L_sec 的档逐分钟) 调用,
   // 回测按日流控后逐拍重放同一个调用.
   // 不要改成"整日一次批量扫" —— 那样回测和实盘就成了两条代码路径, 逐值一致无从保证.
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
     TraceColor(C_Magenta);
     assert(day_ && "compute_and_store: 本日未 begin_day");
-    if constexpr (T::has(0)) {
+    if constexpr (T::has(L_sec)) {
       {
         TraceN("CS_Tick");
-        run<0>(t);
+        run<L_sec>(t);
       }
       // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行).
-      // 读 L1 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日流控保证; 实盘须先对全部资产 CoreTs::advance(m + 1)
+      // 读 L_min 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日流控保证; 实盘须先对全部资产 CoreTs::advance(m + 1)
       if (t % 60 == 59) {
         TraceN("CS_Minute");
-        run<1>(L0_to_L1(t));
+        run<L_min>(L_sec_to_L_min(t));
       }
     } else {
       TraceN("CS_Minute");
-      run<1>(t);
+      run<L_min>(t);
+    }
+    // 收盘级联: 末拍之后算 L_day 行 0. 前提 = 全部资产已写收盘行: 回测由按日流控保证; 实盘须先对全部资产 CoreTs::end_day
+    if (t + 1 == level_valid_rows(kBeatLevel)) {
+      TraceN("CS_Day");
+      run<L_day>(0);
     }
   }
 
-  // 一行 CS 字段 (CsLevel<LVL>::run 展开调用): 源档 S 源层 SRC_LVL 的列 SRC → Tf → Method → 本层列 DST
+  // 一行 CS 字段 (CsLevel<LVL>::run 展开调用): 源档 S 本层的列 SRC → Tf → Method → 本层列 DST
   template <size_t LVL, class S, size_t SRC_LVL, size_t SRC, size_t DST, class Tf, class Method>
   [[gnu::always_inline]] inline void run_one(size_t t) {
-    static_assert(LVL <= 1 && SRC_LVL <= 1, "CS fields live in L0/L1 and read L0/L1");
-    static_assert(!Method::kNeutral || LVL == 1, "NeutralRank needs L1 context (mcap / industry)");
-    static_assert(std::is_same_v<S, T> || LVL == 1, "旁读只许 L1 截面行");
-    const size_t ts = SRC_LVL == LVL ? t : (LVL == 0 ? L0_to_L1(t) : L1_to_L0(t)); // 跨层源列的时间索引 (L1 用分钟起始秒)
+    static_assert(SRC_LVL == LVL, "截面只读本层行 (高频读低频由 TS 行在本层节拍取 Series 最新值, 不跨层取张量)");
+    static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_min / L_day context (mcap / industry)");
+    static_assert(std::is_same_v<S, T> || LVL == L_min, "旁读只许 L_min 截面行");
 
     float *y = input_fp32_.data();
-    gather_(src_col_<S, SRC_LVL, SRC>(ts), y);
+    gather_(src_col_<S, LVL, SRC>(t), y);
     Tf::apply(y, n_);
     if constexpr (Method::kNeutral)
-      Method::apply(y, n_, neutral_(t));
+      Method::apply(y, n_, neutral_<LVL>(t));
     else
       Method::apply(y, n_);
     scatter_<LVL>(t, DST, y);
@@ -229,7 +234,7 @@ private:
   void run(size_t t) {
     if constexpr (!T::has(LVL)) { // 档缺该层: 无特化
       return;
-    } else if constexpr (CsLevel<T, LVL>::kEmpty) { // 层内暂无 CS 行 (L0 目前如此, 预留层): 节拍照走, 有效集也不必扫
+    } else if constexpr (CsLevel<T, LVL>::kEmpty) { // 层内暂无 CS 行 (L_sec 目前如此, 预留层): 节拍照走, 有效集也不必扫
       return;
     } else {
       // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面.
@@ -255,27 +260,28 @@ private:
     if constexpr (std::is_same_v<S, T>) {
       return fstore::cs_col<SRC_LVL>(day_, t, SRC);
     } else {
-      static_assert(std::is_same_v<S, typename TierSide<T>::type> && SRC_LVL == 1, "CS 源档须为本档或 TIER_SIDES 登记的旁读档 (只许 L1)");
+      static_assert(std::is_same_v<S, typename TierSide<T>::type> && SRC_LVL == L_min, "CS 源档须为本档或 TIER_SIDES 登记的旁读档 (只许 L_min)");
       constexpr size_t i = Side::index_of(SRC);
       static_assert(i < Side::N);
-      assert(t < level_rows(1));
-      return side_.data() + (i * level_rows(1) + t) * A_;
+      assert(t < level_rows(L_min));
+      return side_.data() + (i * level_rows(L_min) + t) * A_;
     }
   }
 
-  // NeutralRank 上下文 (L1): 首个 NeutralRank 行触发, 本分钟内复用. 源列按名定址: 本档有就用本档, 否则旁读档
-  using NeutralTier = std::conditional_t<owns_neutral_ctx<T>(), T, typename TierSide<T>::type>;
+  // NeutralRank 上下文 (本层同名列): 首个 NeutralRank 行触发, 本拍内复用. 源列按名定址: 本档有就用本档, 否则旁读档 (只许 L_min)
+  template <size_t LVL>
   const cs::NeutralRank::Ctx &neutral_(size_t t) {
-    using NS = NeutralTier;
-    static_assert(!std::is_void_v<NS>, "用 NeutralRank 的档 L1 须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列, 或登记有它们的旁读档");
-    constexpr size_t MCAP = field_of<NS>(1, CS_STR(NEUTRAL_RANK_MCAP));
-    constexpr size_t INDUSTRY = field_of<NS>(1, CS_STR(NEUTRAL_RANK_INDUSTRY));
-    static_assert(MCAP < NS::LEVELS[1].field_count && INDUSTRY < NS::LEVELS[1].field_count,
-                  "NeutralRank 上下文档 L1 必须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列");
+    using NS = std::conditional_t<owns_neutral_ctx<T, LVL>(), T, typename TierSide<T>::type>;
+    static_assert(!std::is_void_v<NS> && (std::is_same_v<NS, T> || LVL == L_min),
+                  "用 NeutralRank 的层须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列 (L_min 可由旁读档提供)");
+    constexpr size_t MCAP = field_of<NS>(LVL, CS_STR(NEUTRAL_RANK_MCAP));
+    constexpr size_t INDUSTRY = field_of<NS>(LVL, CS_STR(NEUTRAL_RANK_INDUSTRY));
+    static_assert(MCAP < NS::LEVELS[LVL].field_count && INDUSTRY < NS::LEVELS[LVL].field_count,
+                  "NeutralRank 上下文档该层必须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列");
     if (!neutral_ready_) {
-      gather_(src_col_<NS, 1, MCAP>(t), logmc_dense_.data());
+      gather_(src_col_<NS, LVL, MCAP>(t), logmc_dense_.data());
       cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n_);
-      gather_(src_col_<NS, 1, INDUSTRY>(t), industry_dense_.data());
+      gather_(src_col_<NS, LVL, INDUSTRY>(t), industry_dense_.data());
       neutral_ready_ = true;
     }
     return neutral_ctx_;
@@ -284,9 +290,9 @@ private:
   // 本日旁读列: 旁读档库 [N][T][A_side] → 本档 A 轴 [N][T][A]. 缺库 → 整日 NaN + 日志; 头不符 = 旁读档库过期, 先重算它
   void load_side_(misc::Ymd date) {
     using S = typename TierSide<T>::type;
-    const LevelInfo &L = S::LEVELS[1];
+    const LevelInfo &L = S::LEVELS[L_min];
     const size_t T1 = L.rows, As = side_lib_.axis.size();
-    const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(side_lib_.dir, date), 1), L, Side::kFields.data(), Side::N,
+    const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(side_lib_.dir, date), L_min), L, Side::kFields.data(), Side::N,
                                                    side_full_.data(), As, side_lib_.axis.hash, side_scratch_);
     assert((st == FeatureDay::Status::Ok || st == FeatureDay::Status::Missing) && "旁读档库头不符 (轴 / 字段表变了), 先重算旁读档");
     if (st == FeatureDay::Status::Missing) {
@@ -330,8 +336,8 @@ private:
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
   size_t n_ = 0;                      // = valid_indices_.size()
   std::vector<float> input_fp32_;
-  std::vector<float> logmc_dense_;    // L1 中性化输入
-  std::vector<float> industry_dense_; // L1 中性化输入
+  std::vector<float> logmc_dense_;    // 中性化输入 (本拍本层)
+  std::vector<float> industry_dense_; // 中性化输入 (本拍本层)
   bool neutral_ready_ = false;
   const cs::NeutralRank::Ctx neutral_ctx_{logmc_dense_.data(), industry_dense_.data()}; // 向量在 ctor 定长, 指针稳定
 };

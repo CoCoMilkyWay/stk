@@ -7,14 +7,14 @@
 // 字段表 (FieldsGenerated) —— 增删改特征不触发它们重编, 只重编 FeatureMeta.cpp + 写端.
 //   level_info(tier, lvl)   运行时层表 (定义在 src/features/FeatureMeta.cpp, 指向编译期 <tier>::LEVELS)
 //   编译期 <tier>::LEVELS[] (写端定址折叠用) 在 FeatureStoreConfig.hpp, 仅写端 include.
-// 层号 / 行数 / 层名 (文件名) 与档无关 (L0 秒 / L1 分钟, 全档同一套), 是这里的常量; 字段数 / 字段表 / 指纹才随档.
+// 层号 / 行数 / 层名 (文件名) 与档无关 (L_sec 秒 / L_min 分钟 / L_day 日, 全档同一套), 是这里的常量; 字段数 / 字段表 / 指纹才随档.
 // 日文件格式 / 落盘编码在 FeatureDay.hpp.
 // ============================================================================
 
 #include "codec/L2_DataType.hpp"       // L2::ValidType (FieldInfo.valid)
 #include "features/FeaturesDefine.hpp" // FeatureDataType / ALL_TIERS
 #include "features/Method/TS.hpp"      // ts::TfId (FieldInfo.ts_tf)
-#include "features/TimeIndex.hpp"      // L0_ROWS / L1_ROWS
+#include "features/TimeIndex.hpp"      // L_SEC_ROWS / L_MIN_ROWS / L_DAY_ROWS
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -48,7 +48,7 @@ inline constexpr const char *tier_name(TierId t) {
 
 // 层表项: 运行时按 (档, 层) 取 rows / field_count / fingerprint; 档缺的层 fields == nullptr (见 has_level)
 struct LevelInfo {
-  const char *level_name;  // "L0" / "L1": 文件名 features_<name>.bin
+  const char *level_name;  // "L_sec" / "L_min" / "L_day": 文件名 features_<name>.bin
   size_t rows;             // T
   size_t field_count;      // F
   const FieldInfo *fields; // [field_count]
@@ -56,10 +56,18 @@ struct LevelInfo {
   const char *psd;         // 该层特征的推荐频谱 (GUI 元数据)
 };
 
-// 语义层数 (L0 秒 / L1 分钟), 与档无关; 档可以缺层
-inline constexpr size_t LEVEL_COUNT = 2;
-inline constexpr const char *level_name(size_t lvl) { return lvl == 0 ? "L0" : "L1"; }
-inline constexpr size_t level_rows(size_t lvl) { return lvl == 0 ? L0_ROWS : L1_ROWS; }
+// 语义层数 (FeatureLevel: L_sec 秒 / L_min 分钟 / L_day 日, 见 FeaturesDefine.hpp), 与档无关; 档可以缺层
+inline constexpr size_t LEVEL_COUNT = 3;
+inline constexpr const char *level_name(size_t lvl) {
+  assert(lvl < LEVEL_COUNT);
+  return lvl == L_sec ? "L_sec" : lvl == L_min ? "L_min"
+                                               : "L_day";
+}
+inline constexpr size_t level_rows(size_t lvl) {
+  assert(lvl < LEVEL_COUNT);
+  return lvl == L_sec ? L_SEC_ROWS : lvl == L_min ? L_MIN_ROWS
+                                                  : L_DAY_ROWS;
+}
 
 // 运行时层表访问 (定义在 src/features/FeatureMeta.cpp — 唯一依赖字段表的元数据 TU)
 bool has_level(TierId tier, size_t lvl);

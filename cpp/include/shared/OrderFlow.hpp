@@ -1,10 +1,10 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
 // OrderFlow
-// ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (L1 分钟频)
+// ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (L_min 分钟频)
 // │            worker 逐日流式 (从前往后, 每日一次选列读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
-// │            + 多特征 overlay (当前选中层逐列选读, L1 分钟映射到秒); 双槽 ping-pong 整体发布
+// │            + 多特征 overlay (当前选中层逐列选读, L_min 分钟映射到秒); 双槽 ping-pong 整体发布
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
@@ -18,7 +18,7 @@
 #pragma once
 
 #include "codec/L2_DataType.hpp"  // L2::LOB_DEPTH
-#include "features/TimeIndex.hpp" // L0_ROWS / L1_ROWS (稳定形状常量, 不依赖字段表)
+#include "features/TimeIndex.hpp" // L_SEC_ROWS / L_MIN_ROWS (稳定形状常量, 不依赖字段表)
 #include "misc/date.hpp"
 #include "shared/Progress.hpp" // PrefixPub / PingPong
 
@@ -37,8 +37,8 @@
 
 namespace OrderFlowConst {
 // Data Capacity
-constexpr size_t L0_CAPACITY = L0_ROWS;     // ~15300 秒/日 (X 轴跨度)
-constexpr size_t L1_CAPACITY = L1_ROWS;     // ~255 分钟/日 (X 轴跨度)
+constexpr size_t SEC_CAPACITY = L_SEC_ROWS; // ~15300 秒/日 (X 轴跨度)
+constexpr size_t MIN_CAPACITY = L_MIN_ROWS; // ~255 分钟/日 (X 轴跨度)
 constexpr size_t LOB_DEPTH = L2::LOB_DEPTH; // 30 levels
 constexpr size_t MAX_FEATURES = 8;          // overlay 特征多选上限 (两图同限)
 
@@ -63,11 +63,11 @@ constexpr float HEATMAP_LOG_THR_STEP = 0.1f;    // 自动阈值直方图分辨�
 constexpr float HEATMAP_LOG_THR_DEFAULT = 5.0f; // 无数据兜底 (10万元)
 constexpr float HEATMAP_AUTO_INK_RATIO = 0.60f; // 自动阈值目标: 着色价位秒 / 有量价位秒 (越大越密)
 
-// 日内时段边界 (L0 秒下标): 开盘竞价 [0,600) / 盘前5分钟 [600,900)
+// 日内时段边界 (L_sec 秒下标): 开盘竞价 [0,600) / 盘前5分钟 [600,900)
 // / 连续竞价 [900,15120) / 收盘竞价 [15120,15300)
-constexpr size_t SEG_AUCTION_OPEN_END = Clock_to_L0(9, 25, 0);     // 600
-constexpr size_t SEG_PREOPEN_END = Clock_to_L0(9, 30, 0);          // 900
-constexpr size_t SEG_AUCTION_CLOSE_BEGIN = Clock_to_L0(14, 57, 0); // 15120
+constexpr size_t SEG_AUCTION_OPEN_END = Clock_to_L_sec(9, 25, 0);     // 600
+constexpr size_t SEG_PREOPEN_END = Clock_to_L_sec(9, 30, 0);          // 900
+constexpr size_t SEG_AUCTION_CLOSE_BEGIN = Clock_to_L_sec(14, 57, 0); // 15120
 
 // GUI Layout Parameters
 constexpr float DEPTH_PANEL_WIDTH = 160.0f; // Width of depth panel (pixels; 纵向深度图)
@@ -103,7 +103,7 @@ struct OrderFlow {
     std::vector<misc::Ymd> dates; // 回测区间全部特征日 (换代时随 rescan 重扫; gen 匹配期间稳定)
     size_t asset_idx = SIZE_MAX;
 
-    // K线点集: data_valid 分钟, x = day_idx * L1_CAPACITY + minute
+    // K线点集: data_valid 分钟, x = day_idx * MIN_CAPACITY + minute
     std::vector<double> x, open, high, low, close;
     std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat; // 与 K线同 X 网格, 每特征独立点集 (跳过 NaN)
     size_t n_feat = 0;
@@ -115,10 +115,10 @@ struct OrderFlow {
 
     // 坐标换算 (纯算术; dates 读取需 gen 匹配)
     size_t day_idx_from_x(double global_x) const {
-      return static_cast<size_t>(global_x) / OrderFlowConst::L1_CAPACITY;
+      return static_cast<size_t>(global_x) / OrderFlowConst::MIN_CAPACITY;
     }
     double snap_to_day_start(double global_x) const {
-      return static_cast<double>(day_idx_from_x(global_x) * OrderFlowConst::L1_CAPACITY);
+      return static_cast<double>(day_idx_from_x(global_x) * OrderFlowConst::MIN_CAPACITY);
     }
     misc::Ymd date_from_x(double global_x) const {
       const size_t d = day_idx_from_x(global_x);
@@ -154,7 +154,7 @@ struct OrderFlow {
     struct Plot {
       std::vector<double> x, mid_price, best_bid, best_ask;
       std::vector<size_t> tick_idx_map; // 秒下标 -> plot_idx (SIZE_MAX = 无), O(1) snap
-      // 分钟 VWAP 阶梯 (L1 特征列 vwap, 与标签 exit 同源; 只有库轴内且当日已算特征的资产才有):
+      // 分钟 VWAP 阶梯 (L_min 特征列 vwap, 与标签 exit 同源; 只有库轴内且当日已算特征的资产才有):
       // 逐有效分钟一点, X = 分钟起始秒, 末尾补一点 (末分钟末秒) 收口; 与 ticks 无关
       std::vector<double> vwap_x, vwap_y;
       double y_min = 0.0, y_max = 0.0;
@@ -208,11 +208,11 @@ struct OrderFlow {
     HeatmapMerged merged;
     // 当日自动热力图阈值 (log10 元): 载入新槽时 GUI 取作初值 → 色块浓度跨日/跨资产一致
     float auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
-    // 特征线 (当前选中层, 与图2 同源): L0 = data_valid 秒; L1 = 有效分钟, X 映射分钟起始秒
+    // 特征线 (当前选中层, 与图2 同源): L_sec = data_valid 秒; L_min = 有效分钟, X 映射分钟起始秒
     std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat;
     std::array<float, OrderFlowConst::MAX_FEATURES> feat_y_min{}, feat_y_max{};
     size_t n_feat = 0;
-    int feat_level = 0; // 特征所属层 (0=L0, 1=L1; legend 命名按此层取元数据)
+    int feat_level = 0; // 特征所属层 (0=L_sec, 1=L_min; legend 命名按此层取元数据)
 
     // ---- 查询 (GUI, front 槽; X = 秒下标) ----
     size_t plot_idx_from_x(double x) const;
@@ -239,7 +239,7 @@ struct OrderFlow {
 
   // ==========================================================================
   // Pick (资产筛选) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
-  //   状态源 = L1 落盘列 (Fund 节点日频广播): risk_warn / list_age / delist_age
+  //   状态源 = L_min 落盘列 (Fund 节点日频广播): risk_warn / list_age / delist_age
   //   / industry_l1, 配合同层 ts_valid 判有效 —— 当日无有效分钟的资产读不到状态
   //   (落盘缓冲清零, 值全 0 会被误读成"正常在市"), 一律不进候选.
   // ==========================================================================
@@ -343,9 +343,9 @@ struct OrderFlow {
     // Selection state
     int selected_asset_idx = 0;
     bool asset_initialized = false; // 首个候选就绪时自动选一次 (之后尊重用户选择)
-    double l1_anchor_x = 0;
-    misc::Ymd l1_anchor_date = 0;     // GUI 自持副本 (dates 重建期间仍可用; 0 = 未设)
-    size_t l0_anchor_tick = SIZE_MAX; // 图1 锚点 = 秒下标 (跨日/换资产稳定; SIZE_MAX = 未设)
+    double min_anchor_x = 0;
+    misc::Ymd min_anchor_date = 0;     // GUI 自持副本 (dates 重建期间仍可用; 0 = 未设)
+    size_t sec_anchor_tick = SIZE_MAX; // 图1 锚点 = 秒下标 (跨日/换资产稳定; SIZE_MAX = 未设)
 
     // Rendering parameters
     bool show_heatmap = true;
@@ -355,25 +355,25 @@ struct OrderFlow {
     // 请求快照 (期望态; 变化 → gen++ → Request*)
     uint32_t kline_gen = 0, depth_gen = 0;
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
-    std::vector<int> kline_feats, depth_feats; // 选中特征列 (图2 = L1; 图1 = 当前选中层)
+    std::vector<int> kline_feats, depth_feats; // 选中特征列 (图2 = L_min; 图1 = 当前选中层)
     int depth_feat_level = -1;                 // 图1 特征所属层 (期望态; -1 = 未设)
     misc::Ymd depth_date = 0;
 
-    // 图2 X 域 (= 特征日数 × L1_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
+    // 图2 X 域 (= 特征日数 × MIN_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
     // 只在域本身变了 (重扫日期) 才复位视野 —— 换资产不动 X
-    double l1_x_max = 0.0, l1_x_applied = 0.0;
+    double min_x_max = 0.0, min_x_applied = 0.0;
     bool kline_rescan_pending = false; // 请求带 rescan (dates 正在重扫): 期间 dates 不可读
 
     // Y 轴管理 (流式期间跟随发布范围)
-    size_t l1_last_pub_days = SIZE_MAX;    // 上次应用 Y1 范围时的已发布日数
-    uint32_t l0_last_gen = UINT32_MAX;     // 上次 L0 视图重置时的槽 gen
-    double l0_y_min = 0.0, l0_y_max = 0.0; // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
+    size_t min_last_pub_days = SIZE_MAX;     // 上次应用 Y1 范围时的已发布日数
+    uint32_t sec_last_gen = UINT32_MAX;      // 上次 L_sec 视图重置时的槽 gen
+    double sec_y_min = 0.0, sec_y_max = 0.0; // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
 
     // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx
     // (kline_gen, pub_days) 变才重算 — 流式追加 / 换资产 / 重扫日期 都被 gen 覆盖
-    std::vector<size_t> l1_missing_days;
-    uint32_t l1_missing_days_gen = UINT32_MAX;
-    size_t l1_missing_days_pub_days = 0;
+    std::vector<size_t> min_missing_days;
+    uint32_t min_missing_days_gen = UINT32_MAX;
+    size_t min_missing_days_pub_days = 0;
 
     void clear();
   } ui;

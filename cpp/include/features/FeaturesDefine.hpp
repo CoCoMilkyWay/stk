@@ -77,15 +77,16 @@
 // 截面列文件 (Node/<Tier>/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
 //
 //   #define FIELDS_<LVL>_<Name>(X, CAT1)  X(code, CAT1, cat_l2, name_en, name_cn, description, formula, SRC) ...
-//     LVL ∈ {L0, L1}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
+//     LVL ∈ {L_sec, L_min, L_day}: 落盘层 (见 FeatureLevel). 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
 //     cat_l2 缺省写 AUTO (dummy): GUI 按预览值域自动探测 (price/flag/rank/ratio_pos/ratio_neg/ratio/raw, 见 TabFeature detect_cat2);
 //       写别的 token = 人类强行赋值, 覆盖探测 (表格绿字). 不参与落盘指纹, 改了不用重算.
 //     同族列 (Flow 的 {amt,vol,n}_{taker,maker,cancel}_{bid,ask}, Book 的 qty_{bid,ask}_{1,5,10,all} …) 在文件内用 helper 宏生成行, ## 拼进名字, 字面串拼进 EN/CN/公式.
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 有效性标志 / 归一化 (GUI 两列 TS Norm / CS Norm) 全部由它推出:
-//       TS(Node[, port], Tf, Method)  节点输出口. TS; 层必须 == 节点 flush 域; 有效性: onMinute → ALL (L1 稠密), onDepth → DEPTH, 其余 → DATA
+//       TS(Node[, port], Tf, Method)  节点输出口. TS; 任意层可引任意 flush 域的节点 (本层节拍取 Series 最新值, 见 FeatureLevel);
+//                                  有效性: L_min / L_day → ALL (稠密), L_sec: onDepth → DEPTH, 其余 → DATA
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
-//       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 有效性随源层 (L1 ALL / L0 DATA)
-//                                  ns = 本档, 或 TIER_SIDES 登记的旁读档 (只许 L1)
+//       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 必须 == 本层) 的字段 src → cs::Tf::apply → cs::Method::apply.
+//                                  CS; 有效性随源层 (L_sec DATA / 其余 ALL); ns = 本档, 或 TIER_SIDES 登记的旁读档
 //       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写, 不产 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
@@ -95,7 +96,7 @@
 //
 // CMake (projects/main/CMakeLists.txt) 逐档扫描 features/Node/<Tier>/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
 // 分层拓扑排序, 生成 build/generated/features/<Tier>/NodesGenerated.hpp: 本档全部 #include + <Tier>_NODES(N) +
-// <Tier>_L0_FIELDS(X) / <Tier>_L1_FIELDS(X). 基建 (LobGraph / Core* / FeatureStore / Feature.hpp GUI 元数据)
+// <Tier>_L_sec_FIELDS(X) / <Tier>_L_min_FIELDS(X) / <Tier>_L_day_FIELDS(X). 基建 (LobGraph / Core* / FeatureStore / Feature.hpp GUI 元数据)
 // 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
 //
 // 加特征 = 改 (或新建) 一个节点文件. 删特征 = 删几行 / 删文件. 其他地方不动.
@@ -193,19 +194,27 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
 #define NODE_FLUSH(ct, ...) NODE_FLUSH_I(__VA_ARGS__ __VA_OPT__(, ) ct)
 #define NODE_FLUSH_I(ft, ...) Trigger::ft
 
-// flush 域 → 该节点落盘列的层 / 有效性标志 (TS 列由此推出, 不逐列写)
-//   L1 (onMinute) 稠密: 每分钟都写行 (无成交分钟各节点归零 / 延续, 见 ResamplerTick2Min / CoreLob) → ALL, 不受 ts_valid 门控;
-//   L0 事件稀疏: 只有事件秒有行 → DATA / DEPTH 按 ts_valid 门控
-constexpr int level_of(Trigger flush) { return flush == Trigger::onMinute ? 1 : 0; }
-constexpr L2::ValidType valid_of(Trigger flush) {
-  return flush == Trigger::onMinute ? L2::ValidType::ALL : flush == Trigger::onDepth ? L2::ValidType::DEPTH
-                                                                                     : L2::ValidType::DATA;
+// 落盘层 (语义层号, 全档同一套; 档可以缺层). 枚举名 = 层名 = 字段表层标 (FIELDS_<LVL>_ / CS(ns, <LVL>, ...)) = 日文件名
+//   L_sec 秒: 事件秒才有行 (稀疏)    L_min 分钟: 每分钟边界一行 (稠密)    L_day 日: 收盘一行
+// 行由 worker 在本层节拍写 (CoreTs / CoreLob), 值 = 被引节点 Series 的最新值 (Node::last), 与节点 flush 域无关:
+//   高频行引低频节点 = 最近一次低频值 (日频节点 onDay 算 → 分钟行读到当日值); 低频行引高频节点 = 节拍时刻 (收盘) 的值.
+//   节点间只经 Series 传值, 对齐由 Series 天然完成, DAG 里不写对齐; 张量只经 worker 预设接口 (fstore) 读写, 节点不碰.
+enum FeatureLevel : size_t { L_sec,
+                             L_min,
+                             L_day };
+
+// 层 (+ 节点 flush 域) → TS 列的有效性标志 (不逐列写)
+//   L_min / L_day 稠密: 每个节拍都写行 (无成交分钟各节点归零 / 延续, 见 ResamplerTick2Min / CoreLob) → ALL, 不受 ts_valid 门控;
+//   L_sec 事件稀疏: 只有事件秒有行 → DATA / DEPTH (onDepth 节点) 按 ts_valid 门控
+constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
+  return lvl != L_sec ? L2::ValidType::ALL : flush == Trigger::onDepth ? L2::ValidType::DEPTH
+                                                                       : L2::ValidType::DATA;
 }
 
 // ----------------------------------------------------------------------------
 // SRC 列解析 (字段表消费者共用)
 //   SRC_KIND_##src             → FeatureDataType
-//   SRC_VALID_##src            → L2::ValidType (TS 看节点 flush 域: 需要 node_flush::<node>, 见 FeatureStoreConfig)
+//   SRC_VALID_##src            → L2::ValidType (TS 看本层 + 节点 flush 域: 需要 kLevel 与 node_flush::<node>, 见 FeatureStoreConfig)
 //   SRC_TS_TF_##src / SRC_TS_METHOD_##src → ts::TfId:: / ts::MethodId:: (TS 行取 Tf / Method, 其余 None; 消费者需 include Method/TS.hpp)
 //   SRC_CS_TF_##src / SRC_CS_METHOD_##src → cs::TfId:: / cs::MethodId:: (CS 行取 Tf / Method, 其余 None; 消费者需 include Method/CS.hpp)
 //   SRC_DISPATCH(P, code, src) → P_TS(code, node[, port], Tf, Method) / P_CS(code, ns, lvl, s, Tf, Method) /
@@ -216,9 +225,9 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 #define SRC_KIND_LABEL FeatureDataType::LB
 #define SRC_KIND_FLAG FeatureDataType::META
 
-#define SRC_VALID_TS(node, ...) valid_of(node_flush::node)
-#define SRC_VALID_CS(ns, l, ...) (l == 1 ? L2::ValidType::ALL : L2::ValidType::DATA) // 截面随源层: L1 稠密 (门控本就只看 cs_valid)
-#define SRC_VALID_LABEL L2::ValidType::ALL                                           // 标签全行写 (不产 NaN, 缺口用可成交时刻顶上, 见 LabelLob 文件头), 与 L1 特征同稠密
+#define SRC_VALID_TS(node, ...) valid_of(kLevel, node_flush::node)
+#define SRC_VALID_CS(ns, l, ...) (l == L_sec ? L2::ValidType::DATA : L2::ValidType::ALL) // 截面随源层: L_min / L_day 稠密 (门控本就只看 cs_valid)
+#define SRC_VALID_LABEL L2::ValidType::ALL                                               // 标签全行写 (不产 NaN, 缺口用可成交时刻顶上, 见 LabelLob 文件头), 与 L_min 特征同稠密
 #define SRC_VALID_FLAG L2::ValidType::ALL
 
 // TS(node, Tf, Method) / TS(node, port, Tf, Method): 按参数个数取 Tf / Method (RowWriter 同法取 node/port)
@@ -271,18 +280,20 @@ constexpr L2::ValidType valid_of(Trigger flush) {
   X(Bar, bar)
 
 // 落盘层注册 (档 × 层, 一格一行): X(Tier, ns, LVL, index, fields_macro, psd); 行数由层号定 (level_rows)
-//   index = 语义层号 (0 = L0 秒, 1 = L1 分钟), 全档同一套; 档可以缺层 (Bar 无秒频源, 只有 L1)
-//   L0    秒频 (T = L0_ROWS). 预留层: 目前只有 ts_valid / cs_valid 两列, 是"暂时", 不是"无用" ——
-//         秒频算力贵 (每笔触发, 每列行数是 L1 的 60 倍), 进 L0 的特征要精挑细选后才加.
-//         不要删 Lob 的 L0, 不要把层系统退化成只有 L1, 也不要因 L0 暂无特征就删它的写 / CS 节拍 / 落盘 / 读路径.
-//   L1    分钟频 (T = L1_ROWS)
+//   index = 语义层号 (FeatureLevel), 全档同一套; 档可以缺层 (Bar 无秒频源, 只有 L_min / L_day; Lob 无日频列)
+//   L_sec    秒频 (T = L_SEC_ROWS). 预留层: 目前只有 ts_valid / cs_valid 两列, 是"暂时", 不是"无用" ——
+//         秒频算力贵 (每笔触发, 每列行数是 L_min 的 60 倍), 进 L_sec 的特征要精挑细选后才加.
+//         不要删 Lob 的 L_sec, 不要把层系统退化成只有 L_min, 也不要因 L_sec 暂无特征就删它的写 / CS 节拍 / 落盘 / 读路径.
+//   L_min    分钟频 (T = L_MIN_ROWS)
+//   L_day    日频 (T = L_DAY_ROWS): 收盘行 (CoreTs::end_day 写). 本身是日频的数据 (基本面 / 状态 / 票池) 放这里, 不在分钟层逐分钟复写
 //   每层每天一个日文件, 内带列目录, 按列选读 (见 FeatureDay.hpp; 列是否沿 T 轴 XOR 差分由写端逐列按数据定)
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
-#define TIER_LEVELS(X)                           \
-  X(Lob, lob, L0, 0, Lob_L0_FIELDS, "100/00/00") \
-  X(Lob, lob, L1, 1, Lob_L1_FIELDS, "00/100/00") \
-  X(Bar, bar, L1, 1, Bar_L1_FIELDS, "00/100/00")
+#define TIER_LEVELS(X)                                 \
+  X(Lob, lob, L_sec, 0, Lob_L_sec_FIELDS, "100/00/00") \
+  X(Lob, lob, L_min, 1, Lob_L_min_FIELDS, "00/100/00") \
+  X(Bar, bar, L_min, 1, Bar_L_min_FIELDS, "00/100/00") \
+  X(Bar, bar, L_day, 2, Bar_L_day_FIELDS, "00/00/00")
 
-// 档间旁读: X(ns, side) —— ns 档的 L1 截面行可读 side 档的 L1 列 (CS(side, 1, src, ...) / NeutralRank 上下文);
+// 档间旁读: X(ns, side) —— ns 档的截面行可读 side 档同层的列 (CS(side, LVL, src, ...) / NeutralRank 上下文);
 // side 档当日缺库 → 旁读列整日 NaN + 日志 (不等它, 不替它算)
 #define TIER_SIDES(X) X(lob, bar)

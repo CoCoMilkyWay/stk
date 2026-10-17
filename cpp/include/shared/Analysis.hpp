@@ -37,7 +37,7 @@ struct Feature;
 // 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Storage/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
 //   → 导出 staging Snap → 短锁 swap 发布
-//   - A 轴 = 库轴 (槽位 = 库轴下标, 查 items 经 global_ids); Dist / Transform / Preview 只在 L1 跑, Corr* 跟随层
+//   - A 轴 = 库轴 (槽位 = 库轴下标, 查 items 经 global_ids); Dist / Transform / Preview 只在 L_min 跑, Corr* 跟随层
 //   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
 //     reset 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
 //   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排: Request = ReadScope + Spec,
@@ -46,8 +46,8 @@ struct Feature;
 namespace analysis {
 
 // ---- 共用常量 ----
-inline constexpr size_t kLevel = 1;                  // 流式分析只在 L1 跑
-inline constexpr size_t kVR = TRADE_MINUTES_PER_DAY; // L1 有效行 (== level_valid_rows(kLevel), build 内断言)
+inline constexpr size_t kLevel = L_min;              // 流式分析只在 L_min 跑
+inline constexpr size_t kVR = TRADE_MINUTES_PER_DAY; // L_min 有效行 (== level_valid_rows(kLevel), build 内断言)
 inline constexpr size_t kDaysPerBatch = 8;           // 天是流式维度: 首帧 = 一批的 IO + 计算
 inline constexpr size_t kAssetBlock = 64;            // 资产抢块粒度
 inline constexpr size_t kDrawAssets = 512;           // PDF 折线绘制子集 (纯 UI 顶点预算, 计算恒为全资产)
