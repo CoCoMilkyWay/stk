@@ -333,7 +333,7 @@ struct StreamSlot {
 };
 
 // 一次 unrar p 的读取计划: 成员按归档序排好, 同一资产的几块连成一段
-struct ReadPlan {
+struct RarPlan {
   std::vector<std::string> paths;
   std::vector<size_t> sizes;
   std::vector<StreamSlot> slots;
@@ -352,7 +352,7 @@ struct ReadPlan {
 // 最多个位数, 无关紧要. 判据是"首尾跨度等于块数": 一个资产有 1~3 块, 连成
 // 一段当且仅当 last - first + 1 == count.
 struct BatchPlan {
-  std::vector<ReadPlan> plans;
+  std::vector<RarPlan> plans;
 
   void build(const SharedData &data, const EncodeBatch &batch, const MemberFiles &files) {
     order_.clear();
@@ -383,7 +383,7 @@ struct BatchPlan {
     }
 
     plans.resize(n_plans);
-    for (ReadPlan &plan : plans) {
+    for (RarPlan &plan : plans) {
       plan.paths.clear();
       plan.sizes.clear();
       plan.slots.clear();
@@ -394,7 +394,7 @@ struct BatchPlan {
       // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
       const std::string asset_full = config::archive_code(asset.code_ex(), batch.date);
       const size_t m = static_cast<size_t>(slot.member);
-      ReadPlan &plan = plans[plan_of_[slot.task_idx]];
+      RarPlan &plan = plans[plan_of_[slot.task_idx]];
       plan.paths.push_back(misc::dense(batch.date) + "/" + asset_full + "/" + *files[m]);
       plan.sizes.push_back(task.member[m].size);
       plan.slots.push_back(slot);
@@ -405,7 +405,7 @@ struct BatchPlan {
     // 元素, 不会往中间插新东西). 万一还破 — 一个资产会被 begin/finish 两次,
     // 第二次把第一次的产物覆盖成半截数据, 完全无声, 与其信任不如当场炸.
     std::vector<bool> closed(batch.tasks.size(), false);
-    for (const ReadPlan &plan : plans) {
+    for (const RarPlan &plan : plans) {
       for (size_t i = 0; i < plan.slots.size(); ++i) {
         const size_t t = plan.slots[i].task_idx;
         assert(!closed[t] && "encoding_worker: 读取计划里仍有不相邻的资产, 切分会错位");
@@ -550,7 +550,7 @@ void encoding_worker(SharedData &data,
 
     // plans[0] 是连成一段的大流, 其后每条是一个不相邻资产的小流 —— 同一个循环.
     // 到达先后在资产内无所谓 (finish 统一合并排序).
-    for (const ReadPlan &plan : batch_plan.plans) {
+    for (const RarPlan &plan : batch_plan.plans) {
       if (plan.slots.empty())
         continue;
       TraceN("StreamPlan");
