@@ -106,7 +106,7 @@ struct Dist::Runtime {
     }
   };
 
-  Prefetch<TsPlane> pf;      // [A][批天][分钟] 资产主序批平面 ×2 (f16) + io 池
+  Prefetch<TsPlane> pf;      // [A][批段][行] 资产主序批平面 ×2 (f16) + io 池
   AssetSketches assets;      // [A] 每资产累积 sketch
   Snap pub;                  // 发布 staging (扫描线程各写各资产线, 批末导出聚合槽; 短锁与 snap swap)
   W2Ref w2_ref;              // 上一批末的全局分位参考 (批末发布更新, 扫描只读)
@@ -114,21 +114,22 @@ struct Dist::Runtime {
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
   // 容量准备 (幂等, 尺寸对得上零分配), 返回计算执行器
-  misc::exec::ForkJoin &prepare(size_t A, size_t n_months, size_t n_io_cols, size_t agg_stride) {
+  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, size_t A_bar, size_t n_months, size_t agg_stride) {
     TraceN("DistPrepare"); // 首帧账目: 批平面 + 全资产 sketch + n_threads × 聚合 sketch
     const size_t n_threads = threads_for(n_asset_blocks(A));
-    const size_t asset_stride = kDaysPerBatch * kVR;
-    pf.prepare(threads_for(kDaysPerBatch), A, kLevel, n_io_cols);
+    const size_t bs = batch_segs(plan.level), days = bs * seg_days(plan.level);
+    const size_t asset_stride = bs * seg_rows(plan.level);
+    pf.prepare(threads_for(bs), plan, A, A_bar, SIZE_MAX);
     for (TsPlane &p : pf.buf)
-      p.prepare(A, kLevel, kDaysPerBatch, 1);
+      p.prepare(A, plan.level, bs, 1);
     assets.prepare(A);
     w2_ref = W2Ref{};
     shards.resize(n_threads);
     for (Shard &sh : shards) {
       sh.samples.reserve(asset_stride);
       sh.agg_samples.reserve(asset_stride / agg_stride + 1);
-      sh.day_groups.reserve(kDaysPerBatch);
-      sh.tod_runs.reserve(kDaysPerBatch * kTodBins); // 每天最多 kTodBins 段
+      sh.day_groups.reserve(days);
+      sh.tod_runs.reserve(days * kTodBins); // 每天最多 kTodBins 段
       prepare_slots(sh.months, n_months, kAggKllCapacity, kAggKllResolution);
       prepare_slots(sh.by_weekday, 7, kAggKllCapacity, kAggKllResolution);
       prepare_slots(sh.by_tod, kTodBins, kAggKllCapacity, kAggKllResolution);
@@ -148,7 +149,7 @@ Dist::~Dist() = default;
 
 void Dist::reset(ReadScope scope, Spec sp) {
   TraceN("DistReset");
-  assert(sp.cols.n() == 1 && "Dist 只接受单值列 (+ 门控)");
+  assert(sp.plan.n() == 1 && sp.plan.level == sp.plan.cols[0].level && "Dist 只接受单列, 网格 = 列自己的层");
   check_axis(scope.lib.axis.ids);
   std::lock_guard<std::mutex> lock(mutex);
 
@@ -176,24 +177,24 @@ void Dist::reset(ReadScope scope, Spec sp) {
 // Build (分批流式: 每批 IO → 扫描 → 归约 → 发布, 首帧与总区间长度无关)
 // ============================================================================
 
-bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+bool Dist::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
   const size_t A = scope_.lib.axis.size(); // 库轴大小 (扫描/抽样预算/分母全按它)
-  const size_t VR = kVR;
-  assert(level_valid_rows(kLevel) == VR);
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
-  const fmeta::ColumnSet &cols = spec.cols;
+  const ReadPlan &rp = spec.plan;
+  const size_t level = rp.level, rpd = level_valid_rows(level), R = seg_rows(level), BS = batch_segs(level);
   const size_t n_months = scope_.months.size();
+  const Readers rd{reader, all, scope_.lib.axis.ids.data()};
 
-  // 预计算: 分钟 → 日内桶 (L_min)
-  std::array<uint8_t, kVR> tod_lut{};
-  for (size_t t = 0; t < VR; ++t)
-    tod_lut[t] = static_cast<uint8_t>(tod_bin_of(t));
+  // 预计算: 行 → 日内桶
+  std::vector<uint8_t> tod_lut(rpd);
+  for (size_t t = 0; t < rpd; ++t)
+    tod_lut[t] = static_cast<uint8_t>(tod_bin_of_row(level, t));
 
-  // 天序: 洗牌后按总样本预算截断 (分批后平面只存一批, 内存不约束天数; 预算只是总时长旋钮)
-  const DayPlan plan = plan_days(reader, scope_.months, DayOrder::Shuffle, std::max<size_t>(1, kMaxTotalSamples / (A * VR)));
+  // 段序: 洗牌后按总样本预算截断 (分批后平面只存一批, 内存不约束段数; 预算只是总时长旋钮)
+  const SegPlan plan = plan_segs(reader, scope_.months, level, DayOrder::Shuffle, std::max<size_t>(1, kMaxTotalSamples / (A * R)));
   if (plan.size() == 0)
     return true;
   const size_t n_sel = plan.size();
@@ -201,11 +202,11 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
 
   // 聚合槽抽样 stride: 按总格子数 (有效样本的上界) 折到 kAggTargetSamples 量级.
   // 区间小 → stride=1, 全量进聚合槽, 小数据集下不会被抽到低于 kMinSamples.
-  size_t agg_stride = std::max<size_t>(1, (n_sel * A * VR) / kAggTargetSamples);
-  while (agg_stride > 1 && VR % agg_stride == 0)
-    ++agg_stride; // 与日内分钟数互质: 整除会让每天固定落在同一批分钟上, 扭曲日内分布
+  size_t agg_stride = std::max<size_t>(1, (n_sel * A * R) / kAggTargetSamples);
+  while (agg_stride > 1 && rpd % agg_stride == 0)
+    ++agg_stride; // 与日内行数互质: 整除会让每天固定落在同一批行上, 扭曲日内分布
 
-  misc::exec::ForkJoin &ex = rt.prepare(A, n_months, cols.io.size(), agg_stride);
+  misc::exec::ForkJoin &ex = rt.prepare(rp, A, scope_.bar.axis.size(), n_months, agg_stride);
   const size_t n_blocks = n_asset_blocks(A);
   rt.pub = snap; // 资产线的 asset / draw 标记 + 各槽尺寸随之带过去 (之后每批整体覆写)
   rt.pub.agg_stride = agg_stride;
@@ -229,7 +230,7 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
       rt.w2_ref.valid = true;
     }
     // 首个有参考的批: 本批扫描时还没参考 (w2 全 -1), 用刚建好的参考就地补算一次,
-    // 否则单批区间 (天数 ≤ kDaysPerBatch) 永远没有散点. 一次性 A 次 exportICDF, 后续批走滞后路径
+    // 否则单批区间 (段数 ≤ batch_segs) 永远没有散点. 一次性 A 次 exportICDF, 后续批走滞后路径
     if (!had_ref && rt.w2_ref.valid) {
       TraceN("W2Backfill");
       for (size_t a = 0; a < A; ++a) {
@@ -254,15 +255,15 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   // 批 b0 的 IO (预读线程或本线程跑; 只写传入的平面)
   const auto load = [&](size_t b0) {
     return [&, b0](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
-      pl.load_batch(io, slots, reader, plan.dates.data() + b0, std::min(kDaysPerBatch, n_sel - b0), cols, cancel);
+      pl.load_batch(io, slots, rd, rp, plan, b0, std::min(BS, n_sel - b0), cancel);
     };
   };
   rt.pf.now(load(0));
 
-  for (size_t b0 = 0; b0 < n_sel; b0 += kDaysPerBatch) {
-    const size_t bd = std::min(kDaysPerBatch, n_sel - b0);
-    if (b0 + kDaysPerBatch < n_sel)
-      rt.pf.issue(load(b0 + kDaysPerBatch)); // issue → wait 之间不许 return
+  for (size_t b0 = 0; b0 < n_sel; b0 += BS) {
+    const size_t bd = std::min(BS, n_sel - b0);
+    if (b0 + BS < n_sel)
+      rt.pf.issue(load(b0 + BS)); // issue → wait 之间不许 return
     const TsPlane &pl = rt.pf.front();
 
     // ------------------------------------------------------------------
@@ -283,38 +284,42 @@ bool Dist::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
         size_t agg_tick = 0;
 
         for (size_t i = 0; i < bd; ++i) {
-          const feature_storage_t *p = pl.series(0, a, i);
-          const uint32_t day_begin = static_cast<uint32_t>(sh.agg_samples.size());
-
-          for (size_t t = 0; t < VR; ++t) {
-            if (!sh.integrity.add_cell(p[t])) // 哨兵 / ±inf: 按位分账后跳过
+          for (size_t d = 0; d < plan.days; ++d) {
+            const size_t di = (b0 + i) * plan.days + d;
+            if (plan.dates[di] == 0) // 尾段空位: 不入账
               continue;
-            const float v = static_cast<float>(p[t]);
-            sh.samples.push_back(v); // 全量 → 该资产私有 sketch
+            const feature_storage_t *p = pl.series(0, a, i) + d * rpd;
+            const uint32_t day_begin = static_cast<uint32_t>(sh.agg_samples.size());
 
-            if (++agg_tick < agg_stride) // 聚合槽只吃 stride 抽样
-              continue;
-            agg_tick = 0;
-            const int b = tod_lut[t];
-            if (b != cur_bin) {
-              if (cur_bin >= 0)
-                sh.tod_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
-                                       static_cast<uint8_t>(cur_bin)});
-              cur_bin = b;
-              run_begin = static_cast<uint32_t>(sh.agg_samples.size());
+            for (size_t t = 0; t < rpd; ++t) {
+              if (!sh.integrity.add_cell(p[t])) // 哨兵 / ±inf: 按位分账后跳过
+                continue;
+              const float v = static_cast<float>(p[t]);
+              sh.samples.push_back(v); // 全量 → 该资产私有 sketch
+
+              if (++agg_tick < agg_stride) // 聚合槽只吃 stride 抽样
+                continue;
+              agg_tick = 0;
+              const int b = tod_lut[t];
+              if (b != cur_bin) {
+                if (cur_bin >= 0)
+                  sh.tod_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
+                                         static_cast<uint8_t>(cur_bin)});
+                cur_bin = b;
+                run_begin = static_cast<uint32_t>(sh.agg_samples.size());
+              }
+              sh.agg_samples.push_back(v);
             }
-            sh.agg_samples.push_back(v);
-          }
+            sh.integrity.n_total += rpd;
 
-          if (sh.agg_samples.size() > day_begin)
-            sh.day_groups.push_back({day_begin, static_cast<uint32_t>(sh.agg_samples.size()),
-                                     plan.month[b0 + i], plan.weekday[b0 + i]});
+            if (sh.agg_samples.size() > day_begin)
+              sh.day_groups.push_back({day_begin, static_cast<uint32_t>(sh.agg_samples.size()),
+                                       plan.month[di], plan.weekday[di]});
+          }
         }
         if (cur_bin >= 0)
           sh.tod_runs.push_back({run_begin, static_cast<uint32_t>(sh.agg_samples.size()),
                                  static_cast<uint8_t>(cur_bin)});
-
-        sh.integrity.n_total += bd * VR;
 
         // 聚合槽: 私有副本吃切片 (零拷贝)
         if (!sh.agg_samples.empty()) {

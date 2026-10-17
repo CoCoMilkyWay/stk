@@ -26,7 +26,7 @@ struct KlineService::Impl {
     }
     dir = sc.lib.dir, hash = sc.lib.axis.hash, A = sc.lib.axis.size();
     reader.emplace(sc.lib);
-    cols.preallocate(A, analysis::kLevel, 5);
+    cols.preallocate(A, L_min, 5);
   }
 };
 
@@ -61,7 +61,7 @@ void KlineService::reset(KlineRequest &&req) {
   y_min_ = (std::numeric_limits<double>::max)();
   y_max_ = std::numeric_limits<double>::lowest();
   s_.pub.store(KlineStream::pack(cur_.gen, 0, 0), std::memory_order_release); // 先零计数再换代
-  const size_t cap = cur_.dates.size() * level_valid_rows(analysis::kLevel);
+  const size_t cap = cur_.dates.size() * level_valid_rows(L_min);
   for (std::vector<double> *v : {&s_.x, &s_.open, &s_.high, &s_.low, &s_.close}) {
     v->clear();
     v->reserve(cap); // 满容量: 之后只 push_back, data() 恒稳定
@@ -77,7 +77,7 @@ bool KlineService::step(size_t d) {
   reader.load_day_columns(cur_.dates[d], idx, impl_->cols);
   if (reader.stale())
     return false;
-  const size_t a = static_cast<size_t>(cur_.sub), VR = level_valid_rows(analysis::kLevel);
+  const size_t a = static_cast<size_t>(cur_.sub), VR = level_valid_rows(L_min);
   const double x0 = static_cast<double>(d * VR);
   const FeatureRead::DayColumns &c = impl_->cols;
   for (size_t m = 0; m < VR; ++m) {

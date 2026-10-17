@@ -52,8 +52,7 @@ class FeatureRead;
 // 三个目标 (Corr / CorrLag / CorrPair) 同一个引擎 (Corr.cpp), 只差配置:
 //   切片布局 (等距抽稀 / 连续窗 / 取满) × lag 数 (1 / kCorrLags)
 //
-// 层: 跟随 UI 的 L_sec/L_min 选择 (与 Dist/Transform 只跑 L_min 不同, 这里没有 kLevel 硬编码).
-//   L_sec 目前只有 ts_valid / cs_valid 两列, 非 META 列不足 2 → UI 不提交请求.
+// 网格: 请求列里最细的层; 粗层列按 level_asof 投影 (前一根已收的粗层值). L_day 网格 = 段内逐日截面, 切片取满 (日 = 切片).
 // 生命周期: 进 Corr tab 且过滤行集/层/库/日期区间变了 → 新请求取消在跑重算;
 //   切走 tab → 只中断 (矩阵留在内存, 切回不重算); 切出 Features 任务 → clear() 释放.
 // ============================================================================
@@ -67,19 +66,19 @@ static constexpr size_t kCorrMaxLag = 10;                 // lead-lag 半宽 (�
 static constexpr size_t kCorrLags = 2 * kCorrMaxLag + 1;
 static constexpr size_t kCorrLagWindow = kCorrLags; // CorrLag 每日连续窗长 (行数): 每个 lag 至少 kCorrMaxLag+1 对切片
 
-// 该层的切片行步长 (kCorrSliceMinutes 分钟折成层行数; L_min = 10, L_sec = 600, L_10min = 1)
+// 该层的切片行步长 (kCorrSliceMinutes 分钟折成层行数; L_min = 10, L_sec = 600, L_10min = 1, L_day = 1)
 size_t corr_slice_stride(size_t level);
 
-// 三个目标共用的输入: 层 + 列描述 (矩阵 / lag: 升序去重 ≥ 2; 单对: {a, b} 按序)
+// 三个目标共用的输入: 读计划 (网格层 + ColRef; 矩阵 / lag: 升序去重 ≥ 2; 单对: {a, b} 按序)
 struct CorrSpec {
-  size_t level = 0;      // 所属层 (UI 切层后不误读旧快照)
-  fmeta::ColumnSet cols; // 值列 = 该层 metadata 下标 (+ 门控)
-  size_t n() const { return cols.n(); }
-  uint32_t col(size_t i) const {
+  ReadPlan plan;
+  size_t level() const { return plan.level; }
+  size_t n() const { return plan.n(); }
+  const ColRef &col(size_t i) const {
     assert(i < n());
-    return static_cast<uint32_t>(cols.io[i]);
+    return plan.cols[i];
   }
-  bool same(const CorrSpec &o) const { return level == o.level && cols.io == o.cols.io; }
+  bool same(const CorrSpec &o) const { return plan.level == o.plan.level && plan.cols == o.plan.cols; }
 };
 
 struct Corr : Published {
@@ -98,7 +97,7 @@ struct Corr : Published {
   // 重置全部状态并进入 Building (列集/层变了旧矩阵下标全错位, 快照整体清)
   void reset(analysis::ReadScope scope, Spec spec);
   // 逐抽样日构建 (日内切片累加, 每步发布); 被取消返回 false
-  bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
+  bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);
   void clear();
 
 private:
@@ -132,7 +131,7 @@ struct CorrPair : Published {
   ~CorrPair();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
+  bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);
   void clear();
 
 private:
@@ -167,7 +166,7 @@ struct CorrLag : Published {
   ~CorrLag();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
+  bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);
   void clear();
 
 private:

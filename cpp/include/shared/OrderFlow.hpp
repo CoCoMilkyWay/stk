@@ -1,10 +1,12 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
 // OrderFlow
-// ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (L_min 分钟频)
-// │            worker 逐日流式 (从前往后, 每日一次选列读), GUI 画已发布前缀
+// ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (任意 ColRef, 分钟网格)
+// │            worker 逐日流式 (从前往后, 每日每源一次选列读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
-// │            + 多特征 overlay (当前选中层逐列选读, L_min 分钟映射到秒); 双槽 ping-pong 整体发布
+// │            + 多特征 overlay (任意 ColRef, 秒网格); 双槽 ping-pong 整体发布
+// overlay 点 = 尾部对齐 (行 emit 时刻): 图1 x = level_end_sec − 1; 图2 x = 日 × MIN_CAPACITY + 该秒所在分钟
+//   (细于分钟的源每分钟留最后一个有效行). 各源按自己的 (档, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
@@ -17,8 +19,9 @@
 // 三块各带进度面 (Kline 自身 / PingPong), 是各自 worker 的 board.
 #pragma once
 
-#include "codec/L2_DataType.hpp"  // L2::LOB_DEPTH
-#include "features/TimeIndex.hpp" // L_SEC_ROWS / L_MIN_ROWS (稳定形状常量, 不依赖字段表)
+#include "codec/L2_DataType.hpp"              // L2::LOB_DEPTH
+#include "features/Storage/FeatureLevels.hpp" // ColRef / level_end_sec (稳定层, 不依赖字段表)
+#include "features/TimeIndex.hpp"             // L_SEC_ROWS / L_MIN_ROWS (稳定形状常量, 不依赖字段表)
 #include "misc/date.hpp"
 #include "shared/Progress.hpp" // PrefixPub / PingPong
 
@@ -208,11 +211,11 @@ struct OrderFlow {
     HeatmapMerged merged;
     // 当日自动热力图阈值 (log10 元): 载入新槽时 GUI 取作初值 → 色块浓度跨日/跨资产一致
     float auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
-    // 特征线 (当前选中层, 与图2 同源): L_sec = data_valid 秒; L_min = 有效分钟, X 映射分钟起始秒
+    // 特征线 (任意 ColRef, 与图2 同源): 门控过的行, X = 行末秒 − 1
     std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat;
     std::array<float, OrderFlowConst::MAX_FEATURES> feat_y_min{}, feat_y_max{};
     size_t n_feat = 0;
-    int feat_level = 0; // 特征所属层 (0=L_sec, 1=L_min; legend 命名按此层取元数据)
+    std::vector<ColRef> feat_refs; // [n_feat] 各线的列 (legend 命名 / 轴分流按此取元数据, 与槽配对)
 
     // ---- 查询 (GUI, front 槽; X = 秒下标) ----
     size_t plot_idx_from_x(double x) const;
@@ -355,8 +358,7 @@ struct OrderFlow {
     // 请求快照 (期望态; 变化 → gen++ → Request*)
     uint32_t kline_gen = 0, depth_gen = 0;
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
-    std::vector<int> kline_feats, depth_feats; // 选中特征列 (图2 = L_min; 图1 = 当前选中层)
-    int depth_feat_level = -1;                 // 图1 特征所属层 (期望态; -1 = 未设)
+    std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (两图同一组, 截断 MAX_FEATURES)
     misc::Ymd depth_date = 0;
 
     // 图2 X 域 (= 特征日数 × MIN_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;

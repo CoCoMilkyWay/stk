@@ -167,6 +167,13 @@ static uint64_t disp_key(const Corr &corr, const CorrLag *lag, const CorrUIState
 // lead-lag 面板 (选中对): CorrPair 快照, UI 零计算只画
 // ============================================================================
 
+static const ImVec4 kColorA{0.4f, 0.8f, 1.0f, 1.0f}, kColorB{1.0f, 0.8f, 0.3f, 1.0f}; // 对的前者 / 后者
+
+// 列名 + (档 层): 列集可跨层跨档
+static void text_col(SharedData &data, const ImVec4 &color, const ColRef &c) {
+  ImGui::TextColored(color, "%s  (%s %s)", data.feature.meta(c).code, tier_name(c.tier), level_name(c.level));
+}
+
 static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState &ui) {
   const Corr &corr = data.corr;
   const size_t n = corr.spec.n();
@@ -174,10 +181,9 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
     ImGui::TextDisabled("悬停热图任一格子: 自动算该对的 lead-lag 曲线");
     return;
   }
-  const auto &meta_list = data.feature.meta().features[corr.spec.level];
-  const uint32_t ca = corr.spec.col(ui.sel_i), cb = corr.spec.col(ui.sel_j);
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", meta_list[ca].code);
-  ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", meta_list[cb].code);
+  const ColRef ca = corr.spec.col(ui.sel_i), cb = corr.spec.col(ui.sel_j);
+  text_col(data, kColorA, ca);
+  text_col(data, kColorB, cb);
   const size_t o = (size_t)ui.sel_i * n + ui.sel_j;
   const float r0 = corr.snap.rho[o];
   if (r0 == r0)
@@ -201,7 +207,7 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
   std::lock_guard<std::mutex> lock(pair.mutex);
   // 请求在 RenderTabCorr 悬停处已提交; 这里只画. 未匹配 = worker 还没接到新对 (一帧内)
   const bool matched = pair.spec.n() == 2 && pair.spec.col(0) == ca && pair.spec.col(1) == cb &&
-                       pair.spec.level == corr.spec.level;
+                       pair.spec.level() == corr.spec.level();
   const Phase st = pair.phase.load(std::memory_order_acquire);
   ImGui::Text("Lead-Lag: ");
   ImGui::SameLine(0, 0);
@@ -253,22 +259,30 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   assert(service && pair_service && lag_service);
   Corr &corr = data.corr;
 
-  // ---- 行集跟随 Feature 表的过滤 (同一口径): 变了就重算 ----
-  static std::vector<int> rows; // GUI 单线程, 帧内复用
-  FilteredFeatureIndices(data, rows);
-  const int level = data.feature.selection.selected_level;
-  if (rows != ui.req_rows || level != ui.req_level) {
-    ui.req_rows = rows;
-    ui.req_level = level;
+  // ---- 列集: 选中 ≥ 2 列 (跨层跨档) = 选中; 否则跟随 Feature 表当前 (档, 层) 的过滤行集. 变了就重算 ----
+  static std::vector<ColRef> cols; // GUI 单线程, 帧内复用
+  cols.clear();
+  const Feature::Selection &sel = data.feature.selection;
+  if (sel.picked.size() >= 2) {
+    cols.assign(sel.picked.begin(), sel.picked.end());
+  } else {
+    static std::vector<int> rows;
+    FilteredFeatureIndices(data, rows);
+    for (const int i : rows)
+      cols.push_back(ColRef{sel.tier, static_cast<uint8_t>(sel.selected_level), static_cast<uint16_t>(i)});
+  }
+  if (ui.req_stale || cols != ui.req_cols) {
+    ui.req_cols = cols;
+    ui.req_stale = false;
     ui.sel_i = ui.sel_j = -1;
     ui.cluster_n = 0; // 列集变了, 旧聚类序作废
-    service->RequestCompute(data, rows);
+    service->RequestCompute(data, cols);
   }
-  // lag 图跟同一行集, 但只在勾选时算 (重); 勾着且请求快照过期 → 提交
-  if (ui.lag_mode && (rows != ui.lag_req_rows || level != ui.lag_req_level)) {
-    ui.lag_req_rows = rows;
-    ui.lag_req_level = level;
-    lag_service->RequestCompute(data, rows);
+  // lag 图跟同一列集, 但只在勾选时算 (重); 勾着且请求快照过期 → 提交
+  if (ui.lag_mode && (ui.lag_req_stale || cols != ui.lag_req_cols)) {
+    ui.lag_req_cols = cols;
+    ui.lag_req_stale = false;
+    lag_service->RequestCompute(data, cols);
   }
 
   // ---- 1. 状态行 ----
@@ -276,7 +290,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   const bool building = corr.busy();
   ImGui::BeginDisabled(building);
   if (ImGui::Button("Compute"))
-    service->RequestCompute(data, rows);
+    service->RequestCompute(data, cols);
   ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::Button("Cancel"))
@@ -296,13 +310,13 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     if (building)
       ImGui::TextDisabled("构建中: 第一天算完即出图...");
     else
-      ImGui::TextDisabled("该层可算的特征不足 2 列 (L_sec 目前只有 ts_valid / cs_valid 两列; L_day 无日内轴不算相关); 或过滤后行集过窄.");
+      ImGui::TextDisabled("可算的特征不足 2 列 (META 列不参与); 选中 ≥ 2 列, 或放宽当前层过滤.");
     return;
   }
   assert(corr.snap.rho.size() == n * n);
 
   ImGui::SameLine();
-  ImGui::TextDisabled("| %zu x %zu 特征", n, n);
+  ImGui::TextDisabled("| %zu x %zu 特征 @ %s", n, n, level_name(corr.spec.level()));
 
   // ---- 2. 选项行 ----
   ImGui::Checkbox("|rho|", &ui.abs_mode);
@@ -343,12 +357,12 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   if (ImGui::Checkbox("Lag 图", &ui.lag_mode)) {
     if (!ui.lag_mode) {
       lag_service->RequestCancel(); // 关掉即止损; 快照失效, 再勾时重新提交
-      ui.lag_req_rows.clear();
-      ui.lag_req_level = -1;
+      ui.lag_req_cols.clear();
+      ui.lag_req_stale = true;
     } else if (lag_matches(data.corr_lag, corr) &&
                data.corr_lag.phase.load(std::memory_order_acquire) == Phase::Done) {
-      ui.lag_req_rows = rows; // 上次算完的还能用 (行集没变), 不重算
-      ui.lag_req_level = level;
+      ui.lag_req_cols = cols; // 上次算完的还能用 (列集没变), 不重算
+      ui.lag_req_stale = false;
     }
   }
   if (ImGui::IsItemHovered())
@@ -389,7 +403,6 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   ImGui::Separator();
 
   // ---- 3. 热图 + 右侧选中对面板 ----
-  const auto &meta_list = data.feature.meta().features[corr.spec.level];
   const float panel_w = 380.0f;
   const float avail_w = ImGui::GetContentRegionAvail().x;
   const float map_w = std::max(200.0f, avail_w - panel_w - ImGui::GetStyle().ItemSpacing.x);
@@ -446,10 +459,8 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
           const float r = corr.snap.rho[i * n + j];
           const uint32_t pn = corr.snap.pair_n[i * n + j];
           ImGui::BeginTooltip();
-          ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s",
-                             meta_list[corr.spec.col(i)].code);
-          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s",
-                             meta_list[corr.spec.col(j)].code);
+          text_col(data, kColorA, corr.spec.col(i));
+          text_col(data, kColorB, corr.spec.col(j));
           if (r == r)
             ImGui::Text("rho = %+.3f   n = %u", r, pn);
           else
@@ -466,7 +477,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
             ui.sel_i = (int)i;
             ui.sel_j = (int)j;
             if (i != j)
-              pair_service->RequestCompute(data, corr.spec.col(i), corr.spec.col(j));
+              pair_service->RequestCompute(data, corr.spec.level(), corr.spec.col(i), corr.spec.col(j));
           }
         }
       }
@@ -496,10 +507,10 @@ void StopTabCorr(CorrService *service, CorrPairService *pair_service, CorrLagSer
 }
 
 void InvalidateCorrRequests(CorrUIState &ui) {
-  ui.req_rows.clear();
-  ui.req_level = -1;
-  ui.lag_req_rows.clear();
-  ui.lag_req_level = -1;
+  ui.req_cols.clear();
+  ui.req_stale = true;
+  ui.lag_req_cols.clear();
+  ui.lag_req_stale = true;
 }
 
 } // namespace GUI::Features

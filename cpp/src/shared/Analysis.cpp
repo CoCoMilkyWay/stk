@@ -5,6 +5,7 @@
 #include "shared/Config.hpp"
 #include "shared/Feature.hpp"
 
+#include <map>
 #include <numeric>
 #include <random>
 #include <thread>
@@ -54,22 +55,64 @@ DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> 
   return out;
 }
 
-DayPlan plan_days(const FeatureRead &reader, const std::vector<misc::Ym> &months, DayOrder order, size_t limit) {
+ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vector<ColRef> cols) {
+  assert(!cols.empty() && level < LEVEL_COUNT);
+  ReadPlan p;
+  p.level = level;
+  p.cols = std::move(cols);
+  std::map<std::pair<TierId, size_t>, std::vector<uint32_t>> groups; // (档, 层) → 平面列 (请求序)
+  for (size_t c = 0; c < p.cols.size(); ++c) {
+    const ColRef &r = p.cols[c];
+    assert((r.tier == main || r.tier == TierId::Bar) && "别档列只许 Bar 旁读");
+    groups[{r.tier, r.level}].push_back(static_cast<uint32_t>(c));
+  }
+  const size_t rpd = level_valid_rows(level);
+  for (auto &[key, slot] : groups) {
+    Source s;
+    s.tier = key.first;
+    s.level = key.second;
+    s.side = key.first != main;
+    std::vector<size_t> io;
+    io.reserve(slot.size());
+    for (const uint32_t c : slot)
+      io.push_back(p.cols[c].col);
+    s.cs = column_set(feature, s.tier, s.level, std::move(io));
+    s.slot = std::move(slot);
+    s.row.resize(rpd);
+    for (size_t t = 0; t < rpd; ++t) {
+      s.row[t] = static_cast<int32_t>(level_asof(s.level, level, t));
+      s.carry |= s.row[t] < 0;
+    }
+    p.srcs.push_back(std::move(s));
+  }
+  return p;
+}
+
+SegPlan plan_segs(const FeatureRead &reader, const std::vector<misc::Ym> &months, size_t level, DayOrder order,
+                  size_t limit) {
   const DateList all = enumerate_dates(reader, months);
-  std::vector<uint32_t> idx(all.dates.size());
+  const size_t days = seg_days(level), n = all.dates.size();
+  std::vector<uint32_t> idx((n + days - 1) / days);
   std::iota(idx.begin(), idx.end(), 0u);
   if (order == DayOrder::Shuffle)
     std::shuffle(idx.begin(), idx.end(), std::mt19937{0x5eed}); // 与 shuffled_order 同种子: 跨构建稳定
   if (limit > 0 && idx.size() > limit)
     idx.resize(limit);
-  DayPlan p;
-  p.dates.reserve(idx.size());
-  p.month.reserve(idx.size());
-  p.weekday.reserve(idx.size());
-  for (const uint32_t i : idx) {
-    p.dates.push_back(all.dates[i]);
-    p.month.push_back(all.month[i]);
-    p.weekday.push_back(static_cast<uint8_t>(misc::weekday_of(all.dates[i])));
+  SegPlan p;
+  p.days = days;
+  p.dates.reserve(idx.size() * days);
+  p.prev.reserve(idx.size() * days);
+  p.month.reserve(idx.size() * days);
+  p.weekday.reserve(idx.size() * days);
+  for (const uint32_t seg : idx) {
+    for (size_t d = 0; d < days; ++d) {
+      const size_t i = seg * days + d;
+      const bool in = i < n;
+      p.dates.push_back(in ? all.dates[i] : 0);
+      p.prev.push_back(in && i > 0 ? all.dates[i - 1] : 0);
+      p.month.push_back(in ? all.month[i] : 0);
+      p.weekday.push_back(in ? static_cast<uint8_t>(misc::weekday_of(all.dates[i])) : 0);
+    }
   }
   return p;
 }

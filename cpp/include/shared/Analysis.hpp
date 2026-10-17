@@ -1,7 +1,8 @@
 #pragma once
 
 #include "features/MetaFlag.hpp"              // fmeta::ColumnSet
-#include "features/Storage/FeatureLevels.hpp" // TierId
+#include "features/Storage/DayBatchPlane.hpp" // SegPlan / ReadPlan / seg_days
+#include "features/Storage/FeatureLevels.hpp" // TierId / ColRef
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/spectral/DayPSD.hpp"
@@ -31,13 +32,14 @@ struct Feature;
 //   struct X : Published {
 //     struct Spec;  Spec spec;   本次构建的输入 (reset 持锁写; UI 持锁读 = 快照身份)
 //     struct Snap;  Snap snap;   发布成品 (批末持锁 swap; UI 渲染帧内持锁只画)
-//     void reset(ReadScope, Spec);  bool build(FeatureRead &, cancel);  void clear();
-//     (要 Bar 档旁读列的目标改为 bool build(FeatureRead &, const FeatureRead &all, cancel))
+//     void reset(ReadScope, Spec);  bool build(FeatureRead &, const FeatureRead &all, cancel);  void clear();
 //   };
-// 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Storage/DayBatchPlane.hpp)
+// 同一条流水线, 只是配置不同:  段序 (SegPlan) + 读计划 (ReadPlan) → IO + 门控 + as-of 投影 (平面, features/Storage/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
 //   → 导出 staging Snap → 短锁 swap 发布
-//   - A 轴 = 库轴 (槽位 = 库轴下标, 查 items 经 global_ids); Dist / Transform / Preview 只在 L_min 跑, Corr* 跟随层
+//   - A 轴 = 库轴 (槽位 = 库轴下标, 查 items 经 global_ids)
+//   - 网格 = 分析的行轴层 (Spec 里的 level): 列是任意 (档, 层) 的 ColRef, 一律按 level_asof 投影到网格;
+//     要编译期段长 (FFT / LUT) 的目标经 with_grid 分派到 Grid<L>
 //   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
 //     reset 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
 //   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排: Request = ReadScope + Spec,
@@ -46,17 +48,42 @@ struct Feature;
 namespace analysis {
 
 // ---- 共用常量 ----
-inline constexpr size_t kLevel = L_min;              // 流式分析只在 L_min 跑
-inline constexpr size_t kVR = TRADE_MINUTES_PER_DAY; // L_min 有效行 (== level_valid_rows(kLevel), build 内断言)
-inline constexpr size_t kDaysPerBatch = 8;           // 天是流式维度: 首帧 = 一批的 IO + 计算
-inline constexpr size_t kAssetBlock = 64;            // 资产抢块粒度
-inline constexpr size_t kDrawAssets = 512;           // PDF 折线绘制子集 (纯 UI 顶点预算, 计算恒为全资产)
-inline constexpr size_t kMinAssetSamples = 100;      // 资产 PDF 成线的最少样本
-inline constexpr size_t kAssetKllCapacity = 256;     // 每资产 sketch (精度换内存)
-inline constexpr size_t kAssetKllResolution = 128;   // 资产 PDF 网格 (细线 128 点足够)
-inline constexpr size_t kAggKllCapacity = 512;       // 聚合槽 / 全局 sketch
-inline constexpr size_t kAggKllResolution = 256;     // 小面板 ~400px, 255 点 PDF 足够
-using DayPSD = math::spectral::DayPSD<kVR>;
+inline constexpr size_t kDaysPerBatch = 8;                                  // 段是流式维度: 首帧 = 一批的 IO + 计算
+inline constexpr size_t kBatchRows = kDaysPerBatch * TRADE_MINUTES_PER_DAY; // 一批每 (资产, 列) 行预算
+inline constexpr size_t kAssetBlock = 64;                                   // 资产抢块粒度
+inline constexpr size_t kDrawAssets = 512;                                  // PDF 折线绘制子集 (纯 UI 顶点预算, 计算恒为全资产)
+inline constexpr size_t kMinAssetSamples = 100;                             // 资产 PDF 成线的最少样本
+inline constexpr size_t kAssetKllCapacity = 256;                            // 每资产 sketch (精度换内存)
+inline constexpr size_t kAssetKllResolution = 128;                          // 资产 PDF 网格 (细线 128 点足够)
+inline constexpr size_t kAggKllCapacity = 512;                              // 聚合槽 / 全局 sketch
+inline constexpr size_t kAggKllResolution = 256;                            // 小面板 ~400px, 255 点 PDF 足够
+
+// ---- 网格: 分析的行轴层 (段 = 平面一个 j, 见 DayBatchPlane.hpp seg_days) ----
+template <size_t L>
+struct Grid {
+  static constexpr size_t kLevel = L;
+  static constexpr size_t kDays = seg_days(L);
+  static constexpr size_t kRowsPerDay = level_valid_rows(L);
+  static constexpr size_t R = kRowsPerDay * kDays; // 段行数 = TS 序列长度
+  using PSD = math::spectral::DayPSD<R>;
+};
+// 运行时层 → Grid<L> (4 份实例化)
+template <class Fn>
+decltype(auto) with_grid(size_t lvl, Fn &&fn) {
+  assert(lvl < LEVEL_COUNT);
+  switch (lvl) {
+  case L_sec:
+    return fn(Grid<L_sec>{});
+  case L_min:
+    return fn(Grid<L_min>{});
+  case L_10min:
+    return fn(Grid<L_10min>{});
+  default:
+    return fn(Grid<L_day>{});
+  }
+}
+// 一批段数: 每 (资产, 列) ≤ kBatchRows 行 (L_sec 1 段, 其余 kDaysPerBatch 段)
+inline constexpr size_t batch_segs(size_t lvl) { return std::clamp<size_t>(kBatchRows / seg_rows(lvl), 1, kDaysPerBatch); }
 
 // ---- 值账目 (Dist 完整性条 / Feature 表账目列 共用) ----
 struct Integrity {
@@ -198,18 +225,17 @@ struct DateList {
 };
 DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months);
 
-// ---- 天序 (全部流式分析唯一一份) ----
-//   Shuffle:    固定种子洗牌取前 limit 天 —— 无偏, 首批即覆盖全区间 (Dist / Preview / Corr*)
-//   Sequential: 升序取前 limit 天 —— 因果 (Transform 的 TOD 轮廓跨天)
+// GUI 线程: 一组 ColRef → 网格层 level 上的读计划. main = 主库档 (scope.lib.tier); 别档列只许 Bar (旁读).
+// 同 (档, 层) 的列并成一个源 (column_set 定门控), 源行 = level_asof(源层, level, t)
+ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vector<ColRef> cols);
+
+// ---- 段序 (全部流式分析唯一一份): 库内交易日按 seg_days(level) 连续成段, 再排段 ----
+//   Shuffle:    固定种子洗牌取前 limit 段 —— 无偏, 首批即覆盖全区间 (Dist / Preview / Corr*)
+//   Sequential: 升序取前 limit 段 —— 因果 (Transform 的 TOD 轮廓跨段)
 enum class DayOrder : uint8_t { Shuffle,
                                 Sequential };
-struct DayPlan {
-  std::vector<misc::Ymd> dates;
-  std::vector<uint16_t> month;  // months 下标
-  std::vector<uint8_t> weekday; // Mon=0 .. Sun=6
-  size_t size() const { return dates.size(); }
-};
-DayPlan plan_days(const FeatureRead &reader, const std::vector<misc::Ym> &months, DayOrder order, size_t limit); // limit 0 = 全部
+SegPlan plan_segs(const FeatureRead &reader, const std::vector<misc::Ym> &months, size_t level, DayOrder order,
+                  size_t limit); // limit 0 = 全部
 
 // ---- 容量准备 / 线程布局 (幂等, 尺寸对得上零分配) ----
 // 槽数对得上就只 clear (KLL 保留 buffer 容量), 对不上才重建
@@ -272,33 +298,34 @@ struct AssetSketches {
   void clear() { klls = std::vector<KLLcache>{}; }
 };
 
-// 单日谱均值 (Transform / Preview): 线性域算术平均, 每 (资产, 天) 一票
+// 单段谱均值 (Transform / Preview): 线性域算术平均, 每 (资产, 段) 一票
+template <class PSD>
 struct PsdAcc {
-  std::array<double, DayPSD::N_FREQS> sum{};
+  std::array<double, PSD::N_FREQS> sum{};
   uint64_t n = 0;
 
   // 绝对功率 (Transform: 看变换链改了多少能量分布)
-  void add(const DayPSD &psd) {
-    for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
+  void add(const PSD &psd) {
+    for (size_t k = 0; k < PSD::N_FREQS; ++k)
       sum[k] += psd.power[k];
     ++n;
   }
   // Parseval 归一: 除以 [1, N/2] 总功率 (跳 DC) → 每 bin = 方差占比, 跨特征绝对可比 (Preview).
-  // 恒值日 total = 0 谱无定义, 投 "占比全 0" 一票 (曲线下沉 = 有动的天占比)
-  void add_share(const DayPSD &psd) {
+  // 恒值段 total = 0 谱无定义, 投 "占比全 0" 一票 (曲线下沉 = 有动的段占比)
+  void add_share(const PSD &psd) {
     double total = 0.0;
-    for (size_t k = 1; k <= DayPSD::N / 2; ++k)
+    for (size_t k = 1; k <= PSD::N / 2; ++k)
       total += psd.power[k];
     if (total > 0.0) {
       const double inv = 1.0 / total;
-      for (size_t k = 1; k <= DayPSD::N / 2; ++k)
+      for (size_t k = 1; k <= PSD::N / 2; ++k)
         sum[k] += psd.power[k] * inv;
     }
     ++n;
   }
   double mean(size_t k) const { return n > 0 ? sum[k] / static_cast<double>(n) : 0.0; }
   void merge_from(const PsdAcc &o) {
-    for (size_t k = 0; k < DayPSD::N_FREQS; ++k)
+    for (size_t k = 0; k < PSD::N_FREQS; ++k)
       sum[k] += o.sum[k];
     n += o.n;
   }

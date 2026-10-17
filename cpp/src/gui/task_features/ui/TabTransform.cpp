@@ -19,9 +19,6 @@
 
 namespace GUI::Features {
 
-using analysis::DayPSD;
-using analysis::kVR;
-
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -67,13 +64,10 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
     service->RequestCancel();
 
   ImGui::SameLine(0, 20);
-  if (sel.primary_feature_idx() >= 0 && sel.selected_level >= 0 && sel.selected_level < static_cast<int>(LEVEL_COUNT)) {
-    const auto &meta = data.feature.meta().features[sel.selected_level];
-    if (sel.primary_feature_idx() < static_cast<int>(meta.size()))
-      ImGui::Text("%s %s", level_name(static_cast<size_t>(sel.selected_level)), meta[sel.primary_feature_idx()].code);
-  } else {
+  if (const ColRef *feat = sel.primary())
+    ImGui::Text("%s %s %s", tier_name(feat->tier), level_name(feat->level), data.feature.meta(*feat).code);
+  else
     ImGui::TextDisabled("无特征");
-  }
 }
 
 // 链路账目 (输入 → 链末输出), 与 Common 的值账目 RenderIntegrity 语义不同
@@ -118,14 +112,17 @@ static bool EnumCombo(const char *id, E &v, const char *const (&names)[N], float
   return changed;
 }
 
-static bool RenderPipeline(Transform::Params &p) {
+static bool RenderPipeline(Transform::Params &p, size_t level) {
   TraceN("UI:Pipeline");
   bool changed = false;
+  const char *unit = level_unit(level);
 
-  // 1. 季节
+  // 1. 季节 (L_day 段内无日内轴, 不去季节)
   ImGui::Text("季节");
   ImGui::SameLine();
+  ImGui::BeginDisabled(level == L_day);
   changed |= EnumCombo("##season", p.season, math::stationary::TodProfile::MODE_NAMES, 110);
+  ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("日内轮廓去季节\n"
                       "• 每资产每分钟槽的 expanding 均值 / 标准差 (截至昨日, 因果)\n"
@@ -161,8 +158,8 @@ static bool RenderPipeline(Transform::Params &p) {
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("带通: IIR 因果前向滤波\n"
                       "• 天首复位\n"
-                      "• 通带 = PSD 图上两根光标之间的周期 [%.1f, %.1f] 分钟",
-                      p.bp_lo_period, p.bp_hi_period);
+                      "• 通带 = PSD 图上两根光标之间的周期 [%.1f, %.1f] %s",
+                      p.bp_lo_period, p.bp_hi_period, unit);
   if (p.bandpass) {
     ImGui::SameLine();
     changed |= EnumCombo("##iir", p.iir_type, Transform::IIR_TYPE_NAMES, 110);
@@ -170,7 +167,7 @@ static bool RenderPipeline(Transform::Params &p) {
     ImGui::SetNextItemWidth(70);
     changed |= ImGui::SliderInt("阶##iir", &p.iir_order, 1, 8);
     ImGui::SameLine();
-    ImGui::TextDisabled("[%.0f-%.0f min]", p.bp_lo_period, p.bp_hi_period);
+    ImGui::TextDisabled("[%.0f-%.0f %s]", p.bp_lo_period, p.bp_hi_period, unit);
   }
 
   // 4. TS 归一
@@ -329,8 +326,8 @@ static void RenderFocusAndHeatmap(const Transform &tf, const Asset &asset, Trans
 static void RenderSeries(const Transform &tf, const Asset &asset, TransformUIState &ui, float height) {
   TraceN("UI:Series");
   const auto &sn = tf.series;
-  const bool has = sn.n_days > 0;
-  const size_t n_pts = sn.n_days * kVR;
+  const bool has = sn.n_segs > 0;
+  const size_t n_pts = sn.n_segs * sn.R;
   static std::vector<float> tod_tile;
 
   // 有数据才 fit. pending 只在"并集范围真写进了链接值 且 至少一图真画了"那帧消费:
@@ -348,7 +345,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
     scan(sn.raw.data(), n_pts);
     scan(sn.out.data(), n_pts);
     if (tf.spec.params.season != Transform::Season::None)
-      scan(sn.tod_mean.data(), kVR);
+      scan(sn.tod_mean.data(), sn.R);
     if (lo <= hi) {
       const double margin = hi > lo ? 0.05 * (hi - lo) : 1.0;
       ui.series_y_min = lo - margin;
@@ -369,7 +366,8 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
   ImGui::BeginChild("RawPlot", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, height), true);
   if (has) {
     const char *name = sn.asset < asset.items.size() ? asset.items[sn.asset].asset_name.c_str() : "?";
-    ImGui::Text("原始 %u.%s  %s ~ %s (%zu 天)", sn.asset, name, misc::dense(sn.date_begin).c_str(), misc::dense(sn.date_end).c_str(), sn.n_days);
+    ImGui::Text("原始 %u.%s  %s ~ %s (%zu 段 × %zu %s)", sn.asset, name, misc::dense(sn.date_begin).c_str(),
+                misc::dense(sn.date_end).c_str(), sn.n_segs, sn.R, level_unit(sn.level));
   } else {
     ImGui::TextDisabled("原始");
   }
@@ -386,8 +384,8 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
         // TOD 均值轮廓按天平铺叠在原始上 (截至末批的轮廓)
         tod_tile.resize(n_pts);
         const float *tm = sn.tod_mean.data();
-        for (size_t d = 0; d < sn.n_days; ++d)
-          std::copy_n(tm, kVR, tod_tile.data() + d * kVR);
+        for (size_t d = 0; d < sn.n_segs; ++d)
+          std::copy_n(tm, sn.R, tod_tile.data() + d * sn.R);
         ImPlot::SetNextLineStyle(ImVec4(0.3f, 0.9f, 1.0f, 0.9f), 1.5f);
         ImPlot::PlotLine("##tod", tod_tile.data(), static_cast<int>(n_pts), 1.0, 0.0, ImPlotLineFlags_SkipNaN);
       }
@@ -476,20 +474,24 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
 
   ImGui::SameLine();
 
-  // 中: PSD (x = 周期 分钟, log; y = log10 功率)
+  // 中: PSD (x = 周期 网格行, log; y = log10 功率)
+  const size_t level = tf.spec.plan.level;
+  const char *unit = level_unit(level);
+  const float max_period = Transform::Params::max_period(level);
   ImGui::BeginChild("PSDPlot", ImVec2(col_w, height), true);
-  ImGui::Text("单日 PSD 均值  (%llu 资产·天)", static_cast<unsigned long long>(tf.snap.psd_n));
-  constexpr size_t NF = DayPSD::N_FREQS;
+  ImGui::Text("单段 PSD 均值  (%llu 资产·段)", static_cast<unsigned long long>(tf.snap.psd_n));
+  const size_t N = tf.snap.psd_N, NF = tf.snap.psd_mean.size();
+  assert(NF == (N ? N / 2 + 1 : 0));
   static std::vector<float> px, py;
-  px.resize(NF - 1);
-  py.resize(NF - 1);
+  px.resize(NF ? NF - 1 : 0);
+  py.resize(px.size());
   for (size_t k = 1; k < NF; ++k) { // 跳 DC
-    px[k - 1] = DayPSD::period_of(k);
+    px[k - 1] = static_cast<float>(N) / static_cast<float>(k);
     const float v = tf.snap.psd_mean[k];
     py[k - 1] = v > 1e-20f ? std::log10(v) : -20.0f;
   }
   // PSD 只 autofit y: x 是光标所在轴, 带通光标拖动 → 重算 → epoch 变 → x refit 会和光标共振
-  // (轴跳光标跟着跳), 所以 x 固定默认视野 [2, N] 只由用户缩放; y 与其他图同规则 (BeginPlot 成功才消费).
+  // (轴跳光标跟着跳), 所以 x 固定默认视野 [2, N] 只由用户缩放 (N 变 = 换层, 重设一次); y 与其他图同规则 (BeginPlot 成功才消费).
   // 拖动中 (任一控件 active, 与下方请求节流的 released 同判据) 也不 fit y: y 每批 refit → y 刻度
   // 文本宽度变 → PlotRect 左边界横移 → x 刻度/光标像素位置抖 (x 范围其实没变). 松手后再消费 pending.
   const bool fit_psd = ui.fit_psd && tf.snap.psd_n > 0 && !ImGui::IsAnyItemActive();
@@ -499,9 +501,15 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
   // 释放时会把 X 范围 zoom 到拖动跨度 (与光标共振 → flicker). PSD 是诊断图, 缩放靠光标/滚轮即可.
   if (ImPlot::BeginPlot("##PSD", ImVec2(-1, -1), ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
     ui.fit_psd &= !fit_psd;
-    ImPlot::SetupAxes("周期 (min)", "log10 P");
+    char xlabel[32];
+    std::snprintf(xlabel, sizeof(xlabel), "周期 (%s)", unit);
+    ImPlot::SetupAxes(xlabel, "log10 P");
     ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
-    ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, static_cast<double>(DayPSD::N), ImGuiCond_Once);
+    static size_t s_axis_N = 0; // 上次设 x 视野时的 N
+    if (N > 0 && N != s_axis_N) {
+      ImPlot::SetupAxisLimits(ImAxis_X1, 2.0, static_cast<double>(N), ImGuiCond_Always);
+      s_axis_N = N;
+    }
     ImPlot::SetupAxisLimits(ImAxis_Y1, -10.0, 0.0, ImGuiCond_Once);
 
     // 通带阴影
@@ -516,7 +524,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
 
     if (tf.snap.psd_n > 0) {
       ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 2.0f);
-      ImPlot::PlotLine("##psd", px.data(), py.data(), static_cast<int>(NF - 1));
+      ImPlot::PlotLine("##psd", px.data(), py.data(), static_cast<int>(px.size()));
     }
 
     // 带通光标 (周期): lo < hi. DragLineX 按住不动也返回 true (IsMouseDragging 粘滞), 值真变了才算改动
@@ -525,13 +533,13 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
     bool moved = false;
     moved |= ImPlot::DragLineX(100, &lo, ImVec4(0.3f, 0.9f, 0.3f, 1.0f), 2.0f);
     if (ImGui::IsItemActive() || ImGui::IsItemHovered())
-      ImPlot::Annotation(lo, lim.Y.Max, ImVec4(0.3f, 0.9f, 0.3f, 1.0f), ImVec2(5, -10), false, "%.1f min", lo);
+      ImPlot::Annotation(lo, lim.Y.Max, ImVec4(0.3f, 0.9f, 0.3f, 1.0f), ImVec2(5, -10), false, "%.1f %s", lo, unit);
     moved |= ImPlot::DragLineX(101, &hi, ImVec4(0.9f, 0.3f, 0.3f, 1.0f), 2.0f);
     if (ImGui::IsItemActive() || ImGui::IsItemHovered())
-      ImPlot::Annotation(hi, lim.Y.Max, ImVec4(0.9f, 0.3f, 0.3f, 1.0f), ImVec2(5, -10), false, "%.1f min", hi);
+      ImPlot::Annotation(hi, lim.Y.Max, ImVec4(0.9f, 0.3f, 0.3f, 1.0f), ImVec2(5, -10), false, "%.1f %s", hi, unit);
     if (moved) {
-      lo = std::clamp(lo, static_cast<double>(Transform::Params::kMinPeriod), static_cast<double>(Transform::Params::kMaxPeriod) / kMinRatio);
-      hi = std::clamp(hi, lo * kMinRatio, static_cast<double>(Transform::Params::kMaxPeriod));
+      lo = std::clamp(lo, static_cast<double>(Transform::Params::kMinPeriod), static_cast<double>(max_period) / kMinRatio);
+      hi = std::clamp(hi, lo * kMinRatio, static_cast<double>(max_period));
       const float new_lo = static_cast<float>(lo), new_hi = static_cast<float>(hi);
       if (new_lo != ui.params.bp_lo_period || new_hi != ui.params.bp_hi_period) {
         ui.params.bp_lo_period = new_lo;
@@ -545,13 +553,16 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
 
   ImGui::SameLine();
 
-  // 右: ACF / PACF (上下两图, 跳 lag 0; 参考带 = 单天 Bartlett ±1.96/√VR)
+  // 右: ACF / PACF (上下两图, 跳 lag 0; 参考带 = 单段 Bartlett ±1.96/√R)
   ImGui::BeginChild("ACFPlot", ImVec2(0, height), true);
   {
     constexpr int NL = static_cast<int>(kTfMaxLag);
-    const float cb = 1.96f / std::sqrt(static_cast<float>(kVR));
+    const size_t R = seg_rows(level);
+    const float cb = 1.96f / std::sqrt(static_cast<float>(R));
     const float cb_neg = -cb;
-    ImGui::Text("单日 ACF / PACF 均值  (%llu 资产·天)  参考带 ±%.3f", static_cast<unsigned long long>(tf.snap.acf_n), cb);
+    ImGui::Text("单段 ACF / PACF 均值  (%llu 资产·段)  参考带 ±%.3f", static_cast<unsigned long long>(tf.snap.acf_n), cb);
+    char lag_label[32];
+    std::snprintf(lag_label, sizeof(lag_label), "lag (%s)", unit);
     static std::array<float, kTfMaxLag> lags = [] {
       std::array<float, kTfMaxLag> l{};
       for (size_t i = 0; i < kTfMaxLag; ++i)
@@ -565,7 +576,7 @@ static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float he
         ImPlot::SetNextAxisToFit(ImAxis_Y1);
       if (ImPlot::BeginPlot(id, ImVec2(-1, sub_h), ImPlotFlags_NoLegend)) {
         ++acf_drawn;
-        ImPlot::SetupAxes("lag (min)", ylabel);
+        ImPlot::SetupAxes(lag_label, ylabel);
         ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(NL) + 1.0, ImGuiCond_Once);
         ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
         ImPlot::PlotInfLines("##cbp", &cb, 1, ImPlotInfLinesFlags_Horizontal);
@@ -604,7 +615,8 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
 
   // 控件 (不持锁)
   RenderControl(service, data, ui);
-  bool changed = RenderPipeline(ui.params);
+  const ColRef *feat = data.feature.selection.primary();
+  bool changed = RenderPipeline(ui.params, feat ? feat->level : L_min);
 
   // 流式维护 x/y range: epoch 变了 (= 数据变了) 就 autofit 一次, 稳态把缩放还给用户.
   // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧

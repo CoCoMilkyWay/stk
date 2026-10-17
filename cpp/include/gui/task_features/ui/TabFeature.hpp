@@ -6,6 +6,8 @@
 //   4. (Future) View analysis results
 #pragma once
 
+#include "features/Storage/FeatureLevels.hpp" // TierId
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -56,21 +58,21 @@ struct FeatureUIState {
 
 void RenderTabFeature(SharedData &data, FeatureUIState &ui_state);
 
-// 该层每行有效 Cat2 (值域探测 or 字段表人工覆盖, 与 FEATURE 表同口径; 无预览 = "?") + 预览抽样全局值域.
-// cat2[i] 指向静态串或字段表串 (稳定); 无预览的行 val_min > val_max (空账目 ±inf).
+// 该 (档, 层) 每行有效 Cat2 (值域探测 or 字段表人工覆盖, 与 FEATURE 表同口径; 无预览 = "?") + 预览抽样全局值域.
+// cat2[i] 指向静态串或字段表串 (稳定); 无预览的行 (含非预览档) val_min > val_max (空账目 ±inf).
 // 内部短锁读 preview cells. OrderFlow legend 标注 / flag 轴缩放用
 struct Cat2Snapshot {
   std::vector<const char *> cat2;
   std::vector<float> val_min, val_max;
 };
-void EffectiveCat2Snapshot(SharedData &data, size_t level, Cat2Snapshot &out);
+void EffectiveCat2Snapshot(SharedData &data, TierId tier, size_t level, Cat2Snapshot &out);
 
 // 当前层过滤后的行集 (metadata 下标, 升序; 与表格 "Showing n / m" 同一口径, 不含排序).
 // 内部短锁读 preview cells (Cat2 过滤要有效值). Corr 热图取同一行集
 void FilteredFeatureIndices(SharedData &data, std::vector<int> &out);
 
 // 特征表落地 JSON (给人看, 一行一特征): <当前库目录>/features.json (两层全部行, 元数据下标序,
-// 不受过滤/排序影响; 表格可见列 + Stat / Range (仅 L_min 有预览的行), 不落 Dist / PSD 曲线).
+// 不受过滤/排序影响; 表格可见列 + Stat / Range (有预览的行), 不落 Dist / PSD 曲线).
 // 预览跑完 (Building → Done) 时由 TaskFeatures 调
 void SaveFeatureTableJson(SharedData &data);
 

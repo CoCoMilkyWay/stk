@@ -8,12 +8,14 @@
 //         lead-lag 曲线 (换格子即换请求, 在跑的立刻止损)
 //      右: 悬停对详情 + lead-lag 曲线 ρ(lag) (CorrPairService 单独跑, 不打断矩阵构建)
 //
-// 显示序与矩阵下标是两回事: 矩阵下标恒为 corr.cols 的升序位置, 显示序 (order) 只是一层
+// 显示序与矩阵下标是两回事: 矩阵下标恒为 corr.spec.plan.cols 的升序位置, 显示序 (order) 只是一层
 // 重排. 聚类序选中即自动算 (O(n³), n 几百卡一帧): 边长变了立刻重算, 构建中基于早期快照
 // 先画, Done 后再按终版重算一次.
 //
 // Threading: UI 主线程, 渲染帧内持 corr.mutex / corr_pair.mutex / corr_lag.mutex
 #pragma once
+
+#include "features/Storage/FeatureLevels.hpp" // ColRef
 
 #include <cstdint>
 #include <vector>
@@ -47,11 +49,11 @@ struct CorrUIState {
   // ---- 悬停对 (矩阵下标; lead-lag 面板消费; 换对即提交 CorrPair 请求) ----
   int sel_i = -1, sel_j = -1;
 
-  // ---- 请求变更检测 (过滤行集 / 层): 矩阵与 lag 图各一份 ----
-  std::vector<int> req_rows;
-  int req_level = -1;
-  std::vector<int> lag_req_rows;
-  int lag_req_level = -1;
+  // ---- 请求变更检测 (列集 = 选中 ≥ 2 列 / 否则当前层过滤行集; stale = 强制重提): 矩阵与 lag 图各一份 ----
+  std::vector<ColRef> req_cols;
+  bool req_stale = true;
+  std::vector<ColRef> lag_req_cols;
+  bool lag_req_stale = true;
 };
 
 // Render tab (进 tab / 行集变更时自动提交计算请求)

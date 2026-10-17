@@ -18,13 +18,13 @@
 // 特征日文件 — <base>/YYYY/MM/DD/features_<LVL>.bin, 一天一层一个
 // ============================================================================
 //
-//   [FeatureFileHeader][ColRef × F][列载荷 × F]
+//   [FeatureFileHeader][ColSpan × F][列载荷 × F]
 //
 //   头 + 目录定宽 (F = 该层列数, 编译期固定): 写端先空出, 逐列追加载荷,
 //   收工回填头 + 目录, .tmp → rename 原子发布 (半写文件不可能以正式名存在).
 //   读端一次拿头 + 目录, 所请求的列按偏移升序, 首尾相接的并成一段 (≤ kRunCap)
 //   一次 pread, 逐列解码直写进 dst [n][T][A] (列主序 = 落盘单位, 无中转).
-//   列载荷 = 一列 [T][A] 经 FeatureCodec 编码; ColRef.delta = 该列是否沿 T 轴
+//   列载荷 = 一列 [T][A] 经 FeatureCodec 编码; ColSpan.delta = 该列是否沿 T 轴
 //   XOR 差分 (写端逐列按数据定, 见 write).
 //   A / axis_hash = 库轴 (列 → 资产映射靠库轴顺序, 不在文件里; 读端从同一
 //   config 推导同一库轴, O(1) 比对即确认列序一致); fingerprint = 字段表指纹.
@@ -54,12 +54,12 @@ struct FeatureFileHeader {
 static_assert(sizeof(FeatureFileHeader) == 48, "特征日文件头必须定宽无填充");
 
 // 一列载荷在日文件里的位置 + 编码参数
-struct ColRef {
+struct ColSpan {
   uint64_t offset;
   uint32_t size;
   uint32_t delta; // 1 = 沿 T 轴 XOR 差分
 };
-static_assert(sizeof(ColRef) == 16, "特征日文件目录项必须紧凑无填充");
+static_assert(sizeof(ColSpan) == 16, "特征日文件目录项必须紧凑无填充");
 
 inline std::string feature_day_dir(const std::string &base, misc::Ymd date) {
   return base + "/" + misc::slash(date);
@@ -78,7 +78,7 @@ using FeatureCodec = SparseCodec;
 
 struct FeatureDay {
   struct Scratch {
-    std::vector<ColRef> dir;               // 日文件目录 [F]
+    std::vector<ColSpan> dir;              // 日文件目录 [F]
     std::vector<uint32_t> order;           // 读: 所请求列下标, 按载荷偏移升序 (并段用)
     std::vector<uint8_t> buf;              // 写: 一列载荷; 读: 一段载荷 (≤ kRunCap, 单列超限则为该列)
     std::vector<feature_storage_t> column; // 写: 抽出的相邻一组列 [nf][T][A] (编码可就地改写)
@@ -127,7 +127,7 @@ struct FeatureDay {
     s.column.resize(group * words);
     s.buf.resize(FeatureCodec::bound(words));
     s.dir.resize(F);
-    uint64_t end = sizeof(FeatureFileHeader) + F * sizeof(ColRef);
+    uint64_t end = sizeof(FeatureFileHeader) + F * sizeof(ColSpan);
     bool delta[kGatherMaxCols];
     for (size_t f0 = 0; f0 < F; f0 += group) {
       const size_t nf = std::min(group, F - f0);
@@ -145,8 +145,8 @@ struct FeatureDay {
 
     const FeatureFileHeader head{FeatureFileHeader::kMagic, T, F, A, axis_hash, L.fingerprint};
     const size_t head_written = file_pwrite(fd, &head, sizeof(head), 0);
-    const size_t dir_written = file_pwrite(fd, s.dir.data(), F * sizeof(ColRef), sizeof(head));
-    assert(head_written == sizeof(head) && dir_written == F * sizeof(ColRef) && "特征日文件头 / 目录写入失败");
+    const size_t dir_written = file_pwrite(fd, s.dir.data(), F * sizeof(ColSpan), sizeof(head));
+    assert(head_written == sizeof(head) && dir_written == F * sizeof(ColSpan) && "特征日文件头 / 目录写入失败");
     (void)head_written;
     (void)dir_written;
     file_close(fd);
@@ -183,8 +183,8 @@ struct FeatureDay {
       assert(head.T == T && head.F == F && "形状不符: 落盘形状恒为满 (rows / field_count)");
 
       s.dir.resize(F);
-      const size_t dir_got = file_pread(fd, s.dir.data(), F * sizeof(ColRef), sizeof(head));
-      assert(dir_got == F * sizeof(ColRef) && "特征日文件目录读不全");
+      const size_t dir_got = file_pread(fd, s.dir.data(), F * sizeof(ColSpan), sizeof(head));
+      assert(dir_got == F * sizeof(ColSpan) && "特征日文件目录读不全");
       (void)dir_got;
     }
 
@@ -197,7 +197,7 @@ struct FeatureDay {
               [&](uint32_t a, uint32_t b) { return s.dir[cols[a]].offset < s.dir[cols[b]].offset; });
 
     for (size_t i = 0; i < n;) {
-      const ColRef &first = s.dir[cols[s.order[i]]];
+      const ColSpan &first = s.dir[cols[s.order[i]]];
       const uint64_t begin = first.offset;
       uint64_t end = begin + first.size;
       size_t j = i + 1;
@@ -217,7 +217,7 @@ struct FeatureDay {
       TraceN("CodecDecode");
       for (; i < j; ++i) {
         const size_t slot = s.order[i];
-        const ColRef &ref = s.dir[cols[slot]];
+        const ColSpan &ref = s.dir[cols[slot]];
         FeatureCodec::decode(s.buf.data() + (ref.offset - begin), ref.size, dst + slot * T * A, T, A, ref.delta != 0);
       }
     }

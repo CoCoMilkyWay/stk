@@ -13,17 +13,16 @@ namespace GUI::Features {
 
 int RenderStreamControl(const Progress &st, const SharedData &data, const char *unit) {
   const Phase phase = st.phase.load(std::memory_order_acquire);
-  const auto &sel = data.feature.selection;
-  const bool is_lmin = sel.selected_level == static_cast<int>(analysis::kLevel);
+  const ColRef *feat = data.feature.selection.primary();
   int action = 0;
 
-  ImGui::BeginDisabled(st.busy() || sel.primary_feature_idx() < 0 || !is_lmin);
+  ImGui::BeginDisabled(st.busy() || !feat);
   if (ImGui::Button("Compute"))
     action = 1;
   ImGui::EndDisabled();
-  if (!is_lmin) {
+  if (feat) {
     ImGui::SameLine();
-    ImGui::TextDisabled("(仅 L_min)");
+    ImGui::TextDisabled("(%s %s %s)", tier_name(feat->tier), level_name(feat->level), data.feature.meta(*feat).code);
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel"))

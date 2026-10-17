@@ -21,7 +21,6 @@
 #include "gui/util/Service.hpp"
 #include "shared/Analysis.hpp"
 
-#include <atomic>
 #include <cassert>
 #include <utility>
 
@@ -65,15 +64,10 @@ private:
     // reader 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退).
     // reader 自持库目录拷贝, 之后 scope 可整体移交给目标
     FeatureRead reader(req.scope.lib, &this->cancel_);
-    if constexpr (requires(Target &t, FeatureRead &r, const std::atomic<bool> &c) { t.build(r, r, c); }) {
-      // Bar 档旁读 (全轴); All 库缺日/旧表同样删库判废 + 取消
-      FeatureRead all(req.scope.bar, &this->cancel_);
-      target.reset(std::move(req.scope), std::move(req.spec));
-      return target.build(reader, all, this->cancel_) && !reader.stale() && !all.stale();
-    } else {
-      target.reset(std::move(req.scope), std::move(req.spec));
-      return target.build(reader, this->cancel_) && !reader.stale();
-    }
+    // Bar 档旁读 (全轴; 读计划里的 Bar 列 / 笼); All 库缺日/旧表同样删库判废 + 取消
+    FeatureRead all(req.scope.bar, &this->cancel_);
+    target.reset(std::move(req.scope), std::move(req.spec));
+    return target.build(reader, all, this->cancel_) && !reader.stale() && !all.stale();
   }
 
   SharedData *data_ = nullptr;

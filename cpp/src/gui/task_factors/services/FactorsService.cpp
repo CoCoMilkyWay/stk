@@ -44,7 +44,7 @@ using ojson = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-constexpr size_t kLevel = analysis::kLevel; // 因子只在 L_min 算
+constexpr size_t kLevel = L_min; // 因子只在 L_min 算
 
 // 评估派生数据 (run + 表头 + stats): 只描述当前 weights, 权重整体换掉 / 清空时一起删
 void erase_stats(ojson &j) {

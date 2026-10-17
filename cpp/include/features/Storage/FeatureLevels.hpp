@@ -16,6 +16,7 @@
 #include "features/Method/TS.hpp"      // ts::TfId (FieldInfo.ts_tf)
 #include "features/TimeIndex.hpp"      // L_SEC_ROWS / L_MIN_ROWS / L_10MIN_ROWS / L_DAY_ROWS
 #include <cassert>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 
@@ -64,6 +65,13 @@ inline constexpr const char *level_name(size_t lvl) {
                               : lvl == L_10min ? "L_10min"
                                                : "L_day";
 }
+// 一网格行的时间单位 (UI 周期 / 滞后轴标注)
+inline constexpr const char *level_unit(size_t lvl) {
+  assert(lvl < LEVEL_COUNT);
+  return lvl == L_sec ? "s" : lvl == L_min ? "min"
+                          : lvl == L_10min ? "10min"
+                                           : "d";
+}
 inline constexpr size_t level_rows(size_t lvl) {
   assert(lvl < LEVEL_COUNT);
   return lvl == L_sec ? L_SEC_ROWS : lvl == L_min ? L_MIN_ROWS
@@ -82,3 +90,33 @@ inline constexpr size_t level_valid_rows(size_t lvl) {
   assert(lvl < LEVEL_COUNT);
   return level_rows(lvl) - 1;
 }
+
+// ---- 行时间代数 (与档无关): 行 t 覆盖交易秒 [., level_end_sec) ----
+// 节点 emit 全序 = (行末秒, 层): 同刻细层先写 (close_minute → close_10min → end_day, 见 CoreTs.hpp); L_day = 收盘一行
+inline constexpr size_t level_end_sec(size_t lvl, size_t t) {
+  assert(t < level_valid_rows(lvl));
+  return lvl == L_sec ? t + 1 : lvl == L_min ? L_min_to_L_sec(t) + 60
+                            : lvl == L_10min ? L_min_to_L_sec(L_10min_last_min(t)) + 60
+                                             : TRADE_SECONDS_PER_DAY;
+}
+// 交易秒 s 所在行
+inline constexpr size_t level_row_of_sec(size_t lvl, size_t s) {
+  assert(lvl < LEVEL_COUNT && s < TRADE_SECONDS_PER_DAY);
+  return lvl == L_sec ? s : lvl == L_min ? L_sec_to_L_min(s)
+                        : lvl == L_10min ? L_min_to_L_10min(L_sec_to_L_min(s))
+                                         : 0;
+}
+// as-of 投影: dst 层行 t emit 时刻, src 层已 emit 的最新一行 (同日); -1 = 当日尚无 → 前一交易日末行.
+// src 不粗于 dst → 含 dst 末秒的那行 (同刻细层先写, 已可见); 更粗 → 其前一行 (同刻粗层后写 / 尚未收)
+inline constexpr ptrdiff_t level_asof(size_t src, size_t dst, size_t t) {
+  const ptrdiff_t r = static_cast<ptrdiff_t>(level_row_of_sec(src, level_end_sec(dst, t) - 1));
+  return src <= dst ? r : r - 1;
+}
+
+// 一列特征的全局身份 (档 × 层 × 存储列): GUI 跨层跨档选择 / 分析请求的列单位
+struct ColRef {
+  TierId tier = TierId::Lob;
+  uint8_t level = L_min;
+  uint16_t col = 0;
+  auto operator<=>(const ColRef &) const = default;
+};

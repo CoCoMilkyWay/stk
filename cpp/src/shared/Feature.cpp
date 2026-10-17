@@ -34,22 +34,41 @@ size_t Feature::Metadata::col_of(size_t level, const char *code) const {
 // Feature::Selection Implementation
 // ============================================================================
 
-std::string Feature::Selection::lib() const {
-  assert(tier == TierId::Bar || !pool.empty());
-  return tier == TierId::Bar ? Config::kAllTierDir : pool;
+std::string Feature::Selection::lib_of(TierId t) const {
+  assert(t == TierId::Bar || !pool.empty());
+  return t == TierId::Bar ? Config::kAllTierDir : pool;
 }
 
-void Feature::Selection::clear() {
+std::vector<int> Feature::Selection::picked_at(TierId t, size_t level) const {
+  std::vector<int> out;
+  for (const ColRef &c : picked)
+    if (c.tier == t && c.level == level)
+      out.push_back(c.col);
+  return out;
+}
+
+void Feature::Selection::clear_filters() {
   filter_data_type.clear();
   filter_cat_l1.clear();
   filter_cat_l2.clear();
   filter_ts_method.clear();
   filter_cs_method.clear();
-  selected_features.clear();
+}
+
+void Feature::Selection::clear() {
+  clear_filters();
+  picked.clear();
 }
 
 // ============================================================================
 // Feature Implementation
 // ============================================================================
+
+TierId Feature::main_tier(const std::vector<ColRef> &cols) {
+  for (const ColRef &c : cols)
+    if (c.tier == TierId::Lob)
+      return TierId::Lob;
+  return TierId::Bar;
+}
 
 void Feature::clear() { selection.clear(); }

@@ -7,7 +7,7 @@
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Analysis.hpp" // analysis::kLevel
+#include "shared/Analysis.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -23,7 +23,7 @@ static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelLob:
 namespace GUI::Factors {
 
 namespace {
-constexpr size_t kLevel = analysis::kLevel; // 因子只在 L_min 算
+constexpr size_t kLevel = L_min; // 因子只在 L_min 算
 } // namespace
 
 void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L) {

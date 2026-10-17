@@ -5,6 +5,7 @@
 #include "features/Method/TS.hpp"             // TS 行 Tf / Method (GUI "TS Norm" 列)
 #include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / FieldInfo (稳定层, 不依赖字段表)
 #include <array>
+#include <cassert>
 #include <set>
 #include <span>
 #include <string>
@@ -83,11 +84,12 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    TierId tier = TierId::Lob;  // 当前浏览的档 (TabFeature 库选择: all → Bar, 票池 → Lob; 分析页按 lib() 读对应特征库)
+    TierId tier = TierId::Lob;  // 当前浏览的档 (TabFeature 库选择: all → Bar, 票池 → Lob)
     std::string pool;           // 当前票池 (Lob 档库名; 因子页恒用它, 选 all 时保留); 启动 = default_pool
-    int selected_level = L_min; // FeatureLevel (L_sec / L_min / L_10min / L_day), 默认 L_min
+    int selected_level = L_min; // 当前浏览的层 (FeatureLevel: L_sec / L_min / L_10min / L_day), 默认 L_min
 
-    std::string lib() const; // 当前库名: Bar → all, Lob → pool
+    std::string lib_of(TierId t) const; // 档的库名: Bar → all, Lob → pool
+    std::string lib() const { return lib_of(tier); }
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;
@@ -96,13 +98,18 @@ struct Feature {
     std::set<ts::MethodId> filter_ts_method; // TS Norm 列按 Method 过滤 (Tf 只显示)
     std::set<cs::MethodId> filter_cs_method; // CS Norm 列同
 
-    // Selected features (multi-selection; primary = 首个, 供需要单选的消费方)
-    std::set<int> selected_features;
+    // 选中列 (跨层跨档多选; 切层 / 切档保留; primary = 首个, 供需要单选的消费方)
+    std::set<ColRef> picked;
 
-    // 单选视图: 多选的首个, 无选时 -1
-    int primary_feature_idx() const { return selected_features.empty() ? -1 : *selected_features.begin(); }
+    const ColRef *primary() const { return picked.empty() ? nullptr : &*picked.begin(); }
+    bool is_picked(TierId t, size_t level, size_t col) const {
+      return picked.contains(ColRef{t, static_cast<uint8_t>(level), static_cast<uint16_t>(col)});
+    }
+    // 该 (档, 层) 的选中列下标 (升序)
+    std::vector<int> picked_at(TierId t, size_t level) const;
 
-    void clear();
+    void clear_filters();
+    void clear(); // 过滤 + 选中
   };
   Selection selection;
 
@@ -115,6 +122,13 @@ struct Feature {
 
   const Metadata &meta(TierId t) const { return metadata[static_cast<size_t>(t)]; }
   const Metadata &meta() const { return meta(selection.tier); } // 当前档
+  const FeatureMetadata &meta(const ColRef &c) const {
+    const auto &list = meta(c.tier).features[c.level];
+    assert(c.col < list.size());
+    return list[c.col];
+  }
+  // 一组列的分析主档 (= 主库): 有 Lob 列 → Lob (Bar 列旁读), 否则 Bar
+  static TierId main_tier(const std::vector<ColRef> &cols);
 
   void clear();
 };

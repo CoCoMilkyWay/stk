@@ -7,20 +7,21 @@
 //       Depth 重放: decode 帧 → 订单簿逐笔重放 → 秒级快照 → plot/heatmap 构建 → 背槽整体发布
 //       Pick 逐日状态: 锚点日的 L_min filter 列选读 → 全资产 PIT 状态 (ST / 在市 / 行业)
 //         → 背槽整体发布 (供 GUI 资产筛选)
-//       Kline 流式: 逐日选列读 (OHLC + ts_valid + 特征) → 抽选中资产 → 追加 + 单调前缀发布;
+//       Kline 流式: 逐日选列读 (OHLC + ts_valid; 特征逐源 (档, 层) 各读一次) → 抽选中资产 → 追加 + 单调前缀发布;
 //         天与天之间可被新代打断
+//   特征 overlay = ReadPlan (GUI 线程 analysis::read_plan 建: 主档 Lob 票池库, Bar 列旁读 all 库; 只用其源分组 + 门控)
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
 //           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一个票池库: 换池 / 库重算后整体重建 (TaskFeatures).
 #pragma once
 
+#include "features/Storage/DayBatchPlane.hpp" // ReadPlan
 #include "misc/date.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
 struct SharedData;
 
@@ -35,9 +36,10 @@ public:
   void Start(SharedData &data);
   void Stop();
 
-  // GUI 线程: 期望态快照 (最新覆盖旧请求; gen 调用方递增自持, 与发布面配对)
-  void RequestKline(uint32_t gen, size_t asset_idx, std::vector<int> feats, bool rescan_dates);
-  void RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, int feat_level, std::vector<int> feats);
+  // GUI 线程: 期望态快照 (最新覆盖旧请求; gen 调用方递增自持, 与发布面配对).
+  // feats = overlay 读计划 (cols 空 = 无 overlay); ts_price 第 i 位 = 列 i 是其层 ts_valid (展示幅值 = micro price)
+  void RequestKline(uint32_t gen, size_t asset_idx, ReadPlan feats, uint32_t ts_price, bool rescan_dates);
+  void RequestDepth(uint32_t gen, misc::Ymd date, size_t asset_idx, ReadPlan feats, uint32_t ts_price);
   void RequestPick(uint32_t gen, misc::Ymd date);
 
   bool is_running() const { return kline_ != nullptr; }
@@ -47,15 +49,16 @@ private:
   struct KlineReq {
     uint32_t gen;
     size_t asset;
-    std::vector<int> feats; // L_min 字段下标
-    bool rescan;            // 重扫日期列表 (特征重算后)
+    ReadPlan feats;
+    uint32_t ts_price;
+    bool rescan; // 重扫日期列表 (特征重算后)
   };
   struct DepthReq {
     uint32_t gen;
     misc::Ymd date;
     size_t asset;
-    int feat_level;         // 特征所属层 (0=L_sec, 1=L_min)
-    std::vector<int> feats; // feat_level 层字段下标
+    ReadPlan feats;
+    uint32_t ts_price;
   };
   struct PickReq {
     uint32_t gen;

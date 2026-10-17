@@ -22,9 +22,9 @@ class FeatureRead;
 // 发布协议 (单调收敛, UI 画已发布快照; 与 Transform 同一 flow):
 //
 //   worker (DistService 单线程编排; build 用 Runtime 常驻 ForkJoin, 每相一次 dispatch, 返回即栅栏):
-//     天序 = 洗牌 (plan_days Shuffle, 总样本预算截断): 首批即覆盖全区间
-//     for 每批 kDaysPerBatch 个抽样天:
-//       IO (后台预读, 与上一批扫描并发): 单天一任务 → 资产主序批平面 [A][批天][分钟] (TsPlane, 与 Transform 共用:
+//     段序 = 洗牌 (plan_segs Shuffle, 总样本预算截断): 首批即覆盖全区间
+//     for 每批 batch_segs 个抽样段:
+//       IO (后台预读, 与上一批扫描并发): 单段一任务 → 资产主序批平面 [A][批段][行] (TsPlane, 与 Transform 共用:
 //                   f16; 门控不过 / 真 NaN 折成两种哨兵, 扫描按位分账)
 //       Phase 扫描: kAssetBlock 个活跃资产一任务, 全在锁外:
 //                   每个资产: integrity 账目 + stride 抽样喂聚合槽私有副本 (shard)
@@ -76,6 +76,8 @@ constexpr std::array<uint16_t, kTodBins> make_tod_bin_start() {
   return s;
 }
 inline constexpr auto kTodBinStart = make_tod_bin_start();
+// 任意层行 → 日内桶 (行末秒所在分钟的桶; L_day 收盘一行 → 末桶)
+constexpr size_t tod_bin_of_row(size_t lvl, size_t t) { return tod_bin_of(L_sec_to_L_min(level_end_sec(lvl, t) - 1)); }
 
 // 聚合槽 (月/星期/日内/全局) 的目标样本量. KLL 的分位误差 ε≈1/k 只由容量决定, 与样本数
 // 无关 —— 5 年全市场灌进去的几亿样本, 最终也只存下 k·log2(n/k) ≈ 1 万个点, 早已饱和.
@@ -91,7 +93,7 @@ struct Dist : Published {
   };
 
   struct Spec {
-    fmeta::ColumnSet cols; // 单值列 (+ 门控)
+    ReadPlan plan; // 单列, 网格 = 该列自己的层 (日内桶按行末秒归桶, L_day 段 = 连续日)
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   struct Snap {
@@ -113,7 +115,7 @@ struct Dist : Published {
   // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 库轴变了才重建资产线
   void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式 (每批 IO → 扫描 → 归约 → 发布); 被取消返回 false
-  bool build(FeatureRead &reader, const std::atomic<bool> &cancel);
+  bool build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel);
   void clear();
 
 private:

@@ -21,6 +21,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -79,9 +80,8 @@ struct TaskFeaturesState {
 
   // 流式分析三件 (Dist / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
   bool streams_started = false;
-  // Auto-compute tracking (Dist / Transform 共用): 特征/层/库变了即重算 (无论当前在哪个 tab)
-  int prev_primary_feature_idx = -1;
-  int prev_selected_level = 0;
+  // Auto-compute tracking (Dist / Transform 共用): 主特征 (档/层/列) / 其所在库变了即重算 (无论当前在哪个 tab)
+  std::optional<ColRef> prev_primary;
   std::string prev_lib;
   // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库 / 日期区间变了自动重算 (快照做变更检测)
   std::string preview_lib;
@@ -156,7 +156,7 @@ TaskHandle CreateFeaturesTask() {
         data.asset.binary.exists &&
         !data.asset.backtest.days.empty() &&
         !data.taskstate.database.l2_scan_inflight;
-    const bool has_selection = (data.feature.selection.primary_feature_idx() >= 0);
+    const bool has_selection = data.feature.selection.primary() != nullptr;
     fs.has_selection = has_selection;
 
     // Services 懒创建 (首次 Draw), 未创建 = 必然没在算
@@ -355,31 +355,21 @@ TaskHandle CreateFeaturesTask() {
     // 选了就算, 切进 tab 直接看结果)
     {
       auto &sel = data.feature.selection;
+      const ColRef *feat = sel.primary();
 
-      // Detect change (同档换票池: 字段表同, 选中下标不变, 但库变了)
-      bool feature_changed = (sel.primary_feature_idx() != state->prev_primary_feature_idx);
-      bool level_changed = (sel.selected_level != state->prev_selected_level);
-      bool lib_changed = (lib != state->prev_lib);
-      bool has_valid_selection = (sel.primary_feature_idx() >= 0);
+      // Detect change (同档换票池: 字段表同, 选中列不变, 但库变了)
+      const std::string feat_lib = feat ? sel.lib_of(feat->tier) : std::string{};
+      const bool feature_changed = feat ? (!state->prev_primary || *state->prev_primary != *feat) : state->prev_primary.has_value();
+      const bool lib_changed = feat_lib != state->prev_lib;
 
-      if ((feature_changed || level_changed || lib_changed) && has_valid_selection) {
-        // 参数快照 + 取消在跑 (RequestCompute 内部完成; 非 L_min 选择静默忽略)
+      if ((feature_changed || lib_changed) && feat) {
+        // 参数快照 + 取消在跑 (RequestCompute 内部完成)
         state->dist_service->RequestCompute(data);
         state->transform_service->RequestCompute(data, state->transform_ui_state.params,
                                                  state->transform_ui_state.focus);
-
-        // Update tracking
-        state->prev_primary_feature_idx = sel.primary_feature_idx();
-        state->prev_selected_level = sel.selected_level;
-        state->prev_lib = lib;
       }
-
-      // Update tracking even if no change (initialization case)
-      if (!feature_changed && state->prev_primary_feature_idx == -1) {
-        state->prev_primary_feature_idx = sel.primary_feature_idx();
-        state->prev_selected_level = sel.selected_level;
-        state->prev_lib = lib;
-      }
+      state->prev_primary = feat ? std::optional<ColRef>(*feat) : std::nullopt;
+      state->prev_lib = feat_lib;
     }
 
     // Handle trigger from UI (核布局由 ComputeService::run 按机器核数推导)

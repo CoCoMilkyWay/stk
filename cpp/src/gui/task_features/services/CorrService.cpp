@@ -9,37 +9,33 @@ namespace GUI::Features {
 // CorrService (矩阵)
 // ============================================================================
 
-bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest &req) {
-  const auto &sel = data.feature.selection;
-  const size_t lvl = static_cast<size_t>(sel.selected_level);
-  if (lvl == L_day)
-    return false; // 日内 (lead-lag) 相关按日切片, L_day 一日一行无日内轴
-  const auto &meta_list = data.feature.meta().features[lvl];
-
+bool MakeCorrRequest(SharedData &data, const std::vector<ColRef> &in, CorrRequest &req) {
   req = CorrRequest{};
-  std::vector<size_t> cols;
-  for (int r : rows) {
-    assert(r >= 0 && r < (int)meta_list.size());
-    if (meta_list[r].data_type == FeatureDataType::META)
+  std::vector<ColRef> cols;
+  for (const ColRef &c : in) {
+    if (data.feature.meta(c).data_type == FeatureDataType::META)
       continue; // ts_valid 自身不进矩阵 (它是门控不是特征)
-    cols.push_back(static_cast<size_t>(r));
+    cols.push_back(c);
   }
   std::sort(cols.begin(), cols.end());
   cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
   if (cols.size() < 2)
-    return false; // 该层可算的列不足 (L_sec 现状: 只有 ts_valid / cs_valid)
+    return false; // 可算的列不足 (L_sec 现状: 只有 ts_valid / cs_valid)
 
-  req.spec.level = lvl;
-  req.spec.cols = analysis::column_set(data.feature, lvl, std::move(cols));
-  req.scope = analysis::read_scope(data.config, sel.lib());
+  size_t lvl = L_day; // 网格 = 最细层
+  for (const ColRef &c : cols)
+    lvl = std::min<size_t>(lvl, c.level);
+  const TierId main = Feature::main_tier(cols);
+  req.scope = analysis::read_scope(data.config, data.feature.selection.lib_of(main));
+  req.spec.plan = analysis::read_plan(data.feature, main, lvl, std::move(cols));
   return !req.scope.months.empty();
 }
 
 Corr &CorrService::target(SharedData &data) { return data.corr; }
 
-void CorrService::RequestCompute(SharedData &data, const std::vector<int> &rows) {
+void CorrService::RequestCompute(SharedData &data, const std::vector<ColRef> &cols) {
   CorrRequest req;
-  if (MakeCorrRequest(data, rows, req))
+  if (MakeCorrRequest(data, cols, req))
     Request(std::move(req));
 }
 
@@ -49,9 +45,9 @@ void CorrService::RequestCompute(SharedData &data, const std::vector<int> &rows)
 
 CorrLag &CorrLagService::target(SharedData &data) { return data.corr_lag; }
 
-void CorrLagService::RequestCompute(SharedData &data, const std::vector<int> &rows) {
+void CorrLagService::RequestCompute(SharedData &data, const std::vector<ColRef> &cols) {
   CorrRequest req;
-  if (MakeCorrRequest(data, rows, req))
+  if (MakeCorrRequest(data, cols, req))
     Request(std::move(req));
 }
 
@@ -61,20 +57,14 @@ void CorrLagService::RequestCompute(SharedData &data, const std::vector<int> &ro
 
 CorrPair &CorrPairService::target(SharedData &data) { return data.corr_pair; }
 
-void CorrPairService::RequestCompute(SharedData &data, uint32_t col_a, uint32_t col_b) {
-  assert(col_a != col_b);
-  const auto &sel = data.feature.selection;
-  const size_t lvl = static_cast<size_t>(sel.selected_level);
-  if (lvl == L_day)
-    return; // 同 MakeCorrRequest: L_day 无日内轴
-  assert(col_a < data.feature.meta().features[lvl].size() && col_b < data.feature.meta().features[lvl].size());
-
+void CorrPairService::RequestCompute(SharedData &data, size_t level, const ColRef &a, const ColRef &b) {
+  assert(a != b && level <= std::min(a.level, b.level));
   CorrRequest req;
-  req.spec.level = lvl;
-  req.spec.cols = analysis::column_set(data.feature, lvl, {col_a, col_b}); // 按序: a 在前 (lag > 0 = a 领先)
-  req.scope = analysis::read_scope(data.config, sel.lib());
+  const TierId main = Feature::main_tier({a, b});
+  req.scope = analysis::read_scope(data.config, data.feature.selection.lib_of(main));
   if (req.scope.months.empty())
     return;
+  req.spec.plan = analysis::read_plan(data.feature, main, level, {a, b}); // 按序: a 在前 (lag > 0 = a 领先)
   Request(std::move(req));
 }
 

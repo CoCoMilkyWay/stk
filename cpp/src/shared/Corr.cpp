@@ -12,6 +12,8 @@
 using namespace analysis;
 
 size_t corr_slice_stride(size_t level) {
+  if (level == L_day)
+    return 1;
   if (level == L_10min) {
     static_assert(kCorrSliceMinutes % 10 == 0);
     return kCorrSliceMinutes / 10;
@@ -36,7 +38,7 @@ struct CorrPlan {
   int lag_at(size_t k) const { return lags == 1 ? 0 : CorrPair::lag_of(k); }
 
   size_t n_slices(size_t level) const {
-    const size_t VR = level_valid_rows(level);
+    const size_t VR = seg_rows(level);
     switch (slices) {
     case Slices::Strided: {
       const size_t stride = corr_slice_stride(level);
@@ -50,9 +52,9 @@ struct CorrPlan {
     }
     return 0;
   }
-  // 第 d 个抽样日 (共 n_days) 的 S 个切片行号
+  // 第 d 个抽样段 (共 n_days) 的 S 个切片段内行号
   void fill_slices(size_t level, size_t d, size_t n_days, size_t *out) const {
-    const size_t VR = level_valid_rows(level), S = n_slices(level);
+    const size_t VR = seg_rows(level), S = n_slices(level);
     switch (slices) {
     case Slices::Strided: {
       const size_t stride = corr_slice_stride(level), off = d % stride;
@@ -369,12 +371,12 @@ struct Engine {
 
   const PairSums &sums(size_t i, size_t j, size_t k) const { return acc[upper_index(i, j, F) * L + k]; }
 
-  void prepare(const CorrSpec &spec, size_t A_, const CorrPlan &p) {
+  void prepare(const CorrSpec &spec, size_t A_, size_t A_bar, const CorrPlan &p) {
     TraceN("CorrPrepare");
     plan = p;
     F = spec.n();
     A = A_;
-    S = p.n_slices(spec.level);
+    S = p.n_slices(spec.level());
     L = p.lags;
     P = F * (F - 1) / 2;
     assert(F >= 2 && A > 0);
@@ -389,10 +391,10 @@ struct Engine {
     misc::exec::ensure(ex, static_cast<int>(n_threads));
     lag_group = tile_pairs.size() >= 4 * n_threads ? L : 1;
 
-    const size_t n_blk = (F + CsPlane::kBlockCols - 1) / CsPlane::kBlockCols;
-    pf.prepare(threads_for(days * n_blk), A, spec.level, std::min(F, CsPlane::kBlockCols));
+    const size_t n_blk = (F + CsPlane::kBlockCols - 1) / CsPlane::kBlockCols + spec.plan.srcs.size() - 1; // 源列块数上界
+    pf.prepare(threads_for(days * n_blk), spec.plan, A, A_bar, CsPlane::kBlockCols);
     for (CsPlane &pl : pf.buf)
-      pl.prepare(A, spec.level, days, S, F);
+      pl.prepare(A, spec.level(), days, S, F);
     rk.prepare(days * S * F, A);
     acc.assign(P * L, PairSums{});
     diag.assign(F, 0.0);
@@ -403,24 +405,25 @@ struct Engine {
     }
   }
 
-  // 抽样日 (洗牌取前 kCorrDays 个, 与 Dist / Preview 同一天序) 逐步流式; 每步末 publish_step() 写快照
+  // 抽样段 (洗牌取前 kCorrDays 个, 与 Dist / Preview 同一段序) 逐步流式; 每步末 publish_step() 写快照
   template <class Publish>
-  bool run(FeatureRead &reader, const ReadScope &scope, const CorrSpec &spec, const CorrPlan &p,
-           const std::atomic<bool> &cancel, Progress &board, Publish &&publish_step) {
-    const DayPlan sample = plan_days(reader, scope.months, DayOrder::Shuffle, kCorrDays);
+  bool run(FeatureRead &reader, const FeatureRead &all, const ReadScope &scope, const CorrSpec &spec,
+           const CorrPlan &p, const std::atomic<bool> &cancel, Progress &board, Publish &&publish_step) {
+    const SegPlan sample = plan_segs(reader, scope.months, spec.level(), DayOrder::Shuffle, kCorrDays);
     const size_t n_days = sample.size();
     if (n_days == 0)
       return true; // 库为空: 直接 Done, 快照全空
     board.total.store(n_days, std::memory_order_release);
-    prepare(spec, scope.lib.axis.size(), p);
+    prepare(spec, scope.lib.axis.size(), scope.bar.axis.size(), p);
+    const Readers rd{reader, all, scope.lib.axis.ids.data()};
 
     // 第 d0 步的 IO (预读线程或本线程跑; 只写传入的平面, 切片行号随之填)
     const auto load = [&](size_t d0) {
       return [&, d0](CsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
         const size_t bd = std::min(days, n_days - d0);
         for (size_t j = 0; j < bd; ++j)
-          plan.fill_slices(spec.level, d0 + j, n_days, pl.slice_t.data() + j * S);
-        pl.load_batch(io, slots, reader, sample.dates.data() + d0, bd, spec.cols, cancel);
+          plan.fill_slices(spec.level(), d0 + j, n_days, pl.slice_t.data() + j * S);
+        pl.load_batch(io, slots, rd, spec.plan, sample, d0, bd, cancel);
       };
     };
     pf.now(load(0));
@@ -541,9 +544,9 @@ Corr::~Corr() = default;
 void Corr::reset(ReadScope scope, Spec sp) {
   TraceN("CorrReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
-  assert(std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + F));
-  assert(std::adjacent_find(sp.cols.io.begin(), sp.cols.io.begin() + F) == sp.cols.io.begin() + F);
+  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
+  assert(std::is_sorted(sp.plan.cols.begin(), sp.plan.cols.end()));
+  assert(std::adjacent_find(sp.plan.cols.begin(), sp.plan.cols.end()) == sp.plan.cols.end());
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
   spec = std::move(sp);
@@ -555,7 +558,7 @@ void Corr::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool Corr::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+bool Corr::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
   TraceN("CorrBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -563,7 +566,7 @@ bool Corr::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   rt.pub.rho.assign(F * F, kNaN);
   rt.pub.pair_n.assign(F * F, 0);
   const Engine &eng = rt.eng;
-  return rt.eng.run(reader, scope_, spec, kMatrixPlan, cancel, *this, [&] {
+  return rt.eng.run(reader, all, scope_, spec, kMatrixPlan, cancel, *this, [&] {
     TraceN("CorrPublish");
     for (size_t i = 0; i < F; ++i) {
       rt.pub.rho[i * F + i] = 1.0f;
@@ -603,8 +606,8 @@ CorrLag::~CorrLag() = default;
 void CorrLag::reset(ReadScope scope, Spec sp) {
   TraceN("CorrLagReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
-  assert(std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + F));
+  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
+  assert(std::is_sorted(sp.plan.cols.begin(), sp.plan.cols.end()));
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
   spec = std::move(sp);
@@ -615,7 +618,7 @@ void CorrLag::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool CorrLag::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+bool CorrLag::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
   TraceN("CorrLagBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -623,7 +626,7 @@ bool CorrLag::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
   rt.pub.lag_best.assign(F * F, 0);
   rt.pub.rho_best.assign(F * F, kNaN);
   const Engine &eng = rt.eng;
-  return rt.eng.run(reader, scope_, spec, kLagPlan, cancel, *this, [&] {
+  return rt.eng.run(reader, all, scope_, spec, kLagPlan, cancel, *this, [&] {
     TraceN("CorrLagPublish");
     for (size_t i = 0; i < F; ++i) {
       rt.pub.lag_best[i * F + i] = 0;
@@ -678,7 +681,7 @@ CorrPair::~CorrPair() = default;
 
 void CorrPair::reset(ReadScope scope, Spec sp) {
   assert(sp.n() == 2 && sp.col(0) != sp.col(1));
-  assert(sp.level < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
+  assert(sp.level() < LEVEL_COUNT && scope.lib.axis.size() > 0 && !scope.months.empty());
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
   spec = std::move(sp);
@@ -689,12 +692,12 @@ void CorrPair::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool CorrPair::build(FeatureRead &reader, const std::atomic<bool> &cancel) {
+bool CorrPair::build(FeatureRead &reader, const FeatureRead &all, const std::atomic<bool> &cancel) {
   TraceN("CorrPairBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
   const Engine &eng = rt.eng;
-  return rt.eng.run(reader, scope_, spec, kPairPlan, cancel, *this, [&] {
+  return rt.eng.run(reader, all, scope_, spec, kPairPlan, cancel, *this, [&] {
     // ρ(lag) = corr(A(t), B(t + lag)), lag > 0 = A 领先 B (A = 列 0 = 上三角行)
     for (size_t k = 0; k < kCorrLags; ++k) {
       const PairSums &s = eng.sums(0, 1, k);

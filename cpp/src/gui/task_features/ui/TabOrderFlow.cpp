@@ -9,12 +9,14 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)
 #include "gui/util/AssetFilter.hpp"            // 筛选控件 (与 TABLE 共用)
+#include "shared/Analysis.hpp"                 // read_plan (overlay 读计划)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -73,26 +75,56 @@ static void FormatDateShort(char *buf, size_t size, misc::Ymd date) {
   std::snprintf(buf, size, "%02d/%02d/%02d", date / 10000 % 100, date / 100 % 100, date % 100);
 }
 
-// 选中特征列 (当前层): 多选集合, 截断 MAX_FEATURES
-static std::vector<int> CollectFeats(const Feature::Selection &sel, int level) {
-  std::vector<int> v;
-  if (sel.tier != TierId::Lob || sel.selected_level != level)
-    return v; // OrderFlow 读票池库 (Lob 档), 选 Bar 库时的特征下标不属于它
-  for (int f : sel.selected_features) {
+// 选中特征列 (跨层跨档): 多选集合 (ColRef 序), 截断 MAX_FEATURES. OrderFlow 主库 = 票池库 (Lob), Bar 列旁读 all 库
+static std::vector<ColRef> CollectFeats(const Feature::Selection &sel) {
+  std::vector<ColRef> v;
+  for (const ColRef &c : sel.picked) {
     if (v.size() >= OrderFlowConst::MAX_FEATURES)
       break;
-    v.push_back(f);
+    v.push_back(c);
   }
   return v;
 }
 
-// legend = "中文名 (cat2)"; cat2 = 该层有效 Cat2 快照 (探测 or 人工覆盖, 无预览 = "?")
-static const char *FeatName(const Feature &feature, const std::vector<const char *> &cat2,
-                            int level, int idx, char *buf, size_t size) {
-  const auto &metas = feature.meta().features[level];
-  const bool ok = idx >= 0 && static_cast<size_t>(idx) < metas.size();
-  std::snprintf(buf, size, "%s (%s)", ok ? metas[idx].name_cn : "?",
-                ok && static_cast<size_t>(idx) < cat2.size() ? cat2[static_cast<size_t>(idx)] : "?");
+// overlay 读计划 + ts_valid 位 (第 i 位 = 列 i 是其层 ts_valid, 展示幅值 = micro price); 空列 = 空计划
+static ReadPlan FeatPlan(const Feature &feature, size_t grid, const std::vector<ColRef> &cols, uint32_t &ts_price) {
+  ts_price = 0;
+  if (cols.empty())
+    return ReadPlan{};
+  for (size_t i = 0; i < cols.size(); ++i)
+    if (std::strcmp(feature.meta(cols[i]).code, "ts_valid") == 0) // L_day 无 ts_valid, 按名判
+      ts_price |= 1u << i;
+  return analysis::read_plan(feature, TierId::Lob, grid, cols);
+}
+
+// 一条 overlay 线的有效 Cat2 + 预览抽样全局值域 (与 FEATURE 表同口径; 无预览 = "?", val_min > val_max)
+struct FeatCat {
+  const char *cat2 = "?";
+  float val_min = 1.0f, val_max = 0.0f;
+};
+// cols → [i] FeatCat: 每个 (档, 层) 取一次快照
+static void CollectFeatCats(SharedData &data, const std::vector<ColRef> &cols, std::vector<FeatCat> &out) {
+  static Cat2Snapshot s_snap; // GUI 单线程, 帧内复用
+  out.assign(cols.size(), FeatCat{});
+  std::vector<bool> done(cols.size(), false);
+  for (size_t i = 0; i < cols.size(); ++i) {
+    if (done[i])
+      continue;
+    EffectiveCat2Snapshot(data, cols[i].tier, cols[i].level, s_snap);
+    for (size_t j = i; j < cols.size(); ++j) {
+      if (done[j] || cols[j].tier != cols[i].tier || cols[j].level != cols[i].level)
+        continue;
+      done[j] = true;
+      const size_t c = cols[j].col;
+      assert(c < s_snap.cat2.size());
+      out[j] = FeatCat{s_snap.cat2[c], s_snap.val_min[c], s_snap.val_max[c]};
+    }
+  }
+}
+
+// legend = "中文名 (cat2) 层"; cat2 = 有效 Cat2 (探测 or 人工覆盖, 无预览 = "?")
+static const char *FeatName(const Feature &feature, const ColRef &c, const FeatCat &cat, char *buf, size_t size) {
+  std::snprintf(buf, size, "%s (%s) %s", feature.meta(c).name_cn, cat.cat2, level_name(c.level));
   return buf;
 }
 
@@ -114,8 +146,8 @@ enum FeatAxisKind { FEAT_AXIS_PRICE = 0,
                     FEAT_AXIS_SCALE,
                     FEAT_AXIS_CENTER };
 
-static FeatAxisKind FeatAxisOf(const std::vector<const char *> &cat2, int idx) {
-  const char *c = (idx >= 0 && static_cast<size_t>(idx) < cat2.size()) ? cat2[static_cast<size_t>(idx)] : "?";
+static FeatAxisKind FeatAxisOf(const FeatCat &cat) {
+  const char *c = cat.cat2;
   if (std::strcmp(c, "price") == 0)
     return FEAT_AXIS_PRICE;
   if (std::strcmp(c, "rank") == 0)
@@ -133,15 +165,14 @@ static ImAxis FeatYAxis(FeatAxisKind kind) {
 
 // Y2 (rank/flag) 值域并集累加: rank 固定 [0,1]; flag 取该特征全局 min/max (预览快照),
 // 无预览 (快照 min > max) 退回该线自身 y_min/y_max
-static void FeatFixedRange(FeatAxisKind kind, const Cat2Snapshot &snap, int idx,
+static void FeatFixedRange(FeatAxisKind kind, const FeatCat &cat,
                            float y_min, float y_max, float &fixed_min, float &fixed_max) {
   if (kind == FEAT_AXIS_RANK) {
     y_min = 0.0f;
     y_max = 1.0f;
-  } else if (idx >= 0 && static_cast<size_t>(idx) < snap.val_min.size() &&
-             snap.val_min[static_cast<size_t>(idx)] <= snap.val_max[static_cast<size_t>(idx)]) {
-    y_min = snap.val_min[static_cast<size_t>(idx)];
-    y_max = snap.val_max[static_cast<size_t>(idx)];
+  } else if (cat.val_min <= cat.val_max) {
+    y_min = cat.val_min;
+    y_max = cat.val_max;
   }
   fixed_min = std::min(fixed_min, y_min);
   fixed_max = std::max(fixed_max, y_max);
@@ -375,7 +406,7 @@ static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t p
 // L_sec Plot Renderer (图1: front Depth 槽)
 // ============================================================================
 
-static void RenderSecPlot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap) {
+static void RenderSecPlot(OrderFlow &of, const Feature &feature, const std::vector<FeatCat> &cats) {
   auto &ui = of.ui;
   const OrderFlow::Depth &dp = of.depth.front_slot();
 
@@ -408,13 +439,14 @@ static void RenderSecPlot(OrderFlow &of, const Feature &feature, const Cat2Snaps
     bool feat_fixed = false, feat_scale = false, feat_center = false;
     float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
     float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
-    for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
+    assert(cats.size() == dp.n_feat);
+    for (size_t i = 0; i < dp.n_feat; ++i) {
       if (dp.feat[i].x.empty())
         continue;
-      const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.depth_feats[i]);
+      const FeatAxisKind kind = FeatAxisOf(cats[i]);
       if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
         feat_fixed = true;
-        FeatFixedRange(kind, snap, ui.depth_feats[i], dp.feat_y_min[i], dp.feat_y_max[i], fixed_min, fixed_max);
+        FeatFixedRange(kind, cats[i], dp.feat_y_min[i], dp.feat_y_max[i], fixed_min, fixed_max);
       } else if (kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) {
         feat_scale = true;
         feat_center |= (kind == FEAT_AXIS_CENTER);
@@ -532,18 +564,18 @@ static void RenderSecPlot(OrderFlow &of, const Feature &feature, const Cat2Snaps
     // ------------------------------------------------------------------
     // 特征 overlay (多选; 轴按 Cat2 分流, legend = 中文名 (cat2), 颜色 ImPlot 自动分配)
     // ------------------------------------------------------------------
-    for (size_t i = 0; i < dp.n_feat && i < ui.depth_feats.size(); ++i) {
+    for (size_t i = 0; i < dp.n_feat; ++i) {
       const auto &fl = dp.feat[i];
       if (fl.x.empty())
         continue;
       char label[128];
-      const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.depth_feats[i]);
+      const FeatAxisKind kind = FeatAxisOf(cats[i]);
       ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
       // 颜色按选中槽位取 (不用 ImPlot 的 item 序自动分配): 两图 item 序不同, 同一
       // 特征才能在图1 图2 同色
       ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
       // price 类共用主图 Y1: NoFit 保证图1 自动/双击缩放口径不被特征撑大
-      ImPlot::PlotStairs(FeatName(feature, snap.cat2, dp.feat_level, ui.depth_feats[i], label, sizeof(label)),
+      ImPlot::PlotStairs(FeatName(feature, dp.feat_refs[i], cats[i], label, sizeof(label)),
                          fl.x.data(), fl.y.data(), static_cast<int>(fl.x.size()),
                          kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -588,7 +620,7 @@ static void RenderSecPlot(OrderFlow &of, const Feature &feature, const Cat2Snaps
 // L_min Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
-static void RenderMinPlot(OrderFlow &of, const Feature &feature, const Cat2Snapshot &snap, float height) {
+static void RenderMinPlot(OrderFlow &of, const Feature &feature, const std::vector<FeatCat> &cats, float height) {
   auto &ui = of.ui;
   auto &k = of.kline;
 
@@ -631,6 +663,7 @@ static void RenderMinPlot(OrderFlow &of, const Feature &feature, const Cat2Snaps
       ui.min_last_pub_days = pub_days;
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
+    assert(cats.size() == ui.kline_feats.size());
     const size_t nf = ready ? std::min(k.n_feat, ui.kline_feats.size()) : 0;
     std::array<size_t, OrderFlowConst::MAX_FEATURES> feat_counts{};
     {
@@ -641,10 +674,10 @@ static void RenderMinPlot(OrderFlow &of, const Feature &feature, const Cat2Snaps
         feat_counts[i] = k.feat_n[i].load(std::memory_order_acquire);
         if (feat_counts[i] == 0)
           continue;
-        const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.kline_feats[i]);
+        const FeatAxisKind kind = FeatAxisOf(cats[i]);
         if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
           feat_fixed = true;
-          FeatFixedRange(kind, snap, ui.kline_feats[i], k.feat_y_min[i].load(std::memory_order_relaxed),
+          FeatFixedRange(kind, cats[i], k.feat_y_min[i].load(std::memory_order_relaxed),
                          k.feat_y_max[i].load(std::memory_order_relaxed), fixed_min, fixed_max);
         } else if (kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) {
           feat_scale = true;
@@ -706,12 +739,12 @@ static void RenderMinPlot(OrderFlow &of, const Feature &feature, const Cat2Snaps
       if (feat_counts[i] == 0)
         continue;
       char label[128];
-      const FeatAxisKind kind = FeatAxisOf(snap.cat2, ui.kline_feats[i]);
+      const FeatAxisKind kind = FeatAxisOf(cats[i]);
       ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
-      // 颜色按选中槽位取, 与图1 同一口径 (选中层 = L_min 时两图特征列表逐项相同 → 同色)
+      // 颜色按选中槽位取, 与图1 同一口径 (两图特征列表逐项相同 → 同色)
       ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
       // price 类共用主图 Y1: NoFit 保证 K线自身的缩放口径不被特征撑大
-      ImPlot::PlotStairs(FeatName(feature, snap.cat2, 1, ui.kline_feats[i], label, sizeof(label)),
+      ImPlot::PlotStairs(FeatName(feature, ui.kline_feats[i], cats[i], label, sizeof(label)),
                          k.feat[i].x.data(), k.feat[i].y.data(), static_cast<int>(feat_counts[i]),
                          kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -976,14 +1009,17 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  std::vector<int> min_feats = CollectFeats(sel, 1);
-  if (rescan || ui.kline_asset != asset_idx || ui.kline_feats != min_feats) {
+  // 两图同一组选中列 (跨层跨档; 网格: 图2 = L_min, 图1 = L_sec, 各点尾部对齐)
+  const std::vector<ColRef> feats = CollectFeats(sel);
+  if (rescan || ui.kline_asset != asset_idx || ui.kline_feats != feats) {
     ui.kline_asset = asset_idx;
-    ui.kline_feats = min_feats;
+    ui.kline_feats = feats;
     ++ui.kline_gen;
     ui.min_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
     ui.kline_rescan_pending = rescan || ui.min_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
-    service->RequestKline(ui.kline_gen, asset_idx, std::move(min_feats), rescan);
+    uint32_t ts_price = 0;
+    ReadPlan plan = FeatPlan(data.feature, L_min, feats, ts_price);
+    service->RequestKline(ui.kline_gen, asset_idx, std::move(plan), ts_price, rescan);
   }
 
   // Kline 发布状态 (anchor 默认值需要 dates)
@@ -999,19 +1035,16 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.min_anchor_date = of.kline.dates.front();
   }
 
-  // 图1 特征 = 当前选中层的指标集 (L_sec/L_min 皆可): 选 L_min 时与图2 同源, 只取锚点日的日内段
-  //   选 Bar 库时无图1 特征 (CollectFeats 空), 层按 L_min 发 (Bar 的 L_day 不属于票池库)
-  const int depth_level = sel.tier == TierId::Lob ? sel.selected_level : static_cast<int>(L_min);
-  std::vector<int> depth_feats = CollectFeats(sel, depth_level);
+  // 图1 特征 = 同一组选中列, 只取锚点日
   if (ui.min_anchor_date &&
-      (rescan || ui.depth_date != ui.min_anchor_date || ui.depth_asset != asset_idx ||
-       ui.depth_feats != depth_feats || ui.depth_feat_level != depth_level)) {
+      (rescan || ui.depth_date != ui.min_anchor_date || ui.depth_asset != asset_idx || ui.depth_feats != feats)) {
     ui.depth_date = ui.min_anchor_date;
     ui.depth_asset = asset_idx;
-    ui.depth_feats = depth_feats;
-    ui.depth_feat_level = depth_level;
+    ui.depth_feats = feats;
     ++ui.depth_gen;
-    service->RequestDepth(ui.depth_gen, ui.min_anchor_date, asset_idx, depth_level, std::move(depth_feats));
+    uint32_t ts_price = 0;
+    ReadPlan plan = FeatPlan(data.feature, L_sec, feats, ts_price);
+    service->RequestDepth(ui.depth_gen, ui.min_anchor_date, asset_idx, std::move(plan), ts_price);
   }
 
   // ==========================================================================
@@ -1056,11 +1089,11 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.asset_initialized = true;
   }
 
-  // Cat2 有效值快照 (与 FEATURE 表同口径): 两图 legend 括号标注.
-  // 图1 用 front 槽实际渲染的特征层 (换层在途时与旧槽数据配对)
-  static Cat2Snapshot s_cat2_depth, s_cat2_min;
-  EffectiveCat2Snapshot(data, 1, s_cat2_min);
-  EffectiveCat2Snapshot(data, static_cast<size_t>(of.depth.front_slot().feat_level), s_cat2_depth);
+  // Cat2 有效值快照 (与 FEATURE 表同口径): 两图 legend 括号标注 / 轴分流.
+  // 图1 按 front 槽实际渲染的列 (换列在途时与旧槽数据配对), 图2 按请求列 (gen 配对)
+  static std::vector<FeatCat> s_cat_depth, s_cat_min;
+  CollectFeatCats(data, of.depth.front_slot().feat_refs, s_cat_depth);
+  CollectFeatCats(data, ui.kline_feats, s_cat_min);
 
   // ==========================================================================
   // LAYOUT
@@ -1076,7 +1109,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // ==========================================================================
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
   ImGui::BeginChild("SecChart", ImVec2(chart_width, -1), false);
-  RenderSecPlot(of, data.feature, s_cat2_depth);
+  RenderSecPlot(of, data.feature, s_cat_depth);
   ImGui::EndChild();
 
   ImGui::SameLine();
@@ -1105,7 +1138,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   RenderStatusBar(of);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
-  RenderMinPlot(of, data.feature, s_cat2_min, kline_height);
+  RenderMinPlot(of, data.feature, s_cat_min, kline_height);
 
   ImGui::EndChild(); // BottomSection
 }
