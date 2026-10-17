@@ -82,7 +82,7 @@ struct TsPlane {
 
   // 一天 → 批内第 j 天: 读 cs.io 进 st, 逐列按自己的 vt 折叠哨兵并转置.
   // 门控行来源: cs 自带 (st 末列) / 调用方外给 gate ([T][A] 同层 ts_valid, 多块共用一次读) / 无 (全 ALL)
-  // ids: 平面资产 a ← 源库资产 ids[a] (All 档旁读: 源 = 全轴, st 按全轴 preallocate); nullptr = 同轴
+  // ids: 平面资产 a ← 源库资产 ids[a] (Bar 档旁读: 源 = 全轴, st 按全轴 preallocate); nullptr = 同轴
   void load_day(const FeatureRead &reader, misc::Ymd date, const fmeta::ColumnSet &cs, size_t j,
                 FeatureRead::DayColumns &st, const feature_storage_t *gate = nullptr, const uint32_t *ids = nullptr) {
     assert(j < days && cs.n() == n_cols);

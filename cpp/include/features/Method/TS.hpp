@@ -13,7 +13,7 @@
 //     cs::Log 的 "非 finite → NaN" 在 precise TU 里, 此处 ±inf 原样传
 //   时序方法 Method (OP 行末参; None 同时充当"关"). 单资产因果 expanding 统计, 只看历史:
 //     Z / RobustZ / IqrZ / Rank / NormRank / Clip / Winsor
-//     ★ 占位: 只有名字 (枚举 / 元数据 / GUI 列), 尚无实现, 未接入 CoreSequential; 落盘值 == Tf(节点输出).
+//     ★ 占位: 只有名字 (枚举 / 元数据 / GUI 列), 尚无实现, 未接入 CoreLob; 落盘值 == Tf(节点输出).
 //       接入时需要每资产每列一份 expanding 状态 (放 DAG 旁), 签名届时再定; 探索侧对应 math::normalize (Transform 的 ts_norm).
 //
 //   消费方式:

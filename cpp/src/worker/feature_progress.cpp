@@ -47,9 +47,9 @@ void cell(std::ostringstream &os, float t, bool idle) {
 
 } // namespace
 
-FeatureProgress::FeatureProgress(const PoolFeatureStore &store, const TsSchedule &sched,
-                                 const ComputeStats &stats, const std::vector<misc::Ymd> &dates)
-    : store_(store), sched_(sched), stats_(stats), dates_(dates),
+FeatureProgress::FeatureProgress(const StoreRing &store, const TsSchedule &sched,
+                                 const ComputeStats &stats, const std::vector<misc::Ymd> &dates, const char *unit)
+    : store_(store), unit_(unit), sched_(sched), stats_(stats), dates_(dates),
       start_time_(std::chrono::steady_clock::now()) {
   assert(!dates_.empty() && "日期轴为空, 不应启动进度渲染");
   assert(stats_.ts.size() == sched_.frontier.size() && "stats 槽位数与 TS worker 数不符");
@@ -180,7 +180,7 @@ void FeatureProgress::render() {
     out << "] " << std::setw(3) << static_cast<int>(p * 100) << "% "
         << io_days << "/" << total << " 天 | " << fmt_duration(now_ms / 1000);
     if (global_rate > 0.0) {
-      snprintf(buf, sizeof(buf), " | Σ%.1fM单/s", global_rate / 1e6);
+      snprintf(buf, sizeof(buf), " | Σ%.1fM%s/s", global_rate / 1e6, unit_);
       out << buf;
     }
     if (global_day_s > 0.0) {
@@ -213,9 +213,9 @@ void FeatureProgress::render() {
     }
     out << "\033[0m] ";
     const auto [hmin, hmax] = std::minmax_element(holding.begin(), holding.end());
-    snprintf(buf, sizeof(buf), "前沿 %zu..%zu/%zu (%s) %.2fG单 持仓 %zu..%zu",
+    snprintf(buf, sizeof(buf), "前沿 %zu..%zu/%zu (%s) %.2fG%s 持仓 %zu..%zu",
              lag, lead, total, misc::dense(dates_[std::min(lead, total - 1)]).c_str(),
-             static_cast<double>(sum_orders) / 1e9, *hmin, *hmax);
+             static_cast<double>(sum_orders) / 1e9, unit_, *hmin, *hmax);
     out << buf << "\033[K\n";
   }
 

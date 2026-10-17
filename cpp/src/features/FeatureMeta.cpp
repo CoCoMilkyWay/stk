@@ -12,9 +12,9 @@
 //   两档 TS / CS 列名全局唯一 (编译期断言): 因子层按列名拼两档, 重名即歧义
 // ============================================================================
 
-#include "features/All/FeatureCategoriesGenerated.hpp"
 #include "features/Backend/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
-#include "features/Pool/FeatureCategoriesGenerated.hpp"
+#include "features/Bar/FeatureCategoriesGenerated.hpp"
+#include "features/Lob/FeatureCategoriesGenerated.hpp"
 #include "shared/Feature.hpp"
 
 #include <algorithm>
@@ -33,7 +33,7 @@
 // ============================================================================
 namespace {
 #define TIER_LEVELS_PTR(T, ns) &ns::LEVELS,
-constexpr const std::array<LevelInfo, LEVEL_COUNT> *TIER_LEVELS[TIER_COUNT] = {ALL_TIERS(TIER_LEVELS_PTR)};
+constexpr const std::array<LevelInfo, LEVEL_COUNT> *TIER_LEVEL_TABLE[TIER_COUNT] = {ALL_TIERS(TIER_LEVELS_PTR)};
 #undef TIER_LEVELS_PTR
 #define TIER_LAST_LEVEL(T, ns) ns::Tier::kLastLevel,
 constexpr size_t TIER_LAST[TIER_COUNT] = {ALL_TIERS(TIER_LAST_LEVEL)};
@@ -42,12 +42,12 @@ constexpr size_t TIER_LAST[TIER_COUNT] = {ALL_TIERS(TIER_LAST_LEVEL)};
 
 bool has_level(TierId tier, size_t lvl) {
   assert(static_cast<size_t>(tier) < TIER_COUNT && lvl < LEVEL_COUNT);
-  return (*TIER_LEVELS[static_cast<size_t>(tier)])[lvl].fields != nullptr;
+  return (*TIER_LEVEL_TABLE[static_cast<size_t>(tier)])[lvl].fields != nullptr;
 }
 
 const LevelInfo &level_info(TierId tier, size_t lvl) {
   assert(has_level(tier, lvl));
-  return (*TIER_LEVELS[static_cast<size_t>(tier)])[lvl];
+  return (*TIER_LEVEL_TABLE[static_cast<size_t>(tier)])[lvl];
 }
 
 size_t last_level(TierId tier) {
@@ -81,11 +81,14 @@ constexpr void collect(const TierLevels &L, uint8_t tier, TierCode *out, size_t 
     }
 }
 constexpr bool tiers_unique() {
-  constexpr size_t N = field_total(pool::LEVELS) + field_total(all::LEVELS);
+#define TIER_FIELD_TOTAL(T, ns) +field_total(ns::LEVELS)
+  constexpr size_t N = 0 ALL_TIERS(TIER_FIELD_TOTAL);
+#undef TIER_FIELD_TOTAL
   std::array<TierCode, N> v{};
   size_t n = 0;
-  collect(pool::LEVELS, 0, v.data(), n);
-  collect(all::LEVELS, 1, v.data(), n);
+#define TIER_COLLECT(T, ns) collect(ns::LEVELS, static_cast<uint8_t>(TierId::T), v.data(), n);
+  ALL_TIERS(TIER_COLLECT)
+#undef TIER_COLLECT
   std::sort(v.begin(), v.end(), [](const TierCode &a, const TierCode &b) { return a.h < b.h; });
   for (size_t i = 0; i < N;) {
     size_t j = i;
@@ -99,7 +102,7 @@ constexpr bool tiers_unique() {
   }
   return true;
 }
-static_assert(tiers_unique(), "Pool / All 两档 TS / CS 列名重复 (因子层按名拼接两档, 须全局唯一; 池档 K 线用 lob_* 前缀)");
+static_assert(tiers_unique(), "跨档 TS / CS 列名重复 (因子层按名拼接两档, 须全局唯一; Lob 档 K 线用 lob_* 前缀)");
 } // namespace
 
 // ============================================================================
@@ -108,29 +111,38 @@ static_assert(tiers_unique(), "Pool / All 两档 TS / CS 列名重复 (因子层
 #define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                       \
   {#code, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, SRC_TS_TF_##src, SRC_TS_METHOD_##src, SRC_CS_TF_##src, \
    SRC_CS_METHOD_##src, formula, name_en, name_cn, description, kLevel},
-#define GENERATE_METADATA_TABLE(name, num, fields, rows, psd)        \
-  namespace name##_meta_detail {                                     \
+#define GENERATE_METADATA_TABLE(T, ns, name, num, fields, psd)       \
+  namespace ns::name##_meta_detail {                                 \
     constexpr uint8_t kLevel = num;                                  \
     constexpr FeatureMetadata TABLE[] = {fields(GENERATE_METADATA)}; \
   }
-// 每档: META[lvl] / SOURCES[lvl] (档缺的层为空 span) + 依赖表 / 分类表
-#define METADATA_SPAN_SET(name, num, fields, rows, psd) m[num] = {name##_meta_detail::TABLE, std::size(name##_meta_detail::TABLE)};
-#define SOURCE_SPAN_SET(name, num, fields, rows, psd) s[num] = {name##_FIELD_SOURCE, std::size(name##_FIELD_SOURCE)};
-#define GENERATE_TIER_META(T, ns)                                                                          \
-  namespace ns {                                                                                           \
-  constexpr std::array<std::span<const FeatureMetadata>, LEVEL_COUNT> META = [] {                          \
-    std::array<std::span<const FeatureMetadata>, LEVEL_COUNT> m{};                                         \
-    TIER_LEVELS_##T(METADATA_SPAN_SET) return m;                                                           \
-  }();                                                                                                     \
-  constexpr std::array<std::span<const FieldSource>, LEVEL_COUNT> SOURCES = [] {                           \
-    std::array<std::span<const FieldSource>, LEVEL_COUNT> s{};                                             \
-    TIER_LEVELS_##T(SOURCE_SPAN_SET) return s;                                                             \
-  }();                                                                                                     \
-  constexpr std::span<const char *const> CAT1{FeatureCategoryL1_ALL.data(), FeatureCategoryL1_ALL.size()}; \
-  constexpr std::span<const char *const> CAT2{FeatureCategoryL2_ALL.data(), FeatureCategoryL2_ALL.size()}; \
-  }
+TIER_LEVELS(GENERATE_METADATA_TABLE)
 
-FOR_EACH_TIER_LEVEL(GENERATE_METADATA_TABLE)
+// 格表 (与 LEVEL_CELLS 同序) → 每档 META[lvl] / SOURCES[lvl] (档缺的层为空 span) + 依赖表 / 分类表
+struct MetaCell {
+  TierId tier;
+  size_t index;
+  std::span<const FeatureMetadata> meta;
+  std::span<const FieldSource> sources;
+};
+#define META_CELL_ONE(T, ns, name, num, fields, psd) MetaCell{TierId::T, num, ns::name##_meta_detail::TABLE, ns::name##_FIELD_SOURCE},
+constexpr MetaCell META_CELLS[] = {TIER_LEVELS(META_CELL_ONE)};
+#undef META_CELL_ONE
+template <class V>
+constexpr std::array<V, LEVEL_COUNT> tier_spans(TierId tier, V MetaCell::*field) {
+  std::array<V, LEVEL_COUNT> out{};
+  for (const MetaCell &c : META_CELLS)
+    if (c.tier == tier)
+      out[c.index] = c.*field;
+  return out;
+}
+#define GENERATE_TIER_META(T, ns)                                                                                      \
+  namespace ns {                                                                                                       \
+  constexpr std::array<std::span<const FeatureMetadata>, LEVEL_COUNT> META = tier_spans(TierId::T, &MetaCell::meta);   \
+  constexpr std::array<std::span<const FieldSource>, LEVEL_COUNT> SOURCES = tier_spans(TierId::T, &MetaCell::sources); \
+  constexpr std::span<const char *const> CAT1{FeatureCategoryL1_ALL.data(), FeatureCategoryL1_ALL.size()};             \
+  constexpr std::span<const char *const> CAT2{FeatureCategoryL2_ALL.data(), FeatureCategoryL2_ALL.size()};             \
+  }
 ALL_TIERS(GENERATE_TIER_META)
 
 namespace {
@@ -151,8 +163,6 @@ const TierMeta &tier_meta(TierId tier) {
 
 #undef GENERATE_METADATA
 #undef GENERATE_METADATA_TABLE
-#undef METADATA_SPAN_SET
-#undef SOURCE_SPAN_SET
 #undef GENERATE_TIER_META
 
 namespace feature_meta {

@@ -3,6 +3,7 @@
 #include "misc/fs.hpp"
 #include "nlohmann/json.hpp"
 #include "shared/Config.hpp"
+#include "shared/FeatureLib.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -159,4 +160,15 @@ UniverseAxis universe_axis(const Config &cfg, std::size_t num_assets) {
   for (const uint32_t a : uni.ids)
     uni.hash = fnv_append(uni.hash, axis.code(a));
   return uni;
+}
+
+FeatureLib feature_lib(const Config &cfg, std::size_t num_assets, TierId tier) {
+  switch (tier) {
+  case TierId::Lob:
+    return {tier, universe_axis(cfg, num_assets), cfg.FeatureUniverseDir()};
+  case TierId::Bar:
+    return {tier, full_axis(num_assets), cfg.FeatureAllDir()};
+  }
+  assert(false && "feature_lib: 未知档");
+  return {};
 }

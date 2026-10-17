@@ -64,13 +64,14 @@ inline constexpr size_t kDefaultPoolSlots = 4;
 // 向过去回填, 行级进度天然罩不住 —— 所以流水线单位是日, TS 计数粒度是 asset-day.
 //
 // 四段各持一个单调的已完成天数, 段间只靠它们握手 (Disruptor 式):
-//   预取 pf_done_ ─软→ 时序 ts_done_ ─→ 截面 cs_done_ ─→ 落盘 io_done_
-//                       ↑ 背压: 日 d 可开 ⇔ d < io_done_ + P ─────────┘
+//   预取 pf_done_ ─→ 时序 ts_done_ ─→ 截面 cs_done_ ─→ 落盘 io_done_
+//                      ↑ 背压: 日 d 可开 ⇔ d < io_done_ + P ─────────┘
 // 截面 / 落盘按日序推进, 在飞日恒为连续区间 [io_done_, io_done_ + P), 日 d 占 pool_[d % P]
 // —— 无状态枚举 / 无锁 / 无查找; slot 由 io_close 清零后经 io_done_ 的 release 交还.
 //
 // 各段 open / close 同构 (try_open 非阻塞; 等待 / 取消是 worker 骨架的事, 见 feature_workers.hpp):
-//   PF: pf_try_open(d)  d ≤ ts_done_ + P + kPrefetchLead → 暖 page cache (不占 slot, TS 不等它) → pf_close
+//   PF: pf_try_open(d)  d ≤ ts_done_ + P + kPrefetchLead → 备源 (不占 slot) → pf_close
+//                       软源 (Lob: 暖逐笔 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源环, TS 等 pf_ready)
 //   TS: ts_try_open(d)  d < io_done_ + P → 句柄写 (纯指针算术) → 每 (asset, d) 一次 ts_close, 计满全轴 → ts_done_ + 1
 //   CS: cs_try_open(d)  本日计满全轴 → 逐秒扫 → cs_close → cs_done_ = d + 1
 //   IO: io_try_open(d)  d < cs_done_ → 落盘 (FeatureDay::write, 池不碰格式) → io_close (清零) → io_done_ = d + 1
@@ -78,18 +79,18 @@ inline constexpr size_t kDefaultPoolSlots = 4;
 // TS 按 (asset, d) 计数 (而非按 worker) 使资产处置权可在 worker 间转移: 领跑 worker 可接手
 // 落后 worker 的资产并回填旧日 (旧日未计满 ⇒ 仍在飞, ts_try_open 必得), 见 TsSchedule.
 // 资产内日序由调度侧的 claim/done 原子保证, 因此 "d+1 日计满 ⇒ d 日已计满" —— ts_done_ 只增.
-// 开盘档标签 (T+N) 跨日回填: 旧日 ts_close 推迟到标签结清 (见 CoreSequential), 故 P ≥ LabelReturn::MIN_POOL_SLOTS.
+// 开盘档标签 (T+N) 跨日回填: 旧日 ts_close 推迟到标签结清 (见 CoreTs), 故 P ≥ LabelHold::MIN_POOL_SLOTS.
 //
 // 句柄在有效期内被握手钉住 (TS 未计满不给 CS, CS 未 close 不给 IO, IO 未 close 不复用),
 // 不需要 epoch / 每次访问的验证. 数值一致性与调度形态无关, 由输入契约锚定
-// (见 CoreSequential.hpp / CoreCrosssection.hpp), 按日门控只是回测里的因果保证.
+// (见 CoreLob.hpp / CoreCrosssection.hpp), 按日门控只是回测里的因果保证.
 //
 // 布局 [T][F][A] 服务于事件驱动的两个写读姿态: TS 每笔写一行 (t, *, a), CS 每秒
 // 读写 (t, f, *) 一段连续 A. 落盘的列主序只在 FeatureDay 里转换, 不反过来改内存布局.
 // 性能约束: TS / CS 热路径 (逐笔 / 逐秒) 只许指针算术 —— 无锁、无查找、无分配、无
 // 运行时校验 (只 assert); 握手开销全压在每日一次的 open / close 上.
 //
-// 档 T (pool::Tier / all::Tier, 见 FeatureStoreConfig) 是模板参数: 布局常量取 T::LEVELS, 档缺的层不分配
+// 档 T (lob::Tier / bar::Tier, 见 FeatureStoreConfig) 是模板参数: 布局常量取 T::LEVELS, 档缺的层不分配
 // (data[lvl] == nullptr). Slot / Day 独立成模板, fstore:: 的写读 API 从句柄推导档.
 // ============================================================================
 
@@ -146,31 +147,19 @@ template <class T>
 struct StoreDay {
   StoreSlot<T> *slot = nullptr;
   size_t A = 0;
-  size_t d = 0; // 回测日期轴下标 (WorkerCtx::dates), close 推进已完成天数用
+  size_t d = 0; // 档日期轴下标 (StageCtx::dates), close 推进已完成天数用
   explicit operator bool() const { return slot != nullptr; }
 };
 
-template <class T>
-class FeatureStore {
+// 日环握手面 (档无关): 尺寸 + 四段已完成天数 + 预取段 open / close. 仪表盘只读它, 不随档实例化
+class StoreRing {
 public:
-  using Tier = T;
-  using Slot = StoreSlot<T>;
-  using Day = StoreDay<T>;
-
-  // 预取领先 TS 的余量 (天): 窗口 = 在飞跨度上限 P + 余量, 保证最快 TS 到达前缓存已暖
+  // 预取领先 TS 的余量 (天): 窗口 = 在飞跨度上限 P + 余量, 保证最快 TS 到达前源已就绪
   static constexpr size_t kPrefetchLead = 2;
 
-private:
-  static constexpr size_t level_bytes(size_t lvl, size_t num_assets) { return store_level_bytes<T>(lvl, num_assets); }
-
-  // Config
-  const std::uint64_t axis_hash_; // universe 子轴指纹 (UniverseAxis::hash), 落进每个特征文件头
-  const size_t num_assets_;       // A 维 = universe 子轴大小 (张量/落盘/门控全按它)
-  size_t pool_size_;              // P
-  std::string output_dir_;
-
-  // 日环: 日 d 占 pool_[d % P]. 不需要 date→slot map / freelist / epoch / 状态枚举 (见文件头)
-  Slot *pool_ = nullptr;
+protected:
+  const size_t num_assets_; // A 维 = 档 A 轴大小 (张量/落盘/门控全按它)
+  size_t pool_size_;        // P
 
   // 各段已完成天数 (单调): 流水线的全部握手面, 进度面也只读它们
   std::atomic<size_t> pf_done_{0};
@@ -178,19 +167,62 @@ private:
   std::atomic<size_t> cs_done_{0};
   std::atomic<size_t> io_done_{0};
 
+  StoreRing(size_t num_assets, size_t pool_slots) : num_assets_(num_assets), pool_size_(pool_slots) {}
+
+public:
+  // ===== PF: 不占 slot, 只有门控与进度 =====
+
+  // 窗口 = TS 在飞跨度上限 P + 余量. 日 d 进窗 ⇒ d − (P + kPrefetchLead + 1) 已全员计满 (源环可复用其格, 见 feed_ring_size)
+  bool pf_try_open(size_t d) const { return d <= ts_done_.load(std::memory_order_relaxed) + pool_size_ + kPrefetchLead; }
+
+  // release 与 pf_ready 的 acquire 配对 (硬源: 解码写入先于 TS 读)
+  void pf_close(size_t d) {
+    assert(d == pf_done_.load(std::memory_order_relaxed) && "pf_close: 日序乱");
+    pf_done_.store(d + 1, std::memory_order_release);
+  }
+  bool pf_ready(size_t d) const { return d < pf_done_.load(std::memory_order_acquire); }
+
+  // 源环格数: 预取窗口跨度 [ts_done_, ts_done_ + P + kPrefetchLead] 全部在格
+  size_t feed_ring_size() const { return pool_size_ + kPrefetchLead + 1; }
+
+  // ===== QUERY API =====
+  size_t query_A() const { return num_assets_; }
+  size_t query_slots() const { return pool_size_; }
+  size_t query_pf_done() const { return pf_done_.load(std::memory_order_relaxed); }
+  size_t query_ts_done() const { return ts_done_.load(std::memory_order_relaxed); } // 计满全轴的日数 (= 最慢 TS 前沿)
+  size_t query_cs_done() const { return cs_done_.load(std::memory_order_relaxed); }
+  size_t query_io_done() const { return io_done_.load(std::memory_order_relaxed); }
+};
+
+template <class T>
+class FeatureStore : public StoreRing {
+public:
+  using Tier = T;
+  using Slot = StoreSlot<T>;
+  using Day = StoreDay<T>;
+
+private:
+  static constexpr size_t level_bytes(size_t lvl, size_t num_assets) { return store_level_bytes<T>(lvl, num_assets); }
+
+  // Config
+  const std::uint64_t axis_hash_; // A 轴指纹 (UniverseAxis::hash), 落进每个特征文件头
+  std::string output_dir_;
+
+  // 日环: 日 d 占 pool_[d % P]. 不需要 date→slot map / freelist / epoch / 状态枚举 (见文件头)
+  Slot *pool_ = nullptr;
+
   // 日 d 的句柄. 前置: d 在飞 (io_done_ ≤ d < io_done_ + P), 由各 try_open 的门控保证
   Day day_at(size_t d) { return {&pool_[d % pool_size_], num_assets_, d}; }
 
 public:
-  // num_assets: universe 子轴大小; axis_hash: UniverseAxis::hash, 写进每个
-  // 特征文件头锁定"列 → 资产"映射 (读端从同一 config 推导同一子轴比对)
+  // num_assets: 档 A 轴大小; axis_hash: UniverseAxis::hash, 写进每个
+  // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeatureLib 推导同一轴比对)
   FeatureStore(size_t num_assets,
                std::uint64_t axis_hash,
                const std::string &output_dir = "",
                size_t pool_slots = kDefaultPoolSlots)
-      : axis_hash_(axis_hash),
-        num_assets_(num_assets),
-        pool_size_(pool_slots) {
+      : StoreRing(num_assets, pool_slots),
+        axis_hash_(axis_hash) {
     assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");
     assert(num_assets_ >= 1 && "A 轴为空");
 
@@ -267,16 +299,6 @@ public:
     }
   }
 
-  // ===== PF: 不占 slot (只暖 page cache), 只有门控与进度 =====
-
-  // 窗口 = TS 在飞跨度上限 P + 余量: 最快 TS 到达前缓存已暖
-  bool pf_try_open(size_t d) const { return d <= ts_done_.load(std::memory_order_relaxed) + pool_size_ + kPrefetchLead; }
-
-  void pf_close(size_t d) {
-    assert(d == pf_done_.load(std::memory_order_relaxed) && "pf_close: 日序乱");
-    pf_done_.store(d + 1, std::memory_order_relaxed);
-  }
-
   // ===== TS: open 按 d, close 按 (asset, d) =====
 
   // 背压: 日 d 的 slot 须已由 d − P 落盘交还. 回填旧日也走这里 (旧日未计满 ⇒ 仍在飞, 必得).
@@ -339,17 +361,11 @@ public:
 
   // ===== QUERY API =====
   const std::string &query_dir() const { return output_dir_; } // 特征库目录 (日文件落在其下)
-  std::uint64_t query_axis_hash() const { return axis_hash_; } // universe 子轴指纹 (落进每个日文件头)
-  size_t query_A() const { return num_assets_; }
-  size_t query_slots() const { return pool_size_; }
-  size_t query_pf_done() const { return pf_done_.load(std::memory_order_relaxed); }
-  size_t query_ts_done() const { return ts_done_.load(std::memory_order_relaxed); } // 计满全轴的日数 (= 最慢 TS 前沿)
-  size_t query_cs_done() const { return cs_done_.load(std::memory_order_relaxed); }
-  size_t query_io_done() const { return io_done_.load(std::memory_order_relaxed); }
+  std::uint64_t query_axis_hash() const { return axis_hash_; } // A 轴指纹 (落进每个日文件头)
 };
 
-using PoolFeatureStore = FeatureStore<pool::Tier>;
-using AllFeatureStore = FeatureStore<all::Tier>;
+using LobFeatureStore = FeatureStore<lob::Tier>;
+using BarFeatureStore = FeatureStore<bar::Tier>;
 
 // ============================================================================
 // 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L0/L1), 档从日句柄推导,
@@ -364,15 +380,14 @@ using AllFeatureStore = FeatureStore<all::Tier>;
 namespace fstore {
 
 // 唯一真正需要逐档逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
-// (STORE_TIER = 当前展开的档命名空间, 每档展开前定义)
 template <class T, size_t LVL>
 struct RowWriter;
-#define STORE_ROW_WRITER(name, num, fields, rows, psd)                                                                       \
+#define STORE_ROW_WRITER(T, ns, name, num, fields, psd)                                                                      \
   template <>                                                                                                                \
-  struct RowWriter<STORE_TIER::Tier, num> {                                                                                  \
+  struct RowWriter<ns::Tier, num> {                                                                                          \
     template <class DAG>                                                                                                     \
     [[gnu::always_inline]] static inline void write_row(feature_storage_t *row, size_t A, [[maybe_unused]] const DAG &dag) { \
-      namespace FO = STORE_TIER::name##_Field;                                                                               \
+      namespace FO = ns::name##_Field;                                                                                       \
       fields(STORE_ROW_ONE)                                                                                                  \
     }                                                                                                                        \
   };
@@ -386,16 +401,11 @@ struct RowWriter;
 #define STORE_ROW_FLAG(code)
 #define STORE_ROW_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
 
-#define STORE_TIER pool
-TIER_LEVELS_Pool(STORE_ROW_WRITER)
-#undef STORE_TIER
-#define STORE_TIER all
-    TIER_LEVELS_All(STORE_ROW_WRITER)
-#undef STORE_TIER
+TIER_LEVELS(STORE_ROW_WRITER)
 #undef STORE_ROW_WRITER
 
-        template <size_t LVL, class T>
-        [[gnu::always_inline]] inline feature_storage_t *ts_row(const StoreDay<T> &d, size_t t, size_t a) {
+template <size_t LVL, class T>
+[[gnu::always_inline]] inline feature_storage_t *ts_row(const StoreDay<T> &d, size_t t, size_t a) {
   static_assert(T::has(LVL), "该档没有这一层");
   assert(d.slot && d.slot->data[LVL] && "ts_row: day not open");
   assert(t < T::LEVELS[LVL].rows && "time index out of bounds");

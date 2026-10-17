@@ -151,7 +151,7 @@ struct Transform : Published {
   struct Spec {
     Params params;
     fmeta::ColumnSet cols; // [特征] (+ 门控)
-    fmeta::ColumnSet side; // All 档旁读 [mcap, ind_l1] (All 字段表下标; 仅 NeutralRank)
+    fmeta::ColumnSet side; // Bar 档旁读 [mcap, ind_l1] (All 字段表下标; 仅 NeutralRank)
     uint32_t focus = 0;    // 序列快照焦点 (子轴下标)
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)

@@ -166,7 +166,7 @@ bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, S
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), TierId::Pool);
+  req.scope = analysis::read_scope(data.config, data.asset.items.size(), TierId::Lob);
   if (req.scope.months.empty())
     return false;
   req.universe = data.config.universe;
@@ -200,7 +200,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
-  const int A = static_cast<int>(req.scope.uni.size());
+  const int A = static_cast<int>(req.scope.lib.uni.size());
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
   std::vector<int> holds;
   for (const LabelCol &lc : feats_.labels)
@@ -322,7 +322,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     publish();
   };
   // ---- 作用域 / 日期 ----
-  FeatureRead reader(req.scope.tier, req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
+  FeatureRead reader(req.scope.lib, &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty())
     return abort_with("特征库在该区间无数据 (先算特征)");

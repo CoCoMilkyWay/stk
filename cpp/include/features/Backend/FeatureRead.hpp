@@ -2,6 +2,7 @@
 
 #include "FeatureDay.hpp" // 稳定层: level_info / 日文件格式 (不依赖字段表, 增删特征不重编读端)
 #include "misc/profiler.hpp"
+#include "shared/FeatureLib.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -47,12 +48,10 @@ private:
   }
 
 public:
-  // tier = 档 (字段表 / 层集); base_dir = 特征库目录 (Pool: Config::FeatureUniverseDir / All: Config::FeatureAllDir);
-  // axis_A / axis_hash = 期望子轴 (Pool: universe_axis(cfg); All: 全轴)
+  // lib = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一 feature_lib 推导)
   // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
-  FeatureRead(TierId tier, const std::string &base_dir, size_t axis_A, std::uint64_t axis_hash,
-              std::atomic<bool> *abort = nullptr)
-      : tier_(tier), base_dir_(base_dir), axis_A_(axis_A), axis_hash_(axis_hash), abort_(abort) {
+  explicit FeatureRead(const FeatureLib &lib, std::atomic<bool> *abort = nullptr)
+      : tier_(lib.tier), base_dir_(lib.dir), axis_A_(lib.uni.size()), axis_hash_(lib.uni.hash), abort_(abort) {
     assert(axis_A_ > 0 && "期望子轴为空");
   }
 

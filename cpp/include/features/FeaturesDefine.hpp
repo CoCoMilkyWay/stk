@@ -84,24 +84,25 @@
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 有效性标志 / 归一化 (GUI 两列 TS Norm / CS Norm) 全部由它推出:
 //       OP(Node[, port], Tf, Method)  节点输出口. TS; 层必须 == 节点 flush 域; 有效性: onMinute → ALL (L1 稠密), onDepth → DEPTH, 其余 → DATA
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
-//       CS(lvl, src, Tf, Method)   截面: 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 有效性随源层 (L1 ALL / L0 DATA)
-//       LABEL                      标签回填 (CoreSequential 手工写). LB; ALL (全行写, 不产 NaN)
-//       FLAG                       基建标志列 ts_valid / cs_valid (CoreSequential 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
+//       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 有效性随源层 (L1 ALL / L0 DATA)
+//                                  ns = 本档, 或 TIER_SIDES 登记的旁读档 (只许 L1)
+//       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写, 不产 NaN)
+//       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Operator/<Tier>/TS/Meta/Meta.hpp,
 //     LABEL → Operator/<Tier>/TS/Label/*.hpp, CS → Operator/<Tier>/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
-//     推荐频谱 (psd) 按层给 (TIER_LEVELS_*), 不逐列写.
+//     推荐频谱 (psd) 按层给 (TIER_LEVELS), 不逐列写.
 //
 // CMake (projects/main/CMakeLists.txt) 逐档扫描 features/Operator/<Tier>/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
 // 分层拓扑排序, 生成 build/generated/features/<Tier>/NodesGenerated.hpp: 本档全部 #include + <Tier>_NODES(N) +
-// <Tier>_L0_FIELDS(X) / <Tier>_L1_FIELDS(X). 基建 (ComputeGraph / Core* / FeatureStore / Feature.hpp GUI 元数据)
+// <Tier>_L0_FIELDS(X) / <Tier>_L1_FIELDS(X). 基建 (LobGraph / Core* / FeatureStore / Feature.hpp GUI 元数据)
 // 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
 //
 // 加特征 = 改 (或新建) 一个算子文件. 删特征 = 删几行 / 删文件. 其他地方不动.
 // 顺序保证: DAG 按拓扑序声明成一条链, 节点只看得到排在自己前面的节点 → 引用了排后面的节点 = 编译错误.
 // 各触发域执行顺序: 盘前 (节点 reset 后) → onDay; 一个 tick 内 onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute.
 // 字段表改动会改变落盘布局: 文件头带表指纹, 读旧文件即断言失败, 需重算.
-// 标签 (LabelReturn) 回填别的时间行, 不走节点表, 在 ComputeGraph.hpp 手工声明.
+// 标签 (LabelLob) 回填别的时间行, 不走节点表, 在 LobGraph.hpp 手工声明.
 
 // ============================================================================
 // 字段元数据枚举 (X-macro: 一处定义 → enum + to_string(en/cn) + 全值表)
@@ -193,7 +194,7 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
 #define NODE_FLUSH_I(ft, ...) Trigger::ft
 
 // flush 域 → 该节点落盘列的层 / 有效性标志 (OP 列由此推出, 不逐列写)
-//   L1 (onMinute) 稠密: 每分钟都写行 (无成交分钟各节点归零 / 延续, 见 ResamplerTick2Min / CoreSequential) → ALL, 不受 ts_valid 门控;
+//   L1 (onMinute) 稠密: 每分钟都写行 (无成交分钟各节点归零 / 延续, 见 ResamplerTick2Min / CoreLob) → ALL, 不受 ts_valid 门控;
 //   L0 事件稀疏: 只有事件秒有行 → DATA / DEPTH 按 ts_valid 门控
 constexpr int level_of(Trigger flush) { return flush == Trigger::onMinute ? 1 : 0; }
 constexpr L2::ValidType valid_of(Trigger flush) {
@@ -207,7 +208,7 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 //   SRC_VALID_##src            → L2::ValidType (OP 看节点 flush 域: 需要 node_flush::<node>, 见 FeatureStoreConfig)
 //   SRC_TS_TF_##src / SRC_TS_METHOD_##src → ts::TfId:: / ts::MethodId:: (OP 行取 Tf / Method, 其余 None; 消费者需 include Method/TS.hpp)
 //   SRC_CS_TF_##src / SRC_CS_METHOD_##src → cs::TfId:: / cs::MethodId:: (CS 行取 Tf / Method, 其余 None; 消费者需 include Method/CS.hpp)
-//   SRC_DISPATCH(P, code, src) → P_OP(code, node[, port], Tf, Method) / P_CS(code, lvl, s, Tf, Method) /
+//   SRC_DISPATCH(P, code, src) → P_OP(code, node[, port], Tf, Method) / P_CS(code, ns, lvl, s, Tf, Method) /
 //                                P_LABEL(code) / P_FLAG(code)   (消费者按来源各定义一组 P_*)
 // ----------------------------------------------------------------------------
 #define SRC_KIND_OP(...) FeatureDataType::TS
@@ -216,8 +217,8 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 #define SRC_KIND_FLAG FeatureDataType::META
 
 #define SRC_VALID_OP(node, ...) valid_of(node_flush::node)
-#define SRC_VALID_CS(l, ...) (l == 1 ? L2::ValidType::ALL : L2::ValidType::DATA) // 截面随源层: L1 稠密 (门控本就只看 cs_valid)
-#define SRC_VALID_LABEL L2::ValidType::ALL                                       // 标签全行写 (不产 NaN, 缺口用可成交时刻顶上, 见 LabelReturn 文件头), 与 L1 特征同稠密
+#define SRC_VALID_CS(ns, l, ...) (l == 1 ? L2::ValidType::ALL : L2::ValidType::DATA) // 截面随源层: L1 稠密 (门控本就只看 cs_valid)
+#define SRC_VALID_LABEL L2::ValidType::ALL                                           // 标签全行写 (不产 NaN, 缺口用可成交时刻顶上, 见 LabelLob 文件头), 与 L1 特征同稠密
 #define SRC_VALID_FLAG L2::ValidType::ALL
 
 // OP(node, Tf, Method) / OP(node, port, Tf, Method): 按参数个数取 Tf / Method (RowWriter 同法取 node/port)
@@ -240,17 +241,17 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 #define SRC_TS_METHOD_FLAG ts::MethodId::None
 
 #define SRC_CS_TF_OP(...) cs::TfId::None
-#define SRC_CS_TF_CS(l, s, tf, m) cs::TfId::tf
+#define SRC_CS_TF_CS(ns, l, s, tf, m) cs::TfId::tf
 #define SRC_CS_TF_LABEL cs::TfId::None
 #define SRC_CS_TF_FLAG cs::TfId::None
 
 #define SRC_CS_METHOD_OP(...) cs::MethodId::None
-#define SRC_CS_METHOD_CS(l, s, tf, m) cs::MethodId::m
+#define SRC_CS_METHOD_CS(ns, l, s, tf, m) cs::MethodId::m
 #define SRC_CS_METHOD_LABEL cs::MethodId::None
 #define SRC_CS_METHOD_FLAG cs::MethodId::None
 
 #define SRC_ARGS_OP(...) OP, __VA_ARGS__
-#define SRC_ARGS_CS(l, s, tf, m) CS, l, s, tf, m
+#define SRC_ARGS_CS(ns, l, s, tf, m) CS, ns, l, s, tf, m
 #define SRC_ARGS_LABEL LABEL
 #define SRC_ARGS_FLAG FLAG
 #define SRC_DISPATCH(prefix, code, src) SRC_DISPATCH_I(prefix, code, SRC_ARGS_##src)
@@ -258,27 +259,30 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 #define SRC_DISPATCH_II(prefix, code, kind, ...) prefix##_##kind(code __VA_OPT__(, ) __VA_ARGS__)
 
 // ----------------------------------------------------------------------------
-// 特征档 (tier) = 数据源. 一档一套节点表 / 字段表 / 特征库, 两档之间特征层互不读取 (拼接只在因子层):
-//   Pool  Operator/Pool/   L2 逐笔 → LOB 还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
-//   All   Operator/All/    分钟 K (bar1m, 非 LOB 还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
+// 特征档 (tier) = 数据源. 一档一套节点表 / 字段表 / 特征库:
+//   Lob  Operator/Lob/   L2 逐笔 → LOB 还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
+//   Bar  Operator/Bar/   分钟 K (bar1m, 非 LOB 还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
 //   两档 TS / CS 列名全局唯一 (FeatureMeta.cpp 断言; 因子层按名拼接), META / LB 是各档基建列, 同名同语义.
+//   档间只许截面旁读 (TIER_SIDES): 时序是资产内纯函数, 不跨档; 同一列只在一档算 (Lob 要基本面就旁读 Bar, 不重算).
 //
-// 落盘层注册 (每档一张): X(name, index, fields_macro, rows, psd)
-//   index = 语义层号 (0 = L0 秒, 1 = L1 分钟), 全档同一套; 档可以缺层 (All 无秒频源, 只有 L1)
+// 档注册: X(Tier, ns) —— Tier = CMake 生成宏前缀 / TierId 枚举名, ns = C++ 命名空间
+#define ALL_TIERS(X) \
+  X(Lob, lob)        \
+  X(Bar, bar)
+
+// 落盘层注册 (档 × 层, 一格一行): X(Tier, ns, LVL, index, fields_macro, psd); 行数由层号定 (level_rows)
+//   index = 语义层号 (0 = L0 秒, 1 = L1 分钟), 全档同一套; 档可以缺层 (Bar 无秒频源, 只有 L1)
 //   L0    秒频 (T = L0_ROWS). 预留层: 目前只有 ts_valid / cs_valid 两列, 是"暂时", 不是"无用" ——
 //         秒频算力贵 (每笔触发, 每列行数是 L1 的 60 倍), 进 L0 的特征要精挑细选后才加.
-//         不要删 Pool 的 L0, 不要把层系统退化成只有 L1, 也不要因 L0 暂无特征就删它的写 / CS 节拍 / 落盘 / 读路径.
+//         不要删 Lob 的 L0, 不要把层系统退化成只有 L1, 也不要因 L0 暂无特征就删它的写 / CS 节拍 / 落盘 / 读路径.
 //   L1    分钟频 (T = L1_ROWS)
 //   每层每天一个日文件, 内带列目录, 按列选读 (见 FeatureDay.hpp; 列是否沿 T 轴 XOR 差分由写端逐列按数据定)
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
-// ----------------------------------------------------------------------------
-#define TIER_LEVELS_Pool(X)                      \
-  X(L0, 0, Pool_L0_FIELDS, L0_ROWS, "100/00/00") \
-  X(L1, 1, Pool_L1_FIELDS, L1_ROWS, "00/100/00")
-#define TIER_LEVELS_All(X) \
-  X(L1, 1, All_L1_FIELDS, L1_ROWS, "00/100/00")
+#define TIER_LEVELS(X)                           \
+  X(Lob, lob, L0, 0, Lob_L0_FIELDS, "100/00/00") \
+  X(Lob, lob, L1, 1, Lob_L1_FIELDS, "00/100/00") \
+  X(Bar, bar, L1, 1, Bar_L1_FIELDS, "00/100/00")
 
-// 档注册: X(Tier, ns) —— Tier = CMake 生成宏前缀 / TierId 枚举名, ns = C++ 命名空间
-#define ALL_TIERS(X) \
-  X(Pool, pool)      \
-  X(All, all)
+// 档间旁读: X(ns, side) —— ns 档的 L1 截面行可读 side 档的 L1 列 (CS(side, 1, src, ...) / NeutralRank 上下文);
+// side 档当日缺库 → 旁读列整日 NaN + 日志 (不等它, 不替它算)
+#define TIER_SIDES(X) X(lob, bar)

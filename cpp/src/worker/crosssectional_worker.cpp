@@ -7,14 +7,14 @@
 
 #include <cstdio>
 
-void crosssectional_worker(WorkerCtx ctx) {
-  // 本核发布槽 (单写者): work = 累计已扫拍格, idle_ms = 累计干等毫秒;
-  // 天数前沿 = store.query_cs_done(), 渲染线程自取
-  cs_loop<pool::Tier>(ctx.worker_id, ctx.store, ctx.dates, ctx.cancel, ctx.stats.cs);
-}
-
+// 本核发布槽 (单写者): work = 累计已扫拍格, idle_ms = 累计干等毫秒; 天数前沿 = store.query_cs_done(), 渲染线程自取
 template <class T>
-void cs_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> dates, const std::atomic<bool> &cancel_requested, ComputeStats::Core &stat) {
+void cs_loop(const StageCtx<T> &ctx) {
+  const int worker_id = ctx.worker_id;
+  FeatureStore<T> &store = ctx.store;
+  const std::span<const misc::Ymd> dates = ctx.dates;
+  const std::atomic<bool> &cancel_requested = ctx.cancel;
+  ComputeStats::Core &stat = ctx.stat;
   TraceNS("CSWorker", 5);
   TraceValue(worker_id);
   TraceThread(("cs_worker_" + std::to_string(worker_id)).c_str());
@@ -27,7 +27,7 @@ void cs_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> d
 
   // Initialize CoreCrosssection (manages buffers and 3-level computation)
   using Core = CoreCrosssection<T>;
-  Core core(store);
+  Core core(store, ctx.lib.uni, ctx.side);
 
   // Date-first traversal
   for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
@@ -50,8 +50,8 @@ void cs_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> d
     if (!day)
       break;
 
-    // 有效拍 (Pool = 秒 [0, 15300), All = 分钟 [0, 255)): 末行是哨兵 (label lookahead 落点), 不进截面
-    core.begin_day(day);
+    // 有效拍 (Lob = 秒 [0, 15300), Bar = 分钟 [0, 255)): 末行是哨兵 (label lookahead 落点), 不进截面
+    core.begin_day(day, date);
     const size_t beats = level_valid_rows(Core::kBeatLevel);
     for (size_t t = 0; t < beats; ++t) {
       TraceN("TimeslotLoop");
@@ -79,5 +79,6 @@ void cs_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> d
     Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates processed");
 }
 
-template void cs_loop<pool::Tier>(int, PoolFeatureStore &, std::span<const misc::Ymd>, const std::atomic<bool> &, ComputeStats::Core &);
-template void cs_loop<all::Tier>(int, AllFeatureStore &, std::span<const misc::Ymd>, const std::atomic<bool> &, ComputeStats::Core &);
+#define CS_LOOP_INSTANTIATE(T, ns) template void cs_loop<ns::Tier>(const StageCtx<ns::Tier> &);
+ALL_TIERS(CS_LOOP_INSTANTIATE)
+#undef CS_LOOP_INSTANTIATE

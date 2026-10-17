@@ -19,7 +19,7 @@ class FeatureRead;
 // 与 Dist/Transform 维度反转 —— 那边单特征全数据, 这边全特征抽样数据:
 //
 //   轮 = 一个抽样日 (plan_days Shuffle 取前 kPvRounds 个 → 无偏覆盖);
-//   轮首单线程读共享列: All 档旁读 lim_dn / lim_up (笼快照, 按 uni.ids 取全轴) + 主库 ts_valid (门控行, 轮内各块共用);
+//   轮首单线程读共享列: Bar 档旁读 lim_dn / lim_up (笼快照, 按 uni.ids 取全轴) + 主库 ts_valid (门控行, 轮内各块共用);
 //   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自读块列 →
 //     私有 TsPlane 转置 (外部门控 = 轮首那份 ts_valid, 各列按自己的 valid_type 折哨兵);
 //     每特征槽一轮只被一个任务写, 每轮一次 dispatch 隔开相邻轮 → 累积器无锁无归约;
@@ -67,7 +67,7 @@ struct FeaturePreview : Published {
 
   struct Spec {
     fmeta::ColumnSet cols;    // 预览特征列 (metadata 下标升序, 不含 META 类) (+ 门控)
-    std::vector<size_t> cage; // price 笼两列 {lim_dn, lim_up} (All 档旁读, All 字段表下标; 逐日笼内判定, 融合进主扫描)
+    std::vector<size_t> cage; // price 笼两列 {lim_dn, lim_up} (Bar 档旁读, All 字段表下标; 逐日笼内判定, 融合进主扫描)
     size_t n_features = 0;    // 该层特征总数 (cells 尺寸)
   };
   // 发布快照 (进度/epoch/mutex 在 Published; done/total = 轮). 块末短锁拷贝该块 cells

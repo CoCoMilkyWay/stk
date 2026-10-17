@@ -24,7 +24,7 @@ inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增
 
 // LimitOrderBook 委托表 (OrderTable) 初始预留: 槽数 = next_pow2(2 × 本值), 32 B/槽.
 //
-// LOB 是每 worker 一个的复用工作区 (非每资产常驻, 见 sequential_worker), 所以
+// LOB 是每 worker 一个的复用工作区 (非每资产常驻, 见 lob_pipeline.cpp), 所以
 // 按"最忙资产的单日逐笔数"奢侈预留 (每 worker 64MB, ×W 而非 ×A). 每日再按当日
 // 事件数 reserve_orders 收窄在用表长; 事件数超过预留时表会在空表状态下扩容 (不截断).
 inline constexpr size_t LOB_ORDER_CAPACITY = 1000000;

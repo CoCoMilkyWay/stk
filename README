@@ -31,7 +31,8 @@ stk/
 │   │   │   ├── Universe.hpp                          # 📦 动态股票池 (日频 PIT 名单) → 截面门控; 只读 py/universe 产出
 │   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 多选 (首个 = 主特征)
 │   │   │   ├── OrderFlow.hpp                         # 📦 订单流数据
-│   │   │   ├── Analysis.hpp                          # 📦 流式分析公共骨架 (进度 / epoch / 锁)
+│   │   │   ├── Analysis.hpp                          # 📦 流式分析公共骨架 (进度 / epoch / 锁); ReadScope 按档 (Pool / All) 定 A 轴 + 库目录,
+│   │   │   │                                         #    只在全局库的列 (涨跌停 / 市值 / 行业) 两档一律 All 档旁读 (主轴 a ↔ 全轴 uni.ids[a])
 │   │   │   ├── Dist.hpp                              # 📦 分布分析: 月 / 周 / 日内 / 资产四维
 │   │   │   ├── Correlation.hpp                       # 📦 相关分析: 截面 Spearman 矩阵 + lead-lag
 │   │   │   ├── Transform.hpp                         # 📦 变换探索: 变换链 (与生产算子同源) + 平稳性诊断
@@ -51,16 +52,24 @@ stk/
 │   │   │   ├── OrderFrame.hpp                        # 🔄 FrameEncoder ↔ FrameDecoder: 逐笔 ↔ zstd 帧
 │   │   │   ├── L2_Validator.hpp                      # 🔄 逐笔数据准入校验 (编码期)
 │   │   │   └── json_config.hpp                       # 🔄 JSON 配置解析
-│   │   ├── features/                                 # 🧮 特征工程 (两层时间尺度: L0 秒 / L1 分钟); 事件驱动, 回测 = 实盘逐值一致 (逐笔写 / 逐秒截面)
+│   │   ├── features/                                 # 🧮 特征工程; 事件驱动, 回测 = 实盘逐值一致 (逐行写 / 每拍一次截面)
+│   │   │   │                                         #    两档 (TierId), 代码名跨档唯一 (Pool K 线列 lob_*; lb_ / META 豁免), cs_valid 统一 = 在市:
+│   │   │   │                                         #    Pool  L2 逐笔 → LOB 还原, L0 秒 + L1 分钟, 票池内 (features/<universe>/)
+│   │   │   │                                         #    All   bar1m 分钟 K + 日频基本面, 只有 L1, 全市场, 2015-01-01 起 (features/all/); 选池列 pool_<name> 也在这
 │   │   │   ├── FeaturesDefine.hpp                    # 🧮 字段表格式 (NODE_ / FIELDS_ 行) + 元数据枚举
 │   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L0 ↔ L1, 交易时段常数
 │   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData, Trigger 触发域, 算子契约
-│   │   │   ├── ComputeGraph.hpp                      # 🧮 计算图 DAG (CMake 扫描算子文件生成 NodesGenerated.hpp)
-│   │   │   ├── CoreSequential.hpp                    # 🧮 单资产时序: tick → L0 → L1 + 标签; 一致性保证
-│   │   │   ├── CoreCrosssection.hpp                  # 🧮 截面: L0 每秒 + L1 分钟
+│   │   │   ├── GraphNode.hpp                         # 🧮 graph::Node: 算子实例 + 输出 Series (两档构图端共用)
+│   │   │   ├── ComputeGraph.hpp                      # 🧮 Pool 档计算图 DAG (CMake 按档扫描算子文件生成 <Tier>/NodesGenerated.hpp)
+│   │   │   ├── BarGraph.hpp                          # 🧮 All 档计算图 DAG (与 ComputeGraph 对仗, 一个 TU 只许 include 其一)
+│   │   │   ├── CoreSequential.hpp                    # 🧮 Pool 档单资产时序: tick → L0 → L1 + 标签; 一致性保证
+│   │   │   ├── CoreBar.hpp                           # 🧮 All 档单资产时序: bar1m 分钟 K → L1 (255 行稠密) + 标签
+│   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 parquet → 稠密 [A][255] 分钟 K (All 档 TS 输入)
+│   │   │   ├── CoreCrosssection.hpp                  # 🧮 截面 (按档模板): Pool L0 每秒 + L1 分钟; All L1 分钟
 │   │   │   ├── MetaFlag.hpp                          # 🧮 _meta 列编解码 (消费端不依赖 Meta 算子)
-│   │   │   ├── Operator/TS/                          # 🧮 时序算子: class + NODE_ / FIELDS_ 宏
-│   │   │   ├── Operator/CS/                          # 🧮 截面算子: 只有 FIELDS_ 行
+│   │   │   ├── Operator/Pool/{TS,CS}/<分类>/         # 🧮 Pool 档算子: TS = class + NODE_ / FIELDS_ 宏; CS = 只有 FIELDS_ 行
+│   │   │   ├── Operator/All/{TS,CS}/<分类>/          # 🧮 All 档算子 (同上; Universe/ = 选池键 PoolKey + 选池列 pool_<name>)
+│   │   │   ├── Operator/Common/<分类>/               # 🧮 两档共用 class (Bar / Noise / Fund / LabelGroups), 只许 class + helper 宏, 不许 NODE_ / FIELDS_
 │   │   │   ├── Operator/unused/                      # 🧮 未启用半成品
 │   │   │   ├── Method/                               # 🧮 CS / TS 变换方法 + Fundamental (日频 PIT 基本面源)
 │   │   │   └── Backend/                              # 🧮 特征存储后端
@@ -68,8 +77,8 @@ stk/
 │   │   │       ├── FeatureLevels.hpp                 # 🧮 读端运行时层表 (与字段表解耦, 增删特征不触发读侧重编)
 │   │   │       ├── FeatureDay.hpp                    # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录); codec 选型在此
 │   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 日张量池, TS / CS / IO 三段 open-close; 热路径只许指针算术
-│   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 单日按列选读 [n][T][A]; 删库与多 reader 并发安全
-│   │   │       ├── DayBatchPlane.hpp                 # 🧮 多日并行载入平面 (Dist / Transform 共用)
+│   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 单日按列选读 [n][T][A] (按档); 删库与多 reader 并发安全
+│   │   │       ├── DayBatchPlane.hpp                 # 🧮 多日并行载入平面 (Dist / Transform 共用); 可按 ids 从全轴库收拢到主轴 (All 档旁读)
 │   │   │       ├── SparseCodec.hpp                   # 🧮 落盘编码: 稀疏位图 (默认)
 │   │   │       └── ZstdCodec.hpp                     # 🧮 落盘编码: zstd
 │   │   ├── worker/                                   # ⚡ 多线程工作流编排
@@ -81,6 +90,7 @@ stk/
 │   │   │                                             #    截面 1 核 | 沿 T 串行 (整截面) | 第 t 行 → 截面列        | 门控: 本日时序全部写完
 │   │   │                                             #    落盘 1 核 | 沿 D 顺序          | 日张量 → 逐列编码落盘   | 门控: 本日截面写完, 清零交还 slot
 │   │   │                                             #    时序是瓶颈, 其余核全给它; 截面有专门的数据布局优化; 各核专注自己的标的, 持续落后才被领跑核永久领养 (不自由领 / 不按日窃取)
+│   │   │                                             #    All 档: 预取换成 bar1m 双缓冲解码 (1 核), 时序 = bar_worker (N 核静态切资产, CoreBar), 截面 / 落盘同一套模板 (cs_loop / io_loop<Tier>)
 │   │   ├── label/                                    # 🏷️ 标签生成
 │   │   │   └── LabelCalmar.hpp                       # 🏷️ Calmar 比率标签
 │   │   ├── gui/                                      # 🖥️ GUI (ImGui + 协程); 每任务 = services (worker 算, 持锁发布) + ui (每帧持锁读, 不拷大结果)
@@ -108,7 +118,7 @@ stk/
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
 │   │   │   │   ├── services/                         # 🖥️ 服务层
-│   │   │   │   │   ├── ComputeService.hpp            # 🖥️ 特征计算
+│   │   │   │   │   ├── ComputeService.hpp            # 🖥️ 特征计算 (按档: run_pool 逐笔 / run_all bar1m)
 │   │   │   │   │   ├── StreamService.hpp             # 🖥️ 流式分析 worker 骨架 (CRTP)
 │   │   │   │   │   ├── DistService.hpp               # 🖥️ 分布分析 (StreamService)
 │   │   │   │   │   ├── TransformService.hpp          # 🖥️ 特征变换 (StreamService)
@@ -118,7 +128,7 @@ stk/
 │   │   │   │   └── ui/                               # 🖥️ UI
 │   │   │   │       ├── Common.hpp                    # 🖥️ 流式 tab 公共件
 │   │   │   │       ├── TabFeature.hpp                # 🖥️ 特征表: 过滤 + 多选
-│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算
+│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: Start Compute (Pool) / (All) 两按钮
 │   │   │   │       ├── TabOrderFlow.hpp              # 🖥️ 订单流
 │   │   │   │       ├── TabDist.hpp                   # 🖥️ 分布 PDF
 │   │   │   │       ├── TabTransform.hpp              # 🖥️ 变换链 + 平稳性诊断
@@ -230,12 +240,14 @@ stk/
 └── output/                                                 # 📁 运行时输出 (与 cpp/ 同级)
     ├── orders/                                             # L2 编码 (逐笔委托 + 成交合并)
     │   └── YYYY/MM/YYYYMMDD.bin                            # 一天全市场一个: 每资产一个 zstd 帧 + 账目 + 尾部目录
-    ├── features/                                           # 特征张量库 (Float16, 按交易日 universe 子轴)
-    │   └── <universe>/YYYY/MM/DD/
-    │       ├── features_L0.bin                             # L0 一天一个: 头 + 列目录 + 逐列载荷 [T×A] (秒频)
-    │       └── features_L1.bin                             # L1 一天一个: 同上 (分钟频); 两层都逐列自选是否 T 轴 XOR 差分
+    ├── features/                                           # 特征张量库 (Float16)
+    │   ├── <universe>/YYYY/MM/DD/                          # Pool 档 (universe 子轴)
+    │   │   ├── features_L0.bin                             # L0 一天一个: 头 + 列目录 + 逐列载荷 [T×A] (秒频)
+    │   │   └── features_L1.bin                             # L1 一天一个: 同上 (分钟频); 两层都逐列自选是否 T 轴 XOR 差分
+    │   └── all/YYYY/MM/DD/features_L1.bin                  # All 档 (全轴, 只有 L1; universe 名 all 保留给它)
     ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
+    │   ├── bar1m/YYYY-MM/YYYY-MM-DD.parquet                # 分钟 K 日分片 (All 档 TS 输入, 不复权)
     │   ├── _meta/<表>.parquet                              # Static / Snapshot 单文件整刷
     │   └── asset_axis.json                                 # A 轴 (资产轴) 码表, 只增不删
     ├── doc/                                                # 文档 / 资料 (resources-* 符号链接指向仓库外 ../doc)
@@ -259,16 +271,18 @@ stk/
 #   2. cpp/include/features/DataDefine.hpp       算子契约 (enum Out / y[] / compute / flush / reset), Trigger 触发域, 输入红线 (只准本资产数据 + 日频 PIT)
 #   3. cpp/include/features/Operator/unused/     想要的算子可能已有半成品
 #   4. 同类别现有算子 1-2 个作模板 (命名 / 公式 / 注释风格照抄):
-#        累计降频型 → Operator/TS/OrderFlow/Flow.hpp    盘口时间加权 → Operator/TS/Book/Book.hpp
-#        分钟采样型 → Operator/TS/Basic/Bar.hpp         日频广播型  → Operator/TS/Fund/Fund.hpp
+#        累计降频型 → Operator/Pool/TS/OrderFlow/Flow.hpp    盘口时间加权 → Operator/Pool/TS/Book/Book.hpp
+#        分钟采样型 → Operator/Common/Basic/Bar.hpp + Operator/{Pool,All}/TS/Basic/Bar.hpp
+#        日频广播型 → Operator/Common/Fund/Fund.hpp + Operator/{Pool,All}/TS/Fund/Fund.hpp
 #
-# 加在哪:
-#   时序特征  Operator/TS/<类别>/<Op>.hpp   = class (纯数学) + 文件末尾 NODE_<Name> (节点实例) + FIELDS_L1_<Name> (落盘列)
-#   截面因子  Operator/CS/<分类>/<源节点>.hpp = 只有 FIELDS_ 行 (方法在 Method/CS.hpp, owner 名 Cs<源节点>)
-#   除此以外不改任何文件: CMake 自动扫描 Operator/{TS,CS} → 拓扑排序生成 NodesGenerated.hpp
+# 加在哪 (先定档: 要逐笔 / 盘口 → Pool; 只要分钟 K + 基本面 → All):
+#   时序特征  Operator/<Tier>/TS/<类别>/<Op>.hpp   = class (纯数学) + 文件末尾 NODE_<Name> (节点实例) + FIELDS_L1_<Name> (落盘列)
+#   截面因子  Operator/<Tier>/CS/<分类>/<源节点>.hpp = 只有 FIELDS_ 行 (方法在 Method/CS.hpp, owner 名 Cs<源节点>)
+#   两档都要  class 放 Operator/Common/<类别>/, 两档各写各的 NODE_ / FIELDS_ (列名跨档不许重名)
+#   除此以外不改任何文件: CMake 按档扫描 Operator/<Tier>/{TS,CS} → 拓扑排序生成 <Tier>/NodesGenerated.hpp + FieldsGenerated.hpp
 #
 # 规矩:
-#   复用上游 (流式计算图), 不重复计算: 盘口取 Depth.*, 逐笔成交 Δln p 取 TakerRet.out(), 涨跌停取 Fund.y[Fund.lim_up/lim_dn],
+#   复用上游 (流式计算图, 只能依赖同档节点), 不重复计算: 盘口取 Depth.*, 逐笔成交 Δln p 取 TakerRet.out(), 涨跌停取 Fund.y[Fund.lim_up/lim_dn],
 #     中间价 / 微观价取 MidPrice/MicroPrice.out(); 依赖必须字面写在 NODE_ 行 (CMake 按 "Up." 抽取, 不藏进 helper 宏)
 #   命名语法 {measure}_{event}_{side}_{qualifier}: amt/vol/n/qty + taker/maker/cancel + bid/ask + 窗口/档位/阈值
 #     (qty = 存量, vol = 流量; 单档用 l5, 前 N 档累计用裸 5; 缩写忌歧义)

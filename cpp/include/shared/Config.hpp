@@ -14,7 +14,7 @@ struct Config {
   misc::Ymd start_date = 20250101;
   misc::Ymd end_date = 20250201;
 
-  // 池档特征计算 universe: <config_dir>/universe/<name>.json (全市场不是 universe, 是全局档 FeatureAllDir)
+  // Lob 档特征计算 universe: <config_dir>/universe/<name>.json (全市场不是 universe, 是 Bar 档 FeatureAllDir)
   // (动态池逐日 diff, py/universe/<name>.py 产出, 见 shared/Universe.hpp). 特征管线的 A 轴 =
   // 名单并集子轴 (见 AssetAxis.hpp 的 UniverseAxis): 张量/落盘/读端全部只含并集内资产, 当日
   // 在不在池由 Meta 的 cs_valid 表达; 特征库按 universe 分目录 (FeatureUniverseDir);
@@ -38,7 +38,7 @@ struct Config {
   //   配额耗尽 / 离线时关掉即可绕过 BigQuant sync 的 assert; 本地 parquet 仍照常消费.
   bool network_sync = true;
 
-  // 交易税佣 (比率, 不分日期, 统一按现行标准): 标签 (LabelReturn) 是毛收益不含它, 消费端事后扣 (Inspect 图 1 按钮).
+  // 交易税佣 (比率, 不分日期, 统一按现行标准): 标签 (LabelLob) 是毛收益不含它, 消费端事后扣 (Inspect 图 1 按钮).
   //   一次往返 = 2 × commission + stamp (印花税只卖出单边)
   double commission = 0.0001; // 佣金 万 1, 双边各一次
   double stamp = 0.0005;      // 印花税 万 5, 卖出单边
@@ -98,10 +98,10 @@ struct Config {
   // 特征库目录按 universe 分片: <feature_dir>/<universe>. 不同 universe 的库
   // 并存, 切 universe 不清别人的库; 写读两端唯一的路径入口.
   std::string FeatureUniverseDir() const {
-    assert(universe != kAllTierDir && "universe 名 all 已归全局档 (FeatureAllDir), 池档不许用");
+    assert(universe != kAllTierDir && "universe 名 all 已归 Bar 档 (FeatureAllDir), Lob 档不许用");
     return feature_dir + "/" + universe;
   }
-  // 全局档 (All: 分钟 K + 基本面, 全市场 A 轴) 特征库: <feature_dir>/all, 与 universe 无关
+  // Bar 档 (All: 分钟 K + 基本面, 全市场 A 轴) 特征库: <feature_dir>/all, 与 universe 无关
   static constexpr const char *kAllTierDir = "all";
   std::string FeatureAllDir() const { return feature_dir + "/" + kAllTierDir; }
 

@@ -8,7 +8,8 @@
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
-#include "shared/AssetAxis.hpp" // UniverseAxis
+#include "shared/AssetAxis.hpp"  // UniverseAxis
+#include "shared/FeatureLib.hpp" // FeatureLib
 
 #include <algorithm>
 #include <array>
@@ -17,7 +18,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -33,7 +33,7 @@ struct Feature;
 //     struct Spec;  Spec spec;   本次构建的输入 (reset 持锁写; UI 持锁读 = 快照身份)
 //     struct Snap;  Snap snap;   发布成品 (批末持锁 swap; UI 渲染帧内持锁只画)
 //     void reset(ReadScope, Spec);  bool build(FeatureRead &, cancel);  void clear();
-//     (要 All 档旁读列的目标改为 bool build(FeatureRead &, const FeatureRead &all, cancel))
+//     (要 Bar 档旁读列的目标改为 bool build(FeatureRead &, const FeatureRead &all, cancel))
 //   };
 // 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Backend/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
@@ -174,13 +174,10 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 
 // ---- 读取范围 (Request 公共头): GUI 线程从 config 解析, worker 只消费 ----
 struct ReadScope {
-  TierId tier = TierId::Pool;   // 档 (字段表 / 层集 / 库)
   std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月)
-  UniverseAxis uni;             // A 轴 (Pool: universe 子轴; All: 全轴), 文件列序/目录都由它定
-  std::string features_dir;     // 特征库目录 (Pool: Config::FeatureUniverseDir; All: Config::FeatureAllDir)
-  // All 档旁读 (涨跌停 / 市值 / 行业等只在全局库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 uni.ids[a]
-  UniverseAxis all_uni; // 全轴
-  std::string all_dir;  // Config::FeatureAllDir
+  FeatureLib lib;               // 主库 (档 / A 轴 / 目录, 与写端同一 feature_lib 推导)
+  // Bar 档旁读 (涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径): 主轴 a ↔ 全轴 lib.uni.ids[a]
+  FeatureLib bar;
 };
 ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier);
 

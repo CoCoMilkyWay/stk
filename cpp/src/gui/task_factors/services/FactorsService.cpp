@@ -451,7 +451,7 @@ bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, Factors
     return true;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.asset.items.size(), TierId::Pool);
+  req.scope = analysis::read_scope(data.config, data.asset.items.size(), TierId::Lob);
   if (req.scope.months.empty())
     return false;
   req.universe = data.config.universe;
@@ -830,14 +830,14 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   }
 
   // ---- 装载 ----
-  FeatureRead reader(req.scope.tier, req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
+  FeatureRead reader(req.scope.lib, &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty()) {
     finish_all_pending("特征库在该区间无数据 (先算特征)");
     return true;
   }
   Loaded L;
-  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.uni.size()), L);
+  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib.uni.size()), L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
   L.max_impact = static_cast<float>(req.max_impact);
 

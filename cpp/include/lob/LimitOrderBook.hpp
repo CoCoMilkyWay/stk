@@ -13,7 +13,7 @@
 // #include "codec/L2_DataType.hpp"
 #include "codec/OrderFrame.hpp"
 #include "define/FastBitmap.hpp"
-#include "features/CoreSequential.hpp"
+#include "features/CoreLob.hpp"
 #include "lob/LimitOrderBookDefine.hpp"
 
 // #include "math/sample/ResampleRunBar.hpp"
@@ -49,12 +49,12 @@ public:
 
   // LOB 是可换绑的工作区: 簿状态 (档位数组/订单池/桶表/位图/TOB) 全部日内瞬态
   // (每天 unbind() 归零), 不含任何跨日状态 —— 跨日状态 (DAG 暖历史 + Fund 状态机 +
-  // 分钟缓冲 + TickData) 全在 per-asset 的 CoreSequential 里, 经 bind() 换绑.
+  // 分钟缓冲 + TickData) 全在 per-asset 的 CoreLob 里, 经 bind() 换绑.
   //   回测: 每 worker 一个工作区, 资产串行复用 (页面/cache/TLB 常驻, 稳态零扩容);
   //   实盘: 每资产一个工作区, 启动时 bind 一次.
   // DAG 与簿的唯一耦合是 tick_data_ 指针: TickData 归 core 所有 (DAG 节点引用
   // 它, 终身有效), bind() 把本簿的写出口指过去 —— 资产因此不与任何 worker 绑死,
-  // 处置权可转移 (见 sequential_worker 的负载再平衡).
+  // 处置权可转移 (见 feature_pipeline.hpp ts_loop 的负载再平衡).
   explicit LimitOrderBook(size_t ORDER_SIZE)
       : order_table_(ORDER_SIZE) { // 委托表按最忙资产预留, reserve_orders 按日收窄
     auction_bids_.reserve(1024);
@@ -67,7 +67,7 @@ public:
   // 换绑资产. 前置条件: 未绑定 (刚构造或已 unbind(), 簿因此是干净的).
   // 每单内部的时序编排 (update_depth → 特征 → update_lob) 是本类的不变量,
   // 特征侧只是一个可换绑的出口 —— 这是回测/实盘一致性的一部分.
-  void bind(CoreSequential *core, size_t asset_id, L2::ExchangeType exchange_type) {
+  void bind(CoreLob *core, size_t asset_id, L2::ExchangeType exchange_type) {
     assert(core && "bind: null core");
     assert(!bound() && "bind: 上一个资产没 unbind");
     core_ = core;
@@ -98,7 +98,7 @@ public:
     return *tick_data_;
   }
 
-  void begin_day(misc::Ymd date, const PoolFeatureStore::Day &day) {
+  void begin_day(misc::Ymd date, const LobFeatureStore::Day &day) {
     assert(core_ && "begin_day: LOB not bound");
     core_->begin_day(date, day);
 
@@ -129,7 +129,7 @@ public:
 #endif
   }
 
-  void end_day(PoolFeatureStore &store) {
+  void end_day(LobFeatureStore &store) {
     assert(core_ && "end_day: LOB not bound");
     core_->end_day(store);
   }
@@ -395,7 +395,7 @@ private:
 
   // Feature update component (per-asset 跨日状态, bind() 换绑; 每单一次指针间接,
   // 相对 DAG 本身的开销可忽略)
-  CoreSequential *core_ = nullptr;
+  CoreLob *core_ = nullptr;
 
   //======================================================================================
   // LEVEL MANAGEMENT (价格档位基础操作)
@@ -1529,7 +1529,7 @@ private:
 
     // 交叉簿: 买一 ≥ 卖一. 报单乱序到达 / TOB 失效导致的瞬时错位, 此刻的簿不是真盘口.
     // 判定放在这里而不是下游算子里 —— 不算一次盘口更新, onDepth 整个域都不跑, 于是
-    // "每个 onDepth tick, Depth 环必推一格" 对下游 (LabelReturn 的 offset 回溯) 恒成立.
+    // "每个 onDepth tick, Depth 环必推一格" 对下游 (LabelLob 的 offset 回溯) 恒成立.
     // 连续竞价段簿已单调, 两侧一档必是实档 (不足 2N 已在上面返回), 无需再筛哨兵.
     ++depth_seen_;
     const Price bid1 = LOB_feature_ref().depth_buffer[L2::LOB_DEPTH]->price;

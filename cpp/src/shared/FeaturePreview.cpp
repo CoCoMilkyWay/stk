@@ -24,7 +24,7 @@ struct FeaturePreview::Runtime {
   std::vector<uint8_t> int_only;           // [n_preview] flag 探测: 有效值至今全整数 (粘性)
   // ---- 轮共享只读 (轮首单线程载入, 块任务只读) ----
   std::vector<float> cage_dn, cage_up; // [n_draw][VR] 当轮抽样资产的笼快照 (NaN = 当日无值)
-  FeatureRead::DayColumns cage_day;    // [T][A_all] × {lim_dn, lim_up} (All 档旁读, 全轴)
+  FeatureRead::DayColumns cage_day;    // [T][A_all] × {lim_dn, lim_up} (Bar 档旁读, 全轴)
   FeatureRead::DayColumns round;       // [T][A] × {ts_valid} (门控时; 轮内各块共用, 免每块重读)
   std::vector<size_t> round_cols;
   std::vector<uint32_t> asset_order; // [A] 固定种子洗牌 (轮间旋转取片)
@@ -104,8 +104,8 @@ void FeaturePreview::reset(ReadScope scope, Spec sp) {
   assert(n_pv > 0 && std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + n_pv));
   assert(sp.cols.io[n_pv - 1] < sp.n_features);
   assert(sp.cage.size() == 2);
-  assert(scope.uni.size() > 0 && !scope.months.empty());
-  assert(scope.all_uni.size() > 0 && scope.uni.ids.back() < scope.all_uni.size());
+  assert(scope.lib.uni.size() > 0 && !scope.months.empty());
+  assert(scope.bar.uni.size() > 0 && scope.lib.uni.ids.back() < scope.bar.uni.size());
   std::lock_guard<std::mutex> lock(mutex);
 
   scope_ = std::move(scope);
@@ -131,7 +131,7 @@ bool FeaturePreview::build(FeatureRead &reader, const FeatureRead &all, const st
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
   const size_t VR = kVR;
-  const size_t A = scope_.uni.size();
+  const size_t A = scope_.lib.uni.size();
   assert(level_valid_rows(kLevel) == VR);
   assert(A > 0 && spec.cols.n() > 0 && "reset 先于 build");
 
@@ -146,12 +146,12 @@ bool FeaturePreview::build(FeatureRead &reader, const FeatureRead &all, const st
   const size_t n_pv = cols.n();
   const size_t n_draw = std::min(kPvAssetsPerRound, A);
   const size_t n_blocks = (n_pv + kPvBlockCols - 1) / kPvBlockCols;
-  const size_t A_all = scope_.all_uni.size();
-  const uint32_t *ids = scope_.uni.ids.data(); // 主轴 a → 全轴
+  const size_t A_all = scope_.bar.uni.size();
+  const uint32_t *ids = scope_.lib.uni.ids.data(); // 主轴 a → 全轴
   misc::exec::ForkJoin &ex = rt.prepare(spec, A, A_all);
   const bool gated = cols.gated();
 
-  // 轮首共享 IO (单线程): All 档 lim_dn / lim_up 一次读 → 抽样资产当日笼快照 (price 逐日判定融合进块扫描);
+  // 轮首共享 IO (单线程): Bar 档 lim_dn / lim_up 一次读 → 抽样资产当日笼快照 (price 逐日判定融合进块扫描);
   // 主库 ts_valid (门控时) 原样留在 round 供各块平面门控
   auto load_round = [&](size_t r) {
     TraceN("PreviewRoundIO");

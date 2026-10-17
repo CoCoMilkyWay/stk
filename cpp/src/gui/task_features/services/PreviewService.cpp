@@ -15,8 +15,8 @@ void PreviewService::RequestCompute(SharedData &data) {
   if (req.scope.months.empty())
     return;
   req.spec.n_features = meta_list.size();
-  // price 笼: 涨跌停两列只在全局库, 两档一律 All 档旁读
-  const auto &all_meta = data.feature.meta(TierId::All);
+  // price 笼: 涨跌停两列只在全局库, 两档一律 Bar 档旁读
+  const auto &all_meta = data.feature.meta(TierId::Bar);
   req.spec.cage = {all_meta.col_of(analysis::kLevel, "lim_dn"), all_meta.col_of(analysis::kLevel, "lim_up")};
   std::vector<size_t> cols;
   for (size_t i = 0; i < meta_list.size(); ++i) {

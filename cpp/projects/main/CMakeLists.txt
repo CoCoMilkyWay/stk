@@ -223,13 +223,12 @@ set(SOURCES
     ../../src/features/Method/CS.cpp
     ../../src/features/Method/Fundamental.cpp
     # worker
-    ../../src/worker/bar_worker.cpp
+    ../../src/worker/bar_pipeline.cpp
     ../../src/worker/crosssectional_worker.cpp
     ../../src/worker/encoding_worker.cpp
     ../../src/worker/feature_progress.cpp
     ../../src/worker/io_worker.cpp
-    ../../src/worker/prefetch_worker.cpp
-    ../../src/worker/sequential_worker.cpp
+    ../../src/worker/lob_pipeline.cpp
     # gui
     ../../src/gui/Gui.cpp
     ../../src/gui/Tasks.cpp
@@ -304,6 +303,7 @@ set(HEADERS
     ../../include/shared/Correlation.hpp
     ../../include/shared/Dist.hpp
     ../../include/shared/Feature.hpp
+    ../../include/shared/FeatureLib.hpp
     ../../include/shared/FeaturePreview.hpp
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/OrdersDay.hpp
@@ -348,10 +348,11 @@ set(HEADERS
     # features
     ../../include/features/Bar1mDay.hpp
     ../../include/features/BarGraph.hpp
-    ../../include/features/ComputeGraph.hpp
+    ../../include/features/LobGraph.hpp
     ../../include/features/CoreBar.hpp
     ../../include/features/CoreCrosssection.hpp
-    ../../include/features/CoreSequential.hpp
+    ../../include/features/CoreLob.hpp
+    ../../include/features/CoreTs.hpp
     ../../include/features/GraphNode.hpp
     ../../include/features/FeaturesDefine.hpp
     ../../include/features/MetaFlag.hpp
@@ -366,6 +367,7 @@ set(HEADERS
     ../../include/features/Backend/ZstdCodec.hpp
     # worker
     ../../include/worker/encoding_worker.hpp
+    ../../include/worker/feature_pipeline.hpp
     ../../include/worker/feature_workers.hpp
     # gui
     ../../include/gui/Config.hpp
@@ -393,9 +395,9 @@ set(HEADERS
 )
 
 # ============================================================================
-# 特征档 (tier) = 数据源, 一档一套节点表 / 字段表 / 特征库 (C++ 侧档注册见 FeaturesDefine.hpp TIER_LEVELS_*):
-#   Pool  Operator/Pool/{TS,CS}/<分类>/   L2 逐笔 → LOB 还原 (票池内; features/<pool>/)
-#   All   Operator/All/{TS,CS}/<分类>/    分钟 K (bar1m, 非 LOB 还原) + 基本面 (全市场; features/all/)
+# 特征档 (tier) = 数据源, 一档一套节点表 / 字段表 / 特征库 (C++ 侧档注册见 FeaturesDefine.hpp TIER_LEVELS):
+#   Lob  Operator/Lob/{TS,CS}/<分类>/   L2 逐笔 → LOB 还原 (票池内; features/<universe>/)
+#   Bar  Operator/Bar/{TS,CS}/<分类>/   分钟 K (bar1m, 非 LOB 还原) + 基本面 (全市场; features/all/)
 #   两档共用的算子类放 Operator/Common/<分类>/ (只许 class, 不许 NODE_ / FIELDS_), 各档算子文件 include 它再各写各的 NODE_ / FIELDS_.
 #
 # 每档生成物 (build 目录 generated/features/<Tier>/), 切开"字段表消费者"与"算子代码消费者"的编译依赖:
@@ -655,7 +657,7 @@ foreach(owner ${DAG_FIELD_OWNERS})
     endif()
 endforeach()
 set(DAG_GEN_FIELDS "")
-foreach(lvl L0 L1) # 层名与 FeaturesDefine.hpp TIER_LEVELS_* 一致, 生成 <Tier>_<LVL>_FIELDS(X) (档没有的层为空表, C++ 侧断言)
+foreach(lvl L0 L1) # 层名与 FeaturesDefine.hpp TIER_LEVELS 一致, 生成 <Tier>_<LVL>_FIELDS(X) (档没有的层为空表, C++ 侧断言)
     string(APPEND DAG_GEN_FIELDS "#define ${DAG_TIER}_${lvl}_FIELDS(X)")
     foreach(owner ${dag_field_order})
         if(DAG_HAS_${lvl}_${owner})
@@ -747,8 +749,8 @@ ${DAG_GEN_PREV}"    @ONLY
 )
 endfunction()
 
-dag_generate(Pool pool)
-dag_generate(All all)
+dag_generate(Lob lob)
+dag_generate(Bar bar)
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/generated)
 
@@ -804,8 +806,8 @@ set_source_files_properties(
     ../../src/features/Bar1mDay.cpp
     ../../src/features/Method/CS.cpp
     ../../src/features/Method/Fundamental.cpp
-    # worker: All 档 TS (Fund 缺失值 / PoolKey 母集 / cs_valid 依赖 NaN 比较)
-    ../../src/worker/bar_worker.cpp
+    # worker: Bar 档管线 (TS: Fund 缺失值 / PoolKey 母集 / cs_valid 依赖 NaN 比较)
+    ../../src/worker/bar_pipeline.cpp
     # gui
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp

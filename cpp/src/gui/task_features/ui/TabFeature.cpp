@@ -5,6 +5,7 @@
 #include "gui/util/Sparkline.hpp"          // 迷你图 (Dist / PSD 列)
 #include "misc/format.hpp"                 // misc::fmt_width
 #include "shared/Feature.hpp"
+#include "shared/FeatureLib.hpp"
 #include "shared/FeaturePreview.hpp"
 #include "shared/SharedData.hpp"
 
@@ -1358,9 +1359,9 @@ static double sig4(float v) {
 void SaveFeatureTableJson(SharedData &data) {
   using json = nlohmann::json;
   const Feature::Metadata &meta = data.feature.meta();
-  const bool pool_tier = meta.tier == TierId::Pool;
+  const std::filesystem::path dir = feature_lib(data.config, data.asset.items.size(), meta.tier).dir;
 
-  const std::filesystem::path path = std::filesystem::path(pool_tier ? data.config.FeatureUniverseDir() : data.config.FeatureAllDir()) / "features.json";
+  const std::filesystem::path path = dir / "features.json";
   std::filesystem::create_directories(path.parent_path());
   const std::filesystem::path tmp = path.string() + ".tmp";
   {
@@ -1368,7 +1369,7 @@ void SaveFeatureTableJson(SharedData &data) {
     assert(file.is_open() && "features.json: 临时文件打不开");
     file << "{\n";
     file << " \"tier\": " << json(tier_name(meta.tier)).dump() << ",\n";
-    file << " \"universe\": " << json(pool_tier ? data.config.universe : std::string(Config::kAllTierDir)).dump() << ",\n";
+    file << " \"universe\": " << json(dir.filename().string()).dump() << ",\n";
     file << " \"start_date\": " << json(misc::dash(data.config.start_date)).dump() << ",\n";
     file << " \"end_date\": " << json(misc::dash(data.config.end_date)).dump() << ",\n";
     file << " \"preview\": {\"level\": " << json(level_name(analysis::kLevel)).dump()

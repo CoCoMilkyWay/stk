@@ -9,13 +9,14 @@
 #include <filesystem>
 #include <string>
 
-void io_worker(WorkerCtx ctx) {
-  // 本核发布槽 (单写者): work = 已落盘字节, idle_ms = 累计等截面 close 毫秒; 天数前沿 = store.query_io_done()
-  io_loop<pool::Tier>(ctx.worker_id, ctx.store, ctx.dates, ctx.cancel, ctx.stats.io);
-}
-
+// 本核发布槽 (单写者): work = 已落盘字节, idle_ms = 累计等截面 close 毫秒; 天数前沿 = store.query_io_done()
 template <class T>
-void io_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> dates, const std::atomic<bool> &cancel, ComputeStats::Core &stat) {
+void io_loop(const StageCtx<T> &ctx) {
+  const int worker_id = ctx.worker_id;
+  FeatureStore<T> &store = ctx.store;
+  const std::span<const misc::Ymd> dates = ctx.dates;
+  const std::atomic<bool> &cancel = ctx.cancel;
+  ComputeStats::Core &stat = ctx.stat;
   size_t cumulative_bytes = 0;
 
   TraceNS("IOWorker", 5);
@@ -71,5 +72,6 @@ void io_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> d
     Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates flushed");
 }
 
-template void io_loop<pool::Tier>(int, PoolFeatureStore &, std::span<const misc::Ymd>, const std::atomic<bool> &, ComputeStats::Core &);
-template void io_loop<all::Tier>(int, AllFeatureStore &, std::span<const misc::Ymd>, const std::atomic<bool> &, ComputeStats::Core &);
+#define IO_LOOP_INSTANTIATE(T, ns) template void io_loop<ns::Tier>(const StageCtx<ns::Tier> &);
+ALL_TIERS(IO_LOOP_INSTANTIATE)
+#undef IO_LOOP_INSTANTIATE

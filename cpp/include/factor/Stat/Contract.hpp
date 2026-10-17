@@ -4,7 +4,7 @@
 // Stat: 因子评估算子的语义契约 (CPU / GPU 两后端唯一共享件; 无流式后端 —— 评估只在挖掘侧)
 // =============================================================================
 //   输入  因子平面 x [T][A] (SoA: float + 有效位) + 口径 Frame (见下) + H 组常驻标签 (每组一个持有期键 hold, 见下【持有期键】):
-//           v[kLegs] 做多 lv / 做空 sv 价格收益 (features 层 LabelReturn, 毛口径; fp16 位, 与落盘同格式, 无精度损失. 冲击不进标签: 超额对每 t 去均值,
+//           v[kLegs] 做多 lv / 做空 sv 价格收益 (features 层 LabelLob, 毛口径; fp16 位, 与落盘同格式, 无精度损失. 冲击不进标签: 超额对每 t 去均值,
 //                    成本进来只剩截面相对项 —— 消费端在二级上按组池化成本扣). 分钟档 entry / exit 同为盘口中间价 (行 m 的 exit = 行 m+h 的
 //                    entry), 相邻行精确伸缩: 留仓成员逐期标签之和 = 连续持有收益, 【换手成本】的"留仓不付"才成立; 价差只在成本列
 //           m        标签有效位 (long / short 同一快照, 共用一张)
@@ -51,7 +51,7 @@
 //       掩掉 t_seg + h > kSegLen − kCloseAuction − 2 的行 (tail_masked). 日级档全段 exit 同一时刻, 无尾部.
 //     ok / ok_rac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
 //
-//   【持有期键 hold】int, 与 features 层 LabelReturn 的列名同源 (lb_<side>_<name>):
+//   【持有期键 hold】int, 与 features 层 LabelLob 的列名同源 (lb_<side>_<name>):
 //     分钟档 <n>m   hold = n (1 ≤ n, n + kCloseAuction + 2 ≤ kSegLen), 持仓 n 分钟
 //     收盘档 close  hold = kHoldClose, 持有到当日收盘
 //     开盘档 t<N>   hold = hold_open(N), T+N 日开盘平仓
@@ -151,7 +151,7 @@ FACTOR_HD inline constexpr int hold_minutes(int hold) {
   const int n = hold - kHoldDayBase;
   return kSegLen * (n < 1 ? 1 : n);
 }
-// 列名 token → 键: "<n>m" / "close" / "t<N>" (LabelReturn LABEL_GROUPS 的 name); 不识别 → 断言
+// 列名 token → 键: "<n>m" / "close" / "t<N>" (LabelLob LABEL_GROUPS 的 name); 不识别 → 断言
 inline int hold_from_name(std::string_view name) {
   assert(!name.empty());
   if (name == "close")

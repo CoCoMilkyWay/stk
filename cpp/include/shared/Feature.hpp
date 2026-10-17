@@ -67,7 +67,7 @@ struct Feature {
   // ==========================================================================
 
   struct Metadata {
-    TierId tier = TierId::Pool;
+    TierId tier = TierId::Lob;
     std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1; 档缺的层为空)
     std::vector<std::string> deps[LEVEL_COUNT];         // [level][i] = 该特征直接依赖的字段 code (分号分隔), 与 features 平行
     void init_from_compile_time(TierId t);              // Copy from constexpr arrays + resolve deps
@@ -82,8 +82,8 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    TierId tier = TierId::Pool; // 当前浏览的档 (TabFeature 档选择; 分析页按它读对应特征库)
-    int selected_level = 1;     // 0=L0, 1=L1 (GUI 只在这两层选特征, 默认 L1)
+    TierId tier = TierId::Lob; // 当前浏览的档 (TabFeature 档选择; 分析页按它读对应特征库)
+    int selected_level = 1;    // 0=L0, 1=L1 (GUI 只在这两层选特征, 默认 L1)
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;

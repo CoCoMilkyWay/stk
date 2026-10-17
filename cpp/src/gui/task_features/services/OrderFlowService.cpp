@@ -6,7 +6,7 @@
 #include "gui/util/Worker.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
-#include "shared/AssetAxis.hpp" // UniverseAxis
+#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -36,15 +36,15 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 // worker 私有常驻资源 (首个请求时在 worker 线程建, 稳态零分配)
 // ============================================================================
 
-// 特征库读端: 特征列 = universe 子轴; 请求侧资产是全局下标, 经 sub_of 映射
+// 特征库读端: 特征列 = 档 A 轴 (Lob: universe 子轴; Bar: 全轴); 请求侧资产是全局下标, 经 sub_of 映射
 struct LibRead {
-  UniverseAxis uni;
+  FeatureLib lib;
+  const UniverseAxis &uni = lib.uni;
   FeatureRead reader;
   std::vector<size_t> columns; // 选列缓冲
 
-  explicit LibRead(SharedData &data)
-      : uni(universe_axis(data.config, data.asset.items.size())),
-        reader(TierId::Pool, data.config.FeatureUniverseDir(), uni.size(), uni.hash) {}
+  LibRead(const SharedData &data, TierId tier)
+      : lib(feature_lib(data.config, data.asset.items.size(), tier)), reader(lib) {}
 };
 
 // 背槽待 GUI ack (帧首翻面, 无 cv 信号): 限时睡轮询; false = 等待中被新请求 / Stop 打断
@@ -75,7 +75,7 @@ private:
   struct Res {
     LibRead lib;
     FeatureRead::DayColumns cols; // OHLC 4 + ts_valid + 特征
-    explicit Res(SharedData &data) : lib(data) { cols.preallocate(lib.uni.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
+    explicit Res(SharedData &data) : lib(data, TierId::Lob) { cols.preallocate(lib.uni.size(), 1, 5 + OrderFlowConst::MAX_FEATURES); }
   };
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.kline; }
@@ -101,14 +101,14 @@ public:
 private:
   struct Res {
     LibRead lib;
-    L2::FrameDecoder decoder;                 // 对仗 sequential_worker 的 decoder (日文件 reader 按请求现开)
-    LimitOrderBook lob;                       // 奢侈容量, 常驻复用 (对仗 sequential_worker 的工作区)
+    L2::FrameDecoder decoder;                 // 对仗 Lob 管线 Runner 的 decoder (日文件 reader 按请求现开)
+    LimitOrderBook lob;                       // 奢侈容量, 常驻复用 (对仗 Lob 管线 Runner 的工作区)
     TickData tick_data;                       // 无特征侧绑定的盘口写出口
     FeatureRead::DayColumns l1_cols, l0_cols; // ts_valid + VWAP / 特征
     OrderFlow::Depth::HeatmapScratch scratch;
     std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
     std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
-    explicit Res(SharedData &data) : lib(data), lob(L2::LOB_ORDER_CAPACITY) {
+    explicit Res(SharedData &data) : lib(data, TierId::Lob), lob(L2::LOB_ORDER_CAPACITY) {
       l1_cols.preallocate(lib.uni.size(), 1, 1 + OrderFlowConst::MAX_FEATURES);
       l0_cols.preallocate(lib.uni.size(), 0, 1 + OrderFlowConst::MAX_FEATURES);
     }
@@ -132,13 +132,10 @@ public:
 private:
   struct Res {
     LibRead lib;                  // 只用其 universe 子轴 (候选范围)
-    UniverseAxis all_uni;         // All 档 A 轴 (全轴)
-    FeatureRead all_reader;       // 状态列在 All 档 (Fund 只在全局库落盘)
+    LibRead bar;                  // 状态列在 Bar 档 (Fund 只在 Bar 库落盘)
     FeatureRead::DayColumns cols; // 资产筛选状态列 (全轴)
-    explicit Res(SharedData &data)
-        : lib(data), all_uni(full_axis(data.asset.items.size())),
-          all_reader(TierId::All, data.config.FeatureAllDir(), all_uni.size(), all_uni.hash) {
-      cols.preallocate(all_uni.size(), 1, UNIVERSE_COL_COUNT);
+    explicit Res(SharedData &data) : lib(data, TierId::Lob), bar(data, TierId::Bar) {
+      cols.preallocate(bar.uni.size(), 1, UNIVERSE_COL_COUNT);
     }
   };
   static constexpr Phase kStart = Phase::Running;
@@ -200,12 +197,12 @@ void OrderFlowService::RequestUniverse(uint32_t gen, misc::Ymd date) {
 // ============================================================================
 
 namespace {
-void scan_dates(const std::string &dir, std::vector<misc::Ymd> &out) {
+void scan_dates(const FeatureLib &lib, std::vector<misc::Ymd> &out) {
   TraceN("OF_ScanDates");
 
   // 目录不在 / 遍历中途被并发删库 (FeatureRead::wipe_dir) → ec 置位, 该层迭代器即 end
   std::error_code ec;
-  for (const auto &year_entry : std::filesystem::directory_iterator(dir, ec)) {
+  for (const auto &year_entry : std::filesystem::directory_iterator(lib.dir, ec)) {
     if (!year_entry.is_directory() || year_entry.path().filename().string().size() != 4)
       continue;
     const std::string year = year_entry.path().filename().string();
@@ -220,7 +217,7 @@ void scan_dates(const std::string &dir, std::vector<misc::Ymd> &out) {
           continue;
         const misc::Ymd date = misc::parse_ymd(year + month + day_entry.path().filename().string());
         assert(date && "特征目录 YYYY/MM/DD 非日期");
-        if (FeatureRead::has_date(TierId::Pool, dir, date))
+        if (FeatureRead::has_date(lib.tier, lib.dir, date))
           out.push_back(date);
       }
     }
@@ -244,7 +241,7 @@ bool OrderFlowService::KlineWorker::run(KlineReq &req) {
     k.begin(Phase::Scanning);
     res_->lib.reader.revive(); // 重扫 = 库换代 (重算清库/判废后新库落地), 判废解除
     k.dates.clear();
-    scan_dates(data_.config.FeatureUniverseDir(), k.dates);
+    scan_dates(res_->lib.lib, k.dates);
   }
 
   cur_ = std::move(req);
@@ -285,8 +282,8 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
 
   // 选列: [lob_open, lob_high, lob_low, lob_close, ts_valid, 特征...] — L1 日文件, 每日只读 n 列的载荷
   auto &cols = lib.columns;
-  cols.assign({pool::L1_Field::lob_open, pool::L1_Field::lob_high, pool::L1_Field::lob_low,
-               pool::L1_Field::lob_close, pool::L1_Field::ts_valid});
+  cols.assign({lob::L1_Field::lob_open, lob::L1_Field::lob_high, lob::L1_Field::lob_low,
+               lob::L1_Field::lob_close, lob::L1_Field::ts_valid});
   for (int f : cur_.feats)
     cols.push_back(static_cast<size_t>(f));
   lib.reader.load_day_columns(k.dates[d], cols, res_->cols);
@@ -355,7 +352,7 @@ bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
     return false;
   TraceN("OF_UniverseBuild");
   LibRead &lib = res_->lib;
-  FeatureRead &reader = res_->all_reader;
+  FeatureRead &reader = res_->bar.reader;
   reader.revive(); // 新请求 = 重读库 (重算后新库已落地), 判废解除
 
   OrderFlow::Universe::Slot &slot = pp.back();
@@ -363,21 +360,21 @@ bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
   slot.gen = req.gen;
   slot.date = req.date;
 
-  // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 状态列 = All 档全轴 (下标即全局),
+  // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 状态列 = Bar 档全轴 (下标即全局),
   // 只填 universe 子轴内的资产, 子轴外恒 has_data = false (自然被候选过滤掉)
   slot.meta.assign(data_.asset.items.size(), OrderFlow::Universe::Meta{});
 
   auto &cols = lib.columns;
-  cols.assign({static_cast<size_t>(all::L1_Field::ts_valid), static_cast<size_t>(all::L1_Field::st_level),
-               static_cast<size_t>(all::L1_Field::list_age), static_cast<size_t>(all::L1_Field::delist_age),
-               static_cast<size_t>(all::L1_Field::ind_l1)});
+  cols.assign({static_cast<size_t>(bar::L1_Field::ts_valid), static_cast<size_t>(bar::L1_Field::st_level),
+               static_cast<size_t>(bar::L1_Field::list_age), static_cast<size_t>(bar::L1_Field::delist_age),
+               static_cast<size_t>(bar::L1_Field::ind_l1)});
   assert(cols.size() == UNIVERSE_COL_COUNT);
   reader.load_day_columns(req.date, cols, res_->cols);
 
   // 时间外层 / 资产内层 (布局 [n][T][A]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
   const FeatureRead::DayColumns &c = res_->cols;
   const size_t A = lib.uni.size();
-  assert(res_->all_uni.size() == c.A);
+  assert(res_->bar.uni.size() == c.A);
   size_t remaining = A;
   for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
     for (size_t a = 0; a < A; ++a) {
@@ -545,7 +542,7 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
   if (depth_sub < res.lib.uni.size()) {
     TraceN("OF_DepthVwap");
     auto &cols = res.lib.columns;
-    cols.assign({static_cast<size_t>(pool::L1_Field::ts_valid), static_cast<size_t>(pool::L1_Field::vwap)});
+    cols.assign({static_cast<size_t>(lob::L1_Field::ts_valid), static_cast<size_t>(lob::L1_Field::vwap)});
     res.lib.reader.load_day_columns(req.date, cols, res.l1_cols);
     auto &px = slot.plot.vwap_x;
     auto &py = slot.plot.vwap_y;
@@ -566,8 +563,8 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
   if (!req.feats.empty() && depth_sub < res.lib.uni.size()) {
     TraceN("OF_DepthFeats");
     assert(req.feat_level == 0 || req.feat_level == 1);
-    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(pool::L0_Field::ts_valid)
-                                                : static_cast<size_t>(pool::L1_Field::ts_valid);
+    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(lob::L0_Field::ts_valid)
+                                                : static_cast<size_t>(lob::L1_Field::ts_valid);
     auto &cols = res.lib.columns;
     cols.assign({meta_col});
     for (int f : req.feats)

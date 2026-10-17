@@ -31,7 +31,7 @@ public:
     lim_up,         // [元] T 当日适用涨停价 (无限制 → NaN)
     lim_dn,         // [元] T 当日适用跌停价
     low_mc_thr,     // [亿元] 低市值阈值 (主板 5 / 其他 3)
-    // ---- 日频常量列 (All 档直接落盘, 与 FIELDS_L1_Fund 一一对应) ----
+    // ---- 日频常量列 (Bar 档直接落盘, 与 FIELDS_L1_Fund 一一对应) ----
     ind_l1,      // SW2021 一级行业 ID (0=未知, 1..31)
     list_age,    // [日历日] 未上市 → NaN
     delist_age,  // [日历日] 未退市 → NaN

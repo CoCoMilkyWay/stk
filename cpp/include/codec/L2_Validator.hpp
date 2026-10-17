@@ -145,7 +145,7 @@ enum Check : uint32_t {
   // LimitOrderBook 无法处理的记录: 数量为 0 (抵扣不动簿) 或定位 id 为 0
   // (找不到要抵扣的挂单). 判据与 LimitOrderBook 内部那两条一致.
   //
-  // 在编码期就拦下, 是为了让 sequential_worker 里 order_invalid_cnt 超阈值就
+  // 在编码期就拦下, 是为了让 Lob 管线 (lob_pipeline.cpp) 里 order_invalid_cnt 超阈值就
   // exit(1) 那条路永远走不到: 编码期跳掉一个资产, 好过特征计算跑到一半整个
   // 进程退出.
   LobUnusable = 1u << 9,

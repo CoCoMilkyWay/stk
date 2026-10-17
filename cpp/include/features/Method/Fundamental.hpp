@@ -13,7 +13,7 @@
 //   涨跌停价: cutoff=-1 后 row T 即 "T 当日适用涨跌停" (基于 T-1 close 推出), 直接配盘中实时价判触板.
 //   三表 raw (qmt 无): 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
 //
-// fast-math 契约: 输出行被 -ffast-math TU (Valuation 算子/CoreSequential) 盲算消费 — 只做算术 (NaN 硬件透传) 与
+// fast-math 契约: 输出行被 -ffast-math TU (Valuation 算子/CoreLob) 盲算消费 — 只做算术 (NaN 硬件透传) 与
 //   "NaN 恒 false" 语义的比较, 不做 isnan/isfinite. 本文件 .cpp 在 precise-math 列表里, 类型细节全在 .cpp.
 #pragma once
 

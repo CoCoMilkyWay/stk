@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// bar1m 日截面 (output/fundamental/bar1m/YYYY-MM/YYYY-MM-DD.parquet) → 稠密 [A][255] 分钟 K: All 档 TS 的输入
+// bar1m 日截面 (output/fundamental/bar1m/YYYY-MM/YYYY-MM-DD.parquet) → 稠密 [A][255] 分钟 K: Bar 档 TS 的输入
 // =============================================================================
 //   bar1m: 每标的每日 241 根 (09:25 撮合 + 09:31..11:30 + 13:01..15:00), 时间戳 = bar 结束时刻, 价格不复权.
 //   时间戳 → L1 行: 09:25 → 行 10 (撮合 bar 本身), 其余 hh:mm → 分钟 hh:mm−1 的行 (09:31 → 15, 11:30 → 134,
@@ -30,7 +30,7 @@ struct Bar1m {
 struct Bar1mDay {
   misc::Ymd date = 0;
   bool present = false;      // 当日分片存在
-  size_t A = 0;              // 资产轴前缀长度 (= All 档张量 A)
+  size_t A = 0;              // 资产轴前缀长度 (= Bar 档张量 A)
   std::vector<Bar1m> rows;   // [A][TRADE_MINUTES_PER_DAY]
   std::vector<uint8_t> has;  // [A] 本资产当日有任一 bar
   size_t n_assets = 0;       // has 计数 (日志)

@@ -2,34 +2,142 @@
 
 #include "misc/date.hpp"
 
+#include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
-#include <memory>
+#include <functional>
 #include <span>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
 // Forward declarations
 struct SharedData;
-struct OrdersCatalog;
+struct FeatureLib;
+class StoreRing;
 template <class T>
 class FeatureStore;
-namespace pool {
-struct Tier;
-}
-namespace all {
-struct Tier;
-}
-namespace fund {
-class Pool;
-}
-namespace fundamental {
-class Catalog;
-}
-using PoolFeatureStore = FeatureStore<pool::Tier>;
-using AllFeatureStore = FeatureStore<all::Tier>;
-class CoreSequential;
+
+// ============================================================================
+// Stage Layout - 核布局: 按物理核分 stage, 由机器拓扑唯一推导 (worker 数不可配; 两档同一布局)
+//
+//   [TS × (P − 2)] [CS] [IO + 预取]     P = 物理核数
+//
+// 超线程对布局透明: stage 只占物理核, 再展开到该核的逻辑 CPU ——
+//   TS:        每个逻辑 CPU 一个 worker, pin 单个逻辑 CPU (超线程吞吐全归 TS; 无超线程即每核一个)
+//   CS:        1 个 worker 独占一个物理核 (截面日后还要加, 留整核)
+//   IO + 预取: 共一个物理核 (预取大部分时间阻塞在读盘 / 门控, 落盘大部分时间等截面), 两者都 pin 该核全部逻辑 CPU
+// CS / IO 不要落在 TS 物理核的超线程兄弟上: 同核争访存资源, 落盘慢数倍, 整条流水线被池子卡住.
+//
+// 全部线程 pin 死 —— 没有浮动线程抢占 pinned worker 的时间片.
+// worker_id = 全局序号 [TS 0..num_ts−1][CS][IO][预取] (TS 用作 frontier / stats 下标), 与 pin 的 CPU 号无关.
+// stage 顺序 = UI 表格顺序 = 预取, TS..., CS, IO.
+// 进度不按行挂 worker: 仪表盘 (FeatureProgress) 自行采样, 见下.
+// ============================================================================
+enum class ComputeStage : size_t {
+  Prefetch = 0,
+  TS,
+  CS,
+  IO,
+};
+
+struct StageLayout {
+  using Topology = std::vector<std::vector<unsigned int>>; // [物理核][逻辑 CPU], 见 misc::Affinity::physical_cores
+
+  struct Stage {
+    ComputeStage kind = ComputeStage::Prefetch;
+    const char *name = "";
+    const char *desc = "";
+    int threads = 0;      // worker thread 数
+    int cores = 0;        // 独占物理核数 (共核 stage 为 0)
+    int first_worker = 0; // worker_id 区间 [first_worker, first_worker + threads)
+    int first_phys = 0;   // 物理核区间 [first_phys, last_phys]
+    int last_phys = 0;
+    bool shared = false;
+  };
+
+  static constexpr size_t kStageCount = 4;
+
+  const Topology *topo = nullptr; // 进程级常驻 (physical_cores 的 static)
+  int num_ts_phys = 0;            // TS 物理核数, 物理核 0..num_ts_phys-1
+  int num_ts = 0;                 // TS worker 数 = 这些物理核上的逻辑 CPU 总数
+
+  int total_phys() const { return static_cast<int>(topo->size()); }
+  int total_threads() const { return num_ts + 3; }
+
+  Stage stage(ComputeStage kind) const {
+    const int cs = num_ts_phys, io = num_ts_phys + 1;
+    switch (kind) {
+    case ComputeStage::Prefetch:
+      return {kind, "预取 Prefetch", "顺日期备源 (Lob: 逐笔帧读进 page cache; Bar: 解码 bar1m 进源环), 领先最慢时序核不超过 pool slots + 2 天",
+              1, 0, num_ts + 2, io, io, true};
+    case ComputeStage::TS:
+      return {kind, "时序 TS", "逐资产喂源 + DAG, 写 L0/L1 张量; 领跑核自动接手落后核的资产 (处置权转移)",
+              num_ts, num_ts_phys, 0, 0, num_ts_phys - 1, false};
+    case ComputeStage::CS:
+      return {kind, "截面 CS", "本日全部时序核写完后逐拍重放截面 (与实盘同一调用)",
+              1, 1, num_ts, cs, cs, false};
+    case ComputeStage::IO:
+      return {kind, "落盘 IO", "本日截面写完后逐层落盘, 清零交还 slot",
+              1, 1, num_ts + 1, io, io, false};
+    }
+    assert(false && "unknown compute stage");
+    return {};
+  }
+
+  std::array<Stage, kStageCount> stages() const {
+    return {stage(ComputeStage::Prefetch), stage(ComputeStage::TS), stage(ComputeStage::CS), stage(ComputeStage::IO)};
+  }
+
+  // stage 内第 i 个 worker pin 的逻辑 CPU: TS 单个逻辑 CPU (物理核序展开), 其余 = 所在物理核全部逻辑 CPU
+  std::vector<unsigned int> cpus_of(const Stage &s, int i) const {
+    assert(i >= 0 && i < s.threads);
+    if (s.kind != ComputeStage::TS)
+      return (*topo)[static_cast<size_t>(s.first_phys)];
+    for (int p = 0; p < num_ts_phys; ++p) {
+      const std::vector<unsigned int> &cpus = (*topo)[static_cast<size_t>(p)];
+      if (i < static_cast<int>(cpus.size()))
+        return {cpus[static_cast<size_t>(i)]};
+      i -= static_cast<int>(cpus.size());
+    }
+    assert(false && "TS worker 序号越界");
+    return {};
+  }
+
+  static std::string core_text(const Stage &s) {
+    std::ostringstream os;
+    os << "#" << s.first_phys;
+    if (s.last_phys != s.first_phys)
+      os << "-" << s.last_phys;
+    if (s.shared)
+      os << " (共享落盘核)";
+    return os.str();
+  }
+
+  std::string summary() const {
+    std::ostringstream os;
+    os << "Stages (物理核):";
+    bool first = true;
+    for (const Stage &s : stages()) {
+      os << (first ? " " : " | ") << s.name << "×" << s.threads << " (" << core_text(s) << ")";
+      first = false;
+    }
+    return os.str();
+  }
+
+  static StageLayout make(const Topology &topo) {
+    StageLayout l;
+    l.topo = &topo;
+    l.num_ts_phys = static_cast<int>(topo.size()) - 2;
+    assert(l.num_ts_phys >= 1 && "物理核不足: 至少 TS + CS + (IO + 预取)");
+    for (int p = 0; p < l.num_ts_phys; ++p)
+      l.num_ts += static_cast<int>(topo[static_cast<size_t>(p)].size());
+    return l;
+  }
+};
 
 // ============================================================================
 // TS 调度面: per-asset 处置权 + 认领/完成游标 (负载再平衡)
@@ -57,20 +165,15 @@ class CoreSequential;
 //   done:     已完成日 didx, release 发布 core 状态 (接手方 acquire 后可续算)
 //   frontier: per-worker 已完成日数 (领养的观测面)
 //
-// cores 由初始 owner 在自己核上构造 (first-touch); 领养方经 frontier 的
-// release/acquire 链观察到构造完成后才会触碰.
+// cores (per-asset 跨日状态, 档的 Core, 见 feature_pipeline.hpp TsRole) 由初始 owner 在自己核上构造 (first-touch);
+// 领养方经 frontier 的 release/acquire 链观察到构造完成后才会触碰.
 // ============================================================================
 struct TsSchedule {
-  // 全部数组按 universe 子轴下标 (sub) 索引, 大小 = 子轴大小 (= 张量 A 维)
-  std::vector<std::atomic<int32_t>> owner;            // 处置权 worker id (每个子轴资产都有 owner)
-  std::vector<std::atomic<int32_t>> claimed;          // 已认领日 didx, -1 起
-  std::vector<std::atomic<int32_t>> done;             // 已完成日 didx, -1 起
-  std::vector<size_t> weight;                         // 回测期逐笔总条数 (领养挑最轻)
-  std::vector<std::unique_ptr<CoreSequential>> cores; // per-asset 跨日状态
-
-  // sub → 全局轴下标 (UniverseAxis::ids 快照): worker 查 items/码表/bin 路径用.
-  // ComputeService 启动前写好, 运行期只读.
-  std::vector<uint32_t> global_ids;
+  // 全部数组按档 A 轴下标 (sub) 索引, 大小 = A 轴大小 (= 张量 A 维)
+  std::vector<std::atomic<int32_t>> owner;   // 处置权 worker id (每个资产都有 owner)
+  std::vector<std::atomic<int32_t>> claimed; // 已认领日 didx, -1 起
+  std::vector<std::atomic<int32_t>> done;    // 已完成日 didx, -1 起
+  std::vector<size_t> weight;                // 区间内源负载 (Lob: 逐笔总条数; Bar: 均匀) —— 初始分配 / 领养挑最轻
 
   // Per-worker 已完成日数 (worker 自报, release; 领养方 acquire 读 —— 与被领养资产的
   // core 构造/状态写入构成 happens-before). 大小 = TS worker 数.
@@ -84,8 +187,19 @@ struct TsSchedule {
   // 0 = 关闭领养.
   uint64_t adopt_pct = 10;
 
-  TsSchedule(size_t num_assets, size_t num_workers);
-  ~TsSchedule();
+  TsSchedule(size_t num_assets, size_t num_workers)
+      : owner(num_assets), claimed(num_assets), done(num_assets),
+        weight(num_assets, 0), frontier(num_workers), adopt_window(num_workers) {
+    for (size_t i = 0; i < num_assets; ++i) {
+      owner[i].store(-1, std::memory_order_relaxed);
+      claimed[i].store(-1, std::memory_order_relaxed);
+      done[i].store(-1, std::memory_order_relaxed);
+    }
+    for (size_t w = 0; w < num_workers; ++w) {
+      frontier[w].store(0, std::memory_order_relaxed);
+      adopt_window[w].store(0, std::memory_order_relaxed);
+    }
+  }
 };
 
 // ============================================================================
@@ -120,8 +234,8 @@ struct TsSchedule {
 // 前沿 − 颜色档 —— 谁是瓶颈一眼可见 (空 + 红).
 // ============================================================================
 struct ComputeStats {
-  // 每核一槽, 四类统一: work = 单调工作量 (预取=字节, 时序=逐笔条,
-  // 截面=秒格, 落盘=字节), idle_ms = 累计干等毫秒 (每次 sleep 后累加)
+  // 每核一槽, 四类统一: work = 单调工作量 (预取=字节, 时序=源条数 (Lob 逐笔 / Bar 分钟 K),
+  // 截面=拍格, 落盘=字节), idle_ms = 累计干等毫秒 (每次 sleep 后累加)
   struct alignas(64) Core {
     std::atomic<size_t> work{0};
     std::atomic<size_t> idle_ms{0};
@@ -135,9 +249,10 @@ struct ComputeStats {
 
 class FeatureProgress {
 public:
-  // dates = 回测日期轴 (渲染期内调用方保证存活); 构造即预留 5 行并启动采样线程
-  FeatureProgress(const PoolFeatureStore &store, const TsSchedule &sched,
-                  const ComputeStats &stats, const std::vector<misc::Ymd> &dates);
+  // dates = 档的日期轴 (渲染期内调用方保证存活); unit = 时序工作量单位 (Lob "单" = 逐笔条, Bar "bar" = 分钟 K);
+  // 构造即预留 5 行并启动采样线程
+  FeatureProgress(const StoreRing &store, const TsSchedule &sched,
+                  const ComputeStats &stats, const std::vector<misc::Ymd> &dates, const char *unit);
   ~FeatureProgress();
 
   void stop(); // 终画一帧并换行 (幂等)
@@ -146,7 +261,8 @@ private:
   void render();
   long long elapsed_ms() const;
 
-  const PoolFeatureStore &store_;
+  const StoreRing &store_;
+  const char *unit_;
   const TsSchedule &sched_;
   const ComputeStats &stats_;
   const std::vector<misc::Ymd> &dates_;
@@ -169,32 +285,30 @@ private:
 };
 
 // ============================================================================
-// PHASE 2 WORKERS —— 日流水线四角色, 统一签名 void xxx_worker(WorkerCtx), 统一骨架:
+// PHASE 2 —— 日流水线四角色 (两档同一骨架, 档只换源 TierFeed<T>, 见 feature_pipeline.hpp), 统一骨架:
 //   for d in dates: wait_open(store.X_try_open(d)) → 干活 → store.X_close
-// 分核依据 = 两条一致性契约 (见 CoreSequential.hpp / CoreCrosssection.hpp):
+// 分核依据 = 两条一致性契约 (见 CoreTs.hpp / CoreCrosssection.hpp):
 // (核按物理核分, 超线程透明, 见 StageLayout)
-//   预取 1 线程: 软前导, 只暖 page cache (TS 不等它); 与落盘共一个物理核
+//   预取 1 线程: 备源 —— 软源 (Lob: 只暖 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源环, TS 等 pf_ready); 与落盘共一个物理核
 //   时序 N 线程: TS 是资产局部纯函数 ⇒ 沿 A 维并行; 瓶颈, 其余物理核全给它 (每逻辑 CPU 一个; 处置权转移再平衡, 见 TsSchedule)
-//   截面 1 线程: CS 只读张量第 t 行, 要整个截面到齐 ⇒ 沿 T 逐秒串行; 独占一个物理核
+//   截面 1 线程: CS 只读张量第 t 行, 要整个截面到齐 ⇒ 沿 T 逐拍串行; 独占一个物理核
 //   落盘 1 线程: 逐列编码 + 写盘 (单线程须跟上落盘节奏, 见 FeatureDay)
 // 段间握手只经 FeatureStore 的各段已完成天数 (日环, 见 FeatureStore.hpp).
 //
-// sched 只 TS 用, 其余角色不碰 —— 统一签名换来统一 launch (见 ComputeService).
-// dates = 回测日期轴 (Asset::backtest_dates), 四角色的 date_idx 都是它的下标.
-// orders = 开算时切好的帧目录 (OrdersCatalog::slice: 行 = dates, 列 = universe 子轴),
-// ComputeService 持有到全部 worker 退出; orders.at(date_idx, sub) 直接定址.
+// StageCtx = 四角色共有的面; 预取 / 时序另带档的源 (TierFeed) / 调度面 (TsSchedule), 见 feature_pipeline.hpp.
+// dates = 档的日期轴 (Lob: 回测日历; Bar: 交易日 [PIPELINE_START_DATE, end_date]), 四角色的 date_idx 都是它的下标.
 // worker_id = 全局 worker 序号 (TS 0..N−1 在前, 见 StageLayout), 与 pin 的 CPU 号无关; pin 由 launch 侧完成,
 // worker 内只用它做日志 / stats / frontier 下标.
 // ============================================================================
-struct WorkerCtx {
+template <class T>
+struct StageCtx {
   int worker_id;
-  SharedData &data;
+  FeatureStore<T> &store;
+  const FeatureLib &lib;  // 本档库 (A 轴 = lib.uni, 目录 = lib.dir)
+  const FeatureLib &side; // CS 旁读档的库 (TierSide<T>; 无旁读列时不读)
   std::span<const misc::Ymd> dates;
-  const OrdersCatalog &orders;
-  PoolFeatureStore &store;
-  TsSchedule &sched;
   const std::atomic<bool> &cancel;
-  ComputeStats &stats;
+  ComputeStats::Core &stat; // 本核发布槽 (单写者)
 };
 
 // 干等原语 (四角色共用): try_open() 为真即返回它; 否则 cancel → 返回空, 未 cancel → on_idle()
@@ -220,50 +334,27 @@ auto wait_open(const std::atomic<bool> &cancel, ComputeStats::Core &stat, TryOpe
   return wait_open(cancel, stat, try_open, [] {});
 }
 
-template <class TryOpen, class OnIdle>
-auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_open, OnIdle &&on_idle) {
-  return wait_open(ctx.cancel, stat, try_open, on_idle);
-}
-
-template <class TryOpen>
-auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_open) {
-  return wait_open(ctx.cancel, stat, try_open, [] {});
-}
-
-// 预取: 顺日期把当天日文件里 universe 的帧读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
-//       门控 = store.pf_try_open (领先最慢 TS 不超过 P + 余量). 资产集 = universe 子轴 (orders 的一行).
-void prefetch_worker(WorkerCtx ctx);
-
-// 时序: 逐资产 decode + LOB 重建 + DAG, 写 L0/L1 张量 (日期主序遍历);
-//       领跑核在池边干等时领养落后核的资产并回填 (wait_open 的 on_idle, 处置权转移见 TsSchedule).
-void sequential_worker(WorkerCtx ctx);
-
 // 截面: cs_try_open 等本日全部 TS 写完, 逐拍 compute_and_store (实盘同一调用), cs_close 交给 IO.
-void crosssectional_worker(WorkerCtx ctx);
-
 // 落盘: io_try_open 等本日截面写完, 逐层落盘, io_close 清零交还 slot, 直到全部日期刷完.
-void io_worker(WorkerCtx ctx);
-
-// 截面 / 落盘日循环 (两档共用骨架; 上两个 worker 即 T = pool::Tier 的薄壳). 显式实例化 pool / all
+// 档无关, 各自 TU 显式实例化两档 (预取 / 时序随档的源进档 TU, 见 feature_pipeline.hpp)
 template <class T>
-void cs_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> dates, const std::atomic<bool> &cancel, ComputeStats::Core &stat);
+void cs_loop(const StageCtx<T> &ctx);
 template <class T>
-void io_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> dates, const std::atomic<bool> &cancel, ComputeStats::Core &stat);
+void io_loop(const StageCtx<T> &ctx);
 
 // ============================================================================
-// All 档时序 (bar1m + 基本面, 全市场; 截面 / 落盘走 cs_loop / io_loop<all::Tier> 各一线程)
-//   调用线程当协调者: 逐日 ts_try_open → ForkJoin 沿 A 维静态条带跑 CoreBar::run_day (TS 资产局部纯函数 ⇒ 沿 A 并行,
-//   资产固定在同一 tid, core 状态 first-touch 在其上) → 区间末 finish_all.
-//   bar1m 日截面由解码线程领先一日预取 (双缓冲). 缺 bar1m 的日 = 全部资产零事件日.
-//   ts_cpus[tid] = ForkJoin 第 tid 线程 pin 的逻辑 CPU (tid 0 = 调用线程); 大小 = TS 线程数.
+// 特征管线入口 (两档同一骨架, 定义见 feature_pipeline.hpp, 档 TU 显式实例化): ComputeService 备好共享前置
+// (日期轴 / 写读库 / fund_pool / 清库 / 日志) 后调用, 返回 = 未取消. on_io(n) = 已落盘天数 (协调线程每 100ms 调, 进度面镜像)
 // ============================================================================
-struct BarWorkerCtx {
-  std::span<const misc::Ymd> dates;
-  const fund::Pool &fund_pool;
-  const fundamental::Catalog &catalog;
-  AllFeatureStore &store;
-  std::span<const int> ts_cpus;
-  int decode_cpu; // bar1m 解码线程 pin 的逻辑 CPU
+struct PipelineArgs {
+  SharedData &data;
+  const FeatureLib &lib;  // 本档库
+  const FeatureLib &side; // CS 旁读档的库 (无旁读档时任意)
+  const std::vector<misc::Ymd> &dates;
+  size_t pool_slots;
+  uint64_t adopt_pct;
   const std::atomic<bool> &cancel;
+  std::function<void(size_t)> on_io;
 };
-void bar_worker(BarWorkerCtx ctx);
+template <class T>
+bool pipeline(const PipelineArgs &args);

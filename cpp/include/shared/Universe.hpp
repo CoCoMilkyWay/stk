@@ -11,9 +11,9 @@
 //     codes(first, last) 回测区间 [first, last] 内进过池的并集 (升序去重) = 静态 A 轴 (UniverseAxis: 张量列 / 落盘 / 读端).
 //                        只看张量覆盖的时间段, 不是名单全史 (名单从 2015 起, 全史并集会把轴撑大几倍).
 //                        TS 特征对轴上所有标的在区间内全程计算, 区间内日后进池不用补历史
-//     in_pool(code, D)   第 D 日成员位 → CoreSequential::begin_day → MetaTracker::begin_day → cs_valid 整日常量
+//     in_pool(code, D)   第 D 日成员位 → CoreLob::begin_day → MetaTracker::begin_day → cs_valid 整日常量
 //   PIT: 第 D 日名单由 ≤ D−1 数据定 (python 侧保证), 对本类只是 (资产, 日) 的 bool.
-//   全市场 (无名单) 不是票池: 那是全局档 (All, 全 A 轴, 见 FeatureLevels.hpp TierId).
+//   全市场 (无名单) 不是票池: 那是 Bar 档 (features/all, 全 A 轴, 见 FeatureLevels.hpp TierId).
 #include "misc/date.hpp"
 
 #include <cstdint>

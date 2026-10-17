@@ -19,7 +19,7 @@
 
 //----------------------------------------------------------------------------------------
 // TRIGGER: 算子 compute()/flush() 的采样域. 每个节点在算子文件末尾的 NODE_ 宏里
-// 声明 (compute 触发, flush 触发), ComputeGraph 按 CMake 汇总的 NODES 表展开成直线调度代码.
+// 声明 (compute 触发, flush 触发), LobGraph 按 CMake 汇总的 NODES 表展开成直线调度代码.
 //----------------------------------------------------------------------------------------
 enum class Trigger : uint8_t {
   onDay,    // 盘前 (begin_day, 节点 reset 之后): 日频算子的 compute 域, 配 flush=onMinute 盘中广播
@@ -58,7 +58,7 @@ inline constexpr float kPxEps = 1e-4f;
 //   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后推入)
 //   void reset();   (可选)                   // 有跨天状态才写
 // 单侧算子 (只看一侧盘口) 只收那一侧的 DepthSeries, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
-// 输出缓冲由 ComputeGraph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 OP(节点, 口) 引用.
+// 输出缓冲由 LobGraph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 OP(节点, 口) 引用.
 // 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在算子文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
 //----------------------------------------------------------------------------------------
 

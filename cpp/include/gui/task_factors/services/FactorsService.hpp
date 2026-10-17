@@ -88,7 +88,7 @@ struct FeatureTable {
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };
-// LB 列按 code 识别 (LabelReturn 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N> → 持有期键, Stat/Contract.hpp);
+// LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N> → 持有期键, Stat/Contract.hpp);
 // lb_cost_<buy|sell>_<amt>w 建仓冲击成本
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta);
 

@@ -269,9 +269,9 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Universe");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("池档特征计算 universe: <Config Dir>/universe/<name>.json (动态池逐日 diff)\n"
-                            "全市场是全局档 (features/all), 不是 universe.\n"
-                            "只约束池档 Compute, encode 始终全市场.");
+          ImGui::SetTooltip("Lob 档特征计算 universe: <Config Dir>/universe/<name>.json (动态池逐日 diff)\n"
+                            "全市场是 Bar 档 (features/all), 不是 universe.\n"
+                            "只约束 Lob 档 Compute, encode 始终全市场.");
         }
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(-1);
@@ -324,7 +324,7 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("佣金 (双边)");
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("比率, 万 1 = 0.0001; 买卖各扣一次. 标签 (LabelReturn) 不含税佣, Inspect 图 1 事后扣");
+          ImGui::SetTooltip("比率, 万 1 = 0.0001; 买卖各扣一次. 标签 (LabelLob) 不含税佣, Inspect 图 1 事后扣");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
         ImGui::InputDouble("##commission", &cfg.commission, 0.0, 0.0, "%.5f");

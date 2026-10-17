@@ -13,13 +13,9 @@ namespace analysis {
 
 ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier) {
   ReadScope s;
-  s.tier = tier;
   s.months = misc::months_between(cfg.start_date, cfg.end_date);
-  // 与特征计算同一推导 (A 轴/文件列序/目录都由它定)
-  s.uni = tier == TierId::Pool ? universe_axis(cfg, num_assets) : full_axis(num_assets);
-  s.features_dir = tier == TierId::Pool ? cfg.FeatureUniverseDir() : cfg.FeatureAllDir();
-  s.all_uni = full_axis(num_assets);
-  s.all_dir = cfg.FeatureAllDir();
+  s.lib = feature_lib(cfg, num_assets, tier);
+  s.bar = feature_lib(cfg, num_assets, TierId::Bar);
   return s;
 }
 
