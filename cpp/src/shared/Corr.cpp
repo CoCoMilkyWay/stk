@@ -1,7 +1,7 @@
 #include "shared/Corr.hpp"
+#include "features/DataDefine.hpp" // kNaN (全库缺失值口径)
 #include "features/Storage/DayBatchPlane.hpp"
 #include "features/Storage/FeatureRead.hpp"
-#include "features/DataDefine.hpp" // kNaN (全库缺失值口径)
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 

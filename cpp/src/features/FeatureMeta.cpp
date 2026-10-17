@@ -12,9 +12,9 @@
 //   两档 TS / CS 列名全局唯一 (编译期断言): 因子层按列名拼两档, 重名即歧义
 // ============================================================================
 
-#include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
 #include "features/Bar/FeatureCategoriesGenerated.hpp"
 #include "features/Lob/FeatureCategoriesGenerated.hpp"
+#include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
 #include "shared/Feature.hpp"
 #include "shared/FeatureLib.hpp"
 

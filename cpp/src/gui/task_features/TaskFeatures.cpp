@@ -193,12 +193,12 @@ TaskHandle CreateFeaturesTask() {
     auto is_locked = [&](int tab) { return state->tabs_locked && state->locked_tab != tab; };
     const bool inputs_ready = state->inputs_ready;
     const bool disable[TAB_COUNT] = {
-        !inputs_ready || is_locked(TAB_COMPUTE),                        // Compute: needs scanned inputs
-        is_locked(TAB_FEATURE),                                         // Feature: always accessible
-        !inputs_ready || is_locked(TAB_CORR),                    // Corr: 矩阵按过滤行集算, 不看选中
-        !inputs_ready || !has_selection || is_locked(TAB_DIST), // Dist: needs inputs + selection
-        !inputs_ready || !has_selection || is_locked(TAB_TRANSFORM),    // Transform: needs inputs + selection
-        !inputs_ready || is_locked(TAB_ORDERFLOW),                      // OrderFlow: needs scanned inputs
+        !inputs_ready || is_locked(TAB_COMPUTE),                     // Compute: needs scanned inputs
+        is_locked(TAB_FEATURE),                                      // Feature: always accessible
+        !inputs_ready || is_locked(TAB_CORR),                        // Corr: 矩阵按过滤行集算, 不看选中
+        !inputs_ready || !has_selection || is_locked(TAB_DIST),      // Dist: needs inputs + selection
+        !inputs_ready || !has_selection || is_locked(TAB_TRANSFORM), // Transform: needs inputs + selection
+        !inputs_ready || is_locked(TAB_ORDERFLOW),                   // OrderFlow: needs scanned inputs
     };
     for (int k = 0; k < TAB_COUNT; k++)
       state->tab_enabled[k] = !disable[k];

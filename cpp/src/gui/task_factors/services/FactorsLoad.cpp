@@ -1,10 +1,10 @@
 // FactorsLoad — 见头文件. include 因子契约 / Stat CPU 流程头 (cost_rows), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/FactorsLoad.hpp"
 
-#include "factor/Stat/Cpu.hpp" // cost_rows
-#include "features/Storage/FeatureRead.hpp"
-#include "features/MetaFlag.hpp"                       // fmeta::valid / keep / finite
+#include "factor/Stat/Cpu.hpp"                     // cost_rows
+#include "features/MetaFlag.hpp"                   // fmeta::valid / keep / finite
 #include "features/Node/Lob/TS/Label/LabelLob.hpp" // 只取 kContCloseL1 对账尾部界 (不含字段表)
+#include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Analysis.hpp" // analysis::kLevel

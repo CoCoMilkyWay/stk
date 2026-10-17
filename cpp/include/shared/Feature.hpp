@@ -1,9 +1,9 @@
 #pragma once
 
-#include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / FieldInfo (稳定层, 不依赖字段表)
 #include "features/FeaturesDefine.hpp"        // FeatureDataType / EnumStr
 #include "features/Method/CS.hpp"             // CS 行 Tf / Method (GUI "CS Norm" 列)
 #include "features/Method/TS.hpp"             // TS 行 Tf / Method (GUI "TS Norm" 列)
+#include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / FieldInfo (稳定层, 不依赖字段表)
 #include <array>
 #include <set>
 #include <span>

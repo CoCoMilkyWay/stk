@@ -1,7 +1,7 @@
 #include "shared/Preview.hpp"
+#include "features/DataDefine.hpp" // kPxEps (涨跌停比较容差, 全库统一)
 #include "features/Storage/DayBatchPlane.hpp"
 #include "features/Storage/FeatureRead.hpp"
-#include "features/DataDefine.hpp" // kPxEps (涨跌停比较容差, 全库统一)
 #include "misc/profiler.hpp"
 
 #include <algorithm>

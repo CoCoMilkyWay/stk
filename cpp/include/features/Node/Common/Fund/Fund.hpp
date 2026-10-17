@@ -149,6 +149,6 @@ public:
 
 private:
   const fund::Panel &panel_; // DAG_Root::fund_panel (只读共享数据源)
-  const misc::Ymd &date_;  // DAG_Root::date_ (begin_day 设置)
-  fund::Stream stream_;    // 本资产的日频状态机
+  const misc::Ymd &date_;    // DAG_Root::date_ (begin_day 设置)
+  fund::Stream stream_;      // 本资产的日频状态机
 };

@@ -62,9 +62,9 @@ private:
     misc::Ymd date;
   };
 
-  class KlineLane;    // 逐日流式 + 前缀发布
-  class DepthLane;    // 重放 + 构建 + 背槽发布
-  class PickLane; // 逐日 filter 列 → 全资产状态 + 背槽发布
+  class KlineLane; // 逐日流式 + 前缀发布
+  class DepthLane; // 重放 + 构建 + 背槽发布
+  class PickLane;  // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   std::string pool_;
   std::unique_ptr<KlineLane> kline_;

@@ -28,10 +28,10 @@ namespace GUI::Features {
 
 namespace {
 enum PickCol : size_t { PICK_META = 0,
-                       PICK_RISK_WARN,
-                       PICK_LIST_AGE,
-                       PICK_DELIST_AGE,
-                       PICK_INDUSTRY };
+                        PICK_RISK_WARN,
+                        PICK_LIST_AGE,
+                        PICK_DELIST_AGE,
+                        PICK_INDUSTRY };
 constexpr size_t PICK_COL_COUNT = 5;
 
 // ============================================================================

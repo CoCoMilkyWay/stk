@@ -972,7 +972,7 @@ Panel::~Panel() = default;
 int Panel::date_index(Ymd d) const { return data().axes.exact(d); }
 
 void Panel::build(const std::vector<std::string> &codes,
-                 const std::vector<Ymd> &dates) {
+                  const std::vector<Ymd> &dates) {
   assert(!codes.empty() && "AssetAxis 为空");
   assert(!dates.empty() && "回测日为空");
 

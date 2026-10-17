@@ -1,10 +1,10 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
-#include "features/Storage/FeatureRead.hpp"
-#include "features/Storage/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
 #include "features/Method/Fundamental.hpp"
 #include "features/Node/Bar/TS/Label/LabelBar.hpp"
 #include "features/Node/Lob/TS/Label/LabelLob.hpp"
+#include "features/Storage/FeatureRead.hpp"
+#include "features/Storage/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/FeatureLib.hpp"

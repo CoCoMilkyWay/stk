@@ -3,7 +3,7 @@
 #include "features/Storage/FeatureRead.hpp"
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/KPSS.hpp"
-#include "math/timeseries/AutoCorr.hpp"
+#include "math/timeseries/AutoCorrelation.hpp"
 #include "misc/profiler.hpp"
 
 #include <algorithm>

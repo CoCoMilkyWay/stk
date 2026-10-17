@@ -224,7 +224,7 @@ constexpr size_t last_present(const std::array<LevelInfo, LEVEL_COUNT> &l) {
 #define GENERATE_TIER(T, ns)                                                           \
   namespace ns {                                                                       \
   inline constexpr std::array<LevelInfo, LEVEL_COUNT> LEVELS = tier_levels(TierId::T); \
-  /* 写端基建 (FeatureStore / CoreCs / fstore) 的档模板参数 */               \
+  /* 写端基建 (FeatureStore / CoreCs / fstore) 的档模板参数 */                         \
   struct Tier {                                                                        \
     static constexpr TierId kId = TierId::T;                                           \
     static constexpr const std::array<LevelInfo, LEVEL_COUNT> &LEVELS = ns::LEVELS;    \
