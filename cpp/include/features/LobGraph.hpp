@@ -2,7 +2,7 @@
 
 #include "features/DataDefine.hpp"
 #include "features/GraphNode.hpp"          // graph::Node + TIER_DAG (两档共用)
-#include "features/Lob/NodesGenerated.hpp" // CMake 从 Lob 档算子文件汇总: 全部算子 #include + Lob_NODES(N) + Lob_NODE_PREV_* + 字段表
+#include "features/Lob/NodesGenerated.hpp" // IWYU pragma: keep
 #include "features/Method/Fundamental.hpp" // fund::Pool (DAG_Root 日频输入)
 #include "features/Operator/Lob/TS/Label/LabelLob.hpp"
 #include <string>

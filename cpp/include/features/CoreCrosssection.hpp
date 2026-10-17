@@ -9,6 +9,7 @@
 #include "shared/FeatureLib.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <type_traits>
@@ -289,7 +290,7 @@ private:
                                                    side_full_.data(), As, side_lib_.uni.hash, side_scratch_);
     assert((st == FeatureDay::Status::Ok || st == FeatureDay::Status::Missing) && "旁读档库头不符 (轴 / 字段表变了), 先重算旁读档");
     if (st == FeatureDay::Status::Missing) {
-      std::fill(side_.begin(), side_.end(), static_cast<feature_storage_t>(NAN));
+      std::fill(side_.begin(), side_.end(), std::bit_cast<feature_storage_t>(fmeta::kNaNBits)); // fast-math TU: 不许浮点 NaN 字面量
       Logger::log("cs", std::string("旁读档 ") + tier_name(S::kId) + " 缺 " + std::to_string(date) + ", " + std::to_string(Side::N) + " 列整日填 NaN");
       return;
     }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "features/Bar/NodesGenerated.hpp" // CMake 从 Bar 档算子文件汇总: 全部算子 #include + Bar_NODES(N) + Bar_NODE_PREV_* + 字段表
+#include "features/Bar/NodesGenerated.hpp" // IWYU pragma: keep
 #include "features/DataDefine.hpp"
 #include "features/GraphNode.hpp"          // graph::Node + TIER_DAG (两档共用)
 #include "features/Method/Fundamental.hpp" // fund::Pool (DAG_Root 日频输入)

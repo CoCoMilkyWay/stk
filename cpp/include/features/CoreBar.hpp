@@ -1,6 +1,5 @@
 #pragma once
 
-#include "features/Backend/FeatureStore.hpp"
 #include "features/Bar1mDay.hpp"
 #include "features/BarGraph.hpp"
 #include "features/CoreTs.hpp"

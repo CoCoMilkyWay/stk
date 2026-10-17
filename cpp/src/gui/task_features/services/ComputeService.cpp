@@ -1,7 +1,7 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
 #include "features/Backend/FeatureRead.hpp"
-#include "features/Backend/FeatureStore.hpp"
+#include "features/Backend/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
 #include "features/Method/Fundamental.hpp"
 #include "features/Operator/Bar/TS/Label/LabelBar.hpp"
 #include "features/Operator/Lob/TS/Label/LabelLob.hpp"

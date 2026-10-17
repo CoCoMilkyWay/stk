@@ -20,7 +20,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
