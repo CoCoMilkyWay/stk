@@ -3,7 +3,7 @@
 
 #include "factor/Stat/Cpu.hpp" // cost_rows
 #include "features/Backend/FeatureRead.hpp"
-#include "features/MetaFlag.hpp"                      // fmeta::valid / keep / finite
+#include "features/MetaFlag.hpp"                           // fmeta::valid / keep / finite
 #include "features/Operator/Pool/TS/Label/LabelReturn.hpp" // 只取 kContCloseL1 对账尾部界 (不含字段表)
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
@@ -94,8 +94,8 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       for (const uint32_t c : cc.col)
         cols.push_back(c), vts.push_back(ft.cols[c].vt);
   if (with_index) {
-    const FeatCol *fc = ft.find("close");
-    assert(fc && "字段表缺 close 列 (universe 指数)");
+    const FeatCol *fc = ft.find("lob_close");
+    assert(fc && "字段表缺 lob_close 列 (universe 指数)");
     cols.push_back(fc->col), vts.push_back(fc->vt);
   }
   cols.push_back(ft.ts_col);

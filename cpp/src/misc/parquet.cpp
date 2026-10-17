@@ -232,6 +232,16 @@ std::int32_t Col::yyyymmdd(std::int64_t i) const {
   }
 }
 
+int Col::minute_of_day(std::int64_t i) const {
+  if (arr_->IsNull(i))
+    return -1;
+  assert(type_ == arrow::Type::TIMESTAMP && "Col::minute_of_day: 列类型须为 timestamp");
+  constexpr std::int64_t kNsPerMin = 60'000'000'000LL;
+  const std::int64_t ns = static_cast<const arrow::TimestampArray &>(*arr_).Value(i);
+  const std::int64_t m = ns >= 0 ? ns / kNsPerMin : (ns - kNsPerMin + 1) / kNsPerMin; // floor
+  return static_cast<int>(((m % 1440) + 1440) % 1440);
+}
+
 void Col::yyyymmdd_all(std::vector<std::int32_t> &out) const {
   const std::int64_t n = arr_ ? arr_->length() : 0;
   out.resize(static_cast<std::size_t>(n));

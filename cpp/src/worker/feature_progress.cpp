@@ -47,7 +47,7 @@ void cell(std::ostringstream &os, float t, bool idle) {
 
 } // namespace
 
-FeatureProgress::FeatureProgress(const GlobalFeatureStore &store, const TsSchedule &sched,
+FeatureProgress::FeatureProgress(const PoolFeatureStore &store, const TsSchedule &sched,
                                  const ComputeStats &stats, const std::vector<misc::Ymd> &dates)
     : store_(store), sched_(sched), stats_(stats), dates_(dates),
       start_time_(std::chrono::steady_clock::now()) {

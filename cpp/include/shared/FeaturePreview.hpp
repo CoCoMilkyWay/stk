@@ -66,9 +66,11 @@ struct FeaturePreview : Published {
   };
 
   struct Spec {
-    fmeta::ColumnSet cols;         // 预览特征列 (metadata 下标升序, 不含 META 类) (+ 门控)
-    size_t lim_dn = 0, lim_up = 0; // price 笼两列 (逐日笼内判定, 融合进主扫描)
-    size_t n_features = 0;         // 该层特征总数 (cells 尺寸)
+    fmeta::ColumnSet cols; // 预览特征列 (metadata 下标升序, 不含 META 类) (+ 门控)
+    static constexpr size_t kNoCage = SIZE_MAX;
+    size_t lim_dn = 0, lim_up = 0; // price 笼两列 (逐日笼内判定, 融合进主扫描); 档无涨跌停列 (Pool) = kNoCage, 不判 price
+    bool caged() const { return lim_dn != kNoCage; }
+    size_t n_features = 0; // 该层特征总数 (cells 尺寸)
   };
   // 发布快照 (进度/epoch/mutex 在 Published; done/total = 轮). 块末短锁拷贝该块 cells
   struct Snap {

@@ -15,10 +15,10 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
   if (sel.primary_feature_idx() < 0 || sel.selected_level != static_cast<int>(analysis::kLevel))
     return;
   const size_t feat = static_cast<size_t>(sel.primary_feature_idx());
-  const auto &meta = data.feature.metadata;
+  const auto &meta = data.feature.meta();
 
   Req req;
-  req.scope = analysis::read_scope(data.config, data.asset.items.size());
+  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
   if (req.scope.months.empty())
     return;
   req.spec.params = params;

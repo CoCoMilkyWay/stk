@@ -11,16 +11,18 @@
 
 namespace analysis {
 
-ReadScope read_scope(const Config &cfg, size_t num_assets) {
+ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier) {
   ReadScope s;
+  s.tier = tier;
   s.months = misc::months_between(cfg.start_date, cfg.end_date);
-  s.uni = universe_axis(cfg, num_assets); // 与特征计算同一推导 (A 轴/文件列序/目录都由它定)
-  s.features_dir = cfg.FeatureUniverseDir();
+  // 与特征计算同一推导 (A 轴/文件列序/目录都由它定)
+  s.uni = tier == TierId::Pool ? universe_axis(cfg, num_assets) : full_axis(num_assets);
+  s.features_dir = tier == TierId::Pool ? cfg.FeatureUniverseDir() : cfg.FeatureAllDir();
   return s;
 }
 
 fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols) {
-  const auto &meta = feature.metadata;
+  const auto &meta = feature.meta();
   const auto &list = meta.features[level];
   assert(!cols.empty());
   fmeta::ColumnSet cs;

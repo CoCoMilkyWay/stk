@@ -44,7 +44,7 @@ TsSchedule::~TsSchedule() = default;
 void sequential_worker(WorkerCtx ctx) {
   const int worker_id = ctx.worker_id;
   SharedData &data = ctx.data;
-  GlobalFeatureStore &store = ctx.store;
+  PoolFeatureStore &store = ctx.store;
   TsSchedule &sched = ctx.sched;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
   // 本核发布槽 (单写者): work = 累计逐笔条数, idle_ms = 累计干等毫秒;
@@ -120,7 +120,7 @@ void sequential_worker(WorkerCtx ctx) {
   // asset_id = 子轴下标 (张量列/调度槽/帧目录切片列); items 经 global_ids 映射
   // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘档标签 (T+N) 跨日回填, 旧日句柄持到结清
   // (见 CoreSequential::end_day / LabelReturn 文件头); 最后一日之后由 finish_all 全部结清.
-  auto process_asset_day = [&](size_t asset_id, size_t date_idx, const GlobalFeatureStore::Day &day) -> size_t {
+  auto process_asset_day = [&](size_t asset_id, size_t date_idx, const PoolFeatureStore::Day &day) -> size_t {
     const misc::Ymd date = ctx.dates[date_idx];
     const auto &asset = data.asset.items[sched.global_ids[asset_id]];
     const FrameRef &ref = ctx.orders.at(date_idx, asset_id);
@@ -303,7 +303,7 @@ void sequential_worker(WorkerCtx ctx) {
     // 池满 = 本 worker 领先到把池子吃满 —— 干等的时间拿去领养最慢者的资产
     // 并回填 (回填日仍在飞, 不占新 slot), 等 IO 交还 slot 后再继续本日.
     // 只有 sleep 算干等 (领养回填是干活, 见 wait_open).
-    GlobalFeatureStore::Day day;
+    PoolFeatureStore::Day day;
     {
       TraceN("PoolWait");
       TraceColor(C_Orange);

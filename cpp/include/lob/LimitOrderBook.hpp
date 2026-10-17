@@ -98,7 +98,7 @@ public:
     return *tick_data_;
   }
 
-  void begin_day(misc::Ymd date, const GlobalFeatureStore::Day &day) {
+  void begin_day(misc::Ymd date, const PoolFeatureStore::Day &day) {
     assert(core_ && "begin_day: LOB not bound");
     core_->begin_day(date, day);
 
@@ -129,7 +129,7 @@ public:
 #endif
   }
 
-  void end_day(GlobalFeatureStore &store) {
+  void end_day(PoolFeatureStore &store) {
     assert(core_ && "end_day: LOB not bound");
     core_->end_day(store);
   }

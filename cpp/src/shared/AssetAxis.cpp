@@ -129,19 +129,21 @@ AssetAxis &asset_axis() {
   return instance;
 }
 
+UniverseAxis full_axis(std::size_t num_assets) {
+  assert(num_assets > 0 && "资产轴为空");
+  UniverseAxis uni;
+  uni.ids.resize(num_assets);
+  for (std::size_t i = 0; i < num_assets; ++i)
+    uni.ids[i] = static_cast<uint32_t>(i);
+  uni.hash = asset_axis().hash_at(num_assets); // 同一条链的前缀值, 免重算
+  return uni;
+}
+
 UniverseAxis universe_axis(const Config &cfg, std::size_t num_assets) {
   assert(num_assets > 0 && "资产轴为空");
   const AssetAxis &axis = asset_axis();
 
   UniverseAxis uni;
-  if (cfg.universe == "all") {
-    uni.ids.resize(num_assets);
-    for (std::size_t i = 0; i < num_assets; ++i)
-      uni.ids[i] = static_cast<uint32_t>(i);
-    uni.hash = axis.hash_at(num_assets); // 同一条链的前缀值, 免重算
-    return uni;
-  }
-
   const std::vector<std::string> codes = cfg.UniverseCodes();
   uni.ids.reserve(codes.size());
   for (const std::string &code : codes) {

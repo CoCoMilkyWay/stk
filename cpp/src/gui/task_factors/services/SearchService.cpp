@@ -166,7 +166,7 @@ bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, S
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.asset.items.size());
+  req.scope = analysis::read_scope(data.config, data.asset.items.size(), TierId::Pool);
   if (req.scope.months.empty())
     return false;
   req.universe = data.config.universe;
@@ -322,7 +322,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     publish();
   };
   // ---- 作用域 / 日期 ----
-  FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
+  FeatureRead reader(req.scope.tier, req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
   if (dates.empty())
     return abort_with("特征库在该区间无数据 (先算特征)");

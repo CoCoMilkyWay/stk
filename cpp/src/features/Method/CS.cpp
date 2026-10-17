@@ -1,6 +1,6 @@
 // 截面方法实现 (Method/CS.hpp), qmt/cpp/src/feature/cs.cpp 逐步复刻.
 //   Tf:     Reciprocal / Log
-//   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ (+ 运行期分派表 column_fn)
+//   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ / SelectLow400 / SelectHigh400 (+ 运行期分派表 column_fn)
 //
 // 忠实性契约 (决定 qmt 因子效果能否复现, 改动前先对 qmt 源码逐行核对):
 //   median_in_place: nth_element 取上中位, 偶数长度与下中位平均
@@ -317,6 +317,29 @@ void rank_inverse_normal(float *y, std::size_t n) {
     y[sv[rank].second] = inverse_normal_cdf((static_cast<float>(rank) + 1.0f) * scale);
 }
 
+// 选池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选
+template <bool kHigh>
+void select_top(float *y, std::size_t n, std::size_t N) {
+  std::vector<std::size_t> &idx = scratch_idx(n);
+  for (std::size_t i = 0; i < n; ++i)
+    if (std::isfinite(y[i]))
+      idx.push_back(i);
+  auto before = [y](std::size_t a, std::size_t b) {
+    if (y[a] != y[b])
+      return kHigh ? y[a] > y[b] : y[a] < y[b];
+    return a < b;
+  };
+  if (idx.size() > N)
+    std::nth_element(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(N), idx.end(), before);
+  const std::size_t k = std::min(N, idx.size());
+  thread_local std::vector<std::uint8_t> pick;
+  pick.assign(n, 0);
+  for (std::size_t j = 0; j < k; ++j)
+    pick[idx[j]] = 1;
+  for (std::size_t i = 0; i < n; ++i)
+    y[i] = pick[i] ? 1.0f : 0.0f;
+}
+
 } // anonymous namespace
 
 // ---- 元素预变换 ----
@@ -368,6 +391,10 @@ void WinsorZ::apply(float *y, std::size_t n) {
   z(y, n);
   zero_fill(y, n);
 }
+
+void SelectLow400::apply(float *y, std::size_t n) { select_top<false>(y, n, 400); }
+
+void SelectHigh400::apply(float *y, std::size_t n) { select_top<true>(y, n, 400); }
 
 void NeutralRank::prepare_logmc(float *mcap, std::size_t n) {
   for (std::size_t i = 0; i < n; ++i) {

@@ -8,9 +8,9 @@
 #include <vector>
 
 // ============================================================================
-// CoreCrosssection: 截面计算 (CS worker), L0 每秒 + L1 分钟边界级联
-//   与 CoreSequential 对仗: begin_day / compute_and_store (L0 节拍, 级联 L1) / end_day, 逐层 run<0> / run<1>
-//   字段表 CS(src_lvl, src, Tf, Method) 行由 CsLevel<LVL>::run 编译期展开 (与 fstore::RowWriter<LVL> 同构),
+// CoreCrosssection<T>: 截面计算 (CS worker), 档 T 有 L0 → L0 每秒 + L1 分钟边界级联; 无 L0 (All) → L1 每分钟
+//   与 CoreSequential 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L1) / end_day, 逐层 run<0> / run<1>
+//   字段表 CS(src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
 //   算子契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
 //   源列由 Method/CS.hpp 声明) 每分钟按需准备一次, 全部 NeutralRank 行复用; L0 用 NeutralRank = 编译错误.
@@ -30,39 +30,53 @@
 // ============================================================================
 
 // ============================================================================
-// CsLevel<LVL>::run: 该层字段表里每个 CS(...) 行 → core.run_one<...>(t); 其他来源的行展开为空
+// CsLevel<T, LVL>::run: 档 T 该层字段表里每个 CS(...) 行 → core.run_one<...>(t); 其他来源的行展开为空
+// (STORE_TIER = 当前展开的档命名空间, 每档展开前定义; 档缺的层无特化, run<LVL> 编译期跳过)
 // ============================================================================
-#define CS_RUN_CS(code, src_lvl, s, tf, m) core.template run_one<kLevel, src_lvl, L##src_lvl##_Field::s, FO::code, cs::tf, cs::m>(t);
+#define CS_RUN_CS(code, src_lvl, s, tf, m) core.template run_one<kLevel, src_lvl, STORE_TIER::L##src_lvl##_Field::s, FO::code, cs::tf, cs::m>(t);
 #define CS_RUN_OP(code, ...)
 #define CS_RUN_LABEL(code)
 #define CS_RUN_FLAG(code)
 #define CS_RUN_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(CS_RUN, code, src)
 
-template <size_t LVL>
+template <class T, size_t LVL>
 struct CsLevel;
 #define CS_LEVEL_TRAITS(name, num, fields, rows, psd)                                                       \
   template <>                                                                                               \
-  struct CsLevel<num> {                                                                                     \
+  struct CsLevel<STORE_TIER::Tier, num> {                                                                   \
     static constexpr size_t kLevel = num;                                                                   \
-    static constexpr bool kEmpty = count_of_kind(name##_FIELD_INFO, FeatureDataType::CS) == 0;              \
+    static constexpr bool kEmpty = count_of_kind(STORE_TIER::name##_FIELD_INFO, FeatureDataType::CS) == 0;  \
     template <class Core>                                                                                   \
     [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) { \
-      namespace FO = name##_Field;                                                                          \
+      namespace FO = STORE_TIER::name##_Field;                                                              \
       fields(CS_RUN_ONE)                                                                                    \
     }                                                                                                       \
   };
-ALL_LEVELS(CS_LEVEL_TRAITS)
+#define STORE_TIER pool
+TIER_LEVELS_Pool(CS_LEVEL_TRAITS)
+#undef STORE_TIER
+#define STORE_TIER all
+    TIER_LEVELS_All(CS_LEVEL_TRAITS)
+#undef STORE_TIER
 #undef CS_LEVEL_TRAITS
 
-class CoreCrosssection {
+#define CS_STR_(x) #x
+#define CS_STR(x) CS_STR_(x)
+
+        template <class T>
+        class CoreCrosssection {
 public:
-  explicit CoreCrosssection(GlobalFeatureStore &store)
+  using Day = StoreDay<T>;
+  // 节拍层: 有 L0 的档逐秒 (实盘 feed 按墙钟逐秒驱动), 无 L0 的档 (All, 分钟 K 源) 逐分钟
+  static constexpr size_t kBeatLevel = T::has(0) ? 0 : 1;
+
+  explicit CoreCrosssection(FeatureStore<T> &store)
       : A_(store.query_A()), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
   }
 
-  // day = 本日读写句柄 (store.cs_try_open, 已按日门控: 两层张量整体就绪); end_day 交还
-  void begin_day(const GlobalFeatureStore::Day &day) {
+  // day = 本日读写句柄 (store.cs_try_open, 已按日门控: 各层张量整体就绪); end_day 交还
+  void begin_day(const Day &day) {
     assert(day && !day_ && "begin_day / end_day 须成对");
     day_ = day;
   }
@@ -71,21 +85,27 @@ public:
     day_ = {};
   }
 
-  // 每秒一调 (事件驱动): 实盘由 feed 层按墙钟逐秒调用, 回测按日门控后逐秒重放同一个调用.
+  // 每节拍一调 (事件驱动; t = 节拍层 kBeatLevel 的行): 实盘由 feed 层按墙钟逐秒 (无 L0 的档逐分钟) 调用,
+  // 回测按日门控后逐拍重放同一个调用.
   // 不要改成"整日一次批量扫" —— 那样回测和实盘就成了两条代码路径, 逐值一致无从保证.
   void compute_and_store(size_t t) noexcept {
     TraceN("CS");
     TraceColor(C_Magenta);
     assert(day_ && "compute_and_store: 本日未 begin_day");
-    {
-      TraceN("CS_Tick");
-      run<0>(t);
-    }
-    // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行).
-    // 读 L1 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日门控保证; 实盘须先对全部资产 CoreSequential::advance(m + 1)
-    if (t % 60 == 59) {
+    if constexpr (T::has(0)) {
+      {
+        TraceN("CS_Tick");
+        run<0>(t);
+      }
+      // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行).
+      // 读 L1 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日门控保证; 实盘须先对全部资产 CoreSequential::advance(m + 1)
+      if (t % 60 == 59) {
+        TraceN("CS_Minute");
+        run<1>(L0_to_L1(t));
+      }
+    } else {
       TraceN("CS_Minute");
-      run<1>(L0_to_L1(t));
+      run<1>(t);
     }
   }
 
@@ -109,29 +129,38 @@ public:
 private:
   template <size_t LVL>
   void run(size_t t) {
-    if constexpr (CsLevel<LVL>::kEmpty) // 层内暂无 CS 行 (L0 目前如此, 预留层): 节拍照走, 有效集也不必扫
+    if constexpr (!T::has(LVL)) { // 档缺该层: 无特化
       return;
-    // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面.
-    // 虽是整日常量仍逐行读第 t 行: CS 在 t 的输入只许来自张量第 t 行 (行自足), 实盘逐秒推进时也成立 —— 别挪成每日向量
-    constexpr size_t VALID = LVL == 0 ? size_t(L0_Field::cs_valid) : size_t(L1_Field::cs_valid);
-    const _Float16 *valid_flags = fstore::cs_col<LVL>(day_, t, VALID);
-    valid_indices_.clear();
-    for (size_t a = 0; a < A_; ++a)
-      if (fmeta::data_valid(static_cast<float>(valid_flags[a])))
-        valid_indices_.push_back(a);
-    if (valid_indices_.empty())
+    } else if constexpr (CsLevel<T, LVL>::kEmpty) { // 层内暂无 CS 行 (L0 目前如此, 预留层): 节拍照走, 有效集也不必扫
       return;
-    n_ = valid_indices_.size();
-    neutral_ready_ = false;
-    CsLevel<LVL>::run(*this, t);
+    } else {
+      // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面.
+      // 虽是整日常量仍逐行读第 t 行: CS 在 t 的输入只许来自张量第 t 行 (行自足), 实盘逐秒推进时也成立 —— 别挪成每日向量
+      constexpr size_t VALID = field_of<T>(LVL, "cs_valid");
+      static_assert(VALID < T::LEVELS[LVL].field_count, "有 CS 行的层必须有 cs_valid 列");
+      const _Float16 *valid_flags = fstore::cs_col<LVL>(day_, t, VALID);
+      valid_indices_.clear();
+      for (size_t a = 0; a < A_; ++a)
+        if (fmeta::data_valid(static_cast<float>(valid_flags[a])))
+          valid_indices_.push_back(a);
+      if (valid_indices_.empty())
+        return;
+      n_ = valid_indices_.size();
+      neutral_ready_ = false;
+      CsLevel<T, LVL>::run(*this, t);
+    }
   }
 
-  // NeutralRank 上下文 (L1): 首个 NeutralRank 行触发, 本分钟内复用
+  // NeutralRank 上下文 (L1): 首个 NeutralRank 行触发, 本分钟内复用. 源列按名在本档 L1 定址 (用 NeutralRank 的档必须有)
   const cs::NeutralRank::Ctx &neutral_(size_t t) {
+    constexpr size_t MCAP = field_of<T>(1, CS_STR(NEUTRAL_RANK_MCAP));
+    constexpr size_t INDUSTRY = field_of<T>(1, CS_STR(NEUTRAL_RANK_INDUSTRY));
+    static_assert(MCAP < T::LEVELS[1].field_count && INDUSTRY < T::LEVELS[1].field_count,
+                  "用 NeutralRank 的档 L1 必须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列");
     if (!neutral_ready_) {
-      gather_(fstore::cs_col<1>(day_, t, L1_Field::NEUTRAL_RANK_MCAP), logmc_dense_.data());
+      gather_(fstore::cs_col<1>(day_, t, MCAP), logmc_dense_.data());
       cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n_);
-      gather_(fstore::cs_col<1>(day_, t, L1_Field::NEUTRAL_RANK_INDUSTRY), industry_dense_.data());
+      gather_(fstore::cs_col<1>(day_, t, INDUSTRY), industry_dense_.data());
       neutral_ready_ = true;
     }
     return neutral_ctx_;
@@ -152,7 +181,7 @@ private:
       col[valid_indices_[i]] = static_cast<feature_storage_t>(y[i]);
   }
 
-  GlobalFeatureStore::Day day_{}; // 本日读写句柄, begin_day 换入 / end_day 交还
+  Day day_{}; // 本日读写句柄, begin_day 换入 / end_day 交还
   size_t A_;
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)

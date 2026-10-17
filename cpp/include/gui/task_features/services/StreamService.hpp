@@ -63,7 +63,7 @@ private:
     Target &target = Derived::target(*data_);
     // reader 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退).
     // reader 自持库目录拷贝, 之后 scope 可整体移交给目标
-    FeatureRead reader(req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &this->cancel_);
+    FeatureRead reader(req.scope.tier, req.scope.features_dir, req.scope.uni.size(), req.scope.uni.hash, &this->cancel_);
     target.reset(std::move(req.scope), std::move(req.spec));
     return target.build(reader, this->cancel_) && !reader.stale();
   }

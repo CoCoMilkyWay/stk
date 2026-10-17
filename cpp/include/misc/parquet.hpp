@@ -22,6 +22,7 @@
 //
 // TableView / Col: 类型化列访问 (pit build / axis / overlay / parse 共用).
 //   yyyymmdd(i): timestamp[ns] 或 "YYYYMMDD" string 列 → int32; null → 0
+//   minute_of_day(i): timestamp[ns] 列 → 墙钟分钟 hh·60 + mm (无时区, 按存储字段); null → -1
 //   f32(i):      double/float/int 列 → float; null → NaN
 //   i32(i, def): int/uint/bool 列 → int;   null → def
 //   str(i):      string 列 → string_view;  null → {}
@@ -68,6 +69,7 @@ public:
   bool valid() const { return arr_ != nullptr; }
   bool null(std::int64_t i) const;
   std::int32_t yyyymmdd(std::int64_t i) const;
+  int minute_of_day(std::int64_t i) const;
   float f32(std::int64_t i) const;
   int i32(std::int64_t i, int def) const;
   std::string_view str(std::int64_t i) const;

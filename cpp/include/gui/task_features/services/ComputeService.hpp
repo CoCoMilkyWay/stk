@@ -4,6 +4,7 @@
 //   store / 调度面 / 仪表盘全是 run 的局部, 一轮一建
 #pragma once
 
+#include "features/Backend/FeatureLevels.hpp" // TierId
 #include "gui/util/Worker.hpp"
 
 #include <array>
@@ -144,7 +145,8 @@ struct ComputeConfig {
   // 池下限 = LabelReturn::MIN_POOL_SLOTS (开盘档标签 T+N 跨日回填, 旧日 slot 持到结清; 少于此死锁), ComputeService.cpp static_assert 对账
   static constexpr int kMinPoolSlots = 12;
   int pool_slots = kMinPoolSlots + 2;
-  int adopt_pct = 50; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
+  int adopt_pct = 50;         // TS 负载再平衡阈值 N (%), 0 = 关闭领养 (只 Pool 档)
+  TierId tier = TierId::Pool; // 算哪一档 (两档各一个按钮; 只在因子层合并). All 日期轴 = 交易日 [config::PIPELINE_START_DATE, end_date]
 };
 
 // ============================================================================
@@ -167,6 +169,8 @@ private:
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return *this; }
   bool run(ComputeConfig &config);
+  bool run_pool(ComputeConfig &config);
+  bool run_all(ComputeConfig &config);
 
   SharedData &data_;
 };

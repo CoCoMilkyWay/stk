@@ -68,7 +68,7 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
 
   ImGui::SameLine(0, 20);
   if (sel.primary_feature_idx() >= 0 && sel.selected_level >= 0 && sel.selected_level < static_cast<int>(LEVEL_COUNT)) {
-    const auto &meta = data.feature.metadata.features[sel.selected_level];
+    const auto &meta = data.feature.meta().features[sel.selected_level];
     if (sel.primary_feature_idx() < static_cast<int>(meta.size()))
       ImGui::Text("L%d %s", sel.selected_level, meta[sel.primary_feature_idx()].code);
   } else {

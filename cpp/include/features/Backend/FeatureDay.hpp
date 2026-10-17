@@ -34,8 +34,8 @@
 //
 // 两端互逆, 共用一个 Scratch (稳态零分配):
 //
-//   FeatureDay::write(path, lvl, layer [T][F][A], A, hash, s) → 字节数
-//   FeatureDay::read (path, lvl, cols[n], dst [n][T][A], A, hash, s) → Status
+//   FeatureDay::write(path, L = level_info(tier, lvl), layer [T][F][A], A, hash, s) → 字节数
+//   FeatureDay::read (path, L, cols[n], dst [n][T][A], A, hash, s) → Status
 //
 // 与 orders 日文件 (shared/OrdersDay.hpp) 同形: 头 + 载荷 + 目录. 这里单写者顺序
 // 追加且 F 已知, 目录放前部; orders 多 worker 并发追加, 目录只能放尾部.
@@ -65,7 +65,7 @@ inline std::string feature_day_dir(const std::string &base, misc::Ymd date) {
   return base + "/" + misc::slash(date);
 }
 inline std::string feature_file(const std::string &day_dir, size_t lvl) {
-  return day_dir + "/features_" + level_info(lvl).level_name + ".bin";
+  return day_dir + "/features_" + level_name(lvl) + ".bin";
 }
 
 // ============================================================================
@@ -113,10 +113,9 @@ struct FeatureDay {
 
   // 一层一天: layer [T][F][A] 按相邻列组抽列 → 逐列编码 → 追加, 收工回填头 + 目录, rename 发布. 返回文件字节数.
   // 载荷与逐列抽取逐字节相同, 分组只改 layer 的读序.
-  static size_t write(const std::string &path, size_t lvl, const feature_storage_t *layer, size_t A,
+  static size_t write(const std::string &path, const LevelInfo &L, const feature_storage_t *layer, size_t A,
                       std::uint64_t axis_hash, Scratch &s) {
     TraceN("FeatureDayWrite");
-    const LevelInfo &L = level_info(lvl);
     const size_t T = L.rows, F = L.field_count;
 
     const std::string tmp_path = path + ".tmp";
@@ -157,10 +156,9 @@ struct FeatureDay {
   }
 
   // 一层一天: 读 cols[0..n) 到 dst [n][T][A] (第 i 槽 = 列 cols[i]). 非 Ok 时 dst 不动.
-  static Status read(const std::string &path, size_t lvl, const size_t *cols, size_t n, feature_storage_t *dst, size_t A,
+  static Status read(const std::string &path, const LevelInfo &L, const size_t *cols, size_t n, feature_storage_t *dst, size_t A,
                      std::uint64_t axis_hash, Scratch &s) {
     TraceN("FeatureDayRead");
-    const LevelInfo &L = level_info(lvl);
     const size_t T = L.rows, F = L.field_count;
 
     const int fd = file_open_read(path.c_str());

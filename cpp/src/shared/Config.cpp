@@ -83,7 +83,7 @@ void Config::AutoSync() {
 }
 
 std::string Config::UniversePath() const {
-  assert(universe != "all" && "universe == all 无名单文件");
+  assert(universe != kAllTierDir && "universe 名 all 已归全局档, 池档无此名单");
   return (fs::path(config_dir) / "universe" / (universe + ".json")).string();
 }
 

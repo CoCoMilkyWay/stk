@@ -22,12 +22,6 @@ void check_code_array(const json &arr) {
 
 } // namespace
 
-Pool Pool::all() {
-  Pool p;
-  p.all_ = true;
-  return p;
-}
-
 Pool Pool::load(const std::filesystem::path &json_path) {
   std::ifstream file(json_path);
   assert(file.is_open() && "universe 名单文件不存在: <config_dir>/universe/<name>.json (先跑 py/universe/<name>.py)");
@@ -86,7 +80,6 @@ Pool Pool::load(const std::filesystem::path &json_path) {
 }
 
 std::vector<std::string> Pool::codes(misc::Ymd first, misc::Ymd last) const {
-  assert(!all_ && "universe == all 无名单");
   assert(first <= last && "universe::codes: 区间颠倒");
   const auto lo = std::lower_bound(dates_.begin(), dates_.end(), first);
   const auto hi = std::upper_bound(dates_.begin(), dates_.end(), last);
@@ -108,19 +101,14 @@ std::vector<std::string> Pool::codes(misc::Ymd first, misc::Ymd last) const {
 }
 
 const std::vector<misc::Ymd> &Pool::dates() const {
-  assert(!all_ && "universe == all 无名单");
   return dates_;
 }
 
 bool Pool::has_date(misc::Ymd d) const {
-  if (all_)
-    return true;
   return std::binary_search(dates_.begin(), dates_.end(), d);
 }
 
 bool Pool::in_pool(std::string_view code, misc::Ymd d) const {
-  if (all_)
-    return true;
   const auto dit = std::lower_bound(dates_.begin(), dates_.end(), d);
   assert(dit != dates_.end() && *dit == d && "universe: 该日没出名单 (回测区间超出名单覆盖, 重跑 py/universe)");
   assert(code.find('.') != std::string_view::npos && "universe: 键是 \"CODE.EX\", 裸 6 位码永远查不到 (cs_valid 会全 0)");

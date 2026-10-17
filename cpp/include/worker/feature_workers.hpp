@@ -13,7 +13,22 @@
 // Forward declarations
 struct SharedData;
 struct OrdersCatalog;
-class GlobalFeatureStore;
+template <class T>
+class FeatureStore;
+namespace pool {
+struct Tier;
+}
+namespace all {
+struct Tier;
+}
+namespace fund {
+class Pool;
+}
+namespace fundamental {
+class Catalog;
+}
+using PoolFeatureStore = FeatureStore<pool::Tier>;
+using AllFeatureStore = FeatureStore<all::Tier>;
 class CoreSequential;
 
 // ============================================================================
@@ -121,7 +136,7 @@ struct ComputeStats {
 class FeatureProgress {
 public:
   // dates = 回测日期轴 (渲染期内调用方保证存活); 构造即预留 5 行并启动采样线程
-  FeatureProgress(const GlobalFeatureStore &store, const TsSchedule &sched,
+  FeatureProgress(const PoolFeatureStore &store, const TsSchedule &sched,
                   const ComputeStats &stats, const std::vector<misc::Ymd> &dates);
   ~FeatureProgress();
 
@@ -131,7 +146,7 @@ private:
   void render();
   long long elapsed_ms() const;
 
-  const GlobalFeatureStore &store_;
+  const PoolFeatureStore &store_;
   const TsSchedule &sched_;
   const ComputeStats &stats_;
   const std::vector<misc::Ymd> &dates_;
@@ -176,7 +191,7 @@ struct WorkerCtx {
   SharedData &data;
   std::span<const misc::Ymd> dates;
   const OrdersCatalog &orders;
-  GlobalFeatureStore &store;
+  PoolFeatureStore &store;
   TsSchedule &sched;
   const std::atomic<bool> &cancel;
   ComputeStats &stats;
@@ -188,11 +203,11 @@ struct WorkerCtx {
 inline constexpr size_t kIdleMs = 10;
 
 template <class TryOpen, class OnIdle>
-auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_open, OnIdle &&on_idle) {
+auto wait_open(const std::atomic<bool> &cancel, ComputeStats::Core &stat, TryOpen &&try_open, OnIdle &&on_idle) {
   for (;;) {
     if (auto opened = try_open())
       return opened;
-    if (ctx.cancel.load(std::memory_order_relaxed))
+    if (cancel.load(std::memory_order_relaxed))
       return decltype(try_open()){};
     on_idle();
     std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs));
@@ -201,8 +216,18 @@ auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_ope
 }
 
 template <class TryOpen>
+auto wait_open(const std::atomic<bool> &cancel, ComputeStats::Core &stat, TryOpen &&try_open) {
+  return wait_open(cancel, stat, try_open, [] {});
+}
+
+template <class TryOpen, class OnIdle>
+auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_open, OnIdle &&on_idle) {
+  return wait_open(ctx.cancel, stat, try_open, on_idle);
+}
+
+template <class TryOpen>
 auto wait_open(const WorkerCtx &ctx, ComputeStats::Core &stat, TryOpen &&try_open) {
-  return wait_open(ctx, stat, try_open, [] {});
+  return wait_open(ctx.cancel, stat, try_open, [] {});
 }
 
 // 预取: 顺日期把当天日文件里 universe 的帧读进 page cache, 让 TS 的 decode 只吃缓存不等磁盘.
@@ -213,8 +238,32 @@ void prefetch_worker(WorkerCtx ctx);
 //       领跑核在池边干等时领养落后核的资产并回填 (wait_open 的 on_idle, 处置权转移见 TsSchedule).
 void sequential_worker(WorkerCtx ctx);
 
-// 截面: cs_try_open 等本日全部 TS 写完, 逐秒 compute_and_store (实盘同一调用), cs_close 交给 IO.
+// 截面: cs_try_open 等本日全部 TS 写完, 逐拍 compute_and_store (实盘同一调用), cs_close 交给 IO.
 void crosssectional_worker(WorkerCtx ctx);
 
 // 落盘: io_try_open 等本日截面写完, 逐层落盘, io_close 清零交还 slot, 直到全部日期刷完.
 void io_worker(WorkerCtx ctx);
+
+// 截面 / 落盘日循环 (两档共用骨架; 上两个 worker 即 T = pool::Tier 的薄壳). 显式实例化 pool / all
+template <class T>
+void cs_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> dates, const std::atomic<bool> &cancel, ComputeStats::Core &stat);
+template <class T>
+void io_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> dates, const std::atomic<bool> &cancel, ComputeStats::Core &stat);
+
+// ============================================================================
+// All 档时序 (bar1m + 基本面, 全市场; 截面 / 落盘走 cs_loop / io_loop<all::Tier> 各一线程)
+//   调用线程当协调者: 逐日 ts_try_open → ForkJoin 沿 A 维静态条带跑 CoreBar::run_day (TS 资产局部纯函数 ⇒ 沿 A 并行,
+//   资产固定在同一 tid, core 状态 first-touch 在其上) → 区间末 finish_all.
+//   bar1m 日截面由解码线程领先一日预取 (双缓冲). 缺 bar1m 的日 = 全部资产零事件日.
+//   ts_cpus[tid] = ForkJoin 第 tid 线程 pin 的逻辑 CPU (tid 0 = 调用线程); 大小 = TS 线程数.
+// ============================================================================
+struct BarWorkerCtx {
+  std::span<const misc::Ymd> dates;
+  const fund::Pool &fund_pool;
+  const fundamental::Catalog &catalog;
+  AllFeatureStore &store;
+  std::span<const int> ts_cpus;
+  int decode_cpu; // bar1m 解码线程 pin 的逻辑 CPU
+  const std::atomic<bool> &cancel;
+};
+void bar_worker(BarWorkerCtx ctx);

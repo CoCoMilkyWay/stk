@@ -17,6 +17,8 @@
 //     Demean       x − mean, 缺失 → 0.  去市场分量但保留截面离散度的时变 (z 会把每分钟离散度抹平成 1)
 //     Z            (x − mean)/sd (double 累加), 缺失 → 0.  保留量级信息 (全市场同向尖峰 rank 看不见)
 //     WinsorZ      winsor_mad(k=3) → z, 缺失 → 0.  稳健 z (= WinsorRank 去掉末尾 pct_rank)
+//     SelectLow400 / SelectHigh400   选池: 有限值中取最低 / 最高 400 个 → 1, 其余 (含缺失) → 0; 并列按 dense 下标
+//                  (= 资产轴序) 先到先得, 有限值不足 400 则全选. 输入 = 母集掩码后的排序键 (PoolKey, 母集外 NaN)
 //
 //   忠实性契约: WinsorRank / NeutralRank 与 qmt/cpp/src/feature/cs.cpp 逐步一致
 //   (中位数取法 / z 的 double 累加 / pct_rank 并列均秩 / 均值填充), 保证 qmt 因子效果可复现.
@@ -46,7 +48,9 @@ namespace cs {
   X(NeutralRank, "NeutralRank") \
   X(Demean, "Demean")           \
   X(Z, "Z")                     \
-  X(WinsorZ, "WinsorZ")
+  X(WinsorZ, "WinsorZ")         \
+  X(SelectLow400, "Low400")     \
+  X(SelectHigh400, "High400")
 
 // ---- 元素预变换 ----
 struct None { // Tf 与 Method 双身份: 恒等
@@ -87,6 +91,16 @@ struct Z {
 };
 
 struct WinsorZ {
+  static constexpr bool kNeutral = false;
+  static void apply(float *y, std::size_t n);
+};
+
+struct SelectLow400 {
+  static constexpr bool kNeutral = false;
+  static void apply(float *y, std::size_t n);
+};
+
+struct SelectHigh400 {
   static constexpr bool kNeutral = false;
   static void apply(float *y, std::size_t n);
 };

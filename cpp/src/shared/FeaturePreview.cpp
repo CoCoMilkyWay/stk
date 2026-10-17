@@ -51,9 +51,11 @@ struct FeaturePreview::Runtime {
     cage_miss.assign(n_pv, 0);
     int_only.assign(n_pv, 1);
     const size_t n_draw = std::min(kPvAssetsPerRound, A);
-    cage_dn.resize(n_draw * kVR);
-    cage_up.resize(n_draw * kVR);
-    round_cols = {spec.lim_dn, spec.lim_up};
+    cage_dn.assign(n_draw * kVR, kNaN); // 无笼档恒 NaN = 不受检
+    cage_up.assign(n_draw * kVR, kNaN);
+    round_cols.clear();
+    if (spec.caged())
+      round_cols = {spec.lim_dn, spec.lim_up};
     if (spec.cols.gated())
       round_cols.push_back(spec.cols.gate());
     round.preallocate(A, kLevel, 3);
@@ -101,7 +103,7 @@ void FeaturePreview::reset(ReadScope scope, Spec sp) {
   const size_t n_pv = sp.cols.n();
   assert(n_pv > 0 && std::is_sorted(sp.cols.io.begin(), sp.cols.io.begin() + n_pv));
   assert(sp.cols.io[n_pv - 1] < sp.n_features);
-  assert(sp.lim_dn < sp.n_features && sp.lim_up < sp.n_features);
+  assert(sp.caged() ? (sp.lim_dn < sp.n_features && sp.lim_up < sp.n_features) : sp.lim_up == Spec::kNoCage);
   assert(scope.uni.size() > 0 && !scope.months.empty());
   std::lock_guard<std::mutex> lock(mutex);
 
@@ -150,7 +152,11 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
   // 抽样资产当日笼快照 (price 逐日判定融合进块扫描); ts_valid 原样留在 round 供各块平面门控
   auto load_round = [&](size_t r) {
     TraceN("PreviewRoundIO");
+    if (rt.round_cols.empty())
+      return; // 无笼且不门控: 轮首无共享列
     reader.load_day_columns(plan.dates[r], rt.round_cols, rt.round);
+    if (!spec.caged())
+      return; // 笼快照恒 NaN (prepare 已填)
     // 笼外扩容差 (存快照时做, 热循环保持严格比较): 贴板成交价与 lim 两列来源不同
     // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
     // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
@@ -175,7 +181,7 @@ bool FeaturePreview::build(FeatureRead &reader, const std::atomic<bool> &cancel)
   for (size_t r = 0; r < n_rounds; ++r) {
     load_round(r);
     const size_t a_off = (r * n_draw) % A;
-    const feature_storage_t *gate = gated ? rt.round.col(2) : nullptr;
+    const feature_storage_t *gate = gated ? rt.round.col(spec.caged() ? 2 : 0) : nullptr;
 
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];

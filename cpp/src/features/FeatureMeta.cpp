@@ -5,18 +5,23 @@
 // FeatureStoreConfig) 与 FeatureCategoriesGenerated —— GUI/shared 消费者只 include
 // 稳定头 (shared/Feature.hpp / features/Backend/FeatureLevels.hpp), 增删改特征时
 // 它们不重编, 只重编本文件 + 写端, 再重链.
-//   level_info(lvl)            FeatureLevels.hpp 声明的运行时层表入口
-//   feature_meta::features     每层 FeatureMetadata 表 (编译期展开, 运行时只读)
-//   feature_meta::categories_* 分类表 (FeatureCategoriesGenerated)
+//   level_info(tier, lvl)      FeatureLevels.hpp 声明的运行时层表入口
+//   feature_meta::features     每档每层 FeatureMetadata 表 (编译期展开, 运行时只读)
+//   feature_meta::categories_* 每档分类表 (FeatureCategoriesGenerated)
 //   Feature::Metadata::init_from_compile_time  元数据拷贝 + 依赖解析 (node_deps)
+//   两档 TS / CS 列名全局唯一 (编译期断言): 因子层按列名拼两档, 重名即歧义
 // ============================================================================
 
-#include "features/Backend/FeatureStoreConfig.hpp" // 编译期 LEVELS / 字段表 / FieldSource / node_deps
-#include "features/FeatureCategoriesGenerated.hpp"
+#include "features/All/FeatureCategoriesGenerated.hpp"
+#include "features/Backend/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
+#include "features/Pool/FeatureCategoriesGenerated.hpp"
 #include "shared/Feature.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <iterator>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,13 +31,79 @@
 // ============================================================================
 // 运行时层表入口 (FeatureLevels.hpp 声明)
 // ============================================================================
-const LevelInfo &level_info(size_t lvl) {
-  assert(lvl < LEVEL_COUNT);
-  return LEVELS[lvl];
+namespace {
+#define TIER_LEVELS_PTR(T, ns) &ns::LEVELS,
+constexpr const std::array<LevelInfo, LEVEL_COUNT> *TIER_LEVELS[TIER_COUNT] = {ALL_TIERS(TIER_LEVELS_PTR)};
+#undef TIER_LEVELS_PTR
+#define TIER_LAST_LEVEL(T, ns) ns::Tier::kLastLevel,
+constexpr size_t TIER_LAST[TIER_COUNT] = {ALL_TIERS(TIER_LAST_LEVEL)};
+#undef TIER_LAST_LEVEL
+} // namespace
+
+bool has_level(TierId tier, size_t lvl) {
+  assert(static_cast<size_t>(tier) < TIER_COUNT && lvl < LEVEL_COUNT);
+  return (*TIER_LEVELS[static_cast<size_t>(tier)])[lvl].fields != nullptr;
+}
+
+const LevelInfo &level_info(TierId tier, size_t lvl) {
+  assert(has_level(tier, lvl));
+  return (*TIER_LEVELS[static_cast<size_t>(tier)])[lvl];
+}
+
+size_t last_level(TierId tier) {
+  assert(static_cast<size_t>(tier) < TIER_COUNT);
+  return TIER_LAST[static_cast<size_t>(tier)];
 }
 
 // ============================================================================
-// Compile-time Metadata Generation: 每层一张表 (字段表行 + 层信息)
+// 两档 TS / CS 列名唯一 (META / LB 是各档基建列, 同名同语义, 豁免)
+// ============================================================================
+// 两档全部列按名 hash 排序后查同 hash 段 (两两比较 O(Fa·Fb·len) 会撞 constexpr 步数上限)
+namespace {
+using TierLevels = std::array<LevelInfo, LEVEL_COUNT>;
+struct TierCode {
+  uint64_t h;
+  uint8_t tier;
+  bool ts_cs; // TS / CS 列 (与对档任意同名列冲突); 其余 (META / LB / FLAG) 只与对档 TS / CS 同名才算
+  const char *code;
+};
+constexpr size_t field_total(const TierLevels &L) {
+  size_t n = 0;
+  for (const LevelInfo &l : L)
+    n += l.fields ? l.field_count : 0;
+  return n;
+}
+constexpr void collect(const TierLevels &L, uint8_t tier, TierCode *out, size_t &n) {
+  for (const LevelInfo &l : L)
+    for (size_t i = 0; l.fields && i < l.field_count; ++i) {
+      const FeatureDataType k = l.fields[i].kind;
+      out[n++] = {fnv1a_str(0xcbf29ce484222325ULL, l.fields[i].code), tier, k == FeatureDataType::TS || k == FeatureDataType::CS, l.fields[i].code};
+    }
+}
+constexpr bool tiers_unique() {
+  constexpr size_t N = field_total(pool::LEVELS) + field_total(all::LEVELS);
+  std::array<TierCode, N> v{};
+  size_t n = 0;
+  collect(pool::LEVELS, 0, v.data(), n);
+  collect(all::LEVELS, 1, v.data(), n);
+  std::sort(v.begin(), v.end(), [](const TierCode &a, const TierCode &b) { return a.h < b.h; });
+  for (size_t i = 0; i < N;) {
+    size_t j = i;
+    while (j < N && v[j].h == v[i].h)
+      ++j;
+    for (size_t p = i; p < j; ++p)
+      for (size_t q = p + 1; q < j; ++q)
+        if (v[p].tier != v[q].tier && (v[p].ts_cs || v[q].ts_cs) && std::string_view(v[p].code) == v[q].code)
+          return false;
+    i = j;
+  }
+  return true;
+}
+static_assert(tiers_unique(), "Pool / All 两档 TS / CS 列名重复 (因子层按名拼接两档, 须全局唯一; 池档 K 线用 lob_* 前缀)");
+} // namespace
+
+// ============================================================================
+// Compile-time Metadata Generation: 每档每层一张表 (字段表行 + 层信息)
 // ============================================================================
 #define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                       \
   {#code, SRC_VALID_##src, SRC_KIND_##src, cat_l1, #cat_l2, SRC_TS_TF_##src, SRC_TS_METHOD_##src, SRC_CS_TF_##src, \
@@ -42,34 +113,58 @@ const LevelInfo &level_info(size_t lvl) {
     constexpr uint8_t kLevel = num;                                  \
     constexpr FeatureMetadata TABLE[] = {fields(GENERATE_METADATA)}; \
   }
-#define METADATA_TABLE_PTR(name, num, fields, rows, psd) name##_meta_detail::TABLE,
-#define METADATA_TABLE_COUNT(name, num, fields, rows, psd) std::size(name##_meta_detail::TABLE),
+// 每档: META[lvl] / SOURCES[lvl] (档缺的层为空 span) + 依赖表 / 分类表
+#define METADATA_SPAN_SET(name, num, fields, rows, psd) m[num] = {name##_meta_detail::TABLE, std::size(name##_meta_detail::TABLE)};
+#define SOURCE_SPAN_SET(name, num, fields, rows, psd) s[num] = {name##_FIELD_SOURCE, std::size(name##_FIELD_SOURCE)};
+#define GENERATE_TIER_META(T, ns)                                                                          \
+  namespace ns {                                                                                           \
+  constexpr std::array<std::span<const FeatureMetadata>, LEVEL_COUNT> META = [] {                          \
+    std::array<std::span<const FeatureMetadata>, LEVEL_COUNT> m{};                                         \
+    TIER_LEVELS_##T(METADATA_SPAN_SET) return m;                                                           \
+  }();                                                                                                     \
+  constexpr std::array<std::span<const FieldSource>, LEVEL_COUNT> SOURCES = [] {                           \
+    std::array<std::span<const FieldSource>, LEVEL_COUNT> s{};                                             \
+    TIER_LEVELS_##T(SOURCE_SPAN_SET) return s;                                                             \
+  }();                                                                                                     \
+  constexpr std::span<const char *const> CAT1{FeatureCategoryL1_ALL.data(), FeatureCategoryL1_ALL.size()}; \
+  constexpr std::span<const char *const> CAT2{FeatureCategoryL2_ALL.data(), FeatureCategoryL2_ALL.size()}; \
+  }
+
+FOR_EACH_TIER_LEVEL(GENERATE_METADATA_TABLE)
+ALL_TIERS(GENERATE_TIER_META)
 
 namespace {
-ALL_LEVELS(GENERATE_METADATA_TABLE)
-constexpr const FeatureMetadata *META_TABLES[LEVEL_COUNT] = {ALL_LEVELS(METADATA_TABLE_PTR)};
-constexpr size_t META_COUNTS[LEVEL_COUNT] = {ALL_LEVELS(METADATA_TABLE_COUNT)};
+struct TierMeta {
+  const std::array<std::span<const FeatureMetadata>, LEVEL_COUNT> *meta;
+  const std::array<std::span<const FieldSource>, LEVEL_COUNT> *sources;
+  std::span<const char *const> cat1, cat2;
+};
+#define TIER_META_ONE(T, ns) {&ns::META, &ns::SOURCES, ns::CAT1, ns::CAT2},
+const TierMeta TIER_META[TIER_COUNT] = {ALL_TIERS(TIER_META_ONE)};
+#undef TIER_META_ONE
+
+const TierMeta &tier_meta(TierId tier) {
+  assert(static_cast<size_t>(tier) < TIER_COUNT);
+  return TIER_META[static_cast<size_t>(tier)];
+}
 } // namespace
 
 #undef GENERATE_METADATA
 #undef GENERATE_METADATA_TABLE
-#undef METADATA_TABLE_PTR
-#undef METADATA_TABLE_COUNT
+#undef METADATA_SPAN_SET
+#undef SOURCE_SPAN_SET
+#undef GENERATE_TIER_META
 
 namespace feature_meta {
 
-std::span<const FeatureMetadata> features(size_t level) {
+std::span<const FeatureMetadata> features(TierId tier, size_t level) {
   assert(level < LEVEL_COUNT);
-  return {META_TABLES[level], META_COUNTS[level]};
+  return (*tier_meta(tier).meta)[level];
 }
 
-std::span<const char *const> categories_l1() {
-  return {FeatureCategoryL1_ALL.data(), FeatureCategoryL1_ALL.size()};
-}
+std::span<const char *const> categories_l1(TierId tier) { return tier_meta(tier).cat1; }
 
-std::span<const char *const> categories_l2() {
-  return {FeatureCategoryL2_ALL.data(), FeatureCategoryL2_ALL.size()};
-}
+std::span<const char *const> categories_l2(TierId tier) { return tier_meta(tier).cat2; }
 
 } // namespace feature_meta
 
@@ -77,16 +172,25 @@ std::span<const char *const> categories_l2() {
 // Feature::Metadata 初始化 (从编译期表拷贝 + 依赖解析)
 // ============================================================================
 
-void Feature::Metadata::init_from_compile_time() {
-  // 1. Copy from constexpr arrays to runtime vectors (for filtering/sorting)
+void Feature::Metadata::init_from_compile_time(TierId t) {
+  tier = t;
+  const TierMeta &tm = tier_meta(t);
+  // 1. Copy from constexpr arrays to runtime vectors (for filtering/sorting); 档缺的层为空
   for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
-    features[lvl].assign(META_TABLES[lvl], META_TABLES[lvl] + META_COUNTS[lvl]);
+    features[lvl].assign((*tm.meta)[lvl].begin(), (*tm.meta)[lvl].end());
 
-  // 2. 节点上游依赖表: node name → 直接依赖项 (来自 CMake 生成的 node_deps::TABLE)
+  // 2. 节点上游依赖表: node name → 直接依赖项 (来自 CMake 生成的 <tier>::node_deps::TABLE)
   //    项 = "Up" (整节点: Up.out() / Up.outs() / Up.member) 或 "Up.port" (单口: Up.out(Up.port))
   std::unordered_map<std::string, std::vector<std::string>> node_deps_map;
-  for (const auto &e : node_deps::TABLE)
-    node_deps_map.emplace(e.node, std::vector<std::string>(e.deps, e.deps + e.count));
+  auto load_deps = [&](const auto &table) {
+    for (const auto &e : table)
+      node_deps_map.emplace(e.node, std::vector<std::string>(e.deps, e.deps + e.count));
+  };
+#define TIER_DEPS_ONE(T, ns) \
+  if (t == TierId::T)        \
+    load_deps(ns::node_deps::TABLE);
+  ALL_TIERS(TIER_DEPS_ONE)
+#undef TIER_DEPS_ONE
 
   // 3. 节点 → 产出字段 (code, 口名) (跨所有层)
   //    FieldSource.source: OP → 节点名 (在 node_deps_map 中); CS → 源字段 code; "" → 无
@@ -94,18 +198,19 @@ void Feature::Metadata::init_from_compile_time() {
     std::string code, port;
   };
   std::unordered_map<std::string, std::vector<NodeField>> node_fields;
-  auto add_node_fields = [&](const FieldSource *srcs, size_t n) {
-    for (size_t i = 0; i < n; ++i) {
+  auto add_node_fields = [&](std::span<const FieldSource> srcs) {
+    for (size_t i = 0; i < srcs.size(); ++i) {
       std::string_view s = srcs[i].source;
       if (!s.empty() && node_deps_map.count(std::string(s)))
         node_fields[std::string(s)].push_back({srcs[i].code, srcs[i].port});
     }
   };
-  add_node_fields(L0_FIELD_SOURCE, std::size(L0_FIELD_SOURCE));
-  add_node_fields(L1_FIELD_SOURCE, std::size(L1_FIELD_SOURCE));
+  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+    add_node_fields((*tm.sources)[lvl]);
 
   // 4. 逐字段解析直接依赖 (字段 code, 分号分隔)
-  auto resolve_level = [&](const FieldSource *srcs, size_t n, std::vector<std::string> &out) {
+  auto resolve_level = [&](std::span<const FieldSource> srcs, std::vector<std::string> &out) {
+    const size_t n = srcs.size();
     out.assign(n, {});
     for (size_t i = 0; i < n; ++i) {
       std::string_view s = srcs[i].source;
@@ -135,6 +240,6 @@ void Feature::Metadata::init_from_compile_time() {
       }
     }
   };
-  resolve_level(L0_FIELD_SOURCE, std::size(L0_FIELD_SOURCE), deps[0]);
-  resolve_level(L1_FIELD_SOURCE, std::size(L1_FIELD_SOURCE), deps[1]);
+  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+    resolve_level((*tm.sources)[lvl], deps[lvl]);
 }

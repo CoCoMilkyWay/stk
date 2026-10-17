@@ -2,7 +2,10 @@
 #include "gui/task_features/services/ComputeService.hpp"
 #include "features/Backend/FeatureRead.hpp"
 #include "features/Backend/FeatureStore.hpp"
+#include "features/Method/Fundamental.hpp"
+#include "features/Operator/All/TS/Label/LabelBar.hpp"
 #include "features/Operator/Pool/TS/Label/LabelReturn.hpp"
+#include "fundamental/Store.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
@@ -20,6 +23,7 @@
 namespace GUI::Features {
 
 static_assert(ComputeConfig::kMinPoolSlots == static_cast<int>(LabelReturn::MIN_POOL_SLOTS), "ComputeConfig::kMinPoolSlots 与 LabelReturn::MIN_POOL_SLOTS 不符");
+static_assert(ComputeConfig::kMinPoolSlots == static_cast<int>(LabelBar::MIN_POOL_SLOTS), "ComputeConfig::kMinPoolSlots 与 LabelBar::MIN_POOL_SLOTS 不符");
 
 ComputeService::ComputeService(SharedData &data)
     : data_(data) {
@@ -33,6 +37,10 @@ void ComputeService::Request(ComputeConfig config) {
 }
 
 bool ComputeService::run(ComputeConfig &config) {
+  return config.tier == TierId::Pool ? run_pool(config) : run_all(config);
+}
+
+bool ComputeService::run_pool(ComputeConfig &config) {
   // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
   const StageLayout L = StageLayout::make(misc::Affinity::physical_cores());
 
@@ -75,7 +83,7 @@ bool ComputeService::run(ComputeConfig &config) {
 
   // Phase 2 前置: 动态池逐日名单 (与 universe_axis 同一文件: 并集 = 子轴, 逐日成员位 → Meta cs_valid).
   // 回测区间每一天都必须出过名单, 否则是名单没跑到这段 —— 启动即死, 不要静默算出半截 cs_valid.
-  data_.universe_pool = (data_.config.universe == "all") ? universe::Pool::all() : universe::Pool::load(data_.config.UniversePath());
+  data_.universe_pool = universe::Pool::load(data_.config.UniversePath());
   assert(std::all_of(backtest_dates.begin(), backtest_dates.end(), [&](misc::Ymd d) { return data_.universe_pool.has_date(d); }) &&
          "回测日不在动态池名单里: 重跑 py/universe/<name>.py 覆盖到 end_date");
 
@@ -131,7 +139,7 @@ bool ComputeService::run(ComputeConfig &config) {
   FeatureRead::set_dir_stale(feature_dir, false);
 
   // Initialize global feature store
-  GlobalFeatureStore feature_store(
+  PoolFeatureStore feature_store(
       num_assets, uni.hash,
       feature_dir, static_cast<size_t>(config.pool_slots));
   assert(feature_store.query_slots() >= LabelReturn::MIN_POOL_SLOTS && "内存上限把池砍到 LabelReturn::MIN_POOL_SLOTS 之下, 会死锁");
@@ -215,6 +223,106 @@ bool ComputeService::run(ComputeConfig &config) {
             << std::endl;
 
   // Disable High Performance Mode: GUI resumes
+  data_.DisableHighPerformanceMode();
+  std::cout << "[High Performance Mode] Disabled - GUI full-refresh\n"
+            << std::endl;
+  return completed;
+}
+
+// All 档 (bar1m + 基本面, 全轴): 与 Pool 同一张量池 / 截面 / 落盘骨架, 时序换成 bar_worker (ForkJoin 沿 A).
+// 核布局沿用 StageLayout: TS 物理核的全部逻辑 CPU 给时序 ForkJoin, CS 独占一核 (串行逐分钟), IO + bar1m 解码共一核.
+bool ComputeService::run_all(ComputeConfig &config) {
+  const StageLayout L = StageLayout::make(misc::Affinity::physical_cores());
+  const StageLayout::Stage s_ts = L.stage(ComputeStage::TS), s_cs = L.stage(ComputeStage::CS), s_io = L.stage(ComputeStage::IO);
+
+  data_.EnableHighPerformanceMode();
+
+  // 日期轴 = 交易日 [PIPELINE_START_DATE, end_date]: 全局档整段算, 不随回测窗口收窄
+  std::vector<misc::Ymd> dates;
+  for (const CalendarDay &day : data_.assetinfo.get_stock_days())
+    if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data_.config.end_date)
+      dates.push_back(day.date);
+  assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()) && "All 档日期轴为空 / 交易日历非升序");
+
+  // A 轴 = 全轴前缀 (读端 analysis::read_scope 同一推导: full_axis(items.size()))
+  const size_t num_assets = data_.asset.items.size();
+  const UniverseAxis uni = full_axis(num_assets);
+
+  std::cout << "\n=== Phase 2: Feature Computation (All) ===\n"
+            << L.summary() << "\n"
+            << "Assets: " << num_assets
+            << " | Pool slots: " << config.pool_slots
+            << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")\n"
+            << std::endl;
+  begin(Phase::Running, dates.size());
+
+  // 日频 PIT 基本面 (全轴码表 × All 日期轴); 与 Pool 档的 data_.fund_pool 分开, 不互相覆盖
+  fund::Pool fund_pool;
+  {
+    std::vector<std::string> codes(num_assets);
+    for (size_t a = 0; a < num_assets; ++a)
+      codes[a] = asset_axis().code(a);
+    fund_pool.build(codes, dates);
+  }
+  const fundamental::Catalog catalog;
+
+  const std::string feature_dir = data_.config.FeatureAllDir();
+  FeatureRead::wipe_dir(feature_dir);
+  FeatureRead::set_dir_stale(feature_dir, false);
+
+  AllFeatureStore feature_store(num_assets, uni.hash, feature_dir, static_cast<size_t>(config.pool_slots));
+  assert(feature_store.query_slots() >= LabelBar::MIN_POOL_SLOTS && "内存上限把池砍到 LabelBar::MIN_POOL_SLOTS 之下, 会死锁");
+
+  namespace fs = std::filesystem;
+  Logger::close();
+  fs::path log_path(data_.config.log_dir);
+  if (fs::exists(log_path))
+    fs::remove_all(log_path);
+  fs::create_directories(log_path);
+  Logger::init(data_.config.log_dir);
+
+  std::vector<int> ts_cpus(static_cast<size_t>(s_ts.threads));
+  for (int i = 0; i < s_ts.threads; ++i)
+    ts_cpus[static_cast<size_t>(i)] = static_cast<int>(L.cpus_of(s_ts, i).front());
+  const std::vector<unsigned int> cs_cpus = L.cpus_of(s_cs, 0), io_cpus = L.cpus_of(s_io, 0);
+
+  ComputeStats stats(0); // cs / io 槽 (All 无仪表盘)
+  auto pinned = [](const std::vector<unsigned int> &cpus) {
+    if (misc::Affinity::supported()) {
+      const bool ok = misc::Affinity::pin_to_cores(cpus);
+      assert(ok && "worker pin 失败");
+      (void)ok;
+    }
+  };
+  std::vector<std::future<void>> workers;
+  workers.push_back(std::async(std::launch::async, [&] {
+    pinned(cs_cpus);
+    cs_loop<all::Tier>(s_cs.first_worker, feature_store, dates, cancel_, stats.cs);
+  }));
+  workers.push_back(std::async(std::launch::async, [&] {
+    pinned(io_cpus);
+    io_loop<all::Tier>(s_io.first_worker, feature_store, dates, cancel_, stats.io);
+  }));
+  workers.push_back(std::async(std::launch::async, [&] {
+    bar_worker({dates, fund_pool, catalog, feature_store, ts_cpus, static_cast<int>(io_cpus.front()), cancel_});
+  }));
+
+  auto mirror = [&]() { publish(feature_store.query_io_done() - done.load(std::memory_order_relaxed)); };
+  bool announced = false;
+  for (auto &worker : workers)
+    while (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+      mirror();
+      if (!announced && cancel_.load(std::memory_order_relaxed)) {
+        announced = true;
+        std::cout << "[Compute] Cancelling..." << std::endl;
+      }
+    }
+  mirror();
+
+  const bool completed = !cancel_.load(std::memory_order_relaxed);
+  std::cout << "\n=== Feature Computation (All) " << (completed ? "Complete" : "Cancelled") << " ===\n"
+            << std::endl;
+
   data_.DisableHighPerformanceMode();
   std::cout << "[High Performance Mode] Disabled - GUI full-refresh\n"
             << std::endl;

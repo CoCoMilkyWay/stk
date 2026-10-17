@@ -37,9 +37,9 @@ struct FeatureMetadata {
 // 的元数据 TU; 本头保持稳定, 增删改特征不重编 GUI/shared 消费者, 只重编 FeatureMeta.cpp)
 // ============================================================================
 namespace feature_meta {
-std::span<const FeatureMetadata> features(size_t level); // 该层字段表 (行序 = 列序)
-std::span<const char *const> categories_l1();            // Operator/{TS,CS}/<分类> 目录名 (排序)
-std::span<const char *const> categories_l2();            // 字段表二级分类 token (排序)
+std::span<const FeatureMetadata> features(TierId tier, size_t level); // 该档该层字段表 (行序 = 列序; 档缺的层为空)
+std::span<const char *const> categories_l1(TierId tier);              // Operator/<Tier>/{TS,CS}/<分类> 目录名 (排序)
+std::span<const char *const> categories_l2(TierId tier);              // 字段表二级分类 token (排序)
 } // namespace feature_meta
 
 // ts:: / cs:: 归一化枚举的 GUI 适配 (与 FeaturesDefine 的 to_string / *_ALL 同形, 供 TabFeature 过滤下拉 / 两列显示)
@@ -67,21 +67,23 @@ struct Feature {
   // ==========================================================================
 
   struct Metadata {
-    std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1)
+    TierId tier = TierId::Pool;
+    std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (0=L0, 1=L1; 档缺的层为空)
     std::vector<std::string> deps[LEVEL_COUNT];         // [level][i] = 该特征直接依赖的字段 code (分号分隔), 与 features 平行
-    void init_from_compile_time();                      // Copy from constexpr arrays + resolve deps
+    void init_from_compile_time(TierId t);              // Copy from constexpr arrays + resolve deps
 
     // 字段 code → 该层列下标; 字段表里找不到 = 字段表与消费方脱节, assert
     size_t col_of(size_t level, const char *code) const;
   };
-  Metadata metadata;
+  Metadata metadata[TIER_COUNT]; // [tier]
 
   // ==========================================================================
   // User Selection State
   // ==========================================================================
 
   struct Selection {
-    int selected_level = 1; // 0=L0, 1=L1 (GUI 只在这两层选特征, 默认 L1)
+    TierId tier = TierId::Pool; // 当前浏览的档 (TabFeature 档选择; 分析页按它读对应特征库)
+    int selected_level = 1;     // 0=L0, 1=L1 (GUI 只在这两层选特征, 默认 L1)
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;
@@ -106,6 +108,9 @@ struct Feature {
 
   // Constructor: Initialize metadata from compile-time arrays
   Feature();
+
+  const Metadata &meta(TierId t) const { return metadata[static_cast<size_t>(t)]; }
+  const Metadata &meta() const { return meta(selection.tier); } // 当前档
 
   void clear();
 };

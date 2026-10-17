@@ -58,9 +58,10 @@
 //
 
 // ============================================================================
-// 特征定义: 算子文件自带节点实例 + 落盘列 (Operator/{TS,CS}/**/*.hpp 末尾), 没有中心表
+// 特征定义: 算子文件自带节点实例 + 落盘列 (Operator/<Tier>/{TS,CS}/**/*.hpp 末尾), 没有中心表
 // ============================================================================
-// 时序算子文件 (Operator/TS/<类别>/<Op>.hpp) = 数学 (class) + 文件末尾两种宏 (CMake 扫描汇总, C++ 里不直接展开):
+// 时序算子文件 (Operator/<Tier>/TS/<类别>/<Op>.hpp) = 数学 (class) + 文件末尾两种宏 (CMake 扫描汇总, C++ 里不直接展开):
+//   两档都要的算子: class 放 Operator/Common/<类别>/<Op>.hpp, 各档文件 include 它后只写本档的 NODE_ / FIELDS_.
 //
 //   #define NODE_<Name>(N)  N(<Name>, (OpType), (inputs...), trigger[, flush_trigger])
 //     Name     节点名 (DAG 成员名); 同一算子可有多个实例 (不同模板参数), 目前每算子一个节点, 同族列在节点内用口区分
@@ -87,14 +88,14 @@
 //       LABEL                      标签回填 (CoreSequential 手工写). LB; ALL (全行写, 不产 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreSequential 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
-//     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Operator/TS/Meta/Meta.hpp,
-//     LABEL → Operator/TS/Label/LabelReturn.hpp, CS → Operator/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
-//     推荐频谱 (psd) 按层给 (ALL_LEVELS), 不逐列写.
+//     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Operator/<Tier>/TS/Meta/Meta.hpp,
+//     LABEL → Operator/<Tier>/TS/Label/*.hpp, CS → Operator/<Tier>/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
+//     推荐频谱 (psd) 按层给 (TIER_LEVELS_*), 不逐列写.
 //
-// CMake (projects/main/CMakeLists.txt) 扫描 features/Operator/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
-// 分层拓扑排序, 生成 build/generated/features/NodesGenerated.hpp: 全部 #include + NODES(N) +
-// L0_FIELDS(X) / L1_FIELDS(X). 基建 (ComputeGraph / CoreSequential / CoreCrosssection /
-// FeatureStore / Feature.hpp GUI 元数据) 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
+// CMake (projects/main/CMakeLists.txt) 逐档扫描 features/Operator/<Tier>/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
+// 分层拓扑排序, 生成 build/generated/features/<Tier>/NodesGenerated.hpp: 本档全部 #include + <Tier>_NODES(N) +
+// <Tier>_L0_FIELDS(X) / <Tier>_L1_FIELDS(X). 基建 (ComputeGraph / Core* / FeatureStore / Feature.hpp GUI 元数据)
+// 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
 //
 // 加特征 = 改 (或新建) 一个算子文件. 删特征 = 删几行 / 删文件. 其他地方不动.
 // 顺序保证: DAG 按拓扑序声明成一条链, 节点只看得到排在自己前面的节点 → 引用了排后面的节点 = 编译错误.
@@ -257,14 +258,27 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 #define SRC_DISPATCH_II(prefix, code, kind, ...) prefix##_##kind(code __VA_OPT__(, ) __VA_ARGS__)
 
 // ----------------------------------------------------------------------------
-// 落盘层注册: X(name, index, fields_macro, rows, psd)
+// 特征档 (tier) = 数据源. 一档一套节点表 / 字段表 / 特征库, 两档之间特征层互不读取 (拼接只在因子层):
+//   Pool  Operator/Pool/   L2 逐笔 → LOB 还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
+//   All   Operator/All/    分钟 K (bar1m, 非 LOB 还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
+//   两档 TS / CS 列名全局唯一 (FeatureMeta.cpp 断言; 因子层按名拼接), META / LB 是各档基建列, 同名同语义.
+//
+// 落盘层注册 (每档一张): X(name, index, fields_macro, rows, psd)
+//   index = 语义层号 (0 = L0 秒, 1 = L1 分钟), 全档同一套; 档可以缺层 (All 无秒频源, 只有 L1)
 //   L0    秒频 (T = L0_ROWS). 预留层: 目前只有 ts_valid / cs_valid 两列, 是"暂时", 不是"无用" ——
 //         秒频算力贵 (每笔触发, 每列行数是 L1 的 60 倍), 进 L0 的特征要精挑细选后才加.
-//         不要删 L0, 不要把层系统退化成只有 L1, 也不要因 L0 暂无特征就删它的写 / CS 节拍 / 落盘 / 读路径.
+//         不要删 Pool 的 L0, 不要把层系统退化成只有 L1, 也不要因 L0 暂无特征就删它的写 / CS 节拍 / 落盘 / 读路径.
 //   L1    分钟频 (T = L1_ROWS)
 //   每层每天一个日文件, 内带列目录, 按列选读 (见 FeatureDay.hpp; 列是否沿 T 轴 XOR 差分由写端逐列按数据定)
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
 // ----------------------------------------------------------------------------
-#define ALL_LEVELS(X)                       \
-  X(L0, 0, L0_FIELDS, L0_ROWS, "100/00/00") \
-  X(L1, 1, L1_FIELDS, L1_ROWS, "00/100/00")
+#define TIER_LEVELS_Pool(X)                      \
+  X(L0, 0, Pool_L0_FIELDS, L0_ROWS, "100/00/00") \
+  X(L1, 1, Pool_L1_FIELDS, L1_ROWS, "00/100/00")
+#define TIER_LEVELS_All(X) \
+  X(L1, 1, All_L1_FIELDS, L1_ROWS, "00/100/00")
+
+// 档注册: X(Tier, ns) —— Tier = CMake 生成宏前缀 / TierId 枚举名, ns = C++ 命名空间
+#define ALL_TIERS(X) \
+  X(Pool, pool)      \
+  X(All, all)

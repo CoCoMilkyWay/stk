@@ -13,8 +13,7 @@
 //                        TS 特征对轴上所有标的在区间内全程计算, 区间内日后进池不用补历史
 //     in_pool(code, D)   第 D 日成员位 → CoreSequential::begin_day → MetaTracker::begin_day → cs_valid 整日常量
 //   PIT: 第 D 日名单由 ≤ D−1 数据定 (python 侧保证), 对本类只是 (资产, 日) 的 bool.
-//
-//   "all" (无名单文件): 全 A 轴恒在池, 不读文件 —— 旧语义.
+//   全市场 (无名单) 不是票池: 那是全局档 (All, 全 A 轴, 见 FeatureLevels.hpp TierId).
 #include "misc/date.hpp"
 
 #include <cstdint>
@@ -30,10 +29,7 @@ class Pool {
 public:
   // 读 json 并回放. 文件缺失 / 格式不对 / add 已在池 / del 不在池 / 某日池空 / 日期键非升序 → assert
   static Pool load(const std::filesystem::path &json_path);
-  // "all": 恒在池, codes(...)/dates() 不得调用
-  static Pool all();
 
-  bool is_all() const { return all_; }
   // [first, last] (闭区间) 内进过池的代码并集, 升序去重; 区间内没有任何名单日 / 并集为空 → assert
   std::vector<std::string> codes(misc::Ymd first, misc::Ymd last) const;
   const std::vector<misc::Ymd> &dates() const; // 出过名单的日, 升序
@@ -43,7 +39,6 @@ public:
   bool in_pool(std::string_view code, misc::Ymd d) const;
 
 private:
-  bool all_ = false;
   std::vector<misc::Ymd> dates_;
   std::vector<std::string> codes_;
   std::unordered_map<std::string, uint32_t> code_idx_;

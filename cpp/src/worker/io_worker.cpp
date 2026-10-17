@@ -10,17 +10,19 @@
 #include <string>
 
 void io_worker(WorkerCtx ctx) {
-  const int worker_id = ctx.worker_id;
-  GlobalFeatureStore &store = ctx.store;
   // 本核发布槽 (单写者): work = 已落盘字节, idle_ms = 累计等截面 close 毫秒; 天数前沿 = store.query_io_done()
-  ComputeStats::Core &stat = ctx.stats.io;
+  io_loop<pool::Tier>(ctx.worker_id, ctx.store, ctx.dates, ctx.cancel, ctx.stats.io);
+}
+
+template <class T>
+void io_loop(int worker_id, FeatureStore<T> &store, std::span<const misc::Ymd> dates, const std::atomic<bool> &cancel, ComputeStats::Core &stat) {
   size_t cumulative_bytes = 0;
 
   TraceNS("IOWorker", 5);
   TraceValue(worker_id);
   TraceThread(("io_worker_" + std::to_string(worker_id)).c_str());
 
-  const size_t total_dates = ctx.dates.size();
+  const size_t total_dates = dates.size();
   size_t flush_count = 0;
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to flush");
@@ -33,11 +35,11 @@ void io_worker(WorkerCtx ctx) {
     TraceN("FlushLoop");
     TraceValue(date_idx);
 
-    GlobalFeatureStore::Day day;
+    typename FeatureStore<T>::Day day;
     {
       TraceN("WaitForData");
       TraceColor(C_Orange);
-      day = wait_open(ctx, stat, [&] { return store.io_try_open(date_idx); });
+      day = wait_open(cancel, stat, [&] { return store.io_try_open(date_idx); });
     }
     if (!day)
       break;
@@ -47,10 +49,11 @@ void io_worker(WorkerCtx ctx) {
     {
       TraceN("FlushDay");
       TraceColor(C_Red);
-      const std::string day_dir = feature_day_dir(store.query_dir(), ctx.dates[date_idx]);
+      const std::string day_dir = feature_day_dir(store.query_dir(), dates[date_idx]);
       std::filesystem::create_directories(day_dir);
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
-        flushed_bytes += FeatureDay::write(feature_file(day_dir, lvl), lvl, day.slot->data[lvl], day.A, store.query_axis_hash(), scratch);
+        if (T::has(lvl))
+          flushed_bytes += FeatureDay::write(feature_file(day_dir, lvl), T::LEVELS[lvl], day.slot->data[lvl], day.A, store.query_axis_hash(), scratch);
       store.io_close(day);
     }
 
@@ -67,3 +70,6 @@ void io_worker(WorkerCtx ctx) {
   else
     Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates flushed");
 }
+
+template void io_loop<pool::Tier>(int, PoolFeatureStore &, std::span<const misc::Ymd>, const std::atomic<bool> &, ComputeStats::Core &);
+template void io_loop<all::Tier>(int, AllFeatureStore &, std::span<const misc::Ymd>, const std::atomic<bool> &, ComputeStats::Core &);

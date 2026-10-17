@@ -44,7 +44,7 @@ struct LibRead {
 
   explicit LibRead(SharedData &data)
       : uni(universe_axis(data.config, data.asset.items.size())),
-        reader(data.config.FeatureUniverseDir(), uni.size(), uni.hash) {}
+        reader(TierId::Pool, data.config.FeatureUniverseDir(), uni.size(), uni.hash) {}
 };
 
 // 背槽待 GUI ack (帧首翻面, 无 cv 信号): 限时睡轮询; false = 等待中被新请求 / Stop 打断
@@ -131,9 +131,15 @@ public:
 
 private:
   struct Res {
-    LibRead lib;
-    FeatureRead::DayColumns cols; // 资产筛选状态列
-    explicit Res(SharedData &data) : lib(data) { cols.preallocate(lib.uni.size(), 1, UNIVERSE_COL_COUNT); }
+    LibRead lib;                  // 只用其 universe 子轴 (候选范围)
+    UniverseAxis all_uni;         // All 档 A 轴 (全轴)
+    FeatureRead all_reader;       // 状态列在 All 档 (Fund 只在全局库落盘)
+    FeatureRead::DayColumns cols; // 资产筛选状态列 (全轴)
+    explicit Res(SharedData &data)
+        : lib(data), all_uni(full_axis(data.asset.items.size())),
+          all_reader(TierId::All, data.config.FeatureAllDir(), all_uni.size(), all_uni.hash) {
+      cols.preallocate(all_uni.size(), 1, UNIVERSE_COL_COUNT);
+    }
   };
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.universe.slots; }
@@ -214,7 +220,7 @@ void scan_dates(const std::string &dir, std::vector<misc::Ymd> &out) {
           continue;
         const misc::Ymd date = misc::parse_ymd(year + month + day_entry.path().filename().string());
         assert(date && "特征目录 YYYY/MM/DD 非日期");
-        if (FeatureRead::has_date(dir, date))
+        if (FeatureRead::has_date(TierId::Pool, dir, date))
           out.push_back(date);
       }
     }
@@ -277,10 +283,10 @@ bool OrderFlowService::KlineWorker::step(size_t d) {
   LibRead &lib = res_->lib;
   const FeatureRead::DayColumns &dc = res_->cols;
 
-  // 选列: [open, high, low, close, ts_valid, 特征...] — L1 日文件, 每日只读 n 列的载荷
+  // 选列: [lob_open, lob_high, lob_low, lob_close, ts_valid, 特征...] — L1 日文件, 每日只读 n 列的载荷
   auto &cols = lib.columns;
-  cols.assign({L1_Field::open, L1_Field::high, L1_Field::low,
-               L1_Field::close, L1_Field::ts_valid});
+  cols.assign({pool::L1_Field::lob_open, pool::L1_Field::lob_high, pool::L1_Field::lob_low,
+               pool::L1_Field::lob_close, pool::L1_Field::ts_valid});
   for (int f : cur_.feats)
     cols.push_back(static_cast<size_t>(f));
   lib.reader.load_day_columns(k.dates[d], cols, res_->cols);
@@ -349,51 +355,53 @@ bool OrderFlowService::UniverseWorker::run(UniverseReq &req) {
     return false;
   TraceN("OF_UniverseBuild");
   LibRead &lib = res_->lib;
-  lib.reader.revive(); // 新请求 = 重读库 (重算后新库已落地), 判废解除
+  FeatureRead &reader = res_->all_reader;
+  reader.revive(); // 新请求 = 重读库 (重算后新库已落地), 判废解除
 
   OrderFlow::Universe::Slot &slot = pp.back();
   slot.clear();
   slot.gen = req.gen;
   slot.date = req.date;
 
-  // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 特征列 = 子轴,
-  // 子轴外的资产恒 has_data = false (自然被候选过滤掉)
+  // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 状态列 = All 档全轴 (下标即全局),
+  // 只填 universe 子轴内的资产, 子轴外恒 has_data = false (自然被候选过滤掉)
   slot.meta.assign(data_.asset.items.size(), OrderFlow::Universe::Meta{});
 
   auto &cols = lib.columns;
-  cols.assign({static_cast<size_t>(L1_Field::ts_valid), static_cast<size_t>(L1_Field::st_level),
-               static_cast<size_t>(L1_Field::list_age), static_cast<size_t>(L1_Field::delist_age),
-               static_cast<size_t>(L1_Field::ind_l1)});
+  cols.assign({static_cast<size_t>(all::L1_Field::ts_valid), static_cast<size_t>(all::L1_Field::st_level),
+               static_cast<size_t>(all::L1_Field::list_age), static_cast<size_t>(all::L1_Field::delist_age),
+               static_cast<size_t>(all::L1_Field::ind_l1)});
   assert(cols.size() == UNIVERSE_COL_COUNT);
-  lib.reader.load_day_columns(req.date, cols, res_->cols);
+  reader.load_day_columns(req.date, cols, res_->cols);
 
-  // 时间外层 / 资产内层 (布局 [n][T][A_sub]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
+  // 时间外层 / 资产内层 (布局 [n][T][A]: 内层连续); 每资产只取首个有效分钟, 全部填完即止
   const FeatureRead::DayColumns &c = res_->cols;
   const size_t A = lib.uni.size();
-  assert(A == c.A);
+  assert(res_->all_uni.size() == c.A);
   size_t remaining = A;
   for (size_t m = 0; m < level_valid_rows(1) && remaining > 0; ++m) {
     for (size_t a = 0; a < A; ++a) {
-      OrderFlow::Universe::Meta &meta = slot.meta[lib.uni.global(a)];
+      const size_t g = lib.uni.global(a);
+      OrderFlow::Universe::Meta &meta = slot.meta[g];
       if (meta.has_data) // 已取到当日状态 (日频广播, 后续分钟同值)
         continue;
-      if (!fmeta::data_valid(static_cast<float>(c.get(m, UNI_META, a))))
+      if (!fmeta::data_valid(static_cast<float>(c.get(m, UNI_META, g))))
         continue;
 
       meta.has_data = true;
       --remaining;
 
-      const float rw = static_cast<float>(c.get(m, UNI_RISK_WARN, a));
+      const float rw = static_cast<float>(c.get(m, UNI_RISK_WARN, g));
       meta.risk_warn = (rw >= 0.0f && rw <= 3.0f) ? static_cast<uint8_t>(rw + 0.5f) : 0;
 
-      const float ind = static_cast<float>(c.get(m, UNI_INDUSTRY, a));
+      const float ind = static_cast<float>(c.get(m, UNI_INDUSTRY, g));
       meta.industry_l1 = (ind >= 0.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT))
                              ? static_cast<uint8_t>(ind + 0.5f)
                              : 0;
 
       // list_age/delist_age: 非 NaN = 已上市/已退市 (>= 0 日历日), NaN = 未发生
-      const float lage = static_cast<float>(c.get(m, UNI_LIST_AGE, a));
-      const float dage = static_cast<float>(c.get(m, UNI_DELIST_AGE, a));
+      const float lage = static_cast<float>(c.get(m, UNI_LIST_AGE, g));
+      const float dage = static_cast<float>(c.get(m, UNI_DELIST_AGE, g));
       meta.delisted = !std::isnan(dage);
       meta.listed = !std::isnan(lage) && !meta.delisted;
     }
@@ -537,7 +545,7 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
   if (depth_sub < res.lib.uni.size()) {
     TraceN("OF_DepthVwap");
     auto &cols = res.lib.columns;
-    cols.assign({static_cast<size_t>(L1_Field::ts_valid), static_cast<size_t>(L1_Field::vwap)});
+    cols.assign({static_cast<size_t>(pool::L1_Field::ts_valid), static_cast<size_t>(pool::L1_Field::vwap)});
     res.lib.reader.load_day_columns(req.date, cols, res.l1_cols);
     auto &px = slot.plot.vwap_x;
     auto &py = slot.plot.vwap_y;
@@ -558,8 +566,8 @@ bool OrderFlowService::DepthWorker::run(DepthReq &req) {
   if (!req.feats.empty() && depth_sub < res.lib.uni.size()) {
     TraceN("OF_DepthFeats");
     assert(req.feat_level == 0 || req.feat_level == 1);
-    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(L0_Field::ts_valid)
-                                                : static_cast<size_t>(L1_Field::ts_valid);
+    const size_t meta_col = req.feat_level == 0 ? static_cast<size_t>(pool::L0_Field::ts_valid)
+                                                : static_cast<size_t>(pool::L1_Field::ts_valid);
     auto &cols = res.lib.columns;
     cols.assign({meta_col});
     for (int f : req.feats)

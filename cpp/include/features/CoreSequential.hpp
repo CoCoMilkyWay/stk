@@ -19,7 +19,7 @@
 //   L1 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
 //   缺数据日 = 零事件日, 同一路径 (empty_day). 本类不读任何特征值, 不特判任何节点.
 //   ts_valid 只标"本分钟有成交", 标签分钟档 exit 仍只在有成交的分钟推进 (无成交无法平仓).
-//   节点调度全部由 NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
+//   Pool 档 (逐笔 → LOB 源). 节点调度全部由 Pool_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的逐笔流 + 日频 PIT
 //   (fund::Pool), 不读其他资产 / 全局状态 / CS 结果. 张量行 (t, f, a) 因此只由
@@ -33,7 +33,7 @@ class CoreSequential {
   inline auto label_writer() {
     return [this](size_t col, size_t n, size_t label_l1, const float *values, size_t days_ago) { write_label(col, n, label_l1, values, days_ago); };
   }
-  inline auto day_releaser(GlobalFeatureStore &store) {
+  inline auto day_releaser(PoolFeatureStore &store) {
     return [this, &store](size_t days_ago) { store.ts_close(day_at(days_ago)); };
   }
 
@@ -65,18 +65,18 @@ public:
   // 本类的全部写回都是纯指针算术 —— 热路径不再携带 date / worker_id.
   // 句柄进日环 (与 LabelReturn 的悬挂日环同步前进): 开盘档标签 (T+N) 要回填旧日张量,
   // 旧日句柄持到该日标签结清才 ts_close (见 end_day / LabelReturn 文件头).
-  void begin_day(misc::Ymd date, const GlobalFeatureStore::Day &day) {
+  void begin_day(misc::Ymd date, const PoolFeatureStore::Day &day) {
     push_day(day);
     meta_.reset();
     // 当日池成员位: 日频 PIT 名单 (universe::Pool, 盘后 python 产出, 第 D 日由 ≤ D−1 数据定), 与 Fund 吃 fund_pool 同形
     meta_.begin_day(universe_pool_.in_pool(code_ex_, date));
     // cs_valid: 当日池成员位, 整日常量, 与事件无关 → 盘前一次写满两层全部行 (池外不写, slot 清零即 0).
-    // 逐行存而非每日一个标量: CS 在 t 只读张量第 t 行 (见 CoreCrosssection.hpp 一致性锚); L0 也写 (预留层, 见 FeaturesDefine.hpp ALL_LEVELS)
+    // 逐行存而非每日一个标量: CS 在 t 只读张量第 t 行 (见 CoreCrosssection.hpp 一致性锚); L0 也写 (预留层, 见 FeaturesDefine.hpp TIER_LEVELS_Pool)
     if (const float cs = meta_.cs(); cs != 0.0f) {
-      for (size_t t = 0; t < LEVELS[0].rows; ++t)
-        fstore::ts_write<0>(day_, t, L0_Field::cs_valid, asset_id_, cs);
-      for (size_t t = 0; t < LEVELS[1].rows; ++t)
-        fstore::ts_write<1>(day_, t, L1_Field::cs_valid, asset_id_, cs);
+      for (size_t t = 0; t < pool::LEVELS[0].rows; ++t)
+        fstore::ts_write<0>(day_, t, pool::L0_Field::cs_valid, asset_id_, cs);
+      for (size_t t = 0; t < pool::LEVELS[1].rows; ++t)
+        fstore::ts_write<1>(day_, t, pool::L1_Field::cs_valid, asset_id_, cs);
     }
     dag_.at_day_start(date);
     tick2min_.begin_day();
@@ -86,7 +86,7 @@ public:
   // 收盘: 末分钟 (收盘集合竞价 → L1 254) 没有后续 tick 触发结算, 这里 advance 到收盘 (补齐到 254 含);
   // 标签: 分钟档尾部 / 收盘档 / 到期的开盘档 (见 LabelReturn::day_end), 结清的日 ts_close.
   // 末尾归零重采样器与分钟缓冲: begin_day / end_day 成对即一日完整生命周期.
-  void end_day(GlobalFeatureStore &store) {
+  void end_day(PoolFeatureStore &store) {
     advance(TRADE_MINUTES_PER_DAY);
     dag_.LabelReturn.day_end(label_writer(), day_releaser(store));
     dag_.at_day_end();
@@ -96,13 +96,13 @@ public:
 
   // 无数据日 (缺 binary) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟 onMinute / 标签日历),
   // 各节点按自身的无成交约定给值 —— 本类不认识"缺数据"这个概念, 不特判任何特征.
-  void empty_day(misc::Ymd date, const GlobalFeatureStore::Day &day, GlobalFeatureStore &store) {
+  void empty_day(misc::Ymd date, const PoolFeatureStore::Day &day, PoolFeatureStore &store) {
     begin_day(date, day);
     end_day(store);
   }
 
   // 回测区间末 (最后一日 end_day 之后): 悬挂日全部按最后盘口结算并归还句柄
-  void finish_all(GlobalFeatureStore &store) {
+  void finish_all(PoolFeatureStore &store) {
     dag_.LabelReturn.finish_all(label_writer(), day_releaser(store));
   }
 
@@ -173,7 +173,7 @@ private:
       meta_.on_tick(t, depth_updated, dag_.MicroPrice.last(),
                     depth_updated ? dag_.Depth.bid_price[0].back() : 0.0f,
                     depth_updated ? dag_.Depth.ask_price[0].back() : 0.0f, lob.price);
-      fstore::ts_write<0>(day_, t, L0_Field::ts_valid, asset_id_, meta_.l0());
+      fstore::ts_write<0>(day_, t, pool::L0_Field::ts_valid, asset_id_, meta_.l0());
     } else {
       TraceN("TS_Minute");
       const auto &md = dag_.minute_data;
@@ -182,7 +182,7 @@ private:
 
       dag_.run<Trigger::onMinute>();
       fstore::ts_write_row<1>(day_, t, asset_id_, dag_);
-      fstore::ts_write<1>(day_, t, L1_Field::ts_valid, asset_id_, meta_.l1(traded));
+      fstore::ts_write<1>(day_, t, pool::L1_Field::ts_valid, asset_id_, meta_.l1(traded));
       // 标签开盘价 (开盘档 exit): 只在有成交的分钟截 (09:25 撮合价 / 首个连续竞价 bar 首笔)
       if (traded)
         dag_.LabelReturn.minute_closed(t);
@@ -193,15 +193,15 @@ private:
   // days_[cur_] = 当日 (= day_), days_ago 天前的句柄 = days_[(cur_ − days_ago) mod PEND]; 与 LabelReturn::pend_ 下标同步
   static constexpr size_t kPendDays = LabelReturn::PEND_DAYS;
 
-  inline void push_day(const GlobalFeatureStore::Day &day) {
+  inline void push_day(const PoolFeatureStore::Day &day) {
     cur_ = (cur_ + 1) % kPendDays;
     days_[cur_] = day;
     day_ = day;
   }
 
-  inline const GlobalFeatureStore::Day &day_at(size_t days_ago) const {
+  inline const PoolFeatureStore::Day &day_at(size_t days_ago) const {
     assert(days_ago < kPendDays);
-    const GlobalFeatureStore::Day &d = days_[(cur_ + kPendDays - days_ago) % kPendDays];
+    const PoolFeatureStore::Day &d = days_[(cur_ + kPendDays - days_ago) % kPendDays];
     assert(d && "日句柄环: 该日尚未 begin_day");
     return d;
   }
@@ -209,26 +209,26 @@ private:
   // LB 块内偏移 col 起的 n 个连续列写到 days_ago 天前那日的 L1 行 label_l1 (hold 组 [long, short] / 冲击成本列)
   inline void write_label(size_t col, size_t n, size_t label_l1, const float *values, size_t days_ago) {
     assert(n >= 1 && col + n <= LabelReturn::L1_LABEL_COUNT);
-    const GlobalFeatureStore::Day &d = day_at(days_ago);
+    const PoolFeatureStore::Day &d = day_at(days_ago);
     for (size_t i = 0; i < n; ++i)
       fstore::ts_write<1>(d, label_l1, kL1LabelBase + col + i, asset_id_, values[i]);
   }
 
   // 标签列定位: 按类型 (LB) 在字段表里找, 不依赖列名; 列数 / 连续性与 LabelReturn 配置对账
-  static constexpr size_t kL1LabelBase = first_of_kind(L1_FIELD_INFO, FeatureDataType::LB);
-  static_assert(count_of_kind(L1_FIELD_INFO, FeatureDataType::LB) == LabelReturn::L1_LABEL_COUNT && kind_contiguous(L1_FIELD_INFO, FeatureDataType::LB),
+  static constexpr size_t kL1LabelBase = first_of_kind(pool::L1_FIELD_INFO, FeatureDataType::LB);
+  static_assert(count_of_kind(pool::L1_FIELD_INFO, FeatureDataType::LB) == LabelReturn::L1_LABEL_COUNT && kind_contiguous(pool::L1_FIELD_INFO, FeatureDataType::LB),
                 "L1 label columns must be HOLD_COUNT × GROUP_SIZE + COST_COUNT contiguous");
 
-  GlobalFeatureStore::Day day_{};                         // 本日写句柄 (= days_[cur_]), 热路径直接用
-  std::array<GlobalFeatureStore::Day, kPendDays> days_{}; // 日句柄环 (开盘档跨日回填 / 延迟 ts_close)
-  size_t cur_ = kPendDays - 1;                            // 首个 push_day 推到 0
+  PoolFeatureStore::Day day_{};                         // 本日写句柄 (= days_[cur_]), 热路径直接用
+  std::array<PoolFeatureStore::Day, kPendDays> days_{}; // 日句柄环 (开盘档跨日回填 / 延迟 ts_close)
+  size_t cur_ = kPendDays - 1;                          // 首个 push_day 推到 0
   size_t asset_id_;
   size_t core_id_;
   std::string code_ex_;                 // "CODE.EX" (universe::Pool 的键)
   const universe::Pool &universe_pool_; // 动态池逐日名单 (只读共享; begin_day 查 (code_ex_, date) → cs_valid)
 
   TickData tick_data_; // 本资产 L0 工作区 (dag_ 引用它, 须先于 dag_ 声明)
-  DAG dag_;
+  pool::DAG dag_;
   ResamplerTick2Min tick2min_;
 
   MetaTracker meta_; // ts_valid / cs_valid 基建列状态机 (编码/累积语义见 Meta.hpp; begin_day 重置 + 给当日池成员位)

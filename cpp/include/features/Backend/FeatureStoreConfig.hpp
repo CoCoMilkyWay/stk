@@ -1,10 +1,11 @@
 #pragma once
 
-#include "FeatureLevels.hpp" // 稳定层: feature_storage_t / FieldInfo / LevelInfo
+#include "FeatureLevels.hpp"                // 稳定层: feature_storage_t / FieldInfo / LevelInfo / TierId
+#include "features/All/FieldsGenerated.hpp" // CMake 从算子文件汇总 (宏文本, 不含算子 #include): All_NODES(N) / All_L1_FIELDS(X)
 #include "features/FeaturesDefine.hpp"
-#include "features/FieldsGenerated.hpp" // CMake 从算子文件汇总 (宏文本, 不含算子 #include): NODES(N) / L0_FIELDS(X) / L1_FIELDS(X)
-#include "features/Method/TS.hpp"       // OP 行 Tf (FieldInfo.ts_tf → 指纹; RowWriter 落盘套用)
-#include "features/TimeIndex.hpp"       // ALL_LEVELS 的 rows 参数 (L0_ROWS / L1_ROWS) 在此展开
+#include "features/Method/TS.hpp"            // OP 行 Tf (FieldInfo.ts_tf → 指纹; RowWriter 落盘套用)
+#include "features/Pool/FieldsGenerated.hpp" // 同上: Pool_NODES(N) / Pool_L0_FIELDS(X) / Pool_L1_FIELDS(X)
+#include "features/TimeIndex.hpp"            // TIER_LEVELS_* 的 rows 参数 (L0_ROWS / L1_ROWS) 在此展开
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -12,28 +13,32 @@
 #include <string_view>
 
 // ============================================================================
-// FEATURE STORE CONFIGURATION — 全部由字段表 (FIELDS_*, CMake 汇总) + ALL_LEVELS 编译期展开
+// FEATURE STORE CONFIGURATION — 全部由字段表 (FIELDS_*, CMake 汇总) + TIER_LEVELS_* 编译期展开, 每档一个命名空间
 // ============================================================================
 // 写端专用 (FeatureStore / Core* / FeatureMeta.cpp): 编译期表保住常量定址折叠.
-// 读端/GUI 走 FeatureLevels.hpp 的 level_info(lvl) (运行时), 不依赖本文件 ——
+// 读端/GUI 走 FeatureLevels.hpp 的 level_info(tier, lvl) (运行时), 不依赖本文件 ——
 // 增删改特征只重编写端 + FeatureMeta.cpp.
 //   布局: 每层平铺 [T][F][A], data[(t * F + f) * A + a]
-//   每层 <LVL> ∈ ALL_LEVELS 生成:
-//     <LVL>_FIELD_INFO[]     每列 {code, valid, kind, ts_tf} (有效性 / 类型均由 SRC 列推出)
-//     <LVL>_Field::<code>    列下标枚举
-//     <LVL>_FINGERPRINT      字段表指纹 (落文件头)
-//   汇总成 LEVELS[lvl] (LevelInfo), 编译期/运行时按层下标取 rows / field_count / fingerprint.
+//   每档 <tier> (pool / all) 的每层 <LVL> ∈ TIER_LEVELS_<Tier> 生成:
+//     <tier>::<LVL>_FIELD_INFO[]     每列 {code, valid, kind, ts_tf} (有效性 / 类型均由 SRC 列推出)
+//     <tier>::<LVL>_Field::<code>    列下标枚举
+//     <tier>::<LVL>_FINGERPRINT      字段表指纹 (落文件头)
+//   汇总成 <tier>::LEVELS[lvl] (LevelInfo, 按语义层号; 档缺的层 fields == nullptr), 编译期/运行时按层取 rows / field_count / fingerprint;
+//   <tier>::Tier = 写端基建 (FeatureStore / CoreCrosssection / fstore) 的档模板参数.
 //   字段格式: X(code, cat_l1, cat_l2, name_en, name_cn, desc, formula, SRC)
 // ============================================================================
 
 // ============================================================================
-// 节点 flush 域 (OP 列的层 / 有效性标志由此推出)
+// 节点 flush 域 (OP 列的层 / 有效性标志由此推出; SRC_VALID_OP 在档命名空间内按名查到本档的)
 // ============================================================================
-namespace node_flush {
 #define NODE_FLUSH_ONE(name, type, args, ...) constexpr Trigger name = NODE_FLUSH(__VA_ARGS__);
-NODES(NODE_FLUSH_ONE)
+namespace pool::node_flush {
+Pool_NODES(NODE_FLUSH_ONE)
+} // namespace pool::node_flush
+namespace all::node_flush {
+All_NODES(NODE_FLUSH_ONE)
+} // namespace all::node_flush
 #undef NODE_FLUSH_ONE
-} // namespace node_flush
 
 // ============================================================================
 // 字段: 每层一张 FieldInfo 表 + 下标枚举 (FieldInfo 结构体在 FeatureLevels.hpp)
@@ -66,13 +71,28 @@ constexpr bool kind_contiguous(const FieldInfo (&f)[N], FeatureDataType k) {
   return true;
 }
 
+// 每档展开一遍 (档命名空间内): GEN(name, num, fields, rows, psd) 逐层
+static_assert(TIER_COUNT == 2, "加档: 同步 FOR_EACH_TIER_LEVEL / FeatureMeta.cpp");
+#define FOR_EACH_TIER_LEVEL(GEN) \
+  namespace pool {               \
+  TIER_LEVELS_Pool(GEN)          \
+  }                              \
+  namespace all {                \
+  TIER_LEVELS_All(GEN)           \
+  }
+
 #define GENERATE_LEVEL_FIELDS(name, num, fields, rows, psd)                  \
   inline constexpr FieldInfo name##_FIELD_INFO[] = {fields(FIELD_INFO_ONE)}; \
   constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);        \
   namespace name##_Field {                                                   \
     enum : size_t { fields(FIELD_CODE_ONE) };                                \
   }
-ALL_LEVELS(GENERATE_LEVEL_FIELDS)
+FOR_EACH_TIER_LEVEL(GENERATE_LEVEL_FIELDS)
+
+// 档缺的层不许有列 (CMake 对每档都生成 L0/L1 两张表, 缺层的应为空)
+#define FIELD_COUNT_ONE(...) +1
+static_assert(0 All_L0_FIELDS(FIELD_COUNT_ONE) == 0, "All 档无秒频源 (只有 L1), 不许写 FIELDS_L0_");
+#undef FIELD_COUNT_ONE
 
 // ============================================================================
 // 每个字段的"来源" (GUI 特征依赖解析用)
@@ -97,7 +117,7 @@ struct FieldSource {
 #define FIELD_SOURCE_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src), SRC_DISPATCH(SRCPORT, code, src)},
 #define GENERATE_LEVEL_SOURCES(name, num, fields, rows, psd) \
   inline constexpr FieldSource name##_FIELD_SOURCE[] = {fields(FIELD_SOURCE_ONE)};
-ALL_LEVELS(GENERATE_LEVEL_SOURCES)
+FOR_EACH_TIER_LEVEL(GENERATE_LEVEL_SOURCES)
 
 // ============================================================================
 // 编译期一致性检查: 列所在层 == 来源允许的层
@@ -114,7 +134,7 @@ ALL_LEVELS(GENERATE_LEVEL_SOURCES)
     constexpr int kLevel = num;                            \
     fields(CHECK_FIELD_ONE)                                \
   }
-ALL_LEVELS(GENERATE_CHECK_LEVEL)
+FOR_EACH_TIER_LEVEL(GENERATE_CHECK_LEVEL)
 
 // ============================================================================
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
@@ -146,19 +166,46 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
 }
 #define GENERATE_FINGERPRINT(name, num, fields, rows, psd) \
   constexpr uint64_t name##_FINGERPRINT = table_fingerprint(name##_FIELD_INFO);
-ALL_LEVELS(GENERATE_FINGERPRINT)
+FOR_EACH_TIER_LEVEL(GENERATE_FINGERPRINT)
 
 // ============================================================================
-// 层表: LEVELS[lvl] — 编译期版本 (写端定址折叠; LevelInfo 结构体在 FeatureLevels.hpp)
-// 运行时入口 level_info(lvl) 在 FeatureMeta.cpp 定义, 指向本表.
+// 层表: <tier>::LEVELS[lvl] — 编译期版本 (写端定址折叠; LevelInfo 结构体在 FeatureLevels.hpp)
+//   按语义层号定长 LEVEL_COUNT; 档缺的层 = {层名, 行数, 0 列, fields = nullptr}
+// 运行时入口 level_info(tier, lvl) 在 FeatureMeta.cpp 定义, 指向本表.
 // ============================================================================
-#define LEVEL_INFO_ONE(name, num, fields, rows, psd) \
-  {#name, rows, name##_FIELD_COUNT, name##_FIELD_INFO, name##_FINGERPRINT, psd},
-inline constexpr LevelInfo LEVELS[] = {ALL_LEVELS(LEVEL_INFO_ONE)};
-static_assert(std::size(LEVELS) == LEVEL_COUNT, "LEVELS 与 ALL_LEVELS 项数一致");
-#define CHECK_LEVEL_INDEX(name, num, fields, rows, psd) \
-  static_assert(std::string_view(LEVELS[num].level_name) == #name, "ALL_LEVELS index must equal position");
-ALL_LEVELS(CHECK_LEVEL_INDEX)
+#define LEVEL_INFO_SET(name, num, fields, rows, psd)                                            \
+  static_assert(std::string_view(level_name(num)) == #name && level_rows(num) == rows,          \
+                "TIER_LEVELS_* 的 index / rows 必须与语义层 (FeatureLevels.hpp) 一致: " #name); \
+  l[num] = LevelInfo{#name, rows, name##_FIELD_COUNT, name##_FIELD_INFO, name##_FINGERPRINT, psd};
+#define GENERATE_TIER_LEVELS(T, ns)                                                 \
+  namespace ns {                                                                    \
+  inline constexpr std::array<LevelInfo, LEVEL_COUNT> LEVELS = [] {                 \
+    std::array<LevelInfo, LEVEL_COUNT> l{};                                         \
+    for (size_t i = 0; i < LEVEL_COUNT; ++i)                                        \
+      l[i] = LevelInfo{level_name(i), level_rows(i), 0, nullptr, 0, ""};            \
+    TIER_LEVELS_##T(LEVEL_INFO_SET) return l;                                       \
+  }();                                                                              \
+  /* 写端基建 (FeatureStore / CoreCrosssection / fstore) 的档模板参数 */            \
+  struct Tier {                                                                     \
+    static constexpr TierId kId = TierId::T;                                        \
+    static constexpr const std::array<LevelInfo, LEVEL_COUNT> &LEVELS = ns::LEVELS; \
+    static constexpr bool has(size_t lvl) { return LEVELS[lvl].fields != nullptr; } \
+    static constexpr size_t kLastLevel = ns::LEVELS[1].fields != nullptr ? 1 : 0;   \
+  };                                                                                \
+  }
+ALL_TIERS(GENERATE_TIER_LEVELS)
 
-static_assert(LEVELS[0].rows - 1 == TRADE_SECONDS_PER_DAY && LEVELS[1].rows - 1 == TRADE_MINUTES_PER_DAY,
+// 档 T 的 lvl 层里 code 列的下标 (编译期按名定址, 供档模板化的基建取基建列 / 方法源列); 找不到 = field_count
+template <class T>
+constexpr size_t field_of(size_t lvl, std::string_view code) {
+  const LevelInfo &L = T::LEVELS[lvl];
+  for (size_t i = 0; i < L.field_count; ++i)
+    if (code == L.fields[i].code)
+      return i;
+  return L.field_count;
+}
+
+static_assert(level_rows(0) - 1 == TRADE_SECONDS_PER_DAY && level_rows(1) - 1 == TRADE_MINUTES_PER_DAY,
               "每层落盘 T 必须是 有效行数 + 1 哨兵行");
+static_assert(pool::Tier::has(0) && pool::Tier::has(1) && !all::Tier::has(0) && all::Tier::has(1),
+              "Pool 档 L0 + L1, All 档只有 L1");

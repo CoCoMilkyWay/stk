@@ -89,7 +89,7 @@ static std::vector<int> CollectFeats(const Feature::Selection &sel, int level) {
 // legend = "中文名 (cat2)"; cat2 = 该层有效 Cat2 快照 (探测 or 人工覆盖, 无预览 = "?")
 static const char *FeatName(const Feature &feature, const std::vector<const char *> &cat2,
                             int level, int idx, char *buf, size_t size) {
-  const auto &metas = feature.metadata.features[level];
+  const auto &metas = feature.meta().features[level];
   const bool ok = idx >= 0 && static_cast<size_t>(idx) < metas.size();
   std::snprintf(buf, size, "%s (%s)", ok ? metas[idx].name_cn : "?",
                 ok && static_cast<size_t>(idx) < cat2.size() ? cat2[static_cast<size_t>(idx)] : "?");

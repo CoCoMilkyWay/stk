@@ -88,63 +88,80 @@ inline constexpr size_t kDefaultPoolSlots = 4;
 // 读写 (t, f, *) 一段连续 A. 落盘的列主序只在 FeatureDay 里转换, 不反过来改内存布局.
 // 性能约束: TS / CS 热路径 (逐笔 / 逐秒) 只许指针算术 —— 无锁、无查找、无分配、无
 // 运行时校验 (只 assert); 握手开销全压在每日一次的 open / close 上.
+//
+// 档 T (pool::Tier / all::Tier, 见 FeatureStoreConfig) 是模板参数: 布局常量取 T::LEVELS, 档缺的层不分配
+// (data[lvl] == nullptr). Slot / Day 独立成模板, fstore:: 的写读 API 从句柄推导档.
 // ============================================================================
-class GlobalFeatureStore {
+
+// 某档某层一天张量字节数 [T][F][A] (档缺的层 F = 0 → 0)
+template <class T>
+constexpr size_t store_level_bytes(size_t lvl, size_t num_assets) {
+  return T::LEVELS[lvl].rows * T::LEVELS[lvl].field_count * num_assets * sizeof(feature_storage_t);
+}
+
+// 日 d 的张量 (= pool_[d % P])
+template <class T>
+struct StoreSlot {
+  std::atomic<uint32_t> assets_done{0};             // == num_assets ⇒ 本日 TS 全部写完 (CS 放行)
+  feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]; 档缺的层 nullptr
+
+  void allocate(size_t num_assets) {
+    // 张量按 2MB 对齐并 madvise(MADV_HUGEPAGE): 透明大页是普通匿名内存,
+    // 进程退出/崩溃由内核自动回收, 不需要 nr_hugepages 静态预留 (那种预留
+    // 会从 MemAvailable 里整块扣掉, 谁都用不了). 需要系统
+    // /sys/kernel/mm/transparent_hugepage/enabled = madvise 或 always.
+    // 收益: TS 写行是列间 stride (F 列 × A×2B ≈ 11.8KB), 4K 页下每 tick
+    // 踩 F 个不同页, dTLB 压力大; 2M 页覆盖整列邻域, miss 显著减少.
+    constexpr size_t kHugePage = 2ull * 1024 * 1024;
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      if (!T::has(lvl))
+        continue;
+      // aligned_alloc 要求 size 是 alignment 的整数倍; 每层最多多占 <2MB
+      const size_t aligned_bytes = ((store_level_bytes<T>(lvl, num_assets) + kHugePage - 1) / kHugePage) * kHugePage;
+      data[lvl] = static_cast<feature_storage_t *>(aligned_alloc(kHugePage, aligned_bytes));
+#if defined(__linux__)
+      madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
+#endif
+      assert(data[lvl]);
+    }
+  }
+
+  void reset(size_t num_assets) {
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+      if (T::has(lvl))
+        std::memset(data[lvl], 0, store_level_bytes<T>(lvl, num_assets));
+    assets_done.store(0, std::memory_order_relaxed);
+  }
+
+  ~StoreSlot() {
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+      free(data[lvl]);
+  }
+};
+
+// 日句柄 (TS/CS/IO 同一形态): open 时定址一次, 之后所有读写是纯指针算术 ——
+// 热路径不再有字符串比较 / 原子验证 / slot 查找 (原先每 tick 4-6 次).
+// 空句柄 = 没拿到 (池满 / 本日未就绪), try_open 以此表示失败.
+template <class T>
+struct StoreDay {
+  StoreSlot<T> *slot = nullptr;
+  size_t A = 0;
+  size_t d = 0; // 回测日期轴下标 (WorkerCtx::dates), close 推进已完成天数用
+  explicit operator bool() const { return slot != nullptr; }
+};
+
+template <class T>
+class FeatureStore {
 public:
+  using Tier = T;
+  using Slot = StoreSlot<T>;
+  using Day = StoreDay<T>;
+
   // 预取领先 TS 的余量 (天): 窗口 = 在飞跨度上限 P + 余量, 保证最快 TS 到达前缓存已暖
   static constexpr size_t kPrefetchLead = 2;
 
-  // 日 d 的张量 (= pool_[d % P])
-  struct Slot {
-    std::atomic<uint32_t> assets_done{0};             // == num_assets ⇒ 本日 TS 全部写完 (CS 放行)
-    feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]
-
-    void allocate(size_t num_assets) {
-      // 张量按 2MB 对齐并 madvise(MADV_HUGEPAGE): 透明大页是普通匿名内存,
-      // 进程退出/崩溃由内核自动回收, 不需要 nr_hugepages 静态预留 (那种预留
-      // 会从 MemAvailable 里整块扣掉, 谁都用不了). 需要系统
-      // /sys/kernel/mm/transparent_hugepage/enabled = madvise 或 always.
-      // 收益: TS 写行是列间 stride (F 列 × A×2B ≈ 11.8KB), 4K 页下每 tick
-      // 踩 F 个不同页, dTLB 压力大; 2M 页覆盖整列邻域, miss 显著减少.
-      constexpr size_t kHugePage = 2ull * 1024 * 1024;
-      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-        // aligned_alloc 要求 size 是 alignment 的整数倍; 每层最多多占 <2MB
-        const size_t aligned_bytes = ((level_bytes(lvl, num_assets) + kHugePage - 1) / kHugePage) * kHugePage;
-        data[lvl] = static_cast<feature_storage_t *>(aligned_alloc(kHugePage, aligned_bytes));
-#if defined(__linux__)
-        madvise(data[lvl], aligned_bytes, MADV_HUGEPAGE);
-#endif
-        assert(data[lvl]);
-      }
-    }
-
-    void reset(size_t num_assets) {
-      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
-        std::memset(data[lvl], 0, level_bytes(lvl, num_assets));
-      assets_done.store(0, std::memory_order_relaxed);
-    }
-
-    ~Slot() {
-      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
-        free(data[lvl]);
-    }
-  };
-
-  // 日句柄 (TS/CS/IO 同一形态): open 时定址一次, 之后所有读写是纯指针算术 ——
-  // 热路径不再有字符串比较 / 原子验证 / slot 查找 (原先每 tick 4-6 次).
-  // 空句柄 = 没拿到 (池满 / 本日未就绪), try_open 以此表示失败.
-  struct Day {
-    Slot *slot = nullptr;
-    size_t A = 0;
-    size_t d = 0; // 回测日期轴下标 (WorkerCtx::dates), close 推进已完成天数用
-    explicit operator bool() const { return slot != nullptr; }
-  };
-
 private:
-  // 某层一天张量字节数 [T][F][A]
-  static constexpr size_t level_bytes(size_t lvl, size_t num_assets) {
-    return LEVELS[lvl].rows * LEVELS[lvl].field_count * num_assets * sizeof(feature_storage_t);
-  }
+  static constexpr size_t level_bytes(size_t lvl, size_t num_assets) { return store_level_bytes<T>(lvl, num_assets); }
 
   // Config
   const std::uint64_t axis_hash_; // universe 子轴指纹 (UniverseAxis::hash), 落进每个特征文件头
@@ -167,10 +184,10 @@ private:
 public:
   // num_assets: universe 子轴大小; axis_hash: UniverseAxis::hash, 写进每个
   // 特征文件头锁定"列 → 资产"映射 (读端从同一 config 推导同一子轴比对)
-  GlobalFeatureStore(size_t num_assets,
-                     std::uint64_t axis_hash,
-                     const std::string &output_dir = "",
-                     size_t pool_slots = kDefaultPoolSlots)
+  FeatureStore(size_t num_assets,
+               std::uint64_t axis_hash,
+               const std::string &output_dir = "",
+               size_t pool_slots = kDefaultPoolSlots)
       : axis_hash_(axis_hash),
         num_assets_(num_assets),
         pool_size_(pool_slots) {
@@ -206,12 +223,14 @@ public:
     }
     assert(pool_size_ >= 2 && "Pool size too small, need at least 2 slots");
 
-    std::cout << "\n=== Feature Store Tensor Pool ===\n";
+    std::cout << "\n=== Feature Store Tensor Pool (" << tier_name(T::kId) << ") ===\n";
 
     // Detailed dimension breakdown
     std::cout << "Dimension Details:\n";
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-      const auto &L = LEVELS[lvl];
+      if (!T::has(lvl))
+        continue;
+      const auto &L = T::LEVELS[lvl];
       printf("  %-6s [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", L.level_name, L.rows, L.field_count, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
     }
 
@@ -242,7 +261,7 @@ public:
     std::cout << "=================================\n\n";
   }
 
-  ~GlobalFeatureStore() {
+  ~FeatureStore() {
     if (pool_) {
       delete[] pool_; // Slot destructors called automatically
     }
@@ -329,9 +348,12 @@ public:
   size_t query_io_done() const { return io_done_.load(std::memory_order_relaxed); }
 };
 
+using PoolFeatureStore = FeatureStore<pool::Tier>;
+using AllFeatureStore = FeatureStore<all::Tier>;
+
 // ============================================================================
-// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L0/L1),
-// 字段用 <LVL>_Field 枚举; 布局常量一律取 constexpr LEVELS[LVL] (单一事实源),
+// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L0/L1), 档从日句柄推导,
+// 字段用 <tier>::<LVL>_Field 枚举; 布局常量一律取 constexpr T::LEVELS[LVL] (单一事实源),
 // 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_try_open / cs_try_open
 // 定址一次), 每次调用只剩指针算术.
 //   ts_write<L>(day, t, field, a, value)   单资产单列 (TS: 列间跨步 A)
@@ -341,15 +363,16 @@ public:
 // ============================================================================
 namespace fstore {
 
-// 唯一真正需要逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
-template <size_t LVL>
+// 唯一真正需要逐档逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
+// (STORE_TIER = 当前展开的档命名空间, 每档展开前定义)
+template <class T, size_t LVL>
 struct RowWriter;
 #define STORE_ROW_WRITER(name, num, fields, rows, psd)                                                                       \
   template <>                                                                                                                \
-  struct RowWriter<num> {                                                                                                    \
+  struct RowWriter<STORE_TIER::Tier, num> {                                                                                  \
     template <class DAG>                                                                                                     \
     [[gnu::always_inline]] static inline void write_row(feature_storage_t *row, size_t A, [[maybe_unused]] const DAG &dag) { \
-      namespace FO = name##_Field;                                                                                           \
+      namespace FO = STORE_TIER::name##_Field;                                                                               \
       fields(STORE_ROW_ONE)                                                                                                  \
     }                                                                                                                        \
   };
@@ -363,36 +386,43 @@ struct RowWriter;
 #define STORE_ROW_FLAG(code)
 #define STORE_ROW_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(STORE_ROW, code, src)
 
-ALL_LEVELS(STORE_ROW_WRITER)
+#define STORE_TIER pool
+TIER_LEVELS_Pool(STORE_ROW_WRITER)
+#undef STORE_TIER
+#define STORE_TIER all
+    TIER_LEVELS_All(STORE_ROW_WRITER)
+#undef STORE_TIER
 #undef STORE_ROW_WRITER
 
-template <size_t LVL>
-[[gnu::always_inline]] inline feature_storage_t *ts_row(const GlobalFeatureStore::Day &d, size_t t, size_t a) {
+        template <size_t LVL, class T>
+        [[gnu::always_inline]] inline feature_storage_t *ts_row(const StoreDay<T> &d, size_t t, size_t a) {
+  static_assert(T::has(LVL), "该档没有这一层");
   assert(d.slot && d.slot->data[LVL] && "ts_row: day not open");
-  assert(t < LEVELS[LVL].rows && "time index out of bounds");
+  assert(t < T::LEVELS[LVL].rows && "time index out of bounds");
   assert(a < d.A && "asset index out of bounds");
-  return d.slot->data[LVL] + (t * LEVELS[LVL].field_count) * d.A + a;
+  return d.slot->data[LVL] + (t * T::LEVELS[LVL].field_count) * d.A + a;
 }
 
-template <size_t LVL>
-[[gnu::always_inline]] inline void ts_write(const GlobalFeatureStore::Day &d, size_t t, size_t field, size_t a, float value) {
-  assert(field < LEVELS[LVL].field_count && "field index out of bounds");
+template <size_t LVL, class T>
+[[gnu::always_inline]] inline void ts_write(const StoreDay<T> &d, size_t t, size_t field, size_t a, float value) {
+  assert(field < T::LEVELS[LVL].field_count && "field index out of bounds");
   ts_row<LVL>(d, t, a)[field * d.A] = value;
 }
 
-template <size_t LVL, class DAG>
-[[gnu::always_inline]] inline void ts_write_row(const GlobalFeatureStore::Day &d, size_t t, size_t a, const DAG &dag) {
-  RowWriter<LVL>::write_row(ts_row<LVL>(d, t, a), d.A, dag);
+template <size_t LVL, class T, class DAG>
+[[gnu::always_inline]] inline void ts_write_row(const StoreDay<T> &d, size_t t, size_t a, const DAG &dag) {
+  RowWriter<T, LVL>::write_row(ts_row<LVL>(d, t, a), d.A, dag);
 }
 
 // CS worker: 某层某列在 t 时刻全部资产的连续段 (A 个). 读源列和就地写目标列
 // 都是它 —— 与 TS 侧同构, 定址编译期
-template <size_t LVL>
-[[gnu::always_inline]] inline feature_storage_t *cs_col(const GlobalFeatureStore::Day &d, size_t t, size_t field) {
+template <size_t LVL, class T>
+[[gnu::always_inline]] inline feature_storage_t *cs_col(const StoreDay<T> &d, size_t t, size_t field) {
+  static_assert(T::has(LVL), "该档没有这一层");
   assert(d.slot && d.slot->data[LVL] && "cs_col: day not open");
-  assert(t < LEVELS[LVL].rows && "time index out of bounds");
-  assert(field < LEVELS[LVL].field_count && "field index out of bounds");
-  return d.slot->data[LVL] + (t * LEVELS[LVL].field_count + field) * d.A;
+  assert(t < T::LEVELS[LVL].rows && "time index out of bounds");
+  assert(field < T::LEVELS[LVL].field_count && "field index out of bounds");
+  return d.slot->data[LVL] + (t * T::LEVELS[LVL].field_count + field) * d.A;
 }
 
 } // namespace fstore

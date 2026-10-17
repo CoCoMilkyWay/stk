@@ -1,6 +1,7 @@
 #pragma once
 
-#include "features/MetaFlag.hpp" // fmeta::ColumnSet
+#include "features/Backend/FeatureLevels.hpp" // TierId
+#include "features/MetaFlag.hpp"              // fmeta::ColumnSet
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/spectral/DayPSD.hpp"
@@ -172,11 +173,12 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 
 // ---- 读取范围 (Request 公共头): GUI 线程从 config 解析, worker 只消费 ----
 struct ReadScope {
+  TierId tier = TierId::Pool;   // 档 (字段表 / 层集 / 库)
   std::vector<misc::Ym> months; // 升序 (config 区间覆盖的月)
-  UniverseAxis uni;             // universe 子轴 (A 轴/文件列序/目录都由它定)
-  std::string features_dir;     // 该 universe 的特征库目录 (Config::FeatureUniverseDir)
+  UniverseAxis uni;             // A 轴 (Pool: universe 子轴; All: 全轴), 文件列序/目录都由它定
+  std::string features_dir;     // 特征库目录 (Pool: Config::FeatureUniverseDir; All: Config::FeatureAllDir)
 };
-ReadScope read_scope(const Config &cfg, size_t num_assets);
+ReadScope read_scope(const Config &cfg, size_t num_assets, TierId tier);
 
 // ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
 template <class Spec>

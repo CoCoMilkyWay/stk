@@ -12,7 +12,7 @@
 void prefetch_worker(WorkerCtx ctx) {
   const int worker_id = ctx.worker_id;
   SharedData &data = ctx.data;
-  GlobalFeatureStore &store = ctx.store;
+  PoolFeatureStore &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
   // 本核发布槽 (单写者): work = 累计下发预读字节, idle_ms = 累计门控干等毫秒
   ComputeStats::Core &stat = ctx.stats.prefetch;
@@ -36,7 +36,7 @@ void prefetch_worker(WorkerCtx ctx) {
     const misc::Ymd date = ctx.dates[date_idx];
     TraceTextS(misc::dense(date).c_str());
 
-    // 门控: 领先最慢 TS 不超过窗口 (见 GlobalFeatureStore::pf_try_open)
+    // 门控: 领先最慢 TS 不超过窗口 (见 PoolFeatureStore::pf_try_open)
     bool open;
     {
       TraceN("GateWait");

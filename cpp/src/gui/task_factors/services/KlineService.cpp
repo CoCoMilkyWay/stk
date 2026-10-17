@@ -25,7 +25,7 @@ struct KlineService::Impl {
       return;
     }
     dir = sc.features_dir, hash = sc.uni.hash, A = sc.uni.size();
-    reader.emplace(dir, A, hash);
+    reader.emplace(sc.tier, dir, A, hash);
     cols.preallocate(A, analysis::kLevel, 5);
   }
 };

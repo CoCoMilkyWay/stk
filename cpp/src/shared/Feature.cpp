@@ -10,8 +10,9 @@
 // 元数据 TU) —— 本文件与字段表解耦, 增删改特征不重编.
 
 Feature::Feature() {
-  // Initialize metadata from compile-time arrays on construction
-  metadata.init_from_compile_time();
+  // Initialize metadata from compile-time arrays on construction (每档一份)
+  for (size_t t = 0; t < TIER_COUNT; ++t)
+    metadata[t].init_from_compile_time(static_cast<TierId>(t));
 }
 
 // ============================================================================

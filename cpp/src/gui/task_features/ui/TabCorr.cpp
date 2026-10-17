@@ -174,7 +174,7 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
     ImGui::TextDisabled("悬停热图任一格子: 自动算该对的 lead-lag 曲线");
     return;
   }
-  const auto &meta_list = data.feature.metadata.features[corr.spec.level];
+  const auto &meta_list = data.feature.meta().features[corr.spec.level];
   const uint32_t ca = corr.spec.col(ui.sel_i), cb = corr.spec.col(ui.sel_j);
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", meta_list[ca].code);
   ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", meta_list[cb].code);
@@ -389,7 +389,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   ImGui::Separator();
 
   // ---- 3. 热图 + 右侧选中对面板 ----
-  const auto &meta_list = data.feature.metadata.features[corr.spec.level];
+  const auto &meta_list = data.feature.meta().features[corr.spec.level];
   const float panel_w = 380.0f;
   const float avail_w = ImGui::GetContentRegionAvail().x;
   const float map_w = std::max(200.0f, avail_w - panel_w - ImGui::GetStyle().ItemSpacing.x);

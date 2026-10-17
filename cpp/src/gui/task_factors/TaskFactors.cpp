@@ -165,9 +165,9 @@ TaskHandle CreateFactorsTask() {
       // 首次进页: 字段表视图建一次 (编译期字段表, 不随运行变), 只扫描不算; universe 切换 → 目录变 → 自动重扫
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
-        state->factors_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
+        state->factors_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.meta(TierId::Pool)));
         state->search_service = std::make_unique<Factors::SearchService>();
-        state->search_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
+        state->search_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.meta(TierId::Pool)));
       }
       auto &fs = *state->factors_service;
       auto &ss = *state->search_service;
@@ -180,7 +180,7 @@ TaskHandle CreateFactorsTask() {
       }
       if (!state->inspect_service) {
         state->inspect_service = std::make_unique<Factors::InspectService>();
-        state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.metadata));
+        state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature.meta(TierId::Pool)));
         state->kline_service = std::make_unique<Factors::KlineService>();
       }
       auto &is = *state->inspect_service;

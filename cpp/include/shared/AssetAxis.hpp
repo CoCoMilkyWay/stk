@@ -78,7 +78,7 @@ AssetAxis &asset_axis();
 // 由 config.universe + 全局 AssetAxis 唯一确定: ids = 名单在全局轴上的下标
 // (升序去重), hash = 按子轴顺序对码表做同一条 FNV 累积链 (fnv_append). 特征文件
 // 头存 (A_sub, hash): 写读两端各自从 config 推导同一子轴, 不符 = 名单/区间与
-// 特征库不一致 → 读端删库判废, 等重算 (见 FeatureRead). "all" 是普通特例: ids = [0, num_assets),
+// 特征库不一致 → 读端删库判废, 等重算 (见 FeatureRead). 全局档 (All) 用全轴 full_axis: ids = [0, num_assets),
 // hash == asset_axis().hash_at(num_assets) (同一条链的前缀值).
 //
 // 整条特征管线 (张量池 / 落盘 / 读端 / Dist / Transform / OrderFlow 特征读)
@@ -100,9 +100,11 @@ struct UniverseAxis {
   }
 };
 
-// universe 子轴构建: cfg.universe == "all" → 全轴前缀; 否则 cfg.UniverseCodes()
+// universe 子轴构建 (池档): cfg.UniverseCodes()
 // (动态池逐日 diff 回放后的并集, 见 shared/Universe.hpp) 逐条按轴 find. 代码不在轴前缀 [0, num_assets) 内 →
 // assert: 名单写错宁可启动即死, 不要静默算出一个残缺 universe.
 // Compute (派活/落盘) 与 Dist/Transform/OrderFlow (读端) 共用, 各处永远同一子轴.
 struct Config;
 UniverseAxis universe_axis(const Config &cfg, std::size_t num_assets);
+// 全局档 A 轴 = 全轴前缀 [0, num_assets)
+UniverseAxis full_axis(std::size_t num_assets);

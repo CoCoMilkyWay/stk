@@ -12,7 +12,7 @@ namespace GUI::Features {
 bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest &req) {
   const auto &sel = data.feature.selection;
   const size_t lvl = static_cast<size_t>(sel.selected_level);
-  const auto &meta_list = data.feature.metadata.features[lvl];
+  const auto &meta_list = data.feature.meta().features[lvl];
 
   req = CorrRequest{};
   std::vector<size_t> cols;
@@ -29,7 +29,7 @@ bool MakeCorrRequest(SharedData &data, const std::vector<int> &rows, CorrRequest
 
   req.spec.level = lvl;
   req.spec.cols = analysis::column_set(data.feature, lvl, std::move(cols));
-  req.scope = analysis::read_scope(data.config, data.asset.items.size());
+  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
   return !req.scope.months.empty();
 }
 
@@ -63,12 +63,12 @@ void CorrPairService::RequestCompute(SharedData &data, uint32_t col_a, uint32_t 
   assert(col_a != col_b);
   const auto &sel = data.feature.selection;
   const size_t lvl = static_cast<size_t>(sel.selected_level);
-  assert(col_a < data.feature.metadata.features[lvl].size() && col_b < data.feature.metadata.features[lvl].size());
+  assert(col_a < data.feature.meta().features[lvl].size() && col_b < data.feature.meta().features[lvl].size());
 
   CorrRequest req;
   req.spec.level = lvl;
   req.spec.cols = analysis::column_set(data.feature, lvl, {col_a, col_b}); // 按序: a 在前 (lag > 0 = a 领先)
-  req.scope = analysis::read_scope(data.config, data.asset.items.size());
+  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
   if (req.scope.months.empty())
     return;
   Request(std::move(req));

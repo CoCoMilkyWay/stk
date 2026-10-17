@@ -12,7 +12,7 @@ void DistService::RequestCompute(SharedData &data) {
   const size_t feat = static_cast<size_t>(sel.primary_feature_idx());
 
   Req req;
-  req.scope = analysis::read_scope(data.config, data.asset.items.size());
+  req.scope = analysis::read_scope(data.config, data.asset.items.size(), data.feature.selection.tier);
   if (req.scope.months.empty())
     return;
   // 门控: 按特征元数据的 valid_type 决定是否带 ts_valid (编码见 Meta.hpp; L1 全列 ALL, L0 按 DATA / DEPTH)

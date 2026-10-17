@@ -57,7 +57,7 @@ static void render_norm_cell(EnumStr method, bool none) {
 
 // Get current level features based on selection
 static const std::vector<FeatureMetadata> &get_current_level_features(const Feature &feature) {
-  return feature.metadata.features[feature.selection.selected_level];
+  return feature.meta().features[feature.selection.selected_level];
 }
 
 // ============================================================================
@@ -121,7 +121,7 @@ static void effective_cat2_snapshot(const Feature::Metadata &meta, const Feature
 void EffectiveCat2Snapshot(SharedData &data, size_t level, Cat2Snapshot &out) {
   std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
   const FeaturePreview &pv = data.preview;
-  effective_cat2_snapshot(data.feature.metadata, pv, level, out.cat2);
+  effective_cat2_snapshot(data.feature.meta(), pv, level, out.cat2);
   const size_t n = out.cat2.size();
   out.val_min.resize(n);
   out.val_max.resize(n);
@@ -172,9 +172,9 @@ void FilteredFeatureIndices(SharedData &data, std::vector<int> &out) {
   static std::vector<const char *> s_cat2; // GUI 单线程, 帧内复用
   {
     std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
-    effective_cat2_snapshot(feature.metadata, data.preview, level, s_cat2);
+    effective_cat2_snapshot(feature.meta(), data.preview, level, s_cat2);
   }
-  out = get_filtered_indices(feature.selection, feature.metadata.features[level], s_cat2);
+  out = get_filtered_indices(feature.selection, feature.meta().features[level], s_cat2);
 }
 
 // ============================================================================
@@ -918,20 +918,21 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // All filters in one line
   render_filter_dropdown("Type", ui_state.show_filter_data_type, sel.filter_data_type, FeatureDataType_ALL);
   ImGui::SameLine();
-  render_filter_dropdown("Cat1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, feature_meta::categories_l1());
+  render_filter_dropdown("Cat1", ui_state.show_filter_cat_l1, sel.filter_cat_l1, feature_meta::categories_l1(sel.tier));
   ImGui::SameLine();
-  // Cat2 过滤项 = 探测类 + 字段表人工 token (dummy AUTO 不列, 与探测类重名去重)
+  // Cat2 过滤项 = 探测类 + 字段表人工 token (两档并集; dummy AUTO 不列, 与探测类重名去重)
   static const std::vector<const char *> s_cat2_items = [] {
     std::vector<const char *> v(std::begin(kCat2Classes), std::end(kCat2Classes));
-    for (const char *t : feature_meta::categories_l2()) {
-      if (std::strcmp(t, kCat2Dummy) == 0)
-        continue;
-      bool dup = false;
-      for (const char *u : v)
-        dup |= std::strcmp(u, t) == 0;
-      if (!dup)
-        v.push_back(t);
-    }
+    for (size_t tier = 0; tier < TIER_COUNT; ++tier)
+      for (const char *t : feature_meta::categories_l2(static_cast<TierId>(tier))) {
+        if (std::strcmp(t, kCat2Dummy) == 0)
+          continue;
+        bool dup = false;
+        for (const char *u : v)
+          dup |= std::strcmp(u, t) == 0;
+        if (!dup)
+          v.push_back(t);
+      }
     return v;
   }();
   render_filter_dropdown("Cat2", ui_state.show_filter_cat_l2, sel.filter_cat_l2,
@@ -958,13 +959,13 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   // Section 3: Feature Table
   // ==========================================================================
   const auto &features = get_current_level_features(feature);
-  const auto &deps_list = feature.metadata.deps[sel.selected_level];
+  const auto &deps_list = feature.meta().deps[sel.selected_level];
 
   // Cat2 有效值快照 (探测 or 人工覆盖; 过滤/排序/显示共用). 短锁读 preview cells
   static std::vector<const char *> s_eff_cat2;
   {
     std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
-    effective_cat2_snapshot(feature.metadata, data.preview, (size_t)sel.selected_level, s_eff_cat2);
+    effective_cat2_snapshot(feature.meta(), data.preview, (size_t)sel.selected_level, s_eff_cat2);
   }
   auto filtered_indices = get_filtered_indices(sel, features, s_eff_cat2);
 
@@ -1356,32 +1357,38 @@ static double sig4(float v) {
 
 void SaveFeatureTableJson(SharedData &data) {
   using json = nlohmann::json;
-  const Feature::Metadata &meta = data.feature.metadata;
+  const Feature::Metadata &meta = data.feature.meta();
+  const bool pool_tier = meta.tier == TierId::Pool;
 
-  const std::filesystem::path path = std::filesystem::path(data.config.FeatureUniverseDir()) / "features.json";
+  const std::filesystem::path path = std::filesystem::path(pool_tier ? data.config.FeatureUniverseDir() : data.config.FeatureAllDir()) / "features.json";
   std::filesystem::create_directories(path.parent_path());
   const std::filesystem::path tmp = path.string() + ".tmp";
   {
     std::ofstream file(tmp);
     assert(file.is_open() && "features.json: 临时文件打不开");
     file << "{\n";
-    file << " \"universe\": " << json(data.config.universe).dump() << ",\n";
+    file << " \"tier\": " << json(tier_name(meta.tier)).dump() << ",\n";
+    file << " \"universe\": " << json(pool_tier ? data.config.universe : std::string(Config::kAllTierDir)).dump() << ",\n";
     file << " \"start_date\": " << json(misc::dash(data.config.start_date)).dump() << ",\n";
     file << " \"end_date\": " << json(misc::dash(data.config.end_date)).dump() << ",\n";
-    file << " \"preview\": {\"level\": " << json(level_info(analysis::kLevel).level_name).dump()
+    file << " \"preview\": {\"level\": " << json(level_name(analysis::kLevel)).dump()
          << ", \"rounds\": " << data.preview.done.load(std::memory_order_relaxed)
          << ", \"assets_per_round\": " << kPvAssetsPerRound << "},\n";
 
     std::lock_guard<std::mutex> preview_lock(data.preview.mutex);
     std::vector<const char *> eff_cat2;
+    bool first_level = true;
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      if (!has_level(meta.tier, lvl))
+        continue;
       const auto &features = meta.features[lvl];
       const auto &deps_list = meta.deps[lvl];
       assert(deps_list.size() == features.size());
       const bool preview_level = (lvl == analysis::kLevel);
       effective_cat2_snapshot(meta, data.preview, lvl, eff_cat2); // 与表格同口径 (探测 or 人工覆盖)
 
-      file << " \"" << level_info(lvl).level_name << "\": [\n";
+      file << (first_level ? "" : ",\n") << " \"" << level_name(lvl) << "\": [\n";
+      first_level = false;
       for (size_t i = 0; i < features.size(); ++i) {
         const FeatureMetadata &f = features[i];
         // 键序 = 表格列序 (nlohmann ordered_json 保插入序)
@@ -1423,9 +1430,9 @@ void SaveFeatureTableJson(SharedData &data) {
 
         file << "  " << r.dump() << (i + 1 < features.size() ? ",\n" : "\n");
       }
-      file << " ]" << (lvl + 1 < LEVEL_COUNT ? ",\n" : "\n");
+      file << " ]";
     }
-    file << "}\n";
+    file << "\n}\n";
     assert(file.good() && "features.json: 写入失败");
   }
   std::filesystem::rename(tmp, path); // 原子替换: 崩在中途不留半截文件 (同 AssetAxis::save)

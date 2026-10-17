@@ -343,10 +343,19 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Spacing();
 
   if (state.ui_state == ComputeUIState::Idle) {
-    if (ImGui::Button("Start Compute", ImVec2(200, 30))) {
+    if (ImGui::Button("Start Compute (Pool)", ImVec2(200, 30))) {
+      state.config.tier = TierId::Pool;
       state.ui_state = ComputeUIState::ShowingPopup;
       state.popup_frame_count = 0;
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Start Compute (All)", ImVec2(200, 30))) {
+      state.config.tier = TierId::All;
+      state.ui_state = ComputeUIState::ShowingPopup;
+      state.popup_frame_count = 0;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(Pool: LOB 还原, 本 universe; All: bar1m + 基本面, 全市场, %s 起)", misc::dash(::config::PIPELINE_START_DATE).c_str());
   } else {
     if (is_cancelling) {
       ImGui::TextWrapped("Cancelling at date boundary...");
@@ -389,9 +398,10 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::Text("Backtest Period:");
+    const bool all_tier = state.config.tier == TierId::All;
+    ImGui::Text("%s:", all_tier ? "All Tier Period" : "Backtest Period");
     ImGui::Indent();
-    ImGui::BulletText("Start: %s", misc::dash(config.start_date).c_str());
+    ImGui::BulletText("Start: %s", misc::dash(all_tier ? ::config::PIPELINE_START_DATE : config.start_date).c_str());
     ImGui::BulletText("End: %s", misc::dash(config.end_date).c_str());
     ImGui::Unindent();
 

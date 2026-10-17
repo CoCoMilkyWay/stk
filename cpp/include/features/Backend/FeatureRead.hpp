@@ -47,12 +47,12 @@ private:
   }
 
 public:
-  // base_dir = 该 universe 的特征库目录 (Config::FeatureUniverseDir);
-  // axis_A / axis_hash = 期望子轴 (universe_axis(cfg).size() / .hash)
+  // tier = 档 (字段表 / 层集); base_dir = 特征库目录 (Pool: Config::FeatureUniverseDir / All: Config::FeatureAllDir);
+  // axis_A / axis_hash = 期望子轴 (Pool: universe_axis(cfg); All: 全轴)
   // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
-  FeatureRead(const std::string &base_dir, size_t axis_A, std::uint64_t axis_hash,
+  FeatureRead(TierId tier, const std::string &base_dir, size_t axis_A, std::uint64_t axis_hash,
               std::atomic<bool> *abort = nullptr)
-      : base_dir_(base_dir), axis_A_(axis_A), axis_hash_(axis_hash), abort_(abort) {
+      : tier_(tier), base_dir_(base_dir), axis_A_(axis_A), axis_hash_(axis_hash), abort_(abort) {
     assert(axis_A_ > 0 && "期望子轴为空");
   }
 
@@ -102,7 +102,7 @@ public:
   struct DayColumns {
     misc::Ymd date = 0;
     size_t level = 0;
-    size_t T = 0; // = level_info(level).rows (含末尾哨兵行)
+    size_t T = 0; // = level_rows(level) (含末尾哨兵行)
     size_t A = 0;
     size_t max_features = 0;
     std::vector<size_t> fields;          // [n] 字段下标
@@ -123,7 +123,7 @@ public:
     void preallocate(size_t A_, size_t level_, size_t max_features_) {
       A = A_;
       level = level_;
-      T = level_info(level).rows;
+      T = level_rows(level);
       max_features = max_features_;
       data.resize(max_features * T * A);
     }
@@ -135,12 +135,13 @@ public:
     assert(date > 0);
     assert(out.A > 0 && "Must preallocate() before load_day_columns()");
     assert(out.A == axis_A_ && "调用方 A 与 reader 期望子轴不一致 (同一 universe_axis 推导, 不该发生)");
+    assert(has_level(tier_, out.level) && "该档没有这一层");
     assert(!feature_indices.empty() && feature_indices.size() <= out.max_features);
     out.date = date;
     out.fields = feature_indices;
     if (stale_.load(std::memory_order_relaxed))
       return;
-    const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(base_dir_, date), out.level), out.level,
+    const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(base_dir_, date), out.level), level_info(tier_, out.level),
                                                    out.fields.data(), out.fields.size(), out.data.data(), out.A, axis_hash_, out.scratch);
     // 文件缺失 = 库被外部清除: 另一 reader 判废删库, 或 ComputeService 重算
     // 前显式清库 (与读端并发; store 随即重建目录, 故 base_dir_ 是否存在不可
@@ -156,12 +157,13 @@ public:
   // Utility Functions
   // ========================================================================
 
-  // 该日是否有特征文件 (以最后一层的日文件为准: IO worker 按层序落盘, 它在则全在)
-  static bool has_date(const std::string &base_dir, misc::Ymd date) {
+  // 该日是否有特征文件 (以档内最后一层的日文件为准: IO worker 按层序落盘, 它在则全在)
+  static bool has_date(TierId tier, const std::string &base_dir, misc::Ymd date) {
     assert(date > 0);
-    return std::filesystem::exists(feature_file(feature_day_dir(base_dir, date), LEVEL_COUNT - 1));
+    return std::filesystem::exists(feature_file(feature_day_dir(base_dir, date), last_level(tier)));
   }
-  bool has_date(misc::Ymd date) const { return has_date(base_dir_, date); }
+  bool has_date(misc::Ymd date) const { return has_date(tier_, base_dir_, date); }
+  TierId tier() const { return tier_; }
 
   // 月 m 内已齐备落盘的日, 升序
   std::vector<misc::Ymd> list_dates(misc::Ym m) const {
@@ -193,6 +195,7 @@ public:
     return r;
   }
 
+  TierId tier_;
   std::string base_dir_;
   size_t axis_A_;
   std::uint64_t axis_hash_;

@@ -269,23 +269,23 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Universe");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("特征计算 universe: all = 全 A 轴; 其他 = <Config Dir>/universe/<name>.json\n"
-                            "名单为 [\"600000.SH\", ...]; 轴外资产列留零 (A 维/文件指纹仍是全轴).\n"
-                            "只约束 Compute, encode 始终全市场.");
+          ImGui::SetTooltip("池档特征计算 universe: <Config Dir>/universe/<name>.json (动态池逐日 diff)\n"
+                            "全市场是全局档 (features/all), 不是 universe.\n"
+                            "只约束池档 Compute, encode 始终全市场.");
         }
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(-1);
-        // 下拉: "all" + <config_dir>/universe/*.json 的文件名 (去 .json). 只在展开
+        // 下拉: <config_dir>/universe/*.json 的文件名 (去 .json). 只在展开
         // 那一帧扫目录 —— 新建名单文件后重新展开即可见, 不用重启.
         if (ImGui::BeginCombo("##universe", cfg.universe.c_str())) {
-          std::vector<std::string> names{"all"};
+          std::vector<std::string> names;
           const std::filesystem::path dir = std::filesystem::path(cfg.config_dir) / "universe";
           if (std::filesystem::is_directory(dir)) {
             for (const auto &entry : std::filesystem::directory_iterator(dir)) {
               if (entry.is_regular_file() && entry.path().extension() == ".json")
                 names.push_back(entry.path().stem().string());
             }
-            std::sort(names.begin() + 1, names.end());
+            std::sort(names.begin(), names.end());
           }
           // 当前值对应的文件已被删: 仍列出, 让用户看得见并能换掉
           if (std::find(names.begin(), names.end(), cfg.universe) == names.end())

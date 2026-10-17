@@ -51,7 +51,8 @@
 // =============================================================================
 
 #include "features/DataDefine.hpp"
-#include "features/TimeIndex.hpp" // L1_to_L0 (分钟锚定路径)
+#include "features/Operator/Common/Label/LabelGroups.hpp" // LABEL_GROUPS / HoldKind / LABEL_KIND / LABEL_N (两档共用)
+#include "features/TimeIndex.hpp"                         // L1_to_L0 (分钟锚定路径)
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -59,34 +60,12 @@
 #include <iterator>
 
 // ---- 配置 ----
-// 持有期组 (name, KIND, n): name = 列名 token (lb_<side>_<name>; 也是 Stat 持有期键的来源, 见 factor/Stat/Contract.hpp 【持有期键】)
-//   MIN   持仓 n 分钟 (exit = 行 m+n 的 entry 快照中间价, 即锚点后整 n 分钟 + DELAY 的可成交盘口)
-//   CLOSE 持有到当日收盘 (n 不用, 写 0)
-//   OPEN  T+n 开盘平仓 (跨日回填, 见文件头)
-#define LABEL_GROUPS(X, ...)      \
-  X(1m, MIN, 1, __VA_ARGS__)      \
-  X(5m, MIN, 5, __VA_ARGS__)      \
-  X(15m, MIN, 15, __VA_ARGS__)    \
-  X(30m, MIN, 30, __VA_ARGS__)    \
-  X(60m, MIN, 60, __VA_ARGS__)    \
-  X(close, CLOSE, 0, __VA_ARGS__) \
-  X(t1, OPEN, 1, __VA_ARGS__)     \
-  X(t3, OPEN, 3, __VA_ARGS__)     \
-  X(t5, OPEN, 5, __VA_ARGS__)
+// 持有期组见 Common/Label/LabelGroups.hpp (MIN 档 exit = 行 m+n 的 entry 快照中间价, 即锚点后整 n 分钟 + DELAY 的可成交盘口)
 #define LABEL_AMTS(X, ...) X(5, __VA_ARGS__) X(30, __VA_ARGS__) // 冲击成本特征的下单金额档 (万元), 升序
 constexpr size_t LABEL_DELAY_SECONDS = 3;                       // 下单延迟 (秒)
 
-enum class HoldKind : uint8_t { MIN,
-                                CLOSE,
-                                OPEN };
-#define LABEL_KIND_ONE(name, kind, n, ...) HoldKind::kind,
-#define LABEL_N_ONE(name, kind, n, ...) n,
 #define LABEL_LIST_ONE(v, ...) v,
-inline constexpr HoldKind LABEL_KIND[] = {LABEL_GROUPS(LABEL_KIND_ONE)};
-inline constexpr size_t LABEL_N[] = {LABEL_GROUPS(LABEL_N_ONE)};
 inline constexpr size_t LABEL_AMOUNT_WAN[] = {LABEL_AMTS(LABEL_LIST_ONE)};
-#undef LABEL_KIND_ONE
-#undef LABEL_N_ONE
 #undef LABEL_LIST_ONE
 
 class LabelReturn {
@@ -503,14 +482,8 @@ private:
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 // 行由配置生成, 顺序 = LB 块布局: L1 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序, 与 hold_col(h) 对应),
 // 之后 [cost_buy × LABEL_AMTS, cost_sell × LABEL_AMTS] (与 COST_COL / write_cost 对应).
-// 每种 KIND 的描述片段 (英 / 中 / exit 备注 / 公式尾), 由 LABEL_ROW 按 kind token 拼接.
+// 每种 KIND 的描述片段 (英 / 中 在 LabelGroups.hpp; exit 备注 / 公式尾在此), 由 LABEL_ROW 按 kind token 拼接.
 // 备注统一三段: 平仓价 | 顺延规则 | 尾部规则 (收盘档无顺延 / 尾部)
-#define LABEL_EN_MIN(n) #n "min"
-#define LABEL_EN_CLOSE(n) "to-Close"
-#define LABEL_EN_OPEN(n) "T+" #n " Open"
-#define LABEL_CN_MIN(n) #n "分钟"
-#define LABEL_CN_CLOSE(n) "至收盘"
-#define LABEL_CN_OPEN(n) "至T+" #n "开盘"
 #define LABEL_NOTE_MIN(n) "锚点后整" #n "分钟+3s的可成交盘口中间价(= 行m+" #n "的entry快照, 与entry同基准, 相邻行精确伸缩); 空窗则顺延至首个可成交簿; 该锚点落入14:57起则持有到当日收盘(末笔成交价)"
 #define LABEL_NOTE_CLOSE(n) "当日收盘价(末笔成交价=收盘竞价撮合价)"
 #define LABEL_NOTE_OPEN(n) "T+" #n "日开盘价(09:25集合竞价撮合价, 无撮合则连续竞价首笔成交价); 当日无开盘则顺延至之后首个有开盘日(最多再等" #n "日, 仍无则取最近收盘价); 越过区间末则持有到最后一日收盘"

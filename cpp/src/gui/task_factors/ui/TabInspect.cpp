@@ -1465,7 +1465,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           ui.kline_key = res.key, ui.kline_sub = k_sub, ui.kline_days = res.scope.days, ui.kline_last_pub_days = ~0ull;
           kreq.emplace();
           kreq->gen = ui.kline_gen, kreq->scope = res.read_scope, kreq->dates = res.dates, kreq->sub = k_sub;
-          const char *codes[4] = {"open", "high", "low", "close"};
+          const char *codes[4] = {"lob_open", "lob_high", "lob_low", "lob_close"};
           for (int i = 0; i < 4; ++i) {
             const FeatCol *fc = ft.find(codes[i]);
             assert(fc && "字段表缺 OHLC 列");
