@@ -1,18 +1,18 @@
 {
  "type": "alpha",
  "name_cn": "时序均价偏离",
- "expr": "TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d))), d=1275)",
+ "expr": "TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d))), d=1275)",
  "note": "收盘价对近 60 分钟 vwap 均值的对数偏离, 在自身近 5 日的分位 (时序口径: 偏离常态 → 均值回归候选)",
  "weights": [
-  {"hold":30,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=25))), d=1275)"},
-  {"hold":30,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=50))), d=1275)"},
-  {"hold":60,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=50))), d=1275)"},
-  {"hold":60,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=808))), d=1275)"},
-  {"hold":60,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=28))), d=1275)"},
-  {"hold":1000,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=71))), d=1275)"},
-  {"hold":1000,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=65))), d=1275)"},
-  {"hold":1000,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=85))), d=1275)"},
-  {"hold":1001,"expr":"TsRankRoll(TsNeg(TsLogRatio(close, TsMeanRoll(vwap, d=920))), d=1275)"}
+  {"hold":30,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=25))), d=1275)"},
+  {"hold":30,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=50))), d=1275)"},
+  {"hold":60,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=50))), d=1275)"},
+  {"hold":60,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=808))), d=1275)"},
+  {"hold":60,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=28))), d=1275)"},
+  {"hold":1000,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=71))), d=1275)"},
+  {"hold":1000,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=65))), d=1275)"},
+  {"hold":1000,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=85))), d=1275)"},
+  {"hold":1001,"expr":"TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d=920))), d=1275)"}
  ],
  "run": {"pool":"micro","start_date":"2026-05-01","end_date":"2026-10-16","days":111,"T":28305,"A":623,"backend":"gpu","frame":"TS","max_impact":0.01,"n_full":17.65},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],
