@@ -82,10 +82,10 @@ inline void ma_detrend_centered(std::span<const float> in, std::span<float> out,
   }
 }
 
-// Operator 结构体定义
+// 变换步定义
 struct MADetrend {
   static constexpr ParamMeta meta[] = {{"窗口", 10, 10, 500}};
-  static constexpr OperatorDef def = {"MA去趋势", meta, 1};
+  static constexpr StepDef def = {"MA去趋势", meta, 1};
 
   template <typename GetWindow>
   static void compute(std::span<const float> in, std::span<float> out, GetWindow get_window) {

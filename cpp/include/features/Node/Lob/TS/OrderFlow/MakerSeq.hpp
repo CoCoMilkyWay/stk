@@ -91,11 +91,11 @@ private:
 #define NODE_MakerSeq(N) N(MakerSeq, (MakerSeq), (tick_data), onMaker, onMinute)
 
 #define MAKERSEQ_ACF_ROW(X, CAT1, k) \
-  X(dir_acf_maker_##k, CAT1, AUTO, "Order Direction ACF lag " #k, "委托方向自相关lag" #k, "分钟内委托方向(±1)序列的lag-" #k "自相关(滞后项可跨分钟; 无配对→0)", R"(\frac{1}{n}\sum_{\tau \in \Delta t} d_\tau d_{\tau-)" #k R"(},\; d_\tau = \pm 1)", OP(MakerSeq, dir_acf_maker_##k, None, None))
+  X(dir_acf_maker_##k, CAT1, AUTO, "Order Direction ACF lag " #k, "委托方向自相关lag" #k, "分钟内委托方向(±1)序列的lag-" #k "自相关(滞后项可跨分钟; 无配对→0)", R"(\frac{1}{n}\sum_{\tau \in \Delta t} d_\tau d_{\tau-)" #k R"(},\; d_\tau = \pm 1)", TS(MakerSeq, dir_acf_maker_##k, None, None))
 
 #define FIELDS_L1_MakerSeq(X, CAT1)                                                                                                                                                                                               \
   MAKERSEQ_ACF_ROW(X, CAT1, 1)                                                                                                                                                                                                    \
   MAKERSEQ_ACF_ROW(X, CAT1, 5)                                                                                                                                                                                                    \
   MAKERSEQ_ACF_ROW(X, CAT1, 20)                                                                                                                                                                                                   \
-  X(runlen_maker_bid, CAT1, AUTO, "Bid Order Run Length", "连续买委托平均段长", "分钟内结束的连续买方委托段的平均笔数(无→延续上一有效值)", R"(\overline{\mathrm{run}}(d_\tau = +1))", OP(MakerSeq, runlen_maker_bid, None, None)) \
-  X(runlen_maker_ask, CAT1, AUTO, "Ask Order Run Length", "连续卖委托平均段长", "分钟内结束的连续卖方委托段的平均笔数(无→延续上一有效值)", R"(\overline{\mathrm{run}}(d_\tau = -1))", OP(MakerSeq, runlen_maker_ask, None, None))
+  X(runlen_maker_bid, CAT1, AUTO, "Bid Order Run Length", "连续买委托平均段长", "分钟内结束的连续买方委托段的平均笔数(无→延续上一有效值)", R"(\overline{\mathrm{run}}(d_\tau = +1))", TS(MakerSeq, runlen_maker_bid, None, None)) \
+  X(runlen_maker_ask, CAT1, AUTO, "Ask Order Run Length", "连续卖委托平均段长", "分钟内结束的连续卖方委托段的平均笔数(无→延续上一有效值)", R"(\overline{\mathrm{run}}(d_\tau = -1))", TS(MakerSeq, runlen_maker_ask, None, None))

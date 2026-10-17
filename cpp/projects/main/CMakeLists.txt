@@ -412,7 +412,7 @@ set(HEADERS
 #   (Fund / Kline / Meta) 且内容不同 —— 所以内联的 NODE_ / FIELDS_ 宏改名加档前缀 (<Tier>_NODE_x / <Tier>_FIELDS_L1_x);
 #   helper 宏原名内联, 两档同名必须逐字一致 (否则 FATAL_ERROR).
 #   节点实例和落盘列直接写在节点文件里 (TS/ 时序节点, CS/ 截面列; 方法在 Method/):
-#     #define NODE_<Name>(N)         N(<Name>, (OpType), (ctor inputs), compute_trigger, flush_trigger)
+#     #define NODE_<Name>(N)         N(<Name>, (NodeType), (ctor inputs), compute_trigger, flush_trigger)
 #     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ {L0, L1}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
 #   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / Depth.bid_qty ...), 不需要任何 include.
 #   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 生成

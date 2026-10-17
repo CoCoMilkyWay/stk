@@ -70,9 +70,9 @@ struct Transform : Published {
                                     FracDiff };
   struct StationaryEntry {
     Stationary method;
-    const math::OperatorDef *def;
+    const math::StepDef *def;
   };
-  static inline constexpr math::OperatorDef g_stationary_none = {"无", nullptr, 0};
+  static inline constexpr math::StepDef g_stationary_none = {"无", nullptr, 0};
   static inline constexpr StationaryEntry g_stationary[] = {
       {Stationary::None, &g_stationary_none},
       {Stationary::MADetrend, &math::stationary::MADetrend::def},
@@ -80,7 +80,7 @@ struct Transform : Published {
       {Stationary::FracDiff, &math::stationary::FracDiff::def},
   };
   static inline constexpr size_t g_stationary_count = sizeof(g_stationary) / sizeof(g_stationary[0]);
-  static constexpr const math::OperatorDef &stationary_def(Stationary m) {
+  static constexpr const math::StepDef &stationary_def(Stationary m) {
     return *g_stationary[static_cast<size_t>(m)].def;
   }
   static constexpr const char *IIR_TYPE_NAMES[] = {"Butterworth", "Chebyshev I", "Chebyshev II"};
@@ -92,7 +92,7 @@ struct Transform : Published {
     Season season = Season::None;
 
     Stationary stationary = Stationary::None;
-    math::Operator st; // 按 stationary_def(stationary) 初始化
+    math::Step st; // 按 stationary_def(stationary) 初始化
 
     // 带通 (IIR 因果, 天首复位). 通带用周期 (样本数 = L1 分钟) 表达, 与 PSD 轴一致: lo < hi
     bool bandpass = false;
@@ -104,7 +104,7 @@ struct Transform : Published {
     static constexpr float kMaxPeriod = static_cast<float>(analysis::kVR); // 最长看一天
 
     NormMethod ts_norm = NormMethod::NONE;
-    math::Operator ts; // 按 math::normalize::GetMethod(ts_norm) 初始化
+    math::Step ts; // 按 math::normalize::GetMethod(ts_norm) 初始化
 
     // 构建天数上限: 0 = 全区间; 否则只算区间头 N 天, 不往后算 (快速迭代档: 1/5/30)
     size_t max_days = 0;
@@ -117,7 +117,7 @@ struct Transform : Published {
       reset_ts();
     }
     void reset_stationary() { st.init(stationary_def(stationary)); }
-    void reset_ts() { math::normalize::InitOperator(ts, ts_norm); }
+    void reset_ts() { math::normalize::InitStep(ts, ts_norm); }
     bool cs_enabled() const { return cs_tf != cs::TfId::None || cs_method != cs::MethodId::None; }
     bool cs_neutral() const { return cs::method_neutral(cs_method); }
   };

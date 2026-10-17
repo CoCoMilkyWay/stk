@@ -44,7 +44,7 @@
 //     s ∈ {B, A}            侧向: B=Bid 买盘, A=Ask 卖盘
 //     c ∈ {XL, L, Mid, S}   大小单分类
 //     [\mathrm{cond}]       条件筛选 (如 CA=连续竞价, fleet=闪单)
-//   节点:
+//   运算符:
 //     |O|  = 取量 (volume)
 //     #O   = 取笔数 (count)
 //   风格: 分钟内逐笔求和一律 ∑_{τ∈Δt} f(O_τ) (τ 显式); 纯笔数计数用 #O_{Δt} (时间挂 O 下标);
@@ -60,12 +60,12 @@
 // ============================================================================
 // 特征定义: 节点文件自带节点实例 + 落盘列 (Node/<Tier>/{TS,CS}/**/*.hpp 末尾), 没有中心表
 // ============================================================================
-// 时序节点文件 (Node/<Tier>/TS/<类别>/<Op>.hpp) = 数学 (class) + 文件末尾两种宏 (CMake 扫描汇总, C++ 里不直接展开):
-//   两档都要的节点: class 放 Node/Common/<类别>/<Op>.hpp, 各档文件 include 它后只写本档的 NODE_ / FIELDS_.
+// 时序节点文件 (Node/<Tier>/TS/<分类>/<Name>.hpp) = 节点类 (class, 纯数学) + 文件末尾两种宏 (CMake 扫描汇总, C++ 里不直接展开):
+//   两档都要的节点类: class 放 Node/Common/<分类>/<Name>.hpp, 各档文件 include 它后只写本档的 NODE_ / FIELDS_.
 //
-//   #define NODE_<Name>(N)  N(<Name>, (OpType), (inputs...), trigger[, flush_trigger])
-//     Name     节点名 (DAG 成员名); 同一节点可有多个实例 (不同模板参数), 目前每节点一个节点, 同族列在节点内用口区分
-//     OpType   节点类型, 必须加括号 (模板参数里有逗号)
+//   #define NODE_<Name>(N)  N(<Name>, (NodeType), (inputs...), trigger[, flush_trigger])
+//     Name     节点名 (DAG 成员名); 同一节点类可有多个实例 (不同模板参数), 目前每个节点类一个节点, 同族列在节点内用口区分
+//     NodeType 节点类, 必须加括号 (模板参数里有逗号)
 //     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / fund_pool / asset_code_ / asset_id_ / date_ /
 //              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 源层数组 Depth.bid_qty 等;
 //              盘前即需的日频值直接引 y 槽 Up.y[Up.port] (Fund 的 Series 首个分钟 flush 才有值, 见 Fund.hpp).
@@ -74,7 +74,7 @@
 //              降频型写两个: compute=onTick, flush=onMinute; 广播型 (日频): compute=onDay, flush=onMinute
 //     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游节点
 //
-// 截面列文件 (Node/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
+// 截面列文件 (Node/<Tier>/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
 //
 //   #define FIELDS_<LVL>_<Name>(X, CAT1)  X(code, CAT1, cat_l2, name_en, name_cn, description, formula, SRC) ...
 //     LVL ∈ {L0, L1}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
@@ -82,7 +82,7 @@
 //       写别的 token = 人类强行赋值, 覆盖探测 (表格绿字). 不参与落盘指纹, 改了不用重算.
 //     同族列 (Flow 的 {amt,vol,n}_{taker,maker,cancel}_{bid,ask}, Book 的 qty_{bid,ask}_{1,5,10,all} …) 在文件内用 helper 宏生成行, ## 拼进名字, 字面串拼进 EN/CN/公式.
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 有效性标志 / 归一化 (GUI 两列 TS Norm / CS Norm) 全部由它推出:
-//       OP(Node[, port], Tf, Method)  节点输出口. TS; 层必须 == 节点 flush 域; 有效性: onMinute → ALL (L1 稠密), onDepth → DEPTH, 其余 → DATA
+//       TS(Node[, port], Tf, Method)  节点输出口. TS; 层必须 == 节点 flush 域; 有效性: onMinute → ALL (L1 稠密), onDepth → DEPTH, 其余 → DATA
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
 //       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (0/1) 的字段 src → cs::Tf::apply → cs::Method::apply. CS; 有效性随源层 (L1 ALL / L0 DATA)
 //                                  ns = 本档, 或 TIER_SIDES 登记的旁读档 (只许 L1)
@@ -138,7 +138,7 @@ struct EnumStr {
   X(META, 3, "元数据")
 
 // Transform 探索用的时序归一化 (math/normalize/Normalize.hpp, Params::ts_norm). 字段表不再有此列:
-// 落盘归一化由 SRC 列声明 (OP(..., Tf, Method) → ts::, CS(..., Tf, Method) → cs::), GUI 从 SRC 推导显示
+// 落盘归一化由 SRC 列声明 (TS(..., Tf, Method) → ts::, CS(..., Tf, Method) → cs::), GUI 从 SRC 推导显示
 #define NORM_METHODS(X)                                       \
   X(NONE, 0, "无") /* x */                                    \
   /* scale (linear) */                                        \
@@ -193,7 +193,7 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
 #define NODE_FLUSH(ct, ...) NODE_FLUSH_I(__VA_ARGS__ __VA_OPT__(, ) ct)
 #define NODE_FLUSH_I(ft, ...) Trigger::ft
 
-// flush 域 → 该节点落盘列的层 / 有效性标志 (OP 列由此推出, 不逐列写)
+// flush 域 → 该节点落盘列的层 / 有效性标志 (TS 列由此推出, 不逐列写)
 //   L1 (onMinute) 稠密: 每分钟都写行 (无成交分钟各节点归零 / 延续, 见 ResamplerTick2Min / CoreLob) → ALL, 不受 ts_valid 门控;
 //   L0 事件稀疏: 只有事件秒有行 → DATA / DEPTH 按 ts_valid 门控
 constexpr int level_of(Trigger flush) { return flush == Trigger::onMinute ? 1 : 0; }
@@ -205,52 +205,52 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 // ----------------------------------------------------------------------------
 // SRC 列解析 (字段表消费者共用)
 //   SRC_KIND_##src             → FeatureDataType
-//   SRC_VALID_##src            → L2::ValidType (OP 看节点 flush 域: 需要 node_flush::<node>, 见 FeatureStoreConfig)
-//   SRC_TS_TF_##src / SRC_TS_METHOD_##src → ts::TfId:: / ts::MethodId:: (OP 行取 Tf / Method, 其余 None; 消费者需 include Method/TS.hpp)
+//   SRC_VALID_##src            → L2::ValidType (TS 看节点 flush 域: 需要 node_flush::<node>, 见 FeatureStoreConfig)
+//   SRC_TS_TF_##src / SRC_TS_METHOD_##src → ts::TfId:: / ts::MethodId:: (TS 行取 Tf / Method, 其余 None; 消费者需 include Method/TS.hpp)
 //   SRC_CS_TF_##src / SRC_CS_METHOD_##src → cs::TfId:: / cs::MethodId:: (CS 行取 Tf / Method, 其余 None; 消费者需 include Method/CS.hpp)
-//   SRC_DISPATCH(P, code, src) → P_OP(code, node[, port], Tf, Method) / P_CS(code, ns, lvl, s, Tf, Method) /
+//   SRC_DISPATCH(P, code, src) → P_TS(code, node[, port], Tf, Method) / P_CS(code, ns, lvl, s, Tf, Method) /
 //                                P_LABEL(code) / P_FLAG(code)   (消费者按来源各定义一组 P_*)
 // ----------------------------------------------------------------------------
-#define SRC_KIND_OP(...) FeatureDataType::TS
+#define SRC_KIND_TS(...) FeatureDataType::TS
 #define SRC_KIND_CS(...) FeatureDataType::CS
 #define SRC_KIND_LABEL FeatureDataType::LB
 #define SRC_KIND_FLAG FeatureDataType::META
 
-#define SRC_VALID_OP(node, ...) valid_of(node_flush::node)
+#define SRC_VALID_TS(node, ...) valid_of(node_flush::node)
 #define SRC_VALID_CS(ns, l, ...) (l == 1 ? L2::ValidType::ALL : L2::ValidType::DATA) // 截面随源层: L1 稠密 (门控本就只看 cs_valid)
 #define SRC_VALID_LABEL L2::ValidType::ALL                                           // 标签全行写 (不产 NaN, 缺口用可成交时刻顶上, 见 LabelLob 文件头), 与 L1 特征同稠密
 #define SRC_VALID_FLAG L2::ValidType::ALL
 
-// OP(node, Tf, Method) / OP(node, port, Tf, Method): 按参数个数取 Tf / Method (RowWriter 同法取 node/port)
-#define SRC_OP_PICK(_1, _2, _3, _4, NAME, ...) NAME
-#define SRC_OP_TF_3(node, tf, m) tf
-#define SRC_OP_TF_4(node, port, tf, m) tf
-#define SRC_OP_METHOD_3(node, tf, m) m
-#define SRC_OP_METHOD_4(node, port, tf, m) m
-#define SRC_OP_TF(...) SRC_OP_PICK(__VA_ARGS__, SRC_OP_TF_4, SRC_OP_TF_3, , )(__VA_ARGS__)
-#define SRC_OP_METHOD(...) SRC_OP_PICK(__VA_ARGS__, SRC_OP_METHOD_4, SRC_OP_METHOD_3, , )(__VA_ARGS__)
+// TS(node, Tf, Method) / TS(node, port, Tf, Method): 按参数个数取 Tf / Method (RowWriter 同法取 node/port)
+#define SRC_NODE_PICK(_1, _2, _3, _4, NAME, ...) NAME
+#define SRC_NODE_TF_3(node, tf, m) tf
+#define SRC_NODE_TF_4(node, port, tf, m) tf
+#define SRC_NODE_METHOD_3(node, tf, m) m
+#define SRC_NODE_METHOD_4(node, port, tf, m) m
+#define SRC_NODE_TF(...) SRC_NODE_PICK(__VA_ARGS__, SRC_NODE_TF_4, SRC_NODE_TF_3, , )(__VA_ARGS__)
+#define SRC_NODE_METHOD(...) SRC_NODE_PICK(__VA_ARGS__, SRC_NODE_METHOD_4, SRC_NODE_METHOD_3, , )(__VA_ARGS__)
 
-#define SRC_TS_TF_OP(...) ts::TfId::SRC_OP_TF(__VA_ARGS__)
+#define SRC_TS_TF_TS(...) ts::TfId::SRC_NODE_TF(__VA_ARGS__)
 #define SRC_TS_TF_CS(...) ts::TfId::None
 #define SRC_TS_TF_LABEL ts::TfId::None
 #define SRC_TS_TF_FLAG ts::TfId::None
 
-#define SRC_TS_METHOD_OP(...) ts::MethodId::SRC_OP_METHOD(__VA_ARGS__)
+#define SRC_TS_METHOD_TS(...) ts::MethodId::SRC_NODE_METHOD(__VA_ARGS__)
 #define SRC_TS_METHOD_CS(...) ts::MethodId::None
 #define SRC_TS_METHOD_LABEL ts::MethodId::None
 #define SRC_TS_METHOD_FLAG ts::MethodId::None
 
-#define SRC_CS_TF_OP(...) cs::TfId::None
+#define SRC_CS_TF_TS(...) cs::TfId::None
 #define SRC_CS_TF_CS(ns, l, s, tf, m) cs::TfId::tf
 #define SRC_CS_TF_LABEL cs::TfId::None
 #define SRC_CS_TF_FLAG cs::TfId::None
 
-#define SRC_CS_METHOD_OP(...) cs::MethodId::None
+#define SRC_CS_METHOD_TS(...) cs::MethodId::None
 #define SRC_CS_METHOD_CS(ns, l, s, tf, m) cs::MethodId::m
 #define SRC_CS_METHOD_LABEL cs::MethodId::None
 #define SRC_CS_METHOD_FLAG cs::MethodId::None
 
-#define SRC_ARGS_OP(...) OP, __VA_ARGS__
+#define SRC_ARGS_TS(...) TS, __VA_ARGS__
 #define SRC_ARGS_CS(ns, l, s, tf, m) CS, ns, l, s, tf, m
 #define SRC_ARGS_LABEL LABEL
 #define SRC_ARGS_FLAG FLAG

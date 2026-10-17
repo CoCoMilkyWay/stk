@@ -234,7 +234,7 @@ void Feature::Metadata::init_from_compile_time(TierId t) {
 #undef TIER_DEPS_ONE
 
   // 3. 节点 → 产出字段 (code, 口名) (跨所有层)
-  //    FieldSource.source: OP → 节点名 (在 node_deps_map 中); CS → 源字段 code; "" → 无
+  //    FieldSource.source: TS → 节点名 (在 node_deps_map 中); CS → 源字段 code; "" → 无
   struct NodeField {
     std::string code, port;
   };
@@ -259,7 +259,7 @@ void Feature::Metadata::init_from_compile_time(TierId t) {
         continue;
       std::string key(s);
       if (node_deps_map.count(key)) {
-        // OP 字段: 依赖 = 上游节点产出的字段 code; 单口引用只取该口的字段
+        // TS 字段: 依赖 = 上游节点产出的字段 code; 单口引用只取该口的字段
         std::unordered_set<std::string> seen;
         for (const auto &dep : node_deps_map[key]) {
           const size_t dot = dep.find('.');

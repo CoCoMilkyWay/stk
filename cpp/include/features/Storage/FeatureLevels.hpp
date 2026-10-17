@@ -27,7 +27,7 @@ struct FieldInfo {
   const char *code;
   L2::ValidType valid;
   FeatureDataType kind;
-  ts::TfId ts_tf; // OP 行落盘前套用的元素变换 (改变落盘值 → 进指纹); 非 OP 行 None
+  ts::TfId ts_tf; // TS 行落盘前套用的元素变换 (改变落盘值 → 进指纹); 非 TS 行 None
 };
 
 // 档: 数据源 (见 FeaturesDefine.hpp ALL_TIERS)

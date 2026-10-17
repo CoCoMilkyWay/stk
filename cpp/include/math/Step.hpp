@@ -17,28 +17,28 @@ struct ParamMeta {
 };
 
 // ============================================================================
-// 算子定义 (静态, 编译期)
+// 变换步定义 (静态, 编译期)
 // ============================================================================
 //
-// 每个算子在自己文件里定义:
-//   struct MyOp {
+// 每个变换步在自己文件里定义:
+//   struct MyStep {
 //     static constexpr ParamMeta meta[] = {...};
-//     static constexpr OperatorDef def = {"名字", meta, N};
+//     static constexpr StepDef def = {"名字", meta, N};
 //   };
 //
 // ============================================================================
 
-struct OperatorDef {
+struct StepDef {
   const char *name = "";
   const ParamMeta *meta = nullptr;
   size_t param_count = 0;
 };
 
 // ============================================================================
-// 算子实例 (运行时)
+// 变换步实例 (运行时)
 // ============================================================================
 //
-// 继承 OperatorDef，添加运行时参数存储
+// 继承 StepDef，添加运行时参数存储
 //
 // 编译期优化:
 //   compute(x, constant<3.0f>());       // 常量内联
@@ -46,11 +46,11 @@ struct OperatorDef {
 //
 // ============================================================================
 
-struct Operator : OperatorDef {
+struct Step : StepDef {
   float params[4] = {};
 
   // 从静态定义初始化
-  void init(const OperatorDef &d) {
+  void init(const StepDef &d) {
     name = d.name;
     meta = d.meta;
     param_count = d.param_count;

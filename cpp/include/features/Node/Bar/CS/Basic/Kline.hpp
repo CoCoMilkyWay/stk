@@ -1,9 +1,9 @@
 #pragma once
 
 // =============================================================================
-// Kline (CS) - 分钟价格的截面特征 (源 = Kline 节点 L1 列)
+// Kline (CS) - 分钟价格的截面列 (源 = Kline 节点 L1 列)
 // =============================================================================
-//   close_cs = pct_rank(z(winsor_mad(P_t)))   股价特征 (WinsorRank, 方法见 Method/CS.hpp)
+//   close_cs = pct_rank(z(winsor_mad(P_t)))   股价截面秩 (WinsorRank, 方法见 Method/CS.hpp)
 // =============================================================================
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

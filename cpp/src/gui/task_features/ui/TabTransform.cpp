@@ -40,8 +40,8 @@ static ImVec4 AssetColor(size_t idx, size_t total) {
   return ImPlot::SampleColormap(t, ImPlotColormap_Spectral);
 }
 
-// 通用参数 slider (math::Operator 元数据驱动)
-static bool RenderOperatorParams(math::Operator &op, const char *suffix) {
+// 通用参数 slider (math::Step 元数据驱动)
+static bool RenderStepParams(math::Step &op, const char *suffix) {
   bool changed = false;
   for (size_t i = 0; i < op.param_count; ++i) {
     const auto &m = op.meta[i];
@@ -153,7 +153,7 @@ static bool RenderPipeline(Transform::Params &p) {
     ImGui::SetTooltip("平稳化\n"
                       "• 按天分段, 天首从零起 (隔夜跳空不进差分 / 滤波)\n"
                       "• 差分预热段输出 NaN");
-  changed |= RenderOperatorParams(p.st, "st");
+  changed |= RenderStepParams(p.st, "st");
 
   // 3. 带通
   ImGui::SameLine(0, 16);
@@ -193,7 +193,7 @@ static bool RenderPipeline(Transform::Params &p) {
     ImGui::SetTooltip("TS 归一\n"
                       "• 天内 expanding 统计 (只用历史)\n"
                       "• 每天从零起");
-  changed |= RenderOperatorParams(p.ts, "ts");
+  changed |= RenderStepParams(p.ts, "ts");
 
   // 5. 截面 (生产同一套 cs::{Tf, Method})
   ImGui::SameLine(0, 16);

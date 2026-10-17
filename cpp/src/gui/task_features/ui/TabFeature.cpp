@@ -1112,7 +1112,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
         "• 灰线 = 白噪声\n"
         "• 青刀 = 谱重心\n"
         "• 日频特征 = 地板线",
-        "时序归一化: SRC 列 OP(..., Tf, Method) 推出",
+        "时序归一化: SRC 列 TS(..., Tf, Method) 推出",
         "截面归一化: SRC 列 CS(..., Tf, Method) 推出",
         "直接依赖: 该特征计算所依赖的其他特征 code",
     };

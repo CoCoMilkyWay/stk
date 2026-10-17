@@ -32,5 +32,5 @@ private:
 #define NODE_Trade(N) N(Trade, (Trade), (minute_data), onMinute)
 
 #define FIELDS_L1_Trade(X, CAT1)                                                                                 \
-  X(volume, CAT1, AUTO, "Volume", "成交量", "分钟成交量(股)", R"(\mathrm{Vol}_t)", OP(Trade, volume, Log, None)) \
-  X(amount, CAT1, AUTO, "Amount", "成交额", "分钟成交额(元); 分钟 VWAP = amount / volume (因子层)", R"(\mathrm{Amt}_t)", OP(Trade, amount, Log, None))
+  X(volume, CAT1, AUTO, "Volume", "成交量", "分钟成交量(股)", R"(\mathrm{Vol}_t)", TS(Trade, volume, Log, None)) \
+  X(amount, CAT1, AUTO, "Amount", "成交额", "分钟成交额(元); 分钟 VWAP = amount / volume (因子层)", R"(\mathrm{Amt}_t)", TS(Trade, amount, Log, None))

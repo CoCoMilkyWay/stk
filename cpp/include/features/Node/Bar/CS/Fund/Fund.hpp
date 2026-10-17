@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Fund (CS) - 日频基本面的截面因子 (源 = Fund 节点 L1 广播列)
+// Fund (CS) - 日频基本面的截面列 (源 = Fund 节点 L1 广播列)
 // =============================================================================
 //   dy_ttm_cs / roe_ttm_cs / roa_ttm_cs   = pct_rank(z(neutralize(winsor_q(src))))   行业/市值中性化 (NeutralRank)
 //   cfo_chg_ttm_cs / rz_bal_cs / rq_bal_cs = pct_rank(z(winsor_mad(src)))            qmt 同款, 无中性化 (WinsorRank)

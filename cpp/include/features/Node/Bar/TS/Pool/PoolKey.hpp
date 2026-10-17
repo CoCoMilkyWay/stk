@@ -82,8 +82,8 @@ private:
 #define NODE_PoolKey(N) N(PoolKey, (PoolKey), (Fund.y, Valuation.out(Valuation.mcap), asset_code_), onMinute)
 
 #define FIELDS_L1_PoolKey(X, CAT1)                                                                                                                                                                             \
-  X(key_size, CAT1, AUTO, "Pool Key Size", "选池键市值", "母集内实时总市值(亿元), 母集外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base})", OP(PoolKey, size, None, None))                                     \
-  X(key_size_micro, CAT1, AUTO, "Pool Key Size Micro", "选池键微盘市值", "母集∧微盘行业白名单内实时总市值(亿元), 外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base,wl})", OP(PoolKey, size_micro, None, None)) \
-  X(key_pe, CAT1, AUTO, "Pool Key PE", "选池键PE", "母集内 −归母净利TTM/实时市值 (= −EP), 外NaN", R"(-\frac{NP^{TTM}}{\mathrm{mcap}_t})", OP(PoolKey, pe, None, None))                                         \
-  X(key_pb, CAT1, AUTO, "Pool Key PB", "选池键PB", "母集内 −归母权益MRQ/实时市值 (= −BP), 外NaN", R"(-\frac{EQ^{MRQ}}{\mathrm{mcap}_t})", OP(PoolKey, pb, None, None))                                         \
-  X(key_dy, CAT1, AUTO, "Pool Key DY", "选池键股息率", "母集内股息率TTM, 外NaN", R"(\mathrm{dy}^{TTM})", OP(PoolKey, dy, None, None))
+  X(key_size, CAT1, AUTO, "Pool Key Size", "选池键市值", "母集内实时总市值(亿元), 母集外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base})", TS(PoolKey, size, None, None))                                     \
+  X(key_size_micro, CAT1, AUTO, "Pool Key Size Micro", "选池键微盘市值", "母集∧微盘行业白名单内实时总市值(亿元), 外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base,wl})", TS(PoolKey, size_micro, None, None)) \
+  X(key_pe, CAT1, AUTO, "Pool Key PE", "选池键PE", "母集内 −归母净利TTM/实时市值 (= −EP), 外NaN", R"(-\frac{NP^{TTM}}{\mathrm{mcap}_t})", TS(PoolKey, pe, None, None))                                         \
+  X(key_pb, CAT1, AUTO, "Pool Key PB", "选池键PB", "母集内 −归母权益MRQ/实时市值 (= −BP), 外NaN", R"(-\frac{EQ^{MRQ}}{\mathrm{mcap}_t})", TS(PoolKey, pb, None, None))                                         \
+  X(key_dy, CAT1, AUTO, "Pool Key DY", "选池键股息率", "母集内股息率TTM, 外NaN", R"(\mathrm{dy}^{TTM})", TS(PoolKey, dy, None, None))

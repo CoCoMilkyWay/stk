@@ -5,7 +5,7 @@
 #include "features/Bar/FieldsGenerated.hpp" // IWYU pragma: keep
 #include "features/FeaturesDefine.hpp"
 #include "features/Lob/FieldsGenerated.hpp" // IWYU pragma: keep
-#include "features/Method/TS.hpp"           // OP 行 Tf (FieldInfo.ts_tf → 指纹; RowWriter 落盘套用)
+#include "features/Method/TS.hpp"           // TS 行 Tf (FieldInfo.ts_tf → 指纹; RowWriter 落盘套用)
 #include "features/TimeIndex.hpp"
 #include <array>
 #include <cstddef>
@@ -31,7 +31,7 @@
 // ============================================================================
 
 // ============================================================================
-// 节点 flush 域 (OP 列的层 / 有效性标志由此推出; SRC_VALID_OP 在档命名空间内按名查到本档的)
+// 节点 flush 域 (TS 列的层 / 有效性标志由此推出; SRC_VALID_TS 在档命名空间内按名查到本档的)
 // ============================================================================
 #define NODE_FLUSH_ONE(name, type, args, ...) constexpr Trigger name = NODE_FLUSH(__VA_ARGS__);
 #define TIER_NODE_FLUSH(T, ns) \
@@ -94,21 +94,21 @@ ALL_TIERS(CHECK_TIER_FIELDS)
 
 // ============================================================================
 // 每个字段的"来源" (GUI 特征依赖解析用)
-//   OP(node[,port]) → 节点名 (如 "Book") + 口名 (单口节点 ""); CS(ns,lvl,src,...) → 源字段 code (TS / CS 列名跨档唯一, 旁读也不加档名); 其余 → ""
+//   TS(node[,port]) → 节点名 (如 "Book") + 口名 (单口节点 ""); CS(ns,lvl,src,...) → 源字段 code (TS / CS 列名跨档唯一, 旁读也不加档名); 其余 → ""
 //   口名配合 node_deps::TABLE 的 "Up.port" 项: 下游只引用某一口时, 依赖只算该口的字段
 // ============================================================================
 struct FieldSource {
   const char *code;   // 字段 code
-  const char *source; // 节点名 (OP) / 源字段 code (CS) / 空 (LABEL/FLAG)
-  const char *port;   // 口名 (OP 多口) / 空
+  const char *source; // 节点名 (TS) / 源字段 code (CS) / 空 (LABEL/FLAG)
+  const char *port;   // 口名 (TS 多口) / 空
 };
-#define SRCSRC_OP(code, node, ...) #node
+#define SRCSRC_TS(code, node, ...) #node
 #define SRCSRC_CS(code, ns, lvl, src, ...) #src
 #define SRCSRC_LABEL(code) ""
 #define SRCSRC_FLAG(code) ""
-#define SRCPORT_OP_3(node, tf, m) ""
-#define SRCPORT_OP_4(node, port, tf, m) #port
-#define SRCPORT_OP(code, ...) SRC_OP_PICK(__VA_ARGS__, SRCPORT_OP_4, SRCPORT_OP_3, , )(__VA_ARGS__)
+#define SRCPORT_TS_3(node, tf, m) ""
+#define SRCPORT_TS_4(node, port, tf, m) #port
+#define SRCPORT_TS(code, ...) SRC_NODE_PICK(__VA_ARGS__, SRCPORT_TS_4, SRCPORT_TS_3, , )(__VA_ARGS__)
 #define SRCPORT_CS(...) ""
 #define SRCPORT_LABEL(code) ""
 #define SRCPORT_FLAG(code) ""
@@ -121,9 +121,9 @@ TIER_LEVELS(GENERATE_LEVEL_SOURCES)
 
 // ============================================================================
 // 编译期一致性检查: 列所在层 == 来源允许的层
-//   OP → 节点 flush 域 (onMinute→L1, 其余→L0); CS/LABEL → L0/L1; FLAG 任意
+//   TS → 节点 flush 域 (onMinute→L1, 其余→L0); CS/LABEL → L0/L1; FLAG 任意
 // ============================================================================
-#define SRC_LEVEL_OP(node, ...) level_of(node_flush::node)
+#define SRC_LEVEL_TS(node, ...) level_of(node_flush::node)
 #define SRC_LEVEL_CS(...) kLevel
 #define SRC_LEVEL_LABEL kLevel
 #define SRC_LEVEL_FLAG kLevel

@@ -94,10 +94,10 @@ private:
 
 // 一侧 (side token, S = 公式侧上标, CN 侧中文) × 一阈值 (b token; TE / TC / TF = 阈值的 英文 / 中文 / 公式 字面) 的 额/量/笔/价变 4 行
 #define TRADESIZE_ROWS(X, CAT1, side, S, CN, b, TE, TC, TF)                                                                                                                                                                                                                                                       \
-  X(amt_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Amount", "主动" CN "≥" TC "成交额", "分钟内单笔成交额≥" TC "的主动" CN "成交额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{T,)" S R"(}| \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, amt_taker_##side##_ge_##b, Log, None)) \
-  X(vol_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Volume", "主动" CN "≥" TC "成交量", "分钟内单笔成交额≥" TC "的主动" CN "成交量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{T,)" S R"(}| \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, vol_taker_##side##_ge_##b, Log, None))        \
-  X(n_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Count", "主动" CN "≥" TC "成交笔数", "分钟内单笔成交额≥" TC "的主动" CN "成交笔数", R"(\#O_{\Delta t}^{T,)" S R"(} \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, n_taker_##side##_ge_##b, Log, None))                                \
-  X(dlogp_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Log-Price Change", "主动" CN "≥" TC "成交价变动和", "分钟内单笔成交额≥" TC "的主动" CN "成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,)" S R"(}, P_\tau|O_\tau| \geq )" TF R"(])", OP(TradeSize, dlogp_taker_##side##_ge_##b, None, None))
+  X(amt_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Amount", "主动" CN "≥" TC "成交额", "分钟内单笔成交额≥" TC "的主动" CN "成交额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{T,)" S R"(}| \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", TS(TradeSize, amt_taker_##side##_ge_##b, Log, None)) \
+  X(vol_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Volume", "主动" CN "≥" TC "成交量", "分钟内单笔成交额≥" TC "的主动" CN "成交量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{T,)" S R"(}| \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", TS(TradeSize, vol_taker_##side##_ge_##b, Log, None))        \
+  X(n_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Count", "主动" CN "≥" TC "成交笔数", "分钟内单笔成交额≥" TC "的主动" CN "成交笔数", R"(\#O_{\Delta t}^{T,)" S R"(} \mathbf{1}[P_\tau|O_\tau| \geq )" TF R"(])", TS(TradeSize, n_taker_##side##_ge_##b, Log, None))                                \
+  X(dlogp_taker_##side##_ge_##b, CAT1, AUTO, "Taker " S " >= " TE " Log-Price Change", "主动" CN "≥" TC "成交价变动和", "分钟内单笔成交额≥" TC "的主动" CN "成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,)" S R"(}, P_\tau|O_\tau| \geq )" TF R"(])", TS(TradeSize, dlogp_taker_##side##_ge_##b, None, None))
 
 // 一阈值的 买 4 + 卖 4 = 8 行
 #define TRADESIZE_THR_ROWS(X, CAT1, b, TE, TC, TF)       \

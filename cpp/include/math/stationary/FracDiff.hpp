@@ -32,7 +32,7 @@ struct FracDiff {
       {"d", 0.05f, 0.0f, 1.0f},
       {"窗口", 10, 10, 500},
   };
-  static constexpr OperatorDef def = {"分数差分", meta, 2};
+  static constexpr StepDef def = {"分数差分", meta, 2};
 
   template <typename GetD, typename GetWindow>
   static void compute(std::span<const float> in, std::span<float> out, GetD get_d, GetWindow get_window) {

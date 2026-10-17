@@ -10,7 +10,7 @@
 //
 // 公式: (1-L)^d x_t, d ∈ Z+
 //
-// 其中 L 是滞后算子: L x_t = x_{t-1}
+// 其中 L 是滞后运算: L x_t = x_{t-1}
 //
 // d=1: Δx_t = x_t - x_{t-1}
 // d=2: Δ²x_t = x_t - 2x_{t-1} + x_{t-2}
@@ -136,10 +136,10 @@ inline void int_diff(std::span<const float> in, std::span<float> out, int order)
   int_diff(in.data(), out.data(), in.size(), order);
 }
 
-// Operator 结构体定义
+// 变换步定义
 struct IntDiff {
   static constexpr ParamMeta meta[] = {{"阶数", 1, 1, 3}};
-  static constexpr OperatorDef def = {"整数差分", meta, 1};
+  static constexpr StepDef def = {"整数差分", meta, 1};
 
   template <typename GetOrder>
   static void compute(std::span<const float> in, std::span<float> out, GetOrder get_order) {

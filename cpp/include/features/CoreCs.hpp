@@ -46,7 +46,7 @@
 // (档缺的层无特化, run<LVL> 编译期跳过)
 // ============================================================================
 #define CS_RUN_CS(code, ns, src_lvl, s, tf, m) core.template run_one<kLevel, ns::Tier, src_lvl, ns::L##src_lvl##_Field::s, FO::code, cs::tf, cs::m>(t);
-#define CS_RUN_OP(code, ...)
+#define CS_RUN_TS(code, ...)
 #define CS_RUN_LABEL(code)
 #define CS_RUN_FLAG(code)
 #define CS_RUN_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(CS_RUN, code, src)
@@ -59,7 +59,7 @@ struct CsRef {
   bool neutral; // 方法要 NeutralRank 上下文
 };
 #define CS_REF_CS(code, ns, src_lvl, s, tf, m) CsRef{ns::Tier::kId, src_lvl, ns::L##src_lvl##_Field::s, cs::m::kNeutral},
-#define CS_REF_OP(code, ...)
+#define CS_REF_TS(code, ...)
 #define CS_REF_LABEL(code)
 #define CS_REF_FLAG(code)
 #define CS_REF_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(CS_REF, code, src)

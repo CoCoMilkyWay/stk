@@ -163,25 +163,25 @@ private:
 
 // 一个事件类型 e (taker/maker/cancel) 的 额/量/笔 × 买/卖 6 行; E = 公式事件上标, EN / CN = 英 / 中文事件名 (字面串)
 #define FLOW_EVENT_ROWS(X, CAT1, e, E, EN, CN)                                                                                                                                             \
-  X(amt_##e##_bid, CAT1, AUTO, EN " Bid Amount", "买方" CN "额", "分钟内买方" CN "额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{)" E R"(,B}|)", OP(Flow, amt_##e##_bid, Log, None)) \
-  X(amt_##e##_ask, CAT1, AUTO, EN " Ask Amount", "卖方" CN "额", "分钟内卖方" CN "额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{)" E R"(,A}|)", OP(Flow, amt_##e##_ask, Log, None)) \
-  X(vol_##e##_bid, CAT1, AUTO, EN " Bid Volume", "买方" CN "量", "分钟内买方" CN "量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E R"(,B}|)", OP(Flow, vol_##e##_bid, Log, None))        \
-  X(vol_##e##_ask, CAT1, AUTO, EN " Ask Volume", "卖方" CN "量", "分钟内卖方" CN "量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E R"(,A}|)", OP(Flow, vol_##e##_ask, Log, None))        \
-  X(n_##e##_bid, CAT1, AUTO, EN " Bid Count", "买方" CN "笔数", "分钟内买方" CN "笔数", R"(\#O_{\Delta t}^{)" E R"(,B})", OP(Flow, n_##e##_bid, Log, None))                                \
-  X(n_##e##_ask, CAT1, AUTO, EN " Ask Count", "卖方" CN "笔数", "分钟内卖方" CN "笔数", R"(\#O_{\Delta t}^{)" E R"(,A})", OP(Flow, n_##e##_ask, Log, None))
+  X(amt_##e##_bid, CAT1, AUTO, EN " Bid Amount", "买方" CN "额", "分钟内买方" CN "额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{)" E R"(,B}|)", TS(Flow, amt_##e##_bid, Log, None)) \
+  X(amt_##e##_ask, CAT1, AUTO, EN " Ask Amount", "卖方" CN "额", "分钟内卖方" CN "额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{)" E R"(,A}|)", TS(Flow, amt_##e##_ask, Log, None)) \
+  X(vol_##e##_bid, CAT1, AUTO, EN " Bid Volume", "买方" CN "量", "分钟内买方" CN "量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E R"(,B}|)", TS(Flow, vol_##e##_bid, Log, None))        \
+  X(vol_##e##_ask, CAT1, AUTO, EN " Ask Volume", "卖方" CN "量", "分钟内卖方" CN "量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E R"(,A}|)", TS(Flow, vol_##e##_ask, Log, None))        \
+  X(n_##e##_bid, CAT1, AUTO, EN " Bid Count", "买方" CN "笔数", "分钟内买方" CN "笔数", R"(\#O_{\Delta t}^{)" E R"(,B})", TS(Flow, n_##e##_bid, Log, None))                                \
+  X(n_##e##_ask, CAT1, AUTO, EN " Ask Count", "卖方" CN "笔数", "分钟内卖方" CN "笔数", R"(\#O_{\Delta t}^{)" E R"(,A})", TS(Flow, n_##e##_ask, Log, None))
 
 // taker 独有的第 4 项: 主动买 / 主动卖 成交的 Σ 对数价变 (基点; 相对上一笔任意有效成交)
 #define FLOW_TAKER_DLOGP_ROWS(X, CAT1)                                                                                                                                                                                                                                      \
-  X(dlogp_taker_bid, CAT1, AUTO, "Taker Bid Log-Price Change", "主动买成交价变动和", "分钟内主动买成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,B}])", OP(Flow, dlogp_taker_bid, None, None)) \
-  X(dlogp_taker_ask, CAT1, AUTO, "Taker Ask Log-Price Change", "主动卖成交价变动和", "分钟内主动卖成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,A}])", OP(Flow, dlogp_taker_ask, None, None))
+  X(dlogp_taker_bid, CAT1, AUTO, "Taker Bid Log-Price Change", "主动买成交价变动和", "分钟内主动买成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,B}])", TS(Flow, dlogp_taker_bid, None, None)) \
+  X(dlogp_taker_ask, CAT1, AUTO, "Taker Ask Log-Price Change", "主动卖成交价变动和", "分钟内主动卖成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,A}])", TS(Flow, dlogp_taker_ask, None, None))
 
 #define FIELDS_L1_Flow(X, CAT1)                                                                                                                                                                                                                                          \
   FLOW_EVENT_ROWS(X, CAT1, taker, "T", "Taker", "主动成交")                                                                                                                                                                                                              \
   FLOW_TAKER_DLOGP_ROWS(X, CAT1)                                                                                                                                                                                                                                         \
   FLOW_EVENT_ROWS(X, CAT1, maker, "M", "Maker", "新增委托")                                                                                                                                                                                                              \
   FLOW_EVENT_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单")                                                                                                                                                                                                                \
-  X(vol_maker_lim_bid, CAT1, AUTO, "Limit-Down Bid Order Volume", "跌停价挂买量", "分钟内以当日跌停价挂出的买委托量(股, 彩票委托)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,B}| \mathbf{1}[P_\tau \leq P^{dn}_D + \varepsilon])", OP(Flow, vol_maker_lim_bid, Log, None)) \
-  X(vol_maker_lim_ask, CAT1, AUTO, "Limit-Up Ask Order Volume", "涨停价挂卖量", "分钟内以当日涨停价挂出的卖委托量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,A}| \mathbf{1}[P_\tau \geq P^{up}_D - \varepsilon])", OP(Flow, vol_maker_lim_ask, Log, None))             \
-  X(vol_first30s, CAT1, AUTO, "Volume First 30s", "前30秒成交量", "分钟前半段(0-29s)成交量(股); 后半段=vol_taker_bid+ask−本列", R"(\sum_{\tau \in [0,30s)} |O_\tau^T|)", OP(Flow, vol_first30s, Log, None))                                                              \
-  X(vwap, CAT1, AUTO, "VWAP", "成交量加权均价", "分钟成交额/成交量(元; 无成交沿用上一有效值)", R"(\frac{\sum_{\tau \in \Delta t} P_\tau |O_\tau^T|}{\sum_{\tau \in \Delta t} |O_\tau^T|})", OP(Flow, vwap, None, None))                                                  \
-  X(twap, CAT1, AUTO, "TWAP", "时间加权均价", "分钟内成交价时间加权均值(元, 末笔持有到分钟末; 当日尚无成交→vwap)", R"(\frac{\sum_\tau P_\tau (t_{\tau+1}-t_\tau)}{\sum_\tau (t_{\tau+1}-t_\tau)})", OP(Flow, twap, None, None))
+  X(vol_maker_lim_bid, CAT1, AUTO, "Limit-Down Bid Order Volume", "跌停价挂买量", "分钟内以当日跌停价挂出的买委托量(股, 彩票委托)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,B}| \mathbf{1}[P_\tau \leq P^{dn}_D + \varepsilon])", TS(Flow, vol_maker_lim_bid, Log, None)) \
+  X(vol_maker_lim_ask, CAT1, AUTO, "Limit-Up Ask Order Volume", "涨停价挂卖量", "分钟内以当日涨停价挂出的卖委托量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,A}| \mathbf{1}[P_\tau \geq P^{up}_D - \varepsilon])", TS(Flow, vol_maker_lim_ask, Log, None))             \
+  X(vol_first30s, CAT1, AUTO, "Volume First 30s", "前30秒成交量", "分钟前半段(0-29s)成交量(股); 后半段=vol_taker_bid+ask−本列", R"(\sum_{\tau \in [0,30s)} |O_\tau^T|)", TS(Flow, vol_first30s, Log, None))                                                              \
+  X(vwap, CAT1, AUTO, "VWAP", "成交量加权均价", "分钟成交额/成交量(元; 无成交沿用上一有效值)", R"(\frac{\sum_{\tau \in \Delta t} P_\tau |O_\tau^T|}{\sum_{\tau \in \Delta t} |O_\tau^T|})", TS(Flow, vwap, None, None))                                                  \
+  X(twap, CAT1, AUTO, "TWAP", "时间加权均价", "分钟内成交价时间加权均值(元, 末笔持有到分钟末; 当日尚无成交→vwap)", R"(\frac{\sum_\tau P_\tau (t_{\tau+1}-t_\tau)}{\sum_\tau (t_{\tau+1}-t_\tau)})", TS(Flow, twap, None, None))

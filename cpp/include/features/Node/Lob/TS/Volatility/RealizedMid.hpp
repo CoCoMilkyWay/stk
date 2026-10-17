@@ -61,10 +61,10 @@ private:
 #define NODE_RealizedMid(N) N(RealizedMid, (RealizedMid), (Depth.bid_price[0], Depth.ask_price[0], MidPrice.out()), onDepth, onMinute)
 
 #define FIELDS_L1_RealizedMid(X, CAT1)                                                                                                                                                                                                              \
-  X(rv_mid, CAT1, AUTO, "Mid-Price Realized Variance", "中间价变化率平方和", "分钟内逐次盘口更新中间价对数变化率(基点)平方和", R"(\sum_{j \in \Delta t} r_j^2,\; r_j = 10^4 \ln\frac{P_{mid,j}}{P_{mid,j-1}})", OP(RealizedMid, rv_mid, Log, None)) \
-  X(rv_up_mid, CAT1, AUTO, "Mid-Price Upside Variance", "中间价上行变化率平方和", "分钟内中间价正变化率平方和(基点²)", R"(\sum_{j \in \Delta t} r_j^2 \mathbf{1}[r_j>0])", OP(RealizedMid, rv_up_mid, Log, None))                                   \
-  X(rv_dn_mid, CAT1, AUTO, "Mid-Price Downside Variance", "中间价下行变化率平方和", "分钟内中间价负变化率平方和(基点²)", R"(\sum_{j \in \Delta t} r_j^2 \mathbf{1}[r_j<0])", OP(RealizedMid, rv_dn_mid, Log, None))                                 \
-  X(rm3_mid, CAT1, AUTO, "Mid-Price Third Moment", "中间价变化率立方和", "分钟内中间价对数变化率(基点)立方和; 偏度=rm3/rv^1.5", R"(\sum_{j \in \Delta t} r_j^3)", OP(RealizedMid, rm3_mid, Log, None))                                              \
-  X(rm4_mid, CAT1, AUTO, "Mid-Price Fourth Moment", "中间价变化率四次方和", "分钟内中间价对数变化率(基点)四次方和; 峰度=rm4/rv²", R"(\sum_{j \in \Delta t} r_j^4)", OP(RealizedMid, rm4_mid, Log, None))                                            \
-  X(r_max_mid, CAT1, AUTO, "Mid-Price Max Change", "中间价变化率最大值", "分钟内中间价对数变化率(基点)最大值(无更新→0)", R"(\max_{j \in \Delta t} r_j)", OP(RealizedMid, r_max_mid, None, None))                                                    \
-  X(r_min_mid, CAT1, AUTO, "Mid-Price Min Change", "中间价变化率最小值", "分钟内中间价对数变化率(基点)最小值(无更新→0)", R"(\min_{j \in \Delta t} r_j)", OP(RealizedMid, r_min_mid, None, None))
+  X(rv_mid, CAT1, AUTO, "Mid-Price Realized Variance", "中间价变化率平方和", "分钟内逐次盘口更新中间价对数变化率(基点)平方和", R"(\sum_{j \in \Delta t} r_j^2,\; r_j = 10^4 \ln\frac{P_{mid,j}}{P_{mid,j-1}})", TS(RealizedMid, rv_mid, Log, None)) \
+  X(rv_up_mid, CAT1, AUTO, "Mid-Price Upside Variance", "中间价上行变化率平方和", "分钟内中间价正变化率平方和(基点²)", R"(\sum_{j \in \Delta t} r_j^2 \mathbf{1}[r_j>0])", TS(RealizedMid, rv_up_mid, Log, None))                                   \
+  X(rv_dn_mid, CAT1, AUTO, "Mid-Price Downside Variance", "中间价下行变化率平方和", "分钟内中间价负变化率平方和(基点²)", R"(\sum_{j \in \Delta t} r_j^2 \mathbf{1}[r_j<0])", TS(RealizedMid, rv_dn_mid, Log, None))                                 \
+  X(rm3_mid, CAT1, AUTO, "Mid-Price Third Moment", "中间价变化率立方和", "分钟内中间价对数变化率(基点)立方和; 偏度=rm3/rv^1.5", R"(\sum_{j \in \Delta t} r_j^3)", TS(RealizedMid, rm3_mid, Log, None))                                              \
+  X(rm4_mid, CAT1, AUTO, "Mid-Price Fourth Moment", "中间价变化率四次方和", "分钟内中间价对数变化率(基点)四次方和; 峰度=rm4/rv²", R"(\sum_{j \in \Delta t} r_j^4)", TS(RealizedMid, rm4_mid, Log, None))                                            \
+  X(r_max_mid, CAT1, AUTO, "Mid-Price Max Change", "中间价变化率最大值", "分钟内中间价对数变化率(基点)最大值(无更新→0)", R"(\max_{j \in \Delta t} r_j)", TS(RealizedMid, r_max_mid, None, None))                                                    \
+  X(r_min_mid, CAT1, AUTO, "Mid-Price Min Change", "中间价变化率最小值", "分钟内中间价对数变化率(基点)最小值(无更新→0)", R"(\min_{j \in \Delta t} r_j)", TS(RealizedMid, r_min_mid, None, None))

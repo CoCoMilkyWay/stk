@@ -50,7 +50,7 @@ inline constexpr float kPxEps = 1e-4f;
 //----------------------------------------------------------------------------------------
 //   enum Out : size_t { <名>..., kCount };   // 输出口; 单输出用 { value, kCount }; 无输出 (源层) kCount = 0
 //   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域推入 CBuffer
-//   Op(<输入引用>...);                       // 只接输入 (const Series & / const DepthSeries & / 数据结构引用), 不接输出
+//   <NodeType>(<输入引用>...);               // 只接输入 (const Series & / const DepthSeries & / 数据结构引用), 不接输出
 // 输入红线: 只准接本资产的数据 (Series/DepthSeries/TickData/MinuteData) 与日频 PIT (fund::Pool).
 // 跨资产 / 全局状态 / CS 结果一律禁止 —— TS 必须保持资产局部纯函数, 回测重放可任意重排
 // (串行/并行/分片) 且与实盘推流逐值一致, 全系于此; 截面信息的表达一律走 CS 层与因子层.
@@ -58,12 +58,12 @@ inline constexpr float kPxEps = 1e-4f;
 //   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后推入)
 //   void reset();   (可选)                   // 有跨天状态才写
 // 单侧节点 (只看一侧盘口) 只收那一侧的 DepthSeries, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
-// 输出缓冲由 LobGraph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 OP(节点, 口) 引用.
+// 输出缓冲由 graph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 TS(节点, 口) 引用.
 // 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在节点文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------
-// CS NODE CONTRACT (截面: 节点 = Node/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行; 方法 = Method/CS.hpp, namespace cs)
+// CS COLUMN CONTRACT (截面列 = Node/<Tier>/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行, 无节点; 方法 = Method/CS.hpp, namespace cs)
 //----------------------------------------------------------------------------------------
 //   struct <Method> {
 //     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, 仅 L1)
@@ -73,8 +73,8 @@ inline constexpr float kPxEps = 1e-4f;
 // 无状态 (静态函数), 无实例; 一行字段 CS(src_lvl, src, Tf, Method) = gather → Tf::apply → Method::apply → scatter,
 // CoreCrosssection 按字段表编译期展开 (与 TS 的 NODES 展开同构). 无效资产输出 0 由基建写.
 // 方法依赖 NaN 语义 (isfinite): 实现在 src/features/Method/CS.cpp (precise-math TU), 头文件只声明.
-// 节点文件按"算的是什么特征"命名 (= 源节点名), 不按方法命名; 一文件 = 该节点输出列的全部截面因子.
-// 同一套 struct 另有运行期入口 cs::column_fn(TfId, MethodId) (Transform 分析用): 探索里验证的变换 == 落盘节点.
+// 截面列文件按"算的是什么特征"命名 (= 源节点名), 不按方法命名; 一文件 = 该节点输出列的全部截面列.
+// 同一套 struct 另有运行期入口 cs::column_fn(TfId, MethodId) (Transform 分析用): 探索里验证的变换 == 落盘截面列.
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------

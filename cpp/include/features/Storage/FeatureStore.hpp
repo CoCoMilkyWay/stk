@@ -373,13 +373,13 @@ using BarFeatureStore = FeatureStore<bar::Tier>;
 // 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_try_open / cs_try_open
 // 定址一次), 每次调用只剩指针算术.
 //   ts_write<L>(day, t, field, a, value)   单资产单列 (TS: 列间跨步 A)
-//   ts_write_row<L>(day, t, a, dag)        按字段表 SRC 列写一行全部 OP 列
+//   ts_write_row<L>(day, t, a, dag)        按字段表 SRC 列写一行全部 TS 列
 //   cs_col<L>(day, t, field)               单列全部资产的连续段 (CS 读源列 / 就地写目标列)
-//   OP(node[, port], Tf, Method) → ts::Tf::apply(dag.node.last(port)); CS/LABEL/FLAG/META 不在 row 写
+//   TS(node[, port], Tf, Method) → ts::Tf::apply(dag.node.last(port)); CS/LABEL/FLAG/META 不在 row 写
 // ============================================================================
 namespace fstore {
 
-// 唯一真正需要逐档逐层宏展开的东西: 按字段表 SRC 列写一行全部 OP 列
+// 唯一真正需要逐档逐层宏展开的东西: 按字段表 SRC 列写一行全部 TS 列
 template <class T, size_t LVL>
 struct RowWriter;
 #define STORE_ROW_WRITER(T, ns, name, num, fields, psd)                                                                      \
@@ -392,10 +392,10 @@ struct RowWriter;
     }                                                                                                                        \
   };
 
-// OP(node, Tf, Method) / OP(node, port, Tf, Method): 落盘值 = ts::Tf::apply(节点输出). Method 占位未接入 (Method/TS.hpp ★)
-#define STORE_ROW_OP_3(node, tf, m) ts::tf::apply(dag.node.last())
-#define STORE_ROW_OP_4(node, port, tf, m) ts::tf::apply(dag.node.last(dag.node.port))
-#define STORE_ROW_OP(code, ...) row[FO::code * A] = SRC_OP_PICK(__VA_ARGS__, STORE_ROW_OP_4, STORE_ROW_OP_3, , )(__VA_ARGS__);
+// TS(node, Tf, Method) / TS(node, port, Tf, Method): 落盘值 = ts::Tf::apply(节点输出). Method 占位未接入 (Method/TS.hpp ★)
+#define STORE_ROW_TS_3(node, tf, m) ts::tf::apply(dag.node.last())
+#define STORE_ROW_TS_4(node, port, tf, m) ts::tf::apply(dag.node.last(dag.node.port))
+#define STORE_ROW_TS(code, ...) row[FO::code * A] = SRC_NODE_PICK(__VA_ARGS__, STORE_ROW_TS_4, STORE_ROW_TS_3, , )(__VA_ARGS__);
 #define STORE_ROW_CS(code, ...)
 #define STORE_ROW_LABEL(code)
 #define STORE_ROW_FLAG(code)

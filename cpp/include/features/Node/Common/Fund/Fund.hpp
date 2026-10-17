@@ -3,7 +3,7 @@
 // =============================================================================
 // Fund - 日频 PIT 基本面 (广播型节点: compute=onDay 每天一次, flush=onMinute 每分钟原样推出)
 //        持一个 fund::Stream (per-资产日频状态机), 盘前沿交易日历推进到当日算出全部口 (估值分母 / 因子 raw / filter),
-//        盘中每分钟广播; 下游 (Valuation) 按口取 Series, 落盘列直接 OP(Fund, 口). 方法见 Method/Fundamental.hpp
+//        盘中每分钟广播; 下游 (Valuation) 按口取 Series, 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
 //        两档共用类; 节点实例 / 落盘列见 Node/{Pool,All}/TS/Fund/Fund.hpp
 // =============================================================================
 //   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.

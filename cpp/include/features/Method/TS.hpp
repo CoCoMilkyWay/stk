@@ -1,9 +1,9 @@
 #pragma once
 
 // =============================================================================
-// 时序归一化 (namespace ts): 与 Method/CS.hpp 对仗, 声明在字段表 SRC 列 OP(node[, port], Tf, Method)
+// 时序归一化 (namespace ts): 与 Method/CS.hpp 对仗, 声明在字段表 SRC 列 TS(node[, port], Tf, Method)
 // =============================================================================
-//   元素预变换 Tf (OP 行倒数第二参; 无参, 元素级, 单调, 逐值纯函数 → 落盘时 RowWriter 直接套用):
+//   元素预变换 Tf (TS 行倒数第二参; 无参, 元素级, 单调, 逐值纯函数 → 落盘时 RowWriter 直接套用):
 //     None     x → x
 //     Log      x → sign(x)·log1p(|x|)   (与 cs::Log 同式; 重尾量 (量/额) 压尾)
 //     Asinh    x → asinh(x)             (≈ 小值线性 / 大值对数, 不需要 log1p 的保号技巧)
@@ -11,13 +11,13 @@
 //     Sqrt     x → sign(x)·sqrt(|x|)    (幂变换 α = 0.5 固定; Tf 无参)
 //     【fast-math 契约】落盘热路径 TU 走 -ffast-math, 这里不做 isnan/isfinite: NaN 靠硬件算术透传 (与 Fund/Valuation 同约);
 //     cs::Log 的 "非 finite → NaN" 在 precise TU 里, 此处 ±inf 原样传
-//   时序方法 Method (OP 行末参; None 同时充当"关"). 单资产因果 expanding 统计, 只看历史:
+//   时序方法 Method (TS 行末参; None 同时充当"关"). 单资产因果 expanding 统计, 只看历史:
 //     Z / RobustZ / IqrZ / Rank / NormRank / Clip / Winsor
 //     ★ 占位: 只有名字 (枚举 / 元数据 / GUI 列), 尚无实现, 未接入 CoreLob; 落盘值 == Tf(节点输出).
 //       接入时需要每资产每列一份 expanding 状态 (放 DAG 旁), 签名届时再定; 探索侧对应 math::normalize (Transform 的 ts_norm).
 //
 //   消费方式:
-//     编译期: fstore::RowWriter (FeatureStore.hpp) 按 OP(..., Tf, Method) 展开 ts::Tf::apply(值) 写槽位
+//     编译期: fstore::RowWriter (FeatureStore.hpp) 按 TS(..., Tf, Method) 展开 ts::Tf::apply(值) 写槽位
 //     元数据: FieldInfo.ts_tf (FeatureStoreConfig, 进指纹) / FeatureMetadata.ts_tf + ts_method (Feature.hpp, GUI 两列)
 // =============================================================================
 

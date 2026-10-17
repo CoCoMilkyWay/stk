@@ -15,14 +15,14 @@
 //
 // 单个 asset 时间序列的 expanding 统计量归一化 (只用历史, 因果).
 // 截面归一化不在这里: 截面走生产同一套 cs::{Tf, Method} (features/Method/CS.hpp),
-// 探索里验证的截面变换必须就是能落盘的算子.
+// 探索里验证的截面变换必须就是能落盘的截面列.
 //
 // ============================================================================
 
 namespace math::normalize {
 
 // ============================================================================
-// 算子参数定义 (紧凑静态表)
+// 变换步参数定义 (紧凑静态表)
 // ============================================================================
 
 namespace meta {
@@ -78,10 +78,10 @@ inline const MethodDef &GetMethod(NormMethod m) {
   return g_methods[0];
 }
 
-// 初始化 Operator 为指定方法
-inline void InitOperator(Operator &op, NormMethod m) {
+// 初始化变换步为指定方法
+inline void InitStep(Step &op, NormMethod m) {
   auto &d = GetMethod(m);
-  op.init(OperatorDef{d.name, d.meta, d.param_count});
+  op.init(StepDef{d.name, d.meta, d.param_count});
 }
 
 // ============================================================================
@@ -529,7 +529,7 @@ inline void clip_log_zscore(std::span<const float> x, std::span<float> out,
 // TS方向: 对单个 asset 时间序列
 // p[0], p[1] 按 MethodDef 顺序访问参数
 inline void apply_ts(std::span<const float> x, std::span<float> out,
-                     NormMethod m, const Operator &p, size_t min_n = 2) {
+                     NormMethod m, const Step &p, size_t min_n = 2) {
   assert(x.size() == out.size());
   if (x.empty())
     return;

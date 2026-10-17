@@ -7,7 +7,7 @@
 #define NODE_Kline(N) N(Kline, (Kline), (minute_data, Fund.out(Fund.pre_close)), onMinute)
 
 #define FIELDS_L1_Kline(X, CAT1)                                                                                                      \
-  X(lob_open, CAT1, AUTO, "LOB Open", "LOB开盘价", "逐笔还原分钟开盘价(元)", R"(P^{\mathrm{open}}_t)", OP(Kline, open, None, None)) \
-  X(lob_high, CAT1, AUTO, "LOB High", "LOB最高价", "逐笔还原分钟最高价(元)", R"(P^{\mathrm{high}}_t)", OP(Kline, high, None, None)) \
-  X(lob_low, CAT1, AUTO, "LOB Low", "LOB最低价", "逐笔还原分钟最低价(元)", R"(P^{\mathrm{low}}_t)", OP(Kline, low, None, None))     \
-  X(lob_close, CAT1, AUTO, "LOB Close", "LOB收盘价", "逐笔还原分钟收盘价(元)", R"(P^{\mathrm{close}}_t)", OP(Kline, close, None, None))
+  X(lob_open, CAT1, AUTO, "LOB Open", "LOB开盘价", "逐笔还原分钟开盘价(元)", R"(P^{\mathrm{open}}_t)", TS(Kline, open, None, None)) \
+  X(lob_high, CAT1, AUTO, "LOB High", "LOB最高价", "逐笔还原分钟最高价(元)", R"(P^{\mathrm{high}}_t)", TS(Kline, high, None, None)) \
+  X(lob_low, CAT1, AUTO, "LOB Low", "LOB最低价", "逐笔还原分钟最低价(元)", R"(P^{\mathrm{low}}_t)", TS(Kline, low, None, None))     \
+  X(lob_close, CAT1, AUTO, "LOB Close", "LOB收盘价", "逐笔还原分钟收盘价(元)", R"(P^{\mathrm{close}}_t)", TS(Kline, close, None, None))
