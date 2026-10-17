@@ -1,6 +1,6 @@
 // fund — 日频 PIT 基本面实现 (qmt pit.cpp + def/ 链路移植)
 //
-// 结构: Pool::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
+// 结构: Panel::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
 //                     全部 15 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
 //       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与 qmt 批量扫描逐日等价:
 //                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红 365 日滑窗 + 3 年双阈值,
@@ -290,7 +290,7 @@ struct PitPool {
 } // namespace
 
 // ============================================================================
-// Data: Pool 的全部内容 (只读共享)
+// Data: Panel 的全部内容 (只读共享)
 // ============================================================================
 struct Data {
   Axes axes;
@@ -964,14 +964,14 @@ inline int first_d_of_year(const Axes &axes, int y) { return axes.lower(y * 1000
 } // namespace
 
 // ============================================================================
-// Pool
+// Panel
 // ============================================================================
-Pool::Pool() = default;
-Pool::~Pool() = default;
+Panel::Panel() = default;
+Panel::~Panel() = default;
 
-int Pool::date_index(Ymd d) const { return data().axes.exact(d); }
+int Panel::date_index(Ymd d) const { return data().axes.exact(d); }
 
-void Pool::build(const std::vector<std::string> &codes,
+void Panel::build(const std::vector<std::string> &codes,
                  const std::vector<Ymd> &dates) {
   assert(!codes.empty() && "AssetAxis 为空");
   assert(!dates.empty() && "回测日为空");
@@ -1075,7 +1075,7 @@ void Pool::build(const std::vector<std::string> &codes,
 
   auto t1 = std::chrono::steady_clock::now();
   double sec = std::chrono::duration<double>(t1 - t0).count();
-  std::printf("[fund::Pool] built: %d assets, D axis %d, grid [%d, %d) (%.1fs)\n",
+  std::printf("[fund::Panel] built: %d assets, D axis %d, grid [%d, %d) (%.1fs)\n",
               n_a, n_d, pit.g0, pit.g0 + pit.n_g, sec);
 }
 
@@ -1502,9 +1502,9 @@ struct State {
   }
 };
 
-Stream::Stream(const Pool &pool, std::size_t asset_id)
-    : s_(std::make_unique<State>(pool.data(), static_cast<int>(asset_id))) {
-  assert(static_cast<int>(asset_id) < pool.data().axes.n_a() && "asset_id 越界 (AssetAxis)");
+Stream::Stream(const Panel &panel, std::size_t asset_id)
+    : s_(std::make_unique<State>(panel.data(), static_cast<int>(asset_id))) {
+  assert(static_cast<int>(asset_id) < panel.data().axes.n_a() && "asset_id 越界 (AssetAxis)");
 }
 Stream::~Stream() = default;
 

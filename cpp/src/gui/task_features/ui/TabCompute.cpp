@@ -362,7 +362,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   if (ImGui::SmallButton("Refresh"))
     state.libs_dirty = true;
   ImGui::SameLine();
-  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 选池: LOB 还原, 回测区间, 成员 = all 库 D−1 收盘 pool_* 列 → 先算 all)",
+  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 票池: LOB 还原, 回测区间, 成员 = all 库 D−1 收盘 pool_* 列 → 先算 all)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str());
   ImGui::Spacing();
 
@@ -373,7 +373,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     for (const PoolDef &p : feature_pools())
       state.libs.push_back(lib_status(config, p.name));
   }
-  // 选池库的成员来自 all 库: all 落盘齐全才放行
+  // 票池库的成员来自 all 库: all 落盘齐全才放行
   const bool all_complete = !state.libs.empty() && state.libs.front().ready && state.libs.front().done == state.libs.front().days;
 
   if (ImGui::BeginTable("Libraries", 7,

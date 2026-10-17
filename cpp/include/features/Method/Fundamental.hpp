@@ -1,6 +1,6 @@
 // fund — 日频 PIT 基本面 (qmt 估值/因子/filter 链路移植): Fund 节点的数据源 + 逐日推进方法
 //
-//   Pool    数据源. Phase 2 前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × AssetAxis A 轴的
+//   Panel    数据源. Phase 2 前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × AssetAxis A 轴的
 //           原始网格 (close/股本/涨跌停/状态/两融, cutoff 已套, ffill 已做) + per-A 事件链 (ttm/资产负债/年报/分红/预告/行业).
 //           网格只保留 [首回测日 − 15, 末] (trading_st 连续 15 日计数所需), 历史依赖全在事件链上; 只读, 全部 TS worker 共享.
 //   Stream  per-资产日频状态机 (Fund 节点各持一个). advance_to(d) 沿 D 轴逐日推进到 d (回测日之间的非回测日也走,
@@ -51,12 +51,12 @@ inline std::uint8_t sw2021_l1_name_to_id(std::string_view name) {
 struct Data;  // 轴 / meta / 网格切片 / 事件链 (定义在 .cpp)
 struct State; // Stream 内部状态 (定义在 .cpp)
 
-class Pool {
+class Panel {
 public:
-  Pool();
-  ~Pool();
-  Pool(const Pool &) = delete;
-  Pool &operator=(const Pool &) = delete;
+  Panel();
+  ~Panel();
+  Panel(const Panel &) = delete;
+  Panel &operator=(const Panel &) = delete;
 
   // codes: AssetAxis 顺序的 "000001.SZ"; dates: 回测日升序 (决定网格切片起点, 必须全部命中交易日历).
   // 本地 parquet 缺失 → assert (Phase 2 前置条件: 基本面 sync 已完成).
@@ -66,7 +66,7 @@ public:
   int date_index(misc::Ymd d) const; // D 轴下标; 不是交易日 → -1
 
   const Data &data() const {
-    assert(d_ != nullptr && "fund::Pool 未 build");
+    assert(d_ != nullptr && "fund::Panel 未 build");
     return *d_;
   }
 
@@ -76,7 +76,7 @@ private:
 
 class Stream {
 public:
-  Stream(const Pool &pool, std::size_t asset_id);
+  Stream(const Panel &panel, std::size_t asset_id);
   ~Stream();
   Stream(const Stream &) = delete;
   Stream &operator=(const Stream &) = delete;

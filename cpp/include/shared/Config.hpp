@@ -83,7 +83,7 @@ struct Config {
 
   // 特征库目录按库名分片: <feature_dir>/<lib>. 各库并存, 重算一个不清别人的库; 写读两端唯一的路径入口 (库名见 FeatureLib.hpp)
   std::string FeatureLibDir(std::string_view lib) const { return feature_dir + "/" + std::string(lib); }
-  // Bar 档 (All: 分钟 K + 基本面, 全市场 A 轴) 的库名; 其余库名 = 选池名 (Lob 档)
+  // Bar 档 (All: 分钟 K + 基本面, 全市场 A 轴) 的库名; 其余库名 = 票池名 (Lob 档)
   static constexpr const char *kAllTierDir = "all";
 
 private:

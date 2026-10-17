@@ -41,7 +41,7 @@ struct AssetItem {
   AssetItem() = default;
   AssetItem(size_t id, std::string code, std::string name, std::string exch, misc::Ymd start, misc::Ymd end);
 
-  // "000001.SZ": A 轴 / universe::Pool / 归档目录的键
+  // "000001.SZ": A 轴 / pool::Panel / 归档目录的键
   std::string code_ex() const {
     return asset_code + "." + exchange;
   }

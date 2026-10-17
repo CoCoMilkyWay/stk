@@ -241,7 +241,7 @@ void snapshot(const Catalog &cat, const Ids &ids, const Spec &s, const std::vect
 void meta(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
           const std::function<void(const Rows &)> &fn);
 
-// all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (AssetInfo 与 fund::Pool 共用)
+// all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (AssetInfo 与 fund::Panel 共用)
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today);
 
 } // namespace fundamental

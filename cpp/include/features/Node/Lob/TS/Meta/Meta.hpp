@@ -2,7 +2,7 @@
 // 元数据列: 基建标志 ts_valid / cs_valid (FLAG), 由 CoreTs 手工写, 两层都落. 无节点 (不进 DAG):
 //   fmeta        编码/解码唯一事实源 → features/MetaFlag.hpp (稳定头, 消费端不依赖本节点文件)
 //   MetaTracker  状态机 + 编码语义 → Node/Common/Meta/Meta.hpp (两档共用; Lob 档每笔另喂 on_tick)
-//   cs_valid = 当日在池: 选池 = all 库 D−1 收盘行 (L1 254) 的 pool_<库名> 列 (universe::Pool, 见 shared/Pool.hpp)
+//   cs_valid = 当日在池: 票池 = all 库 D−1 收盘行 (L1 254) 的 pool_<库名> 列 (pool::Panel, 见 shared/Pool.hpp)
 
 #include "features/Node/Common/Meta/Meta.hpp" // IWYU pragma: keep
 

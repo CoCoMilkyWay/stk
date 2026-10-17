@@ -12,7 +12,7 @@
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一个选池库: 换池 / 库重算后整体重建 (TaskFeatures).
+//           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一个票池库: 换池 / 库重算后整体重建 (TaskFeatures).
 #pragma once
 
 #include "misc/date.hpp"
@@ -28,7 +28,7 @@ namespace GUI::Features {
 
 class OrderFlowService {
 public:
-  explicit OrderFlowService(std::string pool); // pool = 选池库名 (Lob 档; 状态列另读 all 库)
+  explicit OrderFlowService(std::string pool); // pool = 票池库名 (Lob 档; 状态列另读 all 库)
   ~OrderFlowService();
 
   // Lifecycle (幂等)

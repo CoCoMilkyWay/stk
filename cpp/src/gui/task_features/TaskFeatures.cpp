@@ -314,7 +314,7 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // OrderFlow 一代服务绑一个选池库 (worker 常驻 reader 持该库清单): 换池 / 库重算后整体重建 + 重扫
+    // OrderFlow 一代服务绑一个票池库 (worker 常驻 reader 持该库清单): 换池 / 库重算后整体重建 + 重扫
     const auto renew_orderflow = [&] {
       state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.pool);
       data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
@@ -356,7 +356,7 @@ TaskHandle CreateFeaturesTask() {
     {
       auto &sel = data.feature.selection;
 
-      // Detect change (同档换选池: 字段表同, 选中下标不变, 但库变了)
+      // Detect change (同档换票池: 字段表同, 选中下标不变, 但库变了)
       bool feature_changed = (sel.primary_feature_idx() != state->prev_primary_feature_idx);
       bool level_changed = (sel.selected_level != state->prev_selected_level);
       bool lib_changed = (lib != state->prev_lib);

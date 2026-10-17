@@ -53,7 +53,7 @@ const std::vector<Spec> SPECS = checked({
     // industry_component: 月初快照 (低频), 月内变动靠 industry_change 增量 cover.
     {"cn_stock_industry_component",             "date",         Month, Day, 20, Bq{Partition},
      "行业成分月初快照: 一/二/三级行业码与名"},
-    // industry_change: 行业进出事件 (fund::Pool 仅取 change_flag=1 进入新行业一侧).
+    // industry_change: 行业进出事件 (fund::Panel 仅取 change_flag=1 进入新行业一侧).
     {"cn_stock_industry_change",                "date",         Month, All, 20, Bq{Partition},
      "行业进出事件 (change_flag=1 为进入) — 月内增量盖在月初快照上"},
     // industry_real_bar1d: 行业不复权日行情 (instrument 列实际是 industry_code).

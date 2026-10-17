@@ -33,12 +33,12 @@ void ComputeService::Request(ComputeConfig config) {
   Worker::Request(config);
 }
 
-// 两档同一流程: 规划本库 → fund_pool → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
+// 两档同一流程: 规划本库 → fund_panel → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
 bool ComputeService::run(ComputeConfig &config) {
   // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
   //   Bar (all)  交易日 [PIPELINE_START_DATE, end_date] × 全轴: 整段算, 不随回测窗口收窄; 无旁读档
-  //   Lob (选池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
-  //              × 选池并集 (all 库 D−1 收盘行的 pool 列 → universe::Pool, 逐日成员 = Meta cs_valid); 截面旁读 all 库
+  //   Lob (票池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
+  //              × 票池并集 (all 库 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 all 库
   // 张量/调度/落盘全按本库 A 轴, 需要 items/码表时经 uni.global 映射.
   FeatureLib lib{.tier = lib_tier(config.lib), .name = config.lib, .dir = data_.config.FeatureLibDir(config.lib)};
   FeatureLib side;
@@ -47,8 +47,8 @@ bool ComputeService::run(ComputeConfig &config) {
            "回测日历与配置区间不符 (改配置后没重算覆盖?)");
     lib.dates = data_.asset.backtest_dates();
     side = load_lib(data_.config, Config::kAllTierDir);
-    data_.universe_pool = universe::Pool::build(side, pool_def(lib.name).col, lib.dates);
-    lib.uni = data_.universe_pool.axis();
+    data_.pool_panel = pool::Panel::build(side, pool_def(lib.name).col, lib.dates);
+    lib.uni = data_.pool_panel.axis();
   } else {
     for (const CalendarDay &day : data_.assetinfo.get_stock_days())
       if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data_.config.end_date)
@@ -75,7 +75,7 @@ bool ComputeService::run(ComputeConfig &config) {
     std::vector<std::string> axis_codes(num_assets);
     for (size_t sub = 0; sub < num_assets; ++sub)
       axis_codes[sub] = asset_axis().code(lib.uni.global(sub));
-    data_.fund_pool.build(axis_codes, dates);
+    data_.fund_panel.build(axis_codes, dates);
   }
 
   // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;

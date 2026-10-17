@@ -5,7 +5,7 @@
 //   cs_valid = 当日在市可交易 ? 1 : 0 —— 日频常量 (盘前一次写满全部行, 逐行存, CS 行自足):
 //              非北交所 ∧ 已上市 (list_age ≥ 0) ∧ 未退市 (delist_age 未定义) ∧ 当日非停牌 (is_susp, 盘前可知).
 //              只看本资产代码 + 本资产 Fund 当日 PIT 口 → TS 资产局部纯函数, 不破一致性红线.
-//              全市场截面 (CS 列 / 选池) 只在它上面算; 选池母集的其余条件 (上市满 60 日 / 非 ST / st_* / 行业) 进 PoolKey 键掩码.
+//              全市场截面 (CS 列 / 票池) 只在它上面算; 票池母集的其余条件 (上市满 60 日 / 非 ST / st_* / 行业) 进 PoolKey 键掩码.
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define FIELDS_L1_Meta(X, CAT1)                                                                                                          \

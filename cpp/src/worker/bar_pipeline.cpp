@@ -23,21 +23,21 @@ struct TierFeed<bar::Tier> {
   static constexpr bool kHardFeed = true;
   static constexpr const char *kUnit = "bar";
 
-  const fund::Pool &fund_pool;
+  const fund::Panel &fund_panel;
   const UniverseAxis &uni;
   std::span<const misc::Ymd> dates;
   const fundamental::Catalog catalog;
   std::vector<Bar1mDay> ring; // 源环 (预取线程写, TS 经 pf_close / pf_ready 的 release/acquire 读)
 
   TierFeed(const PipelineArgs &args, const StoreRing &store)
-      : fund_pool(args.data.fund_pool), uni(args.lib.uni), dates(args.dates), ring(store.feed_ring_size()) {
+      : fund_panel(args.data.fund_panel), uni(args.lib.uni), dates(args.dates), ring(store.feed_ring_size()) {
     assert(uni.size() == asset_axis().size() && "Bar 档 A 轴 = 全轴");
   }
 
   size_t weight(size_t) const { return 1; } // 每资产每日恰 255 根, 负载均匀
 
   std::unique_ptr<CoreBar> make_core(size_t sub, int) const {
-    return std::make_unique<CoreBar>(fund_pool, asset_axis().code(uni.global(sub)), sub);
+    return std::make_unique<CoreBar>(fund_panel, asset_axis().code(uni.global(sub)), sub);
   }
 
   size_t prefetch(size_t d) {

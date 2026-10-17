@@ -76,7 +76,7 @@ AssetAxis &asset_axis();
 // UniverseAxis — 特征库的 A 轴 (子轴)
 //
 // ids = 库内资产在全局轴上的下标 (升序去重), hash = 按子轴顺序对码表做同一条 FNV 累积链 (fnv_append).
-// 写端规划 (Lob: 选池并集 sub_axis; Bar: 全轴 full_axis, hash == asset_axis().hash_at(num_assets), 同一条链的前缀值)
+// 写端规划 (Lob: 票池并集 sub_axis; Bar: 全轴 full_axis, hash == asset_axis().hash_at(num_assets), 同一条链的前缀值)
 // 后码表落库清单 (见 FeatureLib.hpp), 读端从清单重建同一子轴. 特征文件头存 (A_sub, hash), 不符 = 库内文件与清单
 // 不一致 → 读端删库判废, 等重算 (见 FeatureRead).
 //

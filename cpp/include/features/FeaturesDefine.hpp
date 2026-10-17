@@ -66,7 +66,7 @@
 //   #define NODE_<Name>(N)  N(<Name>, (NodeType), (inputs...), trigger[, flush_trigger])
 //     Name     节点名 (DAG 成员名); 同一节点类可有多个实例 (不同模板参数), 目前每个节点类一个节点, 同族列在节点内用口区分
 //     NodeType 节点类, 必须加括号 (模板参数里有逗号)
-//     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / fund_pool / asset_code_ / asset_id_ / date_ /
+//     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / fund_panel / asset_code_ / asset_id_ / date_ /
 //              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 源层数组 Depth.bid_qty 等;
 //              盘前即需的日频值直接引 y 槽 Up.y[Up.port] (Fund 的 Series 首个分钟 flush 才有值, 见 Fund.hpp).
 //              必须字面写在这一行 (CMake 按 "Up." 抽依赖; Up.out(Up.port) / Up.y[Up.port] 记单口, 其余记整节点), 不要藏进 helper 宏

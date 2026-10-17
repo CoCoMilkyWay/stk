@@ -51,7 +51,7 @@ inline constexpr float kPxEps = 1e-4f;
 //   enum Out : size_t { <名>..., kCount };   // 输出口; 单输出用 { value, kCount }; 无输出 (源层) kCount = 0
 //   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域推入 CBuffer
 //   <NodeType>(<输入引用>...);               // 只接输入 (const Series & / const DepthSeries & / 数据结构引用), 不接输出
-// 输入红线: 只准接本资产的数据 (Series/DepthSeries/TickData/MinuteData) 与日频 PIT (fund::Pool).
+// 输入红线: 只准接本资产的数据 (Series/DepthSeries/TickData/MinuteData) 与日频 PIT (fund::Panel).
 // 跨资产 / 全局状态 / CS 结果一律禁止 —— TS 必须保持资产局部纯函数, 回测重放可任意重排
 // (串行/并行/分片) 且与实盘推流逐值一致, 全系于此; 截面信息的表达一律走 CS 层与因子层.
 //   void compute();                          // 采样型: 直接写 y

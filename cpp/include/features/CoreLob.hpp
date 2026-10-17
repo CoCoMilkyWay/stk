@@ -20,7 +20,7 @@
 //   Lob 档 (逐笔 → LOB 源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的逐笔流 + 日频 PIT
-//   (fund::Pool), 不读其他资产 / 全局状态 / CS 结果. 张量行 (t, f, a) 因此只由
+//   (fund::Panel), 不读其他资产 / 全局状态 / CS 结果. 张量行 (t, f, a) 因此只由
 //   资产 a 截止秒 t 的事件决定, 对重放调度是不变量: 逐资产串行回测、并行回测、
 //   实盘全市场推流, 写出的值相同. 回测结果可迁移到实盘全系于此条, 破了它一切
 //   重排立即失效. (节点输入面契约见 DataDefine.hpp)
@@ -30,15 +30,15 @@ class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   friend Base;
 
 public:
-  // asset_id = 本库 A 轴下标 (= universe::Pool 的子轴下标, 查当日成员位)
-  CoreLob(const fund::Pool &fund_pool,
-          const universe::Pool &universe_pool,
+  // asset_id = 本库 A 轴下标 (= pool::Panel 的子轴下标, 查当日成员位)
+  CoreLob(const fund::Panel &fund_panel,
+          const pool::Panel &pool_panel,
           const std::string &code_ex,
           size_t asset_id = 0,
           size_t core_id = 0)
-      : Base(asset_id, fund_pool, code_ex, asset_id),
+      : Base(asset_id, fund_panel, code_ex, asset_id),
         core_id_(core_id),
-        universe_pool_(universe_pool),
+        pool_panel_(pool_panel),
         tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.tick_data.core_id = static_cast<uint32_t>(core_id);
@@ -62,8 +62,8 @@ public:
 
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日在池: 选池 (universe::Pool, 第 D 日由 all 库 D−1 收盘行定), 与 Fund 吃 fund_pool 同形
-  bool member(misc::Ymd date) const { return universe_pool_.in_pool(asset_id_, date); }
+  // 当日在池: 票池 (pool::Panel, 第 D 日由 all 库 D−1 收盘行定), 与 Fund 吃 fund_panel 同形
+  bool member(misc::Ymd date) const { return pool_panel_.in_pool(asset_id_, date); }
   ResamplerTick2Min &resampler() { return tick2min_; }
 
   // ---------------------------------------------------------------- L0 每笔 ----
@@ -112,7 +112,7 @@ private:
   }
 
   size_t core_id_;
-  const universe::Pool &universe_pool_; // 选池逐日成员 (只读共享; member 查 (asset_id_, date) → cs_valid)
+  const pool::Panel &pool_panel_; // 票池逐日成员 (只读共享; member 查 (asset_id_, date) → cs_valid)
 
   ResamplerTick2Min tick2min_;
 };

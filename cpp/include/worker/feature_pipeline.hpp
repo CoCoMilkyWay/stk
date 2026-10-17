@@ -149,7 +149,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   // 初始 owner 在本核构造 (first-touch); 处置权转移时对象不动, 只换驱动它的工作区.
   {
     TraceN("InitCores");
-    // asset_id = A 轴下标: 既是张量列 (fstore::ts_write), 也是 fund_pool 的 A 轴下标 (Pool::build 用同一码表)
+    // asset_id = A 轴下标: 既是张量列 (fstore::ts_write), 也是 fund_panel 的 A 轴下标 (Panel::build 用同一码表)
     for (const size_t asset_id : my_asset_ids)
       cores[asset_id] = feed.make_core(asset_id, worker_id);
   }

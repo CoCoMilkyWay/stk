@@ -4,7 +4,7 @@
 #include "features/Node/Common/Fund/Fund.hpp"
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Fund(N) N(Fund, (Fund), (fund_pool, asset_id_, date_), onDay, onMinute)
+#define NODE_Fund(N) N(Fund, (Fund), (fund_panel, asset_id_, date_), onDay, onMinute)
 
 // 三表流量项三口径行: item → item_q / item_ttm / item_lyr (Q 单季 / 滚动四季 / 上年年报)
 #define FUND_ROWS3(X, CAT1, item, EN, CN, DESC, UNIT, SYM)                                                                           \

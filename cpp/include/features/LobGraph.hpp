@@ -7,7 +7,7 @@
 
 // ============================================================================
 // Lob 档 DAG (namespace lob; 与 BarGraph.hpp 对仗, 一个 TU 只许 include 其一). 公共体见 GraphNode.hpp TIER_DAG.
-// 源 = 逐笔 (TickData, LOB 还原写出) + 分钟 K (MinuteData, 由逐笔重采样) + 日频 PIT (fund::Pool).
+// 源 = 逐笔 (TickData, LOB 还原写出) + 分钟 K (MinuteData, 由逐笔重采样) + 日频 PIT (fund::Panel).
 // ============================================================================
 namespace lob {
 

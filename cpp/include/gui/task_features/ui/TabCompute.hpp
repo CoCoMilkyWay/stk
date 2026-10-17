@@ -45,7 +45,7 @@ struct ComputeState {
   // Trigger for starting compute (set by UI, consumed by TaskFeatures)
   bool trigger_start = false;
 
-  // 库表: all + 各选池 (行序 = all 在前, 选池按字段表序)
+  // 库表: all + 各票池 (行序 = all 在前, 票池按字段表序)
   std::vector<LibStatus> libs;
   bool libs_dirty = true; // 下一帧重扫
 };

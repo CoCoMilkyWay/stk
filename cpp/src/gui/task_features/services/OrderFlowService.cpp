@@ -38,7 +38,7 @@ constexpr size_t UNIVERSE_COL_COUNT = 5;
 // worker 私有常驻资源 (首个请求时在 worker 线程建, 稳态零分配)
 // ============================================================================
 
-// 特征库读端: 特征列 = 库 A 轴 (Lob: 选池并集子轴; Bar: 全轴); 请求侧资产是全局下标, 经 sub_of 映射
+// 特征库读端: 特征列 = 库 A 轴 (Lob: 票池并集子轴; Bar: 全轴); 请求侧资产是全局下标, 经 sub_of 映射
 struct LibRead {
   FeatureLib lib;
   const UniverseAxis &uni = lib.uni;
@@ -96,7 +96,7 @@ private:
   bool step(size_t d); // 装一天并发布; false = 库判废
 
   SharedData &data_;
-  const std::string pool_; // 选池库名 (服务一代一个, 换池重建服务)
+  const std::string pool_; // 票池库名 (服务一代一个, 换池重建服务)
   std::optional<Res> res_;
   KlineReq cur_{};
   size_t sub_ = 0;                   // 选中资产的子轴下标 (run 映射一次)
@@ -146,7 +146,7 @@ public:
 
 private:
   struct Res {
-    LibRead lib;                  // 只用其选池并集子轴 (候选范围)
+    LibRead lib;                  // 只用其票池并集子轴 (候选范围)
     LibRead bar;                  // 状态列在 Bar 档 (Fund 只在 Bar 库落盘)
     FeatureRead::DayColumns cols; // 资产筛选状态列 (全轴)
     Res(FeatureLib l, FeatureLib b) : lib(std::move(l)), bar(std::move(b)) {
@@ -248,8 +248,8 @@ bool OrderFlowService::KlineWorker::run(KlineReq &req) {
   k.begin_generation(cur_.gen, cur_.asset, cur_.feats.size());
   k.reserve_capacity(); // 发布前完成: 之后 data() 恒稳定
 
-  // 请求侧 asset 是全局轴下标, 特征列按选池子轴索引. 不在子轴内 (初始
-  // 默认选中 / 换选池后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
+  // 请求侧 asset 是全局轴下标, 特征列按票池子轴索引. 不在子轴内 (初始
+  // 默认选中 / 换票池后的残留选中, 候选就绪后 GUI 会自动换代) → 无特征
   // 列可读, 直接发布"完整但空"的一代 —— 与全轴时代读到恒零列的语义一致.
   sub_ = res_->lib.uni.sub_of(static_cast<uint32_t>(cur_.asset));
   if (sub_ >= res_->lib.uni.size()) {

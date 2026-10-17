@@ -166,16 +166,16 @@ const TierMeta &tier_meta(TierId tier) {
 #undef GENERATE_TIER_META
 
 // ============================================================================
-// 选池 (FeatureLib.hpp 声明): Bar L1 的 Universe 类 CS 列 pool_<name> ↔ Lob 档库 <name>
+// 票池 (FeatureLib.hpp 声明): Bar L1 的 Pool 类 CS 列 pool_<name> ↔ Lob 档库 <name>
 // ============================================================================
 namespace {
 constexpr std::string_view kPoolPrefix = "pool_";
 constexpr bool is_pool(const FeatureMetadata &f) {
-  return f.data_type == FeatureDataType::CS && std::string_view(f.cat_l1) == "Universe" && std::string_view(f.code).starts_with(kPoolPrefix);
+  return f.data_type == FeatureDataType::CS && std::string_view(f.cat_l1) == "Pool" && std::string_view(f.code).starts_with(kPoolPrefix);
 }
 constexpr std::span<const FeatureMetadata> kBarL1 = bar::L1_meta_detail::TABLE;
 constexpr size_t kPoolCount = std::count_if(kBarL1.begin(), kBarL1.end(), is_pool);
-static_assert(kPoolCount > 0, "Bar 字段表没有选池列 (Node/Bar/CS/Pool 的 pool_*)");
+static_assert(kPoolCount > 0, "Bar 字段表没有票池列 (Node/Bar/CS/Pool 的 pool_*)");
 constexpr std::array<PoolDef, kPoolCount> kPools = [] {
   std::array<PoolDef, kPoolCount> out{};
   size_t n = 0;
@@ -192,7 +192,7 @@ const PoolDef &pool_def(std::string_view name) {
   for (const PoolDef &p : kPools)
     if (name == p.name)
       return p;
-  assert(false && "不是选池名 (all 库 pool_<name> 列)");
+  assert(false && "不是票池名 (all 库 pool_<name> 列)");
   return kPools.front();
 }
 

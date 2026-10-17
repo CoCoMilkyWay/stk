@@ -889,7 +889,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   Feature::Selection &sel = feature.selection;
 
   // ==========================================================================
-  // Section 1: Library + Level (库 = all (Bar 档) / 各选池 (Lob 档); 分析页读所选库, 因子页读所选选池)
+  // Section 1: Library + Level (库 = all (Bar 档) / 各票池 (Lob 档); 分析页读所选库, 因子页读所选票池)
   // ==========================================================================
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Lib:");
   ImGui::SameLine();

@@ -167,7 +167,7 @@ std::string lib_manifest(const std::string &dir) { return dir + "/lib.json"; }
 TierId lib_tier(std::string_view name) {
   if (name == Config::kAllTierDir)
     return TierId::Bar;
-  pool_def(name); // 不是选池名 → assert
+  pool_def(name); // 不是票池名 → assert
   return TierId::Lob;
 }
 
@@ -225,7 +225,7 @@ void save_lib(const FeatureLib &lib) {
 
 std::string default_pool(const Config &cfg) {
   const std::span<const PoolDef> pools = feature_pools();
-  assert(!pools.empty() && "Bar 字段表没有选池列 (Universe 类 pool_*)");
+  assert(!pools.empty() && "Bar 字段表没有票池列 (Pool 类 pool_*)");
   for (const PoolDef &p : pools)
     if (std::filesystem::exists(lib_manifest(cfg.FeatureLibDir(p.name))))
       return p.name;

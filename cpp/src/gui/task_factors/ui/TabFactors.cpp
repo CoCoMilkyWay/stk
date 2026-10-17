@@ -983,7 +983,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::Text("%s  %s .. %s", ctx.universe.c_str(), misc::dash(ctx.start_date).c_str(), misc::dash(ctx.end_date).c_str());
   if (ImGui::IsItemHovered())
     tip("因子目录 %s\n"
-        "• 作用域 = Feature 页所选选池 (Lob 库) + config 日期区间\n"
+        "• 作用域 = Feature 页所选票池 (Lob 库) + config 日期区间\n"
         "• 一个时间只算一个作用域",
         ctx.factor_dir.c_str());
   ImGui::SameLine();

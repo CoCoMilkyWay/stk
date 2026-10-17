@@ -5,10 +5,10 @@
 #include <algorithm>
 #include <cassert>
 
-namespace universe {
+namespace pool {
 
-Pool Pool::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
-  assert(bar.tier == TierId::Bar && bar.ready() && "选池源 = all 库 (先算 all)");
+Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
+  assert(bar.tier == TierId::Bar && bar.ready() && "票池源 = all 库 (先算 all)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
   constexpr size_t kLevel = 1;
   constexpr size_t kCloseRow = level_valid_rows(kLevel) - 1; // L1 254 (收盘)
@@ -26,7 +26,7 @@ Pool Pool::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> d
     const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
     assert(it != bar.dates.end() && *it == dates[i] && it != bar.dates.begin() && "回测日不在 all 库日期轴 (或是其首日): 重算 all 覆盖到 end_date");
     const misc::Ymd prev = *(it - 1);
-    assert(reader.has_date(prev) && "all 库缺选池源日 (D−1): 先把 all 库算完");
+    assert(reader.has_date(prev) && "all 库缺票池源日 (D−1): 先把 all 库算完");
     reader.load_day_columns(prev, cols, dc);
     assert(!reader.stale() && "all 库判废 (头不符): 重算 all");
     const feature_storage_t *row = dc.col(0) + kCloseRow * As;
@@ -44,9 +44,9 @@ Pool Pool::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> d
       ids.push_back(bar.uni.global(a));
       pick.push_back(a);
     }
-  assert(!ids.empty() && "选池在回测区间内并集为空");
+  assert(!ids.empty() && "票池在回测区间内并集为空");
 
-  Pool p;
+  Panel p;
   p.dates_.assign(dates.begin(), dates.end());
   p.axis_ = sub_axis(std::move(ids));
   const size_t A = pick.size();
@@ -57,12 +57,12 @@ Pool Pool::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> d
   return p;
 }
 
-bool Pool::in_pool(size_t sub, misc::Ymd d) const {
+bool Panel::in_pool(size_t sub, misc::Ymd d) const {
   const auto dit = std::lower_bound(dates_.begin(), dates_.end(), d);
-  assert(dit != dates_.end() && *dit == d && "universe: 该日不在本库日期轴");
+  assert(dit != dates_.end() && *dit == d && "pool: 该日不在本库日期轴");
   assert(sub < axis_.size());
   const size_t di = static_cast<size_t>(dit - dates_.begin());
   return member_[di * axis_.size() + sub] != 0;
 }
 
-} // namespace universe
+} // namespace pool

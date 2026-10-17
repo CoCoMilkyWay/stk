@@ -317,7 +317,7 @@ void rank_inverse_normal(float *y, std::size_t n) {
     y[sv[rank].second] = inverse_normal_cdf((static_cast<float>(rank) + 1.0f) * scale);
 }
 
-// 选池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选
+// 票池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选
 template <bool kHigh>
 void select_top(float *y, std::size_t n, std::size_t N) {
   std::vector<std::size_t> &idx = scratch_idx(n);
