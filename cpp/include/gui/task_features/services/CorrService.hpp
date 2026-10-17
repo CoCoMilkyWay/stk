@@ -1,5 +1,5 @@
 // CorrService / CorrPairService / CorrLagService — 相关矩阵 / 单对 lead-lag / 全矩阵 lag 峭点
-// 的单 worker 线程编排 (骨架见 StreamService.hpp; 口径与抽样见 shared/Correlation.hpp)
+// 的单 worker 线程编排 (骨架见 StreamService.hpp; 口径与抽样见 shared/Corr.hpp)
 //
 // 三个独立 service: 矩阵重 (F² × 样本数), 单对 lead-lag 轻 (只读两列, 悬停即算), lag 矩阵更重
 // (只在勾选时算) —— 分开才互不打断. 三者同一个 Spec (CorrSpec), 同一个引擎.
@@ -9,7 +9,7 @@
 #pragma once
 
 #include "gui/task_features/services/StreamService.hpp"
-#include "shared/Correlation.hpp"
+#include "shared/Corr.hpp"
 
 #include <vector>
 

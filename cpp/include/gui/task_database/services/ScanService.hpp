@@ -1,13 +1,13 @@
 // Scan Service - L2 binary / archive 扫盘 + 回测区间覆盖检查 (单 worker)
 //
-// 线程模型 (gui/util/Worker.hpp, 随对象):
+// 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request({seq, mode}); 帧首 handoff.take() → Asset::adopt 换进 + 留存覆盖结论
 //   - worker:   run = [扫 binary → 扫 archive] (RescanStorage) → 回测日历 → 覆盖统计 → 判定, 产物整件 post
 //               只读 data_.asset / data_.assetinfo (StateManager 保证扫描在飞期间 GUI 不换它们)
 //   - UI:       进度面 = 自身 (Scanning: 扫盘 天 / 月; Running: 覆盖统计 交易日)
 #pragma once
 
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "shared/Asset.hpp"

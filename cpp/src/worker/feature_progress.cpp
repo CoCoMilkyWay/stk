@@ -1,7 +1,7 @@
 // FeatureProgress —— 特征计算仪表盘 (拉取式, 固定 6 行, 布局见 feature_workers.hpp)
 #include "worker/feature_workers.hpp"
 
-#include "features/Backend/FeatureStore.hpp"
+#include "features/Storage/FeatureStore.hpp"
 
 #include <algorithm>
 #include <cassert>

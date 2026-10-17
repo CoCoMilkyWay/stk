@@ -2,7 +2,7 @@
 
 #include "features/Bar/NodesGenerated.hpp" // IWYU pragma: keep
 #include "features/GraphNode.hpp"          // graph::Node + TIER_DAG (两档共用)
-#include "features/Operator/Bar/TS/Label/LabelBar.hpp"
+#include "features/Node/Bar/TS/Label/LabelBar.hpp"
 
 // ============================================================================
 // Bar 档 DAG (namespace bar; 与 LobGraph.hpp 对仗, 一个 TU 只许 include 其一). 公共体见 GraphNode.hpp TIER_DAG.

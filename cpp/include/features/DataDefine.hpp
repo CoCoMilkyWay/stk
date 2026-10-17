@@ -18,11 +18,11 @@
 //========================================================================================
 
 //----------------------------------------------------------------------------------------
-// TRIGGER: 算子 compute()/flush() 的采样域. 每个节点在算子文件末尾的 NODE_ 宏里
+// TRIGGER: 节点 compute()/flush() 的采样域. 每个节点在节点文件末尾的 NODE_ 宏里
 // 声明 (compute 触发, flush 触发), LobGraph 按 CMake 汇总的 NODES 表展开成直线调度代码.
 //----------------------------------------------------------------------------------------
 enum class Trigger : uint8_t {
-  onDay,    // 盘前 (begin_day, 节点 reset 之后): 日频算子的 compute 域, 配 flush=onMinute 盘中广播
+  onDay,    // 盘前 (begin_day, 节点 reset 之后): 日频节点的 compute 域, 配 flush=onMinute 盘中广播
   onTaker,  // 成交单
   onMaker,  // 挂单
   onCancel, // 撤单
@@ -37,7 +37,7 @@ enum class Trigger : uint8_t {
 using Series = CBuffer<float, L2::BLEN>;
 using DepthSeries = Series[L2::LOB_DEPTH];
 
-// 缺失值约定 (全部算子 / 标签 / Fund 同一口径): "无定义" (空盘口 / 零分母 / 无标签 / PIT 缺失) 一律 NaN,
+// 缺失值约定 (全部节点 / 标签 / Fund 同一口径): "无定义" (空盘口 / 零分母 / 无标签 / PIT 缺失) 一律 NaN,
 // 不用 0 —— 0 是合法取值 (零收益 / 完全均衡), 消费端无法区分. 【fast-math 契约】只生产 NaN, 不 isnan.
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
@@ -46,7 +46,7 @@ inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 inline constexpr float kPxEps = 1e-4f;
 
 //----------------------------------------------------------------------------------------
-// OPERATOR CONTRACT (算子统一接口)
+// NODE CONTRACT (节点统一接口)
 //----------------------------------------------------------------------------------------
 //   enum Out : size_t { <名>..., kCount };   // 输出口; 单输出用 { value, kCount }; 无输出 (源层) kCount = 0
 //   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域推入 CBuffer
@@ -57,13 +57,13 @@ inline constexpr float kPxEps = 1e-4f;
 //   void compute();                          // 采样型: 直接写 y
 //   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后推入)
 //   void reset();   (可选)                   // 有跨天状态才写
-// 单侧算子 (只看一侧盘口) 只收那一侧的 DepthSeries, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
+// 单侧节点 (只看一侧盘口) 只收那一侧的 DepthSeries, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
 // 输出缓冲由 LobGraph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 OP(节点, 口) 引用.
-// 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在算子文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
+// 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在节点文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------
-// CS OPERATOR CONTRACT (截面: 算子 = Operator/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行; 方法 = Method/CS.hpp, namespace cs)
+// CS NODE CONTRACT (截面: 节点 = Node/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行; 方法 = Method/CS.hpp, namespace cs)
 //----------------------------------------------------------------------------------------
 //   struct <Method> {
 //     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, 仅 L1)
@@ -73,8 +73,8 @@ inline constexpr float kPxEps = 1e-4f;
 // 无状态 (静态函数), 无实例; 一行字段 CS(src_lvl, src, Tf, Method) = gather → Tf::apply → Method::apply → scatter,
 // CoreCrosssection 按字段表编译期展开 (与 TS 的 NODES 展开同构). 无效资产输出 0 由基建写.
 // 方法依赖 NaN 语义 (isfinite): 实现在 src/features/Method/CS.cpp (precise-math TU), 头文件只声明.
-// 算子文件按"算的是什么特征"命名 (= 源节点名), 不按方法命名; 一文件 = 该节点输出列的全部截面因子.
-// 同一套 struct 另有运行期入口 cs::column_fn(TfId, MethodId) (Transform 分析用): 探索里验证的变换 == 落盘算子.
+// 节点文件按"算的是什么特征"命名 (= 源节点名), 不按方法命名; 一文件 = 该节点输出列的全部截面因子.
+// 同一套 struct 另有运行期入口 cs::column_fn(TfId, MethodId) (Transform 分析用): 探索里验证的变换 == 落盘节点.
 //----------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------
@@ -90,11 +90,11 @@ struct TickData {
   LOB_Feature lob;
 };
 
-// 事件时刻: 交易时段毫秒 (l0_index × 1000 + ms; 分钟边界 = 60000 整数倍, 午休不计时). 时间加权算子 (Book / Realized) 共用.
+// 事件时刻: 交易时段毫秒 (l0_index × 1000 + ms; 分钟边界 = 60000 整数倍, 午休不计时). 时间加权节点 (Book / Realized) 共用.
 // 14:57-15:00 全部映射到哨兵秒 15299, ms 每秒回绕 → t 可倒退; 消费方对 uint32 差必须钳零 (t > t_prev ? t - t_prev : 0).
 inline uint32_t tick_ms(const TickData &td) { return td.l0_index * 1000u + td.lob.millisecond * 10u; }
 
-// LOB_Feature::ord_* 解码 (字段语义见 LimitOrderBookDefine.hpp; OrderLife / OrderQuad / Moment / Flow 共用, 算子不各写一份):
+// LOB_Feature::ord_* 解码 (字段语义见 LimitOrderBookDefine.hpp; OrderLife / OrderQuad / Moment / Flow 共用, 节点不各写一份):
 //   ord_reliable(lob, s)         该侧是可信的在簿委托: Resting 且非占位单 → ord_orig / ord_tick / ord_price 可信
 //   ord_filled_before(lob, s, f) 该侧委托截止本笔之前的累计成交量 f (股); false = 该侧不可信 (无 id / 占位单 / 过度抵扣)
 inline bool ord_reliable(const LOB_Feature &lob, size_t s) {
@@ -124,7 +124,7 @@ struct MinuteData {
   uint32_t core_id{0};  // static: core identifier
   uint32_t l1_index{0}; // dynamic: current minute index (trading minute index 0-254)
 
-  // Time-series: OHLC (环形窗口, 算子只读 back()/尾部窗口, 不按绝对分钟下标访问)
+  // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对分钟下标访问)
   CBuffer<float, 240> open;
   CBuffer<float, 240> high;
   CBuffer<float, 240> low;

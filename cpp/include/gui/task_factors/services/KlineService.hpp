@@ -2,10 +2,10 @@
 // 5 个小文件) → 追加 + 单调前缀发布, GUI 画已发布前缀 (发布协议 = shared/Progress.hpp PrefixPub, 与 shared/OrderFlow.hpp 的 Kline 同一份).
 // 每天之间查 cancel_: 拖标的随时打断, 新代从头流.
 // 请求 = (gen, 特征库作用域 (目录 + 子轴), 日期表, 子轴资产下标, 列号). gen 由 GUI 递增自持, 与发布面配对; 新请求覆盖旧的.
-// 线程模型 (gui/util/Worker.hpp, 随对象). worker 只在 "GUI 请求代 ≠ 发布代" 时重建数组 (此刻 GUI 不读前缀), 免锁.
+// 线程模型 (gui/util/Service.hpp, 随对象). worker 只在 "GUI 请求代 ≠ 发布代" 时重建数组 (此刻 GUI 不读前缀), 免锁.
 #pragma once
 
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 #include "shared/Analysis.hpp" // ReadScope
 #include "shared/Progress.hpp" // PrefixPub
 

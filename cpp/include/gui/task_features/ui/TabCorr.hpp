@@ -1,4 +1,4 @@
-// TabCorr — 特征两两相关矩阵热图 (口径 / 抽样 / 数值见 shared/Correlation.hpp)
+// TabCorr — 特征两两相关矩阵热图 (口径 / 抽样 / 数值见 shared/Corr.hpp)
 //
 // UI Layout:
 //   1. 状态行: Compute | Cancel | Status (天进度) | 矩阵边长 / 空格数

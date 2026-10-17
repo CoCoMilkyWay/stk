@@ -1,7 +1,7 @@
 #pragma once
-// fmeta — ts_valid / cs_valid 列编码/解码唯一事实源 (从 Operator/TS/Meta/Meta.hpp 拆出的稳定头:
+// fmeta — ts_valid / cs_valid 列编码/解码唯一事实源 (从 Node/TS/Meta/Meta.hpp 拆出的稳定头:
 // 消费端 (DayBatchPlane / FeaturePreview / CoreCrosssection / OrderFlowService) 只需
-// 判定函数, 不依赖算子文件 —— 算子改动不再牵连它们重编). 写入端状态机 MetaTracker
+// 判定函数, 不依赖节点文件 —— 节点改动不再牵连它们重编). 写入端状态机 MetaTracker
 // 与落盘列声明仍在 Meta.hpp.
 //
 //   ts_valid 单槽三态编码: 0 = 该行无事件 (L0) / 无成交 (L1); 非 0 = 有 (data 有效); 负 = 盘口有更新 (depth 有效)

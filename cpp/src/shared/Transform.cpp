@@ -1,9 +1,9 @@
 #include "shared/Transform.hpp"
-#include "features/Backend/DayBatchPlane.hpp"
-#include "features/Backend/FeatureRead.hpp"
+#include "features/Storage/DayBatchPlane.hpp"
+#include "features/Storage/FeatureRead.hpp"
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/KPSS.hpp"
-#include "math/timeseries/AutoCorrelation.hpp"
+#include "math/timeseries/AutoCorr.hpp"
 #include "misc/profiler.hpp"
 
 #include <algorithm>

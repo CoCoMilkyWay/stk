@@ -1,6 +1,6 @@
 // StreamService — Features 页流式分析 (Dist / Transform / FeaturePreview / Corr*) 的 Worker 特化
 //
-// 线程模型 (骨架见 gui/util/Worker.hpp; 目标形状与发布协议见 shared/Analysis.hpp):
+// 线程模型 (骨架见 gui/util/Service.hpp; 目标形状与发布协议见 shared/Analysis.hpp):
 //   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = analysis::Request<Target::Spec>
 //     (ReadScope: 月份表 + universe 子轴 + 库目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
 //     覆盖挂起请求 + 取消在跑
@@ -17,8 +17,8 @@
 //   static Target &target(SharedData &);            // 目标状态 (Published 派生: Dist / Transform / ...)
 #pragma once
 
-#include "features/Backend/FeatureRead.hpp"
-#include "gui/util/Worker.hpp"
+#include "features/Storage/FeatureRead.hpp"
+#include "gui/util/Service.hpp"
 #include "shared/Analysis.hpp"
 
 #include <atomic>

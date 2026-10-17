@@ -227,7 +227,7 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
       }
   if (ImPlot::BeginPlot("##leadlag", ImVec2(-1, 200), ImPlotFlags_NoLegend)) {
     // lag > 0 = 前者领先后者. 峰值不在 0 → 后者是前者的延迟/平滑副本;
-    // 慢变列曲线天然平坦, 对它们这张图没有判别力 (见 Correlation.hpp)
+    // 慢变列曲线天然平坦, 对它们这张图没有判别力 (见 Corr.hpp)
     ImPlot::SetupAxes("lag (行)", "ρ", 0, ImPlotAxisFlags_AutoFit);
     ImPlot::SetupAxisLimits(ImAxis_X1, -(double)kCorrMaxLag, (double)kCorrMaxLag,
                             ImPlotCond_Always);

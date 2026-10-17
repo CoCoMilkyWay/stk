@@ -44,7 +44,7 @@
 //     s ∈ {B, A}            侧向: B=Bid 买盘, A=Ask 卖盘
 //     c ∈ {XL, L, Mid, S}   大小单分类
 //     [\mathrm{cond}]       条件筛选 (如 CA=连续竞价, fleet=闪单)
-//   算子:
+//   节点:
 //     |O|  = 取量 (volume)
 //     #O   = 取笔数 (count)
 //   风格: 分钟内逐笔求和一律 ∑_{τ∈Δt} f(O_τ) (τ 显式); 纯笔数计数用 #O_{Δt} (时间挂 O 下标);
@@ -58,23 +58,23 @@
 //
 
 // ============================================================================
-// 特征定义: 算子文件自带节点实例 + 落盘列 (Operator/<Tier>/{TS,CS}/**/*.hpp 末尾), 没有中心表
+// 特征定义: 节点文件自带节点实例 + 落盘列 (Node/<Tier>/{TS,CS}/**/*.hpp 末尾), 没有中心表
 // ============================================================================
-// 时序算子文件 (Operator/<Tier>/TS/<类别>/<Op>.hpp) = 数学 (class) + 文件末尾两种宏 (CMake 扫描汇总, C++ 里不直接展开):
-//   两档都要的算子: class 放 Operator/Common/<类别>/<Op>.hpp, 各档文件 include 它后只写本档的 NODE_ / FIELDS_.
+// 时序节点文件 (Node/<Tier>/TS/<类别>/<Op>.hpp) = 数学 (class) + 文件末尾两种宏 (CMake 扫描汇总, C++ 里不直接展开):
+//   两档都要的节点: class 放 Node/Common/<类别>/<Op>.hpp, 各档文件 include 它后只写本档的 NODE_ / FIELDS_.
 //
 //   #define NODE_<Name>(N)  N(<Name>, (OpType), (inputs...), trigger[, flush_trigger])
-//     Name     节点名 (DAG 成员名); 同一算子可有多个实例 (不同模板参数), 目前每算子一个节点, 同族列在节点内用口区分
-//     OpType   算子类型, 必须加括号 (模板参数里有逗号)
+//     Name     节点名 (DAG 成员名); 同一节点可有多个实例 (不同模板参数), 目前每节点一个节点, 同族列在节点内用口区分
+//     OpType   节点类型, 必须加括号 (模板参数里有逗号)
 //     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / fund_pool / asset_code_ / asset_id_ / date_ /
 //              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 源层数组 Depth.bid_qty 等;
 //              盘前即需的日频值直接引 y 槽 Up.y[Up.port] (Fund 的 Series 首个分钟 flush 才有值, 见 Fund.hpp).
 //              必须字面写在这一行 (CMake 按 "Up." 抽依赖; Up.out(Up.port) / Up.y[Up.port] 记单口, 其余记整节点), 不要藏进 helper 宏
 //     触发域   Trigger:: 下的名字. 采样型只写一个 (compute 与 flush 同域);
 //              降频型写两个: compute=onTick, flush=onMinute; 广播型 (日频): compute=onDay, flush=onMinute
-//     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游算子
+//     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游节点
 //
-// 截面算子文件 (Operator/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
+// 截面列文件 (Node/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
 //
 //   #define FIELDS_<LVL>_<Name>(X, CAT1)  X(code, CAT1, cat_l2, name_en, name_cn, description, formula, SRC) ...
 //     LVL ∈ {L0, L1}: 落盘层. 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
@@ -89,16 +89,16 @@
 //       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写, 不产 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
-//     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Operator/<Tier>/TS/Meta/Meta.hpp,
-//     LABEL → Operator/<Tier>/TS/Label/*.hpp, CS → Operator/<Tier>/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
+//     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Node/<Tier>/TS/Meta/Meta.hpp,
+//     LABEL → Node/<Tier>/TS/Label/*.hpp, CS → Node/<Tier>/CS/<分类>/<源节点>.hpp (owner 名 Cs<源节点>, 与 TS 节点名区分).
 //     推荐频谱 (psd) 按层给 (TIER_LEVELS), 不逐列写.
 //
-// CMake (projects/main/CMakeLists.txt) 逐档扫描 features/Operator/<Tier>/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
+// CMake (projects/main/CMakeLists.txt) 逐档扫描 features/Node/<Tier>/{TS,CS}/<分类>/**/*.hpp, 按 inputs 引用
 // 分层拓扑排序, 生成 build/generated/features/<Tier>/NodesGenerated.hpp: 本档全部 #include + <Tier>_NODES(N) +
 // <Tier>_L0_FIELDS(X) / <Tier>_L1_FIELDS(X). 基建 (LobGraph / Core* / FeatureStore / Feature.hpp GUI 元数据)
 // 全部由这几张表展开, 不需要手改. 改动后下次 build 自动重新 configure.
 //
-// 加特征 = 改 (或新建) 一个算子文件. 删特征 = 删几行 / 删文件. 其他地方不动.
+// 加特征 = 改 (或新建) 一个节点文件. 删特征 = 删几行 / 删文件. 其他地方不动.
 // 顺序保证: DAG 按拓扑序声明成一条链, 节点只看得到排在自己前面的节点 → 引用了排后面的节点 = 编译错误.
 // 各触发域执行顺序: 盘前 (节点 reset 后) → onDay; 一个 tick 内 onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute.
 // 字段表改动会改变落盘布局: 文件头带表指纹, 读旧文件即断言失败, 需重算.
@@ -260,8 +260,8 @@ constexpr L2::ValidType valid_of(Trigger flush) {
 
 // ----------------------------------------------------------------------------
 // 特征档 (tier) = 数据源. 一档一套节点表 / 字段表 / 特征库:
-//   Lob  Operator/Lob/   L2 逐笔 → LOB 还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
-//   Bar  Operator/Bar/   分钟 K (bar1m, 非 LOB 还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
+//   Lob  Node/Lob/   L2 逐笔 → LOB 还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
+//   Bar  Node/Bar/   分钟 K (bar1m, 非 LOB 还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
 //   两档 TS / CS 列名全局唯一 (FeatureMeta.cpp 断言; 因子层按名拼接), META / LB 是各档基建列, 同名同语义.
 //   档间只许截面旁读 (TIER_SIDES): 时序是资产内纯函数, 不跨档; 同一列只在一档算 (Lob 要基本面就旁读 Bar, 不重算).
 //

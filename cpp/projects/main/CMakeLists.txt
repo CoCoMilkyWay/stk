@@ -185,14 +185,14 @@ set(SOURCES
     ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Config.cpp
-    ../../src/shared/Correlation.cpp
+    ../../src/shared/Corr.cpp
     ../../src/shared/Dist.cpp
     ../../src/shared/Feature.cpp
-    ../../src/shared/FeaturePreview.cpp
+    ../../src/shared/Preview.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/OrdersDay.cpp
     ../../src/shared/Transform.cpp
-    ../../src/shared/Universe.cpp
+    ../../src/shared/Pool.cpp
     # misc
     ../../src/misc/archive.cpp
     ../../src/misc/date.cpp
@@ -300,11 +300,11 @@ set(HEADERS
     ../../include/shared/Asset.hpp
     ../../include/shared/AssetInfo.hpp
     ../../include/shared/Config.hpp
-    ../../include/shared/Correlation.hpp
+    ../../include/shared/Corr.hpp
     ../../include/shared/Dist.hpp
     ../../include/shared/Feature.hpp
     ../../include/shared/FeatureLib.hpp
-    ../../include/shared/FeaturePreview.hpp
+    ../../include/shared/Preview.hpp
     ../../include/shared/OrderFlow.hpp
     ../../include/shared/OrdersDay.hpp
     ../../include/shared/SharedData.hpp
@@ -350,21 +350,21 @@ set(HEADERS
     ../../include/features/BarGraph.hpp
     ../../include/features/LobGraph.hpp
     ../../include/features/CoreBar.hpp
-    ../../include/features/CoreCrosssection.hpp
+    ../../include/features/CoreCs.hpp
     ../../include/features/CoreLob.hpp
     ../../include/features/CoreTs.hpp
     ../../include/features/GraphNode.hpp
     ../../include/features/FeaturesDefine.hpp
     ../../include/features/MetaFlag.hpp
     ../../include/features/TimeIndex.hpp
-    ../../include/features/Backend/DayBatchPlane.hpp
-    ../../include/features/Backend/FeatureDay.hpp
-    ../../include/features/Backend/FeatureLevels.hpp
-    ../../include/features/Backend/FeatureRead.hpp
-    ../../include/features/Backend/FeatureStore.hpp
-    ../../include/features/Backend/FeatureStoreConfig.hpp
-    ../../include/features/Backend/SparseCodec.hpp
-    ../../include/features/Backend/ZstdCodec.hpp
+    ../../include/features/Storage/DayBatchPlane.hpp
+    ../../include/features/Storage/FeatureDay.hpp
+    ../../include/features/Storage/FeatureLevels.hpp
+    ../../include/features/Storage/FeatureRead.hpp
+    ../../include/features/Storage/FeatureStore.hpp
+    ../../include/features/Storage/FeatureStoreConfig.hpp
+    ../../include/features/Storage/SparseCodec.hpp
+    ../../include/features/Storage/ZstdCodec.hpp
     # worker
     ../../include/worker/encoding_worker.hpp
     ../../include/worker/feature_pipeline.hpp
@@ -396,22 +396,22 @@ set(HEADERS
 
 # ============================================================================
 # 特征档 (tier) = 数据源, 一档一套节点表 / 字段表 / 特征库 (C++ 侧档注册见 FeaturesDefine.hpp TIER_LEVELS):
-#   Lob  Operator/Lob/{TS,CS}/<分类>/   L2 逐笔 → LOB 还原 (选池内; features/<选池>/)
-#   Bar  Operator/Bar/{TS,CS}/<分类>/   分钟 K (bar1m, 非 LOB 还原) + 基本面 (全市场; features/all/)
-#   两档共用的算子类放 Operator/Common/<分类>/ (只许 class, 不许 NODE_ / FIELDS_), 各档算子文件 include 它再各写各的 NODE_ / FIELDS_.
+#   Lob  Node/Lob/{TS,CS}/<分类>/   Level-2 逐笔 → 订单簿还原 (池轴; features/<pool>/)
+#   Bar  Node/Bar/{TS,CS}/<分类>/   分钟 K (bar1m, 非订单簿还原) + 基本面 (全轴; features/all/)
+#   两档共用的节点类放 Node/Common/<分类>/ (只许 class, 不许 NODE_ / FIELDS_), 各档节点文件 include 它再各写各的 NODE_ / FIELDS_.
 #
-# 每档生成物 (build 目录 generated/features/<Tier>/), 切开"字段表消费者"与"算子代码消费者"的编译依赖:
-#   FieldsGenerated.hpp  宏文本汇总, 不 #include 任何算子头 —— NODE_/FIELDS_/helper 宏
-#                        原样抽自算子文件 (逐 token 一致) + <Tier>_NODES(N) + <Tier>_L*_FIELDS(X) + <tier>::node_deps.
+# 每档生成物 (build 目录 generated/features/<Tier>/), 切开"字段表消费者"与"节点代码消费者"的编译依赖:
+#   FieldsGenerated.hpp  宏文本汇总, 不 #include 任何节点头 —— NODE_/FIELDS_/helper 宏
+#                        原样抽自节点文件 (逐 token 一致) + <Tier>_NODES(N) + <Tier>_L*_FIELDS(X) + <tier>::node_deps.
 #                        消费者 = FeatureStoreConfig (写端布局/指纹) / FeatureMeta.cpp (GUI 元数据).
-#                        只改算子实现体 → 本文件内容不变 (file(CONFIGURE) 不重写) → 消费者不重编.
-#   NodesGenerated.hpp   本档全部算子 #include + <Tier>_NODE_PREV_* 声明链 —— 只给本档构图端用.
-#                        一个 TU 只许 include 一档的 NodesGenerated (两档算子文件的 NODE_ 宏同名).
+#                        只改节点实现体 → 本文件内容不变 (file(CONFIGURE) 不重写) → 消费者不重编.
+#   NodesGenerated.hpp   本档全部节点 #include + <Tier>_NODE_PREV_* 声明链 —— 只给本档构图端用.
+#                        一个 TU 只许 include 一档的 NodesGenerated (两档节点文件的 NODE_ 宏同名).
 #   FeatureCategoriesGenerated.hpp  本档一级 / 二级分类表 (namespace <tier>)
 #   两档 FieldsGenerated 同处一个 TU (FeatureMeta.cpp / FeatureStoreConfig), 而节点 / 字段 owner 可同名
-#   (Fund / Bar / Meta) 且内容不同 —— 所以内联的 NODE_ / FIELDS_ 宏改名加档前缀 (<Tier>_NODE_x / <Tier>_FIELDS_L1_x);
+#   (Fund / Kline / Meta) 且内容不同 —— 所以内联的 NODE_ / FIELDS_ 宏改名加档前缀 (<Tier>_NODE_x / <Tier>_FIELDS_L1_x);
 #   helper 宏原名内联, 两档同名必须逐字一致 (否则 FATAL_ERROR).
-#   节点实例和落盘列直接写在算子文件里 (TS/ 时序节点, CS/ 截面列; 方法在 Method/):
+#   节点实例和落盘列直接写在节点文件里 (TS/ 时序节点, CS/ 截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (OpType), (ctor inputs), compute_trigger, flush_trigger)
 #     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ {L0, L1}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
 #   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / Depth.bid_qty ...), 不需要任何 include.
@@ -423,18 +423,18 @@ set(HEADERS
 set(DAG_SCAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../include/features)
 
 # Common 只放共用 class: 有 NODE_ / FIELDS_ 宏即配置期报错 (实例必须落在某一档)
-file(GLOB_RECURSE DAG_COMMON_FILES CONFIGURE_DEPENDS ${DAG_SCAN_ROOT}/Operator/Common/*.hpp)
+file(GLOB_RECURSE DAG_COMMON_FILES CONFIGURE_DEPENDS ${DAG_SCAN_ROOT}/Node/Common/*.hpp)
 list(SORT DAG_COMMON_FILES)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DAG_COMMON_FILES})
 foreach(common_file ${DAG_COMMON_FILES})
     file(READ ${common_file} common_src)
     if(common_src MATCHES "#define (NODE|FIELDS)_")
-        message(FATAL_ERROR "Operator/Common 只放两档共用的 class, NODE_ / FIELDS_ 写到 Operator/<Tier>/ 下: ${common_file}")
+        message(FATAL_ERROR "Node/Common 只放两档共用的 class, NODE_ / FIELDS_ 写到 Node/<Tier>/ 下: ${common_file}")
     endif()
 endforeach()
 
 function(dag_generate DAG_TIER DAG_NS)
-set(DAG_TIER_ROOT ${DAG_SCAN_ROOT}/Operator/${DAG_TIER})
+set(DAG_TIER_ROOT ${DAG_SCAN_ROOT}/Node/${DAG_TIER})
 set(DAG_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/features/${DAG_TIER})
 file(GLOB_RECURSE DAG_SCAN_FILES CONFIGURE_DEPENDS
     ${DAG_TIER_ROOT}/TS/*.hpp
@@ -443,13 +443,13 @@ list(SORT DAG_SCAN_FILES)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DAG_SCAN_FILES})
 
 set(DAG_NODES "") # 全部节点名 (发现序)
-set(DAG_FIELD_OWNERS "") # 有任一 FIELDS_ 宏的名字 (节点或非算子列)
-set(DAG_CATEGORIES "") # Operator/TS/<分类> 或 Operator/CS/<分类> 的目录名
+set(DAG_FIELD_OWNERS "") # 有任一 FIELDS_ 宏的名字 (节点或非节点列)
+set(DAG_CATEGORIES "") # Node/TS/<分类> 或 Node/CS/<分类> 的目录名
 set(DAG_CAT2S "") # 字段表中实际出现过的二级分类 token
 set(DAG_GEN_INCLUDES "")
 set(DAG_GEN_MACROS "") # 抽取的 #define/#undef 行 (FieldsGenerated 内联)
-set(DAG_MACRO_NAMES "") # 抽取宏名 (NodesGenerated 先 #undef 再 include 算子头, 免重复定义诊断)
-# Common 头的 #define/#undef 行 (两档共用的 helper 宏, 如 LABEL_GROUPS) 先内联: 字段表宏可引用它们, 而 FieldsGenerated 不 include 算子头.
+set(DAG_MACRO_NAMES "") # 抽取宏名 (NodesGenerated 先 #undef 再 include 节点头, 免重复定义诊断)
+# Common 头的 #define/#undef 行 (两档共用的 helper 宏, 如 LABEL_GROUPS) 先内联: 字段表宏可引用它们, 而 FieldsGenerated 不 include 节点头.
 # 不进 DAG_MACRO_NAMES (NodesGenerated 不 #undef): Common 头 #pragma once, 若已被 include 过, 撤掉就再也定义不回来;
 # 两处定义同出一源逐字一致, 重复定义合法.
 foreach(common_file ${DAG_COMMON_FILES})
@@ -479,7 +479,7 @@ foreach(scan_file ${DAG_SCAN_FILES})
     string(REPLACE "/" ";" scan_parts "${scan_op_rel}")
     list(LENGTH scan_parts scan_parts_len)
     if(scan_parts_len LESS 3)
-        message(FATAL_ERROR "Operator 文件必须放在 Operator/${DAG_TIER}/TS/<分类>/ 或 Operator/${DAG_TIER}/CS/<分类>/ 下: ${scan_rel}")
+        message(FATAL_ERROR "节点文件必须放在 Node/${DAG_TIER}/TS/<分类>/ 或 Node/${DAG_TIER}/CS/<分类>/ 下: ${scan_rel}")
     endif()
     list(GET scan_parts 1 scan_cat)
     if(NOT scan_cat IN_LIST DAG_CATEGORIES)
@@ -503,7 +503,7 @@ foreach(scan_file ${DAG_SCAN_FILES})
     endif()
     string(APPEND DAG_GEN_INCLUDES "#include \"${scan_rel}\"\n")
     # 抽出该文件全部 #define/#undef 行 (NODE_/FIELDS_/helper 宏), 内联进 FieldsGenerated.hpp.
-    # 分号先换占位符 (CMake 列表分隔符), 逐行还原; #define 加 #ifndef 守卫 (算子头先included 时跳过).
+    # 分号先换占位符 (CMake 列表分隔符), 逐行还原; #define 加 #ifndef 守卫 (节点头先included 时跳过).
     # NODE_ / FIELDS_ 改名加档前缀 (见文件头); helper 原名, 跨档同名须逐字一致 (GLOBAL 属性记首见定义)
     string(REPLACE ";" "@SEMICOLON@" scan_nosemi "${scan_src}")
     string(REGEX MATCHALL "(^|\n)[ \t]*#[ \t]*(define|undef)[ \t][^\n]*" macro_lines "${scan_nosemi}")
@@ -605,8 +605,8 @@ while(dag_remaining)
     endif()
 endwhile()
 
-# NodesGenerated 在 include 算子头前先 #undef 全部抽取宏 (FieldsGenerated 可能已定义同名守卫宏),
-# 让算子头内的定义成为现行定义, 两种 include 顺序都无重复定义诊断.
+# NodesGenerated 在 include 节点头前先 #undef 全部抽取宏 (FieldsGenerated 可能已定义同名守卫宏),
+# 让节点头内的定义成为现行定义, 两种 include 顺序都无重复定义诊断.
 set(DAG_GEN_UNDEFS "")
 foreach(macro_name ${DAG_MACRO_NAMES})
     string(APPEND DAG_GEN_UNDEFS "#undef ${macro_name}\n")
@@ -649,7 +649,7 @@ foreach(node_name ${DAG_ORDER})
     string(APPEND DAG_GEN_DEP_TABLE "  {\"${node_name}\", deps_${dep_idx}, ${dep_count}},\n")
     math(EXPR dep_idx "${dep_idx} + 1")
 endforeach()
-# 字段: 先按节点拓扑序, 再非算子列 (按发现序)
+# 字段: 先按节点拓扑序, 再非节点列 (按发现序)
 set(dag_field_order ${DAG_ORDER})
 foreach(owner ${DAG_FIELD_OWNERS})
     if(NOT owner IN_LIST DAG_NODES)
@@ -707,9 +707,9 @@ file(CONFIGURE
 #include <iterator>
 
 // AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
-// ${DAG_TIER} 档字段表/节点宏汇总, 不 #include 任何算子头: NODE_/FIELDS_/helper 宏文本抽自
-// include/features/Operator/${DAG_TIER}/{TS,CS}/<分类>/**/*.hpp (逐 token 一致, NODE_/FIELDS_ 改名加档前缀;
-// #ifndef 守卫兼容算子头先 include 的 TU). 消费者 = FeatureStoreConfig / FeatureMeta.cpp —— 只改算子
+// ${DAG_TIER} 档字段表/节点宏汇总, 不 #include 任何节点头: NODE_/FIELDS_/helper 宏文本抽自
+// include/features/Node/${DAG_TIER}/{TS,CS}/<分类>/**/*.hpp (逐 token 一致, NODE_/FIELDS_ 改名加档前缀;
+// #ifndef 守卫兼容节点头先 include 的 TU). 消费者 = FeatureStoreConfig / FeatureMeta.cpp —— 只改节点
 // 实现体时本文件内容不变 (不重写, 消费者不重编); 改宏行 (增删特征/调参) 才重写.
 
 ${DAG_GEN_MACROS}
@@ -736,10 +736,10 @@ file(CONFIGURE
     "#pragma once
 
 // AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
-// ${DAG_TIER} 档算子头 #include 清单 + DAG 声明链 (${DAG_N} 个节点, 按输入引用分层拓扑排序).
-// 只给本档构图端用; 字段表消费者走 FieldsGenerated.hpp (不随算子实现体重编). 一个 TU 只许 include 一档的本文件.
+// ${DAG_TIER} 档节点头 #include 清单 + DAG 声明链 (${DAG_N} 个节点, 按输入引用分层拓扑排序).
+// 只给本档构图端用; 字段表消费者走 FieldsGenerated.hpp (不随节点实现体重编). 一个 TU 只许 include 一档的本文件.
 
-// 先 #undef 抽取宏 (本 TU 可能已 include FieldsGenerated.hpp), 让算子头内定义成为现行定义
+// 先 #undef 抽取宏 (本 TU 可能已 include FieldsGenerated.hpp), 让节点头内定义成为现行定义
 ${DAG_GEN_UNDEFS}
 ${DAG_GEN_INCLUDES}#include \"features/${DAG_TIER}/FieldsGenerated.hpp\" // ${DAG_TIER}_NODES(N) / 字段表 / node_deps (守卫宏全部跳过)
 
@@ -779,12 +779,12 @@ set_source_files_properties(
     ../../src/shared/AssetAxis.cpp
     ../../src/shared/AssetInfo.cpp
     ../../src/shared/Config.cpp
-    ../../src/shared/Correlation.cpp
+    ../../src/shared/Corr.cpp
     ../../src/shared/Dist.cpp
-    ../../src/shared/FeaturePreview.cpp
+    ../../src/shared/Preview.cpp
     ../../src/shared/OrderFlow.cpp
     ../../src/shared/Transform.cpp
-    ../../src/shared/Universe.cpp
+    ../../src/shared/Pool.cpp
     # misc
     ../../src/misc/date.cpp
     ../../src/misc/format.cpp

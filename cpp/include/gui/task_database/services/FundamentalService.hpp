@@ -4,7 +4,7 @@
 // AssetInfo 从 parquet 构建内存结构.
 #pragma once
 
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "shared/AssetInfo.hpp"
 
@@ -67,7 +67,7 @@ struct FundamentalResult {
 // ============================================================================
 // FundamentalService — 基本面 sync + AssetInfo 构建 (单 worker; 阻塞网络 + parquet IO)
 //
-// 线程模型 (gui/util/Worker.hpp, 随对象):
+// 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::assetinfo (只在 GUI 线程替换)
 //   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> → [逐任务 sync::run (bq) → (ts)] → 构建 → post
 //               (两份计划皆空 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常

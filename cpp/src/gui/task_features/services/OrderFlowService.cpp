@@ -2,8 +2,8 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 
 #include "codec/OrderFrame.hpp"
-#include "features/Backend/FeatureRead.hpp"
-#include "gui/util/Worker.hpp"
+#include "features/Storage/FeatureRead.hpp"
+#include "gui/util/Service.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp"
@@ -23,7 +23,7 @@
 namespace GUI::Features {
 
 // ============================================================================
-// Universe 状态列 (L1, Fund 算子日频广播; 顺序 = uni_cols 的列下标)
+// Universe 状态列 (L1, Fund 节点日频广播; 顺序 = uni_cols 的列下标)
 // ============================================================================
 
 namespace {
@@ -73,7 +73,7 @@ bool await_back(const PingPong<Slot> &pp, const std::atomic<bool> &cancel) {
 } // namespace
 
 // ============================================================================
-// 三个 worker (gui/util/Worker.hpp): board = SharedData 里各自的发布面
+// 三个 worker (gui/util/Service.hpp): board = SharedData 里各自的发布面
 // ============================================================================
 
 class OrderFlowService::KlineWorker : public Worker<KlineWorker, KlineReq> {

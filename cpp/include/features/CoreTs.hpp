@@ -1,8 +1,8 @@
 #pragma once
 
-#include "features/Backend/FeatureStore.hpp"
+#include "features/Storage/FeatureStore.hpp"
 #include "features/DataDefine.hpp"
-#include "features/Operator/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
+#include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
 
@@ -111,7 +111,7 @@ private:
   }
 
   // cs_valid: 当日成员位, 整日常量, 与事件无关 → 盘前一次写满本档全部层全部行 (不在截面不写, slot 清零即 0).
-  // 逐行存而非每日一个标量: CS 在 t 只读张量第 t 行 (见 CoreCrosssection.hpp 一致性锚)
+  // 逐行存而非每日一个标量: CS 在 t 只读张量第 t 行 (见 CoreCs.hpp 一致性锚)
   template <size_t LVL>
   void write_cs_valid(float cs) {
     if constexpr (T::has(LVL)) {

@@ -1,7 +1,7 @@
 #include "worker/feature_workers.hpp"
 
-#include "features/Backend/FeatureDay.hpp"
-#include "features/Backend/FeatureStore.hpp"
+#include "features/Storage/FeatureDay.hpp"
+#include "features/Storage/FeatureStore.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 

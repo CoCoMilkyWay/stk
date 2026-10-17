@@ -287,7 +287,7 @@ private:
 // ============================================================================
 // PHASE 2 —— 日流水线四角色 (两档同一骨架, 档只换源 TierFeed<T>, 见 feature_pipeline.hpp), 统一骨架:
 //   for d in dates: wait_open(store.X_try_open(d)) → 干活 → store.X_close
-// 分核依据 = 两条一致性契约 (见 CoreTs.hpp / CoreCrosssection.hpp):
+// 分核依据 = 两条一致性契约 (见 CoreTs.hpp / CoreCs.hpp):
 // (核按物理核分, 超线程透明, 见 StageLayout)
 //   预取 1 线程: 备源 —— 软源 (Lob: 只暖 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源环, TS 等 pf_ready); 与落盘共一个物理核
 //   时序 N 线程: TS 是资产局部纯函数 ⇒ 沿 A 维并行; 瓶颈, 其余物理核全给它 (每逻辑 CPU 一个; 处置权转移再平衡, 见 TsSchedule)

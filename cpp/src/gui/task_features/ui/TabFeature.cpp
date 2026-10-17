@@ -6,7 +6,7 @@
 #include "misc/format.hpp"                 // misc::fmt_width
 #include "shared/Feature.hpp"
 #include "shared/FeatureLib.hpp"
-#include "shared/FeaturePreview.hpp"
+#include "shared/Preview.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"

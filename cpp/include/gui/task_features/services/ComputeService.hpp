@@ -1,10 +1,10 @@
 // Compute Service - Manages feature computation with multi-threaded workers
 // High-performance mode: Prefetch + TS workers + CS worker + IO worker (两档同一管线, 见 worker/feature_pipeline.hpp)
-// 线程模型 (gui/util/Worker.hpp, 随对象): 进度面 = 自身 (done/total = 已落盘天 / 档的日期轴);
+// 线程模型 (gui/util/Service.hpp, 随对象): 进度面 = 自身 (done/total = 已落盘天 / 档的日期轴);
 //   store / 调度面 / 仪表盘全是 pipeline<T> 的局部, 一轮一建
 #pragma once
 
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 #include "worker/feature_workers.hpp" // StageLayout (UI 核布局表)
 
 #include <string>

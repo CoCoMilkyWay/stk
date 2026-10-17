@@ -24,14 +24,14 @@
 //             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + accum_rows), 不留根平面;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
 //
-// 线程模型 (gui/util/Worker.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
+// 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
 // 进度走原子: Loading 期 done/total = 块内天; Running 期 = 候选 × 块. 服务间互斥由 UI 保证 (Factors Run 与 Optimize 不同时跑: 都写因子文件).
 // 出错策略: 因子行 / 作用域不合是正常输入 → result.message; 契约不一致 → assert.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 #include "shared/Analysis.hpp" // ReadScope
 
 #include <atomic>

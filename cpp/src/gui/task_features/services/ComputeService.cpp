@@ -1,10 +1,10 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
-#include "features/Backend/FeatureRead.hpp"
-#include "features/Backend/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
+#include "features/Storage/FeatureRead.hpp"
+#include "features/Storage/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
 #include "features/Method/Fundamental.hpp"
-#include "features/Operator/Bar/TS/Label/LabelBar.hpp"
-#include "features/Operator/Lob/TS/Label/LabelLob.hpp"
+#include "features/Node/Bar/TS/Label/LabelBar.hpp"
+#include "features/Node/Lob/TS/Label/LabelLob.hpp"
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/FeatureLib.hpp"
@@ -69,7 +69,7 @@ bool ComputeService::run(ComputeConfig &config) {
             << std::endl;
   begin(Phase::Running, dates.size());
 
-  // 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 算子在 worker 内逐日推进; worker 只读.
+  // 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 节点在 worker 内逐日推进; worker 只读.
   // 只 build 本档 A 轴码表 × 本档日期轴 —— 池大小随轴缩.
   {
     std::vector<std::string> axis_codes(num_assets);

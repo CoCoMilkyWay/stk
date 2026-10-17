@@ -1,7 +1,7 @@
 #include "worker/feature_workers.hpp"
 
-#include "features/Backend/FeatureStore.hpp"
-#include "features/CoreCrosssection.hpp"
+#include "features/Storage/FeatureStore.hpp"
+#include "features/CoreCs.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
@@ -38,7 +38,7 @@ void cs_loop(const StageCtx<T> &ctx) {
     TraceTextS(misc::dense(date).c_str());
 
     // 按日门控: 等全部 TS 写完本日, 返回后两层张量整体可读.
-    // 数值一致性由输入契约锚定 (CS 只读秒网格张量行, 见 CoreCrosssection.hpp),
+    // 数值一致性由输入契约锚定 (CS 只读秒网格张量行, 见 CoreCs.hpp),
     // 与"CS 流式伴随还是整日后扫"的调度形态无关, 结果逐值相同.
     // Cancel 即退 (循环顶): 取消后的截面是弃子, 多算是浪费, 更不能拿退出条件去赌 TS 侧计数的时序.
     typename FeatureStore<T>::Day day;

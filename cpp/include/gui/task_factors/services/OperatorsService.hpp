@@ -1,7 +1,7 @@
 // OperatorsService — Factors→Operators 表的单 worker: 一张合成张量喂给 OpTable 全部算子,
 // 逐算子跑 cpu (挖掘向量) / stream (实盘流式) / gpu (CUDA, 编了才有), 对拍 + 计时, 算完一行发布一行.
 //
-// 线程模型 (gui/util/Worker.hpp, 随对象):
+// 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程: Request(req) 覆盖挂起请求 + 取消在跑; RequestCancel 只中断
 //   - worker:   run = 全行复位 Pending → 逐算子 Running → 算 → 持锁写回 Done, publish(1)
 //   - UI:       持 mutex 读 rows 快照; 进度走原子, 免锁
@@ -21,7 +21,7 @@
 
 #include "factor/Check.hpp"
 #include "factor/Contract.hpp"
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 
 #include <atomic>
 #include <cstdint>

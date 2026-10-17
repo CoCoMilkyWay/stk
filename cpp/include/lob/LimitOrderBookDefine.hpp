@@ -291,7 +291,7 @@ enum class OrderFlags : uint8_t {
   ANOMALY_MATCH  // Anomaly match (continuous trading, price/direction mismatch)
 };
 
-// 本笔事件某一侧的委托角色 (LOB_Feature::ord_role), 委托维度算子的分支判据.
+// 本笔事件某一侧的委托角色 (LOB_Feature::ord_role), 委托维度节点的分支判据.
 enum class OrderRole : uint8_t {
   None,      // 该侧无 id, 或该侧是查无的被动方 (乱序到达)
   Resting,   // 在簿委托: ord_orig 是申报量 (flags ∉ {OUT_OF_ORDER, ZERO_PRICE} 才可信), ord_rest 是处理前余量, ord_tick 是挂单时刻
@@ -329,7 +329,7 @@ struct alignas(16) Level {
 static_assert(sizeof(Level) == 16, "Level 应为 16 字节 (4 档一缓存行)");
 
 // 委托: 就地存在 OrderTable 的槽里, id 即哈希键. 没有独立的池与位置表 —— 查到 id 就查到了委托本体.
-// orig_qty / timestamp 是委托维度与订单生命周期算子的全部输入 (算子不自建哈希表):
+// orig_qty / timestamp 是委托维度与订单生命周期节点的全部输入 (节点不自建哈希表):
 //   orig_qty  建单时的量 (绝对值, 股). MAKER 建单 = 真实申报量; 占位单 (OUT_OF_ORDER,
 //             乱序到达) = 首笔量, 不是申报量 —— 消费方按 flags 区分, 见 LOB_Feature.
 //   timestamp 建单时刻, 用于挂单→成交 / 挂单→撤单 的用时
@@ -487,7 +487,7 @@ struct LOB_Feature {
   uint32_t price_base = 0;
 
   // 档位下标 → 绝对价 (元); 下标 0 (市价单 / 占位档) 无价 → 0. 下标空间只在这里还原,
-  // 消费方 (算子 / GUI / LOB 自身) 一律经它, 不自己拿 price_base 拼.
+  // 消费方 (节点 / GUI / LOB 自身) 一律经它, 不自己拿 price_base 拼.
   float price_of(Price index) const { return index == 0 ? 0.0f : static_cast<float>(price_base + index) * 0.01f; }
   float price_of(const Level *level) const { return price_of(level->price); }
   static bool is_real(const Level *level) { return is_real_level(level->price); }
@@ -503,8 +503,8 @@ struct LOB_Feature {
   int32_t auction_matched_qty = 0; // 股, 参考价位的虚拟匹配量
   int32_t auction_imbalance = 0;   // 股, 参考价位的未匹配量 (SIGNED: + 买剩, - 卖剩)
 
-  // 本笔事件两侧的委托状态 (下标 0=bid 1=ask), 委托维度 / 订单生命周期算子的唯一输入面 ——
-  // 算子不自建 id 哈希表 (那会把 per-worker 的簿开销变成 per-asset ×5000).
+  // 本笔事件两侧的委托状态 (下标 0=bid 1=ask), 委托维度 / 订单生命周期节点的唯一输入面 ——
+  // 节点不自建 id 哈希表 (那会把 per-worker 的簿开销变成 per-asset ×5000).
   // 快照取在 LOB 更新 *之前* (与 depth_buffer / price / volume 同相位, 见 process_impl 的调用序),
   // 所以 ord_rest 是本笔处理前的量 —— 要"含本笔"由消费方自己加 volume.
   //   ord_role 该侧角色, 分支判据全看它 (None / Resting / Aggressor, 见 OrderRole)

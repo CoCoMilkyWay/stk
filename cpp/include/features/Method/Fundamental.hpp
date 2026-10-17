@@ -1,9 +1,9 @@
-// fund — 日频 PIT 基本面 (qmt 估值/因子/filter 链路移植): Fund 算子的数据源 + 逐日推进方法
+// fund — 日频 PIT 基本面 (qmt 估值/因子/filter 链路移植): Fund 节点的数据源 + 逐日推进方法
 //
 //   Pool    数据源. Phase 2 前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × AssetAxis A 轴的
 //           原始网格 (close/股本/涨跌停/状态/两融, cutoff 已套, ffill 已做) + per-A 事件链 (ttm/资产负债/年报/分红/预告/行业).
 //           网格只保留 [首回测日 − 15, 末] (trading_st 连续 15 日计数所需), 历史依赖全在事件链上; 只读, 全部 TS worker 共享.
-//   Stream  per-资产日频状态机 (Fund 算子各持一个). advance_to(d) 沿 D 轴逐日推进到 d (回测日之间的非回测日也走,
+//   Stream  per-资产日频状态机 (Fund 节点各持一个). advance_to(d) 沿 D 轴逐日推进到 d (回测日之间的非回测日也走,
 //           状态才对; 回测日前只推事件指针, 不碰网格), 然后产出当日 Fund::kCount 列 (布局 Fund::Out, 缺失 = NaN,
 //           fp16 存不下的极值也归 NaN). 总算力 = per-A 沿 D 轴一遍, 与预计算相同.
 //
@@ -13,7 +13,7 @@
 //   涨跌停价: cutoff=-1 后 row T 即 "T 当日适用涨跌停" (基于 T-1 close 推出), 直接配盘中实时价判触板.
 //   三表 raw (qmt 无): 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
 //
-// fast-math 契约: 输出行被 -ffast-math TU (Valuation 算子/CoreLob) 盲算消费 — 只做算术 (NaN 硬件透传) 与
+// fast-math 契约: 输出行被 -ffast-math TU (Valuation 节点/CoreLob) 盲算消费 — 只做算术 (NaN 硬件透传) 与
 //   "NaN 恒 false" 语义的比较, 不做 isnan/isfinite. 本文件 .cpp 在 precise-math 列表里, 类型细节全在 .cpp.
 #pragma once
 

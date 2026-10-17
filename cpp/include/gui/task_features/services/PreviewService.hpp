@@ -5,7 +5,7 @@
 #pragma once
 
 #include "gui/task_features/services/StreamService.hpp"
-#include "shared/FeaturePreview.hpp"
+#include "shared/Preview.hpp"
 
 namespace GUI::Features {
 

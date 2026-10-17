@@ -24,7 +24,7 @@
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 视作唯一权重 (hold 0).
 //   同一具体规范串多行 (跨文件 / 同文件) → 后者标 dup (黄), 仍算 (共享 DAG 里是同一个根, Stat 也只算一次).
 //
-// 线程模型 (gui/util/Worker.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 rows;
+// 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 rows;
 // 进度走原子. evaluate = false 只扫描 (进页 / Add / Rescan), = true 扫描 + 装载 + 评估.
 //
 // 装载: 一次把所有有效因子用到的特征 (去重) + ts_valid / cs_valid + 全部持有期标签列读进宿主 (逐天并行 load_day_columns,
@@ -48,7 +48,7 @@
 #include "factor/Search/Contract.hpp" // Score / Objective (看板 score / util 与 Search 同一份目标)
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
 #include "shared/Analysis.hpp" // ReadScope
 #include "shared/Feature.hpp"  // Feature::Metadata

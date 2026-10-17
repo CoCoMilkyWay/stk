@@ -3,7 +3,7 @@
 // ============================================================================
 // 全项目只有这个 TU (加上写端 worker) include 生成的字段表 (FieldsGenerated, 经
 // FeatureStoreConfig) 与 FeatureCategoriesGenerated —— GUI/shared 消费者只 include
-// 稳定头 (shared/Feature.hpp / features/Backend/FeatureLevels.hpp), 增删改特征时
+// 稳定头 (shared/Feature.hpp / features/Storage/FeatureLevels.hpp), 增删改特征时
 // 它们不重编, 只重编本文件 + 写端, 再重链.
 //   level_info(tier, lvl)      FeatureLevels.hpp 声明的运行时层表入口
 //   feature_meta::features     每档每层 FeatureMetadata 表 (编译期展开, 运行时只读)
@@ -12,7 +12,7 @@
 //   两档 TS / CS 列名全局唯一 (编译期断言): 因子层按列名拼两档, 重名即歧义
 // ============================================================================
 
-#include "features/Backend/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
+#include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
 #include "features/Bar/FeatureCategoriesGenerated.hpp"
 #include "features/Lob/FeatureCategoriesGenerated.hpp"
 #include "shared/Feature.hpp"
@@ -175,7 +175,7 @@ constexpr bool is_pool(const FeatureMetadata &f) {
 }
 constexpr std::span<const FeatureMetadata> kBarL1 = bar::L1_meta_detail::TABLE;
 constexpr size_t kPoolCount = std::count_if(kBarL1.begin(), kBarL1.end(), is_pool);
-static_assert(kPoolCount > 0, "Bar 字段表没有选池列 (Operator/Bar/CS/Universe 的 pool_*)");
+static_assert(kPoolCount > 0, "Bar 字段表没有选池列 (Node/Bar/CS/Pool 的 pool_*)");
 constexpr std::array<PoolDef, kPoolCount> kPools = [] {
   std::array<PoolDef, kPoolCount> out{};
   size_t n = 0;

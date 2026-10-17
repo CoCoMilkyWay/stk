@@ -3,7 +3,7 @@
 #include "features/DataDefine.hpp"
 #include "features/GraphNode.hpp"          // graph::Node + TIER_DAG (两档共用)
 #include "features/Lob/NodesGenerated.hpp" // IWYU pragma: keep
-#include "features/Operator/Lob/TS/Label/LabelLob.hpp"
+#include "features/Node/Lob/TS/Label/LabelLob.hpp"
 
 // ============================================================================
 // Lob 档 DAG (namespace lob; 与 BarGraph.hpp 对仗, 一个 TU 只许 include 其一). 公共体见 GraphNode.hpp TIER_DAG.

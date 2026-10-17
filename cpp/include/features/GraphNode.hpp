@@ -11,15 +11,15 @@ class Pool;
 }
 
 // ============================================================================
-// Node: 算子实例 + 它的输出 Series. 算子只写 y[口], 推入缓冲由 Node 统一做. 两档构图端共用
+// Node: 节点实例 + 它的输出 Series. 节点只写 y[口], 推入缓冲由 Node 统一做. 两档构图端共用
 // (LobGraph.hpp / BarGraph.hpp; 一个 TU 只许 include 其一, 见 NodesGenerated.hpp).
-//   node.compute()                   算子的
-//   node.flush()                     算子有 flush() 先调 (降频型结算到 y), 然后 y[i] → bufs_[i]
-//   node.reset()                     跨天: 清空全部输出 Series (不留昨日尾值), 算子有 reset() 再调
+//   node.compute()                   节点的
+//   node.flush()                     节点有 flush() 先调 (降频型结算到 y), 然后 y[i] → bufs_[i]
+//   node.reset()                     跨天: 清空全部输出 Series (不留昨日尾值), 节点有 reset() 再调
 //   node.out(i) / node.out()         第 i 个输出口 (下游节点输入用); 单口默认 0
 //   node.outs()                      全部输出口数组 Series[K] (下游按口成组消费)
 //   node.last(i)                     输出口最新值, 尚无输出时 0 (字段表写回用)
-//   node.<port>                      算子 enum Out 的枚举值 (node.out(node.price))
+//   node.<port>                      节点 enum Out 的枚举值 (node.out(node.price))
 // ============================================================================
 namespace graph {
 
@@ -56,7 +56,7 @@ struct Node : Op {
   }
 };
 
-// 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 Depth 的 N 档数组, 由算子自己的 reset 清空); flush/reset 有才调
+// 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 Depth 的 N 档数组, 由节点自己的 reset 清空); flush/reset 有才调
 template <class Op>
 struct Node<Op, 0> : Op {
   using Op::Op;
@@ -94,7 +94,7 @@ struct Root {
 //           是编译错误, 构造序 (基类先) 与 run<>() 执行序 (NODES 行序) 因此一定一致. 空基类无运行时开销.
 //   class DAG  声明链末端 + 标签成员 label (回填别的时间行, 不在节点表; 调用在 CoreTs) + 触发域调度:
 //     run<trig>()        对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush()
-//     at_day_start(date) 设日期 → 全部节点 reset → 标签 reset → onDay 域 (日频算子 compute)
+//     at_day_start(date) 设日期 → 全部节点 reset → 标签 reset → onDay 域 (日频节点 compute)
 //     at_day_end()       盘尾钩子 (目前无事可做; 留给需要收盘结算的特征)
 // ============================================================================
 #define DAG_CAT_(a, b) a##b

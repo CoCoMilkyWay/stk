@@ -20,7 +20,7 @@
 //   - Q = f0 / (f_hi - f_lo): 品质因数
 //   - order: biquad 级联数 (总阶数 = 2*order)
 //
-// 只有前向 (因果) 滤波: y_t 只依赖 x_{≤t}, 任何 TS 算子都能逐值复现 (DataDefine.hpp 红线).
+// 只有前向 (因果) 滤波: y_t 只依赖 x_{≤t}, 任何 TS 节点都能逐值复现 (DataDefine.hpp 红线).
 // 零相位 filtfilt / FIR 中心对齐都用了未来值, 已删. 用法:
 //   IIRCoeffs c; c.compute(f_lo, f_hi, order, type);   // 一次设计 (相对 Nyquist 的 0-1)
 //   IIRState s;  s.init(c.n_sections);                  // 每段 (每天) 复位, 隔夜跳空不进滤波器

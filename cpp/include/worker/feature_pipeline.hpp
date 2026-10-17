@@ -1,6 +1,6 @@
 #pragma once
 
-#include "features/Backend/FeatureStore.hpp"
+#include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"

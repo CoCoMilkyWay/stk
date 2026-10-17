@@ -1,11 +1,11 @@
 // Encoding Service - CSV 归档 → L2 逐笔二进制 (按天流水: producer 列举 → worker 并行解码)
 //   + FileCheckService - 归档格式 / 结构 / 完整性核查 (顺序探测, 单盘)
-// 线程模型 (gui/util/Worker.hpp, 随对象): 进度面 = 自身 (done/total = 回测交易日 / 归档数);
+// 线程模型 (gui/util/Service.hpp, 随对象): 进度面 = 自身 (done/total = 回测交易日 / 归档数);
 //   收尾 handoff.post 一件 (编码: 请求代, StateManager 收到即重扫; 核查: 结论, Encode 页帧首收)
 // 编码期间读 data_.asset (回测日历 / 资产表): StateManager 只在无扫描 / 同步在飞时发请求, 编码在飞时不发扫描
 #pragma once
 
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 #include "misc/file_check.hpp"
 
 #include <cstdint>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "features/Backend/FeatureLevels.hpp" // TierId
+#include "features/Storage/FeatureLevels.hpp" // TierId
 #include "features/MetaFlag.hpp"              // fmeta::ColumnSet
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
@@ -34,7 +34,7 @@ struct Feature;
 //     void reset(ReadScope, Spec);  bool build(FeatureRead &, cancel);  void clear();
 //     (要 Bar 档旁读列的目标改为 bool build(FeatureRead &, const FeatureRead &all, cancel))
 //   };
-// 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Backend/DayBatchPlane.hpp)
+// 同一条流水线, 只是配置不同:  天序 (DayPlan) → IO + 门控 (平面, features/Storage/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
 //   → 导出 staging Snap → 短锁 swap 发布
 //   - A 轴 = universe 子轴 (槽位 = 子轴下标, 查 items 经 global_ids); Dist / Transform / Preview 只在 L1 跑, Corr* 跟随层
@@ -89,7 +89,7 @@ struct Integrity {
     val_min = std::min(val_min, v);
     val_max = std::max(val_max, v);
   }
-  // 平面一格入账 (哨兵口径见 features/Backend/DayBatchPlane.hpp; 纯位判, fast-math TU 包含也安全).
+  // 平面一格入账 (哨兵口径见 features/Storage/DayBatchPlane.hpp; 纯位判, fast-math TU 包含也安全).
   // n_total 由调用方按格数记; 返回 true = 有限值 (调用方收样本)
   bool add_cell(_Float16 x) {
     const uint16_t u = std::bit_cast<uint16_t>(x);

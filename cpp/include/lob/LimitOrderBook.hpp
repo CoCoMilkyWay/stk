@@ -1528,7 +1528,7 @@ private:
       return LOB_feature_ref().depth_updated = false;
 
     // 交叉簿: 买一 ≥ 卖一. 报单乱序到达 / TOB 失效导致的瞬时错位, 此刻的簿不是真盘口.
-    // 判定放在这里而不是下游算子里 —— 不算一次盘口更新, onDepth 整个域都不跑, 于是
+    // 判定放在这里而不是下游节点里 —— 不算一次盘口更新, onDepth 整个域都不跑, 于是
     // "每个 onDepth tick, Depth 环必推一格" 对下游 (LabelLob 的 offset 回溯) 恒成立.
     // 连续竞价段簿已单调, 两侧一档必是实档 (不足 2N 已在上面返回), 无需再筛哨兵.
     ++depth_seen_;

@@ -1,4 +1,4 @@
-// OrderFlowService — OrderFlow 三路请求的编排外观: Kline / Depth / Universe 各一个 worker (gui/util/Worker.hpp), 三路并行
+// OrderFlowService — OrderFlow 三路请求的编排外观: Kline / Depth / Universe 各一个 worker (gui/util/Service.hpp), 三路并行
 //
 // 线程模型 (发布协议见 shared/OrderFlow.hpp 头注释):
 //   - GUI 线程: 每帧把期望态快照 (asset / anchor date / 选中特征) 交给 Request*;

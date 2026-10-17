@@ -4,7 +4,7 @@
 #include "features/LobGraph.hpp"
 #include "math/sample/ResamplerTick2Min.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Universe.hpp"
+#include "shared/Pool.hpp"
 
 // ============================================================================
 // CoreLob: Lob 档单资产时序计算. LOB → L0 (tick, 秒索引) → resample → L1 (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
@@ -23,7 +23,7 @@
 //   (fund::Pool), 不读其他资产 / 全局状态 / CS 结果. 张量行 (t, f, a) 因此只由
 //   资产 a 截止秒 t 的事件决定, 对重放调度是不变量: 逐资产串行回测、并行回测、
 //   实盘全市场推流, 写出的值相同. 回测结果可迁移到实盘全系于此条, 破了它一切
-//   重排立即失效. (算子输入面契约见 DataDefine.hpp)
+//   重排立即失效. (节点输入面契约见 DataDefine.hpp)
 // ============================================================================
 class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   using Base = CoreTs<CoreLob, lob::Tier, lob::DAG>;

@@ -8,7 +8,7 @@
 // RESAMPLER: TICK -> MINUTE
 //========================================================================================
 // 职责:
-// - roll(l1_end): 出 l1_end 之前尚未出的 bar (时钟推进, 见 CoreLob::advance; 本笔进入任何算子之前 / 收盘 / 实盘墙钟)
+// - roll(l1_end): 出 l1_end 之前尚未出的 bar (时钟推进, 见 CoreLob::advance; 本笔进入任何节点之前 / 收盘 / 实盘墙钟)
 // - 累积 OHLC + volume/amount (accumulate, 在本笔跑完 DAG 之后)
 // 两步分开调: 分钟 m 的 bar 与 onMinute 域的结算都必须只看 m 内的事件, 不混入 m+1 的首笔.
 // roll 只看参数不看本笔 (TickData): 由下一笔触发还是由墙钟触发, 出的 bar 相同.

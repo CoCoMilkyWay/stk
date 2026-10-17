@@ -1,6 +1,6 @@
 #pragma once
 
-#include "features/Backend/FeatureLevels.hpp" // LEVEL_COUNT / FieldInfo (稳定层, 不依赖字段表)
+#include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / FieldInfo (稳定层, 不依赖字段表)
 #include "features/FeaturesDefine.hpp"        // FeatureDataType / EnumStr
 #include "features/Method/CS.hpp"             // CS 行 Tf / Method (GUI "CS Norm" 列)
 #include "features/Method/TS.hpp"             // TS 行 Tf / Method (GUI "TS Norm" 列)
@@ -19,7 +19,7 @@ struct FeatureMetadata {
   const char *code;          // tick_ret_z
   L2::ValidType valid_type;  // ALL/DATA/DEPTH (由 SRC / 节点 flush 域推出)
   FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
-  const char *cat_l1;        // Operator/TS/<dir> or Operator/CS/<dir>
+  const char *cat_l1;        // Node/TS/<dir> or Node/CS/<dir>
   const char *cat_l2;        // FIELDS row token (AUTO = GUI 值域自动探测; 其他 = 人工覆盖), generated into FeatureCategoryL2_ALL
   ts::TfId ts_tf;            // 由 SRC 推出: OP(..., Tf, Method) → 时序归一化 (Tf 已落盘套用, Method 占位); 非 OP 行 None
   ts::MethodId ts_method;
@@ -38,7 +38,7 @@ struct FeatureMetadata {
 // ============================================================================
 namespace feature_meta {
 std::span<const FeatureMetadata> features(TierId tier, size_t level); // 该档该层字段表 (行序 = 列序; 档缺的层为空)
-std::span<const char *const> categories_l1(TierId tier);              // Operator/<Tier>/{TS,CS}/<分类> 目录名 (排序)
+std::span<const char *const> categories_l1(TierId tier);              // Node/<Tier>/{TS,CS}/<分类> 目录名 (排序)
 std::span<const char *const> categories_l2(TierId tier);              // 字段表二级分类 token (排序)
 } // namespace feature_meta
 

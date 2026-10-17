@@ -13,7 +13,7 @@
 // ============================================================================
 //   原子, UI 免锁读. epoch = 变化计数: 每个动词 +1, 跨轮单调不归零 (UI 以此判 "数据变了")
 //
-//   worker 骨架 (gui/util/Worker.hpp):   begin(kStart)  ……  end(完成?)
+//   worker 骨架 (gui/util/Service.hpp):   begin(kStart)  ……  end(完成?)
 //   run 内:                              begin(阶段, 总量)    阶段切换 (Loading → Running), 计数归零
 //                                        publish(n)           done += n; 只改了数据不推进度 → publish()
 //   回收:                                idle()               回到未算

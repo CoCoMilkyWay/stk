@@ -2,7 +2,7 @@
 
 #include "features/FeaturesDefine.hpp"
 #include "features/Method/CS.hpp"
-#include "math/Operator.hpp"
+#include "math/Step.hpp"
 #include "math/normalize/Normalize.hpp"
 #include "math/spectral/IIRBandpass.hpp"
 #include "math/stationary/FracDiff.hpp"
@@ -23,7 +23,7 @@ class FeatureRead;
 // Transform Analysis (特征变换探索, 分批流式; 公共骨架见 shared/Analysis.hpp)
 // ============================================================================
 // 目的: 在全区间 × 全资产上试一条变换链, 看它对平稳性 / 分布 / 频谱的效果 —— 而且
-// 链上每一步都必须是生产算子能逐值复现的东西, 否则结论不可迁移:
+// 链上每一步都必须是生产节点能逐值复现的东西, 否则结论不可迁移:
 //
 //   raw ─→ season ─→ stationary ─→ bandpass ─→ ts_norm ─→ CS(Tf → Method)
 //          TOD 轮廓   MA/整数/分数差分  IIR 因果    expanding   features/Method/CS.hpp 同一套代码

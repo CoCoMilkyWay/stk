@@ -7,11 +7,11 @@
 //            UI 不给取消 (Stop 时在步间退出); 改了盘, StateManager 收到交接后重建 AssetInfo
 // 结果是逐表的 "当前状态" (不是变更日志) output/fundamental/_audit/<表>.tsv:
 //   每月只留最近一次核对的结论; 每单元后只整写该表一个文件 (tmp + rename).
-// 线程模型 (gui/util/Worker.hpp, 随对象): 进度面 = 自身 (Published, done/total = 步), state 持 mutex 读;
+// 线程模型 (gui/util/Service.hpp, 随对象): 进度面 = 自身 (Published, done/total = 步), state 持 mutex 读;
 //   逐表状态 (book) worker 独占, 跨轮承接; 每轮收尾 handoff.post(请求代)
 #pragma once
 
-#include "gui/util/Worker.hpp"
+#include "gui/util/Service.hpp"
 
 #include <cstddef>
 #include <cstdint>
