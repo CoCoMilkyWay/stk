@@ -4,7 +4,7 @@
 #include "factor/Stat/Cpu.hpp" // cost_rows
 #include "features/Backend/FeatureRead.hpp"
 #include "features/MetaFlag.hpp"                      // fmeta::valid / keep / finite
-#include "features/Operator/TS/Label/LabelReturn.hpp" // 只取 kContCloseL1 对账尾部界 (不含字段表)
+#include "features/Operator/Pool/TS/Label/LabelReturn.hpp" // 只取 kContCloseL1 对账尾部界 (不含字段表)
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Analysis.hpp" // analysis::kLevel

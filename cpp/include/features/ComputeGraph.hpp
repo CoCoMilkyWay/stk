@@ -4,7 +4,7 @@
 #include "features/FeaturesDefine.hpp"     // NODE_COMPUTE / NODE_FLUSH
 #include "features/Method/Fundamental.hpp" // fund::Pool (DAG_Root 日频输入)
 #include "features/NodesGenerated.hpp"     // CMake 从算子文件汇总: 全部算子 #include + NODES(N) + NODE_PREV_* + 字段表
-#include "features/Operator/TS/Label/LabelReturn.hpp"
+#include "features/Operator/Pool/TS/Label/LabelReturn.hpp"
 #include <cassert>
 #include <string>
 
