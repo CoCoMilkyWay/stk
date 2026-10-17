@@ -84,13 +84,14 @@ constexpr bool kind_contiguous(std::span<const FieldInfo> f, FeatureDataType k) 
   }
 TIER_LEVELS(GENERATE_LEVEL_FIELDS)
 
-// 档缺的层不许有列 (CMake 对每档都生成 L_sec/L_min/L_day 三张表, 未登记的层应为空)
+// 档缺的层不许有列 (CMake 对每档都生成 L_sec/L_min/L_10min/L_day 四张表, 未登记的层应为空)
 #define FIELD_COUNT_ONE(...) +1
 #define CELL_FIELD_COUNT(T, ns, name, num, fields, psd) +(TierId::T == tier ? ns::name##_FIELD_COUNT : 0)
 constexpr size_t registered_field_count(TierId tier) { return 0 TIER_LEVELS(CELL_FIELD_COUNT); }
-#define CHECK_TIER_FIELDS(T, ns)                                                                                           \
-  static_assert(0 T##_L_sec_FIELDS(FIELD_COUNT_ONE) T##_L_min_FIELDS(FIELD_COUNT_ONE) T##_L_day_FIELDS(FIELD_COUNT_ONE) == \
-                    registered_field_count(TierId::T),                                                                     \
+#define CHECK_TIER_FIELDS(T, ns)                                                                                          \
+  static_assert(0 T##_L_sec_FIELDS(FIELD_COUNT_ONE) T##_L_min_FIELDS(FIELD_COUNT_ONE) T##_L_10min_FIELDS(FIELD_COUNT_ONE) \
+                        T##_L_day_FIELDS(FIELD_COUNT_ONE) ==                                                              \
+                    registered_field_count(TierId::T),                                                                    \
                 "档 " #T " 有未在 TIER_LEVELS 登记的层的 FIELDS_ 行");
 ALL_TIERS(CHECK_TIER_FIELDS)
 #undef CHECK_TIER_FIELDS
@@ -266,5 +267,5 @@ constexpr size_t field_of(size_t lvl, std::string_view code) {
 }
 
 static_assert(level_rows(L_sec) - 1 == TRADE_SECONDS_PER_DAY && level_rows(L_min) - 1 == TRADE_MINUTES_PER_DAY &&
-                  level_rows(L_day) - 1 == 1,
+                  level_rows(L_10min) - 1 == TRADE_10MINS_PER_DAY && level_rows(L_day) - 1 == 1,
               "每层落盘 T 必须是 有效行数 + 1 哨兵行");

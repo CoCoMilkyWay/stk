@@ -26,7 +26,7 @@
 //   TierFeed(const PipelineArgs &, const StoreRing &)       全管线一份 (帧目录 / 源环 / 名单 ...)
 //   size_t weight(sub) const            初始分配 / 领养挑最轻的权重
 //   std::unique_ptr<Core> make_core(sub, worker_id) const   初始 owner 在自己核上构造 (first-touch)
-//   size_t prefetch(d)                  预取线程备日 d 的源, 返回字节
+//   size_t prefetch(d)                  预取线程备日 d 的源, 返回字节 (多预取核对不同 d 并发调用)
 //   Runner(TierFeed &, worker_id)       每 TS worker 一份的工作区 (Lob: 订单簿 + decoder + reader)
 //     size_t run(core, sub, d, day, store)   一个 asset-day (缺源 = 零事件日同路径), 返回源条数
 // 截面 / 落盘档无关 (cs_loop / io_loop, 各自 TU).
@@ -45,9 +45,11 @@ struct TsRole {
   std::vector<std::unique_ptr<CoreOf<T>>> &cores;
 };
 
-// 预取: 顺日期备源. 流控 = store.pf_try_open (领先最慢 TS 不超过 P + 余量; 硬源的源环格由此可复用, 见 feed_ring_size).
+// 预取: 第 lane 核 (共 lanes 核) 备日 lane, lane + lanes, ... 的源 (各日写各自的源环格, 互不握手).
+// 流控 = store.pf_try_open (领先最慢 TS 不超过 P + 余量; 硬源的源环格由此可复用, 见 feed_ring_size).
 template <class T>
-void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed) {
+void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed, size_t lane, size_t lanes) {
+  assert(lane < lanes);
   const int worker_id = ctx.worker_id;
   StoreRing &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
@@ -65,7 +67,7 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed) {
   size_t cumulative_bytes = 0;
   size_t completed_dates = 0;
 
-  for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
+  for (size_t date_idx = lane; date_idx < total_dates; date_idx += lanes) {
     if (cancel_requested.load(std::memory_order_relaxed))
       break;
 
@@ -87,8 +89,8 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed) {
       stat.work.store(cumulative_bytes, std::memory_order_relaxed);
     }
 
-    store.pf_close(date_idx);
-    completed_dates = date_idx + 1;
+    store.pf_close(date_idx, TierFeed<T>::kHardFeed);
+    ++completed_dates;
 
     TraceFrame;
   }
@@ -98,7 +100,7 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed) {
   if (cancelled)
     Logger::log("worker_" + std::to_string(worker_id), "Prefetch cancelled: " + std::to_string(cumulative_bytes) + " bytes across " + std::to_string(completed_dates) + " dates");
   else
-    Logger::log("worker_" + std::to_string(worker_id), "Prefetch completed: " + std::to_string(cumulative_bytes) + " bytes across " + std::to_string(total_dates) + " dates");
+    Logger::log("worker_" + std::to_string(worker_id), "Prefetch completed: " + std::to_string(cumulative_bytes) + " bytes across " + std::to_string(completed_dates) + " dates");
 }
 
 // 时序: 逐资产喂源 + DAG, 写张量 (日期主序遍历); 领跑核在池边干等时领养落后核的资产并回填
@@ -366,11 +368,13 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
 template <class T>
 bool pipeline(const PipelineArgs &args) {
   // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
-  const StageLayout L = StageLayout::make(misc::Affinity::physical_cores(), args.cs_cores);
+  const StageLayout L = StageLayout::make(misc::Affinity::physical_cores(), args.pf_cores, args.cs_cores, args.io_cores);
   const std::vector<misc::Ymd> &dates = args.dates;
   const size_t num_assets = args.lib.axis.size();
+  const size_t num_pf = static_cast<size_t>(L.num_pf);
   const size_t num_ts = static_cast<size_t>(L.num_ts);
   const size_t num_cs = static_cast<size_t>(L.num_cs);
+  const size_t num_io = static_cast<size_t>(L.num_io);
   assert(!dates.empty() && num_assets >= 1);
 
   std::cout << "\n=== Phase 2: Feature Computation (" << tier_name(T::kId) << ") ===\n"
@@ -405,7 +409,7 @@ bool pipeline(const PipelineArgs &args) {
 
   // 统一 launch(worker_id, cpus, fn): pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
   // 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
-  ComputeStats stats(num_ts, num_cs);
+  ComputeStats stats(num_pf, num_ts, num_cs, num_io);
   FeatureProgress progress(store, sched, stats, dates, TierFeed<T>::kUnit);
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
     return StageCtx<T>{worker_id, store, args.lib, args.side, dates, args.cancel, stat};
@@ -427,7 +431,7 @@ bool pipeline(const PipelineArgs &args) {
       const int id = s.first_worker + i;
       switch (s.kind) {
       case ComputeStage::Prefetch:
-        launch(id, L.cpus_of(s, i), [&](int w) { prefetch_loop<T>(ctx(w, stats.prefetch), feed); });
+        launch(id, L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { prefetch_loop<T>(ctx(w, stats.prefetch[lane]), feed, lane, num_pf); });
         break;
       case ComputeStage::TS:
         launch(id, L.cpus_of(s, i), [&](int w) { ts_loop<T>(ctx(w, stats.ts[static_cast<size_t>(w)]), role); });
@@ -436,7 +440,7 @@ bool pipeline(const PipelineArgs &args) {
         launch(id, L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { cs_loop<T>(ctx(w, stats.cs[lane]), lane, num_cs); });
         break;
       case ComputeStage::IO:
-        launch(id, L.cpus_of(s, i), [&](int w) { io_loop<T>(ctx(w, stats.io)); });
+        launch(id, L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { io_loop<T>(ctx(w, stats.io[lane]), lane, num_io); });
         break;
       }
     }

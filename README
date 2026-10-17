@@ -54,22 +54,22 @@ stk/
 │   │   ├── features/                                 # 🧮 特征工程: 事件驱动, 回测与实盘逐值一致
 │   │   │   │                                         #    两档 (TierId):
 │   │   │   │                                         #    · Lob: Level-2 逐笔 → 订单簿还原; L_sec 秒 + L_min 分钟; 池轴 (features/<pool>/); cs_valid = 当日在池
-│   │   │   │                                         #    · Bar: bar1m 分钟 K + 日频基本面; L_min 分钟 + L_day 日 (基本面 / 票池); 全轴, 2015-01-01 起 (features/all/); cs_valid = 在市
+│   │   │   │                                         #    · Bar: bar1m 分钟 K + 日频基本面; L_min 分钟 + L_10min 10 分钟 + L_day 日 (基本面 / 票池); 全轴, 2015-01-01 起 (features/all/); cs_valid = 在市
 │   │   │   │                                         #    档间规矩:
 │   │   │   │                                         #    · 同一列只在一档算; 时序不跨档; 截面只许 Lob → Bar 旁读 L_min (TIER_SIDES)
 │   │   │   │                                         #    · TS / CS 列名跨档唯一: Lob K 线加 lob_* 前缀; META 元列 / LB 标签列各档同名, 豁免
 │   │   │   │                                         #    · 先算 Bar 库, 再算 Lob 库 (票池列 pool_<pool> 在 Bar 库)
 │   │   │   ├── FeaturesDefine.hpp                    # 🧮 字段表格式 (NODE_ / FIELDS_ 行) + 元数据枚举
-│   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L_sec ↔ L_min (L_day 一日一行) + 交易时段常数
-│   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData + Trigger 触发域 + 节点契约 / 截面列契约
+│   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L_sec ↔ L_min → L_10min (L_day 一日一行) + 交易时段常数
+│   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData / Min10Data + Trigger 触发域 + 节点契约 / 截面列契约
 │   │   │   ├── GraphNode.hpp                         # 🧮 graph::Node: 节点类实例 + 输出 Series (两档构图共用)
 │   │   │   ├── LobGraph.hpp                          # 🧮 Lob 档计算图 DAG (节点表由 CMake 扫描生成 <Tier>/NodesGenerated.hpp)
 │   │   │   ├── BarGraph.hpp                          # 🧮 Bar 档计算图 DAG (与 LobGraph 对仗; 一个 TU 只许 include 其一)
 │   │   │   ├── CoreTs.hpp                            # 🧮 单资产时序骨架 (档无关, CRTP): 日 / 分钟 / 标签日历 + 日句柄环; 档钩子 = member / resampler
 │   │   │   ├── CoreLob.hpp                           # 🧮 Lob 档单资产时序: 逐笔 → 订单簿 → L_sec → 重采样 L_min + 标签
-│   │   │   ├── CoreBar.hpp                           # 🧮 Bar 档单资产时序: bar1m 分钟 K → L_min (255 行稠密) + L_day 收盘行 + 标签
+│   │   │   ├── CoreBar.hpp                           # 🧮 Bar 档单资产时序: bar1m 分钟 K → L_min (255 行稠密) + L_10min (25 箱) + L_day 收盘行 + 标签
 │   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 parquet → 稠密 [A][255] 分钟 K (Bar 档 TS 输入)
-│   │   │   ├── CoreCs.hpp                            # 🧮 截面 (按档模板): Lob = L_sec 每秒 + L_min 每分钟; Bar = L_min 每分钟 + 收盘 L_day
+│   │   │   ├── CoreCs.hpp                            # 🧮 截面 (按档模板): Lob = L_sec 每秒 + L_min 每分钟; Bar = L_min 每分钟 + 箱末 L_10min + 收盘 L_day
 │   │   │   ├── MetaFlag.hpp                          # 🧮 元列 (_meta) 编解码 (消费端不依赖 Meta 节点)
 │   │   │   ├── Node/Lob/TS/<分类>/                   # 🧮 Lob 档节点: 节点类 + NODE_ / FIELDS_ 宏 (暂无 CS)
 │   │   │   ├── Node/Bar/{TS,CS}/<分类>/              # 🧮 Bar 档节点: TS 同上; CS = 截面列 (只有 FIELDS_ 行)
@@ -290,7 +290,7 @@ stk/
     │   ├── <pool>/YYYY/MM/DD/                              # Lob 库 (池轴; <pool> = Bar 库票池列 pool_<pool>)
     │   │   ├── features_L_sec.bin                          # L_sec (秒频) 一天一个: 头 + 列目录 + 逐列载荷 [T×A]
     │   │   └── features_L_min.bin                          # L_min (分钟频) 一天一个: 同上; 两层都逐列自选是否做 T 轴 XOR 差分
-    │   └── all/YYYY/MM/DD/features_L_{min,day}.bin         # Bar 库 (全轴, L_min + L_day; 目录名 all 保留给它)
+    │   └── all/YYYY/MM/DD/features_L_{min,10min,day}.bin   # Bar 库 (全轴, L_min + L_10min + L_day; 目录名 all 保留给它)
     ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
     │   ├── bar1m/YYYY-MM/YYYY-MM-DD.parquet                # 分钟 K 日分片 (Bar 档 TS 输入, 不复权)
@@ -331,7 +331,7 @@ stk/
 #
 # 加在哪 (先定档: 要逐笔 / 盘口 → Lob; 只要分钟 K + 基本面 → Bar):
 #   - 时序列:   Node/<Tier>/TS/<分类>/<Name>.hpp
-#       · 内容: 节点类 (纯数学) + 文件末尾 NODE_<Name> (节点) + FIELDS_<LVL>_<Name> (落盘列, LVL = L_sec / L_min / L_day; 本身日频的列放 L_day)
+#       · 内容: 节点类 (纯数学) + 文件末尾 NODE_<Name> (节点) + FIELDS_<LVL>_<Name> (落盘列, LVL = L_sec / L_min / L_10min / L_day; 本身日频的列放 L_day)
 #       · 行末源标: TS(<节点>[, <口>], Tf, Method)
 #   - 截面列:   Node/<Tier>/CS/<分类>/<源节点>.hpp
 #       · 内容: 只有 FIELDS_ 行; owner 名 Cs<源节点>; 方法在 Method/CS.hpp

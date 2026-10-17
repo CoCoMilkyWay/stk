@@ -23,10 +23,12 @@ namespace GUI::Features {
 struct ComputeConfig {
   // 日环下限 = LabelHold::MIN_RING_SLOTS (开盘型标签 T+N 跨日回填, 旧日 slot 持到结清; 少于此死锁), ComputeService.cpp static_assert 对账
   static constexpr int kMinRingSlots = 12;
-  // 按档 (下标 = TierId, 默认值按 Lob / Bar 序, ComputeService.cpp 对账). 截面核数 K: 按日轮转, 从时序让核 (Lob 时序是瓶颈, 不让).
-  // 日环: 截面 K 核要有 K 日同时可开 —— 悬挂日 (kMinRingSlots − 1) + 时序当日 + 截面 K 日 + 落盘 1 日, 少了只降吞吐不死锁
+  // 按档 (下标 = TierId, 默认值按 Lob / Bar 序, ComputeService.cpp 对账). 预取 / 截面 / 落盘核数: 各自按日轮转, 从时序让核 (Lob 时序是瓶颈, 不让).
+  // 日环: 截面 / 落盘多核要有多日同时可开 —— 悬挂日 (kMinRingSlots − 1) + 时序当日 + 截面 K_cs 日 + 落盘 K_io 日, 少了只降吞吐不死锁
   std::array<int, TIER_COUNT> ring_slots{kMinRingSlots + 2, kMinRingSlots + 2};
+  std::array<int, TIER_COUNT> pf_cores{1, 1};
   std::array<int, TIER_COUNT> cs_cores{1, 1};
+  std::array<int, TIER_COUNT> io_cores{1, 1};
   int adopt_pct = 50; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
   std::string lib;    // 算哪个库 (库名, 档由名定, 见 FeatureLib.hpp; Compute 页每库一个按钮)
 };
@@ -43,7 +45,7 @@ public:
   explicit ComputeService(SharedData &data); // 末尾 Start
   ~ComputeService() { Stop(); }
 
-  // 核布局由机器核数 + 本档截面核数推导 (StageLayout::make), UI 只交 ComputeConfig; 先断言再转 Service::Request
+  // 核布局由机器核数 + 本档预取 / 截面 / 落盘核数推导 (StageLayout::make), UI 只交 ComputeConfig; 先断言再转 Service::Request
   void Request(ComputeConfig config);
   bool cancelling() const { return busy() && cancel_.load(std::memory_order_relaxed); }
 

@@ -54,7 +54,7 @@ FeatureProgress::FeatureProgress(const StoreRing &store, const TsSchedule &sched
   assert(!dates_.empty() && "日期轴为空, 不应启动进度渲染");
   assert(stats_.ts.size() == sched_.frontier.size() && "stats 槽位数与 TS worker 数不符");
 
-  const size_t num_cores = stats_.ts.size() + stats_.cs.size() + 2; // [预取, ts..., 截面..., 落盘]
+  const size_t num_cores = stats_.prefetch.size() + stats_.ts.size() + stats_.cs.size() + stats_.io.size(); // [预取..., ts..., 截面..., 落盘...]
   hist_work_.assign(num_cores * kWindow, 0);
   hist_idle_.assign(num_cores * kWindow, 0);
   hist_ms_.assign(kWindow, 0);
@@ -92,10 +92,12 @@ long long FeatureProgress::elapsed_ms() const {
 
 void FeatureProgress::render() {
   const size_t total = dates_.size();
+  const size_t num_pf = stats_.prefetch.size();
   const size_t num_ts = sched_.frontier.size();
   const size_t num_cs = stats_.cs.size();
-  const size_t io_core = 1 + num_ts + num_cs;
-  const size_t num_cores = io_core + 1;
+  const size_t num_io = stats_.io.size();
+  const size_t ts_core = num_pf, cs_core = ts_core + num_ts, io_core = cs_core + num_cs;
+  const size_t num_cores = io_core + num_io;
   const long long now_ms = elapsed_ms();
 
   // ---- 采样 (原子读一轮快照; 各值间不要求一致, 展示用) ----
@@ -103,18 +105,20 @@ void FeatureProgress::render() {
   const size_t cs_days = store_.query_cs_done();
   const size_t io_days = store_.query_io_done();
 
-  // 核序 = [预取, ts0..tsN-1, 截面 cs0..csK-1, 落盘]: work + idle_us 快照
+  // 核序 = [预取 × K_pf, ts0..tsN-1, 截面 × K_cs, 落盘 × K_io]: work + idle_us 快照
   std::vector<size_t> work(num_cores), idle(num_cores);
   auto snap = [&](size_t idx, const ComputeStats::Core &c) {
     work[idx] = c.work.load(std::memory_order_relaxed);
     idle[idx] = c.idle_us.load(std::memory_order_relaxed);
   };
-  snap(0, stats_.prefetch);
+  for (size_t k = 0; k < num_pf; ++k)
+    snap(k, stats_.prefetch[k]);
   for (size_t w = 0; w < num_ts; ++w)
-    snap(1 + w, stats_.ts[w]);
+    snap(ts_core + w, stats_.ts[w]);
   for (size_t k = 0; k < num_cs; ++k)
-    snap(1 + num_ts + k, stats_.cs[k]);
-  snap(io_core, stats_.io);
+    snap(cs_core + k, stats_.cs[k]);
+  for (size_t k = 0; k < num_io; ++k)
+    snap(io_core + k, stats_.io[k]);
 
   std::vector<size_t> frontier(num_ts), holding(num_ts, 0);
   for (size_t w = 0; w < num_ts; ++w)
@@ -150,12 +154,14 @@ void FeatureProgress::render() {
   // busy 会假读成 1, 由 done 条件另行判绿, 也不进段统计.
   constexpr float kIdleBusy = 0.05f;
   std::vector<bool> done(num_cores, false);
-  done[0] = pf_days >= total;
+  for (size_t k = 0; k < num_pf; ++k)
+    done[k] = pf_days >= total;
   for (size_t w = 0; w < num_ts; ++w)
-    done[1 + w] = frontier[w] >= total;
+    done[ts_core + w] = frontier[w] >= total;
   for (size_t k = 0; k < num_cs; ++k)
-    done[1 + num_ts + k] = cs_days >= total;
-  done[io_core] = io_days >= total;
+    done[cs_core + k] = cs_days >= total;
+  for (size_t k = 0; k < num_io; ++k)
+    done[io_core + k] = io_days >= total;
 
   // 段忙碌 = 段内未完成核的 均 / 峰
   struct Load {
@@ -175,7 +181,19 @@ void FeatureProgress::render() {
       l.mean /= static_cast<float>(k);
     return l;
   };
-  const Load pf_load = load_of(0, 1), ts_load = load_of(1, num_ts), cs_load = load_of(1 + num_ts, num_cs), io_load = load_of(io_core, 1);
+  const Load pf_load = load_of(0, num_pf), ts_load = load_of(ts_core, num_ts), cs_load = load_of(cs_core, num_cs), io_load = load_of(io_core, num_io);
+  auto rate_of = [&](size_t c0, size_t n) {
+    double r = 0.0;
+    for (size_t c = c0; c < c0 + n; ++c)
+      r += rate[c];
+    return r;
+  };
+  auto work_of = [&](size_t c0, size_t n) {
+    size_t s = 0;
+    for (size_t c = c0; c < c0 + n; ++c)
+      s += work[c];
+    return s;
+  };
   auto load_text = [](const Load &l, size_t n) {
     char s[48];
     if (n == 1)
@@ -195,9 +213,7 @@ void FeatureProgress::render() {
                                : 0.0;
 
   // 全程均值 (瞬时速率见各行; 此处为 start→now 的端到端口径)
-  size_t sum_orders = 0;
-  for (size_t w = 0; w < num_ts; ++w)
-    sum_orders += work[1 + w];
+  const size_t sum_orders = work_of(ts_core, num_ts);
   const double elapsed_s = static_cast<double>(now_ms) / 1000.0;
   const double global_rate = elapsed_s > 0.0 ? static_cast<double>(sum_orders) / elapsed_s : 0.0;
   const double global_day_s = io_days > 0 ? elapsed_s / static_cast<double>(io_days) : 0.0;
@@ -246,17 +262,17 @@ void FeatureProgress::render() {
   // ---- 行2: 预取 ----
   {
     out << "预取 [";
-    cells(0, 1);
-    snprintf(buf, sizeof(buf), "%s %zu/%zu %s %.0fMB/s (%.1fGB)", load_text(pf_load, 1).c_str(),
+    cells(0, num_pf);
+    snprintf(buf, sizeof(buf), "%s %zu/%zu %s %.0fMB/s (%.1fGB)", load_text(pf_load, num_pf).c_str(),
              pf_days, total, pf_days > 0 ? misc::dense(dates_[pf_days - 1]).c_str() : "--------",
-             rate[0] / 1e6, work[0] / 1e9);
+             rate_of(0, num_pf) / 1e6, work_of(0, num_pf) / 1e9);
     out << buf << "\033[K\n";
   }
 
   // ---- 行3: 时序 (核间进度差看 前沿 最慢..领跑) ----
   {
     out << "时序 [";
-    cells(1, num_ts);
+    cells(ts_core, num_ts);
     const auto [hmin, hmax] = std::minmax_element(holding.begin(), holding.end());
     snprintf(buf, sizeof(buf), "%s 前沿 %zu..%zu/%zu (%s) %.2fG%s 持仓 %zu..%zu", load_text(ts_load, num_ts).c_str(),
              lag, lead, total, misc::dense(dates_[std::min(lead, total - 1)]).c_str(),
@@ -266,24 +282,21 @@ void FeatureProgress::render() {
 
   // ---- 行4: 截面 ----
   {
-    double cs_rate = 0.0;
-    for (size_t k = 0; k < num_cs; ++k)
-      cs_rate += rate[1 + num_ts + k];
     out << "截面 [";
-    cells(1 + num_ts, num_cs);
+    cells(cs_core, num_cs);
     snprintf(buf, sizeof(buf), "%s %zu/%zu (%s) %.1fk格/s", load_text(cs_load, num_cs).c_str(),
              cs_days, total, misc::dense(dates_[std::min(cs_days, total - 1)]).c_str(),
-             cs_rate / 1e3);
+             rate_of(cs_core, num_cs) / 1e3);
     out << buf << "\033[K\n";
   }
 
   // ---- 行5: 落盘 ----
   {
     out << "落盘 [";
-    cells(io_core, 1);
-    snprintf(buf, sizeof(buf), "%s %zu/%zu %s %.0fMB/s (%.1fGB)", load_text(io_load, 1).c_str(),
+    cells(io_core, num_io);
+    snprintf(buf, sizeof(buf), "%s %zu/%zu %s %.0fMB/s (%.1fGB)", load_text(io_load, num_io).c_str(),
              io_days, total, io_days > 0 ? misc::dense(dates_[io_days - 1]).c_str() : "--------",
-             rate[io_core] / 1e6, work[io_core] / 1e9);
+             rate_of(io_core, num_io) / 1e6, work_of(io_core, num_io) / 1e9);
     out << buf << "\033[K\n";
   }
 

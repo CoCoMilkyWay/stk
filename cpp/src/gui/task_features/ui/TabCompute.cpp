@@ -106,13 +106,13 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Configuration");
   ImGui::Spacing();
 
-  // 核布局: 机器物理核拓扑 + 按档截面核数推导, TS worker 数不可配 (见 StageLayout)
+  // 核布局: 机器物理核拓扑 + 按档预取 / 截面 / 落盘核数推导, TS worker 数不可配 (见 StageLayout)
   const StageLayout::Topology &topo = misc::Affinity::physical_cores();
-  const int max_cs_cores = static_cast<int>(topo.size()) - 2; // 至少留 1 个 TS 物理核 + 落盘核
+  const int phys = static_cast<int>(topo.size());
 
   for (size_t ti = 0; ti < TIER_COUNT; ++ti) {
     const TierId tier = static_cast<TierId>(ti);
-    const StageLayout layout = StageLayout::make(topo, state.config.cs_cores[ti]);
+    const StageLayout layout = StageLayout::make(topo, state.config.pf_cores[ti], state.config.cs_cores[ti], state.config.io_cores[ti]);
 
     ImGui::Text("Stages %s (%d 物理核 / %u 逻辑 CPU):", tier_name(tier), layout.total_phys(), misc::Affinity::core_count());
     ImGui::Spacing();
@@ -157,17 +157,25 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
         state.config.ring_slots[ti] = ComputeConfig::kMinRingSlots;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open; 截面 K 核宜 >= %d + K)",
-                        ComputeConfig::kMinRingSlots, ComputeConfig::kMinRingSlots + 1);
+    ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open; 宜 >= %d + 截面核 + 落盘核)",
+                        ComputeConfig::kMinRingSlots, ComputeConfig::kMinRingSlots);
 
-    ImGui::Text("CS Cores:");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::InputInt(("##cs_cores_" + id).c_str(), &state.config.cs_cores[ti], 1, 1)) {
-      state.config.cs_cores[ti] = std::clamp(state.config.cs_cores[ti], 1, max_cs_cores);
+    // 预取 / 截面 / 落盘: 按日轮转, 每核独占一个物理核, 从时序让出; 三者之和至多 物理核 − 1 (至少留 1 个 TS 物理核)
+    int *const stage_cores[] = {&state.config.pf_cores[ti], &state.config.cs_cores[ti], &state.config.io_cores[ti]};
+    const char *const stage_labels[] = {"PF Cores:", "CS Cores:", "IO Cores:"};
+    const char *const stage_ids[] = {"##pf_cores_", "##cs_cores_", "##io_cores_"};
+    for (size_t k = 0; k < 3; ++k) {
+      const int others = *stage_cores[(k + 1) % 3] + *stage_cores[(k + 2) % 3];
+      ImGui::Text("%s", stage_labels[k]);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(150);
+      if (ImGui::InputInt((stage_ids[k] + id).c_str(), stage_cores[k], 1, 1))
+        *stage_cores[k] = std::clamp(*stage_cores[k], 1, phys - 1 - others);
+      if (k + 1 < 3)
+        ImGui::SameLine();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("(截面按日轮转, 每核独占一个物理核, 从时序让出; 时序是瓶颈的档用 1)");
+    ImGui::TextDisabled("(预取 / 截面 / 落盘按日轮转, 每核独占一个物理核, 从时序让出; 看仪表盘哪段忙满就给哪段加核)");
     ImGui::Spacing();
   }
 
@@ -500,7 +508,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Text("System Status:");
     ImGui::Indent();
     ImGui::BulletText("GUI entering low-refresh mode");
-    ImGui::BulletText("%s", StageLayout::make(topo, state.config.cs_cores[ti]).summary().c_str());
+    ImGui::BulletText("%s", StageLayout::make(topo, state.config.pf_cores[ti], state.config.cs_cores[ti], state.config.io_cores[ti]).summary().c_str());
     ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots[ti]);
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();

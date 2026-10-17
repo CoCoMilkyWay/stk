@@ -1,10 +1,11 @@
 #pragma once
 // MetaTracker: 基建标志 ts_valid / cs_valid 的状态机 (两档共用; 落盘列 FIELDS_*_Meta 各档自写, 编码/解码 → features/MetaFlag.hpp)
-//   CoreTs 持有: begin_day 重置 + 给当日成员位, close_minute 取 min_flag(traded); Lob 档每笔另喂 on_tick (L_sec 行 + 分钟 depth OR).
+//   CoreTs 持有: begin_day 重置 + 给当日成员位, close_minute 取 min_flag(traded) + on_minute 并入 10 分钟箱, close_10min 取 min10_flag;
+//   Lob 档每笔另喂 on_tick (L_sec 行 + 分钟 depth OR).
 //   Bar 档无逐笔 (从不 on_tick) → min_depth_ 恒 false, min_flag(traded) = traded ? pack(false, 1) : 0, 符号位 (depth) 恒不置.
 //
-//   ts_valid 单槽三态编码: 0 = 该行无事件 (L_sec) / 本分钟无成交 (L_min); 非 0 = 有 (data 有效); 负 = 盘口有更新 (depth 有效)
-//   幅值: L_sec = 当时 micro price (量加权中间价, 元; 开盘竞价盘口未发布时退化为最近事件价); L_min = 1 (纯标志)
+//   ts_valid 单槽三态编码: 0 = 该行无事件 (L_sec) / 本分钟无成交 (L_min) / 本箱无成交 (L_10min); 非 0 = 有 (data 有效); 负 = 盘口有更新 (depth 有效)
+//   幅值: L_sec = 当时 micro price (量加权中间价, 元; 开盘竞价盘口未发布时退化为最近事件价); L_min / L_10min = 1 (纯标志)
 //   依据: 盘口更新必来自事件 → depth ⟹ data, 三态刚好用 零/符号 编进一个 Float16 槽, 价格精度无损
 //   L_min 行稠密 (每分钟都写, 特征列 ALL 不受本列门控), 本列在 L_min 只是"有成交"信息位 + 标签分钟型 exit 的推进条件.
 //
@@ -62,16 +63,31 @@ public:
   float sec_flag() const { return fmeta::pack(sec_depth_, price_); }                          // L_sec 行 (当前秒)
   float min_flag(bool traded) const { return traded ? fmeta::pack(min_depth_, 1.0f) : 0.0f; } // L_min 行 (刚完结分钟; 跨分钟那笔尚未 on_tick); 无成交 → 0
 
+  // 每分钟结算一次 (close_minute): 刚完结分钟的成交 / depth 位 OR 进当前 10 分钟箱
+  // (depth 只随有成交分钟并入: 无事件分钟不会 on_tick, min_depth_ 是更早分钟的残值)
+  void on_minute(bool traded) {
+    min10_traded_ |= traded;
+    min10_depth_ |= traded && min_depth_;
+  }
+  // L_10min 行 (刚完结箱, 箱末分钟 on_minute 之后) 并开新箱; 箱内无成交 → 0
+  float min10_flag() {
+    const float f = min10_traded_ ? fmeta::pack(min10_depth_, 1.0f) : 0.0f;
+    min10_traded_ = min10_depth_ = false;
+    return f;
+  }
+
   void reset() {
     sec_ = min_ = SIZE_MAX;
     sec_depth_ = min_depth_ = book_priced_ = false;
+    min10_traded_ = min10_depth_ = false;
     price_ = 0.0f;
   }
 
 private:
   size_t sec_ = SIZE_MAX, min_ = SIZE_MAX;
   bool sec_depth_ = false, min_depth_ = false;
-  bool book_priced_ = false; // 日内是否已有盘口价 (之前幅值退化为事件价)
-  bool member_ = false;      // 当日成员位 (begin_day 给; 日内不变)
-  float price_ = 0.0f;       // 最近价 (元, 日内): 盘口 micro price, 竞价阶段为事件价
+  bool min10_traded_ = false, min10_depth_ = false; // 当前 10 分钟箱 (close_minute 逐分钟 OR, min10_flag 取走即清)
+  bool book_priced_ = false;                        // 日内是否已有盘口价 (之前幅值退化为事件价)
+  bool member_ = false;                             // 当日成员位 (begin_day 给; 日内不变)
+  float price_ = 0.0f;                              // 最近价 (元, 日内): 盘口 micro price, 竞价阶段为事件价
 };

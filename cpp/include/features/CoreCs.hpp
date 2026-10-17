@@ -17,8 +17,8 @@
 
 // ============================================================================
 // CoreCs<T>: 截面计算 (CS worker), 档 T 有 L_sec → L_sec 每秒 + L_min 分钟边界级联; 无 L_sec (Bar) → L_min 每分钟;
-//   末拍之后级联 L_day (收盘行, 档有该层才算)
-//   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L_min / L_day) / end_day, 逐层 run<LVL>
+//   10 分钟箱末分钟之后级联 L_10min, 末拍之后级联 L_day (收盘行); 档有该层才算
+//   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L_min / L_10min / L_day) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0); 源层 == 本层
 //   节点契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
@@ -197,13 +197,10 @@ public:
       }
       // 分钟末级联: 分钟 m 在其最后一秒算, 覆盖 m=0..254 (原先 t%60==0 && t>0 漏掉分钟 0、多算哨兵行).
       // 读 L_min 行 m 的前提 = 全部资产已结算分钟 m: 回测由按日流控保证; 实盘须先对全部资产 CoreTs::advance(m + 1)
-      if (t % 60 == 59) {
-        TraceN("CS_Minute");
-        run<L_min>(L_sec_to_L_min(t));
-      }
+      if (t % 60 == 59)
+        run_minute_(L_sec_to_L_min(t));
     } else {
-      TraceN("CS_Minute");
-      run<L_min>(t);
+      run_minute_(t);
     }
     // 收盘级联: 末拍之后算 L_day 行 0. 前提 = 全部资产已写收盘行: 回测由按日流控保证; 实盘须先对全部资产 CoreTs::end_day
     if (t + 1 == level_valid_rows(kBeatLevel)) {
@@ -216,7 +213,7 @@ public:
   template <size_t LVL, class S, size_t SRC_LVL, size_t SRC, size_t DST, class Tf, class Method>
   [[gnu::always_inline]] inline void run_one(size_t t) {
     static_assert(SRC_LVL == LVL, "截面只读本层行 (高频读低频由 TS 行在本层节拍取 Series 最新值, 不跨层取张量)");
-    static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_min / L_day context (mcap / industry)");
+    static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_min / L_10min / L_day context (mcap / industry)");
     static_assert(std::is_same_v<S, T> || LVL == L_min, "旁读只许 L_min 截面行");
 
     float *y = input_fp32_.data();
@@ -230,6 +227,18 @@ public:
   }
 
 private:
+  // 分钟 m 的截面 + 箱末级联: m 是 10 分钟箱 k 的末分钟 → 算 L_10min 行 k (前提同 L_min: 全部资产已结算分钟 m, 见 CoreTs::close_10min)
+  void run_minute_(size_t m) {
+    {
+      TraceN("CS_Minute");
+      run<L_min>(m);
+    }
+    if (const size_t k = L_min_to_L_10min(m); L_10min_last_min(k) == m) {
+      TraceN("CS_10Min");
+      run<L_10min>(k);
+    }
+  }
+
   template <size_t LVL>
   void run(size_t t) {
     if constexpr (!T::has(LVL)) { // 档缺该层: 无特化

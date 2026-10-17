@@ -3,6 +3,7 @@
 #include "features/DataDefine.hpp"
 #include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
 #include "features/Storage/FeatureStore.hpp"
+#include "math/sample/ResamplerMin2Min10.hpp"
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
 
@@ -14,9 +15,10 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         end_day    advance 到收盘 → 写 L_day 收盘行 → 标签收盘结算 → 日末 flush → 归零分钟缓冲
+//         end_day    advance 到收盘 → 写 L_day 收盘行 → 标签收盘结算 → 日末 flush → 归零分钟 / 10 分钟缓冲
 //         empty_day  无数据日 = 零事件日, 同一路径
 //   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: onMinute → 写 L_min 行 + ts_valid → 有成交则标签 minute_closed
+//                     → 分钟 bar 收进 10 分钟箱; 箱末分钟再 close_10min: 出 10 分钟 bar → on10Min → 写 L_10min 行 + ts_valid (两档同一路径)
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
@@ -39,6 +41,7 @@ public:
     meta_.reset();
     meta_.begin_day(self().member(date));
     self().resampler().reset();
+    min2min10_.reset();
     if (const float cs = meta_.cs(); cs != 0.0f)
       [&]<size_t... L>(std::index_sequence<L...>) { (write_cs_valid<L>(cs), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
     dag_.label.day_begin();
@@ -53,6 +56,7 @@ public:
     dag_.label.day_end(writer(), releaser(store));
     dag_.at_day_end();
     dag_.minute_data.clear();
+    dag_.min10_data.clear();
   }
 
   // 无数据日 (缺 binary / 无 bar1m) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟 onMinute / 标签日历),
@@ -65,7 +69,7 @@ public:
   // 时钟推进到 L_min 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
   //   回测: 由本资产下一个源单位 (compute_and_store) / 收盘 (end_day) 调.
   //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCs::compute_and_store(t):
-  //         CS 在分钟末级联读 L_min 行 m, 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
+  //         CS 在分钟末级联读 L_min 行 m (箱末分钟另读 L_10min 行), 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
   //   结算时刻不影响值 (onMinute 域只读 MinuteData / 分钟边界), 两种触发写出同一行.
   void advance(size_t m) noexcept {
     while (self().resampler().roll(m)) {
@@ -79,8 +83,10 @@ public:
 
 protected:
   template <class... Args>
-  explicit CoreTs(size_t asset_id, Args &&...dag_args) : asset_id_(asset_id), dag_(std::forward<Args>(dag_args)...) {
+  explicit CoreTs(size_t asset_id, Args &&...dag_args)
+      : asset_id_(asset_id), dag_(std::forward<Args>(dag_args)...), min2min10_(dag_.minute_data, dag_.min10_data) {
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id);
+    dag_.min10_data.asset_id = static_cast<uint32_t>(asset_id);
   }
 
   // 标签回调 (L_sec 路径的分钟锚定也用)
@@ -94,7 +100,8 @@ protected:
   Day day_{}; // 本日写句柄 (= days_[cur_]), 热路径直接用
   size_t asset_id_;
   Dag dag_;
-  MetaTracker meta_; // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
+  MetaTracker meta_;             // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
+  ResamplerMin2Min10 min2min10_; // minute_data → min10_data (两档共用, 档钩子 resampler() 只管源 → 分钟)
 
 private:
   static constexpr size_t kPendDays = Label::PEND_DAYS;
@@ -109,8 +116,26 @@ private:
     dag_.template run<Trigger::onMinute>();
     fstore::ts_write_row<L_min>(day_, m, asset_id_, dag_);
     fstore::ts_write<L_min>(day_, m, kMinTsValid, asset_id_, meta_.min_flag(traded));
+    meta_.on_minute(traded);
     if (traded)
       dag_.label.minute_closed(m, writer());
+    min2min10_.accumulate();
+    if (const size_t k = L_min_to_L_10min(m); L_10min_last_min(k) == m)
+      close_10min(k);
+  }
+
+  // 箱 k 结算 (箱末分钟的 close_minute 内, onMinute 之后): 每箱都跑 on10Min 并写整行 (L_10min 稠密); 有成交 = ts_valid 非零.
+  // 档没有 L_10min 层也照走 (min10_data / on10Min 节点两档同一路径), 只是不落盘
+  void close_10min(size_t k) {
+    min2min10_.emit(k);
+    dag_.template run<Trigger::on10Min>();
+    const float flag = meta_.min10_flag();
+    if constexpr (T::has(L_10min)) {
+      constexpr size_t F = field_of<T>(L_10min, "ts_valid");
+      static_assert(F < T::LEVELS[L_10min].field_count, "L_10min 必须有 ts_valid 列");
+      fstore::ts_write_row<L_10min>(day_, k, asset_id_, dag_);
+      fstore::ts_write<L_10min>(day_, k, F, asset_id_, flag);
+    }
   }
 
   // cs_valid: 当日成员位, 整日常量, 与事件无关 → 盘前一次写满本档全部层全部行 (不在截面不写, slot 清零即 0).

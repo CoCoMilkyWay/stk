@@ -31,7 +31,7 @@ ComputeService::ComputeService(SharedData &data)
 void ComputeService::Request(ComputeConfig config) {
   for (size_t t = 0; t < TIER_COUNT; ++t) {
     assert(config.ring_slots[t] >= ComputeConfig::kMinRingSlots && "ring slots 低于 LabelHold::MIN_RING_SLOTS (T+N 标签悬挂日 + 1), 会死锁");
-    assert(config.cs_cores[t] >= 1 && "截面至少 1 核");
+    assert(config.pf_cores[t] >= 1 && config.cs_cores[t] >= 1 && config.io_cores[t] >= 1 && "预取 / 截面 / 落盘各至少 1 核");
   }
   assert(config.adopt_pct >= 0 && config.adopt_pct <= 100 && "adopt pct must be in [0, 100]");
   Service::Request(config);
@@ -100,7 +100,7 @@ bool ComputeService::run(ComputeConfig &config) {
   // 已落盘天数镜像进进度面
   const size_t tier = static_cast<size_t>(lib.tier);
   const PipelineArgs args{data_, lib, side, dates, static_cast<size_t>(config.ring_slots[tier]), static_cast<uint64_t>(config.adopt_pct),
-                          config.cs_cores[tier], cancel_,
+                          config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;
 #define TIER_PIPELINE(T, ns) \

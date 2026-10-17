@@ -916,7 +916,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::EndCombo();
   }
   if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))
-    sel.selected_level = L_min; // 档缺该层 (Bar 无 L_sec, Lob 无 L_day); 两档都有 L_min
+    sel.selected_level = L_min; // 档缺该层 (Bar 无 L_sec, Lob 无 L_10min / L_day); 两档都有 L_min
 
   ImGui::SameLine();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Level:");

@@ -59,15 +59,15 @@ class FeatureRead;
 // ============================================================================
 
 static constexpr size_t kCorrDays = 32;                   // 抽样日上限 (流式单位 = 天, 逐步发布收敛)
-static constexpr size_t kCorrSliceMinutes = 10;           // 日内切片间隔 (分钟; L_sec 自动换算成秒步长)
+static constexpr size_t kCorrSliceMinutes = 10;           // 日内切片间隔 (分钟; L_sec 自动换算成秒步长, L_10min 换算成箱步长)
 static constexpr size_t kCorrStepCells = size_t(8) << 20; // 单步 (天批) 切片格子预算 天×S×F×A: 列少 (Pair) 一步读多天, IO 按天并行
 static constexpr size_t kCorrMinAssets = 20;              // 单 (切片, 特征) 最少有效资产, 否则该切片该列作废
 static constexpr size_t kCorrMinPairN = 2000;             // 单对累计样本下限, 否则 ρ = NaN (UI 画空格)
-static constexpr size_t kCorrMaxLag = 10;                 // lead-lag 半宽 (层行数: L_min = 分钟, L_sec = 秒)
+static constexpr size_t kCorrMaxLag = 10;                 // lead-lag 半宽 (层行数: L_min = 分钟, L_sec = 秒, L_10min = 箱)
 static constexpr size_t kCorrLags = 2 * kCorrMaxLag + 1;
 static constexpr size_t kCorrLagWindow = kCorrLags; // CorrLag 每日连续窗长 (行数): 每个 lag 至少 kCorrMaxLag+1 对切片
 
-// 该层的切片行步长 (kCorrSliceMinutes 分钟折成层行数; L_min = 10, L_sec = 600)
+// 该层的切片行步长 (kCorrSliceMinutes 分钟折成层行数; L_min = 10, L_sec = 600, L_10min = 1)
 size_t corr_slice_stride(size_t level);
 
 // 三个目标共用的输入: 层 + 列描述 (矩阵 / lag: 升序去重 ≥ 2; 单对: {a, b} 按序)

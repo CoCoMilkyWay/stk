@@ -16,6 +16,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -66,17 +67,19 @@ inline constexpr size_t kDefaultRingSlots = 4;
 // 四段各持一个单调的已完成天数, 段间只靠它们握手 (Disruptor 式):
 //   预取 pf_done_ ─→ 时序 ts_done_ ─→ 截面 cs_done_ ─→ 落盘 io_done_
 //                      ↑ 背压: 日 d 可开 ⇔ d < io_done_ + P ─────────┘
-// 落盘按日序推进, 在飞日恒为连续区间 [io_done_, io_done_ + P), 日 d 占 ring_[d % P]
-// —— 无状态枚举 / 无锁 / 无查找; slot 由 io_close 清零后经 io_done_ 的 release 交还.
-// 截面 K 核按日轮转 (日 d 归第 d % K 核, 核内日序递增), close 可乱序 ⇒ 截面 → 落盘的握手是逐 slot 的 cs_closed,
-// cs_done_ 只是已截面日数 (仪表盘用).
+// io_done_ = 已落盘的连续前缀, 在飞日恒为连续区间 [io_done_, io_done_ + P), 日 d 占 ring_[d % P]
+// —— 无状态枚举 / 无锁 / 无查找; slot 由 io_close 清零后经 io_done_ 的推进交还.
+// 预取 / 截面 / 落盘各 K 核按日轮转 (日 d 归第 d % K 核, 核内日序递增), close 可乱序 ⇒ 段间握手是逐格的:
+//   预取 → 时序: 源环格日标记 pf_mark_[d % R] = d + 1 (只硬源; pf_done_ 只是已备源日数, 仪表盘用)
+//   截面 → 落盘: slot.cs_closed (cs_done_ 只是已截面日数, 仪表盘用)
+//   落盘 → 时序/截面: slot.io_mark = d + 1, io_close 据此把 io_done_ 推到首个未落盘日
 //
 // 各段 open / close 同构 (try_open 非阻塞; 等待 / 取消是 worker 骨架的事, 见 feature_workers.hpp):
-//   PF: pf_try_open(d)  d ≤ ts_done_ + P + kPrefetchLead → 备源 (不占 slot) → pf_close
+//   PF: pf_try_open(d)  d ≤ ts_done_ + P + kPrefetchLead → 备源 (不占 slot) → pf_close → pf_mark_
 //                       软源 (Lob: 暖逐笔 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源环, TS 等 pf_ready)
 //   TS: ts_try_open(d)  d < io_done_ + P → 句柄写 (纯指针算术) → 每 (asset, d) 一次 ts_close, 计满全轴 → ts_done_ + 1
 //   CS: cs_try_open(d)  本日计满全轴 → 逐拍扫 → cs_close → slot.cs_closed
-//   IO: io_try_open(d)  slot.cs_closed → 落盘 (FeatureDay::write, 池不碰格式) → io_close (清零) → io_done_ = d + 1
+//   IO: io_try_open(d)  d < io_done_ + P ∧ slot.cs_closed → 落盘 (FeatureDay::write, 池不碰格式) → io_close (清零) → slot.io_mark → 推进 io_done_
 //
 // TS 按 (asset, d) 计数 (而非按 worker) 使资产处置权可在 worker 间转移: 领跑 worker 可接手
 // 落后 worker 的资产并回填旧日 (旧日未计满 ⇒ 仍在飞, ts_try_open 必得), 见 TsSchedule.
@@ -107,6 +110,7 @@ template <class T>
 struct StoreSlot {
   std::atomic<uint32_t> assets_done{0};             // == num_assets ⇒ 本日 TS 全部写完 (CS 放行)
   std::atomic<bool> cs_closed{false};               // 本日截面写完 (IO 放行)
+  std::atomic<size_t> io_mark{0};                   // 本格最近落盘日 d + 1 (0 = 未落过; reset 不动它)
   feature_storage_t *data[LEVEL_COUNT] = {nullptr}; // 每层 [T][F][A]; 档缺的层 nullptr
 
   void allocate(size_t num_assets) {
@@ -166,12 +170,16 @@ protected:
   size_t ring_size_;        // P
 
   // 各段已完成天数 (单调): 流水线的全部握手面, 进度面也只读它们
-  std::atomic<size_t> pf_done_{0};
+  std::atomic<size_t> pf_done_{0}; // 已备源日数 (fetch_add, 见 pf_close; 预取多核时非连续前缀, 只供仪表盘)
   std::atomic<size_t> ts_done_{0}; // 计满全轴的日数 (fetch_add, 见 ts_close)
   std::atomic<size_t> cs_done_{0}; // 已截面日数 (fetch_add, 见 cs_close; 截面多核时非连续前缀, 只供仪表盘)
-  std::atomic<size_t> io_done_{0};
+  std::atomic<size_t> io_done_{0}; // 已落盘的连续前缀 (CAS 推进, 见 io_close)
+
+  // 源环格日标记 [feed_ring_size()]: 格 d % R 最近备好的日 d + 1 (0 = 未备过). 环长随 ring_size_ 定, 子类收定 P 后 init_pf_marks
+  std::vector<std::atomic<size_t>> pf_mark_;
 
   StoreRing(size_t num_assets, size_t ring_slots) : num_assets_(num_assets), ring_size_(ring_slots) {}
+  void init_pf_marks() { pf_mark_ = std::vector<std::atomic<size_t>>(feed_ring_size()); }
 
 public:
   // ===== PF: 不占 slot, 只有流控与进度 =====
@@ -179,12 +187,20 @@ public:
   // 窗口 = TS 在飞跨度上限 P + 余量. 日 d 进窗 ⇒ d − (P + kPrefetchLead + 1) 已全员计满 (源环可复用其格, 见 feed_ring_size)
   bool pf_try_open(size_t d) const { return d <= ts_done_.load(std::memory_order_relaxed) + ring_size_ + kPrefetchLead; }
 
-  // release 与 pf_ready 的 acquire 配对 (硬源: 解码写入先于 TS 读)
-  void pf_close(size_t d) {
-    assert(d == pf_done_.load(std::memory_order_relaxed) && "pf_close: 日序乱");
-    pf_done_.store(d + 1, std::memory_order_release);
+  // 硬源打源环格日标记: release 与 pf_ready 的 acquire 配对 (解码写入先于 TS 读).
+  // 软源不打: TS 不等预取, 慢核的旧日可能晚于 d + R 才 close, 标记会倒退 (也没有读者)
+  void pf_close(size_t d, bool hard) {
+    if (hard) {
+      const size_t R = pf_mark_.size();
+      assert(R == feed_ring_size() && "pf_close: 源环标记未初始化");
+      std::atomic<size_t> &mark = pf_mark_[d % R];
+      assert(mark.load(std::memory_order_relaxed) == (d >= R ? d + 1 - R : 0) && "pf_close: 源环格上一日不是 d − R (日序乱)");
+      mark.store(d + 1, std::memory_order_release);
+    }
+    pf_done_.fetch_add(1, std::memory_order_relaxed);
   }
-  bool pf_ready(size_t d) const { return d < pf_done_.load(std::memory_order_acquire); }
+  // 格 d % R 在 d 全员计满前不会被 d + R 复用 (pf_try_open 窗口), 标记相等即日 d 已备好
+  bool pf_ready(size_t d) const { return pf_mark_[d % pf_mark_.size()].load(std::memory_order_acquire) == d + 1; }
 
   // 源环格数: 预取窗口跨度 [ts_done_, ts_done_ + P + kPrefetchLead] 全部在格
   size_t feed_ring_size() const { return ring_size_ + kPrefetchLead + 1; }
@@ -258,6 +274,7 @@ public:
       ring_size_ = max_ring_slots;
     }
     assert(ring_size_ >= 2 && "Ring size too small, need at least 2 slots");
+    init_pf_marks();
 
     std::cout << "\n=== Feature Store Tensor Pool (" << tier_name(T::kId) << ") ===\n";
 
@@ -355,19 +372,29 @@ public:
   // ===== IO: 每 d 一对 open/close =====
 
   // 截面已 close 的日才放行 (逐 slot 查: 截面多核 close 乱序); 返回后本日两层张量只归 IO 读 (落盘见 FeatureDay::write).
-  // ring_[d % P] 必是日 d: d + P 要等 d 落盘才开得出 (ts_try_open / cs_try_open 背压)
+  // 落盘多核按日轮转: 先验 slot 已轮到日 d (d < io_done_ + P), 否则 ring_[d % P] 还是已截面待落盘的 d − P, cs_closed 会误放行
   Day io_try_open(size_t d) {
-    assert(d == io_done_.load(std::memory_order_relaxed) && "io_try_open: 日序乱");
+    const size_t io = io_done_.load(std::memory_order_acquire);
+    assert(d >= io && "io_try_open: 日 d 已落盘 (日序乱)");
+    if (d >= io + ring_size_)
+      return {};
     const Day day = day_at(d);
     return day.slot->cs_closed.load(std::memory_order_acquire) ? day : Day{};
   }
 
-  // 本日落盘完毕: 清零后交还 (空闲态不变量: 张量 + 计数全零, 拿来即写).
-  // release 与 ts_try_open / cs_try_open 的 acquire 配对
+  // 本日落盘完毕: 清零后打日标记 (空闲态不变量: 张量 + 计数全零, 拿来即写), 再把 io_done_ 推到首个未落盘日.
+  // 标记写与 io_done_ 读 / CAS 与标记读构成 Dekker 式交叉, 须 seq_cst: 否则两核各自 close 后都看不到对方, 前缀卡住.
+  // io_done_ 的推进 (seq_cst ⊇ release) 与 ts_try_open / cs_try_open 的 acquire 配对 (清零先于复用)
   void io_close(const Day &day) {
-    assert(day && day.d == io_done_.load(std::memory_order_relaxed) && "io_close: 日序乱");
+    assert(day && day.d >= io_done_.load(std::memory_order_relaxed) && "io_close: 日 d 已落盘 (日序乱)");
+    assert(day.slot->io_mark.load(std::memory_order_relaxed) == (day.d >= ring_size_ ? day.d + 1 - ring_size_ : 0) &&
+           "io_close: slot 上一日不是 d − P (日序乱)");
     day.slot->reset(num_assets_);
-    io_done_.store(day.d + 1, std::memory_order_release);
+    day.slot->io_mark.store(day.d + 1, std::memory_order_seq_cst);
+    size_t io = io_done_.load(std::memory_order_seq_cst);
+    while (ring_[io % ring_size_].io_mark.load(std::memory_order_seq_cst) == io + 1)
+      if (io_done_.compare_exchange_weak(io, io + 1, std::memory_order_seq_cst))
+        ++io;
     Logger::log("store", "io_close: d=" + std::to_string(day.d));
   }
 
@@ -380,7 +407,7 @@ using LobFeatureStore = FeatureStore<lob::Tier>;
 using BarFeatureStore = FeatureStore<bar::Tier>;
 
 // ============================================================================
-// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (0/1 = L_sec/L_min), 档从日句柄推导,
+// 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (FeatureLevel), 档从日句柄推导,
 // 字段用 <tier>::<LVL>_Field 枚举; 布局常量一律取 constexpr T::LEVELS[LVL] (单一事实源),
 // 常量下标下定址照样编译期折叠. 数据面走日句柄 (Day, 由 ts_try_open / cs_try_open
 // 定址一次), 每次调用只剩指针算术.

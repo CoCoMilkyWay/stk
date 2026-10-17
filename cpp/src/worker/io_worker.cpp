@@ -5,13 +5,16 @@
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 
+#include <cassert>
 #include <cstdio>
 #include <filesystem>
 #include <string>
 
 // 本核发布槽 (单写者): work = 已落盘字节, idle_us = 累计等截面 close 微秒; 天数前沿 = store.query_io_done()
+// 第 lane 核只落日 lane, lane + lanes, ... (FeatureDay::Scratch 各核一份)
 template <class T>
-void io_loop(const StageCtx<T> &ctx) {
+void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes) {
+  assert(lane < lanes);
   const int worker_id = ctx.worker_id;
   FeatureStore<T> &store = ctx.store;
   const std::span<const misc::Ymd> dates = ctx.dates;
@@ -24,15 +27,16 @@ void io_loop(const StageCtx<T> &ctx) {
   TraceThread(("io_worker_" + std::to_string(worker_id)).c_str());
 
   const size_t total_dates = dates.size();
+  const size_t lane_dates = total_dates > lane ? (total_dates - lane + lanes - 1) / lanes : 0;
   size_t flush_count = 0;
 
-  Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to flush");
+  Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(lane_dates) + " dates to flush");
 
   FeatureDay::Scratch scratch; // 跨日复用, 稳态零分配
   // 循环顶不查 cancel (与其余三角色唯一的不同): 截面已 close 的日子刷完再走 ——
-  // wait_open 先试后查 cancel, 刷到首个未截面的日才返回空. 不能和 ts_done 比:
+  // wait_open 先试后查 cancel, 刷到本核首个未截面 (或别核卡住前缀而未轮到 slot) 的日才返回空. 不能和 ts_done 比:
   // CS 按 cancel 即退, 而某个 TS 可能之后才把在飞的一天计满, 等它就是死等.
-  for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
+  for (size_t date_idx = lane; date_idx < total_dates; date_idx += lanes) {
     TraceN("FlushLoop");
     TraceValue(date_idx);
 
@@ -58,20 +62,20 @@ void io_loop(const StageCtx<T> &ctx) {
       store.io_close(day);
     }
 
-    flush_count = date_idx + 1;
+    ++flush_count;
     cumulative_bytes += flushed_bytes;
     stat.work.store(cumulative_bytes, std::memory_order_relaxed);
-    Logger::log("worker_" + std::to_string(worker_id), "Flushed: " + std::to_string(flush_count) + "/" + std::to_string(total_dates));
+    Logger::log("worker_" + std::to_string(worker_id), "Flushed: " + std::to_string(flush_count) + "/" + std::to_string(lane_dates));
 
     TraceFrame;
   }
 
-  if (flush_count < total_dates)
+  if (flush_count < lane_dates)
     Logger::log("worker_" + std::to_string(worker_id), "Cancelled after " + std::to_string(flush_count) + " dates");
   else
-    Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(total_dates) + " dates flushed");
+    Logger::log("worker_" + std::to_string(worker_id), "Completed: " + std::to_string(lane_dates) + " dates flushed");
 }
 
-#define IO_LOOP_INSTANTIATE(T, ns) template void io_loop<ns::Tier>(const StageCtx<ns::Tier> &);
+#define IO_LOOP_INSTANTIATE(T, ns) template void io_loop<ns::Tier>(const StageCtx<ns::Tier> &, size_t, size_t);
 ALL_TIERS(IO_LOOP_INSTANTIATE)
 #undef IO_LOOP_INSTANTIATE
