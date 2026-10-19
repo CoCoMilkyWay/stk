@@ -11,7 +11,7 @@
 //   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast
 //   cutoff=0  (T 盘前可知): status(st/susp), shares, limit_price, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
 //   涨跌停价: row T 即 "T 当日适用涨跌停" (由 pre_close(T) 推出), 直接配盘中实时价判触板.
-//   D 轴 = 交易日历截到 today 之后的首个交易日 (Fund 收盘推进到 d+1, 末回测日的次日也在轴内).
+//   D 轴 = 交易日历截到 today (Fund 收盘推进到 d+1 ⇒ 末回测日须早于 today, 其次日在轴内).
 //   三表 raw (qmt 无): 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
 //
 // fast-math 契约: 输出行被 -ffast-math TU (Valuation 节点/CoreLob) 盲算消费 — 只做算术 (NaN 硬件透传) 与

@@ -24,7 +24,7 @@
 //     industry component / change                            T 盘后                 −1       T ≤ D
 //     日历派生 (list_age / delist_age / is_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
 //   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
-//   回测区间末日的 D+1 = 交易日历上 today 之后的首个交易日 (fund::Panel 的 D 轴多留这一格).
+//   回测区间末日的 D+1 须在 D 轴内 (D 轴截到 today ⇒ 回测区间不含 today; fund::Panel::build 断言).
 //
 // 【fast-math 契约】本文件不做 isnan/isfinite (状态机在 precise-math TU 里), y 只被下游算术消费, NaN 硬件透传.
 // =============================================================================

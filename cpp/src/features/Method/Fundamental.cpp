@@ -984,13 +984,8 @@ void Panel::build(const std::vector<std::string> &codes,
 
   const fundamental::Catalog cat;
 
-  // ---- D 轴: all_trading_days (market_code='CN', 截到 today 之后的首个交易日: Fund 收盘推进到 d+1, 末回测日也要有次日) ----
-  axes.dates = fundamental::calendar(cat, std::numeric_limits<Ymd>::max());
-  {
-    const auto next = std::upper_bound(axes.dates.begin(), axes.dates.end(), misc::today_ymd());
-    assert(next != axes.dates.end() && "all_trading_days 无 today 之后的交易日 (排程未同步)");
-    axes.dates.erase(next + 1, axes.dates.end());
-  }
+  // ---- D 轴: all_trading_days (market_code='CN', 截到 today; 同步只拉到 today, 无未来日) ----
+  axes.dates = fundamental::calendar(cat, misc::today_ymd());
   axes.date_days.reserve(axes.dates.size());
   for (const Ymd d : axes.dates)
     axes.date_days.push_back(misc::to_days(d));
@@ -1003,11 +998,12 @@ void Panel::build(const std::vector<std::string> &codes,
   const int n_a = axes.n_a();
   const int n_d = axes.n_d();
 
-  // ---- 回测日必须全部命中交易日历; 首回测日决定网格切片起点 ----
+  // ---- 回测日必须全部命中交易日历, 且有次日 (Fund 收盘推进到 d+1); 首回测日决定网格切片起点 ----
   int first_d = n_d;
   for (const Ymd s : dates) {
     const int d = axes.exact(s);
     assert(d >= 0 && "回测日不在交易日历里");
+    assert(d + 1 < n_d && "回测日无次日交易日 (回测区间不能含 today)");
     first_d = std::min(first_d, d);
   }
 

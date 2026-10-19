@@ -51,7 +51,7 @@ inline void put(float *ov, uint8_t *om, size_t i, double v, bool m) {
 inline void bcast(float *ov, uint8_t *om, size_t r, int A, double v, bool m) {
   const Val x = mk(v, m);
   const uint8_t mm = x.m ? 1u : 0u;
-  for (int a = 0; a < A; ++a) {
+  FACTOR_COLS for (int a = 0; a < A; ++a) {
     ov[r + a] = x.v;
     om[r + a] = mm;
   }
@@ -294,8 +294,8 @@ struct CsDemean { // 空池 → μ = 0, 即 x 原值
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       const detail::M1 s = detail::moments(xv + r, xm + r, g + r, A, /*need_m2=*/false);
-      for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a, static_cast<double>(xv[r + a]) - s.mean, xm[r + a]);
+      FACTOR_COLS for (int a = 0; a < A; ++a)
+          detail::put(ov, om, r + a, static_cast<double>(xv[r + a]) - s.mean, xm[r + a]);
     }
   }
 };
@@ -309,8 +309,8 @@ struct CsZ { // σ 退化 → 0 (无尺度可比)
       const detail::M1 s = detail::moments(xv + r, xm + r, g + r, A);
       const bool ok = s.n >= 2 && s.disp();
       const double sd = ok ? s.sd() : 1.0;
-      for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a, ok ? (static_cast<double>(xv[r + a]) - s.mean) / sd : 0.0, xm[r + a]);
+      FACTOR_COLS for (int a = 0; a < A; ++a)
+          detail::put(ov, om, r + a, ok ? (static_cast<double>(xv[r + a]) - s.mean) / sd : 0.0, xm[r + a]);
     }
   }
 };
@@ -372,10 +372,10 @@ struct CsWinsor { // 空池 → 不缩尾, x 原值
       h.build(xv + r, xm + r, g + r, A);
       const float qa = h.quantile(p.k), qb = h.quantile(1.0 - static_cast<double>(p.k));
       const float w_lo = h.n >= 1 ? std::fmin(qa, qb) : -detail::kInfF, w_hi = h.n >= 1 ? std::fmax(qa, qb) : detail::kInfF;
-      for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a,
-                    static_cast<double>(std::fmin(std::fmax(xv[r + a], w_lo), w_hi)),
-                    xm[r + a]);
+      FACTOR_COLS for (int a = 0; a < A; ++a)
+          detail::put(ov, om, r + a,
+                      static_cast<double>(std::fmin(std::fmax(xv[r + a], w_lo), w_hi)),
+                      xm[r + a]);
     }
   }
 };
@@ -409,7 +409,7 @@ struct CsResid { // x 对 y 的截面 OLS (含截距) 残差; y 无离散度 →
       const detail::M2 s = detail::comoments(xv + r, xm + r, yv + r, ym + r, g + r, A);
       const bool ok = s.n >= 2 && s.dy_ok();
       const double b = ok ? s.beta() : 0.0;
-      for (int a = 0; a < A; ++a) {
+      FACTOR_COLS for (int a = 0; a < A; ++a) {
         const double v =
             (static_cast<double>(xv[r + a]) - s.mx) - b * (static_cast<double>(yv[r + a]) - s.my);
         detail::put(ov, om, r + a, v, xm[r + a] && ym[r + a]);
@@ -452,7 +452,7 @@ namespace detail {
 // 扫组 id 并返回组数 G = max gid + 1 (上限断言; 全无效 → 0)
 inline int scan_gid(const float *gv, const uint8_t *gm, int A, int *g) {
   int gmax = -1;
-  for (int i = 0; i < A; ++i) {
+  FACTOR_COLS for (int i = 0; i < A; ++i) {
     g[i] = gid(gv, gm, static_cast<size_t>(i));
     gmax = std::max(gmax, g[i]);
   }
@@ -498,9 +498,9 @@ struct CsGroupMean { // y = 组 id (行业等); 组均值广播到组员 (无组
       int na = 0;
       for (size_t q = 0; q < GS; ++q)
         sa += s[q], na += cn[q];
-      const double ma = sa / std::max(na, 1); // 全池也空 → 0
-      for (size_t q = 0; q < GS; ++q)         // 除法按组做 G 次, 不按资产做 A 次; 无组槽恒 = 全池
-        mean[q] = q < static_cast<size_t>(G) && cn[q] >= 1 ? s[q] / cn[q] : ma;
+      const double ma = sa / std::max(na, 1);     // 全池也空 → 0
+      FACTOR_COLS for (size_t q = 0; q < GS; ++q) // 除法按组做 G 次, 不按资产做 A 次; 无组槽恒 = 全池
+          mean[q] = q < static_cast<size_t>(G) && cn[q] >= 1 ? s[q] / cn[q] : ma;
       gather(gq, mean, xm + r, ov + r, om + r, A, G);
     }
   }
@@ -650,7 +650,7 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
       center(gq, mx, my, xv + r, yv + r, g + r, xt, yt, A, sxy, syy, n);
       const bool ok = n >= 2 && any_spread; // 退化 → β = 0, 输出 x̃
       const double b = ok ? sxy / syy : 0.0;
-      for (int a = 0; a < A; ++a) { // 回写: 行缓冲顺序读, 无 gather
+      FACTOR_COLS for (int a = 0; a < A; ++a) { // 回写: 行缓冲顺序读, 无 gather
         const bool in = gq[a] >= 0;
         detail::put(ov, om, r + a, in ? xt[a] - b * yt[a] : 0.0, in);
       }

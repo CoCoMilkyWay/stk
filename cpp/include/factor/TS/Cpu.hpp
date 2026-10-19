@@ -99,6 +99,10 @@ inline double c4_of(double s1, double s2, double s3, double s4, int n) {
 //   块长 = 窗长 w; 进入新块时回读前一块 w 行建后缀极值 (读放大 2×), 前缀在线递推.
 //   xm2 非空时有效样本 = xm && xm2 (二元算子的双有效窗). 无有效样本 → lo = +inf, hi = −inf (spread 恒假).
 //   状态按列块容量 kTileA 从 Bump 切; 换块 reset(width) 即可 (t = 0 的重建与首行写入盖住全部状态, 不用预填).
+//   成员先落局部再进列循环 (经 this 读的界 / 指针会被当成可能被循环体改写)
+struct Win { // 窗内极值 [width] (下一次 step 前有效)
+  const float *lo = nullptr, *hi = nullptr;
+};
 class RollMinMax {
 public:
   RollMinMax() = default;
@@ -109,49 +113,51 @@ public:
     sh_ = b.take<float>(static_cast<size_t>(w + 1) * cap);
     pl_ = b.take<float>(cap);
     ph_ = b.take<float>(cap);
-    lo = b.take<float>(cap);
-    hi = b.take<float>(cap);
+    lo_ = b.take<float>(cap);
+    hi_ = b.take<float>(cap);
   }
   void reset(int width) {
     assert(1 <= width && width <= kTileA);
     n_ = width;
   }
-  // 按 t = 0, 1, … 递增喂行 (xv/xm 为块首列指针, 行距 stride, 列 [0, width)); 返回后 lo/hi = 窗 [t−w+1, t] 极值
-  void step(const float *xv, const uint8_t *xm, const uint8_t *xm2, int stride, int t) {
-    const int pos = t % w_;
+  // 按 t = 0, 1, … 递增喂行 (xv/xm 为块首列指针, 行距 stride, 列 [0, width)); 返回窗 [t−w+1, t] 极值
+  Win step(const float *xv, const uint8_t *xm, const uint8_t *xm2, int stride, int t) {
+    const int pos = t % w_, n = n_;
     if (pos == 0)
       rebuild(xv, xm, xm2, stride, t);
     const size_t r = static_cast<size_t>(t) * stride;
-    const float *sl = sl_ + static_cast<size_t>(pos + 1) * n_;
-    const float *sh = sh_ + static_cast<size_t>(pos + 1) * n_;
-    for (int a = 0; a < n_; ++a) {
+    const float *sl = sl_ + static_cast<size_t>(pos + 1) * n;
+    const float *sh = sh_ + static_cast<size_t>(pos + 1) * n;
+    float *pl = pl_, *ph = ph_, *lo = lo_, *hi = hi_;
+    FACTOR_COLS for (int a = 0; a < n; ++a) {
       const bool m = xm[r + a] && (!xm2 || xm2[r + a]);
       const float vl = m ? xv[r + a] : kInf, vh = m ? xv[r + a] : -kInf;
-      pl_[a] = pos == 0 ? vl : std::fmin(pl_[a], vl);
-      ph_[a] = pos == 0 ? vh : std::fmax(ph_[a], vh);
-      lo[a] = std::fmin(sl[a], pl_[a]);
-      hi[a] = std::fmax(sh[a], ph_[a]);
+      pl[a] = pos == 0 ? vl : std::fmin(pl[a], vl);
+      ph[a] = pos == 0 ? vh : std::fmax(ph[a], vh);
+      lo[a] = std::fmin(sl[a], pl[a]);
+      hi[a] = std::fmax(sh[a], ph[a]);
     }
+    return {lo, hi};
   }
-  float *lo = nullptr, *hi = nullptr;
 
 private:
   void rebuild(const float *xv, const uint8_t *xm, const uint8_t *xm2, int stride, int t) {
-    std::fill_n(sl_ + static_cast<size_t>(w_) * n_, n_, kInf); // 下标 w = 空后缀哨兵
-    std::fill_n(sh_ + static_cast<size_t>(w_) * n_, n_, -kInf);
-    for (int i = w_ - 1; i >= 0; --i) {
-      float *cl = sl_ + static_cast<size_t>(i) * n_;
-      float *ch = sh_ + static_cast<size_t>(i) * n_;
-      const float *nl = cl + n_;
-      const float *nh = ch + n_;
-      const int row = t - w_ + i;
+    const int w = w_, n = n_;
+    std::fill_n(sl_ + static_cast<size_t>(w) * n, n, kInf); // 下标 w = 空后缀哨兵
+    std::fill_n(sh_ + static_cast<size_t>(w) * n, n, -kInf);
+    for (int i = w - 1; i >= 0; --i) {
+      float *cl = sl_ + static_cast<size_t>(i) * n;
+      float *ch = sh_ + static_cast<size_t>(i) * n;
+      const float *nl = cl + n;
+      const float *nh = ch + n;
+      const int row = t - w + i;
       if (row < 0) { // 平面开头: 空行
-        std::copy_n(nl, n_, cl);
-        std::copy_n(nh, n_, ch);
+        std::copy_n(nl, n, cl);
+        std::copy_n(nh, n, ch);
         continue;
       }
       const size_t r = static_cast<size_t>(row) * stride;
-      for (int a = 0; a < n_; ++a) {
+      FACTOR_COLS for (int a = 0; a < n; ++a) {
         const bool m = xm[r + a] && (!xm2 || xm2[r + a]);
         cl[a] = std::fmin(m ? xv[r + a] : kInf, nl[a]);
         ch[a] = std::fmax(m ? xv[r + a] : -kInf, nh[a]);
@@ -159,12 +165,16 @@ private:
     }
   }
   int w_ = 0, n_ = 0;
-  float *sl_ = nullptr, *sh_ = nullptr, *pl_ = nullptr, *ph_ = nullptr;
+  float *sl_ = nullptr, *sh_ = nullptr, *pl_ = nullptr, *ph_ = nullptr, *lo_ = nullptr, *hi_ = nullptr;
 };
 
 // ---- 滑窗极值 + 最旧并列位置 (契约: 严格比较 → 并列保留最旧) ----
 //   后缀 (窗的旧半) 反向扫取 ≥/≤ (旧优先), 前缀正向扫取 >/< (新不夺旧), 合并时后缀平局优先.
-//   状态切分 / 换块同 RollMinMax.
+//   状态切分 / 换块 / 成员落局部同 RollMinMax.
+struct ArgWin {                // [width] (下一次 step 前有效)
+  const float *best = nullptr; // 窗内极值 (无有效样本 → 哨兵, 由调用方的 n 屏蔽)
+  const int *arg = nullptr;    // 最旧极值的全局行号
+};
 template <bool IsMax>
 class RollArgExt {
 public:
@@ -176,56 +186,54 @@ public:
     sj_ = b.take<int>(static_cast<size_t>(w + 1) * cap);
     pv_ = b.take<float>(cap);
     pj_ = b.take<int>(cap);
-    best = b.take<float>(cap);
-    arg = b.take<int>(cap);
+    best_ = b.take<float>(cap);
+    arg_ = b.take<int>(cap);
   }
   void reset(int width) {
     assert(1 <= width && width <= kTileA);
     n_ = width;
   }
-  void step(const float *xv, const uint8_t *xm, int stride, int t) {
-    const int pos = t % w_;
+  ArgWin step(const float *xv, const uint8_t *xm, int stride, int t) {
+    const int pos = t % w_, n = n_;
     if (pos == 0)
       rebuild(xv, xm, stride, t);
     const size_t r = static_cast<size_t>(t) * stride;
-    const float *sv = sv_ + static_cast<size_t>(pos + 1) * n_;
-    const int *sj = sj_ + static_cast<size_t>(pos + 1) * n_;
-    for (int a = 0; a < n_; ++a) {
+    const float *sv = sv_ + static_cast<size_t>(pos + 1) * n;
+    const int *sj = sj_ + static_cast<size_t>(pos + 1) * n;
+    float *pv = pv_, *best = best_;
+    int *pj = pj_, *arg = arg_;
+    FACTOR_COLS for (int a = 0; a < n; ++a) {
       const bool m = xm[r + a] != 0;
       const float x = xv[r + a];
-      if (pos == 0) {
-        pv_[a] = m ? x : kSent;
-        pj_[a] = m ? t : -1;
-      } else if (m && (IsMax ? x > pv_[a] : x < pv_[a])) {
-        pv_[a] = x;
-        pj_[a] = t;
-      }
-      const bool s_wins = IsMax ? sv[a] >= pv_[a] : sv[a] <= pv_[a];
-      best[a] = s_wins ? sv[a] : pv_[a];
-      arg[a] = s_wins ? sj[a] : pj_[a];
+      const bool take = pos == 0 || (m && (IsMax ? x > pv[a] : x < pv[a])); // 块首重开前缀; 其后严格胜出才换 (新不夺旧)
+      pv[a] = take ? (m ? x : kSent) : pv[a];
+      pj[a] = take ? (m ? t : -1) : pj[a];
+      const bool s_wins = IsMax ? sv[a] >= pv[a] : sv[a] <= pv[a];
+      best[a] = s_wins ? sv[a] : pv[a];
+      arg[a] = s_wins ? sj[a] : pj[a];
     }
+    return {best, arg};
   }
-  float *best = nullptr; // 窗内极值 (无有效样本 → 哨兵, 由调用方的 n 屏蔽)
-  int *arg = nullptr;    // 最旧极值的全局行号
 
 private:
   static constexpr float kSent = IsMax ? -kInf : kInf;
   void rebuild(const float *xv, const uint8_t *xm, int stride, int t) {
-    std::fill_n(sv_ + static_cast<size_t>(w_) * n_, n_, kSent);
-    std::fill_n(sj_ + static_cast<size_t>(w_) * n_, n_, -1);
-    for (int i = w_ - 1; i >= 0; --i) {
-      float *cv = sv_ + static_cast<size_t>(i) * n_;
-      int *cj = sj_ + static_cast<size_t>(i) * n_;
-      const float *nv = cv + n_;
-      const int *nj = cj + n_;
-      const int row = t - w_ + i;
+    const int w = w_, n = n_;
+    std::fill_n(sv_ + static_cast<size_t>(w) * n, n, kSent);
+    std::fill_n(sj_ + static_cast<size_t>(w) * n, n, -1);
+    for (int i = w - 1; i >= 0; --i) {
+      float *cv = sv_ + static_cast<size_t>(i) * n;
+      int *cj = sj_ + static_cast<size_t>(i) * n;
+      const float *nv = cv + n;
+      const int *nj = cj + n;
+      const int row = t - w + i;
       if (row < 0) {
-        std::copy_n(nv, n_, cv);
-        std::copy_n(nj, n_, cj);
+        std::copy_n(nv, n, cv);
+        std::copy_n(nj, n, cj);
         continue;
       }
       const size_t r = static_cast<size_t>(row) * stride;
-      for (int a = 0; a < n_; ++a) {
+      FACTOR_COLS for (int a = 0; a < n; ++a) {
         const bool take = xm[r + a] && (IsMax ? xv[r + a] >= nv[a] : xv[r + a] <= nv[a]);
         cv[a] = take ? xv[r + a] : nv[a];
         cj[a] = take ? row : nj[a];
@@ -233,8 +241,8 @@ private:
     }
   }
   int w_ = 0, n_ = 0;
-  float *sv_ = nullptr, *pv_ = nullptr;
-  int *sj_ = nullptr, *pj_ = nullptr;
+  float *sv_ = nullptr, *pv_ = nullptr, *best_ = nullptr;
+  int *sj_ = nullptr, *pj_ = nullptr, *arg_ = nullptr;
 };
 
 // ---- 桶分位 (契约分桶规则): 全并列 (hi ≤ lo) → lo; 其余取首个前缀累计 ≥ ⌈q·n⌉ 的桶心 ----
@@ -349,7 +357,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
       const Param &p = c.p;                                                                 \
       (void)p;                                                                              \
       for (int t = 0; t < T; ++t)                                                           \
-        for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {                \
+        FACTOR_COLS for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {    \
           const float x = xv[i];                                                            \
           const bool mx = xm[i] != 0;                                                       \
           const bool m = (M);                                                               \
@@ -365,7 +373,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
       const Param &p = c.p;                                                                 \
       (void)p;                                                                              \
       for (int t = 0; t < T; ++t)                                                           \
-        for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {                \
+        FACTOR_COLS for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {    \
           const float x = xv[i], y = yv[i];                                                 \
           const bool mx = xm[i] != 0, my = ym[i] != 0;                                      \
           const bool m = (M);                                                               \
@@ -381,7 +389,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
       const Param &p = c.p;                                                                 \
       (void)p;                                                                              \
       for (int t = 0; t < T; ++t)                                                           \
-        for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {                \
+        FACTOR_COLS for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {    \
           const float x = xv[i], y = yv[i], z = zv[i];                                      \
           const bool mx = xm[i] != 0, my = ym[i] != 0, mz = zm[i] != 0;                     \
           const bool m = (M);                                                               \
@@ -422,7 +430,7 @@ struct TsClip {
     assert(c.p.k >= 0.f);
     const float lo = -c.p.k, hi = c.p.k;
     for (int t = 0; t < T; ++t)
-      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
+      FACTOR_COLS for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
         const float x = xv[i];
         const bool m = xm[i] != 0;
         // 与 std::clamp 同式 (v < lo ? lo : hi < v ? hi : v), 展开成值比较让它变成 cmp + blend;
@@ -442,8 +450,8 @@ struct TsTodMask {
     for (int t = 0; t < T; ++t) {
       const int t_seg = (c.t0 + t) % S;
       const float v = (t_seg >= k && t_seg < k2) ? 1.f : 0.f;
-      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i)
-        detail::put(ov, om, i, static_cast<double>(v), true);
+      FACTOR_COLS for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i)
+          detail::put(ov, om, i, static_cast<double>(v), true);
     }
   }
 };
@@ -457,7 +465,19 @@ CP_P2(TsMin, std::fmin(x, y), mx &&my)
 // TsImb / TsShare: 和相消 (scale = |x| + |y|) → 0 / 0.5, 分母不钳位
 CP_P2(TsImb, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? (x - y) / (x + y) : 0.f, mx &&my)
 CP_P2(TsShare, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? x / (x + y) : 0.5f, mx &&my)
-CP_P2(TsLogRatio, log_ratio(x, y), mx &&my) // 非正侧饱和到 ∓kLogCap (见 Contract::log_ratio)
+// TsLogRatio: 非正侧饱和到 ∓kLogCap (见 Contract::log_ratio); log 无向量版, 关向量化器同 TsLog
+struct TsLogRatio {
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    for (int t = 0; t < T; ++t) {
+#pragma clang loop vectorize(disable)
+      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
+        const bool m = xm[i] && ym[i];
+        detail::put(ov, om, i, m ? static_cast<double>(log_ratio(xv[i], yv[i])) : 0.0, m);
+      }
+    }
+  }
+};
 // TsMask: y 当掩码, y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
 CP_P2(TsMask, x, mx && my && y > 0.f)
 // TsWhere: 未被选中的那支不要求有效
@@ -485,7 +505,7 @@ struct ExpSum {
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const bool m = xm[r + a] != 0;
             s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
             n[a] += m;
@@ -528,7 +548,7 @@ struct ExpMom {
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const float x = xv[r + a];
             const bool m = xm[r + a] != 0;
             const double dx = m ? static_cast<double>(x) : 0.0;
@@ -575,7 +595,7 @@ struct ExpExt {
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A;
           const int ts = t - seg;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const float x = xv[r + a];
             const bool m = xm[r + a] != 0;
             const bool take = m && (n[a] == 0 || (IsMax ? x > best[a] : x < best[a]));
@@ -672,7 +692,7 @@ struct TsHhiCum {
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const float x = xv[r + a];
             const bool m = xm[r + a] != 0;
             s[a] += m ? static_cast<double>(x) : 0.0;
@@ -755,7 +775,7 @@ struct ExpPair {
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const float x = xv[r + a], y = yv[r + a];
             const bool mm = xm[r + a] && ym[r + a];
             const double dx = mm ? static_cast<double>(x) : 0.0;
@@ -812,7 +832,7 @@ struct TsWMeanCum {
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const float x = xv[r + a], y = yv[r + a];
             const bool mm = xm[r + a] && ym[r + a];
             sx[a] += mm ? static_cast<double>(x) : 0.0;
@@ -842,7 +862,7 @@ struct TsDelayRoll {
     assert(d >= 1 && c.t0 == 0);
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - d, 0)) * A;
-      for (int a = 0; a < w; ++a) {
+      FACTOR_COLS for (int a = 0; a < w; ++a) {
         const bool m = xm[q + a] != 0;
         detail::put(ov, om, r + a, m ? static_cast<double>(xv[q + a]) : 0.0, m);
       }
@@ -857,7 +877,7 @@ struct TsDeltaRoll {
     assert(d >= 1 && c.t0 == 0);
     for (int t = 0; t < T; ++t) {
       const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - d, 0)) * A;
-      for (int a = 0; a < w; ++a) {
+      FACTOR_COLS for (int a = 0; a < w; ++a) {
         const bool m = xm[r + a] && xm[q + a];
         detail::put(ov, om, r + a, m ? static_cast<double>(xv[r + a]) - xv[q + a] : 0.0, m);
       }
@@ -882,14 +902,14 @@ struct RollSum {
       for (int t = 0; t < T; ++t) {
         if (t >= d) {
           const size_t q = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const bool m = xm[q + a] != 0;
             s[a] -= m ? static_cast<double>(xv[q + a]) : 0.0;
             n[a] -= m;
           }
         }
         const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
           const bool m = xm[r + a] != 0;
           s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
           n[a] += m;
@@ -927,10 +947,10 @@ struct RollMom {
         std::fill_n(s4, w, 0.0);
       mm.reset(w);
       for (int t = 0; t < T; ++t) {
-        mm.step(xv, xm, nullptr, A, t);
+        const auto [lo, hi] = mm.step(xv, xm, nullptr, A, t);
         if (t >= d) {
           const size_t q0 = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const bool m = xm[q0 + a] != 0;
             const double dx = m ? static_cast<double>(xv[q0 + a]) : 0.0;
             const double q = dx * dx;
@@ -944,7 +964,7 @@ struct RollMom {
           }
         }
         const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
           const float x = xv[r + a];
           const bool m = xm[r + a] != 0;
           const double dx = m ? static_cast<double>(x) : 0.0;
@@ -956,7 +976,7 @@ struct RollMom {
           if constexpr (kS4)
             s4[a] += q * q;
           n[a] += m;
-          const bool ok = detail::mom_ok<K>(n[a], mm.hi[a] > mm.lo[a]);
+          const bool ok = detail::mom_ok<K>(n[a], hi[a] > lo[a]);
           detail::put(ov, om, r + a,
                       ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
                                               n[a], x)
@@ -983,17 +1003,17 @@ struct RollExt {
       mm.reset(w);
       std::fill_n(n, w, 0);
       for (int t = 0; t < T; ++t) {
-        mm.step(xv, xm, A, t);
+        const auto [best, arg] = mm.step(xv, xm, A, t);
         if (t >= d) {
           const size_t q = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a)
-            n[a] -= xm[q + a] != 0;
+          FACTOR_COLS for (int a = 0; a < w; ++a)
+              n[a] -= xm[q + a] != 0;
         }
         const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
           n[a] += xm[r + a] != 0;
           const double v =
-              IsArg ? static_cast<double>(t - mm.arg[a]) : static_cast<double>(mm.best[a]);
+              IsArg ? static_cast<double>(t - arg[a]) : static_cast<double>(best[a]);
           detail::put(ov, om, r + a, n[a] >= 1 ? v : 0.0, true);
         }
       }
@@ -1029,7 +1049,7 @@ struct RollHist {
       std::fill_n(plo, W, detail::kInf);
       std::fill_n(phi, W, -detail::kInf);
       for (int t = 0; t < T; ++t) {
-        mm.step(xv, xm, nullptr, A, t);
+        const auto [lo, hi] = mm.step(xv, xm, nullptr, A, t);
         const int slot = t % d;
         const size_t r = static_cast<size_t>(t) * A;
         for (int j = 0; j < W; ++j) {
@@ -1041,7 +1061,7 @@ struct RollHist {
           rv[rs] = x;
           rm[rs] = m ? 1 : 0;
           n[j] += static_cast<int>(m) - static_cast<int>(mo);
-          const float nl = mm.lo[j], nh = mm.hi[j];
+          const float nl = lo[j], nh = hi[j];
           int *h = hist + static_cast<size_t>(j) * kBuckets;
           if (nh > nl) {
             if (nl != plo[j] || nh != phi[j]) { // 值域变了: 整窗重建
@@ -1098,20 +1118,20 @@ struct TsWmaRoll {
       std::fill_n(sw, w, 0.0);
       std::fill_n(swx, w, 0.0);
       for (int t = 0; t < T; ++t) {
-        for (int a = 0; a < w; ++a) { // 平移: Σw −= n, Σwx −= Σx
+        FACTOR_COLS for (int a = 0; a < w; ++a) { // 平移: Σw −= n, Σwx −= Σx
           sw[a] -= n[a];
           swx[a] -= sx[a];
         }
         if (t >= d) { // 滑出样本权重已平移到 0, 只影响 n / Σx
           const size_t q = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const bool mo = xm[q + a] != 0;
             n[a] -= mo;
             sx[a] -= mo ? static_cast<double>(xv[q + a]) : 0.0;
           }
         }
         const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
           const float x = xv[r + a];
           const bool m = xm[r + a] != 0;
           n[a] += m;
@@ -1145,14 +1165,14 @@ struct TsSlopeRoll {
       std::fill_n(sx, w, 0.0);
       std::fill_n(six, w, 0.0);
       for (int t = 0; t < T; ++t) {
-        for (int a = 0; a < w; ++a) { // 平移: Σ(i−1)² = Σi² − 2Σi + n
+        FACTOR_COLS for (int a = 0; a < w; ++a) { // 平移: Σ(i−1)² = Σi² − 2Σi + n
           sii[a] -= 2.0 * si[a] - n[a];
           si[a] -= n[a];
           six[a] -= sx[a];
         }
         if (t >= d) { // 滑出样本平移后下标 = −1
           const size_t q = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const bool mo = xm[q + a] != 0;
             const double xo = mo ? static_cast<double>(xv[q + a]) : 0.0;
             si[a] += mo;
@@ -1164,7 +1184,7 @@ struct TsSlopeRoll {
         }
         const size_t r = static_cast<size_t>(t) * A;
         const double fi = d - 1; // 新样本的窗内下标
-        for (int a = 0; a < w; ++a) {
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
           const bool m = xm[r + a] != 0;
           const double dx = m ? static_cast<double>(xv[r + a]) : 0.0;
           si[a] += m ? fi : 0.0;
@@ -1258,13 +1278,14 @@ struct RollPair {
         mmy.reset(w);
       }
       for (int t = 0; t < T; ++t) {
+        detail::Win ex, ey;
         if constexpr (kSpx)
-          mmx.step(xv, xm, ym, A, t);
+          ex = mmx.step(xv, xm, ym, A, t);
         if constexpr (kSpy)
-          mmy.step(yv, ym, xm, A, t);
+          ey = mmy.step(yv, ym, xm, A, t);
         if (t >= d) {
           const size_t q = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const bool mm = xm[q + a] && ym[q + a];
             const double dx = mm ? static_cast<double>(xv[q + a]) : 0.0;
             const double dy = mm ? static_cast<double>(yv[q + a]) : 0.0;
@@ -1279,7 +1300,7 @@ struct RollPair {
           }
         }
         const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
           const float x = xv[r + a], y = yv[r + a];
           const bool mm = xm[r + a] && ym[r + a];
           const double dx = mm ? static_cast<double>(x) : 0.0;
@@ -1292,8 +1313,8 @@ struct RollPair {
           if constexpr (kSpy)
             syy[a] += dy * dy;
           n[a] += mm;
-          detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? mmx.hi[a] > mmx.lo[a] : true,
-                              kSpy ? mmy.hi[a] > mmy.lo[a] : true, sx[a], sy[a], sxy[a],
+          detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? ex.hi[a] > ex.lo[a] : true,
+                              kSpy ? ey.hi[a] > ey.lo[a] : true, sx[a], sy[a], sxy[a],
                               kSpx ? sxx[a] : 0.0, kSpy ? syy[a] : 0.0, x, y, mm);
         }
       }
@@ -1323,7 +1344,7 @@ struct TsWMeanRoll {
       for (int t = 0; t < T; ++t) {
         if (t >= d) {
           const size_t q = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a) {
+          FACTOR_COLS for (int a = 0; a < w; ++a) {
             const float x = xv[q + a], y = yv[q + a];
             const bool mm = xm[q + a] && ym[q + a];
             sx[a] -= mm ? static_cast<double>(x) : 0.0;
@@ -1334,7 +1355,7 @@ struct TsWMeanRoll {
           }
         }
         const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
           const float x = xv[r + a], y = yv[r + a];
           const bool mm = xm[r + a] && ym[r + a];
           sx[a] += mm ? static_cast<double>(x) : 0.0;
@@ -1367,11 +1388,11 @@ struct TsMeanEma {
       std::fill_n(on, w, 0);
       for (int t = 0; t < T; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
-          if (xm[r + a]) {
-            y[a] = on[a] ? k * xv[r + a] + (1.0 - k) * y[a] : static_cast<double>(xv[r + a]);
-            on[a] = 1;
-          }
+        FACTOR_COLS for (int a = 0; a < w; ++a) {
+          const bool m = xm[r + a] != 0;
+          const double x = xv[r + a];
+          y[a] = m ? (on[a] ? k * x + (1.0 - k) * y[a] : x) : y[a];
+          on[a] |= m;
           detail::put(ov, om, r + a, y[a], true);
         }
       }

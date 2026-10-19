@@ -196,6 +196,16 @@ struct Bump {
   }
 };
 
+// CPU 列循环: 暂存 / 输入 / 输出三块互不重叠 (暂存由调用方另给; Call::o 不与输入重叠), 故每次迭代只写本格 ([a] / [r + a])、
+// 所读不被本循环写的循环, 迭代间无依赖 —— 告诉向量化器, 免掉逐行的运行期别名检查 (状态数组一多, 检查要么超限退回标量,
+// 要么每行几十次比较吃掉向量化收益). 它同时**强制**向量化: 体内有 libm 调用 / 按数据下标查表 / 写表的循环不用
+// (逐 lane 标量化反而更慢, 见 TS/Cpu.hpp TsLog)
+#if defined(__clang__)
+#define FACTOR_COLS _Pragma("clang loop vectorize(assume_safety)")
+#else
+#define FACTOR_COLS
+#endif
+
 // ---- 逐点链融合程序 (Dag 产出, CPU / GPU evaluator 执行; 只装 POINT × SELF 算子, 每步结果过 mk 与单算子逐位同) ----
 inline constexpr int kFuseIn = 8, kFuseLen = 16; // 外部输入 / 步数上限 (GPU 走 kernel 参数区)
 struct FuseStep {
