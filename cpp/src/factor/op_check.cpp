@@ -13,6 +13,7 @@
 //   属性列也对拍: 流式 TS struct::kT 与 OpTable 的 T 窗列不符 → static_assert 错.
 //   造数 / 配方 / 容差 / 比较 / 驱动在 factor/Check.hpp (与 GUI Factors→Operators 页共用同一口径);
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
+//   单算子之后一节 Fuse (逐点链融合: 随机表达式树, 融合 DAG 与不融合 DAG 在 cpu / gpu 上各自逐位相等): --op Fuse 单跑.
 //   末尾另有一节 Stat (因子评估算子, factor/Stat; 不在 OpTable, 无流式后端, cpu ↔ gpu 两方 match): --op Stat 单跑.
 //   再一节 Search (参数搜索评估算子, factor/Search; 参考 = Stat CPU, Search cpu / gpu 各与它比 + 分块 ≡ 整块): --op Search 单跑.
 // =============================================================================
@@ -25,6 +26,9 @@
 
 #include "factor/Check.hpp"
 #include "factor/Contract.hpp"
+#include "factor/Dag.hpp"
+#include "factor/EvalCpu.hpp"
+#include "factor/EvalGpu.hpp"
 #include "factor/Expr.hpp" // kOps / op_index (算子下标 = GPU 分派下标; 元数 / in 域 / 参数列)
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
@@ -155,6 +159,167 @@ void check(int op, int A, unsigned seed, Report &rep) {
     ++rep.ops_bad;
   else if (!rep.verbose)
     std::printf("  ok   %-14s\n", factor::expr::kOps[op].name);
+}
+
+// 逐点链融合 (Dag fuse): 随机表达式树, 融合 DAG ≡ 不融合 DAG, cpu / gpu 各自逐位相等 (跨后端已由单算子节覆盖).
+//   内部节点 70% 逐点 (POINT × SELF) / 20% 其余 TS / 10% CS ALL; 叶 = 三张特征平面 x0 / x1 / x2 (NORM / POS / SMALL);
+//   15% 的子节点复用已生成的子树 (多消费者 → 不并, 打组边界). 层 × profile × kFuseCases 棵, 每棵至少一个融合节点
+constexpr int kFuseCases = 8, kFuseDepth = 6;
+
+struct GenNode {
+  int op = -1, feat = -1;
+  Param p;
+  int kids[3] = {};
+};
+
+// 生成一棵子树进 pool (子先于父入池), 返回其下标
+int gen_tree(std::vector<GenNode> &pool, std::mt19937 &rng, int depth, int S) {
+  static const auto ops_of = [](int kind) {
+    std::vector<int> r;
+    for (int i = 0; i < factor::expr::kOpCount; ++i) {
+      const factor::expr::OpInfo &o = factor::expr::kOps[i];
+      const int k = factor::detail::pointwise(i) ? 0 : (o.a == factor::A::SELF ? 1 : (o.a == factor::A::ALL ? 2 : -1));
+      if (k == kind)
+        r.push_back(i);
+    }
+    assert(!r.empty());
+    return r;
+  };
+  static const std::vector<int> pools[3] = {ops_of(0), ops_of(1), ops_of(2)};
+  constexpr int kD[] = {1, 5, 20};
+  std::uniform_real_distribution<float> ud(0.f, 1.f);
+  GenNode g;
+  if (depth == 0 || ud(rng) < 0.15f) {
+    g.feat = static_cast<int>(rng() % 3);
+  } else {
+    const float u = ud(rng);
+    const std::vector<int> &from = pools[u < 0.7f ? 0 : (u < 0.9f ? 1 : 2)];
+    g.op = from[rng() % from.size()];
+    const factor::expr::OpInfo &o = factor::expr::kOps[g.op];
+    if (factor::expr::declares(o.params, "d"))
+      g.p.d = kD[rng() % 3];
+    set_k(o.name, g.p, S);
+    for (int a = 0; a < o.arity; ++a)
+      g.kids[a] = !pool.empty() && ud(rng) < 0.15f ? static_cast<int>(rng() % pool.size()) : gen_tree(pool, rng, depth - 1, S);
+  }
+  pool.push_back(g);
+  return static_cast<int>(pool.size()) - 1;
+}
+
+// pool[g] 前序展开进 e (复用的子树展开成重复子式, 由 Dag 按规范串去重回共享节点)
+int emit_expr(factor::expr::Expr &e, const std::vector<GenNode> &pool, int g) {
+  const GenNode &q = pool[static_cast<size_t>(g)];
+  const int i = static_cast<int>(e.nodes.size());
+  factor::expr::Node n;
+  n.op = q.op, n.p = q.p;
+  if (q.op < 0)
+    n.feat = "x" + std::to_string(q.feat);
+  e.nodes.push_back(n);
+  if (q.op >= 0) {
+    ++e.n_ops;
+    for (int a = 0; a < factor::expr::kOps[q.op].arity; ++a) {
+      const int c = emit_expr(e, pool, q.kids[a]);
+      e.nodes[static_cast<size_t>(i)].args[a] = c;
+    }
+  }
+  return i;
+}
+
+void check_fuse(int A, unsigned seed, Report &rep) {
+  namespace gpu = factor::gpu;
+  ++rep.ops;
+  bool op_bad = false;
+  misc::exec::ForkJoin ex(misc::exec::hw());
+  std::vector<Arena> sc(static_cast<size_t>(ex.threads()));
+  factor::cpu::HostPool hp_f, hp_u;
+  const Param p0;
+  const Tol exact{0.0, 0.0};
+  const auto fi = [](const std::string &code) { return code[1] - '0'; }; // 特征 code "x<k>" → 平面 k
+  for_segs(rep, [&](int S) {
+    const int T = rows_of(rep, S);
+    const size_t n = static_cast<size_t>(T) * A;
+    for (int pi = 0; pi < kProfiles; ++pi) {
+      const Profile pr = static_cast<Profile>(pi);
+      std::mt19937 rng(seed + 1000u * pi + static_cast<unsigned>(S));
+      Plane feat[3], gate;
+      const Gen gens[3] = {Gen::NORM, Gen::POS, Gen::SMALL};
+      for (int k = 0; k < 3; ++k)
+        fill(feat[k], gens[k], pr, T, A, S, rng);
+      fill_gate(gate, pr, T, A, S, rng);
+      gpu::Session *gs = nullptr;
+      const gpu::DevPlane *dfeat[3] = {}, *dgate = nullptr;
+      gpu::DevPool dp_f, dp_u;
+      if (gpu::available()) {
+        gs = gpu::session_open(n);
+        for (int k = 0; k < 3; ++k)
+          dfeat[k] = gpu::upload(gs, feat[k].v.data(), feat[k].m.data());
+        dgate = gpu::upload_mask(gs, gate.m.data());
+      }
+      for (int c = 0; c < kFuseCases; ++c) {
+        factor::expr::Expr e;
+        factor::Dag df;
+        int fused = 0, steps = 0;
+        while (fused == 0) {
+          std::vector<GenNode> pool;
+          const int root = gen_tree(pool, rng, kFuseDepth, S);
+          e = factor::expr::Expr{};
+          emit_expr(e, pool, root);
+          df = factor::build(e);
+          for (const factor::DagNode &nd : df.nodes)
+            if (nd.fu.n > 0)
+              ++fused, steps += nd.fu.n;
+        }
+        const factor::Dag du = factor::build(e, /*fuse=*/false);
+        char tag[32];
+        std::snprintf(tag, sizeof(tag), "Fuse.%d", c);
+        bool bad = false;
+
+        const auto cpu_in = [&](const factor::Dag &d) {
+          std::vector<const Plane *> in(d.feats.size());
+          for (size_t k = 0; k < in.size(); ++k)
+            in[k] = &feat[fi(d.feats[k])];
+          return in;
+        };
+        const Plane &rf = *factor::cpu::eval(ex, df, cpu_in(df), hp_f, sc, T, A, S, gate.m.data());
+        const Plane &ru = *factor::cpu::eval(ex, du, cpu_in(du), hp_u, sc, T, A, S, gate.m.data());
+        ++rep.cases;
+        const Diff dc = compare(ru, rf, exact);
+        if (!dc.ok())
+          ++rep.stream_bad, bad = true; // cpu 侧失败计在 stream 列 (同 Search 节)
+        emit(rep, tag, S, p0, kProfName[pi], "cpu", dc, op_bad);
+
+        if (gs) {
+          const auto gpu_in = [&](const factor::Dag &d) {
+            std::vector<const gpu::DevPlane *> in(d.feats.size());
+            for (size_t k = 0; k < in.size(); ++k)
+              in[k] = dfeat[fi(d.feats[k])];
+            return in;
+          };
+          const gpu::DevPlane *of = gpu::eval(df, gpu_in(df), dp_f, gs, T, A, S, dgate);
+          const gpu::DevPlane *ou = gpu::eval(du, gpu_in(du), dp_u, gs, T, A, S, dgate);
+          Plane gf, gu;
+          gf.resize(n), gu.resize(n);
+          gpu::download(gs, of, gf.v.data(), gf.m.data());
+          gpu::download(gs, ou, gu.v.data(), gu.m.data());
+          const Diff dg = compare(gu, gf, exact);
+          if (!dg.ok())
+            ++rep.gpu_bad, bad = true;
+          emit(rep, tag, S, p0, kProfName[pi], "gpu", dg, op_bad);
+        }
+        if (bad || rep.verbose)
+          std::printf("       %s S=%-3d %-8s 融合 %d 节点 / %d 步 (DAG %zu → %zu 节点): %s\n", tag, S, kProfName[pi], fused, steps,
+                      du.nodes.size(), df.nodes.size(), factor::expr::to_string(e).c_str());
+      }
+      if (gs) {
+        dp_f.release(), dp_u.release();
+        gpu::session_close(gs);
+      }
+    }
+  });
+  if (op_bad)
+    ++rep.ops_bad;
+  else if (!rep.verbose)
+    std::printf("  ok   %-14s\n", "Fuse");
 }
 
 // Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
@@ -348,6 +513,8 @@ int main(int argc, char **argv) {
 #undef CK_GROUP
 #undef CK_ALL
 #undef CK_SELF
+  if (only.empty() || only == "Fuse") // 逐点链融合: 随机树, 融合 ≡ 不融合
+    check_fuse(A, seed, rep);
   if (only.empty() || only == "Stat") // 评估算子: 不在 OpTable, 单独一节
     check_stat(A, seed, rep);
   if (only.empty() || only == "Search") // 搜索评估算子: 参考 = Stat CPU
