@@ -81,7 +81,7 @@ void setup_columns() {
   ImGui::TableSetupColumn("最后落盘");
   ImGui::TableSetupColumn("核对");
   ImGui::TableSetupColumn("问题天数");
-  ImGui::TableSetupColumn("行差 (+/−)");
+  ImGui::TableSetupColumn("行差");
   ImGui::TableSetupColumn("修复流量");
   ImGui::TableSetupColumn("全表流量");
   ImGui::TableSetupColumn("内容", ImGuiTableColumnFlags_WidthStretch);
