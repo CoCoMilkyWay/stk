@@ -201,7 +201,7 @@ void renative_all(Job &job) {
   job.svc.begin(Phase::Scanning, files.size());
   job.set_message("重写外来写者的 parquet");
   std::atomic<std::size_t> rewritten{0};
-  misc::exec::ForkJoin ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+  misc::exec::ForkJoin ex(misc::exec::fit(files.size()));
   ex.tasks(static_cast<int>(files.size()), [&](int i, int) {
     if (job.cancel.load(std::memory_order_relaxed))
       return;
@@ -391,8 +391,8 @@ bool build_asset_info(Job &job, const Catalog &cat) {
 
   // ======================== 并行扫描阶段 ========================
   // 留 2 核给 io 线程 + GUI 渲染 (实测 8 线程已拿到 96% 的并行收益)
-  const unsigned hw = std::thread::hardware_concurrency();
-  fundamental::Scan scan(cat, ids, hw > 3 ? hw - 2 : 1);
+  const int hw = misc::exec::hw();
+  fundamental::Scan scan(cat, ids, static_cast<size_t>(hw > 3 ? hw - 2 : 1));
 
   // 分红窗口: publish_date ∈ (today-N日, today] (锚定公告日, 非除权日 —
   // 与 L_min dy_raw 同口径)

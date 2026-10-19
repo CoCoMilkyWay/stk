@@ -2,10 +2,8 @@
 #include "gui/task_database/services/ScanService.hpp"
 #include "shared/SharedData.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <filesystem>
-#include <thread>
 
 namespace GUI::Database {
 
@@ -13,8 +11,6 @@ namespace {
 // 扫盘: 一天 / 一月一个 task, 每个只是一次 open + 两次 pread (头 + 尾部目录) 或一次 readdir, 冷缓存下
 // 是几百个随机读, 有几个线程把盘的队列喂满就够了 (实测 24 封顶)
 constexpr unsigned kScanThreads = 24;
-
-int hw_threads() { return static_cast<int>(std::max(1u, std::thread::hardware_concurrency())); }
 } // namespace
 
 ScanService::ScanService(SharedData &data)
@@ -57,7 +53,7 @@ bool ScanService::run(ScanRequest &req) {
   // ========================================
   AssetScan &s = r.scan.emplace();
   if (req.mode == ScanMode::RescanStorage) {
-    misc::exec::ForkJoin &io = misc::exec::ensure(io_ex_, std::min<int>(hw_threads(), kScanThreads));
+    misc::exec::ForkJoin &io = misc::exec::ensure(io_ex_, misc::exec::fit(kScanThreads));
     asset.scan_binary(s, data_.config.orders_dir, io, *this);
     Asset::scan_archive(s, data_.config.archive_dir, config::ARCHIVE_EXTENSION, io, *this);
   } else {
@@ -78,7 +74,7 @@ bool ScanService::run(ScanRequest &req) {
   // Encode 的缺失表、Table 的 Orders%、Browser 的完整性是同一份统计, 在这里
   // 一次算完. 放在扫描里而不是各页首帧惰性算: 那是 885 天 × 5800 资产的双重
   // 遍历, 摊在渲染帧上会直接卡住一次交互. 纯 CPU, 线程数取核数.
-  asset.compute_coverage_statistics(s, data_.assetinfo, misc::exec::ensure(cpu_ex_, hw_threads()), *this);
+  asset.compute_coverage_statistics(s, data_.assetinfo, misc::exec::ensure(cpu_ex_, misc::exec::hw()), *this);
 
   // ========================================
   // Phase 6: Analyze and determine status

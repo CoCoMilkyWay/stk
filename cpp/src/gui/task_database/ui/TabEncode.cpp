@@ -6,12 +6,12 @@
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
 #include "imgui.h"
+#include "misc/exec.hpp"
 #include "shared/Asset.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -480,12 +480,8 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
     state.file_check = std::move(*r);
 
   // Auto-detect max cores on first run
-  if (state.num_workers <= 0) {
-    int max_workers = std::thread::hardware_concurrency();
-    if (max_workers <= 0)
-      max_workers = 8;
-    state.num_workers = max_workers;
-  }
+  if (state.num_workers <= 0)
+    state.num_workers = misc::exec::hw();
 
   // 在飞 (请求发出到交接收下), 不是进度面忙: 刚确认开跑那几帧 worker 还没摘请求, 全屏进度不能因此关掉
   const bool is_running = sm.encoding();
@@ -653,9 +649,7 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
     ImGui::Indent();
 
     // 参数与启动挤在一行 — 平时只是看一眼, 不值得占三行
-    int max_workers = std::thread::hardware_concurrency();
-    if (max_workers <= 0)
-      max_workers = 8;
+    const int max_workers = misc::exec::hw();
     ImGui::SetNextItemWidth(200);
     ImGui::SliderInt("workers", &state.num_workers, 1, max_workers);
     if (ImGui::IsItemHovered())

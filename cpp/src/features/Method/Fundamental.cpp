@@ -13,6 +13,7 @@
 #include "features/Node/Common/Fund/Fund.hpp" // Fund::Out 输出行布局
 #include "fundamental/Scan.hpp"
 #include "misc/date.hpp"
+#include "misc/exec.hpp"
 #include "misc/parquet.hpp"
 
 #include <algorithm>
@@ -28,7 +29,6 @@
 #include <map>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -1029,7 +1029,7 @@ void Panel::build(const std::vector<std::string> &codes,
 
   // ---- PIT 池: 15 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
   {
-    fundamental::Scan scan(cat, ids, std::max(1u, std::thread::hardware_concurrency()));
+    fundamental::Scan scan(cat, ids, static_cast<size_t>(misc::exec::hw()));
     GridScan grids;
     EventScan events;
     grids.add(scan, axes, pit);
