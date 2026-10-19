@@ -1,0 +1,11 @@
+#pragma once
+
+#include <array>
+
+namespace @DAG_NS@ {
+inline constexpr std::array<const char *, @DAG_CATEGORIES_N@> FeatureCategoryL1_ALL = {
+@DAG_GEN_CATEGORIES@};
+
+inline constexpr std::array<const char *, @DAG_CAT2S_N@> FeatureCategoryL2_ALL = {
+@DAG_GEN_CAT2S@};
+} // namespace @DAG_NS@

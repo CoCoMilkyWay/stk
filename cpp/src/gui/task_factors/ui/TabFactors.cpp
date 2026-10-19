@@ -1015,7 +1015,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         "    ◦ 与单线程逐位一致\n"
         "    ◦ Stat 全核\n"
         "• GPU: %s",
-        g ? (std::string(g) + "\n    ◦ 输入上传一次\n    ◦ 中间量常驻显存\n    ◦ Stat 走常驻会话").c_str() : "off\n    ◦ 无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON");
+        g ? (std::string(g) + "\n    ◦ 输入上传一次\n    ◦ 中间量常驻显存\n    ◦ Stat 走常驻会话").c_str() : "off\n    ◦ 无 CUDA 设备或未编译: cmake -DGPU_BACKEND=CUDA");
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);

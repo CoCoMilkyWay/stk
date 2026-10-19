@@ -29,17 +29,12 @@ def build_main_project():
 
     env = os.environ.copy()
 
-    # Build configuration
-    build_type = "Release"
-
     cmake_args = [
         "cmake",
         "-S",
         ".",
         "-B",
         "build",
-        f"-DCMAKE_BUILD_TYPE={build_type}",
-        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
     ]
 
     # Linux: clang + Ninja
@@ -52,40 +47,14 @@ def build_main_project():
         ]
     )
 
-    # ThreadSanitizer mode
-    if env.get("TSAN_MODE") == "ON":
-        print("ThreadSanitizer mode: ENABLED")
-        cmake_args.append("-DTSAN_MODE=ON")
-    else:
-        cmake_args.append("-DTSAN_MODE=OFF")
-
-    # Profile mode
-    if env.get("PROFILE_MODE") == "ON":
-        print("Profile mode: ENABLED")
-        cmake_args.append("-DPROFILE_MODE=ON")
-    else:
-        cmake_args.append("-DPROFILE_MODE=OFF")
-
-    # Debug mode
-    if env.get("DEBUG_MODE") == "ON":
-        print("Debug mode: ENABLED")
-        cmake_args.append("-DDEBUG_MODE=ON")
-    else:
-        cmake_args.append("-DDEBUG_MODE=OFF")
-
-    # Assert mode
-    if env.get("ASSERT_MODE") == "ON":
-        print("Assert mode: ENABLED")
-        cmake_args.append("-DASSERT_MODE=ON")
-    else:
-        cmake_args.append("-DASSERT_MODE=OFF")
-
-    # 因子 GPU 后端 (nvcc; run.py ENABLE_CUDA)
-    if env.get("FACTOR_CUDA") == "ON":
-        print("Factor CUDA backend: ENABLED")
-        cmake_args.append("-DFACTOR_CUDA=ON")
-    else:
-        cmake_args.append("-DFACTOR_CUDA=OFF")
+    # 选择轴 (CMakeLists axis): run.py 的 <MODE>_MODE / FACTOR_CUDA 开关 → BUILD_MODE / GPU_BACKEND 取值
+    modes = [m for m in ("TSAN", "DEBUG", "PROFILE", "ASSERT") if env.get(f"{m}_MODE") == "ON"]
+    assert len(modes) <= 1, f"模式开关互斥: {modes}"
+    build_mode = modes[0] if modes else "PRODUCTION"
+    gpu_backend = "CUDA" if env.get("FACTOR_CUDA") == "ON" else "Stub"
+    print(f"BUILD_MODE: {build_mode}, GPU_BACKEND: {gpu_backend}")
+    cmake_args.append(f"-DBUILD_MODE={build_mode}")
+    cmake_args.append(f"-DGPU_BACKEND={gpu_backend}")
 
     # Configure
     print("\nConfiguring with CMake...")
@@ -97,7 +66,7 @@ def build_main_project():
     # Build
     print("\nBuilding...")
     result = subprocess.run(
-        ["cmake", "--build", "build", "--config", build_type, "--parallel"],
+        ["cmake", "--build", "build", "--parallel"],
         cwd=cpp_project_dir,
         env=env,
     )

@@ -778,9 +778,7 @@ bool FundamentalService::run(FundamentalRequest &req) {
         continue;
       begin(Phase::Loading, l.tasks.size());
       const std::string tag = l.tag;
-      const Outcome stop = drive(*this, cancel_, tag + ".sync", l.tasks,
-                              [&job, &tag](const std::string &s) { job.set_message("同步 " + tag + ": " + s); },
-                              l.step, l.gate);
+      const Outcome stop = drive(*this, cancel_, tag + ".sync", l.tasks, [&job, &tag](const std::string &s) { job.set_message("同步 " + tag + ": " + s); }, l.step, l.gate);
       if (stop == Outcome::Cancelled)
         break;
     }

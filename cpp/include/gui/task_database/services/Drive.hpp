@@ -26,7 +26,7 @@ enum class Outcome { Done,
 // ============================================================================
 template <class T, class Step>
 Outcome drive(Progress &board, const std::atomic<bool> &cancel, const std::string &tag, const std::vector<T> &items,
-           const std::function<void(const std::string &)> &say, Step &&step, const std::function<bool()> &gate = {}) {
+              const std::function<void(const std::string &)> &say, Step &&step, const std::function<bool()> &gate = {}) {
   using fundamental::audit::label;
   using fundamental::sync::label;
   std::cout << "[" << tag << "] " << items.size() << " item(s)" << std::endl;

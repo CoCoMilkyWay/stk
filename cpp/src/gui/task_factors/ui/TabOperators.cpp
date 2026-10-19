@@ -251,7 +251,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
   if (const char *gname = factor::gpu::device_name())
     ImGui::TextDisabled("| GPU: %s", gname);
   else
-    ImGui::TextDisabled("| GPU: off (无 CUDA 设备或未编译: cmake -DFACTOR_CUDA=ON)");
+    ImGui::TextDisabled("| GPU: off (无 CUDA 设备或未编译: cmake -DGPU_BACKEND=CUDA)");
 
   ImGui::Separator();
 

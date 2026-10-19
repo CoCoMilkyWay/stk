@@ -147,7 +147,7 @@ const AuditTableStat *AuditState::find_table(const std::string &name) const {
 // worker 独占: 核对账本 + 本轮视图 + 写口 (计步走进度面 svc, 展示字段持 svc.mutex 写进 svc.state)
 struct AuditService::Worker {
   AuditService &svc;
-  std::optional<Book> book;    // 核对账本 (Load 读入, 跨轮承接)
+  std::optional<Book> book;     // 核对账本 (Load 读入, 跨轮承接)
   std::unique_ptr<Round> round; // 本轮的本地视图 (每轮开头 / 改盘后换新)
 
   void refresh() { round = std::make_unique<Round>(); }
@@ -255,8 +255,7 @@ bool AuditService::audit(const std::string &table, bool incremental) {
   });
   w.begin(units.size());
   std::cout << "[bigquant.audit] " << (table.empty() ? "全部表" : table) << (incremental ? " (增量)" : "") << std::endl;
-  return drive(*this, cancel_, "bigquant.audit", units, [&](const std::string &l) { w.say(l); },
-               [&](const Unit &u) { return w.check(client, u); }) == Outcome::Done;
+  return drive(*this, cancel_, "bigquant.audit", units, [&](const std::string &l) { w.say(l); }, [&](const Unit &u) { return w.check(client, u); }) == Outcome::Done;
 }
 
 // table 的差异: audit::repair → drive 逐任务 sync::run (整槽 Replace / Splice 日·资产)
@@ -280,12 +279,10 @@ bool AuditService::repair(const std::string &table) {
     years.insert(t.ym / 100);
   }
   w.begin(tasks.size() + years.size());
-  const Outcome pulled = drive(*this, cancel_, "bigquant.repair", tasks, [&](const std::string &l) { w.say("重拉 " + l); },
-                            [&](const Task &t) {
+  const Outcome pulled = drive(*this, cancel_, "bigquant.repair", tasks, [&](const std::string &l) { w.say("重拉 " + l); }, [&](const Task &t) {
                               const std::int64_t rows = fundamental::sync::run<fundamental::Bq>(client, t);
                               w.quota(client);
-                              return std::to_string(rows) + " rows";
-                            });
+                              return std::to_string(rows) + " rows"; });
   if (pulled != Outcome::Done)
     return false;
 
@@ -294,8 +291,7 @@ bool AuditService::repair(const std::string &table) {
   const std::vector<Unit> units = fundamental::audit::plan<fundamental::Bq>(
       *w.round, [&](const Spec &sp, const Slot &sl) { return &sp == &s && months.contains(sl.ym); });
   assert(units.size() == years.size() && "repair: 复核单元数不符");
-  return drive(*this, cancel_, "bigquant.repair", units, [&](const std::string &l) { w.say(l); },
-               [&](const Unit &u) { return w.check(client, u); }) == Outcome::Done;
+  return drive(*this, cancel_, "bigquant.repair", units, [&](const std::string &l) { w.say(l); }, [&](const Unit &u) { return w.check(client, u); }) == Outcome::Done;
 }
 
 } // namespace GUI::Database

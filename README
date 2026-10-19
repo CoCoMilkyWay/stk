@@ -267,7 +267,7 @@ stk/
 │   ├── src/                                                # 💾 源文件实现 (对应 include/)
 │   │   ├── main.cpp                                        # 💾 程序入口
 │   │   ├── factor/op_check.cpp                             # 💾 三后端对拍 CLI (独立 target)
-│   │   ├── factor/op_check_gpu.cu                          # 💾 GPU 后端 CUDA 实现 (FACTOR_CUDA ON 时入链)
+│   │   ├── factor/op_check_gpu.cu                          # 💾 GPU 后端 CUDA 实现 (GPU_BACKEND=CUDA 时入链)
 │   │   ├── factor/op_check_gpu_stub.cpp                    # 💾 GPU stub (未开 CUDA)
 │   │   ├── {api,fundamental,codec,shared,misc,features}/   # 💾 对应模块实现
 │   │   │                                                   #    · features/FeatureMeta.cpp: 字段表元数据唯一 TU (增删特征 GUI 不重编)

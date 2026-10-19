@@ -20,35 +20,99 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-set(SRC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
-set(INC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
-set(PKG_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../package)
+get_filename_component(CPP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../.. ABSOLUTE)
+set(SRC_ROOT  ${CPP_ROOT}/src)
+set(INC_ROOT  ${CPP_ROOT}/include)
+set(PKG_ROOT  ${CPP_ROOT}/package)
+set(FONT_ROOT ${CPP_ROOT}/fonts)
 
 # ============================================================================
-# Options (py/main.py 逐个传 ON / OFF)
+# 选择轴: 一轴 = cache 名 + 取值集 (首项为默认) + 每取值一行表 <轴>_<取值>_<列>
+#   axis(<轴> <取值>...)        声明 + 断言取值合法 (py/main.py 传 -D<轴>=<取值>)
+#   axis_pick(<轴> <列>...)     <轴>_<列> = <轴>_<当前取值>_<列>
+#   三轴两两正交; 轴内互斥由"一个 cache 变量只有一个值"自然保证
 # ============================================================================
-option(TSAN_MODE    "ThreadSanitizer mode: -O1 -g for race detection" OFF)
-option(DEBUG_MODE   "Debug mode: -O0 -g for debugging" OFF)
-option(PROFILE_MODE "Profile mode: -O2 -g + tracy instrumentation" OFF)
-option(ASSERT_MODE  "Assert mode: -O2 with assert checks enabled" OFF)
-option(USE_VULKAN_BACKEND "Use Vulkan backend instead of OpenGL for GUI rendering" OFF)
-option(FACTOR_CUDA "编译 GPU 算子后端 (nvcc)" OFF)
-set(FACTOR_CUDA_ARCH "native" CACHE STRING "GPU 架构算力号, native = 探测本机 GPU")
+function(axis name)
+    set(${name} ${ARGV1} CACHE STRING "${ARGN}")
+    set_property(CACHE ${name} PROPERTY STRINGS ${ARGN})
+    if(NOT ${name} IN_LIST ARGN)
+        message(FATAL_ERROR "${name} = ${${name}}, 须为 ${ARGN} 之一")
+    endif()
+    set(${name}_VALUES ${ARGN} PARENT_SCOPE)
+endfunction()
+
+function(axis_pick name)
+    foreach(col ${ARGN})
+        set(${name}_${col} "${${name}_${${name}}_${col}}" PARENT_SCOPE)
+    endforeach()
+    message(STATUS "${name}: ${${name}}")
+endfunction()
+
+axis(BUILD_MODE  PRODUCTION TSAN DEBUG PROFILE ASSERT)
+axis(GUI_BACKEND OpenGL Vulkan)
+axis(GPU_BACKEND Stub CUDA)
+set(CUDA_ARCH "native" CACHE STRING "GPU 架构算力号, native = 探测本机 GPU")
+
+# 模式表: 五模式同形, 四列
+#   OPT  优化级        C / C++ / CUDA
+#   CC   调试 / 插桩   C / C++ (nvcc 的 -forward-unknown-to-host-compiler 会把 clang 专属 flag 转给 gcc 宿主)
+#   LD   链接
+#   DEF  宏            C / C++ / CUDA (NDEBUG 只在 PRODUCTION: 其余模式 .cu 的断言同样生效)
+set(BUILD_MODE_TSAN_OPT         -O1)
+set(BUILD_MODE_TSAN_CC          -g -fsanitize=thread -fno-omit-frame-pointer)
+set(BUILD_MODE_TSAN_LD          -fsanitize=thread)
+set(BUILD_MODE_TSAN_DEF         TSAN_MODE)
+
+set(BUILD_MODE_DEBUG_OPT        -O0)
+set(BUILD_MODE_DEBUG_CC         -g)
+set(BUILD_MODE_DEBUG_LD         "")
+set(BUILD_MODE_DEBUG_DEF        DEBUG_MODE)
+
+set(BUILD_MODE_PROFILE_OPT      -O2)
+set(BUILD_MODE_PROFILE_CC       -g)
+set(BUILD_MODE_PROFILE_LD       "")
+set(BUILD_MODE_PROFILE_DEF      PROFILE_MODE TRACY_ENABLE TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING)
+
+set(BUILD_MODE_ASSERT_OPT       -O2)
+set(BUILD_MODE_ASSERT_CC        "")
+set(BUILD_MODE_ASSERT_LD        "")
+set(BUILD_MODE_ASSERT_DEF       ASSERT_MODE)
+
+set(BUILD_MODE_PRODUCTION_OPT   -O2)
+set(BUILD_MODE_PRODUCTION_CC    "")
+set(BUILD_MODE_PRODUCTION_LD    "")
+set(BUILD_MODE_PRODUCTION_DEF   NDEBUG)
+
+# GUI 后端表: SRC 入口 / IMPL imgui 后端 (package/imgui/backends/imgui_impl_<IMPL>.cpp) / LINK 图形库; find_package(<取值>)
+set(GUI_BACKEND_OpenGL_SRC      gui/Run_OpenGL.cpp)
+set(GUI_BACKEND_OpenGL_IMPL     opengl3)
+set(GUI_BACKEND_OpenGL_LINK     OpenGL::GL)
+
+set(GUI_BACKEND_Vulkan_SRC      gui/Run_Vulkan.cpp)
+set(GUI_BACKEND_Vulkan_IMPL     vulkan)
+set(GUI_BACKEND_Vulkan_LINK     Vulkan::Vulkan)
+
+# GPU 后端表: SRC GpuRun.hpp 的实现 / LINK 运行时
+set(GPU_BACKEND_Stub_SRC        factor/op_check_gpu_stub.cpp)
+set(GPU_BACKEND_Stub_LINK       "")
+
+set(GPU_BACKEND_CUDA_SRC        factor/op_check_gpu.cu)
+set(GPU_BACKEND_CUDA_LINK       CUDA::cudart)
 
 # ============================================================================
-# CUDA (FACTOR_CUDA): 先于一切编译参数启用, 下方模式表对 C / C++ / CUDA 一视同仁
+# CUDA (GPU_BACKEND=CUDA): 先于一切编译参数启用, 模式表对 C / C++ / CUDA 一视同仁
 # ============================================================================
-# native 须本机有可见 NVIDIA GPU (驱动已装); 探不到 → 本次配置退回 stub (缓存里的 ON 不动, 插卡后重配即恢复).
+# native 须本机有可见 NVIDIA GPU (驱动已装); 探不到 → 本次配置退回 Stub (缓存里的 CUDA 不动, 插卡后重配即恢复).
 # 显式给算力号 = 交叉编译, 不探测
-if(FACTOR_CUDA AND FACTOR_CUDA_ARCH STREQUAL "native")
-    execute_process(COMMAND nvidia-smi -L RESULT_VARIABLE FACTOR_SMI_RC OUTPUT_VARIABLE FACTOR_SMI_OUT ERROR_QUIET)
-    if(NOT FACTOR_SMI_RC EQUAL 0 OR NOT FACTOR_SMI_OUT MATCHES "GPU [0-9]+:")
-        message(WARNING "factor: 本机无可见 NVIDIA GPU (nvidia-smi -L 失败), GPU 后端回退 stub")
-        set(FACTOR_CUDA OFF)
+if(GPU_BACKEND STREQUAL "CUDA" AND CUDA_ARCH STREQUAL "native")
+    execute_process(COMMAND nvidia-smi -L RESULT_VARIABLE CUDA_SMI_RC OUTPUT_VARIABLE CUDA_SMI_OUT ERROR_QUIET)
+    if(NOT CUDA_SMI_RC EQUAL 0 OR NOT CUDA_SMI_OUT MATCHES "GPU [0-9]+:")
+        message(WARNING "factor: 本机无可见 NVIDIA GPU (nvidia-smi -L 失败), GPU 后端回退 Stub")
+        set(GPU_BACKEND Stub)
     endif()
 endif()
 
-if(FACTOR_CUDA)
+if(GPU_BACKEND STREQUAL "CUDA")
     # 必须走 nvcc: clang 21 最高只认到 CUDA 12.8, 本机是 13.x (13 删掉了 clang 依赖的
     # texture_fetch_functions.h 等旧头), -x cuda 直接编不过.
     # 宿主侧仍是 clang++ -std=c++23, CUDA 侧是 nvcc+g++ -std=c++20;
@@ -60,7 +124,7 @@ if(FACTOR_CUDA)
     if(NOT CMAKE_CUDA_COMPILER)
         message(FATAL_ERROR "找不到 nvcc: sudo apt install cuda-toolkit-13-0 (NVIDIA apt 源)\n")
     endif()
-    set(CMAKE_CUDA_ARCHITECTURES ${FACTOR_CUDA_ARCH})
+    set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH})
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 20)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -68,73 +132,22 @@ if(FACTOR_CUDA)
     # CUB 头 (TS/CS Gpu.cuh 的 #include <cub/cub.cuh>): CUDA 13 起从 include/cub/ 挪到
     # include/cccl/cub/, nvcc 自动把 include/cccl 加进搜索路径, 故源码里写法不变.
     # 两种布局都认; 都找不到 = toolkit 装残了 (pip 的 nvidia-* 运行时包不含 CUB), 配置期就炸.
-    find_path(FACTOR_CUB_DIR cub/cub.cuh
+    find_path(CUDA_CUB_DIR cub/cub.cuh
         PATHS ${CUDAToolkit_INCLUDE_DIRS} ${CUDAToolkit_TARGET_DIR}/include
         PATH_SUFFIXES cccl
         NO_DEFAULT_PATH)
-    if(NOT FACTOR_CUB_DIR)
+    if(NOT CUDA_CUB_DIR)
         message(FATAL_ERROR "缺 cub/cub.cuh: sudo apt install cuda-toolkit-13-0 (NVIDIA apt 源)\n")
     endif()
-    message(STATUS "factor: GPU 后端 ON (arch=${FACTOR_CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION}, CUB ${FACTOR_CUB_DIR}) → op_check + app_main")
+    message(STATUS "factor: GPU 后端 CUDA (arch=${CUDA_ARCH}, CUDA ${CUDAToolkit_VERSION}, CUB ${CUDA_CUB_DIR}) → op_check + app_main")
 else()
-    message(STATUS "factor: GPU 后端 OFF (op_check 两方对拍; GUI Operators 页 GPU 列 n/a)")
+    message(STATUS "factor: GPU 后端 Stub (op_check 两方对拍; GUI Operators 页 GPU 列 n/a)")
 endif()
 
-# ============================================================================
-# 模式表: 五模式同形, 四列
-#   OPT  优化级        C / C++ / CUDA
-#   CC   调试 / 插桩   C / C++ (nvcc 的 -forward-unknown-to-host-compiler 会把 clang 专属 flag 转给 gcc 宿主)
-#   LD   链接
-#   DEF  宏            C / C++ / CUDA (NDEBUG 只在 PRODUCTION: 其余模式 .cu 的断言同样生效)
-# 至多一个 <MODE>_MODE 开关为 ON; 全 OFF = PRODUCTION
-# ============================================================================
-set(MODE_TSAN_OPT         -O1)
-set(MODE_TSAN_CC          -g -fsanitize=thread -fno-omit-frame-pointer)
-set(MODE_TSAN_LD          -fsanitize=thread)
-set(MODE_TSAN_DEF         TSAN_MODE)
-
-set(MODE_DEBUG_OPT        -O0)
-set(MODE_DEBUG_CC         -g)
-set(MODE_DEBUG_LD         "")
-set(MODE_DEBUG_DEF        DEBUG_MODE)
-
-set(MODE_PROFILE_OPT      -O2)
-set(MODE_PROFILE_CC       -g)
-set(MODE_PROFILE_LD       "")
-set(MODE_PROFILE_DEF      PROFILE_MODE TRACY_ENABLE TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING)
-
-set(MODE_ASSERT_OPT       -O2)
-set(MODE_ASSERT_CC        "")
-set(MODE_ASSERT_LD        "")
-set(MODE_ASSERT_DEF       ASSERT_MODE)
-
-set(MODE_PRODUCTION_OPT   -O2)
-set(MODE_PRODUCTION_CC    "")
-set(MODE_PRODUCTION_LD    "")
-set(MODE_PRODUCTION_DEF   NDEBUG)
-
-set(BUILD_MODE PRODUCTION)
-foreach(mode TSAN DEBUG PROFILE ASSERT)
-    if(${mode}_MODE)
-        if(NOT BUILD_MODE STREQUAL "PRODUCTION")
-            message(FATAL_ERROR "模式开关互斥: ${BUILD_MODE}_MODE 与 ${mode}_MODE 同为 ON")
-        endif()
-        set(BUILD_MODE ${mode})
-    endif()
-endforeach()
-message(STATUS "Build mode: ${BUILD_MODE}")
-
-# ============================================================================
-# GUI 后端: OpenGL / Vulkan 同形 (宏 USE_<X>_BACKEND / 入口 gui/Run_<X>.cpp / find_package(<X>))
-# ============================================================================
-if(USE_VULKAN_BACKEND)
-    set(GUI_BACKEND Vulkan)
-else()
-    set(GUI_BACKEND OpenGL)
-endif()
-string(TOUPPER ${GUI_BACKEND} GUI_BACKEND_UPPER)
+axis_pick(BUILD_MODE  OPT CC LD DEF)
+axis_pick(GUI_BACKEND SRC IMPL LINK)
+axis_pick(GPU_BACKEND SRC LINK)
 find_package(${GUI_BACKEND} REQUIRED)
-message(STATUS "GUI Pipeline: ${GUI_BACKEND}")
 
 # ============================================================================
 # 全局编译参数: 只出自模式表 + 下方数学档, 构建类型自带的 flag 一律清空 (含 CUDA 的 -O3 -DNDEBUG)
@@ -147,33 +160,35 @@ foreach(lang ${BUILD_LANGS})
 endforeach()
 
 # genex 必须整体加引号, 否则里面的 ; 会先被当成 add_compile_options 的参数分隔符
-set(CC_FLAGS ${MODE_${BUILD_MODE}_CC} -march=native -fcolor-diagnostics -fansi-escape-codes -Wno-overriding-option)
-add_compile_options(${MODE_${BUILD_MODE}_OPT} "$<$<COMPILE_LANGUAGE:C,CXX>:${CC_FLAGS}>")
-add_compile_definitions(${MODE_${BUILD_MODE}_DEF} USE_${GUI_BACKEND_UPPER}_BACKEND)
+set(CC_FLAGS ${BUILD_MODE_CC} -march=native -fcolor-diagnostics -fansi-escape-codes -Wno-overriding-option)
+add_compile_options(${BUILD_MODE_OPT} "$<$<COMPILE_LANGUAGE:C,CXX>:${CC_FLAGS}>")
+add_compile_definitions(${BUILD_MODE_DEF})
 # 链接加速: lld (LLVM 自带, 并行) — 增量迭代每轮都要重链, 默认 GNU ld 是常数项瓶颈
-add_link_options(${MODE_${BUILD_MODE}_LD} -fuse-ld=lld)
+add_link_options(${BUILD_MODE_LD} -fuse-ld=lld)
 
 # 第三方头 (zstd / zlib / microtex / tracy / arrow) 随各自目标的 usage requirements 走, 不进全局
 include_directories(${INC_ROOT} ${PKG_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/generated)
 # Boost 头在 C++23 下会触发 -Wdeprecated-declarations 等, 用 SYSTEM 抑制第三方头警告.
 include_directories(SYSTEM ${PKG_ROOT}/boost)
 
-# 断言 ARGN 各表两两不交, 且并集 = ${all}
+# 断言 ARGN 各表两两不交, 且并集 = ${all}; 成员判定走标志变量 (O(1)): in_all_<文件> / in_part_<文件> = 所在表
 function(assert_partition what all)
-    set(seen "")
+    foreach(file ${${all}})
+        set(in_all_${file} TRUE)
+    endforeach()
     foreach(part ${ARGN})
         foreach(file ${${part}})
-            if(NOT file IN_LIST ${all})
+            if(NOT DEFINED in_all_${file})
                 message(FATAL_ERROR "${what}: ${part} 里的 ${file} 不存在")
             endif()
-            if(file IN_LIST seen)
-                message(FATAL_ERROR "${what}: ${file} 重复归类")
+            if(DEFINED in_part_${file})
+                message(FATAL_ERROR "${what}: ${file} 重复归类 (${in_part_${file}} / ${part})")
             endif()
-            list(APPEND seen ${file})
+            set(in_part_${file} ${part})
         endforeach()
     endforeach()
     foreach(file ${${all}})
-        if(NOT file IN_LIST seen)
+        if(NOT DEFINED in_part_${file})
             message(FATAL_ERROR "${what}: ${file} 未归类, 须归入 ${ARGN} 之一")
         endif()
     endforeach()
@@ -181,10 +196,9 @@ endfunction()
 
 # ============================================================================
 # 源表: src/ 全量按目标分区 (配置期断言不重不漏)
-#   SRC_OP_CHECK  因子算子对拍 CLI
-#   SRC_GPU       因子 GPU 后端, .cu / stub 二选一 (FACTOR_CUDA)
-#   SRC_GUI       GUI 后端入口, Run_OpenGL / Run_Vulkan 二选一 (GUI_BACKEND)
-#   SRC_APP       其余全部 → app_main
+#   SRC_OP_CHECK            因子算子对拍 CLI
+#   <轴>_<取值>_SRC          GUI_BACKEND / GPU_BACKEND 每个取值一份, 当前取值入链
+#   SRC_APP                 其余全部 → app_main
 # ============================================================================
 file(GLOB_RECURSE SRC_ALL CONFIGURE_DEPENDS RELATIVE ${SRC_ROOT}
     ${SRC_ROOT}/*.cpp
@@ -192,18 +206,16 @@ file(GLOB_RECURSE SRC_ALL CONFIGURE_DEPENDS RELATIVE ${SRC_ROOT}
     ${SRC_ROOT}/*.cu)
 
 set(SRC_OP_CHECK factor/op_check.cpp)
-set(SRC_GPU      factor/op_check_gpu.cu factor/op_check_gpu_stub.cpp)
-set(SRC_GUI      gui/Run_OpenGL.cpp gui/Run_Vulkan.cpp)
 set(SRC_APP      ${SRC_ALL})
-list(REMOVE_ITEM SRC_APP ${SRC_OP_CHECK} ${SRC_GPU} ${SRC_GUI})
-assert_partition(源表 SRC_ALL SRC_APP SRC_OP_CHECK SRC_GPU SRC_GUI)
-
-if(FACTOR_CUDA)
-    set(GPU_SOURCE factor/op_check_gpu.cu)
-else()
-    set(GPU_SOURCE factor/op_check_gpu_stub.cpp)
-endif()
-set(GUI_SOURCE gui/Run_${GUI_BACKEND}.cpp)
+set(SRC_PARTS    SRC_APP SRC_OP_CHECK)
+list(REMOVE_ITEM SRC_APP ${SRC_OP_CHECK})
+foreach(axis GUI_BACKEND GPU_BACKEND)
+    foreach(value ${${axis}_VALUES})
+        list(REMOVE_ITEM SRC_APP ${${axis}_${value}_SRC})
+        list(APPEND SRC_PARTS ${axis}_${value}_SRC)
+    endforeach()
+endforeach()
+assert_partition(源表 SRC_ALL ${SRC_PARTS})
 
 # ============================================================================
 # 数学档: src/ 每个文件恰属一档 (配置期断言不重不漏; 新文件必须先在此归档); 三方库一律 PRECISE (见 Vendor 段)
@@ -217,6 +229,7 @@ set(GUI_SOURCE gui/Run_${GUI_BACKEND}.cpp)
 set(MATH_FAST_FLAGS    -ffast-math)
 set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 
+# 两表同一段序 (shared → misc → api → fundamental → codec → features → worker → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
 set(MATH_FAST
     # shared
     shared/Asset.cpp
@@ -227,6 +240,8 @@ set(MATH_FAST
     misc/file_check.cpp
     misc/logging.cpp
     misc/system_metrics.cpp
+    # api
+    # fundamental
     # codec
     codec/L2_Validator.cpp
     codec/OrderEncoder.cpp
@@ -241,11 +256,9 @@ set(MATH_FAST
     worker/lob_pipeline.cpp
     # gui
     gui/Gui.cpp
-    gui/Tasks.cpp
     gui/Run_OpenGL.cpp
     gui/Run_Vulkan.cpp
-    gui/task_icon_bar/NetworkService.cpp
-    gui/task_icon_bar/TaskIconBar.cpp
+    gui/Tasks.cpp
     gui/task_database/services/AuditService.cpp
     gui/task_database/services/EncodingService.cpp
     gui/task_database/ui/TabBrowser.cpp
@@ -258,8 +271,11 @@ set(MATH_FAST
     gui/task_features/services/PreviewService.cpp
     gui/task_features/services/TransformService.cpp
     gui/task_features/ui/TabCompute.cpp
+    gui/task_icon_bar/NetworkService.cpp
+    gui/task_icon_bar/TaskIconBar.cpp
     gui/task_settings/TaskSettings.cpp
     gui/task_system_info/TaskSystemInfo.cpp
+    # factor
     # 入口
     main.cpp
 )
@@ -272,10 +288,10 @@ set(MATH_PRECISE
     shared/Config.cpp
     shared/Corr.cpp
     shared/Dist.cpp
-    shared/Preview.cpp
     shared/OrderFlow.cpp
-    shared/Transform.cpp
     shared/Pool.cpp
+    shared/Preview.cpp
+    shared/Transform.cpp
     # misc
     misc/date.cpp
     misc/format.cpp
@@ -314,10 +330,7 @@ set(MATH_PRECISE
     gui/task_features/ui/TabFeature.cpp
     gui/task_features/ui/TabOrderFlow.cpp
     gui/task_features/ui/TabTransform.cpp
-    # factor: 契约头 (Contract.hpp: isfinite 入口/出口) 的所有消费者 + op_check 本体与 GPU 后端
-    factor/op_check.cpp
-    factor/op_check_gpu.cu
-    factor/op_check_gpu_stub.cpp
+    # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) 的消费者
     gui/task_factors/TaskFactors.cpp
     gui/task_factors/services/FactorsLoad.cpp
     gui/task_factors/services/FactorsService.cpp
@@ -328,22 +341,32 @@ set(MATH_PRECISE
     gui/task_factors/ui/TabFactors.cpp
     gui/task_factors/ui/TabInspect.cpp
     gui/task_factors/ui/TabOperators.cpp
+    # gui: microtex 头 (nums.h: POS_INF = infinity()) 的消费者, -ffinite-math-only 下是 UB
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
-    # microtex 头 (nums.h: POS_INF = infinity()) 的消费者, -ffinite-math-only 下是 UB
     gui/util/Latex.cpp
+    # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
+    factor/op_check.cpp
+    factor/op_check_gpu.cu
+    factor/op_check_gpu_stub.cpp
+    # 入口
 )
 assert_partition(数学档 SRC_ALL MATH_FAST MATH_PRECISE)
 
+# 数学档 → 编译参数: C / C++ 直给, CUDA 经 -Xcompiler 逗号拼接转给宿主; src 按文件 / vendor 按目标, 同一份
+function(math_options out math)
+    set(cc ${MATH_${math}_FLAGS})
+    list(TRANSFORM cc PREPEND "$<$<COMPILE_LANGUAGE:C,CXX>:")
+    list(TRANSFORM cc APPEND ">")
+    list(JOIN MATH_${math}_FLAGS "," nvcc)
+    set(${out} ${cc} "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${nvcc}>" PARENT_SCOPE)
+endfunction()
+
 foreach(math FAST PRECISE)
-    set(math_cc ${MATH_${math}_FLAGS})
-    list(TRANSFORM math_cc PREPEND "$<$<COMPILE_LANGUAGE:C,CXX>:")
-    list(TRANSFORM math_cc APPEND ">")
-    list(JOIN MATH_${math}_FLAGS "," math_nvcc)
+    math_options(math_opts ${math})
     set(math_files ${MATH_${math}})
     list(TRANSFORM math_files PREPEND ${SRC_ROOT}/)
-    set_source_files_properties(${math_files} PROPERTIES
-        COMPILE_OPTIONS "${math_cc};$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${math_nvcc}>")
+    set_source_files_properties(${math_files} PROPERTIES COMPILE_OPTIONS "${math_opts}")
 endforeach()
 
 # ============================================================================
@@ -356,7 +379,7 @@ endforeach()
 #   FieldsGenerated.hpp  宏文本汇总, 不 #include 任何节点头 —— NODE_/FIELDS_/helper 宏
 #                        原样抽自节点文件 (逐 token 一致) + <Tier>_NODES(N) + <Tier>_L*_FIELDS(X) + <tier>::node_deps.
 #                        消费者 = FeatureStoreConfig (写端布局/指纹) / FeatureMeta.cpp (GUI 元数据).
-#                        只改节点实现体 → 本文件内容不变 (file(CONFIGURE) 不重写) → 消费者不重编.
+#                        只改节点实现体 → 本文件内容不变 (configure_file 不重写) → 消费者不重编.
 #   NodesGenerated.hpp   本档全部节点 #include + <Tier>_NODE_PREV_* 声明链 —— 只给本档构图端用.
 #                        一个 TU 只许 include 一档的 NodesGenerated (两档节点文件的 NODE_ 宏同名).
 #   FeatureCategoriesGenerated.hpp  本档一级 / 二级分类表 (namespace <tier>)
@@ -367,12 +390,13 @@ endforeach()
 #     #define NODE_<Name>(N)         N(<Name>, (NodeType), (ctor inputs), compute_trigger, flush_trigger)
 #     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ DAG_LEVELS; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
 #   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / Depth.bid_qty ...), 不需要任何 include.
-#   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 生成
+#   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 套 templates/<文件>.hpp.in 生成
 #     <Tier>_NODES(N) / <Tier>_NODE_PREV_<Name> (声明链, 让顺序错误变成编译错误) /
 #     <Tier>_<LVL>_FIELDS(X) 和 #include 清单.
 #   CMAKE_CONFIGURE_DEPENDS 盯住每个文件内容: 改动后下次 build 自动重新 configure.
 # ============================================================================
-set(DAG_SCAN_ROOT ${INC_ROOT}/features)
+set(DAG_SCAN_ROOT     ${INC_ROOT}/features)
+set(DAG_TEMPLATE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/templates)
 # 落盘层名 (与 FeaturesDefine.hpp FeatureLevel / TIER_LEVELS 一致)
 set(DAG_LEVELS L_sec L_min L_5min L_15min L_30min L_60min L_day)
 string(REPLACE ";" "|" DAG_LEVEL_RE "${DAG_LEVELS}")
@@ -427,36 +451,44 @@ function(dag_join out sep prefix suffix)
     set(${out} "${joined}" PARENT_SCOPE)
 endfunction()
 
+# 读节点头 → 续行拼成一行; 读即登记 CMAKE_CONFIGURE_DEPENDS (内容一改, 下次 build 自动重新 configure)
+function(dag_read file out)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${file})
+    file(READ ${file} src)
+    string(REGEX REPLACE "\\\\\n" " " src "${src}")
+    set(${out} "${src}" PARENT_SCOPE)
+endfunction()
+
 # Common 只放共用 class: 有 NODE_ / FIELDS_ 宏即配置期报错 (实例必须落在某一档).
 # 其 #define/#undef 行 (两档共用的 helper 宏, 如 LABEL_GROUPS) 先内联进每档 FieldsGenerated: 字段表宏可引用它们, 而 FieldsGenerated 不 include 节点头.
 # 不进 NodesGenerated 的 #undef 清单: Common 头 #pragma once, 若已被 include 过, 撤掉就再也定义不回来;
 # 两处定义同出一源逐字一致, 重复定义合法.
 file(GLOB_RECURSE DAG_COMMON_FILES CONFIGURE_DEPENDS ${DAG_SCAN_ROOT}/Node/Common/*.hpp)
 list(SORT DAG_COMMON_FILES)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DAG_COMMON_FILES})
 set(DAG_COMMON_MACROS "")
 foreach(common_file ${DAG_COMMON_FILES})
     file(RELATIVE_PATH common_rel ${INC_ROOT} ${common_file})
-    file(READ ${common_file} common_src)
+    dag_read(${common_file} common_src)
     if(common_src MATCHES "#define (NODE|FIELDS)_")
         message(FATAL_ERROR "Node/Common 只放两档共用的 class, NODE_ / FIELDS_ 写到 Node/<Tier>/ 下: ${common_file}")
     endif()
-    string(REGEX REPLACE "\\\\\n" " " common_src "${common_src}") # 续行拼成一行
     dag_inline_macros("${common_src}" ${common_rel} "" common_text common_names)
     string(APPEND DAG_COMMON_MACROS "${common_text}")
 endforeach()
 
-function(dag_generate DAG_TIER DAG_NS)
-    set(DAG_TIER_ROOT ${DAG_SCAN_ROOT}/Node/${DAG_TIER})
-    set(DAG_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/features/${DAG_TIER})
+# 一档三段 (宏, 共享 dag_generate 的函数作用域):
+#   dag_scan  节点文件 → 节点 / 依赖 / 字段 / 分类 / 宏
+#   dag_sort  节点 → 拓扑序
+#   dag_emit  → 三个生成文件 (模板 = templates/<文件>.hpp.in)
+# 成员判定走标志变量 (O(1)): DAG_DEPS_<名> 已定义 ⇔ <名> 是本档节点; DAG_DONE_<名> 已定义 ⇔ <名> 已排入拓扑序
+macro(dag_scan)
     file(GLOB_RECURSE DAG_SCAN_FILES CONFIGURE_DEPENDS
         ${DAG_TIER_ROOT}/TS/*.hpp
         ${DAG_TIER_ROOT}/CS/*.hpp)
     list(SORT DAG_SCAN_FILES)
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DAG_SCAN_FILES})
 
     set(DAG_NODES "")                          # 全部节点名 (发现序)
-    set(DAG_FIELD_OWNERS "")                   # 有任一 FIELDS_ 宏的名字 (节点或非节点列)
+    set(DAG_FIELD_OWNERS "")                   # 有任一 FIELDS_ 宏的名字 (节点或非节点列; 发现序)
     set(DAG_CATEGORIES "")                     # Node/TS/<分类> 或 Node/CS/<分类> 的目录名
     set(DAG_CAT2S "")                          # 字段表中实际出现过的二级分类 token
     set(DAG_INCLUDES "")                       # 有 NODE_ / FIELDS_ 的节点文件 (include/ 下相对)
@@ -471,11 +503,8 @@ function(dag_generate DAG_TIER DAG_NS)
             message(FATAL_ERROR "节点文件必须放在 Node/${DAG_TIER}/TS/<分类>/ 或 Node/${DAG_TIER}/CS/<分类>/ 下: ${scan_rel}")
         endif()
         list(GET scan_parts 1 scan_cat)
-        if(NOT scan_cat IN_LIST DAG_CATEGORIES)
-            list(APPEND DAG_CATEGORIES ${scan_cat})
-        endif()
-        file(READ ${scan_file} scan_src)
-        string(REGEX REPLACE "\\\\\n" " " scan_src "${scan_src}") # 续行拼成一行
+        list(APPEND DAG_CATEGORIES ${scan_cat})
+        dag_read(${scan_file} scan_src)
         set(scan_defs "${scan_src}")
         string(REGEX REPLACE "(^|\n) *//[^\n]*" "\n" scan_defs "${scan_defs}")
         string(REGEX MATCHALL "(^|\n) *#define NODE_[A-Za-z0-9_]+\\(" node_defs "${scan_defs}")
@@ -483,9 +512,7 @@ function(dag_generate DAG_TIER DAG_NS)
         string(REGEX MATCHALL "X\\([^,\n]+, *CAT1, *[A-Za-z0-9_]+," cat2_uses "${scan_defs}")
         foreach(cat2_use ${cat2_uses})
             string(REGEX REPLACE ".*CAT1, *([A-Za-z0-9_]+),.*" "\\1" cat2 "${cat2_use}")
-            if(NOT cat2 IN_LIST DAG_CAT2S)
-                list(APPEND DAG_CAT2S ${cat2})
-            endif()
+            list(APPEND DAG_CAT2S ${cat2})
         endforeach()
         if(NOT node_defs AND NOT field_defs)
             continue()
@@ -496,7 +523,7 @@ function(dag_generate DAG_TIER DAG_NS)
         list(APPEND DAG_MACRO_NAMES ${scan_names})
         foreach(node_def ${node_defs})
             string(REGEX REPLACE ".*#define NODE_([A-Za-z0-9_]+)\\(" "\\1" node_name "${node_def}")
-            if(node_name IN_LIST DAG_NODES)
+            if(DEFINED DAG_DEPS_${node_name})
                 message(FATAL_ERROR "NODE_${node_name} 重复定义 (${scan_rel})")
             endif()
             list(APPEND DAG_NODES ${node_name})
@@ -533,37 +560,44 @@ function(dag_generate DAG_TIER DAG_NS)
             endif()
             set(DAG_FIELDS_${lvl}_${owner} "${scan_cat}")
             set(DAG_FILES_${lvl}_${owner} "${scan_rel}")
-            if(NOT owner IN_LIST DAG_FIELD_OWNERS)
-                list(APPEND DAG_FIELD_OWNERS ${owner})
-            endif()
+            list(APPEND DAG_FIELD_OWNERS ${owner})
         endforeach()
     endforeach()
-    list(REMOVE_DUPLICATES DAG_MACRO_NAMES)
+    # 去重保首见序
+    foreach(dag_list CATEGORIES CAT2S FIELD_OWNERS MACRO_NAMES)
+        list(REMOVE_DUPLICATES DAG_${dag_list})
+    endforeach()
+endmacro()
 
-    # 分层拓扑排序: 每轮取出全部依赖已就位的节点 (按发现序), 无进展即成环.
+# 分层拓扑排序: 每轮按发现序扫一遍剩余节点, 依赖已就位即排入 (同轮后者看得见前者), 一轮无进展即成环.
+macro(dag_sort)
     set(DAG_ORDER "")
     set(dag_remaining ${DAG_NODES})
     while(dag_remaining)
-        set(dag_progress FALSE)
+        set(dag_pending "")
         foreach(node_name ${dag_remaining})
             set(ready TRUE)
             foreach(dep ${DAG_DEPS_${node_name}})
-                if(dep IN_LIST DAG_NODES AND NOT dep IN_LIST DAG_ORDER)
+                if(DEFINED DAG_DEPS_${dep} AND NOT DEFINED DAG_DONE_${dep})
                     set(ready FALSE)
                     break()
                 endif()
             endforeach()
             if(ready)
                 list(APPEND DAG_ORDER ${node_name})
-                list(REMOVE_ITEM dag_remaining ${node_name})
-                set(dag_progress TRUE)
+                set(DAG_DONE_${node_name} TRUE)
+            else()
+                list(APPEND dag_pending ${node_name})
             endif()
         endforeach()
-        if(NOT dag_progress)
+        if(dag_pending STREQUAL dag_remaining)
             message(FATAL_ERROR "节点依赖成环: ${dag_remaining}")
         endif()
+        set(dag_remaining ${dag_pending})
     endwhile()
+endmacro()
 
+macro(dag_emit)
     # NodesGenerated 在 include 节点头前先 #undef 全部抽取宏 (FieldsGenerated 可能已定义同名守卫宏),
     # 让节点头内的定义成为现行定义, 两种 include 顺序都无重复定义诊断.
     dag_join(DAG_GEN_UNDEFS   "" "#undef "     "\n"   ${DAG_MACRO_NAMES})
@@ -576,7 +610,7 @@ function(dag_generate DAG_TIER DAG_NS)
         string(APPEND DAG_GEN_PREV "#define ${DAG_TIER}_NODE_PREV_${node_name} ${dag_prev}\n")
         set(dag_prev DAG_${node_name})
     endforeach()
-    string(APPEND DAG_GEN_PREV "#define ${DAG_TIER}_DAG_LAST ${dag_prev}\n")
+    set(DAG_LAST ${dag_prev})
 
     # 节点上游依赖 (仅保留指向真实节点的引用, 过滤掉 tick_data 等源; 去重)
     # 生成 <tier>::node_deps::TABLE: {node, deps[], count}, 项 = "Up" (整节点) 或 "Up.port" (单口), 供 GUI 特征依赖解析使用
@@ -587,10 +621,11 @@ function(dag_generate DAG_TIER DAG_NS)
         set(dep_list "")
         foreach(dep ${DAG_DEPREFS_${node_name}})
             string(REGEX REPLACE "\\..*$" "" dep_node "${dep}")
-            if(dep_node IN_LIST DAG_ORDER AND NOT dep IN_LIST dep_list)
+            if(DEFINED DAG_DEPS_${dep_node})
                 list(APPEND dep_list ${dep})
             endif()
         endforeach()
+        list(REMOVE_DUPLICATES dep_list)
         list(LENGTH dep_list dep_count)
         dag_join(dep_items ", " "\"" "\"" ${dep_list})
         string(APPEND DAG_GEN_DEP_ARRAYS "  inline constexpr const char* const deps_${dep_idx}[] = {${dep_items}};\n")
@@ -601,7 +636,7 @@ function(dag_generate DAG_TIER DAG_NS)
     # 字段: 先按节点拓扑序, 再非节点列 (按发现序)
     set(dag_field_order ${DAG_ORDER})
     foreach(owner ${DAG_FIELD_OWNERS})
-        if(NOT owner IN_LIST DAG_NODES)
+        if(NOT DEFINED DAG_DEPS_${owner})
             list(APPEND dag_field_order ${owner})
         endif()
     endforeach()
@@ -628,75 +663,18 @@ function(dag_generate DAG_TIER DAG_NS)
         dag_join(DAG_GEN_${cats} "" "  \"" "\",\n" ${DAG_${cats}})
     endforeach()
 
-    file(CONFIGURE
-        OUTPUT ${DAG_GEN_DIR}/FeatureCategoriesGenerated.hpp
-        CONTENT
-    "#pragma once
+    # 内容不变不重写 (消费者不重编)
+    foreach(gen FeatureCategoriesGenerated FieldsGenerated NodesGenerated)
+        configure_file(${DAG_TEMPLATE_ROOT}/${gen}.hpp.in ${DAG_GEN_DIR}/${gen}.hpp @ONLY NEWLINE_STYLE UNIX)
+    endforeach()
+endmacro()
 
-#include <array>
-
-namespace ${DAG_NS} {
-inline constexpr std::array<const char *, ${DAG_CATEGORIES_N}> FeatureCategoryL1_ALL = {
-${DAG_GEN_CATEGORIES}};
-
-inline constexpr std::array<const char *, ${DAG_CAT2S_N}> FeatureCategoryL2_ALL = {
-${DAG_GEN_CAT2S}};
-} // namespace ${DAG_NS}
-"
-        @ONLY
-        NEWLINE_STYLE UNIX
-    )
-    file(CONFIGURE
-        OUTPUT ${DAG_GEN_DIR}/FieldsGenerated.hpp
-        CONTENT
-    "#pragma once
-
-#include <cstddef>
-#include <iterator>
-
-// AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
-// ${DAG_TIER} 档字段表/节点宏汇总, 不 #include 任何节点头: NODE_/FIELDS_/helper 宏文本抽自
-// include/features/Node/${DAG_TIER}/{TS,CS}/<分类>/**/*.hpp (逐 token 一致, NODE_/FIELDS_ 改名加档前缀;
-// #ifndef 守卫兼容节点头先 include 的 TU). 消费者 = FeatureStoreConfig / FeatureMeta.cpp —— 只改节点
-// 实现体时本文件内容不变 (不重写, 消费者不重编); 改宏行 (增删特征/调参) 才重写.
-
-${DAG_GEN_MACROS}
-// 节点表 (拓扑序 = DAG 声明序 = 同一触发域内执行序)
-#define ${DAG_TIER}_NODES(N)${DAG_GEN_NODES}
-
-// 落盘字段表 (按层; 行序 = 列序)
-${DAG_GEN_FIELDS}
-
-// 节点上游依赖 (仅真实节点, 拓扑序; GUI 特征依赖解析用). 项 = \"Up\" 整节点 / \"Up.port\" 单口 (Up.out(Up.port) 形态)
-namespace ${DAG_NS}::node_deps {
-  struct NodeDepsEntry { const char* node; const char* const* deps; size_t count; };
-${DAG_GEN_DEP_ARRAYS}
-  inline constexpr NodeDepsEntry TABLE[] = {
-${DAG_GEN_DEP_TABLE}  };
-  inline constexpr size_t COUNT = std::size(TABLE);
-}
-"
-        @ONLY
-        NEWLINE_STYLE UNIX
-    )
-    file(CONFIGURE
-        OUTPUT ${DAG_GEN_DIR}/NodesGenerated.hpp
-        CONTENT
-    "#pragma once
-
-// AUTO-GENERATED by cpp/projects/main/CMakeLists.txt — 不要手动编辑.
-// ${DAG_TIER} 档节点头 #include 清单 + DAG 声明链 (${DAG_N} 个节点, 按输入引用分层拓扑排序).
-// 只给本档构图端用; 字段表消费者走 FieldsGenerated.hpp (不随节点实现体重编). 一个 TU 只许 include 一档的本文件.
-
-// 先 #undef 抽取宏 (本 TU 可能已 include FieldsGenerated.hpp), 让节点头内定义成为现行定义
-${DAG_GEN_UNDEFS}
-${DAG_GEN_INCLUDES}#include \"features/${DAG_TIER}/FieldsGenerated.hpp\" // ${DAG_TIER}_NODES(N) / 字段表 / node_deps (守卫宏全部跳过)
-
-// 声明链: DAG_<name> : ${DAG_TIER}_NODE_PREV_<name>, 节点只看得到排在自己前面的节点, 顺序错误即编译错误
-${DAG_GEN_PREV}"
-        @ONLY
-        NEWLINE_STYLE UNIX
-    )
+function(dag_generate DAG_TIER DAG_NS)
+    set(DAG_TIER_ROOT ${DAG_SCAN_ROOT}/Node/${DAG_TIER})
+    set(DAG_GEN_DIR   ${CMAKE_CURRENT_BINARY_DIR}/generated/features/${DAG_TIER})
+    dag_scan()
+    dag_sort()
+    dag_emit()
 endfunction()
 
 dag_generate(Lob lob)
@@ -710,25 +688,24 @@ set(CMAKE_THREAD_LIBS_INIT "-lpthread" CACHE STRING "pthread library")
 set(CMAKE_HAVE_THREADS_LIBRARY 1)
 set(Threads_FOUND TRUE CACHE BOOL "Threads found" FORCE)
 
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+foreach(glfw_opt GLFW_BUILD_EXAMPLES GLFW_BUILD_TESTS GLFW_BUILD_DOCS GLFW_INSTALL)
+    set(${glfw_opt} OFF CACHE BOOL "" FORCE)
+endforeach()
 
-add_subdirectory(${PKG_ROOT}/zlib-1.3.1 ${CMAKE_BINARY_DIR}/zlib EXCLUDE_FROM_ALL)
-add_subdirectory(${PKG_ROOT}/zstd-1.5.7 ${CMAKE_BINARY_DIR}/zstd EXCLUDE_FROM_ALL)
-add_subdirectory(${PKG_ROOT}/tinyxml2   ${CMAKE_BINARY_DIR}/tinyxml2)
-add_subdirectory(${PKG_ROOT}/microtex   ${CMAKE_BINARY_DIR}/microtex)
-add_subdirectory(${PKG_ROOT}/glfw       ${CMAKE_BINARY_DIR}/glfw)
-add_subdirectory(${PKG_ROOT}/imgui      ${CMAKE_BINARY_DIR}/imgui)
-add_subdirectory(${PKG_ROOT}/implot     ${CMAKE_BINARY_DIR}/implot)
+# 有 CMakeLists 的: package/<目录> → build/vendor/<目录>, 一律 EXCLUDE_FROM_ALL (只随链接者构建); 单文件的: 直接 OBJECT
+set(VENDOR_DIRS zlib-1.3.1 zstd-1.5.7 tinyxml2 microtex glfw imgui implot)
+foreach(vendor_dir ${VENDOR_DIRS})
+    add_subdirectory(${PKG_ROOT}/${vendor_dir} ${CMAKE_BINARY_DIR}/vendor/${vendor_dir} EXCLUDE_FROM_ALL)
+endforeach()
 
 add_library(tracy  OBJECT ${PKG_ROOT}/tracy/public/TracyClient.cpp)
 add_library(yyjson OBJECT ${PKG_ROOT}/yyjson/yyjson.c)
 target_include_directories(tracy SYSTEM PUBLIC ${PKG_ROOT}/tracy/public/tracy)
 
-foreach(vendor z libzstd_static tinyxml2 microtex glfw imgui implot tracy yyjson)
-    target_compile_options(${vendor} PRIVATE ${MATH_PRECISE_FLAGS})
+set(VENDOR_TARGETS z libzstd_static tinyxml2 microtex glfw imgui implot tracy yyjson)
+math_options(vendor_math PRECISE)
+foreach(vendor ${VENDOR_TARGETS})
+    target_compile_options(${vendor} PRIVATE ${vendor_math})
 endforeach()
 
 # Vendored Arrow C++ Flight + Parquet (基本面数据 sync: api/bigquant + api/tushare; Flight 走明文 gRPC, 无 TLS 依赖)
@@ -759,16 +736,14 @@ endforeach()
 #               只依赖 factor/*.hpp, 无 GUI / Arrow / Python; 退化判据 (disp_ok / den_ok) 与 guard 依赖受控浮点 → PRECISE
 #   app_main    GUI 主程序: Factors→Operators 页经同一 GpuRun.hpp 调 GPU
 # ============================================================================
-add_library(factor_gpu OBJECT ${SRC_ROOT}/${GPU_SOURCE})
-if(FACTOR_CUDA)
-    target_link_libraries(factor_gpu PUBLIC CUDA::cudart)
-endif()
+add_library(factor_gpu OBJECT ${SRC_ROOT}/${GPU_BACKEND_SRC})
+target_link_libraries(factor_gpu PUBLIC ${GPU_BACKEND_LINK})
 
 add_executable(op_check ${SRC_ROOT}/${SRC_OP_CHECK})
 target_link_libraries(op_check PRIVATE factor_gpu)
 
 list(TRANSFORM SRC_APP PREPEND ${SRC_ROOT}/)
-add_executable(app_main ${SRC_APP} ${SRC_ROOT}/${GUI_SOURCE})
+add_executable(app_main ${SRC_APP} ${SRC_ROOT}/${GUI_BACKEND_SRC})
 target_link_libraries(app_main PRIVATE
     factor_gpu
     libzstd_static
@@ -802,18 +777,11 @@ add_custom_target(run_main
     COMMENT "Running app_main"
 )
 
-# Copy fonts directory to build directory
-add_custom_command(TARGET app_main POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/../../fonts
-    ${CMAKE_BINARY_DIR}/fonts
-    COMMENT "Copying fonts to build directory"
-)
-
-# Copy MicroTeX resources
-add_custom_command(TARGET app_main POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${MICROTEX_RES_DIR}
-    ${CMAKE_BINARY_DIR}/res
-    COMMENT "Copying MicroTeX resources"
-)
+# 运行时资源: build/<名> ← RES_<名> (字体 / MicroTeX 资源)
+set(RES_fonts ${FONT_ROOT})
+set(RES_res   ${MICROTEX_RES_DIR})
+foreach(res fonts res)
+    add_custom_command(TARGET app_main POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${RES_${res}} ${CMAKE_BINARY_DIR}/${res}
+        COMMENT "Copying ${res} to build directory")
+endforeach()
