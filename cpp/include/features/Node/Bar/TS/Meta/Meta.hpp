@@ -8,7 +8,7 @@
 //              全市场截面 (CS 列 / 票池) 只在它上面算; 票池母集的其余条件 (上市满 60 日 / 非 ST / st_* / 行业) 进 PoolKey 键掩码.
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define FIELDS_L_1min_Meta(X, CAT1)                                                                                                       \
+#define FIELDS_L_1min_Meta(X, CAT1)                                                                                                      \
   X(ts_valid, CAT1, AUTO, "TS Valid", "时序有效", "0=该分钟无成交 (行仍写, 特征稠密); 1=有成交", R"(\mathbf{1}_{\mathrm{trade}})", FLAG) \
   X(cs_valid, CAT1, AUTO, "CS Valid", "截面有效", "当日在市可交易=1 (非北交所∧已上市∧未退市∧非停牌) 否则 0 (整日常量); 截面只看此列", R"(\mathbf{1}_{\mathrm{mkt},D})", FLAG)
 
@@ -22,6 +22,6 @@
 #define FIELDS_L_60min_Meta(X, CAT1) BAR_BIN_META(X, CAT1, 60)
 
 // L_1day (整日箱) 与分钟箱层对仗: ts_valid = 当日有成交, cs_valid 同一日频常量
-#define FIELDS_L_1day_Meta(X, CAT1)                                                                                                       \
+#define FIELDS_L_1day_Meta(X, CAT1)                                                                                                      \
   X(ts_valid, CAT1, AUTO, "TS Valid", "时序有效", "0=当日无成交 (行仍写, 特征稠密); 1=有成交", R"(\mathbf{1}_{\mathrm{trade},D})", FLAG) \
   X(cs_valid, CAT1, AUTO, "CS Valid", "截面有效", "当日在市可交易=1 (非北交所∧已上市∧未退市∧非停牌) 否则 0 (整日常量); 截面只看此列", R"(\mathbf{1}_{\mathrm{mkt},D})", FLAG)

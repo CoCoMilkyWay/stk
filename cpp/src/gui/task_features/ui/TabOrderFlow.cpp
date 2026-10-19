@@ -806,8 +806,9 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
                        pick.candidates.size(), data.asset.items.size());
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s 通过筛选的资产数 / 总数\n"
-                        "• 状态取自当日 L_1min 落盘列 (ST / 上市 / 行业)\n"
-                        "• 当日无有效分钟的资产不列入 (无盘口可看)",
+                        "• 状态取自前一交易日 L_1day 行 (ST / 上市 / 行业)\n"
+                        "• 候选范围 = 主库轴 (无选中特征 = all, 否则 = 选中特征所在库)\n"
+                        "• 日轴首日无前一交易日状态, 不列入",
                         misc::dash(slot.date).c_str());
   } else {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "loading...");
@@ -988,9 +989,28 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // ==========================================================================
   // 期望态检测 → 请求 (gen++ 即"停止消费旧代", 发布追上后自动恢复渲染)
   // ==========================================================================
-  const bool rescan = of.needs_rescan.exchange(false, std::memory_order_relaxed);
   const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
+
+  // 主库 = 选中列所在的唯一库 (无选中 = all): 图1 VWAP / 候选轴; 选中跨库 → 不画, 提示重选 (先于消费 needs_rescan)
+  LibMask picked_libs = 0;
+  for (const ColRef &c : sel.picked)
+    picked_libs |= lib_bit(c.lib);
+  if (std::popcount(picked_libs) > 1) {
+    std::string names;
+    for (const LibId l : lib_ids())
+      if (picked_libs & lib_bit(l))
+        names += (names.empty() ? "" : " / ") + std::string(lib_def(l).name);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "选中特征跨多个库 (%s), 请在 Feature 页只选一个库的特征", names.c_str());
+    return;
+  }
+  const LibId main_lib = picked_libs ? static_cast<LibId>(std::countr_zero(picked_libs)) : kAllLib;
+  if (ui.main_lib != main_lib) { // 主库变了: 图1 / Pick 重发
+    ui.main_lib = main_lib;
+    ui.depth_date = 0;
+    of.pick.req_date = 0;
+  }
+  const bool rescan = of.needs_rescan.exchange(false, std::memory_order_relaxed);
 
   // 两图同一组选中列 (跨层跨档), 各截到图的网格 (图2 = L_1min, 图1 = L_sec; 细于网格的列不进), 各点尾部对齐.
   // 图2 日轴 = 库集 (all 日 K 底图 + overlay 各库) 落盘日的并集: 库集变了 = 日轴变了 → 重扫
@@ -1007,7 +1027,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.min_last_pub_days = SIZE_MAX; // 换代: 重置轴管理
     // dates 会被重扫 (或首次建) → 期间不可读; 粘到新代落定 (重扫请求可能被后一请求覆盖, 后者须照带)
     ui.kline_rescan_pending |= rescan || relib || ui.min_x_max <= 0.0;
-    if (rescan) { // 主库 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
+    if (rescan) { // 库重算 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
       ui.depth_date = 0;
       of.pick.req_date = 0;
     }
@@ -1021,7 +1041,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const bool kline_ready = (pub_gen == (ui.kline_gen & 0xFFFF));
   if (kline_ready && ui.kline_rescan_pending) {
     ui.kline_rescan_pending = false; // dates 已随新代落定
-    // 锚点日须在新日轴上: 在 = 按新轴重定位, 不在 = 回首日
+    // 锚点日须在新日轴上: 在 = 按新轴重定位, 不在 = 回末日
     const auto &dates = of.kline.dates;
     const auto it = std::lower_bound(dates.begin(), dates.end(), ui.min_anchor_date);
     if (it != dates.end() && *it == ui.min_anchor_date)
@@ -1030,9 +1050,10 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
       ui.min_anchor_date = 0;
   }
 
+  // 默认锚点 = 末日 (轴首无承接日, Pick 状态读不到)
   if (!ui.min_anchor_date && kline_ready && !of.kline.dates.empty()) {
-    ui.min_anchor_x = 0;
-    ui.min_anchor_date = of.kline.dates.front();
+    ui.min_anchor_x = static_cast<double>((of.kline.dates.size() - 1) * OrderFlowConst::MIN_CAPACITY);
+    ui.min_anchor_date = of.kline.dates.back();
   }
 
   // 图1 特征 = 同一组选中列 (≥ L_sec), 只取锚点日
@@ -1042,7 +1063,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.depth_asset = asset_idx;
     ui.depth_feats = depth_feats;
     ++ui.depth_gen;
-    service->RequestDepth(data, ui.depth_gen, ui.min_anchor_date, asset_idx, depth_feats);
+    service->RequestDepth(data, ui.depth_gen, main_lib, ui.min_anchor_date, asset_idx, depth_feats);
   }
 
   // ==========================================================================
@@ -1066,7 +1087,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   if (ui.min_anchor_date && !ui.kline_rescan_pending && pick.req_date != ui.min_anchor_date) {
     pick.req_date = ui.min_anchor_date;
     ++pick.gen;
-    service->RequestPick(data, pick.gen, ui.min_anchor_date);
+    service->RequestPick(data, pick.gen, main_lib, ui.min_anchor_date);
   }
 
   // 候选重建 (槽换代 或 筛选条件变)

@@ -87,7 +87,7 @@ inline void tail_rows(Source &s, size_t grid, bool carry) {
 }
 // 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan); 源库 = 列所在库, 主库在 ReadScope
 struct ReadPlan {
-  size_t level = L_1min;     // 网格层 (尾部行: 定 at 与开盘承接)
+  size_t level = L_1min;    // 网格层 (尾部行: 定 at 与开盘承接)
   std::vector<ColRef> cols; // [平面列]
   std::vector<Source> srcs;
   size_t n() const { return cols.size(); }

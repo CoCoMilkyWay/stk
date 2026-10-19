@@ -83,7 +83,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_PoolKey(N) N(PoolKey, (PoolKey), (Fund.outs(), Valuation.out(Valuation.mcap), asset_code_), onSettle)
 
-#define FIELDS_L_1day_PoolKey(X, CAT1)                                                                                                                                                                          \
+#define FIELDS_L_1day_PoolKey(X, CAT1)                                                                                                                                                                         \
   X(key_size, CAT1, AUTO, "Pool Key Size", "票池键市值", "母集内收盘总市值(亿元), 母集外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base})", TS(PoolKey, size, None, None))                                     \
   X(key_size_micro, CAT1, AUTO, "Pool Key Size Micro", "票池键微盘市值", "母集∧微盘行业白名单内收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base,wl})", TS(PoolKey, size_micro, None, None)) \
   X(key_pe, CAT1, AUTO, "Pool Key PE", "票池键PE", "母集内 −归母净利TTM/收盘市值 (= −EP), 外NaN", R"(-\frac{NP^{TTM}}{\mathrm{mcap}_t})", TS(PoolKey, pe, None, None))                                         \

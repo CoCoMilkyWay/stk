@@ -317,8 +317,8 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
 #define TIER_LEVELS(X)                                     \
   X(Lob, lob, L_sec, 0, Lob_L_sec_FIELDS, "100/00/00")     \
-  X(Lob, lob, L_1min, 1, Lob_L_1min_FIELDS, "00/100/00")     \
-  X(Bar, bar, L_1min, 1, Bar_L_1min_FIELDS, "00/100/00")     \
+  X(Lob, lob, L_1min, 1, Lob_L_1min_FIELDS, "00/100/00")   \
+  X(Bar, bar, L_1min, 1, Bar_L_1min_FIELDS, "00/100/00")   \
   X(Bar, bar, L_5min, 2, Bar_L_5min_FIELDS, "00/100/00")   \
   X(Bar, bar, L_15min, 3, Bar_L_15min_FIELDS, "00/100/00") \
   X(Bar, bar, L_30min, 4, Bar_L_30min_FIELDS, "00/00/100") \

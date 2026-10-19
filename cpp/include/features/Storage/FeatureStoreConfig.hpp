@@ -88,11 +88,11 @@ TIER_LEVELS(GENERATE_LEVEL_FIELDS)
 #define FIELD_COUNT_ONE(...) +1
 #define CELL_FIELD_COUNT(T, ns, name, num, fields, psd) +(TierId::T == tier ? ns::name##_FIELD_COUNT : 0)
 constexpr size_t registered_field_count(TierId tier) { return 0 TIER_LEVELS(CELL_FIELD_COUNT); }
-#define CHECK_TIER_FIELDS(T, ns)                                                                                         \
+#define CHECK_TIER_FIELDS(T, ns)                                                                                          \
   static_assert(0 T##_L_sec_FIELDS(FIELD_COUNT_ONE) T##_L_1min_FIELDS(FIELD_COUNT_ONE) T##_L_5min_FIELDS(FIELD_COUNT_ONE) \
-                        T##_L_15min_FIELDS(FIELD_COUNT_ONE) T##_L_30min_FIELDS(FIELD_COUNT_ONE)                          \
+                        T##_L_15min_FIELDS(FIELD_COUNT_ONE) T##_L_30min_FIELDS(FIELD_COUNT_ONE)                           \
                             T##_L_60min_FIELDS(FIELD_COUNT_ONE) T##_L_1day_FIELDS(FIELD_COUNT_ONE) ==                     \
-                    registered_field_count(TierId::T),                                                                   \
+                    registered_field_count(TierId::T),                                                                    \
                 "档 " #T " 有未在 TIER_LEVELS 登记的层的 FIELDS_ 行");
 ALL_TIERS(CHECK_TIER_FIELDS)
 #undef CHECK_TIER_FIELDS
@@ -174,10 +174,10 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
   }
   return h;
 }
-#define GENERATE_FINGERPRINT(T, ns, name, num, fields, psd)                                                          \
-  namespace ns {                                                                                                     \
+#define GENERATE_FINGERPRINT(T, ns, name, num, fields, psd)                                                           \
+  namespace ns {                                                                                                      \
   constexpr uint64_t name##_FINGERPRINT = num == L_1day ? fnv1a_u64(table_fingerprint(name##_FIELD_INFO), kDaySemver) \
-                                                       : table_fingerprint(name##_FIELD_INFO);                       \
+                                                        : table_fingerprint(name##_FIELD_INFO);                       \
   }
 TIER_LEVELS(GENERATE_FINGERPRINT)
 

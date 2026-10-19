@@ -416,9 +416,9 @@ void OrderFlowService::KlineLane::publish(size_t b0, size_t bd) {
 }
 
 // ============================================================================
-// Pick: 锚点日 L_1min ts_valid + 承接日 L_1day filter 列 → 全资产 PIT 状态 → 背槽发布
+// Pick: 承接日 L_1day filter 列 → 全资产 PIT 状态 → 背槽发布
 //   Fund L_1day 行 D = 次日盘前态, 故锚点日状态 = 承接日 (日轴前一日) 的 L_1day 行 (RowPlane::carry; 轴首无承接 = 哨兵);
-//   当日无 ts_valid 有效分钟 = 状态不可判读 → has_data=false
+//   承接格无源 (轴首 / 资产不在 all 库 / all 缺承接日) = 状态不可判读 → has_data=false; 当日有无分钟不论
 // ============================================================================
 
 bool OrderFlowService::PickLane::run(RowReq &req) {
@@ -441,12 +441,11 @@ bool OrderFlowService::PickLane::run(RowReq &req) {
   // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 只填主库轴内的资产, 轴外恒 has_data = false (自然被候选过滤掉)
   slot.meta.assign(data_.asset.items.size(), OrderFlow::Pick::Meta{});
 
-  // 每资产首个有效分钟即判有数据 (无有效分钟 / all 库缺这天 = 状态不可判读); 状态取承接日 L_1day 行
+  // 状态取承接日 L_1day 行; 承接格无源 = 状态不可判读
   const RowPlane &p = read_.pf.front();
   const LibAxis &axis = cur_.scope.axis;
   for (size_t a = 0; a < axis.size(); ++a) {
-    const feature_storage_t *ts = p.series(PICK_TS, a, 0);
-    if (std::none_of(ts, ts + p.rows[PICK_TS], has_data))
+    if (!present(p.carry(PICK_LIST_AGE, a, 0)))
       continue;
     OrderFlow::Pick::Meta &meta = slot.meta[axis.global(a)];
     meta.has_data = true;

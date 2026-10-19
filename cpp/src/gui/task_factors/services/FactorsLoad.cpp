@@ -24,7 +24,7 @@ static_assert([] {
       return false;
     for (int t = 0; t < g.S; ++t) {
       const size_t m = l.lvl == L_1min ? static_cast<size_t>(t) : l.lvl == L_1day ? TRADE_MINUTES_PER_DAY - 1
-                                                                                : bin_last_min(level_bin_minutes(l.lvl), static_cast<size_t>(t));
+                                                                                  : bin_last_min(level_bin_minutes(l.lvl), static_cast<size_t>(t));
       if (static_cast<size_t>(g.minute(t)) != m)
         return false;
     }

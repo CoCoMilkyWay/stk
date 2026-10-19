@@ -138,7 +138,7 @@ private:
   ORDERQUAD_ACT_ROWS(X, CAT1, bid, "B", "主动买", b, TE, TC, TF) \
   ORDERQUAD_ACT_ROWS(X, CAT1, ask, "A", "主动卖", b, TE, TC, TF)
 
-#define FIELDS_L_1min_OrderQuad(X, CAT1)                                         \
+#define FIELDS_L_1min_OrderQuad(X, CAT1)                                        \
   ORDERQUAD_THR_ROWS(X, CAT1, 4w, "4w", "4万元", R"(4 \times 10^4)")            \
   ORDERQUAD_THR_ROWS(X, CAT1, 20w, "20w", "20万元", R"(2 \times 10^5)")         \
   ORDERQUAD_THR_ROWS(X, CAT1, 100w, "100w", "100万元", R"(10^6)")               \

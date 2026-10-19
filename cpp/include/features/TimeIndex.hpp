@@ -42,7 +42,7 @@ constexpr bool bins_aligned() {
 }
 static_assert(bins_aligned(), "分钟箱须与午休 / 收盘对齐");
 
-constexpr size_t L_SEC_ROWS = TRADE_SECONDS_PER_DAY + 1; // 15301
+constexpr size_t L_SEC_ROWS = TRADE_SECONDS_PER_DAY + 1;  // 15301
 constexpr size_t L_1MIN_ROWS = TRADE_MINUTES_PER_DAY + 1; // 256
 constexpr size_t L_1DAY_ROWS = 1 + 1;                     // 2
 inline constexpr size_t bin_rows(size_t n) { return bins_per_day(n) + 1; }

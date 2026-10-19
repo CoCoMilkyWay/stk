@@ -10,7 +10,7 @@
 #define NODE_Kline60min(N) N(Kline60min, (KlineT<BinData>), (min60_data, Fund.out(Fund.pre_close)), on60Min)
 #define NODE_KlineDay(N) N(KlineDay, (KlineT<BinData>), (day_data, Fund.out(Fund.pre_close)), onClose)
 
-#define FIELDS_L_1min_Kline(X, CAT1)                                                                              \
+#define FIELDS_L_1min_Kline(X, CAT1)                                                                             \
   X(open, CAT1, AUTO, "Open", "开盘价", "分钟开盘价(元)", R"(P^{\mathrm{open}}_t)", TS(Kline, open, None, None)) \
   X(high, CAT1, AUTO, "High", "最高价", "分钟最高价(元)", R"(P^{\mathrm{high}}_t)", TS(Kline, high, None, None)) \
   X(low, CAT1, AUTO, "Low", "最低价", "分钟最低价(元)", R"(P^{\mathrm{low}}_t)", TS(Kline, low, None, None))     \
@@ -27,7 +27,7 @@
 #define FIELDS_L_30min_Kline30min(X, CAT1) BAR_BIN_KLINE(X, CAT1, Kline30min, 30)
 #define FIELDS_L_60min_Kline60min(X, CAT1) BAR_BIN_KLINE(X, CAT1, Kline60min, 60)
 
-#define FIELDS_L_1day_KlineDay(X, CAT1)                                                                                                                \
+#define FIELDS_L_1day_KlineDay(X, CAT1)                                                                                                               \
   X(open_day, CAT1, AUTO, "Open (day)", "日开盘价", "日开盘价(元): 首个有成交分钟的开盘价", R"(P^{\mathrm{open}}_D)", TS(KlineDay, open, None, None)) \
   X(high_day, CAT1, AUTO, "High (day)", "日最高价", "日最高价(元)", R"(P^{\mathrm{high}}_D)", TS(KlineDay, high, None, None))                         \
   X(low_day, CAT1, AUTO, "Low (day)", "日最低价", "日最低价(元)", R"(P^{\mathrm{low}}_D)", TS(KlineDay, low, None, None))                             \

@@ -250,7 +250,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Ctr(N) N(Ctr, (CTR), (tick_data), onTaker, onMinute)
 
-#define FIELDS_L_1min_Ctr(X, CAT1)                                                                                                                                                                                                                                                                                 \
+#define FIELDS_L_1min_Ctr(X, CAT1)                                                                                                                                                                                                                                                                                \
   X(ctr_ca, CAT1, RATIO, "Continuous Auction Trade Ratio", "连续竞价成交占比", "连续竞价成交额占全天成交额的比例(降频)", R"(\frac{|O_t^{T,\mathrm{CA}}|}{|O_t^{T}|})", TS(Ctr, ctr_ca, None, None))                                                                                                               \
   X(ctr_xl, CAT1, RATIO, "Cumulative XL Trade Ratio", "特大单累计成交占比", "从开盘到t时刻,特大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{XL}}|+|O_{\tau}^{T,A,\mathrm{XL}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", TS(Ctr, ctr_xl, None, None))    \
   X(ctr_l, CAT1, RATIO, "Cumulative L Trade Ratio", "大单累计成交占比", "从开盘到t时刻,大单成交额占总成交额比例(降频)", R"(\frac{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B,\mathrm{L}}|+|O_{\tau}^{T,A,\mathrm{L}}|)}{\sum_{\tau=t_0}^{t}(|O_{\tau}^{T,B}|+|O_{\tau}^{T,A}|)})", TS(Ctr, ctr_l, None, None))             \

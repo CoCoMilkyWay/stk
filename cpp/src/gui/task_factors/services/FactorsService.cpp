@@ -401,7 +401,7 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
   const char *ohlc[4] = {"open", "high", "low", "close"};
   for (int i = 0; i < 4; ++i) {
     const std::string code = lv.tier == TierId::Lob ? std::string("lob_") + ohlc[i]
-                             : lv.lvl == L_1day      ? std::string(ohlc[i]) + "_day"
+                             : lv.lvl == L_1day     ? std::string(ohlc[i]) + "_day"
                                                     : std::string(ohlc[i]) + "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
     t.ohlc[i] = static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str()));
   }

@@ -104,7 +104,7 @@ private:
   TRADESIZE_ROWS(X, CAT1, bid, "B", "买", b, TE, TC, TF) \
   TRADESIZE_ROWS(X, CAT1, ask, "A", "卖", b, TE, TC, TF)
 
-#define FIELDS_L_1min_TradeSize(X, CAT1)                                       \
+#define FIELDS_L_1min_TradeSize(X, CAT1)                                      \
   TRADESIZE_THR_ROWS(X, CAT1, 4w, "4w", "4万元", R"(4 \times 10^4)")          \
   TRADESIZE_THR_ROWS(X, CAT1, 20w, "20w", "20万元", R"(2 \times 10^5)")       \
   TRADESIZE_THR_ROWS(X, CAT1, 100w, "100w", "100万元", R"(10^6)")             \

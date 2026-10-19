@@ -40,10 +40,10 @@
 
 namespace OrderFlowConst {
 // Data Capacity
-constexpr size_t SEC_CAPACITY = L_SEC_ROWS; // ~15300 秒/日 (X 轴跨度)
+constexpr size_t SEC_CAPACITY = L_SEC_ROWS;  // ~15300 秒/日 (X 轴跨度)
 constexpr size_t MIN_CAPACITY = L_1MIN_ROWS; // ~255 分钟/日 (X 轴跨度)
-constexpr size_t LOB_DEPTH = L2::LOB_DEPTH; // 30 levels
-constexpr size_t MAX_FEATURES = 8;          // overlay 特征多选上限 (两图同限)
+constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;  // 30 levels
+constexpr size_t MAX_FEATURES = 8;           // overlay 特征多选上限 (两图同限)
 
 // Price and Volume Conversion
 constexpr float TICK_SIZE = 0.01f;            // Minimum price step (RMB)
@@ -254,16 +254,16 @@ struct OrderFlow {
 
   // ==========================================================================
   // Pick (资产筛选) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
-  //   状态源 = L_1min 落盘列 (Fund 节点日频广播): risk_warn / list_age / delist_age
-  //   / industry_l1, 配合同层 ts_valid 判有效 —— 当日无有效分钟的资产读不到状态
-  //   (落盘缓冲清零, 值全 0 会被误读成"正常在市"), 一律不进候选.
+  //   状态源 = all 库承接日 (日轴前一日) L_1day 行 (Fund 节点): risk_warn / list_age / delist_age
+  //   / industry_l1 —— 承接格无源 (轴首 / 不在 all 库) 读不到状态, 不进候选; 当日有无分钟不论 (停牌照列).
+  //   候选轴 = 主库轴 (GUI 按选中列定: 无选中 = all, 单库 = 该库)
   // ==========================================================================
   struct Pick {
     // 单资产当日状态 (worker 写背槽, 发布后只读)
     struct Meta {
       uint8_t industry_l1 = 0; // SW2021 一级行业 ID (0 = 未知), 见 fund::SW2021_L1_NAMES
       uint8_t risk_warn = 0;   // 0=正常 1=ST 2=*ST 3=退市整理期
-      bool has_data = false;   // 当日有有效分钟 (false = 其余字段无意义)
+      bool has_data = false;   // 状态可判读 (承接日 L_1day 行有源; false = 其余字段无意义)
       bool listed = false;     // 当日在市 (已上市 且 未退市)
       bool delisted = false;   // 当日已退市
     };
@@ -372,6 +372,7 @@ struct OrderFlow {
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
     std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (同一组选中, 各截到图的网格: 图2 ≥ L_1min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
     LibMask kline_libs = 0;                       // 图2 库集 (主库 + overlay 各库) = 日轴并集的库; 变了 → 重扫日轴
+    LibId main_lib = kAllLib;                     // 主库 (选中列所在的唯一库, 无选中 = all): 图1 VWAP / 候选轴; 变了 → 图1 / Pick 重发
     misc::Ymd depth_date = 0;
 
     // 图2 X 域 (= 特征日数 × MIN_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;

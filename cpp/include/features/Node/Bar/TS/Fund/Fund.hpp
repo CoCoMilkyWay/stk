@@ -17,7 +17,7 @@
   X(item, CAT1, AUTO, EN " MRQ", CN "MRQ", DESC "(最近报告期, 亿元)", SYM R"(^{MRQ}_{D})", TS(Fund, item, None, None))
 
 // 日频列只在 L_1day (行业亦然: 日内截面中性化按 as-of 读前一交易日行 = 当日适用, 见 Method/CS.hpp NEUTRAL_RANK_*)
-#define FIELDS_L_1day_Fund(X, CAT1)                                                                                                                                                                           \
+#define FIELDS_L_1day_Fund(X, CAT1)                                                                                                                                                                          \
   X(ind_l1, CAT1, AUTO, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", TS(Fund, ind_l1, None, None))                                                                    \
   X(list_age, CAT1, AUTO, "List Age", "上市龄", "次日上市日历日数(未上市→NaN)", R"(D - D_{list})", TS(Fund, list_age, None, None))                                                                           \
   X(delist_age, CAT1, AUTO, "Delist Age", "退市龄", "次日退市日历日数(未退市→NaN)", R"(D - D_{delist})", TS(Fund, delist_age, None, None))                                                                   \

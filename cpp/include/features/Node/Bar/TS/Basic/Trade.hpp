@@ -39,7 +39,7 @@ using Trade = TradeT<MinuteData>;
 #define NODE_Trade60min(N) N(Trade60min, (TradeT<BinData>), (min60_data), on60Min)
 #define NODE_TradeDay(N) N(TradeDay, (TradeT<BinData>), (day_data), onClose)
 
-#define FIELDS_L_1min_Trade(X, CAT1)                                                                              \
+#define FIELDS_L_1min_Trade(X, CAT1)                                                                             \
   X(volume, CAT1, AUTO, "Volume", "成交量", "分钟成交量(股)", R"(\mathrm{Vol}_t)", TS(Trade, volume, Log, None)) \
   X(amount, CAT1, AUTO, "Amount", "成交额", "分钟成交额(元); 分钟 VWAP = amount / volume (因子层)", R"(\mathrm{Amt}_t)", TS(Trade, amount, Log, None))
 
@@ -52,6 +52,6 @@ using Trade = TradeT<MinuteData>;
 #define FIELDS_L_30min_Trade30min(X, CAT1) BAR_BIN_TRADE(X, CAT1, Trade30min, 30)
 #define FIELDS_L_60min_Trade60min(X, CAT1) BAR_BIN_TRADE(X, CAT1, Trade60min, 60)
 
-#define FIELDS_L_1day_TradeDay(X, CAT1)                                                                                        \
+#define FIELDS_L_1day_TradeDay(X, CAT1)                                                                                       \
   X(volume_day, CAT1, AUTO, "Volume (day)", "日成交量", "日成交量(股)", R"(\mathrm{Vol}_D)", TS(TradeDay, volume, Log, None)) \
   X(amount_day, CAT1, AUTO, "Amount (day)", "日成交额", "日成交额(元)", R"(\mathrm{Amt}_D)", TS(TradeDay, amount, Log, None))

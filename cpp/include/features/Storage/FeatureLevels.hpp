@@ -139,7 +139,7 @@ inline constexpr size_t level_rows(size_t lvl) {
   assert(lvl < LEVEL_COUNT);
   return lvl == L_sec ? L_SEC_ROWS : lvl == L_1min ? L_1MIN_ROWS
                                  : lvl == L_1day   ? L_1DAY_ROWS
-                                                  : bin_rows(level_bin_minutes(lvl));
+                                                   : bin_rows(level_bin_minutes(lvl));
 }
 
 // 运行时层表访问 (定义在 src/features/FeatureMeta.cpp — 唯一依赖字段表的元数据 TU)
@@ -160,14 +160,14 @@ inline constexpr size_t level_end_sec(size_t lvl, size_t t) {
   assert(t < level_valid_rows(lvl));
   return lvl == L_sec ? t + 1 : lvl == L_1min ? L_1min_to_L_sec(t) + 60
                             : lvl == L_1day   ? TRADE_SECONDS_PER_DAY
-                                             : L_1min_to_L_sec(bin_last_min(level_bin_minutes(lvl), t)) + 60;
+                                              : L_1min_to_L_sec(bin_last_min(level_bin_minutes(lvl), t)) + 60;
 }
 // 交易秒 s 所在行
 inline constexpr size_t level_row_of_sec(size_t lvl, size_t s) {
   assert(lvl < LEVEL_COUNT && s < TRADE_SECONDS_PER_DAY);
   return lvl == L_sec ? s : lvl == L_1min ? L_sec_to_L_1min(s)
                         : lvl == L_1day   ? 0
-                                         : L_1min_to_bin(level_bin_minutes(lvl), L_sec_to_L_1min(s));
+                                          : L_1min_to_bin(level_bin_minutes(lvl), L_sec_to_L_1min(s));
 }
 // as-of 投影: dst 层行 t emit 时刻, src 层已 emit 的最新一行 (同日); -1 = 当日尚无 → 前一交易日末行.
 // src 不粗于 dst → 含 dst 末秒的那行 (同刻细层先写, 已可见); 更粗 → 其前一行 (同刻粗层后写 / 尚未收)

@@ -141,7 +141,7 @@ struct Transform : Published {
   // 短锁只推进 n_segs / 日期 / TOD 轮廓; UI 只读前缀 [0, n_segs·R)
   struct SeriesSnap {
     uint32_t asset = 0;                     // 焦点资产全局轴下标 (UI 查 items; 构建起手定)
-    size_t level = L_1min, R = 0;            // 网格层 / 段行数 (UI 按它铺 X 轴)
+    size_t level = L_1min, R = 0;           // 网格层 / 段行数 (UI 按它铺 X 轴)
     size_t n_segs = 0;                      // 已发布段数 (逐批递增至全程)
     misc::Ymd date_begin = 0, date_end = 0; // 已发布区间首末日
     std::vector<float> raw;                 // [总段数 * R] (f16 → float, NaN = 缺/未到批)
