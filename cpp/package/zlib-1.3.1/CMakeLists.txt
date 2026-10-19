@@ -33,25 +33,6 @@ if(NOT WIN32)
     target_compile_definitions(z PRIVATE _POSIX_C_SOURCE=200112L _DEFAULT_SOURCE)
 endif()
 
-# Compiler flags (match parent project)
-if(IS_WINDOWS)
-    target_compile_options(z PRIVATE
-        /nologo
-        /O2
-        -march=native
-        /fp:fast
-        -D_CRT_SECURE_NO_DEPRECATE
-        -D_CRT_NONSTDC_NO_DEPRECATE
-        -Wno-overriding-option
-    )
-else()
-    target_compile_options(z PRIVATE
-        -O2
-        -march=native
-        -ffast-math
-    )
-endif()
-
 # Public include directory
 target_include_directories(z PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

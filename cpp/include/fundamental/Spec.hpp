@@ -6,11 +6,11 @@
 //   Store  本地: 清单 + 槽位账本 (状态 ledger / 动作 todo) + 唯一读点 read / 唯一写点 put (Store.hpp)
 //   Remote 远端: Task → Query → Table, 两源同骨架 (Remote.hpp)
 //   sync   写侧: plan → run = put(t, fetch(client, t)) (Sync.hpp)
-//   audit  核对: plan → run (远端指纹 ↔ 本地指纹, 仅 DAI) → repair (差异 → Task) (Audit.hpp)
+//   audit  核对: plan → run (远端指纹 ↔ 本地指纹, 仅精确源) → repair (差异 → Task); 结论入 Book (Audit.hpp)
 //   Scan   读侧: split → fold → merge; meta / snapshot 同一 Rows 视图 (Scan.hpp)
 //
 // 依赖单向: fundamental → api/{bigquant, tushare}::Client (纯传输, 不知 Spec)
-// 分派键唯一 = 数据源 Src (Bq / Tu); 客户端类型由 Src::Client 给出
+// 分派键唯一 = 数据源 Src (Bq / Tu); 客户端类型由 Src::Client 给出, 能力由 Src::exact 给出
 #pragma once
 
 #include "misc/date.hpp"
@@ -60,6 +60,7 @@ enum class Prune { Where,
 struct Bq {
   using Client = bigquant::Client;
   static constexpr std::string_view key = "instrument"; // 资产键列
+  static constexpr bool exact = true;                   // 按组键精确取数 (SQL GROUP BY / 组键谓词) ⇒ 可核对 / 可 Splice
   Prune prune;
   std::string table = {};
 };
@@ -72,6 +73,7 @@ struct Bq {
 struct Tu {
   using Client = tushare::Client;
   static constexpr std::string_view key = "ts_code"; // 资产键列
+  static constexpr bool exact = false;               // 只有接口参数, 无组键谓词 ⇒ 不核对 / 不 Splice
   std::string api;
   std::vector<std::string> day_params;
   std::vector<std::string> num;
@@ -94,6 +96,11 @@ inline std::string_view key_col(const Spec &s) {
   return std::visit([](const auto &src) { return src.key; }, s.src);
 }
 
+// 数据源能否按组键精确取数 (见 Bq / Tu::exact)
+inline bool exact(const Spec &s) {
+  return std::visit([](const auto &src) { return src.exact; }, s.src);
+}
+
 template <class Src>
 bool from(const Spec &s) { return std::holds_alternative<Src>(s.src); }
 
@@ -108,6 +115,11 @@ struct Window {
 enum class Grain { Month,
                    Day,
                    Asset };
+
+// 槽即组: 一个分片槽 = 槽级的一个组 —— Month 形 = Month 级, Daily 形 = Day 级 (Meta 无组 → assert)
+Grain slot_grain(const Spec &s);
+// 可单独重写的最细组 (audit 下钻的底): 精确源的 Month 形 Splice 到 Asset; 否则 (Daily 日文件只整日 Replace) = 槽级
+Grain finest(const Spec &s);
 
 // 行 (vd = d, 资产键 = asset) 在 g 级的组键; Asset 级 asset 空 → assert
 std::string group_key(Grain g, Ymd d, std::string_view asset = {});
@@ -126,7 +138,7 @@ enum class Write { Replace,
 
 // 一次抓取 = 表 × 分片 × 窗口 × 写法; sync::run = put(t, fetch(client, t))
 //   Append: w.lo 已抬到水位 + 1; Snap::Day 表无 Append (快照须看整窗)
-//   Splice: keys 升序去重非空, Day / Asset 级, 同属 ym 分片; w = 槽整窗 (Snap::Day 的 MIN 子查询照看整窗); 仅 Bq
+//   Splice: keys 升序去重非空, Day / Asset 级, 同属 ym 分片; w = 槽整窗 (Snap::Day 的 MIN 子查询照看整窗); 仅 exact 源
 //   Shape::Daily: w = [该日, 该日], ym = 该日所属月, 只 Replace
 struct Task {
   const Spec *spec = nullptr; // 指向 SPECS 的一行

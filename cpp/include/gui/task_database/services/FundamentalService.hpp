@@ -34,7 +34,7 @@ struct FundamentalState {
   std::string last_update; // 最近一次构建成功时刻
 
   // BigQuant 周配额 (preflight 结果, 单位 cell; Overview 常显 + 待确认弹窗)
-  //   每轮联网同步开头取一次, BigQuant 同步后再取一次; 未联网的轮次沿用上次
+  //   每轮联网同步开头 preflight 一次, 每个 BigQuant 任务后再取; 未联网的轮次沿用上次
   std::int64_t quota_weekly = 0;
   std::int64_t quota_used = 0;
   std::string quota_time; // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
@@ -70,7 +70,7 @@ struct FundamentalResult {
 //
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::assetinfo (只在 GUI 线程替换)
-//   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> → [逐任务 sync::run (bq) → (ts)] → 构建 → post
+//   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> (Round) → [drive 三道: bq → ts → bq.daily] → 构建 → post
 //               (两份计划皆空 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;
 //               state 持 mutex 读; confirm_pending = 配额待确认 (worker 挂起等 confirm)

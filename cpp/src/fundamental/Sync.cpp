@@ -19,14 +19,16 @@ long age_seconds(const Shard &sh, const Now &now) {
 } // namespace
 
 template <class Src>
-std::vector<Task> plan(const Catalog &cat, const Now &now) {
+std::vector<Task> plan(const Round &r, const Keep &keep) {
   std::vector<Task> out;
   for (const Spec &s : SPECS) {
     if (!from<Src>(s))
       continue;
-    for (const Slot &sl : ledger(s, cat, now)) {
+    for (const Slot &sl : ledger(s, r)) {
       // 已存在的分片刚写过 → 本轮不动
-      if (sl.sh && age_seconds(*sl.sh, now) < ::config::PIPELINE_DEDUP_WINDOW_SECONDS)
+      if (sl.sh && age_seconds(*sl.sh, r.now) < ::config::PIPELINE_DEDUP_WINDOW_SECONDS)
+        continue;
+      if (keep && !keep(s, sl))
         continue;
       if (auto t = todo(s, sl))
         out.push_back(std::move(*t));
@@ -62,8 +64,8 @@ std::string label(const Task &t) {
   return at;
 }
 
-template std::vector<Task> plan<Bq>(const Catalog &, const Now &);
-template std::vector<Task> plan<Tu>(const Catalog &, const Now &);
+template std::vector<Task> plan<Bq>(const Round &, const Keep &);
+template std::vector<Task> plan<Tu>(const Round &, const Keep &);
 template std::int64_t run<Bq>(bigquant::Client &, const Task &);
 template std::int64_t run<Tu>(tushare::Client &, const Task &);
 

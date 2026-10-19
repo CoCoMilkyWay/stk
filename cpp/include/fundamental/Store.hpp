@@ -18,11 +18,12 @@
 // Store — 本地数据集 output/fundamental/{YYYY-MM, _meta}/<name>.parquet + YYYY-MM/<name>/YYYY-MM-DD.parquet (Daily)
 //
 // Catalog: 一次目录遍历的本地清单 (表名 → 分片). sync / audit / 构建 / Overview 全只读它.
+// Round  : 一轮的本地视图 = 清单 + 时刻 + 日历 (同一时刻各取一次); sync / audit 的 plan 只读它.
 // read / put: 本地唯一读点 / 唯一写点 (路径只在 Store 内拼).
 //
-// ledger: 一张表全部槽位在 now 视角下的状态 —— "冻结" 只在这里定义一次, 每槽只判一次;
+// ledger: 一张表全部槽位在 Round 视角下的状态 —— "冻结" 只在这里定义一次, 每槽只判一次;
 //   todo: 一个槽的动作 (右列) —— "拉什么 / 怎么写" 只在这里定义一次.
-//   sync::plan = ledger 过 dedup 后逐槽 todo; frozen = ledger 的过滤. 时间只经 Now 传入 ⇒ 两者是纯函数.
+//   sync::plan = ledger 过 dedup 后逐槽 todo; frozen = ledger 的过滤. 时间与日历只经 Round 传入 ⇒ 两者是纯函数.
 //   horizon = 当前时刻已完整的最晚数据日 (now.hour >= avail_hour ? today : 昨天)
 //   Month 关月 (月末 < today − lookback):
 //     Missing  无文件                                        → 整月拉, 覆盖
@@ -36,7 +37,7 @@
 //   Meta:
 //     Missing  无文件 / Stale 不新鲜 → 整刷; Frozen 新鲜 → 不动
 //     新鲜 = vd 空: 写盘时刻 ≥ horizon 日 avail_hour 点 (当日新股随其他表同点入盘); 否则: mark ≥ horizon
-//   Daily (槽位 = all_trading_days 里 [start, horizon] 的交易日; 日历未入盘 → 无槽):
+//   Daily (槽位 = Round::days 里 [start, horizon] 的交易日; 日历未入盘 → 无槽):
 //     Missing  无文件                                        → 拉该日, 覆盖
 //     Frozen   有文件                                        → 不动 (avail_hour=24 ⇒ 只拉到昨天, 落盘即整日; 回填靠 audit)
 //   (右列动作 = todo; dedup 节流在 sync::plan)
@@ -81,6 +82,22 @@ private:
   std::map<std::string, std::vector<Shard>, std::less<>> by_name_;
 };
 
+// all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (Round / AssetInfo / fund::Panel 共用); 无 CN 行 → assert
+std::vector<Ymd> calendar(const Catalog &cat, Ymd today);
+
+// 一轮的本地视图: 清单 + 时刻 + 日历, 同一时刻各取一次 (ledger / frozen / plan / repair 的唯一输入)
+//   days: calendar(cat, now.today); 日历未入盘 (首轮同步前) → 空
+//   Slot / Unit 指向 cat ⇒ 不可拷贝, 须活到最后一个 run 结束
+struct Round {
+  Round();
+  Round(const Round &) = delete;
+  Round &operator=(const Round &) = delete;
+
+  Catalog cat;
+  Now now;
+  std::vector<Ymd> days;
+};
+
 enum class State { Missing,
                    Stale,
                    Open,
@@ -97,10 +114,16 @@ struct Slot {
 };
 
 // s 的全部槽位: Meta = {0}; Month = [ym(PIPELINE_START_DATE), ym(today)] 升序; Daily = 交易日升序
-std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now);
+std::vector<Slot> ledger(const Spec &s, const Round &r);
 
 // ledger 中 Frozen 的 Month / Daily 槽 ((ym, 日) 升序) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
-std::vector<Slot> frozen(const Spec &s, const Catalog &cat, const Now &now);
+std::vector<Slot> frozen(const Spec &s, const Round &r);
+
+// 槽键 = 槽级组键 (见 slot_grain): 与 Task::keys / audit::Diff::group 同一键语言 (父键 = 子键前缀)
+std::string slot_key(const Spec &s, const Slot &sl);
+
+// 调用方的槽过滤 (sync::plan / audit::plan 共用; 空 = 全部)
+using Keep = std::function<bool(const Spec &, const Slot &)>;
 
 // 槽 sl 的动作 (见文件头右列); 无事 (Frozen / 已到水位 / Snap::Day 快照已入盘) → nullopt.
 //   Open 槽在这里读水位 (唯一一处), 其余零 IO

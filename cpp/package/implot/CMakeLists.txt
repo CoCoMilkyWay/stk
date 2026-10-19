@@ -16,10 +16,3 @@ target_include_directories(implot SYSTEM PUBLIC
 
 target_link_libraries(implot PUBLIC imgui)
 
-# Use precise math for implot
-if(IS_WINDOWS)
-    target_compile_options(implot PRIVATE /fp:precise)
-else()
-    target_compile_options(implot PRIVATE -fno-fast-math)
-endif()
-

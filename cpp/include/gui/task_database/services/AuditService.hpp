@@ -1,14 +1,14 @@
 // Audit Service - BigQuant 远端 vs 本地冻结月分片一致性核对 + 逐表修复 (单 worker; 网络 + parquet IO)
 // 口径见 fundamental/Audit.hpp. 请求三种 (AuditOp), 同一 worker 串行:
-//   Load   : 读逐表状态 → 统计 (零网络, 零 parquet IO); StateManager 首个请求
+//   Load   : 读核对账本 (audit::Book) → 统计 (零网络, 零 parquet IO); StateManager 首个请求
 //   Audit  : 一表 / 全部表核对 (月扫描 → 不一致的月逐级定位到 日 / 资产), 只报告不改盘;
 //            取消在单元间生效 (在飞的 DoGet 不可中断)
-//   Repair : 一表的定位键 → audit::repair 任务 (日·资产 Splice; 只定位到月 → 整月 Replace) → sync::run → 只复核这些月
+//   Repair : 一表的差异键 → audit::repair 任务 (整槽 Replace / 日·资产 Splice) → sync::run → 只复核这些月
 //            UI 不给取消 (Stop 时在步间退出); 改了盘, StateManager 收到交接后重建 AssetInfo
-// 结果是逐表的 "当前状态" (不是变更日志) output/fundamental/_audit/<表>.tsv:
-//   每月只留最近一次核对的结论; 每单元后只整写该表一个文件 (tmp + rename).
+// 结论落 audit::Book (output/fundamental/_audit/<表>.tsv, 每月只留最近一次; 分片重写 ⇒ 版本变 ⇒ 自动作废).
+// 循环骨架 = drive (Drive.hpp, 与 FundamentalService 同一份).
 // 线程模型 (gui/util/Service.hpp, 随对象): 进度面 = 自身 (Published, done/total = 步), state 持 mutex 读;
-//   逐表状态 (book) worker 独占, 跨轮承接; 每轮收尾 handoff.post(请求代)
+//   账本 + 本轮视图 (Worker) worker 独占, 跨轮承接; 每轮收尾 handoff.post(请求代)
 #pragma once
 
 #include "gui/util/Service.hpp"
@@ -21,9 +21,9 @@
 
 namespace GUI::Database {
 
-// 每表汇总 = f(该表状态文件里的差异格, 已核月的本地清点); 启动读状态与在跑时实时刷新同一条路径.
+// 每表汇总 = f(该表仍有效的结论: 差异格 + 已核月的本地清点); 启动读账本与在跑时实时刷新同一条路径.
 // 逐格明细只在状态文件 (AuditState::log_dir). 分母只含已核月 (清点取自核对当时的分片).
-// SPECS 里每张 DAI·Month 表恒有一条 (从未核对 = 已核月数 0).
+// SPECS 里每张参与核对的表恒有一条 (从未核对 = 已核月数 0).
 //   问题天数占比 = bad_days / (local_days + remote_only_days)
 //   行差占比     = (added + removed) / local_rows
 //   流量 (cell = 行 × 列, 与 fetch SELECT * 同口径):
@@ -90,14 +90,14 @@ class AuditService : public Service<AuditService, AuditRequest>, public Publishe
 
 public:
   static constexpr const char *kName = "AuditWorker";
-  AuditService(); // 两者都在 .cpp: Book 不完整; 构造末尾 Start
+  AuditService(); // 两者都在 .cpp: Worker 不完整; 构造末尾 Start
   ~AuditService();
 
   AuditState state;          // UI 持 mutex 读
   Mailbox<uint64_t> handoff; // worker 每轮收尾 post 请求代, StateManager 帧首 take
 
 private:
-  struct Book; // 逐表核对状态 + 冻结月数 (worker 独占, 跨轮承接)
+  struct Worker; // 核对账本 + 本轮视图 + 写口 (worker 独占, 跨轮承接)
 
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return *this; }
@@ -106,7 +106,7 @@ private:
   bool audit(const std::string &table, bool incremental);
   bool repair(const std::string &table);
 
-  std::unique_ptr<Book> book_;
+  std::unique_ptr<Worker> worker_;
 };
 
 } // namespace GUI::Database

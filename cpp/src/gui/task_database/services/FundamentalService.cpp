@@ -1,6 +1,6 @@
 // Fundamental Service - 基本面数据 sync + AssetInfo 构建
-// 抓取: fundamental::sync::plan<Src> → 逐任务 sync::run<Src> (月度 parquet, 水位增量, 槽位状态见 fundamental/Store.hpp)
-//   与 AuditService 的 audit::plan → 逐单元 audit::run 同形: 循环 / 进度 / 取消都在本层
+// 抓取: fundamental::sync::plan<Src>(Round) → 三条同步道逐任务 sync::run<Src> (月度 parquet, 水位增量, 槽位状态见 fundamental/Store.hpp)
+//   与 AuditService 的 audit::plan<Src> → 逐单元 audit::run<Src> 同形: 循环 / 进度 / 取消 / 闸门同走 drive (Drive.hpp)
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days}
 //   stock_days   ← all_trading_days (fundamental::calendar)
 //   stock_info   ← cn_stock_basic_info (_meta) + cn_stock_instruments (PIT 简称)
@@ -22,6 +22,7 @@
 #include "api/tushare/client.hpp"
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
+#include "gui/task_database/services/Drive.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/parquet.hpp"
@@ -41,6 +42,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -152,38 +154,6 @@ struct Job {
     svc.publish();
   }
 };
-
-// 逐任务 sync::run (与 AuditService 逐单元 audit::run 同形): 计步 = 进度面 Loading, 取消在任务间生效
-// (在飞的查询不可中断). gate 非空: 每个任务开跑前判一次, false ⇒ 跳过余下全部任务
-template <class Src>
-void sync_all(Job &job, typename Src::Client &client, const std::vector<fundamental::Task> &tasks, const char *tag,
-              const std::function<bool()> &gate = {}) {
-  std::cout << "[" << tag << ".sync] " << tasks.size() << " task(s) from " << config::PIPELINE_START_DATE
-            << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
-            << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
-  job.svc.begin(Phase::Loading, tasks.size());
-  bool gated = false;
-  for (const fundamental::Task &t : tasks) {
-    if (job.cancel.load(std::memory_order_relaxed))
-      break;
-    if (gate && !gate()) {
-      gated = true;
-      std::cout << "[" << tag << ".sync] gate closed, skip remaining "
-                << tasks.size() - job.svc.done.load(std::memory_order_relaxed) << " task(s)" << std::endl;
-      break;
-    }
-    const std::string label = fundamental::sync::label(t);
-    job.set_message(std::string("同步 ") + tag + ": " + label);
-    std::cout << "[" << tag << ".sync] " << label << " ... " << std::flush;
-    const std::int64_t rows = fundamental::sync::run<Src>(client, t);
-    std::cout << rows << " rows" << std::endl;
-    job.svc.publish(1);
-  }
-  std::cout << "[" << tag << ".sync] "
-            << (job.cancel.load(std::memory_order_relaxed) ? "cancelled" : gated ? "stopped (gate)"
-                                                                                 : "done")
-            << std::endl;
-}
 
 // 外来写者的 parquet 以本库原样重写 (每轮开头, 先于 sync / 构建; 见 misc::pq::renative):
 //   Catalog 全部分片 (含 Daily 分钟线) 经 fundamental::renative. 判定只读 footer; 并行, 重的先跑, 取消在文件间生效
@@ -735,34 +705,34 @@ bool FundamentalService::run(FundamentalRequest &req) {
   Job job{*this, cancel_};
   renative_all(job);
   if (req.with_network) {
-    const fundamental::Now now = fundamental::now();
-    const Catalog cat; // 本轮开头的清单 (plan 只算这一次, sync 照单执行)
+    const fundamental::Round round; // 本轮开头的本地视图 (plan 只算这一次, sync 照单执行)
     bigquant::Client bq;
-    // 配额探针不耗配额: 每轮都取, Overview 常显本周余额 (未联网的轮次沿用上次读数)
-    auto take_quota = [this, &job, &bq]() {
-      job.quota = bigquant::preflight(bq);
+    // 配额读数 → state (探针不耗配额; Overview 常显本周余额, 未联网的轮次沿用上次读数)
+    auto show_quota = [this, &job]() {
       std::lock_guard lk(mutex);
       state.quota_weekly = job.quota.weekly;
       state.quota_used = job.quota.used;
       state.quota_time = now_str();
       publish();
     };
+    auto left = [&job]() {
+      return 1.0 - static_cast<double>(job.quota.used) / static_cast<double>(job.quota.weekly);
+    };
     job.set_message("preflight: BigQuant 周配额");
-    take_quota();
+    job.quota = bigquant::preflight(bq);
+    show_quota();
     // plan 纯本地判定: 全部表在 dedup 窗口内 / 已到水位 ⇒ 空计划, 不拉数据
     job.set_message("plan 判定 (水位/dedup 窗口)");
     // Daily (分钟线) 单拆一组放到最后, 用普通表剩下的配额
     std::vector<fundamental::Task> bq_tasks, daily_tasks;
-    for (fundamental::Task &t : fundamental::sync::plan<fundamental::Bq>(cat, now))
+    for (fundamental::Task &t : fundamental::sync::plan<fundamental::Bq>(round))
       (t.spec->shape == fundamental::Shape::Daily ? daily_tasks : bq_tasks).push_back(std::move(t));
-    const std::vector<fundamental::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(cat, now);
+    const std::vector<fundamental::Task> ts_tasks = fundamental::sync::plan<fundamental::Tu>(round);
     bool need_bq = !bq_tasks.empty();
     bool declined = false; // 弹窗拒绝 ⇒ 本轮 BigQuant 一律不拉 (含分钟线)
     if (need_bq) {
       // 剩余 < 阈值 ⇒ 挂起等弹窗 (GUI 线程 confirm); 取消 (新请求 / Stop) 视同跳过
-      const double left = 1.0 - static_cast<double>(job.quota.used) /
-                                    static_cast<double>(job.quota.weekly);
-      if (left < config::BIGQUANT_QUOTA_CONFIRM_RATIO) {
+      if (left() < config::BIGQUANT_QUOTA_CONFIRM_RATIO) {
         job.set_message("等待确认: BigQuant 周配额不足");
         decision_.store(0, std::memory_order_relaxed);
         confirm_pending.store(true, std::memory_order_release);
@@ -773,22 +743,46 @@ bool FundamentalService::run(FundamentalRequest &req) {
         declined = !need_bq;
       }
     }
-    if (need_bq) {
-      sync_all<fundamental::Bq>(job, bq, bq_tasks, "bigquant");
-      take_quota();
-    }
-    if (!ts_tasks.empty() && !cancel_.load(std::memory_order_relaxed)) {
-      tushare::Client ts;
-      sync_all<fundamental::Tu>(job, ts, ts_tasks, "tushare");
-    }
-    if (config::BIGQUANT_SYNC_DAILY && !daily_tasks.empty() && !declined &&
-        !cancel_.load(std::memory_order_relaxed)) {
-      // 一天约 1200 万 cell: 每天开拉前重取配额 (探针不耗配额), 剩余 < 阈值即跳过余下各天
-      sync_all<fundamental::Bq>(job, bq, daily_tasks, "bigquant.daily", [&job, &take_quota]() {
-        take_quota();
-        return 1.0 - static_cast<double>(job.quota.used) / static_cast<double>(job.quota.weekly) >=
-               config::BIGQUANT_QUOTA_DAILY_RATIO;
-      });
+    // 三条同步道, 道序即执行序 (同一 drive; 与 AuditService 逐单元 audit::run 同形):
+    //   on = 本道是否开跑; BigQuant 每任务后重取配额 (不耗配额); gate 每任务开跑前判
+    //   (分钟线一天约 1200 万 cell: 剩余 < 阈值即跳过余下各天)
+    std::optional<tushare::Client> ts;
+    auto run_bq = [&](const fundamental::Task &t) {
+      const std::int64_t rows = fundamental::sync::run<fundamental::Bq>(bq, t);
+      job.quota = bq.quota();
+      show_quota();
+      return std::to_string(rows) + " rows";
+    };
+    auto run_tu = [&](const fundamental::Task &t) {
+      if (!ts)
+        ts.emplace();
+      return std::to_string(fundamental::sync::run<fundamental::Tu>(*ts, t)) + " rows";
+    };
+    struct Lane {
+      const char *tag;
+      const std::vector<fundamental::Task> &tasks;
+      bool on;
+      std::function<std::string(const fundamental::Task &)> step;
+      std::function<bool()> gate;
+    };
+    const Lane lanes[] = {
+        {"bigquant", bq_tasks, need_bq, run_bq, {}},
+        {"tushare", ts_tasks, true, run_tu, {}},
+        {"bigquant.daily", daily_tasks, config::BIGQUANT_SYNC_DAILY && !declined, run_bq,
+         [&left]() { return left() >= config::BIGQUANT_QUOTA_DAILY_RATIO; }},
+    };
+    std::cout << "[sync] from " << config::PIPELINE_START_DATE << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
+              << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
+    for (const Lane &l : lanes) {
+      if (!l.on || l.tasks.empty())
+        continue;
+      begin(Phase::Loading, l.tasks.size());
+      const std::string tag = l.tag;
+      const Outcome stop = drive(*this, cancel_, tag + ".sync", l.tasks,
+                              [&job, &tag](const std::string &s) { job.set_message("同步 " + tag + ": " + s); },
+                              l.step, l.gate);
+      if (stop == Outcome::Cancelled)
+        break;
     }
   }
   // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)

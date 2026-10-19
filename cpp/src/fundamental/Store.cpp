@@ -1,6 +1,5 @@
 #include "fundamental/Store.hpp"
 
-#include "fundamental/Scan.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 #include "shared/Config.hpp"
@@ -284,36 +283,45 @@ const Shard *Catalog::find_day(std::string_view name, Ymd d) const {
   return (it != v.end() && it->day == d) ? &*it : nullptr;
 }
 
-std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now) {
-  assert(::config::PIPELINE_START_DATE > 0 && ::config::PIPELINE_START_DATE <= now.today);
+Round::Round() : now(fundamental::now()) {
+  if (!cat.shards("all_trading_days").empty())
+    days = calendar(cat, now.today);
+}
+
+std::vector<Slot> ledger(const Spec &s, const Round &r) {
+  assert(::config::PIPELINE_START_DATE > 0 && ::config::PIPELINE_START_DATE <= r.now.today);
   std::vector<Slot> out;
   if (s.shape == Shape::Daily) {
-    if (cat.shards("all_trading_days").empty())
-      return out; // 日历未入盘 (首轮同步前): 本轮无槽, 下轮再排
-    for (const Ymd d : calendar(cat, horizon(s.avail_hour, now))) {
+    // 日历未入盘 (首轮同步前) → days 空: 本轮无槽, 下轮再排
+    const Ymd hz = horizon(s.avail_hour, r.now);
+    for (const Ymd d : r.days) {
+      if (d > hz)
+        break;
       if (d < ::config::PIPELINE_START_DATE)
         continue;
-      const Shard *sh = cat.find_day(s.name, d);
-      out.push_back({misc::ym_of(d), sh, state(s, sh, misc::ym_of(d), now), {d, d}});
+      const Shard *sh = r.cat.find_day(s.name, d);
+      out.push_back({misc::ym_of(d), sh, state(s, sh, misc::ym_of(d), r.now), {d, d}});
     }
     return out;
   }
-  for (const Ym m : slots(s, now)) {
-    const Shard *sh = cat.find(s.name, m);
-    out.push_back({m, sh, state(s, sh, m, now), window(s, m, now)});
+  for (const Ym m : slots(s, r.now)) {
+    const Shard *sh = r.cat.find(s.name, m);
+    out.push_back({m, sh, state(s, sh, m, r.now), window(s, m, r.now)});
   }
   return out;
 }
 
-std::vector<Slot> frozen(const Spec &s, const Catalog &cat, const Now &now) {
+std::vector<Slot> frozen(const Spec &s, const Round &r) {
   std::vector<Slot> out;
   if (s.shape == Shape::Meta)
     return out;
-  for (const Slot &sl : ledger(s, cat, now))
+  for (const Slot &sl : ledger(s, r))
     if (sl.st == State::Frozen)
       out.push_back(sl);
   return out;
 }
+
+std::string slot_key(const Spec &s, const Slot &sl) { return group_key(slot_grain(s), sl.w.lo); }
 
 std::optional<Task> todo(const Spec &s, const Slot &sl) {
   if (sl.st == State::Frozen)
@@ -339,6 +347,24 @@ Ymd mark(const Spec &s, const Shard &sh) {
 std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::string> &cols,
                                    const std::vector<std::string> &dict) {
   return pq::read_table(sh.path, cols, dict);
+}
+
+std::vector<Ymd> calendar(const Catalog &cat, Ymd today) {
+  std::vector<Ymd> out, d;
+  for (const Shard &sh : cat.shards("all_trading_days")) {
+    pq::TableView v(read(sh, {"date", "market_code"}));
+    if (v.rows() == 0)
+      continue;
+    v.col("date").yyyymmdd_all(d);
+    const pq::Col mc = v.col("market_code");
+    for (std::int64_t i = 0; i < v.rows(); ++i)
+      if (mc.str(i) == "CN" && d[static_cast<std::size_t>(i)] > 0 && d[static_cast<std::size_t>(i)] <= today)
+        out.push_back(d[static_cast<std::size_t>(i)]); // 排程提前含未来日, 截到 today
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  assert(!out.empty() && "all_trading_days 无 CN 行 (基本面未同步?)");
+  return out;
 }
 
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {

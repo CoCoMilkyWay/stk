@@ -18,7 +18,6 @@ std::vector<bigquant::Query> queries(const Spec &s, const Bq &, const Task &t) {
 }
 
 std::vector<tushare::Query> queries(const Spec &, const Tu &src, const Task &t) {
-  assert(t.how != Write::Splice && "fetch: Tushare 无精确修补");
   std::vector<tushare::Query> out;
   if (src.day_params.empty()) {
     out.push_back({src.api, {{"start_date", misc::dense(t.w.lo)}, {"end_date", misc::dense(t.w.hi)}}, src.num});
@@ -49,6 +48,7 @@ std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Task &t)
   const Spec &s = *t.spec;
   assert(from<Src>(s) && "fetch: 表与 client 的数据源不符");
   assert((t.how != Write::Append || s.snap == Snap::All) && "fetch: Snap::Day 表无水位增量 (MIN / MAX 须看整窗)");
+  assert((t.how != Write::Splice || Src::exact) && "fetch: 非精确源无 Splice");
   assert((t.how != Write::Splice || !t.keys.empty()) && "fetch: Splice 的 keys 为空");
   for ([[maybe_unused]] const std::string &k : t.keys)
     assert(grain_of(k) != Grain::Month && key_day(k) >= t.w.lo && key_day(k) <= t.w.hi &&

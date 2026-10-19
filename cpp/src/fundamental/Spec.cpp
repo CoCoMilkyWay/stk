@@ -128,6 +128,15 @@ const std::vector<Spec> SPECS = checked({
 });
 // clang-format on
 
+Grain slot_grain(const Spec &s) {
+  assert(s.shape != Shape::Meta && "slot_grain: Meta 无组");
+  return s.shape == Shape::Daily ? Grain::Day : Grain::Month;
+}
+
+Grain finest(const Spec &s) {
+  return s.shape == Shape::Month && exact(s) ? Grain::Asset : slot_grain(s);
+}
+
 std::string group_key(Grain g, Ymd d, std::string_view asset) {
   assert(d > 0 && "group_key: 日为空");
   switch (g) {

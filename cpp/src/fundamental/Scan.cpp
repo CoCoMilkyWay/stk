@@ -109,22 +109,4 @@ bool daily(const Catalog &cat, const Ids &ids, const Spec &s, Ymd d, const std::
   return true;
 }
 
-std::vector<Ymd> calendar(const Catalog &cat, Ymd today) {
-  std::vector<Ymd> out, d;
-  for (const Shard &sh : cat.shards("all_trading_days")) {
-    pq::TableView v(read(sh, {"date", "market_code"}));
-    if (v.rows() == 0)
-      continue;
-    v.col("date").yyyymmdd_all(d);
-    const pq::Col mc = v.col("market_code");
-    for (std::int64_t i = 0; i < v.rows(); ++i)
-      if (mc.str(i) == "CN" && d[static_cast<std::size_t>(i)] > 0 && d[static_cast<std::size_t>(i)] <= today)
-        out.push_back(d[static_cast<std::size_t>(i)]); // 排程提前含未来日, 截到 today
-  }
-  std::sort(out.begin(), out.end());
-  out.erase(std::unique(out.begin(), out.end()), out.end());
-  assert(!out.empty() && "all_trading_days 无 CN 行 (基本面未同步?)");
-  return out;
-}
-
 } // namespace fundamental

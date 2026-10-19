@@ -22,7 +22,7 @@
 //   Month·最新日 snapshot() : 写侧 Snap::Day 的读侧
 //   Meta         meta()     : _meta 单文件
 //   Daily        daily()    : 一交易日一文件 (逐日读, 暂存由调用方跨日复用)
-//   D 轴由 calendar() 给出 (文件末尾, 无资产键). 读盘一律经 Store::read, 行一律经 Rows::each.
+//   D 轴由 Store::calendar() 给出 (无资产键). 读盘一律经 Store::read, 行一律经 Rows::each.
 //
 //   split: 一张表的分片按 ym 升序均分成 ≤ threads 段 (段 = 连续 ym 区间), 段 s 独占累加器 segs[s]
 //   fold : fold(rows, acc) 逐分片累加; 行的资产 id 与 vd 日期已整列预转
@@ -246,8 +246,5 @@ void meta(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<s
 //   x = 调用方暂存 (逐日调用跨日复用; 并发调用各持一份)
 bool daily(const Catalog &cat, const Ids &ids, const Spec &s, Ymd d, const std::vector<std::string> &cols, Scratch &x,
            const std::function<void(const Rows &)> &fn);
-
-// all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (AssetInfo 与 fund::Panel 共用)
-std::vector<Ymd> calendar(const Catalog &cat, Ymd today);
 
 } // namespace fundamental
