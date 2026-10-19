@@ -19,13 +19,11 @@
 #include "factor/Stat/Cpu.hpp"
 #include "misc/exec.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <random>
-#include <thread>
 #include <vector>
 
 namespace factor::stat::check {
@@ -199,8 +197,6 @@ struct Result {
   std::vector<HoldStat> stat;          // [H]
   double prep_ms = 0.0, eval_ms = 0.0; // 预处理 (标签 rank, 常驻期一次) / 评估 (每因子一次)
 };
-
-inline int cpu_threads() { return static_cast<int>(std::max<unsigned>(1, std::thread::hardware_concurrency())); }
 
 // CPU 驱动 (ForkJoin(threads) 切行): 预处理 + 评估 (含二级) 各计时 (wall)
 inline void run_cpu(const Data &d, Result &r, int threads) {

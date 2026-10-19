@@ -232,9 +232,8 @@ set(SOURCES
     # gui
     ../../src/gui/Gui.cpp
     ../../src/gui/Tasks.cpp
-    ../../src/gui/coro/CoroManager.cpp
     ../../src/gui/util/Latex.cpp
-    ../../src/gui/task_icon_bar/CoroNetwork.cpp
+    ../../src/gui/task_icon_bar/NetworkService.cpp
     ../../src/gui/task_icon_bar/TaskIconBar.cpp
     # gui / task_database
     ../../src/gui/task_database/TaskDatabase.cpp
@@ -242,7 +241,6 @@ set(SOURCES
     ../../src/gui/task_database/services/AuditService.cpp
     ../../src/gui/task_database/services/EncodingService.cpp
     ../../src/gui/task_database/services/FundamentalService.cpp
-    ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp
@@ -373,15 +371,12 @@ set(HEADERS
     ../../include/gui/Config.hpp
     ../../include/gui/Gui.hpp
     ../../include/gui/Tasks.hpp
-    ../../include/gui/coro/CoroManager.hpp
-    ../../include/gui/task_icon_bar/CoroNetwork.hpp
+    ../../include/gui/task_icon_bar/NetworkService.hpp
     ../../include/gui/task_icon_bar/TaskIconBar.hpp
     # gui / task_database
     ../../include/gui/task_database/TaskDatabase.hpp
     ../../include/gui/task_database/models/SharedTypes.hpp
-    ../../include/gui/task_database/services/ClassifierService.hpp
     ../../include/gui/task_database/services/FundamentalService.hpp
-    ../../include/gui/task_database/services/L2DatabaseService.hpp
     ../../include/gui/task_database/services/ScanService.hpp
     ../../include/gui/task_database/services/StateManager.hpp
     ../../include/gui/task_database/ui/TabBrowser.hpp
@@ -823,7 +818,6 @@ set_source_files_properties(
     ../../src/gui/task_database/TaskDatabase.cpp
     ../../src/gui/task_database/services/AssetLoader.cpp
     ../../src/gui/task_database/services/FundamentalService.cpp
-    ../../src/gui/task_database/services/L2DatabaseService.cpp
     ../../src/gui/task_database/services/ScanService.cpp
     ../../src/gui/task_database/services/StateManager.cpp
     ../../src/gui/task_database/ui/CrossSectionAnalysis.cpp

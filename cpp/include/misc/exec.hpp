@@ -9,6 +9,7 @@
 //               dispatch 期间醒; 一次 dispatch 的固定开销 = 一轮 futex 唤醒 + 一次屏障 (~0.1ms @ 72 线程), 不分配.
 //   两者结果逐位一致: 切法不改语义 (行独立 / 段对齐 / A 列块都是无关联切分), 由各核保证.
 //   threads() 给调用方按 tid 备暂存 (Scratch[tid]); ForkJoin(1) 退化为 Serial 行为 (无 worker).
+//   线程数一律 hw() (全部核) / fit(任务数) (按任务数封顶).
 //   出错策略: 只 assert.
 // =============================================================================
 
@@ -23,6 +24,10 @@
 #include <vector>
 
 namespace misc::exec {
+
+// 线程数: 硬件并发 / 按任务数封顶 (多于任务数的线程每次 dispatch 都空转)
+inline int hw() { return static_cast<int>(std::max(1u, std::thread::hardware_concurrency())); }
+inline int fit(size_t n_tasks) { return static_cast<int>(std::clamp<size_t>(n_tasks, 1, static_cast<size_t>(hw()))); }
 
 struct Serial {
   int threads() const { return 1; }

@@ -3,7 +3,6 @@
 #include "FeatureStoreConfig.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
-#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -15,7 +14,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #ifdef __APPLE__
@@ -300,7 +298,7 @@ public:
 
     // Parallel allocation: 一槽一任务
     std::atomic<size_t> progress_counter{0};
-    misc::exec::ForkJoin ex(static_cast<int>(std::min<size_t>(ring_size_, std::thread::hardware_concurrency())));
+    misc::exec::ForkJoin ex(misc::exec::fit(ring_size_));
     ex.tasks(static_cast<int>(ring_size_), [&](int i, int) {
       ring_[i].allocate(num_assets_);
       ring_[i].reset(num_assets_); // memset 清零 = 坐实物理页 + 空闲态不变量: 拿来即写

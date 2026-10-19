@@ -193,7 +193,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
     Data d;
     make(d, fr, Profile::PLAIN, R.rq.times, R.rq.A, rng);
     Result cpu;
-    run_cpu(d, cpu, cpu_threads());
+    run_cpu(d, cpu, misc::exec::hw());
     row.cpu_ms += cpu.eval_ms;
     if (fr == factor::stat::Frame::CS)
       prep_cpu = cpu.prep_ms;
@@ -229,7 +229,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
 void run_search(RoundCtx &R, OperatorRow &row) {
   namespace sk = factor::search::check;
   const bool has_gpu = factor::gpu::available();
-  const int threads = factor::stat::check::cpu_threads();
+  const int threads = misc::exec::hw();
   row.gpu_ms = has_gpu ? 0 : -1;
   double prep_cpu = 0, prep_gpu = -1;
   std::string scores;

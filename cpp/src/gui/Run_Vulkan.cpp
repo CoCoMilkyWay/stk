@@ -352,7 +352,7 @@ int RunGUI() {
   std::cout << init_msg << std::endl;
 
   // Initialize icon bar with network monitoring
-  TaskIconBar::InitIconBar(data.coromgr);
+  TaskIconBar::InitIconBar();
 
   // Setup error callback
   glfwSetErrorCallback(glfw_error_callback_vulkan);
@@ -497,9 +497,6 @@ int RunGUI() {
       frame_start = glfwGetTime();
       glfwPollEvents();
     }
-
-    // Poll coroutines
-    data.coromgr.Poll();
 
     // Resize swap chain?
     int fb_width, fb_height;

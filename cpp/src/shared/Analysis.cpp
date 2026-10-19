@@ -8,7 +8,6 @@
 #include <map>
 #include <numeric>
 #include <random>
-#include <thread>
 
 namespace analysis {
 
@@ -192,9 +191,6 @@ void check_axis(const std::vector<uint32_t> &global_ids) {
   (void)global_ids;
 }
 
-size_t threads_for(size_t max_tasks) {
-  const size_t n_hw = std::max<size_t>(1, std::thread::hardware_concurrency());
-  return std::max<size_t>(1, std::min(n_hw, max_tasks));
-}
+size_t threads_for(size_t max_tasks) { return static_cast<size_t>(misc::exec::fit(max_tasks)); }
 
 } // namespace analysis

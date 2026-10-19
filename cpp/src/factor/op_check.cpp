@@ -137,7 +137,7 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
   namespace sc = factor::stat::check; // 与 factor::check 同名的 Data / Tol 等, 全限定
   ++rep.ops;
   bool op_bad = false;
-  const int threads = sc::cpu_threads();
+  const int threads = misc::exec::hw();
   for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
     const char *fname = factor::stat::frame_name(fr);
     char tag_rows[32], tag_stat[32];
@@ -183,7 +183,7 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
   namespace sk = factor::search::check;
   ++rep.ops;
   bool op_bad = false;
-  const int threads = factor::stat::check::cpu_threads();
+  const int threads = misc::exec::hw();
   const Param p;
   for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
     const char *fname = factor::stat::frame_name(fr);

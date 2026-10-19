@@ -2,7 +2,6 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/task_features/TaskFeatures.hpp"
-#include "gui/task_icon_bar/TaskIconBar.hpp"
 #include "gui/task_settings/TaskSettings.hpp"
 #include "gui/task_system_info/TaskSystemInfo.hpp"
 #include "gui/task_tools/TaskTools.hpp"
@@ -142,22 +141,16 @@ void ReinitAllTasks(TaskTree &tree, SharedData &data) {
   // Step 1: Cleanup existing tasks
   CleanupAllTasks(tree);
 
-  // Step 2: Cleanup icon bar
-  TaskIconBar::CleanupIconBar();
-
-  // Step 3: Completely rebuild SharedData by placement new (destroys all state)
+  // Step 2: Completely rebuild SharedData by placement new (destroys all state)
   data.~SharedData();
   new (&data) SharedData();
 
-  // Step 4: Restore config reinit callback
+  // Step 3: Restore config reinit callback
   data.config.reinit_callback = [&data]() {
     data.request_reinit = true;
   };
 
-  // Step 5: Reinitialize icon bar
-  TaskIconBar::InitIconBar(data.coromgr);
-
-  // Step 6: Recreate all tasks (Init 按顺序立即触发, 默认选中并展开首个任务)
+  // Step 4: Recreate all tasks (Init 按顺序立即触发, 默认选中并展开首个任务)
   tree = CreateAllTasks(data);
 }
 

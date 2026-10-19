@@ -3,7 +3,6 @@
 #include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
-#include "gui/task_database/services/L2DatabaseService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/task_database/ui/TabBrowser.hpp"
@@ -11,11 +10,11 @@
 #include "gui/task_database/ui/TabOverview.hpp"
 #include "gui/task_database/ui/TabTable.hpp"
 #include "imgui.h"
+#include "misc/exec.hpp"
 #include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
 #include <memory>
 #include <mutex>
-#include <thread>
 
 namespace GUI::Tasks {
 namespace {
@@ -30,7 +29,6 @@ private:
   std::unique_ptr<ScanService> scan_svc_;
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
-  std::unique_ptr<L2DatabaseService> l2_svc_;
   std::unique_ptr<StateManager> state_mgr_;
 
   // UI state
@@ -169,12 +167,7 @@ public:
     if (encode_state_.trigger_start) {
       encode_state_.trigger_start = false;
 
-      int workers = encode_state_.num_workers;
-      if (workers <= 0) {
-        workers = std::thread::hardware_concurrency();
-        if (workers <= 0)
-          workers = 8;
-      }
+      const int workers = encode_state_.num_workers > 0 ? encode_state_.num_workers : misc::exec::hw();
 
       if (!state_mgr_->syncing() && !state_mgr_->scanning() && !state_mgr_->encoding())
         state_mgr_->encode(workers, encode_state_.skip_existing);
@@ -189,7 +182,6 @@ private:
     scan_svc_ = std::make_unique<ScanService>(data);
     encoding_svc_ = std::make_unique<EncodingService>(data);
     filecheck_svc_ = std::make_unique<FileCheckService>();
-    l2_svc_ = std::make_unique<L2DatabaseService>(data);
     // 构造即发首批请求 (核对 Load + 基本面 → 扫描); 进度在终端与各页
     state_mgr_ = std::make_unique<StateManager>(data, *fundamental_svc_, *scan_svc_, *encoding_svc_, *audit_svc_);
   }
@@ -393,7 +385,7 @@ private:
 
   void DrawTabOverview() {
     // Safety: check if services are initialized
-    if (!fundamental_svc_ || !l2_svc_) {
+    if (!fundamental_svc_) {
       ImGui::TextDisabled("Services initializing...");
       return;
     }

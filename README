@@ -115,7 +115,7 @@ stk/
 │   │   │                                             #    · 两档只差源: Lob 软源 (预取只暖 page cache) / Bar 硬源 (预取解码 bar1m 进源环, 时序等它)
 │   │   ├── label/                                    # 🏷️ 标签生成
 │   │   │   └── LabelCalmar.hpp                       # 🏷️ Calmar 比率标签
-│   │   ├── gui/                                      # 🖥️ GUI (ImGui + 协程); 每任务分两层:
+│   │   ├── gui/                                      # 🖥️ GUI (ImGui + Service 后台线程); 每任务分两层:
 │   │   │   │                                         #    · services: 后台线程计算, 持锁发布结果
 │   │   │   │                                         #    · ui: 每帧持锁读结果, 不拷贝大块数据
 │   │   │   ├── Gui.hpp                               # 🖥️ 主循环: ImGui 渲染 + 事件分发
@@ -124,22 +124,20 @@ stk/
 │   │   │   ├── util/{Color,AssetFilter,Latex}.hpp    # 🖥️ 颜色 / 资产过滤 / LaTeX 渲染
 │   │   │   ├── util/Sparkline.hpp                    # 🖥️ 表格格内迷你图 (Features 预览 / Factors 因子表共用)
 │   │   │   ├── util/Service.hpp                      # 🖥️ 后台单线程服务骨架 GUI::Service<Derived, Req> (CRTP): 新请求覆盖旧请求; 全部 GUI 服务共用
-│   │   │   ├── coro/                                 # 🖥️ 协程基础设施
-│   │   │   │   └── CoroManager.hpp                   # 🖥️ 协程管理器: 调度 / 生命周期
 │   │   │   ├── task_settings/                        # 🖥️ 设置
 │   │   │   │   └── TaskSettings.hpp                  # 🖥️ 设置: 配置管理 [synced / syncing / writing]
 │   │   │   ├── task_system_info/                     # 🖥️ 系统信息
 │   │   │   │   └── TaskSystemInfo.hpp                # 🖥️ 系统信息: CPU / 内存 / 磁盘监控 [live]
 │   │   │   ├── task_icon_bar/                        # 🖥️ 图标栏
 │   │   │   │   ├── TaskIconBar.hpp                   # 🖥️ 图标栏: 网络状态 / FPS
-│   │   │   │   └── CoroNetwork.hpp                   # 🖥️ 网络子协程: 异步请求
+│   │   │   │   └── NetworkService.hpp                # 🖥️ 网络探测 (Service): 每轮并发 TCP 连目标计时
 │   │   │   ├── task_tools/                           # 🖥️ 工具
 │   │   │   │   ├── TaskTools.hpp                     # 🖥️ 工具任务主界面
 │   │   │   │   └── ui/TabLatex.hpp                   # 🖥️ LaTeX 渲染 tab
 │   │   │   ├── task_database/                        # 🖥️ 数据库管理
 │   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
-│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / L2Database / Scan / Classifier / StateManager
+│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager
 │   │   │   │   │                                     #    · Audit: 远端 ↔ 本地冻结月核对 + 修复
 │   │   │   │   └── ui/                               # 🖥️ UI: TabOverview (基本面同步) / TabBrowser / TabTable / TabEncode / CrossSectionAnalysis
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
@@ -259,7 +257,7 @@ stk/
 │   │       ├── format.hpp                                  # 🔧 定宽数值格式化 (UI 表格 / 日志对齐)
 │   │       ├── timer.hpp / profiler.hpp                    # 🔧 计时器 / 性能剖析
 │   │       ├── progress_single.hpp / progress_parallel.hpp # 🔧 单行 / 多线程进度条
-│   │       ├── exec.hpp                                    # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致; 接口 rows(t0, t1, tid) / tasks(i, tid)
+│   │       ├── exec.hpp                                    # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致; 接口 rows(t0, t1, tid) / tasks(i, tid); 线程数 hw() / fit(n)
 │   │       ├── affinity.hpp                                # 🔧 CPU 亲和性
 │   │       ├── archive.hpp / parquet.hpp                   # 🔧 归档操作 / Parquet 读写
 │   │       ├── fs.hpp / file_check.hpp                     # 🔧 文件系统 / 归档完整性校验

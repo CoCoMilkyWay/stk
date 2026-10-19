@@ -13,7 +13,6 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <thread>
 #include <vector>
 
 namespace GUI::Factors {
@@ -104,7 +103,7 @@ struct InspectService::Flow {
   InspectPlanes pl;        // 一级平面, 发布时与 result.pl 交换
   std::vector<uint8_t> lc; // 腿码 [T][A] (C 用)
 
-  Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
+  Flow() : ex(misc::exec::hw()) {}
   void reset_scope() {
     scope_key.clear();
     dates.clear();

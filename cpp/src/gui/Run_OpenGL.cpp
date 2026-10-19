@@ -50,7 +50,7 @@ int RunGUI() {
   std::cout << init_msg << std::endl;
 
   // Initialize icon bar with network monitoring
-  TaskIconBar::InitIconBar(data.coromgr);
+  TaskIconBar::InitIconBar();
 
   // Setup error callback
   glfwSetErrorCallback(glfw_error_callback);
@@ -171,9 +171,6 @@ int RunGUI() {
       frame_start = glfwGetTime();
       glfwPollEvents();
     }
-
-    // Poll coroutines
-    data.coromgr.Poll();
 
     // Start frame
     ImGui_ImplOpenGL3_NewFrame();

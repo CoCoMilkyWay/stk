@@ -27,7 +27,6 @@
 #include <fstream>
 #include <map>
 #include <string>
-#include <thread>
 #include <utility>
 
 namespace GUI::Factors {
@@ -153,7 +152,7 @@ struct SearchService::Flow {
   std::vector<factor::cpu::ParScratch> sc;
   factor::cpu::stat::Workspace w;
   std::vector<uint16_t> rx; // 候选的 r16 [T][A] (块形, 候选间复用)
-  Flow() : ex(static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))) {}
+  Flow() : ex(misc::exec::hw()) {}
 };
 
 bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, SearchRequest &req) {

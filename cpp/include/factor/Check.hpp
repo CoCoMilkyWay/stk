@@ -20,7 +20,6 @@
 #include <cstring>
 #include <random>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace factor::check {
@@ -128,7 +127,7 @@ inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
     std::mt19937 r(seeds[static_cast<size_t>(s)]);
     detail::fill_seg(p, g, pr, s * kSegLen, (s + 1) * kSegLen, A, r);
   };
-  misc::exec::ForkJoin ex(std::min<int>(nseg, static_cast<int>(std::max<unsigned>(1, std::thread::hardware_concurrency()))));
+  misc::exec::ForkJoin ex(misc::exec::fit(static_cast<size_t>(nseg)));
   ex.tasks(nseg, [&](int s, int) { seg(s); });
 }
 

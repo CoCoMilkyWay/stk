@@ -75,10 +75,10 @@ struct DistUIState {
 // API
 // ============================================================================
 
-// Render tab - auto-spawns compute coroutine
+// Render tab - auto-starts compute worker
 void RenderTabDist(DistService *service, SharedData &data, DistUIState &ui);
 
-// Stop coroutine on tab close
+// Stop worker on tab close
 void StopTabDist(DistService *service, SharedData &data);
 
 } // namespace GUI::Features

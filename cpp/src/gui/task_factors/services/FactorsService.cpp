@@ -26,7 +26,6 @@
 #include <map>
 #include <set>
 #include <string_view>
-#include <thread>
 
 namespace GUI::Factors {
 
@@ -614,7 +613,7 @@ bool FactorsService::run(FactorsRequest &req) {
 
   if (!req.evaluate)
     return true;
-  return evaluate(req, misc::exec::ensure(ex_, static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))));
+  return evaluate(req, misc::exec::ensure(ex_, misc::exec::hw()));
 }
 
 // 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)
