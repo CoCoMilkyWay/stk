@@ -860,6 +860,15 @@ set_source_files_properties(
 # GPU 后端 (op_check_gpu.cu 或 stub) 同时挂给 app_main: GUI Factors→Operators 页经同一 GpuRun.hpp 调 GPU.
 option(FACTOR_CUDA "编译 GPU 算子后端 (nvcc)" OFF)
 set(FACTOR_CUDA_ARCH "native" CACHE STRING "GPU 架构算力号, native = 探测本机 GPU")
+# native 须本机有可见 NVIDIA GPU (驱动已装); 探不到 → 本次配置退回 stub (缓存里的 ON 不动, 插卡后重配即恢复).
+# 显式给算力号 = 交叉编译, 不探测
+if(FACTOR_CUDA AND FACTOR_CUDA_ARCH STREQUAL "native")
+    execute_process(COMMAND nvidia-smi -L RESULT_VARIABLE FACTOR_SMI_RC OUTPUT_VARIABLE FACTOR_SMI_OUT ERROR_QUIET)
+    if(NOT FACTOR_SMI_RC EQUAL 0 OR NOT FACTOR_SMI_OUT MATCHES "GPU [0-9]+:")
+        message(WARNING "factor: 本机无可见 NVIDIA GPU (nvidia-smi -L 失败), GPU 后端回退 stub")
+        set(FACTOR_CUDA OFF)
+    endif()
+endif()
 
 set(FACTOR_GPU_SOURCE ../../src/factor/op_check_gpu_stub.cpp)
 if(FACTOR_CUDA)
