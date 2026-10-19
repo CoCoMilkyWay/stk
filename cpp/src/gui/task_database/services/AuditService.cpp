@@ -13,12 +13,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -189,36 +191,76 @@ void save(const std::string &name, const TableBook &t) {
   fs::rename(tmp, p);
 }
 
-// log_dir 下全部 <表>.tsv (.tmp 残留不读)
+std::optional<std::int64_t> to_int(const std::string &s) {
+  std::int64_t v = 0;
+  const auto [p, ec] = std::from_chars(s.data(), s.data() + s.size(), v);
+  if (ec != std::errc{} || p != s.data() + s.size())
+    return std::nullopt;
+  return v;
+}
+
+// 与 grain_of / key_day / key_ym 同形: YYYY-MM[-DD[|资产]]
+bool valid_group(const std::string &g) {
+  const std::string_view v = g;
+  if (misc::parse_ym(v.substr(0, 7)) == 0)
+    return false;
+  if (g.size() == 7)
+    return true;
+  return misc::parse_ymd(v.substr(0, 10)) > 0 && (g.size() == 10 || (g.size() > 11 && g[10] == '|'));
+}
+
+// 一个状态文件; 表不是 DAI·Month / 任一行格式不符 / 差异月无清点 → nullopt
+std::optional<TableBook> parse_book(const fs::path &p) {
+  const std::string name = p.stem().string();
+  const auto s = std::ranges::find_if(fundamental::SPECS, [&](const fundamental::Spec &x) { return x.name == name; });
+  if (s == fundamental::SPECS.end() || !fundamental::from<fundamental::Bq>(*s) ||
+      s->shape != fundamental::Shape::Month)
+    return std::nullopt;
+  TableBook t;
+  std::ifstream in(p);
+  assert(in && "audit: 状态文件无法打开");
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line.starts_with("#"))
+      continue;
+    const std::vector<std::string> f = split_tab(line);
+    if (f[0] == "month") {
+      if (f.size() != 9 || misc::parse_ym(f[1]) == 0)
+        return std::nullopt;
+      const auto rows = to_int(f[3]), days = to_int(f[4]), cols = to_int(f[5]);
+      if (!rows || !days || !cols)
+        return std::nullopt;
+      MonthRec &m = t.months[f[1]];
+      m.audited_at = f[2] == "-" ? "" : f[2];
+      m.inv = {*rows, *days, *cols};
+      continue;
+    }
+    if (f[0] != "diff" || f.size() != 8 || !valid_group(f[1]))
+      return std::nullopt;
+    const auto local_n = to_int(f[2]), remote_n = to_int(f[3]);
+    if (!local_n || !remote_n)
+      return std::nullopt;
+    t.rows.push_back({f[1], *local_n, *remote_n, f[4], f[5], f[6], f[7]});
+  }
+  for (const LogRow &r : t.rows)
+    if (!t.months.contains(r.group.substr(0, 7)))
+      return std::nullopt;
+  return t;
+}
+
+// log_dir 下全部 <表>.tsv (.tmp 残留不读); 解析不过的直接删 (旧格式等), 该表视为未核, 重新 audit 即可
 Books load_book() {
   Books b;
   for (const auto &e : fs::directory_iterator(log_dir())) {
     if (e.path().extension() != ".tsv")
       continue;
-    const std::string name = e.path().stem().string();
-    [[maybe_unused]] const fundamental::Spec &spec = fundamental::spec(name); // 不在 SPECS → assert
-    assert(fundamental::from<fundamental::Bq>(spec) && spec.shape == fundamental::Shape::Month &&
-           "audit: 状态文件不是 DAI·Month 表");
-    TableBook &t = b[name];
-    std::ifstream in(e.path());
-    assert(in && "audit: 状态文件无法打开");
-    std::string line;
-    while (std::getline(in, line)) {
-      if (line.empty() || line.starts_with("#"))
-        continue;
-      const std::vector<std::string> f = split_tab(line);
-      if (f[0] == "month") {
-        assert(f.size() == 9 && "audit: 状态 month 行列数不符");
-        assert(misc::parse_ym(f[1]) > 0 && "audit: 状态 month 行月份不符");
-        MonthRec &m = t.months[f[1]];
-        m.audited_at = f[2] == "-" ? "" : f[2];
-        m.inv = {std::stoll(f[3]), std::stoll(f[4]), std::stoll(f[5])};
-        continue;
-      }
-      assert(f[0] == "diff" && f.size() == 8 && "audit: 状态行格式不符");
-      fundamental::grain_of(f[1]); // 组键形不符 → assert
-      t.rows.push_back({f[1], std::stoll(f[2]), std::stoll(f[3]), f[4], f[5], f[6], f[7]});
+    std::optional<TableBook> t = parse_book(e.path());
+    if (!t) {
+      std::cout << "[bigquant.audit] 状态文件格式不符, 已删除: " << e.path().string() << std::endl;
+      fs::remove(e.path());
+      continue;
     }
+    b[e.path().stem().string()] = std::move(*t);
   }
   return b;
 }

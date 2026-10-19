@@ -14,10 +14,8 @@ using namespace analysis;
 size_t corr_slice_stride(size_t level) {
   if (level == L_day)
     return 1;
-  if (level == L_10min) {
-    static_assert(kCorrSliceMinutes % 10 == 0);
-    return kCorrSliceMinutes / 10;
-  }
+  if (is_bin_level(level))
+    return std::max<size_t>(1, kCorrSliceMinutes / level_bin_minutes(level));
   const size_t vr = level_valid_rows(level);
   assert(vr % TRADE_MINUTES_PER_DAY == 0 && "层有效行数必须是分钟数的整数倍");
   return kCorrSliceMinutes * (vr / TRADE_MINUTES_PER_DAY);

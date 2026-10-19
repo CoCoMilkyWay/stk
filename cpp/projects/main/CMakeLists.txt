@@ -408,7 +408,7 @@ set(HEADERS
 #   helper 宏原名内联, 两档同名必须逐字一致 (否则 FATAL_ERROR).
 #   节点实例和落盘列直接写在节点文件里 (TS/ 时序节点, CS/ 截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (NodeType), (ctor inputs), compute_trigger, flush_trigger)
-#     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ {L_sec, L_min, L_10min, L_day}; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
+#     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ DAG_LEVELS; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
 #   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / Depth.bid_qty ...), 不需要任何 include.
 #   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 生成
 #     <Tier>_NODES(N) / <Tier>_NODE_PREV_<Name> (声明链, 让顺序错误变成编译错误) /
@@ -416,6 +416,9 @@ set(HEADERS
 #   CMAKE_CONFIGURE_DEPENDS 盯住每个文件内容: 改动后下次 build 自动重新 configure.
 # ============================================================================
 set(DAG_SCAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../include/features)
+# 落盘层名 (与 FeaturesDefine.hpp FeatureLevel / TIER_LEVELS 一致)
+set(DAG_LEVELS L_sec L_min L_5min L_15min L_30min L_60min L_day)
+string(REPLACE ";" "|" DAG_LEVEL_RE "${DAG_LEVELS}")
 
 # Common 只放共用 class: 有 NODE_ / FIELDS_ 宏即配置期报错 (实例必须落在某一档)
 file(GLOB_RECURSE DAG_COMMON_FILES CONFIGURE_DEPENDS ${DAG_SCAN_ROOT}/Node/Common/*.hpp)
@@ -485,7 +488,7 @@ foreach(scan_file ${DAG_SCAN_FILES})
     set(scan_defs "${scan_src}")
     string(REGEX REPLACE "(^|\n) *//[^\n]*" "\n" scan_defs "${scan_defs}")
     string(REGEX MATCHALL "(^|\n) *#define NODE_[A-Za-z0-9_]+\\(" node_defs "${scan_defs}")
-    string(REGEX MATCHALL "(^|\n) *#define FIELDS_(L_sec|L_min|L_10min|L_day)_[A-Za-z0-9_]+\\(" field_defs "${scan_defs}")
+    string(REGEX MATCHALL "(^|\n) *#define FIELDS_(${DAG_LEVEL_RE})_[A-Za-z0-9_]+\\(" field_defs "${scan_defs}")
     string(REGEX MATCHALL "X\\([^,\n]+, *CAT1, *[A-Za-z0-9_]+," cat2_uses "${scan_defs}")
     foreach(cat2_use ${cat2_uses})
         string(REGEX REPLACE ".*CAT1, *([A-Za-z0-9_]+),.*" "\\1" cat2 "${cat2_use}")
@@ -562,7 +565,7 @@ foreach(scan_file ${DAG_SCAN_FILES})
         endforeach()
     endforeach()
     foreach(field_def ${field_defs})
-        string(REGEX REPLACE ".*#define FIELDS_(L_sec|L_min|L_10min|L_day)_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
+        string(REGEX REPLACE ".*#define FIELDS_(${DAG_LEVEL_RE})_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
         list(GET lvl_owner 0 lvl)
         list(GET lvl_owner 1 owner)
         if(DAG_HAS_${lvl}_${owner})
@@ -655,7 +658,7 @@ endforeach()
 set(DAG_GEN_FIELDS "")
 # 层名与 FeaturesDefine.hpp TIER_LEVELS 一致, 生成 <Tier>_<LVL>_FIELDS(X) (档没有的层为空表, C++ 侧断言)
 # 与 <Tier>_<LVL>_FILES(X): 同一展开 (行序一致), CAT1 位换成节点文件路径 (include/ 下相对; GUI 元数据用)
-foreach(lvl L_sec L_min L_10min L_day)
+foreach(lvl ${DAG_LEVELS})
     string(APPEND DAG_GEN_FIELDS "#define ${DAG_TIER}_${lvl}_FIELDS(X)")
     foreach(owner ${dag_field_order})
         if(DAG_HAS_${lvl}_${owner})

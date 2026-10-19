@@ -234,7 +234,7 @@ bool Preview::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bo
   total.store(n_total, std::memory_order_release);
 
   // 轮循环: 各层轮交错 (层序 = L_min 先: 特征最多, 再粗层, L_sec 最重最后)
-  constexpr std::array<size_t, LEVEL_COUNT> kOrder{L_min, L_10min, L_day, L_sec};
+  constexpr std::array<size_t, LEVEL_COUNT> kOrder{L_min, L_5min, L_15min, L_30min, L_60min, L_day, L_sec};
   for (size_t r = 0; r < n_rounds; ++r)
     for (const size_t l : kOrder) {
       Level *lv = rt.lv[l].get();

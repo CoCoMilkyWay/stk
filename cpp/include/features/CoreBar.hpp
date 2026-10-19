@@ -6,7 +6,7 @@
 #include "math/sample/ResamplerBar2Min.hpp"
 
 // ============================================================================
-// CoreBar: Bar 档单资产时序计算 (源 = bar1m 分钟 K; L_min / L_10min / L_day). 日 / 分钟 / 10 分钟 / 标签骨架见 CoreTs.hpp
+// CoreBar: Bar 档单资产时序计算 (源 = bar1m 分钟 K; L_min / 分钟箱层 / L_day). 日 / 分钟 / 分钟箱 / 标签骨架见 CoreTs.hpp
 //   与 CoreLob 对仗: compute_and_store = 本源单位 (分钟 m 的 bar1m) 先 advance 到分钟 m, 再收进重采样器
 //   L_min 稠密: 255 行每行都跑 onMinute 并写; 无成交分钟 (volume 0 / 无 bar) 由 ResamplerBar2Min 出携带价 bar, 各节点按自身约定兜底.
 //   缺数据日 (无 bar1m) = 零事件日 (CoreTs::empty_day), 同一路径. 本类不读任何特征值, 不特判任何节点.

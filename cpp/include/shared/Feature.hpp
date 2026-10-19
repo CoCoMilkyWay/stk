@@ -86,7 +86,7 @@ struct Feature {
   struct Selection {
     TierId tier = TierId::Lob;  // 当前浏览的档 (TabFeature 库选择定: 选中库的档)
     PerTier<std::string> libs;  // 每档当前库 (Bar: all; Lob: 票池, 因子页 / OrderFlow 恒用它; 切档保留); 启动 = default_lib
-    int selected_level = L_min; // 当前浏览的层 (FeatureLevel: L_sec / L_min / L_10min / L_day), 默认 L_min
+    int selected_level = L_min; // 当前浏览的层 (FeatureLevel: L_sec / L_min / L_5min .. L_60min / L_day), 默认 L_min
 
     const std::string &lib_of(TierId t) const; // 档的当前库名
     const std::string &lib() const { return lib_of(tier); }

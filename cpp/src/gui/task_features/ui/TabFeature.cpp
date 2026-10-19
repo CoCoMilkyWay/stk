@@ -27,6 +27,7 @@
 #include <limits>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace GUI::Features {
 
@@ -547,7 +548,9 @@ struct PsdSparkAxis {
   }
 };
 static const PsdSparkAxis &psd_spark_axis(size_t level) {
-  static const std::array<PsdSparkAxis, LEVEL_COUNT> s{PsdSparkAxis(0), PsdSparkAxis(1), PsdSparkAxis(2), PsdSparkAxis(3)};
+  static const auto s = []<size_t... L>(std::index_sequence<L...>) {
+    return std::array<PsdSparkAxis, LEVEL_COUNT>{PsdSparkAxis(L)...};
+  }(std::make_index_sequence<LEVEL_COUNT>{});
   return s[level];
 }
 // 白噪声参照: 桶内每 bin 占比 × N/2 = 1 (Parseval 归一后全层恒定), 高于线 = 超白噪声份额
@@ -926,7 +929,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::EndCombo();
   }
   if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))
-    sel.selected_level = L_min; // 档缺该层 (Bar 无 L_sec, Lob 无 L_10min / L_day); 两档都有 L_min
+    sel.selected_level = L_min; // 档缺该层 (Bar 无 L_sec, Lob 无分钟箱层 / L_day); 两档都有 L_min
 
   ImGui::SameLine();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Level:");

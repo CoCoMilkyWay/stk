@@ -67,7 +67,7 @@ struct Grid {
   static constexpr size_t R = kRowsPerDay * kDays; // 段行数 = TS 序列长度
   using PSD = math::spectral::DayPSD<R>;
 };
-// 运行时层 → Grid<L> (4 份实例化)
+// 运行时层 → Grid<L> (每层一份实例化)
 template <class Fn>
 decltype(auto) with_grid(size_t lvl, Fn &&fn) {
   assert(lvl < LEVEL_COUNT);
@@ -76,8 +76,14 @@ decltype(auto) with_grid(size_t lvl, Fn &&fn) {
     return fn(Grid<L_sec>{});
   case L_min:
     return fn(Grid<L_min>{});
-  case L_10min:
-    return fn(Grid<L_10min>{});
+  case L_5min:
+    return fn(Grid<L_5min>{});
+  case L_15min:
+    return fn(Grid<L_15min>{});
+  case L_30min:
+    return fn(Grid<L_30min>{});
+  case L_60min:
+    return fn(Grid<L_60min>{});
   default:
     return fn(Grid<L_day>{});
   }

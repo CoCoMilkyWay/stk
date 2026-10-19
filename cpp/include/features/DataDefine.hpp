@@ -9,7 +9,7 @@
 // HIERARCHICAL DATA DEFINITIONS
 //========================================================================================
 // Defines shared data structures across feature computation hierarchy:
-// Tick (LOB_Feature) -> Minute (MinuteData) -> 10-Minute (Min10Data)
+// Tick (LOB_Feature) -> Minute (MinuteData) -> n-Minute bins (BinData, n ∈ BIN_MINUTES)
 //
 // Design: Each level stores time-series data in CBuffers
 // - No duplication: CBuffer serves as both storage and current value access
@@ -29,8 +29,13 @@ enum class Trigger : uint8_t {
   onTick,   // 每笔订单 (增/删/改/成交)
   onDepth,  // 盘口更新 (depth_updated)
   onMinute, // 分钟边界 (L_min 每分钟一次, 含无成交分钟: 降频型节点对空分钟按自身约定归零 / 延续, 不产 NaN)
-  on10Min,  // 10 分钟箱末 (L_10min 每箱一次, 箱末分钟 onMinute 之后; 含无成交箱, 同 onMinute 约定)
+  on5Min,   // n 分钟箱末 (L_<n>min 每箱一次, 箱末分钟 onMinute 之后, 细箱先于粗箱; 含无成交箱, 同 onMinute 约定)
+  on15Min,
+  on30Min,
+  on60Min,
 };
+// 第 i 个分钟箱层 (BIN_MINUTES[i]) 的触发域
+inline constexpr Trigger BIN_TRIGGERS[] = {Trigger::on5Min, Trigger::on15Min, Trigger::on30Min, Trigger::on60Min};
 
 //----------------------------------------------------------------------------------------
 // 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 个价位 = DepthSeries (Depth 的 bid_qty 等)
@@ -52,7 +57,7 @@ inline constexpr float kPxEps = 1e-4f;
 //   enum Out : size_t { <名>..., kCount };   // 输出口; 单输出用 { value, kCount }; 无输出 (源层) kCount = 0
 //   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域推入 CBuffer
 //   <NodeType>(<输入引用>...);               // 只接输入 (const Series & / const DepthSeries & / 数据结构引用), 不接输出
-// 输入红线: 只准接本资产的数据 (Series/DepthSeries/TickData/MinuteData/Min10Data) 与日频 PIT (fund::Panel).
+// 输入红线: 只准接本资产的数据 (Series/DepthSeries/TickData/MinuteData/BinData) 与日频 PIT (fund::Panel).
 // 跨资产 / 全局状态 / CS 结果一律禁止 —— TS 必须保持资产局部纯函数, 回测重放可任意重排
 // (串行/并行/分片) 且与实盘推流逐值一致, 全系于此; 截面信息的表达一律走 CS 层与因子层.
 //   void compute();                          // 采样型: 直接写 y
@@ -67,7 +72,7 @@ inline constexpr float kPxEps = 1e-4f;
 // CS COLUMN CONTRACT (截面列 = Node/<Tier>/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行, 无节点; 方法 = Method/CS.hpp, namespace cs)
 //----------------------------------------------------------------------------------------
 //   struct <Method> {
-//     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, L_min / L_10min / L_day; L_sec 不可)
+//     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, L_min / 分钟箱层 / L_day; L_sec 不可)
 //     static void apply(float *y, size_t n[, const Ctx &]); // dense 列原地: 输入 = 有效资产子集的源列 (缺失 NaN), 输出 = 结果
 //   };
 //   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换, 先于 <Method>
@@ -150,25 +155,25 @@ struct MinuteData {
 };
 
 //----------------------------------------------------------------------------------------
-// 10-MINUTE LEVEL (L_10min): Resampled from MinuteData (ResamplerMin2Min10, 箱见 TimeIndex.hpp)
+// n-MINUTE BIN LEVELS (L_5min / L_15min / L_30min / L_60min): Resampled from MinuteData (ResamplerMin2Bin, 箱见 TimeIndex.hpp)
 //----------------------------------------------------------------------------------------
-struct Min10Data {
+struct BinData {
   // Metadata
-  uint32_t asset_id{0};    // static: asset identifier
-  uint32_t core_id{0};     // static: core identifier
-  uint32_t min10_index{0}; // dynamic: current 10-minute bin index (0-24)
+  uint32_t asset_id{0};  // static: asset identifier
+  uint32_t core_id{0};   // static: core identifier
+  uint32_t bin_index{0}; // dynamic: current bin index (0 .. bins_per_day(n) - 1)
 
-  // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对箱下标访问)
-  CBuffer<float, 32> open;
-  CBuffer<float, 32> high;
-  CBuffer<float, 32> low;
-  CBuffer<float, 32> close;
+  // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对箱下标访问; 64 ≥ 最细箱层一日箱数)
+  CBuffer<float, 64> open;
+  CBuffer<float, 64> high;
+  CBuffer<float, 64> low;
+  CBuffer<float, 64> close;
 
   // Time-series: Volume and amount by side
-  CBuffer<uint32_t, 32> bid_volume;
-  CBuffer<uint32_t, 32> ask_volume;
-  CBuffer<float, 32> bid_amount;
-  CBuffer<float, 32> ask_amount;
+  CBuffer<uint32_t, 64> bid_volume;
+  CBuffer<uint32_t, 64> ask_volume;
+  CBuffer<float, 64> bid_amount;
+  CBuffer<float, 64> ask_amount;
 
   void clear() {
     open.clear();

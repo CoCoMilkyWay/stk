@@ -13,12 +13,13 @@
 #include <cmath>
 #include <cstring>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 // ============================================================================
 // CoreCs<T>: 截面计算 (CS worker), 档 T 有 L_sec → L_sec 每秒 + L_min 分钟边界级联; 无 L_sec (Bar) → L_min 每分钟;
-//   10 分钟箱末分钟之后级联 L_10min, 末拍之后级联 L_day (收盘行); 档有该层才算
-//   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L_min / L_10min / L_day) / end_day, 逐层 run<LVL>
+//   各分钟箱层箱末分钟之后级联该层 (细 → 粗), 末拍之后级联 L_day (收盘行); 档有该层才算
+//   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, 级联 L_min / 分钟箱层 / L_day) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0); 源层 == 本层
 //   节点契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
@@ -215,7 +216,7 @@ public:
   template <size_t LVL, class S, size_t SRC_LVL, size_t SRC, size_t DST, class Tf, class Method>
   [[gnu::always_inline]] inline void run_one(size_t t) {
     static_assert(SRC_LVL == LVL, "截面只读本层行 (高频读低频由 TS 行在本层节拍取 Series 最新值, 不跨层取张量)");
-    static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_min / L_10min / L_day context (mcap / industry)");
+    static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_min / bin / L_day context (mcap / industry)");
     static_assert(std::is_same_v<S, T> || LVL == L_min, "旁读只许 L_min 截面行");
 
     float *y = input_fp32_.data();
@@ -229,15 +230,20 @@ public:
   }
 
 private:
-  // 分钟 m 的截面 + 箱末级联: m 是 10 分钟箱 k 的末分钟 → 算 L_10min 行 k (前提同 L_min: 全部资产已结算分钟 m, 见 CoreTs::close_10min)
+  // 分钟 m 的截面 + 箱末级联: m 是某分钟箱层箱 k 的末分钟 → 算该层行 k, 细层先 (前提同 L_min: 全部资产已结算分钟 m, 见 CoreTs::close_bin)
   void run_minute_(size_t m) {
     {
       TraceN("CS_Minute");
       run<L_min>(m);
     }
-    if (const size_t k = L_min_to_L_10min(m); L_10min_last_min(k) == m) {
-      TraceN("CS_10Min");
-      run<L_10min>(k);
+    [&]<size_t... I>(std::index_sequence<I...>) { (run_bin_<I>(m), ...); }(std::make_index_sequence<BIN_COUNT>{});
+  }
+  template <size_t I>
+  void run_bin_(size_t m) {
+    constexpr size_t N = BIN_MINUTES[I];
+    if (const size_t k = L_min_to_bin(N, m); bin_last_min(N, k) == m) {
+      TraceN("CS_Bin");
+      run<L_5min + I>(k);
     }
   }
 
