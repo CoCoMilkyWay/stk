@@ -984,8 +984,13 @@ void Panel::build(const std::vector<std::string> &codes,
 
   const fundamental::Catalog cat;
 
-  // ---- D 轴: all_trading_days (market_code='CN', 截到 today) ----
-  axes.dates = fundamental::calendar(cat, misc::today_ymd());
+  // ---- D 轴: all_trading_days (market_code='CN', 截到 today 之后的首个交易日: Fund 收盘推进到 d+1, 末回测日也要有次日) ----
+  axes.dates = fundamental::calendar(cat, std::numeric_limits<Ymd>::max());
+  {
+    const auto next = std::upper_bound(axes.dates.begin(), axes.dates.end(), misc::today_ymd());
+    assert(next != axes.dates.end() && "all_trading_days 无 today 之后的交易日 (排程未同步)");
+    axes.dates.erase(next + 1, axes.dates.end());
+  }
   axes.date_days.reserve(axes.dates.size());
   for (const Ymd d : axes.dates)
     axes.date_days.push_back(misc::to_days(d));

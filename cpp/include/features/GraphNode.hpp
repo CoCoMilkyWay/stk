@@ -16,7 +16,8 @@ class Panel;
 // (LobGraph.hpp / BarGraph.hpp; 一个 TU 只许 include 其一, 见 NodesGenerated.hpp).
 //   node.compute()                   节点类的 compute()
 //   node.flush()                     节点类有 flush() 先调 (降频型结算到 y), 然后 y[i] → bufs_[i]
-//   node.reset()                     跨天: 清空全部输出 Series (不留昨日尾值), 节点类有 reset() 再调
+//   node.reset()                     跨天 (日内节点): 清空全部输出 Series (不留昨日尾值), 节点类有 reset() 再调
+//   node.carry()                     跨天 (日频节点, 见 is_day_trigger): Series 保留; 节点类有 carry() 且返回 true → y 推入一格 (盘前承接)
 //   node.out(i) / node.out()         第 i 个输出口 (下游节点输入用); 单口默认 0
 //   node.outs()                      全部输出口数组 Series[K] (下游按口成组消费)
 //   node.last(i)                     输出口最新值, 尚无输出时 NaN (缺失值约定, 见 DataDefine.hpp; 字段表写回用)
@@ -55,6 +56,12 @@ struct Node : Impl {
     if constexpr (requires(Impl &o) { o.reset(); })
       Impl::reset();
   }
+  void carry() {
+    if constexpr (requires(Impl &o) { o.carry(); })
+      if (Impl::carry())
+        for (size_t i = 0; i < K; ++i)
+          bufs_[i].push_back(Impl::y[i]);
+  }
 };
 
 // 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 Depth 的 N 价位数组, 由节点自己的 reset 清空); flush/reset 有才调
@@ -71,10 +78,19 @@ struct Node<Impl, 0> : Impl {
   }
 };
 
+// 跨天: 按节点 flush 域分派 (日频节点承接, 日内节点清空)
+template <Trigger Flush, class N>
+inline void day_start(N &node) {
+  if constexpr (is_day_trigger(Flush))
+    node.carry();
+  else
+    node.reset();
+}
+
 // 两档共有的源: 分钟 K + 分钟箱 K + 日 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
 struct Root {
   MinuteData minute_data;                                          // L_min 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
-  BinData min5_data, min15_data, min30_data, min60_data, day_data; // 分钟箱层 + L_day 输入 (CoreTs 由 minute_data 重采样, 两档同一路径)
+  BinData min5_data, min15_data, min30_data, min60_data, day_data; // 分钟箱层 + L_day 输入 (CoreTs 由 minute_data 重采样, 两档同一路径); day_data 跨天保留
   const fund::Panel &fund_panel;                                   // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
   std::string asset_code_;                                         // "CODE.EX"
   size_t asset_id_;                                                // 档 A 轴下标
@@ -99,7 +115,7 @@ static_assert(L_5min + std::size(BIN_DATA) == L_day + 1);
 //           是编译错误, 构造序 (基类先) 与 run<>() 执行序 (NODES 行序) 因此一定一致. 空基类无运行时开销.
 //   class DAG  声明链末端 + 标签成员 label (回填别的时间行, 不在节点表; 调用在 CoreTs) + 触发域调度:
 //     run<trig>()        对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush()
-//     at_day_start(date) 设日期 → 全部节点 reset → 标签 reset → onDay 域 (日频节点 compute)
+//     at_day_start(date) 设日期 → 日内节点 reset / 日频节点 carry (按行序) → 标签 reset → onDay 域
 //     at_day_end()       盘尾钩子 (目前无事可做; 留给需要收盘结算的特征)
 // ============================================================================
 #define DAG_CAT_(a, b) a##b
@@ -116,7 +132,7 @@ static_assert(L_5min + std::size(BIN_DATA) == L_day + 1);
     name.compute();                                \
   if constexpr (NODE_FLUSH(__VA_ARGS__) == trig)   \
     name.flush();
-#define DAG_RESET_NODE(name, type, args, ...) name.reset();
+#define DAG_RESET_NODE(name, type, args, ...) graph::day_start<NODE_FLUSH(__VA_ARGS__)>(name);
 #define TIER_DAG(LabelType, ...)                                                                \
   DAG_CAT(DAG_TIER, _NODES)(DAG_DECLARE_NODE) class DAG : public DAG_CAT(DAG_TIER, _DAG_LAST) { \
   public:                                                                                       \

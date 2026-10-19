@@ -5,6 +5,7 @@
 #include "shared/Config.hpp"
 #include "shared/Feature.hpp"
 
+#include <algorithm>
 #include <map>
 #include <numeric>
 #include <random>
@@ -29,9 +30,23 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
     }
   }
 }
+// 库 l 落了第 d 天 (按库清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
+bool landed(const ReadScope &s, LibId l, misc::Ymd d) {
+  const FeatureLib &lib = s.libs[l];
+  return std::binary_search(lib.dates.begin(), lib.dates.end(), d) && FeatureRead::has_date(lib.tier, lib.dir, d);
+}
+// 第 d 天库集里落了盘的库
+LibMask landed_mask(const ReadScope &s, misc::Ymd d) {
+  LibMask m = 0;
+  for (const LibId l : lib_ids())
+    if (s.has(l) && landed(s, l, d))
+      m |= lib_bit(l);
+  return m;
+}
 } // namespace
 
-ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets) {
+ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets,
+                     DayAxis days) {
   ReadScope s;
   bool ready = true;
   const auto add = [&](LibId l) {
@@ -55,7 +70,21 @@ ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &c
         main = l;
   }
   s.main = main;
-  s.months = misc::months_between(cfg.start_date, cfg.end_date);
+  if (days == DayAxis::Main) {
+    s.days = lib_bit(main);
+    s.months = misc::months_between(cfg.start_date, cfg.end_date);
+  } else {
+    misc::Ymd lo = 0, hi = 0;
+    for (const LibId l : lib_ids())
+      if (s.has(l)) {
+        const std::vector<misc::Ymd> &d = s.libs[l].dates;
+        assert(!d.empty() && "已建库日期轴为空");
+        s.days |= lib_bit(l);
+        lo = lo == 0 ? d.front() : std::min(lo, d.front());
+        hi = std::max(hi, d.back());
+      }
+    s.months = misc::months_between(lo, hi);
+  }
   map_axis(s, std::move(assets));
   return s;
 }
@@ -68,7 +97,7 @@ PerLib<size_t> ReadScope::sizes() const {
 }
 
 Readers ReadScope::readers(const PerLib<const FeatureRead *> &fr) const {
-  Readers rd{.main = main};
+  Readers rd;
   for (const LibId l : lib_ids())
     if (has(l)) {
       assert(fr[l] && "库集库缺 reader");
@@ -79,10 +108,10 @@ Readers ReadScope::readers(const PerLib<const FeatureRead *> &fr) const {
 }
 
 bool read_request(const Config &cfg, const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan) {
-  scope = read_scope(cfg, rs.main, rs.cols, std::move(rs.assets));
+  scope = read_scope(cfg, rs.main, rs.cols, std::move(rs.assets), rs.days);
   if (scope.months.empty())
     return false;
-  plan = read_plan(feature, rs.level, rs.rows, std::move(rs.cols));
+  plan = read_plan(feature, rs.level, rs.rows, rs.carry, std::move(rs.cols));
   return true;
 }
 
@@ -104,21 +133,39 @@ fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, s
   return cs;
 }
 
-DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months) {
-  TraceN("EnumDates"); // 首帧账目: 每月一次目录迭代 + 每天一次 stat
+DateList enumerate_dates(const ReadScope &s) {
+  TraceN("EnumDates"); // 首帧账目: 日轴库每 (库, 日) 一次 stat
+  assert(!s.months.empty());
+  const misc::Ymd lo = misc::first_day(s.months.front()), hi = misc::last_day(s.months.back());
+  std::vector<std::pair<misc::Ymd, LibMask>> axis; // (日, 落了盘的日轴库)
+  for (const LibId l : lib_ids()) {
+    if (!(s.days & lib_bit(l)))
+      continue;
+    const FeatureLib &lib = s.libs[l];
+    for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), lo); it != lib.dates.end() && *it <= hi; ++it)
+      if (FeatureRead::has_date(lib.tier, lib.dir, *it))
+        axis.emplace_back(*it, lib_bit(l));
+  }
+  std::sort(axis.begin(), axis.end());
   DateList out;
-  for (size_t m = 0; m < months.size(); ++m) {
-    for (const misc::Ymd d : reader.list_dates(months[m])) {
-      out.dates.push_back(d);
-      out.month.push_back(static_cast<uint16_t>(m));
+  for (const auto &[d, bit] : axis) {
+    if (!out.dates.empty() && out.dates.back() == d) {
+      out.has.back() |= bit;
+      continue;
     }
+    out.dates.push_back(d);
+    out.has.push_back(bit);
+    const auto m = std::lower_bound(s.months.begin(), s.months.end(), misc::ym_of(d));
+    assert(m != s.months.end() && *m == misc::ym_of(d));
+    out.month.push_back(static_cast<uint16_t>(m - s.months.begin()));
   }
   return out;
 }
 
 // 同 (库, 层) 的列并成一个源 (槽 = 请求序), 源行由 rows 定
-ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, std::vector<ColRef> cols) {
+ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, std::vector<ColRef> cols) {
   assert(!cols.empty() && level < LEVEL_COUNT);
+  assert((rows == Rows::Tail || carry) && "网格行恒承接 (as-of 投影到 -1 即前日末行)");
   const size_t rpd = level_valid_rows(level);
   ReadPlan p;
   p.level = level;
@@ -139,15 +186,14 @@ ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, std::vector<
     if (rows == Rows::AsOf)
       project_rows(s, level, rpd);
     else
-      native_rows(s, level);
+      tail_rows(s, level, carry);
     p.srcs.push_back(std::move(s));
   }
   return p;
 }
 
-SegPlan plan_segs(const FeatureRead &reader, const std::vector<misc::Ym> &months, size_t level, DayOrder order,
-                  size_t limit) {
-  const DateList all = enumerate_dates(reader, months);
+SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t limit) {
+  const DateList all = enumerate_dates(scope);
   const size_t days = seg_days(level), n = all.dates.size();
   std::vector<uint32_t> idx((n + days - 1) / days);
   std::iota(idx.begin(), idx.end(), 0u);
@@ -155,10 +201,20 @@ SegPlan plan_segs(const FeatureRead &reader, const std::vector<misc::Ym> &months
     std::shuffle(idx.begin(), idx.end(), std::mt19937{0x5eed}); // 与 shuffled_order 同种子: 跨构建稳定
   if (limit > 0 && idx.size() > limit)
     idx.resize(limit);
+  // 第 i 天库集里落了盘的库 = 日轴库位 + 余库 (只判入选的日)
+  const auto has = [&](size_t i) {
+    LibMask m = all.has[i];
+    for (const LibId l : lib_ids())
+      if (scope.has(l) && !(scope.days & lib_bit(l)) && landed(scope, l, all.dates[i]))
+        m |= lib_bit(l);
+    return m;
+  };
   SegPlan p;
   p.days = days;
   p.dates.reserve(idx.size() * days);
   p.prev.reserve(idx.size() * days);
+  p.has.reserve(idx.size() * days);
+  p.has_prev.reserve(idx.size() * days);
   p.month.reserve(idx.size() * days);
   p.weekday.reserve(idx.size() * days);
   for (const uint32_t seg : idx) {
@@ -167,10 +223,38 @@ SegPlan plan_segs(const FeatureRead &reader, const std::vector<misc::Ym> &months
       const bool in = i < n;
       p.dates.push_back(in ? all.dates[i] : 0);
       p.prev.push_back(in && i > 0 ? all.dates[i - 1] : 0);
+      p.has.push_back(in ? has(i) : 0);
+      p.has_prev.push_back(in && i > 0 ? has(i - 1) : 0);
       p.month.push_back(in ? all.month[i] : 0);
       p.weekday.push_back(in ? static_cast<uint8_t>(misc::weekday_of(all.dates[i])) : 0);
     }
   }
+  return p;
+}
+
+SegPlan plan_day(const ReadScope &scope, misc::Ymd date) {
+  assert(date != 0 && !scope.months.empty());
+  // 日轴上前一日 = 各日轴库 < date 的末个落盘日之最大者 (不早于区间首日; 0 = 轴首)
+  const misc::Ymd lo = misc::first_day(scope.months.front());
+  misc::Ymd prev = 0;
+  for (const LibId l : lib_ids()) {
+    if (!(scope.days & lib_bit(l)))
+      continue;
+    const FeatureLib &lib = scope.libs[l];
+    for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), date); it != lib.dates.begin() && *(it - 1) > prev && *(it - 1) >= lo; --it)
+      if (FeatureRead::has_date(lib.tier, lib.dir, *(it - 1))) {
+        prev = *(it - 1);
+        break;
+      }
+  }
+  SegPlan p;
+  p.days = 1;
+  p.dates = {date};
+  p.prev = {prev};
+  p.has = {landed_mask(scope, date)};
+  p.has_prev = {prev != 0 ? landed_mask(scope, prev) : LibMask{0}};
+  p.month = {0};
+  p.weekday = {static_cast<uint8_t>(misc::weekday_of(date))};
   return p;
 }
 

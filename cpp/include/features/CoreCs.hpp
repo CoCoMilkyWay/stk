@@ -168,7 +168,6 @@ public:
       assert(side.tier == S::kId && axis.size() == A_);
       const LibId side_lib = lib_id(side.name);
       side_rd_.emplace(side);
-      side_readers_.main = lib_id(libs[T::kId].name);
       side_readers_.rd[side_lib] = &*side_rd_;
       [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side_lib, side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
       side_ids_.resize(A_);
@@ -311,7 +310,7 @@ private:
   void load_side_(misc::Ymd date) {
     if constexpr (Side<LVL>::N > 0) {
       const Source &s = side_src_[LVL];
-      load_source(side_readers_, s, date, 0, s.cs.io, side_buf_[LVL]);
+      load_source(side_readers_, s, Day{.date = date, .has = side_rd_->has_date(date) ? lib_bit(s.lib) : LibMask{0}}, s.cs.io, side_buf_[LVL]);
       assert(side_buf_[LVL].has_cur && !side_rd_->stale() && "旁读档库缺这天 / 头不符 (轴 / 字段表变了): 先算 / 重算旁读档");
     }
   }

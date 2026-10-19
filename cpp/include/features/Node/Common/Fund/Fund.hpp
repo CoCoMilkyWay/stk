@@ -1,19 +1,35 @@
 #pragma once
 
 // =============================================================================
-// Fund - 日频 PIT 基本面 (广播型节点: compute=onDay 每天一次, flush=onMinute 每分钟原样推出)
-//        持一个 fund::Stream (per-资产日频状态机), 盘前沿交易日历推进到当日算出全部口 (估值分母 / 因子 raw / filter),
-//        盘中每分钟广播; 下游 (Valuation) 按口取 Series, 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
-//        两档共用类; 节点实例 / 落盘列见 Node/{Pool,All}/TS/Fund/Fund.hpp
+// Fund - 日频 PIT 基本面 (日频节点: compute=flush=onSettle, 每个交易日收盘后推一格; Series 跨天保留)
+//        持一个 fund::Stream (per-资产日频状态机), 收盘后沿 D 轴推进到次日 (d+1) 算出全部口 (估值分母 / 因子 raw / filter):
+//        L_day 行 D = 次日盘前态; 下游 (Valuation / Depth / Flow / Book / Auction / Kline / LabelLob) 按口取 Series,
+//        盘中读 back() = 前一交易日 L_day 行 = 当日适用值; 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
+//        两档共用类; 节点实例 / 落盘列见 Node/{Bar,Lob}/TS/Fund/Fund.hpp
 // =============================================================================
 //   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.
 //   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L_min 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
-//   盘中 tick 域节点 (Depth / Flow) 读 Fund.y[Fund.lim_up] 而非 Fund.out(): 盘口 / 委托 9:15 就开始,
-//   Fund 的 Series 要到首个分钟 flush 才有当日值; 涨跌停比较容差统一用 kPxEps (DataDefine.hpp).
+//   涨跌停比较容差统一用 kPxEps (DataDefine.hpp).
+//
+//   逐表对齐 (源表 date = T 的行; Stream 网格行 row = idx − cutoff, 见 Fundamental.cpp RowOf; L_day 行 D = Stream 状态 d+1):
+//     表 (字段)                                              更新时点               cutoff   L_day 行 D 含
+//     real_bar1d.close                                       T 盘后                 −1       T ≤ D
+//     real_bar1d.pre_close / adjust_factor                   T 盘前 (交易所公布)     0       T ≤ D+1 (次日前收 / 除权)
+//     shares (total / a_float)                               T 盘前 (生效日记账)     0       T ≤ D+1
+//     limit_price (upper / lower)                            T 盘前 (由前收推出)     0       T ≤ D+1 (次日适用涨跌停)
+//     status (st / risk_warning / suspended)                 T 盘前                  0       T ≤ D+1 (次日 ST / 停牌)
+//     margin_trading_detail (余额 / 流量 / 两融标的)         T 盘后, T+1 盘前公布   −1       T ≤ D
+//     financial ttm / balance / income / cashflow / notes    公告日 T 盘后          −1       公告日 ≤ D
+//     dividend / forecast                                    公告日 T 盘后          −1       公告日 ≤ D
+//     industry component / change                            T 盘后                 −1       T ≤ D
+//     日历派生 (list_age / delist_age / is_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
+//   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
+//   回测区间末日的 D+1 = 交易日历上 today 之后的首个交易日 (fund::Panel 的 D 轴多留这一格).
 //
 // 【fast-math 契约】本文件不做 isnan/isfinite (状态机在 precise-math TU 里), y 只被下游算术消费, NaN 硬件透传.
 // =============================================================================
 
+#include "features/DataDefine.hpp"
 #include "features/Method/Fundamental.hpp"
 #include <cassert>
 #include <cstddef>
@@ -28,8 +44,8 @@ public:
     equity_mrq,     // [亿元] 归母权益 MRQ (可负)
     revenue_ttm,    // [亿元] 营业总收入 TTM (>0; ≤0 为源脏值 → NaN)
     cffoa_ttm,      // [亿元] 经营现金流 TTM (可负)
-    lim_up,         // [元] T 当日适用涨停价 (无限制 → NaN)
-    lim_dn,         // [元] T 当日适用跌停价
+    lim_up,         // [元] 次日适用涨停价 (无限制 → NaN; 盘中 back() = 当日适用)
+    lim_dn,         // [元] 次日适用跌停价
     low_mc_thr,     // [亿元] 低市值阈值 (主板 5 / 其他 3)
     // ---- 日频常量列 (Bar 档直接落盘, 与 FIELDS_L_day_Fund 一一对应) ----
     ind_l1,      // SW2021 一级行业 ID (0=未知, 1..31)
@@ -50,8 +66,8 @@ public:
     st_level,    // 0=正常/1=ST/2=*ST/3=退市整理期
     is_new,      // 0/1
     // ---- 行情日线 / 两融明细 / 公告日 ----
-    pre_close,         // [元] 除权后前收 (盘前可知)
-    adj_factor,        // 复权因子 (盘前可知)
+    pre_close,         // [元] 次日除权后前收 (盘中 back() = 当日前收)
+    adj_factor,        // 次日复权因子
     rz_buy_amt,        // [亿元] 融资买入额
     rz_repay_amt,      // [亿元] 融资偿还额
     rq_sell_vol,       // [万股] 融券卖出量
@@ -134,21 +150,38 @@ public:
   Fund(const fund::Panel &panel, size_t asset_id, const misc::Ymd &date)
       : panel_(panel), date_(date), stream_(panel, asset_id) {}
 
-  // 当日在市可交易: 非北交所 ∧ 已上市 (list_age ≥ 0) ∧ 未退市 (delist_age 未定义) ∧ 当日非停牌 (盘前可知).
-  // 只许 precise-math TU 调 (NaN 比较语义; 违反本文件 fast-math 契约的唯一入口): Bar 档 cs_valid / PoolKey 母集
-  static bool in_market(const float (&y)[kCount], bool bj) {
-    return !bj && y[list_age] >= 0.0f && !(y[delist_age] >= 0.0f) && y[is_susp] == 0.0f;
+  // 在市可交易 (Fund 口 back() 那一格适用日): 非北交所 ∧ 已上市 (list_age ≥ 0) ∧ 未退市 (delist_age 未定义) ∧ 非停牌.
+  // 只许 precise-math TU 调 (NaN 比较语义; 违反本文件 fast-math 契约的唯一入口): Bar 档 cs_valid (盘中 = 当日) / PoolKey 母集 (onSettle = 次日)
+  static bool in_market(const Series (&f)[kCount], bool bj) {
+    return !bj && f[list_age].back() >= 0.0f && !(f[delist_age].back() >= 0.0f) && f[is_susp].back() == 0.0f;
   }
 
-  // onDay (盘前): 状态机推进到当日, 写 y; 之后每分钟 flush 原样广播
+  // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 推入 = L_day 行 D
   void compute() {
-    const int d = panel_.date_index(date_);
-    assert(d >= 0 && "回测日不在基本面交易日历里");
+    const int d = today();
+    stream_.advance_to(d + 1, y);
+    at_ = d + 1;
+  }
+
+  // 盘前承接: Series 末格须是当日盘前态 (状态 d). 前一回测日已推到 d → 无事; 区间首日 / 日期轴跳日 → 推进到 d 补一格
+  bool carry() {
+    const int d = today();
+    if (at_ == d)
+      return false;
     stream_.advance_to(d, y);
+    at_ = d;
+    return true;
   }
 
 private:
+  int today() const {
+    const int d = panel_.date_index(date_);
+    assert(d >= 0 && "回测日不在基本面交易日历里");
+    return d;
+  }
+
   const fund::Panel &panel_; // DAG_Root::fund_panel (只读共享数据源)
   const misc::Ymd &date_;    // DAG_Root::date_ (begin_day 设置)
   fund::Stream stream_;      // 本资产的日频状态机
+  int at_ = -1;              // y / Series 末格对应的 D 轴日
 };

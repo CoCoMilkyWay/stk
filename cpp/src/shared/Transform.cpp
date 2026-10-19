@@ -199,7 +199,7 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
   const Readers rd = scope_.readers(fr);
 
   // 段序: 升序 (TOD 轮廓跨天因果); max_days = 快速迭代预设, 只算区间头 N 段
-  const SegPlan plan = plan_segs(rd.lib(), scope_.months, G::kLevel, DayOrder::Sequential, p.max_days);
+  const SegPlan plan = plan_segs(scope_, G::kLevel, DayOrder::Sequential, p.max_days);
   if (plan.size() == 0)
     return true;
   const size_t n_days = plan.size();
@@ -273,24 +273,18 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
   const bool do_cs = rt.cs_fn != nullptr;
   const bool neutral = p.cs_neutral();
 
-  // 批 b0 的 IO (预读线程或本线程跑; 只写传入的平面)
-  const auto load = [&](size_t b0) {
-    return [&, b0](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
-      pl.load_batch(io, slots, rd, rp, plan, b0, std::min(BS, n_days - b0), cancel);
+  // 批 [b0, b0 + bd) 的 IO (预读线程或本线程跑; 只写传入的平面)
+  const auto load = [&](size_t b0, size_t bd) {
+    return [&, b0, bd](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
+      pl.load_batch(io, slots, rd, rp, plan, b0, bd, cancel);
     };
   };
-  rt.pf.now(load(0));
 
   // ==========================================================================
-  // 批循环: 下一批 IO 后台预读, 本批四相 (TS → CS → 统计 → 归约), 每相一次 dispatch (返回即栅栏);
+  // 批循环 (Prefetch::stream): 下一批 IO 后台预读, 本批四相 (TS → CS → 统计 → 归约), 每相一次 dispatch (返回即栅栏);
   // 批末发布在本线程 (单线程, 天然串行)
   // ==========================================================================
-  for (size_t b0 = 0; b0 < n_days; b0 += BS) {
-    const size_t bd = std::min(BS, n_days - b0);
-    if (b0 + BS < n_days)
-      rt.pf.issue(load(b0 + BS)); // issue → wait 之间不许 return
-    const TsPlane &pl = rt.pf.front();
-
+  const auto compute = [&](const TsPlane &pl, size_t b0, size_t bd) {
     // ------------------------------------------------------------------
     // Phase TS: 每 (资产, 段) 一条因果链 → out_ (a = 库轴下标); kAssetBlock 个资产一任务
     // ------------------------------------------------------------------
@@ -488,14 +482,8 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
     // Phase 归约: shard 两两并行归约到 shard 0, 全程锁外 (shard 0 = 全程累加器, 其余清零供下批)
     // ------------------------------------------------------------------
     reduce_tree(ex, rt.shards);
-
-    rt.pf.wait();
-    if (cancel.load(std::memory_order_relaxed))
-      return false; // 半批不发布
-    publish_batch(b0, bd);
-    rt.pf.flip();
-  }
-  return true;
+  };
+  return rt.pf.stream(n_days, BS, cancel, load, compute, publish_batch);
 }
 
 // ============================================================================

@@ -30,8 +30,8 @@ public:
 
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日在市: 本资产代码 + Fund 当日 PIT 口 (onDay 之后才有)
-  bool member(misc::Ymd) const { return Fund::in_market(dag_.Fund.y, bj_); }
+  // 当日在市: 本资产代码 + Fund 日频口 back() (盘前承接之后 = 当日盘前态)
+  bool member(misc::Ymd) const { return Fund::in_market(dag_.Fund.outs(), bj_); }
   ResamplerBar2Min &resampler() { return bar2min_; }
 
   bool bj_; // 北交所: 不在市 (cs_valid 0)

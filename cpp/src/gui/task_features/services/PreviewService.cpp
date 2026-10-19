@@ -29,7 +29,7 @@ void PreviewService::RequestCompute(SharedData &data) {
       cols.push_back({lib, static_cast<uint8_t>(l), static_cast<uint16_t>(i)});
     }
     if (!cols.empty())
-      req.spec.plans[l] = analysis::read_plan(data.feature, l, analysis::Rows::AsOf, std::move(cols));
+      req.spec.plans[l] = analysis::read_plan(data.feature, l, analysis::Rows::AsOf, true, std::move(cols));
   }
   Request(std::move(req));
 }

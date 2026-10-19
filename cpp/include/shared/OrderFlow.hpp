@@ -1,8 +1,8 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
-// OrderFlow (主库 = 日期轴 / K 线 OHLC 所在库, Lob 或 Bar 档皆可)
-// ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (任意 ColRef, 分钟网格)
-// │            worker 逐日流式 (从前往后, 每日每源一次选列读), GUI 画已发布前缀
+// OrderFlow (主库 = K 线 OHLC 所在库, Lob 或 Bar 档皆可; 日轴 = 主库 + overlay 各库落盘日的并集, 各库画各自有的日)
+// ├── Kline  (图2) 单资产全日轴: K线 + 多特征 overlay (≥ L_min 的任意 ColRef, 分钟网格)
+// │            worker 分批流式 (从前往后, 每日每源一次选列读, 下一批后台预读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
 // │            + 多特征 overlay (任意 ColRef, 秒网格); 双槽 ping-pong 整体发布
 // overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1), 网格: 图1 L_sec / 图2 L_min
@@ -11,7 +11,7 @@
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
 // 发布协议 (无锁 SPSC):
-//   Kline: 每日尾 feat_n[i] / y range (release) → pub word [gen|days|points] (release, shared/Progress.hpp PrefixPub);
+//   Kline: 每批尾 feat_n[i] / y range (release) → pub word [gen|days|points] (release, shared/Progress.hpp PrefixPub);
 //          GUI acquire 读 pub, 只画已发布前缀; gen != 请求代 = 正在重建, 不画.
 //          数组 reserve 满容量后只 push_back → data() 恒稳定, 前缀读安全.
 //   Depth / Pick: PingPong (shared/Progress.hpp) — worker 写背槽 → commit; GUI 帧首 ack 翻面;
@@ -118,11 +118,11 @@ struct OrderFlow {
   };
 
   // ==========================================================================
-  // Kline (图2) — 单资产全回测: K线 + 多特征, 逐日流式, 单调前缀发布
+  // Kline (图2) — 单资产全日轴: K线 + 多特征, 分批流式, 单调前缀发布
   // ==========================================================================
   struct Kline : Progress, PrefixPub { // 进度 done/total = 天
     // ---- worker 写 / GUI 前缀读 ----
-    std::vector<misc::Ymd> dates; // 回测区间全部特征日 (换代时随 rescan 重扫; gen 匹配期间稳定)
+    std::vector<misc::Ymd> dates; // 日轴: 库集各库落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
 
     // K线点集: data_valid 分钟, x = day_idx * MIN_CAPACITY + minute
     std::vector<double> x, open, high, low, close;
@@ -369,7 +369,8 @@ struct OrderFlow {
     // 请求快照 (期望态; 变化 → gen++ → Request*)
     uint32_t kline_gen = 0, depth_gen = 0;
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
-    std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (两图同一组, 截断 MAX_FEATURES)
+    std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (同一组选中, 各截到图的网格: 图2 ≥ L_min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
+    LibMask kline_libs = 0;                       // 图2 库集 (主库 + overlay 各库) = 日轴并集的库; 变了 → 重扫日轴
     misc::Ymd depth_date = 0;
 
     // 图2 X 域 (= 特征日数 × MIN_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
@@ -382,7 +383,7 @@ struct OrderFlow {
     uint32_t sec_last_gen = UINT32_MAX;      // 上次 L_sec 视图重置时的槽 gen
     double sec_y_min = 0.0, sec_y_max = 0.0; // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
 
-    // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx
+    // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx (只在单库日轴时画: 多库叠加时日轴是并集, 不画)
     // (kline_gen, pub_days) 变才重算 — 流式追加 / 换资产 / 重扫日期 都被 gen 覆盖
     std::vector<size_t> min_missing_days;
     uint32_t min_missing_days_gen = UINT32_MAX;

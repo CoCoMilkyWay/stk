@@ -20,7 +20,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   assert(!s.cur && s.carry && "盘前 as-of 日层 = 只读前一交易日");
 
   FeatureRead reader(bar);
-  Readers rd{.main = lib};
+  Readers rd;
   rd.rd[lib] = &reader;
   IoSlot::Buf b;
   const size_t As = bar.axis.size();
@@ -34,7 +34,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
     assert(it != bar.dates.end() && *it == dates[i] && it != bar.dates.begin() && "回测日不在 Bar 库日期轴 (或是其首日): 重算 Bar 库覆盖到 end_date");
     const misc::Ymd prev = *(it - 1);
     assert(reader.has_date(prev) && "Bar 库缺票池源日 (D−1): 先把 Bar 库算完");
-    load_source(rd, s, dates[i], prev, s.cs.io, b);
+    load_source(rd, s, Day{dates[i], prev, lib_bit(lib), lib_bit(lib)}, s.cs.io, b);
     assert(!reader.stale() && "Bar 库判废 (头不符): 重算 Bar 库");
     size_t r = 0;
     const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);

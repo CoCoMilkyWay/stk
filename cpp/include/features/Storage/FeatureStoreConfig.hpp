@@ -147,8 +147,10 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
 //   FNV-1a 64 over "code:1:kind" 逐字段拼接 (顺序敏感; 1 = 已废的列宽, 恒折入以保旧库指纹)
 //   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelLob 的 entry / exit 定义) 时 +1, 旧库读取即判废而非静默错义
+//   L_day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
 constexpr uint64_t kLabelSemver = 2; // 1: 分钟型 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准)
+constexpr uint64_t kDaySemver = 1;   // 1: 行 D = 次日盘前态 (Fund / PoolKey onSettle, 见 Fund.hpp 逐表对齐)
 constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
   for (; *s; ++s)
     h = (h ^ static_cast<uint8_t>(*s)) * 0x100000001b3ULL;
@@ -171,9 +173,10 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
   }
   return h;
 }
-#define GENERATE_FINGERPRINT(T, ns, name, num, fields, psd)                     \
-  namespace ns {                                                                \
-  constexpr uint64_t name##_FINGERPRINT = table_fingerprint(name##_FIELD_INFO); \
+#define GENERATE_FINGERPRINT(T, ns, name, num, fields, psd)                                                          \
+  namespace ns {                                                                                                     \
+  constexpr uint64_t name##_FINGERPRINT = num == L_day ? fnv1a_u64(table_fingerprint(name##_FIELD_INFO), kDaySemver) \
+                                                       : table_fingerprint(name##_FIELD_INFO);                       \
   }
 TIER_LEVELS(GENERATE_FINGERPRINT)
 

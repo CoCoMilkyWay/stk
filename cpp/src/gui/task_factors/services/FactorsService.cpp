@@ -859,7 +859,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
 
   // ---- 装载 ----
   FeatureRead reader(req.scope.lib(), &cancel_);
-  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
+  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty()) {
     finish_all_pending("特征库在该区间无数据 (先算特征)");
     return true;

@@ -169,7 +169,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
 
   // ---- S: 作用域 (标签 / 成本 / 门控 + 特征缓存) ----
   FeatureRead reader(req.scope.lib(), &cancel_);
-  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
+  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty()) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;

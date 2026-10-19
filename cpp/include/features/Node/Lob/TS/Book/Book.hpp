@@ -93,7 +93,7 @@ public:
        const DepthSeries &bid_price, const DepthSeries &ask_price,
        const DepthSeries &bid_qty, const DepthSeries &ask_qty,
        const Series &mid_price, const Series &micro_price,
-       const float &lim_up, const float &lim_dn, const float &pre_close)
+       const Series &lim_up, const Series &lim_dn, const Series &pre_close)
       : td_(td), md_(md), bp_(bid_price), ap_(ask_price), bq_(bid_qty), aq_(ask_qty), mid_(mid_price), micro_(micro_price),
         lim_up_(lim_up), lim_dn_(lim_dn), pre_close_(pre_close) {}
 
@@ -148,10 +148,10 @@ public:
     }
     // 全簿吃不完: 余量假设在涨跌停价成交 (买吃卖盘 → 涨停, 卖吃买盘 → 跌停), 当一个无限量价位再吃一次即补齐剩余目标.
     // 边界 NaN (无限制股 / 缺失) → 比较恒 false → 不补 (与 Depth 同约)
-    if (kb < NCOST && lim_dn_ > 0.0f)
-      kb = eat(cost_sell_10w, kb, lim_dn_, LIMIT_FILL_QTY, eb_pv, eb_v, mid, false);
-    if (ka < NCOST && lim_up_ > 0.0f)
-      ka = eat(cost_buy_10w, ka, lim_up_, LIMIT_FILL_QTY, ea_pv, ea_v, mid, true);
+    if (const float dn = lim_dn_.back(); kb < NCOST && dn > 0.0f)
+      kb = eat(cost_sell_10w, kb, dn, LIMIT_FILL_QTY, eb_pv, eb_v, mid, false);
+    if (const float up = lim_up_.back(); ka < NCOST && up > 0.0f)
+      ka = eat(cost_buy_10w, ka, up, LIMIT_FILL_QTY, ea_pv, ea_v, mid, true);
     // 仍未补齐 (涨跌停价缺失): 该快照该列无定义, 由 flush 延续上一有效值
     for (size_t k = kb; k < NCOST; ++k)
       ok_ &= ~(1ull << (cost_sell_10w + k));
@@ -185,7 +185,7 @@ public:
     // 日内尚无成交 (bar 价 0) → 前收). 不沿用昨日盘口原值 —— 除权会造成假跳变; bar 价与 OHLC / vwap 同源同刻, 天然对齐.
     if (!has_state_) {
       const float bar = md_.close.back();
-      const float px = bar > 0.0f ? bar : pre_close_;
+      const float px = bar > 0.0f ? bar : pre_close_.back();
       y[micro] = last_[micro] = px;
       y[Out::mid] = last_[Out::mid] = px;
     }
@@ -233,8 +233,8 @@ private:
   const MinuteData &md_;
   const DepthSeries &bp_, &ap_, &bq_, &aq_;
   const Series &mid_, &micro_;
-  const float &lim_up_, &lim_dn_; // Fund 当日涨跌停价 (盘前已知), 吃单成本吃不完时补齐余量用
-  const float &pre_close_;        // Fund 当日前收 (盘前已知), 当日无盘口无成交时的价代理
+  const Series &lim_up_, &lim_dn_; // Fund 日频口: 当日涨跌停价, 吃单成本吃不完时补齐余量用
+  const Series &pre_close_;        // Fund 日频口: 当日前收, 当日无盘口无成交时的价代理
 
   bool has_state_ = false;
   uint32_t t_prev_ = 0;  // 当前状态起点 (ms)
@@ -246,7 +246,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Book(N) N(Book, (Book<L2::LOB_DEPTH>), (tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, MidPrice.out(), MicroPrice.out(), Fund.y[Fund.lim_up], Fund.y[Fund.lim_dn], Fund.y[Fund.pre_close]), onDepth, onMinute)
+#define NODE_Book(N) N(Book, (Book<L2::LOB_DEPTH>), (tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, MidPrice.out(), MicroPrice.out(), Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn), Fund.out(Fund.pre_close)), onDepth, onMinute)
 
 // 一侧 (side token, S 公式上标, CN) 的 量深度 4 + 金额深度 4 + 顶部占比 3 行
 #define BOOK_SIDE_ROWS(X, CAT1, side, S, CN)                                                                                                                                                                                                                            \

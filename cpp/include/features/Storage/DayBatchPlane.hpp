@@ -16,14 +16,14 @@
 #include <vector>
 
 // ============================================================================
-// 流式分析的三种平面 (网格行: 对应生产管线的 TS / CS 两段; 原生行: 单日逐列) + 共用的段序 / 读计划 / IO 暂存 / 双缓冲预读
+// 流式分析的三种平面 (网格行: 对应生产管线的 TS / CS 两段; 尾部行: 各列原生行) + 共用的段序 / 读计划 / IO 暂存 / 双缓冲预读
 // ============================================================================
 //   TsPlane   data[c][a][j][t]  资产主序: 每资产每列一段连续 segs×R (TS 扫描友好), 截面按 asset_stride 跨步取
 //   CsPlane   data[j][s][c][a]  切片主序: 每 (段, 切片, 列) 一段连续 A (截面友好), 每段只取 slice_t 指定的 S 行
-//   RowPlane  data[c][a][r]     单日原生行: 各列按自己的层 (不投影), 另带开盘 as-of 承接值 (OrderFlow 尾部对齐由消费方定)
-// 网格行: 行轴 = 网格层 (ReadPlan::level) 的段 (SegPlan); 列 = ReadPlan 的 ColRef, 跨库跨层的列按 level_asof 投影到网格行.
-// 原生行: 源不投影 (row 空), 只在开盘 as-of 落到前一交易日时承接前日末行.
-// A 轴 = ReadScope::axis; 列所在库经 Readers::ids 收拢到 A 轴, 资产不在该库 / 该库缺这天 = 无源.
+//   RowPlane  data[c][a][j][r]  尾部行: 各列按自己的层 (不投影), 另带开盘承接值; 行 r 落在网格行 Source::at[r] (OrderFlow)
+// 两种行映射对仗: 网格行 = gather (网格行 t ← 源行 Source::row[t], level_asof); 尾部行 = scatter (源行 r → 网格行 Source::at[r]).
+// 列 = ReadPlan 的 ColRef; 三平面同一契约 prepare / load_batch(…, SegPlan, s0, bs), 同一个折叠核 fold_span (只差目的步长).
+// A 轴 = ReadScope::axis; 列所在库经 Readers::ids 收拢到 A 轴, 资产不在该库 / 该库这天没落盘 (Day::has) = 无源.
 // 同一个 IO 契约 (每源一个 fmeta::ColumnSet: 读什么、各列怎么门控), 同一套哨兵 (fmeta):
 //   门控不过 / 无源 (空日, 区间首日无承接, 资产或日不在该库) → kInvalidBits, 门控过但 NaN → kNaNBits, 其余 (含 ±inf) 原样.
 //   热循环一次 v != v 两种一并跳过; 要分账 (NaN vs 门控不过) 的消费方按位区分, 分母口径由消费方自己定.
@@ -35,29 +35,38 @@ inline constexpr size_t kDaySegDays = 255;
 inline constexpr size_t seg_days(size_t lvl) { return lvl == L_day ? kDaySegDays : 1; }
 inline constexpr size_t seg_rows(size_t lvl) { return level_valid_rows(lvl) * seg_days(lvl); }
 
-// 段序: [段][days] 平铺; dates 0 = 尾段空位 (整天作废); prev = 库内前一交易日 (as-of 跨日承接), 0 = 区间首日
+// 日轴一天: 当日 + 承接日 (日轴上前一日, 0 = 轴首) + 两日各自落了盘的库 (日轴规划时一次判定, 装载时 O(1) 查位)
+struct Day {
+  misc::Ymd date = 0, prev = 0;
+  LibMask has = 0, has_prev = 0;
+};
+// 段序: [段][days] 平铺; dates 0 = 尾段空位 (整天作废, has = 0); has_prev[i] = 日轴上前一日的 has
 struct SegPlan {
   size_t days = 1;
   std::vector<misc::Ymd> dates, prev;
+  std::vector<LibMask> has, has_prev;
   std::vector<uint16_t> month;  // months 下标
   std::vector<uint8_t> weekday; // Mon=0 .. Sun=6
   size_t size() const { return dates.size() / days; }
+  Day day(size_t i) const { return {dates[i], prev[i], has[i], has_prev[i]}; }
 };
 
-// 源 = 同 (库, 层) 的一组值列: 一天一次选列读 (cs 末位带该层 ts_valid), 行按 level_asof 投影到网格 (或原生行)
+// 源 = 同 (库, 层) 的一组值列: 一天一次选列读 (cs 末位带该层 ts_valid), 行映射二选一 (row gather / at scatter)
 // 读端 (平面) 与写端上游读 (CoreCs 旁读 / pool::Panel 票池成员位) 同一份: 跨库跨层一律 level_asof, 不另写特例
 struct Source {
   LibId lib = kAllLib; // 平面 a ← 该库轴 Readers::ids[lib][a] (nullptr = 同轴)
   size_t level = L_min;
   fmeta::ColumnSet cs;        // 值列 (+ 门控列)
   std::vector<uint32_t> slot; // [cs.n()] 值列 → 平面列
-  std::vector<int32_t> row;   // [网格每日有效行] → 源行; -1 = 前一交易日末行; 空 = 原生行
-  bool cur = false;           // 读当日 (网格: row 含 ≥ 0; 原生: 恒读)
-  bool carry = false;         // 读前一交易日 (网格: row 含 -1; 原生: 开盘 as-of 落在前日)
+  std::vector<int32_t> row;   // 网格行: [网格每日有效行] → 源行; -1 = 前一交易日末行
+  std::vector<uint32_t> at;   // 尾部行: [源层有效行] → 网格行 (行末秒 − 1 所在)
+  bool cur = false;           // 读当日 (网格: row 含 ≥ 0; 尾部: 恒读)
+  bool carry = false;         // 读前一交易日 (网格: row 含 -1; 尾部: 要承接且开盘 as-of 落在前日)
 };
-// 源行投影: 网格层 grid 的 rows 个行 → level_asof(源层, grid, t)
+// 网格行: 网格层 grid 的 rows 个行 → level_asof(源层, grid, t)
 inline void project_rows(Source &s, size_t grid, size_t rows) {
   s.row.resize(rows);
+  s.at.clear();
   s.cur = s.carry = false;
   for (size_t t = 0; t < rows; ++t) {
     s.row[t] = static_cast<int32_t>(level_asof(s.level, grid, t));
@@ -65,33 +74,34 @@ inline void project_rows(Source &s, size_t grid, size_t rows) {
     s.carry |= s.row[t] < 0;
   }
 }
-// 原生行: 行不投影; 承接 = 网格层 grid 开盘首行的 as-of 落在前一交易日 (该时刻源层尚无当日行, 已知值 = 前日末行)
-inline void native_rows(Source &s, size_t grid) {
+// 尾部行: 源行 r → 网格层 grid 中含 level_end_sec(源层, r) − 1 的行; 承接 = carry 且网格开盘首行的 as-of 落在前一交易日
+// (该时刻源层尚无当日行, 已知值 = 前日末行)
+inline void tail_rows(Source &s, size_t grid, bool carry) {
+  const size_t R = level_valid_rows(s.level);
   s.row.clear();
+  s.at.resize(R);
+  for (size_t r = 0; r < R; ++r)
+    s.at[r] = static_cast<uint32_t>(level_row_of_sec(grid, level_end_sec(s.level, r) - 1));
   s.cur = true;
-  s.carry = level_asof(s.level, grid, 0) < 0;
+  s.carry = carry && level_asof(s.level, grid, 0) < 0;
 }
 // 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan); 源库 = 列所在库, 主库在 ReadScope
 struct ReadPlan {
-  size_t level = L_min;     // 网格层 (原生行: 只定开盘承接)
+  size_t level = L_min;     // 网格层 (尾部行: 定 at 与开盘承接)
   std::vector<ColRef> cols; // [平面列]
   std::vector<Source> srcs;
   size_t n() const { return cols.size(); }
 };
 // 资产不在该库轴 (Readers::ids 的值): 平面格 = 无源
 inline constexpr uint32_t kAbsent = UINT32_MAX;
-// 库集各库 reader + A 轴 → 该库轴映射 (nullptr = 同轴; 库集外库 nullptr)
+// 库集各库 reader + A 轴 → 该库轴映射 (nullptr = 同轴; 库集外库 nullptr). 哪天哪库有数据归日轴 (Day::has), 不归 reader
 struct Readers {
-  LibId main = kAllLib;
   PerLib<const FeatureRead *> rd{};
   PerLib<const uint32_t *> ids{};
   const FeatureRead &of(LibId l) const {
     assert(rd[l] && "库不在库集内");
     return *rd[l];
   }
-  const FeatureRead &lib() const { return of(main); }
-  // 库 l 有这天: 主库 = 段序本就取自它; 别库按日文件判 (缺日 = 无源, 不判废)
-  bool has(LibId l, misc::Ymd date) const { return date != 0 && (l == main || of(l).has_date(date)); }
 };
 // 库集 reader 组 (worker 线程按库清单开, 库集外 = 空清单): 拿到取消旗 (库判废时拉起); 清单没变 (目录 + 库轴) 的库复用
 struct LibReaders {
@@ -151,16 +161,22 @@ struct IoSlot {
   }
 };
 
-// 源一天 (当日 + 承接日) 选列读进暂存; io = 本次读列 (值列子集 [+ 门控列]); 源库缺的日 = 无源
-inline void load_source(const Readers &rd, const Source &s, misc::Ymd date, misc::Ymd prev,
-                        const std::vector<size_t> &io, IoSlot::Buf &b) {
+// 源一天 (当日 + 承接日) 选列读进暂存; io = 本次读列 (值列子集 [+ 门控列]); 源库这天没落盘 (Day 位) = 无源
+inline void load_source(const Readers &rd, const Source &s, const Day &d, const std::vector<size_t> &io, IoSlot::Buf &b) {
   const FeatureRead &reader = rd.of(s.lib);
-  b.has_cur = s.cur && rd.has(s.lib, date);
-  b.has_prev = s.carry && date != 0 && rd.has(s.lib, prev);
+  const LibMask bit = lib_bit(s.lib);
+  assert(!(d.has & bit) || d.date != 0);
+  assert(!(d.has_prev & bit) || d.prev != 0);
+  b.has_cur = s.cur && (d.has & bit);
+  b.has_prev = s.carry && (d.has_prev & bit);
   if (b.has_cur)
-    reader.load_day_columns(date, io, b.cur);
+    reader.load_day_columns(d.date, io, b.cur);
   if (b.has_prev)
-    reader.load_day_columns(prev, io, b.prev);
+    reader.load_day_columns(d.prev, io, b.prev);
+}
+// 暂存 dc 第 k 列第 r 行首格 (dc nullptr = 无源 → nullptr)
+inline const feature_storage_t *col_row(const FeatureRead::DayColumns *dc, size_t k, size_t r) {
+  return dc ? dc->col(k) + r * dc->A : nullptr;
 }
 // 网格行 t → 源暂存 + 源行 r (nullptr = 无源)
 inline const FeatureRead::DayColumns *source_row(const Source &s, const IoSlot::Buf &b, size_t t, size_t &r) {
@@ -183,17 +199,38 @@ inline feature_storage_t fold_cell(feature_storage_t raw, const feature_storage_
 inline feature_storage_t fold_at(const feature_storage_t *src, const feature_storage_t *g, uint32_t x, L2::ValidType vt) {
   return x == kAbsent ? std::bit_cast<feature_storage_t>(fmeta::kInvalidBits) : fold_cell(src[x], g ? g + x : nullptr, vt);
 }
-// 一行 A 格 (平面 a ← 源 ids[a]; ids nullptr = 同轴)
-inline void fold_row(const feature_storage_t *src, const feature_storage_t *g, L2::ValidType vt, size_t A,
-                     feature_storage_t *dst, const uint32_t *ids = nullptr) {
-  for (size_t a = 0; a < A; ++a)
-    dst[a] = fold_at(src, g, ids ? ids[a] : static_cast<uint32_t>(a), vt);
+// 折叠核 (三平面同一份, 只差目的步长): 源一行 → 平面 [a0, a1) 格 dst[a · stride] (平面 a ← 源 ids[a], nullptr = 同轴).
+// val nullptr = 无源 (整段哨兵); g = 同行门控 (nullptr = 不门控)
+inline void fold_span(const feature_storage_t *val, const feature_storage_t *g, L2::ValidType vt, const uint32_t *ids,
+                      size_t a0, size_t a1, feature_storage_t *dst, size_t stride) {
+  if (!val) {
+    for (size_t a = a0; a < a1; ++a)
+      dst[a * stride] = std::bit_cast<feature_storage_t>(fmeta::kInvalidBits);
+    return;
+  }
+  for (size_t a = a0; a < a1; ++a)
+    dst[a * stride] = fold_at(val, g, ids ? ids[a] : static_cast<uint32_t>(a), vt);
 }
+
+// 单段一任务的批装载 (TsPlane / RowPlane 共用; CsPlane 按 段 × 列块 自己拆): 批 [s0, s0 + bs) 第 j 段 = 第 s0 + j 段,
+// io 池跑, 暂存按 tid; 只写本平面 (可与另一平面上的计算并发)
+template <class Plane>
+struct SegBatch {
+  void load_batch(misc::exec::ForkJoin &io, std::vector<IoSlot> &slots, const Readers &rd, const ReadPlan &plan,
+                  const SegPlan &sp, size_t s0, size_t bs, const std::atomic<bool> &cancel) {
+    Plane &pl = static_cast<Plane &>(*this);
+    assert(bs <= pl.segs && s0 + bs <= sp.size() && slots.size() >= static_cast<size_t>(io.threads()));
+    io.tasks(static_cast<int>(bs), [&](int j, int tid) {
+      if (!cancel.load(std::memory_order_relaxed))
+        pl.load_seg(rd, plan, sp, s0 + static_cast<size_t>(j), static_cast<size_t>(j), slots[tid]);
+    });
+  }
+};
 
 // ============================================================================
 // TsPlane: 段批 TS 视图 (Dist / Transform 分批流式, Preview 单段)
 // ============================================================================
-struct TsPlane {
+struct TsPlane : SegBatch<TsPlane> {
   static constexpr size_t kTransposeBlock = 64; // 转置按 64 资产一块: 块内写驻留在 64 条 cache line 上
 
   size_t A = 0, level = 0, R = 0, segs = 0, n_cols = 0;
@@ -226,56 +263,32 @@ struct TsPlane {
   // 第 seg 段 → 批内第 j 段: 逐日逐源读进 sl, 行投影 + 按各列 vt 折叠哨兵 + 转置
   void load_seg(const Readers &rd, const ReadPlan &plan, const SegPlan &sp, size_t seg, size_t j, IoSlot &sl) {
     assert(j < segs && plan.n() == n_cols && plan.level == level && sp.days == seg_days(level));
-    const auto invalid = std::bit_cast<feature_storage_t>(fmeta::kInvalidBits);
     const size_t rpd = level_valid_rows(level), stride = asset_stride();
     for (size_t d = 0; d < sp.days; ++d) {
-      const size_t i = seg * sp.days + d;
+      const Day day = sp.day(seg * sp.days + d);
       for (size_t si = 0; si < plan.srcs.size(); ++si) {
         const Source &s = plan.srcs[si];
         IoSlot::Buf &b = sl.src[si];
         {
           TraceN("LoadDay");
-          load_source(rd, s, sp.dates[i], sp.prev[i], s.cs.io, b);
+          load_source(rd, s, day, s.cs.io, b);
         }
         TraceN("TransposeDay");
         const size_t nv = s.cs.n();
         const uint32_t *ids = rd.ids[s.lib];
         for (size_t k = 0; k < nv; ++k) {
-          const L2::ValidType vt = s.cs.vts[k];
           feature_storage_t *base = data.data() + (s.slot[k] * A * segs + j) * R + d * rpd; // + a * stride + t
           for (size_t a0 = 0; a0 < A; a0 += kTransposeBlock) {
             const size_t a1 = std::min(a0 + kTransposeBlock, A);
             for (size_t t = 0; t < rpd; ++t) {
               size_t r = 0;
               const FeatureRead::DayColumns *dc = source_row(s, b, t, r);
-              if (!dc) {
-                for (size_t a = a0; a < a1; ++a)
-                  base[a * stride + t] = invalid;
-                continue;
-              }
-              const size_t SA = dc->A;
-              const feature_storage_t *val = dc->col(k) + r * SA;
-              const feature_storage_t *g = s.cs.gated() ? dc->col(nv) + r * SA : nullptr;
-              for (size_t a = a0; a < a1; ++a) {
-                const uint32_t x = ids ? ids[a] : static_cast<uint32_t>(a);
-                assert(x == kAbsent || x < SA);
-                base[a * stride + t] = fold_at(val, g, x, vt);
-              }
+              fold_span(col_row(dc, k, r), s.cs.gated() ? col_row(dc, nv, r) : nullptr, s.cs.vts[k], ids, a0, a1, base + t, stride);
             }
           }
         }
       }
     }
-  }
-
-  // 一批 [s0, s0 + bs): 单段一任务 (io 池, 暂存按 tid; 只写本平面, 可与另一平面上的计算并发)
-  void load_batch(misc::exec::ForkJoin &io, std::vector<IoSlot> &slots, const Readers &rd, const ReadPlan &plan,
-                  const SegPlan &sp, size_t s0, size_t bs, const std::atomic<bool> &cancel) {
-    assert(bs <= segs && s0 + bs <= sp.size() && slots.size() >= static_cast<size_t>(io.threads()));
-    io.tasks(static_cast<int>(bs), [&](int j, int tid) {
-      if (!cancel.load(std::memory_order_relaxed))
-        load_seg(rd, plan, sp, s0 + static_cast<size_t>(j), static_cast<size_t>(j), slots[tid]);
-    });
   }
 
   void clear() {
@@ -348,23 +361,16 @@ struct CsPlane {
       for (size_t d = 0; d < sp.days; ++d) {
         if (std::none_of(st, st + S, [&](size_t t) { return t < R && t / rpd == d; }))
           continue;
-        const size_t i = (s0 + j) * sp.days + d;
-        load_source(rd, src, sp.dates[i], sp.prev[i], sl.cols, b);
+        load_source(rd, src, sp.day((s0 + j) * sp.days + d), sl.cols, b);
         for (size_t s = 0; s < S; ++s) {
           if (st[s] >= R || st[s] / rpd != d)
             continue;
           size_t r = 0;
           const FeatureRead::DayColumns *dc = source_row(src, b, st[s] % rpd, r);
-          for (size_t k = bk.k0; k < bk.k1; ++k) {
-            feature_storage_t *dst = data.data() + ((j * S + s) * n_cols + src.slot[k]) * A;
-            if (!dc) {
-              std::fill_n(dst, A, invalid);
-              continue;
-            }
-            const size_t SA = dc->A;
-            const feature_storage_t *g = src.cs.gated() ? dc->col(bk.k1 - bk.k0) + r * SA : nullptr;
-            fold_row(dc->col(k - bk.k0) + r * SA, g, src.cs.vts[k], A, dst, rd.ids[src.lib]);
-          }
+          const feature_storage_t *g = src.cs.gated() ? col_row(dc, bk.k1 - bk.k0, r) : nullptr;
+          for (size_t k = bk.k0; k < bk.k1; ++k)
+            fold_span(col_row(dc, k - bk.k0, r), g, src.cs.vts[k], rd.ids[src.lib], 0, A,
+                      data.data() + ((j * S + s) * n_cols + src.slot[k]) * A, 1);
         }
       }
     });
@@ -378,26 +384,28 @@ struct CsPlane {
 };
 
 // ============================================================================
-// RowPlane: 单日原生行视图 (OrderFlow: 各列按自己的层画, 不投影到网格)
+// RowPlane: 段批尾部行视图 (OrderFlow: 各列按自己的层画, 行 r 落在网格行 Source::at[r]; 段 = 1 天)
 // ============================================================================
-struct RowPlane {
-  size_t A = 0, n_cols = 0;
+struct RowPlane : SegBatch<RowPlane> {
+  size_t A = 0, segs = 0, n_cols = 0;
   std::vector<size_t> rows, off;       // [n_cols] 列 c 的层有效行数 / 在 data 中的起点
-  std::vector<feature_storage_t> data; // 列 c: [A][rows[c]]
-  std::vector<feature_storage_t> open; // [n_cols][A] 开盘 as-of 承接值 (前日末行; 不承接的列 = kInvalidBits)
+  std::vector<feature_storage_t> data; // 列 c: [A][segs][rows[c]]
+  std::vector<feature_storage_t> open; // [n_cols][A][segs] 开盘承接值 (前日末行; 不承接 = kInvalidBits)
 
-  const feature_storage_t *series(size_t c, size_t a) const {
-    assert(c < n_cols && a < A);
-    return data.data() + off[c] + a * rows[c];
+  const feature_storage_t *series(size_t c, size_t a, size_t j) const {
+    assert(c < n_cols && a < A && j < segs);
+    return data.data() + off[c] + (a * segs + j) * rows[c];
   }
-  feature_storage_t carry(size_t c, size_t a) const {
-    assert(c < n_cols && a < A);
-    return open[c * A + a];
+  feature_storage_t carry(size_t c, size_t a, size_t j) const {
+    assert(c < n_cols && a < A && j < segs);
+    return open[(c * A + a) * segs + j];
   }
 
-  void prepare(size_t A_, const ReadPlan &plan) {
-    assert(A_ > 0 && plan.n() > 0);
+  void prepare(size_t A_, const ReadPlan &plan, size_t segs_) {
+    TraceN("RowPlanePrepare");
+    assert(A_ > 0 && segs_ > 0 && plan.n() > 0);
     A = A_;
+    segs = segs_;
     n_cols = plan.n();
     rows.resize(n_cols);
     off.resize(n_cols);
@@ -405,45 +413,35 @@ struct RowPlane {
     for (size_t c = 0; c < n_cols; ++c) {
       rows[c] = level_valid_rows(plan.cols[c].level);
       off[c] = n;
-      n += A * rows[c];
+      n += A * segs * rows[c];
     }
     data.resize(n);
-    open.resize(n_cols * A);
+    open.resize(n_cols * A * segs);
   }
 
-  // 一日: 逐源读当日 (+ 承接日) 进 sl, 按各列 vt 折叠哨兵
-  void load_day(const Readers &rd, const ReadPlan &plan, misc::Ymd date, misc::Ymd prev, IoSlot &sl) {
-    assert(plan.n() == n_cols && sl.src.size() == plan.srcs.size());
-    const auto invalid = std::bit_cast<feature_storage_t>(fmeta::kInvalidBits);
-    std::fill(open.begin(), open.end(), invalid);
+  // 第 seg 段 → 批内第 j 段: 逐源读当日 (+ 承接日) 进 sl, 原生行按各列 vt 折叠哨兵
+  void load_seg(const Readers &rd, const ReadPlan &plan, const SegPlan &sp, size_t seg, size_t j, IoSlot &sl) {
+    assert(j < segs && plan.n() == n_cols && sp.days == 1 && sl.src.size() == plan.srcs.size());
+    const Day day = sp.day(seg);
     for (size_t si = 0; si < plan.srcs.size(); ++si) {
       const Source &s = plan.srcs[si];
-      assert(s.row.empty() && "RowPlane 只收原生行源 (analysis::Rows::Native)");
+      assert(!s.at.empty() && "RowPlane 只收尾部行源 (analysis::Rows::Tail)");
       IoSlot::Buf &b = sl.src[si];
-      load_source(rd, s, date, prev, s.cs.io, b);
+      {
+        TraceN("LoadDay");
+        load_source(rd, s, day, s.cs.io, b);
+      }
       const size_t nv = s.cs.n(), R = level_valid_rows(s.level);
       const uint32_t *ids = rd.ids[s.lib];
+      const FeatureRead::DayColumns *cur = b.has_cur ? &b.cur : nullptr, *prev = b.has_prev ? &b.prev : nullptr;
       for (size_t k = 0; k < nv; ++k) {
         const size_t c = s.slot[k];
         const L2::ValidType vt = s.cs.vts[k];
-        feature_storage_t *dst = data.data() + off[c];
-        if (b.has_cur) {
-          const size_t SA = b.cur.A;
-          const feature_storage_t *val = b.cur.col(k), *g = s.cs.gated() ? b.cur.col(nv) : nullptr;
-          for (size_t a = 0; a < A; ++a) {
-            const uint32_t x = ids ? ids[a] : static_cast<uint32_t>(a);
-            assert(x == kAbsent || x < SA);
-            for (size_t r = 0; r < R; ++r)
-              dst[a * R + r] = x == kAbsent ? invalid : fold_cell(val[r * SA + x], g ? g + r * SA + x : nullptr, vt);
-          }
-        } else {
-          std::fill_n(dst, A * R, invalid);
-        }
-        if (b.has_prev) {
-          const size_t SA = b.prev.A, r = R - 1;
-          const feature_storage_t *g = s.cs.gated() ? b.prev.col(nv) + r * SA : nullptr;
-          fold_row(b.prev.col(k) + r * SA, g, vt, A, open.data() + c * A, ids);
-        }
+        feature_storage_t *base = data.data() + off[c] + j * R; // + (a * segs) * R + r
+        for (size_t r = 0; r < R; ++r)
+          fold_span(col_row(cur, k, r), s.cs.gated() ? col_row(cur, nv, r) : nullptr, vt, ids, 0, A, base + r, segs * R);
+        fold_span(col_row(prev, k, R - 1), s.cs.gated() ? col_row(prev, nv, R - 1) : nullptr, vt, ids, 0, A,
+                  open.data() + c * A * segs + j, segs);
       }
     }
   }
@@ -451,7 +449,7 @@ struct RowPlane {
   void clear() {
     rows = off = std::vector<size_t>{};
     data = open = std::vector<feature_storage_t>{};
-    A = n_cols = 0;
+    A = segs = n_cols = 0;
   }
 };
 
@@ -459,7 +457,7 @@ struct RowPlane {
 // Prefetch<Plane>: 双缓冲预读 —— 算 front 的同时后台线程把下一批读进 back
 // ============================================================================
 // 两个池互不重入: 计算池由 worker 线程 dispatch, io 池由预读线程 dispatch.
-// 循环契约 (issue 与 wait 之间不许 return: 预读线程引用着调用方栈):
+// 循环契约 (issue 与 wait 之间不许 return: 预读线程引用着调用方栈) 只在 stream 里写一份:
 //   now(load 0);
 //   for b: { if (有下一批) issue(load b+1);  compute(front());  wait();  if (cancel) return false;  publish;  flip(); }
 template <class Plane>
@@ -500,6 +498,27 @@ struct Prefetch {
   void flip() {
     assert(!th.joinable());
     cur ^= 1;
+  }
+  // 流式批骨架 (Dist / Transform / Corr / OrderFlow Kline 同一份): n 段每批 bs 段, 算本批的同时预读下一批; 取消 → false (半批不发布)
+  //   load(b0, bd) → fn(Plane &, ForkJoin &io, std::vector<IoSlot> &);  compute(const Plane &, b0, bd);  publish(b0, bd)
+  template <class Load, class Compute, class Publish>
+  bool stream(size_t n, size_t bs, const std::atomic<bool> &cancel, Load &&load, Compute &&compute, Publish &&publish) {
+    assert(bs > 0);
+    if (n == 0)
+      return true; // 空日轴: 直接 Done
+    now(load(size_t{0}, std::min(bs, n)));
+    for (size_t b0 = 0; b0 < n; b0 += bs) {
+      const size_t bd = std::min(bs, n - b0);
+      if (b0 + bd < n)
+        issue(load(b0 + bd, std::min(bs, n - b0 - bd)));
+      compute(static_cast<const Plane &>(front()), b0, bd);
+      wait();
+      if (cancel.load(std::memory_order_relaxed))
+        return false;
+      publish(b0, bd);
+      flip();
+    }
+    return true;
   }
   void clear() {
     wait();

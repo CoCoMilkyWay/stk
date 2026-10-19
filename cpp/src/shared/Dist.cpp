@@ -194,7 +194,7 @@ bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> 
     tod_lut[t] = static_cast<uint8_t>(tod_bin_of_row(level, t));
 
   // 段序: 洗牌后按总样本预算截断 (分批后平面只存一批, 内存不约束段数; 预算只是总时长旋钮)
-  const SegPlan plan = plan_segs(rd.lib(), scope_.months, level, DayOrder::Shuffle, std::max<size_t>(1, kMaxTotalSamples / (A * R)));
+  const SegPlan plan = plan_segs(scope_, level, DayOrder::Shuffle, std::max<size_t>(1, kMaxTotalSamples / (A * R)));
   if (plan.size() == 0)
     return true;
   const size_t n_sel = plan.size();
@@ -212,7 +212,7 @@ bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> 
   rt.pub.agg_stride = agg_stride;
 
   // ==========================================================================
-  // 批循环: 下一批 IO 后台预读, 本批两相 (扫描 → 归约), 每相一次 dispatch (返回即栅栏);
+  // 批循环 (Prefetch::stream): 下一批 IO 后台预读, 本批两相 (扫描 → 归约), 每相一次 dispatch (返回即栅栏);
   // 批末发布在本线程 (单线程, 天然串行)
   // ==========================================================================
   Runtime::Shard &acc = rt.shards[0]; // 归约终点 = 全程累加器
@@ -252,20 +252,14 @@ bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> 
     publish(bd);
   };
 
-  // 批 b0 的 IO (预读线程或本线程跑; 只写传入的平面)
-  const auto load = [&](size_t b0) {
-    return [&, b0](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
-      pl.load_batch(io, slots, rd, rp, plan, b0, std::min(BS, n_sel - b0), cancel);
+  // 批 [b0, b0 + bd) 的 IO (预读线程或本线程跑; 只写传入的平面)
+  const auto load = [&](size_t b0, size_t bd) {
+    return [&, b0, bd](TsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
+      pl.load_batch(io, slots, rd, rp, plan, b0, bd, cancel);
     };
   };
-  rt.pf.now(load(0));
 
-  for (size_t b0 = 0; b0 < n_sel; b0 += BS) {
-    const size_t bd = std::min(BS, n_sel - b0);
-    if (b0 + BS < n_sel)
-      rt.pf.issue(load(b0 + BS)); // issue → wait 之间不许 return
-    const TsPlane &pl = rt.pf.front();
-
+  const auto compute = [&](const TsPlane &pl, size_t b0, size_t bd) {
     // ------------------------------------------------------------------
     // Phase 扫描: kAssetBlock 个资产一任务 (a = 库轴下标), 全在锁外, 聚合进本 tid 的 shard
     // ------------------------------------------------------------------
@@ -344,14 +338,8 @@ bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> 
     // Phase 归约: shard 两两并行归约到 shard 0, 全程锁外 (shard 0 = 全程累加器, 其余清零供下批)
     // ------------------------------------------------------------------
     reduce_tree(ex, rt.shards);
-
-    rt.pf.wait();
-    if (cancel.load(std::memory_order_relaxed))
-      return false; // 半批不发布
-    publish_batch(bd);
-    rt.pf.flip();
-  }
-  return true;
+  };
+  return rt.pf.stream(n_sel, BS, cancel, load, compute, [&](size_t, size_t bd) { publish_batch(bd); });
 }
 
 // ============================================================================

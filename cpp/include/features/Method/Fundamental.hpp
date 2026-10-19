@@ -7,10 +7,11 @@
 //           状态才对; 回测日前只推事件指针, 不碰网格), 然后产出当日 Fund::kCount 列 (布局 Fund::Out, 缺失 = NaN,
 //           fp16 存不下的极值也归 NaN). 总算力 = per-A 沿 D 轴一遍, 与预计算相同.
 //
-// PIT 口径 (与 qmt 完全一致):
-//   cutoff=-1 (承认滞后, row D=T 取 T-1 可见): bar1d/shares/limit_price/industry/dividend/financial_ttm/balance/income/forecast
-//   cutoff=0  (盘前可知): status(st/susp), margin_trading_detail, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
-//   涨跌停价: cutoff=-1 后 row T 即 "T 当日适用涨跌停" (基于 T-1 close 推出), 直接配盘中实时价判触板.
+// PIT 口径 (row D = D 日盘前可知; 逐表见 .cpp GridScan / EventScan, Fund 节点前另列 L_day 对齐):
+//   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast
+//   cutoff=0  (T 盘前可知): status(st/susp), shares, limit_price, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
+//   涨跌停价: row T 即 "T 当日适用涨跌停" (由 pre_close(T) 推出), 直接配盘中实时价判触板.
+//   D 轴 = 交易日历截到 today 之后的首个交易日 (Fund 收盘推进到 d+1, 末回测日的次日也在轴内).
 //   三表 raw (qmt 无): 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
 //
 // fast-math 契约: 输出行被 -ffast-math TU (Valuation 节点/CoreLob) 盲算消费 — 只做算术 (NaN 硬件透传) 与

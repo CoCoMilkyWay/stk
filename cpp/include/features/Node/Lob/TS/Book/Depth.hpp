@@ -13,8 +13,8 @@
 //   跨天: reset() 清空 4 组序列 —— 当日首次盘口更新前序列为空, onMinute 采样节点据此给 NaN, 不读昨日尾值.
 //   涨跌停保护: 边界 = Fund 的当日适用涨跌停价 (PIT, 与 Valuation 同源; ST 5% / 无限制 NaN 都在数据里),
 //              超限价位强制为边界价, qty=1股. 边界 NaN (无限制 / 缺失) → 比较恒 false → 不钳.
-//   只接 Fund.y[Fund.lim_up] / Fund.y[Fund.lim_dn] 两口 (非 Fund.out()): Fund compute=onDay 盘前已写 y,
-//   其 Series 要到首个分钟 flush 才有当日值, 而盘口在 9:15 就开始更新. 单口引用也让 CMake 依赖表只记这两列.
+//   只接 Fund.out(Fund.lim_up) / Fund.out(Fund.lim_dn) 两口: Fund 是日频节点, 盘前承接后 back() 即当日适用值 (9:15 起可读).
+//   单口引用也让 CMake 依赖表只记这两列.
 //   【fast-math 契约】不做 isnan; NaN 边界靠 "比较遇 NaN 恒 false" 透传 (与 Valuation 同约).
 // =============================================================================
 
@@ -30,7 +30,7 @@ public:
   // 源层节点: 无标量输出口 (kCount = 0), 自持 4 组 N 个价位 CBuffer, 下游按 Depth.bid_qty 等直接引用
   enum Out : size_t { kCount = 0 };
 
-  Depth(const TickData &tick_data, const float &lim_up, const float &lim_dn)
+  Depth(const TickData &tick_data, const Series &lim_up, const Series &lim_dn)
       : tick_data_(tick_data), lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   Series bid_price[N_LEVELS];
@@ -42,8 +42,9 @@ public:
   inline void compute() {
     const LOB_Feature &lob = tick_data_.lob;
     const auto &depth = lob.depth_buffer;
-    const float limit_up = lim_up_ + kPxEps;
-    const float limit_down = lim_dn_ - kPxEps;
+    const float lim_up = lim_up_.back(), lim_dn = lim_dn_.back();
+    const float limit_up = lim_up + kPxEps;
+    const float limit_down = lim_dn - kPxEps;
 
     for (size_t i = 0; i < N_LEVELS; ++i) {
       const Level *bid_level = depth[L2::LOB_DEPTH + i];     // 买 i+1 价位
@@ -55,15 +56,15 @@ public:
       float aq = std::min(static_cast<float>(ask_level->net_quantity), 0.0f); // 负值
 
       if (bp > limit_up) [[unlikely]] {
-        bp = lim_up_, bq = LIMIT_QTY;
+        bp = lim_up, bq = LIMIT_QTY;
       } else if (bp < limit_down) [[unlikely]] {
-        bp = lim_dn_, bq = LIMIT_QTY;
+        bp = lim_dn, bq = LIMIT_QTY;
       }
 
       if (ap > limit_up) [[unlikely]] {
-        ap = lim_up_, aq = -LIMIT_QTY;
+        ap = lim_up, aq = -LIMIT_QTY;
       } else if (ap < limit_down) [[unlikely]] {
-        ap = lim_dn_, aq = -LIMIT_QTY;
+        ap = lim_dn, aq = -LIMIT_QTY;
       }
 
       bid_price[i].push_back(bp);
@@ -85,8 +86,8 @@ public:
 
 private:
   const TickData &tick_data_;
-  const float &lim_up_, &lim_dn_; // Fund 节点当日涨 / 跌停价 (元), 引用 y[] 槽位
+  const Series &lim_up_, &lim_dn_; // Fund 日频口: 当日涨 / 跌停价 (元)
 };
 
 // ---- 节点实例 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Depth(N) N(Depth, (Depth<L2::LOB_DEPTH>), (tick_data, Fund.y[Fund.lim_up], Fund.y[Fund.lim_dn]), onDepth)
+#define NODE_Depth(N) N(Depth, (Depth<L2::LOB_DEPTH>), (tick_data, Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn)), onDepth)

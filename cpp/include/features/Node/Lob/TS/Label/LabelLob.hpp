@@ -98,9 +98,9 @@ public:
   LabelLob(const TickData &td, const MinuteData &md,
            const DepthSeries &bid_price, const DepthSeries &ask_price,
            const DepthSeries &bid_qty, const DepthSeries &ask_qty,
-           const float &lim_up, const float &lim_dn)
+           const Series &lim_up, const Series &lim_dn)
       : td_(td), md_(md), bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty),
-        lim_up_(lim_up), lim_dn_(lim_dn) {}
+        lim_up_src_(lim_up), lim_dn_src_(lim_dn) {}
 
   // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
   // 换秒 (或本次更新不可成交) 时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
@@ -172,9 +172,12 @@ public:
     close_day(traded, close_px, at_price(close_px), writer, release, [&](size_t m, const Snapshot &e) { write_cost(m, e, writer); });
   }
 
-  // 每日重置: 快照环作废, 行游标归零
+  // 每日重置: 快照环作废, 行游标归零; 当日涨跌停价取 Fund 日频口 back() (盘前承接之后 = 当日适用, 收盘后 Fund 已推进到次日)
   inline void reset() {
     LabelHold::reset();
+    assert(!lim_up_src_.empty() && !lim_dn_src_.empty() && "LabelLob: Fund 日频口盘前须已承接");
+    lim_up_ = lim_up_src_.back();
+    lim_dn_ = lim_dn_src_.back();
     for (auto &snap : ring_)
       snap.valid = false;
     pending_sec_ = kNoPending; // 昨日最后一个活跃秒不结算 (当日 ring 已整体作废)
@@ -305,7 +308,8 @@ private:
   const DepthSeries &ask_price_;
   const DepthSeries &bid_qty_;
   const DepthSeries &ask_qty_;
-  const float &lim_up_, &lim_dn_; // Fund 当日涨跌停价 (盘前已知), 簿子吃不完时补齐余量用
+  const Series &lim_up_src_, &lim_dn_src_; // Fund 日频口 (lim_up / lim_dn)
+  float lim_up_ = kNaN, lim_dn_ = kNaN;    // 当日涨跌停价 (reset 时取), 簿子吃不完时补齐余量用
 
   static constexpr size_t kNoPending = SIZE_MAX;
 

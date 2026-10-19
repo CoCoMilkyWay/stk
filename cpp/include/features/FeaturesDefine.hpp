@@ -73,8 +73,10 @@
 //              盘前即需的日频值直接引 y 槽 Up.y[Up.port] (Fund 的 Series 首个分钟 flush 才有值, 见 Fund.hpp).
 //              必须字面写在这一行 (CMake 按 "Up." 抽依赖; Up.out(Up.port) / Up.y[Up.port] 记单口, 其余记整节点), 不要藏进 helper 宏
 //     触发域   Trigger:: 下的名字. 采样型只写一个 (compute 与 flush 同域);
-//              降频型写两个: compute=onTick, flush=onMinute; 广播型 (日频): compute=onDay, flush=onMinute;
-//              分钟箱型: on5Min / on15Min / on30Min / on60Min (读 min<n>_data n 分钟 K, 箱末结算); 日型: onClose (读 day_data 整日 K, 收盘结算)
+//              降频型写两个: compute=onTick, flush=onMinute;
+//              分钟箱型: on5Min / on15Min / on30Min / on60Min (读 min<n>_data n 分钟 K, 箱末结算); 日型: onClose (读 day_data 整日 K, 收盘结算);
+//              盘后型: onSettle (onClose 之后; 日频 PIT 推进到次日盘前, 如 Fund).
+//              日型 / 盘后型 = 日频节点: Series 跨天保留, 盘中下游读 back() = 前一交易日 L_day 行的值 (当日盘中全程可 act on)
 //     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游节点
 //
 // 截面列文件 (Node/<Tier>/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
@@ -104,8 +106,8 @@
 //
 // 加特征 = 改 (或新建) 一个节点文件. 删特征 = 删几行 / 删文件. 其他地方不动.
 // 顺序保证: DAG 按拓扑序声明成一条链, 节点只看得到排在自己前面的节点 → 引用了排后面的节点 = 编译错误.
-// 各触发域执行顺序: 盘前 (节点 reset 后) → onDay; 一个 tick 内 onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute;
-// 分钟箱末分钟 (onMinute 之后) → on5Min → on15Min → on30Min → on60Min → (末分钟) onClose (细层先结算, 粗层节点可读细层节点当行值).
+// 各触发域执行顺序: 盘前 (日内节点 reset / 日频节点 carry 后) → onDay; 一个 tick 内 onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute;
+// 分钟箱末分钟 (onMinute 之后) → on5Min → on15Min → on30Min → on60Min → (末分钟) onClose → onSettle (细层先结算, 粗层节点可读细层节点当行值).
 // 字段表改动会改变落盘布局: 文件头带表指纹, 读旧文件即断言失败, 需重算.
 // 标签 (LabelLob) 回填别的时间行, 不走节点表, 在 LobGraph.hpp 手工声明.
 
@@ -203,7 +205,7 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
 //   L_5min / L_15min / L_30min / L_60min 分钟箱: 每箱末一行 (稠密, 箱长 = BIN_MINUTES, 箱见 TimeIndex.hpp)
 //   L_day 日: 收盘一行
 // 行由 worker 在本层节拍写 (CoreTs / CoreLob), 值 = 被引节点 Series 的最新值 (Node::last), 与节点 flush 域无关:
-//   高频行引低频节点 = 最近一次低频值 (日频节点 onDay 算 → 分钟行读到当日值; on30Min 节点 → 分钟行读到上一箱值);
+//   高频行引低频节点 = 最近一次低频值 (日频节点 → 分钟行读到前一交易日 L_day 行的值; on30Min 节点 → 分钟行读到上一箱值);
 //   低频行引高频节点 = 节拍时刻 (箱末 / 收盘) 的值.
 //   节点间只经 Series 传值, 对齐由 Series 天然完成, DAG 里不写对齐; 张量只经 worker 预设接口 (fstore) 读写, 节点不碰.
 enum FeatureLevel : size_t { L_sec,
@@ -307,7 +309,8 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 //   L_min    分钟频 (T = L_MIN_ROWS)
 //   L_5min / L_15min / L_30min / L_60min  分钟箱频 (T = bin_rows(n)): 箱末行 (CoreTs::close_row 写, 箱划分见 TimeIndex.hpp);
 //            on5Min / on15Min / on30Min / on60Min 节点的原生层
-//   L_day    日频 (T = L_DAY_ROWS): 收盘行 (= 整日箱, CoreTs::close_row 末分钟写); onClose 节点的原生层.
+//   L_day    日频 (T = L_DAY_ROWS): 收盘行 (= 整日箱, CoreTs::close_row 末分钟写, onSettle 之后); onClose / onSettle 节点的原生层.
+//            行 D = D 日收盘后至 D+1 开盘前可知的值, D+1 盘中全程可 act on (高频读它即读前一交易日行).
 //            本身是日频的数据 (基本面 / 状态 / 票池) 放这里, 不在分钟层逐分钟复写
 //   每层每天一个日文件, 内带列目录, 按列选读 (见 FeatureDay.hpp; 列是否沿 T 轴 XOR 差分由写端逐列按数据定)
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)

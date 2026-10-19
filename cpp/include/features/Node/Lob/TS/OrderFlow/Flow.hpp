@@ -16,7 +16,7 @@
 //   不单列 (因子层做): 总额 / 量 / 笔 = 买 + 卖 按行求和; 开盘 / 收盘集合竞价成交 = 09:25 行 (t_min=10) / 末行 (t_min=254) 的 taker 口;
 //   K 线见 Basic/Kline.hpp.
 //   fp16 落盘: 额 / 量 / 笔 用 Log Tf; 价 / 基点 原值.
-//   只接 Fund.y[Fund.lim_up] / Fund.y[Fund.lim_dn] 两口 (非 Fund.out()): 委托 9:15 就开始, Fund 的 Series 要到首个分钟 flush 才有当日值 (与 Depth 同法).
+//   只接 Fund.out(Fund.lim_up) / Fund.out(Fund.lim_dn) 两口: Fund 日频口盘前承接后 back() 即当日适用值, 委托 9:15 起可读 (与 Depth 同法).
 // =============================================================================
 
 #include "codec/L2_DataType.hpp"
@@ -59,7 +59,7 @@ public:
   static_assert(vol_maker_lim_bid == NG * 2);
   float y[kCount] = {};
 
-  Flow(const TickData &td, const MinuteData &md, const Series &taker_dlogp, const float &lim_up, const float &lim_dn)
+  Flow(const TickData &td, const MinuteData &md, const Series &taker_dlogp, const Series &lim_up, const Series &lim_dn)
       : td_(td), md_(md), taker_dlogp_(taker_dlogp), lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   inline void compute() {
@@ -88,9 +88,9 @@ public:
       acc_[4][s] += lob.price * v, acc_[5][s] += v, acc_[6][s] += 1.0f; // price=0 (市价单) → 额 0
       // 彩票委托: 买单挂跌停价 / 卖单挂涨停价 (边界 NaN → 比较恒 false → 不计)
       if (s == 0) {
-        if (lob.price <= lim_dn_ + kPxEps && lob.price > 0.0f)
+        if (lob.price <= lim_dn_.back() + kPxEps && lob.price > 0.0f)
           vol_lim_[0] += v;
-      } else if (lob.price >= lim_up_ - kPxEps) {
+      } else if (lob.price >= lim_up_.back() - kPxEps) {
         vol_lim_[1] += v;
       }
       break;
@@ -116,8 +116,8 @@ public:
     const float vol_total = acc_[1][0] + acc_[1][1];
     if (vol_total > 0.0f)
       vwap_last_ = amt_total / vol_total;
-    else if (vwap_last_ <= 0.0f && lim_up_ > 0.0f)
-      vwap_last_ = (lim_up_ + lim_dn_) * 0.5f;
+    else if (vwap_last_ <= 0.0f && lim_up_.back() > 0.0f)
+      vwap_last_ = (lim_up_.back() + lim_dn_.back()) * 0.5f;
     y[vwap] = vwap_last_;
 
     // twap: 末笔持有到分钟末; 当日尚无成交 (span 0) → 退 vwap (同源同刻, 不产 NaN)
@@ -147,8 +147,8 @@ private:
 
   const TickData &td_;
   const MinuteData &md_;
-  const Series &taker_dlogp_;     // TakerRet 输出口 (onTaker 先于 onTick, back() 即本笔值)
-  const float &lim_up_, &lim_dn_; // Fund 节点当日涨 / 跌停价 (元), 引用 y[] 槽位
+  const Series &taker_dlogp_;      // TakerRet 输出口 (onTaker 先于 onTick, back() 即本笔值)
+  const Series &lim_up_, &lim_dn_; // Fund 日频口: 当日涨 / 跌停价 (元)
 
   float acc_[NG][2] = {}; // [组][侧]: 组序 = enum 前 NG 组; 侧 = {bid, ask}
   float vol_30a_ = 0.0f;
@@ -159,7 +159,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Flow(N) N(Flow, (Flow), (tick_data, minute_data, TakerRet.out(), Fund.y[Fund.lim_up], Fund.y[Fund.lim_dn]), onTick, onMinute)
+#define NODE_Flow(N) N(Flow, (Flow), (tick_data, minute_data, TakerRet.out(), Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn)), onTick, onMinute)
 
 // 一个事件类型 e (taker/maker/cancel) 的 额/量/笔 × 买/卖 6 行; E = 公式事件上标, EN / CN = 英 / 中文事件名 (字面串)
 #define FLOW_EVENT_ROWS(X, CAT1, e, E, EN, CN)                                                                                                                                             \

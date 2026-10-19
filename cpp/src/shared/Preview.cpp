@@ -224,7 +224,7 @@ bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<boo
       lv->prepare(p, A, As, n_threads);
       return lv;
     });
-    rt.lv[l]->plan = plan_segs(rd.lib(), scope_.months, l, DayOrder::Shuffle, kPvRounds);
+    rt.lv[l]->plan = plan_segs(scope_, l, DayOrder::Shuffle, kPvRounds);
     n_rounds = std::max(n_rounds, rt.lv[l]->plan.size());
     n_total += rt.lv[l]->plan.size();
   }
@@ -268,15 +268,16 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
     constexpr float kF16Rel = 1.0f / 1024.0f;   // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
     const uint32_t *cage_ids = rd.ids[kAllLib]; // nullptr = 主库即 all (同轴); all = 全轴, 不会 kAbsent
     for (size_t d = 0; d < days; ++d) {
-      const misc::Ymd date = plan.dates[r * days + d];
-      n_real += date != 0;
-      if (date != 0)
-        rd.of(kAllLib).load_day_columns(date, pv.spec.cage, rt.cage_day);
+      const Day day = plan.day(r * days + d);
+      n_real += day.date != 0;
+      const bool has = day.has_prev & lib_bit(kAllLib); // 当日适用涨跌停 = 前一交易日 L_day 行; all 库那天没落盘 / 轴首 = 笼缺 (NaN)
+      if (has)
+        rd.of(kAllLib).load_day_columns(day.prev, pv.spec.cage, rt.cage_day);
       for (size_t k = 0; k < n_draw; ++k) {
         const size_t a = rt.asset_order[(a_off + k) % A];
         const size_t s = cage_ids ? cage_ids[a] : a;
-        const float dn = date ? static_cast<float>(rt.cage_day.col(0)[s]) : kNaN; // L_day 行 0 (当日常量)
-        const float up = date ? static_cast<float>(rt.cage_day.col(1)[s]) : kNaN;
+        const float dn = has ? static_cast<float>(rt.cage_day.col(0)[s]) : kNaN; // L_day 行 0 (日常量)
+        const float up = has ? static_cast<float>(rt.cage_day.col(1)[s]) : kNaN;
         cage_dn[k * days + d] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
         cage_up[k * days + d] = up + (std::fabs(up) * kF16Rel + kPxEps);
       }

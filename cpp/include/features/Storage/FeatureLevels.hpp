@@ -85,6 +85,12 @@ struct PerLib {
   }
   bool operator==(const PerLib &) const = default;
 };
+// 库集位 (位 = LibId; PerLib<bool> 的紧凑形): 日轴每天哪些库落了盘 / 日轴取哪些库
+using LibMask = uint32_t;
+inline constexpr LibMask lib_bit(LibId l) {
+  assert(l < 32 && "库表超出 LibMask 位宽");
+  return LibMask{1} << l;
+}
 
 // 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读 side 档 (写端截面; 读端不受它约束, 列读自己的库)
 namespace tier_of {

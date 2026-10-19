@@ -326,7 +326,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   };
   // ---- 作用域 / 日期 ----
   FeatureRead reader(req.scope.lib(), &cancel_);
-  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(reader, req.scope.months).dates;
+  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty())
     return abort_with("特征库在该区间无数据 (先算特征)");
   const int days = static_cast<int>(dates.size());

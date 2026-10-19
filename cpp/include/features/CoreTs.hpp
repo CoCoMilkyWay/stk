@@ -15,11 +15,11 @@
 
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
-//   日:   begin_day  句柄进日环 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         end_day    advance 到收盘 (末分钟级联收 L_day 行) → 标签收盘结算 → 日末 flush → 归零分钟 / 分钟箱 / 日 bar 缓冲
+//   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
+//         end_day    advance 到收盘 (末分钟级联收 L_day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 归零分钟 / 分钟箱缓冲 (日 bar 跨天保留)
 //         empty_day  无数据日 = 零事件日, 同一路径
 //   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_min 以上各层当前行
-//                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_min 已出) → 该层节拍域 (beat_of) → 写该层行 + ts_valid
+//                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_min 已出) → 该层节拍域 (beat_of; L_day 另跟 onSettle) → 写该层行 + ts_valid
 //                     → 有成交则标签 minute_closed. L_min / 分钟箱层 / L_day 同一路径, 两档同一路径
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
@@ -58,7 +58,8 @@ public:
     dag_.at_day_end();
     dag_.minute_data.clear();
     for (BinData graph::Root::*b : graph::BIN_DATA)
-      (dag_.*b).clear();
+      if (b != &graph::Root::day_data)
+        (dag_.*b).clear();
   }
 
   // 无数据日 (缺 binary / 无 bar1m) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟级联收行 / 标签日历),
@@ -138,6 +139,8 @@ private:
     if constexpr (LVL != L_min)
       min2bin_[LVL - L_5min].emit(r);
     dag_.template run<beat_of(LVL)>();
+    if constexpr (LVL == L_day)
+      dag_.template run<Trigger::onSettle>();
     const float flag = meta_.flag<LVL>();
     if constexpr (T::has(LVL)) {
       constexpr size_t F = field_of<T>(LVL, "ts_valid");

@@ -408,38 +408,31 @@ struct Engine {
   bool run(const PerLib<const FeatureRead *> &fr, const ReadScope &scope, const CorrSpec &spec,
            const CorrPlan &p, const std::atomic<bool> &cancel, Progress &board, Publish &&publish_step) {
     const Readers rd = scope.readers(fr);
-    const SegPlan sample = plan_segs(rd.lib(), scope.months, spec.level(), DayOrder::Shuffle, kCorrDays);
+    const SegPlan sample = plan_segs(scope, spec.level(), DayOrder::Shuffle, kCorrDays);
     const size_t n_days = sample.size();
     if (n_days == 0)
       return true; // 库为空: 直接 Done, 快照全空
     board.total.store(n_days, std::memory_order_release);
     prepare(spec, scope.axis.size(), scope.sizes(), p);
 
-    // 第 d0 步的 IO (预读线程或本线程跑; 只写传入的平面, 切片行号随之填)
-    const auto load = [&](size_t d0) {
-      return [&, d0](CsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
-        const size_t bd = std::min(days, n_days - d0);
+    // 步 [d0, d0 + bd) 的 IO (预读线程或本线程跑; 只写传入的平面, 切片行号随之填)
+    const auto load = [&](size_t d0, size_t bd) {
+      return [&, d0, bd](CsPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
         for (size_t j = 0; j < bd; ++j)
           plan.fill_slices(spec.level(), d0 + j, n_days, pl.slice_t.data() + j * S);
         pl.load_batch(io, slots, rd, spec.plan, sample, d0, bd, cancel);
       };
     };
-    pf.now(load(0));
-
-    for (size_t d0 = 0; d0 < n_days; d0 += days) {
-      const size_t bd = std::min(days, n_days - d0);
-      if (d0 + days < n_days)
-        pf.issue(load(d0 + days)); // issue → wait 之间不许 return
-      rank(pf.front(), bd, cancel);
-      accumulate(bd, cancel);
-      pf.wait();
-      if (cancel.load(std::memory_order_relaxed))
-        return false; // 半步不发布
-      publish_step();
-      board.publish(bd);
-      pf.flip();
-    }
-    return true;
+    return pf.stream(
+        n_days, days, cancel, load,
+        [&](const CsPlane &pl, size_t, size_t bd) {
+          rank(pl, bd, cancel);
+          accumulate(bd, cancel);
+        },
+        [&](size_t, size_t bd) {
+          publish_step();
+          board.publish(bd);
+        });
   }
 
   // 相: 秩 (行一任务, 粒度细尾部不空转) → 等价类 + 对角账 (单线程)

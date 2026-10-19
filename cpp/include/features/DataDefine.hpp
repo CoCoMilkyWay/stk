@@ -22,7 +22,7 @@
 // 声明 (compute 触发, flush 触发), LobGraph 按 CMake 汇总的 NODES 表展开成直线调度代码.
 //----------------------------------------------------------------------------------------
 enum class Trigger : uint8_t {
-  onDay,    // 盘前 (begin_day, 节点 reset 之后): 日频节点的 compute 域, 配 flush=onMinute 盘中广播
+  onDay,    // 盘前 (begin_day, 节点 reset / carry 之后)
   onTaker,  // 成交单
   onMaker,  // 挂单
   onCancel, // 撤单
@@ -33,9 +33,12 @@ enum class Trigger : uint8_t {
   on15Min,
   on30Min,
   on60Min,
-  onClose, // 收盘 (L_day 一日一次, 末分钟 on60Min 之后; 整日箱, 含无成交日, 同 onMinute 约定)
+  onClose,  // 收盘 (L_day 一日一次, 末分钟 on60Min 之后; 整日箱, 含无成交日, 同 onMinute 约定)
+  onSettle, // 盘后 (onClose 之后, L_day 行写之前): 日频 PIT 推进到次日盘前 (Fund); 本域节点读到的是本日收盘全部节点值
 };
 // onMinute .. onClose = 层 L_min .. L_day 的收行节拍 (同序连续, 见 FeaturesDefine.hpp beat_of)
+// 日频节点 = flush 域 onClose / onSettle: Series 跨天保留 (不 reset), 盘中下游读 back() = 前一交易日 L_day 行的值
+inline constexpr bool is_day_trigger(Trigger t) { return t == Trigger::onClose || t == Trigger::onSettle; }
 
 //----------------------------------------------------------------------------------------
 // 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 个价位 = DepthSeries (Depth 的 bid_qty 等)
@@ -62,7 +65,8 @@ inline constexpr float kPxEps = 1e-4f;
 // (串行/并行/分片) 且与实盘推流逐值一致, 全系于此; 截面信息的表达一律走 CS 层与因子层.
 //   void compute();                          // 采样型: 直接写 y
 //   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后推入)
-//   void reset();   (可选)                   // 有跨天状态才写
+//   void reset();   (可选)                   // 有跨天状态才写 (日内节点; 日频节点不 reset)
+//   bool carry();   (可选, 日频节点)         // 盘前承接: 输出 Series 不是当日盘前态 (区间首日 / 日期轴跳日) → 写 y 并返回 true, Node 推入一格
 // 单侧节点 (只看一侧盘口) 只收那一侧的 DepthSeries, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
 // 输出缓冲由 graph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 TS(节点, 口) 引用.
 // 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在节点文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).

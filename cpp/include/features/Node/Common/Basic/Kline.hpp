@@ -39,6 +39,6 @@ public:
 
 private:
   const Bars &md_;
-  const Series &pre_close_; // Fund 口 (onMinute 域, 拓扑序在前 / 行末 onMinute 先于 on<n>Min / onClose, back() 即当日值)
+  const Series &pre_close_; // Fund 日频口 (back() = 当日前收; Fund 的 onSettle 晚于 onClose, 日 K 收盘时仍是当日值)
 };
 using Kline = KlineT<MinuteData>;

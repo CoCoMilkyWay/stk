@@ -16,6 +16,7 @@
 #include "implot.h"
 #include "implot_internal.h"
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -75,13 +76,15 @@ static void FormatDateShort(char *buf, size_t size, misc::Ymd date) {
   std::snprintf(buf, size, "%02d/%02d/%02d", date / 10000 % 100, date / 100 % 100, date % 100);
 }
 
-// 选中特征列 (跨库跨层): 多选集合 (ColRef 序), 截断 MAX_FEATURES. 各列读自己的库, 资产不在该库 / 该库缺这天 = 无点
-static std::vector<ColRef> CollectFeats(const Feature::Selection &sel) {
+// 选中特征列 (跨库跨层): 多选集合 (ColRef 序) 中不细于图网格 min_level 的列, 截断 MAX_FEATURES.
+// 各列读自己的库, 资产不在该库 / 该库缺这天 = 无点
+static std::vector<ColRef> CollectFeats(const Feature::Selection &sel, size_t min_level) {
   std::vector<ColRef> v;
   for (const ColRef &c : sel.picked) {
     if (v.size() >= OrderFlowConst::MAX_FEATURES)
       break;
-    v.push_back(c);
+    if (c.level >= min_level)
+      v.push_back(c);
   }
   return v;
 }
@@ -691,7 +694,8 @@ static void RenderMinPlot(SharedData &data, float height) {
     // 缺失日竖条: 已发布前缀里该资产无 data_valid 分钟的 day_idx → 淡黄色竖 stripe
     // (alpha 0.1) 打底, 画在 K 线之前以免遮挡. 缓存键 (kline_gen, pub_days), 流式
     // 追加 / 换资产 / 重扫日期都使 gen 变 → 自动失效. 二分判定每日有无 K 线点.
-    if (ready && pub_days > 0) {
+    // 只在单库日轴时画 (多库叠加 = 并集日轴, 各库自己画自己有的日, 缺日不标)
+    if (ready && pub_days > 0 && std::has_single_bit(ui.kline_libs)) {
       const uint32_t cur_gen = ui.kline_gen & 0xFFFF;
       if (ui.min_missing_days_gen != cur_gen || ui.min_missing_days_pub_days != pub_days) {
         ui.min_missing_days_gen = cur_gen;
@@ -989,19 +993,26 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  // 两图同一组选中列 (跨层跨档; 网格: 图2 = L_min, 图1 = L_sec, 各点尾部对齐)
-  const std::vector<ColRef> feats = CollectFeats(sel);
-  if (rescan || ui.kline_asset != asset_idx || ui.kline_feats != feats) {
+  // 两图同一组选中列 (跨层跨档), 各截到图的网格 (图2 = L_min, 图1 = L_sec; 细于网格的列不进), 各点尾部对齐.
+  // 图2 日轴 = 库集 (主库 + overlay 各库) 落盘日的并集: 库集变了 = 日轴变了 → 重扫
+  const std::vector<ColRef> kline_feats = CollectFeats(sel, L_min), depth_feats = CollectFeats(sel, L_sec);
+  LibMask kline_libs = lib_bit(service->main());
+  for (const ColRef &c : kline_feats)
+    kline_libs |= lib_bit(c.lib);
+  const bool relib = ui.kline_libs != kline_libs;
+  if (rescan || relib || ui.kline_asset != asset_idx || ui.kline_feats != kline_feats) {
     ui.kline_asset = asset_idx;
-    ui.kline_feats = feats;
+    ui.kline_feats = kline_feats;
+    ui.kline_libs = kline_libs;
     ++ui.kline_gen;
-    ui.min_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
-    ui.kline_rescan_pending = rescan || ui.min_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
-    if (rescan) {                                            // 主库 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
+    ui.min_last_pub_days = SIZE_MAX; // 换代: 重置轴管理
+    // dates 会被重扫 (或首次建) → 期间不可读; 粘到新代落定 (重扫请求可能被后一请求覆盖, 后者须照带)
+    ui.kline_rescan_pending |= rescan || relib || ui.min_x_max <= 0.0;
+    if (rescan) { // 主库 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
       ui.depth_date = 0;
       of.pick.req_date = 0;
     }
-    service->RequestKline(data, ui.kline_gen, asset_idx, feats, rescan);
+    service->RequestKline(data, ui.kline_gen, asset_idx, kline_feats, ui.kline_rescan_pending);
   }
 
   // Kline 发布状态 (anchor 默认值需要 dates)
@@ -1011,7 +1022,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const bool kline_ready = (pub_gen == (ui.kline_gen & 0xFFFF));
   if (kline_ready && ui.kline_rescan_pending) {
     ui.kline_rescan_pending = false; // dates 已随新代落定
-    // 锚点日须在主库日轴上 (读计划按主库判有无): 在 = 按新轴重定位, 不在 = 回首日
+    // 锚点日须在新日轴上: 在 = 按新轴重定位, 不在 = 回首日
     const auto &dates = of.kline.dates;
     const auto it = std::lower_bound(dates.begin(), dates.end(), ui.min_anchor_date);
     if (it != dates.end() && *it == ui.min_anchor_date)
@@ -1025,14 +1036,14 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.min_anchor_date = of.kline.dates.front();
   }
 
-  // 图1 特征 = 同一组选中列, 只取锚点日
+  // 图1 特征 = 同一组选中列 (≥ L_sec), 只取锚点日
   if (ui.min_anchor_date && !ui.kline_rescan_pending &&
-      (ui.depth_date != ui.min_anchor_date || ui.depth_asset != asset_idx || ui.depth_feats != feats)) {
+      (ui.depth_date != ui.min_anchor_date || ui.depth_asset != asset_idx || ui.depth_feats != depth_feats)) {
     ui.depth_date = ui.min_anchor_date;
     ui.depth_asset = asset_idx;
-    ui.depth_feats = feats;
+    ui.depth_feats = depth_feats;
     ++ui.depth_gen;
-    service->RequestDepth(data, ui.depth_gen, ui.min_anchor_date, asset_idx, feats);
+    service->RequestDepth(data, ui.depth_gen, ui.min_anchor_date, asset_idx, depth_feats);
   }
 
   // ==========================================================================

@@ -76,7 +76,7 @@ public:
   static_assert(qty_imb_auc2 == n_snap_auc1 + 15);
   float y[kCount] = {};
 
-  Auction(const TickData &td, const float &pre_close) : td_(td), pre_close_(pre_close) {}
+  Auction(const TickData &td, const Series &pre_close) : td_(td), pre_close_(pre_close) {}
 
   inline void compute() {
     const uint32_t t_sec = td_.sec_index;
@@ -159,7 +159,7 @@ public:
         y[qty_match_auc2] = match_end_[0];
         y[qty_imb_auc2] = imb_end_[0];
       } else { // 至此全日无委托: 簿空, 价取前收 (Fund 日频 PIT), 量口 0
-        y[px_auc1 + k] = y[px_max_auc1 + k] = y[px_min_auc1 + k] = pre_close_;
+        y[px_auc1 + k] = y[px_max_auc1 + k] = y[px_min_auc1 + k] = pre_close_.back();
         y[qty_match_auc1 + k] = y[qty_imb_auc1 + k] = 0.0f;
       }
     }
@@ -184,7 +184,7 @@ public:
 
 private:
   const TickData &td_;
-  const float &pre_close_; // Fund 当日前收 (元, 盘前已知), 引用 y[] 槽位; 全日无委托时的簿价兜底
+  const Series &pre_close_; // Fund 日频口: 当日前收 (元); 全日无委托时的簿价兜底
 
   float maker_vol_[2][2] = {}, maker_n_[2][2] = {}; // [阶段][侧]
   float cancel_vol_[2] = {}, cancel_n_[2] = {};     // [侧], 仅 𝒯₁
@@ -200,7 +200,7 @@ private:
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define NODE_Auction(N) N(Auction, (Auction), (tick_data, Fund.y[Fund.pre_close]), onTick, onMinute)
+#define NODE_Auction(N) N(Auction, (Auction), (tick_data, Fund.out(Fund.pre_close)), onTick, onMinute)
 
 // 一个阶段 k (数字 token; K = 阶段中文, T = 时段字面) 的新增委托 量 / 笔 × 买 / 卖 4 行
 #define AUCTION_MAKER_ROWS(X, CAT1, k, K, T)                                                                                                                                                                                                                          \

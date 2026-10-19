@@ -2,7 +2,6 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 
 #include "codec/OrderFrame.hpp"
-#include "features/Storage/FeatureRead.hpp"
 #include "gui/util/Service.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
@@ -79,26 +78,36 @@ uint32_t ts_price_of(const Feature &feature, const std::vector<ColRef> &feats) {
 inline bool has_data(feature_storage_t g) { return fmeta::finite(g) && fmeta::data_valid(static_cast<float>(g)); }
 
 // ============================================================================
-// worker 私有常驻读端: 库集 reader (清单没变复用) + IO 暂存 + 原生行平面 (稳态零分配)
+// worker 私有常驻读端: 库集 reader (清单没变复用) + 双缓冲尾部行平面预读 (稳态零分配)
+//   Kline = stream (分批流式, 与 Dist / Transform / Corr 同一骨架), Depth / Pick = now (单日)
 // ============================================================================
 struct RowRead {
   LibReaders libs;
   Readers rd; // ids 指向 scope.to: scope 须活过本代 (lane 存在 cur_ 里)
-  IoSlot io;
-  RowPlane plane;
+  Prefetch<RowPlane> pf;
 
-  // 换代: 按范围开库 (新请求 = 重读库: 重算后新库已落地, 判废解除), 按计划备容量
-  void reset(const analysis::ReadScope &scope, const ReadPlan &plan) {
-    libs.open(scope.libs, nullptr);
+  // 换代: 按范围开库 (新请求 = 重读库: 重算后新库已落地, 判废解除; 判废拉起 abort), 按计划 × 批段数备容量
+  void reset(const analysis::ReadScope &scope, const ReadPlan &plan, size_t segs, std::atomic<bool> *abort) {
+    libs.open(scope.libs, abort);
     libs.revive();
     rd = scope.readers(libs.ptr);
-    io.prepare(plan, scope.sizes(), SIZE_MAX);
-    plane.prepare(scope.axis.size(), plan);
+    pf.prepare(analysis::threads_for(segs), plan, scope.sizes(), SIZE_MAX);
+    for (RowPlane &p : pf.buf)
+      p.prepare(scope.axis.size(), plan, segs);
   }
-  // 一天 (prev 0 = 不承接); false = 库判废
-  bool load(const ReadPlan &plan, misc::Ymd date, misc::Ymd prev) {
-    plane.load_day(rd, plan, date, prev, io);
-    return !libs.stale();
+  // 段 [s0, s0 + bs) 的 IO (Prefetch 跑; 只写传入的平面)
+  auto load(const ReadPlan &plan, const SegPlan &sp, const std::atomic<bool> &cancel) {
+    return [this, &plan, &sp, &cancel](size_t s0, size_t bs) {
+      return [this, &plan, &sp, &cancel, s0, bs](RowPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
+        pl.load_batch(io, slots, rd, plan, sp, s0, bs, cancel);
+      };
+    };
+  }
+  // 单日 (sp = plan_day) 读进 front; false = 被打断 / 库判废 (abort 即 cancel)
+  bool now(const ReadPlan &plan, const SegPlan &sp, const std::atomic<bool> &cancel) {
+    assert(sp.size() == 1);
+    pf.now(load(plan, sp, cancel)(0, 1));
+    return !cancel.load(std::memory_order_relaxed);
   }
 };
 
@@ -107,33 +116,37 @@ bool any_lib(const analysis::ReadScope &scope) {
   return std::ranges::any_of(lib_ids(), [&](LibId l) { return scope.has(l) && (scope.to[l].empty() || scope.to[l][0] != kAbsent); });
 }
 
-// overlay 线: 平面列 [k0, n) → 线 i = c − k0 (资产槽 0). X = x0 + 网格行 (行末秒 − 1) (尾部对齐; 网格 = plan.level);
+// overlay 线: 平面列 [k0, n) → 线 i = c − k0 (资产槽 0, 批内段 j). X = x0 + 网格行 Source::at[r] (尾部对齐; 网格 = plan.level);
 // 开盘承接值先落在 x0 (粗层开盘时的已知值; 不承接 = 哨兵). 哨兵 (门控不过 / 无源 / NaN) 跳过;
 // 同 X 覆盖 = 留末个 (细于网格的列每格取末值)
-void emit_rows(const ReadPlan &plan, const RowPlane &p, size_t k0, double x0, uint32_t ts_price,
+void emit_rows(const ReadPlan &plan, const RowPlane &p, size_t j, size_t k0, double x0, uint32_t ts_price,
                OrderFlow::FeatLine *lines, float *y_min, float *y_max) {
-  for (size_t c = k0; c < plan.n(); ++c) {
-    const size_t i = c - k0, lvl = plan.cols[c].level;
-    OrderFlow::FeatLine &fl = lines[i];
-    const auto put = [&](double x, feature_storage_t raw) {
-      if (fmeta::nan(raw))
-        return;
-      float v = static_cast<float>(raw);
-      if (ts_price >> i & 1u)
-        v = fmeta::price(v);
-      if (!fl.x.empty() && fl.x.back() == x) {
-        fl.y.back() = static_cast<double>(v);
-      } else {
-        fl.x.push_back(x);
-        fl.y.push_back(static_cast<double>(v));
-      }
-      y_min[i] = std::min(y_min[i], v);
-      y_max[i] = std::max(y_max[i], v);
-    };
-    put(x0, p.carry(c, 0));
-    const feature_storage_t *s = p.series(c, 0);
-    for (size_t r = 0; r < p.rows[c]; ++r)
-      put(x0 + static_cast<double>(level_row_of_sec(plan.level, level_end_sec(lvl, r) - 1)), s[r]);
+  for (const Source &s : plan.srcs) {
+    for (const uint32_t c : s.slot) {
+      if (c < k0)
+        continue;
+      const size_t i = c - k0;
+      OrderFlow::FeatLine &fl = lines[i];
+      const auto put = [&](double x, feature_storage_t raw) {
+        if (fmeta::nan(raw))
+          return;
+        float v = static_cast<float>(raw);
+        if (ts_price >> i & 1u)
+          v = fmeta::price(v);
+        if (!fl.x.empty() && fl.x.back() == x) {
+          fl.y.back() = static_cast<double>(v);
+        } else {
+          fl.x.push_back(x);
+          fl.y.push_back(static_cast<double>(v));
+        }
+        y_min[i] = std::min(y_min[i], v);
+        y_max[i] = std::max(y_max[i], v);
+      };
+      put(x0, p.carry(c, 0, j));
+      const feature_storage_t *v = p.series(c, 0, j);
+      for (size_t r = 0; r < s.at.size(); ++r)
+        put(x0 + static_cast<double>(s.at[r]), v[r]);
+    }
   }
 }
 
@@ -163,13 +176,17 @@ public:
 
 private:
   static constexpr Phase kStart = Phase::Running;
+  static constexpr size_t kDaysPerBatch = 16; // 一批天数 = 发布粒度
   Progress &board() { return data_.orderflow.kline; }
   bool run(RowReq &req);
-  bool step(size_t d); // 装一天并发布; false = 库判废
+  void emit(const RowPlane &p, size_t b0, size_t bd); // 批 [b0, b0 + bd) → 追加 OHLC + overlay
+  void publish(size_t b0, size_t bd);                 // 各数组计数 / 范围 → pub word
 
   SharedData &data_;
   RowRead read_;
   RowReq cur_{};
+  SegPlan days_;                     // 日轴 (随 rescan 重扫; 库集变了 GUI 必带 rescan)
+  LibMask libs_ = 0;                 // days_ 的库集
   double y_min_ = 0.0, y_max_ = 0.0; // OHLC 运行范围
   std::vector<float> feat_min_, feat_max_;
 };
@@ -247,151 +264,149 @@ void OrderFlowService::Stop() { // worker 析构即 Stop (join)
 // Requests (GUI 线程; 最新覆盖旧的)
 // ============================================================================
 
-// 固定列在前, overlay 在后; 原生行 (各列按自己的层, level 只定开盘承接)
-bool OrderFlowService::make(const SharedData &data, RowReq &req, size_t level, std::vector<ColRef> fixed,
+// 固定列在前, overlay 在后; 尾部行 (各列按自己的层, level = 网格: 定行末对齐与开盘承接); 日轴 = 库集并集
+bool OrderFlowService::make(const SharedData &data, RowReq &req, size_t level, bool carry, std::vector<ColRef> fixed,
                             const std::vector<ColRef> &feats, std::vector<uint32_t> assets) const {
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
-  req.k0 = fixed.size();
-  req.ts_price = ts_price_of(data.feature, feats);
+  req.spec.k0 = fixed.size();
+  req.spec.ts_price = ts_price_of(data.feature, feats);
   fixed.insert(fixed.end(), feats.begin(), feats.end());
   return analysis::read_request(data.config, data.feature,
-                                {.main = main_, .level = level, .rows = analysis::Rows::Native, .cols = std::move(fixed), .assets = std::move(assets)},
-                                req.scope, req.plan);
+                                {.main = main_,
+                                 .days = analysis::DayAxis::Union,
+                                 .level = level,
+                                 .rows = analysis::Rows::Tail,
+                                 .carry = carry,
+                                 .cols = std::move(fixed),
+                                 .assets = std::move(assets)},
+                                req.scope, req.spec.plan);
 }
 
-// 网格: Kline = L_min (不承接: 前一日的点已在图上), Depth = L_sec (粗层开盘承接前日末行); A 轴 = 选中资产 / Pick = 主库轴
+// 网格: Kline = L_min (不承接: 前一日的点已在图上), Depth = L_sec (粗层开盘承接前日末行), Pick = L_min (状态取当日);
+// A 轴 = 选中资产 / Pick = 主库轴
 void OrderFlowService::RequestKline(const SharedData &data, uint32_t gen, size_t asset_idx, const std::vector<ColRef> &feats,
                                     bool rescan_dates) {
   assert(kline_ && "Request 先于 Start");
-  RowReq req{.gen = gen, .rescan = rescan_dates};
-  if (make(data, req, L_min, kline_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
+  assert(std::ranges::all_of(feats, [](const ColRef &c) { return c.level >= L_min; }) && "Kline 网格 = L_min, 细层列不进");
+  RowReq req{.spec = {.gen = gen, .rescan = rescan_dates}};
+  if (make(data, req, L_min, false, kline_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
     kline_->Request(std::move(req));
 }
 
 void OrderFlowService::RequestDepth(const SharedData &data, uint32_t gen, misc::Ymd date, size_t asset_idx,
                                     const std::vector<ColRef> &feats) {
   assert(depth_ && "Request 先于 Start");
-  RowReq req{.gen = gen, .date = date};
-  if (make(data, req, L_sec, depth_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
+  RowReq req{.spec = {.gen = gen, .date = date}};
+  if (make(data, req, L_sec, true, depth_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
     depth_->Request(std::move(req));
 }
 
 void OrderFlowService::RequestPick(const SharedData &data, uint32_t gen, misc::Ymd date) {
   assert(pick_ && "Request 先于 Start");
-  RowReq req{.gen = gen, .date = date};
-  if (make(data, req, L_min, pick_cols(data.feature), {}, {}))
+  RowReq req{.spec = {.gen = gen, .date = date}};
+  if (make(data, req, L_min, true, pick_cols(data.feature), {}, {}))
     pick_->Request(std::move(req));
 }
 
 // ============================================================================
-// 日期扫描: 库清单日轴 (lib.json dates, 升序) 中已落盘的日
-// ============================================================================
-
-namespace {
-void scan_dates(const FeatureLib &lib, std::vector<misc::Ymd> &out) {
-  TraceN("OF_ScanDates");
-  for (const misc::Ymd date : lib.dates)
-    if (FeatureRead::has_date(lib.tier, lib.dir, date))
-      out.push_back(date);
-}
-} // namespace
-
-// ============================================================================
-// Kline: 换代 + 逐日流式
+// Kline: 换代 + 分批流式 (Prefetch::stream)
 // ============================================================================
 
 bool OrderFlowService::KlineLane::run(RowReq &req) {
   TraceN("OF_KlineBegin");
   OrderFlow::Kline &k = data_.orderflow.kline;
   cur_ = std::move(req);
-  assert(cur_.date == 0 && cur_.k0 == KL_COUNT);
-  read_.reset(cur_.scope, cur_.plan);
+  const RowSpec &sp = cur_.spec;
+  assert(sp.date == 0 && sp.k0 == KL_COUNT);
 
   // 此刻 GUI 请求代 == req.gen, 发布代 == 旧代 → GUI 不读 kline, dates/数组可安全重建
-  if (cur_.rescan || k.dates.empty()) {
+  if (sp.rescan || days_.dates.empty()) {
     k.begin(Phase::Scanning);
-    k.dates.clear();
-    scan_dates(cur_.scope.lib(), k.dates);
+    days_ = analysis::plan_segs(cur_.scope, L_min, analysis::DayOrder::Sequential, 0);
+    libs_ = cur_.scope.days;
+    k.dates = days_.dates;
   }
+  assert(libs_ == cur_.scope.days && "库集变了须带 rescan (日轴随库集)");
+  read_.reset(cur_.scope, sp.plan, kDaysPerBatch, &cancel_);
 
-  const size_t nf = cur_.plan.n() - cur_.k0;
+  const size_t nf = sp.plan.n() - sp.k0;
   y_min_ = (std::numeric_limits<double>::max)();
   y_max_ = std::numeric_limits<double>::lowest();
   feat_min_.assign(nf, (std::numeric_limits<float>::max)());
   feat_max_.assign(nf, std::numeric_limits<float>::lowest());
 
-  k.begin_generation(cur_.gen, std::vector<ColRef>(cur_.plan.cols.begin() + cur_.k0, cur_.plan.cols.end()));
+  k.begin_generation(sp.gen, std::vector<ColRef>(sp.plan.cols.begin() + sp.k0, sp.plan.cols.end()));
   k.reserve_capacity(); // 首点发布前完成: 之后 data() 恒稳定
 
   // 请求侧 asset 是全局轴下标. 不在库集任一库内 (初始默认选中 / 换票池后的残留选中,
   // 候选就绪后 GUI 会自动换代) → 无列可读, 直接发布"完整但空"的一代
   if (!any_lib(cur_.scope)) {
-    k.pub.store(OrderFlow::Kline::pack(cur_.gen, k.dates.size(), 0), std::memory_order_release);
+    k.pub.store(OrderFlow::Kline::pack(sp.gen, k.dates.size(), 0), std::memory_order_release);
     return true;
   }
 
-  k.begin(Phase::Running, k.dates.size());
-  for (size_t d = 0; d < k.dates.size(); ++d) {
-    if (cancel_.load(std::memory_order_relaxed))
-      return false; // 一天一步: 新请求在天与天之间打断
-    if (!step(d))
-      return false; // 特征库被判废删除 (字段表改了): 停流, 别把空转的陈旧列喂进 K 线; 重算后 needs_rescan 自愈
-    k.publish(1);
-  }
-  return true;
+  // 批与批之间可被新代打断; 特征库被判废删除 (字段表改了) 经 abort 同样拉起 cancel_: 停流, 别把空转的陈旧列喂进 K 线;
+  // 重算后 needs_rescan 自愈
+  k.begin(Phase::Running, days_.size());
+  return read_.pf.stream(
+      days_.size(), kDaysPerBatch, cancel_, read_.load(sp.plan, days_, cancel_),
+      [&](const RowPlane &p, size_t b0, size_t bd) { emit(p, b0, bd); },
+      [&](size_t b0, size_t bd) { publish(b0, bd); });
 }
 
-bool OrderFlowService::KlineLane::step(size_t d) {
-  TraceN("OF_KlineDay");
+void OrderFlowService::KlineLane::emit(const RowPlane &p, size_t b0, size_t bd) {
+  TraceN("OF_KlineBatch");
   OrderFlow::Kline &k = data_.orderflow.kline;
-  assert(d < k.dates.size());
-  // 一天一次读计划 (逐源 (库, 层) 选列读); 不承接: 前一日的点已在图上
-  if (!read_.load(cur_.plan, k.dates[d], 0))
-    return false;
-  const RowPlane &p = read_.plane;
-  const double x0 = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);
-  const size_t nf = cur_.plan.n() - cur_.k0;
+  const RowSpec &sp = cur_.spec;
+  for (size_t j = 0; j < bd; ++j) {
+    const double x0 = static_cast<double>((b0 + j) * OrderFlowConst::MIN_CAPACITY);
 
-  const feature_storage_t *ts = p.series(KL_TS, 0);
-  for (size_t m = 0; m < level_valid_rows(L_min); ++m) {
-    if (!has_data(ts[m]))
-      continue;
+    // OHLC: 主库 L_min (主库缺这天 = 门控哨兵, 无 K 线)
+    const feature_storage_t *ts = p.series(KL_TS, 0, j);
+    for (size_t m = 0; m < level_valid_rows(L_min); ++m) {
+      if (!has_data(ts[m]))
+        continue;
 
-    const double o = static_cast<double>(p.series(KL_OPEN, 0)[m]);
-    const double h = static_cast<double>(p.series(KL_HIGH, 0)[m]);
-    const double l = static_cast<double>(p.series(KL_LOW, 0)[m]);
-    const double c = static_cast<double>(p.series(KL_CLOSE, 0)[m]);
+      const double o = static_cast<double>(p.series(KL_OPEN, 0, j)[m]);
+      const double h = static_cast<double>(p.series(KL_HIGH, 0, j)[m]);
+      const double l = static_cast<double>(p.series(KL_LOW, 0, j)[m]);
+      const double c = static_cast<double>(p.series(KL_CLOSE, 0, j)[m]);
 
-    k.x.push_back(x0 + static_cast<double>(m));
-    k.open.push_back(o);
-    k.high.push_back(h);
-    k.low.push_back(l);
-    k.close.push_back(c);
-    y_min_ = std::min(y_min_, l);
-    y_max_ = std::max(y_max_, h);
+      k.x.push_back(x0 + static_cast<double>(m));
+      k.open.push_back(o);
+      k.high.push_back(h);
+      k.low.push_back(l);
+      k.close.push_back(c);
+      y_min_ = std::min(y_min_, l);
+      y_max_ = std::max(y_max_, h);
+    }
+
+    // 特征 overlay: X = 日起点 + 行末秒所在分钟 (尾部对齐; 不承接 → 开盘承接值是哨兵, 不落点)
+    emit_rows(sp.plan, p, j, sp.k0, x0, sp.ts_price, k.feat.line.data(), feat_min_.data(), feat_max_.data());
   }
+}
 
-  // 特征 overlay: X = 日起点 + 行末秒所在分钟 (尾部对齐; 不承接 → 开盘承接值是哨兵, 不落点)
-  emit_rows(cur_.plan, p, cur_.k0, x0, cur_.ts_price, k.feat.line.data(), feat_min_.data(), feat_max_.data());
-
-  // 发布: 先各数组计数/范围 (release), 后 pub word (release) — GUI acquire 读 pub 即见全量
+// 发布: 先各数组计数/范围 (release), 后 pub word (release) — GUI acquire 读 pub 即见全量
+void OrderFlowService::KlineLane::publish(size_t b0, size_t bd) {
+  OrderFlow::Kline &k = data_.orderflow.kline;
+  const RowSpec &sp = cur_.spec;
   if (y_min_ <= y_max_) {
     k.y_min.store(y_min_, std::memory_order_relaxed);
     k.y_max.store(y_max_, std::memory_order_relaxed);
   }
-  for (size_t i = 0; i < nf; ++i) {
+  for (size_t i = 0; i < sp.plan.n() - sp.k0; ++i) {
     k.feat.y_min[i].store(feat_min_[i], std::memory_order_relaxed);
     k.feat.y_max[i].store(feat_max_[i], std::memory_order_relaxed);
     k.feat_n[i].store(k.feat.line[i].x.size(), std::memory_order_release);
   }
-  k.pub.store(OrderFlow::Kline::pack(cur_.gen, d + 1, k.x.size()), std::memory_order_release);
-  return true;
+  k.pub.store(OrderFlow::Kline::pack(sp.gen, b0 + bd, k.x.size()), std::memory_order_release);
+  k.publish(bd);
 }
 
 // ============================================================================
-// Pick: 锚点日的 L_min filter 列 → 全资产 PIT 状态 → 背槽发布
-//   Fund 是 onDay 算一次 / onMinute 原样广播, 故当日任一有效分钟的值即当日状态;
-//   取首个 ts_valid 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
+// Pick: 锚点日 L_min ts_valid + 承接日 L_day filter 列 → 全资产 PIT 状态 → 背槽发布
+//   Fund L_day 行 D = 次日盘前态, 故锚点日状态 = 承接日 (日轴前一日) 的 L_day 行 (RowPlane::carry; 轴首无承接 = 哨兵);
+//   当日无 ts_valid 有效分钟 = 状态不可判读 → has_data=false
 // ============================================================================
 
 bool OrderFlowService::PickLane::run(RowReq &req) {
@@ -400,40 +415,41 @@ bool OrderFlowService::PickLane::run(RowReq &req) {
     return false;
   TraceN("OF_PickBuild");
   cur_ = std::move(req);
-  assert(cur_.date != 0 && cur_.k0 == PICK_COUNT && cur_.plan.n() == PICK_COUNT);
-  read_.reset(cur_.scope, cur_.plan);
-  if (!read_.load(cur_.plan, cur_.date, 0)) // 状态取当日 L_day 行 0, 不承接
+  const RowSpec &sp = cur_.spec;
+  assert(sp.date != 0 && sp.k0 == PICK_COUNT && sp.plan.n() == PICK_COUNT);
+  read_.reset(cur_.scope, sp.plan, 1, &cancel_);
+  if (!read_.now(sp.plan, analysis::plan_day(cur_.scope, sp.date), cancel_)) // 状态取承接日 L_day 行
     return false;
 
   OrderFlow::Pick::Slot &slot = pp.back();
   slot.clear();
-  slot.gen = cur_.gen;
-  slot.date = cur_.date;
+  slot.gen = sp.gen;
+  slot.date = sp.date;
 
   // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 只填主库轴内的资产, 轴外恒 has_data = false (自然被候选过滤掉)
   slot.meta.assign(data_.asset.items.size(), OrderFlow::Pick::Meta{});
 
-  // 每资产首个有效分钟即判有数据 (无有效分钟 / all 库缺这天 = 状态不可判读); 状态取 L_day 行 0
-  const RowPlane &p = read_.plane;
+  // 每资产首个有效分钟即判有数据 (无有效分钟 / all 库缺这天 = 状态不可判读); 状态取承接日 L_day 行
+  const RowPlane &p = read_.pf.front();
   const LibAxis &axis = cur_.scope.axis;
   for (size_t a = 0; a < axis.size(); ++a) {
-    const feature_storage_t *ts = p.series(PICK_TS, a);
+    const feature_storage_t *ts = p.series(PICK_TS, a, 0);
     if (std::none_of(ts, ts + p.rows[PICK_TS], has_data))
       continue;
     OrderFlow::Pick::Meta &meta = slot.meta[axis.global(a)];
     meta.has_data = true;
 
-    const float rw = static_cast<float>(p.series(PICK_RISK_WARN, a)[0]);
+    const float rw = static_cast<float>(p.carry(PICK_RISK_WARN, a, 0));
     meta.risk_warn = (rw >= 0.0f && rw <= 3.0f) ? static_cast<uint8_t>(rw + 0.5f) : 0;
 
-    const float ind = static_cast<float>(p.series(PICK_INDUSTRY, a)[0]);
+    const float ind = static_cast<float>(p.carry(PICK_INDUSTRY, a, 0));
     meta.industry_l1 = (ind >= 0.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT))
                            ? static_cast<uint8_t>(ind + 0.5f)
                            : 0;
 
     // list_age/delist_age: 非 NaN = 已上市/已退市 (>= 0 日历日), NaN = 未发生
-    const float lage = static_cast<float>(p.series(PICK_LIST_AGE, a)[0]);
-    const float dage = static_cast<float>(p.series(PICK_DELIST_AGE, a)[0]);
+    const float lage = static_cast<float>(p.carry(PICK_LIST_AGE, a, 0));
+    const float dage = static_cast<float>(p.carry(PICK_DELIST_AGE, a, 0));
     meta.delisted = !std::isnan(dage);
     meta.listed = !std::isnan(lage) && !meta.delisted;
   }
@@ -455,10 +471,11 @@ bool OrderFlowService::DepthLane::run(RowReq &in) {
     res_.emplace();
   Res &res = *res_;
   cur_ = std::move(in);
-  const RowReq &req = cur_;
-  assert(req.date != 0 && req.scope.axis.size() == 1 && (req.k0 == DP_TS + 1 || req.k0 == DP_COUNT));
-  read_.reset(req.scope, req.plan);
-  const size_t asset_idx = req.scope.axis.global(0);
+  const RowSpec &req = cur_.spec;
+  const analysis::ReadScope &scope = cur_.scope;
+  assert(req.date != 0 && scope.axis.size() == 1 && (req.k0 == DP_TS + 1 || req.k0 == DP_COUNT));
+  read_.reset(scope, req.plan, 1, &cancel_);
+  const size_t asset_idx = scope.axis.global(0);
 
   OrderFlow::Depth &slot = pp.back();
   slot.clear();
@@ -568,22 +585,17 @@ bool OrderFlowService::DepthLane::run(RowReq &in) {
   }
 
   // ---- 特征列 (VWAP + overlay, 与盘口独立: 一次读计划, 与图2 同源; 盘口重放走日文件, 不受库轴约束, 上面照常构建) ----
-  // 承接日 = 主库日期轴上的前一日 (已落盘才承接): 粗层开盘时的已知值 = 前日末行
-  const std::vector<misc::Ymd> &days = req.scope.lib().dates;
-  const auto it = std::lower_bound(days.begin(), days.end(), req.date);
-  misc::Ymd prev = it != days.begin() ? *(it - 1) : 0;
-  if (prev != 0 && !read_.rd.lib().has_date(prev))
-    prev = 0;
+  // 承接日 = 日轴上的前一日 (plan_day; 各源库当日已落盘才承接): 粗层开盘时的已知值 = 前日末行
   {
     TraceN("OF_DepthFeats");
-    if (!read_.load(req.plan, req.date, prev))
+    if (!read_.now(req.plan, analysis::plan_day(scope, req.date), cancel_))
       return false;
   }
-  const RowPlane &p = read_.plane;
+  const RowPlane &p = read_.pf.front();
 
   // 分钟 VWAP 阶梯 (主库有 vwap 列才画): 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口
   if (req.k0 == DP_COUNT) {
-    const feature_storage_t *ts = p.series(DP_TS, 0), *vwap = p.series(DP_VWAP, 0);
+    const feature_storage_t *ts = p.series(DP_TS, 0, 0), *vwap = p.series(DP_VWAP, 0, 0);
     auto &px = slot.plot.vwap_x;
     auto &py = slot.plot.vwap_y;
     for (size_t m = 0; m < level_valid_rows(L_min); ++m) {
@@ -603,7 +615,7 @@ bool OrderFlowService::DepthLane::run(RowReq &in) {
   ov.refs.assign(req.plan.cols.begin() + req.k0, req.plan.cols.end());
   ov.y_min.fill((std::numeric_limits<float>::max)());
   ov.y_max.fill(std::numeric_limits<float>::lowest());
-  emit_rows(req.plan, p, req.k0, 0.0, req.ts_price, ov.line.data(), ov.y_min.data(), ov.y_max.data());
+  emit_rows(req.plan, p, 0, req.k0, 0.0, req.ts_price, ov.line.data(), ov.y_min.data(), ov.y_max.data());
 
   // ---- 背槽整体发布 (GUI 帧首 ack 翻面) ----
   pp.commit();
