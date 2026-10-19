@@ -22,7 +22,6 @@ struct KlineRequest {
   std::vector<misc::Ymd> dates; // = InspectResult::dates; x = 日下标 × VR + 行 (VR = 该层每日有效行数)
   int sub = -1;                 // 库轴资产下标
   size_t level = 0;             // 特征库层 (因子层)
-  bool has_ts = true;           // 该层有 ts_valid (col[4]); 日层无 → 行行有效
   uint32_t col[5] = {};         // 该层列号: open high low close ts_valid (FeatureTable 解析)
 };
 

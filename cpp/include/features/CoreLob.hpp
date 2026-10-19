@@ -13,7 +13,7 @@
 //   分钟: close_minute(m) 调 onMinute 域, 写 L_min 行; 只经 CoreTs::advance (时钟推进) 触发
 //   顺序: 本笔先 advance 到本笔所在分钟 (逐分钟结算之前尚未结算的分钟), 再进 DAG (run<L_sec> → accumulate).
 //   所以 L_min 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态";
-//   onMinute 域只读 MinuteData / 分钟边界 (md.min_index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
+//   onMinute 域只读 MinuteData / 分钟边界 (md.index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
 //   L_min 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
 //   缺数据日 = 零事件日, 同一路径 (empty_day). 本类不读任何特征值, 不特判任何节点.
 //   ts_valid 只标"本分钟有成交", 标签分钟型 exit 仍只在有成交的分钟推进 (无成交无法平仓).
@@ -108,7 +108,7 @@ private:
     meta_.on_tick(t, depth_updated, dag_.MicroPrice.last(),
                   depth_updated ? dag_.Depth.bid_price[0].back() : 0.0f,
                   depth_updated ? dag_.Depth.ask_price[0].back() : 0.0f, lob.price);
-    fstore::ts_write<L_sec>(day_, t, lob::L_sec_Field::ts_valid, asset_id_, meta_.sec_flag());
+    fstore::ts_write<L_sec>(day_, t, lob::L_sec_Field::ts_valid, asset_id_, meta_.flag<L_sec>());
   }
 
   size_t core_id_;

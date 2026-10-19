@@ -8,7 +8,7 @@
 //   K 线标准携带约定, 振幅 / 实体 = 0. 价类下游 (Valuation 等) 读本节点 close 口, 不直接读 MinuteData.
 //   对数派生不单列 (因子层做, 同行 / 相邻行纯函数): 收益 ln(C_t / C_{t-1}) (日内首分钟基准 = Fund pre_close), 振幅 ln(H/L), 实体 ln(C/O).
 //   两档共用节点类; 节点实例 / 落盘列见 Node/{Lob,Bar}/TS/Basic/Kline.hpp (Lob 列名 lob_*, 与 Bar 档的 bar1m K 线区分).
-//   KlineT<BinData> = 分钟箱 K 线 (compute=on<n>Min, 同一携带约定; 读 min<n>_data); Kline = 分钟版.
+//   KlineT<BinData> = 分钟箱 / 日 K 线 (compute=on<n>Min / onClose, 同一携带约定; 读 min<n>_data / day_data); Kline = 分钟版.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -39,6 +39,6 @@ public:
 
 private:
   const Bars &md_;
-  const Series &pre_close_; // Fund 口 (onMinute 域, 拓扑序在前 / 箱末 onMinute 先于 on<n>Min, back() 即当日值)
+  const Series &pre_close_; // Fund 口 (onMinute 域, 拓扑序在前 / 行末 onMinute 先于 on<n>Min / onClose, back() 即当日值)
 };
 using Kline = KlineT<MinuteData>;

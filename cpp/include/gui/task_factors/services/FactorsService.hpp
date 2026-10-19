@@ -100,16 +100,14 @@ struct CostCol {
   int amt = 0;                            // 下单金额段 (万)
   uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_cost_buy_<amt>w / lb_cost_sell_<amt>w
 };
-inline constexpr uint32_t kNoCol = UINT32_MAX;
 struct FeatureTable {
   int seg = 0;                  // 因子层 (factor_level(seg))
   std::vector<FeatCol> cols;    // 下标 = 本层列
-  uint32_t ts_col = kNoCol;     // 本层 ts_valid 门控列 (特征输入); L_day 无 (行稠密) = kNoCol
+  uint32_t ts_col = 0;          // 本层 ts_valid 门控列 (特征输入; 每层必有)
   uint32_t cs_col = 0;          // 本层 cs_valid 门控列 (标签 + 截面门控平面)
   uint32_t ohlc[4] = {};        // 本层 open high low close 列 (K 线 / close 给库等权指数): lob_<x> / <x>_<n>min / <x>_day
   std::vector<LabelCol> labels; // L_min 列下标, 按 hold 升序; long / short 都齐且本层合法 (hold_ok) 才收
   std::vector<CostCol> costs;   // L_min 列下标, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 库无)
-  bool has_ts() const { return ts_col != kNoCol; }
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };

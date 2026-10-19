@@ -5,30 +5,31 @@
 #include <cstdint>
 
 #include "features/DataDefine.hpp"
-#include "features/TimeIndex.hpp"
+#include "features/Storage/FeatureLevels.hpp" // level_end_sec
 
 //========================================================================================
-// RESAMPLER: MINUTE -> n-MINUTE BIN (与 ResamplerTick2Min / ResamplerBar2Min 对仗: 源 = 已结算的分钟 bar)
+// RESAMPLER: MINUTE -> 本层 BAR (分钟箱层 + L_day 整日箱; 与 ResamplerTick2Min / ResamplerBar2Min 对仗: 源 = 已结算的分钟 bar)
 //========================================================================================
-// 职责 / 调用序 (CoreTs::close_minute, 每分钟 onMinute 之后):
-// - accumulate(): 刚结算的分钟 bar (MinuteData 末项) 收进当前箱
-// - emit(k):      箱 k 末分钟 accumulate 之后, 出箱 k 一根 bar 并开新箱 (箱划分见 TimeIndex.hpp, 首箱 15 分钟)
-// 分钟 bar 已稠密 (每分钟恰一根), 所以每箱 (0 .. bins_per_day(n) - 1) 恰出一根 bar.
-// bar 口径: open = 箱内首个有成交分钟的 open, high/low 只含有成交分钟, close = 箱末分钟 close (日内最近成交价);
-//   无成交箱 O=H=L=C=日内最近成交价 (日内尚无成交 → 0 = 无价), 量额 0. "有成交" 与 CoreTs::close_minute 同判据.
+// 职责 / 调用序 (CoreTs::close_minute, 每分钟收行之前 / close_row 收本层行时):
+// - accumulate(): 刚结算的分钟 bar (MinuteData 末项) 收进本层当前行
+// - emit(k):      本层行 k 末分钟 accumulate 之后, 出行 k 一根 bar 并开新行 (行划分见 FeatureLevels.hpp, 箱首箱 15 分钟)
+// 分钟 bar 已稠密 (每分钟恰一根), 所以本层每行恰出一根 bar.
+// bar 口径: open = 行内首个有成交分钟的 open, high/low 只含有成交分钟, close = 行末分钟 close (日内最近成交价);
+//   无成交行 O=H=L=C=日内最近成交价 (日内尚无成交 → 0 = 无价), 量额 0. "有成交" 与 CoreTs::close_minute 同判据.
+//   量额宽累计 (uint64 / double): 整日成交量可超 uint32.
 //   本类纯重采样, 不认识任何特征 / 日频数据.
 //========================================================================================
 
 class ResamplerMin2Bin {
 public:
-  ResamplerMin2Bin(const MinuteData &input, BinData &output, size_t n)
-      : input_(input), output_(output), n_(n) {}
+  ResamplerMin2Bin(const MinuteData &input, BinData &output, size_t lvl)
+      : input_(input), output_(output), lvl_(lvl) {}
 
   void reset() noexcept {
     traded_ = false;
     open_ = high_ = low_ = 0.0f;
     bid_volume_ = ask_volume_ = 0;
-    bid_amount_ = ask_amount_ = 0.0f;
+    bid_amount_ = ask_amount_ = 0.0;
   }
 
   void accumulate() noexcept {
@@ -52,9 +53,9 @@ public:
   }
 
   void emit(size_t k) noexcept {
-    assert(bin_last_min(n_, k) == input_.min_index && "emit: MinuteData 末 bar 不是箱 k 末分钟");
+    assert(level_end_sec(lvl_, k) == level_end_sec(L_min, input_.index) && "emit: MinuteData 末 bar 不是本层行 k 末分钟");
     const float px = input_.close.back();
-    output_.bin_index = static_cast<uint32_t>(k);
+    output_.index = static_cast<uint32_t>(k);
     output_.open.push_back(traded_ ? open_ : px);
     output_.high.push_back(traded_ ? high_ : px);
     output_.low.push_back(traded_ ? low_ : px);
@@ -69,10 +70,10 @@ public:
 private:
   const MinuteData &input_;
   BinData &output_;
-  size_t n_; // 箱长 (分钟)
+  size_t lvl_; // 本层 (L_5min .. L_day)
 
-  bool traded_{false}; // 本箱已有成交分钟
+  bool traded_{false}; // 本行已有成交分钟
   float open_{0}, high_{0}, low_{0};
-  uint32_t bid_volume_{0}, ask_volume_{0};
-  float bid_amount_{0}, ask_amount_{0};
+  uint64_t bid_volume_{0}, ask_volume_{0};
+  double bid_amount_{0}, ask_amount_{0};
 };

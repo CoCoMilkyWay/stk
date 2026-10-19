@@ -2,7 +2,6 @@
 
 #include "features/DataDefine.hpp"
 #include "features/FeaturesDefine.hpp" // NODE_COMPUTE / NODE_FLUSH (TIER_DAG)
-#include "features/TimeIndex.hpp"      // BIN_COUNT
 #include "misc/date.hpp"
 #include <cassert>
 #include <iterator>
@@ -72,20 +71,20 @@ struct Node<Impl, 0> : Impl {
   }
 };
 
-// 两档共有的源: 分钟 K + 分钟箱 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
+// 两档共有的源: 分钟 K + 分钟箱 K + 日 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
 struct Root {
-  MinuteData minute_data;                                // L_min 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
-  BinData min5_data, min15_data, min30_data, min60_data; // 分钟箱层输入 (CoreTs 由 minute_data 重采样, 两档同一路径)
-  const fund::Panel &fund_panel;                         // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
-  std::string asset_code_;                               // "CODE.EX"
-  size_t asset_id_;                                      // 档 A 轴下标
-  misc::Ymd date_ = 0;                                   // 当日 (at_day_start 设置)
+  MinuteData minute_data;                                          // L_min 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
+  BinData min5_data, min15_data, min30_data, min60_data, day_data; // 分钟箱层 + L_day 输入 (CoreTs 由 minute_data 重采样, 两档同一路径)
+  const fund::Panel &fund_panel;                                   // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
+  std::string asset_code_;                                         // "CODE.EX"
+  size_t asset_id_;                                                // 档 A 轴下标
+  misc::Ymd date_ = 0;                                             // 当日 (at_day_start 设置)
   Root(const fund::Panel &panel, const std::string &code, size_t asset_id)
       : fund_panel(panel), asset_code_(code), asset_id_(asset_id) {}
 };
-// 第 i 个分钟箱层 (BIN_MINUTES[i]) 的输入
-inline constexpr BinData Root::*BIN_DATA[] = {&Root::min5_data, &Root::min15_data, &Root::min30_data, &Root::min60_data};
-static_assert(std::size(BIN_DATA) == BIN_COUNT && std::size(BIN_TRIGGERS) == BIN_COUNT);
+// 层 L_5min + i 的输入 (分钟箱层 + L_day 整日箱)
+inline constexpr BinData Root::*BIN_DATA[] = {&Root::min5_data, &Root::min15_data, &Root::min30_data, &Root::min60_data, &Root::day_data};
+static_assert(L_5min + std::size(BIN_DATA) == L_day + 1);
 
 } // namespace graph
 

@@ -151,7 +151,7 @@ public:
   }
 
   inline void flush() {
-    const uint32_t end_sec = static_cast<uint32_t>(L_min_to_L_sec(md_.min_index)) + 60u;
+    const uint32_t end_sec = static_cast<uint32_t>(L_min_to_L_sec(md_.index)) + 60u;
     g3_.flush_minute(end_sec, px_last_);
     g15_.flush_minute(end_sec, px_last_);
     write(g3_, rv_3s);

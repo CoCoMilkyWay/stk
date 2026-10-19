@@ -1,7 +1,7 @@
 #pragma once
 
 #include "features/DataDefine.hpp"
-#include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层输入)
+#include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_day 输入)
 #include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
 #include "features/Storage/FeatureStore.hpp"
 #include "math/sample/ResamplerMin2Bin.hpp"
@@ -16,10 +16,11 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         end_day    advance 到收盘 → 写 L_day 收盘行 → 标签收盘结算 → 日末 flush → 归零分钟 / 分钟箱缓冲
+//         end_day    advance 到收盘 (末分钟级联收 L_day 行) → 标签收盘结算 → 日末 flush → 归零分钟 / 分钟箱 / 日 bar 缓冲
 //         empty_day  无数据日 = 零事件日, 同一路径
-//   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: onMinute → 写 L_min 行 + ts_valid → 有成交则标签 minute_closed
-//                     → 分钟 bar 收进各分钟箱层 (细 → 粗); 某层箱末分钟再 close_bin: 出该层 bar → on<n>Min → 写该层行 + ts_valid (两档同一路径)
+//   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_min 以上各层当前行
+//                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_min 已出) → 该层节拍域 (beat_of) → 写该层行 + ts_valid
+//                     → 有成交则标签 minute_closed. L_min / 分钟箱层 / L_day 同一路径, 两档同一路径
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
@@ -50,11 +51,9 @@ public:
   }
 
   // 收盘: 末分钟 (收盘集合竞价 → L_min 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含),
-  // 再写 L_day 收盘行 (各节点 Series 最新值); 须在标签收盘结算之前 (day_end 可能 ts_close 本日)
+  // 末分钟级联写 L_day 收盘行; 须在标签收盘结算之前 (day_end 可能 ts_close 本日)
   void end_day(Store &store) {
     advance(TRADE_MINUTES_PER_DAY);
-    if constexpr (T::has(L_day))
-      fstore::ts_write_row<L_day>(day_, 0, asset_id_, dag_);
     dag_.label.day_end(writer(), releaser(store));
     dag_.at_day_end();
     dag_.minute_data.clear();
@@ -62,7 +61,7 @@ public:
       (dag_.*b).clear();
   }
 
-  // 无数据日 (缺 binary / 无 bar1m) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟 onMinute / 标签日历),
+  // 无数据日 (缺 binary / 无 bar1m) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟级联收行 / 标签日历),
   // 各节点按自身的无成交约定给值 —— 本类不认识"缺数据"这个概念, 不特判任何特征.
   void empty_day(misc::Ymd date, const Day &day, Store &store) {
     begin_day(date, day);
@@ -72,12 +71,12 @@ public:
   // 时钟推进到 L_min 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
   //   回测: 由本资产下一个源单位 (compute_and_store) / 收盘 (end_day) 调.
   //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCs::compute_and_store(t):
-  //         CS 在分钟末级联读 L_min 行 m (箱末分钟另读该分钟箱层行), 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
+  //         CS 在分钟末级联读 L_min 行 m (该分钟收行的更粗层另读其行), 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
   //   结算时刻不影响值 (onMinute 域只读 MinuteData / 分钟边界), 两种触发写出同一行.
   void advance(size_t m) noexcept {
     while (self().resampler().roll(m)) {
       TraceN("TS_Minute");
-      close_minute(dag_.minute_data.min_index);
+      close_minute(dag_.minute_data.index);
     }
   }
 
@@ -87,7 +86,7 @@ public:
 protected:
   template <class... Args>
   explicit CoreTs(size_t asset_id, Args &&...dag_args)
-      : asset_id_(asset_id), dag_(std::forward<Args>(dag_args)...), min2bin_(make_min2bin(dag_, std::make_index_sequence<BIN_COUNT>{})) {
+      : asset_id_(asset_id), dag_(std::forward<Args>(dag_args)...), min2bin_(make_min2bin(dag_, std::make_index_sequence<std::size(graph::BIN_DATA)>{})) {
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id);
     for (BinData graph::Root::*b : graph::BIN_DATA)
       (dag_.*b).asset_id = static_cast<uint32_t>(asset_id);
@@ -104,8 +103,9 @@ protected:
   Day day_{}; // 本日写句柄 (= days_[cur_]), 热路径直接用
   size_t asset_id_;
   Dag dag_;
-  MetaTracker meta_;                                // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
-  std::array<ResamplerMin2Bin, BIN_COUNT> min2bin_; // minute_data → min<n>_data (两档共用, 档钩子 resampler() 只管源 → 分钟)
+  MetaTracker meta_; // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
+  // minute_data → 层 L_5min + i 的 bar (graph::BIN_DATA[i], 分钟箱层 + L_day; 两档共用, 档钩子 resampler() 只管源 → 分钟)
+  std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> min2bin_;
 
 private:
   static constexpr size_t kPendDays = Label::PEND_DAYS;
@@ -113,42 +113,37 @@ private:
   Derived &self() { return static_cast<Derived &>(*this); }
 
   template <size_t... I>
-  static std::array<ResamplerMin2Bin, BIN_COUNT> make_min2bin(Dag &d, std::index_sequence<I...>) {
-    return {ResamplerMin2Bin(d.minute_data, d.*graph::BIN_DATA[I], BIN_MINUTES[I])...};
+  static std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> make_min2bin(Dag &d, std::index_sequence<I...>) {
+    return {ResamplerMin2Bin(d.minute_data, d.*graph::BIN_DATA[I], L_5min + I)...};
   }
 
-  // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 每分钟都跑 onMinute 并写整行 (L_min 稠密); 有成交 = ts_valid 非零 + 标签
+  // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 分钟 bar + 成交位并入 L_min 以上各层当前行 → 分钟 m 末秒收行的层逐层 close_row (细 → 粗)
+  // → 有成交则标签 (只读 MinuteData, 写 L_min 标签列; 与各层行无关)
   void close_minute(size_t m) {
     const MinuteData &md = dag_.minute_data;
-    assert(!md.close.empty() && m == md.min_index && "close_minute: MinuteData 末 bar 不是分钟 m");
+    assert(!md.close.empty() && m == md.index && "close_minute: MinuteData 末 bar 不是分钟 m");
     const bool traded = md.close.back() > 0 && (md.bid_volume.back() + md.ask_volume.back()) > 0;
-    dag_.template run<Trigger::onMinute>();
-    fstore::ts_write_row<L_min>(day_, m, asset_id_, dag_);
-    fstore::ts_write<L_min>(day_, m, kMinTsValid, asset_id_, meta_.min_flag(traded));
     meta_.on_minute(traded);
+    for (ResamplerMin2Bin &r : min2bin_)
+      r.accumulate();
+    for_each_close<L_min>(level_end_sec(L_min, m) - 1, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
     if (traded)
       dag_.label.minute_closed(m, writer());
-    [&]<size_t... I>(std::index_sequence<I...>) { (close_bin<I>(m), ...); }(std::make_index_sequence<BIN_COUNT>{});
   }
 
-  // 第 I 个分钟箱层 (L_5min + I): 分钟 m 收进当前箱; m 是箱 k 末分钟 → 箱 k 结算 (close_minute 内, onMinute 之后, 细层先于粗层):
-  // 每箱都跑 on<n>Min 并写整行 (该层稠密); 有成交 = ts_valid 非零.
-  // 档没有该层也照走 (min<n>_data / on<n>Min 节点两档同一路径), 只是不落盘
-  template <size_t I>
-  void close_bin(size_t m) {
-    constexpr size_t N = BIN_MINUTES[I], LVL = L_5min + I;
-    min2bin_[I].accumulate();
-    const size_t k = L_min_to_bin(N, m);
-    if (bin_last_min(N, k) != m)
-      return;
-    min2bin_[I].emit(k);
-    dag_.template run<BIN_TRIGGERS[I]>();
-    const float flag = meta_.bin_flag(I);
+  // 层 LVL 收行 r: 出该层 bar (L_min 的 bar 已由档重采样器出) → 该层节拍域 → 写整行 + ts_valid (每行都写, L_min 及以上稠密; 有成交 = ts_valid 非零).
+  // 档没有该层也照走 (bar / 节拍域节点两档同一路径), 只是不落盘
+  template <size_t LVL>
+  void close_row(size_t r) {
+    if constexpr (LVL != L_min)
+      min2bin_[LVL - L_5min].emit(r);
+    dag_.template run<beat_of(LVL)>();
+    const float flag = meta_.flag<LVL>();
     if constexpr (T::has(LVL)) {
       constexpr size_t F = field_of<T>(LVL, "ts_valid");
-      static_assert(F < T::LEVELS[LVL].field_count, "分钟箱层必须有 ts_valid 列");
-      fstore::ts_write_row<LVL>(day_, k, asset_id_, dag_);
-      fstore::ts_write<LVL>(day_, k, F, asset_id_, flag);
+      static_assert(F < T::LEVELS[LVL].field_count, "L_min 及以上每层必须有 ts_valid 列");
+      fstore::ts_write_row<LVL>(day_, r, asset_id_, dag_);
+      fstore::ts_write<LVL>(day_, r, F, asset_id_, flag);
     }
   }
 
@@ -187,11 +182,9 @@ private:
       fstore::ts_write<L_min>(d, label_min, kMinLabelBase + col + i, asset_id_, values[i]);
   }
 
-  // 元列按名 / 标签列按类型 (LB) 在字段表里定位; 列数 / 连续性与标签配置对账
+  // 标签列按类型 (LB) 在字段表里定位; 列数 / 连续性与标签配置对账
   static_assert(T::has(L_min), "TS 档必须有 L_min (分钟行 / 标签)");
   static constexpr std::span<const FieldInfo> kMinFields{T::LEVELS[L_min].fields, T::LEVELS[L_min].field_count};
-  static constexpr size_t kMinTsValid = field_of<T>(L_min, "ts_valid");
-  static_assert(kMinTsValid < T::LEVELS[L_min].field_count, "L_min 必须有 ts_valid 列");
   static constexpr size_t kMinLabelBase = first_of_kind(kMinFields, FeatureDataType::LB);
   static_assert(count_of_kind(kMinFields, FeatureDataType::LB) == Label::MIN_LABEL_COUNT && kind_contiguous(kMinFields, FeatureDataType::LB),
                 "L_min 标签列须与标签配置 MIN_LABEL_COUNT 等长且连续");

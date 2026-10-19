@@ -92,7 +92,7 @@ static ReadPlan FeatPlan(const Feature &feature, size_t grid, const std::vector<
   if (cols.empty())
     return ReadPlan{};
   for (size_t i = 0; i < cols.size(); ++i)
-    if (std::strcmp(feature.meta(cols[i]).code, "ts_valid") == 0) // L_day 无 ts_valid, 按名判
+    if (std::strcmp(feature.meta(cols[i]).code, "ts_valid") == 0)
       ts_price |= 1u << i;
   return analysis::read_plan(feature, TierId::Lob, grid, cols);
 }

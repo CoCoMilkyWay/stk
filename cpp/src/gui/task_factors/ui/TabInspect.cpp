@@ -1476,10 +1476,9 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           kreq->gen = ui.kline_gen, kreq->scope = res.read_scope, kreq->dates = res.dates, kreq->sub = k_sub;
           assert(ft.seg == res.seg && "字段表层与结果层不符");
           kreq->level = factor_level(res.seg).lvl;
-          kreq->has_ts = ft.has_ts();
           for (int i = 0; i < 4; ++i)
             kreq->col[i] = ft.ohlc[i];
-          kreq->col[4] = ft.has_ts() ? ft.ts_col : 0;
+          kreq->col[4] = ft.ts_col;
         }
       }
     }

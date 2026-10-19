@@ -87,24 +87,21 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   const size_t VR = level_valid_rows(lvl);
   assert(ft.seg == L.seg && VR == static_cast<size_t>(L.seg));
   const factor::Geo geo = factor::geo_of(L.seg);
-  const bool has_ts = ft.has_ts();
   const size_t H = with_labels ? static_cast<size_t>(L.n_hold) : 0;
   const size_t C = with_costs ? ft.costs.size() : 0;
   const size_t nf = L.feat_codes.size();
-  // 本层读列表: [特征 nf][close (with_index)][ts_valid (有则)][cs_valid] (+ 本层即 L_min: 接 [标签 long/short × hold][成本 buy/sell × amt])
+  // 本层读列表: [特征 nf][close (with_index)][ts_valid][cs_valid] (+ 本层即 L_min: 接 [标签 long/short × hold][成本 buy/sell × amt])
   // L_min 读列表 (更粗的层): [标签 long/short × hold][成本 buy/sell × amt]
   std::vector<size_t> cols, lcols;
   std::vector<L2::ValidType> vts;
   for (const std::string &c : L.feat_codes) {
     const FeatCol *fc = ft.find(c);
     assert(fc && fc->allowed);
-    assert((has_ts || fc->vt == L2::ValidType::ALL) && "无 ts_valid 的层 (日层) 特征须不门控");
     cols.push_back(fc->col), vts.push_back(fc->vt);
   }
   if (with_index)
     cols.push_back(ft.ohlc[3]);
-  if (has_ts)
-    cols.push_back(ft.ts_col);
+  cols.push_back(ft.ts_col);
   cols.push_back(ft.cs_col);
   const size_t close_i = nf, ts_i = cols.size() - 2, cs_i = cols.size() - 1;
   const bool same = lvl == kLabLevel;
@@ -176,10 +173,9 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     const FeatureRead::DayColumns &ldc = lcols.empty() ? dc : lstaging[tid]; // 本层即 L_min (或不读标签) → 同一份
     // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
     // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
-    // 日层无 ts_valid: 只看 cs_valid (Bar 库的 cs_valid 已含当日停牌)
     std::vector<uint8_t> &has = has_data[tid];
-    std::fill(has.begin(), has.end(), static_cast<uint8_t>(!has_ts));
-    for (size_t t = 0; has_ts && t < VR; ++t) {
+    std::fill(has.begin(), has.end(), static_cast<uint8_t>(0));
+    for (size_t t = 0; t < VR; ++t) {
       const feature_storage_t *ts_gate = dc.col(ts_i) + t * A;
       for (size_t a = 0; a < A; ++a)
         has[a] |= fmeta::data_valid(static_cast<float>(ts_gate[a]));
@@ -187,7 +183,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       const size_t lt = static_cast<size_t>(geo.minute(static_cast<int>(t))); // 标签 / 成本的 L_min 行
-      const feature_storage_t *ts_gate = has_ts ? dc.col(ts_i) + t * A : nullptr;
+      const feature_storage_t *ts_gate = dc.col(ts_i) + t * A;
       const feature_storage_t *cs_gate = dc.col(cs_i) + t * A;
       for (size_t i = 0; i < nf; ++i) {
         const feature_storage_t *src = dc.col(i) + t * A;
@@ -195,7 +191,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         uint8_t *m = L.planes[i].m.data() + row;
         for (size_t a = 0; a < A; ++a) {
           const float x = static_cast<float>(src[a]);
-          const bool ok = has_ts ? fmeta::keep(static_cast<float>(ts_gate[a]), vts[i], src[a]) : fmeta::finite(src[a]);
+          const bool ok = fmeta::keep(static_cast<float>(ts_gate[a]), vts[i], src[a]);
           v[a] = ok ? x : 0.f;
           m[a] = ok;
         }
@@ -213,7 +209,7 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
         int k = 0;
         for (size_t a = 0; a < A; ++a) {
           const float c = static_cast<float>(cl[a]);
-          if ((has_ts && !fmeta::data_valid(static_cast<float>(ts_gate[a]))) || !(c > 0.f))
+          if (!fmeta::data_valid(static_cast<float>(ts_gate[a])) || !(c > 0.f))
             continue;
           const bool in = fmeta::data_valid(static_cast<float>(cs_gate[a]));
           float &p = px[tid][a];

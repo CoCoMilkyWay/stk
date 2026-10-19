@@ -74,7 +74,7 @@ bool KlineService::step(size_t d) {
   assert(d < cur_.dates.size());
   FeatureRead &reader = *impl_->reader;
   auto &idx = impl_->idx;
-  idx.assign(std::begin(cur_.col), std::begin(cur_.col) + (cur_.has_ts ? 5 : 4));
+  idx.assign(std::begin(cur_.col), std::end(cur_.col));
   reader.load_day_columns(cur_.dates[d], idx, impl_->cols);
   if (reader.stale())
     return false;
@@ -82,7 +82,7 @@ bool KlineService::step(size_t d) {
   const double x0 = static_cast<double>(d * VR);
   const FeatureRead::DayColumns &c = impl_->cols;
   for (size_t m = 0; m < VR; ++m) {
-    if (cur_.has_ts ? !fmeta::data_valid(static_cast<float>(c.get(m, 4, a))) : !(static_cast<float>(c.get(m, 3, a)) > 0.f)) // 日层: 无成交日 close 非正
+    if (!fmeta::data_valid(static_cast<float>(c.get(m, 4, a))))
       continue;
     const double o = static_cast<double>(c.get(m, 0, a)), h = static_cast<double>(c.get(m, 1, a));
     const double l = static_cast<double>(c.get(m, 2, a)), cl = static_cast<double>(c.get(m, 3, a));

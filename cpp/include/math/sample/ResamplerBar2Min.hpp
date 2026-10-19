@@ -43,7 +43,7 @@ private:
   bool emit_before(size_t min_end) noexcept {
     if (next_min_ >= min_end) [[likely]]
       return false;
-    output_.min_index = static_cast<uint32_t>(next_min_++);
+    output_.index = static_cast<uint32_t>(next_min_++);
     const bool traded = bar_.volume > 0;
     const float px = last_price_; // 有成交 = 本 bar close
 

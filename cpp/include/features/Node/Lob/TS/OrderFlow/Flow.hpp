@@ -121,7 +121,7 @@ public:
     y[vwap] = vwap_last_;
 
     // twap: 末笔持有到分钟末; 当日尚无成交 (span 0) → 退 vwap (同源同刻, 不产 NaN)
-    const uint32_t t_end = (static_cast<uint32_t>(L_min_to_L_sec(md_.min_index)) + 60u) * 1000u;
+    const uint32_t t_end = (static_cast<uint32_t>(L_min_to_L_sec(md_.index)) + 60u) * 1000u;
     twap_acc_ += px_last_ * static_cast<float>(t_end > t_last_ ? t_end - t_last_ : 0u);
     const float span = static_cast<float>(t_end > t_start_ ? t_end - t_start_ : 0u);
     y[twap] = span > 0.0f && px_last_ > 0.0f ? twap_acc_ / span : vwap_last_;

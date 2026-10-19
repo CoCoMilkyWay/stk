@@ -9,7 +9,7 @@
 // HIERARCHICAL DATA DEFINITIONS
 //========================================================================================
 // Defines shared data structures across feature computation hierarchy:
-// Tick (LOB_Feature) -> Minute (MinuteData) -> n-Minute bins (BinData, n ∈ BIN_MINUTES)
+// Tick (LOB_Feature) -> Minute (MinuteData) -> n-Minute bins + whole-day bin (BinData, n ∈ BIN_MINUTES)
 //
 // Design: Each level stores time-series data in CBuffers
 // - No duplication: CBuffer serves as both storage and current value access
@@ -33,9 +33,9 @@ enum class Trigger : uint8_t {
   on15Min,
   on30Min,
   on60Min,
+  onClose, // 收盘 (L_day 一日一次, 末分钟 on60Min 之后; 整日箱, 含无成交日, 同 onMinute 约定)
 };
-// 第 i 个分钟箱层 (BIN_MINUTES[i]) 的触发域
-inline constexpr Trigger BIN_TRIGGERS[] = {Trigger::on5Min, Trigger::on15Min, Trigger::on30Min, Trigger::on60Min};
+// onMinute .. onClose = 层 L_min .. L_day 的收行节拍 (同序连续, 见 FeaturesDefine.hpp beat_of)
 
 //----------------------------------------------------------------------------------------
 // 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 个价位 = DepthSeries (Depth 的 bid_qty 等)
@@ -122,25 +122,29 @@ inline bool ord_filled_before(const LOB_Feature &lob, size_t s, uint32_t &f) {
 }
 
 //----------------------------------------------------------------------------------------
-// MINUTE LEVEL (L_min): Resampled from tick data
+// BAR LEVELS (L_min / L_5min .. L_60min / L_day): 每层一份 bar 环, 同一结构, 只差容量与量额宽度
+//   MinuteData  L_min: 档的重采样器填充 (Lob ResamplerTick2Min 逐笔 / Bar ResamplerBar2Min bar1m)
+//   BinData     分钟箱层 + L_day (整日箱): ResamplerMin2Bin 由 MinuteData 重采样 (箱见 TimeIndex.hpp);
+//               量额宽累计 (整日成交量可超 uint32); 64 ≥ 最细箱层一日箱数
 //----------------------------------------------------------------------------------------
-struct MinuteData {
+template <size_t Cap, class Vol, class Amt>
+struct Bars {
   // Metadata
-  uint32_t asset_id{0};  // static: asset identifier
-  uint32_t core_id{0};   // static: core identifier
-  uint32_t min_index{0}; // dynamic: current minute index (trading minute index 0-254)
+  uint32_t asset_id{0}; // static: asset identifier
+  uint32_t core_id{0};  // static: core identifier
+  uint32_t index{0};    // dynamic: 末 bar 的本层行 (L_min 0-254 / 箱 0 .. bins_per_day(n) - 1 / L_day 0)
 
-  // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对分钟下标访问)
-  CBuffer<float, 240> open;
-  CBuffer<float, 240> high;
-  CBuffer<float, 240> low;
-  CBuffer<float, 240> close;
+  // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对行下标访问)
+  CBuffer<float, Cap> open;
+  CBuffer<float, Cap> high;
+  CBuffer<float, Cap> low;
+  CBuffer<float, Cap> close;
 
   // Time-series: Volume and amount by side
-  CBuffer<uint32_t, 240> bid_volume;
-  CBuffer<uint32_t, 240> ask_volume;
-  CBuffer<float, 240> bid_amount;
-  CBuffer<float, 240> ask_amount;
+  CBuffer<Vol, Cap> bid_volume;
+  CBuffer<Vol, Cap> ask_volume;
+  CBuffer<Amt, Cap> bid_amount;
+  CBuffer<Amt, Cap> ask_amount;
 
   void clear() {
     open.clear();
@@ -153,36 +157,5 @@ struct MinuteData {
     ask_amount.clear();
   }
 };
-
-//----------------------------------------------------------------------------------------
-// n-MINUTE BIN LEVELS (L_5min / L_15min / L_30min / L_60min): Resampled from MinuteData (ResamplerMin2Bin, 箱见 TimeIndex.hpp)
-//----------------------------------------------------------------------------------------
-struct BinData {
-  // Metadata
-  uint32_t asset_id{0};  // static: asset identifier
-  uint32_t core_id{0};   // static: core identifier
-  uint32_t bin_index{0}; // dynamic: current bin index (0 .. bins_per_day(n) - 1)
-
-  // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对箱下标访问; 64 ≥ 最细箱层一日箱数)
-  CBuffer<float, 64> open;
-  CBuffer<float, 64> high;
-  CBuffer<float, 64> low;
-  CBuffer<float, 64> close;
-
-  // Time-series: Volume and amount by side
-  CBuffer<uint32_t, 64> bid_volume;
-  CBuffer<uint32_t, 64> ask_volume;
-  CBuffer<float, 64> bid_amount;
-  CBuffer<float, 64> ask_amount;
-
-  void clear() {
-    open.clear();
-    high.clear();
-    low.clear();
-    close.clear();
-    bid_volume.clear();
-    ask_volume.clear();
-    bid_amount.clear();
-    ask_amount.clear();
-  }
-};
+using MinuteData = Bars<240, uint32_t, float>;
+using BinData = Bars<64, uint64_t, double>;

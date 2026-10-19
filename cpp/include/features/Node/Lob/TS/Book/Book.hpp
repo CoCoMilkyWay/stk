@@ -169,7 +169,7 @@ public:
   }
 
   inline void flush() {
-    const uint32_t t_end = (static_cast<uint32_t>(L_min_to_L_sec(md_.min_index)) + 60u) * 1000u;
+    const uint32_t t_end = (static_cast<uint32_t>(L_min_to_L_sec(md_.index)) + 60u) * 1000u;
     if (has_state_) {
       hold(static_cast<float>(t_end > t_prev_ ? t_end - t_prev_ : 0u)); // 末状态持有到分钟末
       t_prev_ = t_end;

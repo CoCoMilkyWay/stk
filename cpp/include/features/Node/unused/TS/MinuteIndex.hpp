@@ -23,7 +23,7 @@ public:
   explicit MinuteIndex(const MinuteData &md) : md_(md) {}
 
   void compute() {
-    float clock_min = static_cast<float>(md_.min_index);
+    float clock_min = static_cast<float>(md_.index);
     y[tod_min] = std::sin(clock_min * MIN_PHASE_SCALE);
     y[minute_index] = clock_min;
   }

@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 // 存储类型: _Float16 (内存/磁盘减半, F16C/AVX-512 FP16/NEON 硬件转换, ±65504, ~3.3 位有效数字)
 using feature_storage_t = _Float16;
@@ -122,7 +123,7 @@ inline constexpr size_t level_valid_rows(size_t lvl) {
 }
 
 // ---- 行时间代数 (与档无关): 行 t 覆盖交易秒 [., level_end_sec) ----
-// 节点 emit 全序 = (行末秒, 层): 同刻细层先写 (close_minute → close_bin 细箱 → 粗箱 → end_day, 见 CoreTs.hpp); L_day = 收盘一行
+// 节点 emit 全序 = (行末秒, 层): 同刻细层先写 (for_each_close 级联, CoreTs / CoreCs 同一路径); L_day = 收盘一行
 inline constexpr size_t level_end_sec(size_t lvl, size_t t) {
   assert(t < level_valid_rows(lvl));
   return lvl == L_sec ? t + 1 : lvl == L_min ? L_min_to_L_sec(t) + 60
@@ -141,6 +142,22 @@ inline constexpr size_t level_row_of_sec(size_t lvl, size_t s) {
 inline constexpr ptrdiff_t level_asof(size_t src, size_t dst, size_t t) {
   const ptrdiff_t r = static_cast<ptrdiff_t>(level_row_of_sec(src, level_end_sec(dst, t) - 1));
   return src <= dst ? r : r - 1;
+}
+
+// 收行 (哪层在哪刻收行的唯一判据): 层 lvl 在交易秒 s 末收行 ⇔ s 所在行的末秒 = s
+inline constexpr bool level_closes(size_t lvl, size_t s) { return level_end_sec(lvl, level_row_of_sec(lvl, s)) == s + 1; }
+static_assert(level_closes(L_sec, 0) && !level_closes(L_min, 58) && level_closes(L_min, 59) && !level_closes(L_5min, 59) &&
+                  level_closes(L_5min, OPEN_BIN_MINUTES * 60 - 1) && !level_closes(L_day, TRADE_SECONDS_PER_DAY - 2) &&
+                  level_closes(L_day, TRADE_SECONDS_PER_DAY - 1) && level_closes(L_60min, TRADE_SECONDS_PER_DAY - 1),
+              "收行: 每秒收 L_sec, 分钟末秒收 L_min, 箱末分钟末秒收箱层, 收盘末秒全层收行");
+
+// 交易秒 s 末收行的层 (层号 ≥ From), 细 → 粗逐层 f.template operator()<LVL>(该层行)
+template <size_t From, class F>
+[[gnu::always_inline]] inline void for_each_close(size_t s, F &&f) {
+  assert(s < TRADE_SECONDS_PER_DAY);
+  [&]<size_t... L>(std::index_sequence<L...>) {
+    ((level_closes(From + L, s) ? f.template operator()<From + L>(level_row_of_sec(From + L, s)) : void()), ...);
+  }(std::make_index_sequence<LEVEL_COUNT - From>{});
 }
 
 // 一列特征的全局身份 (档 × 层 × 存储列): GUI 跨层跨档选择 / 分析请求的列单位

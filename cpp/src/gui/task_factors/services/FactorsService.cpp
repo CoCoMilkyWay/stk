@@ -397,10 +397,8 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
   for (size_t i = 0; i < level.size(); ++i) {
     const FeatureMetadata &f = level[i];
     t.cols.push_back({f.code, static_cast<uint32_t>(i), f.valid_type, f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS});
-    if (std::string_view(f.code) == "ts_valid")
-      t.ts_col = static_cast<uint32_t>(i);
   }
-  assert((lv.lvl == L_day) == !t.has_ts() && "ts_valid 列: 日层无, 其余层必有");
+  t.ts_col = static_cast<uint32_t>(meta.col_of(lv.lvl, "ts_valid"));
   t.cs_col = static_cast<uint32_t>(meta.col_of(lv.lvl, "cs_valid"));
   const char *ohlc[4] = {"open", "high", "low", "close"};
   for (int i = 0; i < 4; ++i) {

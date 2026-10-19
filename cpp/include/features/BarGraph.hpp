@@ -6,8 +6,8 @@
 
 // ============================================================================
 // Bar 档 DAG (namespace bar; 与 LobGraph.hpp 对仗, 一个 TU 只许 include 其一). 公共体见 GraphNode.hpp TIER_DAG.
-// 源 = 分钟 K (MinuteData, CoreBar 由 bar1m 填充) + 分钟箱 K (BinData, CoreTs 重采样) + 日频 PIT (fund::Panel),
-// 触发域只有 onDay / onMinute / on5Min / on15Min / on30Min / on60Min.
+// 源 = 分钟 K (MinuteData, CoreBar 由 bar1m 填充) + 分钟箱 K / 日 K (BinData, CoreTs 重采样) + 日频 PIT (fund::Panel),
+// 触发域只有 onDay / onMinute / on5Min / on15Min / on30Min / on60Min / onClose.
 // ============================================================================
 namespace bar {
 

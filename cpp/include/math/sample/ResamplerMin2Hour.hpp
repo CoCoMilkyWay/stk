@@ -56,7 +56,7 @@ public:
     if (input_.open.empty()) [[unlikely]]
       return false;
 
-    const size_t hour_index = L_min_to_L_hour(input_.min_index);
+    const size_t hour_index = L_min_to_L_hour(input_.index);
     bool emitted = false;
 
     // 检测 hour_index 变化

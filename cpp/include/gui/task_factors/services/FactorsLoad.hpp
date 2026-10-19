@@ -45,7 +45,7 @@ struct Loaded {
   float max_impact = 0.f;                   // 买入冲击封顶 (Config::max_impact): with_costs 装载前由调用方设 (> 0), buy = min(原值, 封顶)
   std::vector<std::string> feat_codes;      // 去重特征 (平面下标)
   std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码 (按 ts_valid 门控)
-  factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = 当日在池 ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量; 日层无 ts_valid → 只看 cs_valid)
+  factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = 当日在池 ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
   std::vector<LabelPlane> labels;           // [hold] (按 cs.m 门控), 与 hd / label_idx 同序; 本层行 t 取 L_min 行 Geo::minute(t)
   std::vector<CostPlane> costs;             // [amt] (with_costs 才装), 下标 = FeatureTable::costs 下标; 采样同标签
   std::vector<float> index;                 // [T] 库等权指数 (with_index 才算; 起点 1): 逐行 Σ_成分 (close / 上一有效 close − 1) / n 连乘,

@@ -36,7 +36,7 @@ public:
   explicit Tod(const MinuteData &md) : md_(md) { update_short_mask(); }
 
   inline void compute() {
-    const size_t slot = md_.min_index;
+    const size_t slot = md_.index;
     const float xa = md_.bid_amount.back() + md_.ask_amount.back();
     const float xv = static_cast<float>(md_.bid_volume.back() + md_.ask_volume.back());
     const uint16_t v_all = valid_[slot];
