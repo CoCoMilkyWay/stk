@@ -121,7 +121,7 @@ inline void rank_x(Exec &ex, Plane x, const uint8_t *g, Frame f, const Span &s, 
 template <class Exec, class Sink>
 inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels &L, Workspace &w, Accum *acc, const Sink &sink) {
   factor::stat::assert_span(s);
-  factor::stat::assert_labels(L, true);
+  factor::stat::assert_labels(L, s.g.S, true);
   const int H = L.hd.n, A = s.A, nt = ex.threads();
   assert(rx && acc && w.A == A && w.H >= H && w.threads >= nt);
   std::fill(w.acc.begin(), w.acc.begin() + static_cast<size_t>(nt) * H, Accum{});
@@ -130,10 +130,10 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
       const size_t base = static_cast<size_t>(t) * A;
       for (int i = 0; i < H; ++i) {
-        const int hold = L.hd.h[i], h = factor::stat::hold_minutes(hold);
+        const int hold = L.hd.h[i], h = factor::stat::hold_rows(hold, s.g);
         typename Sink::Ext e = sink.ext();
         const Row r = row_stat(rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base), A, L.cap,
-                               factor::stat::tail_masked(s.t0_abs + t, hold), e);
+                               factor::stat::tail_masked(s.t0_abs + t, hold, s.g), e);
         sink.row(i, t, r, e);
         a[i].add(r);
       }
@@ -171,7 +171,7 @@ template <class Exec>
 inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &hd, const Cost *c, int C, double cap, Workspace &w, CostAcc *out,
                       long long *cov) {
   factor::stat::assert_span(s);
-  factor::stat::assert_holds(hd);
+  factor::stat::assert_holds(hd, s.g.S);
   const int H = hd.n, A = s.A, nt = ex.threads();
   assert(lc && c && out && cov && C >= 1 && C <= kMaxCost && cap > 0.0 && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
   const size_t per = static_cast<size_t>(C) * H, pc = static_cast<size_t>(1 + C);
@@ -184,7 +184,7 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &h
       const size_t base = static_cast<size_t>(t) * A;
       const uint8_t *lag[kMaxHold];
       for (int i = 0; i < H; ++i) {
-        const int h = factor::stat::hold_minutes(hd.h[i]);
+        const int h = factor::stat::hold_rows(hd.h[i], s.g);
         lag[i] = t >= h ? lc + base - static_cast<size_t>(h) * A : nullptr;
       }
       Cost cr[kMaxCost];

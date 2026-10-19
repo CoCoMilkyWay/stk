@@ -281,10 +281,15 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
 // -----------------------------------------------------------------------------
 // 统一签名 (63 个算子同形; 元数不足时调用方传 nullptr, 故未用到的指针一律不许读)
 // -----------------------------------------------------------------------------
+//   CP_SIG_S = 行为随段长 S (每段行数, Contract【层几何】) 变的算子 (EXPAND 段界 / TodMask 段内位置): run 是 template <int S>;
+//   其余算子与 S 无关, 各层共用一份 (分派见 EvalCpu.hpp ts_run)
 #define CP_SIG                                                                              \
   static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,   \
                   const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, \
                   const Param &p)
+#define CP_SIG_S   \
+  template <int S> \
+  CP_SIG
 
 #define CP_NO23 (void)yv, (void)ym, (void)zv, (void)zm
 #define CP_NO3 (void)zv, (void)zm
@@ -381,11 +386,11 @@ struct TsClip {
 
 // TsTodMask: 元数 0, 完全不读输入指针 (调用方传 nullptr)
 struct TsTodMask {
-  CP_SIG {
+  CP_SIG_S {
     (void)xv, (void)xm;
     CP_NO23;
     for (int t = 0; t < T; ++t) {
-      const int t_seg = t % kSegLen;
+      const int t_seg = t % S;
       const float v = (t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f;
       const size_t r = static_cast<size_t>(t) * A;
       for (int a = 0; a < A; ++a)
@@ -416,15 +421,15 @@ CP_P3(TsWhere, x > 0.f ? y : z, mx && (x > 0.f ? my : mz))
 // ---- Sum / Mean ----
 template <bool Mean>
 struct ExpSum {
-  CP_SIG {
+  CP_SIG_S {
     CP_NO23;
     (void)p;
     std::vector<int> n(static_cast<size_t>(A));
     std::vector<double> s(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += kSegLen) {
+    for (int seg = 0; seg < T; seg += S) {
       std::fill(n.begin(), n.end(), 0);
       std::fill(s.begin(), s.end(), 0.0);
-      const int e = std::min(seg + kSegLen, T);
+      const int e = std::min(seg + S, T);
       for (int t = seg; t < e; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
         for (int a = 0; a < A; ++a) {
@@ -443,14 +448,14 @@ template <detail::Mom K>
 struct ExpMom {
   static constexpr bool kS3 = K == detail::Mom::SKEW || K == detail::Mom::KURT;
   static constexpr bool kS4 = K == detail::Mom::KURT;
-  CP_SIG {
+  CP_SIG_S {
     CP_NO23;
     (void)p;
     const size_t W = static_cast<size_t>(A);
     std::vector<int> n(W);
     std::vector<double> s1(W), s2(W), s3(kS3 ? W : 0), s4(kS4 ? W : 0);
     std::vector<float> lo(W), hi(W);
-    for (int seg = 0; seg < T; seg += kSegLen) {
+    for (int seg = 0; seg < T; seg += S) {
       std::fill(n.begin(), n.end(), 0);
       std::fill(s1.begin(), s1.end(), 0.0);
       std::fill(s2.begin(), s2.end(), 0.0);
@@ -460,7 +465,7 @@ struct ExpMom {
         std::fill(s4.begin(), s4.end(), 0.0);
       std::fill(lo.begin(), lo.end(), detail::kInf);
       std::fill(hi.begin(), hi.end(), -detail::kInf);
-      const int e = std::min(seg + kSegLen, T);
+      const int e = std::min(seg + S, T);
       for (int t = seg; t < e; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
         for (int a = 0; a < A; ++a) {
@@ -492,16 +497,16 @@ struct ExpMom {
 // ---- Max / Min / ArgMax / ArgMin: 递推极值 (严格比较 → 并列保留最旧); 空 → 0 ----
 template <bool IsMax, bool IsArg>
 struct ExpExt {
-  CP_SIG {
+  CP_SIG_S {
     CP_NO23;
     (void)p;
     std::vector<int> n(static_cast<size_t>(A)), bi(static_cast<size_t>(A));
     std::vector<float> best(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += kSegLen) {
+    for (int seg = 0; seg < T; seg += S) {
       std::fill(n.begin(), n.end(), 0);
       std::fill(bi.begin(), bi.end(), 0);
       std::fill(best.begin(), best.end(), 0.f);
-      const int e = std::min(seg + kSegLen, T);
+      const int e = std::min(seg + S, T);
       for (int t = seg; t < e; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
         const int ts = t - seg;
@@ -522,23 +527,23 @@ struct ExpExt {
 
 // ---- RankCum: 增量直方图 (段内 lo/hi 只扩不缩; 扩时用段内样本缓存重建); 相对型, 全并列 → 0.5 ----
 struct TsRankCum {
-  CP_SIG {
+  CP_SIG_S {
     CP_NO23;
     (void)p;
     std::vector<float> buf, lo, hi;
     std::vector<int> hist, cnt;
     for (int a0 = 0; a0 < A; a0 += detail::kBlockA) {
       const int W = std::min(detail::kBlockA, A - a0);
-      buf.resize(static_cast<size_t>(W) * kSegLen);
+      buf.resize(static_cast<size_t>(W) * S);
       hist.assign(static_cast<size_t>(W) * kBuckets, 0);
       cnt.assign(static_cast<size_t>(W), 0);
       lo.assign(static_cast<size_t>(W), detail::kInf);
       hi.assign(static_cast<size_t>(W), -detail::kInf);
-      for (int seg = 0; seg < T; seg += kSegLen) {
+      for (int seg = 0; seg < T; seg += S) {
         std::fill(cnt.begin(), cnt.end(), 0); // hist 不清: 重建时清
         std::fill(lo.begin(), lo.end(), detail::kInf);
         std::fill(hi.begin(), hi.end(), -detail::kInf);
-        const int e = std::min(seg + kSegLen, T);
+        const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A + a0;
           for (int j = 0; j < W; ++j) {
@@ -546,7 +551,7 @@ struct TsRankCum {
             const bool m = xm[r + j] != 0;
             int *h = hist.data() + static_cast<size_t>(j) * kBuckets;
             if (m) {
-              buf[static_cast<size_t>(j) * kSegLen + cnt[j]] = x;
+              buf[static_cast<size_t>(j) * S + cnt[j]] = x;
               ++cnt[j];
               const float pl = lo[j], ph = hi[j];
               const float nl = std::fmin(pl, x), nh = std::fmax(ph, x);
@@ -555,7 +560,7 @@ struct TsRankCum {
               if (nh > nl) {
                 if (nl != pl || nh != ph) { // 值域扩了 (含首次进入 spread): 重建
                   std::fill(h, h + kBuckets, 0);
-                  const float *b = buf.data() + static_cast<size_t>(j) * kSegLen;
+                  const float *b = buf.data() + static_cast<size_t>(j) * S;
                   for (int s = 0; s < cnt[j]; ++s)
                     ++h[bin_of(b[s], nl, nh)];
                 } else {
@@ -585,16 +590,16 @@ struct TsRankCum {
 
 // ---- HhiCum: Σx 相消 (非负域下即全 0) → 1/n (全体相等的极限); 空 → 0 ----
 struct TsHhiCum {
-  CP_SIG {
+  CP_SIG_S {
     CP_NO23;
     (void)p;
     std::vector<int> n(static_cast<size_t>(A));
     std::vector<double> s(static_cast<size_t>(A)), s2(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += kSegLen) {
+    for (int seg = 0; seg < T; seg += S) {
       std::fill(n.begin(), n.end(), 0);
       std::fill(s.begin(), s.end(), 0.0);
       std::fill(s2.begin(), s2.end(), 0.0);
-      const int e = std::min(seg + kSegLen, T);
+      const int e = std::min(seg + S, T);
       for (int t = seg; t < e; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
         for (int a = 0; a < A; ++a) {
@@ -613,16 +618,16 @@ struct TsHhiCum {
 
 // ---- EntropyCum: 只计 x > 0 的样本; 无正样本 → 0 (单样本熵 = 0 的极限) ----
 struct TsEntropyCum {
-  CP_SIG {
+  CP_SIG_S {
     CP_NO23;
     (void)p;
     std::vector<int> np(static_cast<size_t>(A));
     std::vector<double> s(static_cast<size_t>(A)), sxl(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += kSegLen) {
+    for (int seg = 0; seg < T; seg += S) {
       std::fill(np.begin(), np.end(), 0);
       std::fill(s.begin(), s.end(), 0.0);
       std::fill(sxl.begin(), sxl.end(), 0.0);
-      const int e = std::min(seg + kSegLen, T);
+      const int e = std::min(seg + S, T);
       for (int t = seg; t < e; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
         for (int a = 0; a < A; ++a) {
@@ -643,14 +648,14 @@ template <detail::Pair K>
 struct ExpPair {
   static constexpr bool kSpx = K == detail::Pair::CORR;
   static constexpr bool kSpy = K != detail::Pair::COV;
-  CP_SIG {
+  CP_SIG_S {
     CP_NO3;
     (void)p;
     const size_t W = static_cast<size_t>(A);
     std::vector<int> n(W);
     std::vector<double> sx(W), sy(W), sxy(W), sxx(kSpx ? W : 0), syy(kSpy ? W : 0);
     std::vector<float> lox(kSpx ? W : 0), hix(kSpx ? W : 0), loy(kSpy ? W : 0), hiy(kSpy ? W : 0);
-    for (int seg = 0; seg < T; seg += kSegLen) {
+    for (int seg = 0; seg < T; seg += S) {
       std::fill(n.begin(), n.end(), 0);
       std::fill(sx.begin(), sx.end(), 0.0);
       std::fill(sy.begin(), sy.end(), 0.0);
@@ -665,7 +670,7 @@ struct ExpPair {
         std::fill(loy.begin(), loy.end(), detail::kInf);
         std::fill(hiy.begin(), hiy.end(), -detail::kInf);
       }
-      const int e = std::min(seg + kSegLen, T);
+      const int e = std::min(seg + S, T);
       for (int t = seg; t < e; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
         for (int a = 0; a < A; ++a) {
@@ -703,19 +708,19 @@ inline double wmean_val(double sx, double sy, double syx, double say, int n) {
 
 // ---- WMeanCum: y 为权 ----
 struct TsWMeanCum {
-  CP_SIG {
+  CP_SIG_S {
     CP_NO3;
     (void)p;
     const size_t W = static_cast<size_t>(A);
     std::vector<int> n(W);
     std::vector<double> sx(W), sy(W), syx(W), say(W);
-    for (int seg = 0; seg < T; seg += kSegLen) {
+    for (int seg = 0; seg < T; seg += S) {
       std::fill(n.begin(), n.end(), 0);
       std::fill(sx.begin(), sx.end(), 0.0);
       std::fill(sy.begin(), sy.end(), 0.0);
       std::fill(syx.begin(), syx.end(), 0.0);
       std::fill(say.begin(), say.end(), 0.0);
-      const int e = std::min(seg + kSegLen, T);
+      const int e = std::min(seg + S, T);
       for (int t = seg; t < e; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
         for (int a = 0; a < A; ++a) {
@@ -1232,6 +1237,7 @@ using TsResidRoll = RollPair<detail::Pair::RESID>;
 #undef CP_P1
 #undef CP_NO3
 #undef CP_NO23
+#undef CP_SIG_S
 #undef CP_SIG
 
 } // namespace factor::cpu::ts

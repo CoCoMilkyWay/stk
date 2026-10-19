@@ -3,9 +3,10 @@
 // =============================================================================
 // 因子表达式 解析 / 序列化: 文本 ↔ 树 (parse / to_string) + 静态校验
 // =============================================================================
-//   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = L_min 字段 code 裸写, 参数命名):
+//   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = 字段 code 裸写, 参数命名):
 //     expr  := Op '(' [expr {',' expr}] {',' param} ')' | feature
 //     param := key '=' number | key          key := 'd' | 'k' | 'k2'
+//   特征 = 因子所在层的字段 code; d / TOD 的单位是该层的行 (Contract【层几何】, parse 收 seg)
 //   例:  CsRank(TsMeanRoll(TsLog(amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(amt), d))
 //   规矩:
 //     序列参数在前 (个数 = 元数), 命名参数在后 (= OpTable 参数列声明的全部字段, 不多不少, 无隐含默认)
@@ -26,7 +27,7 @@
 
 #include "factor/Contract.hpp"
 #include "factor/OpTable.hpp"
-#include "factor/Stat/Contract.hpp" // Frame / kTsNormD (root_frame)
+#include "factor/Stat/Contract.hpp" // Frame / ts_norm_d (root_frame)
 
 #include <cassert>
 #include <cmath>
@@ -84,8 +85,7 @@ constexpr bool declares(const char *params, std::string_view key) {
   return false;
 }
 
-// ---- 参数值域 ----
-inline constexpr int kMaxD = 5 * kSegLen; // 窗长上限 (五个交易日; 再长 GPU ROLL 块 carry 不划算, 也不该在分钟级挖)
+// ---- 参数值域 (d 上限 kMaxD 见 Contract.hpp) ----
 
 // 表的静态一致性: TOD 只许 0 元 POINT (t_D 是隐含输入); GROUP 域的组 id 元 (末元) 必须要求 INT
 constexpr bool table_consistent() {
@@ -131,10 +131,11 @@ inline bool dom_holds(Dom d, float v) {
   return false;
 }
 
-// 参数值域校验: nullptr = 合法, 否则一句话原因 (只查该算子声明的字段; k 按 OpTable k域 列)
-inline const char *check_params(const OpInfo &o, const Param &p) {
+// 参数值域校验: nullptr = 合法, 否则一句话原因 (只查该算子声明的字段; k 按 OpTable k域 列; seg = 本层每段行数, TOD 上界)
+inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
+  assert(is_seg(seg));
   if (has_d(o.t) && (p.d < 1 || p.d > kMaxD))
-    return "d 须为 1..kMaxD (5 个交易日) 的整数";
+    return "d 须为 1..kMaxD (255 行) 的整数; 更长的窗口请降到更粗的层上做";
   if (has_k(o.kdom)) {
     const float k = p.k;
     if (!std::isfinite(k))
@@ -164,23 +165,23 @@ inline const char *check_params(const OpInfo &o, const Param &p) {
         return "k 须为 1..kMaxGroup 的整数 (桶数)";
       break;
     case KDom::TOD:
-      if (!(is_int(k) && is_int(p.k2) && k >= 0.f && k < p.k2 && p.k2 <= static_cast<float>(kSegLen)))
-        return "须 0 ≤ k < k2 ≤ kSegLen, 皆整数";
+      if (!(is_int(k) && is_int(p.k2) && k >= 0.f && k < p.k2 && p.k2 <= static_cast<float>(seg)))
+        return "须 0 ≤ k < k2 ≤ S (本层每段行数), 皆整数";
       break;
     }
   }
   return nullptr;
 }
 
-// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = kSegLen, 只动该键)
-inline void free_value(const OpInfo &o, std::string_view key, Param &p) {
+// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = seg, 只动该键)
+inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg) {
   if (key == "d") {
     p.d = 1;
     return;
   }
   if (key == "k2") {
     assert(o.kdom == KDom::TOD);
-    p.k2 = static_cast<float>(kSegLen);
+    p.k2 = static_cast<float>(seg);
     return;
   }
   switch (o.kdom) {
@@ -396,7 +397,7 @@ inline bool is_ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\
 
 class Parser {
 public:
-  Parser(std::string_view src, Expr &out, std::string &err, const FeatureLookup &fl) : s_(src), e_(out), err_(err), fl_(fl) {}
+  Parser(std::string_view src, Expr &out, std::string &err, const FeatureLookup &fl, int seg) : s_(src), e_(out), err_(err), fl_(fl), seg_(seg) {}
 
   bool run() {
     e_.nodes.clear();
@@ -419,6 +420,7 @@ private:
   Expr &e_;
   std::string &err_;
   const FeatureLookup &fl_;
+  int seg_; // 本层每段行数 (TOD 上界)
 
   bool fail(size_t pos, const std::string &msg) {
     err_ = "位置 " + std::to_string(pos) + ": " + msg;
@@ -545,7 +547,7 @@ private:
           got = true;
           if (!eat('=')) { // 裸键名 = 自由参数
             free |= free_bit(key);
-            free_value(o, key, p);
+            free_value(o, key, p, seg_);
           } else if (double v = 0; !number(v)) {
             return fail(i_, "参数 " + std::string(key) + " 须为数字");
           } else if (key == "d") {
@@ -581,7 +583,7 @@ private:
       return fail(pos0, std::string(o.name) + " 缺参数 k");
     if (declares(o.params, "k2") && !got_k2)
       return fail(pos0, std::string(o.name) + " 缺参数 k2");
-    if (const char *why = check_params(o, p))
+    if (const char *why = check_params(o, p, seg_))
       return fail(pos0, std::string(o.name) + ": " + why);
     Node &n = e_.nodes[static_cast<size_t>(out)];
     n.p = p;
@@ -598,10 +600,11 @@ private:
 
 } // namespace detail
 
-// 解析 + 校验. 失败 → false, err = "位置 N: 原因" (out 内容不可用)
-inline bool parse(std::string_view src, const FeatureLookup &fl, Expr &out, std::string &err) {
+// 解析 + 校验. seg = 因子所在层的每段行数 (Contract【层几何】). 失败 → false, err = "位置 N: 原因" (out 内容不可用)
+inline bool parse(std::string_view src, const FeatureLookup &fl, int seg, Expr &out, std::string &err) {
+  assert(is_seg(seg));
   err.clear();
-  detail::Parser p(src, out, err, fl);
+  detail::Parser p(src, out, err, fl, seg);
   const bool ok = p.run();
   if (!ok)
     out.nodes.clear(), out.n_ops = 0, out.canon.clear();
@@ -610,11 +613,11 @@ inline bool parse(std::string_view src, const FeatureLookup &fl, Expr &out, std:
 
 // ---- alpha 因子的口径 (Stat/Contract.hpp【口径 Frame】): 由根算子严格判定, 且根必须是归一算子 ----
 //   CS: 根 ∈ {CsRank, CsNormRank, CsZ} (截面居中 → 因子值 = 仓位, β 隔离)
-//   TS: 根 = TsRankRoll(d = kTsNormD) (自身 kTsNormDays 日滚动分位; 整数天窗跨日 deseason)
+//   TS: 根 = TsRankRoll(d = ts_norm_d(seg)) (自身滚动分位, 窗 = ≤ kMaxD 行的最大整交易日数; 整数天窗跨日 deseason)
 //   其他根 (含 TS 包 CS: 截面不再居中, β 漏) → false + err.
 //   再拦根输入的两种静态可判退化 (Stat 里必然全并列 / 20 组填不满, 评出来永远是空), 只读 OpTable out 列 + 树结构:
 //     离散值域 (dom_discrete: 0/1 掩码 / 符号 / 桶号, 分位只有几个取值) / 沿资产轴不变异 (varies_a = false: 每 t 截面全相同)
-//   因子文件 / 构建器都走这一个判据 (模板也判: TS 根的 d 须写死 kTsNormD, 裸 d 的占位值 1 过不了)
+//   因子文件 / 构建器都走这一个判据 (模板也判: TS 根的 d 须写死 ts_norm_d(seg), 裸 d 的占位值 1 过不了)
 
 // 节点值是否沿资产轴 a 变异 (结构推导): 特征叶变异; 算子节点 = 非截面广播 (out ≠ BCAST) 且任一输入变异
 //   (无特征叶的纯参数树 → 恒 false; TsTodMask 只看 t_D, 每 t 全资产同值)
@@ -630,26 +633,26 @@ inline bool varies_a(const Expr &e, int i) {
   return false;
 }
 
-static_assert(stat::kTsNormD == kMaxD, "TS 口径归一窗 (kTsNormDays 日) 须等于 d 上限 kMaxD");
-inline bool root_frame(const Expr &e, stat::Frame &out, std::string &err) {
+// seg = 因子所在层的每段行数 (TS 根的 d = stat::ts_norm_d(seg))
+inline bool root_frame(const Expr &e, int seg, stat::Frame &out, std::string &err) {
   const Node &r = e.root();
   const std::string_view nm = r.op >= 0 ? std::string_view(kOps[r.op].name) : std::string_view();
+  const int nd = stat::ts_norm_d(seg);
   stat::Frame f;
   if (nm == "CsRank" || nm == "CsNormRank" || nm == "CsZ") {
     f = stat::Frame::CS;
   } else if (nm == "TsRankRoll") {
     if (r.free & kFreeD) {
-      err = "TS 口径根 TsRankRoll 的 d 是口径定义, 须写死 " + std::to_string(stat::kTsNormD) + ", 不能是自由参数";
+      err = "TS 口径根 TsRankRoll 的 d 是口径定义, 须写死 " + std::to_string(nd) + ", 不能是自由参数";
       return false;
     }
-    if (r.p.d != stat::kTsNormD) {
-      err = "TS 口径根 TsRankRoll 的 d 须为 " + std::to_string(stat::kTsNormD) + " (" + std::to_string(stat::kTsNormDays) + " 个交易日), 现为 " +
-            std::to_string(r.p.d);
+    if (r.p.d != nd) {
+      err = "TS 口径根 TsRankRoll 的 d 须为 " + std::to_string(nd) + " (本层 " + std::to_string(nd / seg) + " 个交易日), 现为 " + std::to_string(r.p.d);
       return false;
     }
     f = stat::Frame::TS;
   } else {
-    err = "根须是归一算子: CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=" + std::to_string(stat::kTsNormD) + ") (时序口径)";
+    err = "根须是归一算子: CsRank / CsNormRank / CsZ (截面口径) 或 TsRankRoll(d=" + std::to_string(nd) + ") (时序口径)";
     return false;
   }
   assert(kOps[r.op].arity == 1); // 归一算子都是一元

@@ -22,7 +22,7 @@ namespace fundamental {
 class Catalog;
 class Ids;
 class Scratch;
-}
+} // namespace fundamental
 
 struct Bar1m {
   float open = 0.0f, high = 0.0f, low = 0.0f, close = 0.0f; // [元] 不复权

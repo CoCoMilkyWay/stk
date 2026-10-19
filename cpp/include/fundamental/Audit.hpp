@@ -2,6 +2,7 @@
 
 #include "api/bigquant/client.hpp"
 #include "fundamental/Store.hpp"
+#include "shared/Config.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -43,8 +44,10 @@
 // ============================================================================
 namespace fundamental::audit {
 
-// 参与核对的表: DAI 的 Month / Daily
-inline bool audited(const Spec &s) { return from<Bq>(s) && s.shape != Shape::Meta; }
+// 参与核对的表: DAI 的 Month / Daily (Daily 受 BIGQUANT_SYNC_DAILY 门控)
+inline bool audited(const Spec &s) {
+  return from<Bq>(s) && (s.shape == Shape::Month || (s.shape == Shape::Daily && ::config::BIGQUANT_SYNC_DAILY));
+}
 
 // 一单元 = 一表 × 一年 = 一次月级查询 (+ 不一致月的逐级定位)
 struct Unit {

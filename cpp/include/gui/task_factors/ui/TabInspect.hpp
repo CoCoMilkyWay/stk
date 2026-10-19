@@ -112,7 +112,8 @@ struct InspectUIState {
   uint32_t kline_gen = 0;
   std::string kline_key;
   int kline_sub = -1;
-  int kline_days = 0;                        // 本代日数 (x 域 = days × kSegLen)
+  int kline_days = 0;                        // 本代日数 (x 域 = days × kline_seg)
+  int kline_seg = 0;                         // 本代因子层每日行数 (x = 日下标 × kline_seg + 行)
   int kline_days_applied = -1;               // x 域已应用的日数 (变了才复位视野)
   size_t kline_last_pub_days = ~0ull;        // 上次 y 贴合时的已发布日数 (换代 / 前缀增长 → 按当前 x 窗口重贴)
   double kline_x_lo = 0.0, kline_x_hi = 0.0; // 上帧 x 视野 (y 贴合只看窗口内的蜡烛)
@@ -120,7 +121,7 @@ struct InspectUIState {
   uint32_t ref_gen = ~0u;
   size_t ref_pts = ~0ull;
   uint64_t ref_epoch = ~0ull;
-  int ref_t0 = 0, ref_t1 = 0;  // 定义域 [t0, t1): t0 = 首根有效蜡烛 + L, t1 = 已发布日数 × kSegLen
+  int ref_t0 = 0, ref_t1 = 0;  // 定义域 [t0, t1): t0 = 首根有效蜡烛 + L, t1 = 已发布日数 × kline_seg
   std::vector<float> ref_line; // [T], 定义域外无意义
 };
 

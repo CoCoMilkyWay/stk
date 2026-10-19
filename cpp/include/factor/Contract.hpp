@@ -25,10 +25,17 @@
 //   【数据布局】
 //     数组一律 SoA 两平面: 值 float* + 有效位 uint8_t*, 行主序 [T][A] (t*A + a).
 //     标量用 Val {v, m}. GPU 侧同 SoA, 不用 AoS.
-//     段 = 一个交易日 = kSegLen 分钟 (L_min 全部 255 行: 15 分钟集合竞价 + 240 分钟连续竞价, 竞价段也要有因子值).
-//     段内位置 t_seg = t % kSegLen (块起点对齐段起点).
-//     Expand 窗按段 reset (流式实现推满 kSegLen 自动归零); Roll 窗**跨段**不 reset (窗口单位是分钟, 与日界无关);
+//     段 = 一个交易日 = S 行 (层几何 Geo, 见下【层几何】; L_min S = 255: 15 分钟集合竞价 + 240 分钟连续竞价, 竞价段也要有因子值).
+//     S 是 TS 算子的**编译期模板参数** (三后端同; 运行期 seg 经 with_seg 分派到 kGeos 之一). 段内位置 t_seg = t % S (块起点对齐段起点).
+//     Expand 窗按段 reset (流式实现推满 S 自动归零); Roll 窗**跨段**不 reset (窗口单位是行, 与日界无关);
 //     Expo 窗全程递推, 不 reset.
+//
+//   【层几何 Geo】因子在哪一层上算 (L_min / 分钟箱 n / 日), 只由三个数刻画: S = 每段行数, N = 每行分钟数, M0 = 行 0 的末分钟.
+//     行 t_seg 覆盖的最后一分钟 (L_min 分钟号 0..254) = minute(t_seg) = M0 + t_seg·N:
+//       L_min  S 255, N 1,   M0 0
+//       分钟箱 n (5 / 15 / 30 / 60)  S = 1 + 240/n, N = n, M0 = 14 (首箱 = 09:15–09:30 集合竞价 15 分钟, 其后每箱 n 分钟)
+//       日     S 1,   N 255, M0 254 (收盘行)
+//     S 两两不同, 故 S 唯一确定层 (geo_of). 与 features/TimeIndex 的对账在 GUI 侧 (FactorsLoad).
 //     Roll 窗未满 (t < d−1) **不是无效**: 窗 = 已有前缀 [max(0, t−d+1), t], 同公式 (expanding 直到满窗);
 //     TsDelayRoll / TsDeltaRoll 的滞后夹到序列头: 取 x_{max(t−d, 0)}, 满窗后与 x_{t−d} 无缝衔接.
 //     窗内位置 (Wma 权 / Arg 距今期数) 以**最新一格 = d−1** 锚定, 未满窗时最旧格的位置 = d−n, 三后端同口径.
@@ -81,11 +88,20 @@
 #include <cassert>
 #include <cmath>
 
+// 两后端共用的契约公式: CUDA 编译器下 __host__ __device__, 纯 C++ 下为空 (Stat/Contract.hpp【一份公式】)
+#ifndef FACTOR_HD
+#if defined(__CUDACC__)
+#define FACTOR_HD __host__ __device__
+#else
+#define FACTOR_HD
+#endif
+#endif
+
 namespace factor {
 
 // ---- 运行期参数 (每个算子只读 OpTable 里声明的字段) ----
 struct Param {
-  int d = 0;      // 窗长 / 滞后 (期 = 分钟)
+  int d = 0;      // 窗长 / 滞后 (期 = 本层的行)
   float k = 0.f;  // 阈值 / 桶数 / EMA 系数 / 分位
   float k2 = 0.f; // 第二阈值 (TodMask 上界)
 };
@@ -93,9 +109,60 @@ struct Param {
 // ---- 常量 ----
 inline constexpr float kRelEps = 1e-6f;               // 相消退化阈值 (den_ok; LogRatio 的饱和比值 ε)
 inline constexpr float kLogCap = 13.815510557964274f; // −ln kRelEps: LogRatio 的饱和上界 (比值夹到 [ε, 1/ε])
-inline constexpr int kSegLen = 255;                   // 段 (交易日) 的分钟数 = L_min 行数 (09:15 竞价起, 含 15 分钟集合竞价; == features/TimeIndex TRADE_MINUTES_PER_DAY, GUI 侧 static_assert 对账)
 inline constexpr int kBuckets = 256;                  // 序统计近似的直方图桶数
 inline constexpr int kMaxGroup = 1024;                // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
+
+// ---- 层几何 (见文件头【层几何 Geo】) ----
+struct Geo {
+  int S = 0, N = 0, M0 = 0;                                                  // 每段行数 / 每行分钟数 / 行 0 的末分钟
+  FACTOR_HD constexpr int minute(int t_seg) const { return M0 + t_seg * N; } // 行 t_seg 的末分钟 (L_min 分钟号)
+};
+// 全部层 (S, N, M0), 细 → 粗; 加层只改这一行
+#define FACTOR_GEOS(X) X(255, 1, 0) X(49, 5, 14) X(17, 15, 14) X(9, 30, 14) X(5, 60, 14) X(1, 255, 254)
+#define FACTOR_GEO_ROW(S, N, M0) Geo{S, N, M0},
+inline constexpr Geo kGeos[] = {FACTOR_GEOS(FACTOR_GEO_ROW)};
+#undef FACTOR_GEO_ROW
+inline constexpr int kGeoCount = static_cast<int>(sizeof(kGeos) / sizeof(kGeos[0]));
+inline constexpr int kSegMax = 255; // 最大段长 (= L_min; GPU EXPAND 块容量 256 须盖住)
+inline constexpr int kMaxD = 255;   // 窗长 / 滞后 d 的上限 (行, 各层同一个): 长窗口应降到更粗的层上做, 不在细层上拉长
+constexpr bool geos_consistent() {
+  for (int i = 0; i < kGeoCount; ++i) {
+    const Geo &g = kGeos[i];
+    if (g.S < 1 || g.S > kSegMax || g.minute(g.S - 1) != kSegMax - 1) // 末行 = 收盘分钟 254
+      return false;
+    for (int j = 0; j < i; ++j)
+      if (kGeos[j].S == g.S)
+        return false;
+  }
+  return true;
+}
+static_assert(geos_consistent(), "层几何: S 须两两不同且 ∈ [1, kSegMax], 末行末分钟 = 254");
+constexpr bool is_seg(int S) {
+  for (const Geo &g : kGeos)
+    if (g.S == S)
+      return true;
+  return false;
+}
+constexpr Geo geo_of(int S) {
+  for (const Geo &g : kGeos)
+    if (g.S == S)
+      return g;
+  assert(false && "seg 不是任何层的每日行数 (kGeos)");
+  return {};
+}
+// 运行期 seg → 编译期: f.template operator()<S>() (f 通常是 []<int S>() {...}); seg 不在 kGeos → 断言死
+template <class F>
+decltype(auto) with_seg(int seg, F &&f) {
+  switch (seg) {
+#define FACTOR_SEG_CASE(S, N, M0) \
+  case S:                         \
+    return f.template operator()<S>();
+    FACTOR_GEOS(FACTOR_SEG_CASE)
+#undef FACTOR_SEG_CASE
+  }
+  assert(false && "seg 不是任何层的每日行数 (kGeos)");
+  __builtin_unreachable();
+}
 
 // ---- 三维分类 (OpTable 三列; 列名 = 枚举名 = 行字段名, 全库统一叫 T / A; 流式 TS struct::kT 对表) ----
 enum class T { POINT,
@@ -178,7 +245,7 @@ inline constexpr const char *dom_name(Dom d) {
   }
   return "?";
 }
-static_assert(kMaxGroup == 1024 && kSegLen == 255, "dom_tex(INT) / kdom_tex(TOD) 的字面上限须随 kMaxGroup / kSegLen 改");
+static_assert(kMaxGroup == 1024, "dom_tex(INT) 的字面上限须随 kMaxGroup 改");
 inline constexpr const char *dom_tex(Dom d) {
   switch (d) {
   case Dom::REAL:
@@ -219,7 +286,7 @@ enum class KDom { NONE,          // 无 k
                   OPEN0_CLOSED1, // 0 < k ≤ 1
                   OPEN0_HALF,    // 0 < k < 1/2
                   POSINT_GROUP,  // 正整数 ≤ kMaxGroup (桶数, 输出可作组 id)
-                  TOD };         // 0 ≤ k < k2 ≤ kSegLen, 皆整数 (TsTodMask; 唯一带 k2 的域)
+                  TOD };         // 0 ≤ k < k2 ≤ S, 皆整数 (TsTodMask; 唯一带 k2 的域; S = 本层每段行数)
 inline constexpr bool has_d(T t) { return t == T::ROLL; }
 inline constexpr bool has_k(KDom k) { return k != KDom::NONE; }
 inline constexpr bool has_k2(KDom k) { return k == KDom::TOD; }
@@ -267,7 +334,7 @@ inline constexpr const char *kdom_tex(KDom k) {
   case KDom::POSINT_GROUP:
     return R"tex(\mathbb{Z}_{+})tex";
   case KDom::TOD:
-    return R"tex(t_D \in \{0..254\};\; 0 \le k{=}⟨k⟩ < k_2{=}⟨k2⟩ \le 255)tex";
+    return R"tex(t_D \in \{0..S-1\};\; 0 \le k{=}⟨k⟩ < k_2{=}⟨k2⟩ \le S)tex";
   }
   return "?";
 }

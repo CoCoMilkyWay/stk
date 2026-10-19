@@ -180,7 +180,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::SetTooltip("时间轴长度 (无单位)\n"
                       "• 自动取整到 %d 的倍数\n"
                       "• 段界对齐是 EXPAND 的前提",
-                      factor::kSegLen);
+                      factor::kSegMax);
   ImGui::SameLine();
   ImGui::Text("×");
   ImGui::SameLine();
@@ -190,8 +190,8 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::SetTooltip("资产轴宽度\n"
                       "• GPU 后端一线程一资产, 设计点 5000\n"
                       "• 太小喂不满卡, 吞吐不公允");
-  ui.req.times = std::max(ui.req.times, factor::kSegLen);
-  ui.req.times -= ui.req.times % factor::kSegLen;
+  ui.req.times = std::max(ui.req.times, 2 * factor::kSegMax); // fill 造数要 ≥ 2 段
+  ui.req.times -= ui.req.times % factor::kSegMax;
   ui.req.A = std::max(ui.req.A, 2);
   ImGui::SameLine();
   {
@@ -758,7 +758,7 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     const auto tit = j.find("tensor");
     if (tit == j.end() || !tit->is_object() || !json_int(*tit, "times", req.times) || !json_int(*tit, "assets", req.A))
       return false;
-    if (req.times < factor::kSegLen || req.times % factor::kSegLen != 0 || req.A < 2) // Request 的前置条件
+    if (req.times < 2 * factor::kSegMax || req.times % factor::kSegMax != 0 || req.A < 2) // Request 的前置条件
       return false;
     const auto rit = j.find("rows");
     if (rit == j.end() || !rit->is_array() || rit->size() != svc.rows.size())

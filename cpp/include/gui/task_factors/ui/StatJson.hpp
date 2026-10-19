@@ -136,7 +136,8 @@ inline nlohmann::ordered_json hold_json(const factor::stat::HoldStat &h) {
   return o;
 }
 
-inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
+// seg = 因子目录所在层 (HoldStat::seg 不落文件)
+inline bool load_hold(const nlohmann::json &o, int seg, factor::stat::HoldStat &dst) {
   if (!o.is_array() || o.size() != hold_cols().size())
     return false;
   factor::stat::HoldStat h;
@@ -164,6 +165,7 @@ inline bool load_hold(const nlohmann::json &o, factor::stat::HoldStat &dst) {
       return false;
     h.grp[k] = e.get<float>();
   }
+  h.seg = seg;
   dst = h;
   return true;
 }

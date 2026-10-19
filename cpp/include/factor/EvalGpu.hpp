@@ -4,7 +4,7 @@
 // 因子 DAG 的 GPU evaluator (宿主侧, 不含 CUDA 头): 中间量常驻显存, 按 Dag 槽计划复用设备平面
 // =============================================================================
 //   DevPool  会话内按 n_slots 预分配的设备平面 (跨因子复用; 只增不减, 会话关闭前 release)
-//   eval     输入 = 已 upload 的设备平面 (按 Dag::feats 下标); 返回根平面 (设备侧, 交给 gpu::stat_eval / download)
+//   eval     输入 = 已 upload 的设备平面 (按 Dag::feats 下标); 返回根平面 (设备侧, 交给 gpu::stat_eval / download); seg = 段长 (TS 节点用)
 //   cs_gate  截面池掩码 (cs_valid 的设备平面, 只用 m; 语义见 EvalCpu.hpp 文件头) 原样递给 CS 节点的算子; 含 CS 节点时必填
 //   kernel_ms 累加各算子纯 kernel 时间
 // =============================================================================
@@ -34,7 +34,7 @@ struct DevPool {
   }
 };
 
-inline const DevPlane *eval(const Dag &d, const std::vector<const DevPlane *> &inputs, DevPool &dp, Session *s, int T, int A,
+inline const DevPlane *eval(const Dag &d, const std::vector<const DevPlane *> &inputs, DevPool &dp, Session *s, int T, int A, int seg,
                             const DevPlane *cs_gate, double *kernel_ms = nullptr) {
   assert(inputs.size() == d.feats.size());
   for (const DevPlane *p : inputs)
@@ -56,7 +56,7 @@ inline const DevPlane *eval(const Dag &d, const std::vector<const DevPlane *> &i
     DevPlane *out = dp.slots[static_cast<size_t>(nd.slot)];
     double ms = 0.0;
     if (o.a == A::SELF) {
-      run_ts_dev(s, o.name, in[0], in[1], in[2], out, T, A, nd.p, &ms);
+      run_ts_dev(s, o.name, in[0], in[1], in[2], out, T, A, seg, nd.p, &ms);
     } else {
       assert(cs_gate && "CS 节点必须给截面池掩码 cs_gate");
       run_cs_dev(s, o.name, in[0], in[1], in[2], cs_gate, out, T, A, nd.p, &ms);

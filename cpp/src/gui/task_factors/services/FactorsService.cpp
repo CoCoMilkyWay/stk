@@ -43,7 +43,7 @@ using ojson = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-constexpr size_t kLevel = L_min; // 因子只在 L_min 算
+constexpr size_t kLabLevel = L_min; // 标签 / 冲击成本只在 L_min 落盘
 
 // 评估派生数据 (run + 表头 + stats): 只描述当前 weights, 权重整体换掉 / 清空时一起删
 void erase_stats(ojson &j) {
@@ -116,7 +116,7 @@ bool load_mini_pdf(const json &o, MiniPdf &dst) {
 
 // 文件顶层 run (全部权重共用的口径) + 权重 stat → 行 (载入显示用); 任一处不合 / 口径与当前根不符 → 整块忽略
 // (不算 BROKEN: stat 是本服务写的派生数据, 下次评估覆盖)
-void load_stat(const json &run, const json &j, FactorRow &r) {
+void load_stat(const json &run, const json &j, int seg, FactorRow &r) {
   if (!run.is_object() || !j.is_object())
     return;
   FactorRow t;
@@ -158,7 +158,7 @@ void load_stat(const json &run, const json &j, FactorRow &r) {
     return;
   t.n_hold = static_cast<int>(hit->size());
   for (int k = 0; k < t.n_hold; ++k)
-    if (!load_hold((*hit)[static_cast<size_t>(k)], t.hold[k]))
+    if (!load_hold((*hit)[static_cast<size_t>(k)], seg, t.hold[k]))
       return;
   const auto cit = j.find("costs"); // [amt] 每金额段 cover + [n_hold] CostAcc (cost_json 的逆)
   if (cit == j.end() || !cit->is_array())
@@ -375,11 +375,41 @@ factor::expr::FeatureLookup FeatureTable::lookup() const {
   };
 }
 
-FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
+const FactorLevel &factor_level(int seg) {
+  for (const FactorLevel &l : kFactorLevels)
+    if (l.seg == seg)
+      return l;
+  assert(false && "seg 不是因子层");
+  __builtin_unreachable();
+}
+
+std::string factor_dir_of(const SharedData &data, int seg) {
+  const FactorLevel &l = factor_level(seg);
+  return data.config.factor_dir + "/" + data.feature.selection.lib_of(l.tier) + "/" + l.name;
+}
+
+FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
+  const FactorLevel &lv = factor_level(seg);
+  assert(level_valid_rows(lv.lvl) == static_cast<size_t>(seg) && "因子层段长与特征库层有效行数不符");
   FeatureTable t;
-  const auto &L_min = meta.features[kLevel];
-  t.ts_col = static_cast<uint32_t>(meta.col_of(kLevel, "ts_valid"));
-  t.cs_col = static_cast<uint32_t>(meta.col_of(kLevel, "cs_valid"));
+  t.seg = seg;
+  const auto &level = meta.features[lv.lvl];
+  for (size_t i = 0; i < level.size(); ++i) {
+    const FeatureMetadata &f = level[i];
+    t.cols.push_back({f.code, static_cast<uint32_t>(i), f.valid_type, f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS});
+    if (std::string_view(f.code) == "ts_valid")
+      t.ts_col = static_cast<uint32_t>(i);
+  }
+  assert((lv.lvl == L_day) == !t.has_ts() && "ts_valid 列: 日层无, 其余层必有");
+  t.cs_col = static_cast<uint32_t>(meta.col_of(lv.lvl, "cs_valid"));
+  const char *ohlc[4] = {"open", "high", "low", "close"};
+  for (int i = 0; i < 4; ++i) {
+    const std::string code = lv.tier == TierId::Lob ? std::string("lob_") + ohlc[i]
+                             : lv.lvl == L_day      ? std::string(ohlc[i]) + "_day"
+                                                    : std::string(ohlc[i]) + "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
+    t.ohlc[i] = static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str()));
+  }
+  const auto &L_min = meta.features[kLabLevel];
   struct Lab {
     bool is_long;
     int hold;
@@ -395,12 +425,6 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   std::set<int> holds, amts;
   for (size_t i = 0; i < L_min.size(); ++i) {
     const FeatureMetadata &f = L_min[i];
-    FeatCol c;
-    c.code = f.code;
-    c.col = static_cast<uint32_t>(i);
-    c.vt = f.valid_type;
-    c.allowed = f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS;
-    t.cols.push_back(c);
     if (f.data_type != FeatureDataType::LB)
       continue;
     char side[8] = {}, name[16] = {};
@@ -419,6 +443,8 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   }
   assert(!labs.empty() && "字段表无标签列");
   for (int h : holds) {
+    if (!factor::stat::hold_ok(h, factor::geo_of(seg)))
+      continue;
     LabelCol lc;
     lc.hold = h;
     lc.col[factor::stat::kLong] = lc.col[factor::stat::kShort] = UINT32_MAX;
@@ -428,6 +454,7 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
     assert(lc.col[factor::stat::kLong] != UINT32_MAX && lc.col[factor::stat::kShort] != UINT32_MAX && "标签列不齐: 某 hold 缺 long 或 short");
     t.labels.push_back(lc);
   }
+  assert(!t.labels.empty() && "本层无合法持有期");
   for (int a : amts) {
     CostCol cc;
     cc.amt = a;
@@ -441,17 +468,19 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta) {
   return t;
 }
 
-bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req) {
+bool MakeFactorsRequest(const SharedData &data, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
   req = FactorsRequest{};
-  const std::string &pool = data.feature.selection.lib_of(TierId::Lob);
-  req.factor_dir = data.config.factor_dir + "/" + pool;
+  const TierId tier = factor_level(seg).tier;
+  const std::string &pool = data.feature.selection.lib_of(tier);
+  req.seg = seg;
+  req.factor_dir = factor_dir_of(data, seg);
   req.evaluate = evaluate;
   req.gpu = gpu;
   if (!evaluate)
     return true;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature, TierId::Lob);
+  req.scope = analysis::read_scope(data.config, data.feature, tier);
   if (req.scope.months.empty())
     return false;
   req.pool = pool;
@@ -491,7 +520,7 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
   assert(ValidFactorName(name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   factor::stat::Frame fr;
-  if (!factor::expr::parse(expr_src, feats.lookup(), e, err) || !factor::expr::root_frame(e, fr, err))
+  if (!factor::expr::parse(expr_src, feats.lookup(), feats.seg, e, err) || !factor::expr::root_frame(e, feats.seg, fr, err))
     return "";
   const std::string file = std::string(name) + ".json";
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
@@ -514,7 +543,7 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
   assert(ValidFactorName(new_name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   factor::stat::Frame fr;
-  if (!factor::expr::parse(expr_src, feats.lookup(), e, err) || !factor::expr::root_frame(e, fr, err))
+  if (!factor::expr::parse(expr_src, feats.lookup(), feats.seg, e, err) || !factor::expr::root_frame(e, feats.seg, fr, err))
     return "";
   const std::filesystem::path from = std::filesystem::path(factor_dir) / file;
   const std::string new_file = std::string(new_name) + ".json";
@@ -539,7 +568,7 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
   if (const auto old_expr = j.find("expr"); old_expr != j.end() && old_expr->is_string()) {
     factor::expr::Expr old_e;
     std::string old_err;
-    if (factor::expr::parse(old_expr->get<std::string>(), feats.lookup(), old_e, old_err))
+    if (factor::expr::parse(old_expr->get<std::string>(), feats.lookup(), feats.seg, old_e, old_err))
       expr_changed = old_e.canon != e.canon;
   }
   j["expr"] = e.canon;
@@ -627,6 +656,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         files.push_back(ent.path());
   std::sort(files.begin(), files.end());
 
+  assert(req.seg == feats_.seg && "请求层与字段表层不符");
   const factor::expr::FeatureLookup fl = feats_.lookup();
   std::map<std::pair<int, std::string>, std::string> seen; // (hold, 具体规范串) → 首行 key
   const auto emit = [&](FactorRow &r) {
@@ -676,12 +706,12 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       continue;
     }
     factor::expr::Expr t; // 模板
-    if (!factor::expr::parse(r.expr_raw, fl, t, r.error)) {
+    if (!factor::expr::parse(r.expr_raw, fl, feats_.seg, t, r.error)) {
       emit(r);
       continue;
     }
     r.tmpl = t.canon; // 表里显示规范串, 便于看根
-    if (!factor::expr::root_frame(t, r.frame, r.error)) {
+    if (!factor::expr::root_frame(t, feats_.seg, r.frame, r.error)) {
       emit(r);
       continue;
     }
@@ -734,7 +764,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         continue;
       }
       factor::expr::Expr e;
-      if (!factor::expr::parse(ws[i].expr, fl, e, w.error)) {
+      if (!factor::expr::parse(ws[i].expr, fl, feats_.seg, e, w.error)) {
         w.error = "weights[" + std::to_string(i) + "]: " + w.error;
         emit(w);
         continue;
@@ -747,7 +777,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       w.sign = ws[i].sign;
       if (w.sign < 0) { // 评估对象 = 根下插 TsNeg
         std::string err;
-        const bool ok = factor::expr::parse(factor::expr::negated_canon(e), fl, e, err);
+        const bool ok = factor::expr::parse(factor::expr::negated_canon(e), fl, feats_.seg, e, err);
         assert(ok && "合法实例的取反串必可解析");
         (void)ok;
       }
@@ -762,7 +792,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       else
         seen.emplace(std::pair{w.hold_src, e.canon}, w.key);
       if (stats)
-        load_stat(*run, (*stats)[i], w);
+        load_stat(*run, (*stats)[i], req.seg, w);
       emit(w);
     }
   }
@@ -788,7 +818,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
       }
       factor::expr::Expr e;
       std::string err;
-      const bool ok = factor::expr::parse(rows[i].expr, fl, e, err);
+      const bool ok = factor::expr::parse(rows[i].expr, fl, feats_.seg, e, err);
       assert(ok && "scan 过的规范串必可再解析");
       (void)ok;
       idx.push_back(i);
@@ -959,7 +989,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
           for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
             in[a] = plane_of(nd.in[a]);
           const Clock::time_point t0 = Clock::now();
-          factor::cpu::run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], L.T, L.A, sc, L.cs.m.data());
+          factor::cpu::run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], L.T, L.A, L.seg, sc, L.cs.m.data());
           return ms_since(t0);
         },
         [&](int i, factor::stat::Frame fr, float &valid_pct, float &rank_pct) {
@@ -968,7 +998,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
           factor::cpu::stat::run(ex, factor::stat::Plane{root->v.data(), root->m.data()}, L.cs.m.data(), fr, L.span(), lab.L, rx.data(), w, acc,
                                  factor::cpu::stat::LandRows{lrows.data(), L.T});
           rank_pct = rank_pct_of(ex, rx.data(), root->m.data(), L.cs.m.data(), L.T, L.A);
-          factor::stat::finish_all(acc, L.hd, hold);
+          factor::stat::finish_all(acc, L.hd, L.seg, hold);
           ic_mini_pdfs(lrows.data(), L.hd.n, L.T, ic_pdf);
           const factor::check::Plane *xp = plane_of(F.nodes[static_cast<size_t>(i)].in[0]); // 根输入: 根的槽先于输入释放分配, 此刻仍在
           x_dist(ex, xp->v.data(), xp->m.data(), rx.data(), L.T, L.A, xd);
@@ -984,7 +1014,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   for (size_t i = 0; i < L.planes.size(); ++i)
     dev[i] = factor::gpu::upload(sess, L.planes[i].v.data(), L.planes[i].m.data());     // 输入只上传一次
   const factor::gpu::DevPlane *cs_gate = factor::gpu::upload_mask(sess, L.cs.m.data()); // 截面池掩码平面 (随会话释放)
-  factor::gpu::StatSession *ss = factor::gpu::stat_open(L.T, L.A, labels_raw(L), nullptr);
+  factor::gpu::StatSession *ss = factor::gpu::stat_open(L.T, L.A, L.seg, labels_raw(L), nullptr);
   factor::cpu::stat::Workspace w; // 只给 cost_tiers (宿主成本代码与 CPU 后端同一份)
   w.ensure(L.A, L.hd.n, static_cast<int>(feats_.costs.size()), ex.threads());
   factor::gpu::DevPool dp;
@@ -1008,7 +1038,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
         factor::gpu::DevPlane *out = dp.slots[static_cast<size_t>(nd.slot)];
         double ms = 0.0; // 纯 kernel (与 Operators 页 GPU 列同口径)
         if (o.a == factor::A::SELF)
-          factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], out, L.T, L.A, nd.p, &ms);
+          factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], out, L.T, L.A, L.seg, nd.p, &ms);
         else
           factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], cs_gate, out, L.T, L.A, nd.p, &ms);
         return ms;
@@ -1019,7 +1049,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
         valid_pct = valid_pct_of(mask.data(), L.cs.m.data(), n);
         factor::gpu::stat_eval(ss, root, cs_gate, fr, acc, lrows.data(), lc.data(), rx.data());
         rank_pct = rank_pct_of(ex, rx.data(), mask.data(), L.cs.m.data(), L.T, L.A);
-        factor::stat::finish_all(acc, L.hd, hold);
+        factor::stat::finish_all(acc, L.hd, L.seg, hold);
         ic_mini_pdfs(lrows.data(), L.hd.n, L.T, ic_pdf);
         const factor::DagNode &xn = F.nodes[static_cast<size_t>(F.nodes[static_cast<size_t>(i)].in[0])];
         if (xn.op < 0) {

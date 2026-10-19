@@ -15,19 +15,19 @@ struct KlineService::Impl {
   std::optional<FeatureRead> reader; // 作用域 (目录 + 库轴) 变了重建
   std::string dir;
   uint64_t hash = 0;
-  size_t A = 0;
+  size_t A = 0, level = 0;
   FeatureRead::DayColumns cols;
   std::vector<size_t> idx;
 
-  void ensure(const analysis::ReadScope &sc) {
+  void ensure(const analysis::ReadScope &sc, size_t lvl) {
     const FeatureLib &lib = sc.lib();
-    if (reader && dir == lib.dir && hash == lib.axis.hash && A == lib.axis.size()) {
+    if (reader && dir == lib.dir && hash == lib.axis.hash && A == lib.axis.size() && level == lvl) {
       reader->revive(); // 新请求 = Inspect 刚读过库 (库已落地), 判废解除
       return;
     }
-    dir = lib.dir, hash = lib.axis.hash, A = lib.axis.size();
+    dir = lib.dir, hash = lib.axis.hash, A = lib.axis.size(), level = lvl;
     reader.emplace(lib);
-    cols.preallocate(A, L_min, 5);
+    cols.preallocate(A, level, 5);
   }
 };
 
@@ -57,12 +57,12 @@ void KlineService::reset(KlineRequest &&req) {
   // 此刻 GUI 请求代 == req.gen ≠ 发布代 → GUI 不读前缀, 数组可整体重建
   if (!impl_)
     impl_ = std::make_unique<Impl>();
-  impl_->ensure(req.scope);
+  impl_->ensure(req.scope, req.level);
   cur_ = std::move(req);
   y_min_ = (std::numeric_limits<double>::max)();
   y_max_ = std::numeric_limits<double>::lowest();
   s_.pub.store(KlineStream::pack(cur_.gen, 0, 0), std::memory_order_release); // 先零计数再换代
-  const size_t cap = cur_.dates.size() * level_valid_rows(L_min);
+  const size_t cap = cur_.dates.size() * level_valid_rows(cur_.level);
   for (std::vector<double> *v : {&s_.x, &s_.open, &s_.high, &s_.low, &s_.close}) {
     v->clear();
     v->reserve(cap); // 满容量: 之后只 push_back, data() 恒稳定
@@ -74,15 +74,15 @@ bool KlineService::step(size_t d) {
   assert(d < cur_.dates.size());
   FeatureRead &reader = *impl_->reader;
   auto &idx = impl_->idx;
-  idx.assign(std::begin(cur_.col), std::end(cur_.col));
+  idx.assign(std::begin(cur_.col), std::begin(cur_.col) + (cur_.has_ts ? 5 : 4));
   reader.load_day_columns(cur_.dates[d], idx, impl_->cols);
   if (reader.stale())
     return false;
-  const size_t a = static_cast<size_t>(cur_.sub), VR = level_valid_rows(L_min);
+  const size_t a = static_cast<size_t>(cur_.sub), VR = level_valid_rows(cur_.level);
   const double x0 = static_cast<double>(d * VR);
   const FeatureRead::DayColumns &c = impl_->cols;
   for (size_t m = 0; m < VR; ++m) {
-    if (!fmeta::data_valid(static_cast<float>(c.get(m, 4, a))))
+    if (cur_.has_ts ? !fmeta::data_valid(static_cast<float>(c.get(m, 4, a))) : !(static_cast<float>(c.get(m, 3, a)) > 0.f)) // 日层: 无成交日 close 非正
       continue;
     const double o = static_cast<double>(c.get(m, 0, a)), h = static_cast<double>(c.get(m, 1, a));
     const double l = static_cast<double>(c.get(m, 2, a)), cl = static_cast<double>(c.get(m, 3, a));

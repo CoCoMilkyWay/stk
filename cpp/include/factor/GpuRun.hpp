@@ -42,9 +42,10 @@ void unpin(void *host);
 
 // name 必须在 OpTable 里; 不在则断言死 (三后端同名是硬约束). 元数不到的槽位传 nullptr.
 // CS 算子多收池掩码 g (只用 g->m, 必填; 契约【截面池 g】).
+// TS 算子多收 seg = 段长 (Contract【层几何】, T 须为整段数).
 // kernel_ms 非空 → 回填纯 kernel 耗时 (cudaEvent), 不含工作区分配 / D2H
 void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
-            int T, int A, const Param &p, double *kernel_ms = nullptr);
+            int T, int A, int seg, const Param &p, double *kernel_ms = nullptr);
 void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
             float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms = nullptr);
 
@@ -56,13 +57,13 @@ DevPlane *plane_new(Session *s);
 void plane_del(Session *s, DevPlane *p);
 void download(Session *s, const DevPlane *p, float *v, uint8_t *m);
 void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
-                int A, const Param &p, double *kernel_ms = nullptr);
+                int A, int seg, const Param &p, double *kernel_ms = nullptr);
 void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
                 DevPlane *out, int T, int A, const Param &p, double *kernel_ms = nullptr);
 
 // 一次性版本 (op_check 用): 宿主指针进出, 内部开临时会话 (上传 → 跑 → 关); kernel_ms 口径同上
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
+            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p,
             double *kernel_ms = nullptr);
 void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
             const float *zv, const uint8_t *zm, const uint8_t *gm, float *ov, uint8_t *om, int T, int A, const Param &p,
@@ -71,16 +72,17 @@ void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *y
 // Stat 评估算子 (factor/Stat/Gpu.cuh; 契约 factor/Stat/Contract.hpp): 宿主指针进, acc[L.hd.n] 宿主出 (二级由调用方 finish_all).
 // gm = 截面池掩码 [T][A] (只看 gm ∧ x.m 的格). L = L.hd.n 组**宿主**标签 (Label 的 v[kLegs] / m; ry 不看),
 // 内部拷进显存 → 每组 prep_label (rank_y) → run → 拷回. rows 非空再拷回一级 [L.hd.n][T] (对拍用).
-// prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent): 预处理是常驻期一次的成本, 评估是每因子的成本, 分开记
-void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, int T, int A, const factor::stat::Labels &L, factor::stat::Accum *acc,
-              factor::stat::Row *rows = nullptr, double *prep_ms = nullptr, double *eval_ms = nullptr);
+// prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent): 预处理是常驻期一次的成本, 评估是每因子的成本, 分开记.
+// seg = 因子所在层的段长 (Span::g; Stat / Search 会话同)
+void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg, const factor::stat::Labels &L,
+              factor::stat::Accum *acc, factor::stat::Row *rows = nullptr, double *prep_ms = nullptr, double *eval_ms = nullptr);
 
 // Stat 常驻会话 (因子表: 一个作用域多因子): 标签上传 + rank 预处理只做一次, 逐因子只跑 run,
 // x 是设备常驻平面 (DAG 根槽), g 是设备常驻池掩码平面 (只用 g->m), 口径 f 逐因子给 (会话与口径无关), acc[L.hd.n] 拷回;
 // rows 非空再拷回一级; lc 非空再拷回腿码 [T][A] (宿主侧换手成本 cost_rows 要, 与 CPU 后端 leg_codes 同一份; 整数, 两后端逐位同);
 // rx 非空再拷回 r16 [T][A] (宿主侧可秩率 rank_pct_of 要). run_stat 一次性版 = open + 上传 x / g + eval + close.
 struct StatSession;
-StatSession *stat_open(int T, int A, const factor::stat::Labels &L, double *prep_ms = nullptr);
+StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, double *prep_ms = nullptr);
 void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Accum *acc, factor::stat::Row *rows = nullptr,
                uint8_t *lc = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
 void stat_close(StatSession *s);
@@ -90,7 +92,7 @@ void stat_close(StatSession *s);
 // 每批 eval (C ≤ Cmax 张设备常驻候选平面 (DAG 根槽) + 池掩码 g → out[C] 宿主 Result; t0_abs / t_lo 见契约【分块流式】) → close.
 // cap = 满仓 (Labels::cap, 各块同一个). prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
 struct SearchSession;
-SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd, double cap);
+SearchSession *search_open(int T, int A, int seg, int Cmax, const factor::stat::Holds &hd, double cap);
 void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_ms = nullptr);
 void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo,
                  factor::search::Result *out, double *eval_ms = nullptr);
@@ -98,8 +100,8 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
 void search_ranks(SearchSession *s, int c, int t0, int stride, int n_rows, uint16_t *out);
 void search_close(SearchSession *s);
 // 一次性版 (op_check 用): 宿主指针进出 (xv[c] / xm[c] 各一张 [T][A]), 内部 open + 上传 + load + eval + close
-void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int t0_abs,
-                int t_lo, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out, double *prep_ms = nullptr,
-                double *eval_ms = nullptr);
+void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg,
+                int t0_abs, int t_lo, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out,
+                double *prep_ms = nullptr, double *eval_ms = nullptr);
 
 } // namespace factor::gpu

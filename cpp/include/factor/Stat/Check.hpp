@@ -61,9 +61,10 @@ struct Data {
   Plane x;
   Plane g;                    // 截面池掩码 (只用 m; factor::check::fill_gate)
   std::vector<LabelHost> lab; // 按 hd 序
-  Holds hd;
-  int T = 0, A = 0;
-  double cap = 0.0; // 满仓 = 池内平均每行格数 / kGroups (与 GUI n_full_of 同式)
+  Holds hd;                   // kHolds 里本层合法的 (hold_ok)
+  int T = 0, A = 0, seg = 0;  // seg = 段长 (Contract【层几何】)
+  double cap = 0.0;           // 满仓 = 池内平均每行格数 / kGroups (与 GUI n_full_of 同式)
+  Span span() const { return {T, A, geo_of(seg)}; }
 };
 // d 的全部标签 + 各组预处理 ry → 契约 Labels (偏 off 格; ry 为空 = 未预处理)
 inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> &ry, size_t off = 0) {
@@ -76,15 +77,17 @@ inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> 
   return L;
 }
 
-inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) {
+inline void make(Data &d, Frame f, Profile pr, int T, int A, int seg, std::mt19937 &rng) {
   d.frame = f;
-  d.T = T, d.A = A;
-  d.hd.n = kNumHolds;
-  for (int i = 0; i < kNumHolds; ++i)
-    d.hd.h[i] = kHolds[i];
+  d.T = T, d.A = A, d.seg = seg;
+  d.hd.n = 0;
+  for (int h : kHolds)
+    if (hold_ok(h, geo_of(seg)))
+      d.hd.h[d.hd.n++] = h;
+  assert_holds(d.hd, seg);
   Plane z;
-  factor::check::fill(z, Gen::NORM, pr, T, A, rng);
-  factor::check::fill_gate(d.g, pr, T, A, rng);
+  factor::check::fill(z, Gen::NORM, pr, T, A, seg, rng);
+  factor::check::fill_gate(d.g, pr, T, A, seg, rng);
   const size_t n = static_cast<size_t>(T) * A;
   long long on = 0;
   for (size_t i = 0; i < n; ++i)
@@ -95,10 +98,10 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) 
   if (f == Frame::TS) // 标准正态 → 分位 Φ(z) ∈ (0,1); 无效格值本就是 0
     for (size_t i = 0; i < n; ++i)
       d.x.v[i] = d.x.m[i] ? static_cast<float>(0.5 * (1.0 + std::erf(static_cast<double>(z.v[i]) / std::sqrt(2.0)))) : 0.f;
-  d.lab.assign(static_cast<size_t>(kNumHolds), LabelHost{});
+  d.lab.assign(static_cast<size_t>(d.hd.n), LabelHost{});
   for (LabelHost &L : d.lab) {
     Plane e;
-    factor::check::fill(e, Gen::NORM, pr, T, A, rng);
+    factor::check::fill(e, Gen::NORM, pr, T, A, seg, rng);
     L.v[kLong].resize(n), L.v[kShort].resize(n), L.m.resize(n);
     for (size_t i = 0; i < n; ++i) {
       const float yl = 0.3f * z.v[i] + e.v[i];
@@ -201,7 +204,7 @@ struct Result {
 // CPU 驱动 (ForkJoin(threads) 切行): 预处理 + 评估 (含二级) 各计时 (wall)
 inline void run_cpu(const Data &d, Result &r, int threads) {
   using Clock = std::chrono::steady_clock;
-  const Span s{d.T, d.A};
+  const Span s = d.span();
   const int H = d.hd.n;
   misc::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
@@ -218,7 +221,7 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   t0 = Clock::now();
   factor::cpu::stat::run(ex, factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.frame, s, labels_of(d, ry), rx.data(), w, acc.data(),
                          factor::cpu::stat::LandRows{r.rows.data(), d.T});
-  finish_all(acc.data(), d.hd, r.stat.data());
+  finish_all(acc.data(), d.hd, d.seg, r.stat.data());
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
@@ -228,9 +231,9 @@ inline void run_gpu(const Data &d, Result &r) {
   std::vector<Accum> acc(static_cast<size_t>(H));
   r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
   r.stat.resize(static_cast<size_t>(H));
-  factor::gpu::run_stat(factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.frame, d.T, d.A, labels_of(d, {}), acc.data(),
+  factor::gpu::run_stat(factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.frame, d.T, d.A, d.seg, labels_of(d, {}), acc.data(),
                         r.rows.data(), &r.prep_ms, &r.eval_ms);
-  finish_all(acc.data(), d.hd, r.stat.data());
+  finish_all(acc.data(), d.hd, d.seg, r.stat.data());
 }
 
 } // namespace factor::stat::check

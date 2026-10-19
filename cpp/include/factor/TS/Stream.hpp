@@ -5,9 +5,10 @@
 // =============================================================================
 //   结构 = 两节, 对应 OpTable 的 T 窗列 (每个 struct 带 static constexpr T kT, op_check 对表):
 //     节一  POINT             无状态纯函数   struct Op : Point { static Val apply(Val x[, Val y[, Val z]], const Param &); }
-//                             TodMask 元数 0: apply(int t_seg, const Param &)
+//                             TodMask 元数 0: apply(int t_seg, const Param &) (t_seg = t % S 由调用方给)
 //     节二  EXPAND/ROLL/EXPO  有状态          struct Op { explicit Op(const Param &); Val push(Val x[, Val y]); }
-//           EXPAND 推满 kSegLen 自动归零 (也可 reset() 手动); ROLL / EXPO 没有 reset —— 契约说它们跨段不重置.
+//           EXPAND 的 push 是 template <int S> (S = 段长, Contract【层几何】), 推满 S 自动归零 (也可 reset() 手动);
+//           ROLL / EXPO 没有 reset —— 契约说它们跨段不重置.
 //
 //   节二只写一份公式: **统计核 core::* × 窗适配 Expand/Roll/Ema**.
 //   命名 Ts<核><窗>: *Cum 与 *Roll 就是同一个核挂在两个窗上 (见文件末尾的实例化清单),
@@ -372,19 +373,27 @@ struct WMean { // y 为权; Σy 相消 → 等权均值 Σx/n (权全相等的�
 
 } // namespace core
 
-// ---- 窗: EXPAND (段内 expanding; 推满 kSegLen 自动归零, 段首也可手动 reset) ----
+// ---- 窗: EXPAND (段内 expanding; 推满 S 自动归零, 段首也可手动 reset) ----
+//   S = 段长 (本层每段行数, Contract【层几何】) 是 push 的模板参数: 同一实例只用一个 S
 template <class C>
 class Expand {
 public:
   static constexpr T kT = T::EXPAND;
   explicit Expand(const Param &p) : p_(p) { reset(); }
   void reset() { c_.reset(p_), i_ = 0; }
-  Val push(Val x) { return step(x, Val{}); }
-  Val push(Val x, Val y) { return step(x, y); }
+  template <int S>
+  Val push(Val x) {
+    return step<S>(x, Val{});
+  }
+  template <int S>
+  Val push(Val x, Val y) {
+    return step<S>(x, y);
+  }
 
 private:
+  template <int S>
   Val step(Val x, Val y) {
-    if (i_ == kSegLen)
+    if (i_ == S)
       reset();
     c_.add(i_, x, y);
     ++i_;

@@ -64,7 +64,7 @@ bool contains_ci(std::string_view hay, std::string_view needle) {
 
 // 换本层算子, 槽内原有内容保留: 原是算子 → 子槽逐位对应 (多出的截掉, 不够的补空); 原是叶 → 进第一元. 参数取默认表.
 // 子槽值域不在这里查 (下拉只按本槽 need 过滤), 交给每帧 parse 即时校验标红
-void set_op(BuildNode &n, int op) {
+void set_op(BuildNode &n, int op, int seg) {
   std::vector<BuildNode> args;
   if (n.op >= 0) {
     args = std::move(n.args);
@@ -81,15 +81,15 @@ void set_op(BuildNode &n, int op) {
   n.p = factor::Param{};
   n.free = 0;
   n.p.d = factor::check::default_d(name);
-  factor::check::set_k(name, n.p);
+  factor::check::set_k(name, n.p, seg);
 }
 
 // 外面套一层: 本节点整体成为新算子的第一元 (新算子 arity ≥ 1, 列表已过滤)
-void wrap_op(BuildNode &n, int op) {
+void wrap_op(BuildNode &n, int op, int seg) {
   assert(factor::expr::kOps[op].arity >= 1);
   BuildNode inner = std::move(n);
   n = BuildNode{};
-  set_op(n, op);
+  set_op(n, op, seg);
   n.args[0] = std::move(inner);
 }
 
@@ -150,13 +150,13 @@ void to_source(const BuildNode &n, std::string &s, bool &complete) {
 }
 
 // Expr 树 → 构建器 (表格行勾选载入模板); 自由参数处的占位值换成默认表值 (取消自由时有个像样的起点)
-void from_expr(const factor::expr::Expr &e, int i, BuildNode &n) {
+void from_expr(const factor::expr::Expr &e, int i, int seg, BuildNode &n) {
   const factor::expr::Node &x = e.nodes[static_cast<size_t>(i)];
   if (x.op < 0) {
     set_feat(n, x.feat);
     return;
   }
-  set_op(n, x.op); // 参数 = 默认表
+  set_op(n, x.op, seg); // 参数 = 默认表
   if (!(x.free & factor::expr::kFreeD))
     n.p.d = x.p.d;
   if (!(x.free & factor::expr::kFreeK))
@@ -165,7 +165,7 @@ void from_expr(const factor::expr::Expr &e, int i, BuildNode &n) {
     n.p.k2 = x.p.k2;
   n.free = x.free;
   for (size_t a = 0; a < n.args.size(); ++a)
-    from_expr(e, x.args[a], n.args[a]);
+    from_expr(e, x.args[a], seg, n.args[a]);
 }
 
 // 候选列表 (槽下拉 / 套一层弹窗公用): 过滤框 + 算子段 (+ 槽模式: <清空> + 特征段).
@@ -229,7 +229,7 @@ void slot_combo(BuildNode &n, const FeatureTable &ft, char *filter, size_t filte
   std::string feat;
   if (pick_list(ft, filter, filter_cap, need, false, n.op, n.feat, op, feat)) {
     if (op >= 0)
-      set_op(n, op);
+      set_op(n, op, ft.seg);
     else if (!feat.empty())
       set_feat(n, feat);
     else
@@ -260,7 +260,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
       int op;
       std::string feat;
       if (pick_list(ft, filter, filter_cap, need, true, -1, std::string(), op, feat))
-        wrap_op(n, op);
+        wrap_op(n, op, ft.seg);
       ImGui::EndPopup();
     }
   }
@@ -321,7 +321,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
       ImGui::InputInt("d", &n.p.d, 0);
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered())
-        tip("窗长 / 滞后 (分钟), 1..%d", factor::expr::kMaxD);
+        tip("窗长 / 滞后 (本层行), 1..%d", factor::kMaxD);
     }
     if (factor::expr::declares(o.params, "k")) {
       const bool f = free_box("##fk", factor::expr::kFreeK);
@@ -983,7 +983,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::Text("%s  %s .. %s", ctx.pool.c_str(), misc::dash(ctx.start_date).c_str(), misc::dash(ctx.end_date).c_str());
   if (ImGui::IsItemHovered())
     tip("因子目录 %s\n"
-        "• 作用域 = Feature 页所选票池 (Lob 库) + config 日期区间\n"
+        "• 作用域 = 因子层所在库 (L_min = Feature 页所选 Lob 票池库, 更粗的层 = Bar 库) + config 日期区间\n"
         "• 一个时间只算一个作用域",
         ctx.factor_dir.c_str());
   ImGui::SameLine();
@@ -1303,7 +1303,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   bool is_tmpl = false; // 有自由参数 (Add / Save 后是"未搜索", 要 Search)
   if (complete) {
     factor::expr::Expr e;
-    if (factor::expr::parse(src, ft.lookup(), e, ui.add_err) && factor::expr::root_frame(e, frame, ui.add_err)) {
+    if (factor::expr::parse(src, ft.lookup(), ft.seg, e, ui.add_err) && factor::expr::root_frame(e, ft.seg, frame, ui.add_err)) {
       canon = e.canon;
       is_tmpl = e.is_template();
     }
@@ -1655,10 +1655,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             if (!r.tmpl.empty()) { // 模板规范串来自 scan 的 parse, 必可再解析 (根非归一的 BROKEN 行也有, 载入后套个根即可); 其他 BROKEN 行留空
               factor::expr::Expr e;
               std::string err;
-              const bool ok = factor::expr::parse(r.tmpl, ft.lookup(), e, err);
+              const bool ok = factor::expr::parse(r.tmpl, ft.lookup(), ft.seg, e, err);
               assert(ok);
               (void)ok;
-              from_expr(e, 0, ui.build);
+              from_expr(e, 0, ft.seg, ui.build);
             }
             std::snprintf(ui.name_buf, sizeof(ui.name_buf), "%s", r.name_en.c_str());
             std::snprintf(ui.name_cn_buf, sizeof(ui.name_cn_buf), "%s", r.name_cn.c_str());

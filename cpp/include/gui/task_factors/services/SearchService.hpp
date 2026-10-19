@@ -17,7 +17,7 @@
 //   终            每 h pick_uncorrelated → ≤ kPicks 权重; 一个 h 都没有正分候选 → 文件不动; 否则 weights = 全部 h 的 picks
 //
 // 评估 (Search 算子, 两后端语义同 Stat; 装 / 评搜索窗内全部标签组):
-//   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 kCarryDays = 5 日 (= kMaxD = max_lag 的行数), 统计从 t_lo 起
+//   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry_days = ⌈kMaxD / seg⌉ 日 (行数 ≥ kMaxD ≥ max_lag), 统计从 t_lo 起
 //             (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同 (ROLL 窗 ≤ kMaxD, EXPAND 段界 reset;
 //             唯 TsMeanEma 全历史递推在块首重启, carry 5 日后差 (1−k)^1275, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
 //   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次).
@@ -46,7 +46,8 @@ struct SharedData;
 namespace GUI::Factors {
 
 struct SearchRequest {
-  std::string factor_dir;                              // <factor_dir>/<pool> (落盘)
+  int seg = 0;                                         // 因子层 (= FeatureTable::seg)
+  std::string factor_dir;                              // factor_dir_of(seg) (落盘)
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
   analysis::ReadScope scope;
@@ -55,7 +56,7 @@ struct SearchRequest {
   bool gpu = false;
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error)
-bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, SearchRequest &req);
+bool MakeSearchRequest(const SharedData &data, int seg, const FactorRow &row, bool gpu, SearchRequest &req);
 
 // 评过的一个候选在一个 h 下的分 (UI 列表)
 struct SearchCand {

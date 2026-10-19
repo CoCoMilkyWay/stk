@@ -21,7 +21,7 @@
 //     一套代码只在两处分叉:
 //     CS  截面: 根是截面归一算子 (CsRank / CsNormRank / CsZ). 每 t 沿 A 轴 rank x (排序) → 20 组 = 截面分位组;
 //         因子值 = 仓位 (每 t 居中 → 多空对冲, β 自然隔离; 超额对 rank 类统计是平移不变的). 大块并列会把相邻组挤空.
-//     TS  时序: 根是 TsRankRoll(d = kTsNormD = kTsNormDays 个交易日), 输出已是每资产对自身滚动历史的分位 ∈ [0,1]
+//     TS  时序: 根是 TsRankRoll(d = ts_norm_d(seg), 整数个交易日), 输出已是每资产对自身滚动历史的分位 ∈ [0,1]
 //         (整数天窗跨日 deseason). 不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组;
 //         评的是"个股处于自身高位时是否跑赢市场", β 由超额隔离, 样本间不再因共同分量相关.
 //     两口径之后逐字共用: grp_of / rIC / 超额 / 持仓口径 / ls / mkt / rAC / 二级汇总. 组允许空 (那一刻没有资产在该组), 空组 / 空腿收益 0.
@@ -44,24 +44,27 @@
 //            二级 HoldStat 的 LS 系 (Moments ls / ls_annual / sharpe_of / beta) 全部基于它. 无信号时 ≈ 0 (原值口径会 ≈ −市场往返成本).
 //     mkt    [kLegs] J 上做多 / 做空标签原值均值 = 两腿的超额基准 (grp 与二级回归 beta 用 mkt[kLong]).
 //     ok     标签侧有效: 非段末尾部 (见下) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0). 组可空 (不再整行作废).
-//     rac    rank AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 才对应"一个持有期换多少仓".
+//     rac    rank AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 行 (hold_rows) 才对应"一个持有期换多少仓".
 //     ok_rac t ≥ h ∧ n ≥ 2 ∧ 两侧方差 > 0. 与标签无关, 段末尾部也算.
-//     段末尾部 (仅分钟型): 行 t 的 entry 锚点 = 分钟 t+1 起始; 最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前
-//       一分钟的起始 = 行 kSegLen − kCloseAuction − 2 的锚点. 行 t 的 exit = 行 t+h 的锚点, t + h 越过它就"持有到收盘", 持有期缩短 →
-//       掩掉 t_seg + h > kSegLen − kCloseAuction − 2 的行 (tail_masked). 日级型全段 exit 同一时刻, 无尾部.
+//     段末尾部 (仅分钟型): 行 t 的标签 = 该行末分钟 m = minute(t_seg) (Contract【层几何】) 的 L_min 标签, entry 锚点 = 分钟 m+1 起始;
+//       最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前一分钟的起始 = L_min 行 kLastAnchorRow 的锚点.
+//       exit = 分钟 m+n 的锚点, m + n 越过它就"持有到收盘", 持有期缩短 → 掩掉 minute(t_seg) + n > kLastAnchorRow 的行 (tail_masked).
+//       日级型全段 exit 同一时刻, 无尾部.
 //     ok / ok_rac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
 //
-//   【持有期键 hold】int, 与 features 层 LabelLob 的列名同源 (lb_<side>_<name>):
-//     分钟型 <n>m   hold = n (1 ≤ n, n + kCloseAuction + 2 ≤ kSegLen), 持仓 n 分钟
+//   【持有期键 hold】int, 与 features 层 LabelLob 的列名同源 (lb_<side>_<name>); 键的单位是**分钟**, 与因子所在层无关:
+//     分钟型 <n>m   hold = n (1 ≤ n ≤ kLastAnchorRow), 持仓 n 分钟
 //     收盘型 close  hold = kHoldClose, 持有到当日收盘
 //     开盘型 t<N>   hold = hold_open(N), T+N 日开盘平仓
-//     折算 / lag / 年化用的有效分钟 h = hold_minutes(hold): 分钟型 = n; close 与 T+1 = kSegLen (同日各行共一个 exit →
-//     每日一个独立样本); T+N = N · kSegLen (相邻 N 日的窗口重叠).
+//     层上合法 (hold_ok): 分钟型 n 是行长 N 的整数倍且首行 minute(0) + n ≤ kLastAnchorRow (尾部不吞整段); close 要求 S > 1
+//       (日层的行就在收盘, 即建即平); 开盘型各层皆可.
+//     折算 / lag / 年化用的有效行数 h = hold_rows(hold, geo): 分钟型 = n / N; close 与 T+1 = S (同日各行共一个 exit →
+//     每日一个独立样本); T+N = N · S (相邻 N 日的窗口重叠). L_min 上 = 分钟数.
 //
 //   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行 (含尾部 / 不 ok, 整张量 = T):
 //     ric / rac / ls  三个逐行量沿 t 的同一套矩 (Moments, 同一个累加器 MomAcc; ric / ls 用 ok 行, rac 用 ok_rac 行):
 //       mean / sd (ddof=1) / ir = mean/sd / pos = >0 占比 / skew, kurt (总体矩, 超额峰度)
-//       t = ir · √(n/h): 分钟行的持有期重叠 (相邻 h 行是同一段收益 / 同一段 lag), 有效样本按 n/h 折算, 不然 t 虚高 √h 倍
+//       t = ir · √(n/h): 持有期重叠 (相邻 h 行是同一段收益 / 同一段 lag, h = hold_rows), 有效样本按 n/h 折算, 不然 t 虚高 √h 倍
 //     真实收益 (派生, 不落 HoldStat): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all, ls_annual = × 每年期数 (= Inspect 累计曲线末点),
 //       sharpe_of = 补 0 后的 mean / sd × √每年期数 (由 n / ls.mean / ls.sd 还原 Σ / Σ², ann_sharpe). 因子表 / Inspect / Search 同一份
 //     beta   ls 对 mkt[kLong] 的 OLS 斜率 (alpha 略: beta ≈ 0 时 alpha ≈ ls.mean)
@@ -83,7 +86,7 @@
 //     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
-//     Labels (持有期键 hd 与其标签 l[] 同处, 带满仓 cap) · Span (块形 T × A + 分块流式 t0_abs / t_lo; 整张量两者为 0).
+//     Labels (持有期键 hd 与其标签 l[] 同处, 带满仓 cap) · Span (块形 T × A + 层每段行数 seg + 分块流式 t0_abs / t_lo; 整张量两者为 0).
 //     流程出口统一是二级累加器 Accum[H] (两后端同), HoldStat 由 finish_all 现算; 一级 Row 是可选的 sink.
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
@@ -102,14 +105,6 @@
 #include <string>
 #include <string_view>
 
-#ifndef FACTOR_HD
-#if defined(__CUDACC__)
-#define FACTOR_HD __host__ __device__
-#else
-#define FACTOR_HD
-#endif
-#endif
-
 namespace factor::stat {
 
 // ---- 常量 ----
@@ -118,13 +113,13 @@ inline constexpr int kMaxHold = 12;                                // 同时评�
 inline constexpr int kMaxCost = 8;                                 // 同时攒的换手成本金额段数上限
 inline constexpr int kMaxA = 5120;                                 // 资产轴上限 (GPU 一行一 block 的片上排序容量)
 inline constexpr int kCloseAuction = 3;                            // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 锚点不能落入
-inline constexpr int kLastAnchorRow = kSegLen - kCloseAuction - 2; // 最后一个 entry 锚点可成交的行 (锚点 = 下一分钟起始, 须在 14:57 前)
+inline constexpr int kLastAnchorRow = kSegMax - kCloseAuction - 2; // 最后一个 entry 锚点可成交的 L_min 行 (= 分钟号; 锚点 = 下一分钟起始, 须在 14:57 前)
 inline constexpr int kDaysPerYear = 242;                           // 年化用交易日数
 inline constexpr uint16_t kRankNone = 0xFFFF;                      // r16 无效
 inline constexpr int kRankMax = 65534;                             // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
 inline constexpr unsigned kNoKey = 0xFFFFFFFFu;                    // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
-inline constexpr int kTsNormDays = 5;                              // TS 口径根 TsRankRoll 的窗长 (整交易日, 跨日 deseason)
-inline constexpr int kTsNormD = kTsNormDays * kSegLen;             // = 1275 分钟 (== Expr.hpp kMaxD, 在 Expr.hpp static_assert 对账)
+// TS 口径根 TsRankRoll 的窗长 (行) = ≤ kMaxD 行的最大整交易日数 (整数天窗跨日 deseason; ≤ kMaxD 故 Search carry 盖得住)
+constexpr int ts_norm_d(int seg) { return kMaxD / seg * seg; }
 
 // ---- 腿 (见文件头【腿 Leg】) ----
 enum Leg : int { kLong = 0,
@@ -144,12 +139,18 @@ inline constexpr int kHoldClose = kHoldDayBase;                    // 持有到�
 inline constexpr int kHoldOpenMax = 30;                            // T+N 的 N 上限 (键值域 / 断言用)
 inline constexpr int hold_open(int n) { return kHoldDayBase + n; } // T+n 开盘平仓
 FACTOR_HD inline constexpr bool hold_intraday(int hold) { return hold < kHoldDayBase; }
-// 折算用有效分钟: 分钟型 = n; close / T+1 = 一段; T+N = N 段
-FACTOR_HD inline constexpr int hold_minutes(int hold) {
+// 持有期在层 g 上是否合法 (见文件头【持有期键】)
+inline constexpr bool hold_ok(int hold, const Geo &g) {
   if (hold_intraday(hold))
-    return hold;
+    return hold >= 1 && hold % g.N == 0 && g.minute(0) + hold <= kLastAnchorRow;
+  return hold != kHoldClose || g.S > 1;
+}
+// 折算 / lag / 年化用的有效行数 (层 g 上): 分钟型 = n / N; close / T+1 = 一段 S 行; T+N = N 段
+FACTOR_HD inline constexpr int hold_rows(int hold, const Geo &g) {
+  if (hold_intraday(hold))
+    return hold / g.N;
   const int n = hold - kHoldDayBase;
-  return kSegLen * (n < 1 ? 1 : n);
+  return g.S * (n < 1 ? 1 : n);
 }
 // 列名 token → 键: "<n>m" / "close" / "t<N>" (LabelLob LABEL_GROUPS 的 name); 不识别 → 断言
 inline int hold_from_name(std::string_view name) {
@@ -181,14 +182,13 @@ struct Holds {
   int h[kMaxHold] = {};
 };
 
-inline void assert_holds(const Holds &hd) {
+inline void assert_holds(const Holds &hd, int seg) {
   assert(hd.n >= 1 && hd.n <= kMaxHold);
   for (int i = 0; i < hd.n; ++i) {
     const int h = hd.h[i];
-    if (hold_intraday(h))
-      assert(h >= 1 && h <= kLastAnchorRow && "分钟型持有期须 ≥ 1 且尾部掩码不能吞掉整段");
-    else
-      assert(h - kHoldDayBase >= 0 && h - kHoldDayBase <= kHoldOpenMax && "日级型键越界 (close = kHoldClose, T+N = hold_open(N))");
+    assert((hold_intraday(h) || (h - kHoldDayBase >= 0 && h - kHoldDayBase <= kHoldOpenMax)) && "日级型键越界 (close = kHoldClose, T+N = hold_open(N))");
+    assert(hold_ok(h, geo_of(seg)) && "持有期在本层不合法 (分钟型须是行长整数倍且尾部不吞整段; 日层无 close)");
+    (void)h;
   }
 }
 
@@ -218,19 +218,21 @@ struct Labels { // l[i] ↔ hd.h[i]
   Label l[kMaxHold];
   double cap = 0.0; // 满仓一腿只数 (【持仓口径】; 调用方给 n_full)
 };
-struct Span { // 块形 + 分块流式 (Search 契约【分块流式】); 整张量 t0_abs = t_lo = 0
+struct Span { // 块形 + 层几何 + 分块流式 (Search 契约【分块流式】); 整张量 t0_abs = t_lo = 0
   int T = 0, A = 0;
+  Geo g; // 因子所在层 (Contract【层几何】): tail_masked / hold_rows 用
   int t0_abs = 0, t_lo = 0;
   FACTOR_HD size_t n() const { return static_cast<size_t>(T) * A; }
 };
 
 inline void assert_span(const Span &s) {
   assert(s.T >= 1 && s.A >= 1 && s.A <= kMaxA && static_cast<long long>(s.T) * s.A < (1LL << 31));
+  assert(is_seg(s.g.S) && geo_of(s.g.S).N == s.g.N && geo_of(s.g.S).M0 == s.g.M0 && "Span::g 须是 kGeos 之一");
   assert(s.t0_abs >= 0 && s.t_lo >= 0 && s.t_lo < s.T);
 }
-// prepped = ry 已由 prep_label 填 (评估入口); 假 = 只要两腿 + 掩码 (GPU 会话的宿主输入)
-inline void assert_labels(const Labels &L, bool prepped) {
-  assert_holds(L.hd);
+// prepped = ry 已由 prep_label 填 (评估入口); 假 = 只要两腿 + 掩码 (GPU 会话的宿主输入). seg = 因子所在层 (持有期按层校验)
+inline void assert_labels(const Labels &L, int seg, bool prepped) {
+  assert_holds(L.hd, seg);
   for (int i = 0; i < L.hd.n; ++i)
     assert(L.l[i].v[kLong] && L.l[i].v[kShort] && L.l[i].m && (!prepped || L.l[i].ry) && "标签不全 / 未预处理 (prep_label)");
   assert(L.cap > 0.0 && "满仓 cap 未给 (Labels::cap = n_full)");
@@ -251,6 +253,7 @@ struct Moments {
   float mean = 0.f, sd = 0.f, ir = 0.f, t = 0.f, pos = 0.f, skew = 0.f, kurt = 0.f;
 };
 struct HoldStat {
+  int seg = 0; // 因子所在层的每段行数 (finish 填; 不落文件, 载入时由因子目录的层给): 年化 / 换手折算用
   int hold = 0, n = 0, n_rac = 0;
   int n_all = 0, n_trig = 0; // 攒过的全部行 (真实收益的分母) / 触发行 (ok 且至少一腿非空)
   Moments ric, rac, ls;      // 三个逐行量 (ric / ls: ok 行; rac: ok_rac 行)
@@ -258,25 +261,24 @@ struct HoldStat {
   float leg_n = 0.f;       // 平均每触发行一腿成员数 (两腿组计数的平均; util_of 的分子)
   float grp[kGroups] = {}; // 组每行持仓收益的均值 (Σ / n_all)
 };
-// 每年持有期数 = kDaysPerYear · kSegLen / h (一年 242 个交易日, 一天 kSegLen 分钟): 年化 (sharpe / 换手 / 均值超额) 统一走这一个
-inline constexpr double periods_per_year(int hold) { return static_cast<double>(kDaysPerYear) * kSegLen / hold_minutes(hold); }
-// 真实收益 (见文件头【二级 HoldStat】): m = n 个 ok 行的矩, 其余 n_all − n 行记 0. 年化均值 = Σ / n_all × 每年期数
-inline double ann_mean(const Moments &m, int n, int n_all, int hold) {
-  return n_all > 0 ? static_cast<double>(m.mean) * n / n_all * periods_per_year(hold) : 0.0;
-}
+// 每年持有期数 = kDaysPerYear · S / h (一年 242 个交易日, 一天 S 行, h = hold_rows): 年化 (sharpe / 换手 / 均值超额) 统一走这一个
+inline constexpr double periods_per_year(int hold, int seg) { return static_cast<double>(kDaysPerYear) * seg / hold_rows(hold, geo_of(seg)); }
+inline double periods_per_year(const HoldStat &s) { return periods_per_year(s.hold, s.seg); }
+// 真实收益 (见文件头【二级 HoldStat】): m = n 个 ok 行的矩, 其余 n_all − n 行记 0. 年化均值 = Σ / n_all × 每年期数 ppy
+inline double ann_mean(const Moments &m, int n, int n_all, double ppy) { return n_all > 0 ? static_cast<double>(m.mean) * n / n_all * ppy : 0.0; }
 // 补 0 后的年化 Sharpe: 由 (n, mean, sd) 还原 Σ = n·mean, Σ² = (n−1)·sd² + n·mean², 在 n_all 行上重算 mean / sd (ddof=1)
-inline double ann_sharpe(const Moments &m, int n, int n_all, int hold) {
+inline double ann_sharpe(const Moments &m, int n, int n_all, double ppy) {
   if (n < 3 || n_all < 2)
     return 0.0;
   const double nn = n, N = n_all, mu = m.mean, sd = m.sd;
   const double s1 = nn * mu, s2 = (nn - 1.0) * sd * sd + nn * mu * mu;
   const double M = s1 / N, v = (s2 - N * M * M) / (N - 1.0);
-  return v > 0.0 ? M / std::sqrt(v) * std::sqrt(periods_per_year(hold)) : 0.0;
+  return v > 0.0 ? M / std::sqrt(v) * std::sqrt(ppy) : 0.0;
 }
 // LS 每期真实收益 / 年化 / 年化 Sharpe. 派生量, 不落 HoldStat / 文件
 inline double ls_period(const HoldStat &s) { return s.n_all > 0 ? static_cast<double>(s.ls.mean) * s.n / s.n_all : 0.0; }
-inline double ls_annual(const HoldStat &s) { return ann_mean(s.ls, s.n, s.n_all, s.hold); }
-inline double sharpe_of(const HoldStat &s) { return ann_sharpe(s.ls, s.n, s.n_all, s.hold); }
+inline double ls_annual(const HoldStat &s) { return ann_mean(s.ls, s.n, s.n_all, periods_per_year(s)); }
+inline double sharpe_of(const HoldStat &s) { return ann_sharpe(s.ls, s.n, s.n_all, periods_per_year(s)); }
 // 触发率 = 触发行 / ok 行; n = 0 → 0 (诊断)
 inline double trigger_of(const HoldStat &s) { return s.n > 0 ? static_cast<double>(s.n_trig) / s.n : 0.0; }
 // 两腿利用率 = 平均每触发行一腿成员数 / 满仓 cap, 不封顶 (> 1 = 腿塞过满仓; 诊断)
@@ -286,7 +288,7 @@ inline double util_of(const HoldStat &s, double cap) {
 }
 // 年化换手 (倍/年) = 每持有期换手 (1 − rAC 均值, 秩重排占比) × 每年持有期数.
 // rAC 的 lag = h 随持有期变, 本身不可跨期比; 折到同一时间轴后可比, 越低越好. 派生量, 不落 HoldStat / 文件
-inline double turnover_annual(const HoldStat &s) { return (1.0 - s.rac.mean) * periods_per_year(s.hold); }
+inline double turnover_annual(const HoldStat &s) { return (1.0 - s.rac.mean) * periods_per_year(s); }
 
 // ---- 共享公式 (FACTOR_HD: 两后端同一份) ----
 
@@ -317,8 +319,8 @@ FACTOR_HD inline int grp_of(unsigned r16) {
   return g < kGroups - 1 ? g : kGroups - 1;
 }
 
-// 段末尾部 (exit 锚点 = 行 t+h 的锚点越过最后可成交锚点 → 标签持有到收盘, 持有期缩短) → 掩掉; 日级型无尾部
-FACTOR_HD inline bool tail_masked(int t, int hold) { return hold_intraday(hold) && t % kSegLen + hold > kLastAnchorRow; }
+// 段末尾部 (exit 锚点 = 行末分钟 + n 的锚点越过最后可成交锚点 → 标签持有到收盘, 持有期缩短) → 掩掉; 日级型无尾部. t = 绝对行号
+FACTOR_HD inline bool tail_masked(int t, int hold, const Geo &g) { return hold_intraday(hold) && g.minute(t % g.S) + hold > kLastAnchorRow; }
 
 // ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线共用) ----
 
@@ -375,7 +377,7 @@ struct CostAcc {
 inline double net_ls_period(const HoldStat &s, const CostAcc &c, double sell_impact) {
   return ls_period(s) - c.cost(kLong, sell_impact, s.n_all) - c.cost(kShort, sell_impact, s.n_all);
 }
-inline double net_ls(const HoldStat &s, const CostAcc &c, double sell_impact) { return net_ls_period(s, c, sell_impact) * periods_per_year(s.hold); }
+inline double net_ls(const HoldStat &s, const CostAcc &c, double sell_impact) { return net_ls_period(s, c, sell_impact) * periods_per_year(s); }
 
 // 整数五和 + 计数 (rIC / rAC 的 Pearson 原料), 下标 s[kSn..kSxy]; 两后端同一份累加 (r16 ≤ 65534: 积 < 2³², 32 位乘后再加进 64 位)
 enum : int { kSn,
@@ -484,8 +486,8 @@ struct MomAcc {
     n += o.n, npos += o.npos;
     s1 += o.s1, s2 += o.s2, s3 += o.s3, s4 += o.s4;
   }
-  // hold = 持有期键 (t 值的重叠折算 n/h)
-  Moments finish(int hold) const {
+  // h = 持有期折成的行数 (hold_rows; t 值的重叠折算 n/h)
+  Moments finish(int h) const {
     Moments m;
     if (n < 3)
       return m;
@@ -499,7 +501,7 @@ struct MomAcc {
     m.pos = static_cast<float>(npos / nn);
     if (sd > 0.0) {
       m.ir = static_cast<float>(mu / sd);
-      m.t = static_cast<float>(mu / sd * std::sqrt(nn / hold_minutes(hold)));
+      m.t = static_cast<float>(mu / sd * std::sqrt(nn / h));
       const double v = m2 / nn;
       m.skew = static_cast<float>((m3 / nn) / (v * std::sqrt(v)));
       m.kurt = static_cast<float>((m4 / nn) / (v * v) - 3.0);
@@ -553,18 +555,21 @@ struct Accum {
     for (int k = 0; k < kGroups; ++k)
       grp[k].merge(o.grp[k]);
   }
-  // hold = 持有期键 (折算 / 年化); n < 3 → 标签侧全 0, rac 照算 (看 n_rac)
-  HoldStat finish(int hold) const {
+  // hold = 持有期键, seg = 因子所在层的每段行数 (折算 / 年化); n < 3 → 标签侧全 0, rac 照算 (看 n_rac)
+  HoldStat finish(int hold, int seg) const {
     assert(hold >= 1);
+    const int h = hold_rows(hold, geo_of(seg));
+    assert(h >= 1);
     HoldStat s;
+    s.seg = seg;
     s.hold = hold;
     s.n = head.ric.n;
     s.n_rac = head.rac.n;
     s.n_all = head.n_all;
     s.n_trig = head.n_trig;
-    s.ric = head.ric.finish(hold);
-    s.rac = head.rac.finish(hold);
-    s.ls = head.ls.finish(hold);
+    s.ric = head.ric.finish(h);
+    s.rac = head.rac.finish(h);
+    s.ls = head.ls.finish(h);
     if (s.n < 3)
       return s;
     double g[kGroups];
@@ -583,10 +588,10 @@ struct Accum {
 };
 
 // 流程出口 Accum[hd.n] → HoldStat[hd.n] (两后端同一份; 见文件头【视图】)
-inline void finish_all(const Accum *acc, const Holds &hd, HoldStat *out) {
+inline void finish_all(const Accum *acc, const Holds &hd, int seg, HoldStat *out) {
   assert(acc && out);
   for (int i = 0; i < hd.n; ++i)
-    out[i] = acc[i].finish(hd.h[i]);
+    out[i] = acc[i].finish(hd.h[i], seg);
 }
 
 } // namespace factor::stat

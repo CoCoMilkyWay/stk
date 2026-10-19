@@ -57,14 +57,15 @@ void plane_free(DevPlane &p) { // v 可空 (upload_mask 的掩码平面)
 }
 
 // 会话内跑一个算子, 输出留在设备平面 out: 工作区不够才重分配; cudaEvent 夹 Op::run 计纯 kernel.
-// CS 算子多收池掩码 g (只用 g->m); TS 传 nullptr
+// CS 算子多收池掩码 g (只用 g->m); TS 传 nullptr. seg = 段长 (TS 必填; 段长相关算子的 run 是 template <int S>, 经 with_seg 分派); CS 不看
 template <class Op, bool CS>
-void call_dev(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, DevPlane *out, int T, int A,
+void call_dev(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, DevPlane *out, int T, int A, int seg,
               const Param &p, double *kernel_ms) {
   assert(s && s->n == static_cast<size_t>(T) * A && "会话形状与本次调用不符");
   assert(out && out->v && out->m);
   assert(out != x && out != y && out != z && "算子不支持原地");
   assert(CS == (g != nullptr) && (!CS || g->m) && "CS 算子必须给池掩码 g, TS 不收");
+  assert((CS || (is_seg(seg) && T % seg == 0)) && "TS 须给合法段长, T 为整段数");
   const size_t wsn = Op::workspace(T, A, p);
   if (wsn > s->ws_cap) {
     if (s->ws)
@@ -77,10 +78,13 @@ void call_dev(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *
   // 只有要计时才夹事件并同步: 搜索路径 (kernel_ms = nullptr) 整条 DAG 异步排队, 不逐算子做 CPU↔GPU 往返
   if (kernel_ms)
     CU(cudaEventRecord(s->e0));
+  void *ws = wsn ? s->ws : nullptr;
   if constexpr (CS)
-    Op::run(xv, xm, yv, ym, zv, zm, g->m, out->v, out->m, T, A, p, wsn ? s->ws : nullptr, nullptr);
+    Op::run(xv, xm, yv, ym, zv, zm, g->m, out->v, out->m, T, A, p, ws, nullptr);
+  else if constexpr (requires { Op::template run<kSegMax>(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, ws, nullptr); }) // nvcc 不认 &Op::template run<S> 形式
+    with_seg(seg, [&]<int S>() { Op::template run<S>(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, ws, nullptr); });
   else
-    Op::run(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, wsn ? s->ws : nullptr, nullptr);
+    Op::run(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, ws, nullptr);
   CU(cudaGetLastError());
   if (kernel_ms) {
     CU(cudaEventRecord(s->e1));
@@ -95,8 +99,8 @@ void call_dev(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *
 // 会话版: 写会话输出平面后拷回宿主 (宿主 pin 过则走 DMA)
 template <class Op, bool CS>
 void call(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, float *ov, uint8_t *om, int T, int A,
-          const Param &p, double *kernel_ms) {
-  call_dev<Op, CS>(s, x, y, z, g, &s->o, T, A, p, kernel_ms);
+          int seg, const Param &p, double *kernel_ms) {
+  call_dev<Op, CS>(s, x, y, z, g, &s->o, T, A, seg, p, kernel_ms);
   CU(cudaMemcpy(ov, s->o.v, s->n * sizeof(float), cudaMemcpyDeviceToHost));
   CU(cudaMemcpy(om, s->o.m, s->n, cudaMemcpyDeviceToHost));
 }
@@ -104,13 +108,13 @@ void call(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *z, c
 // 一次性版本的公共体: 临时会话, 上传 → 跑 → 关 (gm 非空 ⟺ CS)
 template <class Op, bool CS>
 void call_once(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm,
-               const uint8_t *gm, float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms) {
+               const uint8_t *gm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p, double *kernel_ms) {
   Session *s = session_open(static_cast<size_t>(T) * A);
   const DevPlane *x = xv ? upload(s, xv, xm) : nullptr;
   const DevPlane *y = yv ? upload(s, yv, ym) : nullptr;
   const DevPlane *z = zv ? upload(s, zv, zm) : nullptr;
   const DevPlane *g = gm ? upload_mask(s, gm) : nullptr;
-  call<Op, CS>(s, x, y, z, g, ov, om, T, A, p, kernel_ms);
+  call<Op, CS>(s, x, y, z, g, ov, om, T, A, seg, p, kernel_ms);
   session_close(s);
 }
 
@@ -212,10 +216,10 @@ int search_max_batch() { return stat::kMaxBatch; }
 
 // 分派: 六个入口 (ts / cs × 会话 / 一次性 / 设备输出) 共用 OpTable 展开, 只差调哪个 call
 void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
-                int A, const Param &p, double *kernel_ms) {
+                int A, int seg, const Param &p, double *kernel_ms) {
 #define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
   if (std::strcmp(name, #Name) == 0)                                        \
-    return call_dev<ts::Name, false>(s, x, y, z, nullptr, out, T, A, p, kernel_ms);
+    return call_dev<ts::Name, false>(s, x, y, z, nullptr, out, T, A, seg, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
   assert(false && "算子不在 OpTable 的 TS 组");
@@ -225,17 +229,17 @@ void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane 
                 DevPlane *out, int T, int A, const Param &p, double *kernel_ms) {
 #define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
   if (std::strcmp(name, #Name) == 0)                                        \
-    return call_dev<cs::Name, true>(s, x, y, z, g, out, T, A, p, kernel_ms);
+    return call_dev<cs::Name, true>(s, x, y, z, g, out, T, A, 0, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
   assert(false && "算子不在 OpTable 的 CS 组");
 }
 
 void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
-            int T, int A, const Param &p, double *kernel_ms) {
+            int T, int A, int seg, const Param &p, double *kernel_ms) {
 #define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
   if (std::strcmp(name, #Name) == 0)                                        \
-    return call<ts::Name, false>(s, x, y, z, nullptr, ov, om, T, A, p, kernel_ms);
+    return call<ts::Name, false>(s, x, y, z, nullptr, ov, om, T, A, seg, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
   assert(false && "算子不在 OpTable 的 TS 组");
@@ -245,18 +249,18 @@ void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, 
             float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms) {
 #define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
   if (std::strcmp(name, #Name) == 0)                                        \
-    return call<cs::Name, true>(s, x, y, z, g, ov, om, T, A, p, kernel_ms);
+    return call<cs::Name, true>(s, x, y, z, g, ov, om, T, A, 0, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
   assert(false && "算子不在 OpTable 的 CS 组");
 }
 
 void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p,
+            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p,
             double *kernel_ms) {
 #define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
   if (std::strcmp(name, #Name) == 0)                                        \
-    return call_once<ts::Name, false>(xv, xm, yv, ym, zv, zm, nullptr, ov, om, T, A, p, kernel_ms);
+    return call_once<ts::Name, false>(xv, xm, yv, ym, zv, zm, nullptr, ov, om, T, A, seg, p, kernel_ms);
   OP_TS(G_TS)
 #undef G_TS
   assert(false && "算子不在 OpTable 的 TS 组");
@@ -268,7 +272,7 @@ void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *y
   assert(gm && "CS 算子必须给池掩码");
 #define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
   if (std::strcmp(name, #Name) == 0)                                        \
-    return call_once<cs::Name, true>(xv, xm, yv, ym, zv, zm, gm, ov, om, T, A, p, kernel_ms);
+    return call_once<cs::Name, true>(xv, xm, yv, ym, zv, zm, gm, ov, om, T, A, 0, p, kernel_ms);
   OP_CS(G_CS)
 #undef G_CS
   assert(false && "算子不在 OpTable 的 CS 组");
@@ -324,8 +328,8 @@ struct DevLabels {
   DevBuf<uint16_t> v[kLegs][factor::stat::kMaxHold], ry[factor::stat::kMaxHold];
   DevBuf<uint8_t> m[factor::stat::kMaxHold];
   factor::stat::Labels L;
-  void alloc(const factor::stat::Holds &hd, size_t n) {
-    factor::stat::assert_holds(hd);
+  void alloc(const factor::stat::Holds &hd, int seg, size_t n) {
+    factor::stat::assert_holds(hd, seg);
     H = hd.n, L.hd = hd;
     for (int i = 0; i < H; ++i) {
       for (int l = 0; l < kLegs; ++l)
@@ -336,7 +340,7 @@ struct DevLabels {
   }
   // 宿主标签 (持有期须与 alloc 同) 拷入 + ry 预处理 (纯 kernel 计时)
   double load(const factor::stat::Labels &host, const factor::stat::Span &s, Timer &tm) {
-    factor::stat::assert_labels(host, false);
+    factor::stat::assert_labels(host, s.g.S, false);
     assert(host.hd.n == H);
     for (int i = 0; i < H; ++i)
       assert(host.hd.h[i] == L.hd.h[i] && "标签持有期与会话不符");
@@ -374,13 +378,13 @@ struct StatSession {
   Timer tm;
 };
 
-StatSession *stat_open(int T, int A, const factor::stat::Labels &L, double *prep_ms) {
+StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, double *prep_ms) {
   StatSession *s = new StatSession;
-  s->s = {T, A};
+  s->s = {T, A, geo_of(seg)};
   factor::stat::assert_span(s->s);
   const size_t n = s->s.n();
   const int H = L.hd.n, NB = stat::n_parts(s->s);
-  s->lab.alloc(L.hd, n);
+  s->lab.alloc(L.hd, seg, n);
   s->rx.alloc(n), s->lc.alloc(n);
   s->rows.alloc(static_cast<size_t>(H) * T);
   s->part.alloc(static_cast<size_t>(H) * NB), s->acc.alloc(static_cast<size_t>(H));
@@ -418,15 +422,15 @@ void stat_close(StatSession *s) {
 }
 
 // 一次性版: 临时会话 + 上传 x / g
-void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, int T, int A, const factor::stat::Labels &L, factor::stat::Accum *acc,
-              factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
+void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg, const factor::stat::Labels &L,
+              factor::stat::Accum *acc, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
   assert(x.v && x.m && gm);
   const size_t n = static_cast<size_t>(T) * A;
   DevBuf<float> xv;
   DevBuf<uint8_t> xm, g;
   xv.up(x.v, n), xm.up(x.m, n), g.up(gm, n);
   const DevPlane xp{xv.p, xm.p}, gp{nullptr, g.p};
-  StatSession *s = stat_open(T, A, L, prep_ms);
+  StatSession *s = stat_open(T, A, seg, L, prep_ms);
   stat_eval(s, &xp, &gp, f, acc, rows, nullptr, nullptr, eval_ms);
   stat_close(s);
   xv.free_(), xm.free_(), g.free_();
@@ -434,7 +438,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
 
 // Search 会话: 一块的标签 + Cmax 候选的 rx 工作区 + 分片 / 结果, open 时全部分配; load 只拷入 + 预处理
 struct SearchSession {
-  int T = 0, A = 0, Cmax = 0;
+  int T = 0, A = 0, seg = 0, Cmax = 0;
   factor::stat::Holds hd;
   double cap = 0.0;
   DevLabels lab;
@@ -445,14 +449,14 @@ struct SearchSession {
   Timer tm;
 };
 
-SearchSession *search_open(int T, int A, int Cmax, const factor::stat::Holds &hd, double cap) {
-  factor::stat::assert_holds(hd);
+SearchSession *search_open(int T, int A, int seg, int Cmax, const factor::stat::Holds &hd, double cap) {
+  factor::stat::assert_holds(hd, seg);
   assert(T > 0 && A > 0 && A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch && cap > 0.0);
   const size_t n = static_cast<size_t>(T) * A;
   SearchSession *s = new SearchSession;
-  s->T = T, s->A = A, s->Cmax = Cmax, s->hd = hd, s->cap = cap;
-  s->lab.alloc(hd, n);
-  const search::Work w = search::plan(Cmax, T, A, hd.n, 0); // t_lo = 0 是分片数上界
+  s->T = T, s->A = A, s->seg = seg, s->Cmax = Cmax, s->hd = hd, s->cap = cap;
+  s->lab.alloc(hd, seg, n);
+  const search::Work w = search::plan(Cmax, T, A, seg, hd.n, 0); // t_lo = 0 是分片数上界
   s->rx.alloc(w.rx_elems());
   s->part.alloc(w.part_elems());
   s->out.alloc(w.out_elems());
@@ -466,7 +470,7 @@ void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_
   L.cap = s->cap;
   for (int i = 0; i < s->hd.n; ++i)
     L.l[i] = lab[i];
-  const double pms = s->lab.load(L, factor::stat::Span{s->T, s->A}, s->tm);
+  const double pms = s->lab.load(L, factor::stat::Span{s->T, s->A, geo_of(s->seg)}, s->tm);
   if (prep_ms)
     *prep_ms = pms;
   s->loaded = true;
@@ -481,7 +485,7 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
     assert(x[c] && x[c]->v && x[c]->m);
     B.x[c] = {x[c]->v, x[c]->m};
   }
-  const search::Work w = search::plan(C, s->T, s->A, s->hd.n, t_lo);
+  const search::Work w = search::plan(C, s->T, s->A, s->seg, s->hd.n, t_lo);
   if (eval_ms)
     s->tm.begin();
   search::eval(B, g->m, f, w, t0_abs, s->lab.L, s->rx.p, s->part.p, s->out.p, nullptr);
@@ -506,9 +510,9 @@ void search_close(SearchSession *s) {
   delete s;
 }
 
-void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int t0_abs,
-                int t_lo, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out, double *prep_ms,
-                double *eval_ms) {
+void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg,
+                int t0_abs, int t_lo, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out,
+                double *prep_ms, double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = static_cast<size_t>(T) * A;
   std::vector<DevBuf<float>> x(static_cast<size_t>(C));
@@ -523,7 +527,7 @@ void run_search(int C, const float *const *xv, const uint8_t *const *xm, const u
   DevBuf<uint8_t> g;
   g.up(gm, n);
   const DevPlane gp{nullptr, g.p};
-  SearchSession *s = search_open(T, A, C, hd, cap);
+  SearchSession *s = search_open(T, A, seg, C, hd, cap);
   search_load(s, lab, prep_ms);
   search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, out, eval_ms);
   search_close(s);

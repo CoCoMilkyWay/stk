@@ -39,12 +39,11 @@ using factor::search::Result;
 using factor::search::Score;
 using Clock = std::chrono::steady_clock;
 
-constexpr int kCarryDays = 5;      // 块首多带的交易日 (ROLL 预热 + rAC lag): 行数 = kMaxD = TS 归一窗 ≥ max_lag
-constexpr int kCpuForest = 64;     // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
-constexpr int kGpuMinBatch = 8;    // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
-constexpr double kHostFrac = 0.6;  // 宿主可用内存的使用比例
-constexpr double kVramFrac = 0.85; // 显存空闲量的使用比例
-static_assert(kCarryDays * factor::kSegLen == factor::expr::kMaxD, "carry 行数须等于窗长上限 kMaxD");
+constexpr int carry_days(int seg) { return (factor::kMaxD + seg - 1) / seg; } // 块首多带的交易日 (ROLL 预热 + rAC lag): 行数 ≥ kMaxD ≥ TS 归一窗 / max_lag
+constexpr int kCpuForest = 64;                                                // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
+constexpr int kGpuMinBatch = 8;                                               // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
+constexpr double kHostFrac = 0.6;                                             // 宿主可用内存的使用比例
+constexpr double kVramFrac = 0.85;                                            // 显存空闲量的使用比例
 
 __attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
   char buf[4096];
@@ -117,7 +116,7 @@ struct ChunkData {
   int t_lo = 0, t0_abs = 0;
   Loaded L;
   LabelsHost lab; // CPU; 装载后清空, 首次评估时算 (指 L 的标签, 随块同生)
-  factor::stat::Span span() const { return {L.T, L.A, t0_abs, t_lo}; }
+  factor::stat::Span span() const { return {L.T, L.A, factor::geo_of(L.seg), t0_abs, t_lo}; }
 };
 
 // 一个候选 (评过 / 待评); 分数每 h 一份
@@ -155,18 +154,20 @@ struct SearchService::Flow {
   Flow() : ex(misc::exec::hw()) {}
 };
 
-bool MakeSearchRequest(const SharedData &data, const FactorRow &row, bool gpu, SearchRequest &req) {
+bool MakeSearchRequest(const SharedData &data, int seg, const FactorRow &row, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  const std::string &pool = data.feature.selection.lib_of(TierId::Lob);
-  req.factor_dir = data.config.factor_dir + "/" + pool;
+  const TierId tier = factor_level(seg).tier;
+  const std::string &pool = data.feature.selection.lib_of(tier);
+  req.seg = seg;
+  req.factor_dir = factor_dir_of(data, seg);
   req.file = row.file;
   req.tmpl = row.tmpl;
   req.frame = row.frame;
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature, TierId::Lob);
+  req.scope = analysis::read_scope(data.config, data.feature, tier);
   if (req.scope.months.empty())
     return false;
   req.pool = pool;
@@ -201,10 +202,12 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
   const int A = static_cast<int>(req.scope.lib().axis.size());
+  assert(req.seg == feats_.seg && "请求层与字段表层不符");
+  const int seg = feats_.seg, carry = carry_days(seg);
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
   std::vector<int> holds;
   for (const LabelCol &lc : feats_.labels)
-    if (factor::search::hold_in_window(lc.hold))
+    if (factor::search::hold_in_window(lc.hold)) // 字段表已只收本层合法 (hold_ok) 的
       holds.push_back(lc.hold);
   SearchResult res;
   res.file = req.file;
@@ -245,8 +248,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     sh.hold = hd.h[hi];
     res.holds.push_back(std::move(sh));
   }
-  fs::assert_holds(hd);
-  assert(factor::search::max_lag(hd) <= kCarryDays * factor::kSegLen && "carry 不够 rAC 的 lag");
+  fs::assert_holds(hd, seg);
+  assert(factor::search::max_lag(hd, seg) <= carry * seg && "carry 不够 rAC 的 lag");
   {
     std::string hs;
     for (int hi = 0; hi < H; ++hi)
@@ -260,11 +263,11 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   factor::expr::Expr e0;
   {
     std::string err;
-    const bool ok = factor::expr::parse(req.tmpl, feats_.lookup(), e0, err);
+    const bool ok = factor::expr::parse(req.tmpl, feats_.lookup(), seg, e0, err);
     assert(ok && "Factors 表的模板规范串必可再解析");
     (void)ok;
   }
-  std::vector<grid::Slot> slots = grid::slots_of(e0);
+  std::vector<grid::Slot> slots = grid::slots_of(e0, seg);
   for (const grid::Slot &s : slots)
     res.slots.push_back(s.name);
   if (slots.empty())
@@ -282,7 +285,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   std::map<std::string, int> seen;
   const auto add_cand = [&](const std::vector<double> &u, const std::vector<int> &offs) -> int {
     Entry en;
-    if (!grid::apply(e0, slots, u, en.e))
+    if (!grid::apply(e0, slots, u, seg, en.e))
       return -1;
     if (const auto it = seen.find(en.e.canon); it != seen.end())
       return it->second;
@@ -332,24 +335,24 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   //   L0  宿主 Loaded: 特征 (v+m) 5·nf + 截面门控 5 + 标签 (lv,sv,m) 5·H
   //   Wc  CPU 工作区: ry 2·H + ws 2 + 池 (s0+2)·5
   //   F0  设备常驻: 特征 5·nf + 门控 1 + 搜索会话标签 (lv,sv,m,ry) 7·H; 每候选 7 (根平面 5 + rx 2); 中间量 2·s0 槽
-  const double per_day = static_cast<double>(factor::kSegLen) * A;
+  const double per_day = static_cast<double>(seg) * A;
   const double L0 = 5.0 * nf + 5.0 + 5.0 * H;
   const double Wc = 2.0 * H + 2.0 + 5.0 * (s0 + 2);
   const double F0 = 5.0 * nf + 1.0 + 7.0 * H;
   const MemoryUsage mu = memory_usage();
   const double host_budget = kHostFrac * static_cast<double>(mu.total_bytes - mu.used_bytes);
-  int D = std::clamp(static_cast<int>(host_budget / (per_day * (L0 + (req.gpu ? 0.0 : Wc)))) - kCarryDays, 1, days);
+  int D = std::clamp(static_cast<int>(host_budget / (per_day * (L0 + (req.gpu ? 0.0 : Wc)))) - carry, 1, days);
   double vram_budget = 0.0;
   if (req.gpu) {
     assert(factor::gpu::available() && "GPU 后端不可用");
     size_t vfree = 0, vtotal = 0;
     factor::gpu::mem_info(&vfree, &vtotal);
     vram_budget = kVramFrac * static_cast<double>(vfree);
-    const int Dg = std::clamp(static_cast<int>(vram_budget / (per_day * (F0 + 10.0 * s0 + 7.0 * kGpuMinBatch))) - kCarryDays, 1, days);
+    const int Dg = std::clamp(static_cast<int>(vram_budget / (per_day * (F0 + 10.0 * s0 + 7.0 * kGpuMinBatch))) - carry, 1, days);
     D = std::min(D, Dg);
   }
   const int n_chunks = (days + D - 1) / D;
-  const int Tmax = std::min(days, D + kCarryDays) * factor::kSegLen; // 最长一块的行数
+  const int Tmax = std::min(days, D + carry) * seg; // 最长一块的行数
   int batch = 1;
   if (req.gpu) {
     const double nmax = static_cast<double>(Tmax) * A;
@@ -358,14 +361,14 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   // 整轮缓存全部块 (装得下) 还是一块复用
   double cache_bytes = 0.0;
   for (int ci = 0; ci < n_chunks; ++ci) {
-    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - kCarryDays);
+    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
     cache_bytes += (day1 - load0) * per_day * (L0 + (req.gpu ? 0.0 : 2.0 * H));
   }
   const bool cache_all = cache_bytes + Tmax * static_cast<double>(A) * (req.gpu ? 0.0 : Wc) <= host_budget;
   res.n_chunk = n_chunks, res.chunk_days = D, res.batch = batch;
   res.n_assets = A;
   for (int ci = 0; ci < n_chunks; ++ci) {
-    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - kCarryDays);
+    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
     res.chunk_plan.push_back(SearchChunk{day1 - load0, (day1 - load0) * per_day * (L0 + (req.gpu ? 0.0 : 2.0 * H)) / (1024.0 * 1024.0)});
   }
   chunks_.store(n_chunks, std::memory_order_relaxed);
@@ -373,10 +376,10 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   constexpr double kMiB = 1024.0 * 1024.0;
   lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, nf, H, s0, L0, req.gpu ? 0.0 : Wc);
   lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", host_budget / kMiB,
-     req.gpu ? strf(", 显存 %.0f MB", vram_budget / kMiB).c_str() : "", D, kCarryDays, n_chunks, cache_all ? "是" : "否 (每趟逐块重读)", cache_bytes / kMiB,
+     req.gpu ? strf(", 显存 %.0f MB", vram_budget / kMiB).c_str() : "", D, carry, n_chunks, cache_all ? "是" : "否 (每趟逐块重读)", cache_bytes / kMiB,
      req.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
   for (int ci = 0; ci < n_chunks; ++ci) {
-    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - kCarryDays);
+    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
     lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, misc::dense(dates[static_cast<size_t>(day0)]).c_str(), misc::dense(dates[static_cast<size_t>(day1 - 1)]).c_str(), day1 - day0,
        day1 - load0, res.chunk_plan[static_cast<size_t>(ci)].mb);
   }
@@ -385,7 +388,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   bool domain_checked = false;
   // 装一块: 交易日 [day0, day1), 前带 carry; 首块顺带查特征叶值域
   const auto load_chunk = [&](int ci, ChunkData &cd) -> Rc {
-    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - kCarryDays);
+    const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
     const std::vector<misc::Ymd> cdates(dates.begin() + load0, dates.begin() + day1);
     const Clock::time_point t_load = Clock::now();
     cd.idx = -1;
@@ -406,8 +409,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     }
     lg("装载块 %d/%d: %d 天, %.1fs", ci + 1, n_chunks, day1 - load0, std::chrono::duration<double>(Clock::now() - t_load).count());
     cd.idx = ci;
-    cd.t_lo = (day0 - load0) * factor::kSegLen;
-    cd.t0_abs = load0 * factor::kSegLen;
+    cd.t_lo = (day0 - load0) * seg;
+    cd.t0_abs = load0 * seg;
     if (!domain_checked) {
       domain_checked = true;
       for (int i = 0; i < static_cast<int>(d0.nodes.size()); ++i) {
@@ -438,7 +441,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       return static_cast<int>(it - ids.begin());
     }
   };
-  const int stride = std::max(1, days * factor::kSegLen / factor::search::kCorrRows);
+  const int stride = std::max(1, days * seg / factor::search::kCorrRows);
   RankSink *sink = nullptr; // 非空 = 本趟抽样
   const auto sink_begin = [&](ChunkData &cd) {
     if (!sink)
@@ -509,7 +512,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         const factor::check::Plane *in[3] = {};
         for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
           in[a] = plane_of(nd.in[a]);
-        factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, F.sc, L.cs.m.data());
+        factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, F.sc, L.cs.m.data());
         if (!Fd.is_root(i))
           continue;
         const factor::check::Plane *rp = plane_of(i);
@@ -542,7 +545,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     fs::Label lab[fs::kMaxHold];
     for (int hi = 0; hi < H; ++hi)
       lab[hi] = label_of(L.labels[static_cast<size_t>(hi)], nullptr);
-    factor::gpu::SearchSession *ss = factor::gpu::search_open(T, A, batch, hd, n_full_of(L));
+    factor::gpu::SearchSession *ss = factor::gpu::search_open(T, A, seg, batch, hd, n_full_of(L));
     factor::gpu::search_load(ss, lab);
     factor::gpu::DevPool dp;
     std::vector<Result> out(static_cast<size_t>(batch));
@@ -586,7 +589,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
           in[a] = plane_of(nd.in[a]);
         factor::gpu::DevPlane *o_plane = dp.slots[static_cast<size_t>(nd.slot)];
         if (o.a == factor::A::SELF)
-          factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], o_plane, T, A, nd.p);
+          factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], o_plane, T, A, seg, nd.p);
         else
           factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], cs_gate, o_plane, T, A, nd.p);
       }
@@ -643,7 +646,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
       for (int hi = 0; hi < H; ++hi)
-        en.sc[hi] = factor::search::score_signed(en.r, hd, hi, obj);
+        en.sc[hi] = factor::search::score_signed(en.r, hd, seg, hi, obj);
       if (en.pass < 0) // corr 趟重评不改首评趟号
         en.pass = pass;
     }
@@ -718,7 +721,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
           const factor::check::Plane *in[3] = {};
           for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
             in[a] = plane_of(nd.in[a]);
-          factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, F.sc, L.cs.m.data());
+          factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, F.sc, L.cs.m.data());
         }
         for (size_t q = 0; q < need.size(); ++q) {
           if (want[q] != i)
@@ -947,7 +950,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   if (sk.pairs.empty())
     lg("截面相关: 各持有期高原 ≤ 1 个, 跳过");
   else
-    lg("截面相关: 并集 %d 候选重评, 抽样步长 %d 行 (约 %d 行), %d 对", static_cast<int>(sk.ids.size()), stride, days * factor::kSegLen / stride,
+    lg("截面相关: 并集 %d 候选重评, 抽样步长 %d 行 (约 %d 行), %d 对", static_cast<int>(sk.ids.size()), stride, days * seg / stride,
        static_cast<int>(sk.pairs.size()));
   if (!sk.pairs.empty()) { // 单候选的 h 不必算相关; 重评 (r 清零再攒, 分数不变)
     sink = &sk;

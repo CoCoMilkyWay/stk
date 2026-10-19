@@ -65,7 +65,7 @@ struct RoundCtx {
     assert(slot >= 0 && slot < kSlots);
     factor::check::Plane &p = host[slot][static_cast<int>(gen)];
     if (p.v.empty()) {
-      factor::check::fill(p, gen, factor::check::Profile::PLAIN, rq.times, rq.A, rng);
+      factor::check::fill(p, gen, factor::check::Profile::PLAIN, rq.times, rq.A, factor::kSegMax, rng);
       if (gpu)
         dev[slot][static_cast<int>(gen)] = factor::gpu::upload(gpu, p.v.data(), p.m.data());
     }
@@ -77,7 +77,7 @@ struct RoundCtx {
   }
   const factor::check::Plane &gate_plane() {
     if (gate.v.empty()) {
-      factor::check::fill_gate(gate, factor::check::Profile::PLAIN, rq.times, rq.A, rng);
+      factor::check::fill_gate(gate, factor::check::Profile::PLAIN, rq.times, rq.A, factor::kSegMax, rng);
       if (gpu)
         dgate = factor::gpu::upload_mask(gpu, gate.m.data());
     }
@@ -96,7 +96,7 @@ double ms_since(Clock::time_point t0) {
 factor::Param param_of(const OperatorRow &row) {
   factor::Param p;
   p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.e_name) : 1;
-  factor::check::set_k(row.e_name, p);
+  factor::check::set_k(row.e_name, p, factor::kSegMax);
   return p;
 }
 
@@ -125,14 +125,14 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   if constexpr (IS_CS)
     run_cpu_cs<C>(d, p, AR, R.ref);
   else
-    run_cpu<C>(d, p, AR, R.ref);
+    run_cpu<C, factor::kSegMax>(d, p, AR, R.ref);
   row.cpu_ms = ms_since(t0);
 
   t0 = Clock::now();
   if constexpr (IS_CS)
     run_stream_cs<S>(d, p, AR, R.got);
   else
-    run_stream_ts<S, AR, W>(d, p, R.got);
+    run_stream_ts<S, AR, W, factor::kSegMax>(d, p, R.got);
   row.stream_ms = ms_since(t0);
   row.cpu_chk = compare(R.ref, R.got, tol_of(nm, false, Profile::PLAIN));
 
@@ -141,7 +141,7 @@ void run_op(RoundCtx &R, OperatorRow &row) {
     if constexpr (IS_CS)
       factor::gpu::run_cs(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.dgate, R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
     else
-      factor::gpu::run_ts(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
+      factor::gpu::run_ts(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, factor::kSegMax, p, &kms);
     row.gpu_ms = kms;
     row.gpu_chk = compare(R.ref, R.g, tol_of(nm, true, Profile::PLAIN));
   }
@@ -191,7 +191,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
     Data d;
-    make(d, fr, Profile::PLAIN, R.rq.times, R.rq.A, rng);
+    make(d, fr, Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
     Result cpu;
     run_cpu(d, cpu, misc::exec::hw());
     row.cpu_ms += cpu.eval_ms;
@@ -236,21 +236,21 @@ void run_search(RoundCtx &R, OperatorRow &row) {
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
     sk::Data d;
-    sk::make(d, fr, sk::Profile::PLAIN, R.rq.times, R.rq.A, rng);
+    sk::make(d, fr, sk::Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
     const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
     const factor::stat::Holds &hd = d.base.hd;
     const sk::Tol tol = factor::stat::check::tol_of(sk::Profile::PLAIN);
-    const sk::Split sp = sk::split_of(T, hd);
+    const sk::Split sp = sk::split_of(T, hd, factor::kSegMax);
     // 一个后端: 整块 vs golden (ref), 两块 merge vs 整块
     const auto judge = [&](factor::check::Diff &into, const sk::Ref *ref, const factor::search::Result *full,
                            const factor::search::Result *c1, const factor::search::Result *c2) {
       for (int c = 0; c < sk::kCands; ++c) {
-        merge_diff(into, sk::compare(ref[c], full[c], hd, tol));
+        merge_diff(into, sk::compare(ref[c], full[c], hd, factor::kSegMax, tol));
         factor::search::Result m = c1[c];
         m.merge(c2[c], hd.n);
         sk::Ref rf;
-        sk::to_ref(full[c], hd, rf);
-        merge_diff(into, sk::compare(rf, m, hd, tol));
+        sk::to_ref(full[c], hd, factor::kSegMax, rf);
+        merge_diff(into, sk::compare(rf, m, hd, factor::kSegMax, tol));
       }
     };
     sk::Ref ref[sk::kCands];
@@ -270,7 +270,7 @@ void run_search(RoundCtx &R, OperatorRow &row) {
     detail_line(scores, "%s", factor::stat::frame_name(fr));
     for (int c = 0; c < sk::kCands; ++c)
       for (int hi = 0; hi < hd.n; ++hi) {
-        const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{});
+        const factor::search::Score s = factor::search::score_of(full[c], hd, factor::kSegMax, hi, factor::search::Objective{});
         detail_line(scores, "  c%d  h=%-5s ls %+.5f rIC %+.4f score %+.3g", c, factor::stat::hold_name(hd.h[hi]).c_str(), s.ls, s.ric, s.score);
       }
     if (!has_gpu)
@@ -285,11 +285,11 @@ void run_search(RoundCtx &R, OperatorRow &row) {
           lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr, off);
         for (int c = 0; c < sk::kCands; ++c)
           xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, d.base.cap, lab.data(), out, prep_ms, eval_ms);
+        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, factor::kSegMax, row0, t_lo, hd, d.base.cap, lab.data(), out, prep_ms, eval_ms);
       };
       sk::Ref cpu_ref[sk::kCands]; // gpu 的 golden = cpu 整块
       for (int c = 0; c < sk::kCands; ++c)
-        sk::to_ref(full[c], hd, cpu_ref[c]);
+        sk::to_ref(full[c], hd, factor::kSegMax, cpu_ref[c]);
       factor::search::Result gfull[sk::kCands], gc1[sk::kCands], gc2[sk::kCands];
       double prep_ms = 0, eval_ms = 0;
       run(0, T, 0, gfull, &prep_ms, &eval_ms);
@@ -406,7 +406,7 @@ OperatorsService::OperatorsService() {
 }
 
 void OperatorsService::Request(OperatorsRequest req) {
-  assert(req.times >= factor::kSegLen && req.times % factor::kSegLen == 0 && req.A >= 2);
+  assert(req.times >= 2 * factor::kSegMax && req.times % factor::kSegMax == 0 && req.A >= 2);
   // 时间戳做种子: 不做复现, 同一轮内所有算子共享同一张量 (run_op 都从 req.seed 造数)
   req.seed = static_cast<unsigned>(std::chrono::system_clock::now().time_since_epoch().count());
   Service::Request(std::move(req));
@@ -431,10 +431,10 @@ bool OperatorsService::run(OperatorsRequest &req) {
   // GPU 探测 + 首次热身 (CUDA 上下文初始化几百 ms, 不能算进首个算子的 gpu_ms)
   if (factor::gpu::available() && !gpu_warmed_) {
     factor::check::Plane x, o;
-    x.resize(factor::kSegLen), o.resize(factor::kSegLen);
+    x.resize(factor::kSegMax), o.resize(factor::kSegMax);
     factor::Param p;
     factor::gpu::run_ts("TsAbs", x.v.data(), x.m.data(), nullptr, nullptr, nullptr, nullptr, o.v.data(),
-                        o.m.data(), factor::kSegLen, 1, p);
+                        o.m.data(), factor::kSegMax, 1, factor::kSegMax, p);
     gpu_warmed_ = true;
   }
 

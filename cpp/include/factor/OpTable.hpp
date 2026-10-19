@@ -23,17 +23,17 @@
 //            + 窗 累(Cum) / 滚(Roll) / 指(Ema) (逐点无窗字) + 核 (标准术语: 均值 / 方差 / 秩 / 贝塔 …)
 //     元数   输入序列数 0..3 (窗长 d / 阈值 k 不算元)
 //     T窗    POINT  当前点 (无时间状态)
-//            EXPAND 段内 expanding (段 = 交易日 kSegLen 分钟, 段界 reset)
-//            ROLL   最近 d 期滚动 (期 = 分钟, 跨段不 reset)
+//            EXPAND 段内 expanding (段 = 交易日 = 本层 S 行, 段界 reset; Contract【层几何】)
+//            ROLL   最近 d 期滚动 (期 = 本层的行, 跨段不 reset)
 //            EXPO   指数加权全历史 (系数 k, 全程不 reset)
 //     A域    SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 由 y 或 z 给)
 //     核类   MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /
 //            ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级
 //
-//   参数 (Contract.hpp struct Param) 不单列, 由 (T, k域) 推出 (params_str): d ⇔ T = ROLL (窗长 / 滞后, 期 = 分钟);
+//   参数 (Contract.hpp struct Param) 不单列, 由 (T, k域) 推出 (params_str): d ⇔ T = ROLL (窗长 / 滞后, 期 = 本层的行);
 //     k ⇔ k域 ≠ NONE (阈值 / 桶数 / EMA 系数 / 分位, 含义见各行 operator); k2 ⇔ k域 = TOD (TodMask 上界)
 //   k域 列 = k 的值域 (enum KDom): NONE / ANY ℝ / GE0 ≥0 / OPEN01 (0,1) / OPEN0_CLOSED1 (0,1] / OPEN0_HALF (0,1/2) /
-//     POSINT_GROUP 正整数 ≤ kMaxGroup / TOD 0 ≤ k < k2 ≤ kSegLen 整数;  parse 按它校验参数值
+//     POSINT_GROUP 正整数 ≤ kMaxGroup / TOD 0 ≤ k < k2 ≤ S 整数 (S = 本层段长);  parse 按它校验参数值
 //
 //   in / out 列 = 自变量 / 因变量值域 (同一 enum Dom, Contract.hpp; 全机器可读, 表里不手写值域 LaTeX):
 //     REAL ℝ / NONNEG ℝ≥0 / POS ℝ>0 / UNIT [0,1] / SIGNED [−1,1] / BIN {0,1} / SIGN3 {−1,0,1} / INT [0,kMaxGroup) / BCAST 截面广播
@@ -55,7 +55,7 @@
 //   算子库专用补充 (GUI Factors→Operators 页按 LaTeX 渲染):
 //     x, y, z     输入序列, 按元数取前 1..3 个; 每格 Val{v, m}, 所有 ∑ / 计数 / 极值只计有效 (m = 1) 样本
 //     a, b        资产 (截面轴). TS 只看本资产, 省略 a; CS 只看同一 t 的截面, 写 x_a 省略 t
-//     t_D         段内分钟位置 = t − 当日首分钟 (0..kSegLen−1)
+//     t_D         段内位置 = t − 当日首行 (0..S−1; L_min 上即分钟)
 //     W_t         TS 窗 (由 T 列决定, operator 里统一写 W_t):
 //                   EXPAND  W_t = {s : D(s) = D(t), s ≤ t}   ROLL  W_t = {s : t−d < s ≤ t}
 //     Σ_{W_t}     窗内求和 ∑_{s∈W_t} (下标只写窗 / 组, 求和变量恒是 s 或 b); Π_{W_t} 同理为乘积

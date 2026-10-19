@@ -1,5 +1,5 @@
 // FactorsService — Factors→Factors 表的单 worker: 扫 <factor_dir>/<pool>/*.json 因子文件 → 解析 / 校验模板与权重表达式
-// (factor/Expr.hpp) → (Run 时) 读特征库把因子输入 + 标签装成 [T = days·kSegLen][A] 平面 → 每权重 Expr → Dag →
+// (factor/Expr.hpp) → (Run 时) 读特征库把因子输入 + 标签装成 [T = days·seg][A] 平面 (seg = 因子层, 见 FactorLevel) → 每权重 Expr → Dag →
 // CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行 + 回写该权重的 stat (stats[i]; expr / weights 不动).
 //
 // 因子文件 (一因子一文件, 独立落盘, 格式破碎也**绝不删**: 表里标 BROKEN + 原因, 人手动处理):
@@ -64,10 +64,31 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-// ---- 字段表视图 (GUI 线程从 Feature::Metadata 建一次, worker 只读) ----
+// ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 特征库 档 / 层 / 因子子目录 ----
+//   L_min 读 Lob 票池库 (盘口特征 + 冲击成本, 截面 = 票池); 更粗的层读 Bar 库 (全市场 cs_valid, 无冲击成本).
+//   标签恒取同库 L_min 列, 按本层行的末分钟 (Geo::minute) 采样; 因子文件在 <config.factor_dir>/<库>/<name>/
+struct FactorLevel {
+  int seg = 0;               // 每日行数 (Geo::S)
+  size_t lvl = 0;            // 特征库层 (FeatureLevel)
+  TierId tier = TierId::Lob; // 档
+  const char *name = "";     // 子目录名 / UI 名
+};
+inline constexpr FactorLevel kFactorLevels[] = {
+    {255, L_min, TierId::Lob, "min"},
+    {49, L_5min, TierId::Bar, "5min"},
+    {17, L_15min, TierId::Bar, "15min"},
+    {9, L_30min, TierId::Bar, "30min"},
+    {5, L_60min, TierId::Bar, "60min"},
+    {1, L_day, TierId::Bar, "day"},
+};
+const FactorLevel &factor_level(int seg); // seg 不在表里 → assert
+// 该层因子目录 = <config.factor_dir>/<该档当前库名>/<name>
+std::string factor_dir_of(const SharedData &data, int seg);
+
+// ---- 字段表视图 (GUI 线程从 Feature::Metadata 建一次, worker 只读; 一份对应一层) ----
 struct FeatCol {
   std::string code;
-  uint32_t col = 0; // L_min 列下标
+  uint32_t col = 0; // 本层列下标
   L2::ValidType vt = L2::ValidType::ALL;
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
 };
@@ -79,25 +100,30 @@ struct CostCol {
   int amt = 0;                            // 下单金额段 (万)
   uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_cost_buy_<amt>w / lb_cost_sell_<amt>w
 };
+inline constexpr uint32_t kNoCol = UINT32_MAX;
 struct FeatureTable {
-  std::vector<FeatCol> cols;    // 下标 = L_min 列
-  uint32_t ts_col = 0;          // ts_valid 门控列 (特征输入)
-  uint32_t cs_col = 0;          // cs_valid 门控列 (标签 + 截面门控平面)
-  std::vector<LabelCol> labels; // 按 hold 升序; long / short 都齐才收
-  std::vector<CostCol> costs;   // 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本)
+  int seg = 0;                  // 因子层 (factor_level(seg))
+  std::vector<FeatCol> cols;    // 下标 = 本层列
+  uint32_t ts_col = kNoCol;     // 本层 ts_valid 门控列 (特征输入); L_day 无 (行稠密) = kNoCol
+  uint32_t cs_col = 0;          // 本层 cs_valid 门控列 (标签 + 截面门控平面)
+  uint32_t ohlc[4] = {};        // 本层 open high low close 列 (K 线 / close 给库等权指数): lob_<x> / <x>_<n>min / <x>_day
+  std::vector<LabelCol> labels; // L_min 列下标, 按 hold 升序; long / short 都齐且本层合法 (hold_ok) 才收
+  std::vector<CostCol> costs;   // L_min 列下标, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 库无)
+  bool has_ts() const { return ts_col != kNoCol; }
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };
 // LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N> → 持有期键, Stat/Contract.hpp);
-// lb_cost_<buy|sell>_<amt>w 建仓冲击成本
-FeatureTable BuildFeatureTable(const Feature::Metadata &meta);
+// lb_cost_<buy|sell>_<amt>w 建仓冲击成本. meta = factor_level(seg).tier 档的字段表
+FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg);
 
 // 本地时间 "YYYY-MM-DD HH:MM" (stat.time / search.time 落盘用)
 std::string now_string();
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) ----
 struct FactorsRequest {
-  std::string factor_dir; // <config.factor_dir>/<pool>
+  int seg = 0;            // 因子层
+  std::string factor_dir; // factor_dir_of(seg)
   bool evaluate = false;  // false = 只扫描解析
   // 以下 evaluate 时才用
   analysis::ReadScope scope;
@@ -108,7 +134,7 @@ struct FactorsRequest {
   std::string only_file;   // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat
 };
 // evaluate 请求需要资产轴 (读特征库); 轴未就绪 (数据库未扫) → false
-bool MakeFactorsRequest(const SharedData &data, bool evaluate, bool gpu, FactorsRequest &req);
+bool MakeFactorsRequest(const SharedData &data, int seg, bool evaluate, bool gpu, FactorsRequest &req);
 
 // ---- 行 ----
 // 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 只留位, 扫描到即标 error

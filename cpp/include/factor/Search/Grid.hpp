@@ -9,7 +9,7 @@
 //       d / EMA 系数 / 缩尾 / 桶数              log2        (窗长 / 尺度参数的效应是对数的)
 //       分位 (0,1)                             logit       (两端都有界, 向两端等比加密)
 //       阈值 ℝ / 对称截断 ≥ 0 (原始量纲)        / σ          (σ = 该节点输入的标准差, 调用方装载后 set_scale; 1 单位 = 1σ. 没有它阈值搜不动)
-//       日内时段分钟                            / 32        (半小时量级为一单位)
+//       日内时段 (段内行)                       / (32 / N)  (半小时量级为一单位; N = 本层每行分钟数, 一单位 = 32 分钟折成的行)
 //     整数参数 (d / 桶数 / 分钟) 取整回去.
 //   【粗网格】只有它是网格: 每槽 u0 + ℤ·s, 有界侧枚举到出界为止, 无界侧覆盖 kSpan 单位; 步长 s 从 1 起按 √2 放大到笛卡尔积 ≤ kLayerMax
 //     (精度由预算反推, 不随槽数爆炸).
@@ -35,7 +35,7 @@ namespace factor::search::grid {
 inline constexpr int kLayerMax = 64;         // 粗网格的格点上限; 粗步长由它反推 (只为找峰, 精度交给模式搜索)
 inline constexpr double kSpan = 4.0;         // 无界侧粗网格覆盖的坐标范围 (单位)
 inline constexpr double kMinStep = 1.0 / 16; // 模式搜索最小步长 (单位; 只对连续槽起作用, 整数槽先到取整分辨率)
-inline constexpr double kTodUnit = 32.0;     // 时段参数一单位 = 32 分钟
+inline constexpr double kTodUnit = 32.0;     // 时段参数一单位 = 32 分钟 (槽内按本层行长折成行: Slot::scale)
 
 enum class Key : uint8_t { D,
                            K,
@@ -50,7 +50,7 @@ struct Slot {
   bool lo_bounded = false, hi_bounded = false;
   double u_lo = 0.0, u_hi = 0.0; // 有界侧范围 (闭; 开端点由 check_params 否决)
   double u0 = 0.0;               // 中心坐标 (见文件头【槽】)
-  double scale = 1.0;            // ANY / GE0: 输入节点标准差 (set_scale 后有效); 其他 1
+  double scale = 1.0;            // ANY / GE0: 输入节点标准差 (set_scale 后有效); TOD: 一单位的行数 kTodUnit / N; 其他 1
   std::string name;              // "<Op>.<key>" (显示)
 };
 
@@ -72,7 +72,7 @@ inline double to_u(const Slot &s, double v) {
   case KDom::ANY:
     return v / s.scale;
   case KDom::TOD:
-    return v / kTodUnit;
+    return v / s.scale;
   case KDom::NONE:
     break;
   }
@@ -98,7 +98,7 @@ inline double to_v(const Slot &s, double u) {
       v = u * s.scale;
       break;
     case KDom::TOD:
-      v = u * kTodUnit;
+      v = u * s.scale;
       break;
     case KDom::NONE:
       assert(false);
@@ -107,8 +107,9 @@ inline double to_v(const Slot &s, double u) {
   return s.integer ? std::round(v) : v;
 }
 
-// 模板的可搜槽 = 自由参数 (节点前序); 具体表达式 → 空
-inline std::vector<Slot> slots_of(const expr::Expr &e) {
+// 模板的可搜槽 = 自由参数 (节点前序); 具体表达式 → 空. seg = 因子所在层 (TOD 槽的范围 / 刻度按本层行)
+inline std::vector<Slot> slots_of(const expr::Expr &e, int seg) {
+  const Geo g = geo_of(seg);
   std::vector<Slot> out;
   for (size_t i = 0; i < e.nodes.size(); ++i) {
     const expr::Node &n = e.nodes[i];
@@ -124,7 +125,7 @@ inline std::vector<Slot> slots_of(const expr::Expr &e) {
       if (key == Key::D) {
         s.integer = true;
         s.lo_bounded = s.hi_bounded = true;
-        s.u_lo = 0.0, s.u_hi = std::log2(static_cast<double>(expr::kMaxD));
+        s.u_lo = 0.0, s.u_hi = std::log2(static_cast<double>(kMaxD));
       } else {
         switch (o.kdom) {
         case KDom::OPEN01:
@@ -147,7 +148,8 @@ inline std::vector<Slot> slots_of(const expr::Expr &e) {
         case KDom::TOD:
           s.integer = true;
           s.lo_bounded = s.hi_bounded = true;
-          s.u_lo = 0.0, s.u_hi = static_cast<double>(kSegLen) / kTodUnit;
+          s.scale = kTodUnit / g.N;
+          s.u_lo = 0.0, s.u_hi = static_cast<double>(g.S) / s.scale;
           break;
         case KDom::NONE:
           assert(false);
@@ -183,8 +185,8 @@ inline void set_scale(Slot &s, double sigma) {
 inline bool in_range(const Slot &s, double u) { return (!s.lo_bounded || u >= s.u_lo - 1e-9) && (!s.hi_bounded || u <= s.u_hi + 1e-9); }
 
 // 坐标 u[P] → 具体表达式 (base 模板的拷贝, 槽参数落值并清自由位, 刷新 canon); 任一槽出界 / 参数值域不合 → false.
-// base 的自由参数须恰为 slots (否则结果仍是模板, 断言)
-inline bool apply(const expr::Expr &base, const std::vector<Slot> &slots, const std::vector<double> &u, expr::Expr &out) {
+// base 的自由参数须恰为 slots (否则结果仍是模板, 断言); seg = 因子所在层 (check_params 按层校验)
+inline bool apply(const expr::Expr &base, const std::vector<Slot> &slots, const std::vector<double> &u, int seg, expr::Expr &out) {
   assert(u.size() == slots.size());
   out = base;
   for (size_t j = 0; j < slots.size(); ++j) {
@@ -205,7 +207,7 @@ inline bool apply(const expr::Expr &base, const std::vector<Slot> &slots, const 
   assert(!out.is_template() && "槽须覆盖模板的全部自由参数");
   for (const Slot &s : slots) {
     const expr::Node &n = out.nodes[static_cast<size_t>(s.node)];
-    if (expr::check_params(expr::kOps[n.op], n.p))
+    if (expr::check_params(expr::kOps[n.op], n.p, seg))
       return false;
   }
   out.canon = expr::to_string(out);

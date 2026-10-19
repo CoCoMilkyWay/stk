@@ -204,10 +204,11 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   if (res.key.empty() || !res.error.empty() || res.pl.rows.empty())
     return;
   assert(sel >= 0 && sel < res.hd.n);
-  const int T = res.scope.T, days = res.scope.days, S = factor::kSegLen;
+  const int T = res.scope.T, days = res.scope.days, S = res.seg;
   assert(T == days * S && days >= 1);
   const int hold = res.hd.h[sel];
-  const double h = factor::stat::hold_minutes(hold);
+  const int hr = factor::stat::hold_rows(hold, factor::geo_of(S)); // 持有期折成的行数 (相邻 hr 行重叠)
+  const double h = hr;
   const double ann = 100.0 * factor::stat::kDaysPerYear / days;
   const double cap = res.scope.n_full;
   assert(cap > 0.0);
@@ -264,7 +265,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     }
   }
   for (int i = 0; i < kLsLines; ++i)
-    d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(ls_m[i].finish(hold), ls_m[i].n, T, hold));
+    d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(ls_m[i].finish(hr), ls_m[i].n, T, factor::stat::periods_per_year(hold, S)));
   // 各簇 / 各 LS 线的 min / max (含起点 0): y 范围 / LS 平移量按显示的簇每帧合成 (layer_range)
   const auto span = [](const std::vector<float> &v, float &a, float &b) {
     for (const float x : v)
@@ -482,7 +483,7 @@ void asset_label(const FactorsUIContext &ctx, uint32_t gid, char *buf, size_t n)
 
 // 资产轴派生: 光标日 (day = 交易日下标) 各资产的日内均 R (有效刻平均) → 降序 (左 = G20 侧; 并列按库轴序); 当日无一有效刻的资产不列
 void derive_axis(const InspectResult &res, int day, std::vector<int> &order, std::vector<uint32_t> &gid, std::vector<float> &r) {
-  const int A = res.scope.A, S = factor::kSegLen;
+  const int A = res.scope.A, S = res.seg;
   assert(day >= 0 && day < res.scope.days && res.pl.rx.size() == static_cast<size_t>(res.scope.T) * A);
   std::vector<float> mean(static_cast<size_t>(A), 0.f);
   std::vector<int> cnt(static_cast<size_t>(A), 0);
@@ -583,27 +584,34 @@ bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, 
   return changed;
 }
 
-// K 线横轴: 全局分钟 (日下标 × kSegLen + 分钟) → "YYMMDD HH:MM" (user_data = dates)
+// K 线横轴: 全局行 (日下标 × seg + 行) → "YYMMDD HH:MM" (行末分钟; 日层只到日期)
+struct KlineAxis {
+  const std::vector<misc::Ymd> *dates = nullptr;
+  int seg = 0;
+};
 int minute_formatter(double v, char *buf, int size, void *ud) {
-  const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
+  const KlineAxis &ax = *static_cast<const KlineAxis *>(ud);
+  const std::vector<misc::Ymd> &dates = *ax.dates;
   if (dates.empty())
     return std::snprintf(buf, size, "%g", v);
-  const int S = factor::kSegLen, days = static_cast<int>(dates.size());
+  const int S = ax.seg, days = static_cast<int>(dates.size());
   const long long g = std::clamp(static_cast<long long>(std::floor(v)), 0LL, static_cast<long long>(days) * S - 1);
-  const int d = static_cast<int>(g / S), m = static_cast<int>(g % S);
+  const int d = static_cast<int>(g / S), m = factor::geo_of(S).minute(static_cast<int>(g % S));
+  if (S == 1)
+    return std::snprintf(buf, size, "%06d", dates[static_cast<size_t>(d)] % 1000000);
   const ClockTime ct = L_min_to_Clock(static_cast<size_t>(m));
   return std::snprintf(buf, size, "%06d %02d:%02d", dates[static_cast<size_t>(d)] % 1000000, ct.hour, ct.minute);
 }
 
-// 滚动重锚指数线: line[t] = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))). P = 选中资产 close 前值填充到逐分钟格 (无成交分钟持平), I = 库等权指数
+// 滚动重锚指数线: line[t] = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))). P = 选中资产 close 前值填充到逐行格 (无成交行持平), I = 库等权指数
 // 等权指数 [T]. 基准取 L 分钟前的 EMA_L: 当前价不进基准 (近期偏移不被吸收), 基准本身平滑 (过去的高频波动不干扰当前); 指数偏移再 EMA_S 压指数自身
 // 的分钟噪声 (个股侧 EMA_L(P) 已平滑, 不再压). 线 = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移.
 // 跨日连续算 (EMA 不按日重置); pandas ewm(span, adjust=False) 口径: α = 2/(span+1), 首个样本起算. 只用已发布前缀 [0, pub_pts), 个股在
 // [首根有效蜡烛, pub_days·S) 有值; 线定义域 [t0, t1) = [首根 + L, pub_days·S) (基准要 L 分钟前有值). 全量重算 (T ≤ 几万, 微秒级)
-constexpr int kRefLag = factor::kSegLen; // L (分钟) = 1 交易日
-constexpr int kRefSmooth = 10;           // S (分钟)
-void derive_ref(const KlineStream &ks, size_t pub_days, size_t pub_pts, const std::vector<float> &lib_idx, int &t0, int &t1, std::vector<float> &line) {
-  const size_t T = lib_idx.size(), seg = static_cast<size_t>(factor::kSegLen), L = static_cast<size_t>(kRefLag);
+// L = 1 交易日 = seg 行
+constexpr int kRefSmooth = 10; // S (行)
+void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub_pts, const std::vector<float> &lib_idx, int &t0, int &t1, std::vector<float> &line) {
+  const size_t T = lib_idx.size(), seg = static_cast<size_t>(seg_rows), L = seg;
   assert(pub_days * seg <= T); // 只按 pub word 读前缀, 不碰 vector 元数据 (worker 在 push_back)
   line.assign(T, 0.f);
   t0 = t1 = 0;
@@ -639,9 +647,9 @@ void derive_ref(const KlineStream &ks, size_t pub_days, size_t pub_pts, const st
 
 // K 线 (右上的下图): 选中资产沿全部交易日的分钟 OHLC, 画 KlineService 已发布前缀 (gen 配对; 换代在途照画空图, 轴不撤). 每根色 = 该刻 R(t)
 // 组色 (ui.col_r; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
-// 视野: x 域 = 日数 × kSegLen, 只在日数变时复位 (换资产不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长时按**当前 x 窗口内**的已发布蜡烛重定
+// 视野: x 域 = 日数 × seg, 只在日数变时复位 (换资产不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长时按**当前 x 窗口内**的已发布蜡烛重定
 // (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 换资产后窗口里的新价位自然贴合, 之后不打扰.
-// 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × kSegLen): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
+// 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × seg): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
 // 染淡色竖带. 叠加 库等权指数 lib_idx [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚, 不参与 fit; 再叠加滚动重锚指数线 (derive_ref, 键变才重算,
 // 不参与 fit). 悬停报最近一根的时刻 / OHLC / R / 两条指数线 / 个股相对滚动重锚线的偏移
 void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<misc::Ymd> &dates, const std::vector<float> &lib_idx, int &cursor_day,
@@ -652,8 +660,9 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
   const bool ready = pub_gen == (ui.kline_gen & 0xFFFF);
   if (!ready)
     pub_days = pub_pts = 0; // 旧代计数不可用 (数组正在重建)
-  const int S = factor::kSegLen, days = ui.kline_days;
+  const int S = ui.kline_seg, days = ui.kline_days;
   assert(static_cast<size_t>(days) == dates.size() && "K 线代与派生日期表不同源");
+  const KlineAxis ax{&dates, S};
   assert(lib_idx.size() == static_cast<size_t>(days) * S);
   const double x_dom = std::max(1, days) * static_cast<double>(S);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
@@ -661,7 +670,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
   CompactLegend cl;
   ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
   ImPlot::SetupAxes(nullptr, "价格", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-  ImPlot::SetupAxisFormat(ImAxis_X1, minute_formatter, const_cast<std::vector<misc::Ymd> *>(&dates));
+  ImPlot::SetupAxisFormat(ImAxis_X1, minute_formatter, const_cast<KlineAxis *>(&ax));
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
   if (ui.kline_days_applied != days) { // x 域变 (换结果日数) → 复位 x 视野
     ui.kline_days_applied = days;
@@ -722,7 +731,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
   // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (lib_idx 已换)
   if (ready && (ui.ref_gen != ui.kline_gen || ui.ref_pts != pub_pts || ui.ref_epoch != ui.derived_epoch)) {
     ui.ref_gen = ui.kline_gen, ui.ref_pts = pub_pts, ui.ref_epoch = ui.derived_epoch;
-    derive_ref(ks, pub_days, pub_pts, lib_idx, ui.ref_t0, ui.ref_t1, ui.ref_line);
+    derive_ref(ks, S, pub_days, pub_pts, lib_idx, ui.ref_t0, ui.ref_t1, ui.ref_line);
   }
   const bool ref_ok = ready && ui.ref_gen == ui.kline_gen && ui.ref_t1 > ui.ref_t0;
   if (ref_ok) {
@@ -775,7 +784,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
       const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
       const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f, ra = t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f;
       char when[32], ux[160] = "";
-      minute_formatter(xs[i], when, sizeof(when), const_cast<std::vector<misc::Ymd> *>(&dates));
+      minute_formatter(xs[i], when, sizeof(when), const_cast<KlineAxis *>(&ax));
       int ul = 0;
       if (uk > 0.0)
         ul += std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n库等权指数 %.2f (按视野首根重锚)", lib_idx[t] * uk);
@@ -1053,7 +1062,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       for (int i = 0; i < n_hold; ++i) {
         if (hs[i].n < 3)
           continue;
-        const double ann = 100.0 * factor::stat::periods_per_year(hs[i].hold); // 每期均值 × 每年期数 → 年化 %, 跨持有期可比
+        const double ann = 100.0 * factor::stat::periods_per_year(hs[i]); // 每期均值 × 每年期数 → 年化 %, 跨持有期可比
         xk.push_back(i);
         yk.push_back(value(c, q, i) * ann);
       }
@@ -1091,7 +1100,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     const factor::stat::HoldStat &h = hs[pi];
     const bool ls = pc == kLegs;
     const double gross = ls ? 0.5 * factor::stat::ls_period(h) : h.grp[leg_group(pc)];
-    const double legs = ls ? 2.0 : 1.0, sign = ls ? 1.0 : leg_sign(pc), ppy = factor::stat::periods_per_year(h.hold);
+    const double legs = ls ? 2.0 : 1.0, sign = ls ? 1.0 : leg_sign(pc), ppy = factor::stat::periods_per_year(h);
     const char *tier = tier_names[static_cast<size_t>(pq)].c_str();
     // 一行一项, 三列定位 (SameLine 绝对 x, 不靠 printf 补空格 —— 中文字节宽 ≠ 字形宽): 名目 | 数值 | 注
     constexpr float kXVal = 90.f, kXNote = 230.f;
@@ -1197,7 +1206,7 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
 std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
   InspectRequest probe;
-  probe.file = row.key, probe.expr = row.expr, probe.frame = row.frame;
+  probe.seg = ctx.seg, probe.file = row.key, probe.expr = row.expr, probe.frame = row.frame;
   probe.pool = ctx.pool, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
   return probe.key();
 }
@@ -1462,16 +1471,15 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
         }
         if (ui.kline_key != res.key || ui.kline_sub != k_sub) { // 换结果 / 换资产 → 新代从头流
           ++ui.kline_gen;
-          ui.kline_key = res.key, ui.kline_sub = k_sub, ui.kline_days = res.scope.days, ui.kline_last_pub_days = ~0ull;
+          ui.kline_key = res.key, ui.kline_sub = k_sub, ui.kline_days = res.scope.days, ui.kline_seg = res.seg, ui.kline_last_pub_days = ~0ull;
           kreq.emplace();
           kreq->gen = ui.kline_gen, kreq->scope = res.read_scope, kreq->dates = res.dates, kreq->sub = k_sub;
-          const char *codes[4] = {"lob_open", "lob_high", "lob_low", "lob_close"};
-          for (int i = 0; i < 4; ++i) {
-            const FeatCol *fc = ft.find(codes[i]);
-            assert(fc && "字段表缺 OHLC 列");
-            kreq->col[i] = fc->col;
-          }
-          kreq->col[4] = ft.ts_col;
+          assert(ft.seg == res.seg && "字段表层与结果层不符");
+          kreq->level = factor_level(res.seg).lvl;
+          kreq->has_ts = ft.has_ts();
+          for (int i = 0; i < 4; ++i)
+            kreq->col[i] = ft.ohlc[i];
+          kreq->col[4] = ft.has_ts() ? ft.ts_col : 0;
         }
       }
     }
@@ -1580,8 +1588,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           "    ◦ 阳线空心 / 阴线实心\n"
           "• 青线 = 滚动重锚指数: 个股若跟着指数近期走应在的价\n"
           "    ◦ line_t = EMA_L(个股)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L})))\n"
-          "    ◦ L = %d 分钟 (1 交易日), S = %d 分钟\n"
-          "    ◦ 基准 = L 分钟前的 EMA_L: 当前价不进基准, 基准平滑\n"
+          "    ◦ L = %d 行 (1 交易日), S = %d 行\n"
+          "    ◦ 基准 = L 行前的 EMA_L: 当前价不进基准, 基准平滑\n"
           "    ◦ 指数偏移再 EMA_S 压分钟噪声\n"
           "    ◦ 自发贴住蜡烛; 蜡烛 − 青线 = 个股相对指数的近期偏移 (悬停报 %%)\n"
           "    ◦ 个股 close 无成交分钟前值填充, 跨日连续算\n"
@@ -1589,7 +1597,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           "• 黄线 = 库等权指数 (默认隐藏)\n"
           "    ◦ 每帧按视野内首根蜡烛重锚\n"
           "    ◦ 带着全区间历史, 长视野下与个股渐行渐远",
-          kRefLag, kRefSmooth);
+          ui.kline_seg, kRefSmooth);
     const float strip_h = ImGui::GetTextLineHeight() * 2.f, sp_y = ImGui::GetStyle().ItemSpacing.y;
     if (plot_asset_axis(ui, ctx, pos, ImVec2(cell.x, strip_h)))
       moved = true;

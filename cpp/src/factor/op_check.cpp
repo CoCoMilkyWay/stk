@@ -1,7 +1,9 @@
 // =============================================================================
 // op_check: 因子算子三方对拍 (stream 实盘流式 / cpu 挖掘向量 / gpu 挖掘 CUDA, 全程 C++, 不经 Python)
 // =============================================================================
-//   用法  op_check [--op Name] [--T 720] [--A 32] [--seed 1] [-v]
+//   用法  op_check [--op Name] [--seg S] [--T 765] [--A 32] [--seed 1] [-v]
+//         每个用例在全部层几何 (Contract kGeos: S = 255 / 49 / 17 / 9 / 5 / 1) 上各跑一遍; --seg 只跑一种.
+//         --T 是目标行数, 每层向上取整到整段数
 //   stream 是语义锚 (实盘路径); cpu 整张量一次算出参考平面, stream 与 gpu 各自与它比
 //   (cpu↔stream 紧容差互证, gpu↔cpu 松容差 —— 传递闭包覆盖三方).
 //   三份实现互不可见 (各自只 include Contract.hpp), 所以这套对拍不会空转.
@@ -39,7 +41,6 @@
 namespace {
 
 using namespace factor::check;
-using factor::kSegLen;
 using factor::Param;
 
 // ---- 汇总 ----
@@ -47,33 +48,49 @@ struct Report {
   int cases = 0, stream_bad = 0, gpu_bad = 0;
   int ops = 0, ops_bad = 0;
   bool verbose = false;
+  int seg_only = 0; // 0 = 全部层; 否则只跑段长 = seg_only 的层
+  int T_target = 0; // 目标行数 (每层向上取整到整段数)
 };
 
-void emit(Report &rep, const char *name, const Param &p, const char *prof, const char *side,
-          const Diff &d, bool &op_bad) {
+// 本层的张量行数: ≥ T_target 的最小整段数, 且盖住造数 profile 的段界 (S + 37) 与最长 d (S + 60)
+int rows_of(const Report &rep, int S) {
+  int T = (rep.T_target + S - 1) / S * S;
+  while (T <= S + 60)
+    T += S;
+  return T;
+}
+
+// 按 rep.seg_only 筛层, 每层以编译期段长 S 调 f.template operator()<S>()
+template <class F>
+void for_segs(const Report &rep, F &&f) {
+  for (const factor::Geo &g : factor::kGeos)
+    if (rep.seg_only == 0 || rep.seg_only == g.S)
+      factor::with_seg(g.S, f);
+}
+
+void emit(Report &rep, const char *name, int S, const Param &p, const char *prof, const char *side, const Diff &d, bool &op_bad) {
   if (d.ok()) {
     if (rep.verbose)
-      std::printf("  ok   %-14s %-6s d=%-3d k=%-5g %-8s 比较 %6d 点, max|Δ| = %.3g\n", name, side, p.d,
-                  p.k, prof, d.compared, d.worst);
+      std::printf("  ok   %-14s S=%-3d %-6s d=%-3d k=%-5g %-8s 比较 %6d 点, max|Δ| = %.3g\n", name, S, side, p.d, p.k, prof, d.compared,
+                  d.worst);
     return;
   }
   op_bad = true;
-  std::printf("  FAIL %-14s %-6s d=%-3d k=%-5g %-8s 掩码不符 %d, 超差 %d / %d, max|Δ| = %.3g, 首处 idx %d\n",
-              name, side, p.d, p.k, prof, d.mask_bad, d.val_bad, d.compared, d.worst, d.worst_at);
+  std::printf("  FAIL %-14s S=%-3d %-6s d=%-3d k=%-5g %-8s 掩码不符 %d, 超差 %d / %d, max|Δ| = %.3g, 首处 idx %d\n", name, S, side, p.d,
+              p.k, prof, d.mask_bad, d.val_bad, d.compared, d.worst, d.worst_at);
 }
 
-// 一个算子的全部用例: profile × d 扫描
-//   d 扫 {1, 5, 20, 240, 300}: 240 = 恰一段 (ROLL 窗界与段界重合), 300 > 段 (窗跨段, GPU 块界不对齐段界)
-template <class S, class C, int AR, factor::T W, bool IS_CS>
-void check(const char *name, const char *params, int T, int A, unsigned seed, Report &rep) {
+// 一个算子在一层 (段长 S) 上的全部用例: profile × d 扫描
+//   d 扫 {1, 5, 20, S, S + 60}: S = 恰一段 (ROLL 窗界与段界重合), S + 60 > 段 (窗跨段, GPU 块界不对齐段界)
+template <class Str, class C, int AR, factor::T W, bool IS_CS, int S>
+void check_seg(const char *name, const char *params, int A, unsigned seed, Report &rep, bool &op_bad) {
+  const int T = rows_of(rep, S);
   const std::string nm = name;
   const Recipe rc = recipe_of(nm);
   const bool sweep_d = std::strchr(params, 'd') != nullptr;
-  const int ds[] = {1, 5, 20, kSegLen, kSegLen + 60};
+  const int ds[] = {1, 5, 20, S, S + 60};
   constexpr int kNd = static_cast<int>(sizeof(ds) / sizeof(ds[0]));
 
-  ++rep.ops;
-  bool op_bad = false;
   for (int pi = 0; pi < kProfiles; ++pi) {
     const Profile pr = static_cast<Profile>(pi);
     std::mt19937 rng(seed + 1000u * pi);
@@ -81,32 +98,32 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
     Data d;
     d.T = T, d.A = A;
     if (AR >= 1)
-      fill(x, rc.x, pr, T, A, rng), d.x = &x;
+      fill(x, rc.x, pr, T, A, S, rng), d.x = &x;
     if (AR >= 2)
-      fill(y, rc.y, pr, T, A, rng), d.y = &y;
+      fill(y, rc.y, pr, T, A, S, rng), d.y = &y;
     if (AR >= 3)
-      fill(z, rc.z, pr, T, A, rng), d.z = &z;
+      fill(z, rc.z, pr, T, A, S, rng), d.z = &z;
     if constexpr (IS_CS)
-      fill_gate(gate, pr, T, A, rng), d.g = &gate;
+      fill_gate(gate, pr, T, A, S, rng), d.g = &gate;
 
     for (int di = 0; di < (sweep_d ? kNd : 1); ++di) {
       Param p;
       p.d = sweep_d ? ds[di] : 1;
-      set_k(nm, p);
+      set_k(nm, p, S);
 
       Plane ref, got;
       if constexpr (IS_CS) {
         run_cpu_cs<C>(d, p, AR, ref);
-        run_stream_cs<S>(d, p, AR, got);
+        run_stream_cs<Str>(d, p, AR, got);
       } else {
-        run_cpu<C>(d, p, AR, ref);
-        run_stream_ts<S, AR, W>(d, p, got);
+        run_cpu<C, S>(d, p, AR, ref);
+        run_stream_ts<Str, AR, W, S>(d, p, got);
       }
       ++rep.cases;
       Diff ds_ = compare(ref, got, tol_of(nm, false, pr));
       if (!ds_.ok())
         ++rep.stream_bad;
-      emit(rep, name, p, kProfName[pi], "stream", ds_, op_bad);
+      emit(rep, name, S, p, kProfName[pi], "stream", ds_, op_bad);
 
       if (factor::gpu::available()) {
         Plane g;
@@ -117,14 +134,22 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
                               pv(d.z, AR >= 3), pm(d.z, AR >= 3), gate.m.data(), g.v.data(), g.m.data(), T, A, p);
         else
           factor::gpu::run_ts(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, p);
+                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, S, p);
         Diff dg = compare(ref, g, tol_of(nm, true, pr));
         if (!dg.ok())
           ++rep.gpu_bad;
-        emit(rep, name, p, kProfName[pi], "gpu", dg, op_bad);
+        emit(rep, name, S, p, kProfName[pi], "gpu", dg, op_bad);
       }
     }
   }
+}
+
+// 一个算子的全部用例: 层 × profile × d
+template <class Str, class C, int AR, factor::T W, bool IS_CS>
+void check(const char *name, const char *params, int A, unsigned seed, Report &rep) {
+  ++rep.ops;
+  bool op_bad = false;
+  for_segs(rep, [&]<int S>() { check_seg<Str, C, AR, W, IS_CS, S>(name, params, A, seed, rep, op_bad); });
   if (op_bad)
     ++rep.ops_bad;
   else if (!rep.verbose)
@@ -132,45 +157,48 @@ void check(const char *name, const char *params, int T, int A, unsigned seed, Re
 }
 
 // Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
-//   两口径 (CS / TS) × profile 全扫 (无 d); 无 GPU 时只跑 cpu 并打印二级汇总 (-v), 不算失败
-void check_stat(int T, int A, unsigned seed, Report &rep) {
+//   层 × 两口径 (CS / TS) × profile 全扫 (无 d; 持有期取本层合法的); 无 GPU 时只跑 cpu 并打印二级汇总 (-v), 不算失败
+void check_stat(int A, unsigned seed, Report &rep) {
   namespace sc = factor::stat::check; // 与 factor::check 同名的 Data / Tol 等, 全限定
   ++rep.ops;
   bool op_bad = false;
   const int threads = misc::exec::hw();
-  for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
-    const char *fname = factor::stat::frame_name(fr);
-    char tag_rows[32], tag_stat[32];
-    std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s.rows", fname);
-    std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s.stat", fname);
-    for (int pi = 0; pi < kProfiles; ++pi) {
-      const Profile pr = static_cast<Profile>(pi);
-      std::mt19937 rng(seed + 1000u * pi);
-      sc::Data d;
-      sc::make(d, fr, pr, T, A, rng);
-      sc::Result cpu;
-      sc::run_cpu(d, cpu, threads);
-      if (rep.verbose)
-        for (const factor::stat::HoldStat &s : cpu.stat)
-          std::printf("       Stat.%s cpu    h=%-3d %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
-                      "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
-                      fname, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t, s.ls.pos,
-                      factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
-      if (!factor::gpu::available())
-        continue;
-      sc::Result gpu;
-      sc::run_gpu(d, gpu);
-      const Tol tol = sc::tol_of(pr);
-      const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
-      const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
-      ++rep.cases;
-      if (!dr.ok() || !ds.ok())
-        ++rep.gpu_bad;
-      Param p;
-      emit(rep, tag_rows, p, kProfName[pi], "gpu", dr, op_bad);
-      emit(rep, tag_stat, p, kProfName[pi], "gpu", ds, op_bad);
+  for_segs(rep, [&]<int S>() {
+    const int T = rows_of(rep, S);
+    for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
+      const char *fname = factor::stat::frame_name(fr);
+      char tag_rows[32], tag_stat[32];
+      std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s.rows", fname);
+      std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s.stat", fname);
+      for (int pi = 0; pi < kProfiles; ++pi) {
+        const Profile pr = static_cast<Profile>(pi);
+        std::mt19937 rng(seed + 1000u * pi);
+        sc::Data d;
+        sc::make(d, fr, pr, T, A, S, rng);
+        sc::Result cpu;
+        sc::run_cpu(d, cpu, threads);
+        if (rep.verbose)
+          for (const factor::stat::HoldStat &s : cpu.stat)
+            std::printf("       Stat.%s cpu    S=%-3d h=%-3d %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
+                        "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
+                        fname, S, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t,
+                        s.ls.pos, factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
+        if (!factor::gpu::available())
+          continue;
+        sc::Result gpu;
+        sc::run_gpu(d, gpu);
+        const Tol tol = sc::tol_of(pr);
+        const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
+        const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
+        ++rep.cases;
+        if (!dr.ok() || !ds.ok())
+          ++rep.gpu_bad;
+        Param p;
+        emit(rep, tag_rows, S, p, kProfName[pi], "gpu", dr, op_bad);
+        emit(rep, tag_stat, S, p, kProfName[pi], "gpu", ds, op_bad);
+      }
     }
-  }
+  });
   if (op_bad)
     ++rep.ops_bad;
   else if (!rep.verbose)
@@ -178,88 +206,91 @@ void check_stat(int T, int A, unsigned seed, Report &rep) {
 }
 
 // Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat; Search cpu / gpu 各与它比,
-//   再比 分块 (两块带 carry, merge) ≡ 整块. 两口径 × profile 全扫; 无 GPU 时只跑 cpu 两项
-void check_search(int T, int A, unsigned seed, Report &rep) {
+//   再比 分块 (两块带 carry, merge) ≡ 整块. 层 × 两口径 × profile 全扫; 无 GPU 时只跑 cpu 两项
+void check_search(int A, unsigned seed, Report &rep) {
   namespace sk = factor::search::check;
   ++rep.ops;
   bool op_bad = false;
   const int threads = misc::exec::hw();
   const Param p;
-  for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
-    const char *fname = factor::stat::frame_name(fr);
-    char tag[32];
-    for (int pi = 0; pi < kProfiles; ++pi) {
-      const Profile pr = static_cast<Profile>(pi);
-      std::mt19937 rng(seed + 1000u * pi);
-      sk::Data d;
-      sk::make(d, fr, pr, T, A, rng);
-      const factor::stat::Holds &hd = d.base.hd;
-      const Tol tol = factor::stat::check::tol_of(pr);
-      const sk::Split sp = sk::split_of(T, hd);
-      sk::Ref ref[sk::kCands];
-      for (int c = 0; c < sk::kCands; ++c)
-        sk::reference(d, c, threads, ref[c]);
-      // 一个后端的两项: 整块 vs 参考; 两块 merge vs 整块
-      const auto judge = [&](const char *side, const factor::search::Result *full, const factor::search::Result *c1,
-                             const factor::search::Result *c2) {
-        bool bad = false;
-        for (int c = 0; c < sk::kCands; ++c) {
-          std::snprintf(tag, sizeof(tag), "Search.%s.c%d", fname, c);
-          const Diff df = sk::compare(ref[c], full[c], hd, tol);
-          emit(rep, tag, p, kProfName[pi], side, df, op_bad);
-          bad = bad || !df.ok();
-          factor::search::Result m = c1[c];
-          m.merge(c2[c], hd.n);
-          sk::Ref rf;
-          sk::to_ref(full[c], hd, rf);
-          const Diff dm = sk::compare(rf, m, hd, tol);
-          std::snprintf(tag, sizeof(tag), "Search.%s.c%d.chunk", fname, c);
-          emit(rep, tag, p, kProfName[pi], side, dm, op_bad);
-          bad = bad || !dm.ok();
-        }
-        return bad;
-      };
-      {
-        factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
-        sk::run_cpu(d, threads, 0, T, 0, full);
-        sk::run_cpu(d, threads, 0, sp.T1, 0, c1);
-        sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, c2);
-        ++rep.cases;
-        if (judge("cpu", full, c1, c2))
-          ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
-        if (rep.verbose)
-          for (int c = 0; c < sk::kCands; ++c)
-            for (int hi = 0; hi < hd.n; ++hi) {
-              const factor::search::Score s = factor::search::score_of(full[c], hd, hi, factor::search::Objective{});
-              std::printf("       Search.%s cpu c%d %-8s h=%-4d ls %+.5f rIC %+.4f score %+.3g\n", fname, c, kProfName[pi], hd.h[hi], s.ls, s.ric,
-                          s.score);
-            }
-      }
-      if (!factor::gpu::available())
-        continue;
-      {
-        const int H = hd.n;
-        std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
-        const float *xv[sk::kCands];
-        const uint8_t *xm[sk::kCands];
-        const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out) {
-          const size_t off = static_cast<size_t>(row0) * A;
-          for (int i = 0; i < H; ++i)
-            lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr, off);
-          for (int c = 0; c < sk::kCands; ++c)
-            xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-          factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, row0, t_lo, hd, d.base.cap, lab.data(), out);
+  for_segs(rep, [&]<int S>() {
+    const int T = rows_of(rep, S);
+    for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
+      const char *fname = factor::stat::frame_name(fr);
+      char tag[32];
+      for (int pi = 0; pi < kProfiles; ++pi) {
+        const Profile pr = static_cast<Profile>(pi);
+        std::mt19937 rng(seed + 1000u * pi);
+        sk::Data d;
+        sk::make(d, fr, pr, T, A, S, rng);
+        const factor::stat::Holds &hd = d.base.hd;
+        const Tol tol = factor::stat::check::tol_of(pr);
+        const sk::Split sp = sk::split_of(T, hd, S);
+        sk::Ref ref[sk::kCands];
+        for (int c = 0; c < sk::kCands; ++c)
+          sk::reference(d, c, threads, ref[c]);
+        // 一个后端的两项: 整块 vs 参考; 两块 merge vs 整块
+        const auto judge = [&](const char *side, const factor::search::Result *full, const factor::search::Result *c1,
+                               const factor::search::Result *c2) {
+          bool bad = false;
+          for (int c = 0; c < sk::kCands; ++c) {
+            std::snprintf(tag, sizeof(tag), "Search.%s.c%d", fname, c);
+            const Diff df = sk::compare(ref[c], full[c], hd, S, tol);
+            emit(rep, tag, S, p, kProfName[pi], side, df, op_bad);
+            bad = bad || !df.ok();
+            factor::search::Result m = c1[c];
+            m.merge(c2[c], hd.n);
+            sk::Ref rf;
+            sk::to_ref(full[c], hd, S, rf);
+            const Diff dm = sk::compare(rf, m, hd, S, tol);
+            std::snprintf(tag, sizeof(tag), "Search.%s.c%d.chunk", fname, c);
+            emit(rep, tag, S, p, kProfName[pi], side, dm, op_bad);
+            bad = bad || !dm.ok();
+          }
+          return bad;
         };
-        factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
-        run(0, T, 0, full);
-        run(0, sp.T1, 0, c1);
-        run(sp.s, T - sp.s, sp.t_lo, c2);
-        ++rep.cases;
-        if (judge("gpu", full, c1, c2))
-          ++rep.gpu_bad;
+        {
+          factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
+          sk::run_cpu(d, threads, 0, T, 0, full);
+          sk::run_cpu(d, threads, 0, sp.T1, 0, c1);
+          sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, c2);
+          ++rep.cases;
+          if (judge("cpu", full, c1, c2))
+            ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
+          if (rep.verbose)
+            for (int c = 0; c < sk::kCands; ++c)
+              for (int hi = 0; hi < hd.n; ++hi) {
+                const factor::search::Score s = factor::search::score_of(full[c], hd, S, hi, factor::search::Objective{});
+                std::printf("       Search.%s cpu S=%-3d c%d %-8s h=%-4d ls %+.5f rIC %+.4f score %+.3g\n", fname, S, c, kProfName[pi], hd.h[hi],
+                            s.ls, s.ric, s.score);
+              }
+        }
+        if (!factor::gpu::available())
+          continue;
+        {
+          const int H = hd.n;
+          std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
+          const float *xv[sk::kCands];
+          const uint8_t *xm[sk::kCands];
+          const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out) {
+            const size_t off = static_cast<size_t>(row0) * A;
+            for (int i = 0; i < H; ++i)
+              lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr, off);
+            for (int c = 0; c < sk::kCands; ++c)
+              xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
+            factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, S, row0, t_lo, hd, d.base.cap, lab.data(), out);
+          };
+          factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
+          run(0, T, 0, full);
+          run(0, sp.T1, 0, c1);
+          run(sp.s, T - sp.s, sp.t_lo, c2);
+          ++rep.cases;
+          if (judge("gpu", full, c1, c2))
+            ++rep.gpu_bad;
+        }
       }
     }
-  }
+  });
   if (op_bad)
     ++rep.ops_bad;
   else if (!rep.verbose)
@@ -270,30 +301,34 @@ void check_search(int T, int A, unsigned seed, Report &rep) {
 
 int main(int argc, char **argv) {
   std::string only;
-  int T = 3 * kSegLen, A = 32;
+  int A = 32;
   unsigned seed = 1;
   Report rep;
+  rep.T_target = 3 * factor::kSegMax;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "-v")
       rep.verbose = true;
     else if (a == "--op" && i + 1 < argc)
       only = argv[++i];
+    else if (a == "--seg" && i + 1 < argc)
+      rep.seg_only = std::atoi(argv[++i]);
     else if (a == "--T" && i + 1 < argc)
-      T = std::atoi(argv[++i]);
+      rep.T_target = std::atoi(argv[++i]);
     else if (a == "--A" && i + 1 < argc)
       A = std::atoi(argv[++i]);
     else if (a == "--seed" && i + 1 < argc)
       seed = static_cast<unsigned>(std::atoi(argv[++i]));
     else {
-      std::fprintf(stderr, "用法: op_check [--op Name] [--T %d] [--A %d] [--seed 1] [-v]\n", T, A);
+      std::fprintf(stderr, "用法: op_check [--op Name] [--seg S] [--T %d] [--A %d] [--seed 1] [-v]\n", rep.T_target, A);
       return 2;
     }
   }
-  assert(T % kSegLen == 0 && "T 必须是整段数 (段界对齐是 EXPAND 的前提)");
+  assert((rep.seg_only == 0 || factor::is_seg(rep.seg_only)) && "--seg 须是 kGeos 的段长之一 (255 / 49 / 17 / 9 / 5 / 1)");
+  assert(rep.T_target >= 1);
 
-  std::printf("op_check  T=%d (%d 段) A=%d seed=%u  gpu=%s\n", T, T / kSegLen, A, seed,
-              factor::gpu::available() ? "on" : "off (未编译 CUDA 后端)");
+  std::printf("op_check  T≈%d 行 (每层取整到整段) A=%d seed=%u seg=%s  gpu=%s\n", rep.T_target, A, seed,
+              rep.seg_only ? std::to_string(rep.seg_only).c_str() : "全部", factor::gpu::available() ? "on" : "off (未编译 CUDA 后端)");
 
   // 分派: 表里每一行展开成一个用例组, 按 A 域列 token 粘贴选后端命名空间 (SELF → ts, ALL/GROUP → cs);
   // 缺任一后端的同名 struct → 编译错; 流式 TS kT 与表的 T 窗列不符 → 编译错.
@@ -301,10 +336,10 @@ int main(int argc, char **argv) {
 #define CK_SELF(Name, ar, t, prm)                                                               \
   static_assert(factor::ts::Name::kT == factor::T::t, #Name ": 流式 kT 与 OpTable T 窗列不符"); \
   if (only.empty() || only == #Name)                                                            \
-    check<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>(#Name, prm, T, A, seed, rep);
+    check<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>(#Name, prm, A, seed, rep);
 #define CK_ALL(Name, ar, t, prm)     \
   if (only.empty() || only == #Name) \
-    check<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>(#Name, prm, T, A, seed, rep);
+    check<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>(#Name, prm, A, seed, rep);
 #define CK_GROUP CK_ALL
 #define CK(Name, c_name, ar, t, a, kern, kdom, in, out, op, note) CK_##a(Name, ar, t, factor::params_str(factor::T::t, factor::KDom::kdom))
   OP_ALL(CK)
@@ -313,9 +348,9 @@ int main(int argc, char **argv) {
 #undef CK_ALL
 #undef CK_SELF
   if (only.empty() || only == "Stat") // 评估算子: 不在 OpTable, 单独一节
-    check_stat(T, A, seed, rep);
+    check_stat(A, seed, rep);
   if (only.empty() || only == "Search") // 搜索评估算子: 参考 = Stat CPU
-    check_search(T, A, seed, rep);
+    check_search(A, seed, rep);
 
   std::printf("=== %d 算子 / %d 用例: stream 失败 %d, gpu 失败 %d; 算子级失败 %d ===\n", rep.ops,
               rep.cases, rep.stream_bad, rep.gpu_bad, rep.ops_bad);

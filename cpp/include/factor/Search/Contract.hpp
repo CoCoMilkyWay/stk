@@ -4,14 +4,14 @@
 // Search: 参数搜索评估算子的语义契约 (CPU / GPU 两后端唯一共享件; 建在 Stat/Contract.hpp 之上)
 // =============================================================================
 //   定位  同一因子表达式的一批参数候选 (C 张因子平面, 同池 g / 同口径 Frame / 同标签集), 每候选每持有期直接攒二级累加器 Accum,
-//         不落一级 Row. 语义 = Stat: 候选 c 的 acc[h].finish(hold) 与 Stat 对同一平面算出的 HoldStat 逐字段一致 (整数派生量逐位,
+//         不落一级 Row. 语义 = Stat: 候选 c 的 acc[h].finish(hold, seg) 与 Stat 对同一平面算出的 HoldStat 逐字段一致 (整数派生量逐位,
 //         浮点和只差求和序; 对拍 Search/Check.hpp). Stat 服务交互 (一因子一次, 要 Row), Search 服务搜索 (一因子上万次, 只要分数);
 //         两者同一后端共用同一组行核 (Stat/Host.hpp / Stat/Dev.cuh), 只在"行怎么排 / 攒到哪"上分叉.
 //         算子对持有期数 H 不设限 (hd.n ≤ kMaxHold); Search 服务传搜索窗内全部持有期 (hold_in_window: 30m ~ T+1), 每 h 各自打分 /
 //         各自搜 (见【目标】: 不跨 h 比), 因子平面只算一遍, 多 h 只多行统计.
 //
 //   【分块流式】超大张量沿 T 切块: 一块 = 行 [0, T) 的平面 (因子 / 标签 / 池 同块同形), 带两个绝对量:
-//         t0_abs  块首行的绝对下标 (tail_masked 看 (t0_abs + t) % kSegLen)
+//         t0_abs  块首行的绝对下标 (tail_masked 看 (t0_abs + t) % S)
 //         t_lo    从这一行起才计入统计; [0, t_lo) 是上一块的尾巴 (carry), 只给 rAC 的 lag 行 (t − h) 用
 //         块内 t − h < 0 → ok_rac = 0. 调用方保证 carry ≥ max_lag(hd) (首块除外: 整张量里 t < h 本就无 rAC) 则分块 ≡ 整张量;
 //         跨块 Result::merge 续攒 (Accum 可合并). 一块内候选之间互不相干, 后端怎么并行由后端定.
@@ -88,11 +88,11 @@ inline std::vector<int> pick_uncorrelated(const std::vector<std::vector<double>>
   return best;
 }
 
-// rAC 需要的最大 lag 行数 (= carry 下限)
-inline int max_lag(const Holds &hd) {
+// rAC 需要的最大 lag 行数 (= carry 下限; seg = 因子所在层)
+inline int max_lag(const Holds &hd, int seg) {
   int m = 0;
   for (int i = 0; i < hd.n; ++i)
-    m = m > factor::stat::hold_minutes(hd.h[i]) ? m : factor::stat::hold_minutes(hd.h[i]);
+    m = std::max(m, factor::stat::hold_rows(hd.h[i], geo_of(seg)));
   return m;
 }
 
@@ -130,11 +130,11 @@ inline Score score_of(const HoldStat &hs, const Objective &o) {
     s.score = s.ls * (o.ric_pow == 1.0 ? s.ric : std::pow(s.ric, o.ric_pow));
   return s;
 }
-// hi = hd 下标
-inline Score score_of(const Result &r, const Holds &hd, int hi, const Objective &o) {
-  factor::stat::assert_holds(hd);
+// hi = hd 下标; seg = 因子所在层
+inline Score score_of(const Result &r, const Holds &hd, int seg, int hi, const Objective &o) {
+  factor::stat::assert_holds(hd, seg);
   assert(hi >= 0 && hi < hd.n);
-  return score_of(r.acc[hi].finish(hd.h[hi]), o);
+  return score_of(r.acc[hi].finish(hd.h[hi], seg), o);
 }
 
 // 自动定向 (见【方向】): ls / rIC 同负 → 按取反计 (sign −1, ls / ric 翻成正)
@@ -147,10 +147,10 @@ inline Score score_signed(const HoldStat &hs, const Objective &o) {
   s.score = s.ls * (o.ric_pow == 1.0 ? s.ric : std::pow(s.ric, o.ric_pow));
   return s;
 }
-inline Score score_signed(const Result &r, const Holds &hd, int hi, const Objective &o) {
-  factor::stat::assert_holds(hd);
+inline Score score_signed(const Result &r, const Holds &hd, int seg, int hi, const Objective &o) {
+  factor::stat::assert_holds(hd, seg);
   assert(hi >= 0 && hi < hd.n);
-  return score_signed(r.acc[hi].finish(hd.h[hi]), o);
+  return score_signed(r.acc[hi].finish(hd.h[hi], seg), o);
 }
 
 } // namespace factor::search

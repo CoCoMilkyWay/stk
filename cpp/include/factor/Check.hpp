@@ -66,8 +66,8 @@ struct Data {
 };
 
 namespace detail {
-// 一段 [t0, t1) 的造数 (fill 的段级内核): 逐点逻辑与 profile 边界全在此
-inline void fill_seg(Plane &p, Gen g, Profile pr, int t0, int t1, int A, std::mt19937 &rng) {
+// 一段 [t0, t1) 的造数 (fill 的段级内核): 逐点逻辑与 profile 边界全在此; S = 段长 (profile 边界按段定位)
+inline void fill_seg(Plane &p, Gen g, Profile pr, int t0, int t1, int A, int S, std::mt19937 &rng) {
   std::normal_distribution<float> nd(0.f, 1.f);
   std::student_t_distribution<float> td(2.5f); // 重尾
   std::uniform_real_distribution<float> ud(0.f, 1.f);
@@ -95,51 +95,51 @@ inline void fill_seg(Plane &p, Gen g, Profile pr, int t0, int t1, int A, std::mt
         // 常值列: 第 0/1 号资产整列常值 → 全并列退化 (spread 为假)
         if (pr == Profile::CONSTCOL && a < 2)
           v = c;
-        // 常值段: 0/1 号资产只在第 1 段常值; 2 号资产全程常值, 仅 t = kSegLen + 37 一格跳变
+        // 常值段: 0/1 号资产只在第 1 段常值; 2 号资产全程常值, 仅 t = S + 37 一格跳变
         if (pr == Profile::CONSTSEG) {
-          if (a < 2 && t / kSegLen == 1)
+          if (a < 2 && t / S == 1)
             v = c;
           if (a == 2)
-            v = t == kSegLen + 37 ? c + 1.f : c;
+            v = t == S + 37 ? c + 1.f : c;
         }
         if (pr == Profile::TINY)
           v *= kTinyScale;
       }
       p.v[i] = v;
       p.m[i] = 1;
-      // 空洞: 15% 缺失 + 2 号资产整段缺失 (段内 n = 0) + t = kSegLen + 5 整行缺失 (截面 n = 0)
-      if (pr == Profile::HOLES && (ud(rng) < 0.15f || (t / kSegLen == 1 && a == 2) || t == kSegLen + 5))
+      // 空洞: 15% 缺失 + 2 号资产整段缺失 (段内 n = 0) + t = S + 5 整行缺失 (截面 n = 0)
+      if (pr == Profile::HOLES && (ud(rng) < 0.15f || (t / S == 1 && a == 2) || t == S + 5))
         p.v[i] = 0.f, p.m[i] = 0;
     }
 }
 } // namespace detail
 
 // 并行按段造数: 每段从主 rng 派生一个种子再独立抽样, 结果只由 (seed, 段序) 决定, 与线程数无关.
-// 24000×1000 单线程 mt19937 + normal_distribution 要 ~1 s, 这是对拍里唯一算不上算子的大头
-inline void fill(Plane &p, Gen g, Profile pr, int T, int A, std::mt19937 &rng) {
-  assert(T % kSegLen == 0 && "T 必须是整段数 (造数按段并行, 段界也是 EXPAND 的前提)");
+// 24000×1000 单线程 mt19937 + normal_distribution 要 ~1 s, 这是对拍里唯一算不上算子的大头. S = 段长 (Contract【层几何】)
+inline void fill(Plane &p, Gen g, Profile pr, int T, int A, int S, std::mt19937 &rng) {
+  assert(is_seg(S) && T % S == 0 && T > S + 37 && "T 必须是整段数 (造数按段并行, 段界也是 EXPAND 的前提) 且盖住 profile 边界");
   p.resize(static_cast<size_t>(T) * A);
-  const int nseg = T / kSegLen;
+  const int nseg = T / S;
   std::vector<uint32_t> seeds(static_cast<size_t>(nseg));
   for (uint32_t &s : seeds)
     s = rng();
   auto seg = [&](int s) {
     std::mt19937 r(seeds[static_cast<size_t>(s)]);
-    detail::fill_seg(p, g, pr, s * kSegLen, (s + 1) * kSegLen, A, r);
+    detail::fill_seg(p, g, pr, s * S, (s + 1) * S, A, S, r);
   };
   misc::exec::ForkJoin ex(misc::exec::fit(static_cast<size_t>(nseg)));
   ex.tasks(nseg, [&](int s, int) { seg(s); });
 }
 
 // 截面池掩码: 每 (段, 资产) 一个常量 (真实池按日增删), 约 60% 在池; v 恒 0 不用.
-//   HOLES 再叠: 3 号资产全程池外 (只做受体); t = kSegLen + 9 整行空池 (池内 n = 0 → 广播中性值 / 相对型用空池统计量);
+//   HOLES 再叠: 3 号资产全程池外 (只做受体); t = S + 9 整行空池 (池内 n = 0 → 广播中性值 / 相对型用空池统计量);
 //              第 1 段里组 id 6 (Gen::GROUP 的 a % 7 == 6) 整组池外 → 打 GROUP 族的全池回退
-inline void fill_gate(Plane &p, Profile pr, int T, int A, std::mt19937 &rng) {
-  assert(T % kSegLen == 0);
+inline void fill_gate(Plane &p, Profile pr, int T, int A, int S, std::mt19937 &rng) {
+  assert(is_seg(S) && T % S == 0 && T > S + 9);
   p.resize(static_cast<size_t>(T) * A);
   std::fill(p.v.begin(), p.v.end(), 0.f);
   std::uniform_real_distribution<float> ud(0.f, 1.f);
-  const int nseg = T / kSegLen;
+  const int nseg = T / S;
   std::vector<uint8_t> in(static_cast<size_t>(nseg) * A);
   for (int s = 0; s < nseg; ++s)
     for (int a = 0; a < A; ++a) {
@@ -149,9 +149,9 @@ inline void fill_gate(Plane &p, Profile pr, int T, int A, std::mt19937 &rng) {
       in[static_cast<size_t>(s) * A + a] = g;
     }
   for (int t = 0; t < T; ++t) {
-    const uint8_t *row = in.data() + static_cast<size_t>(t / kSegLen) * A;
+    const uint8_t *row = in.data() + static_cast<size_t>(t / S) * A;
     uint8_t *o = p.m.data() + static_cast<size_t>(t) * A;
-    if (pr == Profile::HOLES && t == kSegLen + 9)
+    if (pr == Profile::HOLES && t == S + 9)
       std::fill(o, o + A, 0);
     else
       std::copy(row, row + A, o);
@@ -181,8 +181,8 @@ inline Recipe recipe_of(const std::string &name) {
   return {"", Gen::NORM, Gen::NORM, Gen::NORM};
 }
 
-// 窗长参数: 每算子一个"典型用法"的默认 d (期 = 分钟), 给 GUI Operators 表用;
-// op_check 不吃这份 (它全扫 d = {1, 5, 20, 240, 300} 打边界)
+// 窗长参数: 每算子一个"典型用法"的默认 d (期 = 行; Operators 表在 L_min 上即分钟), 给 GUI Operators 表用;
+// op_check 不吃这份 (它全扫 d = {1, 5, 20, S, S + 60} 打边界)
 struct DParam {
   const char *e_name;
   int d;
@@ -210,7 +210,7 @@ inline int default_d(const std::string &name) {
   return 30; // 其余 ROLL 族 (均值/和/斜率/计数等): 半小时
 }
 
-// 阈值型参数: 这里只定 k / k2
+// 阈值型参数: 这里只定 k / k2. TsTodMask 的段内区间按 L_min (S = kSegMax) 给, set_k 按段长 S 等比缩放 (保持 0 ≤ k < k2 ≤ S)
 struct KParam {
   const char *e_name;
   float k, k2;
@@ -225,11 +225,16 @@ inline constexpr KParam kKParams[] = {
     {"CsWinsor", 0.05f, 0.f},
     {"CsBucket", 5.f, 0.f},
 };
-inline void set_k(const std::string &name, Param &p) {
+inline void set_k(const std::string &name, Param &p, int S) {
+  assert(is_seg(S));
   p.k = 1.f, p.k2 = 0.f;
   for (const KParam &q : kKParams)
     if (name == q.e_name)
       p.k = q.k, p.k2 = q.k2;
+  if (name == "TsTodMask") {
+    const int k = static_cast<int>(p.k) * S / kSegMax, k2 = static_cast<int>(p.k2) * S / kSegMax;
+    p.k = static_cast<float>(k), p.k2 = static_cast<float>(k2 > k ? k2 : k + 1);
+  }
 }
 
 // ---- 比较 ----
@@ -292,11 +297,16 @@ inline const uint8_t *pm(const Plane *p, bool use) {
   return use ? p->m.data() : nullptr;
 }
 
-template <class C>
+// TS CPU: 段长相关算子 (run 是 template <int S>, TS/Cpu.hpp CP_SIG_S) 取 run<S>, 其余取 run
+template <class C, int S>
 void run_cpu(const Data &d, const Param &p, int ar, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
-  C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
-         pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
+  if constexpr (requires { &C::template run<S>; })
+    C::template run<S>(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
+                       pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
+  else
+    C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
+           pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
 }
 template <class C>
 void run_cpu_cs(const Data &d, const Param &p, int ar, Plane &o) {
@@ -305,8 +315,8 @@ void run_cpu_cs(const Data &d, const Param &p, int ar, Plane &o) {
          pm(d.z, ar >= 3), pm(d.g, true), o.v.data(), o.m.data(), d.T, d.A, p);
 }
 
-// TS 流式: 逐资产建一个 kernel 沿 t 推进 (与实盘同路: EXPAND 推满 kSegLen 自动归零, 不手动 reset)
-template <class S, int AR, T W>
+// TS 流式: 逐资产建一个 kernel 沿 t 推进 (与实盘同路: EXPAND 推满段长 S 自动归零, 不手动 reset)
+template <class Op, int AR, T W, int S>
 void run_stream_ts(const Data &d, const Param &p, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
   assert(AR < 1 || d.x);
@@ -318,26 +328,35 @@ void run_stream_ts(const Data &d, const Param &p, Plane &o) {
         const size_t i = static_cast<size_t>(t) * d.A + a;
         Val r;
         if constexpr (AR == 0)
-          r = S::apply(t % kSegLen, p);
+          r = Op::apply(t % S, p);
         else if constexpr (AR == 1)
-          r = S::apply(Val{d.x->v[i], d.x->m[i] != 0}, p);
+          r = Op::apply(Val{d.x->v[i], d.x->m[i] != 0}, p);
         else if constexpr (AR == 2)
-          r = S::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0}, p);
+          r = Op::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0}, p);
         else
-          r = S::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0},
-                       Val{d.z->v[i], d.z->m[i] != 0}, p);
+          r = Op::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0},
+                        Val{d.z->v[i], d.z->m[i] != 0}, p);
         o.v[i] = r.v, o.m[i] = r.m;
       }
   } else {
+    const auto push = [](Op &op, Val x, Val y) -> Val {
+      (void)y;
+      if constexpr (W == T::EXPAND && AR == 1)
+        return op.template push<S>(x);
+      else if constexpr (W == T::EXPAND)
+        return op.template push<S>(x, y);
+      else if constexpr (AR == 1)
+        return op.push(x);
+      else
+        return op.push(x, y);
+    };
     for (int a = 0; a < d.A; ++a) {
-      S op(p);
+      Op op(p);
       for (int t = 0; t < d.T; ++t) {
         const size_t i = static_cast<size_t>(t) * d.A + a;
-        Val r;
-        if constexpr (AR == 1)
-          r = op.push(Val{d.x->v[i], d.x->m[i] != 0});
-        else
-          r = op.push(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0});
+        const Val x{d.x->v[i], d.x->m[i] != 0};
+        const Val y = AR >= 2 ? Val{d.y->v[i], d.y->m[i] != 0} : Val{};
+        const Val r = push(op, x, y);
         o.v[i] = r.v, o.m[i] = r.m;
       }
     }

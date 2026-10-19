@@ -50,7 +50,7 @@ struct Slice {
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, int T, int A, int t0_abs, int t_lo, Labels L, int NB,
+__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, int T, int A, Geo g, int t0_abs, int t_lo, Labels L, int NB,
                                                      Slice *part) {
   const auto &hd = L.hd;
   __shared__ Slots sh;
@@ -58,7 +58,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
   const int c = blockIdx.x * kWarps + warp;
   if (c >= C) // warp 一致; 核内没有块级同步, 整 warp 直接退出安全
     return;
-  const int hi = blockIdx.z, hold = hd.h[hi], h = factor::stat::hold_minutes(hold);
+  const int hi = blockIdx.z, hold = hd.h[hi], h = factor::stat::hold_rows(hold, g);
   const Label lb = L.l[hi];
   const int tb = blockIdx.y, t_beg = t_lo + tb * kRows, t_end = min(T, t_beg + kRows);
   const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;
@@ -71,7 +71,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
-    const Row r = dev::row_stat(xr, xl, lb.at(base), A, L.cap, factor::stat::tail_masked(t0_abs + t, hold), sh.gs[warp], sh.gc[warp], lane);
+    const Row r = dev::row_stat(xr, xl, lb.at(base), A, L.cap, factor::stat::tail_masked(t0_abs + t, hold, g), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       head.add(r);
     if (r.ok) {
@@ -112,18 +112,19 @@ __global__ void __launch_bounds__(kWB) reduce_slices(const Slice *part, int NB, 
 // 宿主接口 (全部设备指针; 拷入拷出由调用方负责 —— 搜索侧候选平面常驻显存)
 // =============================================================================
 
-// 一次 eval 的形状与工作区尺寸 (调用方按它分配: rx / part / out)
+// 一次 eval 的形状与工作区尺寸 (调用方按它分配: rx / part / out); g = 因子所在层 (seg 定)
 struct Work {
   int C = 0, T = 0, A = 0, H = 0, t_lo = 0, NB = 0;
+  Geo g;
   size_t rx_elems() const { return static_cast<size_t>(C) * T * A; }
   size_t part_elems() const { return static_cast<size_t>(C) * H * NB; }
   size_t out_elems() const { return static_cast<size_t>(C); }
 };
-inline Work plan(int C, int T, int A, int H, int t_lo) {
+inline Work plan(int C, int T, int A, int seg, int H, int t_lo) {
   assert(C >= 1 && C <= kMaxBatch && T >= 1 && A >= 1 && A <= kMaxA && static_cast<long long>(T) * A < (1LL << 31));
-  assert(H >= 1 && H <= kMaxHold && t_lo >= 0 && t_lo < T);
+  assert(H >= 1 && H <= kMaxHold && t_lo >= 0 && t_lo < T && is_seg(seg));
   Work w;
-  w.C = C, w.T = T, w.A = A, w.H = H, w.t_lo = t_lo;
+  w.C = C, w.T = T, w.A = A, w.H = H, w.t_lo = t_lo, w.g = geo_of(seg);
   w.NB = (T - t_lo + kRows - 1) / kRows;
   return w;
 }
@@ -131,11 +132,11 @@ inline Work plan(int C, int T, int A, int H, int t_lo) {
 // 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + L (L.hd.n 组预处理标签, 设备指针) → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo
 inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t0_abs, const Labels &L, uint16_t *rx, Slice *part, Result *out,
                  cudaStream_t stream) {
-  factor::stat::assert_labels(L, true);
+  factor::stat::assert_labels(L, w.g.S, true);
   assert(B.C == w.C && L.hd.n == w.H && g && rx && part && out && t0_abs >= 0);
-  factor::gpu::stat::rank_x(B, g, f, Span{w.T, w.A, t0_abs, w.t_lo}, rx, stream);
+  factor::gpu::stat::rank_x(B, g, f, Span{w.T, w.A, w.g, t0_abs, w.t_lo}, rx, stream);
   const dim3 grid(static_cast<unsigned>((w.C + kWarps - 1) / kWarps), static_cast<unsigned>(w.NB), static_cast<unsigned>(w.H));
-  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, w.C, w.T, w.A, t0_abs, w.t_lo, L, w.NB, part);
+  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, w.C, w.T, w.A, w.g, t0_abs, w.t_lo, L, w.NB, part);
   FACTOR_CUDA_OK(cudaGetLastError());
   const int P = w.C * w.H;
   k::reduce_slices<<<(P + kWB - 1) / kWB, kWB, 0, stream>>>(part, w.NB, w.C, w.H, out);

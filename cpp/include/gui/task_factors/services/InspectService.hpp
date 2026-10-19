@@ -42,6 +42,7 @@ struct SharedData;
 namespace GUI::Factors {
 
 struct InspectRequest {
+  int seg = 0;            // 因子层 (= FeatureTable::seg)
   std::string file, expr; // 权重行 key (FactorRow::key = 文件#权重号) + 具体规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
   factor::stat::Frame frame = factor::stat::Frame::CS;
   analysis::ReadScope scope;
@@ -49,10 +50,10 @@ struct InspectRequest {
   misc::Ymd start_date = 0, end_date = 0;
   bool reload = false;     // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 装载时生效 → 进作用域缓存键)
-  std::string key() const { return file + "|" + expr + "|" + pool + "|" + std::to_string(start_date) + "|" + std::to_string(end_date); }
+  std::string key() const { return std::to_string(seg) + "|" + file + "|" + expr + "|" + pool + "|" + std::to_string(start_date) + "|" + std::to_string(end_date); }
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
-bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req);
+bool MakeInspectRequest(const SharedData &data, int seg, const FactorRow &row, bool reload, InspectRequest &req);
 
 // 尾部分层 (Inspect 专属, 不进 Stat 契约): 两腿的组 (顶 / 底) 内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
 // j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径 (q = 1 即整组). 一级 [H][T], 只在 Row::ok 行有值, 其余全 0
@@ -77,6 +78,7 @@ struct InspectPlanes {
 struct InspectResult {
   std::string key; // = InspectRequest::key(); 空 = 无结果
   std::string file, expr;
+  int seg = 0; // 因子层: T = days · seg, K 线 / 横轴按层
   factor::stat::Frame frame = factor::stat::Frame::CS;
   StatScope scope;
   std::vector<misc::Ymd> dates; // [days]

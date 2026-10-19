@@ -112,9 +112,11 @@ struct InspectService::Flow {
   }
 };
 
-bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reload, InspectRequest &req) {
+bool MakeInspectRequest(const SharedData &data, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
+  const TierId tier = factor_level(seg).tier;
+  req.seg = seg;
   req.file = row.key;
   req.expr = row.expr;
   req.frame = row.frame;
@@ -122,10 +124,10 @@ bool MakeInspectRequest(const SharedData &data, const FactorRow &row, bool reloa
   req.max_impact = data.config.max_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature, TierId::Lob);
+  req.scope = analysis::read_scope(data.config, data.feature, tier);
   if (req.scope.months.empty())
     return false;
-  req.pool = data.feature.selection.lib_of(TierId::Lob);
+  req.pool = data.feature.selection.lib_of(tier);
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;
@@ -150,7 +152,8 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   factor::expr::Expr e;
   {
     std::string err;
-    const bool ok = factor::expr::parse(req.expr, feats_.lookup(), e, err);
+    assert(req.seg == feats_.seg && "请求层与字段表层不符");
+    const bool ok = factor::expr::parse(req.expr, feats_.lookup(), feats_.seg, e, err);
     assert(ok && "Factors 表的规范串必可再解析");
     (void)ok;
   }
@@ -171,7 +174,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;
   }
-  std::string ckey = req.scope.lib().dir + "|" + std::to_string(req.scope.lib().axis.hash) + "|cap" + std::to_string(req.max_impact);
+  std::string ckey = std::to_string(req.seg) + "|" + req.scope.lib().dir + "|" + std::to_string(req.scope.lib().axis.hash) + "|cap" + std::to_string(req.max_impact);
   for (const misc::Ym m : req.scope.months)
     ckey += "|" + std::to_string(m);
   const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib().axis.size());
@@ -236,6 +239,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.key = req.key();
   res.file = req.file;
   res.expr = req.expr;
+  res.seg = req.seg;
   res.frame = req.frame;
   res.scope.pool = req.pool;
   res.scope.start_date = req.start_date;
@@ -289,7 +293,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
       in[a] = plane_of(nd.in[a]);
     const Clock::time_point t0 = Clock::now();
-    factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, F.nsc, L.cs.m.data());
+    factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, L.seg, F.nsc, L.cs.m.data());
     res.eval_ms += ms_since(t0);
     publish(1);
   }
@@ -333,7 +337,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   tail_thresholds(thr);
   factor::stat::Accum acc[factor::stat::kMaxHold];
   factor::cpu::stat::accum_rows(F.ex, s, rx, F.lab.L, F.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, thr, F.lab.L.cap});
-  factor::stat::finish_all(acc, L.hd, res.hold.data());
+  factor::stat::finish_all(acc, L.hd, L.seg, res.hold.data());
   publish(1);
   if (cancelled())
     return false;

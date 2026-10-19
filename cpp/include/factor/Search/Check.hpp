@@ -40,8 +40,8 @@ struct Data {
   Plane cand[kCands];             // 候选平面
 };
 
-inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) {
-  factor::stat::check::make(d.base, f, pr, T, A, rng);
+inline void make(Data &d, Frame f, Profile pr, int T, int A, int seg, std::mt19937 &rng) {
+  factor::stat::check::make(d.base, f, pr, T, A, seg, rng);
   const size_t n = static_cast<size_t>(T) * A;
   d.cand[0] = d.base.x;
   d.cand[1] = d.base.x;
@@ -58,10 +58,10 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, std::mt19937 &rng) 
 struct Split {
   int T1 = 0, s = 0, t_lo = 0;
 };
-inline Split split_of(int T, const factor::stat::Holds &hd) {
+inline Split split_of(int T, const factor::stat::Holds &hd, int seg) {
   Split sp;
   sp.T1 = T / 2 < 1 ? 1 : T / 2;
-  const int carry = max_lag(hd) < sp.T1 ? max_lag(hd) : sp.T1;
+  const int carry = max_lag(hd, seg) < sp.T1 ? max_lag(hd, seg) : sp.T1;
   sp.s = sp.T1 - carry;
   sp.t_lo = carry;
   return sp;
@@ -79,16 +79,16 @@ inline void reference(const Data &d, int c, int threads, Ref &r) {
   r.stat = res.stat;
 }
 // Search 的 Result → 同形 Ref (finish 各持有期), 给 分块 ≡ 整块 用
-inline void to_ref(const Result &res, const factor::stat::Holds &hd, Ref &r) {
+inline void to_ref(const Result &res, const factor::stat::Holds &hd, int seg, Ref &r) {
   r.stat.resize(static_cast<size_t>(hd.n));
   for (int i = 0; i < hd.n; ++i)
-    r.stat[static_cast<size_t>(i)] = res.acc[i].finish(hd.h[i]);
+    r.stat[static_cast<size_t>(i)] = res.acc[i].finish(hd.h[i], seg);
 }
 
 // ---- 比较: 二级逐字段 (compare_stat) ----
-inline Diff compare(const Ref &ref, const Result &got, const factor::stat::Holds &hd, Tol tol) {
+inline Diff compare(const Ref &ref, const Result &got, const factor::stat::Holds &hd, int seg, Tol tol) {
   Ref g;
-  to_ref(got, hd, g);
+  to_ref(got, hd, seg, g);
   return factor::stat::check::compare_stat(ref.stat.data(), g.stat.data(), hd.n, tol);
 }
 
@@ -100,7 +100,8 @@ inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, Re
   using Clock = std::chrono::steady_clock;
   const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
   assert(row0 >= 0 && rows >= 1 && row0 + rows <= T);
-  const factor::stat::Span all{T, A}, s{rows, A, row0, t_lo};
+  const Geo g = geo_of(d.base.seg);
+  const factor::stat::Span all{T, A, g}, s{rows, A, g, row0, t_lo};
   misc::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
   w.ensure(A, H, 0, ex.threads());
