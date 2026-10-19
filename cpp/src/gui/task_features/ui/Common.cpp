@@ -1,5 +1,6 @@
 #include "gui/task_features/ui/Common.hpp"
 #include "gui/Tasks.hpp"
+#include "shared/FeatureLib.hpp" // lib_def
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -22,7 +23,7 @@ int RenderStreamControl(const Progress &st, const SharedData &data, const char *
   ImGui::EndDisabled();
   if (feat) {
     ImGui::SameLine();
-    ImGui::TextDisabled("(%s %s %s)", tier_name(feat->tier), level_name(feat->level), data.feature.meta(*feat).code);
+    ImGui::TextDisabled("(%s %s %s)", lib_def(feat->lib).name, level_name(feat->level), data.feature.meta(*feat).code);
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel"))

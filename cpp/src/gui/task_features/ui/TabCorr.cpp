@@ -4,6 +4,7 @@
 #include "gui/task_features/services/CorrService.hpp"
 #include "gui/task_features/ui/Common.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
+#include "shared/FeatureLib.hpp" // lib_def
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -169,9 +170,9 @@ static uint64_t disp_key(const Corr &corr, const CorrLag *lag, const CorrUIState
 
 static const ImVec4 kColorA{0.4f, 0.8f, 1.0f, 1.0f}, kColorB{1.0f, 0.8f, 0.3f, 1.0f}; // 对的前者 / 后者
 
-// 列名 + (档 层): 列集可跨层跨档
+// 列名 + (库 层): 列集可跨库跨层
 static void text_col(SharedData &data, const ImVec4 &color, const ColRef &c) {
-  ImGui::TextColored(color, "%s  (%s %s)", data.feature.meta(c).code, tier_name(c.tier), level_name(c.level));
+  ImGui::TextColored(color, "%s  (%s %s)", data.feature.meta(c).code, lib_def(c.lib).name, level_name(c.level));
 }
 
 static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState &ui) {
@@ -207,7 +208,7 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
   std::lock_guard<std::mutex> lock(pair.mutex);
   // 请求在 RenderTabCorr 悬停处已提交; 这里只画. 未匹配 = worker 还没接到新对 (一帧内)
   const bool matched = pair.spec.n() == 2 && pair.spec.col(0) == ca && pair.spec.col(1) == cb &&
-                       pair.spec.level() == corr.spec.level();
+                       pair.spec.level() == corr.spec.level() && pair.spec.plan.main == corr.spec.plan.main;
   const Phase st = pair.phase.load(std::memory_order_acquire);
   ImGui::Text("Lead-Lag: ");
   ImGui::SameLine(0, 0);
@@ -259,7 +260,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   assert(service && pair_service && lag_service);
   Corr &corr = data.corr;
 
-  // ---- 列集: 选中 ≥ 2 列 (跨层跨档) = 选中; 否则跟随 Feature 表当前 (档, 层) 的过滤行集. 变了就重算 ----
+  // ---- 列集: 选中 ≥ 2 列 (跨库跨层) = 选中; 否则跟随 Feature 表当前 (库, 层) 的过滤行集. 变了就重算 ----
   static std::vector<ColRef> cols; // GUI 单线程, 帧内复用
   cols.clear();
   const Feature::Selection &sel = data.feature.selection;
@@ -269,7 +270,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     static std::vector<int> rows;
     FilteredFeatureIndices(data, rows);
     for (const int i : rows)
-      cols.push_back(ColRef{sel.tier, static_cast<uint8_t>(sel.selected_level), static_cast<uint16_t>(i)});
+      cols.push_back(ColRef{sel.cur_lib(), static_cast<uint8_t>(sel.selected_level), static_cast<uint16_t>(i)});
   }
   if (ui.req_stale || cols != ui.req_cols) {
     ui.req_cols = cols;
@@ -477,7 +478,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
             ui.sel_i = (int)i;
             ui.sel_j = (int)j;
             if (i != j)
-              pair_service->RequestCompute(data, corr.spec.level(), corr.spec.col(i), corr.spec.col(j));
+              pair_service->RequestCompute(data, corr.spec.plan.main, corr.spec.level(), corr.spec.col(i), corr.spec.col(j));
           }
         }
       }

@@ -114,7 +114,7 @@ struct Dist::Runtime {
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
   // 容量准备 (幂等, 尺寸对得上零分配), 返回计算执行器
-  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, const PerTier<size_t> &As, size_t n_months, size_t agg_stride) {
+  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, const PerLib<size_t> &As, size_t n_months, size_t agg_stride) {
     TraceN("DistPrepare"); // 首帧账目: 批平面 + 全资产 sketch + n_threads × 聚合 sketch
     const size_t n_threads = threads_for(n_asset_blocks(A));
     const size_t bs = batch_segs(plan.level), days = bs * seg_days(plan.level);
@@ -151,18 +151,18 @@ void Dist::reset(ReadScope scope, Spec sp) {
   TraceN("DistReset");
   assert(sp.plan.n() == 1 && sp.plan.level == sp.plan.cols[0].level && "Dist 只接受单列, 网格 = 列自己的层");
   assert(sp.plan.main == scope.main);
-  check_axis(scope.lib().axis.ids);
+  check_axis(scope.axis.ids);
   std::lock_guard<std::mutex> lock(mutex);
 
-  const bool axis_changed = scope_.lib().axis.ids != scope.lib().axis.ids;
+  const bool axis_changed = scope_.axis.ids != scope.axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.lib().axis.size(); // A 轴 = 库轴
+  const size_t A = scope_.axis.size(); // A 轴 = 库轴
 
   // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 库 / 区间变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
-  init_lines(snap.lines, scope_.lib().axis.ids);
+  init_lines(snap.lines, scope_.axis.ids);
   if (snap.months.size() != scope_.months.size())
     snap.months.assign(scope_.months.size(), AggPdf{});
   if (snap.by_weekday.size() != 7)
@@ -178,11 +178,11 @@ void Dist::reset(ReadScope scope, Spec sp) {
 // Build (分批流式: 每批 IO → 扫描 → 归约 → 发布, 首帧与总区间长度无关)
 // ============================================================================
 
-bool Dist::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = scope_.lib().axis.size(); // 库轴大小 (扫描/抽样预算/分母全按它)
+  const size_t A = scope_.axis.size(); // 库轴大小 (扫描/抽样预算/分母全按它)
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
   const ReadPlan &rp = spec.plan;
   const size_t level = rp.level, rpd = level_valid_rows(level), R = seg_rows(level), BS = batch_segs(level);

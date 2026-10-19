@@ -32,13 +32,13 @@ struct Feature;
 //   struct X : Published {
 //     struct Spec;  Spec spec;   本次构建的输入 (reset 持锁写; UI 持锁读 = 快照身份)
 //     struct Snap;  Snap snap;   发布成品 (批末持锁 swap; UI 渲染帧内持锁只画)
-//     void reset(ReadScope, Spec);  bool build(const PerTier<const FeatureRead *> &, cancel);  void clear();
+//     void reset(ReadScope, Spec);  bool build(const PerLib<const FeatureRead *> &, cancel);  void clear();
 //   };
 // 同一条流水线, 只是配置不同:  段序 (SegPlan) + 读计划 (ReadPlan) → IO + 门控 + as-of 投影 (平面, features/Storage/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
 //   → 导出 staging Snap → 短锁 swap 发布
-//   - A 轴 = 库轴 (槽位 = 库轴下标, 查 items 经 global_ids)
-//   - 网格 = 分析的行轴层 (Spec 里的 level): 列是任意 (档, 层) 的 ColRef, 一律按 level_asof 投影到网格;
+//   - A 轴 = ReadScope::axis (主库轴; 槽位 = 主库轴下标, 查 items 经 global_ids)
+//   - 网格 = 分析的行轴层 (Spec 里的 level): 列是任意 (库, 层) 的 ColRef, 一律按 level_asof 投影到网格;
 //     要编译期段长 (FFT / LUT) 的目标经 with_grid 分派到 Grid<L>
 //   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
 //     reset 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
@@ -205,19 +205,21 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 }
 
 // ---- 读取范围 (Request 公共头): GUI 线程从 config + 库清单解析, worker 只消费 ----
-// 库集 = 主档库 + 旁读档库 (TIER_SIDES; 涨跌停 / 市值 / 行业等只在 Bar 库的列, 两档分析共用一条路径), 余档空
+// 库集 = 主库 + 各列所在库 (同档多库 / 跨档一视同仁; 资产不在列所在库 / 该库缺这天 = 无源), 余库空
 struct ReadScope {
-  std::vector<misc::Ym> months;      // 升序 (config 区间覆盖的月); 库集任一未建 → 空
-  TierId main = TierId::Lob;         // 主档: A 轴 = libs[main].axis
-  PerTier<FeatureLib> libs;          // 档 / A 轴 / 目录, 与写端同一清单
-  PerTier<std::vector<uint32_t>> to; // 旁读档: 主轴 a → 该档轴下标; 主档 / 余档空
+  std::vector<misc::Ym> months;     // 升序 (config 区间覆盖的月); 库集任一未建 → 空
+  LibId main = kAllLib;             // 主库: 段序 / 日期轴
+  LibAxis axis;                     // A 轴 (平面资产维, 槽位 → 全局 id): 主库轴, 或指定资产 (OrderFlow 单资产)
+  PerLib<FeatureLib> libs;          // 档 / 库轴 / 目录, 与写端同一清单
+  PerLib<std::vector<uint32_t>> to; // A 轴 a → 该库轴下标 (kAbsent = 不在该库); 与 A 轴同轴的库空
 
-  bool has(TierId t) const { return t == main || tier_side(main, t); } // 在库集内
+  bool has(LibId l) const { return !libs[l].name.empty(); } // 在库集内
   const FeatureLib &lib() const { return libs[main]; }
-  PerTier<size_t> sizes() const;                                 // 各档 A 轴长
-  Readers readers(const PerTier<const FeatureRead *> &fr) const; // fr: 库集各档 reader
+  PerLib<size_t> sizes() const;                                 // 各库库轴长 (源暂存按源库开)
+  Readers readers(const PerLib<const FeatureRead *> &fr) const; // fr: 库集各库 reader (LibReaders::ptr)
 };
-ReadScope read_scope(const Config &cfg, const Feature &feature, TierId main); // 各档库名 = feature.selection.lib_of(档)
+// 库集 = main + cols 所在库; assets 空 = A 轴取主库轴, 否则 = 这些全局 id (升序去重)
+ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {});
 
 // ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
 template <class Spec>
@@ -226,9 +228,8 @@ struct Request {
   Spec spec;
 };
 
-// GUI 线程: 该档该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid). 不给档 = 当前档
+// GUI 线程: 该档该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid)
 fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, std::vector<size_t> cols);
-fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols);
 
 // 库里实际存在的日期 (升序) + 每日所属月下标 (months 下标)
 struct DateList {
@@ -237,11 +238,16 @@ struct DateList {
 };
 DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months);
 
-// GUI 线程: 一组 ColRef → 网格层 level 上的读计划. main = 主库档 (scope.main); 别档列只许旁读档 (tier_side).
-// 同 (档, 层) 的列并成一个源 (column_set 定门控), 源行 = level_asof(源层, level, t)
-ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vector<ColRef> cols);
-// 统一请求构建: 主档 = Feature::main_tier(cols) → 读取范围 + 读计划; 库集未建 → false (请求方放弃)
+// GUI 线程: 一组 ColRef → 读计划. main = 主库 (scope.main); 同 (库, 层) 的列并成一个源 (column_set 定门控).
+//   read_plan: 源行 = level_asof(源层, 网格层 level, t)   (TsPlane / CsPlane)
+//   read_rows: 原生行, level 只定开盘承接               (RowPlane)
+ReadPlan read_plan(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols);
+ReadPlan read_rows(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols);
+// 统一请求构建: 读取范围 + 读计划; 库集未建 → false (请求方放弃).
+// 主库 = 列所在库里库轴最短者 (票池库优先: Bar 列旁读 all, 池外格不算); 给 main = 指定 (CorrPair 随矩阵)
 bool read_request(const Config &cfg, const Feature &feature, size_t level, std::vector<ColRef> cols, ReadScope &scope, ReadPlan &plan);
+bool read_request(const Config &cfg, const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols, ReadScope &scope,
+                  ReadPlan &plan);
 
 // ---- 段序 (全部流式分析唯一一份): 库内交易日按 seg_days(level) 连续成段, 再排段 ----
 //   Shuffle:    固定种子洗牌取前 limit 段 —— 无偏, 首批即覆盖全区间 (Dist / Preview / Corr*)

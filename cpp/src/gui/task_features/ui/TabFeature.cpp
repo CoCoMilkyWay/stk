@@ -918,7 +918,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       const bool selected = cur_lib == d.name;
       if (ImGui::Selectable(d.name, selected) && !selected) {
         if (d.tier != sel.tier) {
-          sel.clear_filters(); // 换档 = 换字段表: 过滤作废; 选中是 ColRef (带档), 跨档保留
+          sel.clear_filters(); // 换档 = 换字段表: 过滤作废; 选中是 ColRef (带库), 切库保留
           sel.tier = d.tier;
         }
         sel.libs[d.tier] = d.name;
@@ -1250,11 +1250,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     }
 
     // Table rows (preview 锁已在上方持有): 行体 lambda, 下面按视野裁剪分两条路提交
+    const LibId view_lib = sel.cur_lib();
     auto render_row = [&](int idx) {
       const FeatureMetadata &f = features[idx];
 
       // Check if this row is selected
-      const ColRef ref{sel.tier, static_cast<uint8_t>(view_level), static_cast<uint16_t>(idx)};
+      const ColRef ref{view_lib, static_cast<uint8_t>(view_level), static_cast<uint16_t>(idx)};
       bool is_selected = sel.picked.contains(ref);
 
       ImGui::TableNextRow();
@@ -1396,7 +1397,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     if (ImGui::IsItemHovered()) {
       ImGui::BeginTooltip();
       for (const ColRef &c : sel.picked)
-        ImGui::Text("%s %s %s", tier_name(c.tier), level_name(c.level), feature.meta(c).code);
+        ImGui::Text("%s %s %s", lib_def(c.lib).name, level_name(c.level), feature.meta(c).code);
       ImGui::EndTooltip();
     }
   }

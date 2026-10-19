@@ -4,7 +4,7 @@
 //   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = analysis::Request<Target::Spec>
 //     (ReadScope: 月份表 + 库轴 + 库目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
 //     覆盖挂起请求 + 取消在跑
-//   - worker 线程 run: 库集各档 FeatureRead → target.reset(scope, spec) → target.build(readers)
+//   - worker 线程 run: 库集各库 FeatureRead (LibReaders) → target.reset(scope, spec) → target.build(readers)
 //     (build 内部用 Runtime 常驻 ForkJoin 分批流式, 批末发布; 新请求/Cancel 置 cancel_, 每个任务开头检查后放弃)
 //   - UI 渲染持 target.mutex 读快照; 进度走原子, 免锁
 //
@@ -17,13 +17,11 @@
 //   static Target &target(SharedData &);            // 目标状态 (Published 派生: Dist / Transform / ...)
 #pragma once
 
-#include "features/Storage/FeatureRead.hpp"
 #include "gui/util/Service.hpp"
 #include "shared/Analysis.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <optional>
 #include <utility>
 
 struct SharedData;
@@ -63,16 +61,13 @@ private:
   Progress &board() { return Derived::target(*data_); }
   bool run(Req &req) {
     Target &target = Derived::target(*data_);
-    // 库集 (主档 + 旁读档) 各一个 reader, 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退).
-    // reader 自持库目录拷贝, 之后 scope 可整体移交给目标
-    PerTier<std::optional<FeatureRead>> readers;
-    PerTier<const FeatureRead *> fr;
-    for (const TierId t : TIER_IDS)
-      if (req.scope.has(t))
-        fr[t] = &readers[t].emplace(req.scope.libs[t], &this->cancel_);
+    // 库集 (主库 + 列所在库) 各一个 reader, 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退).
+    // reader 自持库清单拷贝, 之后 scope 可整体移交给目标
+    LibReaders readers;
+    readers.open(req.scope.libs, &this->cancel_);
     target.reset(std::move(req.scope), std::move(req.spec));
-    const bool done = target.build(fr, this->cancel_);
-    return done && std::ranges::none_of(readers.v, [](const std::optional<FeatureRead> &r) { return r && r->stale(); });
+    const bool done = target.build(readers.ptr, this->cancel_);
+    return done && !readers.stale();
   }
 
   SharedData *data_ = nullptr;

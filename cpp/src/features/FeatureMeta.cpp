@@ -200,16 +200,24 @@ constexpr std::array<LibDef, 1 + kPoolCount> kLibs = [] {
       out[n++] = {kBarDay[i].code + kPoolPrefix.size(), TierId::Lob, i};
   return out;
 }();
+static_assert(kLibs.size() <= UINT8_MAX && kLibs[kAllLib].tier == TierId::Bar, "LibId = uint8_t 库表下标, [kAllLib] = all");
 } // namespace
 
 std::span<const LibDef> feature_libs() { return kLibs; }
+size_t lib_count() { return kLibs.size(); }
+TierId lib_tier(LibId lib) { return lib_def(lib).tier; }
 
-const LibDef &lib_def(std::string_view name) {
-  for (const LibDef &d : kLibs)
-    if (name == d.name)
-      return d;
+const LibDef &lib_def(LibId lib) {
+  assert(lib < kLibs.size() && "库下标越界");
+  return kLibs[lib];
+}
+const LibDef &lib_def(std::string_view name) { return kLibs[lib_id(name)]; }
+LibId lib_id(std::string_view name) {
+  for (size_t i = 0; i < kLibs.size(); ++i)
+    if (name == kLibs[i].name)
+      return static_cast<LibId>(i);
   assert(false && "不是库名 (all / Bar 库 pool_<pool> 列)");
-  return kLibs.front();
+  return kAllLib;
 }
 
 namespace feature_meta {

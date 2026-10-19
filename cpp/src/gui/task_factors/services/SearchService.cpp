@@ -167,7 +167,7 @@ bool MakeSearchRequest(const SharedData &data, int seg, const FactorRow &row, bo
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature, tier);
+  req.scope = analysis::read_scope(data.config, data.feature.selection.cur_lib(tier), {});
   if (req.scope.months.empty())
     return false;
   req.pool = pool;

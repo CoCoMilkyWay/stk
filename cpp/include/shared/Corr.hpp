@@ -78,7 +78,7 @@ struct CorrSpec {
     assert(i < n());
     return plan.cols[i];
   }
-  bool same(const CorrSpec &o) const { return plan.level == o.plan.level && plan.cols == o.plan.cols; }
+  bool same(const CorrSpec &o) const { return plan.main == o.plan.main && plan.level == o.plan.level && plan.cols == o.plan.cols; }
 };
 
 struct Corr : Published {
@@ -97,7 +97,7 @@ struct Corr : Published {
   // 重置全部状态并进入 Building (列集/层变了旧矩阵下标全错位, 快照整体清)
   void reset(analysis::ReadScope scope, Spec spec);
   // 逐抽样日构建 (日内切片累加, 每步发布); 被取消返回 false
-  bool build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:
@@ -131,7 +131,7 @@ struct CorrPair : Published {
   ~CorrPair();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:
@@ -166,7 +166,7 @@ struct CorrLag : Published {
   ~CorrLag();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:

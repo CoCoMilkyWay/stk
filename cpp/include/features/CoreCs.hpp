@@ -166,10 +166,11 @@ public:
       const LibAxis &axis = libs[T::kId].axis;
       const FeatureLib &side = libs[S::kId];
       assert(side.tier == S::kId && axis.size() == A_);
+      const LibId side_lib = lib_id(side.name);
       side_rd_.emplace(side);
-      side_readers_.main = T::kId;
-      side_readers_.rd[S::kId] = &*side_rd_;
-      [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
+      side_readers_.main = lib_id(libs[T::kId].name);
+      side_readers_.rd[side_lib] = &*side_rd_;
+      [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side_lib, side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
       side_ids_.resize(A_);
       for (size_t a = 0; a < A_; ++a) {
         const size_t x = side.axis.sub_of(axis.global(a));
@@ -290,10 +291,10 @@ private:
 
   // 层 LVL 旁读源 (读端同一个 Source): 值列 = CsSide 列集, 不门控; 行 = level_asof(LVL, LVL, t) = t → 只读当日, 不承接
   template <size_t LVL>
-  void init_side_(size_t As) {
+  void init_side_([[maybe_unused]] LibId lib, [[maybe_unused]] size_t As) {
     if constexpr (Side<LVL>::N > 0) {
       Source &s = side_src_[LVL];
-      s.tier = TierSide<T>::type::kId;
+      s.lib = lib;
       s.level = LVL;
       s.cs.io.assign(Side<LVL>::kFields.begin(), Side<LVL>::kFields.end());
       s.cs.vts.assign(Side<LVL>::N, L2::ValidType::ALL);
@@ -311,7 +312,7 @@ private:
     if constexpr (Side<LVL>::N > 0) {
       const Source &s = side_src_[LVL];
       load_source(side_readers_, s, date, 0, s.cs.io, side_buf_[LVL]);
-      assert(!side_rd_->stale() && "旁读档库缺这天 / 头不符 (轴 / 字段表变了): 先算 / 重算旁读档");
+      assert(side_buf_[LVL].has_cur && !side_rd_->stale() && "旁读档库缺这天 / 头不符 (轴 / 字段表变了): 先算 / 重算旁读档");
     }
   }
 

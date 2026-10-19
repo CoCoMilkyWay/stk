@@ -9,7 +9,7 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)
 #include "gui/util/AssetFilter.hpp"            // 筛选控件 (与 TABLE 共用)
-#include "shared/Analysis.hpp"                 // read_plan (overlay 读计划)
+#include "shared/FeatureLib.hpp"               // lib_def (legend 库名)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -75,7 +75,7 @@ static void FormatDateShort(char *buf, size_t size, misc::Ymd date) {
   std::snprintf(buf, size, "%02d/%02d/%02d", date / 10000 % 100, date / 100 % 100, date % 100);
 }
 
-// 选中特征列 (跨层跨档): 多选集合 (ColRef 序), 截断 MAX_FEATURES. OrderFlow 主库 = 票池库 (Lob), Bar 列旁读 all 库
+// 选中特征列 (跨库跨层): 多选集合 (ColRef 序), 截断 MAX_FEATURES. 各列读自己的库, 资产不在该库 / 该库缺这天 = 无点
 static std::vector<ColRef> CollectFeats(const Feature::Selection &sel) {
   std::vector<ColRef> v;
   for (const ColRef &c : sel.picked) {
@@ -84,17 +84,6 @@ static std::vector<ColRef> CollectFeats(const Feature::Selection &sel) {
     v.push_back(c);
   }
   return v;
-}
-
-// overlay 读计划 + ts_valid 位 (第 i 位 = 列 i 是其层 ts_valid, 展示幅值 = micro price); 空列 = 空计划
-static ReadPlan FeatPlan(const Feature &feature, size_t grid, const std::vector<ColRef> &cols, uint32_t &ts_price) {
-  ts_price = 0;
-  if (cols.empty())
-    return ReadPlan{};
-  for (size_t i = 0; i < cols.size(); ++i)
-    if (std::strcmp(feature.meta(cols[i]).code, "ts_valid") == 0)
-      ts_price |= 1u << i;
-  return analysis::read_plan(feature, TierId::Lob, grid, cols);
 }
 
 // 一条 overlay 线的有效 Cat2 + 预览抽样全局值域 (与 FEATURE 表同口径; 无预览 = "?", val_min > val_max)
@@ -110,9 +99,9 @@ static void CollectFeatCats(SharedData &data, const std::vector<ColRef> &cols, s
   for (size_t i = 0; i < cols.size(); ++i) {
     if (done[i])
       continue;
-    EffectiveCat2Snapshot(data, cols[i].tier, cols[i].level, s_snap);
+    EffectiveCat2Snapshot(data, cols[i].tier(), cols[i].level, s_snap);
     for (size_t j = i; j < cols.size(); ++j) {
-      if (done[j] || cols[j].tier != cols[i].tier || cols[j].level != cols[i].level)
+      if (done[j] || cols[j].tier() != cols[i].tier() || cols[j].level != cols[i].level)
         continue;
       done[j] = true;
       const size_t c = cols[j].col;
@@ -122,9 +111,9 @@ static void CollectFeatCats(SharedData &data, const std::vector<ColRef> &cols, s
   }
 }
 
-// legend = "中文名 (cat2) 层"; cat2 = 有效 Cat2 (探测 or 人工覆盖, 无预览 = "?")
+// legend = "中文名 (cat2) 库 层"; cat2 = 有效 Cat2 (探测 or 人工覆盖, 无预览 = "?"); 同列不同库靠库名区分
 static const char *FeatName(const Feature &feature, const ColRef &c, const FeatCat &cat, char *buf, size_t size) {
-  std::snprintf(buf, size, "%s (%s) %s", feature.meta(c).name_cn, cat.cat2, level_name(c.level));
+  std::snprintf(buf, size, "%s (%s) %s %s", feature.meta(c).name_cn, cat.cat2, lib_def(c.lib).name, level_name(c.level));
   return buf;
 }
 
@@ -1017,9 +1006,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ++ui.kline_gen;
     ui.min_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
     ui.kline_rescan_pending = rescan || ui.min_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
-    uint32_t ts_price = 0;
-    ReadPlan plan = FeatPlan(data.feature, L_min, feats, ts_price);
-    service->RequestKline(ui.kline_gen, asset_idx, std::move(plan), ts_price, rescan);
+    service->RequestKline(data, ui.kline_gen, asset_idx, feats, rescan);
   }
 
   // Kline 发布状态 (anchor 默认值需要 dates)
@@ -1042,9 +1029,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.depth_asset = asset_idx;
     ui.depth_feats = feats;
     ++ui.depth_gen;
-    uint32_t ts_price = 0;
-    ReadPlan plan = FeatPlan(data.feature, L_sec, feats, ts_price);
-    service->RequestDepth(ui.depth_gen, ui.min_anchor_date, asset_idx, std::move(plan), ts_price);
+    service->RequestDepth(data, ui.depth_gen, ui.min_anchor_date, asset_idx, feats);
   }
 
   // ==========================================================================
@@ -1068,7 +1053,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   if (ui.min_anchor_date && (rescan || pick.req_date != ui.min_anchor_date)) {
     pick.req_date = ui.min_anchor_date;
     ++pick.gen;
-    service->RequestPick(pick.gen, ui.min_anchor_date);
+    service->RequestPick(data, pick.gen, ui.min_anchor_date);
   }
 
   // 候选重建 (槽换代 或 筛选条件变)

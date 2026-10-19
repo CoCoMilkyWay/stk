@@ -8,15 +8,19 @@ Preview &PreviewService::target(SharedData &data) { return data.preview; }
 void PreviewService::RequestCompute(SharedData &data) {
   // 预览覆盖当前档每层全部非 META 特征 (各层网格 = 该层), 不看选中
   const TierId tier = data.feature.selection.tier;
+  const LibId lib = data.feature.selection.cur_lib();
   const auto &meta = data.feature.meta(tier);
 
   Req req;
-  req.scope = analysis::read_scope(data.config, data.feature, tier);
+  // price 笼: 涨跌停两列只在 all 库 (票池库经旁读)
+  const auto &all_meta = data.feature.meta(lib_tier(kAllLib));
+  req.spec.cage = {all_meta.col_of(L_day, "lim_dn"), all_meta.col_of(L_day, "lim_up")};
+  std::vector<ColRef> cage;
+  for (const size_t c : req.spec.cage)
+    cage.push_back({kAllLib, static_cast<uint8_t>(L_day), static_cast<uint16_t>(c)});
+  req.scope = analysis::read_scope(data.config, lib, cage);
   if (req.scope.months.empty())
     return;
-  // price 笼: 涨跌停两列只在 Bar 库 (Lob 主档经旁读)
-  const auto &all_meta = data.feature.meta(TierId::Bar);
-  req.spec.cage = {all_meta.col_of(L_day, "lim_dn"), all_meta.col_of(L_day, "lim_up")};
   req.spec.tier = tier;
   for (size_t l = 0; l < LEVEL_COUNT; ++l) {
     const auto &meta_list = meta.features[l];
@@ -25,10 +29,10 @@ void PreviewService::RequestCompute(SharedData &data) {
     for (size_t i = 0; i < meta_list.size(); ++i) {
       if (meta_list[i].data_type == FeatureDataType::META)
         continue; // 元数据列不预览 (含 ts_valid 自身)
-      cols.push_back({tier, static_cast<uint8_t>(l), static_cast<uint16_t>(i)});
+      cols.push_back({lib, static_cast<uint8_t>(l), static_cast<uint16_t>(i)});
     }
     if (!cols.empty())
-      req.spec.plans[l] = analysis::read_plan(data.feature, tier, l, std::move(cols));
+      req.spec.plans[l] = analysis::read_plan(data.feature, lib, l, std::move(cols));
   }
   Request(std::move(req));
 }

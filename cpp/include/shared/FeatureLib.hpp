@@ -27,8 +27,10 @@ struct LibDef {
   TierId tier;
   size_t pool_col; // 票池: Bar 库 L_day 的 pool_<name> 列下标; all: SIZE_MAX
 };
-std::span<const LibDef> feature_libs();
+std::span<const LibDef> feature_libs(); // 下标 = LibId
+const LibDef &lib_def(LibId lib);
 const LibDef &lib_def(std::string_view name); // 不是库名 → assert
+LibId lib_id(std::string_view name);          // 不是库名 → assert
 
 struct FeatureLib {
   TierId tier = TierId::Lob;

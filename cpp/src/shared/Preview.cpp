@@ -83,7 +83,7 @@ struct Preview::LevelOf final : Preview::Level {
   std::vector<std::vector<float>> bufs; // [n_threads][R] 单 (资产, 段) 序列 (缺/门控 NaN → 谱前 ffill)
 
   // 容量准备: 每特征累积 + 块读计划 + 线程私有
-  void prepare(const ReadPlan &pv_plan, size_t A, const PerTier<size_t> &As, size_t n_threads) {
+  void prepare(const ReadPlan &pv_plan, size_t A, const PerLib<size_t> &As, size_t n_threads) {
     level = G::kLevel;
     rpd = G::kRowsPerDay;
     days = G::kDays;
@@ -94,7 +94,7 @@ struct Preview::LevelOf final : Preview::Level {
     cage_n.assign(n_pv, 0);
     cage_miss.assign(n_pv, 0);
     int_only.assign(n_pv, 1);
-    assert(pv_plan.srcs.size() == 1 && pv_plan.srcs[0].tier == pv_plan.main && "预览列 = 主档该层");
+    assert(pv_plan.srcs.size() == 1 && pv_plan.srcs[0].lib == pv_plan.main && "预览列 = 主库该层");
     const Source &src = pv_plan.srcs[0];
     blocks.clear();
     f0.clear();
@@ -164,10 +164,10 @@ void Preview::reset(ReadScope scope, Spec sp) {
       continue;
     assert(p.level == l && std::is_sorted(p.cols.begin(), p.cols.end()));
     assert(p.cols.back().level == l && p.cols.back().col < sp.n_features[l]);
-    assert(p.main == sp.tier && p.main == scope.main);
+    assert(lib_tier(p.main) == sp.tier && p.main == scope.main);
   }
-  assert(sp.cage.size() == 2 && scope.has(TierId::Bar) && "price 笼读 Bar 档");
-  assert(scope.lib().axis.size() > 0 && !scope.months.empty());
+  assert(sp.cage.size() == 2 && scope.has(kAllLib) && "price 笼读 all 库");
+  assert(scope.axis.size() > 0 && !scope.months.empty());
   std::lock_guard<std::mutex> lock(mutex);
 
   scope_ = std::move(scope);
@@ -192,12 +192,12 @@ void Preview::reset(ReadScope scope, Spec sp) {
 // Build (轮训: 轮 = 抽样日, 轮内按特征分块, 块末发布; 首帧 = 一块的 IO + 扫描)
 // ============================================================================
 
-bool Preview::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("PreviewBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = scope_.lib().axis.size();
-  const PerTier<size_t> As = scope_.sizes();
+  const size_t A = scope_.axis.size();
+  const PerLib<size_t> As = scope_.sizes();
   assert(A > 0 && "reset 先于 build");
   const Readers rd = scope_.readers(fr);
 
@@ -210,7 +210,7 @@ bool Preview::build(const PerTier<const FeatureRead *> &fr, const std::atomic<bo
   rt.shards.resize(n_threads);
   for (Runtime::Shard &sh : rt.shards)
     sh.samples.reserve(kPvAssetsPerRound * TRADE_MINUTES_PER_DAY);
-  rt.cage_day.preallocate(As[TierId::Bar], L_day, 2);
+  rt.cage_day.preallocate(As[kAllLib], L_day, 2);
   rt.asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
 
   // 各层: 段序 (洗牌取前 kPvRounds 个, 无偏覆盖全区间, 轮序即收敛序) + 容量
@@ -266,13 +266,13 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
     // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
     // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
     TraceN("PreviewRoundIO");
-    constexpr float kF16Rel = 1.0f / 1024.0f;       // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
-    const uint32_t *cage_ids = rd.ids[TierId::Bar]; // nullptr = 主档即 Bar (同轴)
+    constexpr float kF16Rel = 1.0f / 1024.0f;   // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
+    const uint32_t *cage_ids = rd.ids[kAllLib]; // nullptr = 主库即 all (同轴); all = 全轴, 不会 kAbsent
     for (size_t d = 0; d < days; ++d) {
       const misc::Ymd date = plan.dates[r * days + d];
       n_real += date != 0;
       if (date != 0)
-        rd.of(TierId::Bar).load_day_columns(date, pv.spec.cage, rt.cage_day);
+        rd.of(kAllLib).load_day_columns(date, pv.spec.cage, rt.cage_day);
       for (size_t k = 0; k < n_draw; ++k) {
         const size_t a = rt.asset_order[(a_off + k) % A];
         const size_t s = cage_ids ? cage_ids[a] : a;

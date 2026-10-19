@@ -80,9 +80,8 @@ struct TaskFeaturesState {
 
   // 流式分析三件 (Dist / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
   bool streams_started = false;
-  // Auto-compute tracking (Dist / Transform 共用): 主特征 (档/层/列) / 其所在库变了即重算 (无论当前在哪个 tab)
+  // Auto-compute tracking (Dist / Transform 共用): 主特征 (库/层/列) 变了即重算 (无论当前在哪个 tab)
   std::optional<ColRef> prev_primary;
-  std::string prev_lib;
   // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库 / 日期区间变了自动重算 (快照做变更检测)
   std::string preview_lib;
   misc::Ymd preview_start = 0, preview_end = 0;
@@ -292,7 +291,7 @@ TaskHandle CreateFeaturesTask() {
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
     if (!state->orderflow_service) {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.libs);
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.cur_lib(TierId::Lob));
     }
     if (!state->dist_service) {
       state->dist_service = std::make_unique<Features::DistService>();
@@ -313,12 +312,12 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // OrderFlow 一代服务绑一组库 (每档一个, worker 常驻 reader 持各库清单): 换库 / 库重算后整体重建 + 重扫
+    // OrderFlow 一代服务绑一个主库 (Lob 当前库: 逐笔重放 / 日期轴 / 候选; overlay 列各读各库, 随请求): 换主库 / 库重算后整体重建 + 重扫
     const auto renew_orderflow = [&] {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.libs);
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.cur_lib(TierId::Lob));
       data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
     };
-    if (state->orderflow_service->libs() != data.feature.selection.libs)
+    if (state->orderflow_service->main() != data.feature.selection.cur_lib(TierId::Lob))
       renew_orderflow();
 
     // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (库 A 轴要它).
@@ -356,19 +355,16 @@ TaskHandle CreateFeaturesTask() {
       auto &sel = data.feature.selection;
       const ColRef *feat = sel.primary();
 
-      // Detect change (同档换票池: 字段表同, 选中列不变, 但库变了)
-      const std::string feat_lib = feat ? sel.lib_of(feat->tier) : std::string{};
+      // Detect change (选中列绑定库: 切库不改既有选中, 换库即换列)
       const bool feature_changed = feat ? (!state->prev_primary || *state->prev_primary != *feat) : state->prev_primary.has_value();
-      const bool lib_changed = feat_lib != state->prev_lib;
 
-      if ((feature_changed || lib_changed) && feat) {
+      if (feature_changed && feat) {
         // 参数快照 + 取消在跑 (RequestCompute 内部完成)
         state->dist_service->RequestCompute(data);
         state->transform_service->RequestCompute(data, state->transform_ui_state.params,
                                                  state->transform_ui_state.focus);
       }
       state->prev_primary = feat ? std::optional<ColRef>(*feat) : std::nullopt;
-      state->prev_lib = feat_lib;
     }
 
     // Handle trigger from UI (核布局由 ComputeService::run 按机器核数推导)

@@ -90,6 +90,8 @@ struct Feature {
 
     const std::string &lib_of(TierId t) const; // 档的当前库名
     const std::string &lib() const { return lib_of(tier); }
+    LibId cur_lib(TierId t) const; // 档的当前库 (库表下标)
+    LibId cur_lib() const { return cur_lib(tier); }
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;
@@ -98,15 +100,10 @@ struct Feature {
     std::set<ts::MethodId> filter_ts_method; // TS Norm 列按 Method 过滤 (Tf 只显示)
     std::set<cs::MethodId> filter_cs_method; // CS Norm 列同
 
-    // 选中列 (跨层跨档多选; 切层 / 切档保留; primary = 首个, 供需要单选的消费方)
+    // 选中列 (跨库跨层多选; 选中时绑定当时的当前库, 切库 / 切层保留; 同列在不同库各选一次; primary = 首个, 供需要单选的消费方)
     std::set<ColRef> picked;
 
     const ColRef *primary() const { return picked.empty() ? nullptr : &*picked.begin(); }
-    bool is_picked(TierId t, size_t level, size_t col) const {
-      return picked.contains(ColRef{t, static_cast<uint8_t>(level), static_cast<uint16_t>(col)});
-    }
-    // 该 (档, 层) 的选中列下标 (升序)
-    std::vector<int> picked_at(TierId t, size_t level) const;
 
     void clear_filters();
     void clear(); // 过滤 + 选中
@@ -123,12 +120,10 @@ struct Feature {
   const Metadata &meta(TierId t) const { return metadata[static_cast<size_t>(t)]; }
   const Metadata &meta() const { return meta(selection.tier); } // 当前档
   const FeatureMetadata &meta(const ColRef &c) const {
-    const auto &list = meta(c.tier).features[c.level];
+    const auto &list = meta(c.tier()).features[c.level];
     assert(c.col < list.size());
     return list[c.col];
   }
-  // 一组列的分析主档 (= 主库): 列集里的某档, 其余列的档都是它的旁读档 (tier_side); 找不到 → assert
-  static TierId main_tier(const std::vector<ColRef> &cols);
 
   void clear();
 };

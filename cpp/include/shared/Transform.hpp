@@ -177,7 +177,7 @@ struct Transform : Published {
   // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 库轴变了才重建资产线
   void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式; 被取消返回 false
-  bool build(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:
@@ -185,7 +185,7 @@ private:
   template <class G>
   struct RuntimeOf; // worker 私有 (批平面 / TS 链状态 / 线程 shard), 按网格实例化
   template <class G>
-  bool build_grid(const PerTier<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build_grid(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   std::unique_ptr<Runtime> rt_;
   analysis::ReadScope scope_; // reset 时定好, build 全程只读
 };

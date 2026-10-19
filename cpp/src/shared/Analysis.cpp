@@ -11,61 +11,89 @@
 
 namespace analysis {
 
-ReadScope read_scope(const Config &cfg, const Feature &feature, TierId main) {
+namespace {
+// A 轴 + 各库映射 (assets 空 = 主库轴, 主库同轴不映射)
+void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
+  const bool own = assets.empty();
+  s.axis = own ? s.lib().axis : LibAxis{.ids = std::move(assets)};
+  check_axis(s.axis.ids);
+  for (const LibId l : lib_ids()) {
+    s.to[l].clear();
+    if (!s.has(l) || (own && l == s.main))
+      continue;
+    const LibAxis &side = s.libs[l].axis;
+    s.to[l].resize(s.axis.size());
+    for (size_t a = 0; a < s.axis.size(); ++a) {
+      const size_t x = side.sub_of(s.axis.global(a));
+      s.to[l][a] = x < side.size() ? static_cast<uint32_t>(x) : kAbsent;
+    }
+  }
+}
+} // namespace
+
+ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets) {
   ReadScope s;
   s.main = main;
   bool ready = true;
-  for (const TierId t : TIER_IDS)
-    if (s.has(t)) {
-      s.libs[t] = load_lib(cfg, feature.selection.lib_of(t));
-      assert(s.libs[t].tier == t);
-      ready &= s.libs[t].ready();
-    }
+  const auto add = [&](LibId l) {
+    if (s.has(l))
+      return;
+    s.libs[l] = load_lib(cfg, lib_def(l).name);
+    assert(s.libs[l].tier == lib_tier(l));
+    ready &= s.libs[l].ready();
+  };
+  add(main);
+  for (const ColRef &c : cols)
+    add(c.lib);
   if (!ready) // 未建库 = 空范围 (请求方见 months 为空即放弃)
     return s;
   s.months = misc::months_between(cfg.start_date, cfg.end_date);
-  const LibAxis &axis = s.lib().axis;
-  for (const TierId t : TIER_IDS)
-    if (t != main && s.has(t)) {
-      const LibAxis &side = s.libs[t].axis;
-      s.to[t].resize(axis.size());
-      for (size_t a = 0; a < axis.size(); ++a) {
-        s.to[t][a] = static_cast<uint32_t>(side.sub_of(axis.global(a)));
-        assert(s.to[t][a] < side.size() && "主档资产不在旁读档 A 轴内");
-      }
-    }
+  map_axis(s, std::move(assets));
   return s;
 }
 
-PerTier<size_t> ReadScope::sizes() const {
-  PerTier<size_t> out;
-  for (const TierId t : TIER_IDS)
-    out[t] = libs[t].axis.size();
+PerLib<size_t> ReadScope::sizes() const {
+  PerLib<size_t> out;
+  for (const LibId l : lib_ids())
+    out[l] = libs[l].axis.size();
   return out;
 }
 
-Readers ReadScope::readers(const PerTier<const FeatureRead *> &fr) const {
+Readers ReadScope::readers(const PerLib<const FeatureRead *> &fr) const {
   Readers rd{.main = main};
-  for (const TierId t : TIER_IDS)
-    if (has(t)) {
-      assert(fr[t] && "库集档缺 reader");
-      rd.rd[t] = fr[t];
-      rd.ids[t] = t == main ? nullptr : to[t].data();
+  for (const LibId l : lib_ids())
+    if (has(l)) {
+      assert(fr[l] && "库集库缺 reader");
+      rd.rd[l] = fr[l];
+      rd.ids[l] = to[l].empty() ? nullptr : to[l].data();
     }
   return rd;
 }
 
 bool read_request(const Config &cfg, const Feature &feature, size_t level, std::vector<ColRef> cols, ReadScope &scope, ReadPlan &plan) {
-  const TierId main = Feature::main_tier(cols);
-  scope = read_scope(cfg, feature, main);
+  assert(!cols.empty());
+  scope = read_scope(cfg, cols.front().lib, cols);
   if (scope.months.empty())
     return false;
+  LibId main = scope.main;
+  for (const LibId l : lib_ids())
+    if (scope.has(l) && scope.libs[l].axis.size() < scope.libs[main].axis.size())
+      main = l;
+  if (main != scope.main) {
+    scope.main = main;
+    map_axis(scope, {});
+  }
   plan = read_plan(feature, main, level, std::move(cols));
   return true;
 }
 
-fmeta::ColumnSet column_set(const Feature &feature, size_t level, std::vector<size_t> cols) {
-  return column_set(feature, feature.selection.tier, level, std::move(cols));
+bool read_request(const Config &cfg, const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols, ReadScope &scope,
+                  ReadPlan &plan) {
+  scope = read_scope(cfg, main, cols);
+  if (scope.months.empty())
+    return false;
+  plan = read_plan(feature, main, level, std::move(cols));
+  return true;
 }
 
 fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, std::vector<size_t> cols) {
@@ -98,33 +126,42 @@ DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> 
   return out;
 }
 
-ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vector<ColRef> cols) {
+namespace {
+// 同 (库, 层) 的列并成一个源 (槽 = 请求序), 源行由 rows(s) 定
+template <class Rows>
+ReadPlan plan_of(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols, Rows rows) {
   assert(!cols.empty() && level < LEVEL_COUNT);
   ReadPlan p;
   p.main = main;
   p.level = level;
   p.cols = std::move(cols);
-  std::map<std::pair<TierId, size_t>, std::vector<uint32_t>> groups; // (档, 层) → 平面列 (请求序)
-  for (size_t c = 0; c < p.cols.size(); ++c) {
-    const ColRef &r = p.cols[c];
-    assert((r.tier == main || tier_side(main, r.tier)) && "别档列只许旁读档");
-    groups[{r.tier, r.level}].push_back(static_cast<uint32_t>(c));
-  }
-  const size_t rpd = level_valid_rows(level);
+  std::map<std::pair<LibId, size_t>, std::vector<uint32_t>> groups; // (库, 层) → 平面列 (请求序)
+  for (size_t c = 0; c < p.cols.size(); ++c)
+    groups[{p.cols[c].lib, p.cols[c].level}].push_back(static_cast<uint32_t>(c));
   for (auto &[key, slot] : groups) {
     Source s;
-    s.tier = key.first;
+    s.lib = key.first;
     s.level = key.second;
     std::vector<size_t> io;
     io.reserve(slot.size());
     for (const uint32_t c : slot)
       io.push_back(p.cols[c].col);
-    s.cs = column_set(feature, s.tier, s.level, std::move(io));
+    s.cs = column_set(feature, lib_tier(s.lib), s.level, std::move(io));
     s.slot = std::move(slot);
-    project_rows(s, level, rpd);
+    rows(s);
     p.srcs.push_back(std::move(s));
   }
   return p;
+}
+} // namespace
+
+ReadPlan read_plan(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols) {
+  const size_t rpd = level_valid_rows(level);
+  return plan_of(feature, main, level, std::move(cols), [&](Source &s) { project_rows(s, level, rpd); });
+}
+
+ReadPlan read_rows(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols) {
+  return plan_of(feature, main, level, std::move(cols), [&](Source &s) { native_rows(s, level); });
 }
 
 SegPlan plan_segs(const FeatureRead &reader, const std::vector<misc::Ym> &months, size_t level, DayOrder order,

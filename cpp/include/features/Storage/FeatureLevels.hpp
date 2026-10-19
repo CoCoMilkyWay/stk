@@ -19,7 +19,10 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 // 存储类型: _Float16 (内存/磁盘减半, F16C/AVX-512 FP16/NEON 硬件转换, ±65504, ~3.3 位有效数字)
 using feature_storage_t = _Float16;
@@ -60,7 +63,30 @@ struct PerTier {
   bool operator==(const PerTier &) const = default;
 };
 
-// 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读 side 档 (截面 / 分析读计划)
+// 库: 库表 feature_libs() 下标 (shared/FeatureLib.hpp; [0] = all, 其余 = 票池). 档 = 库的属性 (字段表按档, 数据按库)
+using LibId = uint8_t;
+inline constexpr LibId kAllLib = 0;
+size_t lib_count();         // 库表长 (由 Bar 字段表票池列定; 定义在 FeatureMeta.cpp)
+TierId lib_tier(LibId lib); // 库的档
+// 库表全部下标 (与 TIER_IDS 对仗, 运行时长)
+inline auto lib_ids() { return std::views::iota(LibId{0}, static_cast<LibId>(lib_count())); }
+
+// 按库下标的数组 (与 PerTier 对仗): 一切 "主库 + 列所在库" 成组的东西 (库清单 / reader / 轴映射) 都用它
+template <class X>
+struct PerLib {
+  std::vector<X> v = std::vector<X>(lib_count());
+  X &operator[](LibId l) {
+    assert(l < v.size());
+    return v[l];
+  }
+  const X &operator[](LibId l) const {
+    assert(l < v.size());
+    return v[l];
+  }
+  bool operator==(const PerLib &) const = default;
+};
+
+// 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读 side 档 (写端截面; 读端不受它约束, 列读自己的库)
 namespace tier_of {
 #define TIER_OF_ONE(T, ns) inline constexpr TierId ns = TierId::T;
 ALL_TIERS(TIER_OF_ONE)
@@ -160,10 +186,13 @@ template <size_t From, class F>
   }(std::make_index_sequence<LEVEL_COUNT - From>{});
 }
 
-// 一列特征的全局身份 (档 × 层 × 存储列): GUI 跨层跨档选择 / 分析请求的列单位
+// 一列特征的全局身份 (库 × 层 × 存储列; 档 = 库的档, 列下标 = 该 (档, 层) 字段表行号): GUI 跨库跨层选择 / 分析请求的列单位.
+// 序 = (档, 库, 层, 列): 同库相邻, Lob 档在前 (picked 首个 = primary)
 struct ColRef {
-  TierId tier = TierId::Lob;
+  LibId lib = kAllLib;
   uint8_t level = L_min;
   uint16_t col = 0;
-  auto operator<=>(const ColRef &) const = default;
+  TierId tier() const { return lib_tier(lib); }
+  bool operator==(const ColRef &) const = default;
+  auto operator<=>(const ColRef &o) const { return std::tuple(tier(), lib, level, col) <=> std::tuple(o.tier(), o.lib, o.level, o.col); }
 };
