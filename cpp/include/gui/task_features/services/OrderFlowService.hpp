@@ -56,9 +56,9 @@ private:
     misc::Ymd date = 0;        // Depth / Pick: 锚点日; Kline: 0 (整条主库日轴流式)
     analysis::ReadScope scope; // A 轴: Kline / Depth = {资产}, Pick = 主库轴
     ReadPlan plan;
-    size_t k0 = 0;          // overlay 起点 (= 固定列数)
-    uint32_t ts_price = 0;  // 第 i 位 = overlay 线 i 是其层 ts_valid (展示幅值 = micro price)
-    bool rescan = false;    // Kline: 重扫日期列表 (特征重算后)
+    size_t k0 = 0;         // overlay 起点 (= 固定列数)
+    uint32_t ts_price = 0; // 第 i 位 = overlay 线 i 是其层 ts_valid (展示幅值 = micro price)
+    bool rescan = false;   // Kline: 重扫日期列表 (特征重算后)
   };
   // GUI 线程: 固定列 + overlay → 请求 (库集未建 → false, 不提交)
   bool make(const SharedData &data, RowReq &req, size_t level, std::vector<ColRef> fixed, const std::vector<ColRef> &feats,

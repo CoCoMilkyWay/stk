@@ -997,7 +997,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ++ui.kline_gen;
     ui.min_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
     ui.kline_rescan_pending = rescan || ui.min_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
-    if (rescan) { // 主库 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
+    if (rescan) {                                            // 主库 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
       ui.depth_date = 0;
       of.pick.req_date = 0;
     }
