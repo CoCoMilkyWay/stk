@@ -4,10 +4,11 @@
 
 #include "features/Bar1mDay.hpp"
 #include "features/CoreBar.hpp"
-#include "fundamental/Store.hpp"
+#include "fundamental/Scan.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/SharedData.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <memory>
 #include <span>
@@ -16,7 +17,7 @@
 
 // 硬源: 预取线程把日 d 的 bar1m 分片解码进源环格 ring[d % R], TS 等 pf_ready(d) 后读.
 //   R = StoreRing::feed_ring_size(): 预取窗口跨度全部在格, 日 d 的格被 d + R 复用时 d 已全员计满 (再无读者).
-//   缺 bar1m 的日 = 全部资产零事件日.
+//   缺 bar1m 的日 = 全部资产零事件日; 只许在日期轴尾部 (数据尾部未同步), 中间缺日构造时断言.
 template <>
 struct TierFeed<bar::Tier> {
   using Core = CoreBar;
@@ -27,11 +28,19 @@ struct TierFeed<bar::Tier> {
   const LibAxis &axis;
   std::span<const misc::Ymd> dates;
   const fundamental::Catalog catalog;
-  std::vector<Bar1mDay> ring; // 源环 (预取线程写, TS 经 pf_close / pf_ready 的 release/acquire 读)
+  fundamental::Ids ids{fundamental::Ids::Miss::Skip}; // A 轴码表 (id = sub); 构造后只读, 多预取核并发 find
+  std::vector<Bar1mDay> ring;                         // 源环 (预取线程写, TS 经 pf_close / pf_ready 的 release/acquire 读)
+  std::vector<fundamental::Scratch> scratch;          // 与 ring 逐格对应 (一格同一时刻只有一个预取核在写)
 
   TierFeed(const PipelineArgs &args, const StoreRing &store)
-      : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), dates(args.dates), ring(store.feed_ring_size()) {
+      : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), dates(args.dates),
+        ring(store.feed_ring_size()), scratch(ring.size()) {
     assert(axis.size() == asset_axis().size() && "Bar 档 A 轴 = 全轴");
+    for (size_t sub = 0; sub < axis.size(); ++sub)
+      ids.add(asset_axis().code(axis.global(sub)));
+    auto has = [this](misc::Ymd d) { return catalog.find_day("bar1m", d) != nullptr; };
+    [[maybe_unused]] const auto tail = std::find_if_not(dates.begin(), dates.end(), has);
+    assert(std::none_of(tail, dates.end(), has) && "bar1m: 日期轴中间缺日 (同步漏日)");
   }
 
   size_t weight(size_t) const { return 1; } // 每资产每日恰 255 根, 负载均匀
@@ -42,7 +51,7 @@ struct TierFeed<bar::Tier> {
 
   size_t prefetch(size_t d) {
     Bar1mDay &b = ring[d % ring.size()];
-    b.load(catalog, dates[d], axis.size());
+    b.load(catalog, ids, scratch[d % ring.size()], dates[d]);
     if (!b.present)
       Logger::log("bar1m", "missing " + std::to_string(dates[d]) + ": 全部资产零事件日");
     return b.rows.size() * sizeof(Bar1m);

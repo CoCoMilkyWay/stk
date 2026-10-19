@@ -107,7 +107,10 @@ Layout layout_of(bigquant::Client &client, const Unit &u) {
   L.all.push_back({});
   // LIMIT 0: 只要 schema, 0 cell
   auto t = client.query(select(*u.spec, "*", u.w, " LIMIT 0"));
+  const std::vector<std::string> &drop = u.spec->drop;
   for (const auto &f : t->schema()->fields()) {
+    if (std::find(drop.begin(), drop.end(), f->name()) != drop.end())
+      continue; // 不落盘的列 (同 fetch 的 strip)
     const int c = static_cast<int>(L.names.size());
     L.names.push_back(f->name());
     L.kinds.push_back(kind_of(*f->type()));
@@ -306,8 +309,8 @@ void accumulate(const arrow::Array &a, Kind k, const std::vector<Use> &uses,
   assert(false && "audit: 不支持的列类型");
 }
 
-// 本地: months 各分片逐行累加, 与 remote_fps 同组键同口径 (parents 非空 → 只这些父组, 父键 = 组键前缀)
-Fps local_fps(const Spec &s, const Layout &L, const Cells &cells, Grain g, const std::vector<Slot> &months,
+// 本地: slots 各分片逐行累加, 与 remote_fps 同组键同口径 (parents 非空 → 只这些父组, 父键 = 组键前缀)
+Fps local_fps(const Spec &s, const Layout &L, const Cells &cells, Grain g, const std::vector<Slot> &slots,
               const std::vector<std::string> &parents) {
   std::vector<std::vector<Use>> uses(L.names.size());
   for (std::size_t k = 1; k < cells.size(); ++k)
@@ -338,7 +341,7 @@ Fps local_fps(const Spec &s, const Layout &L, const Cells &cells, Grain g, const
       v.assign(cells.size(), 0);
     return &v;
   };
-  for (const Slot &sl : months) {
+  for (const Slot &sl : slots) {
     const Ym ym = sl.ym;
     auto t = read(*sl.sh, need);
     // 行 → 所属组的累加槽 (Month / Day 级同日短路: 分片内 vd 按日成块)
@@ -454,21 +457,22 @@ Diff make_diff(const Spec &s, const Layout &L, const Probe &p) {
   return d;
 }
 
-// sl 月内一个不一致的组逐级往下定位 (Day → Asset), 每级一次远端查询; 返回最终组 (组键彼此不相交)
-Probes locate(bigquant::Client &client, const Spec &s, const Layout &L, const Slot &sl, Probe top) {
+// 一个月 (槽 month, 窗口 w) 内一个不一致的组逐级往下定位 (Day → Asset), 每级一次远端查询; 返回最终组 (组键彼此不相交)
+Probes locate(bigquant::Client &client, const Spec &s, const Layout &L, const std::vector<Slot> &month, Window w,
+              Probe top) {
   const std::int64_t C = static_cast<std::int64_t>(L.names.size()); // 直接修复一行的 cell (SELECT *)
   std::int64_t span = 0;                                            // 月窗口天数 = Day 级子组数上界
-  for (Ymd d = sl.w.lo; d <= sl.w.hi; d = misc::add_days(d, 1))
+  for (Ymd d = w.lo; d <= w.hi; d = misc::add_days(d, 1))
     ++span;
   Probes done, frontier{std::move(top)};
   for (const Grain g : {Grain::Day, Grain::Asset}) {
-    // 可下钻的父组: 子级存在 ∧ 两侧皆非空 (一侧空 ⇒ 子组全不一致); D = 不一致格涉及的列
+    // 可下钻的父组: 子级存在 (Daily 无 Asset 级修复) ∧ 两侧皆非空 (一侧空 ⇒ 子组全不一致); D = 不一致格涉及的列
     Probes drill;
     std::set<int> D;
     std::int64_t bound = 0, fix = 0; // 子组数上界 / 直接按父组修复的 cell
     for (Probe &p : frontier) {
       const std::int64_t ln = std::stoll(p.l[0]), rn = std::stoll(p.r[0]);
-      if ((g == Grain::Asset && !L.asset) || ln == 0 || rn == 0) {
+      if ((g == Grain::Asset && (!L.asset || s.shape == Shape::Daily)) || ln == 0 || rn == 0) {
         done.push_back(std::move(p));
         continue;
       }
@@ -495,8 +499,8 @@ Probes locate(bigquant::Client &client, const Spec &s, const Layout &L, const Sl
     for (const Probe &p : drill)
       parents.push_back(p.key);
     std::sort(parents.begin(), parents.end());
-    const Fps rc = remote_fps(client, s, L, *cells, g, sl.w, parents);
-    const Fps lc = local_fps(s, L, *cells, g, {sl}, parents);
+    const Fps rc = remote_fps(client, s, L, *cells, g, w, parents);
+    const Fps lc = local_fps(s, L, *cells, g, month, parents);
     const std::vector<std::string> zeros(cells->size(), "0");
     for (Probe &p : drill) {
       std::set<std::string> kids; // 两侧以 p.key 为前缀的组
@@ -527,16 +531,16 @@ std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed, const 
   std::mt19937 rng(seed);
   std::vector<std::vector<Unit>> tables;
   for (const Spec &s : SPECS) {
-    if (!from<Bq>(s) || s.shape != Shape::Month)
+    if (!audited(s))
       continue;
     std::map<int, Unit> by_year;
     for (const Slot &sl : frozen(s, cat, now)) {
       if (keep && !keep(s, sl.ym))
         continue;
       Unit &u = by_year[sl.ym / 100];
-      if (u.months.empty())
+      if (u.slots.empty())
         u.w.lo = sl.w.lo;
-      u.months.push_back(sl);
+      u.slots.push_back(sl);
       u.w.hi = sl.w.hi;
     }
     std::vector<Unit> units;
@@ -563,7 +567,7 @@ std::vector<Unit> plan(const Catalog &cat, const Now &now, unsigned seed, const 
 }
 
 std::vector<Diff> run(bigquant::Client &client, const Unit &u) {
-  assert(u.spec && !u.months.empty());
+  assert(u.spec && !u.slots.empty());
   const Spec &s = *u.spec;
   const Layout L = layout_of(client, u);
   const auto all = std::make_shared<const Cells>(L.all);
@@ -571,16 +575,20 @@ std::vector<Diff> run(bigquant::Client &client, const Unit &u) {
 
   // 月级 (第一遍扫描): 全部格
   const Fps rm = remote_fps(client, s, L, *all, Grain::Month, u.w, {});
-  const Fps lm = local_fps(s, L, *all, Grain::Month, u.months, {});
+  const Fps lm = local_fps(s, L, *all, Grain::Month, u.slots, {});
 
+  // 同月的槽成组 (Month 一月一槽, Daily 一月多日槽); 组窗口 = 首槽 w.lo .. 末槽 w.hi
   std::vector<Diff> out;
-  for (const Slot &sl : u.months) {
-    const std::string key = misc::dash_ym(sl.ym);
+  for (auto b = u.slots.begin(); b != u.slots.end();) {
+    const auto e = std::find_if(b, u.slots.end(), [&](const Slot &x) { return x.ym != b->ym; });
+    const std::vector<Slot> month(b, e);
+    b = e;
+    const std::string key = misc::dash_ym(month.front().ym);
     const auto &l = find_or_zero(lm, key, zeros);
     const auto &r = find_or_zero(rm, key, zeros);
     if (l == r)
       continue;
-    for (const Probe &p : locate(client, s, L, sl, {key, all, l, r}))
+    for (const Probe &p : locate(client, s, L, month, {month.front().w.lo, month.back().w.hi}, {key, all, l, r}))
       out.push_back(make_diff(s, L, p));
   }
   return out;
@@ -589,6 +597,28 @@ std::vector<Diff> run(bigquant::Client &client, const Unit &u) {
 std::string label(const Unit &u) { return u.spec->name + " " + std::to_string(u.year); }
 
 std::vector<Task> repair(const Spec &s, const std::vector<Slot> &frozen, const std::vector<std::string> &groups) {
+  if (s.shape == Shape::Daily) {
+    std::set<Ymd> days; // 差异日
+    for (const std::string &g : groups) {
+      const Grain grain = grain_of(g);
+      assert(grain != Grain::Asset && "repair: Daily 定位最细到 Day");
+      if (grain == Grain::Day) {
+        days.insert(key_day(g));
+        continue;
+      }
+      [[maybe_unused]] bool any = false;
+      for (const Slot &sl : frozen)
+        if (sl.ym == key_ym(g)) {
+          days.insert(sl.w.lo);
+          any = true;
+        }
+      assert(any && "repair: Daily 差异月无冻结日");
+    }
+    std::vector<Task> out;
+    for (const Ymd d : days)
+      out.push_back({&s, misc::ym_of(d), {d, d}, Write::Replace});
+    return out;
+  }
   std::map<Ym, std::set<std::string>> by_month; // 差异月 → 定位键
   for (const std::string &g : groups)
     by_month[key_ym(g)].insert(g);

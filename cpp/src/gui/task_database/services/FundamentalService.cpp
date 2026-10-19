@@ -120,7 +120,8 @@ std::vector<TableFileStat> collect_table_stats(const Catalog &cat) {
       st.bytes += sh.bytes;
       if (sh.ym != 0) {
         ++st.months;
-        st.last_month = sh.ym; // ym 升序 ⇒ 末个即最新
+        st.last_month = sh.ym; // (ym, 日) 升序 ⇒ 末个即最新
+        st.last_day = sh.day;
       }
       newest = std::max(newest, sh.mtime);
     }

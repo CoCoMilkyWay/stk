@@ -77,14 +77,15 @@ std::map<std::string, std::pair<std::int64_t, std::int64_t>> group_n(const std::
   return out;
 }
 
-// 已核月的本地清点 (分母 + 流量), 取自核对当时的分片
+// 已核月的本地清点 (分母 + 流量), 取自核对当时的分片 (Daily: 该月各日分片累加)
 struct MonthInv {
   std::int64_t rows = 0;
   std::int64_t days = 0;
   std::int64_t cols = 0;
 };
 
-MonthInv count_month(const fundamental::Spec &s, const fundamental::Shard &sh) {
+// 一个分片的清点
+MonthInv count_shard(const fundamental::Spec &s, const fundamental::Shard &sh) {
   MonthInv m;
   m.cols = parquet::ParquetFileReader::OpenFile(sh.path.string())->metadata()->num_columns();
   auto t = fundamental::read(sh, {s.vd});
@@ -115,12 +116,16 @@ using Books = std::map<std::string, TableBook>; // 表名 → 状态
 void apply(TableBook &t, const fundamental::audit::Unit &u, const std::vector<fundamental::audit::Diff> &diffs,
            const std::string &at) {
   std::set<std::string> keys;
-  for (const fundamental::Slot &sl : u.months) {
+  for (const fundamental::Slot &sl : u.slots) {
     const std::string key = misc::dash_ym(sl.ym);
     MonthRec &m = t.months[key];
-    m.inv = count_month(*u.spec, *sl.sh);
+    if (keys.insert(key).second)
+      m.inv = {};
+    const MonthInv one = count_shard(*u.spec, *sl.sh);
+    m.inv.rows += one.rows;
+    m.inv.days += one.days;
+    m.inv.cols = std::max(m.inv.cols, one.cols);
     m.audited_at = at;
-    keys.insert(key);
   }
   std::erase_if(t.rows, [&](const LogRow &r) { return keys.contains(r.group.substr(0, 7)); });
   for (const auto &d : diffs)
@@ -209,12 +214,11 @@ bool valid_group(const std::string &g) {
   return misc::parse_ymd(v.substr(0, 10)) > 0 && (g.size() == 10 || (g.size() > 11 && g[10] == '|'));
 }
 
-// 一个状态文件; 表不是 DAI·Month / 任一行格式不符 / 差异月无清点 → nullopt
+// 一个状态文件; 表不参与核对 (audit::audited) / 任一行格式不符 / 差异月无清点 → nullopt
 std::optional<TableBook> parse_book(const fs::path &p) {
   const std::string name = p.stem().string();
   const auto s = std::ranges::find_if(fundamental::SPECS, [&](const fundamental::Spec &x) { return x.name == name; });
-  if (s == fundamental::SPECS.end() || !fundamental::from<fundamental::Bq>(*s) ||
-      s->shape != fundamental::Shape::Month)
+  if (s == fundamental::SPECS.end() || !fundamental::audit::audited(*s))
     return std::nullopt;
   TableBook t;
   std::ifstream in(p);
@@ -265,14 +269,19 @@ Books load_book() {
   return b;
 }
 
-// 每张 DAI·Month 表当前冻结的月数 (与 audit::plan 同一来源; 只看目录与 mtime)
+// 每张参与核对的表当前冻结的月数 (Daily: 含冻结日的月; 与 audit::plan 同一来源; 只看目录与 mtime)
 std::map<std::string, std::size_t> count_frozen() {
   const fundamental::Catalog cat;
   const fundamental::Now now = fundamental::now();
   std::map<std::string, std::size_t> out;
-  for (const fundamental::Spec &s : fundamental::SPECS)
-    if (fundamental::from<fundamental::Bq>(s) && s.shape == fundamental::Shape::Month)
-      out[s.name] = fundamental::frozen(s, cat, now).size();
+  for (const fundamental::Spec &s : fundamental::SPECS) {
+    if (!fundamental::audit::audited(s))
+      continue;
+    std::set<misc::Ym> months;
+    for (const fundamental::Slot &sl : fundamental::frozen(s, cat, now))
+      months.insert(sl.ym);
+    out[s.name] = months.size();
+  }
   return out;
 }
 
@@ -508,7 +517,7 @@ bool AuditService::audit(const std::string &table, bool incremental) {
   return !cancelled;
 }
 
-// table 的差异: audit::repair → 逐任务 sync::run (Splice 日·资产 / Replace 整月) → 这些月旧结论作废 → plan(keep = 这些月) 复核
+// table 的差异: audit::repair → 逐任务 sync::run (Splice 日·资产 / Replace 整月 / Daily 逐日 Replace) → 这些月旧结论作废 → plan(keep = 这些月) 复核
 bool AuditService::repair(const std::string &table) {
   Book &bk = *book_;
   const fundamental::Spec &s = fundamental::spec(table);
@@ -523,7 +532,7 @@ bool AuditService::repair(const std::string &table) {
   std::set<std::string> keys; // 有差异的月 "YYYY-MM"
   std::set<int> years;
   {
-    // 定位键 → 修复任务 (整月 Replace / 日·资产 Splice, 见 audit::repair)
+    // 定位键 → 修复任务 (整月 Replace / 日·资产 Splice / Daily 逐日 Replace, 见 audit::repair)
     const fundamental::Catalog cat;
     const std::vector<fundamental::Task> tasks =
         fundamental::audit::repair(s, fundamental::frozen(s, cat, fundamental::now()), groups);

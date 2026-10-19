@@ -15,7 +15,7 @@
 #include <vector>
 
 // ============================================================================
-// Store — 本地数据集 output/fundamental/{YYYY-MM, _meta}/<name>.parquet + <name>/YYYY-MM/YYYY-MM-DD.parquet (Daily)
+// Store — 本地数据集 output/fundamental/{YYYY-MM, _meta}/<name>.parquet + YYYY-MM/<name>/YYYY-MM-DD.parquet (Daily)
 //
 // Catalog: 一次目录遍历的本地清单 (表名 → 分片). sync / audit / 构建 / Overview 全只读它.
 // read / put: 本地唯一读点 / 唯一写点 (路径只在 Store 内拼).
@@ -38,7 +38,7 @@
 //     新鲜 = vd 空: 写盘时刻 ≥ horizon 日 avail_hour 点 (当日新股随其他表同点入盘); 否则: mark ≥ horizon
 //   Daily (槽位 = all_trading_days 里 [start, horizon] 的交易日; 日历未入盘 → 无槽):
 //     Missing  无文件                                        → 拉该日, 覆盖
-//     Frozen   有文件                                        → 不动 (avail_hour=24 ⇒ 只拉到昨天, 落盘即整日)
+//     Frozen   有文件                                        → 不动 (avail_hour=24 ⇒ 只拉到昨天, 落盘即整日; 回填靠 audit)
 //   (右列动作 = todo; dedup 节流在 sync::plan)
 //
 // 配额按返回 cell 数计 ⇒ 增量稳态下每表每天只为新增的一天数据付费一次;
@@ -99,7 +99,7 @@ struct Slot {
 // s 的全部槽位: Meta = {0}; Month = [ym(PIPELINE_START_DATE), ym(today)] 升序; Daily = 交易日升序
 std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now);
 
-// ledger 中 Frozen 的 Month 槽 (ym 升序) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
+// ledger 中 Frozen 的 Month / Daily 槽 ((ym, 日) 升序) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
 std::vector<Slot> frozen(const Spec &s, const Catalog &cat, const Now &now);
 
 // 槽 sl 的动作 (见文件头右列); 无事 (Frozen / 已到水位 / Snap::Day 快照已入盘) → nullopt.

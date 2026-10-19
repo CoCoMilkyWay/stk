@@ -7,10 +7,10 @@
     parquet (主):
         data/fundamental/_meta/<table>.parquet               # 静态/全量快照表
         data/fundamental/<yyyy>-<mm>/<table>.parquet         # 每月每表一个 parquet (= 本地 output/fundamental)
-        data/<table>/<yyyy>-<mm>/<yyyy-mm-dd>.parquet        # 分钟表: 每交易日一个 parquet
+        data/fundamental/<yyyy>-<mm>/<local>/<yyyy-mm-dd>.parquet  # 分钟表: 每交易日一个 parquet (local = 本地表名)
     tar (PACK=True 时生成, 不再压缩; 成员路径相对 data/, mtime 原样保留):
         data/pack/<table>_<yyyy>.tar
-        月度表: tar -xf <table>_<yyyy>.tar -C <repo>/output/  → 直接覆盖本地分片, 之后本地增量 sync
+        tar -xf <table>_<yyyy>.tar -C <repo>/output/  → 直接覆盖本地分片, 之后本地增量 sync (月度表 / 分钟表同)
         远端 pyarrow 的写者痕迹 (created_by / ARROW:schema) 由本地每轮开头的 renative 以本库重写抹掉
     json (可选, SPLIT_JSON=True 时同步生成):
         data/json/_meta/<table>.json                         # 静态表
@@ -88,7 +88,12 @@ PACK = True
 #   "month_first" : 每月仅拉当月最早有记录的一天 (SQL MIN(date) 选), 用于月度快照
 #                   (例: industry_component 月度快照 + industry_change 日频增量 cover).
 
-Table = namedtuple("Table", "name visible_date strategy freq", defaults=("day",))
+# local: 本地表名 (= cpp SPECS 的 name); None = 同远端表名 name
+Table = namedtuple("Table", "name visible_date strategy freq local", defaults=("day", None))
+
+
+def _local(t):
+    return t.local or t.name
 
 TABLES = [
     # # ---- 静态快照 (优先下载, 无时间维度) ----
@@ -132,7 +137,7 @@ TABLES = [
     # Table("cn_stock_valuation", "date", "partition"),
     # ---- 分钟行情 (未复权 1m, date = 分钟时间戳) ----
     # 用截面表 _c (按月截面存储, 适合拉全市场); cn_stock_bar1m 按标的存储, 全市场单日要扫遍所有标的
-    Table("cn_stock_bar1m_c", "date", "minute"),
+    Table("cn_stock_bar1m_c", "date", "minute", local="bar1m"),
 ]
 
 
@@ -332,7 +337,7 @@ def _members(data_root, t):
     else:
         # 不用 glob(root_dir=) (Python ≥ 3.10; 远端运行时偏旧)
         sub = (
-            (t.name, "*", "*.parquet")
+            ("fundamental", "*", _local(t), "*.parquet")
             if t.strategy == "minute"
             else ("fundamental", "*", f"{t.name}.parquet")
         )
@@ -343,9 +348,8 @@ def _members(data_root, t):
     rels = [r for r in rels if os.path.exists(os.path.join(data_root, r))]
     out = {}
     for r in sorted(rels):
-        year = (
-            None if t.strategy == "static" else os.path.basename(os.path.dirname(r))[:4]
-        )
+        # r = fundamental/<yyyy>-<mm>/...
+        year = None if t.strategy == "static" else r.split(os.sep)[1][:4]
         out.setdefault(year, []).append(r)
     return out
 
@@ -444,7 +448,7 @@ def main():
 
                 _progress(0, "")
                 for di, day in enumerate(days, 1):
-                    pq_path = os.path.join(data_root, t.name, ym, f"{day}.parquet")
+                    pq_path = os.path.join(fund_root, ym, _local(t), f"{day}.parquet")
                     if os.path.exists(pq_path):
                         ncached += 1
                         _progress(di, last_msg)

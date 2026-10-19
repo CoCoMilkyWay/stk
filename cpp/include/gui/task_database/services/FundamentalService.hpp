@@ -23,6 +23,7 @@ struct TableFileStat {
   std::string name;        // = parquet 文件名 = spec.name
   std::size_t months = 0;  // 已落月度分片数 (Daily: 日文件数); _meta 单文件表恒 0
   misc::Ym last_month = 0; // 最新分片; _meta 单文件表为 0
+  misc::Ymd last_day = 0;  // Daily: 最新日文件; 其余 0
   std::uint64_t bytes = 0;
   std::string mtime; // 最后落盘时刻 "MM-DD HH:MM"
 };

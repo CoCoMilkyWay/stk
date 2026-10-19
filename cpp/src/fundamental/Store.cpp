@@ -62,10 +62,10 @@ fs::path path(std::string_view name, Ym ym) {
   return root() / (ym == 0 ? std::string("_meta") : misc::dash_ym(ym)) / (std::string(name) + ".parquet");
 }
 
-// Daily 的日文件路径: <name>/YYYY-MM/YYYY-MM-DD.parquet
+// Daily 的日文件路径: YYYY-MM/<name>/YYYY-MM-DD.parquet
 fs::path day_path(std::string_view name, Ymd d) {
   assert(d > 0);
-  return root() / std::string(name) / misc::dash_ym(misc::ym_of(d)) / (misc::dash(d) + ".parquet");
+  return root() / misc::dash_ym(misc::ym_of(d)) / std::string(name) / (misc::dash(d) + ".parquet");
 }
 
 bool is_daily(std::string_view name) {
@@ -239,26 +239,25 @@ Catalog::Catalog() {
     if (!d.is_directory())
       continue;
     const std::string dir = d.path().filename().string();
-    // Daily 表的目录 <name>/YYYY-MM/YYYY-MM-DD.parquet
-    if (is_daily(dir)) {
-      for (const fs::directory_entry &md : fs::directory_iterator(d.path())) {
-        const Ym m = misc::parse_ym(md.path().filename().string());
-        assert(md.is_directory() && m > 0 && "Catalog: Daily 表目录下只应有 YYYY-MM 子目录");
-        for (const fs::directory_entry &f : fs::directory_iterator(md.path())) {
-          if (f.path().extension() != ".parquet")
-            continue;
-          const Ymd day = misc::parse_ymd(f.path().stem().string());
-          assert(day > 0 && misc::ym_of(day) == m && "Catalog: Daily 文件名须为所属月内的 YYYY-MM-DD");
-          by_name_[dir].push_back({m, f.path(), f.file_size(), f.last_write_time(), day});
-        }
-      }
-      continue;
-    }
-    // 其余数据集只有 "_meta" 和 "YYYY-MM" 两种目录; 再其余 (pool 等) 不是本流水线产物
+    assert(!is_daily(dir) && "Catalog: Daily 表须在 YYYY-MM/<name>/ 下, 不能是顶层目录");
+    // 只有 "_meta" 和 "YYYY-MM" 两种目录; 再其余 (pool 等) 不是本流水线产物
     const Ym m = dir == "_meta" ? 0 : misc::parse_ym(dir);
     if (dir != "_meta" && m == 0)
       continue;
     for (const fs::directory_entry &f : fs::directory_iterator(d.path())) {
+      // Daily 表的子目录 YYYY-MM/<name>/YYYY-MM-DD.parquet
+      if (f.is_directory()) {
+        const std::string name = f.path().filename().string();
+        assert(m > 0 && is_daily(name) && "Catalog: 月目录下的子目录只应是 Daily 表");
+        for (const fs::directory_entry &g : fs::directory_iterator(f.path())) {
+          if (g.path().extension() != ".parquet")
+            continue;
+          const Ymd day = misc::parse_ymd(g.path().stem().string());
+          assert(day > 0 && misc::ym_of(day) == m && "Catalog: Daily 文件名须为所属月内的 YYYY-MM-DD");
+          by_name_[name].push_back({m, g.path(), g.file_size(), g.last_write_time(), day});
+        }
+        continue;
+      }
       if (f.path().extension() != ".parquet")
         continue;
       by_name_[f.path().stem().string()].push_back({m, f.path(), f.file_size(), f.last_write_time()});
@@ -308,7 +307,7 @@ std::vector<Slot> ledger(const Spec &s, const Catalog &cat, const Now &now) {
 
 std::vector<Slot> frozen(const Spec &s, const Catalog &cat, const Now &now) {
   std::vector<Slot> out;
-  if (s.shape != Shape::Month)
+  if (s.shape == Shape::Meta)
     return out;
   for (const Slot &sl : ledger(s, cat, now))
     if (sl.st == State::Frozen)

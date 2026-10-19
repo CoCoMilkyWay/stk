@@ -1,11 +1,12 @@
 // Tab Overview - 基本面数据源 (BigQuant + Tushare) 状态与同步入口
-// 数据落地 = output/fundamental/YYYY-MM/*.parquet (水位增量, 常量见 shared/Config.hpp);
+// 数据落地 = output/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/<表>/YYYY-MM-DD.parquet (Daily)
+//   (水位增量, 常量见 shared/Config.hpp);
 // AssetInfo 由 FundamentalService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
 //
 // 逐表清单的两半信息各有出处, 谁也不抄谁:
 //   静态元描述 (增量键 / 抓法 / 就绪 / 说明) — 直接遍历 fundamental::SPECS
 //     (按 src 分两张清单), spec 加一张表这里自动多一行, 不存在漏配.
-//   本地落盘状态 (分片数 / 最新月 / 体积 / 落盘时刻) — FundamentalState::tables,
+//   本地落盘状态 (分片数 / 最新分片 / 体积 / 落盘时刻) — FundamentalState::tables,
 //     工作线程扫好的快照, 按表名关联; 渲染帧内零 IO.
 #include "gui/task_database/ui/TabOverview.hpp"
 #include "fundamental/Spec.hpp"
@@ -75,7 +76,7 @@ void setup_columns() {
   ImGui::TableSetupColumn("抓法");
   ImGui::TableSetupColumn("就绪");
   ImGui::TableSetupColumn("分片");
-  ImGui::TableSetupColumn("最新月");
+  ImGui::TableSetupColumn("最新分片");
   ImGui::TableSetupColumn("体积");
   ImGui::TableSetupColumn("最后落盘");
   ImGui::TableSetupColumn("核对");
@@ -216,7 +217,7 @@ void text_wrapped_disabled(const char *s) {
 //   scanned=false: 首轮同步还没跑完, 落盘列一律留白 —— 此时把整张表标成
 //     missing 是误报, 只是还没人去扫盘.
 //   stat == nullptr (scanned=true): 本地确实一个文件都没有.
-//   Shape::Meta: 落 _meta/ 单文件, 没有"分片/最新月"的概念.
+//   Shape::Meta: 落 _meta/ 单文件, 没有"分片/最新分片"的概念; Daily 的最新分片显示到日.
 void table_row(const fundamental::Spec &spec, bool scanned, const TableFileStat *stat,
                const AuditTableStat *audit, const AuditView &audit_state, bool disable_audit,
                std::string *audit_table, std::string *repair_table, std::int64_t weekly) {
@@ -250,7 +251,9 @@ void table_row(const fundamental::Spec &spec, bool scanned, const TableFileStat 
     ImGui::Text("%zu", stat->months);
 
   ImGui::TableNextColumn();
-  ImGui::TextUnformatted(stat && stat->last_month ? misc::dash_ym(stat->last_month).c_str() : "-");
+  ImGui::TextUnformatted(stat && stat->last_day     ? misc::dash(stat->last_day).c_str()
+                         : stat && stat->last_month ? misc::dash_ym(stat->last_month).c_str()
+                                                    : "-");
 
   ImGui::TableNextColumn();
   if (stat)

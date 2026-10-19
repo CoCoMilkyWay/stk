@@ -37,17 +37,21 @@
 //   定位结果 (组键彼此不相交) = 修复键: 定位到哪些行, repair 就只拉哪些行
 //
 // 只核 frozen 的月 (State::Frozen): 开放月 / 待重拉月本地本就落后.
-// Meta (_meta 日级整刷) 不核. SQL 与 fetch 同一个 select (Remote.hpp).
+// Daily: 冻结日按所属月成组, 与 Month 同一份月级指纹; 日文件无 Splice ⇒ 定位最细到 Day, 不下钻 Asset.
+// Meta (_meta 日级整刷) 不核. SQL 与 fetch 同一个 select (Remote.hpp); 指纹列 = 远端 schema 去掉 Spec::drop.
 // 远端指纹 (SQL GROUP BY) 与本地指纹 (arrow 逐行累加) 在 .cpp 里相邻成对.
 // ============================================================================
 namespace fundamental::audit {
+
+// 参与核对的表: DAI 的 Month / Daily
+inline bool audited(const Spec &s) { return from<Bq>(s) && s.shape != Shape::Meta; }
 
 // 一单元 = 一表 × 一年 = 一次月级查询 (+ 不一致月的逐级定位)
 struct Unit {
   const Spec *spec = nullptr;
   int year = 0;
-  std::vector<Slot> months; // 该年已冻结的月槽 (指向 Catalog), 升序非空; 各槽 w = 该月 SQL 窗口
-  Window w;                 // 整单元 SQL 窗口闭区间 (= 首槽 w.lo .. 末槽 w.hi)
+  std::vector<Slot> slots; // 该年已冻结的槽 (指向 Catalog), 升序非空: Month = 月槽, Daily = 日槽; 各槽 w = 该槽 SQL 窗口
+  Window w;                // 整单元 SQL 窗口闭区间 (= 首槽 w.lo .. 末槽 w.hi)
 };
 
 struct Diff {
@@ -65,7 +69,7 @@ struct Diff {
   std::vector<Cell> cells; // 全部不一致格 (不截断, 不含 n)
 };
 
-// SPECS 里的 DAI·Month 表, 表间轮转 —— 表序与各表年序均按 seed 打乱, 相邻单元几乎总是不同表,
+// SPECS 里 audited 的表, 表间轮转 —— 表序与各表年序均按 seed 打乱, 相邻单元几乎总是不同表,
 // 问题尽早暴露而不是盯着一张表扫完.
 // keep: 只核 keep(spec, ym) 为真的冻结月 (空 = 全部); 单元仍按 表 × 年 切,
 //   年内被滤掉的月夹在 w 里只多一组远端指纹行, 不参与比对.
@@ -79,9 +83,10 @@ std::vector<Diff> run(bigquant::Client &client, const Unit &u);
 // "cn_stock_dividend 2019" (进度展示)
 std::string label(const Unit &u);
 
-// 差异组键 (Diff::group) → 修复任务, 每差异月一条, ym 升序:
-//   月内有 Month 键 → Replace 整月 (槽窗口); 否则 Splice 这些 Day / Asset 键 (槽窗口).
-//   frozen = s 的 frozen() 槽; 差异月须全在其中 (assert)
+// 差异组键 (Diff::group) → 修复任务, (ym, 日) 升序:
+//   Month: 每差异月一条 —— 月内有 Month 键 → Replace 整月 (槽窗口); 否则 Splice 这些 Day / Asset 键 (槽窗口)
+//   Daily: 每差异日一条 Replace —— Day 键 → 该日; Month 键 → 该月全部冻结日
+//   frozen = s 的 frozen() 槽; Month 的差异月须全在其中 (assert)
 std::vector<Task> repair(const Spec &s, const std::vector<Slot> &frozen, const std::vector<std::string> &groups);
 
 } // namespace fundamental::audit

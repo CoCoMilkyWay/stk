@@ -99,6 +99,16 @@ void meta(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<s
   fn(x.open(*sh, s, cols, ids));
 }
 
+bool daily(const Catalog &cat, const Ids &ids, const Spec &s, Ymd d, const std::vector<std::string> &cols, Scratch &x,
+           const std::function<void(const Rows &)> &fn) {
+  assert(s.shape == Shape::Daily && "daily: 只读 Daily 表");
+  const Shard *sh = cat.find_day(s.name, d);
+  if (!sh)
+    return false;
+  fn(x.open(*sh, s, cols, ids));
+  return true;
+}
+
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today) {
   std::vector<Ymd> out, d;
   for (const Shard &sh : cat.shards("all_trading_days")) {

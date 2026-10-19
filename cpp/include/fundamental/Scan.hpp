@@ -17,10 +17,11 @@
 #include <vector>
 
 // ============================================================================
-// Scan — 读侧原语, 与写侧 Shape × Snap 对仗; 三个入口同一签名骨架 (…, Spec, cols, …fn(const Rows &)):
+// Scan — 读侧原语, 与写侧 Shape × Snap 对仗; 四个入口同一签名骨架 (…, Spec, cols, …fn(const Rows &)):
 //   Month·全行   Scan::add  : 分段并行 map-reduce (与 sync 的 plan → fetch → put 对仗)
 //   Month·最新日 snapshot() : 写侧 Snap::Day 的读侧
 //   Meta         meta()     : _meta 单文件
+//   Daily        daily()    : 一交易日一文件 (逐日读, 暂存由调用方跨日复用)
 //   D 轴由 calendar() 给出 (文件末尾, 无资产键). 读盘一律经 Store::read, 行一律经 Rows::each.
 //
 //   split: 一张表的分片按 ym 升序均分成 ≤ threads 段 (段 = 连续 ym 区间), 段 s 独占累加器 segs[s]
@@ -240,6 +241,11 @@ void snapshot(const Catalog &cat, const Ids &ids, const Spec &s, const std::vect
 // Meta 表 s 的 _meta 单文件 → fn(rows) (分片缺失 → assert) —— 写侧 Shape::Meta 的读侧
 void meta(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
           const std::function<void(const Rows &)> &fn);
+
+// Daily 表 s 的 d 日文件 → fn(rows); 分片缺失 → 不调, 返回 false —— 写侧 Shape::Daily 的读侧
+//   x = 调用方暂存 (逐日调用跨日复用; 并发调用各持一份)
+bool daily(const Catalog &cat, const Ids &ids, const Spec &s, Ymd d, const std::vector<std::string> &cols, Scratch &x,
+           const std::function<void(const Rows &)> &fn);
 
 // all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (AssetInfo 与 fund::Panel 共用)
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today);

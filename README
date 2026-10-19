@@ -72,7 +72,7 @@ stk/
 │   │   │   ├── CoreTs.hpp                            # 🧮 单资产时序骨架 (档无关, CRTP): 日 / 分钟 / 标签日历 + 日句柄环; 档钩子 = member / resampler
 │   │   │   ├── CoreLob.hpp                           # 🧮 Lob 档单资产时序: 逐笔 → 订单簿 → L_sec → 重采样 L_min + 标签
 │   │   │   ├── CoreBar.hpp                           # 🧮 Bar 档单资产时序: bar1m 分钟 K → L_min (255 行稠密) + 分钟箱层 (49 / 17 / 9 / 5 箱) + L_day 收盘行 + 标签
-│   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 parquet → 稠密 [A][255] 分钟 K (Bar 档 TS 输入)
+│   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 (fundamental::daily) → 稠密 [A][255] 分钟 K (Bar 档 TS 输入)
 │   │   │   ├── CoreCs.hpp                            # 🧮 截面 (按档模板): Lob = L_sec 每秒 + L_min 每分钟; Bar = L_min 每分钟 + 箱末分钟箱层 + 收盘 L_day
 │   │   │   ├── MetaFlag.hpp                          # 🧮 元列 (_meta) 编解码 (消费端不依赖 Meta 节点)
 │   │   │   ├── Node/Lob/TS/<分类>/                   # 🧮 Lob 档节点: 节点类 + NODE_ / FIELDS_ 宏 (暂无 CS)
@@ -249,8 +249,8 @@ stk/
 │   │   │   ├── Store.hpp                                   # 📊   本地: Catalog (一次目录遍历) + 分片状态 + 拉取计划 + put (时间只经 Now)
 │   │   │   ├── Remote.hpp                                  # 📊   远端: fetch(client, task), 两源同骨架 (queries → query → concat → drop); DAI SQL 只在 select 构造
 │   │   │   ├── Sync.hpp                                    # 📊   写侧: plan<Src> → sync(client, tasks) = put(t, fetch(client, t))
-│   │   │   ├── Scan.hpp                                    # 📊   读侧: 分段并行 map-reduce + meta / calendar (AssetInfo / fund::Panel 共用)
-│   │   │   └── Audit.hpp                                   # 📊   核对: 远端指纹 ↔ 本地指纹 (仅 DAI 冻结月)
+│   │   │   ├── Scan.hpp                                    # 📊   读侧: 分段并行 map-reduce + meta / daily / calendar (AssetInfo / fund::Panel / Bar1mDay 共用)
+│   │   │   └── Audit.hpp                                   # 📊   核对: 远端指纹 ↔ 本地指纹 (仅 DAI 冻结月 / 冻结日)
 │   │   ├── mining/                                         # ⛏️ 数据挖掘设计文档 (特征 → 因子)
 │   │   └── misc/                                           # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                     # 🔧 日志 / STL 容器格式化打印
@@ -301,7 +301,7 @@ stk/
     │   └── all/YYYY/MM/DD/features_L_*.bin                 # Bar 库 (全轴, L_min + 分钟箱层 + L_day; 目录名 all 保留给它)
     ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
-    │   ├── bar1m/YYYY-MM/YYYY-MM-DD.parquet                # 分钟 K 日分片 (Bar 档 TS 输入, 不复权)
+    │   ├── YYYY-MM/bar1m/YYYY-MM-DD.parquet                # 分钟 K 日分片 (Bar 档 TS 输入, 不复权)
     │   ├── _meta/<表>.parquet                              # Static / Snapshot 单文件整刷
     │   └── asset_axis.json                                 # A 轴 (资产轴) 码表, 只增不删
     ├── doc/                                                # 文档 / 资料 (resources-* 符号链接指向仓库外 ../doc)
