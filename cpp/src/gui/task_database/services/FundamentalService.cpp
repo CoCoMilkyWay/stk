@@ -8,7 +8,7 @@
 //                  + cn_stock_real_bar1d (最新行 + 最新有效报价行) + cn_stock_status
 //   stock_factor ← cn_stock_real_bar1d.adjust_factor 变点序列 (分红/拆分事件日)
 //   mcap/pe_ttm/pb_mrq/ps_ttm/pcf_ttm/dy{1,3,5}y ← close × total_shares / 财务分母
-//                  (最新可见快照, 口径与 L_min 特征表一致; 分钟实时版在特征表阶段算)
+//                  (最新可见快照, 口径与估值特征一致; 分钟实时版在特征表阶段算)
 //                  dy{1,3,5}y 另取 cn_stock_dividend 近 1/3/5 年公告, 年化
 //
 // 扫描架构: 六张月度大表 (real_bar1d / status / shares / financial_ttm_shift /
@@ -560,7 +560,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   }
 
   // ---- 估值快照 (MCAP/PE/PB/PS/PCF/DY) ← 最新 close × total_shares / 各分母 ----
-  //   口径与 L_min 特征表一致 (qmt 移植): 分子统一为总市值 mcap = close × total_shares
+  //   口径与 L_5min 估值特征一致 (qmt 移植): 分子统一为总市值 mcap = close × total_shares
   //   (不复权真价); PE=mcap/归母净利TTM, PB=mcap/归母权益MRQ, PS=mcap/营业总收入TTM
   //   (≤0脏值→空), PCF=mcap/经营现金流净额TTM; 亏损/负权益/烧钱保留负值.
   //   DY1/3/5 = 近 1/3/5 年税前分红总额年化后 / mcap; 静态快照的股本恒为最新

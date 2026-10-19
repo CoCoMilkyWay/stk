@@ -1,27 +1,30 @@
 #pragma once
 
 // =============================================================================
-// Tod - 同分钟历史基准 z 值 (compute=onMinute; feature_list.md 1.8, 前 D 日版, D ∈ {5, 10}; 20 / 60 跨周版不做)
+// TodT<Bars, SLOTS> - 同时段历史基准 z 值 (feature_list.md 1.8, 前 D 日版, D ∈ {5, 10}; 20 / 60 跨周版不做)
 // =============================================================================
-//   x_t = 本分钟成交额 / 成交量 (MinuteData 买 + 卖; Bar: bar1m 总量, 与 Trade 同源; Lob: 主动买 + 卖, 与 Flow 同源),
+//   槽 = 本层行 (Bars::index): Tod = 分钟版 (compute=onMinute, 255 槽; Lob); Bar 档用 5 分钟箱版 (compute=on5Min, 49 槽, 读 min5_data).
+//   下文"分钟"对箱版即"箱".
+//   x_t = 本分钟成交额 / 成交量 (Bars 买 + 卖; Bar: bar1m 总量, 与 Trade 同源; Lob: 主动买 + 卖, 与 Flow 同源),
 //   μ_t / σ_t = 前 D 个交易日 同一分钟槽 的均值 / 样本标准差 (不含今天; 因果):
 //     amt_todz_{D}d = (amt_t − μ_t) / σ_t      vol_todz_{D}d = (vol_t − μ_t) / σ_t
 //   槽内有效样本 < 3 或 σ = 0 → 0 (z 的中性值 = 与历史均值一致; 不产 NaN, 下游多日序列无缺口).
 //   无成交的分钟 x = 0 照常入样 (每分钟都 flush): 基准含"没成交"这一事实, 竞价空窗槽历史全 0 → σ = 0 → 中性 0.
-//   状态: [255 槽][D_MAX] 环 + 有效位图 (位 = 该日有数据, 无数据日 / 上市前为缺), 每日 reset 清掉被覆盖的一列; D=5 取环上最近 5 列 (位掩码).
+//   状态: [SLOTS 槽][D_MAX] 环 + 有效位图 (位 = 该日有数据, 无数据日 / 上市前为缺), 每日 reset 清掉被覆盖的一列; D=5 取环上最近 5 列 (位掩码).
 //   智臾 调整后成交量相关性 / 日内持续异常交易量; 开源 029 TGD 基准.
 //   两档共用类; 节点实例 / 落盘列见 Node/{Lob,Bar}/TS/Basic/Tod.hpp (Lob 列名 lob_*).
 // =============================================================================
 
 #include "features/DataDefine.hpp"
 #include "features/TimeIndex.hpp"
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 
-class Tod {
+template <class Bars, size_t SLOTS>
+class TodT {
   static constexpr size_t D_MAX = 10;
   static constexpr size_t D_SHORT = 5;
-  static constexpr size_t SLOTS = TRADE_MINUTES_PER_DAY;
   static constexpr uint32_t MIN_N = 3;
   static_assert(D_MAX <= 16, "valid_ 位图 uint16_t");
 
@@ -33,11 +36,12 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit Tod(const MinuteData &md) : md_(md) { update_short_mask(); }
+  explicit TodT(const Bars &md) : md_(md) { update_short_mask(); }
 
   inline void compute() {
     const size_t slot = md_.index;
-    const float xa = md_.bid_amount.back() + md_.ask_amount.back();
+    assert(slot < SLOTS && "Tod: 本层行超出槽数");
+    const float xa = static_cast<float>(md_.bid_amount.back() + md_.ask_amount.back());
     const float xv = static_cast<float>(md_.bid_volume.back() + md_.ask_volume.back());
     const uint16_t v_all = valid_[slot];
     const uint16_t v_short = static_cast<uint16_t>(v_all & short_mask_);
@@ -88,10 +92,11 @@ private:
     return var > 0.0f ? (x - mean) / std::sqrt(var) : 0.0f; // σ = 0 (历史全同值): 无离散度可归一, 同样落中性 0
   }
 
-  const MinuteData &md_;
+  const Bars &md_;
   float ring_a_[SLOTS][D_MAX] = {};
   float ring_v_[SLOTS][D_MAX] = {};
   uint16_t valid_[SLOTS] = {};
   uint16_t short_mask_ = 0;
   size_t col_ = 0;
 };
+using Tod = TodT<MinuteData, TRADE_MINUTES_PER_DAY>;

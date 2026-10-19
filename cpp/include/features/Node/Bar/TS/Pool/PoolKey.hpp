@@ -76,7 +76,7 @@ private:
   static_assert(std::popcount(kMicroOut) == 5, "微盘行业黑名单拼写不在 SW2021 一级表内");
 
   const Series (&fund_)[Fund::kCount]; // Fund 全部口 (同域 onSettle, 拓扑序在前 → back() = 次日盘前态)
-  const Series &mcap_;                 // Valuation.mcap (onMinute, back() = 收盘分钟值)
+  const Series &mcap_;                 // Valuation.mcap (back() = 收盘箱值)
   const bool bj_;                      // 北交所 (交易制度 / 流动性不同, 不入池)
 };
 

@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Valuation (CS) - 实时估值的截面列 (源 = Valuation 节点 L_min 列)
+// Valuation (CS) - 实时估值的截面列 (源 = Valuation 节点 L_5min 列)
 // =============================================================================
 //   ep_ttm_cs / bp_mrq_cs / sp_ttm_cs / cp_ttm_cs = pct_rank(z(neutralize(winsor_q(1/pe|pb|ps|pcf))))   收益率口径 + 行业/市值中性化 (Reciprocal + NeutralRank)
 //   mcap_cs / fmcap_cs                            = pct_rank(z(winsor_mad(mcap|fmcap)))                  市值因子 (WinsorRank)
@@ -9,10 +9,10 @@
 // =============================================================================
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define FIELDS_L_min_CsValuation(X, CAT1)                                                                                                                                                                     \
-  X(ep_ttm_cs, CAT1, AUTO, "Neutral EP TTM", "中性EP", "pct_rank(z(neutralize(winsor_q(1/pe_ttm))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pe}))))", CS(bar, L_min, pe_ttm, Reciprocal, NeutralRank))    \
-  X(bp_mrq_cs, CAT1, AUTO, "Neutral BP MRQ", "中性BP", "pct_rank(z(neutralize(winsor_q(1/pb_mrq))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pb}))))", CS(bar, L_min, pb_mrq, Reciprocal, NeutralRank))    \
-  X(sp_ttm_cs, CAT1, AUTO, "Neutral SP TTM", "中性SP", "pct_rank(z(neutralize(winsor_q(1/ps_ttm))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{ps}))))", CS(bar, L_min, ps_ttm, Reciprocal, NeutralRank))    \
-  X(cp_ttm_cs, CAT1, AUTO, "Neutral CP TTM", "中性CP", "pct_rank(z(neutralize(winsor_q(1/pcf_ttm))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pcf}))))", CS(bar, L_min, pcf_ttm, Reciprocal, NeutralRank)) \
-  X(mcap_cs, CAT1, AUTO, "Market Cap Factor", "总市值因子", "pct_rank(z(winsor_mad(mcap)))", R"(\mathrm{pctl}(z(\mathrm{w}(\mathrm{mcap}))))", CS(bar, L_min, mcap, None, WinsorRank))                        \
-  X(fmcap_cs, CAT1, AUTO, "Float Market Cap Factor", "流通市值因子", "pct_rank(z(winsor_mad(fmcap)))", R"(\mathrm{pctl}(z(\mathrm{w}(\mathrm{fmcap}))))", CS(bar, L_min, fmcap, None, WinsorRank))
+#define FIELDS_L_5min_CsValuation(X, CAT1)                                                                                                                                                                     \
+  X(ep_ttm_cs, CAT1, AUTO, "Neutral EP TTM", "中性EP", "pct_rank(z(neutralize(winsor_q(1/pe_ttm))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pe}))))", CS(bar, L_5min, pe_ttm, Reciprocal, NeutralRank))    \
+  X(bp_mrq_cs, CAT1, AUTO, "Neutral BP MRQ", "中性BP", "pct_rank(z(neutralize(winsor_q(1/pb_mrq))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pb}))))", CS(bar, L_5min, pb_mrq, Reciprocal, NeutralRank))    \
+  X(sp_ttm_cs, CAT1, AUTO, "Neutral SP TTM", "中性SP", "pct_rank(z(neutralize(winsor_q(1/ps_ttm))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{ps}))))", CS(bar, L_5min, ps_ttm, Reciprocal, NeutralRank))    \
+  X(cp_ttm_cs, CAT1, AUTO, "Neutral CP TTM", "中性CP", "pct_rank(z(neutralize(winsor_q(1/pcf_ttm))))", R"(\mathrm{pctl}(z(\mathrm{neu}(1/\mathrm{pcf}))))", CS(bar, L_5min, pcf_ttm, Reciprocal, NeutralRank)) \
+  X(mcap_cs, CAT1, AUTO, "Market Cap Factor", "总市值因子", "pct_rank(z(winsor_mad(mcap)))", R"(\mathrm{pctl}(z(\mathrm{w}(\mathrm{mcap}))))", CS(bar, L_5min, mcap, None, WinsorRank))                        \
+  X(fmcap_cs, CAT1, AUTO, "Float Market Cap Factor", "流通市值因子", "pct_rank(z(winsor_mad(fmcap)))", R"(\mathrm{pctl}(z(\mathrm{w}(\mathrm{fmcap}))))", CS(bar, L_5min, fmcap, None, WinsorRank))
