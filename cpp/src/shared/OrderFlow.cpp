@@ -13,28 +13,22 @@
 // OrderFlow::Kline Implementation
 // ============================================================================
 
-void OrderFlow::Kline::begin_generation(uint32_t gen, size_t asset, size_t n_feats) {
-  assert(n_feats <= OrderFlowConst::MAX_FEATURES);
-  // 换代顺序: 先零计数 (release), 后置 gen (release) —— GUI 见到新 gen 时旧计数必已归零
+void OrderFlow::Kline::begin_generation(uint32_t gen, std::vector<ColRef> refs) {
+  assert(refs.size() <= OrderFlowConst::MAX_FEATURES);
+  // 换代顺序: 先零计数 / 清数组 / 定 overlay 列, 后置 gen (release) —— GUI 见到新 gen 时一切已就位
+  // (此刻 GUI 请求代已是新代, 发布代仍是旧代 → GUI 不读 kline, 数组可安全重建)
   for (auto &n : feat_n)
     n.store(0, std::memory_order_release);
   y_min.store(0.0, std::memory_order_relaxed);
   y_max.store(0.0, std::memory_order_relaxed);
-  for (size_t i = 0; i < OrderFlowConst::MAX_FEATURES; ++i) {
-    feat_y_min[i].store(0.0f, std::memory_order_relaxed);
-    feat_y_max[i].store(0.0f, std::memory_order_relaxed);
-  }
-  pub.store(pack(gen, 0, 0), std::memory_order_release);
-
-  asset_idx = asset;
-  n_feat = n_feats;
   x.clear();
   open.clear();
   high.clear();
   low.clear();
   close.clear();
-  for (auto &f : feat)
-    f.clear();
+  feat.clear();
+  feat.refs = std::move(refs);
+  pub.store(pack(gen, 0, 0), std::memory_order_release);
 }
 
 void OrderFlow::Kline::reserve_capacity() {
@@ -45,9 +39,9 @@ void OrderFlow::Kline::reserve_capacity() {
   high.reserve(cap);
   low.reserve(cap);
   close.reserve(cap);
-  for (size_t i = 0; i < n_feat; ++i) {
-    feat[i].x.reserve(cap);
-    feat[i].y.reserve(cap);
+  for (size_t i = 0; i < feat.n(); ++i) {
+    feat.line[i].x.reserve(cap);
+    feat.line[i].y.reserve(cap);
   }
 }
 
@@ -57,15 +51,12 @@ void OrderFlow::Kline::clear() {
   for (auto &n : feat_n)
     n.store(0, std::memory_order_release);
   dates.clear();
-  asset_idx = SIZE_MAX;
   x.clear();
   open.clear();
   high.clear();
   low.clear();
   close.clear();
-  for (auto &f : feat)
-    f.clear();
-  n_feat = 0;
+  feat.clear();
 }
 
 // ============================================================================
@@ -311,17 +302,11 @@ void OrderFlow::Depth::clear() {
   asset_idx = SIZE_MAX;
   has_data = false;
   order_count = 0;
-  data_valid_count = 0;
   ticks.clear();
   plot.clear();
   merged.clear();
   auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
-  for (auto &f : feat)
-    f.clear();
-  feat_y_min.fill(0.0f);
-  feat_y_max.fill(0.0f);
-  n_feat = 0;
-  feat_refs.clear();
+  feat.clear();
 }
 
 // ============================================================================

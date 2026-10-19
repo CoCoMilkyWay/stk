@@ -85,7 +85,7 @@ struct Feature {
 
   struct Selection {
     TierId tier = TierId::Bar;  // 当前浏览的档 (TabFeature 库选择定: 选中库的档); 默认 Bar = all 库
-    PerTier<std::string> libs;  // 每档当前库 (Bar: all; Lob: 票池, 因子页 / OrderFlow 恒用它; 切档保留); 启动 = default_lib
+    PerTier<std::string> libs;  // 每档当前库 (Bar: all; Lob: 票池, 因子页恒用它; 切档保留); 启动 = default_lib
     int selected_level = L_min; // 当前浏览的层 (FeatureLevel: L_sec / L_min / L_5min .. L_60min / L_day), 默认 L_min
 
     const std::string &lib_of(TierId t) const; // 档的当前库名
@@ -123,6 +123,10 @@ struct Feature {
     const auto &list = meta(c.tier()).features[c.level];
     assert(c.col < list.size());
     return list[c.col];
+  }
+  // (库, 层, 字段 code) → 列; 字段表里找不到 = assert (Metadata::col_of)
+  ColRef ref(LibId lib, size_t level, const char *code) const {
+    return {lib, static_cast<uint8_t>(level), static_cast<uint16_t>(meta(lib_tier(lib)).col_of(level, code))};
   }
 
   void clear();

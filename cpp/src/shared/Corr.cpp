@@ -542,7 +542,7 @@ Corr::~Corr() = default;
 void Corr::reset(ReadScope scope, Spec sp) {
   TraceN("CorrReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.axis.size() > 0 && !scope.months.empty() && sp.plan.main == scope.main);
+  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.axis.size() > 0 && !scope.months.empty());
   assert(std::is_sorted(sp.plan.cols.begin(), sp.plan.cols.end()));
   assert(std::adjacent_find(sp.plan.cols.begin(), sp.plan.cols.end()) == sp.plan.cols.end());
   std::lock_guard<std::mutex> lock(mutex);
@@ -604,7 +604,7 @@ CorrLag::~CorrLag() = default;
 void CorrLag::reset(ReadScope scope, Spec sp) {
   TraceN("CorrLagReset");
   const size_t F = sp.n();
-  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.axis.size() > 0 && !scope.months.empty() && sp.plan.main == scope.main);
+  assert(F >= 2 && sp.level() < LEVEL_COUNT && scope.axis.size() > 0 && !scope.months.empty());
   assert(std::is_sorted(sp.plan.cols.begin(), sp.plan.cols.end()));
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
@@ -679,7 +679,7 @@ CorrPair::~CorrPair() = default;
 
 void CorrPair::reset(ReadScope scope, Spec sp) {
   assert(sp.n() == 2 && sp.col(0) != sp.col(1));
-  assert(sp.level() < LEVEL_COUNT && scope.axis.size() > 0 && !scope.months.empty() && sp.plan.main == scope.main);
+  assert(sp.level() < LEVEL_COUNT && scope.axis.size() > 0 && !scope.months.empty());
   std::lock_guard<std::mutex> lock(mutex);
   scope_ = std::move(scope);
   spec = std::move(sp);

@@ -23,8 +23,9 @@
 namespace GUI::Features {
 
 // ============================================================================
-// 固定列 (读计划首部, 与 overlay 同一条读路径; 列下标按字段表 code 查, 字段表里没有 = assert)
-//   Kline: 主库 L_min OHLC + ts_valid      Depth: 主库 L_min ts_valid + vwap
+// 固定列 (读计划首部 [0, k0), 与 overlay 同一条读路径; 列下标按字段表 code 查, 字段表里没有 = assert)
+//   Kline: 主库 L_min OHLC + ts_valid (OHLC 列名随档: Lob = lob_*, Bar = 裸名)
+//   Depth: 主库 L_min ts_valid [+ vwap] (vwap 只在 Lob 档: Bar 主库无 VWAP 线)
 //   Pick:  all 库 L_min ts_valid (有无数据) + L_day 收盘行状态列 (Fund 节点日频)
 // ============================================================================
 
@@ -45,30 +46,26 @@ enum PickCol : size_t { PICK_TS = 0,
                         PICK_INDUSTRY,
                         PICK_COUNT };
 
-std::vector<ColRef> fixed_cols(const Feature &feature, LibId lib, size_t level, std::initializer_list<const char *> codes) {
-  const Feature::Metadata &meta = feature.meta(lib_tier(lib));
+std::vector<ColRef> refs(const Feature &f, LibId lib, size_t level, std::initializer_list<const char *> codes) {
   std::vector<ColRef> out;
   for (const char *code : codes)
-    out.push_back({lib, static_cast<uint8_t>(level), static_cast<uint16_t>(meta.col_of(level, code))});
+    out.push_back(f.ref(lib, level, code));
   return out;
 }
 std::vector<ColRef> kline_cols(const Feature &f, LibId main) {
-  return fixed_cols(f, main, L_min, {"lob_open", "lob_high", "lob_low", "lob_close", "ts_valid"});
+  return lib_tier(main) == TierId::Lob ? refs(f, main, L_min, {"lob_open", "lob_high", "lob_low", "lob_close", "ts_valid"})
+                                       : refs(f, main, L_min, {"open", "high", "low", "close", "ts_valid"});
 }
-std::vector<ColRef> depth_cols(const Feature &f, LibId main) { return fixed_cols(f, main, L_min, {"ts_valid", "vwap"}); }
+std::vector<ColRef> depth_cols(const Feature &f, LibId main) {
+  return lib_tier(main) == TierId::Lob ? refs(f, main, L_min, {"ts_valid", "vwap"}) : refs(f, main, L_min, {"ts_valid"});
+}
 std::vector<ColRef> pick_cols(const Feature &f) {
-  std::vector<ColRef> out = fixed_cols(f, kAllLib, L_min, {"ts_valid"});
-  for (const ColRef &c : fixed_cols(f, kAllLib, L_day, {"st_level", "list_age", "delist_age", "ind_l1"}))
+  std::vector<ColRef> out = refs(f, kAllLib, L_min, {"ts_valid"});
+  for (const ColRef &c : refs(f, kAllLib, L_day, {"st_level", "list_age", "delist_age", "ind_l1"}))
     out.push_back(c);
   return out;
 }
 
-// 固定列 + overlay (读计划列序)
-std::vector<ColRef> with_feats(std::vector<ColRef> fixed, const std::vector<ColRef> &feats) {
-  assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
-  fixed.insert(fixed.end(), feats.begin(), feats.end());
-  return fixed;
-}
 // 第 i 位 = overlay 线 i 是其层 ts_valid (展示幅值 = micro price)
 uint32_t ts_price_of(const Feature &feature, const std::vector<ColRef> &feats) {
   uint32_t m = 0;
@@ -110,10 +107,10 @@ bool any_lib(const analysis::ReadScope &scope) {
   return std::ranges::any_of(lib_ids(), [&](LibId l) { return scope.has(l) && (scope.to[l].empty() || scope.to[l][0] != kAbsent); });
 }
 
-// overlay 线: 平面列 [k0, n) → 线 i = c − k0 (资产槽 0). 哨兵 (门控不过 / 无源 / NaN) 跳过, X = x_of(层, 行) (尾部对齐);
-// 同 X 覆盖 = 留末个 (细于网格的列每格取末值). x_open ≥ 0 → 开盘承接值先落在 x_open (粗层开盘时的已知值)
-template <class XOf>
-void emit_rows(const ReadPlan &plan, const RowPlane &p, size_t k0, uint32_t ts_price, double x_open, XOf x_of,
+// overlay 线: 平面列 [k0, n) → 线 i = c − k0 (资产槽 0). X = x0 + 网格行 (行末秒 − 1) (尾部对齐; 网格 = plan.level);
+// 开盘承接值先落在 x0 (粗层开盘时的已知值; 不承接 = 哨兵). 哨兵 (门控不过 / 无源 / NaN) 跳过;
+// 同 X 覆盖 = 留末个 (细于网格的列每格取末值)
+void emit_rows(const ReadPlan &plan, const RowPlane &p, size_t k0, double x0, uint32_t ts_price,
                OrderFlow::FeatLine *lines, float *y_min, float *y_max) {
   for (size_t c = k0; c < plan.n(); ++c) {
     const size_t i = c - k0, lvl = plan.cols[c].level;
@@ -133,11 +130,10 @@ void emit_rows(const ReadPlan &plan, const RowPlane &p, size_t k0, uint32_t ts_p
       y_min[i] = std::min(y_min[i], v);
       y_max[i] = std::max(y_max[i], v);
     };
-    if (x_open >= 0.0)
-      put(x_open, p.carry(c, 0));
+    put(x0, p.carry(c, 0));
     const feature_storage_t *s = p.series(c, 0);
     for (size_t r = 0; r < p.rows[c]; ++r)
-      put(x_of(lvl, r), s[r]);
+      put(x0 + static_cast<double>(level_row_of_sec(plan.level, level_end_sec(lvl, r) - 1)), s[r]);
   }
 }
 
@@ -157,8 +153,8 @@ bool await_back(const PingPong<Slot> &pp, const std::atomic<bool> &cancel) {
 // 三个 worker (gui/util/Service.hpp): board = SharedData 里各自的发布面
 // ============================================================================
 
-class OrderFlowService::KlineLane : public Service<KlineLane, KlineReq> {
-  friend Service<KlineLane, KlineReq>;
+class OrderFlowService::KlineLane : public Service<KlineLane, RowReq> {
+  friend Service<KlineLane, RowReq>;
 
 public:
   static constexpr const char *kName = "OF_KlineLane";
@@ -168,18 +164,18 @@ public:
 private:
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.kline; }
-  bool run(KlineReq &req);
+  bool run(RowReq &req);
   bool step(size_t d); // 装一天并发布; false = 库判废
 
   SharedData &data_;
   RowRead read_;
-  KlineReq cur_{};
+  RowReq cur_{};
   double y_min_ = 0.0, y_max_ = 0.0; // OHLC 运行范围
   std::vector<float> feat_min_, feat_max_;
 };
 
-class OrderFlowService::DepthLane : public Service<DepthLane, DepthReq> {
-  friend Service<DepthLane, DepthReq>;
+class OrderFlowService::DepthLane : public Service<DepthLane, RowReq> {
+  friend Service<DepthLane, RowReq>;
 
 public:
   static constexpr const char *kName = "OF_DepthLane";
@@ -193,21 +189,20 @@ private:
     TickData tick_data;       // 无特征侧绑定的盘口写出口
     OrderFlow::Depth::HeatmapScratch scratch;
     std::vector<int32_t> sec_slot; // 秒 -> ticks 下标 (重放临时, -1 = 未见)
-    std::vector<uint8_t> sec_data; // 秒 -> 有逐笔
     Res() : lob(L2::LOB_ORDER_CAPACITY) {}
   };
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.depth; }
-  bool run(DepthReq &req); // 重放 + 构建 + 背槽发布
+  bool run(RowReq &req); // 重放 + 构建 + 背槽发布
 
   SharedData &data_;
   std::optional<Res> res_; // 首个请求时在 worker 线程建
   RowRead read_;
-  DepthReq cur_{};
+  RowReq cur_{};
 };
 
-class OrderFlowService::PickLane : public Service<PickLane, PickReq> {
-  friend Service<PickLane, PickReq>;
+class OrderFlowService::PickLane : public Service<PickLane, RowReq> {
+  friend Service<PickLane, RowReq>;
 
 public:
   static constexpr const char *kName = "OF_PickLane";
@@ -217,18 +212,18 @@ public:
 private:
   static constexpr Phase kStart = Phase::Running;
   Progress &board() { return data_.orderflow.pick.slots; }
-  bool run(PickReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
+  bool run(RowReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   SharedData &data_;
   RowRead read_; // A 轴 = 主库轴 (候选范围); 状态列在 all 库 (Fund 只在 all 库落盘)
-  PickReq cur_{};
+  RowReq cur_{};
 };
 
 // ============================================================================
 // Lifecycle
 // ============================================================================
 
-OrderFlowService::OrderFlowService(LibId main) : main_(main) { assert(lib_tier(main) == TierId::Lob && "OrderFlow 主库 = Lob 档库"); }
+OrderFlowService::OrderFlowService(LibId main) : main_(main) {}
 
 OrderFlowService::~OrderFlowService() {
   Stop();
@@ -252,40 +247,40 @@ void OrderFlowService::Stop() { // worker 析构即 Stop (join)
 // Requests (GUI 线程; 最新覆盖旧的)
 // ============================================================================
 
-// 网格: Kline = L_min (不承接: 前一日的点已在图上), Depth = L_sec (粗层开盘承接前日末行); A 轴 = 选中资产
+// 固定列在前, overlay 在后; 原生行 (各列按自己的层, level 只定开盘承接)
+bool OrderFlowService::make(const SharedData &data, RowReq &req, size_t level, std::vector<ColRef> fixed,
+                            const std::vector<ColRef> &feats, std::vector<uint32_t> assets) const {
+  assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
+  req.k0 = fixed.size();
+  req.ts_price = ts_price_of(data.feature, feats);
+  fixed.insert(fixed.end(), feats.begin(), feats.end());
+  return analysis::read_request(data.config, data.feature,
+                                {.main = main_, .level = level, .rows = analysis::Rows::Native, .cols = std::move(fixed), .assets = std::move(assets)},
+                                req.scope, req.plan);
+}
+
+// 网格: Kline = L_min (不承接: 前一日的点已在图上), Depth = L_sec (粗层开盘承接前日末行); A 轴 = 选中资产 / Pick = 主库轴
 void OrderFlowService::RequestKline(const SharedData &data, uint32_t gen, size_t asset_idx, const std::vector<ColRef> &feats,
                                     bool rescan_dates) {
   assert(kline_ && "Request 先于 Start");
-  std::vector<ColRef> cols = with_feats(kline_cols(data.feature, main_), feats);
-  KlineReq req{.gen = gen, .asset = asset_idx, .ts_price = ts_price_of(data.feature, feats), .rescan = rescan_dates};
-  req.scope = analysis::read_scope(data.config, main_, cols, {static_cast<uint32_t>(asset_idx)});
-  if (req.scope.months.empty())
-    return;
-  req.plan = analysis::read_rows(data.feature, main_, L_min, std::move(cols));
-  kline_->Request(std::move(req));
+  RowReq req{.gen = gen, .rescan = rescan_dates};
+  if (make(data, req, L_min, kline_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
+    kline_->Request(std::move(req));
 }
 
 void OrderFlowService::RequestDepth(const SharedData &data, uint32_t gen, misc::Ymd date, size_t asset_idx,
                                     const std::vector<ColRef> &feats) {
   assert(depth_ && "Request 先于 Start");
-  std::vector<ColRef> cols = with_feats(depth_cols(data.feature, main_), feats);
-  DepthReq req{.gen = gen, .date = date, .asset = asset_idx, .ts_price = ts_price_of(data.feature, feats)};
-  req.scope = analysis::read_scope(data.config, main_, cols, {static_cast<uint32_t>(asset_idx)});
-  if (req.scope.months.empty())
-    return;
-  req.plan = analysis::read_rows(data.feature, main_, L_sec, std::move(cols));
-  depth_->Request(std::move(req));
+  RowReq req{.gen = gen, .date = date};
+  if (make(data, req, L_sec, depth_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
+    depth_->Request(std::move(req));
 }
 
 void OrderFlowService::RequestPick(const SharedData &data, uint32_t gen, misc::Ymd date) {
   assert(pick_ && "Request 先于 Start");
-  std::vector<ColRef> cols = pick_cols(data.feature);
-  PickReq req{.gen = gen, .date = date};
-  req.scope = analysis::read_scope(data.config, main_, cols);
-  if (req.scope.months.empty())
-    return;
-  req.plan = analysis::read_rows(data.feature, main_, L_min, std::move(cols));
-  pick_->Request(std::move(req));
+  RowReq req{.gen = gen, .date = date};
+  if (make(data, req, L_min, pick_cols(data.feature), {}, {}))
+    pick_->Request(std::move(req));
 }
 
 // ============================================================================
@@ -305,10 +300,11 @@ void scan_dates(const FeatureLib &lib, std::vector<misc::Ymd> &out) {
 // Kline: 换代 + 逐日流式
 // ============================================================================
 
-bool OrderFlowService::KlineLane::run(KlineReq &req) {
+bool OrderFlowService::KlineLane::run(RowReq &req) {
   TraceN("OF_KlineBegin");
   OrderFlow::Kline &k = data_.orderflow.kline;
   cur_ = std::move(req);
+  assert(cur_.date == 0 && cur_.k0 == KL_COUNT);
   read_.reset(cur_.scope, cur_.plan);
 
   // 此刻 GUI 请求代 == req.gen, 发布代 == 旧代 → GUI 不读 kline, dates/数组可安全重建
@@ -318,14 +314,14 @@ bool OrderFlowService::KlineLane::run(KlineReq &req) {
     scan_dates(cur_.scope.lib(), k.dates);
   }
 
-  const size_t nf = cur_.plan.n() - KL_COUNT;
+  const size_t nf = cur_.plan.n() - cur_.k0;
   y_min_ = (std::numeric_limits<double>::max)();
   y_max_ = std::numeric_limits<double>::lowest();
   feat_min_.assign(nf, (std::numeric_limits<float>::max)());
   feat_max_.assign(nf, std::numeric_limits<float>::lowest());
 
-  k.begin_generation(cur_.gen, cur_.asset, nf);
-  k.reserve_capacity(); // 发布前完成: 之后 data() 恒稳定
+  k.begin_generation(cur_.gen, std::vector<ColRef>(cur_.plan.cols.begin() + cur_.k0, cur_.plan.cols.end()));
+  k.reserve_capacity(); // 首点发布前完成: 之后 data() 恒稳定
 
   // 请求侧 asset 是全局轴下标. 不在库集任一库内 (初始默认选中 / 换票池后的残留选中,
   // 候选就绪后 GUI 会自动换代) → 无列可读, 直接发布"完整但空"的一代
@@ -354,7 +350,7 @@ bool OrderFlowService::KlineLane::step(size_t d) {
     return false;
   const RowPlane &p = read_.plane;
   const double x0 = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);
-  const size_t nf = cur_.plan.n() - KL_COUNT;
+  const size_t nf = cur_.plan.n() - cur_.k0;
 
   const feature_storage_t *ts = p.series(KL_TS, 0);
   for (size_t m = 0; m < level_valid_rows(L_min); ++m) {
@@ -375,11 +371,8 @@ bool OrderFlowService::KlineLane::step(size_t d) {
     y_max_ = std::max(y_max_, h);
   }
 
-  // 特征 overlay: X = 日起点 + 行末秒所在分钟 (尾部对齐)
-  const auto x_of = [x0](size_t lvl, size_t r) {
-    return x0 + static_cast<double>(L_sec_to_L_min(level_end_sec(lvl, r) - 1));
-  };
-  emit_rows(cur_.plan, p, KL_COUNT, cur_.ts_price, -1.0, x_of, k.feat.data(), feat_min_.data(), feat_max_.data());
+  // 特征 overlay: X = 日起点 + 行末秒所在分钟 (尾部对齐; 不承接 → 开盘承接值是哨兵, 不落点)
+  emit_rows(cur_.plan, p, cur_.k0, x0, cur_.ts_price, k.feat.line.data(), feat_min_.data(), feat_max_.data());
 
   // 发布: 先各数组计数/范围 (release), 后 pub word (release) — GUI acquire 读 pub 即见全量
   if (y_min_ <= y_max_) {
@@ -387,9 +380,9 @@ bool OrderFlowService::KlineLane::step(size_t d) {
     k.y_max.store(y_max_, std::memory_order_relaxed);
   }
   for (size_t i = 0; i < nf; ++i) {
-    k.feat_y_min[i].store(feat_min_[i], std::memory_order_relaxed);
-    k.feat_y_max[i].store(feat_max_[i], std::memory_order_relaxed);
-    k.feat_n[i].store(k.feat[i].x.size(), std::memory_order_release);
+    k.feat.y_min[i].store(feat_min_[i], std::memory_order_relaxed);
+    k.feat.y_max[i].store(feat_max_[i], std::memory_order_relaxed);
+    k.feat_n[i].store(k.feat.line[i].x.size(), std::memory_order_release);
   }
   k.pub.store(OrderFlow::Kline::pack(cur_.gen, d + 1, k.x.size()), std::memory_order_release);
   return true;
@@ -401,12 +394,13 @@ bool OrderFlowService::KlineLane::step(size_t d) {
 //   取首个 ts_valid 有效的分钟 (无有效分钟 = 落盘缓冲清零, 状态不可判读 → has_data=false)
 // ============================================================================
 
-bool OrderFlowService::PickLane::run(PickReq &req) {
+bool OrderFlowService::PickLane::run(RowReq &req) {
   PingPong<OrderFlow::Pick::Slot> &pp = data_.orderflow.pick.slots;
   if (!await_back(pp, cancel_))
     return false;
   TraceN("OF_PickBuild");
   cur_ = std::move(req);
+  assert(cur_.date != 0 && cur_.k0 == PICK_COUNT && cur_.plan.n() == PICK_COUNT);
   read_.reset(cur_.scope, cur_.plan);
   if (!read_.load(cur_.plan, cur_.date, 0)) // 状态取当日 L_day 行 0, 不承接
     return false;
@@ -452,7 +446,7 @@ bool OrderFlowService::PickLane::run(PickReq &req) {
 // Depth: 日文件逐笔重放 → 秒级快照 → plot/heatmap → 背槽发布
 // ============================================================================
 
-bool OrderFlowService::DepthLane::run(DepthReq &in) {
+bool OrderFlowService::DepthLane::run(RowReq &in) {
   PingPong<OrderFlow::Depth> &pp = data_.orderflow.depth;
   if (!await_back(pp, cancel_))
     return false;
@@ -461,20 +455,22 @@ bool OrderFlowService::DepthLane::run(DepthReq &in) {
     res_.emplace();
   Res &res = *res_;
   cur_ = std::move(in);
-  const DepthReq &req = cur_;
+  const RowReq &req = cur_;
+  assert(req.date != 0 && req.scope.axis.size() == 1 && (req.k0 == DP_TS + 1 || req.k0 == DP_COUNT));
   read_.reset(req.scope, req.plan);
+  const size_t asset_idx = req.scope.axis.global(0);
 
   OrderFlow::Depth &slot = pp.back();
   slot.clear();
   slot.gen = req.gen;
   slot.date = req.date;
-  slot.asset_idx = req.asset;
+  slot.asset_idx = asset_idx;
 
-  // ---- 重放当天日文件里这个资产的帧 (无帧 = 停牌/未编码, 发布空槽) ----
+  // ---- 重放当天日文件里这个资产的帧 (无帧 = 停牌/未编码/早于逐笔, 发布空槽) ----
   // 帧目录快照定位 (与 TS worker 同一条路); 快照与重扫描并发安全, 本请求期间持有.
-  const AssetItem &asset = data_.asset.items[req.asset];
+  const AssetItem &asset = data_.asset.items[asset_idx];
   const std::shared_ptr<const OrdersCatalog> orders = data_.asset.orders();
-  const FrameRef &ref = orders->at(orders->day_idx(req.date), req.asset);
+  const FrameRef &ref = orders->at(orders->day_idx(req.date), asset_idx);
   L2::FrameView view;
   if (!ref.empty()) {
     TraceN("OF_Decode");
@@ -486,14 +482,12 @@ bool OrderFlowService::DepthLane::run(DepthReq &in) {
     slot.order_count = order_num;
 
     LimitOrderBook &lob = res.lob;
-    lob.bind(&res.tick_data, req.asset, asset.exchange_type); // 无特征侧绑定
+    lob.bind(&res.tick_data, asset_idx, asset.exchange_type); // 无特征侧绑定
     lob.begin_frame(view);
 
     auto &sec_slot = res.sec_slot;
-    auto &sec_data = res.sec_data;
     auto &scratch = res.scratch;
     sec_slot.assign(level_valid_rows(L_sec), -1);
-    sec_data.assign(level_valid_rows(L_sec), 0);
     slot.ticks.reserve(level_valid_rows(L_sec));
     slot.heatmap_begin(scratch);
 
@@ -527,7 +521,6 @@ bool OrderFlowService::DepthLane::run(DepthReq &in) {
           cur_sec = t;
         }
         lob.process(order);
-        sec_data[t] = 1;
         if (!lf.depth_updated)
           continue;
 
@@ -566,8 +559,6 @@ bool OrderFlowService::DepthLane::run(DepthReq &in) {
     }
     lob.unbind(); // 归还干净簿 (下次 bind 断言)
 
-    for (uint8_t v : sec_data)
-      slot.data_valid_count += v;
     slot.has_data = !slot.ticks.empty();
 
     if (slot.has_data) {
@@ -590,8 +581,8 @@ bool OrderFlowService::DepthLane::run(DepthReq &in) {
   }
   const RowPlane &p = read_.plane;
 
-  // 分钟 VWAP 阶梯: 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口
-  {
+  // 分钟 VWAP 阶梯 (主库有 vwap 列才画): 逐有效分钟一点, X = 分钟起始秒; 末尾补末分钟末秒收口
+  if (req.k0 == DP_COUNT) {
     const feature_storage_t *ts = p.series(DP_TS, 0), *vwap = p.series(DP_VWAP, 0);
     auto &px = slot.plot.vwap_x;
     auto &py = slot.plot.vwap_y;
@@ -608,12 +599,11 @@ bool OrderFlowService::DepthLane::run(DepthReq &in) {
   }
 
   // overlay: X = 行末秒 − 1 (尾部对齐); 开盘承接值落在 X = 0
-  slot.n_feat = req.plan.n() - DP_COUNT;
-  slot.feat_refs.assign(req.plan.cols.begin() + DP_COUNT, req.plan.cols.end());
-  slot.feat_y_min.fill((std::numeric_limits<float>::max)());
-  slot.feat_y_max.fill(std::numeric_limits<float>::lowest());
-  const auto x_of = [](size_t lvl, size_t r) { return static_cast<double>(level_end_sec(lvl, r) - 1); };
-  emit_rows(req.plan, p, DP_COUNT, req.ts_price, 0.0, x_of, slot.feat.data(), slot.feat_y_min.data(), slot.feat_y_max.data());
+  OrderFlow::Overlay<float> &ov = slot.feat;
+  ov.refs.assign(req.plan.cols.begin() + req.k0, req.plan.cols.end());
+  ov.y_min.fill((std::numeric_limits<float>::max)());
+  ov.y_max.fill(std::numeric_limits<float>::lowest());
+  emit_rows(req.plan, p, req.k0, 0.0, req.ts_price, ov.line.data(), ov.y_min.data(), ov.y_max.data());
 
   // ---- 背槽整体发布 (GUI 帧首 ack 翻面) ----
   pp.commit();

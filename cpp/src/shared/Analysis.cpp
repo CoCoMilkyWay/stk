@@ -33,7 +33,6 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
 
 ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets) {
   ReadScope s;
-  s.main = main;
   bool ready = true;
   const auto add = [&](LibId l) {
     if (s.has(l))
@@ -42,11 +41,20 @@ ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &c
     assert(s.libs[l].tier == lib_tier(l));
     ready &= s.libs[l].ready();
   };
-  add(main);
+  if (main != kAutoMain)
+    add(main);
   for (const ColRef &c : cols)
     add(c.lib);
   if (!ready) // 未建库 = 空范围 (请求方见 months 为空即放弃)
     return s;
+  if (main == kAutoMain) {
+    assert(!cols.empty() && "自动主库要列");
+    main = cols.front().lib;
+    for (const LibId l : lib_ids())
+      if (s.has(l) && s.libs[l].axis.size() < s.libs[main].axis.size())
+        main = l;
+  }
+  s.main = main;
   s.months = misc::months_between(cfg.start_date, cfg.end_date);
   map_axis(s, std::move(assets));
   return s;
@@ -70,29 +78,11 @@ Readers ReadScope::readers(const PerLib<const FeatureRead *> &fr) const {
   return rd;
 }
 
-bool read_request(const Config &cfg, const Feature &feature, size_t level, std::vector<ColRef> cols, ReadScope &scope, ReadPlan &plan) {
-  assert(!cols.empty());
-  scope = read_scope(cfg, cols.front().lib, cols);
+bool read_request(const Config &cfg, const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan) {
+  scope = read_scope(cfg, rs.main, rs.cols, std::move(rs.assets));
   if (scope.months.empty())
     return false;
-  LibId main = scope.main;
-  for (const LibId l : lib_ids())
-    if (scope.has(l) && scope.libs[l].axis.size() < scope.libs[main].axis.size())
-      main = l;
-  if (main != scope.main) {
-    scope.main = main;
-    map_axis(scope, {});
-  }
-  plan = read_plan(feature, main, level, std::move(cols));
-  return true;
-}
-
-bool read_request(const Config &cfg, const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols, ReadScope &scope,
-                  ReadPlan &plan) {
-  scope = read_scope(cfg, main, cols);
-  if (scope.months.empty())
-    return false;
-  plan = read_plan(feature, main, level, std::move(cols));
+  plan = read_plan(feature, rs.level, rs.rows, std::move(rs.cols));
   return true;
 }
 
@@ -126,13 +116,11 @@ DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> 
   return out;
 }
 
-namespace {
-// 同 (库, 层) 的列并成一个源 (槽 = 请求序), 源行由 rows(s) 定
-template <class Rows>
-ReadPlan plan_of(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols, Rows rows) {
+// 同 (库, 层) 的列并成一个源 (槽 = 请求序), 源行由 rows 定
+ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, std::vector<ColRef> cols) {
   assert(!cols.empty() && level < LEVEL_COUNT);
+  const size_t rpd = level_valid_rows(level);
   ReadPlan p;
-  p.main = main;
   p.level = level;
   p.cols = std::move(cols);
   std::map<std::pair<LibId, size_t>, std::vector<uint32_t>> groups; // (库, 层) → 平面列 (请求序)
@@ -148,20 +136,13 @@ ReadPlan plan_of(const Feature &feature, LibId main, size_t level, std::vector<C
       io.push_back(p.cols[c].col);
     s.cs = column_set(feature, lib_tier(s.lib), s.level, std::move(io));
     s.slot = std::move(slot);
-    rows(s);
+    if (rows == Rows::AsOf)
+      project_rows(s, level, rpd);
+    else
+      native_rows(s, level);
     p.srcs.push_back(std::move(s));
   }
   return p;
-}
-} // namespace
-
-ReadPlan read_plan(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols) {
-  const size_t rpd = level_valid_rows(level);
-  return plan_of(feature, main, level, std::move(cols), [&](Source &s) { project_rows(s, level, rpd); });
-}
-
-ReadPlan read_rows(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols) {
-  return plan_of(feature, main, level, std::move(cols), [&](Source &s) { native_rows(s, level); });
 }
 
 SegPlan plan_segs(const FeatureRead &reader, const std::vector<misc::Ym> &months, size_t level, DayOrder order,

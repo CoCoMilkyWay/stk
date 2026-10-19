@@ -291,7 +291,7 @@ TaskHandle CreateFeaturesTask() {
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     }
     if (!state->orderflow_service) {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.cur_lib(TierId::Lob));
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.cur_lib());
     }
     if (!state->dist_service) {
       state->dist_service = std::make_unique<Features::DistService>();
@@ -312,12 +312,12 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // OrderFlow 一代服务绑一个主库 (Lob 当前库: 逐笔重放 / 日期轴 / 候选; overlay 列各读各库, 随请求): 换主库 / 库重算后整体重建 + 重扫
+    // OrderFlow 一代服务绑一个主库 (当前档当前库: 日期轴 / K 线 / 候选; overlay 列各读各库, 随请求): 换主库 / 库重算后整体重建 + 重扫
     const auto renew_orderflow = [&] {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.cur_lib(TierId::Lob));
+      state->orderflow_service = std::make_unique<Features::OrderFlowService>(data.feature.selection.cur_lib());
       data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
     };
-    if (state->orderflow_service->main() != data.feature.selection.cur_lib(TierId::Lob))
+    if (state->orderflow_service->main() != data.feature.selection.cur_lib())
       renew_orderflow();
 
     // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (库 A 轴要它).

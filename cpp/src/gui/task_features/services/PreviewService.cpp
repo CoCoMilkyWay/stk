@@ -13,11 +13,8 @@ void PreviewService::RequestCompute(SharedData &data) {
 
   Req req;
   // price 笼: 涨跌停两列只在 all 库 (票池库经旁读)
-  const auto &all_meta = data.feature.meta(lib_tier(kAllLib));
-  req.spec.cage = {all_meta.col_of(L_day, "lim_dn"), all_meta.col_of(L_day, "lim_up")};
-  std::vector<ColRef> cage;
-  for (const size_t c : req.spec.cage)
-    cage.push_back({kAllLib, static_cast<uint8_t>(L_day), static_cast<uint16_t>(c)});
+  const std::vector<ColRef> cage = {data.feature.ref(kAllLib, L_day, "lim_dn"), data.feature.ref(kAllLib, L_day, "lim_up")};
+  req.spec.cage = {cage[0].col, cage[1].col};
   req.scope = analysis::read_scope(data.config, lib, cage);
   if (req.scope.months.empty())
     return;
@@ -32,7 +29,7 @@ void PreviewService::RequestCompute(SharedData &data) {
       cols.push_back({lib, static_cast<uint8_t>(l), static_cast<uint16_t>(i)});
     }
     if (!cols.empty())
-      req.spec.plans[l] = analysis::read_plan(data.feature, lib, l, std::move(cols));
+      req.spec.plans[l] = analysis::read_plan(data.feature, l, analysis::Rows::AsOf, std::move(cols));
   }
   Request(std::move(req));
 }

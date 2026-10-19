@@ -206,6 +206,7 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 
 // ---- 读取范围 (Request 公共头): GUI 线程从 config + 库清单解析, worker 只消费 ----
 // 库集 = 主库 + 各列所在库 (同档多库 / 跨档一视同仁; 资产不在列所在库 / 该库缺这天 = 无源), 余库空
+inline constexpr LibId kAutoMain = UINT8_MAX; // 主库 = 列所在库里库轴最短者 (票池库优先: Bar 列旁读 all, 池外格不算)
 struct ReadScope {
   std::vector<misc::Ym> months;     // 升序 (config 区间覆盖的月); 库集任一未建 → 空
   LibId main = kAllLib;             // 主库: 段序 / 日期轴
@@ -218,7 +219,7 @@ struct ReadScope {
   PerLib<size_t> sizes() const;                                 // 各库库轴长 (源暂存按源库开)
   Readers readers(const PerLib<const FeatureRead *> &fr) const; // fr: 库集各库 reader (LibReaders::ptr)
 };
-// 库集 = main + cols 所在库; assets 空 = A 轴取主库轴, 否则 = 这些全局 id (升序去重)
+// 库集 = main + cols 所在库 (main = kAutoMain → 见上); assets 空 = A 轴取主库轴, 否则 = 这些全局 id (升序去重)
 ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {});
 
 // ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
@@ -238,16 +239,22 @@ struct DateList {
 };
 DateList enumerate_dates(const FeatureRead &reader, const std::vector<misc::Ym> &months);
 
-// GUI 线程: 一组 ColRef → 读计划. main = 主库 (scope.main); 同 (库, 层) 的列并成一个源 (column_set 定门控).
-//   read_plan: 源行 = level_asof(源层, 网格层 level, t)   (TsPlane / CsPlane)
-//   read_rows: 原生行, level 只定开盘承接               (RowPlane)
-ReadPlan read_plan(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols);
-ReadPlan read_rows(const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols);
-// 统一请求构建: 读取范围 + 读计划; 库集未建 → false (请求方放弃).
-// 主库 = 列所在库里库轴最短者 (票池库优先: Bar 列旁读 all, 池外格不算); 给 main = 指定 (CorrPair 随矩阵)
-bool read_request(const Config &cfg, const Feature &feature, size_t level, std::vector<ColRef> cols, ReadScope &scope, ReadPlan &plan);
-bool read_request(const Config &cfg, const Feature &feature, LibId main, size_t level, std::vector<ColRef> cols, ReadScope &scope,
-                  ReadPlan &plan);
+// 行网格: 平面行怎么由源行得到
+enum class Rows : uint8_t { AsOf,     // 源行 = level_asof(源层, 网格层 level, t)  (TsPlane / CsPlane)
+                            Native }; // 原生行, level 只定开盘承接                (RowPlane)
+// GUI 线程: 一组 ColRef → 读计划. 同 (库, 层) 的列并成一个源 (column_set 定门控)
+ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, std::vector<ColRef> cols);
+
+// 读请求 = 主库 (日期轴) × A 轴 × 行网格 × 列
+struct ReadSpec {
+  LibId main = kAutoMain;
+  size_t level = L_min;
+  Rows rows = Rows::AsOf;
+  std::vector<ColRef> cols;
+  std::vector<uint32_t> assets; // 空 = 主库轴
+};
+// 统一请求构建 (= read_scope + read_plan): 库集未建 → false (请求方放弃)
+bool read_request(const Config &cfg, const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan);
 
 // ---- 段序 (全部流式分析唯一一份): 库内交易日按 seg_days(level) 连续成段, 再排段 ----
 //   Shuffle:    固定种子洗牌取前 limit 段 —— 无偏, 首批即覆盖全区间 (Dist / Preview / Corr*)

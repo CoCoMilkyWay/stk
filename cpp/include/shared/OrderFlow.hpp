@@ -1,12 +1,12 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
-// OrderFlow
+// OrderFlow (主库 = 日期轴 / K 线 OHLC 所在库, Lob 或 Bar 档皆可)
 // ├── Kline  (图2) 单资产全回测区间: K线 + 多特征 overlay (任意 ColRef, 分钟网格)
 // │            worker 逐日流式 (从前往后, 每日每源一次选列读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
 // │            + 多特征 overlay (任意 ColRef, 秒网格); 双槽 ping-pong 整体发布
-// overlay 点 = 尾部对齐 (行 emit 时刻): 图1 x = level_end_sec − 1; 图2 x = 日 × MIN_CAPACITY + 该秒所在分钟
-//   (细于分钟的源每分钟留最后一个有效行). 各源按自己的 (档, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
+// overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1), 网格: 图1 L_sec / 图2 L_min
+//   (细于网格的源每格留最后一个有效行). 各源按自己的 (库, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
@@ -55,7 +55,6 @@ constexpr int32_t AMOUNT_ROUND_TO_RMB = 1000; // Round amount to nearest N RMB
 constexpr size_t ESTIMATED_PRICE_LEVELS = 512; // 全簿唯一价位初始预留 (不够则增长)
 
 // Amount Thresholds (RMB)
-constexpr float AMOUNT_MIN_VISIBLE = 1000.0f;      // 1K RMB (transparent in heatmap)
 constexpr float AMOUNT_MAX_VISIBLE = 10000000.0f;  // 10M RMB (solid in heatmap)
 constexpr float DEPTH_BAR_MAX_AMOUNT = 1000000.0f; // 100W RMB (full bar in depth panel)
 
@@ -99,22 +98,39 @@ struct OrderFlow {
   };
 
   // ==========================================================================
+  // Overlay — 一图的特征 overlay (两图同构): 各线的列 + 点集 + 值域
+  //   V = float (Depth: 整槽发布) / std::atomic<float> (Kline: 前缀发布, worker 逐日更新值域)
+  // ==========================================================================
+  template <class V>
+  struct Overlay {
+    std::vector<ColRef> refs;                                // [n] 各线的列 (legend / 轴分流按此取元数据, 与槽 / 代配对)
+    std::array<FeatLine, OrderFlowConst::MAX_FEATURES> line; // 只含有效点 (哨兵 / NaN 跳过)
+    std::array<V, OrderFlowConst::MAX_FEATURES> y_min{}, y_max{};
+    size_t n() const { return refs.size(); }
+    void clear() {
+      refs.clear();
+      for (size_t i = 0; i < OrderFlowConst::MAX_FEATURES; ++i) {
+        line[i].clear();
+        y_min[i] = 0.0f;
+        y_max[i] = 0.0f;
+      }
+    }
+  };
+
+  // ==========================================================================
   // Kline (图2) — 单资产全回测: K线 + 多特征, 逐日流式, 单调前缀发布
   // ==========================================================================
   struct Kline : Progress, PrefixPub { // 进度 done/total = 天
     // ---- worker 写 / GUI 前缀读 ----
     std::vector<misc::Ymd> dates; // 回测区间全部特征日 (换代时随 rescan 重扫; gen 匹配期间稳定)
-    size_t asset_idx = SIZE_MAX;
 
     // K线点集: data_valid 分钟, x = day_idx * MIN_CAPACITY + minute
     std::vector<double> x, open, high, low, close;
-    std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat; // 与 K线同 X 网格, 每特征独立点集 (跳过 NaN)
-    size_t n_feat = 0;
+    Overlay<std::atomic<float>> feat; // 与 K线同 X 网格 (refs 换代时定, gen 匹配期间稳定)
 
     // 发布面 (worker release / GUI acquire; pub word 在 PrefixPub)
     std::array<std::atomic<size_t>, OrderFlowConst::MAX_FEATURES> feat_n{}; // 每特征已发布点数
-    std::array<std::atomic<float>, OrderFlowConst::MAX_FEATURES> feat_y_min{}, feat_y_max{};
-    std::atomic<double> y_min{0.0}, y_max{0.0}; // OHLC 已发布范围
+    std::atomic<double> y_min{0.0}, y_max{0.0};                             // OHLC 已发布范围
 
     // 坐标换算 (纯算术; dates 读取需 gen 匹配)
     size_t day_idx_from_x(double global_x) const {
@@ -128,8 +144,8 @@ struct OrderFlow {
       return d < dates.size() ? dates[d] : 0;
     }
 
-    // worker: 换代 — 先零计数再置 gen (GUI 见到新 gen 时旧计数必已归零)
-    void begin_generation(uint32_t gen, size_t asset, size_t n_feats);
+    // worker: 换代 — 先零计数 / 清数组 / 定 overlay 列, 后置 gen (GUI 见到新 gen 时一切已就位)
+    void begin_generation(uint32_t gen, std::vector<ColRef> refs);
     // worker: 满容量预留 (dates 定下后一次; 之后只 push_back, data() 稳定)
     void reserve_capacity();
 
@@ -204,18 +220,13 @@ struct OrderFlow {
     size_t asset_idx = SIZE_MAX;
     bool has_data = false; // 帧存在且重放出至少一个有效快照
     size_t order_count = 0;
-    size_t data_valid_count = 0; // 有逐笔的秒数
 
     std::vector<Tick> ticks; // 按 tick_idx 升序
     Plot plot;
     HeatmapMerged merged;
     // 当日自动热力图阈值 (log10 元): 载入新槽时 GUI 取作初值 → 色块浓度跨日/跨资产一致
     float auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
-    // 特征线 (任意 ColRef, 与图2 同源): 门控过的行, X = 行末秒 − 1
-    std::array<FeatLine, OrderFlowConst::MAX_FEATURES> feat;
-    std::array<float, OrderFlowConst::MAX_FEATURES> feat_y_min{}, feat_y_max{};
-    size_t n_feat = 0;
-    std::vector<ColRef> feat_refs; // [n_feat] 各线的列 (legend 命名 / 轴分流按此取元数据, 与槽配对)
+    Overlay<float> feat; // 与图2 同源, X = 行末秒 − 1
 
     // ---- 查询 (GUI, front 槽; X = 秒下标) ----
     size_t plot_idx_from_x(double x) const;

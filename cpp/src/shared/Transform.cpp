@@ -152,7 +152,6 @@ void Transform::reset(ReadScope scope, Spec sp) {
   TraceN("TransformReset");
   assert(sp.plan.n() == (sp.params.cs_neutral() ? 3u : 1u));
   assert(sp.plan.level == sp.plan.cols[0].level && "网格 = 特征自己的层");
-  assert(sp.plan.main == scope.main);
   check_axis(scope.axis.ids);
   std::lock_guard<std::mutex> lock(mutex);
 

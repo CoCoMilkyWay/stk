@@ -13,7 +13,7 @@ void DistService::RequestCompute(SharedData &data) {
 
   Req req;
   // 网格 = 特征自己的层; 门控按特征元数据的 valid_type 决定是否带 ts_valid (L_min 全列 ALL, L_sec 按 DATA / DEPTH)
-  if (analysis::read_request(data.config, data.feature, feat->level, {*feat}, req.scope, req.spec.plan))
+  if (analysis::read_request(data.config, data.feature, {.level = feat->level, .cols = {*feat}}, req.scope, req.spec.plan))
     Request(std::move(req));
 }
 

@@ -147,9 +147,9 @@ static void rebuild_disp(const Corr &corr, const CorrLag *lag, CorrUIState &ui) 
   }
 }
 
-// lag 快照能否与矩阵按同一下标读: 同层同列集 (列集变了未算完之前不匹配, UI 画空)
+// lag 快照能否与矩阵按同一下标读: 同主库同层同列集 (列集变了未算完之前不匹配, UI 画空)
 static bool lag_matches(const CorrLag &lag, const Corr &corr) {
-  return lag.spec.same(corr.spec) && lag.snap.rho_best.size() == corr.snap.rho.size();
+  return lag.main() == corr.main() && lag.spec.same(corr.spec) && lag.snap.rho_best.size() == corr.snap.rho.size();
 }
 
 static uint64_t disp_key(const Corr &corr, const CorrLag *lag, const CorrUIState &ui) {
@@ -208,7 +208,7 @@ static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState 
   std::lock_guard<std::mutex> lock(pair.mutex);
   // 请求在 RenderTabCorr 悬停处已提交; 这里只画. 未匹配 = worker 还没接到新对 (一帧内)
   const bool matched = pair.spec.n() == 2 && pair.spec.col(0) == ca && pair.spec.col(1) == cb &&
-                       pair.spec.level() == corr.spec.level() && pair.spec.plan.main == corr.spec.plan.main;
+                       pair.spec.level() == corr.spec.level() && pair.main() == corr.main();
   const Phase st = pair.phase.load(std::memory_order_acquire);
   ImGui::Text("Lead-Lag: ");
   ImGui::SameLine(0, 0);
@@ -478,7 +478,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
             ui.sel_i = (int)i;
             ui.sel_j = (int)j;
             if (i != j)
-              pair_service->RequestCompute(data, corr.spec.plan.main, corr.spec.level(), corr.spec.col(i), corr.spec.col(j));
+              pair_service->RequestCompute(data, corr.main(), corr.spec.level(), corr.spec.col(i), corr.spec.col(j));
           }
         }
       }

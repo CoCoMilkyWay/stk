@@ -94,14 +94,13 @@ struct Preview::LevelOf final : Preview::Level {
     cage_n.assign(n_pv, 0);
     cage_miss.assign(n_pv, 0);
     int_only.assign(n_pv, 1);
-    assert(pv_plan.srcs.size() == 1 && pv_plan.srcs[0].lib == pv_plan.main && "预览列 = 主库该层");
+    assert(pv_plan.srcs.size() == 1 && "预览列 = 主库该层 (Preview::reset 核对主库)");
     const Source &src = pv_plan.srcs[0];
     blocks.clear();
     f0.clear();
     for (size_t b = 0; b < n_pv; b += kBlk) {
       const size_t e = std::min(b + kBlk, n_pv);
       ReadPlan bp;
-      bp.main = pv_plan.main;
       bp.level = pv_plan.level;
       bp.cols.assign(pv_plan.cols.begin() + b, pv_plan.cols.begin() + e);
       Source s = src;
@@ -164,7 +163,7 @@ void Preview::reset(ReadScope scope, Spec sp) {
       continue;
     assert(p.level == l && std::is_sorted(p.cols.begin(), p.cols.end()));
     assert(p.cols.back().level == l && p.cols.back().col < sp.n_features[l]);
-    assert(lib_tier(p.main) == sp.tier && p.main == scope.main);
+    assert(p.srcs.size() == 1 && p.srcs[0].lib == scope.main && lib_tier(scope.main) == sp.tier);
   }
   assert(sp.cage.size() == 2 && scope.has(kAllLib) && "price 笼读 all 库");
   assert(scope.axis.size() > 0 && !scope.months.empty());

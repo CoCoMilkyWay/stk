@@ -78,7 +78,7 @@ struct CorrSpec {
     assert(i < n());
     return plan.cols[i];
   }
-  bool same(const CorrSpec &o) const { return plan.main == o.plan.main && plan.level == o.plan.level && plan.cols == o.plan.cols; }
+  bool same(const CorrSpec &o) const { return plan.level == o.plan.level && plan.cols == o.plan.cols; }
 };
 
 struct Corr : Published {
@@ -99,6 +99,7 @@ struct Corr : Published {
   // 逐抽样日构建 (日内切片累加, 每步发布); 被取消返回 false
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
+  LibId main() const { return scope_.main; } // 主库 (与 spec 同锁读)
 
 private:
   struct Runtime; // worker 私有 (引擎 + 发布 staging), 定义在 Corr.cpp
@@ -133,6 +134,7 @@ struct CorrPair : Published {
   void reset(analysis::ReadScope scope, Spec spec);
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
+  LibId main() const { return scope_.main; }
 
 private:
   struct Runtime;
@@ -168,6 +170,7 @@ struct CorrLag : Published {
   void reset(analysis::ReadScope scope, Spec spec);
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
+  LibId main() const { return scope_.main; }
 
 private:
   struct Runtime;

@@ -202,6 +202,54 @@ static void DrawFeatZeroLine() {
   ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
 }
 
+// overlay 值域: Depth 槽直读 / Kline 原子读 (worker 逐日更新)
+static float LoadY(float v) { return v; }
+static float LoadY(const std::atomic<float> &v) { return v.load(std::memory_order_relaxed); }
+
+// 两图 overlay 同一套绘制: cats[i] / counts[i] (可画点数, 0 = 不在场) 与线 i 对齐, n = 在画线数
+// Setup 阶段 (任何绘制之前): 按在场类别开右轴, Y3 居中则画 0 轴
+template <class V>
+static void SetupOverlayAxes(const OrderFlow::Overlay<V> &ov, const std::vector<FeatCat> &cats, const size_t *counts, size_t n) {
+  assert(cats.size() >= n);
+  bool feat_fixed = false, feat_scale = false, feat_center = false;
+  float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
+  float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
+  for (size_t i = 0; i < n; ++i) {
+    if (counts[i] == 0)
+      continue;
+    const FeatAxisKind kind = FeatAxisOf(cats[i]);
+    if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
+      feat_fixed = true;
+      FeatFixedRange(kind, cats[i], LoadY(ov.y_min[i]), LoadY(ov.y_max[i]), fixed_min, fixed_max);
+    } else if (kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) {
+      feat_scale = true;
+      feat_center |= (kind == FEAT_AXIS_CENTER);
+      scale_min = std::min(scale_min, LoadY(ov.y_min[i]));
+      scale_max = std::max(scale_max, LoadY(ov.y_max[i]));
+    }
+  }
+  SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max, feat_center);
+  if (feat_center)
+    DrawFeatZeroLine();
+}
+// 画线 (legend = 中文名 (cat2) 库 层): 颜色按线下标取 (不用 ImPlot 的 item 序自动分配: 两图 item 序不同,
+// 同一列才能两图同色); price 类共用主图 Y1, NoFit 保证主图自动 / 双击缩放口径不被特征撑大
+template <class V>
+static void PlotOverlay(const Feature &feature, const OrderFlow::Overlay<V> &ov, const std::vector<FeatCat> &cats, const size_t *counts,
+                        size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    if (counts[i] == 0)
+      continue;
+    char label[128];
+    const FeatAxisKind kind = FeatAxisOf(cats[i]);
+    ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
+    ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
+    ImPlot::PlotStairs(FeatName(feature, ov.refs[i], cats[i], label, sizeof(label)), ov.line[i].x.data(), ov.line[i].y.data(),
+                       static_cast<int>(counts[i]), kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+  }
+}
+
 // ============================================================================
 // Candlestick Renderer
 // ============================================================================
@@ -395,7 +443,8 @@ static void RenderDepthPanel(OrderFlow &of, const OrderFlow::Depth &dp, size_t p
 // L_sec Plot Renderer (图1: front Depth 槽)
 // ============================================================================
 
-static void RenderSecPlot(OrderFlow &of, const Feature &feature, const std::vector<FeatCat> &cats) {
+static void RenderSecPlot(SharedData &data) {
+  OrderFlow &of = data.orderflow;
   auto &ui = of.ui;
   const OrderFlow::Depth &dp = of.depth.front_slot();
 
@@ -403,10 +452,16 @@ static void RenderSecPlot(OrderFlow &of, const Feature &feature, const std::vect
     ImGui::TextDisabled("Waiting for depth replay...");
     return;
   }
-  if (!dp.has_data && dp.n_feat == 0) {
+  const OrderFlow::Overlay<float> &ov = dp.feat; // front 槽实际渲染的列 (换列在途时与旧槽数据配对)
+  if (!dp.has_data && ov.n() == 0) {
     ImGui::TextDisabled("No orders data for this (day, asset)");
     return;
   }
+  static std::vector<FeatCat> cats; // GUI 单线程, 帧内复用
+  CollectFeatCats(data, ov.refs, cats);
+  std::array<size_t, OrderFlowConst::MAX_FEATURES> counts{};
+  for (size_t i = 0; i < ov.n(); ++i)
+    counts[i] = ov.line[i].x.size();
 
   // 新槽 (gen 变了) → 重置视图 + 热力图阈值回到当日自动初值 (之后尊重用户拖动)
   const bool slot_changed = (ui.sec_last_gen != dp.gen);
@@ -425,27 +480,7 @@ static void RenderSecPlot(OrderFlow &of, const Feature &feature, const std::vect
     ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换资产不挪 plot 左边界
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
-    bool feat_fixed = false, feat_scale = false, feat_center = false;
-    float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
-    float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
-    assert(cats.size() == dp.n_feat);
-    for (size_t i = 0; i < dp.n_feat; ++i) {
-      if (dp.feat[i].x.empty())
-        continue;
-      const FeatAxisKind kind = FeatAxisOf(cats[i]);
-      if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
-        feat_fixed = true;
-        FeatFixedRange(kind, cats[i], dp.feat_y_min[i], dp.feat_y_max[i], fixed_min, fixed_max);
-      } else if (kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) {
-        feat_scale = true;
-        feat_center |= (kind == FEAT_AXIS_CENTER);
-        scale_min = std::min(scale_min, dp.feat_y_min[i]);
-        scale_max = std::max(scale_max, dp.feat_y_max[i]);
-      }
-    }
-    SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max, feat_center);
-    if (feat_center)
-      DrawFeatZeroLine();
+    SetupOverlayAxes(ov, cats, counts.data(), ov.n());
 
     // 当前 Y 视野快照 → 右侧深度面板每帧同步 (两图价格轴严格对齐)
     {
@@ -551,24 +586,9 @@ static void RenderSecPlot(OrderFlow &of, const Feature &feature, const std::vect
     }
 
     // ------------------------------------------------------------------
-    // 特征 overlay (多选; 轴按 Cat2 分流, legend = 中文名 (cat2), 颜色 ImPlot 自动分配)
+    // 特征 overlay (多选; 轴按 Cat2 分流, legend = 中文名 (cat2) 库 层)
     // ------------------------------------------------------------------
-    for (size_t i = 0; i < dp.n_feat; ++i) {
-      const auto &fl = dp.feat[i];
-      if (fl.x.empty())
-        continue;
-      char label[128];
-      const FeatAxisKind kind = FeatAxisOf(cats[i]);
-      ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
-      // 颜色按选中槽位取 (不用 ImPlot 的 item 序自动分配): 两图 item 序不同, 同一
-      // 特征才能在图1 图2 同色
-      ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
-      // price 类共用主图 Y1: NoFit 保证图1 自动/双击缩放口径不被特征撑大
-      ImPlot::PlotStairs(FeatName(feature, dp.feat_refs[i], cats[i], label, sizeof(label)),
-                         fl.x.data(), fl.y.data(), static_cast<int>(fl.x.size()),
-                         kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
-      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-    }
+    PlotOverlay(data.feature, ov, cats, counts.data(), ov.n());
 
     // ------------------------------------------------------------------
     // Anchor: 锚在秒级时间 (跨日/换资产稳定); DragLineX + 双击, 落点吸附有效秒
@@ -609,7 +629,8 @@ static void RenderSecPlot(OrderFlow &of, const Feature &feature, const std::vect
 // L_min Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
-static void RenderMinPlot(OrderFlow &of, const Feature &feature, const std::vector<FeatCat> &cats, float height) {
+static void RenderMinPlot(SharedData &data, float height) {
+  OrderFlow &of = data.orderflow;
   auto &ui = of.ui;
   auto &k = of.kline;
 
@@ -633,6 +654,15 @@ static void RenderMinPlot(OrderFlow &of, const Feature &feature, const std::vect
   } else {
     pub_days = pub_points = 0; // 旧代计数不可用于本帧 (数组正在重建)
   }
+  // overlay 列 = 已发布代实际渲染的列 (refs 在本代发布期间稳定; 未就绪 = 不画)
+  const OrderFlow::Overlay<std::atomic<float>> &ov = k.feat;
+  static const std::vector<ColRef> kNone;
+  static std::vector<FeatCat> cats; // GUI 单线程, 帧内复用
+  CollectFeatCats(data, ready ? ov.refs : kNone, cats);
+  const size_t nf = cats.size();
+  std::array<size_t, OrderFlowConst::MAX_FEATURES> counts{};
+  for (size_t i = 0; i < nf; ++i)
+    counts[i] = k.feat_n[i].load(std::memory_order_acquire);
 
   if (ImPlot::BeginPlot("##KLine", ImVec2(-1, height))) {
     ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
@@ -652,36 +682,10 @@ static void RenderMinPlot(OrderFlow &of, const Feature &feature, const std::vect
       ui.min_last_pub_days = pub_days;
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
-    assert(cats.size() == ui.kline_feats.size());
-    const size_t nf = ready ? std::min(k.n_feat, ui.kline_feats.size()) : 0;
-    std::array<size_t, OrderFlowConst::MAX_FEATURES> feat_counts{};
-    {
-      bool feat_fixed = false, feat_scale = false, feat_center = false;
-      float fixed_min = (std::numeric_limits<float>::max)(), scale_min = fixed_min;
-      float fixed_max = std::numeric_limits<float>::lowest(), scale_max = fixed_max;
-      for (size_t i = 0; i < nf; ++i) {
-        feat_counts[i] = k.feat_n[i].load(std::memory_order_acquire);
-        if (feat_counts[i] == 0)
-          continue;
-        const FeatAxisKind kind = FeatAxisOf(cats[i]);
-        if (kind == FEAT_AXIS_RANK || kind == FEAT_AXIS_FLAG) {
-          feat_fixed = true;
-          FeatFixedRange(kind, cats[i], k.feat_y_min[i].load(std::memory_order_relaxed),
-                         k.feat_y_max[i].load(std::memory_order_relaxed), fixed_min, fixed_max);
-        } else if (kind == FEAT_AXIS_SCALE || kind == FEAT_AXIS_CENTER) {
-          feat_scale = true;
-          feat_center |= (kind == FEAT_AXIS_CENTER);
-          scale_min = std::min(scale_min, k.feat_y_min[i].load(std::memory_order_relaxed));
-          scale_max = std::max(scale_max, k.feat_y_max[i].load(std::memory_order_relaxed));
-        }
-      }
-      SetupFeatAxes(feat_fixed, fixed_min, fixed_max, feat_scale, scale_min, scale_max, feat_center);
-      if (feat_center)
-        DrawFeatZeroLine();
-    }
+    SetupOverlayAxes(ov, cats, counts.data(), nf);
 
     // ------------------------------------------------------------------
-    // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名 (cat2))
+    // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名 (cat2) 库 层)
     // ------------------------------------------------------------------
 
     // 缺失日竖条: 已发布前缀里该资产无 data_valid 分钟的 day_idx → 淡黄色竖 stripe
@@ -724,20 +728,7 @@ static void RenderMinPlot(OrderFlow &of, const Feature &feature, const std::vect
                       k.low.data(), k.close.data(), static_cast<int>(pub_points));
     }
 
-    for (size_t i = 0; i < nf; ++i) {
-      if (feat_counts[i] == 0)
-        continue;
-      char label[128];
-      const FeatAxisKind kind = FeatAxisOf(cats[i]);
-      ImPlot::SetAxes(ImAxis_X1, FeatYAxis(kind));
-      // 颜色按选中槽位取, 与图1 同一口径 (两图特征列表逐项相同 → 同色)
-      ImPlot::SetNextLineStyle(ImPlot::GetColormapColor(static_cast<int>(i)));
-      // price 类共用主图 Y1: NoFit 保证 K线自身的缩放口径不被特征撑大
-      ImPlot::PlotStairs(FeatName(feature, ui.kline_feats[i], cats[i], label, sizeof(label)),
-                         k.feat[i].x.data(), k.feat[i].y.data(), static_cast<int>(feat_counts[i]),
-                         kind == FEAT_AXIS_PRICE ? ImPlotItemFlags_NoFit : 0);
-      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-    }
+    PlotOverlay(data.feature, ov, cats, counts.data(), nf);
 
     // ------------------------------------------------------------------
     // Anchor: 吸附日起点 → 驱动图1 (day, asset) 请求
@@ -1006,6 +997,10 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ++ui.kline_gen;
     ui.min_last_pub_days = SIZE_MAX;                         // 换代: 重置轴管理
     ui.kline_rescan_pending = rescan || ui.min_x_max <= 0.0; // dates 会被重扫 (或首次建) → 期间不可读
+    if (rescan) { // 主库 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
+      ui.depth_date = 0;
+      of.pick.req_date = 0;
+    }
     service->RequestKline(data, ui.kline_gen, asset_idx, feats, rescan);
   }
 
@@ -1014,8 +1009,16 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   size_t pub_days, pub_points;
   OrderFlow::Kline::unpack(of.kline.pub.load(std::memory_order_acquire), pub_gen, pub_days, pub_points);
   const bool kline_ready = (pub_gen == (ui.kline_gen & 0xFFFF));
-  if (kline_ready)
+  if (kline_ready && ui.kline_rescan_pending) {
     ui.kline_rescan_pending = false; // dates 已随新代落定
+    // 锚点日须在主库日轴上 (读计划按主库判有无): 在 = 按新轴重定位, 不在 = 回首日
+    const auto &dates = of.kline.dates;
+    const auto it = std::lower_bound(dates.begin(), dates.end(), ui.min_anchor_date);
+    if (it != dates.end() && *it == ui.min_anchor_date)
+      ui.min_anchor_x = static_cast<double>(static_cast<size_t>(it - dates.begin()) * OrderFlowConst::MIN_CAPACITY);
+    else
+      ui.min_anchor_date = 0;
+  }
 
   if (!ui.min_anchor_date && kline_ready && !of.kline.dates.empty()) {
     ui.min_anchor_x = 0;
@@ -1023,8 +1026,8 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   }
 
   // 图1 特征 = 同一组选中列, 只取锚点日
-  if (ui.min_anchor_date &&
-      (rescan || ui.depth_date != ui.min_anchor_date || ui.depth_asset != asset_idx || ui.depth_feats != feats)) {
+  if (ui.min_anchor_date && !ui.kline_rescan_pending &&
+      (ui.depth_date != ui.min_anchor_date || ui.depth_asset != asset_idx || ui.depth_feats != feats)) {
     ui.depth_date = ui.min_anchor_date;
     ui.depth_asset = asset_idx;
     ui.depth_feats = feats;
@@ -1050,7 +1053,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     pick.cached_gen = UINT32_MAX; // 强制重建候选
   }
 
-  if (ui.min_anchor_date && (rescan || pick.req_date != ui.min_anchor_date)) {
+  if (ui.min_anchor_date && !ui.kline_rescan_pending && pick.req_date != ui.min_anchor_date) {
     pick.req_date = ui.min_anchor_date;
     ++pick.gen;
     service->RequestPick(data, pick.gen, ui.min_anchor_date);
@@ -1074,12 +1077,6 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.asset_initialized = true;
   }
 
-  // Cat2 有效值快照 (与 FEATURE 表同口径): 两图 legend 括号标注 / 轴分流.
-  // 图1 按 front 槽实际渲染的列 (换列在途时与旧槽数据配对), 图2 按请求列 (gen 配对)
-  static std::vector<FeatCat> s_cat_depth, s_cat_min;
-  CollectFeatCats(data, of.depth.front_slot().feat_refs, s_cat_depth);
-  CollectFeatCats(data, ui.kline_feats, s_cat_min);
-
   // ==========================================================================
   // LAYOUT
   // ==========================================================================
@@ -1094,7 +1091,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // ==========================================================================
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
   ImGui::BeginChild("SecChart", ImVec2(chart_width, -1), false);
-  RenderSecPlot(of, data.feature, s_cat_depth);
+  RenderSecPlot(data);
   ImGui::EndChild();
 
   ImGui::SameLine();
@@ -1123,7 +1120,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   RenderStatusBar(of);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
-  RenderMinPlot(of, data.feature, s_cat_min, kline_height);
+  RenderMinPlot(data, kline_height);
 
   ImGui::EndChild(); // BottomSection
 }

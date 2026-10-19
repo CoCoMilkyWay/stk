@@ -150,7 +150,6 @@ Dist::~Dist() = default;
 void Dist::reset(ReadScope scope, Spec sp) {
   TraceN("DistReset");
   assert(sp.plan.n() == 1 && sp.plan.level == sp.plan.cols[0].level && "Dist 只接受单列, 网格 = 列自己的层");
-  assert(sp.plan.main == scope.main);
   check_axis(scope.axis.ids);
   std::lock_guard<std::mutex> lock(mutex);
 

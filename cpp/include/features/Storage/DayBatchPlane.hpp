@@ -71,9 +71,8 @@ inline void native_rows(Source &s, size_t grid) {
   s.cur = true;
   s.carry = level_asof(s.level, grid, 0) < 0;
 }
-// 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan / read_rows)
+// 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan); 源库 = 列所在库, 主库在 ReadScope
 struct ReadPlan {
-  LibId main = kAllLib;     // 主库 (段序 / 日期轴); 源库 = 列所在库
   size_t level = L_min;     // 网格层 (原生行: 只定开盘承接)
   std::vector<ColRef> cols; // [平面列]
   std::vector<Source> srcs;
@@ -419,7 +418,7 @@ struct RowPlane {
     std::fill(open.begin(), open.end(), invalid);
     for (size_t si = 0; si < plan.srcs.size(); ++si) {
       const Source &s = plan.srcs[si];
-      assert(s.row.empty() && "RowPlane 只收原生行源 (analysis::read_rows)");
+      assert(s.row.empty() && "RowPlane 只收原生行源 (analysis::Rows::Native)");
       IoSlot::Buf &b = sl.src[si];
       load_source(rd, s, date, prev, s.cs.io, b);
       const size_t nv = s.cs.n(), R = level_valid_rows(s.level);
