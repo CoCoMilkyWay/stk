@@ -13,8 +13,8 @@
 // 两步分开调: 分钟 m 的 bar 与 onMinute 域的结算都必须只看 m 内的事件, 不混入 m+1 的首笔.
 // roll 只看参数不看本笔 (TickData): 由下一笔触发还是由墙钟触发, 出的 bar 相同.
 // bar 口径: open = 本分钟首笔成交价, high/low 只含本分钟成交.
-// 【稠密】每个 L_min 分钟 (0..254) 恰出一根 bar, 无成交分钟 O=H=L=C=日内最近成交价 (日内尚无成交 → 0 = 无价), 量额 0;
-//   L_min 行因此每分钟都写, 特征稠密无缺口 (0 价 / 零量由各节点按自身约定兜底: Bar 退前收等; ts_valid 仍标"本分钟有成交").
+// 【稠密】每个 L_1min 分钟 (0..254) 恰出一根 bar, 无成交分钟 O=H=L=C=日内最近成交价 (日内尚无成交 → 0 = 无价), 量额 0;
+//   L_1min 行因此每分钟都写, 特征稠密无缺口 (0 价 / 零量由各节点按自身约定兜底: Bar 退前收等; ts_valid 仍标"本分钟有成交").
 //   本类纯重采样, 不认识任何特征 / 日频数据.
 //   roll 每调一次至多出一根 bar (返回 true), 调用方循环 "while (roll(m)) run<1>()" 直到追平:
 //   跨越多分钟的事件空窗 (09:25 撮合后到 09:30 / 停牌 / 14:57 起映射到哨兵秒) 由此逐分钟补齐.
@@ -105,7 +105,7 @@ private:
   TickData &input_;
   MinuteData &output_;
 
-  size_t next_min_{0}; // 下一根待出 bar 的 L_min 分钟 (= 当前累积中的分钟)
+  size_t next_min_{0}; // 下一根待出 bar 的 L_1min 分钟 (= 当前累积中的分钟)
   float bar_open_{0}, bar_high_{0}, bar_low_{0}, bar_close_{0};
   float last_price_{0}; // 日内最近成交价 (盘前 0): 零价成交回退 / 无成交分钟携带价
   uint32_t bar_bid_volume_{0}, bar_ask_volume_{0};

@@ -22,7 +22,7 @@ bool MakeCorrRequest(SharedData &data, const std::vector<ColRef> &in, CorrReques
   if (cols.size() < 2)
     return false; // 可算的列不足 (L_sec 现状: 只有 ts_valid / cs_valid)
 
-  size_t lvl = L_day; // 网格 = 最细层
+  size_t lvl = L_1day; // 网格 = 最细层
   for (const ColRef &c : cols)
     lvl = std::min<size_t>(lvl, c.level);
   return analysis::read_request(data.config, data.feature, {.level = lvl, .cols = std::move(cols)}, req.scope, req.spec.plan);

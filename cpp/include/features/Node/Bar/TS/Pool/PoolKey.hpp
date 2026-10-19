@@ -12,7 +12,7 @@
 //     pe          −NP_ttm / mcap   (= −EP; 亏损接在正 EP 的高端之后: PE 2 < 1000 < −1000 < −2)
 //     pb          −EQ_mrq / mcap   (= −BP)
 //     dy          dy_ttm           (近 365 日税前分红 / 总市值; 分母 = 当日收盘 × 次日股本, 见 Fundamental.cpp)
-//   票池日频: 键落 L_day (收盘后, 母集按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_day 行票池列 (shared/Pool.hpp 读 Bar 库).
+//   票池日频: 键落 L_1day (收盘后, 母集按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_1day 行票池列 (shared/Pool.hpp 读 Bar 库).
 //   delist 只看已发生 (不含未来信息); 键无暖机 (数据起点后一年内 PE/PB/DY 不全).
 //
 // 本 TU (bar_pipeline.cpp) precise-math: 母集判定依赖 NaN 比较语义 (list_age / delist_age / mcap 缺失 = NaN).
@@ -83,7 +83,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_PoolKey(N) N(PoolKey, (PoolKey), (Fund.outs(), Valuation.out(Valuation.mcap), asset_code_), onSettle)
 
-#define FIELDS_L_day_PoolKey(X, CAT1)                                                                                                                                                                          \
+#define FIELDS_L_1day_PoolKey(X, CAT1)                                                                                                                                                                          \
   X(key_size, CAT1, AUTO, "Pool Key Size", "票池键市值", "母集内收盘总市值(亿元), 母集外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base})", TS(PoolKey, size, None, None))                                     \
   X(key_size_micro, CAT1, AUTO, "Pool Key Size Micro", "票池键微盘市值", "母集∧微盘行业白名单内收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_t \cdot \mathbf{1}_{base,wl})", TS(PoolKey, size_micro, None, None)) \
   X(key_pe, CAT1, AUTO, "Pool Key PE", "票池键PE", "母集内 −归母净利TTM/收盘市值 (= −EP), 外NaN", R"(-\frac{NP^{TTM}}{\mathrm{mcap}_t})", TS(PoolKey, pe, None, None))                                         \

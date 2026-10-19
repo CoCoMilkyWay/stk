@@ -118,10 +118,10 @@ static bool RenderPipeline(Transform::Params &p, size_t level) {
   bool changed = false;
   const char *unit = level_unit(level);
 
-  // 1. 季节 (L_day 段内无日内轴, 不去季节)
+  // 1. 季节 (L_1day 段内无日内轴, 不去季节)
   ImGui::Text("季节");
   ImGui::SameLine();
-  ImGui::BeginDisabled(level == L_day);
+  ImGui::BeginDisabled(level == L_1day);
   changed |= EnumCombo("##season", p.season, math::stationary::TodProfile::MODE_NAMES, 110);
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
@@ -617,7 +617,7 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   // 控件 (不持锁)
   RenderControl(service, data, ui);
   const ColRef *feat = data.feature.selection.primary();
-  bool changed = RenderPipeline(ui.params, feat ? feat->level : L_min);
+  bool changed = RenderPipeline(ui.params, feat ? feat->level : L_1min);
 
   // 流式维护 x/y range: epoch 变了 (= 数据变了) 就 autofit 一次, 稳态把缩放还给用户.
   // epoch 跨构建单调 (reset/clear/每批发布都 +1), 换特征时 reset→publish 哪怕发生在两帧

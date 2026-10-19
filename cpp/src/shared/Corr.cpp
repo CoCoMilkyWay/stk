@@ -12,7 +12,7 @@
 using namespace analysis;
 
 size_t corr_slice_stride(size_t level) {
-  if (level == L_day)
+  if (level == L_1day)
     return 1;
   if (is_bin_level(level))
     return std::max<size_t>(1, kCorrSliceMinutes / level_bin_minutes(level));

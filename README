@@ -30,7 +30,7 @@ stk/
 │   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 多选 picked = set<ColRef> (跨库跨层; 选中绑定当时的当前库, 切库 / 切层保留; 首个 = primary)
 │   │   │   │                                         #    · 当前库 libs = PerTier<库名> (每档一个, 切档保留); ref(库, 层, code) → ColRef
 │   │   │   ├── OrderFlow.hpp                         # 📦 订单流数据: 主库 = 当前档当前库 (Lob / Bar 皆可; 图1 VWAP / 候选轴)
-│   │   │   │                                         #    · 两图 overlay 同构 (Overlay, 任意库任意层 ColRef; 图2 只收 ≥ L_min), 点尾部对齐: x = 日起点 + 网格行 (行末秒 − 1)
+│   │   │   │                                         #    · 两图 overlay 同构 (Overlay, 任意库任意层 ColRef; 图2 只收 ≥ L_1min), 点尾部对齐: x = 日起点 + 网格行 (行末秒 − 1)
 │   │   │   │                                         #    · 图2 = all 库日 K 底图 + overlay; 日轴 = all + overlay 各库落盘日的并集, 各库画各自有的日
 │   │   │   ├── Progress.hpp                          # 📦 后台计算进度面 (原子量, UI 免锁读) + 单调前缀发布 PrefixPub
 │   │   │   ├── Analysis.hpp                          # 📦 流式分析公共骨架 (进度 / epoch / 锁)
@@ -61,27 +61,27 @@ stk/
 │   │   │   └── json_config.hpp                       # 🔄 JSON 配置解析
 │   │   ├── features/                                 # 🧮 特征工程: 事件驱动, 回测与实盘逐值一致
 │   │   │   │                                         #    两档 (TierId):
-│   │   │   │                                         #    · Lob: Level-2 逐笔 → 订单簿还原; L_sec 秒 + L_min 分钟; 池轴 (features/<pool>/); cs_valid = 当日在池
-│   │   │   │                                         #    · Bar: bar1m 分钟 K + 日频基本面; L_min 分钟 + L_5min / L_15min / L_30min / L_60min 分钟箱 + L_day 日 (基本面 / 票池); 全轴, 2015-01-01 起 (features/all/); cs_valid = 在市
-│   │   │   │                                         #    · 标签: Lob 只落 L_min; Bar 只落 L_5min 及以上 (每层只留本层及以上的持有期组)
-│   │   │   │                                         #    L_day 行 D = 次日盘前态 (D 收盘后至 D+1 开盘前可知, D+1 盘中全程可 act on; 高频读它即读前一交易日行)
+│   │   │   │                                         #    · Lob: Level-2 逐笔 → 订单簿还原; L_sec 秒 + L_1min 分钟; 池轴 (features/<pool>/); cs_valid = 当日在池
+│   │   │   │                                         #    · Bar: bar1m 分钟 K + 日频基本面; L_1min 分钟 + L_5min / L_15min / L_30min / L_60min 分钟箱 + L_1day 日 (基本面 / 票池); 全轴, 2015-01-01 起 (features/all/); cs_valid = 在市
+│   │   │   │                                         #    · 标签: Lob 只落 L_1min; Bar 只落 L_5min 及以上 (每层只留本层及以上的持有期组)
+│   │   │   │                                         #    L_1day 行 D = 次日盘前态 (D 收盘后至 D+1 开盘前可知, D+1 盘中全程可 act on; 高频读它即读前一交易日行)
 │   │   │   │                                         #    档间规矩:
 │   │   │   │                                         #    · 同一列只在一档算; 时序不跨档; 截面只许 Lob → Bar 旁读 (TIER_SIDES, 任意层, level_asof 投影)
 │   │   │   │                                         #    · TS / CS 列名跨档唯一: Lob K 线加 lob_* 前缀; META 元列 / LB 标签列各档同名, 豁免
 │   │   │   │                                         #    · 先算 Bar 库, 再算 Lob 库 (票池列 pool_<pool> 在 Bar 库)
 │   │   │   ├── FeaturesDefine.hpp                    # 🧮 字段表格式 (NODE_ / FIELDS_ 行) + 元数据枚举
-│   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L_sec ↔ L_min → n 分钟箱 (首箱 = 09:15-09:30 竞价; L_day 一日一行) + 交易时段常数
+│   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L_sec ↔ L_1min → n 分钟箱 (首箱 = 09:15-09:30 竞价; L_1day 一日一行) + 交易时段常数
 │   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData / BinData + Trigger 触发域 + 节点契约 / 截面列契约
 │   │   │   │                                         #    · 触发域: 盘前 onDay → 盘中 onTick / onDepth / onMinute → 箱末 on<n>Min → 收盘 onClose → 盘后 onSettle (日频 PIT 推进到次日)
 │   │   │   ├── GraphNode.hpp                         # 🧮 graph::Node: 节点类实例 + 输出 Series (两档构图共用); 跨天: 日内节点 reset / 日频节点 carry (Series 保留)
 │   │   │   ├── LobGraph.hpp                          # 🧮 Lob 档计算图 DAG (节点表由 CMake 扫描生成 <Tier>/NodesGenerated.hpp)
 │   │   │   ├── BarGraph.hpp                          # 🧮 Bar 档计算图 DAG (与 LobGraph 对仗; 一个 TU 只许 include 其一)
 │   │   │   ├── CoreTs.hpp                            # 🧮 单资产时序骨架 (档无关, CRTP): 日 / 分钟 / 标签日历 + 日句柄环; 档钩子 = member / resampler
-│   │   │   │                                         #    · 收行级联 for_each_close (细 → 粗): L_min / 分钟箱层 / L_day 同一路径 close_row
-│   │   │   ├── CoreLob.hpp                           # 🧮 Lob 档单资产时序: 逐笔 → 订单簿 → L_sec → 重采样 L_min + 标签
-│   │   │   ├── CoreBar.hpp                           # 🧮 Bar 档单资产时序: bar1m 分钟 K → L_min (255 行稠密) + 分钟箱层 (49 / 17 / 9 / 5 箱) + L_day 收盘行 + 标签
+│   │   │   │                                         #    · 收行级联 for_each_close (细 → 粗): L_1min / 分钟箱层 / L_1day 同一路径 close_row
+│   │   │   ├── CoreLob.hpp                           # 🧮 Lob 档单资产时序: 逐笔 → 订单簿 → L_sec → 重采样 L_1min + 标签
+│   │   │   ├── CoreBar.hpp                           # 🧮 Bar 档单资产时序: bar1m 分钟 K → L_1min (255 行稠密) + 分钟箱层 (49 / 17 / 9 / 5 箱) + L_1day 收盘行 + 标签
 │   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 (fundamental::daily) → 稠密 [A][255] 分钟 K (Bar 档 TS 输入)
-│   │   │   ├── CoreCs.hpp                            # 🧮 截面 (按档模板): 节拍 Lob = L_sec / Bar = L_min, 每拍按 for_each_close 级联本拍收行的各层
+│   │   │   ├── CoreCs.hpp                            # 🧮 截面 (按档模板): 节拍 Lob = L_sec / Bar = L_1min, 每拍按 for_each_close 级联本拍收行的各层
 │   │   │   │                                         #    · 源层任意: 源行 = level_asof(源层, 本层, t); 落到前一交易日 → 读日环 d−1 槽位 (cs_prev, 只许 TS / 元列); 区间首日 NaN
 │   │   │   │                                         #    · 旁读档上游读 = 读端同一个 Source; 旁读档库缺日 → 断言
 │   │   │   ├── MetaFlag.hpp                          # 🧮 元列 (_meta) 编解码 (消费端不依赖 Meta 节点)
@@ -97,7 +97,7 @@ stk/
 │   │   │       ├── FeatureLevels.hpp                 # 🧮 读端层表: 运行时 (与字段表解耦, 增删特征不触发读端重编)
 │   │   │       │                                     #    · 库 LibId = 库表下标 ([0] = all); PerLib<X> (与 PerTier 对仗) / LibMask 库集位
 │   │   │       │                                     #    · ColRef = (库, 层, 列), 档 = 库的档: 跨库跨层选择 / 分析请求的列单位; 序 = (档, 库, 层, 列)
-│   │   │       │                                     #    · 行时间代数: emit 全序 = (行末秒, 层), 同刻细层先写; L_day = 收盘一行 (尾部对齐)
+│   │   │       │                                     #    · 行时间代数: emit 全序 = (行末秒, 层), 同刻细层先写; L_1day = 收盘一行 (尾部对齐)
 │   │   │       │                                     #    · level_asof(src, dst, t): src 不粗于 dst → 含 dst 末秒的行; 更粗 → 其前一行 (−1 = 前一交易日末行)
 │   │   │       │                                     #    · 收行判据 level_closes / for_each_close: 哪层在哪秒末收行的唯一判据 (CoreTs / CoreCs 同一路径)
 │   │   │       ├── FeatureDay.hpp                    # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录 ColSpan); 落盘编码在此选型
@@ -105,7 +105,7 @@ stk/
 │   │   │       │                                     #    · CS 跨日只读 d−1 槽位 TS 列 (cs_prev); IO(d) 等 CS(d+1) close 才放行 (末日除外)
 │   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 单日按列选读 [n][T][A]; 删库与多 reader 并发安全
 │   │   │       ├── DayBatchPlane.hpp                 # 🧮 多段并行载入平面: TsPlane / CsPlane (网格行; Dist / Transform / Corr / Preview) + RowPlane (尾部行; OrderFlow)
-│   │   │       │                                     #    · 段 = 平面一个 j: 日内层 1 天, L_day 连续 255 个交易日; 三平面同一契约 prepare / load_batch + 同一折叠核 fold_span
+│   │   │       │                                     #    · 段 = 平面一个 j: 日内层 1 天, L_1day 连续 255 个交易日; 三平面同一契约 prepare / load_batch + 同一折叠核 fold_span
 │   │   │       │                                     #    · ReadPlan → 每 (库, 层) 一个 Source: 一天一次选列读 + column_set 门控; 行映射 row (gather, level_asof) / at (scatter, 行末对齐)
 │   │   │       │                                     #    · 列所在库经 Readers::ids[库] 收拢到 A 轴; 资产不在该库 / 该库这天没落盘 (Day::has) = 无源
 │   │   │       │                                     #    · 写端上游读 (CoreCs 旁读 / pool::Panel 成员位) 与读端同一个 Source
@@ -188,7 +188,7 @@ stk/
 │   │   │       │   │                                 #    · 标签 / 成本恒取同库本层列 (同行); n_full_of: 满仓只数; cost_tiers: 换手成本 (Run / Inspect 同一份)
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Stat cost_row (与 Run 同一份)
-│   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_min OHLC, 单调前缀发布 (PrefixPub)
+│   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Search 按钮, 单线程)
 │   │   │       │                                     #    · 流程: 模板自由参数粗网格 → 每个局部峰一支逐层细化 → 高原集按截面相关挑 ≤ 3 个 → 整体替换 weights
 │   │   │       │                                     #    · 窗口: 30m ~ T+1, 每个 h 各搜 (标签一次装全, 因子平面只算一遍)
@@ -260,7 +260,7 @@ stk/
 │   │   ├── math/                                           # 📐 distribution / normalize / sample / spectral / stationary / timeseries / autoencoder / model
 │   │   │   ├── Step.hpp                                    # 📐 变换步元数据 / 定义 (ParamMeta / StepDef → Step, 编译期注册)
 │   │   │   ├── sample/ResamplerTick2Min / ResamplerBar2Min # 📐 两档重采样器: 逐笔 / bar1m → 稠密分钟 K (255 根; 无成交分钟用携带价补齐)
-│   │   │   ├── sample/ResamplerMin2Bin                     # 📐 分钟 K → 本层 bar (分钟箱层 + L_day 整日箱, 两档共用)
+│   │   │   ├── sample/ResamplerMin2Bin                     # 📐 分钟 K → 本层 bar (分钟箱层 + L_1day 整日箱, 两档共用)
 │   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
 │   │   │   └── spectral/IIRBandpass.hpp                    # 📐 因果 IIR 带通
 │   │   ├── api/                                            # 🌐 数据源 API: 纯传输, 不知 Spec; 两客户端对仗 (query → arrow::Table)
@@ -319,8 +319,8 @@ stk/
     │   ├── <lib>/features.json                             # 特征表预览成品 (每轮落地)
     │   ├── <pool>/YYYY/MM/DD/                              # Lob 库 (池轴; <pool> = Bar 库票池列 pool_<pool>)
     │   │   ├── features_L_sec.bin                          # L_sec (秒频) 一天一个: 头 + 列目录 + 逐列载荷 [T×A]
-    │   │   └── features_L_min.bin                          # L_min (分钟频) 一天一个: 同上; 两层都逐列自选是否做 T 轴 XOR 差分
-    │   └── all/YYYY/MM/DD/features_L_*.bin                 # Bar 库 (全轴, L_min + 分钟箱层 + L_day; 目录名 all 保留给它)
+    │   │   └── features_L_1min.bin                          # L_1min (分钟频) 一天一个: 同上; 两层都逐列自选是否做 T 轴 XOR 差分
+    │   └── all/YYYY/MM/DD/features_L_*.bin                 # Bar 库 (全轴, L_1min + 分钟箱层 + L_1day; 目录名 all 保留给它)
     ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Overview)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
     │   ├── YYYY-MM/bar1m/YYYY-MM-DD.parquet                # 分钟 K 日分片 (Bar 档 TS 输入, 不复权)
@@ -361,7 +361,7 @@ stk/
 #
 # 加在哪 (先定档: 要逐笔 / 盘口 → Lob; 只要分钟 K + 基本面 → Bar):
 #   - 时序列:   Node/<Tier>/TS/<分类>/<Name>.hpp
-#       · 内容: 节点类 (纯数学) + 文件末尾 NODE_<Name> (节点) + FIELDS_<LVL>_<Name> (落盘列, LVL = L_sec / L_min / L_5min / L_15min / L_30min / L_60min / L_day; 本身日频的列放 L_day)
+#       · 内容: 节点类 (纯数学) + 文件末尾 NODE_<Name> (节点) + FIELDS_<LVL>_<Name> (落盘列, LVL = L_sec / L_1min / L_5min / L_15min / L_30min / L_60min / L_1day; 本身日频的列放 L_1day)
 #       · 触发域: 降频型 onTick + onMinute; 分钟箱型 on<n>Min; 日型 onClose (读 day_data 整日 K); 盘后型 onSettle (日频 PIT 推进到次日)
 #       · 行末源标: TS(<节点>[, <口>], Tf, Method)
 #   - 截面列:   Node/<Tier>/CS/<分类>/<源节点>.hpp
@@ -385,4 +385,4 @@ stk/
 #   - 缺失: 一律 NaN, 不用 0; fast-math TU 不写 isnan, 无定义用位图 / 守卫显式表示
 #   - 出错: 只用断言, 不做错误处理; 失败越早越好
 #   - 重算: 改字段表 (含加列) = 落盘指纹变化, 旧特征文件读取即断言失败, 需全量重算
-#       · 列名不变但口径变: 标签 kLabelSemver / L_day 行 kDaySemver +1 (FeatureStoreConfig.hpp), 同样判废
+#       · 列名不变但口径变: 标签 kLabelSemver / L_1day 行 kDaySemver +1 (FeatureStoreConfig.hpp), 同样判废

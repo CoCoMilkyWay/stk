@@ -89,9 +89,9 @@ TIER_LEVELS(GENERATE_LEVEL_FIELDS)
 #define CELL_FIELD_COUNT(T, ns, name, num, fields, psd) +(TierId::T == tier ? ns::name##_FIELD_COUNT : 0)
 constexpr size_t registered_field_count(TierId tier) { return 0 TIER_LEVELS(CELL_FIELD_COUNT); }
 #define CHECK_TIER_FIELDS(T, ns)                                                                                         \
-  static_assert(0 T##_L_sec_FIELDS(FIELD_COUNT_ONE) T##_L_min_FIELDS(FIELD_COUNT_ONE) T##_L_5min_FIELDS(FIELD_COUNT_ONE) \
+  static_assert(0 T##_L_sec_FIELDS(FIELD_COUNT_ONE) T##_L_1min_FIELDS(FIELD_COUNT_ONE) T##_L_5min_FIELDS(FIELD_COUNT_ONE) \
                         T##_L_15min_FIELDS(FIELD_COUNT_ONE) T##_L_30min_FIELDS(FIELD_COUNT_ONE)                          \
-                            T##_L_60min_FIELDS(FIELD_COUNT_ONE) T##_L_day_FIELDS(FIELD_COUNT_ONE) ==                     \
+                            T##_L_60min_FIELDS(FIELD_COUNT_ONE) T##_L_1day_FIELDS(FIELD_COUNT_ONE) ==                     \
                     registered_field_count(TierId::T),                                                                   \
                 "档 " #T " 有未在 TIER_LEVELS 登记的层的 FIELDS_ 行");
 ALL_TIERS(CHECK_TIER_FIELDS)
@@ -148,7 +148,7 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
 //   FNV-1a 64 over "code:1:kind" 逐字段拼接 (顺序敏感; 1 = 已废的列宽, 恒折入以保旧库指纹)
 //   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelLob 的 entry / exit 定义) 时 +1, 旧库读取即判废而非静默错义
-//   L_day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
+//   L_1day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
 constexpr uint64_t kLabelSemver = 2; // 1: 分钟型 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准)
 constexpr uint64_t kDaySemver = 1;   // 1: 行 D = 次日盘前态 (Fund / PoolKey onSettle, 见 Fund.hpp 逐表对齐)
@@ -176,7 +176,7 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
 }
 #define GENERATE_FINGERPRINT(T, ns, name, num, fields, psd)                                                          \
   namespace ns {                                                                                                     \
-  constexpr uint64_t name##_FINGERPRINT = num == L_day ? fnv1a_u64(table_fingerprint(name##_FIELD_INFO), kDaySemver) \
+  constexpr uint64_t name##_FINGERPRINT = num == L_1day ? fnv1a_u64(table_fingerprint(name##_FIELD_INFO), kDaySemver) \
                                                        : table_fingerprint(name##_FIELD_INFO);                       \
   }
 TIER_LEVELS(GENERATE_FINGERPRINT)
@@ -271,6 +271,6 @@ constexpr size_t field_of(size_t lvl, std::string_view code) {
   return L.field_count;
 }
 
-static_assert(level_rows(L_sec) - 1 == TRADE_SECONDS_PER_DAY && level_rows(L_min) - 1 == TRADE_MINUTES_PER_DAY &&
-                  level_rows(L_5min) - 1 == bins_per_day(5) && level_rows(L_60min) - 1 == bins_per_day(60) && level_rows(L_day) - 1 == 1,
+static_assert(level_rows(L_sec) - 1 == TRADE_SECONDS_PER_DAY && level_rows(L_1min) - 1 == TRADE_MINUTES_PER_DAY &&
+                  level_rows(L_5min) - 1 == bins_per_day(5) && level_rows(L_60min) - 1 == bins_per_day(60) && level_rows(L_1day) - 1 == 1,
               "每层落盘 T 必须是 有效行数 + 1 哨兵行");

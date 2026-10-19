@@ -366,7 +366,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   fundamental::Scan scan(cat, ids, static_cast<size_t>(hw > 3 ? hw - 2 : 1));
 
   // 分红窗口: publish_date ∈ (today-N日, today] (锚定公告日, 非除权日 —
-  // 与 L_min dy_raw 同口径)
+  // 与 L_1min dy_raw 同口径)
   Ymd div_lo[kDyWindows];
   for (int w = 0; w < kDyWindows; ++w)
     div_lo[w] = misc::add_days(today, -kDyDays[w]);
@@ -564,10 +564,10 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   //   (不复权真价); PE=mcap/归母净利TTM, PB=mcap/归母权益MRQ, PS=mcap/营业总收入TTM
   //   (≤0脏值→空), PCF=mcap/经营现金流净额TTM; 亏损/负权益/烧钱保留负值.
   //   DY1/3/5 = 近 1/3/5 年税前分红总额年化后 / mcap; 静态快照的股本恒为最新
-  //   快照, 故等价于 Σ每股分红/年数/close (L_min dy_raw 用公告日当时股本, 窗口内
+  //   快照, 故等价于 Σ每股分红/年数/close (L_1min dy_raw 用公告日当时股本, 窗口内
   //   有增发时会有微差). 无效 → 留 NaN (Table 显示 "-").
   //
-  //   缺失语义 (与 L_min 一致: 只标记, 不横截面填充 —— 展示层不放非该股真实值):
+  //   缺失语义 (与 L_1min 一致: 只标记, 不横截面填充 —— 展示层不放非该股真实值):
   //     · mcap 算不出 (无有效成交价 / 无股本) → 该股估值列整片留空, 不留半成品;
   //     · 各分母独立回退到最后一个有效期次, 所以停止披露只影响到期次而非有无;
   //     · 仍为空的只剩两类结构性缺口 —— 2015-01 前退市 (整体在 PIPELINE_START_DATE

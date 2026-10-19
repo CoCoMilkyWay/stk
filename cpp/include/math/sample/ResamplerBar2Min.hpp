@@ -11,7 +11,7 @@
 // 职责 / 调用序与 Tick2Min 同:
 // - roll(min_end): 出 min_end 之前尚未出的 bar (时钟推进, 见 CoreTs::advance; 本分钟 bar 收进之前 / 收盘)
 // - accumulate(bar): 分钟 m 的 bar1m 收进当前分钟 (roll(m) 之后调)
-// 【稠密】同约: 每个 L_min 分钟 (0..254) 恰出一根 bar, 无成交分钟 (volume 0 / 无 bar) O=H=L=C=日内最近成交价
+// 【稠密】同约: 每个 L_1min 分钟 (0..254) 恰出一根 bar, 无成交分钟 (volume 0 / 无 bar) O=H=L=C=日内最近成交价
 //   (日内尚无成交 → 0 = 无价), 量额 0. bar1m 不分主买 / 主卖: 量额全放 bid 侧, ask 侧恒 0 (Trade 节点 = bid + ask).
 //   本类纯重采样, 不认识任何特征 / 日频数据.
 //========================================================================================
@@ -62,7 +62,7 @@ private:
 
   MinuteData &output_;
 
-  size_t next_min_{0};  // 下一根待出 bar 的 L_min 分钟 (= 当前收 bar 的分钟)
+  size_t next_min_{0};  // 下一根待出 bar 的 L_1min 分钟 (= 当前收 bar 的分钟)
   Bar1m bar_{};         // 本分钟收进的 bar1m (无成交 = 全 0)
   float last_price_{0}; // 日内最近成交价 (盘前 0): 无成交分钟携带价
 };

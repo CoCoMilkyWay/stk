@@ -56,7 +56,7 @@
 //   算子库专用补充 (GUI Factors→Operators 页按 LaTeX 渲染):
 //     x, y, z     输入序列, 按元数取前 1..3 个; 每格 Val{v, m}, 所有 ∑ / 计数 / 极值只计有效 (m = 1) 样本
 //     a, b        资产 (截面轴). TS 只看本资产, 省略 a; CS 只看同一 t 的截面, 写 x_a 省略 t
-//     t_D         段内位置 = t − 当日首行 (0..S−1; L_min 上即分钟)
+//     t_D         段内位置 = t − 当日首行 (0..S−1; L_1min 上即分钟)
 //     W_t         TS 窗 (由 T 列决定, operator 里统一写 W_t):
 //                   EXPAND  W_t = {s : D(s) = D(t), s ≤ t}   ROLL  W_t = {s : t−d < s ≤ t}
 //     Σ_{W_t}     窗内求和 ∑_{s∈W_t} (下标只写窗 / 组, 求和变量恒是 s 或 b); Π_{W_t} 同理为乘积

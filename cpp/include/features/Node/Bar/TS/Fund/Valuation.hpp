@@ -3,7 +3,7 @@
 // =============================================================================
 // Valuation - 实时估值: 5 分钟箱末最新价 (Kline5min.close) × 当日基本面 (Fund 节点输出口, PIT 预计算, 缺失=NaN)
 // =============================================================================
-//   落 L_5min (不落 L_min: 逐分钟代价太大); 更粗层截面 / 日频节点经 as-of / Series 读它 (L_day 读到收盘箱值)
+//   落 L_5min (不落 L_1min: 逐分钟代价太大); 更粗层截面 / 日频节点经 as-of / Series 读它 (L_1day 读到收盘箱值)
 //   mcap    = P_t × S_total   (亿元)       fmcap   = P_t × S_float   (亿元)
 //   pe_ttm  = mcap / NP_ttm                pb_mrq  = mcap / EQ_mrq
 //   ps_ttm  = mcap / REV_ttm               pcf_ttm = mcap / CF_ttm

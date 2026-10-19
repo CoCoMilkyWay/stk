@@ -41,7 +41,7 @@ struct TaskFactorsState {
   // 一轮结束检测 (Running → Done / Cancelled 那一帧把算子表落地 operators.json)
   Phase prev_operators_phase = Phase::Idle;
 
-  int seg = factor::kSegMax; // 因子层 (Factors::kFactorLevels), 默认 L_min
+  int seg = factor::kSegMax; // 因子层 (Factors::kFactorLevels), 默认 L_1min
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                        // 上次扫描的目录 (票池切换 → 自动重扫)
@@ -188,7 +188,7 @@ TaskHandle CreateFactorsTask() {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
           Factors::tip("因子层 (Factors / Inspect 共用)\n"
                        "• min = Lob 票池库 (盘口特征 + 冲击成本); 5min .. day = Bar 库 (全市场, 无冲击成本)\n"
-                       "• 窗长 d 等参数按本层行计; 标签取 L_min 列在行末分钟采样\n"
+                       "• 窗长 d 等参数按本层行计; 标签取 L_1min 列在行末分钟采样\n"
                        "• 因子目录 <factor_dir>/<库>/<层>/; 有服务在跑时不能换");
       }
       // 首次进页 / 换层: 字段表视图按层建一次 (编译期字段表, 不随运行变), 只扫描不算; 票池切换 → 目录变 → 自动重扫

@@ -28,9 +28,9 @@ class FeatureRead;
 //   raw ─→ season ─→ stationary ─→ bandpass ─→ ts_norm ─→ CS(Tf → Method)
 //          TOD 轮廓   MA/整数/分数差分  IIR 因果    expanding   features/Method/CS.hpp 同一套代码
 //
-//   TS 段 (前四步) 按段分: 每 (资产, 段) 一条 R 长的序列 (网格 = 特征自己的层; 日内层段 = 1 天, L_day 段 = 连续 255 天),
+//   TS 段 (前四步) 按段分: 每 (资产, 段) 一条 R 长的序列 (网格 = 特征自己的层; 日内层段 = 1 天, L_1day 段 = 连续 255 天),
 //   滤波/差分状态段首复位, 隔夜跳空不进滤波器; 唯一的跨段状态是 TOD 轮廓 (per-asset expanding, 严格因果:
-//   今天用截至昨日的轮廓, 再把今天并入; L_day 无日内轮廓). 全部因果, 不用未来值.
+//   今天用截至昨日的轮廓, 再把今天并入; L_1day 无日内轮廓). 全部因果, 不用未来值.
 //   CS 段: 每个 (段, 行) 截面一列, 有效资产子集 dense 化 → cs::column_fn (Tf, Method) 原地.
 //
 // 流式 (对仗 Dist.hpp): 段是流式维度, 每批 batch_segs 段, 从前往后 (plan_segs Sequential: TOD 轮廓因果);
@@ -141,7 +141,7 @@ struct Transform : Published {
   // 短锁只推进 n_segs / 日期 / TOD 轮廓; UI 只读前缀 [0, n_segs·R)
   struct SeriesSnap {
     uint32_t asset = 0;                     // 焦点资产全局轴下标 (UI 查 items; 构建起手定)
-    size_t level = L_min, R = 0;            // 网格层 / 段行数 (UI 按它铺 X 轴)
+    size_t level = L_1min, R = 0;            // 网格层 / 段行数 (UI 按它铺 X 轴)
     size_t n_segs = 0;                      // 已发布段数 (逐批递增至全程)
     misc::Ymd date_begin = 0, date_end = 0; // 已发布区间首末日
     std::vector<float> raw;                 // [总段数 * R] (f16 → float, NaN = 缺/未到批)

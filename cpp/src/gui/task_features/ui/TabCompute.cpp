@@ -201,7 +201,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f)); // Gray text
   ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);                      // Use smaller font if available
 
-  ImGui::TextWrapped("按照日期, 切分多频率Tensor: {[T, F, A]_L_sec(tick), [T, F, A]_L_min(minute)}_dayN");
+  ImGui::TextWrapped("按照日期, 切分多频率Tensor: {[T, F, A]_L_sec(tick), [T, F, A]_L_1min(minute)}_dayN");
   ImGui::Text("T (Time):    max = 100,000  (100K time indices per day (ms/s))");
   ImGui::Text("A (Asset):   max = 1,000    (1K assets per library)");
   ImGui::Text("F (Feature): max = 1,000    (all feature types combined)");

@@ -151,7 +151,7 @@ public:
   }
 
   inline void flush() {
-    const uint32_t end_sec = static_cast<uint32_t>(L_min_to_L_sec(md_.index)) + 60u;
+    const uint32_t end_sec = static_cast<uint32_t>(L_1min_to_L_sec(md_.index)) + 60u;
     g3_.flush_minute(end_sec, px_last_);
     g15_.flush_minute(end_sec, px_last_);
     write(g3_, rv_3s);
@@ -206,7 +206,7 @@ private:
   X(rv_bigup_##d, CAT1, AUTO, "Big Upside Jump Variance " #dd "s", #dd "秒大上行跳跃方差", "超过阈值θ=4σ_Δ的正收益平方和(基点²), σ_Δ由前一日BPV推出; 首日θ未定→0", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c > 4\sigma_\Delta],\; \sigma_\Delta^2 = \frac{\pi}{2}\frac{\sum_{D-1} bpv}{N_\Delta})", TS(Realized, rv_bigup_##d, Log, None)) \
   X(rv_bigdn_##d, CAT1, AUTO, "Big Downside Jump Variance " #dd "s", #dd "秒大下行跳跃方差", "低于阈值-θ的负收益平方和(基点²); 首日θ未定→0", R"(\sum_{c \in \Delta t} r_c^2 \mathbf{1}[r_c < -4\sigma_\Delta])", TS(Realized, rv_bigdn_##d, Log, None))
 
-#define FIELDS_L_min_Realized(X, CAT1) \
+#define FIELDS_L_1min_Realized(X, CAT1) \
   REALIZED_GRID_ROWS(X, CAT1, 3s, 3)   \
   REALIZED_GRID_ROWS(X, CAT1, 15s, 15) \
   X(path_len, CAT1, AUTO, "Trade Path Length", "逐笔路径长", "分钟内逐笔|对数价变动|之和(基点); 趋势占比=|ln(C/C₋₁)|/path_len", R"(\sum_{\tau \in \Delta t} |10^4 \ln\frac{P_\tau}{P_{\tau-1}}|)", TS(Realized, path_len, None, None))

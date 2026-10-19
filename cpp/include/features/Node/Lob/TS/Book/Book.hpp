@@ -169,7 +169,7 @@ public:
   }
 
   inline void flush() {
-    const uint32_t t_end = (static_cast<uint32_t>(L_min_to_L_sec(md_.index)) + 60u) * 1000u;
+    const uint32_t t_end = (static_cast<uint32_t>(L_1min_to_L_sec(md_.index)) + 60u) * 1000u;
     if (has_state_) {
       hold(static_cast<float>(t_end > t_prev_ ? t_end - t_prev_ : 0u)); // 末状态持有到分钟末
       t_prev_ = t_end;
@@ -268,7 +268,7 @@ private:
   X(cost_##dir##_100w, CAT1, AUTO, "Impact Cost " EN " 1M", CN "冲击成本100万", "吃掉100万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→余量按涨跌停价成交", R"(\overline{)" F1 R"(10^6)" F2 R"(}^{\,tw} \times 10^4)", TS(Book, cost_##dir##_100w, None, None)) \
   X(cost_##dir##_300w, CAT1, AUTO, "Impact Cost " EN " 3M", CN "冲击成本300万", "吃掉300万元" S "盘的执行价对中间价偏离(基点)时间加权均值; 全簿不足→余量按涨跌停价成交", R"(\overline{)" F1 R"(3 \times 10^6)" F2 R"(}^{\,tw} \times 10^4)", TS(Book, cost_##dir##_300w, None, None))
 
-#define FIELDS_L_min_Book(X, CAT1)                                                                                                                                                                                                                                                                              \
+#define FIELDS_L_1min_Book(X, CAT1)                                                                                                                                                                                                                                                                              \
   X(spread_l1, CAT1, AUTO, "Spread L1", "第1档价差", "分钟内第1档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_1^{M,A}-P_1^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", TS(Book, spread_l1, None, None))                                                                                              \
   X(spread_l5, CAT1, AUTO, "Spread L5", "第5档价差", "分钟内第5档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_5^{M,A}-P_5^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", TS(Book, spread_l5, None, None))                                                                                              \
   X(spread_l10, CAT1, AUTO, "Spread L10", "第10档价差", "分钟内第10档卖价减买价对中间价的时间加权均值(基点)", R"(\overline{\frac{P_{10}^{M,A}-P_{10}^{M,B}}{P_{mid}}}^{\,tw} \times 10^4)", TS(Book, spread_l10, None, None))                                                                                   \

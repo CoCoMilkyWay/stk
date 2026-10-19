@@ -15,15 +15,15 @@
 #include <cmath>
 #include <cstdio>
 
-// 因子层几何 (factor::Geo) 与特征库层对账: 每日行数 = 层有效行数; 行 t 的末分钟 = L_min 分钟号 (箱末 bin_last_min / 日层 = 收盘分钟)
-static_assert(factor::kSegMax == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegMax 必须等于 L_min 每日分钟数");
+// 因子层几何 (factor::Geo) 与特征库层对账: 每日行数 = 层有效行数; 行 t 的末分钟 = L_1min 分钟号 (箱末 bin_last_min / 日层 = 收盘分钟)
+static_assert(factor::kSegMax == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegMax 必须等于 L_1min 每日分钟数");
 static_assert([] {
   for (const GUI::Factors::FactorLevel &l : GUI::Factors::kFactorLevels) {
     const factor::Geo g = factor::geo_of(l.seg);
     if (level_valid_rows(l.lvl) != static_cast<size_t>(l.seg))
       return false;
     for (int t = 0; t < g.S; ++t) {
-      const size_t m = l.lvl == L_min ? static_cast<size_t>(t) : l.lvl == L_day ? TRADE_MINUTES_PER_DAY - 1
+      const size_t m = l.lvl == L_1min ? static_cast<size_t>(t) : l.lvl == L_1day ? TRADE_MINUTES_PER_DAY - 1
                                                                                 : bin_last_min(level_bin_minutes(l.lvl), static_cast<size_t>(t));
       if (static_cast<size_t>(g.minute(t)) != m)
         return false;

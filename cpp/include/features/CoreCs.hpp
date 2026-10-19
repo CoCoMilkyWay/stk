@@ -18,8 +18,8 @@
 #include <vector>
 
 // ============================================================================
-// CoreCs<T>: 截面计算 (CS worker), 档 T 有 L_sec → L_sec 每秒一拍; 无 L_sec (Bar) → L_min 每分钟一拍;
-//   每拍按收行判据 (for_each_close) 级联本拍末秒收行的各层 (节拍层 → L_min → 分钟箱层 → L_day, 细 → 粗); 档有该层才算
+// CoreCs<T>: 截面计算 (CS worker), 档 T 有 L_sec → L_sec 每秒一拍; 无 L_sec (Bar) → L_1min 每分钟一拍;
+//   每拍按收行判据 (for_each_close) 级联本拍末秒收行的各层 (节拍层 → L_1min → 分钟箱层 → L_1day, 细 → 粗); 档有该层才算
 //   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, for_each_close 同一级联) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
@@ -224,14 +224,14 @@ public:
     TraceColor(C_Magenta);
     assert(day_ && "compute_and_store: 本日未 begin_day");
     // 节拍行 t 末秒收行的各层逐层截面 (细 → 粗, 与 CoreTs::close_minute 同一 for_each_close). 读层 LVL 行 r 的前提 = 全部资产已收该行:
-    // 回测由按日流控保证; 实盘须先对全部资产 CoreTs::advance(m + 1) (L_min 及以上在分钟 m 末收行, L_day 随末分钟收)
+    // 回测由按日流控保证; 实盘须先对全部资产 CoreTs::advance(m + 1) (L_1min 及以上在分钟 m 末收行, L_1day 随末分钟收)
     for_each_close<kBeatLevel>(level_end_sec(kBeatLevel, t) - 1, [&]<size_t LVL>(size_t r) { run<LVL>(r); });
   }
 
   // 一行 CS 字段 (CsLevel<LVL>::run 展开调用): 源档 S 源层 SRC_LVL 的列 SRC (as-of 投影到本层行 t) → Tf → Method → 本层列 DST
   template <size_t LVL, class S, size_t SRC_LVL, size_t SRC, size_t DST, class Tf, class Method>
   [[gnu::always_inline]] inline void run_one(size_t t) {
-    static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_min / bin / L_day context (mcap / industry)");
+    static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_1min / bin / L_1day context (mcap / industry)");
 
     float *y = input_fp32_.data();
     gather_(src_col_<S, SRC_LVL, SRC, LVL>(t), ids_<S>(), y);

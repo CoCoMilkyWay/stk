@@ -197,7 +197,7 @@ struct Recipe {
 };
 inline Recipe recipe_of(const Dom (&in)[3]) { return {gen_of(in[0]), gen_of(in[1]), gen_of(in[2])}; }
 
-// 窗长参数: 每算子一个"典型用法"的默认 d (期 = 行; Operators 表在 L_min 上即分钟), 给 GUI Operators 表用;
+// 窗长参数: 每算子一个"典型用法"的默认 d (期 = 行; Operators 表在 L_1min 上即分钟), 给 GUI Operators 表用;
 // op_check 不吃这份 (它全扫 d = {1, 5, 20, S, S + 60} 打边界)
 struct DParam {
   const char *e_name;
@@ -226,7 +226,7 @@ inline int default_d(const std::string &name) {
   return 30; // 其余 ROLL 族 (均值/和/斜率/计数等): 半小时
 }
 
-// 阈值型参数: 这里只定 k / k2. TsTodMask 的段内区间按 L_min (S = kSegMax) 给, set_k 按段长 S 等比缩放 (保持 0 ≤ k < k2 ≤ S)
+// 阈值型参数: 这里只定 k / k2. TsTodMask 的段内区间按 L_1min (S = kSegMax) 给, set_k 按段长 S 等比缩放 (保持 0 ≤ k < k2 ≤ S)
 struct KParam {
   const char *e_name;
   float k, k2;

@@ -78,7 +78,7 @@ private:
   X(para_##sd##_c2, CAT1, RAW, en " Depth Parabola c2", cn "侧抛物线曲率", "<0:近端有订单块(降频)", R"(c_{2,t}^{M,)" S R"(}, \quad \text{where } V_{i,t}^{M,)" S R"(} \sim c_{0,t}^{M,)" S R"(} + c_{1,t}^{M,)" S R"(} i + c_{2,t}^{M,)" S R"(} i^2)", TS(Para_##side, c2, None, None))
 
 #define NODE_Para_a(N) N(Para_a, (Para<false>), (DepthData.ask_qty), onMinute)
-#define FIELDS_L_min_Para_a(X, CAT1) PARA_FIELDS(X, CAT1, a, ask, "A", "Ask", "卖")
+#define FIELDS_L_1min_Para_a(X, CAT1) PARA_FIELDS(X, CAT1, a, ask, "A", "Ask", "卖")
 
 #define NODE_Para_b(N) N(Para_b, (Para<true>), (DepthData.bid_qty), onMinute)
-#define FIELDS_L_min_Para_b(X, CAT1) PARA_FIELDS(X, CAT1, b, bid, "B", "Bid", "买")
+#define FIELDS_L_1min_Para_b(X, CAT1) PARA_FIELDS(X, CAT1, b, bid, "B", "Bid", "买")

@@ -55,7 +55,7 @@ public:
   // 见 FeatureStore::io_try_open), d 的 slot 要多持到 d+1 结清 (其余 CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
   static constexpr size_t MIN_RING_SLOTS = PEND_DAYS + 2;
 
-  // 09:25 撮合 bar (L_min kAuctionMin) / 连续竞价 [kContOpenMin, kContCloseMin) = [09:30, 14:57) / 收盘竞价 (L_min 252..254)
+  // 09:25 撮合 bar (L_1min kAuctionMin) / 连续竞价 [kContOpenMin, kContCloseMin) = [09:30, 14:57) / 收盘竞价 (L_1min 252..254)
   static constexpr size_t kAuctionMin = (L2::MORNING_MATCHING_START_HOUR * 60 + L2::MORNING_MATCHING_START_MINUTE) - MORNING_START_MIN;
   static constexpr size_t kContOpenMin = (L2::CONTINUOUS_TRADING_MORNING_START_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_START_MINUTE) - MORNING_START_MIN;
   static constexpr size_t kContCloseMin = MORNING_MINUTES + (AFTERNOON_END_MIN - AFTERNOON_START_MIN);
@@ -219,7 +219,7 @@ private:
     }
   }
 
-  size_t next_label_min_[HOLD_COUNT] = {}; // 分钟型: 各组下一个待写 L_min 行 (收盘 / 开盘型不用)
+  size_t next_label_min_[HOLD_COUNT] = {}; // 分钟型: 各组下一个待写 L_1min 行 (收盘 / 开盘型不用)
   float open_px_ = 0.0f;                   // 当日开盘价, open_ok_ = 已截到 (reset 清)
   bool open_ok_ = false;
 

@@ -12,14 +12,14 @@
 //   MIN   持仓 n 分钟 (exit = 行 m+n 的 entry)
 //   CLOSE 持有到当日收盘 (n 不用, 写 0)
 //   OPEN  T+n 开盘平仓 (跨日回填)
-// 按层截取: LABEL_GROUPS_FROM_<LVL> = 本层可落的组 (滤掉比本层行还短的持有期: 5min 层不要 1m; L_day 只剩开盘型), 序同 LABEL_GROUPS
-#define LABEL_GROUPS(X, ...) LABEL_GROUPS_FROM_L_min(X, __VA_ARGS__)
-#define LABEL_GROUPS_FROM_L_min(X, ...) X(1m, MIN, 1, __VA_ARGS__) LABEL_GROUPS_FROM_L_5min(X, __VA_ARGS__)
+// 按层截取: LABEL_GROUPS_FROM_<LVL> = 本层可落的组 (滤掉比本层行还短的持有期: 5min 层不要 1m; L_1day 只剩开盘型), 序同 LABEL_GROUPS
+#define LABEL_GROUPS(X, ...) LABEL_GROUPS_FROM_L_1min(X, __VA_ARGS__)
+#define LABEL_GROUPS_FROM_L_1min(X, ...) X(1m, MIN, 1, __VA_ARGS__) LABEL_GROUPS_FROM_L_5min(X, __VA_ARGS__)
 #define LABEL_GROUPS_FROM_L_5min(X, ...) X(5m, MIN, 5, __VA_ARGS__) LABEL_GROUPS_FROM_L_15min(X, __VA_ARGS__)
 #define LABEL_GROUPS_FROM_L_15min(X, ...) X(15m, MIN, 15, __VA_ARGS__) LABEL_GROUPS_FROM_L_30min(X, __VA_ARGS__)
 #define LABEL_GROUPS_FROM_L_30min(X, ...) X(30m, MIN, 30, __VA_ARGS__) LABEL_GROUPS_FROM_L_60min(X, __VA_ARGS__)
-#define LABEL_GROUPS_FROM_L_60min(X, ...) X(60m, MIN, 60, __VA_ARGS__) X(close, CLOSE, 0, __VA_ARGS__) LABEL_GROUPS_FROM_L_day(X, __VA_ARGS__)
-#define LABEL_GROUPS_FROM_L_day(X, ...) X(t1, OPEN, 1, __VA_ARGS__) X(t3, OPEN, 3, __VA_ARGS__) X(t5, OPEN, 5, __VA_ARGS__)
+#define LABEL_GROUPS_FROM_L_60min(X, ...) X(60m, MIN, 60, __VA_ARGS__) X(close, CLOSE, 0, __VA_ARGS__) LABEL_GROUPS_FROM_L_1day(X, __VA_ARGS__)
+#define LABEL_GROUPS_FROM_L_1day(X, ...) X(t1, OPEN, 1, __VA_ARGS__) X(t3, OPEN, 3, __VA_ARGS__) X(t5, OPEN, 5, __VA_ARGS__)
 
 enum class HoldKind : uint8_t { MIN,
                                 CLOSE,

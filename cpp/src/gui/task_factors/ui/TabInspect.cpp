@@ -1,6 +1,6 @@
 // Tab Inspect — 见头文件
 #include "gui/task_factors/ui/TabInspect.hpp"
-#include "features/TimeIndex.hpp" // L_min_to_Clock (K 线横轴刻度)
+#include "features/TimeIndex.hpp" // L_1min_to_Clock (K 线横轴刻度)
 #include "gui/Tasks.hpp"          // StatusColor
 #include "shared/Asset.hpp"       // AssetItem (资产代码 / 名称)
 
@@ -599,7 +599,7 @@ int minute_formatter(double v, char *buf, int size, void *ud) {
   const int d = static_cast<int>(g / S), m = factor::geo_of(S).minute(static_cast<int>(g % S));
   if (S == 1)
     return std::snprintf(buf, size, "%06d", dates[static_cast<size_t>(d)] % 1000000);
-  const ClockTime ct = L_min_to_Clock(static_cast<size_t>(m));
+  const ClockTime ct = L_1min_to_Clock(static_cast<size_t>(m));
   return std::snprintf(buf, size, "%06d %02d:%02d", dates[static_cast<size_t>(d)] % 1000000, ct.hour, ct.minute);
 }
 

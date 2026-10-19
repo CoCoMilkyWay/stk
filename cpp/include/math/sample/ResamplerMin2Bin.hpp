@@ -8,7 +8,7 @@
 #include "features/Storage/FeatureLevels.hpp" // level_end_sec
 
 //========================================================================================
-// RESAMPLER: MINUTE -> 本层 BAR (分钟箱层 + L_day 整日箱; 与 ResamplerTick2Min / ResamplerBar2Min 对仗: 源 = 已结算的分钟 bar)
+// RESAMPLER: MINUTE -> 本层 BAR (分钟箱层 + L_1day 整日箱; 与 ResamplerTick2Min / ResamplerBar2Min 对仗: 源 = 已结算的分钟 bar)
 //========================================================================================
 // 职责 / 调用序 (CoreTs::close_minute, 每分钟收行之前 / close_row 收本层行时):
 // - accumulate(): 刚结算的分钟 bar (MinuteData 末项) 收进本层当前行
@@ -53,7 +53,7 @@ public:
   }
 
   void emit(size_t k) noexcept {
-    assert(level_end_sec(lvl_, k) == level_end_sec(L_min, input_.index) && "emit: MinuteData 末 bar 不是本层行 k 末分钟");
+    assert(level_end_sec(lvl_, k) == level_end_sec(L_1min, input_.index) && "emit: MinuteData 末 bar 不是本层行 k 末分钟");
     const float px = input_.close.back();
     output_.index = static_cast<uint32_t>(k);
     output_.open.push_back(traded_ ? open_ : px);
@@ -70,7 +70,7 @@ public:
 private:
   const MinuteData &input_;
   BinData &output_;
-  size_t lvl_; // 本层 (L_5min .. L_day)
+  size_t lvl_; // 本层 (L_5min .. L_1day)
 
   bool traded_{false}; // 本行已有成交分钟
   float open_{0}, high_{0}, low_{0};

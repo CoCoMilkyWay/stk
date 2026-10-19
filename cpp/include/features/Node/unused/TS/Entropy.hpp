@@ -51,13 +51,13 @@ private:
   X(ent_##sd##_##n, CAT1, RAW, "Top " #n "-level " en " Shannon Entropy", cn "侧" #n "档香农熵", "0:极端集中; ln(N):极端均匀(降频)", R"(-\sum_{i=1}^{N} \pi_{i,t}^{M,)" S R"(} \log(\pi_{i,t}^{M,)" S R"(}), \quad \pi_{i,t}^{M,)" S R"(} = \frac{V_{i,t}^{M,)" S R"(}}{\sum_{j=1}^{N} V_{j,t}^{M,)" S R"(}}, \quad N = )" #n, TS(Entropy_##side##_##n, None, None))
 
 #define NODE_Entropy_a_30(N) N(Entropy_a_30, (Entropy<30, false>), (DepthData.ask_qty), onMinute)
-#define FIELDS_L_min_Entropy_a_30(X, CAT1) ENTROPY_FIELD(X, CAT1, a, ask, "A", "Ask", "卖", 30)
+#define FIELDS_L_1min_Entropy_a_30(X, CAT1) ENTROPY_FIELD(X, CAT1, a, ask, "A", "Ask", "卖", 30)
 
 #define NODE_Entropy_a_5(N) N(Entropy_a_5, (Entropy<5, false>), (DepthData.ask_qty), onMinute)
-#define FIELDS_L_min_Entropy_a_5(X, CAT1) ENTROPY_FIELD(X, CAT1, a, ask, "A", "Ask", "卖", 5)
+#define FIELDS_L_1min_Entropy_a_5(X, CAT1) ENTROPY_FIELD(X, CAT1, a, ask, "A", "Ask", "卖", 5)
 
 #define NODE_Entropy_b_30(N) N(Entropy_b_30, (Entropy<30, true>), (DepthData.bid_qty), onMinute)
-#define FIELDS_L_min_Entropy_b_30(X, CAT1) ENTROPY_FIELD(X, CAT1, b, bid, "B", "Bid", "买", 30)
+#define FIELDS_L_1min_Entropy_b_30(X, CAT1) ENTROPY_FIELD(X, CAT1, b, bid, "B", "Bid", "买", 30)
 
 #define NODE_Entropy_b_5(N) N(Entropy_b_5, (Entropy<5, true>), (DepthData.bid_qty), onMinute)
-#define FIELDS_L_min_Entropy_b_5(X, CAT1) ENTROPY_FIELD(X, CAT1, b, bid, "B", "Bid", "买", 5)
+#define FIELDS_L_1min_Entropy_b_5(X, CAT1) ENTROPY_FIELD(X, CAT1, b, bid, "B", "Bid", "买", 5)

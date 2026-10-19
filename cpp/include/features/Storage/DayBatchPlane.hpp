@@ -30,9 +30,9 @@
 // t = 有效行 (level_valid_rows, 末哨兵行不进平面). 容量准备幂等: 尺寸对得上零分配.
 // ============================================================================
 
-// ---- 段: 平面一个 j. 日内层 1 天, L_day 连续 kDaySegDays 个交易日 (日频序列成段); 段行数 = 每日有效行 × 段天数 ----
+// ---- 段: 平面一个 j. 日内层 1 天, L_1day 连续 kDaySegDays 个交易日 (日频序列成段); 段行数 = 每日有效行 × 段天数 ----
 inline constexpr size_t kDaySegDays = 255;
-inline constexpr size_t seg_days(size_t lvl) { return lvl == L_day ? kDaySegDays : 1; }
+inline constexpr size_t seg_days(size_t lvl) { return lvl == L_1day ? kDaySegDays : 1; }
 inline constexpr size_t seg_rows(size_t lvl) { return level_valid_rows(lvl) * seg_days(lvl); }
 
 // 日轴一天: 当日 + 承接日 (日轴上前一日, 0 = 轴首) + 两日各自落了盘的库 (日轴规划时一次判定, 装载时 O(1) 查位)
@@ -55,7 +55,7 @@ struct SegPlan {
 // 读端 (平面) 与写端上游读 (CoreCs 旁读 / pool::Panel 票池成员位) 同一份: 跨库跨层一律 level_asof, 不另写特例
 struct Source {
   LibId lib = kAllLib; // 平面 a ← 该库轴 Readers::ids[lib][a] (nullptr = 同轴)
-  size_t level = L_min;
+  size_t level = L_1min;
   fmeta::ColumnSet cs;        // 值列 (+ 门控列)
   std::vector<uint32_t> slot; // [cs.n()] 值列 → 平面列
   std::vector<int32_t> row;   // 网格行: [网格每日有效行] → 源行; -1 = 前一交易日末行
@@ -87,7 +87,7 @@ inline void tail_rows(Source &s, size_t grid, bool carry) {
 }
 // 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan); 源库 = 列所在库, 主库在 ReadScope
 struct ReadPlan {
-  size_t level = L_min;     // 网格层 (尾部行: 定 at 与开盘承接)
+  size_t level = L_1min;     // 网格层 (尾部行: 定 at 与开盘承接)
   std::vector<ColRef> cols; // [平面列]
   std::vector<Source> srcs;
   size_t n() const { return cols.size(); }

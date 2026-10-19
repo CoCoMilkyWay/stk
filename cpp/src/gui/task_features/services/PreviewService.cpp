@@ -13,7 +13,7 @@ void PreviewService::RequestCompute(SharedData &data) {
 
   Req req;
   // price 笼: 涨跌停两列只在 all 库 (票池库经旁读)
-  const std::vector<ColRef> cage = {data.feature.ref(kAllLib, L_day, "lim_dn"), data.feature.ref(kAllLib, L_day, "lim_up")};
+  const std::vector<ColRef> cage = {data.feature.ref(kAllLib, L_1day, "lim_dn"), data.feature.ref(kAllLib, L_1day, "lim_up")};
   req.spec.cage = {cage[0].col, cage[1].col};
   req.scope = analysis::read_scope(data.config, lib, cage);
   if (req.scope.months.empty())

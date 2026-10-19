@@ -7,14 +7,14 @@
 #include "shared/Pool.hpp"
 
 // ============================================================================
-// CoreLob: Lob 档单资产时序计算. 订单簿 → L_sec (tick, 秒索引) → resample → L_min (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
+// CoreLob: Lob 档单资产时序计算. 订单簿 → L_sec (tick, 秒索引) → resample → L_1min (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
 //   与 CoreBar 对仗: compute_and_store = 本源单位 (逐笔) 先 advance 到所在分钟, 再进 DAG + 重采样器
 //   每笔: run<L_sec>(t) 按触发域 (onTaker|onMaker|onCancel → onTick → onDepth) 调 DAG, 写 L_sec 行 + 标签回填
-//   分钟: close_minute(m) 调 onMinute 域, 写 L_min 行; 只经 CoreTs::advance (时钟推进) 触发
+//   分钟: close_minute(m) 调 onMinute 域, 写 L_1min 行; 只经 CoreTs::advance (时钟推进) 触发
 //   顺序: 本笔先 advance 到本笔所在分钟 (逐分钟结算之前尚未结算的分钟), 再进 DAG (run<L_sec> → accumulate).
-//   所以 L_min 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态";
+//   所以 L_1min 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态";
 //   onMinute 域只读 MinuteData / 分钟边界 (md.index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
-//   L_min 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
+//   L_1min 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
 //   缺数据日 = 零事件日, 同一路径 (empty_day). 本类不读任何特征值, 不特判任何节点.
 //   ts_valid 只标"本分钟有成交", 标签分钟型 exit 仍只在有成交的分钟推进 (无成交无法平仓).
 //   Lob 档 (逐笔 → 订单簿源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
@@ -55,7 +55,7 @@ public:
 
     const size_t t = Clock_to_L_sec(dag_.tick_data.lob.hour, dag_.tick_data.lob.minute, dag_.tick_data.lob.second);
     dag_.tick_data.sec_index = static_cast<uint32_t>(t);
-    advance(L_sec_to_L_min(t));
+    advance(L_sec_to_L_1min(t));
     run<L_sec>(t);
     tick2min_.accumulate();
   }
@@ -69,7 +69,7 @@ private:
 
   // ---------------------------------------------------------------- L_sec 每笔 ----
   // 与 CoreCs::run<LVL> 对仗: 本笔按触发域 onTaker|onMaker|onCancel → onTick → onDepth 进 DAG → 写 L_sec 行 + ts_valid,
-  // 标签快照 / 锚定. L_min 行走 CoreTs::close_minute (advance 内 roll 出 bar 后)
+  // 标签快照 / 锚定. L_1min 行走 CoreTs::close_minute (advance 内 roll 出 bar 后)
   template <size_t LVL>
   inline void run(size_t t) {
     static_assert(LVL == L_sec);
@@ -95,7 +95,7 @@ private:
     if (depth_updated) {
       dag_.run<Trigger::onDepth>();
 
-      // 标签: 盘口快照入环, 然后 L_min 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟型行); 开盘价走分钟 bar (close_minute → minute_closed)
+      // 标签: 盘口快照入环, 然后 L_1min 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟型行); 开盘价走分钟 bar (close_minute → minute_closed)
       dag_.label.snapshot(t);
       dag_.label.minute_anchored(t, writer());
     }

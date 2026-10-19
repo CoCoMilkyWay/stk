@@ -121,7 +121,7 @@ public:
     y[vwap] = vwap_last_;
 
     // twap: 末笔持有到分钟末; 当日尚无成交 (span 0) → 退 vwap (同源同刻, 不产 NaN)
-    const uint32_t t_end = (static_cast<uint32_t>(L_min_to_L_sec(md_.index)) + 60u) * 1000u;
+    const uint32_t t_end = (static_cast<uint32_t>(L_1min_to_L_sec(md_.index)) + 60u) * 1000u;
     twap_acc_ += px_last_ * static_cast<float>(t_end > t_last_ ? t_end - t_last_ : 0u);
     const float span = static_cast<float>(t_end > t_start_ ? t_end - t_start_ : 0u);
     y[twap] = span > 0.0f && px_last_ > 0.0f ? twap_acc_ / span : vwap_last_;
@@ -175,7 +175,7 @@ private:
   X(dlogp_taker_bid, CAT1, AUTO, "Taker Bid Log-Price Change", "主动买成交价变动和", "分钟内主动买成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,B}])", TS(Flow, dlogp_taker_bid, None, None)) \
   X(dlogp_taker_ask, CAT1, AUTO, "Taker Ask Log-Price Change", "主动卖成交价变动和", "分钟内主动卖成交对上一笔成交价的对数变动之和(基点)", R"(\sum_{\tau \in \Delta t} 10^4 \ln\frac{P_\tau}{P_{\tau-1}} \mathbf{1}[O_\tau^{T,A}])", TS(Flow, dlogp_taker_ask, None, None))
 
-#define FIELDS_L_min_Flow(X, CAT1)                                                                                                                                                                                                                                       \
+#define FIELDS_L_1min_Flow(X, CAT1)                                                                                                                                                                                                                                       \
   FLOW_EVENT_ROWS(X, CAT1, taker, "T", "Taker", "主动成交")                                                                                                                                                                                                              \
   FLOW_TAKER_DLOGP_ROWS(X, CAT1)                                                                                                                                                                                                                                         \
   FLOW_EVENT_ROWS(X, CAT1, maker, "M", "Maker", "新增委托")                                                                                                                                                                                                              \

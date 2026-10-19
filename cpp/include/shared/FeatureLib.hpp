@@ -25,7 +25,7 @@ struct Config;
 struct LibDef {
   const char *name; // 库名 = 目录名 (票池 = 列名去 pool_ 前缀)
   TierId tier;
-  size_t pool_col; // 票池: Bar 库 L_day 的 pool_<name> 列下标; all: SIZE_MAX
+  size_t pool_col; // 票池: Bar 库 L_1day 的 pool_<name> 列下标; all: SIZE_MAX
 };
 std::span<const LibDef> feature_libs(); // 下标 = LibId
 const LibDef &lib_def(LibId lib);

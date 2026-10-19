@@ -1,11 +1,11 @@
 #pragma once
 
 // =============================================================================
-// Kline (CS) - 分钟价格的截面列 (源 = Kline 节点 L_min 列)
+// Kline (CS) - 分钟价格的截面列 (源 = Kline 节点 L_1min 列)
 // =============================================================================
 //   close_cs = pct_rank(z(winsor_mad(P_t)))   股价截面秩 (WinsorRank, 方法见 Method/CS.hpp)
 // =============================================================================
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-#define FIELDS_L_min_CsKline(X, CAT1) \
-  X(close_cs, CAT1, AUTO, "Price Factor", "股价因子", "pct_rank(z(winsor_mad(close)))", R"(\mathrm{pctl}(z(\mathrm{w}(P^{\mathrm{close}}_t))))", CS(bar, L_min, close, None, WinsorRank))
+#define FIELDS_L_1min_CsKline(X, CAT1) \
+  X(close_cs, CAT1, AUTO, "Price Factor", "股价因子", "pct_rank(z(winsor_mad(close)))", R"(\mathrm{pctl}(z(\mathrm{w}(P^{\mathrm{close}}_t))))", CS(bar, L_1min, close, None, WinsorRank))

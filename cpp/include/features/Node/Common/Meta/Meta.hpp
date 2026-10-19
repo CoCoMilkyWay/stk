@@ -1,13 +1,13 @@
 #pragma once
 // MetaTracker: 基建标志 ts_valid / cs_valid 的状态机 (两档共用; 落盘列 FIELDS_*_Meta 各档自写, 编码/解码 → features/MetaFlag.hpp)
-//   CoreTs 持有: begin_day 重置 + 给当日成员位, close_minute 先 on_minute 并入 L_min 及以上各层当前行, close_row<LVL> 取 flag<LVL>();
+//   CoreTs 持有: begin_day 重置 + 给当日成员位, close_minute 先 on_minute 并入 L_1min 及以上各层当前行, close_row<LVL> 取 flag<LVL>();
 //   Lob 档每笔另喂 on_tick (L_sec 行 + 分钟 depth OR), 写 L_sec 行取 flag<L_sec>().
 //   Bar 档无逐笔 (从不 on_tick) → min_depth_ 恒 false, 各层 flag = 有成交 ? pack(false, 1) : 0, 符号位 (depth) 恒不置.
 //
-//   ts_valid 单槽三态编码: 0 = 该行无事件 (L_sec) / 行内无成交 (L_min / 分钟箱层 / L_day); 非 0 = 有 (data 有效); 负 = 盘口有更新 (depth 有效)
-//   幅值: L_sec = 当时 micro price (量加权中间价, 元; 开盘竞价盘口未发布时退化为最近事件价); L_min 及以上 = 1 (纯标志)
+//   ts_valid 单槽三态编码: 0 = 该行无事件 (L_sec) / 行内无成交 (L_1min / 分钟箱层 / L_1day); 非 0 = 有 (data 有效); 负 = 盘口有更新 (depth 有效)
+//   幅值: L_sec = 当时 micro price (量加权中间价, 元; 开盘竞价盘口未发布时退化为最近事件价); L_1min 及以上 = 1 (纯标志)
 //   依据: 盘口更新必来自事件 → depth ⟹ data, 三态刚好用 零/符号 编进一个 Float16 槽, 价格精度无损
-//   L_min 行稠密 (每分钟都写, 特征列 ALL 不受本列门控), 本列在 L_min 只是"有成交"信息位 + 标签分钟型 exit 的推进条件.
+//   L_1min 行稠密 (每分钟都写, 特征列 ALL 不受本列门控), 本列在 L_1min 只是"有成交"信息位 + 标签分钟型 exit 的推进条件.
 //
 //   cs_valid = 当日成员 ? 1 : 0 —— 纯日频成员位, 整日常量, 与事件无关 (盘前一次写满本档全部层全部行). 两列对仗:
 //     ts_valid  本资产这一行有没有事件 / 成交 (TS 语义, 与池无关; 全轴资产永远算, 日后进池不用补历史)
@@ -18,13 +18,13 @@
 //   Bar = 在市 (Fund::in_market). 对本类只是一个 (资产, 日) 的 bool —— TS 行仍只看本资产 + 日频 PIT, 不破一致性红线.
 
 #include "features/MetaFlag.hpp"              // fmeta:: 编码/解码 (稳定头, 消费端直接用它, 不依赖本节点文件)
-#include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / L_sec_to_L_min
+#include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / L_sec_to_L_1min
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 
-// ts_valid 状态机: 同秒 (L_sec 行) / 同分钟 (L_min 行) 多笔的 depth 位 OR 累积 + micro price 维护.
+// ts_valid 状态机: 同秒 (L_sec 行) / 同分钟 (L_1min 行) 多笔的 depth 位 OR 累积 + micro price 维护.
 // 逐笔覆盖写同一槽位, 最后一笔的累积值 = 该行终值 (免读改写). close_minute 在跨分钟的那笔
 // 进入 on_tick 之前调 (CoreTs::advance 顺序), 所以 on_minute 读到的 min_depth_ 就是刚完结分钟的 OR.
 // cs(): 当日 cs_valid 值 = 成员 ? 1 : 0 (成员位 begin_day 给, 日内不变; CoreTs 盘前写满整列).
@@ -41,7 +41,7 @@ public:
       sec_ = t;
       sec_depth_ = false;
     }
-    const size_t m = L_sec_to_L_min(t);
+    const size_t m = L_sec_to_L_1min(t);
     if (m != min_) {
       min_ = m;
       min_depth_ = false;
@@ -61,15 +61,15 @@ public:
     assert(price_ > 0.0f && "日内首笔必有价: 竞价阶段只有限价单, 撤单前必有挂单");
   }
 
-  // 每分钟结算一次 (close_minute, 收行之前; 跨分钟那笔尚未 on_tick): 刚完结分钟的成交 / depth 位 OR 进 L_min 及以上各层的当前行
+  // 每分钟结算一次 (close_minute, 收行之前; 跨分钟那笔尚未 on_tick): 刚完结分钟的成交 / depth 位 OR 进 L_1min 及以上各层的当前行
   // (depth 只随有成交分钟并入: 无事件分钟不会 on_tick, min_depth_ 是更早分钟的残值)
   void on_minute(bool traded) {
-    for (size_t l = L_min; l < LEVEL_COUNT; ++l) {
+    for (size_t l = L_1min; l < LEVEL_COUNT; ++l) {
       traded_[l] |= traded;
       depth_[l] |= traded && min_depth_;
     }
   }
-  // 层 LVL 本行的 ts_valid. L_sec: 当前秒 (逐笔覆盖写); L_min 及以上: 刚收的行 (收行时取, 并开该层新行), 行内无成交 → 0
+  // 层 LVL 本行的 ts_valid. L_sec: 当前秒 (逐笔覆盖写); L_1min 及以上: 刚收的行 (收行时取, 并开该层新行), 行内无成交 → 0
   template <size_t LVL>
   float flag() {
     if constexpr (LVL == L_sec) {
@@ -92,7 +92,7 @@ public:
 private:
   size_t sec_ = SIZE_MAX, min_ = SIZE_MAX;
   bool sec_depth_ = false, min_depth_ = false;
-  std::array<bool, LEVEL_COUNT> traded_{}, depth_{}; // [lvl] L_min 及以上各层当前行 (close_minute 逐分钟 OR, flag 取走即清; L_sec 位不用)
+  std::array<bool, LEVEL_COUNT> traded_{}, depth_{}; // [lvl] L_1min 及以上各层当前行 (close_minute 逐分钟 OR, flag 取走即清; L_sec 位不用)
   bool book_priced_ = false;                         // 日内是否已有盘口价 (之前幅值退化为事件价)
   bool member_ = false;                              // 当日成员位 (begin_day 给; 日内不变)
   float price_ = 0.0f;                               // 最近价 (元, 日内): 盘口 micro price, 竞价阶段为事件价

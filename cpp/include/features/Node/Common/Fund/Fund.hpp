@@ -3,16 +3,16 @@
 // =============================================================================
 // Fund - 日频 PIT 基本面 (日频节点: compute=flush=onSettle, 每个交易日收盘后推一格; Series 跨天保留)
 //        持一个 fund::Stream (per-资产日频状态机), 收盘后沿 D 轴推进到次日 (d+1) 算出全部口 (估值分母 / 因子 raw / filter):
-//        L_day 行 D = 次日盘前态; 下游 (Valuation / Depth / Flow / Book / Auction / Kline / LabelLob) 按口取 Series,
-//        盘中读 back() = 前一交易日 L_day 行 = 当日适用值; 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
+//        L_1day 行 D = 次日盘前态; 下游 (Valuation / Depth / Flow / Book / Auction / Kline / LabelLob) 按口取 Series,
+//        盘中读 back() = 前一交易日 L_1day 行 = 当日适用值; 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
 //        两档共用类; 节点实例 / 落盘列见 Node/{Bar,Lob}/TS/Fund/Fund.hpp
 // =============================================================================
 //   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.
-//   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L_min 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
+//   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L_1min 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
 //   涨跌停比较容差统一用 kPxEps (DataDefine.hpp).
 //
-//   逐表对齐 (源表 date = T 的行; Stream 网格行 row = idx − cutoff, 见 Fundamental.cpp RowOf; L_day 行 D = Stream 状态 d+1):
-//     表 (字段)                                              更新时点               cutoff   L_day 行 D 含
+//   逐表对齐 (源表 date = T 的行; Stream 网格行 row = idx − cutoff, 见 Fundamental.cpp RowOf; L_1day 行 D = Stream 状态 d+1):
+//     表 (字段)                                              更新时点               cutoff   L_1day 行 D 含
 //     real_bar1d.close                                       T 盘后                 −1       T ≤ D
 //     real_bar1d.pre_close / adjust_factor                   T 盘前 (交易所公布)     0       T ≤ D+1 (次日前收 / 除权)
 //     shares (total / a_float)                               T 盘前 (生效日记账)     0       T ≤ D+1
@@ -23,7 +23,7 @@
 //     dividend / forecast                                    公告日 T 盘后          −1       公告日 ≤ D
 //     industry component / change                            T 盘后                 −1       T ≤ D
 //     日历派生 (list_age / delist_age / is_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
-//   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
+//   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_1day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
 //   回测区间末日的 D+1 须在 D 轴内 (D 轴截到 today ⇒ 回测区间不含 today; fund::Panel::build 断言).
 //
 // 【fast-math 契约】本文件不做 isnan/isfinite (状态机在 precise-math TU 里), y 只被下游算术消费, NaN 硬件透传.
@@ -47,7 +47,7 @@ public:
     lim_up,         // [元] 次日适用涨停价 (无限制 → NaN; 盘中 back() = 当日适用)
     lim_dn,         // [元] 次日适用跌停价
     low_mc_thr,     // [亿元] 低市值阈值 (主板 5 / 其他 3)
-    // ---- 日频常量列 (Bar 档直接落盘, 与 FIELDS_L_day_Fund 一一对应) ----
+    // ---- 日频常量列 (Bar 档直接落盘, 与 FIELDS_L_1day_Fund 一一对应) ----
     ind_l1,      // SW2021 一级行业 ID (0=未知, 1..31)
     list_age,    // [日历日] 未上市 → NaN
     delist_age,  // [日历日] 未退市 → NaN
@@ -156,7 +156,7 @@ public:
     return !bj && f[list_age].back() >= 0.0f && !(f[delist_age].back() >= 0.0f) && f[is_susp].back() == 0.0f;
   }
 
-  // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 推入 = L_day 行 D
+  // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 推入 = L_1day 行 D
   void compute() {
     const int d = today();
     stream_.advance_to(d + 1, y);

@@ -2,7 +2,7 @@
 //
 // 两页筛选口径同源、数据源不同:
 //   TABLE     = AssetInfo 全局快照 (StockInfo: 字符串行业码, 静态上市状态)
-//   ORDERFLOW = 锚点日 L_min 落盘列 (逐日 PIT: 数字 SW2021 行业 ID)
+//   ORDERFLOW = 锚点日 L_1min 落盘列 (逐日 PIT: 数字 SW2021 行业 ID)
 // 所以这里只共享控件本身与 ST/Listed/Board 三维的选项表; 行业维 (键类型不同)
 // 和尾部统计由各页自绘.
 #pragma once

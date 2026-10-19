@@ -1,6 +1,6 @@
 #pragma once
 
-// Bar 档同 5 分钟箱历史基准 z 值 (类见 Node/Common/Basic/Tod.hpp; x = 箱内 bar1m 总量 / 额, 与 Trade5min 同源; 不落 L_min: 逐分钟代价太大)
+// Bar 档同 5 分钟箱历史基准 z 值 (类见 Node/Common/Basic/Tod.hpp; x = 箱内 bar1m 总量 / 额, 与 Trade5min 同源; 不落 L_1min: 逐分钟代价太大)
 #include "features/Node/Common/Basic/Tod.hpp"
 
 #define NODE_Tod5min(N) N(Tod5min, (TodT<BinData, bins_per_day(5)>), (min5_data), on5Min)

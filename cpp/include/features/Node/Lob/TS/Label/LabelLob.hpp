@@ -35,7 +35,7 @@
 //                               入环 (materialize offset=1); 查询目标恰为当前秒 (还没结算) 时从环末现算
 //                               (offset=0). 与"每次更新都算"逐值一致, 计算次数从每笔盘口更新降到每活跃秒一次.
 //                               只有可成交簿记为活跃秒.
-//   minute_anchored(t, writer)  L_min 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
+//   minute_anchored(t, writer)  L_1min 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
 //                               把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 同时写该行的冲击成本列;
 //                               行 e 捕获即是行 e−n 的分钟型 exit 到位, 顺带写分钟型 (e−n, n) 的标签.
 //   minute_closed(t_min, writer)   分钟 bar 结算后 (CoreTs::close_minute, 只在有成交的分钟调): 只记开盘价 (开盘型 T+N 的 exit,
@@ -52,7 +52,7 @@
 #include "features/DataDefine.hpp"
 #include "features/Node/Common/Label/LabelGroups.hpp" // LABEL_GROUPS / HoldKind / LABEL_KIND / LABEL_N (两档共用)
 #include "features/Node/Common/Label/LabelHold.hpp"   // 持有期骨架 (两档共用)
-#include "features/TimeIndex.hpp"                     // L_min_to_L_sec (分钟锚定路径)
+#include "features/TimeIndex.hpp"                     // L_1min_to_L_sec (分钟锚定路径)
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -115,8 +115,8 @@ public:
       pending_sec_ = t;
   }
 
-  // L_min 分钟锚定 entry 捕获: 锚点 = 分钟 m 末 (= m+1 起始秒; 11:29 → 13:00:00), entry = 锚点+DELAY.
-  //   L_min 行 m 的特征是分钟 m 结束时才可知的 (CoreLob 顺序), 所以标签只能从 m 末起算, 锚到 m 起始秒会前视一分钟.
+  // L_1min 分钟锚定 entry 捕获: 锚点 = 分钟 m 末 (= m+1 起始秒; 11:29 → 13:00:00), entry = 锚点+DELAY.
+  //   L_1min 行 m 的特征是分钟 m 结束时才可知的 (CoreLob 顺序), 所以标签只能从 m 末起算, 锚到 m 起始秒会前视一分钟.
   //   entry 快照按行存进当日悬挂槽 (所有组共用): entry 秒完结 (entry_sec < t) 且 [entry_sec − 60, t − 1] 内有盘口才算捕获
   //   (锚点后无可成交簿 = 顺延中, 等下一活跃秒; 一直没有 → day_end 按收盘价建仓). 捕获即写该行的冲击成本列 (只依赖 entry 盘口).
   //   只在可成交更新上推进 (snapshot 刚把 pending 设为 t): 集合竞价期的更新什么都不做 —— 连续竞价已结束,
@@ -129,7 +129,7 @@ public:
       return; // 本次更新不可成交 (集合竞价)
     Pend &p = today();
     while (p.n_entry < TRADE_MINUTES_PER_DAY) {
-      const size_t entry_sec = L_min_to_L_sec(p.n_entry + 1) + LABEL_DELAY_SECONDS; // 末分钟 254 → 15303 (盘后), 永不捕获 → day_end
+      const size_t entry_sec = L_1min_to_L_sec(p.n_entry + 1) + LABEL_DELAY_SECONDS; // 末分钟 254 → 15303 (盘后), 永不捕获 → day_end
       if (entry_sec >= t)
         break; // entry 秒尚未完结: 同秒只消费最后一次盘口
       const Snapshot *e = get_snapshot_tradable(entry_sec, t - 1);
@@ -320,7 +320,7 @@ private:
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 行由配置生成, 顺序 = LB 块布局: L_min 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序, 与 hold_col(h) 对应),
+// 行由配置生成, 顺序 = LB 块布局: L_1min 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序, 与 hold_col(h) 对应),
 // 之后 [cost_buy × LABEL_AMTS, cost_sell × LABEL_AMTS] (与 COST_COL / write_cost 对应).
 // 每种 KIND 的描述片段 (英 / 中 在 LabelGroups.hpp; exit 备注 / 公式尾在此), 由 LABEL_ROW 按 kind token 拼接.
 // 备注统一三段: 平仓价 | 顺延规则 | 尾部规则 (收盘型无顺延 / 尾部)
@@ -346,4 +346,4 @@ private:
   X(lb_cost_sell_##a##w, CAT1, ratio_pos, "Entry Sell Impact " #a "w", "卖出冲击(" #a "万)", \
     "建仓卖出冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃bid " #a "万元, 成交VWAP相对中间价的折价. 边界: 全簿不足余量按跌停价成交, 买侧全空且无跌停价则NaN. 做空净收益=lb_short_*−本列−Config::sell_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LABEL)
 
-#define FIELDS_L_min_LabelLob(X, CAT1) LABEL_GROUPS(LABEL_GROUP, X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)
+#define FIELDS_L_1min_LabelLob(X, CAT1) LABEL_GROUPS(LABEL_GROUP, X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)

@@ -71,7 +71,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_FlowRate(N) N(FlowRate, (FlowRate), (tick_data), onTick, onMinute)
 
-#define FIELDS_L_min_FlowRate(X, CAT1)                                                                                                                                                                                                                              \
+#define FIELDS_L_1min_FlowRate(X, CAT1)                                                                                                                                                                                                                              \
   X(mkr_bid, CAT1, RAW, "Bid Maker Rate", "买方挂单额", "每分钟买方挂单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,B}| \cdot P_\tau)", TS(FlowRate, mkr_bid, None, None))                                                                              \
   X(mkr_ask, CAT1, RAW, "Ask Maker Rate", "卖方挂单额", "每分钟卖方挂单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{M,A}| \cdot P_\tau)", TS(FlowRate, mkr_ask, None, None))                                                                              \
   X(cxl_bid, CAT1, RAW, "Bid Cancel Rate", "买方撤单额", "每分钟买方撤单金额(万元/分钟)", R"(\sum_{\tau \in \Delta t} |O_\tau^{C,B}| \cdot P_\tau)", TS(FlowRate, cxl_bid, None, None))                                                                             \

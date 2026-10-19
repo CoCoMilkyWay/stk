@@ -70,7 +70,7 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_Oa(N) N(Oa, (OA), (tick_data), onTick, onMinute)
 
-#define FIELDS_L_min_Oa(X, CAT1)                                                                                                                                                                                                                                                                                                      \
+#define FIELDS_L_1min_Oa(X, CAT1)                                                                                                                                                                                                                                                                                                      \
   X(oa_cr_bid, CAT1, RATIO, "OA Bid Cancel Ratio", "早盘竞价买方撤单率", "集合竞价买方撤单额占买方挂单额比例(降频)", R"(\frac{\sum_{\tau\in\mathcal{T}_{\mathrm{OA}}}|O_{\tau}^{C,B}|}{\sum_{\tau\in\mathcal{T}_{\mathrm{OA}}}|O_{\tau}^{M,B}|}, \quad \mathcal{T}_{\mathrm{OA}}=[09\!:\!15,09\!:\!25))", TS(Oa, cr_bid, None, None)) \
   X(oa_cr_ask, CAT1, RATIO, "OA Ask Cancel Ratio", "早盘竞价卖方撤单率", "集合竞价卖方撤单额占卖方挂单额比例(降频)", R"(\frac{\sum_{\tau\in\mathcal{T}_{\mathrm{OA}}}|O_{\tau}^{C,A}|}{\sum_{\tau\in\mathcal{T}_{\mathrm{OA}}}|O_{\tau}^{M,A}|}, \quad \mathcal{T}_{\mathrm{OA}}=[09\!:\!15,09\!:\!25))", TS(Oa, cr_ask, None, None)) \
   X(oa_tr_bid, CAT1, RATIO, "OA Bid Trade Ratio", "早盘竞价买方成交率", "集合竞价买方成交额占买方挂单额比例(降频)", R"(\frac{\sum_{\tau\in\mathcal{T}_{\mathrm{OA}}}|O_{\tau}^{T,B}|}{\sum_{\tau\in\mathcal{T}_{\mathrm{OA}}}|O_{\tau}^{M,B}|}, \quad \mathcal{T}_{\mathrm{OA}}=[09\!:\!15,09\!:\!25))", TS(Oa, tr_bid, None, None))  \

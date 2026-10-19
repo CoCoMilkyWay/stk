@@ -6,7 +6,7 @@
 
 #define NODE_Kline(N) N(Kline, (Kline), (minute_data, Fund.out(Fund.pre_close)), onMinute)
 
-#define FIELDS_L_min_Kline(X, CAT1)                                                                                                 \
+#define FIELDS_L_1min_Kline(X, CAT1)                                                                                                 \
   X(lob_open, CAT1, AUTO, "LOB Open", "LOB开盘价", "逐笔还原分钟开盘价(元)", R"(P^{\mathrm{open}}_t)", TS(Kline, open, None, None)) \
   X(lob_high, CAT1, AUTO, "LOB High", "LOB最高价", "逐笔还原分钟最高价(元)", R"(P^{\mathrm{high}}_t)", TS(Kline, high, None, None)) \
   X(lob_low, CAT1, AUTO, "LOB Low", "LOB最低价", "逐笔还原分钟最低价(元)", R"(P^{\mathrm{low}}_t)", TS(Kline, low, None, None))     \

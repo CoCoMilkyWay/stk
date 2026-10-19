@@ -1,10 +1,10 @@
 #pragma once
 
-// Bar 档 Fund 节点 + 日频基本面落盘列 (L_day; 类见 Node/Common/Fund/Fund.hpp)
+// Bar 档 Fund 节点 + 日频基本面落盘列 (L_1day; 类见 Node/Common/Fund/Fund.hpp)
 #include "features/Node/Common/Fund/Fund.hpp"
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 日频节点: L_day 行 D = 次日盘前态 (逐表对齐见 Node/Common/Fund/Fund.hpp 文件头)
+// 日频节点: L_1day 行 D = 次日盘前态 (逐表对齐见 Node/Common/Fund/Fund.hpp 文件头)
 #define NODE_Fund(N) N(Fund, (Fund), (fund_panel, asset_id_, date_), onSettle)
 
 // 三表流量项三口径行: item → item_q / item_ttm / item_lyr (Q 单季 / 滚动四季 / 上年年报)
@@ -16,8 +16,8 @@
 #define FUND_ROW_BS(X, CAT1, item, EN, CN, DESC, SYM) \
   X(item, CAT1, AUTO, EN " MRQ", CN "MRQ", DESC "(最近报告期, 亿元)", SYM R"(^{MRQ}_{D})", TS(Fund, item, None, None))
 
-// 日频列只在 L_day (行业亦然: 日内截面中性化按 as-of 读前一交易日行 = 当日适用, 见 Method/CS.hpp NEUTRAL_RANK_*)
-#define FIELDS_L_day_Fund(X, CAT1)                                                                                                                                                                           \
+// 日频列只在 L_1day (行业亦然: 日内截面中性化按 as-of 读前一交易日行 = 当日适用, 见 Method/CS.hpp NEUTRAL_RANK_*)
+#define FIELDS_L_1day_Fund(X, CAT1)                                                                                                                                                                           \
   X(ind_l1, CAT1, AUTO, "Industry L1", "一级行业", "SW2021一级行业ID(0=未知,1..31)", R"(\mathrm{ind}_{D})", TS(Fund, ind_l1, None, None))                                                                    \
   X(list_age, CAT1, AUTO, "List Age", "上市龄", "次日上市日历日数(未上市→NaN)", R"(D - D_{list})", TS(Fund, list_age, None, None))                                                                           \
   X(delist_age, CAT1, AUTO, "Delist Age", "退市龄", "次日退市日历日数(未退市→NaN)", R"(D - D_{delist})", TS(Fund, delist_age, None, None))                                                                   \

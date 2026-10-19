@@ -18,9 +18,9 @@ class FeatureRead;
 // 目的: Feature 表每行尾部两个迷你曲线 (PDF / PSD), 全表一眼对比形态.
 // 与 Dist/Transform 维度反转 —— 那边单特征全数据, 这边全特征抽样数据:
 //
-//   每层各跑一份 (网格 = 该层, 段 = 日内层 1 天 / L_day 连续 255 天), 各层轮交错 (层 0 轮 0, 层 1 轮 0, …);
+//   每层各跑一份 (网格 = 该层, 段 = 日内层 1 天 / L_1day 连续 255 天), 各层轮交错 (层 0 轮 0, 层 1 轮 0, …);
 //   轮 = 一个抽样段 (plan_segs Shuffle 取前 kPvRounds 个 → 无偏覆盖);
-//   轮首单线程读笼: Bar 档 L_day lim_dn / lim_up 逐日读 (当日常量, 盘前已知 → 同日对照, 不走 as-of; 按 lib.axis.ids 取全轴);
+//   轮首单线程读笼: Bar 档 L_1day lim_dn / lim_up 逐日读 (当日常量, 盘前已知 → 同日对照, 不走 as-of; 按 lib.axis.ids 取全轴);
 //   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自按块读计划读块列 (+ 该层 ts_valid) →
 //     私有 TsPlane 转置 (各列按自己的 valid_type 折哨兵);
 //     每特征槽一轮只被一个任务写, 每轮一次 dispatch 隔开相邻轮 → 累积器无锁无归约;
@@ -77,7 +77,7 @@ struct Preview : Published {
     TierId tier = TierId::Lob;                    // 预览的档 (= 主库档; UI 按 (档, 层) 取 cells)
     std::array<ReadPlan, LEVEL_COUNT> plans;      // 每层预览列 (主档该层, metadata 下标升序, 不含 META 类); 空 = 该层不跑
     std::array<size_t, LEVEL_COUNT> n_features{}; // 每层特征总数 (cells 尺寸)
-    std::vector<size_t> cage;                     // price 笼两列 {lim_dn, lim_up} (Bar 档旁读, All 的 L_day 字段表下标; 逐日笼内判定, 融合进主扫描)
+    std::vector<size_t> cage;                     // price 笼两列 {lim_dn, lim_up} (Bar 档旁读, All 的 L_1day 字段表下标; 逐日笼内判定, 融合进主扫描)
   };
   // 发布快照 (进度/epoch/mutex 在 Published; done/total = 各层轮数和). 块末短锁拷贝该块 cells
   struct Snap {

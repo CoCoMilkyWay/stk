@@ -59,7 +59,7 @@ static constexpr size_t kMaxTotalSamples = size_t(2) << 30;
 // 桶键 = 时钟分钟 / 10, 上下午各自连续编号 → 槽位紧凑无空洞.
 static constexpr size_t kTodBinMinutes = 10;
 constexpr size_t tod_bin_of(size_t t_min) {
-  const ClockTime c = L_min_to_Clock(t_min);
+  const ClockTime c = L_1min_to_Clock(t_min);
   const size_t key = (static_cast<size_t>(c.hour) * 60 + c.minute) / kTodBinMinutes;
   constexpr size_t key_am0 = MORNING_START_MIN / kTodBinMinutes;
   constexpr size_t n_am = (MORNING_END_MIN - 1) / kTodBinMinutes - key_am0 + 1;
@@ -68,7 +68,7 @@ constexpr size_t tod_bin_of(size_t t_min) {
 }
 static constexpr size_t kTodBins = tod_bin_of(TRADE_MINUTES_PER_DAY - 1) + 1;
 static_assert(tod_bin_of(0) == 0 && tod_bin_of(MORNING_MINUTES) == tod_bin_of(MORNING_MINUTES - 1) + 1);
-// 桶首分钟 (L_min 下标) → UI 标签 "HH:MM"
+// 桶首分钟 (L_1min 下标) → UI 标签 "HH:MM"
 constexpr std::array<uint16_t, kTodBins> make_tod_bin_start() {
   std::array<uint16_t, kTodBins> s{};
   for (size_t t_min = TRADE_MINUTES_PER_DAY; t_min-- > 0;)
@@ -76,8 +76,8 @@ constexpr std::array<uint16_t, kTodBins> make_tod_bin_start() {
   return s;
 }
 inline constexpr auto kTodBinStart = make_tod_bin_start();
-// 任意层行 → 日内桶 (行末秒所在分钟的桶; L_day 收盘一行 → 末桶)
-constexpr size_t tod_bin_of_row(size_t lvl, size_t t) { return tod_bin_of(L_sec_to_L_min(level_end_sec(lvl, t) - 1)); }
+// 任意层行 → 日内桶 (行末秒所在分钟的桶; L_1day 收盘一行 → 末桶)
+constexpr size_t tod_bin_of_row(size_t lvl, size_t t) { return tod_bin_of(L_sec_to_L_1min(level_end_sec(lvl, t) - 1)); }
 
 // 聚合槽 (月/星期/日内/全局) 的目标样本量. KLL 的分位误差 ε≈1/k 只由容量决定, 与样本数
 // 无关 —— 5 年全市场灌进去的几亿样本, 最终也只存下 k·log2(n/k) ≈ 1 万个点, 早已饱和.
@@ -93,7 +93,7 @@ struct Dist : Published {
   };
 
   struct Spec {
-    ReadPlan plan; // 单列, 网格 = 该列自己的层 (日内桶按行末秒归桶, L_day 段 = 连续日)
+    ReadPlan plan; // 单列, 网格 = 该列自己的层 (日内桶按行末秒归桶, L_1day 段 = 连续日)
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   struct Snap {

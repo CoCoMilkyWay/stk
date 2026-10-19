@@ -10,9 +10,9 @@ namespace pool {
 Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
   assert(bar.tier == TierId::Bar && bar.ready() && "票池源 = Bar 库 (先算 Bar 库)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
-  // 第 D 日成员 = 盘前 (L_sec 行 0) as-of 的 L_day 列: level_asof(L_day, L_sec, 0) = -1 → D−1 收盘行 (与读端同一投影)
+  // 第 D 日成员 = 盘前 (L_sec 行 0) as-of 的 L_1day 列: level_asof(L_1day, L_sec, 0) = -1 → D−1 收盘行 (与读端同一投影)
   const LibId lib = lib_id(bar.name);
-  Source s{.lib = lib, .level = L_day};
+  Source s{.lib = lib, .level = L_1day};
   s.cs.io = {col};
   s.cs.vts = {L2::ValidType::ALL};
   s.slot = {0};

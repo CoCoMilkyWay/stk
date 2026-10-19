@@ -384,7 +384,7 @@ endforeach()
 #                        一个 TU 只许 include 一档的 NodesGenerated (两档节点文件的 NODE_ 宏同名).
 #   FeatureCategoriesGenerated.hpp  本档一级 / 二级分类表 (namespace <tier>)
 #   两档 FieldsGenerated 同处一个 TU (FeatureMeta.cpp / FeatureStoreConfig), 而节点 / 字段 owner 可同名
-#   (Fund / Kline / Meta) 且内容不同 —— 所以内联的 NODE_ / FIELDS_ 宏改名加档前缀 (<Tier>_NODE_x / <Tier>_FIELDS_L_min_x);
+#   (Fund / Kline / Meta) 且内容不同 —— 所以内联的 NODE_ / FIELDS_ 宏改名加档前缀 (<Tier>_NODE_x / <Tier>_FIELDS_L_1min_x);
 #   helper 宏原名内联, 两档同名必须逐字一致 (否则 FATAL_ERROR).
 #   节点实例和落盘列直接写在节点文件里 (TS/ 时序节点, CS/ 截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (NodeType), (ctor inputs), compute_trigger, flush_trigger)
@@ -398,7 +398,7 @@ endforeach()
 set(DAG_SCAN_ROOT     ${INC_ROOT}/features)
 set(DAG_TEMPLATE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/templates)
 # 落盘层名 (与 FeaturesDefine.hpp FeatureLevel / TIER_LEVELS 一致)
-set(DAG_LEVELS L_sec L_min L_5min L_15min L_30min L_60min L_day)
+set(DAG_LEVELS L_sec L_1min L_5min L_15min L_30min L_60min L_1day)
 string(REPLACE ";" "|" DAG_LEVEL_RE "${DAG_LEVELS}")
 
 # src 的全部 #define/#undef 行 → out_text (#define 加 #ifndef 守卫: 节点头先 include 时跳过; 整段冠 "// ---- rel ----", 无宏为空)

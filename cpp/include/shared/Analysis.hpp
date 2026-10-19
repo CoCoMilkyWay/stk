@@ -74,8 +74,8 @@ decltype(auto) with_grid(size_t lvl, Fn &&fn) {
   switch (lvl) {
   case L_sec:
     return fn(Grid<L_sec>{});
-  case L_min:
-    return fn(Grid<L_min>{});
+  case L_1min:
+    return fn(Grid<L_1min>{});
   case L_5min:
     return fn(Grid<L_5min>{});
   case L_15min:
@@ -85,7 +85,7 @@ decltype(auto) with_grid(size_t lvl, Fn &&fn) {
   case L_60min:
     return fn(Grid<L_60min>{});
   default:
-    return fn(Grid<L_day>{});
+    return fn(Grid<L_1day>{});
   }
 }
 // 一批段数: 每 (资产, 列) ≤ kBatchRows 行 (L_sec 1 段, 其余 kDaysPerBatch 段)
@@ -256,7 +256,7 @@ ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, 
 struct ReadSpec {
   LibId main = kAutoMain;
   DayAxis days = DayAxis::Main;
-  size_t level = L_min;
+  size_t level = L_1min;
   Rows rows = Rows::AsOf;
   bool carry = true; // Tail 可关 (前一日的点已在图上)
   std::vector<ColRef> cols;

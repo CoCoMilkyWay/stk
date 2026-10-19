@@ -60,7 +60,7 @@ struct Preview::Level {
 
 struct Preview::Runtime {
   std::array<std::unique_ptr<Level>, LEVEL_COUNT> lv; // 空 = 该层不跑
-  FeatureRead::DayColumns cage_day;                   // L_day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 库轴)
+  FeatureRead::DayColumns cage_day;                   // L_1day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 库轴)
   std::vector<uint32_t> asset_order;                  // [A] 固定种子洗牌 (轮间旋转取片)
   // ---- 线程私有 (按 tid; 各层共用) ----
   struct Shard {
@@ -209,7 +209,7 @@ bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<boo
   rt.shards.resize(n_threads);
   for (Runtime::Shard &sh : rt.shards)
     sh.samples.reserve(kPvAssetsPerRound * TRADE_MINUTES_PER_DAY);
-  rt.cage_day.preallocate(As[kAllLib], L_day, 2);
+  rt.cage_day.preallocate(As[kAllLib], L_1day, 2);
   rt.asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
 
   // 各层: 段序 (洗牌取前 kPvRounds 个, 无偏覆盖全区间, 轮序即收敛序) + 容量
@@ -232,8 +232,8 @@ bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<boo
     return true; // 库为空: 直接 Done, 表格全 "—"
   total.store(n_total, std::memory_order_release);
 
-  // 轮循环: 各层轮交错 (层序 = L_min 先: 特征最多, 再粗层, L_sec 最重最后)
-  constexpr std::array<size_t, LEVEL_COUNT> kOrder{L_min, L_5min, L_15min, L_30min, L_60min, L_day, L_sec};
+  // 轮循环: 各层轮交错 (层序 = L_1min 先: 特征最多, 再粗层, L_sec 最重最后)
+  constexpr std::array<size_t, LEVEL_COUNT> kOrder{L_1min, L_5min, L_15min, L_30min, L_60min, L_1day, L_sec};
   for (size_t r = 0; r < n_rounds; ++r)
     for (const size_t l : kOrder) {
       Level *lv = rt.lv[l].get();
@@ -260,7 +260,7 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
   const ReadPlan &pv_plan = pv.spec.plans[G::kLevel];
   size_t n_real = 0; // 本段真实日数 (尾段空位不入账)
   {
-    // 轮首笼 (单线程): Bar 档 L_day lim_dn / lim_up 逐日读 → 抽样资产逐日笼快照 (price 逐日判定融合进块扫描).
+    // 轮首笼 (单线程): Bar 档 L_1day lim_dn / lim_up 逐日读 → 抽样资产逐日笼快照 (price 逐日判定融合进块扫描).
     // 笼外扩容差 (存快照时做, 热循环保持严格比较): 贴板成交价与 lim 两列来源不同
     // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
     // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
@@ -270,13 +270,13 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
     for (size_t d = 0; d < days; ++d) {
       const Day day = plan.day(r * days + d);
       n_real += day.date != 0;
-      const bool has = day.has_prev & lib_bit(kAllLib); // 当日适用涨跌停 = 前一交易日 L_day 行; all 库那天没落盘 / 轴首 = 笼缺 (NaN)
+      const bool has = day.has_prev & lib_bit(kAllLib); // 当日适用涨跌停 = 前一交易日 L_1day 行; all 库那天没落盘 / 轴首 = 笼缺 (NaN)
       if (has)
         rd.of(kAllLib).load_day_columns(day.prev, pv.spec.cage, rt.cage_day);
       for (size_t k = 0; k < n_draw; ++k) {
         const size_t a = rt.asset_order[(a_off + k) % A];
         const size_t s = cage_ids ? cage_ids[a] : a;
-        const float dn = has ? static_cast<float>(rt.cage_day.col(0)[s]) : kNaN; // L_day 行 0 (日常量)
+        const float dn = has ? static_cast<float>(rt.cage_day.col(0)[s]) : kNaN; // L_1day 行 0 (日常量)
         const float up = has ? static_cast<float>(rt.cage_day.col(1)[s]) : kNaN;
         cage_dn[k * days + d] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
         cage_up[k * days + d] = up + (std::fabs(up) * kF16Rel + kPxEps);

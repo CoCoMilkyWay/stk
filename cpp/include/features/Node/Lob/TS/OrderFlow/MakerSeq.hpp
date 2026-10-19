@@ -93,7 +93,7 @@ private:
 #define MAKERSEQ_ACF_ROW(X, CAT1, k) \
   X(dir_acf_maker_##k, CAT1, AUTO, "Order Direction ACF lag " #k, "委托方向自相关lag" #k, "分钟内委托方向(±1)序列的lag-" #k "自相关(滞后项可跨分钟; 无配对→0)", R"(\frac{1}{n}\sum_{\tau \in \Delta t} d_\tau d_{\tau-)" #k R"(},\; d_\tau = \pm 1)", TS(MakerSeq, dir_acf_maker_##k, None, None))
 
-#define FIELDS_L_min_MakerSeq(X, CAT1)                                                                                                                                                                                            \
+#define FIELDS_L_1min_MakerSeq(X, CAT1)                                                                                                                                                                                            \
   MAKERSEQ_ACF_ROW(X, CAT1, 1)                                                                                                                                                                                                    \
   MAKERSEQ_ACF_ROW(X, CAT1, 5)                                                                                                                                                                                                    \
   MAKERSEQ_ACF_ROW(X, CAT1, 20)                                                                                                                                                                                                   \

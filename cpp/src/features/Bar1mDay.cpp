@@ -13,7 +13,7 @@ namespace {
 
 constexpr int kAuctionStamp = 9 * 60 + 25; // 09:25 撮合 bar
 
-// bar 结束时间戳 (墙钟分钟) → L_min 行
+// bar 结束时间戳 (墙钟分钟) → L_1min 行
 size_t stamp_to_min(int stamp) {
   const int m = stamp == kAuctionStamp ? stamp : stamp - 1;
   if (m >= MORNING_START_MIN && m < MORNING_END_MIN)

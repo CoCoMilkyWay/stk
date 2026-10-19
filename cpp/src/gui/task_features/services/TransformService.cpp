@@ -18,9 +18,9 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
 
   Req req;
   req.spec.params = params;
-  if (feat->level == L_day)
-    req.spec.params.season = Transform::Season::None; // L_day 无日内轮廓
-  // 网格 = 特征自己的层; 门控: 各列按自己的 valid_type, 任一需门控才带 ts_valid (L_min 全列 ALL, L_sec 按 DATA / DEPTH)
+  if (feat->level == L_1day)
+    req.spec.params.season = Transform::Season::None; // L_1day 无日内轮廓
+  // 网格 = 特征自己的层; 门控: 各列按自己的 valid_type, 任一需门控才带 ts_valid (L_1min 全列 ALL, L_sec 按 DATA / DEPTH)
   std::vector<ColRef> cols{*feat};
   // NeutralRank 上下文 (市值 / 行业) 只在 all 库各自声明层 (Method/CS.hpp): 一律旁读 all, as-of 投影到特征层
   if (params.cs_neutral()) {

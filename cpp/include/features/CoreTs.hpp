@@ -1,7 +1,7 @@
 #pragma once
 
 #include "features/DataDefine.hpp"
-#include "features/GraphNode.hpp"                     // graph::BIN_DATA (分钟箱层 + L_day 输入)
+#include "features/GraphNode.hpp"                     // graph::BIN_DATA (分钟箱层 + L_1day 输入)
 #include "features/Node/Common/Label/LabelGroups.hpp" // LABEL_NAME (标签列按名定址)
 #include "features/Node/Common/Meta/Meta.hpp"         // MetaTracker (ts_valid / cs_valid)
 #include "features/Storage/FeatureStore.hpp"
@@ -19,14 +19,14 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         end_day    advance 到收盘 (末分钟级联收 L_day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 归零分钟 / 分钟箱缓冲 (日 bar 跨天保留)
+//         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 归零分钟 / 分钟箱缓冲 (日 bar 跨天保留)
 //         empty_day  无数据日 = 零事件日, 同一路径
-//   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_min 以上各层当前行
-//                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_min 已出) → 该层节拍域 (beat_of; L_day 另跟 onSettle) → 写该层行 + ts_valid
-//                     → 有成交则标签 minute_closed. L_min / 分钟箱层 / L_day 同一路径, 两档同一路径
+//   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_1min 以上各层当前行
+//                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_1min 已出) → 该层节拍域 (beat_of; L_1day 另跟 onSettle) → 写该层行 + ts_valid
+//                     → 有成交则标签 minute_closed. L_1min / 分钟箱层 / L_1day 同一路径, 两档同一路径
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列, 落到以 t_min 为行末分钟的各层行
-//         (哪层有哪些标签列由字段表定: Lob 只 L_min; Bar 只 L_5min 及以上, 每层只留本层及以上的持有期组);
+//         (哪层有哪些标签列由字段表定: Lob 只 L_1min; Bar 只 L_5min 及以上, 每层只留本层及以上的持有期组);
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
 //   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 开盘型 (T+N) 回填旧日张量, 旧日句柄持到结清才 ts_close.
 //   档钩子 (Derived 实现):
@@ -54,8 +54,8 @@ public:
     dag_.label.day_begin();
   }
 
-  // 收盘: 末分钟 (收盘集合竞价 → L_min 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含),
-  // 末分钟级联写 L_day 收盘行; 须在标签收盘结算之前 (day_end 可能 ts_close 本日)
+  // 收盘: 末分钟 (收盘集合竞价 → L_1min 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含),
+  // 末分钟级联写 L_1day 收盘行; 须在标签收盘结算之前 (day_end 可能 ts_close 本日)
   void end_day(Store &store) {
     advance(TRADE_MINUTES_PER_DAY);
     dag_.label.day_end(writer(), releaser(store));
@@ -73,10 +73,10 @@ public:
     end_day(store);
   }
 
-  // 时钟推进到 L_min 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
+  // 时钟推进到 L_1min 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
   //   回测: 由本资产下一个源单位 (compute_and_store) / 收盘 (end_day) 调.
   //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCs::compute_and_store(t):
-  //         CS 在分钟末级联读 L_min 行 m (该分钟收行的更粗层另读其行), 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
+  //         CS 在分钟末级联读 L_1min 行 m (该分钟收行的更粗层另读其行), 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
   //   结算时刻不影响值 (onMinute 域只读 MinuteData / 分钟边界), 两种触发写出同一行.
   void advance(size_t m) noexcept {
     while (self().resampler().roll(m)) {
@@ -109,7 +109,7 @@ protected:
   size_t asset_id_;
   Dag dag_;
   MetaTracker meta_; // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
-  // minute_data → 层 L_5min + i 的 bar (graph::BIN_DATA[i], 分钟箱层 + L_day; 两档共用, 档钩子 resampler() 只管源 → 分钟)
+  // minute_data → 层 L_5min + i 的 bar (graph::BIN_DATA[i], 分钟箱层 + L_1day; 两档共用, 档钩子 resampler() 只管源 → 分钟)
   std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> min2bin_;
 
 private:
@@ -122,7 +122,7 @@ private:
     return {ResamplerMin2Bin(d.minute_data, d.*graph::BIN_DATA[I], L_5min + I)...};
   }
 
-  // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 分钟 bar + 成交位并入 L_min 以上各层当前行 → 分钟 m 末秒收行的层逐层 close_row (细 → 粗)
+  // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 分钟 bar + 成交位并入 L_1min 以上各层当前行 → 分钟 m 末秒收行的层逐层 close_row (细 → 粗)
   // → 有成交则标签 (只读 MinuteData, 写标签列; 与各层行无关)
   void close_minute(size_t m) {
     const MinuteData &md = dag_.minute_data;
@@ -131,24 +131,24 @@ private:
     meta_.on_minute(traded);
     for (ResamplerMin2Bin &r : min2bin_)
       r.accumulate();
-    for_each_close<L_min>(level_end_sec(L_min, m) - 1, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
+    for_each_close<L_1min>(level_end_sec(L_1min, m) - 1, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
     if (traded)
       dag_.label.minute_closed(m, writer());
   }
 
-  // 层 LVL 收行 r: 出该层 bar (L_min 的 bar 已由档重采样器出) → 该层节拍域 → 写整行 + ts_valid (每行都写, L_min 及以上稠密; 有成交 = ts_valid 非零).
+  // 层 LVL 收行 r: 出该层 bar (L_1min 的 bar 已由档重采样器出) → 该层节拍域 → 写整行 + ts_valid (每行都写, L_1min 及以上稠密; 有成交 = ts_valid 非零).
   // 档没有该层也照走 (bar / 节拍域节点两档同一路径), 只是不落盘
   template <size_t LVL>
   void close_row(size_t r) {
-    if constexpr (LVL != L_min)
+    if constexpr (LVL != L_1min)
       min2bin_[LVL - L_5min].emit(r);
     dag_.template run<beat_of(LVL)>();
-    if constexpr (LVL == L_day)
+    if constexpr (LVL == L_1day)
       dag_.template run<Trigger::onSettle>();
     const float flag = meta_.flag<LVL>();
     if constexpr (T::has(LVL)) {
       constexpr size_t F = field_of<T>(LVL, "ts_valid");
-      static_assert(F < T::LEVELS[LVL].field_count, "L_min 及以上每层必须有 ts_valid 列");
+      static_assert(F < T::LEVELS[LVL].field_count, "L_1min 及以上每层必须有 ts_valid 列");
       fstore::ts_write_row<LVL>(day_, r, asset_id_, dag_);
       fstore::ts_write<LVL>(day_, r, F, asset_id_, flag);
     }
@@ -186,7 +186,7 @@ private:
   void write_label(size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) {
     assert(n >= 1 && col + n <= Label::MIN_LABEL_COUNT);
     const Day &d = day_at(days_ago);
-    for_each_close<L_min>(level_end_sec(L_min, label_min) - 1, [&]<size_t LVL>(size_t r) {
+    for_each_close<L_1min>(level_end_sec(L_1min, label_min) - 1, [&]<size_t LVL>(size_t r) {
       if constexpr (kLabCount[LVL] != 0)
         for (size_t i = 0; i < n; ++i)
           if (const size_t f = kLabCol[LVL][col + i]; f != kNoCol)

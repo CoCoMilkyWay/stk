@@ -28,16 +28,16 @@ enum class Trigger : uint8_t {
   onCancel, // 撤单
   onTick,   // 每笔订单 (增/删/改/成交)
   onDepth,  // 盘口更新 (depth_updated)
-  onMinute, // 分钟边界 (L_min 每分钟一次, 含无成交分钟: 降频型节点对空分钟按自身约定归零 / 延续, 不产 NaN)
+  onMinute, // 分钟边界 (L_1min 每分钟一次, 含无成交分钟: 降频型节点对空分钟按自身约定归零 / 延续, 不产 NaN)
   on5Min,   // n 分钟箱末 (L_<n>min 每箱一次, 箱末分钟 onMinute 之后, 细箱先于粗箱; 含无成交箱, 同 onMinute 约定)
   on15Min,
   on30Min,
   on60Min,
-  onClose,  // 收盘 (L_day 一日一次, 末分钟 on60Min 之后; 整日箱, 含无成交日, 同 onMinute 约定)
-  onSettle, // 盘后 (onClose 之后, L_day 行写之前): 日频 PIT 推进到次日盘前 (Fund); 本域节点读到的是本日收盘全部节点值
+  onClose,  // 收盘 (L_1day 一日一次, 末分钟 on60Min 之后; 整日箱, 含无成交日, 同 onMinute 约定)
+  onSettle, // 盘后 (onClose 之后, L_1day 行写之前): 日频 PIT 推进到次日盘前 (Fund); 本域节点读到的是本日收盘全部节点值
 };
-// onMinute .. onClose = 层 L_min .. L_day 的收行节拍 (同序连续, 见 FeaturesDefine.hpp beat_of)
-// 日频节点 = flush 域 onClose / onSettle: Series 跨天保留 (不 reset), 盘中下游读 back() = 前一交易日 L_day 行的值
+// onMinute .. onClose = 层 L_1min .. L_1day 的收行节拍 (同序连续, 见 FeaturesDefine.hpp beat_of)
+// 日频节点 = flush 域 onClose / onSettle: Series 跨天保留 (不 reset), 盘中下游读 back() = 前一交易日 L_1day 行的值
 inline constexpr bool is_day_trigger(Trigger t) { return t == Trigger::onClose || t == Trigger::onSettle; }
 
 //----------------------------------------------------------------------------------------
@@ -76,7 +76,7 @@ inline constexpr float kPxEps = 1e-4f;
 // CS COLUMN CONTRACT (截面列 = Node/<Tier>/CS/<分类>/<源节点>.hpp 只有 FIELDS_ 行, 无节点; 方法 = Method/CS.hpp, namespace cs)
 //----------------------------------------------------------------------------------------
 //   struct <Method> {
-//     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, L_min / 分钟箱层 / L_day; L_sec 不可)
+//     static constexpr bool kNeutral;                       // 是否需要中性化上下文 (NeutralRank::Ctx, L_1min / 分钟箱层 / L_1day; L_sec 不可)
 //     static void apply(float *y, size_t n[, const Ctx &]); // dense 列原地: 输入 = 有效资产子集的源列 (缺失 NaN), 输出 = 结果
 //   };
 //   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换, 先于 <Method>
@@ -126,9 +126,9 @@ inline bool ord_filled_before(const LOB_Feature &lob, size_t s, uint32_t &f) {
 }
 
 //----------------------------------------------------------------------------------------
-// BAR LEVELS (L_min / L_5min .. L_60min / L_day): 每层一份 bar 环, 同一结构, 只差容量与量额宽度
-//   MinuteData  L_min: 档的重采样器填充 (Lob ResamplerTick2Min 逐笔 / Bar ResamplerBar2Min bar1m)
-//   BinData     分钟箱层 + L_day (整日箱): ResamplerMin2Bin 由 MinuteData 重采样 (箱见 TimeIndex.hpp);
+// BAR LEVELS (L_1min / L_5min .. L_60min / L_1day): 每层一份 bar 环, 同一结构, 只差容量与量额宽度
+//   MinuteData  L_1min: 档的重采样器填充 (Lob ResamplerTick2Min 逐笔 / Bar ResamplerBar2Min bar1m)
+//   BinData     分钟箱层 + L_1day (整日箱): ResamplerMin2Bin 由 MinuteData 重采样 (箱见 TimeIndex.hpp);
 //               量额宽累计 (整日成交量可超 uint32); 64 ≥ 最细箱层一日箱数
 //----------------------------------------------------------------------------------------
 template <size_t Cap, class Vol, class Amt>
@@ -136,7 +136,7 @@ struct Bars {
   // Metadata
   uint32_t asset_id{0}; // static: asset identifier
   uint32_t core_id{0};  // static: core identifier
-  uint32_t index{0};    // dynamic: 末 bar 的本层行 (L_min 0-254 / 箱 0 .. bins_per_day(n) - 1 / L_day 0)
+  uint32_t index{0};    // dynamic: 末 bar 的本层行 (L_1min 0-254 / 箱 0 .. bins_per_day(n) - 1 / L_1day 0)
 
   // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对行下标访问)
   CBuffer<float, Cap> open;

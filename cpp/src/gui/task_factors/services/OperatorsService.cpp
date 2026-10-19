@@ -123,7 +123,7 @@ void run_op(RoundCtx &R, OperatorRow &row) {
     d.g = &R.gate_plane();
 
   const factor::Param &p = row.param;  // 复位阶段已按请求填好 (见 param_of)
-  constexpr int seg = factor::kSegMax; // GUI 表在 L_min 层
+  constexpr int seg = factor::kSegMax; // GUI 表在 L_1min 层
 
   Clock::time_point t0 = Clock::now();
   if constexpr (IS_CS)

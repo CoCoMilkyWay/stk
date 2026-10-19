@@ -13,8 +13,8 @@ struct SharedData;
 namespace GUI::Features {
 
 // ---- 状态面 (阶段名/颜色走 gui/Tasks.hpp TextPhase) ----
-// Row: Compute | (仅 L_min) | Cancel | Status: xxx (unit done/total)
-// 选中特征且 L_min 且不忙才可 Compute. 返回值: 1 = Compute 按下, -1 = Cancel 按下, 0 = 无
+// Row: Compute | (仅 L_1min) | Cancel | Status: xxx (unit done/total)
+// 选中特征且 L_1min 且不忙才可 Compute. 返回值: 1 = Compute 按下, -1 = Cancel 按下, 0 = 无
 int RenderStreamControl(const Progress &st, const SharedData &data, const char *unit);
 
 // ---- 值账目 ----

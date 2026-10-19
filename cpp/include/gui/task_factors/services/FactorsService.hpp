@@ -65,7 +65,7 @@ struct SharedData;
 namespace GUI::Factors {
 
 // ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 特征库 档 / 层 / 因子子目录 ----
-//   L_min 读 Lob 票池库 (盘口特征 + 冲击成本, 截面 = 票池); 更粗的层读 Bar 库 (全市场 cs_valid, 无冲击成本).
+//   L_1min 读 Lob 票池库 (盘口特征 + 冲击成本, 截面 = 票池); 更粗的层读 Bar 库 (全市场 cs_valid, 无冲击成本).
 //   标签恒取同库本层列 (同行; 各层只落本层及以上的持有期); 因子文件在 <config.factor_dir>/<库>/<name>/
 struct FactorLevel {
   int seg = 0;               // 每日行数 (Geo::S)
@@ -74,12 +74,12 @@ struct FactorLevel {
   const char *name = "";     // 子目录名 / UI 名
 };
 inline constexpr FactorLevel kFactorLevels[] = {
-    {255, L_min, TierId::Lob, "min"},
+    {255, L_1min, TierId::Lob, "min"},
     {49, L_5min, TierId::Bar, "5min"},
     {17, L_15min, TierId::Bar, "15min"},
     {9, L_30min, TierId::Bar, "30min"},
     {5, L_60min, TierId::Bar, "60min"},
-    {1, L_day, TierId::Bar, "day"},
+    {1, L_1day, TierId::Bar, "day"},
 };
 const FactorLevel &factor_level(int seg); // seg 不在表里 → assert
 // 该层因子目录 = <config.factor_dir>/<该档当前库名>/<name>

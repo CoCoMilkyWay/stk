@@ -181,14 +181,14 @@ const TierMeta &tier_meta(TierId tier) {
 #undef GENERATE_TIER_META
 
 // ============================================================================
-// 库表 (FeatureLib.hpp 声明): [0] = all (Bar 档); 其余 = Bar L_day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档库 <pool>
+// 库表 (FeatureLib.hpp 声明): [0] = all (Bar 档); 其余 = Bar L_1day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档库 <pool>
 // ============================================================================
 namespace {
 constexpr std::string_view kPoolPrefix = "pool_";
 constexpr bool is_pool(const FeatureMetadata &f) {
   return f.data_type == FeatureDataType::CS && std::string_view(f.cat_l1) == "Pool" && std::string_view(f.code).starts_with(kPoolPrefix);
 }
-constexpr std::span<const FeatureMetadata> kBarDay = bar::L_day_meta_detail::TABLE;
+constexpr std::span<const FeatureMetadata> kBarDay = bar::L_1day_meta_detail::TABLE;
 constexpr size_t kPoolCount = std::count_if(kBarDay.begin(), kBarDay.end(), is_pool);
 static_assert(kPoolCount > 0, "Bar 字段表没有票池列 (Node/Bar/CS/Pool 的 pool_*)");
 constexpr std::array<LibDef, 1 + kPoolCount> kLibs = [] {

@@ -33,8 +33,8 @@ void OrderFlow::Kline::begin_generation(uint32_t gen, std::vector<ColRef> refs, 
 }
 
 void OrderFlow::Kline::reserve_capacity(size_t ohlc_rows) {
-  // 满容量 = 日数 × 每日有效行 (OHLC: 其层; overlay: 网格 L_min); 之后只 push_back → data() 恒稳定 (前缀读安全)
-  const size_t bars = dates.size() * ohlc_rows, cap = dates.size() * level_valid_rows(L_min);
+  // 满容量 = 日数 × 每日有效行 (OHLC: 其层; overlay: 网格 L_1min); 之后只 push_back → data() 恒稳定 (前缀读安全)
+  const size_t bars = dates.size() * ohlc_rows, cap = dates.size() * level_valid_rows(L_1min);
   x.reserve(bars);
   open.reserve(bars);
   high.reserve(bars);

@@ -46,8 +46,8 @@
 //     ok     标签侧有效: 非段末尾部 (见下) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0). 组可空 (不再整行作废).
 //     rac    rank AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 行 (hold_rows) 才对应"一个持有期换多少仓".
 //     ok_rac t ≥ h ∧ n ≥ 2 ∧ 两侧方差 > 0. 与标签无关, 段末尾部也算.
-//     段末尾部 (仅分钟型): 行 t 的标签 = 该行末分钟 m = minute(t_seg) (Contract【层几何】) 的 L_min 标签, entry 锚点 = 分钟 m+1 起始;
-//       最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前一分钟的起始 = L_min 行 kLastAnchorRow 的锚点.
+//     段末尾部 (仅分钟型): 行 t 的标签 = 该行末分钟 m = minute(t_seg) (Contract【层几何】) 的 L_1min 标签, entry 锚点 = 分钟 m+1 起始;
+//       最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前一分钟的起始 = L_1min 行 kLastAnchorRow 的锚点.
 //       exit = 分钟 m+n 的锚点, m + n 越过它就"持有到收盘", 持有期缩短 → 掩掉 minute(t_seg) + n > kLastAnchorRow 的行 (tail_masked).
 //       日级型全段 exit 同一时刻, 无尾部.
 //     ok / ok_rac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
@@ -59,7 +59,7 @@
 //     层上合法 (hold_ok): 分钟型 n 是行长 N 的整数倍且首行 minute(0) + n ≤ kLastAnchorRow (尾部不吞整段); close 要求 S > 1
 //       (日层的行就在收盘, 即建即平); 开盘型各层皆可.
 //     折算 / lag / 年化用的有效行数 h = hold_rows(hold, geo): 分钟型 = n / N; close 与 T+1 = S (同日各行共一个 exit →
-//     每日一个独立样本); T+N = N · S (相邻 N 日的窗口重叠). L_min 上 = 分钟数.
+//     每日一个独立样本); T+N = N · S (相邻 N 日的窗口重叠). L_1min 上 = 分钟数.
 //
 //   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行 (含尾部 / 不 ok, 整张量 = T):
 //     ric / rac / ls  三个逐行量沿 t 的同一套矩 (Moments, 同一个累加器 MomAcc; ric / ls 用 ok 行, rac 用 ok_rac 行):
@@ -113,7 +113,7 @@ inline constexpr int kMaxHold = 12;                                // 同时评�
 inline constexpr int kMaxCost = 8;                                 // 同时攒的换手成本金额段数上限
 inline constexpr int kMaxA = 5120;                                 // 资产轴上限 (GPU 一行一 block 的片上排序容量)
 inline constexpr int kCloseAuction = 3;                            // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 锚点不能落入
-inline constexpr int kLastAnchorRow = kSegMax - kCloseAuction - 2; // 最后一个 entry 锚点可成交的 L_min 行 (= 分钟号; 锚点 = 下一分钟起始, 须在 14:57 前)
+inline constexpr int kLastAnchorRow = kSegMax - kCloseAuction - 2; // 最后一个 entry 锚点可成交的 L_1min 行 (= 分钟号; 锚点 = 下一分钟起始, 须在 14:57 前)
 inline constexpr int kDaysPerYear = 242;                           // 年化用交易日数
 inline constexpr uint16_t kRankNone = 0xFFFF;                      // r16 无效
 inline constexpr int kRankMax = 65534;                             // r16 = round(pct · kRankMax) ∈ [0, kRankMax]

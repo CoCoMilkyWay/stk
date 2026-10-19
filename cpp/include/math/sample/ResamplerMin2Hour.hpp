@@ -24,9 +24,9 @@ struct HourData {
   std::vector<float> ask_amount;
 };
 
-// L_min (分钟 0-254) → L_hour (交易小时 0-4):
+// L_1min (分钟 0-254) → L_hour (交易小时 0-4):
 //   0:[09:15,10:00) 1:[10:00,11:00) 2:[11:00,11:30) 3:[13:00,14:00) 4:[14:00,15:00)
-inline constexpr size_t L_min_to_L_hour(size_t t_min) {
+inline constexpr size_t L_1min_to_L_hour(size_t t_min) {
   if (t_min < 45)
     return 0;
   if (t_min < 105)
@@ -56,7 +56,7 @@ public:
     if (input_.open.empty()) [[unlikely]]
       return false;
 
-    const size_t hour_index = L_min_to_L_hour(input_.index);
+    const size_t hour_index = L_1min_to_L_hour(input_.index);
     bool emitted = false;
 
     // 检测 hour_index 变化

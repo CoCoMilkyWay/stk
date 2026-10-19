@@ -1,11 +1,11 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
 // OrderFlow (主库 = 图1 VWAP / 候选轴所在库, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各库落盘日的并集, 各库画各自有的日)
-// ├── Kline  (图2) 单资产全日轴: all 库日 K 底图 + 多特征 overlay (≥ L_min 的任意 ColRef, 分钟网格; 分钟 K 也是 overlay)
+// ├── Kline  (图2) 单资产全日轴: all 库日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef, 分钟网格; 分钟 K 也是 overlay)
 // │            worker 分批流式 (从前往后, 每日每源一次选列读, 下一批后台预读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
 // │            + 多特征 overlay (任意 ColRef, 秒网格); 双槽 ping-pong 整体发布
-// overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1), 网格: 图1 L_sec / 图2 L_min
+// overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1), 网格: 图1 L_sec / 图2 L_1min
 //   (细于网格的源每格留最后一个有效行). 各源按自己的 (库, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
@@ -21,7 +21,7 @@
 
 #include "codec/L2_DataType.hpp"              // L2::LOB_DEPTH
 #include "features/Storage/FeatureLevels.hpp" // ColRef / level_end_sec (稳定层, 不依赖字段表)
-#include "features/TimeIndex.hpp"             // L_SEC_ROWS / L_MIN_ROWS (稳定形状常量, 不依赖字段表)
+#include "features/TimeIndex.hpp"             // L_SEC_ROWS / L_1MIN_ROWS (稳定形状常量, 不依赖字段表)
 #include "misc/date.hpp"
 #include "shared/Progress.hpp" // PrefixPub / PingPong
 
@@ -41,7 +41,7 @@
 namespace OrderFlowConst {
 // Data Capacity
 constexpr size_t SEC_CAPACITY = L_SEC_ROWS; // ~15300 秒/日 (X 轴跨度)
-constexpr size_t MIN_CAPACITY = L_MIN_ROWS; // ~255 分钟/日 (X 轴跨度)
+constexpr size_t MIN_CAPACITY = L_1MIN_ROWS; // ~255 分钟/日 (X 轴跨度)
 constexpr size_t LOB_DEPTH = L2::LOB_DEPTH; // 30 levels
 constexpr size_t MAX_FEATURES = 8;          // overlay 特征多选上限 (两图同限)
 
@@ -174,7 +174,7 @@ struct OrderFlow {
     struct Plot {
       std::vector<double> x, mid_price, best_bid, best_ask;
       std::vector<size_t> tick_idx_map; // 秒下标 -> plot_idx (SIZE_MAX = 无), O(1) snap
-      // 分钟 VWAP 阶梯 (L_min 特征列 vwap, 与标签 exit 同源; 只有库轴内且当日已算特征的资产才有):
+      // 分钟 VWAP 阶梯 (L_1min 特征列 vwap, 与标签 exit 同源; 只有库轴内且当日已算特征的资产才有):
       // 逐有效分钟一点, X = 分钟起始秒, 末尾补一点 (末分钟末秒) 收口; 与 ticks 无关
       std::vector<double> vwap_x, vwap_y;
       double y_min = 0.0, y_max = 0.0;
@@ -254,7 +254,7 @@ struct OrderFlow {
 
   // ==========================================================================
   // Pick (资产筛选) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
-  //   状态源 = L_min 落盘列 (Fund 节点日频广播): risk_warn / list_age / delist_age
+  //   状态源 = L_1min 落盘列 (Fund 节点日频广播): risk_warn / list_age / delist_age
   //   / industry_l1, 配合同层 ts_valid 判有效 —— 当日无有效分钟的资产读不到状态
   //   (落盘缓冲清零, 值全 0 会被误读成"正常在市"), 一律不进候选.
   // ==========================================================================
@@ -370,7 +370,7 @@ struct OrderFlow {
     // 请求快照 (期望态; 变化 → gen++ → Request*)
     uint32_t kline_gen = 0, depth_gen = 0;
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
-    std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (同一组选中, 各截到图的网格: 图2 ≥ L_min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
+    std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (同一组选中, 各截到图的网格: 图2 ≥ L_1min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
     LibMask kline_libs = 0;                       // 图2 库集 (主库 + overlay 各库) = 日轴并集的库; 变了 → 重扫日轴
     misc::Ymd depth_date = 0;
 

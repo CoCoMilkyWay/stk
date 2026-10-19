@@ -1,7 +1,7 @@
 // TransformService — Transform 的单 worker 线程编排 (骨架见 StreamService.hpp)
 //
 // Request: UI 参数 + 列选择 (特征列 / NeutralRank 上下文列 (+ ts_valid 门控列)) + 序列焦点 + ReadScope;
-//          非 L_min / 无选择 静默忽略. 换焦点也是一次新构建 (链末输出经过 CS 截面, 单资产无法离线重放)
+//          非 L_1min / 无选择 静默忽略. 换焦点也是一次新构建 (链末输出经过 CS 截面, 单资产无法离线重放)
 #pragma once
 
 #include "gui/task_features/services/StreamService.hpp"

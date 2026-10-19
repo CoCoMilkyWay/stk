@@ -46,7 +46,7 @@ static int MinTimeFormatter(double value, char *buff, int size, void *user_data)
     return std::snprintf(buff, size, " ");
   const size_t d = std::min(k.day_idx_from_x(value), k.dates.size() - 1);
   const size_t m = std::min(static_cast<size_t>(value) % OrderFlowConst::MIN_CAPACITY, TRADE_MINUTES_PER_DAY);
-  const ClockTime ct = L_min_to_Clock(m); // 255 → 15:00 (日右边界)
+  const ClockTime ct = L_1min_to_Clock(m); // 255 → 15:00 (日右边界)
   const misc::Ymd date = k.dates[d];
   return std::snprintf(buff, size, "%02d/%02d/%02d %02d:%02d", date / 10000 % 100, date / 100 % 100, date % 100,
                        ct.hour, ct.minute);
@@ -571,7 +571,7 @@ static void RenderSecPlot(SharedData &data) {
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
-      // 分钟 VWAP 阶梯 (L_min 特征列 vwap; 库轴外 / 未算特征的资产无此线)
+      // 分钟 VWAP 阶梯 (L_1min 特征列 vwap; 库轴外 / 未算特征的资产无此线)
       if (!dp.plot.vwap_x.empty()) {
         ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
         ImPlot::PlotStairs("VWAP", dp.plot.vwap_x.data(), dp.plot.vwap_y.data(), static_cast<int>(dp.plot.vwap_x.size()), ImPlotItemFlags_NoFit);
@@ -628,7 +628,7 @@ static void RenderSecPlot(SharedData &data) {
 }
 
 // ============================================================================
-// L_min Plot Renderer (图2: Kline 已发布前缀)
+// L_1min Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
 static void RenderMinPlot(SharedData &data, float height) {
@@ -806,7 +806,7 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
                        pick.candidates.size(), data.asset.items.size());
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s 通过筛选的资产数 / 总数\n"
-                        "• 状态取自当日 L_min 落盘列 (ST / 上市 / 行业)\n"
+                        "• 状态取自当日 L_1min 落盘列 (ST / 上市 / 行业)\n"
                         "• 当日无有效分钟的资产不列入 (无盘口可看)",
                         misc::dash(slot.date).c_str());
   } else {
@@ -883,13 +883,13 @@ static void RenderStatusBar(const OrderFlow &of) {
   if (pub_gen == (ui.kline_gen & 0xFFFF) && !k.dates.empty()) {
     const bool streaming = pub_days < k.dates.size();
     ImGui::TextColored(streaming ? ImVec4(1.0f, 0.8f, 0.0f, 1.0f) : ImVec4(0.3f, 0.8f, 0.3f, 1.0f),
-                       "[L_min: %zu/%zu days, %zu pts]", pub_days, k.dates.size(), pub_points);
+                       "[L_1min: %zu/%zu days, %zu pts]", pub_days, k.dates.size(), pub_points);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("K线流式加载 (从前往后逐日)\n"
                         "• 已发布日数 / 总日数\n"
                         "• 有效分钟数");
   } else {
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L_min: rebuilding]");
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "[L_1min: rebuilding]");
   }
 
   ImGui::SameLine();
@@ -992,9 +992,9 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  // 两图同一组选中列 (跨层跨档), 各截到图的网格 (图2 = L_min, 图1 = L_sec; 细于网格的列不进), 各点尾部对齐.
+  // 两图同一组选中列 (跨层跨档), 各截到图的网格 (图2 = L_1min, 图1 = L_sec; 细于网格的列不进), 各点尾部对齐.
   // 图2 日轴 = 库集 (all 日 K 底图 + overlay 各库) 落盘日的并集: 库集变了 = 日轴变了 → 重扫
-  const std::vector<ColRef> kline_feats = CollectFeats(sel, L_min), depth_feats = CollectFeats(sel, L_sec);
+  const std::vector<ColRef> kline_feats = CollectFeats(sel, L_1min), depth_feats = CollectFeats(sel, L_sec);
   LibMask kline_libs = lib_bit(kAllLib);
   for (const ColRef &c : kline_feats)
     kline_libs |= lib_bit(c.lib);

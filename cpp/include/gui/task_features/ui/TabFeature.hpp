@@ -1,6 +1,6 @@
 // Tab Feature - Feature Selection and Analysis Panel
 // Allows users to:
-//   1. Select feature level (L_sec/L_min/L2)
+//   1. Select feature level (L_sec/L_1min/L2)
 //   2. Filter features by multiple dimensions
 //   3. Select primary feature and secondary features for analysis
 //   4. (Future) View analysis results

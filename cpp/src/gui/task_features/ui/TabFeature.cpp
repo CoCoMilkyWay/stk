@@ -676,7 +676,7 @@ static void rebuild_psd_spark(PsdSparkCache &pc, const Preview::Cell &cell, uint
   const size_t n = ax.n;
   // 谱重心 = 曲线在 log 周期轴下的面积中位: 权重 = 桶密度 × 桶的 log 频率宽度 Σ1/k (∫ P d ln f).
   // 不是能量中位 (∫ P df): 能量按频率均匀分 bin, 白噪声一半 bin 落在 Nyquist 一个倍频程内,
-  // 在 log 轴上没有可读性. 面积中位: 白噪声 → 轴中央 (L_min 精确期望 32 min: Σ1/k 从 k=128 累到一半在 k=8,
+  // 在 log 轴上没有可读性. 面积中位: 白噪声 → 轴中央 (L_1min 精确期望 32 min: Σ1/k 从 k=128 累到一半在 k=8,
   // 抽样残差 ±几 min), 谱越红越右, 越蓝越左
   std::array<double, kPvPsdBins> pw{}; // 桶面积
   double total = 0.0;
@@ -929,7 +929,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::EndCombo();
   }
   if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))
-    sel.selected_level = L_min; // 档缺该层 (Bar 无 L_sec, Lob 无分钟箱层 / L_day); 两档都有 L_min
+    sel.selected_level = L_1min; // 档缺该层 (Bar 无 L_sec, Lob 无分钟箱层 / L_1day); 两档都有 L_1min
 
   ImGui::SameLine();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Level:");

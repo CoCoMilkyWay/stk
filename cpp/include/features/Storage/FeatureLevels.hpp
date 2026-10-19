@@ -7,14 +7,14 @@
 // 字段表 (FieldsGenerated) —— 增删改特征不触发它们重编, 只重编 FeatureMeta.cpp + 写端.
 //   level_info(tier, lvl)   运行时层表 (定义在 src/features/FeatureMeta.cpp, 指向编译期 <tier>::LEVELS)
 //   编译期 <tier>::LEVELS[] (写端定址折叠用) 在 FeatureStoreConfig.hpp, 仅写端 include.
-// 层号 / 行数 / 层名 (文件名) 与档无关 (L_sec 秒 / L_min 分钟 / L_5min .. L_60min 分钟箱 / L_day 日, 全档同一套), 是这里的常量; 字段数 / 字段表 / 指纹才随档.
+// 层号 / 行数 / 层名 (文件名) 与档无关 (L_sec 秒 / L_1min 分钟 / L_5min .. L_60min 分钟箱 / L_1day 日, 全档同一套), 是这里的常量; 字段数 / 字段表 / 指纹才随档.
 // 日文件格式 / 落盘编码在 FeatureDay.hpp.
 // ============================================================================
 
 #include "codec/L2_DataType.hpp"       // L2::ValidType (FieldInfo.valid)
 #include "features/FeaturesDefine.hpp" // FeatureDataType / ALL_TIERS
 #include "features/Method/TS.hpp"      // ts::TfId (FieldInfo.ts_tf)
-#include "features/TimeIndex.hpp"      // L_SEC_ROWS / L_MIN_ROWS / bin_rows / L_DAY_ROWS
+#include "features/TimeIndex.hpp"      // L_SEC_ROWS / L_1MIN_ROWS / bin_rows / L_1DAY_ROWS
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -109,7 +109,7 @@ inline constexpr bool tier_side(TierId main, TierId side) {
 
 // 层表项: 运行时按 (档, 层) 取 rows / field_count / fingerprint; 档缺的层 fields == nullptr (见 has_level)
 struct LevelInfo {
-  const char *level_name;  // "L_sec" / "L_min" / "L_5min" / .. / "L_day": 文件名 features_<name>.bin
+  const char *level_name;  // "L_sec" / "L_1min" / "L_5min" / .. / "L_1day": 文件名 features_<name>.bin
   size_t rows;             // T
   size_t field_count;      // F
   const FieldInfo *fields; // [field_count]
@@ -117,8 +117,8 @@ struct LevelInfo {
   const char *psd;         // 该层特征的推荐频谱 (GUI 元数据)
 };
 
-// 语义层数 (FeatureLevel: L_sec 秒 / L_min 分钟 / L_5min .. L_60min 分钟箱 / L_day 日, 见 FeaturesDefine.hpp), 与档无关; 档可以缺层
-inline constexpr size_t LEVEL_COUNT = L_day + 1;
+// 语义层数 (FeatureLevel: L_sec 秒 / L_1min 分钟 / L_5min .. L_60min 分钟箱 / L_1day 日, 见 FeaturesDefine.hpp), 与档无关; 档可以缺层
+inline constexpr size_t LEVEL_COUNT = L_1day + 1;
 // 分钟箱层的箱长 (分钟)
 inline constexpr size_t level_bin_minutes(size_t lvl) {
   assert(is_bin_level(lvl));
@@ -126,7 +126,7 @@ inline constexpr size_t level_bin_minutes(size_t lvl) {
 }
 inline constexpr const char *level_name(size_t lvl) {
   assert(lvl < LEVEL_COUNT);
-  constexpr const char *kNames[LEVEL_COUNT] = {"L_sec", "L_min", "L_5min", "L_15min", "L_30min", "L_60min", "L_day"};
+  constexpr const char *kNames[LEVEL_COUNT] = {"L_sec", "L_1min", "L_5min", "L_15min", "L_30min", "L_60min", "L_1day"};
   return kNames[lvl];
 }
 // 一网格行的时间单位 (UI 周期 / 滞后轴标注)
@@ -137,8 +137,8 @@ inline constexpr const char *level_unit(size_t lvl) {
 }
 inline constexpr size_t level_rows(size_t lvl) {
   assert(lvl < LEVEL_COUNT);
-  return lvl == L_sec ? L_SEC_ROWS : lvl == L_min ? L_MIN_ROWS
-                                 : lvl == L_day   ? L_DAY_ROWS
+  return lvl == L_sec ? L_SEC_ROWS : lvl == L_1min ? L_1MIN_ROWS
+                                 : lvl == L_1day   ? L_1DAY_ROWS
                                                   : bin_rows(level_bin_minutes(lvl));
 }
 
@@ -155,19 +155,19 @@ inline constexpr size_t level_valid_rows(size_t lvl) {
 }
 
 // ---- 行时间代数 (与档无关): 行 t 覆盖交易秒 [., level_end_sec) ----
-// 节点 emit 全序 = (行末秒, 层): 同刻细层先写 (for_each_close 级联, CoreTs / CoreCs 同一路径); L_day = 收盘一行
+// 节点 emit 全序 = (行末秒, 层): 同刻细层先写 (for_each_close 级联, CoreTs / CoreCs 同一路径); L_1day = 收盘一行
 inline constexpr size_t level_end_sec(size_t lvl, size_t t) {
   assert(t < level_valid_rows(lvl));
-  return lvl == L_sec ? t + 1 : lvl == L_min ? L_min_to_L_sec(t) + 60
-                            : lvl == L_day   ? TRADE_SECONDS_PER_DAY
-                                             : L_min_to_L_sec(bin_last_min(level_bin_minutes(lvl), t)) + 60;
+  return lvl == L_sec ? t + 1 : lvl == L_1min ? L_1min_to_L_sec(t) + 60
+                            : lvl == L_1day   ? TRADE_SECONDS_PER_DAY
+                                             : L_1min_to_L_sec(bin_last_min(level_bin_minutes(lvl), t)) + 60;
 }
 // 交易秒 s 所在行
 inline constexpr size_t level_row_of_sec(size_t lvl, size_t s) {
   assert(lvl < LEVEL_COUNT && s < TRADE_SECONDS_PER_DAY);
-  return lvl == L_sec ? s : lvl == L_min ? L_sec_to_L_min(s)
-                        : lvl == L_day   ? 0
-                                         : L_min_to_bin(level_bin_minutes(lvl), L_sec_to_L_min(s));
+  return lvl == L_sec ? s : lvl == L_1min ? L_sec_to_L_1min(s)
+                        : lvl == L_1day   ? 0
+                                         : L_1min_to_bin(level_bin_minutes(lvl), L_sec_to_L_1min(s));
 }
 // as-of 投影: dst 层行 t emit 时刻, src 层已 emit 的最新一行 (同日); -1 = 当日尚无 → 前一交易日末行.
 // src 不粗于 dst → 含 dst 末秒的那行 (同刻细层先写, 已可见); 更粗 → 其前一行 (同刻粗层后写 / 尚未收)
@@ -178,10 +178,10 @@ inline constexpr ptrdiff_t level_asof(size_t src, size_t dst, size_t t) {
 
 // 收行 (哪层在哪刻收行的唯一判据): 层 lvl 在交易秒 s 末收行 ⇔ s 所在行的末秒 = s
 inline constexpr bool level_closes(size_t lvl, size_t s) { return level_end_sec(lvl, level_row_of_sec(lvl, s)) == s + 1; }
-static_assert(level_closes(L_sec, 0) && !level_closes(L_min, 58) && level_closes(L_min, 59) && !level_closes(L_5min, 59) &&
-                  level_closes(L_5min, OPEN_BIN_MINUTES * 60 - 1) && !level_closes(L_day, TRADE_SECONDS_PER_DAY - 2) &&
-                  level_closes(L_day, TRADE_SECONDS_PER_DAY - 1) && level_closes(L_60min, TRADE_SECONDS_PER_DAY - 1),
-              "收行: 每秒收 L_sec, 分钟末秒收 L_min, 箱末分钟末秒收箱层, 收盘末秒全层收行");
+static_assert(level_closes(L_sec, 0) && !level_closes(L_1min, 58) && level_closes(L_1min, 59) && !level_closes(L_5min, 59) &&
+                  level_closes(L_5min, OPEN_BIN_MINUTES * 60 - 1) && !level_closes(L_1day, TRADE_SECONDS_PER_DAY - 2) &&
+                  level_closes(L_1day, TRADE_SECONDS_PER_DAY - 1) && level_closes(L_60min, TRADE_SECONDS_PER_DAY - 1),
+              "收行: 每秒收 L_sec, 分钟末秒收 L_1min, 箱末分钟末秒收箱层, 收盘末秒全层收行");
 
 // 交易秒 s 末收行的层 (层号 ≥ From), 细 → 粗逐层 f.template operator()<LVL>(该层行)
 template <size_t From, class F>
@@ -196,7 +196,7 @@ template <size_t From, class F>
 // 序 = (档, 库, 层, 列): 同库相邻, Lob 档在前 (picked 首个 = primary)
 struct ColRef {
   LibId lib = kAllLib;
-  uint8_t level = L_min;
+  uint8_t level = L_1min;
   uint16_t col = 0;
   TierId tier() const { return lib_tier(lib); }
   bool operator==(const ColRef &) const = default;
