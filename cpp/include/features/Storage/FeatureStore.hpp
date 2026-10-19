@@ -76,8 +76,9 @@ inline constexpr size_t kDefaultRingSlots = 4;
 //   PF: pf_try_open(d)  d ≤ ts_done_ + P + kPrefetchLead → 备源 (不占 slot) → pf_close → pf_mark_
 //                       软源 (Lob: 暖逐笔 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源环, TS 等 pf_ready)
 //   TS: ts_try_open(d)  d < io_done_ + P → 句柄写 (纯指针算术) → 每 (asset, d) 一次 ts_close, 计满全轴 → ts_done_ + 1
-//   CS: cs_try_open(d)  本日计满全轴 → 逐拍扫 → cs_close → slot.cs_closed
-//   IO: io_try_open(d)  d < io_done_ + P ∧ slot.cs_closed → 落盘 (FeatureDay::write, 池不碰格式) → io_close (清零) → slot.io_mark → 推进 io_done_
+//   CS: cs_try_open(d)  本日计满全轴 → 逐拍扫 (cs_prev: 跨日只读 d−1 槽位 TS 列) → cs_close → slot.cs_closed
+//   IO: io_try_open(d)  d < io_done_ + P ∧ slot.cs_closed ∧ (末日 ∨ CS(d+1) 已 close) → 落盘 (FeatureDay::write, 池不碰格式)
+//                       → io_close (清零) → slot.io_mark → 推进 io_done_
 //
 // TS 按 (asset, d) 计数 (而非按 worker) 使资产处置权可在 worker 间转移: 领跑 worker 可接手
 // 落后 worker 的资产并回填旧日 (旧日未计满 ⇒ 仍在飞, ts_try_open 必得), 见 TsSchedule.
@@ -359,6 +360,16 @@ public:
     return day;
   }
 
+  // 截面跨日读 (粗层 as-of 落到前一交易日): 日 d−1 句柄, 只读 TS / 元列 (d−1 的截面 / 标签可能还在写).
+  // 槽位由 io_try_open(d−1) 等本日 cs_close 钉住. d = 0 → 空
+  Day cs_prev(const Day &day) {
+    assert(day);
+    if (day.d == 0)
+      return {};
+    assert(day.d - 1 >= io_done_.load(std::memory_order_acquire) && "cs_prev: d−1 已落盘 (io_try_open 握手失效)");
+    return day_at(day.d - 1);
+  }
+
   // CS 写完本日全部截面列, 交给 IO. release 与 io_try_open 的 acquire 配对
   void cs_close(const Day &day) {
     assert(day && !day.slot->cs_closed.load(std::memory_order_relaxed) && "cs_close: 重复 close");
@@ -370,14 +381,23 @@ public:
   // ===== IO: 每 d 一对 open/close =====
 
   // 截面已 close 的日才放行 (逐 slot 查: 截面多核 close 乱序); 返回后本日两层张量只归 IO 读 (落盘见 FeatureDay::write).
-  // 落盘多核按日轮转: 先验 slot 已轮到日 d (d < io_done_ + P), 否则 ring_[d % P] 还是已截面待落盘的 d − P, cs_closed 会误放行
-  Day io_try_open(size_t d) {
+  // 落盘多核按日轮转: 先验 slot 已轮到日 d (d < io_done_ + P), 否则 ring_[d % P] 还是已截面待落盘的 d − P, cs_closed 会误放行.
+  // 非末日 (last = d 是日期轴末日) 还要 CS(d+1) 已 close: 它经 cs_prev 读本 slot. d+1 的 slot 同样先验已轮到;
+  // CS(d+1) close 后 IO(d+1) 可能抢先落盘清零 (cs_closed 复位) → 再认 io_mark == d+2 (粘滞)
+  Day io_try_open(size_t d, bool last) {
     const size_t io = io_done_.load(std::memory_order_acquire);
     assert(d >= io && "io_try_open: 日 d 已落盘 (日序乱)");
     if (d >= io + ring_size_)
       return {};
     const Day day = day_at(d);
-    return day.slot->cs_closed.load(std::memory_order_acquire) ? day : Day{};
+    if (!day.slot->cs_closed.load(std::memory_order_acquire))
+      return {};
+    if (last)
+      return day;
+    if (d + 1 >= io + ring_size_)
+      return {};
+    const Slot &next = ring_[(d + 1) % ring_size_];
+    return next.cs_closed.load(std::memory_order_acquire) || next.io_mark.load(std::memory_order_seq_cst) == d + 2 ? day : Day{};
   }
 
   // 本日落盘完毕: 清零后打日标记 (空闲态不变量: 张量 + 计数全零, 拿来即写), 再把 io_done_ 推到首个未落盘日.

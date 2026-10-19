@@ -16,6 +16,8 @@
 //           最多再等 n 日 (D+2n 仍无 → 最近收盘价); 越过区间末 → 最后一日收盘价
 //   全日无成交 (停牌 / 无 bar1m): 分钟 / 收盘型全行留 0, 当日不悬挂; 开盘型到期照常结算.
 //   价格均为 bar1m 原始价 (不复权): 开盘型跨除权日的收益含除权缺口, 与 Lob 档同约.
+//   落盘层: 不落 L_min (255 行代价太大), 只落 L_5min / L_15min / L_30min / L_60min / L_day —— 行 = 该层行的末分钟 m 的标签;
+//     每层只留本层及以上的持有期组 (LABEL_GROUPS_FROM_<LVL>: 5min 层无 1m, L_day 只有开盘型). 逐分钟照算, 只是不落非行末分钟.
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node), CoreTs 驱动, 接口与 LabelLob 对仗:
 //   minute_closed(t_min, writer)   有成交的分钟 (onMinute 之后) 一调: 截开盘价, 连续竞价分钟的 VWAP 填给之前悬着的行 = 这些行的 entry,
@@ -74,7 +76,7 @@ private:
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 行序 = LB 块布局: 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序, 与 hold_col(h) 对应). 英 / 中片段见 LabelGroups.hpp
+// 行序: 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序; 层内按名定址回 LB 块 hold_col(h), 见 CoreTs). 英 / 中片段见 LabelGroups.hpp
 #define LBAR_NOTE_MIN(n) "行m+" #n "的entry(其后首个有成交连续竞价分钟的VWAP, 与entry同基准, 相邻行精确伸缩); 过收盘则按当日收盘价"
 #define LBAR_NOTE_CLOSE(n) "当日收盘价(末笔成交价)"
 #define LBAR_NOTE_OPEN(n) "T+" #n "日开盘价(09:25集合竞价撮合价, 无撮合则连续竞价首个有成交bar的开盘价); 当日无开盘则顺延至之后首个有开盘日(最多再等" #n "日, 仍无则取最近收盘价); 越过区间末则持有到最后一日收盘"
@@ -88,4 +90,8 @@ private:
 #define LBAR_ROW_SHORT(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}_{entry}-P_{exit}}{\mathrm{VWAP}_{entry}})", name, kind, n)
 #define LBAR_GROUP(name, kind, n, X, CAT1) LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW_SHORT(name, kind, n, X, CAT1)
 
-#define FIELDS_L_min_LabelBar(X, CAT1) LABEL_GROUPS(LBAR_GROUP, X, CAT1)
+#define FIELDS_L_5min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_5min(LBAR_GROUP, X, CAT1)
+#define FIELDS_L_15min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_15min(LBAR_GROUP, X, CAT1)
+#define FIELDS_L_30min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_30min(LBAR_GROUP, X, CAT1)
+#define FIELDS_L_60min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_60min(LBAR_GROUP, X, CAT1)
+#define FIELDS_L_day_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_day(LBAR_GROUP, X, CAT1)

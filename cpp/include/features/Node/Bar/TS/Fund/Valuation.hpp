@@ -93,7 +93,3 @@ private:
   X(is_limit_dn, CAT1, AUTO, "Limit Down RT", "实时跌停标记", "分钟最新价触及当日跌停价", R"(\mathbf{1}[P_t \leq P^{dn}_{D} + \varepsilon])", TS(Valuation, is_limit_dn, None, None))         \
   X(is_low_px, CAT1, AUTO, "Low Price RT", "实时低价标记", "分钟最新价 < 1元(面值退市风险)", R"(\mathbf{1}[P_t < 1])", TS(Valuation, is_low_px, None, None))                                  \
   X(is_low_mcap, CAT1, AUTO, "Low Market Cap RT", "实时低市值标记", "实时市值 < 阈值(主板5亿/其他3亿)", R"(\mathbf{1}[P_t S^{total}_{D} < \theta])", TS(Valuation, is_low_mcap, None, None))
-
-// L_day 收盘市值: 日频截面中性化 (CsFund 的 NeutralRank) 的市值上下文
-#define FIELDS_L_day_Valuation(X, CAT1) \
-  X(mcap, CAT1, AUTO, "Market Cap Close", "收盘总市值", "收盘价×总股本(亿元,不复权真市值)", R"(\frac{P^{close}_{D} \cdot S^{total}_{D}}{10^{8}})", TS(Valuation, mcap, None, None))

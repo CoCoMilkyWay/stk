@@ -66,7 +66,7 @@ namespace GUI::Factors {
 
 // ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 特征库 档 / 层 / 因子子目录 ----
 //   L_min 读 Lob 票池库 (盘口特征 + 冲击成本, 截面 = 票池); 更粗的层读 Bar 库 (全市场 cs_valid, 无冲击成本).
-//   标签恒取同库 L_min 列, 按本层行的末分钟 (Geo::minute) 采样; 因子文件在 <config.factor_dir>/<库>/<name>/
+//   标签恒取同库本层列 (同行; 各层只落本层及以上的持有期); 因子文件在 <config.factor_dir>/<库>/<name>/
 struct FactorLevel {
   int seg = 0;               // 每日行数 (Geo::S)
   size_t lvl = 0;            // 特征库层 (FeatureLevel)
@@ -106,8 +106,8 @@ struct FeatureTable {
   uint32_t ts_col = 0;          // 本层 ts_valid 门控列 (特征输入; 每层必有)
   uint32_t cs_col = 0;          // 本层 cs_valid 门控列 (标签 + 截面门控平面)
   uint32_t ohlc[4] = {};        // 本层 open high low close 列 (K 线 / close 给库等权指数): lob_<x> / <x>_<n>min / <x>_day
-  std::vector<LabelCol> labels; // L_min 列下标, 按 hold 升序; long / short 都齐且本层合法 (hold_ok) 才收
-  std::vector<CostCol> costs;   // L_min 列下标, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 库无)
+  std::vector<LabelCol> labels; // 本层列下标, 按 hold 升序; long / short 都齐且本层合法 (hold_ok) 才收
+  std::vector<CostCol> costs;   // 本层列下标, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 库无)
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };

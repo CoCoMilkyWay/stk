@@ -1,7 +1,7 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
-// OrderFlow (主库 = K 线 OHLC 所在库, Lob 或 Bar 档皆可; 日轴 = 主库 + overlay 各库落盘日的并集, 各库画各自有的日)
-// ├── Kline  (图2) 单资产全日轴: K线 + 多特征 overlay (≥ L_min 的任意 ColRef, 分钟网格)
+// OrderFlow (主库 = 图1 VWAP / 候选轴所在库, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各库落盘日的并集, 各库画各自有的日)
+// ├── Kline  (图2) 单资产全日轴: all 库日 K 底图 + 多特征 overlay (≥ L_min 的任意 ColRef, 分钟网格; 分钟 K 也是 overlay)
 // │            worker 分批流式 (从前往后, 每日每源一次选列读, 下一批后台预读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
 // │            + 多特征 overlay (任意 ColRef, 秒网格); 双槽 ping-pong 整体发布
@@ -124,9 +124,10 @@ struct OrderFlow {
     // ---- worker 写 / GUI 前缀读 ----
     std::vector<misc::Ymd> dates; // 日轴: 库集各库落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
 
-    // K线点集: data_valid 分钟, x = day_idx * MIN_CAPACITY + minute
+    // K线点集 (all 库日 K): data_valid 行, x = day_idx * MIN_CAPACITY + 该行所跨分钟的中点 (日 K = 日中)
     std::vector<double> x, open, high, low, close;
-    Overlay<std::atomic<float>> feat; // 与 K线同 X 网格 (refs 换代时定, gen 匹配期间稳定)
+    double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH; // 一根 K 线半宽 (X 单位; 换代时随 OHLC 层定)
+    Overlay<std::atomic<float>> feat;                           // 与 K线同 X 网格 (refs 换代时定, gen 匹配期间稳定)
 
     // 发布面 (worker release / GUI acquire; pub word 在 PrefixPub)
     std::array<std::atomic<size_t>, OrderFlowConst::MAX_FEATURES> feat_n{}; // 每特征已发布点数
@@ -145,9 +146,9 @@ struct OrderFlow {
     }
 
     // worker: 换代 — 先零计数 / 清数组 / 定 overlay 列, 后置 gen (GUI 见到新 gen 时一切已就位)
-    void begin_generation(uint32_t gen, std::vector<ColRef> refs);
-    // worker: 满容量预留 (dates 定下后一次; 之后只 push_back, data() 稳定)
-    void reserve_capacity();
+    void begin_generation(uint32_t gen, std::vector<ColRef> refs, double half_width);
+    // worker: 满容量预留 (dates 定下后一次; 之后只 push_back, data() 稳定); ohlc_rows = OHLC 层每日有效行
+    void reserve_capacity(size_t ohlc_rows);
 
     void clear();
   } kline;

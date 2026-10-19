@@ -258,12 +258,11 @@ static void PlotOverlay(const Feature &feature, const OrderFlow::Overlay<V> &ov,
 // ============================================================================
 
 static void PlotCandlestick(const char *label_id, const double *xs, const double *opens,
-                            const double *highs, const double *lows, const double *closes, int count) {
+                            const double *highs, const double *lows, const double *closes, int count, double half_width) {
   if (count <= 0)
     return;
 
   ImDrawList *draw_list = ImPlot::GetPlotDrawList();
-  constexpr double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH;
 
   if (ImPlot::BeginItem(label_id)) {
     ImPlot::GetCurrentItem()->Color = IM_COL32(128, 128, 128, 255);
@@ -277,8 +276,8 @@ static void PlotCandlestick(const char *label_id, const double *xs, const double
 
     // 视野裁剪: 只画可视 X 区间 (数组按 x 升序)
     const ImPlotRect limits = ImPlot::GetPlotLimits();
-    const double *lo = std::lower_bound(xs, xs + count, limits.X.Min - 1.0);
-    const double *hi = std::upper_bound(xs, xs + count, limits.X.Max + 1.0);
+    const double *lo = std::lower_bound(xs, xs + count, limits.X.Min - 2.0 * half_width);
+    const double *hi = std::upper_bound(xs, xs + count, limits.X.Max + 2.0 * half_width);
 
     for (int i = static_cast<int>(lo - xs); i < static_cast<int>(hi - xs); ++i) {
       const double o = opens[i], h = highs[i], l = lows[i], c = closes[i];
@@ -729,7 +728,7 @@ static void RenderMinPlot(SharedData &data, float height) {
 
     if (pub_points > 0) {
       PlotCandlestick("OHLC", k.x.data(), k.open.data(), k.high.data(),
-                      k.low.data(), k.close.data(), static_cast<int>(pub_points));
+                      k.low.data(), k.close.data(), static_cast<int>(pub_points), k.half_width);
     }
 
     PlotOverlay(data.feature, ov, cats, counts.data(), nf);
@@ -994,9 +993,9 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
   // 两图同一组选中列 (跨层跨档), 各截到图的网格 (图2 = L_min, 图1 = L_sec; 细于网格的列不进), 各点尾部对齐.
-  // 图2 日轴 = 库集 (主库 + overlay 各库) 落盘日的并集: 库集变了 = 日轴变了 → 重扫
+  // 图2 日轴 = 库集 (all 日 K 底图 + overlay 各库) 落盘日的并集: 库集变了 = 日轴变了 → 重扫
   const std::vector<ColRef> kline_feats = CollectFeats(sel, L_min), depth_feats = CollectFeats(sel, L_sec);
-  LibMask kline_libs = lib_bit(service->main());
+  LibMask kline_libs = lib_bit(kAllLib);
   for (const ColRef &c : kline_feats)
     kline_libs |= lib_bit(c.lib);
   const bool relib = ui.kline_libs != kline_libs;

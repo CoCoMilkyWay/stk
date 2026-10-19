@@ -37,10 +37,6 @@ static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelLob:
 
 namespace GUI::Factors {
 
-namespace {
-constexpr size_t kLabLevel = L_min; // 标签 / 冲击成本只在 L_min 落盘
-} // namespace
-
 void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L) {
   L.days = days;
   L.A = A;
@@ -86,13 +82,11 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   const size_t lvl = factor_level(ft.seg).lvl;
   const size_t VR = level_valid_rows(lvl);
   assert(ft.seg == L.seg && VR == static_cast<size_t>(L.seg));
-  const factor::Geo geo = factor::geo_of(L.seg);
   const size_t H = with_labels ? static_cast<size_t>(L.n_hold) : 0;
   const size_t C = with_costs ? ft.costs.size() : 0;
   const size_t nf = L.feat_codes.size();
-  // 本层读列表: [特征 nf][close (with_index)][ts_valid][cs_valid] (+ 本层即 L_min: 接 [标签 long/short × hold][成本 buy/sell × amt])
-  // L_min 读列表 (更粗的层): [标签 long/short × hold][成本 buy/sell × amt]
-  std::vector<size_t> cols, lcols;
+  // 本层读列表: [特征 nf][close (with_index)][ts_valid][cs_valid][标签 long/short × hold][成本 buy/sell × amt] (标签 / 成本与特征同层同行)
+  std::vector<size_t> cols;
   std::vector<L2::ValidType> vts;
   for (const std::string &c : L.feat_codes) {
     const FeatCol *fc = ft.find(c);
@@ -104,22 +98,20 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   cols.push_back(ft.ts_col);
   cols.push_back(ft.cs_col);
   const size_t close_i = nf, ts_i = cols.size() - 2, cs_i = cols.size() - 1;
-  const bool same = lvl == kLabLevel;
-  std::vector<size_t> &lab = same ? cols : lcols;
-  const size_t lab_i = lab.size(), cost_i = lab_i + 2 * H; // 标签 / 成本在其读列表里的起点
+  const size_t lab_i = cols.size(), cost_i = lab_i + 2 * H; // 标签 / 成本在读列表里的起点
   if (with_labels) {
     assert(L.label_idx.size() == H);
     for (size_t h = 0; h < H; ++h) {
       const LabelCol &lc = ft.labels[static_cast<size_t>(L.label_idx[h])];
       assert(lc.hold == L.hd.h[h]);
       for (const uint32_t c : lc.col)
-        lab.push_back(c);
+        cols.push_back(c);
     }
   }
   if (with_costs)
     for (const CostCol &cc : ft.costs)
       for (const uint32_t c : cc.col)
-        lab.push_back(c);
+        cols.push_back(c);
 
   L.planes.resize(nf);
   for (factor::check::Plane &p : L.planes)
@@ -139,11 +131,9 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
   }
 
   const size_t n_threads = static_cast<size_t>(ex.threads());
-  std::vector<FeatureRead::DayColumns> staging(n_threads), lstaging(lcols.empty() ? 0 : n_threads);
+  std::vector<FeatureRead::DayColumns> staging(n_threads);
   for (FeatureRead::DayColumns &dc : staging)
     dc.preallocate(A, lvl, cols.size());
-  for (FeatureRead::DayColumns &dc : lstaging)
-    dc.preallocate(A, kLabLevel, lcols.size());
   std::vector<std::vector<uint8_t>> has_data(n_threads, std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交
   // 指数: 逐天并行攒日内项 (isum / icnt [T]); 当日首笔的前价在前一天 (跨日), 记下首笔 / 末笔 [days][A] (0 = 无) 收尾串行补
   std::vector<double> isum;
@@ -166,11 +156,8 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     const size_t d = static_cast<size_t>(di), tid = static_cast<size_t>(ti);
     FeatureRead::DayColumns &dc = staging[tid];
     reader.load_day_columns(dates[d], cols, dc);
-    if (!lcols.empty())
-      reader.load_day_columns(dates[d], lcols, lstaging[tid]);
     if (reader.stale())
       return;
-    const FeatureRead::DayColumns &ldc = lcols.empty() ? dc : lstaging[tid]; // 本层即 L_min (或不读标签) → 同一份
     // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
     // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
     std::vector<uint8_t> &has = has_data[tid];
@@ -182,7 +169,6 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
     }
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      const size_t lt = static_cast<size_t>(geo.minute(static_cast<int>(t))); // 标签 / 成本的 L_min 行
       const feature_storage_t *ts_gate = dc.col(ts_i) + t * A;
       const feature_storage_t *cs_gate = dc.col(cs_i) + t * A;
       for (size_t i = 0; i < nf; ++i) {
@@ -229,8 +215,8 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       }
       for (size_t h = 0; h < H; ++h) {
         const size_t il = lab_i + 2 * h, is = il + 1;
-        const feature_storage_t *sl = ldc.col(il) + lt * A;
-        const feature_storage_t *ss = ldc.col(is) + lt * A;
+        const feature_storage_t *sl = dc.col(il) + t * A;
+        const feature_storage_t *ss = dc.col(is) + t * A;
         LabelPlane &lb = L.labels[h];
         for (size_t a = 0; a < A; ++a) {
           const bool ok = L.cs.m[row + a] && fmeta::finite(sl[a]) && fmeta::finite(ss[a]); // 池内且当日有数据
@@ -241,8 +227,8 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
       }
       for (size_t c = 0; c < C; ++c) {
         const size_t ib = cost_i + 2 * c, is = ib + 1;
-        const feature_storage_t *sb = ldc.col(ib) + lt * A;
-        const feature_storage_t *ss = ldc.col(is) + lt * A;
+        const feature_storage_t *sb = dc.col(ib) + t * A;
+        const feature_storage_t *ss = dc.col(is) + t * A;
         CostPlane &cp = L.costs[c];
         for (size_t a = 0; a < A; ++a) {
           const bool ok = L.cs.m[row + a] && fmeta::finite(sb[a]) && fmeta::finite(ss[a]); // 池内且当日有数据; 吃不到 = NaN → 无效

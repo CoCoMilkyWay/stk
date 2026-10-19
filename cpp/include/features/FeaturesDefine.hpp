@@ -90,8 +90,9 @@
 //       TS(Node[, port], Tf, Method)  节点输出口. TS; 任意层可引任意 flush 域的节点 (本层节拍取 Series 最新值, 见 FeatureLevel);
 //                                  有效性: L_min / 分钟箱层 / L_day → ALL (稠密), L_sec: onDepth → DEPTH, 其余 → DATA
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
-//       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 必须 == 本层) 的字段 src → cs::Tf::apply → cs::Method::apply.
-//                                  CS; 有效性随源层 (L_sec DATA / 其余 ALL); ns = 本档, 或 TIER_SIDES 登记的旁读档
+//       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 任意层) 的字段 src → cs::Tf::apply → cs::Method::apply.
+//                                  源行 = level_asof(lvl, 本层, t) (粗层读已收的上一行, 日内读 L_day = 前一交易日行; 跨日只许 TS / 元列,
+//                                  区间首日无前日 → NaN). CS; 有效性随源层 (L_sec DATA / 其余 ALL); ns = 本档, 或 TIER_SIDES 登记的旁读档
 //       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写, 不产 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
@@ -324,6 +325,6 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
   X(Bar, bar, L_60min, 5, Bar_L_60min_FIELDS, "00/00/100") \
   X(Bar, bar, L_day, 6, Bar_L_day_FIELDS, "00/00/00")
 
-// 档间旁读: X(ns, side) —— ns 档的截面行可读 side 档同层的列 (CS(side, LVL, src, ...) / NeutralRank 上下文);
+// 档间旁读: X(ns, side) —— ns 档的截面行可读 side 档任意层的列 (CS(side, lvl, src, ...) / NeutralRank 上下文);
 // 跨档跨层读一律 level_asof 投影 (读端 Source 同一份); side 档当日缺库 → 断言 (不等它, 不替它算)
 #define TIER_SIDES(X) X(lob, bar)

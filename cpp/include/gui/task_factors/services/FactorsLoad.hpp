@@ -46,7 +46,7 @@ struct Loaded {
   std::vector<std::string> feat_codes;      // 去重特征 (平面下标)
   std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码 (按 ts_valid 门控)
   factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = 当日在池 ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
-  std::vector<LabelPlane> labels;           // [hold] (按 cs.m 门控), 与 hd / label_idx 同序; 本层行 t 取 L_min 行 Geo::minute(t)
+  std::vector<LabelPlane> labels;           // [hold] (按 cs.m 门控), 与 hd / label_idx 同序; 本层行 t 取本层标签列行 t
   std::vector<CostPlane> costs;             // [amt] (with_costs 才装), 下标 = FeatureTable::costs 下标; 采样同标签
   std::vector<float> index;                 // [T] 库等权指数 (with_index 才算; 起点 1): 逐行 Σ_成分 (close / 上一有效 close − 1) / n 连乘,
                                             //   成分 = 该刻 cs_valid; 上一有效 close 跨日 (隔夜跳空进当日首笔); 无成分可算的行持平
@@ -71,8 +71,8 @@ void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L);
 // 标签组收窄到 holds (Search: 搜索窗内的持有期, 只装 / 只评这些标签); 每个 hold 须在字段表里, 非空. 装载前调
 void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded &L);
 
-// 逐天并行读 (ex 抢单): 本层 特征列 (L.feat_codes) + ts_valid + cs_valid 一次 load_day_columns; (with_labels) L.hd 的标签列
-// (+ with_costs 冲击成本列) 读 L_min (本层即 L_min 则并进同一次读), 门控后散进平面; with_index 再加读本层 close 列,
+// 逐天并行读 (ex 抢单): 本层 特征列 (L.feat_codes) + ts_valid + cs_valid + (with_labels) L.hd 的标签列 (+ with_costs 冲击成本列)
+// 一次 load_day_columns, 门控后散进平面; with_index 再加读本层 close 列,
 // 顺带出 L.index (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘).
 // 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). 每天 prog.publish(1)
 bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, misc::exec::ForkJoin &ex,

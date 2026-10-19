@@ -1,8 +1,9 @@
 #pragma once
 
 #include "features/DataDefine.hpp"
-#include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_day 输入)
-#include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
+#include "features/GraphNode.hpp"                     // graph::BIN_DATA (分钟箱层 + L_day 输入)
+#include "features/Node/Common/Label/LabelGroups.hpp" // LABEL_NAME (标签列按名定址)
+#include "features/Node/Common/Meta/Meta.hpp"         // MetaTracker (ts_valid / cs_valid)
 #include "features/Storage/FeatureStore.hpp"
 #include "math/sample/ResamplerMin2Bin.hpp"
 #include "misc/date.hpp"
@@ -10,7 +11,9 @@
 
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <span>
+#include <string_view>
 #include <utility>
 
 // ============================================================================
@@ -22,7 +25,8 @@
 //                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_min 已出) → 该层节拍域 (beat_of; L_day 另跟 onSettle) → 写该层行 + ts_valid
 //                     → 有成交则标签 minute_closed. L_min / 分钟箱层 / L_day 同一路径, 两档同一路径
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
-//   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列;
+//   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列, 落到以 t_min 为行末分钟的各层行
+//         (哪层有哪些标签列由字段表定: Lob 只 L_min; Bar 只 L_5min 及以上, 每层只留本层及以上的持有期组);
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
 //   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 开盘型 (T+N) 回填旧日张量, 旧日句柄持到结清才 ts_close.
 //   档钩子 (Derived 实现):
@@ -119,7 +123,7 @@ private:
   }
 
   // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 分钟 bar + 成交位并入 L_min 以上各层当前行 → 分钟 m 末秒收行的层逐层 close_row (细 → 粗)
-  // → 有成交则标签 (只读 MinuteData, 写 L_min 标签列; 与各层行无关)
+  // → 有成交则标签 (只读 MinuteData, 写标签列; 与各层行无关)
   void close_minute(size_t m) {
     const MinuteData &md = dag_.minute_data;
     assert(!md.close.empty() && m == md.index && "close_minute: MinuteData 末 bar 不是分钟 m");
@@ -177,20 +181,74 @@ private:
     return d;
   }
 
-  // LB 块内偏移 col 起的 n 个连续列写到 days_ago 天前那日的 L_min 行 label_min
+  // 分钟 label_min 的标签 (LB 块内偏移 col 起的 n 个连续列) 写到 days_ago 天前那日: 以 label_min 为行末分钟的各层 (细 → 粗) 的那一行,
+  // 层里没有的列 (该层滤掉的持有期组) 不写
   void write_label(size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) {
     assert(n >= 1 && col + n <= Label::MIN_LABEL_COUNT);
     const Day &d = day_at(days_ago);
-    for (size_t i = 0; i < n; ++i)
-      fstore::ts_write<L_min>(d, label_min, kMinLabelBase + col + i, asset_id_, values[i]);
+    for_each_close<L_min>(level_end_sec(L_min, label_min) - 1, [&]<size_t LVL>(size_t r) {
+      if constexpr (kLabCount[LVL] != 0)
+        for (size_t i = 0; i < n; ++i)
+          if (const size_t f = kLabCol[LVL][col + i]; f != kNoCol)
+            fstore::ts_write<LVL>(d, r, f, asset_id_, values[i]);
+    });
   }
 
-  // 标签列按类型 (LB) 在字段表里定位; 列数 / 连续性与标签配置对账
-  static_assert(T::has(L_min), "TS 档必须有 L_min (分钟行 / 标签)");
-  static constexpr std::span<const FieldInfo> kMinFields{T::LEVELS[L_min].fields, T::LEVELS[L_min].field_count};
-  static constexpr size_t kMinLabelBase = first_of_kind(kMinFields, FeatureDataType::LB);
-  static_assert(count_of_kind(kMinFields, FeatureDataType::LB) == Label::MIN_LABEL_COUNT && kind_contiguous(kMinFields, FeatureDataType::LB),
-                "L_min 标签列须与标签配置 MIN_LABEL_COUNT 等长且连续");
+  // 标签列定址: LB 块偏移 → 层 LVL 的列下标 (本层没有 = kNoCol). 持有期列 hold_col(h) + side 按名 lb_<side>_<name> 找;
+  // 块尾的档附带列 (Lob 冲击成本, 偏移 ≥ kHoldCols) = 本层按名对不上的 LB 列, 按序对应, 要么全在要么全无. 对不齐 → 编译期失败
+  static constexpr size_t kNoCol = SIZE_MAX;
+  static constexpr size_t kHoldCols = Label::HOLD_COUNT * Label::GROUP_SIZE;
+  struct LabLayout { // 无默认成员初始化器: 外层类未完整时 (下方静态成员初始化) 不许用
+    std::array<std::array<size_t, Label::MIN_LABEL_COUNT>, LEVEL_COUNT> col;
+    std::array<size_t, LEVEL_COUNT> count;
+    bool ok;
+  };
+  static constexpr LabLayout kLab = [] {
+    constexpr auto is_label_code = [](std::string_view code, size_t h, size_t s) {
+      const std::string_view side = Label::SIDE_NAME[s], name = LABEL_NAME[h];
+      return code.size() == 3 + side.size() + 1 + name.size() && code.starts_with("lb_") && code.substr(3, side.size()) == side &&
+             code[3 + side.size()] == '_' && code.ends_with(name);
+    };
+    LabLayout L{};
+    L.ok = true;
+    for (size_t l = 0; l < LEVEL_COUNT; ++l) {
+      L.col[l].fill(kNoCol);
+      if (!T::has(l))
+        continue;
+      const std::span<const FieldInfo> fs{T::LEVELS[l].fields, T::LEVELS[l].field_count};
+      const size_t base = first_of_kind(fs, FeatureDataType::LB), cnt = count_of_kind(fs, FeatureDataType::LB);
+      L.count[l] = cnt;
+      if (cnt > Label::MIN_LABEL_COUNT || !kind_contiguous(fs, FeatureDataType::LB)) {
+        L.ok = false;
+        continue;
+      }
+      std::array<bool, Label::MIN_LABEL_COUNT> named{}; // 层内第 f − base 个 LB 列已按名对上
+      for (size_t f = base; f < base + cnt; ++f)
+        for (size_t h = 0; h < Label::HOLD_COUNT; ++h)
+          for (size_t s = 0; s < Label::GROUP_SIZE; ++s)
+            if (is_label_code(fs[f].code, h, s)) {
+              L.ok = L.ok && L.col[l][Label::hold_col(h) + s] == kNoCol;
+              L.col[l][Label::hold_col(h) + s] = f;
+              named[f - base] = true;
+            }
+      size_t extra = kHoldCols;
+      for (size_t f = base; f < base + cnt; ++f)
+        if (!named[f - base]) {
+          L.ok = L.ok && extra < Label::MIN_LABEL_COUNT;
+          if (extra < Label::MIN_LABEL_COUNT)
+            L.col[l][extra++] = f;
+        }
+      L.ok = L.ok && (extra == kHoldCols || extra == Label::MIN_LABEL_COUNT);
+    }
+    size_t total = 0;
+    for (const size_t c : L.count)
+      total += c;
+    L.ok = L.ok && total > 0; // 至少一层落标签
+    return L;
+  }();
+  static_assert(kLab.ok, "各层 LB 列须连续, 且每列都能按名 (lb_<side>_<name>) 或块尾附带列 (全在 / 全无) 定址回标签 LB 块");
+  static constexpr const auto &kLabCount = kLab.count;
+  static constexpr const auto &kLabCol = kLab.col;
 
   std::array<Day, kPendDays> days_{}; // 日句柄环 (开盘型跨日回填 / 延迟 ts_close)
   size_t cur_ = kPendDays - 1;        // 首个 push_day 推到 0

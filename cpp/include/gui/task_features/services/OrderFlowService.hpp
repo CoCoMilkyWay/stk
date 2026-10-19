@@ -10,15 +10,15 @@
 //         → 背槽整体发布 (供 GUI 资产筛选)
 //       Kline 流式: 分批 (与 Dist / Transform / Corr 同一个 Prefetch::stream, 算本批同时预读下一批) → 追加 + 单调前缀发布;
 //         批与批之间可被新代打断
-//   日轴 = 库集各库落盘日的并集 (analysis::DayAxis::Union: 主库 + overlay 各库, 不受回测区间限; 每天带各库落盘位);
-//     Depth / Pick 只取锚点日 (analysis::plan_day). OHLC 只来自主库, 主库缺的日不画 K 线, overlay 各画各的
+//   日轴 = 库集各库落盘日的并集 (analysis::DayAxis::Union: Kline = all + overlay 各库, 不受回测区间限; 每天带各库落盘位);
+//     Depth / Pick 只取锚点日 (analysis::plan_day). Kline 底图 = all 库日 K (all 缺的日不画), overlay 各画各的
 //   读计划 = 固定列 [0, k0) (K 线 / VWAP / 状态, 按字段表 code 定列) + overlay [k0, n) (选中 ColRef, 任意库任意层), 同一条读路径:
 //     尾部行 (各列按自己的层画, 行末对齐到网格行; 网格: Kline = L_min / Depth = L_sec, 细于网格的列不进 Kline),
 //     资产不在列所在库 / 该库缺这天 = 无点.
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一个主库 (当前档当前库: K 线 OHLC / 候选轴;
+//           切出 Features 任务 Destroy → Stop (析构 join). 一代服务绑一个主库 (当前档当前库: 图1 VWAP / 候选轴;
 //           逐笔重放按 orders 日文件, 与主库无关): 换主库 / 库重算后整体重建 + 重扫 (TaskFeatures).
 #pragma once
 
@@ -64,7 +64,7 @@ private:
   };
   using RowReq = analysis::Request<RowSpec>;
   // GUI 线程: 固定列 + overlay → 请求 (库集未建 → false, 不提交); level = 网格, carry = 粗层开盘承接前日末行
-  bool make(const SharedData &data, RowReq &req, size_t level, bool carry, std::vector<ColRef> fixed,
+  bool make(const SharedData &data, RowReq &req, LibId main, size_t level, bool carry, std::vector<ColRef> fixed,
             const std::vector<ColRef> &feats, std::vector<uint32_t> assets) const;
 
   class KlineLane; // 逐日流式 + 前缀发布

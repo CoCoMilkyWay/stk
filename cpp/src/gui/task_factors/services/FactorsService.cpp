@@ -43,8 +43,6 @@ using ojson = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-constexpr size_t kLabLevel = L_min; // 标签 / 冲击成本只在 L_min 落盘
-
 // 评估派生数据 (run + 表头 + stats): 只描述当前 weights, 权重整体换掉 / 清空时一起删
 void erase_stats(ojson &j) {
   j.erase("run");
@@ -407,7 +405,6 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
                                                     : std::string(ohlc[i]) + "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
     t.ohlc[i] = static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str()));
   }
-  const auto &L_min = meta.features[kLabLevel];
   struct Lab {
     bool is_long;
     int hold;
@@ -421,8 +418,8 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
   std::vector<Lab> labs;
   std::vector<Cost> costs;
   std::set<int> holds, amts;
-  for (size_t i = 0; i < L_min.size(); ++i) {
-    const FeatureMetadata &f = L_min[i];
+  for (size_t i = 0; i < level.size(); ++i) {
+    const FeatureMetadata &f = level[i];
     if (f.data_type != FeatureDataType::LB)
       continue;
     char side[8] = {}, name[16] = {};

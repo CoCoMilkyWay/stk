@@ -23,7 +23,7 @@ namespace GUI::Features {
 
 // ============================================================================
 // 固定列 (读计划首部 [0, k0), 与 overlay 同一条读路径; 列下标按字段表 code 查, 字段表里没有 = assert)
-//   Kline: 主库 L_min OHLC + ts_valid (OHLC 列名随档: Lob = lob_*, Bar = 裸名)
+//   Kline: all 库 L_day 日 K + ts_valid (底图, 一日一根; 分钟 K 等要看就选成 overlay)
 //   Depth: 主库 L_min ts_valid [+ vwap] (vwap 只在 Lob 档: Bar 主库无 VWAP 线)
 //   Pick:  all 库 L_min ts_valid (有无数据) + L_day 收盘行状态列 (Fund 节点日频)
 // ============================================================================
@@ -51,9 +51,8 @@ std::vector<ColRef> refs(const Feature &f, LibId lib, size_t level, std::initial
     out.push_back(f.ref(lib, level, code));
   return out;
 }
-std::vector<ColRef> kline_cols(const Feature &f, LibId main) {
-  return lib_tier(main) == TierId::Lob ? refs(f, main, L_min, {"lob_open", "lob_high", "lob_low", "lob_close", "ts_valid"})
-                                       : refs(f, main, L_min, {"open", "high", "low", "close", "ts_valid"});
+std::vector<ColRef> kline_cols(const Feature &f) {
+  return refs(f, kAllLib, L_day, {"open_day", "high_day", "low_day", "close_day", "ts_valid"});
 }
 std::vector<ColRef> depth_cols(const Feature &f, LibId main) {
   return lib_tier(main) == TierId::Lob ? refs(f, main, L_min, {"ts_valid", "vwap"}) : refs(f, main, L_min, {"ts_valid"});
@@ -187,6 +186,7 @@ private:
   RowReq cur_{};
   SegPlan days_;                     // 日轴 (随 rescan 重扫; 库集变了 GUI 必带 rescan)
   LibMask libs_ = 0;                 // days_ 的库集
+  std::vector<double> bar_x_;        // [OHLC 层每日有效行] 一根 K 线的日内 X (所跨分钟的中点)
   double y_min_ = 0.0, y_max_ = 0.0; // OHLC 运行范围
   std::vector<float> feat_min_, feat_max_;
 };
@@ -265,14 +265,14 @@ void OrderFlowService::Stop() { // worker 析构即 Stop (join)
 // ============================================================================
 
 // 固定列在前, overlay 在后; 尾部行 (各列按自己的层, level = 网格: 定行末对齐与开盘承接); 日轴 = 库集并集
-bool OrderFlowService::make(const SharedData &data, RowReq &req, size_t level, bool carry, std::vector<ColRef> fixed,
+bool OrderFlowService::make(const SharedData &data, RowReq &req, LibId main, size_t level, bool carry, std::vector<ColRef> fixed,
                             const std::vector<ColRef> &feats, std::vector<uint32_t> assets) const {
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
   req.spec.k0 = fixed.size();
   req.spec.ts_price = ts_price_of(data.feature, feats);
   fixed.insert(fixed.end(), feats.begin(), feats.end());
   return analysis::read_request(data.config, data.feature,
-                                {.main = main_,
+                                {.main = main,
                                  .days = analysis::DayAxis::Union,
                                  .level = level,
                                  .rows = analysis::Rows::Tail,
@@ -289,7 +289,7 @@ void OrderFlowService::RequestKline(const SharedData &data, uint32_t gen, size_t
   assert(kline_ && "Request 先于 Start");
   assert(std::ranges::all_of(feats, [](const ColRef &c) { return c.level >= L_min; }) && "Kline 网格 = L_min, 细层列不进");
   RowReq req{.spec = {.gen = gen, .rescan = rescan_dates}};
-  if (make(data, req, L_min, false, kline_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
+  if (make(data, req, kAllLib, L_min, false, kline_cols(data.feature), feats, {static_cast<uint32_t>(asset_idx)}))
     kline_->Request(std::move(req));
 }
 
@@ -297,14 +297,14 @@ void OrderFlowService::RequestDepth(const SharedData &data, uint32_t gen, misc::
                                     const std::vector<ColRef> &feats) {
   assert(depth_ && "Request 先于 Start");
   RowReq req{.spec = {.gen = gen, .date = date}};
-  if (make(data, req, L_sec, true, depth_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
+  if (make(data, req, main_, L_sec, true, depth_cols(data.feature, main_), feats, {static_cast<uint32_t>(asset_idx)}))
     depth_->Request(std::move(req));
 }
 
 void OrderFlowService::RequestPick(const SharedData &data, uint32_t gen, misc::Ymd date) {
   assert(pick_ && "Request 先于 Start");
   RowReq req{.spec = {.gen = gen, .date = date}};
-  if (make(data, req, L_min, true, pick_cols(data.feature), {}, {}))
+  if (make(data, req, main_, L_min, true, pick_cols(data.feature), {}, {}))
     pick_->Request(std::move(req));
 }
 
@@ -335,8 +335,18 @@ bool OrderFlowService::KlineLane::run(RowReq &req) {
   feat_min_.assign(nf, (std::numeric_limits<float>::max)());
   feat_max_.assign(nf, std::numeric_limits<float>::lowest());
 
-  k.begin_generation(sp.gen, std::vector<ColRef>(sp.plan.cols.begin() + sp.k0, sp.plan.cols.end()));
-  k.reserve_capacity(); // 首点发布前完成: 之后 data() 恒稳定
+  // OHLC 层: 行 m 跨网格行 [上一行末 + 1, 行末] → 画在中点; 半宽按每根跨的分钟数折
+  const size_t bar_lvl = sp.plan.cols[KL_TS].level, R = level_valid_rows(bar_lvl);
+  bar_x_.resize(R);
+  for (size_t m = 0, lo = 0; m < R; ++m) {
+    const size_t hi = level_row_of_sec(L_min, level_end_sec(bar_lvl, m) - 1);
+    bar_x_[m] = 0.5 * static_cast<double>(lo + hi);
+    lo = hi + 1;
+  }
+  const double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH * static_cast<double>(level_valid_rows(L_min)) / static_cast<double>(R);
+
+  k.begin_generation(sp.gen, std::vector<ColRef>(sp.plan.cols.begin() + sp.k0, sp.plan.cols.end()), half_width);
+  k.reserve_capacity(R); // 首点发布前完成: 之后 data() 恒稳定
 
   // 请求侧 asset 是全局轴下标. 不在库集任一库内 (初始默认选中 / 换票池后的残留选中,
   // 候选就绪后 GUI 会自动换代) → 无列可读, 直接发布"完整但空"的一代
@@ -361,9 +371,9 @@ void OrderFlowService::KlineLane::emit(const RowPlane &p, size_t b0, size_t bd) 
   for (size_t j = 0; j < bd; ++j) {
     const double x0 = static_cast<double>((b0 + j) * OrderFlowConst::MIN_CAPACITY);
 
-    // OHLC: 主库 L_min (主库缺这天 = 门控哨兵, 无 K 线)
+    // OHLC: all 库日 K (all 库缺这天 = 门控哨兵, 无 K 线)
     const feature_storage_t *ts = p.series(KL_TS, 0, j);
-    for (size_t m = 0; m < level_valid_rows(L_min); ++m) {
+    for (size_t m = 0; m < bar_x_.size(); ++m) {
       if (!has_data(ts[m]))
         continue;
 
@@ -372,7 +382,7 @@ void OrderFlowService::KlineLane::emit(const RowPlane &p, size_t b0, size_t bd) 
       const double l = static_cast<double>(p.series(KL_LOW, 0, j)[m]);
       const double c = static_cast<double>(p.series(KL_CLOSE, 0, j)[m]);
 
-      k.x.push_back(x0 + static_cast<double>(m));
+      k.x.push_back(x0 + bar_x_[m]);
       k.open.push_back(o);
       k.high.push_back(h);
       k.low.push_back(l);

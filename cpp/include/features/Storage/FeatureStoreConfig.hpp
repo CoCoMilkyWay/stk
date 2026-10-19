@@ -128,10 +128,11 @@ TIER_LEVELS(GENERATE_LEVEL_SOURCES)
 
 // ============================================================================
 // 编译期一致性检查: 列所在层 == 来源允许的层
-//   CS → 源层 == 本层 (截面只在本层节拍读本层行); TS 任意 (节拍取 Series 最新值, 见 Level); LABEL / FLAG 任意
+//   CS 源层任意 (CoreCs 按 level_asof(源层, 本层, t) 投影; 跨日只许 TS / 元列, CoreCs 编译期查); TS 任意 (节拍取 Series 最新值, 见 Level);
+//   LABEL / FLAG 任意 —— 目前全部放行, 留作挂点
 // ============================================================================
 #define SRC_LEVEL_TS(...) kLevel
-#define SRC_LEVEL_CS(ns, l, ...) l
+#define SRC_LEVEL_CS(...) kLevel
 #define SRC_LEVEL_LABEL kLevel
 #define SRC_LEVEL_FLAG kLevel
 #define CHECK_FIELD_ONE(code, c1, c2, en, cn, desc, formula, src) \

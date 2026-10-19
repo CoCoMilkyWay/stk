@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Fund (CS) - 日频基本面的截面列 (L_day: 源 = Fund 节点 L_day 列, 中性化上下文 = L_day 的 mcap / ind_l1)
+// Fund (CS) - 日频基本面的截面列 (L_day: 源 = Fund 节点 L_day 列, 中性化上下文 = L_min 末行 mcap (收盘市值) / L_day ind_l1, 见 Method/CS.hpp)
 // =============================================================================
 //   dy_ttm_cs / roe_ttm_cs / roa_ttm_cs   = pct_rank(z(neutralize(winsor_q(src))))   行业/市值中性化 (NeutralRank)
 //   cfo_chg_ttm_cs / rz_bal_cs / rq_bal_cs = pct_rank(z(winsor_mad(src)))            qmt 同款, 无中性化 (WinsorRank)

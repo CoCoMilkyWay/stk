@@ -201,12 +201,18 @@ SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t l
     std::shuffle(idx.begin(), idx.end(), std::mt19937{0x5eed}); // 与 shuffled_order 同种子: 跨构建稳定
   if (limit > 0 && idx.size() > limit)
     idx.resize(limit);
-  // 第 i 天库集里落了盘的库 = 日轴库位 + 余库 (只判入选的日)
+  // 第 i 天库集里落了盘的库 = 日轴库位 + 余库 (只判入选的日; 记住上一次: 相邻日的承接日 = 上一日, 不重判)
+  size_t memo_i = SIZE_MAX;
+  LibMask memo = 0;
   const auto has = [&](size_t i) {
+    if (i == memo_i)
+      return memo;
     LibMask m = all.has[i];
     for (const LibId l : lib_ids())
       if (scope.has(l) && !(scope.days & lib_bit(l)) && landed(scope, l, all.dates[i]))
         m |= lib_bit(l);
+    memo_i = i;
+    memo = m;
     return m;
   };
   SegPlan p;
@@ -221,10 +227,12 @@ SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t l
     for (size_t d = 0; d < days; ++d) {
       const size_t i = seg * days + d;
       const bool in = i < n;
+      const LibMask hp = in && i > 0 ? has(i - 1) : 0; // 先承接日后当日: 顺序相邻时承接日命中上一次
+      const LibMask hc = in ? has(i) : 0;
       p.dates.push_back(in ? all.dates[i] : 0);
       p.prev.push_back(in && i > 0 ? all.dates[i - 1] : 0);
-      p.has.push_back(in ? has(i) : 0);
-      p.has_prev.push_back(in && i > 0 ? has(i - 1) : 0);
+      p.has.push_back(hc);
+      p.has_prev.push_back(hp);
       p.month.push_back(in ? all.month[i] : 0);
       p.weekday.push_back(in ? static_cast<uint8_t>(misc::weekday_of(all.dates[i])) : 0);
     }

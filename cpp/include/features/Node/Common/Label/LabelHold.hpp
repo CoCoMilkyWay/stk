@@ -13,7 +13,8 @@
 //   开盘型 (T+N) 跨日回填: 日 D 的行 entry 存在悬挂槽里, 等到 D+N 日开盘才写 D 的张量 → D 的写句柄由 CoreTs 持到该日结清
 //   (writer 带 days_ago). D+N 无开盘 (停牌 / 全日无成交) → 顺延到之后首个有开盘的日, 最多再等 N 日 (D+2N 仍无 → 最近一次收盘价).
 //   悬挂日环长 PEND_DAYS = 2·N_max + 1, 顶掉的槽必已结清 (断言).
-//   writer(col, n, t_min, values, days_ago) 写 LB 块内偏移 col 起的 n 列; release(days_ago) = 该日全部组已写完, 写句柄可归还.
+//   writer(col, n, t_min, values, days_ago) 写 LB 块内偏移 col 起的 n 列 (分钟 t_min 的标签; 落哪些层的哪行由 CoreTs 定);
+//   release(days_ago) = 该日全部组已写完, 写句柄可归还.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -29,7 +30,8 @@ template <class Entry>
 class LabelHold {
 public:
   static constexpr size_t HOLD_COUNT = std::size(LABEL_KIND);
-  static constexpr size_t GROUP_SIZE = 2; // 一个 hold 组: [long, short]
+  static constexpr size_t GROUP_SIZE = 2;                                 // 一个 hold 组: [long, short]
+  static constexpr const char *SIDE_NAME[GROUP_SIZE] = {"long", "short"}; // 列名 lb_<side>_<name> 的 side
   static constexpr size_t hold_col(size_t h) { return h * GROUP_SIZE; }
   static_assert(HOLD_COUNT <= 32, "开盘型结算位图用 uint32_t");
 
@@ -49,8 +51,9 @@ public:
     return true;
   }(),
                 "分钟型 / 开盘型的 n 须 ≥ 1");
-  // FeatureStore 日环下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进 (CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
-  static constexpr size_t MIN_RING_SLOTS = PEND_DAYS + 1;
+  // FeatureStore 日环下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进; 再 +1: IO(d) 等 CS(d+1) close (截面跨日读 d−1 槽位,
+  // 见 FeatureStore::io_try_open), d 的 slot 要多持到 d+1 结清 (其余 CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
+  static constexpr size_t MIN_RING_SLOTS = PEND_DAYS + 2;
 
   // 09:25 撮合 bar (L_min kAuctionMin) / 连续竞价 [kContOpenMin, kContCloseMin) = [09:30, 14:57) / 收盘竞价 (L_min 252..254)
   static constexpr size_t kAuctionMin = (L2::MORNING_MATCHING_START_HOUR * 60 + L2::MORNING_MATCHING_START_MINUTE) - MORNING_START_MIN;

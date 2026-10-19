@@ -34,7 +34,7 @@ void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes) {
 
   FeatureDay::Scratch scratch; // 跨日复用, 稳态零分配
   // 循环顶不查 cancel (与其余三角色唯一的不同): 截面已 close 的日子刷完再走 ——
-  // wait_open 先试后查 cancel, 刷到本核首个未截面 (或别核卡住前缀而未轮到 slot) 的日才返回空. 不能和 ts_done 比:
+  // wait_open 先试后查 cancel, 刷到本核首个未截面 (或次日未截面: 次日截面跨日读本日 slot; 或别核卡住前缀而未轮到 slot) 的日才返回空. 不能和 ts_done 比:
   // CS 按 cancel 即退, 而某个 TS 可能之后才把在飞的一天计满, 等它就是死等.
   for (size_t date_idx = lane; date_idx < total_dates; date_idx += lanes) {
     TraceN("FlushLoop");
@@ -44,7 +44,7 @@ void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes) {
     {
       TraceN("WaitForData");
       TraceColor(C_Orange);
-      day = wait_open(cancel, stat, [&] { return store.io_try_open(date_idx); });
+      day = wait_open(cancel, stat, [&] { return store.io_try_open(date_idx, date_idx + 1 == total_dates); });
     }
     if (!day)
       break;

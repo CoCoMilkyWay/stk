@@ -13,7 +13,7 @@
 // OrderFlow::Kline Implementation
 // ============================================================================
 
-void OrderFlow::Kline::begin_generation(uint32_t gen, std::vector<ColRef> refs) {
+void OrderFlow::Kline::begin_generation(uint32_t gen, std::vector<ColRef> refs, double half_width_) {
   assert(refs.size() <= OrderFlowConst::MAX_FEATURES);
   // 换代顺序: 先零计数 / 清数组 / 定 overlay 列, 后置 gen (release) —— GUI 见到新 gen 时一切已就位
   // (此刻 GUI 请求代已是新代, 发布代仍是旧代 → GUI 不读 kline, 数组可安全重建)
@@ -28,17 +28,18 @@ void OrderFlow::Kline::begin_generation(uint32_t gen, std::vector<ColRef> refs) 
   close.clear();
   feat.clear();
   feat.refs = std::move(refs);
+  half_width = half_width_;
   pub.store(pack(gen, 0, 0), std::memory_order_release);
 }
 
-void OrderFlow::Kline::reserve_capacity() {
-  // 满容量 = 日数 × 有效分钟数; 之后只 push_back → data() 恒稳定 (前缀读安全)
-  const size_t cap = dates.size() * level_valid_rows(L_min);
-  x.reserve(cap);
-  open.reserve(cap);
-  high.reserve(cap);
-  low.reserve(cap);
-  close.reserve(cap);
+void OrderFlow::Kline::reserve_capacity(size_t ohlc_rows) {
+  // 满容量 = 日数 × 每日有效行 (OHLC: 其层; overlay: 网格 L_min); 之后只 push_back → data() 恒稳定 (前缀读安全)
+  const size_t bars = dates.size() * ohlc_rows, cap = dates.size() * level_valid_rows(L_min);
+  x.reserve(bars);
+  open.reserve(bars);
+  high.reserve(bars);
+  low.reserve(bars);
+  close.reserve(bars);
   for (size_t i = 0; i < feat.n(); ++i) {
     feat.line[i].x.reserve(cap);
     feat.line[i].y.reserve(cap);
