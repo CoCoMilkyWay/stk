@@ -41,14 +41,26 @@ struct SegPlan {
 };
 
 // 源 = 同 (档, 层) 的一组值列: 一天一次选列读 (cs 末位带该层 ts_valid), 行按 level_asof 投影到网格
+// 读端 (平面) 与写端上游读 (CoreCs 旁读 / pool::Panel 票池成员位) 同一份: 跨档跨层一律 level_asof, 不另写特例
 struct Source {
   TierId tier = TierId::Lob; // 主档 = 同轴; 旁读档: 平面 a ← 该档轴 Readers::ids[tier][a]
   size_t level = L_min;
   fmeta::ColumnSet cs;        // 值列 (+ 门控列)
   std::vector<uint32_t> slot; // [cs.n()] 值列 → 平面列
   std::vector<int32_t> row;   // [网格每日有效行] → 源行; -1 = 前一交易日末行
-  bool carry = false;         // row 含 -1
+  bool cur = false;           // row 含 ≥ 0 (读当日)
+  bool carry = false;         // row 含 -1 (读前一交易日)
 };
+// 源行投影: 网格层 grid 的 rows 个行 → level_asof(源层, grid, t)
+inline void project_rows(Source &s, size_t grid, size_t rows) {
+  s.row.resize(rows);
+  s.cur = s.carry = false;
+  for (size_t t = 0; t < rows; ++t) {
+    s.row[t] = static_cast<int32_t>(level_asof(s.level, grid, t));
+    s.cur |= s.row[t] >= 0;
+    s.carry |= s.row[t] < 0;
+  }
+}
 // 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan)
 struct ReadPlan {
   TierId main = TierId::Lob; // 主档 (A 轴); 源档 = 主档或其旁读档
@@ -85,7 +97,8 @@ struct IoSlot {
       const Source &s = plan.srcs[i];
       const size_t n = std::min(s.cs.n(), max_cols) + s.cs.gated();
       const size_t SA = As[s.tier];
-      src[i].cur.preallocate(SA, s.level, n);
+      if (s.cur)
+        src[i].cur.preallocate(SA, s.level, n);
       if (s.carry)
         src[i].prev.preallocate(SA, s.level, n);
     }
@@ -97,7 +110,7 @@ struct IoSlot {
 inline void load_source(const Readers &rd, const Source &s, misc::Ymd date, misc::Ymd prev,
                         const std::vector<size_t> &io, IoSlot::Buf &b) {
   const FeatureRead &reader = rd.of(s.tier);
-  b.has_cur = date != 0;
+  b.has_cur = s.cur && date != 0;
   b.has_prev = s.carry && date != 0 && prev != 0;
   if (b.has_cur)
     reader.load_day_columns(date, io, b.cur);

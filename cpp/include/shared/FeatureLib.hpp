@@ -5,6 +5,10 @@
 //   <pool>     Lob 档 (逐笔 → 订单簿), 池轴, 回测日历; <pool> = Bar 库票池列 pool_<pool> (feature_libs)
 // 写端 (ComputeService) 规划后落清单 <dir>/lib.json (save_lib); 读端 (FeatureRead / ReadScope / 截面旁读) 只读清单 (load_lib),
 // 两端永远同一 (档, 轴, 日期轴). 无清单 = 未建库 (空轴, ready() == false).
+//
+// 计算 / 落盘单位 = 库 (TS + CS 同库一趟), 刻意不拆:
+//   TS 行将来可以吃库内 CS 的输出 (截面 → 时序), TS / CS 剥不干净 → 不把 TS 拆成跨库共享的一份, 也不跨票池库去重 TS.
+//   Lob 只在池内算 (池轴 = 本池并集); 一般只算一个票池库, 不为"多池一起算"做并集轴 / 共享优化.
 
 #include "features/Storage/FeatureLevels.hpp" // TierId
 #include "misc/date.hpp"

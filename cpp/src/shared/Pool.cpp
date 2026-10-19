@@ -1,5 +1,5 @@
 #include "shared/Pool.hpp"
-#include "features/Storage/FeatureRead.hpp"
+#include "features/Storage/DayBatchPlane.hpp" // 上游读: Source / load_source / source_row (与读端同一份)
 #include "shared/FeatureLib.hpp"
 
 #include <algorithm>
@@ -10,14 +10,20 @@ namespace pool {
 Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
   assert(bar.tier == TierId::Bar && bar.ready() && "票池源 = Bar 库 (先算 Bar 库)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
-  constexpr size_t kLevel = L_day;
-  constexpr size_t kCloseRow = 0; // L_day 唯一有效行 (收盘)
+  // 第 D 日成员 = 盘前 (L_sec 行 0) as-of 的 L_day 列: level_asof(L_day, L_sec, 0) = -1 → D−1 收盘行 (与读端同一投影)
+  Source s{.tier = TierId::Bar, .level = L_day};
+  s.cs.io = {col};
+  s.cs.vts = {L2::ValidType::ALL};
+  s.slot = {0};
+  project_rows(s, L_sec, 1);
+  assert(!s.cur && s.carry && "盘前 as-of 日层 = 只读前一交易日");
 
   FeatureRead reader(bar);
-  FeatureRead::DayColumns dc;
+  Readers rd{.main = TierId::Bar};
+  rd.rd[TierId::Bar] = &reader;
+  IoSlot::Buf b;
   const size_t As = bar.axis.size();
-  dc.preallocate(As, kLevel, 1);
-  const std::vector<size_t> cols{col};
+  b.prev.preallocate(As, s.level, 1);
 
   // 全轴逐日成员位 [date_i][a_bar], 顺带记并集
   std::vector<uint8_t> full(dates.size() * As, 0);
@@ -27,9 +33,12 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
     assert(it != bar.dates.end() && *it == dates[i] && it != bar.dates.begin() && "回测日不在 Bar 库日期轴 (或是其首日): 重算 Bar 库覆盖到 end_date");
     const misc::Ymd prev = *(it - 1);
     assert(reader.has_date(prev) && "Bar 库缺票池源日 (D−1): 先把 Bar 库算完");
-    reader.load_day_columns(prev, cols, dc);
+    load_source(rd, s, dates[i], prev, s.cs.io, b);
     assert(!reader.stale() && "Bar 库判废 (头不符): 重算 Bar 库");
-    const feature_storage_t *row = dc.col(0) + kCloseRow * As;
+    size_t r = 0;
+    const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);
+    assert(dc && "盘前 as-of 无源");
+    const feature_storage_t *row = dc->col(0) + r * As;
     uint8_t *dst = full.data() + i * As;
     for (size_t a = 0; a < As; ++a) {
       dst[a] = static_cast<float>(row[a]) > 0.5f; // NaN (母集外) → 不在池 (本 TU precise-math)

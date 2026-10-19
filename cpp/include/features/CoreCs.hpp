@@ -1,17 +1,15 @@
 #pragma once
 
-#include "features/MetaFlag.hpp"  // fmeta::data_valid (之前经 NodesGenerated→Meta.hpp 传递获得)
-#include "features/Method/CS.hpp" // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
-#include "features/Storage/FeatureDay.hpp"
+#include "features/MetaFlag.hpp"              // fmeta::data_valid (之前经 NodesGenerated→Meta.hpp 传递获得)
+#include "features/Method/CS.hpp"             // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
+#include "features/Storage/DayBatchPlane.hpp" // 上游读: Source / load_source / source_row (与读端同一份)
 #include "features/Storage/FeatureStore.hpp"
-#include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp"
-#include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -26,7 +24,8 @@
 //   源列由 Method/CS.hpp 声明, 取本层同名列) 每拍按需准备一次, 全部 NeutralRank 行复用; L_sec 用 NeutralRank = 编译错误.
 //
 //   旁读 (TIER_SIDES, 两档共有的任意层): 每层源档 ns ≠ 本档的行 + 本档没有的 NeutralRank 上下文列 = 该层旁读列集 (CsSide<T, LVL>, 编译期去重).
-//   begin_day 从旁读档的库整日读入各层这些列 (按本档 A 轴取子集); 当日缺库 → 整日 NaN + 日志, 不等不算.
+//   begin_day 从旁读档的库整日读入各层这些列 (上游读 = 读端同一个 Source, 行 = level_asof(LVL, LVL, t) = t; gather 时经 ids 取本档 A 轴);
+//   当日缺库 / 头不符 → 断言 (旁读档库须先算完覆盖本库日期轴, 不等它, 不替它算).
 //   旁读列是上游档落盘的张量行, 与本档张量行同属"CS 只看张量行"的输入契约.
 //
 //   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + cs_valid) 看世界,
@@ -159,23 +158,23 @@ public:
   static constexpr bool kSides = []<size_t... L>(std::index_sequence<L...>) { return ((Side<L>::N > 0) || ...); }(std::make_index_sequence<LEVEL_COUNT>{});
 
   // libs[T::kId] = 本档库 (轴 sub → global); libs[旁读档] = 旁读档的库 (无旁读列时不读)
-  CoreCs(FeatureStore<T> &store, const PerTier<FeatureLib> &libs)
-      : A_(store.query_A()), libs_(libs), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
+  CoreCs(FeatureStore<T> &store, [[maybe_unused]] const PerTier<FeatureLib> &libs)
+      : A_(store.query_A()), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
     if constexpr (kSides) {
       using S = typename TierSide<T>::type;
       const LibAxis &axis = libs[T::kId].axis;
       const FeatureLib &side = libs[S::kId];
       assert(side.tier == S::kId && axis.size() == A_);
-      [&]<size_t... L>(std::index_sequence<L...>) {
-        ((side_[L].resize(Side<L>::N * level_rows(L) * A_),
-          side_full_.resize(std::max(side_full_.size(), Side<L>::N * level_rows(L) * side.axis.size()))),
-         ...);
-      }(std::make_index_sequence<LEVEL_COUNT>{});
-      side_sub_.resize(A_);
+      side_rd_.emplace(side);
+      side_readers_.main = T::kId;
+      side_readers_.rd[S::kId] = &*side_rd_;
+      [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
+      side_ids_.resize(A_);
       for (size_t a = 0; a < A_; ++a) {
-        side_sub_[a] = side.axis.sub_of(axis.global(a));
-        assert(side_sub_[a] < side.axis.size() && "本档资产不在旁读档 A 轴内");
+        const size_t x = side.axis.sub_of(axis.global(a));
+        assert(x < side.axis.size() && "本档资产不在旁读档 A 轴内");
+        side_ids_[a] = static_cast<uint32_t>(x);
       }
     }
   }
@@ -210,7 +209,7 @@ public:
     static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_min / bin / L_day context (mcap / industry)");
 
     float *y = input_fp32_.data();
-    gather_(src_col_<S, LVL, SRC>(t), y);
+    gather_(src_col_<S, LVL, SRC>(t), ids_<S>(), y);
     Tf::apply(y, n_);
     if constexpr (Method::kNeutral)
       Method::apply(y, n_, neutral_<LVL>(t));
@@ -245,7 +244,7 @@ private:
     }
   }
 
-  // 源列 t 时刻全部资产的连续段 (本档 A 轴): 本档 → 张量; 旁读档 → 本日该层旁读缓冲
+  // 源列 t 时刻全部资产的连续段 (源档 A 轴, 经 ids_<S> 取本档资产): 本档 → 张量; 旁读档 → 本日该层旁读张量 (source_row 投影)
   template <class S, size_t SRC_LVL, size_t SRC>
   const feature_storage_t *src_col_(size_t t) {
     if constexpr (std::is_same_v<S, T>) {
@@ -254,9 +253,21 @@ private:
       static_assert(std::is_same_v<S, typename TierSide<T>::type>, "CS 源档须为本档或 TIER_SIDES 登记的旁读档");
       constexpr size_t i = Side<SRC_LVL>::index_of(SRC);
       static_assert(i < Side<SRC_LVL>::N);
-      assert(t < level_rows(SRC_LVL));
-      return side_[SRC_LVL].data() + (i * level_rows(SRC_LVL) + t) * A_;
+      const Source &s = side_src_[SRC_LVL];
+      assert(t < s.row.size());
+      size_t r = 0;
+      const FeatureRead::DayColumns *dc = source_row(s, side_buf_[SRC_LVL], t, r);
+      assert(dc && "旁读源本日未读");
+      return dc->col(i) + r * dc->A;
     }
+  }
+  // 源档 A 轴 ← 本档 a: 本档 = 同轴 (nullptr); 旁读档 = Readers::ids 同义
+  template <class S>
+  const uint32_t *ids_() const {
+    if constexpr (std::is_same_v<S, T>)
+      return nullptr;
+    else
+      return side_ids_.data();
   }
 
   // NeutralRank 上下文 (本层同名列): 首个 NeutralRank 行触发, 本拍内复用. 源列按名定址: 本档有就用本档, 否则旁读档同层
@@ -269,47 +280,49 @@ private:
     static_assert(MCAP < NS::LEVELS[LVL].field_count && INDUSTRY < NS::LEVELS[LVL].field_count,
                   "NeutralRank 上下文档该层必须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列");
     if (!neutral_ready_) {
-      gather_(src_col_<NS, LVL, MCAP>(t), logmc_dense_.data());
+      gather_(src_col_<NS, LVL, MCAP>(t), ids_<NS>(), logmc_dense_.data());
       cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n_);
-      gather_(src_col_<NS, LVL, INDUSTRY>(t), industry_dense_.data());
+      gather_(src_col_<NS, LVL, INDUSTRY>(t), ids_<NS>(), industry_dense_.data());
       neutral_ready_ = true;
     }
     return neutral_ctx_;
   }
 
-  // 本日层 LVL 旁读列: 旁读档库 [N][T][A_side] → 本档 A 轴 [N][T][A]. 该层无旁读列 → 空; 缺库 → 整日 NaN + 日志; 头不符 = 旁读档库过期, 先重算它
+  // 层 LVL 旁读源 (读端同一个 Source): 值列 = CsSide 列集, 不门控; 行 = level_asof(LVL, LVL, t) = t → 只读当日, 不承接
+  template <size_t LVL>
+  void init_side_(size_t As) {
+    if constexpr (Side<LVL>::N > 0) {
+      Source &s = side_src_[LVL];
+      s.tier = TierSide<T>::type::kId;
+      s.level = LVL;
+      s.cs.io.assign(Side<LVL>::kFields.begin(), Side<LVL>::kFields.end());
+      s.cs.vts.assign(Side<LVL>::N, L2::ValidType::ALL);
+      s.slot.resize(Side<LVL>::N);
+      for (size_t i = 0; i < Side<LVL>::N; ++i)
+        s.slot[i] = static_cast<uint32_t>(i);
+      project_rows(s, LVL, level_valid_rows(LVL));
+      assert(s.cur && !s.carry && "同层旁读只读当日");
+      side_buf_[LVL].cur.preallocate(As, LVL, Side<LVL>::N);
+    }
+  }
+  // 本日层 LVL 旁读列 (旁读档 A 轴整日张量). 该层无旁读列 → 不读; 缺库 / 头不符 → reader 判废 → 断言
   template <size_t LVL>
   void load_side_(misc::Ymd date) {
     if constexpr (Side<LVL>::N > 0) {
-      using S = typename TierSide<T>::type;
-      constexpr size_t N = Side<LVL>::N;
-      const LevelInfo &L = S::LEVELS[LVL];
-      const FeatureLib &side = libs_[S::kId];
-      const size_t T1 = L.rows, As = side.axis.size();
-      std::vector<feature_storage_t> &buf = side_[LVL];
-      const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(side.dir, date), LVL), L, Side<LVL>::kFields.data(), N,
-                                                     side_full_.data(), As, side.axis.hash, side_scratch_);
-      assert((st == FeatureDay::Status::Ok || st == FeatureDay::Status::Missing) && "旁读档库头不符 (轴 / 字段表变了), 先重算旁读档");
-      if (st == FeatureDay::Status::Missing) {
-        std::fill(buf.begin(), buf.end(), std::bit_cast<feature_storage_t>(fmeta::kNaNBits)); // fast-math TU: 不许浮点 NaN 字面量
-        Logger::log("cs", std::string("旁读档 ") + tier_name(S::kId) + " 缺 " + std::to_string(date) + " " + level_name(LVL) + ", " + std::to_string(N) +
-                              " 列整日填 NaN");
-        return;
-      }
-      for (size_t i = 0; i < N; ++i)
-        for (size_t t = 0; t < T1; ++t) {
-          const feature_storage_t *src = side_full_.data() + (i * T1 + t) * As;
-          feature_storage_t *dst = buf.data() + (i * T1 + t) * A_;
-          for (size_t a = 0; a < A_; ++a)
-            dst[a] = src[side_sub_[a]];
-        }
+      const Source &s = side_src_[LVL];
+      load_source(side_readers_, s, date, 0, s.cs.io, side_buf_[LVL]);
+      assert(!side_rd_->stale() && "旁读档库缺这天 / 头不符 (轴 / 字段表变了): 先算 / 重算旁读档");
     }
   }
 
-  // 源列 valid 子集 → dense fp32
-  void gather_(const _Float16 *src, float *dst) const {
-    for (size_t i = 0; i < n_; ++i)
-      dst[i] = static_cast<float>(src[valid_indices_[i]]);
+  // 源列 valid 子集 → dense fp32 (ids = 源档 A 轴 ← 本档 a, nullptr = 同轴)
+  void gather_(const _Float16 *src, const uint32_t *ids, float *dst) const {
+    if (ids)
+      for (size_t i = 0; i < n_; ++i)
+        dst[i] = static_cast<float>(src[ids[valid_indices_[i]]]);
+    else
+      for (size_t i = 0; i < n_; ++i)
+        dst[i] = static_cast<float>(src[valid_indices_[i]]);
   }
 
   // dense fp32 → 目标列就地写 (清零后只写有效资产): 无中转缓冲, 全 A 只扫一遍
@@ -324,11 +337,11 @@ private:
   Day day_{}; // 本日读写句柄, begin_day 换入 / end_day 交还
   size_t A_;
 
-  const PerTier<FeatureLib> &libs_;                                // 本档 + 旁读档库 (目录 + A 轴)
-  std::array<std::vector<feature_storage_t>, LEVEL_COUNT> side_{}; // [lvl] [N][T][A] 本日该层旁读列 (本档 A 轴; 无旁读列的层空)
-  std::vector<feature_storage_t> side_full_;                       // [N][T][A_side] 读盘暂存 (各层轮用, 按最大层定长)
-  std::vector<size_t> side_sub_;                                   // 本档 a → 旁读档 A 轴下标
-  FeatureDay::Scratch side_scratch_;
+  std::optional<FeatureRead> side_rd_;              // 旁读档库 reader (无旁读列不建)
+  Readers side_readers_;                            // rd[旁读档] = side_rd_
+  std::vector<uint32_t> side_ids_;                  // 本档 a → 旁读档 A 轴下标
+  std::array<Source, LEVEL_COUNT> side_src_{};      // [lvl] 该层旁读源 (无旁读列的层空)
+  std::array<IoSlot::Buf, LEVEL_COUNT> side_buf_{}; // [lvl] 本日该层旁读张量 (旁读档 A 轴)
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
   size_t n_ = 0;                      // = valid_indices_.size()

@@ -121,11 +121,7 @@ ReadPlan read_plan(const Feature &feature, TierId main, size_t level, std::vecto
       io.push_back(p.cols[c].col);
     s.cs = column_set(feature, s.tier, s.level, std::move(io));
     s.slot = std::move(slot);
-    s.row.resize(rpd);
-    for (size_t t = 0; t < rpd; ++t) {
-      s.row[t] = static_cast<int32_t>(level_asof(s.level, level, t));
-      s.carry |= s.row[t] < 0;
-    }
+    project_rows(s, level, rpd);
     p.srcs.push_back(std::move(s));
   }
   return p;

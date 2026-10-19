@@ -19,7 +19,7 @@ class Panel;
 //   node.reset()                     跨天: 清空全部输出 Series (不留昨日尾值), 节点类有 reset() 再调
 //   node.out(i) / node.out()         第 i 个输出口 (下游节点输入用); 单口默认 0
 //   node.outs()                      全部输出口数组 Series[K] (下游按口成组消费)
-//   node.last(i)                     输出口最新值, 尚无输出时 0 (字段表写回用)
+//   node.last(i)                     输出口最新值, 尚无输出时 NaN (缺失值约定, 见 DataDefine.hpp; 字段表写回用)
 //   node.<port>                      节点类 enum Out 的枚举值 (node.out(node.price))
 // ============================================================================
 namespace graph {
@@ -40,7 +40,7 @@ struct Node : Impl {
   const Series (&outs() const)[K] { return bufs_; }
   float last(size_t i = 0) const {
     assert(i < K);
-    return bufs_[i].empty() ? 0.0f : bufs_[i].back();
+    return bufs_[i].empty() ? kNaN : bufs_[i].back();
   }
 
   [[gnu::always_inline]] inline void flush() {

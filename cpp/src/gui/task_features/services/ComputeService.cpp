@@ -44,6 +44,8 @@ bool ComputeService::run(ComputeConfig &config) {
   //   Lob (票池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
   //              × 票池并集 (Bar 库 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 Bar 库
   // 张量/调度/落盘全按本库 A 轴, 需要 items/码表时经 axis.global() 映射.
+  // 一次只算一个库 (TS + CS 同库一趟, 不拆不跨库去重: 将来 TS 可吃库内 CS 输出, 见 FeatureLib.hpp); Lob 只在本池轴内算
+  //  —— 一般只算一个票池库, 不为多池合算做并集轴.
   // 库集 = 本库 + 旁读档的当前库 (Selection::libs), 余档空
   const LibDef &def = lib_def(config.lib);
   PerTier<FeatureLib> libs;

@@ -322,5 +322,5 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
   X(Bar, bar, L_day, 6, Bar_L_day_FIELDS, "00/00/00")
 
 // 档间旁读: X(ns, side) —— ns 档的截面行可读 side 档同层的列 (CS(side, LVL, src, ...) / NeutralRank 上下文);
-// side 档当日缺库 → 旁读列整日 NaN + 日志 (不等它, 不替它算)
+// 跨档跨层读一律 level_asof 投影 (读端 Source 同一份); side 档当日缺库 → 断言 (不等它, 不替它算)
 #define TIER_SIDES(X) X(lob, bar)
