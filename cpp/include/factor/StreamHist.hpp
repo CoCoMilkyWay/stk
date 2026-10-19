@@ -25,8 +25,9 @@ struct Hist {
   int n = 0;
   bool ok = false; // spread(lo, hi): 非全并列
 
-  void build(const std::vector<float> &s) {
+  void build(const std::vector<float> &s) { // 可复用: 每次 build 从空状态起
     n = static_cast<int>(s.size());
+    lo = hi = 0, ok = false;
     if (n == 0)
       return;
     const auto [a, b] = std::minmax_element(s.begin(), s.end());
@@ -34,6 +35,7 @@ struct Hist {
     ok = spread(lo, hi);
     if (!ok)
       return;
+    std::fill(cnt, cnt + kBuckets, 0);
     for (float v : s)
       ++cnt[bin_of(v, lo, hi)];
     for (int b2 = 0; b2 < kBuckets; ++b2)

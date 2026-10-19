@@ -8,7 +8,8 @@
 //   Stream/Gpu 头, 不复用其算法代码 (否则 cpu↔stream 对拍空转).
 //
 //   【布局与向量化】SoA 行主序 [T][A]: 内层 A 连续, 一切按"行推进 + 跨资产状态数组"组织,
-//   内层循环 branchless select 交给自动向量化; 序统计族按资产分块 (kBlockA, 直方图驻留 L2).
+//   内层循环 branchless select 交给自动向量化. 有状态算子按资产列块 (kTileA 列) 推进: 状态数组按块容量
+//   从调用方暂存切出 (scratch 声明, 驻留 L1/L2), 算子内部不分配.
 //
 //   【算法】(旧 naive 参考实现按定义 O(T·d·A) 重算, 本文件全部摊到 O(T·A) 或 O(T·A·B)):
 //     POINT   单遍逐元素
@@ -33,19 +34,47 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <vector>
+#include <tuple>
 
 #include "factor/Contract.hpp"
+
+namespace factor::cpu {
+inline constexpr int kTileA = 128; // TS 有状态算子的资产列块宽 (状态容量; evaluator 也按它切 TS 任务)
+} // namespace factor::cpu
 
 namespace factor::cpu::ts {
 
 // -----------------------------------------------------------------------------
-// detail: 输出 / 幂和→中心矩 / 滑窗极值 (van Herk) / 桶分位
+// detail: 列块 / 输出 / 幂和→中心矩 / 滑窗极值 (van Herk) / 桶分位
 // -----------------------------------------------------------------------------
 namespace detail {
 
 inline constexpr float kInf = std::numeric_limits<float>::infinity();
-inline constexpr int kBlockA = 128; // 序统计族的资产分块宽 (直方图 + 环形缓存驻留 L2)
+
+// ---- 列块: 指针已偏到块首列, 行距仍是 A (i = t*A + a, a ∈ [0, w)) ----
+struct Tile {
+  const float *xv;
+  const uint8_t *xm;
+  const float *yv;
+  const uint8_t *ym;
+  const float *zv;
+  const uint8_t *zm;
+  float *ov;
+  uint8_t *om;
+  int T, A, w;
+};
+template <class P>
+inline P *at(P *p, int a0) { return p ? p + a0 : nullptr; }
+// 列 [lo, hi) 一整块 (逐点算子)
+inline Tile span(const Call &c, int lo, int hi) {
+  assert(0 <= lo && lo <= hi && hi <= c.A && c.o.v && c.o.m);
+  return {at(c.x.v, lo), at(c.x.m, lo), at(c.y.v, lo), at(c.y.m, lo), at(c.z.v, lo), at(c.z.m, lo), c.o.v + lo, c.o.m + lo, c.T, c.A, hi - lo};
+}
+// 从 a0 起 ≤ kTileA 列 (有状态算子; 状态从行 0 起算)
+inline Tile tile(const Call &c, int a0, int hi) {
+  assert(c.t0 == 0 && "非逐点算子从行 0 起算 (段界 / 窗口历史)");
+  return span(c, a0, std::min(hi, a0 + kTileA));
+}
 
 inline void put(float *ov, uint8_t *om, size_t i, double v, bool m) {
   const Val r = mk(v, m);
@@ -69,25 +98,32 @@ inline double c4_of(double s1, double s2, double s3, double s4, int n) {
 //   spread 判据要求 lo/hi 与逐样本 fmin/fmax 完全一致, 本法给的就是精确极值 (不是近似).
 //   块长 = 窗长 w; 进入新块时回读前一块 w 行建后缀极值 (读放大 2×), 前缀在线递推.
 //   xm2 非空时有效样本 = xm && xm2 (二元算子的双有效窗). 无有效样本 → lo = +inf, hi = −inf (spread 恒假).
+//   状态按列块容量 kTileA 从 Bump 切; 换块 reset(width) 即可 (t = 0 的重建与首行写入盖住全部状态, 不用预填).
 class RollMinMax {
 public:
-  RollMinMax(int w, int width) : w_(w), n_(width) {
-    assert(w >= 1 && width >= 1);
-    sl_.assign(static_cast<size_t>(w + 1) * width, kInf);
-    sh_.assign(static_cast<size_t>(w + 1) * width, -kInf);
-    pl_.assign(static_cast<size_t>(width), kInf);
-    ph_.assign(static_cast<size_t>(width), -kInf);
-    lo.assign(static_cast<size_t>(width), kInf);
-    hi.assign(static_cast<size_t>(width), -kInf);
+  RollMinMax() = default;
+  RollMinMax(Bump &b, int w) : w_(w) {
+    assert(w >= 1);
+    const size_t cap = static_cast<size_t>(kTileA);
+    sl_ = b.take<float>(static_cast<size_t>(w + 1) * cap);
+    sh_ = b.take<float>(static_cast<size_t>(w + 1) * cap);
+    pl_ = b.take<float>(cap);
+    ph_ = b.take<float>(cap);
+    lo = b.take<float>(cap);
+    hi = b.take<float>(cap);
   }
-  // 按 t 递增喂行 (xv/xm 为整平面, 行距 stride, 列 [a0, a0+width)); 返回后 lo/hi = 窗 [t−w+1, t] 极值
-  void step(const float *xv, const uint8_t *xm, const uint8_t *xm2, int stride, int a0, int t) {
+  void reset(int width) {
+    assert(1 <= width && width <= kTileA);
+    n_ = width;
+  }
+  // 按 t = 0, 1, … 递增喂行 (xv/xm 为块首列指针, 行距 stride, 列 [0, width)); 返回后 lo/hi = 窗 [t−w+1, t] 极值
+  void step(const float *xv, const uint8_t *xm, const uint8_t *xm2, int stride, int t) {
     const int pos = t % w_;
     if (pos == 0)
-      rebuild(xv, xm, xm2, stride, a0, t);
-    const size_t r = static_cast<size_t>(t) * stride + a0;
-    const float *sl = sl_.data() + static_cast<size_t>(pos + 1) * n_;
-    const float *sh = sh_.data() + static_cast<size_t>(pos + 1) * n_;
+      rebuild(xv, xm, xm2, stride, t);
+    const size_t r = static_cast<size_t>(t) * stride;
+    const float *sl = sl_ + static_cast<size_t>(pos + 1) * n_;
+    const float *sh = sh_ + static_cast<size_t>(pos + 1) * n_;
     for (int a = 0; a < n_; ++a) {
       const bool m = xm[r + a] && (!xm2 || xm2[r + a]);
       const float vl = m ? xv[r + a] : kInf, vh = m ? xv[r + a] : -kInf;
@@ -97,15 +133,15 @@ public:
       hi[a] = std::fmax(sh[a], ph_[a]);
     }
   }
-  std::vector<float> lo, hi;
+  float *lo = nullptr, *hi = nullptr;
 
 private:
-  void rebuild(const float *xv, const uint8_t *xm, const uint8_t *xm2, int stride, int a0, int t) {
-    std::fill_n(sl_.begin() + static_cast<size_t>(w_) * n_, n_, kInf); // 下标 w = 空后缀哨兵
-    std::fill_n(sh_.begin() + static_cast<size_t>(w_) * n_, n_, -kInf);
+  void rebuild(const float *xv, const uint8_t *xm, const uint8_t *xm2, int stride, int t) {
+    std::fill_n(sl_ + static_cast<size_t>(w_) * n_, n_, kInf); // 下标 w = 空后缀哨兵
+    std::fill_n(sh_ + static_cast<size_t>(w_) * n_, n_, -kInf);
     for (int i = w_ - 1; i >= 0; --i) {
-      float *cl = sl_.data() + static_cast<size_t>(i) * n_;
-      float *ch = sh_.data() + static_cast<size_t>(i) * n_;
+      float *cl = sl_ + static_cast<size_t>(i) * n_;
+      float *ch = sh_ + static_cast<size_t>(i) * n_;
       const float *nl = cl + n_;
       const float *nh = ch + n_;
       const int row = t - w_ + i;
@@ -114,7 +150,7 @@ private:
         std::copy_n(nh, n_, ch);
         continue;
       }
-      const size_t r = static_cast<size_t>(row) * stride + a0;
+      const size_t r = static_cast<size_t>(row) * stride;
       for (int a = 0; a < n_; ++a) {
         const bool m = xm[r + a] && (!xm2 || xm2[r + a]);
         cl[a] = std::fmin(m ? xv[r + a] : kInf, nl[a]);
@@ -122,31 +158,38 @@ private:
       }
     }
   }
-  int w_, n_;
-  std::vector<float> sl_, sh_, pl_, ph_;
+  int w_ = 0, n_ = 0;
+  float *sl_ = nullptr, *sh_ = nullptr, *pl_ = nullptr, *ph_ = nullptr;
 };
 
 // ---- 滑窗极值 + 最旧并列位置 (契约: 严格比较 → 并列保留最旧) ----
 //   后缀 (窗的旧半) 反向扫取 ≥/≤ (旧优先), 前缀正向扫取 >/< (新不夺旧), 合并时后缀平局优先.
+//   状态切分 / 换块同 RollMinMax.
 template <bool IsMax>
 class RollArgExt {
 public:
-  RollArgExt(int w, int width) : w_(w), n_(width) {
-    assert(w >= 1 && width >= 1);
-    sv_.assign(static_cast<size_t>(w + 1) * width, kSent);
-    sj_.assign(static_cast<size_t>(w + 1) * width, -1);
-    pv_.assign(static_cast<size_t>(width), kSent);
-    pj_.assign(static_cast<size_t>(width), -1);
-    best.assign(static_cast<size_t>(width), kSent);
-    arg.assign(static_cast<size_t>(width), -1);
+  RollArgExt() = default;
+  RollArgExt(Bump &b, int w) : w_(w) {
+    assert(w >= 1);
+    const size_t cap = static_cast<size_t>(kTileA);
+    sv_ = b.take<float>(static_cast<size_t>(w + 1) * cap);
+    sj_ = b.take<int>(static_cast<size_t>(w + 1) * cap);
+    pv_ = b.take<float>(cap);
+    pj_ = b.take<int>(cap);
+    best = b.take<float>(cap);
+    arg = b.take<int>(cap);
   }
-  void step(const float *xv, const uint8_t *xm, int stride, int a0, int t) {
+  void reset(int width) {
+    assert(1 <= width && width <= kTileA);
+    n_ = width;
+  }
+  void step(const float *xv, const uint8_t *xm, int stride, int t) {
     const int pos = t % w_;
     if (pos == 0)
-      rebuild(xv, xm, stride, a0, t);
-    const size_t r = static_cast<size_t>(t) * stride + a0;
-    const float *sv = sv_.data() + static_cast<size_t>(pos + 1) * n_;
-    const int *sj = sj_.data() + static_cast<size_t>(pos + 1) * n_;
+      rebuild(xv, xm, stride, t);
+    const size_t r = static_cast<size_t>(t) * stride;
+    const float *sv = sv_ + static_cast<size_t>(pos + 1) * n_;
+    const int *sj = sj_ + static_cast<size_t>(pos + 1) * n_;
     for (int a = 0; a < n_; ++a) {
       const bool m = xm[r + a] != 0;
       const float x = xv[r + a];
@@ -162,17 +205,17 @@ public:
       arg[a] = s_wins ? sj[a] : pj_[a];
     }
   }
-  std::vector<float> best; // 窗内极值 (无有效样本 → 哨兵, 由调用方的 n 屏蔽)
-  std::vector<int> arg;    // 最旧极值的全局行号
+  float *best = nullptr; // 窗内极值 (无有效样本 → 哨兵, 由调用方的 n 屏蔽)
+  int *arg = nullptr;    // 最旧极值的全局行号
 
 private:
   static constexpr float kSent = IsMax ? -kInf : kInf;
-  void rebuild(const float *xv, const uint8_t *xm, int stride, int a0, int t) {
-    std::fill_n(sv_.begin() + static_cast<size_t>(w_) * n_, n_, kSent);
-    std::fill_n(sj_.begin() + static_cast<size_t>(w_) * n_, n_, -1);
+  void rebuild(const float *xv, const uint8_t *xm, int stride, int t) {
+    std::fill_n(sv_ + static_cast<size_t>(w_) * n_, n_, kSent);
+    std::fill_n(sj_ + static_cast<size_t>(w_) * n_, n_, -1);
     for (int i = w_ - 1; i >= 0; --i) {
-      float *cv = sv_.data() + static_cast<size_t>(i) * n_;
-      int *cj = sj_.data() + static_cast<size_t>(i) * n_;
+      float *cv = sv_ + static_cast<size_t>(i) * n_;
+      int *cj = sj_ + static_cast<size_t>(i) * n_;
       const float *nv = cv + n_;
       const int *nj = cj + n_;
       const int row = t - w_ + i;
@@ -181,7 +224,7 @@ private:
         std::copy_n(nj, n_, cj);
         continue;
       }
-      const size_t r = static_cast<size_t>(row) * stride + a0;
+      const size_t r = static_cast<size_t>(row) * stride;
       for (int a = 0; a < n_; ++a) {
         const bool take = xm[r + a] && (IsMax ? xv[r + a] >= nv[a] : xv[r + a] <= nv[a]);
         cv[a] = take ? xv[r + a] : nv[a];
@@ -189,9 +232,9 @@ private:
       }
     }
   }
-  int w_, n_;
-  std::vector<float> sv_, pv_;
-  std::vector<int> sj_, pj_;
+  int w_ = 0, n_ = 0;
+  float *sv_ = nullptr, *pv_ = nullptr;
+  int *sj_ = nullptr, *pj_ = nullptr;
 };
 
 // ---- 桶分位 (契约分桶规则): 全并列 (hi ≤ lo) → lo; 其余取首个前缀累计 ≥ ⌈q·n⌉ 的桶心 ----
@@ -279,66 +322,72 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
 } // namespace detail
 
 // -----------------------------------------------------------------------------
-// 统一签名 (63 个算子同形; 元数不足时调用方传 nullptr, 故未用到的指针一律不许读)
+// 统一签名 (Contract【调用形状】; 元数不足的输入槽为空, 未用到的指针一律不许读)
 // -----------------------------------------------------------------------------
-//   CP_SIG_S = 行为随段长 S (每段行数, Contract【层几何】) 变的算子 (EXPAND 段界 / TodMask 段内位置): run 是 template <int S>;
-//   其余算子与 S 无关, 各层共用一份 (分派见 EvalCpu.hpp ts_run)
-#define CP_SIG                                                                              \
-  static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,   \
-                  const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, \
-                  const Param &p)
-#define CP_SIG_S   \
-  template <int S> \
-  CP_SIG
-
-#define CP_NO23 (void)yv, (void)ym, (void)zv, (void)zm
-#define CP_NO3 (void)zv, (void)zm
+//   scratch(c) = 每线程暂存字节; run(c, rg, ws) 算资产列 [rg.lo, rg.hi) 的全部 T 行.
+//   有状态算子: carve(Bump, c) 按 kTileA 列容量切状态 (scratch 与 run 走同一份切分), 逐列块推进, 块首重置状态.
+//   段长 S = c.geo.S 是运行期量 (EXPAND 段界 / TodMask 段内位置)
+#define CP_RUN static void run(const Call &c, Range rg, void *ws)
+#define CP_SCRATCH                       \
+  static size_t scratch(const Call &c) { \
+    Bump b;                              \
+    (void)carve(b, c);                   \
+    return b.used;                       \
+  }
+#define CP_STATELESS                                \
+  static size_t scratch(const Call &) { return 0; } \
+  static void run(const Call &c, Range rg, void *)
 
 // =============================================================================
 // POINT (21): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
 // =============================================================================
-#define CP_P1(Name, V, M)                                            \
-  struct Name {                                                      \
-    CP_SIG {                                                         \
-      CP_NO23;                                                       \
-      (void)p;                                                       \
-      const size_t N = static_cast<size_t>(T) * A;                   \
-      for (size_t i = 0; i < N; ++i) {                               \
-        const float x = xv[i];                                       \
-        const bool mx = xm[i] != 0;                                  \
-        const bool m = (M);                                          \
-        detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m); \
-      }                                                              \
-    }                                                                \
+//   逐点算子接受任意行窗 (c.t0 = 行 0 的全局行号; 融合块按小块调用)
+#define CP_P1(Name, V, M)                                                                   \
+  struct Name {                                                                             \
+    CP_STATELESS {                                                                          \
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi); \
+      const Param &p = c.p;                                                                 \
+      (void)p;                                                                              \
+      for (int t = 0; t < T; ++t)                                                           \
+        for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {                \
+          const float x = xv[i];                                                            \
+          const bool mx = xm[i] != 0;                                                       \
+          const bool m = (M);                                                               \
+          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                      \
+        }                                                                                   \
+    }                                                                                       \
   };
 
-#define CP_P2(Name, V, M)                                            \
-  struct Name {                                                      \
-    CP_SIG {                                                         \
-      CP_NO3;                                                        \
-      (void)p;                                                       \
-      const size_t N = static_cast<size_t>(T) * A;                   \
-      for (size_t i = 0; i < N; ++i) {                               \
-        const float x = xv[i], y = yv[i];                            \
-        const bool mx = xm[i] != 0, my = ym[i] != 0;                 \
-        const bool m = (M);                                          \
-        detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m); \
-      }                                                              \
-    }                                                                \
+#define CP_P2(Name, V, M)                                                                   \
+  struct Name {                                                                             \
+    CP_STATELESS {                                                                          \
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi); \
+      const Param &p = c.p;                                                                 \
+      (void)p;                                                                              \
+      for (int t = 0; t < T; ++t)                                                           \
+        for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {                \
+          const float x = xv[i], y = yv[i];                                                 \
+          const bool mx = xm[i] != 0, my = ym[i] != 0;                                      \
+          const bool m = (M);                                                               \
+          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                      \
+        }                                                                                   \
+    }                                                                                       \
   };
 
-#define CP_P3(Name, V, M)                                             \
-  struct Name {                                                       \
-    CP_SIG {                                                          \
-      (void)p;                                                        \
-      const size_t N = static_cast<size_t>(T) * A;                    \
-      for (size_t i = 0; i < N; ++i) {                                \
-        const float x = xv[i], y = yv[i], z = zv[i];                  \
-        const bool mx = xm[i] != 0, my = ym[i] != 0, mz = zm[i] != 0; \
-        const bool m = (M);                                           \
-        detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);  \
-      }                                                               \
-    }                                                                 \
+#define CP_P3(Name, V, M)                                                                   \
+  struct Name {                                                                             \
+    CP_STATELESS {                                                                          \
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi); \
+      const Param &p = c.p;                                                                 \
+      (void)p;                                                                              \
+      for (int t = 0; t < T; ++t)                                                           \
+        for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {                \
+          const float x = xv[i], y = yv[i], z = zv[i];                                      \
+          const bool mx = xm[i] != 0, my = ym[i] != 0, mz = zm[i] != 0;                     \
+          const bool m = (M);                                                               \
+          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                      \
+        }                                                                                   \
+    }                                                                                       \
   };
 
 CP_P1(TsAbs, std::fabs(x), mx)
@@ -348,15 +397,15 @@ CP_P1(TsSqrt, std::copysign(std::sqrt(std::fabs(x)), x), mx)
 // TsLog: log1p 无向量版 (libm 标量调用是下限). 不禁向量化的话, 向量化器会把 log1pf 逐 lane 标量化再 insert
 // 拼回去, 比纯标量循环还慢 —— 故此处显式关掉向量化器, 走干净的标量循环.
 struct TsLog {
-  CP_SIG {
-    CP_NO23;
-    (void)p;
-    const size_t N = static_cast<size_t>(T) * A;
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    for (int t = 0; t < T; ++t) {
 #pragma clang loop vectorize(disable)
-    for (size_t i = 0; i < N; ++i) {
-      const float x = xv[i];
-      const bool m = xm[i] != 0;
-      detail::put(ov, om, i, m ? static_cast<double>(std::copysign(std::log1p(std::fabs(x)), x)) : 0.0, m);
+      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
+        const float x = xv[i];
+        const bool m = xm[i] != 0;
+        detail::put(ov, om, i, m ? static_cast<double>(std::copysign(std::log1p(std::fabs(x)), x)) : 0.0, m);
+      }
     }
   }
 };
@@ -368,33 +417,33 @@ CP_P1(TsGt, x > p.k ? 1.f : 0.f, mx)
 
 // TsClip: clamp 要求 lo ≤ hi, 即 k ≥ 0 —— 参数级约束, 早死在 assert 上
 struct TsClip {
-  CP_SIG {
-    CP_NO23;
-    assert(p.k >= 0.f);
-    const size_t N = static_cast<size_t>(T) * A;
-    const float lo = -p.k, hi = p.k;
-    for (size_t i = 0; i < N; ++i) {
-      const float x = xv[i];
-      const bool m = xm[i] != 0;
-      // 与 std::clamp 同式 (v < lo ? lo : hi < v ? hi : v), 展开成值比较让它变成 cmp + blend;
-      // std::clamp 走 const& 进出, 向量化器对引用选择不认账
-      const float c = x < lo ? lo : (hi < x ? hi : x);
-      detail::put(ov, om, i, m ? static_cast<double>(c) : 0.0, m);
-    }
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    assert(c.p.k >= 0.f);
+    const float lo = -c.p.k, hi = c.p.k;
+    for (int t = 0; t < T; ++t)
+      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
+        const float x = xv[i];
+        const bool m = xm[i] != 0;
+        // 与 std::clamp 同式 (v < lo ? lo : hi < v ? hi : v), 展开成值比较让它变成 cmp + blend;
+        // std::clamp 走 const& 进出, 向量化器对引用选择不认账
+        const float cl = x < lo ? lo : (hi < x ? hi : x);
+        detail::put(ov, om, i, m ? static_cast<double>(cl) : 0.0, m);
+      }
   }
 };
 
-// TsTodMask: 元数 0, 完全不读输入指针 (调用方传 nullptr)
+// TsTodMask: 元数 0, 完全不读输入指针 (调用方传 nullptr); 段内位置按全局行号 (c.t0 + t)
 struct TsTodMask {
-  CP_SIG_S {
-    (void)xv, (void)xm;
-    CP_NO23;
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    const int S = c.geo.S, k = static_cast<int>(c.p.k), k2 = static_cast<int>(c.p.k2);
+    assert(S >= 1);
     for (int t = 0; t < T; ++t) {
-      const int t_seg = t % S;
-      const float v = (t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f;
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a, static_cast<double>(v), true);
+      const int t_seg = (c.t0 + t) % S;
+      const float v = (t_seg >= k && t_seg < k2) ? 1.f : 0.f;
+      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i)
+        detail::put(ov, om, i, static_cast<double>(v), true);
     }
   }
 };
@@ -421,22 +470,27 @@ CP_P3(TsWhere, x > 0.f ? y : z, mx && (x > 0.f ? my : mz))
 // ---- Sum / Mean ----
 template <bool Mean>
 struct ExpSum {
-  CP_SIG_S {
-    CP_NO23;
-    (void)p;
-    std::vector<int> n(static_cast<size_t>(A));
-    std::vector<double> s(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += S) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(s.begin(), s.end(), 0.0);
-      const int e = std::min(seg + S, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool m = xm[r + a] != 0;
-          s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
-          n[a] += m;
-          detail::put(ov, om, r + a, Mean ? (n[a] >= 1 ? s[a] / n[a] : 0.0) : s[a], true); // 空: 和 0 / 均值 0
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<double>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, s] = carve(b, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      for (int seg = 0; seg < T; seg += S) {
+        std::fill_n(n, w, 0);
+        std::fill_n(s, w, 0.0);
+        const int e = std::min(seg + S, T);
+        for (int t = seg; t < e; ++t) {
+          const size_t r = static_cast<size_t>(t) * A;
+          for (int a = 0; a < w; ++a) {
+            const bool m = xm[r + a] != 0;
+            s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
+            n[a] += m;
+            detail::put(ov, om, r + a, Mean ? (n[a] >= 1 ? s[a] / n[a] : 0.0) : s[a], true); // 空: 和 0 / 均值 0
+          }
         }
       }
     }
@@ -448,46 +502,53 @@ template <detail::Mom K>
 struct ExpMom {
   static constexpr bool kS3 = K == detail::Mom::SKEW || K == detail::Mom::KURT;
   static constexpr bool kS4 = K == detail::Mom::KURT;
-  CP_SIG_S {
-    CP_NO23;
-    (void)p;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W);
-    std::vector<double> s1(W), s2(W), s3(kS3 ? W : 0), s4(kS4 ? W : 0);
-    std::vector<float> lo(W), hi(W);
-    for (int seg = 0; seg < T; seg += S) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(s1.begin(), s1.end(), 0.0);
-      std::fill(s2.begin(), s2.end(), 0.0);
-      if constexpr (kS3)
-        std::fill(s3.begin(), s3.end(), 0.0);
-      if constexpr (kS4)
-        std::fill(s4.begin(), s4.end(), 0.0);
-      std::fill(lo.begin(), lo.end(), detail::kInf);
-      std::fill(hi.begin(), hi.end(), -detail::kInf);
-      const int e = std::min(seg + S, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[r + a];
-          const bool m = xm[r + a] != 0;
-          const double dx = m ? static_cast<double>(x) : 0.0;
-          const double q = dx * dx;
-          s1[a] += dx;
-          s2[a] += q;
-          if constexpr (kS3)
-            s3[a] += q * dx;
-          if constexpr (kS4)
-            s4[a] += q * q;
-          n[a] += m;
-          lo[a] = m ? std::fmin(lo[a], x) : lo[a];
-          hi[a] = m ? std::fmax(hi[a], x) : hi[a];
-          const bool ok = detail::mom_ok<K>(n[a], hi[a] > lo[a]);
-          detail::put(ov, om, r + a,
-                      ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
-                                              n[a], x)
-                         : 0.0,
-                      true);
+  static auto carve(Bump &b, const Call &) {
+    constexpr size_t W = kTileA;
+    return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(kS3 ? W : 0), b.take<double>(kS4 ? W : 0),
+                      b.take<float>(W), b.take<float>(W)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, s1, s2, s3, s4, lo, hi] = carve(b, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      for (int seg = 0; seg < T; seg += S) {
+        std::fill_n(n, w, 0);
+        std::fill_n(s1, w, 0.0);
+        std::fill_n(s2, w, 0.0);
+        if constexpr (kS3)
+          std::fill_n(s3, w, 0.0);
+        if constexpr (kS4)
+          std::fill_n(s4, w, 0.0);
+        std::fill_n(lo, w, detail::kInf);
+        std::fill_n(hi, w, -detail::kInf);
+        const int e = std::min(seg + S, T);
+        for (int t = seg; t < e; ++t) {
+          const size_t r = static_cast<size_t>(t) * A;
+          for (int a = 0; a < w; ++a) {
+            const float x = xv[r + a];
+            const bool m = xm[r + a] != 0;
+            const double dx = m ? static_cast<double>(x) : 0.0;
+            const double q = dx * dx;
+            s1[a] += dx;
+            s2[a] += q;
+            if constexpr (kS3)
+              s3[a] += q * dx;
+            if constexpr (kS4)
+              s4[a] += q * q;
+            n[a] += m;
+            lo[a] = m ? std::fmin(lo[a], x) : lo[a];
+            hi[a] = m ? std::fmax(hi[a], x) : hi[a];
+            const bool ok = detail::mom_ok<K>(n[a], hi[a] > lo[a]);
+            detail::put(ov, om, r + a,
+                        ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
+                                                n[a], x)
+                           : 0.0,
+                        true);
+          }
         }
       }
     }
@@ -497,28 +558,33 @@ struct ExpMom {
 // ---- Max / Min / ArgMax / ArgMin: 递推极值 (严格比较 → 并列保留最旧); 空 → 0 ----
 template <bool IsMax, bool IsArg>
 struct ExpExt {
-  CP_SIG_S {
-    CP_NO23;
-    (void)p;
-    std::vector<int> n(static_cast<size_t>(A)), bi(static_cast<size_t>(A));
-    std::vector<float> best(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += S) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(bi.begin(), bi.end(), 0);
-      std::fill(best.begin(), best.end(), 0.f);
-      const int e = std::min(seg + S, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        const int ts = t - seg;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[r + a];
-          const bool m = xm[r + a] != 0;
-          const bool c = m && (n[a] == 0 || (IsMax ? x > best[a] : x < best[a]));
-          best[a] = c ? x : best[a];
-          bi[a] = c ? ts : bi[a];
-          n[a] += m;
-          const double v = IsArg ? static_cast<double>(ts - bi[a]) : static_cast<double>(best[a]);
-          detail::put(ov, om, r + a, n[a] >= 1 ? v : 0.0, true);
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<int>(kTileA), b.take<float>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, bi, best] = carve(b, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      for (int seg = 0; seg < T; seg += S) {
+        std::fill_n(n, w, 0);
+        std::fill_n(bi, w, 0);
+        std::fill_n(best, w, 0.f);
+        const int e = std::min(seg + S, T);
+        for (int t = seg; t < e; ++t) {
+          const size_t r = static_cast<size_t>(t) * A;
+          const int ts = t - seg;
+          for (int a = 0; a < w; ++a) {
+            const float x = xv[r + a];
+            const bool m = xm[r + a] != 0;
+            const bool take = m && (n[a] == 0 || (IsMax ? x > best[a] : x < best[a]));
+            best[a] = take ? x : best[a];
+            bi[a] = take ? ts : bi[a];
+            n[a] += m;
+            const double v = IsArg ? static_cast<double>(ts - bi[a]) : static_cast<double>(best[a]);
+            detail::put(ov, om, r + a, n[a] >= 1 ? v : 0.0, true);
+          }
         }
       }
     }
@@ -527,29 +593,29 @@ struct ExpExt {
 
 // ---- RankCum: 增量直方图 (段内 lo/hi 只扩不缩; 扩时用段内样本缓存重建); 相对型, 全并列 → 0.5 ----
 struct TsRankCum {
-  CP_SIG_S {
-    CP_NO23;
-    (void)p;
-    std::vector<float> buf, lo, hi;
-    std::vector<int> hist, cnt;
-    for (int a0 = 0; a0 < A; a0 += detail::kBlockA) {
-      const int W = std::min(detail::kBlockA, A - a0);
-      buf.resize(static_cast<size_t>(W) * S);
-      hist.assign(static_cast<size_t>(W) * kBuckets, 0);
-      cnt.assign(static_cast<size_t>(W), 0);
-      lo.assign(static_cast<size_t>(W), detail::kInf);
-      hi.assign(static_cast<size_t>(W), -detail::kInf);
+  static auto carve(Bump &b, const Call &c) {
+    constexpr size_t W = kTileA;
+    return std::tuple{b.take<float>(W * static_cast<size_t>(c.geo.S)), b.take<int>(W * kBuckets), b.take<int>(W), b.take<float>(W), b.take<float>(W)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump bp{static_cast<char *>(ws)};
+    const auto [buf, hist, cnt, lo, hi] = carve(bp, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, W] = detail::tile(c, a0, rg.hi);
       for (int seg = 0; seg < T; seg += S) {
-        std::fill(cnt.begin(), cnt.end(), 0); // hist 不清: 重建时清
-        std::fill(lo.begin(), lo.end(), detail::kInf);
-        std::fill(hi.begin(), hi.end(), -detail::kInf);
+        std::fill_n(cnt, W, 0); // hist 不清: 先有 spread 才读, 而进入 spread 必重建
+        std::fill_n(lo, W, detail::kInf);
+        std::fill_n(hi, W, -detail::kInf);
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
-          const size_t r = static_cast<size_t>(t) * A + a0;
+          const size_t r = static_cast<size_t>(t) * A;
           for (int j = 0; j < W; ++j) {
             const float x = xv[r + j];
             const bool m = xm[r + j] != 0;
-            int *h = hist.data() + static_cast<size_t>(j) * kBuckets;
+            int *h = hist + static_cast<size_t>(j) * kBuckets;
             if (m) {
               buf[static_cast<size_t>(j) * S + cnt[j]] = x;
               ++cnt[j];
@@ -560,7 +626,7 @@ struct TsRankCum {
               if (nh > nl) {
                 if (nl != pl || nh != ph) { // 值域扩了 (含首次进入 spread): 重建
                   std::fill(h, h + kBuckets, 0);
-                  const float *b = buf.data() + static_cast<size_t>(j) * S;
+                  const float *b = buf + static_cast<size_t>(j) * S;
                   for (int s = 0; s < cnt[j]; ++s)
                     ++h[bin_of(b[s], nl, nh)];
                 } else {
@@ -590,26 +656,31 @@ struct TsRankCum {
 
 // ---- HhiCum: Σx 相消 (非负域下即全 0) → 1/n (全体相等的极限); 空 → 0 ----
 struct TsHhiCum {
-  CP_SIG_S {
-    CP_NO23;
-    (void)p;
-    std::vector<int> n(static_cast<size_t>(A));
-    std::vector<double> s(static_cast<size_t>(A)), s2(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += S) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(s.begin(), s.end(), 0.0);
-      std::fill(s2.begin(), s2.end(), 0.0);
-      const int e = std::min(seg + S, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[r + a];
-          const bool m = xm[r + a] != 0;
-          s[a] += m ? static_cast<double>(x) : 0.0;
-          s2[a] += m ? static_cast<double>(x) * x : 0.0;
-          n[a] += m;
-          const bool ok = den_ok(s[a] * s[a], n[a] * s2[a]);
-          detail::put(ov, om, r + a, n[a] < 1 ? 0.0 : (ok ? s2[a] / (s[a] * s[a]) : 1.0 / n[a]), true);
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<double>(kTileA), b.take<double>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, s, s2] = carve(b, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      for (int seg = 0; seg < T; seg += S) {
+        std::fill_n(n, w, 0);
+        std::fill_n(s, w, 0.0);
+        std::fill_n(s2, w, 0.0);
+        const int e = std::min(seg + S, T);
+        for (int t = seg; t < e; ++t) {
+          const size_t r = static_cast<size_t>(t) * A;
+          for (int a = 0; a < w; ++a) {
+            const float x = xv[r + a];
+            const bool m = xm[r + a] != 0;
+            s[a] += m ? static_cast<double>(x) : 0.0;
+            s2[a] += m ? static_cast<double>(x) * x : 0.0;
+            n[a] += m;
+            const bool ok = den_ok(s[a] * s[a], n[a] * s2[a]);
+            detail::put(ov, om, r + a, n[a] < 1 ? 0.0 : (ok ? s2[a] / (s[a] * s[a]) : 1.0 / n[a]), true);
+          }
         }
       }
     }
@@ -618,25 +689,30 @@ struct TsHhiCum {
 
 // ---- EntropyCum: 只计 x > 0 的样本; 无正样本 → 0 (单样本熵 = 0 的极限) ----
 struct TsEntropyCum {
-  CP_SIG_S {
-    CP_NO23;
-    (void)p;
-    std::vector<int> np(static_cast<size_t>(A));
-    std::vector<double> s(static_cast<size_t>(A)), sxl(static_cast<size_t>(A));
-    for (int seg = 0; seg < T; seg += S) {
-      std::fill(np.begin(), np.end(), 0);
-      std::fill(s.begin(), s.end(), 0.0);
-      std::fill(sxl.begin(), sxl.end(), 0.0);
-      const int e = std::min(seg + S, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[r + a];
-          const bool pos = xm[r + a] && x > 0.f;
-          s[a] += pos ? static_cast<double>(x) : 0.0;
-          sxl[a] += pos ? static_cast<double>(x) * std::log(static_cast<double>(x)) : 0.0;
-          np[a] += pos;
-          detail::put(ov, om, r + a, np[a] >= 1 ? std::log(s[a]) - sxl[a] / s[a] : 0.0, true);
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<double>(kTileA), b.take<double>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [np, s, sxl] = carve(b, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      for (int seg = 0; seg < T; seg += S) {
+        std::fill_n(np, w, 0);
+        std::fill_n(s, w, 0.0);
+        std::fill_n(sxl, w, 0.0);
+        const int e = std::min(seg + S, T);
+        for (int t = seg; t < e; ++t) {
+          const size_t r = static_cast<size_t>(t) * A;
+          for (int a = 0; a < w; ++a) {
+            const float x = xv[r + a];
+            const bool pos = xm[r + a] && x > 0.f;
+            s[a] += pos ? static_cast<double>(x) : 0.0;
+            sxl[a] += pos ? static_cast<double>(x) * std::log(static_cast<double>(x)) : 0.0;
+            np[a] += pos;
+            detail::put(ov, om, r + a, np[a] >= 1 ? std::log(s[a]) - sxl[a] / s[a] : 0.0, true);
+          }
         }
       }
     }
@@ -648,53 +724,60 @@ template <detail::Pair K>
 struct ExpPair {
   static constexpr bool kSpx = K == detail::Pair::CORR;
   static constexpr bool kSpy = K != detail::Pair::COV;
-  CP_SIG_S {
-    CP_NO3;
-    (void)p;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W);
-    std::vector<double> sx(W), sy(W), sxy(W), sxx(kSpx ? W : 0), syy(kSpy ? W : 0);
-    std::vector<float> lox(kSpx ? W : 0), hix(kSpx ? W : 0), loy(kSpy ? W : 0), hiy(kSpy ? W : 0);
-    for (int seg = 0; seg < T; seg += S) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(sx.begin(), sx.end(), 0.0);
-      std::fill(sy.begin(), sy.end(), 0.0);
-      std::fill(sxy.begin(), sxy.end(), 0.0);
-      if constexpr (kSpx) {
-        std::fill(sxx.begin(), sxx.end(), 0.0);
-        std::fill(lox.begin(), lox.end(), detail::kInf);
-        std::fill(hix.begin(), hix.end(), -detail::kInf);
-      }
-      if constexpr (kSpy) {
-        std::fill(syy.begin(), syy.end(), 0.0);
-        std::fill(loy.begin(), loy.end(), detail::kInf);
-        std::fill(hiy.begin(), hiy.end(), -detail::kInf);
-      }
-      const int e = std::min(seg + S, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[r + a], y = yv[r + a];
-          const bool mm = xm[r + a] && ym[r + a];
-          const double dx = mm ? static_cast<double>(x) : 0.0;
-          const double dy = mm ? static_cast<double>(y) : 0.0;
-          sx[a] += dx;
-          sy[a] += dy;
-          sxy[a] += dx * dy;
-          if constexpr (kSpx) {
-            sxx[a] += dx * dx;
-            lox[a] = mm ? std::fmin(lox[a], x) : lox[a];
-            hix[a] = mm ? std::fmax(hix[a], x) : hix[a];
+  static auto carve(Bump &b, const Call &) {
+    constexpr size_t W = kTileA, WX = kSpx ? W : 0, WY = kSpy ? W : 0;
+    return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W), b.take<double>(WX), b.take<double>(WY),
+                      b.take<float>(WX), b.take<float>(WX), b.take<float>(WY), b.take<float>(WY)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, sx, sy, sxy, sxx, syy, lox, hix, loy, hiy] = carve(b, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      for (int seg = 0; seg < T; seg += S) {
+        std::fill_n(n, w, 0);
+        std::fill_n(sx, w, 0.0);
+        std::fill_n(sy, w, 0.0);
+        std::fill_n(sxy, w, 0.0);
+        if constexpr (kSpx) {
+          std::fill_n(sxx, w, 0.0);
+          std::fill_n(lox, w, detail::kInf);
+          std::fill_n(hix, w, -detail::kInf);
+        }
+        if constexpr (kSpy) {
+          std::fill_n(syy, w, 0.0);
+          std::fill_n(loy, w, detail::kInf);
+          std::fill_n(hiy, w, -detail::kInf);
+        }
+        const int e = std::min(seg + S, T);
+        for (int t = seg; t < e; ++t) {
+          const size_t r = static_cast<size_t>(t) * A;
+          for (int a = 0; a < w; ++a) {
+            const float x = xv[r + a], y = yv[r + a];
+            const bool mm = xm[r + a] && ym[r + a];
+            const double dx = mm ? static_cast<double>(x) : 0.0;
+            const double dy = mm ? static_cast<double>(y) : 0.0;
+            sx[a] += dx;
+            sy[a] += dy;
+            sxy[a] += dx * dy;
+            if constexpr (kSpx) {
+              sxx[a] += dx * dx;
+              lox[a] = mm ? std::fmin(lox[a], x) : lox[a];
+              hix[a] = mm ? std::fmax(hix[a], x) : hix[a];
+            }
+            if constexpr (kSpy) {
+              syy[a] += dy * dy;
+              loy[a] = mm ? std::fmin(loy[a], y) : loy[a];
+              hiy[a] = mm ? std::fmax(hiy[a], y) : hiy[a];
+            }
+            n[a] += mm;
+            detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? hix[a] > lox[a] : true,
+                                kSpy ? hiy[a] > loy[a] : true, sx[a], sy[a], sxy[a],
+                                kSpx ? sxx[a] : 0.0, kSpy ? syy[a] : 0.0, x, y, mm);
           }
-          if constexpr (kSpy) {
-            syy[a] += dy * dy;
-            loy[a] = mm ? std::fmin(loy[a], y) : loy[a];
-            hiy[a] = mm ? std::fmax(hiy[a], y) : hiy[a];
-          }
-          n[a] += mm;
-          detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? hix[a] > lox[a] : true,
-                              kSpy ? hiy[a] > loy[a] : true, sx[a], sy[a], sxy[a],
-                              kSpx ? sxx[a] : 0.0, kSpy ? syy[a] : 0.0, x, y, mm);
         }
       }
     }
@@ -708,30 +791,37 @@ inline double wmean_val(double sx, double sy, double syx, double say, int n) {
 
 // ---- WMeanCum: y 为权 ----
 struct TsWMeanCum {
-  CP_SIG_S {
-    CP_NO3;
-    (void)p;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W);
-    std::vector<double> sx(W), sy(W), syx(W), say(W);
-    for (int seg = 0; seg < T; seg += S) {
-      std::fill(n.begin(), n.end(), 0);
-      std::fill(sx.begin(), sx.end(), 0.0);
-      std::fill(sy.begin(), sy.end(), 0.0);
-      std::fill(syx.begin(), syx.end(), 0.0);
-      std::fill(say.begin(), say.end(), 0.0);
-      const int e = std::min(seg + S, T);
-      for (int t = seg; t < e; ++t) {
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[r + a], y = yv[r + a];
-          const bool mm = xm[r + a] && ym[r + a];
-          sx[a] += mm ? static_cast<double>(x) : 0.0;
-          sy[a] += mm ? static_cast<double>(y) : 0.0;
-          syx[a] += mm ? static_cast<double>(y) * x : 0.0;
-          say[a] += mm ? static_cast<double>(std::fabs(y)) : 0.0;
-          n[a] += mm;
-          detail::put(ov, om, r + a, wmean_val(sx[a], sy[a], syx[a], say[a], n[a]), true);
+  static auto carve(Bump &b, const Call &) {
+    constexpr size_t W = kTileA;
+    return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, sx, sy, syx, say] = carve(b, c);
+    const int S = c.geo.S;
+    assert(S >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      for (int seg = 0; seg < T; seg += S) {
+        std::fill_n(n, w, 0);
+        std::fill_n(sx, w, 0.0);
+        std::fill_n(sy, w, 0.0);
+        std::fill_n(syx, w, 0.0);
+        std::fill_n(say, w, 0.0);
+        const int e = std::min(seg + S, T);
+        for (int t = seg; t < e; ++t) {
+          const size_t r = static_cast<size_t>(t) * A;
+          for (int a = 0; a < w; ++a) {
+            const float x = xv[r + a], y = yv[r + a];
+            const bool mm = xm[r + a] && ym[r + a];
+            sx[a] += mm ? static_cast<double>(x) : 0.0;
+            sy[a] += mm ? static_cast<double>(y) : 0.0;
+            syx[a] += mm ? static_cast<double>(y) * x : 0.0;
+            say[a] += mm ? static_cast<double>(std::fabs(y)) : 0.0;
+            n[a] += mm;
+            detail::put(ov, om, r + a, wmean_val(sx[a], sy[a], syx[a], say[a], n[a]), true);
+          }
         }
       }
     }
@@ -746,12 +836,13 @@ struct TsWMeanCum {
 
 // ---- Delay / Delta: 纯移位取值, 滞后夹到序列头 (t < d 取第 0 行) ----
 struct TsDelayRoll {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    const int d = c.p.d;
+    assert(d >= 1 && c.t0 == 0);
     for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - p.d, 0)) * A;
-      for (int a = 0; a < A; ++a) {
+      const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - d, 0)) * A;
+      for (int a = 0; a < w; ++a) {
         const bool m = xm[q + a] != 0;
         detail::put(ov, om, r + a, m ? static_cast<double>(xv[q + a]) : 0.0, m);
       }
@@ -760,12 +851,13 @@ struct TsDelayRoll {
 };
 
 struct TsDeltaRoll {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    const int d = c.p.d;
+    assert(d >= 1 && c.t0 == 0);
     for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - p.d, 0)) * A;
-      for (int a = 0; a < A; ++a) {
+      const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - d, 0)) * A;
+      for (int a = 0; a < w; ++a) {
         const bool m = xm[r + a] && xm[q + a];
         detail::put(ov, om, r + a, m ? static_cast<double>(xv[r + a]) - xv[q + a] : 0.0, m);
       }
@@ -776,27 +868,33 @@ struct TsDeltaRoll {
 // ---- Sum / Mean (Roll): 滑动加减 ----
 template <bool Mean>
 struct RollSum {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    std::vector<int> n(static_cast<size_t>(A), 0);
-    std::vector<double> s(static_cast<size_t>(A), 0.0);
-    for (int t = 0; t < T; ++t) {
-      if (t >= d) {
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool m = xm[q + a] != 0;
-          s[a] -= m ? static_cast<double>(xv[q + a]) : 0.0;
-          n[a] -= m;
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<double>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, s] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(n, w, 0);
+      std::fill_n(s, w, 0.0);
+      for (int t = 0; t < T; ++t) {
+        if (t >= d) {
+          const size_t q = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a) {
+            const bool m = xm[q + a] != 0;
+            s[a] -= m ? static_cast<double>(xv[q + a]) : 0.0;
+            n[a] -= m;
+          }
         }
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        const bool m = xm[r + a] != 0;
-        s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
-        n[a] += m;
-        detail::put(ov, om, r + a, Mean ? (n[a] >= 1 ? s[a] / n[a] : 0.0) : s[a], true);
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          const bool m = xm[r + a] != 0;
+          s[a] += m ? static_cast<double>(xv[r + a]) : 0.0;
+          n[a] += m;
+          detail::put(ov, om, r + a, Mean ? (n[a] >= 1 ? s[a] / n[a] : 0.0) : s[a], true);
+        }
       }
     }
   }
@@ -807,50 +905,64 @@ template <detail::Mom K>
 struct RollMom {
   static constexpr bool kS3 = K == detail::Mom::SKEW || K == detail::Mom::KURT;
   static constexpr bool kS4 = K == detail::Mom::KURT;
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W, 0);
-    std::vector<double> s1(W, 0.0), s2(W, 0.0), s3(kS3 ? W : 0, 0.0), s4(kS4 ? W : 0, 0.0);
-    detail::RollMinMax mm(d, A);
-    for (int t = 0; t < T; ++t) {
-      mm.step(xv, xm, nullptr, A, 0, t);
-      if (t >= d) {
-        const size_t q0 = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool m = xm[q0 + a] != 0;
-          const double dx = m ? static_cast<double>(xv[q0 + a]) : 0.0;
-          const double q = dx * dx;
-          s1[a] -= dx;
-          s2[a] -= q;
-          if constexpr (kS3)
-            s3[a] -= q * dx;
-          if constexpr (kS4)
-            s4[a] -= q * q;
-          n[a] -= m;
+  static auto carve(Bump &b, const Call &c) {
+    constexpr size_t W = kTileA;
+    return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(kS3 ? W : 0), b.take<double>(kS4 ? W : 0),
+                      detail::RollMinMax(b, c.p.d)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    auto [n, s1, s2, s3, s4, mm] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(n, w, 0);
+      std::fill_n(s1, w, 0.0);
+      std::fill_n(s2, w, 0.0);
+      if constexpr (kS3)
+        std::fill_n(s3, w, 0.0);
+      if constexpr (kS4)
+        std::fill_n(s4, w, 0.0);
+      mm.reset(w);
+      for (int t = 0; t < T; ++t) {
+        mm.step(xv, xm, nullptr, A, t);
+        if (t >= d) {
+          const size_t q0 = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a) {
+            const bool m = xm[q0 + a] != 0;
+            const double dx = m ? static_cast<double>(xv[q0 + a]) : 0.0;
+            const double q = dx * dx;
+            s1[a] -= dx;
+            s2[a] -= q;
+            if constexpr (kS3)
+              s3[a] -= q * dx;
+            if constexpr (kS4)
+              s4[a] -= q * q;
+            n[a] -= m;
+          }
         }
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        const float x = xv[r + a];
-        const bool m = xm[r + a] != 0;
-        const double dx = m ? static_cast<double>(x) : 0.0;
-        const double q = dx * dx;
-        s1[a] += dx;
-        s2[a] += q;
-        if constexpr (kS3)
-          s3[a] += q * dx;
-        if constexpr (kS4)
-          s4[a] += q * q;
-        n[a] += m;
-        const bool ok = detail::mom_ok<K>(n[a], mm.hi[a] > mm.lo[a]);
-        detail::put(ov, om, r + a,
-                    ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
-                                            n[a], x)
-                       : 0.0,
-                    K == detail::Mom::Z ? m : true); // Z 相对型: x_t 无效则无效
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          const float x = xv[r + a];
+          const bool m = xm[r + a] != 0;
+          const double dx = m ? static_cast<double>(x) : 0.0;
+          const double q = dx * dx;
+          s1[a] += dx;
+          s2[a] += q;
+          if constexpr (kS3)
+            s3[a] += q * dx;
+          if constexpr (kS4)
+            s4[a] += q * q;
+          n[a] += m;
+          const bool ok = detail::mom_ok<K>(n[a], mm.hi[a] > mm.lo[a]);
+          detail::put(ov, om, r + a,
+                      ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
+                                              n[a], x)
+                         : 0.0,
+                      K == detail::Mom::Z ? m : true); // Z 相对型: x_t 无效则无效
+        }
       }
     }
   }
@@ -859,25 +971,31 @@ struct RollMom {
 // ---- Max / Min / ArgMax / ArgMin (Roll): van Herk 极值 + 最旧并列位置; 空 → 0 ----
 template <bool IsMax, bool IsArg>
 struct RollExt {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    detail::RollArgExt<IsMax> mm(d, A);
-    std::vector<int> n(static_cast<size_t>(A), 0);
-    for (int t = 0; t < T; ++t) {
-      mm.step(xv, xm, A, 0, t);
-      if (t >= d) {
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a)
-          n[a] -= xm[q + a] != 0;
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        n[a] += xm[r + a] != 0;
-        const double v =
-            IsArg ? static_cast<double>(t - mm.arg[a]) : static_cast<double>(mm.best[a]);
-        detail::put(ov, om, r + a, n[a] >= 1 ? v : 0.0, true);
+  static auto carve(Bump &b, const Call &c) { return std::tuple{detail::RollArgExt<IsMax>(b, c.p.d), b.take<int>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    auto [mm, n] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      mm.reset(w);
+      std::fill_n(n, w, 0);
+      for (int t = 0; t < T; ++t) {
+        mm.step(xv, xm, A, t);
+        if (t >= d) {
+          const size_t q = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a)
+            n[a] -= xm[q + a] != 0;
+        }
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          n[a] += xm[r + a] != 0;
+          const double v =
+              IsArg ? static_cast<double>(t - mm.arg[a]) : static_cast<double>(mm.best[a]);
+          detail::put(ov, om, r + a, n[a] >= 1 ? v : 0.0, true);
+        }
       }
     }
   }
@@ -889,26 +1007,31 @@ enum class HistK { RANK,
 
 template <HistK K>
 struct RollHist {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
+  static auto carve(Bump &b, const Call &c) {
+    constexpr size_t W = kTileA;
+    const size_t dw = static_cast<size_t>(c.p.d) * W;
+    return std::tuple{b.take<float>(dw), b.take<uint8_t>(dw), b.take<int>(W * kBuckets), b.take<int>(W), b.take<float>(W), b.take<float>(W),
+                      detail::RollMinMax(b, c.p.d)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump bp{static_cast<char *>(ws)};
+    auto [rv, rm, hist, n, plo, phi, mm] = carve(bp, c);
+    const Param &p = c.p;
     const int d = p.d;
-    std::vector<float> rv, plo, phi;
-    std::vector<uint8_t> rm;
-    std::vector<int> hist, n;
-    for (int a0 = 0; a0 < A; a0 += detail::kBlockA) {
-      const int W = std::min(detail::kBlockA, A - a0);
-      detail::RollMinMax mm(d, W);
-      rv.assign(static_cast<size_t>(d) * W, 0.f);
-      rm.assign(static_cast<size_t>(d) * W, 0);
-      hist.assign(static_cast<size_t>(W) * kBuckets, 0);
-      n.assign(static_cast<size_t>(W), 0);
-      plo.assign(static_cast<size_t>(W), detail::kInf);
-      phi.assign(static_cast<size_t>(W), -detail::kInf);
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, W] = detail::tile(c, a0, rg.hi);
+      mm.reset(W);
+      std::fill_n(rv, static_cast<size_t>(d) * W, 0.f);
+      std::fill_n(rm, static_cast<size_t>(d) * W, 0);
+      std::fill_n(n, W, 0); // hist 不清: 先有 spread 才读, 而进入 spread 必重建
+      std::fill_n(plo, W, detail::kInf);
+      std::fill_n(phi, W, -detail::kInf);
       for (int t = 0; t < T; ++t) {
-        mm.step(xv, xm, nullptr, A, a0, t);
+        mm.step(xv, xm, nullptr, A, t);
         const int slot = t % d;
-        const size_t r = static_cast<size_t>(t) * A + a0;
+        const size_t r = static_cast<size_t>(t) * A;
         for (int j = 0; j < W; ++j) {
           const float x = xv[r + j];
           const bool m = xm[r + j] != 0;
@@ -919,7 +1042,7 @@ struct RollHist {
           rm[rs] = m ? 1 : 0;
           n[j] += static_cast<int>(m) - static_cast<int>(mo);
           const float nl = mm.lo[j], nh = mm.hi[j];
-          int *h = hist.data() + static_cast<size_t>(j) * kBuckets;
+          int *h = hist + static_cast<size_t>(j) * kBuckets;
           if (nh > nl) {
             if (nl != plo[j] || nh != phi[j]) { // 值域变了: 整窗重建
               std::fill(h, h + kBuckets, 0);
@@ -961,35 +1084,42 @@ struct RollHist {
 
 // ---- WmaRoll: 线性权 (最旧 1 … 最新 d); 滑动时全体权重 −1 (平移), 新样本以权 d 入窗 ----
 struct TsWmaRoll {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W, 0);
-    std::vector<double> sx(W, 0.0), sw(W, 0.0), swx(W, 0.0);
-    for (int t = 0; t < T; ++t) {
-      for (int a = 0; a < A; ++a) { // 平移: Σw −= n, Σwx −= Σx
-        sw[a] -= n[a];
-        swx[a] -= sx[a];
-      }
-      if (t >= d) { // 滑出样本权重已平移到 0, 只影响 n / Σx
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool mo = xm[q + a] != 0;
-          n[a] -= mo;
-          sx[a] -= mo ? static_cast<double>(xv[q + a]) : 0.0;
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<double>(kTileA), b.take<double>(kTileA), b.take<double>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, sx, sw, swx] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(n, w, 0);
+      std::fill_n(sx, w, 0.0);
+      std::fill_n(sw, w, 0.0);
+      std::fill_n(swx, w, 0.0);
+      for (int t = 0; t < T; ++t) {
+        for (int a = 0; a < w; ++a) { // 平移: Σw −= n, Σwx −= Σx
+          sw[a] -= n[a];
+          swx[a] -= sx[a];
         }
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        const float x = xv[r + a];
-        const bool m = xm[r + a] != 0;
-        n[a] += m;
-        sx[a] += m ? static_cast<double>(x) : 0.0;
-        sw[a] += m ? static_cast<double>(d) : 0.0;
-        swx[a] += m ? static_cast<double>(d) * x : 0.0;
-        detail::put(ov, om, r + a, n[a] >= 1 ? swx[a] / sw[a] : 0.0, true); // n ≥ 1 ⇒ Σw ≥ 1; 空 → 0
+        if (t >= d) { // 滑出样本权重已平移到 0, 只影响 n / Σx
+          const size_t q = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a) {
+            const bool mo = xm[q + a] != 0;
+            n[a] -= mo;
+            sx[a] -= mo ? static_cast<double>(xv[q + a]) : 0.0;
+          }
+        }
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          const float x = xv[r + a];
+          const bool m = xm[r + a] != 0;
+          n[a] += m;
+          sx[a] += m ? static_cast<double>(x) : 0.0;
+          sw[a] += m ? static_cast<double>(d) : 0.0;
+          swx[a] += m ? static_cast<double>(d) * x : 0.0;
+          detail::put(ov, om, r + a, n[a] >= 1 ? swx[a] / sw[a] : 0.0, true); // n ≥ 1 ⇒ Σw ≥ 1; 空 → 0
+        }
       }
     }
   }
@@ -997,46 +1127,57 @@ struct TsWmaRoll {
 
 // ---- SlopeRoll: OLS 斜率; 滑动时窗内下标全体 −1 (平移), 下标和/平方和是整数值 double, 平移精确 ----
 struct TsSlopeRoll {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W, 0);
-    std::vector<double> si(W, 0.0), sii(W, 0.0), sx(W, 0.0), six(W, 0.0);
-    for (int t = 0; t < T; ++t) {
-      for (int a = 0; a < A; ++a) { // 平移: Σ(i−1)² = Σi² − 2Σi + n
-        sii[a] -= 2.0 * si[a] - n[a];
-        si[a] -= n[a];
-        six[a] -= sx[a];
-      }
-      if (t >= d) { // 滑出样本平移后下标 = −1
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool mo = xm[q + a] != 0;
-          const double xo = mo ? static_cast<double>(xv[q + a]) : 0.0;
-          si[a] += mo;
-          sii[a] -= mo;
-          sx[a] -= xo;
-          six[a] += xo;
-          n[a] -= mo;
+  static auto carve(Bump &b, const Call &) {
+    constexpr size_t W = kTileA;
+    return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, si, sii, sx, six] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(n, w, 0);
+      std::fill_n(si, w, 0.0);
+      std::fill_n(sii, w, 0.0);
+      std::fill_n(sx, w, 0.0);
+      std::fill_n(six, w, 0.0);
+      for (int t = 0; t < T; ++t) {
+        for (int a = 0; a < w; ++a) { // 平移: Σ(i−1)² = Σi² − 2Σi + n
+          sii[a] -= 2.0 * si[a] - n[a];
+          si[a] -= n[a];
+          six[a] -= sx[a];
         }
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      const double fi = d - 1; // 新样本的窗内下标
-      for (int a = 0; a < A; ++a) {
-        const bool m = xm[r + a] != 0;
-        const double dx = m ? static_cast<double>(xv[r + a]) : 0.0;
-        si[a] += m ? fi : 0.0;
-        sii[a] += m ? fi * fi : 0.0;
-        sx[a] += dx;
-        six[a] += fi * dx;
-        n[a] += m;
-        const bool ok = n[a] >= 2; // n < 2 → 0 (无趋势)
-        double v = 0.0;
-        if (ok)
-          v = (six[a] - si[a] * sx[a] / n[a]) / (sii[a] - si[a] * si[a] / n[a]);
-        detail::put(ov, om, r + a, v, true);
+        if (t >= d) { // 滑出样本平移后下标 = −1
+          const size_t q = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a) {
+            const bool mo = xm[q + a] != 0;
+            const double xo = mo ? static_cast<double>(xv[q + a]) : 0.0;
+            si[a] += mo;
+            sii[a] -= mo;
+            sx[a] -= xo;
+            six[a] += xo;
+            n[a] -= mo;
+          }
+        }
+        const size_t r = static_cast<size_t>(t) * A;
+        const double fi = d - 1; // 新样本的窗内下标
+        for (int a = 0; a < w; ++a) {
+          const bool m = xm[r + a] != 0;
+          const double dx = m ? static_cast<double>(xv[r + a]) : 0.0;
+          si[a] += m ? fi : 0.0;
+          sii[a] += m ? fi * fi : 0.0;
+          sx[a] += dx;
+          six[a] += fi * dx;
+          n[a] += m;
+          const bool ok = n[a] >= 2; // n < 2 → 0 (无趋势)
+          double v = 0.0;
+          if (ok)
+            v = (six[a] - si[a] * sx[a] / n[a]) / (sii[a] - si[a] * si[a] / n[a]);
+          detail::put(ov, om, r + a, v, true);
+        }
       }
     }
   }
@@ -1047,32 +1188,39 @@ struct TsSlopeRoll {
 //   ln|1+x| 的取值与 Stream 同式: x > −1 用 log1p(x), x < −1 用 log(−1 − x), x = −1 不进对数
 inline double log_abs1p(float x) { return x > -1.f ? std::log1p(static_cast<double>(x)) : (x < -1.f ? std::log(-1.0 - x) : 0.0); }
 struct TsProductRoll {
-  CP_SIG {
-    CP_NO23;
-    assert(p.d >= 1);
-    const int d = p.d;
-    std::vector<int> zero(static_cast<size_t>(A), 0), neg(static_cast<size_t>(A), 0);
-    std::vector<double> sl(static_cast<size_t>(A), 0.0);
-    for (int t = 0; t < T; ++t) {
-      if (t >= d) {
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const float xo = xv[q + a];
-          const bool mo = xm[q + a] != 0;
-          sl[a] -= mo ? log_abs1p(xo) : 0.0;
-          zero[a] -= mo && xo == -1.f;
-          neg[a] -= mo && xo < -1.f;
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<int>(kTileA), b.take<double>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [zero, neg, sl] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(zero, w, 0);
+      std::fill_n(neg, w, 0);
+      std::fill_n(sl, w, 0.0);
+      for (int t = 0; t < T; ++t) {
+        if (t >= d) {
+          const size_t q = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a) {
+            const float xo = xv[q + a];
+            const bool mo = xm[q + a] != 0;
+            sl[a] -= mo ? log_abs1p(xo) : 0.0;
+            zero[a] -= mo && xo == -1.f;
+            neg[a] -= mo && xo < -1.f;
+          }
         }
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        const float x = xv[r + a];
-        const bool m = xm[r + a] != 0;
-        sl[a] += m ? log_abs1p(x) : 0.0;
-        zero[a] += m && x == -1.f;
-        neg[a] += m && x < -1.f;
-        const double v = zero[a] > 0 ? -1.0 : (neg[a] & 1 ? -std::exp(sl[a]) - 1.0 : std::expm1(sl[a]));
-        detail::put(ov, om, r + a, v, true);
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          const float x = xv[r + a];
+          const bool m = xm[r + a] != 0;
+          sl[a] += m ? log_abs1p(x) : 0.0;
+          zero[a] += m && x == -1.f;
+          neg[a] += m && x < -1.f;
+          const double v = zero[a] > 0 ? -1.0 : (neg[a] & 1 ? -std::exp(sl[a]) - 1.0 : std::expm1(sl[a]));
+          detail::put(ov, om, r + a, v, true);
+        }
       }
     }
   }
@@ -1083,54 +1231,71 @@ template <detail::Pair K>
 struct RollPair {
   static constexpr bool kSpx = K == detail::Pair::CORR;
   static constexpr bool kSpy = K != detail::Pair::COV;
-  CP_SIG {
-    CP_NO3;
-    assert(p.d >= 1);
-    const int d = p.d;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W, 0);
-    std::vector<double> sx(W, 0.0), sy(W, 0.0), sxy(W, 0.0), sxx(kSpx ? W : 0, 0.0),
-        syy(kSpy ? W : 0, 0.0);
-    detail::RollMinMax mmx(kSpx ? d : 1, kSpx ? A : 1); // 未用的实例给最小形状, 不 step
-    detail::RollMinMax mmy(kSpy ? d : 1, kSpy ? A : 1);
-    for (int t = 0; t < T; ++t) {
-      if constexpr (kSpx)
-        mmx.step(xv, xm, ym, A, 0, t);
-      if constexpr (kSpy)
-        mmy.step(yv, ym, xm, A, 0, t);
-      if (t >= d) {
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const bool mm = xm[q + a] && ym[q + a];
-          const double dx = mm ? static_cast<double>(xv[q + a]) : 0.0;
-          const double dy = mm ? static_cast<double>(yv[q + a]) : 0.0;
-          sx[a] -= dx;
-          sy[a] -= dy;
-          sxy[a] -= dx * dy;
-          if constexpr (kSpx)
-            sxx[a] -= dx * dx;
-          if constexpr (kSpy)
-            syy[a] -= dy * dy;
-          n[a] -= mm;
-        }
+  static auto carve(Bump &b, const Call &c) {
+    constexpr size_t W = kTileA;
+    return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W), b.take<double>(kSpx ? W : 0), b.take<double>(kSpy ? W : 0),
+                      kSpx ? detail::RollMinMax(b, c.p.d) : detail::RollMinMax(), // 未用的实例不切不 step
+                      kSpy ? detail::RollMinMax(b, c.p.d) : detail::RollMinMax()};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    auto [n, sx, sy, sxy, sxx, syy, mmx, mmy] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(n, w, 0);
+      std::fill_n(sx, w, 0.0);
+      std::fill_n(sy, w, 0.0);
+      std::fill_n(sxy, w, 0.0);
+      if constexpr (kSpx) {
+        std::fill_n(sxx, w, 0.0);
+        mmx.reset(w);
       }
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        const float x = xv[r + a], y = yv[r + a];
-        const bool mm = xm[r + a] && ym[r + a];
-        const double dx = mm ? static_cast<double>(x) : 0.0;
-        const double dy = mm ? static_cast<double>(y) : 0.0;
-        sx[a] += dx;
-        sy[a] += dy;
-        sxy[a] += dx * dy;
+      if constexpr (kSpy) {
+        std::fill_n(syy, w, 0.0);
+        mmy.reset(w);
+      }
+      for (int t = 0; t < T; ++t) {
         if constexpr (kSpx)
-          sxx[a] += dx * dx;
+          mmx.step(xv, xm, ym, A, t);
         if constexpr (kSpy)
-          syy[a] += dy * dy;
-        n[a] += mm;
-        detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? mmx.hi[a] > mmx.lo[a] : true,
-                            kSpy ? mmy.hi[a] > mmy.lo[a] : true, sx[a], sy[a], sxy[a],
-                            kSpx ? sxx[a] : 0.0, kSpy ? syy[a] : 0.0, x, y, mm);
+          mmy.step(yv, ym, xm, A, t);
+        if (t >= d) {
+          const size_t q = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a) {
+            const bool mm = xm[q + a] && ym[q + a];
+            const double dx = mm ? static_cast<double>(xv[q + a]) : 0.0;
+            const double dy = mm ? static_cast<double>(yv[q + a]) : 0.0;
+            sx[a] -= dx;
+            sy[a] -= dy;
+            sxy[a] -= dx * dy;
+            if constexpr (kSpx)
+              sxx[a] -= dx * dx;
+            if constexpr (kSpy)
+              syy[a] -= dy * dy;
+            n[a] -= mm;
+          }
+        }
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          const float x = xv[r + a], y = yv[r + a];
+          const bool mm = xm[r + a] && ym[r + a];
+          const double dx = mm ? static_cast<double>(x) : 0.0;
+          const double dy = mm ? static_cast<double>(y) : 0.0;
+          sx[a] += dx;
+          sy[a] += dy;
+          sxy[a] += dx * dy;
+          if constexpr (kSpx)
+            sxx[a] += dx * dx;
+          if constexpr (kSpy)
+            syy[a] += dy * dy;
+          n[a] += mm;
+          detail::pair_put<K>(ov, om, r + a, n[a], kSpx ? mmx.hi[a] > mmx.lo[a] : true,
+                              kSpy ? mmy.hi[a] > mmy.lo[a] : true, sx[a], sy[a], sxy[a],
+                              kSpx ? sxx[a] : 0.0, kSpy ? syy[a] : 0.0, x, y, mm);
+        }
       }
     }
   }
@@ -1138,36 +1303,47 @@ struct RollPair {
 
 // ---- WMeanRoll ----
 struct TsWMeanRoll {
-  CP_SIG {
-    CP_NO3;
-    assert(p.d >= 1);
-    const int d = p.d;
-    const size_t W = static_cast<size_t>(A);
-    std::vector<int> n(W, 0);
-    std::vector<double> sx(W, 0.0), sy(W, 0.0), syx(W, 0.0), say(W, 0.0);
-    for (int t = 0; t < T; ++t) {
-      if (t >= d) {
-        const size_t q = static_cast<size_t>(t - d) * A;
-        for (int a = 0; a < A; ++a) {
-          const float x = xv[q + a], y = yv[q + a];
-          const bool mm = xm[q + a] && ym[q + a];
-          sx[a] -= mm ? static_cast<double>(x) : 0.0;
-          sy[a] -= mm ? static_cast<double>(y) : 0.0;
-          syx[a] -= mm ? static_cast<double>(y) * x : 0.0;
-          say[a] -= mm ? static_cast<double>(std::fabs(y)) : 0.0;
-          n[a] -= mm;
+  static auto carve(Bump &b, const Call &) {
+    constexpr size_t W = kTileA;
+    return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W), b.take<double>(W)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [n, sx, sy, syx, say] = carve(b, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(n, w, 0);
+      std::fill_n(sx, w, 0.0);
+      std::fill_n(sy, w, 0.0);
+      std::fill_n(syx, w, 0.0);
+      std::fill_n(say, w, 0.0);
+      for (int t = 0; t < T; ++t) {
+        if (t >= d) {
+          const size_t q = static_cast<size_t>(t - d) * A;
+          for (int a = 0; a < w; ++a) {
+            const float x = xv[q + a], y = yv[q + a];
+            const bool mm = xm[q + a] && ym[q + a];
+            sx[a] -= mm ? static_cast<double>(x) : 0.0;
+            sy[a] -= mm ? static_cast<double>(y) : 0.0;
+            syx[a] -= mm ? static_cast<double>(y) * x : 0.0;
+            say[a] -= mm ? static_cast<double>(std::fabs(y)) : 0.0;
+            n[a] -= mm;
+          }
         }
-      }
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        const float x = xv[r + a], y = yv[r + a];
-        const bool mm = xm[r + a] && ym[r + a];
-        sx[a] += mm ? static_cast<double>(x) : 0.0;
-        sy[a] += mm ? static_cast<double>(y) : 0.0;
-        syx[a] += mm ? static_cast<double>(y) * x : 0.0;
-        say[a] += mm ? static_cast<double>(std::fabs(y)) : 0.0;
-        n[a] += mm;
-        detail::put(ov, om, r + a, wmean_val(sx[a], sy[a], syx[a], say[a], n[a]), true);
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          const float x = xv[r + a], y = yv[r + a];
+          const bool mm = xm[r + a] && ym[r + a];
+          sx[a] += mm ? static_cast<double>(x) : 0.0;
+          sy[a] += mm ? static_cast<double>(y) : 0.0;
+          syx[a] += mm ? static_cast<double>(y) * x : 0.0;
+          say[a] += mm ? static_cast<double>(std::fabs(y)) : 0.0;
+          n[a] += mm;
+          detail::put(ov, om, r + a, wmean_val(sx[a], sy[a], syx[a], say[a], n[a]), true);
+        }
       }
     }
   }
@@ -1178,20 +1354,26 @@ struct TsWMeanRoll {
 // =============================================================================
 // TsMeanEma: x 有效时 y = 已出现过有效值 ? k·x + (1−k)·y : x; x 无效时 y 不动; 尚无有效样本 → 0
 struct TsMeanEma {
-  CP_SIG {
-    CP_NO23;
-    assert(p.k > 0.f && p.k <= 1.f);
-    const double k = p.k;
-    std::vector<double> y(static_cast<size_t>(A), 0.0);
-    std::vector<uint8_t> on(static_cast<size_t>(A), 0);
-    for (int t = 0; t < T; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      for (int a = 0; a < A; ++a) {
-        if (xm[r + a]) {
-          y[a] = on[a] ? k * xv[r + a] + (1.0 - k) * y[a] : static_cast<double>(xv[r + a]);
-          on[a] = 1;
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<double>(kTileA), b.take<uint8_t>(kTileA)}; }
+  CP_SCRATCH
+  CP_RUN {
+    Bump b{static_cast<char *>(ws)};
+    const auto [y, on] = carve(b, c);
+    assert(c.p.k > 0.f && c.p.k <= 1.f);
+    const double k = c.p.k;
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
+      std::fill_n(y, w, 0.0);
+      std::fill_n(on, w, 0);
+      for (int t = 0; t < T; ++t) {
+        const size_t r = static_cast<size_t>(t) * A;
+        for (int a = 0; a < w; ++a) {
+          if (xm[r + a]) {
+            y[a] = on[a] ? k * xv[r + a] + (1.0 - k) * y[a] : static_cast<double>(xv[r + a]);
+            on[a] = 1;
+          }
+          detail::put(ov, om, r + a, y[a], true);
         }
-        detail::put(ov, om, r + a, y[a], true);
       }
     }
   }
@@ -1235,9 +1417,8 @@ using TsResidRoll = RollPair<detail::Pair::RESID>;
 #undef CP_P3
 #undef CP_P2
 #undef CP_P1
-#undef CP_NO3
-#undef CP_NO23
-#undef CP_SIG_S
-#undef CP_SIG
+#undef CP_STATELESS
+#undef CP_SCRATCH
+#undef CP_RUN
 
 } // namespace factor::cpu::ts

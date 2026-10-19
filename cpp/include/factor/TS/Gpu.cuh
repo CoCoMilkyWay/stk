@@ -9,8 +9,11 @@
 //   【布局】SoA 行主序 [T][A], 下标 t*A + a. 同一时刻的资产在内存里连续
 //     → TS 方向"一线程一资产 + 沿 t 串行"天然合并访存 (相邻线程读相邻地址, 128B/warp).
 //     典型规模 T = 19200 (80 段 × 240), A = 5000, 单平面 fp32 = 384 MB.
-//     段长 S (本层每段行数, Contract【层几何】) 只有 EXPAND 段界与 TodMask 段内位置依赖它: 这些算子的 run 是 template <int S>;
+//     段长 S (本层每段行数, Contract【层几何】, 运行期 Call::geo.S) 只有 EXPAND 段界与 TodMask 段内位置依赖它;
 //     ROLL / EXTREME / RECUR 的分块长只是性能参数, 与层无关 (取 kSegMax).
+//
+//   【调用形状】(Contract) static size_t scratch(const Call &) + static void run(const Call &, void *ws, cudaStream_t);
+//     POINT 的 F::apply 另给融合核 (GpuRun 的 run_fused) 逐步调用.
 //
 //   【核配置总则】
 //     POINT : 2D 网格逐格融合, grid(⌈A/256⌉, min(T,512)) × 256 线程, 纯带宽.
@@ -141,9 +144,10 @@ namespace k {
 // =============================================================================
 // 1. POINT: 逐格融合
 // =============================================================================
-// S = 段长 (只 TodMask 读 t_seg = t % S; 其余 POINT 算子不读, 取 S = 1)
-template <int NARY, class Op, int S>
-__global__ void point(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, Param p) {
+// t_seg = (t0 + t) % S: t0 = 行 0 的全局行号, S = 段长 (只 TodMask 读)
+template <int NARY, class Op>
+__global__ void point(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, int t0, int S,
+                      Param p) {
   const int a = blockIdx.x * blockDim.x + threadIdx.x;
   if (a >= A)
     return;
@@ -158,7 +162,7 @@ __global__ void point(const float *xv, const uint8_t *xm, const float *yv, const
       z = DVal{zv[i], zm[i]};
     float v = 0.f;
     bool m = false;
-    Op::apply(x, y, z, t % S, p, v, m);
+    Op::apply(x, y, z, (t0 + t) % S, p, v, m);
     dev::store(ov, om, i, v, m);
   }
 }
@@ -324,8 +328,8 @@ __device__ __forceinline__ bool valid_at(const uint8_t *xm, const uint8_t *ym, i
   return g;
 }
 
-template <class Op, int S>
-__global__ void expand(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, float *ov, uint8_t *om, int T, int A, Param p) {
+template <class Op>
+__global__ void expand(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, float *ov, uint8_t *om, int T, int A, int S, Param p) {
   const int a = blockIdx.x * blockDim.x + threadIdx.x;
   if (a >= A)
     return;
@@ -1282,9 +1286,9 @@ inline dim3 g_pt(int T, int A) { return dim3(static_cast<unsigned>((A + kPB - 1)
 inline dim3 g_seg(int T, int A, int S) { return dim3(static_cast<unsigned>((A + kTB - 1) / kTB), static_cast<unsigned>((T + S - 1) / S)); } // 一线程一 (资产, 长 S 的块)
 inline dim3 g_hist(int T, int A, int C) { return dim3(static_cast<unsigned>(A), static_cast<unsigned>((T + C - 1) / C)); }                  // 一 block 一 (资产, 块)
 // HIST 启动: 模板函数里 if constexpr 才会丢弃另一支 (宏展开的非模板 run 里不丢弃, nvcc 会去找没实例化的核).
-// S = 段长, 只 EXPAND 用 (块 = 一段); 核本身不随 S 实例化 (块长是运行期参数)
-template <int MODE, class H, int S>
-inline void launch_hist(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, const Param &p, cudaStream_t stream) {
+// S = 段长, 只 EXPAND 用 (块 = 一段, 块长是运行期参数)
+template <int MODE, class H>
+inline void launch_hist(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int S, const Param &p, cudaStream_t stream) {
   static_assert(kSegMax <= 256, "EXPAND 块容量 256 须盖住一段");
   if constexpr (MODE == 0) {
     hist<0, 256, 256, H><<<g_hist(T, A, S), 256, 0, stream>>>(xv, xm, ov, om, T, A, 0, S, p);
@@ -1306,25 +1310,31 @@ inline dim3 g_roll(int T, int A, int C) { return dim3(static_cast<unsigned>((A +
 } // namespace k
 
 // =============================================================================
-// 算子: 统一签名 (未用到的指针传 nullptr, 全部设备指针); 怎么算是本后端私事, 不进 OpTable
+// 算子: Contract【调用形状】(元数不到的槽为空, 全部设备指针); 怎么算是本后端私事, 不进 OpTable
 // =============================================================================
+#define FACTOR_TS_NOWS \
+  static size_t scratch(const Call &) { return 0; }
+#define FACTOR_TS_RUN static void run(const Call &c, void *ws, cudaStream_t stream)
+// 非逐点算子从行 0 起算 (段界 / 窗口历史); 下标是 int
+#define FACTOR_TS_CHECK(c) assert((c).t0 == 0 && (c).o.v && (c).o.m && static_cast<long long>((c).T) * (c).A < (1LL << 31))
 
-// ---- POINT (21) ----
-#define FACTOR_TS_POINT(Name, NARY, BODY)                                                                                                                                             \
-  struct Name {                                                                                                                                                                       \
-    struct F {                                                                                                                                                                        \
-      __device__ static void apply(DVal x, DVal y, DVal z, int t_seg, const Param &p, float &v, bool &m) {                                                                            \
-        (void)x, (void)y, (void)z, (void)t_seg, (void)p;                                                                                                                              \
-        BODY                                                                                                                                                                          \
-      }                                                                                                                                                                               \
-    };                                                                                                                                                                                \
-    static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                    \
-    static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, const Param &p, \
-                    void *, cudaStream_t stream) {                                                                                                                                    \
-      assert(static_cast<long long>(T) * A < (1LL << 31));                                                                                                                            \
-      k::point<NARY, F, 1><<<k::g_pt(T, A), kPB, 0, stream>>>(xv, xm, yv, ym, zv, zm, ov, om, T, A, p);                                                                               \
-      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                             \
-    }                                                                                                                                                                                 \
+// ---- POINT (21): 接受任意行窗 (c.t0 = 行 0 的全局行号) ----
+#define FACTOR_TS_POINT(Name, NARY, BODY)                                                                                                       \
+  struct Name {                                                                                                                                 \
+    struct F {                                                                                                                                  \
+      __device__ static void apply(DVal x, DVal y, DVal z, int t_seg, const Param &p, float &v, bool &m) {                                      \
+        (void)x, (void)y, (void)z, (void)t_seg, (void)p;                                                                                        \
+        BODY                                                                                                                                    \
+      }                                                                                                                                         \
+    };                                                                                                                                          \
+    FACTOR_TS_NOWS                                                                                                                              \
+    FACTOR_TS_RUN {                                                                                                                             \
+      (void)ws;                                                                                                                                 \
+      assert(c.o.v && c.o.m && static_cast<long long>(c.T) * c.A < (1LL << 31));                                                                \
+      k::point<NARY, F><<<k::g_pt(c.T, c.A), kPB, 0, stream>>>(c.x.v, c.x.m, c.y.v, c.y.m, c.z.v, c.z.m, c.o.v, c.o.m, c.T, c.A, c.t0, c.geo.S, \
+                                                               c.p);                                                                            \
+      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                       \
+    }                                                                                                                                           \
   };
 
 FACTOR_TS_POINT(TsAbs, 1, { v = fabsf(x.v); m = x.m; })
@@ -1336,23 +1346,8 @@ FACTOR_TS_POINT(TsNeg, 1, { v = -x.v; m = x.m; })
 FACTOR_TS_POINT(TsRecip, 1, { v = x.v != 0.f ? 1.f / x.v : 0.f; m = x.m; }) // x = 0 → 0; 溢出 → 出口转无效
 FACTOR_TS_POINT(TsGt, 1, { v = x.v > p.k ? 1.f : 0.f; m = x.m; })    // 指示; 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
 FACTOR_TS_POINT(TsClip, 1, { assert(p.k >= 0.f); v = fminf(fmaxf(x.v, -p.k), p.k); m = x.m; })
-// 元数 0: 不读输入, 纯段内位置 t_seg = t % S (唯一读 S 的 POINT 算子, 手写以带 run<S>)
-struct TsTodMask {
-  struct F {
-    __device__ static void apply(DVal, DVal, DVal, int t_seg, const Param &p, float &v, bool &m) {
-      v = (t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f;
-      m = true;
-    }
-  };
-  static size_t workspace(int, int, const Param &) { return 0; }
-  template <int S>
-  static void run(const float *, const uint8_t *, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, void *,
-                  cudaStream_t stream) {
-    assert(static_cast<long long>(T) * A < (1LL << 31));
-    k::point<0, F, S><<<k::g_pt(T, A), kPB, 0, stream>>>(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, ov, om, T, A, p);
-    FACTOR_CUDA_OK(cudaGetLastError());
-  }
-};
+// 元数 0: 不读输入, 纯段内位置 t_seg (唯一读 S 的 POINT 算子)
+FACTOR_TS_POINT(TsTodMask, 0, { v = (t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f; m = true; })
 FACTOR_TS_POINT(TsAdd, 2, { v = x.v + y.v; m = x.m && y.m; })
 FACTOR_TS_POINT(TsSub, 2, { v = x.v - y.v; m = x.m && y.m; })
 FACTOR_TS_POINT(TsMul, 2, { v = x.v * y.v; m = x.m && y.m; })
@@ -1367,30 +1362,31 @@ FACTOR_TS_POINT(TsMask, 2, { v = x.v; m = x.m && y.m && y.v > 0.f; })     // y �
 FACTOR_TS_POINT(TsWhere, 3, { v = x.v > 0.f ? y.v : z.v; m = x.m && (x.v > 0.f ? y.m : z.m); })
 
 // ---- GATHER (2): d 只改地址 ----
-#define FACTOR_TS_GATHER(Name, DELTA)                                                                                                                                                 \
-  struct Name {                                                                                                                                                                       \
-    static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                    \
-    static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, void *, \
-                    cudaStream_t stream) {                                                                                                                                            \
-      assert(p.d >= 1 && p.d <= T);                                                                                                                                                   \
-      k::gather<DELTA><<<k::g_pt(T, A), kPB, 0, stream>>>(xv, xm, ov, om, T, A, p.d);                                                                                                 \
-      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                             \
-    }                                                                                                                                                                                 \
+#define FACTOR_TS_GATHER(Name, DELTA)                                                                       \
+  struct Name {                                                                                             \
+    FACTOR_TS_NOWS                                                                                          \
+    FACTOR_TS_RUN {                                                                                         \
+      (void)ws;                                                                                             \
+      FACTOR_TS_CHECK(c);                                                                                   \
+      assert(c.p.d >= 1 && c.p.d <= c.T);                                                                   \
+      k::gather<DELTA><<<k::g_pt(c.T, c.A), kPB, 0, stream>>>(c.x.v, c.x.m, c.o.v, c.o.m, c.T, c.A, c.p.d); \
+      FACTOR_CUDA_OK(cudaGetLastError());                                                                   \
+    }                                                                                                       \
   };
 FACTOR_TS_GATHER(TsDelayRoll, false) // x_{max(t−d,0)}, m = xm[max(t−d,0)]
 FACTOR_TS_GATHER(TsDeltaRoll, true)  // x_t − x_{max(t−d,0)}
 
 // ---- EXPAND (SCAN 族): 段内 expanding, 段界 reset (段长 S) ----
-#define FACTOR_TS_EXPAND(Name, Fn)                                                                                                                                                \
-  struct Name {                                                                                                                                                                   \
-    static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                \
-    template <int S>                                                                                                                                                              \
-    static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, \
-                    void *, cudaStream_t stream) {                                                                                                                                \
-      assert(static_cast<long long>(T) * A < (1LL << 31));                                                                                                                        \
-      k::expand<k::Fn, S><<<k::g_seg(T, A, S), kTB, 0, stream>>>(xv, xm, yv, ym, ov, om, T, A, p);                                                                                \
-      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                         \
-    }                                                                                                                                                                             \
+#define FACTOR_TS_EXPAND(Name, Fn)                                                                                             \
+  struct Name {                                                                                                                \
+    FACTOR_TS_NOWS                                                                                                             \
+    FACTOR_TS_RUN {                                                                                                            \
+      (void)ws;                                                                                                                \
+      FACTOR_TS_CHECK(c);                                                                                                      \
+      const int S = c.geo.S;                                                                                                   \
+      k::expand<k::Fn><<<k::g_seg(c.T, c.A, S), kTB, 0, stream>>>(c.x.v, c.x.m, c.y.v, c.y.m, c.o.v, c.o.m, c.T, c.A, S, c.p); \
+      FACTOR_CUDA_OK(cudaGetLastError());                                                                                      \
+    }                                                                                                                          \
   };
 FACTOR_TS_EXPAND(TsSumCum, FnSum)   // Σ_{s≤t} x_s
 FACTOR_TS_EXPAND(TsMeanCum, FnMean) // Σx/n
@@ -1411,16 +1407,17 @@ FACTOR_TS_EXPAND(TsResidCum, FnResid)
 FACTOR_TS_EXPAND(TsWMeanCum, FnWMean)
 
 // ---- ROLL (SCAN 族): 块内预热 + 滑窗 add/sub, 跨段不 reset ----
-#define FACTOR_TS_ROLL(Name, Fn)                                                                                                                                                  \
-  struct Name {                                                                                                                                                                   \
-    static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                \
-    static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, \
-                    void *, cudaStream_t stream) {                                                                                                                                \
-      assert(p.d >= 1 && p.d <= T && static_cast<long long>(T) * A < (1LL << 31));                                                                                                \
-      const int C = k::roll_chunk(p.d);                                                                                                                                           \
-      k::roll<k::Fn><<<k::g_roll(T, A, C), kTB, 0, stream>>>(xv, xm, yv, ym, ov, om, T, A, p.d, C, p);                                                                            \
-      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                         \
-    }                                                                                                                                                                             \
+#define FACTOR_TS_ROLL(Name, Fn)                                                                                                     \
+  struct Name {                                                                                                                      \
+    FACTOR_TS_NOWS                                                                                                                   \
+    FACTOR_TS_RUN {                                                                                                                  \
+      (void)ws;                                                                                                                      \
+      FACTOR_TS_CHECK(c);                                                                                                            \
+      assert(c.p.d >= 1 && c.p.d <= c.T);                                                                                            \
+      const int C = k::roll_chunk(c.p.d);                                                                                            \
+      k::roll<k::Fn><<<k::g_roll(c.T, c.A, C), kTB, 0, stream>>>(c.x.v, c.x.m, c.y.v, c.y.m, c.o.v, c.o.m, c.T, c.A, c.p.d, C, c.p); \
+      FACTOR_CUDA_OK(cudaGetLastError());                                                                                            \
+    }                                                                                                                                \
   };
 FACTOR_TS_ROLL(TsSumRoll, FnSum)
 FACTOR_TS_ROLL(TsMeanRoll, FnMean)
@@ -1439,20 +1436,20 @@ FACTOR_TS_ROLL(TsResidRoll, FnResid)
 FACTOR_TS_ROLL(TsWMeanRoll, FnWMean)
 
 // ---- EXTREME (4): 滑窗极值 / 距今期数 ----
-//   workspace = 每时间块一份环形后缀区 [d][A]: gridY·d·A·sizeof(E). T=19200 A=5000 d=240: 20×240×5000×8B = 192 MB (pair 版)
-#define FACTOR_TS_EXTREME(Name, MAXOP, ELEM)                                                                                                                                  \
-  struct Name {                                                                                                                                                               \
-    static size_t workspace(int T, int A, const Param &p) {                                                                                                                   \
-      const int C = k::ext_chunk(p.d);                                                                                                                                        \
-      return static_cast<size_t>((T + C - 1) / C) * p.d * A * sizeof(ELEM);                                                                                                   \
-    }                                                                                                                                                                         \
-    static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, \
-                    void *ws, cudaStream_t stream) {                                                                                                                          \
-      assert(p.d >= 1 && p.d <= T && ws != nullptr && static_cast<long long>(T) * A < (1LL << 31));                                                                           \
-      const int C = k::ext_chunk(p.d);                                                                                                                                        \
-      k::extreme<MAXOP, ELEM><<<k::g_roll(T, A, C), kTB, 0, stream>>>(xv, xm, static_cast<ELEM *>(ws), ov, om, T, A, p.d, C);                                                 \
-      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                     \
-    }                                                                                                                                                                         \
+//   scratch = 每时间块一份环形后缀区 [d][A]: gridY·d·A·sizeof(E). T=19200 A=5000 d=240: 20×240×5000×8B = 192 MB (pair 版)
+#define FACTOR_TS_EXTREME(Name, MAXOP, ELEM)                                                                                                        \
+  struct Name {                                                                                                                                     \
+    static size_t scratch(const Call &c) {                                                                                                          \
+      const int C = k::ext_chunk(c.p.d);                                                                                                            \
+      return static_cast<size_t>((c.T + C - 1) / C) * c.p.d * c.A * sizeof(ELEM);                                                                   \
+    }                                                                                                                                               \
+    FACTOR_TS_RUN {                                                                                                                                 \
+      FACTOR_TS_CHECK(c);                                                                                                                           \
+      assert(c.p.d >= 1 && c.p.d <= c.T && ws != nullptr);                                                                                          \
+      const int C = k::ext_chunk(c.p.d);                                                                                                            \
+      k::extreme<MAXOP, ELEM><<<k::g_roll(c.T, c.A, C), kTB, 0, stream>>>(c.x.v, c.x.m, static_cast<ELEM *>(ws), c.o.v, c.o.m, c.T, c.A, c.p.d, C); \
+      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                           \
+    }                                                                                                                                               \
   };
 FACTOR_TS_EXTREME(TsMaxRoll, true, float)
 FACTOR_TS_EXTREME(TsMinRoll, false, float)
@@ -1460,31 +1457,36 @@ FACTOR_TS_EXTREME(TsArgMaxRoll, true, k::FI) // (d−1)−i, 并列保留最旧
 FACTOR_TS_EXTREME(TsArgMinRoll, false, k::FI)
 
 // ---- HIST (3): EXPAND 一段一块 (容量 256); ROLL 块长 C = NCAP − d + 1, 容量按 d 选 2048 / 4096 (见第 6 节) ----
-//   TMPL = template <int S> (EXPAND, 段长 S) 或空 (ROLL, 与段无关; 传 S = kSegMax 占位, launch_hist 的 ROLL 支不读)
-#define FACTOR_TS_HIST(Name, MODE, H, TMPL, SV)                                                                                                                                    \
-  struct Name {                                                                                                                                                                    \
-    static size_t workspace(int, int, const Param &) { return 0; }                                                                                                                 \
-    TMPL static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, \
-                         void *, cudaStream_t stream) {                                                                                                                            \
-      assert(static_cast<long long>(T) * A < (1LL << 31));                                                                                                                         \
-      k::launch_hist<MODE, k::H, SV>(xv, xm, ov, om, T, A, p, stream);                                                                                                             \
-      FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                          \
-    }                                                                                                                                                                              \
+#define FACTOR_TS_HIST(Name, MODE, H)                                                         \
+  struct Name {                                                                               \
+    FACTOR_TS_NOWS                                                                            \
+    FACTOR_TS_RUN {                                                                           \
+      (void)ws;                                                                               \
+      FACTOR_TS_CHECK(c);                                                                     \
+      k::launch_hist<MODE, k::H>(c.x.v, c.x.m, c.o.v, c.o.m, c.T, c.A, c.geo.S, c.p, stream); \
+      FACTOR_CUDA_OK(cudaGetLastError());                                                     \
+    }                                                                                         \
   };
-FACTOR_TS_HIST(TsRankCum, 0, HRank, template <int S>, S)
-FACTOR_TS_HIST(TsRankRoll, 1, HRank, , kSegMax)
-FACTOR_TS_HIST(TsQuantileRoll, 1, HQuantile, , kSegMax)
+FACTOR_TS_HIST(TsRankCum, 0, HRank)
+FACTOR_TS_HIST(TsRankRoll, 1, HRank)
+FACTOR_TS_HIST(TsQuantileRoll, 1, HQuantile)
 
 // ---- EXPO (1) ----
 struct TsMeanEma {
   // 块前缀 (a, b_seen, b_seed, seen) × nc 块 (块长 kSegMax, 与层无关): 80×5000×(4+4+4+1) = 5.2 MB
-  static size_t workspace(int T, int A, const Param &) {
-    const size_t nc = static_cast<size_t>((T + kSegMax - 1) / kSegMax);
-    return nc * A * (3 * sizeof(float) + sizeof(uint8_t));
+  static size_t scratch(const Call &c) {
+    const size_t nc = static_cast<size_t>((c.T + kSegMax - 1) / kSegMax);
+    return nc * c.A * (3 * sizeof(float) + sizeof(uint8_t));
   }
-  static void run(const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, float *ov, uint8_t *om, int T, int A, const Param &p, void *ws,
-                  cudaStream_t stream) {
-    assert(ws != nullptr && static_cast<long long>(T) * A < (1LL << 31));
+  FACTOR_TS_RUN {
+    FACTOR_TS_CHECK(c);
+    assert(ws != nullptr);
+    const float *xv = c.x.v;
+    const uint8_t *xm = c.x.m;
+    float *ov = c.o.v;
+    uint8_t *om = c.o.m;
+    const int T = c.T, A = c.A;
+    const Param &p = c.p;
     const int nc = (T + kSegMax - 1) / kSegMax;
     float *ca = static_cast<float *>(ws);
     float *cb = ca + static_cast<size_t>(nc) * A;

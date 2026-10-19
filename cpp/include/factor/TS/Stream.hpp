@@ -3,12 +3,13 @@
 // =============================================================================
 // TS 流式实现 (实盘: 每分钟一次 push, O(1) 或 O(d) 状态; 语义契约见 factor/Contract.hpp)
 // =============================================================================
-//   结构 = 两节, 对应 OpTable 的 T 窗列 (每个 struct 带 static constexpr T kT, op_check 对表):
-//     节一  POINT             无状态纯函数   struct Op : Point { static Val apply(Val x[, Val y[, Val z]], const Param &); }
-//                             TodMask 元数 0: apply(int t_seg, const Param &) (t_seg = t % S 由调用方给)
-//     节二  EXPAND/ROLL/EXPO  有状态          struct Op { explicit Op(const Param &); Val push(Val x[, Val y]); }
-//           EXPAND 的 push 是 template <int S> (S = 段长, Contract【层几何】), 推满 S 自动归零 (也可 reset() 手动);
-//           ROLL / EXPO 没有 reset —— 契约说它们跨段不重置.
+//   统一接口 (Contract【调用形状】; 每个资产一个对象, 各自推进, 晚到的资产不拖别人):
+//     explicit Op(const Param &);  Val step(Val x, Val y, Val z, int t_seg);  static constexpr T kT (op_check 对表)
+//     元数不到的元传 Val{}; t_seg = 段内位置 (t % S, Contract【层几何】), 每行必推 (缺数据推 m = 0).
+//   结构 = 两节, 对应 OpTable 的 T 窗列:
+//     节一  POINT             无状态纯函数 pt::*: static Val apply(x, y, z, t_seg, p), 经 Point<F> 适配
+//     节二  EXPAND/ROLL/EXPO  有状态: 核 core::* × 窗 Expand / Roll / Ema
+//           EXPAND 在 t_seg = 0 归零; ROLL / EXPO 不看 t_seg —— 契约说它们跨段不重置.
 //
 //   节二只写一份公式: **统计核 core::* × 窗适配 Expand/Roll/Ema**.
 //   命名 Ts<核><窗>: *Cum 与 *Roll 就是同一个核挂在两个窗上 (见文件末尾的实例化清单),
@@ -36,88 +37,100 @@ namespace factor::ts {
 
 // =========================== 节一: POINT (无状态) ===========================
 
-struct Point {
-  static constexpr T kT = T::POINT;
-};
+namespace pt {
 
-struct TsAbs : Point {
-  static Val apply(Val x, const Param &) { return mk(std::fabs(x.v), x.m); }
+struct Abs {
+  static Val apply(Val x, Val, Val, int, const Param &) { return mk(std::fabs(x.v), x.m); }
 };
-struct TsSign : Point {
-  static Val apply(Val x, const Param &) { return mk(x.v > 0.f ? 1.f : (x.v < 0.f ? -1.f : 0.f), x.m); }
+struct Sign {
+  static Val apply(Val x, Val, Val, int, const Param &) { return mk(x.v > 0.f ? 1.f : (x.v < 0.f ? -1.f : 0.f), x.m); }
 };
-struct TsLog : Point { // 保号 log1p: 在 0 附近线性, 尾部对数, 不需要输入为正
-  static Val apply(Val x, const Param &) { return mk(std::copysign(std::log1p(std::fabs(x.v)), x.v), x.m); }
+struct Log { // 保号 log1p: 在 0 附近线性, 尾部对数, 不需要输入为正
+  static Val apply(Val x, Val, Val, int, const Param &) { return mk(std::copysign(std::log1p(std::fabs(x.v)), x.v), x.m); }
 };
-struct TsSqrt : Point {
-  static Val apply(Val x, const Param &) { return mk(std::copysign(std::sqrt(std::fabs(x.v)), x.v), x.m); }
+struct Sqrt {
+  static Val apply(Val x, Val, Val, int, const Param &) { return mk(std::copysign(std::sqrt(std::fabs(x.v)), x.v), x.m); }
 };
-struct TsRelu : Point {
-  static Val apply(Val x, const Param &) { return mk(std::fmax(0.f, x.v), x.m); }
+struct Relu {
+  static Val apply(Val x, Val, Val, int, const Param &) { return mk(std::fmax(0.f, x.v), x.m); }
 };
-struct TsNeg : Point {
-  static Val apply(Val x, const Param &) { return mk(-x.v, x.m); }
+struct Neg {
+  static Val apply(Val x, Val, Val, int, const Param &) { return mk(-x.v, x.m); }
 };
-struct TsRecip : Point { // x = 0 → 0; 溢出由 mk 转无效
-  static Val apply(Val x, const Param &) { return mk(x.v != 0.f ? 1.f / x.v : 0.f, x.m); }
+struct Recip { // x = 0 → 0; 溢出由 mk 转无效
+  static Val apply(Val x, Val, Val, int, const Param &) { return mk(x.v != 0.f ? 1.f / x.v : 0.f, x.m); }
 };
-struct TsClip : Point {
-  static Val apply(Val x, const Param &p) {
+struct Clip {
+  static Val apply(Val x, Val, Val, int, const Param &p) {
     assert(p.k >= 0.f);
     return mk(std::clamp(x.v, -p.k, p.k), x.m);
   }
 };
-struct TsGt : Point { // 指示: 严格大于. 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
-  static Val apply(Val x, const Param &p) { return mk(x.v > p.k ? 1.f : 0.f, x.m); }
+struct Gt { // 指示: 严格大于. 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
+  static Val apply(Val x, Val, Val, int, const Param &p) { return mk(x.v > p.k ? 1.f : 0.f, x.m); }
 };
-struct TsTodMask : Point { // 元数 0: 只看段内位置, 恒有效
-  static Val apply(int t_seg, const Param &p) {
+struct TodMask { // 元数 0: 只看段内位置, 恒有效
+  static Val apply(Val, Val, Val, int t_seg, const Param &p) {
     return mk((t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f, true);
   }
 };
 
-struct TsAdd : Point {
-  static Val apply(Val x, Val y, const Param &) { return mk(x.v + y.v, x.m && y.m); }
+struct Add {
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(x.v + y.v, x.m && y.m); }
 };
-struct TsSub : Point {
-  static Val apply(Val x, Val y, const Param &) { return mk(x.v - y.v, x.m && y.m); }
+struct Sub {
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(x.v - y.v, x.m && y.m); }
 };
-struct TsMul : Point {
-  static Val apply(Val x, Val y, const Param &) { return mk(x.v * y.v, x.m && y.m); }
+struct Mul {
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(x.v * y.v, x.m && y.m); }
 };
-struct TsDiv : Point { // y = 0 → 0; 溢出由 mk 转无效
-  static Val apply(Val x, Val y, const Param &) { return mk(y.v != 0.f ? x.v / y.v : 0.f, x.m && y.m); }
+struct Div { // y = 0 → 0; 溢出由 mk 转无效
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(y.v != 0.f ? x.v / y.v : 0.f, x.m && y.m); }
 };
-struct TsMax : Point {
-  static Val apply(Val x, Val y, const Param &) { return mk(std::fmax(x.v, y.v), x.m && y.m); }
+struct Max {
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(std::fmax(x.v, y.v), x.m && y.m); }
 };
-struct TsMin : Point {
-  static Val apply(Val x, Val y, const Param &) { return mk(std::fmin(x.v, y.v), x.m && y.m); }
+struct Min {
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(std::fmin(x.v, y.v), x.m && y.m); }
 };
-struct TsImb : Point { // 和在两侧量级下相消 (双边皆 0 / x ≈ −y) → 0 (无失衡)
-  static Val apply(Val x, Val y, const Param &) {
+struct Imb { // 和在两侧量级下相消 (双边皆 0 / x ≈ −y) → 0 (无失衡)
+  static Val apply(Val x, Val y, Val, int, const Param &) {
     const bool ok = den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
     return mk(ok ? (x.v - y.v) / (x.v + y.v) : 0.f, x.m && y.m);
   }
 };
-struct TsShare : Point { // 同上 → 0.5 (对半)
-  static Val apply(Val x, Val y, const Param &) {
+struct Share { // 同上 → 0.5 (对半)
+  static Val apply(Val x, Val y, Val, int, const Param &) {
     const bool ok = den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
     return mk(ok ? x.v / (x.v + y.v) : 0.5f, x.m && y.m);
   }
 };
-struct TsLogRatio : Point { // ln(clamp(x/y, ε, 1/ε)): 非正侧饱和到 ∓kLogCap (见 log_ratio)
-  static Val apply(Val x, Val y, const Param &) { return mk(log_ratio(x.v, y.v), x.m && y.m); }
+struct LogRatio { // ln(clamp(x/y, ε, 1/ε)): 非正侧饱和到 ∓kLogCap (见 log_ratio)
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(log_ratio(x.v, y.v), x.m && y.m); }
 };
-struct TsMask : Point { // y 当掩码用, 不取值; y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
-  static Val apply(Val x, Val y, const Param &) { return mk(x.v, x.m && y.m && y.v > 0.f); }
+struct Mask { // y 当掩码用, 不取值; y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
+  static Val apply(Val x, Val y, Val, int, const Param &) { return mk(x.v, x.m && y.m && y.v > 0.f); }
 };
 
-struct TsWhere : Point { // x 只当条件用, 不取值; 未被选中的那支不要求有效
-  static Val apply(Val x, Val y, Val z, const Param &) {
+struct Where { // x 只当条件用, 不取值; 未被选中的那支不要求有效
+  static Val apply(Val x, Val y, Val z, int, const Param &) {
     const bool pick_y = x.v > 0.f;
     return mk(pick_y ? y.v : z.v, x.m && (pick_y ? y.m : z.m));
   }
+};
+
+} // namespace pt
+
+// ---- 窗: POINT (无状态; 只存参数) ----
+template <class F>
+class Point {
+public:
+  static constexpr T kT = T::POINT;
+  explicit Point(const Param &p) : p_(p) {}
+  Val step(Val x, Val y, Val z, int t_seg) const { return F::apply(x, y, z, t_seg, p_); }
+
+private:
+  Param p_;
 };
 
 // =========================== 节二: 有窗 ===========================
@@ -373,32 +386,22 @@ struct WMean { // y 为权; Σy 相消 → 等权均值 Σx/n (权全相等的�
 
 } // namespace core
 
-// ---- 窗: EXPAND (段内 expanding; 推满 S 自动归零, 段首也可手动 reset) ----
-//   S = 段长 (本层每段行数, Contract【层几何】) 是 push 的模板参数: 同一实例只用一个 S
+// ---- 窗: EXPAND (段内 expanding; t_seg = 0 归零) ----
 template <class C>
 class Expand {
 public:
   static constexpr T kT = T::EXPAND;
-  explicit Expand(const Param &p) : p_(p) { reset(); }
-  void reset() { c_.reset(p_), i_ = 0; }
-  template <int S>
-  Val push(Val x) {
-    return step<S>(x, Val{});
-  }
-  template <int S>
-  Val push(Val x, Val y) {
-    return step<S>(x, y);
-  }
-
-private:
-  template <int S>
-  Val step(Val x, Val y) {
-    if (i_ == S)
-      reset();
+  explicit Expand(const Param &p) : p_(p) { c_.reset(p_); }
+  Val step(Val x, Val y, Val, int t_seg) {
+    if (t_seg == 0)
+      c_.reset(p_), i_ = 0;
+    assert(i_ == t_seg && "每行必推: 段内位置须连续");
     c_.add(i_, x, y);
     ++i_;
     return c_.get(Ctx{i_, x, y, p_});
   }
+
+private:
   Param p_;
   C c_;
   int i_ = 0;
@@ -414,11 +417,7 @@ public:
   explicit Roll(const Param &p) : p_(p), L_(p.d + Extra), bx_(static_cast<size_t>(L_)), by_(static_cast<size_t>(L_)) {
     assert(p.d >= 1);
   }
-  Val push(Val x) { return step(x, Val{}); }
-  Val push(Val x, Val y) { return step(x, y); }
-
-private:
-  Val step(Val x, Val y) {
+  Val step(Val x, Val y, Val, int) {
     bx_[head_] = x, by_[head_] = y;
     if (++head_ == L_)
       head_ = 0;
@@ -432,6 +431,8 @@ private:
     }
     return c_.get(Ctx{p_.d, x, y, p_});
   }
+
+private:
   Param p_;
   int L_, head_ = 0, n_ = 0;
   std::vector<Val> bx_, by_;
@@ -443,7 +444,7 @@ class Ema {
 public:
   static constexpr T kT = T::EXPO;
   explicit Ema(const Param &p) : k_(p.k) { assert(k_ > 0.f && k_ <= 1.f); }
-  Val push(Val x) { // x 无效 → 状态保持; 尚无有效样本 → 0
+  Val step(Val x, Val, Val, int) { // x 无效 → 状态保持; 尚无有效样本 → 0
     if (x.m)
       y_ = on_ ? k_ * x.v + (1.0 - k_) * y_ : x.v, on_ = true;
     return mk(y_, true);
@@ -459,6 +460,27 @@ private:
 //   (全局 idx 序只归 OpTable 管, 实现文件不跟着排).
 //   Delay/Delta 要看 d 期之前那一格 → 窗长 d+1
 
+using TsAbs = Point<pt::Abs>;
+using TsSign = Point<pt::Sign>;
+using TsLog = Point<pt::Log>;
+using TsSqrt = Point<pt::Sqrt>;
+using TsRelu = Point<pt::Relu>;
+using TsNeg = Point<pt::Neg>;
+using TsRecip = Point<pt::Recip>;
+using TsClip = Point<pt::Clip>;
+using TsGt = Point<pt::Gt>;
+using TsTodMask = Point<pt::TodMask>;
+using TsAdd = Point<pt::Add>;
+using TsSub = Point<pt::Sub>;
+using TsMul = Point<pt::Mul>;
+using TsDiv = Point<pt::Div>;
+using TsMax = Point<pt::Max>;
+using TsMin = Point<pt::Min>;
+using TsImb = Point<pt::Imb>;
+using TsShare = Point<pt::Share>;
+using TsLogRatio = Point<pt::LogRatio>;
+using TsMask = Point<pt::Mask>;
+using TsWhere = Point<pt::Where>;
 using TsDelayRoll = Roll<core::Oldest, 1>;
 using TsDeltaRoll = Roll<core::Diff, 1>;
 using TsSumCum = Expand<core::Sum>;

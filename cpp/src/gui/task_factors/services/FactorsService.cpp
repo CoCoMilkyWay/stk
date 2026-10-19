@@ -849,7 +849,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
       seen[static_cast<size_t>(i)] = 1;
       sub[k].push_back(i);
       const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-      for (int a = 0; nd.op >= 0 && a < factor::expr::kOps[nd.op].arity; ++a)
+      for (int a = 0; a < nd.n_in; ++a)
         stack.push_back(nd.in[a]);
     }
   }
@@ -971,7 +971,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
     std::vector<uint16_t> rx(n); // r16(x), 评估与腿码共用
     factor::cpu::HostPool hp;
     hp.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
-    std::vector<factor::cpu::ParScratch> sc(static_cast<size_t>(ex.threads()));
+    std::vector<factor::check::Arena> sc(static_cast<size_t>(ex.threads()));
     const auto plane_of = [&](int i) -> const factor::check::Plane * {
       const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
       return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &hp.slots[static_cast<size_t>(nd.slot)];
@@ -980,8 +980,8 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
         "cpu",
         [&](int i) {
           const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-          const factor::check::Plane *in[3] = {};
-          for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
+          const factor::check::Plane *in[factor::kFuseIn] = {};
+          for (int a = 0; a < nd.n_in; ++a)
             in[a] = plane_of(nd.in[a]);
           const Clock::time_point t0 = Clock::now();
           factor::cpu::run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], L.T, L.A, L.seg, sc, L.cs.m.data());
@@ -1026,16 +1026,11 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
       "gpu",
       [&](int i) {
         const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-        const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
-        const factor::gpu::DevPlane *in[3] = {};
-        for (int a = 0; a < o.arity; ++a)
+        const factor::gpu::DevPlane *in[factor::kFuseIn] = {};
+        for (int a = 0; a < nd.n_in; ++a)
           in[a] = dplane_of(nd.in[a]);
-        factor::gpu::DevPlane *out = dp.slots[static_cast<size_t>(nd.slot)];
         double ms = 0.0; // 纯 kernel (与 Operators 页 GPU 列同口径)
-        if (o.a == factor::A::SELF)
-          factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], out, L.T, L.A, L.seg, nd.p, &ms);
-        else
-          factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], cs_gate, out, L.T, L.A, nd.p, &ms);
+        factor::gpu::run_node(sess, nd, in, dp.slots[static_cast<size_t>(nd.slot)], L.T, L.A, L.seg, cs_gate, &ms);
         return ms;
       },
       [&](int i, factor::stat::Frame fr, float &valid_pct, float &rank_pct) {

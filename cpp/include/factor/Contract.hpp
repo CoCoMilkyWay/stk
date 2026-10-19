@@ -22,12 +22,20 @@
 //   OpTable 的"T 窗"列是**载荷**: 流式 TS struct 带 kT, op_check static_assert 对表;
 //   A 域 / 核类是纯语义列, 实现侧不带载荷 (后端怎么算不受表约束).
 //
+//   【调用形状】三后端同一个 Call (下文): 输入 x/y/z + 输出 o 的 SoA 指针, 池掩码 g, 形状 T×A (行距恒 A), 层几何 geo, 参数 p.
+//     元数不到的输入槽为空; g 只 CS 读 (TS 不读, 调用方有就给). 架构层只认这一个形状, 算子的特殊性全在算子内部.
+//     流式  TS 一资产一个对象: Op(p), Val step(x, y, z, t_seg) 逐点推 (资产可晚到, 互不等待; 元数不到的元传 Val{});
+//           CS 一个对象推全部截面: Op op; void step(Call, t) 推第 t 行 (暂存是成员, 跨行复用)
+//     CPU   scratch(Call) = 每线程暂存字节; run(Call, Range, ws): TS 的 Range = 资产列 [lo, hi) (全 T 行), CS 的 Range = 行 [lo, hi)
+//     GPU   scratch(Call) = 设备暂存字节; run(Call, ws, stream): 整张量
+//     暂存由调用方持有 (只增不减), 算子用 Bump 从中切, 内部不分配.
+//
 //   【数据布局】
 //     数组一律 SoA 两平面: 值 float* + 有效位 uint8_t*, 行主序 [T][A] (t*A + a).
 //     标量用 Val {v, m}. GPU 侧同 SoA, 不用 AoS.
 //     段 = 一个交易日 = S 行 (层几何 Geo, 见下【层几何】; L_min S = 255: 15 分钟集合竞价 + 240 分钟连续竞价, 竞价段也要有因子值).
-//     S 是 TS 算子的**编译期模板参数** (三后端同; 运行期 seg 经 with_seg 分派到 kGeos 之一). 段内位置 t_seg = t % S (块起点对齐段起点).
-//     Expand 窗按段 reset (流式实现推满 S 自动归零); Roll 窗**跨段**不 reset (窗口单位是行, 与日界无关);
+//     S 是运行期量 (Call::geo.S). 段内位置 t_seg = t % S (块起点对齐段起点).
+//     Expand 窗按段 reset (流式实现在 t_seg = 0 归零); Roll 窗**跨段**不 reset (窗口单位是行, 与日界无关);
 //     Expo 窗全程递推, 不 reset.
 //
 //   【层几何 Geo】因子在哪一层上算 (L_min / 分钟箱 n / 日), 只由三个数刻画: S = 每段行数, N = 每行分钟数, M0 = 行 0 的末分钟.
@@ -41,7 +49,7 @@
 //     窗内位置 (Wma 权 / Arg 距今期数) 以**最新一格 = d−1** 锚定, 未满窗时最旧格的位置 = d−n, 三后端同口径.
 //
 //   【截面池 g】CS 算子 (A 域 ALL / GROUP) 与 Stat 多收一张池掩码 g (uint8 [T][A], 流式 = 一行 [A]; 特征库 cs_valid 列
-//     = 当日在池, 整日常量; 必填非空). TS 算子没有池概念 (只有张量并集), 签名不带 g, 跨进出池的历史照常算.
+//     = 当日在池, 整日常量; 必填非空). TS 算子没有池概念 (只有张量并集), 不读 g, 跨进出池的历史照常算.
 //     样本集 S_t = {a : g ∧ 输入有效}: 截面统计量 (μ/σ/分位/直方图/β/组统计) **只由池内算出**, 池内资产结果与"只喂池内"逐位相同.
 //     输出 = 对每个输入有效的资产, 把池内统计量作用在它自己的 x 上 (池外资产零成本拿到公允值: 池内直方图查桶 = 在池内找最像的,
 //     (x−μ)/σ / x−α−βy 连续外推); 广播型整行同值. GROUP: 组内池成员的统计量, 该组当天无池内成员 → 回退全池统计量.
@@ -87,6 +95,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 
 // 两后端共用的契约公式: CUDA 编译器下 __host__ __device__, 纯 C++ 下为空 (Stat/Contract.hpp【一份公式】)
 #ifndef FACTOR_HD
@@ -150,19 +160,53 @@ constexpr Geo geo_of(int S) {
   assert(false && "seg 不是任何层的每日行数 (kGeos)");
   return {};
 }
-// 运行期 seg → 编译期: f.template operator()<S>() (f 通常是 []<int S>() {...}); seg 不在 kGeos → 断言死
-template <class F>
-decltype(auto) with_seg(int seg, F &&f) {
-  switch (seg) {
-#define FACTOR_SEG_CASE(S, N, M0) \
-  case S:                         \
-    return f.template operator()<S>();
-    FACTOR_GEOS(FACTOR_SEG_CASE)
-#undef FACTOR_SEG_CASE
+// ---- 调用形状 (文件头【调用形状】; 指针是宿主还是设备地址由后端定) ----
+struct In {
+  const float *v = nullptr;
+  const uint8_t *m = nullptr;
+};
+struct Out {
+  float *v = nullptr;
+  uint8_t *m = nullptr;
+};
+struct Call {
+  In x, y, z;                 // 元数不到的槽为空
+  const uint8_t *g = nullptr; // 截面池掩码 [T][A] (CS 必填, TS 不读)
+  Out o;                      // 输出 [T][A], 不与输入重叠
+  int T = 0, A = 0;           // 行数 / 列数 (= 行距)
+  int t0 = 0;                 // 行 0 的全局行号: 只有逐点算子接受非 0 (融合块), 段内位置 = (t0 + t) % geo.S
+  Geo geo;
+  Param p;
+};
+// CPU 一次 run 负责的区间: TS = 资产列 [lo, hi), CS = 行 [lo, hi)
+struct Range {
+  int lo = 0, hi = 0;
+};
+// 暂存切分: 同一段切分代码两用 —— base 为空只计字节 (scratch 求大小), 否则按序切出 64B 对齐的指针 (run).
+// 只做指针算术不解引用, 设备地址同样可切
+struct Bump {
+  char *base = nullptr;
+  size_t used = 0;
+  template <class E>
+  E *take(size_t n) {
+    used = (used + 63) & ~static_cast<size_t>(63);
+    E *r = base ? reinterpret_cast<E *>(base + used) : nullptr;
+    used += n * sizeof(E);
+    return r;
   }
-  assert(false && "seg 不是任何层的每日行数 (kGeos)");
-  __builtin_unreachable();
-}
+};
+
+// ---- 逐点链融合程序 (Dag 产出, CPU / GPU evaluator 执行; 只装 POINT × SELF 算子, 每步结果过 mk 与单算子逐位同) ----
+inline constexpr int kFuseIn = 8, kFuseLen = 16; // 外部输入 / 步数上限 (GPU 走 kernel 参数区)
+struct FuseStep {
+  int op = -1;     // OpTable 行序下标 (= expr::kOps 下标)
+  int arg[3] = {}; // ≥ 0: 外部输入 arg; < 0: 第 ~arg 步的结果; 元数不到的槽不读
+  Param p;
+};
+struct Fuse {
+  int n = 0; // 步数 (0 = 非融合); 拓扑序, 末步 = 输出
+  FuseStep s[kFuseLen];
+};
 
 // ---- 三维分类 (OpTable 三列; 列名 = 枚举名 = 行字段名, 全库统一叫 T / A; 流式 TS struct::kT 对表) ----
 enum class T { POINT,
@@ -184,19 +228,20 @@ enum class Kern { MAP,
 //     严格域 (dom_strict: INT, 越界 = 算子内部 assert) → 子.out 须 ⊆ in (dom_sub), 特征叶按数据逐格查 (dom_holds);
 //     其余域是语义声明 (越界格按【退化】规则给中性值 / 饱和值), 不能静态否决 (Σ 正量的 out 只能写 REAL),
 //     只用于渲染签名与算子表.
-//   只表达能写成集合的约束 (y ≠ 0 / x > −1 之类写 REAL); out 只按算子自身声明, 不随输入推导
+//   只表达能写成集合的约束 (y ≠ 0 之类写 REAL); out 只按算子自身声明, 不随输入推导
 //   (透传 Mask / Where / Delay 与取大取小写 REAL). 表格 / JSON 渲染用 dom_tex / dom_name.
 //   Expr 另用: 离散 (dom_discrete) 不能作因子归一算子的输入 (分位只有几个取值, 20 组填不满);
 //   BCAST 抹掉截面变异 (每 t 全资产同值), 沿 A 变异按结构推 (Expr.hpp varies_a).
-enum class Dom { REAL,    // ℝ (首项 = 0: in[] 数组未写的元默认 REAL)
-                 NONNEG,  // ℝ≥0 (含整数计数: ArgMax 等期数)
-                 POS,     // ℝ>0 (只作输入要求: 对数 / 熵; 无算子能保证输出 > 0, 只特征叶可满足)
-                 UNIT,    // [0,1] (分位 / 占比)
-                 SIGNED,  // [−1,1] (相关 / 失衡)
-                 BIN,     // {0,1} 指示
-                 SIGN3,   // {−1,0,1}
-                 INT,     // 非负小整数 [0, kMaxGroup) (桶号 / 组 id)
-                 BCAST }; // ℝ 且截面广播 (同一 t 全资产同值)
+enum class Dom { REAL,   // ℝ (首项 = 0: in[] 数组未写的元默认 REAL)
+                 NONNEG, // ℝ≥0 (含整数计数: ArgMax 等期数)
+                 POS,    // ℝ>0 (只作输入要求: 对数 / 熵; 无算子能保证输出 > 0, 只特征叶可满足)
+                 UNIT,   // [0,1] (分位 / 占比)
+                 SIGNED, // [−1,1] (相关 / 失衡)
+                 BIN,    // {0,1} 指示
+                 SIGN3,  // {−1,0,1}
+                 INT,    // 非负小整数 [0, kMaxGroup) (桶号 / 组 id)
+                 BCAST,  // ℝ 且截面广播 (同一 t 全资产同值)
+                 RET };  // ℝ>−1 (收益率: 1 + x > 0)
 inline constexpr bool dom_discrete(Dom d) { return d == Dom::BIN || d == Dom::SIGN3 || d == Dom::INT; }
 inline constexpr bool dom_strict(Dom d) { return d == Dom::INT; } // 作 in 时必须静态 / 按数据保证 (组 id 越界 = assert)
 // 集合包含 child ⊆ need
@@ -214,6 +259,8 @@ inline constexpr bool dom_sub(Dom child, Dom need) {
     return child == Dom::BIN;
   case Dom::SIGN3:
     return child == Dom::BIN;
+  case Dom::RET:
+    return child == Dom::NONNEG || child == Dom::POS || child == Dom::UNIT || child == Dom::BIN || child == Dom::INT;
   case Dom::REAL:
   case Dom::POS:
   case Dom::BIN:
@@ -242,6 +289,8 @@ inline constexpr const char *dom_name(Dom d) {
     return "INT";
   case Dom::BCAST:
     return "BCAST";
+  case Dom::RET:
+    return "RET";
   }
   return "?";
 }
@@ -266,6 +315,8 @@ inline constexpr const char *dom_tex(Dom d) {
     return R"tex(\{0..1023\})tex";
   case Dom::BCAST:
     return R"tex(\mathbb{R}\ (\mathrm{bcast}))tex";
+  case Dom::RET:
+    return R"tex((-1,\infty))tex";
   }
   return "?";
 }
@@ -294,27 +345,6 @@ inline constexpr const char *params_str(T t, KDom k) {
   if (has_d(t))
     return has_k(k) ? "d,k" : "d";
   return has_k2(k) ? "k,k2" : (has_k(k) ? "k" : "");
-}
-inline constexpr const char *kdom_name(KDom k) {
-  switch (k) {
-  case KDom::NONE:
-    return "NONE";
-  case KDom::ANY:
-    return "ANY";
-  case KDom::GE0:
-    return "GE0";
-  case KDom::OPEN01:
-    return "OPEN01";
-  case KDom::OPEN0_CLOSED1:
-    return "OPEN0_CLOSED1";
-  case KDom::OPEN0_HALF:
-    return "OPEN0_HALF";
-  case KDom::POSINT_GROUP:
-    return "POSINT_GROUP";
-  case KDom::TOD:
-    return "TOD";
-  }
-  return "?";
 }
 // k 的值域 LaTeX (TOD 整段自带 k / k2 占位符, 见 Expr.hpp operand_tex)
 inline constexpr const char *kdom_tex(KDom k) {

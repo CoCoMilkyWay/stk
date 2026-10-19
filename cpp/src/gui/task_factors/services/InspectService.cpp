@@ -98,7 +98,7 @@ struct InspectService::Flow {
   LabelsHost lab;
   // X / R / C / L 常驻缓冲
   factor::cpu::HostPool hp;
-  std::vector<factor::cpu::ParScratch> nsc;
+  std::vector<factor::check::Arena> nsc;
   factor::cpu::stat::Workspace w;
   InspectPlanes pl;        // 一级平面, 发布时与 result.pl 交换
   std::vector<uint8_t> lc; // 腿码 [T][A] (C 用)
@@ -289,8 +289,8 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     const factor::DagNode &nd = d.nodes[static_cast<size_t>(i)];
     if (nd.op < 0)
       continue;
-    const factor::check::Plane *in[3] = {};
-    for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
+    const factor::check::Plane *in[factor::kFuseIn] = {};
+    for (int a = 0; a < nd.n_in; ++a)
       in[a] = plane_of(nd.in[a]);
     const Clock::time_point t0 = Clock::now();
     factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, L.seg, F.nsc, L.cs.m.data());

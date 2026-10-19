@@ -25,6 +25,7 @@
 
 #include "factor/Check.hpp"
 #include "factor/Contract.hpp"
+#include "factor/Expr.hpp" // kOps / op_index (算子下标 = GPU 分派下标; 元数 / in 域 / 参数列)
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
 #include "factor/Search/Check.hpp"
@@ -60,12 +61,12 @@ int rows_of(const Report &rep, int S) {
   return T;
 }
 
-// 按 rep.seg_only 筛层, 每层以编译期段长 S 调 f.template operator()<S>()
+// 按 rep.seg_only 筛层, 每层以段长 S 调 f(S)
 template <class F>
 void for_segs(const Report &rep, F &&f) {
   for (const factor::Geo &g : factor::kGeos)
     if (rep.seg_only == 0 || rep.seg_only == g.S)
-      factor::with_seg(g.S, f);
+      f(g.S);
 }
 
 void emit(Report &rep, const char *name, int S, const Param &p, const char *prof, const char *side, const Diff &d, bool &op_bad) {
@@ -82,12 +83,14 @@ void emit(Report &rep, const char *name, int S, const Param &p, const char *prof
 
 // 一个算子在一层 (段长 S) 上的全部用例: profile × d 扫描
 //   d 扫 {1, 5, 20, S, S + 60}: S = 恰一段 (ROLL 窗界与段界重合), S + 60 > 段 (窗跨段, GPU 块界不对齐段界)
-template <class Str, class C, int AR, factor::T W, bool IS_CS, int S>
-void check_seg(const char *name, const char *params, int A, unsigned seed, Report &rep, bool &op_bad) {
-  const int T = rows_of(rep, S);
+template <class Str, class C, bool IS_CS>
+void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
+  const factor::expr::OpInfo &o = factor::expr::kOps[op];
+  const char *name = o.name;
+  const int T = rows_of(rep, S), AR = o.arity;
   const std::string nm = name;
-  const Recipe rc = recipe_of(nm);
-  const bool sweep_d = std::strchr(params, 'd') != nullptr;
+  const Recipe rc = recipe_of(o.in);
+  const bool sweep_d = std::strchr(o.params, 'd') != nullptr;
   const int ds[] = {1, 5, 20, S, S + 60};
   constexpr int kNd = static_cast<int>(sizeof(ds) / sizeof(ds[0]));
 
@@ -103,7 +106,7 @@ void check_seg(const char *name, const char *params, int A, unsigned seed, Repor
       fill(y, rc.y, pr, T, A, S, rng), d.y = &y;
     if (AR >= 3)
       fill(z, rc.z, pr, T, A, S, rng), d.z = &z;
-    if constexpr (IS_CS)
+    if (IS_CS)
       fill_gate(gate, pr, T, A, S, rng), d.g = &gate;
 
     for (int di = 0; di < (sweep_d ? kNd : 1); ++di) {
@@ -113,11 +116,11 @@ void check_seg(const char *name, const char *params, int A, unsigned seed, Repor
 
       Plane ref, got;
       if constexpr (IS_CS) {
-        run_cpu_cs<C>(d, p, AR, ref);
-        run_stream_cs<Str>(d, p, AR, got);
+        run_cpu_cs<C>(d, p, AR, S, ref);
+        run_stream_cs<Str>(d, p, AR, S, got);
       } else {
-        run_cpu<C, S>(d, p, AR, ref);
-        run_stream_ts<Str, AR, W, S>(d, p, got);
+        run_cpu_ts<C>(d, p, AR, S, ref);
+        run_stream_ts<Str>(d, p, AR, S, got);
       }
       ++rep.cases;
       Diff ds_ = compare(ref, got, tol_of(nm, false, pr));
@@ -128,13 +131,10 @@ void check_seg(const char *name, const char *params, int A, unsigned seed, Repor
       if (factor::gpu::available()) {
         Plane g;
         g.resize(static_cast<size_t>(T) * A);
-        // 一次性宿主指针版本 (内部临时会话); run_ts / run_cs 有会话重载, 不能取三目
-        if constexpr (IS_CS)
-          factor::gpu::run_cs(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), gate.m.data(), g.v.data(), g.m.data(), T, A, p);
-        else
-          factor::gpu::run_ts(name, pv(d.x, AR >= 1), pm(d.x, AR >= 1), pv(d.y, AR >= 2), pm(d.y, AR >= 2),
-                              pv(d.z, AR >= 3), pm(d.z, AR >= 3), g.v.data(), g.m.data(), T, A, S, p);
+        const auto V = [](const Plane *q) -> const float * { return q ? q->v.data() : nullptr; };
+        const auto M = [](const Plane *q) -> const uint8_t * { return q ? q->m.data() : nullptr; };
+        // 一次性宿主指针版本 (内部临时会话)
+        factor::gpu::run(op, V(d.x), M(d.x), V(d.y), M(d.y), V(d.z), M(d.z), M(d.g), g.v.data(), g.m.data(), T, A, S, p);
         Diff dg = compare(ref, g, tol_of(nm, true, pr));
         if (!dg.ok())
           ++rep.gpu_bad;
@@ -145,15 +145,16 @@ void check_seg(const char *name, const char *params, int A, unsigned seed, Repor
 }
 
 // 一个算子的全部用例: 层 × profile × d
-template <class Str, class C, int AR, factor::T W, bool IS_CS>
-void check(const char *name, const char *params, int A, unsigned seed, Report &rep) {
+template <class Str, class C, bool IS_CS>
+void check(int op, int A, unsigned seed, Report &rep) {
+  assert(op >= 0);
   ++rep.ops;
   bool op_bad = false;
-  for_segs(rep, [&]<int S>() { check_seg<Str, C, AR, W, IS_CS, S>(name, params, A, seed, rep, op_bad); });
+  for_segs(rep, [&](int S) { check_seg<Str, C, IS_CS>(op, S, A, seed, rep, op_bad); });
   if (op_bad)
     ++rep.ops_bad;
   else if (!rep.verbose)
-    std::printf("  ok   %-14s\n", name);
+    std::printf("  ok   %-14s\n", factor::expr::kOps[op].name);
 }
 
 // Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
@@ -163,7 +164,7 @@ void check_stat(int A, unsigned seed, Report &rep) {
   ++rep.ops;
   bool op_bad = false;
   const int threads = misc::exec::hw();
-  for_segs(rep, [&]<int S>() {
+  for_segs(rep, [&](int S) {
     const int T = rows_of(rep, S);
     for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
       const char *fname = factor::stat::frame_name(fr);
@@ -213,7 +214,7 @@ void check_search(int A, unsigned seed, Report &rep) {
   bool op_bad = false;
   const int threads = misc::exec::hw();
   const Param p;
-  for_segs(rep, [&]<int S>() {
+  for_segs(rep, [&](int S) {
     const int T = rows_of(rep, S);
     for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
       const char *fname = factor::stat::frame_name(fr);
@@ -333,15 +334,15 @@ int main(int argc, char **argv) {
   // 分派: 表里每一行展开成一个用例组, 按 A 域列 token 粘贴选后端命名空间 (SELF → ts, ALL/GROUP → cs);
   // 缺任一后端的同名 struct → 编译错; 流式 TS kT 与表的 T 窗列不符 → 编译错.
   // 枚举 factor::T / factor::A 必须全限定: 本函数局部 int T / int A 遮蔽了不限定名
-#define CK_SELF(Name, ar, t, prm)                                                               \
+#define CK_SELF(Name, t)                                                                        \
   static_assert(factor::ts::Name::kT == factor::T::t, #Name ": 流式 kT 与 OpTable T 窗列不符"); \
   if (only.empty() || only == #Name)                                                            \
-    check<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>(#Name, prm, A, seed, rep);
-#define CK_ALL(Name, ar, t, prm)     \
+    check<factor::ts::Name, factor::cpu::ts::Name, false>(factor::expr::op_index(#Name), A, seed, rep);
+#define CK_ALL(Name, t)              \
   if (only.empty() || only == #Name) \
-    check<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>(#Name, prm, A, seed, rep);
+    check<factor::cs::Name, factor::cpu::cs::Name, true>(factor::expr::op_index(#Name), A, seed, rep);
 #define CK_GROUP CK_ALL
-#define CK(Name, c_name, ar, t, a, kern, kdom, in, out, op, note) CK_##a(Name, ar, t, factor::params_str(factor::T::t, factor::KDom::kdom))
+#define CK(Name, c_name, ar, t, a, kern, kdom, in, out, op, note) CK_##a(Name, t)
   OP_ALL(CK)
 #undef CK
 #undef CK_GROUP

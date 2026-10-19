@@ -368,15 +368,14 @@ __global__ void row(const float *xv, const uint8_t *xm, const float *yv, const u
 } // namespace k
 
 // =============================================================================
-// 算子: 统一签名 (未用到的指针传 nullptr, 池掩码 gm 必填, 全部设备指针)
+// 算子: Contract【调用形状】(元数不到的槽为空, 池掩码 c.g 必填, 全部设备指针)
 // =============================================================================
-#define FACTOR_CS_RUN()                                                                                                                                                         \
-  static size_t workspace(int, int, const Param &) { return 0; } /* 全部在 shared 里做完, 不要临时显存 */                                                                       \
-  static void run(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm, const uint8_t *gm, float *ov, uint8_t *om, int T, \
-                  int A, const Param &p, void *, cudaStream_t stream) {                                                                                                         \
-    assert(gm != nullptr && A >= 1 && static_cast<long long>(T) * A < (1LL << 31));                                                                                             \
-    k::row<Self><<<T, kCB, 0, stream>>>(xv, xm, yv, ym, zv, zm, gm, ov, om, A, p);                                                                                              \
-    FACTOR_CUDA_OK(cudaGetLastError());                                                                                                                                         \
+#define FACTOR_CS_RUN()                                                                                           \
+  static size_t scratch(const Call &) { return 0; } /* 全部在 shared 里做完, 不要临时显存 */                      \
+  static void run(const Call &c, void *, cudaStream_t stream) {                                                   \
+    assert(c.g != nullptr && c.o.v && c.o.m && c.A >= 1 && static_cast<long long>(c.T) * c.A < (1LL << 31));      \
+    k::row<Self><<<c.T, kCB, 0, stream>>>(c.x.v, c.x.m, c.y.v, c.y.m, c.z.v, c.z.m, c.g, c.o.v, c.o.m, c.A, c.p); \
+    FACTOR_CUDA_OK(cudaGetLastError());                                                                           \
   }
 
 // ---- REDUCE (7): 沿资产归约, 广播型算子对全行写同一个值 ----

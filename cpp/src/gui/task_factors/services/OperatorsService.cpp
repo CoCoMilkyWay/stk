@@ -100,12 +100,15 @@ factor::Param param_of(const OperatorRow &row) {
   return p;
 }
 
-// 一个算子: 从 RoundCtx 取输入 (配方按算子, 元数不到的槽位空) → cpu / stream / gpu 各计时 → 对拍
-template <class S, class C, int AR, factor::T W, bool IS_CS>
+// 一个算子: 从 RoundCtx 取输入 (配方按 in 域, 元数不到的槽位空) → cpu / stream / gpu 各计时 → 对拍
+template <class S, class C, bool IS_CS>
 void run_op(RoundCtx &R, OperatorRow &row) {
   using namespace factor::check;
   const std::string nm = row.e_name;
-  const Recipe rc = recipe_of(nm);
+  const int op = factor::expr::op_index(nm);
+  assert(op >= 0);
+  const int AR = factor::expr::kOps[op].arity;
+  const Recipe rc = recipe_of(factor::expr::kOps[op].in);
   const Gen gens[3] = {rc.x, rc.y, rc.z};
   const Plane *pl[3] = {};
   const factor::gpu::DevPlane *dp[3] = {};
@@ -116,32 +119,30 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   Data d;
   d.T = R.rq.times, d.A = R.rq.A;
   d.x = pl[0], d.y = pl[1], d.z = pl[2];
-  if constexpr (IS_CS)
+  if (IS_CS)
     d.g = &R.gate_plane();
 
-  const factor::Param &p = row.param; // 复位阶段已按请求填好 (见 param_of)
+  const factor::Param &p = row.param;  // 复位阶段已按请求填好 (见 param_of)
+  constexpr int seg = factor::kSegMax; // GUI 表在 L_min 层
 
   Clock::time_point t0 = Clock::now();
   if constexpr (IS_CS)
-    run_cpu_cs<C>(d, p, AR, R.ref);
+    run_cpu_cs<C>(d, p, AR, seg, R.ref);
   else
-    run_cpu<C, factor::kSegMax>(d, p, AR, R.ref);
+    run_cpu_ts<C>(d, p, AR, seg, R.ref);
   row.cpu_ms = ms_since(t0);
 
   t0 = Clock::now();
   if constexpr (IS_CS)
-    run_stream_cs<S>(d, p, AR, R.got);
+    run_stream_cs<S>(d, p, AR, seg, R.got);
   else
-    run_stream_ts<S, AR, W, factor::kSegMax>(d, p, R.got);
+    run_stream_ts<S>(d, p, AR, seg, R.got);
   row.stream_ms = ms_since(t0);
   row.cpu_chk = compare(R.ref, R.got, tol_of(nm, false, Profile::PLAIN));
 
   if (R.gpu) {
     double kms = -1; // 纯 kernel (cudaEvent); 输入已常驻, 这里只剩 kernel + 一张输出 D2H
-    if constexpr (IS_CS)
-      factor::gpu::run_cs(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.dgate, R.g.v.data(), R.g.m.data(), d.T, d.A, p, &kms);
-    else
-      factor::gpu::run_ts(R.gpu, row.e_name, dp[0], dp[1], dp[2], R.g.v.data(), R.g.m.data(), d.T, d.A, factor::kSegMax, p, &kms);
+    factor::gpu::run(R.gpu, op, dp[0], dp[1], dp[2], IS_CS ? R.dgate : nullptr, R.g.v.data(), R.g.m.data(), d.T, d.A, seg, p, &kms);
     row.gpu_ms = kms;
     row.gpu_chk = compare(R.ref, R.g, tol_of(nm, true, Profile::PLAIN));
   }
@@ -378,13 +379,13 @@ OperatorsService::OperatorsService() {
   }
   // 静态列直接抄 OpTable 三维分类列, 跑手按 A 域 token 粘贴选后端命名空间
   // (SELF → ts, ALL/GROUP → cs; 缺任一后端同名 struct → 此处编译错)
-#define RUN_SELF(Name, ar, t) (&run_op<factor::ts::Name, factor::cpu::ts::Name, ar, factor::T::t, false>)
-#define RUN_ALL(Name, ar, t) (&run_op<factor::cs::Name, factor::cpu::cs::Name, ar, factor::T::t, true>)
+#define RUN_SELF(Name) (&run_op<factor::ts::Name, factor::cpu::ts::Name, false>)
+#define RUN_ALL(Name) (&run_op<factor::cs::Name, factor::cpu::cs::Name, true>)
 #define RUN_GROUP RUN_ALL
 #define ROW(Name, c_name, ar, t, a, kern, kdom, in, out, op, note)                                                       \
   rows.push_back({#Name, c_name, ar, factor::T::t, factor::A::a, factor::Kern::kern, factor::KDom::kdom,                 \
                   factor::params_str(factor::T::t, factor::KDom::kdom), std::string{}, in, factor::Dom::out, op, note}); \
-  runners_.push_back(RUN_##a(Name, ar, t));
+  runners_.push_back(RUN_##a(Name));
   OP_ALL(ROW)
 #undef ROW
 #undef RUN_GROUP
@@ -433,8 +434,8 @@ bool OperatorsService::run(OperatorsRequest &req) {
     factor::check::Plane x, o;
     x.resize(factor::kSegMax), o.resize(factor::kSegMax);
     factor::Param p;
-    factor::gpu::run_ts("TsAbs", x.v.data(), x.m.data(), nullptr, nullptr, nullptr, nullptr, o.v.data(),
-                        o.m.data(), factor::kSegMax, 1, factor::kSegMax, p);
+    factor::gpu::run(factor::expr::op_index("TsAbs"), x.v.data(), x.m.data(), nullptr, nullptr, nullptr, nullptr, nullptr, o.v.data(),
+                     o.m.data(), factor::kSegMax, 1, factor::kSegMax, p);
     gpu_warmed_ = true;
   }
 

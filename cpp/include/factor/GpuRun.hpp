@@ -40,34 +40,29 @@ DevPlane *upload_mask(Session *s, const uint8_t *m);            // 只有掩码�
 void pin(void *host, size_t bytes);
 void unpin(void *host);
 
-// name 必须在 OpTable 里; 不在则断言死 (三后端同名是硬约束). 元数不到的槽位传 nullptr.
-// CS 算子多收池掩码 g (只用 g->m, 必填; 契约【截面池 g】).
-// TS 算子多收 seg = 段长 (Contract【层几何】, T 须为整段数).
+// op = OpTable 行序下标 (= expr::kOps 下标). 元数不到的槽位传 nullptr.
+// g = 截面池掩码 (只用 g->m; 契约【截面池 g】): CS 算子 (A 域 ALL / GROUP) 必填, TS 算子必须为空.
+// seg = 段长 (Contract【层几何】, T 须为整段数; CS 不看).
 // kernel_ms 非空 → 回填纯 kernel 耗时 (cudaEvent), 不含工作区分配 / D2H
-void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
-            int T, int A, int seg, const Param &p, double *kernel_ms = nullptr);
-void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
-            float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms = nullptr);
+void run(Session *s, int op, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, float *ov, uint8_t *om, int T,
+         int A, int seg, const Param &p, double *kernel_ms = nullptr);
 
 // ---- 设备常驻中间量 (因子 DAG: 算子之间不落宿主, 见 factor/EvalGpu.hpp) ----
 //   plane_new / plane_del  会话形状的空平面 (不清零), 归调用方释放 (不在会话的 in 列表里)
 //   download               拷回宿主 (v / m 任一可空 = 只拷另一侧; 如只要掩码算有效率)
-//   run_*_dev              算子输出写进设备平面 out (不拷回); 其余同会话版
+//   run_dev                算子输出写进设备平面 out (不拷回); 其余同会话版
+//   run_fused              逐点链融合节点 (Dag fuse; Contract Fuse): in[q] (q < n_in) = 外部输入, 一个核逐格跑完全部步, 只写 out
 DevPlane *plane_new(Session *s);
 void plane_del(Session *s, DevPlane *p);
 void download(Session *s, const DevPlane *p, float *v, uint8_t *m);
-void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
-                int A, int seg, const Param &p, double *kernel_ms = nullptr);
-void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
-                DevPlane *out, int T, int A, const Param &p, double *kernel_ms = nullptr);
+void run_dev(Session *s, int op, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, DevPlane *out, int T, int A,
+             int seg, const Param &p, double *kernel_ms = nullptr);
+void run_fused(Session *s, const Fuse &f, const DevPlane *const *in, int n_in, DevPlane *out, int T, int A, int seg,
+               double *kernel_ms = nullptr);
 
-// 一次性版本 (op_check 用): 宿主指针进出, 内部开临时会话 (上传 → 跑 → 关); kernel_ms 口径同上
-void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p,
-            double *kernel_ms = nullptr);
-void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, const uint8_t *gm, float *ov, uint8_t *om, int T, int A, const Param &p,
-            double *kernel_ms = nullptr);
+// 一次性版本 (op_check 用): 宿主指针进出, 内部开临时会话 (上传 → 跑 → 关); gm 同 g; kernel_ms 口径同上
+void run(int op, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm,
+         const uint8_t *gm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p, double *kernel_ms = nullptr);
 
 // Stat 评估算子 (factor/Stat/Gpu.cuh; 契约 factor/Stat/Contract.hpp): 宿主指针进, acc[L.hd.n] 宿主出 (二级由调用方 finish_all).
 // gm = 截面池掩码 [T][A] (只看 gm ∧ x.m 的格). L = L.hd.n 组**宿主**标签 (Label 的 v[kLegs] / m; ry 不看),

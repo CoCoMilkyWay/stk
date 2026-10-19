@@ -269,9 +269,10 @@ bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<
 // (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判
 void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err) {
   const factor::DagNode &nd = d.nodes[static_cast<size_t>(node)];
-  if (nd.op < 0)
+  if (nd.op < 0 || nd.fu.n > 0) // 融合节点只装逐点 TS 算子, 无严格域元
     return;
   const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
+  assert(nd.n_in == o.arity);
   for (int s = 0; s < o.arity; ++s) {
     const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
     if (g.op >= 0 || !factor::dom_strict(o.in[s]))

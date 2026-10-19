@@ -935,12 +935,14 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Level:");
   ImGui::SameLine();
 
-  // 换层只换视图: 选中是 ColRef (带层), 跨层保留
+  // 换层只换视图: 选中是 ColRef (带层), 跨层保留. 标签带该层特征数
   for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
     if (lvl > 0)
       ImGui::SameLine();
+    char label[48];
+    std::snprintf(label, sizeof(label), "%s (%zu)###lvl%zu", level_name(lvl), feature.meta().features[lvl].size(), lvl);
     ImGui::BeginDisabled(!has_level(sel.tier, lvl));
-    ImGui::RadioButton(level_name(lvl), &sel.selected_level, static_cast<int>(lvl));
+    ImGui::RadioButton(label, &sel.selected_level, static_cast<int>(lvl));
     ImGui::EndDisabled();
   }
 

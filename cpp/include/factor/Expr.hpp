@@ -127,6 +127,8 @@ inline bool dom_holds(Dom d, float v) {
     return is_int(v) && v >= 0.f && v < static_cast<float>(kMaxGroup);
   case Dom::BCAST:
     return false;
+  case Dom::RET:
+    return v > -1.f;
   }
   return false;
 }

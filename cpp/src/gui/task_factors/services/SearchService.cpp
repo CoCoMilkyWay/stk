@@ -148,7 +148,7 @@ enum class Rc : uint8_t { Ok,
 struct SearchService::Flow {
   misc::exec::ForkJoin ex;
   factor::cpu::HostPool hp;
-  std::vector<factor::cpu::ParScratch> sc;
+  std::vector<factor::check::Arena> sc;
   factor::cpu::stat::Workspace w;
   std::vector<uint16_t> rx; // 候选的 r16 [T][A] (块形, 候选间复用)
   Flow() : ex(misc::exec::hw()) {}
@@ -276,8 +276,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   for (const grid::Slot &s : slots)
     lg("  %-24s 坐标 %-5s 范围 [%s, %s] 中心 u0=%.3g%s", s.name.c_str(), coord_name(s), s.lo_bounded ? strf("%.3g", s.u_lo).c_str() : "-inf",
        s.hi_bounded ? strf("%.3g", s.u_hi).c_str() : "+inf", s.u0, s.integer ? " 整数" : "");
-  const factor::expr::Expr ep = e0.placeholder(); // 结构 / 特征叶序 / 槽数与任一具体化相同 (尺度也在它上算)
-  const factor::Dag d0 = factor::build(ep);
+  const factor::expr::Expr ep = e0.placeholder();           // 结构 / 特征叶序 / 槽数与任一具体化相同 (尺度也在它上算)
+  const factor::Dag d0 = factor::build(ep, /*fuse=*/false); // 尺度要按 keys 取任一子式的平面, 不融合
   const int nf = static_cast<int>(d0.feats.size()), s0 = d0.n_slots;
 
   // 候选表: 规范串去重
@@ -509,8 +509,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         assert(nd.op >= 0 || !Fd.is_root(i)); // 根是归一算子, 不会是特征叶
         if (nd.op < 0)
           continue;
-        const factor::check::Plane *in[3] = {};
-        for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
+        const factor::check::Plane *in[factor::kFuseIn] = {};
+        for (int a = 0; a < nd.n_in; ++a)
           in[a] = plane_of(nd.in[a]);
         factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, F.sc, L.cs.m.data());
         if (!Fd.is_root(i))
@@ -583,15 +583,10 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         const factor::DagNode &nd = Fd.nodes[static_cast<size_t>(i)];
         if (nd.op < 0)
           continue;
-        const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
-        const factor::gpu::DevPlane *in[3] = {};
-        for (int a = 0; a < o.arity; ++a)
+        const factor::gpu::DevPlane *in[factor::kFuseIn] = {};
+        for (int a = 0; a < nd.n_in; ++a)
           in[a] = plane_of(nd.in[a]);
-        factor::gpu::DevPlane *o_plane = dp.slots[static_cast<size_t>(nd.slot)];
-        if (o.a == factor::A::SELF)
-          factor::gpu::run_ts_dev(sess, o.name, in[0], in[1], in[2], o_plane, T, A, seg, nd.p);
-        else
-          factor::gpu::run_cs_dev(sess, o.name, in[0], in[1], in[2], cs_gate, o_plane, T, A, nd.p);
+        factor::gpu::run_node(sess, nd, in, dp.slots[static_cast<size_t>(nd.slot)], T, A, seg, cs_gate);
       }
       if (!ok)
         break;
@@ -718,8 +713,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         }
         const factor::DagNode &nd = d0.nodes[static_cast<size_t>(i)];
         if (nd.op >= 0) {
-          const factor::check::Plane *in[3] = {};
-          for (int a = 0; a < factor::expr::kOps[nd.op].arity; ++a)
+          const factor::check::Plane *in[factor::kFuseIn] = {};
+          for (int a = 0; a < nd.n_in; ++a)
             in[a] = plane_of(nd.in[a]);
           factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, F.sc, L.cs.m.data());
         }

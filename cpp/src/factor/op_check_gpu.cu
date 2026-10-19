@@ -2,7 +2,8 @@
 // GpuRun 的 CUDA 实现: 输入拷进显存 (会话内一次) → 跑 Gpu.cuh 的算子 → 输出拷回
 // =============================================================================
 //   只服务对拍的正确性 + 纯 kernel 计时, 不是挖掘的性能路径 (挖掘侧数据常驻显存, 不走这里).
-//   分派表由 OpTable.hpp 展开: 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错.
+//   分派表由 OpTable.hpp 展开 (下标 = expr::kOps 下标): 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错.
+//   逐点链融合节点 (Dag fuse) 的解释核也在这里 (run_fused).
 // =============================================================================
 
 #include "factor/CS/Gpu.cuh" // IWYU pragma: keep
@@ -16,7 +17,6 @@
 
 #include <cassert>
 #include <cstdio>
-#include <cstring>
 #include <vector>
 
 #define CU(call)                                         \
@@ -56,35 +56,32 @@ void plane_free(DevPlane &p) { // v 可空 (upload_mask 的掩码平面)
   CU(cudaFree(p.m));
 }
 
-// 会话内跑一个算子, 输出留在设备平面 out: 工作区不够才重分配; cudaEvent 夹 Op::run 计纯 kernel.
-// CS 算子多收池掩码 g (只用 g->m); TS 传 nullptr. seg = 段长 (TS 必填; 段长相关算子的 run 是 template <int S>, 经 with_seg 分派); CS 不看
-template <class Op, bool CS>
-void call_dev(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, DevPlane *out, int T, int A, int seg,
-              const Param &p, double *kernel_ms) {
-  assert(s && s->n == static_cast<size_t>(T) * A && "会话形状与本次调用不符");
-  assert(out && out->v && out->m);
-  assert(out != x && out != y && out != z && "算子不支持原地");
-  assert(CS == (g != nullptr) && (!CS || g->m) && "CS 算子必须给池掩码 g, TS 不收");
-  assert((CS || (is_seg(seg) && T % seg == 0)) && "TS 须给合法段长, T 为整段数");
-  const size_t wsn = Op::workspace(T, A, p);
-  if (wsn > s->ws_cap) {
-    if (s->ws)
-      CU(cudaFree(s->ws));
-    CU(cudaMalloc(&s->ws, wsn));
-    s->ws_cap = wsn;
-  }
-  const float *xv = x ? x->v : nullptr, *yv = y ? y->v : nullptr, *zv = z ? z->v : nullptr;
-  const uint8_t *xm = x ? x->m : nullptr, *ym = y ? y->m : nullptr, *zm = z ? z->m : nullptr;
-  // 只有要计时才夹事件并同步: 搜索路径 (kernel_ms = nullptr) 整条 DAG 异步排队, 不逐算子做 CPU↔GPU 往返
+// 算子分派表 (下标 = expr::kOps 下标): A 域 token 粘贴选命名空间 (SELF → ts, ALL / GROUP → cs); 表里有名字而 Gpu.cuh 无同名 struct → 编译错
+struct Kernel {
+  size_t (*scratch)(const Call &);
+  void (*run)(const Call &, void *, cudaStream_t);
+  bool cs; // 收池掩码 g
+};
+const Kernel &kernel(int op) {
+#define G_SELF(Name) Kernel{&ts::Name::scratch, &ts::Name::run, false}
+#define G_ALL(Name) Kernel{&cs::Name::scratch, &cs::Name::run, true}
+#define G_GROUP G_ALL
+#define G_ROW(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op_tex, note) G_##a(Name),
+  static const Kernel tbl[] = {OP_ALL(G_ROW)};
+#undef G_ROW
+#undef G_GROUP
+#undef G_ALL
+#undef G_SELF
+  assert(op >= 0 && op < static_cast<int>(sizeof(tbl) / sizeof(tbl[0])));
+  return tbl[op];
+}
+
+// 只有要计时才夹事件并同步: 搜索路径 (kernel_ms = nullptr) 整条 DAG 异步排队, 不逐算子做 CPU↔GPU 往返
+template <class Fn>
+void timed(Session *s, double *kernel_ms, Fn &&launch) {
   if (kernel_ms)
     CU(cudaEventRecord(s->e0));
-  void *ws = wsn ? s->ws : nullptr;
-  if constexpr (CS)
-    Op::run(xv, xm, yv, ym, zv, zm, g->m, out->v, out->m, T, A, p, ws, nullptr);
-  else if constexpr (requires { Op::template run<kSegMax>(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, ws, nullptr); }) // nvcc 不认 &Op::template run<S> 形式
-    with_seg(seg, [&]<int S>() { Op::template run<S>(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, ws, nullptr); });
-  else
-    Op::run(xv, xm, yv, ym, zv, zm, out->v, out->m, T, A, p, ws, nullptr);
+  launch();
   CU(cudaGetLastError());
   if (kernel_ms) {
     CU(cudaEventRecord(s->e1));
@@ -96,29 +93,96 @@ void call_dev(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *
   }
 }
 
-// 会话版: 写会话输出平面后拷回宿主 (宿主 pin 过则走 DMA)
-template <class Op, bool CS>
-void call(Session *s, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, float *ov, uint8_t *om, int T, int A,
-          int seg, const Param &p, double *kernel_ms) {
-  call_dev<Op, CS>(s, x, y, z, g, &s->o, T, A, seg, p, kernel_ms);
-  CU(cudaMemcpy(ov, s->o.v, s->n * sizeof(float), cudaMemcpyDeviceToHost));
-  CU(cudaMemcpy(om, s->o.m, s->n, cudaMemcpyDeviceToHost));
+// ---- 逐点链融合核: 一线程一格, 逐步调各 POINT 算子的 F::apply, 每步结果过 mk (= dev::store 口径) 与不融合逐位同 ----
+// OpTable 行序 → 编译期下标 (case 标号)
+#define G_IDX(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op_tex, note) kIdx##Name,
+enum : int { OP_ALL(G_IDX) kIdxEnd };
+#undef G_IDX
+
+struct FuseArgs { // kernel 参数区 (< 4 KB)
+  In in[kFuseIn];
+  Fuse f;
+};
+
+template <int NARY, class F>
+__device__ __forceinline__ DVal fuse_step(const FuseStep &st, const In *in, const DVal *r, int i, int t_seg) {
+  DVal u[3] = {{0.f, 0}, {0.f, 0}, {0.f, 0}};
+#pragma unroll
+  for (int j = 0; j < NARY; ++j) {
+    const int q = st.arg[j];
+    u[j] = q >= 0 ? DVal{in[q].v[i], in[q].m[i]} : r[~q];
+  }
+  float v = 0.f;
+  bool m = false;
+  F::apply(u[0], u[1], u[2], t_seg, st.p, v, m);
+  const bool ok = m && dev::fin(v);
+  return DVal{ok ? v : 0.f, static_cast<uint8_t>(ok ? 1 : 0)};
 }
 
-// 一次性版本的公共体: 临时会话, 上传 → 跑 → 关 (gm 非空 ⟺ CS)
-template <class Op, bool CS>
-void call_once(const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm,
-               const uint8_t *gm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p, double *kernel_ms) {
-  Session *s = session_open(static_cast<size_t>(T) * A);
-  const DevPlane *x = xv ? upload(s, xv, xm) : nullptr;
-  const DevPlane *y = yv ? upload(s, yv, ym) : nullptr;
-  const DevPlane *z = zv ? upload(s, zv, zm) : nullptr;
-  const DevPlane *g = gm ? upload_mask(s, gm) : nullptr;
-  call<Op, CS>(s, x, y, z, g, ov, om, T, A, seg, p, kernel_ms);
-  session_close(s);
+__global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, int S) {
+  const int col = blockIdx.x * blockDim.x + threadIdx.x;
+  if (col >= A)
+    return;
+  for (int t = blockIdx.y; t < T; t += gridDim.y) {
+    const int i = t * A + col;
+    DVal r[kFuseLen];
+    for (int s = 0; s < a.f.n; ++s) {
+      const FuseStep &st = a.f.s[s];
+      switch (st.op) {
+#define G_FUSE_SELF_POINT(Name, ar)                           \
+  case kIdx##Name:                                            \
+    r[s] = fuse_step<ar, ts::Name::F>(st, a.in, r, i, t % S); \
+    break;
+#define G_FUSE_SELF_EXPAND(Name, ar)
+#define G_FUSE_SELF_ROLL(Name, ar)
+#define G_FUSE_SELF_EXPO(Name, ar)
+#define G_FUSE_ALL_POINT(Name, ar)
+#define G_FUSE_ALL_EXPAND(Name, ar)
+#define G_FUSE_ALL_ROLL(Name, ar)
+#define G_FUSE_ALL_EXPO(Name, ar)
+#define G_FUSE_GROUP_POINT(Name, ar)
+#define G_FUSE_GROUP_EXPAND(Name, ar)
+#define G_FUSE_GROUP_ROLL(Name, ar)
+#define G_FUSE_GROUP_EXPO(Name, ar)
+#define G_FUSE(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op_tex, note) G_FUSE_##a##_##t(Name, ar)
+        OP_ALL(G_FUSE)
+#undef G_FUSE
+      default:
+        assert(false && "融合步只装 POINT × SELF 算子");
+      }
+    }
+    ov[i] = r[a.f.n - 1].v;
+    om[i] = r[a.f.n - 1].m;
+  }
 }
 
 } // namespace
+
+// 会话内跑一个算子, 输出留在设备平面 out: 工作区不够才重分配 (只增不缩); cudaEvent 夹 run 计纯 kernel
+void run_dev(Session *s, int op, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, DevPlane *out, int T, int A,
+             int seg, const Param &p, double *kernel_ms) {
+  assert(s && s->n == static_cast<size_t>(T) * A && "会话形状与本次调用不符");
+  assert(out && out->v && out->m);
+  assert(out != x && out != y && out != z && "算子不支持原地");
+  assert(is_seg(seg) && T % seg == 0 && "须给合法段长, T 为整段数");
+  const Kernel &k = kernel(op);
+  assert(k.cs == (g != nullptr) && (!k.cs || g->m) && "CS 算子必须给池掩码 g, TS 不收");
+  Call c;
+  c.x = x ? In{x->v, x->m} : In{};
+  c.y = y ? In{y->v, y->m} : In{};
+  c.z = z ? In{z->v, z->m} : In{};
+  c.g = g ? g->m : nullptr;
+  c.o = {out->v, out->m};
+  c.T = T, c.A = A, c.geo = geo_of(seg), c.p = p;
+  const size_t wsn = k.scratch(c);
+  if (wsn > s->ws_cap) {
+    if (s->ws)
+      CU(cudaFree(s->ws));
+    CU(cudaMalloc(&s->ws, wsn));
+    s->ws_cap = wsn;
+  }
+  timed(s, kernel_ms, [&] { k.run(c, wsn ? s->ws : nullptr, nullptr); });
+}
 
 Session *session_open(size_t n) {
   assert(n > 0);
@@ -214,68 +278,38 @@ void mem_info(size_t *free_bytes, size_t *total_bytes) {
 
 int search_max_batch() { return stat::kMaxBatch; }
 
-// 分派: 六个入口 (ts / cs × 会话 / 一次性 / 设备输出) 共用 OpTable 展开, 只差调哪个 call
-void run_ts_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, DevPlane *out, int T,
-                int A, int seg, const Param &p, double *kernel_ms) {
-#define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                        \
-    return call_dev<ts::Name, false>(s, x, y, z, nullptr, out, T, A, seg, p, kernel_ms);
-  OP_TS(G_TS)
-#undef G_TS
-  assert(false && "算子不在 OpTable 的 TS 组");
+// 会话版: 写会话输出平面后拷回宿主 (宿主 pin 过则走 DMA)
+void run(Session *s, int op, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, float *ov, uint8_t *om, int T,
+         int A, int seg, const Param &p, double *kernel_ms) {
+  run_dev(s, op, x, y, z, g, &s->o, T, A, seg, p, kernel_ms);
+  CU(cudaMemcpy(ov, s->o.v, s->n * sizeof(float), cudaMemcpyDeviceToHost));
+  CU(cudaMemcpy(om, s->o.m, s->n, cudaMemcpyDeviceToHost));
 }
 
-void run_cs_dev(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
-                DevPlane *out, int T, int A, const Param &p, double *kernel_ms) {
-#define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                        \
-    return call_dev<cs::Name, true>(s, x, y, z, g, out, T, A, 0, p, kernel_ms);
-  OP_CS(G_CS)
-#undef G_CS
-  assert(false && "算子不在 OpTable 的 CS 组");
+// 一次性版: 临时会话, 上传 → 跑 → 关
+void run(int op, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm,
+         const uint8_t *gm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p, double *kernel_ms) {
+  Session *s = session_open(static_cast<size_t>(T) * A);
+  const DevPlane *x = xv ? upload(s, xv, xm) : nullptr;
+  const DevPlane *y = yv ? upload(s, yv, ym) : nullptr;
+  const DevPlane *z = zv ? upload(s, zv, zm) : nullptr;
+  const DevPlane *g = gm ? upload_mask(s, gm) : nullptr;
+  run(s, op, x, y, z, g, ov, om, T, A, seg, p, kernel_ms);
+  session_close(s);
 }
 
-void run_ts(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, float *ov, uint8_t *om,
-            int T, int A, int seg, const Param &p, double *kernel_ms) {
-#define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                        \
-    return call<ts::Name, false>(s, x, y, z, nullptr, ov, om, T, A, seg, p, kernel_ms);
-  OP_TS(G_TS)
-#undef G_TS
-  assert(false && "算子不在 OpTable 的 TS 组");
-}
-
-void run_cs(Session *s, const char *name, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g,
-            float *ov, uint8_t *om, int T, int A, const Param &p, double *kernel_ms) {
-#define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                        \
-    return call<cs::Name, true>(s, x, y, z, g, ov, om, T, A, 0, p, kernel_ms);
-  OP_CS(G_CS)
-#undef G_CS
-  assert(false && "算子不在 OpTable 的 CS 组");
-}
-
-void run_ts(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p,
-            double *kernel_ms) {
-#define G_TS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                        \
-    return call_once<ts::Name, false>(xv, xm, yv, ym, zv, zm, nullptr, ov, om, T, A, seg, p, kernel_ms);
-  OP_TS(G_TS)
-#undef G_TS
-  assert(false && "算子不在 OpTable 的 TS 组");
-}
-
-void run_cs(const char *name, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym,
-            const float *zv, const uint8_t *zm, const uint8_t *gm, float *ov, uint8_t *om, int T, int A, const Param &p,
-            double *kernel_ms) {
-  assert(gm && "CS 算子必须给池掩码");
-#define G_CS(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op, note) \
-  if (std::strcmp(name, #Name) == 0)                                        \
-    return call_once<cs::Name, true>(xv, xm, yv, ym, zv, zm, gm, ov, om, T, A, 0, p, kernel_ms);
-  OP_CS(G_CS)
-#undef G_CS
-  assert(false && "算子不在 OpTable 的 CS 组");
+void run_fused(Session *s, const Fuse &f, const DevPlane *const *in, int n_in, DevPlane *out, int T, int A, int seg, double *kernel_ms) {
+  assert(s && s->n == static_cast<size_t>(T) * A && "会话形状与本次调用不符");
+  assert(out && out->v && out->m);
+  assert(f.n >= 2 && f.n <= kFuseLen && n_in >= 0 && n_in <= kFuseIn);
+  assert(is_seg(seg) && T % seg == 0 && "须给合法段长, T 为整段数");
+  FuseArgs a;
+  a.f = f;
+  for (int q = 0; q < n_in; ++q) {
+    assert(in[q] && in[q]->v && in[q]->m && in[q] != out && "融合节点不支持原地");
+    a.in[q] = {in[q]->v, in[q]->m};
+  }
+  timed(s, kernel_ms, [&] { fused<<<ts::k::g_pt(T, A), ts::kPB>>>(a, out->v, out->m, T, A, seg); });
 }
 
 namespace {

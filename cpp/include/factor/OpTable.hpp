@@ -12,7 +12,7 @@
 //   op_check 输出序 / GUI Operators 表默认序), 序键 (枚举序见 Contract.hpp):
 //     元数 → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL → GROUP → 核类 → 名字字母序
 //   表按 (元数 × 域) 切成 OP_TS0..3 / OP_CS1..3 七块, 块内按上述序键排;
-//   OP_ALL 交错拼出 idx 序, OP_TS / OP_CS 各拼本域 (供 GpuRun 的 run_ts / run_cs 按域分派).
+//   OP_ALL 交错拼出 idx 序 (各后端的下标分派表都由它展开).
 //   加算子按序键插行, idx 顺延, 不另设编号.
 //
 //   行格式统一, 三个分类列 = 三个正交维度 (语义与类型约束见 Contract.hpp【分类】):
@@ -36,8 +36,9 @@
 //     POSINT_GROUP 正整数 ≤ kMaxGroup / TOD 0 ≤ k < k2 ≤ S 整数 (S = 本层段长);  parse 按它校验参数值
 //
 //   in / out 列 = 自变量 / 因变量值域 (同一 enum Dom, Contract.hpp; 全机器可读, 表里不手写值域 LaTeX):
-//     REAL ℝ / NONNEG ℝ≥0 / POS ℝ>0 / UNIT [0,1] / SIGNED [−1,1] / BIN {0,1} / SIGN3 {−1,0,1} / INT [0,kMaxGroup) / BCAST 截面广播
-//     in  按元数写 OP_IN0..3(逐元 Dom), GROUP 域的组 id 元写 INT; 只写能静态判的约束 (y ≠ 0 / x > −1 判不了 → REAL)
+//     REAL ℝ / NONNEG ℝ≥0 / POS ℝ>0 / UNIT [0,1] / SIGNED [−1,1] / BIN {0,1} / SIGN3 {−1,0,1} / INT [0,kMaxGroup) / BCAST 截面广播 /
+//     RET ℝ>−1 收益率
+//     in  按元数写 OP_IN0..3(逐元 Dom), GROUP 域的组 id 元写 INT; 只写能写成集合的约束 (y ≠ 0 写不成 → REAL)
 //     out 只按算子自身声明: 透传 (Mask / Where / Delay) 与取大取小写 REAL, 不随输入推导; 计数 (ArgMax 期数) 写 NONNEG
 //     parser 逐元查: in 为严格域 (INT) 时 子.out ⊆ in (dom_sub), 特征叶到 eval 前按数据查; 其余 in 是语义声明 (越界格算子自按退化规则处理)
 //     因子根 (归一算子) 的输入不许离散 (BIN / SIGN3 / INT) / 不许被 BCAST 抹平 (Expr.hpp root_frame)
@@ -121,7 +122,7 @@
   X(TsDeltaRoll, "时滚差分", 1, ROLL, SELF, SHIFT, NONE, OP_IN1(REAL), REAL, R"tex(x_t - x_{t-d})tex", "本值减 d 期前; 量变化")                                                                                            \
   X(TsKurtRoll, "时滚峰度", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(m_4 / m_2^{2} - 3)tex", "近 d 期的峰度; 量尖峰厚尾")                                                                                    \
   X(TsMeanRoll, "时滚均值", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\mu_t = (1/n)\,\Sigma_{W_t}\,x_s)tex", "近 d 期的均值; 平滑基线")                                                                       \
-  X(TsProductRoll, "时滚乘积", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\Pi_{W_t}(1 + x_s) - 1)tex", "近 d 期的复利累乘; 聚合收益率")                                                                        \
+  X(TsProductRoll, "时滚乘积", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(RET), REAL, R"tex(\Pi_{W_t}(1 + x_s) - 1)tex", "近 d 期的复利累乘; 聚合收益率")                                                                         \
   X(TsSkewRoll, "时滚偏度", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(m_3 / m_2^{3/2})tex", "近 d 期的偏度; 量不对称")                                                                                        \
   X(TsSlopeRoll, "时滚斜率", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\Sigma_i (i - \bar i)(x_{s_i} - \mu_t) \;/\; \Sigma_i (i - \bar i)^2,\; i = 0..d-1)tex", "近 d 期对期序的 OLS 斜率; 量趋势方向与快慢") \
   X(TsStdRoll, "时滚标差", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), NONNEG, R"tex(\sigma_t = (\sigma_t^2)^{1/2})tex", "近 d 期的标准差; 量近期波动")                                                                     \
@@ -188,8 +189,6 @@
 #define OP_CS3(X) \
   X(CsGroupResid, "组残差", 3, POINT, GROUP, MOMENT, NONE, OP_IN3(REAL, REAL, INT), REAL, R"tex(\tilde x_a - \hat\beta\,\tilde y_a,\; \tilde x_a = x_a - \bar x_{G(a)},\; G(a) = \{b : z_b = z_a\})tex", "组内 demean 后 x 对 y 的回归残差; 组与 y 双重中性化, z = 组 id (负 = 未知 → 全池)")
 
-// ---- 拼装: OP_ALL 展开序 = 全局 idx 序; OP_TS / OP_CS 按域 (GpuRun 的 run_ts / run_cs 用);
+// ---- 拼装: OP_ALL 展开序 = 全局 idx 序;
 //      需要按 A 域分派时用 X_##域 token 粘贴 (见 op_check / OperatorsService) ----
-#define OP_TS(X) OP_TS0(X) OP_TS1(X) OP_TS2(X) OP_TS3(X)
-#define OP_CS(X) OP_CS1(X) OP_CS2(X) OP_CS3(X)
 #define OP_ALL(X) OP_TS0(X) OP_TS1(X) OP_CS1(X) OP_TS2(X) OP_CS2(X) OP_TS3(X) OP_CS3(X)

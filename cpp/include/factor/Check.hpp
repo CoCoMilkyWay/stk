@@ -7,6 +7,7 @@
 //     src/factor/op_check.cpp                     命令行三方对拍 (profile × d 全扫)
 //     src/gui/task_factors/services/OperatorsService  GUI Operators 表 (单张量, 逐算子对拍 + 计时)
 //   本头只依赖 Contract.hpp; 驱动是模板, 具体的 Stream / Cpu struct 由消费者 include 后实例化.
+//   Arena (每线程暂存) 也在此, EvalCpu 共用.
 //   依赖受控浮点: 消费者 TU 必须编进 -fno-fast-math (CMake PRECISE_MATH_FLAG).
 // =============================================================================
 
@@ -25,7 +26,7 @@
 namespace factor::check {
 
 // ---- 造数 ----
-//   每个算子按"输入配方"拿到合适的数据: 正值型算子给正值, 分组型给整数组 id, 其余给正态.
+//   每个算子按"输入配方"拿到合适的数据: 配方由 OpTable in 列的 Dom 逐元推出 (gen_of), 不按算子名列.
 //   profile 再叠一层边界, 每个专打一类契约分支 (退化分支现在产中性值而非无效, 对拍照样逐位比掩码 + 比值):
 //     HOLES    15% 缺失 + 某资产整段缺失 (段内 n = 0 → 中性值) + 某时刻**整行缺失** (截面 n = 0 → 中性值)
 //     CONSTCOL 整列常值 (全并列退化, 全程)
@@ -58,6 +59,17 @@ struct Plane {
   }
 };
 
+// 每线程暂存 (算子 scratch 声明的字节数): 只增不缩, 返回 64B 对齐首址 (Bump 的对齐以它为基)
+struct Arena {
+  std::vector<char> buf;
+  void *get(size_t n) {
+    if (buf.size() < n + 64)
+      buf.resize(n + 64);
+    const uintptr_t p = reinterpret_cast<uintptr_t>(buf.data());
+    return reinterpret_cast<void *>((p + 63) & ~static_cast<uintptr_t>(63));
+  }
+};
+
 // 输入张量: 非拥有 (三张平面由调用方持有 —— op_check 每 profile 造一次扫 d, GUI 一轮造一次全表复用);
 // 元数不到的槽位为空. g = 截面池掩码 (只用 m; CS 算子与 Stat 必填, TS 不看; 契约【截面池 g】)
 struct Data {
@@ -79,13 +91,13 @@ inline void fill_seg(Plane &p, Gen g, Profile pr, int t0, int t1, int A, int S, 
       case Gen::NORM:
         v = pr == Profile::HEAVY ? td(rng) : nd(rng);
         break;
-      case Gen::POS: // 对数正态: 保证 > 0, 给 Entropy / Hhi / LogRatio
+      case Gen::POS: // 对数正态: 保证 > 0, 给 Dom POS / NONNEG
         v = std::exp(nd(rng) * 0.5f) + 0.05f;
         break;
-      case Gen::SMALL: // |x| 小: 保证 1 + x > 0, 给 TsProductRoll
+      case Gen::SMALL: // |x| 小: 保证 1 + x > 0, 给 Dom RET
         v = nd(rng) * 0.05f;
         break;
-      case Gen::GROUP: // 整数组 id (行业), 每个资产固定不变; a % 11 == 5 的给 −1 (未知行业 → 以全池为组)
+      case Gen::GROUP: // 整数组 id (行业), 给 Dom INT; 每个资产固定不变; a % 11 == 5 的给 −1 (未知行业 → 以全池为组)
         v = a % 11 == 5 ? -1.f : static_cast<float>(a % 7);
         break;
       }
@@ -158,28 +170,32 @@ inline void fill_gate(Plane &p, Profile pr, int T, int A, int S, std::mt19937 &r
   }
 }
 
-// 输入配方: 默认全 NORM, 只列出需要特殊数据的算子 (e_name 索引, 与 OpTable 行名一致)
+// 输入配方: 逐元由 OpTable in 列的 Dom 推 (NONNEG 给正值: 权 / 量为正, 否则 Σy 抵消、x + y 近 0)
+inline Gen gen_of(Dom d) {
+  switch (d) {
+  case Dom::REAL:
+    return Gen::NORM;
+  case Dom::NONNEG:
+  case Dom::POS:
+    return Gen::POS;
+  case Dom::RET:
+    return Gen::SMALL;
+  case Dom::INT:
+    return Gen::GROUP;
+  case Dom::UNIT:
+  case Dom::SIGNED:
+  case Dom::BIN:
+  case Dom::SIGN3:
+  case Dom::BCAST:
+    break;
+  }
+  assert(false && "该 Dom 作输入尚无造数: 在 gen_of 补一支");
+  return Gen::NORM;
+}
 struct Recipe {
-  const char *e_name;
   Gen x, y, z;
 };
-inline constexpr Recipe kRecipes[] = {
-    {"TsLogRatio", Gen::POS, Gen::POS, Gen::NORM},
-    {"TsEntropyCum", Gen::POS, Gen::NORM, Gen::NORM},
-    {"TsHhiCum", Gen::POS, Gen::NORM, Gen::NORM},
-    {"TsWMeanCum", Gen::NORM, Gen::POS, Gen::NORM}, // 权为正, 否则 Σy 抵消
-    {"TsWMeanRoll", Gen::NORM, Gen::POS, Gen::NORM},
-    {"TsProductRoll", Gen::SMALL, Gen::NORM, Gen::NORM},
-    {"CsGroupMean", Gen::NORM, Gen::GROUP, Gen::NORM},
-    {"CsGroupRank", Gen::NORM, Gen::GROUP, Gen::NORM},
-    {"CsGroupResid", Gen::NORM, Gen::NORM, Gen::GROUP},
-};
-inline Recipe recipe_of(const std::string &name) {
-  for (const Recipe &r : kRecipes)
-    if (name == r.e_name)
-      return r;
-  return {"", Gen::NORM, Gen::NORM, Gen::NORM};
-}
+inline Recipe recipe_of(const Dom (&in)[3]) { return {gen_of(in[0]), gen_of(in[1]), gen_of(in[2])}; }
 
 // 窗长参数: 每算子一个"典型用法"的默认 d (期 = 行; Operators 表在 L_min 上即分钟), 给 GUI Operators 表用;
 // op_check 不吃这份 (它全扫 d = {1, 5, 20, S, S + 60} 打边界)
@@ -285,95 +301,65 @@ inline Diff compare(const Plane &ref, const Plane &got, Tol tol) {
   return d;
 }
 
-// ---- 驱动: cpu (整张量一次) / stream (逐点推进) / gpu 由消费者经 GpuRun.hpp 调 ----
+// ---- 驱动: cpu (整张量一次) / stream (逐行推进) / gpu 由消费者经 GpuRun.hpp 调 ----
+//   ar = 元数 (够到的槽位必填); S = 段长 (Contract【层几何】; CS 不看)
 
-// 槽位取指针: use 为真时平面必须在 (元数够到的槽位调用方必填)
-inline const float *pv(const Plane *p, bool use) {
-  assert(!use || p);
-  return use ? p->v.data() : nullptr;
-}
-inline const uint8_t *pm(const Plane *p, bool use) {
-  assert(!use || p);
-  return use ? p->m.data() : nullptr;
-}
-
-// TS CPU: 段长相关算子 (run 是 template <int S>, TS/Cpu.hpp CP_SIG_S) 取 run<S>, 其余取 run
-template <class C, int S>
-void run_cpu(const Data &d, const Param &p, int ar, Plane &o) {
+// 整平面的调用形状 (Contract【调用形状】); o 先 ensure
+inline Call call_of(const Data &d, int ar, const Param &p, int S, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
-  if constexpr (requires { &C::template run<S>; })
-    C::template run<S>(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
-                       pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
-  else
-    C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
-           pm(d.z, ar >= 3), o.v.data(), o.m.data(), d.T, d.A, p);
+  Call c;
+  const Plane *const pl[3] = {d.x, d.y, d.z};
+  In *const slot[3] = {&c.x, &c.y, &c.z};
+  for (int a = 0; a < ar; ++a) {
+    assert(pl[a]);
+    *slot[a] = {pl[a]->v.data(), pl[a]->m.data()};
+  }
+  c.g = d.g ? d.g->m.data() : nullptr;
+  c.o = {o.v.data(), o.m.data()};
+  c.T = d.T, c.A = d.A, c.geo = geo_of(S), c.p = p;
+  return c;
+}
+
+// CPU: 单线程一次调满 (TS 全部列 / CS 全部行)
+template <class C>
+void run_cpu_ts(const Data &d, const Param &p, int ar, int S, Plane &o) {
+  thread_local Arena ws;
+  const Call c = call_of(d, ar, p, S, o);
+  C::run(c, Range{0, d.A}, ws.get(C::scratch(c)));
 }
 template <class C>
-void run_cpu_cs(const Data &d, const Param &p, int ar, Plane &o) {
-  o.ensure(static_cast<size_t>(d.T) * d.A);
-  C::run(pv(d.x, ar >= 1), pm(d.x, ar >= 1), pv(d.y, ar >= 2), pm(d.y, ar >= 2), pv(d.z, ar >= 3),
-         pm(d.z, ar >= 3), pm(d.g, true), o.v.data(), o.m.data(), d.T, d.A, p);
+void run_cpu_cs(const Data &d, const Param &p, int ar, int S, Plane &o) {
+  thread_local Arena ws;
+  const Call c = call_of(d, ar, p, S, o);
+  assert(c.g);
+  C::run(c, Range{0, d.T}, ws.get(C::scratch(c)));
 }
 
-// TS 流式: 逐资产建一个 kernel 沿 t 推进 (与实盘同路: EXPAND 推满段长 S 自动归零, 不手动 reset)
-template <class Op, int AR, T W, int S>
-void run_stream_ts(const Data &d, const Param &p, Plane &o) {
+// TS 流式: 每资产一个算子对象, 逐行把全部资产推一步 (与实盘同路: 段内位置 t % S, EXPAND 在 t_seg = 0 自动归零)
+template <class Op>
+void run_stream_ts(const Data &d, const Param &p, int ar, int S, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
-  assert(AR < 1 || d.x);
-  assert(AR < 2 || d.y);
-  assert(AR < 3 || d.z);
-  if constexpr (W == T::POINT) {
-    for (int t = 0; t < d.T; ++t)
-      for (int a = 0; a < d.A; ++a) {
-        const size_t i = static_cast<size_t>(t) * d.A + a;
-        Val r;
-        if constexpr (AR == 0)
-          r = Op::apply(t % S, p);
-        else if constexpr (AR == 1)
-          r = Op::apply(Val{d.x->v[i], d.x->m[i] != 0}, p);
-        else if constexpr (AR == 2)
-          r = Op::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0}, p);
-        else
-          r = Op::apply(Val{d.x->v[i], d.x->m[i] != 0}, Val{d.y->v[i], d.y->m[i] != 0},
-                        Val{d.z->v[i], d.z->m[i] != 0}, p);
-        o.v[i] = r.v, o.m[i] = r.m;
-      }
-  } else {
-    const auto push = [](Op &op, Val x, Val y) -> Val {
-      (void)y;
-      if constexpr (W == T::EXPAND && AR == 1)
-        return op.template push<S>(x);
-      else if constexpr (W == T::EXPAND)
-        return op.template push<S>(x, y);
-      else if constexpr (AR == 1)
-        return op.push(x);
-      else
-        return op.push(x, y);
-    };
+  const Plane *const pl[3] = {d.x, d.y, d.z};
+  for (int a = 0; a < ar; ++a)
+    assert(pl[a]);
+  const auto val = [&](int s, size_t i) { return s < ar ? Val{pl[s]->v[i], pl[s]->m[i] != 0} : Val{}; };
+  std::vector<Op> ops(static_cast<size_t>(d.A), Op(p));
+  for (int t = 0; t < d.T; ++t)
     for (int a = 0; a < d.A; ++a) {
-      Op op(p);
-      for (int t = 0; t < d.T; ++t) {
-        const size_t i = static_cast<size_t>(t) * d.A + a;
-        const Val x{d.x->v[i], d.x->m[i] != 0};
-        const Val y = AR >= 2 ? Val{d.y->v[i], d.y->m[i] != 0} : Val{};
-        const Val r = push(op, x, y);
-        o.v[i] = r.v, o.m[i] = r.m;
-      }
+      const size_t i = static_cast<size_t>(t) * d.A + a;
+      const Val r = ops[static_cast<size_t>(a)].step(val(0, i), val(1, i), val(2, i), t % S);
+      o.v[i] = r.v, o.m[i] = r.m;
     }
-  }
 }
 
-// CS 流式: 每个时刻一个截面
-template <class S>
-void run_stream_cs(const Data &d, const Param &p, int ar, Plane &o) {
-  o.ensure(static_cast<size_t>(d.T) * d.A);
-  const float *xv = pv(d.x, ar >= 1), *yv = pv(d.y, ar >= 2), *zv = pv(d.z, ar >= 3);
-  const uint8_t *xm = pm(d.x, ar >= 1), *ym = pm(d.y, ar >= 2), *zm = pm(d.z, ar >= 3), *gm = pm(d.g, true);
-  for (int t = 0; t < d.T; ++t) {
-    const size_t b = static_cast<size_t>(t) * d.A;
-    S::apply(xv ? xv + b : nullptr, xm ? xm + b : nullptr, yv ? yv + b : nullptr, ym ? ym + b : nullptr,
-             zv ? zv + b : nullptr, zm ? zm + b : nullptr, gm + b, o.v.data() + b, o.m.data() + b, d.A, p);
-  }
+// CS 流式: 一个算子对象逐行推全部截面
+template <class Op>
+void run_stream_cs(const Data &d, const Param &p, int ar, int S, Plane &o) {
+  const Call c = call_of(d, ar, p, S, o);
+  assert(c.g);
+  Op op;
+  for (int t = 0; t < d.T; ++t)
+    op.step(c, t);
 }
 
 } // namespace factor::check
