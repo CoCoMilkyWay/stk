@@ -183,10 +183,9 @@ private:
   SharedData &data_;
   RowRead read_;
   RowReq cur_{};
-  SegPlan days_;                     // 日轴 (随 rescan 重扫; 库集变了 GUI 必带 rescan)
-  LibMask libs_ = 0;                 // days_ 的库集
-  std::vector<double> bar_x_;        // [OHLC 层每日有效行] 一根 K 线的日内 X (所跨分钟的中点)
-  double y_min_ = 0.0, y_max_ = 0.0; // OHLC 运行范围
+  SegPlan days_;              // 日轴 (随 rescan 重扫; 库集变了 GUI 必带 rescan)
+  LibMask libs_ = 0;          // days_ 的库集
+  std::vector<double> bar_x_; // [OHLC 层每日有效行] 一根 K 线的日内 X (所跨分钟的中点)
   std::vector<float> feat_min_, feat_max_;
 };
 
@@ -332,8 +331,6 @@ bool OrderFlowService::KlineLane::run(RowReq &req) {
   read_.reset(cur_.scope, sp.plan, kDaysPerBatch, &cancel_);
 
   const size_t nf = sp.plan.n() - sp.k0;
-  y_min_ = (std::numeric_limits<double>::max)();
-  y_max_ = std::numeric_limits<double>::lowest();
   feat_min_.assign(nf, (std::numeric_limits<float>::max)());
   feat_max_.assign(nf, std::numeric_limits<float>::lowest());
 
@@ -389,8 +386,6 @@ void OrderFlowService::KlineLane::emit(const RowPlane &p, size_t b0, size_t bd) 
       k.high.push_back(h);
       k.low.push_back(l);
       k.close.push_back(c);
-      y_min_ = std::min(y_min_, l);
-      y_max_ = std::max(y_max_, h);
     }
 
     // 特征 overlay: X = 日起点 + 行末秒所在分钟 (尾部对齐; 不承接 → 开盘承接值是哨兵, 不落点)
@@ -402,10 +397,6 @@ void OrderFlowService::KlineLane::emit(const RowPlane &p, size_t b0, size_t bd) 
 void OrderFlowService::KlineLane::publish(size_t b0, size_t bd) {
   OrderFlow::Kline &k = data_.orderflow.kline;
   const RowSpec &sp = cur_.spec;
-  if (y_min_ <= y_max_) {
-    k.y_min.store(y_min_, std::memory_order_relaxed);
-    k.y_max.store(y_max_, std::memory_order_relaxed);
-  }
   for (size_t i = 0; i < sp.plan.n() - sp.k0; ++i) {
     k.feat.y_min[i].store(feat_min_[i], std::memory_order_relaxed);
     k.feat.y_max[i].store(feat_max_[i], std::memory_order_relaxed);

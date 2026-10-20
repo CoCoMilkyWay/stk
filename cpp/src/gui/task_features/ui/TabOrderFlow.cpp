@@ -666,8 +666,13 @@ static void RenderMinPlot(SharedData &data, float height) {
   for (size_t i = 0; i < nf; ++i)
     counts[i] = k.feat_n[i].load(std::memory_order_acquire);
 
+  // Y1: 发布范围变化 (换代 / 流式追加) 或上帧 X 视野变了 → 按可见 X 区间内的 K 线贴合 (RangeFit); 只动 Y 轴不重贴
+  if ((pub_points > 0 && ui.min_last_pub_days != pub_days) || ui.min_fit_y)
+    ImPlot::SetNextAxisToFit(ImAxis_Y1);
+  ui.min_fit_y = false;
+
   if (ImPlot::BeginPlot("##KLine", ImVec2(-1, height))) {
-    ImPlot::SetupAxes(nullptr, nullptr, 0, 0);
+    ImPlot::SetupAxes(nullptr, nullptr, 0, ImPlotAxisFlags_RangeFit);
     // X: 固定域 (0 ~ 全部特征日), 只在域本身变了 (重扫日期) 才复位 → 换资产 / 流式追加都不动视野
     const bool x_domain_changed = (ui.min_x_applied != ui.min_x_max);
     ui.min_x_applied = ui.min_x_max;
@@ -675,16 +680,18 @@ static void RenderMinPlot(SharedData &data, float height) {
                             x_domain_changed ? ImPlotCond_Always : ImPlotCond_Once);
     ImPlot::SetupAxisFormat(ImAxis_X1, MinTimeFormatter, &k); // YY/MM/DD HH:MM (非重扫期 dates 稳定)
     ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter);       // 定宽: 换资产不挪 plot 左边界
-    // Y1: 发布范围变化 (换代 / 流式追加) 时跟随; 稳定后不再打扰
-    if (pub_points > 0 && ui.min_last_pub_days != pub_days) {
-      ImPlot::SetupAxisLimits(ImAxis_Y1, k.y_min.load(std::memory_order_relaxed),
-                              k.y_max.load(std::memory_order_relaxed), ImPlotCond_Always);
-    }
     if (ready)
       ui.min_last_pub_days = pub_days;
 
     // 特征 overlay 的右轴 (按 Cat2 分流; price 类直接借主图 Y1, 不开轴)
     SetupOverlayAxes(ov, cats, counts.data(), nf);
+
+    {
+      const ImPlotRange xr = ImPlot::GetPlotLimits().X;
+      ui.min_fit_y = xr.Min != ui.min_view_x_min || xr.Max != ui.min_view_x_max;
+      ui.min_view_x_min = xr.Min;
+      ui.min_view_x_max = xr.Max;
+    }
 
     // ------------------------------------------------------------------
     // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名 (cat2) 库 层)
@@ -729,6 +736,11 @@ static void RenderMinPlot(SharedData &data, float height) {
     if (pub_points > 0) {
       PlotCandlestick("OHLC", k.x.data(), k.open.data(), k.high.data(),
                       k.low.data(), k.close.data(), static_cast<int>(pub_points), k.half_width);
+    }
+    // 双击复位 X = 全日轴 (与初始视野同口径); K 线 FitPoint 只到本资产有 K 线的日
+    if (ImPlot::FitThisFrame()) {
+      ImPlot::FitPointX(0.0);
+      ImPlot::FitPointX(std::max(ui.min_x_max, 1.0));
     }
 
     PlotOverlay(data.feature, ov, cats, counts.data(), nf);

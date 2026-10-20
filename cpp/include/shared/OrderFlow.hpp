@@ -131,7 +131,6 @@ struct OrderFlow {
 
     // 发布面 (worker release / GUI acquire; pub word 在 PrefixPub)
     std::array<std::atomic<size_t>, OrderFlowConst::MAX_FEATURES> feat_n{}; // 每特征已发布点数
-    std::atomic<double> y_min{0.0}, y_max{0.0};                             // OHLC 已发布范围
 
     // 坐标换算 (纯算术; dates 读取需 gen 匹配)
     size_t day_idx_from_x(double global_x) const {
@@ -380,10 +379,12 @@ struct OrderFlow {
     double min_x_max = 0.0, min_x_applied = 0.0;
     bool kline_rescan_pending = false; // 请求带 rescan (dates 正在重扫): 期间 dates 不可读
 
-    // Y 轴管理 (流式期间跟随发布范围)
-    size_t min_last_pub_days = SIZE_MAX;     // 上次应用 Y1 范围时的已发布日数
-    uint32_t sec_last_gen = UINT32_MAX;      // 上次 L_sec 视图重置时的槽 gen
-    double sec_y_min = 0.0, sec_y_max = 0.0; // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
+    // 图2 Y1 = 可见 X 区间内 K 线贴合 (RangeFit): 发布变了 / X 视野变了 → 重贴; 只动 Y 轴不重贴 (手动 Y 缩放保留)
+    size_t min_last_pub_days = SIZE_MAX;               // 上次贴合 Y1 时的已发布日数
+    bool min_fit_y = false;                            // 上帧 X 视野变了 → 本帧贴合 Y1
+    double min_view_x_min = 0.0, min_view_x_max = 0.0; // 上帧 X 视野
+    uint32_t sec_last_gen = UINT32_MAX;                // 上次 L_sec 视图重置时的槽 gen
+    double sec_y_min = 0.0, sec_y_max = 0.0;           // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
 
     // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx (只在单库日轴时画: 多库叠加时日轴是并集, 不画)
     // (kline_gen, pub_days) 变才重算 — 流式追加 / 换资产 / 重扫日期 都被 gen 覆盖
