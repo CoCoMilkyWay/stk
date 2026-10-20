@@ -236,10 +236,10 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
         return !cancelled();
       }))
     return false;
-  const int xi = d.nodes[static_cast<size_t>(root)].in[0];
-  assert(xi >= 0 && "根是归一算子, 至少一元");
+  const int ai = d.nodes[static_cast<size_t>(root)].in[0];
+  assert(ai >= 0 && "根是归一算子, 至少一元");
   const factor::check::Plane *rp = F.E.plane(root); // Stat 只看池内 (g 在算子内部)
-  const factor::check::Plane *xp = F.E.plane(xi);   // 根输入: 根的槽先于输入释放分配, 此刻仍在
+  const factor::check::Plane *ap = F.E.plane(ai);   // alpha = 根的输入: 根的槽先于输入释放分配, 此刻仍在
 
   // ---- R: rank_x ----
   InspectPlanes &pl = F.pl;
@@ -269,8 +269,8 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   if (cancelled())
     return false;
 
-  // ---- 收尾 (FactorsLoad finish_root, 与 Run 同一份): valid% / rank% / 二级 HoldStat[H] / x 分布 / 换手成本 (契约【换手成本】) ----
-  finish_root(F.ex, y, RootRaw{rp->m.data(), rx, F.lc.data(), acc, {xp->v.data(), xp->m.data()}}, ss.w, res, res.xdist);
+  // ---- 收尾 (FactorsLoad finish_root, 与 Run 同一份): valid% / rank% / 二级 HoldStat[H] / alpha 分布 / 换手成本 (契约【换手成本】) ----
+  finish_root(F.ex, y, RootRaw{rp->m.data(), rx, F.lc.data(), acc, {ap->v.data(), ap->m.data()}}, ss.w, res, res.alpha_dist);
   publish(1);
   if (cancelled())
     return false;

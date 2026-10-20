@@ -610,18 +610,18 @@ void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const YPlanes &y, f
   }
 }
 
-void finish_root(misc::exec::ForkJoin &ex, const YPlanes &y, const RootRaw &r, factor::cpu::stat::Workspace &w, EvalStat &st, XDist &xd) {
-  assert(r.m && r.rx && r.lc && r.acc && r.x.v && r.x.m);
+void finish_root(misc::exec::ForkJoin &ex, const YPlanes &y, const RootRaw &r, factor::cpu::stat::Workspace &w, EvalStat &st, AlphaDist &adist) {
+  assert(r.m && r.rx && r.lc && r.acc && r.alpha.v && r.alpha.m);
   const uint8_t *gate = y.gate.data();
   st.valid_pct = valid_pct_of(r.m, gate, y.sh.n());
   st.rank_pct = rank_pct_of(ex, r.rx, r.m, gate, y.sh.T, y.sh.A);
   st.n_hold = y.hd.n;
   factor::stat::finish_all(r.acc, y.hd, y.sh.seg, st.hold);
-  x_dist(ex, r.x.v, r.x.m, r.rx, y.sh.T, y.sh.A, xd);
+  alpha_dist(ex, r.alpha.v, r.alpha.m, r.rx, y.sh.T, y.sh.A, adist);
   cost_tiers(ex, r.lc, y, w, st.costs);
 }
 
-void x_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o) {
+void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o) {
   constexpr int K = factor::stat::kGroups;
   constexpr size_t kBuf = 4096;
   const int nt = ex.threads();
@@ -688,7 +688,7 @@ void x_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const ui
       kll[static_cast<size_t>(tid)].addBatch(buf);
   });
   const KLLcache &all = sketch_end();
-  o = XDist{};
+  o = AlphaDist{};
   o.n = all.totalCount();
   if (o.n < 3)
     return;

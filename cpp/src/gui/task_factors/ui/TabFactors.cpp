@@ -5,7 +5,7 @@
 #include "factor/Search/Contract.hpp" // 搜索窗 / 高原 / 终选常量: Search 提示
 #include "factor/Search/Grid.hpp"     // kLayerMax: Search 提示
 #include "gui/Tasks.hpp"              // StatusColor
-#include "gui/util/Sparkline.hpp"     // ic~ / x~ 列迷你图
+#include "gui/util/Sparkline.hpp"     // ic~ / alpha~ 列迷你图
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
@@ -508,7 +508,7 @@ double metric_key(const HS *h, const Metric &m, const FR &r) { return h ? m.get(
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Fixed 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn *h frame period status time | val% rank% trig% util% mono turn LS% SR rIC rICIR rIC>0 rAC | ic~ x~ expr ops feats slots note
+//   edit type name_en name_cn *h frame period status time | val% rank% trig% util% mono turn LS% SR rIC rICIR rIC>0 rAC | ic~ alpha~ expr ops feats slots note
 // ============================================================================
 enum Fixed : int { Edit,
                    Type,
@@ -520,7 +520,7 @@ enum Fixed : int { Edit,
                    Status,
                    Time,
                    IcPdf,
-                   XPdf,
+                   AlphaPdf,
                    Expr,
                    Ops,
                    Feats,
@@ -597,14 +597,14 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      true},
     {IcPdf, "ic~",
      "逐行 rank IC 分布 (选定持有期, ok 行; 与 Inspect 左下左半同一组样本)\n"
-     "• KLL PDF, 峰值归一; x 域 = 数据范围并含 0\n"
+     "• KLL PDF, 峰值归一; x 域 = ±max|rIC|, 0 居中\n"
      "• 绿 = rIC < 0 段, 红 = rIC > 0 段\n"
      "• 悬停放大; Run 时算, 落文件 stat",
      false},
-    {XPdf, "x~",
-     "根输入值分布 (归一前的因子值; 与 Inspect 左下右半同一份)\n"
+    {AlphaPdf, "alpha~",
+     "alpha 分布 (归一前的因子值; 与 Inspect 左下右半同一份)\n"
      "• 池内有效格, 截尾 ≈ [P0.4, P99.6]; KLL PDF, 峰值归一; x 域含 0\n"
-     "• 绿 = x < 0 段, 红 = x > 0 段; 与持有期无关\n"
+     "• 绿 = alpha < 0 段, 红 = alpha > 0 段; 与持有期无关\n"
      "• 悬停放大; Run 时算, 落文件 stat",
      false},
     {Expr, "expr",
@@ -832,8 +832,8 @@ enum class RowKind : uint8_t { Flat,
                                Parent,
                                Child };
 
-// 分布小图一格 (ic~ / x~ 列): 点列两端补到含 0 (全表同口径), 以 0 为界红绿; 悬停 ImPlot 放大 (同 Features Dist 列)
-void mini_pdf_cell(const MiniPdf *p, const char *id, const char *title) {
+// 分布小图一格 (ic~ / alpha~ 列): 点列两端补到含 0 (全表同口径; center = 补到 ±max|x|, 0 居中), 以 0 为界红绿; 悬停 ImPlot 放大 (同 Features Dist 列)
+void mini_pdf_cell(const MiniPdf *p, const char *id, const char *title, bool center) {
   if (!p || !p->has()) {
     ImGui::TextDisabled("-");
     return;
@@ -846,16 +846,19 @@ void mini_pdf_cell(const MiniPdf *p, const char *id, const char *title) {
   static std::vector<float> xs, ys; // GUI 单线程, 帧内复用
   xs.clear();
   ys.clear();
-  if (p->lo > 0.f) {
-    xs.push_back(0.f);
+  const float m = std::max(-p->lo, p->hi);
+  const float lo = center ? -m : std::min(p->lo, 0.f);
+  const float hi = center ? m : std::max(p->hi, 0.f);
+  if (p->lo > lo) {
+    xs.push_back(lo);
     ys.push_back(0.f);
   }
   for (int i = 0; i < kMiniPdfPts; ++i) {
     xs.push_back(p->lo + (p->hi - p->lo) * static_cast<float>(i) / (kMiniPdfPts - 1));
     ys.push_back(p->y[i]);
   }
-  if (p->hi < 0.f) {
-    xs.push_back(0.f);
+  if (p->hi < hi) {
+    xs.push_back(hi);
     ys.push_back(0.f);
   }
   const int n = static_cast<int>(xs.size());
@@ -926,10 +929,10 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
     return num(r.has_stat, "%.1f", r.eval_ms);
   case IcPdf: {
     const std::string title = "rIC 分布 (" + factor::stat::hold_name(hold) + ", 峰值归一)";
-    return mini_pdf_cell(r.has_stat ? r.find_ic_pdf(hold) : nullptr, "##ic_pdf", title.c_str());
+    return mini_pdf_cell(r.has_stat ? r.find_ic_pdf(hold) : nullptr, "##ic_pdf", title.c_str(), true);
   }
-  case XPdf:
-    return mini_pdf_cell(r.has_stat ? &r.x_pdf : nullptr, "##x_pdf", "根输入值分布 (截尾, 峰值归一)");
+  case AlphaPdf:
+    return mini_pdf_cell(r.has_stat ? &r.alpha_pdf : nullptr, "##alpha_pdf", "alpha 分布 (截尾, 峰值归一)", false);
   case Expr: // 父 / 文件级行 = 模板 (自由参数裸键名); 子 / 平铺权重 = 具体串; 模板解析不过 → 文件原串 (红)
     if (kind != RowKind::Parent && !r.expr.empty())
       ImGui::TextUnformatted(r.expr.c_str());

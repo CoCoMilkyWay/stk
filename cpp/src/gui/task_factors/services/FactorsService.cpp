@@ -165,7 +165,7 @@ void load_stat(const json &run, const json &j, int seg, FactorRow &r) {
       if (!load_mini_pdf((*pit)[static_cast<size_t>(k)], t.ic_pdf[k]))
         return;
   }
-  if (const auto pit = j.find("x_pdf"); pit != j.end() && !load_mini_pdf(*pit, t.x_pdf))
+  if (const auto pit = j.find("alpha_pdf"); pit != j.end() && !load_mini_pdf(*pit, t.alpha_pdf))
     return;
   r.scope = t.scope;
   r.valid_pct = t.valid_pct;
@@ -176,7 +176,7 @@ void load_stat(const json &run, const json &j, int seg, FactorRow &r) {
     r.hold[k] = t.hold[k];
     r.ic_pdf[k] = t.ic_pdf[k];
   }
-  r.x_pdf = t.x_pdf;
+  r.alpha_pdf = t.alpha_pdf;
   r.costs = std::move(t.costs);
   r.has_stat = true;
   r.stat_from_file = true;
@@ -216,7 +216,7 @@ ojson stat_json(const FactorRow &r) {
   for (int k = 0; k < r.n_hold; ++k)
     ic.push_back(mini_pdf_json(r.ic_pdf[k]));
   j["ic_pdf"] = ic;
-  j["x_pdf"] = mini_pdf_json(r.x_pdf);
+  j["alpha_pdf"] = mini_pdf_json(r.alpha_pdf);
   return j;
 }
 
@@ -323,7 +323,7 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
 }
 
 // 根评估结果 → 行 (EvalStat 整块 + scope / 小图; eval_ms 归调用方); ic_pdf = [y.hd.n]
-void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, const YPlanes &y, const EvalStat &st, const XDist &xd,
+void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, const YPlanes &y, const EvalStat &st, const AlphaDist &adist,
                const MiniPdf *ic_pdf, const char *backend) {
   static_cast<EvalStat &>(r) = st;
   r.scope.pool = req.scope.pool;
@@ -336,7 +336,7 @@ void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, con
   r.scope.time = now_string();
   for (int hi = 0; hi < y.hd.n; ++hi)
     r.ic_pdf[hi] = ic_pdf[hi];
-  r.x_pdf = mini_pdf_of(xd.pdf);
+  r.alpha_pdf = mini_pdf_of(adist.pdf);
   r.has_stat = true;
   r.stat_from_file = false;
 }
@@ -949,7 +949,7 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
     return true;
   }
   // ---- 装载 (整张量): Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain, 共享 DAG 输入下标 = feats 下标) ----
-  //      宿主峰值 = Y + X + rx / lc + CPU 活槽 + 标签秩 | GPU 掩码 / 根输入拷回, + Row[H][T]
+  //      宿主峰值 = Y + X + rx / lc + CPU 活槽 + 标签秩 | GPU 掩码 / alpha 拷回, + Row[H][T]
   const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(req.scope.max_impact)};
   {
     const int days = static_cast<int>(es.days.size()), A = static_cast<int>(es.rs.axis.size());
@@ -1002,7 +1002,7 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
   std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
   std::vector<factor::stat::Row> lrows(static_cast<size_t>(H) * T); // 该根的一级 Row[H][T] (引擎落地), 只给 ic_pdf
   EvalStat st;                                                      // 该根的宿主收尾
-  XDist xd;
+  AlphaDist adist;
   MiniPdf ic_pdf[factor::stat::kMaxHold]; // 该根的因子表小图 (与 Inspect 同一组样本)
 
   // 共享 DAG 走过节点 i (ms = 算子耗时, 叶 0): 记时 + 进度; 到根: eng.stat → 发布该根的全部因子 (dup 共根)
@@ -1021,7 +1021,7 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
       if (!runnable[k] || F.roots[k] != i)
         continue;
       if (!stat_done) {
-        eng.stat(i, frames[k], lrows.data(), st, xd);
+        eng.stat(i, frames[k], lrows.data(), st, adist);
         ic_mini_pdfs(lrows.data(), H, T, ic_pdf);
         stat_done = true;
       }
@@ -1030,7 +1030,7 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
         std::lock_guard<std::mutex> lock(mutex);
         r = rows[idx[k]];
       }
-      fill_stat(r, req, es, y, st, xd, ic_pdf, E::kName);
+      fill_stat(r, req, es, y, st, adist, ic_pdf, E::kName);
       r.eval_ms = 0.0;
       for (int j : sub[k])
         r.eval_ms += node_ms[static_cast<size_t>(j)];

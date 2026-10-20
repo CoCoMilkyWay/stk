@@ -4,7 +4,7 @@
 //   load_x / load_y 同一份逐天并行骨架; ScopeCache + ensure_y / ensure_x = 作用域块 (Y 常驻, X 按服务策略留 / 补);
 //   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率;
 //   cost_tiers 换手成本; labels_of 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
-//   x_dist 根输入值分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本);
+//   alpha_dist alpha 分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本);
 //   RootRaw → finish_root → EvalStat: 根评估的宿主收尾 (Run 两后端 / Inspect 同一份).
 // 三个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat (+ 因子表小图); InspectService 一棵 DAG 留一级 Row[H][T];
 // SearchService 分块流式攒候选累加器.
@@ -163,9 +163,9 @@ float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
 // 沿 nv ≥ 1 的行取均值. rx = 该因子的 r16 [T][A] (rank_x 出)
 float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A);
 
-// 根输入值分布 (Inspect 左下右半图 / Run 落因子表小图, 同一份): 样本 = 池内有效格 (rx 有效 ∧ 根输入有效), 组号 = grp_of(rx)
+// alpha 分布 (Inspect 左下右半图 / Run 落因子表小图, 同一份): 样本 = 池内有效格 (rx 有效 ∧ alpha 有效), 组号 = grp_of(rx)
 // (与 Stat 同一组). 与持有期无关
-struct XDist {
+struct AlphaDist {
   analysis::AggPdf pdf;                               // 截尾 [lo, hi] 内样本的 PDF (255 点全落在主体上, 重尾不压扁); 只画图, 矩不用它
   uint64_t n = 0;                                     // 全体样本数 (不截尾, 下同)
   float mean = 0.f, sd = 0.f, skew = 0.f, kurt = 0.f; // 全体矩
@@ -178,7 +178,7 @@ struct XDist {
 // 两趟, 每趟条带并行: 每线程一份 KLL + 缓冲批量 addBatch, 末尾合并进线程 0 那份.
 //   趟 1: 全体样本 → 矩 + 截尾范围 [lo, hi]; 同趟逐行: 截面均值 (series) + 各组 min / max → 相邻组边界中点, 各组和 / 数
 //   趟 2: 只收 [lo, hi] 内样本 → pdf
-void x_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o);
+void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o);
 
 // 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
@@ -192,15 +192,15 @@ void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const YPlanes &y, f
 
 // ---- 根评估 (Run 两后端 / Inspect 同一份收尾): 后端只出原料 RootRaw, 宿主 finish_root 直填 EvalStat ----
 //   CPU: stat_eval (rank_x + accum_rows, sink 落一级: Run LandRows / Inspect TailSink) + leg_codes; m = 根平面掩码
-//   GPU: download 根掩码 + stat_eval (acc / rows / lc / rx 拷回); x = 根输入 (叶 = 宿主平面, 否则拷回)
+//   GPU: download 根掩码 + stat_eval (acc / rows / lc / rx 拷回); alpha = 根的输入 (叶 = 宿主平面, 否则拷回)
 struct RootRaw {                            // [T][A] 视图, 两后端同形
   const uint8_t *m = nullptr;               // 根掩码
   const uint16_t *rx = nullptr;             // r16(x)
   const uint8_t *lc = nullptr;              // 腿码
   const factor::stat::Accum *acc = nullptr; // [hd.n] 一级累加
-  factor::stat::Plane x;                    // 根输入 (值 + 有效位)
+  factor::stat::Plane alpha;                // 根的输入 (值 + 有效位)
 };
-// st 的 valid% / rank% / n_hold + hold (finish_all) / costs (cost_tiers; w ensure 过 C = y.ad.n) + xd (x_dist); scope / eval_ms 归调用方
-void finish_root(misc::exec::ForkJoin &ex, const YPlanes &y, const RootRaw &r, factor::cpu::stat::Workspace &w, EvalStat &st, XDist &xd);
+// st 的 valid% / rank% / n_hold + hold (finish_all) / costs (cost_tiers; w ensure 过 C = y.ad.n) + adist (alpha_dist); scope / eval_ms 归调用方
+void finish_root(misc::exec::ForkJoin &ex, const YPlanes &y, const RootRaw &r, factor::cpu::stat::Workspace &w, EvalStat &st, AlphaDist &adist);
 
 } // namespace GUI::Factors

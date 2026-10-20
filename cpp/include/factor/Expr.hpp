@@ -627,7 +627,7 @@ inline bool parse(std::string_view src, const FeatureLookup &fl, int seg, Expr &
 //   CS: 根 ∈ {CsRank, CsNormRank, CsZ} (截面居中 → 因子值 = 仓位, β 隔离)
 //   TS: 根 = TsRankRoll(d = ts_norm_d(seg)) (自身滚动分位, 窗 = ≤ kMaxD 行的最大整交易日数; 整数天窗跨日 deseason)
 //   其他根 (含 TS 包 CS: 截面不再居中, β 漏) → false + err.
-//   再拦根输入的两种静态可判退化 (Stat 里必然全并列 / 20 组填不满, 评出来永远是空), 只读 OpTable out 列 + 树结构:
+//   再拦 alpha (根的输入) 的两种静态可判退化 (Stat 里必然全并列 / 20 组填不满, 评出来永远是空), 只读 OpTable out 列 + 树结构:
 //     离散值域 (dom_discrete: 0/1 掩码 / 符号 / 桶号, 分位只有几个取值) / 沿资产轴不变异 (varies_a = false: 每 t 截面全相同)
 //   因子文件 / 构建器都走这一个判据 (模板也判: TS 根的 d 须写死 ts_norm_d(seg), 裸 d 的占位值 1 过不了)
 

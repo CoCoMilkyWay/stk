@@ -18,7 +18,7 @@
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
 //         "costs": [{amt, cover, acc: [[CostAcc]…]}…],          //   每金额段 × 每持有期换手成本累加器 (Inspect 净线从它算)
-//         "ic_pdf": [{lo, hi, y}…], "x_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 因子表小图空): 每持有期逐行 rIC 分布 / 根输入值分布 (MiniPdf)
+//         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 因子表小图空): 每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 视作唯一权重 (hold 0).
@@ -254,7 +254,7 @@ struct FactorRow : EvalStat {
   bool has_stat = false;                  // hold[][] 有内容 (本轮算的或文件载入的)
   bool stat_from_file = false;            // stat 来自文件 (非本进程算的); EvalStat::eval_ms = time 列
   MiniPdf ic_pdf[factor::stat::kMaxHold]; // [hold] 逐行 rIC (ok 行) 分布, 与 Inspect 左下左半同一组样本
-  MiniPdf x_pdf;                          // 根输入值分布 (截尾, 与 Inspect 左下右半同一份 x_dist; 与持有期无关)
+  MiniPdf alpha_pdf;                      // alpha 分布 (截尾, 与 Inspect 左下右半同一份 alpha_dist; 与持有期无关)
   const MiniPdf *find_ic_pdf(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)

@@ -6,13 +6,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 using namespace analysis;
 
 // ============================================================================
 // Runtime: worker 私有状态 (UI 不看)
-// 并行面 = 特征块: 轮内一块一任务 (IO + 扫描 + 发布全在块内), 每特征槽一轮只被一个任务写,
-// 每轮一次 dispatch (返回即栅栏) 隔开相邻轮 → 每特征累积器无锁无 shard, 也不需要归约
+// 并行面 = (层, 轮, 块): 全部任务一次 dispatch, 无轮间栅栏 (笼快照先一相预载);
+// 任务锁外 IO + 扫描进线程私有累积 (KLL / 谱 / 账目), 块锁 fold_mu[块] 内并进每特征累积器 + 发布 →
+// 同块跨轮并发只在 fold 处互斥 (发布在锁内: 后 fold 的必后发布, 快照不回退)
 // ============================================================================
 
 PsdAxis psd_axis(size_t N) {
@@ -36,36 +38,42 @@ PsdAxis psd_axis(size_t N) {
   return ax;
 }
 
-// 一层的网格无关状态: 每特征累积 (跨轮, 槽位 = 预览列下标) + 段序 + 块读计划 + 线程私有平面/暂存 + 轮首笼快照
+// 一层的网格无关状态: 每特征累积 (跨轮, 槽位 = 预览列下标) + 段序 + 块读计划 + 线程私有平面/暂存 + 各轮笼快照
 struct Preview::Level {
   size_t level = 0, rpd = 0, days = 1;
   SegPlan plan;
-  std::vector<ReadPlan> blocks; // [块] 单源读计划 (预览列 [f0[b], f0[b] + n) + 该层 ts_valid)
-  std::vector<size_t> f0;       // [块] 块首预览列下标
-  // ---- 每特征累积 (跨轮) ----
+  std::vector<ReadPlan> blocks;                  // [块] 单源读计划 (预览列 [f0[b], f0[b] + n) + 该层 ts_valid)
+  std::vector<size_t> f0;                        // [块] 块首预览列下标
+  std::unique_ptr<std::mutex[]> fold_mu;         // [块] 同块跨轮任务的 fold + 发布互斥
+  std::unique_ptr<std::atomic<uint32_t>[]> left; // [轮] 未完成块数 (归零那个任务计一轮进度)
+  // ---- 每特征累积 (跨轮, 持 fold_mu[块] 写) ----
   std::vector<KLLcache> klls;              // [n_preview] 每特征累积 sketch
   std::vector<Integrity> integ;            // [n_preview] 每特征累积账目
   std::vector<uint32_t> cage_n, cage_miss; // [n_preview] price 笼账目 (受检/笼外) 累积
   std::vector<uint8_t> int_only;           // [n_preview] flag 探测: 有效值至今全整数 (粘性)
   // ---- 线程私有 (按 tid) ----
-  std::vector<TsPlane> planes; // [块列][A][1][R]
-  std::vector<IoSlot> io;      // IO 暂存
-  // ---- 轮共享只读 (轮首单线程载入, 块任务只读) ----
-  std::vector<float> cage_dn, cage_up; // [n_draw][days] 当轮抽样资产的逐日笼 (NaN = 当日无值 / 空位)
+  std::vector<TsPlane> planes;                // [块列][n_draw][1][R] (只转置本轮抽样资产)
+  std::vector<IoSlot> io;                     // IO 暂存
+  std::vector<std::vector<KLLcache>> kll_loc; // [tid][块列] 本 (块, 轮) sketch (锁外 addBatch, 锁内 merge)
+  // ---- 笼相预载, 块任务只读 ----
+  std::vector<float> cage_dn, cage_up; // [轮][n_draw][days] 各轮抽样资产的逐日笼 (NaN = 当日无值 / 空位)
 
   virtual ~Level() = default;
-  // 一轮: 轮首笼 (单线程) → 特征块一块一任务 (IO + 扫描 + 块末发布), 一次 dispatch
-  virtual void round(Preview &pv, Runtime &rt, const Readers &rd, size_t r, const std::atomic<bool> &cancel) = 0;
+  // 笼相一个任务: 第 r 轮第 d 天的抽样资产笼快照
+  void cage(const Preview &pv, Runtime &rt, const Readers &rd, size_t r, size_t d, size_t tid);
+  // 块相一个任务: 第 r 轮第 blk 块 (IO + 扫描锁外; fold + 发布持 fold_mu[blk])
+  virtual void block(Preview &pv, Runtime &rt, const Readers &rd, size_t r, size_t blk, size_t tid) = 0;
 };
 
 struct Preview::Runtime {
   std::array<std::unique_ptr<Level>, LEVEL_COUNT> lv; // 空 = 该层不跑
-  FeatureRead::DayColumns cage_day;                   // L_1day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 池轴)
   std::vector<uint32_t> asset_order;                  // [A] 固定种子洗牌 (轮间旋转取片)
   // ---- 线程私有 (按 tid; 各层共用) ----
   struct Shard {
-    std::array<Cell, kPvBlockCols> cells; // 块成品 staging (锁外填, 短锁拷贝)
+    std::array<Cell, kPvBlockCols> cells; // 块成品 staging (fold 锁内填, 短锁拷贝)
     std::vector<float> samples;           // 单 (特征, 轮) 有效样本缓冲
+    std::vector<uint32_t> draw;           // [n_draw] 本轮抽样资产 → 主池源轴下标 (平面 k ← draw[k])
+    FeatureRead::DayColumns cage_day;     // L_1day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 池轴)
   };
   std::vector<Shard> shards; // [n_threads]
   std::unique_ptr<misc::exec::ForkJoin> ex;
@@ -78,12 +86,13 @@ struct Preview::LevelOf final : Preview::Level {
   // 块宽: 长段层按行数折减 (平面 + 暂存 ∝ 块宽 × R × A)
   static constexpr size_t kBlk = std::clamp<size_t>(kPvBlockCols * TRADE_MINUTES_PER_DAY / R, 1, kPvBlockCols);
 
-  std::vector<PsdAcc<PSD>> psd;         // [n_preview] 单段谱 (每 bin 占比) 累加 (含恒值段的零票)
-  std::vector<std::unique_ptr<PSD>> ws; // [n_threads] FFT workspace (大对象, 堆上)
-  std::vector<std::vector<float>> bufs; // [n_threads][R] 单 (资产, 段) 序列 (缺/门控 NaN → 谱前 ffill)
+  std::vector<PsdAcc<PSD>> psd;                  // [n_preview] 单段谱 (每 bin 占比) 累加 (含恒值段的零票)
+  std::vector<std::vector<PsdAcc<PSD>>> psd_loc; // [n_threads][块列] 本 (块, 轮) 谱累加 (锁内 merge)
+  std::vector<std::unique_ptr<PSD>> ws;          // [n_threads] FFT workspace (大对象, 堆上)
+  std::vector<std::vector<float>> bufs;          // [n_threads][R] 单 (资产, 段) 序列 (缺/门控 NaN → 谱前 ffill)
 
   // 容量准备: 每特征累积 + 块读计划 + 线程私有
-  void prepare(const ReadPlan &pv_plan, size_t A, const PerPool<size_t> &As, size_t n_threads) {
+  void prepare(const ReadPlan &pv_plan, const PerPool<size_t> &As, size_t n_threads) {
     level = G::kLevel;
     rpd = G::kRowsPerDay;
     days = G::kDays;
@@ -115,22 +124,24 @@ struct Preview::LevelOf final : Preview::Level {
       blocks.push_back(std::move(bp));
       f0.push_back(b);
     }
-    const size_t n_draw = std::min(kPvAssetsPerRound, A);
-    cage_dn.resize(n_draw * days);
-    cage_up.resize(n_draw * days);
+    fold_mu = std::make_unique<std::mutex[]>(blocks.size());
     planes.resize(n_threads);
     io.resize(n_threads);
+    kll_loc.resize(n_threads);
+    psd_loc.resize(n_threads);
     ws.resize(n_threads);
     bufs.resize(n_threads);
     for (size_t i = 0; i < n_threads; ++i) {
       io[i].prepare(blocks[0], As, kBlk);
+      prepare_slots(kll_loc[i], kBlk, kPvKllCapacity, kPvKllResolution);
+      psd_loc[i].resize(kBlk);
       if (!ws[i])
         ws[i] = std::make_unique<PSD>();
       bufs[i].resize(R);
     }
   }
 
-  void round(Preview &pv, Runtime &rt, const Readers &rd, size_t r, const std::atomic<bool> &cancel) override;
+  void block(Preview &pv, Runtime &rt, const Readers &rd, size_t r, size_t blk, size_t tid) override;
 };
 
 Preview::Preview() = default;
@@ -188,7 +199,7 @@ void Preview::reset(ReadScope scope, Spec sp) {
 }
 
 // ============================================================================
-// Build (轮训: 轮 = 抽样日, 轮内按特征分块, 块末发布; 首帧 = 一块的 IO + 扫描)
+// Build (轮训: 轮 = 抽样段, 轮内按特征分块; 全部 (层, 轮, 块) 一次 dispatch, 块末发布; 首帧 = 一块的 IO + 扫描)
 // ============================================================================
 
 bool Preview::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
@@ -200,16 +211,19 @@ bool Preview::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bo
   assert(A > 0 && "reset 先于 build");
   const Readers rd = scope_.readers(fr);
 
-  // 线程数 = min(硬件并发, 最多块数): 块是抢任务单位, 多于块数的线程整轮空转
-  size_t max_blocks = 1;
+  // 线程数 = min(硬件并发, 任务数上界 Σ 列数 × 轮数): 任务 = (层, 轮, 块), 多于任务数的线程空转
+  size_t max_tasks = 1;
   for (const ReadPlan &p : spec.plans)
-    max_blocks = std::max(max_blocks, p.n());
-  const size_t n_threads = threads_for(max_blocks);
+    max_tasks += p.n() * kPvRounds;
+  const size_t n_threads = threads_for(max_tasks);
   misc::exec::ensure(rt.ex, static_cast<int>(n_threads));
   rt.shards.resize(n_threads);
-  for (Runtime::Shard &sh : rt.shards)
+  const size_t n_draw = std::min(kPvAssetsPerRound, A);
+  for (Runtime::Shard &sh : rt.shards) {
     sh.samples.reserve(kPvAssetsPerRound * TRADE_MINUTES_PER_DAY);
-  rt.cage_day.preallocate(As[kAllPool], L_1day, 2);
+    sh.draw.resize(n_draw);
+    sh.cage_day.preallocate(As[kAllPool], L_1day, 2);
+  }
   rt.asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
 
   // 各层: 段序 (洗牌取前 kPvRounds 个, 无偏覆盖全区间, 轮序即收敛序) + 容量
@@ -221,101 +235,147 @@ bool Preview::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bo
       continue;
     rt.lv[l] = with_grid(l, [&](auto g) -> std::unique_ptr<Level> {
       auto lv = std::make_unique<LevelOf<decltype(g)>>();
-      lv->prepare(p, A, As, n_threads);
+      lv->prepare(p, As, n_threads);
       return lv;
     });
-    rt.lv[l]->plan = plan_segs(scope_, l, DayOrder::Shuffle, kPvRounds);
-    n_rounds = std::max(n_rounds, rt.lv[l]->plan.size());
-    n_total += rt.lv[l]->plan.size();
+    Level &lv = *rt.lv[l];
+    lv.plan = plan_segs(scope_, l, DayOrder::Shuffle, kPvRounds);
+    const size_t nr = lv.plan.size();
+    lv.cage_dn.resize(nr * n_draw * lv.days);
+    lv.cage_up.resize(nr * n_draw * lv.days);
+    lv.left = std::make_unique<std::atomic<uint32_t>[]>(nr);
+    for (size_t r = 0; r < nr; ++r)
+      lv.left[r].store(static_cast<uint32_t>(lv.blocks.size()), std::memory_order_relaxed);
+    n_rounds = std::max(n_rounds, nr);
+    n_total += nr;
   }
   if (n_total == 0)
     return true; // 池为空: 直接 Done, 表格全 "—"
   total.store(n_total, std::memory_order_release);
 
-  // 轮循环: 各层轮交错 (层序 = L_1min 先: 特征最多, 再粗层, L_sec 最重最后)
+  // 任务表: 轮序优先 (抢单按下标序 → 收敛序仍逐轮), 轮内各层交错 (层序 = L_1min 先: 特征最多, 再粗层, L_sec 最重最后)
   constexpr std::array<size_t, LEVEL_COUNT> kOrder{L_1min, L_5min, L_15min, L_30min, L_60min, L_1day, L_sec};
+  struct Job {
+    size_t l, r, i; // 层, 轮, 日 (笼相) / 块 (块相)
+  };
+  std::vector<Job> cages, jobs;
   for (size_t r = 0; r < n_rounds; ++r)
     for (const size_t l : kOrder) {
-      Level *lv = rt.lv[l].get();
+      const Level *lv = rt.lv[l].get();
       if (!lv || r >= lv->plan.size())
         continue;
-      lv->round(*this, rt, rd, r, cancel);
-      if (cancel.load(std::memory_order_relaxed))
-        return false;
-      publish(1);
+      for (size_t d = 0; d < lv->days; ++d)
+        cages.push_back({l, r, d});
+      for (size_t b = 0; b < lv->blocks.size(); ++b)
+        jobs.push_back({l, r, b});
     }
-  return true;
+
+  // 笼相: 全部 (层, 轮, 日) 笼快照预载 (块任务只读)
+  run_phase(*rt.ex, cages.size(), cancel, [&](size_t i, size_t tid) {
+    const Job &j = cages[i];
+    rt.lv[j.l]->cage(*this, rt, rd, j.r, j.i, tid);
+  });
+  if (cancel.load(std::memory_order_relaxed))
+    return false;
+  // 块相: 全部 (层, 轮, 块) 一次 dispatch, 无轮间栅栏
+  run_phase(*rt.ex, jobs.size(), cancel, [&](size_t i, size_t tid) {
+    const Job &j = jobs[i];
+    rt.lv[j.l]->block(*this, rt, rd, j.r, j.i, tid);
+  });
+  return !cancel.load(std::memory_order_relaxed);
 }
 
 // ============================================================================
-// 一层一轮: 轮首笼 (单线程) → 特征块一块一任务 (块 = IO + 扫描 + 发布, 全在锁外, 只在拷 cells 时短锁),
-// 一次 dispatch (返回即栅栏)
+// 笼相一个任务 (层, 轮, 日): Bar 档 L_1day lim_dn / lim_up → 本轮抽样资产当日笼快照 (price 逐日判定融合进块扫描)
+// ============================================================================
+
+void Preview::Level::cage(const Preview &pv, Runtime &rt, const Readers &rd, size_t r, size_t d, size_t tid) {
+  // 笼外扩容差 (存快照时做, 热循环保持严格比较): 贴板成交价与 lim 两列来源不同
+  // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
+  // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
+  TraceN("PreviewCage");
+  constexpr float kF16Rel = 1.0f / 1024.0f; // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
+  const size_t A = rt.asset_order.size();
+  const size_t n_draw = std::min(kPvAssetsPerRound, A);
+  const size_t a_off = (r * n_draw) % A;       // 洗牌序旋转取片
+  const uint32_t *cage_ids = rd.ids[kAllPool]; // nullptr = 主池即 all (同轴); all = 全轴, 不会 kAbsent
+  FeatureRead::DayColumns &cd = rt.shards[tid].cage_day;
+  const Day day = plan.day(r * days + d);
+  const bool has = day.has_prev & pool_bit(kAllPool); // 当日适用涨跌停 = 前一交易日 L_1day 行; all 池那天没落盘 / 轴首 = 笼缺 (NaN)
+  if (has)
+    rd.of(kAllPool).load_day_columns(day.prev, pv.spec.cage, cd);
+  float *c_dn = cage_dn.data() + r * n_draw * days, *c_up = cage_up.data() + r * n_draw * days;
+  for (size_t k = 0; k < n_draw; ++k) {
+    const size_t a = rt.asset_order[(a_off + k) % A];
+    const size_t s = cage_ids ? cage_ids[a] : a;
+    const float dn = has ? static_cast<float>(cd.col(0)[s]) : kNaN; // L_1day 行 0 (日常量)
+    const float up = has ? static_cast<float>(cd.col(1)[s]) : kNaN;
+    c_dn[k * days + d] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
+    c_up[k * days + d] = up + (std::fabs(up) * kF16Rel + kPxEps);
+  }
+}
+
+// ============================================================================
+// 块相一个任务 (层, 轮, 块): IO + 扫描进线程私有累积 (锁外) → 持 fold_mu[blk] 并进每特征累积器 + 导出 + 短锁拷进 cells
 // ============================================================================
 
 template <class G>
-void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, size_t r, const std::atomic<bool> &cancel) {
+void Preview::LevelOf<G>::block(Preview &pv, Runtime &rt, const Readers &rd, size_t r, size_t blk, size_t tid) {
   const size_t A = rt.asset_order.size();
   const size_t n_draw = std::min(kPvAssetsPerRound, A);
   const size_t a_off = (r * n_draw) % A; // 洗牌序旋转取片
   const ReadPlan &pv_plan = pv.spec.plans[G::kLevel];
   size_t n_real = 0; // 本段真实日数 (尾段空位不入账)
-  {
-    // 轮首笼 (单线程): Bar 档 L_1day lim_dn / lim_up 逐日读 → 抽样资产逐日笼快照 (price 逐日判定融合进块扫描).
-    // 笼外扩容差 (存快照时做, 热循环保持严格比较): 贴板成交价与 lim 两列来源不同
-    // (整数分换算 vs 解析/计算), 原始 float 差 ≤ kPxEps, 落 f16 后可差 1 ulp (≈ 值/1024);
-    // 严格比较会把涨跌停分钟误判笼外 (一字板整天 close == lim_up). NaN 经算术照传
-    TraceN("PreviewRoundIO");
-    constexpr float kF16Rel = 1.0f / 1024.0f;    // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
-    const uint32_t *cage_ids = rd.ids[kAllPool]; // nullptr = 主池即 all (同轴); all = 全轴, 不会 kAbsent
-    for (size_t d = 0; d < days; ++d) {
-      const Day day = plan.day(r * days + d);
-      n_real += day.date != 0;
-      const bool has = day.has_prev & pool_bit(kAllPool); // 当日适用涨跌停 = 前一交易日 L_1day 行; all 池那天没落盘 / 轴首 = 笼缺 (NaN)
-      if (has)
-        rd.of(kAllPool).load_day_columns(day.prev, pv.spec.cage, rt.cage_day);
-      for (size_t k = 0; k < n_draw; ++k) {
-        const size_t a = rt.asset_order[(a_off + k) % A];
-        const size_t s = cage_ids ? cage_ids[a] : a;
-        const float dn = has ? static_cast<float>(rt.cage_day.col(0)[s]) : kNaN; // L_1day 行 0 (日常量)
-        const float up = has ? static_cast<float>(rt.cage_day.col(1)[s]) : kNaN;
-        cage_dn[k * days + d] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
-        cage_up[k * days + d] = up + (std::fabs(up) * kF16Rel + kPxEps);
-      }
-    }
-  }
+  for (size_t d = 0; d < days; ++d)
+    n_real += plan.dates[r * days + d] != 0;
   const size_t n_rows = n_real * rpd; // 本段真实格数 / (资产, 特征)
+  const float *c_dn = cage_dn.data() + r * n_draw * days, *c_up = cage_up.data() + r * n_draw * days;
   const PsdAxis &axis = pv.snap.axis[G::kLevel];
   const double K = static_cast<double>(PSD::N / 2);
 
-  run_phase(*rt.ex, blocks.size(), cancel, [&](size_t blk, size_t tid) {
+  {
     Runtime::Shard &sh = rt.shards[tid];
     PSD &seg_psd = *ws[tid];
     float *seg_buf = bufs[tid].data();
     TsPlane &plane = planes[tid];
+    std::vector<KLLcache> &kll_t = kll_loc[tid];
+    std::vector<PsdAcc<PSD>> &psd_t = psd_loc[tid];
     std::array<Cell, kPvBlockCols> &block_cells = sh.cells;
     const ReadPlan &bp = blocks[blk];
     const size_t nb = bp.n();
     const size_t fb = f0[blk];
 
-    // 块 IO: nb 值列 + 该层 ts_valid (各列按自己的 vt 折哨兵)
+    // 块 IO: nb 值列 + 该层 ts_valid (各列按自己的 vt 折哨兵); 只转置本轮抽样资产:
+    // 平面 A = n_draw, 主池映射换成 抽样下标 k → 主池源轴下标 (fold_span 经 ids 取格)
     {
       TraceN("PreviewIO");
-      plane.prepare(A, G::kLevel, 1, nb);
-      plane.load_seg(rd, bp, plan, r, 0, io[tid]);
+      const PoolId p = bp.srcs[0].pool;
+      const uint32_t *ids = rd.ids[p];
+      for (size_t k = 0; k < n_draw; ++k) {
+        const uint32_t a = rt.asset_order[(a_off + k) % A];
+        sh.draw[k] = ids ? ids[a] : a;
+      }
+      Readers sub = rd;
+      sub.ids[p] = sh.draw.data();
+      plane.prepare(n_draw, G::kLevel, 1, nb);
+      plane.load_seg(sub, bp, plan, r, 0, io[tid]);
     }
 
-    // 块扫描: 每特征抽 n_draw 个资产
+    // 块扫描: 每特征抽 n_draw 个资产 → 线程私有累积 (it_t / kll_t / psd_t / 笼 / flag)
     TraceN("PreviewScan");
+    std::array<Integrity, kPvBlockCols> it_t{};
+    std::array<uint32_t, kPvBlockCols> cn_t{}, cmiss_t{}; // 本 (特征, 轮) price 笼账目
+    std::array<uint8_t, kPvBlockCols> nonint_t{};         // 本 (特征, 轮) 见过非整数有效值 (flag 探测)
     for (size_t i = 0; i < nb; ++i) {
-      const size_t slot = fb + i;
-      Integrity &it = integ[slot];
-      uint32_t c_n = 0, c_miss = 0; // 本 (特征, 轮) price 笼账目
-      bool nonint = false;          // 本 (特征, 轮) 见过非整数有效值 (flag 探测)
+      Integrity &it = it_t[i];
+      uint32_t c_n = 0, c_miss = 0;
+      bool nonint = false;
       sh.samples.clear();
+      kll_t[i].clear();
+      psd_t[i].clear();
 
       for (size_t k = 0; k < n_draw; ++k) {
-        const size_t a = rt.asset_order[(a_off + k) % A];
-        const feature_storage_t *v = plane.series(i, a, 0);
+        const feature_storage_t *v = plane.series(i, k, 0);
         it.n_total += n_rows;
         size_t n_ok = 0;
         for (size_t t = 0; t < R; ++t) {
@@ -328,7 +388,7 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
             nonint |= (x != static_cast<float>(static_cast<int32_t>(x)));
             // price 笼: 对照该资产当日 [lim_dn, lim_up] (NaN 笼 = 当日无值, 不受检)
             const size_t d = t / rpd;
-            const float dn = cage_dn[k * days + d], up = cage_up[k * days + d];
+            const float dn = c_dn[k * days + d], up = c_up[k * days + d];
             if (dn == dn && up == up) {
               ++c_n;
               c_miss += !(x >= dn && x <= up);
@@ -351,21 +411,29 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
           ffill_day(seg_buf, R);
           [[maybe_unused]] const bool done = seg_psd.compute(seg_buf);
           assert(done && "ffill 后稠密, 有效数 = R");
-          psd[slot].add_share(seg_psd);
+          psd_t[i].add_share(seg_psd);
         }
       }
       if (!sh.samples.empty())
-        klls[slot].addBatch(sh.samples.data(), sh.samples.size());
-      cage_n[slot] += c_n;
-      cage_miss[slot] += c_miss;
-      int_only[slot] &= static_cast<uint8_t>(!nonint);
+        kll_t[i].addBatch(sh.samples.data(), sh.samples.size());
+      cn_t[i] = c_n;
+      cmiss_t[i] = c_miss;
+      nonint_t[i] = nonint;
     }
 
-    // 块末发布: 锁外导出成品, 一次短锁拷贝整块进 cells
+    // 块末: 持 fold_mu[blk] 并进每特征累积器 + 导出成品, 再一次短锁拷贝整块进 cells
+    // (发布也在 fold 锁内: 同块后 fold 的任务必后拷, cells 不会被旧快照覆盖)
     {
       TraceN("PreviewPublish");
+      std::lock_guard<std::mutex> fold(fold_mu[blk]);
       for (size_t i = 0; i < nb; ++i) {
         const size_t slot = fb + i;
+        klls[slot].mergeWith(kll_t[i]);
+        integ[slot].add(it_t[i]);
+        psd[slot].merge_from(psd_t[i]);
+        cage_n[slot] += cn_t[i];
+        cage_miss[slot] += cmiss_t[i];
+        int_only[slot] &= static_cast<uint8_t>(!nonint_t[i]);
         Cell &c = block_cells[i];
         c = Cell{}; // staging 复用: psd_n == 0 时不填 psd, 必须清掉上一块的残值
         c.fill(klls[slot], kPvMinSamples);
@@ -391,7 +459,10 @@ void Preview::LevelOf<G>::round(Preview &pv, Runtime &rt, const Readers &rd, siz
         pv.snap.cells[G::kLevel][pv_plan.cols[fb + i].col] = block_cells[i];
     }
     pv.epoch.fetch_add(1, std::memory_order_release);
-  });
+  }
+  // 本 (层, 轮) 最后一块完成 → 计一轮进度
+  if (left[r].fetch_sub(1, std::memory_order_acq_rel) == 1)
+    pv.publish(1);
 }
 
 // ============================================================================

@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace GUI::Tasks {
 
@@ -51,6 +52,7 @@ struct TaskFactorsState {
   // 页顶层按钮后的因子文件数 (所选池各因子层目录): 池变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
   std::string counted_key; // config.factor_dir | 所选池; 空 = 没数过
   size_t level_files[std::size(Factors::kFactorLevels)] = {};
+  std::vector<size_t> pool_files; // [PoolId] 页顶池下拉里各池因子文件数 (该池各因子层之和): 每次打开下拉重数
   Phase prev_factors_phase = Phase::Idle;
   std::shared_ptr<const Factors::FeatureTable> feature_table; // 本层字段表视图 (按层建一次, Factors / Search / Inspect 共享)
   std::unique_ptr<Factors::FactorsService> factors_service;
@@ -236,15 +238,27 @@ TaskHandle CreateFactorsTask() {
         const std::string cur_pool = sel.pool();
         ImGui::SetNextItemWidth(140);
         if (ImGui::BeginCombo("##factor_pool", cur_pool.c_str())) {
+          if (ImGui::IsWindowAppearing()) {
+            state->pool_files.clear();
+            for (const PoolDef &d : feature_pools()) {
+              size_t n = 0;
+              for (const Factors::FactorLevel &l : Factors::kFactorLevels)
+                if (Factors::level_for_pool(l, d.tier))
+                  n += Factors::list_factor_files(Factors::factor_dir_of(data, d.name, l.seg)).size();
+              state->pool_files.push_back(n);
+            }
+          }
+          assert(state->pool_files.size() == feature_pools().size());
           float cn_x = 0.0f; // 中文名列起点 (对齐最长池名)
           for (const PoolDef &d : feature_pools())
             cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
           cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
-          for (const PoolDef &d : feature_pools()) {
+          for (size_t pi = 0; pi < feature_pools().size(); ++pi) {
+            const PoolDef &d = feature_pools()[pi];
             const bool selected = cur_pool == d.name;
             const bool clicked = ImGui::Selectable(d.name, selected);
             ImGui::SameLine(cn_x);
-            ImGui::TextDisabled("%s", d.name_cn);
+            ImGui::TextDisabled("%s (%zu)", d.name_cn, state->pool_files[pi]);
             if (clicked && !selected) {
               if (d.tier != sel.tier) {
                 sel.clear_filters(); // 同特征面板: 换档 = 换字段表, 过滤作废

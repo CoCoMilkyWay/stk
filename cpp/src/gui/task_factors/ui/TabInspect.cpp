@@ -217,7 +217,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   const TailRow *tr = res.tails_at(sel);
   d.hs = res.hold[static_cast<size_t>(sel)];
   assert(d.hs.n_all == T && "累计线 / Sharpe 的分母 = 全部行, 须与二级 n_all 同");
-  d.xd = res.xdist;
+  d.adist = res.alpha_dist;
   d.days = days;
   d.dates = res.dates;
   assert(res.pool_index.size() == static_cast<size_t>(T));
@@ -873,7 +873,7 @@ void smooth_fit(const analysis::AggPdf &p, std::vector<float> &g) {
     g[static_cast<size_t>(i)] = static_cast<float>(z[static_cast<size_t>(i)] * area / sum);
 }
 
-// 左下两半 (rIC | 根输入) 同一张分布图, 元素与图例序对仗: PDF (KLL, 阴影 + 线) / PDF 光滑拟合 (smooth_fit) / mean / 时序 (背景) / 分组 (仅根输入).
+// 左下两半 (rIC | alpha) 同一张分布图, 元素与图例序对仗: PDF (KLL, 阴影 + 线) / PDF 光滑拟合 (smooth_fit) / mean / 时序 (背景) / 分组 (仅 alpha).
 //   时序: x = 时间铺满当前 x 轴, y = 值 [−max|s|, max|s|] → 当前 y 视野 (0 钉在纵向正中), 淡灰压在最底, NoFit (不动坐标自适应)
 //   分组: 组边界竖切 PDF, 每段组色填充 (决策边界); 图例一项, 一键开关
 //   图例序 = ImPlot 本帧首次登记序, 与画序解耦: 先 PlotDummy 按图例序登记, 再按画序 (时序 → 填充 → 线) 真画
@@ -884,7 +884,7 @@ struct DistView {
   const std::vector<float> &series; // 时序 (行序)
   double mean;
   double x_half = 0.0;
-  const XDist *bands = nullptr; // 非空 = 分组 (边界 / 组占比 / 组均)
+  const AlphaDist *bands = nullptr; // 非空 = 分组 (边界 / 组占比 / 组均)
 };
 void plot_dist(const DistView &v, const ImVec2 &size) {
   const ImGuiID key = ImHashData(v.pdf.y.data(), v.pdf.y.size() * sizeof(float), ImHashStr(v.title)); // 标题带矩 + PDF 本身
@@ -972,7 +972,7 @@ void plot_dist(const DistView &v, const ImVec2 &size) {
     if (!v.bands) {
       ImGui::SetTooltip("%s %+.4g  density %.3f", v.x_label, x, p.y[static_cast<size_t>(i)]);
     } else {
-      const XDist &b = *v.bands;
+      const AlphaDist &b = *v.bands;
       const int k = static_cast<int>(std::upper_bound(b.bound, b.bound + K - 1, x) - b.bound);
       ImGui::SetTooltip("%s %+.4g  density %.3f\nG%d  [%+.4g, %+.4g]  占全体 %.1f%%  组均 %+.4g", v.x_label, x, p.y[static_cast<size_t>(i)], k + 1,
                         k ? b.bound[k - 1] : b.lo, k + 1 < K ? b.bound[k] : b.hi, 100.f * b.share[k], b.gmean[k]);
@@ -988,13 +988,13 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
   plot_dist({title, "IC", "rIC(t)", d.ic_pdf, d.ic_series, d.hs.ric.mean, 0.5, nullptr}, size);
 }
 
-// 左下右半: 根输入分布 — 池内有效格的根输入值 (标题的矩 = 全体, 不截尾); PDF 已截尾 → x 半宽贴 PDF 两端 max |x| 即按主体缩放 (0 居中); 时序 = 逐行截面均值; 组边界竖切分组
-void plot_xdist(const InspectDerived &d, const ImVec2 &size) {
-  const XDist &x = d.xd;
+// 左下右半: alpha 分布 — 池内有效格的 alpha (标题的矩 = 全体, 不截尾); PDF 已截尾 → x 半宽贴 PDF 两端 max |alpha| 即按主体缩放 (0 居中); 时序 = 逐行截面均值; 组边界竖切分组
+void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
+  const AlphaDist &a = d.adist;
   char title[160];
-  std::snprintf(title, sizeof(title), "根输入分布 (PDF 截 0.4%%~99.6%%)  mean %+.4g  sd %.4g  skew %+.2f  kurt %+.2f###xdist", x.mean, x.sd, x.skew,
-                x.kurt);
-  plot_dist({title, "x", "X(t)", x.pdf, x.series, x.mean, 0.0, &x}, size);
+  std::snprintf(title, sizeof(title), "alpha 分布 (PDF 截 0.4%%~99.6%%)  mean %+.4g  sd %.4g  skew %+.2f  kurt %+.2f###alpha", a.mean, a.sd, a.skew,
+                a.kurt);
+  plot_dist({title, "alpha", "alpha(t)", a.pdf, a.series, a.mean, 0.0, &a}, size);
 }
 
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
@@ -1610,11 +1610,11 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     empty_plot("资产 K 线###kline", cell, wait_hint);
   }
 
-  if (shown && ui.der.valid) { // 左下一格分两半: rIC 分布 | 根输入分布
+  if (shown && ui.der.valid) { // 左下一格分两半: rIC 分布 | alpha 分布
     const ImVec2 half(std::max(50.f, (cell.x - sp) * 0.5f), cell.y);
     plot_ic(ui.der, half);
     ImGui::SameLine();
-    plot_xdist(ui.der, half);
+    plot_alpha(ui.der, half);
   } else
     empty_plot("IC 分布###ic", cell, wait_hint);
   ImGui::SameLine();

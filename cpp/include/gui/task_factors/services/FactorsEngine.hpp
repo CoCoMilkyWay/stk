@@ -2,7 +2,7 @@
 // (三服务的评估流程按 E 写一遍, 后端只在构造处分叉: with_engine / Engine<Cpu | Gpu>):
 //   bind(c)          绑作用域块: 块 (或其代 gen) 变 → 会话作废, 下次用时重开 (Y 一个作用域只进会话一次)
 //   walk(d, need, visit(i, ms))     顺序走 Dag (叶 = 块里的 X 平面, 截面池 g = 块的 Y 门控); ms = 算子耗时 (叶 0), visit 返回 false → 停
-//   stat(root, f, rows, st, xd)      visit 内调: 该根的 Stat (一级 Row 非空再落地 [hd.n][T]) + 宿主收尾 finish_root → st / xd
+//   stat(root, f, rows, st, adist)   visit 内调: 该根的 Stat (一级 Row 非空再落地 [hd.n][T]) + 宿主收尾 finish_root → st / adist
 //   forest(cands, C)                 一批候选的共享森林 (C 出 = 实际收的前 C 个: CPU ≤ batch, GPU 再按显存减半)
 //   search(d, f, t0_abs, t_lo, done(k, r, ranks))   一批候选评完逐个回调; ranks(t0, stride, n_rows, out) = 该候选 r16 抽样行
 // CPU: 根即算即放 (Stat / Search 都在根的 visit 里评); GPU: 输入 (X 叶 + 门控) 按 d.feats 上传, 叶集不变不重传; Search 森林 keep_roots, 一批一次 search_eval.
@@ -65,21 +65,21 @@ public:
     }
     return ss_;
   }
-  void stat(int root, factor::stat::Frame f, factor::stat::Row *rows, EvalStat &st, XDist &xd) {
+  void stat(int root, factor::stat::Frame f, factor::stat::Row *rows, EvalStat &st, AlphaDist &adist) {
     factor::cpu::stat::StatSession &ss = stat_session();
     const YPlanes &y = c_->y;
     const size_t n = y.sh.n();
     rx_.resize(n);
     lc_.resize(n);
     const factor::check::Plane *rp = plane(root);                                       // Stat 只看池内 (g 在算子内部)
-    const factor::check::Plane *xp = plane(d_->nodes[static_cast<size_t>(root)].in[0]); // 根输入: 根的槽先于输入释放分配, 此刻仍在
+    const factor::check::Plane *ap = plane(d_->nodes[static_cast<size_t>(root)].in[0]); // alpha = 根的输入: 根的槽先于输入释放分配, 此刻仍在
     const factor::stat::Plane x{rp->v.data(), rp->m.data()};
     factor::stat::Accum acc[factor::stat::kMaxHold];
     if (rows)
       factor::cpu::stat::stat_eval(ex_, ss, x, y.gate.data(), f, acc, factor::cpu::stat::LandRows{rows, y.sh.T}, lc_.data(), rx_.data());
     else
       factor::cpu::stat::stat_eval(ex_, ss, x, y.gate.data(), f, acc, factor::cpu::stat::DropRows{}, lc_.data(), rx_.data());
-    finish_root(ex_, y, RootRaw{rp->m.data(), rx_.data(), lc_.data(), acc, {xp->v.data(), xp->m.data()}}, ss.w, st, xd);
+    finish_root(ex_, y, RootRaw{rp->m.data(), rx_.data(), lc_.data(), acc, {ap->v.data(), ap->m.data()}}, ss.w, st, adist);
   }
 
   factor::Dag forest(const std::vector<const factor::expr::Expr *> &cands, int &C) const {
@@ -160,28 +160,28 @@ public:
     return factor::gpu::walk(sess_, d, dev_, dp_, sh.T, sh.A, sh.seg, gate_, need, [&](int i, const auto &, double ms) { return visit(i, ms); });
   }
 
-  void stat(int root, factor::stat::Frame f, factor::stat::Row *rows, EvalStat &st, XDist &xd) {
+  void stat(int root, factor::stat::Frame f, factor::stat::Row *rows, EvalStat &st, AlphaDist &adist) {
     const YPlanes &y = c_->y;
     if (!stat_) {
       const size_t n = y.sh.n();
       stat_ = factor::gpu::stat_open(y.sh.T, y.sh.A, y.sh.seg, labels_of(y), nullptr);
       w_.ensure(y.sh.A, y.hd.n, y.ad.n, ex_.threads());
-      rx_.resize(n), lc_.resize(n), mask_.resize(n), xv_.resize(n), xm_.resize(n);
+      rx_.resize(n), lc_.resize(n), mask_.resize(n), av_.resize(n), am_.resize(n);
     }
     const factor::gpu::DevPlane *rp = at(root); // Stat 只看池内 (g 在算子内部)
     factor::gpu::download(sess_, rp, nullptr, mask_.data());
     factor::stat::Accum acc[factor::stat::kMaxHold];
     factor::gpu::stat_eval(stat_, rp, gate_, f, acc, rows, lc_.data(), rx_.data());
-    const int xi = d_->nodes[static_cast<size_t>(root)].in[0]; // 根输入: 叶 = 宿主平面, 否则拷回
-    const factor::DagNode &xn = d_->nodes[static_cast<size_t>(xi)];
-    factor::stat::Plane x{xv_.data(), xm_.data()};
-    if (xn.op < 0) {
-      const factor::check::Plane *p = c_->x.find(d_->feats[static_cast<size_t>(xn.feat)]);
-      x = {p->v.data(), p->m.data()};
+    const int ai = d_->nodes[static_cast<size_t>(root)].in[0]; // alpha = 根的输入: 叶 = 宿主平面, 否则拷回
+    const factor::DagNode &an = d_->nodes[static_cast<size_t>(ai)];
+    factor::stat::Plane alpha{av_.data(), am_.data()};
+    if (an.op < 0) {
+      const factor::check::Plane *p = c_->x.find(d_->feats[static_cast<size_t>(an.feat)]);
+      alpha = {p->v.data(), p->m.data()};
     } else {
-      factor::gpu::download(sess_, at(xi), xv_.data(), xm_.data());
+      factor::gpu::download(sess_, at(ai), av_.data(), am_.data());
     }
-    finish_root(ex_, y, RootRaw{mask_.data(), rx_.data(), lc_.data(), acc, x}, w_, st, xd);
+    finish_root(ex_, y, RootRaw{mask_.data(), rx_.data(), lc_.data(), acc, alpha}, w_, st, adist);
   }
 
   // 森林按实际槽数试装: 新增槽的显存不够就减半 (一个候选都装不下 = 块太大, 断言)
@@ -281,8 +281,8 @@ private:
   std::vector<uint16_t> rx_;       // 根的 r16 拷回 (rank% / 成本)
   std::vector<uint8_t> lc_;        // 根的腿码拷回
   std::vector<uint8_t> mask_;      // 根掩码拷回 (valid% / rank%)
-  std::vector<float> xv_;          // 根输入拷回 (x_dist; 叶直接用宿主平面)
-  std::vector<uint8_t> xm_;
+  std::vector<float> av_;          // alpha 拷回 (alpha_dist; 叶直接用宿主平面)
+  std::vector<uint8_t> am_;
 };
 
 // 后端只在这里分叉一次: fn(Engine<Cpu | Gpu> &)
