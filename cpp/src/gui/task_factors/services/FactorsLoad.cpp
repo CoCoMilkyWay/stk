@@ -298,6 +298,33 @@ bool read_days(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr
   return !cancel.load(std::memory_order_relaxed) && !lr.stale();
 }
 
+// 一天的截面门控 (load_y / n_full_of 同一份): gate[t·A + a], t < VR = cs_valid ∧ 当日有数据 (∧ 子池成员); has = 本线程 [A] 暂存.
+// 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
+// (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
+// 子池 (Bar 标签层): 再与当日成员相与, 池外格同样不进截面
+template <class ViewFn>
+void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const EvalScope &es, const Day &day, size_t VR, size_t A, std::vector<uint8_t> &has,
+              uint8_t *gate) {
+  feature_storage_t x;
+  float g;
+  std::fill(has.begin(), has.end(), static_cast<uint8_t>(0));
+  for (size_t t = 0; t < VR; ++t) {
+    const View wt = view(ts_i, t);
+    for (size_t a = 0; a < A; ++a)
+      has[a] |= cell(wt, a, x, g) && fmeta::data_valid(static_cast<float>(x));
+  }
+  if (es.member) {
+    const uint8_t *mem = es.member->row(day.date);
+    for (size_t a = 0; a < A; ++a)
+      has[a] &= mem[a];
+  }
+  for (size_t t = 0; t < VR; ++t) {
+    const View wc = view(cs_i, t);
+    for (size_t a = 0; a < A; ++a)
+      gate[t * A + a] = cell(wc, a, x, g) && fmeta::data_valid(static_cast<float>(x)) && has[a];
+  }
+}
+
 } // namespace
 
 bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const XSpec &spec, XPlanes &X,
@@ -412,32 +439,14 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
         }
       }
     };
-    // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
-    // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
-    // 子池 (Bar 标签层): 再与当日成员相与, 池外格同样不进截面
-    feature_storage_t x;
-    float g;
-    std::vector<uint8_t> &has = has_data[tid];
-    std::fill(has.begin(), has.end(), static_cast<uint8_t>(0));
-    for (size_t t = 0; t < VR; ++t) {
-      const View wt = view(ts_i, t);
-      for (size_t a = 0; a < A; ++a)
-        has[a] |= cell(wt, a, x, g) && fmeta::data_valid(static_cast<float>(x));
-    }
-    if (es.member) {
-      const uint8_t *mem = es.member->row(day.date);
-      for (size_t a = 0; a < A; ++a)
-        has[a] &= mem[a];
-    }
+    gate_day(view, ts_i, cs_i, es, day, VR, A, has_data[tid], Y.gate.data() + d * VR * A);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      const View wt = view(ts_i, t), wc = view(cs_i, t);
-      for (size_t a = 0; a < A; ++a)
-        Y.gate[row + a] = cell(wc, a, x, g) && fmeta::data_valid(static_cast<float>(x)) && has[a];
       if (spec.index) { // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限
-        const View wl = view(close_i, t), wp = view(px_i, t), wf = view(fs_i, t);
+        const View wt = view(ts_i, t), wl = view(close_i, t), wp = view(px_i, t), wf = view(fs_i, t);
         for (size_t a = 0; a < A; ++a) {
           feature_storage_t c, s, px, fs;
+          float g;
           const bool ok = cell(wl, a, c, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, c);
           close.v[row + a] = ok ? static_cast<float>(c) : 0.f;
           close.m[row + a] = ok;
@@ -458,6 +467,30 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
     on += g != 0;
   Y.n_full = static_cast<double>(on) / static_cast<double>(Y.sh.T) / factor::stat::kGroups;
   assert(Y.n_full > 0.0 && "池内无有效资产");
+  return true;
+}
+
+bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, misc::exec::ForkJoin &ex,
+               const std::atomic<bool> &cancel, Progress &prog, double &out) {
+  TraceN("FactorsNFull");
+  const Shape sh = shape_of(ft, es, d0, d1);
+  const size_t A = static_cast<size_t>(sh.A), VR = static_cast<size_t>(ft.seg), nt = static_cast<size_t>(ex.threads());
+  std::vector<ColRef> cols{ft.y.ts.ref(es.pool), ft.y.cs.ref(es.pool)};
+  assert(cols[0].pool == es.rs.main && "门控在标签库");
+  std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
+  std::vector<long long> on(nt, 0);
+  prog.begin(Phase::Loading, d1 - d0);
+  if (!read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t, size_t tid) {
+        gate_day(view, 0, 1, es, day, VR, A, has[tid], gate[tid].data());
+        for (const uint8_t g : gate[tid])
+          on[tid] += g != 0;
+      }))
+    return false;
+  long long n = 0;
+  for (const long long k : on)
+    n += k;
+  out = static_cast<double>(n) / static_cast<double>(sh.T) / factor::stat::kGroups;
+  assert(out > 0.0 && "池内无有效资产");
   return true;
 }
 

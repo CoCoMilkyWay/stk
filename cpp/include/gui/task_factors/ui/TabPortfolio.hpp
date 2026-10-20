@@ -1,7 +1,7 @@
 // Factors→Portfolio: 因子组合页 + Factors 页 1. 区右侧的两个组合小框.
 //   小框 1: 选组合 (<portfolio_dir>/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
-//   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度 YY/MM/DD HH:MM; 不画个股):
+//   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD; 不画个股):
 //     组合两条线 = 各因子独立回测 (PortfolioService FactorCurve, 各自的层) 的逐行增量等权聚合: 每个交易日在当日有数据的 n 个因子间等分,
 //     因子增量 = (行收益 − 行成本) / h (h = hold_rows, 重叠持有期折算), 记在该行平仓时刻 (分钟型 = 行末分钟 + n, 收盘型 = 当日收盘, T+N = 第 N 个交易日开盘;
 //       已实现口径, 与池指数对齐; 等分仍按建仓日); 净值 = 同一 x 的增量和逐点复利连乘.
@@ -10,7 +10,7 @@
 //     池指数线 (日层, 每池一条等权; all 池两条 = 全A加权 (流通市值) / 全A等权; 全部在主图例): 只画因子日并集轴范围内, 当日收盘一点; 默认只显组合里因子所在的池;
 //       图例带成员年换手 (全评估期日均 PoolCurve::turnover × kDaysPerYear, 倍; all 池无)
 //     单因子线 (右侧图例, 默认全关): 该因子单独的 G20 多头净值 (带它自己的冲击)
-//     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
+//     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     主图例 / 右图例 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
 #pragma once
 
@@ -75,8 +75,10 @@ struct PortfolioUIState {
   uint64_t der_gen = ~0ull, der_items = ~0ull;
   double der_impact = -1.0;
   PortfolioDerived der;
-  int d0 = 0, d1 = 0;          // 区间 [d0, d1) (der.dates 下标); 日轴变 → 全段
-  double rx0 = 0.0, rx1 = 0.0; // 区间条矩形 (x 单位; 拖动中自由, 松手吸附到日并生效)
+  int d0 = 0, d1 = 0;                       // 区间 [d0, d1) (der.dates 下标; 两边在月初 / 末尾); 日轴变 → 全段
+  int drag = 0;                             // 区间条拖动中: 0 无 / 1 左把手 / 2 右把手 / 3 段内平移
+  double grab_day = 0.0;                    // 按下时鼠标所在日 (平移按与它的差算)
+  int grab_k0 = 0, grab_k1 = 0;             // 按下时两边的月初序号 (平移保持 k1 − k0)
   int view_d0 = -1, view_d1 = -1;
   PortfolioView view;
   bool log_y = false;

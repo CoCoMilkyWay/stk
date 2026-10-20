@@ -35,7 +35,6 @@ using factor::search::Result;
 using factor::search::Score;
 using Clock = std::chrono::steady_clock;
 
-constexpr int carry_days(int seg) { return (factor::kMaxD + seg - 1) / seg; } // 块首多带的交易日 (ROLL 预热 + rAC lag): 行数 ≥ kMaxD ≥ TS 归一窗 / max_lag
 constexpr int kCpuForest = 64;                                                // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
 constexpr int kGpuMinBatch = 8;                                               // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
 constexpr double kVramFrac = 0.85;                                            // 显存空闲量的使用比例 (宿主: FactorsLoad host_budget)
@@ -179,7 +178,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const FactorScope &scope = req.scope;
   const SearchSpec &sp = req.spec;
   assert(scope.seg == ft.seg && "请求层与字段表层不符");
-  const int seg = ft.seg, carry = carry_days(seg);
+  const int seg = ft.seg;
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
   std::vector<int> holds;
   for (const int h : keys_of(ft.y.labels))
@@ -225,7 +224,6 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     res.holds.push_back(std::move(sh));
   }
   fs::assert_holds(hd, seg);
-  assert(factor::search::max_lag(hd, seg) <= carry * seg && "carry 不够 rAC 的 lag");
   {
     std::string hs;
     for (int hi = 0; hi < H; ++hi)
@@ -252,6 +250,10 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   for (const grid::Slot &s : slots)
     lg("  %-24s 坐标 %-5s 范围 [%s, %s] 中心 u0=%.3g%s", s.name.c_str(), coord_name(s), s.lo_bounded ? strf("%.3g", s.u_lo).c_str() : "-inf",
        s.hi_bounded ? strf("%.3g", s.u_hi).c_str() : "+inf", s.u0, s.integer ? " 整数" : "");
+  // 块首前带: 统计首行的 rAC lag 行 (t_lo − max_lag) 也须整窗 ⇒ 行数 ≥ 模板回看 + max_lag
+  const int look = grid::lookback(e0), lag = factor::search::max_lag(hd, seg);
+  const int carry = (look + lag + seg - 1) / seg;
+  lg("前带: 模板回看 %d 行 + rAC lag %d 行 → %d 天", look, lag, carry);
   const factor::expr::Expr ep = e0.placeholder();           // 结构 / 特征叶序 / 槽数与任一具体化相同 (尺度也在它上算)
   const factor::Dag d0 = factor::build(ep, /*fuse=*/false); // 尺度要按 keys 取任一子式的平面, 不融合
   const int nf = static_cast<int>(d0.feats.size()), s0 = d0.n_slots;
@@ -366,6 +368,20 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
        day1 - load0, res.chunk_plan[static_cast<size_t>(ci)].mb);
   }
 
+  // ---- 满仓只数 = 全期池宽 (与 Run 同一个 cap): 一块 = 块 0 的 YPlanes::n_full 即全期; 多块先预扫全期门控, 装块时覆盖各块的 n_full
+  //      (引擎的 Search 会话取 y.n_full) ----
+  double n_full = 0.0;
+  if (n_chunks > 1) {
+    const Clock::time_point t_scan = Clock::now();
+    if (!n_full_of(ft, es, F.lr, 0, static_cast<size_t>(days), F.ex, cancel_, *this, n_full)) {
+      if (F.lr.stale())
+        return abort_with("特征库判废 (池轴/字段表与当前不符), 需重算特征");
+      lg("已取消");
+      return false;
+    }
+    lg("预扫全期门控: %.1fs", std::chrono::duration<double>(Clock::now() - t_scan).count());
+  }
+
   std::vector<ChunkData> chunks(cache_all ? static_cast<size_t>(n_chunks) : 1);
   bool domain_checked = false;
   // 装一块: 交易日 [day0, day1), 前带 carry; 首块顺带查特征叶值域
@@ -386,6 +402,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     }
     lg("装载块 %d/%d: %d 天, %.1fs", ci + 1, n_chunks, day1 - load0, std::chrono::duration<double>(Clock::now() - t_load).count());
     cd.idx = ci;
+    if (n_chunks > 1)
+      cd.c.y.n_full = n_full;
     cd.t_lo = (day0 - load0) * seg;
     cd.t0_abs = load0 * seg;
     if (!domain_checked) {
@@ -541,9 +559,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   //      上游自由参数取占位值, σ 只是坐标刻度, 粗网格 ±kSpan 单位 + 局部搜索兜得住) ----
   if (handle(load_chunk(0, chunks[0]), ret))
     return ret;
-  // ---- 满仓只数 n_full (显示用): 块 0 池宽. 评估的 cap 逐块取该块的 YPlanes::n_full (两后端 search_open 同一份) ----
   res.n_full = chunks[0].c.y.n_full;
-  lg("满仓一腿 %.1f 只 (块 1 池内平均有效资产数 / %d 组)", res.n_full, fs::kGroups);
+  lg("满仓一腿 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
   cpu.emplace(F.ex, cancel_, kCpuForest); // 尺度恒走 CPU (要宿主平面); CPU 后端时也是评估引擎
   {
     std::vector<size_t> need; // 要尺度的槽

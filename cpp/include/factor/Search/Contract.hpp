@@ -31,8 +31,8 @@
 //         根下插 TsNeg 的表达式 (Expr negated), 精确统计由 Run 在它上算. 因子表 / 算子表仍用 score_of (只认正向).
 //
 //   【多权重】一个模板在一个 h 下不止一个好参数 (粗网格的各局部峰各自模式搜索到一个最优). 终选: 各峰最优里 score ≥ (1 − kPlateau)·max 的
-//         为**高原集**; 其中按两两**截面相关**挑 ≤ kPicks 个 (pick_uncorrelated: 组内两两最大相关最小的组合, 不保证含 max) —— 要的是
-//         持仓重合最少的几组优质权重, 不是分数最高的几个. 截面相关 = 同 t 两候选 r16 行的 Pearson (与 rAC 同一行核 lag_row, lag 换成另一候选),
+//         为**高原集**; 其中按两两**截面相关**挑 ≤ kPicks 个 (pick_uncorrelated: 组内两两最大相关最小的组合, 不保证含 max; 再去掉相关
+//         > kCorrMax 的近似重复, 留分高者) —— 要的是持仓重合最少的几组优质权重, 不是分数最高的几个. 截面相关 = 同 t 两候选 r16 行的 Pearson (与 rAC 同一行核 lag_row, lag 换成另一候选),
 //         沿抽样行取均值 (kCorrRows 行够估; 两两全量算不值). 每 h 独立做, 全部 h 的 picks 合为该模板的 weights.
 // =============================================================================
 
@@ -58,34 +58,45 @@ inline constexpr int kHoldMaxOpen = 1;     // 窗上沿: T+1 开盘
 inline constexpr double kPlateau = 0.20;   // 高原: score ≥ (1 − kPlateau)·max
 inline constexpr int kPicks = 3;           // 每 h 最多留的权重数
 inline constexpr int kCorrRows = 1024;     // 截面相关的抽样行数 (整个作用域上均匀)
+inline constexpr double kCorrMax = 0.9;    // 终选两两相关上限: 超过 = 近似重复的参数, 只留分高者
 inline bool hold_in_window(int hold) {
   return factor::stat::hold_intraday(hold) ? hold >= kHoldMinMinutes : hold <= factor::stat::hold_open(kHoldMaxOpen);
 }
 
-// 终选: corr[M][M] 对称 (对角不看), 在 ≤ kPicks 的组合里取两两最大相关最小者 (并列取 score 和大的); M ≤ kPicks → 全要. 返回下标
+// 终选: corr[M][M] 对称 (对角不看), 在 ≤ kPicks 的组合里取两两最大相关最小者 (并列取 score 和大的; M ≤ kPicks → 全要),
+// 再按 score 降序贪心去掉与已留者相关 > kCorrMax 的. 返回下标 (score 降序, 非空)
 inline std::vector<int> pick_uncorrelated(const std::vector<std::vector<double>> &corr, const std::vector<double> &score) {
   const int M = static_cast<int>(score.size());
-  assert(static_cast<int>(corr.size()) == M);
+  assert(M >= 1 && static_cast<int>(corr.size()) == M);
   std::vector<int> best;
   if (M <= kPicks) {
     for (int i = 0; i < M; ++i)
       best.push_back(i);
-    return best;
-  }
-  static_assert(kPicks == 3, "下面枚举写死三元组");
-  double best_c = std::numeric_limits<double>::infinity(), best_s = -std::numeric_limits<double>::infinity();
-  for (int i = 0; i < M; ++i)
-    for (int j = i + 1; j < M; ++j)
-      for (int k = j + 1; k < M; ++k) {
-        const double c = std::max({corr[i][j], corr[i][k], corr[j][k]});
-        const double s = score[i] + score[j] + score[k];
-        if (c < best_c || (c == best_c && s > best_s)) {
-          best_c = c, best_s = s;
-          best = {i, j, k};
+  } else {
+    static_assert(kPicks == 3, "下面枚举写死三元组");
+    double best_c = std::numeric_limits<double>::infinity(), best_s = -std::numeric_limits<double>::infinity();
+    for (int i = 0; i < M; ++i)
+      for (int j = i + 1; j < M; ++j)
+        for (int k = j + 1; k < M; ++k) {
+          const double c = std::max({corr[i][j], corr[i][k], corr[j][k]});
+          const double s = score[i] + score[j] + score[k];
+          if (c < best_c || (c == best_c && s > best_s)) {
+            best_c = c, best_s = s;
+            best = {i, j, k};
+          }
         }
-      }
-  assert(best.size() == static_cast<size_t>(kPicks));
-  return best;
+    assert(best.size() == static_cast<size_t>(kPicks));
+  }
+  std::stable_sort(best.begin(), best.end(), [&](int a, int b) { return score[a] > score[b]; });
+  std::vector<int> out;
+  for (const int i : best) {
+    bool dup = false;
+    for (const int j : out)
+      dup = dup || corr[i][j] > kCorrMax;
+    if (!dup)
+      out.push_back(i);
+  }
+  return out;
 }
 
 // rAC 需要的最大 lag 行数 (= carry 下限; seg = 因子所在层)

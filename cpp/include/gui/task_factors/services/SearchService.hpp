@@ -5,7 +5,8 @@
 // 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 全部 h 的标签同在 (hd.n = H), 因子平面只算一遍; 趟与趟之间才有依赖):
-//   尺度          先装块 0: 满仓只数 n_full = 池内平均有效资产数 / kGroups (Labels::cap, FactorsLoad YPlanes::n_full); 模板按占位值 (Expr::placeholder)
+//   尺度          先装块 0: 满仓只数 n_full = 全期池内平均有效资产数 / kGroups (Labels::cap, 各块共用, 与 Run 同一个; 一块 = 块 0 的 YPlanes::n_full,
+//                 多块 = 预扫全期门控 FactorsLoad n_full_of); 模板按占位值 (Expr::placeholder)
 //                 建 DAG 在 CPU 上走到各阈值槽 (ANY / GE0) 的输入节点, 取池内有效格标准差 σ 作该槽坐标单位 (Grid set_scale);
 //                 σ 不是正有限数的槽 → 整个搜索放弃 (自由参数没法落值)
 //   趟 0 粗网格   全部槽的格点笛卡尔积 (围 Grid 的中心铺, 步长由 kLayerMax 预算反推), 评一次得全部 h 的分 (自动定向: Contract【方向】)
@@ -17,9 +18,9 @@
 //   终            每 h pick_uncorrelated → ≤ kPicks 权重; 一个 h 都没有正分候选 → 文件不动; 否则 weights = 全部 h 的 picks
 //
 // 评估 (Search 算子, 两后端语义同 Stat; 装 / 评搜索窗内全部标签组):
-//   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry_days = ⌈kMaxD / seg⌉ 日 (行数 ≥ kMaxD ≥ max_lag), 统计从 t_lo 起
-//             (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同 (ROLL 窗 ≤ kMaxD, EXPAND 段界 reset;
-//             唯 TsMeanEma 全历史递推在块首重启, carry 5 日后差 (1−k)^1275, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
+//   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry = ⌈(模板回看 + max_lag) / seg⌉ 日 (Grid lookback: 各路径 ROLL 窗长之和,
+//             自由 d 取 kMaxD), 统计从 t_lo 起 (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同
+//             (EXPAND 段界 reset; 唯 EXPO 全历史递推在块首重启, 差 (1−k)^carry 行, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
 //   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次).
 //             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + accum_rows), 不留根平面;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
@@ -94,7 +95,7 @@ struct SearchResult {
   std::vector<SearchChunk> chunk_plan; // 分块计划 (装载前发布)
   std::string backend;
   double seconds = 0.0;
-  double n_full = 0.0; // 满仓一腿只数 (Labels::cap; 块 0 池内平均有效资产数 / kGroups)
+  double n_full = 0.0; // 满仓一腿只数 (Labels::cap, 各块共用; 全期池内平均有效资产数 / kGroups)
   int n_weights = 0;   // 写入的权重数
   bool wrote = false;  // 已写 weights (UI 据此重扫 + Run)
   std::string message; // 结论 / 没算成的原因

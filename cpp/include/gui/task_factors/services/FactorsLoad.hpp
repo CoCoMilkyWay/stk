@@ -1,7 +1,7 @@
 // FactorsLoad — 因子评估的特征库装载层, FactorsService (全表 Run) / InspectService (单因子深看) / SearchService 共用:
 //   open_libs / EvalScope = 一个因子的评估作用域 (eval_scope: 所用库 + 评估期 = 落盘日交集 + A 轴 + 子池成员), worker 按因子解析;
 //   XSpec → XPlanes (因子输入叶) ↔ YSpec → YPlanes (截面门控 + 两腿平面 标签 [hold] / 成本 [amt] + 池等权指数 + 满仓只数):
-//   load_x / load_y 同一份逐天并行骨架; ScopeCache + ensure_y / ensure_x = 作用域块 (Y 常驻, X 按服务策略留 / 补);
+//   load_x / load_y 同一份逐天并行骨架 (n_full_of 只扫门控出满仓只数); ScopeCache + ensure_y / ensure_x = 作用域块 (Y 常驻, X 按服务策略留 / 补);
 //   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率;
 //   cost_tiers 换手成本; labels_of 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
 //   alpha_dist alpha 分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本);
@@ -130,6 +130,10 @@ bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
             misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec, YPlanes &Y,
             misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
+// es.days[d0, d1) 的满仓只数 (与 load_y 的 YPlanes::n_full 同一份门控同式), 只读 ts_valid / cs_valid 两列, 不留平面 (Search 多块时的全期 cap).
+// prog.begin Loading. false = 取消 / 库判废
+bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, misc::exec::ForkJoin &ex,
+               const std::atomic<bool> &cancel, Progress &prog, double &out);
 
 // ---- 作用域块: Y 按 (层, 作用域, 日段, YSpec) 常驻; X 挂在同一块上 (Y 换 → X 清) ----
 //   Run = 每轮一块 (Y 跨文件复用, X retain 只留本文件的叶); Inspect = 服务一块 (X 只增); Search = 每块一个

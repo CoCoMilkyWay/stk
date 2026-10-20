@@ -1,7 +1,7 @@
 // Factors→Portfolio — 见头文件
 #include "gui/task_factors/ui/TabPortfolio.hpp"
 
-#include "features/TimeIndex.hpp"             // L_1min_to_Clock / TRADE_MINUTES_PER_DAY (横轴刻度)
+#include "features/TimeIndex.hpp"             // TRADE_MINUTES_PER_DAY (横轴每日跨度)
 #include "gui/Tasks.hpp"                      // StatusColor
 #include "gui/task_factors/ui/TabFactors.hpp" // tip
 #include "shared/FeatureLib.hpp"              // feature_pools
@@ -54,18 +54,7 @@ std::string entry_label(const PortfolioEntry &e) {
   return "(" + e.pool + ", " + factor::stat::hold_name(e.hold) + "): " + std::filesystem::path(e.file).stem().string();
 }
 
-// 横轴刻度: x = 日下标 · kDayW + 分钟 → YY/MM/DD HH:MM (user_data = 日并集轴)
-int clock_formatter(double v, char *buf, int size, void *ud) {
-  const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
-  if (dates.empty() || v < 0)
-    return std::snprintf(buf, size, " ");
-  const size_t d = std::min(static_cast<size_t>(v) / kDayW, dates.size() - 1);
-  const ClockTime ct = L_1min_to_Clock(static_cast<size_t>(v) % kDayW);
-  const misc::Ymd y = dates[d];
-  return std::snprintf(buf, size, "%02d/%02d/%02d %02d:%02d", y / 10000 % 100, y / 100 % 100, y % 100, ct.hour, ct.minute);
-}
-
-// 区间条刻度: 只到日
+// 横轴刻度 (主图 / 区间条): x = 日下标 · kDayW + 分钟 → YY/MM/DD, 只到日 (user_data = 日并集轴)
 int day_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   if (dates.empty() || v < 0)
@@ -468,7 +457,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ui.der_gen = gen, ui.der_items = ui.items_gen, ui.der_impact = fixed_impact;
     if (d.dates != old) { // 日轴变 → 区间回全段
       ui.d0 = 0, ui.d1 = static_cast<int>(d.dates.size());
-      ui.rx0 = 0.0, ui.rx1 = static_cast<double>(d.dates.size() * kDayW);
+      ui.drag = 0;
       refit = true;
     }
     ui.view_d0 = -1;
@@ -586,7 +575,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   if (ImPlot::BeginPlot("##portfolio", ImVec2(pw, av.y - kBarH - st.ItemSpacing.y))) {
     // 线性: y 下限钉在 0 (净值恒正), fit / 缩放只动上限; log: 正常
     ImPlot::SetupAxes(nullptr, "净值 (复利, 区间起点 = 1)", ImPlotAxisFlags_None, ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin);
-    ImPlot::SetupAxisFormat(ImAxis_X1, clock_formatter, &d.dates);
+    ImPlot::SetupAxisFormat(ImAxis_X1, day_formatter, &d.dates);
     if (ui.log_y)
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     else
@@ -659,7 +648,8 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ImPlot::EndPlot();
   }
 
-  // ---- 区间条: 全段组合 LS; 矩形 = 选定日段, 松手吸附到日后生效 (各线在新起点归一) ----
+  // ---- 区间条: 全段组合 LS; 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
+  //   左右边 = 竖把手 (拖改起止, 双击拉到头); 段内拖 = 平移 (月数不变); 悬停 / 拖动时把手旁标起止日
   const int D = static_cast<int>(d.dates.size());
   if (ImPlot::BeginPlot("##pf_range", ImVec2(pw, kBarH),
                         ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
@@ -672,25 +662,104 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ImPlot::SetNextLineStyle(kColLs, 1.0f);
     ImPlot::PlotLine("##pf_range_ls", d.ls.x.data(), d.ls.y.data(), static_cast<int>(d.ls.x.size()));
     if (D > 0) {
+      std::vector<int> ms; // 吸附点 = 月初下标, 末尾补 D
+      for (int i = 0; i < D; ++i)
+        if (i == 0 || d.dates[i] / 100 != d.dates[i - 1] / 100)
+          ms.push_back(i);
+      ms.push_back(D);
+      const int K = static_cast<int>(ms.size()) - 1;
+      const auto near_k = [&](double day, int lo, int hi) { // ms[lo..hi] 里离 day 最近的那个的下标
+        int best = lo;
+        for (int k = lo + 1; k <= hi; ++k)
+          if (std::abs(ms[k] - day) < std::abs(ms[best] - day))
+            best = k;
+        return best;
+      };
       const ImPlotRect lim = ImPlot::GetPlotLimits();
-      double y0 = lim.Y.Min, y1 = lim.Y.Max;
-      bool hovered = false, held = false;
-      ImPlot::DragRect(0, &ui.rx0, &y0, &ui.rx1, &y1, ImVec4(0.4f, 0.8f, 1.0f, 1.0f), ImPlotDragToolFlags_NoFit, nullptr, &hovered, &held);
-      if (!held) {
-        const int a = std::clamp(static_cast<int>(std::lround(std::min(ui.rx0, ui.rx1) / kDayW)), 0, D - 1);
-        const int b = std::clamp(static_cast<int>(std::lround(std::max(ui.rx0, ui.rx1) / kDayW)), a + 1, D);
-        if (a != ui.d0 || b != ui.d1) {
-          ui.d0 = a, ui.d1 = b;
-          ui.refit = true;
-        }
-        ui.rx0 = static_cast<double>(static_cast<size_t>(a) * kDayW), ui.rx1 = static_cast<double>(static_cast<size_t>(b) * kDayW);
-        if (hovered)
-          tip("区间 %d/%02d/%02d ~ %d/%02d/%02d (%d 日)\n"
-              "• 拖中心点平移, 拖左右边改起止; 松手吸附到日\n"
-              "• 双击左 / 右边 = 拉到头",
-              d.dates[ui.d0] / 10000, d.dates[ui.d0] / 100 % 100, d.dates[ui.d0] % 100, d.dates[ui.d1 - 1] / 10000, d.dates[ui.d1 - 1] / 100 % 100,
-              d.dates[ui.d1 - 1] % 100, ui.d1 - ui.d0);
+      const auto px_of = [&](int day) { return ImPlot::PlotToPixels(static_cast<double>(static_cast<size_t>(day) * kDayW), lim.Y.Min).x; };
+      const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize(), mp = ImGui::GetMousePos();
+      const double mday = ImPlot::GetPlotMousePos().x / static_cast<double>(kDayW);
+      constexpr float kGrab = 7.0f; // 把手抓取半宽 (px)
+      int over = 0;                 // 鼠标下: 1 左把手 / 2 右把手 / 3 段内
+      if (mp.x >= pp.x && mp.x <= pp.x + ps.x && mp.y >= pp.y && mp.y <= pp.y + ps.y &&
+          ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+        const float x0 = px_of(ui.d0), x1 = px_of(ui.d1);
+        over = std::abs(mp.x - x0) <= kGrab ? 1 : std::abs(mp.x - x1) <= kGrab ? 2 : (mp.x > x0 && mp.x < x1) ? 3 : 0;
       }
+      int k0 = near_k(ui.d0, 0, K), k1 = near_k(ui.d1, 0, K);
+      if (k1 <= k0) // 保 0 ≤ k0 < k1 ≤ K (下面按边拖的取值范围要它)
+        k1 = std::min(k0 + 1, K), k0 = k1 - 1;
+      if (ui.drag == 0 && over != 0 && ImGui::IsMouseClicked(0))
+        ui.drag = over, ui.grab_day = mday, ui.grab_k0 = k0, ui.grab_k1 = k1;
+      if (ui.drag != 0 && !ImGui::IsMouseDown(0))
+        ui.drag = 0;
+      if (ui.drag == 1)
+        k0 = near_k(mday, 0, k1 - 1);
+      else if (ui.drag == 2)
+        k1 = near_k(mday, k0 + 1, K);
+      else if (ui.drag == 3) {
+        const int w = ui.grab_k1 - ui.grab_k0;
+        k0 = near_k(ms[ui.grab_k0] + (mday - ui.grab_day), 0, K - w), k1 = k0 + w;
+      }
+      if (over == 1 && ImGui::IsMouseDoubleClicked(0))
+        k0 = 0;
+      if (over == 2 && ImGui::IsMouseDoubleClicked(0))
+        k1 = K;
+      if (k1 <= k0)
+        k1 = std::min(k0 + 1, K), k0 = k1 - 1;
+      if (ms[k0] != ui.d0 || ms[k1] != ui.d1) {
+        ui.d0 = ms[k0], ui.d1 = ms[k1];
+        ui.refit = true;
+      }
+      const int act = ui.drag != 0 ? ui.drag : over;
+      if (act == 1 || act == 2)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+      else if (act == 3)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+      // 画: 段外压暗 + 段内淡色 + 两边竖把手 (带握纹, 悬停 / 拖动高亮)
+      const float x0 = px_of(ui.d0), x1 = px_of(ui.d1), yb = pp.y + ps.y;
+      ImDrawList &dl = *ImPlot::GetPlotDrawList();
+      ImPlot::PushPlotClipRect();
+      dl.AddRectFilled(pp, ImVec2(x0, yb), IM_COL32(0, 0, 0, 120));
+      dl.AddRectFilled(ImVec2(x1, pp.y), ImVec2(pp.x + ps.x, yb), IM_COL32(0, 0, 0, 120));
+      dl.AddRectFilled(ImVec2(x0, pp.y), ImVec2(x1, yb), IM_COL32(102, 204, 255, 28));
+      const auto handle = [&](float x, bool hot) {
+        const ImU32 c = hot ? IM_COL32(190, 240, 255, 255) : IM_COL32(102, 204, 255, 255);
+        dl.AddLine(ImVec2(x, pp.y), ImVec2(x, yb), c, hot ? 3.0f : 2.0f);
+        constexpr float hw = 5.0f;
+        const float cx = std::clamp(x, pp.x + hw, pp.x + ps.x - hw), cy = pp.y + ps.y * 0.5f, hh = ps.y * 0.28f;
+        dl.AddRectFilled(ImVec2(cx - hw, cy - hh), ImVec2(cx + hw, cy + hh), c, 3.0f);
+        for (const float gx : {cx - 1.5f, cx + 1.5f})
+          dl.AddLine(ImVec2(gx, cy - hh * 0.5f), ImVec2(gx, cy + hh * 0.5f), IM_COL32(20, 50, 70, 255), 1.0f);
+      };
+      handle(x0, act == 1 || act == 3);
+      handle(x1, act == 2 || act == 3);
+      if (act != 0) { // 起止日贴把手外侧 (放不下改内侧)
+        char s0[16], s1[16];
+        const misc::Ymd a = d.dates[ui.d0], b = d.dates[ui.d1 - 1];
+        std::snprintf(s0, sizeof(s0), "%d/%02d/%02d", a / 10000, a / 100 % 100, a % 100);
+        std::snprintf(s1, sizeof(s1), "%d/%02d/%02d", b / 10000, b / 100 % 100, b % 100);
+        const ImVec2 t0 = ImGui::CalcTextSize(s0), t1 = ImGui::CalcTextSize(s1);
+        float lx = x0 - 9.0f - t0.x, rx = x1 + 9.0f;
+        if (lx < pp.x)
+          lx = x0 + 9.0f;
+        if (rx + t1.x > pp.x + ps.x)
+          rx = x1 - 9.0f - t1.x;
+        const auto label = [&](float tx, const char *s, const ImVec2 &ts) {
+          dl.AddRectFilled(ImVec2(tx - 3.0f, pp.y + 2.0f), ImVec2(tx + ts.x + 3.0f, pp.y + 4.0f + ts.y), IM_COL32(10, 20, 30, 220), 3.0f);
+          dl.AddText(ImVec2(tx, pp.y + 3.0f), IM_COL32(255, 255, 255, 255), s);
+        };
+        label(lx, s0, t0);
+        label(rx, s1, t1);
+      }
+      ImPlot::PopPlotClipRect();
+      if (act != 0)
+        tip("区间 %d/%02d/%02d ~ %d/%02d/%02d (%d 日)\n"
+            "• 拖左右把手改起止, 拖段内平移 (月数不变); 吸附到月初\n"
+            "• 双击把手 = 拉到头",
+            d.dates[ui.d0] / 10000, d.dates[ui.d0] / 100 % 100, d.dates[ui.d0] % 100, d.dates[ui.d1 - 1] / 10000, d.dates[ui.d1 - 1] / 100 % 100,
+            d.dates[ui.d1 - 1] % 100, ui.d1 - ui.d0);
     }
     ImPlot::EndPlot();
   }

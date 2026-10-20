@@ -168,6 +168,19 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg) {
   return out;
 }
 
+// 模板子树 i 的最长回看行数 = 沿各条到叶的路径累加 ROLL 窗长 d (自由 d 取上界 kMaxD; 用 d 而非 d−1 以盖住 Delay / Delta 的 x_{t−d}).
+// EXPAND 段内 reset (块首对齐段首) 不计; EXPO 全历史递推不计 (块首重启, 由调用方接受)
+inline int lookback(const expr::Expr &e, int i = 0) {
+  const expr::Node &n = e.nodes[static_cast<size_t>(i)];
+  if (n.op < 0)
+    return 0;
+  const expr::OpInfo &o = expr::kOps[n.op];
+  int m = 0;
+  for (int a = 0; a < o.arity; ++a)
+    m = std::max(m, lookback(e, n.args[a]));
+  return m + (o.t == T::ROLL ? ((n.free & expr::kFreeD) ? kMaxD : n.p.d) : 0);
+}
+
 // 中心坐标 u0[P]
 inline std::vector<double> center_u(const std::vector<Slot> &slots) {
   std::vector<double> u(slots.size());
