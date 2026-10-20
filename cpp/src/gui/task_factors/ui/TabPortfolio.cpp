@@ -250,18 +250,21 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed
     d.pools.push_back(std::move(p));
   }
 
-  // ---- VAL: 各池 / 申万一级行业 (all 池按行业切) 的流通市值加权指数 + 同日估值 (含滚动分位), 只取日并集轴上的日 (收盘一点);
+  // ---- VAL: 各池 / 申万一级行业 (all 池按行业切) 的流通市值加权指数, 只取日并集轴上的日 (收盘一点) + 全史估值 (滚动窗用);
   //      右图例 = 池名 | 中文名 (all = 全A加权) / sw<ID> | 行业名 ----
   if (d.dates.empty())
     return;
   std::vector<std::string> v_cns;
   const auto add_val = [&](std::string name, std::string cn, std::string tag, const PoolCurve &c, const std::vector<float> &ix,
-                           const ValCurve(&vc)[kPoolVals]) {
+                           const std::vector<float>(&vc)[kPoolVals]) {
     PortfolioDerived::Val vl;
     vl.name = std::move(name), vl.tag = std::move(tag);
     assert(ix.size() == c.dates.size());
-    for (const ValCurve &s : vc)
-      assert(s.v.size() == c.dates.size() && s.pct.size() == c.dates.size());
+    vl.hd = c.dates;
+    for (int b = 0; b < kPoolVals; ++b) {
+      assert(vc[b].size() == c.dates.size());
+      vl.hv[b] = vc[b];
+    }
     for (size_t i = 0; i < c.dates.size(); ++i) {
       if (c.dates[i] < d.dates.front() || c.dates[i] > d.dates.back())
         continue;
@@ -269,12 +272,7 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed
       if (d.dates[di] != c.dates[i])
         continue;
       vl.p.x.push_back(static_cast<double>(di * kDayW + kDayW - 1)), vl.p.y.push_back(ix[i]);
-      for (int b = 0; b < kPoolVals; ++b) {
-        ValCurve &o = vl.val[b];
-        o.v.push_back(vc[b].v[i]), o.pct.push_back(vc[b].pct[i]);
-        for (int j = 0; j < kBandQ; ++j)
-          o.q[j].push_back(vc[b].q[j][i]);
-      }
+      vl.at.push_back(static_cast<uint32_t>(i));
     }
     v_cns.push_back(std::move(cn));
     d.vals.push_back(std::move(vl));
@@ -331,8 +329,74 @@ float ann_of(const PortfolioCurve &c) {
 // 估值 (PE / PB / DY) 可算: 有限 ∧ > 0
 bool val_ok(double r) { return std::isfinite(r) && r > 0.0; }
 
-// vs = VAL 选中池 (der.vals 下标, −1 = 无)
-void make_view(const PortfolioDerived &d, int d0, int d1, int vs, PortfolioView &v) {
+// s 的口 b 的滚动分位 → o [s.p.x]: 价格倍数 m (kValInv → 1 / 值; 可算才收) 全史排序定秩 (同值同秩), 秩上 Fenwick 计窗内个数;
+// 窗 = (日 − years 年, 日], 沿全史逐日入 1 点 / 出窗游标; 分位 = 窗内第 round(q · (n − 1)) + 1 小 (Fenwick 倍增下降),
+// 估值分位 = 窗内 ≤ 当日的个数 / n. 每日 O(kBandQ · log), 一口全史 ~ 亚毫秒 (滑条即时)
+void roll_of(const PortfolioDerived::Val &s, int b, int years, PortfolioRoll &o) {
+  constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+  const size_t n = s.hd.size(), np = s.at.size();
+  const std::vector<float> &v = s.hv[b];
+  std::vector<float> srt;
+  for (size_t i = 0; i < n; ++i)
+    if (val_ok(v[i]))
+      srt.push_back(kValInv[b] ? 1.f / v[i] : v[i]);
+  std::sort(srt.begin(), srt.end());
+  std::vector<int> rk(n, -1); // 秩 (−1 = 不可算)
+  for (size_t i = 0; i < n; ++i)
+    if (val_ok(v[i]))
+      rk[i] = static_cast<int>(std::lower_bound(srt.begin(), srt.end(), kValInv[b] ? 1.f / v[i] : v[i]) - srt.begin());
+  const int S = static_cast<int>(srt.size());
+  std::vector<int> bit(static_cast<size_t>(S) + 1, 0);
+  const auto add = [&](int r, int dv) {
+    for (int i = r + 1; i <= S; i += i & -i)
+      bit[static_cast<size_t>(i)] += dv;
+  };
+  const auto upto = [&](int r) { // 秩 ≤ r 的个数
+    int c = 0;
+    for (int i = r + 1; i > 0; i -= i & -i)
+      c += bit[static_cast<size_t>(i)];
+    return c;
+  };
+  int top = 1;
+  while (top * 2 <= S)
+    top *= 2;
+  const auto kth = [&](int k) { // 第 k (1 起) 小的秩
+    int p = 0;
+    for (int st = top; st > 0; st >>= 1)
+      if (p + st <= S && bit[static_cast<size_t>(p + st)] < k)
+        p += st, k -= bit[static_cast<size_t>(p)];
+    return p;
+  };
+  for (std::vector<float> &q : o.q)
+    q.assign(np, kNaN);
+  o.pct.assign(np, kNaN);
+  misc::Ymd first = 0; // 首个可算日
+  size_t lo = 0, k = 0;
+  int w = 0;
+  for (size_t t = 0; t < n && k < np; ++t) {
+    if (rk[t] >= 0) {
+      add(rk[t], 1), ++w;
+      if (first == 0)
+        first = s.hd[t];
+    }
+    for (; s.hd[lo] <= s.hd[t] - years * 10000; ++lo)
+      if (rk[lo] >= 0)
+        add(rk[lo], -1), --w;
+    if (s.at[k] != t)
+      continue;
+    const size_t i = k++;
+    if (w == 0 || first == 0 || first > s.hd[t] - 10000)
+      continue;
+    for (int j = 0; j < kBandQ; ++j)
+      o.q[j][i] = srt[static_cast<size_t>(kth(static_cast<int>(std::lround(kBandQs[j] * (w - 1))) + 1))];
+    if (rk[t] >= 0)
+      o.pct[i] = 100.f * static_cast<float>(upto(rk[t])) / static_cast<float>(w);
+  }
+  assert(k == np && "at 须升序且落在 hd 内");
+}
+
+// vs = VAL 选中池 (der.vals 下标, −1 = 无); roll = 它的滚动分位
+void make_view(const PortfolioDerived &d, int d0, int d1, int vs, const PortfolioRoll (&roll)[kPoolVals], PortfolioView &v) {
   const double x0 = static_cast<double>(static_cast<size_t>(d0) * kDayW), x1 = static_cast<double>(static_cast<size_t>(d1) * kDayW);
   // ---- VAL: 各池区间末个可算点的 PE / PB / DY; 选中池的价格线 (区间首点归一) + 各口滚动 band ----
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -343,11 +407,11 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, PortfolioView 
   for (int b = 0; b < kPoolVals; ++b) {
     v.val_now[b].assign(d.vals.size(), kNaN);
     for (size_t i = 0; i < d.vals.size(); ++i) {
-      const std::vector<float> &r = d.vals[i].val[b].v;
-      const auto [i0, i1] = range_of(d.vals[i].p);
+      const PortfolioDerived::Val &s = d.vals[i];
+      const auto [i0, i1] = range_of(s.p);
       for (size_t j = i1; j > i0; --j)
-        if (val_ok(r[j - 1])) {
-          v.val_now[b][i] = r[j - 1];
+        if (const float x = s.hv[b][s.at[j - 1]]; val_ok(x)) {
+          v.val_now[b][i] = x;
           break;
         }
     }
@@ -361,16 +425,18 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, PortfolioView 
     for (size_t i = i0; i < i1; ++i)
       v.val.x.push_back(s.p.x[i]), v.val.y.push_back(s.p.y[i] / s.p.y[i0]);
     for (int b = 0; b < kPoolVals; ++b) {
-      const ValCurve &r = s.val[b];
+      const PortfolioRoll &r = roll[b];
+      assert(r.pct.size() == s.at.size());
       PortfolioBand &bd = v.band[b];
       const auto inv = [&](double x) { return kValInv[b] ? 1.0 / x : x; };
+      const auto val_at = [&](size_t i) { return static_cast<double>(s.hv[b][s.at[i]]); };
       size_t last = SIZE_MAX;
       for (int j = 0; j < kBandQ; ++j)
         bd.line[j].x = v.val.x, bd.line[j].y.assign(i1 - i0, kNaN);
       for (size_t i = i0; i < i1; ++i) {
-        if (!val_ok(r.v[i]) || !std::isfinite(r.q[0][i]))
+        if (!val_ok(val_at(i)) || !std::isfinite(r.q[0][i]))
           continue;
-        const double m = inv(r.v[i]);
+        const double m = inv(val_at(i));
         for (int j = 0; j < kBandQ; ++j)
           bd.line[j].y[i - i0] = v.val.y[i - i0] * r.q[j][i] / m;
         const int k = static_cast<int>(i - i0);
@@ -383,7 +449,7 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, PortfolioView 
       if (last == SIZE_MAX)
         continue;
       bd.ok = true;
-      bd.now = r.v[last], bd.pct = r.pct[last];
+      bd.now = val_at(last), bd.pct = r.pct[last];
       for (int j = 0; j < kBandQ; ++j)
         bd.q[j] = inv(r.q[j][last]);
     }
@@ -618,7 +684,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
       ui.drag = 0;
       refit = true;
     }
-    ui.view_d0 = -1;
+    ui.view_d0 = -1, ui.roll_val = -2;
   }
   // VAL 选中池: 换组合 → 回默认 (组合首个因子所在池; 它还没算出 → 暂用首个池, 不记)
   if (ui.val_for != ui.name)
@@ -638,8 +704,17 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     else if (!d.vals.empty())
       vs = 0;
   }
+  if (ui.roll_val != vs || ui.roll_years != ui.band_years) { // 滚动分位: 选中池 / 窗长 / 派生变才重算
+    for (int b = 0; b < kPoolVals; ++b)
+      if (vs >= 0)
+        roll_of(d.vals[static_cast<size_t>(vs)], b, ui.band_years, ui.roll[b]);
+      else
+        ui.roll[b] = {};
+    ui.roll_val = vs, ui.roll_years = ui.band_years;
+    ui.view_d0 = -1;
+  }
   if (ui.view_d0 != ui.d0 || ui.view_d1 != ui.d1 || ui.view_val != vs) {
-    make_view(d, ui.d0, ui.d1, vs, ui.view);
+    make_view(d, ui.d0, ui.d1, vs, ui.roll, ui.view);
     ui.view_d0 = ui.d0, ui.view_d1 = ui.d1, ui.view_val = vs;
   }
   const PortfolioView &v = ui.view;
@@ -828,7 +903,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
         if (bd.ok) {
           char now[16];
           fmt_val(b, bd.now, now, sizeof(now));
-          std::snprintf(lb, sizeof(lb), "%s Band  当前 %s  (%d年估值分位 %.0f%%)###pf_band%d", kValName[b], now, kBandYears, bd.pct, b);
+          std::snprintf(lb, sizeof(lb), "%s Band  当前 %s  (%d年估值分位 %.0f%%)###pf_band%d", kValName[b], now, ui.roll_years, bd.pct, b);
         } else
           std::snprintf(lb, sizeof(lb), "%s Band  (区间内不可算)###pf_band%d", kValName[b], b);
         if (b != kValPe)
@@ -1009,6 +1084,11 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   ImGui::SameLine();
   ImGui::BeginChild("##pf_flegend", ImVec2(0, av.y), ImGuiChildFlags_Borders);
   if (!nav) {
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemHovered())
+      tip("Band 分位的滚动窗长 N: 每日取过去 N 年 (含当日) 的倍数分位, 拖动即时重算\n"
+          "• 池估值史不足 N 年时先扩张窗; 不满 1 年不画");
     ImGui::TextColored(kHead, "池 / 行业 (单选)");
     if (ImGui::IsItemHovered())
       tip("选一个池或申万一级行业: 主图画它的价格 + PE / PB / DY Band\n"
@@ -1016,8 +1096,8 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
           "• 行业成员 = 全A 成分按上一交易日的 SW2021 一级行业 (ind_l1) 切; 行业未知的只进全A\n"
           "• PE = Σ总市值 / Σ归母净利TTM, PB = Σ总市值 / Σ归母权益MRQ, DY = Σ近365日税前分红 / Σ总市值 (整体法, 亏损 / 负权益照计)\n"
           "• 成分 = 上一交易日收盘定的池 (同池指数); 市值 = 收盘价 × 当日适用总股本, 财务取当日适用 (无前视)\n"
-          "• Band = 价格 × q / 当日倍数 (倍数 = PE / PB / 1÷DY), q = 过去 5 年 (含当日) 倍数的 5/10/25/50/75/90/95%% 分位, 逐日滚动;\n"
-          "  不足 1 年样本不画. 最便宜档以下绿 → 最贵档以上红; 估值分位 = 当日倍数在窗内的分位 (高 = 贵)\n"
+          "• Band = 价格 × q / 当日倍数 (倍数 = PE / PB / 1÷DY), q = 过去 N 年 (含当日; 上方滑条) 倍数的 5/10/25/50/75/90/95%% 分位, 逐日滚动;\n"
+          "  估值史不满 1 年不画. 最便宜档以下绿 → 最贵档以上红; 估值分位 = 当日倍数在窗内的分位 (高 = 贵)\n"
           "• 右列 = 区间末的 PE / PB / DY");
     for (size_t i = 0; i < d.vals.size(); ++i) {
       if (i == d.n_val_pools)

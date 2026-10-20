@@ -13,10 +13,8 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 
 namespace GUI::Factors {
 
@@ -39,38 +37,6 @@ int seg_of_level(const std::string &name) {
       return l.seg;
   assert(false && "组合文件: level 不是因子层名");
   __builtin_unreachable();
-}
-
-// 一口估值 v [dates] → o (v 移入): 价格倍数 m = kValInv ? 1 / v : v (v 有限 ∧ > 0 才收); 窗 = (日 − kBandYears 年, 日] 的可算点,
-// 升序数组逐日二分增删 (入窗 1 点, 出窗游标), 分位 = 窗内第 round(q · (n − 1)) 个
-void roll_band(const std::vector<misc::Ymd> &dates, std::vector<float> v, bool inv, ValCurve &o) {
-  const size_t n = dates.size();
-  assert(v.size() == n);
-  constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-  const auto mult = [&](size_t i) { return std::isfinite(v[i]) && v[i] > 0.f ? (inv ? 1.f / v[i] : v[i]) : kNaN; };
-  for (std::vector<float> &q : o.q)
-    q.assign(n, kNaN);
-  o.pct.assign(n, kNaN);
-  std::vector<float> win;
-  size_t lo = 0;
-  for (size_t t = 0; t < n; ++t) {
-    if (const float m = mult(t); std::isfinite(m))
-      win.insert(std::upper_bound(win.begin(), win.end(), m), m);
-    for (; dates[lo] <= dates[t] - kBandYears * 10000; ++lo)
-      if (const float m = mult(lo); std::isfinite(m)) {
-        const auto it = std::lower_bound(win.begin(), win.end(), m);
-        assert(it != win.end() && *it == m);
-        win.erase(it);
-      }
-    const size_t w = win.size();
-    if (w < static_cast<size_t>(kBandMinDays))
-      continue;
-    for (int j = 0; j < kBandQ; ++j)
-      o.q[j][t] = win[static_cast<size_t>(std::lround(kBandQs[j] * static_cast<double>(w - 1)))];
-    if (const float m = mult(t); std::isfinite(m))
-      o.pct[t] = 100.f * static_cast<float>(std::upper_bound(win.begin(), win.end(), m) - win.begin()) / static_cast<float>(w);
-  }
-  o.v = std::move(v);
 }
 
 } // namespace
@@ -444,7 +410,7 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   return !cancelled();
 }
 
-// 日层池等权指数: 无叶作用域 (标签库 + 池成员) → load_y 顺带算 index / 估值; 块用完即弃. 估值滚动分位: 池本身 + 各行业按行业并行
+// 日层池等权指数: 无叶作用域 (标签库 + 池成员) → load_y 顺带算 index / 估值; 块用完即弃
 bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   TraceN("PortfolioPool");
   const FeatureTable &ft = *j.ft;
@@ -470,18 +436,16 @@ bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   out.index[kWeightCap] = std::move(c.y.index_cap);
   out.turnover[kWeightEq] = c.y.index_turn;
   out.turnover[kWeightCap] = c.y.index_cap_turn;
-  out.inds.resize(K);
   for (int m = 0; m < kPoolVals; ++m)
-    roll_band(out.dates, std::move(c.y.val[m]), kValInv[m], out.val[m]);
-  F.ex.rows(static_cast<int>(K) - 1, [&](int k0, int k1, int) {
-    for (size_t k = static_cast<size_t>(k0) + 1; k <= static_cast<size_t>(k1); ++k) {
-      PoolCurve::Ind &ind = out.inds[k];
-      const auto seg = [&](const std::vector<float> &x) { return std::vector<float>(x.begin() + k * nd, x.begin() + (k + 1) * nd); };
-      ind.index = seg(c.y.ind_index);
-      for (int m = 0; m < kPoolVals; ++m)
-        roll_band(out.dates, seg(c.y.ind_val[m]), kValInv[m], ind.val[m]);
-    }
-  });
+    out.val[m] = std::move(c.y.val[m]);
+  out.inds.resize(K);
+  for (size_t k = 1; k < K; ++k) {
+    PoolCurve::Ind &ind = out.inds[k];
+    const auto seg = [&](const std::vector<float> &x) { return std::vector<float>(x.begin() + k * nd, x.begin() + (k + 1) * nd); };
+    ind.index = seg(c.y.ind_index);
+    for (int m = 0; m < kPoolVals; ++m)
+      ind.val[m] = seg(c.y.ind_val[m]);
+  }
   return true;
 }
 

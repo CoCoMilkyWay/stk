@@ -14,7 +14,7 @@
 //     主图例 / 右图例 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
 //   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用): 右图例单选一个池或申万一级行业 (全A 内按上一行 ind_l1 切;
 //     默认 = 组合首个因子所在池; 各项标区间末 PE / PB / DY), 主图 = 该池 / 行业流通市值加权指数 P (区间首点 = 1) + 滚动 PE / PB / DY Band (主图例开关,
-//     默认只开 PE): 价格 band y_t = P_t · q_j(t) / m_t, m = 价格倍数 (PE / PB / 1/DY), q_j(t) = 过去 kBandYears 年窗内 m 的 kBandQs 分位 (ValCurve, Service 算);
+//     默认只开 PE): 价格 band y_t = P_t · q_j(t) / m_t, m = 价格倍数 (PE / PB / 1/DY), q_j(t) = 过去 N 年窗内 m 的 kBandQs 分位 (N = 右图例滑条, 即时重算);
 //     band 间填色 (最便宜档以下绿 → 最贵档以上红, 低 alpha 渐变), 指数线在上; 不可算的点断开
 #pragma once
 
@@ -54,16 +54,29 @@ struct PortfolioDerived {
   std::vector<Factor> factors;  // [items 序, 只含算成的]
   int n_ready = 0, n_error = 0; // 已算成 / 算失败的因子数
   struct Val {
-    std::string name;        // 单选键: 池名 / "sw<ID>" (行业)
-    std::string label;       // VAL 右图例: 池名 | 中文名 / sw<ID> | 行业名 (补空格对齐)
-    std::string tag;         // 线尾小字 / 价格线图例: 池名 / 行业名
-    PortfolioCurve p;        // 流通市值加权指数, 轴上每日收盘一点 (不归一; 视图在区间首点归一)
-    ValCurve val[kPoolVals]; // [PoolVal] 同点 (p.x) 切出的 PoolCurve 估值 + 滚动分位
+    std::string name;                 // 单选键: 池名 / "sw<ID>" (行业)
+    std::string label;                // VAL 右图例: 池名 | 中文名 / sw<ID> | 行业名 (补空格对齐)
+    std::string tag;                  // 线尾小字 / 价格线图例: 池名 / 行业名
+    PortfolioCurve p;                 // 流通市值加权指数, 轴上每日收盘一点 (不归一; 视图在区间首点归一)
+    std::vector<misc::Ymd> hd;        // 全史日 (PoolCurve::dates; 滚动窗要看日并集轴以外的历史)
+    std::vector<float> hv[kPoolVals]; // [PoolVal][hd] 全史估值 (PoolCurve::val; NaN = 不可算)
+    std::vector<uint32_t> at;         // [p.x] → hd 下标 (升序)
   };
   std::vector<Val> vals;  // [feature_pools 序, 只含算成的池] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有)
   size_t n_val_pools = 0; // vals 前 n 个是池
 };
 
+// VAL 滚动 band: 每口价格倍数 m (PE / PB / 1/DY, 升 = 贵) 逐日在过去 N 自然年 (含当日; N = band_years) 窗内取 kBandQs 分位;
+// 池估值史 (首个可算日起) 不满 1 年 → 不画 (不足 N 年先扩张窗)
+inline constexpr int kBandYearsDef = 5, kBandYearsMax = 15;
+inline constexpr int kBandQ = 7;
+inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95};
+inline constexpr bool kValInv[kPoolVals] = {false, false, true}; // [PoolVal] 价格倍数 = 1 / 值 (DY)
+// 选中池一口的滚动分位 [der.vals[vs].p.x]
+struct PortfolioRoll {
+  std::vector<float> q[kBandQ]; // 窗内价格倍数的 kBandQs 分位 (升序; NaN = 史不满 1 年)
+  std::vector<float> pct;       // 当日价格倍数在窗内的分位 (%, 高 = 贵; NaN = 同上 / 当日不可算)
+};
 // VAL 页选中池的一口 band (PoolVal): 滚动分位的价格线
 struct PortfolioBand {
   bool ok = false;                       // 区间内有可画点 (否则其余空)
@@ -107,8 +120,11 @@ struct PortfolioUIState {
   int grab_k0 = 0, grab_k1 = 0;                  // 按下时两边的月初序号 (平移保持 k1 − k0)
   int view_d0 = -1, view_d1 = -1, view_val = -2; // view 算时的区间 / VAL 选中池 (der.vals 下标)
   PortfolioView view;
-  std::string val_pool; // VAL 选中池 (空 = 默认: 组合首个因子所在池, 未算出前暂用首个池)
-  std::string val_for;  // val_pool 对应的组合 (换组合 → 回默认)
+  std::string val_pool;              // VAL 选中池 (空 = 默认: 组合首个因子所在池, 未算出前暂用首个池)
+  std::string val_for;               // val_pool 对应的组合 (换组合 → 回默认)
+  int band_years = kBandYearsDef;    // VAL 滚动窗 N (年; 右图例滑条)
+  int roll_val = -2, roll_years = 0; // roll 算时的选中池 / 窗长 (派生变 → 作废)
+  PortfolioRoll roll[kPoolVals];     // [PoolVal] 选中池的滚动分位
   bool log_y = false;
   std::map<std::string, bool> factor_show; // 右图例: PortfolioEntry::key → 显示 (缺 = 关)
   std::string vis_key;                     // 池线默认显隐已按它设过 (组合 + 其因子所在池; 变了重设)
