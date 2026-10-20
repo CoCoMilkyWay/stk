@@ -719,7 +719,7 @@ if(NOT EXISTS ${ARROW_ROOT}/include/arrow/flight/client.h)
 endif()
 #   直接链带版本号的真实 .so: exFAT 等无 symlink 的盘上, git 把 lib*.so 符号链接检出为纯文本, lld 会当链接脚本解析失败
 foreach(arrow_lib arrow_flight parquet arrow)
-    file(GLOB arrow_so ${ARROW_ROOT}/lib/lib${arrow_lib}.so.[0-9]*)
+    file(GLOB arrow_so CONFIGURE_DEPENDS ${ARROW_ROOT}/lib/lib${arrow_lib}.so.[0-9]*)
     list(LENGTH arrow_so arrow_so_n)
     if(NOT arrow_so_n EQUAL 1)
         message(FATAL_ERROR
