@@ -97,6 +97,7 @@ constexpr ImVec4 kColRef(0.15f, 0.45f, 0.48f, 0.40f);                     // 右
 constexpr float kTailLayerWeight[kTails] = {1.0f, 0.75f, 0.5f};           // 尾部分层线宽 (组线 1.2): 越极端越细
 constexpr float kTailLsWeight[kTails] = {2.0f, 1.5f, 1.0f};               // 尾部 LS 线宽 (LS 2.5): 同上
 constexpr float kTailFillAlpha[kTails] = {0.08f, 0.15f, 0.24f};           // 相邻尾部分层线间色带 alpha: 越极端越重, 但不盖线
+constexpr float kHiScale = 2.f;                                           // 图例 hover 高亮倍数 (同 ImPlot 线宽 ITEM_HIGHLIGHT_LINE_SCALE; 线以外的件自己乘)
 constexpr float kColEdge = 2.f;                                           // 两端各留几组显色
 constexpr float kColGain = 12.f;                                          // tanh 增益: 越大台阶越陡 (12 → 相邻一组从 ~0.93 掉到 ~0.5 再到 ~0.07)
 ImVec4 lerp_color(float t) {                                              // t ∈ [0, 1]: 0 = 深蓝 (G1 / 最负), 0.5 = 灰, 1 = 深红 (G20 / 最正)
@@ -320,9 +321,11 @@ LayerRange layer_range(const InspectDerived &d, const bool *show) {
   return {lo - margin, hi + margin, lo - ls_lo};
 }
 
-// 左上右 1/4: 光标日截面 = 各组 section_at 的横柱, 按组号在共享 y 范围里均匀排 (G1 下 … G20 上), x 范围 = y 范围 (只同步 range, 与左图同尺);
-// 柱色按组号 (与左图同一 group_color, 两边对得上; 柱长非单调即分层破绽), 不标组号. 须在 plot_layers 的子图内调 (y 由 LinkRows 跟左图)
-void plot_section(const InspectDerived &d, const LayerRange &yr, int cursor_day) {
+// 左上右 1/4: 光标日截面 = 各分层线 section_at 的横柱, 在共享 y 范围里均匀排 (G1 下 … G20 上), x 范围 = y 范围 (只同步 range, 与左图同尺);
+// 柱色按组号 (与左图同一 group_color, 两边对得上; 柱长非单调即分层破绽), 不标组号. 开着的尾部级 (show[1 + j], 同 layer_range) 两腿各加一柱:
+// 底腿排 G1 之下, 顶腿排 G20 之上, 越极端越靠外; 色 / 细度同左图尾部分层线 (饱和顶 / 底色, kTailLayerWeight). 须在 plot_layers 的子图内调 (y 由 LinkRows 跟左图)
+// hov[i] = 左图图例项 i hover: 该项的柱 (i = 0 → G1 / G20; i ≥ 1 → 尾部级 i − 1 两腿) 描白边高亮
+void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *show, const bool *hov, int cursor_day) {
   if (!ImPlot::BeginPlot("##section", ImVec2(), ImPlotFlags_NoMenus | ImPlotFlags_NoLegend))
     return;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines,
@@ -331,20 +334,47 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, int cursor_day)
   const double zero = 0.0;
   ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
   ImPlot::PlotInfLines("##zero", &zero, 1);
-  float v[K];
-  for (int k = 0; k < K; ++k)
-    v[k] = section_at(d, d.lay_cum[k], cursor_day);
-  const double slot = (yr.y_hi - yr.y_lo) / K; // y 范围均分 K 槽
-  for (int k = 0; k < K; ++k) {                // 逐组一柱: PlotBars 一次只能一色
-    const double x = v[k], y = yr.y_lo + (k + 0.5) * slot;
-    ImPlot::SetNextFillStyle(group_color(k));
+  struct Slot {
+    int line; // lay_cum 下标
+    ImVec4 col;
+    float w; // 柱宽系数
+    bool hl;
+    char tag[24];
+  };
+  Slot s[kLayerLines];
+  int ns = 0;
+  const auto tail = [&](int l, int j) {
+    Slot &t = s[ns++];
+    t = Slot{layer_tail(l, j), l == kLong ? kColTop : kColBottom, kTailLayerWeight[j], hov[1 + j], {}};
+    std::snprintf(t.tag, sizeof(t.tag), "G%d 尾 %g%%", leg_group(l) + 1, static_cast<double>(kTailOfGroup[j]) * 100.0);
+  };
+  for (int j = kTails - 1; j >= 0; --j)
+    if (show[1 + j])
+      tail(kShort, j);
+  for (int k = 0; k < K; ++k) {
+    Slot &t = s[ns++];
+    t = Slot{k, group_color(k), 1.f, hov[0] && (k == leg_group(kLong) || k == leg_group(kShort)), {}};
+    std::snprintf(t.tag, sizeof(t.tag), "G%d", k + 1);
+  }
+  for (int j = 0; j < kTails; ++j)
+    if (show[1 + j])
+      tail(kLong, j);
+  float v[kLayerLines];
+  for (int i = 0; i < ns; ++i)
+    v[i] = section_at(d, d.lay_cum[s[i].line], cursor_day);
+  const double slot = (yr.y_hi - yr.y_lo) / ns; // y 范围均分 ns 槽
+  for (int i = 0; i < ns; ++i) {                // 逐线一柱: PlotBars 一次只能一色
+    const double x = v[i], y = yr.y_lo + (i + 0.5) * slot;
+    ImPlot::SetNextFillStyle(s[i].col);
+    if (s[i].hl)
+      ImPlot::SetNextLineStyle(kColLS, kHiScale);
     char id[16];
-    std::snprintf(id, sizeof(id), "##b%d", k);
-    ImPlot::PlotBars(id, &x, &y, 1, slot * 0.8, ImPlotBarsFlags_Horizontal);
+    std::snprintf(id, sizeof(id), "##b%d", s[i].line);
+    ImPlot::PlotBars(id, &x, &y, 1, slot * 0.8 * s[i].w, ImPlotBarsFlags_Horizontal);
   }
   if (ImPlot::IsPlotHovered()) {
-    const int k = std::clamp(static_cast<int>(std::floor((ImPlot::GetPlotMousePos().y - yr.y_lo) / slot)), 0, K - 1);
-    ImGui::SetTooltip("G%d  %+.3f  (年化 %%, 到光标日)", k + 1, v[k]);
+    const int i = std::clamp(static_cast<int>(std::floor((ImPlot::GetPlotMousePos().y - yr.y_lo) / slot)), 0, ns - 1);
+    ImGui::SetTooltip("%s  %+.3f  (年化 %%, 到光标日)", s[i].tag, v[i]);
   }
   ImPlot::EndPlot();
 }
@@ -353,7 +383,7 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, int cursor_day)
 //   左 3/4 时序: 分层累计 (20 组 + 尾部 2 × kTails 条 + 相邻尾部线间色带) + LS 系 (顶底 + kTails 条尾部). y 范围 / LS 平移量 = layer_range(图例状态):
 //   进 BeginPlot 先按 ID 查上帧 item 的 Show (Setup 阶段种子未推, 按 Items.ID 自己哈希; 首帧还没 item → 尾部默认隐藏, LS 显), 再 SetupAxisLimits, 开关图例下一帧即重贴;
 //   LS 系共平移 +ls_off, 最低点贴到范围底 (跨度更大时范围已抬高装下), 刚好填满; 尾部线越极端越细 (kTailLayerWeight / kTailLsWeight), 色带越极端越重
-//   (kTailFillAlpha), 一级一个图例项管该级分层 + 色带 + LS, 默认隐藏
+//   (kTailFillAlpha), 一级一个图例项管该级分层 + 色带 + LS + 右图截面柱, 默认隐藏
 //   光标: DragLineX 锚在交易日 (cursor_day ∈ [0, days], 整数吸附; 双击落点; 默认末日), 不做 hover 列表; 右 1/4 = plot_section(光标日)
 void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const ImVec2 &size) {
   if (cursor_day < 0 || cursor_day > d.days)
@@ -363,6 +393,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   const int n = d.days + 1;
   float col_ratios[2] = {3.f, 1.f};
   LayerRange yr{};
+  bool show[kLsLines] = {}, hov[kLsLines] = {};
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0.f, ImPlot::GetStyle().PlotPadding.y));
   if (ImPlot::BeginSubplots("##layers", 1, 2, size, ImPlotSubplotFlags_NoTitle | ImPlotSubplotFlags_NoMenus | ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_LinkRows,
                             nullptr, col_ratios)) {
@@ -370,17 +401,18 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       CompactLegend cl;
       { // 图例状态 → y 范围. item 按 "###id" 查 (与下面 Plot 的 label 同 ID); 不存在 = 首帧, 取默认显隐.
         // ImPlot 在 SetupFinish 才 PushOverrideID(Items.ID) 作 item 哈希种子, 这里还在 Setup 阶段, GetItem(label) 会用错种子 → 直接按同一种子哈希
+        // hover = 上帧 EndPlot 记的 LegendHovered (ImPlot 自己 BeginItem 加粗同名线也读它); ImPlot 只管同名 item 的线, 组线 / 色带 / 右图截面柱按 hov 自己高亮
         ImPlotItemGroup &items = *GImPlot->CurrentItems;
-        const auto shown = [&](const char *id, bool dflt) {
+        const auto look = [&](const char *id, bool dflt, bool &sh, bool &hv) {
           const ImPlotItem *it = items.GetItem(ImHashStr(id, 0, items.ID));
-          return it ? it->Show : dflt;
+          sh = it ? it->Show : dflt;
+          hv = it && it->Show && it->LegendHovered;
         };
-        bool show[kLsLines];
-        show[0] = shown("###ls", true);
+        look("###ls", true, show[0], hov[0]);
         for (int j = 0; j < kTails; ++j) {
           char id[16];
           std::snprintf(id, sizeof(id), "###tls%d", j);
-          show[1 + j] = shown(id, false);
+          look(id, false, show[1 + j], hov[1 + j]);
         }
         yr = layer_range(d, show);
       }
@@ -391,8 +423,9 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       follow_limits(ImAxis_Y1, yr.y_lo, yr.y_hi);
       ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
       ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.2f);
-      for (int k = 0; k < K; ++k) {
-        ImPlot::SetNextLineStyle(group_color(k));
+      for (int k = 0; k < K; ++k) { // 顶底组线 = 顶底 LS 的分层: 随 LS 图例项高亮
+        const bool hl = hov[0] && (k == leg_group(kLong) || k == leg_group(kShort));
+        ImPlot::SetNextLineStyle(group_color(k), hl ? 1.2f * kHiScale : IMPLOT_AUTO);
         char id[16];
         std::snprintf(id, sizeof(id), "##g%d", k);
         ImPlot::PlotLine(id, d.x_day.data(), d.lay_cum[k].data(), n);
@@ -423,7 +456,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         ImPlot::HideNextItem(true, ImPlotCond_Once);
         for (int l = 0; l < kLegs; ++l) { // 色带: 本级线与上一级线 (j = 0 时是该腿的组线) 之间, 越极端越重
           const float *inner = (j ? d.lay_cum[layer_tail(l, j - 1)] : d.lay_cum[leg_group(l)]).data();
-          ImPlot::SetNextFillStyle(leg_col[l], kTailFillAlpha[j]);
+          ImPlot::SetNextFillStyle(leg_col[l], kTailFillAlpha[j] * (hov[1 + j] ? kHiScale : 1.f));
           ImPlot::PlotShaded(ll, d.x_day.data(), inner, d.lay_cum[layer_tail(l, j)].data(), n);
         }
         for (int l = 0; l < kLegs; ++l) { // 分层: 饱和顶 / 底色, 越极端越细
@@ -445,7 +478,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       }
       ImPlot::EndPlot();
     }
-    plot_section(d, yr, cursor_day);
+    plot_section(d, yr, show, hov, cursor_day);
     ImPlot::EndSubplots();
   }
   ImPlot::PopStyleVar();
@@ -1353,6 +1386,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
         "• 尾部: 默认隐藏, 点图例 \"LS 50%%\" 等开一级\n"
         "    ◦ G20 / G1 内更极端的 50%% / 20%% / 5%% (= 整截面 2.5%% / 1%% / 0.25%%)\n"
         "    ◦ 每级一条分层线 (饱和顶 / 底色) + 一条 LS (白, 同一起点)\n"
+        "    ◦ 右侧截面同步加柱: 底腿排 G1 下, 顶腿排 G20 上\n"
         "    ◦ 越极端越细");
   ImGui::SameLine(0.f, kCtlGap);
   const bool can_run = !busy && ctx.axis_ready && n_hold > 0 && sel.error.empty();
