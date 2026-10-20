@@ -10,6 +10,7 @@
 //   mcap/pe_ttm/pb_mrq/ps_ttm/pcf_ttm/dy{1,3,5}y ← close × total_shares / 财务分母
 //                  (最新可见快照, 口径与估值特征一致; 分钟实时版在特征表阶段算)
 //                  dy{1,3,5}y 另取 cn_stock_dividend 近 1/3/5 年公告, 年化
+//   events       ← 种类表各源表 (shared/AssetEvent.hpp): 单点逐行 / 区间由逐日标记按交易日连段
 //
 // 扫描架构: 六张月度大表 (real_bar1d / status / shares / financial_ttm_shift /
 //   balance_general_pit / dividend) 共 800+ 个分片, 全部登记进一个 fundamental::Scan.
@@ -40,12 +41,15 @@
 #include <ctime>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -244,7 +248,29 @@ struct BarAcc {
   }
 };
 
-// cn_stock_status: 每股最新行 + 逐日停牌名单
+// 事件 (shared/AssetEvent.hpp) 的扫描期形态: 文本先留原串, 归约时入池
+struct EventRow {
+  std::uint32_t id;
+  AssetEvent ev;
+  std::string text;
+};
+using EventAcc = Append<EventRow>;
+
+EventRow point(std::uint32_t id, EventKind kind, Ymd d) {
+  EventRow e{id, {}, {}};
+  e.ev.kind = kind;
+  e.ev.d0 = e.ev.d1 = d;
+  return e;
+}
+
+// 区间事件的原料: 逐日标记 (同资产 / 同值 / 交易日相连 = 一段)
+struct DayMark {
+  std::uint32_t id;
+  Ymd d;
+  int val;
+};
+
+// cn_stock_status: 每股最新行 + 逐日停牌名单 + 风险警示日 + 涨跌停
 struct Status {
   int st = 0;
   bool suspended = false;
@@ -254,10 +280,21 @@ struct StatusAcc {
   explicit StatusAcc(std::uint32_t n) : latest(n) {}
   PerId<Latest<Status>> latest;
   Append<std::pair<Ymd, std::uint32_t>> halts; // (date, id)
+  Append<DayMark> risks;                       // 4 态 ≠ 0 的日 (val = 等级)
+  EventAcc limits;                             // 收盘涨停 / 跌停
   void merge(StatusAcc &&o) {
     latest.merge(std::move(o.latest));
     halts.merge(std::move(o.halts));
+    risks.merge(std::move(o.risks));
+    limits.merge(std::move(o.limits));
   }
+};
+
+// cn_stock_suspend: 逐日停牌原因 (挂到停牌区间上)
+struct DayText {
+  std::uint32_t id;
+  Ymd d;
+  std::string text;
 };
 
 // cn_stock_shares: 每股最新总股本 (<= 0 ⇒ 源脏值, 估值段跳过)
@@ -287,6 +324,52 @@ struct DivRow {
   float cash; // 税前每股分红
 };
 using DivAcc = Append<DivRow>;
+
+// 单点事件表 → 每行一条 kind (日 = 日期列 at, nullptr = vd; 日空 → 跳过).
+// payload(r) 每分片取一次列, 返回逐行 fill(i, id, AssetEvent &, std::string &text); false = 该行不记
+template <class Payload>
+void add_points(fundamental::Scan &scan, Part<EventAcc> &out, const char *table, EventKind kind, const char *at,
+                std::vector<std::string> cols, Payload payload) {
+  if (at)
+    cols.emplace_back(at);
+  scan.add(out, fundamental::spec(table), std::move(cols), EventAcc{}, [kind, at, payload](const Rows &r, EventAcc &a) {
+    const pq::Col day = at ? r.col(at) : pq::Col{};
+    const auto fill = payload(r);
+    r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
+      EventRow e = point(id, kind, at ? day.yyyymmdd(i) : d);
+      if (e.ev.d0 != 0 && fill(i, id, e.ev, e.text))
+        a.push(e);
+    });
+  });
+}
+
+// 逐日标记 → 区间事件 (v0 = 交易日数, v1 = 值); 标记日须是交易日, (资产, 日) 不重复
+void to_spans(std::vector<DayMark> &marks, EventKind kind, const std::vector<Ymd> &trading, std::vector<EventRow> &out) {
+  std::sort(marks.begin(), marks.end(), [](const DayMark &a, const DayMark &b) { return std::tie(a.id, a.d) < std::tie(b.id, b.d); });
+  const auto day_of = [&trading](Ymd d) {
+    const auto it = std::lower_bound(trading.begin(), trading.end(), d);
+    assert(it != trading.end() && *it == d && "逐日标记不在交易日历");
+    return it - trading.begin();
+  };
+  for (std::size_t i = 0; i < marks.size();) {
+    const DayMark &m = marks[i];
+    auto t = day_of(m.d);
+    std::size_t j = i + 1;
+    for (; j < marks.size() && marks[j].id == m.id && marks[j].val == m.val; ++j) {
+      const auto tj = day_of(marks[j].d);
+      assert(tj > t && "逐日标记 (资产, 日) 重复");
+      if (tj != t + 1)
+        break;
+      t = tj;
+    }
+    EventRow e = point(m.id, kind, m.d);
+    e.ev.d1 = marks[j - 1].d;
+    e.ev.v[0] = static_cast<float>(j - i);
+    e.ev.v[1] = static_cast<float>(m.val);
+    out.push_back(std::move(e));
+    i = j;
+  }
+}
 
 // parquet → AssetInfo. 返回 false = 本地数据缺失 (首跑需先联网同步);
 // 结构性问题 (缺列/类型不符) 由 TableView 内部 assert fail fast.
@@ -326,9 +409,9 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   });
 
   // ---- 交易日历 ← all_trading_days → 全日历展开 (含周末/节假日 trading=false 行) ----
-  // Browser 日历的节假日标注依赖非交易日行
+  // Browser 日历的节假日标注依赖非交易日行; trading 另作区间事件的交易日相连判据
+  const std::vector<Ymd> trading = fundamental::calendar(cat, today);
   {
-    const std::vector<Ymd> trading = fundamental::calendar(cat, today);
     auto &stock_days = job.assetinfo.mutable_stock_days();
     stock_days.clear();
     auto t = trading.begin();
@@ -453,20 +536,140 @@ bool build_asset_info(Job &job, const Catalog &cat) {
 
   // ---- 状态 ← cn_stock_status ----
   //   每股最新行 → st / suspended;
-  //   suspended≠0 的 (date, id) 全量 → suspended_ (逐日停牌名单).
+  //   suspended≠0 的 (date, id) 全量 → suspended_ (逐日停牌名单) + 停牌区间事件.
   //   Browser 完整性把停牌股从当日分母里剔掉 — 全天停牌本就无逐笔可编码.
+  //   风险警示 4 态 (口径同 Fund st_level): st 1/2 优先; 否则 risk_warning → 3 (退市整理期)
+  //   price_limit_status: 1 = 收盘跌停 / 2 = 正常 / 3 = 收盘涨停 (实测对照 cn_stock_limit_price)
   Part<StatusAcc> status_p;
-  scan.add(status_p, spec("cn_stock_status"), {"st_status", "suspended"}, StatusAcc(nid),
-           [](const Rows &r, StatusAcc &a) {
+  scan.add(status_p, spec("cn_stock_status"), {"st_status", "suspended", "is_risk_warning", "price_limit_status"},
+           StatusAcc(nid), [](const Rows &r, StatusAcc &a) {
              const pq::Col st = r.col("st_status");
              const pq::Col sp = r.col("suspended");
+             const pq::Col rw = r.col("is_risk_warning");
+             const pq::Col lim = r.col("price_limit_status");
              r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                const bool halted = sp.i32(i, 0) != 0;
-               a.latest[id].offer(d, {st.i32(i, 0), halted});
-               if (halted && d > 0)
+               const int s = st.i32(i, 0);
+               a.latest[id].offer(d, {s, halted});
+               if (d == 0)
+                 return;
+               if (halted)
                  a.halts.push({d, id});
+               const int level = (s == 1 || s == 2) ? s : (rw.i32(i, 0) != 0 ? 3 : 0);
+               if (level != 0)
+                 a.risks.push({id, d, level});
+               const int pl = lim.i32(i, 2);
+               if (pl == 1 || pl == 3)
+                 a.limits.push(point(id, pl == 3 ? EventKind::LimitUp : EventKind::LimitDn, d));
              });
            });
+
+  // ---- 事件: 停牌原因 ← cn_stock_suspend; 单点事件表 (一表一种, 载荷见 shared/AssetEvent.hpp) ----
+  Part<Append<DayText>> susp_p;
+  scan.add(susp_p, spec("cn_stock_suspend"), {"suspend_reason"}, Append<DayText>{},
+           [](const Rows &r, Append<DayText> &a) {
+             const pq::Col why = r.col("suspend_reason");
+             r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
+               if (!why.null(i))
+                 a.push({id, d, std::string(why.str(i))});
+             });
+           });
+  std::array<Part<EventAcc>, 10> point_p;
+  std::size_t np = 0;
+  // 首段 (起始日 ≤ 上市日) = 上市简称, 不是改名
+  add_points(scan, point_p[np++], "cn_stock_name_change", EventKind::Rename, "start_date", {"name"}, [&infos](const Rows &r) {
+    return [&infos, name = r.col("name")](std::int64_t i, std::uint32_t id, AssetEvent &ev, std::string &text) {
+      if (ev.d0 <= infos[id]->ipo_date)
+        return false;
+      text = halfwidth_ascii(name.str(i));
+      return true;
+    };
+  });
+  add_points(scan, point_p[np++], "cn_stock_industry_change", EventKind::Industry, nullptr,
+             {"industry", "industry_level", "change_flag", "industry_name"}, [](const Rows &r) {
+               return [ind = r.col("industry"), lvl = r.col("industry_level"), flag = r.col("change_flag"),
+                       name = r.col("industry_name")](std::int64_t i, std::uint32_t, AssetEvent &, std::string &text) {
+                 if (ind.str(i) != "sw2021" || lvl.i32(i, 0) != 1 || flag.i32(i, -1) != 1)
+                   return false;
+                 text = name.str(i);
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "cn_stock_dividend", EventKind::ExDiv, "ex_date",
+             {"cash_before_tax", "bonus_rate", "conversed_rate"}, [](const Rows &r) {
+               return [cash = r.col("cash_before_tax"), bonus = r.col("bonus_rate"),
+                       conv = r.col("conversed_rate")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &) {
+                 ev.v = {cash.f32(i), bonus.f32(i), conv.f32(i)};
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "cn_stock_allotment", EventKind::Allot, "exright_date",
+             {"allotment_price", "allotment_rate"}, [](const Rows &r) {
+               return [price = r.col("allotment_price"),
+                       rate = r.col("allotment_rate")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &) {
+                 ev.v[0] = price.f32(i);
+                 ev.v[1] = rate.f32(i);
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "cn_stock_capital", EventKind::Capital, "change_date",
+             {"reason", "total_shares", "float_a"}, [](const Rows &r) {
+               return [why = r.col("reason"), total = r.col("total_shares"),
+                       fl = r.col("float_a")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &text) {
+                 ev.v[0] = total.f32(i);
+                 ev.v[1] = fl.f32(i);
+                 text = why.str(i);
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "cn_stock_dragon_list", EventKind::Dragon, nullptr,
+             {"reason", "net_buy_amount", "price_change"}, [](const Rows &r) {
+               return [why = r.col("reason"), net = r.col("net_buy_amount"),
+                       chg = r.col("price_change")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &text) {
+                 ev.v[0] = net.f32(i);
+                 ev.v[1] = chg.f32(i);
+                 text = why.str(i);
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "cn_stock_financial_income_general_pit", EventKind::Report, nullptr, {"report_date"},
+             [](const Rows &r) {
+               return [rd = r.col("report_date")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &) {
+                 ev.ref = rd.yyyymmdd(i);
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "forecast", EventKind::Forecast, nullptr, {"end_date", "type", "p_change_min", "p_change_max"},
+             [](const Rows &r) {
+               return [ed = r.col("end_date"), type = r.col("type"), lo = r.col("p_change_min"),
+                       hi = r.col("p_change_max")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &text) {
+                 ev.ref = ed.yyyymmdd(i);
+                 ev.v[0] = lo.f32(i);
+                 ev.v[1] = hi.f32(i);
+                 text = type.str(i);
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "express", EventKind::Express, nullptr, {"end_date", "revenue", "n_income", "yoy_net_profit"},
+             [](const Rows &r) {
+               return [ed = r.col("end_date"), rev = r.col("revenue"), ni = r.col("n_income"),
+                       ni0 = r.col("yoy_net_profit")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &) {
+                 ev.ref = ed.yyyymmdd(i);
+                 ev.v = {rev.f32(i), ni.f32(i), ni0.f32(i)};
+                 return true;
+               };
+             });
+  add_points(scan, point_p[np++], "cn_stock_shareholder", EventKind::Holder, nullptr,
+             {"end_date", "total_shareholder", "total_shareholder_chg"}, [](const Rows &r) {
+               return [ed = r.col("end_date"), n = r.col("total_shareholder"),
+                       chg = r.col("total_shareholder_chg")](std::int64_t i, std::uint32_t, AssetEvent &ev, std::string &) {
+                 ev.ref = ed.yyyymmdd(i);
+                 ev.v[0] = n.f32(i);
+                 ev.v[1] = chg.f32(i);
+                 return true;
+               };
+             });
+  assert(np == point_p.size() && "单点事件表数与 point_p 不符");
 
   // ---- 股本 ← cn_stock_shares 每股最新行 ----
   Part<SharesAcc> shares_p;
@@ -546,6 +749,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   const TtmAcc ttm = std::move(ttm_p).take();
   const BalAcc bal = std::move(bal_p).take();
   const DivAcc div = std::move(div_p).take();
+  std::vector<DayText> why = std::move(susp_p).take().v;
 
   // ---- 日频行情: 每股最新行 + 最新有效报价行 ----
   for (std::uint32_t id = 0; id < nid; ++id) {
@@ -647,6 +851,71 @@ bool build_asset_info(Job &job, const Catalog &cat) {
           continue; // 非变点
         out.push_back(p);
       }
+    }
+  }
+
+  // ---- 事件: 汇总 → 文本入池 → 去重 → 按资产分桶 (先于下段: 停牌区间要读 status.halts) ----
+  {
+    std::vector<EventRow> rows;
+    const auto absorb = [&rows](EventAcc &&a) {
+      rows.insert(rows.end(), std::make_move_iterator(a.v.begin()), std::make_move_iterator(a.v.end()));
+    };
+    for (std::uint32_t id = 0; id < nid; ++id) {
+      if (infos[id]->ipo_date)
+        rows.push_back(point(id, EventKind::List, infos[id]->ipo_date));
+      if (infos[id]->out_date)
+        rows.push_back(point(id, EventKind::Delist, infos[id]->out_date));
+    }
+    absorb(std::move(status.limits));
+    for (Part<EventAcc> &p : point_p)
+      absorb(std::move(p).take());
+
+    // 停牌区间: 原因 = 区间内首条停复牌明细
+    std::vector<DayMark> halts;
+    halts.reserve(status.halts.v.size());
+    for (const auto &[d, id] : status.halts.v)
+      halts.push_back({id, d, 1});
+    const std::size_t s0 = rows.size();
+    to_spans(halts, EventKind::Suspend, trading, rows);
+    const auto by_day = [](const DayText &a, const DayText &b) { return std::tie(a.id, a.d) < std::tie(b.id, b.d); };
+    std::sort(why.begin(), why.end(), by_day);
+    for (std::size_t k = s0; k < rows.size(); ++k) {
+      EventRow &e = rows[k];
+      const auto it = std::lower_bound(why.begin(), why.end(), DayText{e.id, e.ev.d0, {}}, by_day);
+      if (it != why.end() && it->id == e.id && it->d <= e.ev.d1)
+        e.text = it->text;
+    }
+    to_spans(status.risks.v, EventKind::Risk, trading, rows);
+
+    AssetEvents &events = job.assetinfo.mutable_events();
+    events = AssetEvents{};
+    std::unordered_map<std::string, std::uint32_t> pool{{"", 0}};
+    std::vector<std::pair<std::uint32_t, AssetEvent>> evs;
+    evs.reserve(rows.size());
+    for (EventRow &e : rows) {
+      const auto [it, fresh] = pool.try_emplace(std::move(e.text), static_cast<std::uint32_t>(events.texts.size()));
+      if (fresh)
+        events.texts.push_back(it->first);
+      e.ev.text = it->second;
+      evs.emplace_back(e.id, e.ev);
+    }
+    rows = {};
+
+    // 去重键 (资产, d0, 种类, ref, 文本): 同键留末条 (段序 = 源 ym 序, 后发布覆盖先发布); 键序即桶内 d0 升序
+    const auto key = [](const std::pair<std::uint32_t, AssetEvent> &p) {
+      return std::tie(p.first, p.second.d0, p.second.kind, p.second.ref, p.second.text);
+    };
+    std::stable_sort(evs.begin(), evs.end(), [&key](const auto &a, const auto &b) { return key(a) < key(b); });
+    std::vector<AssetEvent> *bucket = nullptr;
+    std::uint32_t cur = Ids::kNone;
+    for (std::size_t i = 0; i < evs.size(); ++i) {
+      if (i + 1 < evs.size() && key(evs[i]) == key(evs[i + 1]))
+        continue;
+      if (evs[i].first != cur) {
+        cur = evs[i].first;
+        bucket = &events.by_code[codes[cur]];
+      }
+      bucket->push_back(evs[i].second);
     }
   }
 
@@ -804,8 +1073,10 @@ bool FundamentalService::run(FundamentalRequest &req) {
     }
     publish();
   }
-  if (out.ok)
+  if (out.ok) {
+    job.assetinfo.mutable_events().seq = req.seq;
     out.assetinfo = std::move(job.assetinfo);
+  }
   handoff.post(std::move(out));
   return true;
 }

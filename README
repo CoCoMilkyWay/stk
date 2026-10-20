@@ -20,6 +20,7 @@ stk/
 │   │   │   ├── Config.hpp                            # 📦 配置数据结构
 │   │   │   ├── TaskState.hpp                         # 📦 任务状态
 │   │   │   ├── Asset.hpp / AssetInfo.hpp             # 📦 资产定义 / 元数据
+│   │   │   ├── AssetEvent.hpp                        # 📦 个股历史事件 (AssetInfo 内): 种类表 = 单点 / 区间 × 4 组; OrderFlow 图2 时间轴标注
 │   │   │   ├── AssetAxis.hpp                         # 📦 资产轴 (A 轴) 码表 + 池轴 PoolAxis: Lob = 池轴 pool_axis / Bar = 全轴 full_axis
 │   │   │   ├── FeatureLib.hpp                       # 📦 FeatureLib = 池名 + 档 + A 轴 + 目录 + 日期轴
 │   │   │   │                                         #    · 池表 feature_pools (PoolDef = 池名 + 档 + 池列): all → Bar 池; <pool> → Lob 池 (<pool> 来自 Bar 池 pool_<pool> 列)

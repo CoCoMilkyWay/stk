@@ -562,6 +562,47 @@ void OrderFlow::DepthProfile::clear() {
 }
 
 // ============================================================================
+// OrderFlow::EventMarks Implementation (GUI 线程)
+// ============================================================================
+
+void OrderFlow::EventMarks::build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs, uint32_t g,
+                                  uint64_t s) {
+  for (auto &l : lane)
+    l.clear();
+  events = evs;
+  gen = g;
+  seq = s;
+  if (!evs || dates.empty())
+    return;
+  constexpr double W = static_cast<double>(OrderFlowConst::MIN_CAPACITY);
+  for (size_t i = 0; i < evs->size(); ++i) {
+    const AssetEvent &e = (*evs)[i];
+    // 首日 = d0 起首个日轴日 (单点早于轴首丢; 区间早于轴首的部分裁掉), 末日 = d1 及之前末个日轴日
+    if (event_def(e.kind).shape == EventShape::Point && e.d0 < dates.front())
+      continue;
+    const size_t i0 = static_cast<size_t>(std::lower_bound(dates.begin(), dates.end(), e.d0) - dates.begin());
+    const size_t i1 = event_def(e.kind).shape == EventShape::Point
+                          ? i0
+                          : static_cast<size_t>(std::upper_bound(dates.begin(), dates.end(), e.d1) - dates.begin()) - 1;
+    if (i0 >= dates.size() || i1 == SIZE_MAX || i1 < i0)
+      continue;
+    lane[static_cast<size_t>(event_def(e.kind).group)].push_back(
+        {static_cast<double>(i0) * W, static_cast<double>(i1 + 1) * W, static_cast<uint32_t>(i)});
+  }
+  for (const auto &l : lane)
+    assert(std::is_sorted(l.begin(), l.end(), [](const Mark &a, const Mark &b) { return a.x0 < b.x0; }) &&
+           "事件须 d0 升序 (AssetEvents::by_code 契约)");
+}
+
+void OrderFlow::EventMarks::clear() {
+  events = nullptr;
+  for (auto &l : lane)
+    l.clear();
+  gen = UINT32_MAX;
+  seq = UINT64_MAX;
+}
+
+// ============================================================================
 // OrderFlow::UI / OrderFlow Implementation
 // ============================================================================
 
@@ -575,6 +616,7 @@ void OrderFlow::clear() {
   pick.clear();
   heatmap_colored.clear();
   depth_profile.clear();
+  event_marks.clear();
   ui.clear();
   needs_rescan.store(false, std::memory_order_relaxed);
 }

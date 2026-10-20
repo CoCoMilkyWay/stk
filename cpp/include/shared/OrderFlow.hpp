@@ -8,6 +8,7 @@
 // overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1), 网格: 图1 L_sec / 图2 L_1min
 //   (细于网格的源每格留最后一个有效行). 各源按自己的 (池, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
+// ├── EventMarks      GUI 线程私有渲染缓存 (选中资产的历史事件 → 图2 日轴 X, 按组分行)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
 // 发布协议 (无锁 SPSC):
@@ -23,7 +24,8 @@
 #include "features/Storage/FeatureLevels.hpp" // ColRef / level_end_sec (稳定层, 不依赖字段表)
 #include "features/TimeIndex.hpp"             // L_SEC_ROWS / L_1MIN_ROWS (稳定形状常量, 不依赖字段表)
 #include "misc/date.hpp"
-#include "shared/Progress.hpp" // PrefixPub / PingPong
+#include "shared/AssetEvent.hpp" // EventMarks
+#include "shared/Progress.hpp"   // PrefixPub / PingPong
 
 #include <array>
 #include <atomic>
@@ -351,6 +353,27 @@ struct OrderFlow {
   } depth_profile;
 
   // ==========================================================================
+  // EventMarks — GUI 线程私有: 选中资产的历史事件 (AssetInfo::events) → 图2 日轴 X, 按组分行
+  //   日 → 日轴: 单点落在 d0 起首个日轴日 (非交易日公告顺延), 早于轴首 / 晚于轴末丢;
+  //   区间裁到日轴, 与日轴无交丢. 缓存键 (Kline 发布代, 事件构建代): 换资产 / 重扫日轴 / 基本面重建都失效
+  // ==========================================================================
+  struct EventMarks {
+    struct Mark {
+      double x0, x1; // [首日起点, 末日终点) (图2 X)
+      uint32_t ev;   // events 下标
+    };
+    const std::vector<AssetEvent> *events = nullptr;  // 选中资产的事件 (AssetInfo 内; seq 配对期间稳定)
+    std::array<std::vector<Mark>, kEventGroups> lane; // 按组, 各行 x0 升序
+    uint32_t gen = UINT32_MAX;                        // 绑定的 Kline 发布代
+    uint64_t seq = UINT64_MAX;                        // 绑定的 AssetEvents::seq
+    bool matches(uint32_t g, uint64_t s) const { return gen == g && seq == s; }
+
+    // GUI 线程; dates = Kline 日轴 (gen 配对期间稳定), evs = 选中资产的事件 (nullptr = 无)
+    void build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs, uint32_t g, uint64_t s);
+    void clear();
+  } event_marks;
+
+  // ==========================================================================
   // UI State — GUI 线程私有 (请求代 gen 与发布面配对)
   // ==========================================================================
   struct UI {
@@ -363,6 +386,7 @@ struct OrderFlow {
 
     // Rendering parameters
     bool show_heatmap = true;
+    unsigned event_groups = (1u << kEventGroups) - 1; // 图2 显示的事件组 (位 = EventGroup)
     // log10(amount) 阈值, 区间 [HEATMAP_LOG_THR_MIN, MAX]; 换槽时取该槽 auto_log_threshold
     float log_amount_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
 

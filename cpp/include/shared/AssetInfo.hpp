@@ -5,6 +5,7 @@
 #pragma once
 
 #include "misc/date.hpp"
+#include "shared/AssetEvent.hpp"
 
 #include <limits>
 #include <map>
@@ -78,11 +79,13 @@ struct AssetInfo {
   StockFactorMap stock_factor_;
   StockDaysVec stock_days_;
   SuspendedMap suspended_;
+  AssetEvents events_; // 个股历史事件 (shared/AssetEvent.hpp)
 
   const StockInfoMap &get_stock_info() const { return stock_info_; }
   const StockFactorMap &get_stock_factor() const { return stock_factor_; }
   const StockDaysVec &get_stock_days() const { return stock_days_; }
   const SuspendedMap &get_suspended() const { return suspended_; }
+  const AssetEvents &get_events() const { return events_; }
 
   // code 如 "sh.600000"; 不存在 → nullptr
   const StockInfo *find_stock_info(const std::string &code) const;
@@ -91,4 +94,5 @@ struct AssetInfo {
   StockFactorMap &mutable_stock_factor() { return stock_factor_; }
   StockDaysVec &mutable_stock_days() { return stock_days_; }
   SuspendedMap &mutable_suspended() { return suspended_; }
+  AssetEvents &mutable_events() { return events_; }
 };

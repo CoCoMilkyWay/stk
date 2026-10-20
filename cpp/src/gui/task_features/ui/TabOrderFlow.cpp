@@ -18,9 +18,12 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <utility>
@@ -628,6 +631,184 @@ static void RenderSecPlot(SharedData &data) {
 }
 
 // ============================================================================
+// Event Lanes (图2 时间轴事件标注, 数据见 shared/AssetEvent.hpp / OrderFlow::EventMarks)
+//   一组一行, 自底向上贴 X 轴 (隐藏组不占行); 单点 / 区间同一画法: 衬底圆 + 彩色单字落在首日中点,
+//   区间另在本行画细色带至末日. 同行字形像素重叠只画先者; hover 列出本行鼠标处 (字形 / 色带) 的全部事件
+// ============================================================================
+
+static constexpr ImU32 kEventColor[] = {
+    IM_COL32(90, 220, 120, 255),  // List
+    IM_COL32(200, 90, 90, 255),   // Delist
+    IM_COL32(170, 170, 170, 255), // Suspend
+    IM_COL32(255, 140, 0, 255),   // Risk
+    IM_COL32(120, 180, 255, 255), // Rename
+    IM_COL32(0, 200, 200, 255),   // Industry
+    IM_COL32(255, 215, 0, 255),   // ExDiv
+    IM_COL32(220, 180, 120, 255), // Allot
+    IM_COL32(180, 130, 255, 255), // Capital
+    IM_COL32(0, 200, 0, 255),     // LimitUp (与 K 线同色系: 涨绿)
+    IM_COL32(220, 40, 40, 255),   // LimitDn (跌红)
+    IM_COL32(255, 90, 200, 255),  // Dragon
+    IM_COL32(230, 230, 230, 255), // Report
+    IM_COL32(100, 200, 255, 255), // Forecast
+    IM_COL32(180, 255, 100, 255), // Express
+    IM_COL32(255, 170, 140, 255), // Holder
+};
+static_assert(std::size(kEventColor) == kEventKinds, "kEventColor 与 ASSET_EVENT_KINDS 逐行对齐");
+
+static ImU32 EventColor(EventKind k) { return kEventColor[static_cast<size_t>(k)]; }
+
+// hover 明细 (日期之后的载荷; 无载荷 = 空串). 源单位 → 展示单位只在这里换
+static void EventDetail(const AssetEvent &e, const AssetEvents &src, char *buf, size_t n) {
+  const auto &v = e.v;
+  const char *t = src.texts[e.text].c_str();
+  switch (e.kind) {
+  case EventKind::List:
+  case EventKind::Delist:
+  case EventKind::LimitUp:
+  case EventKind::LimitDn:
+    buf[0] = '\0';
+    return;
+  case EventKind::Suspend:
+    std::snprintf(buf, n, "%.0f 个交易日  %s", v[0], t);
+    return;
+  case EventKind::Risk:
+    std::snprintf(buf, n, "%s  %.0f 个交易日", v[1] == 1.0f ? "ST" : (v[1] == 2.0f ? "*ST" : "退市整理期"), v[0]);
+    return;
+  case EventKind::Rename:
+    std::snprintf(buf, n, "改为 %s", t);
+    return;
+  case EventKind::Industry:
+    std::snprintf(buf, n, "申万一级: %s", t);
+    return;
+  case EventKind::ExDiv: { // 每 10 股 (A 股惯例); 缺项不列
+    char pay[32] = "", bonus[32] = "", conv[32] = "";
+    if (v[0] > 0.0f)
+      std::snprintf(pay, sizeof(pay), " 派%.2f元", v[0] * 10.0f);
+    if (v[1] > 0.0f)
+      std::snprintf(bonus, sizeof(bonus), " 送%.2g", v[1] * 10.0f);
+    if (v[2] > 0.0f)
+      std::snprintf(conv, sizeof(conv), " 转%.2g", v[2] * 10.0f);
+    std::snprintf(buf, n, "每10股%s%s%s (税前)", pay, bonus, conv);
+    return;
+  }
+  case EventKind::Allot:
+    std::snprintf(buf, n, "每10股配%.2g股  配股价 %.2f元", v[1] * 10.0f, v[0]);
+    return;
+  case EventKind::Capital:
+    std::snprintf(buf, n, "总股本 %.2f亿股  流通A %.2f亿股  原因码 %s", v[0] / 1e8f, v[1] / 1e8f, t);
+    return;
+  case EventKind::Dragon:
+    std::snprintf(buf, n, "净买 %+.0f万  涨跌 %+.2f%%  %s", v[0] / 1e4f, v[1], t);
+    return;
+  case EventKind::Report:
+    std::snprintf(buf, n, "报告期 %s", misc::dash(e.ref).c_str());
+    return;
+  case EventKind::Forecast:
+    if (std::isnan(v[0]) || std::isnan(v[1]))
+      std::snprintf(buf, n, "报告期 %s  %s", misc::dash(e.ref).c_str(), t);
+    else
+      std::snprintf(buf, n, "报告期 %s  %s  净利变动 %+.0f%% ~ %+.0f%%", misc::dash(e.ref).c_str(), t, v[0], v[1]);
+    return;
+  case EventKind::Express:
+    if (v[2] > 0.0f)
+      std::snprintf(buf, n, "报告期 %s  营收 %.2f亿  净利 %.2f亿  同比 %+.1f%%", misc::dash(e.ref).c_str(), v[0] / 1e8f,
+                    v[1] / 1e8f, (v[1] / v[2] - 1.0f) * 100.0f);
+    else
+      std::snprintf(buf, n, "报告期 %s  营收 %.2f亿  净利 %.2f亿", misc::dash(e.ref).c_str(), v[0] / 1e8f, v[1] / 1e8f);
+    return;
+  case EventKind::Holder:
+    if (std::isnan(v[1]))
+      std::snprintf(buf, n, "截止 %s  %.0f户", misc::dash(e.ref).c_str(), v[0]);
+    else
+      std::snprintf(buf, n, "截止 %s  %.0f户  环比 %+.1f%%", misc::dash(e.ref).c_str(), v[0], v[1] * 100.0f);
+    return;
+  }
+  assert(false && "EventDetail: 未知事件种类");
+}
+
+static void PlotEventLanes(const OrderFlow::EventMarks &em, const AssetEvents &src, unsigned groups) {
+  if (!em.events)
+    return;
+  const std::vector<AssetEvent> &evs = *em.events;
+  const float r = ImGui::GetFontSize() * 0.6f; // 衬底圆半径
+  const float lane_h = 2.0f * r + 2.0f;
+  const double half_day = 0.5 * static_cast<double>(OrderFlowConst::MIN_CAPACITY);
+  const ImVec2 pos = ImPlot::GetPlotPos(), size = ImPlot::GetPlotSize();
+  const ImVec2 mouse = ImGui::GetMousePos();
+  const bool hovered = ImPlot::IsPlotHovered();
+  static std::vector<uint32_t> hits; // GUI 单线程, 帧内复用
+  hits.clear();
+
+  ImPlot::PushPlotClipRect();
+  ImDrawList *dl = ImPlot::GetPlotDrawList();
+  float y1 = pos.y + size.y; // 当前行下沿
+  for (size_t g = kEventGroups; g-- > 0;) {
+    if (!(groups >> g & 1u))
+      continue;
+    const float y0 = y1 - lane_h, yc = 0.5f * (y0 + y1);
+    const bool in_lane = hovered && mouse.y >= y0 && mouse.y < y1;
+    dl->AddRectFilled(ImVec2(pos.x, y0), ImVec2(pos.x + size.x, y1), IM_COL32(0, 0, 0, 90));
+
+    // 色带先画, 字形压在上面
+    for (const OrderFlow::EventMarks::Mark &m : em.lane[g]) {
+      const AssetEvent &e = evs[m.ev];
+      if (event_def(e.kind).shape != EventShape::Span)
+        continue;
+      const float px0 = ImPlot::PlotToPixels(m.x0, 0.0).x, px1 = ImPlot::PlotToPixels(m.x1, 0.0).x;
+      if (px1 < pos.x || px0 > pos.x + size.x)
+        continue;
+      const ImU32 band = (EventColor(e.kind) & ~IM_COL32_A_MASK) | (140u << IM_COL32_A_SHIFT);
+      dl->AddRectFilled(ImVec2(px0, yc - 2.0f), ImVec2(std::max(px1, px0 + 1.0f), yc + 2.0f), band);
+    }
+
+    float last = -FLT_MAX; // 上一个画出的字形中心
+    for (const OrderFlow::EventMarks::Mark &m : em.lane[g]) {
+      const AssetEvent &e = evs[m.ev];
+      const EventKindDef &def = event_def(e.kind);
+      const float cx = ImPlot::PlotToPixels(m.x0 + half_day, 0.0).x;
+      const float right = def.shape == EventShape::Span ? std::max(cx + r, ImPlot::PlotToPixels(m.x1, 0.0).x) : cx + r;
+      if (right < pos.x || cx - r > pos.x + size.x)
+        continue;
+      if (in_lane && mouse.x >= cx - r && mouse.x <= right)
+        hits.push_back(m.ev);
+      if (cx - last < 2.0f * r)
+        continue;
+      last = cx;
+      const ImU32 col = EventColor(e.kind);
+      dl->AddCircleFilled(ImVec2(cx, yc), r, IM_COL32(24, 24, 28, 235));
+      dl->AddCircle(ImVec2(cx, yc), r, col, 0, 1.5f);
+      const ImVec2 ts = ImGui::CalcTextSize(def.glyph);
+      dl->AddText(ImVec2(cx - 0.5f * ts.x, yc - 0.5f * ts.y), col, def.glyph);
+    }
+    y1 = y0;
+  }
+  ImPlot::PopPlotClipRect();
+
+  if (hits.empty())
+    return;
+  constexpr size_t kMaxLines = 12;
+  char buf[256];
+  ImGui::BeginTooltip();
+  for (size_t i = 0; i < std::min(hits.size(), kMaxLines); ++i) {
+    const AssetEvent &e = evs[hits[i]];
+    const EventKindDef &def = event_def(e.kind);
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(EventColor(e.kind)), "%s", def.glyph);
+    ImGui::SameLine();
+    const std::string day = def.shape == EventShape::Span ? misc::dash(e.d0) + " ~ " + misc::dash(e.d1) : misc::dash(e.d0);
+    ImGui::Text("%s  %s", def.name, day.c_str());
+    EventDetail(e, src, buf, sizeof(buf));
+    if (buf[0]) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", buf);
+    }
+  }
+  if (hits.size() > kMaxLines)
+    ImGui::TextDisabled("… 另 %zu 条", hits.size() - kMaxLines);
+  ImGui::EndTooltip();
+}
+
+// ============================================================================
 // L_1min Plot Renderer (图2: Kline 已发布前缀)
 // ============================================================================
 
@@ -744,6 +925,18 @@ static void RenderMinPlot(SharedData &data, float height) {
     }
 
     PlotOverlay(data.feature, ov, cats, counts.data(), nf);
+
+    // 事件标注: (Kline 发布代, 事件构建代) 变了才重建 (dates 只在 ready 时可读)
+    if (ready) {
+      const AssetEvents &events = data.assetinfo.get_events();
+      if (!of.event_marks.matches(pub_gen, events.seq)) {
+        const AssetItem &item = data.asset.items[ui.kline_asset];
+        std::string key = item.exchange;
+        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+        of.event_marks.build(k.dates, events.find(key + "." + item.asset_code), pub_gen, events.seq);
+      }
+      PlotEventLanes(of.event_marks, events, ui.event_groups);
+    }
 
     // ------------------------------------------------------------------
     // Anchor: 吸附日起点 → 驱动图1 (day, asset) 请求
@@ -966,6 +1159,32 @@ static void RenderHeatmapControls(OrderFlow &of) {
 }
 
 // ============================================================================
+// Event Controls (图2 事件行开关, 一组一个; hover = 本组字形图例)
+// ============================================================================
+
+static void RenderEventControls(OrderFlow &of) {
+  for (size_t g = 0; g < kEventGroups; ++g) {
+    char label[32];
+    std::snprintf(label, sizeof(label), "%s##ofEv", kEventGroupNames[g]);
+    ImGui::SameLine();
+    ImGui::CheckboxFlags(label, &of.ui.event_groups, 1u << g);
+    if (!ImGui::IsItemHovered())
+      continue;
+    ImGui::BeginTooltip();
+    ImGui::TextDisabled("图2 时间轴事件行");
+    for (size_t i = 0; i < kEventKinds; ++i) {
+      const EventKindDef &def = kEventKindDefs[i];
+      if (static_cast<size_t>(def.group) != g)
+        continue;
+      ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kEventColor[i]), "%s", def.glyph);
+      ImGui::SameLine();
+      ImGui::Text("%s%s", def.name, def.shape == EventShape::Span ? " (区间)" : "");
+    }
+    ImGui::EndTooltip();
+  }
+}
+
+// ============================================================================
 // Main Orchestration
 // ============================================================================
 
@@ -1160,6 +1379,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   RenderAssetFilterBar(data, of);
   RenderAssetSlider(data, of); // 同行右侧 (筛选控件之后剩余宽度)
   RenderHeatmapControls(of);
+  RenderEventControls(of);
   RenderStatusBar(of);
 
   const float kline_height = ImGui::GetContentRegionAvail().y;
