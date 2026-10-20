@@ -533,7 +533,7 @@ private:
 
 inline KLLcache::KLLcache(size_t k, size_t n_recon)
     : capacity_(k), resolution_(n_recon), count_(0), min_(0.0f), max_(0.0f),
-      rng_(std::random_device{}()), cache_{} {
+      rng_(0x5eed), cache_{} {
   assert(capacity_ >= 2);
   assert(resolution_ >= 2);
   levels_.reserve(32); // 足够存储 2^64 个样本
@@ -542,6 +542,7 @@ inline KLLcache::KLLcache(size_t k, size_t n_recon)
 
 inline void KLLcache::clear() {
   count_ = 0;
+  rng_.seed(0x5eed);
   for (auto &lv : levels_) {
     lv.buffer.clear();
   }
