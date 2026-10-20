@@ -337,10 +337,12 @@ set(MATH_PRECISE
     gui/task_factors/services/InspectService.cpp
     gui/task_factors/services/KlineService.cpp
     gui/task_factors/services/OperatorsService.cpp
+    gui/task_factors/services/PortfolioService.cpp
     gui/task_factors/services/SearchService.cpp
     gui/task_factors/ui/TabFactors.cpp
     gui/task_factors/ui/TabInspect.cpp
     gui/task_factors/ui/TabOperators.cpp
+    gui/task_factors/ui/TabPortfolio.cpp
     # gui: microtex 头 (nums.h: POS_INF = infinity()) 的消费者, -ffinite-math-only 下是 UB
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp

@@ -431,6 +431,12 @@ private:
                       cfg.factor_dir_buf,
                       sizeof(cfg.factor_dir_buf),
                       cfg.factor_dir);
+        draw_path_row("Portfolio Dir",
+                      "因子组合目录: <name>.json",
+                      "##portfolio_dir",
+                      cfg.portfolio_dir_buf,
+                      sizeof(cfg.portfolio_dir_buf),
+                      cfg.portfolio_dir);
         draw_path_row("Log Dir",
                       "日志目录",
                       "##log_dir",

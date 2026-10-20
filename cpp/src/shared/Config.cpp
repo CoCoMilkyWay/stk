@@ -43,6 +43,7 @@ void Config::SyncStringBuffers() {
   snprintf(orders_dir_buf, sizeof(orders_dir_buf), "%s", orders_dir.c_str());
   snprintf(feature_dir_buf, sizeof(feature_dir_buf), "%s", feature_dir.c_str());
   snprintf(factor_dir_buf, sizeof(factor_dir_buf), "%s", factor_dir.c_str());
+  snprintf(portfolio_dir_buf, sizeof(portfolio_dir_buf), "%s", portfolio_dir.c_str());
   snprintf(log_dir_buf, sizeof(log_dir_buf), "%s", log_dir.c_str());
   snprintf(config_dir_buf, sizeof(config_dir_buf), "%s", config_dir.c_str());
   snprintf(csv_market_data_buf, sizeof(csv_market_data_buf), "%s", csv_market_data.c_str());
@@ -97,6 +98,7 @@ bool Config::LoadFromFile() {
   orders_dir = j.value("orders_dir", orders_dir);
   feature_dir = j.value("feature_dir", feature_dir);
   factor_dir = j.value("factor_dir", factor_dir);
+  portfolio_dir = j.value("portfolio_dir", portfolio_dir);
   log_dir = j.value("log_dir", log_dir);
   config_dir = j.value("config_dir", config_dir);
   csv_market_data = j.value("csv_market_data", csv_market_data);
@@ -137,6 +139,7 @@ bool Config::SaveToFile() {
   j["orders_dir"] = orders_dir;
   j["feature_dir"] = feature_dir;
   j["factor_dir"] = factor_dir;
+  j["portfolio_dir"] = portfolio_dir;
   j["log_dir"] = log_dir;
   j["config_dir"] = config_dir;
   j["csv_market_data"] = csv_market_data;

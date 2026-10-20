@@ -6,16 +6,20 @@
 //     (要资产轴就绪), 结果回写各因子文件.
 //   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 FactorsService; 一级 Row 由自己的
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
+//   Portfolio: 因子组合 (<portfolio_dir>/<name>.json; 在 Factors 页 1. 区右侧两小框选 / 编辑) 的等权组合曲线 + 池指数. 跨池跨层,
+//     与页顶池 / 层无关 (换层不重建); 组合内容变 / 因子重扫后重解析, 有效条目变才发请求 (PortfolioService 只算新增的因子).
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/FactorsService.hpp"
 #include "gui/task_factors/services/InspectService.hpp"
 #include "gui/task_factors/services/KlineService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
+#include "gui/task_factors/services/PortfolioService.hpp"
 #include "gui/task_factors/services/SearchService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "gui/task_factors/ui/TabInspect.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
+#include "gui/task_factors/ui/TabPortfolio.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools (页顶池选择)
 #include "shared/SharedData.hpp" // config.factor_dir / 池 / 日期区间, feature.metadata, asset.items
 
@@ -36,6 +40,7 @@ enum TabIdx {
   TAB_OPERATORS = 0,
   TAB_FACTORS,
   TAB_INSPECT,
+  TAB_PORTFOLIO,
   TAB_COUNT
 };
 
@@ -64,6 +69,15 @@ struct TaskFactorsState {
   std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (构造即起 worker); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
   std::unique_ptr<Factors::KlineService> kline_service;     // Inspect 右下选中资产的分钟 K 线流 (与 inspect_service 同生灭)
   Factors::InspectUIState inspect_ui;
+
+  // 组合 (与层无关, 换层不重建; 首次进 Factors / Inspect / Portfolio 页建)
+  std::unique_ptr<Factors::PortfolioService> portfolio_service;
+  Factors::PortfolioUIState portfolio_ui;
+  Factors::FeatureTables portfolio_tables; // 条目各层的字段表 (解析 + 请求用, 按需建)
+  uint64_t portfolio_gen = ~0ull;          // 已解析的 portfolio_ui.content_gen
+  bool portfolio_dirty = false;            // 解析过, 请求还没发 (资产轴未就绪时挂着)
+  std::string portfolio_sig;               // 上次请求的内容签名
+  Phase portfolio_prev_fs = Phase::Idle;   // 因子服务进 Done (因子文件可能改了) → 重解析
 };
 
 // 特征面板选择 (池档, 层) 对应的因子层段长; 不是该池的因子层 (L_sec / Bar 池 L_1min) = 0
@@ -108,6 +122,31 @@ static void search_all_next(const SharedData &data, TaskFactorsState &s) {
   }
 }
 
+// 组合: 内容变 / 因子服务进 Done → 重解析; 有效条目 / 池集合变 (或 reload) 才发请求, 不打断在跑的
+static void portfolio_sync(const SharedData &data, TaskFactorsState &s, bool reload) {
+  Factors::PortfolioUIState &pui = s.portfolio_ui;
+  const Phase fst = s.factors_service ? s.factors_service->phase.load(std::memory_order_acquire) : Phase::Idle;
+  const bool fs_done = fst == Phase::Done && s.portfolio_prev_fs != Phase::Done;
+  s.portfolio_prev_fs = fst;
+  if (pui.content_gen != s.portfolio_gen || fs_done) {
+    s.portfolio_gen = pui.content_gen;
+    Factors::ResolvePortfolio(data, s.portfolio_tables, pui.entries, pui.items);
+    ++pui.items_gen;
+    s.portfolio_dirty = true;
+  }
+  if ((s.portfolio_dirty || reload) && !data.asset.items.empty()) {
+    s.portfolio_dirty = false;
+    Factors::PortfolioRequest req;
+    Factors::MakePortfolioRequest(data, s.portfolio_tables, pui.items, reload, req);
+    ++pui.items_gen; // 作用域建不成的条目在这里标失效
+    std::string sig = req.sig();
+    if (reload || sig != s.portfolio_sig) {
+      s.portfolio_sig = std::move(sig);
+      s.portfolio_service->Request(std::move(req));
+    }
+  }
+}
+
 // Factors 子页的作用域 (每帧从 config 取; 池 / 层取本页已生效的)
 static Factors::FactorsUIContext factors_context(const SharedData &data, const std::string &pool, int seg) {
   Factors::FactorsUIContext c;
@@ -126,7 +165,7 @@ TaskHandle CreateFactorsTask() {
   TaskHandle handle;
   handle.name = "Factors";
   handle.storage = state;
-  handle.tabs = {"Operators", "Factors", "Inspect"};
+  handle.tabs = {"Operators", "Factors", "Inspect", "Portfolio"};
 
   // 不设 OnCollapse: 切走任务 worker 继续跑完 (单线程 + ~90 行小结构, 左栏状态标签照常更新, 切回直接看表)
 
@@ -191,6 +230,8 @@ TaskHandle CreateFactorsTask() {
     }
     if (idx == TAB_INSPECT)
       return state->inspect_service ? ProgressStatus(*state->inspect_service) : TaskStatus{};
+    if (idx == TAB_PORTFOLIO)
+      return state->portfolio_service ? ProgressStatus(*state->portfolio_service) : TaskStatus{};
     // 任务行与 Operators 行同一状态
     if (!state->operators_service)
       return {};
@@ -213,6 +254,13 @@ TaskHandle CreateFactorsTask() {
       if (!Factors::LoadOperatorTableJson(data.config.factor_dir, svc, state->operators_ui))
         svc.Request(state->operators_ui.req);
     }
+
+    if (idx != TAB_OPERATORS) {
+      if (!state->portfolio_service)
+        state->portfolio_service = std::make_unique<Factors::PortfolioService>();
+      Factors::SyncPortfolioDir(state->portfolio_ui, data.config.portfolio_dir);
+    }
+    bool portfolio_reload = false;
 
     ImGui::BeginChild("FactorsTab", ImVec2(0, 0), false);
     ImGui::Spacing();
@@ -367,7 +415,7 @@ TaskHandle CreateFactorsTask() {
       if (idx == TAB_INSPECT) {
         iaction = Factors::RenderTabInspect(fs, is, *state->kline_service, state->factors_ui, state->inspect_ui, ctx);
       } else {
-        const int action = Factors::RenderTabFactors(fs, ss, state->factors_ui, ctx);
+        const int action = Factors::RenderTabFactors(fs, ss, state->factors_ui, state->portfolio_ui, ctx);
         if (action == 1 || action == 2) {
           Factors::FactorsRequest req;
           if (Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
@@ -396,9 +444,18 @@ TaskHandle CreateFactorsTask() {
       }
       break;
     }
+    case TAB_PORTFOLIO: {
+      const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.sell_impact);
+      if (action == -1)
+        state->portfolio_service->RequestCancel();
+      portfolio_reload = action == 1;
+      break;
+    }
     default:
       break;
     }
+    if (idx != TAB_OPERATORS)
+      portfolio_sync(data, *state, portfolio_reload);
     ImGui::EndChild();
   };
 
@@ -415,6 +472,13 @@ TaskHandle CreateFactorsTask() {
     state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放
     state->inspect_ui = Factors::InspectUIState{};
     state->feature_table.reset();
+    state->portfolio_service.reset(); // 析构 Stop() join worker, 缓存随之释放
+    state->portfolio_ui = Factors::PortfolioUIState{};
+    state->portfolio_tables.clear();
+    state->portfolio_gen = ~0ull;
+    state->portfolio_dirty = false;
+    state->portfolio_sig.clear();
+    state->portfolio_prev_fs = Phase::Idle;
   };
 
   return handle;

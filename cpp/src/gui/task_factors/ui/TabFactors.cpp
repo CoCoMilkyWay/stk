@@ -1,11 +1,12 @@
 // Tab Factors — 见头文件
 #include "gui/task_factors/ui/TabFactors.hpp"
-#include "factor/Check.hpp"           // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
-#include "factor/GpuRun.hpp"          // available / device_name
-#include "factor/Search/Contract.hpp" // 搜索窗 / 高原 / 终选常量: Search 提示
-#include "factor/Search/Grid.hpp"     // kLayerMax: Search 提示
-#include "gui/Tasks.hpp"              // StatusColor
-#include "gui/util/Sparkline.hpp"     // ic~ / alpha~ 列迷你图
+#include "factor/Check.hpp"                     // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
+#include "factor/GpuRun.hpp"                    // available / device_name
+#include "factor/Search/Contract.hpp"           // 搜索窗 / 高原 / 终选常量: Search 提示
+#include "factor/Search/Grid.hpp"               // kLayerMax: Search 提示
+#include "gui/Tasks.hpp"                        // StatusColor
+#include "gui/task_factors/ui/TabPortfolio.hpp" // RenderPortfolioBoxes
+#include "gui/util/Sparkline.hpp"               // ic~ / alpha~ 列迷你图
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
@@ -981,7 +982,7 @@ void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
 
 } // namespace
 
-int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, const FactorsUIContext &ctx) {
+int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx) {
   int action = 0;
   const Phase st = svc.phase.load(std::memory_order_acquire);
   const bool busy = svc.busy();
@@ -998,8 +999,9 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   const int cur_hold = ft.y.labels.empty() ? 0 : ft.y.labels[static_cast<size_t>(ui.hold_idx)].key;
 
   // ==========================================================================
-  // 1. 作用域 + 后端 + Run / Cancel / Rescan + 状态
+  // 1. 作用域 + 后端 + Run / Cancel / Rescan + 状态; 右侧 组合两小框 (TabPortfolio)
   // ==========================================================================
+  ImGui::BeginGroup();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
   ImGui::Text("%s  %s", ctx.pool.c_str(), factor_level(ctx.seg).name);
@@ -1285,6 +1287,19 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "已取消");
       break;
     }
+  }
+  ImGui::EndGroup();
+  {
+    const FactorRow *view_row = nullptr;
+    for (const FactorRow &r : s_rows)
+      if (r.key == ui.view_file)
+        view_row = &r;
+    constexpr float kBoxesW = 250.0f + 380.0f; // = RenderPortfolioBoxes 两框宽 (框间再隔一个 ItemSpacing)
+    ImGui::SameLine();
+    const float pad = ImGui::GetContentRegionAvail().x - kBoxesW - ImGui::GetStyle().ItemSpacing.x;
+    if (pad > 0.0f)
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad);
+    RenderPortfolioBoxes(pui, view_row, ctx.pool, ctx.seg, cur_hold);
   }
 
   ImGui::Separator();

@@ -267,6 +267,10 @@ struct FactorRow : EvalStat {
 // 无 stat / stat 无该持有期 / n < 3 → ok = false. ric_pow 取契约默认
 factor::search::Score RowScore(const FactorRow &r, int hold);
 
+// 一个因子文件 → 行 (每权重一行; 文件级问题一行 widx −1) 追加进 out; 解析 / 校验失败 → error (文件不动). 跨行查重 (dup_of) 不在这里.
+// FactorsService::scan 逐文件调; Portfolio 按 (文件, 具体规范串) 找回条目的权重也走它
+void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std::vector<FactorRow> &out);
+
 // 进度面 = 自身 (Published): Scanning → (evaluate) Loading 期 done/total = 天 → Running 期 = 共享 DAG 算子节点
 class FactorsService : public Service<FactorsService, FactorsRequest>, public Published {
   friend Service<FactorsService, FactorsRequest>;

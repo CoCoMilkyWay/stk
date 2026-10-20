@@ -702,20 +702,13 @@ bool FactorsService::run(FactorsRequest &req) {
   return evaluate(req, misc::exec::ensure(ex_, misc::exec::hw()));
 }
 
-// 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)
-void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out) {
-  TraceN("FactorsScan");
-  out.clear();
-  const std::vector<std::filesystem::path> files = list_factor_files(req.scope.factor_dir);
-  const FeatureTable &ft = feats();
-  assert(req.scope.seg == ft.seg && "请求层与字段表层不符");
+void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std::vector<FactorRow> &out) {
   const factor::expr::FeatureLookup fl = ft.lookup();
-  std::map<std::pair<int, std::string>, std::string> seen; // (hold, 具体规范串) → 首行 key
   const auto emit = [&](FactorRow &r) {
     r.key = row_key(r.file, r.widx);
     out.push_back(r);
   };
-  for (const std::filesystem::path &p : files) {
+  {
     FactorRow r;
     r.file = p.filename().string();
     r.name_en = p.stem().string();
@@ -727,7 +720,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
     if (j.is_discarded() || !j.is_object()) {
       r.error = "JSON 解析失败 / 顶层不是对象";
       emit(r);
-      continue;
+      return;
     }
     if (const auto it = j.find("note"); it != j.end() && it->is_string())
       r.note = it->get<std::string>();
@@ -736,13 +729,13 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
     if (!ValidFactorNameCn(r.name_cn)) {
       r.error = "缺 name_cn 键或值不合 (纯汉字, 1..10 字)";
       emit(r);
-      continue;
+      return;
     }
     const auto eit = j.find("expr");
     if (eit == j.end() || !eit->is_string()) {
       r.error = "缺 expr 键或不是字串";
       emit(r);
-      continue;
+      return;
     }
     r.expr_raw = eit->get<std::string>();
     // type: 必填; beta 只留位
@@ -750,22 +743,22 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       r.kind = FactorKind::Beta;
       r.error = "beta 类因子未实现 (留位)";
       emit(r);
-      continue;
+      return;
     }
     if (!json_str_is(j, "type", kind_name(FactorKind::Alpha))) {
       r.error = "缺 type 键或值不合 (alpha | beta)";
       emit(r);
-      continue;
+      return;
     }
     factor::expr::Expr t; // 模板
     if (!factor::expr::parse(r.expr_raw, fl, ft.seg, t, r.error) || !ft.check_grid(t, r.error)) {
       emit(r);
-      continue;
+      return;
     }
     r.tmpl = t.canon; // 表里显示规范串, 便于看根
     if (!factor::expr::root_frame(t, ft.seg, r.frame, r.error)) {
       emit(r);
-      continue;
+      return;
     }
     // 权重: weights 数组每项一行; 无 weights 时, 模板具体 → 手填唯一权重, 否则 "未搜索" 一行
     struct W {
@@ -777,7 +770,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       if (!wit->is_array()) {
         r.error = "weights 须是数组";
         emit(r);
-        continue;
+        return;
       }
       for (size_t i = 0; i < wit->size(); ++i) {
         const json &o = (*wit)[i];
@@ -799,7 +792,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
     if (ws.empty()) { // 模板未搜索
       r.status = RowStatus::Done;
       emit(r);
-      continue;
+      return;
     }
     // run + 表头对得上当前代码且 stats 与 weights 同长才吃 stats[i] (否则全部忽略, 下次 Run 覆盖)
     const json *run = nullptr, *stats = nullptr;
@@ -838,15 +831,29 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       const factor::Dag d = factor::build(e);
       w.n_feats = static_cast<int>(d.feats.size());
       w.n_slots = d.n_slots;
-      w.key = row_key(w.file, w.widx);
-      if (const auto it = seen.find({w.hold_src, e.canon}); it != seen.end())
-        w.dup_of = it->second;
-      else
-        seen.emplace(std::pair{w.hold_src, e.canon}, w.key);
       if (stats)
         load_stat(*run, (*stats)[i], ft.seg, w);
       emit(w);
     }
+  }
+}
+
+// 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)
+void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out) {
+  TraceN("FactorsScan");
+  out.clear();
+  const FeatureTable &ft = feats();
+  assert(req.scope.seg == ft.seg && "请求层与字段表层不符");
+  for (const std::filesystem::path &p : list_factor_files(req.scope.factor_dir))
+    ScanFactorFile(p, ft, out);
+  std::map<std::pair<int, std::string>, std::string> seen; // (hold, 具体规范串) → 首行 key
+  for (FactorRow &w : out) {
+    if (w.expr.empty())
+      continue;
+    if (const auto it = seen.find({w.hold_src, w.expr}); it != seen.end())
+      w.dup_of = it->second;
+    else
+      seen.emplace(std::pair{w.hold_src, w.expr}, w.key);
   }
   if (!req.spec.evaluate) // 只扫描: BROKEN 行也算"处理完"
     for (FactorRow &r : out)

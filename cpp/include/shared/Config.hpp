@@ -19,6 +19,7 @@ struct Config {
   std::string orders_dir = "../../../../output/orders";
   std::string feature_dir = "../../../../output/features";
   std::string factor_dir = "../../../../output/factors";
+  std::string portfolio_dir = "../../../../output/portfolio";
   std::string log_dir = "../../../../output/log";
   std::string config_dir = "../../../../config";
 
@@ -52,6 +53,7 @@ struct Config {
   char orders_dir_buf[512] = "";
   char feature_dir_buf[512] = "";
   char factor_dir_buf[512] = "";
+  char portfolio_dir_buf[512] = "";
   char log_dir_buf[512] = "";
   char config_dir_buf[512] = "";
   char csv_market_data_buf[128] = "";

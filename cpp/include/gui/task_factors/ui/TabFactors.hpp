@@ -15,6 +15,8 @@ struct AssetItem;
 
 namespace GUI::Factors {
 
+struct PortfolioUIState; // TabPortfolio.hpp
+
 // 构建器的一个槽: 未选 / 特征叶 / 算子 (带 arity 个子槽 + 参数). 从外到内填: 先选根算子, 再逐槽往里选
 struct BuildNode {
   int op = -1;                 // factor::expr::kOps 下标; -1 = 叶
@@ -74,7 +76,7 @@ struct FactorsUIContext {
 void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row), 4 = Search all (ui.search_queue 已填),
-// -3 = 取消 Search (Search all 的队列已清), 0 = 无
-int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, const FactorsUIContext &ctx);
+// -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)
+int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors
