@@ -717,15 +717,18 @@ if(NOT EXISTS ${ARROW_ROOT}/include/arrow/flight/client.h)
         "Vendored Arrow headers missing: ${ARROW_ROOT}/include/arrow/flight/client.h\n"
         "Run: ${ARROW_ROOT}/vendor_from_pyarrow.sh")
 endif()
+#   直接链带版本号的真实 .so: exFAT 等无 symlink 的盘上, git 把 lib*.so 符号链接检出为纯文本, lld 会当链接脚本解析失败
 foreach(arrow_lib arrow_flight parquet arrow)
-    if(NOT EXISTS ${ARROW_ROOT}/lib/lib${arrow_lib}.so)
+    file(GLOB arrow_so ${ARROW_ROOT}/lib/lib${arrow_lib}.so.[0-9]*)
+    list(LENGTH arrow_so arrow_so_n)
+    if(NOT arrow_so_n EQUAL 1)
         message(FATAL_ERROR
-            "Vendored Arrow shared libs missing: ${ARROW_ROOT}/lib/lib${arrow_lib}.so\n"
+            "Expected exactly one ${ARROW_ROOT}/lib/lib${arrow_lib}.so.<ver>, found ${arrow_so_n}: ${arrow_so}\n"
             "Run: ${ARROW_ROOT}/vendor_from_pyarrow.sh")
     endif()
     add_library(arrow::${arrow_lib} SHARED IMPORTED)
     set_target_properties(arrow::${arrow_lib} PROPERTIES
-        IMPORTED_LOCATION ${ARROW_ROOT}/lib/lib${arrow_lib}.so
+        IMPORTED_LOCATION ${arrow_so}
         INTERFACE_INCLUDE_DIRECTORIES ${ARROW_ROOT}/include)
 endforeach()
 
