@@ -26,6 +26,7 @@
 namespace factor::gpu::stat {
 
 using factor::stat::Accum;
+using factor::stat::Labels;
 using factor::stat::Plane;
 
 inline constexpr int kRows = 128; // fold_rows 每 warp 的行块长 (分片粒度)

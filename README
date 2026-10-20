@@ -333,7 +333,8 @@ stk/
     │   └── resources-tag -> ../../../doc/resources-tag     # 标注后 (标签体系 + 统计, 给 agent)
     ├── factors/                                            # 因子库 (factor/ 的落地)
     │   ├── operators.json                                  # 算子表快照 (对拍 + 耗时), 与当前 OpTable 不符则重算
-    │   └── <pool>/                                         # 因子文件 (一因子一文件, 可手写; 按 Lob 库名分目录)
+    │   └── <lib>/<层>/                                     # 因子文件 (一因子一文件, 可手写); <lib> = 该层所在档的当前库, <层> = min (Lob) / 5min / 15min / 30min / 60min / day (Bar)
+    │       ├── log/<name>.log                              # Search 过程日志 (每次覆盖)
     │       └── *.json                                      # 因子文件字段:
     │                                                       #    · 必填: type / name_cn / expr (模板, 自由参数用裸键名)
     │                                                       #    · 可选: note / run / hold_cols / acc_cols

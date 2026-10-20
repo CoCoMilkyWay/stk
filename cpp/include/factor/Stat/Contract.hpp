@@ -89,7 +89,7 @@
 //     Labels (持有期键 hd 与其标签 l[] 同处, 带满仓 cap) · Span (块形 T × A + 层每段行数 seg + 分块流式 t0_abs / t_lo; 整张量两者为 0).
 //     流程出口统一是二级累加器 Accum[H] (两后端同), HoldStat 由 finish_all 现算; 一级 Row 是可选的 sink.
 //
-//   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^57, 有符号 64 位不溢); 浮点和 (标签值) 两后端
+//   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^58, 有符号 64 位不溢); 浮点和 (标签值) 两后端
 //   求和序不同, 走对拍容差. 全程 branchless 无 NaN: 标签 fp16 → float 是精确转换, 出口不产 inf.
 //   【一份公式】契约公式 (ord / r16 / grp_of / tail / pair_add / pearson_int / finish_row / Accum::add, merge) 标 FACTOR_HD: CUDA 编译器下是
 //   __host__ __device__, 纯 C++ 下为空 —— CPU / GPU 两后端直接调用这一份, 不再各自复刻; 后端只剩访存与并行.
@@ -111,7 +111,7 @@ namespace factor::stat {
 inline constexpr int kGroups = 20;                                 // 分组数 (等分 pct rank)
 inline constexpr int kMaxHold = 12;                                // 同时评估的持有期数上限
 inline constexpr int kMaxCost = 8;                                 // 同时攒的换手成本金额段数上限
-inline constexpr int kMaxA = 5120;                                 // 资产轴上限 (GPU 一行一 block 的片上排序容量)
+inline constexpr int kMaxA = 8192;                                 // 资产轴上限 (GPU 一行一 block 的片上排序容量)
 inline constexpr int kCloseAuction = 3;                            // 段末收盘集合竞价分钟数 (14:57–15:00), 标签 exit 锚点不能落入
 inline constexpr int kLastAnchorRow = kSegMax - kCloseAuction - 2; // 最后一个 entry 锚点可成交的 L_1min 行 (= 分钟号; 锚点 = 下一分钟起始, 须在 14:57 前)
 inline constexpr int kDaysPerYear = 242;                           // 年化用交易日数

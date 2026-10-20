@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "十分钟放量突发",
+ "expr": "TsRankRoll(TsLogRatio(TsSumRoll(TsAdd(amt_taker_bid, amt_taker_ask), d), TsSumRoll(TsAdd(amt_taker_bid, amt_taker_ask), d)), d=255)",
+ "note": "近 10 分钟成交额相对近 1 日 (255 分钟) 成交额的对数比, 在自身近 1 日的分位 (时序口径: 放量突发; 演示子树去重 TsAdd 只算一次)"
+}

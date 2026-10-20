@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "换手率",
+ "expr": "CsRank(TsNeg(TsMeanRoll(TsDiv(volume_day, float_shares), d)))",
+ "note": "d 日均换手 (volume / 流通股本) 取负; 东方 因子选股-014 Turnover=Average(Volume/FloatShares) rankIC -0.086 (月)"
+}

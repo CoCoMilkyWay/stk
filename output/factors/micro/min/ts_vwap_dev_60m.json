@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "时序均价偏离",
+ "expr": "TsRankRoll(TsNeg(TsLogRatio(lob_close, TsMeanRoll(vwap, d))), d=255)",
+ "note": "收盘价对近 60 分钟 vwap 均值的对数偏离, 在自身近 1 日的分位 (时序口径: 偏离常态 → 均值回归候选)"
+}

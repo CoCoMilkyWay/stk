@@ -381,9 +381,10 @@ const FactorLevel &factor_level(int seg) {
   __builtin_unreachable();
 }
 
-std::string factor_dir_of(const SharedData &data, int seg) {
+std::string factor_dir_of(const SharedData &data, const std::string &lib, int seg) {
   const FactorLevel &l = factor_level(seg);
-  return data.config.factor_dir + "/" + data.feature.selection.lib_of(l.tier) + "/" + l.name;
+  assert(lib_def(lib).tier == l.tier && "库不属该因子层的档");
+  return data.config.factor_dir + "/" + lib + "/" + l.name;
 }
 
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
@@ -463,19 +464,18 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
   return t;
 }
 
-bool MakeFactorsRequest(const SharedData &data, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
+bool MakeFactorsRequest(const SharedData &data, const std::string &lib, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
   req = FactorsRequest{};
-  const TierId tier = factor_level(seg).tier;
-  const std::string &pool = data.feature.selection.lib_of(tier);
+  const std::string &pool = lib;
   req.seg = seg;
-  req.factor_dir = factor_dir_of(data, seg);
+  req.factor_dir = factor_dir_of(data, lib, seg);
   req.evaluate = evaluate;
   req.gpu = gpu;
   if (!evaluate)
     return true;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature.selection.cur_lib(tier), {});
+  req.scope = analysis::read_scope(data.config, lib_id(lib), {});
   if (req.scope.months.empty())
     return false;
   req.pool = pool;

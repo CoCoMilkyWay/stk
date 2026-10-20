@@ -112,10 +112,10 @@ struct InspectService::Flow {
   }
 };
 
-bool MakeInspectRequest(const SharedData &data, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
+bool MakeInspectRequest(const SharedData &data, const std::string &lib, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
+  assert(lib_def(lib).tier == factor_level(seg).tier && "库不属该因子层的档");
   req = InspectRequest{};
-  const TierId tier = factor_level(seg).tier;
   req.seg = seg;
   req.file = row.key;
   req.expr = row.expr;
@@ -124,10 +124,10 @@ bool MakeInspectRequest(const SharedData &data, int seg, const FactorRow &row, b
   req.max_impact = data.config.max_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature.selection.cur_lib(tier), {});
+  req.scope = analysis::read_scope(data.config, lib_id(lib), {});
   if (req.scope.months.empty())
     return false;
-  req.pool = data.feature.selection.lib_of(tier);
+  req.pool = lib;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;

@@ -154,20 +154,19 @@ struct SearchService::Flow {
   Flow() : ex(misc::exec::hw()) {}
 };
 
-bool MakeSearchRequest(const SharedData &data, int seg, const FactorRow &row, bool gpu, SearchRequest &req) {
+bool MakeSearchRequest(const SharedData &data, const std::string &lib, int seg, const FactorRow &row, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  const TierId tier = factor_level(seg).tier;
-  const std::string &pool = data.feature.selection.lib_of(tier);
+  const std::string &pool = lib;
   req.seg = seg;
-  req.factor_dir = factor_dir_of(data, seg);
+  req.factor_dir = factor_dir_of(data, lib, seg);
   req.file = row.file;
   req.tmpl = row.tmpl;
   req.frame = row.frame;
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, data.feature.selection.cur_lib(tier), {});
+  req.scope = analysis::read_scope(data.config, lib_id(lib), {});
   if (req.scope.months.empty())
     return false;
   req.pool = pool;

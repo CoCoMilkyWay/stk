@@ -47,7 +47,7 @@ namespace GUI::Factors {
 
 struct SearchRequest {
   int seg = 0;                                         // 因子层 (= FeatureTable::seg)
-  std::string factor_dir;                              // factor_dir_of(seg) (落盘)
+  std::string factor_dir;                              // factor_dir_of(lib, seg) (落盘)
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
   analysis::ReadScope scope;
@@ -56,7 +56,7 @@ struct SearchRequest {
   bool gpu = false;
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error)
-bool MakeSearchRequest(const SharedData &data, int seg, const FactorRow &row, bool gpu, SearchRequest &req);
+bool MakeSearchRequest(const SharedData &data, const std::string &lib, int seg, const FactorRow &row, bool gpu, SearchRequest &req);
 
 // 评过的一个候选在一个 h 下的分 (UI 列表)
 struct SearchCand {

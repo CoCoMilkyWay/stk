@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "高频波动",
+ "expr": "CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(close_5min, TsDelayRoll(close_5min, d=1)), TsTodMask(k=1, k2=49)), d)))",
+ "note": "近 d 箱 5 分钟对数收益标准差取负 (掩掉首箱 = 竞价 + 隔夜跳空); 广发 多因子-048 real_var rankIC -0.0608 (周), 信达 因子选股-001 Ret_Std -0.0575"
+}

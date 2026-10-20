@@ -57,9 +57,9 @@ struct FactorsUIState {
 
 // 当前 config 决定的作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域对比着色
 struct FactorsUIContext {
-  int seg = 0;            // 因子层 (FactorLevel; 页顶全局选择)
-  std::string factor_dir; // factor_dir_of(seg) = <factor_dir>/<库>/<层名>
-  std::string pool;       // 该层所在档的当前库名
+  int seg = 0;            // 因子层 (FactorLevel; 本页已生效的, 跟页顶 / 特征面板选择走)
+  std::string factor_dir; // factor_dir_of(pool, seg) = <factor_dir>/<库>/<层名>
+  std::string pool;       // 本页已生效的库名
   misc::Ymd start_date = 0, end_date = 0;
   double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估

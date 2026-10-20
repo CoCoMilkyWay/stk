@@ -82,8 +82,8 @@ inline constexpr FactorLevel kFactorLevels[] = {
     {1, L_1day, TierId::Bar, "day"},
 };
 const FactorLevel &factor_level(int seg); // seg 不在表里 → assert
-// 该层因子目录 = <config.factor_dir>/<该档当前库名>/<name>
-std::string factor_dir_of(const SharedData &data, int seg);
+// 该层因子目录 = <config.factor_dir>/<lib>/<name> (lib 须属该层的档)
+std::string factor_dir_of(const SharedData &data, const std::string &lib, int seg);
 
 // ---- 字段表视图 (GUI 线程从 Feature::Metadata 建一次, worker 只读; 一份对应一层) ----
 struct FeatCol {
@@ -121,7 +121,7 @@ std::string now_string();
 // ---- 请求 (GUI 线程解析 config, worker 不碰) ----
 struct FactorsRequest {
   int seg = 0;            // 因子层
-  std::string factor_dir; // factor_dir_of(seg)
+  std::string factor_dir; // factor_dir_of(lib, seg)
   bool evaluate = false;  // false = 只扫描解析
   // 以下 evaluate 时才用
   analysis::ReadScope scope;
@@ -132,7 +132,7 @@ struct FactorsRequest {
   std::string only_file;   // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat
 };
 // evaluate 请求需要资产轴 (读特征库); 轴未就绪 (数据库未扫) → false
-bool MakeFactorsRequest(const SharedData &data, int seg, bool evaluate, bool gpu, FactorsRequest &req);
+bool MakeFactorsRequest(const SharedData &data, const std::string &lib, int seg, bool evaluate, bool gpu, FactorsRequest &req);
 
 // ---- 行 ----
 // 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 只留位, 扫描到即标 error

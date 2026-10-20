@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "换手波动",
+ "expr": "CsRank(TsNeg(TsStdRoll(TsDiv(volume_day, float_shares), d)))",
+ "note": "d 日换手标准差取负; 长江 高频因子-016 换手率波动率 IC 0.1013 方向负 (月)"
+}

@@ -9,15 +9,16 @@
 //
 //   【布局】SoA 行主序 [T][A]; 一行 = 一个截面. 候选批 Batch = C 张 Plane (kernel 参数区, 128 × 16 B = 2 KB);
 //           r16 工作区 rx[c][T][A] (u16). Stat 是 C = 1 的特例.
-//   【rank_rows】grid (T, C) 一行一 block (kRB = 512 线程, 每 SM 驻 2 块): 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上),
+//   【rank_rows】grid (T, C) 一行一 block (kRB = 512 线程, 前三级每 SM 驻 2 块): 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上),
 //     排好写回 shared, 每个元素二分查 less / eq → r16. 无效键 = kNoKey 排最后, n = 首个 kNoKey 的位置.
-//     ITEMS (每线程元素数) 按 A 分三级 2 / 6 / 10 (A ≤ 1024 / 3072 / 5120), shared 6 / 18 / 30 KB.
+//     ITEMS (每线程元素数) 按 A 分四级 2 / 6 / 10 / 16 (A ≤ 1024 / 3072 / 5120 / 8192), shared 6 / 18 / 30 / 48 KB;
+//     末级 key + idx 正好顶满静态 shared 上限 48 KB (cub 排序暂存 ≈ 34 KB 与之 union), sm_75 每 SM 只驻 1 块.
 //     同一个核给因子批 (SrcX: 池内 g ∧ m) 与标签 (SrcY: fp16 平面, C = 1) 用, 只换行源; 行源 row(c, 行首) 给出取键器
 //     KeyX / KeyY (行视图, 与 Host.hpp 同名同形).
 //   【quant_rows】TS: 分位直接量化 (r16_quant), 逐格无关, grid (·, C).
 //   【row_stat】= 换手侧 lag_row + 标签侧 label_row (与 Host.hpp 同构). 一 warp 算一 (t, hold) 行 → Row, **全 lane 同值**
 //     (收尾 finish_row 在 32 lane 冗余算: SIMT 下与 lane 0 独算同耗时,
-//     省掉 lane 间搬运; 消费端 lane 0 落 Row 或 lane k 取 grp[k] 都直接从寄存器拿). 一行只有 A ≤ 5120 格, 块级归约是纯栅栏延迟瓶颈,
+//     省掉 lane 间搬运; 消费端 lane 0 落 Row 或 lane k 取 grp[k] 都直接从寄存器拿). 一行只有 A ≤ kMaxA 格, 块级归约是纯栅栏延迟瓶颈,
 //     所以一遍 A 轴 lane 跨步 32, 累加器全在寄存器 + 每 lane **独占**的 smem 分组槽 (Slots, [warp][组][lane] 布局, 32 lane 落 32 连续字,
 //     无 bank 冲突; 每格 1 LDS + 1 STS, 不展开 20 组 select): 整数五和 (rIC / rAC) 64 位 warp 蝶形归约 → 精确, 与 CPU 逐位一致;
 //     标签浮点和 float 蝶形; 分组槽由 lane q 沿 32 lane 串行加 (旋转起点), 求和序固定 → GPU 自身逐次确定, 与 CPU 只差求和序 (对拍容差).
@@ -47,24 +48,22 @@ namespace factor::gpu::stat {
 
 using factor::stat::Batch;
 using factor::stat::Frame;
-using factor::stat::Holds;
 using factor::stat::kGroups;
 using factor::stat::kLegs;
 using factor::stat::kLong;
 using factor::stat::kMaxA;
 using factor::stat::kMaxBatch;
-using factor::stat::kMaxHold;
 using factor::stat::kNoKey;
 using factor::stat::kRankNone;
 using factor::stat::kShort;
 using factor::stat::kSums;
 using factor::stat::Label;
-using factor::stat::Labels;
 using factor::stat::LegSum;
 using factor::stat::Row;
 using factor::stat::Span;
 
-inline constexpr int kRB = 512; // rank_rows 一行一 block 的线程数 (每 SM 驻 2 块)
+inline constexpr int kRB = 512; // rank_rows 一行一 block 的线程数 (ITEMS ≤ 10 每 SM 驻 2 块)
+static_assert(kRB * 16 == kMaxA, "rank_rows 末级 (ITEMS = 16) 须恰好盖住 kMaxA");
 inline constexpr int kWB = 256; // 行核 block 的线程数: kWarps 个 warp, 一 warp 一行
 inline constexpr int kWarps = kWB / 32;
 
@@ -297,8 +296,10 @@ inline void rank_launch(const Src &src, uint16_t *out, int T, int A, int C, cuda
     k::rank_rows<2, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
   else if (A <= kRB * 6)
     k::rank_rows<6, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
-  else
+  else if (A <= kRB * 10)
     k::rank_rows<10, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+  else
+    k::rank_rows<16, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 

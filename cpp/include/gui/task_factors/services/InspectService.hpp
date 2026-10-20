@@ -53,7 +53,7 @@ struct InspectRequest {
   std::string key() const { return std::to_string(seg) + "|" + file + "|" + expr + "|" + pool + "|" + std::to_string(start_date) + "|" + std::to_string(end_date); }
 };
 // 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
-bool MakeInspectRequest(const SharedData &data, int seg, const FactorRow &row, bool reload, InspectRequest &req);
+bool MakeInspectRequest(const SharedData &data, const std::string &lib, int seg, const FactorRow &row, bool reload, InspectRequest &req);
 
 // 尾部分层 (Inspect 专属, 不进 Stat 契约): 两腿的组 (顶 / 底) 内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
 // j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径 (q = 1 即整组). 一级 [H][T], 只在 Row::ok 行有值, 其余全 0
