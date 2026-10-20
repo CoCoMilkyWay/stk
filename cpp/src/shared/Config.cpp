@@ -115,14 +115,14 @@ bool Config::LoadFromFile() {
   };
   double new_commission = j.value("commission", commission);
   double new_stamp = j.value("stamp", stamp);
-  double new_sell_impact = j.value("sell_impact", sell_impact);
+  double new_fixed_impact = j.value("fixed_impact", fixed_impact);
   double new_max_impact = j.value("max_impact", max_impact);
   try_assign(commission, new_commission,
              new_commission >= 0.0 && new_commission < 0.01, "佣金比率越界 (万 1 = 0.0001)");
   try_assign(stamp, new_stamp,
              new_stamp >= 0.0 && new_stamp < 0.01, "印花税比率越界 (万 5 = 0.0005)");
-  try_assign(sell_impact, new_sell_impact,
-             new_sell_impact >= 0.0 && new_sell_impact < 0.05, "平仓冲击比率越界 (20bp = 0.0020)");
+  try_assign(fixed_impact, new_fixed_impact,
+             new_fixed_impact >= 0.0 && new_fixed_impact < 0.05, "固定冲击比率越界 (20bp = 0.0020)");
   try_assign(max_impact, new_max_impact,
              new_max_impact > 0.0 && new_max_impact <= 0.2, "买入冲击封顶越界 (1% = 0.01)");
 
@@ -148,7 +148,7 @@ bool Config::SaveToFile() {
   j["network_sync"] = network_sync;
   j["commission"] = commission;
   j["stamp"] = stamp;
-  j["sell_impact"] = sell_impact;
+  j["fixed_impact"] = fixed_impact;
   j["max_impact"] = max_impact;
 
   std::ofstream file(filepath);

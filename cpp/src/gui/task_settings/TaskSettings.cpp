@@ -26,7 +26,7 @@ static std::string GetCWD() {
 class SettingsTask {
 private:
   // 数值配置上次合法值: 失焦校验越界时回退用 (避免越界值进 cfg/落盘)
-  double last_commission = 0, last_stamp = 0, last_sell_impact = 0, last_max_impact = 0;
+  double last_commission = 0, last_stamp = 0, last_fixed_impact = 0, last_max_impact = 0;
 
   // Date picker state
   struct DatePickerState {
@@ -200,7 +200,7 @@ private:
     ts.initialized = true;
     last_commission = data.config.commission;
     last_stamp = data.config.stamp;
-    last_sell_impact = data.config.sell_impact;
+    last_fixed_impact = data.config.fixed_impact;
     last_max_impact = data.config.max_impact;
   }
 
@@ -322,20 +322,20 @@ private:
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("平仓冲击 (模拟)");
+        ImGui::Text("固定冲击 (模拟)");
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("比率, 20bp = 0.0020; 不按金额变. 标签 exit 是盘口中间价不含冲击, 建仓冲击按深度精确算 (lb_cost_*);\n"
-                            "Inspect 选择扣冲击时平仓侧统一扣这一常数 (做多卖出 / 做空买回同用)");
+          ImGui::SetTooltip("比率, 20bp = 0.0020; 不按金额变. 标签 exit 是盘口中间价不含冲击, Lob 建仓冲击按深度精确算 (lb_cost_*);\n"
+                            "扣冲击时平仓侧统一扣这一常数 (做多卖出 / 做空买回同用); Bar 档无盘口, Portfolio 建仓也按它");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        ImGui::InputDouble("##sell_impact", &cfg.sell_impact, 0.0, 0.0, "%.5f");
+        ImGui::InputDouble("##fixed_impact", &cfg.fixed_impact, 0.0, 0.0, "%.5f");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-          if (cfg.sell_impact >= 0.0 && cfg.sell_impact < 0.05) {
-            last_sell_impact = cfg.sell_impact;
+          if (cfg.fixed_impact >= 0.0 && cfg.fixed_impact < 0.05) {
+            last_fixed_impact = cfg.fixed_impact;
             changed = true;
           } else {
-            std::cout << "警告: 平仓冲击比率越界 (20bp = 0.0020), 保留旧值" << std::endl;
-            cfg.sell_impact = last_sell_impact;
+            std::cout << "警告: 固定冲击比率越界 (20bp = 0.0020), 保留旧值" << std::endl;
+            cfg.fixed_impact = last_fixed_impact;
           }
         }
 

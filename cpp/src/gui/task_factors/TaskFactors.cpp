@@ -153,7 +153,7 @@ static Factors::FactorsUIContext factors_context(const SharedData &data, const s
   c.seg = seg;
   c.pool = pool;
   c.factor_dir = Factors::factor_dir_of(data, pool, seg);
-  c.sell_impact = data.config.sell_impact;
+  c.fixed_impact = data.config.fixed_impact;
   c.axis_ready = !data.asset.items.empty();
   c.assets = &data.asset.items;
   return c;
@@ -445,7 +445,7 @@ TaskHandle CreateFactorsTask() {
       break;
     }
     case TAB_PORTFOLIO: {
-      const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.sell_impact);
+      const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.fixed_impact);
       if (action == -1)
         state->portfolio_service->RequestCancel();
       portfolio_reload = action == 1;

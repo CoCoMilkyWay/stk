@@ -6,8 +6,9 @@
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条 flow (FactorsLoad 装载 → Engine<Cpu> walk → rank_x →
-//   accum_rows / leg_codes), 只留该 hold 的逐行序列 (FactorCurve): G20 做多绝对收益 / LS (毛) + 各金额段两腿的逐行换手成本
-//   (Stat 契约【换手成本】, cost_row 每行一份 CostAcc; 与 cost_rows 逐行同式, 行和 = Inspect 的 CostTier). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
+//   accum_rows / leg_codes), 只留该 hold 的逐行序列 (FactorCurve): G20 做多绝对收益 / LS (毛) + 最小金额段两腿的逐行换手成本
+//   (Stat 契约【换手成本】, cost_row 每行一份 CostAcc; 与 cost_rows 逐行同式, 行和 = Inspect 的 CostTier). Bar 层无金额段: 新进者计数不看成本有效
+//   (建仓 / 平仓都按 Config::fixed_impact, UI 扣). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
 //   结果按条目键缓存: 加一个因子只算它; 请求里没有的条目丢掉.
 // 池等权指数: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes::index), 按池缓存 (Recompute 才重算).
 //
@@ -87,11 +88,11 @@ struct FactorCurve {
   std::vector<misc::Ymd> dates; // [days]
   std::vector<float> lng;       // G20 做多绝对收益 = grp[G20] + mkt[多] · cnt / max(cnt, cap) (Inspect 分层 绝对 口径)
   std::vector<float> ls;        // Row::ls
-  std::vector<int> amts;        // [C] 金额段 (万), FeatureTable::y.costs 序; Bar 层无
-  std::vector<float> wimp, we;  // [C][kLegs][T] 逐行 CostLeg::wimp / we (t < h 的行 0); 该腿行成本 = wimp + we · sell_impact
+  int amt = 0;                  // 成本金额段 (万) = 该层最小段; 0 = 无段 (Bar 层) → 建仓也按 fixed_impact
+  std::vector<float> wimp, we;  // [kLegs][T] 逐行 CostLeg::wimp / we (t < h 的行 0); 该腿行成本 = wimp + we · fixed_impact · (amt > 0 ? 1 : 2)
   std::string error;            // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
-  const float *wimp_at(int c, int l) const { return wimp.data() + (static_cast<size_t>(c) * factor::stat::kLegs + l) * lng.size(); }
-  const float *we_at(int c, int l) const { return we.data() + (static_cast<size_t>(c) * factor::stat::kLegs + l) * lng.size(); }
+  const float *wimp_at(int l) const { return wimp.data() + static_cast<size_t>(l) * lng.size(); }
+  const float *we_at(int l) const { return we.data() + static_cast<size_t>(l) * lng.size(); }
 };
 struct PoolCurve {
   std::string pool;

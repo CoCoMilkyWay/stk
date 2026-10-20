@@ -8,10 +8,12 @@
 
 #include "imgui.h"
 #include "implot.h"
+#include "implot_internal.h" // GetItem (主图例显隐 / 池线色)
 
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <set>
@@ -63,9 +65,23 @@ int clock_formatter(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%02d/%02d/%02d %02d:%02d", y / 10000 % 100, y / 100 % 100, y % 100, ct.hour, ct.minute);
 }
 
-// 组合聚合 + 池线 (见头文件). amt ≤ 0 = 毛
-void derive(const PortfolioUIState &ui, const PortfolioResult &res, int amt, double sell, PortfolioDerived &d) {
+// 区间条刻度: 只到日
+int day_formatter(double v, char *buf, int size, void *ud) {
+  const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
+  if (dates.empty() || v < 0)
+    return std::snprintf(buf, size, " ");
+  const misc::Ymd y = dates[std::min(static_cast<size_t>(v) / kDayW, dates.size() - 1)];
+  return std::snprintf(buf, size, "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
+}
+
+const ImVec4 kColLong(1.0f, 0.55f, 0.15f, 1.0f), kColLs(1.0f, 1.0f, 1.0f, 1.0f);
+// 单因子线色: 接在池线 (自动配色, 先建先取) 之后取色表
+ImVec4 factor_color(const PortfolioDerived &d, size_t i) { return ImPlot::GetColormapColor(static_cast<int>(d.pools.size() + i)); }
+
+// 组合聚合 + 单因子 + 池线 (见头文件), 全段净值
+void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed_impact, PortfolioDerived &d) {
   d = PortfolioDerived{};
+  std::vector<const PortfolioItem *> its;
   std::vector<const FactorCurve *> fc;
   std::set<std::string> own;
   for (const PortfolioItem &it : ui.items) {
@@ -80,13 +96,8 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, int amt, dou
       continue;
     }
     ++d.n_ready;
+    its.push_back(&it);
     fc.push_back(f->second.get());
-  }
-  {
-    std::set<int> as;
-    for (const FactorCurve *f : fc)
-      as.insert(f->amts.begin(), f->amts.end());
-    d.amts.assign(as.begin(), as.end());
   }
   for (const FactorCurve *f : fc)
     d.dates.insert(d.dates.end(), f->dates.begin(), f->dates.end());
@@ -103,65 +114,145 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, int amt, dou
     double x, l, ls;
   };
   std::vector<Ev> ev;
-  for (const FactorCurve *f : fc) {
+  for (size_t q = 0; q < fc.size(); ++q) {
+    const FactorCurve *f = fc[q];
     const int S = f->seg;
     const factor::Geo g = factor::geo_of(S);
     const int h = factor::stat::hold_rows(f->hold, g);
-    assert(f->lng.size() == f->dates.size() * static_cast<size_t>(S));
-    const auto ait = std::find(f->amts.begin(), f->amts.end(), amt);
-    const int k = amt > 0 && ait != f->amts.end() ? static_cast<int>(ait - f->amts.begin()) : -1;
-    const float *wl = k >= 0 ? f->wimp_at(k, kLong) : nullptr, *el = k >= 0 ? f->we_at(k, kLong) : nullptr;
-    const float *ws = k >= 0 ? f->wimp_at(k, kShort) : nullptr, *es = k >= 0 ? f->we_at(k, kShort) : nullptr;
+    assert(!f->dates.empty() && f->lng.size() == f->dates.size() * static_cast<size_t>(S));
+    // 每个新进者: 平仓 fixed_impact + 建仓 (Lob = 金额段冲击, 已在 wimp; Bar 无段 = 再一份 fixed_impact)
+    const double ke = f->amt > 0 ? fixed_impact : 2.0 * fixed_impact;
+    const float *wl = f->wimp_at(kLong), *el = f->we_at(kLong), *ws = f->wimp_at(kShort), *es = f->we_at(kShort);
+    PortfolioDerived::Factor pf;
+    pf.key = its[q]->e.key();
+    pf.label = entry_label(its[q]->e) + (f->amt > 0 ? " (" + std::to_string(f->amt) + "w冲击)" : std::string(" (固定冲击)"));
+    pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f->hold);
+    pf.c.x.push_back(static_cast<double>(day_of(f->dates.front()) * kDayW)), pf.c.y.push_back(1.0);
+    double nav = 1.0;
     for (size_t dl = 0; dl < f->dates.size(); ++dl) {
       const size_t di = day_of(f->dates[dl]);
-      const double w = 1.0 / (static_cast<double>(h) * n_act[di]);
       for (int ts = 0; ts < S; ++ts) {
         const size_t t = dl * S + static_cast<size_t>(ts);
-        const double cl = wl ? wl[t] + el[t] * sell : 0.0, cs = ws ? ws[t] + es[t] * sell : 0.0;
-        ev.push_back({static_cast<double>(di * kDayW + static_cast<size_t>(g.minute(ts))), (f->lng[t] - cl) * w, (f->ls[t] - cl - cs) * w});
+        const double cl = wl[t] + el[t] * ke, cs = ws[t] + es[t] * ke;
+        const double x = static_cast<double>(di * kDayW + static_cast<size_t>(g.minute(ts)));
+        const double rl = (f->lng[t] - cl) / h, rls = (f->ls[t] - cl - cs) / h;
+        ev.push_back({x, rl / n_act[di], rls / n_act[di]});
+        nav *= 1.0 + rl;
+        pf.c.x.push_back(x), pf.c.y.push_back(nav);
       }
     }
+    d.factors.push_back(std::move(pf));
   }
   std::sort(ev.begin(), ev.end(), [](const Ev &a, const Ev &b) { return a.x < b.x; });
   if (!d.dates.empty()) {
-    d.x.push_back(0.0), d.cum_l.push_back(0.0), d.cum_ls.push_back(0.0);
-    double cl = 0.0, cls = 0.0;
+    d.l.x.push_back(0.0), d.l.y.push_back(1.0), d.ls.y.push_back(1.0);
+    double nl = 1.0, nls = 1.0;
     for (size_t i = 0; i < ev.size();) {
+      double il = 0.0, ils = 0.0;
       size_t j = i;
       for (; j < ev.size() && ev[j].x == ev[i].x; ++j)
-        cl += ev[j].l, cls += ev[j].ls;
-      d.x.push_back(ev[i].x), d.cum_l.push_back(100.0 * cl), d.cum_ls.push_back(100.0 * cls);
+        il += ev[j].l, ils += ev[j].ls;
+      nl *= 1.0 + il, nls *= 1.0 + ils;
+      d.l.x.push_back(ev[i].x), d.l.y.push_back(nl), d.ls.y.push_back(nls);
       i = j;
     }
-    const double ann = static_cast<double>(factor::stat::kDaysPerYear) / static_cast<double>(d.dates.size());
-    d.ann_l = static_cast<float>(d.cum_l.back() * ann), d.ann_ls = static_cast<float>(d.cum_ls.back() * ann);
+    d.ls.x = d.l.x;
   }
 
   // ---- 池线: 只在日并集轴范围内; 不在轴上的日的收益并进下一个轴上的日 ----
   for (const PoolDef &pd : feature_pools()) {
     PortfolioDerived::Pool p;
     p.label = std::string(pd.name) + " " + pd.name_cn;
+    p.tag = pd.name;
     p.own = own.contains(pd.name);
     if (const auto it = res.pools.find(pd.name); it != res.pools.end() && it->second->error.empty() && !d.dates.empty()) {
       const PoolCurve &c = *it->second;
-      double cum = 0.0, base = 0.0;
+      double base = 0.0;
       for (size_t i = 0; i < c.dates.size(); ++i) {
         if (c.dates[i] < d.dates.front() || c.dates[i] > d.dates.back())
           continue;
         const size_t di = day_of(c.dates[i]);
-        if (p.x.empty()) {
+        if (p.c.x.empty()) {
           base = i > 0 ? c.index[i - 1] : c.index[i];
-          p.x.push_back(static_cast<double>(di * kDayW)), p.y.push_back(0.0);
+          p.c.x.push_back(static_cast<double>(di * kDayW)), p.c.y.push_back(1.0);
         }
         if (d.dates[di] != c.dates[i])
           continue;
-        cum += c.index[i] / base - 1.0;
-        base = c.index[i];
-        p.x.push_back(static_cast<double>(di * kDayW + kDayW - 1)), p.y.push_back(100.0 * cum);
+        p.c.x.push_back(static_cast<double>(di * kDayW + kDayW - 1)), p.c.y.push_back(c.index[i] / base);
       }
     }
     d.pools.push_back(std::move(p));
   }
+}
+
+// 切到 [x0, x1) 并在 x0 归一: x0 前有点 → 起点 (x0, 1), 基 = x0 前末点; 否则基 = 自身首点. 整条在区间外 → 空
+void rebase(const PortfolioCurve &s, double x0, double x1, PortfolioCurve &o) {
+  o.x.clear(), o.y.clear();
+  const size_t i0 = static_cast<size_t>(std::lower_bound(s.x.begin(), s.x.end(), x0) - s.x.begin());
+  const size_t i1 = static_cast<size_t>(std::lower_bound(s.x.begin(), s.x.end(), x1) - s.x.begin());
+  if (i0 == s.x.size() || i1 == 0)
+    return;
+  const double base = i0 > 0 ? s.y[i0 - 1] : s.y[0];
+  if (i0 > 0)
+    o.x.push_back(x0), o.y.push_back(1.0);
+  for (size_t i = i0; i < i1; ++i)
+    o.x.push_back(s.x[i]), o.y.push_back(s.y[i] / base);
+}
+
+// 复利年化 (%): 末点净值按首末点所跨交易日数折年
+float ann_of(const PortfolioCurve &c) {
+  if (c.x.size() < 2)
+    return 0.f;
+  const double days = std::floor(c.x.back() / kDayW) - std::floor(c.x.front() / kDayW) + 1.0;
+  return static_cast<float>(100.0 * (std::pow(c.y.back(), static_cast<double>(factor::stat::kDaysPerYear) / days) - 1.0));
+}
+
+void make_view(const PortfolioDerived &d, int d0, int d1, PortfolioView &v) {
+  const double x0 = static_cast<double>(static_cast<size_t>(d0) * kDayW), x1 = static_cast<double>(static_cast<size_t>(d1) * kDayW);
+  rebase(d.l, x0, x1, v.l);
+  rebase(d.ls, x0, x1, v.ls);
+  v.ann_l = ann_of(v.l), v.ann_ls = ann_of(v.ls);
+  v.pools.resize(d.pools.size());
+  for (size_t i = 0; i < d.pools.size(); ++i)
+    rebase(d.pools[i].c, x0, x1, v.pools[i]);
+  v.factors.resize(d.factors.size());
+  v.ann_f.resize(d.factors.size());
+  for (size_t i = 0; i < d.factors.size(); ++i) {
+    rebase(d.factors[i].c, x0, x1, v.factors[i]);
+    v.ann_f[i] = ann_of(v.factors[i]);
+  }
+}
+
+// 线尾小字: 视野内末点的像素位置
+struct EndTag {
+  ImVec2 at;
+  ImU32 col;
+  const char *text;
+};
+void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, const PortfolioCurve &c, ImU32 col, const char *text) {
+  const auto it = std::upper_bound(c.x.begin(), c.x.end(), lim.X.Max);
+  if (it == c.x.begin())
+    return;
+  const size_t i = static_cast<size_t>(it - c.x.begin()) - 1;
+  if (c.x[i] < lim.X.Min)
+    return;
+  tags.push_back({ImPlot::PlotToPixels(c.x[i], c.y[i]), col, text});
+}
+// 按像素 y 排开不重叠, 贴点右侧 (出界则左移进图内)
+void draw_tags(std::vector<EndTag> &tags) {
+  std::sort(tags.begin(), tags.end(), [](const EndTag &a, const EndTag &b) { return a.at.y < b.at.y; });
+  ImFont *font = ImGui::GetFont();
+  const float fs = ImGui::GetFontSize() * 0.8f;
+  for (size_t i = 1; i < tags.size(); ++i)
+    tags[i].at.y = std::max(tags[i].at.y, tags[i - 1].at.y + fs);
+  const float right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x;
+  ImDrawList *dl = ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  for (const EndTag &t : tags) {
+    const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t.text);
+    dl->AddText(font, fs, ImVec2(std::min(t.at.x + 4.0f, right - sz.x - 2.0f), t.at.y - 0.5f * sz.y), t.col, t.text);
+  }
+  ImPlot::PopPlotClipRect();
 }
 
 } // namespace
@@ -313,7 +404,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
   ImGui::EndChild();
 }
 
-int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double sell_impact) {
+int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed_impact) {
   int action = 0;
   PortfolioResult res;
   uint64_t gen = 0;
@@ -325,18 +416,24 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double sell_
     message = svc.message;
   }
   PortfolioDerived &d = ui.der;
-  bool refit = false;
-  if (gen != ui.der_gen || ui.items_gen != ui.der_items || ui.amt != ui.der_amt || sell_impact != ui.der_sell) {
+  bool refit = ui.refit;
+  ui.refit = false;
+  if (gen != ui.der_gen || ui.items_gen != ui.der_items || fixed_impact != ui.der_impact) {
     const std::vector<misc::Ymd> old = d.dates;
-    derive(ui, res, ui.amt, sell_impact, d);
-    ui.der_gen = gen, ui.der_items = ui.items_gen, ui.der_amt = ui.amt, ui.der_sell = sell_impact;
-    refit = d.dates != old;
+    derive(ui, res, fixed_impact, d);
+    ui.der_gen = gen, ui.der_items = ui.items_gen, ui.der_impact = fixed_impact;
+    if (d.dates != old) { // 日轴变 → 区间回全段
+      ui.d0 = 0, ui.d1 = static_cast<int>(d.dates.size());
+      ui.rx0 = 0.0, ui.rx1 = static_cast<double>(d.dates.size() * kDayW);
+      refit = true;
+    }
+    ui.view_d0 = -1;
   }
-  if (ui.amt == -1 && !d.amts.empty()) { // 默认最小非零金额段 (下一帧按它重派生)
-    const auto it = std::find_if(d.amts.begin(), d.amts.end(), [](int a) { return a > 0; });
-    if (it != d.amts.end())
-      ui.amt = *it;
+  if (ui.view_d0 != ui.d0 || ui.view_d1 != ui.d1) {
+    make_view(d, ui.d0, ui.d1, ui.view);
+    ui.view_d0 = ui.d0, ui.view_d1 = ui.d1;
   }
+  const PortfolioView &v = ui.view;
 
   // ---- 头: 组合 / 成本 / Recompute / Cancel / 状态 ----
   ImGui::TextColored(kHead, "Portfolio:");
@@ -362,28 +459,18 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double sell_
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(80);
-  {
-    char cur[24];
-    std::snprintf(cur, sizeof(cur), ui.amt > 0 ? "%dw" : "毛", ui.amt);
-    if (ImGui::BeginCombo("Cost", cur)) {
-      if (ImGui::Selectable("毛", ui.amt <= 0))
-        ui.amt = 0;
-      for (const int a : d.amts) {
-        char lb[24];
-        std::snprintf(lb, sizeof(lb), "%dw", a);
-        if (ImGui::Selectable(lb, ui.amt == a))
-          ui.amt = a;
-      }
-      ImGui::EndCombo();
-    }
-  }
+  ImGui::TextDisabled("带冲击");
   if (ImGui::IsItemHovered())
-    tip("换手成本的下单金额段 (万)\n"
-        "• 每行成本 = 两腿新进者 (t−h 不在该组) 的建仓冲击 + sell_impact %.4f, 按持仓加权 (Stat 契约【换手成本】)\n"
-        "• G20 多头扣多腿; LS 扣两腿\n"
-        "• Bar 层 (5min .. day) 没有冲击成本段, 恒为毛",
-        sell_impact);
+    tip("换手成本 = 各因子自己的最小冲击段, 不可选\n"
+        "• 每行成本 = 两腿新进者 (t−h 不在该组) 的建仓 + 平仓冲击, 按持仓加权 (Stat 契约【换手成本】)\n"
+        "• Lob 层: 建仓 = 最小金额段冲击 (封顶 max_impact), 平仓 = 固定冲击 %.1f bp\n"
+        "• Bar 层 (无冲击段): 建仓 / 平仓都按固定冲击 %.1f bp\n"
+        "• G20 多头扣多腿; LS 扣两腿",
+        fixed_impact * 1e4, fixed_impact * 1e4);
+  ImGui::SameLine();
+  ImGui::Checkbox("log", &ui.log_y);
+  if (ImGui::IsItemHovered())
+    tip("y 轴 (净值) 切对数刻度");
   ImGui::SameLine();
   const bool busy = svc.busy();
   ImGui::BeginDisabled(busy);
@@ -436,7 +523,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double sell_
       ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "  %s  %s", entry_label(it.e).c_str(), why.c_str());
   }
 
-  // ---- 图: 组合两条线 + 全部池指数 ----
+  // ---- 图: 左 = 主图 (组合 + 池 + 单因子) / 区间条; 右 = 单因子图例 ----
   const std::string vis_key = [&] {
     std::string k = ui.name;
     for (const PortfolioDerived::Pool &p : d.pools)
@@ -447,25 +534,125 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double sell_
   ui.vis_key = vis_key;
   if (refit || set_vis)
     ImPlot::SetNextAxesToFit();
-  if (ImPlot::BeginPlot("##portfolio", ImVec2(-1, -1))) {
-    ImPlot::SetupAxes(nullptr, "Σ (ret − cost) / h  (%)");
+  constexpr float kLegendW = 320.0f, kBarH = 90.0f;
+  const ImGuiStyle &st = ImGui::GetStyle();
+  const ImVec2 av = ImGui::GetContentRegionAvail();
+  const float pw = av.x - kLegendW - st.ItemSpacing.x;
+  ImGui::BeginGroup();
+  if (ImPlot::BeginPlot("##portfolio", ImVec2(pw, av.y - kBarH - st.ItemSpacing.y))) {
+    ImPlot::SetupAxes(nullptr, "净值 (复利, 区间起点 = 1)");
     ImPlot::SetupAxisFormat(ImAxis_X1, clock_formatter, &d.dates);
+    if (ui.log_y)
+      ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
-    for (const PortfolioDerived::Pool &p : d.pools) {
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    std::vector<EndTag> tags;
+    std::string shown; // 各线显隐 + log: 与上帧不同 → 下帧重新 fit
+    const auto legend_shown = [&](const char *label) {
+      const ImPlotItem *it = ImPlot::GetItem(label);
+      assert(it);
+      shown += it->Show ? '1' : '0';
+      return it->Show ? it : nullptr;
+    };
+    for (size_t i = 0; i < d.pools.size(); ++i) {
+      const PortfolioDerived::Pool &p = d.pools[i];
+      const PortfolioCurve &c = v.pools[i];
       if (set_vis)
         ImPlot::HideNextItem(!p.own, ImPlotCond_Always);
-      ImPlot::PlotLine(p.label.c_str(), p.x.data(), p.y.data(), static_cast<int>(p.x.size()));
+      ImPlot::PlotLine(p.label.c_str(), c.x.data(), c.y.data(), static_cast<int>(c.x.size()));
+      if (const ImPlotItem *it = legend_shown(p.label.c_str()))
+        push_tag(tags, lim, c, it->Color, p.tag.c_str());
     }
-    char lb[64];
-    const int n = static_cast<int>(d.x.size());
-    std::snprintf(lb, sizeof(lb), "G20 多头  %+.1f%%/年###pf_long", d.ann_l);
-    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.55f, 0.15f, 1.0f), 2.0f);
-    ImPlot::PlotLine(lb, d.x.data(), d.cum_l.data(), n);
-    std::snprintf(lb, sizeof(lb), "LS  %+.1f%%/年###pf_ls", d.ann_ls);
-    ImPlot::SetNextLineStyle(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), 2.0f);
-    ImPlot::PlotLine(lb, d.x.data(), d.cum_ls.data(), n);
+    for (size_t i = 0; i < d.factors.size(); ++i) {
+      const PortfolioDerived::Factor &f = d.factors[i];
+      const bool on = ui.factor_show[f.key];
+      shown += on ? '1' : '0';
+      if (!on)
+        continue;
+      const PortfolioCurve &c = v.factors[i];
+      const ImVec4 col = factor_color(d, i);
+      ImPlot::SetNextLineStyle(col, 1.0f);
+      ImPlot::PlotLine(("##pf_f" + f.key).c_str(), c.x.data(), c.y.data(), static_cast<int>(c.x.size()));
+      push_tag(tags, lim, c, ImGui::ColorConvertFloat4ToU32(col), f.tag.c_str());
+    }
+    char lb[96];
+    std::snprintf(lb, sizeof(lb), "G20 多头 (带冲击)  %+.1f%%/年###pf_long", v.ann_l);
+    ImPlot::SetNextLineStyle(kColLong, 2.0f);
+    ImPlot::PlotLine(lb, v.l.x.data(), v.l.y.data(), static_cast<int>(v.l.x.size()));
+    if (legend_shown(lb))
+      push_tag(tags, lim, v.l, ImGui::ColorConvertFloat4ToU32(kColLong), "G20");
+    std::snprintf(lb, sizeof(lb), "LS (带冲击)  %+.1f%%/年###pf_ls", v.ann_ls);
+    ImPlot::SetNextLineStyle(kColLs, 2.0f);
+    ImPlot::PlotLine(lb, v.ls.x.data(), v.ls.y.data(), static_cast<int>(v.ls.x.size()));
+    if (legend_shown(lb))
+      push_tag(tags, lim, v.ls, ImGui::ColorConvertFloat4ToU32(kColLs), "LS");
+    shown += ui.log_y ? 'L' : 'l';
+    if (shown != ui.shown_key) {
+      ui.shown_key = std::move(shown);
+      ui.refit = true;
+    }
+    draw_tags(tags);
     ImPlot::EndPlot();
   }
+
+  // ---- 区间条: 全段组合 LS; 矩形 = 选定日段, 松手吸附到日后生效 (各线在新起点归一) ----
+  const int D = static_cast<int>(d.dates.size());
+  if (ImPlot::BeginPlot("##pf_range", ImVec2(pw, kBarH),
+                        ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
+    if (D > 0)
+      ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(d.dates.size() * kDayW), ImPlotCond_Always);
+    ImPlot::SetupAxisFormat(ImAxis_X1, day_formatter, &d.dates);
+    if (ui.log_y)
+      ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+    ImPlot::SetNextLineStyle(kColLs, 1.0f);
+    ImPlot::PlotLine("##pf_range_ls", d.ls.x.data(), d.ls.y.data(), static_cast<int>(d.ls.x.size()));
+    if (D > 0) {
+      const ImPlotRect lim = ImPlot::GetPlotLimits();
+      double y0 = lim.Y.Min, y1 = lim.Y.Max;
+      bool hovered = false, held = false;
+      ImPlot::DragRect(0, &ui.rx0, &y0, &ui.rx1, &y1, ImVec4(0.4f, 0.8f, 1.0f, 1.0f), ImPlotDragToolFlags_NoFit, nullptr, &hovered, &held);
+      if (!held) {
+        const int a = std::clamp(static_cast<int>(std::lround(std::min(ui.rx0, ui.rx1) / kDayW)), 0, D - 1);
+        const int b = std::clamp(static_cast<int>(std::lround(std::max(ui.rx0, ui.rx1) / kDayW)), a + 1, D);
+        if (a != ui.d0 || b != ui.d1) {
+          ui.d0 = a, ui.d1 = b;
+          ui.refit = true;
+        }
+        ui.rx0 = static_cast<double>(static_cast<size_t>(a) * kDayW), ui.rx1 = static_cast<double>(static_cast<size_t>(b) * kDayW);
+        if (hovered)
+          tip("区间 %d/%02d/%02d ~ %d/%02d/%02d (%d 日)\n"
+              "• 拖中心点平移, 拖左右边改起止; 松手吸附到日\n"
+              "• 双击左 / 右边 = 拉到头",
+              d.dates[ui.d0] / 10000, d.dates[ui.d0] / 100 % 100, d.dates[ui.d0] % 100, d.dates[ui.d1 - 1] / 10000, d.dates[ui.d1 - 1] / 100 % 100,
+              d.dates[ui.d1 - 1] % 100, ui.d1 - ui.d0);
+      }
+    }
+    ImPlot::EndPlot();
+  }
+  ImGui::EndGroup();
+
+  // ---- 右图例: 单因子 G20 多头 (默认全关) ----
+  ImGui::SameLine();
+  ImGui::BeginChild("##pf_flegend", ImVec2(0, av.y), ImGuiChildFlags_Borders);
+  ImGui::TextColored(kHead, "单因子 G20 多头");
+  if (ImGui::IsItemHovered())
+    tip("勾选 = 主图画该因子单独的 G20 多头净值\n"
+        "• 带它自己的冲击 (括号里: Lob 最小金额段 / Bar 固定冲击)\n"
+        "• 与组合同一区间起点归一; 年化按区间复利");
+  for (size_t i = 0; i < d.factors.size(); ++i) {
+    const PortfolioDerived::Factor &f = d.factors[i];
+    const ImVec4 col = factor_color(d, i);
+    char ann[32];
+    std::snprintf(ann, sizeof(ann), "  %+.1f%%/年##pff%zu", v.ann_f[i], i);
+    bool on = ui.factor_show[f.key];
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, col);
+    ImGui::PushStyleColor(ImGuiCol_Text, col);
+    if (ImGui::Checkbox((f.label + ann).c_str(), &on))
+      ui.factor_show[f.key] = on;
+    ImGui::PopStyleColor(2);
+  }
+  ImGui::EndChild();
   return action;
 }
 

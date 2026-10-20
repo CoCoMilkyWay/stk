@@ -79,8 +79,8 @@
 //     交易的只是两腿的组 (多腿 = 顶组, 空腿 = 底组). 成本只看**腿码** lc = leg_code(r16) ∈ {kLcLong, kLcShort, kLcMid, kLcVoid} (u8 平面,
 //     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx). 每 (t, h) 行, 腿成员 = lc(t) = 腿 ∧ 成本有效的格; 其中 lc(t−h) ≠ 该腿 (含当时
 //     rank 无效) 的记作**新进者**, 只有新进者付一次往返 = 建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额段, 买入已按
-//     Config::max_impact 封顶) + 平仓固定冲击 sell_impact; 留仓成员不付. 每 h 一份 CostAcc, 按【持仓口径】逐行加权:
-//     每行一腿成本 = (Σ新进者冲击 + 新进者数 · sell_impact) / max(腿样本数, cap), 沿 t 求和; 每期成本 cost(腿) = 该和 / n_all (与 ls_period 同分母).
+//     Config::max_impact 封顶) + 平仓侧固定冲击 fixed_impact; 留仓成员不付. 每 h 一份 CostAcc, 按【持仓口径】逐行加权:
+//     每行一腿成本 = (Σ新进者冲击 + 新进者数 · fixed_impact) / max(腿样本数, cap), 沿 t 求和; 每期成本 cost(腿) = 该和 / n_all (与 ls_period 同分母).
 //     只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关). 未加权的计数 (腿样本 / 新进者 / 冲击和) 只给换手占比 / 均冲击显示.
 //     同一遍顺带 cover 计数 (lc ≠ kLcVoid 的格 / 其中成本有效的格, 与 h 无关).
 //     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
@@ -363,10 +363,10 @@ struct CostAcc {
     }
     rows += o.rows;
   }
-  // 每期真实成本 (腿 l, 【持仓口径】): Σ_行 (建仓冲击 + 新进者数 · 平仓冲击) / max(腿样本数, cap) / n_all (与 ls_period 同分母)
-  double cost(int l, double sell_impact, int n_all) const {
+  // 每期真实成本 (腿 l, 【持仓口径】): Σ_行 (建仓冲击 + 新进者数 · 固定冲击) / max(腿样本数, cap) / n_all (与 ls_period 同分母)
+  double cost(int l, double fixed_impact, int n_all) const {
     const CostLeg &c = leg[l];
-    return n_all > 0 ? (c.wimp + c.we * sell_impact) / static_cast<double>(n_all) : 0.0;
+    return n_all > 0 ? (c.wimp + c.we * fixed_impact) / static_cast<double>(n_all) : 0.0;
   }
   // 换手 (新进者占比) / 新进者平均建仓冲击 (显示 / 对拍用)
   double turn(int l) const { return leg[l].n > 0 ? static_cast<double>(leg[l].e) / static_cast<double>(leg[l].n) : 0.0; }
@@ -374,10 +374,10 @@ struct CostAcc {
 };
 
 // 每期净多空 = ls_period − 两腿每期成本; 年化 = × periods_per_year (s.hold 由 finish 填)
-inline double net_ls_period(const HoldStat &s, const CostAcc &c, double sell_impact) {
-  return ls_period(s) - c.cost(kLong, sell_impact, s.n_all) - c.cost(kShort, sell_impact, s.n_all);
+inline double net_ls_period(const HoldStat &s, const CostAcc &c, double fixed_impact) {
+  return ls_period(s) - c.cost(kLong, fixed_impact, s.n_all) - c.cost(kShort, fixed_impact, s.n_all);
 }
-inline double net_ls(const HoldStat &s, const CostAcc &c, double sell_impact) { return net_ls_period(s, c, sell_impact) * periods_per_year(s); }
+inline double net_ls(const HoldStat &s, const CostAcc &c, double fixed_impact) { return net_ls_period(s, c, fixed_impact) * periods_per_year(s); }
 
 // 整数五和 + 计数 (rIC / rAC 的 Pearson 原料), 下标 s[kSn..kSxy]; 两后端同一份累加 (r16 ≤ 65534: 积 < 2³², 32 位乘后再加进 64 位)
 enum : int { kSn,

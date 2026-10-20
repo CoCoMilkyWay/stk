@@ -13,9 +13,9 @@
 //     价格均 × 当日复权比 (Fund adj_ratio, 日内恒定): 日内型与不复权同值, 开盘型跨除权日的收益不含除权缺口.
 //   冲击成本特征 (lb_cost_{buy,sell}_<a>w) = entry 同一盘口吃 a 万元的 VWAP 相对中间价的偏离 (比例, ≥0):
 //     cost_buy = VWAP^A(a)/mid − 1,  cost_sell = 1 − VWAP^B(a)/mid.  "mid − 成交价" 单拆出来, 标签 − 成本 = 精确的吃单成交收益;
-//     默认不扣 (Factors Run 只看毛), 消费端 (Inspect 期限结构) 在毛超额二级上按组池化扣: 组均 lv − 组均 cost_buy(a) − sell_impact
+//     默认不扣 (Factors Run 只看毛), 消费端 (Inspect 期限结构) 在毛超额二级上按组池化扣: 组均 lv − 组均 cost_buy(a) − fixed_impact
 //     (做空腿 cost_sell); 不进标签再算超额 —— 超额对每 t 去均值, 成本进标签只剩截面相对项, 扣不出绝对成本.
-//     平仓侧冲击 Config::sell_impact 为固定模拟值 (不按金额变). 税佣 (Config::commission / stamp) 同理事后扣.
+//     平仓侧冲击 = 固定冲击 Config::fixed_impact (模拟值, 不按金额变). 税佣 (Config::commission / stamp) 同理事后扣.
 //     为什么不进标签: 评估 (IC / 超额) 对常数平移不变, 冲击 / 税佣留在标签里只会把 LS / Sharpe 按每行一次往返压死 (1m 持有期一天 255 次),
 //     高频因子没法研究; 拆成特征后其他阶段想加随时能加.
 //   【不产 NaN (标签)】标签一律取"实盘真能做到的那笔交易", 缺口用可成交时刻/价格顶上, 幅值都在收益量纲内, 多日拉取无跳变:
@@ -338,7 +338,7 @@ private:
 // 描述统一四段: 口径 | entry | exit | 净收益换算. entry 三型共用, exit 按 KIND, 净收益按 side (做多扣买入冲击, 做空扣卖出冲击)
 #define LABEL_ROW(X, CAT1, side, cost, en, cn, formula, name, kind, n)                                \
   X(lb_##side##_##name, CAT1, ret, en " " LABEL_EN_##kind(n) " Return", cn LABEL_CN_##kind(n) "收益", \
-    cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣). entry: 锚点(分钟末)+3s的可成交盘口中间价, 空窗则顺延至首个可成交簿, 锚点后再无可成交簿则按收盘价建仓. exit: " LABEL_NOTE_##kind(n) ". 净收益=本列−lb_cost_" cost "_<a>w−Config::sell_impact(消费端可选扣减)", formula LABEL_TEX_##kind(n), LABEL)
+    cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣). entry: 锚点(分钟末)+3s的可成交盘口中间价, 空窗则顺延至首个可成交簿, 锚点后再无可成交簿则按收盘价建仓. exit: " LABEL_NOTE_##kind(n) ". 净收益=本列−lb_cost_" cost "_<a>w−Config::fixed_impact(消费端可选扣减)", formula LABEL_TEX_##kind(n), LABEL)
 #define LABEL_ROW_LONG(name, kind, n, X, CAT1) LABEL_ROW(X, CAT1, long, "buy", "Long", "做多", R"(\frac{P_{exit}-P^{mid}_{entry}}{P^{mid}_{entry}})", name, kind, n)
 #define LABEL_ROW_SHORT(name, kind, n, X, CAT1) LABEL_ROW(X, CAT1, short, "sell", "Short", "做空", R"(\frac{P^{mid}_{entry}-P_{exit}}{P^{mid}_{entry}})", name, kind, n)
 #define LABEL_GROUP(name, kind, n, X, CAT1) LABEL_ROW_LONG(name, kind, n, X, CAT1) LABEL_ROW_SHORT(name, kind, n, X, CAT1)
@@ -346,9 +346,9 @@ private:
 // 描述统一四段: 口径 | 吃单 | 边界 | 净收益换算 (买入 / 卖出逐词对应)
 #define LABEL_COST_BUY(a, X, CAT1)                                                         \
   X(lb_cost_buy_##a##w, CAT1, ratio_pos, "Entry Buy Impact " #a "w", "买入冲击(" #a "万)", \
-    "建仓买入冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价. 边界: 全簿不足余量按涨停价成交, 卖侧全空且无涨停价则NaN. 做多净收益=lb_long_*−本列−Config::sell_impact", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LABEL)
+    "建仓买入冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价. 边界: 全簿不足余量按涨停价成交, 卖侧全空且无涨停价则NaN. 做多净收益=lb_long_*−本列−Config::fixed_impact", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LABEL)
 #define LABEL_COST_SELL(a, X, CAT1)                                                          \
   X(lb_cost_sell_##a##w, CAT1, ratio_pos, "Entry Sell Impact " #a "w", "卖出冲击(" #a "万)", \
-    "建仓卖出冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃bid " #a "万元, 成交VWAP相对中间价的折价. 边界: 全簿不足余量按跌停价成交, 买侧全空且无跌停价则NaN. 做空净收益=lb_short_*−本列−Config::sell_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LABEL)
+    "建仓卖出冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃bid " #a "万元, 成交VWAP相对中间价的折价. 边界: 全簿不足余量按跌停价成交, 买侧全空且无跌停价则NaN. 做空净收益=lb_short_*−本列−Config::fixed_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LABEL)
 
 #define FIELDS_L_1min_LabelLob(X, CAT1) LABEL_GROUPS(LABEL_GROUP, X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)

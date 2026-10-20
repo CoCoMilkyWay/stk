@@ -1033,20 +1033,20 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做多超额) / LS (顶底多空) 均值, PCHIP 圆滑折线 + 节点圆点.
 // 三组 × (毛 + 全部金额段) 一次画全 (金额段越大线越细越淡), 成本只在这张图出现; L / S 默认隐藏, 点图例切 (图例项 = 组 × 金额段).
 // 口径 = Stat 契约【持仓口径】的每期真实收益 (HoldStat::grp = Σ 组持仓收益 / 全部行; ls_period = Σ ls / 全部行, 不触发行记 0).
-// 净线 = 毛二级 − leg_sign(腿) · 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 sell_impact; L / S 按做多超额画, 空腿付成本 = 线上移;
+// 净线 = 毛二级 − leg_sign(腿) · 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; L / S 按做多超额画, 空腿付成本 = 线上移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (金额段, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是 t ≥ h 的 rx ∧ 成本有效格, 两者不完全重合 —— entry 成本与标签无关
 // hs[n_hold] 毛二级; costs[n_cost] 可空 (旧文件 stat 无 costs). n < 3 的持有期不作节点.
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的单边账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 (LS × 2 腿) = 画的年化
-void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, double sell_impact, int sel_hold,
+void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, double fixed_impact, int sel_hold,
                const char *source, const ImVec2 &size) {
-  assert(n_hold >= 1 && n_cost >= 0 && sell_impact >= 0.0);
+  assert(n_hold >= 1 && n_cost >= 0 && fixed_impact >= 0.0);
   char title[128];
   std::snprintf(title, sizeof(title), "期限结构: 年化池化均值超额 / 持有期  (%s)###term", source);
   {
     ImGuiID key = ImHashData(hs, static_cast<size_t>(n_hold) * sizeof(*hs), ImHashStr(source)); // 毛二级 + 金额段数 + 冲击口径
     key = ImHashData(&n_cost, sizeof(n_cost), key);
-    fit_on_change(title, ImHashData(&sell_impact, sizeof(sell_impact), key), {ImAxis_Y1});
+    fit_on_change(title, ImHashData(&fixed_impact, sizeof(fixed_impact), key), {ImAxis_Y1});
   }
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
@@ -1067,9 +1067,9 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   const auto value = [&](int c, int q, int i) {
     const factor::stat::HoldStat &h = hs[i];
     if (c == kLegs)
-      return q == 0 ? factor::stat::ls_period(h) : factor::stat::net_ls_period(h, costs[q - 1].acc[i], sell_impact);
+      return q == 0 ? factor::stat::ls_period(h) : factor::stat::net_ls_period(h, costs[q - 1].acc[i], fixed_impact);
     const double gross = h.grp[leg_group(c)];
-    return q == 0 ? gross : gross - leg_sign(c) * costs[q - 1].acc[i].cost(c, sell_impact, h.n_all);
+    return q == 0 ? gross : gross - leg_sign(c) * costs[q - 1].acc[i].cost(c, fixed_impact, h.n_all);
   };
   ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
@@ -1160,7 +1160,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       const auto avg = [&](auto f) { return ls ? 0.5 * (f(kLong) + f(kShort)) : f(pc); }; // LS = 两腿平均, 否则该腿
       const auto entry = [&](int l) { return ca.entry(l); };
       const auto turn = [&](int l) { return ca.turn(l); };
-      const auto cost = [&](int l) { return ca.cost(l, sell_impact, h.n_all); };
+      const auto cost = [&](int l) { return ca.cost(l, fixed_impact, h.n_all); };
       amort = avg(cost);
       ImGui::Spacing();
       std::snprintf(v, sizeof(v), "%.2f bp", avg(entry) * bp);
@@ -1169,8 +1169,8 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       else
         std::snprintf(note, sizeof(note), "新进者建仓冲击 %s (%s)", tier, pc == kLong ? "buy" : "sell");
       row("开仓冲击", v, note);
-      std::snprintf(v, sizeof(v), "%.2f bp", sell_impact * bp);
-      row("关仓冲击", v, "Config::sell_impact, 固定");
+      std::snprintf(v, sizeof(v), "%.2f bp", fixed_impact * bp);
+      row("固定冲击", v, "Config::fixed_impact");
       std::snprintf(v, sizeof(v), "%.0f %%", avg(turn) * 100.0);
       if (ls)
         std::snprintf(note, sizeof(note), "新进者占比 (t−h 不在该组): L %.0f%% / S %.0f%% 的平均", turn(kLong) * 100.0, turn(kShort) * 100.0);
@@ -1654,9 +1654,9 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   ImGui::SameLine();
   // 右下 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.costs; 两者都是毛 + 全部金额段, 同一份 CostTier)
   if (shown) {
-    plot_term(res_holds.data(), n_hold, res_costs.data(), static_cast<int>(res_costs.size()), ctx.sell_impact, ui.hold_idx, "Inspect", cell);
+    plot_term(res_holds.data(), n_hold, res_costs.data(), static_cast<int>(res_costs.size()), ctx.fixed_impact, ui.hold_idx, "Inspect", cell);
   } else if (row.has_stat && row.n_hold == n_hold) {
-    plot_term(row.hold, n_hold, row.costs.data(), static_cast<int>(row.costs.size()), ctx.sell_impact, ui.hold_idx,
+    plot_term(row.hold, n_hold, row.costs.data(), static_cast<int>(row.costs.size()), ctx.fixed_impact, ui.hold_idx,
               row.stat_from_file ? "文件 stat" : "Factors Run", cell);
   } else {
     empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Compute)");

@@ -297,7 +297,7 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
   out.max_impact = sc.max_impact;
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
-  // ---- 作用域 + 装载 (Y = 该 hold + 全部金额段; X 只留本因子的叶) ----
+  // ---- 作用域 + 装载 (Y = 该 hold + 最小金额段; X 只留本因子的叶) ----
   EvalScope es;
   if (std::string why; !eval_scope(ft, sc, d.feats, es, why)) {
     out.error = why;
@@ -305,7 +305,10 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
   }
   open_libs(sc, F.lr, &cancel_);
   const int days = static_cast<int>(es.dates.size()), A = static_cast<int>(es.rs.axis.size());
-  const YSpec ys{holds_of({j.hold}), amts_of(keys_of(ft.y.costs)), static_cast<float>(sc.max_impact), /*index=*/false};
+  const std::vector<int> ck = keys_of(ft.y.costs);
+  assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
+  const YSpec ys{holds_of({j.hold}), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
+                 /*index=*/false};
   { // 宿主峰值: Y + X (本因子) + 活槽 + rx / lc + 标签秩 + Row [T]
     const double cells = static_cast<double>(days) * ft.seg * A;
     const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(d.feats.size() + static_cast<size_t>(d.n_slots)) + 3.0 + 2.0;
@@ -374,33 +377,31 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
   }
 
   // ---- 逐行换手成本 (cost_rows 的逐行版: 每行一份 CostAcc, t < h 无 lag 不攒) ----
-  const int C = y.ad.n, h = factor::stat::hold_rows(j.hold, factor::geo_of(sc.seg));
-  out.amts.assign(y.ad.a, y.ad.a + C);
-  out.wimp.assign(static_cast<size_t>(C) * kLegs * T, 0.f);
-  out.we.assign(static_cast<size_t>(C) * kLegs * T, 0.f);
-  if (C > 0) {
-    factor::stat::Cost cs[factor::stat::kMaxCost];
-    for (int k = 0; k < C; ++k)
-      cs[k] = cost_of(y.costs[static_cast<size_t>(k)]);
-    F.ex.rows(T, [&](int t0, int t1, int) {
-      for (int t = std::max(t0, h); t < t1; ++t) {
-        const size_t base = static_cast<size_t>(t) * A;
-        const uint8_t *lag = F.lc.data() + base - static_cast<size_t>(h) * A;
-        factor::stat::Cost cr[factor::stat::kMaxCost];
-        for (int k = 0; k < C; ++k)
-          cr[k] = cs[k].at(base);
-        factor::stat::CostAcc ca[factor::stat::kMaxCost] = {};
-        long long cov[1 + factor::stat::kMaxCost] = {};
-        factor::cpu::stat::cost_row(F.lc.data() + base, &lag, 1, cr, C, A, cap, ca, cov);
-        for (int k = 0; k < C; ++k)
-          for (int l = 0; l < kLegs; ++l) {
-            const size_t o = (static_cast<size_t>(k) * kLegs + l) * T + t;
-            out.wimp[o] = static_cast<float>(ca[k].leg[l].wimp);
-            out.we[o] = static_cast<float>(ca[k].leg[l].we);
-          }
+  //   Bar 层无金额段: 一行宽的零冲击 + 全有效 (腿成员都算, 新进者数照计), 每行同一份
+  assert(y.ad.n <= 1);
+  const bool flat = y.ad.n == 0;
+  const int h = factor::stat::hold_rows(j.hold, factor::geo_of(sc.seg));
+  out.amt = flat ? 0 : y.ad.a[0];
+  out.wimp.assign(static_cast<size_t>(kLegs) * T, 0.f);
+  out.we.assign(static_cast<size_t>(kLegs) * T, 0.f);
+  const std::vector<uint16_t> zero(flat ? A : 0, 0);
+  const std::vector<uint8_t> all(flat ? A : 0, 1);
+  const factor::stat::Cost cs = flat ? factor::stat::Cost{{zero.data(), zero.data()}, all.data()} : cost_of(y.costs[0]);
+  F.ex.rows(T, [&](int t0, int t1, int) {
+    for (int t = std::max(t0, h); t < t1; ++t) {
+      const size_t base = static_cast<size_t>(t) * A;
+      const uint8_t *lag = F.lc.data() + base - static_cast<size_t>(h) * A;
+      const factor::stat::Cost cr = flat ? cs : cs.at(base);
+      factor::stat::CostAcc ca = {};
+      long long cov[2] = {};
+      factor::cpu::stat::cost_row(F.lc.data() + base, &lag, 1, &cr, 1, A, cap, &ca, cov);
+      for (int l = 0; l < kLegs; ++l) {
+        const size_t o = static_cast<size_t>(l) * T + t;
+        out.wimp[o] = static_cast<float>(ca.leg[l].wimp);
+        out.we[o] = static_cast<float>(ca.leg[l].we);
       }
-    });
-  }
+    }
+  });
   publish(1);
   return !cancelled();
 }

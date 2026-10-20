@@ -66,7 +66,7 @@ struct FactorsUIContext {
   int seg = 0;                                    // 因子层 (FactorLevel; 本页已生效的, 跟页顶 / 特征面板选择走)
   std::string factor_dir;                         // factor_dir_of(pool, seg) = <factor_dir>/<池>/<层名>
   std::string pool;                               // 本页已生效的池名
-  double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
+  double fixed_impact = 0.0;                      // Config::fixed_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估
   const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右下按全局 id 显示代码 / 名称
 };
