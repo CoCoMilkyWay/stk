@@ -150,7 +150,7 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 //   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelLob 的 entry / exit 定义) 时 +1, 旧库读取即判废而非静默错义
 //   L_1day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
-constexpr uint64_t kLabelSemver = 2; // 1: 分钟型 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准)
+constexpr uint64_t kLabelSemver = 3; // 1: 分钟型 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准); 3: 价格 × 当日复权比 (开盘型跨除权)
 constexpr uint64_t kDaySemver = 1;   // 1: 行 D = 次日盘前态 (Fund / PoolKey onSettle, 见 Fund.hpp 逐表对齐)
 constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
   for (; *s; ++s)

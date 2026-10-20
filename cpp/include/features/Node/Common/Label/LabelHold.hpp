@@ -96,7 +96,7 @@ protected:
 
   Pend &today() { return pend_[cur_]; }
 
-  float px_scale_ = 1.0f; // 开盘价缩放 (Bar 档 = 当日复权比, 档每日设; Lob 恒 1)
+  float px_scale_ = 1.0f; // 价格缩放 = 当日复权比 (两档 reset 时设; 开盘型跨日收益不含除权缺口)
 
   // 有成交的分钟 bar 截开盘价; 返回该 bar 是否连续竞价
   inline bool open_at(size_t t_min, const MinuteData &md) {

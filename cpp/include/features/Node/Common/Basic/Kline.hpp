@@ -9,6 +9,7 @@
 //   对数派生不单列 (因子层做, 同行 / 相邻行纯函数): 收益 ln(C_t / C_{t-1}) (日内首分钟基准 = Fund pre_close), 振幅 ln(H/L), 实体 ln(C/O).
 //   两档共用节点类; 节点实例 / 落盘列见 Node/{Lob,Bar}/TS/Basic/Kline.hpp (Lob 列名 lob_*, 与 Bar 档的 bar1m K 线区分).
 //   KlineT<BinData> = 分钟箱 / 日 K 线 (compute=on<n>Min / onClose, 同一携带约定; 读 min<n>_data / day_data); Kline = 分钟版.
+//   AdjClose = 后复权收盘价 (本层 close × Fund adj_ratio; 跨日收益 / 池指数用, 画图 / 涨跌停 / 估值仍用不复权价).
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -42,3 +43,19 @@ private:
   const Series &pre_close_; // Fund 日频口 (back() = 当日前收; Fund 的 onSettle 晚于 onClose, 日 K 收盘时仍是当日值)
 };
 using Kline = KlineT<MinuteData>;
+
+// AdjClose - 后复权收盘价 = 本层 close × Fund adj_ratio (当日复权比, 日内恒定 ⇒ 日内比值与不复权同)
+class AdjClose {
+public:
+  enum Out : size_t { value,
+                      kCount };
+  float y[kCount] = {};
+
+  AdjClose(const Series &close, const Series &adj_ratio) : close_(close), adj_ratio_(adj_ratio) {}
+
+  inline void compute() { y[value] = close_.back() * adj_ratio_.back(); }
+
+private:
+  const Series &close_;     // 本层 Kline close (同域, 拓扑序在前, back() 即本行值)
+  const Series &adj_ratio_; // Fund 日频口 (back() = 当日; Fund 的 onSettle 晚于 onClose, 日 K 收盘时仍是当日值)
+};

@@ -10,6 +10,7 @@
 //             相邻行标签精确伸缩 (Σ 连续 n 个 1m = 一个 nm), 与 Stat 换手成本"留仓不付, 只有新进者付"自洽; 价差 / 冲击全部在成本列,
 //             标签里不残留 (exit 用成交 VWAP 会把 taker 侧半价差记进标签: 被主动买的资产 VWAP 贴 ask, 失衡类因子每期白捡一个水平项);
 //             收盘型: 当日收盘价 (末笔成交价 = 收盘竞价撮合价); 开盘型: T+N 日开盘价 (09:25 集合竞价撮合价, 无撮合则连续竞价首笔成交价).
+//     价格均 × 当日复权比 (Fund adj_ratio, 日内恒定): 日内型与不复权同值, 开盘型跨除权日的收益不含除权缺口.
 //   冲击成本特征 (lb_cost_{buy,sell}_<a>w) = entry 同一盘口吃 a 万元的 VWAP 相对中间价的偏离 (比例, ≥0):
 //     cost_buy = VWAP^A(a)/mid − 1,  cost_sell = 1 − VWAP^B(a)/mid.  "mid − 成交价" 单拆出来, 标签 − 成本 = 精确的吃单成交收益;
 //     默认不扣 (Factors Run 只看毛), 消费端 (Inspect 期限结构) 在毛超额二级上按组池化扣: 组均 lv − 组均 cost_buy(a) − sell_impact
@@ -98,9 +99,9 @@ public:
   LabelLob(const TickData &td, const MinuteData &md,
            const DepthSeries &bid_price, const DepthSeries &ask_price,
            const DepthSeries &bid_qty, const DepthSeries &ask_qty,
-           const Series &lim_up, const Series &lim_dn)
+           const Series &lim_up, const Series &lim_dn, const Series &adj_ratio)
       : td_(td), md_(md), bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty),
-        lim_up_src_(lim_up), lim_dn_src_(lim_dn) {}
+        lim_up_src_(lim_up), lim_dn_src_(lim_dn), adj_ratio_(adj_ratio) {}
 
   // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
   // 换秒 (或本次更新不可成交) 时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
@@ -165,19 +166,20 @@ public:
     if (pending_sec_ != kNoPending)
       flush_pending(0); // 最后一个可成交秒之后再无盘口更新: 环末就是它的终簿
     const bool traded = last_sec_ != kNoPending;
-    const float bar_close = md_.close.empty() ? 0.0f : md_.close.back();
+    const float bar_close = md_.close.empty() ? 0.0f : md_.close.back() * px_scale_;
     const float close_px = !traded ? 0.0f : bar_close > 0.0f ? bar_close
                                                              : ring_[last_sec_ % RING_SIZE].px; // 全日无成交 (极罕见) → 最后可成交簿的中间价
     // 锚点后再无可成交簿 (14:57 起的锚点 / 至收盘无盘口): 收盘价建仓, 冲击 0
     close_day(traded, close_px, at_price(close_px), writer, release, [&](size_t m, const Snapshot &e) { write_cost(m, e, writer); });
   }
 
-  // 每日重置: 快照环作废, 行游标归零; 当日涨跌停价取 Fund 日频口 back() (盘前承接之后 = 当日适用, 收盘后 Fund 已推进到次日)
+  // 每日重置: 快照环作废, 行游标归零; 当日涨跌停价 / 复权比取 Fund 日频口 back() (盘前承接之后 = 当日适用, 收盘后 Fund 已推进到次日)
   inline void reset() {
     LabelHold::reset();
-    assert(!lim_up_src_.empty() && !lim_dn_src_.empty() && "LabelLob: Fund 日频口盘前须已承接");
+    assert(!lim_up_src_.empty() && !lim_dn_src_.empty() && !adj_ratio_.empty() && "LabelLob: Fund 日频口盘前须已承接");
     lim_up_ = lim_up_src_.back();
     lim_dn_ = lim_dn_src_.back();
+    px_scale_ = adj_ratio_.back();
     for (auto &snap : ring_)
       snap.valid = false;
     pending_sec_ = kNoPending; // 昨日最后一个活跃秒不结算 (当日 ring 已整体作废)
@@ -224,7 +226,9 @@ private:
   // 从 Depth 环末尾回退 offset 格的盘口状态结算快照 (0 = 当前更新, 1 = 上一次更新):
   //   中间价 = (买一 + 卖一)/2; 一侧全空 (封板) 取另一侧 (= 涨跌停价); 双侧全空 → 0 (无价).
   //   冲击 = 吃 a 万的 VWAP 相对中间价 (余量按涨跌停价, 见 calc_vwap); 吃不到 (VWAP 0) 或无中间价 → NaN
+  //   px 存后复权价 (mid × 当日复权比); 冲击是同日比值, 按原始价算
   void materialize(Snapshot &snap, size_t t_sec, size_t offset) const {
+    assert(px_scale_ > 0.0f && "有可成交盘口但当日无复权比 (bar1d adjust_factor 缺失)");
     snap.sec_index = t_sec;
     snap.valid = true;
     assert(bid_price_[0].size() > offset && ask_price_[0].size() > offset && "materialize: Depth 环深度不足 offset");
@@ -232,7 +236,7 @@ private:
     const float b1 = bid_price_[0][k], a1 = ask_price_[0][k];
     const bool has_b = b1 > 1e-6f && bid_qty_[0][k] > 1e-6f, has_a = a1 > 1e-6f && -ask_qty_[0][k] > 1e-6f;
     const float mid = has_b && has_a ? 0.5f * (b1 + a1) : (has_b ? b1 : (has_a ? a1 : 0.0f));
-    snap.px = mid;
+    snap.px = mid * px_scale_;
     for (size_t a = 0; a < AMT_COUNT; ++a) {
       const float amt = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f;
       const float vb = calc_vwap(ask_price_, ask_qty_, amt, true, offset, lim_up_);  // 吃 ask (买入): 余量按涨停
@@ -309,6 +313,7 @@ private:
   const DepthSeries &bid_qty_;
   const DepthSeries &ask_qty_;
   const Series &lim_up_src_, &lim_dn_src_; // Fund 日频口 (lim_up / lim_dn)
+  const Series &adj_ratio_;                // Fund 日频口 (当日复权比 → px_scale_)
   float lim_up_ = kNaN, lim_dn_ = kNaN;    // 当日涨跌停价 (reset 时取), 簿子吃不完时补齐余量用
 
   static constexpr size_t kNoPending = SIZE_MAX;

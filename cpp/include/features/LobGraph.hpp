@@ -19,7 +19,7 @@ struct DAG_Root : graph::Root {
 };
 
 #define DAG_TIER Lob
-TIER_DAG(::LabelLob, tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn))
+TIER_DAG(::LabelLob, tick_data, minute_data, Depth.bid_price, Depth.ask_price, Depth.bid_qty, Depth.ask_qty, Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn), Fund.out(Fund.adj_ratio))
 #undef DAG_TIER
 
 } // namespace lob

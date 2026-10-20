@@ -68,7 +68,7 @@ public:
     // ---- 行情日线 / 两融明细 / 公告日 ----
     pre_close,         // [元] 次日除权后前收 (盘中 back() = 当日前收)
     adj_factor,        // 次日复权因子
-    adj_ratio,         // 次日复权比 = adj_factor / 本资产网格切片 (首回测日 −15 起) 内首个 adj_factor (后复权首日归一, fp16 存得下; Bar 档 close_adj / LabelBar 用)
+    adj_ratio,         // 次日复权比 = adj_factor / 本资产网格切片 (首回测日 −15 起) 内首个 adj_factor (后复权首日归一, fp16 存得下; 两档 close_adj / 标签用)
     rz_buy_amt,        // [亿元] 融资买入额
     rz_repay_amt,      // [亿元] 融资偿还额
     rq_sell_vol,       // [万股] 融券卖出量

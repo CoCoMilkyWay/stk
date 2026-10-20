@@ -170,7 +170,7 @@ const factor::check::Plane *XPlanes::find(std::string_view code) const {
 
 namespace {
 
-// 池等权指数 (YPlanes::index): 资产条带并行, 各条带沿 t 推本条带资产的上一有效 close (跨日, 不看在池), 成分格 (在池 ∧ 前价有) 攒进本线程
+// 池等权指数 (YPlanes::index): 资产条带并行, 各条带沿 t 推本条带资产的上一有效后复权 close (跨日, 不看在池), 成分格 (在池 ∧ 前价有) 攒进本线程
 // 逐行 Σ / 数; 线程间按 tid 序归并后串行连乘
 void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const uint8_t *in, int T, int A, std::vector<float> &out) {
   const size_t nT = static_cast<size_t>(T), nt = static_cast<size_t>(ex.threads());
@@ -333,14 +333,14 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | close (index) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
+  // ---- 列段 ts_valid | cs_valid | close_adj (index) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
   std::vector<ColRef> cols;
   const auto add = [&](const Col &c) {
     cols.push_back(c.ref(es.pool));
     return cols.size() - 1;
   };
   const size_t ts_i = add(ft.y.ts), cs_i = add(ft.y.cs);
-  const size_t close_i = spec.index ? add(ft.y.ohlc[3]) : SIZE_MAX;
+  const size_t close_i = spec.index ? add(ft.y.close_adj) : SIZE_MAX;
   assert(cols[ts_i].pool == es.rs.main && "门控 / 标签 / 成本 / OHLC 在标签库");
   const size_t lab_i = cols.size();
   for (size_t i = 0; i < H; ++i)
@@ -362,7 +362,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   };
   alloc(Y.labels, H);
   alloc(Y.costs, C);
-  factor::check::Plane close; // 本行有成交的 close (index), 装完算指数即弃
+  factor::check::Plane close; // 本行有成交的后复权 close (index, 跨日除权不进收益), 装完算指数即弃
   if (spec.index)
     close.resize(n);
   // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
