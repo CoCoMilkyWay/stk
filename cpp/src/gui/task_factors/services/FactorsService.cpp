@@ -471,8 +471,14 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
                                                     : "close_adj_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
     t.y.close_adj = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
   }
-  if (lv.lvl == L_1day)
+  if (lv.lvl == L_1day) {
     t.y.float_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "float_shares")));
+    t.y.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
+    t.y.np_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_npp_ttm")));
+    t.y.eq_mrq = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "bs_eq")));
+    t.y.dy_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "dy_ttm")));
+    t.y.ind_l1 = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "ind_l1")));
+  }
   struct Lab {
     bool is_long;
     int hold;

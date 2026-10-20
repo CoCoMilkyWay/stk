@@ -13,8 +13,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 namespace GUI::Factors {
 
@@ -22,7 +24,6 @@ namespace {
 
 using json = nlohmann::json;
 using ojson = nlohmann::ordered_json;
-using factor::stat::kLegs;
 using factor::stat::kLong;
 
 constexpr int kDaySeg = 1; // 池指数的层 (日层)
@@ -38,6 +39,38 @@ int seg_of_level(const std::string &name) {
       return l.seg;
   assert(false && "组合文件: level 不是因子层名");
   __builtin_unreachable();
+}
+
+// 一口估值 v [dates] → o (v 移入): 价格倍数 m = kValInv ? 1 / v : v (v 有限 ∧ > 0 才收); 窗 = (日 − kBandYears 年, 日] 的可算点,
+// 升序数组逐日二分增删 (入窗 1 点, 出窗游标), 分位 = 窗内第 round(q · (n − 1)) 个
+void roll_band(const std::vector<misc::Ymd> &dates, std::vector<float> v, bool inv, ValCurve &o) {
+  const size_t n = dates.size();
+  assert(v.size() == n);
+  constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+  const auto mult = [&](size_t i) { return std::isfinite(v[i]) && v[i] > 0.f ? (inv ? 1.f / v[i] : v[i]) : kNaN; };
+  for (std::vector<float> &q : o.q)
+    q.assign(n, kNaN);
+  o.pct.assign(n, kNaN);
+  std::vector<float> win;
+  size_t lo = 0;
+  for (size_t t = 0; t < n; ++t) {
+    if (const float m = mult(t); std::isfinite(m))
+      win.insert(std::upper_bound(win.begin(), win.end(), m), m);
+    for (; dates[lo] <= dates[t] - kBandYears * 10000; ++lo)
+      if (const float m = mult(lo); std::isfinite(m)) {
+        const auto it = std::lower_bound(win.begin(), win.end(), m);
+        assert(it != win.end() && *it == m);
+        win.erase(it);
+      }
+    const size_t w = win.size();
+    if (w < static_cast<size_t>(kBandMinDays))
+      continue;
+    for (int j = 0; j < kBandQ; ++j)
+      o.q[j][t] = win[static_cast<size_t>(std::lround(kBandQs[j] * static_cast<double>(w - 1)))];
+    if (const float m = mult(t); std::isfinite(m))
+      o.pct[t] = 100.f * static_cast<float>(std::upper_bound(win.begin(), win.end(), m) - win.begin()) / static_cast<float>(w);
+  }
+  o.v = std::move(v);
 }
 
 } // namespace
@@ -233,16 +266,15 @@ std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<con
   return todo;
 }
 
-// accum_rows 的 sink: 一级 Row 不落地, 直接折成两盘口毛收益 (单 hold)
-struct BookSink {
-  float *ret[kBooks] = {};
+// accum_rows 的 sink: 一级 Row 不落地, 直接折成 G20 多头毛收益 (单 hold)
+struct LongSink {
+  float *ret = nullptr;
   double cap = 0.0;
   using Ext = factor::cpu::stat::NoExt;
   Ext ext() const { return {}; }
   void row(int, int t, const factor::stat::Row &r, const Ext &) const {
     constexpr int gl = factor::stat::leg_group(kLong);
-    ret[kBookLong][t] = static_cast<float>(r.grp[gl] + r.mkt[kLong] * r.cnt[gl] / factor::stat::book_den(r.cnt[gl], cap));
-    ret[kBookLs][t] = r.ls;
+    ret[t] = static_cast<float>(r.grp[gl] + r.mkt[kLong] * r.cnt[gl] / factor::stat::book_den(r.cnt[gl], cap));
   }
 };
 
@@ -335,7 +367,7 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   { // 宿主峰值: Y + X (本因子) + 活槽 + rx / lc + 标签秩 + 出参 [T] (ret / wimp / we)
     const double cells = static_cast<double>(days) * ft.seg * A;
     const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(d.feats.size() + static_cast<size_t>(d.n_slots)) + 3.0 + 2.0;
-    assert_fits("Portfolio", cells * per + static_cast<double>(days) * ft.seg * sizeof(float) * (kBooks + 2 * kLegs), days, A, ft.seg);
+    assert_fits("Portfolio", cells * per + static_cast<double>(days) * ft.seg * sizeof(float) * 3, days, A, ft.seg);
   }
   if (!ensure_y(F.c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this) ||
       !ensure_x(F.c, ft, es, F.lr, d.feats, /*retain=*/true, F.ex, cancel_, *this))
@@ -368,17 +400,14 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
     return false;
   const factor::check::Plane *rp = F.E.plane(root);
 
-  // ---- 秩 + 腿码 + 两盘口毛收益 (sink 直写, 不落 Row) ----
+  // ---- 秩 + 腿码 + G20 多头毛收益 (sink 直写, 不落 Row) ----
   const double cap = y.n_full;
   assert(cap > 0.0);
   F.rx.resize(n);
   F.lc.resize(n);
   out.dates = es.dates;
-  BookSink sink{.cap = cap};
-  for (int b = 0; b < kBooks; ++b) {
-    out.ret[b].assign(static_cast<size_t>(T), 0.f);
-    sink.ret[b] = out.ret[b].data();
-  }
+  out.ret.assign(static_cast<size_t>(T), 0.f);
+  const LongSink sink{.ret = out.ret.data(), .cap = cap};
   const factor::stat::Span &s = ss.s;
   factor::cpu::stat::rank_x(F.ex, factor::stat::Plane{rp->v.data(), rp->m.data()}, y.gate.data(), j.frame, s, F.rx.data(), ss.w);
   factor::cpu::stat::leg_codes(F.ex, F.rx.data(), s, F.lc.data());
@@ -394,10 +423,8 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   const bool flat = y.ad.n == 0;
   const int h = factor::stat::hold_rows(j.hold, factor::geo_of(sc.seg));
   out.amt = flat ? 0 : y.ad.a[0];
-  for (int l = 0; l < kLegs; ++l) {
-    out.wimp[l].assign(static_cast<size_t>(T), 0.f);
-    out.we[l].assign(static_cast<size_t>(T), 0.f);
-  }
+  out.wimp.assign(static_cast<size_t>(T), 0.f);
+  out.we.assign(static_cast<size_t>(T), 0.f);
   const std::vector<uint16_t> zero(flat ? A : 0, 0);
   const std::vector<uint8_t> all(flat ? A : 0, 1);
   const factor::stat::Cost cs = flat ? factor::stat::Cost{{zero.data(), zero.data()}, all.data()} : cost_of(y.costs[0]);
@@ -409,17 +436,15 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
       factor::stat::CostAcc ca = {};
       long long cov[2] = {};
       factor::cpu::stat::cost_row(F.lc.data() + base, &lag, 1, &cr, 1, A, cap, &ca, cov);
-      for (int l = 0; l < kLegs; ++l) {
-        out.wimp[l][static_cast<size_t>(t)] = static_cast<float>(ca.leg[l].wimp);
-        out.we[l][static_cast<size_t>(t)] = static_cast<float>(ca.leg[l].we);
-      }
+      out.wimp[static_cast<size_t>(t)] = static_cast<float>(ca.leg[kLong].wimp);
+      out.we[static_cast<size_t>(t)] = static_cast<float>(ca.leg[kLong].we);
     }
   });
   publish(1);
   return !cancelled();
 }
 
-// 日层池等权指数: 无叶作用域 (标签库 + 池成员) → load_y 顺带算 index; 块用完即弃
+// 日层池等权指数: 无叶作用域 (标签库 + 池成员) → load_y 顺带算 index / 估值; 块用完即弃. 估值滚动分位: 池本身 + 各行业按行业并行
 bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   TraceN("PortfolioPool");
   const FeatureTable &ft = *j.ft;
@@ -436,24 +461,27 @@ bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   ScopeCache c;
   if (!ensure_y(c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this))
     return load_failed(F);
-  assert(c.y.index.size() == es.dates.size() && c.y.index_cap.size() == es.dates.size());
+  const size_t nd = es.dates.size(), K = YPlanes::kInds;
+  assert(c.y.index.size() == nd && c.y.index_cap.size() == nd && c.y.ind_index.size() == K * nd);
+  for (int m = 0; m < kPoolVals; ++m)
+    assert(c.y.val[m].size() == nd && c.y.ind_val[m].size() == K * nd);
   out.dates = es.dates;
   out.index[kWeightEq] = std::move(c.y.index);
   out.index[kWeightCap] = std::move(c.y.index_cap);
-  if (es.member) {
-    const size_t P = es.member->axis().size();
-    double sum = 0.0;
-    int n = 0;
-    for (size_t i = 1; i < es.dates.size(); ++i) {
-      const uint8_t *now = es.member->row(es.dates[i]), *pre = es.member->row(es.dates[i - 1]);
-      size_t cnt = 0, keep = 0;
-      for (size_t s = 0; s < P; ++s)
-        cnt += now[s], keep += now[s] & pre[s];
-      if (cnt > 0)
-        sum += 1.0 - static_cast<double>(keep) / static_cast<double>(cnt), ++n;
+  out.turnover[kWeightEq] = c.y.index_turn;
+  out.turnover[kWeightCap] = c.y.index_cap_turn;
+  out.inds.resize(K);
+  for (int m = 0; m < kPoolVals; ++m)
+    roll_band(out.dates, std::move(c.y.val[m]), kValInv[m], out.val[m]);
+  F.ex.rows(static_cast<int>(K) - 1, [&](int k0, int k1, int) {
+    for (size_t k = static_cast<size_t>(k0) + 1; k <= static_cast<size_t>(k1); ++k) {
+      PoolCurve::Ind &ind = out.inds[k];
+      const auto seg = [&](const std::vector<float> &x) { return std::vector<float>(x.begin() + k * nd, x.begin() + (k + 1) * nd); };
+      ind.index = seg(c.y.ind_index);
+      for (int m = 0; m < kPoolVals; ++m)
+        roll_band(out.dates, seg(c.y.ind_val[m]), kValInv[m], ind.val[m]);
     }
-    out.turnover = n > 0 ? sum / n : 0.0;
-  }
+  });
   return true;
 }
 

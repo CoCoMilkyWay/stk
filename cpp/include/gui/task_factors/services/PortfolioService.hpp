@@ -6,10 +6,11 @@
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条 flow (FactorsLoad 装载 → Engine<Cpu> walk → rank_x →
-//   accum_rows / leg_codes), 只留该 hold 的逐行序列 (FactorCurve): 两盘口毛收益 ret[kBooks] (accum_rows 的 sink 直写, 不落 Row) + 最小金额段两腿的逐行换手成本
+//   accum_rows / leg_codes), 只留该 hold 的逐行序列 (FactorCurve): G20 多头毛收益 ret (accum_rows 的 sink 直写, 不落 Row) + 最小金额段多腿的逐行换手成本
 //   (Stat 契约【换手成本】, cost_row 每行一份 CostAcc; 与 cost_rows 逐行同式, 行和 = Inspect 的 CostTier). Bar 层无金额段: 新进者计数不看成本有效
 //   (建仓 / 平仓都按 Config::fixed_impact, UI 扣). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-// 池指数: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes::index / index_cap → PoolCurve::index[kWeights]) + 成员日均换手.
+// 池指数: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes::index / index_cap → PoolCurve::index[kWeights]) + 各自的日均单边换手 + 池 / 行业估值 PE / PB / DY (整体法)
+//   及其滚动 kBandYears 年分位 (ValCurve).
 // 因子 ↔ 池 同一套缓存: 按 Job::key 存, 曲线记算时的 Job::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑 (缓存已算的不丢); UI 持 mutex 读 result
@@ -57,13 +58,9 @@ struct PortfolioItem {
 };
 void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
 
-// ---- 线的轴: 组合线 = 盘口 Book × 冲击 Impact; 池线 = 权重 Weight (Service 出毛序列, UI 组线) ----
-enum Book : int { kBookLong, // G20 多头: G20 做多绝对收益, 扣多腿成本
-                  kBookLs }; // LS: 多空 (Row::ls), 扣两腿成本
-inline constexpr int kBooks = 2;
-inline constexpr bool book_pays(int b, int leg) { return leg == factor::stat::kLong || b == kBookLs; } // 盘口 b 付腿 leg 的换手成本
-enum Impact : int { kImpactNet,                                                                        // 带冲击
-                    kImpactGross };                                                                    // 无冲击
+// ---- 线的轴: 组合线 (G20 多头, 扣多腿成本) = 冲击 Impact; 池线 = 权重 Weight (Service 出毛序列, UI 组线) ----
+enum Impact : int { kImpactNet,     // 有冲击
+                    kImpactGross }; // 无冲击
 inline constexpr int kImpacts = 2;
 enum Weight : int { kWeightEq,    // 池等权
                     kWeightCap }; // 流通市值加权
@@ -100,17 +97,33 @@ struct FactorCurve {
   std::string sig;              // 算时的 FactorJob::sig
   std::vector<misc::Ymd> dates; // [days]
   int seg = 0, hold = 0;
-  std::vector<float> ret[kBooks];                                        // [T] 毛: kBookLong = grp[G20] + mkt[多] · cnt / max(cnt, cap) (Inspect 分层 绝对 口径); kBookLs = Row::ls
-  int amt = 0;                                                           // 成本金额段 (万) = 该层最小段; 0 = 无段 (Bar 层) → 建仓也按 fixed_impact
-  std::vector<float> wimp[factor::stat::kLegs], we[factor::stat::kLegs]; // [T] 逐行 CostLeg::wimp / we (t < h 的行 0);
-                                                                         //   该腿行成本 = wimp + we · fixed_impact · (amt > 0 ? 1 : 2)
-  std::string error;                                                     // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
+  std::vector<float> ret;      // [T] 毛 G20 多头 = grp[G20] + mkt[多] · cnt / max(cnt, cap) (Inspect 分层 绝对 口径)
+  int amt = 0;                 // 成本金额段 (万) = 该层最小段; 0 = 无段 (Bar 层) → 建仓也按 fixed_impact
+  std::vector<float> wimp, we; // [T] 多腿逐行 CostLeg::wimp / we (t < h 的行 0); 行成本 = wimp + we · fixed_impact · (amt > 0 ? 1 : 2)
+  std::string error;           // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
+};
+// 池估值滚动 band (VAL 页): 每口的价格倍数 (PE / PB / 1/DY, 升 = 贵) 逐日在过去 kBandYears 自然年 (含当日) 窗内取 kBandQs 分位;
+// 窗内可算点 < kBandMinDays → 不可算 (历史不足 kBandYears 年先扩张窗)
+inline constexpr int kBandYears = 5, kBandMinDays = factor::stat::kDaysPerYear;
+inline constexpr int kBandQ = 7;
+inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95};
+inline constexpr bool kValInv[kPoolVals] = {false, false, true}; // [PoolVal] 价格倍数 = 1 / 值 (DY)
+struct ValCurve {                                                // 一口估值 [days]
+  std::vector<float> v;                                          // 值 (整体法 PE / PB / DY, YPlanes::val; NaN = 当日不可算)
+  std::vector<float> q[kBandQ];                                  // 窗内价格倍数的 kBandQs 分位 (升序; NaN = 窗内不足)
+  std::vector<float> pct;                                        // 当日价格倍数在窗内的分位 (%, 高 = 贵; NaN = 窗内不足 / 当日不可算)
 };
 struct PoolCurve {
   std::string sig;                    // 算时的 PoolJob::sig
   std::vector<misc::Ymd> dates;       // [days] 日层评估期
   std::vector<float> index[kWeights]; // [days] 池指数 (起点 1); kWeightCap 只画 all 池的 = 全A加权
-  double turnover = -1.0;             // 日均换手 = 沿日均值 (1 − |S_t ∩ S_{t−1}| / |S_t|), S = 池成员位 (日层: D 收盘定的池); all 池无成员 → < 0
+  double turnover[kWeights] = {};     // 日均单边换手 = YPlanes::index_turn / index_cap_turn (权重口径: 等权再平衡 + 成分进出, 停牌 = 移出再移回)
+  ValCurve val[kPoolVals];            // [PoolVal] 池估值
+  struct Ind {
+    std::vector<float> index; // [days] 流通市值加权指数 (YPlanes::ind_index 的行业 k 段)
+    ValCurve val[kPoolVals];  // [PoolVal] (YPlanes::ind_val)
+  };
+  std::vector<Ind> inds; // [YPlanes::kInds] 本池按 SW2021 一级切的行业 (0 = 未知, 空); UI 只用 all 池的 = 申万一级
   std::string error;
 };
 struct PortfolioResult {
