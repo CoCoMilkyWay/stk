@@ -433,6 +433,20 @@ bool PortfolioService::eval_pool(const PoolJob &j, Flow &F, PoolCurve &out) {
   assert(c.y.index.size() == es.dates.size());
   out.dates = es.dates;
   out.index = std::move(c.y.index);
+  if (es.member) {
+    const size_t P = es.member->axis().size();
+    double sum = 0.0;
+    int n = 0;
+    for (size_t i = 1; i < es.dates.size(); ++i) {
+      const uint8_t *now = es.member->row(es.dates[i]), *pre = es.member->row(es.dates[i - 1]);
+      size_t cnt = 0, keep = 0;
+      for (size_t s = 0; s < P; ++s)
+        cnt += now[s], keep += now[s] & pre[s];
+      if (cnt > 0)
+        sum += 1.0 - static_cast<double>(keep) / static_cast<double>(cnt), ++n;
+    }
+    out.turnover = n > 0 ? sum / n : 0.0;
+  }
   return true;
 }
 

@@ -170,14 +170,16 @@ const factor::check::Plane *XPlanes::find(std::string_view code) const {
 
 namespace {
 
-// 池等权指数 (YPlanes::index): 资产条带并行, 各条带沿 t 推本条带资产的上一有效后复权 close (跨日, 不看在池), 成分格 (在池 ∧ 前价有) 攒进本线程
-// 逐行 Σ / 数; 线程间按 tid 序归并后串行连乘
+// 池等权指数 (YPlanes::index): 资产条带并行, 各条带沿 t 推本条带资产的上一有效后复权 close + 该 close 行的在池位 (跨日);
+// 成分格 (上一有效 close 行在池 ∧ 本行有 close) 攒进本线程. 日层门控 = D 收盘定的池 (收盘换仓), 故 D 的收益按 D−1 收盘的成员;
+// 停牌行不更新 ⇒ 持仓带到复牌, 复牌跳空计入. 逐行 Σ / 数; 线程间按 tid 序归并后串行连乘
 void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const uint8_t *in, int T, int A, std::vector<float> &out) {
   const size_t nT = static_cast<size_t>(T), nt = static_cast<size_t>(ex.threads());
   std::vector<double> sum(nt * nT, 0.0);
   std::vector<int> cnt(nt * nT, 0);
   ex.rows(A, [&](int a0, int a1, int tid) {
     std::vector<float> prev(static_cast<size_t>(a1 - a0), 0.f);
+    std::vector<uint8_t> held(static_cast<size_t>(a1 - a0), 0);
     double *s = sum.data() + static_cast<size_t>(tid) * nT;
     int *k = cnt.data() + static_cast<size_t>(tid) * nT;
     for (size_t t = 0; t < nT; ++t)
@@ -187,11 +189,13 @@ void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, con
         if (!close.m[i] || !(c > 0.f))
           continue;
         float &p = prev[static_cast<size_t>(a - a0)];
-        if (p > 0.f && in[i]) {
+        uint8_t &h = held[static_cast<size_t>(a - a0)];
+        if (p > 0.f && h) {
           s[t] += c / p - 1.0;
           ++k[t];
         }
         p = c;
+        h = in[i];
       }
   });
   out.resize(nT);
@@ -340,6 +344,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
     return cols.size() - 1;
   };
   const size_t ts_i = add(ft.y.ts), cs_i = add(ft.y.cs);
+  assert((!spec.index || factor_level(ft.seg).lvl == L_1day) && "池指数只在日层 (成员位 = 本行收盘定的池)");
   const size_t close_i = spec.index ? add(ft.y.close_adj) : SIZE_MAX;
   assert(cols[ts_i].pool == es.rs.main && "门控 / 标签 / 成本 / OHLC 在标签库");
   const size_t lab_i = cols.size();
