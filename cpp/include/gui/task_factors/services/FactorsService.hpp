@@ -55,6 +55,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -84,6 +85,8 @@ inline constexpr FactorLevel kFactorLevels[] = {
 const FactorLevel &factor_level(int seg); // seg 不在表里 → assert
 // 该层因子目录 = <config.factor_dir>/<lib>/<name> (lib 须属该层的档)
 std::string factor_dir_of(const SharedData &data, const std::string &lib, int seg);
+// 因子目录下的因子文件 (*.json 普通文件, 不进子目录), 路径序; 目录不存在 = 空
+std::vector<std::filesystem::path> list_factor_files(const std::string &dir);
 
 // ---- 字段表视图 (GUI 线程从 Feature::Metadata 建一次, worker 只读; 一份对应一层) ----
 struct FeatCol {

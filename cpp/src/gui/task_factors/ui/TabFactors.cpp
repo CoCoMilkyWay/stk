@@ -965,7 +965,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   const Phase st = svc.phase.load(std::memory_order_acquire);
   const bool busy = svc.busy();
   const Phase sst = ss.phase.load(std::memory_order_acquire);
-  const bool sbusy = ss.busy(); // Search 在跑: 它要写因子文件, Run 让路
+  const bool sbusy = ss.busy();                // Search 在跑: 它要写因子文件, Run 让路
+  const bool all_active = ui.search_all_n > 0; // Search all 整轮 (含队列项之间的空闲帧与收尾 Run) 同样让路
   const FeatureTable &ft = svc.feats();
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
@@ -1035,7 +1036,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen);
   ImGui::SameLine();
 
-  const bool can_run = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty();
+  const bool can_run = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.labels.empty();
   if (!can_run)
     ImGui::BeginDisabled();
   if (ImGui::Button("Run", ImVec2(60, 0)))
@@ -1057,11 +1058,11 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   if (!busy)
     ImGui::EndDisabled();
   ImGui::SameLine();
-  if (busy)
+  if (busy || all_active)
     ImGui::BeginDisabled();
   if (ImGui::Button("Rescan", ImVec2(60, 0)))
     action = 2;
-  if (busy)
+  if (busy || all_active)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
     tip("重扫目录: 只解析校验, 不算\n"
@@ -1113,8 +1114,9 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     for (const FactorRow &r : s_rows)
       if (r.key == ui.view_file)
         view_row = &r;
-    const bool tmpl_ok = view_row && view_row->error.empty() && !view_row->tmpl.empty() && view_row->tmpl != view_row->expr; // 模板有自由参数
-    const bool can_search = !busy && !sbusy && ctx.axis_ready && !ft.labels.empty() && tmpl_ok;
+    const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }; // 模板有自由参数
+    const bool tmpl_ok = view_row && searchable(*view_row);
+    const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.labels.empty() && tmpl_ok;
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Search:");
     ImGui::SameLine();
     if (!can_search)
@@ -1160,13 +1162,45 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             factor::search::grid::kLayerMax, 100.0 * (1.0 - factor::search::kPlateau), factor::search::kCorrRows,
             factor::search::kPicks);
     }
+    // Search all: 各文件首个可搜行 (按文件去重), 表序
+    std::vector<const FactorRow *> all_rows;
+    for (const FactorRow &r : s_rows)
+      if (searchable(r) && std::none_of(all_rows.begin(), all_rows.end(), [&](const FactorRow *p) { return p->file == r.file; }))
+        all_rows.push_back(&r);
+    const bool can_search_all = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.labels.empty() && !all_rows.empty();
     ImGui::SameLine();
-    if (!sbusy)
+    if (!can_search_all)
       ImGui::BeginDisabled();
-    if (ImGui::Button("Cancel##opt", ImVec2(60, 0)))
-      action = -3;
-    if (!sbusy)
+    if (ImGui::Button("Search all", ImVec2(90, 0))) {
+      ui.search_queue.clear();
+      for (const FactorRow *p : all_rows)
+        ui.search_queue.push_back(*p);
+      ui.search_all_n = static_cast<int>(ui.search_queue.size());
+      action = 4;
+    }
+    if (!can_search_all)
       ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      tip("逐个搜 %s 下全部模板文件 (%d 个)\n"
+          "• 每个文件同 Search: 搜索窗内每个持有期各搜, 终选整体替换该文件 weights (已有的也重搜)\n"
+          "• 跳过: 模板无自由参数 / BROKEN 的文件\n"
+          "• 收尾: 全部搜完整目录 Run 一次 (中间不 Run)\n"
+          "• Cancel: 取消在跑的那个并清空队列 (已搜完的文件 weights 已写入, 不 Run)",
+          ctx.factor_dir.c_str(), static_cast<int>(all_rows.size()));
+    ImGui::SameLine();
+    if (!sbusy && !all_active)
+      ImGui::BeginDisabled();
+    if (ImGui::Button("Cancel##opt", ImVec2(60, 0))) {
+      ui.search_queue.clear();
+      ui.search_all_n = 0;
+      action = -3;
+    }
+    if (!sbusy && !all_active)
+      ImGui::EndDisabled();
+    if (all_active) {
+      ImGui::SameLine();
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "[%d/%d]", ui.search_all_n - static_cast<int>(ui.search_queue.size()), ui.search_all_n);
+    }
     ImGui::SameLine();
     ImGui::Text("状态:");
     ImGui::SameLine();

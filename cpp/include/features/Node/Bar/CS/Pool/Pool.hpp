@@ -10,7 +10,7 @@
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define FIELDS_L_1day_CsPool(X, CAT1)                                                                                                                                                                               \
-  X(pool_mega, CAT1, AUTO, "Pool Mega", "巨盘池", "母集内实时总市值最大400只", R"(\mathbf{1}[\mathrm{rank}\downarrow(\mathrm{mcap}) \le 400])", CS(bar, L_1day, key_size, None, SelectHigh400))                     \
+  X(pool_mega, CAT1, AUTO, "Pool Mega", "大盘池", "母集内实时总市值最大400只", R"(\mathbf{1}[\mathrm{rank}\downarrow(\mathrm{mcap}) \le 400])", CS(bar, L_1day, key_size, None, SelectHigh400))                     \
   X(pool_micro, CAT1, AUTO, "Pool Micro", "微盘池", "母集∧微盘行业白名单内实时总市值最小400只", R"(\mathbf{1}[\mathrm{rank}\uparrow(\mathrm{mcap}) \le 400])", CS(bar, L_1day, key_size_micro, None, SelectLow400)) \
   X(pool_pe_low, CAT1, AUTO, "Pool PE Low", "低PE池", "母集内 −EP 最小400只 (EP 最高)", R"(\mathbf{1}[\mathrm{rank}\uparrow(-\mathrm{EP}) \le 400])", CS(bar, L_1day, key_pe, None, SelectLow400))                  \
   X(pool_pe_high, CAT1, AUTO, "Pool PE High", "高PE池", "母集内 −EP 最大400只 (亏损最深在前)", R"(\mathbf{1}[\mathrm{rank}\downarrow(-\mathrm{EP}) \le 400])", CS(bar, L_1day, key_pe, None, SelectHigh400))        \

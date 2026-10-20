@@ -193,11 +193,11 @@ constexpr size_t kPoolCount = std::count_if(kBarDay.begin(), kBarDay.end(), is_p
 static_assert(kPoolCount > 0, "Bar 字段表没有票池列 (Node/Bar/CS/Pool 的 pool_*)");
 constexpr std::array<LibDef, 1 + kPoolCount> kLibs = [] {
   std::array<LibDef, 1 + kPoolCount> out{};
-  out[0] = {Config::kAllTierDir, TierId::Bar, SIZE_MAX};
+  out[0] = {Config::kAllTierDir, "全市场", TierId::Bar, SIZE_MAX};
   size_t n = 1;
   for (size_t i = 0; i < kBarDay.size(); ++i)
     if (is_pool(kBarDay[i]))
-      out[n++] = {kBarDay[i].code + kPoolPrefix.size(), TierId::Lob, i};
+      out[n++] = {kBarDay[i].code + kPoolPrefix.size(), kBarDay[i].name_cn, TierId::Lob, i};
   return out;
 }();
 static_assert(kLibs.size() <= UINT8_MAX && kLibs[kAllLib].tier == TierId::Bar, "LibId = uint8_t 库表下标, [kAllLib] = all");

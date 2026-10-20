@@ -23,7 +23,8 @@ struct Config;
 
 // 库表 (全部库唯一一份, 定义在 FeatureMeta.cpp): [0] = all (Bar 档), 其余 = 票池 (Lob 档, 由 Bar 字段表 Pool 类 pool_* 列展开, 字段表序)
 struct LibDef {
-  const char *name; // 库名 = 目录名 (票池 = 列名去 pool_ 前缀)
+  const char *name;    // 库名 = 目录名 (票池 = 列名去 pool_ 前缀)
+  const char *name_cn; // 中文名 (票池 = pool_<name> 列的 name_cn; all = 全市场), UI 下拉跟在库名后
   TierId tier;
   size_t pool_col; // 票池: Bar 库 L_1day 的 pool_<name> 列下标; all: SIZE_MAX
 };

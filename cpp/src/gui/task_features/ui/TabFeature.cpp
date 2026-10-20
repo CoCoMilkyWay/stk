@@ -914,9 +914,16 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   const std::string cur_lib = sel.lib();
   ImGui::SetNextItemWidth(140);
   if (ImGui::BeginCombo("##lib", cur_lib.c_str())) {
+    float cn_x = 0.0f; // 中文名列起点 (对齐最长库名)
+    for (const LibDef &d : feature_libs())
+      cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
+    cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
     for (const LibDef &d : feature_libs()) {
       const bool selected = cur_lib == d.name;
-      if (ImGui::Selectable(d.name, selected) && !selected) {
+      const bool clicked = ImGui::Selectable(d.name, selected);
+      ImGui::SameLine(cn_x);
+      ImGui::TextDisabled("%s", d.name_cn);
+      if (clicked && !selected) {
         if (d.tier != sel.tier) {
           sel.clear_filters(); // 换档 = 换字段表: 过滤作废; 选中是 ColRef (带库), 切库保留
           sel.tier = d.tier;

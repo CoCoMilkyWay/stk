@@ -45,6 +45,10 @@ struct FactorsUIState {
   std::vector<std::string> expanded; // 展开的多权重因子文件
   // Search (对象 = 高光行所在文件的模板, 搜索窗内全部持有期): 点下时把行拷给 search_row (TaskFactors 据此建请求)
   FactorRow search_row;
+  // Search all (当前库 / 层下全部可搜模板文件逐个搜, 全部搜完整目录 Run 一次): 点下时把各文件首个可搜行拷进队列, TaskFactors 逐个出队;
+  // Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换库换层)
+  std::vector<FactorRow> search_queue;
+  int search_all_n = 0;  // 本轮文件总数; 0 = 没在 Search all
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
   // 表列宽贴合 (对仗 TabOperators)
@@ -70,7 +74,8 @@ struct FactorsUIContext {
 // 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
 void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
-// 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row), -3 = 取消 Search, 0 = 无
+// 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row), 4 = Search all (ui.search_queue 已填),
+// -3 = 取消 Search (Search all 的队列已清), 0 = 无
 int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors

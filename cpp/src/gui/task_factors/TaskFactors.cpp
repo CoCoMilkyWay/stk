@@ -23,6 +23,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -46,6 +48,10 @@ struct TaskFactorsState {
   // 本页已生效的 (库, 因子层): 跟 data.feature.selection (与特征面板同一份) 走, 所有服务空闲时才追上; seg = 0 = 选择不是因子层 (空页, 无服务)
   int seg = 0;
   std::string lib;
+  // 页顶层按钮后的因子文件数 (所选库各因子层目录): 库变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
+  std::string counted_key; // config.factor_dir | 所选库; 空 = 没数过
+  size_t level_files[std::size(Factors::kFactorLevels)] = {};
+  Phase prev_factors_phase = Phase::Idle;
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                        // 上次扫描的目录 (票池切换 → 自动重扫)
@@ -76,6 +82,28 @@ static void reset_level_services(TaskFactorsState &s) {
   s.inspect_ui = Factors::InspectUIState{};
 }
 
+// Search all 出队一个发 Search; 队空 = 整目录 Run 一次并收尾. 请求建不成 (资产轴 / 区间) = 整轮放弃
+static void search_all_next(const SharedData &data, TaskFactorsState &s) {
+  Factors::FactorsUIState &ui = s.factors_ui;
+  assert(ui.search_all_n > 0 && s.factors_service && s.search_service);
+  if (ui.search_queue.empty()) {
+    ui.search_all_n = 0;
+    Factors::FactorsRequest req;
+    if (Factors::MakeFactorsRequest(data, s.lib, s.seg, /*evaluate=*/true, ui.backend == 1, req))
+      s.factors_service->Request(req);
+    return;
+  }
+  const Factors::FactorRow row = std::move(ui.search_queue.front());
+  ui.search_queue.erase(ui.search_queue.begin());
+  Factors::SearchRequest req;
+  if (Factors::MakeSearchRequest(data, s.lib, s.seg, row, ui.backend == 1, req)) {
+    s.search_service->Request(req);
+  } else {
+    ui.search_queue.clear();
+    ui.search_all_n = 0;
+  }
+}
+
 // Factors 子页的作用域 (每帧从 config 取; 库 / 层取本页已生效的)
 static Factors::FactorsUIContext factors_context(const SharedData &data, const std::string &lib, int seg) {
   Factors::FactorsUIContext c;
@@ -103,10 +131,20 @@ TaskHandle CreateFactorsTask() {
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
   // (与票池无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
-    // Search 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
+    // Search all: 一个文件搜完 (忙 → Done / Cancelled, 含 Loading 期就放弃的) → 出队下一个, 队空整目录 Run; 被取消 → 整轮放弃
+    // 单个 Search 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
     if (state->search_service && state->factors_service) {
       const Phase sst = state->search_service->phase.load(std::memory_order_acquire);
-      if (sst == Phase::Done && state->prev_search_phase == Phase::Running) {
+      const Phase prev = state->prev_search_phase;
+      const bool finished = (sst == Phase::Done || sst == Phase::Cancelled) && (prev == Phase::Scanning || prev == Phase::Loading || prev == Phase::Running);
+      if (finished && state->factors_ui.search_all_n > 0) {
+        if (sst == Phase::Done) {
+          search_all_next(data, *state);
+        } else {
+          state->factors_ui.search_queue.clear();
+          state->factors_ui.search_all_n = 0;
+        }
+      } else if (sst == Phase::Done && prev == Phase::Running) {
         bool wrote = false;
         std::string file;
         {
@@ -198,9 +236,16 @@ TaskHandle CreateFactorsTask() {
         const std::string cur_lib = sel.lib();
         ImGui::SetNextItemWidth(140);
         if (ImGui::BeginCombo("##factor_lib", cur_lib.c_str())) {
+          float cn_x = 0.0f; // 中文名列起点 (对齐最长库名)
+          for (const LibDef &d : feature_libs())
+            cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
+          cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
           for (const LibDef &d : feature_libs()) {
             const bool selected = cur_lib == d.name;
-            if (ImGui::Selectable(d.name, selected) && !selected) {
+            const bool clicked = ImGui::Selectable(d.name, selected);
+            ImGui::SameLine(cn_x);
+            ImGui::TextDisabled("%s", d.name_cn);
+            if (clicked && !selected) {
               if (d.tier != sel.tier) {
                 sel.clear_filters(); // 同特征面板: 换档 = 换字段表, 过滤作废
                 sel.tier = d.tier;
@@ -219,10 +264,28 @@ TaskHandle CreateFactorsTask() {
         }
         ImGui::SameLine();
         ImGui::TextUnformatted("Level:");
-        for (const Factors::FactorLevel &l : Factors::kFactorLevels) {
+        {
+          const std::string key = data.config.factor_dir + "|" + sel.lib();
+          const Phase fst = state->factors_service ? state->factors_service->phase.load(std::memory_order_acquire) : Phase::Idle;
+          if (key != state->counted_key || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
+            state->counted_key = key;
+            for (size_t i = 0; i < std::size(Factors::kFactorLevels); ++i) {
+              const Factors::FactorLevel &l = Factors::kFactorLevels[i];
+              state->level_files[i] = l.tier == sel.tier ? Factors::list_factor_files(Factors::factor_dir_of(data, sel.lib(), l.seg)).size() : 0;
+            }
+          }
+          state->prev_factors_phase = fst;
+        }
+        for (size_t i = 0; i < std::size(Factors::kFactorLevels); ++i) {
+          const Factors::FactorLevel &l = Factors::kFactorLevels[i];
+          char label[48];
+          if (l.tier == sel.tier)
+            std::snprintf(label, sizeof(label), "%s (%zu)###flvl%zu", l.name, state->level_files[i], i);
+          else
+            std::snprintf(label, sizeof(label), "%s###flvl%zu", l.name, i);
           ImGui::SameLine();
           ImGui::BeginDisabled(l.tier != sel.tier);
-          if (ImGui::RadioButton(l.name, l.tier == sel.tier && static_cast<int>(l.lvl) == sel.selected_level))
+          if (ImGui::RadioButton(label, l.tier == sel.tier && static_cast<int>(l.lvl) == sel.selected_level))
             sel.selected_level = static_cast<int>(l.lvl);
           ImGui::EndDisabled();
         }
@@ -236,7 +299,7 @@ TaskHandle CreateFactorsTask() {
       }
       {
         const bool busy = (state->factors_service && state->factors_service->busy()) || (state->search_service && state->search_service->busy()) ||
-                          (state->inspect_service && state->inspect_service->busy());
+                          (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
         const int want_seg = selected_factor_seg(sel);
         const std::string want_lib = want_seg != 0 ? sel.lib() : std::string{};
         if (!busy) {
@@ -295,6 +358,8 @@ TaskHandle CreateFactorsTask() {
           Factors::SearchRequest req;
           if (Factors::MakeSearchRequest(data, state->lib, state->seg, state->factors_ui.search_row, state->factors_ui.backend == 1, req))
             ss.Request(req);
+        } else if (action == 4) {
+          search_all_next(data, *state);
         } else if (action == -3) {
           ss.RequestCancel();
         }
@@ -322,6 +387,8 @@ TaskHandle CreateFactorsTask() {
     state->operators_started = false;
     state->search_service.reset(); // 析构 Stop() join worker
     state->prev_search_phase = Phase::Idle;
+    state->factors_ui.search_queue.clear(); // Search all 随服务一起作废
+    state->factors_ui.search_all_n = 0;
     state->factors_service.reset();
     state->factors_scanned_dir.clear();
     state->kline_service.reset();   // 析构 Stop() join worker

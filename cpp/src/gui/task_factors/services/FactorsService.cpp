@@ -387,6 +387,16 @@ std::string factor_dir_of(const SharedData &data, const std::string &lib, int se
   return data.config.factor_dir + "/" + lib + "/" + l.name;
 }
 
+std::vector<std::filesystem::path> list_factor_files(const std::string &dir) {
+  std::vector<std::filesystem::path> files;
+  if (std::filesystem::is_directory(dir))
+    for (const auto &ent : std::filesystem::directory_iterator(dir))
+      if (ent.is_regular_file() && ent.path().extension() == ".json")
+        files.push_back(ent.path());
+  std::sort(files.begin(), files.end());
+  return files;
+}
+
 FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
   const FactorLevel &lv = factor_level(seg);
   assert(level_valid_rows(lv.lvl) == static_cast<size_t>(seg) && "因子层段长与特征库层有效行数不符");
@@ -644,12 +654,7 @@ bool FactorsService::run(FactorsRequest &req) {
 void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out) {
   TraceN("FactorsScan");
   out.clear();
-  std::vector<std::filesystem::path> files;
-  if (std::filesystem::is_directory(req.factor_dir))
-    for (const auto &ent : std::filesystem::directory_iterator(req.factor_dir))
-      if (ent.is_regular_file() && ent.path().extension() == ".json")
-        files.push_back(ent.path());
-  std::sort(files.begin(), files.end());
+  const std::vector<std::filesystem::path> files = list_factor_files(req.factor_dir);
 
   assert(req.seg == feats_.seg && "请求层与字段表层不符");
   const factor::expr::FeatureLookup fl = feats_.lookup();
