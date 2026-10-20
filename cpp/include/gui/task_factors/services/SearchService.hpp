@@ -5,7 +5,7 @@
 // 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 全部 h 的标签同在 (hd.n = H), 因子平面只算一遍; 趟与趟之间才有依赖):
-//   尺度          先装块 0: 满仓只数 n_full = 池内平均有效资产数 / kGroups (Labels::cap, FactorsLoad n_full_of); 模板按占位值 (Expr::placeholder)
+//   尺度          先装块 0: 满仓只数 n_full = 池内平均有效资产数 / kGroups (Labels::cap, FactorsLoad YPlanes::n_full); 模板按占位值 (Expr::placeholder)
 //                 建 DAG 在 CPU 上走到各阈值槽 (ANY / GE0) 的输入节点, 取池内有效格标准差 σ 作该槽坐标单位 (Grid set_scale);
 //                 σ 不是正有限数的槽 → 整个搜索放弃 (自由参数没法落值)
 //   趟 0 粗网格   全部槽的格点笛卡尔积 (围 Grid 的中心铺, 步长由 kLayerMax 预算反推), 评一次得全部 h 的分 (自动定向: Contract【方向】)

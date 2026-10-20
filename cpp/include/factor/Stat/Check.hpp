@@ -63,7 +63,7 @@ struct Data {
   std::vector<LabelHost> lab; // 按 hd 序
   Holds hd;                   // kHolds 里本层合法的 (hold_ok)
   int T = 0, A = 0, seg = 0;  // seg = 段长 (Contract【层几何】)
-  double cap = 0.0;           // 满仓 = 池内平均每行格数 / kGroups (与 GUI n_full_of 同式)
+  double cap = 0.0;           // 满仓 = 池内平均每行格数 / kGroups (与 GUI YPlanes::n_full 同式)
   Span span() const { return {T, A, geo_of(seg)}; }
 };
 // d 的全部标签 + 各组预处理 ry → 契约 Labels (偏 off 格; ry 为空 = 未预处理)

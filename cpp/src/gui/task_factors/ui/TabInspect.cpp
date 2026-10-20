@@ -1222,7 +1222,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUISta
         break;
       }
   }
-  if (fui.view_file.empty() || !ctx.axis_ready || isvc.feats().labels.empty())
+  if (fui.view_file.empty() || !ctx.axis_ready || isvc.feats().y.labels.empty())
     return false;
   if (isvc.busy())
     return false;
@@ -1315,20 +1315,20 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   const FeatureTable &ft = isvc.feats();
   const Phase st = isvc.phase.load(std::memory_order_acquire);
   const bool busy = isvc.busy();
-  const int n_hold = static_cast<int>(ft.labels.size());
+  const int n_hold = static_cast<int>(ft.y.labels.size());
   if (ui.hold_for != sel.key) { // 换了权重 → Hold 切到它搜出来的持有期 (手填权重无, 不动)
     ui.hold_for = sel.key;
     for (int i = 0; i < n_hold; ++i)
-      if (ft.labels[static_cast<size_t>(i)].key == sel.hold_src)
+      if (ft.y.labels[static_cast<size_t>(i)].key == sel.hold_src)
         ui.hold_idx = i;
   }
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
-  const int cur_hold = n_hold ? ft.labels[static_cast<size_t>(ui.hold_idx)].key : 0;
+  const int cur_hold = n_hold ? ft.y.labels[static_cast<size_t>(ui.hold_idx)].key : 0;
   if (n_hold >= 2) {
     std::vector<std::string> names(static_cast<size_t>(n_hold));
     std::vector<const char *> cs(static_cast<size_t>(n_hold));
     for (int i = 0; i < n_hold; ++i)
-      names[static_cast<size_t>(i)] = factor::stat::hold_name(ft.labels[static_cast<size_t>(i)].key), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
+      names[static_cast<size_t>(i)] = factor::stat::hold_name(ft.y.labels[static_cast<size_t>(i)].key), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
     cycler("Hold", ui.hold_idx, cs.data(), n_hold);
   } else {
     ImGui::TextDisabled("Hold %s", n_hold ? factor::stat::hold_name(cur_hold).c_str() : "-");
@@ -1430,7 +1430,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
       res_valid = res.valid_pct;
       res_rank = res.rank_pct;
       res_ms = res.eval_ms;
-      res_holds = res.hold;
+      res_holds.assign(res.hold, res.hold + res.n_hold);
       res_costs = res.costs;
       assert(res_holds.size() == static_cast<size_t>(n_hold));
     }
@@ -1476,8 +1476,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           assert(ft.seg == res.seg && "字段表层与结果层不符");
           kreq->level = factor_level(res.seg).lvl;
           for (int i = 0; i < 4; ++i)
-            kreq->col[i] = ft.ohlc[i].col;
-          kreq->col[4] = ft.ts.col;
+            kreq->col[i] = ft.y.ohlc[i].col;
+          kreq->col[4] = ft.y.ts.col;
         }
       }
     }

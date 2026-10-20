@@ -207,7 +207,7 @@ bool pick_list(const FeatureTable &ft, char *filter, size_t filter_cap, factor::
   }
   if (!wrap) {
     ImGui::TextDisabled("特征");
-    for (const FeatCol &c : ft.cols) {
+    for (const FeatCol &c : ft.x.leaves) {
       if (!c.allowed || !contains_ci(c.code, f))
         continue;
       if (ImGui::Selectable(c.code.c_str(), cur_op < 0 && cur_feat == c.code)) {
@@ -991,8 +991,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ui.backend = 0;
   else if (ui.backend < 0)
     ui.backend = 1; // 有 GPU 默认 GPU
-  ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, static_cast<int>(ft.labels.size()) - 1));
-  const int cur_hold = ft.labels.empty() ? 0 : ft.labels[static_cast<size_t>(ui.hold_idx)].key;
+  ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, static_cast<int>(ft.y.labels.size()) - 1));
+  const int cur_hold = ft.y.labels.empty() ? 0 : ft.y.labels[static_cast<size_t>(ui.hold_idx)].key;
 
   // ==========================================================================
   // 1. 作用域 + 后端 + Run / Cancel / Rescan + 状态
@@ -1039,9 +1039,9 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("Hold", ft.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str())) {
-    for (size_t i = 0; i < ft.labels.size(); ++i)
-      if (ImGui::Selectable(factor::stat::hold_name(ft.labels[i].key).c_str(), static_cast<int>(i) == ui.hold_idx))
+  if (ImGui::BeginCombo("Hold", ft.y.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str())) {
+    for (size_t i = 0; i < ft.y.labels.size(); ++i)
+      if (ImGui::Selectable(factor::stat::hold_name(ft.y.labels[i].key).c_str(), static_cast<int>(i) == ui.hold_idx))
         ui.hold_idx = static_cast<int>(i);
     ImGui::EndCombo();
   }
@@ -1055,7 +1055,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen);
   ImGui::SameLine();
 
-  const bool can_run = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.labels.empty();
+  const bool can_run = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty();
   if (!can_run)
     ImGui::BeginDisabled();
   if (ImGui::Button("Run", ImVec2(60, 0)))
@@ -1135,7 +1135,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         view_row = &r;
     const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }; // 模板有自由参数
     const bool tmpl_ok = view_row && searchable(*view_row);
-    const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.labels.empty() && tmpl_ok;
+    const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty() && tmpl_ok;
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Search:");
     ImGui::SameLine();
     if (!can_search)
@@ -1186,7 +1186,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     for (const FactorRow &r : s_rows)
       if (searchable(r) && std::none_of(all_rows.begin(), all_rows.end(), [&](const FactorRow *p) { return p->file == r.file; }))
         all_rows.push_back(&r);
-    const bool can_search_all = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.labels.empty() && !all_rows.empty();
+    const bool can_search_all = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty() && !all_rows.empty();
     ImGui::SameLine();
     if (!can_search_all)
       ImGui::BeginDisabled();

@@ -63,14 +63,14 @@ bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector
   const PoolId pool = pool_id(sc.pool);
   assert(level_for_pool(lv, pool_tier(pool)) && "该池不能用这个因子层");
   const PoolId lab = lv.lab(pool);
-  assert(ft.ts.ref(pool).pool == lab && ft.cs.ref(pool).pool == lab && "门控 / 标签 / 成本 / OHLC 在标签库");
+  assert(ft.y.ts.ref(pool).pool == lab && ft.y.cs.ref(pool).pool == lab && "门控 / 标签 / 成本 / OHLC 在标签库");
   const bool sub = pool != lab; // Lob 池 × Bar 标签: 截面再与上池成员
   const PerPool<FeatureLib> &libs = sc.libs;
   es = EvalScope{};
   es.pool = pool;
   es.used = pool_bit(lab);
   for (const std::string &f : feats) {
-    const FeatCol *c = ft.find(f);
+    const FeatCol *c = ft.x.find(f);
     assert(c && c->allowed);
     es.used |= pool_bit(c->ref(pool).pool);
   }
@@ -132,13 +132,45 @@ void assert_fits(const char *who, double bytes, int days, int A, int seg) {
   assert(bytes <= budget && "因子整张量装载放不下内存 (因子层太细 / 评估期太长), 拒绝评估");
 }
 
-double cell_bytes(const LoadSpec &s) {
-  return 5.0 * static_cast<double>(s.feats.size() + 1 + s.holds.size() + s.amts.size() + (s.index ? 1 : 0));
+factor::stat::Holds holds_of(const std::vector<int> &keys) {
+  assert(keys.size() <= static_cast<size_t>(factor::stat::kMaxHold) && "持有期数超 Stat 标签组容量 (kMaxHold)");
+  factor::stat::Holds hd;
+  hd.n = static_cast<int>(keys.size());
+  std::copy(keys.begin(), keys.end(), hd.h);
+  return hd;
+}
+
+Amts amts_of(const std::vector<int> &keys) {
+  assert(keys.size() <= static_cast<size_t>(factor::stat::kMaxCost) && "金额段数超 Stat 成本容量 (kMaxCost)");
+  Amts ad;
+  ad.n = static_cast<int>(keys.size());
+  std::copy(keys.begin(), keys.end(), ad.a);
+  return ad;
+}
+
+std::string YSpec::key() const {
+  std::string k = "h";
+  for (int i = 0; i < hd.n; ++i)
+    k += "," + std::to_string(hd.h[i]);
+  k += "|a";
+  for (int i = 0; i < ad.n; ++i)
+    k += "," + std::to_string(ad.a[i]);
+  return k + "|cap" + std::to_string(max_impact) + "|i" + (index ? "1" : "0");
+}
+
+double cell_bytes(const XSpec &s) { return kPlaneBytes * static_cast<double>(s.codes.size()); }
+double cell_bytes(const YSpec &s) { return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n + s.ad.n + (s.index ? 1 : 0)); }
+
+const factor::check::Plane *XPlanes::find(std::string_view code) const {
+  for (size_t i = 0; i < codes.size(); ++i)
+    if (codes[i] == code)
+      return &v[i];
+  return nullptr;
 }
 
 namespace {
 
-// 池等权指数 (Loaded::index): 资产条带并行, 各条带沿 t 推本条带资产的上一有效 close (跨日, 不看在池), 成分格 (在池 ∧ 前价有) 攒进本线程
+// 池等权指数 (YPlanes::index): 资产条带并行, 各条带沿 t 推本条带资产的上一有效 close (跨日, 不看在池), 成分格 (在池 ∧ 前价有) 攒进本线程
 // 逐行 Σ / 数; 线程间按 tid 序归并后串行连乘
 void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const uint8_t *in, int T, int A, std::vector<float> &out) {
   const size_t nT = static_cast<size_t>(T), nt = static_cast<size_t>(ex.threads());
@@ -175,146 +207,54 @@ void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, con
   }
 }
 
-} // namespace
+// 平面列 c 在网格行 t 的源行视图 (v nullptr = 无源); 格 a ← ids[a] (nullptr = 同轴; kAbsent = 资产不在该库)
+struct View {
+  const feature_storage_t *v = nullptr, *g = nullptr;
+  const uint32_t *ids = nullptr;
+  L2::ValidType vt = L2::ValidType::ALL;
+};
+// 格 a: 有源 → x = 值, g = 同行门控 (不门控 = 1)
+bool cell(const View &w, size_t a, feature_storage_t &x, float &g) {
+  const uint32_t i = w.ids ? w.ids[a] : static_cast<uint32_t>(a);
+  if (!w.v || i == kAbsent)
+    return false;
+  x = w.v[i];
+  g = w.g ? static_cast<float>(w.g[i]) : 1.f;
+  return true;
+}
 
-bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const LoadSpec &spec, Loaded &L,
-                 misc::exec::ForkJoin &ex, std::atomic<bool> &cancel, Progress &prog) {
-  TraceN("FactorsLoad");
-  constexpr size_t K = factor::stat::kLegs;
+// 张量形 (容量断言在此): days × A → T = days · seg
+Shape shape_of(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1) {
   assert(d0 < d1 && d1 <= es.days.size());
-  assert((spec.amts.empty() || spec.max_impact > 0.f) && "装成本要封顶 (Config::max_impact)");
-  const size_t lvl = factor_level(ft.seg).lvl;
-  const size_t VR = level_valid_rows(lvl);
-  assert(VR == static_cast<size_t>(ft.seg));
-  // ---- 维度 / 标签组 / 金额段 (容量断言) ----
-  L.days = static_cast<int>(d1 - d0);
-  L.A = static_cast<int>(es.rs.axis.size());
-  L.seg = ft.seg;
-  L.T = L.days * L.seg;
-  assert(L.A >= 2 && L.A <= factor::stat::kMaxA && "资产轴超 Stat 容量 (kMaxA)");
-  assert(static_cast<long long>(L.T) * L.A < (1LL << 31));
-  assert(spec.holds.size() <= static_cast<size_t>(factor::stat::kMaxHold) && "持有期数超 Stat 标签组容量 (kMaxHold)");
-  assert(spec.amts.size() <= static_cast<size_t>(factor::stat::kMaxCost) && "金额段数超 Stat 成本容量 (kMaxCost)");
-  L.feat_codes = spec.feats;
-  L.hd = factor::stat::Holds{};
-  L.hd.n = static_cast<int>(spec.holds.size());
-  std::copy(spec.holds.begin(), spec.holds.end(), L.hd.h);
-  if (L.hd.n > 0)
-    factor::stat::assert_holds(L.hd, L.seg);
-  L.amts = spec.amts;
-  L.index.clear();
-  const size_t A = static_cast<size_t>(L.A), n = L.n(), days = d1 - d0;
-  const size_t nf = spec.feats.size(), H = spec.holds.size(), C = spec.amts.size();
-  // ---- 读计划: 列段 叶 [nf] | ts_valid | cs_valid | close (index) | 标签 [H][K] | 成本 [C][K], 全部 Col::ref(es.pool);
-  //      叶按所在 (池, 层) 投影到网格行, 其余是标签库网格层本层列 (同行) ----
-  std::vector<ColRef> cols;
-  const auto add = [&](const Col &c) {
-    cols.push_back(c.ref(es.pool));
-    return cols.size() - 1;
-  };
-  for (const std::string &f : spec.feats) {
-    const FeatCol *c = ft.find(f);
-    assert(c && c->allowed);
-    add(*c);
-  }
-  const size_t ts_i = add(ft.ts), cs_i = add(ft.cs);
-  const size_t close_i = spec.index ? add(ft.ohlc[3]) : SIZE_MAX;
-  assert(cols[ts_i].pool == es.rs.main && "门控 / 标签 / 成本 / OHLC 在标签库");
-  const size_t lab_i = cols.size();
-  for (const int h : spec.holds)
-    for (const Col &c : leg_of(ft.labels, h).leg)
-      add(c);
-  const size_t cost_i = cols.size();
-  for (const int a : spec.amts)
-    for (const Col &c : leg_of(ft.costs, a).leg)
-      add(c);
+  assert(level_valid_rows(factor_level(ft.seg).lvl) == static_cast<size_t>(ft.seg));
+  Shape s;
+  s.days = static_cast<int>(d1 - d0);
+  s.A = static_cast<int>(es.rs.axis.size());
+  s.seg = ft.seg;
+  s.T = s.days * s.seg;
+  assert(s.A >= 2 && s.A <= factor::stat::kMaxA && "资产轴超 Stat 容量 (kMaxA)");
+  assert(static_cast<long long>(s.T) * s.A < (1LL << 31));
+  return s;
+}
+
+// 逐天并行读骨架 (load_x / load_y 同一份): cols → 一张读计划 (同 (池, 层) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
+// on_day(view, day, d, tid) 散进平面 (view(c, t) = 平面列 c 在网格行 t 的源行视图). 每天 prog.publish(1). false = 取消 / 库判废
+template <class OnDay>
+bool read_days(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, std::vector<ColRef> cols,
+               misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog, OnDay &&on_day) {
   const size_t n_cols = cols.size();
-  const ReadPlan plan = analysis::read_plan(*ft.feature, lvl, analysis::Rows::AsOf, /*carry=*/true, std::move(cols));
+  assert(n_cols > 0);
+  const ReadPlan plan = analysis::read_plan(*ft.feature, factor_level(ft.seg).lvl, analysis::Rows::AsOf, /*carry=*/true, std::move(cols));
   std::vector<std::pair<uint32_t, uint32_t>> at(n_cols); // 平面列 → (源, 源内值列)
   for (size_t si = 0; si < plan.srcs.size(); ++si)
     for (size_t k = 0; k < plan.srcs[si].slot.size(); ++k)
       at[plan.srcs[si].slot[k]] = {static_cast<uint32_t>(si), static_cast<uint32_t>(k)};
   const Readers rd = es.rs.readers(lr.ptr);
-  // 平面列 c 在网格行 t 的源行视图 (v nullptr = 无源); 格 a ← ids[a] (nullptr = 同轴; kAbsent = 资产不在该库)
-  struct View {
-    const feature_storage_t *v = nullptr, *g = nullptr;
-    const uint32_t *ids = nullptr;
-    L2::ValidType vt = L2::ValidType::ALL;
-  };
-  const auto view = [&](const IoSlot &io, size_t c, size_t t) {
-    const auto [si, k] = at[c];
-    const Source &s = plan.srcs[si];
-    View w;
-    w.ids = rd.ids[s.pool];
-    w.vt = s.cs.vts[k];
-    size_t r = 0;
-    if (const FeatureRead::DayColumns *dc = source_row(s, io.src[si], t, r)) {
-      w.v = col_row(dc, k, r);
-      w.g = s.cs.gated() ? col_row(dc, s.cs.n(), r) : nullptr;
-    }
-    return w;
-  };
-  // 格 a: 有源 → x = 值, g = 同行门控 (不门控 = 1)
-  const auto cell = [](const View &w, size_t a, feature_storage_t &x, float &g) {
-    const uint32_t i = w.ids ? w.ids[a] : static_cast<uint32_t>(a);
-    if (!w.v || i == kAbsent)
-      return false;
-    x = w.v[i];
-    g = w.g ? static_cast<float>(w.g[i]) : 1.f;
-    return true;
-  };
-
-  L.planes.resize(nf);
-  for (factor::check::Plane &p : L.planes)
-    p.resize(n);
-  L.cs.resize(n);
-  const auto alloc = [&](std::vector<LegPlane> &ps, size_t k) {
-    ps.resize(k);
-    for (LegPlane &p : ps) {
-      for (std::vector<uint16_t> &v : p.v)
-        v.assign(n, 0);
-      p.m.assign(n, 0);
-    }
-  };
-  alloc(L.labels, H);
-  alloc(L.costs, C);
-  factor::check::Plane close; // 本行有成交的 close (index), 装完算指数即弃
-  if (spec.index)
-    close.resize(n);
-  // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
-  constexpr float kNoCap = std::numeric_limits<float>::infinity();
-  const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {spec.max_impact, kNoCap};
-  // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (cs.m) ∧ 两腿皆有限 → fp16 位, 其余 0 + 无效
-  // (成本吃不到 = NaN → 无效)
-  const auto fold_legs = [&](const IoSlot &io, size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row) {
-    for (size_t k = 0; k < out.size(); ++k) {
-      View w[K];
-      feature_storage_t top[K];
-      for (size_t l = 0; l < K; ++l) {
-        w[l] = view(io, base + K * k + l, t);
-        top[l] = static_cast<feature_storage_t>(cap[l]);
-      }
-      LegPlane &p = out[k];
-      for (size_t a = 0; a < A; ++a) {
-        feature_storage_t x[K] = {};
-        float g;
-        bool ok = L.cs.m[row + a];
-        for (size_t l = 0; l < K; ++l)
-          ok = ok && cell(w[l], a, x[l], g) && fmeta::finite(x[l]);
-        for (size_t l = 0; l < K; ++l)
-          p.v[l][row + a] = ok ? std::bit_cast<uint16_t>(static_cast<float>(x[l]) > cap[l] ? top[l] : x[l]) : 0;
-        p.m[row + a] = ok;
-      }
-    }
-  };
-
-  const size_t n_threads = static_cast<size_t>(ex.threads());
-  std::vector<IoSlot> slots(n_threads);
+  std::vector<IoSlot> slots(static_cast<size_t>(ex.threads()));
   for (IoSlot &s : slots)
     s.prepare(plan, es.rs.sizes(), n_cols);
-  std::vector<std::vector<uint8_t>> has_data(n_threads, std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
 
-  ex.tasks(static_cast<int>(days), [&](int di, int ti) {
+  ex.tasks(static_cast<int>(d1 - d0), [&](int di, int ti) {
     if (cancel.load(std::memory_order_relaxed))
       return;
     const size_t d = static_cast<size_t>(di), tid = static_cast<size_t>(ti);
@@ -324,6 +264,136 @@ bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &
       load_source(rd, plan.srcs[si], day, plan.srcs[si].cs.io, io.src[si]);
     if (lr.stale())
       return;
+    const auto view = [&](size_t c, size_t t) {
+      const auto [si, k] = at[c];
+      const Source &s = plan.srcs[si];
+      View w;
+      w.ids = rd.ids[s.pool];
+      w.vt = s.cs.vts[k];
+      size_t r = 0;
+      if (const FeatureRead::DayColumns *dc = source_row(s, io.src[si], t, r)) {
+        w.v = col_row(dc, k, r);
+        w.g = s.cs.gated() ? col_row(dc, s.cs.n(), r) : nullptr;
+      }
+      return w;
+    };
+    on_day(view, day, d, tid);
+    prog.publish(1);
+  });
+  return !cancel.load(std::memory_order_relaxed) && !lr.stale();
+}
+
+} // namespace
+
+bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const XSpec &spec, XPlanes &X,
+            misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+  TraceN("FactorsLoadX");
+  X = XPlanes{};
+  X.sh = shape_of(ft, es, d0, d1);
+  X.codes = spec.codes;
+  const size_t A = static_cast<size_t>(X.sh.A), n = X.sh.n(), VR = static_cast<size_t>(ft.seg), nf = spec.codes.size();
+  // ---- 列段 叶 [nf], 各按所在 (池, 层) 投影到网格行 ----
+  std::vector<ColRef> cols;
+  for (const std::string &f : spec.codes) {
+    const FeatCol *c = ft.x.find(f);
+    assert(c && c->allowed);
+    cols.push_back(c->ref(es.pool));
+  }
+  X.v.resize(nf);
+  for (factor::check::Plane &p : X.v)
+    p.resize(n);
+  return read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
+    feature_storage_t x;
+    float g;
+    for (size_t t = 0; t < VR; ++t) {
+      const size_t row = (d * VR + t) * A;
+      for (size_t i = 0; i < nf; ++i) {
+        const View w = view(i, t);
+        float *v = X.v[i].v.data() + row;
+        uint8_t *m = X.v[i].m.data() + row;
+        for (size_t a = 0; a < A; ++a) {
+          const bool ok = cell(w, a, x, g) && fmeta::keep(g, w.vt, x);
+          v[a] = ok ? static_cast<float>(x) : 0.f;
+          m[a] = ok;
+        }
+      }
+    }
+  });
+}
+
+bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec, YPlanes &Y,
+            misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+  TraceN("FactorsLoadY");
+  constexpr size_t K = factor::stat::kLegs;
+  assert((spec.ad.n == 0 || spec.max_impact > 0.f) && "装成本要封顶 (Config::max_impact)");
+  Y = YPlanes{};
+  Y.sh = shape_of(ft, es, d0, d1);
+  Y.hd = spec.hd;
+  Y.ad = spec.ad;
+  factor::stat::assert_holds(Y.hd, Y.sh.seg);
+  const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
+  const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
+  // ---- 列段 ts_valid | cs_valid | close (index) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
+  std::vector<ColRef> cols;
+  const auto add = [&](const Col &c) {
+    cols.push_back(c.ref(es.pool));
+    return cols.size() - 1;
+  };
+  const size_t ts_i = add(ft.y.ts), cs_i = add(ft.y.cs);
+  const size_t close_i = spec.index ? add(ft.y.ohlc[3]) : SIZE_MAX;
+  assert(cols[ts_i].pool == es.rs.main && "门控 / 标签 / 成本 / OHLC 在标签库");
+  const size_t lab_i = cols.size();
+  for (size_t i = 0; i < H; ++i)
+    for (const Col &c : leg_of(ft.y.labels, Y.hd.h[i]).leg)
+      add(c);
+  const size_t cost_i = cols.size();
+  for (size_t c = 0; c < C; ++c)
+    for (const Col &l : leg_of(ft.y.costs, Y.ad.a[c]).leg)
+      add(l);
+
+  Y.gate.assign(n, 0);
+  const auto alloc = [&](std::vector<LegPlane> &ps, size_t k) {
+    ps.resize(k);
+    for (LegPlane &p : ps) {
+      for (std::vector<uint16_t> &v : p.v)
+        v.assign(n, 0);
+      p.m.assign(n, 0);
+    }
+  };
+  alloc(Y.labels, H);
+  alloc(Y.costs, C);
+  factor::check::Plane close; // 本行有成交的 close (index), 装完算指数即弃
+  if (spec.index)
+    close.resize(n);
+  // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
+  constexpr float kNoCap = std::numeric_limits<float>::infinity();
+  const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {spec.max_impact, kNoCap};
+  std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
+
+  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
+    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (gate) ∧ 两腿皆有限 → fp16 位, 其余 0 + 无效
+    // (成本吃不到 = NaN → 无效)
+    const auto fold_legs = [&](size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row) {
+      for (size_t k = 0; k < out.size(); ++k) {
+        View w[K];
+        feature_storage_t top[K];
+        for (size_t l = 0; l < K; ++l) {
+          w[l] = view(base + K * k + l, t);
+          top[l] = static_cast<feature_storage_t>(cap[l]);
+        }
+        LegPlane &p = out[k];
+        for (size_t a = 0; a < A; ++a) {
+          feature_storage_t x[K] = {};
+          float g;
+          bool ok = Y.gate[row + a];
+          for (size_t l = 0; l < K; ++l)
+            ok = ok && cell(w[l], a, x[l], g) && fmeta::finite(x[l]);
+          for (size_t l = 0; l < K; ++l)
+            p.v[l][row + a] = ok ? std::bit_cast<uint16_t>(static_cast<float>(x[l]) > cap[l] ? top[l] : x[l]) : 0;
+          p.m[row + a] = ok;
+        }
+      }
+    };
     // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
     // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
     // 子池 (Bar 标签层): 再与当日成员相与, 池外格同样不进截面
@@ -332,7 +402,7 @@ bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &
     std::vector<uint8_t> &has = has_data[tid];
     std::fill(has.begin(), has.end(), static_cast<uint8_t>(0));
     for (size_t t = 0; t < VR; ++t) {
-      const View wt = view(io, ts_i, t);
+      const View wt = view(ts_i, t);
       for (size_t a = 0; a < A; ++a)
         has[a] |= cell(wt, a, x, g) && fmeta::data_valid(static_cast<float>(x));
     }
@@ -343,24 +413,11 @@ bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &
     }
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      const View wt = view(io, ts_i, t), wc = view(io, cs_i, t);
-      for (size_t i = 0; i < nf; ++i) {
-        const View w = view(io, i, t);
-        float *v = L.planes[i].v.data() + row;
-        uint8_t *m = L.planes[i].m.data() + row;
-        for (size_t a = 0; a < A; ++a) {
-          const bool ok = cell(w, a, x, g) && fmeta::keep(g, w.vt, x);
-          v[a] = ok ? static_cast<float>(x) : 0.f;
-          m[a] = ok;
-        }
-      }
-      for (size_t a = 0; a < A; ++a) {
-        const float c = cell(wc, a, x, g) ? static_cast<float>(x) : 0.f;
-        L.cs.v[row + a] = c;
-        L.cs.m[row + a] = fmeta::data_valid(c) && has[a];
-      }
+      const View wt = view(ts_i, t), wc = view(cs_i, t);
+      for (size_t a = 0; a < A; ++a)
+        Y.gate[row + a] = cell(wc, a, x, g) && fmeta::data_valid(static_cast<float>(x)) && has[a];
       if (spec.index) { // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限
-        const View wl = view(io, close_i, t);
+        const View wl = view(close_i, t);
         for (size_t a = 0; a < A; ++a) {
           feature_storage_t c, s;
           const bool ok = cell(wl, a, c, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, c);
@@ -368,29 +425,95 @@ bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &
           close.m[row + a] = ok;
         }
       }
-      fold_legs(io, lab_i, lab_cap, L.labels, t, row);
-      fold_legs(io, cost_i, cost_cap, L.costs, t, row);
+      fold_legs(lab_i, lab_cap, Y.labels, t, row);
+      fold_legs(cost_i, cost_cap, Y.costs, t, row);
     }
-    prog.publish(1);
   });
-  if (cancel.load(std::memory_order_relaxed) || lr.stale())
+  if (!read)
     return false;
   if (spec.index)
-    pool_index(ex, close, L.cs.m.data(), L.T, L.A, L.index);
+    pool_index(ex, close, Y.gate.data(), Y.sh.T, Y.sh.A, Y.index);
+  long long on = 0;
+  for (const uint8_t g : Y.gate)
+    on += g != 0;
+  Y.n_full = static_cast<double>(on) / static_cast<double>(Y.sh.T) / factor::stat::kGroups;
+  assert(Y.n_full > 0.0 && "池内无有效资产");
   return true;
 }
 
-std::vector<const factor::check::Plane *> leaf_planes(const Loaded &L, size_t nf) {
-  assert(nf <= L.planes.size());
-  std::vector<const factor::check::Plane *> in(nf);
-  for (size_t i = 0; i < nf; ++i)
-    in[i] = &L.planes[i];
+factor::stat::Labels labels_of(const YPlanes &y) {
+  assert(y.hd.n > 0 && y.labels.size() == static_cast<size_t>(y.hd.n) && "标签未装");
+  factor::stat::Labels out;
+  out.hd = y.hd;
+  out.cap = y.n_full;
+  for (int h = 0; h < y.hd.n; ++h)
+    out.l[h] = label_of(y.labels[static_cast<size_t>(h)], nullptr);
+  return out;
+}
+
+std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec) {
+  return std::to_string(ft.seg) + "|" + es.key() + "|" + std::to_string(d0) + "-" + std::to_string(d1) + "|" + spec.key();
+}
+
+bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec,
+              misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+  assert(d0 < d1 && d1 <= es.dates.size());
+  const std::string key = scope_key(ft, es, d0, d1, spec);
+  const auto first = es.dates.begin() + static_cast<long>(d0), last = es.dates.begin() + static_cast<long>(d1);
+  if (c.key == key && std::equal(c.dates.begin(), c.dates.end(), first, last))
+    return true;
+  c.reset();
+  prog.begin(Phase::Loading, d1 - d0);
+  if (!load_y(ft, es, lr, d0, d1, spec, c.y, ex, cancel, prog)) {
+    c.reset();
+    return false;
+  }
+  c.key = key;
+  c.dates.assign(first, last);
+  c.d0 = d0, c.d1 = d1;
+  c.x.sh = c.y.sh;
+  return true;
+}
+
+bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const std::vector<std::string> &codes,
+              bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+  assert(!c.key.empty() && "先 ensure_y");
+  if (retain)
+    for (size_t i = c.x.codes.size(); i-- > 0;)
+      if (std::find(codes.begin(), codes.end(), c.x.codes[i]) == codes.end()) {
+        c.x.codes.erase(c.x.codes.begin() + static_cast<long>(i));
+        c.x.v.erase(c.x.v.begin() + static_cast<long>(i));
+      }
+  XSpec miss;
+  for (const std::string &code : codes)
+    if (!c.x.find(code))
+      miss.codes.push_back(code);
+  if (miss.codes.empty())
+    return true;
+  prog.begin(Phase::Loading, c.d1 - c.d0);
+  XPlanes add;
+  if (!load_x(ft, es, lr, c.d0, c.d1, miss, add, ex, cancel, prog))
+    return false;
+  assert(add.sh == c.y.sh);
+  for (size_t i = 0; i < add.codes.size(); ++i) {
+    c.x.codes.push_back(std::move(add.codes[i]));
+    c.x.v.push_back(std::move(add.v[i]));
+  }
+  return true;
+}
+
+std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes) {
+  std::vector<const factor::check::Plane *> in(codes.size());
+  for (size_t i = 0; i < codes.size(); ++i) {
+    in[i] = c.x.find(codes[i]);
+    assert(in[i] && "叶未装 (ensure_x)");
+  }
   return in;
 }
 
 // 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
 // (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判
-void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err) {
+void check_leaf_domains(const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in, std::string &err) {
   const factor::DagNode &nd = d.nodes[static_cast<size_t>(node)];
   if (nd.op < 0 || nd.fu.n > 0) // 融合节点只装逐点 TS 算子, 无严格域元
     return;
@@ -400,14 +523,14 @@ void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::st
     const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
     if (g.op >= 0 || !factor::dom_strict(o.in[s]))
       continue;
-    const factor::check::Plane &p = L.planes[static_cast<size_t>(g.feat)];
+    const factor::check::Plane &p = *in[static_cast<size_t>(g.feat)];
     for (size_t i = 0; i < p.v.size(); ++i) {
       if (!p.m[i] || factor::expr::dom_holds(o.in[s], p.v[i]))
         continue;
       char buf[64];
       std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(p.v[i]));
       err = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " +
-            L.feat_codes[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
+            d.feats[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
       return;
     }
   }
@@ -466,66 +589,36 @@ float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m
   return static_cast<float>(100.0 * s / static_cast<double>(nr));
 }
 
-double n_full_of(const Loaded &L) {
-  const uint8_t *g = L.cs.m.data();
-  long long on = 0;
-  for (size_t k = 0, n = L.n(); k < n; ++k)
-    on += g[k] != 0;
-  const double nf = static_cast<double>(on) / static_cast<double>(L.T) / factor::stat::kGroups;
-  assert(nf > 0.0 && "池内无有效资产");
-  return nf;
-}
-
-void prep_labels(misc::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::Workspace &w, LabelsHost &out) {
-  const size_t H = static_cast<size_t>(L.hd.n);
-  assert(H > 0 && L.labels.size() == H && "标签未装 (LoadSpec::holds 空)");
-  out.ry.assign(H, std::vector<uint16_t>(L.n()));
-  out.L = labels_raw(L);
-  for (size_t h = 0; h < H; ++h) {
-    factor::cpu::stat::prep_label(ex, out.L.l[h], L.span(), out.ry[h].data(), w);
-    out.L.l[h].ry = out.ry[h].data();
-  }
-}
-
-factor::stat::Labels labels_raw(const Loaded &L) {
-  assert(L.hd.n > 0 && L.labels.size() == static_cast<size_t>(L.hd.n) && "标签未装 (LoadSpec::holds 空)");
-  factor::stat::Labels out;
-  out.hd = L.hd;
-  out.cap = n_full_of(L);
-  for (int h = 0; h < L.hd.n; ++h)
-    out.l[h] = label_of(L.labels[static_cast<size_t>(h)], nullptr);
-  return out;
-}
-
-void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, factor::cpu::stat::Workspace &w, std::vector<CostTier> &out) {
-  const int C = static_cast<int>(L.amts.size()), H = L.hd.n;
-  assert(lc && L.costs.size() == static_cast<size_t>(C));
+void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const YPlanes &y, factor::cpu::stat::Workspace &w, std::vector<CostTier> &out) {
+  const int C = y.ad.n, H = y.hd.n;
+  assert(lc && y.costs.size() == static_cast<size_t>(C));
   out.assign(static_cast<size_t>(C), CostTier{});
   if (C == 0)
     return;
   std::vector<factor::stat::Cost> cost(static_cast<size_t>(C));
   for (int c = 0; c < C; ++c)
-    cost[static_cast<size_t>(c)] = cost_of(L.costs[static_cast<size_t>(c)]);
+    cost[static_cast<size_t>(c)] = cost_of(y.costs[static_cast<size_t>(c)]);
   std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [c][hi]
   std::vector<long long> nx(static_cast<size_t>(1 + C));              // [0 = 有秩格数, 1 + c = 有秩 ∧ 成本 c 有效]
-  factor::cpu::stat::cost_rows(ex, lc, L.span(), L.hd, cost.data(), C, n_full_of(L), w, acc.data(), nx.data());
+  factor::cpu::stat::cost_rows(ex, lc, y.sh.span(), y.hd, cost.data(), C, y.n_full, w, acc.data(), nx.data());
   for (int c = 0; c < C; ++c) {
     CostTier &tier = out[static_cast<size_t>(c)];
-    tier.amt = L.amts[static_cast<size_t>(c)];
+    tier.amt = y.ad.a[c];
     for (int i = 0; i < H; ++i)
       tier.acc[i] = acc[static_cast<size_t>(c) * H + i];
     tier.cover = nx[0] ? static_cast<float>(static_cast<double>(nx[static_cast<size_t>(1 + c)]) / static_cast<double>(nx[0])) : 0.f;
   }
 }
 
-void finish_root(misc::exec::ForkJoin &ex, const Loaded &L, const RootRaw &r, factor::cpu::stat::Workspace &w, RootOut &o) {
+void finish_root(misc::exec::ForkJoin &ex, const YPlanes &y, const RootRaw &r, factor::cpu::stat::Workspace &w, EvalStat &st, XDist &xd) {
   assert(r.m && r.rx && r.lc && r.acc && r.x.v && r.x.m);
-  const uint8_t *gate = L.cs.m.data();
-  o.valid_pct = valid_pct_of(r.m, gate, L.n());
-  o.rank_pct = rank_pct_of(ex, r.rx, r.m, gate, L.T, L.A);
-  factor::stat::finish_all(r.acc, L.hd, L.seg, o.hold);
-  x_dist(ex, r.x.v, r.x.m, r.rx, L.T, L.A, o.xd);
-  cost_tiers(ex, r.lc, L, w, o.costs);
+  const uint8_t *gate = y.gate.data();
+  st.valid_pct = valid_pct_of(r.m, gate, y.sh.n());
+  st.rank_pct = rank_pct_of(ex, r.rx, r.m, gate, y.sh.T, y.sh.A);
+  st.n_hold = y.hd.n;
+  factor::stat::finish_all(r.acc, y.hd, y.sh.seg, st.hold);
+  x_dist(ex, r.x.v, r.x.m, r.rx, y.sh.T, y.sh.A, xd);
+  cost_tiers(ex, r.lc, y, w, st.costs);
 }
 
 void x_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, XDist &o) {

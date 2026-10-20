@@ -17,6 +17,7 @@
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     leg_codes     rx → 腿码 lc[T][A] (契约【换手成本】)
 //     cost_rows     lc × C 个金额段 → CostAcc[C][H] + cover[1 + C]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
+//     StatSession   stat_open (标签 prep_label + 工作区, 一次) / stat_eval (run + leg_codes, 逐因子): 与 gpu::stat_open / stat_eval 同序
 //     Search/Cpu.hpp 对每个候选走 rank_x + accum_rows, 不另写流程.
 //   r16(x) 平面 rx / 腿码 lc 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H] / cover[tid][1 + C])
 //   由调用方持有, ensure 幂等 → 稳态零分配; 搜索每 worker 一份, 交互一份常驻.
@@ -203,6 +204,40 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &h
     for (int tid = 0; tid < nt; ++tid)
       cov[j] += w.ccov[static_cast<size_t>(tid) * pc + j];
   }
+}
+
+// -----------------------------------------------------------------------------
+// 常驻会话 (与 gpu::StatSession 同名同参序, GpuRun.hpp): 一个作用域多因子 —— open 一次 (标签 rank 预处理 + 工作区), 逐因子 eval
+// -----------------------------------------------------------------------------
+
+struct StatSession {
+  Span s;                                // 整张量 (t0_abs = t_lo = 0)
+  Labels L;                              // 两腿 / 掩码指调用方的宿主标签 (须活过会话), ry 指下面
+  std::vector<std::vector<uint16_t>> ry; // [hd.n][T·A]
+  Workspace w;                           // ensure 到 (A, hd.n, C, 线程数); 宿主收尾 (cost_rows) 共用
+};
+// L = 宿主标签 (ry 不看, 同 gpu::stat_open); C = 金额段数 (w 给 cost_rows 用; 不算成本给 0)
+template <class Exec>
+inline void stat_open(Exec &ex, StatSession &ss, int T, int A, int seg, const Labels &L, int C) {
+  ss.s = Span{T, A, geo_of(seg)};
+  factor::stat::assert_span(ss.s);
+  factor::stat::assert_labels(L, seg, false);
+  ss.L = L;
+  ss.w.ensure(A, L.hd.n, C, ex.threads());
+  ss.ry.resize(static_cast<size_t>(L.hd.n));
+  for (int i = 0; i < L.hd.n; ++i) {
+    std::vector<uint16_t> &ry = ss.ry[static_cast<size_t>(i)];
+    ry.resize(ss.s.n());
+    prep_label(ex, L.l[i], ss.s, ry.data(), ss.w);
+    ss.L.l[i].ry = ry.data();
+  }
+}
+// 一个因子 (同 gpu::stat_eval 序; 一级 Row 走 sink 而不是 rows): run → rx (调用方持有) + acc[hd.n]; lc 非空再出腿码
+template <class Exec, class Sink>
+inline void stat_eval(Exec &ex, StatSession &ss, Plane x, const uint8_t *g, Frame f, Accum *acc, const Sink &sink, uint8_t *lc, uint16_t *rx) {
+  run(ex, x, g, f, ss.s, ss.L, rx, ss.w, acc, sink);
+  if (lc)
+    leg_codes(ex, rx, ss.s, lc);
 }
 
 } // namespace factor::cpu::stat

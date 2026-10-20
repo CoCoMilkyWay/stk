@@ -67,6 +67,8 @@ struct SharedData;
 
 namespace GUI::Factors {
 
+struct ScopeCache; // FactorsLoad.hpp
+
 // ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 网格层 / 标签档 / 因子子目录 ----
 //   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层, 因子文件在 <config.factor_dir>/<池>/<name>/.
 //   标签库 (门控 ts / cs_valid + 标签 + 成本 + OHLC, 恒取网格层本层列, 同行): tier = Lob → 该 Lob 池 (盘口特征 + 冲击成本);
@@ -123,17 +125,25 @@ struct LegCol {
 };
 const LegCol &leg_of(const std::vector<LegCol> &cols, int key); // key 不在 → assert
 std::vector<int> keys_of(const std::vector<LegCol> &cols);      // 全部 key (同序)
-// 叶 = 标签档及 Bar 档 (Lob 标签层才有 lob.*) 不细于网格的各层全部列; 门控 / 标签 / 成本 / OHLC = 标签档网格层本层列
+// X ↔ Y 两侧 (FactorsLoad 同一对: XSpec / YSpec, XPlanes / YPlanes, load_x / load_y):
+//   X = 因子输入叶 = 标签档及 Bar 档 (Lob 标签层才有 lob.*) 不细于网格的各层全部列, 随因子变
+//   Y = 门控 / 标签 / 成本 / OHLC = 标签档网格层本层列, 只随作用域变
+struct XCols {
+  std::vector<FeatCol> leaves; // 全部叶 (可选与不可选)
+  const FeatCol *find(std::string_view code) const;
+};
+struct YCols {
+  Col ts;                     // ts_valid (当日有成交)
+  Col cs;                     // cs_valid (标签 + 截面门控平面)
+  Col ohlc[4];                // open high low close (K 线 / close 给池等权指数): lob_<x> / <x>_<n>min / <x>_day
+  std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
+  std::vector<LegCol> costs;  // 按 key 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 标签无)
+};
 struct FeatureTable {
   int seg = 0;                      // 因子层 (factor_level(seg))
   const Feature *feature = nullptr; // 元数据 (读计划 analysis::read_plan; SharedData 常驻)
-  std::vector<FeatCol> cols;        // 全部叶 (可选与不可选)
-  Col ts;                           // ts_valid (当日有成交)
-  Col cs;                           // cs_valid (标签 + 截面门控平面)
-  Col ohlc[4];                      // open high low close (K 线 / close 给池等权指数): lob_<x> / <x>_<n>min / <x>_day
-  std::vector<LegCol> labels;       // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
-  std::vector<LegCol> costs;        // 按 key 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 标签无)
-  const FeatCol *find(std::string_view code) const;
+  XCols x;
+  YCols y;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER)
   // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调
   bool check_grid(const factor::expr::Expr &e, std::string &err) const;
@@ -198,11 +208,32 @@ struct MiniPdf {
   float y[kMiniPdfPts] = {};
   bool has() const { return hi > lo; }
 };
+// 一个根的评估结果 (Run 行 / Inspect 结果同一份; FactorsLoad finish_root 直填 valid% / rank% / hold / costs, scope / eval_ms 归调用方)
+struct EvalStat {
+  StatScope scope;                       // stat 的作用域
+  double eval_ms = 0;                    // 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
+  float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsLoad valid_pct_of / rank_pct_of)
+  int n_hold = 0;
+  factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
+  std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序, 每金额段 [n_hold] CostAcc (Inspect 净线从它算)
+  const factor::stat::HoldStat *find_hold(int hold_m) const {
+    for (int j = 0; j < n_hold; ++j)
+      if (hold[j].hold == hold_m)
+        return &hold[j];
+    return nullptr;
+  }
+  const CostTier *find_cost(int amt) const {
+    for (const CostTier &c : costs)
+      if (c.amt == amt)
+        return &c;
+    return nullptr;
+  }
+};
 // 行身份 (view_file / dup_of): "<file>#<widx>"
 inline std::string row_key(std::string_view file, int widx) { return std::string(file) + "#" + std::to_string(widx); }
 // 一行 = 一个因子文件的一个权重 (weights[widx]); 文件级问题 (BROKEN / 模板未搜索) 的文件只出一行 widx = −1, 无可评估表达式.
 // 文件级字段 (file / name_* / expr_raw / tmpl / note / kind) 同文件各行相同
-struct FactorRow {
+struct FactorRow : EvalStat {
   std::string file;    // 文件名 (不含目录) = 因子 (父) 身份 (edit_file / Search / 删除)
   int widx = -1;       // weights 下标; −1 = 文件级行
   int hold_src = 0;    // 该权重搜索时的持有期 (0 = 手填: 文件 expr 本身具体且无 weights, 视作唯一权重)
@@ -219,33 +250,15 @@ struct FactorRow {
   std::string error;  // 非空 = BROKEN (文件格式 / 表达式 / 该权重 / 组 id 数据), 文件原样留着
   std::string dup_of; // 非空 = 与该行 (key) 同 hold 同一具体规范串
   int n_ops = 0, n_feats = 0, n_slots = 0;
-  RowStatus status = RowStatus::Pending; // Done = 本轮算过 (evaluate) 或本轮不算 (只扫描)
-  bool has_stat = false;                 // hold[][] 有内容 (本轮算的或文件载入的)
-  bool stat_from_file = false;           // stat 来自文件 (非本进程算的)
-  StatScope scope;                       // stat 的作用域
-  double eval_ms = 0;                    // time 列: 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
-  float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsLoad valid_pct_of / rank_pct_of)
-  int n_hold = 0;
-  factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
-  std::vector<CostTier> costs;                         // [amt] = FeatureTable::costs 序, 每金额段 [n_hold] CostAcc (Inspect 净线从它算)
-  MiniPdf ic_pdf[factor::stat::kMaxHold];              // [hold] 逐行 rIC (ok 行) 分布, 与 Inspect 左下左半同一组样本
-  MiniPdf x_pdf;                                       // 根输入值分布 (截尾, 与 Inspect 左下右半同一份 x_dist; 与持有期无关)
-  const factor::stat::HoldStat *find_hold(int hold_m) const {
-    for (int j = 0; j < n_hold; ++j)
-      if (hold[j].hold == hold_m)
-        return &hold[j];
-    return nullptr;
-  }
+  RowStatus status = RowStatus::Pending;  // Done = 本轮算过 (evaluate) 或本轮不算 (只扫描)
+  bool has_stat = false;                  // hold[][] 有内容 (本轮算的或文件载入的)
+  bool stat_from_file = false;            // stat 来自文件 (非本进程算的); EvalStat::eval_ms = time 列
+  MiniPdf ic_pdf[factor::stat::kMaxHold]; // [hold] 逐行 rIC (ok 行) 分布, 与 Inspect 左下左半同一组样本
+  MiniPdf x_pdf;                          // 根输入值分布 (截尾, 与 Inspect 左下右半同一份 x_dist; 与持有期无关)
   const MiniPdf *find_ic_pdf(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)
         return &ic_pdf[j];
-    return nullptr;
-  }
-  const CostTier *find_cost(int amt) const {
-    for (const CostTier &c : costs)
-      if (c.amt == amt)
-        return &c;
     return nullptr;
   }
 };
@@ -279,8 +292,10 @@ private:
   bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
   bool evaluate(const FactorsRequest &req, misc::exec::ForkJoin &ex); // false = 取消
-  // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 一次装载 + 共享 DAG. false = 取消
-  bool evaluate_file(const FactorsRequest &req, misc::exec::ForkJoin &ex, LibReaders &lr, const std::vector<size_t> &idx,
+  // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 作用域块补装 + 共享 DAG 走引擎 E
+  // (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). false = 取消
+  template <class E>
+  bool evaluate_file(const FactorsRequest &req, misc::exec::ForkJoin &ex, LibReaders &lr, ScopeCache &sc, E &eng, const std::vector<size_t> &idx,
                      const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames);
 
   std::shared_ptr<const FeatureTable> feats_;
