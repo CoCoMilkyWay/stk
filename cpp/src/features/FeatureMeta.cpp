@@ -15,9 +15,9 @@
 #include "features/Bar/FeatureCategoriesGenerated.hpp"
 #include "features/Lob/FeatureCategoriesGenerated.hpp"
 #include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
-#include "shared/Config.hpp"                       // Config::kAllTierDir (库表 [0])
+#include "shared/Config.hpp"                       // Config::kAllTierDir (池表 [0])
 #include "shared/Feature.hpp"
-#include "shared/FeatureLib.hpp"
+#include "shared/FeaturePool.hpp"
 
 #include <algorithm>
 #include <array>
@@ -181,7 +181,7 @@ const TierMeta &tier_meta(TierId tier) {
 #undef GENERATE_TIER_META
 
 // ============================================================================
-// 库表 (FeatureLib.hpp 声明): [0] = all (Bar 档); 其余 = Bar L_1day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档库 <pool>
+// 池表 (FeaturePool.hpp 声明): [0] = all (Bar 档); 其余 = Bar L_1day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档池 <pool>
 // ============================================================================
 namespace {
 constexpr std::string_view kPoolPrefix = "pool_";
@@ -190,9 +190,9 @@ constexpr bool is_pool(const FeatureMetadata &f) {
 }
 constexpr std::span<const FeatureMetadata> kBarDay = bar::L_1day_meta_detail::TABLE;
 constexpr size_t kPoolCount = std::count_if(kBarDay.begin(), kBarDay.end(), is_pool);
-static_assert(kPoolCount > 0, "Bar 字段表没有票池列 (Node/Bar/CS/Pool 的 pool_*)");
-constexpr std::array<LibDef, 1 + kPoolCount> kLibs = [] {
-  std::array<LibDef, 1 + kPoolCount> out{};
+static_assert(kPoolCount > 0, "Bar 字段表没有池列 (Node/Bar/CS/Pool 的 pool_*)");
+constexpr std::array<PoolDef, 1 + kPoolCount> kPools = [] {
+  std::array<PoolDef, 1 + kPoolCount> out{};
   out[0] = {Config::kAllTierDir, "全市场", TierId::Bar, SIZE_MAX};
   size_t n = 1;
   for (size_t i = 0; i < kBarDay.size(); ++i)
@@ -200,24 +200,24 @@ constexpr std::array<LibDef, 1 + kPoolCount> kLibs = [] {
       out[n++] = {kBarDay[i].code + kPoolPrefix.size(), kBarDay[i].name_cn, TierId::Lob, i};
   return out;
 }();
-static_assert(kLibs.size() <= UINT8_MAX && kLibs[kAllLib].tier == TierId::Bar, "LibId = uint8_t 库表下标, [kAllLib] = all");
+static_assert(kPools.size() <= UINT8_MAX && kPools[kAllPool].tier == TierId::Bar, "PoolId = uint8_t 池表下标, [kAllPool] = all");
 } // namespace
 
-std::span<const LibDef> feature_libs() { return kLibs; }
-size_t lib_count() { return kLibs.size(); }
-TierId lib_tier(LibId lib) { return lib_def(lib).tier; }
+std::span<const PoolDef> feature_pools() { return kPools; }
+size_t pool_count() { return kPools.size(); }
+TierId pool_tier(PoolId pool) { return pool_def(pool).tier; }
 
-const LibDef &lib_def(LibId lib) {
-  assert(lib < kLibs.size() && "库下标越界");
-  return kLibs[lib];
+const PoolDef &pool_def(PoolId pool) {
+  assert(pool < kPools.size() && "池下标越界");
+  return kPools[pool];
 }
-const LibDef &lib_def(std::string_view name) { return kLibs[lib_id(name)]; }
-LibId lib_id(std::string_view name) {
-  for (size_t i = 0; i < kLibs.size(); ++i)
-    if (name == kLibs[i].name)
-      return static_cast<LibId>(i);
-  assert(false && "不是库名 (all / Bar 库 pool_<pool> 列)");
-  return kAllLib;
+const PoolDef &pool_def(std::string_view name) { return kPools[pool_id(name)]; }
+PoolId pool_id(std::string_view name) {
+  for (size_t i = 0; i < kPools.size(); ++i)
+    if (name == kPools[i].name)
+      return static_cast<PoolId>(i);
+  assert(false && "不是池名 (all / Bar 池 pool_<pool> 列)");
+  return kAllPool;
 }
 
 namespace feature_meta {

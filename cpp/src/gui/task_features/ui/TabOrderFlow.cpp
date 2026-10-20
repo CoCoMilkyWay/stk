@@ -9,7 +9,7 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)
 #include "gui/util/AssetFilter.hpp"            // 筛选控件 (与 TABLE 共用)
-#include "shared/FeatureLib.hpp"               // lib_def (legend 库名)
+#include "shared/FeaturePool.hpp"              // pool_def (legend 池名)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -76,8 +76,8 @@ static void FormatDateShort(char *buf, size_t size, misc::Ymd date) {
   std::snprintf(buf, size, "%02d/%02d/%02d", date / 10000 % 100, date / 100 % 100, date % 100);
 }
 
-// 选中特征列 (跨库跨层): 多选集合 (ColRef 序) 中不细于图网格 min_level 的列, 截断 MAX_FEATURES.
-// 各列读自己的库, 资产不在该库 / 该库缺这天 = 无点
+// 选中特征列 (跨池跨层): 多选集合 (ColRef 序) 中不细于图网格 min_level 的列, 截断 MAX_FEATURES.
+// 各列读自己的池, 资产不在该池 / 该池缺这天 = 无点
 static std::vector<ColRef> CollectFeats(const Feature::Selection &sel, size_t min_level) {
   std::vector<ColRef> v;
   for (const ColRef &c : sel.picked) {
@@ -114,9 +114,9 @@ static void CollectFeatCats(SharedData &data, const std::vector<ColRef> &cols, s
   }
 }
 
-// legend = "中文名 (cat2) 库 层"; cat2 = 有效 Cat2 (探测 or 人工覆盖, 无预览 = "?"); 同列不同库靠库名区分
+// legend = "中文名 (cat2) 池 层"; cat2 = 有效 Cat2 (探测 or 人工覆盖, 无预览 = "?"); 同列不同池靠池名区分
 static const char *FeatName(const Feature &feature, const ColRef &c, const FeatCat &cat, char *buf, size_t size) {
-  std::snprintf(buf, size, "%s (%s) %s %s", feature.meta(c).name_cn, cat.cat2, lib_def(c.lib).name, level_name(c.level));
+  std::snprintf(buf, size, "%s (%s) %s %s", feature.meta(c).name_cn, cat.cat2, pool_def(c.pool).name, level_name(c.level));
   return buf;
 }
 
@@ -235,7 +235,7 @@ static void SetupOverlayAxes(const OrderFlow::Overlay<V> &ov, const std::vector<
   if (feat_center)
     DrawFeatZeroLine();
 }
-// 画线 (legend = 中文名 (cat2) 库 层): 颜色按线下标取 (不用 ImPlot 的 item 序自动分配: 两图 item 序不同,
+// 画线 (legend = 中文名 (cat2) 池 层): 颜色按线下标取 (不用 ImPlot 的 item 序自动分配: 两图 item 序不同,
 // 同一列才能两图同色); price 类共用主图 Y1, NoFit 保证主图自动 / 双击缩放口径不被特征撑大
 template <class V>
 static void PlotOverlay(const Feature &feature, const OrderFlow::Overlay<V> &ov, const std::vector<FeatCat> &cats, const size_t *counts,
@@ -571,7 +571,7 @@ static void RenderSecPlot(SharedData &data) {
       ImPlot::PlotStairs("Mid Price", dp.plot.x.data(), dp.plot.mid_price.data(), n, ImPlotItemFlags_NoFit);
       ImPlot::PopStyleColor();
 
-      // 分钟 VWAP 阶梯 (L_1min 特征列 vwap; 库轴外 / 未算特征的资产无此线)
+      // 分钟 VWAP 阶梯 (L_1min 特征列 vwap; 池轴外 / 未算特征的资产无此线)
       if (!dp.plot.vwap_x.empty()) {
         ImPlot::SetNextLineStyle(ImVec4(0.9f, 0.5f, 1.0f, 0.9f), 1.5f);
         ImPlot::PlotStairs("VWAP", dp.plot.vwap_x.data(), dp.plot.vwap_y.data(), static_cast<int>(dp.plot.vwap_x.size()), ImPlotItemFlags_NoFit);
@@ -588,7 +588,7 @@ static void RenderSecPlot(SharedData &data) {
     }
 
     // ------------------------------------------------------------------
-    // 特征 overlay (多选; 轴按 Cat2 分流, legend = 中文名 (cat2) 库 层)
+    // 特征 overlay (多选; 轴按 Cat2 分流, legend = 中文名 (cat2) 池 层)
     // ------------------------------------------------------------------
     PlotOverlay(data.feature, ov, cats, counts.data(), ov.n());
 
@@ -694,14 +694,14 @@ static void RenderMinPlot(SharedData &data, float height) {
     }
 
     // ------------------------------------------------------------------
-    // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名 (cat2) 库 层)
+    // K线 (已发布前缀) + 特征 overlay (多选, legend = 中文名 (cat2) 池 层)
     // ------------------------------------------------------------------
 
     // 缺失日竖条: 已发布前缀里该资产无 data_valid 分钟的 day_idx → 淡黄色竖 stripe
     // (alpha 0.1) 打底, 画在 K 线之前以免遮挡. 缓存键 (kline_gen, pub_days), 流式
     // 追加 / 换资产 / 重扫日期都使 gen 变 → 自动失效. 二分判定每日有无 K 线点.
-    // 只在单库日轴时画 (多库叠加 = 并集日轴, 各库自己画自己有的日, 缺日不标)
-    if (ready && pub_days > 0 && std::has_single_bit(ui.kline_libs)) {
+    // 只在单池日轴时画 (多池叠加 = 并集日轴, 各池自己画自己有的日, 缺日不标)
+    if (ready && pub_days > 0 && std::has_single_bit(ui.kline_pools)) {
       const uint32_t cur_gen = ui.kline_gen & 0xFFFF;
       if (ui.min_missing_days_gen != cur_gen || ui.min_missing_days_pub_days != pub_days) {
         ui.min_missing_days_gen = cur_gen;
@@ -819,7 +819,7 @@ static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s 通过筛选的资产数 / 总数\n"
                         "• 状态取自前一交易日 L_1day 行 (ST / 上市 / 行业)\n"
-                        "• 候选范围 = 主库轴 (无选中特征 = all, 否则 = 选中特征所在库)\n"
+                        "• 候选范围 = 主池轴 (无选中特征 = all, 否则 = 选中特征所在池)\n"
                         "• 日轴首日无前一交易日状态, 不列入",
                         misc::dash(slot.date).c_str());
   } else {
@@ -1004,42 +1004,42 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  // 主库 = 选中列所在的唯一库 (无选中 = all): 图1 VWAP / 候选轴; 选中跨库 → 不画, 提示重选 (先于消费 needs_rescan)
-  LibMask picked_libs = 0;
+  // 主池 = 选中列所在的唯一池 (无选中 = all): 图1 VWAP / 候选轴; 选中跨池 → 不画, 提示重选 (先于消费 needs_rescan)
+  PoolMask picked_pools = 0;
   for (const ColRef &c : sel.picked)
-    picked_libs |= lib_bit(c.lib);
-  if (std::popcount(picked_libs) > 1) {
+    picked_pools |= pool_bit(c.pool);
+  if (std::popcount(picked_pools) > 1) {
     std::string names;
-    for (const LibId l : lib_ids())
-      if (picked_libs & lib_bit(l))
-        names += (names.empty() ? "" : " / ") + std::string(lib_def(l).name);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "选中特征跨多个库 (%s), 请在 Feature 页只选一个库的特征", names.c_str());
+    for (const PoolId l : pool_ids())
+      if (picked_pools & pool_bit(l))
+        names += (names.empty() ? "" : " / ") + std::string(pool_def(l).name);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "选中特征跨多个池 (%s), 请在 Feature 页只选一个池的特征", names.c_str());
     return;
   }
-  const LibId main_lib = picked_libs ? static_cast<LibId>(std::countr_zero(picked_libs)) : kAllLib;
-  if (ui.main_lib != main_lib) { // 主库变了: 图1 / Pick 重发
-    ui.main_lib = main_lib;
+  const PoolId main_pool = picked_pools ? static_cast<PoolId>(std::countr_zero(picked_pools)) : kAllPool;
+  if (ui.main_pool != main_pool) { // 主池变了: 图1 / Pick 重发
+    ui.main_pool = main_pool;
     ui.depth_date = 0;
     of.pick.req_date = 0;
   }
   const bool rescan = of.needs_rescan.exchange(false, std::memory_order_relaxed);
 
   // 两图同一组选中列 (跨层跨档), 各截到图的网格 (图2 = L_1min, 图1 = L_sec; 细于网格的列不进), 各点尾部对齐.
-  // 图2 日轴 = 库集 (all 日 K 底图 + overlay 各库) 落盘日的并集: 库集变了 = 日轴变了 → 重扫
+  // 图2 日轴 = 池集 (all 日 K 底图 + overlay 各池) 落盘日的并集: 池集变了 = 日轴变了 → 重扫
   const std::vector<ColRef> kline_feats = CollectFeats(sel, L_1min), depth_feats = CollectFeats(sel, L_sec);
-  LibMask kline_libs = lib_bit(kAllLib);
+  PoolMask kline_pools = pool_bit(kAllPool);
   for (const ColRef &c : kline_feats)
-    kline_libs |= lib_bit(c.lib);
-  const bool relib = ui.kline_libs != kline_libs;
-  if (rescan || relib || ui.kline_asset != asset_idx || ui.kline_feats != kline_feats) {
+    kline_pools |= pool_bit(c.pool);
+  const bool repool = ui.kline_pools != kline_pools;
+  if (rescan || repool || ui.kline_asset != asset_idx || ui.kline_feats != kline_feats) {
     ui.kline_asset = asset_idx;
     ui.kline_feats = kline_feats;
-    ui.kline_libs = kline_libs;
+    ui.kline_pools = kline_pools;
     ++ui.kline_gen;
     ui.min_last_pub_days = SIZE_MAX; // 换代: 重置轴管理
     // dates 会被重扫 (或首次建) → 期间不可读; 粘到新代落定 (重扫请求可能被后一请求覆盖, 后者须照带)
-    ui.kline_rescan_pending |= rescan || relib || ui.min_x_max <= 0.0;
-    if (rescan) { // 库重算 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
+    ui.kline_rescan_pending |= rescan || repool || ui.min_x_max <= 0.0;
+    if (rescan) { // 池重算 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
       ui.depth_date = 0;
       of.pick.req_date = 0;
     }
@@ -1075,7 +1075,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.depth_asset = asset_idx;
     ui.depth_feats = depth_feats;
     ++ui.depth_gen;
-    service->RequestDepth(data, ui.depth_gen, main_lib, ui.min_anchor_date, asset_idx, depth_feats);
+    service->RequestDepth(data, ui.depth_gen, main_pool, ui.min_anchor_date, asset_idx, depth_feats);
   }
 
   // ==========================================================================
@@ -1099,7 +1099,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   if (ui.min_anchor_date && !ui.kline_rescan_pending && pick.req_date != ui.min_anchor_date) {
     pick.req_date = ui.min_anchor_date;
     ++pick.gen;
-    service->RequestPick(data, pick.gen, main_lib, ui.min_anchor_date);
+    service->RequestPick(data, pick.gen, main_pool, ui.min_anchor_date);
   }
 
   // 候选重建 (槽换代 或 筛选条件变)

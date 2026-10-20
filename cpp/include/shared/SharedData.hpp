@@ -21,7 +21,7 @@ struct SharedData {
   Asset asset;
   AssetInfo assetinfo;
   fund::Panel fund_panel; // 日频 PIT 基本面数据源 (Phase 2 前 build, TS worker 只读共享)
-  pool::Panel pool_panel; // 票池逐日成员 (Lob 库规划时由 Bar 库 build, TS worker 只读共享 → Meta 的 cs_valid)
+  pool::Panel pool_panel; // 池逐日成员 (Lob 池规划时由 Bar 池 build, TS worker 只读共享 → Meta 的 cs_valid)
   Feature feature;
   Preview preview;
   OrderFlow orderflow;

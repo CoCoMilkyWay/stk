@@ -15,7 +15,7 @@
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
 #include "shared/Analysis.hpp"
-#include "shared/FeatureLib.hpp"
+#include "shared/FeaturePool.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -80,10 +80,10 @@ struct TaskFeaturesState {
 
   // 流式分析三件 (Dist / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
   bool streams_started = false;
-  // Auto-compute tracking (Dist / Transform 共用): 主特征 (库/层/列) 变了即重算 (无论当前在哪个 tab)
+  // Auto-compute tracking (Dist / Transform 共用): 主特征 (池/层/列) 变了即重算 (无论当前在哪个 tab)
   std::optional<ColRef> prev_primary;
-  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库 / 日期区间变了自动重算 (快照做变更检测)
-  std::string preview_lib;
+  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 池 / 日期区间变了自动重算 (快照做变更检测)
+  std::string preview_pool;
   misc::Ymd preview_start = 0, preview_end = 0;
   // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
   Phase prev_preview_phase = Phase::Idle;
@@ -203,8 +203,8 @@ TaskHandle CreateFeaturesTask() {
       state->tab_enabled[k] = !disable[k];
 
     // 预览每跑完一轮 (done 增长) 就把特征表 (元数据 + 账目/值域) 落地
-    // <当前库目录>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
-    // done 回退 (新请求 begin 清零) 不落, 避免写出空表; Done 那一帧补一次 (空库 0 轮也有文件)
+    // <当前池目录>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
+    // done 回退 (新请求 begin 清零) 不落, 避免写出空表; Done 那一帧补一次 (空池 0 轮也有文件)
     {
       const Phase pv_phase = data.preview.phase.load(std::memory_order_acquire);
       const size_t pv_done = data.preview.done.load(std::memory_order_acquire);
@@ -253,9 +253,9 @@ TaskHandle CreateFeaturesTask() {
 
     case TAB_COMPUTE: { // 全量特征计算
       const bool running = state->compute_service && state->compute_service->busy();
-      // 任一 reader (含 Factors 页) 判废删了某个库 → 提示重算 (该库 compute 开跑即撤销登记; 哪个库见 Compute 页库表)
-      const auto lib_stale = [&](const LibDef &d) { return FeatureRead::dir_stale(data.config.FeatureLibDir(d.name)); };
-      if (!running && std::ranges::any_of(feature_libs(), lib_stale))
+      // 任一 reader (含 Factors 页) 判废删了某个池 → 提示重算 (该池 compute 开跑即撤销登记; 哪个池见 Compute 页池表)
+      const auto pool_stale = [&](const PoolDef &d) { return FeatureRead::dir_stale(data.config.FeaturePoolDir(d.name)); };
+      if (!running && std::ranges::any_of(feature_pools(), pool_stale))
         return {TaskStatus::Kind::Warn, "stale"};
       if (!state->compute_service)
         return {};
@@ -312,16 +312,16 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // OrderFlow 主库随请求 (TabOrderFlow 按选中列定); 库重算后整体重建 + 重扫
+    // OrderFlow 主池随请求 (TabOrderFlow 按选中列定); 池重算后整体重建 + 重扫
     const auto renew_orderflow = [&] {
       state->orderflow_service = std::make_unique<Features::OrderFlowService>();
       data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
     };
 
-    // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (库 A 轴要它).
+    // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (池 A 轴要它).
     // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
     // Preview 起手即自动构建 (全 L_1min 特征轮训抽样, 不依赖选中); Dist / Transform 等选中特征
-    const std::string lib = data.feature.selection.lib();
+    const std::string pool = data.feature.selection.pool();
     if (!state->streams_started && state->inputs_ready && !data.asset.items.empty()) {
       state->dist_service->Start(data);
       state->transform_service->Start(data);
@@ -331,19 +331,19 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service->Start(data);
       state->preview_service->RequestCompute(data);
       state->streams_started = true;
-      state->preview_lib = lib;
+      state->preview_pool = pool;
       state->preview_start = data.config.start_date;
       state->preview_end = data.config.end_date;
     } else if (state->streams_started &&
-               (state->preview_lib != lib ||
+               (state->preview_pool != pool ||
                 state->preview_start != data.config.start_date ||
                 state->preview_end != data.config.end_date)) {
-      // 库 / 日期区间变了 → 预览重算 (特征库目录/文件列序都跟着库走)
-      state->preview_lib = lib;
+      // 池 / 日期区间变了 → 预览重算 (特征库目录/文件列序都跟着池走)
+      state->preview_pool = pool;
       state->preview_start = data.config.start_date;
       state->preview_end = data.config.end_date;
       state->preview_service->RequestCompute(data);
-      // 相关矩阵也跟着库 / 区间走: 清掉请求快照, TabCorr 下一帧自发重算
+      // 相关矩阵也跟着池 / 区间走: 清掉请求快照, TabCorr 下一帧自发重算
       Features::InvalidateCorrRequests(state->corr_ui_state);
     }
 
@@ -353,7 +353,7 @@ TaskHandle CreateFeaturesTask() {
       auto &sel = data.feature.selection;
       const ColRef *feat = sel.primary();
 
-      // Detect change (选中列绑定库: 切库不改既有选中, 换库即换列)
+      // Detect change (选中列绑定池: 切池不改既有选中, 换池即换列)
       const bool feature_changed = feat ? (!state->prev_primary || *state->prev_primary != *feat) : state->prev_primary.has_value();
 
       if (feature_changed && feat) {
@@ -376,12 +376,12 @@ TaskHandle CreateFeaturesTask() {
       const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
       if ((state->prev_compute_phase == Phase::Running) &&
           (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
-        // Compute just finished - OrderFlow 按新清单重建 + 重扫; 库表重扫; 预览重抽 (新库落盘)
+        // Compute just finished - OrderFlow 按新清单重建 + 重扫; 池表重扫; 预览重抽 (新池落盘)
         renew_orderflow();
-        state->compute_state.libs_dirty = true;
+        state->compute_state.pools_dirty = true;
         if (state->streams_started) {
           state->preview_service->RequestCompute(data);
-          Features::InvalidateCorrRequests(state->corr_ui_state); // 新库落盘: 相关矩阵同样作废
+          Features::InvalidateCorrRequests(state->corr_ui_state); // 新池落盘: 相关矩阵同样作废
         }
       }
       state->prev_compute_phase = current_phase;

@@ -8,14 +8,14 @@ Preview &PreviewService::target(SharedData &data) { return data.preview; }
 void PreviewService::RequestCompute(SharedData &data) {
   // 预览覆盖当前档每层全部非 META 特征 (各层网格 = 该层), 不看选中
   const TierId tier = data.feature.selection.tier;
-  const LibId lib = data.feature.selection.cur_lib();
+  const PoolId pool = data.feature.selection.cur_pool();
   const auto &meta = data.feature.meta(tier);
 
   Req req;
-  // price 笼: 涨跌停两列只在 all 库 (票池库经旁读)
-  const std::vector<ColRef> cage = {data.feature.ref(kAllLib, L_1day, "lim_dn"), data.feature.ref(kAllLib, L_1day, "lim_up")};
+  // price 笼: 涨跌停两列只在 all 池 (池经旁读)
+  const std::vector<ColRef> cage = {data.feature.ref(kAllPool, L_1day, "lim_dn"), data.feature.ref(kAllPool, L_1day, "lim_up")};
   req.spec.cage = {cage[0].col, cage[1].col};
-  req.scope = analysis::read_scope(data.config, lib, cage);
+  req.scope = analysis::read_scope(data.config, pool, cage);
   if (req.scope.months.empty())
     return;
   req.spec.tier = tier;
@@ -26,7 +26,7 @@ void PreviewService::RequestCompute(SharedData &data) {
     for (size_t i = 0; i < meta_list.size(); ++i) {
       if (meta_list[i].data_type == FeatureDataType::META)
         continue; // 元数据列不预览 (含 ts_valid 自身)
-      cols.push_back({lib, static_cast<uint8_t>(l), static_cast<uint16_t>(i)});
+      cols.push_back({pool, static_cast<uint8_t>(l), static_cast<uint16_t>(i)});
     }
     if (!cols.empty())
       req.spec.plans[l] = analysis::read_plan(data.feature, l, analysis::Rows::AsOf, true, std::move(cols));

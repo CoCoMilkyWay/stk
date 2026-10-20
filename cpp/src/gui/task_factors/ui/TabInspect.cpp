@@ -92,7 +92,7 @@ int date_formatter(double v, char *buf, int size, void *ud) {
 constexpr ImVec4 kColBottom(0.00f, 0.20f, 0.70f, 1.f), kColTop(0.85f, 0.15f, 0.10f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
 constexpr ImVec4 kColNeutral(0.50f, 0.50f, 0.52f, 1.f);                   // 中段
 constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);                         // 光标 (左上图交易日 / 右上 K 线 / 资产轴), 对仗 OrderFlow 的锚
-constexpr ImVec4 kColIndex(0.55f, 0.47f, 0.15f, 0.40f);                   // 右上 K 线叠加的 库等权指数线 (视野首根重锚; 背景, 深淡)
+constexpr ImVec4 kColIndex(0.55f, 0.47f, 0.15f, 0.40f);                   // 右上 K 线叠加的 池等权指数线 (视野首根重锚; 背景, 深淡)
 constexpr ImVec4 kColRef(0.15f, 0.45f, 0.48f, 0.40f);                     // 右上 K 线叠加的滚动重锚指数线 (背景, 深淡)
 constexpr float kTailLayerWeight[kTails] = {1.0f, 0.75f, 0.5f};           // 尾部分层线宽 (组线 1.2): 越极端越细
 constexpr float kTailLsWeight[kTails] = {2.0f, 1.5f, 1.0f};               // 尾部 LS 线宽 (LS 2.5): 同上
@@ -220,8 +220,8 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   d.xd = res.xdist;
   d.days = days;
   d.dates = res.dates;
-  assert(res.lib_index.size() == static_cast<size_t>(T));
-  d.lib_index = res.lib_index;
+  assert(res.pool_index.size() == static_cast<size_t>(T));
+  d.pool_index = res.pool_index;
   d.x_day.resize(static_cast<size_t>(days) + 1);
   for (int i = 0; i <= days; ++i)
     d.x_day[static_cast<size_t>(i)] = static_cast<float>(i);
@@ -481,7 +481,7 @@ void asset_label(const FactorsUIContext &ctx, uint32_t gid, char *buf, size_t n)
   }
 }
 
-// 资产轴派生: 光标日 (day = 交易日下标) 各资产的日内均 R (有效刻平均) → 降序 (左 = G20 侧; 并列按库轴序); 当日无一有效刻的资产不列
+// 资产轴派生: 光标日 (day = 交易日下标) 各资产的日内均 R (有效刻平均) → 降序 (左 = G20 侧; 并列按池轴序); 当日无一有效刻的资产不列
 void derive_axis(const InspectResult &res, int day, std::vector<int> &order, std::vector<uint32_t> &gid, std::vector<float> &r) {
   const int A = res.scope.A, S = res.seg;
   assert(day >= 0 && day < res.scope.days && res.pl.rx.size() == static_cast<size_t>(res.scope.T) * A);
@@ -505,12 +505,12 @@ void derive_axis(const InspectResult &res, int day, std::vector<int> &order, std
   gid.resize(order.size());
   r.resize(order.size());
   for (size_t i = 0; i < order.size(); ++i) {
-    gid[i] = res.read_scope.lib().axis.global(static_cast<size_t>(order[i]));
+    gid[i] = res.read_scope.pool().axis.global(static_cast<size_t>(order[i]));
     r[i] = mean[static_cast<size_t>(order[i])];
   }
 }
 
-// 选中资产 (库轴 sub) 的 R(t) [T]: col = 池内秩 (rx), col_all = 不看池的秩 (rx_all; 池外段靠它显示)
+// 选中资产 (池轴 sub) 的 R(t) [T]: col = 池内秩 (rx), col_all = 不看池的秩 (rx_all; 池外段靠它显示)
 void derive_col(const InspectResult &res, int sub, std::vector<float> &col, std::vector<float> &col_all) {
   const int A = res.scope.A, T = res.scope.T;
   assert(sub >= 0 && sub < A && res.pl.rx.size() == static_cast<size_t>(T) * A && res.pl.rx_all.size() == res.pl.rx.size());
@@ -603,15 +603,15 @@ int minute_formatter(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%06d %02d:%02d", dates[static_cast<size_t>(d)] % 1000000, ct.hour, ct.minute);
 }
 
-// 滚动重锚指数线: line[t] = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))). P = 选中资产 close 前值填充到逐行格 (无成交行持平), I = 库等权指数
+// 滚动重锚指数线: line[t] = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))). P = 选中资产 close 前值填充到逐行格 (无成交行持平), I = 池等权指数
 // 等权指数 [T]. 基准取 L 分钟前的 EMA_L: 当前价不进基准 (近期偏移不被吸收), 基准本身平滑 (过去的高频波动不干扰当前); 指数偏移再 EMA_S 压指数自身
 // 的分钟噪声 (个股侧 EMA_L(P) 已平滑, 不再压). 线 = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移.
 // 跨日连续算 (EMA 不按日重置); pandas ewm(span, adjust=False) 口径: α = 2/(span+1), 首个样本起算. 只用已发布前缀 [0, pub_pts), 个股在
 // [首根有效蜡烛, pub_days·S) 有值; 线定义域 [t0, t1) = [首根 + L, pub_days·S) (基准要 L 分钟前有值). 全量重算 (T ≤ 几万, 微秒级)
 // L = 1 交易日 = seg 行
 constexpr int kRefSmooth = 10; // S (行)
-void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub_pts, const std::vector<float> &lib_idx, int &t0, int &t1, std::vector<float> &line) {
-  const size_t T = lib_idx.size(), seg = static_cast<size_t>(seg_rows), L = seg;
+void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub_pts, const std::vector<float> &pool_idx, int &t0, int &t1, std::vector<float> &line) {
+  const size_t T = pool_idx.size(), seg = static_cast<size_t>(seg_rows), L = seg;
   assert(pub_days * seg <= T); // 只按 pub word 读前缀, 不碰 vector 元数据 (worker 在 push_back)
   line.assign(T, 0.f);
   t0 = t1 = 0;
@@ -624,10 +624,10 @@ void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub
   t0 = static_cast<int>(tf + L), t1 = static_cast<int>(te);
   const double aL = 2.0 / (static_cast<double>(L) + 1), aS = 2.0 / (kRefSmooth + 1);
   std::vector<double> ema_i(te), ema_p(te);
-  ema_i[0] = static_cast<double>(lib_idx[0]);
+  ema_i[0] = static_cast<double>(pool_idx[0]);
   for (size_t t = 1; t < te; ++t) {
-    assert(lib_idx[t] > 0.f);
-    ema_i[t] = aL * lib_idx[t] + (1.0 - aL) * ema_i[t - 1];
+    assert(pool_idx[t] > 0.f);
+    ema_i[t] = aL * pool_idx[t] + (1.0 - aL) * ema_i[t - 1];
   }
   size_t k = 0;
   double p = ks.close[0];
@@ -638,7 +638,7 @@ void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub
   }
   double sd = 0.0;
   for (size_t t = L; t < te; ++t) { // 指数偏移从 t = L 起平滑 (不依赖个股), 线从 t0 起
-    const double dev = std::log(static_cast<double>(lib_idx[t]) / ema_i[t - L]);
+    const double dev = std::log(static_cast<double>(pool_idx[t]) / ema_i[t - L]);
     sd = t == L ? dev : aS * dev + (1.0 - aS) * sd;
     if (t >= tf + L)
       line[t] = static_cast<float>(ema_p[t - L] * std::exp(sd));
@@ -650,9 +650,9 @@ void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub
 // 视野: x 域 = 日数 × seg, 只在日数变时复位 (换资产不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长时按**当前 x 窗口内**的已发布蜡烛重定
 // (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 换资产后窗口里的新价位自然贴合, 之后不打扰.
 // 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × seg): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
-// 染淡色竖带. 叠加 库等权指数 lib_idx [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚, 不参与 fit; 再叠加滚动重锚指数线 (derive_ref, 键变才重算,
+// 染淡色竖带. 叠加 池等权指数 pool_idx [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚, 不参与 fit; 再叠加滚动重锚指数线 (derive_ref, 键变才重算,
 // 不参与 fit). 悬停报最近一根的时刻 / OHLC / R / 两条指数线 / 个股相对滚动重锚线的偏移
-void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<misc::Ymd> &dates, const std::vector<float> &lib_idx, int &cursor_day,
+void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<misc::Ymd> &dates, const std::vector<float> &pool_idx, int &cursor_day,
                 const char *title, const ImVec2 &size) {
   uint32_t pub_gen;
   size_t pub_days = 0, pub_pts = 0;
@@ -663,7 +663,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
   const int S = ui.kline_seg, days = ui.kline_days;
   assert(static_cast<size_t>(days) == dates.size() && "K 线代与派生日期表不同源");
   const KlineAxis ax{&dates, S};
-  assert(lib_idx.size() == static_cast<size_t>(days) * S);
+  assert(pool_idx.size() == static_cast<size_t>(days) * S);
   const double x_dom = std::max(1, days) * static_cast<double>(S);
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
     return;
@@ -709,15 +709,15 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
     const ImPlotRect lim = ImPlot::GetPlotLimits();
     const int ia = static_cast<int>(std::lower_bound(xs, xs + n, lim.X.Min) - xs);
     if (ia < n && xs[ia] <= lim.X.Max) {
-      uk = ks.close[static_cast<size_t>(ia)] / static_cast<double>(lib_idx[static_cast<size_t>(xs[ia])]);
+      uk = ks.close[static_cast<size_t>(ia)] / static_cast<double>(pool_idx[static_cast<size_t>(xs[ia])]);
       struct Rebased {
         const float *v;
         long long t0;
         double k;
       };
-      const long long t0 = std::clamp(static_cast<long long>(std::floor(lim.X.Min)), 0LL, static_cast<long long>(lib_idx.size()));
-      const long long t1 = std::clamp(static_cast<long long>(std::ceil(lim.X.Max)) + 1, t0, static_cast<long long>(lib_idx.size()));
-      Rebased rb{lib_idx.data(), t0, uk};
+      const long long t0 = std::clamp(static_cast<long long>(std::floor(lim.X.Min)), 0LL, static_cast<long long>(pool_idx.size()));
+      const long long t1 = std::clamp(static_cast<long long>(std::ceil(lim.X.Max)) + 1, t0, static_cast<long long>(pool_idx.size()));
+      Rebased rb{pool_idx.data(), t0, uk};
       const auto rebased = [](int i, void *ud) {
         const Rebased &r = *static_cast<const Rebased *>(ud);
         const long long t = r.t0 + i;
@@ -725,13 +725,13 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
       };
       ImPlot::SetNextLineStyle(kColIndex, 1.5f);
       ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认隐藏 (带全区间历史), 点图例显; 重锚系数 uk 照算 (悬停仍报)
-      ImPlot::PlotLineG("库等权指数", rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
+      ImPlot::PlotLineG("池等权指数", rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
     }
   }
-  // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (lib_idx 已换)
+  // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (pool_idx 已换)
   if (ready && (ui.ref_gen != ui.kline_gen || ui.ref_pts != pub_pts || ui.ref_epoch != ui.derived_epoch)) {
     ui.ref_gen = ui.kline_gen, ui.ref_pts = pub_pts, ui.ref_epoch = ui.derived_epoch;
-    derive_ref(ks, S, pub_days, pub_pts, lib_idx, ui.ref_t0, ui.ref_t1, ui.ref_line);
+    derive_ref(ks, S, pub_days, pub_pts, pool_idx, ui.ref_t0, ui.ref_t1, ui.ref_line);
   }
   const bool ref_ok = ready && ui.ref_gen == ui.kline_gen && ui.ref_t1 > ui.ref_t0;
   if (ref_ok) {
@@ -787,7 +787,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
       minute_formatter(xs[i], when, sizeof(when), const_cast<KlineAxis *>(&ax));
       int ul = 0;
       if (uk > 0.0)
-        ul += std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n库等权指数 %.2f (按视野首根重锚)", lib_idx[t] * uk);
+        ul += std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n池等权指数 %.2f (按视野首根重锚)", pool_idx[t] * uk);
       if (ref_ok && static_cast<int>(t) >= ui.ref_t0 && static_cast<int>(t) < ui.ref_t1) {
         const double ref = ui.ref_line[t];
         std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n指数 滚动重锚 %.2f  个股相对偏移 %+.2f%%", ref, (ks.close[u] / ref - 1.0) * 100.0);
@@ -1415,7 +1415,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   std::vector<factor::stat::HoldStat> res_holds; // 毛二级 [n_hold]
   std::vector<CostTier> res_costs;               // [C] 组均冲击 (期限结构净线现算)
   bool res_has = false;
-  int k_sub = -1;                   // 右上选中资产 (结果库轴下标); -1 = 无
+  int k_sub = -1;                   // 右上选中资产 (结果池轴下标); -1 = 无
   std::optional<KlineRequest> kreq; // 本帧要发的 K 线请求 (锁内填, 出锁发)
   {
     std::lock_guard<std::mutex> lock(isvc.mutex);
@@ -1454,8 +1454,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
         ui.ax_epoch = ep, ui.ax_day = day;
         derive_axis(res, day, ui.ax_order, ui.ax_gid, ui.ax_r);
       }
-      const LibAxis &axis = res.read_scope.lib().axis;
-      size_t sub = axis.sub_of(ui.asset_gid); // 未选 / 不在本库轴内 → 光标日 R 最高者 (光标日无池内资产 → 全区间有效刻最多者), 结果一到就有 K 线
+      const PoolAxis &axis = res.read_scope.pool().axis;
+      size_t sub = axis.sub_of(ui.asset_gid); // 未选 / 不在本池轴内 → 光标日 R 最高者 (光标日无池内资产 → 全区间有效刻最多者), 结果一到就有 K 线
       if (sub >= axis.size()) {
         const int pick = !ui.ax_order.empty() ? ui.ax_order.front() : fallback_asset(res);
         if (pick >= 0) {
@@ -1576,7 +1576,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           "    ◦ K 线用不看池的秩淡色显示\n"
           "• 选中沿资产粘住\n"
           "    ◦ 拖光标只换序, K 线不重载\n"
-          "    ◦ 换库轴才重选");
+          "    ◦ 换池轴才重选");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
@@ -1593,7 +1593,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           "    ◦ 自发贴住蜡烛; 蜡烛 − 青线 = 个股相对指数的近期偏移 (悬停报 %%)\n"
           "    ◦ 个股 close 无成交分钟前值填充, 跨日连续算\n"
           "    ◦ 线从首根蜡烛 + L 起有值\n"
-          "• 黄线 = 库等权指数 (默认隐藏)\n"
+          "• 黄线 = 池等权指数 (默认隐藏)\n"
           "    ◦ 每帧按视野内首根蜡烛重锚\n"
           "    ◦ 带着全区间历史, 长视野下与个股渐行渐远",
           ui.kline_seg, kRefSmooth);
@@ -1605,7 +1605,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     char title[160];
     std::snprintf(title, sizeof(title), "分钟 K 线  %s###kline", name);
     const float kh = std::max(60.f, cell.y - ImGui::GetFrameHeight() - strip_h - 2.f * sp_y);
-    plot_kline(ui, ksvc.stream(), ui.der.dates, ui.der.lib_index, ui.cursor_day, title, ImVec2(cell.x, kh));
+    plot_kline(ui, ksvc.stream(), ui.der.dates, ui.der.pool_index, ui.cursor_day, title, ImVec2(cell.x, kh));
     ImGui::EndGroup();
   } else {
     empty_plot("资产 K 线###kline", cell, wait_hint);

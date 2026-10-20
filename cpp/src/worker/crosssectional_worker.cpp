@@ -29,7 +29,7 @@ void cs_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes) {
 
   // Initialize CoreCs (manages buffers and 3-level computation)
   using Core = CoreCs<T>;
-  Core core(store, ctx.libs);
+  Core core(store, ctx.pools);
 
   // Date-first traversal
   for (size_t date_idx = lane; date_idx < total_dates; date_idx += lanes) {

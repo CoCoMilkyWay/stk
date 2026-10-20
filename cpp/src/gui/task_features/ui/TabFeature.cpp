@@ -5,7 +5,7 @@
 #include "gui/util/Sparkline.hpp"          // 迷你图 (Dist / PSD 列)
 #include "misc/format.hpp"                 // misc::fmt_width
 #include "shared/Feature.hpp"
-#include "shared/FeatureLib.hpp"
+#include "shared/FeaturePool.hpp"
 #include "shared/Preview.hpp"
 #include "shared/SharedData.hpp"
 
@@ -907,28 +907,28 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   Feature::Selection &sel = feature.selection;
 
   // ==========================================================================
-  // Section 1: Library + Level (库 = all (Bar 档) / 各票池 (Lob 档); 分析页读所选库, 因子页与本处共用每档当前库)
+  // Section 1: Pool + Level (池 = all (Bar 档) / 各池 (Lob 档); 分析页读所选池, 因子页与本处共用每档当前池)
   // ==========================================================================
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Lib:");
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Pool:");
   ImGui::SameLine();
-  const std::string cur_lib = sel.lib();
+  const std::string cur_pool = sel.pool();
   ImGui::SetNextItemWidth(140);
-  if (ImGui::BeginCombo("##lib", cur_lib.c_str())) {
-    float cn_x = 0.0f; // 中文名列起点 (对齐最长库名)
-    for (const LibDef &d : feature_libs())
+  if (ImGui::BeginCombo("##pool", cur_pool.c_str())) {
+    float cn_x = 0.0f; // 中文名列起点 (对齐最长池名)
+    for (const PoolDef &d : feature_pools())
       cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
     cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
-    for (const LibDef &d : feature_libs()) {
-      const bool selected = cur_lib == d.name;
+    for (const PoolDef &d : feature_pools()) {
+      const bool selected = cur_pool == d.name;
       const bool clicked = ImGui::Selectable(d.name, selected);
       ImGui::SameLine(cn_x);
       ImGui::TextDisabled("%s", d.name_cn);
       if (clicked && !selected) {
         if (d.tier != sel.tier) {
-          sel.clear_filters(); // 换档 = 换字段表: 过滤作废; 选中是 ColRef (带库), 切库保留
+          sel.clear_filters(); // 换档 = 换字段表: 过滤作废; 选中是 ColRef (带池), 切池保留
           sel.tier = d.tier;
         }
-        sel.libs[d.tier] = d.name;
+        sel.pools[d.tier] = d.name;
       }
       if (selected)
         ImGui::SetItemDefaultFocus();
@@ -1259,12 +1259,12 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     }
 
     // Table rows (preview 锁已在上方持有): 行体 lambda, 下面按视野裁剪分两条路提交
-    const LibId view_lib = sel.cur_lib();
+    const PoolId view_pool = sel.cur_pool();
     auto render_row = [&](int idx) {
       const FeatureMetadata &f = features[idx];
 
       // Check if this row is selected
-      const ColRef ref{view_lib, static_cast<uint8_t>(view_level), static_cast<uint16_t>(idx)};
+      const ColRef ref{view_pool, static_cast<uint8_t>(view_level), static_cast<uint16_t>(idx)};
       bool is_selected = sel.picked.contains(ref);
 
       ImGui::TableNextRow();
@@ -1406,7 +1406,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     if (ImGui::IsItemHovered()) {
       ImGui::BeginTooltip();
       for (const ColRef &c : sel.picked)
-        ImGui::Text("%s %s %s", lib_def(c.lib).name, level_name(c.level), feature.meta(c).code);
+        ImGui::Text("%s %s %s", pool_def(c.pool).name, level_name(c.level), feature.meta(c).code);
       ImGui::EndTooltip();
     }
   }
@@ -1426,7 +1426,7 @@ static double sig4(float v) {
 void SaveFeatureTableJson(SharedData &data) {
   using json = nlohmann::json;
   const Feature::Metadata &meta = data.feature.meta();
-  const std::filesystem::path dir = data.config.FeatureLibDir(data.feature.selection.lib());
+  const std::filesystem::path dir = data.config.FeaturePoolDir(data.feature.selection.pool());
 
   const std::filesystem::path path = dir / "features.json";
   std::filesystem::create_directories(path.parent_path());
@@ -1436,7 +1436,7 @@ void SaveFeatureTableJson(SharedData &data) {
     assert(file.is_open() && "features.json: 临时文件打不开");
     file << "{\n";
     file << " \"tier\": " << json(tier_name(meta.tier)).dump() << ",\n";
-    file << " \"lib\": " << json(dir.filename().string()).dump() << ",\n";
+    file << " \"pool\": " << json(dir.filename().string()).dump() << ",\n";
     file << " \"start_date\": " << json(misc::dash(data.config.start_date)).dump() << ",\n";
     file << " \"end_date\": " << json(misc::dash(data.config.end_date)).dump() << ",\n";
     file << " \"preview\": {\"rounds\": " << data.preview.done.load(std::memory_order_relaxed)

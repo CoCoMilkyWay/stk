@@ -81,9 +81,9 @@ struct Config {
   // Auto-sync: check file changes and debounced save
   void AutoSync();
 
-  // 特征库目录按库名分片: <feature_dir>/<lib>. 各库并存, 重算一个不清别人的库; 写读两端唯一的路径入口 (库名见 FeatureLib.hpp)
-  std::string FeatureLibDir(std::string_view lib) const { return feature_dir + "/" + std::string(lib); }
-  // Bar 档 (All: 分钟 K + 基本面, 全市场 A 轴) 的库名; 其余库名 = 票池名 (Lob 档)
+  // 特征库目录按池名分片: <feature_dir>/<pool>. 各池并存, 重算一个不清别人的池; 写读两端唯一的路径入口 (池名见 FeaturePool.hpp)
+  std::string FeaturePoolDir(std::string_view pool) const { return feature_dir + "/" + std::string(pool); }
+  // Bar 档 (All: 分钟 K + 基本面, 全市场 A 轴) 的池名; 其余池名 = 池名 (Lob 档)
   static constexpr const char *kAllTierDir = "all";
 
 private:

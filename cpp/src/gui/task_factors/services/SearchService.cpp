@@ -138,7 +138,7 @@ struct Branch {
 };
 
 enum class Rc : uint8_t { Ok,
-                          Cancel, // 取消 / 库判废 → run 返回 false
+                          Cancel, // 取消 / 池判废 → run 返回 false
                           Abort   // 正常输入问题, message 已填 → run 返回 true
 };
 
@@ -154,19 +154,18 @@ struct SearchService::Flow {
   Flow() : ex(misc::exec::hw()) {}
 };
 
-bool MakeSearchRequest(const SharedData &data, const std::string &lib, int seg, const FactorRow &row, bool gpu, SearchRequest &req) {
+bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  const std::string &pool = lib;
   req.seg = seg;
-  req.factor_dir = factor_dir_of(data, lib, seg);
+  req.factor_dir = factor_dir_of(data, pool, seg);
   req.file = row.file;
   req.tmpl = row.tmpl;
   req.frame = row.frame;
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, lib_id(lib), {});
+  req.scope = analysis::read_scope(data.config, pool_id(pool), {});
   if (req.scope.months.empty())
     return false;
   req.pool = pool;
@@ -200,7 +199,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
-  const int A = static_cast<int>(req.scope.lib().axis.size());
+  const int A = static_cast<int>(req.scope.pool().axis.size());
   assert(req.seg == feats_.seg && "请求层与字段表层不符");
   const int seg = feats_.seg, carry = carry_days(seg);
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
@@ -225,7 +224,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     lg("Search %s  @ %s", req.file.c_str(), ts);
     lg("模板: %s", req.tmpl.c_str());
-    lg("后端 %s, 票池 %s, 区间 %s ~ %s", res.backend.c_str(), req.pool.c_str(), misc::dash(req.start_date).c_str(), misc::dash(req.end_date).c_str());
+    lg("后端 %s, 池 %s, 区间 %s ~ %s", res.backend.c_str(), req.pool.c_str(), misc::dash(req.start_date).c_str(), misc::dash(req.end_date).c_str());
   }
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
   const auto abort_with = [&](std::string msg) {
@@ -324,7 +323,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     publish();
   };
   // ---- 作用域 / 日期 ----
-  FeatureRead reader(req.scope.lib(), &cancel_);
+  FeatureRead reader(req.scope.pool(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty())
     return abort_with("特征库在该区间无数据 (先算特征)");
@@ -399,7 +398,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     begin(Phase::Loading, static_cast<size_t>(day1 - load0));
     if (!load_planes(feats_, reader, cdates, cd.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/false, /*with_index=*/false)) {
       if (reader.stale()) {
-        res.message = "特征库判废 (库轴/字段表与当前不符), 需重算特征";
+        res.message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
         lg("中止: %s", res.message.c_str());
         publish_result();
         return Rc::Abort;

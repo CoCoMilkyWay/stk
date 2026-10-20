@@ -23,18 +23,18 @@ struct TierFeed<lob::Tier> {
   static constexpr const char *kUnit = "单";
 
   SharedData &data;
-  const LibAxis &axis;
+  const PoolAxis &axis;
   std::span<const misc::Ymd> dates;
-  // 帧目录切成 日期 × 库轴 (行 = dates 下标, 列 = 库轴下标), 持有到全部 worker 退出,
+  // 帧目录切成 日期 × 池轴 (行 = dates 下标, 列 = 池轴下标), 持有到全部 worker 退出,
   // 不碰 Asset 上随重扫描换代的那一份; orders.at(date_idx, sub) 直接定址.
   const OrdersCatalog orders;
   std::vector<size_t> weights; // 区间内逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)
 
   TierFeed(const PipelineArgs &args, const StoreRing &)
-      : data(args.data), axis(args.libs[TierId::Lob].axis), dates(args.dates),
+      : data(args.data), axis(args.pools[TierId::Lob].axis), dates(args.dates),
         orders(args.data.asset.orders()->slice(args.dates, axis.ids)), weights(axis.size(), 0) {
-    // 票池逐日成员 (ComputeService 规划本库时 build: 并集 = 本库 A 轴, 逐日成员位 → Meta cs_valid)
-    assert(data.pool_panel.axis().hash == axis.hash && std::ranges::equal(data.pool_panel.dates(), dates) && "票池与本库 A 轴 / 日期轴不符");
+    // 池逐日成员 (ComputeService 规划本池时 build: 并集 = 本池 A 轴, 逐日成员位 → Meta cs_valid)
+    assert(data.pool_panel.axis().hash == axis.hash && std::ranges::equal(data.pool_panel.dates(), dates) && "池与本池 A 轴 / 日期轴不符");
     for (size_t d = 0; d < dates.size(); ++d) {
       const std::span<const FrameRef> row = orders.row(d);
       for (size_t sub = 0; sub < weights.size(); ++sub)

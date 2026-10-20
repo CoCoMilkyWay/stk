@@ -369,7 +369,7 @@ struct Engine {
 
   const PairSums &sums(size_t i, size_t j, size_t k) const { return acc[upper_index(i, j, F) * L + k]; }
 
-  void prepare(const CorrSpec &spec, size_t A_, const PerLib<size_t> &As, const CorrPlan &p) {
+  void prepare(const CorrSpec &spec, size_t A_, const PerPool<size_t> &As, const CorrPlan &p) {
     TraceN("CorrPrepare");
     plan = p;
     F = spec.n();
@@ -405,13 +405,13 @@ struct Engine {
 
   // 抽样段 (洗牌取前 kCorrDays 个, 与 Dist / Preview 同一段序) 逐步流式; 每步末 publish_step() 写快照
   template <class Publish>
-  bool run(const PerLib<const FeatureRead *> &fr, const ReadScope &scope, const CorrSpec &spec,
+  bool run(const PerPool<const FeatureRead *> &fr, const ReadScope &scope, const CorrSpec &spec,
            const CorrPlan &p, const std::atomic<bool> &cancel, Progress &board, Publish &&publish_step) {
     const Readers rd = scope.readers(fr);
     const SegPlan sample = plan_segs(scope, spec.level(), DayOrder::Shuffle, kCorrDays);
     const size_t n_days = sample.size();
     if (n_days == 0)
-      return true; // 库为空: 直接 Done, 快照全空
+      return true; // 池为空: 直接 Done, 快照全空
     board.total.store(n_days, std::memory_order_release);
     prepare(spec, scope.axis.size(), scope.sizes(), p);
 
@@ -549,7 +549,7 @@ void Corr::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool Corr::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Corr::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("CorrBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -609,7 +609,7 @@ void CorrLag::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool CorrLag::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool CorrLag::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("CorrLagBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
@@ -683,7 +683,7 @@ void CorrPair::reset(ReadScope scope, Spec sp) {
   publish();
 }
 
-bool CorrPair::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool CorrPair::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("CorrPairBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;

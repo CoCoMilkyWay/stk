@@ -91,7 +91,7 @@ struct TailSink {
 struct InspectService::Flow {
   misc::exec::ForkJoin ex;
   // S 作用域
-  std::string scope_key; // features_dir | 库轴 hash | 月份表; 空 = 未装载
+  std::string scope_key; // features_dir | 池轴 hash | 月份表; 空 = 未装载
   std::vector<misc::Ymd> dates;
   Loaded L; // planes / feat_codes = 作用域内读过的特征 (只增; 每次评估前把当前 Dag::feats 换到前排); labels (毛) / costs / cs 常驻
   // Y 毛标签 [H]: ry = prep_label 常驻, lab.L 指向 L.labels + ry
@@ -112,9 +112,9 @@ struct InspectService::Flow {
   }
 };
 
-bool MakeInspectRequest(const SharedData &data, const std::string &lib, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
+bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
-  assert(lib_def(lib).tier == factor_level(seg).tier && "库不属该因子层的档");
+  assert(pool_def(pool).tier == factor_level(seg).tier && "池不属该因子层的档");
   req = InspectRequest{};
   req.seg = seg;
   req.file = row.key;
@@ -124,10 +124,10 @@ bool MakeInspectRequest(const SharedData &data, const std::string &lib, int seg,
   req.max_impact = data.config.max_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, lib_id(lib), {});
+  req.scope = analysis::read_scope(data.config, pool_id(pool), {});
   if (req.scope.months.empty())
     return false;
-  req.pool = lib;
+  req.pool = pool;
   req.start_date = data.config.start_date;
   req.end_date = data.config.end_date;
   return true;
@@ -168,21 +168,21 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
   // ---- S: 作用域 (标签 / 成本 / 门控 + 特征缓存) ----
-  FeatureRead reader(req.scope.lib(), &cancel_);
+  FeatureRead reader(req.scope.pool(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty()) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;
   }
-  std::string ckey = std::to_string(req.seg) + "|" + req.scope.lib().dir + "|" + std::to_string(req.scope.lib().axis.hash) + "|cap" + std::to_string(req.max_impact);
+  std::string ckey = std::to_string(req.seg) + "|" + req.scope.pool().dir + "|" + std::to_string(req.scope.pool().axis.hash) + "|cap" + std::to_string(req.max_impact);
   for (const misc::Ym m : req.scope.months)
     ckey += "|" + std::to_string(m);
-  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib().axis.size());
+  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.pool().axis.size());
   begin(Phase::Loading, static_cast<size_t>(days));
   const auto stale_out = [&] {
-    if (reader.stale()) { // 库换了, 缓存的一切不可信
+    if (reader.stale()) { // 池换了, 缓存的一切不可信
       F.reset_scope();
-      publish_message("特征库判废 (库轴/字段表与当前不符), 需重算特征");
+      publish_message("特征库判废 (池轴/字段表与当前不符), 需重算特征");
     }
     return false;
   };
@@ -249,7 +249,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.scope.n_full = F.lab.L.cap;
   res.dates = dates;
   res.read_scope = req.scope;
-  res.lib_index = L.index;
+  res.pool_index = L.index;
   res.n_hold = H;
   res.hd = L.hd;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)

@@ -114,7 +114,7 @@ struct Dist::Runtime {
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
   // 容量准备 (幂等, 尺寸对得上零分配), 返回计算执行器
-  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, const PerLib<size_t> &As, size_t n_months, size_t agg_stride) {
+  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, const PerPool<size_t> &As, size_t n_months, size_t agg_stride) {
     TraceN("DistPrepare"); // 首帧账目: 批平面 + 全资产 sketch + n_threads × 聚合 sketch
     const size_t n_threads = threads_for(n_asset_blocks(A));
     const size_t bs = batch_segs(plan.level), days = bs * seg_days(plan.level);
@@ -156,9 +156,9 @@ void Dist::reset(ReadScope scope, Spec sp) {
   const bool axis_changed = scope_.axis.ids != scope.axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.axis.size(); // A 轴 = 库轴
+  const size_t A = scope_.axis.size(); // A 轴 = 池轴
 
-  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 库 / 区间变了 (槽位含义已变) 才重建
+  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 池 / 区间变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
   init_lines(snap.lines, scope_.axis.ids);
@@ -177,11 +177,11 @@ void Dist::reset(ReadScope scope, Spec sp) {
 // Build (分批流式: 每批 IO → 扫描 → 归约 → 发布, 首帧与总区间长度无关)
 // ============================================================================
 
-bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Dist::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
-  const size_t A = scope_.axis.size(); // 库轴大小 (扫描/抽样预算/分母全按它)
+  const size_t A = scope_.axis.size(); // 池轴大小 (扫描/抽样预算/分母全按它)
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
   const ReadPlan &rp = spec.plan;
   const size_t level = rp.level, rpd = level_valid_rows(level), R = seg_rows(level), BS = batch_segs(level);
@@ -261,7 +261,7 @@ bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> 
 
   const auto compute = [&](const TsPlane &pl, size_t b0, size_t bd) {
     // ------------------------------------------------------------------
-    // Phase 扫描: kAssetBlock 个资产一任务 (a = 库轴下标), 全在锁外, 聚合进本 tid 的 shard
+    // Phase 扫描: kAssetBlock 个资产一任务 (a = 池轴下标), 全在锁外, 聚合进本 tid 的 shard
     // ------------------------------------------------------------------
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       Runtime::Shard &sh = rt.shards[tid];

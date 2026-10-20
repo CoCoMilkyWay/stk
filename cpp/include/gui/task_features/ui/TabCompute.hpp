@@ -18,11 +18,11 @@ namespace GUI::Features {
 // Compute Tab State
 // ============================================================================
 
-// 库状态行 (库清单 + 已落盘日数; 扫盘有成本, 只在进页 / 一轮算完 / Refresh 时重扫)
-struct LibStatus {
+// 池状态行 (池清单 + 已落盘日数; 扫盘有成本, 只在进页 / 一轮算完 / Refresh 时重扫)
+struct PoolStatus {
   std::string name;
   TierId tier = TierId::Lob;
-  bool ready = false; // 有清单 (已建库)
+  bool ready = false; // 有清单 (已建池)
   misc::Ymd first = 0, last = 0;
   size_t assets = 0, days = 0, done = 0; // A 轴 / 日期轴长 / 已落盘日
 };
@@ -45,9 +45,9 @@ struct ComputeState {
   // Trigger for starting compute (set by UI, consumed by TaskFeatures)
   bool trigger_start = false;
 
-  // 库表: all + 各票池 (行序 = all 在前, 票池按字段表序)
-  std::vector<LibStatus> libs;
-  bool libs_dirty = true; // 下一帧重扫
+  // 池表: all + 各池 (行序 = all 在前, 池按字段表序)
+  std::vector<PoolStatus> pools;
+  bool pools_dirty = true; // 下一帧重扫
 };
 
 // ============================================================================

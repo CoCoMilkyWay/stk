@@ -1,11 +1,11 @@
 #pragma once
 
 // =============================================================================
-// Pool (CS) - 票池列: 每行 = "收盘按 PoolKey 调仓"的成员位 (1 = 入池, 0 = 不入; 截面 = cs_valid 在市集)
+// Pool (CS) - 池列: 每行 = "收盘按 PoolKey 调仓"的成员位 (1 = 入池, 0 = 不入; 截面 = cs_valid 在市集)
 // =============================================================================
 //   pool_<pool> = Select{Low,High}400(key_*): 键有限值 (母集内) 中取低端 / 高端前 400, 并列按资产轴序先到先得 (方法见 Method/CS.hpp).
-//   列名 pool_<pool> 的 <pool> = Lob 档库名 (本类每列即一个库, 由 feature_libs 展开, 见 shared/FeatureLib.hpp),
-//   L_1day (收盘行): Lob 档交易日 D 的票池 = 本库 D−1 的 L_1day 行的该列 (shared/Pool.hpp). 全部日频调仓. 加一列即多一个库.
+//   列名 pool_<pool> 的 <pool> = Lob 档池名 (本类每列即一个池, 由 feature_pools 展开, 见 shared/FeaturePool.hpp),
+//   L_1day (收盘行): Lob 档交易日 D 的池 = 本池 D−1 的 L_1day 行的该列 (shared/Pool.hpp). 全部日频调仓. 加一列即多一个池.
 // =============================================================================
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

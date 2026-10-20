@@ -6,7 +6,7 @@
 #include "misc/affinity.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Config.hpp"
-#include "shared/FeatureLib.hpp"
+#include "shared/FeaturePool.hpp"
 
 #include "imgui.h"
 
@@ -16,19 +16,19 @@
 
 namespace GUI::Features {
 
-// 库清单 + 逐日 stat 已落盘 (以档内末层日文件为 commit 标记, 见 FeatureRead::has_date)
-static LibStatus lib_status(const Config &config, std::string_view name) {
-  const FeatureLib lib = load_lib(config, name);
-  LibStatus s{lib.name, lib.tier};
-  if (!lib.ready())
+// 池清单 + 逐日 stat 已落盘 (以档内末层日文件为 commit 标记, 见 FeatureRead::has_date)
+static PoolStatus pool_status(const Config &config, std::string_view name) {
+  const FeaturePool pool = load_pool(config, name);
+  PoolStatus s{pool.name, pool.tier};
+  if (!pool.ready())
     return s;
   s.ready = true;
-  s.first = lib.dates.front();
-  s.last = lib.dates.back();
-  s.assets = lib.axis.size();
-  s.days = lib.dates.size();
-  s.done = static_cast<size_t>(std::count_if(lib.dates.begin(), lib.dates.end(),
-                                             [&](misc::Ymd d) { return FeatureRead::has_date(lib.tier, lib.dir, d); }));
+  s.first = pool.dates.front();
+  s.last = pool.dates.back();
+  s.assets = pool.axis.size();
+  s.days = pool.dates.size();
+  s.done = static_cast<size_t>(std::count_if(pool.dates.begin(), pool.dates.end(),
+                                             [&](misc::Ymd d) { return FeatureRead::has_date(pool.tier, pool.dir, d); }));
   return s;
 }
 
@@ -203,7 +203,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
 
   ImGui::TextWrapped("按照日期, 切分多频率Tensor: {[T, F, A]_L_sec(tick), [T, F, A]_L_1min(minute)}_dayN");
   ImGui::Text("T (Time):    max = 100,000  (100K time indices per day (ms/s))");
-  ImGui::Text("A (Asset):   max = 1,000    (1K assets per library)");
+  ImGui::Text("A (Asset):   max = 1,000    (1K assets per pool)");
   ImGui::Text("F (Feature): max = 1,000    (all feature types combined)");
   ImGui::Text("特征子类型示例: F_TS: (600 时序特征) F_CS (250 截面特征) F_LB (50 标签) F_SH (50 共享中间值) F_META (50 元数据)");
   ImGui::Text("访问模式分析 (优化目标: 最小化总内存访问时间)");
@@ -379,35 +379,35 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::Spacing();
 
   // ========================================================================
-  // Section 4: Libraries (每库一行: 清单 / 落盘进度 / 判废, 各自 Compute)
+  // Section 4: Pools (每池一行: 清单 / 落盘进度 / 判废, 各自 Compute)
   // ========================================================================
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Libraries");
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Pools");
   ImGui::SameLine();
   if (ImGui::SmallButton("Refresh"))
-    state.libs_dirty = true;
+    state.pools_dirty = true;
   ImGui::SameLine();
-  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 票池: 订单簿还原, 回测区间, 成员 = Bar 库 D−1 收盘 pool_* 列 → 先算 all)",
+  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 池: 订单簿还原, 回测区间, 成员 = Bar 池 D−1 收盘 pool_* 列 → 先算 all)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str());
   ImGui::Spacing();
 
-  if (state.libs_dirty && !is_running) {
-    state.libs_dirty = false;
-    state.libs.clear();
-    for (const LibDef &d : feature_libs())
-      state.libs.push_back(lib_status(config, d.name));
+  if (state.pools_dirty && !is_running) {
+    state.pools_dirty = false;
+    state.pools.clear();
+    for (const PoolDef &d : feature_pools())
+      state.pools.push_back(pool_status(config, d.name));
   }
-  // 旁读档的库落盘齐全才放行本档 (票池库的成员来自 Bar 库)
+  // 旁读档的池落盘齐全才放行本档 (池的成员来自 Bar 池)
   PerTier<bool> tier_complete;
   for (const TierId t : TIER_IDS)
-    tier_complete[t] = std::ranges::all_of(state.libs, [&](const LibStatus &s) { return s.tier != t || (s.ready && s.done == s.days); });
+    tier_complete[t] = std::ranges::all_of(state.pools, [&](const PoolStatus &s) { return s.tier != t || (s.ready && s.done == s.days); });
   const auto sides_complete = [&](TierId t) {
     return std::ranges::all_of(TIER_IDS, [&](TierId s) { return !tier_side(t, s) || tier_complete[s]; });
   };
 
-  if (ImGui::BeginTable("Libraries", 7,
+  if (ImGui::BeginTable("Pools", 7,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
-    ImGui::TableSetupColumn("库");
+    ImGui::TableSetupColumn("池");
     ImGui::TableSetupColumn("档");
     ImGui::TableSetupColumn("区间");
     ImGui::TableSetupColumn("资产");
@@ -416,7 +416,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
 
-    for (const LibStatus &s : state.libs) {
+    for (const PoolStatus &s : state.pools) {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("%s", s.name.c_str());
@@ -432,10 +432,10 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       if (s.ready)
         ImGui::Text("%zu / %zu", s.done, s.days);
       ImGui::TableNextColumn();
-      const bool computing = is_running && state.config.lib == s.name;
+      const bool computing = is_running && state.config.pool == s.name;
       if (computing)
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "computing");
-      else if (FeatureRead::dir_stale(config.FeatureLibDir(s.name)))
+      else if (FeatureRead::dir_stale(config.FeaturePoolDir(s.name)))
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "stale");
       else if (!s.ready)
         ImGui::TextDisabled("未建");
@@ -447,7 +447,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       const bool blocked = state.ui_state != ComputeUIState::Idle || !sides_complete(s.tier);
       ImGui::BeginDisabled(blocked);
       if (ImGui::SmallButton(("Compute##" + s.name).c_str())) {
-        state.config.lib = s.name;
+        state.config.pool = s.name;
         state.ui_state = ComputeUIState::ShowingPopup;
         state.popup_frame_count = 0;
       }
@@ -498,9 +498,9 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Separator();
     ImGui::Spacing();
 
-    const TierId lib_t = lib_def(state.config.lib).tier;
-    const bool bar_tier = lib_t == TierId::Bar;
-    ImGui::Text("Lib %s, %s:", state.config.lib.c_str(), bar_tier ? "Bar Tier Period" : "Backtest Period");
+    const TierId run_tier = pool_def(state.config.pool).tier;
+    const bool bar_tier = run_tier == TierId::Bar;
+    ImGui::Text("Pool %s, %s:", state.config.pool.c_str(), bar_tier ? "Bar Tier Period" : "Backtest Period");
     ImGui::Indent();
     ImGui::BulletText("Start: %s", misc::dash(bar_tier ? ::config::PIPELINE_START_DATE : config.start_date).c_str());
     ImGui::BulletText("End: %s", misc::dash(config.end_date).c_str());
@@ -510,8 +510,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Text("System Status:");
     ImGui::Indent();
     ImGui::BulletText("GUI entering low-refresh mode");
-    ImGui::BulletText("%s", StageLayout::make(topo, state.config.pf_cores[lib_t], state.config.cs_cores[lib_t], state.config.io_cores[lib_t]).summary().c_str());
-    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots[lib_t]);
+    ImGui::BulletText("%s", StageLayout::make(topo, state.config.pf_cores[run_tier], state.config.cs_cores[run_tier], state.config.io_cores[run_tier]).summary().c_str());
+    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots[run_tier]);
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 

@@ -53,7 +53,7 @@ class FeatureRead;
 //   切片布局 (等距抽稀 / 连续窗 / 取满) × lag 数 (1 / kCorrLags)
 //
 // 网格: 请求列里最细的层; 粗层列按 level_asof 投影 (前一根已收的粗层值). L_1day 网格 = 段内逐日截面, 切片取满 (日 = 切片).
-// 生命周期: 进 Corr tab 且过滤行集/层/库/日期区间变了 → 新请求取消在跑重算;
+// 生命周期: 进 Corr tab 且过滤行集/层/池/日期区间变了 → 新请求取消在跑重算;
 //   切走 tab → 只中断 (矩阵留在内存, 切回不重算); 切出 Features 任务 → clear() 释放.
 // ============================================================================
 
@@ -97,9 +97,9 @@ struct Corr : Published {
   // 重置全部状态并进入 Building (列集/层变了旧矩阵下标全错位, 快照整体清)
   void reset(analysis::ReadScope scope, Spec spec);
   // 逐抽样日构建 (日内切片累加, 每步发布); 被取消返回 false
-  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
-  LibId main() const { return scope_.main; } // 主库 (与 spec 同锁读)
+  PoolId main() const { return scope_.main; } // 主池 (与 spec 同锁读)
 
 private:
   struct Runtime; // worker 私有 (引擎 + 发布 staging), 定义在 Corr.cpp
@@ -132,9 +132,9 @@ struct CorrPair : Published {
   ~CorrPair();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
-  LibId main() const { return scope_.main; }
+  PoolId main() const { return scope_.main; }
 
 private:
   struct Runtime;
@@ -168,9 +168,9 @@ struct CorrLag : Published {
   ~CorrLag();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
-  LibId main() const { return scope_.main; }
+  PoolId main() const { return scope_.main; }
 
 private:
   struct Runtime;

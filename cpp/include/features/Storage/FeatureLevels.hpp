@@ -54,7 +54,7 @@ inline constexpr const char *tier_name(TierId t) {
 inline constexpr std::array<TierId, TIER_COUNT> TIER_IDS{ALL_TIERS(TIER_ID_LIST)};
 #undef TIER_ID_LIST
 
-// 按档下标的数组: 一切 "本档 + 旁读档" 成对的东西 (库 / reader / 轴映射 / 按档配置) 都用它, 不设具名槽
+// 按档下标的数组: 一切 "本档 + 旁读档" 成对的东西 (池 / reader / 轴映射 / 按档配置) 都用它, 不设具名槽
 template <class X>
 struct PerTier {
   std::array<X, TIER_COUNT> v{};
@@ -63,36 +63,36 @@ struct PerTier {
   bool operator==(const PerTier &) const = default;
 };
 
-// 库: 库表 feature_libs() 下标 (shared/FeatureLib.hpp; [0] = all, 其余 = 票池). 档 = 库的属性 (字段表按档, 数据按库)
-using LibId = uint8_t;
-inline constexpr LibId kAllLib = 0;
-size_t lib_count();         // 库表长 (由 Bar 字段表票池列定; 定义在 FeatureMeta.cpp)
-TierId lib_tier(LibId lib); // 库的档
-// 库表全部下标 (与 TIER_IDS 对仗, 运行时长)
-inline auto lib_ids() { return std::views::iota(LibId{0}, static_cast<LibId>(lib_count())); }
+// 池: 池表 feature_pools() 下标 (shared/FeaturePool.hpp; [0] = all, 其余 = 池). 档 = 池的属性 (字段表按档, 数据按池)
+using PoolId = uint8_t;
+inline constexpr PoolId kAllPool = 0;
+size_t pool_count();           // 池表长 (由 Bar 字段表池列定; 定义在 FeatureMeta.cpp)
+TierId pool_tier(PoolId pool); // 池的档
+// 池表全部下标 (与 TIER_IDS 对仗, 运行时长)
+inline auto pool_ids() { return std::views::iota(PoolId{0}, static_cast<PoolId>(pool_count())); }
 
-// 按库下标的数组 (与 PerTier 对仗): 一切 "主库 + 列所在库" 成组的东西 (库清单 / reader / 轴映射) 都用它
+// 按池下标的数组 (与 PerTier 对仗): 一切 "主池 + 列所在池" 成组的东西 (池清单 / reader / 轴映射) 都用它
 template <class X>
-struct PerLib {
-  std::vector<X> v = std::vector<X>(lib_count());
-  X &operator[](LibId l) {
+struct PerPool {
+  std::vector<X> v = std::vector<X>(pool_count());
+  X &operator[](PoolId l) {
     assert(l < v.size());
     return v[l];
   }
-  const X &operator[](LibId l) const {
+  const X &operator[](PoolId l) const {
     assert(l < v.size());
     return v[l];
   }
-  bool operator==(const PerLib &) const = default;
+  bool operator==(const PerPool &) const = default;
 };
-// 库集位 (位 = LibId; PerLib<bool> 的紧凑形): 日轴每天哪些库落了盘 / 日轴取哪些库
-using LibMask = uint32_t;
-inline constexpr LibMask lib_bit(LibId l) {
-  assert(l < 32 && "库表超出 LibMask 位宽");
-  return LibMask{1} << l;
+// 池集位 (位 = PoolId; PerPool<bool> 的紧凑形): 日轴每天哪些池落了盘 / 日轴取哪些池
+using PoolMask = uint32_t;
+inline constexpr PoolMask pool_bit(PoolId l) {
+  assert(l < 32 && "池表超出 PoolMask 位宽");
+  return PoolMask{1} << l;
 }
 
-// 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读 side 档 (写端截面; 读端不受它约束, 列读自己的库)
+// 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读 side 档 (写端截面; 读端不受它约束, 列读自己的池)
 namespace tier_of {
 #define TIER_OF_ONE(T, ns) inline constexpr TierId ns = TierId::T;
 ALL_TIERS(TIER_OF_ONE)
@@ -192,13 +192,13 @@ template <size_t From, class F>
   }(std::make_index_sequence<LEVEL_COUNT - From>{});
 }
 
-// 一列特征的全局身份 (库 × 层 × 存储列; 档 = 库的档, 列下标 = 该 (档, 层) 字段表行号): GUI 跨库跨层选择 / 分析请求的列单位.
-// 序 = (档, 库, 层, 列): 同库相邻, Lob 档在前 (picked 首个 = primary)
+// 一列特征的全局身份 (池 × 层 × 存储列; 档 = 池的档, 列下标 = 该 (档, 层) 字段表行号): GUI 跨池跨层选择 / 分析请求的列单位.
+// 序 = (档, 池, 层, 列): 同池相邻, Lob 档在前 (picked 首个 = primary)
 struct ColRef {
-  LibId lib = kAllLib;
+  PoolId pool = kAllPool;
   uint8_t level = L_1min;
   uint16_t col = 0;
-  TierId tier() const { return lib_tier(lib); }
+  TierId tier() const { return pool_tier(pool); }
   bool operator==(const ColRef &) const = default;
-  auto operator<=>(const ColRef &o) const { return std::tuple(tier(), lib, level, col) <=> std::tuple(o.tier(), o.lib, o.level, o.col); }
+  auto operator<=>(const ColRef &o) const { return std::tuple(tier(), pool, level, col) <=> std::tuple(o.tier(), o.pool, o.level, o.col); }
 };

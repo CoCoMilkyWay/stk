@@ -52,9 +52,9 @@ class FeatureRead;
 // UI: 每帧持 mutex 读快照; 改任何参数 = 新请求 (取消在跑, 从第一天重来) —— 海量数据下
 //     交互仍即时, 因为每次都只等第一批.
 // 重算: reset 不清展示字段 (拖动调参时旧图留住), 首批 publish 整体覆盖 —— 与 Dist 同一约定.
-// A 轴 = 库轴 (与特征库文件列序一致, 见 LibAxis) —— 平面 /
-//   out / lines / sketch / TOD 都只有库轴大小, 每个槽都是活跃资产, 不存在空列.
-//   槽位 = 库轴下标; AssetLine/StatLine 的 .asset 存全局轴下标 (UI 查 items 用).
+// A 轴 = 池轴 (与特征库文件列序一致, 见 PoolAxis) —— 平面 /
+//   out / lines / sketch / TOD 都只有池轴大小, 每个槽都是活跃资产, 不存在空列.
+//   槽位 = 池轴下标; AssetLine/StatLine 的 .asset 存全局轴下标 (UI 查 items 用).
 // ============================================================================
 
 static constexpr size_t kTfMinStatSamples = 20; // 单段 ADF/KPSS 的最少有效样本
@@ -122,9 +122,9 @@ struct Transform : Published {
     bool cs_neutral() const { return cs::method_neutral(cs_method); }
   };
 
-  using AssetLine = analysis::AssetLine; // 每资产链末输出的累积分布 (槽位 == 库轴下标)
+  using AssetLine = analysis::AssetLine; // 每资产链末输出的累积分布 (槽位 == 池轴下标)
 
-  // 每资产 (槽位 == 库轴下标, 与 lines 对齐): 逐天平稳性检验累积
+  // 每资产 (槽位 == 池轴下标, 与 lines 对齐): 逐天平稳性检验累积
   struct StatLine {
     uint32_t asset = 0;  // 全局轴下标 (UI 查 items 用)
     uint32_t n_days = 0; // 参与检验的天数 (有效样本 ≥ kTfMinStatSamples)
@@ -135,7 +135,7 @@ struct Transform : Published {
   };
 
   // 焦点资产 全程 的序列快照 (UI 序列视图: 原始 vs 输出 + TOD 轮廓).
-  // 只存一个资产 → 内存 O(总段数 × R), 与 库轴大小无关; 换焦点 = 重跑构建
+  // 只存一个资产 → 内存 O(总段数 × R), 与 池轴大小无关; 换焦点 = 重跑构建
   // (与改参数同流程 —— 链末输出经过 CS 截面, 单资产无法离线重放).
   // 前缀发布零拷贝: raw/out 首批发布时整体 swap 进来, 之后 worker 锁外只写 [n_segs·R, ...) 段,
   // 短锁只推进 n_segs / 日期 / TOD 轮廓; UI 只读前缀 [0, n_segs·R)
@@ -152,12 +152,12 @@ struct Transform : Published {
   struct Spec {
     Params params;
     ReadPlan plan;      // 平面列 [特征] (+ Bar 旁读 [mcap, ind_l1], 仅 NeutralRank); 网格 = 特征自己的层
-    uint32_t focus = 0; // 序列快照焦点 (库轴下标)
+    uint32_t focus = 0; // 序列快照焦点 (池轴下标)
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   struct Snap {
-    std::vector<AssetLine> lines;                             // [A_sub] (槽位 == 库轴下标, .asset = 全局轴下标)
-    std::vector<StatLine> stat_lines;                         // [A_sub] 槽位 == 库轴下标 (与 lines 对齐)
+    std::vector<AssetLine> lines;                             // [A_sub] (槽位 == 池轴下标, .asset = 全局轴下标)
+    std::vector<StatLine> stat_lines;                         // [A_sub] 槽位 == 池轴下标 (与 lines 对齐)
     size_t psd_N = 0;                                         // 谱 FFT 长度: bin k ↔ 周期 psd_N / k 网格行
     std::vector<float> psd_mean;                              // [psd_N/2 + 1] 逐 (资产, 段) 单段谱的算术平均 (逐批收敛)
     uint64_t psd_n = 0;                                       // 参与平均的 (资产, 段) 数
@@ -174,10 +174,10 @@ struct Transform : Published {
   Transform();
   ~Transform();
 
-  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 库轴变了才重建资产线
+  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 池轴变了才重建资产线
   void reset(analysis::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式; 被取消返回 false
-  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:
@@ -185,7 +185,7 @@ private:
   template <class G>
   struct RuntimeOf; // worker 私有 (批平面 / TS 链状态 / 线程 shard), 按网格实例化
   template <class G>
-  bool build_grid(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build_grid(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   std::unique_ptr<Runtime> rt_;
   analysis::ReadScope scope_; // reset 时定好, build 全程只读
 };

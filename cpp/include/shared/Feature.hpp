@@ -84,14 +84,14 @@ struct Feature {
   // ==========================================================================
 
   struct Selection {
-    TierId tier = TierId::Bar;   // 当前浏览的档 (TabFeature 库选择定: 选中库的档); 默认 Bar = all 库
-    PerTier<std::string> libs;   // 每档当前库 (Bar: all; Lob: 票池; 特征面板与因子页共用读写; 切档保留); 启动 = default_lib
+    TierId tier = TierId::Bar;   // 当前浏览的档 (TabFeature 池选择定: 选中池的档); 默认 Bar = all 池
+    PerTier<std::string> pools;  // 每档当前池 (Bar: all; Lob: 池; 特征面板与因子页共用读写; 切档保留); 启动 = default_pool
     int selected_level = L_1min; // 当前浏览的层 (FeatureLevel: L_sec / L_1min / L_5min .. L_60min / L_1day), 默认 L_1min
 
-    const std::string &lib_of(TierId t) const; // 档的当前库名
-    const std::string &lib() const { return lib_of(tier); }
-    LibId cur_lib(TierId t) const; // 档的当前库 (库表下标)
-    LibId cur_lib() const { return cur_lib(tier); }
+    const std::string &pool_of(TierId t) const; // 档的当前池名
+    const std::string &pool() const { return pool_of(tier); }
+    PoolId cur_pool(TierId t) const; // 档的当前池 (池表下标)
+    PoolId cur_pool() const { return cur_pool(tier); }
 
     // Filter states
     std::set<FeatureDataType> filter_data_type;
@@ -100,7 +100,7 @@ struct Feature {
     std::set<ts::MethodId> filter_ts_method; // TS Norm 列按 Method 过滤 (Tf 只显示)
     std::set<cs::MethodId> filter_cs_method; // CS Norm 列同
 
-    // 选中列 (跨库跨层多选; 选中时绑定当时的当前库, 切库 / 切层保留; 同列在不同库各选一次; primary = 首个, 供需要单选的消费方)
+    // 选中列 (跨池跨层多选; 选中时绑定当时的当前池, 切池 / 切层保留; 同列在不同池各选一次; primary = 首个, 供需要单选的消费方)
     std::set<ColRef> picked;
 
     const ColRef *primary() const { return picked.empty() ? nullptr : &*picked.begin(); }
@@ -124,9 +124,9 @@ struct Feature {
     assert(c.col < list.size());
     return list[c.col];
   }
-  // (库, 层, 字段 code) → 列; 字段表里找不到 = assert (Metadata::col_of)
-  ColRef ref(LibId lib, size_t level, const char *code) const {
-    return {lib, static_cast<uint8_t>(level), static_cast<uint16_t>(meta(lib_tier(lib)).col_of(level, code))};
+  // (池, 层, 字段 code) → 列; 字段表里找不到 = assert (Metadata::col_of)
+  ColRef ref(PoolId pool, size_t level, const char *code) const {
+    return {pool, static_cast<uint8_t>(level), static_cast<uint16_t>(meta(pool_tier(pool)).col_of(level, code))};
   }
 
   void clear();

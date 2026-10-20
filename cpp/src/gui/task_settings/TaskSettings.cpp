@@ -2,7 +2,7 @@
 #include "gui/Tasks.hpp"
 #include "imgui.h"
 #include "misc/cross_platform.hpp"
-#include "shared/FeatureLib.hpp"
+#include "shared/FeaturePool.hpp"
 #include "shared/SharedData.hpp"
 #include <algorithm>
 #include <cassert>
@@ -196,7 +196,7 @@ private:
     };
     data.config.Initialize();
     for (const TierId t : TIER_IDS)
-      data.feature.selection.libs[t] = default_lib(data.config, t);
+      data.feature.selection.pools[t] = default_pool(data.config, t);
     ts.initialized = true;
     last_commission = data.config.commission;
     last_stamp = data.config.stamp;
@@ -520,7 +520,7 @@ private:
     bool changed = false;
     if (ImGui::CollapsingHeader("数据库配置", ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::TextWrapped("encode 始终全市场日频, A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json);"
-                         " 特征库 (all / 各票池) 在 Features → Compute 页按库计算.");
+                         " 特征库 (all / 各池) 在 Features → Compute 页按池计算.");
       ImGui::Spacing();
 
       auto readonly_table = [](const char *table_id, auto draw_rows) {

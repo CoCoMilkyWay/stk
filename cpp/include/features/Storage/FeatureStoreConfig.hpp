@@ -146,8 +146,8 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 
 // ============================================================================
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
-//   FNV-1a 64 over "code:1:kind" 逐字段拼接 (顺序敏感; 1 = 已废的列宽, 恒折入以保旧库指纹)
-//   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelLob 的 entry / exit 定义) 时 +1, 旧库读取即判废而非静默错义
+//   FNV-1a 64 over "code:1:kind" 逐字段拼接 (顺序敏感; 1 = 已废的列宽, 恒折入以保旧池指纹)
+//   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelLob 的 entry / exit 定义) 时 +1, 旧池读取即判废而非静默错义
 //   L_1day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
 constexpr uint64_t kLabelSemver = 2; // 1: 分钟型 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准)

@@ -292,8 +292,8 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 
 // ----------------------------------------------------------------------------
 // 特征档 (tier) = 数据源. 一档一套节点表 / 字段表 / 特征库:
-//   Lob  Node/Lob/   L2 逐笔 → 订单簿还原 (K 线亦由逐笔重采样); 票池内算, 库在 features/<pool>/
-//   Bar  Node/Bar/   分钟 K (bar1m, 非订单簿还原) + 基本面; 全市场算, 库在 features/all/ (票池名单也由它产出)
+//   Lob  Node/Lob/   L2 逐笔 → 订单簿还原 (K 线亦由逐笔重采样); 池内算, 池在 features/<pool>/
+//   Bar  Node/Bar/   分钟 K (bar1m, 非订单簿还原) + 基本面; 全市场算, 池在 features/all/ (池名单也由它产出)
 //   两档 TS / CS 列名全局唯一 (FeatureMeta.cpp 断言; 因子层按名拼接), META 元列 / LB 标签列各档同名同语义.
 //   档间只许截面旁读 (TIER_SIDES): 时序是资产内纯函数, 不跨档; 同一列只在一档算 (Lob 要基本面就旁读 Bar, 不重算).
 //
@@ -312,7 +312,7 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 //            on5Min / on15Min / on30Min / on60Min 节点的原生层
 //   L_1day    日频 (T = L_1DAY_ROWS): 收盘行 (= 整日箱, CoreTs::close_row 末分钟写, onSettle 之后); onClose / onSettle 节点的原生层.
 //            行 D = D 日收盘后至 D+1 开盘前可知的值, D+1 盘中全程可 act on (高频读它即读前一交易日行).
-//            本身是日频的数据 (基本面 / 状态 / 票池) 放这里, 不在分钟层逐分钟复写
+//            本身是日频的数据 (基本面 / 状态 / 池) 放这里, 不在分钟层逐分钟复写
 //   每层每天一个日文件, 内带列目录, 按列选读 (见 FeatureDay.hpp; 列是否沿 T 轴 XOR 差分由写端逐列按数据定)
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)
 #define TIER_LEVELS(X)                                     \
@@ -326,5 +326,5 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
   X(Bar, bar, L_1day, 6, Bar_L_1day_FIELDS, "00/00/00")
 
 // 档间旁读: X(ns, side) —— ns 档的截面行可读 side 档任意层的列 (CS(side, lvl, src, ...) / NeutralRank 上下文);
-// 跨档跨层读一律 level_asof 投影 (读端 Source 同一份); side 档当日缺库 → 断言 (不等它, 不替它算)
+// 跨档跨层读一律 level_asof 投影 (读端 Source 同一份); side 档当日缺池 → 断言 (不等它, 不替它算)
 #define TIER_SIDES(X) X(lob, bar)

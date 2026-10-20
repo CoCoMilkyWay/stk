@@ -12,7 +12,7 @@
 namespace GUI::Factors {
 
 struct KlineService::Impl {
-  std::optional<FeatureRead> reader; // 作用域 (目录 + 库轴) 变了重建
+  std::optional<FeatureRead> reader; // 作用域 (目录 + 池轴) 变了重建
   std::string dir;
   uint64_t hash = 0;
   size_t A = 0, level = 0;
@@ -20,13 +20,13 @@ struct KlineService::Impl {
   std::vector<size_t> idx;
 
   void ensure(const analysis::ReadScope &sc, size_t lvl) {
-    const FeatureLib &lib = sc.lib();
-    if (reader && dir == lib.dir && hash == lib.axis.hash && A == lib.axis.size() && level == lvl) {
-      reader->revive(); // 新请求 = Inspect 刚读过库 (库已落地), 判废解除
+    const FeaturePool &pool = sc.pool();
+    if (reader && dir == pool.dir && hash == pool.axis.hash && A == pool.axis.size() && level == lvl) {
+      reader->revive(); // 新请求 = Inspect 刚读过池 (池已落地), 判废解除
       return;
     }
-    dir = lib.dir, hash = lib.axis.hash, A = lib.axis.size(), level = lvl;
-    reader.emplace(lib);
+    dir = pool.dir, hash = pool.axis.hash, A = pool.axis.size(), level = lvl;
+    reader.emplace(pool);
     cols.preallocate(A, level, 5);
   }
 };
@@ -35,7 +35,7 @@ KlineService::KlineService() { Start(); }
 KlineService::~KlineService() { Stop(); }
 
 void KlineService::Request(KlineRequest req) {
-  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.lib().axis.size() && !req.dates.empty());
+  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.pool().axis.size() && !req.dates.empty());
   Service::Request(std::move(req));
 }
 
@@ -46,7 +46,7 @@ bool KlineService::run(KlineRequest &req) {
     if (cancel_.load(std::memory_order_relaxed))
       return false; // 一天一步: 新请求在天与天之间打断
     if (!step(d))
-      return false; // 库判废: 停流 (Inspect 重算后新代重来)
+      return false; // 池判废: 停流 (Inspect 重算后新代重来)
     s_.publish(1);
   }
   return true;

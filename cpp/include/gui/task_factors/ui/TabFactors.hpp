@@ -45,8 +45,8 @@ struct FactorsUIState {
   std::vector<std::string> expanded; // 展开的多权重因子文件
   // Search (对象 = 高光行所在文件的模板, 搜索窗内全部持有期): 点下时把行拷给 search_row (TaskFactors 据此建请求)
   FactorRow search_row;
-  // Search all (当前库 / 层下全部可搜模板文件逐个搜, 全部搜完整目录 Run 一次): 点下时把各文件首个可搜行拷进队列, TaskFactors 逐个出队;
-  // Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换库换层)
+  // Search all (当前池 / 层下全部可搜模板文件逐个搜, 全部搜完整目录 Run 一次): 点下时把各文件首个可搜行拷进队列, TaskFactors 逐个出队;
+  // Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换池换层)
   std::vector<FactorRow> search_queue;
   int search_all_n = 0;  // 本轮文件总数; 0 = 没在 Search all
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
@@ -62,8 +62,8 @@ struct FactorsUIState {
 // 当前 config 决定的作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域对比着色
 struct FactorsUIContext {
   int seg = 0;            // 因子层 (FactorLevel; 本页已生效的, 跟页顶 / 特征面板选择走)
-  std::string factor_dir; // factor_dir_of(pool, seg) = <factor_dir>/<库>/<层名>
-  std::string pool;       // 本页已生效的库名
+  std::string factor_dir; // factor_dir_of(pool, seg) = <factor_dir>/<池>/<层名>
+  std::string pool;       // 本页已生效的池名
   misc::Ymd start_date = 0, end_date = 0;
   double sell_impact = 0.0;                       // Config::sell_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估

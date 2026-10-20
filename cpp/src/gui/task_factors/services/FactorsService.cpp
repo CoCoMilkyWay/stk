@@ -295,7 +295,7 @@ void write_json(const std::filesystem::path &path, const ojson &j) {
 }
 
 // 评估后回写: 只动 stats[widx] + 顶层 run / 表头, 其他键 (expr / note / 人加的任何东西) 原样保留.
-// stats 与 weights 同长同序 (没评的位置 null); run / 表头与已有的不同 (换了区间 / 票池 / 后端…) → 别的权重的 stat 不再
+// stats 与 weights 同长同序 (没评的位置 null); run / 表头与已有的不同 (换了区间 / 池 / 后端…) → 别的权重的 stat 不再
 // 对应 run, 一并清成 null (下次 Run 重算). 手填权重 (文件无 weights, hold_src = 0) 首次回写时补出 weights = [{hold 0, expr}]
 void write_back(const std::filesystem::path &path, const FactorRow &r) {
   assert(r.widx >= 0 && !r.expr.empty());
@@ -381,10 +381,10 @@ const FactorLevel &factor_level(int seg) {
   __builtin_unreachable();
 }
 
-std::string factor_dir_of(const SharedData &data, const std::string &lib, int seg) {
+std::string factor_dir_of(const SharedData &data, const std::string &pool, int seg) {
   const FactorLevel &l = factor_level(seg);
-  assert(lib_def(lib).tier == l.tier && "库不属该因子层的档");
-  return data.config.factor_dir + "/" + lib + "/" + l.name;
+  assert(pool_def(pool).tier == l.tier && "池不属该因子层的档");
+  return data.config.factor_dir + "/" + pool + "/" + l.name;
 }
 
 std::vector<std::filesystem::path> list_factor_files(const std::string &dir) {
@@ -474,18 +474,17 @@ FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
   return t;
 }
 
-bool MakeFactorsRequest(const SharedData &data, const std::string &lib, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
+bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
   req = FactorsRequest{};
-  const std::string &pool = lib;
   req.seg = seg;
-  req.factor_dir = factor_dir_of(data, lib, seg);
+  req.factor_dir = factor_dir_of(data, pool, seg);
   req.evaluate = evaluate;
   req.gpu = gpu;
   if (!evaluate)
     return true;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, lib_id(lib), {});
+  req.scope = analysis::read_scope(data.config, pool_id(pool), {});
   if (req.scope.months.empty())
     return false;
   req.pool = pool;
@@ -860,21 +859,21 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   }
 
   // ---- 装载 ----
-  FeatureRead reader(req.scope.lib(), &cancel_);
+  FeatureRead reader(req.scope.pool(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty()) {
     finish_all_pending("特征库在该区间无数据 (先算特征)");
     return true;
   }
   Loaded L;
-  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib().axis.size()), L);
+  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.pool().axis.size()), L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
   L.max_impact = static_cast<float>(req.max_impact);
 
   begin(Phase::Loading, static_cast<size_t>(L.days));
   if (!load_planes(feats_, reader, dates, L, ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true)) {
     if (reader.stale())
-      finish_all_pending("特征库判废 (库轴/字段表与当前不符), 需重算特征");
+      finish_all_pending("特征库判废 (池轴/字段表与当前不符), 需重算特征");
     return false;
   }
   const double n_full = n_full_of(L); // 满仓 cap (池宽), 全部因子共用

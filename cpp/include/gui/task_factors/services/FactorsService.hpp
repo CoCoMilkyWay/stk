@@ -66,8 +66,8 @@ struct SharedData;
 namespace GUI::Factors {
 
 // ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 特征库 档 / 层 / 因子子目录 ----
-//   L_1min 读 Lob 票池库 (盘口特征 + 冲击成本, 截面 = 票池); 更粗的层读 Bar 库 (全市场 cs_valid, 无冲击成本).
-//   标签恒取同库本层列 (同行; 各层只落本层及以上的持有期); 因子文件在 <config.factor_dir>/<库>/<name>/
+//   L_1min 读 Lob 池 (盘口特征 + 冲击成本, 截面 = 池); 更粗的层读 Bar 池 (全市场 cs_valid, 无冲击成本).
+//   标签恒取同池本层列 (同行; 各层只落本层及以上的持有期); 因子文件在 <config.factor_dir>/<池>/<name>/
 struct FactorLevel {
   int seg = 0;               // 每日行数 (Geo::S)
   size_t lvl = 0;            // 特征库层 (FeatureLevel)
@@ -83,8 +83,8 @@ inline constexpr FactorLevel kFactorLevels[] = {
     {1, L_1day, TierId::Bar, "day"},
 };
 const FactorLevel &factor_level(int seg); // seg 不在表里 → assert
-// 该层因子目录 = <config.factor_dir>/<lib>/<name> (lib 须属该层的档)
-std::string factor_dir_of(const SharedData &data, const std::string &lib, int seg);
+// 该层因子目录 = <config.factor_dir>/<pool>/<name> (pool 须属该层的档)
+std::string factor_dir_of(const SharedData &data, const std::string &pool, int seg);
 // 因子目录下的因子文件 (*.json 普通文件, 不进子目录), 路径序; 目录不存在 = 空
 std::vector<std::filesystem::path> list_factor_files(const std::string &dir);
 
@@ -108,9 +108,9 @@ struct FeatureTable {
   std::vector<FeatCol> cols;    // 下标 = 本层列
   uint32_t ts_col = 0;          // 本层 ts_valid 门控列 (特征输入; 每层必有)
   uint32_t cs_col = 0;          // 本层 cs_valid 门控列 (标签 + 截面门控平面)
-  uint32_t ohlc[4] = {};        // 本层 open high low close 列 (K 线 / close 给库等权指数): lob_<x> / <x>_<n>min / <x>_day
+  uint32_t ohlc[4] = {};        // 本层 open high low close 列 (K 线 / close 给池等权指数): lob_<x> / <x>_<n>min / <x>_day
   std::vector<LabelCol> labels; // 本层列下标, 按 hold 升序; long / short 都齐且本层合法 (hold_ok) 才收
-  std::vector<CostCol> costs;   // 本层列下标, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 库无)
+  std::vector<CostCol> costs;   // 本层列下标, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 池无)
   const FeatCol *find(std::string_view code) const;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
 };
@@ -124,7 +124,7 @@ std::string now_string();
 // ---- 请求 (GUI 线程解析 config, worker 不碰) ----
 struct FactorsRequest {
   int seg = 0;            // 因子层
-  std::string factor_dir; // factor_dir_of(lib, seg)
+  std::string factor_dir; // factor_dir_of(pool, seg)
   bool evaluate = false;  // false = 只扫描解析
   // 以下 evaluate 时才用
   analysis::ReadScope scope;
@@ -135,7 +135,7 @@ struct FactorsRequest {
   std::string only_file;   // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat
 };
 // evaluate 请求需要资产轴 (读特征库); 轴未就绪 (数据库未扫) → false
-bool MakeFactorsRequest(const SharedData &data, const std::string &lib, int seg, bool evaluate, bool gpu, FactorsRequest &req);
+bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg, bool evaluate, bool gpu, FactorsRequest &req);
 
 // ---- 行 ----
 // 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 只留位, 扫描到即标 error

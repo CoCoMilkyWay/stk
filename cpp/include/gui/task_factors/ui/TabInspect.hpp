@@ -21,12 +21,12 @@
 //   右上 资产 K 线 (因子具体怎么交易的; 对仗 OrderFlow 的图 2): 上一条资产轴 + 下面选中资产的分钟 K 线.
 //        R(t) = r16(x) / kRankMax ∈ [0,1] (CS = 截面秩, TS = 自身分位; 与组号同向: 1 = G20 侧), 色 = lerp(G1 蓝 → G20 橙)
 //        资产轴: 光标日池内 (cs_valid ∧ 当日有成交) 资产的日内均 R 降序 (左 = G20 侧), 一资产一格, 格色 = R 组色; 光标 (拖 / 双击 / ◂ ▸ 步进)
-//        选资产, 选中沿全局 id 粘住 (拖光标只换序不换资产, K 线不重载); 未选 / 换库轴 → 光标日 R 最高者 (无池内资产 → 全区间有效刻
+//        选资产, 选中沿全局 id 粘住 (拖光标只换序不换资产, K 线不重载); 未选 / 换池轴 → 光标日 R 最高者 (无池内资产 → 全区间有效刻
 //        最多者), 结果一到就有 K 线
 //        K 线: 选中资产沿全部交易日的分钟 OHLC (KlineService 逐日流式, 画已发布前缀, 不等全载), 每根色 = 该刻 R(t) 组色; 池外段 (出 CS 池 /
 //        当日无成交, 秩不入评估, valid% 也不计) 用不看池的秩 (rx_all) 淡色显示, 因子无输出 = 暗灰; 阴线实心 / 阳线空心.
 //        x 窗口换资产不动, y 按窗口内蜡烛重贴; 光标 = 与左上图同一个 cursor_day (同色, 锚在日边界), 光标日染淡色竖带
-//        叠加 库等权指数线 (InspectResult::lib_index): 每帧按视野内个股首根蜡烛重锚 (该刻指数 = 该根 close), zoom / 平移跟着对齐; 不参与 y 贴合
+//        叠加 池等权指数线 (InspectResult::pool_index): 每帧按视野内个股首根蜡烛重锚 (该刻指数 = 该根 close), zoom / 平移跟着对齐; 不参与 y 贴合
 //        (默认隐藏, 点图例显; 带着全区间历史, 看不出近期)
 //        再叠加滚动重锚指数线 (青, 默认显), L = 1 天: line_t = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))),
 //        P = 个股 close 前值填充到分钟格, I = 指数, S = 10 分钟; = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移. UI 现算, 不发请求
@@ -65,7 +65,7 @@ inline constexpr int layer_tail(int l, int j) { return factor::stat::kGroups + l
 struct InspectDerived {
   int days = 0;
   std::vector<misc::Ymd> dates;            // [days] 轴刻度用
-  std::vector<float> lib_index;            // [T] = InspectResult::lib_index (右上 K 线叠加)
+  std::vector<float> pool_index;           // [T] = InspectResult::pool_index (右上 K 线叠加)
   std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
   std::vector<float> lay_cum[kLayerLines]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)
   std::vector<float> ls_cum[kLsLines];     // [days + 1], 同上
@@ -95,20 +95,20 @@ struct InspectUIState {
   bool derived_abs = false;
   InspectDerived der;
   // ---- 右上 资产 K 线 ----
-  uint32_t asset_gid = ~0u; // 选中资产 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.lib().axis.sub_of 找回, 不在库轴内 → 重选
+  uint32_t asset_gid = ~0u; // 选中资产 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.pool().axis.sub_of 找回, 不在池轴内 → 重选
   // 资产轴派生 (键: epoch / 光标日): 光标日各资产日内均 R 降序
   uint64_t ax_epoch = ~0ull;
   int ax_day = -1;
-  std::vector<int> ax_order;    // [n] 库轴下标 (R 降序, 左 = G20 侧)
+  std::vector<int> ax_order;    // [n] 池轴下标 (R 降序, 左 = G20 侧)
   std::vector<uint32_t> ax_gid; // [n] 对应全局 id
   std::vector<float> ax_r;      // [n] R ∈ [0,1]
   int ax_n_applied = -1;        // 资产轴 x 域已应用的 n (变了才复位视野)
-  // 选中资产的 R(t) 列派生 (键: epoch / 库轴下标)
+  // 选中资产的 R(t) 列派生 (键: epoch / 池轴下标)
   uint64_t col_epoch = ~0ull;
   int col_sub = -1;
   std::vector<float> col_r;     // [T] 池内秩 R ∈ [0,1], < 0 = 池外 / 无值
   std::vector<float> col_r_all; // [T] 不看池的秩 (池外段靠它淡色显示), < 0 = 因子无输出
-  // K 线请求期望态 (结果 key + 库轴下标 变 → gen++ → KlineService::Request; 与 KlineStream::pub 配对)
+  // K 线请求期望态 (结果 key + 池轴下标 变 → gen++ → KlineService::Request; 与 KlineStream::pub 配对)
   uint32_t kline_gen = 0;
   std::string kline_key;
   int kline_sub = -1;

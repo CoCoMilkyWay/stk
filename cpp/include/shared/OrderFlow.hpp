@@ -1,12 +1,12 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
-// OrderFlow (主库 = 图1 VWAP / 候选轴所在库, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各库落盘日的并集, 各库画各自有的日)
-// ├── Kline  (图2) 单资产全日轴: all 库日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef, 分钟网格; 分钟 K 也是 overlay)
+// OrderFlow (主池 = 图1 VWAP / 候选轴所在池, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各池落盘日的并集, 各池画各自有的日)
+// ├── Kline  (图2) 单资产全日轴: all 池日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef, 分钟网格; 分钟 K 也是 overlay)
 // │            worker 分批流式 (从前往后, 每日每源一次选列读, 下一批后台预读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
 // │            + 多特征 overlay (任意 ColRef, 秒网格); 双槽 ping-pong 整体发布
 // overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1), 网格: 图1 L_sec / 图2 L_1min
-//   (细于网格的源每格留最后一个有效行). 各源按自己的 (库, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
+//   (细于网格的源每格留最后一个有效行). 各源按自己的 (池, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
 // ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
 // └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
 //
@@ -122,9 +122,9 @@ struct OrderFlow {
   // ==========================================================================
   struct Kline : Progress, PrefixPub { // 进度 done/total = 天
     // ---- worker 写 / GUI 前缀读 ----
-    std::vector<misc::Ymd> dates; // 日轴: 库集各库落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
+    std::vector<misc::Ymd> dates; // 日轴: 池集各池落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
 
-    // K线点集 (all 库日 K): data_valid 行, x = day_idx * MIN_CAPACITY + 该行所跨分钟的中点 (日 K = 日中)
+    // K线点集 (all 池日 K): data_valid 行, x = day_idx * MIN_CAPACITY + 该行所跨分钟的中点 (日 K = 日中)
     std::vector<double> x, open, high, low, close;
     double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH; // 一根 K 线半宽 (X 单位; 换代时随 OHLC 层定)
     Overlay<std::atomic<float>> feat;                           // 与 K线同 X 网格 (refs 换代时定, gen 匹配期间稳定)
@@ -173,7 +173,7 @@ struct OrderFlow {
     struct Plot {
       std::vector<double> x, mid_price, best_bid, best_ask;
       std::vector<size_t> tick_idx_map; // 秒下标 -> plot_idx (SIZE_MAX = 无), O(1) snap
-      // 分钟 VWAP 阶梯 (L_1min 特征列 vwap, 与标签 exit 同源; 只有库轴内且当日已算特征的资产才有):
+      // 分钟 VWAP 阶梯 (L_1min 特征列 vwap, 与标签 exit 同源; 只有池轴内且当日已算特征的资产才有):
       // 逐有效分钟一点, X = 分钟起始秒, 末尾补一点 (末分钟末秒) 收口; 与 ticks 无关
       std::vector<double> vwap_x, vwap_y;
       double y_min = 0.0, y_max = 0.0;
@@ -253,9 +253,9 @@ struct OrderFlow {
 
   // ==========================================================================
   // Pick (资产筛选) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
-  //   状态源 = all 库承接日 (日轴前一日) L_1day 行 (Fund 节点): risk_warn / list_age / delist_age
-  //   / industry_l1 —— 承接格无源 (轴首 / 不在 all 库) 读不到状态, 不进候选; 当日有无分钟不论 (停牌照列).
-  //   候选轴 = 主库轴 (GUI 按选中列定: 无选中 = all, 单库 = 该库)
+  //   状态源 = all 池承接日 (日轴前一日) L_1day 行 (Fund 节点): risk_warn / list_age / delist_age
+  //   / industry_l1 —— 承接格无源 (轴首 / 不在 all 池) 读不到状态, 不进候选; 当日有无分钟不论 (停牌照列).
+  //   候选轴 = 主池轴 (GUI 按选中列定: 无选中 = all, 单池 = 该池)
   // ==========================================================================
   struct Pick {
     // 单资产当日状态 (worker 写背槽, 发布后只读)
@@ -370,8 +370,8 @@ struct OrderFlow {
     uint32_t kline_gen = 0, depth_gen = 0;
     size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
     std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (同一组选中, 各截到图的网格: 图2 ≥ L_1min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
-    LibMask kline_libs = 0;                       // 图2 库集 (主库 + overlay 各库) = 日轴并集的库; 变了 → 重扫日轴
-    LibId main_lib = kAllLib;                     // 主库 (选中列所在的唯一库, 无选中 = all): 图1 VWAP / 候选轴; 变了 → 图1 / Pick 重发
+    PoolMask kline_pools = 0;                     // 图2 池集 (主池 + overlay 各池) = 日轴并集的池; 变了 → 重扫日轴
+    PoolId main_pool = kAllPool;                  // 主池 (选中列所在的唯一池, 无选中 = all): 图1 VWAP / 候选轴; 变了 → 图1 / Pick 重发
     misc::Ymd depth_date = 0;
 
     // 图2 X 域 (= 特征日数 × MIN_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
@@ -386,7 +386,7 @@ struct OrderFlow {
     uint32_t sec_last_gen = UINT32_MAX;                // 上次 L_sec 视图重置时的槽 gen
     double sec_y_min = 0.0, sec_y_max = 0.0;           // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
 
-    // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx (只在单库日轴时画: 多库叠加时日轴是并集, 不画)
+    // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx (只在单池日轴时画: 多池叠加时日轴是并集, 不画)
     // (kline_gen, pub_days) 变才重算 — 流式追加 / 换资产 / 重扫日期 都被 gen 覆盖
     std::vector<size_t> min_missing_days;
     uint32_t min_missing_days_gen = UINT32_MAX;

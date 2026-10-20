@@ -17,7 +17,7 @@
 //     Demean       x − mean, 缺失 → 0.  去市场分量但保留截面离散度的时变 (z 会把每分钟离散度抹平成 1)
 //     Z            (x − mean)/sd (double 累加), 缺失 → 0.  保留量级信息 (全市场同向尖峰 rank 看不见)
 //     WinsorZ      winsor_mad(k=3) → z, 缺失 → 0.  稳健 z (= WinsorRank 去掉末尾 pct_rank)
-//     SelectLow400 / SelectHigh400   票池: 有限值中取最低 / 最高 400 个 → 1, 其余 (含缺失) → 0; 并列按 dense 下标
+//     SelectLow400 / SelectHigh400   池: 有限值中取最低 / 最高 400 个 → 1, 其余 (含缺失) → 0; 并列按 dense 下标
 //                  (= 资产轴序) 先到先得, 有限值不足 400 则全选. 输入 = 母集掩码后的排序键 (PoolKey, 母集外 NaN)
 //
 //   忠实性契约: WinsorRank / NeutralRank 与 qmt/cpp/src/feature/cs.cpp 逐步一致

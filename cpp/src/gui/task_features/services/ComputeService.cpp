@@ -7,7 +7,7 @@
 #include "features/Storage/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
-#include "shared/FeatureLib.hpp"
+#include "shared/FeaturePool.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/feature_workers.hpp"
 
@@ -37,39 +37,39 @@ void ComputeService::Request(ComputeConfig config) {
   Service::Request(config);
 }
 
-// 两档同一流程: 规划本库 → fund_panel → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
+// 两档同一流程: 规划本池 → fund_panel → 清池 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
 bool ComputeService::run(ComputeConfig &config) {
-  // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
+  // 规划 (日期轴 × A 轴; 写池清单 = 读端唯一来源, 见 FeaturePool.hpp):
   //   Bar (all)  交易日 [PIPELINE_START_DATE, end_date] × 全轴: 整段算, 不随回测窗口收窄; 无旁读档
-  //   Lob (票池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
-  //              × 票池并集 (Bar 库 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 Bar 库
-  // 张量/调度/落盘全按本库 A 轴, 需要 items/码表时经 axis.global() 映射.
-  // 一次只算一个库 (TS + CS 同库一趟, 不拆不跨库去重: 将来 TS 可吃库内 CS 输出, 见 FeatureLib.hpp); Lob 只在本池轴内算
-  //  —— 一般只算一个票池库, 不为多池合算做并集轴.
-  // 库集 = 本库 + 旁读档的当前库 (Selection::libs), 余档空
-  const LibDef &def = lib_def(config.lib);
-  PerTier<FeatureLib> libs;
+  //   Lob (池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
+  //              × 池并集 (Bar 池 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 Bar 池
+  // 张量/调度/落盘全按本池 A 轴, 需要 items/码表时经 axis.global() 映射.
+  // 一次只算一个池 (TS + CS 同池一趟, 不拆不跨池去重: 将来 TS 可吃池内 CS 输出, 见 FeaturePool.hpp); Lob 只在本池轴内算
+  //  —— 一般只算一个池, 不为多池合算做并集轴.
+  // 池集 = 本池 + 旁读档的当前池 (Selection::pools), 余档空
+  const PoolDef &def = pool_def(config.pool);
+  PerTier<FeaturePool> pools;
   for (const TierId s : TIER_IDS)
     if (tier_side(def.tier, s))
-      libs[s] = load_lib(data_.config, data_.feature.selection.lib_of(s));
-  FeatureLib &lib = libs[def.tier];
-  lib = FeatureLib{.tier = def.tier, .name = config.lib, .dir = data_.config.FeatureLibDir(config.lib)};
-  if (lib.tier == TierId::Lob) {
+      pools[s] = load_pool(data_.config, data_.feature.selection.pool_of(s));
+  FeaturePool &pool = pools[def.tier];
+  pool = FeaturePool{.tier = def.tier, .name = config.pool, .dir = data_.config.FeaturePoolDir(config.pool)};
+  if (pool.tier == TierId::Lob) {
     assert(data_.asset.backtest.start == data_.config.start_date && data_.asset.backtest.end == data_.config.end_date &&
            "回测日历与配置区间不符 (改配置后没重算覆盖?)");
-    lib.dates = data_.asset.backtest_dates();
-    data_.pool_panel = pool::Panel::build(libs[TierId::Bar], def.pool_col, lib.dates);
-    lib.axis = data_.pool_panel.axis();
+    pool.dates = data_.asset.backtest_dates();
+    data_.pool_panel = pool::Panel::build(pools[TierId::Bar], def.pool_col, pool.dates);
+    pool.axis = data_.pool_panel.axis();
   } else {
     for (const CalendarDay &day : data_.assetinfo.get_stock_days())
       if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data_.config.end_date)
-        lib.dates.push_back(day.date);
-    lib.axis = full_axis(data_.asset.items.size());
+        pool.dates.push_back(day.date);
+    pool.axis = full_axis(data_.asset.items.size());
   }
-  assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "日期轴为空 / 交易日历非升序, 不应触发特征计算");
-  const std::vector<misc::Ymd> &dates = lib.dates;
-  const size_t num_assets = lib.axis.size();
-  std::cout << "Lib " << lib.name << " (" << tier_name(lib.tier) << "): " << lib.dir << " → " << num_assets << " / "
+  assert(!pool.dates.empty() && std::is_sorted(pool.dates.begin(), pool.dates.end()) && "日期轴为空 / 交易日历非升序, 不应触发特征计算");
+  const std::vector<misc::Ymd> &dates = pool.dates;
+  const size_t num_assets = pool.axis.size();
+  std::cout << "Pool " << pool.name << " (" << tier_name(pool.tier) << "): " << pool.dir << " → " << num_assets << " / "
             << data_.asset.items.size() << " assets\n"
             << std::endl;
 
@@ -84,15 +84,15 @@ bool ComputeService::run(ComputeConfig &config) {
   {
     std::vector<std::string> axis_codes(num_assets);
     for (size_t sub = 0; sub < num_assets; ++sub)
-      axis_codes[sub] = asset_axis().code(lib.axis.global(sub));
+      axis_codes[sub] = asset_axis().code(pool.axis.global(sub));
     data_.fund_panel.build(axis_codes, dates);
   }
 
-  // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;
-  // 别的库不碰 —— 按目录分片, 见 Config), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集)
-  FeatureRead::wipe_dir(lib.dir); // 可能与 reader 判废删库并发
-  FeatureRead::set_dir_stale(lib.dir, false);
-  save_lib(lib);
+  // 全量重算: 显式清本池 (清池是调用方的决定, 不是 store 构造的副作用;
+  // 别的池不碰 —— 按目录分片, 见 Config), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集)
+  FeatureRead::wipe_dir(pool.dir); // 可能与 reader 判废删池并发
+  FeatureRead::set_dir_stale(pool.dir, false);
+  save_pool(pool);
 
   // 日志: 先关 (释放上一轮文件句柄), 清空重建 log_dir, 全部 worker 共用一个日志文件
   namespace fs = std::filesystem;
@@ -104,13 +104,13 @@ bool ComputeService::run(ComputeConfig &config) {
   Logger::init(data_.config.log_dir);
 
   // 已落盘天数镜像进进度面
-  const TierId tier = lib.tier;
-  const PipelineArgs args{data_, libs, dates, static_cast<size_t>(config.ring_slots[tier]), static_cast<uint64_t>(config.adopt_pct),
+  const TierId tier = pool.tier;
+  const PipelineArgs args{data_, pools, dates, static_cast<size_t>(config.ring_slots[tier]), static_cast<uint64_t>(config.adopt_pct),
                           config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;
-#define TIER_PIPELINE(T, ns) \
-  if (lib.tier == TierId::T) \
+#define TIER_PIPELINE(T, ns)  \
+  if (pool.tier == TierId::T) \
     completed = pipeline<ns::Tier>(args);
   ALL_TIERS(TIER_PIPELINE)
 #undef TIER_PIPELINE

@@ -30,7 +30,7 @@ struct ComputeConfig {
   PerTier<int> cs_cores{{1, 1}};
   PerTier<int> io_cores{{1, 1}};
   int adopt_pct = 50; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
-  std::string lib;    // 算哪个库 (库名, 档由名定, 见 FeatureLib.hpp; Compute 页每库一个按钮)
+  std::string pool;   // 算哪个池 (池名, 档由名定, 见 FeaturePool.hpp; Compute 页每池一个按钮)
 };
 
 // ============================================================================

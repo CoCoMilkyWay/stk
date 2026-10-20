@@ -4,7 +4,7 @@
 #include "gui/task_features/services/CorrService.hpp"
 #include "gui/task_features/ui/Common.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
-#include "shared/FeatureLib.hpp" // lib_def
+#include "shared/FeaturePool.hpp" // pool_def
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -147,7 +147,7 @@ static void rebuild_disp(const Corr &corr, const CorrLag *lag, CorrUIState &ui) 
   }
 }
 
-// lag 快照能否与矩阵按同一下标读: 同主库同层同列集 (列集变了未算完之前不匹配, UI 画空)
+// lag 快照能否与矩阵按同一下标读: 同主池同层同列集 (列集变了未算完之前不匹配, UI 画空)
 static bool lag_matches(const CorrLag &lag, const Corr &corr) {
   return lag.main() == corr.main() && lag.spec.same(corr.spec) && lag.snap.rho_best.size() == corr.snap.rho.size();
 }
@@ -170,9 +170,9 @@ static uint64_t disp_key(const Corr &corr, const CorrLag *lag, const CorrUIState
 
 static const ImVec4 kColorA{0.4f, 0.8f, 1.0f, 1.0f}, kColorB{1.0f, 0.8f, 0.3f, 1.0f}; // 对的前者 / 后者
 
-// 列名 + (库 层): 列集可跨库跨层
+// 列名 + (池 层): 列集可跨池跨层
 static void text_col(SharedData &data, const ImVec4 &color, const ColRef &c) {
-  ImGui::TextColored(color, "%s  (%s %s)", data.feature.meta(c).code, lib_def(c.lib).name, level_name(c.level));
+  ImGui::TextColored(color, "%s  (%s %s)", data.feature.meta(c).code, pool_def(c.pool).name, level_name(c.level));
 }
 
 static void render_pair_panel(SharedData &data, const CorrLag *lag, CorrUIState &ui) {
@@ -260,7 +260,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   assert(service && pair_service && lag_service);
   Corr &corr = data.corr;
 
-  // ---- 列集: 选中 ≥ 2 列 (跨库跨层) = 选中; 否则跟随 Feature 表当前 (库, 层) 的过滤行集. 变了就重算 ----
+  // ---- 列集: 选中 ≥ 2 列 (跨池跨层) = 选中; 否则跟随 Feature 表当前 (池, 层) 的过滤行集. 变了就重算 ----
   static std::vector<ColRef> cols; // GUI 单线程, 帧内复用
   cols.clear();
   const Feature::Selection &sel = data.feature.selection;
@@ -270,7 +270,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     static std::vector<int> rows;
     FilteredFeatureIndices(data, rows);
     for (const int i : rows)
-      cols.push_back(ColRef{sel.cur_lib(), static_cast<uint8_t>(sel.selected_level), static_cast<uint16_t>(i)});
+      cols.push_back(ColRef{sel.cur_pool(), static_cast<uint8_t>(sel.selected_level), static_cast<uint16_t>(i)});
   }
   if (ui.req_stale || cols != ui.req_cols) {
     ui.req_cols = cols;

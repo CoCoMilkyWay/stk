@@ -2,10 +2,10 @@
 //   Operators: OpTable 全部算子对拍 + 计时. 不依赖特征库 / 数据库扫描 (合成张量), 故任何时候可进.
 //     首次进页默认不算: 先载入本地 operators.json 显示 (校验不过则删文件); 只有手动 Run —— 或本地无有效
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
-//   Factors: <factor_dir>/<库>/<层>/ 一因子一文件的整体面板 (库 + 层 = 页顶全局选择, Factors / Inspect 共用, 与特征面板双向同步; 换层 = 服务整体重建). 进页只扫描解析 (任何时候可进); Run 才读特征库评估
+//   Factors: <factor_dir>/<池>/<层>/ 一因子一文件的整体面板 (池 + 层 = 页顶全局选择, Factors / Inspect 共用, 与特征面板双向同步; 换层 = 服务整体重建). 进页只扫描解析 (任何时候可进); Run 才读特征库评估
 //     (要资产轴就绪), 结果回写各因子文件.
 //   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 FactorsService; 一级 Row 由自己的
-//     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
+//     InspectService 对该因子单独读池算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_factors/services/FactorsService.hpp"
@@ -16,8 +16,8 @@
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "gui/task_factors/ui/TabInspect.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
-#include "shared/FeatureLib.hpp" // feature_libs (页顶库选择)
-#include "shared/SharedData.hpp" // config.factor_dir / 票池 / 日期区间, feature.metadata, asset.items
+#include "shared/FeaturePool.hpp" // feature_pools (页顶池选择)
+#include "shared/SharedData.hpp"  // config.factor_dir / 池 / 日期区间, feature.metadata, asset.items
 
 #include "imgui.h"
 
@@ -45,16 +45,16 @@ struct TaskFactorsState {
   // 一轮结束检测 (Running → Done / Cancelled 那一帧把算子表落地 operators.json)
   Phase prev_operators_phase = Phase::Idle;
 
-  // 本页已生效的 (库, 因子层): 跟 data.feature.selection (与特征面板同一份) 走, 所有服务空闲时才追上; seg = 0 = 选择不是因子层 (空页, 无服务)
+  // 本页已生效的 (池, 因子层): 跟 data.feature.selection (与特征面板同一份) 走, 所有服务空闲时才追上; seg = 0 = 选择不是因子层 (空页, 无服务)
   int seg = 0;
-  std::string lib;
-  // 页顶层按钮后的因子文件数 (所选库各因子层目录): 库变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
-  std::string counted_key; // config.factor_dir | 所选库; 空 = 没数过
+  std::string pool;
+  // 页顶层按钮后的因子文件数 (所选池各因子层目录): 池变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
+  std::string counted_key; // config.factor_dir | 所选池; 空 = 没数过
   size_t level_files[std::size(Factors::kFactorLevels)] = {};
   Phase prev_factors_phase = Phase::Idle;
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
-  std::string factors_scanned_dir;                        // 上次扫描的目录 (票池切换 → 自动重扫)
+  std::string factors_scanned_dir;                        // 上次扫描的目录 (池切换 → 自动重扫)
   std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Search (与 factors_service 同建); 写了 weights 的那一轮结束 → 自动 Run
   Phase prev_search_phase = Phase::Idle;
 
@@ -89,14 +89,14 @@ static void search_all_next(const SharedData &data, TaskFactorsState &s) {
   if (ui.search_queue.empty()) {
     ui.search_all_n = 0;
     Factors::FactorsRequest req;
-    if (Factors::MakeFactorsRequest(data, s.lib, s.seg, /*evaluate=*/true, ui.backend == 1, req))
+    if (Factors::MakeFactorsRequest(data, s.pool, s.seg, /*evaluate=*/true, ui.backend == 1, req))
       s.factors_service->Request(req);
     return;
   }
   const Factors::FactorRow row = std::move(ui.search_queue.front());
   ui.search_queue.erase(ui.search_queue.begin());
   Factors::SearchRequest req;
-  if (Factors::MakeSearchRequest(data, s.lib, s.seg, row, ui.backend == 1, req)) {
+  if (Factors::MakeSearchRequest(data, s.pool, s.seg, row, ui.backend == 1, req)) {
     s.search_service->Request(req);
   } else {
     ui.search_queue.clear();
@@ -104,12 +104,12 @@ static void search_all_next(const SharedData &data, TaskFactorsState &s) {
   }
 }
 
-// Factors 子页的作用域 (每帧从 config 取; 库 / 层取本页已生效的)
-static Factors::FactorsUIContext factors_context(const SharedData &data, const std::string &lib, int seg) {
+// Factors 子页的作用域 (每帧从 config 取; 池 / 层取本页已生效的)
+static Factors::FactorsUIContext factors_context(const SharedData &data, const std::string &pool, int seg) {
   Factors::FactorsUIContext c;
   c.seg = seg;
-  c.pool = lib;
-  c.factor_dir = Factors::factor_dir_of(data, lib, seg);
+  c.pool = pool;
+  c.factor_dir = Factors::factor_dir_of(data, pool, seg);
   c.start_date = data.config.start_date;
   c.end_date = data.config.end_date;
   c.sell_impact = data.config.sell_impact;
@@ -129,7 +129,7 @@ TaskHandle CreateFactorsTask() {
   // 不设 OnCollapse: 切走任务 worker 继续跑完 (单线程 + ~90 行小结构, 左栏状态标签照常更新, 切回直接看表)
 
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
-  // (与票池无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
+  // (与池无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
     // Search all: 一个文件搜完 (忙 → Done / Cancelled, 含 Loading 期就放弃的) → 出队下一个, 队空整目录 Run; 被取消 → 整轮放弃
     // 单个 Search 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
@@ -154,7 +154,7 @@ TaskHandle CreateFactorsTask() {
         }
         if (wrote) {
           Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, state->lib, state->seg, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
+          if (Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
             req.only_file = file;
             state->factors_service->Request(req);
           }
@@ -225,23 +225,23 @@ TaskHandle CreateFactorsTask() {
     }
     case TAB_FACTORS:
     case TAB_INSPECT: {
-      // 库 + 层 = data.feature.selection (与特征面板双向同步: 页顶控件直接改它, 特征面板改了这里跟着变).
-      // 本页 (lib, seg) 在所有服务空闲时追上选择: 换层 = 四个服务整体重建 (字段表 / 目录 / Inspect 缓存都随层);
-      // 同层换库只换目录 (下方自动重扫); 有服务在跑 = 旧作用域跑完再切
+      // 池 + 层 = data.feature.selection (与特征面板双向同步: 页顶控件直接改它, 特征面板改了这里跟着变).
+      // 本页 (pool, seg) 在所有服务空闲时追上选择: 换层 = 四个服务整体重建 (字段表 / 目录 / Inspect 缓存都随层);
+      // 同层换池只换目录 (下方自动重扫); 有服务在跑 = 旧作用域跑完再切
       Feature::Selection &sel = data.feature.selection;
       {
         ImGui::BeginGroup();
-        ImGui::TextUnformatted("Lib:");
+        ImGui::TextUnformatted("Pool:");
         ImGui::SameLine();
-        const std::string cur_lib = sel.lib();
+        const std::string cur_pool = sel.pool();
         ImGui::SetNextItemWidth(140);
-        if (ImGui::BeginCombo("##factor_lib", cur_lib.c_str())) {
-          float cn_x = 0.0f; // 中文名列起点 (对齐最长库名)
-          for (const LibDef &d : feature_libs())
+        if (ImGui::BeginCombo("##factor_pool", cur_pool.c_str())) {
+          float cn_x = 0.0f; // 中文名列起点 (对齐最长池名)
+          for (const PoolDef &d : feature_pools())
             cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
           cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
-          for (const LibDef &d : feature_libs()) {
-            const bool selected = cur_lib == d.name;
+          for (const PoolDef &d : feature_pools()) {
+            const bool selected = cur_pool == d.name;
             const bool clicked = ImGui::Selectable(d.name, selected);
             ImGui::SameLine(cn_x);
             ImGui::TextDisabled("%s", d.name_cn);
@@ -255,7 +255,7 @@ TaskHandle CreateFactorsTask() {
                   sel.selected_level = static_cast<int>(first->lvl);
                 }
               }
-              sel.libs[d.tier] = d.name;
+              sel.pools[d.tier] = d.name;
             }
             if (selected)
               ImGui::SetItemDefaultFocus();
@@ -265,13 +265,13 @@ TaskHandle CreateFactorsTask() {
         ImGui::SameLine();
         ImGui::TextUnformatted("Level:");
         {
-          const std::string key = data.config.factor_dir + "|" + sel.lib();
+          const std::string key = data.config.factor_dir + "|" + sel.pool();
           const Phase fst = state->factors_service ? state->factors_service->phase.load(std::memory_order_acquire) : Phase::Idle;
           if (key != state->counted_key || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
             state->counted_key = key;
             for (size_t i = 0; i < std::size(Factors::kFactorLevels); ++i) {
               const Factors::FactorLevel &l = Factors::kFactorLevels[i];
-              state->level_files[i] = l.tier == sel.tier ? Factors::list_factor_files(Factors::factor_dir_of(data, sel.lib(), l.seg)).size() : 0;
+              state->level_files[i] = l.tier == sel.tier ? Factors::list_factor_files(Factors::factor_dir_of(data, sel.pool(), l.seg)).size() : 0;
             }
           }
           state->prev_factors_phase = fst;
@@ -291,36 +291,36 @@ TaskHandle CreateFactorsTask() {
         }
         ImGui::EndGroup();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-          Factors::tip("库 + 因子层 (Factors / Inspect 共用; 与特征面板的库 / 层双向同步)\n"
-                       "• min = Lob 票池库 (盘口特征 + 冲击成本); 5min .. day = Bar 库 (全市场, 无冲击成本)\n"
-                       "• 只能选当前库所在档的层; 换到别档的库, 层跳到该档首个因子层\n"
+          Factors::tip("池 + 因子层 (Factors / Inspect 共用; 与特征面板的池 / 层双向同步)\n"
+                       "• min = Lob 池 (盘口特征 + 冲击成本); 5min .. day = Bar 池 (全市场, 无冲击成本)\n"
+                       "• 只能选当前池所在档的层; 换到别档的池, 层跳到该档首个因子层\n"
                        "• 窗长 d 等参数按本层行计; 标签取 L_1min 列在行末分钟采样\n"
-                       "• 因子目录 <factor_dir>/<库>/<层>/; 有服务在跑时, 跑完才切过去");
+                       "• 因子目录 <factor_dir>/<池>/<层>/; 有服务在跑时, 跑完才切过去");
       }
       {
         const bool busy = (state->factors_service && state->factors_service->busy()) || (state->search_service && state->search_service->busy()) ||
                           (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
         const int want_seg = selected_factor_seg(sel);
-        const std::string want_lib = want_seg != 0 ? sel.lib() : std::string{};
+        const std::string want_pool = want_seg != 0 ? sel.pool() : std::string{};
         if (!busy) {
           if (want_seg != state->seg) {
             reset_level_services(*state);
             state->seg = want_seg;
           }
-          if (want_lib != state->lib) {
-            state->prev_search_phase = Phase::Idle; // 旧库那轮 Search 的结束不再触发 Update 的自动 Run
-            state->lib = want_lib;
+          if (want_pool != state->pool) {
+            state->prev_search_phase = Phase::Idle; // 旧池那轮 Search 的结束不再触发 Update 的自动 Run
+            state->pool = want_pool;
           }
-        } else if (want_seg != state->seg || want_lib != state->lib) {
+        } else if (want_seg != state->seg || want_pool != state->pool) {
           ImGui::SameLine();
-          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(服务跑完后切到 %s / %s)", sel.lib().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(服务跑完后切到 %s / %s)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
         }
       }
       if (state->seg == 0) {
-        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: 票池库 min; all 库 5min .. day)", sel.lib().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
+        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: 池 min; all 池 5min .. day)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
         break;
       }
-      // 首次进页 / 换层: 字段表视图按层建一次 (编译期字段表, 不随运行变), 只扫描不算; 票池切换 → 目录变 → 自动重扫
+      // 首次进页 / 换层: 字段表视图按层建一次 (编译期字段表, 不随运行变), 只扫描不算; 池切换 → 目录变 → 自动重扫
       const Feature::Metadata &meta = data.feature.meta(Factors::factor_level(state->seg).tier);
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
@@ -330,11 +330,11 @@ TaskHandle CreateFactorsTask() {
       }
       auto &fs = *state->factors_service;
       auto &ss = *state->search_service;
-      const Factors::FactorsUIContext ctx = factors_context(data, state->lib, state->seg);
+      const Factors::FactorsUIContext ctx = factors_context(data, state->pool, state->seg);
       if (state->factors_scanned_dir != ctx.factor_dir) {
         state->factors_scanned_dir = ctx.factor_dir;
         Factors::FactorsRequest req;
-        Factors::MakeFactorsRequest(data, state->lib, state->seg, /*evaluate=*/false, false, req);
+        Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/false, false, req);
         fs.Request(req);
       }
       if (!state->inspect_service) {
@@ -350,13 +350,13 @@ TaskHandle CreateFactorsTask() {
         const int action = Factors::RenderTabFactors(fs, ss, state->factors_ui, ctx);
         if (action == 1 || action == 2) {
           Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, state->lib, state->seg, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
+          if (Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
             fs.Request(req);
         } else if (action == -1) {
           fs.RequestCancel();
         } else if (action == 3) {
           Factors::SearchRequest req;
-          if (Factors::MakeSearchRequest(data, state->lib, state->seg, state->factors_ui.search_row, state->factors_ui.backend == 1, req))
+          if (Factors::MakeSearchRequest(data, state->pool, state->seg, state->factors_ui.search_row, state->factors_ui.backend == 1, req))
             ss.Request(req);
         } else if (action == 4) {
           search_all_next(data, *state);
@@ -369,7 +369,7 @@ TaskHandle CreateFactorsTask() {
         iaction = 1;
       if (iaction == 1) {
         Factors::InspectRequest req;
-        if (Factors::MakeInspectRequest(data, state->lib, state->seg, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
+        if (Factors::MakeInspectRequest(data, state->pool, state->seg, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
           is.Request(req);
       } else if (iaction == -1) {
         is.RequestCancel();

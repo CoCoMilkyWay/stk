@@ -20,7 +20,7 @@ class FeatureRead;
 //
 //   每层各跑一份 (网格 = 该层, 段 = 日内层 1 天 / L_1day 连续 255 天), 各层轮交错 (层 0 轮 0, 层 1 轮 0, …);
 //   轮 = 一个抽样段 (plan_segs Shuffle 取前 kPvRounds 个 → 无偏覆盖);
-//   轮首单线程读笼: Bar 档 L_1day lim_dn / lim_up 逐日读 (当日常量, 盘前已知 → 同日对照, 不走 as-of; 按 lib.axis.ids 取全轴);
+//   轮首单线程读笼: Bar 档 L_1day lim_dn / lim_up 逐日读 (当日常量, 盘前已知 → 同日对照, 不走 as-of; 按 pool.axis.ids 取全轴);
 //   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自按块读计划读块列 (+ 该层 ts_valid) →
 //     私有 TsPlane 转置 (各列按自己的 valid_type 折哨兵);
 //     每特征槽一轮只被一个任务写, 每轮一次 dispatch 隔开相邻轮 → 累积器无锁无归约;
@@ -31,10 +31,10 @@ class FeatureRead;
 //   块末短锁发布该块 Cell (PDF 折线 + log10 谱) → 首帧 = 一块的 IO + 扫描 (几 ms),
 //   之后逐块逐轮收敛; 跑完全部轮即 Done, 不再耗后台.
 //
-// A 轴 = 库轴; 抽样资产 = 库轴下标 (UI 不需要资产身份).
+// A 轴 = 池轴; 抽样资产 = 池轴下标 (UI 不需要资产身份).
 // 重算: reset 清空 cells (预览是全表底图, 输入变了旧格子无参照意义), 逐块填回.
 // 生命周期: 进 Features 任务且输入就绪 → 起 worker + 自动构建 (不依赖选中特征);
-//   库 / 日期区间变了 或 Compute 落了新库 → 新请求即取消在跑重算;
+//   池 / 日期区间变了 或 Compute 落了新池 → 新请求即取消在跑重算;
 //   切出 Features 任务 → clear() 整体释放.
 // ============================================================================
 
@@ -74,7 +74,7 @@ struct Preview : Published {
   };
 
   struct Spec {
-    TierId tier = TierId::Lob;                    // 预览的档 (= 主库档; UI 按 (档, 层) 取 cells)
+    TierId tier = TierId::Lob;                    // 预览的档 (= 主池档; UI 按 (档, 层) 取 cells)
     std::array<ReadPlan, LEVEL_COUNT> plans;      // 每层预览列 (主档该层, metadata 下标升序, 不含 META 类); 空 = 该层不跑
     std::array<size_t, LEVEL_COUNT> n_features{}; // 每层特征总数 (cells 尺寸)
     std::vector<size_t> cage;                     // price 笼两列 {lim_dn, lim_up} (Bar 档旁读, All 的 L_1day 字段表下标; 逐日笼内判定, 融合进主扫描)
@@ -98,7 +98,7 @@ struct Preview : Published {
   // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回)
   void reset(analysis::ReadScope scope, Spec spec);
   // 轮训构建 (轮内特征块一块一任务: IO + 扫描 + 块末发布; 每轮一次 dispatch); 被取消返回 false
-  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:

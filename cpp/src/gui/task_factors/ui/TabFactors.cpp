@@ -356,7 +356,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
 // 该行选定持有期的汇总; 没有 → nullptr
 const factor::stat::HoldStat *hold_of(const FactorRow &r, int hold) { return r.has_stat ? r.find_hold(hold) : nullptr; }
 
-// 文件里的 stat 与当前作用域是否一致 (票池 / 区间)
+// 文件里的 stat 与当前作用域是否一致 (池 / 区间)
 bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
   return r.scope.pool == ctx.pool && r.scope.start_date == ctx.start_date && r.scope.end_date == ctx.end_date;
 }
@@ -570,7 +570,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• 未搜索 灰: 模板含自由参数但还没 weights\n"
      "    ◦ 不评; 高光它点 Search\n"
      "• ok 绿: 有 stat 且作用域一致 (本轮算的或文件读的)\n"
-     "• file≠scope 黄: 文件 stat 是别的票池 / 区间算的\n"
+     "• file≠scope 黄: 文件 stat 是别的池 / 区间算的\n"
      "• no stat: 从未评估\n"
      "• dup 黄: 与另一行同 hold 同一规范串",
      false},
@@ -984,7 +984,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::Text("%s  %s .. %s", ctx.pool.c_str(), misc::dash(ctx.start_date).c_str(), misc::dash(ctx.end_date).c_str());
   if (ImGui::IsItemHovered())
     tip("因子目录 %s\n"
-        "• 作用域 = 因子层所在库 (L_1min = Feature 页所选 Lob 票池库, 更粗的层 = Bar 库) + config 日期区间\n"
+        "• 作用域 = 因子层所在池 (L_1min = Feature 页所选 Lob 池, 更粗的层 = Bar 池) + config 日期区间\n"
         "• 一个时间只算一个作用域",
         ctx.factor_dir.c_str());
   ImGui::SameLine();

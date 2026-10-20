@@ -54,7 +54,7 @@ void CorrLagService::RequestCompute(SharedData &data, const std::vector<ColRef> 
 
 CorrPair &CorrPairService::target(SharedData &data) { return data.corr_pair; }
 
-void CorrPairService::RequestCompute(SharedData &data, LibId main, size_t level, const ColRef &a, const ColRef &b) {
+void CorrPairService::RequestCompute(SharedData &data, PoolId main, size_t level, const ColRef &a, const ColRef &b) {
   assert(a != b && level <= std::min(a.level, b.level));
   CorrRequest req;
   if (analysis::read_request(data.config, data.feature, {.main = main, .level = level, .cols = {a, b}}, req.scope, req.spec.plan)) // 按序: a 在前 (lag > 0 = a 领先)

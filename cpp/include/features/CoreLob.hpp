@@ -30,7 +30,7 @@ class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   friend Base;
 
 public:
-  // asset_id = 本库 A 轴下标 (= pool::Panel 的库轴下标, 查当日成员位)
+  // asset_id = 本池 A 轴下标 (= pool::Panel 的池轴下标, 查当日成员位)
   CoreLob(const fund::Panel &fund_panel,
           const pool::Panel &pool_panel,
           const std::string &code_ex,
@@ -62,8 +62,8 @@ public:
 
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日在池: 票池 (pool::Panel, 第 D 日由 Bar 库 D−1 收盘行定), 与 Fund 吃 fund_panel 同形.
-  // Lob 只在池内算 (本库轴 = 本池并集, 不是全市场); 多池各成一库, 不合算 (见 FeatureLib.hpp)
+  // 当日在池: 池 (pool::Panel, 第 D 日由 Bar 池 D−1 收盘行定), 与 Fund 吃 fund_panel 同形.
+  // Lob 只在池内算 (本池轴 = 本池并集, 不是全市场); 多池各成一池, 不合算 (见 FeaturePool.hpp)
   bool member(misc::Ymd date) const { return pool_panel_.in_pool(asset_id_, date); }
   ResamplerTick2Min &resampler() { return tick2min_; }
 
@@ -113,7 +113,7 @@ private:
   }
 
   size_t core_id_;
-  const pool::Panel &pool_panel_; // 票池逐日成员 (只读共享; member 查 (asset_id_, date) → cs_valid)
+  const pool::Panel &pool_panel_; // 池逐日成员 (只读共享; member 查 (asset_id_, date) → cs_valid)
 
   ResamplerTick2Min tick2min_;
 };

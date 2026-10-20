@@ -89,9 +89,9 @@ struct Transform::RuntimeOf final : Transform::Runtime {
   std::vector<Shard> shards; // [n_threads] 按 tid
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
-  // A = 库轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), As = 各档轴长 (源暂存),
+  // A = 池轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), As = 各档轴长 (源暂存),
   // 返回计算执行器
-  misc::exec::ForkJoin &prepare(size_t A, const PerLib<size_t> &As, const Spec &sp) {
+  misc::exec::ForkJoin &prepare(size_t A, const PerPool<size_t> &As, const Spec &sp) {
     TraceN("TransformPrepare");
     const Params &p = sp.params;
     const size_t BS = batch_segs(G::kLevel);
@@ -158,10 +158,10 @@ void Transform::reset(ReadScope scope, Spec sp) {
   const bool axis_changed = scope_.axis.ids != scope.axis.ids;
   scope_ = std::move(scope);
   spec = std::move(sp);
-  const size_t A = scope_.axis.size(); // A 轴 = 库轴
-  assert(spec.focus < A && "序列焦点越界 (库轴下标)");
+  const size_t A = scope_.axis.size(); // A 轴 = 池轴
+  assert(spec.focus < A && "序列焦点越界 (池轴下标)");
 
-  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 库轴变了 (槽位含义已变) 才重建
+  // 展示字段一律不清: 旧图留住, 首批 publish 整体覆盖. 池轴变了 (槽位含义已变) 才重建
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
   init_lines(snap.lines, scope_.axis.ids);
@@ -177,12 +177,12 @@ void Transform::reset(ReadScope scope, Spec sp) {
 // Build
 // ============================================================================
 
-bool Transform::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Transform::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   return with_grid(spec.plan.level, [&](auto g) { return build_grid<decltype(g)>(fr, cancel); });
 }
 
 template <class G>
-bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Transform::build_grid(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("TransformBuild");
   using Rt = RuntimeOf<G>;
   using PSD = typename G::PSD;
@@ -191,7 +191,7 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
   Rt &rt = static_cast<Rt &>(*rt_);
   const Params &p = spec.params;
   const ReadPlan &rp = spec.plan;
-  const size_t A = scope_.axis.size(); // 库轴大小
+  const size_t A = scope_.axis.size(); // 池轴大小
   constexpr size_t VR = G::R;          // 段行数
   constexpr size_t BS = batch_segs(G::kLevel);
   assert(A > 0 && snap.lines.size() == A && "reset 先于 build");
@@ -286,7 +286,7 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
   // ==========================================================================
   const auto compute = [&](const TsPlane &pl, size_t b0, size_t bd) {
     // ------------------------------------------------------------------
-    // Phase TS: 每 (资产, 段) 一条因果链 → out_ (a = 库轴下标); kAssetBlock 个资产一任务
+    // Phase TS: 每 (资产, 段) 一条因果链 → out_ (a = 池轴下标); kAssetBlock 个资产一任务
     // ------------------------------------------------------------------
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       typename Rt::Shard &sh = rt.shards[tid];
@@ -393,7 +393,7 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
     }
 
     // ------------------------------------------------------------------
-    // Phase 统计: 每资产 sketch + ADF/KPSS/ACF/PSD + 序列快照 (全资产, 槽位 == 库轴下标); kAssetBlock 个资产一任务
+    // Phase 统计: 每资产 sketch + ADF/KPSS/ACF/PSD + 序列快照 (全资产, 槽位 == 池轴下标); kAssetBlock 个资产一任务
     // ------------------------------------------------------------------
     run_phase(ex, n_blocks, cancel, [&](size_t blk, size_t tid) {
       typename Rt::Shard &sh = rt.shards[tid];

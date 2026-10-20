@@ -3,7 +3,7 @@
 #include "misc/fs.hpp"
 #include "nlohmann/json.hpp"
 #include "shared/Config.hpp"
-#include "shared/FeatureLib.hpp"
+#include "shared/FeaturePool.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -38,7 +38,7 @@ void AssetAxis::load() {
   dirty_ = false;
 
   if (!std::filesystem::exists(path_))
-    return; // 首次建库, 空轴
+    return; // 首次建池, 空轴
 
   std::ifstream file(path_);
   assert(file.is_open() && "AssetAxis: 注册表存在但打不开");
@@ -132,9 +132,9 @@ AssetAxis &asset_axis() {
   return instance;
 }
 
-LibAxis full_axis(std::size_t num_assets) {
+PoolAxis full_axis(std::size_t num_assets) {
   assert(num_assets > 0 && "资产轴为空");
-  LibAxis out;
+  PoolAxis out;
   out.ids.resize(num_assets);
   for (std::size_t i = 0; i < num_assets; ++i)
     out.ids[i] = static_cast<uint32_t>(i);
@@ -142,13 +142,13 @@ LibAxis full_axis(std::size_t num_assets) {
   return out;
 }
 
-LibAxis pool_axis(std::vector<uint32_t> ids) {
+PoolAxis pool_axis(std::vector<uint32_t> ids) {
   const AssetAxis &table = asset_axis();
-  assert(!ids.empty() && "库轴为空");
-  assert(std::adjacent_find(ids.begin(), ids.end(), std::greater_equal<>()) == ids.end() && "库轴 ids 须升序去重");
-  assert(ids.back() < table.size() && "库轴资产不在 A 轴上");
+  assert(!ids.empty() && "池轴为空");
+  assert(std::adjacent_find(ids.begin(), ids.end(), std::greater_equal<>()) == ids.end() && "池轴 ids 须升序去重");
+  assert(ids.back() < table.size() && "池轴资产不在 A 轴上");
 
-  LibAxis out;
+  PoolAxis out;
   out.ids = std::move(ids);
   out.hash = kFnvOffset;
   for (const uint32_t a : out.ids)
@@ -157,25 +157,25 @@ LibAxis pool_axis(std::vector<uint32_t> ids) {
 }
 
 // ============================================================================
-// 特征库清单 (见 FeatureLib.hpp): <dir>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...]}
+// 特征库清单 (见 FeaturePool.hpp): <dir>/pool.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...]}
 // ============================================================================
 namespace {
-std::string lib_manifest(const std::string &dir) { return dir + "/lib.json"; }
+std::string pool_manifest(const std::string &dir) { return dir + "/pool.json"; }
 } // namespace
 
-FeatureLib load_lib(const Config &cfg, std::string_view name) {
-  FeatureLib lib;
-  lib.tier = lib_def(name).tier;
-  lib.name = name;
-  lib.dir = cfg.FeatureLibDir(name);
-  std::ifstream file(lib_manifest(lib.dir));
+FeaturePool load_pool(const Config &cfg, std::string_view name) {
+  FeaturePool pool;
+  pool.tier = pool_def(name).tier;
+  pool.name = name;
+  pool.dir = cfg.FeaturePoolDir(name);
+  std::ifstream file(pool_manifest(pool.dir));
   if (!file.is_open())
-    return lib; // 未建库
+    return pool; // 未建池
 
   const nlohmann::json j = nlohmann::json::parse(file);
-  assert(j.at("tier").get<std::string>() == tier_name(lib.tier) && "库清单的档与库名不符");
-  lib.dates = j.at("dates").get<std::vector<misc::Ymd>>();
-  assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "库清单日期轴为空 / 非升序");
+  assert(j.at("tier").get<std::string>() == tier_name(pool.tier) && "池清单的档与池名不符");
+  pool.dates = j.at("dates").get<std::vector<misc::Ymd>>();
+  assert(!pool.dates.empty() && std::is_sorted(pool.dates.begin(), pool.dates.end()) && "池清单日期轴为空 / 非升序");
 
   const AssetAxis &table = asset_axis();
   const auto &codes = j.at("codes");
@@ -183,48 +183,48 @@ FeatureLib load_lib(const Config &cfg, std::string_view name) {
   ids.reserve(codes.size());
   for (const auto &c : codes) {
     const std::size_t id = table.find(c.get_ref<const std::string &>());
-    assert(id < table.size() && "库清单代码不在 A 轴上");
+    assert(id < table.size() && "池清单代码不在 A 轴上");
     ids.push_back(static_cast<uint32_t>(id));
   }
-  lib.axis = pool_axis(std::move(ids));
-  return lib;
+  pool.axis = pool_axis(std::move(ids));
+  return pool;
 }
 
-void save_lib(const FeatureLib &lib) {
-  assert(lib.ready() && !lib.dates.empty() && "空库不落清单");
+void save_pool(const FeaturePool &pool) {
+  assert(pool.ready() && !pool.dates.empty() && "空池不落清单");
   const AssetAxis &table = asset_axis();
   std::vector<std::string> codes;
-  codes.reserve(lib.axis.size());
-  for (const uint32_t a : lib.axis.ids)
+  codes.reserve(pool.axis.size());
+  for (const uint32_t a : pool.axis.ids)
     codes.push_back(table.code(a));
 
   nlohmann::json j;
-  j["tier"] = tier_name(lib.tier);
-  j["dates"] = lib.dates;
+  j["tier"] = tier_name(pool.tier);
+  j["dates"] = pool.dates;
   j["codes"] = codes;
 
-  std::filesystem::create_directories(lib.dir);
-  const std::string path = lib_manifest(lib.dir);
+  std::filesystem::create_directories(pool.dir);
+  const std::string path = pool_manifest(pool.dir);
   const std::string tmp = path + ".tmp";
   {
     std::ofstream file(tmp);
-    assert(file.is_open() && "save_lib: 临时文件打不开");
+    assert(file.is_open() && "save_pool: 临时文件打不开");
     file << j.dump(0);
-    assert(file.good() && "save_lib: 写入失败");
+    assert(file.good() && "save_pool: 写入失败");
   }
   std::filesystem::rename(tmp, path); // 原子替换: 读端要么见旧清单要么见新清单
 }
 
-std::string default_lib(const Config &cfg, TierId tier) {
+std::string default_pool(const Config &cfg, TierId tier) {
   const char *first = nullptr;
-  for (const LibDef &d : feature_libs()) {
+  for (const PoolDef &d : feature_pools()) {
     if (d.tier != tier)
       continue;
-    if (std::filesystem::exists(lib_manifest(cfg.FeatureLibDir(d.name))))
+    if (std::filesystem::exists(pool_manifest(cfg.FeaturePoolDir(d.name))))
       return d.name;
     if (!first)
       first = d.name;
   }
-  assert(first && "该档没有库 (库表)");
+  assert(first && "该档没有池 (池表)");
   return first;
 }

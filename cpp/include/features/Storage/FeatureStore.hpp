@@ -224,7 +224,7 @@ private:
   static constexpr size_t level_bytes(size_t lvl, size_t num_assets) { return store_level_bytes<T>(lvl, num_assets); }
 
   // Config
-  const std::uint64_t axis_hash_; // A 轴指纹 (LibAxis::hash), 落进每个特征文件头
+  const std::uint64_t axis_hash_; // A 轴指纹 (PoolAxis::hash), 落进每个特征文件头
   std::string output_dir_;
 
   // 日环: 日 d 占 ring_[d % P]. 不需要 date→slot map / freelist / epoch / 状态枚举 (见文件头)
@@ -234,8 +234,8 @@ private:
   Day day_at(size_t d) { return {&ring_[d % ring_size_], num_assets_, d}; }
 
 public:
-  // num_assets: 档 A 轴大小; axis_hash: LibAxis::hash, 写进每个
-  // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeatureLib 推导同一轴比对)
+  // num_assets: 档 A 轴大小; axis_hash: PoolAxis::hash, 写进每个
+  // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeaturePool 推导同一轴比对)
   FeatureStore(size_t num_assets,
                std::uint64_t axis_hash,
                const std::string &output_dir = "",
@@ -247,7 +247,7 @@ public:
 
     if (!output_dir.empty()) {
       output_dir_ = output_dir;
-      // 只建目录, 不清库: 清库/重算是调用方的显式决定 (回测全量重算见
+      // 只建目录, 不清池: 清池/重算是调用方的显式决定 (回测全量重算见
       // ComputeService), 构造副作用会让实盘复用 store 时误删历史特征.
       std::filesystem::create_directories(output_dir_);
     }
@@ -330,7 +330,7 @@ public:
     return d < io + ring_size_ ? day_at(d) : Day{};
   }
 
-  // 一个 (asset, d) 写完. 计数攒齐全轴 (库轴) 后 CS 放行;
+  // 一个 (asset, d) 写完. 计数攒齐全轴 (池轴) 后 CS 放行;
   // release 与 cs_try_open 的 acquire 配对, 保证张量写入对 CS 可见.
   // 缺 binary 的 asset-day 也要计 (张量保持默认值), 由当时的处置权持有者计.
   void ts_close(const Day &day) {

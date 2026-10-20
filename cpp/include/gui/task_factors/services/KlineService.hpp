@@ -1,7 +1,7 @@
 // KlineService — Factors→Inspect 右下图的单 worker: 对选中的一个资产, 沿 Inspect 结果的交易日逐日流式读因子层 OHLC (选列读, 每日只碰
 // 4~5 个小文件) → 追加 + 单调前缀发布, GUI 画已发布前缀 (发布协议 = shared/Progress.hpp PrefixPub, 与 shared/OrderFlow.hpp 的 Kline 同一份).
 // 每天之间查 cancel_: 拖资产随时打断, 新代从头流.
-// 请求 = (gen, 特征库作用域 (目录 + 库轴), 日期表, 库轴资产下标, 列号). gen 由 GUI 递增自持, 与发布面配对; 新请求覆盖旧的.
+// 请求 = (gen, 特征库作用域 (目录 + 池轴), 日期表, 池轴资产下标, 列号). gen 由 GUI 递增自持, 与发布面配对; 新请求覆盖旧的.
 // 线程模型 (gui/util/Service.hpp, 随对象). worker 只在 "GUI 请求代 ≠ 发布代" 时重建数组 (此刻 GUI 不读前缀), 免锁.
 #pragma once
 
@@ -18,9 +18,9 @@ namespace GUI::Factors {
 
 struct KlineRequest {
   uint32_t gen = 0;
-  analysis::ReadScope scope;    // 主库 lib (目录 + 库轴, reader 的期望)
+  analysis::ReadScope scope;    // 主池 pool (目录 + 池轴, reader 的期望)
   std::vector<misc::Ymd> dates; // = InspectResult::dates; x = 日下标 × VR + 行 (VR = 该层每日有效行数)
-  int sub = -1;                 // 库轴资产下标
+  int sub = -1;                 // 池轴资产下标
   size_t level = 0;             // 特征库层 (因子层)
   uint32_t col[5] = {};         // 该层列号: open high low close ts_valid (FeatureTable 解析)
 };
@@ -49,7 +49,7 @@ private:
   Progress &board() { return s_; }
   bool run(KlineRequest &req);
   void reset(KlineRequest &&req);
-  bool step(size_t d); // 装一天并发布; false = 库判废
+  bool step(size_t d); // 装一天并发布; false = 池判废
 
   KlineStream s_;
   // ---- worker 私有 ----

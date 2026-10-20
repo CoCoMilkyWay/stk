@@ -30,7 +30,7 @@
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
 //   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 开盘型 (T+N) 回填旧日张量, 旧日句柄持到结清才 ts_close.
 //   档钩子 (Derived 实现):
-//     bool  member(misc::Ymd)  日开 (onDay 之后): 当日成员位 → cs_valid (Lob 票池 / Bar 在市)
+//     bool  member(misc::Ymd)  日开 (onDay 之后): 当日成员位 → cs_valid (Lob 池 / Bar 在市)
 //     auto &resampler()        源 → MinuteData 的重采样器 (ResamplerTick2Min / ResamplerBar2Min: reset / roll)
 // ============================================================================
 template <class Derived, class T, class Dag>
