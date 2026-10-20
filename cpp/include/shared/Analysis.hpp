@@ -9,7 +9,7 @@
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
-#include "shared/FeaturePool.hpp" // FeaturePool
+#include "shared/FeatureLib.hpp" // FeatureLib
 
 #include <algorithm>
 #include <array>
@@ -204,7 +204,7 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
     lines[order[i]].draw = 1;
 }
 
-// ---- 读取范围 (Request 公共头): GUI 线程从 config + 池清单解析, worker 只消费 ----
+// ---- 读取范围 (Request 公共头): GUI 线程从 config + 库清单解析, worker 只消费 ----
 // 池集 = 主池 + 各列所在池 (同档多池 / 跨档一视同仁; 资产不在列所在池 / 该池这天没落盘 = 无源), 余池空
 inline constexpr PoolId kAutoMain = UINT8_MAX; // 主池 = 列所在池里池轴最短者 (Lob 池优先: Bar 列旁读 all, 池外格不算)
 // 日轴: 段序 / 承接日取哪些池的落盘日
@@ -213,15 +213,15 @@ enum class DayAxis : uint8_t { Main,    // config 区间 × 主池 (流式分析
 struct ReadScope {
   std::vector<misc::Ym> months;      // 升序 (日轴区间覆盖的月); 池集任一未建 → 空
   PoolId main = kAllPool;            // 主池: A 轴 (池轴) / K 线等主池列
-  PoolMask days = 0;                 // 日轴池集 (DayAxis 定): 这些池落盘日的并集
+  PoolMask days = 0;                 // 日轴池集 (DayAxis 定): 这些库落盘日的并集
   PoolAxis axis;                     // A 轴 (平面资产维, 槽位 → 全局 id): 主池轴, 或指定资产 (OrderFlow 单资产)
-  PerPool<FeaturePool> pools;        // 档 / 池轴 / 目录, 与写端同一清单
+  PerPool<FeatureLib> libs;          // 档 / 池轴 / 目录, 与写端同一清单
   PerPool<std::vector<uint32_t>> to; // A 轴 a → 该池轴下标 (kAbsent = 不在该池); 与 A 轴同轴的池空
 
-  bool has(PoolId l) const { return !pools[l].name.empty(); } // 在池集内
-  const FeaturePool &pool() const { return pools[main]; }
+  bool has(PoolId l) const { return !libs[l].name.empty(); } // 在池集内
+  const FeatureLib &lib() const { return libs[main]; }
   PerPool<size_t> sizes() const;                                 // 各池的池轴长 (源暂存按源池开)
-  Readers readers(const PerPool<const FeatureRead *> &fr) const; // fr: 池集各池 reader (PoolReaders::ptr)
+  Readers readers(const PerPool<const FeatureRead *> &fr) const; // fr: 池集各池 reader (LibReaders::ptr)
 };
 // 池集 = main + cols 所在池 (main = kAutoMain → 见上); assets 空 = A 轴取主池轴, 否则 = 这些全局 id (升序去重)
 ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {},
@@ -237,7 +237,7 @@ struct Request {
 // GUI 线程: 该档该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid)
 fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, std::vector<size_t> cols);
 
-// 日轴 (升序): scope.days 各池落盘日 (按池清单日期轴) 的并集 ∩ months + 每日所属月下标 + 每日落了盘的日轴池
+// 日轴 (升序): scope.days 各库落盘日 (按库清单日期轴) 的并集 ∩ months + 每日所属月下标 + 每日落了盘的日轴池
 // (余池的位由 plan_segs 只对入选的日补判)
 struct DateList {
   std::vector<misc::Ymd> dates;

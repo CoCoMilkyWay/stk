@@ -17,7 +17,7 @@
 
 // Forward declarations
 struct SharedData;
-struct FeaturePool;
+struct FeatureLib;
 class StoreRing;
 template <class T>
 class FeatureStore;
@@ -304,7 +304,7 @@ template <class T>
 struct StageCtx {
   int worker_id;
   FeatureStore<T> &store;
-  const PerTier<FeaturePool> &pools; // 本档池 pools[T::kId] (A 轴 / 目录) + CS 旁读档的池 pools[TierSide<T>] (无旁读列时不读); 余档空
+  const PerTier<FeatureLib> &libs; // 本档池 libs[T::kId] (A 轴 / 目录) + CS 旁读档的池 libs[TierSide<T>] (无旁读列时不读); 余档空
   std::span<const misc::Ymd> dates;
   const std::atomic<bool> &cancel;
   ComputeStats::Core &stat; // 本核发布槽 (单写者)
@@ -346,11 +346,11 @@ void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
 
 // ============================================================================
 // 特征管线入口 (两档同一骨架, 定义见 feature_pipeline.hpp, 档 TU 显式实例化): ComputeService 备好共享前置
-// (日期轴 / 写读池 / fund_panel / 清池 / 日志) 后调用, 返回 = 未取消. on_io(n) = 已落盘天数 (协调线程每 100ms 调, 进度面镜像)
+// (日期轴 / 写读库 / fund_panel / 清库 / 日志) 后调用, 返回 = 未取消. on_io(n) = 已落盘天数 (协调线程每 100ms 调, 进度面镜像)
 // ============================================================================
 struct PipelineArgs {
   SharedData &data;
-  const PerTier<FeaturePool> &pools; // 本档池 + CS 旁读档的池 (余档空), 见 StageCtx
+  const PerTier<FeatureLib> &libs; // 本档池 + CS 旁读档的池 (余档空), 见 StageCtx
   const std::vector<misc::Ymd> &dates;
   size_t ring_slots;
   uint64_t adopt_pct;

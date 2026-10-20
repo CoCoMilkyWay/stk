@@ -103,25 +103,25 @@ struct Readers {
     return *rd[l];
   }
 };
-// 池集 reader 组 (worker 线程按池清单开, 池集外 = 空清单): 拿到取消旗 (池判废时拉起); 清单没变 (目录 + 池轴) 的池复用
-struct PoolReaders {
-  PerPool<FeaturePool> pools;
+// 池集 reader 组 (worker 线程按库清单开, 池集外 = 空清单): 拿到取消旗 (库判废时拉起); 清单没变 (目录 + 池轴) 的池复用
+struct LibReaders {
+  PerPool<FeatureLib> libs;
   PerPool<std::optional<FeatureRead>> at;
   PerPool<const FeatureRead *> ptr{};
 
-  void open(const PerPool<FeaturePool> &want, std::atomic<bool> *abort) {
+  void open(const PerPool<FeatureLib> &want, std::atomic<bool> *abort) {
     for (const PoolId l : pool_ids()) {
-      const FeaturePool &w = want[l];
+      const FeatureLib &w = want[l];
       if (w.name.empty()) {
         at[l].reset();
-        pools[l] = FeaturePool{};
+        libs[l] = FeatureLib{};
         ptr[l] = nullptr;
         continue;
       }
-      assert(w.ready() && "池集含未建池 (请求方按 months 为空放弃)");
-      if (!at[l] || pools[l].dir != w.dir || pools[l].axis.hash != w.axis.hash || pools[l].axis.size() != w.axis.size()) {
-        pools[l] = w;
-        at[l].emplace(pools[l], abort);
+      assert(w.ready() && "池集含未建库 (请求方按 months 为空放弃)");
+      if (!at[l] || libs[l].dir != w.dir || libs[l].axis.hash != w.axis.hash || libs[l].axis.size() != w.axis.size()) {
+        libs[l] = w;
+        at[l].emplace(libs[l], abort);
       }
       ptr[l] = &*at[l];
     }
@@ -129,7 +129,7 @@ struct PoolReaders {
   bool stale() const {
     return std::ranges::any_of(at.v, [](const std::optional<FeatureRead> &r) { return r && r->stale(); });
   }
-  void revive() { // 重读池 (重算清池 / 判废后新池落地), 判废解除
+  void revive() { // 重读库 (重算清库 / 判废后新库落地), 判废解除
     for (std::optional<FeatureRead> &r : at.v)
       if (r)
         r->revive();

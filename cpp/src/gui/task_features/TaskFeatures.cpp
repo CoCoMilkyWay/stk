@@ -15,7 +15,7 @@
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
 #include "shared/Analysis.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -203,8 +203,8 @@ TaskHandle CreateFeaturesTask() {
       state->tab_enabled[k] = !disable[k];
 
     // 预览每跑完一轮 (done 增长) 就把特征表 (元数据 + 账目/值域) 落地
-    // <当前池目录>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
-    // done 回退 (新请求 begin 清零) 不落, 避免写出空表; Done 那一帧补一次 (空池 0 轮也有文件)
+    // <当前库目录>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
+    // done 回退 (新请求 begin 清零) 不落, 避免写出空表; Done 那一帧补一次 (空库 0 轮也有文件)
     {
       const Phase pv_phase = data.preview.phase.load(std::memory_order_acquire);
       const size_t pv_done = data.preview.done.load(std::memory_order_acquire);
@@ -254,8 +254,8 @@ TaskHandle CreateFeaturesTask() {
     case TAB_COMPUTE: { // 全量特征计算
       const bool running = state->compute_service && state->compute_service->busy();
       // 任一 reader (含 Factors 页) 判废删了某个池 → 提示重算 (该池 compute 开跑即撤销登记; 哪个池见 Compute 页池表)
-      const auto pool_stale = [&](const PoolDef &d) { return FeatureRead::dir_stale(data.config.FeaturePoolDir(d.name)); };
-      if (!running && std::ranges::any_of(feature_pools(), pool_stale))
+      const auto lib_stale = [&](const PoolDef &d) { return FeatureRead::dir_stale(data.config.FeatureLibDir(d.name)); };
+      if (!running && std::ranges::any_of(feature_pools(), lib_stale))
         return {TaskStatus::Kind::Warn, "stale"};
       if (!state->compute_service)
         return {};
@@ -312,7 +312,7 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // OrderFlow 主池随请求 (TabOrderFlow 按选中列定); 池重算后整体重建 + 重扫
+    // OrderFlow 主池随请求 (TabOrderFlow 按选中列定); 库重算后整体重建 + 重扫
     const auto renew_orderflow = [&] {
       state->orderflow_service = std::make_unique<Features::OrderFlowService>();
       data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
@@ -376,12 +376,12 @@ TaskHandle CreateFeaturesTask() {
       const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
       if ((state->prev_compute_phase == Phase::Running) &&
           (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
-        // Compute just finished - OrderFlow 按新清单重建 + 重扫; 池表重扫; 预览重抽 (新池落盘)
+        // Compute just finished - OrderFlow 按新清单重建 + 重扫; 池表重扫; 预览重抽 (新库落盘)
         renew_orderflow();
-        state->compute_state.pools_dirty = true;
+        state->compute_state.libs_dirty = true;
         if (state->streams_started) {
           state->preview_service->RequestCompute(data);
-          Features::InvalidateCorrRequests(state->corr_ui_state); // 新池落盘: 相关矩阵同样作废
+          Features::InvalidateCorrRequests(state->corr_ui_state); // 新库落盘: 相关矩阵同样作废
         }
       }
       state->prev_compute_phase = current_phase;

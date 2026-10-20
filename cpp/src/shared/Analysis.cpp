@@ -16,13 +16,13 @@ namespace {
 // A 轴 + 各池映射 (assets 空 = 主池轴, 主池同轴不映射)
 void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
   const bool own = assets.empty();
-  s.axis = own ? s.pool().axis : PoolAxis{.ids = std::move(assets)};
+  s.axis = own ? s.lib().axis : PoolAxis{.ids = std::move(assets)};
   check_axis(s.axis.ids);
   for (const PoolId l : pool_ids()) {
     s.to[l].clear();
     if (!s.has(l) || (own && l == s.main))
       continue;
-    const PoolAxis &side = s.pools[l].axis;
+    const PoolAxis &side = s.libs[l].axis;
     s.to[l].resize(s.axis.size());
     for (size_t a = 0; a < s.axis.size(); ++a) {
       const size_t x = side.sub_of(s.axis.global(a));
@@ -30,10 +30,10 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
     }
   }
 }
-// 池 l 落了第 d 天 (按池清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
+// 池 l 落了第 d 天 (按库清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
 bool landed(const ReadScope &s, PoolId l, misc::Ymd d) {
-  const FeaturePool &pool = s.pools[l];
-  return std::binary_search(pool.dates.begin(), pool.dates.end(), d) && FeatureRead::has_date(pool.tier, pool.dir, d);
+  const FeatureLib &lib = s.libs[l];
+  return std::binary_search(lib.dates.begin(), lib.dates.end(), d) && FeatureRead::has_date(lib.tier, lib.dir, d);
 }
 // 第 d 天池集里落了盘的池
 PoolMask landed_mask(const ReadScope &s, misc::Ymd d) {
@@ -52,21 +52,21 @@ ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &
   const auto add = [&](PoolId l) {
     if (s.has(l))
       return;
-    s.pools[l] = load_pool(cfg, pool_def(l).name);
-    assert(s.pools[l].tier == pool_tier(l));
-    ready &= s.pools[l].ready();
+    s.libs[l] = load_lib(cfg, pool_def(l).name);
+    assert(s.libs[l].tier == pool_tier(l));
+    ready &= s.libs[l].ready();
   };
   if (main != kAutoMain)
     add(main);
   for (const ColRef &c : cols)
     add(c.pool);
-  if (!ready) // 未建池 = 空范围 (请求方见 months 为空即放弃)
+  if (!ready) // 未建库 = 空范围 (请求方见 months 为空即放弃)
     return s;
   if (main == kAutoMain) {
     assert(!cols.empty() && "自动主池要列");
     main = cols.front().pool;
     for (const PoolId l : pool_ids())
-      if (s.has(l) && s.pools[l].axis.size() < s.pools[main].axis.size())
+      if (s.has(l) && s.libs[l].axis.size() < s.libs[main].axis.size())
         main = l;
   }
   s.main = main;
@@ -77,8 +77,8 @@ ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &
     misc::Ymd lo = 0, hi = 0;
     for (const PoolId l : pool_ids())
       if (s.has(l)) {
-        const std::vector<misc::Ymd> &d = s.pools[l].dates;
-        assert(!d.empty() && "已建池日期轴为空");
+        const std::vector<misc::Ymd> &d = s.libs[l].dates;
+        assert(!d.empty() && "已建库日期轴为空");
         s.days |= pool_bit(l);
         lo = lo == 0 ? d.front() : std::min(lo, d.front());
         hi = std::max(hi, d.back());
@@ -92,7 +92,7 @@ ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &
 PerPool<size_t> ReadScope::sizes() const {
   PerPool<size_t> out;
   for (const PoolId l : pool_ids())
-    out[l] = pools[l].axis.size();
+    out[l] = libs[l].axis.size();
   return out;
 }
 
@@ -141,9 +141,9 @@ DateList enumerate_dates(const ReadScope &s) {
   for (const PoolId l : pool_ids()) {
     if (!(s.days & pool_bit(l)))
       continue;
-    const FeaturePool &pool = s.pools[l];
-    for (auto it = std::lower_bound(pool.dates.begin(), pool.dates.end(), lo); it != pool.dates.end() && *it <= hi; ++it)
-      if (FeatureRead::has_date(pool.tier, pool.dir, *it))
+    const FeatureLib &lib = s.libs[l];
+    for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), lo); it != lib.dates.end() && *it <= hi; ++it)
+      if (FeatureRead::has_date(lib.tier, lib.dir, *it))
         axis.emplace_back(*it, pool_bit(l));
   }
   std::sort(axis.begin(), axis.end());
@@ -248,9 +248,9 @@ SegPlan plan_day(const ReadScope &scope, misc::Ymd date) {
   for (const PoolId l : pool_ids()) {
     if (!(scope.days & pool_bit(l)))
       continue;
-    const FeaturePool &pool = scope.pools[l];
-    for (auto it = std::lower_bound(pool.dates.begin(), pool.dates.end(), date); it != pool.dates.begin() && *(it - 1) > prev && *(it - 1) >= lo; --it)
-      if (FeatureRead::has_date(pool.tier, pool.dir, *(it - 1))) {
+    const FeatureLib &lib = scope.libs[l];
+    for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), date); it != lib.dates.begin() && *(it - 1) > prev && *(it - 1) >= lo; --it)
+      if (FeatureRead::has_date(lib.tier, lib.dir, *(it - 1))) {
         prev = *(it - 1);
         break;
       }

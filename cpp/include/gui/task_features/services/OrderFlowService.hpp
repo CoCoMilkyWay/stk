@@ -10,7 +10,7 @@
 //         → 背槽整体发布 (供 GUI 资产筛选)
 //       Kline 流式: 分批 (与 Dist / Transform / Corr 同一个 Prefetch::stream, 算本批同时预读下一批) → 追加 + 单调前缀发布;
 //         批与批之间可被新代打断
-//   日轴 = 池集各池落盘日的并集 (analysis::DayAxis::Union: Kline = all + overlay 各池, 不受回测区间限; 每天带各池落盘位);
+//   日轴 = 池集各库落盘日的并集 (analysis::DayAxis::Union: Kline = all + overlay 各池, 不受回测区间限; 每天带各库落盘位);
 //     Depth / Pick 只取锚点日 (analysis::plan_day). Kline 底图 = all 池日 K (all 缺的日不画), overlay 各画各的
 //   读计划 = 固定列 [0, k0) (K 线 / VWAP / 状态, 按字段表 code 定列) + overlay [k0, n) (选中 ColRef, 任意池任意层), 同一条读路径:
 //     尾部行 (各列按自己的层画, 行末对齐到网格行; 网格: Kline = L_1min / Depth = L_sec, 细于网格的列不进 Kline),
@@ -18,7 +18,7 @@
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (析构 join). 池重算后整体重建 + 重扫 (TaskFeatures).
+//           切出 Features 任务 Destroy → Stop (析构 join). 库重算后整体重建 + 重扫 (TaskFeatures).
 // 主池 (图1 VWAP / 候选轴) 随请求: GUI 按选中列定 (无选中 = all, 单池 = 该池); 主池未建 → 退回 all
 //   (逐笔重放按 orders 日文件, 与主池无关; 退回后无 VWAP / overlay)
 #pragma once

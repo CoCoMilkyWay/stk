@@ -25,7 +25,7 @@ struct OperatorsUIState {
 int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui);
 
 // 算子表落地 JSON (给人看, 一行一算子): <factor_dir>/operators.json. 算子库与池 / 日期区间无关
-// (合成张量), 故不像 features.json 那样按池分目录, 全局一份, 每次跑完覆盖.
+// (合成张量), 故不像 features.json 那样按库分目录, 全局一份, 每次跑完覆盖.
 // 全部行按 OpTable 表序 (不受页面排序影响); 表头 = 本轮张量参数 + 总体状态, 行 = 静态列 + 对拍/耗时
 // (未跑完的行只落静态列 + status). 一轮结束 (Running → Done / Cancelled) 时由 TaskFactors 调
 void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc);

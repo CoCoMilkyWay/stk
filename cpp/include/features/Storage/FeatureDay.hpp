@@ -28,7 +28,7 @@
 //   XOR 差分 (写端逐列按数据定, 见 write).
 //   A / axis_hash = 池轴 (列 → 资产映射靠池轴顺序, 不在文件里; 读端从同一
 //   config 推导同一池轴, O(1) 比对即确认列序一致); fingerprint = 字段表指纹.
-//   magic (含格式版本) / 池轴 / 指纹 与读端期望不符 = 旧池 → Status 告知, 由池判废.
+//   magic (含格式版本) / 池轴 / 指纹 与读端期望不符 = 旧库 → Status 告知, 由库判废.
 //   形状是编译期常量: 写端永远写满 (rows / field_count), 文件头 T/F 只做校验.
 //   IO worker 按层序落盘, 最后一层的日文件兼任本日 commit 标记 (FeatureRead::has_date).
 //
@@ -86,7 +86,7 @@ struct FeatureDay {
 
   enum class Status : uint8_t {
     Ok,
-    Missing,  // 文件不在 (池被外部清除)
+    Missing,  // 文件不在 (库被外部清除)
     Format,   // magic 不符 (旧格式版本)
     AxisSize, // 池轴大小不符
     AxisHash, // 池轴指纹不符
@@ -102,9 +102,9 @@ struct FeatureDay {
     case Status::Format:
       return "日文件格式版本不符 (特征库是旧格式写的)";
     case Status::AxisSize:
-      return "池轴大小不符 (特征库是旧 池清单/回测区间写的)";
+      return "池轴大小不符 (特征库是旧 库清单/回测区间写的)";
     case Status::AxisHash:
-      return "池轴指纹不符 (特征库与当前池清单/asset_axis.json 列序不一致)";
+      return "池轴指纹不符 (特征库与当前库清单/asset_axis.json 列序不一致)";
     case Status::Fields:
       return "字段表指纹不符 (特征文件是旧字段表写的)";
     }

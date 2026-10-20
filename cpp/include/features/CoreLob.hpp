@@ -63,7 +63,7 @@ public:
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
   // 当日在池: 池 (pool::Panel, 第 D 日由 Bar 池 D−1 收盘行定), 与 Fund 吃 fund_panel 同形.
-  // Lob 只在池内算 (本池轴 = 本池并集, 不是全市场); 多池各成一池, 不合算 (见 FeaturePool.hpp)
+  // Lob 只在池内算 (本池轴 = 本池并集, 不是全市场); 多池各成一池, 不合算 (见 FeatureLib.hpp)
   bool member(misc::Ymd date) const { return pool_panel_.in_pool(asset_id_, date); }
   ResamplerTick2Min &resampler() { return tick2min_; }
 

@@ -138,7 +138,7 @@ struct Branch {
 };
 
 enum class Rc : uint8_t { Ok,
-                          Cancel, // 取消 / 池判废 → run 返回 false
+                          Cancel, // 取消 / 库判废 → run 返回 false
                           Abort   // 正常输入问题, message 已填 → run 返回 true
 };
 
@@ -199,7 +199,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
-  const int A = static_cast<int>(req.scope.pool().axis.size());
+  const int A = static_cast<int>(req.scope.lib().axis.size());
   assert(req.seg == feats_.seg && "请求层与字段表层不符");
   const int seg = feats_.seg, carry = carry_days(seg);
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
@@ -323,7 +323,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     publish();
   };
   // ---- 作用域 / 日期 ----
-  FeatureRead reader(req.scope.pool(), &cancel_);
+  FeatureRead reader(req.scope.lib(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty())
     return abort_with("特征库在该区间无数据 (先算特征)");

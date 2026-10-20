@@ -17,7 +17,7 @@
 #include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
 #include "shared/Config.hpp"                       // Config::kAllTierDir (池表 [0])
 #include "shared/Feature.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 
 #include <algorithm>
 #include <array>
@@ -181,7 +181,7 @@ const TierMeta &tier_meta(TierId tier) {
 #undef GENERATE_TIER_META
 
 // ============================================================================
-// 池表 (FeaturePool.hpp 声明): [0] = all (Bar 档); 其余 = Bar L_1day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档池 <pool>
+// 池表 (FeatureLib.hpp 声明): [0] = all (Bar 档); 其余 = Bar L_1day 的 Pool 类 CS 列 pool_<pool> ↔ Lob 档池 <pool>
 // ============================================================================
 namespace {
 constexpr std::string_view kPoolPrefix = "pool_";

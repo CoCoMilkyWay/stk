@@ -33,7 +33,7 @@ struct TierFeed<bar::Tier> {
   std::vector<fundamental::Scratch> scratch;          // 与 ring 逐格对应 (一格同一时刻只有一个预取核在写)
 
   TierFeed(const PipelineArgs &args, const StoreRing &store)
-      : fund_panel(args.data.fund_panel), axis(args.pools[TierId::Bar].axis), dates(args.dates),
+      : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), dates(args.dates),
         ring(store.feed_ring_size()), scratch(ring.size()) {
     assert(axis.size() == asset_axis().size() && "Bar 档 A 轴 = 全轴");
     for (size_t sub = 0; sub < axis.size(); ++sub)

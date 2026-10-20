@@ -859,14 +859,14 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   }
 
   // ---- 装载 ----
-  FeatureRead reader(req.scope.pool(), &cancel_);
+  FeatureRead reader(req.scope.lib(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty()) {
     finish_all_pending("特征库在该区间无数据 (先算特征)");
     return true;
   }
   Loaded L;
-  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.pool().axis.size()), L);
+  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib().axis.size()), L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
   L.max_impact = static_cast<float>(req.max_impact);
 

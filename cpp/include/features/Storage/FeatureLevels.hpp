@@ -63,7 +63,7 @@ struct PerTier {
   bool operator==(const PerTier &) const = default;
 };
 
-// 池: 池表 feature_pools() 下标 (shared/FeaturePool.hpp; [0] = all, 其余 = 池). 档 = 池的属性 (字段表按档, 数据按池)
+// 池: 池表 feature_pools() 下标 (shared/FeatureLib.hpp; [0] = all, 其余 = 池). 档 = 池的属性 (字段表按档, 数据按池)
 using PoolId = uint8_t;
 inline constexpr PoolId kAllPool = 0;
 size_t pool_count();           // 池表长 (由 Bar 字段表池列定; 定义在 FeatureMeta.cpp)
@@ -71,7 +71,7 @@ TierId pool_tier(PoolId pool); // 池的档
 // 池表全部下标 (与 TIER_IDS 对仗, 运行时长)
 inline auto pool_ids() { return std::views::iota(PoolId{0}, static_cast<PoolId>(pool_count())); }
 
-// 按池下标的数组 (与 PerTier 对仗): 一切 "主池 + 列所在池" 成组的东西 (池清单 / reader / 轴映射) 都用它
+// 按池下标的数组 (与 PerTier 对仗): 一切 "主池 + 列所在池" 成组的东西 (库清单 / reader / 轴映射) 都用它
 template <class X>
 struct PerPool {
   std::vector<X> v = std::vector<X>(pool_count());

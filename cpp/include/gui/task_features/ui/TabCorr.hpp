@@ -64,7 +64,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
 void StopTabCorr(CorrService *service, CorrPairService *pair_service, CorrLagService *lag_service,
                  SharedData &data);
 
-// 清掉请求快照 (池 / 区间 / 新池落盘 / 切回 tab): 下一帧按当前行集自发重新提交
+// 清掉请求快照 (池 / 区间 / 新库落盘 / 切回 tab): 下一帧按当前行集自发重新提交
 void InvalidateCorrRequests(CorrUIState &ui);
 
 } // namespace GUI::Features

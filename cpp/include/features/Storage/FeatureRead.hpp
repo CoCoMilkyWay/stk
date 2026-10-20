@@ -2,7 +2,7 @@
 
 #include "FeatureDay.hpp" // 稳定层: level_info / 日文件格式 (不依赖字段表, 增删特征不重编读端)
 #include "misc/profiler.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -20,12 +20,12 @@
 // FEATURE READER — 特征库 (目录 + 池轴期望 + 判废), 单日读委托 FeatureDay::read
 // ============================================================================
 // 时间轴: 落盘形状恒为满 (rows / field_count), 消费端时间轴一律 level_valid_rows(lvl).
-// A / axis_hash = 池 A 轴大小 / 指纹 (PoolAxis, 来自池清单, 见 FeaturePool.hpp):
+// A / axis_hash = 池 A 轴大小 / 指纹 (PoolAxis, 来自库清单, 见 FeatureLib.hpp):
 //   读端构造时带期望池轴 (A + hash), 逐文件精确比对, 不做兼容展宽.
 // 头不符分两类:
-//   格式版本 / 字段表指纹 = 旧池, 已无法解释 → 就地判废: 删掉整个 base_dir_ + 置 stale() + 拉起构建的取消旗
+//   格式版本 / 字段表指纹 = 旧库, 已无法解释 → 就地判废: 删掉整个 base_dir_ + 置 stale() + 拉起构建的取消旗
 //     (构造时可传), 在跑的构建在既有取消检查点收工, 等用户点 compute 重算. 不断言: 改字段表是常规操作, 不该闪退.
-//   池轴 A / 指纹 = 本 reader 持的清单过期 (池已按新清单重算, 文件与新清单一致) → 只置 stale 空转, 不删池;
+//   池轴 A / 指纹 = 本 reader 持的清单过期 (池已按新清单重算, 文件与新清单一致) → 只置 stale 空转, 不删库;
 //     请求方重读清单 (新请求 / 重建服务) 即自愈.
 //
 // API: load_day_columns(date, cols, DayColumns) — 单日选列 [n][T][A], 只读 n 列的载荷
@@ -34,7 +34,7 @@
 
 class FeatureRead {
 private:
-  // 池判废: 记日志 + 删池 (wipe) + 置 stale + 拉起取消旗. 幂等 (多 IO 线程共用一个 reader).
+  // 库判废: 记日志 + 删库 (wipe) + 置 stale + 拉起取消旗. 幂等 (多 IO 线程共用一个 reader).
   void mark_stale(const char *why, bool wipe) const {
     if (stale_.exchange(true, std::memory_order_relaxed))
       return;
@@ -49,14 +49,14 @@ private:
   }
 
 public:
-  // pool = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一清单; 须已建池)
-  // abort = 可选, 构建的取消旗 (StreamService::cancel_): 池判废时一并拉起, 在跑的构建就地收工
-  explicit FeatureRead(const FeaturePool &pool, std::atomic<bool> *abort = nullptr)
-      : tier_(pool.tier), base_dir_(pool.dir), axis_A_(pool.axis.size()), axis_hash_(pool.axis.hash), abort_(abort) {
-    assert(axis_A_ > 0 && "期望池轴为空 (池未建: 先 pool.ready())");
+  // lib = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一清单; 须已建库)
+  // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
+  explicit FeatureRead(const FeatureLib &lib, std::atomic<bool> *abort = nullptr)
+      : tier_(lib.tier), base_dir_(lib.dir), axis_A_(lib.axis.size()), axis_hash_(lib.axis.hash), abort_(abort) {
+    assert(axis_A_ > 0 && "期望池轴为空 (库未建: 先 lib.ready())");
   }
 
-  // 删池. 多个 reader (各 service 每请求各一份, stale_ 不互通) 与 ComputeService 清池可能
+  // 删库. 多个 reader (各 service 每请求各一份, stale_ 不互通) 与 ComputeService 清库可能
   // 同时删同一目录, 并发 remove_all 会撞上对方刚删掉的文件而抛异常. 先原子 rename 到唯一
   // 墓碑名 (只有一方抢得到), 再删墓碑; rename 时目录已不在 = 别人删了.
   static void wipe_dir(const std::string &dir) {
@@ -66,13 +66,13 @@ public:
     std::error_code ec;
     std::filesystem::rename(dir, trash, ec);
     if (ec) {
-      assert(ec == std::errc::no_such_file_or_directory && "删池 rename 失败");
+      assert(ec == std::errc::no_such_file_or_directory && "删库 rename 失败");
       return;
     }
     std::filesystem::remove_all(trash);
   }
 
-  // 进程级判废登记 (按池目录): reader 头不符删池时登记, ComputeService 开始重算时撤销;
+  // 进程级判废登记 (按库目录): reader 头不符删库时登记, ComputeService 开始重算时撤销;
   // GUI 左栏 Compute 行据此提示 stale. reader 各自的 stale_ 随请求生灭, 不能给 UI 用.
   static void set_dir_stale(const std::string &dir, bool stale) {
     auto &r = stale_registry();
@@ -88,10 +88,10 @@ public:
     return r.dirs.count(dir) != 0;
   }
 
-  // 字段表指纹不符 → 旧池已删, 本次构建产出无效 (调用方重算)
+  // 字段表指纹不符 → 旧库已删, 本次构建产出无效 (调用方重算)
   bool stale() const { return stale_.load(std::memory_order_relaxed); }
 
-  // 复活: 常驻 reader (OrderFlow) 在重算完成后重扫时调用 —— 新池已落地, 判废解除
+  // 复活: 常驻 reader (OrderFlow) 在重算完成后重扫时调用 —— 新库已落地, 判废解除
   void revive() { stale_.store(false, std::memory_order_relaxed); }
 
   // ========================================================================
@@ -129,12 +129,12 @@ public:
     }
   };
 
-  // 池已判废时空转 (out.data 保持原样): 在跑的构建靠取消旗收工, 中途读到的内容一律丢弃.
+  // 库已判废时空转 (out.data 保持原样): 在跑的构建靠取消旗收工, 中途读到的内容一律丢弃.
   void load_day_columns(misc::Ymd date, const std::vector<size_t> &feature_indices, DayColumns &out) const {
     Trace;
     assert(date > 0);
     assert(out.A > 0 && "Must preallocate() before load_day_columns()");
-    assert(out.A == axis_A_ && "调用方 A 与 reader 期望池轴不一致 (同一池清单, 不该发生)");
+    assert(out.A == axis_A_ && "调用方 A 与 reader 期望池轴不一致 (同一库清单, 不该发生)");
     assert(has_level(tier_, out.level) && "该档没有这一层");
     assert(!feature_indices.empty() && feature_indices.size() <= out.max_features);
     out.date = date;
@@ -143,10 +143,10 @@ public:
       return;
     const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(base_dir_, date), out.level), level_info(tier_, out.level),
                                                    out.fields.data(), out.fields.size(), out.data.data(), out.A, axis_hash_, out.scratch);
-    // 文件缺失 = 池被外部清除: 另一 reader 判废删池, 或 ComputeService 重算
-    // 前显式清池 (与读端并发; store 随即重建目录, 故 base_dir_ 是否存在不可
+    // 文件缺失 = 库被外部清除: 另一 reader 判废删库, 或 ComputeService 重算
+    // 前显式清库 (与读端并发; store 随即重建目录, 故 base_dir_ 是否存在不可
     // 作判据). 落盘侧 .tmp+rename 原子发布 + 末层 commit 标记 (has_date) 保证
-    // 正常池不会"目录在文件缺" → 一律判废空转收工, 重扫/重算后 revive. 池轴不符 = 清单过期, 同样不删池.
+    // 正常池不会"目录在文件缺" → 一律判废空转收工, 重扫/重算后 revive. 池轴不符 = 清单过期, 同样不删库.
     if (st == FeatureDay::Status::Missing || st == FeatureDay::Status::AxisSize || st == FeatureDay::Status::AxisHash)
       mark_stale(FeatureDay::why(st), /*wipe=*/false);
     else if (st != FeatureDay::Status::Ok)
@@ -170,7 +170,7 @@ public:
     std::vector<misc::Ymd> dates;
     const std::string dir = base_dir_ + "/" + misc::slash(misc::first_day(m)).substr(0, 7);
 
-    // 目录不在 / 遍历前被并发删池 (wipe_dir) → ec 置位, 迭代器即 end
+    // 目录不在 / 遍历前被并发删库 (wipe_dir) → ec 置位, 迭代器即 end
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
       if (entry.is_directory()) {
@@ -200,5 +200,5 @@ public:
   size_t axis_A_;
   std::uint64_t axis_hash_;
   std::atomic<bool> *abort_ = nullptr;     // 可选取消旗 (不持有)
-  mutable std::atomic<bool> stale_{false}; // 池判废 (多 IO 线程共用一个 reader, 故原子)
+  mutable std::atomic<bool> stale_{false}; // 库判废 (多 IO 线程共用一个 reader, 故原子)
 };

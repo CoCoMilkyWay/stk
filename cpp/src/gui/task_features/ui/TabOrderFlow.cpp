@@ -9,7 +9,7 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)
 #include "gui/util/AssetFilter.hpp"            // 筛选控件 (与 TABLE 共用)
-#include "shared/FeaturePool.hpp"              // pool_def (legend 池名)
+#include "shared/FeatureLib.hpp"              // pool_def (legend 池名)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -1039,7 +1039,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     ui.min_last_pub_days = SIZE_MAX; // 换代: 重置轴管理
     // dates 会被重扫 (或首次建) → 期间不可读; 粘到新代落定 (重扫请求可能被后一请求覆盖, 后者须照带)
     ui.kline_rescan_pending |= rescan || repool || ui.min_x_max <= 0.0;
-    if (rescan) { // 池重算 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
+    if (rescan) { // 库重算 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
       ui.depth_date = 0;
       of.pick.req_date = 0;
     }

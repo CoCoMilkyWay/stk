@@ -4,7 +4,7 @@
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 #include "worker/feature_workers.hpp"
 
 #include <algorithm>
@@ -370,8 +370,8 @@ bool pipeline(const PipelineArgs &args) {
   // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
   const StageLayout L = StageLayout::make(misc::Affinity::physical_cores(), args.pf_cores, args.cs_cores, args.io_cores);
   const std::vector<misc::Ymd> &dates = args.dates;
-  const FeaturePool &pool = args.pools[T::kId];
-  const size_t num_assets = pool.axis.size();
+  const FeatureLib &lib = args.libs[T::kId];
+  const size_t num_assets = lib.axis.size();
   const size_t num_pf = static_cast<size_t>(L.num_pf);
   const size_t num_ts = static_cast<size_t>(L.num_ts);
   const size_t num_cs = static_cast<size_t>(L.num_cs);
@@ -386,7 +386,7 @@ bool pipeline(const PipelineArgs &args) {
             << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")\n"
             << std::endl;
 
-  FeatureStore<T> store(num_assets, pool.axis.hash, pool.dir, args.ring_slots);
+  FeatureStore<T> store(num_assets, lib.axis.hash, lib.dir, args.ring_slots);
   assert(store.query_slots() >= CoreOf<T>::kMinRingSlots && "内存上限把日环砍到 MIN_RING_SLOTS 之下, 会死锁");
 
   TierFeed<T> feed(args, store);
@@ -413,7 +413,7 @@ bool pipeline(const PipelineArgs &args) {
   ComputeStats stats(num_pf, num_ts, num_cs, num_io);
   FeatureProgress progress(store, sched, stats, dates, TierFeed<T>::kUnit);
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
-    return StageCtx<T>{worker_id, store, args.pools, dates, args.cancel, stat};
+    return StageCtx<T>{worker_id, store, args.libs, dates, args.cancel, stat};
   };
   std::vector<std::future<void>> workers;
   workers.reserve(static_cast<size_t>(L.total_threads()));

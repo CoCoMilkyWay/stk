@@ -2,9 +2,9 @@
 //
 // 线程模型 (骨架见 gui/util/Service.hpp; 目标形状与发布协议见 shared/Analysis.hpp):
 //   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = analysis::Request<Target::Spec>
-//     (ReadScope: 月份表 + 池轴 + 池目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
+//     (ReadScope: 月份表 + 池轴 + 库目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
 //     覆盖挂起请求 + 取消在跑
-//   - worker 线程 run: 池集各池 FeatureRead (PoolReaders) → target.reset(scope, spec) → target.build(readers)
+//   - worker 线程 run: 池集各池 FeatureRead (LibReaders) → target.reset(scope, spec) → target.build(readers)
 //     (build 内部用 Runtime 常驻 ForkJoin 分批流式, 批末发布; 新请求/Cancel 置 cancel_, 每个任务开头检查后放弃)
 //   - UI 渲染持 target.mutex 读快照; 进度走原子, 免锁
 //
@@ -61,10 +61,10 @@ private:
   Progress &board() { return Derived::target(*data_); }
   bool run(Req &req) {
     Target &target = Derived::target(*data_);
-    // 池集 (主池 + 列所在池) 各一个 reader, 拿到 cancel_: 读到旧字段表写的特征文件时它删池判废并拉起取消, 构建就地收工 (不闪退).
-    // reader 自持池清单拷贝, 之后 scope 可整体移交给目标
-    PoolReaders readers;
-    readers.open(req.scope.pools, &this->cancel_);
+    // 池集 (主池 + 列所在池) 各一个 reader, 拿到 cancel_: 读到旧字段表写的特征文件时它删库判废并拉起取消, 构建就地收工 (不闪退).
+    // reader 自持库清单拷贝, 之后 scope 可整体移交给目标
+    LibReaders readers;
+    readers.open(req.scope.libs, &this->cancel_);
     target.reset(std::move(req.scope), std::move(req.spec));
     const bool done = target.build(readers.ptr, this->cancel_);
     return done && !readers.stale();

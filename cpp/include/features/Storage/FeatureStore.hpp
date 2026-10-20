@@ -235,7 +235,7 @@ private:
 
 public:
   // num_assets: 档 A 轴大小; axis_hash: PoolAxis::hash, 写进每个
-  // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeaturePool 推导同一轴比对)
+  // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeatureLib 推导同一轴比对)
   FeatureStore(size_t num_assets,
                std::uint64_t axis_hash,
                const std::string &output_dir = "",
@@ -247,7 +247,7 @@ public:
 
     if (!output_dir.empty()) {
       output_dir_ = output_dir;
-      // 只建目录, 不清池: 清池/重算是调用方的显式决定 (回测全量重算见
+      // 只建目录, 不清库: 清库/重算是调用方的显式决定 (回测全量重算见
       // ComputeService), 构造副作用会让实盘复用 store 时误删历史特征.
       std::filesystem::create_directories(output_dir_);
     }

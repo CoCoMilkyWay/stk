@@ -6,7 +6,7 @@
 //
 // 矩阵请求: 列集 (UI 给的 ColRef: 跨池跨层选中 ≥ 2 列时 = 选中, 否则 = 当前过滤后的行集; 去 META, 升序去重)
 //   网格 = 列集里最细的层 (粗层列 as-of 投影); 主池 = 列所在池里池轴最短者 (analysis::read_request), 单对随矩阵主池.
-// 触发: 进 Corr tab / 列集变了 / 池 / 日期区间变了 / Compute 落了新池.
+// 触发: 进 Corr tab / 列集变了 / 池 / 日期区间变了 / Compute 落了新库.
 #pragma once
 
 #include "gui/task_features/services/StreamService.hpp"

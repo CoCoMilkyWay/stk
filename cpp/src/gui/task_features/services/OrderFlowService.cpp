@@ -5,7 +5,7 @@
 #include "gui/util/Service.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -80,15 +80,15 @@ inline bool present(feature_storage_t g) { return std::bit_cast<uint16_t>(g) != 
 //   Kline = stream (分批流式, 与 Dist / Transform / Corr 同一骨架), Depth / Pick = now (单日)
 // ============================================================================
 struct RowRead {
-  PoolReaders pools;
+  LibReaders libs;
   Readers rd; // ids 指向 scope.to: scope 须活过本代 (lane 存在 cur_ 里)
   Prefetch<RowPlane> pf;
 
-  // 换代: 按范围开池 (新请求 = 重读池: 重算后新池已落地, 判废解除; 判废拉起 abort), 按计划 × 批段数备容量
+  // 换代: 按范围开库 (新请求 = 重读库: 重算后新库已落地, 判废解除; 判废拉起 abort), 按计划 × 批段数备容量
   void reset(const analysis::ReadScope &scope, const ReadPlan &plan, size_t segs, std::atomic<bool> *abort) {
-    pools.open(scope.pools, abort);
-    pools.revive();
-    rd = scope.readers(pools.ptr);
+    libs.open(scope.libs, abort);
+    libs.revive();
+    rd = scope.readers(libs.ptr);
     pf.prepare(analysis::threads_for(segs), plan, scope.sizes(), SIZE_MAX);
     for (RowPlane &p : pf.buf)
       p.prepare(scope.axis.size(), plan, segs);
@@ -101,7 +101,7 @@ struct RowRead {
       };
     };
   }
-  // 单日 (sp = plan_day) 读进 front; false = 被打断 / 池判废 (abort 即 cancel)
+  // 单日 (sp = plan_day) 读进 front; false = 被打断 / 库判废 (abort 即 cancel)
   bool now(const ReadPlan &plan, const SegPlan &sp, const std::atomic<bool> &cancel) {
     assert(sp.size() == 1);
     pf.now(load(plan, sp, cancel)(0, 1));
@@ -230,7 +230,7 @@ private:
   bool run(RowReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   SharedData &data_;
-  RowRead read_; // A 轴 = 主池轴 (候选范围); 状态列在 all 池 (Fund 只在 all 池落盘)
+  RowRead read_; // A 轴 = 主池轴 (候选范围); 状态列在 all 池 (Fund 只在 all 库落盘)
   RowReq cur_{};
 };
 

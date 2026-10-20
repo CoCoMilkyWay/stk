@@ -5,7 +5,7 @@
 #include "gui/util/Sparkline.hpp"          // 迷你图 (Dist / PSD 列)
 #include "misc/format.hpp"                 // misc::fmt_width
 #include "shared/Feature.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 #include "shared/Preview.hpp"
 #include "shared/SharedData.hpp"
 
@@ -1426,7 +1426,7 @@ static double sig4(float v) {
 void SaveFeatureTableJson(SharedData &data) {
   using json = nlohmann::json;
   const Feature::Metadata &meta = data.feature.meta();
-  const std::filesystem::path dir = data.config.FeaturePoolDir(data.feature.selection.pool());
+  const std::filesystem::path dir = data.config.FeatureLibDir(data.feature.selection.pool());
 
   const std::filesystem::path path = dir / "features.json";
   std::filesystem::create_directories(path.parent_path());

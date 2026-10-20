@@ -1,5 +1,5 @@
 #include "shared/Feature.hpp"
-#include "shared/FeaturePool.hpp" // pool_id
+#include "shared/FeatureLib.hpp" // pool_id
 
 #include <cassert>
 #include <cstring>

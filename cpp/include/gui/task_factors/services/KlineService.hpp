@@ -49,7 +49,7 @@ private:
   Progress &board() { return s_; }
   bool run(KlineRequest &req);
   void reset(KlineRequest &&req);
-  bool step(size_t d); // 装一天并发布; false = 池判废
+  bool step(size_t d); // 装一天并发布; false = 库判废
 
   KlineStream s_;
   // ---- worker 私有 ----

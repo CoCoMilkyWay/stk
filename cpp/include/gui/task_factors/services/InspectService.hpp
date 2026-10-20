@@ -85,7 +85,7 @@ struct InspectResult {
   int n_hold = 0;
   factor::stat::Holds hd;                   // hd.h[hi]
   std::vector<CostTier> costs;              // [C] = FeatureTable::costs 序 (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
-  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 池轴 + 月份): 右下 K 线按它读池; pool().axis 做池轴 ↔ 全局 id
+  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 池轴 + 月份): 右下 K 线按它读库; pool().axis 做池轴 ↔ 全局 id
   std::vector<float> pool_index;            // [T] 池等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   InspectPlanes pl;                         // 一级平面 (Row / 尾部 / 秩)
   std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径

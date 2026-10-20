@@ -6,7 +6,7 @@
 #include "misc/affinity.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Config.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 
 #include "imgui.h"
 
@@ -16,19 +16,19 @@
 
 namespace GUI::Features {
 
-// 池清单 + 逐日 stat 已落盘 (以档内末层日文件为 commit 标记, 见 FeatureRead::has_date)
-static PoolStatus pool_status(const Config &config, std::string_view name) {
-  const FeaturePool pool = load_pool(config, name);
-  PoolStatus s{pool.name, pool.tier};
-  if (!pool.ready())
+// 库清单 + 逐日 stat 已落盘 (以档内末层日文件为 commit 标记, 见 FeatureRead::has_date)
+static LibStatus lib_status(const Config &config, std::string_view name) {
+  const FeatureLib lib = load_lib(config, name);
+  LibStatus s{lib.name, lib.tier};
+  if (!lib.ready())
     return s;
   s.ready = true;
-  s.first = pool.dates.front();
-  s.last = pool.dates.back();
-  s.assets = pool.axis.size();
-  s.days = pool.dates.size();
-  s.done = static_cast<size_t>(std::count_if(pool.dates.begin(), pool.dates.end(),
-                                             [&](misc::Ymd d) { return FeatureRead::has_date(pool.tier, pool.dir, d); }));
+  s.first = lib.dates.front();
+  s.last = lib.dates.back();
+  s.assets = lib.axis.size();
+  s.days = lib.dates.size();
+  s.done = static_cast<size_t>(std::count_if(lib.dates.begin(), lib.dates.end(),
+                                             [&](misc::Ymd d) { return FeatureRead::has_date(lib.tier, lib.dir, d); }));
   return s;
 }
 
@@ -384,22 +384,22 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Pools");
   ImGui::SameLine();
   if (ImGui::SmallButton("Refresh"))
-    state.pools_dirty = true;
+    state.libs_dirty = true;
   ImGui::SameLine();
   ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 池: 订单簿还原, 回测区间, 成员 = Bar 池 D−1 收盘 pool_* 列 → 先算 all)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str());
   ImGui::Spacing();
 
-  if (state.pools_dirty && !is_running) {
-    state.pools_dirty = false;
-    state.pools.clear();
+  if (state.libs_dirty && !is_running) {
+    state.libs_dirty = false;
+    state.libs.clear();
     for (const PoolDef &d : feature_pools())
-      state.pools.push_back(pool_status(config, d.name));
+      state.libs.push_back(lib_status(config, d.name));
   }
-  // 旁读档的池落盘齐全才放行本档 (池的成员来自 Bar 池)
+  // 旁读档的库落盘齐全才放行本档 (池的成员来自 Bar 池)
   PerTier<bool> tier_complete;
   for (const TierId t : TIER_IDS)
-    tier_complete[t] = std::ranges::all_of(state.pools, [&](const PoolStatus &s) { return s.tier != t || (s.ready && s.done == s.days); });
+    tier_complete[t] = std::ranges::all_of(state.libs, [&](const LibStatus &s) { return s.tier != t || (s.ready && s.done == s.days); });
   const auto sides_complete = [&](TierId t) {
     return std::ranges::all_of(TIER_IDS, [&](TierId s) { return !tier_side(t, s) || tier_complete[s]; });
   };
@@ -416,7 +416,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
 
-    for (const PoolStatus &s : state.pools) {
+    for (const LibStatus &s : state.libs) {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("%s", s.name.c_str());
@@ -435,7 +435,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       const bool computing = is_running && state.config.pool == s.name;
       if (computing)
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "computing");
-      else if (FeatureRead::dir_stale(config.FeaturePoolDir(s.name)))
+      else if (FeatureRead::dir_stale(config.FeatureLibDir(s.name)))
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "stale");
       else if (!s.ready)
         ImGui::TextDisabled("未建");

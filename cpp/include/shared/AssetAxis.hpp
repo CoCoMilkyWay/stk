@@ -30,12 +30,12 @@
 class AssetAxis {
 public:
   // 落盘 output/fundamental/asset_axis.json — 与基本面同域, 因为轴由股票全量
-  // 派生, 且必须活过两级 cache 的任何清池 (FeatureStore 构造会 remove_all
+  // 派生, 且必须活过两级 cache 的任何清库 (FeatureStore 构造会 remove_all
   // feature_dir; 轴丢了 append-only 保证就没了).
   static constexpr const char *kFileName = "asset_axis.json";
   static constexpr int kVersion = 1;
 
-  // 注册表 → 内存. 文件不存在 → 空轴 (首次建池);
+  // 注册表 → 内存. 文件不存在 → 空轴 (首次建库);
   // 存在 → 解析 + 重算累积 hash 与文件记录比对 (不符 = 注册表损坏, assert).
   void load();
 
@@ -77,8 +77,8 @@ AssetAxis &asset_axis();
 //
 // ids = 池内资产在全局轴上的下标 (升序去重), hash = 按池轴顺序对码表做同一条 FNV 累积链 (fnv_append).
 // 写端规划 (Lob: 池并集 pool_axis; Bar: 全轴 full_axis, hash == asset_axis().hash_at(num_assets), 同一条链的前缀值)
-// 后码表落池清单 (见 FeaturePool.hpp), 读端从清单重建同一池轴. 特征文件头存 (A_sub, hash), 不符 = 池内文件与清单
-// 不一致 → 读端删池判废, 等重算 (见 FeatureRead).
+// 后码表落库清单 (见 FeatureLib.hpp), 读端从清单重建同一池轴. 特征文件头存 (A_sub, hash), 不符 = 库内文件与清单
+// 不一致 → 读端删库判废, 等重算 (见 FeatureRead).
 //
 // 整条特征管线 (日环 / 落盘 / 读端 / Dist / Transform / OrderFlow 特征读)
 // 一律用池轴下标 (sub); 需要查 items/码表/行业等全局资源时经 global() 映射.

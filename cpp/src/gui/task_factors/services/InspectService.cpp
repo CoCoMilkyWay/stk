@@ -168,19 +168,19 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
   // ---- S: 作用域 (标签 / 成本 / 门控 + 特征缓存) ----
-  FeatureRead reader(req.scope.pool(), &cancel_);
+  FeatureRead reader(req.scope.lib(), &cancel_);
   const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
   if (dates.empty()) {
     publish_message("特征库在该区间无数据 (先算特征)");
     return true;
   }
-  std::string ckey = std::to_string(req.seg) + "|" + req.scope.pool().dir + "|" + std::to_string(req.scope.pool().axis.hash) + "|cap" + std::to_string(req.max_impact);
+  std::string ckey = std::to_string(req.seg) + "|" + req.scope.lib().dir + "|" + std::to_string(req.scope.lib().axis.hash) + "|cap" + std::to_string(req.max_impact);
   for (const misc::Ym m : req.scope.months)
     ckey += "|" + std::to_string(m);
-  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.pool().axis.size());
+  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib().axis.size());
   begin(Phase::Loading, static_cast<size_t>(days));
   const auto stale_out = [&] {
-    if (reader.stale()) { // 池换了, 缓存的一切不可信
+    if (reader.stale()) { // 库换了, 缓存的一切不可信
       F.reset_scope();
       publish_message("特征库判废 (池轴/字段表与当前不符), 需重算特征");
     }

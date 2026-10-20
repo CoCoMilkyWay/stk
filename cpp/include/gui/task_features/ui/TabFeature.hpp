@@ -71,7 +71,7 @@ void EffectiveCat2Snapshot(SharedData &data, TierId tier, size_t level, Cat2Snap
 // 内部短锁读 preview cells (Cat2 过滤要有效值). Corr 热图取同一行集
 void FilteredFeatureIndices(SharedData &data, std::vector<int> &out);
 
-// 特征表落地 JSON (给人看, 一行一特征): <当前池目录>/features.json (两层全部行, 元数据下标序,
+// 特征表落地 JSON (给人看, 一行一特征): <当前库目录>/features.json (两层全部行, 元数据下标序,
 // 不受过滤/排序影响; 表格可见列 + Stat / Range (有预览的行), 不落 Dist / PSD 曲线).
 // 预览跑完 (Building → Done) 时由 TaskFeatures 调
 void SaveFeatureTableJson(SharedData &data);

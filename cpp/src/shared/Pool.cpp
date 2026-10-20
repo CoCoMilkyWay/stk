@@ -1,13 +1,13 @@
 #include "shared/Pool.hpp"
 #include "features/Storage/DayBatchPlane.hpp" // 上游读: Source / load_source / source_row (与读端同一份)
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 
 #include <algorithm>
 #include <cassert>
 
 namespace pool {
 
-Panel Panel::build(const FeaturePool &bar, size_t col, std::span<const misc::Ymd> dates) {
+Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
   assert(bar.tier == TierId::Bar && bar.ready() && "池源 = Bar 池 (先算 Bar 池)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
   // 第 D 日成员 = 盘前 (L_sec 行 0) as-of 的 L_1day 列: level_asof(L_1day, L_sec, 0) = -1 → D−1 收盘行 (与读端同一投影)
@@ -35,7 +35,7 @@ Panel Panel::build(const FeaturePool &bar, size_t col, std::span<const misc::Ymd
     const misc::Ymd prev = *(it - 1);
     assert(reader.has_date(prev) && "Bar 池缺池源日 (D−1): 先把 Bar 池算完");
     load_source(rd, s, Day{dates[i], prev, pool_bit(pool), pool_bit(pool)}, s.cs.io, b);
-    assert(!reader.stale() && "Bar 池判废 (头不符): 重算 Bar 池");
+    assert(!reader.stale() && "Bar 库判废 (头不符): 重算 Bar 池");
     size_t r = 0;
     const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);
     assert(dc && "盘前 as-of 无源");

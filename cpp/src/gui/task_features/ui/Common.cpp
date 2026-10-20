@@ -1,6 +1,6 @@
 #include "gui/task_features/ui/Common.hpp"
 #include "gui/Tasks.hpp"
-#include "shared/FeaturePool.hpp" // pool_def
+#include "shared/FeatureLib.hpp" // pool_def
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"

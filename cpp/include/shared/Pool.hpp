@@ -9,7 +9,7 @@
 //                   TS 特征对池轴上所有资产在区间内全程计算, 区间内日后进池不用补历史
 //     in_pool(sub, D) 第 D 日成员位 (sub = 池轴下标) → CoreLob::member → MetaTracker → cs_valid 整日常量
 //   PIT: 第 D 日池由 D−1 收盘定, 对 Lob 档只是 (资产, 日) 的 bool.
-//   全市场不是池: 那是 Bar 池 (全轴, 见 FeaturePool.hpp).
+//   全市场不是池: 那是 Bar 池 (全轴, 见 FeatureLib.hpp).
 #include "misc/date.hpp"
 #include "shared/AssetAxis.hpp" // PoolAxis
 
@@ -18,14 +18,14 @@
 #include <span>
 #include <vector>
 
-struct FeaturePool;
+struct FeatureLib;
 
 namespace pool {
 
 class Panel {
 public:
   // Bar 池的池列 col → dates 逐日成员. D 不在 Bar 池日期轴 / 是其首日 / 前一日未落盘 / 并集为空 → assert
-  static Panel build(const FeaturePool &bar, size_t col, std::span<const misc::Ymd> dates);
+  static Panel build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates);
 
   const PoolAxis &axis() const { return axis_; }
   const std::vector<misc::Ymd> &dates() const { return dates_; } // = build 的 dates

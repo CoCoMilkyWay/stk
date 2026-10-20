@@ -1,6 +1,6 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
-// OrderFlow (主池 = 图1 VWAP / 候选轴所在池, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各池落盘日的并集, 各池画各自有的日)
+// OrderFlow (主池 = 图1 VWAP / 候选轴所在池, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各库落盘日的并集, 各池画各自有的日)
 // ├── Kline  (图2) 单资产全日轴: all 池日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef, 分钟网格; 分钟 K 也是 overlay)
 // │            worker 分批流式 (从前往后, 每日每源一次选列读, 下一批后台预读), GUI 画已发布前缀
 // ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
@@ -122,7 +122,7 @@ struct OrderFlow {
   // ==========================================================================
   struct Kline : Progress, PrefixPub { // 进度 done/total = 天
     // ---- worker 写 / GUI 前缀读 ----
-    std::vector<misc::Ymd> dates; // 日轴: 池集各池落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
+    std::vector<misc::Ymd> dates; // 日轴: 池集各库落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
 
     // K线点集 (all 池日 K): data_valid 行, x = day_idx * MIN_CAPACITY + 该行所跨分钟的中点 (日 K = 日中)
     std::vector<double> x, open, high, low, close;

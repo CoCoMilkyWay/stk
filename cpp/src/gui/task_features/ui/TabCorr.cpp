@@ -4,7 +4,7 @@
 #include "gui/task_features/services/CorrService.hpp"
 #include "gui/task_features/ui/Common.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
-#include "shared/FeaturePool.hpp" // pool_def
+#include "shared/FeatureLib.hpp" // pool_def
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"

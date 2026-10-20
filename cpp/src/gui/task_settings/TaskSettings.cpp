@@ -2,7 +2,7 @@
 #include "gui/Tasks.hpp"
 #include "imgui.h"
 #include "misc/cross_platform.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 #include <algorithm>
 #include <cassert>

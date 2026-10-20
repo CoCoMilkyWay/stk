@@ -20,7 +20,7 @@ class FeatureRead;
 //
 //   每层各跑一份 (网格 = 该层, 段 = 日内层 1 天 / L_1day 连续 255 天), 各层轮交错 (层 0 轮 0, 层 1 轮 0, …);
 //   轮 = 一个抽样段 (plan_segs Shuffle 取前 kPvRounds 个 → 无偏覆盖);
-//   轮首单线程读笼: Bar 档 L_1day lim_dn / lim_up 逐日读 (当日常量, 盘前已知 → 同日对照, 不走 as-of; 按 pool.axis.ids 取全轴);
+//   轮首单线程读笼: Bar 档 L_1day lim_dn / lim_up 逐日读 (当日常量, 盘前已知 → 同日对照, 不走 as-of; 按 lib.axis.ids 取全轴);
 //   轮内按特征分块 (每块 kPvBlockCols 列), 一块一任务 (Runtime 常驻 ForkJoin): 各自按块读计划读块列 (+ 该层 ts_valid) →
 //     私有 TsPlane 转置 (各列按自己的 valid_type 折哨兵);
 //     每特征槽一轮只被一个任务写, 每轮一次 dispatch 隔开相邻轮 → 累积器无锁无归约;
@@ -34,7 +34,7 @@ class FeatureRead;
 // A 轴 = 池轴; 抽样资产 = 池轴下标 (UI 不需要资产身份).
 // 重算: reset 清空 cells (预览是全表底图, 输入变了旧格子无参照意义), 逐块填回.
 // 生命周期: 进 Features 任务且输入就绪 → 起 worker + 自动构建 (不依赖选中特征);
-//   池 / 日期区间变了 或 Compute 落了新池 → 新请求即取消在跑重算;
+//   池 / 日期区间变了 或 Compute 落了新库 → 新请求即取消在跑重算;
 //   切出 Features 任务 → clear() 整体释放.
 // ============================================================================
 

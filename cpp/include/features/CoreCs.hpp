@@ -5,7 +5,7 @@
 #include "features/Storage/DayBatchPlane.hpp" // 上游读: Source / load_source (与读端同一份)
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/profiler.hpp"
-#include "shared/FeaturePool.hpp"
+#include "shared/FeatureLib.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -179,14 +179,14 @@ public:
   // 任一层有旁读列
   static constexpr bool kSides = []<size_t... L>(std::index_sequence<L...>) { return ((Side<L>::N > 0) || ...); }(std::make_index_sequence<LEVEL_COUNT>{});
 
-  // pools[T::kId] = 本档池 (轴 sub → global); pools[旁读档] = 旁读档的池 (无旁读列时不读)
-  CoreCs(FeatureStore<T> &store, [[maybe_unused]] const PerTier<FeaturePool> &pools)
+  // libs[T::kId] = 本档池 (轴 sub → global); libs[旁读档] = 旁读档的池 (无旁读列时不读)
+  CoreCs(FeatureStore<T> &store, [[maybe_unused]] const PerTier<FeatureLib> &libs)
       : A_(store.query_A()), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
     if constexpr (kSides) {
       using S = typename TierSide<T>::type;
-      const PoolAxis &axis = pools[T::kId].axis;
-      const FeaturePool &side = pools[S::kId];
+      const PoolAxis &axis = libs[T::kId].axis;
+      const FeatureLib &side = libs[S::kId];
       assert(side.tier == S::kId && axis.size() == A_);
       const PoolId side_pool = pool_id(side.name);
       side_rd_.emplace(side);
