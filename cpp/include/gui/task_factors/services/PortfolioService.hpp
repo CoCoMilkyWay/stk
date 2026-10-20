@@ -6,11 +6,11 @@
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条 flow (FactorsLoad 装载 → Engine<Cpu> walk → rank_x →
-//   accum_rows / leg_codes), 只留该 hold 的逐行序列 (FactorCurve): G20 做多绝对收益 / LS (毛) + 最小金额段两腿的逐行换手成本
+//   accum_rows / leg_codes), 只留该 hold 的逐行序列 (FactorCurve): 两盘口毛收益 ret[kBooks] (accum_rows 的 sink 直写, 不落 Row) + 最小金额段两腿的逐行换手成本
 //   (Stat 契约【换手成本】, cost_row 每行一份 CostAcc; 与 cost_rows 逐行同式, 行和 = Inspect 的 CostTier). Bar 层无金额段: 新进者计数不看成本有效
 //   (建仓 / 平仓都按 Config::fixed_impact, UI 扣). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-//   结果按条目键缓存: 加一个因子只算它; 请求里没有的条目丢掉.
-// 池等权指数: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes::index / index_cap) + 成员日均换手, 按池缓存 (Recompute 才重算).
+// 池指数: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes::index / index_cap → PoolCurve::index[kWeights]) + 成员日均换手.
+// 因子 ↔ 池 同一套缓存: 按 Job::key 存, 曲线记算时的 Job::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑 (缓存已算的不丢); UI 持 mutex 读 result
 // (shared_ptr 拷出即放锁). 进度: Loading 期 done/total = 天; Running 期 = 算子节点 + 收尾; 第几个因子走 jobs_done / jobs_total.
@@ -57,21 +57,36 @@ struct PortfolioItem {
 };
 void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
 
+// ---- 线的轴: 组合线 = 盘口 Book × 冲击 Impact; 池线 = 权重 Weight (Service 出毛序列, UI 组线) ----
+enum Book : int { kBookLong, // G20 多头: G20 做多绝对收益, 扣多腿成本
+                  kBookLs }; // LS: 多空 (Row::ls), 扣两腿成本
+inline constexpr int kBooks = 2;
+inline constexpr bool book_pays(int b, int leg) { return leg == factor::stat::kLong || b == kBookLs; } // 盘口 b 付腿 leg 的换手成本
+enum Impact : int { kImpactNet,                                                                        // 带冲击
+                    kImpactGross };                                                                    // 无冲击
+inline constexpr int kImpacts = 2;
+enum Weight : int { kWeightEq,    // 池等权
+                    kWeightCap }; // 流通市值加权
+inline constexpr int kWeights = 2;
+
 // ---- 请求 ----
-struct PortfolioJob { // 一个有效条目
-  std::string key;    // PortfolioEntry::key
-  FactorScope scope;  // 条目的 (池, 层)
+struct FactorJob {   // 一个有效条目
+  std::string key;   // PortfolioEntry::key
+  FactorScope scope; // 条目的 (池, 层)
   std::shared_ptr<const FeatureTable> ft;
   std::string expr;
   factor::stat::Frame frame = factor::stat::Frame::CS;
   int hold = 0;
+  std::string sig() const { return key + "|" + std::to_string(scope.max_impact); } // 买入冲击封顶变了重算
 };
 struct PoolJob {     // 一个池的日层指数
+  std::string key;   // 池名
   FactorScope scope; // (池, 日层)
   std::shared_ptr<const FeatureTable> ft;
+  std::string sig() const { return key; }
 };
 struct PortfolioRequest {
-  std::vector<PortfolioJob> factors;
+  std::vector<FactorJob> factors;
   std::vector<PoolJob> pools; // 有因子才带 (标签库已建的全部池)
   bool reload = false;        // 弃缓存全部重算 (特征库重算过 / 手动 Recompute)
   std::string sig() const;    // 内容签名 (不含 reload): 没变就不发请求, 不打断在跑的
@@ -82,29 +97,25 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 // ---- 结果 ----
 // 一个因子 (该 hold) 的逐行序列 [T = days · seg], 毛口径; 不 ok / 段末尾部行 = 0 (真实收益口径: 不触发记 0)
 struct FactorCurve {
-  std::string key;
-  int seg = 0, hold = 0;
-  double max_impact = 0.0;      // 算时的买入冲击封顶 (变了重算)
+  std::string sig;              // 算时的 FactorJob::sig
   std::vector<misc::Ymd> dates; // [days]
-  std::vector<float> lng;       // G20 做多绝对收益 = grp[G20] + mkt[多] · cnt / max(cnt, cap) (Inspect 分层 绝对 口径)
-  std::vector<float> ls;        // Row::ls
-  int amt = 0;                  // 成本金额段 (万) = 该层最小段; 0 = 无段 (Bar 层) → 建仓也按 fixed_impact
-  std::vector<float> wimp, we;  // [kLegs][T] 逐行 CostLeg::wimp / we (t < h 的行 0); 该腿行成本 = wimp + we · fixed_impact · (amt > 0 ? 1 : 2)
-  std::string error;            // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
-  const float *wimp_at(int l) const { return wimp.data() + static_cast<size_t>(l) * lng.size(); }
-  const float *we_at(int l) const { return we.data() + static_cast<size_t>(l) * lng.size(); }
+  int seg = 0, hold = 0;
+  std::vector<float> ret[kBooks];                                        // [T] 毛: kBookLong = grp[G20] + mkt[多] · cnt / max(cnt, cap) (Inspect 分层 绝对 口径); kBookLs = Row::ls
+  int amt = 0;                                                           // 成本金额段 (万) = 该层最小段; 0 = 无段 (Bar 层) → 建仓也按 fixed_impact
+  std::vector<float> wimp[factor::stat::kLegs], we[factor::stat::kLegs]; // [T] 逐行 CostLeg::wimp / we (t < h 的行 0);
+                                                                         //   该腿行成本 = wimp + we · fixed_impact · (amt > 0 ? 1 : 2)
+  std::string error;                                                     // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
 };
 struct PoolCurve {
-  std::string pool;
-  std::vector<misc::Ymd> dates; // [days] 日层评估期
-  std::vector<float> index;     // [days] 池等权指数 (起点 1)
-  std::vector<float> index_cap; // [days] 池流通市值加权指数 (起点 1; UI 只画 all 池的 = 全A加权)
-  double turnover = -1.0;       // 日均换手 = 沿日均值 (1 − |S_t ∩ S_{t−1}| / |S_t|), S = 池成员位 (日层: D 收盘定的池); all 池无成员 → < 0
+  std::string sig;                    // 算时的 PoolJob::sig
+  std::vector<misc::Ymd> dates;       // [days] 日层评估期
+  std::vector<float> index[kWeights]; // [days] 池指数 (起点 1); kWeightCap 只画 all 池的 = 全A加权
+  double turnover = -1.0;             // 日均换手 = 沿日均值 (1 − |S_t ∩ S_{t−1}| / |S_t|), S = 池成员位 (日层: D 收盘定的池); all 池无成员 → < 0
   std::string error;
 };
 struct PortfolioResult {
-  std::map<std::string, std::shared_ptr<const FactorCurve>> factors; // PortfolioEntry::key →
-  std::map<std::string, std::shared_ptr<const PoolCurve>> pools;     // 池名 →
+  std::map<std::string, std::shared_ptr<const FactorCurve>> factors; // FactorJob::key →
+  std::map<std::string, std::shared_ptr<const PoolCurve>> pools;     // PoolJob::key →
 };
 
 class PortfolioService : public Service<PortfolioService, PortfolioRequest>, public Published {
@@ -126,8 +137,11 @@ private:
   static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return *this; }
   bool run(PortfolioRequest &req);
-  bool eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &out); // false = 取消 / 判废
-  bool eval_pool(const PoolJob &j, Flow &F, PoolCurve &out);          // false = 取消 / 判废
+  template <class Job, class Curve>
+  bool run_jobs(const std::vector<const Job *> &todo, std::map<std::string, std::shared_ptr<const Curve>> &out, Flow &F); // false = 取消 / 判废
+  bool eval(const FactorJob &j, Flow &F, FactorCurve &out);                                                               // false = 取消 / 判废
+  bool eval(const PoolJob &j, Flow &F, PoolCurve &out);                                                                   // false = 取消 / 判废
+  bool load_failed(Flow &F);                                                                                              // 装载没成: 库判废 → 弃缓存 + 置 message; 恒 false
 
   std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活
 };

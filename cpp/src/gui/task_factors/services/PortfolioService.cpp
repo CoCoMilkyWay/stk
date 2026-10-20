@@ -164,7 +164,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
   for (PortfolioItem &it : items) {
     if (!it.missing.empty())
       continue;
-    PortfolioJob j;
+    FactorJob j;
     if (!MakeFactorScope(data, it.e.pool, it.e.seg, /*gpu=*/false, j.scope)) {
       it.missing = "标签库未建";
       continue;
@@ -182,6 +182,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
     PoolJob p;
     if (!MakeFactorScope(data, d.name, kDaySeg, /*gpu=*/false, p.scope))
       continue;
+    p.key = d.name;
     p.ft = table_of(tables, data.feature, kDaySeg);
     assert(!p.ft->y.labels.empty() && "日层须有标签 (load_y 至少一组)");
     req.pools.push_back(std::move(p));
@@ -190,10 +191,10 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 
 std::string PortfolioRequest::sig() const {
   std::string s;
-  for (const PortfolioJob &j : factors)
-    s += j.key + "|" + std::to_string(j.scope.max_impact) + "\n";
+  for (const FactorJob &j : factors)
+    s += j.sig() + "\n";
   for (const PoolJob &p : pools)
-    s += p.scope.pool + "\n";
+    s += p.sig() + "\n";
   return s;
 }
 
@@ -207,67 +208,59 @@ struct PortfolioService::Flow {
   LibReaders lr; // 已建的库 (清单没变的复用)
   ScopeCache c;  // 因子的作用域块: 同作用域的因子共用 Y, X 只留当前因子的叶
   Engine<Cpu> E;
-  std::vector<uint16_t> rx;            // [T][A]
-  std::vector<uint8_t> lc;             // [T][A]
-  std::vector<factor::stat::Row> rows; // [T] 一级 (单 hold)
+  std::vector<uint16_t> rx; // [T][A]
+  std::vector<uint8_t> lc;  // [T][A]
 
   explicit Flow(const std::atomic<bool> &cancel) : ex(misc::exec::hw()), E(ex, cancel, 1) {}
 };
 
+namespace {
+
+// 缓存跟请求走 (因子 / 池同一条): reload → 全丢; 请求里没有的 key 丢掉
+template <class Job, class Curve>
+void prune(std::map<std::string, std::shared_ptr<const Curve>> &m, const std::vector<Job> &jobs, bool reload) {
+  if (reload)
+    m.clear();
+  std::erase_if(m, [&](const auto &kv) { return std::none_of(jobs.begin(), jobs.end(), [&](const Job &j) { return j.key == kv.first; }); });
+}
+// 要算的: 缺 / 签名变了
+template <class Job, class Curve>
+std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<const Curve>> &m, const std::vector<Job> &jobs) {
+  std::vector<const Job *> todo;
+  for (const Job &j : jobs)
+    if (const auto it = m.find(j.key); it == m.end() || it->second->sig != j.sig())
+      todo.push_back(&j);
+  return todo;
+}
+
+// accum_rows 的 sink: 一级 Row 不落地, 直接折成两盘口毛收益 (单 hold)
+struct BookSink {
+  float *ret[kBooks] = {};
+  double cap = 0.0;
+  using Ext = factor::cpu::stat::NoExt;
+  Ext ext() const { return {}; }
+  void row(int, int t, const factor::stat::Row &r, const Ext &) const {
+    constexpr int gl = factor::stat::leg_group(kLong);
+    ret[kBookLong][t] = static_cast<float>(r.grp[gl] + r.mkt[kLong] * r.cnt[gl] / factor::stat::book_den(r.cnt[gl], cap));
+    ret[kBookLs][t] = r.ls;
+  }
+};
+
+} // namespace
+
 PortfolioService::PortfolioService() { Start(); }
 PortfolioService::~PortfolioService() { Stop(); }
 
-bool PortfolioService::run(PortfolioRequest &req) {
-  if (!flow_)
-    flow_ = std::make_unique<Flow>(cancel_);
-  Flow &F = *flow_;
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    message.clear();
-    if (req.reload) {
-      result.factors.clear();
-      result.pools.clear();
-    }
-    std::erase_if(result.factors, [&](const auto &kv) {
-      return std::none_of(req.factors.begin(), req.factors.end(), [&](const PortfolioJob &j) { return j.key == kv.first; });
-    });
-    ++result_gen;
-  }
-  if (req.reload)
-    F.c.reset();
-  publish();
-
-  // 只有 worker 写 result: 这里读不加锁
-  std::vector<const PortfolioJob *> todo_f;
-  for (const PortfolioJob &j : req.factors)
-    if (const auto it = result.factors.find(j.key); it == result.factors.end() || it->second->max_impact != j.scope.max_impact)
-      todo_f.push_back(&j);
-  std::vector<const PoolJob *> todo_p;
-  for (const PoolJob &p : req.pools)
-    if (!result.pools.contains(p.scope.pool))
-      todo_p.push_back(&p);
-  jobs_done.store(0, std::memory_order_relaxed);
-  jobs_total.store(static_cast<int>(todo_f.size() + todo_p.size()), std::memory_order_relaxed);
-
-  for (const PortfolioJob *j : todo_f) {
-    auto c = std::make_shared<FactorCurve>();
-    if (!eval_factor(*j, F, *c))
+template <class Job, class Curve>
+bool PortfolioService::run_jobs(const std::vector<const Job *> &todo, std::map<std::string, std::shared_ptr<const Curve>> &out, Flow &F) {
+  for (const Job *j : todo) {
+    auto c = std::make_shared<Curve>();
+    c->sig = j->sig();
+    if (!eval(*j, F, *c))
       return false;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      result.factors[j->key] = std::move(c);
-      ++result_gen;
-    }
-    jobs_done.fetch_add(1, std::memory_order_relaxed);
-    publish();
-  }
-  for (const PoolJob *p : todo_p) {
-    auto c = std::make_shared<PoolCurve>();
-    if (!eval_pool(*p, F, *c))
-      return false;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      result.pools[p->scope.pool] = std::move(c);
+      out[j->key] = std::move(c);
       ++result_gen;
     }
     jobs_done.fetch_add(1, std::memory_order_relaxed);
@@ -276,8 +269,40 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return true;
 }
 
+bool PortfolioService::run(PortfolioRequest &req) {
+  if (!flow_)
+    flow_ = std::make_unique<Flow>(cancel_);
+  Flow &F = *flow_;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    message.clear();
+    prune(result.factors, req.factors, req.reload);
+    prune(result.pools, req.pools, req.reload);
+    ++result_gen;
+  }
+  if (req.reload)
+    F.c.reset();
+  publish();
+
+  // 只有 worker 写 result: 这里读不加锁
+  const std::vector<const FactorJob *> todo_f = todo_of(result.factors, req.factors);
+  const std::vector<const PoolJob *> todo_p = todo_of(result.pools, req.pools);
+  jobs_done.store(0, std::memory_order_relaxed);
+  jobs_total.store(static_cast<int>(todo_f.size() + todo_p.size()), std::memory_order_relaxed);
+  return run_jobs(todo_f, result.factors, F) && run_jobs(todo_p, result.pools, F);
+}
+
+bool PortfolioService::load_failed(Flow &F) {
+  if (F.lr.stale()) { // 库换了, 缓存的一切不可信
+    F.c.reset();
+    std::lock_guard<std::mutex> lock(mutex);
+    message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
+  }
+  return false;
+}
+
 // 与 InspectService::evaluate 同一条 flow, 只留该 hold 的逐行序列
-bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &out) {
+bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   TraceN("PortfolioFactor");
   const FeatureTable &ft = *j.ft;
   const FactorScope &sc = j.scope;
@@ -291,10 +316,8 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
   }
   const factor::Dag d = factor::build(e);
   const int N = static_cast<int>(d.nodes.size()), root = d.root();
-  out.key = j.key;
   out.seg = sc.seg;
   out.hold = j.hold;
-  out.max_impact = sc.max_impact;
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
   // ---- 作用域 + 装载 (Y = 该 hold + 最小金额段; X 只留本因子的叶) ----
@@ -309,20 +332,14 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
   assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
   const YSpec ys{holds_of({j.hold}), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
                  /*index=*/false};
-  { // 宿主峰值: Y + X (本因子) + 活槽 + rx / lc + 标签秩 + Row [T]
+  { // 宿主峰值: Y + X (本因子) + 活槽 + rx / lc + 标签秩 + 出参 [T] (ret / wimp / we)
     const double cells = static_cast<double>(days) * ft.seg * A;
     const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(d.feats.size() + static_cast<size_t>(d.n_slots)) + 3.0 + 2.0;
-    assert_fits("Portfolio", cells * per + static_cast<double>(days) * ft.seg * sizeof(factor::stat::Row), days, A, ft.seg);
+    assert_fits("Portfolio", cells * per + static_cast<double>(days) * ft.seg * sizeof(float) * (kBooks + 2 * kLegs), days, A, ft.seg);
   }
   if (!ensure_y(F.c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this) ||
-      !ensure_x(F.c, ft, es, F.lr, d.feats, /*retain=*/true, F.ex, cancel_, *this)) {
-    if (F.lr.stale()) { // 库换了, 缓存的一切不可信
-      F.c.reset();
-      std::lock_guard<std::mutex> lock(mutex);
-      message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
-    }
-    return false;
-  }
+      !ensure_x(F.c, ft, es, F.lr, d.feats, /*retain=*/true, F.ex, cancel_, *this))
+    return load_failed(F);
   const YPlanes &y = F.c.y;
   const int T = y.sh.T;
   const size_t n = y.sh.n();
@@ -351,30 +368,25 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
     return false;
   const factor::check::Plane *rp = F.E.plane(root);
 
-  // ---- 秩 + 腿码 + 一级 Row ----
+  // ---- 秩 + 腿码 + 两盘口毛收益 (sink 直写, 不落 Row) ----
+  const double cap = y.n_full;
+  assert(cap > 0.0);
   F.rx.resize(n);
   F.lc.resize(n);
-  F.rows.assign(static_cast<size_t>(T), factor::stat::Row{});
+  out.dates = es.dates;
+  BookSink sink{.cap = cap};
+  for (int b = 0; b < kBooks; ++b) {
+    out.ret[b].assign(static_cast<size_t>(T), 0.f);
+    sink.ret[b] = out.ret[b].data();
+  }
   const factor::stat::Span &s = ss.s;
   factor::cpu::stat::rank_x(F.ex, factor::stat::Plane{rp->v.data(), rp->m.data()}, y.gate.data(), j.frame, s, F.rx.data(), ss.w);
   factor::cpu::stat::leg_codes(F.ex, F.rx.data(), s, F.lc.data());
   factor::stat::Accum acc[factor::stat::kMaxHold];
-  factor::cpu::stat::accum_rows(F.ex, s, F.rx.data(), ss.L, ss.w, acc, factor::cpu::stat::LandRows{F.rows.data(), T});
+  factor::cpu::stat::accum_rows(F.ex, s, F.rx.data(), ss.L, ss.w, acc, sink);
   publish(1);
   if (cancelled())
     return false;
-
-  const double cap = y.n_full;
-  assert(cap > 0.0);
-  constexpr int gl = factor::stat::leg_group(kLong);
-  out.dates = es.dates;
-  out.lng.resize(static_cast<size_t>(T));
-  out.ls.resize(static_cast<size_t>(T));
-  for (int t = 0; t < T; ++t) {
-    const factor::stat::Row &r = F.rows[static_cast<size_t>(t)];
-    out.lng[static_cast<size_t>(t)] = static_cast<float>(r.grp[gl] + r.mkt[kLong] * r.cnt[gl] / factor::stat::book_den(r.cnt[gl], cap));
-    out.ls[static_cast<size_t>(t)] = r.ls;
-  }
 
   // ---- 逐行换手成本 (cost_rows 的逐行版: 每行一份 CostAcc, t < h 无 lag 不攒) ----
   //   Bar 层无金额段: 一行宽的零冲击 + 全有效 (腿成员都算, 新进者数照计), 每行同一份
@@ -382,8 +394,10 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
   const bool flat = y.ad.n == 0;
   const int h = factor::stat::hold_rows(j.hold, factor::geo_of(sc.seg));
   out.amt = flat ? 0 : y.ad.a[0];
-  out.wimp.assign(static_cast<size_t>(kLegs) * T, 0.f);
-  out.we.assign(static_cast<size_t>(kLegs) * T, 0.f);
+  for (int l = 0; l < kLegs; ++l) {
+    out.wimp[l].assign(static_cast<size_t>(T), 0.f);
+    out.we[l].assign(static_cast<size_t>(T), 0.f);
+  }
   const std::vector<uint16_t> zero(flat ? A : 0, 0);
   const std::vector<uint8_t> all(flat ? A : 0, 1);
   const factor::stat::Cost cs = flat ? factor::stat::Cost{{zero.data(), zero.data()}, all.data()} : cost_of(y.costs[0]);
@@ -396,9 +410,8 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
       long long cov[2] = {};
       factor::cpu::stat::cost_row(F.lc.data() + base, &lag, 1, &cr, 1, A, cap, &ca, cov);
       for (int l = 0; l < kLegs; ++l) {
-        const size_t o = static_cast<size_t>(l) * T + t;
-        out.wimp[o] = static_cast<float>(ca.leg[l].wimp);
-        out.we[o] = static_cast<float>(ca.leg[l].we);
+        out.wimp[l][static_cast<size_t>(t)] = static_cast<float>(ca.leg[l].wimp);
+        out.we[l][static_cast<size_t>(t)] = static_cast<float>(ca.leg[l].we);
       }
     }
   });
@@ -407,11 +420,10 @@ bool PortfolioService::eval_factor(const PortfolioJob &j, Flow &F, FactorCurve &
 }
 
 // 日层池等权指数: 无叶作用域 (标签库 + 池成员) → load_y 顺带算 index; 块用完即弃
-bool PortfolioService::eval_pool(const PoolJob &j, Flow &F, PoolCurve &out) {
+bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   TraceN("PortfolioPool");
   const FeatureTable &ft = *j.ft;
   assert(j.scope.seg == ft.seg && ft.seg == kDaySeg);
-  out.pool = j.scope.pool;
   EvalScope es;
   if (std::string why; !eval_scope(ft, j.scope, {}, es, why)) {
     out.error = why;
@@ -422,18 +434,12 @@ bool PortfolioService::eval_pool(const PoolJob &j, Flow &F, PoolCurve &out) {
   const YSpec ys{holds_of({ft.y.labels.front().key}), {}, 0.f, /*index=*/true};
   assert_fits("Portfolio", static_cast<double>(days) * A * cell_bytes(ys), days, A, ft.seg);
   ScopeCache c;
-  if (!ensure_y(c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this)) {
-    if (F.lr.stale()) {
-      F.c.reset();
-      std::lock_guard<std::mutex> lock(mutex);
-      message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
-    }
-    return false;
-  }
+  if (!ensure_y(c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this))
+    return load_failed(F);
   assert(c.y.index.size() == es.dates.size() && c.y.index_cap.size() == es.dates.size());
   out.dates = es.dates;
-  out.index = std::move(c.y.index);
-  out.index_cap = std::move(c.y.index_cap);
+  out.index[kWeightEq] = std::move(c.y.index);
+  out.index[kWeightCap] = std::move(c.y.index_cap);
   if (es.member) {
     const size_t P = es.member->axis().size();
     double sum = 0.0;

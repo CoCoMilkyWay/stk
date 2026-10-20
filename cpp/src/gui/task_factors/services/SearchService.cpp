@@ -35,9 +35,9 @@ using factor::search::Result;
 using factor::search::Score;
 using Clock = std::chrono::steady_clock;
 
-constexpr int kCpuForest = 64;                                                // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
-constexpr int kGpuMinBatch = 8;                                               // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
-constexpr double kVramFrac = 0.85;                                            // 显存空闲量的使用比例 (宿主: FactorsLoad host_budget)
+constexpr int kCpuForest = 64;     // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
+constexpr int kGpuMinBatch = 8;    // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
+constexpr double kVramFrac = 0.85; // 显存空闲量的使用比例 (宿主: FactorsLoad host_budget)
 
 __attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
   char buf[4096];

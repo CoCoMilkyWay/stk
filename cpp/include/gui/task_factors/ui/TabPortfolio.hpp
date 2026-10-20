@@ -30,9 +30,8 @@ struct PortfolioCurve {
 
 // Portfolio 页派生 (UI 线程, 结果 / 内容 / fixed_impact 变才重算): 全段, 起点 1
 struct PortfolioDerived {
-  std::vector<misc::Ymd> dates; // 日并集轴 (横轴 day 下标)
-  PortfolioCurve l, ls;         // 组合 (带冲击): 起点 + 每个有增量的 x
-  PortfolioCurve l0, ls0;       // 组合 (无冲击), 同 x
+  std::vector<misc::Ymd> dates;          // 日并集轴 (横轴 day 下标)
+  PortfolioCurve book[kBooks][kImpacts]; // 组合: 起点 + 每个有增量的 x (各线同 x)
   struct Pool {
     std::string label; // 图例: 池名 | 中文名 | 年换手 (补空格对齐; ###池名 定 ID, 换手到了不换 item)
     std::string tag;   // 线尾小字 (池名)
@@ -52,10 +51,10 @@ struct PortfolioDerived {
 
 // 区间视图: 派生各线切到 [d0, d1) 并在起点归一 (派生 / 区间变才重算)
 struct PortfolioView {
-  PortfolioCurve l, ls, l0, ls0;
-  std::vector<PortfolioCurve> pools, factors;                   // [der.pools] / [der.factors]
-  float ann_l = 0.f, ann_ls = 0.f, ann_l0 = 0.f, ann_ls0 = 0.f; // 区间复利年化 (%)
-  std::vector<float> ann_f;                                     // [der.factors]
+  PortfolioCurve book[kBooks][kImpacts];
+  float ann[kBooks][kImpacts] = {};           // 区间复利年化 (%)
+  std::vector<PortfolioCurve> pools, factors; // [der.pools] / [der.factors]
+  std::vector<float> ann_f;                   // [der.factors]
 };
 
 struct PortfolioUIState {
@@ -75,10 +74,10 @@ struct PortfolioUIState {
   uint64_t der_gen = ~0ull, der_items = ~0ull;
   double der_impact = -1.0;
   PortfolioDerived der;
-  int d0 = 0, d1 = 0;                       // 区间 [d0, d1) (der.dates 下标; 两边在月初 / 末尾); 日轴变 → 全段
-  int drag = 0;                             // 区间条拖动中: 0 无 / 1 左把手 / 2 右把手 / 3 段内平移
-  double grab_day = 0.0;                    // 按下时鼠标所在日 (平移按与它的差算)
-  int grab_k0 = 0, grab_k1 = 0;             // 按下时两边的月初序号 (平移保持 k1 − k0)
+  int d0 = 0, d1 = 0;           // 区间 [d0, d1) (der.dates 下标; 两边在月初 / 末尾); 日轴变 → 全段
+  int drag = 0;                 // 区间条拖动中: 0 无 / 1 左把手 / 2 右把手 / 3 段内平移
+  double grab_day = 0.0;        // 按下时鼠标所在日 (平移按与它的差算)
+  int grab_k0 = 0, grab_k1 = 0; // 按下时两边的月初序号 (平移保持 k1 − k0)
   int view_d0 = -1, view_d1 = -1;
   PortfolioView view;
   bool log_y = false;

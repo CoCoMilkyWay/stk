@@ -22,8 +22,7 @@ namespace GUI::Factors {
 
 namespace {
 
-using factor::stat::kLong;
-using factor::stat::kShort;
+using factor::stat::kLegs;
 
 constexpr size_t kDayW = TRADE_MINUTES_PER_DAY; // 横轴每日跨度 (同 OrderFlow 图 2: x = 日下标 · 255 + 分钟)
 const ImVec4 kHead(0.4f, 0.8f, 1.0f, 1.0f);
@@ -63,7 +62,27 @@ int day_formatter(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
-const ImVec4 kColLong(1.0f, 0.55f, 0.15f, 1.0f), kColLs(1.0f, 1.0f, 1.0f, 1.0f);
+// 组合线表 [kBooks] × [kImpacts]: 色 / 名 / ID 按盘口, 透明度 / 线宽 / 名 / ID 按冲击; 线尾小字两轴合成
+const ImVec4 kBookCol[kBooks] = {ImVec4(1.0f, 0.55f, 0.15f, 1.0f), ImVec4(1.0f, 1.0f, 1.0f, 1.0f)};
+constexpr const char *kBookName[kBooks] = {"G20 多头", "LS"};
+constexpr const char *kBookId[kBooks] = {"long", "ls"};
+constexpr float kImpactAlpha[kImpacts] = {1.0f, 0.5f};
+constexpr float kImpactWidth[kImpacts] = {2.0f, 1.0f};
+constexpr const char *kImpactName[kImpacts] = {"带冲击", "无冲击"};
+constexpr const char *kImpactId[kImpacts] = {"", "0"};
+constexpr const char *kBookTag[kBooks][kImpacts] = {{"G20", "G20 无冲击"}, {"LS", "LS 无冲击"}};
+// 池指数线表 [kWeights] (all 池两条; 其余池只画 kWeightEq, 名用池中文名)
+constexpr const char *kWeightName[kWeights] = {"全A等权", "全A加权"};
+constexpr const char *kWeightId[kWeights] = {"", "_cap"};
+
+// 组合线逐条 (冲击外层, 盘口内层 = 主图例序)
+template <class Fn>
+void for_books(Fn &&fn) {
+  for (int i = 0; i < kImpacts; ++i)
+    for (int b = 0; b < kBooks; ++b)
+      fn(b, i);
+}
+
 // 右补空格到 px 宽 (等宽字体, 中文占两格: 按实测像素补, 列对齐)
 std::string pad_to(const char *s, float px) {
   const float w = ImGui::CalcTextSize(s).x, sp = ImGui::CalcTextSize(" ").x;
@@ -100,24 +119,24 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed
   d.dates.erase(std::unique(d.dates.begin(), d.dates.end()), d.dates.end());
   const auto day_of = [&](misc::Ymd y) { return static_cast<size_t>(std::lower_bound(d.dates.begin(), d.dates.end(), y) - d.dates.begin()); };
 
-  // ---- 组合: 每日在当日有数据的因子间等分 ----
+  // ---- 组合: 每日在当日有数据的因子间等分; 增量按整数 x 稠密累加 (与因子数 / 行数无关, 免排序) ----
   std::vector<int> n_act(d.dates.size(), 0);
   for (const FactorCurve *f : fc)
     for (const misc::Ymd y : f->dates)
       ++n_act[day_of(y)];
-  struct Ev {
-    double x, l, ls, l0, ls0; // 带冲击 / 无冲击
+  struct Cell {
+    double inc[kBooks][kImpacts];
+    uint8_t hit;
   };
-  std::vector<Ev> ev;
+  std::vector<Cell> cell(d.dates.size() * kDayW);
   for (size_t q = 0; q < fc.size(); ++q) {
     const FactorCurve *f = fc[q];
     const int S = f->seg;
     const factor::Geo g = factor::geo_of(S);
     const int h = factor::stat::hold_rows(f->hold, g);
-    assert(!f->dates.empty() && f->lng.size() == f->dates.size() * static_cast<size_t>(S));
+    assert(!f->dates.empty() && f->ret[kBookLong].size() == f->dates.size() * static_cast<size_t>(S));
     // 每个新进者: 平仓 fixed_impact + 建仓 (Lob = 金额段冲击, 已在 wimp; Bar 无段 = 再一份 fixed_impact)
     const double ke = f->amt > 0 ? fixed_impact : 2.0 * fixed_impact;
-    const float *wl = f->wimp_at(kLong), *el = f->we_at(kLong), *ws = f->wimp_at(kShort), *es = f->we_at(kShort);
     PortfolioDerived::Factor pf;
     pf.key = its[q]->e.key();
     pf.label = entry_label(its[q]->e) + (f->amt > 0 ? " (" + std::to_string(f->amt) + "w冲击)" : std::string(" (固定冲击)"));
@@ -125,62 +144,68 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed
     pf.c.x.push_back(static_cast<double>(day_of(f->dates.front()) * kDayW)), pf.c.y.push_back(1.0);
     // 行收益记在平仓时刻 (与池指数同为已实现口径): 分钟型 = 行末分钟 + n (过收盘 → 收盘); 收盘型 = 当日收盘;
     // T+N = 其后第 N 个交易日开盘 (越过区间末 → 末日收盘, 标签按最后收盘结算)
-    const auto exit_x = [&](size_t dl, int ts) {
+    const auto exit_x = [&](size_t dl, int ts) -> size_t {
       const size_t di = day_of(f->dates[dl]);
       if (factor::stat::hold_intraday(f->hold))
-        return static_cast<double>(di * kDayW + std::min(static_cast<size_t>(g.minute(ts) + f->hold), kDayW - 1));
+        return di * kDayW + std::min(static_cast<size_t>(g.minute(ts) + f->hold), kDayW - 1);
       if (f->hold == factor::stat::kHoldClose)
-        return static_cast<double>(di * kDayW + kDayW - 1);
+        return di * kDayW + kDayW - 1;
       const size_t de = dl + static_cast<size_t>(f->hold - factor::stat::kHoldDayBase);
       if (de >= f->dates.size())
-        return static_cast<double>(day_of(f->dates.back()) * kDayW + kDayW - 1);
-      return static_cast<double>(day_of(f->dates[de]) * kDayW);
+        return day_of(f->dates.back()) * kDayW + kDayW - 1;
+      return day_of(f->dates[de]) * kDayW;
     };
     double nav = 1.0;
     for (size_t dl = 0; dl < f->dates.size(); ++dl) {
       const size_t di = day_of(f->dates[dl]);
       for (int ts = 0; ts < S; ++ts) {
         const size_t t = dl * S + static_cast<size_t>(ts);
-        const double cl = wl[t] + el[t] * ke, cs = ws[t] + es[t] * ke;
-        const double x = exit_x(dl, ts);
-        const double rl = (f->lng[t] - cl) / h, rls = (f->ls[t] - cl - cs) / h;
-        ev.push_back({x, rl / n_act[di], rls / n_act[di], f->lng[t] / h / n_act[di], f->ls[t] / h / n_act[di]});
-        nav *= 1.0 + rl;
-        pf.c.x.push_back(x), pf.c.y.push_back(nav);
+        double r[kBooks][kImpacts]; // 本行增量 (/ h)
+        for (int b = 0; b < kBooks; ++b) {
+          double cost = 0.0;
+          for (int l = 0; l < kLegs; ++l)
+            cost += book_pays(b, l) ? f->wimp[l][t] + f->we[l][t] * ke : 0.0;
+          r[b][kImpactNet] = (f->ret[b][t] - cost) / h;
+          r[b][kImpactGross] = f->ret[b][t] / h;
+        }
+        const size_t x = exit_x(dl, ts);
+        Cell &c = cell[x];
+        c.hit = 1;
+        for_books([&](int b, int i) { c.inc[b][i] += r[b][i] / n_act[di]; });
+        nav *= 1.0 + r[kBookLong][kImpactNet];
+        pf.c.x.push_back(static_cast<double>(x)), pf.c.y.push_back(nav);
       }
     }
     d.factors.push_back(std::move(pf));
   }
-  std::sort(ev.begin(), ev.end(), [](const Ev &a, const Ev &b) { return a.x < b.x; });
   if (!d.dates.empty()) {
-    d.l.x.push_back(0.0), d.l.y.push_back(1.0), d.ls.y.push_back(1.0), d.l0.y.push_back(1.0), d.ls0.y.push_back(1.0);
-    double nl = 1.0, nls = 1.0, nl0 = 1.0, nls0 = 1.0;
-    for (size_t i = 0; i < ev.size();) {
-      double il = 0.0, ils = 0.0, il0 = 0.0, ils0 = 0.0;
-      size_t j = i;
-      for (; j < ev.size() && ev[j].x == ev[i].x; ++j)
-        il += ev[j].l, ils += ev[j].ls, il0 += ev[j].l0, ils0 += ev[j].ls0;
-      nl *= 1.0 + il, nls *= 1.0 + ils, nl0 *= 1.0 + il0, nls0 *= 1.0 + ils0;
-      d.l.x.push_back(ev[i].x), d.l.y.push_back(nl), d.ls.y.push_back(nls), d.l0.y.push_back(nl0), d.ls0.y.push_back(nls0);
-      i = j;
+    std::vector<double> xs{0.0};
+    double nav[kBooks][kImpacts];
+    for_books([&](int b, int i) { nav[b][i] = 1.0, d.book[b][i].y.push_back(1.0); });
+    for (size_t x = 0; x < cell.size(); ++x) {
+      if (!cell[x].hit)
+        continue;
+      xs.push_back(static_cast<double>(x));
+      for_books([&](int b, int i) { nav[b][i] *= 1.0 + cell[x].inc[b][i], d.book[b][i].y.push_back(nav[b][i]); });
     }
-    d.ls.x = d.l0.x = d.ls0.x = d.l.x;
+    for_books([&](int b, int i) { d.book[b][i].x = xs; });
   }
 
   // ---- 池线: 只在日并集轴范围内; 不在轴上的日的收益并进下一个轴上的日 ----
   // 图例 = 池名 | 中文名 | 年换手 (日均 × kDaysPerYear) 三列, 各列按最宽者补空格对齐
-  // all 池拆两条: 全A加权 (流通市值, PoolCurve::index_cap) / 全A等权 (index); 其余池一条等权
+  // all 池拆两条: 全A加权 (流通市值, kWeightCap) / 全A等权 (kWeightEq); 其余池一条等权
   struct Line {
     const PoolDef *pd;
-    const char *cn, *tag, *id;
-    bool cap;
+    const char *cn, *tag;
+    Weight w;
   };
   std::vector<Line> lines;
   for (const PoolDef &pd : feature_pools())
     if (pd.pool_col == SIZE_MAX)
-      lines.push_back({&pd, "全A加权", "全A加权", "_cap", true}), lines.push_back({&pd, "全A等权", "全A等权", "", false});
+      for (const Weight w : {kWeightCap, kWeightEq})
+        lines.push_back({&pd, kWeightName[w], kWeightName[w], w});
     else
-      lines.push_back({&pd, pd.name_cn, pd.name, "", false});
+      lines.push_back({&pd, pd.name_cn, pd.name, kWeightEq});
   float w_en = 0.f, w_cn = 0.f;
   for (const Line &ln : lines)
     w_en = std::max(w_en, ImGui::CalcTextSize(ln.pd->name).x), w_cn = std::max(w_cn, ImGui::CalcTextSize(ln.cn).x);
@@ -192,12 +217,12 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed
     char turn[48] = "";
     if (pc && pc->turnover >= 0.0)
       std::snprintf(turn, sizeof(turn), "  (年换手=%5.1f倍)", pc->turnover * factor::stat::kDaysPerYear);
-    p.label = pad_to(pd.name, w_en) + "  " + pad_to(ln.cn, w_cn) + turn + "###pf_pool_" + pd.name + ln.id;
+    p.label = pad_to(pd.name, w_en) + "  " + pad_to(ln.cn, w_cn) + turn + "###pf_pool_" + pd.name + kWeightId[ln.w];
     p.tag = ln.tag;
     p.own = own.contains(pd.name);
     if (pc && !d.dates.empty()) {
       const PoolCurve &c = *pc;
-      const std::vector<float> &ix = ln.cap ? c.index_cap : c.index;
+      const std::vector<float> &ix = c.index[ln.w];
       double base = 0.0;
       for (size_t i = 0; i < c.dates.size(); ++i) {
         if (c.dates[i] < d.dates.front() || c.dates[i] > d.dates.back())
@@ -240,11 +265,10 @@ float ann_of(const PortfolioCurve &c) {
 
 void make_view(const PortfolioDerived &d, int d0, int d1, PortfolioView &v) {
   const double x0 = static_cast<double>(static_cast<size_t>(d0) * kDayW), x1 = static_cast<double>(static_cast<size_t>(d1) * kDayW);
-  rebase(d.l, x0, x1, v.l);
-  rebase(d.ls, x0, x1, v.ls);
-  rebase(d.l0, x0, x1, v.l0);
-  rebase(d.ls0, x0, x1, v.ls0);
-  v.ann_l = ann_of(v.l), v.ann_ls = ann_of(v.ls), v.ann_l0 = ann_of(v.l0), v.ann_ls0 = ann_of(v.ls0);
+  for_books([&](int b, int i) {
+    rebase(d.book[b][i], x0, x1, v.book[b][i]);
+    v.ann[b][i] = ann_of(v.book[b][i]);
+  });
   v.pools.resize(d.pools.size());
   for (size_t i = 0; i < d.pools.size(); ++i)
     rebase(d.pools[i].c, x0, x1, v.pools[i]);
@@ -611,34 +635,18 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
       ImPlot::PlotLine(("##pf_f" + f.key).c_str(), c.x.data(), c.y.data(), static_cast<int>(c.x.size()));
       push_tag(tags, lim, c, ImGui::ColorConvertFloat4ToU32(col), f.tag.c_str());
     }
-    char lb[96];
-    std::snprintf(lb, sizeof(lb), "G20 多头 (带冲击)  %+.1f%%/年###pf_long", v.ann_l);
-    ImPlot::SetNextLineStyle(kColLong, 2.0f);
-    ImPlot::PlotLine(lb, v.l.x.data(), v.l.y.data(), static_cast<int>(v.l.x.size()));
-    if (legend_shown(lb))
-      push_tag(tags, lim, v.l, ImGui::ColorConvertFloat4ToU32(kColLong), "G20");
-    std::snprintf(lb, sizeof(lb), "LS (带冲击)  %+.1f%%/年###pf_ls", v.ann_ls);
-    if (set_vis) // 策略线默认只显 G20 多头 (带冲击)
-      ImPlot::HideNextItem(true, ImPlotCond_Always);
-    ImPlot::SetNextLineStyle(kColLs, 2.0f);
-    ImPlot::PlotLine(lb, v.ls.x.data(), v.ls.y.data(), static_cast<int>(v.ls.x.size()));
-    if (legend_shown(lb))
-      push_tag(tags, lim, v.ls, ImGui::ColorConvertFloat4ToU32(kColLs), "LS");
-    const ImVec4 col_l0(kColLong.x, kColLong.y, kColLong.z, 0.5f), col_ls0(kColLs.x, kColLs.y, kColLs.z, 0.5f);
-    std::snprintf(lb, sizeof(lb), "G20 多头 (无冲击)  %+.1f%%/年###pf_long0", v.ann_l0);
-    if (set_vis)
-      ImPlot::HideNextItem(true, ImPlotCond_Always);
-    ImPlot::SetNextLineStyle(col_l0, 1.0f);
-    ImPlot::PlotLine(lb, v.l0.x.data(), v.l0.y.data(), static_cast<int>(v.l0.x.size()));
-    if (legend_shown(lb))
-      push_tag(tags, lim, v.l0, ImGui::ColorConvertFloat4ToU32(col_l0), "G20 无冲击");
-    std::snprintf(lb, sizeof(lb), "LS (无冲击)  %+.1f%%/年###pf_ls0", v.ann_ls0);
-    if (set_vis)
-      ImPlot::HideNextItem(true, ImPlotCond_Always);
-    ImPlot::SetNextLineStyle(col_ls0, 1.0f);
-    ImPlot::PlotLine(lb, v.ls0.x.data(), v.ls0.y.data(), static_cast<int>(v.ls0.x.size()));
-    if (legend_shown(lb))
-      push_tag(tags, lim, v.ls0, ImGui::ColorConvertFloat4ToU32(col_ls0), "LS 无冲击");
+    for_books([&](int b, int i) {
+      const PortfolioCurve &c = v.book[b][i];
+      const ImVec4 col(kBookCol[b].x, kBookCol[b].y, kBookCol[b].z, kImpactAlpha[i]);
+      char lb[96];
+      std::snprintf(lb, sizeof(lb), "%s (%s)  %+.1f%%/年###pf_%s%s", kBookName[b], kImpactName[i], v.ann[b][i], kBookId[b], kImpactId[i]);
+      if (set_vis && (b != kBookLong || i != kImpactNet)) // 策略线默认只显 G20 多头 (带冲击)
+        ImPlot::HideNextItem(true, ImPlotCond_Always);
+      ImPlot::SetNextLineStyle(col, kImpactWidth[i]);
+      ImPlot::PlotLine(lb, c.x.data(), c.y.data(), static_cast<int>(c.x.size()));
+      if (legend_shown(lb))
+        push_tag(tags, lim, c, ImGui::ColorConvertFloat4ToU32(col), kBookTag[b][i]);
+    });
     shown += ui.log_y ? 'L' : 'l';
     if (shown != ui.shown_key) {
       ui.shown_key = std::move(shown);
@@ -659,8 +667,9 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ImPlot::SetupAxisFormat(ImAxis_X1, day_formatter, &d.dates);
     if (ui.log_y)
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-    ImPlot::SetNextLineStyle(kColLs, 1.0f);
-    ImPlot::PlotLine("##pf_range_ls", d.ls.x.data(), d.ls.y.data(), static_cast<int>(d.ls.x.size()));
+    const PortfolioCurve &rc = d.book[kBookLs][kImpactNet];
+    ImPlot::SetNextLineStyle(kBookCol[kBookLs], 1.0f);
+    ImPlot::PlotLine("##pf_range_ls", rc.x.data(), rc.y.data(), static_cast<int>(rc.x.size()));
     if (D > 0) {
       std::vector<int> ms; // 吸附点 = 月初下标, 末尾补 D
       for (int i = 0; i < D; ++i)
@@ -684,7 +693,9 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
       if (mp.x >= pp.x && mp.x <= pp.x + ps.x && mp.y >= pp.y && mp.y <= pp.y + ps.y &&
           ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
         const float x0 = px_of(ui.d0), x1 = px_of(ui.d1);
-        over = std::abs(mp.x - x0) <= kGrab ? 1 : std::abs(mp.x - x1) <= kGrab ? 2 : (mp.x > x0 && mp.x < x1) ? 3 : 0;
+        over = std::abs(mp.x - x0) <= kGrab ? 1 : std::abs(mp.x - x1) <= kGrab ? 2
+                                              : (mp.x > x0 && mp.x < x1)       ? 3
+                                                                               : 0;
       }
       int k0 = near_k(ui.d0, 0, K), k1 = near_k(ui.d1, 0, K);
       if (k1 <= k0) // 保 0 ≤ k0 < k1 ≤ K (下面按边拖的取值范围要它)
