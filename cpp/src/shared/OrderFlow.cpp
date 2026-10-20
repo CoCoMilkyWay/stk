@@ -19,8 +19,6 @@ void OrderFlow::Kline::begin_generation(uint32_t gen, std::vector<ColRef> refs, 
   // (此刻 GUI 请求代已是新代, 发布代仍是旧代 → GUI 不读 kline, 数组可安全重建)
   for (auto &n : feat_n)
     n.store(0, std::memory_order_release);
-  y_min.store(0.0, std::memory_order_relaxed);
-  y_max.store(0.0, std::memory_order_relaxed);
   x.clear();
   open.clear();
   high.clear();
