@@ -16,7 +16,7 @@ struct DAG_Root : graph::Root {
 };
 
 #define DAG_TIER Bar
-TIER_DAG(::LabelBar, minute_data)
+TIER_DAG(::LabelBar, minute_data, Fund.out(Fund.adj_ratio))
 #undef DAG_TIER
 
 } // namespace bar

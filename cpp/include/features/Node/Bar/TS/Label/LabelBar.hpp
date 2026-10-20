@@ -15,7 +15,7 @@
 //     OPEN  T+n 开盘价 = 09:25 撮合 bar 的价, 无撮合则首个有成交连续竞价 bar 的 open; 当日无开盘 (停牌) → 顺延,
 //           最多再等 n 日 (D+2n 仍无 → 最近收盘价); 越过区间末 → 最后一日收盘价
 //   全日无成交 (停牌 / 无 bar1m): 分钟 / 收盘型全行留 0, 当日不悬挂; 开盘型到期照常结算.
-//   价格均为 bar1m 原始价 (不复权): 开盘型跨除权日的收益含除权缺口, 与 Lob 档同约.
+//   价格均为 bar1m 价 × 当日复权比 (Fund adj_ratio, 日内恒定): 日内型与不复权同值, 开盘型跨除权日的收益不含除权缺口 (Lob 档仍含).
 //   落盘层: 不落 L_1min (255 行代价太大), 只落 L_5min / L_15min / L_30min / L_60min / L_1day —— 行 = 该层行的末分钟 m 的标签;
 //     每层只留本层及以上的持有期组 (LABEL_GROUPS_FROM_<LVL>: 5min 层无 1m, L_1day 只有开盘型). 逐分钟照算, 只是不落非行末分钟.
 //
@@ -40,16 +40,17 @@ class LabelBar : public LabelHold<BarEntry> {
 public:
   static constexpr size_t MIN_LABEL_COUNT = HOLD_COUNT * GROUP_SIZE; // LB 块总列数
 
-  explicit LabelBar(const MinuteData &md) : md_(md) {}
+  LabelBar(const MinuteData &md, const Series &adj_ratio) : md_(md), adj_ratio_(adj_ratio) {}
 
   // 有成交的分钟 bar 结算后 (CoreTs 只在有成交的分钟调). writer(col, n, t_min, values, days_ago), 此处 days_ago 恒 0
   template <class Writer>
   inline void minute_closed(size_t t_min, Writer &&writer) {
-    last_px_ = md_.close.back(); // 当日末笔成交价 (收盘价候选)
+    assert(px_scale_ > 0.0f && "有成交但当日无复权比 (bar1d adjust_factor 缺失)");
+    last_px_ = md_.close.back() * px_scale_; // 当日末笔成交价 (收盘价候选)
     has_px_ = true;
     if (!open_at(t_min, md_))
       return; // 集合竞价 bar 不作 entry
-    const BarEntry e{md_.bid_amount.back() / static_cast<float>(md_.bid_volume.back())};
+    const BarEntry e{md_.bid_amount.back() / static_cast<float>(md_.bid_volume.back()) * px_scale_};
     Pend &p = today();
     for (; p.n_entry < t_min; ++p.n_entry)
       p.entry[p.n_entry] = e; // 行 m < t_min (m+1 ≤ t_min) 悬着的 entry 全部到位
@@ -62,14 +63,16 @@ public:
     close_day(has_px_, last_px_, BarEntry{last_px_}, writer, release, [](size_t, const BarEntry &) {});
   }
 
-  // 每日重置: 行游标 / 当日开盘 / 当日末笔归零
+  // 每日重置: 行游标 / 当日开盘 / 当日末笔归零; 取当日复权比 (节点 carry 之后调, Fund back() = 当日)
   inline void reset() {
     LabelHold::reset();
     has_px_ = false;
+    px_scale_ = adj_ratio_.back();
   }
 
 private:
-  const MinuteData &md_; // 当前 bar (close / open / bid 侧 = bar1m 总量额)
+  const MinuteData &md_;    // 当前 bar (close / open / bid 侧 = bar1m 总量额)
+  const Series &adj_ratio_; // Fund 日频口
 
   float last_px_ = 0.0f; // 当日末笔成交价 (has_px_ = 当日有过成交; reset 清)
   bool has_px_ = false;

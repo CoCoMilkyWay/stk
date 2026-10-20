@@ -1100,6 +1100,7 @@ struct State {
   bool mb;      // 主板
   float mc_thr; // 低市值阈值 [元]
   int warmup_d; // dividend_st 生效起点 = max(轴起点+3y, 上市+3y)
+  float adj0;   // 复权比锚 = 网格切片内首个有效 adj_factor (无 → NaN)
   int cur_d = -1;
 
   // ttm / balance: latest (上市前事件丢弃)
@@ -1140,6 +1141,13 @@ struct State {
     if (meta.list[ai])
       stock_warmup_d = first_d_of_year(axes, year_of(meta.list[ai]) + 3);
     warmup_d = std::max(D.axes_warmup_d, stock_warmup_d);
+
+    adj0 = NaNF;
+    for (int d = D.pit.g0; d < D.pit.g0 + D.pit.n_g; ++d)
+      if (const float f = D.pit.at(D.pit.adj_factor, a, d); std::isfinite(f) && f > 0.0f) {
+        adj0 = f;
+        break;
+      }
 
     // 触发区间 (forecast v 升序 → on 升序); 年报预亏 (首亏/续亏, 12 月末报告期)
     const auto &inc = D.pit.income_annual[ai];
@@ -1407,6 +1415,7 @@ struct State {
     // ---- 行情日线项 / 两融明细 ----
     out[Fund::pre_close] = pos(p.at(p.pre_close, a, d));
     out[Fund::adj_factor] = pos(p.at(p.adj_factor, a, d));
+    out[Fund::adj_ratio] = out[Fund::adj_factor] / adj0; // 锚 = 过去的固定日, PIT
     out[Fund::rz_buy_amt] = sat(p.at(p.fin_purchase, a, d) * 1e-8f);
     out[Fund::rz_repay_amt] = sat(p.at(p.fin_repayment, a, d) * 1e-8f);
     out[Fund::rq_sell_vol] = sat(p.at(p.sec_sales_qty, a, d) * 1e-4f);

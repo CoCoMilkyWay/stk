@@ -96,18 +96,20 @@ protected:
 
   Pend &today() { return pend_[cur_]; }
 
+  float px_scale_ = 1.0f; // 开盘价缩放 (Bar 档 = 当日复权比, 档每日设; Lob 恒 1)
+
   // 有成交的分钟 bar 截开盘价; 返回该 bar 是否连续竞价
   inline bool open_at(size_t t_min, const MinuteData &md) {
     if (t_min == kAuctionMin) {
       assert(!open_ok_ && "09:25 撮合 bar 之前不该有开盘价");
-      open_px_ = md.close.back();
+      open_px_ = md.close.back() * px_scale_;
       open_ok_ = true;
       return false;
     }
     if (t_min < kContOpenMin || t_min >= kContCloseMin)
       return false;
     if (!open_ok_) {
-      open_px_ = md.open.back();
+      open_px_ = md.open.back() * px_scale_;
       open_ok_ = true;
     }
     return true;
