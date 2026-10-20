@@ -52,6 +52,7 @@ struct TaskFactorsState {
   std::string counted_key; // config.factor_dir | 所选池; 空 = 没数过
   size_t level_files[std::size(Factors::kFactorLevels)] = {};
   Phase prev_factors_phase = Phase::Idle;
+  std::shared_ptr<const Factors::FeatureTable> feature_table; // 本层字段表视图 (按层建一次, Factors / Search / Inspect 共享)
   std::unique_ptr<Factors::FactorsService> factors_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                        // 上次扫描的目录 (池切换 → 自动重扫)
@@ -80,6 +81,7 @@ static void reset_level_services(TaskFactorsState &s) {
   s.kline_service.reset();
   s.inspect_service.reset();
   s.inspect_ui = Factors::InspectUIState{};
+  s.feature_table.reset();
 }
 
 // Search all 出队一个发 Search; 队空 = 整目录 Run 一次并收尾. 请求建不成 (资产轴 / 区间) = 整轮放弃
@@ -153,7 +155,7 @@ TaskHandle CreateFactorsTask() {
         if (wrote) {
           Factors::FactorsRequest req;
           if (Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
-            req.only_file = file;
+            req.spec.only_file = file;
             state->factors_service->Request(req);
           }
         }
@@ -324,11 +326,13 @@ TaskHandle CreateFactorsTask() {
         break;
       }
       // 首次进页 / 换层: 字段表视图按层建一次 (编译期字段表, 不随运行变), 只扫描不算; 池切换 → 目录变 → 自动重扫
+      if (!state->feature_table)
+        state->feature_table = std::make_shared<Factors::FeatureTable>(Factors::BuildFeatureTable(data.feature, state->seg));
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
-        state->factors_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature, state->seg));
+        state->factors_service->SetFeatureTable(state->feature_table);
         state->search_service = std::make_unique<Factors::SearchService>();
-        state->search_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature, state->seg));
+        state->search_service->SetFeatureTable(state->feature_table);
       }
       auto &fs = *state->factors_service;
       auto &ss = *state->search_service;
@@ -341,7 +345,7 @@ TaskHandle CreateFactorsTask() {
       }
       if (!state->inspect_service) {
         state->inspect_service = std::make_unique<Factors::InspectService>();
-        state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature, state->seg));
+        state->inspect_service->SetFeatureTable(state->feature_table);
         state->kline_service = std::make_unique<Factors::KlineService>();
       }
       auto &is = *state->inspect_service;
@@ -396,6 +400,7 @@ TaskHandle CreateFactorsTask() {
     state->kline_service.reset();   // 析构 Stop() join worker
     state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放
     state->inspect_ui = Factors::InspectUIState{};
+    state->feature_table.reset();
   };
 
   return handle;

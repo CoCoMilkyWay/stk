@@ -44,15 +44,11 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-struct SearchRequest {
-  int seg = 0;                                         // 因子层 (= FeatureTable::seg)
-  std::string factor_dir;                              // factor_dir_of(pool, seg) (落盘)
+struct SearchSpec {
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
-  std::string pool;
-  PerPool<FeatureLib> libs; // factor_libs (评估期 / A 轴在 worker 按模板叶解析: FactorsLoad eval_scope)
-  bool gpu = false;
 };
+using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights); scope.max_impact 不看 (不评成本)
 // 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error)
 bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool gpu, SearchRequest &req);
 
@@ -119,8 +115,8 @@ public:
   SearchService(); // 两者都在 .cpp: Flow 不完整
   ~SearchService();
 
-  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
-  const FeatureTable &feats() const { return feats_; }
+  void SetFeatureTable(std::shared_ptr<const FeatureTable> t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
+  const FeatureTable &feats() const { return *feats_; }
 
   SearchStage stage() const { return stage_.load(std::memory_order_relaxed); }
   int level() const { return level_.load(std::memory_order_relaxed); }   // 局部搜索轮 (Refine 期)
@@ -139,7 +135,7 @@ private:
   bool run(SearchRequest &req);
   bool evaluate(const SearchRequest &req, Flow &F); // false = 取消
 
-  FeatureTable feats_;
+  std::shared_ptr<const FeatureTable> feats_;
   std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活
   std::atomic<SearchStage> stage_{SearchStage::Scale};
   std::atomic<int> level_{0}, alive_{0};

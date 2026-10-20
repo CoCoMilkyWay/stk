@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -39,8 +38,6 @@ namespace {
 
 using json = nlohmann::json;
 using ojson = nlohmann::ordered_json;
-using Clock = std::chrono::steady_clock;
-double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
 // 评估派生数据 (run + 表头 + stats): 只描述当前 weights, 权重整体换掉 / 清空时一起删
 void erase_stats(ojson &j) {
@@ -328,24 +325,26 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
   write_json(path, j);
 }
 
-// 评估结果 → 行 (scope / 二级); hold = [n_hold]
-void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, const Loaded &L, double n_full, const factor::stat::HoldStat *hold,
-               const std::vector<CostTier> &costs, const MiniPdf *ic_pdf, const MiniPdf &x_pdf, const char *backend) {
-  r.scope.pool = req.pool;
+// 根评估结果 → 行 (scope / 二级 / 成本 / 小图); ic_pdf = [L.hd.n]
+void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, const Loaded &L, double n_full, const RootOut &o, const MiniPdf *ic_pdf,
+               const char *backend) {
+  r.scope.pool = req.scope.pool;
   r.scope.start_date = es.dates.front();
   r.scope.end_date = es.dates.back();
   r.scope.days = L.days, r.scope.T = L.T, r.scope.A = L.A;
-  r.scope.max_impact = req.max_impact;
+  r.scope.max_impact = req.scope.max_impact;
   r.scope.n_full = n_full;
   r.scope.backend = backend;
   r.scope.time = now_string();
-  r.n_hold = L.n_hold;
-  for (int hi = 0; hi < L.n_hold; ++hi) {
-    r.hold[hi] = hold[hi];
+  r.valid_pct = o.valid_pct;
+  r.rank_pct = o.rank_pct;
+  r.n_hold = L.hd.n;
+  for (int hi = 0; hi < L.hd.n; ++hi) {
+    r.hold[hi] = o.hold[hi];
     r.ic_pdf[hi] = ic_pdf[hi];
   }
-  r.x_pdf = x_pdf;
-  r.costs = costs;
+  r.x_pdf = mini_pdf_of(o.xd.pdf);
+  r.costs = o.costs;
   r.has_stat = true;
   r.stat_from_file = false;
 }
@@ -361,6 +360,21 @@ const FeatCol *FeatureTable::find(std::string_view code) const {
     if (c.code == code)
       return &c;
   return nullptr;
+}
+
+const LegCol &leg_of(const std::vector<LegCol> &cols, int key) {
+  for (const LegCol &c : cols)
+    if (c.key == key)
+      return c;
+  assert(false && "key 不在字段表两腿列里");
+  __builtin_unreachable();
+}
+
+std::vector<int> keys_of(const std::vector<LegCol> &cols) {
+  std::vector<int> keys;
+  for (const LegCol &c : cols)
+    keys.push_back(c.key);
+  return keys;
 }
 
 factor::expr::FeatureLookup FeatureTable::lookup() const {
@@ -412,8 +426,8 @@ PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool,
   assert(level_for_pool(l, pool_def(pool).tier) && "该池不能用这个因子层");
   PerPool<FeatureLib> libs;
   libs[kAllPool] = load_lib(data.config, pool_def(kAllPool).name);
-  if (l.tier == TierId::Lob)
-    libs[pool_id(pool)] = load_lib(data.config, pool);
+  if (const PoolId lab = l.lab(pool_id(pool)); lab != kAllPool)
+    libs[lab] = load_lib(data.config, pool);
   return libs;
 }
 
@@ -443,21 +457,21 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
       const std::string pre = std::string(tier_name(tier)) + "." + kLevelToken[l] + ".";
       for (size_t i = 0; i < list.size(); ++i) {
         const FeatureMetadata &f = list[i];
-        t.cols.push_back({pre + f.code, tier, l, static_cast<uint32_t>(i), f.valid_type,
-                          f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS});
+        t.cols.push_back({{tier, l, static_cast<uint32_t>(i)}, pre + f.code, f.valid_type, f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS});
       }
     }
   }
   const Feature::Metadata &meta = feature.meta(lv.tier);
   const auto &level = meta.features[lv.lvl];
-  t.ts_col = static_cast<uint32_t>(meta.col_of(lv.lvl, "ts_valid"));
-  t.cs_col = static_cast<uint32_t>(meta.col_of(lv.lvl, "cs_valid"));
+  const auto own = [&](uint32_t c) { return Col{lv.tier, lv.lvl, c}; }; // 标签档网格层本层列
+  t.ts = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "ts_valid")));
+  t.cs = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "cs_valid")));
   const char *ohlc[4] = {"open", "high", "low", "close"};
   for (int i = 0; i < 4; ++i) {
     const std::string code = lv.tier == TierId::Lob ? std::string("lob_") + ohlc[i]
                              : lv.lvl == L_1day     ? std::string(ohlc[i]) + "_day"
                                                     : std::string(ohlc[i]) + "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
-    t.ohlc[i] = static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str()));
+    t.ohlc[i] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
   }
   struct Lab {
     bool is_long;
@@ -491,48 +505,52 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
     holds.insert(h);
   }
   assert(!labs.empty() && "字段表无标签列");
+  const auto legs = [&](int key) {
+    LegCol lc;
+    lc.key = key;
+    lc.leg[factor::stat::kLong] = lc.leg[factor::stat::kShort] = own(UINT32_MAX);
+    return lc;
+  };
+  const auto full = [](const LegCol &lc) { return lc.leg[factor::stat::kLong].col != UINT32_MAX && lc.leg[factor::stat::kShort].col != UINT32_MAX; };
   for (int h : holds) {
     if (!factor::stat::hold_ok(h, factor::geo_of(seg)))
       continue;
-    LabelCol lc;
-    lc.hold = h;
-    lc.col[factor::stat::kLong] = lc.col[factor::stat::kShort] = UINT32_MAX;
+    LegCol lc = legs(h);
     for (const Lab &l : labs)
       if (l.hold == h)
-        lc.col[l.is_long ? factor::stat::kLong : factor::stat::kShort] = l.col;
-    assert(lc.col[factor::stat::kLong] != UINT32_MAX && lc.col[factor::stat::kShort] != UINT32_MAX && "标签列不齐: 某 hold 缺 long 或 short");
+        lc.leg[l.is_long ? factor::stat::kLong : factor::stat::kShort].col = l.col;
+    assert(full(lc) && "标签列不齐: 某 hold 缺 long 或 short");
     t.labels.push_back(lc);
   }
   assert(!t.labels.empty() && "本层无合法持有期");
   for (int a : amts) {
-    CostCol cc;
-    cc.amt = a;
-    cc.col[factor::stat::kLong] = cc.col[factor::stat::kShort] = UINT32_MAX;
+    LegCol lc = legs(a);
     for (const Cost &c : costs)
       if (c.amt == a)
-        cc.col[c.is_buy ? factor::stat::kLong : factor::stat::kShort] = c.col;
-    assert(cc.col[factor::stat::kLong] != UINT32_MAX && cc.col[factor::stat::kShort] != UINT32_MAX && "冲击成本列不齐: 某金额段缺 buy 或 sell");
-    t.costs.push_back(cc);
+        lc.leg[c.is_buy ? factor::stat::kLong : factor::stat::kShort].col = c.col;
+    assert(full(lc) && "冲击成本列不齐: 某金额段缺 buy 或 sell");
+    t.costs.push_back(lc);
   }
   return t;
 }
 
-bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
-  req = FactorsRequest{};
-  req.seg = seg;
-  req.factor_dir = factor_dir_of(data, pool, seg);
-  req.evaluate = evaluate;
-  req.gpu = gpu;
-  if (!evaluate)
-    return true;
+bool MakeFactorScope(const SharedData &data, const std::string &pool, int seg, bool gpu, FactorScope &sc) {
+  sc = FactorScope{};
+  sc.seg = seg;
+  sc.pool = pool;
+  sc.factor_dir = factor_dir_of(data, pool, seg);
+  sc.max_impact = data.config.max_impact;
+  sc.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.libs = factor_libs(data, pool, seg);
-  if (!req.libs[factor_level(seg).tier == TierId::Lob ? pool_id(pool) : kAllPool].ready())
-    return false; // 标签库未建
-  req.pool = pool;
-  req.max_impact = data.config.max_impact;
-  return true;
+  sc.libs = factor_libs(data, pool, seg);
+  return sc.libs[factor_level(seg).lab(pool_id(pool))].ready(); // 标签库未建 → false
+}
+
+bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
+  req = FactorsRequest{};
+  req.spec.evaluate = evaluate;
+  return MakeFactorScope(data, pool, seg, gpu, req.scope) || !evaluate;
 }
 
 // ============================================================================
@@ -687,7 +705,7 @@ bool FactorsService::run(FactorsRequest &req) {
   broken_.store(nb, std::memory_order_relaxed);
   publish();
 
-  if (!req.evaluate)
+  if (!req.spec.evaluate)
     return true;
   return evaluate(req, misc::exec::ensure(ex_, misc::exec::hw()));
 }
@@ -696,10 +714,10 @@ bool FactorsService::run(FactorsRequest &req) {
 void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out) {
   TraceN("FactorsScan");
   out.clear();
-  const std::vector<std::filesystem::path> files = list_factor_files(req.factor_dir);
-
-  assert(req.seg == feats_.seg && "请求层与字段表层不符");
-  const factor::expr::FeatureLookup fl = feats_.lookup();
+  const std::vector<std::filesystem::path> files = list_factor_files(req.scope.factor_dir);
+  const FeatureTable &ft = feats();
+  assert(req.scope.seg == ft.seg && "请求层与字段表层不符");
+  const factor::expr::FeatureLookup fl = ft.lookup();
   std::map<std::pair<int, std::string>, std::string> seen; // (hold, 具体规范串) → 首行 key
   const auto emit = [&](FactorRow &r) {
     r.key = row_key(r.file, r.widx);
@@ -748,12 +766,12 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       continue;
     }
     factor::expr::Expr t; // 模板
-    if (!factor::expr::parse(r.expr_raw, fl, feats_.seg, t, r.error) || !feats_.check_grid(t, r.error)) {
+    if (!factor::expr::parse(r.expr_raw, fl, ft.seg, t, r.error) || !ft.check_grid(t, r.error)) {
       emit(r);
       continue;
     }
     r.tmpl = t.canon; // 表里显示规范串, 便于看根
-    if (!factor::expr::root_frame(t, feats_.seg, r.frame, r.error)) {
+    if (!factor::expr::root_frame(t, ft.seg, r.frame, r.error)) {
       emit(r);
       continue;
     }
@@ -806,7 +824,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
         continue;
       }
       factor::expr::Expr e;
-      if (!factor::expr::parse(ws[i].expr, fl, feats_.seg, e, w.error)) {
+      if (!factor::expr::parse(ws[i].expr, fl, ft.seg, e, w.error)) {
         w.error = "weights[" + std::to_string(i) + "]: " + w.error;
         emit(w);
         continue;
@@ -819,7 +837,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       w.sign = ws[i].sign;
       if (w.sign < 0) { // 评估对象 = 根下插 TsNeg
         std::string err;
-        const bool ok = factor::expr::parse(factor::expr::negated_canon(e), fl, feats_.seg, e, err);
+        const bool ok = factor::expr::parse(factor::expr::negated_canon(e), fl, ft.seg, e, err);
         assert(ok && "合法实例的取反串必可解析");
         (void)ok;
       }
@@ -834,11 +852,11 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       else
         seen.emplace(std::pair{w.hold_src, e.canon}, w.key);
       if (stats)
-        load_stat(*run, (*stats)[i], req.seg, w);
+        load_stat(*run, (*stats)[i], ft.seg, w);
       emit(w);
     }
   }
-  if (!req.evaluate) // 只扫描: BROKEN 行也算"处理完"
+  if (!req.spec.evaluate) // 只扫描: BROKEN 行也算"处理完"
     for (FactorRow &r : out)
       r.status = RowStatus::Done;
 }
@@ -852,15 +870,15 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
   std::vector<std::vector<factor::stat::Frame>> frames; // [k] 口径 (同根的因子规范串相同 → 口径相同)
   {
     std::lock_guard<std::mutex> lock(mutex);
-    const factor::expr::FeatureLookup fl = feats_.lookup();
+    const factor::expr::FeatureLookup fl = feats().lookup();
     for (size_t i = 0; i < rows.size(); ++i) {
-      if (!rows[i].error.empty() || rows[i].expr.empty() || (!req.only_file.empty() && rows[i].file != req.only_file)) {
+      if (!rows[i].error.empty() || rows[i].expr.empty() || (!req.spec.only_file.empty() && rows[i].file != req.spec.only_file)) {
         rows[i].status = RowStatus::Done; // BROKEN / 未搜索 / 不在 only_file 的行本轮不算
         continue;
       }
       factor::expr::Expr e;
       std::string err;
-      const bool ok = factor::expr::parse(rows[i].expr, fl, feats_.seg, e, err);
+      const bool ok = factor::expr::parse(rows[i].expr, fl, feats().seg, e, err);
       assert(ok && "scan 过的规范串必可再解析");
       (void)ok;
       if (idx.empty() || rows[idx.back().front()].file != rows[i].file)
@@ -877,12 +895,8 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
     message = "无有效因子";
     return true;
   }
-  PerPool<FeatureLib> ready; // 已建的库全开 (各文件只读自己用到的)
-  for (const PoolId l : pool_ids())
-    if (req.libs[l].ready())
-      ready[l] = req.libs[l];
   LibReaders lr;
-  lr.open(ready, &cancel_);
+  open_libs(req.scope, lr, &cancel_);
   for (size_t f = 0; f < idx.size(); ++f)
     if (!evaluate_file(req, ex, lr, idx[f], exprs[f], frames[f])) {
       if (lr.stale()) {
@@ -924,9 +938,10 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
   }
 
   // ---- 评估期 / A 轴 (所用库落盘日交集; 不成 → 该文件各行 BROKEN) ----
+  const FeatureTable &ft = feats();
   EvalScope es;
   std::string why;
-  if (!eval_scope(feats_, req.libs, pool_id(req.pool), F.feats, es, why)) {
+  if (!eval_scope(ft, req.scope, F.feats, es, why)) {
     std::lock_guard<std::mutex> lock(mutex);
     for (const size_t i : idx) {
       rows[i].error = why;
@@ -936,21 +951,19 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
     publish();
     return true;
   }
-  // ---- 装载 (整张量; 宿主峰值 = 输入 / cs / 标签 / 成本平面 + rx / lc + CPU 活槽 + 标签秩 | GPU 掩码 / 根输入拷回, + Row[H][T]) ----
-  const int days = static_cast<int>(es.days.size()), A = static_cast<int>(es.rs.axis.size());
+  // ---- 装载 (整张量, 全部持有期 + 全部金额段; 共享 DAG 的输入平面下标 = feats 下标) ----
+  //      宿主峰值 = 装载平面 (cell_bytes) + rx / lc + CPU 活槽 + 标签秩 | GPU 掩码 / 根输入拷回, + Row[H][T]
+  const LoadSpec spec{F.feats, keys_of(ft.labels), keys_of(ft.costs), static_cast<float>(req.scope.max_impact)};
   {
-    const double H = static_cast<double>(feats_.labels.size()), C = static_cast<double>(feats_.costs.size());
-    const double cells = static_cast<double>(days) * feats_.seg * A, rows_T = static_cast<double>(days) * feats_.seg;
-    const double per = 5.0 * (static_cast<double>(F.feats.size()) + 1.0 + H + C) + 3.0 + (req.gpu ? 5.0 : 5.0 * F.n_slots + 2.0 * H);
-    assert_fits("Run", cells * per + H * rows_T * sizeof(factor::stat::Row), days, A, feats_.seg);
+    const int days = static_cast<int>(es.days.size()), A = static_cast<int>(es.rs.axis.size());
+    const double H = static_cast<double>(spec.holds.size());
+    const double cells = static_cast<double>(days) * ft.seg * A, rows_T = static_cast<double>(days) * ft.seg;
+    const double per = cell_bytes(spec) + 3.0 + (req.scope.gpu ? 5.0 : 5.0 * F.n_slots + 2.0 * H);
+    assert_fits("Run", cells * per + H * rows_T * sizeof(factor::stat::Row), days, A, ft.seg);
   }
   Loaded L;
-  init_loaded(feats_, days, A, L);
-  L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
-  L.max_impact = static_cast<float>(req.max_impact);
-
-  begin(Phase::Loading, static_cast<size_t>(L.days));
-  if (!load_planes(feats_, es, lr, 0, es.days.size(), L, ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true))
+  begin(Phase::Loading, es.days.size());
+  if (!load_planes(ft, es, lr, 0, es.days.size(), spec, L, ex, cancel_, *this))
     return false;
   const double n_full = n_full_of(L); // 满仓 cap (池宽), 该文件全部权重共用
 
@@ -987,100 +1000,73 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
     begin(Phase::Running, n_need); // Running 期进度 = 共享 DAG 的算子节点
   }
   const size_t n = L.n();
-  const std::filesystem::path dir(req.factor_dir);
+  const int H = L.hd.n;
+  const std::filesystem::path dir(req.scope.factor_dir);
   std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
-  factor::stat::HoldStat hold[factor::stat::kMaxHold];
-  factor::stat::Accum acc[factor::stat::kMaxHold];                         // 该根的一级累加 (后端出), 二级 finish_all → hold
-  std::vector<uint8_t> lc(n);                                              // 该根的腿码 (后端出), 评估与成本共用
-  std::vector<CostTier> costs;                                             // [amt] 该根的换手成本 (cost_tiers, 两后端同一份宿主代码, 腿码由后端给)
-  std::vector<factor::stat::Row> lrows(static_cast<size_t>(L.hd.n) * L.T); // 该根的一级 Row[H][T] (后端落地), 只给 ic_pdf
-  MiniPdf ic_pdf[factor::stat::kMaxHold], x_pdf;                           // 该根的因子表小图 (ic_mini_pdfs / x_dist, 与 Inspect 同一组样本)
-  XDist xd;
+  factor::stat::Accum acc[factor::stat::kMaxHold];                    // 该根的一级累加 (后端出)
+  std::vector<uint16_t> rx(n);                                        // 该根的 r16(x) (CPU 出 / GPU 拷回)
+  std::vector<uint8_t> lc(n);                                         // 该根的腿码 (后端出), 评估与成本共用
+  std::vector<factor::stat::Row> lrows(static_cast<size_t>(H) * L.T); // 该根的一级 Row[H][T] (后端落地), 只给 ic_pdf
+  factor::cpu::stat::Workspace w;                                     // CPU Stat + 宿主收尾 (finish_root, 两后端同一份)
+  w.ensure(L.A, H, static_cast<int>(L.amts.size()), ex.threads());
+  RootOut o;                              // 该根的宿主收尾
+  MiniPdf ic_pdf[factor::stat::kMaxHold]; // 该根的因子表小图 (与 Inspect 同一组样本)
 
-  // 共享 DAG 顺序走节点: run_node(i) → 该算子节点 wall ms; 到根: stat_root(i, frame, valid_pct, rank_pct) 填 hold[] + costs + 小图 → 发布该根的全部因子 (dup 共根)
-  const auto walk = [&](const char *backend, auto &&run_node, auto &&stat_root) -> bool {
-    for (int i = 0; i < N; ++i) {
-      if (cancel_.load(std::memory_order_relaxed))
-        return false;
-      if (!needed[static_cast<size_t>(i)])
+  // 共享 DAG 走过节点 i (ms = 算子耗时, 叶 0): 记时 + 进度; 到根: stat_root(frame) 出 RootRaw → finish_root → 发布该根的全部因子 (dup 共根)
+  const auto visit = [&](const char *backend, int i, double ms, auto &&stat_root) -> bool {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false;
+    if (F.nodes[static_cast<size_t>(i)].op >= 0) {
+      node_ms[static_cast<size_t>(i)] = ms;
+      publish(1);
+    }
+    if (!F.is_root(i))
+      return true;
+    bool stat_done = false;
+    for (size_t k = 0; k < idx.size(); ++k) {
+      if (!runnable[k] || F.roots[k] != i)
         continue;
-      if (F.nodes[static_cast<size_t>(i)].op >= 0) {
-        node_ms[static_cast<size_t>(i)] = run_node(i);
-        publish(1);
+      if (!stat_done) {
+        finish_root(ex, L, stat_root(frames[k]), w, o);
+        ic_mini_pdfs(lrows.data(), H, L.T, ic_pdf);
+        stat_done = true;
       }
-      if (!F.is_root(i))
-        continue;
-      float valid_pct = 0.f, rank_pct = 0.f;
-      bool stat_done = false;
-      for (size_t k = 0; k < idx.size(); ++k) {
-        if (!runnable[k] || F.roots[k] != i)
-          continue;
-        if (!stat_done) {
-          stat_root(i, frames[k], valid_pct, rank_pct);
-          stat_done = true;
-        }
-        FactorRow r;
-        {
-          std::lock_guard<std::mutex> lock(mutex);
-          r = rows[idx[k]];
-        }
-        r.eval_ms = 0.0;
-        for (int j : sub[k])
-          r.eval_ms += node_ms[static_cast<size_t>(j)];
-        r.valid_pct = valid_pct;
-        r.rank_pct = rank_pct;
-        fill_stat(r, req, es, L, n_full, hold, costs, ic_pdf, x_pdf, backend);
-        r.status = RowStatus::Done;
-        {
-          std::lock_guard<std::mutex> lock(mutex);
-          rows[idx[k]] = r;
-        }
-        write_back(dir / r.file, r);
-        publish();
+      FactorRow r;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        r = rows[idx[k]];
       }
+      r.eval_ms = 0.0;
+      for (int j : sub[k])
+        r.eval_ms += node_ms[static_cast<size_t>(j)];
+      fill_stat(r, req, es, L, n_full, o, ic_pdf, backend);
+      r.status = RowStatus::Done;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        rows[idx[k]] = r;
+      }
+      write_back(dir / r.file, r);
+      publish();
     }
     return true;
   };
 
-  if (!req.gpu) {
-    // 标签 rank 预处理 (全核, 一次)
-    factor::cpu::stat::Workspace w;
-    w.ensure(L.A, L.hd.n, static_cast<int>(feats_.costs.size()), ex.threads());
-    LabelsHost lab;
+  if (!req.scope.gpu) {
+    LabelsHost lab; // 标签 rank 预处理 (全核, 一次)
     prep_labels(ex, L, w, lab);
-    std::vector<uint16_t> rx(n); // r16(x), 评估与腿码共用
-    factor::cpu::HostPool hp;
-    hp.prepare(F.n_slots, n); // 内存 = 峰值活槽 × n × 5B, 一次分配
-    std::vector<factor::check::Arena> sc(static_cast<size_t>(ex.threads()));
-    const auto plane_of = [&](int i) -> const factor::check::Plane * {
-      const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-      return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &hp.slots[static_cast<size_t>(nd.slot)];
-    };
-    return walk(
-        "cpu",
-        [&](int i) {
-          const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-          const factor::check::Plane *in[factor::kFuseIn] = {};
-          for (int a = 0; a < nd.n_in; ++a)
-            in[a] = plane_of(nd.in[a]);
-          const Clock::time_point t0 = Clock::now();
-          factor::cpu::run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], L.T, L.A, L.seg, sc, L.cs.m.data());
-          return ms_since(t0);
-        },
-        [&](int i, factor::stat::Frame fr, float &valid_pct, float &rank_pct) {
-          const factor::check::Plane *root = plane_of(i); // Stat 只看池内 (g 在算子内部)
-          valid_pct = valid_pct_of(root->m.data(), L.cs.m.data(), n);
-          factor::cpu::stat::run(ex, factor::stat::Plane{root->v.data(), root->m.data()}, L.cs.m.data(), fr, L.span(), lab.L, rx.data(), w, acc,
-                                 factor::cpu::stat::LandRows{lrows.data(), L.T});
-          rank_pct = rank_pct_of(ex, rx.data(), root->m.data(), L.cs.m.data(), L.T, L.A);
-          factor::stat::finish_all(acc, L.hd, L.seg, hold);
-          ic_mini_pdfs(lrows.data(), L.hd.n, L.T, ic_pdf);
-          const factor::check::Plane *xp = plane_of(F.nodes[static_cast<size_t>(i)].in[0]); // 根输入: 根的槽先于输入释放分配, 此刻仍在
-          x_dist(ex, xp->v.data(), xp->m.data(), rx.data(), L.T, L.A, xd);
-          x_pdf = mini_pdf_of(xd.pdf);
-          factor::cpu::stat::leg_codes(ex, rx.data(), L.span(), lc.data());
-          cost_tiers(ex, lc.data(), L, feats_, w, costs);
-        });
+    factor::cpu::HostPool hp; // 内存 = 峰值活槽 × n × 5B, 一次分配
+    std::vector<factor::check::Arena> sc;
+    return factor::cpu::walk(ex, F, leaf_planes(L, F.feats.size()), hp, sc, L.T, L.A, L.seg, L.cs.m.data(), needed.data(),
+                             [&](int i, const auto &at, double ms) {
+                               return visit("cpu", i, ms, [&](factor::stat::Frame fr) {
+                                 const factor::check::Plane *root = at(i);                                   // Stat 只看池内 (g 在算子内部)
+                                 const factor::check::Plane *xp = at(F.nodes[static_cast<size_t>(i)].in[0]); // 根输入: 根的槽先于输入释放分配, 此刻仍在
+                                 factor::cpu::stat::run(ex, factor::stat::Plane{root->v.data(), root->m.data()}, L.cs.m.data(), fr, L.span(), lab.L,
+                                                        rx.data(), w, acc, factor::cpu::stat::LandRows{lrows.data(), L.T});
+                                 factor::cpu::stat::leg_codes(ex, rx.data(), L.span(), lc.data());
+                                 return RootRaw{root->m.data(), rx.data(), lc.data(), acc, {xp->v.data(), xp->m.data()}};
+                               });
+                             });
   }
 
   assert(factor::gpu::available() && "GPU 后端不可用");
@@ -1090,48 +1076,25 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
     dev[i] = factor::gpu::upload(sess, L.planes[i].v.data(), L.planes[i].m.data());     // 输入只上传一次
   const factor::gpu::DevPlane *cs_gate = factor::gpu::upload_mask(sess, L.cs.m.data()); // 截面池掩码平面 (随会话释放)
   factor::gpu::StatSession *ss = factor::gpu::stat_open(L.T, L.A, L.seg, labels_raw(L), nullptr);
-  factor::cpu::stat::Workspace w; // 只给 cost_tiers (宿主成本代码与 CPU 后端同一份)
-  w.ensure(L.A, L.hd.n, static_cast<int>(feats_.costs.size()), ex.threads());
-  factor::gpu::DevPool dp;
-  dp.prepare(sess, F.n_slots); // 中间量常驻显存, 不回宿主
-  std::vector<uint8_t> mask(n);
-  std::vector<uint16_t> rx(n); // r16(x) 拷回 (rank% / x_dist)
-  std::vector<float> xv(n);    // 根输入值拷回 (x_dist; 叶直接用宿主平面)
+  factor::gpu::DevPool dp;      // 中间量常驻显存, 不回宿主
+  std::vector<uint8_t> mask(n); // 根掩码拷回 (n 字节; valid% / rank%)
+  std::vector<float> xv(n);     // 根输入值拷回 (x_dist; 叶直接用宿主平面)
   std::vector<uint8_t> xm(n);
-  const auto dplane_of = [&](int i) -> const factor::gpu::DevPlane * {
-    const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-    return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : dp.slots[static_cast<size_t>(nd.slot)];
-  };
-  const bool ok = walk(
-      "gpu",
-      [&](int i) {
-        const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-        const factor::gpu::DevPlane *in[factor::kFuseIn] = {};
-        for (int a = 0; a < nd.n_in; ++a)
-          in[a] = dplane_of(nd.in[a]);
-        double ms = 0.0; // 纯 kernel (与 Operators 页 GPU 列同口径)
-        factor::gpu::run_node(sess, nd, in, dp.slots[static_cast<size_t>(nd.slot)], L.T, L.A, L.seg, cs_gate, &ms);
-        return ms;
-      },
-      [&](int i, factor::stat::Frame fr, float &valid_pct, float &rank_pct) {
-        const factor::gpu::DevPlane *root = dplane_of(i);        // Stat 只看池内 (g 在算子内部)
-        factor::gpu::download(sess, root, nullptr, mask.data()); // 只回掩码 (n 字节) 算 valid% / rank%
-        valid_pct = valid_pct_of(mask.data(), L.cs.m.data(), n);
-        factor::gpu::stat_eval(ss, root, cs_gate, fr, acc, lrows.data(), lc.data(), rx.data());
-        rank_pct = rank_pct_of(ex, rx.data(), mask.data(), L.cs.m.data(), L.T, L.A);
-        factor::stat::finish_all(acc, L.hd, L.seg, hold);
-        ic_mini_pdfs(lrows.data(), L.hd.n, L.T, ic_pdf);
-        const factor::DagNode &xn = F.nodes[static_cast<size_t>(F.nodes[static_cast<size_t>(i)].in[0])];
-        if (xn.op < 0) {
-          const factor::check::Plane &xp = L.planes[static_cast<size_t>(xn.feat)];
-          x_dist(ex, xp.v.data(), xp.m.data(), rx.data(), L.T, L.A, xd);
-        } else {
-          factor::gpu::download(sess, dp.slots[static_cast<size_t>(xn.slot)], xv.data(), xm.data());
-          x_dist(ex, xv.data(), xm.data(), rx.data(), L.T, L.A, xd);
-        }
-        x_pdf = mini_pdf_of(xd.pdf);
-        cost_tiers(ex, lc.data(), L, feats_, w, costs);
-      });
+  const bool ok = factor::gpu::walk(sess, F, dev, dp, L.T, L.A, L.seg, cs_gate, needed.data(), [&](int i, const auto &at, double ms) {
+    return visit("gpu", i, ms, [&](factor::stat::Frame fr) {
+      const factor::gpu::DevPlane *root = at(i); // Stat 只看池内 (g 在算子内部)
+      factor::gpu::download(sess, root, nullptr, mask.data());
+      factor::gpu::stat_eval(ss, root, cs_gate, fr, acc, lrows.data(), lc.data(), rx.data());
+      const int xi = F.nodes[static_cast<size_t>(i)].in[0];
+      const factor::DagNode &xn = F.nodes[static_cast<size_t>(xi)];
+      factor::stat::Plane x{xv.data(), xm.data()};
+      if (xn.op < 0)
+        x = {L.planes[static_cast<size_t>(xn.feat)].v.data(), L.planes[static_cast<size_t>(xn.feat)].m.data()};
+      else
+        factor::gpu::download(sess, at(xi), xv.data(), xm.data());
+      return RootRaw{mask.data(), rx.data(), lc.data(), acc, x};
+    });
+  });
   dp.release();
   factor::gpu::stat_close(ss);
   factor::gpu::session_close(sess); // 上传的输入平面随会话释放

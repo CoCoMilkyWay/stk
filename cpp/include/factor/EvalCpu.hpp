@@ -13,7 +13,8 @@
 //                   融合 (Dag fuse)  kFuseRows 行一个任务, 块内按 kTileA 列逐步跑逐点算子 (中间量只在块缓冲里, 驻 L1/L2),
 //                                    外部输入直接读平面, 末步直接写输出
 //                 每线程暂存 = check::Arena (算子 scratch 声明大小); sc.size() ≥ ex.threads(), 跨节点 / 跨因子复用
-//   eval          顺序跑一张 Dag (每节点 run_node); 输入平面按 Dag::feats 下标给; 返回根平面 (根是特征叶时直接返回该输入)
+//   walk          顺序走一张 Dag (每节点 run_node), 逐节点回调 visit (计时 / 进度 / 取消 / 到根即评); 输入平面按 Dag::feats 下标给
+//   eval          walk 到底, 返回根平面 (根是特征叶时直接返回该输入)
 //   cs_gate       截面池掩码 [T][A] (特征库 cs_valid 列 = 当日在池, 整日常量, 见 features/MetaFlag.hpp), 原样递给 CS 节点
 //                 (A 域 ALL / GROUP) 的算子 —— 池内统计 / 池外就近取值全在算子内部 (契约【截面池 g】); TS 节点不收.
 //                 evaluator 不做任何二次门控 / 补值; 有 CS 节点时 cs_gate 必填
@@ -28,6 +29,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <vector>
 
 namespace factor::cpu {
@@ -144,30 +146,51 @@ inline void run_node(Exec &ex, const DagNode &nd, const check::Plane *const in[k
     ex.rows(T, [&](int t0, int t1, int tid) { k.run(c, Range{t0, t1}, sc[static_cast<size_t>(tid)].get(ws)); });
 }
 
-// inputs[k] = 特征 feats[k] 的平面 ([T][A] SoA). 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方)
-// cs_gate: 截面池掩码 [T][A] (文件头); DAG 含 CS 节点时必填. seg = 本层每段行数. 进度 / 计时 / 取消要逐节点的调用方自己走 run_node
-template <class Exec>
-inline const check::Plane *eval(Exec &ex, const Dag &d, const std::vector<const check::Plane *> &inputs, HostPool &hp, std::vector<check::Arena> &sc,
-                                int T, int A, int seg, const uint8_t *cs_gate) {
+// 节点 i 的平面: 叶 = inputs[feat], 算子 = 池槽 (槽按 Dag 计划复用: 只在 i 写出后、被下一个占用者覆盖前有效)
+inline const check::Plane *plane_at(const Dag &d, const std::vector<const check::Plane *> &inputs, const HostPool &hp, int i) {
+  const DagNode &nd = d.nodes[static_cast<size_t>(i)];
+  return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : &hp.slots[static_cast<size_t>(nd.slot)];
+}
+
+// 顺序走 Dag (拓扑序; need 非空 → 只走 need[i] 的节点), 算子节点 run_node. 每走过一个节点 i 调 visit(i, at, ms) → bool:
+// at(j) = plane_at(j) (visit 内 i 及其输入仍在槽里), ms = 算子 wall (叶 0); visit 返回 false → 停, walk 返回 false.
+// inputs[k] = 特征 feats[k] 的平面 ([T][A] SoA); cs_gate / seg 同 run_node; hp / sc 按 Dag 与 ex 补齐
+template <class Exec, class Visit>
+inline bool walk(Exec &ex, const Dag &d, const std::vector<const check::Plane *> &inputs, HostPool &hp, std::vector<check::Arena> &sc, int T, int A,
+                 int seg, const uint8_t *cs_gate, const uint8_t *need, Visit &&visit) {
   assert(inputs.size() == d.feats.size());
   const size_t n = static_cast<size_t>(T) * A;
   for (const check::Plane *p : inputs)
     assert(p && p->v.size() == n && p->m.size() == n);
   hp.prepare(d.n_slots, n);
-  auto plane_of = [&](int node) -> const check::Plane * {
-    const DagNode &nd = d.nodes[static_cast<size_t>(node)];
-    return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : &hp.slots[static_cast<size_t>(nd.slot)];
-  };
-  for (size_t i = 0; i < d.nodes.size(); ++i) {
-    const DagNode &nd = d.nodes[i];
-    if (nd.op < 0)
+  if (sc.size() < static_cast<size_t>(ex.threads()))
+    sc.resize(static_cast<size_t>(ex.threads()));
+  const auto at = [&](int j) { return plane_at(d, inputs, hp, j); };
+  for (int i = 0; i < static_cast<int>(d.nodes.size()); ++i) {
+    if (need && !need[i])
       continue;
-    const check::Plane *in[kFuseIn] = {};
-    for (int a = 0; a < nd.n_in; ++a)
-      in[a] = plane_of(nd.in[a]);
-    run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, sc, cs_gate);
+    const DagNode &nd = d.nodes[static_cast<size_t>(i)];
+    double ms = 0.0;
+    if (nd.op >= 0) {
+      const check::Plane *in[kFuseIn] = {};
+      for (int a = 0; a < nd.n_in; ++a)
+        in[a] = at(nd.in[a]);
+      const auto t0 = std::chrono::steady_clock::now();
+      run_node(ex, nd, in, hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, sc, cs_gate);
+      ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+    if (!visit(i, at, ms))
+      return false;
   }
-  return plane_of(d.root());
+  return true;
+}
+
+// 整张 Dag 走完, 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方). 进度 / 计时 / 取消要逐节点的调用方用 walk
+template <class Exec>
+inline const check::Plane *eval(Exec &ex, const Dag &d, const std::vector<const check::Plane *> &inputs, HostPool &hp, std::vector<check::Arena> &sc,
+                                int T, int A, int seg, const uint8_t *cs_gate) {
+  walk(ex, d, inputs, hp, sc, T, A, seg, cs_gate, nullptr, [](int, const auto &, double) { return true; });
+  return plane_at(d, inputs, hp, d.root());
 }
 
 } // namespace factor::cpu

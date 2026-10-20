@@ -1,10 +1,12 @@
 // FactorsLoad — 因子评估的特征库装载层, FactorsService (全表 Run) / InspectService (单因子深看) / SearchService 共用:
-//   EvalScope = 一个因子的评估作用域 (eval_scope: 所用库 + 评估期 = 落盘日交集 + A 轴 + 子池成员), worker 按因子解析;
-//   Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 标签 [hold] + 冲击成本 [amt]), load_planes 逐天并行读各库散进去;
+//   open_libs / EvalScope = 一个因子的评估作用域 (eval_scope: 所用库 + 评估期 = 落盘日交集 + A 轴 + 子池成员), worker 按因子解析;
+//   LoadSpec → Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 两腿平面 标签 [hold] / 成本 [amt]), load_planes 逐天并行读各库散进去;
 //   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率; n_full_of 满仓只数;
-//   cost_tiers 换手成本 (两服务同一份); prep_labels / labels_raw 标签的契约视图 (CPU 预处理过 / GPU 会话自己预处理; cap = n_full_of);
-//   x_dist 根输入值分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本).
-// 两个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat (+ 因子表小图); InspectService 一棵 DAG 留一级 Row[H][T].
+//   cost_tiers 换手成本; prep_labels / labels_raw 标签的契约视图 (CPU 预处理过 / GPU 会话自己预处理; cap = n_full_of);
+//   x_dist 根输入值分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本);
+//   RootRaw → finish_root → RootOut: 根评估的宿主收尾 (Run 两后端 / Inspect 同一份).
+// 三个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat (+ 因子表小图); InspectService 一棵 DAG 留一级 Row[H][T];
+// SearchService 分块流式攒候选累加器.
 #pragma once
 
 #include "factor/Check.hpp" // check::Plane
@@ -38,9 +40,11 @@ struct EvalScope {
   std::optional<pool::Panel> member; // 子池成员 (Lob 池 × Bar 标签层; 网格层 as-of, 池轴 = A 轴)
   std::string key() const;           // 缓存键: 池 | 所用库目录 + 池轴 | 评估期首末 + 天数
 };
-// 因子池 pool + 叶 feats (FeatureTable 叶名) → 作用域. 所用库未建 / 无共同落盘日 → false + why (正常输入)
-bool eval_scope(const FeatureTable &ft, const PerPool<FeatureLib> &libs, PoolId pool, const std::vector<std::string> &feats, EvalScope &es,
-                std::string &why);
+// worker: 作用域 sc 里已建的库全开 (清单没变的复用; 各因子只读自己用到的). abort = 库判废时拉起的取消旗
+void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
+// 作用域 sc + 叶 feats (FeatureTable 叶名) → 作用域. 所用库 = 读计划各列的库 (Col::ref) 之并 (+ all: 池成员);
+// 所用库未建 / 无共同落盘日 → false + why (正常输入)
+bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector<std::string> &feats, EvalScope &es, std::string &why);
 
 // 宿主内存预算: 可用内存 × kHostFrac (Search 分块同一口径)
 inline constexpr double kHostFrac = 0.6;
@@ -48,37 +52,44 @@ double host_budget();
 // 整张量装载 (Run / Inspect) 放不下 → assert (who / 规模进消息): 该因子层太细或评估期太长, 拒绝评估
 void assert_fits(const char *who, double bytes, int days, int A, int seg);
 
-// ---- 装载好的一轮数据 ----
-struct LabelPlane {
-  std::vector<uint16_t> v[factor::stat::kLegs]; // 两腿毛收益 fp16 位: 做多 / 做空 (与落盘同格式, Stat 直接吃)
+// ---- 装载规格 → 装载好的一轮数据 ----
+struct LoadSpec {
+  std::vector<std::string> feats; // 叶 (FeatureTable 叶名; 平面下标 = 此序)
+  std::vector<int> holds;         // 标签组 (LegCol::key, 字段表里有; 空 = 不装)
+  std::vector<int> amts;          // 成本段 (LegCol::key, 字段表里有; 空 = 不装)
+  float max_impact = 0.f;         // 买入冲击封顶 (Config::max_impact; amts 非空时 > 0): buy = min(原值, 封顶)
+  bool index = false;             // 池等权指数 (close 平面装完即算, 不留)
+};
+// 宿主装载量 (字节 / 格): 叶 (v + m) 5 · feats + 截面门控 5 + 两腿 (lv, sv, m) 5 · (holds + amts) + close 5 (index, 装载期峰值)
+double cell_bytes(const LoadSpec &s);
+
+// 两腿平面 (标签 / 成本同形): fp16 位 (与落盘同格式, Stat 直接吃) + 有效位 (池内 ∧ 两腿皆有限)
+struct LegPlane {
+  std::vector<uint16_t> v[factor::stat::kLegs];
   std::vector<uint8_t> m;
 };
-struct CostPlane {
-  std::vector<uint16_t> imp[factor::stat::kLegs]; // 两腿建仓冲击 (比例) fp16 位: lb_cost_buy_<amt>w (按 Loaded::max_impact 封顶) / lb_cost_sell_<amt>w (原值)
-  std::vector<uint8_t> m;                         // 有效位 (两列皆有限; 吃不到 = NaN → 无效)
-};
 // 宿主平面 → 契约视图 (整张量, 未偏). ry = 预处理的做多标签 r16 (nullptr = 未预处理, GPU 会话自己做)
-inline factor::stat::Label label_of(const LabelPlane &p, const uint16_t *ry) {
+inline factor::stat::Label label_of(const LegPlane &p, const uint16_t *ry) {
   return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data(), ry};
 }
-inline factor::stat::Cost cost_of(const CostPlane &p) { return {{p.imp[factor::stat::kLong].data(), p.imp[factor::stat::kShort].data()}, p.m.data()}; }
+inline factor::stat::Cost cost_of(const LegPlane &p) { return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data()}; }
 struct Loaded {
   int T = 0, A = 0, days = 0;
   int seg = 0;                              // 因子层每日行数 (= FeatureTable::seg); T = days · seg
-  float max_impact = 0.f;                   // 买入冲击封顶 (Config::max_impact): with_costs 装载前由调用方设 (> 0), buy = min(原值, 封顶)
-  std::vector<std::string> feat_codes;      // 去重特征 (平面下标)
+  std::vector<std::string> feat_codes;      // [feat] = LoadSpec::feats (平面下标)
   std::vector<factor::check::Plane> planes; // [feat] 值 + 掩码 (按 ts_valid 门控)
   factor::check::Plane cs;                  // 截面门控平面: v = cs_valid 原值, m = 当日在池 ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
-  std::vector<LabelPlane> labels;           // [hold] (按 cs.m 门控), 与 hd / label_idx 同序; 本层行 t 取本层标签列行 t
-  std::vector<CostPlane> costs;             // [amt] (with_costs 才装), 下标 = FeatureTable::costs 下标; 采样同标签
-  std::vector<float> index;                 // [T] 池等权指数 (with_index 才算; 起点 1): 逐行 Σ_成分 (close / 上一有效 close − 1) / n 连乘,
-                                            //   成分 = 该刻 cs_valid; 上一有效 close 跨日 (隔夜跳空进当日首笔); 无成分可算的行持平
-  factor::stat::Holds hd;                   // hd.h[hi] = hold
-  int n_hold = 0;
-  std::vector<int> label_idx; // [hi] → FeatureTable::labels 下标 (init_loaded 全部持有期; select_holds 收窄到子集)
+  factor::stat::Holds hd;                   // [hold] = LoadSpec::holds
+  std::vector<int> amts;                    // [amt] = LoadSpec::amts
+  std::vector<LegPlane> labels;             // [hold] 两腿毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t
+  std::vector<LegPlane> costs;              // [amt] 两腿建仓冲击 (比例): 买入 (封顶) / 卖出; 采样同标签, 吃不到 = NaN → 无效
+  std::vector<float> index;                 // [T] 池等权指数 (LoadSpec::index; 起点 1): 逐行 Σ_成分 (close / 上一有效 close − 1) / n 连乘,
+                                            //   成分 = 该格在池 (cs.m) 且本行有成交; 上一有效 close 跨日 (隔夜跳空进当日首笔); 无成分可算的行持平
   size_t n() const { return static_cast<size_t>(T) * A; }
   factor::stat::Span span() const { return {T, A, factor::geo_of(seg)}; } // 整张量 (t0_abs = t_lo = 0)
 };
+// 叶平面视图 [0, nf) (DAG 输入: 平面下标 = Dag::feats 下标)
+std::vector<const factor::check::Plane *> leaf_planes(const Loaded &L, size_t nf);
 
 // CPU 后端的标签: ry[hi] = r16(做多标签) 一次预处理 (全核), L = 契约视图 (指 Loaded::labels / ry; Loaded 须活过它)
 struct LabelsHost {
@@ -89,18 +100,13 @@ void prep_labels(misc::exec::ForkJoin &ex, const Loaded &L, factor::cpu::stat::W
 // 未预处理的契约视图 (ry 空; GPU 会话自己预处理)
 factor::stat::Labels labels_raw(const Loaded &L);
 
-// 维度 / 标签组: days × A → T (seg = ft.seg); hd = 字段表的全部持有期 (容量断言在此)
-void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L);
-// 标签组收窄到 holds (Search: 搜索窗内的持有期, 只装 / 只评这些标签); 每个 hold 须在字段表里, 非空. 装载前调
-void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded &L);
-
-// 逐天并行读 (ex 抢单) es.days[d0, d1): 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影) =
-// 特征列 (L.feat_codes, 各按本层 ts_valid 门控) + 标签库网格层 ts_valid + cs_valid + (with_labels) L.hd 的标签列 (+ with_costs 冲击成本列)
-// (+ with_index close 列), 散进平面; 截面门控 = cs_valid ∧ 当日有成交 (∧ 子池成员). with_index 顺带出 L.index
-// (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘). lr 须按 es.rs.libs 开好.
+// 逐天并行读 (ex 抢单) es.days[d0, d1) 按 spec 装进 L (覆盖; 维度 days × A → T, 标签组 / 金额段随 spec, 容量断言在此).
+// 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影), 列段 = 叶 | ts_valid / cs_valid | close (index) |
+// 标签 [holds][kLegs] | 成本 [amts][kLegs], 全部 Col::ref(es.pool). 叶按各自 ts_valid 门控; 截面门控 = cs_valid ∧ 当日有成交 (∧ 子池成员);
+// 两腿平面同一份折叠 (池内 ∧ 两腿有限, 腿按封顶截); close 按本行有成交门控, 装完算 L.index 即弃. lr 须按 es.rs.libs 开好.
 // 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 每天 prog.publish(1)
-bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, Loaded &L, misc::exec::ForkJoin &ex,
-                 std::atomic<bool> &cancel, Progress &prog, bool with_labels = true, bool with_costs = false, bool with_index = false);
+bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const LoadSpec &spec, Loaded &L,
+                 misc::exec::ForkJoin &ex, std::atomic<bool> &cancel, Progress &prog);
 
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN)
 void check_leaf_domains(const factor::Dag &d, int node, const Loaded &L, std::string &err);
@@ -137,9 +143,27 @@ MiniPdf mini_pdf_of(const analysis::AggPdf &p);
 void ic_mini_pdfs(const factor::stat::Row *rows, int H, int T, MiniPdf *out);
 
 // 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份),
-// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c) + cover) → out[c].acc[hi] (c 按 L.costs 序, hi 按 L.hd 序), cover = Σ(有秩 ∧ 成本有效) / Σ 有秩.
-// w = Stat CPU 工作区 (ensure 过 C = ft.costs.size()). 须 with_costs 装过 (L.costs.size() == ft.costs.size()); 无金额段 → out 空
-void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, const FeatureTable &ft, factor::cpu::stat::Workspace &w,
-                std::vector<CostTier> &out);
+// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c) + cover) → out[c].acc[hi] (c 按 L.amts 序, hi 按 L.hd 序), cover = Σ(有秩 ∧ 成本有效) / Σ 有秩.
+// w = Stat CPU 工作区 (ensure 过 C = L.amts.size()); 无金额段 → out 空
+void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const Loaded &L, factor::cpu::stat::Workspace &w, std::vector<CostTier> &out);
+
+// ---- 根评估 (Run 两后端 / Inspect 同一份收尾): 后端只出原料 RootRaw, 宿主 finish_root 出 RootOut ----
+//   CPU: rank_x + accum_rows (sink 落一级: Run LandRows / Inspect TailSink) + leg_codes; m = 根平面掩码
+//   GPU: download 根掩码 + stat_eval (acc / rows / lc / rx 拷回); x = 根输入 (叶 = 宿主平面, 否则拷回)
+struct RootRaw {                            // [T][A] 视图, 两后端同形
+  const uint8_t *m = nullptr;               // 根掩码
+  const uint16_t *rx = nullptr;             // r16(x)
+  const uint8_t *lc = nullptr;              // 腿码
+  const factor::stat::Accum *acc = nullptr; // [hd.n] 一级累加
+  factor::stat::Plane x;                    // 根输入 (值 + 有效位)
+};
+struct RootOut {
+  float valid_pct = 0.f, rank_pct = 0.f;               // 池内有效率 / 可秩率
+  factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hd.n] 二级, 毛口径
+  std::vector<CostTier> costs;                         // [amt] 换手成本
+  XDist xd;                                            // 根输入值分布
+};
+// valid% / rank% / finish_all / x_dist / cost_tiers (w ensure 过 C = L.amts.size())
+void finish_root(misc::exec::ForkJoin &ex, const Loaded &L, const RootRaw &r, factor::cpu::stat::Workspace &w, RootOut &o);
 
 } // namespace GUI::Factors

@@ -42,16 +42,13 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-struct InspectRequest {
-  int seg = 0;            // 因子层 (= FeatureTable::seg)
+struct InspectSpec {
   std::string file, expr; // 权重行 key (FactorRow::key = 文件#权重号) + 具体规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
   factor::stat::Frame frame = factor::stat::Frame::CS;
-  std::string pool;
-  PerPool<FeatureLib> libs; // factor_libs (评估期 / A 轴在 worker 按因子解析: FactorsLoad eval_scope)
-  bool reload = false;      // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
-  double max_impact = 0.0;  // Config::max_impact (买入冲击封顶, 装载时生效 → 进作用域缓存键)
-  std::string key() const { return std::to_string(seg) + "|" + file + "|" + expr + "|" + pool; }
+  bool reload = false; // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
+  std::string key(const FactorScope &sc) const { return std::to_string(sc.seg) + "|" + file + "|" + expr + "|" + sc.pool; }
 };
+using InspectRequest = Request<InspectSpec>; // scope.max_impact 装载时生效 → 进作用域缓存键; scope.gpu 不看 (只 CPU)
 // 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool reload, InspectRequest &req);
 
@@ -76,7 +73,7 @@ struct InspectPlanes {
 };
 
 struct InspectResult {
-  std::string key; // = InspectRequest::key(); 空 = 无结果
+  std::string key; // = InspectSpec::key(scope); 空 = 无结果
   std::string file, expr;
   int seg = 0; // 因子层: T = days · seg, K 线 / 横轴按层
   factor::stat::Frame frame = factor::stat::Frame::CS;
@@ -84,7 +81,7 @@ struct InspectResult {
   std::vector<misc::Ymd> dates; // [days]
   int n_hold = 0;
   factor::stat::Holds hd;                   // hd.h[hi]
-  std::vector<CostTier> costs;              // [C] = FeatureTable::costs 序 (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
+  std::vector<CostTier> costs;              // [C] = Loaded::amts 序 = FeatureTable::costs 序 (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
   analysis::ReadScope read_scope;           // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
   std::vector<float> pool_index;            // [T] 池等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   InspectPlanes pl;                         // 一级平面 (Row / 尾部 / 秩)
@@ -107,8 +104,8 @@ public:
   InspectService(); // 两者都在 .cpp: Flow 不完整
   ~InspectService();
 
-  void SetFeatureTable(FeatureTable &&t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
-  const FeatureTable &feats() const { return feats_; }
+  void SetFeatureTable(std::shared_ptr<const FeatureTable> t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
+  const FeatureTable &feats() const { return *feats_; }
 
   // UI 持 mutex 读 (不拷 rows)
   InspectResult result;
@@ -122,7 +119,7 @@ private:
   bool run(InspectRequest &req);
   bool evaluate(const InspectRequest &req, Flow &F); // false = 取消
 
-  FeatureTable feats_;
+  std::shared_ptr<const FeatureTable> feats_;
   std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活 (S / Y 缓存跨请求)
 };
 

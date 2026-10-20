@@ -32,7 +32,8 @@ public:
 
   const PoolAxis &axis() const { return axis_; }
   const std::vector<misc::Ymd> &dates() const { return dates_; } // = build 的 dates
-  // 第 D 日成员位. D 不在 dates() → assert
+  // 第 D 日成员位 [axis().size()] / 单格. D 不在 dates() → assert
+  const uint8_t *row(misc::Ymd d) const;
   bool in_pool(size_t sub, misc::Ymd d) const;
 
 private:

@@ -1205,10 +1205,9 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
 std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
-  InspectRequest probe;
-  probe.seg = ctx.seg, probe.file = row.key, probe.expr = row.expr, probe.frame = row.frame;
-  probe.pool = ctx.pool;
-  return probe.key();
+  FactorScope sc;
+  sc.seg = ctx.seg, sc.pool = ctx.pool;
+  return InspectSpec{row.key, row.expr, row.frame}.key(sc);
 }
 
 } // namespace
@@ -1320,16 +1319,16 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   if (ui.hold_for != sel.key) { // 换了权重 → Hold 切到它搜出来的持有期 (手填权重无, 不动)
     ui.hold_for = sel.key;
     for (int i = 0; i < n_hold; ++i)
-      if (ft.labels[static_cast<size_t>(i)].hold == sel.hold_src)
+      if (ft.labels[static_cast<size_t>(i)].key == sel.hold_src)
         ui.hold_idx = i;
   }
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
-  const int cur_hold = n_hold ? ft.labels[static_cast<size_t>(ui.hold_idx)].hold : 0;
+  const int cur_hold = n_hold ? ft.labels[static_cast<size_t>(ui.hold_idx)].key : 0;
   if (n_hold >= 2) {
     std::vector<std::string> names(static_cast<size_t>(n_hold));
     std::vector<const char *> cs(static_cast<size_t>(n_hold));
     for (int i = 0; i < n_hold; ++i)
-      names[static_cast<size_t>(i)] = factor::stat::hold_name(ft.labels[static_cast<size_t>(i)].hold), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
+      names[static_cast<size_t>(i)] = factor::stat::hold_name(ft.labels[static_cast<size_t>(i)].key), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
     cycler("Hold", ui.hold_idx, cs.data(), n_hold);
   } else {
     ImGui::TextDisabled("Hold %s", n_hold ? factor::stat::hold_name(cur_hold).c_str() : "-");
@@ -1477,8 +1476,8 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           assert(ft.seg == res.seg && "字段表层与结果层不符");
           kreq->level = factor_level(res.seg).lvl;
           for (int i = 0; i < 4; ++i)
-            kreq->col[i] = ft.ohlc[i];
-          kreq->col[4] = ft.ts_col;
+            kreq->col[i] = ft.ohlc[i].col;
+          kreq->col[4] = ft.ts.col;
         }
       }
     }

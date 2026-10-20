@@ -155,19 +155,8 @@ struct SearchService::Flow {
 bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  req.seg = seg;
-  req.factor_dir = factor_dir_of(data, pool, seg);
-  req.file = row.file;
-  req.tmpl = row.tmpl;
-  req.frame = row.frame;
-  req.gpu = gpu;
-  if (data.asset.items.empty())
-    return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.libs = factor_libs(data, pool, seg);
-  if (!req.libs[factor_level(seg).tier == TierId::Lob ? pool_id(pool) : kAllPool].ready())
-    return false; // 标签库未建
-  req.pool = pool;
-  return true;
+  req.spec = SearchSpec{row.file, row.tmpl, row.frame};
+  return MakeFactorScope(data, pool, seg, gpu, req.scope);
 }
 
 SearchService::SearchService() { Start(); }
@@ -181,9 +170,9 @@ bool SearchService::run(SearchRequest &req) {
   {
     std::lock_guard<std::mutex> lock(mutex);
     result = SearchResult{};
-    result.file = req.file;
-    result.tmpl = req.tmpl;
-    result.backend = req.gpu ? "gpu" : "cpu";
+    result.file = req.spec.file;
+    result.tmpl = req.spec.tmpl;
+    result.backend = req.scope.gpu ? "gpu" : "cpu";
   }
   publish();
   if (!flow_)
@@ -195,31 +184,34 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
-  assert(req.seg == feats_.seg && "请求层与字段表层不符");
-  const int seg = feats_.seg, carry = carry_days(seg);
+  const FeatureTable &ft = feats();
+  const FactorScope &scope = req.scope;
+  const SearchSpec &sp = req.spec;
+  assert(scope.seg == ft.seg && "请求层与字段表层不符");
+  const int seg = ft.seg, carry = carry_days(seg);
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
   std::vector<int> holds;
-  for (const LabelCol &lc : feats_.labels)
-    if (factor::search::hold_in_window(lc.hold)) // 字段表已只收本层合法 (hold_ok) 的
-      holds.push_back(lc.hold);
+  for (const int h : keys_of(ft.labels))
+    if (factor::search::hold_in_window(h)) // 字段表已只收本层合法 (hold_ok) 的
+      holds.push_back(h);
   SearchResult res;
-  res.file = req.file;
-  res.tmpl = req.tmpl;
-  res.backend = req.gpu ? "gpu" : "cpu";
+  res.file = sp.file;
+  res.tmpl = sp.tmpl;
+  res.backend = scope.gpu ? "gpu" : "cpu";
   RunLog lg;
   lg.t0 = t_start;
   {
-    const std::filesystem::path log_dir = std::filesystem::path(req.factor_dir) / "log";
+    const std::filesystem::path log_dir = std::filesystem::path(scope.factor_dir) / "log";
     std::filesystem::create_directories(log_dir);
-    prune_logs(req.factor_dir, log_dir);
-    lg.f.open(log_dir / (std::filesystem::path(req.file).stem().string() + ".log"), std::ios::trunc);
+    prune_logs(scope.factor_dir, log_dir);
+    lg.f.open(log_dir / (std::filesystem::path(sp.file).stem().string() + ".log"), std::ios::trunc);
     assert(lg.f.is_open() && "Search log 打不开");
     const std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-    lg("Search %s  @ %s", req.file.c_str(), ts);
-    lg("模板: %s", req.tmpl.c_str());
-    lg("后端 %s, 池 %s", res.backend.c_str(), req.pool.c_str());
+    lg("Search %s  @ %s", sp.file.c_str(), ts);
+    lg("模板: %s", sp.tmpl.c_str());
+    lg("后端 %s, 池 %s", res.backend.c_str(), scope.pool.c_str());
   }
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
   const auto abort_with = [&](std::string msg) {
@@ -256,7 +248,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   factor::expr::Expr e0;
   {
     std::string err;
-    const bool ok = factor::expr::parse(req.tmpl, feats_.lookup(), seg, e0, err);
+    const bool ok = factor::expr::parse(sp.tmpl, ft.lookup(), seg, e0, err);
     assert(ok && "Factors 表的模板规范串必可再解析");
     (void)ok;
   }
@@ -321,30 +313,27 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   EvalScope es;
   {
     std::string why;
-    if (!eval_scope(feats_, req.libs, pool_id(req.pool), d0.feats, es, why))
+    if (!eval_scope(ft, scope, d0.feats, es, why))
       return abort_with(why);
   }
-  PerPool<FeatureLib> ready; // 已建的库全开 (本模板只读 es.used)
-  for (const PoolId l : pool_ids())
-    if (req.libs[l].ready())
-      ready[l] = req.libs[l];
-  F.lr.open(ready, &cancel_);
+  open_libs(scope, F.lr, &cancel_);
   const std::vector<misc::Ymd> &dates = es.dates;
   const int days = static_cast<int>(dates.size()), A = static_cast<int>(es.rs.axis.size());
   lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集)", misc::dash(dates.front()).c_str(), misc::dash(dates.back()).c_str(), days);
 
   // ---- 分块与预算 (字节 / 格; 见头文件【分块流式】) ----
-  //   L0  宿主 Loaded: 特征 (v+m) 5·nf + 截面门控 5 + 标签 (lv,sv,m) 5·H
+  //   L0  宿主 Loaded: cell_bytes (叶 + 截面门控 + 搜索窗标签, 不装成本 / 指数)
   //   Wc  CPU 工作区: ry 2·H + ws 2 + 池 (s0+2)·5
   //   F0  设备常驻: 特征 5·nf + 门控 1 + 搜索会话标签 (lv,sv,m,ry) 7·H; 每候选 7 (根平面 5 + rx 2); 中间量 2·s0 槽
+  const LoadSpec spec{d0.feats, holds};
   const double per_day = static_cast<double>(seg) * A;
-  const double L0 = 5.0 * nf + 5.0 + 5.0 * H;
+  const double L0 = cell_bytes(spec);
   const double Wc = 2.0 * H + 2.0 + 5.0 * (s0 + 2);
   const double F0 = 5.0 * nf + 1.0 + 7.0 * H;
   const double host_cap = host_budget();
-  int D = std::clamp(static_cast<int>(host_cap / (per_day * (L0 + (req.gpu ? 0.0 : Wc)))) - carry, 1, days);
+  int D = std::clamp(static_cast<int>(host_cap / (per_day * (L0 + (scope.gpu ? 0.0 : Wc)))) - carry, 1, days);
   double vram_budget = 0.0;
-  if (req.gpu) {
+  if (scope.gpu) {
     assert(factor::gpu::available() && "GPU 后端不可用");
     size_t vfree = 0, vtotal = 0;
     factor::gpu::mem_info(&vfree, &vtotal);
@@ -355,7 +344,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const int n_chunks = (days + D - 1) / D;
   const int Tmax = std::min(days, D + carry) * seg; // 最长一块的行数
   int batch = 1;
-  if (req.gpu) {
+  if (scope.gpu) {
     const double nmax = static_cast<double>(Tmax) * A;
     batch = std::clamp(static_cast<int>((vram_budget - nmax * (F0 + 10.0 * s0)) / (7.0 * nmax)), 1, factor::gpu::search_max_batch());
   }
@@ -363,22 +352,22 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   double cache_bytes = 0.0;
   for (int ci = 0; ci < n_chunks; ++ci) {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
-    cache_bytes += (day1 - load0) * per_day * (L0 + (req.gpu ? 0.0 : 2.0 * H));
+    cache_bytes += (day1 - load0) * per_day * (L0 + (scope.gpu ? 0.0 : 2.0 * H));
   }
-  const bool cache_all = cache_bytes + Tmax * static_cast<double>(A) * (req.gpu ? 0.0 : Wc) <= host_cap;
+  const bool cache_all = cache_bytes + Tmax * static_cast<double>(A) * (scope.gpu ? 0.0 : Wc) <= host_cap;
   res.n_chunk = n_chunks, res.chunk_days = D, res.batch = batch;
   res.n_assets = A;
   for (int ci = 0; ci < n_chunks; ++ci) {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
-    res.chunk_plan.push_back(SearchChunk{day1 - load0, (day1 - load0) * per_day * (L0 + (req.gpu ? 0.0 : 2.0 * H)) / (1024.0 * 1024.0)});
+    res.chunk_plan.push_back(SearchChunk{day1 - load0, (day1 - load0) * per_day * (L0 + (scope.gpu ? 0.0 : 2.0 * H)) / (1024.0 * 1024.0)});
   }
   chunks_.store(n_chunks, std::memory_order_relaxed);
   publish_result(); // 装载前先发布分块计划
   constexpr double kMiB = 1024.0 * 1024.0;
-  lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, nf, H, s0, L0, req.gpu ? 0.0 : Wc);
+  lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, nf, H, s0, L0, scope.gpu ? 0.0 : Wc);
   lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", host_cap / kMiB,
-     req.gpu ? strf(", 显存 %.0f MB", vram_budget / kMiB).c_str() : "", D, carry, n_chunks, cache_all ? "是" : "否 (每趟逐块重读)", cache_bytes / kMiB,
-     req.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
+     scope.gpu ? strf(", 显存 %.0f MB", vram_budget / kMiB).c_str() : "", D, carry, n_chunks, cache_all ? "是" : "否 (每趟逐块重读)", cache_bytes / kMiB,
+     scope.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
   for (int ci = 0; ci < n_chunks; ++ci) {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
     lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, misc::dense(dates[static_cast<size_t>(day0)]).c_str(), misc::dense(dates[static_cast<size_t>(day1 - 1)]).c_str(), day1 - day0,
@@ -394,12 +383,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     cd.idx = -1;
     cd.lab.ry.clear();
     cd.L = Loaded{};
-    init_loaded(feats_, day1 - load0, A, cd.L);
-    select_holds(feats_, holds, cd.L);
-    cd.L.feat_codes = d0.feats;
     begin(Phase::Loading, static_cast<size_t>(day1 - load0));
-    if (!load_planes(feats_, es, F.lr, static_cast<size_t>(load0), static_cast<size_t>(day1), cd.L, F.ex, cancel_, *this, /*with_labels=*/true,
-                     /*with_costs=*/false, /*with_index=*/false)) {
+    if (!load_planes(ft, es, F.lr, static_cast<size_t>(load0), static_cast<size_t>(day1), spec, cd.L, F.ex, cancel_, *this)) {
       if (F.lr.stale()) {
         res.message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
         lg("中止: %s", res.message.c_str());
@@ -489,8 +474,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     F.rx.resize(n);
     if (cd.lab.ry.empty())
       prep_labels(F.ex, L, F.w, cd.lab);
-    if (F.sc.size() < static_cast<size_t>(nt))
-      F.sc.resize(static_cast<size_t>(nt));
+    const std::vector<const factor::check::Plane *> in = leaf_planes(L, d0.feats.size());
     for (size_t b0 = 0; b0 < ids.size(); b0 += kCpuForest) {
       const size_t b1 = std::min(ids.size(), b0 + kCpuForest);
       std::vector<const factor::expr::Expr *> ptrs;
@@ -498,37 +482,25 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         ptrs.push_back(&ents[static_cast<size_t>(ids[k])].e);
       const factor::Dag Fd = factor::build_forest(ptrs, /*keep_roots=*/false);
       assert(Fd.feats == d0.feats && "同结构候选的特征叶序必与基线一致 (平面下标按 d0.feats 装)");
-      F.hp.prepare(Fd.n_slots, n);
-      const auto plane_of = [&](int i) -> const factor::check::Plane * {
-        const factor::DagNode &nd = Fd.nodes[static_cast<size_t>(i)];
-        return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.hp.slots[static_cast<size_t>(nd.slot)];
-      };
-      for (int i = 0; i < static_cast<int>(Fd.nodes.size()); ++i) {
-        if (cancelled())
-          return false;
-        const factor::DagNode &nd = Fd.nodes[static_cast<size_t>(i)];
-        assert(nd.op >= 0 || !Fd.is_root(i)); // 根是归一算子, 不会是特征叶
-        if (nd.op < 0)
-          continue;
-        const factor::check::Plane *in[factor::kFuseIn] = {};
-        for (int a = 0; a < nd.n_in; ++a)
-          in[a] = plane_of(nd.in[a]);
-        factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, F.sc, L.cs.m.data());
-        if (!Fd.is_root(i))
-          continue;
-        const factor::check::Plane *rp = plane_of(i);
-        fs::Batch B;
-        B.C = 1, B.x[0] = {rp->v.data(), rp->m.data()};
-        for (size_t k = b0; k < b1; ++k) {
-          if (Fd.roots[k - b0] != i)
-            continue;
-          Result out;
-          factor::cpu::search::run(F.ex, B, L.cs.m.data(), req.frame, cd.span(), cd.lab.L, F.rx.data(), F.w, &out);
-          ents[static_cast<size_t>(ids[k])].r.merge(out, H);
-          sink_rows_cpu(ids[k], F.rx.data());
-          publish(1);
-        }
-      }
+      if (!factor::cpu::walk(F.ex, Fd, in, F.hp, F.sc, T, A, seg, L.cs.m.data(), nullptr, [&](int i, const auto &at, double) {
+            if (!Fd.is_root(i))
+              return !cancelled();
+            assert(Fd.nodes[static_cast<size_t>(i)].op >= 0); // 根是归一算子, 不会是特征叶
+            const factor::check::Plane *rp = at(i);
+            fs::Batch B;
+            B.C = 1, B.x[0] = {rp->v.data(), rp->m.data()};
+            for (size_t k = b0; k < b1; ++k) {
+              if (Fd.roots[k - b0] != i)
+                continue;
+              Result out;
+              factor::cpu::search::run(F.ex, B, L.cs.m.data(), sp.frame, cd.span(), cd.lab.L, F.rx.data(), F.w, &out);
+              ents[static_cast<size_t>(ids[k])].r.merge(out, H);
+              sink_rows_cpu(ids[k], F.rx.data());
+              publish(1);
+            }
+            return !cancelled();
+          }))
+        return false;
     }
     return true;
   };
@@ -571,32 +543,15 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         assert(C > 1 && "显存不够评一个候选: 块太大");
         C /= 2;
       }
-      dp.prepare(sess, Fd.n_slots);
-      const auto plane_of = [&](int i) -> const factor::gpu::DevPlane * {
-        const factor::DagNode &nd = Fd.nodes[static_cast<size_t>(i)];
-        return nd.op < 0 ? dev[static_cast<size_t>(nd.feat)] : dp.slots[static_cast<size_t>(nd.slot)];
-      };
-      for (int i = 0; i < static_cast<int>(Fd.nodes.size()); ++i) {
-        if (cancelled()) {
-          ok = false;
-          break;
-        }
-        const factor::DagNode &nd = Fd.nodes[static_cast<size_t>(i)];
-        if (nd.op < 0)
-          continue;
-        const factor::gpu::DevPlane *in[factor::kFuseIn] = {};
-        for (int a = 0; a < nd.n_in; ++a)
-          in[a] = plane_of(nd.in[a]);
-        factor::gpu::run_node(sess, nd, in, dp.slots[static_cast<size_t>(nd.slot)], T, A, seg, cs_gate);
-      }
+      ok = factor::gpu::walk(sess, Fd, dev, dp, T, A, seg, cs_gate, nullptr, [&](int, const auto &, double) { return !cancelled(); });
       if (!ok)
         break;
       for (int k = 0; k < C; ++k) {
-        const factor::DagNode &rn = Fd.nodes[static_cast<size_t>(Fd.roots[static_cast<size_t>(k)])];
-        assert(rn.op >= 0 && rn.slot >= 0);
-        roots[static_cast<size_t>(k)] = dp.slots[static_cast<size_t>(rn.slot)];
+        const int ri = Fd.roots[static_cast<size_t>(k)];
+        assert(Fd.nodes[static_cast<size_t>(ri)].op >= 0 && Fd.nodes[static_cast<size_t>(ri)].slot >= 0);
+        roots[static_cast<size_t>(k)] = factor::gpu::plane_at(Fd, dev, dp, ri);
       }
-      factor::gpu::search_eval(ss, roots.data(), C, cs_gate, req.frame, cd.t0_abs, cd.t_lo, out.data());
+      factor::gpu::search_eval(ss, roots.data(), C, cs_gate, sp.frame, cd.t0_abs, cd.t_lo, out.data());
       for (int k = 0; k < C; ++k) {
         const int id = ids[b0 + static_cast<size_t>(k)];
         ents[static_cast<size_t>(id)].r.merge(out[static_cast<size_t>(k)], H);
@@ -634,7 +589,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       begin(Phase::Running, ids.size() * static_cast<size_t>(n_chunks));
       publish(ids.size() * static_cast<size_t>(ci)); // 前面的块已评完
       sink_begin(cd);
-      if (!(req.gpu ? gpu_chunk(cd, ids) : cpu_chunk(cd, ids)))
+      if (!(scope.gpu ? gpu_chunk(cd, ids) : cpu_chunk(cd, ids)))
         return Rc::Cancel;
       sink_end();
       chunk_.store(ci + 1, std::memory_order_relaxed);
@@ -699,40 +654,29 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       const int T = L.T;
       const size_t n = L.n();
       const int last = *std::max_element(want.begin(), want.end());
-      F.hp.prepare(d0.n_slots, n);
-      if (F.sc.size() < static_cast<size_t>(nt))
-        F.sc.resize(static_cast<size_t>(nt));
-      const auto plane_of = [&](int i) -> const factor::check::Plane * {
-        const factor::DagNode &nd = d0.nodes[static_cast<size_t>(i)];
-        return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.hp.slots[static_cast<size_t>(nd.slot)];
-      };
+      std::vector<uint8_t> prefix(d0.nodes.size(), 0); // 走到最后一个要尺度的节点即止
+      std::fill_n(prefix.begin(), last + 1, static_cast<uint8_t>(1));
       std::vector<double> sigma(need.size(), 0.0);
-      for (int i = 0; i <= last; ++i) {
-        if (cancelled()) {
-          lg("已取消");
-          return false;
-        }
-        const factor::DagNode &nd = d0.nodes[static_cast<size_t>(i)];
-        if (nd.op >= 0) {
-          const factor::check::Plane *in[factor::kFuseIn] = {};
-          for (int a = 0; a < nd.n_in; ++a)
-            in[a] = plane_of(nd.in[a]);
-          factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, seg, F.sc, L.cs.m.data());
-        }
-        for (size_t q = 0; q < need.size(); ++q) {
-          if (want[q] != i)
-            continue;
-          const factor::check::Plane *p = plane_of(i);
-          const uint8_t *gate = L.cs.m.data();
-          double s1 = 0.0, s2 = 0.0;
-          long long cnt = 0;
-          for (size_t k = 0; k < n; ++k) {
-            const bool on = p->m[k] && gate[k];
-            const double v = on ? static_cast<double>(p->v[k]) : 0.0;
-            s1 += v, s2 += v * v, cnt += on;
-          }
-          sigma[q] = cnt >= 2 ? std::sqrt(std::max(0.0, (s2 - s1 * s1 / static_cast<double>(cnt)) / static_cast<double>(cnt - 1))) : 0.0;
-        }
+      if (!factor::cpu::walk(F.ex, d0, leaf_planes(L, d0.feats.size()), F.hp, F.sc, T, A, seg, L.cs.m.data(), prefix.data(),
+                             [&](int i, const auto &at, double) {
+                               for (size_t q = 0; q < need.size(); ++q) {
+                                 if (want[q] != i)
+                                   continue;
+                                 const factor::check::Plane *p = at(i);
+                                 const uint8_t *gate = L.cs.m.data();
+                                 double s1 = 0.0, s2 = 0.0;
+                                 long long cnt = 0;
+                                 for (size_t k = 0; k < n; ++k) {
+                                   const bool on = p->m[k] && gate[k];
+                                   const double v = on ? static_cast<double>(p->v[k]) : 0.0;
+                                   s1 += v, s2 += v * v, cnt += on;
+                                 }
+                                 sigma[q] = cnt >= 2 ? std::sqrt(std::max(0.0, (s2 - s1 * s1 / static_cast<double>(cnt)) / static_cast<double>(cnt - 1))) : 0.0;
+                               }
+                               return !cancelled();
+                             })) {
+        lg("已取消");
+        return false;
       }
       for (size_t j = 0, q = 0; j < slots.size(); ++j) {
         if (!grid::needs_scale(slots[j]))
@@ -1008,8 +952,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       ws.push_back(SearchWeight{sh.hold, en.sc[hi].sign, en.e.canon});
     }
   }
-  assert(!ws.empty());                              // n_branch > 0 ⇒ 至少一个 h 有高原集
-  WriteFactorWeights(req.factor_dir, req.file, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
+  assert(!ws.empty());                               // n_branch > 0 ⇒ 至少一个 h 有高原集
+  WriteFactorWeights(scope.factor_dir, sp.file, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
   res.wrote = true;
   res.n_weights = static_cast<int>(ws.size());
   res.message = "weights 已写入 (" + std::to_string(ws.size()) + " 个权重, " + std::to_string(H) + " 个持有期), 自动 Run 重算 stat";

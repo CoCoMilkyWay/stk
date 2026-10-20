@@ -5,7 +5,8 @@
 // =============================================================================
 //   DevPool  会话内按 n_slots 预分配的设备平面 (跨因子复用; 只增不减, 会话关闭前 release)
 //   run_node 一个算子节点: 融合节点 (fu.n > 0) → run_fused, 其余 → run_dev (CS 收 cs_gate, TS 不收); 不认具体算子
-//   eval     输入 = 已 upload 的设备平面 (按 Dag::feats 下标); 返回根平面 (设备侧, 交给 gpu::stat_eval / download); seg = 段长
+//   walk     顺序走 Dag, 逐节点回调 visit (口径同 EvalCpu walk); 输入 = 已 upload 的设备平面 (按 Dag::feats 下标); seg = 段长
+//   eval     walk 到底, 返回根平面 (设备侧, 交给 gpu::stat_eval / download)
 //   cs_gate  截面池掩码 (cs_valid 的设备平面, 只用 m; 语义见 EvalCpu.hpp 文件头) 原样递给 CS 节点的算子; 含 CS 节点时必填
 //   kernel_ms 累加各算子纯 kernel 时间
 // =============================================================================
@@ -14,6 +15,7 @@
 #include "factor/GpuRun.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <vector>
 
 namespace factor::gpu {
@@ -48,31 +50,48 @@ inline void run_node(Session *s, const DagNode &nd, const DevPlane *const in[kFu
   run_dev(s, nd.op, in[0], in[1], in[2], o.a == A::SELF ? nullptr : cs_gate, out, T, A, seg, nd.p, kernel_ms);
 }
 
-inline const DevPlane *eval(const Dag &d, const std::vector<const DevPlane *> &inputs, DevPool &dp, Session *s, int T, int A, int seg,
-                            const DevPlane *cs_gate, double *kernel_ms = nullptr) {
+// 节点 i 的平面: 叶 = inputs[feat], 算子 = 池槽 (复用口径同 EvalCpu plane_at)
+inline const DevPlane *plane_at(const Dag &d, const std::vector<const DevPlane *> &inputs, const DevPool &dp, int i) {
+  const DagNode &nd = d.nodes[static_cast<size_t>(i)];
+  return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : dp.slots[static_cast<size_t>(nd.slot)];
+}
+
+// 顺序走 Dag, 回调口径同 EvalCpu walk: visit(i, at, ms) → bool, ms = 算子纯 kernel (叶 0); dp 按 Dag 补齐
+template <class Visit>
+inline bool walk(Session *s, const Dag &d, const std::vector<const DevPlane *> &inputs, DevPool &dp, int T, int A, int seg, const DevPlane *cs_gate,
+                 const uint8_t *need, Visit &&visit) {
   assert(inputs.size() == d.feats.size());
   for (const DevPlane *p : inputs)
     assert(p);
   dp.prepare(s, d.n_slots);
-  auto plane_of = [&](int node) -> const DevPlane * {
-    const DagNode &nd = d.nodes[static_cast<size_t>(node)];
-    return nd.op < 0 ? inputs[static_cast<size_t>(nd.feat)] : dp.slots[static_cast<size_t>(nd.slot)];
-  };
-  double total = 0.0;
-  for (size_t i = 0; i < d.nodes.size(); ++i) {
-    const DagNode &nd = d.nodes[i];
-    if (nd.op < 0)
+  const auto at = [&](int j) { return plane_at(d, inputs, dp, j); };
+  for (int i = 0; i < static_cast<int>(d.nodes.size()); ++i) {
+    if (need && !need[i])
       continue;
-    const DevPlane *in[kFuseIn] = {};
-    for (int a = 0; a < nd.n_in; ++a)
-      in[a] = plane_of(nd.in[a]);
+    const DagNode &nd = d.nodes[static_cast<size_t>(i)];
     double ms = 0.0;
-    run_node(s, nd, in, dp.slots[static_cast<size_t>(nd.slot)], T, A, seg, cs_gate, &ms);
-    total += ms;
+    if (nd.op >= 0) {
+      const DevPlane *in[kFuseIn] = {};
+      for (int a = 0; a < nd.n_in; ++a)
+        in[a] = at(nd.in[a]);
+      run_node(s, nd, in, dp.slots[static_cast<size_t>(nd.slot)], T, A, seg, cs_gate, &ms);
+    }
+    if (!visit(i, at, ms))
+      return false;
   }
+  return true;
+}
+
+inline const DevPlane *eval(const Dag &d, const std::vector<const DevPlane *> &inputs, DevPool &dp, Session *s, int T, int A, int seg,
+                            const DevPlane *cs_gate, double *kernel_ms = nullptr) {
+  double total = 0.0;
+  walk(s, d, inputs, dp, T, A, seg, cs_gate, nullptr, [&](int, const auto &, double ms) {
+    total += ms;
+    return true;
+  });
   if (kernel_ms)
     *kernel_ms = total;
-  return plane_of(d.root());
+  return plane_at(d, inputs, dp, d.root());
 }
 
 } // namespace factor::gpu

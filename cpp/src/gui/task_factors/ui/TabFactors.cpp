@@ -507,28 +507,28 @@ void metric_cell(const HS *h, const Metric &m, const FR &r, const ImVec4 *color 
 double metric_key(const HS *h, const Metric &m, const FR &r) { return h ? m.get(*h, r) : -1e300; }
 
 // ============================================================================
-// 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
+// 主表列模型: 固定列 (kFixedCols, 按 Fixed 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
 //   edit type name_en name_cn *h frame period status time | val% rank% trig% util% mono turn LS% SR rIC rICIR rIC>0 rAC | ic~ x~ expr ops feats slots note
 // ============================================================================
-enum Col : int { Edit,
-                 Type,
-                 NameEn,
-                 NameCn,
-                 HoldSrc,
-                 Frame,
-                 Period,
-                 Status,
-                 Time,
-                 IcPdf,
-                 XPdf,
-                 Expr,
-                 Ops,
-                 Feats,
-                 Slots,
-                 Note,
-                 kNumFixed };
+enum Fixed : int { Edit,
+                   Type,
+                   NameEn,
+                   NameCn,
+                   HoldSrc,
+                   Frame,
+                   Period,
+                   Status,
+                   Time,
+                   IcPdf,
+                   XPdf,
+                   Expr,
+                   Ops,
+                   Feats,
+                   Slots,
+                   Note,
+                   kNumFixed };
 struct FixedCol {
-  Col id; // 须 = 数组下标 (下方 static_assert)
+  Fixed id; // 须 = 数组下标 (下方 static_assert)
   const char *name, *tip;
   bool sortable;
 };
@@ -629,7 +629,7 @@ constexpr bool fixed_cols_ordered() {
       return false;
   return true;
 }
-static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Col 枚举一致");
+static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Fixed 枚举一致");
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
 // 显示顺序: Stat 列夹在 time 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
@@ -652,7 +652,7 @@ constexpr std::array<ColRef, kNumCols> col_layout() {
 constexpr std::array<ColRef, kNumCols> kColLayout = col_layout();
 static_assert(kColLayout[0].fixed == Edit, "edit 列须在第 0 列 (行循环里单独画)");
 // 表列号 ↔ 固定列 / 指标
-constexpr int col_of(Col f) {
+constexpr int col_of(Fixed f) {
   for (int c = 0; c < kNumCols; ++c)
     if (kColLayout[static_cast<size_t>(c)].fixed == f)
       return c;
@@ -883,7 +883,7 @@ void mini_pdf_cell(const MiniPdf *p, const char *id, const char *title) {
 }
 
 // 固定列一格 (edit 列是勾选框, 在表循环里单独画); hold = 因子表选定持有期 (ic~ 列)
-void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool editing, RowKind kind, int hold) {
+void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool editing, RowKind kind, int hold) {
   const bool ok = r.error.empty();
   const auto text = [&](const std::string &s, bool hi = false) {
     if (s.empty())
@@ -992,7 +992,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   else if (ui.backend < 0)
     ui.backend = 1; // 有 GPU 默认 GPU
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, static_cast<int>(ft.labels.size()) - 1));
-  const int cur_hold = ft.labels.empty() ? 0 : ft.labels[static_cast<size_t>(ui.hold_idx)].hold;
+  const int cur_hold = ft.labels.empty() ? 0 : ft.labels[static_cast<size_t>(ui.hold_idx)].key;
 
   // ==========================================================================
   // 1. 作用域 + 后端 + Run / Cancel / Rescan + 状态
@@ -1041,7 +1041,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::SetNextItemWidth(70);
   if (ImGui::BeginCombo("Hold", ft.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str())) {
     for (size_t i = 0; i < ft.labels.size(); ++i)
-      if (ImGui::Selectable(factor::stat::hold_name(ft.labels[i].hold).c_str(), static_cast<int>(i) == ui.hold_idx))
+      if (ImGui::Selectable(factor::stat::hold_name(ft.labels[i].key).c_str(), static_cast<int>(i) == ui.hold_idx))
         ui.hold_idx = static_cast<int>(i);
     ImGui::EndCombo();
   }
@@ -1740,7 +1740,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             ImGui::PopStyleVar();
             ImGui::SameLine(0, 2);
           }
-          fixed_cell(static_cast<Col>(cr.fixed), r, ctx, editing, kind, cur_hold);
+          fixed_cell(static_cast<Fixed>(cr.fixed), r, ctx, editing, kind, cur_hold);
         } else {
           const Metric &m = *col_metric(c);
           if (group_tip(m.group))

@@ -68,12 +68,16 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   return p;
 }
 
-bool Panel::in_pool(size_t sub, misc::Ymd d) const {
+const uint8_t *Panel::row(misc::Ymd d) const {
   const auto dit = std::lower_bound(dates_.begin(), dates_.end(), d);
   assert(dit != dates_.end() && *dit == d && "pool: 该日不在本池日期轴");
-  assert(sub < axis_.size());
   const size_t di = static_cast<size_t>(dit - dates_.begin());
-  return member_[di * axis_.size() + sub] != 0;
+  return member_.data() + di * axis_.size();
+}
+
+bool Panel::in_pool(size_t sub, misc::Ymd d) const {
+  assert(sub < axis_.size());
+  return row(d)[sub] != 0;
 }
 
 } // namespace pool

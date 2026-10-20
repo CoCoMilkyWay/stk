@@ -10,16 +10,12 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cmath>
 #include <vector>
 
 namespace GUI::Factors {
 
 namespace {
-
-using Clock = std::chrono::steady_clock;
-double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
 using factor::stat::kLegs;
 using factor::stat::kLong;
@@ -114,21 +110,9 @@ struct InspectService::Flow {
 
 bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
-  assert(level_for_pool(factor_level(seg), pool_def(pool).tier) && "该池不能用这个因子层");
   req = InspectRequest{};
-  req.seg = seg;
-  req.file = row.key;
-  req.expr = row.expr;
-  req.frame = row.frame;
-  req.reload = reload;
-  req.max_impact = data.config.max_impact;
-  if (data.asset.items.empty())
-    return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.libs = factor_libs(data, pool, seg);
-  if (!req.libs[factor_level(seg).tier == TierId::Lob ? pool_id(pool) : kAllPool].ready())
-    return false; // 标签库未建
-  req.pool = pool;
-  return true;
+  req.spec = InspectSpec{row.key, row.expr, row.frame, reload};
+  return MakeFactorScope(data, pool, seg, /*gpu=*/false, req.scope);
 }
 
 InspectService::InspectService() { Start(); }
@@ -147,11 +131,14 @@ bool InspectService::run(InspectRequest &req) {
 
 bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   TraceN("InspectEvaluate");
+  const FeatureTable &ft = feats();
+  const FactorScope &sc = req.scope;
+  const InspectSpec &sp = req.spec;
   factor::expr::Expr e;
   {
     std::string err;
-    assert(req.seg == feats_.seg && "请求层与字段表层不符");
-    const bool ok = factor::expr::parse(req.expr, feats_.lookup(), feats_.seg, e, err);
+    assert(sc.seg == ft.seg && "请求层与字段表层不符");
+    const bool ok = factor::expr::parse(sp.expr, ft.lookup(), ft.seg, e, err);
     assert(ok && "Factors 表的规范串必可再解析");
     (void)ok;
   }
@@ -169,20 +156,16 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   EvalScope es;
   {
     std::string why;
-    if (!eval_scope(feats_, req.libs, pool_id(req.pool), d.feats, es, why)) {
+    if (!eval_scope(ft, sc, d.feats, es, why)) {
       publish_message(why);
       return true;
     }
   }
-  PerPool<FeatureLib> ready; // 已建的库全开 (本因子只读 es.used)
-  for (const PoolId l : pool_ids())
-    if (req.libs[l].ready())
-      ready[l] = req.libs[l];
-  F.lr.open(ready, &cancel_);
+  open_libs(sc, F.lr, &cancel_);
   const std::vector<misc::Ymd> &dates = es.dates;
-  const std::string ckey = std::to_string(req.seg) + "|cap" + std::to_string(req.max_impact) + "|" + es.key();
+  const std::string ckey = std::to_string(sc.seg) + "|cap" + std::to_string(sc.max_impact) + "|" + es.key();
   const int days = static_cast<int>(dates.size()), A = static_cast<int>(es.rs.axis.size());
-  const double cells = static_cast<double>(days) * feats_.seg * A;
+  const double cells = static_cast<double>(days) * ft.seg * A;
   begin(Phase::Loading, static_cast<size_t>(days));
   const auto stale_out = [&] {
     if (F.lr.stale()) { // 库换了, 缓存的一切不可信
@@ -191,18 +174,16 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     }
     return false;
   };
-  if (req.reload || F.scope_key != ckey || F.dates != dates) {
+  if (sp.reload || F.scope_key != ckey || F.dates != dates) {
     F.reset_scope();
-    { // 宿主峰值: 输入 / cs / 标签 / 成本平面 + 活槽 + rx / rx_all / lc + 标签秩 + Row / TailRow [H][T]
-      const double H = static_cast<double>(feats_.labels.size()), C = static_cast<double>(feats_.costs.size());
-      const double per = 5.0 * (static_cast<double>(d.feats.size()) + 1.0 + H + C + d.n_slots) + 5.0 + 2.0 * H;
-      assert_fits("Inspect", cells * per + H * days * feats_.seg * static_cast<double>(sizeof(factor::stat::Row) + sizeof(TailRow)), days, A,
-                  feats_.seg);
+    // 全部持有期 + 全部金额段 + 池等权指数
+    const LoadSpec spec{d.feats, keys_of(ft.labels), keys_of(ft.costs), static_cast<float>(sc.max_impact), /*index=*/true};
+    { // 宿主峰值: 装载平面 (cell_bytes) + 活槽 + rx / rx_all / lc + 标签秩 + Row / TailRow [H][T]
+      const double H = static_cast<double>(spec.holds.size());
+      const double per = cell_bytes(spec) + 5.0 * d.n_slots + 5.0 + 2.0 * H;
+      assert_fits("Inspect", cells * per + H * days * ft.seg * static_cast<double>(sizeof(factor::stat::Row) + sizeof(TailRow)), days, A, ft.seg);
     }
-    init_loaded(feats_, days, A, F.L);
-    F.L.max_impact = static_cast<float>(req.max_impact);
-    F.L.feat_codes = d.feats;
-    if (!load_planes(feats_, es, F.lr, 0, es.days.size(), F.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/true))
+    if (!load_planes(ft, es, F.lr, 0, es.days.size(), spec, F.L, F.ex, cancel_, *this))
       return stale_out();
     F.scope_key = ckey;
     F.dates = dates;
@@ -214,11 +195,10 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     if (missing.empty()) {
       publish(static_cast<size_t>(days));
     } else {
-      assert_fits("Inspect", cells * 5.0 * static_cast<double>(missing.size()), days, A, feats_.seg); // 补读的特征平面
+      const LoadSpec spec{missing}; // 只补读特征平面
+      assert_fits("Inspect", cells * cell_bytes(spec), days, A, ft.seg);
       Loaded tmp;
-      init_loaded(feats_, days, A, tmp);
-      tmp.feat_codes = missing;
-      if (!load_planes(feats_, es, F.lr, 0, es.days.size(), tmp, F.ex, cancel_, *this, /*with_labels=*/false))
+      if (!load_planes(ft, es, F.lr, 0, es.days.size(), spec, tmp, F.ex, cancel_, *this))
         return stale_out();
       for (size_t i = 0; i < missing.size(); ++i) {
         F.L.feat_codes.push_back(missing[i]);
@@ -237,7 +217,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   }
   const size_t n = L.n();
   const int H = L.hd.n, T = L.T;
-  F.w.ensure(A, H, static_cast<int>(feats_.costs.size()), nt);
+  F.w.ensure(A, H, static_cast<int>(L.amts.size()), nt);
 
   // ---- Y: 毛标签 [H] (作用域内一次) ----
   if (F.lab.ry.empty()) {
@@ -248,12 +228,12 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
 
   // ---- 结果骨架 ----
   InspectResult res;
-  res.key = req.key();
-  res.file = req.file;
-  res.expr = req.expr;
-  res.seg = req.seg;
-  res.frame = req.frame;
-  res.scope.pool = req.pool;
+  res.key = sp.key(sc);
+  res.file = sp.file;
+  res.expr = sp.expr;
+  res.seg = sc.seg;
+  res.frame = sp.frame;
+  res.scope.pool = sc.pool;
   res.scope.start_date = dates.front();
   res.scope.end_date = dates.back();
   res.scope.days = L.days, res.scope.T = T, res.scope.A = A;
@@ -287,32 +267,22 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   }
 
   // ---- X: Dag 后序顺序走, 每节点全核 ----
-  begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 成本池化 + 评估
-  F.hp.prepare(d.n_slots, n);
-  if (F.nsc.size() < static_cast<size_t>(nt))
-    F.nsc.resize(static_cast<size_t>(nt));
-  const auto plane_of = [&](int i) -> const factor::check::Plane * {
-    const factor::DagNode &nd = d.nodes[static_cast<size_t>(i)];
-    return nd.op < 0 ? &L.planes[static_cast<size_t>(nd.feat)] : &F.hp.slots[static_cast<size_t>(nd.slot)];
-  };
-  for (int i = 0; i < N; ++i) {
-    if (cancelled())
-      return false;
-    const factor::DagNode &nd = d.nodes[static_cast<size_t>(i)];
-    if (nd.op < 0)
-      continue;
-    const factor::check::Plane *in[factor::kFuseIn] = {};
-    for (int a = 0; a < nd.n_in; ++a)
-      in[a] = plane_of(nd.in[a]);
-    const Clock::time_point t0 = Clock::now();
-    factor::cpu::run_node(F.ex, nd, in, F.hp.slots[static_cast<size_t>(nd.slot)], T, A, L.seg, F.nsc, L.cs.m.data());
-    res.eval_ms += ms_since(t0);
-    publish(1);
-  }
+  begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 评估 + 收尾
+  const std::vector<const factor::check::Plane *> in = leaf_planes(L, d.feats.size());
+  if (!factor::cpu::walk(F.ex, d, in, F.hp, F.nsc, T, A, L.seg, L.cs.m.data(), nullptr, [&](int i, const auto &, double ms) {
+        if (d.nodes[static_cast<size_t>(i)].op >= 0) {
+          res.eval_ms += ms;
+          publish(1);
+        }
+        return !cancelled();
+      }))
+    return false;
+  const int xi = d.nodes[static_cast<size_t>(root)].in[0];
+  assert(xi >= 0 && "根是归一算子, 至少一元");
+  const factor::check::Plane *rp = factor::cpu::plane_at(d, in, F.hp, root); // Stat 只看池内 (g 在算子内部)
+  const factor::check::Plane *xp = factor::cpu::plane_at(d, in, F.hp, xi);   // 根输入: 根的槽先于输入释放分配, 此刻仍在
 
-  // ---- R: rank_x 一次 ----
-  const factor::check::Plane *rp = plane_of(root); // Stat 只看池内 (g 在算子内部)
-  res.valid_pct = valid_pct_of(rp->m.data(), L.cs.m.data(), n);
+  // ---- R: rank_x ----
   InspectPlanes &pl = F.pl;
   const size_t nrow = static_cast<size_t>(H) * T;
   pl.rows.resize(nrow);
@@ -320,36 +290,34 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   pl.rx.resize(n);
   pl.rx_all.resize(n);
   F.lc.resize(n);
-  res.hold.resize(static_cast<size_t>(H));
   const factor::stat::Span s = L.span();
   const factor::stat::Plane x{rp->v.data(), rp->m.data()};
   // 先多跑一遍不看池的秩 (g = xm) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 → rx
-  factor::cpu::stat::rank_x(F.ex, x, x.m, req.frame, s, pl.rx_all.data(), F.w);
-  factor::cpu::stat::rank_x(F.ex, x, L.cs.m.data(), req.frame, s, pl.rx.data(), F.w);
+  factor::cpu::stat::rank_x(F.ex, x, x.m, sp.frame, s, pl.rx_all.data(), F.w);
+  factor::cpu::stat::rank_x(F.ex, x, L.cs.m.data(), sp.frame, s, pl.rx.data(), F.w);
   const uint16_t *rx = pl.rx.data();
-  res.rank_pct = rank_pct_of(F.ex, rx, rp->m.data(), L.cs.m.data(), T, A);
-  {
-    const int xi = d.nodes[static_cast<size_t>(root)].in[0];
-    assert(xi >= 0 && "根是归一算子, 至少一元");
-    const factor::check::Plane *xp = plane_of(xi);
-    x_dist(F.ex, xp->v.data(), xp->m.data(), rx, T, A, res.xdist);
-  }
-  if (cancelled())
-    return false;
-
-  // ---- C: 换手成本 (FactorsLoad cost_tiers, 与 Run 同一份; 契约【换手成本】) ----
+  // ---- C: 腿码 (换手成本用) ----
   factor::cpu::stat::leg_codes(F.ex, rx, s, F.lc.data());
-  cost_tiers(F.ex, F.lc.data(), L, feats_, F.w, res.costs);
-  publish(1);
   if (cancelled())
     return false;
 
-  // ---- L: 评估 (只毛): 一级 Row[H][T] + 二级 HoldStat[H]; 同遍尾部分层 (TailExt, Inspect 专属: 只在 Row::ok 行, 两腿组内更极端的 kTailOfGroup 截) ----
+  // ---- L: 评估 (只毛): 一级 Row[H][T] + 一级累加; 同遍尾部分层 (TailExt, Inspect 专属: 只在 Row::ok 行, 两腿组内更极端的 kTailOfGroup 截) ----
   int thr[kLegs][kTails];
   tail_thresholds(thr);
   factor::stat::Accum acc[factor::stat::kMaxHold];
   factor::cpu::stat::accum_rows(F.ex, s, rx, F.lab.L, F.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, thr, F.lab.L.cap});
-  factor::stat::finish_all(acc, L.hd, L.seg, res.hold.data());
+  publish(1);
+  if (cancelled())
+    return false;
+
+  // ---- 收尾 (FactorsLoad finish_root, 与 Run 同一份): valid% / rank% / 二级 HoldStat[H] / x 分布 / 换手成本 (契约【换手成本】) ----
+  RootOut o;
+  finish_root(F.ex, L, RootRaw{rp->m.data(), rx, F.lc.data(), acc, {xp->v.data(), xp->m.data()}}, F.w, o);
+  res.valid_pct = o.valid_pct;
+  res.rank_pct = o.rank_pct;
+  res.hold.assign(o.hold, o.hold + H);
+  res.costs = std::move(o.costs);
+  res.xdist = std::move(o.xd);
   publish(1);
   if (cancelled())
     return false;
