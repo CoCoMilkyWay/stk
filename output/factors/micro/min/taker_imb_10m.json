@@ -1,11 +1,11 @@
 {
  "type": "alpha",
  "name_cn": "十分钟主动失衡",
- "expr": "CsZ(TsMeanRoll(TsImb(amt_taker_bid, amt_taker_ask), d))",
+ "expr": "CsZ(TsMeanRoll(TsImb(lob.1m.amt_taker_bid, lob.1m.amt_taker_ask), d))",
  "note": "主动买卖成交额失衡的 10 分钟均值, 截面标准化",
  "weights": [
-  {"hold":30,"expr":"CsZ(TsMeanRoll(TsImb(amt_taker_bid, amt_taker_ask), d=18))"},
-  {"hold":30,"expr":"CsZ(TsMeanRoll(TsImb(amt_taker_bid, amt_taker_ask), d=36))"}
+  {"hold":30,"expr":"CsZ(TsMeanRoll(TsImb(lob.1m.amt_taker_bid, lob.1m.amt_taker_ask), d=18))"},
+  {"hold":30,"expr":"CsZ(TsMeanRoll(TsImb(lob.1m.amt_taker_bid, lob.1m.amt_taker_ask), d=36))"}
  ],
  "run": {"pool":"micro","start_date":"2026-05-01","end_date":"2026-10-16","days":111,"T":28305,"A":621,"backend":"gpu","frame":"CS","max_impact":0.01,"n_full":17.65},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],

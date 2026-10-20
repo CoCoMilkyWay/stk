@@ -1,5 +1,6 @@
-// FactorsLoad — 因子评估的特征库装载层, FactorsService (全表 Run) 与 InspectService (单因子深看) 共用:
-//   Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 标签 [hold] + 冲击成本 [amt]), load_planes 逐天并行读特征库散进去;
+// FactorsLoad — 因子评估的特征库装载层, FactorsService (全表 Run) / InspectService (单因子深看) / SearchService 共用:
+//   EvalScope = 一个因子的评估作用域 (eval_scope: 所用库 + 评估期 = 落盘日交集 + A 轴 + 子池成员), worker 按因子解析;
+//   Loaded = 一轮评估的宿主平面 (特征 [feat] + 截面门控 cs + 标签 [hold] + 冲击成本 [amt]), load_planes 逐天并行读各库散进去;
 //   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率; n_full_of 满仓只数;
 //   cost_tiers 换手成本 (两服务同一份); prep_labels / labels_raw 标签的契约视图 (CPU 预处理过 / GPU 会话自己预处理; cap = n_full_of);
 //   x_dist 根输入值分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本).
@@ -9,21 +10,43 @@
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Dag.hpp"
 #include "factor/Stat/Contract.hpp"
+#include "features/Storage/DayBatchPlane.hpp"           // Day / LibReaders
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / MiniPdf
 #include "misc/exec.hpp"
-#include "shared/Analysis.hpp" // AggPdf
+#include "shared/Analysis.hpp" // AggPdf / ReadScope
+#include "shared/Pool.hpp"     // pool::Panel
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
-class FeatureRead;
 namespace factor::cpu::stat {
 struct Workspace;
 }
 
 namespace GUI::Factors {
+
+// ---- 评估作用域 (一个因子; 同文件各权重同叶 → 同一份) ----
+struct EvalScope {
+  PoolId pool = kAllPool;            // 因子池 (目录)
+  PoolMask used = 0;                 // 所用库: 标签库 + 叶所在库 (+ all: 池成员)
+  analysis::ReadScope rs;            // main = 标签库, libs = used 各库清单, axis = A 轴 (标签库轴 / 子池并集), to = A → 各库轴
+  std::vector<misc::Ymd> dates;      // 评估期 = used 各库落盘日交集 (升序, 非空)
+  std::vector<Day> days;             // [dates] 当日 + 承接日 (标签库日期轴上的前一日, 0 = 轴首) 及其落盘位 (承接日按库判)
+  std::optional<pool::Panel> member; // 子池成员 (Lob 池 × Bar 标签层; 网格层 as-of, 池轴 = A 轴)
+  std::string key() const;           // 缓存键: 池 | 所用库目录 + 池轴 | 评估期首末 + 天数
+};
+// 因子池 pool + 叶 feats (FeatureTable 叶名) → 作用域. 所用库未建 / 无共同落盘日 → false + why (正常输入)
+bool eval_scope(const FeatureTable &ft, const PerPool<FeatureLib> &libs, PoolId pool, const std::vector<std::string> &feats, EvalScope &es,
+                std::string &why);
+
+// 宿主内存预算: 可用内存 × kHostFrac (Search 分块同一口径)
+inline constexpr double kHostFrac = 0.6;
+double host_budget();
+// 整张量装载 (Run / Inspect) 放不下 → assert (who / 规模进消息): 该因子层太细或评估期太长, 拒绝评估
+void assert_fits(const char *who, double bytes, int days, int A, int seg);
 
 // ---- 装载好的一轮数据 ----
 struct LabelPlane {
@@ -71,11 +94,12 @@ void init_loaded(const FeatureTable &ft, int days, int A, Loaded &L);
 // 标签组收窄到 holds (Search: 搜索窗内的持有期, 只装 / 只评这些标签); 每个 hold 须在字段表里, 非空. 装载前调
 void select_holds(const FeatureTable &ft, const std::vector<int> &holds, Loaded &L);
 
-// 逐天并行读 (ex 抢单): 本层 特征列 (L.feat_codes) + ts_valid + cs_valid + (with_labels) L.hd 的标签列 (+ with_costs 冲击成本列)
-// 一次 load_day_columns, 门控后散进平面; with_index 再加读本层 close 列,
-// 顺带出 L.index (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘).
-// 返回 false = 取消 或 reader 判废 (调用方查 reader.stale()). 每天 prog.publish(1)
-bool load_planes(const FeatureTable &ft, FeatureRead &reader, const std::vector<misc::Ymd> &dates, Loaded &L, misc::exec::ForkJoin &ex,
+// 逐天并行读 (ex 抢单) es.days[d0, d1): 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影) =
+// 特征列 (L.feat_codes, 各按本层 ts_valid 门控) + 标签库网格层 ts_valid + cs_valid + (with_labels) L.hd 的标签列 (+ with_costs 冲击成本列)
+// (+ with_index close 列), 散进平面; 截面门控 = cs_valid ∧ 当日有成交 (∧ 子池成员). with_index 顺带出 L.index
+// (逐天并行攒日内项, 收尾串行补跨日首笔 + 连乘). lr 须按 es.rs.libs 开好.
+// 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 每天 prog.publish(1)
+bool load_planes(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, Loaded &L, misc::exec::ForkJoin &ex,
                  std::atomic<bool> &cancel, Progress &prog, bool with_labels = true, bool with_costs = false, bool with_index = false);
 
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN)

@@ -32,7 +32,6 @@
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow
 #include "gui/util/Service.hpp"
-#include "shared/Analysis.hpp" // ReadScope
 
 #include <atomic>
 #include <cstdint>
@@ -50,12 +49,11 @@ struct SearchRequest {
   std::string factor_dir;                              // factor_dir_of(pool, seg) (落盘)
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
-  analysis::ReadScope scope;
   std::string pool;
-  misc::Ymd start_date = 0, end_date = 0;
+  PerPool<FeatureLib> libs; // factor_libs (评估期 / A 轴在 worker 按模板叶解析: FactorsLoad eval_scope)
   bool gpu = false;
 };
-// 资产轴未就绪 / 区间无月份 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error)
+// 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error)
 bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool gpu, SearchRequest &req);
 
 // 评过的一个候选在一个 h 下的分 (UI 列表)

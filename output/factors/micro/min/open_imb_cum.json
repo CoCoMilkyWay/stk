@@ -1,13 +1,13 @@
 {
  "type": "alpha",
  "name_cn": "开盘量失衡累计",
- "expr": "CsRank(TsMeanCum(TsMask(TsImb(vol_taker_bid, vol_taker_ask), TsTodMask(k, k2))))",
+ "expr": "CsRank(TsMeanCum(TsMask(TsImb(lob.1m.vol_taker_bid, lob.1m.vol_taker_ask), TsTodMask(k, k2))))",
  "note": "开盘半小时 (09:30-10:00, 段内分钟 15..44) 主动成交量失衡的当日累计均值 (演示时段掩码 + 段内 expanding), 截面秩",
  "weights": [
-  {"hold":30,"sign":1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(vol_taker_bid, vol_taker_ask), TsTodMask(k=16, k2=64))))"},
-  {"hold":60,"sign":1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(vol_taker_bid, vol_taker_ask), TsTodMask(k=12, k2=32))))"},
-  {"hold":1000,"sign":1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(vol_taker_bid, vol_taker_ask), TsTodMask(k=16, k2=64))))"},
-  {"hold":1001,"sign":-1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(vol_taker_bid, vol_taker_ask), TsTodMask(k=56, k2=88))))"}
+  {"hold":30,"sign":1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(lob.1m.vol_taker_bid, lob.1m.vol_taker_ask), TsTodMask(k=16, k2=64))))"},
+  {"hold":60,"sign":1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(lob.1m.vol_taker_bid, lob.1m.vol_taker_ask), TsTodMask(k=12, k2=32))))"},
+  {"hold":1000,"sign":1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(lob.1m.vol_taker_bid, lob.1m.vol_taker_ask), TsTodMask(k=16, k2=64))))"},
+  {"hold":1001,"sign":-1,"expr":"CsRank(TsMeanCum(TsMask(TsImb(lob.1m.vol_taker_bid, lob.1m.vol_taker_ask), TsTodMask(k=56, k2=88))))"}
  ],
  "run": {"pool":"micro","start_date":"2026-05-01","end_date":"2026-10-16","days":111,"T":28305,"A":621,"backend":"gpu","frame":"CS","max_impact":0.01,"n_full":17.65},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],

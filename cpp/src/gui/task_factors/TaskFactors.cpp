@@ -17,7 +17,7 @@
 #include "gui/task_factors/ui/TabInspect.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools (页顶池选择)
-#include "shared/SharedData.hpp"  // config.factor_dir / 池 / 日期区间, feature.metadata, asset.items
+#include "shared/SharedData.hpp" // config.factor_dir / 池 / 日期区间, feature.metadata, asset.items
 
 #include "imgui.h"
 
@@ -63,10 +63,10 @@ struct TaskFactorsState {
   Factors::InspectUIState inspect_ui;
 };
 
-// 特征面板选择 (档, 层) 对应的因子层段长; 不是因子层 (Lob L_sec / Bar L_1min) = 0
+// 特征面板选择 (池档, 层) 对应的因子层段长; 不是该池的因子层 (L_sec / Bar 池 L_1min) = 0
 static int selected_factor_seg(const Feature::Selection &sel) {
   for (const Factors::FactorLevel &l : Factors::kFactorLevels)
-    if (l.tier == sel.tier && static_cast<int>(l.lvl) == sel.selected_level)
+    if (Factors::level_for_pool(l, sel.tier) && static_cast<int>(l.lvl) == sel.selected_level)
       return l.seg;
   return 0;
 }
@@ -110,8 +110,6 @@ static Factors::FactorsUIContext factors_context(const SharedData &data, const s
   c.seg = seg;
   c.pool = pool;
   c.factor_dir = Factors::factor_dir_of(data, pool, seg);
-  c.start_date = data.config.start_date;
-  c.end_date = data.config.end_date;
   c.sell_impact = data.config.sell_impact;
   c.axis_ready = !data.asset.items.empty();
   c.assets = &data.asset.items;
@@ -249,9 +247,10 @@ TaskHandle CreateFactorsTask() {
               if (d.tier != sel.tier) {
                 sel.clear_filters(); // 同特征面板: 换档 = 换字段表, 过滤作废
                 sel.tier = d.tier;
-                if (selected_factor_seg(sel) == 0) { // 原层在新档不是因子层 → 该档首个因子层
-                  const auto first = std::ranges::find(Factors::kFactorLevels, d.tier, &Factors::FactorLevel::tier);
-                  assert(first != std::end(Factors::kFactorLevels) && "该档没有因子层");
+                if (selected_factor_seg(sel) == 0) { // 原层在新池不是因子层 → 该池首个因子层
+                  const auto first =
+                      std::ranges::find_if(Factors::kFactorLevels, [&](const Factors::FactorLevel &l) { return Factors::level_for_pool(l, d.tier); });
+                  assert(first != std::end(Factors::kFactorLevels) && "该池没有因子层");
                   sel.selected_level = static_cast<int>(first->lvl);
                 }
               }
@@ -271,30 +270,34 @@ TaskHandle CreateFactorsTask() {
             state->counted_key = key;
             for (size_t i = 0; i < std::size(Factors::kFactorLevels); ++i) {
               const Factors::FactorLevel &l = Factors::kFactorLevels[i];
-              state->level_files[i] = l.tier == sel.tier ? Factors::list_factor_files(Factors::factor_dir_of(data, sel.pool(), l.seg)).size() : 0;
+              state->level_files[i] =
+                  Factors::level_for_pool(l, sel.tier) ? Factors::list_factor_files(Factors::factor_dir_of(data, sel.pool(), l.seg)).size() : 0;
             }
           }
           state->prev_factors_phase = fst;
         }
         for (size_t i = 0; i < std::size(Factors::kFactorLevels); ++i) {
           const Factors::FactorLevel &l = Factors::kFactorLevels[i];
+          const bool usable = Factors::level_for_pool(l, sel.tier);
           char label[48];
-          if (l.tier == sel.tier)
+          if (usable)
             std::snprintf(label, sizeof(label), "%s (%zu)###flvl%zu", l.name, state->level_files[i], i);
           else
             std::snprintf(label, sizeof(label), "%s###flvl%zu", l.name, i);
           ImGui::SameLine();
-          ImGui::BeginDisabled(l.tier != sel.tier);
-          if (ImGui::RadioButton(label, l.tier == sel.tier && static_cast<int>(l.lvl) == sel.selected_level))
+          ImGui::BeginDisabled(!usable);
+          if (ImGui::RadioButton(label, usable && static_cast<int>(l.lvl) == sel.selected_level))
             sel.selected_level = static_cast<int>(l.lvl);
           ImGui::EndDisabled();
         }
         ImGui::EndGroup();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
           Factors::tip("池 + 因子层 (Factors / Inspect 共用; 与特征面板的池 / 层双向同步)\n"
-                       "• min = Lob 池 (盘口特征 + 冲击成本); 5min .. day = Bar 池 (全市场, 无冲击成本)\n"
-                       "• 只能选当前池所在档的层; 换到别档的池, 层跳到该档首个因子层\n"
-                       "• 窗长 d 等参数按本层行计; 标签取 L_1min 列在行末分钟采样\n"
+                       "• 因子层 = 所用特征的最细层; 叶写全名 档.层.列 (lob.1m.x / bar.5m.x …)\n"
+                       "• min: 只 Lob 池 (盘口标签 + 冲击成本, 可混 bar.* 叶)\n"
+                       "• 5min .. day: 任何池 (all 池标签, 无冲击成本); Lob 池 = 当日池成员截面\n"
+                       "• 评估期 = 所用特征库落盘日交集 (不看 config 区间)\n"
+                       "• 窗长 d 等参数按本层行计\n"
                        "• 因子目录 <factor_dir>/<池>/<层>/; 有服务在跑时, 跑完才切过去");
       }
       {
@@ -317,16 +320,15 @@ TaskHandle CreateFactorsTask() {
         }
       }
       if (state->seg == 0) {
-        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: 池 min; all 池 5min .. day)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
+        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: Lob 池 min; 任何池 5min .. day)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
         break;
       }
       // 首次进页 / 换层: 字段表视图按层建一次 (编译期字段表, 不随运行变), 只扫描不算; 池切换 → 目录变 → 自动重扫
-      const Feature::Metadata &meta = data.feature.meta(Factors::factor_level(state->seg).tier);
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
-        state->factors_service->SetFeatureTable(Factors::BuildFeatureTable(meta, state->seg));
+        state->factors_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature, state->seg));
         state->search_service = std::make_unique<Factors::SearchService>();
-        state->search_service->SetFeatureTable(Factors::BuildFeatureTable(meta, state->seg));
+        state->search_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature, state->seg));
       }
       auto &fs = *state->factors_service;
       auto &ss = *state->search_service;
@@ -339,7 +341,7 @@ TaskHandle CreateFactorsTask() {
       }
       if (!state->inspect_service) {
         state->inspect_service = std::make_unique<Factors::InspectService>();
-        state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(meta, state->seg));
+        state->inspect_service->SetFeatureTable(Factors::BuildFeatureTable(data.feature, state->seg));
         state->kline_service = std::make_unique<Factors::KlineService>();
       }
       auto &is = *state->inspect_service;

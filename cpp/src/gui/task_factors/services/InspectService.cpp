@@ -3,7 +3,6 @@
 
 #include "factor/EvalCpu.hpp"
 #include "factor/Stat/Cpu.hpp"
-#include "features/Storage/FeatureRead.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
@@ -90,8 +89,9 @@ struct TailSink {
 // 计算 flow 的状态 (worker 私有, 跨请求存活; 分级见头文件)
 struct InspectService::Flow {
   misc::exec::ForkJoin ex;
+  LibReaders lr; // 已建的库 (清单没变的复用)
   // S 作用域
-  std::string scope_key; // features_dir | 池轴 hash | 月份表; 空 = 未装载
+  std::string scope_key; // 层 | 封顶 | EvalScope::key; 空 = 未装载
   std::vector<misc::Ymd> dates;
   Loaded L; // planes / feat_codes = 作用域内读过的特征 (只增; 每次评估前把当前 Dag::feats 换到前排); labels (毛) / costs / cs 常驻
   // Y 毛标签 [H]: ry = prep_label 常驻, lab.L 指向 L.labels + ry
@@ -114,7 +114,7 @@ struct InspectService::Flow {
 
 bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
-  assert(pool_def(pool).tier == factor_level(seg).tier && "池不属该因子层的档");
+  assert(level_for_pool(factor_level(seg), pool_def(pool).tier) && "该池不能用这个因子层");
   req = InspectRequest{};
   req.seg = seg;
   req.file = row.key;
@@ -124,12 +124,10 @@ bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg
   req.max_impact = data.config.max_impact;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, pool_id(pool), {});
-  if (req.scope.months.empty())
-    return false;
+  req.libs = factor_libs(data, pool, seg);
+  if (!req.libs[factor_level(seg).tier == TierId::Lob ? pool_id(pool) : kAllPool].ready())
+    return false; // 标签库未建
   req.pool = pool;
-  req.start_date = data.config.start_date;
-  req.end_date = data.config.end_date;
   return true;
 }
 
@@ -168,19 +166,26 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
   // ---- S: 作用域 (标签 / 成本 / 门控 + 特征缓存) ----
-  FeatureRead reader(req.scope.lib(), &cancel_);
-  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
-  if (dates.empty()) {
-    publish_message("特征库在该区间无数据 (先算特征)");
-    return true;
+  EvalScope es;
+  {
+    std::string why;
+    if (!eval_scope(feats_, req.libs, pool_id(req.pool), d.feats, es, why)) {
+      publish_message(why);
+      return true;
+    }
   }
-  std::string ckey = std::to_string(req.seg) + "|" + req.scope.lib().dir + "|" + std::to_string(req.scope.lib().axis.hash) + "|cap" + std::to_string(req.max_impact);
-  for (const misc::Ym m : req.scope.months)
-    ckey += "|" + std::to_string(m);
-  const int days = static_cast<int>(dates.size()), A = static_cast<int>(req.scope.lib().axis.size());
+  PerPool<FeatureLib> ready; // 已建的库全开 (本因子只读 es.used)
+  for (const PoolId l : pool_ids())
+    if (req.libs[l].ready())
+      ready[l] = req.libs[l];
+  F.lr.open(ready, &cancel_);
+  const std::vector<misc::Ymd> &dates = es.dates;
+  const std::string ckey = std::to_string(req.seg) + "|cap" + std::to_string(req.max_impact) + "|" + es.key();
+  const int days = static_cast<int>(dates.size()), A = static_cast<int>(es.rs.axis.size());
+  const double cells = static_cast<double>(days) * feats_.seg * A;
   begin(Phase::Loading, static_cast<size_t>(days));
   const auto stale_out = [&] {
-    if (reader.stale()) { // 库换了, 缓存的一切不可信
+    if (F.lr.stale()) { // 库换了, 缓存的一切不可信
       F.reset_scope();
       publish_message("特征库判废 (池轴/字段表与当前不符), 需重算特征");
     }
@@ -188,10 +193,16 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   };
   if (req.reload || F.scope_key != ckey || F.dates != dates) {
     F.reset_scope();
+    { // 宿主峰值: 输入 / cs / 标签 / 成本平面 + 活槽 + rx / rx_all / lc + 标签秩 + Row / TailRow [H][T]
+      const double H = static_cast<double>(feats_.labels.size()), C = static_cast<double>(feats_.costs.size());
+      const double per = 5.0 * (static_cast<double>(d.feats.size()) + 1.0 + H + C + d.n_slots) + 5.0 + 2.0 * H;
+      assert_fits("Inspect", cells * per + H * days * feats_.seg * static_cast<double>(sizeof(factor::stat::Row) + sizeof(TailRow)), days, A,
+                  feats_.seg);
+    }
     init_loaded(feats_, days, A, F.L);
     F.L.max_impact = static_cast<float>(req.max_impact);
     F.L.feat_codes = d.feats;
-    if (!load_planes(feats_, reader, dates, F.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/true))
+    if (!load_planes(feats_, es, F.lr, 0, es.days.size(), F.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true, /*with_index=*/true))
       return stale_out();
     F.scope_key = ckey;
     F.dates = dates;
@@ -203,10 +214,11 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     if (missing.empty()) {
       publish(static_cast<size_t>(days));
     } else {
+      assert_fits("Inspect", cells * 5.0 * static_cast<double>(missing.size()), days, A, feats_.seg); // 补读的特征平面
       Loaded tmp;
       init_loaded(feats_, days, A, tmp);
       tmp.feat_codes = missing;
-      if (!load_planes(feats_, reader, dates, tmp, F.ex, cancel_, *this, /*with_labels=*/false))
+      if (!load_planes(feats_, es, F.lr, 0, es.days.size(), tmp, F.ex, cancel_, *this, /*with_labels=*/false))
         return stale_out();
       for (size_t i = 0; i < missing.size(); ++i) {
         F.L.feat_codes.push_back(missing[i]);
@@ -242,13 +254,13 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.seg = req.seg;
   res.frame = req.frame;
   res.scope.pool = req.pool;
-  res.scope.start_date = req.start_date;
-  res.scope.end_date = req.end_date;
+  res.scope.start_date = dates.front();
+  res.scope.end_date = dates.back();
   res.scope.days = L.days, res.scope.T = T, res.scope.A = A;
   res.scope.backend = "cpu";
   res.scope.n_full = F.lab.L.cap;
   res.dates = dates;
-  res.read_scope = req.scope;
+  res.read_scope = es.rs;
   res.pool_index = L.index;
   res.n_hold = H;
   res.hd = L.hd;

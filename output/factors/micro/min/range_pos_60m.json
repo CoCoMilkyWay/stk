@@ -1,15 +1,15 @@
 {
  "type": "alpha",
  "name_cn": "一小时区间位置",
- "expr": "CsRank(TsNeg(TsDiv(TsSub(lob_close, TsMinRoll(lob_low, d)), TsSub(TsMaxRoll(lob_high, d), TsMinRoll(lob_low, d)))))",
+ "expr": "CsRank(TsNeg(TsDiv(TsSub(lob.1m.lob_close, TsMinRoll(lob.1m.lob_low, d)), TsSub(TsMaxRoll(lob.1m.lob_high, d), TsMinRoll(lob.1m.lob_low, d)))))",
  "note": "近 60 分钟价格区间位置 (close-low)/(high-low), 截面秩 (演示子树去重: TsMinRoll(lob_low, d=60) 出现两次只算一次)",
  "weights": [
-  {"hold":30,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob_close, TsMinRoll(lob_low, d=2)), TsSub(TsMaxRoll(lob_high, d=2), TsMinRoll(lob_low, d=2)))))"},
-  {"hold":30,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob_close, TsMinRoll(lob_low, d=240)), TsSub(TsMaxRoll(lob_high, d=1), TsMinRoll(lob_low, d=240)))))"},
-  {"hold":60,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob_close, TsMinRoll(lob_low, d=1)), TsSub(TsMaxRoll(lob_high, d=1), TsMinRoll(lob_low, d=1)))))"},
-  {"hold":1000,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob_close, TsMinRoll(lob_low, d=1)), TsSub(TsMaxRoll(lob_high, d=1), TsMinRoll(lob_low, d=1)))))"},
-  {"hold":1001,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob_close, TsMinRoll(lob_low, d=1)), TsSub(TsMaxRoll(lob_high, d=2), TsMinRoll(lob_low, d=1)))))"},
-  {"hold":1001,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob_close, TsMinRoll(lob_low, d=240)), TsSub(TsMaxRoll(lob_high, d=25), TsMinRoll(lob_low, d=3)))))"}
+  {"hold":30,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob.1m.lob_close, TsMinRoll(lob.1m.lob_low, d=2)), TsSub(TsMaxRoll(lob.1m.lob_high, d=2), TsMinRoll(lob.1m.lob_low, d=2)))))"},
+  {"hold":30,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob.1m.lob_close, TsMinRoll(lob.1m.lob_low, d=240)), TsSub(TsMaxRoll(lob.1m.lob_high, d=1), TsMinRoll(lob.1m.lob_low, d=240)))))"},
+  {"hold":60,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob.1m.lob_close, TsMinRoll(lob.1m.lob_low, d=1)), TsSub(TsMaxRoll(lob.1m.lob_high, d=1), TsMinRoll(lob.1m.lob_low, d=1)))))"},
+  {"hold":1000,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob.1m.lob_close, TsMinRoll(lob.1m.lob_low, d=1)), TsSub(TsMaxRoll(lob.1m.lob_high, d=1), TsMinRoll(lob.1m.lob_low, d=1)))))"},
+  {"hold":1001,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob.1m.lob_close, TsMinRoll(lob.1m.lob_low, d=1)), TsSub(TsMaxRoll(lob.1m.lob_high, d=2), TsMinRoll(lob.1m.lob_low, d=1)))))"},
+  {"hold":1001,"expr":"CsRank(TsNeg(TsDiv(TsSub(lob.1m.lob_close, TsMinRoll(lob.1m.lob_low, d=240)), TsSub(TsMaxRoll(lob.1m.lob_high, d=25), TsMinRoll(lob.1m.lob_low, d=3)))))"}
  ],
  "run": {"pool":"micro","start_date":"2026-05-01","end_date":"2026-10-16","days":111,"T":28305,"A":623,"backend":"gpu","frame":"CS","max_impact":0.01,"n_full":17.65},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],

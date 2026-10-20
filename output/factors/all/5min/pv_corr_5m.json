@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "高频量价相关",
- "expr": "CsRank(TsNeg(TsCorrRoll(TsMask(close_5min, TsTodMask(k=1, k2=49)), volume_5min, d)))",
+ "expr": "CsRank(TsNeg(TsCorrRoll(TsMask(bar.5m.close_5min, TsTodMask(k=1, k2=49)), bar.5m.volume_5min, d)))",
  "note": "近 d 箱 corr(5 分钟收盘价, 成交量) 取负 (掩首箱竞价量); 长江 高频因子-016 corr(成交量, 收盘价) IC 0.0617 方向负, 海通 选股因子-069 高频量价相关性"
 }

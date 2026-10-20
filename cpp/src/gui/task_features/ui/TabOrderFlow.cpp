@@ -9,7 +9,7 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)
 #include "gui/util/AssetFilter.hpp"            // 筛选控件 (与 TABLE 共用)
-#include "shared/FeatureLib.hpp"              // pool_def (legend 池名)
+#include "shared/FeatureLib.hpp"               // pool_def (legend 池名)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"

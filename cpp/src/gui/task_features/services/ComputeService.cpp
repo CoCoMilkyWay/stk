@@ -109,7 +109,7 @@ bool ComputeService::run(ComputeConfig &config) {
                           config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;
-#define TIER_PIPELINE(T, ns)  \
+#define TIER_PIPELINE(T, ns) \
   if (lib.tier == TierId::T) \
     completed = pipeline<ns::Tier>(args);
   ALL_TIERS(TIER_PIPELINE)

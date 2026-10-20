@@ -3,11 +3,12 @@
 // =============================================================================
 // 因子表达式 解析 / 序列化: 文本 ↔ 树 (parse / to_string) + 静态校验
 // =============================================================================
-//   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = 字段 code 裸写, 参数命名):
-//     expr  := Op '(' [expr {',' expr}] {',' param} ')' | feature
-//     param := key '=' number | key          key := 'd' | 'k' | 'k2'
-//   特征 = 因子所在层的字段 code; d / TOD 的单位是该层的行 (Contract【层几何】, parse 收 seg)
-//   例:  CsRank(TsMeanRoll(TsLog(amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(amt), d))
+//   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = 限定名, 参数命名):
+//     expr    := Op '(' [expr {',' expr}] {',' param} ')' | feature
+//     feature := ident {'.' [A-Za-z0-9_]+}      (限定名整串交 FeatureLookup 解释, 如 档.层.列)
+//     param   := key '=' number | key          key := 'd' | 'k' | 'k2'
+//   d / TOD 的单位是因子层的行 (Contract【层几何】, parse 收 seg)
+//   例:  CsRank(TsMeanRoll(TsLog(bar.5m.amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(lob.1m.amt), d))
 //   规矩:
 //     序列参数在前 (个数 = 元数), 命名参数在后 (= OpTable 参数列声明的全部字段, 不多不少, 无隐含默认)
 //     裸键名 (无 '=') = **自由参数** (Node::free 位): 值待参数搜索定, 同名裸键各节点独立, 不编号.
@@ -387,6 +388,7 @@ inline bool instance_of(const Expr &t, const Expr &x) {
 // ---- 特征查询 (调用方注入; factor/ 不认识字段表) ----
 enum class FeatState : uint8_t { MISSING,   // 字段表里没有
                                  FORBIDDEN, // 有, 但不许作因子输入 (标签 / ts_valid)
+                                 FINER,     // 有, 但比因子层细 (因子层 = 所用特征的最细层)
                                  OK };
 using FeatureLookup = std::function<FeatState(std::string_view code)>;
 
@@ -499,6 +501,12 @@ private:
     std::string_view id;
     if (!ident(id))
       return fail(pos0, i_ < s_.size() ? std::string("期望算子名或特征 code, 遇到 '") + s_[i_] + "'" : "表达式不完整");
+    if (i_ < s_.size() && s_[i_] == '.') { // 限定名: 紧跟的 '.' 段并入 (段可数字开头, 如 5m)
+      const size_t b = i_ - id.size();
+      while (i_ < s_.size() && (is_ident(s_[i_]) || s_[i_] == '.'))
+        ++i_;
+      id = s_.substr(b, i_ - b);
+    }
     if (!peek('(')) {
       // 特征叶
       if (op_index(id) >= 0)
@@ -508,6 +516,8 @@ private:
         return fail(pos0, "字段表里没有特征 " + std::string(id));
       case FeatState::FORBIDDEN:
         return fail(pos0, "特征 " + std::string(id) + " 不许作因子输入 (标签 / 元数据列)");
+      case FeatState::FINER:
+        return fail(pos0, "特征 " + std::string(id) + " 比因子层细 (因子层 = 所用特征的最细层, 放到对应层目录)");
       case FeatState::OK:
         break;
       }

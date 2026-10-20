@@ -505,7 +505,7 @@ void derive_axis(const InspectResult &res, int day, std::vector<int> &order, std
   gid.resize(order.size());
   r.resize(order.size());
   for (size_t i = 0; i < order.size(); ++i) {
-    gid[i] = res.read_scope.lib().axis.global(static_cast<size_t>(order[i]));
+    gid[i] = res.read_scope.axis.global(static_cast<size_t>(order[i]));
     r[i] = mean[static_cast<size_t>(order[i])];
   }
 }
@@ -1207,7 +1207,7 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
   InspectRequest probe;
   probe.seg = ctx.seg, probe.file = row.key, probe.expr = row.expr, probe.frame = row.frame;
-  probe.pool = ctx.pool, probe.start_date = ctx.start_date, probe.end_date = ctx.end_date;
+  probe.pool = ctx.pool;
   return probe.key();
 }
 
@@ -1415,7 +1415,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   std::vector<factor::stat::HoldStat> res_holds; // 毛二级 [n_hold]
   std::vector<CostTier> res_costs;               // [C] 组均冲击 (期限结构净线现算)
   bool res_has = false;
-  int k_sub = -1;                   // 右上选中资产 (结果池轴下标); -1 = 无
+  int k_sub = -1;                   // 右上选中资产 (结果 A 轴下标); -1 = 无
   std::optional<KlineRequest> kreq; // 本帧要发的 K 线请求 (锁内填, 出锁发)
   {
     std::lock_guard<std::mutex> lock(isvc.mutex);
@@ -1454,7 +1454,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
         ui.ax_epoch = ep, ui.ax_day = day;
         derive_axis(res, day, ui.ax_order, ui.ax_gid, ui.ax_r);
       }
-      const PoolAxis &axis = res.read_scope.lib().axis;
+      const PoolAxis &axis = res.read_scope.axis;
       size_t sub = axis.sub_of(ui.asset_gid); // 未选 / 不在本池轴内 → 光标日 R 最高者 (光标日无池内资产 → 全区间有效刻最多者), 结果一到就有 K 线
       if (sub >= axis.size()) {
         const int pick = !ui.ax_order.empty() ? ui.ax_order.front() : fallback_asset(res);

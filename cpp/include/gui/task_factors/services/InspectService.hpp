@@ -6,7 +6,8 @@
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 Flow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算:
-//   S  作用域   key = 特征库目录 | 池轴 hash | 月份 | 封顶  → dates, 截面门控, 毛标签 [H], 成本 [C], 池等权指数; 特征平面缓存 (作用域内读过的全留, 只增)
+//   S  作用域   key = 层 | 封顶 | EvalScope::key (池 | 所用库 | 评估期)  → dates, 截面门控, 毛标签 [H], 成本 [C], 池等权指数; 特征平面缓存 (作用域内读过的全留, 只增)
+//               (装载前 assert_fits: 放不下 = 因子层太细 / 评估期太长)
 //   Y  标签     随 S                                       → 毛 LabelsHost {ry[H], Labels} (FactorsLoad prep_labels, 一次常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 → Dag 节点 (run_node, 全核) → 根平面 (HostPool 常驻)
 //   R  rank_x                                              → 直接秩进 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
@@ -45,14 +46,13 @@ struct InspectRequest {
   int seg = 0;            // 因子层 (= FeatureTable::seg)
   std::string file, expr; // 权重行 key (FactorRow::key = 文件#权重号) + 具体规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
   factor::stat::Frame frame = factor::stat::Frame::CS;
-  analysis::ReadScope scope;
   std::string pool;
-  misc::Ymd start_date = 0, end_date = 0;
-  bool reload = false;     // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
-  double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 装载时生效 → 进作用域缓存键)
-  std::string key() const { return std::to_string(seg) + "|" + file + "|" + expr + "|" + pool + "|" + std::to_string(start_date) + "|" + std::to_string(end_date); }
+  PerPool<FeatureLib> libs; // factor_libs (评估期 / A 轴在 worker 按因子解析: FactorsLoad eval_scope)
+  bool reload = false;      // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
+  double max_impact = 0.0;  // Config::max_impact (买入冲击封顶, 装载时生效 → 进作用域缓存键)
+  std::string key() const { return std::to_string(seg) + "|" + file + "|" + expr + "|" + pool; }
 };
-// 资产轴未就绪 / 区间无月份 → false. row 须是有效 alpha 行 (error 空)
+// 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空)
 bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool reload, InspectRequest &req);
 
 // 尾部分层 (Inspect 专属, 不进 Stat 契约): 两腿的组 (顶 / 底) 内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
@@ -85,7 +85,7 @@ struct InspectResult {
   int n_hold = 0;
   factor::stat::Holds hd;                   // hd.h[hi]
   std::vector<CostTier> costs;              // [C] = FeatureTable::costs 序 (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
-  analysis::ReadScope read_scope;           // 特征库作用域 (目录 + 池轴 + 月份): 右下 K 线按它读库; pool().axis 做池轴 ↔ 全局 id
+  analysis::ReadScope read_scope;           // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
   std::vector<float> pool_index;            // [T] 池等权指数 (= Loaded::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   InspectPlanes pl;                         // 一级平面 (Row / 尾部 / 秩)
   std::vector<factor::stat::HoldStat> hold; // 二级 [hd.n], 只毛口径

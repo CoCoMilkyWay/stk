@@ -22,17 +22,18 @@
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 视作唯一权重 (hold 0).
-//   同一具体规范串多行 (跨文件 / 同文件) → 后者标 dup (黄), 仍算 (共享 DAG 里是同一个根, Stat 也只算一次).
+//   同一具体规范串多行 (跨文件 / 同文件) → 后者标 dup (黄), 仍算 (同文件的在共享 DAG 里是同一个根, Stat 也只算一次).
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 rows;
 // 进度走原子. evaluate = false 只扫描 (进页 / Add / Rescan), = true 扫描 + 装载 + 评估.
 //
-// 装载: 一次把所有有效因子用到的特征 (去重) + ts_valid / cs_valid + 全部持有期标签列读进宿主 (逐天并行 load_day_columns,
-// 门控 fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
+// 装载: 逐因子文件 (各文件评估期 / A 轴不同, 见 FactorLevel) 把该文件用到的特征 (去重, 跨库跨层 level_asof 投影) + 标签库 ts_valid / cs_valid
+// + 全部持有期标签列读进宿主 (逐天并行, 门控 fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
+// 装载前按宿主内存预算断言放得下 (FactorsLoad assert_fits; 放不下 = 该因子层太细 / 评估期太长).
 // 两张门控列的分工 (features/MetaFlag.hpp): 特征输入按 ts_valid 门控 (TS 节点要跨进出池的历史); 标签按 cs_valid 门控 (只被 Stat 吃,
 // rank(y) 得在池内排); cs_valid 的有效位另成一张截面池掩码平面 g, 原样递给 CS 节点的算子与 Stat (factor/Contract.hpp【截面池 g】:
 // 池内统计 / 池外就近取值全在算子内部, 评估器不做二次门控).
-// 评估 (Run 的并行方案, 与 search 的解耦): 所有有效因子合成一张共享 DAG (factor::build_forest, 公共子式只算一次), 按拓扑序
+// 评估 (Run 的并行方案, 与 search 的解耦): 一个文件的全部权重合成一张共享 DAG (factor::build_forest, 公共子式只算一次), 按拓扑序
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node + 常驻 ForkJoin, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), HoldStat 是毛口径;
@@ -50,8 +51,9 @@
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
 #include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
-#include "shared/Analysis.hpp" // ReadScope
-#include "shared/Feature.hpp"  // Feature::Metadata
+#include "shared/Analysis.hpp"   // ReadScope
+#include "shared/Feature.hpp"    // Feature
+#include "shared/FeatureLib.hpp" // FeatureLib (请求的库清单)
 
 #include <atomic>
 #include <cstdint>
@@ -65,13 +67,16 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-// ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 特征库 档 / 层 / 因子子目录 ----
-//   L_1min 读 Lob 池 (盘口特征 + 冲击成本, 截面 = 池); 更粗的层读 Bar 池 (全市场 cs_valid, 无冲击成本).
-//   标签恒取同池本层列 (同行; 各层只落本层及以上的持有期); 因子文件在 <config.factor_dir>/<池>/<name>/
+// ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 网格层 / 标签档 / 因子子目录 ----
+//   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层, 因子文件在 <config.factor_dir>/<池>/<name>/.
+//   标签库 (门控 ts / cs_valid + 标签 + 成本 + OHLC, 恒取网格层本层列, 同行): tier = Lob → 该 Lob 池 (盘口特征 + 冲击成本);
+//   tier = Bar → all 池 (无冲击成本), 因子池是 Lob 池时截面再与上池成员 (pool::Panel 网格层 as-of).
+//   特征叶写全名 档.层.列 (kLevelToken): lob.* = 因子池的库, bar.* = all 池; 叶可来自任意不细于网格的层 (level_asof 投影).
+//   评估期 = 标签库 + 叶所在库 落盘日的交集 (不看 config 区间)
 struct FactorLevel {
   int seg = 0;               // 每日行数 (Geo::S)
-  size_t lvl = 0;            // 特征库层 (FeatureLevel)
-  TierId tier = TierId::Lob; // 档
+  size_t lvl = 0;            // 网格层 (FeatureLevel)
+  TierId tier = TierId::Lob; // 标签档
   const char *name = "";     // 子目录名 / UI 名
 };
 inline constexpr FactorLevel kFactorLevels[] = {
@@ -83,17 +88,28 @@ inline constexpr FactorLevel kFactorLevels[] = {
     {1, L_1day, TierId::Bar, "day"},
 };
 const FactorLevel &factor_level(int seg); // seg 不在表里 → assert
-// 该层因子目录 = <config.factor_dir>/<pool>/<name> (pool 须属该层的档)
+// 池 (档 pool_tier) 能用的因子层: Bar 标签层任何池都能用 (Lob 池 = all 标签 + 池成员门控); Lob 标签层只给 Lob 池
+inline constexpr bool level_for_pool(const FactorLevel &l, TierId pool_tier) { return l.tier == TierId::Bar || l.tier == pool_tier; }
+// 叶名里的层段 (档.层.列 的中段), 下标 = FeatureLevel
+inline constexpr const char *kLevelToken[LEVEL_COUNT] = {"1s", "1m", "5m", "15m", "30m", "60m", "1d"};
+// 该层因子目录 = <config.factor_dir>/<pool>/<name> (level_for_pool)
 std::string factor_dir_of(const SharedData &data, const std::string &pool, int seg);
+// 请求的库清单 (GUI 线程读): 标签库 + all 池 (bar.* 叶 / 池成员); 余池空. 未建库的清单 ready() == false
+PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool, int seg);
 // 因子目录下的因子文件 (*.json 普通文件, 不进子目录), 路径序; 目录不存在 = 空
 std::vector<std::filesystem::path> list_factor_files(const std::string &dir);
 
-// ---- 字段表视图 (GUI 线程从 Feature::Metadata 建一次, worker 只读; 一份对应一层) ----
+// ---- 字段表视图 (GUI 线程从 Feature 建一次, worker 只读; 一份对应一个因子层, 与池无关) ----
 struct FeatCol {
-  std::string code;
-  uint32_t col = 0; // 本层列下标
+  std::string code; // 叶名 档.层.列
+  TierId tier = TierId::Lob;
+  size_t level = 0;
+  uint32_t col = 0; // 该 (档, 层) 列下标
   L2::ValidType vt = L2::ValidType::ALL;
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
+  // 所在库: lob = 因子池的库, bar = all 池
+  PoolId pool_in(PoolId pool) const { return tier == TierId::Lob ? pool : kAllPool; }
+  ColRef ref(PoolId pool) const { return {pool_in(pool), static_cast<uint8_t>(level), static_cast<uint16_t>(col)}; }
 };
 struct LabelCol {
   int hold = 0;                           // 持有期键 (Stat/Contract.hpp)
@@ -103,20 +119,24 @@ struct CostCol {
   int amt = 0;                            // 下单金额段 (万)
   uint32_t col[factor::stat::kLegs] = {}; // 两腿列下标: lb_cost_buy_<amt>w / lb_cost_sell_<amt>w
 };
+// 叶 = 标签档及 Bar 档 (Lob 标签层才有 lob.*) 不细于网格的各层全部列; 门控 / 标签 / 成本 / OHLC = 标签档网格层本层列
 struct FeatureTable {
-  int seg = 0;                  // 因子层 (factor_level(seg))
-  std::vector<FeatCol> cols;    // 下标 = 本层列
-  uint32_t ts_col = 0;          // 本层 ts_valid 门控列 (特征输入; 每层必有)
-  uint32_t cs_col = 0;          // 本层 cs_valid 门控列 (标签 + 截面门控平面)
-  uint32_t ohlc[4] = {};        // 本层 open high low close 列 (K 线 / close 给池等权指数): lob_<x> / <x>_<n>min / <x>_day
-  std::vector<LabelCol> labels; // 本层列下标, 按 hold 升序; long / short 都齐且本层合法 (hold_ok) 才收
-  std::vector<CostCol> costs;   // 本层列下标, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 池无)
+  int seg = 0;                      // 因子层 (factor_level(seg))
+  const Feature *feature = nullptr; // 元数据 (读计划 analysis::read_plan; SharedData 常驻)
+  std::vector<FeatCol> cols;        // 全部叶 (可选与不可选)
+  uint32_t ts_col = 0;              // 标签档网格层 ts_valid (当日有成交)
+  uint32_t cs_col = 0;              // 标签档网格层 cs_valid (标签 + 截面门控平面)
+  uint32_t ohlc[4] = {};            // 标签档网格层 open high low close 列 (K 线 / close 给池等权指数): lob_<x> / <x>_<n>min / <x>_day
+  std::vector<LabelCol> labels;     // 标签档网格层列下标, 按 hold 升序; long / short 都齐且本层合法 (hold_ok) 才收
+  std::vector<CostCol> costs;       // 同上, 建仓冲击成本特征, 按 amt 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 标签无)
   const FeatCol *find(std::string_view code) const;
-  factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入
+  factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER)
+  // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调
+  bool check_grid(const factor::expr::Expr &e, std::string &err) const;
 };
 // LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N> → 持有期键, Stat/Contract.hpp);
-// lb_cost_<buy|sell>_<amt>w 建仓冲击成本. meta = factor_level(seg).tier 档的字段表
-FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg);
+// lb_cost_<buy|sell>_<amt>w 建仓冲击成本
+FeatureTable BuildFeatureTable(const Feature &feature, int seg);
 
 // 本地时间 "YYYY-MM-DD HH:MM" (stat.time / search.time 落盘用)
 std::string now_string();
@@ -126,15 +146,14 @@ struct FactorsRequest {
   int seg = 0;            // 因子层
   std::string factor_dir; // factor_dir_of(pool, seg)
   bool evaluate = false;  // false = 只扫描解析
-  // 以下 evaluate 时才用
-  analysis::ReadScope scope;
+  // 以下 evaluate 时才用 (评估期 / A 轴按因子在 worker 解析: FactorsLoad eval_scope)
   std::string pool;
-  misc::Ymd start_date = 0, end_date = 0;
+  PerPool<FeatureLib> libs; // factor_libs
   bool gpu = false;
   double max_impact = 0.0; // Config::max_impact (买入冲击封顶, 成本装载时生效)
   std::string only_file;   // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat
 };
-// evaluate 请求需要资产轴 (读特征库); 轴未就绪 (数据库未扫) → false
+// evaluate 请求需要资产轴 (读特征库) 与标签库; 轴未就绪 (数据库未扫) / 标签库未建 → false
 bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg, bool evaluate, bool gpu, FactorsRequest &req);
 
 // ---- 行 ----
@@ -144,7 +163,7 @@ enum class FactorKind : uint8_t { Alpha,
 inline constexpr const char *kind_name(FactorKind k) { return k == FactorKind::Alpha ? "alpha" : "beta"; }
 struct StatScope {
   std::string pool, backend, time;
-  misc::Ymd start_date = 0, end_date = 0;
+  misc::Ymd start_date = 0, end_date = 0; // 评估期首末 (所用库落盘日交集)
   int days = 0, T = 0, A = 0;
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
   double n_full = 0.0;     // 满仓一腿只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
@@ -246,6 +265,9 @@ private:
   bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
   bool evaluate(const FactorsRequest &req, misc::exec::ForkJoin &ex); // false = 取消
+  // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 一次装载 + 共享 DAG. false = 取消
+  bool evaluate_file(const FactorsRequest &req, misc::exec::ForkJoin &ex, LibReaders &lr, const std::vector<size_t> &idx,
+                     const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames);
 
   FeatureTable feats_;
   std::unique_ptr<misc::exec::ForkJoin> ex_; // 首个 evaluate 懒建, 随 worker 活

@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "时序半小时动量",
- "expr": "TsRankRoll(TsNeg(TsDeltaRoll(TsLog(lob_close), d)), d=255)",
+ "expr": "TsRankRoll(TsNeg(TsDeltaRoll(TsLog(lob.1m.lob_close), d)), d=255)",
  "note": "30 分钟对数动量在自身近 1 日的分位 (时序口径: 择时, 高分位 = 近期动量强于自身常态)"
 }

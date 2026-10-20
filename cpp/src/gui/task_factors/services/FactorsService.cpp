@@ -6,7 +6,6 @@
 #include "factor/EvalGpu.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Stat/Cpu.hpp"
-#include "features/Storage/FeatureRead.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp" // Loaded / load_planes / check_leaf_domains (与 InspectService 共用)
 #include "gui/task_factors/ui/StatJson.hpp"
 #include "misc/profiler.hpp"
@@ -330,11 +329,11 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
 }
 
 // 评估结果 → 行 (scope / 二级); hold = [n_hold]
-void fill_stat(FactorRow &r, const FactorsRequest &req, const Loaded &L, double n_full, const factor::stat::HoldStat *hold,
+void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, const Loaded &L, double n_full, const factor::stat::HoldStat *hold,
                const std::vector<CostTier> &costs, const MiniPdf *ic_pdf, const MiniPdf &x_pdf, const char *backend) {
   r.scope.pool = req.pool;
-  r.scope.start_date = req.start_date;
-  r.scope.end_date = req.end_date;
+  r.scope.start_date = es.dates.front();
+  r.scope.end_date = es.dates.back();
   r.scope.days = L.days, r.scope.T = L.T, r.scope.A = L.A;
   r.scope.max_impact = req.max_impact;
   r.scope.n_full = n_full;
@@ -366,11 +365,32 @@ const FeatCol *FeatureTable::find(std::string_view code) const {
 
 factor::expr::FeatureLookup FeatureTable::lookup() const {
   return [this](std::string_view code) {
-    const FeatCol *c = find(code);
-    if (!c)
-      return factor::expr::FeatState::MISSING;
-    return c->allowed ? factor::expr::FeatState::OK : factor::expr::FeatState::FORBIDDEN;
+    if (const FeatCol *c = find(code))
+      return c->allowed ? factor::expr::FeatState::OK : factor::expr::FeatState::FORBIDDEN;
+    // 档.层.列 的层比网格细 (字段表只收不细于网格的层)
+    const size_t p = code.find('.'), q = p == std::string_view::npos ? p : code.find('.', p + 1);
+    if (q != std::string_view::npos)
+      for (size_t lv = 0; lv < factor_level(seg).lvl; ++lv)
+        if (code.substr(p + 1, q - p - 1) == kLevelToken[lv])
+          return factor::expr::FeatState::FINER;
+    return factor::expr::FeatState::MISSING;
   };
+}
+
+bool FeatureTable::check_grid(const factor::expr::Expr &e, std::string &err) const {
+  const FactorLevel &lv = factor_level(seg);
+  size_t finest = LEVEL_COUNT;
+  for (const factor::expr::Node &n : e.nodes)
+    if (n.op < 0) {
+      const FeatCol *c = find(n.feat);
+      assert(c && "parse 过的叶须在字段表里");
+      finest = std::min(finest, c->level);
+    }
+  if (finest == LEVEL_COUNT || finest == lv.lvl) // 无特征叶 (纯生成算子) 随目录层
+    return true;
+  assert(finest > lv.lvl);
+  err = std::string("最细的特征层是 ") + kLevelToken[finest] + ", 比因子层 " + lv.name + " 粗: 因子层 = 所用特征的最细层, 放到对应层目录";
+  return false;
 }
 
 const FactorLevel &factor_level(int seg) {
@@ -383,8 +403,18 @@ const FactorLevel &factor_level(int seg) {
 
 std::string factor_dir_of(const SharedData &data, const std::string &pool, int seg) {
   const FactorLevel &l = factor_level(seg);
-  assert(pool_def(pool).tier == l.tier && "池不属该因子层的档");
+  assert(level_for_pool(l, pool_def(pool).tier) && "该池不能用这个因子层");
   return data.config.factor_dir + "/" + pool + "/" + l.name;
+}
+
+PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool, int seg) {
+  const FactorLevel &l = factor_level(seg);
+  assert(level_for_pool(l, pool_def(pool).tier) && "该池不能用这个因子层");
+  PerPool<FeatureLib> libs;
+  libs[kAllPool] = load_lib(data.config, pool_def(kAllPool).name);
+  if (l.tier == TierId::Lob)
+    libs[pool_id(pool)] = load_lib(data.config, pool);
+  return libs;
 }
 
 std::vector<std::filesystem::path> list_factor_files(const std::string &dir) {
@@ -397,16 +427,29 @@ std::vector<std::filesystem::path> list_factor_files(const std::string &dir) {
   return files;
 }
 
-FeatureTable BuildFeatureTable(const Feature::Metadata &meta, int seg) {
+FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
   const FactorLevel &lv = factor_level(seg);
   assert(level_valid_rows(lv.lvl) == static_cast<size_t>(seg) && "因子层段长与特征库层有效行数不符");
   FeatureTable t;
   t.seg = seg;
-  const auto &level = meta.features[lv.lvl];
-  for (size_t i = 0; i < level.size(); ++i) {
-    const FeatureMetadata &f = level[i];
-    t.cols.push_back({f.code, static_cast<uint32_t>(i), f.valid_type, f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS});
+  t.feature = &feature;
+  for (const TierId tier : {TierId::Lob, TierId::Bar}) {
+    if (tier == TierId::Lob && lv.tier != TierId::Lob) // lob.* = 因子池的库, 只有 Lob 标签层的池是 Lob 池
+      continue;
+    for (size_t l = lv.lvl; l < LEVEL_COUNT; ++l) {
+      if (!has_level(tier, l))
+        continue;
+      const auto &list = feature.meta(tier).features[l];
+      const std::string pre = std::string(tier_name(tier)) + "." + kLevelToken[l] + ".";
+      for (size_t i = 0; i < list.size(); ++i) {
+        const FeatureMetadata &f = list[i];
+        t.cols.push_back({pre + f.code, tier, l, static_cast<uint32_t>(i), f.valid_type,
+                          f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS});
+      }
+    }
   }
+  const Feature::Metadata &meta = feature.meta(lv.tier);
+  const auto &level = meta.features[lv.lvl];
   t.ts_col = static_cast<uint32_t>(meta.col_of(lv.lvl, "ts_valid"));
   t.cs_col = static_cast<uint32_t>(meta.col_of(lv.lvl, "cs_valid"));
   const char *ohlc[4] = {"open", "high", "low", "close"};
@@ -484,12 +527,10 @@ bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg
     return true;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, pool_id(pool), {});
-  if (req.scope.months.empty())
-    return false;
+  req.libs = factor_libs(data, pool, seg);
+  if (!req.libs[factor_level(seg).tier == TierId::Lob ? pool_id(pool) : kAllPool].ready())
+    return false; // 标签库未建
   req.pool = pool;
-  req.start_date = data.config.start_date;
-  req.end_date = data.config.end_date;
   req.max_impact = data.config.max_impact;
   return true;
 }
@@ -524,7 +565,8 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
   assert(ValidFactorName(name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   factor::stat::Frame fr;
-  if (!factor::expr::parse(expr_src, feats.lookup(), feats.seg, e, err) || !factor::expr::root_frame(e, feats.seg, fr, err))
+  if (!factor::expr::parse(expr_src, feats.lookup(), feats.seg, e, err) || !feats.check_grid(e, err) ||
+      !factor::expr::root_frame(e, feats.seg, fr, err))
     return "";
   const std::string file = std::string(name) + ".json";
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
@@ -547,7 +589,8 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
   assert(ValidFactorName(new_name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   factor::stat::Frame fr;
-  if (!factor::expr::parse(expr_src, feats.lookup(), feats.seg, e, err) || !factor::expr::root_frame(e, feats.seg, fr, err))
+  if (!factor::expr::parse(expr_src, feats.lookup(), feats.seg, e, err) || !feats.check_grid(e, err) ||
+      !factor::expr::root_frame(e, feats.seg, fr, err))
     return "";
   const std::filesystem::path from = std::filesystem::path(factor_dir) / file;
   const std::string new_file = std::string(new_name) + ".json";
@@ -705,7 +748,7 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       continue;
     }
     factor::expr::Expr t; // 模板
-    if (!factor::expr::parse(r.expr_raw, fl, feats_.seg, t, r.error)) {
+    if (!factor::expr::parse(r.expr_raw, fl, feats_.seg, t, r.error) || !feats_.check_grid(t, r.error)) {
       emit(r);
       continue;
     }
@@ -800,13 +843,13 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       r.status = RowStatus::Done;
 }
 
-// 装载 + 评估 (worker 线程; 返回 false = 取消)
+// 装载 + 评估 (worker 线程; 返回 false = 取消): 逐因子文件 evaluate_file
 bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &ex) {
   TraceN("FactorsEvaluate");
-  // 有效权重行 → Expr (scan 已校验过, 这里必成功) → 一张共享 DAG (F.roots[k] ↔ idx[k])
-  std::vector<size_t> idx;
-  std::vector<factor::expr::Expr> exprs;
-  std::vector<factor::stat::Frame> frames; // [k] 口径 (同根的因子规范串相同 → 口径相同)
+  // 有效权重行 → Expr (scan 已校验过, 这里必成功), 按文件分组 (scan 出的行同文件相邻)
+  std::vector<std::vector<size_t>> idx;
+  std::vector<std::vector<factor::expr::Expr>> exprs;
+  std::vector<std::vector<factor::stat::Frame>> frames; // [k] 口径 (同根的因子规范串相同 → 口径相同)
   {
     std::lock_guard<std::mutex> lock(mutex);
     const factor::expr::FeatureLookup fl = feats_.lookup();
@@ -820,21 +863,43 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
       const bool ok = factor::expr::parse(rows[i].expr, fl, feats_.seg, e, err);
       assert(ok && "scan 过的规范串必可再解析");
       (void)ok;
-      idx.push_back(i);
-      exprs.push_back(std::move(e));
-      frames.push_back(rows[i].frame);
+      if (idx.empty() || rows[idx.back().front()].file != rows[i].file)
+        idx.emplace_back(), exprs.emplace_back(), frames.emplace_back();
+      idx.back().push_back(i);
+      exprs.back().push_back(std::move(e));
+      frames.back().push_back(rows[i].frame);
     }
   }
-  const auto finish_all_pending = [&](const char *msg) {
+  if (idx.empty()) {
     std::lock_guard<std::mutex> lock(mutex);
     for (FactorRow &r : rows)
       r.status = RowStatus::Done;
-    message = msg;
-  };
-  if (idx.empty()) {
-    finish_all_pending("无有效因子");
+    message = "无有效因子";
     return true;
   }
+  PerPool<FeatureLib> ready; // 已建的库全开 (各文件只读自己用到的)
+  for (const PoolId l : pool_ids())
+    if (req.libs[l].ready())
+      ready[l] = req.libs[l];
+  LibReaders lr;
+  lr.open(ready, &cancel_);
+  for (size_t f = 0; f < idx.size(); ++f)
+    if (!evaluate_file(req, ex, lr, idx[f], exprs[f], frames[f])) {
+      if (lr.stale()) {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (FactorRow &r : rows)
+          r.status = RowStatus::Done;
+        message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
+      }
+      return false;
+    }
+  return true;
+}
+
+bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJoin &ex, LibReaders &lr, const std::vector<size_t> &idx,
+                                   const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames) {
+  TraceN("FactorsEvaluateFile");
+  // 该文件的权重 → 一张共享 DAG (F.roots[k] ↔ idx[k])
   std::vector<const factor::expr::Expr *> eptr;
   for (const factor::expr::Expr &e : exprs)
     eptr.push_back(&e);
@@ -858,25 +923,36 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
     }
   }
 
-  // ---- 装载 ----
-  FeatureRead reader(req.scope.lib(), &cancel_);
-  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
-  if (dates.empty()) {
-    finish_all_pending("特征库在该区间无数据 (先算特征)");
+  // ---- 评估期 / A 轴 (所用库落盘日交集; 不成 → 该文件各行 BROKEN) ----
+  EvalScope es;
+  std::string why;
+  if (!eval_scope(feats_, req.libs, pool_id(req.pool), F.feats, es, why)) {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const size_t i : idx) {
+      rows[i].error = why;
+      rows[i].status = RowStatus::Done;
+      broken_.fetch_add(1, std::memory_order_relaxed);
+    }
+    publish();
     return true;
   }
+  // ---- 装载 (整张量; 宿主峰值 = 输入 / cs / 标签 / 成本平面 + rx / lc + CPU 活槽 + 标签秩 | GPU 掩码 / 根输入拷回, + Row[H][T]) ----
+  const int days = static_cast<int>(es.days.size()), A = static_cast<int>(es.rs.axis.size());
+  {
+    const double H = static_cast<double>(feats_.labels.size()), C = static_cast<double>(feats_.costs.size());
+    const double cells = static_cast<double>(days) * feats_.seg * A, rows_T = static_cast<double>(days) * feats_.seg;
+    const double per = 5.0 * (static_cast<double>(F.feats.size()) + 1.0 + H + C) + 3.0 + (req.gpu ? 5.0 : 5.0 * F.n_slots + 2.0 * H);
+    assert_fits("Run", cells * per + H * rows_T * sizeof(factor::stat::Row), days, A, feats_.seg);
+  }
   Loaded L;
-  init_loaded(feats_, static_cast<int>(dates.size()), static_cast<int>(req.scope.lib().axis.size()), L);
+  init_loaded(feats_, days, A, L);
   L.feat_codes = F.feats; // 共享 DAG 的输入平面下标 = feats 下标
   L.max_impact = static_cast<float>(req.max_impact);
 
   begin(Phase::Loading, static_cast<size_t>(L.days));
-  if (!load_planes(feats_, reader, dates, L, ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true)) {
-    if (reader.stale())
-      finish_all_pending("特征库判废 (池轴/字段表与当前不符), 需重算特征");
+  if (!load_planes(feats_, es, lr, 0, es.days.size(), L, ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/true))
     return false;
-  }
-  const double n_full = n_full_of(L); // 满仓 cap (池宽), 全部因子共用
+  const double n_full = n_full_of(L); // 满仓 cap (池宽), 该文件全部权重共用
 
   // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
   std::vector<std::string> node_err(static_cast<size_t>(N));
@@ -953,7 +1029,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
           r.eval_ms += node_ms[static_cast<size_t>(j)];
         r.valid_pct = valid_pct;
         r.rank_pct = rank_pct;
-        fill_stat(r, req, L, n_full, hold, costs, ic_pdf, x_pdf, backend);
+        fill_stat(r, req, es, L, n_full, hold, costs, ic_pdf, x_pdf, backend);
         r.status = RowStatus::Done;
         {
           std::lock_guard<std::mutex> lock(mutex);

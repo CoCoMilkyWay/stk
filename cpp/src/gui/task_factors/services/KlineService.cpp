@@ -35,7 +35,9 @@ KlineService::KlineService() { Start(); }
 KlineService::~KlineService() { Stop(); }
 
 void KlineService::Request(KlineRequest req) {
-  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.lib().axis.size() && !req.dates.empty());
+  assert(req.sub >= 0 && static_cast<size_t>(req.sub) < req.scope.axis.size() && !req.dates.empty());
+  const std::vector<uint32_t> &to = req.scope.to[req.scope.main];
+  assert((to.empty() || to[static_cast<size_t>(req.sub)] != kAbsent) && "A 轴资产须在主池轴上");
   Service::Request(std::move(req));
 }
 
@@ -78,7 +80,8 @@ bool KlineService::step(size_t d) {
   reader.load_day_columns(cur_.dates[d], idx, impl_->cols);
   if (reader.stale())
     return false;
-  const size_t a = static_cast<size_t>(cur_.sub), VR = level_valid_rows(cur_.level);
+  const std::vector<uint32_t> &to = cur_.scope.to[cur_.scope.main];
+  const size_t a = to.empty() ? static_cast<size_t>(cur_.sub) : to[static_cast<size_t>(cur_.sub)], VR = level_valid_rows(cur_.level);
   const double x0 = static_cast<double>(d * VR);
   const FeatureRead::DayColumns &c = impl_->cols;
   for (size_t m = 0; m < VR; ++m) {

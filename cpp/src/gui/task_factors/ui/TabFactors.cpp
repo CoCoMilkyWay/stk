@@ -356,9 +356,18 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
 // 该行选定持有期的汇总; 没有 → nullptr
 const factor::stat::HoldStat *hold_of(const FactorRow &r, int hold) { return r.has_stat ? r.find_hold(hold) : nullptr; }
 
-// 文件里的 stat 与当前作用域是否一致 (池 / 区间)
-bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) {
-  return r.scope.pool == ctx.pool && r.scope.start_date == ctx.start_date && r.scope.end_date == ctx.end_date;
+// 文件里的 stat 与当前作用域是否一致 (池; 评估期随库落盘日走, 不比)
+bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) { return r.scope.pool == ctx.pool; }
+
+// 评估期长度 "X年Y月" (整月 = 首末日历差, 末日的日 < 首日的日 少算一月); 不足一月 "<1月"
+std::string period_text(misc::Ymd lo, misc::Ymd hi) {
+  assert(lo > 0 && hi >= lo);
+  const int m = (hi / 10000 - lo / 10000) * 12 + (hi / 100 % 100 - lo / 100 % 100) - (hi % 100 < lo % 100 ? 1 : 0);
+  if (m < 1)
+    return "<1月";
+  if (m < 12)
+    return std::to_string(m) + "月";
+  return std::to_string(m / 12) + "年" + (m % 12 ? std::to_string(m % 12) + "月" : "");
 }
 
 // ============================================================================
@@ -499,7 +508,7 @@ double metric_key(const HS *h, const Metric &m, const FR &r) { return h ? m.get(
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Col 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn *h frame status time | val% rank% trig% util% mono turn LS% SR rIC rICIR rIC>0 rAC | ic~ x~ expr ops feats slots note
+//   edit type name_en name_cn *h frame period status time | val% rank% trig% util% mono turn LS% SR rIC rICIR rIC>0 rAC | ic~ x~ expr ops feats slots note
 // ============================================================================
 enum Col : int { Edit,
                  Type,
@@ -507,6 +516,7 @@ enum Col : int { Edit,
                  NameCn,
                  HoldSrc,
                  Frame,
+                 Period,
                  Status,
                  Time,
                  IcPdf,
@@ -559,6 +569,12 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "    ◦ 根 TsRankRoll 5 日\n"
      "    ◦ 自身分位直接分 20 组\n"
      "    ◦ 组可空 → long / flat",
+     true},
+    {Period, "period",
+     "评估期长度 (stat 的作用域; 结束 = 所用库最近落盘日, 只写长度)\n"
+     "• 评估期 = 所用特征库落盘日的交集 (按因子定, 不看 config 区间)\n"
+     "• 用了 lob.* 的只有 Lob 池建库以来的几个月; 纯 bar.* 的可到全历史\n"
+     "• 悬停 Stat 列看首末日期",
      true},
     {Status, "status",
      "评估状态\n"
@@ -902,6 +918,8 @@ void fixed_cell(Col c, const FactorRow &r, const FactorsUIContext &ctx, bool edi
     return r.widx >= 0 && r.hold_src > 0 ? ImGui::TextUnformatted(factor::stat::hold_name(r.hold_src).c_str()) : ImGui::TextDisabled("-");
   case Frame:
     return ok ? ImGui::TextUnformatted(factor::stat::frame_name(r.frame)) : ImGui::TextDisabled("-");
+  case Period:
+    return r.has_stat ? ImGui::TextUnformatted(period_text(r.scope.start_date, r.scope.end_date).c_str()) : ImGui::TextDisabled("-");
   case Status:
     return status_cell(r, ctx);
   case Time:
@@ -981,11 +999,12 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // ==========================================================================
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
-  ImGui::Text("%s  %s .. %s", ctx.pool.c_str(), misc::dash(ctx.start_date).c_str(), misc::dash(ctx.end_date).c_str());
+  ImGui::Text("%s  %s", ctx.pool.c_str(), factor_level(ctx.seg).name);
   if (ImGui::IsItemHovered())
     tip("因子目录 %s\n"
-        "• 作用域 = 因子层所在池 (L_1min = Feature 页所选 Lob 池, 更粗的层 = Bar 池) + config 日期区间\n"
-        "• 一个时间只算一个作用域",
+        "• 作用域 = 池 × 因子层 (因子层 = 所用特征的最细层); 叶写全名 档.层.列, 如 lob.1m.x / bar.5m.x\n"
+        "• 评估期按因子定 = 所用特征库落盘日的交集 (不看 config 区间); 用了 lob.* 的只有 Lob 池的几个月\n"
+        "• Lob 池的 Bar 层因子 = all 池标签 + 当日池成员截面",
         ctx.factor_dir.c_str());
   ImGui::SameLine();
   ImGui::TextDisabled("|");
@@ -1337,7 +1356,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   bool is_tmpl = false; // 有自由参数 (Add / Save 后是"未搜索", 要 Search)
   if (complete) {
     factor::expr::Expr e;
-    if (factor::expr::parse(src, ft.lookup(), ft.seg, e, ui.add_err) && factor::expr::root_frame(e, ft.seg, frame, ui.add_err)) {
+    if (factor::expr::parse(src, ft.lookup(), ft.seg, e, ui.add_err) && ft.check_grid(e, ui.add_err) &&
+        factor::expr::root_frame(e, ft.seg, frame, ui.add_err)) {
       canon = e.canon;
       is_tmpl = e.is_template();
     }
@@ -1613,6 +1633,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           return r.widx >= 0 ? r.hold_src : -1.0;
         case Frame:
           return r.error.empty() ? static_cast<double>(r.frame) : -1.0;
+        case Period:
+          return r.has_stat ? static_cast<double>(r.scope.days) : -1.0;
         case Time:
           return r.has_stat ? r.eval_ms : -1.0;
         case Ops:

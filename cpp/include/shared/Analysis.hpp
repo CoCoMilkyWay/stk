@@ -226,6 +226,8 @@ struct ReadScope {
 // 池集 = main + cols 所在池 (main = kAutoMain → 见上); assets 空 = A 轴取主池轴, 否则 = 这些全局 id (升序去重)
 ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {},
                      DayAxis days = DayAxis::Main);
+// A 轴 + 各池映射 (s.libs / s.main 已定; assets 空 = 主池轴, 主池同轴不映射)
+void map_axis(ReadScope &s, std::vector<uint32_t> assets);
 
 // ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
 template <class Spec>

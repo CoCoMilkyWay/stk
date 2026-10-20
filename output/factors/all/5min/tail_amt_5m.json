@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "尾盘成交占比",
- "expr": "CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(amount_5min, TsTodMask(k=43, k2=49)), d), TsSumRoll(amount_5min, d))))",
+ "expr": "CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d), TsSumRoll(bar.5m.amount_5min, d))))",
  "note": "近 d 箱 14:30-15:00 (箱 43..48) 成交额 / 全部成交额 取负 (分子分母两个 d 各自搜); 中信建投 逐鹿alpha-019 尾盘流动性 IC -0.0911 (周)"
 }

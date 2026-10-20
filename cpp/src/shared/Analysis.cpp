@@ -12,8 +12,6 @@
 
 namespace analysis {
 
-namespace {
-// A 轴 + 各池映射 (assets 空 = 主池轴, 主池同轴不映射)
 void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
   const bool own = assets.empty();
   s.axis = own ? s.lib().axis : PoolAxis{.ids = std::move(assets)};
@@ -30,6 +28,8 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
     }
   }
 }
+
+namespace {
 // 池 l 落了第 d 天 (按库清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
 bool landed(const ReadScope &s, PoolId l, misc::Ymd d) {
   const FeatureLib &lib = s.libs[l];

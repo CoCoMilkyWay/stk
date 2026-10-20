@@ -9,9 +9,7 @@
 #include "factor/Search/Cpu.hpp"
 #include "factor/Search/Grid.hpp"
 #include "factor/Stat/Cpu.hpp"
-#include "features/Storage/FeatureRead.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp"
-#include "misc/cross_platform.hpp" // memory_usage
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
@@ -42,8 +40,7 @@ using Clock = std::chrono::steady_clock;
 constexpr int carry_days(int seg) { return (factor::kMaxD + seg - 1) / seg; } // 块首多带的交易日 (ROLL 预热 + rAC lag): 行数 ≥ kMaxD ≥ TS 归一窗 / max_lag
 constexpr int kCpuForest = 64;                                                // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
 constexpr int kGpuMinBatch = 8;                                               // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
-constexpr double kHostFrac = 0.6;                                             // 宿主可用内存的使用比例
-constexpr double kVramFrac = 0.85;                                            // 显存空闲量的使用比例
+constexpr double kVramFrac = 0.85;                                            // 显存空闲量的使用比例 (宿主: FactorsLoad host_budget)
 
 __attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
   char buf[4096];
@@ -147,6 +144,7 @@ enum class Rc : uint8_t { Ok,
 // worker 私有的常驻件 (线程池 + CPU 工作区; 跨请求存活, ensure 幂等)
 struct SearchService::Flow {
   misc::exec::ForkJoin ex;
+  LibReaders lr; // 已建的库 (清单没变的复用)
   factor::cpu::HostPool hp;
   std::vector<factor::check::Arena> sc;
   factor::cpu::stat::Workspace w;
@@ -165,12 +163,10 @@ bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg,
   req.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  req.scope = analysis::read_scope(data.config, pool_id(pool), {});
-  if (req.scope.months.empty())
-    return false;
+  req.libs = factor_libs(data, pool, seg);
+  if (!req.libs[factor_level(seg).tier == TierId::Lob ? pool_id(pool) : kAllPool].ready())
+    return false; // 标签库未建
   req.pool = pool;
-  req.start_date = data.config.start_date;
-  req.end_date = data.config.end_date;
   return true;
 }
 
@@ -199,7 +195,6 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const int nt = F.ex.threads();
-  const int A = static_cast<int>(req.scope.lib().axis.size());
   assert(req.seg == feats_.seg && "请求层与字段表层不符");
   const int seg = feats_.seg, carry = carry_days(seg);
   // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
@@ -224,7 +219,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     lg("Search %s  @ %s", req.file.c_str(), ts);
     lg("模板: %s", req.tmpl.c_str());
-    lg("后端 %s, 池 %s, 区间 %s ~ %s", res.backend.c_str(), req.pool.c_str(), misc::dash(req.start_date).c_str(), misc::dash(req.end_date).c_str());
+    lg("后端 %s, 池 %s", res.backend.c_str(), req.pool.c_str());
   }
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
   const auto abort_with = [&](std::string msg) {
@@ -322,12 +317,21 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     }
     publish();
   };
-  // ---- 作用域 / 日期 ----
-  FeatureRead reader(req.scope.lib(), &cancel_);
-  const std::vector<misc::Ymd> dates = analysis::enumerate_dates(req.scope).dates;
-  if (dates.empty())
-    return abort_with("特征库在该区间无数据 (先算特征)");
-  const int days = static_cast<int>(dates.size());
+  // ---- 作用域 / 日期 (评估期 = 模板叶所用库落盘日交集) ----
+  EvalScope es;
+  {
+    std::string why;
+    if (!eval_scope(feats_, req.libs, pool_id(req.pool), d0.feats, es, why))
+      return abort_with(why);
+  }
+  PerPool<FeatureLib> ready; // 已建的库全开 (本模板只读 es.used)
+  for (const PoolId l : pool_ids())
+    if (req.libs[l].ready())
+      ready[l] = req.libs[l];
+  F.lr.open(ready, &cancel_);
+  const std::vector<misc::Ymd> &dates = es.dates;
+  const int days = static_cast<int>(dates.size()), A = static_cast<int>(es.rs.axis.size());
+  lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集)", misc::dash(dates.front()).c_str(), misc::dash(dates.back()).c_str(), days);
 
   // ---- 分块与预算 (字节 / 格; 见头文件【分块流式】) ----
   //   L0  宿主 Loaded: 特征 (v+m) 5·nf + 截面门控 5 + 标签 (lv,sv,m) 5·H
@@ -337,9 +341,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const double L0 = 5.0 * nf + 5.0 + 5.0 * H;
   const double Wc = 2.0 * H + 2.0 + 5.0 * (s0 + 2);
   const double F0 = 5.0 * nf + 1.0 + 7.0 * H;
-  const MemoryUsage mu = memory_usage();
-  const double host_budget = kHostFrac * static_cast<double>(mu.total_bytes - mu.used_bytes);
-  int D = std::clamp(static_cast<int>(host_budget / (per_day * (L0 + (req.gpu ? 0.0 : Wc)))) - carry, 1, days);
+  const double host_cap = host_budget();
+  int D = std::clamp(static_cast<int>(host_cap / (per_day * (L0 + (req.gpu ? 0.0 : Wc)))) - carry, 1, days);
   double vram_budget = 0.0;
   if (req.gpu) {
     assert(factor::gpu::available() && "GPU 后端不可用");
@@ -362,7 +365,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
     cache_bytes += (day1 - load0) * per_day * (L0 + (req.gpu ? 0.0 : 2.0 * H));
   }
-  const bool cache_all = cache_bytes + Tmax * static_cast<double>(A) * (req.gpu ? 0.0 : Wc) <= host_budget;
+  const bool cache_all = cache_bytes + Tmax * static_cast<double>(A) * (req.gpu ? 0.0 : Wc) <= host_cap;
   res.n_chunk = n_chunks, res.chunk_days = D, res.batch = batch;
   res.n_assets = A;
   for (int ci = 0; ci < n_chunks; ++ci) {
@@ -373,7 +376,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   publish_result(); // 装载前先发布分块计划
   constexpr double kMiB = 1024.0 * 1024.0;
   lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, nf, H, s0, L0, req.gpu ? 0.0 : Wc);
-  lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", host_budget / kMiB,
+  lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", host_cap / kMiB,
      req.gpu ? strf(", 显存 %.0f MB", vram_budget / kMiB).c_str() : "", D, carry, n_chunks, cache_all ? "是" : "否 (每趟逐块重读)", cache_bytes / kMiB,
      req.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
   for (int ci = 0; ci < n_chunks; ++ci) {
@@ -387,7 +390,6 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   // 装一块: 交易日 [day0, day1), 前带 carry; 首块顺带查特征叶值域
   const auto load_chunk = [&](int ci, ChunkData &cd) -> Rc {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
-    const std::vector<misc::Ymd> cdates(dates.begin() + load0, dates.begin() + day1);
     const Clock::time_point t_load = Clock::now();
     cd.idx = -1;
     cd.lab.ry.clear();
@@ -396,8 +398,9 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     select_holds(feats_, holds, cd.L);
     cd.L.feat_codes = d0.feats;
     begin(Phase::Loading, static_cast<size_t>(day1 - load0));
-    if (!load_planes(feats_, reader, cdates, cd.L, F.ex, cancel_, *this, /*with_labels=*/true, /*with_costs=*/false, /*with_index=*/false)) {
-      if (reader.stale()) {
+    if (!load_planes(feats_, es, F.lr, static_cast<size_t>(load0), static_cast<size_t>(day1), cd.L, F.ex, cancel_, *this, /*with_labels=*/true,
+                     /*with_costs=*/false, /*with_index=*/false)) {
+      if (F.lr.stale()) {
         res.message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
         lg("中止: %s", res.message.c_str());
         publish_result();

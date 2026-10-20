@@ -1,12 +1,12 @@
 {
  "type": "alpha",
  "name_cn": "一小时量价相关",
- "expr": "CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob_close), d), lob_vol_todz_5d, d))",
+ "expr": "CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob.1m.lob_close), d), lob.1m.lob_vol_todz_5d, d))",
  "note": "量价相关: 1 分钟收益与成交量同分钟 z 值近 60 分钟的相关系数, 截面秩",
  "weights": [
-  {"hold":30,"sign":-1,"expr":"CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob_close), d=40), lob_vol_todz_5d, d=146))"},
-  {"hold":60,"sign":-1,"expr":"CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob_close), d=40), lob_vol_todz_5d, d=155))"},
-  {"hold":1000,"sign":-1,"expr":"CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob_close), d=38), lob_vol_todz_5d, d=165))"}
+  {"hold":30,"sign":-1,"expr":"CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob.1m.lob_close), d=40), lob.1m.lob_vol_todz_5d, d=146))"},
+  {"hold":60,"sign":-1,"expr":"CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob.1m.lob_close), d=40), lob.1m.lob_vol_todz_5d, d=155))"},
+  {"hold":1000,"sign":-1,"expr":"CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob.1m.lob_close), d=38), lob.1m.lob_vol_todz_5d, d=165))"}
  ],
  "run": {"pool":"micro","start_date":"2026-05-01","end_date":"2026-10-16","days":111,"T":28305,"A":623,"backend":"gpu","frame":"CS","max_impact":0.01,"n_full":17.65},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],

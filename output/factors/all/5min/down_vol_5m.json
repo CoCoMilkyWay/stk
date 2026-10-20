@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "下行波动占比",
- "expr": "CsRank(TsDiv(TsSumRoll(TsMul(TsRelu(TsNeg(TsMask(TsLogRatio(close_5min, TsDelayRoll(close_5min, d=1)), TsTodMask(k=1, k2=49)))), TsRelu(TsNeg(TsMask(TsLogRatio(close_5min, TsDelayRoll(close_5min, d=1)), TsTodMask(k=1, k2=49))))), d), TsSumRoll(TsMul(TsMask(TsLogRatio(close_5min, TsDelayRoll(close_5min, d=1)), TsTodMask(k=1, k2=49)), TsMask(TsLogRatio(close_5min, TsDelayRoll(close_5min, d=1)), TsTodMask(k=1, k2=49))), d)))",
+ "expr": "CsRank(TsDiv(TsSumRoll(TsMul(TsRelu(TsNeg(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)))), TsRelu(TsNeg(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49))))), d), TsSumRoll(TsMul(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49))), d)))",
  "note": "近 d 箱 Σr²·1[r<0] / Σr² (掩首箱; 分子分母两个 d 各自搜); 海通 高频因子-001 下行波动占比 rankIC 0.0875 方向正 (月)"
 }
