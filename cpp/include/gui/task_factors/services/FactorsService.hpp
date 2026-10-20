@@ -137,6 +137,7 @@ struct YCols {
   Col cs;                     // cs_valid (标签 + 截面门控平面)
   Col ohlc[4];                // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
   Col close_adj;              // 后复权收盘价 (池等权指数): lob_close_adj / close_adj_<n>min / close_adj_day
+  Col float_shares;           // A 股流通股本 (只日层设; 池流通市值加权指数的权重 = close_day × 本列)
   std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
   std::vector<LegCol> costs;  // 按 key 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 标签无)
 };

@@ -159,7 +159,7 @@ std::string YSpec::key() const {
 }
 
 double cell_bytes(const XSpec &s) { return kPlaneBytes * static_cast<double>(s.codes.size()); }
-double cell_bytes(const YSpec &s) { return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n + s.ad.n + (s.index ? 1 : 0)); }
+double cell_bytes(const YSpec &s) { return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n + s.ad.n + (s.index ? 1 : 0)) + (s.index ? 4.0 : 0.0); }
 
 const factor::check::Plane *XPlanes::find(std::string_view code) const {
   for (size_t i = 0; i < codes.size(); ++i)
@@ -172,15 +172,17 @@ namespace {
 
 // 池等权指数 (YPlanes::index): 资产条带并行, 各条带沿 t 推本条带资产的上一有效后复权 close + 该 close 行的在池位 (跨日);
 // 成分格 (上一有效 close 行在池 ∧ 本行有 close) 攒进本线程. 日层门控 = D 收盘定的池 (收盘换仓), 故 D 的收益按 D−1 收盘的成员;
-// 停牌行不更新 ⇒ 持仓带到复牌, 复牌跳空计入. 逐行 Σ / 数; 线程间按 tid 序归并后串行连乘
-void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const uint8_t *in, int T, int A, std::vector<float> &out) {
+// 停牌行不更新 ⇒ 持仓带到复牌, 复牌跳空计入. 逐行 Σ / 数; 线程间按 tid 序归并后串行连乘.
+// 加权版 (out_cap) 同成分同收益, 权 = 上一有效 close 行的 wt (流通市值): 逐行 Σ w·r / Σ w
+void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const float *wt, const uint8_t *in, int T, int A, std::vector<float> &out,
+                std::vector<float> &out_cap) {
   const size_t nT = static_cast<size_t>(T), nt = static_cast<size_t>(ex.threads());
-  std::vector<double> sum(nt * nT, 0.0);
+  std::vector<double> sum(nt * nT, 0.0), wsum(nt * nT, 0.0), wtot(nt * nT, 0.0);
   std::vector<int> cnt(nt * nT, 0);
   ex.rows(A, [&](int a0, int a1, int tid) {
-    std::vector<float> prev(static_cast<size_t>(a1 - a0), 0.f);
+    std::vector<float> prev(static_cast<size_t>(a1 - a0), 0.f), pw(static_cast<size_t>(a1 - a0), 0.f);
     std::vector<uint8_t> held(static_cast<size_t>(a1 - a0), 0);
-    double *s = sum.data() + static_cast<size_t>(tid) * nT;
+    double *s = sum.data() + static_cast<size_t>(tid) * nT, *sw = wsum.data() + static_cast<size_t>(tid) * nT, *ww = wtot.data() + static_cast<size_t>(tid) * nT;
     int *k = cnt.data() + static_cast<size_t>(tid) * nT;
     for (size_t t = 0; t < nT; ++t)
       for (int a = a0; a < a1; ++a) {
@@ -190,24 +192,33 @@ void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, con
           continue;
         float &p = prev[static_cast<size_t>(a - a0)];
         uint8_t &h = held[static_cast<size_t>(a - a0)];
+        float &w = pw[static_cast<size_t>(a - a0)];
         if (p > 0.f && h) {
-          s[t] += c / p - 1.0;
+          const double r = c / p - 1.0;
+          s[t] += r;
           ++k[t];
+          sw[t] += w * r;
+          ww[t] += w;
         }
         p = c;
         h = in[i];
+        w = wt[i];
       }
   });
   out.resize(nT);
-  double lv = 1.0;
+  out_cap.resize(nT);
+  double lv = 1.0, lc = 1.0;
   for (size_t t = 0; t < nT; ++t) {
-    double s = 0.0;
+    double s = 0.0, x = 0.0, y = 0.0;
     int k = 0;
     for (size_t j = 0; j < nt; ++j)
-      s += sum[j * nT + t], k += cnt[j * nT + t];
+      s += sum[j * nT + t], k += cnt[j * nT + t], x += wsum[j * nT + t], y += wtot[j * nT + t];
     if (k)
       lv *= 1.0 + s / k;
+    if (y > 0.0)
+      lc *= 1.0 + x / y;
     out[t] = static_cast<float>(lv);
+    out_cap[t] = static_cast<float>(lc);
   }
 }
 
@@ -337,7 +348,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | close_adj (index) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
+  // ---- 列段 ts_valid | cs_valid | close_adj close_day float_shares (index) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
   std::vector<ColRef> cols;
   const auto add = [&](const Col &c) {
     cols.push_back(c.ref(es.pool));
@@ -346,6 +357,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   const size_t ts_i = add(ft.y.ts), cs_i = add(ft.y.cs);
   assert((!spec.index || factor_level(ft.seg).lvl == L_1day) && "池指数只在日层 (成员位 = 本行收盘定的池)");
   const size_t close_i = spec.index ? add(ft.y.close_adj) : SIZE_MAX;
+  const size_t px_i = spec.index ? add(ft.y.ohlc[3]) : SIZE_MAX, fs_i = spec.index ? add(ft.y.float_shares) : SIZE_MAX;
   assert(cols[ts_i].pool == es.rs.main && "门控 / 标签 / 成本 / OHLC 在标签库");
   const size_t lab_i = cols.size();
   for (size_t i = 0; i < H; ++i)
@@ -368,8 +380,9 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   alloc(Y.labels, H);
   alloc(Y.costs, C);
   factor::check::Plane close; // 本行有成交的后复权 close (index, 跨日除权不进收益), 装完算指数即弃
+  std::vector<float> fmc;     // 本行流通市值 = close_day × float_shares (index 加权版的权; close 无效 / 缺股本 → 0)
   if (spec.index)
-    close.resize(n);
+    close.resize(n), fmc.assign(n, 0.f);
   // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
   constexpr float kNoCap = std::numeric_limits<float>::infinity();
   const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {spec.max_impact, kNoCap};
@@ -422,12 +435,14 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       for (size_t a = 0; a < A; ++a)
         Y.gate[row + a] = cell(wc, a, x, g) && fmeta::data_valid(static_cast<float>(x)) && has[a];
       if (spec.index) { // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限
-        const View wl = view(close_i, t);
+        const View wl = view(close_i, t), wp = view(px_i, t), wf = view(fs_i, t);
         for (size_t a = 0; a < A; ++a) {
-          feature_storage_t c, s;
+          feature_storage_t c, s, px, fs;
           const bool ok = cell(wl, a, c, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, c);
           close.v[row + a] = ok ? static_cast<float>(c) : 0.f;
           close.m[row + a] = ok;
+          if (ok && cell(wp, a, px, g) && cell(wf, a, fs, g) && static_cast<float>(px) > 0.f && static_cast<float>(fs) > 0.f)
+            fmc[row + a] = static_cast<float>(px) * static_cast<float>(fs);
         }
       }
       fold_legs(lab_i, lab_cap, Y.labels, t, row);
@@ -437,7 +452,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   if (!read)
     return false;
   if (spec.index)
-    pool_index(ex, close, Y.gate.data(), Y.sh.T, Y.sh.A, Y.index);
+    pool_index(ex, close, fmc.data(), Y.gate.data(), Y.sh.T, Y.sh.A, Y.index, Y.index_cap);
   long long on = 0;
   for (const uint8_t g : Y.gate)
     on += g != 0;

@@ -80,12 +80,12 @@ struct YSpec {
   factor::stat::Holds hd; // 标签组 (LegCol::key, 字段表里有)
   Amts ad;                // 成本段 (LegCol::key, 字段表里有; 空 = 不装)
   float max_impact = 0.f; // 买入冲击封顶 (Config::max_impact; ad 非空时 > 0): buy = min(原值, 封顶)
-  bool index = false;     // 池等权指数 (close_adj 平面装完即算, 不留)
+  bool index = false;     // 池等权 / 流通市值加权指数 (close_adj + 权重平面装完即算, 不留)
   std::string key() const;
 };
 // 每格平面字节 (check::Plane: float + u8)
 inline constexpr double kPlaneBytes = 5.0;
-// 宿主装载量 (字节 / 格): X = 叶 5 · codes; Y = 门控 1 + 两腿 (lv, sv, m) 5 · (hd + ad) + close 5 (index, 装载期峰值)
+// 宿主装载量 (字节 / 格): X = 叶 5 · codes; Y = 门控 1 + 两腿 (lv, sv, m) 5 · (hd + ad) + close 5 + 权重 4 (index, 装载期峰值)
 double cell_bytes(const XSpec &s);
 double cell_bytes(const YSpec &s);
 
@@ -116,6 +116,7 @@ struct YPlanes {
   std::vector<float> index;     // [T] 池等权指数 (YSpec::index, 只日层; 起点 1): 逐行 Σ_成分 (close_adj / 上一有效 close_adj − 1) / n 连乘,
                                 //   成分 = 上一有效 close_adj 那行在池 (gate = 该行收盘定的池) 且本行有成交; 停牌持仓带到复牌;
                                 //   上一有效 close_adj 跨日 (除权缺口不进); 无成分可算的行持平
+  std::vector<float> index_cap; // [T] 同成分同收益, 按上一有效 close 行的流通市值 (close_day × float_shares, 不复权) 加权; 缺股本的格权 0
   double n_full = 0.0;          // 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 池内平均每行有效资产数 / kGroups: 池宽决定, 与因子无关
 };
 // 标签的契约视图 (未预处理, ry 空; cap = n_full). 会话 open (cpu / gpu stat_open) 自己预处理
@@ -123,7 +124,7 @@ factor::stat::Labels labels_of(const YPlanes &y);
 
 // 逐天并行读 (ex 抢单) es.days[d0, d1) 按 spec 装进 X / Y (覆盖; 形 days × A → T, 容量断言在此). 两侧同一份骨架:
 // 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影), 列全部 Col::ref(es.pool);
-// X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | close (index) | 标签 [hd][kLegs] | 成本 [ad][kLegs] (标签库网格层本层列).
+// X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | close_adj close_day float_shares (index) | 标签 [hd][kLegs] | 成本 [ad][kLegs] (标签库网格层本层列).
 // lr 须按 es.rs.libs 开好. 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 每天 prog.publish(1), 不 begin
 bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const XSpec &spec, XPlanes &X,
             misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);

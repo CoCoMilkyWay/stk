@@ -134,13 +134,26 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed
     pf.label = entry_label(its[q]->e) + (f->amt > 0 ? " (" + std::to_string(f->amt) + "w冲击)" : std::string(" (固定冲击)"));
     pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f->hold);
     pf.c.x.push_back(static_cast<double>(day_of(f->dates.front()) * kDayW)), pf.c.y.push_back(1.0);
+    // 行收益记在平仓时刻 (与池指数同为已实现口径): 分钟型 = 行末分钟 + n (过收盘 → 收盘); 收盘型 = 当日收盘;
+    // T+N = 其后第 N 个交易日开盘 (越过区间末 → 末日收盘, 标签按最后收盘结算)
+    const auto exit_x = [&](size_t dl, int ts) {
+      const size_t di = day_of(f->dates[dl]);
+      if (factor::stat::hold_intraday(f->hold))
+        return static_cast<double>(di * kDayW + std::min(static_cast<size_t>(g.minute(ts) + f->hold), kDayW - 1));
+      if (f->hold == factor::stat::kHoldClose)
+        return static_cast<double>(di * kDayW + kDayW - 1);
+      const size_t de = dl + static_cast<size_t>(f->hold - factor::stat::kHoldDayBase);
+      if (de >= f->dates.size())
+        return static_cast<double>(day_of(f->dates.back()) * kDayW + kDayW - 1);
+      return static_cast<double>(day_of(f->dates[de]) * kDayW);
+    };
     double nav = 1.0;
     for (size_t dl = 0; dl < f->dates.size(); ++dl) {
       const size_t di = day_of(f->dates[dl]);
       for (int ts = 0; ts < S; ++ts) {
         const size_t t = dl * S + static_cast<size_t>(ts);
         const double cl = wl[t] + el[t] * ke, cs = ws[t] + es[t] * ke;
-        const double x = static_cast<double>(di * kDayW + static_cast<size_t>(g.minute(ts)));
+        const double x = exit_x(dl, ts);
         const double rl = (f->lng[t] - cl) / h, rls = (f->ls[t] - cl - cs) / h;
         ev.push_back({x, rl / n_act[di], rls / n_act[di], f->lng[t] / h / n_act[di], f->ls[t] / h / n_act[di]});
         nav *= 1.0 + rl;
@@ -167,33 +180,47 @@ void derive(const PortfolioUIState &ui, const PortfolioResult &res, double fixed
 
   // ---- 池线: 只在日并集轴范围内; 不在轴上的日的收益并进下一个轴上的日 ----
   // 图例 = 池名 | 中文名 | 年换手 (日均 × kDaysPerYear) 三列, 各列按最宽者补空格对齐
-  float w_en = 0.f, w_cn = 0.f;
+  // all 池拆两条: 全A加权 (流通市值, PoolCurve::index_cap) / 全A等权 (index); 其余池一条等权
+  struct Line {
+    const PoolDef *pd;
+    const char *cn, *tag, *id;
+    bool cap;
+  };
+  std::vector<Line> lines;
   for (const PoolDef &pd : feature_pools())
-    w_en = std::max(w_en, ImGui::CalcTextSize(pd.name).x), w_cn = std::max(w_cn, ImGui::CalcTextSize(pd.name_cn).x);
-  for (const PoolDef &pd : feature_pools()) {
+    if (pd.pool_col == SIZE_MAX)
+      lines.push_back({&pd, "全A加权", "全A加权", "_cap", true}), lines.push_back({&pd, "全A等权", "全A等权", "", false});
+    else
+      lines.push_back({&pd, pd.name_cn, pd.name, "", false});
+  float w_en = 0.f, w_cn = 0.f;
+  for (const Line &ln : lines)
+    w_en = std::max(w_en, ImGui::CalcTextSize(ln.pd->name).x), w_cn = std::max(w_cn, ImGui::CalcTextSize(ln.cn).x);
+  for (const Line &ln : lines) {
+    const PoolDef &pd = *ln.pd;
     PortfolioDerived::Pool p;
     const auto pit = res.pools.find(pd.name);
     const PoolCurve *pc = pit != res.pools.end() && pit->second->error.empty() ? pit->second.get() : nullptr;
     char turn[48] = "";
     if (pc && pc->turnover >= 0.0)
       std::snprintf(turn, sizeof(turn), "  (年换手=%5.1f倍)", pc->turnover * factor::stat::kDaysPerYear);
-    p.label = pad_to(pd.name, w_en) + "  " + pad_to(pd.name_cn, w_cn) + turn + "###pf_pool_" + pd.name;
-    p.tag = pd.name;
+    p.label = pad_to(pd.name, w_en) + "  " + pad_to(ln.cn, w_cn) + turn + "###pf_pool_" + pd.name + ln.id;
+    p.tag = ln.tag;
     p.own = own.contains(pd.name);
     if (pc && !d.dates.empty()) {
       const PoolCurve &c = *pc;
+      const std::vector<float> &ix = ln.cap ? c.index_cap : c.index;
       double base = 0.0;
       for (size_t i = 0; i < c.dates.size(); ++i) {
         if (c.dates[i] < d.dates.front() || c.dates[i] > d.dates.back())
           continue;
         const size_t di = day_of(c.dates[i]);
         if (p.c.x.empty()) {
-          base = i > 0 ? c.index[i - 1] : c.index[i];
+          base = i > 0 ? ix[i - 1] : ix[i];
           p.c.x.push_back(static_cast<double>(di * kDayW)), p.c.y.push_back(1.0);
         }
         if (d.dates[di] != c.dates[i])
           continue;
-        p.c.x.push_back(static_cast<double>(di * kDayW + kDayW - 1)), p.c.y.push_back(c.index[i] / base);
+        p.c.x.push_back(static_cast<double>(di * kDayW + kDayW - 1)), p.c.y.push_back(ix[i] / base);
       }
     }
     d.pools.push_back(std::move(p));

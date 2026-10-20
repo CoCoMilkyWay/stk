@@ -10,7 +10,7 @@
 //   (Stat 契约【换手成本】, cost_row 每行一份 CostAcc; 与 cost_rows 逐行同式, 行和 = Inspect 的 CostTier). Bar 层无金额段: 新进者计数不看成本有效
 //   (建仓 / 平仓都按 Config::fixed_impact, UI 扣). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
 //   结果按条目键缓存: 加一个因子只算它; 请求里没有的条目丢掉.
-// 池等权指数: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes::index) + 成员日均换手, 按池缓存 (Recompute 才重算).
+// 池等权指数: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes::index / index_cap) + 成员日均换手, 按池缓存 (Recompute 才重算).
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑 (缓存已算的不丢); UI 持 mutex 读 result
 // (shared_ptr 拷出即放锁). 进度: Loading 期 done/total = 天; Running 期 = 算子节点 + 收尾; 第几个因子走 jobs_done / jobs_total.
@@ -98,6 +98,7 @@ struct PoolCurve {
   std::string pool;
   std::vector<misc::Ymd> dates; // [days] 日层评估期
   std::vector<float> index;     // [days] 池等权指数 (起点 1)
+  std::vector<float> index_cap; // [days] 池流通市值加权指数 (起点 1; UI 只画 all 池的 = 全A加权)
   double turnover = -1.0;       // 日均换手 = 沿日均值 (1 − |S_t ∩ S_{t−1}| / |S_t|), S = 池成员位 (日层: D 收盘定的池); all 池无成员 → < 0
   std::string error;
 };

@@ -430,9 +430,10 @@ bool PortfolioService::eval_pool(const PoolJob &j, Flow &F, PoolCurve &out) {
     }
     return false;
   }
-  assert(c.y.index.size() == es.dates.size());
+  assert(c.y.index.size() == es.dates.size() && c.y.index_cap.size() == es.dates.size());
   out.dates = es.dates;
   out.index = std::move(c.y.index);
+  out.index_cap = std::move(c.y.index_cap);
   if (es.member) {
     const size_t P = es.member->axis().size();
     double sum = 0.0;
