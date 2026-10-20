@@ -184,9 +184,11 @@ public:
   Scan(const Catalog &cat, const Ids &ids, std::size_t threads);
 
   // 登记一张 Month 表. proto = 每段累加器的初值; fold(const Rows &, Acc &).
-  // out / fold 引用的对象须活到 run() 结束.
+  // ids = 本表改用的 id 空间 (nullptr = 构造时的; 须与之同码同序, 只换 Miss 口径).
+  // out / fold / ids 引用的对象须活到 run() 结束.
   template <class Acc, class Fold>
-  void add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, const Acc &proto, Fold fold);
+  void add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, const Acc &proto, Fold fold,
+           const Ids *ids = nullptr);
 
   std::size_t files() const { return files_; } // 已登记分片数 (进度分母)
 
@@ -207,8 +209,11 @@ private:
 };
 
 template <class Acc, class Fold>
-void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, const Acc &proto, Fold fold) {
+void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, const Acc &proto, Fold fold,
+               const Ids *ids) {
   assert(s.shape == Shape::Month && !s.vd.empty() && "Scan: 只扫 Month 表");
+  assert((!ids || ids->size() == ids_.size()) && "Scan: 换用的 id 空间须与构造时同码同序");
+  const Ids *space = ids ? ids : &ids_;
   const std::vector<Shard> &all = cat_.shards(s.name);
   const std::size_t n = all.size();
   const std::size_t nseg = std::clamp<std::size_t>(n, 1, threads_);
@@ -222,9 +227,9 @@ void Scan::add(Part<Acc> &out, const Spec &s, std::vector<std::string> cols, con
     std::uint64_t bytes = 0;
     for (std::size_t i = lo; i < hi; ++i)
       bytes += all[i].bytes;
-    jobs_.push_back({bytes, [this, &out, &s, &all, shared_cols, fold, seg, lo, hi](Scratch &x, std::atomic<std::size_t> &done) {
+    jobs_.push_back({bytes, [space, &out, &s, &all, shared_cols, fold, seg, lo, hi](Scratch &x, std::atomic<std::size_t> &done) {
                        for (std::size_t i = lo; i < hi; ++i) {
-                         const Rows r = x.open(all[i], s, *shared_cols, ids_);
+                         const Rows r = x.open(all[i], s, *shared_cols, *space);
                          if (r.size() > 0)
                            fold(r, out.segs_[seg]);
                          done.fetch_add(1, std::memory_order_relaxed);

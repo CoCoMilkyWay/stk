@@ -600,7 +600,7 @@ static void RenderSecPlot(SharedData &data) {
     // ------------------------------------------------------------------
     if (!dp.plot.x.empty()) {
       if (ui.sec_anchor_tick == SIZE_MAX)
-        ui.sec_anchor_tick = dp.ticks.front().tick_idx; // 首次: 默认首个有效秒
+        ui.sec_anchor_tick = dp.ticks.back().tick_idx; // 首次: 默认末个有效秒 (收盘)
 
       double anchor_x = static_cast<double>(ui.sec_anchor_tick);
       const bool drag_changed = ImPlot::DragLineX(0, &anchor_x, ImVec4(1, 0.5f, 0, 1), 2.0f);
