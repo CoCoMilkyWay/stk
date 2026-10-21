@@ -132,12 +132,12 @@ struct XCols {
   std::vector<FeatCol> leaves; // 全部叶 (可选与不可选)
   const FeatCol *find(std::string_view code) const;
 };
-// 池估值五口 (整体法; FactorsLoad pool_val → PoolCurve → Portfolio VAL 页): PE = Σ市值 / Σ净利, PB = Σ市值 / Σ权益, PS = Σ市值 / Σ营收,
-// PCF = Σ市值 / Σ经营现金流, DY = Σ分红 / Σ市值
-enum PoolVal : int { kValPe,
-                     kValPb,
-                     kValPs,
-                     kValPcf,
+// 池估值五口 (整体法收益率口径, 分母同为 Σ市值; FactorsLoad pool_baskets → PoolCurve → Portfolio VAL 页): EP = Σ净利, BP = Σ权益, SP = Σ营收,
+// CP = Σ经营现金流, DY = Σ分红 (各 / Σ市值; 高 = 便宜, 分子过 0 连续)
+enum PoolVal : int { kValEp,
+                     kValBp,
+                     kValSp,
+                     kValCp,
                      kValDy };
 inline constexpr int kPoolVals = 5;
 // 篮子指数两权重 (FactorsLoad pool_baskets → PoolCurve → Portfolio NAV 池线 / VAL 价格线)
@@ -151,7 +151,7 @@ struct YCols {
   Col close_adj;    // 后复权收盘价 (池等权指数): lob_close_adj / close_adj_<n>min / close_adj_day
   Col float_shares; // A 股流通股本 (只日层设; 池流通市值加权指数的权重 = close_day × 本列)
   Col total_shares; // 总股本 / 归母净利 TTM (pl_npp_ttm) / 归母权益 MRQ (bs_eq) / 营业总收入 TTM (pl_rev_ttm) / 经营现金流 TTM (cf_ocf_ttm) /
-                    // 股息率 TTM (dy_ttm): 只日层设, 池估值 PE / PB / PS / PCF / DY (整体法)
+                    // 股息率 TTM (dy_ttm): 只日层设, 池估值 EP / BP / SP / CP / DY (整体法)
   Col np_ttm, eq_mrq, rev_ttm, ocf_ttm, dy_ttm;
   Col ind_l1;                 // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)
   std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收

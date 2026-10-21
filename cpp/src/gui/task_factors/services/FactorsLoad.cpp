@@ -240,7 +240,7 @@ void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, c
     rows.r[w].assign(K * nT, 0.0), rows.w[w].assign(K * nT, 0.0);
   ex.rows(T, [&](int t0, int t1, int) {
     for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
-      double x[K][kWeights][2] = {}, v[K][kPoolVals][2] = {}; // 指数 [篮子][Weight][Σ权·r, Σ权]; 估值 [篮子][PoolVal][Σ分子, Σ分母]
+      double x[K][kWeights][2] = {}, v[K][kPoolVals][2] = {}; // 指数 [篮子][Weight][Σ权·r, Σ权]; 估值 [篮子][PoolVal][Σ分子, Σ市值]
       for (size_t a = 0; a < nA; ++a) {
         const size_t i = t * nA + a;
         if (const int32_t q = prv[i]; q >= 0) {
@@ -259,12 +259,11 @@ void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, c
         const double mc = static_cast<double>(px[i]) * sh[p];
         if (!(mc > 0.0)) // 无价 / 缺股本 (NaN) / 非正
           continue;
-        const float f[kPoolVals] = {np[p], eq[p], rev[p], ocf[p], dy[p]};
-        const double num[kPoolVals] = {mc, mc, mc, mc, static_cast<double>(dy[p]) * px[p] * sh[p]}, den[kPoolVals] = {np[p], eq[p], rev[p], ocf[p], mc};
+        const double num[kPoolVals] = {np[p], eq[p], rev[p], ocf[p], static_cast<double>(dy[p]) * px[p] * sh[p]};
         each_basket(ind[p], [&](size_t k) {
           for (int m = 0; m < kPoolVals; ++m)
-            if (std::isfinite(f[m]))
-              v[k][m][0] += num[m], v[k][m][1] += den[m];
+            if (std::isfinite(num[m]))
+              v[k][m][0] += num[m], v[k][m][1] += mc;
         });
       }
       for (size_t k = 0; k < K; ++k) {

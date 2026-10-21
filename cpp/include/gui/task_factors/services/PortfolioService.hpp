@@ -9,7 +9,7 @@
 //   accum_rows / leg_codes), 只留该 hold 的逐行序列 (FactorCurve): G20 多头毛收益 ret (accum_rows 的 sink 直写, 不落 Row) + 最小金额段多腿的逐行换手成本
 //   (Stat 契约【换手成本】, cost_row 每行一份 CostAcc; 与 cost_rows 逐行同式, 行和 = Inspect 的 CostTier). Bar 层无金额段: 新进者计数不看成本有效
 //   (建仓 / 平仓都按 Config::fixed_impact, UI 扣). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes 篮子 → PoolCurve): 篮子 (池整体 + 行业) 两权重指数 + 估值 PE / PB / PS / PCF / DY (整体法;
+// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes 篮子 → PoolCurve): 篮子 (池整体 + 行业) 两权重指数 + 估值 EP / BP / SP / CP / DY (整体法收益率;
 //   滚动分位 band 在 UI 按可调窗长现算) + 池整体日均单边换手.
 // 因子 ↔ 池 同一套缓存: 按 Job::key 存, 曲线记算时的 Job::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
 //
@@ -104,7 +104,7 @@ struct PoolCurve {
   std::string sig;                    // 算时的 PoolJob::sig
   std::vector<misc::Ymd> dates;       // [nd] 日层评估期
   std::vector<float> index[kWeights]; // [Weight][kBaskets · nd] 篮子指数 (起点 1)
-  std::vector<float> val[kPoolVals];  // [PoolVal][kBaskets · nd] 篮子估值 (整体法 PE / PB / PS / PCF / DY; NaN = 当日不可算)
+  std::vector<float> val[kPoolVals];  // [PoolVal][kBaskets · nd] 篮子估值 (整体法收益率 EP / BP / SP / CP / DY; NaN = 当日不可算)
   double turn[kWeights] = {};         // [Weight] 篮子 0 日均单边换手 (YPlanes::turn; 再平衡 + 成分进出, 停牌 = 移出再移回)
   std::string error;
   const float *index_of(size_t k, int w) const { return index[w].data() + k * dates.size(); } // 篮子 k 段 [nd]
