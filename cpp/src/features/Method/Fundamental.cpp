@@ -858,16 +858,23 @@ inline int quarter_of(std::int32_t rd) {
 //   TTM = YTD(R) + YTD(上年年报) − YTD(去年同期 R)  (年报即 YTD)
 //   LYR = YTD(≤ R 的最近年报)
 // 任一所需报告期缺失 → NaN; 各表 R 取各自 latest 的最大 report_date.
+// 源有空值行 (重述同期行整列 null / 新期个别项 null): 同 report_date 逐项合并, NaN 不盖有效值;
+//   各项各口径在 R 上算不出 (该项缺于 R 或所需同期) → 退回 R 的上一季末 (只退一季, 再旧即陈旧 → NaN).
+//   rd[i] = 该项 TTM 所用 R (0 = 无)
 template <std::size_t N>
 struct YtdState {
-  std::map<std::int32_t, YtdEv<N>> by_rd; // report_date → latest (追溯重述覆盖)
+  std::map<std::int32_t, YtdEv<N>> by_rd; // report_date → latest (追溯重述逐项覆盖)
   std::size_t p = 0;
   int last_v = -1; // 最近一次公告 row (上市前事件丢弃)
 
   void absorb(const std::vector<YtdEv<N>> &ev, int d, int list_d) {
     while (p < ev.size() && ev[p].v <= d) {
       if (ev[p].v >= list_d) {
-        by_rd[ev[p].report_date] = ev[p];
+        const auto [it, fresh] = by_rd.try_emplace(ev[p].report_date, ev[p]);
+        if (!fresh)
+          for (std::size_t i = 0; i < N; ++i)
+            if (std::isfinite(ev[p].x[i]))
+              it->second.x[i] = ev[p].x[i];
         last_v = ev[p].v;
       }
       ++p;
@@ -879,34 +886,48 @@ struct YtdState {
     return it == by_rd.end() ? nullptr : it->second.x;
   }
 
-  void emit(float *q, float *ttm, float *lyr) const {
+  // 以 R 为报告期的差分所需行 (缺 → nullptr)
+  struct At {
+    std::int32_t R;
+    int qi;
+    const float *cur, *prev_q, *ly_annual, *ly_same, *lyr_row;
+  };
+  At at(std::int32_t R, const float *cur) const {
+    const int qi = quarter_of(R), y = year_of(R);
+    const float *ly_annual = find((y - 1) * 10000 + 1231);
+    // LYR: ≤ R 的最近年报 (R 本身为年报时即 R)
+    return {R, qi, cur, (qi == 1) ? nullptr : find(prev_quarter_end(R)), ly_annual, find(R - 10000), (qi == 4) ? cur : ly_annual};
+  }
+
+  void emit(float *q, float *ttm, float *lyr, std::int32_t *rd) const {
     for (std::size_t i = 0; i < N; ++i)
-      q[i] = ttm[i] = lyr[i] = NaNF;
+      q[i] = ttm[i] = lyr[i] = NaNF, rd[i] = 0;
     if (by_rd.empty())
       return;
-    const std::int32_t R = by_rd.rbegin()->first;
-    const int qi = quarter_of(R);
-    if (qi == 0)
+    const std::int32_t R0 = by_rd.rbegin()->first;
+    if (quarter_of(R0) == 0)
       return;
-    const int y = year_of(R);
-    const float *cur = by_rd.rbegin()->second.x;
-    const float *prev_q = (qi == 1) ? nullptr : find(prev_quarter_end(R));
-    const float *ly_annual = find((y - 1) * 10000 + 1231);
-    const float *ly_same = find(R - 10000);
-    // LYR: ≤ R 的最近年报 (R 本身为年报时即 R)
-    const float *lyr_row = (qi == 4) ? cur : ly_annual;
-    for (std::size_t i = 0; i < N; ++i) {
-      if (qi == 1)
-        q[i] = cur[i];
-      else if (prev_q)
-        q[i] = cur[i] - prev_q[i];
-      if (qi == 4)
-        ttm[i] = cur[i];
-      else if (ly_annual && ly_same)
-        ttm[i] = cur[i] + ly_annual[i] - ly_same[i];
-      if (lyr_row)
-        lyr[i] = lyr_row[i];
-    }
+    const At a0 = at(R0, by_rd.rbegin()->second.x);
+    const float *x1 = find(prev_quarter_end(R0));
+    const At a1 = x1 ? at(prev_quarter_end(R0), x1) : a0;
+    for (std::size_t i = 0; i < N; ++i)
+      for (const At *a : {&a0, &a1}) {
+        if (!std::isfinite(q[i])) {
+          if (a->qi == 1)
+            q[i] = a->cur[i];
+          else if (a->prev_q)
+            q[i] = a->cur[i] - a->prev_q[i];
+        }
+        if (!std::isfinite(ttm[i])) {
+          if (a->qi == 4)
+            ttm[i] = a->cur[i];
+          else if (a->ly_annual && a->ly_same)
+            ttm[i] = a->cur[i] + a->ly_annual[i] - a->ly_same[i];
+          rd[i] = std::isfinite(ttm[i]) ? a->R : 0;
+        }
+        if (!std::isfinite(lyr[i]) && a->lyr_row)
+          lyr[i] = a->lyr_row[i];
+      }
   }
 };
 
@@ -1468,7 +1489,8 @@ struct State {
     // ---- 利润表 / 现金流量表 三口径 (亿元; eps 元) ----
     {
       float q[INC_COUNT], ttm[INC_COUNT], lyr[INC_COUNT];
-      income.emit(q, ttm, lyr);
+      std::int32_t rd[INC_COUNT];
+      income.emit(q, ttm, lyr, rd);
       auto put = [&](std::size_t item, float scale, Fund::Out oq, Fund::Out ottm, Fund::Out olyr) {
         out[oq] = sat(q[item] * scale);
         out[ottm] = sat(ttm[item] * scale);
@@ -1486,16 +1508,17 @@ struct State {
       put(inc_eps, 1.0f, Fund::pl_eps_q, Fund::pl_eps_ttm, Fund::pl_eps_lyr);
       // 扣非归母 TTM = 归母 TTM (差分口径) − 非经常性损益 TTM (notes 表 latest); 报告期不一致 → NaN
       float np_ded = NaNF;
-      if (last_nonrecur >= 0 && !income.by_rd.empty()) {
+      if (last_nonrecur >= 0 && rd[inc_np_parent] != 0) {
         const NonrecurEv &nr = p.nonrecur[ai][static_cast<std::size_t>(last_nonrecur)];
-        if (nr.report_date == income.by_rd.rbegin()->first)
+        if (nr.report_date == rd[inc_np_parent])
           np_ded = ttm[inc_np_parent] - nr.nonrecurring_ttm;
       }
       out[Fund::pl_npd_ttm] = sat(np_ded * 1e-8f);
     }
     {
       float q[CF_COUNT], ttm[CF_COUNT], lyr[CF_COUNT];
-      cashflow.emit(q, ttm, lyr);
+      std::int32_t rd[CF_COUNT];
+      cashflow.emit(q, ttm, lyr, rd);
       auto put = [&](std::size_t item, Fund::Out oq, Fund::Out ottm, Fund::Out olyr) {
         out[oq] = sat(q[item] * 1e-8f);
         out[ottm] = sat(ttm[item] * 1e-8f);
