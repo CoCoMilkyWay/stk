@@ -457,10 +457,11 @@ bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
     out.index[w] = std::move(c.y.index[w]);
     out.turn[w] = c.y.turn[w];
   }
-  for (int m = 0; m < kPoolVals; ++m) {
-    assert(c.y.val[m].size() == n);
-    out.val[m] = std::move(c.y.val[m]);
-  }
+  for (int w = 0; w < kWeights; ++w)
+    for (int m = 0; m < kPoolVals; ++m) {
+      assert(c.y.val[w][m].size() == n);
+      out.val[w][m] = std::move(c.y.val[w][m]);
+    }
   return true;
 }
 

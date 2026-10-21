@@ -206,7 +206,7 @@ void index_strip(const factor::check::Plane &close, const float *wt, const uint8
     }
 }
 
-// 篮子指数 / 估值 (YPlanes::index / val), 两遍:
+// 篮子指数 / 估值 (YPlanes::index / val, 各两权重), 两遍:
 //   1) 资产条带并行, 沿 t 就地把 px 补成上一有效收盘价 (停牌带着); prv = 有效 close 格的上一有效 close 行 (−1 = 无);
 //   2) 行并行, 每行一遍 A 轴攒进本行的篮子桶 (0 + 行业):
 //      指数成分 = 上一有效 close 行在池, 收益 = close_adj / 上一有效 close_adj − 1, 权 = 1 / 该行流通市值 fmc, 行业取该行;
@@ -234,13 +234,15 @@ void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, c
       }
   });
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-  for (int m = 0; m < kPoolVals; ++m)
-    Y.val[m].assign(K * nT, kNaN);
+  for (int w = 0; w < kWeights; ++w)
+    for (int m = 0; m < kPoolVals; ++m)
+      Y.val[w][m].assign(K * nT, kNaN);
   for (int w = 0; w < kWeights; ++w)
     rows.r[w].assign(K * nT, 0.0), rows.w[w].assign(K * nT, 0.0);
   ex.rows(T, [&](int t0, int t1, int) {
     for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
-      double x[K][kWeights][2] = {}, v[K][kPoolVals][2] = {}; // 指数 [篮子][Weight][Σ权·r, Σ权]; 估值 [篮子][PoolVal][Σ分子, Σ市值]
+      // 指数 [篮子][Weight][Σ权·r, Σ权]; 估值 [篮子][Weight][PoolVal][Σ权·收益率, Σ权] (收益率 = 分子 / 市值; 权 = 等权 1 / 加权 市值 ⇒ 整体法 Σ分子 / Σ市值)
+      double x[K][kWeights][2] = {}, v[K][kWeights][kPoolVals][2] = {};
       for (size_t a = 0; a < nA; ++a) {
         const size_t i = t * nA + a;
         if (const int32_t q = prv[i]; q >= 0) {
@@ -259,21 +261,22 @@ void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, c
         const double mc = static_cast<double>(px[i]) * sh[p];
         if (!(mc > 0.0)) // 无价 / 缺股本 (NaN) / 非正
           continue;
-        const double num[kPoolVals] = {np[p], eq[p], rev[p], ocf[p], static_cast<double>(dy[p]) * px[p] * sh[p]};
+        const double num[kPoolVals] = {np[p], eq[p], rev[p], ocf[p], static_cast<double>(dy[p]) * px[p] * sh[p]}, om[kWeights] = {1.0, mc};
         each_basket(ind[p], [&](size_t k) {
           for (int m = 0; m < kPoolVals; ++m)
             if (std::isfinite(num[m]))
-              v[k][m][0] += num[m], v[k][m][1] += mc;
+              for (int w = 0; w < kWeights; ++w)
+                v[k][w][m][0] += om[w] * (num[m] / mc), v[k][w][m][1] += om[w];
         });
       }
-      for (size_t k = 0; k < K; ++k) {
-        for (int w = 0; w < kWeights; ++w)
+      for (size_t k = 0; k < K; ++k)
+        for (int w = 0; w < kWeights; ++w) {
           if (x[k][w][1] > 0.0)
             rows.r[w][k * nT + t] = x[k][w][0] / x[k][w][1], rows.w[w][k * nT + t] = x[k][w][1];
-        for (int m = 0; m < kPoolVals; ++m)
-          if (v[k][m][1] > 0.0)
-            Y.val[m][k * nT + t] = static_cast<float>(v[k][m][0] / v[k][m][1]);
-      }
+          for (int m = 0; m < kPoolVals; ++m)
+            if (v[k][w][m][1] > 0.0)
+              Y.val[w][m][k * nT + t] = static_cast<float>(v[k][w][m][0] / v[k][w][m][1]);
+        }
     }
   });
   for (int w = 0; w < kWeights; ++w) {

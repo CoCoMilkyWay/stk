@@ -132,15 +132,15 @@ struct XCols {
   std::vector<FeatCol> leaves; // 全部叶 (可选与不可选)
   const FeatCol *find(std::string_view code) const;
 };
-// 池估值五口 (整体法收益率口径, 分母同为 Σ市值; FactorsLoad pool_baskets → PoolCurve → Portfolio VAL 页): EP = Σ净利, BP = Σ权益, SP = Σ营收,
-// CP = Σ经营现金流, DY = Σ分红 (各 / Σ市值; 高 = 便宜, 分子过 0 连续)
+// 池估值五口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; FactorsLoad pool_baskets → PoolCurve → Portfolio VAL 页):
+// EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续)
 enum PoolVal : int { kValEp,
                      kValBp,
                      kValSp,
                      kValCp,
                      kValDy };
 inline constexpr int kPoolVals = 5;
-// 篮子指数两权重 (FactorsLoad pool_baskets → PoolCurve → Portfolio NAV 池线 / VAL 价格线)
+// 篮子指数 / 估值两权重 (FactorsLoad pool_baskets → PoolCurve → Portfolio NAV 池线 / VAL 价格线 + Band)
 enum Weight : int { kWeightEq,    // 等权
                     kWeightCap }; // 流通市值加权
 inline constexpr int kWeights = 2;

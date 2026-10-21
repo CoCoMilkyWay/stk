@@ -118,17 +118,18 @@ struct YPlanes {
   // 篮子 (YSpec::index, 只日层; 池整体与行业同形): 篮子 0 = 池整体, k = 1..kBaskets−1 = SW2021 一级行业 k (本池成分按行业切, 全A 池 = 申万一级;
   //   行业未知的只进篮子 0); [kBaskets · T], 篮子 k 行 t 在 [k · T + t]
   static constexpr size_t kBaskets = fund::SW2021_L1_COUNT;
-  std::vector<float> index[kWeights]; // [Weight] 指数 (起点 1): 逐行成分收益 r = close_adj / 上一有效 close_adj − 1 按权平均后连乘, 无成分的行持平;
-                                      //   权: 等权 1 / 流通市值加权 = 上一有效 close 行的 close_day × float_shares (不复权; 缺股本权 0);
-                                      //   成分 = 上一有效 close 行在池 (gate = 该行收盘定的池) ∧ 本行有成交 (∧ 该行 ind_l1 = k); 停牌持仓带到复牌, 跨日除权缺口不进
-  std::vector<float> val[kPoolVals];  // [PoolVal] 估值 (整体法): 行 t 成分 = 上一行在池 (∧ 上一行 ind_l1 = k); 市值 = 本行收盘价 (停牌带上一有效价) × 上一行总股本;
-                                      //   收益率口径 (分母同为 Σ市值): EP = Σ归母净利TTM, BP = Σ归母权益MRQ, SP = Σ营业总收入TTM, CP = Σ经营现金流TTM, DY = Σ分红,
-                                      //   分红 = 上一行 dy_ttm × 上一行收盘价 × 上一行总股本 (= Fund 的分母口径还原近 365 日税前分红额);
-                                      //   财务同取上一行 (Fund 行 D = 次日盘前态 ⇒ 上一行 = 当日适用); 每口只收该口输入有限的成分 (亏损 / 负权益 / 负现金流照计为负);
-                                      //   Σ市值 ≤ 0 / 无成分 → NaN
-  double turn[kWeights] = {};         // [Weight] 篮子 0 的每行单边换手 ½ Σ|w_t − w̃_{t−1}| (w̃ = 上一成分行的权按本行收益漂移; 含再平衡 + 成分进出)
-                                      //   沿成分行均值, 首行建仓不计
-  double n_full = 0.0;                // 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 池内平均每行有效资产数 / kGroups: 池宽决定, 与因子无关
+  std::vector<float> index[kWeights];          // [Weight] 指数 (起点 1): 逐行成分收益 r = close_adj / 上一有效 close_adj − 1 按权平均后连乘, 无成分的行持平;
+                                               //   权: 等权 1 / 流通市值加权 = 上一有效 close 行的 close_day × float_shares (不复权; 缺股本权 0);
+                                               //   成分 = 上一有效 close 行在池 (gate = 该行收盘定的池) ∧ 本行有成交 (∧ 该行 ind_l1 = k); 停牌持仓带到复牌, 跨日除权缺口不进
+  std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal] 估值: 行 t 成分 = 上一行在池 (∧ 上一行 ind_l1 = k); 市值 = 本行收盘价 (停牌带上一有效价) × 上一行总股本;
+                                               //   个股收益率 = 分子 / 市值, 按权平均: 等权 = 算术平均 (= 等权组合每元的分子) / 加权 (权 = 市值) = 整体法 Σ分子 / Σ市值;
+                                               //   分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 分红,
+                                               //   分红 = 上一行 dy_ttm × 上一行收盘价 × 上一行总股本 (= Fund 的分母口径还原近 365 日税前分红额);
+                                               //   财务同取上一行 (Fund 行 D = 次日盘前态 ⇒ 上一行 = 当日适用); 每口只收该口输入有限的成分 (亏损 / 负权益 / 负现金流照计为负);
+                                               //   Σ权 ≤ 0 / 无成分 → NaN
+  double turn[kWeights] = {};                  // [Weight] 篮子 0 的每行单边换手 ½ Σ|w_t − w̃_{t−1}| (w̃ = 上一成分行的权按本行收益漂移; 含再平衡 + 成分进出)
+                                               //   沿成分行均值, 首行建仓不计
+  double n_full = 0.0;                         // 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 池内平均每行有效资产数 / kGroups: 池宽决定, 与因子无关
 };
 // 标签的契约视图 (未预处理, ry 空; cap = n_full). 会话 open (cpu / gpu stat_open) 自己预处理
 factor::stat::Labels labels_of(const YPlanes &y);

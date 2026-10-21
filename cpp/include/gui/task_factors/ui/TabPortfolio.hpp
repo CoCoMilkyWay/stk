@@ -67,8 +67,9 @@ struct PortfolioDerived {
   PortfolioLine strat[kImpacts];        // 组合策略 (G20 多头): 首日开盘 1 + 每个有增量的 x; en | cn = 组合名 | 冲击口径
   std::vector<PortfolioFactor> factors; // [items 序, 只含算成的] 该因子单独的 G20 多头 (有冲击), 与组合同式; id = PortfolioEntry::key, en = 因子文件主干, note = 冲击口径
   std::vector<PortfolioBasket> pools;   // [池线序] 篮子 0; en | cn = 池名 | 中文名, note = 年换手, on = 组合里有因子在这个池
-  std::vector<PortfolioBasket> vals;    // [feature_pools 序, 只含算成的池] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有), 均流通市值加权;
-                                        //   id = 单选键 (池名 / "sw<ID>"), en | cn = 池名 | 中文名 / sw<ID> | 行业名, tag = 池名 / 行业名
+  std::vector<PortfolioBasket> vals;    // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 流通市值加权);
+                                        //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | 中文名 (all 池 = kWeightName) / sw<ID> | 行业名,
+                                        //   tag = 池名 (all 池 = kWeightName) / 行业名
   size_t n_val_pools = 0;               // vals 前 n 个是池
   int n_ready = 0, n_error = 0;         // 已算成 / 算失败的因子数
 };

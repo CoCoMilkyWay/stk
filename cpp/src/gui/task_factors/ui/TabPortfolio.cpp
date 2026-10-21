@@ -348,7 +348,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
     }
   }
 
-  // ---- VAL 篮子: 各池整体 (篮子 0) / 申万一级行业 (all 池篮子 k ≥ 1), 流通市值加权; 全史估值留在 PoolCurve ----
+  // ---- VAL 篮子: 各池整体 (篮子 0; all 池两条 = 全A加权 / 全A等权, 其余池等权, 同池线) / 申万一级行业 (all 池篮子 k ≥ 1, 流通市值加权); 全史估值留在 PoolCurve ----
   if (d.dates.empty())
     return;
   std::shared_ptr<const PoolCurve> all;
@@ -357,9 +357,12 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
     if (!pc)
       continue;
     assert(pc->index[kWeightCap].size() == fund::SW2021_L1_COUNT * pc->dates.size());
-    if (pd.pool_col == SIZE_MAX)
+    const bool is_all = pd.pool_col == SIZE_MAX;
+    if (is_all)
       all = pc;
-    d.vals.push_back(basket(pd.name, pd.name, pd.pool_col == SIZE_MAX ? kWeightName[kWeightCap] : pd.name_cn, pd.name, pc, 0, kWeightCap));
+    for (const Weight w : {kWeightCap, kWeightEq})
+      if (is_all || w == kWeightEq)
+        d.vals.push_back(basket(std::string(pd.name) + kWeightId[w], pd.name, is_all ? kWeightName[w] : pd.name_cn, is_all ? kWeightName[w] : pd.name, pc, 0, w));
   }
   d.n_val_pools = d.vals.size();
   if (all)
@@ -421,7 +424,7 @@ void roll_of(const PortfolioBasket &s, int b, int years, PortfolioRoll &o) {
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
   const std::vector<misc::Ymd> &hd = s.pc->dates;
   const size_t n = hd.size(), np = s.at.size();
-  const float *v = s.pc->val_of(s.k, b);
+  const float *v = s.pc->val_of(s.k, s.w, b);
   std::vector<float> srt;
   for (size_t i = 0; i < n; ++i)
     if (val_ok(v[i]))
@@ -486,7 +489,7 @@ void roll_of(const PortfolioBasket &s, int b, int years, PortfolioRoll &o) {
 // 篮子 s 的口 b 在切片 sl 内末个可算点的估值分位 (NaN = 无): 与 roll_of 的 pct 同一定义, 只一点 → 直接数窗, O(窗)
 double last_pct(const PortfolioBasket &s, const PortfolioSlice &sl, int b, int years) {
   const std::vector<misc::Ymd> &hd = s.pc->dates;
-  const float *v = s.pc->val_of(s.k, b);
+  const float *v = s.pc->val_of(s.k, s.w, b);
   size_t f = 0; // 首个可算日 (无 → hd.size(), 下面 val_ok 先短路)
   while (f < hd.size() && !val_ok(v[f]))
     ++f;
@@ -547,7 +550,7 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
     const PortfolioRoll &r = roll[b];
     assert(r.pct.size() == s.at.size());
     PortfolioBand &bd = v.band[b];
-    const float *hv = s.pc->val_of(s.k, b);
+    const float *hv = s.pc->val_of(s.k, s.w, b);
     for (std::vector<double> &y : bd.y)
       y.assign(n, std::numeric_limits<double>::quiet_NaN());
     size_t last = SIZE_MAX; // 末个有分位的点 (源下标)
@@ -750,9 +753,9 @@ bool pages() {
     const bool val_open = ImGui::BeginTabItem("VAL");
     if (ImGui::IsItemHovered())
       tip("VAL = 估值 (Valuation)\n"
-          "• 右侧单选一个池或申万一级行业: 主图 = 它的流通市值加权指数 + 估值 Band\n"
+          "• 右侧单选一个池或申万一级行业: 主图 = 它的指数 + 估值 Band (全A加权 / 行业 = 流通市值加权, 全A等权 / 其余池 = 等权)\n"
           "• EP 盈利收益率 (1/PE) / BP 账面市值比 (1/PB) / SP 营收市值比 (1/PS) / CP 现金流收益率 (1/PCF) / DY 股息率\n"
-          "  (整体法收益率口径: 高 = 便宜, 亏损照计为负, 过 0 连续), 主图例逐个开关\n"
+          "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值; 高 = 便宜, 亏损照计为负, 过 0 连续), 主图例逐个开关\n"
           "• Band = 把过去 N 年的估值分位换算成价格线: 指数落在哪档 = 当前估值在历史里的位置 (绿 = 便宜, 红 = 贵)\n"
           "• 区间 / log 与 NAV 页共用");
     if (val_open) {
@@ -827,7 +830,7 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
     std::snprintf(pct, sizeof(pct), "(%d年估值分位 %3.0f%%)", ui.roll.key.years, bd.pct);
     rows.push_back({nm, cur, pct});
   }
-  rows.push_back({s.tag, "流通市值加权指数", ""});
+  rows.push_back({s.tag, s.w == kWeightCap ? "流通市值加权指数" : "等权指数", ""});
   const std::vector<std::string> texts = align_cols(rows);
   for (int b = 0; b < kPoolVals; ++b) {
     const PortfolioBand &bd = v.band[b];
@@ -1057,10 +1060,10 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TextColored(kHead, "池 / 行业 (单选)");
   if (ImGui::IsItemHovered())
     tip("选一个池或申万一级行业: 主图画它的价格 + EP / BP / SP / CP / DY Band\n"
-        "• 价格 = 流通市值加权指数 (all = 全A加权; 行业 = 全A 内该行业)\n"
+        "• 价格: 全A加权 / 行业 = 流通市值加权指数 (行业 = 全A 内该行业); 全A等权 / 其余池 = 等权指数 (同 NAV 池线)\n"
         "• 行业成员 = 全A 成分按上一交易日的 SW2021 一级行业 (ind_l1) 切; 行业未知的只进全A\n"
-        "• EP = Σ归母净利TTM / Σ总市值, BP = Σ归母权益MRQ / Σ总市值, SP = Σ营业总收入TTM / Σ总市值,\n"
-        "  CP = Σ经营现金流TTM / Σ总市值, DY = Σ近365日税前分红 / Σ总市值 (整体法, 亏损 / 负权益 / 负现金流照计为负)\n"
+        "• 估值与价格同权重: 个股收益率 = 分子 / 总市值; 加权 = 整体法 Σ分子 / Σ总市值, 等权 = 成分个股收益率的算术平均 (= 等权组合每元的分子)\n"
+        "  分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 近365日税前分红 (亏损 / 负权益 / 负现金流照计为负)\n"
         "• 成分 = 上一交易日收盘定的池 (同池指数); 市值 = 收盘价 × 当日适用总股本, 财务取当日适用 (无前视)\n"
         "• 估值分位 = 当日收益率在过去 N 年 (含当日; 上方滑条) 窗内的分位, 收益率越低越贵 (高 = 贵; ≤ 0 排在最贵端), 逐日滚动; 估值史不满 1 年不画\n"
         "• Band = 价格 × 当日收益率 / q, q = 窗内 5/10/25/50/75/90/95%% 贵度分位的收益率 (与倍数口径的 Band 同一条线);\n"
