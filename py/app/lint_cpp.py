@@ -47,9 +47,6 @@ SKIP_DIRS = {
     "boost",
 }
 
-# clangd binary: prefer PATH, fall back to the bundled LLVM install.
-CLANGD_FALLBACK = Path("/home/chuyin/work/bin/LLVM-22.1.5-Linux-X64/bin/clangd")
-
 # Concurrent preamble/AST builds inside clangd. Lower if memory runs out.
 CLANGD_JOBS = os.cpu_count()
 
@@ -68,12 +65,8 @@ SEV_NAME = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
 def find_clangd() -> str:
     found = shutil.which("clangd")
-    if found:
-        return found
-    assert (
-        CLANGD_FALLBACK.exists()
-    ), f"clangd not found on PATH and fallback missing: {CLANGD_FALLBACK}"
-    return str(CLANGD_FALLBACK)
+    assert found, "clangd not found on PATH"
+    return found
 
 
 def iter_sources(root: Path):

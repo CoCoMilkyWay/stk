@@ -49,11 +49,6 @@ SKIP_DIRS = {
     "boost",  # vendored Boost headers under cpp/include/boost
 }
 
-# clang-format binary: prefer PATH, fall back to the bundled LLVM install.
-CLANG_FORMAT_FALLBACK = Path(
-    "/home/chuyin/work/bin/LLVM-22.1.5-Linux-X64/bin/clang-format"
-)
-
 
 # ============================================================================
 # Helpers
@@ -62,13 +57,8 @@ CLANG_FORMAT_FALLBACK = Path(
 
 def find_clang_format() -> str:
     found = shutil.which("clang-format")
-    if found:
-        return found
-    assert CLANG_FORMAT_FALLBACK.exists(), (
-        f"clang-format not found on PATH and fallback missing: "
-        f"{CLANG_FORMAT_FALLBACK}"
-    )
-    return str(CLANG_FORMAT_FALLBACK)
+    assert found, "clang-format not found on PATH"
+    return found
 
 
 def iter_sources(root: Path):
