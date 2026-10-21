@@ -410,7 +410,7 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   return !cancelled();
 }
 
-// 日层池等权指数: 无叶作用域 (标签库 + 池成员) → load_y 顺带算 index / 估值; 块用完即弃
+// 日层池篮子: 无叶作用域 (标签库 + 池成员) → load_y 顺带算篮子指数 / 估值 / 换手, 整块搬进 PoolCurve; 块用完即弃
 bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   TraceN("PortfolioPool");
   const FeatureTable &ft = *j.ft;
@@ -427,24 +427,16 @@ bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   ScopeCache c;
   if (!ensure_y(c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this))
     return load_failed(F);
-  const size_t nd = es.dates.size(), K = YPlanes::kInds;
-  assert(c.y.index.size() == nd && c.y.index_cap.size() == nd && c.y.ind_index.size() == K * nd);
-  for (int m = 0; m < kPoolVals; ++m)
-    assert(c.y.val[m].size() == nd && c.y.ind_val[m].size() == K * nd);
+  const size_t n = YPlanes::kBaskets * es.dates.size();
   out.dates = es.dates;
-  out.index[kWeightEq] = std::move(c.y.index);
-  out.index[kWeightCap] = std::move(c.y.index_cap);
-  out.turnover[kWeightEq] = c.y.index_turn;
-  out.turnover[kWeightCap] = c.y.index_cap_turn;
-  for (int m = 0; m < kPoolVals; ++m)
+  for (int w = 0; w < kWeights; ++w) {
+    assert(c.y.index[w].size() == n);
+    out.index[w] = std::move(c.y.index[w]);
+    out.turn[w] = c.y.turn[w];
+  }
+  for (int m = 0; m < kPoolVals; ++m) {
+    assert(c.y.val[m].size() == n);
     out.val[m] = std::move(c.y.val[m]);
-  out.inds.resize(K);
-  for (size_t k = 1; k < K; ++k) {
-    PoolCurve::Ind &ind = out.inds[k];
-    const auto seg = [&](const std::vector<float> &x) { return std::vector<float>(x.begin() + k * nd, x.begin() + (k + 1) * nd); };
-    ind.index = seg(c.y.ind_index);
-    for (int m = 0; m < kPoolVals; ++m)
-      ind.val[m] = seg(c.y.ind_val[m]);
   }
   return true;
 }

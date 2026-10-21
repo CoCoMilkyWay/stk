@@ -1,23 +1,24 @@
-// OrderFlow — GUI OrderFlow tab 数据面 (双图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
+// OrderFlow — GUI OrderFlow tab 数据面 (两图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
 // OrderFlow (主池 = 图1 VWAP / 候选轴所在池, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各库落盘日的并集, 各池画各自有的日)
-// ├── Kline  (图2) 单资产全日轴: all 池日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef, 分钟网格; 分钟 K 也是 overlay)
+// ├── Sec   (图1, 网格 L_sec)  单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
+// │            + 多特征 overlay (任意 ColRef; 尾挂主池 vwap); 双槽 ping-pong 整体发布
+// ├── Min   (图2, 网格 L_1min) 单资产全日轴: all 池日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef; 分钟 K 也是 overlay)
 // │            worker 分批流式 (从前往后, 每日每源一次选列读, 下一批后台预读), GUI 画已发布前缀
-// ├── Depth  (图1) 单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
-// │            + 多特征 overlay (任意 ColRef, 秒网格); 双槽 ping-pong 整体发布
-// overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1), 网格: 图1 L_sec / 图2 L_1min
+// ├── Pick  资产筛选: 锚点日逐日 PIT 状态 (双槽 ping-pong) + 筛选 / 候选 (GUI)
+// overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1)
 //   (细于网格的源每格留最后一个有效行). 各源按自己的 (池, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
-// ├── HeatmapColored  GUI 线程私有渲染缓存 (front Depth 槽 + 阈值派生)
-// ├── EventMarks      GUI 线程私有渲染缓存 (选中资产的历史事件 → 图2 日轴 X, 按组分行)
-// └── UI     用户态: 选择 / 锚点 / 请求代 (gen) / 坐标轴缓存
+// ├── HeatColor / Profile / EventMarks / MissingDays  GUI 线程私有渲染缓存, 键 = Memo (键变才重建)
+// └── UI    用户态: 选择 / 锚点 / 三路期望态 Want (键变 → gen++ → Request) / 坐标轴缓存
 //
-// 发布协议 (无锁 SPSC):
-//   Kline: 每批尾 feat_n[i] / y range (release) → pub word [gen|days|points] (release, shared/Progress.hpp PrefixPub);
-//          GUI acquire 读 pub, 只画已发布前缀; gen != 请求代 = 正在重建, 不画.
-//          数组 reserve 满容量后只 push_back → data() 恒稳定, 前缀读安全.
-//   Depth / Pick: PingPong (shared/Progress.hpp) — worker 写背槽 → commit; GUI 帧首 ack 翻面;
-//          pending 未 ack 期间 worker 不碰任何槽.
-// 三块各带进度面 (Kline 自身 / PingPong), 是各自 worker 的 board.
+// 两侧对仗 = 下标 Side (Bid / Ask), 不写两份: 一档价 best[s] / 深度累计 cum[s] / 内沿 edge[s]
+//
+// 发布协议 (无锁 SPSC), 三路同一判据 = 发布代追上请求代 (Min::prefix(gen).ready / Board::ready(gen)):
+//   Min: 每批尾 overlay 计数 / 值域 (release) → pub word [gen|days|points] (release, shared/Progress.hpp PrefixPub);
+//        GUI acquire 读 pub, 只画已发布前缀; 数组 reserve 满容量后只 push_back → data() 恒稳定, 前缀读安全.
+//   Sec / Pick: PingPong (shared/Progress.hpp) — worker 写背槽 → commit; GUI 帧首 ack 翻面;
+//        pending 未 ack 期间 worker 不碰任何槽.
+// 三块各带进度面 (Min 自身 / PingPong), 是各自 worker 的 board.
 #pragma once
 
 #include "codec/L2_DataType.hpp"              // L2::LOB_DEPTH
@@ -31,9 +32,11 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <map>
+#include <optional>
 #include <set>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // ============================================================================
@@ -42,10 +45,12 @@
 
 namespace OrderFlowConst {
 // Data Capacity
-constexpr size_t SEC_CAPACITY = L_SEC_ROWS;  // ~15300 秒/日 (X 轴跨度)
-constexpr size_t MIN_CAPACITY = L_1MIN_ROWS; // ~255 分钟/日 (X 轴跨度)
-constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;  // 30 levels
-constexpr size_t MAX_FEATURES = 8;           // overlay 特征多选上限 (两图同限)
+constexpr size_t SEC_CAPACITY = L_SEC_ROWS;    // ~15300 秒/日 (X 轴跨度)
+constexpr size_t MIN_CAPACITY = L_1MIN_ROWS;   // ~255 分钟/日 (X 轴跨度)
+constexpr size_t LOB_DEPTH = L2::LOB_DEPTH;    // 30 levels
+constexpr size_t MAX_FEATURES = 8;             // overlay 特征多选上限 (两图同限)
+constexpr size_t MAX_LINES = MAX_FEATURES + 1; // overlay 线上限 (选中 + 图1 尾挂 vwap)
+constexpr size_t PRICE_SLOTS = 65536;          // 订单簿价位下标空间 (= lob PRICE_RANGE_SIZE, OrderFlowService.cpp 断言)
 
 // Price and Volume Conversion
 constexpr float TICK_SIZE = 0.01f;            // Minimum price step (RMB)
@@ -72,6 +77,7 @@ constexpr float HEATMAP_AUTO_INK_RATIO = 0.60f; // 自动阈值目标: 着色价
 constexpr size_t SEG_AUCTION_OPEN_END = Clock_to_L_sec(9, 25, 0);     // 600
 constexpr size_t SEG_PREOPEN_END = Clock_to_L_sec(9, 30, 0);          // 900
 constexpr size_t SEG_AUCTION_CLOSE_BEGIN = Clock_to_L_sec(14, 57, 0); // 15120
+constexpr std::array<size_t, 3> SEG_BOUNDS = {SEG_AUCTION_OPEN_END, SEG_PREOPEN_END, SEG_AUCTION_CLOSE_BEGIN};
 
 // GUI Layout Parameters
 constexpr float DEPTH_PANEL_WIDTH = 160.0f; // Width of depth panel (pixels; 纵向深度图)
@@ -84,10 +90,55 @@ constexpr double CANDLESTICK_HALF_WIDTH = 0.5;      // Half width of candlestick
 } // namespace OrderFlowConst
 
 // ============================================================================
+// Memo / Want — GUI 线程的两种键 (缓存失效 / 请求换代), 全 tab 只此两份
+// ============================================================================
+
+// Memo — 渲染缓存的失效键: 键变 (或未建) → stale 记新键并返回 true, 调用方随即重建
+template <class... K>
+struct Memo {
+  std::optional<std::tuple<K...>> key;
+  bool stale(K... k) {
+    std::tuple<K...> t{k...};
+    if (key == t)
+      return false;
+    key = std::move(t);
+    return true;
+  }
+  void reset() { key.reset(); }
+};
+
+// Want — 期望态 → 请求代: 键变 (或 force / 未发过) → gen++, 调用方随即 Request; 发布面以 gen 配对
+template <class K>
+struct Want {
+  std::optional<K> key;
+  uint32_t gen = 0;
+  bool set(const K &k, bool force = false) {
+    if (!force && key == k)
+      return false;
+    key = k;
+    ++gen;
+    return true;
+  }
+  void reset() { key.reset(); } // 下次 set 必换代
+};
+
+// ============================================================================
 // Main OrderFlow Structure
 // ============================================================================
 
 struct OrderFlow {
+  // 两侧下标 (买卖对仗): sign = +1 / −1
+  enum Side : size_t { Bid = 0,
+                       Ask = 1 };
+  template <class T>
+  using PerSide = std::array<T, 2>;
+
+  // 双槽发布面 + 配对判据 (Sec / Pick 同一份)
+  template <class Slot>
+  struct Board : PingPong<Slot> {
+    bool ready(uint32_t g) const { return this->front_slot().gen == g; }
+  };
+
   // ==========================================================================
   // FeatLine — overlay 一条特征线 (x/y 对齐, 只含有效点; 两图同构)
   // ==========================================================================
@@ -100,39 +151,50 @@ struct OrderFlow {
   };
 
   // ==========================================================================
-  // Overlay — 一图的特征 overlay (两图同构): 各线的列 + 点集 + 值域
-  //   V = float (Depth: 整槽发布) / std::atomic<float> (Kline: 前缀发布, worker 逐日更新值域)
+  // Overlay — 一图的特征 overlay (两图同构): 各线的列 + 点集 + 已发布点数 / 值域
+  //   worker: begin (换代: 清点集 / 零计数 / 定列) → 追加点 → publish (值域 relaxed, 点数 release)
+  //   GUI:    count (acquire) 之内的点可读; y_lo / y_hi 随之
   // ==========================================================================
-  template <class V>
   struct Overlay {
-    std::vector<ColRef> refs;                                // [n] 各线的列 (legend / 轴分流按此取元数据, 与槽 / 代配对)
-    std::array<FeatLine, OrderFlowConst::MAX_FEATURES> line; // 只含有效点 (哨兵 / NaN 跳过)
-    std::array<V, OrderFlowConst::MAX_FEATURES> y_min{}, y_max{};
-    size_t n() const { return refs.size(); }
-    void clear() {
-      refs.clear();
-      for (size_t i = 0; i < OrderFlowConst::MAX_FEATURES; ++i) {
-        line[i].clear();
-        y_min[i] = 0.0f;
-        y_max[i] = 0.0f;
-      }
-    }
+    std::vector<ColRef> refs;                             // [size()] 各线的列 (legend / 轴分流 / 配色按此取, 与槽 / 代配对)
+    std::array<FeatLine, OrderFlowConst::MAX_LINES> line; // 只含有效点 (哨兵 / NaN 跳过)
+    std::array<std::atomic<size_t>, OrderFlowConst::MAX_LINES> n{};
+    std::array<std::atomic<float>, OrderFlowConst::MAX_LINES> lo{}, hi{};
+
+    size_t size() const { return refs.size(); }
+    size_t count(size_t i) const { return n[i].load(std::memory_order_acquire); }
+    float y_lo(size_t i) const { return lo[i].load(std::memory_order_relaxed); }
+    float y_hi(size_t i) const { return hi[i].load(std::memory_order_relaxed); }
+
+    void begin(std::vector<ColRef> cols);
+    void publish(const float *lo_, const float *hi_); // [size()] 本代至今的值域
+    void clear();
   };
 
   // ==========================================================================
-  // Kline (图2) — 单资产全日轴: K线 + 多特征, 分批流式, 单调前缀发布
+  // Min (图2, 网格 L_1min) — 单资产全日轴: K线 + 多特征, 分批流式, 单调前缀发布
   // ==========================================================================
-  struct Kline : Progress, PrefixPub { // 进度 done/total = 天
+  struct Min : Progress, PrefixPub { // 进度 done/total = 天
+    enum Ohlc : size_t { kOpen = 0,
+                         kHigh,
+                         kLow,
+                         kClose }; // 与读计划固定列 [0, 4) 同序
+
     // ---- worker 写 / GUI 前缀读 ----
     std::vector<misc::Ymd> dates; // 日轴: 池集各库落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
 
     // K线点集 (all 池日 K): data_valid 行, x = day_idx * MIN_CAPACITY + 该行所跨分钟的中点 (日 K = 日中)
-    std::vector<double> x, open, high, low, close;
+    std::vector<double> x;
+    std::array<std::vector<double>, 4> ohlc;                    // [Ohlc] 与 x 1:1
     double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH; // 一根 K 线半宽 (X 单位; 换代时随 OHLC 层定)
-    Overlay<std::atomic<float>> feat;                           // 与 K线同 X 网格 (refs 换代时定, gen 匹配期间稳定)
+    Overlay feat;                                               // 与 K线同 X 网格 (refs 换代时定, gen 匹配期间稳定)
 
-    // 发布面 (worker release / GUI acquire; pub word 在 PrefixPub)
-    std::array<std::atomic<size_t>, OrderFlowConst::MAX_FEATURES> feat_n{}; // 每特征已发布点数
+    // GUI: 已发布前缀 (发布代 ≠ 请求代 → 未就绪, 计数归零: 数组正在重建)
+    struct Prefix {
+      bool ready = false;
+      size_t days = 0, points = 0;
+    };
+    Prefix prefix(uint32_t gen) const;
 
     // 坐标换算 (纯算术; dates 读取需 gen 匹配)
     size_t day_idx_from_x(double global_x) const {
@@ -152,106 +214,88 @@ struct OrderFlow {
     void reserve_capacity(size_t ohlc_rows);
 
     void clear();
-  } kline;
+  } min;
 
   // ==========================================================================
-  // Depth (图1) — 单 (day, asset) 秒级盘口重放结果 (双槽 ping-pong)
+  // Sec (图1, 网格 L_sec) — 单 (day, asset) 秒级盘口重放结果 (双槽 ping-pong)
   // ==========================================================================
-  struct Depth {
-    // 单秒盘口快照 (秒末终值; 稀疏, 只存重放出有效盘口的秒, 按 tick_idx 升序)
-    struct Tick {
-      size_t tick_idx; // 交易秒下标 [0, 15300)
-      float mid_price; // 竞价交叉秒 = 预撮合参考价, 其余 = (bid1+ask1)/2
-      // 集合竞价预撮合 (订单簿 update_depth 竞价分支): ref > 0 = 竞价且簿交叉, 其余恒 0
-      float ref_price;                                                   // 元
-      float matched_amount;                                              // 元, 参考价位虚拟匹配额
-      float imbalance_amount;                                            // 元, SIGNED: + 买剩, - 卖剩
-      std::array<float, OrderFlowConst::LOB_DEPTH> bid_price, ask_price; // 元, NaN = 笼外/哨兵
-      std::array<float, OrderFlowConst::LOB_DEPTH> bid_volume;           // 手, SIGNED: > 0
-      std::array<float, OrderFlowConst::LOB_DEPTH> ask_volume;           // 手, SIGNED: < 0
-    };
+  struct Sec {
+    static constexpr uint32_t kNoRow = UINT32_MAX;
 
-    // 线图: 与 ticks 1:1 (plot_idx == ticks 下标)
-    struct Plot {
-      std::vector<double> x, mid_price, best_bid, best_ask;
-      std::vector<size_t> tick_idx_map; // 秒下标 -> plot_idx (SIZE_MAX = 无), O(1) snap
-      // 分钟 VWAP 阶梯 (L_1min 特征列 vwap, 与标签 exit 同源; 只有池轴内且当日已算特征的资产才有):
-      // 逐有效分钟一点, X = 分钟起始秒, 末尾补一点 (末分钟末秒) 收口; 与 ticks 无关
-      std::vector<double> vwap_x, vwap_y;
-      double y_min = 0.0, y_max = 0.0;
-      double y_min_with_margin = 0.0, y_max_with_margin = 0.0;
-      void clear();
-    };
-
-    // 热力图 (全簿): 逐有效秒喂订单簿全部可见价位 → 按价位合并矩形 (amount 不变则延长)
-    struct HeatmapMerged {
+    // 热力图 (全簿): 逐有效秒喂订单簿全部可见价位 → 按价位合并矩形 (额不变则延长; 时段边界处断开, 矩形不跨段)
+    struct Heat {
       struct Rect {
-        size_t tick_start, tick_end;
-        float price_high, price_low; // high >= low always
-        int32_t amount_rmb;          // SIGNED: +bid, -ask
+        uint32_t t0, t1; // [t0, t1) 秒
+        int32_t amount;  // 元, SIGNED 恒非 0: + bid (矩形 [价 − tick, 价]) / − ask ([价, 价 + tick])
       };
       struct Level {
         float price;
-        std::vector<Rect> rects;
+        size_t off;                     // 首个矩形在全体矩形拼接序中的下标 (GUI 着色数组按此对齐)
+        std::vector<Rect> rects;        // t0 升序, 首尾不重叠
+        const Rect *at(size_t t) const; // 覆盖秒 t 的矩形 (无 = nullptr)
       };
-      std::vector<Level> levels;
+      std::vector<Level> levels; // 价升序
       size_t rect_count = 0;
+
+      // 价落在 [lo, hi] 的价位下标区间 [first, last) (价升序二分)
+      std::pair<size_t, size_t> span(double lo, double hi) const;
+      static std::pair<double, double> rect_y(float price, int32_t amount) { // 矩形价区间 [y0, y1]
+        const double p = static_cast<double>(price), tick = static_cast<double>(OrderFlowConst::TICK_SIZE);
+        return amount > 0 ? std::pair{p - tick, p} : std::pair{p, p + tick};
+      }
       void clear();
     };
 
-    // 深度面板查询结果
-    struct Snapshot {
-      float mid_price = 0;
-      float ref_price = 0; // 预撮合 (> 0 = 竞价交叉秒), 语义同 Tick
-      float matched_amount = 0;
-      float imbalance_amount = 0;
-      const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_price = nullptr;
-      const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_price = nullptr;
-      const std::array<float, OrderFlowConst::LOB_DEPTH> *bid_volume = nullptr;
-      const std::array<float, OrderFlowConst::LOB_DEPTH> *ask_volume = nullptr;
-      size_t tick_idx = 0;
-      struct {
-        uint8_t hour, minute, second;
-      } time;
-      bool valid = false;
+    // 热力图构建暂存 (worker 私有常驻): 价位下标 = key − base, 稠密 O(1)
+    struct HeatScratch {
+      static constexpr uint32_t kNoLevel = UINT32_MAX;
+      uint32_t base = 0;                              // 当日价位基准 (key = base + 价位下标)
+      std::vector<uint32_t> level_of;                 // [PRICE_SLOTS] 价位下标 → levels 下标 (只在重放期有效)
+      std::vector<std::pair<int, int32_t>> prev, cur; // 上一提交秒 / 本秒全簿: (price_key 升序, SIGNED 元, 非 0)
+      size_t t_prev = 0;                              // 上一提交秒
     };
 
     // ---- 数据 (worker 写背槽, 发布后只读) ----
-    uint32_t gen = 0; // 请求代 (GUI 配对; 兼作 HeatmapColored 失效键)
+    uint32_t gen = 0; // 请求代 (GUI 配对; 兼作 HeatColor / Profile 失效键)
     misc::Ymd date = 0;
     size_t asset_idx = SIZE_MAX;
     bool has_data = false; // 帧存在且重放出至少一个有效快照
     size_t order_count = 0;
 
-    std::vector<Tick> ticks; // 按 tick_idx 升序
-    Plot plot;
-    HeatmapMerged merged;
+    // 秒序列 (秒末终值; 稀疏, 只存重放出有效盘口的秒, x 升序; 各列 1:1, 行 = 下标)
+    std::vector<double> x;             // 交易秒下标 [0, 15300)
+    std::vector<double> mid;           // 竞价交叉秒 = 预撮合参考价, 其余 = (bid1 + ask1) / 2
+    PerSide<std::vector<double>> best; // 一档价 (元); 竞价交叉秒 NaN (断线不画)
+    std::vector<double> ref;           // 预撮合参考价 (订单簿竞价分支): > 0 = 竞价且簿交叉, 其余恒 0
+    std::vector<double> matched;       // 元, 参考价位虚拟匹配额
+    std::vector<double> imbalance;     // 元, SIGNED: + 买剩, − 卖剩
+    std::vector<uint32_t> row_of;      // [SEC_CAPACITY] 秒 → 行 (kNoRow = 无), O(1) snap
+    double y_lo = 0.0, y_hi = 0.0;     // 初始 Y 视野 (连续竞价秒 bid1..ask1 极值 ± 余量; 双击复位同口径)
+
+    Heat heat;
     // 当日自动热力图阈值 (log10 元): 载入新槽时 GUI 取作初值 → 色块浓度跨日/跨资产一致
     float auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
-    Overlay<float> feat; // 与图2 同源, X = 行末秒 − 1
+    Overlay feat; // 与图2 同源, X = 行末秒 − 1
 
     // ---- 查询 (GUI, front 槽; X = 秒下标) ----
-    size_t plot_idx_from_x(double x) const;
-    size_t snap_to_valid_plot_idx(double x) const;
-    Snapshot query_depth(size_t plot_idx) const;
+    size_t size() const { return x.size(); }
+    size_t row_at(double gx) const; // 秒有快照 O(1), 否则右邻有效秒 (越末取末行); 空 = SIZE_MAX
 
-    // ---- 构建 (worker, 背槽) ----
-    struct HeatmapScratch {
-      std::map<int, size_t> price_to_level;              // price_key -> merged.levels 下标 (整代累积, 有序)
-      std::vector<std::pair<int, int32_t>> current_tick; // 当前秒全簿: (price_key 升序, SIGNED amount_rmb)
-      void clear();
-    };
-    void build_plot();
-    // 自动阈值: 合并矩形按持续秒加权的 log10(净额) 上分位 (依赖 build_plot 的初始 Y 视野)
-    void build_auto_threshold();
-    // 热力图增量构建: begin 一次 → 重放中逐有效秒 (caller 填好 current_tick) commit
-    void heatmap_begin(HeatmapScratch &scratch);
-    void heatmap_commit_tick(HeatmapScratch &scratch, size_t tick_idx);
+    // ---- 构建 (worker, 背槽): begin → 重放中逐快照 put (秒内覆盖写) + 逐有效秒 heat_commit (调用方填好 s.cur) → end ----
+    void begin(HeatScratch &s, uint32_t base);
+    void put(size_t t, float bid1, float ask1, float ref_price, float matched_amount, float imbalance_amount);
+    void heat_commit(HeatScratch &s, size_t t);
+    void end(); // 热力图价升序 + 拼接下标 → Y 视野 → 自动阈值
 
     void clear();
+
+  private:
+    void build_view();
+    // 自动阈值: 合并矩形按持续秒加权的 log10(净额) 上分位 (依赖 build_view 的初始 Y 视野)
+    void build_auto_threshold();
   };
 
-  PingPong<Depth> depth;
+  Board<Sec> sec;
 
   // ==========================================================================
   // Pick (资产筛选) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
@@ -269,14 +313,14 @@ struct OrderFlow {
       bool delisted = false;   // 当日已退市
     };
 
-    // ---- 逐日状态槽 (双槽 ping-pong, 对仗 Depth) ----
+    // ---- 逐日状态槽 (双槽 ping-pong, 对仗 Sec) ----
     struct Slot {
       uint32_t gen = 0;
       misc::Ymd date = 0;
       std::vector<Meta> meta; // [A] 与 AssetAxis 同序 (asset_idx 直接下标)
       void clear();
     };
-    PingPong<Slot> slots;
+    Board<Slot> slots;
 
     // ---- 筛选条件 (GUI; 空集 = 该维不筛, 对仗 DATABASE/TABLE) ----
     std::set<int> st_filter;        // risk_warn 取值 0..3
@@ -287,14 +331,8 @@ struct OrderFlow {
     // ---- 候选列表 (GUI 派生缓存: 过滤 + 排序) ----
     std::vector<size_t> candidates;    // 通过筛选的 asset_idx (市场 → 代码序)
     std::vector<size_t> display_order; // 全部 asset_idx 按 市场 → 代码 排序 (静态, 建一次)
-    uint32_t cached_gen = UINT32_MAX;  // 上次 rebuild 绑定的槽 gen
     uint64_t filter_epoch = 0;         // 筛选条件版本 (改一次 +1)
-    uint64_t cached_epoch = UINT64_MAX;
-    bool matches(uint32_t g) const { return cached_gen == g && cached_epoch == filter_epoch; }
-
-    // 请求快照 (GUI; 锚点日变 → gen++ → RequestPick)
-    uint32_t gen = 0;
-    misc::Ymd req_date = 0;
+    Memo<uint32_t, uint64_t> key;      // (槽 gen, 筛选版本)
 
     // GUI: 单资产是否通过筛选 (has_data 是前置条件)
     bool passes(const Meta &m, int board) const;
@@ -307,56 +345,35 @@ struct OrderFlow {
   } pick;
 
   // ==========================================================================
-  // HeatmapColored — GUI 线程私有: front Depth 槽 + 阈值 → 着色矩形
+  // GUI 线程私有渲染缓存 (四块同形: 产物 + Memo 键 + build / clear; 调用方 key.stale(...) 即 build)
   // ==========================================================================
-  struct HeatmapColored {
-    struct Rect {
-      double x1, y1, x2, y2;
-      uint32_t color;
-    };
-    struct Metadata { // tooltip (与 rects 1:1)
-      int32_t amount_rmb;
-      float price; // bid: price_high, ask: price_low
-      size_t tick_start, tick_end;
-    };
-    std::vector<Rect> rects;
-    std::vector<Metadata> metadata;
 
-    uint32_t gen = UINT32_MAX; // 绑定的 Depth 槽 gen
-    float threshold = -1.0f;   // 绑定的 log_amount_threshold
-    bool matches(uint32_t g, float thr) const { return gen == g && threshold == thr; }
-
-    void build(const Depth &src, float log_threshold); // GUI 线程
+  // HeatColor — front Sec 槽 + 阈值 → 每矩形颜色 (与 Sec::Heat 矩形拼接序 1:1, 下标 = Level::off + k; 0 = 透明)
+  struct HeatColor {
+    std::vector<uint32_t> color;
+    Memo<uint32_t, float> key; // (Sec 槽 gen, log 阈值)
+    void build(const Sec &src, float log_threshold);
     void clear();
-  } heatmap_colored;
+  } heat_color;
 
-  // ==========================================================================
-  // DepthProfile — GUI 线程私有: 锚点秒的全簿截面 → 纵向深度图 (图1右)
+  // Profile — 锚点秒的全簿截面 → 纵向深度图 (图1右)
   //   数据源 = 热力图合并矩形 (全簿, 不受 30 价位限制): 每价位二分找覆盖锚点秒的矩形.
-  //   竞价交叉簿三态: 纯买区 (< 最低卖价位) / 纯卖区 (> 最高买价位) / 重合区 [ask_low, bid_top]
-  // ==========================================================================
-  struct DepthProfile {
-    // 逐价位净额 (价升序; amount SIGNED 元: + 买 - 卖)
-    std::vector<double> price, amount;
-    // 累计曲线 (万元): 买自最高买价向下累计, 卖自最低卖价向上累计 (各自独立点集)
-    std::vector<double> bid_cum_x, bid_cum_y; // y = 价格降序
-    std::vector<double> ask_cum_x, ask_cum_y; // y = 价格升序
-    double bid_top = 0, ask_low = 0;          // 最高买价位价 / 最低卖价位价 (交叉: ask_low < bid_top)
-    double cum_max = 0;                       // 两侧累计额最大值 (万元, X 轴范围)
-
-    uint32_t gen = UINT32_MAX; // 绑定的 Depth 槽 gen
-    size_t tick = SIZE_MAX;    // 绑定的锚点秒
-    bool matches(uint32_t g, size_t t) const { return gen == g && tick == t; }
-
-    void build(const Depth &src, size_t tick_idx); // GUI 线程
+  //   竞价交叉簿三态: 纯买区 (< edge[Ask]) / 纯卖区 (> edge[Bid]) / 重合区 [edge[Ask], edge[Bid]]
+  struct Profile {
+    struct Curve {
+      std::vector<double> x, y; // x = 累计额 (万元), y = 价
+    };
+    std::vector<double> price, amount; // 逐价位净额 (价升序; amount SIGNED 元: + 买 − 卖)
+    PerSide<Curve> cum;                // 累计曲线: 自内沿向外 (Bid 价降序 / Ask 价升序), 各自独立点集
+    PerSide<double> edge{};            // 内沿价: 最高买价位 / 最低卖价位 (交叉: edge[Ask] < edge[Bid]; 0 = 该侧空)
+    double cum_max = 0;                // 两侧累计额最大值 (万元, X 轴范围)
+    Memo<uint32_t, size_t> key;        // (Sec 槽 gen, 锚点秒)
+    void build(const Sec &src, size_t t);
     void clear();
-  } depth_profile;
+  } profile;
 
-  // ==========================================================================
-  // EventMarks — GUI 线程私有: 选中资产的历史事件 (AssetInfo::events) → 图2 日轴 X, 按组分行
-  //   日 → 日轴: 单点落在 d0 起首个日轴日 (非交易日公告顺延), 早于轴首 / 晚于轴末丢;
-  //   区间裁到日轴, 与日轴无交丢. 缓存键 (Kline 发布代, 事件构建代): 换资产 / 重扫日轴 / 基本面重建都失效
-  // ==========================================================================
+  // EventMarks — 选中资产的历史事件 (AssetInfo::events) → 图2 日轴 X, 按组分行
+  //   日 → 日轴: 单点落在 d0 起首个日轴日 (非交易日公告顺延), 早于轴首 / 晚于轴末丢; 区间裁到日轴, 与日轴无交丢
   struct EventMarks {
     struct Mark {
       double x0, x1; // [首日起点, 末日终点) (图2 X)
@@ -364,14 +381,43 @@ struct OrderFlow {
     };
     const std::vector<AssetEvent> *events = nullptr;  // 选中资产的事件 (AssetInfo 内; seq 配对期间稳定)
     std::array<std::vector<Mark>, kEventGroups> lane; // 按组, 各行 x0 升序
-    uint32_t gen = UINT32_MAX;                        // 绑定的 Kline 发布代
-    uint64_t seq = UINT64_MAX;                        // 绑定的 AssetEvents::seq
-    bool matches(uint32_t g, uint64_t s) const { return gen == g && seq == s; }
-
-    // GUI 线程; dates = Kline 日轴 (gen 配对期间稳定), evs = 选中资产的事件 (nullptr = 无)
-    void build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs, uint32_t g, uint64_t s);
+    Memo<uint32_t, uint64_t> key;                     // (Min 请求代, AssetEvents::seq): 换资产 / 重扫日轴 / 基本面重建都失效
+    // dates = Min 日轴 (gen 配对期间稳定), evs = 选中资产的事件 (nullptr = 无)
+    void build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs);
     void clear();
   } event_marks;
+
+  // MissingDays — 已发布前缀中该资产无 K 线的 day_idx → 图2 淡黄竖条 (只在单池日轴画: 多池叠加 = 并集日轴, 不画)
+  struct MissingDays {
+    std::vector<size_t> days;
+    Memo<uint32_t, size_t> key; // (Min 请求代, 已发布日数): 流式追加 / 换资产 / 重扫日期 都失效
+    void build(const Min &src, size_t pub_days, size_t pub_points);
+    void clear();
+  } missing_days;
+
+  // ==========================================================================
+  // 三路期望态键 (GUI 快照, 服务按键发请求; 键变 → 换代)
+  //   feats = 同一组选中列各截到图的网格 (图2 ≥ L_1min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
+  //   main  = 主池 (选中列所在的唯一池, 无选中 = all): 图1 VWAP / 候选轴
+  // ==========================================================================
+  struct MinKey {
+    size_t asset = SIZE_MAX;
+    std::vector<ColRef> feats;
+    PoolMask pools = 0; // 日轴池集 (all + overlay 各池); 变了 → 重扫日轴
+    bool operator==(const MinKey &) const = default;
+  };
+  struct SecKey {
+    PoolId main = kAllPool;
+    misc::Ymd date = 0;
+    size_t asset = SIZE_MAX;
+    std::vector<ColRef> feats;
+    bool operator==(const SecKey &) const = default;
+  };
+  struct PickKey {
+    PoolId main = kAllPool;
+    misc::Ymd date = 0;
+    bool operator==(const PickKey &) const = default;
+  };
 
   // ==========================================================================
   // UI State — GUI 线程私有 (请求代 gen 与发布面配对)
@@ -390,18 +436,15 @@ struct OrderFlow {
     // log10(amount) 阈值, 区间 [HEATMAP_LOG_THR_MIN, MAX]; 换槽时取该槽 auto_log_threshold
     float log_amount_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
 
-    // 请求快照 (期望态; 变化 → gen++ → Request*)
-    uint32_t kline_gen = 0, depth_gen = 0;
-    size_t kline_asset = SIZE_MAX, depth_asset = SIZE_MAX;
-    std::vector<ColRef> kline_feats, depth_feats; // 选中特征列 (同一组选中, 各截到图的网格: 图2 ≥ L_1min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
-    PoolMask kline_pools = 0;                     // 图2 池集 (主池 + overlay 各池) = 日轴并集的池; 变了 → 重扫日轴
-    PoolId main_pool = kAllPool;                  // 主池 (选中列所在的唯一池, 无选中 = all): 图1 VWAP / 候选轴; 变了 → 图1 / Pick 重发
-    misc::Ymd depth_date = 0;
+    // 三路期望态 (键变 → gen++ → Request)
+    Want<MinKey> min;
+    Want<SecKey> sec;
+    Want<PickKey> pick;
 
     // 图2 X 域 (= 特征日数 × MIN_CAPACITY): GUI 自持副本, 换代在途时照画空图不撤轴;
     // 只在域本身变了 (重扫日期) 才复位视野 —— 换资产不动 X
     double min_x_max = 0.0, min_x_applied = 0.0;
-    bool kline_rescan_pending = false; // 请求带 rescan (dates 正在重扫): 期间 dates 不可读
+    bool min_rescan_pending = false; // 请求带 rescan (dates 正在重扫): 期间 dates 不可读
 
     // 图2 Y1 = 可见 X 区间内 K 线贴合 (RangeFit): 发布变了 / X 视野变了 → 重贴; 只动 Y 轴不重贴 (手动 Y 缩放保留)
     size_t min_last_pub_days = SIZE_MAX;               // 上次贴合 Y1 时的已发布日数
@@ -409,12 +452,6 @@ struct OrderFlow {
     double min_view_x_min = 0.0, min_view_x_max = 0.0; // 上帧 X 视野
     uint32_t sec_last_gen = UINT32_MAX;                // 上次 L_sec 视图重置时的槽 gen
     double sec_y_min = 0.0, sec_y_max = 0.0;           // 图1 当前 Y 视野 (每帧快照; 右侧深度面板同步)
-
-    // 图2 缺失日标记缓存: 已发布前缀中该资产无 data_valid 分钟的 day_idx (只在单池日轴时画: 多池叠加时日轴是并集, 不画)
-    // (kline_gen, pub_days) 变才重算 — 流式追加 / 换资产 / 重扫日期 都被 gen 覆盖
-    std::vector<size_t> min_missing_days;
-    uint32_t min_missing_days_gen = UINT32_MAX;
-    size_t min_missing_days_pub_days = 0;
 
     void clear();
   } ui;

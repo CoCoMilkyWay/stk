@@ -199,7 +199,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.scope.n_full = y.n_full;
   res.dates = dates;
   res.read_scope = es.rs;
-  res.pool_index = y.index;
+  res.pool_index.assign(y.index[kWeightEq].begin(), y.index[kWeightEq].begin() + T); // 篮子 0 = 池整体
   res.hd = y.hd;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
     res.scope.time = now_string();

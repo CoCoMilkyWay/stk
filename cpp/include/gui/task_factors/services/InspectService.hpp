@@ -83,7 +83,7 @@ struct InspectResult : EvalStat {
   std::vector<misc::Ymd> dates;   // [days]
   factor::stat::Holds hd;         // hd.h[hi]
   analysis::ReadScope read_scope; // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
-  std::vector<float> pool_index;  // [T] 池等权指数 (= YPlanes::index, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
+  std::vector<float> pool_index;  // [T] 池等权指数 (= YPlanes::index[kWeightEq] 篮子 0, 作用域级, 起点 1): 右上 K 线叠加, UI 按视野左端个股价重锚
   InspectPlanes pl;               // 一级平面 (Row / 尾部 / 秩)
   AlphaDist alpha_dist;           // alpha 分布 (全体 + 各组, 左下右半图)
   std::string error;              // 非空 = 没算成 (特征叶值域越界等), 其余字段空

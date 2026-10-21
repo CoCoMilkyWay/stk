@@ -8,159 +8,255 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <utility>
 
 // ============================================================================
-// OrderFlow::Kline Implementation
+// OrderFlow::Overlay Implementation
 // ============================================================================
 
-void OrderFlow::Kline::begin_generation(uint32_t gen, std::vector<ColRef> refs, double half_width_) {
-  assert(refs.size() <= OrderFlowConst::MAX_FEATURES);
+void OrderFlow::Overlay::begin(std::vector<ColRef> cols) {
+  assert(cols.size() <= OrderFlowConst::MAX_LINES);
+  for (size_t i = 0; i < OrderFlowConst::MAX_LINES; ++i) {
+    n[i].store(0, std::memory_order_release);
+    lo[i].store(0.0f, std::memory_order_relaxed);
+    hi[i].store(0.0f, std::memory_order_relaxed);
+    line[i].clear();
+  }
+  refs = std::move(cols);
+}
+
+// 先值域后点数 (release): GUI acquire 读到点数即见同批值域
+void OrderFlow::Overlay::publish(const float *lo_, const float *hi_) {
+  for (size_t i = 0; i < size(); ++i) {
+    lo[i].store(lo_[i], std::memory_order_relaxed);
+    hi[i].store(hi_[i], std::memory_order_relaxed);
+    n[i].store(line[i].x.size(), std::memory_order_release);
+  }
+}
+
+void OrderFlow::Overlay::clear() {
+  begin({});
+}
+
+// ============================================================================
+// OrderFlow::Min Implementation
+// ============================================================================
+
+OrderFlow::Min::Prefix OrderFlow::Min::prefix(uint32_t gen) const {
+  Prefix p;
+  uint32_t pub_gen;
+  unpack(pub.load(std::memory_order_acquire), pub_gen, p.days, p.points);
+  p.ready = pub_gen == (gen & 0xFFFF);
+  if (!p.ready)
+    p.days = p.points = 0;
+  return p;
+}
+
+void OrderFlow::Min::begin_generation(uint32_t gen, std::vector<ColRef> refs, double half_width_) {
   // 换代顺序: 先零计数 / 清数组 / 定 overlay 列, 后置 gen (release) —— GUI 见到新 gen 时一切已就位
-  // (此刻 GUI 请求代已是新代, 发布代仍是旧代 → GUI 不读 kline, 数组可安全重建)
-  for (auto &n : feat_n)
-    n.store(0, std::memory_order_release);
+  // (此刻 GUI 请求代已是新代, 发布代仍是旧代 → GUI 不读 min, 数组可安全重建)
+  feat.begin(std::move(refs));
   x.clear();
-  open.clear();
-  high.clear();
-  low.clear();
-  close.clear();
-  feat.clear();
-  feat.refs = std::move(refs);
+  for (auto &v : ohlc)
+    v.clear();
   half_width = half_width_;
   pub.store(pack(gen, 0, 0), std::memory_order_release);
 }
 
-void OrderFlow::Kline::reserve_capacity(size_t ohlc_rows) {
+void OrderFlow::Min::reserve_capacity(size_t ohlc_rows) {
   // 满容量 = 日数 × 每日有效行 (OHLC: 其层; overlay: 网格 L_1min); 之后只 push_back → data() 恒稳定 (前缀读安全)
   const size_t bars = dates.size() * ohlc_rows, cap = dates.size() * level_valid_rows(L_1min);
   x.reserve(bars);
-  open.reserve(bars);
-  high.reserve(bars);
-  low.reserve(bars);
-  close.reserve(bars);
-  for (size_t i = 0; i < feat.n(); ++i) {
+  for (auto &v : ohlc)
+    v.reserve(bars);
+  for (size_t i = 0; i < feat.size(); ++i) {
     feat.line[i].x.reserve(cap);
     feat.line[i].y.reserve(cap);
   }
 }
 
-void OrderFlow::Kline::clear() {
+void OrderFlow::Min::clear() {
   idle();
   pub.store(0, std::memory_order_release);
-  for (auto &n : feat_n)
-    n.store(0, std::memory_order_release);
   dates.clear();
   x.clear();
-  open.clear();
-  high.clear();
-  low.clear();
-  close.clear();
+  for (auto &v : ohlc)
+    v.clear();
   feat.clear();
 }
 
 // ============================================================================
-// OrderFlow::Depth Implementation
+// OrderFlow::Sec Implementation
 // ============================================================================
 
-void OrderFlow::Depth::Plot::clear() {
-  x.clear();
-  mid_price.clear();
-  best_bid.clear();
-  best_ask.clear();
-  tick_idx_map.clear();
-  vwap_x.clear();
-  vwap_y.clear();
-  y_min = y_max = 0.0;
-  y_min_with_margin = y_max_with_margin = 0.0;
+const OrderFlow::Sec::Heat::Rect *OrderFlow::Sec::Heat::Level::at(size_t t) const {
+  auto it = std::upper_bound(rects.begin(), rects.end(), t, [](size_t v, const Rect &r) { return v < r.t0; });
+  if (it == rects.begin())
+    return nullptr;
+  --it;
+  return t < it->t1 ? &*it : nullptr;
 }
 
-void OrderFlow::Depth::HeatmapMerged::clear() {
+std::pair<size_t, size_t> OrderFlow::Sec::Heat::span(double lo, double hi) const {
+  const auto first = std::lower_bound(levels.begin(), levels.end(), lo, [](const Level &l, double v) { return l.price < v; });
+  const auto last = std::upper_bound(first, levels.end(), hi, [](double v, const Level &l) { return v < l.price; });
+  return {static_cast<size_t>(first - levels.begin()), static_cast<size_t>(last - levels.begin())};
+}
+
+void OrderFlow::Sec::Heat::clear() {
   levels.clear();
   rect_count = 0;
 }
 
-void OrderFlow::Depth::HeatmapScratch::clear() {
-  price_to_level.clear();
-  current_tick.clear();
+size_t OrderFlow::Sec::row_at(double gx) const {
+  if (x.empty())
+    return SIZE_MAX;
+  const size_t t = static_cast<size_t>(std::max(0.0, gx));
+  if (t < row_of.size() && row_of[t] != kNoRow)
+    return row_of[t];
+  const auto it = std::lower_bound(x.begin(), x.end(), gx);
+  return it == x.end() ? x.size() - 1 : static_cast<size_t>(it - x.begin());
 }
 
-size_t OrderFlow::Depth::plot_idx_from_x(double gx) const {
-  auto it = std::lower_bound(plot.x.begin(), plot.x.end(), gx);
-  if (it == plot.x.end())
-    return plot.x.empty() ? SIZE_MAX : plot.x.size() - 1;
-  return static_cast<size_t>(it - plot.x.begin());
+void OrderFlow::Sec::begin(HeatScratch &s, uint32_t base) {
+  constexpr size_t T = OrderFlowConst::SEC_CAPACITY;
+  x.reserve(T);
+  mid.reserve(T);
+  for (auto &v : best)
+    v.reserve(T);
+  ref.reserve(T);
+  matched.reserve(T);
+  imbalance.reserve(T);
+  row_of.assign(T, kNoRow);
+  heat.levels.reserve(OrderFlowConst::ESTIMATED_PRICE_LEVELS);
+
+  s.base = base;
+  s.level_of.assign(OrderFlowConst::PRICE_SLOTS, HeatScratch::kNoLevel);
+  s.prev.clear();
+  s.cur.clear();
+  s.t_prev = 0;
 }
 
-size_t OrderFlow::Depth::snap_to_valid_plot_idx(double gx) const {
-  // Fast path: O(1) 秒下标 → plot_idx
-  const size_t tick_idx = static_cast<size_t>(std::max(0.0, gx));
-  if (tick_idx < plot.tick_idx_map.size()) {
-    const size_t mapped = plot.tick_idx_map[tick_idx];
-    if (mapped != SIZE_MAX)
-      return mapped;
+// 秒内覆盖写: 终值 = 秒末盘口 (分钟语义, 粒度换成秒)
+void OrderFlow::Sec::put(size_t t, float bid1, float ask1, float ref_price, float matched_amount, float imbalance_amount) {
+  assert(t < OrderFlowConst::SEC_CAPACITY && "秒下标越出日内");
+  uint32_t &r = row_of[t];
+  if (r == kNoRow) {
+    assert((x.empty() || static_cast<double>(t) > x.back()) && "秒须升序");
+    r = static_cast<uint32_t>(size());
+    x.push_back(static_cast<double>(t));
+    mid.push_back(0.0);
+    for (auto &v : best)
+      v.push_back(0.0);
+    ref.push_back(0.0);
+    matched.push_back(0.0);
+    imbalance.push_back(0.0);
   }
-  return plot_idx_from_x(gx);
-}
-
-OrderFlow::Depth::Snapshot OrderFlow::Depth::query_depth(size_t plot_idx) const {
-  Snapshot result;
-  if (plot_idx >= ticks.size())
-    return result;
-
-  const Tick &tick = ticks[plot_idx];
-  result.mid_price = tick.mid_price;
-  result.ref_price = tick.ref_price;
-  result.matched_amount = tick.matched_amount;
-  result.imbalance_amount = tick.imbalance_amount;
-  result.bid_price = &tick.bid_price;
-  result.ask_price = &tick.ask_price;
-  result.bid_volume = &tick.bid_volume;
-  result.ask_volume = &tick.ask_volume;
-  result.tick_idx = tick.tick_idx;
-
-  const ClockTime ct = L_sec_to_Clock(tick.tick_idx);
-  result.time.hour = ct.hour;
-  result.time.minute = ct.minute;
-  result.time.second = ct.second;
-  result.valid = true;
-  return result;
-}
-
-void OrderFlow::Depth::build_plot() {
-  plot.clear();
-
-  plot.x.reserve(ticks.size());
-  plot.mid_price.reserve(ticks.size());
-  plot.best_bid.reserve(ticks.size());
-  plot.best_ask.reserve(ticks.size());
-  plot.tick_idx_map.assign(OrderFlowConst::SEC_CAPACITY, SIZE_MAX);
-
+  // 竞价交叉秒: bid/ask/spread 无意义 → NaN 断线不画, mid = 预撮合参考价 (图1 mid 线在竞价段即预撮合曲线)
   constexpr double NAN_D = std::numeric_limits<double>::quiet_NaN();
+  const bool crossed = ref_price > 0.0f;
+  mid[r] = crossed ? static_cast<double>(ref_price) : 0.5 * (static_cast<double>(bid1) + static_cast<double>(ask1));
+  best[Bid][r] = crossed ? NAN_D : static_cast<double>(bid1);
+  best[Ask][r] = crossed ? NAN_D : static_cast<double>(ask1);
+  ref[r] = static_cast<double>(ref_price);
+  matched[r] = static_cast<double>(matched_amount);
+  imbalance[r] = static_cast<double>(imbalance_amount);
+}
+
+// 一秒的全簿 (s.cur, key 升序) 并入合并矩形: 与上一提交秒 (s.prev) 归并 —— 同额延长 / 变额断开 / 消失闭合 / 新现开矩形.
+// 挂单在两提交秒之间 (无快照的秒) 不变, 故延长 / 闭合都盖到 t.
+void OrderFlow::Sec::heat_commit(HeatScratch &s, size_t t) {
+  const uint32_t t32 = static_cast<uint32_t>(t);
+  const auto rects_of = [&](int key) -> std::vector<Heat::Rect> & {
+    const size_t i = static_cast<size_t>(key) - s.base;
+    assert(i < s.level_of.size() && s.level_of[i] != HeatScratch::kNoLevel);
+    return heat.levels[s.level_of[i]].rects;
+  };
+  const auto open = [&](int key, int32_t amount) {
+    const size_t i = static_cast<size_t>(key) - s.base;
+    assert(i < s.level_of.size() && "价位下标越出订单簿下标空间");
+    uint32_t &li = s.level_of[i];
+    if (li == HeatScratch::kNoLevel) {
+      li = static_cast<uint32_t>(heat.levels.size());
+      heat.levels.push_back({static_cast<float>(key) / OrderFlowConst::PRICE_SCALE, 0, {}});
+    }
+    heat.levels[li].rects.push_back({t32, t32 + 1, amount});
+  };
+  const auto close = [&](std::vector<Heat::Rect> &rs) { // 挂单持续到本秒前; 零宽 (边界处新开的段首) 弃
+    rs.back().t1 = t32;
+    if (rs.back().t0 == rs.back().t1)
+      rs.pop_back();
+  };
+
+  // 时段边界 b ∈ (上一提交秒, t]: 在场价位于 b 断开重开 (段首零宽, 下面归并延长或弃) —— 矩形不跨段, 各段各自色系
+  for (const size_t b : OrderFlowConst::SEG_BOUNDS) {
+    if (!(s.t_prev < b && b <= t))
+      continue;
+    const uint32_t b32 = static_cast<uint32_t>(b);
+    for (const auto &[key, amount] : s.prev) {
+      std::vector<Heat::Rect> &rs = rects_of(key);
+      rs.back().t1 = b32;
+      rs.push_back({b32, b32, amount});
+    }
+  }
+
+  const auto &P = s.prev, &C = s.cur;
+  size_t i = 0, j = 0;
+  while (i < P.size() || j < C.size()) {
+    if (j == C.size() || (i < P.size() && P[i].first < C[j].first)) {
+      close(rects_of(P[i].first)); // 消失
+      ++i;
+    } else if (i == P.size() || C[j].first < P[i].first) {
+      open(C[j].first, C[j].second); // 新现
+      ++j;
+    } else {
+      std::vector<Heat::Rect> &rs = rects_of(C[j].first);
+      assert(rs.back().amount == P[i].second);
+      if (P[i].second == C[j].second) {
+        rs.back().t1 = t32 + 1; // 未动: 延长
+      } else {
+        close(rs); // 变额: 断开
+        open(C[j].first, C[j].second);
+      }
+      ++i;
+      ++j;
+    }
+  }
+  std::swap(s.prev, s.cur);
+  s.t_prev = t;
+}
+
+void OrderFlow::Sec::end() {
+  // 价升序 (s.level_of 随即作废, 只在重放期用) + 拼接下标
+  std::sort(heat.levels.begin(), heat.levels.end(), [](const Heat::Level &a, const Heat::Level &b) { return a.price < b.price; });
+  size_t off = 0;
+  for (Heat::Level &l : heat.levels) {
+    l.off = off;
+    off += l.rects.size();
+  }
+  heat.rect_count = off;
+
+  has_data = !x.empty();
+  if (!has_data)
+    return;
+  build_view();
+  build_auto_threshold();
+}
+
+void OrderFlow::Sec::build_view() {
   double y_min = (std::numeric_limits<double>::max)();
   double y_max = std::numeric_limits<double>::lowest();
   double y_min_all = y_min, y_max_all = y_max; // 全时段兜底 (当日无连续竞价秒才用)
-
-  for (size_t i = 0; i < ticks.size(); ++i) {
-    const Tick &tick = ticks[i];
-    assert(tick.tick_idx < OrderFlowConst::SEC_CAPACITY && "tick_idx out of intra-day range");
-
-    // 竞价交叉秒: bid/ask/spread 无意义 → NaN 断线不画, mid 已是预撮合参考价
-    const bool crossed = tick.ref_price > 0.0f;
-
-    plot.tick_idx_map[tick.tick_idx] = i;
-    plot.x.push_back(static_cast<double>(tick.tick_idx));
-    plot.mid_price.push_back(static_cast<double>(tick.mid_price));
-    plot.best_bid.push_back(crossed ? NAN_D : static_cast<double>(tick.bid_price[0]));
-    plot.best_ask.push_back(crossed ? NAN_D : static_cast<double>(tick.ask_price[0]));
-
+  for (size_t i = 0; i < size(); ++i) {
     // 范围: bid/ask 极值 (bid <= mid <= ask, 初始视图不切掉 spread 边缘, 与图1 双击 fit
     // 口径一致); 只统计连续竞价秒 —— 竞价预撮合价可能摸涨跌停, 不应撑大初始视野
-    const double lo = crossed ? static_cast<double>(tick.mid_price) : static_cast<double>(tick.bid_price[0]);
-    const double hi = crossed ? static_cast<double>(tick.mid_price) : static_cast<double>(tick.ask_price[0]);
+    const bool crossed = ref[i] > 0.0;
+    const double lo = crossed ? mid[i] : best[Bid][i];
+    const double hi = crossed ? mid[i] : best[Ask][i];
     y_min_all = std::min(y_min_all, lo);
     y_max_all = std::max(y_max_all, hi);
-    if (tick.tick_idx >= OrderFlowConst::SEG_PREOPEN_END &&
-        tick.tick_idx < OrderFlowConst::SEG_AUCTION_CLOSE_BEGIN) {
+    if (x[i] >= static_cast<double>(OrderFlowConst::SEG_PREOPEN_END) &&
+        x[i] < static_cast<double>(OrderFlowConst::SEG_AUCTION_CLOSE_BEGIN)) {
       y_min = std::min(y_min, lo);
       y_max = std::max(y_max, hi);
     }
@@ -169,44 +265,37 @@ void OrderFlow::Depth::build_plot() {
     y_min = y_min_all;
     y_max = y_max_all;
   }
-
-  if (!plot.mid_price.empty()) {
-    plot.y_min = y_min;
-    plot.y_max = y_max;
-
-    const double margin = std::max((plot.y_max - plot.y_min) * OrderFlowConst::Y_MARGIN_RATIO, 0.1);
-    plot.y_min_with_margin = plot.y_min - margin;
-    plot.y_max_with_margin = plot.y_max + margin;
-  }
+  const double margin = std::max((y_max - y_min) * OrderFlowConst::Y_MARGIN_RATIO, 0.1);
+  y_lo = y_min - margin;
+  y_hi = y_max + margin;
 }
 
 // 自动阈值 = 「价位·秒」权重下 log10(净额) 的上分位数:
 //   权重 w = 矩形持续秒数 (价位高恒 1 tick → w ∝ 该价位在图上的着色面积),
 //   自高额 bin 向低累计到总权重的 HEATMAP_AUTO_INK_RATIO 即停 → 着色面积 / 有量面积
 //   恒定, 故不同日/资产的色块浓度观感一致. 单趟 O(rect_count), 无分配.
-void OrderFlow::Depth::build_auto_threshold() {
+void OrderFlow::Sec::build_auto_threshold() {
   constexpr float THR_MIN = OrderFlowConst::HEATMAP_LOG_THR_MIN;
   constexpr float STEP = OrderFlowConst::HEATMAP_LOG_THR_STEP;
   constexpr size_t NBIN =
       static_cast<size_t>((OrderFlowConst::HEATMAP_LOG_THR_MAX - THR_MIN) / STEP + 0.5f);
 
   auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
-  if (merged.rect_count == 0)
+  if (heat.rect_count == 0)
     return;
 
   const float min_amount = std::pow(10.0f, THR_MIN); // 低于滑条下限的价位永远不显示, 不计入总量
   std::array<double, NBIN> hist{};
   double total = 0.0;
-  for (const auto &level : merged.levels) {
-    // 初始视野外的价位不影响观感 (双击复位即此视野)
-    if (level.price < plot.y_min_with_margin || level.price > plot.y_max_with_margin)
-      continue;
-    for (const auto &r : level.rects) {
-      const float a = std::abs(static_cast<float>(r.amount_rmb));
+  // 初始视野外的价位不影响观感 (双击复位即此视野)
+  const auto [l0, l1] = heat.span(y_lo, y_hi);
+  for (size_t l = l0; l < l1; ++l) {
+    for (const Heat::Rect &r : heat.levels[l].rects) {
+      const float a = std::abs(static_cast<float>(r.amount));
       if (a < min_amount)
         continue;
       const size_t b = std::min(NBIN - 1, static_cast<size_t>((std::log10(a) - THR_MIN) / STEP));
-      const double w = static_cast<double>(r.tick_end - r.tick_start);
+      const double w = static_cast<double>(r.t1 - r.t0);
       hist[b] += w;
       total += w;
     }
@@ -227,83 +316,22 @@ void OrderFlow::Depth::build_auto_threshold() {
   auto_log_threshold = THR_MIN + static_cast<float>(bin) * STEP; // 该 bin 下沿
 }
 
-void OrderFlow::Depth::heatmap_begin(HeatmapScratch &scratch) {
-  merged.clear();
-  scratch.clear();
-  merged.levels.reserve(OrderFlowConst::ESTIMATED_PRICE_LEVELS);
-}
-
-// 一秒的全簿状态 (scratch.current_tick, price_key 升序) 并入合并矩形
-void OrderFlow::Depth::heatmap_commit_tick(HeatmapScratch &scratch, size_t tick_idx) {
-  // 单价位更新: amount 不变则延长上一矩形, 变了则闭合并开新矩形
-  auto update_price_level = [&](int price_key, int32_t amount_rmb) {
-    auto [it, inserted] = scratch.price_to_level.try_emplace(price_key, 0);
-    if (inserted) {
-      it->second = merged.levels.size();
-      merged.levels.push_back({static_cast<float>(price_key) / OrderFlowConst::PRICE_SCALE, {}});
-    }
-
-    auto &level = merged.levels[it->second];
-    if (!level.rects.empty()) {
-      auto &last_rect = level.rects.back();
-      if (last_rect.amount_rmb == amount_rmb) {
-        last_rect.tick_end = tick_idx + 1; // 挂单未动: 延长
-        return;
-      }
-      last_rect.tick_end = tick_idx; // 闭合 (首尾相连)
-    }
-
-    if (amount_rmb == 0 && level.rects.empty())
-      return;
-
-    // Bid (amount > 0): rect 向下延伸; Ask (amount < 0): 向上
-    const float price = level.price;
-    const bool is_bid = (amount_rmb > 0);
-    const float price_high = is_bid ? price : price + OrderFlowConst::TICK_SIZE;
-    const float price_low = is_bid ? price - OrderFlowConst::TICK_SIZE : price;
-    level.rects.push_back({tick_idx, tick_idx + 1, price_high, price_low, amount_rmb});
-    ++merged.rect_count;
-  };
-
-  if (scratch.current_tick.empty())
-    return;
-
-  // 更新集 = 当前全簿价位 ∪ 簿范围内有活跃矩形的历史价位 (归零闭合) — 两序列双指针归并
-  auto cur = scratch.current_tick.begin();
-  const auto cur_end = scratch.current_tick.end();
-  auto act = scratch.price_to_level.lower_bound(scratch.current_tick.front().first);
-  const int max_key = scratch.current_tick.back().first;
-
-  while (true) {
-    const bool has_cur = (cur != cur_end);
-    const bool has_act = (act != scratch.price_to_level.end() && act->first <= max_key);
-    if (!has_cur && !has_act)
-      break;
-
-    if (!has_act || (has_cur && cur->first < act->first)) {
-      update_price_level(cur->first, cur->second); // 新价位插在 act 已扫过的区间, 迭代器不受影响
-      ++cur;
-    } else if (!has_cur || act->first < cur->first) {
-      if (!merged.levels[act->second].rects.empty())
-        update_price_level(act->first, 0); // 价位从簿上消失: 归零闭合
-      ++act;
-    } else {
-      update_price_level(cur->first, cur->second);
-      ++cur;
-      ++act;
-    }
-  }
-}
-
-void OrderFlow::Depth::clear() {
+void OrderFlow::Sec::clear() {
   gen = 0;
   date = 0;
   asset_idx = SIZE_MAX;
   has_data = false;
   order_count = 0;
-  ticks.clear();
-  plot.clear();
-  merged.clear();
+  x.clear();
+  mid.clear();
+  for (auto &v : best)
+    v.clear();
+  ref.clear();
+  matched.clear();
+  imbalance.clear();
+  row_of.clear();
+  y_lo = y_hi = 0.0;
+  heat.clear();
   auto_log_threshold = OrderFlowConst::HEATMAP_LOG_THR_DEFAULT;
   feat.clear();
 }
@@ -360,8 +388,6 @@ void OrderFlow::Pick::rebuild_candidates(const Slot &s, const std::vector<int> &
     if (idx < s.meta.size() && passes(s.meta[idx], boards[idx]))
       candidates.push_back(idx);
   }
-  cached_gen = s.gen;
-  cached_epoch = filter_epoch;
 }
 
 void OrderFlow::Pick::clear() {
@@ -372,15 +398,12 @@ void OrderFlow::Pick::clear() {
   industry_filter.clear();
   candidates.clear();
   display_order.clear();
-  cached_gen = UINT32_MAX;
   filter_epoch = 0;
-  cached_epoch = UINT64_MAX;
-  gen = 0;
-  req_date = 0;
+  key.reset();
 }
 
 // ============================================================================
-// OrderFlow::HeatmapColored Implementation (GUI 线程)
+// OrderFlow::HeatColor Implementation (GUI 线程)
 // ============================================================================
 
 // Map log10(amount) to color intensity [0, 1]
@@ -433,145 +456,87 @@ static uint32_t amount_to_color(int32_t amount_rmb, float log_threshold, int seg
   return pack(static_cast<uint8_t>(150 + intensity * 105), static_cast<uint8_t>(intensity * 50), 0);
 }
 
-void OrderFlow::HeatmapColored::build(const Depth &src, float log_threshold) {
+// 矩形已在 worker 按时段边界断开 (不跨段) → 一矩形一色, 无分配
+void OrderFlow::HeatColor::build(const Sec &src, float log_threshold) {
   Trace;
-  rects.clear();
-  metadata.clear();
-  rects.reserve(src.merged.rect_count);
-  metadata.reserve(src.merged.rect_count);
+  color.resize(src.heat.rect_count);
+  for (const Sec::Heat::Level &l : src.heat.levels)
+    for (size_t k = 0; k < l.rects.size(); ++k)
+      color[l.off + k] = amount_to_color(l.rects[k].amount, log_threshold, tick_segment(l.rects[k].t0));
+}
 
-  // 时段边界 (跨段的合并矩形按边界切开, 各段各自色系)
-  constexpr size_t SEG_BOUNDS[3] = {OrderFlowConst::SEG_AUCTION_OPEN_END,
-                                    OrderFlowConst::SEG_PREOPEN_END,
-                                    OrderFlowConst::SEG_AUCTION_CLOSE_BEGIN};
+void OrderFlow::HeatColor::clear() {
+  color.clear();
+  key.reset();
+}
 
-  for (const auto &level : src.merged.levels) {
-    for (const auto &mr : level.rects) {
-      size_t t0 = mr.tick_start;
-      while (t0 < mr.tick_end) {
-        size_t t1 = mr.tick_end;
-        for (size_t b : SEG_BOUNDS) {
-          if (b > t0 && b < t1) {
-            t1 = b;
-            break;
-          }
-        }
-        const uint32_t color = amount_to_color(mr.amount_rmb, log_threshold, tick_segment(t0));
-        if (color != 0) {
-          rects.push_back({static_cast<double>(t0), static_cast<double>(mr.price_high),
-                           static_cast<double>(t1), static_cast<double>(mr.price_low), color});
-          // bid (正) 展示 price_high, ask (负) 展示 price_low
-          metadata.push_back({mr.amount_rmb,
-                              mr.amount_rmb > 0 ? mr.price_high : mr.price_low,
-                              t0, t1});
-        }
-        t0 = t1;
-      }
+// ============================================================================
+// OrderFlow::Profile Implementation (GUI 线程)
+// ============================================================================
+
+void OrderFlow::Profile::build(const Sec &src, size_t t) {
+  Trace;
+  price.clear();
+  amount.clear();
+  for (Curve &c : cum) {
+    c.x.clear();
+    c.y.clear();
+  }
+  edge = {0.0, 0.0};
+  cum_max = 0;
+
+  // 锚点秒全簿截面: 价位已价升序, 每价位二分找覆盖秒的矩形
+  for (const Sec::Heat::Level &l : src.heat.levels) {
+    if (const Sec::Heat::Rect *r = l.at(t)) {
+      price.push_back(static_cast<double>(l.price));
+      amount.push_back(static_cast<double>(r->amount));
     }
   }
-
-  gen = src.gen;
-  threshold = log_threshold;
-}
-
-void OrderFlow::HeatmapColored::clear() {
-  rects.clear();
-  metadata.clear();
-  gen = UINT32_MAX;
-  threshold = -1.0f;
-}
-
-// ============================================================================
-// OrderFlow::DepthProfile Implementation (GUI 线程)
-// ============================================================================
-
-void OrderFlow::DepthProfile::build(const Depth &src, size_t tick_idx) {
-  Trace;
-  price.clear();
-  amount.clear();
-  bid_cum_x.clear();
-  bid_cum_y.clear();
-  ask_cum_x.clear();
-  ask_cum_y.clear();
-  bid_top = ask_low = 0;
-  cum_max = 0;
-
-  // 锚点秒全簿截面: 每价位在 rects (tick_start 升序, 首尾相连) 里二分找覆盖秒
-  std::vector<std::pair<double, double>> rows; // (price, SIGNED amount 元)
-  rows.reserve(src.merged.levels.size());
-  for (const auto &level : src.merged.levels) {
-    const auto &rects = level.rects;
-    auto it = std::upper_bound(rects.begin(), rects.end(), tick_idx,
-                               [](size_t t, const Depth::HeatmapMerged::Rect &r) { return t < r.tick_start; });
-    if (it == rects.begin())
-      continue;
-    const auto &r = *(it - 1);
-    if (r.tick_end <= tick_idx || r.amount_rmb == 0)
-      continue;
-    rows.emplace_back(static_cast<double>(level.price), static_cast<double>(r.amount_rmb));
-  }
-  std::sort(rows.begin(), rows.end()); // 价升序
-
-  price.reserve(rows.size());
-  amount.reserve(rows.size());
-  for (const auto &[p, a] : rows) {
-    price.push_back(p);
-    amount.push_back(a);
-    if (a > 0)
-      bid_top = p; // 价升序: 最终值 = 最高买价位
-    else if (ask_low == 0)
-      ask_low = p; // 首个卖价位 = 最低卖价
+  const size_t n = price.size();
+  for (size_t k = 0; k < n; ++k) {
+    if (amount[k] > 0)
+      edge[Bid] = price[k]; // 价升序: 末个买价位 = 最高买价
+    else if (edge[Ask] == 0)
+      edge[Ask] = price[k]; // 首个卖价位 = 最低卖价
   }
 
-  // 累计曲线 (万元): 买自最高买价向下, 卖自最低卖价向上
+  // 累计曲线 (万元): 自内沿向外 —— Bid 价降序, Ask 价升序
   constexpr double TO_WAN = 1e-4;
-  double cum = 0;
-  for (size_t i = rows.size(); i-- > 0;) {
-    if (rows[i].second <= 0)
-      continue;
-    cum += rows[i].second * TO_WAN;
-    bid_cum_x.push_back(cum);
-    bid_cum_y.push_back(rows[i].first);
-  }
-  cum_max = cum;
-  cum = 0;
-  for (const auto &[p, a] : rows) {
-    if (a >= 0)
-      continue;
-    cum += -a * TO_WAN;
-    ask_cum_x.push_back(cum);
-    ask_cum_y.push_back(p);
-  }
-  cum_max = std::max(cum_max, cum);
-
-  gen = src.gen;
-  tick = tick_idx;
+  PerSide<double> sum{0.0, 0.0};
+  const auto add = [&](Side s, size_t k) {
+    if ((amount[k] > 0) != (s == Bid))
+      return;
+    sum[s] += std::abs(amount[k]) * TO_WAN;
+    cum[s].x.push_back(sum[s]);
+    cum[s].y.push_back(price[k]);
+  };
+  for (size_t k = n; k-- > 0;)
+    add(Bid, k);
+  for (size_t k = 0; k < n; ++k)
+    add(Ask, k);
+  cum_max = std::max(sum[Bid], sum[Ask]);
 }
 
-void OrderFlow::DepthProfile::clear() {
+void OrderFlow::Profile::clear() {
   price.clear();
   amount.clear();
-  bid_cum_x.clear();
-  bid_cum_y.clear();
-  ask_cum_x.clear();
-  ask_cum_y.clear();
-  bid_top = ask_low = 0;
+  for (Curve &c : cum) {
+    c.x.clear();
+    c.y.clear();
+  }
+  edge = {0.0, 0.0};
   cum_max = 0;
-  gen = UINT32_MAX;
-  tick = SIZE_MAX;
+  key.reset();
 }
 
 // ============================================================================
 // OrderFlow::EventMarks Implementation (GUI 线程)
 // ============================================================================
 
-void OrderFlow::EventMarks::build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs, uint32_t g,
-                                  uint64_t s) {
+void OrderFlow::EventMarks::build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs) {
   for (auto &l : lane)
     l.clear();
   events = evs;
-  gen = g;
-  seq = s;
   if (!evs || dates.empty())
     return;
   constexpr double W = static_cast<double>(OrderFlowConst::MIN_CAPACITY);
@@ -598,8 +563,29 @@ void OrderFlow::EventMarks::clear() {
   events = nullptr;
   for (auto &l : lane)
     l.clear();
-  gen = UINT32_MAX;
-  seq = UINT64_MAX;
+  key.reset();
+}
+
+// ============================================================================
+// OrderFlow::MissingDays Implementation (GUI 线程)
+// ============================================================================
+
+// 每日二分判定有无 K 线点 (x 升序)
+void OrderFlow::MissingDays::build(const Min &src, size_t pub_days, size_t pub_points) {
+  days.clear();
+  const auto end = src.x.begin() + static_cast<long>(pub_points);
+  for (size_t d = 0; d < pub_days; ++d) {
+    const double lo = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);
+    const double hi = lo + static_cast<double>(OrderFlowConst::MIN_CAPACITY);
+    const auto it = std::lower_bound(src.x.begin(), end, lo);
+    if (it == end || *it >= hi)
+      days.push_back(d);
+  }
+}
+
+void OrderFlow::MissingDays::clear() {
+  days.clear();
+  key.reset();
 }
 
 // ============================================================================
@@ -611,12 +597,13 @@ void OrderFlow::UI::clear() {
 }
 
 void OrderFlow::clear() {
-  kline.clear();
-  depth.clear();
+  min.clear();
+  sec.clear();
   pick.clear();
-  heatmap_colored.clear();
-  depth_profile.clear();
+  heat_color.clear();
+  profile.clear();
   event_marks.clear();
+  missing_days.clear();
   ui.clear();
   needs_rescan.store(false, std::memory_order_relaxed);
 }

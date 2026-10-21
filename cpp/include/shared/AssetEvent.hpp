@@ -26,11 +26,11 @@ enum class EventShape : std::uint8_t {
   X(Disc, "披露")
 
 // 种类表 X(枚举, 形态, 组, 字, 名). 载荷:
-//   List      cn_stock_basic_info.list_date
+//   List      cn_stock_basic_info.list_date          text = 上市简称 (cn_stock_name_change 首段; 无 = 空)
 //   Delist    cn_stock_basic_info.delist_date
 //   Suspend   cn_stock_status.suspended 连续交易日   v0 = 交易日数, text = 停牌原因 (cn_stock_suspend, 区间内首条)
 //   Risk      cn_stock_status 4 态 ≠ 0 连续交易日     v0 = 交易日数, v1 = 等级 (1=ST 2=*ST 3=退市整理期; 口径同 Fund st_level)
-//   Rename    cn_stock_name_change.start_date        text = 新简称 (首段 = 上市简称, 不记)
+//   Rename    cn_stock_name_change.start_date        text = 新简称 (首段 = 上市简称, 记在 List; 曾用名 = 前一条 Rename / List 的 text)
 //   Industry  cn_stock_industry_change (sw2021 一级进入)  text = 新行业名
 //   ExDiv     cn_stock_dividend.ex_date              v0 = 每股派现 (税前, 元), v1 = 每股送股, v2 = 每股转增
 //   Allot     cn_stock_allotment.exright_date        v0 = 配股价 (元), v1 = 每股配股

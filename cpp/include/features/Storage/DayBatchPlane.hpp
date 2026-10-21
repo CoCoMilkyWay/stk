@@ -499,7 +499,7 @@ struct Prefetch {
     assert(!th.joinable());
     cur ^= 1;
   }
-  // 流式批骨架 (Dist / Transform / Corr / OrderFlow Kline 同一份): n 段每批 bs 段, 算本批的同时预读下一批; 取消 → false (半批不发布)
+  // 流式批骨架 (Dist / Transform / Corr / OrderFlow Min 同一份): n 段每批 bs 段, 算本批的同时预读下一批; 取消 → false (半批不发布)
   //   load(b0, bd) → fn(Plane &, ForkJoin &io, std::vector<IoSlot> &);  compute(const Plane &, b0, bd);  publish(b0, bd)
   template <class Load, class Compute, class Publish>
   bool stream(size_t n, size_t bs, const std::atomic<bool> &cancel, Load &&load, Compute &&compute, Publish &&publish) {

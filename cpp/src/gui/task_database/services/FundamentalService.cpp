@@ -585,13 +585,11 @@ bool build_asset_info(Job &job, const Catalog &cat) {
     loose.add(ids.code(id));
   std::array<Part<EventAcc>, 10> point_p;
   std::size_t np = 0;
-  // 首段 (起始日 ≤ 上市日) = 上市简称, 不是改名
-  add_points(scan, point_p[np++], "cn_stock_name_change", EventKind::Rename, "start_date", {"name"}, [&infos](const Rows &r) { return [&infos, name = r.col("name")](std::int64_t i, std::uint32_t id, AssetEvent &ev, std::string &text) {
-                                                                                                                                 if (ev.d0 <= infos[id]->ipo_date)
-                                                                                                                                   return false;
-                                                                                                                                 text = halfwidth_ascii(name.str(i));
-                                                                                                                                 return true;
-                                                                                                                               }; }, &loose);
+  // 首段 (起始日 ≤ 上市日) = 上市简称, 不是改名: 汇总时挂到上市事件 text 后剔除
+  add_points(scan, point_p[np++], "cn_stock_name_change", EventKind::Rename, "start_date", {"name"}, [](const Rows &r) { return [name = r.col("name")](std::int64_t i, std::uint32_t, AssetEvent &, std::string &text) {
+                                                                                                                           text = halfwidth_ascii(name.str(i));
+                                                                                                                           return true;
+                                                                                                                         }; }, &loose);
   add_points(scan, point_p[np++], "cn_stock_industry_change", EventKind::Industry, nullptr,
              {"industry", "industry_level", "change_flag", "industry_name"}, [](const Rows &r) {
                return [ind = r.col("industry"), lvl = r.col("industry_level"), flag = r.col("change_flag"),
@@ -855,15 +853,35 @@ bool build_asset_info(Job &job, const Catalog &cat) {
     const auto absorb = [&rows](EventAcc &&a) {
       rows.insert(rows.end(), std::make_move_iterator(a.v.begin()), std::make_move_iterator(a.v.end()));
     };
+    std::vector<std::size_t> list_row(nid, SIZE_MAX); // 上市事件在 rows 的下标
     for (std::uint32_t id = 0; id < nid; ++id) {
-      if (infos[id]->ipo_date)
+      if (infos[id]->ipo_date) {
+        list_row[id] = rows.size();
         rows.push_back(point(id, EventKind::List, infos[id]->ipo_date));
+      }
       if (infos[id]->out_date)
         rows.push_back(point(id, EventKind::Delist, infos[id]->out_date));
     }
     absorb(std::move(status.limits));
     for (Part<EventAcc> &p : point_p)
       absorb(std::move(p).take());
+
+    // 上市简称 = 起始日 ≤ 上市日的末段 → 上市事件 text; 这些段不是改名, 剔除
+    {
+      const auto listing_seg = [&infos](const EventRow &e) {
+        return e.ev.kind == EventKind::Rename && e.ev.d0 <= infos[e.id]->ipo_date;
+      };
+      std::vector<Ymd> seg_d0(nid, 0);
+      for (std::size_t k = 0; k < rows.size(); ++k) {
+        const EventRow &e = rows[k];
+        if (!listing_seg(e) || e.ev.d0 < seg_d0[e.id])
+          continue;
+        assert(list_row[e.id] < k && "上市事件须先于改名段入 rows");
+        seg_d0[e.id] = e.ev.d0;
+        rows[list_row[e.id]].text = e.text;
+      }
+      std::erase_if(rows, listing_seg);
+    }
 
     // 停牌区间: 原因 = 区间内首条停复牌明细
     std::vector<DayMark> halts;

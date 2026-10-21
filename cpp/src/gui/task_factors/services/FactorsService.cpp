@@ -476,6 +476,8 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
     t.y.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
     t.y.np_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_npp_ttm")));
     t.y.eq_mrq = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "bs_eq")));
+    t.y.rev_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_rev_ttm")));
+    t.y.ocf_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "cf_ocf_ttm")));
     t.y.dy_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "dy_ttm")));
     t.y.ind_l1 = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "ind_l1")));
   }
