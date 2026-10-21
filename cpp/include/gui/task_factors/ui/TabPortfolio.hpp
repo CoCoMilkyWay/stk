@@ -186,6 +186,7 @@ struct PortfolioUIState {
   std::string vis_key;                     // 池线默认显隐已按它设过 (组合 + 其因子所在池; 变了重设)
   std::string shown_key;                   // 上帧各线显隐 + log (变了 → 下帧重新 fit)
   bool refit = false;
+  float legend_w[2] = {400.0f, 380.0f}; // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
 };
 
 // GUI 线程每帧 (两页都调): 目录变 → 重列, 当前组合不在了 → 选第一个 (载入内容, content_gen +1)

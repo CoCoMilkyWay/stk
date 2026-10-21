@@ -12,6 +12,7 @@
 #include "implot_internal.h" // GetItem (主图例显隐 / 池线色)
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cfloat>
 #include <cmath>
@@ -105,6 +106,29 @@ void fmt_val(int b, double x, char *buf, size_t n) {
 std::string pad_to(const char *s, float px) {
   const float w = ImGui::CalcTextSize(s).x, sp = ImGui::CalcTextSize(" ").x;
   return s + std::string(static_cast<size_t>(std::lround(std::max(0.f, px - w) / sp)), ' ');
+}
+// 主图例多列排版 (NAV / VAL 同一份): 第 c 列起点 = 前 c 列各自全行最宽之和 + 列间隔; 按已拼前缀的实测宽补空格 (取整误差不跨列累积); 空格子不补
+template <size_t N>
+std::vector<std::string> align_cols(const std::vector<std::array<std::string, N>> &rows) {
+  float w[N] = {};
+  for (const std::array<std::string, N> &r : rows)
+    for (size_t c = 0; c < N; ++c)
+      w[c] = std::max(w[c], ImGui::CalcTextSize(r[c].c_str()).x);
+  const float gap = ImGui::CalcTextSize("  ").x;
+  std::vector<std::string> out;
+  out.reserve(rows.size());
+  for (const std::array<std::string, N> &r : rows) {
+    std::string s;
+    float x = 0.f;
+    for (size_t c = 0; c < N; ++c) {
+      if (c > 0)
+        x += w[c - 1] + gap;
+      if (!r[c].empty())
+        s = pad_to(s.c_str(), x) + r[c];
+    }
+    out.push_back(std::move(s));
+  }
+  return out;
 }
 
 // 单因子线色: 接在池线 (自动配色, 先建先取) 之后取色表
@@ -317,7 +341,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
       p.on = own.contains(pd.name);
       if (pc) {
         char turn[48];
-        std::snprintf(turn, sizeof(turn), "  (年换手=%5.1f倍)", pc->turn[w] * factor::stat::kDaysPerYear);
+        std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", pc->turn[w] * factor::stat::kDaysPerYear);
         p.note = turn;
       }
       d.pools.push_back(std::move(p));
@@ -740,20 +764,22 @@ bool pages() {
   return nav;
 }
 
-// ---- NAV 主图: 池线 → 单因子 → 策略线 (最上层). 主图例 (池 / 策略同格式) = en | cn (补空格同列宽) + 区间年化 + note, ###id 定 ID (年化变了不换 item) ----
+// ---- NAV 主图: 池线 → 单因子 → 策略线 (最上层). 主图例 (池 / 策略同一张列表) = en | cn | 区间年化 | note (align_cols), ###id 定 ID (年化变了不换 item) ----
 void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, bool set_vis, PlotFrame &pf) {
-  float w_en = 0.f, w_cn = 0.f;
-  const auto widen = [&](const PortfolioLine &l) {
-    w_en = std::max(w_en, ImGui::CalcTextSize(l.en.c_str()).x), w_cn = std::max(w_cn, ImGui::CalcTextSize(l.cn.c_str()).x);
-  };
-  for (const PortfolioLine &l : d.strat)
-    widen(l);
-  for (const PortfolioBasket &l : d.pools)
-    widen(l);
-  const auto main_line = [&](const PortfolioLine &l, const PortfolioSlice &s) {
+  std::vector<std::array<std::string, 4>> rows; // 画序: 池线, 策略线
+  const auto row = [&](const PortfolioLine &l, const PortfolioSlice &s) {
     char ann[48];
-    std::snprintf(ann, sizeof(ann), "  (年化=%+5.1f%%)", s.ann);
-    const std::string lb = pad_to(l.en.c_str(), w_en) + "  " + pad_to(l.cn.c_str(), w_cn) + ann + l.note + "###" + l.id;
+    std::snprintf(ann, sizeof(ann), "(年化=%+5.1f%%)", s.ann);
+    rows.push_back({l.en, l.cn, ann, l.note});
+  };
+  for (size_t i = 0; i < d.pools.size(); ++i)
+    row(d.pools[i], v.pools[i]);
+  for (int i = 0; i < kImpacts; ++i)
+    row(d.strat[i], v.strat[i]);
+  const std::vector<std::string> texts = align_cols(rows);
+  size_t r = 0;
+  const auto main_line = [&](const PortfolioLine &l, const PortfolioSlice &s) {
+    const std::string lb = texts[r++] + "###" + l.id;
     if (set_vis)
       ImPlot::HideNextItem(!l.on, ImPlotCond_Always);
     plot_slice(lb.c_str(), s);
@@ -786,15 +812,27 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
   const double *bx = v.band_x.data();
   const int bn = static_cast<int>(v.band_x.size());
   pf.shown += s.id;
+  // 主图例 (Band 各口 / 价格同一张列表) = 名 | 当前值 | 估值分位 (align_cols), ###id 定 ID
+  std::vector<std::array<std::string, 3>> rows; // [0, kPoolVals) = Band, kPoolVals = 价格
   for (int b = 0; b < kPoolVals; ++b) {
     const PortfolioBand &bd = v.band[b];
-    char lb[128];
-    if (bd.ok) {
-      char now[24];
-      fmt_val(b, bd.now, now, sizeof(now));
-      std::snprintf(lb, sizeof(lb), "%s Band  当前 %s  (%d年估值分位 %.0f%%)###pf_band%d", kVal[b].name, now, ui.roll.key.years, bd.pct, b);
-    } else
-      std::snprintf(lb, sizeof(lb), "%s Band  (区间内不可算)###pf_band%d", kVal[b].name, b);
+    const std::string nm = std::string(kVal[b].name) + " Band";
+    if (!bd.ok) {
+      rows.push_back({nm, "(区间内不可算)", ""});
+      continue;
+    }
+    char now[24], cur[40], pct[48];
+    fmt_val(b, bd.now, now, sizeof(now));
+    std::snprintf(cur, sizeof(cur), "当前 %s", now);
+    std::snprintf(pct, sizeof(pct), "(%d年估值分位 %3.0f%%)", ui.roll.key.years, bd.pct);
+    rows.push_back({nm, cur, pct});
+  }
+  rows.push_back({s.tag, "流通市值加权指数", ""});
+  const std::vector<std::string> texts = align_cols(rows);
+  for (int b = 0; b < kPoolVals; ++b) {
+    const PortfolioBand &bd = v.band[b];
+    const std::string lbs = texts[static_cast<size_t>(b)] + "###pf_band" + std::to_string(b);
+    const char *lb = lbs.c_str();
     if (b != kValEp)
       ImPlot::HideNextItem(true, ImPlotCond_Once);
     // 色块 c ∈ [0, kBandQ]: 0 = 最便宜档以下 (到图底), kBandQ = 最贵档以上 (到图顶; 两头不进 fit), 其余 = 相邻两档之间
@@ -822,7 +860,7 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
         push_tag(pf.tags, pf.lim, v.band_x.size(), [&](size_t i) { return ImPlotPoint(bx[i], bd.y[j][i]); }, ImGui::ColorConvertFloat4ToU32(band_col((j + 0.5) / kBandQ, kBandTagA)), std::string(kBandQName[j]) + " " + q);
       }
   }
-  const std::string plb = s.tag + "  流通市值加权指数###pf_val_px";
+  const std::string plb = texts[kPoolVals] + "###pf_val_px";
   ImPlot::SetNextLineStyle(kValPxCol, 2.0f);
   plot_slice(plb.c_str(), sl);
   if (const ImPlotItem *it = pf.item(plb.c_str()))
@@ -954,6 +992,14 @@ void range_bar(PortfolioUIState &ui, bool nav, int vs, float pw, float bar_h) {
   ImPlot::EndPlot();
 }
 
+// 右图例表格收尾 (NAV / VAL 同一份): 返回列不截断所需的宽 = ColumnsAutoFitWidth (EndTable 按本帧内容更新; 列不可拖 → 纯内容宽) + 竖滚动条
+float end_table() {
+  const ImGuiTable *t = ImGui::GetCurrentTable();
+  assert(t);
+  ImGui::EndTable();
+  return t->ColumnsAutoFitWidth + ImGui::GetStyle().ScrollbarSize;
+}
+
 // ---- NAV 右图例: 单因子 G20 多头表格 (默认全关), 勾选 = 主图画该线; 列 = 池 / 层 / 持有期 / 因子 / 冲击 / 区间年化 ----
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v) {
   ImGui::TextColored(kHead, "单因子 G20 多头");
@@ -998,7 +1044,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TableSetColumnIndex(6);
     ImGui::Text("%+6.1f%%", v.factors[i].ann);
   }
-  ImGui::EndTable();
+  ui.legend_w[0] = end_table();
 }
 
 // ---- VAL 右图例: 滚动窗长 + 篮子单选表格 (池 / 申万一级); 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红) ----
@@ -1053,7 +1099,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
       ImGui::Text("%3.0f%%", c.pct);
     }
   }
-  ImGui::EndTable();
+  ui.legend_w[1] = end_table();
 }
 
 } // namespace
@@ -1277,10 +1323,11 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   }
   if (refit || set_vis)
     ImPlot::SetNextAxesToFit();
-  constexpr float kLegendW = 420.0f, kValLegendW = 400.0f, kBarH = 90.0f;
+  constexpr float kBarH = 90.0f, kLegendMaxFrac = 0.5f; // 右图例最多占整宽的比例 (再宽表格自己截)
   const ImGuiStyle &st = ImGui::GetStyle();
   const ImVec2 av = ImGui::GetContentRegionAvail();
-  const float pw = av.x - (nav ? kLegendW : kValLegendW) - st.ItemSpacing.x;
+  const float lw = std::min(ui.legend_w[nav ? 0 : 1] + 2.0f * (st.WindowPadding.x + st.ChildBorderSize), av.x * kLegendMaxFrac);
+  const float pw = av.x - lw - st.ItemSpacing.x;
   ImGui::BeginGroup();
   if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", ImVec2(pw, av.y - kBarH - st.ItemSpacing.y))) {
     // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
@@ -1318,7 +1365,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   ImGui::EndGroup();
 
   ImGui::SameLine();
-  ImGui::BeginChild("##pf_flegend", ImVec2(0, av.y), ImGuiChildFlags_Borders);
+  ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
   if (nav)
     legend_nav(ui, d, v);
   else

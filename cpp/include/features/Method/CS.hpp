@@ -19,6 +19,8 @@
 //     WinsorZ      winsor_mad(k=3) → z, 缺失 → 0.  稳健 z (= WinsorRank 去掉末尾 pct_rank)
 //     SelectLow400 / SelectHigh400   池: 有限值中取最低 / 最高 400 个 → 1, 其余 (含缺失) → 0; 并列按 dense 下标
 //                  (= 资产轴序) 先到先得, 有限值不足 400 则全选. 输入 = 母集掩码后的排序键 (PoolKey, 母集外 NaN)
+//     SelectLow200 / SelectHigh200   同上取 200 个 (同键同序 ⇒ 200 档 ⊂ 400 档)
+//     SelectAll    池: 有限值 → 1, 其余 (含缺失) → 0 (不截断; 成员由键的母集定)
 //
 //   忠实性契约: WinsorRank / NeutralRank 与 qmt/cpp/src/feature/cs.cpp 逐步一致
 //   (中位数取法 / z 的 double 累加 / pct_rank 并列均秩 / 均值填充), 保证 qmt 因子效果可复现.
@@ -50,7 +52,10 @@ namespace cs {
   X(Z, "Z")                     \
   X(WinsorZ, "WinsorZ")         \
   X(SelectLow400, "Low400")     \
-  X(SelectHigh400, "High400")
+  X(SelectHigh400, "High400")   \
+  X(SelectLow200, "Low200")     \
+  X(SelectHigh200, "High200")   \
+  X(SelectAll, "All")
 
 // ---- 元素预变换 ----
 struct None { // Tf 与 Method 双身份: 恒等
@@ -101,6 +106,21 @@ struct SelectLow400 {
 };
 
 struct SelectHigh400 {
+  static constexpr bool kNeutral = false;
+  static void apply(float *y, std::size_t n);
+};
+
+struct SelectLow200 {
+  static constexpr bool kNeutral = false;
+  static void apply(float *y, std::size_t n);
+};
+
+struct SelectHigh200 {
+  static constexpr bool kNeutral = false;
+  static void apply(float *y, std::size_t n);
+};
+
+struct SelectAll {
   static constexpr bool kNeutral = false;
   static void apply(float *y, std::size_t n);
 };

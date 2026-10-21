@@ -201,6 +201,7 @@ constexpr std::array<PoolDef, 1 + kPoolCount> kPools = [] {
   return out;
 }();
 static_assert(kPools.size() <= UINT8_MAX && kPools[kAllPool].tier == TierId::Bar, "PoolId = uint8_t 池表下标, [kAllPool] = all");
+static_assert(kPools.size() <= sizeof(PoolMask) * 8, "池表超出 PoolMask 位宽");
 } // namespace
 
 std::span<const PoolDef> feature_pools() { return kPools; }

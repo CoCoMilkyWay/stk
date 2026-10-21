@@ -1,6 +1,6 @@
 // 截面方法实现 (Method/CS.hpp), qmt/cpp/src/feature/cs.cpp 逐步复刻.
 //   Tf:     Reciprocal / Log
-//   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ / SelectLow400 / SelectHigh400 (+ 运行期分派表 column_fn)
+//   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ / Select{Low,High}{400,200} / SelectAll (+ 运行期分派表 column_fn)
 //
 // 忠实性契约 (决定 qmt 因子效果能否复现, 改动前先对 qmt 源码逐行核对):
 //   median_in_place: nth_element 取上中位, 偶数长度与下中位平均
@@ -402,6 +402,15 @@ void WinsorZ::apply(float *y, std::size_t n) {
 void SelectLow400::apply(float *y, std::size_t n) { select_top<false>(y, n, 400); }
 
 void SelectHigh400::apply(float *y, std::size_t n) { select_top<true>(y, n, 400); }
+
+void SelectLow200::apply(float *y, std::size_t n) { select_top<false>(y, n, 200); }
+
+void SelectHigh200::apply(float *y, std::size_t n) { select_top<true>(y, n, 200); }
+
+void SelectAll::apply(float *y, std::size_t n) {
+  for (std::size_t i = 0; i < n; ++i)
+    y[i] = std::isfinite(y[i]) ? 1.0f : 0.0f;
+}
 
 void NeutralRank::prepare_logmc(float *mcap, std::size_t n) {
   for (std::size_t i = 0; i < n; ++i) {
