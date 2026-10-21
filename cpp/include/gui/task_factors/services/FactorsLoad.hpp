@@ -173,7 +173,8 @@ bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes);
 
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN). in = leaves(c, d.feats)
-void check_leaf_domains(const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in, std::string &err);
+void check_leaf_domains(misc::exec::ForkJoin &ex, const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in,
+                        std::string &err);
 
 // 池内有效率: Σ(m ∧ gate) / Σgate (gate = 截面池 cs_valid; 池外格不进分子分母)
 float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);

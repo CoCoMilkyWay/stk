@@ -15,6 +15,7 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <tuple>
 
 namespace GUI::Factors {
 
@@ -207,8 +208,9 @@ struct PortfolioService::Flow {
   LibReaders lr; // 已建的库 (清单没变的复用)
   ScopeCache c;  // 因子的作用域块: 同作用域的因子共用 Y, X 只留当前因子的叶
   Engine<Cpu> E;
-  std::vector<uint16_t> rx; // [T][A]
-  std::vector<uint8_t> lc;  // [T][A]
+  std::vector<uint16_t> rx;                      // [T][A]
+  std::vector<uint8_t> lc;                       // [T][A]
+  std::map<std::string, std::vector<int>> holds; // 本轮请求: group_of → 该组全部因子的持有期 (升序去重; Y 一组一次装全)
 
   explicit Flow(const std::atomic<bool> &cancel) : ex(misc::exec::hw()), E(ex, cancel, 1) {}
 };
@@ -231,6 +233,9 @@ std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<con
       todo.push_back(&j);
   return todo;
 }
+
+// Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_y 命中)
+std::string group_of(const FactorJob &j) { return std::to_string(j.scope.seg) + "|" + j.scope.pool; }
 
 // accum_rows 的 sink: 一级 Row 不落地, 直接折成 G20 多头毛收益 (单 hold)
 struct LongSink {
@@ -283,7 +288,17 @@ bool PortfolioService::run(PortfolioRequest &req) {
   publish();
 
   // 只有 worker 写 result: 这里读不加锁
-  const std::vector<const FactorJob *> todo_f = todo_of(result.factors, req.factors);
+  std::vector<const FactorJob *> todo_f = todo_of(result.factors, req.factors);
+  std::stable_sort(todo_f.begin(), todo_f.end(), [](const FactorJob *a, const FactorJob *b) {
+    return std::tie(a->scope.seg, a->scope.pool) < std::tie(b->scope.seg, b->scope.pool);
+  });
+  F.holds.clear();
+  for (const FactorJob &j : req.factors)
+    F.holds[group_of(j)].push_back(j.hold);
+  for (auto &[g, hk] : F.holds) {
+    std::sort(hk.begin(), hk.end());
+    hk.erase(std::unique(hk.begin(), hk.end()), hk.end());
+  }
   const std::vector<const PoolJob *> todo_p = todo_of(result.pools, req.pools);
   jobs_done.store(0, std::memory_order_relaxed);
   jobs_total.store(static_cast<int>(todo_f.size() + todo_p.size()), std::memory_order_relaxed);
@@ -318,7 +333,7 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   out.hold = j.hold;
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
-  // ---- 作用域 + 装载 (Y = 该 hold + 最小金额段; X 只留本因子的叶) ----
+  // ---- 作用域 + 装载 (Y = 同组全部 hold + 最小金额段, 组内因子共用; X 只留本因子的叶) ----
   EvalScope es;
   if (std::string why; !eval_scope(ft, sc, d.feats, es, why)) {
     out.error = why;
@@ -328,7 +343,7 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   const int days = static_cast<int>(es.dates.size()), A = static_cast<int>(es.rs.axis.size());
   const std::vector<int> ck = keys_of(ft.y.costs);
   assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
-  const YSpec ys{holds_of({j.hold}), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
+  const YSpec ys{holds_of(F.holds.at(group_of(j))), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
                  /*index=*/false};
   { // 宿主峰值: Y + X (本因子) + 活槽 + rx / lc + 标签秩 + 出参 [T] (ret / wimp / we)
     const double cells = static_cast<double>(days) * ft.seg * A;
@@ -350,7 +365,7 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   {
     const std::vector<const factor::check::Plane *> in = leaves(F.c, d.feats);
     for (int i = 0; i < N; ++i) {
-      check_leaf_domains(d, i, in, out.error);
+      check_leaf_domains(F.ex, d, i, in, out.error);
       if (!out.error.empty())
         return true;
     }
@@ -377,8 +392,16 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   const factor::stat::Span &s = ss.s;
   factor::cpu::stat::rank_x(F.ex, factor::stat::Plane{rp->v.data(), rp->m.data()}, y.gate.data(), j.frame, s, F.rx.data(), ss.w);
   factor::cpu::stat::leg_codes(F.ex, F.rx.data(), s, F.lc.data());
+  int hi = 0;
+  while (hi < y.hd.n && y.hd.h[hi] != j.hold)
+    ++hi;
+  assert(hi < y.hd.n && "组 Y 须含本因子的持有期");
+  factor::stat::Labels L1; // 只累本因子的 hold (sink 下标恒 0)
+  L1.hd = holds_of({j.hold});
+  L1.l[0] = ss.L.l[hi];
+  L1.cap = ss.L.cap;
   factor::stat::Accum acc[factor::stat::kMaxHold];
-  factor::cpu::stat::accum_rows(F.ex, s, F.rx.data(), ss.L, ss.w, acc, sink);
+  factor::cpu::stat::accum_rows(F.ex, s, F.rx.data(), L1, ss.w, acc, sink);
   publish(1);
   if (cancelled())
     return false;

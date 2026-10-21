@@ -217,7 +217,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   {
     const std::vector<const factor::check::Plane *> in = leaves(F.c, d.feats);
     for (int i = 0; i < N; ++i) {
-      check_leaf_domains(d, i, in, res.error);
+      check_leaf_domains(F.ex, d, i, in, res.error);
       if (!res.error.empty()) {
         F.pl.clear(); // 无一级 / 无 rx
         publish_result();

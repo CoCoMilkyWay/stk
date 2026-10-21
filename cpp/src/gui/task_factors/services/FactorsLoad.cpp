@@ -598,10 +598,17 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
                  Y.sh.T, Y.sh.A, Y, rows);
     pool_turn(ex, close, fmc.data(), Y.gate.data(), Y.sh.T, Y.sh.A, rows, Y.turn);
   }
-  long long on = 0;
-  for (const uint8_t g : Y.gate)
-    on += g != 0;
-  Y.n_full = static_cast<double>(on) / static_cast<double>(Y.sh.T) / factor::stat::kGroups;
+  std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);
+  ex.rows(Y.sh.T, [&](int t0, int t1, int tid) {
+    long long k = 0;
+    for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i)
+      k += Y.gate[i] != 0;
+    on[static_cast<size_t>(tid)] = k;
+  });
+  long long n_on = 0;
+  for (const long long k : on)
+    n_on += k;
+  Y.n_full = static_cast<double>(n_on) / static_cast<double>(Y.sh.T) / factor::stat::kGroups;
   assert(Y.n_full > 0.0 && "池内无有效资产");
   return true;
 }
@@ -702,7 +709,8 @@ std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std:
 
 // 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
 // (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判
-void check_leaf_domains(const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in, std::string &err) {
+void check_leaf_domains(misc::exec::ForkJoin &ex, const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in,
+                        std::string &err) {
   const factor::DagNode &nd = d.nodes[static_cast<size_t>(node)];
   if (nd.op < 0 || nd.fu.n > 0) // 融合节点只装逐点 TS 算子, 无严格域元
     return;
@@ -713,15 +721,23 @@ void check_leaf_domains(const factor::Dag &d, int node, const std::vector<const 
     if (g.op >= 0 || !factor::dom_strict(o.in[s]))
       continue;
     const factor::check::Plane &p = *in[static_cast<size_t>(g.feat)];
-    for (size_t i = 0; i < p.v.size(); ++i) {
-      if (!p.m[i] || factor::expr::dom_holds(o.in[s], p.v[i]))
-        continue;
-      char buf[64];
-      std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(p.v[i]));
-      err = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " +
-            d.feats[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
-      return;
-    }
+    const size_t n = p.v.size();
+    std::vector<size_t> first(static_cast<size_t>(ex.threads()), n); // 各条带首个越界格 (取全局最小, 与顺序扫同一格)
+    ex.rows(static_cast<int>(n), [&](int i0, int i1, int tid) {
+      for (size_t i = static_cast<size_t>(i0); i < static_cast<size_t>(i1); ++i)
+        if (p.m[i] && !factor::expr::dom_holds(o.in[s], p.v[i])) {
+          first[static_cast<size_t>(tid)] = i;
+          return;
+        }
+    });
+    const size_t i = *std::min_element(first.begin(), first.end());
+    if (i == n)
+      continue;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(p.v[i]));
+    err = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " +
+          d.feats[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
+    return;
   }
 }
 

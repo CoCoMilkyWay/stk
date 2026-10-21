@@ -990,7 +990,7 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
   {
     const std::vector<const factor::check::Plane *> in = leaves(sc, F.feats);
     for (int i = 0; i < N; ++i)
-      check_leaf_domains(F, i, in, node_err[static_cast<size_t>(i)]);
+      check_leaf_domains(ex, F, i, in, node_err[static_cast<size_t>(i)]);
   }
   std::vector<uint8_t> runnable(idx.size(), 1), needed(static_cast<size_t>(N), 0);
   for (size_t k = 0; k < idx.size(); ++k) {

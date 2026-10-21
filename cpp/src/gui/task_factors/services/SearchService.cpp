@@ -411,7 +411,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       const std::vector<const factor::check::Plane *> in = leaves(cd.c, d0.feats);
       for (int i = 0; i < static_cast<int>(d0.nodes.size()); ++i) {
         std::string err;
-        check_leaf_domains(d0, i, in, err);
+        check_leaf_domains(F.ex, d0, i, in, err);
         if (!err.empty()) {
           res.message = err;
           lg("中止: %s", err.c_str());
