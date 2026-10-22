@@ -4,9 +4,9 @@
  "expr": "CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d)))",
  "note": "近 d 箱 5 分钟对数收益标准差取负 (掩掉首箱 = 竞价 + 隔夜跳空); 广发 多因子-048 real_var rankIC -0.0608 (周), 信达 因子选股-001 Ret_Std -0.0575",
  "weights": [
-  {"hold":30,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=10)))"},
-  {"hold":60,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=9)))"},
-  {"hold":1000,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=27)))"},
-  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=16)))"}
+  {"hold":30,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=8)))"},
+  {"hold":60,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=6)))"},
+  {"hold":1000,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=15)))"},
+  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsStdRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=52)))"}
  ]
 }

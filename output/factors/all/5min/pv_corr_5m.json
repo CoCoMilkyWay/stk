@@ -6,7 +6,7 @@
  "weights": [
   {"hold":30,"sign":1,"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.5m.close_5min, TsTodMask(k=1, k2=49)), bar.5m.volume_5min, d=12)))"},
   {"hold":60,"sign":1,"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.5m.close_5min, TsTodMask(k=1, k2=49)), bar.5m.volume_5min, d=12)))"},
-  {"hold":1000,"sign":1,"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.5m.close_5min, TsTodMask(k=1, k2=49)), bar.5m.volume_5min, d=45)))"},
-  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.5m.close_5min, TsTodMask(k=1, k2=49)), bar.5m.volume_5min, d=133)))"}
+  {"hold":1000,"sign":1,"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.5m.close_5min, TsTodMask(k=1, k2=49)), bar.5m.volume_5min, d=39)))"},
+  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.5m.close_5min, TsTodMask(k=1, k2=49)), bar.5m.volume_5min, d=52)))"}
  ]
 }

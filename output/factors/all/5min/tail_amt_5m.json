@@ -2,5 +2,13 @@
  "type": "alpha",
  "name_cn": "尾盘成交占比",
  "expr": "CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d), TsSumRoll(bar.5m.amount_5min, d))))",
- "note": "近 d 箱 14:30-15:00 (箱 43..48) 成交额 / 全部成交额 取负 (分子分母两个 d 各自搜); 中信建投 逐鹿alpha-019 尾盘流动性 IC -0.0911 (周)"
+ "note": "近 d 箱 14:30-15:00 (箱 43..48) 成交额 / 全部成交额 取负 (分子分母两个 d 各自搜); 中信建投 逐鹿alpha-019 尾盘流动性 IC -0.0911 (周)",
+ "weights": [
+  {"hold":30,"sign":1,"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d=2), TsSumRoll(bar.5m.amount_5min, d=27))))"},
+  {"hold":30,"sign":1,"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d=96), TsSumRoll(bar.5m.amount_5min, d=1))))"},
+  {"hold":30,"sign":-1,"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d=39), TsSumRoll(bar.5m.amount_5min, d=144))))"},
+  {"hold":60,"sign":-1,"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d=55), TsSumRoll(bar.5m.amount_5min, d=255))))"},
+  {"hold":1000,"sign":-1,"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d=27), TsSumRoll(bar.5m.amount_5min, d=255))))"},
+  {"hold":1001,"sign":-1,"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.5m.amount_5min, TsTodMask(k=43, k2=49)), d=253), TsSumRoll(bar.5m.amount_5min, d=22))))"}
+ ]
 }

@@ -4,9 +4,9 @@
  "expr": "CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d)))",
  "note": "近 d 箱 5 分钟收益峰度取负 (掩首箱); 国泰君安 权益配置因子-004 5分钟收益率峰度 rankIC 0.0595 方向负 (周)",
  "weights": [
-  {"hold":30,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=51)))"},
-  {"hold":60,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=49)))"},
-  {"hold":1000,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=49)))"},
-  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=159)))"}
+  {"hold":30,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=23)))"},
+  {"hold":60,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=21)))"},
+  {"hold":1000,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=52)))"},
+  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.5m.close_5min, TsDelayRoll(bar.5m.close_5min, d=1)), TsTodMask(k=1, k2=49)), d=127)))"}
  ]
 }
