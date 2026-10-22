@@ -4,8 +4,8 @@
 
 #include "factor/Dag.hpp"
 #include "factor/GpuRun.hpp"
-#include "factor/Search/Gp.hpp"
-#include "factor/Search/Grid.hpp"
+#include "factor/Search/Space.hpp"
+#include "factor/Search/Surface.hpp"
 #include "gui/task_factors/services/FactorsEngine.hpp" // Engine<Cpu | Gpu>
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/exec.hpp"
@@ -30,8 +30,8 @@ namespace GUI::Factors {
 
 namespace {
 
-namespace grid = factor::search::grid;
-namespace gp = factor::search::gp;
+namespace space = factor::search::space;
+namespace surface = factor::search::surface;
 namespace fs = factor::stat;
 using factor::search::Result;
 using factor::search::Score;
@@ -78,20 +78,20 @@ void prune_logs(const std::filesystem::path &factor_dir, const std::filesystem::
 }
 
 // 槽在坐标 u 处的参数值 (整数槽按整数写)
-std::string slot_val(const grid::Slot &s, double u) {
-  const double v = grid::to_v(s, u);
+std::string slot_val(const space::Slot &s, double u) {
+  const double v = space::to_v(s, u);
   return s.integer ? strf("%d", static_cast<int>(v)) : strf("%.4g", v);
 }
 // 坐标 u[P] → "Op.d=16, Op.k=0.0042"
-std::string params_of(const std::vector<grid::Slot> &slots, const std::vector<double> &u) {
+std::string params_of(const std::vector<space::Slot> &slots, const std::vector<double> &u) {
   std::string out;
   for (size_t j = 0; j < slots.size(); ++j)
     out += (j ? ", " : "") + slots[j].name + "=" + slot_val(slots[j], u[j]);
   return out;
 }
-// 坐标变换名 (Grid.hpp to_v)
-const char *coord_name(const grid::Slot &s) {
-  if (s.key == grid::Key::D)
+// 坐标变换名 (Space.hpp to_v)
+const char *coord_name(const space::Slot &s) {
+  if (s.key == space::Key::D)
     return "log2";
   switch (s.kdom) {
   case factor::KDom::OPEN01:
@@ -130,7 +130,7 @@ struct Samp {
 
 // 一个 h 的曲面 + 终选 (每趟后重算)
 struct Surface {
-  gp::Model M;
+  surface::Model M;
   std::vector<int> ids;    // 观测 (M 的下标 → 候选 id)
   std::vector<double> mu;  // 观测处后验均值
   std::vector<int> peaks;  // 峰 (观测下标, μ 降序)
@@ -251,9 +251,9 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   }
   if (!e0.is_template())
     return abort_with("模板无自由参数 (裸键名 d / k / k2 才搜; 写了数字的参数固定)");
-  std::vector<grid::Slot> slots;
+  std::vector<space::Slot> slots;
   // 块首前带: 统计首行的 rAC lag 行 (t_lo − max_lag) 也须整窗 ⇒ 行数 ≥ 模板回看 + max_lag
-  const int look = grid::lookback(e0), lag = factor::search::max_lag(hd, seg);
+  const int look = space::lookback(e0), lag = factor::search::max_lag(hd, seg);
   const int carry = (look + lag + seg - 1) / seg;
   lg("前带: 模板回看 %d 行 + rAC lag %d 行 → %d 天", look, lag, carry);
   const factor::expr::Expr ep = e0.placeholder();           // 结构 / 特征叶序 / 槽数与任一具体化相同
@@ -265,7 +265,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   std::map<std::string, int> seen;
   const auto add_cand = [&](const std::vector<double> &u) -> int {
     Entry en;
-    if (!grid::apply(e0, slots, u, seg, en.e))
+    if (!space::apply(e0, slots, u, seg, en.e))
       return -1;
     if (const auto it = seen.find(en.e.canon); it != seen.end())
       return it->second;
@@ -330,7 +330,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const double Wc = 2.0 * H + 2.0 + kPlaneBytes * (s0 + 2);
   const double F0 = 5.0 * nf + 1.0 + 7.0 * H;
   const double r16_bytes = (static_cast<double>(days) * seg / stride + 1.0) * A * sizeof(uint16_t);
-  const double host_cap = host_budget() - grid::kInit * r16_bytes;
+  const double host_cap = host_budget() - space::kInit * r16_bytes;
   assert(host_cap > 0.0 && "内存预算装不下趟 0 的 r16 抽样行");
   int D = std::clamp(static_cast<int>(host_cap / (per_day * (L0 + (scope.gpu ? 0.0 : Wc)))) - carry, 1, days);
   double vram_budget = 0.0;
@@ -574,21 +574,21 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   res.n_full = chunks[0].c.y.n_full;
   lg("满仓一腿 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
   const double a_eff = res.n_full * fs::kGroups;
-  slots = grid::slots_of(e0, seg, a_eff);
+  slots = space::slots_of(e0, seg, a_eff);
   assert(!slots.empty());
-  for (const grid::Slot &s : slots)
+  for (const space::Slot &s : slots)
     res.slots.push_back(s.name);
   lg("自由参数 %d 个 (区间按池内平均有效资产数 %.0f 定):", static_cast<int>(slots.size()), a_eff);
-  for (const grid::Slot &s : slots)
+  for (const space::Slot &s : slots)
     lg("  %-24s 坐标 %-8s 区间 [%.3g, %.3g] 中性 u0=%.3g%s", s.name.c_str(), coord_name(s), s.u_lo, s.u_hi, s.u0, s.integer ? " 整数" : "");
   // 阈值槽 (ANY / GE0) 由深到浅 (前序逆序: 子树先于祖先): 中性具体式在 CPU 上走到该槽的输入节点即止,
   // 取块 0 抽样行的池内有效值 (GE0: |x|) 升序作分位表
   cpu.emplace(F.ex, cancel_, kCpuForest); // 分位表恒走 CPU (要宿主平面); CPU 后端时也是评估引擎
   for (size_t jj = slots.size(); jj-- > 0;) {
-    grid::Slot &sl = slots[jj];
-    if (!grid::needs_qtab(sl))
+    space::Slot &sl = slots[jj];
+    if (!space::needs_qtab(sl))
       continue;
-    const factor::expr::Expr ec = grid::neutral(e0, slots, seg);
+    const factor::expr::Expr ec = space::neutral(e0, slots, seg);
     const factor::Dag dc = factor::build(ec, /*fuse=*/false);
     const factor::expr::Node &nd = ec.nodes[static_cast<size_t>(sl.node)];
     assert(factor::expr::kOps[nd.op].arity >= 1);
@@ -622,7 +622,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     if (tab.size() < 2 || !(tab.front() < tab.back())) // 输入常量 → 阈值无意义; 自由参数没法落值, 整个搜索放弃
       return abort_with("阈值槽 " + sl.name + " 的输入在块 0 抽样行上是常量, 搜不动");
     const size_t n_tab = tab.size();
-    grid::set_qtab(sl, std::move(tab));
+    space::set_qtab(sl, std::move(tab));
     lg("分位表: %s ← %zu 个值 (输入 %s), 区间 [%s, %s], 中性 %s", sl.name.c_str(), n_tab, key.c_str(), slot_val(sl, sl.u_lo).c_str(), slot_val(sl, sl.u_hi).c_str(),
        slot_val(sl, sl.u0).c_str());
   }
@@ -631,18 +631,18 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     gpu.emplace(F.ex, cancel_, batch);
   }
 
-  // ---- 趟 0: R_d 采样 (Grid design), 一趟得全部 h 的分 ----
+  // ---- 趟 0: R_d 采样 (Space design), 一趟得全部 h 的分 ----
   std::vector<int> ids;
   {
     int n_bad = 0;
-    for (const std::vector<double> &u : grid::design(slots, grid::kInit)) {
+    for (const std::vector<double> &u : space::design(slots, space::kInit)) {
       const int id = add_cand(u);
       if (id < 0)
         ++n_bad;
       else if (std::find(ids.begin(), ids.end(), id) == ids.end())
         ids.push_back(id);
     }
-    lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选; r16 抽样步长 %d 行 (每候选 %d 行)", grid::kInit, n_bad, static_cast<int>(ids.size()), stride, R);
+    lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选; r16 抽样步长 %d 行 (每候选 %d 行)", space::kInit, n_bad, static_cast<int>(ids.size()), stride, R);
   }
   if (ids.empty())
     return abort_with("采样点无一参数合法 (值域互斥?), 文件不动");
@@ -669,19 +669,19 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         if (en.pass < 0 || !en.sc[hi].ok)
           continue;
         S.ids.push_back(id);
-        x.push_back(grid::unit(slots, en.u));
+        x.push_back(space::unit(slots, en.u));
         y.push_back(en.sc[hi].g);
         se.push_back(en.sc[hi].se);
       }
       if (S.ids.empty())
         return;
-      S.M = gp::fit(x, y, se);
+      S.M = surface::fit(x, y, se);
       std::vector<uint8_t> usable;
       for (size_t i = 0; i < x.size(); ++i) {
-        S.mu.push_back(gp::mean(S.M, x[i]));
+        S.mu.push_back(surface::mean(S.M, x[i]));
         usable.push_back(std::isfinite(ents[static_cast<size_t>(S.ids[i])].sc[hi].score));
       }
-      S.peaks = gp::peaks(S.M, S.mu, usable);
+      S.peaks = surface::peaks(S.M, S.mu, usable);
     });
     for (int hi = 0; hi < H; ++hi) { // 截面相关要全核 (ensure_rho), 逐 h 做
       Surface &S = surf[static_cast<size_t>(hi)];
@@ -744,7 +744,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
               if (std::find(ids.begin(), ids.end(), id) != ids.end())
                 break;
               double mu = 0.0, sd = 0.0;
-              gp::predict(S.M, grid::unit(slots, ents[static_cast<size_t>(id)].u), mu, sd);
+              surface::predict(S.M, space::unit(slots, ents[static_cast<size_t>(id)].u), mu, sd);
               if (mu + sd - S.pmu[q] > se_c)
                 ids.push_back(id);
               break;

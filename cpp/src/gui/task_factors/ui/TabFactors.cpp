@@ -3,7 +3,7 @@
 #include "factor/Check.hpp"                     // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
 #include "factor/GpuRun.hpp"                    // available / device_name
 #include "factor/Search/Contract.hpp"           // 搜索窗 / 抽样常量: Search 提示
-#include "factor/Search/Grid.hpp"               // kInit: Search 提示
+#include "factor/Search/Space.hpp"              // kInit: Search 提示
 #include "gui/Tasks.hpp"                        // StatusColor
 #include "gui/task_factors/ui/TabPortfolio.hpp" // RenderPortfolioBoxes
 #include "gui/util/Sparkline.hpp"               // ic~ / alpha~ 列迷你图
@@ -1180,7 +1180,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             "    ◦ 候选合成共享 DAG, 公共前缀只算一次\n"
             "• 写回: 全部持有期的终选整体替换该文件 weights (旧的全丢), 并自动 Run 重算",
             view_row->file.c_str(), factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen,
-            factor::search::grid::kInit, factor::search::kCorrRows);
+            factor::search::space::kInit, factor::search::kCorrRows);
     }
     // Search all: 各文件首个可搜行 (按文件去重), 表序
     std::vector<const FactorRow *> all_rows;

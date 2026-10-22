@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Search 的曲面 (纯逻辑, 宿主 double, 无后端 / IO): 已评候选 (单位立方坐标 x, 带符号目标 g, 标准误 se) → 高斯过程后验 → 峰
+// Search 的曲面 (纯逻辑, 宿主 double, 无后端 / IO; 与 Space.hpp 对仗): 已评候选 (坐标由 Space unit 归一) (单位立方坐标 x, 带符号目标 g, 标准误 se) → 高斯过程后验 → 峰
 // =============================================================================
 //   【模型】g(x) = m + f(x) + ε, f ~ GP(0, σf²·Matérn5/2(r)), r² = Σ_j ((x_j − x'_j) / ℓ_j)², ε_i ~ N(0, se_i²):
 //     噪声用各点已知标准误 (Search/Contract【噪声】), 不估计; m 取 GLS 闭式; σf / ℓ_j 极大化边际似然 (对数网格坐标下降, 网格只是
@@ -17,7 +17,7 @@
 #include <limits>
 #include <vector>
 
-namespace factor::search::gp {
+namespace factor::search::surface {
 
 struct Model {
   int P = 0, N = 0;
@@ -209,4 +209,4 @@ inline std::vector<int> peaks(const Model &M, const std::vector<double> &mu, con
   return out;
 }
 
-} // namespace factor::search::gp
+} // namespace factor::search::surface

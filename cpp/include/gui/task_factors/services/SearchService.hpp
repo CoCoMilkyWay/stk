@@ -1,25 +1,25 @@
 // SearchService — Factors 页 Search 的单 worker: 对表格高光的那一个因子文件 (模板 expr, Expr.hpp 自由参数) 搜它的**全部自由参数**
-// (factor/Search/Grid.hpp 定槽 / 坐标 / 区间), 搜索窗内每个持有期 h (Search/Contract.hpp hold_in_window: 30m ~ T+1) 各自独立搜, 目标 = 该 h 的
+// (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 搜索窗内每个持有期 h (Search/Contract.hpp hold_in_window: 30m ~ T+1) 各自独立搜, 目标 = 该 h 的
 // 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本), 每 h 按冗余规则终选持仓重合少的
 // 显著权重 (Contract【多权重】, 个数不设上限), 全部 h 的 picks 整个替换该因子文件的 weights (FactorsService WriteFactorWeights; UI 随后自动 Run 重算每权重的 stat).
 // 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
-// 唯一的预算量 = 第 0 趟点数 (Grid kInit); 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
+// 唯一的预算量 = 第 0 趟点数 (Space kInit); 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 全部 h 的标签同在 (hd.n = H), 因子平面只算一遍; 趟与趟之间才有依赖):
 //   准备          先装块 0: 满仓只数 n_full = 全期池内平均有效资产数 / kGroups (Labels::cap, 各块共用, 与 Run 同一个; 一块 = 块 0 的 YPlanes::n_full,
-//                 多块 = 预扫全期门控 FactorsLoad n_full_of); 槽区间按 A = n_full · kGroups 定 (Grid slots_of).
-//                 阈值槽 (ANY / GE0) 由深到浅: 中性具体式 (Grid neutral) 在 CPU 上走到它的输入节点, 取块 0 抽样行的池内有效值作分位表
-//                 (Grid set_qtab); 输入是常量 → 整个搜索放弃
-//   趟 0 采样     R_d 低差异点 (Grid design), 评一次得全部 h 的分 (自动定向: Contract【方向】)
-//   每趟之后      每 h (并行): 已评点拟合曲面 (Search/Gp.hpp, 噪声 = 各点 SE) → 峰 → pick_diverse 得活跃峰 (= 当前终选集)
-//   趟 1..        每 h 每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起, 落到已评点就减半再试; 新点的 μ + sd − μ_c > SE_c (可能显著胜过峰) 才评;
-//                 取整回到 c / 出界 / 不合法 / 不值得 → 该方向止. 全部 h 的新点去重拼成一趟; 没有新点 → 停
+//                 多块 = 预扫全期门控 FactorsLoad n_full_of); 槽区间按 A = n_full · kGroups 定 (Space slots_of).
+//                 阈值槽 (ANY / GE0) 由深到浅: 中性具体式 (Space neutral) 在 CPU 上走到它的输入节点, 取块 0 抽样行的池内有效值作分位表
+//                 (Space set_qtab); 输入是常量 → 整个搜索放弃
+//   趟 0 采样     R_d 低差异点 (Space design), 评一次得全部 h 的分 (自动定向: Contract【方向】)
+//   每趟之后      每 h (并行): 已评点拟合曲面 (Search/Surface.hpp, 噪声 = 各点 SE) → 峰 → pick_diverse 得活跃峰 (= 当前终选集)
+//   趟 1..        每 h 每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起 (夹到区间端), 落到已评点就减半再试; 新点的 μ + sd − μ_c > SE_c (可能显著胜过峰) 才评;
+//                 取整回到 c / 不合法 / 本趟已提 / 不值得 → 该方向止. 全部 h 的新点去重拼成一趟; 没有新点 → 停
 //   终            最后一次曲面的 pick_diverse 即 weights; 一个 h 都没有显著候选 → 文件不动
 //   r16 抽样      每趟顺带把每个候选的 kCorrRows 抽样行 r16 回宿主常驻 (约 kCorrRows × A × 2 字节 / 候选), 截面相关按需两两现算 (Stat/Host lag_row),
 //                 不另开一趟
 //
 // 评估 (Search 算子, 两后端语义同 Stat; 装 / 评搜索窗内全部标签组):
-//   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry = ⌈(模板回看 + max_lag) / seg⌉ 日 (Grid lookback: 各路径 ROLL 窗长之和,
+//   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry = ⌈(模板回看 + max_lag) / seg⌉ 日 (Space lookback: 各路径 ROLL 窗长之和,
 //             自由 d 取 kMaxD), 统计从 t_lo 起 (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同
 //             (EXPAND 段界 reset; 唯 EXPO 全历史递推在块首重启, 差 (1−k)^carry 行, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
 //   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次).

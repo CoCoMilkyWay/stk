@@ -85,7 +85,7 @@ bool ComputeService::run(ComputeConfig &config) {
     std::vector<std::string> axis_codes(num_assets);
     for (size_t sub = 0; sub < num_assets; ++sub)
       axis_codes[sub] = asset_axis().code(lib.axis.global(sub));
-    data_.fund_panel.build(axis_codes, dates);
+    data_.fund_panel.build(axis_codes, dates, lib.tier != TierId::Lob);
   }
 
   // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;

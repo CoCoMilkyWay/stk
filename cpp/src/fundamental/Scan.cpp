@@ -62,7 +62,7 @@ std::uint32_t Ids::find(std::string_view code) const {
 }
 
 void Ids::miss(const Spec &s, std::string_view code) const {
-  if (!from<Bq>(s))
+  if (cover_ == Cover::Part || !from<Bq>(s))
     return;
   const std::lock_guard lock(miss_mu_);
   if (!live_loaded_) {

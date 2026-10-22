@@ -114,12 +114,16 @@ struct Sink {
 //   空间外代码 → kNone (Rows::each 跳过), 经 miss 分两种:
 //     当日在市 (cn_stock_static_data 快照) = 码表漏收 → warning
 //     不在市 = 源数据挂在旧号 / 新三板挂牌号 / 未上市代码上 → 静默
+//   Cover::Part (空间是子集, 如 Lob 池轴): 空间外在市股是常态, 不查漏收, 一律静默
 // ---------------------------------------------------------------------------
 class Ids {
 public:
   static constexpr std::uint32_t kNone = ~0u;
+  enum class Cover { Full,
+                     Part };
 
   Ids() = default;
+  explicit Ids(Cover c) : cover_(c) {}
   // 空间 = Meta 表 s 的键列 (文件行序); 0 行 / 代码非 <码>.<交易所> 形 / 重复 → expect
   Ids(const Catalog &cat, const Spec &s);
   Ids(const Ids &) = delete; // codes_ 指向 ids_ 的节点
@@ -129,7 +133,7 @@ public:
   std::uint32_t size() const { return static_cast<std::uint32_t>(codes_.size()); }
   std::uint32_t find(std::string_view code) const;
   std::string_view code(std::uint32_t id) const { return *codes_[id]; }
-  // 空间外代码的处置 (Scratch::open 每字典项一次): Bq 表且当日在市 → warning; 其余静默.
+  // 空间外代码的处置 (Scratch::open 每字典项一次): Full 且 Bq 表且当日在市 → warning; 其余静默.
   //   并发安全; 首次在市判定时载入快照
   void miss(const Spec &s, std::string_view code) const;
 
@@ -144,6 +148,7 @@ private:
   };
   std::unordered_map<std::string, std::uint32_t, Hash, Eq> ids_;
   std::vector<const std::string *> codes_; // id → ids_ 的键 (unordered_map 节点地址稳定)
+  Cover cover_ = Cover::Full;
   mutable std::mutex miss_mu_;
   mutable bool live_loaded_ = false;
   mutable std::unordered_map<std::string, std::string, Hash, Eq> live_; // 当日在市代码 → 简称

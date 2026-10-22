@@ -993,7 +993,7 @@ Panel::~Panel() = default;
 int Panel::date_index(Ymd d) const { return data().axes.exact(d); }
 
 void Panel::build(const std::vector<std::string> &codes,
-                  const std::vector<Ymd> &dates) {
+                  const std::vector<Ymd> &dates, bool full) {
   assert(!codes.empty() && "AssetAxis 为空");
   assert(!dates.empty() && "回测日为空");
 
@@ -1012,7 +1012,7 @@ void Panel::build(const std::vector<std::string> &codes,
     axes.date_days.push_back(misc::to_days(d));
 
   // ---- A 轴: AssetAxis codes ("000001.SZ"); 月度表里轴外的代码 → kNone 跳过 ----
-  fundamental::Ids ids;
+  fundamental::Ids ids(full ? fundamental::Ids::Cover::Full : fundamental::Ids::Cover::Part);
   for (const auto &c : codes)
     ids.add(c);
   axes.n_a_ = static_cast<int>(ids.size());

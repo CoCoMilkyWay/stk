@@ -60,8 +60,9 @@ public:
   Panel &operator=(const Panel &) = delete;
 
   // codes: AssetAxis 顺序的 "000001.SZ"; dates: 回测日升序 (决定网格切片起点, 必须全部命中交易日历).
+  // full: codes 是全市场码表 (Bar 全轴) → 查码表漏收; 池轴子集 (Lob) → 不查.
   // 本地 parquet 缺失 → assert (Phase 2 前置条件: 基本面 sync 已完成).
-  void build(const std::vector<std::string> &codes, const std::vector<misc::Ymd> &dates);
+  void build(const std::vector<std::string> &codes, const std::vector<misc::Ymd> &dates, bool full);
 
   bool built() const { return d_ != nullptr; }
   int date_index(misc::Ymd d) const; // D 轴下标; 不是交易日 → -1

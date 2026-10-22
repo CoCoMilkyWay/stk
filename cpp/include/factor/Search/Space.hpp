@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Search 的参数空间 (纯逻辑, 无后端, 无 IO): 表达式 → 可搜参数槽 → 统一坐标 + 闭区间 → 低差异采样 (第 0 趟)
+// Search 的参数空间 (纯逻辑, 无后端, 无 IO; 与 Surface.hpp 对仗: 点从哪来 / 点有多好): 表达式 → 可搜参数槽 → 统一坐标 + 闭区间 → 低差异采样 (第 0 趟)
 // =============================================================================
 //   【槽】模板表达式 (Expr.hpp 自由参数: 裸键名 d / k / k2) 的每个自由参数各一槽; 写了数字的参数固定不搜 (TS 口径根的 d 必是数字).
 //   【坐标与区间】每槽一维坐标 u, 单调; 区间两端全由已有常数推出 (不设跨度常数). 变换按参数含义选 (见 to_v):
@@ -30,7 +30,7 @@
 #include <string>
 #include <vector>
 
-namespace factor::search::grid {
+namespace factor::search::space {
 
 inline constexpr int kInit = 64; // 第 0 趟采样点数 (唯一的预算量; 整数槽取整去重后可能更少)
 
@@ -261,4 +261,4 @@ inline std::vector<std::vector<double>> design(const std::vector<Slot> &slots, i
   return out;
 }
 
-} // namespace factor::search::grid
+} // namespace factor::search::space
