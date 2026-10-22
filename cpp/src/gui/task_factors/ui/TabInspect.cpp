@@ -197,8 +197,8 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
   ys.push_back(y.back());
 }
 
-// 毛口径一级 Row[T] (选定 hold) → 日级序列 + IC 分布 / 时序. 累计按 1/h 折算: 相邻 h 行的标签是同一段收益, Σ_t r_t / h = h 个相位非重叠链的平均;
-// 再按回测长度折成等效年化 (× kDaysPerYear / days, 单位 %): 末点 = 年化收益, 不同区间长度 / 持有期可比;
+// 选定 hold → 日级序列 + IC 分布 / 时序. 分层累计 = InspectResult::nav (FactorsBook 净值引擎: 分批 1/h, 买不进空着, 卖不出延长) 选定口径的
+// 日收益连乘, 画 (净值 − 1) × 100 %; LS Sharpe = 日收益 mean / sd × √kDaysPerYear;
 // rIC 分布 = ok 行的 ric 逐行进 KLL (与 HoldStat::ric 的 mean/sd/skew/kurt 同一组样本).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
@@ -207,17 +207,9 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   assert(sel >= 0 && sel < res.hd.n);
   const int T = res.scope.T, days = res.scope.days, S = res.seg;
   assert(T == days * S && days >= 1);
-  const int hold = res.hd.h[sel];
-  const int hr = factor::stat::hold_rows(hold, factor::geo_of(S)); // 持有期折成的行数 (相邻 hr 行重叠)
-  const double h = hr;
-  const double ann = 100.0 * factor::stat::kDaysPerYear / days;
-  const double cap = res.scope.n_full;
-  assert(cap > 0.0);
   const factor::stat::Row *r = res.rows_at(sel);
-  assert(res.pl.tails.size() == res.pl.rows.size());
-  const TailRow *tr = res.tails_at(sel);
+  assert(res.nav.size() == static_cast<size_t>(res.hd.n) * kNavLines * static_cast<size_t>(days));
   d.hs = res.hold[static_cast<size_t>(sel)];
-  assert(d.hs.n_all == T && "累计线 / Sharpe 的分母 = 全部行, 须与二级 n_all 同");
   d.adist = res.alpha_dist;
   d.days = days;
   d.dates = res.dates;
@@ -232,41 +224,24 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     c.assign(static_cast<size_t>(days) + 1, 0.f);
   std::vector<float> &ics = d.ic_series;
   ics.reserve(static_cast<size_t>(T));
-  double lay_c[kLayerLines] = {}, ls_c[kLsLines] = {};
-  factor::stat::MomAcc ls_m[kLsLines]; // LS 线沿 ok 行的矩 → Sharpe (与 Accum::finish 的 LS 同式, 不 ok 行按 0 补进 T 行: ann_sharpe)
-  for (int day = 0; day < days; ++day) {
-    double g[kLayerLines] = {}, s[kLsLines] = {};
-    for (int t = day * S; t < (day + 1) * S; ++t) {
-      const factor::stat::Row &w = r[t];
-      if (!w.ok)
-        continue;
-      ics.push_back(w.ric);
-      const double base = absolute ? w.mkt[kLong] : 0.0;
-      // ret = 持仓超额收益 (契约【持仓口径】); 绝对口径再加基准 × 仓位 cnt / max(cnt, cap_i). 组 / 尾空 → 贡献 0
-      const auto layer = [&](int i, float ret, unsigned cnt, double cap_i) { g[i] += ret + base * cnt / factor::stat::book_den(cnt, cap_i); };
-      const TailRow &x = tr[t];
-      for (int k = 0; k < K; ++k)
-        layer(k, w.grp[k], w.cnt[k], cap);
-      for (int l = 0; l < kLegs; ++l)
-        for (int j = 0; j < kTails; ++j)
-          layer(layer_tail(l, j), x.sum[l][j], x.cnt[l][j], cap * kTailOfGroup[j]);
-      for (int i = 0; i < kLsLines; ++i) {
-        const float v = i ? x.ls[i - 1] : w.ls;
-        s[i] += v;
-        ls_m[i].add(v);
-      }
-    }
-    for (int i = 0; i < kLayerLines; ++i) {
-      lay_c[i] += g[i] / h;
-      d.lay_cum[i][static_cast<size_t>(day) + 1] = static_cast<float>(lay_c[i] * ann);
-    }
-    for (int i = 0; i < kLsLines; ++i) {
-      ls_c[i] += s[i] / h;
-      d.ls_cum[i][static_cast<size_t>(day) + 1] = static_cast<float>(ls_c[i] * ann);
-    }
+  for (int t = 0; t < T; ++t)
+    if (r[t].ok)
+      ics.push_back(r[t].ric);
+  const auto compound = [&](const float *v, std::vector<float> &cum) {
+    double l = 1.0;
+    for (int day = 0; day < days; ++day)
+      l *= 1.0 + v[day], cum[static_cast<size_t>(day) + 1] = static_cast<float>((l - 1.0) * 100.0);
+  };
+  for (int i = 0; i < kLayerLines; ++i)
+    compound(res.nav_at(sel, (absolute ? 0 : kNavLayers) + i), d.lay_cum[i]);
+  for (int i = 0; i < kLsLines; ++i) {
+    const float *v = res.nav_at(sel, 2 * kNavLayers + i);
+    compound(v, d.ls_cum[i]);
+    factor::stat::MomAcc m;
+    for (int day = 0; day < days; ++day)
+      m.add(v[day]);
+    d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(m.finish(1), m.n, days, factor::stat::kDaysPerYear));
   }
-  for (int i = 0; i < kLsLines; ++i)
-    d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(ls_m[i].finish(hr), ls_m[i].n, T, factor::stat::periods_per_year(hold, S)));
   // 各簇 / 各 LS 线的 min / max (含起点 0): y 范围 / LS 平移量按显示的簇每帧合成 (layer_range)
   const auto span = [](const std::vector<float> &v, float &a, float &b) {
     for (const float x : v)
@@ -295,11 +270,14 @@ void empty_plot(const char *title, const ImVec2 &size, const char *hint) {
   }
 }
 
-// 光标日截面值 (唯一出口, 右图柱 / 光标标注都走这): 到第 c 日的累计折成等效年化 %. 曲线 (lay_cum / ls_cum) 按整段 days 折 (× kDaysPerYear / days),
-// 到第 c 日只过了 c 天, 再乘 days / c 即 × kDaysPerYear / c; c = days 与曲线末点一致; c = 0 无累计 → 0
+// 光标日截面值 (唯一出口, 右图柱 / 光标标注都走这): 到第 c 日的复利累计 (lay_cum / ls_cum, %) 按已过 c 天几何年化 %:
+// (1 + cum)^(kDaysPerYear / c) − 1; 净值 ≤ 0 → −100; c = 0 无累计 → 0
 float section_at(const InspectDerived &d, const std::vector<float> &cum, int c) {
   assert(c >= 0 && c <= d.days);
-  return c ? cum[static_cast<size_t>(c)] * static_cast<float>(d.days) / static_cast<float>(c) : 0.f;
+  if (!c)
+    return 0.f;
+  const double nav = 1.0 + cum[static_cast<size_t>(c)] / 100.0;
+  return nav > 0.0 ? static_cast<float>((std::pow(nav, static_cast<double>(factor::stat::kDaysPerYear) / c) - 1.0) * 100.0) : -100.f;
 }
 
 // 左上 y 范围: 显示中的分层簇 (簇 0 = 20 组恒显 + 开着的尾部级) min / max 加边; LS 线 (顶底 + 开着的尾部级) 不参与定范围, 而是共一个平移量把最低点贴 lo
@@ -389,7 +367,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   if (cursor_day < 0 || cursor_day > d.days)
     cursor_day = d.days;
   char title[128];
-  std::snprintf(title, sizeof(title), "分层累计 (等效年化) %s###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)");
+  std::snprintf(title, sizeof(title), "分层累计 (复利净值) %s###ts", absolute ? "(绝对 lv)" : "(超额 lv − mkt)");
   const int n = d.days + 1;
   float col_ratios[2] = {3.f, 1.f};
   LayerRange yr{};
@@ -416,7 +394,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         }
         yr = layer_range(d, show);
       }
-      ImPlot::SetupAxes(nullptr, absolute ? "年化 Σ ret / h  (%)" : "年化 Σ excess / h  (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+      ImPlot::SetupAxes(nullptr, absolute ? "净值 − 1  (%)" : "超额净值 − 1  (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
       ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
       ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<misc::Ymd> *>(&d.dates));
       follow_limits(ImAxis_X1, 0, std::max(1, d.days));
@@ -439,10 +417,10 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         const Shift &s = *static_cast<const Shift *>(ud);
         return ImPlotPoint(i, s.y[i] + s.off);
       };
-      // 图例列对齐 (等宽字体): "LS <tag:4> <+7.2f>%  SR <+5.2f>", 收益 = 曲线末点 (等效年化 %), 顶底 LS 的 tag 空
+      // 图例列对齐 (等宽字体): "LS <tag:4> <+7.2f>%  SR <+5.2f>", 收益 = 全段几何年化 % (section_at 末日), 顶底 LS 的 tag 空
       constexpr const char *kLsFmt = "LS %-4s %+7.2f%%  SR %+5.2f###%s";
       char ll[64];
-      std::snprintf(ll, sizeof(ll), kLsFmt, "", d.ls_cum[0].back(), d.ls_sharpe[0], "ls");
+      std::snprintf(ll, sizeof(ll), kLsFmt, "", section_at(d, d.ls_cum[0], d.days), d.ls_sharpe[0], "ls");
       Shift shift[kLsLines];
       shift[0] = Shift{d.ls_cum[0].data(), yr.ls_off};
       ImPlot::SetNextLineStyle(kColLS, 2.5f);
@@ -452,7 +430,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         char tag[8], id[8];
         std::snprintf(tag, sizeof(tag), "%g%%", static_cast<double>(kTailOfGroup[j]) * 100.0);
         std::snprintf(id, sizeof(id), "tls%d", j);
-        std::snprintf(ll, sizeof(ll), kLsFmt, tag, d.ls_cum[1 + j].back(), d.ls_sharpe[1 + j], id);
+        std::snprintf(ll, sizeof(ll), kLsFmt, tag, section_at(d, d.ls_cum[1 + j], d.days), d.ls_sharpe[1 + j], id);
         ImPlot::HideNextItem(true, ImPlotCond_Once);
         for (int l = 0; l < kLegs; ++l) { // 色带: 本级线与上一级线 (j = 0 时是该腿的组线) 之间, 越极端越重
           const float *inner = (j ? d.lay_cum[layer_tail(l, j - 1)] : d.lay_cum[leg_group(l)]).data();

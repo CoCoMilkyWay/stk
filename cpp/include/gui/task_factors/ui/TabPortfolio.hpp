@@ -2,19 +2,20 @@
 //   小框 1: 选组合 (<portfolio_dir>/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
 //   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD; 不画个股):
-//     组合策略线 (有冲击 / 无冲击两条, 图例 = 组合名 | 冲击口径 | 区间年化, 与池线同格式列对齐) = 各因子独立回测 (PortfolioService FactorCurve, 各自的层) 的逐行增量等权聚合: 每个交易日在当日有数据的 n 个因子间等分,
-//     因子增量 = (行收益 − 行成本) / h (h = hold_rows, 重叠持有期折算), 记在该行平仓时刻 (分钟型 = 行末分钟 + n, 收盘型 = 当日收盘, T+N = 第 N 个交易日开盘;
-//       已实现口径, 与池指数对齐; 等分仍按建仓日); 净值 = 同一 x 的增量和逐点复利连乘. 单因子线同式 (权 1) ⇒ 单因子线 ≡ 只含它的组合.
-//       只算 G20 多头 = G20 做多绝对收益 − 多腿成本 (无冲击 = 不扣, 细线; 默认只显有冲击). 成本 = 各因子自己的最小冲击段, 不可选:
-//       Lob 层 = 最小金额段建仓冲击 + Config::fixed_impact; Bar 层无金额段 = 建仓 / 平仓都按 fixed_impact
-//     池指数线 (日层篮子 0, 每池一条等权; all 池两条 = 全A加权 (流通市值) / 全A等权; 全部在主图例): 只画因子日并集轴范围内, 当日收盘一点; 默认只显组合里因子所在的池;
+//     组合策略线 (有冲击 / 无冲击两条, 图例 = 组合名 | 冲击口径 | 区间年化 | 全段仓位 均 / 峰, 与池线同格式列对齐) = 各因子独立回测 (PortfolioService FactorCurve,
+//     各自的层, FactorsBook 净值引擎: 每行开 1/h 净值一批, 买不进空着, 卖不出延长) 的逐行增量等权聚合: 每个交易日在当日有数据的 n 个因子间等分 (按实现日),
+//     因子增量 = 毛收益 − 建仓冲击 − 固定冲击份数 · fixed_impact (占净值), 记在实现时刻 (分钟型 = 行末分钟, 收盘型 = 当日收盘, T+N = 开盘;
+//       已实现口径, 与池指数对齐); 净值 = 同一 x 的增量和逐点复利连乘. 单因子线同式 (权 1) ⇒ 单因子线 ≡ 只含它的组合.
+//       只算 G20 多头 (无冲击 = 不扣, 细线; 默认只显有冲击). 成本只在真成交时记, 冲击段 = 各因子自己的最小段, 不可选:
+//       Lob 层 = 最小金额段建仓冲击 + 平仓 Config::fixed_impact; Bar 层无金额段 = 建仓 / 平仓都按 fixed_impact
+//     池指数线 (日层篮子 0, 每池一条等权; all 池两条 = 全A加权 (总市值) / 全A等权; 全部在主图例): 只画因子日并集轴范围内, 当日收盘一点; 默认只显组合里因子所在的池;
 //       图例 = 池名 | 中文名 | 区间年化 | 年换手 (全评估期日均单边 PoolCurve::turn[该线权重] × kDaysPerYear, 倍; 指数线本身不扣成本)
-//     单因子线 (右侧图例, 默认全关): 该因子单独的 G20 多头净值 (带它自己的冲击)
+//     单因子线 (右侧图例, 默认全关): 该因子单独的 G20 多头净值 (带它自己的冲击; 表格另列全段仓位 均 / 峰)
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     主图例 / 右图例 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
 //   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用): 右侧表格单选一个池或申万一级行业 (全A 内按上一行 ind_l1 切;
 //     默认 = 组合首个因子所在池; 格 = 区间末 EP / BP / SP / CP / DY 的 N 年估值分位, 底色 = 该分位在同组 (池 / 行业) 同口内的截面名次, 便宜绿 → 贵红),
-//     主图 = 该池 / 行业流通市值加权指数 P (区间起点 = 1, 与 NAV 同一切片) + 滚动 EP / BP / SP / CP / DY Band
+//     主图 = 该篮子指数 P (全A加权 / 行业 = 总市值加权, 全A等权 / 其余池 = 等权; 区间起点 = 1, 与 NAV 同一切片) + 同权重的滚动 EP / BP / SP / CP / DY Band
 //     (主图例开关, 默认只开 EP): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
 //     (N = 右图例滑条, 即时重算; 正值窗内 ≡ 倍数口径 P · m_q / m); band 间填色 (最便宜档以下绿 → 最贵档以上红, 低 alpha 渐变), 指数线在上;
 //     不可算 / v ≤ 0 / 窗内有 v ≤ 0 的点断开, q_j ≤ 0 的档单独断开
@@ -51,6 +52,7 @@ struct PortfolioLine {
 // 单因子线 = 线 + 它的条目 (右表格的池 / 层 / 持有期 / 悬停)
 struct PortfolioFactor : PortfolioLine {
   PortfolioItem item;
+  std::string expo; // 右表格仓位列: 全段日均仓位的 均 / 峰 (FactorCurve::expo)
 };
 // 篮子线 (NAV 池线 / VAL 篮子同形) = 线 + 它的源: PoolCurve 篮子 k 权重 w 的指数投影到日并集轴
 //   = 前收一点 (范围首日开盘; 源首日无) + 轴上每日收盘一点, 原值
@@ -64,10 +66,10 @@ struct PortfolioBasket : PortfolioLine {
 // Portfolio 页派生 (UI 线程, 结果 / 内容 / fixed_impact 变才重算): 全段
 struct PortfolioDerived {
   std::vector<misc::Ymd> dates;         // 日并集轴 (横轴 day 下标)
-  PortfolioLine strat[kImpacts];        // 组合策略 (G20 多头): 首日开盘 1 + 每个有增量的 x; en | cn = 组合名 | 冲击口径
+  PortfolioLine strat[kImpacts];        // 组合策略 (G20 多头): 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | 冲击口径, note = 全段仓位 均 / 峰
   std::vector<PortfolioFactor> factors; // [items 序, 只含算成的] 该因子单独的 G20 多头 (有冲击), 与组合同式; id = PortfolioEntry::key, en = 因子文件主干, note = 冲击口径
   std::vector<PortfolioBasket> pools;   // [池线序] 篮子 0; en | cn = 池名 | 中文名, note = 年换手, on = 组合里有因子在这个池
-  std::vector<PortfolioBasket> vals;    // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 流通市值加权);
+  std::vector<PortfolioBasket> vals;    // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 总市值加权);
                                         //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | 中文名 (all 池 = kWeightName) / sw<ID> | 行业名,
                                         //   tag = 池名 (all 池 = kWeightName) / 行业名
   size_t n_val_pools = 0;               // vals 前 n 个是池

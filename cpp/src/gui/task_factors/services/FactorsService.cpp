@@ -471,8 +471,14 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
                                                     : "close_adj_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
     t.y.close_adj = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
   }
+  if (lv.tier == TierId::Bar) {
+    const char *trade[4] = {"can_buy", "can_sell", "can_buy_open", "can_sell_open"};
+    const std::string sfx = lv.lvl == L_1day ? std::string("_day") : "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
+    for (int i = 0; i < 4; ++i)
+      t.y.trade[i] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, (trade[i] + sfx).c_str())));
+    t.y.has_trade = true;
+  }
   if (lv.lvl == L_1day) {
-    t.y.float_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "float_shares")));
     t.y.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
     t.y.np_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_npp_ttm")));
     t.y.eq_mrq = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "bs_eq")));
@@ -669,7 +675,7 @@ factor::search::Score RowScore(const FactorRow &r, int hold) {
   const factor::stat::HoldStat *h = r.has_stat ? r.find_hold(hold) : nullptr;
   if (!h)
     return {};
-  return factor::search::score_of(*h, factor::search::Objective{});
+  return factor::search::score_of(*h);
 }
 
 void WriteFactorWeights(const std::string &factor_dir, std::string_view file, const std::vector<SearchWeight> &ws) {

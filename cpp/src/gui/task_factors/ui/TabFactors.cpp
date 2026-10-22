@@ -2,8 +2,8 @@
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "factor/Check.hpp"                     // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
 #include "factor/GpuRun.hpp"                    // available / device_name
-#include "factor/Search/Contract.hpp"           // 搜索窗 / 高原 / 终选常量: Search 提示
-#include "factor/Search/Grid.hpp"               // kLayerMax: Search 提示
+#include "factor/Search/Contract.hpp"           // 搜索窗 / 抽样常量: Search 提示
+#include "factor/Search/Grid.hpp"               // kInit: Search 提示
 #include "gui/Tasks.hpp"                        // StatusColor
 #include "gui/task_factors/ui/TabPortfolio.hpp" // RenderPortfolioBoxes
 #include "gui/util/Sparkline.hpp"               // ic~ / alpha~ 列迷你图
@@ -1167,24 +1167,20 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             "    ◦ 触发率 / 利用率已在 LS 里, 稀疏触发的候选自然压低, 不设活跃度硬阈值\n"
             "    ◦ 自动定向: LS 与 rIC 同负 → 取反计 (权重带 sign = -1)\n"
             "• 搜索\n"
-            "    ◦ 粗网格\n"
-            "        ▪ 中心 = 有界槽中点 / 0\n"
-            "        ▪ 步长按 ≤ %d 点的预算反推\n"
-            "        ▪ 阈值类参数以其输入的 σ 为单位\n"
-            "    ◦ 分支: 粗网格的每个局部峰各开一支 (不限支数)\n"
-            "    ◦ 局部: 每支坐标模式搜索 (每轮每参数 ±步长), 有更优就移, 否则步长减半, 到取整分辨率停\n"
-            "        ▪ 走到别支的点并入; 不升且低于高原线的剪掉\n"
-            "• 终选\n"
-            "    ◦ 高原集 = 各支最优里 score ≥ %.0f%%·max\n"
-            "    ◦ 按两两截面相关 (抽 %d 行) 挑 ≤ %d 个持仓重合最少的 (不保证含 max)\n"
+            "    ◦ 参数区间全由已有常数 / 池内有效资产数推出; 阈值类参数按其输入分布的分位搜\n"
+            "    ◦ 采样: %d 个低差异点铺满参数空间, 一趟评完\n"
+            "    ◦ 曲面: 每个持有期用已评点拟合平滑曲面 (噪声 = 各点标准误), 取曲面的峰\n"
+            "    ◦ 细化: 每个活跃峰沿各参数 ± 试探, 只评可能显著胜过峰的新点; 没有新点就停\n"
+            "• 终选 (每个持有期)\n"
+            "    ◦ 与最高者统计上分不开的峰里, 按截面相关 (抽 %d 行) 贪心挑持仓重合少的, 新增价值 > 标准误才入选 (个数不设上限)\n"
+            "    ◦ 最高者都不显著 (μ ≤ SE) 的持有期不出权重\n"
             "• 计算\n"
             "    ◦ 数据按天分块流式过, 块大小按内存 / 显存定\n"
             "    ◦ 窗内标签一次装全, 因子平面只算一遍\n"
             "    ◦ 候选合成共享 DAG, 公共前缀只算一次\n"
             "• 写回: 全部持有期的终选整体替换该文件 weights (旧的全丢), 并自动 Run 重算",
             view_row->file.c_str(), factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen,
-            factor::search::grid::kLayerMax, 100.0 * (1.0 - factor::search::kPlateau), factor::search::kCorrRows,
-            factor::search::kPicks);
+            factor::search::grid::kInit, factor::search::kCorrRows);
     }
     // Search all: 各文件首个可搜行 (按文件去重), 表序
     std::vector<const FactorRow *> all_rows;
@@ -1252,8 +1248,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       break;
     case Phase::Loading: {
       const int ci = ss.chunk();
-      if (ss.stage() == SearchStage::Scale && stotal > 0 && sdone >= stotal) {
-        ImGui::TextColored(busy, "准备: 计算阈值尺度 σ");
+      if (ss.stage() == SearchStage::Prepare && stotal > 0 && sdone >= stotal) {
+        ImGui::TextColored(busy, "准备: 阈值分位表");
       } else if (ci < static_cast<int>(s_sr.chunk_plan.size())) {
         const SearchChunk &c = s_sr.chunk_plan[static_cast<size_t>(ci)];
         const double got = stotal > 0 ? c.mb * sdone / stotal : 0.0;
@@ -1265,15 +1261,12 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     }
     case Phase::Running:
       switch (ss.stage()) {
-      case SearchStage::Scale:
-      case SearchStage::Coarse:
-        eval_line("粗网格");
+      case SearchStage::Prepare:
+      case SearchStage::Design:
+        eval_line("采样");
         break;
       case SearchStage::Refine:
-        eval_line("局部 第 " + std::to_string(ss.level()) + " 轮, 存活 " + std::to_string(ss.alive()) + " 支");
-        break;
-      case SearchStage::Corr:
-        eval_line("截面相关");
+        eval_line("细化 第 " + std::to_string(ss.pass()) + " 趟, 活跃峰 " + std::to_string(ss.alive()) + " 个");
         break;
       }
       break;

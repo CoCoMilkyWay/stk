@@ -1,11 +1,12 @@
 // Factors→Portfolio — 见头文件
 #include "gui/task_factors/ui/TabPortfolio.hpp"
 
-#include "features/Method/Fundamental.hpp"    // fund::SW2021_L1_NAMES (VAL 行业)
-#include "features/TimeIndex.hpp"             // TRADE_MINUTES_PER_DAY (横轴每日跨度)
-#include "gui/Tasks.hpp"                      // StatusColor
-#include "gui/task_factors/ui/TabFactors.hpp" // tip
-#include "shared/FeatureLib.hpp"              // feature_pools
+#include "features/Method/Fundamental.hpp"           // fund::SW2021_L1_NAMES (VAL 行业)
+#include "features/TimeIndex.hpp"                    // TRADE_MINUTES_PER_DAY (横轴每日跨度)
+#include "gui/Tasks.hpp"                             // StatusColor
+#include "gui/task_factors/services/FactorsBook.hpp" // book_kind (增量的实现时刻)
+#include "gui/task_factors/ui/TabFactors.hpp"        // tip
+#include "shared/FeatureLib.hpp"                     // feature_pools
 
 #include "imgui.h"
 #include "implot.h"
@@ -190,7 +191,8 @@ Inc sum_of(std::vector<Inc> v) {
   }
   return std::move(v.front());
 }
-// 增量流的冲击口径 i → 净值线: 起点 (x0, 1) + 每个 x 一点, 逐点复利
+// 增量流的冲击口径 i → 净值线: 起点 (x0, 1) + 每个 x 一点, 逐点复利. 起点取首日开盘前 kStartDx 格: 首行可在开盘点就有增量 (L_1min 行 0 末分钟 = 开盘)
+constexpr double kStartDx = 0.5;
 PortfolioCurve compound(const Inc &s, int i, double x0) {
   assert(s.x.empty() || s.x.front() > x0);
   PortfolioCurve c;
@@ -203,33 +205,31 @@ PortfolioCurve compound(const Inc &s, int i, double x0) {
   }
   return c;
 }
-// 因子 f 的增量流 (di = f 各日在并集轴上的下标): 行增量 = (行收益 − 行成本) / h · wt(建仓日并集轴下标), 记在平仓时刻 (与池指数同为已实现口径):
-//   分钟型 = 行末分钟 + n (过收盘 → 收盘); 收盘型 = 当日收盘; T+N = 其后第 N 个交易日开盘 (越过区间末 → 末日收盘, 标签按最后收盘结算)
+// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorsBook 逐行增量 (已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在实现时刻:
+//   Row 型 (分钟) = 行末分钟; Close 型 = 当日收盘; Open 型 (T+N) = 第 N 日起的日首行 → 开盘 (该行另有收盘建仓的成本, 一并记开盘), 其余行 → 行末分钟
 template <class Wt>
 Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_impact, const Wt &wt) {
   const int S = f.seg;
   const factor::Geo g = factor::geo_of(S);
-  const int h = factor::stat::hold_rows(f.hold, g);
-  assert(!f.dates.empty() && f.ret.size() == f.dates.size() * static_cast<size_t>(S));
-  // 每个新进者: 平仓 fixed_impact + 建仓 (Lob = 金额段冲击, 已在 wimp; Bar 无段 = 再一份 fixed_impact)
-  const double ke = f.amt > 0 ? fixed_impact : 2.0 * fixed_impact;
-  const auto exit_x = [&](size_t dl, int ts) -> size_t {
-    if (factor::stat::hold_intraday(f.hold))
-      return x_at(di[dl], std::min(static_cast<size_t>(g.minute(ts) + f.hold), kClose));
-    if (f.hold == factor::stat::kHoldClose)
+  const BookKind kind = book_kind(f.hold);
+  const size_t N = kind == BookKind::Open ? static_cast<size_t>(f.hold - factor::stat::kHoldDayBase) : 0;
+  assert(!f.dates.empty() && f.pnl.size() == f.dates.size() * static_cast<size_t>(S));
+  const auto row_x = [&](size_t dl, int ts) -> size_t {
+    if (kind == BookKind::Close)
       return x_at(di[dl], kClose);
-    const size_t de = dl + static_cast<size_t>(f.hold - factor::stat::kHoldDayBase);
-    return de < di.size() ? x_at(di[de], kOpen) : x_at(di.back(), kClose);
+    if (kind == BookKind::Open && ts == 0 && dl >= N)
+      return x_at(di[dl], kOpen);
+    return x_at(di[dl], static_cast<size_t>(g.minute(ts)));
   };
   Inc o;
   for (size_t dl = 0; dl < di.size(); ++dl) {
-    const double k = wt(di[dl]) / h;
+    const double k = wt(di[dl]);
     for (int ts = 0; ts < S; ++ts) {
       const size_t t = dl * S + static_cast<size_t>(ts);
       double r[kImpacts];
-      r[kImpactNet] = (f.ret[t] - f.wimp[t] - f.we[t] * ke) * k;
-      r[kImpactGross] = f.ret[t] * k;
-      o.add(static_cast<double>(exit_x(dl, ts)), r);
+      r[kImpactNet] = (f.pnl[t] - f.imp[t] - f.fix[t] * fixed_impact) * k;
+      r[kImpactGross] = f.pnl[t] * k;
+      o.add(static_cast<double>(row_x(dl, ts)), r);
     }
   }
   return o;
@@ -288,16 +288,30 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     for (const size_t i : di)
       ++n_act[i];
 
+  // 仓位 (全段): 日均仓位的 均 / 峰; 组合 = 当日各因子仓位按同一份 1 / n_act 加权
+  const auto expo_text = [](const std::vector<double> &e) {
+    double s = 0.0, m = 0.0;
+    for (const double x : e)
+      s += x, m = std::max(m, x);
+    char b[48];
+    std::snprintf(b, sizeof(b), "仓位 均%.0f%% 峰%.0f%%", e.empty() ? 0.0 : 100.0 * s / static_cast<double>(e.size()), 100.0 * m);
+    return std::string(b);
+  };
+  std::vector<double> combo_expo(d.dates.size(), 0.0);
   std::vector<Inc> shares; // [因子] 份额流
   for (size_t q = 0; q < fc.size(); ++q) {
     const FactorCurve &f = *fc[q];
     const std::vector<size_t> &di = dix[q];
+    assert(f.expo.size() == di.size());
+    for (size_t k = 0; k < di.size(); ++k)
+      combo_expo[di[k]] += f.expo[k] / n_act[di[k]];
     PortfolioFactor pf;
     pf.id = its[q]->e.key();
     pf.en = std::filesystem::path(its[q]->e.file).stem().string();
     pf.note = f.amt > 0 ? std::to_string(f.amt) + "w" : std::string("固定");
+    pf.expo = expo_text(std::vector<double>(f.expo.begin(), f.expo.end()));
     pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f.hold);
-    pf.c = compound(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen));
+    pf.c = compound(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen) - kStartDx);
     pf.item = *its[q];
     d.factors.push_back(std::move(pf));
     shares.push_back(inc_of(f, di, fixed_impact, [&](size_t i) { return 1.0 / n_act[i]; }));
@@ -308,9 +322,10 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     s.id = std::string("pf_strat") + kImpactId[i];
     s.en = name, s.cn = kImpactName[i];
     s.tag = name + kImpactTag[i];
+    s.note = expo_text(combo_expo);
     s.on = i == kImpactNet; // 默认只显有冲击
     if (!d.dates.empty())
-      s.c = compound(sum, i, x_of(0, kOpen));
+      s.c = compound(sum, i, x_of(0, kOpen) - kStartDx);
   }
 }
 
@@ -348,7 +363,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
     }
   }
 
-  // ---- VAL 篮子: 各池整体 (篮子 0; all 池两条 = 全A加权 / 全A等权, 其余池等权, 同池线) / 申万一级行业 (all 池篮子 k ≥ 1, 流通市值加权); 全史估值留在 PoolCurve ----
+  // ---- VAL 篮子: 各池整体 (篮子 0; all 池两条 = 全A加权 / 全A等权, 其余池等权, 同池线) / 申万一级行业 (all 池篮子 k ≥ 1, 总市值加权); 全史估值留在 PoolCurve ----
   if (d.dates.empty())
     return;
   std::shared_ptr<const PoolCurve> all;
@@ -675,10 +690,10 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
   ImGui::TextDisabled("有冲击");
   if (ImGui::IsItemHovered())
     tip("换手成本 = 各因子自己的最小冲击段, 不可选\n"
-        "• 每行成本 = 多腿新进者 (t−h 不在该组) 的建仓 + 平仓冲击, 按持仓加权 (Stat 契约【换手成本】)\n"
-        "• Lob 层: 建仓 = 最小金额段冲击 (封顶 max_impact), 平仓 = 固定冲击 %.1f bp\n"
+        "• 只在真成交时记: 每行开 1/h 净值一批, 上一批已持有的留仓不成交; 买不进的空着, 卖不出的延长到下个平仓点再判\n"
+        "• Lob 层: 建仓 = 最小金额段冲击 (封顶 max_impact, 吃不到按封顶), 平仓 = 固定冲击 %.1f bp\n"
         "• Bar 层 (无冲击段): 建仓 / 平仓都按固定冲击 %.1f bp\n"
-        "• 组合只算 G20 多头, 扣多腿; 无冲击线不扣",
+        "• 组合只算 G20 多头; 无冲击线不扣",
         fixed_impact * 1e4, fixed_impact * 1e4);
   ImGui::SameLine();
   ImGui::Checkbox("log", &ui.log_y);
@@ -744,7 +759,7 @@ bool pages() {
     const bool nav_open = ImGui::BeginTabItem("NAV");
     if (ImGui::IsItemHovered())
       tip("NAV = 资金曲线 (Net Asset Value, 净值)\n"
-          "• 橙线 = 本组合 G20 多头: 各因子独立回测的逐行收益等权聚合, 扣换手冲击 (细线 = 无冲击)\n"
+          "• 橙线 = 本组合 G20 多头: 各因子独立回测 (分批 1/h, 能成交才成交) 的逐行增量等权聚合, 扣换手冲击 (细线 = 无冲击); 图例尾 = 全段仓位\n"
           "• 池指数线 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只显组合里因子所在的池\n"
           "• 右侧勾选 = 单因子各自的 G20 多头净值\n"
           "• 底部区间条选日段: 各线在区间起点归一 = 1, 年化按区间复利");
@@ -753,7 +768,7 @@ bool pages() {
     const bool val_open = ImGui::BeginTabItem("VAL");
     if (ImGui::IsItemHovered())
       tip("VAL = 估值 (Valuation)\n"
-          "• 右侧单选一个池或申万一级行业: 主图 = 它的指数 + 估值 Band (全A加权 / 行业 = 流通市值加权, 全A等权 / 其余池 = 等权)\n"
+          "• 右侧单选一个池或申万一级行业: 主图 = 它的指数 + 估值 Band (全A加权 / 行业 = 总市值加权, 全A等权 / 其余池 = 等权)\n"
           "• EP 盈利收益率 (1/PE) / BP 账面市值比 (1/PB) / SP 营收市值比 (1/PS) / CP 现金流收益率 (1/PCF) / DY 股息率\n"
           "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值; 高 = 便宜, 亏损照计为负, 过 0 连续), 主图例逐个开关\n"
           "• Band = 把过去 N 年的估值分位换算成价格线: 指数落在哪档 = 当前估值在历史里的位置 (绿 = 便宜, 红 = 贵)\n"
@@ -830,7 +845,7 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
     std::snprintf(pct, sizeof(pct), "(%d年估值分位 %3.0f%%)", ui.roll.key.years, bd.pct);
     rows.push_back({nm, cur, pct});
   }
-  rows.push_back({s.tag, s.w == kWeightCap ? "流通市值加权指数" : "等权指数", ""});
+  rows.push_back({s.tag, s.w == kWeightCap ? "总市值加权指数" : "等权指数", ""});
   const std::vector<std::string> texts = align_cols(rows);
   for (int b = 0; b < kPoolVals; ++b) {
     const PortfolioBand &bd = v.band[b];
@@ -1003,14 +1018,15 @@ float end_table() {
   return t->ColumnsAutoFitWidth + ImGui::GetStyle().ScrollbarSize;
 }
 
-// ---- NAV 右图例: 单因子 G20 多头表格 (默认全关), 勾选 = 主图画该线; 列 = 池 / 层 / 持有期 / 因子 / 冲击 / 区间年化 ----
+// ---- NAV 右图例: 单因子 G20 多头表格 (默认全关), 勾选 = 主图画该线; 列 = 池 / 层 / 持有期 / 因子 / 冲击 / 仓位 / 区间年化 ----
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v) {
   ImGui::TextColored(kHead, "单因子 G20 多头");
   if (ImGui::IsItemHovered())
     tip("勾选 = 主图画该因子单独的 G20 多头净值\n"
         "• 带它自己的冲击 (冲击列: Lob 最小金额段 / Bar 固定冲击)\n"
+        "• 仓位列 = 全段日均仓位的均值 / 峰值 (买不进的空着 → < 100%%, 卖不出的延长 → 可 > 100%%)\n"
         "• 与组合同一区间起点归一; 年化按区间复利");
-  if (!ImGui::BeginTable("##pf_nav_tbl", 7, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV))
+  if (!ImGui::BeginTable("##pf_nav_tbl", 8, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV))
     return;
   ImGui::TableSetupScrollFreeze(0, 1);
   ImGui::TableSetupColumn("##on");
@@ -1019,6 +1035,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TableSetupColumn("持有");
   ImGui::TableSetupColumn("因子", ImGuiTableColumnFlags_WidthStretch);
   ImGui::TableSetupColumn("冲击");
+  ImGui::TableSetupColumn("仓位");
   ImGui::TableSetupColumn("年化");
   ImGui::TableHeadersRow();
   for (size_t i = 0; i < d.factors.size(); ++i) {
@@ -1045,6 +1062,8 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TableSetColumnIndex(5);
     ImGui::TextUnformatted(f.note.c_str());
     ImGui::TableSetColumnIndex(6);
+    ImGui::TextUnformatted(f.expo.c_str());
+    ImGui::TableSetColumnIndex(7);
     ImGui::Text("%+6.1f%%", v.factors[i].ann);
   }
   ui.legend_w[0] = end_table();
@@ -1060,7 +1079,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TextColored(kHead, "池 / 行业 (单选)");
   if (ImGui::IsItemHovered())
     tip("选一个池或申万一级行业: 主图画它的价格 + EP / BP / SP / CP / DY Band\n"
-        "• 价格: 全A加权 / 行业 = 流通市值加权指数 (行业 = 全A 内该行业); 全A等权 / 其余池 = 等权指数 (同 NAV 池线)\n"
+        "• 价格: 全A加权 / 行业 = 总市值加权指数 (行业 = 全A 内该行业); 全A等权 / 其余池 = 等权指数 (同 NAV 池线)\n"
         "• 行业成员 = 全A 成分按上一交易日的 SW2021 一级行业 (ind_l1) 切; 行业未知的只进全A\n"
         "• 估值与价格同权重: 个股收益率 = 分子 / 总市值; 加权 = 整体法 Σ分子 / Σ总市值, 等权 = 成分个股收益率的算术平均 (= 等权组合每元的分子)\n"
         "  分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 近365日税前分红 (亏损 / 负权益 / 负现金流照计为负)\n"

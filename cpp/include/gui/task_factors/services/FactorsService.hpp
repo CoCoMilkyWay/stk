@@ -46,7 +46,7 @@
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
 #include "factor/Expr.hpp"
-#include "factor/Search/Contract.hpp" // Score / Objective (因子表 score / util 与 Search 同一份目标)
+#include "factor/Search/Contract.hpp" // Score (因子表 score / util 与 Search 同一份目标)
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
 #include "gui/util/Service.hpp"
@@ -142,16 +142,17 @@ enum PoolVal : int { kValEp,
 inline constexpr int kPoolVals = 5;
 // 篮子指数 / 估值两权重 (FactorsLoad pool_baskets → PoolCurve → Portfolio NAV 池线 / VAL 价格线 + Band)
 enum Weight : int { kWeightEq,    // 等权
-                    kWeightCap }; // 流通市值加权
+                    kWeightCap }; // 总市值加权
 inline constexpr int kWeights = 2;
 struct YCols {
-  Col ts;           // ts_valid (当日有成交)
-  Col cs;           // cs_valid (标签 + 截面门控平面)
-  Col ohlc[4];      // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
-  Col close_adj;    // 后复权收盘价 (池等权指数): lob_close_adj / close_adj_<n>min / close_adj_day
-  Col float_shares; // A 股流通股本 (只日层设; 池流通市值加权指数的权重 = close_day × 本列)
-  Col total_shares; // 总股本 / 归母净利 TTM (pl_npp_ttm) / 归母权益 MRQ (bs_eq) / 营业总收入 TTM (pl_rev_ttm) / 经营现金流 TTM (cf_ocf_ttm) /
-                    // 股息率 TTM (dy_ttm): 只日层设, 池估值 EP / BP / SP / CP / DY (整体法)
+  Col ts;                 // ts_valid (当日有成交)
+  Col cs;                 // cs_valid (标签 + 截面门控平面)
+  Col ohlc[4];            // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
+  Col close_adj;          // 后复权收盘价 (池等权指数): lob_close_adj / close_adj_<n>min / close_adj_day
+  Col trade[4];           // 可成交 can_buy / can_sell (行末) / can_buy_open / can_sell_open (当日开盘): Bar 档 Tradable 本层列 <x>_<n>min / <x>_day (FactorsBook kTr* 同序)
+  bool has_trade = false; // Lob 档无可成交列: 恒可成交
+  Col total_shares;       // 总股本 / 归母净利 TTM (pl_npp_ttm) / 归母权益 MRQ (bs_eq) / 营业总收入 TTM (pl_rev_ttm) / 经营现金流 TTM (cf_ocf_ttm) /
+                          // 股息率 TTM (dy_ttm): 只日层设, 池估值 EP / BP / SP / CP / DY (整体法); 总股本另作池加权指数的权重 = close_day × 本列
   Col np_ttm, eq_mrq, rev_ttm, ocf_ttm, dy_ttm;
   Col ind_l1;                 // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)
   std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
@@ -282,7 +283,7 @@ struct FactorRow : EvalStat {
 };
 
 // 因子表的目标分量 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的 每期真实毛 LS / rIC / score.
-// 无 stat / stat 无该持有期 / n < 3 → ok = false. ric_pow 取契约默认
+// 无 stat / stat 无该持有期 / n < 3 → ok = false
 factor::search::Score RowScore(const FactorRow &r, int hold);
 
 // 一个因子文件 → 行 (每权重一行; 文件级问题一行 widx −1) 追加进 out; 解析 / 校验失败 → error (文件不动). 跨行查重 (dup_of) 不在这里.

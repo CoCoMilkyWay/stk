@@ -8,14 +8,14 @@
 //   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各金额段 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改 fixed_impact 都只是切片
 //   (UI 持锁派生 / 现算), 不发请求, 零延时
 // 下面 2×2 四图:
-//   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日累计的组均收益 (控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
-//        重叠持有期按 1/h 折算 = h 个相位非重叠链的平均). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
-//        图例标注末点等效年化收益 + 年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中段中性灰, 两侧各一条反向 tanh 台阶: 边上 2 组近全色, 第 3 组半色, 再往里灰 (单调)
+//   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的复利净值 − 1 (InspectResult::nav, FactorsBook 引擎: 每行开 1/h 净值一批,
+//        买不进空着, 卖不出延长; 控件行 分层 选 超额 e = lv − mkt | 绝对 lv). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
+//        图例标注全段几何年化收益 + 日收益年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中段中性灰, 两侧各一条反向 tanh 台阶: 边上 2 组近全色, 第 3 组半色, 再往里灰 (单调)
 //        尾部 (InspectService TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
 //        (白, 越极端越细, 与 LS 同一平移量 → 同一起点); 相邻尾部分层线之间填淡色带 (G20↔50% / 50%↔20% / 20%↔5%, 越极端越重), 底侧同;
 //        一级一个图例项 ("LS 50%" + 年化收益 + Sharpe, 列与 LS 对齐) 管该级分层 + 色带 + LS, 默认隐藏; y 范围 / LS 平移量只按显示的簇合成, 开关图例即重贴
 //        时序上一条可拖光标 (cursor_day, 锚在交易日边界, 双击落点, 默认末日; 与右上 K 线共享, 拖哪边另一边同步; 不做 hover 列表)
-//        右 1/4 光标日截面 = 各组到光标日的累计按已过天数折年化 (section_at, 唯一出口; 末日与曲线末点一致) 的横柱, 按组号在 y 范围里均匀排
+//        右 1/4 光标日截面 = 各组到光标日的复利累计按已过天数几何年化 (section_at, 唯一出口) 的横柱, 按组号在 y 范围里均匀排
 //        (G1 下 … G20 上), x 范围 = y 范围 (同尺);
 //        柱色按组号 (与左图同一组色, 两边对得上), 柱长非单调处一眼可见
 //   右上 资产 K 线 (因子具体怎么交易的; 对仗 OrderFlow 的图 2): 上一条资产轴 + 下面选中资产的分钟 K 线.
@@ -55,11 +55,9 @@
 
 namespace GUI::Factors {
 
-// 左上的线表. 分层线: [0, kGroups) = 20 组 (Row::grp), layer_tail(腿, j) = 该腿组内第 j 级尾部 (TailRow::sum[腿][j]).
-// LS 线: [0] = 顶底 LS (Row::ls), 1 + j = 第 j 级尾部 LS (TailRow::ls[j]). 簇 i 与 LS 线 i 同号: 簇 0 = 20 组, 簇 1 + j = 第 j 级尾部 (两腿)
-inline constexpr int kLayerLines = factor::stat::kGroups + factor::stat::kLegs * kTails;
-inline constexpr int kLsLines = 1 + kTails;
-inline constexpr int layer_tail(int l, int j) { return factor::stat::kGroups + l * kTails + j; }
+// 左上的线表 (= InspectResult::nav 的线序, layer_tail 见 InspectService.hpp). 簇 i 与 LS 线 i 同号: 簇 0 = 20 组, 簇 1 + j = 第 j 级尾部 (两腿)
+inline constexpr int kLayerLines = kNavLayers;
+inline constexpr int kLsLines = kNavLs;
 
 // 从 result 派生的日级序列 (UI 线程持锁算一次, 选项变才重算)
 struct InspectDerived {
@@ -67,9 +65,9 @@ struct InspectDerived {
   std::vector<misc::Ymd> dates;            // [days] 轴刻度用
   std::vector<float> pool_index;           // [T] = InspectResult::pool_index (右上 K 线叠加)
   std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
-  std::vector<float> lay_cum[kLayerLines]; // [days + 1], 等效年化 % (累计 × kDaysPerYear / days)
+  std::vector<float> lay_cum[kLayerLines]; // [days + 1], 复利累计 % ((净值 − 1) × 100)
   std::vector<float> ls_cum[kLsLines];     // [days + 1], 同上
-  float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe (与 sharpe_of 同式, MomAcc)
+  float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe (日收益 mean / sd × √kDaysPerYear)
   // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围 / LS 平移量按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
   float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};

@@ -426,7 +426,7 @@ void check_search(int A, unsigned seed, Report &rep) {
           if (rep.verbose)
             for (int c = 0; c < sk::kCands; ++c)
               for (int hi = 0; hi < hd.n; ++hi) {
-                const factor::search::Score s = factor::search::score_of(full[c], hd, S, hi, factor::search::Objective{});
+                const factor::search::Score s = factor::search::score_of(full[c], hd, S, hi);
                 std::printf("       Search.%s cpu S=%-3d c%d %-8s h=%-4d ls %+.5f rIC %+.4f score %+.3g\n", fname, S, c, kProfName[pi], hd.h[hi],
                             s.ls, s.ric, s.score);
               }

@@ -2,6 +2,7 @@
 #include "gui/task_factors/services/PortfolioService.hpp"
 
 #include "factor/Stat/Cpu.hpp"
+#include "gui/task_factors/services/FactorsBook.hpp"   // run_book (G20 多头净值)
 #include "gui/task_factors/services/FactorsEngine.hpp" // Engine<Cpu> (只 CPU)
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/exec.hpp"
@@ -209,7 +210,6 @@ struct PortfolioService::Flow {
   ScopeCache c;  // 因子的作用域块: 同作用域的因子共用 Y, X 只留当前因子的叶
   Engine<Cpu> E;
   std::vector<uint16_t> rx;                      // [T][A]
-  std::vector<uint8_t> lc;                       // [T][A]
   std::map<std::string, std::vector<int>> holds; // 本轮请求: group_of → 该组全部因子的持有期 (升序去重; Y 一组一次装全)
 
   explicit Flow(const std::atomic<bool> &cancel) : ex(misc::exec::hw()), E(ex, cancel, 1) {}
@@ -237,15 +237,26 @@ std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<con
 // Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_y 命中)
 std::string group_of(const FactorJob &j) { return std::to_string(j.scope.seg) + "|" + j.scope.pool; }
 
-// accum_rows 的 sink: 一级 Row 不落地, 直接折成 G20 多头毛收益 (单 hold)
-struct LongSink {
-  float *ret = nullptr;
-  double cap = 0.0;
-  using Ext = factor::cpu::stat::NoExt;
-  Ext ext() const { return {}; }
-  void row(int, int t, const factor::stat::Row &r, const Ext &) const {
-    constexpr int gl = factor::stat::leg_group(kLong);
-    ret[t] = static_cast<float>(r.grp[gl] + r.mkt[kLong] * r.cnt[gl] / factor::stat::book_den(r.cnt[gl], cap));
+// run_book 的 src: G20 多头一个篮子. 意向 = rx 落 G20, 权 = wt[t] = 1 / book_den(意向只数, 满仓); 收益 = 做多标签; 建仓冲击 = 买入冲击 (Lob; 吃不到按封顶)
+struct LongSrc {
+  const uint16_t *rx;
+  const LegPlane *lab, *cost; // cost = nullptr: 无金额段 (Bar)
+  const float *wt;            // [T]
+  double max_impact;
+  size_t A;
+  uint64_t mask(int t, size_t a) const {
+    const uint16_t r = rx[static_cast<size_t>(t) * A + a];
+    return r != factor::stat::kRankNone && factor::stat::grp_of(r) == factor::stat::leg_group(kLong);
+  }
+  double weight(int t, size_t, int) const { return wt[t]; }
+  bool enter(int t, size_t a) const { return lab->m[static_cast<size_t>(t) * A + a]; }
+  double ret(int c, size_t a) const { return factor::cpu::stat::h2f(lab->v[kLong][static_cast<size_t>(c) * A + a]); }
+  double bench(int) const { return 0.0; }
+  double cost_in(int t, size_t a) const {
+    if (!cost)
+      return 0.0;
+    const size_t i = static_cast<size_t>(t) * A + a;
+    return cost->m[i] ? factor::cpu::stat::h2f(cost->v[kLong][i]) : max_impact;
   }
 };
 
@@ -344,11 +355,11 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   const std::vector<int> ck = keys_of(ft.y.costs);
   assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
   const YSpec ys{holds_of(F.holds.at(group_of(j))), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
-                 /*index=*/false};
-  { // 宿主峰值: Y + X (本因子) + 活槽 + rx / lc + 标签秩 + 出参 [T] (ret / wimp / we)
+                 /*index=*/false, /*book=*/true};
+  { // 宿主峰值: Y + X (本因子) + 活槽 + rx + 标签秩 + 权 / 出参 [T] (wt / pnl / imp / fix) + 引擎出参 [T] (double × 4)
     const double cells = static_cast<double>(days) * ft.seg * A;
-    const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(d.feats.size() + static_cast<size_t>(d.n_slots)) + 3.0 + 2.0;
-    assert_fits("Portfolio", cells * per + static_cast<double>(days) * ft.seg * sizeof(float) * 3, days, A, ft.seg);
+    const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(d.feats.size() + static_cast<size_t>(d.n_slots)) + 2.0 + 2.0;
+    assert_fits("Portfolio", cells * per + static_cast<double>(days) * ft.seg * (sizeof(float) * 4 + sizeof(double) * 4), days, A, ft.seg);
   }
   if (!ensure_y(F.c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this) ||
       !ensure_x(F.c, ft, es, F.lr, d.feats, /*retain=*/true, F.ex, cancel_, *this))
@@ -372,7 +383,7 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   }
 
   // ---- 因子: Dag 后序顺序走 ----
-  begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 评估 + 成本
+  begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 秩 + 净值引擎
   if (!F.E.walk(d, nullptr, [&](int i, double) {
         if (d.nodes[static_cast<size_t>(i)].op >= 0)
           publish(1);
@@ -381,54 +392,58 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
     return false;
   const factor::check::Plane *rp = F.E.plane(root);
 
-  // ---- 秩 + 腿码 + G20 多头毛收益 (sink 直写, 不落 Row) ----
+  // ---- 秩 ----
   const double cap = y.n_full;
   assert(cap > 0.0);
   F.rx.resize(n);
-  F.lc.resize(n);
   out.dates = es.dates;
-  out.ret.assign(static_cast<size_t>(T), 0.f);
-  const LongSink sink{.ret = out.ret.data(), .cap = cap};
   const factor::stat::Span &s = ss.s;
   factor::cpu::stat::rank_x(F.ex, factor::stat::Plane{rp->v.data(), rp->m.data()}, y.gate.data(), j.frame, s, F.rx.data(), ss.w);
-  factor::cpu::stat::leg_codes(F.ex, F.rx.data(), s, F.lc.data());
   int hi = 0;
   while (hi < y.hd.n && y.hd.h[hi] != j.hold)
     ++hi;
   assert(hi < y.hd.n && "组 Y 须含本因子的持有期");
-  factor::stat::Labels L1; // 只累本因子的 hold (sink 下标恒 0)
-  L1.hd = holds_of({j.hold});
-  L1.l[0] = ss.L.l[hi];
-  L1.cap = ss.L.cap;
-  factor::stat::Accum acc[factor::stat::kMaxHold];
-  factor::cpu::stat::accum_rows(F.ex, s, F.rx.data(), L1, ss.w, acc, sink);
   publish(1);
   if (cancelled())
     return false;
 
-  // ---- 逐行换手成本 (cost_rows 的逐行版: 每行一份 CostAcc, t < h 无 lag 不攒) ----
-  //   Bar 层无金额段: 一行宽的零冲击 + 全有效 (腿成员都算, 新进者数照计), 每行同一份
+  // ---- G20 多头净值引擎 (FactorsBook) ----
   assert(y.ad.n <= 1);
-  const bool flat = y.ad.n == 0;
-  const int h = factor::stat::hold_rows(j.hold, factor::geo_of(sc.seg));
-  out.amt = flat ? 0 : y.ad.a[0];
-  out.wimp.assign(static_cast<size_t>(T), 0.f);
-  out.we.assign(static_cast<size_t>(T), 0.f);
-  const std::vector<uint16_t> zero(flat ? A : 0, 0);
-  const std::vector<uint8_t> all(flat ? A : 0, 1);
-  const factor::stat::Cost cs = flat ? factor::stat::Cost{{zero.data(), zero.data()}, all.data()} : cost_of(y.costs[0]);
+  out.amt = y.ad.n ? y.ad.a[0] : 0;
+  const size_t nA = static_cast<size_t>(A);
+  std::vector<float> wt(static_cast<size_t>(T));
   F.ex.rows(T, [&](int t0, int t1, int) {
-    for (int t = std::max(t0, h); t < t1; ++t) {
-      const size_t base = static_cast<size_t>(t) * A;
-      const uint8_t *lag = F.lc.data() + base - static_cast<size_t>(h) * A;
-      const factor::stat::Cost cr = flat ? cs : cs.at(base);
-      factor::stat::CostAcc ca = {};
-      long long cov[2] = {};
-      factor::cpu::stat::cost_row(F.lc.data() + base, &lag, 1, &cr, 1, A, cap, &ca, cov);
-      out.wimp[static_cast<size_t>(t)] = static_cast<float>(ca.leg[kLong].wimp);
-      out.we[static_cast<size_t>(t)] = static_cast<float>(ca.leg[kLong].we);
+    for (int t = t0; t < t1; ++t) {
+      int c = 0;
+      for (size_t a = 0; a < nA; ++a) {
+        const uint16_t r = F.rx[static_cast<size_t>(t) * nA + a];
+        c += r != factor::stat::kRankNone && factor::stat::grp_of(r) == factor::stat::leg_group(kLong);
+      }
+      wt[static_cast<size_t>(t)] = static_cast<float>(1.0 / factor::stat::book_den(c, cap));
     }
   });
+  BookSpec bs;
+  bs.T = T, bs.A = A, bs.S = y.sh.seg, bs.h = factor::stat::hold_rows(j.hold, factor::geo_of(sc.seg)), bs.hold = j.hold, bs.kind = book_kind(j.hold);
+  bs.nb = 1, bs.side[0] = 1, bs.fields = bk_bit(kBkImp) | bk_bit(kBkFix) | bk_bit(kBkExpo);
+  bs.trade = y.trade.empty() ? nullptr : y.trade.data(), bs.px = y.px.empty() ? nullptr : y.px.data(), bs.open = y.open.empty() ? nullptr : y.open.data();
+  bs.unit_in = out.amt > 0 ? 0.0 : 1.0;
+  BookOut bo;
+  run_book(F.ex, bs, LongSrc{F.rx.data(), &y.labels[static_cast<size_t>(hi)], y.ad.n ? &y.costs[0] : nullptr, wt.data(), sc.max_impact, nA}, bo);
+  const auto take = [&](BookField k, std::vector<float> &v) {
+    const double *p = bo.at(k, 0);
+    v.assign(p, p + T);
+  };
+  take(kBkPnl, out.pnl);
+  take(kBkImp, out.imp);
+  take(kBkFix, out.fix);
+  const size_t S = static_cast<size_t>(y.sh.seg);
+  out.expo.assign(static_cast<size_t>(y.sh.days), 0.f);
+  for (size_t dd = 0; dd < out.expo.size(); ++dd) {
+    double e = 0.0;
+    for (size_t t = dd * S; t < (dd + 1) * S; ++t)
+      e += bo.at(kBkExpo, 0)[t];
+    out.expo[dd] = static_cast<float>(e / static_cast<double>(S));
+  }
   publish(1);
   return !cancelled();
 }
