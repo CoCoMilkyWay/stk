@@ -1012,7 +1012,7 @@ void Panel::build(const std::vector<std::string> &codes,
     axes.date_days.push_back(misc::to_days(d));
 
   // ---- A 轴: AssetAxis codes ("000001.SZ"); 月度表里轴外的代码 → kNone 跳过 ----
-  fundamental::Ids ids(fundamental::Ids::Miss::Skip);
+  fundamental::Ids ids;
   for (const auto &c : codes)
     ids.add(c);
   axes.n_a_ = static_cast<int>(ids.size());

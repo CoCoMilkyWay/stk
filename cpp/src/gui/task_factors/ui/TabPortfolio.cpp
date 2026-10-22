@@ -479,7 +479,7 @@ void roll_of(const PortfolioBasket &s, int b, int years, PortfolioRoll &o) {
       continue;
     for (int j = 0; j < kBandQ; ++j)
       o.q[j][i] = dear_of(srt[static_cast<size_t>(kth(static_cast<int>(std::lround(kBandQs[j] * (w - 1))) + 1))]);
-    o.band[i] = wp > kBandValid * w;
+    o.band[i] = wp == w;
     if (rk[t] >= 0)
       o.pct[i] = pct_of(upto(rk[t]), w);
   }
@@ -535,7 +535,7 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
         v.cell[i][b].rank = n > 1 ? (lt + 0.5 * (eq - 1)) / (n - 1) : 0.5;
       }
 
-  // ---- VAL 选中篮子各口 band: 与价格线同一切片, y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有解占比不足 → 不画) ----
+  // ---- VAL 选中篮子各口 band: 与价格线同一切片, y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画) ----
   v.band_x.clear();
   for (PortfolioBand &bd : v.band)
     bd = {};

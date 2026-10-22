@@ -17,7 +17,7 @@
 //     主图 = 该池 / 行业流通市值加权指数 P (区间起点 = 1, 与 NAV 同一切片) + 滚动 EP / BP / SP / CP / DY Band
 //     (主图例开关, 默认只开 EP): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
 //     (N = 右图例滑条, 即时重算; 正值窗内 ≡ 倍数口径 P · m_q / m); band 间填色 (最便宜档以下绿 → 最贵档以上红, 低 alpha 渐变), 指数线在上;
-//     不可算 / v ≤ 0 / 窗内 v > 0 占比 ≤ kBandValid 的点断开, q_j ≤ 0 的档单独断开
+//     不可算 / v ≤ 0 / 窗内有 v ≤ 0 的点断开, q_j ≤ 0 的档单独断开
 #pragma once
 
 #include "gui/task_factors/services/PortfolioService.hpp"
@@ -79,12 +79,11 @@ struct PortfolioDerived {
 inline constexpr int kBandYearsDef = 5, kBandYearsMax = 15;
 inline constexpr int kBandQ = 7;
 inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95};
-inline constexpr double kBandValid = 0.8; // band 可画: 窗内收益率 > 0 (价格有解) 的占比须 > 它, 否则窗内分位多半落在无解区, 不画
 // 选中篮子一口的滚动分位 [der.vals[vs].c.x]
 struct PortfolioRoll {
   std::vector<float> q[kBandQ]; // 窗内贵度 kBandQs 分位处的收益率 (便宜 → 贵 = 降序; NaN = 史不满 1 年)
   std::vector<float> pct;       // 当日贵度在窗内的分位 (%, 高 = 贵; NaN = 同上 / 当日不可算)
-  std::vector<uint8_t> band;    // 当日 band 可画 (窗内收益率 > 0 占比 > kBandValid; 分位照算不受限)
+  std::vector<uint8_t> band;    // 当日 band 可画 (窗内可算点收益率全 > 0, 价格全有解; 分位照算不受限)
 };
 // VAL 页选中篮子的一口 band (PoolVal): 滚动分位的价格线, x = PortfolioView::band_x
 struct PortfolioBand {

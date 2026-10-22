@@ -404,10 +404,11 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     return std::ranges::all_of(TIER_IDS, [&](TierId s) { return !tier_side(t, s) || tier_complete[s]; });
   };
 
-  if (ImGui::BeginTable("Pools", 7,
+  if (ImGui::BeginTable("Pools", 8,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("池");
+    ImGui::TableSetupColumn("中文名");
     ImGui::TableSetupColumn("档");
     ImGui::TableSetupColumn("区间");
     ImGui::TableSetupColumn("资产");
@@ -420,6 +421,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("%s", s.name.c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", pool_def(s.name).name_cn);
       ImGui::TableNextColumn();
       ImGui::Text("%s", tier_name(s.tier));
       ImGui::TableNextColumn();

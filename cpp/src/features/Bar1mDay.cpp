@@ -13,14 +13,14 @@ namespace {
 
 constexpr int kAuctionStamp = 9 * 60 + 25; // 09:25 撮合 bar
 
-// bar 结束时间戳 (墙钟分钟) → L_1min 行
+// bar 结束时间戳 (墙钟分钟) → L_1min 行; 不在交易时段 → TRADE_MINUTES_PER_DAY
 size_t stamp_to_min(int stamp) {
   const int m = stamp == kAuctionStamp ? stamp : stamp - 1;
   if (m >= MORNING_START_MIN && m < MORNING_END_MIN)
     return static_cast<size_t>(m - MORNING_START_MIN);
-  assert(m >= AFTERNOON_START_MIN && m < AFTERNOON_START_MIN + static_cast<int>(TRADE_MINUTES_PER_DAY - MORNING_MINUTES) &&
-         "bar1m: 时间戳不在交易时段");
-  return MORNING_MINUTES + static_cast<size_t>(m - AFTERNOON_START_MIN);
+  if (m >= AFTERNOON_START_MIN && m < AFTERNOON_START_MIN + static_cast<int>(TRADE_MINUTES_PER_DAY - MORNING_MINUTES))
+    return MORNING_MINUTES + static_cast<size_t>(m - AFTERNOON_START_MIN);
+  return TRADE_MINUTES_PER_DAY;
 }
 
 static_assert(MORNING_START_MIN + 10 == kAuctionStamp);
@@ -43,11 +43,14 @@ void Bar1mDay::load(const fundamental::Catalog &cat, const fundamental::Ids &ids
                         c_close = r.col("close"), c_vol = r.col("volume"), c_amt = r.col("amount");
     std::int64_t hit = 0;
     r.each([&](std::int64_t i, std::uint32_t id, misc::Ymd day) {
-      assert(day == d && "bar1m: 分片内日期与文件名不符");
+      const fundamental::At at{.d = d, .code = ids.code(id)};
+      fundamental::expect(day == d, kSpec, at, "分片内日期与文件名不符");
       const size_t a = id;
       const float vol = c_vol.f32(i);
-      assert(vol >= 0.0f && vol <= static_cast<float>(std::numeric_limits<uint32_t>::max()) && "bar1m: volume 越界");
-      Bar1m &b = rows[a * TRADE_MINUTES_PER_DAY + stamp_to_min(c_date.minute_of_day(i))];
+      fundamental::expect(vol >= 0.0f && vol <= static_cast<float>(std::numeric_limits<uint32_t>::max()), kSpec, at, "volume 越界");
+      const size_t m = stamp_to_min(c_date.minute_of_day(i));
+      fundamental::expect(m < TRADE_MINUTES_PER_DAY, kSpec, at, "时间戳不在交易时段");
+      Bar1m &b = rows[a * TRADE_MINUTES_PER_DAY + m];
       b.open = c_open.f32(i);
       b.high = c_high.f32(i);
       b.low = c_low.f32(i);

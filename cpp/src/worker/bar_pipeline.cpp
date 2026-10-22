@@ -28,9 +28,9 @@ struct TierFeed<bar::Tier> {
   const PoolAxis &axis;
   std::span<const misc::Ymd> dates;
   const fundamental::Catalog catalog;
-  fundamental::Ids ids{fundamental::Ids::Miss::Skip}; // A 轴码表 (id = sub); 构造后只读, 多预取核并发 find
-  std::vector<Bar1mDay> ring;                         // 源环 (预取线程写, TS 经 pf_close / pf_ready 的 release/acquire 读)
-  std::vector<fundamental::Scratch> scratch;          // 与 ring 逐格对应 (一格同一时刻只有一个预取核在写)
+  fundamental::Ids ids;                      // A 轴码表 (id = sub); 构造后只读, 多预取核并发 find
+  std::vector<Bar1mDay> ring;                // 源环 (预取线程写, TS 经 pf_close / pf_ready 的 release/acquire 读)
+  std::vector<fundamental::Scratch> scratch; // 与 ring 逐格对应 (一格同一时刻只有一个预取核在写)
 
   TierFeed(const PipelineArgs &args, const StoreRing &store)
       : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), dates(args.dates),
