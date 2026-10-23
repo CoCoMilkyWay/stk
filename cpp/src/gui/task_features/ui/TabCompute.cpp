@@ -148,16 +148,10 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::EndTable();
 
     const std::string id = tier_name(tier);
-    ImGui::Text("Pool Slots:");
+    ImGui::Text("Pool Slots: %d", state.config.ring_slots(tier));
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::InputInt(("##ring_slots_" + id).c_str(), &state.config.ring_slots[tier], 1, 1)) {
-      if (state.config.ring_slots[tier] < ComputeConfig::kMinRingSlots)
-        state.config.ring_slots[tier] = ComputeConfig::kMinRingSlots;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(in-flight day tensors; >= %d: T+N labels hold old days open; 宜 >= %d + 截面核 + 落盘核)",
-                        ComputeConfig::kMinRingSlots, ComputeConfig::kMinRingSlots);
+    ImGui::TextDisabled("(自动 = %d (T+N 悬挂 + 时序下一日 + 截面跨日) + 截面核 + 落盘核 + %d)",
+                        ComputeConfig::kMinRingSlots, ComputeConfig::kRingJitter);
 
     // 预取 / 截面 / 落盘: 按日轮转, 每核独占一个物理核, 从时序让出; 三者之和至多 物理核 − 1 (至少留 1 个 TS 物理核)
     int *const stage_cores[] = {&state.config.pf_cores[tier], &state.config.cs_cores[tier], &state.config.io_cores[tier]};
@@ -514,7 +508,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
     ImGui::Indent();
     ImGui::BulletText("GUI entering low-refresh mode");
     ImGui::BulletText("%s", StageLayout::make(topo, state.config.pf_cores[run_tier], state.config.cs_cores[run_tier], state.config.io_cores[run_tier]).summary().c_str());
-    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots[run_tier]);
+    ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots(run_tier));
     ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 

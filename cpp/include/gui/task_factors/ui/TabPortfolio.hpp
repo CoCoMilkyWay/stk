@@ -81,10 +81,10 @@ struct PortfolioDerived {
 inline constexpr int kBandYearsDef = 5, kBandYearsMax = 15;
 inline constexpr int kBandQ = 7;
 inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95};
-// 选中篮子一口的滚动分位 [der.vals[vs].c.x]
+// 选中篮子一口的滚动分位 [der.vals[vs].c.x] (窗内按距今天数加权, 见 TabPortfolio.cpp roll_w)
 struct PortfolioRoll {
-  std::vector<float> q[kBandQ]; // 窗内贵度 kBandQs 分位处的收益率 (便宜 → 贵 = 降序; NaN = 史不满 1 年)
-  std::vector<float> pct;       // 当日贵度在窗内的分位 (%, 高 = 贵; NaN = 同上 / 当日不可算)
+  std::vector<float> q[kBandQ]; // 窗内贵度 kBandQs 加权分位处的收益率 (便宜 → 贵 = 降序; NaN = 史不满 1 年)
+  std::vector<float> pct;       // 当日贵度在窗内的加权分位 (%, 高 = 贵; NaN = 同上 / 当日不可算)
   std::vector<uint8_t> band;    // 当日 band 可画 (窗内可算点收益率全 > 0, 价格全有解; 分位照算不受限)
 };
 // VAL 页选中篮子的一口 band (PoolVal): 滚动分位的价格线, x = PortfolioView::band_x

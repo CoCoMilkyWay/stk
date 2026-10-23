@@ -6,6 +6,7 @@
 #include "gui/Tasks.hpp"                             // StatusColor
 #include "gui/task_factors/services/FactorsBook.hpp" // book_kind (增量的实现时刻)
 #include "gui/task_factors/ui/TabFactors.hpp"        // tip
+#include "misc/date.hpp"                             // to_days (滚动窗权重按日历天)
 #include "shared/FeatureLib.hpp"                     // feature_pools
 
 #include "imgui.h"
@@ -89,6 +90,11 @@ constexpr ValMeta kVal[kPoolVals] = {{"EP", 2}, {"BP", 1}, {"SP", 1}, {"CP", 2},
 const ImVec4 kValPxCol(0.95f, 0.95f, 0.95f, 1.0f);
 constexpr const char *kBandQName[kBandQ] = {"5%", "10%", "25%", "50%", "75%", "90%", "95%"};
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f, kValCellA = 0.45f;
+// VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 Band 小字看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
+struct ValMark {
+  double r, u;
+};
+constexpr ValMark kValMarks[] = {{0.10, 0.0}, {-0.05, 0.6}, {-0.10, 0.7}, {-0.20, 0.85}, {-0.30, 1.0}};
 // band 色: u ∈ [0, 1] (0 = 最便宜 绿 → 1 = 最贵 红) 按色相渐变
 ImVec4 band_col(double u, float a) {
   ImVec4 c(0.f, 0.f, 0.f, a);
@@ -430,73 +436,84 @@ F dear_of(F x) {
 }
 // 自然年平移: 滚动窗 = (years_before(日, N), 日]; 史满 1 年 = 首个可算日 ≤ years_before(日, 1)
 constexpr misc::Ymd years_before(misc::Ymd day, int years) { return day - years * 10000; }
-// 估值分位 = 窗内贵度 ≤ 当日的个数 le / 窗内可算个数 w (%, 高 = 贵)
-float pct_of(int le, int w) { return 100.f * static_cast<float>(le) / static_cast<float>(w); }
+// 估值分位 = 窗内贵度 ≤ 当日的权重和 le / 窗内可算点权重和 w (%, 高 = 贵)
+float pct_of(double le, double w) { return static_cast<float>(100.0 * le / w); }
+// 窗内权重 (指数饱和): u = 1 − a / T, a = 距当日的日历天数, T = 当日 − max(N 年前, 首个可算日) (史不足 N 年 → 按实际史长缩放);
+// 窗内前 ~3/4 ≈ 等权, 窗尾段快速降到 0 (点出窗时权重已 ≈ 0, 分位不跳)
+constexpr double kRollK = 10.0;
+double roll_w(int a, int T) { return 1.0 - std::exp(-kRollK * (1.0 - static_cast<double>(a) / T)); }
+int days_of(misc::Ymd d) { return static_cast<int>(misc::to_days(d).time_since_epoch().count()); }
+// 当日 day 的窗跨度 T (日历天; first = 首个可算日)
+int span_of(misc::Ymd day, misc::Ymd first, int years) { return days_of(day) - days_of(std::max(years_before(day, years), first)); }
 
-// 篮子 s 的口 b 的滚动分位 → o [s.c.x]: 贵度全史排序定秩 (同值同秩), 秩上 Fenwick 计窗内个数;
-// 沿全史逐日入 1 点 / 出窗游标; 分位 = 窗内第 round(q · (n − 1)) + 1 小 (Fenwick 倍增下降). 每日 O(kBandQ · log), 一口全史 ~ 亚毫秒
+// 篮子 s 的口 b 的滚动分位 → o [s.c.x]: 窗内可算点按贵度保持有序 (逐日二分插入 / 出窗删除);
+// 出点日扫两遍窗: 权重和 → 加权分位 = 累计权重首个 ≥ q · 总权重的点 + 当日加权估值分位. 权重按距今天数查表 (T 变才重建)
 void roll_of(const PortfolioBasket &s, int b, int years, PortfolioRoll &o) {
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
   const std::vector<misc::Ymd> &hd = s.pc->dates;
   const size_t n = hd.size(), np = s.at.size();
   const float *v = s.pc->val_of(s.k, s.w, b);
-  std::vector<float> srt;
+  std::vector<int> dd(n); // 日历天
   for (size_t i = 0; i < n; ++i)
-    if (val_ok(v[i]))
-      srt.push_back(dear_of(v[i]));
-  std::sort(srt.begin(), srt.end());
-  std::vector<int> rk(n, -1); // 秩 (−1 = 不可算)
-  for (size_t i = 0; i < n; ++i)
-    if (val_ok(v[i]))
-      rk[i] = static_cast<int>(std::lower_bound(srt.begin(), srt.end(), dear_of(v[i])) - srt.begin());
-  const int S = static_cast<int>(srt.size());
-  std::vector<int> bit(static_cast<size_t>(S) + 1, 0);
-  const auto add = [&](int r, int dv) {
-    for (int i = r + 1; i <= S; i += i & -i)
-      bit[static_cast<size_t>(i)] += dv;
-  };
-  const auto upto = [&](int r) { // 秩 ≤ r 的个数
-    int c = 0;
-    for (int i = r + 1; i > 0; i -= i & -i)
-      c += bit[static_cast<size_t>(i)];
-    return c;
-  };
-  int top = 1;
-  while (top * 2 <= S)
-    top *= 2;
-  const auto kth = [&](int k) { // 第 k (1 起) 小的秩
-    int p = 0;
-    for (int st = top; st > 0; st >>= 1)
-      if (p + st <= S && bit[static_cast<size_t>(p + st)] < k)
-        p += st, k -= bit[static_cast<size_t>(p)];
-    return p;
-  };
+    dd[i] = days_of(hd[i]);
+  const auto by_dear = [&](size_t x, size_t y) { return dear_of(v[x]) < dear_of(v[y]); };
+  std::vector<size_t> win; // 窗内可算点 (hd 下标), 贵度升序
+  std::vector<double> wt;  // wt[a] = roll_w(a, T)
+  int wt_T = -1;
   for (std::vector<float> &q : o.q)
     q.assign(np, kNaN);
   o.pct.assign(np, kNaN);
   o.band.assign(np, 0);
   misc::Ymd first = 0; // 首个可算日
   size_t lo = 0, k = 0;
-  int w = 0, wp = 0; // 窗内可算 / 其中收益率 > 0 的个数
+  int wp = 0; // 窗内收益率 > 0 的个数
   for (size_t t = 0; t < n && k < np; ++t) {
-    if (rk[t] >= 0) {
-      add(rk[t], 1), ++w, wp += v[t] > 0.f;
+    if (val_ok(v[t])) {
+      win.insert(std::upper_bound(win.begin(), win.end(), t, by_dear), t), wp += v[t] > 0.f;
       if (first == 0)
         first = hd[t];
     }
     for (; hd[lo] <= years_before(hd[t], years); ++lo)
-      if (rk[lo] >= 0)
-        add(rk[lo], -1), --w, wp -= v[lo] > 0.f;
+      if (val_ok(v[lo])) {
+        const auto [e0, e1] = std::equal_range(win.begin(), win.end(), lo, by_dear);
+        const auto e = std::find(e0, e1, lo);
+        assert(e != e1);
+        win.erase(e), wp -= v[lo] > 0.f;
+      }
     if (s.at[k] != t)
       continue;
     const size_t i = k++;
-    if (w == 0 || first == 0 || first > years_before(hd[t], 1))
+    if (win.empty() || first == 0 || first > years_before(hd[t], 1))
       continue;
-    for (int j = 0; j < kBandQ; ++j)
-      o.q[j][i] = dear_of(srt[static_cast<size_t>(kth(static_cast<int>(std::lround(kBandQs[j] * (w - 1))) + 1))]);
-    o.band[i] = wp == w;
-    if (rk[t] >= 0)
-      o.pct[i] = pct_of(upto(rk[t]), w);
+    const int T = span_of(hd[t], first, years);
+    assert(T > 0);
+    if (T != wt_T) {
+      wt.resize(static_cast<size_t>(T) + 1);
+      for (int a = 0; a <= T; ++a)
+        wt[static_cast<size_t>(a)] = roll_w(a, T);
+      wt_T = T;
+    }
+    const auto w_of = [&](size_t u) {
+      assert(dd[t] - dd[u] <= T);
+      return wt[static_cast<size_t>(dd[t] - dd[u])];
+    };
+    double W = 0.0;
+    for (const size_t u : win)
+      W += w_of(u);
+    double cum = 0.0, le = 0.0;
+    int j = 0;
+    for (const size_t u : win) {
+      const double x = w_of(u);
+      cum += x;
+      for (; j < kBandQ && cum >= kBandQs[j] * W; ++j)
+        o.q[j][i] = v[u];
+      if (val_ok(v[t]) && dear_of(v[u]) <= dear_of(v[t]))
+        le += x;
+    }
+    assert(j == kBandQ);
+    o.band[i] = wp == static_cast<int>(win.size());
+    if (val_ok(v[t]))
+      o.pct[i] = pct_of(le, W);
   }
   assert(k == np && "at 须升序且落在 hd 内");
 }
@@ -513,10 +530,13 @@ double last_pct(const PortfolioBasket &s, const PortfolioSlice &sl, int b, int y
     if (!val_ok(v[t]) || hd[f] > years_before(hd[t], 1))
       continue;
     const float m = dear_of(v[t]);
-    int w = 0, le = 0;
+    const int T = span_of(hd[t], hd[f], years), d = days_of(hd[t]);
+    double w = 0.0, le = 0.0;
     for (size_t u = static_cast<size_t>(std::upper_bound(hd.begin(), hd.begin() + t, years_before(hd[t], years)) - hd.begin()); u <= t; ++u)
-      if (val_ok(v[u]))
-        ++w, le += dear_of(v[u]) <= m;
+      if (val_ok(v[u])) {
+        const double x = roll_w(d - days_of(hd[u]), T);
+        w += x, le += dear_of(v[u]) <= m ? x : 0.0;
+      }
     return pct_of(le, w);
   }
   return std::numeric_limits<double>::quiet_NaN();
@@ -603,17 +623,21 @@ struct EndTag {
   ImU32 col;
   std::string text;
 };
-// n 点线 (pt(i) = 第 i 点, x 升序)
+// n 点线 (pt(i) = 第 i 点, x 升序) 视野内末点; 无 (或不可算) → false
 template <class Pt>
-void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, size_t n, const Pt &pt, ImU32 col, std::string text) {
+bool end_point(const ImPlotRect &lim, size_t n, const Pt &pt, ImPlotPoint &p) {
   const auto r = std::views::iota(size_t{0}, n);
   const size_t e = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t i) { return pt(i).x <= lim.X.Max; }) - r.begin());
   if (e == 0)
-    return;
-  const ImPlotPoint p = pt(e - 1);
-  if (p.x < lim.X.Min || !std::isfinite(p.y))
-    return;
-  tags.push_back({ImPlot::PlotToPixels(p), col, std::move(text)});
+    return false;
+  p = pt(e - 1);
+  return p.x >= lim.X.Min && std::isfinite(p.y);
+}
+template <class Pt>
+void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, size_t n, const Pt &pt, ImU32 col, std::string text) {
+  ImPlotPoint p;
+  if (end_point(lim, n, pt, p))
+    tags.push_back({ImPlot::PlotToPixels(p), col, std::move(text)});
 }
 
 // ---- 切片画线 (零拷贝: ImPlot 按下标回调取点) ----
@@ -651,11 +675,35 @@ void draw_tags(std::vector<EndTag> &tags) {
   }
   ImPlot::PopPlotClipRect();
 }
+constexpr float kMarkTick = 6.0f; // 刻度的短横长 (px)
+// 刻度占的像素宽 (短横 + 字; 无 → 0)
+float marks_width(const std::vector<EndTag> &marks) { return marks.empty() ? 0.0f : tags_width(marks) + kMarkTick; }
+// 刻度: 真 y 处短横贴点右侧 (同线尾小字, 出界则左移进图内), 字左对齐接在短横后, 按像素 y 排开不重叠
+void draw_marks(std::vector<EndTag> &marks) {
+  if (marks.empty())
+    return;
+  std::sort(marks.begin(), marks.end(), [](const EndTag &a, const EndTag &b) { return a.at.y < b.at.y; });
+  ImFont *font = ImGui::GetFont();
+  const float fs = ImGui::GetFontSize() * kTagScale;
+  const float right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x;
+  ImDrawList *dl = ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  float y = -FLT_MAX;
+  for (const EndTag &m : marks) {
+    const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, m.text.c_str());
+    const float x0 = std::min(m.at.x + kTagGap, right - marks_width(marks) + kTagGap), x1 = x0 + kMarkTick; // 短横 [x0, x1); 字左缘 = x1 + kTagGap
+    dl->AddLine(ImVec2(x0, m.at.y), ImVec2(x1, m.at.y), m.col);
+    y = std::max(m.at.y, y + fs);
+    dl->AddText(font, fs, ImVec2(x1 + kTagGap, y - 0.5f * sz.y), m.col, m.text.c_str());
+  }
+  ImPlot::PopPlotClipRect();
+}
 
-// 主图一帧的公共件 (NAV / VAL 同一份): 小字筛选视野 + 线尾小字 + 显隐签名 (与上帧不同 → 下帧重新 fit)
+// 主图一帧的公共件 (NAV / VAL 同一份): 小字筛选视野 + 线尾小字 + 线尾刻度 (VAL) + 显隐签名 (与上帧不同 → 下帧重新 fit)
 struct PlotFrame {
   ImPlotRect lim;
   std::vector<EndTag> tags;
+  std::vector<EndTag> marks;
   std::string shown;
   // 图例项 label 的显隐记进 shown; 显示 → 该项 (Color = 实际线色), 否则 nullptr
   const ImPlotItem *item(const char *label) {
@@ -772,6 +820,7 @@ bool pages() {
           "• EP 盈利收益率 (1/PE) / BP 账面市值比 (1/PB) / SP 营收市值比 (1/PS) / CP 现金流收益率 (1/PCF) / DY 股息率\n"
           "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值; 高 = 便宜, 亏损照计为负, 过 0 连续), 主图例逐个开关\n"
           "• Band = 把过去 N 年的估值分位换算成价格线: 指数落在哪档 = 当前估值在历史里的位置 (绿 = 便宜, 红 = 贵)\n"
+          "• 线尾刻度 = 指数末点 +10%% / -5%% / -10%% / -20%% / -30%% 的点位: 对照 Band 小字看还要涨跌多少到哪档\n"
           "• 区间 / log 与 NAV 页共用");
     if (val_open) {
       nav = false;
@@ -881,8 +930,16 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
   const std::string plb = texts[kPoolVals] + "###pf_val_px";
   ImPlot::SetNextLineStyle(kValPxCol, 2.0f);
   plot_slice(plb.c_str(), sl);
-  if (const ImPlotItem *it = pf.item(plb.c_str()))
+  if (const ImPlotItem *it = pf.item(plb.c_str())) {
     push_tag(pf.tags, pf.lim, sl, it->Color, s.tag);
+    ImPlotPoint p;
+    if (end_point(pf.lim, sl.size(), [&](size_t i) { return slice_pt(sl, i); }, p))
+      for (const ValMark &m : kValMarks) {
+        char t[16];
+        std::snprintf(t, sizeof(t), "%+.0f%%", 100.0 * m.r);
+        pf.marks.push_back({ImPlot::PlotToPixels(p.x, p.y * (1.0 + m.r)), ImGui::ColorConvertFloat4ToU32(band_col(m.u, kBandTagA)), t});
+      }
+  }
 }
 
 // ---- 区间条: 全段组合 (有冲击) / VAL 选中篮子价格; 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
@@ -1074,8 +1131,9 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::SetNextItemWidth(-FLT_MIN);
   ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
   if (ImGui::IsItemHovered())
-    tip("Band 分位的滚动窗长 N: 每日取过去 N 年 (含当日) 的收益率分位, 拖动即时重算\n"
-        "• 池估值史不足 N 年时先扩张窗; 不满 1 年不画");
+    tip("Band 分位的滚动窗长 N: 每日取过去 N 年 (含当日) 的收益率加权分位, 拖动即时重算\n"
+        "• 权重 = 1 - exp(-10 u), u = 1 - 距今 / 窗跨度: 近 ~3/4 窗约等权, 窗尾段快速降到 0 (老点出窗时分位不跳)\n"
+        "• 池估值史不足 N 年时先扩张窗 (权重按实际史长缩放); 不满 1 年不画");
   ImGui::TextColored(kHead, "池 / 行业 (单选)");
   if (ImGui::IsItemHovered())
     tip("选一个池或申万一级行业: 主图画它的价格 + EP / BP / SP / CP / DY Band\n"
@@ -1084,7 +1142,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 估值与价格同权重: 个股收益率 = 分子 / 总市值; 加权 = 整体法 Σ分子 / Σ总市值, 等权 = 成分个股收益率的算术平均 (= 等权组合每元的分子)\n"
         "  分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 近365日税前分红 (亏损 / 负权益 / 负现金流照计为负)\n"
         "• 成分 = 上一交易日收盘定的池 (同池指数); 市值 = 收盘价 × 当日适用总股本, 财务取当日适用 (无前视)\n"
-        "• 估值分位 = 当日收益率在过去 N 年 (含当日; 上方滑条) 窗内的分位, 收益率越低越贵 (高 = 贵; ≤ 0 排在最贵端), 逐日滚动; 估值史不满 1 年不画\n"
+        "• 估值分位 = 当日收益率在过去 N 年 (含当日; 上方滑条) 窗内的加权分位 (窗尾降权, 见滑条提示), 收益率越低越贵 (高 = 贵; ≤ 0 排在最贵端), 逐日滚动; 估值史不满 1 年不画\n"
         "• Band = 价格 × 当日收益率 / q, q = 窗内 5/10/25/50/75/90/95%% 贵度分位的收益率 (与倍数口径的 Band 同一条线);\n"
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
         "• 表格 = 区间末各口的估值分位 (高 = 贵); 绝对值看主图 Band 图例 / 线尾\n"
@@ -1363,7 +1421,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
     // fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
-    PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}};
+    PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}};
     if (nav)
       plot_nav(ui, d, v, set_vis, pf);
     else if (vs >= 0)
@@ -1373,14 +1431,15 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
       ui.shown_key = std::move(pf.shown);
       ui.refit = true;
     }
-    // 本帧 fit (自动 / 双击): x 右端再扩一段, 让区间末点右侧留出线尾小字的宽度
+    // 本帧 fit (自动 / 双击): x 右端再扩一段, 让区间末点右侧留出线尾小字 / 刻度 (同贴末点, 取宽者) 的宽度
     if (ImPlot::FitThisFrame() && !pf.tags.empty() && ui.range.d1 > ui.range.d0) {
-      const float tw = tags_width(pf.tags), W = ImPlot::GetPlotSize().x;
+      const float tw = std::max(tags_width(pf.tags), marks_width(pf.marks)), W = ImPlot::GetPlotSize().x;
       const double x0 = x_of(static_cast<size_t>(ui.range.d0), kOpen), x1 = x_of(static_cast<size_t>(ui.range.d1), kOpen);
       if (W > 2.0f * tw)
         ImPlot::FitPointX(x1 + (x1 - x0) * tw / (W - tw));
     }
     draw_tags(pf.tags);
+    draw_marks(pf.marks);
     ImPlot::EndPlot();
   }
   range_bar(ui, nav, vs, pw, kBarH);
