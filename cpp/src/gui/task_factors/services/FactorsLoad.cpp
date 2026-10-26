@@ -157,12 +157,13 @@ std::string YSpec::key() const {
   k += "|a";
   for (int i = 0; i < ad.n; ++i)
     k += "," + std::to_string(ad.a[i]);
-  return k + "|cap" + std::to_string(max_impact) + "|i" + (index ? "1" : "0") + "|b" + (book ? "1" : "0");
+  return k + "|cap" + std::to_string(max_impact) + "|i" + std::to_string(static_cast<int>(index)) + "|b" + (book ? "1" : "0");
 }
 
 double cell_bytes(const XSpec &s) { return kPlaneBytes * static_cast<double>(s.codes.size()); }
 double cell_bytes(const YSpec &s) {
-  return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n + (s.index ? 1 : 0)) + 4.0 * s.ad.n + (s.index ? 4.0 + 28.0 + 1.0 + 4.0 + 4.0 + 1.0 : 0.0) +
+  const bool idx = s.index != IndexKind::None, full = s.index == IndexKind::Full;
+  return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (idx ? kPlaneBytes + 4.0 + 1.0 : 0.0) + (full ? 4.0 + 28.0 + 1.0 + 4.0 : 0.0) +
          (s.book ? 1.0 + 4.0 : 0.0);
 }
 
@@ -176,7 +177,7 @@ const factor::check::Plane *XPlanes::find(std::string_view code) const {
 namespace {
 
 // 篮子 (YPlanes::index / val / turn): 日层门控 = D 收盘定的池 (收盘换仓), 故 D 的收益按 D−1 收盘的成员; 停牌行不更新 ⇒ 持仓带到复牌, 复牌跳空计入.
-//   pool_baskets 出各篮子两权重的逐行收益 / 权和 (BasketRows) + 指数 (FactorsBook); pool_turn 只用篮子 0 的逐行收益 / 权和算换手.
+//   pool_index 出指数 (FactorsBook); pool_baskets 出估值 + 各篮子两权重的逐行收益 / 权和 (BasketRows); pool_turn 只用篮子 0 的逐行收益 / 权和算换手.
 
 // 篮子逐行 [Weight][kBaskets · T]: 成分收益 r = Σ权·r / Σ权 (无成分 0) / 权和 Σ权 (等权 = 成分数)
 struct BasketRows {
@@ -211,13 +212,62 @@ void index_strip(const factor::check::Plane &close, const float *wt, const uint8
     }
 }
 
-// 篮子指数 / 估值 (YPlanes::index / val, 各两权重), 两遍:
+// 池篮子的意向 (指数; 篮子 b = W · k + w, W = 权重数): 成分 = 行 t 在池 (∧ 行 t ind_l1 = k), 权 = 等权 1 / n | 加权 mcap / Σmcap (同行同篮子)
+struct PoolIntent {
+  const uint8_t *in;  // [T][A] 在池
+  const uint8_t *ind; // [T][A] 行业 ID; nullptr = 只篮子 0
+  const float *mcap;  // [T][A] 总市值; W = 1 (只等权) → nullptr
+  const double *wsum; // [T][nb] 同行同篮子 Σ权
+  int W, nb;
+  size_t A;
+  int side(int) const { return 1; }
+  uint64_t mask(int t, size_t a) const {
+    const size_t i = static_cast<size_t>(t) * A + a;
+    const uint64_t w = (uint64_t{1} << W) - 1;
+    return in[i] ? w | (ind && ind[i] > 0 ? w << (W * ind[i]) : 0) : 0;
+  }
+  double weight(int t, size_t a, int b) const {
+    const double S = wsum[static_cast<size_t>(t) * static_cast<size_t>(nb) + static_cast<size_t>(b)];
+    return S > 0.0 ? (b % W == kWeightCap ? mcap[static_cast<size_t>(t) * A + a] : 1.0) / S : 0.0;
+  }
+};
+
+// 篮子指数 (YPlanes::index) = 净值引擎 (FactorsBook): 时钟 book_clock(0) (h = 1 逐行) × PoolIntent × PxFill (价 = 本行有成交的 close_adj)
+//   → 逐篮子 pnl 线 (stride 1). nk = 篮子数 (1 = 只池整体; ind 可空), nw = 权重数 (1 = 只等权; mcap 可空)
+void pool_index(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const float *mcap, const uint8_t *ind, const uint8_t *in, const uint8_t *trade,
+                int T, int A, int S, int nk, int nw, BookLines &out) {
+  static_assert(kWeightEq == 0, "只等权 (nw = 1) 的篮子 b = k");
+  const int nb = nk * nw;
+  assert(nb <= kBookMax && (nk == 1 || ind) && (nw == 1 || mcap));
+  const size_t nT = static_cast<size_t>(T), nA = static_cast<size_t>(A), NB = static_cast<size_t>(nb);
+  std::vector<double> wsum(nT * NB, 0.0);
+  ex.rows(T, [&](int t0, int t1, int) {
+    for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t)
+      for (size_t a = 0; a < nA; ++a) {
+        const size_t i = t * nA + a;
+        if (!in[i])
+          continue;
+        each_basket(nk > 1 ? ind[i] : uint8_t{0}, [&](size_t k) {
+          double *w = wsum.data() + t * NB + static_cast<size_t>(nw) * k;
+          w[kWeightEq] += 1.0;
+          if (nw > 1)
+            w[kWeightCap] += mcap[i];
+        });
+      }
+  });
+  const BookClock K = book_clock(0, S, T);
+  const BookMarket m{A, trade, close.v.data()};
+  BookOut bo;
+  run_book(ex, K, PoolIntent{in, nk > 1 ? ind : nullptr, nw > 1 ? mcap : nullptr, wsum.data(), nw, nb, nA}, PxFill(ex, K, m), 0u, bo);
+  fold_lines(ex, bo, pnl_lines(nb), 1, out);
+}
+
+// 篮子估值 (YPlanes::val, 两权重) + 逐行收益 / 权和 (rows, 换手用), 两遍:
 //   1) 资产条带并行, 沿 t 就地把 px 补成上一有效收盘价 (停牌带着); prv = 有效 close 格的上一有效 close 行 (−1 = 无);
 //   2) 行并行, 每行一遍 A 轴攒进本行的篮子桶 (0 + 行业):
-//      指数成分 = 上一有效 close 行在池, 收益 = close_adj / 上一有效 close_adj − 1, 权 = 1 / 该行总市值 mcap, 行业取该行;
+//      收益成分 = 上一有效 close 行在池, 收益 = close_adj / 上一有效 close_adj − 1, 权 = 1 / 该行总市值 mcap, 行业取该行;
 //      估值成分 = 上一行在池, 市值 = px × 上一行总股本, 净利 / 权益 / 营收 / 经营现金流 / 股息率 / 行业同取上一行.
-//   逐行收益 / 权和留在 rows (换手用); 指数另走 FactorsBook 净值引擎 (h = 1, 买不进空着 / 卖不出延长, 见函数末). px = 本行有成交的收盘价 (否则 0), 就地改;
-//   ind = 行业 ID (0 = 未知 / 缺)
+//   px = 本行有成交的收盘价 (否则 0), 就地改; ind = 行业 ID (0 = 未知 / 缺)
 void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const float *mcap, float *px, const float *sh, const float *np,
                   const float *eq, const float *rev, const float *ocf, const float *dy, const uint8_t *ind, const uint8_t *in, int T, int A, YPlanes &Y,
                   BasketRows &rows) {
@@ -285,78 +335,6 @@ void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, c
         }
     }
   });
-  // 指数 = 净值引擎 (h = 1 逐行, 篮子 b = kWeights · k + Weight): 意向成分 = 行 c 在池 (∧ 行业 k), 权 = 等权 1 / n | 加权 mcap / Σmcap (同行同篮子),
-  //   买入要本行有成交 ∧ 收盘可买; 收益 = 带值 close_adj 之比 (停牌带上一有效价)
-  const int nb = static_cast<int>(K) * kWeights;
-  static_assert(YPlanes::kBaskets * kWeights <= static_cast<size_t>(kBookMax));
-  const auto bits_of = [](uint8_t ind) { return uint64_t{3} | (ind > 0 ? uint64_t{3} << (kWeights * ind) : 0); };
-  std::vector<float> pc(nT * nA, 0.f); // 带值 close_adj
-  std::vector<double> wsum(nT * static_cast<size_t>(nb), 0.0);
-  ex.rows(A, [&](int a0, int a1, int) {
-    std::vector<float> l(static_cast<size_t>(a1 - a0), 0.f);
-    for (size_t t = 0; t < nT; ++t)
-      for (int a = a0; a < a1; ++a) {
-        const size_t i = t * nA + static_cast<size_t>(a), j = static_cast<size_t>(a - a0);
-        if (close.m[i] && close.v[i] > 0.f)
-          l[j] = close.v[i];
-        pc[i] = l[j];
-      }
-  });
-  ex.rows(T, [&](int t0, int t1, int) {
-    for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t)
-      for (size_t a = 0; a < nA; ++a) {
-        const size_t i = t * nA + a;
-        if (!in[i])
-          continue;
-        each_basket(ind[i], [&](size_t k) {
-          wsum[t * nb + kWeights * k + kWeightEq] += 1.0;
-          wsum[t * nb + kWeights * k + kWeightCap] += mcap[i];
-        });
-      }
-  });
-  const uint8_t *trade = Y.trade.empty() ? nullptr : Y.trade.data();
-  struct Src {
-    const factor::check::Plane &close;
-    const float *mcap, *pc;
-    const uint8_t *ind, *in, *trade;
-    const double *wsum;
-    size_t A;
-    int nb;
-    uint64_t (*bits)(uint8_t);
-    uint64_t mask(int t, size_t a) const {
-      const size_t i = static_cast<size_t>(t) * A + a;
-      return in[i] ? bits(ind[i]) : 0;
-    }
-    double weight(int t, size_t a, int b) const {
-      const double W = wsum[static_cast<size_t>(t) * nb + b];
-      return W > 0.0 ? (b % kWeights == kWeightCap ? mcap[static_cast<size_t>(t) * A + a] : 1.0) / W : 0.0;
-    }
-    bool enter(int t, size_t a) const {
-      const size_t i = static_cast<size_t>(t) * A + a;
-      return close.m[i] && close.v[i] > 0.f && (!trade || (trade[i] & kTrBuy));
-    }
-    double ret(int c, size_t a) const {
-      const size_t i = static_cast<size_t>(c) * A + a;
-      return pc[i] > 0.f ? static_cast<double>(pc[i + A]) / pc[i] - 1.0 : 0.0;
-    }
-    double cost_in(int, size_t) const { return 0.0; }
-  };
-  const Src src{close, mcap, pc.data(), ind, in, trade, wsum.data(), nA, nb, +bits_of};
-  BookSpec bs;
-  bs.T = T, bs.A = A, bs.S = Y.sh.seg, bs.h = 1, bs.kind = BookKind::Row, bs.nb = nb;
-  std::fill(bs.side, bs.side + nb, int8_t{1});
-  bs.trade = trade, bs.px = close.v.data();
-  BookOut bo;
-  run_book(ex, bs, src, bo);
-  for (int w = 0; w < kWeights; ++w) {
-    Y.index[w].resize(K * nT);
-    for (size_t k = 0; k < K; ++k) {
-      const double *r = bo.at(kBkPnl, static_cast<int>(kWeights * k) + w);
-      double l = 1.0;
-      for (size_t t = 0; t < nT; ++t)
-        l *= 1.0 + r[t], Y.index[w][k * nT + t] = static_cast<float>(l);
-    }
-  }
 }
 
 // 篮子 0 的换手 (YPlanes::turn): 成分行 t 的权 w_t = ω / Σω (等权 ω = 1, 加权 ω = mcap) 对上一成分行漂移后的权 w̃ = w (1 + r) / (1 + R) 的
@@ -560,7 +538,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
   // ---- 列段 ts_valid | cs_valid | 可成交 ×2 (有则装) | close_adj close (index / book) | total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm
-  //      ind_l1 (index) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
+  //      ind_l1 (index Full) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
   //      可成交: 标签有效位另要建仓行两向可成交 (Run / Search / Inspect / Portfolio 的 Stat 同口径); book = 净值引擎的平面
   //      (估值价两档都装; 可成交位只在有可成交列的档, Lob 档无 → 恒可成交)
   std::vector<ColRef> cols;
@@ -569,18 +547,18 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
     return cols.size() - 1;
   };
   const size_t ts_i = add(ft.y.ts), cs_i = add(ft.y.cs);
-  assert((!spec.index || factor_level(ft.seg).lvl == L_1day) && "池指数只在日层 (成员位 = 本行收盘定的池)");
-  const bool tr_on = ft.y.has_trade, px_on = spec.index || spec.book;
+  const bool idx = spec.index != IndexKind::None, full = spec.index == IndexKind::Full;
+  assert((!full || factor_level(ft.seg).lvl == L_1day) && "池篮子全档只在日层 (成员位 = 本行收盘定的池)");
+  const bool tr_on = ft.y.has_trade, px_on = idx || spec.book;
   const size_t tr_i = cols.size();
   if (tr_on)
     for (const Col &c : ft.y.trade)
       add(c);
   const size_t close_i = px_on ? add(ft.y.close_adj) : SIZE_MAX;
   const size_t px_i = px_on ? add(ft.y.ohlc[3]) : SIZE_MAX;
-  const size_t sh_i = spec.index ? add(ft.y.total_shares) : SIZE_MAX, np_i = spec.index ? add(ft.y.np_ttm) : SIZE_MAX,
-               eq_i = spec.index ? add(ft.y.eq_mrq) : SIZE_MAX, rv_i = spec.index ? add(ft.y.rev_ttm) : SIZE_MAX,
-               cf_i = spec.index ? add(ft.y.ocf_ttm) : SIZE_MAX, dy_i = spec.index ? add(ft.y.dy_ttm) : SIZE_MAX,
-               ind_i = spec.index ? add(ft.y.ind_l1) : SIZE_MAX;
+  const size_t sh_i = full ? add(ft.y.total_shares) : SIZE_MAX, np_i = full ? add(ft.y.np_ttm) : SIZE_MAX, eq_i = full ? add(ft.y.eq_mrq) : SIZE_MAX,
+               rv_i = full ? add(ft.y.rev_ttm) : SIZE_MAX, cf_i = full ? add(ft.y.ocf_ttm) : SIZE_MAX, dy_i = full ? add(ft.y.dy_ttm) : SIZE_MAX,
+               ind_i = full ? add(ft.y.ind_l1) : SIZE_MAX;
   assert(cols[ts_i].pool == es.rs.main && "门控 / 标签 / 成本 / OHLC 在标签库");
   const size_t lab_i = cols.size();
   for (size_t i = 0; i < H; ++i)
@@ -603,19 +581,20 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   };
   alloc(Y.labels, H, true);
   alloc(Y.costs, C, false);
-  if (tr_on && (spec.book || spec.index))
+  if (tr_on && (spec.book || idx))
     Y.trade.assign(n, 0);
   if (spec.book)
     Y.px.assign(n, 0.f);
   std::vector<std::vector<uint8_t>> trb(tr_on && Y.trade.empty() ? static_cast<size_t>(ex.threads()) : 0, std::vector<uint8_t>(A)); // 不留平面时每线程一行
   factor::check::Plane close;                                                                                                       // 本行有成交的后复权 close (index, 跨日除权不进收益), 装完算指数即弃
-  std::vector<float> mcap;                                                                                                          // 本行总市值 = close_day × total_shares (index 加权版的权; close 无效 / 缺股本 → 0)
-  std::vector<float> vpx, vsh, vnp, veq, vrv, vcf, vdy;                                                                             // 估值 (index): 本行有成交的 close_day (否则 0) / 总股本 / 归母净利TTM / 归母权益MRQ /
+  std::vector<float> mcap;                                                                                                          // 本行总市值 = close_day × total_shares (index Full 加权版的权; close 无效 / 缺股本 → 0)
+  std::vector<float> vpx, vsh, vnp, veq, vrv, vcf, vdy;                                                                             // 估值 (index Full): 本行有成交的 close_day (否则 0) / 总股本 / 归母净利TTM / 归母权益MRQ /
                                                                                                                                     //   营业总收入TTM / 经营现金流TTM / 股息率TTM (缺 → NaN), 装完算 val 即弃
-  std::vector<uint8_t> vind;                                                                                                        // 行业 ID (index; 0 = 未知 / 缺 / 越界)
-  if (spec.index)
-    close.resize(n), mcap.assign(n, 0.f), vpx.assign(n, 0.f), vsh.resize(n), vnp.resize(n), veq.resize(n), vrv.resize(n), vcf.resize(n), vdy.resize(n),
-        vind.assign(n, 0);
+  std::vector<uint8_t> vind;                                                                                                        // 行业 ID (index Full; 0 = 未知 / 缺 / 越界)
+  if (idx)
+    close.resize(n);
+  if (full)
+    mcap.assign(n, 0.f), vpx.assign(n, 0.f), vsh.resize(n), vnp.resize(n), veq.resize(n), vrv.resize(n), vcf.resize(n), vdy.resize(n), vind.assign(n, 0);
   // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
   constexpr float kNoCap = std::numeric_limits<float>::infinity();
   const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {spec.max_impact, kNoCap};
@@ -677,13 +656,15 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
           float g;
           const bool ok = cell(wl, a, c, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, c);
           const bool okp = ok && cell(wp, a, px, g) && static_cast<float>(px) > 0.f;
-          if (spec.index)
-            close.v[row + a] = ok ? static_cast<float>(c) : 0.f, close.m[row + a] = ok, vpx[row + a] = okp ? static_cast<float>(px) : 0.f;
+          if (idx)
+            close.v[row + a] = ok ? static_cast<float>(c) : 0.f, close.m[row + a] = ok;
+          if (full)
+            vpx[row + a] = okp ? static_cast<float>(px) : 0.f;
           if (spec.book && okp && static_cast<float>(c) > 0.f)
             Y.px[row + a] = static_cast<float>(c);
         }
       }
-      if (spec.index) {
+      if (full) {
         const View ws = view(sh_i, t), wn = view(np_i, t), we = view(eq_i, t), wr = view(rv_i, t), wc = view(cf_i, t), wd = view(dy_i, t), wi = view(ind_i, t);
         constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
         for (size_t a = 0; a < A; ++a) {
@@ -709,7 +690,10 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   });
   if (!read)
     return false;
-  if (spec.index) {
+  if (idx)
+    pool_index(ex, close, full ? mcap.data() : nullptr, full ? vind.data() : nullptr, Y.gate.data(), Y.trade.empty() ? nullptr : Y.trade.data(), Y.sh.T,
+               Y.sh.A, Y.sh.seg, full ? static_cast<int>(YPlanes::kBaskets) : 1, full ? kWeights : 1, Y.index);
+  if (full) {
     BasketRows rows;
     pool_baskets(ex, close, mcap.data(), vpx.data(), vsh.data(), vnp.data(), veq.data(), vrv.data(), vcf.data(), vdy.data(), vind.data(), Y.gate.data(),
                  Y.sh.T, Y.sh.A, Y, rows);
@@ -766,15 +750,9 @@ factor::stat::Labels labels_of(const YPlanes &y) {
   return out;
 }
 
-BookSpec book_spec(const YPlanes &y, int hold) {
+BookMarket book_market(const YPlanes &y) {
   assert(!y.px.empty() && "净值引擎平面未装 (YSpec::book)");
-  BookSpec bs;
-  bs.T = y.sh.T, bs.A = y.sh.A, bs.S = y.sh.seg, bs.hold = hold, bs.kind = book_kind(hold);
-  bs.h = bs.kind == BookKind::Row     ? factor::stat::hold_rows(hold, factor::geo_of(y.sh.seg))
-         : bs.kind == BookKind::Close ? y.sh.seg
-                                      : hold - factor::stat::kHoldDayBase;
-  bs.trade = y.trade.empty() ? nullptr : y.trade.data(), bs.px = y.px.data();
-  return bs;
+  return {y.sh.A, y.trade.empty() ? nullptr : y.trade.data(), y.px.data()};
 }
 
 std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec) {

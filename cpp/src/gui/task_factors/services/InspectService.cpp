@@ -2,7 +2,7 @@
 #include "gui/task_factors/services/InspectService.hpp"
 
 #include "factor/Stat/Cpu.hpp"
-#include "gui/task_factors/services/FactorsBook.hpp"   // Line / fold_lines (分层累计净值)
+#include "gui/task_factors/services/FactorsBook.hpp"   // RankBasket / Line (分层累计净值的篮子表 / 线表)
 #include "gui/task_factors/services/FactorsEngine.hpp" // FactorFlow / factor_pass / RankBook (只 CPU)
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/profiler.hpp"
@@ -23,52 +23,46 @@ using factor::stat::kLong;
 using factor::stat::kShort;
 
 // 尾部阈值 (r16): 多腿尾 = r16 ≥ thr[kLong], 空腿尾 = r16 < thr[kShort], 尾占整截面 q = kTailOfGroup / kGroups. 与 grp_of 同一条边界公式
-// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时两条阈值正好是 G20 / G1 的组边界
-void tail_thresholds(int (*thr)[kTails]) {
+// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时两条阈值正好是 G20 / G1 的组边界. 尾部分层 (TailExt) 与净值篮子 (kNavBaskets) 同一份
+struct TailThr {
+  int v[kLegs][kTails] = {};
+};
+TailThr tail_thresholds() {
+  TailThr o;
   for (int j = 0; j < kTails; ++j) {
     const double q = static_cast<double>(kTailOfGroup[j]) / factor::stat::kGroups, span = factor::stat::kRankMax + 1;
-    thr[kLong][j] = static_cast<int>(std::ceil((1.0 - q) * span));
-    thr[kShort][j] = static_cast<int>(std::ceil(q * span));
-    assert(thr[kShort][j] >= 1 && thr[kLong][j] <= factor::stat::kRankMax && thr[kShort][j] < thr[kLong][j]);
+    o.v[kLong][j] = static_cast<int>(std::ceil((1.0 - q) * span));
+    o.v[kShort][j] = static_cast<int>(std::ceil(q * span));
+    assert(o.v[kShort][j] >= 1 && o.v[kLong][j] <= factor::stat::kRankMax && o.v[kShort][j] < o.v[kLong][j]);
   }
+  return o;
 }
+const TailThr kTailThr = tail_thresholds();
 inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : r16 < thr; }
 
-// 净值篮子 (RankBook): [0, kNavLayers) = 分层线 (全做多, 线序同 kNavLayers), kNavG1 = G1 做空, kNavG1 + 1 + j = 底腿尾 j 做空
+// 净值篮子表 (RankBook, 全是 r16 区间): [0, kNavLayers) = 分层线 (全做多, 线序同 kNavLayers), kNavG1 = G1 做空, kNavG1 + 1 + j = 底腿尾 j 做空;
+//   满仓倍数 组 / G1 空 = 1, 尾 j = kTailOfGroup[j]
 inline constexpr int kNavG1 = kNavLayers, kNavBaskets = kNavLayers + 1 + kTails;
 static_assert(kNavBaskets <= kBookMax);
-// r16 → 意向篮子位 (与 grp_of / in_tail 同边界)
-struct NavBits {
-  int thr[kLegs][kTails] = {};
-  uint64_t operator()(uint16_t r16) const {
-    if (r16 == factor::stat::kRankNone)
-      return 0;
-    const int g = factor::stat::grp_of(r16), x = r16;
-    uint64_t m = uint64_t{1} << g;
+// 腿 l 的尾 j (与 in_tail 同边界: 多腿 [thr, kRankMax], 空腿 [0, thr − 1])
+RankBasket tail_basket(int l, int j, int side) {
+  const int thr = kTailThr.v[l][j];
+  return {static_cast<uint16_t>(l == kLong ? thr : 0), static_cast<uint16_t>(l == kLong ? factor::stat::kRankMax : thr - 1), static_cast<int8_t>(side),
+          kTailOfGroup[j]};
+}
+std::array<RankBasket, kNavBaskets> nav_baskets() {
+  std::array<RankBasket, kNavBaskets> bk{};
+  for (int g = 0; g < factor::stat::kGroups; ++g)
+    bk[static_cast<size_t>(g)] = group_basket(g, 1);
+  for (int l = 0; l < kLegs; ++l)
     for (int j = 0; j < kTails; ++j)
-      if (in_tail(kLong, x, thr[kLong][j]))
-        m |= uint64_t{1} << layer_tail(kLong, j);
-    if (g == factor::stat::leg_group(kShort)) {
-      m |= uint64_t{1} << kNavG1;
-      for (int j = 0; j < kTails; ++j)
-        if (in_tail(kShort, x, thr[kShort][j]))
-          m |= uint64_t{1} << layer_tail(kShort, j) | uint64_t{1} << (kNavG1 + 1 + j);
-    }
-    return m;
-  }
-};
-// 篮子表: 满仓倍数 组 / G1 空 = 1, 尾 j = kTailOfGroup[j]
-RankBaskets<NavBits> nav_baskets(const int (*thr)[kTails]) {
-  RankBaskets<NavBits> bk;
-  bk.nb = kNavBaskets;
-  for (int b = 0; b < kNavBaskets; ++b) {
-    const int j = b >= kNavG1 ? b - kNavG1 - 1 : b - factor::stat::kGroups;
-    bk.side[b] = b < kNavG1 ? 1 : -1;
-    bk.cap[b] = j < 0 ? 1.0 : kTailOfGroup[j % kTails];
-  }
-  std::copy(&thr[0][0], &thr[0][0] + kLegs * kTails, &bk.bits.thr[0][0]);
+      bk[static_cast<size_t>(layer_tail(l, j))] = tail_basket(l, j, 1);
+  bk[static_cast<size_t>(kNavG1)] = group_basket(factor::stat::leg_group(kShort), -1);
+  for (int j = 0; j < kTails; ++j)
+    bk[static_cast<size_t>(kNavG1 + 1 + j)] = tail_basket(kShort, j, -1);
   return bk;
 }
+const std::array<RankBasket, kNavBaskets> kNavBasketTable = nav_baskets();
 // 线表 (InspectResult::nav 线序, 见 kNavLines): 分层绝对 | 分层超额 (− 基准) | LS (两腿超额之和)
 std::array<Line, kNavLines> nav_lines() {
   std::array<Line, kNavLines> ls{};
@@ -89,6 +83,7 @@ std::array<Line, kNavLines> nav_lines() {
   return ls;
 }
 const std::array<Line, kNavLines> kNavLineTable = nav_lines();
+const BookPlan kNavPlan{kNavBasketTable, kNavLineTable};
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
 struct TailExt {
   const int (*thr)[kTails];
@@ -190,7 +185,7 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   // ---- S / Y / X / R: 单因子前缀 (factor_pass, 与 Portfolio 同一份) ----
   //   Y = 全部持有期 + 全部金额段 + 池等权指数 + 净值引擎平面; X = 作用域内读过的全留 (只增), 缺的补读
   //   另占: rx_all 2 + lc 1 (/ 格); Row / TailRow [H] + 净值引擎 (意向权 float + pnl / bench double) [篮子] (/ 行); 收尾: 评估 + 收尾
-  const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(sc.max_impact), /*index=*/true, /*book=*/true};
+  const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(sc.max_impact), IndexKind::Pool, /*book=*/true};
   const double row_extra =
       ys.hd.n * static_cast<double>(sizeof(factor::stat::Row) + sizeof(TailRow)) + kNavBaskets * (sizeof(float) + 2.0 * sizeof(double));
   FactorPass p;
@@ -224,7 +219,8 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   res.scope.n_full = y.n_full;
   res.dates = dates;
   res.read_scope = p.es.rs;
-  res.pool_index.assign(y.index[kWeightEq].begin(), y.index[kWeightEq].begin() + T); // 篮子 0 = 池整体
+  assert(y.index.n == 1 && y.index.P == T && "Pool 档: 只线 0 = 池整体等权");
+  res.pool_index.assign(y.index.at(0), y.index.at(0) + T);
   res.hd = y.hd;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
     res.scope.time = now_string();
@@ -265,23 +261,18 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
     return false;
 
   // ---- L: 评估 (只毛): 一级 Row[H][T] + 一级累加; 同遍尾部分层 (TailExt, Inspect 专属: 只在 Row::ok 行, 两腿组内更极端的 kTailOfGroup 截) ----
-  int thr[kLegs][kTails];
-  tail_thresholds(thr);
   factor::stat::Accum acc[factor::stat::kMaxHold];
-  factor::cpu::stat::accum_rows(F.ex, s, rx, ss.L, ss.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, thr, ss.L.cap});
+  factor::cpu::stat::accum_rows(F.ex, s, rx, ss.L, ss.w, acc, TailSink{pl.rows.data(), pl.tails.data(), T, kTailThr.v, ss.L.cap});
   publish(1);
   if (cancelled())
     return false;
 
-  // ---- N: 分层累计净值 (RankBook, 篮子表 nav_baskets; 每持有期一遍) → 线表 kNavLineTable 折成日收益 nav [H][kNavLines][days] ----
+  // ---- N: 分层累计净值 (RankBook, 计划 kNavPlan = 篮子表 + 线表; 每持有期一遍) → 日收益 nav[H] = [kNavLines][days] ----
   {
-    const RankBook book(F.ex, y, rx, nav_baskets(thr));
-    const size_t D = static_cast<size_t>(y.sh.days);
-    res.nav.assign(static_cast<size_t>(H) * kNavLines * D, 0.f);
-    BookOut bo;
+    const RankBook book(F.ex, y, rx, kNavPlan);
+    res.nav.resize(static_cast<size_t>(H));
     for (int hi = 0; hi < H; ++hi) {
-      book.run(hi, /*ci=*/-1, bk_bit(kBkBench), bo);
-      fold_lines(F.ex, bo, kNavLineTable.data(), kNavLines, /*stride=*/y.sh.seg, res.nav.data() + static_cast<size_t>(hi) * kNavLines * D);
+      book.lines(hi, /*ci=*/-1, /*stride=*/y.sh.seg, res.nav[static_cast<size_t>(hi)]);
       if (cancelled())
         return false;
     }

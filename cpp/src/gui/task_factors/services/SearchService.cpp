@@ -324,7 +324,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   //   F0  设备常驻: 特征 5·nf + 门控 1 + 搜索会话标签 (lv,sv,m,ry) 7·H; 每候选 7 (根平面 5 + rx 2); 中间量 2·s0 槽
   //   r16 常驻: 每候选 (抽样行 × A × 2) 字节; 预留趟 0 的 kInit 个, 细化的随评随增
   const XSpec xs{d0.feats};
-  const YSpec ys{hd, Amts{}, 0.f, /*index=*/false};
+  const YSpec ys{hd, Amts{}, 0.f, IndexKind::None};
   const double per_day = static_cast<double>(seg) * A;
   const double L0 = cell_bytes(xs) + cell_bytes(ys);
   const double Wc = 2.0 * H + 2.0 + kPlaneBytes * (s0 + 2);

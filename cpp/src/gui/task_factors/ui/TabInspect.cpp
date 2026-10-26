@@ -208,13 +208,14 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   const int T = res.scope.T, days = res.scope.days, S = res.seg;
   assert(T == days * S && days >= 1);
   const factor::stat::Row *r = res.rows_at(sel);
-  assert(res.nav.size() == static_cast<size_t>(res.hd.n) * kNavLines * static_cast<size_t>(days));
+  assert(res.nav.size() == static_cast<size_t>(res.hd.n) && res.nav[static_cast<size_t>(sel)].n == kNavLines && res.nav[static_cast<size_t>(sel)].P == days);
   d.hs = res.hold[static_cast<size_t>(sel)];
   d.adist = res.alpha_dist;
   d.days = days;
   d.dates = res.dates;
   assert(res.pool_index.size() == static_cast<size_t>(T));
-  d.pool_index = res.pool_index;
+  d.pool_index.resize(static_cast<size_t>(T));
+  compound(res.pool_index.data(), static_cast<size_t>(T), [&](size_t t, double l) { d.pool_index[t] = static_cast<float>(l); });
   d.x_day.resize(static_cast<size_t>(days) + 1);
   for (int i = 0; i <= days; ++i)
     d.x_day[static_cast<size_t>(i)] = static_cast<float>(i);
@@ -227,16 +228,14 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   for (int t = 0; t < T; ++t)
     if (r[t].ok)
       ics.push_back(r[t].ric);
-  const auto compound = [&](const float *v, std::vector<float> &cum) {
-    double l = 1.0;
-    for (int day = 0; day < days; ++day)
-      l *= 1.0 + v[day], cum[static_cast<size_t>(day) + 1] = static_cast<float>((l - 1.0) * 100.0);
+  const auto cum_of = [&](const float *v, std::vector<float> &cum) {
+    compound(v, static_cast<size_t>(days), [&](size_t day, double l) { cum[day + 1] = static_cast<float>((l - 1.0) * 100.0); });
   };
   for (int i = 0; i < kLayerLines; ++i)
-    compound(res.nav_at(sel, (absolute ? 0 : kNavLayers) + i), d.lay_cum[i]);
+    cum_of(res.nav_at(sel, (absolute ? 0 : kNavLayers) + i), d.lay_cum[i]);
   for (int i = 0; i < kLsLines; ++i) {
     const float *v = res.nav_at(sel, 2 * kNavLayers + i);
-    compound(v, d.ls_cum[i]);
+    cum_of(v, d.ls_cum[i]);
     factor::stat::MomAcc m;
     for (int day = 0; day < days; ++day)
       m.add(v[day]);

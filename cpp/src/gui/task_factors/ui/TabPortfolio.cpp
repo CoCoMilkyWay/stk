@@ -199,16 +199,12 @@ Inc sum_of(std::vector<Inc> v) {
 }
 // 增量流的冲击口径 i → 净值线: 起点 (x0, 1) + 每个 x 一点, 逐点复利. 起点取首日开盘前 kStartDx 格: 首行可在开盘点就有增量 (L_1min 行 0 末分钟 = 开盘)
 constexpr double kStartDx = 0.5;
-PortfolioCurve compound(const Inc &s, int i, double x0) {
+PortfolioCurve curve_of(const Inc &s, int i, double x0) {
   assert(s.x.empty() || s.x.front() > x0);
   PortfolioCurve c;
   c.x.reserve(s.x.size() + 1), c.y.reserve(s.x.size() + 1);
   c.x.push_back(x0), c.y.push_back(1.0);
-  double nav = 1.0;
-  for (size_t k = 0; k < s.x.size(); ++k) {
-    nav *= 1.0 + s.d[i][k];
-    c.x.push_back(s.x[k]), c.y.push_back(nav);
-  }
+  compound(s.d[i].data(), s.x.size(), [&](size_t k, double l) { c.x.push_back(s.x[k]), c.y.push_back(l); });
   return c;
 }
 // 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorsBook 逐行增量 (已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在实现时刻:
@@ -218,7 +214,7 @@ Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_imp
   const int S = f.seg;
   const factor::Geo g = factor::geo_of(S);
   const BookKind kind = book_kind(f.hold);
-  assert(!f.dates.empty() && f.nav.size() == static_cast<size_t>(kCurveLines) * f.dates.size() * static_cast<size_t>(S));
+  assert(!f.dates.empty() && f.nav.n == kCurveLines && static_cast<size_t>(f.nav.P) == f.dates.size() * static_cast<size_t>(S));
   const float *pnl = f.nav_at(kCurvePnl), *imp = f.nav_at(kCurveImp), *fix = f.nav_at(kCurveFix);
   const auto row_x = [&](size_t dl, int ts) -> size_t {
     if (kind != BookKind::Row)
@@ -242,7 +238,8 @@ Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_imp
 // ---- 篮子投影 (池线 / VAL 同一份, 见 PortfolioBasket): 只取日并集轴范围内; 不在轴上的日只差点位, 收益自然并进下一个轴上的日 ----
 void project(const std::vector<misc::Ymd> &axis, PortfolioBasket &b) {
   const std::vector<misc::Ymd> &src = b.pc->dates;
-  const float *v = b.pc->index_of(b.k, b.w);
+  std::vector<double> v(src.size()); // 篮子点位 (日收益复利, 起点 1)
+  compound(b.pc->index_of(b.k, b.w), src.size(), [&](size_t i, double l) { v[i] = l; });
   const std::vector<size_t> di = days_on(axis, src);
   const auto push = [&](double x, size_t i) { b.c.x.push_back(x), b.c.y.push_back(v[i]), b.at.push_back(static_cast<uint32_t>(i)); };
   for (size_t i = 0; i < src.size(); ++i) {
@@ -327,7 +324,7 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     pf.note = f.amt > 0 ? std::to_string(f.amt) + "w" : std::string("固定");
     pf.expo = expo_text(fe);
     pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f.hold);
-    pf.c = compound(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen) - kStartDx);
+    pf.c = curve_of(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen) - kStartDx);
     pf.item = *its[q];
     d.factors.push_back(std::move(pf));
     shares.push_back(inc_of(f, di, fixed_impact, [&](size_t i) { return 1.0 / n_act[i]; }));
@@ -341,7 +338,7 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     s.note = expo_text(combo_expo);
     s.on = i == kImpactNet; // 默认只显有冲击
     if (!d.dates.empty())
-      s.c = compound(sum, i, x_of(0, kOpen) - kStartDx);
+      s.c = curve_of(sum, i, x_of(0, kOpen) - kStartDx);
   }
 }
 
@@ -387,7 +384,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
     const std::shared_ptr<const PoolCurve> pc = pool_of(res, pd.name);
     if (!pc)
       continue;
-    assert(pc->index[kWeightCap].size() == fund::SW2021_L1_COUNT * pc->dates.size());
+    assert(pc->index.n == static_cast<int>(fund::SW2021_L1_COUNT) * kWeights && static_cast<size_t>(pc->index.P) == pc->dates.size());
     const bool is_all = pd.pool_col == SIZE_MAX;
     if (is_all)
       all = pc;

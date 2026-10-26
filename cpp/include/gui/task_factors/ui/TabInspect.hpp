@@ -63,7 +63,7 @@ inline constexpr int kLsLines = kNavLs;
 struct InspectDerived {
   int days = 0;
   std::vector<misc::Ymd> dates;            // [days] 轴刻度用
-  std::vector<float> pool_index;           // [T] = InspectResult::pool_index (右上 K 线叠加)
+  std::vector<float> pool_index;           // [T] InspectResult::pool_index 复利成的点位 (起点 1, 右上 K 线叠加)
   std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
   std::vector<float> lay_cum[kLayerLines]; // [days + 1], 复利累计 % ((净值 − 1) × 100)
   std::vector<float> ls_cum[kLsLines];     // [days + 1], 同上

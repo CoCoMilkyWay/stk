@@ -7,10 +7,10 @@
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条前缀 (FactorsEngine factor_pass: 装载 → walk → rank_x), 再按该 hold 跑
 //   秩平面账本 RankBook (G20 多头一个篮子: 每个换仓点开 1/h 净值一批 (换仓点 / 成交价见 FactorsBook.hpp【成交价】),
-//   意向等权 1 / max(只数, 满仓), 买不进空着, 卖不出延长) → fold_lines stride 1 → FactorCurve 逐行出参线.
+//   意向等权 1 / max(只数, 满仓), 买不进空着, 卖不出延长) → RankBook::lines stride 1 → FactorCurve 逐行出参线.
 //   成本只在真成交时记: Lob 层分钟 / 收盘型建仓 = 最小金额段买入冲击 (封顶 max_impact) + 平仓一份 Config::fixed_impact; Bar 层无金额段 与 T+N
 //   (集合竞价) = 建仓 / 平仓各一份 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes 篮子 → PoolCurve): 篮子 (池整体 + 行业) 两权重指数 (FactorsBook h = 1) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
+// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes 篮子 → PoolCurve): 篮子 (池整体 + 行业) 两权重指数日收益 (FactorsBook 池指数: PxFill, h = 1) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
 //   滚动分位 band 在 UI 按可调窗长现算) + 池整体日均单边换手.
 // 因子 ↔ 池 同一套缓存: 按 Job::key 存, 曲线记算时的 Job::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
 //
@@ -19,6 +19,7 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
+#include "gui/task_factors/services/FactorsLoad.hpp"    // BookLines / YPlanes::index_line
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorScope / Request
 #include "gui/util/Service.hpp"
 
@@ -98,20 +99,20 @@ struct FactorCurve {
   std::string sig;              // 算时的 HoldJob::sig
   std::vector<misc::Ymd> dates; // [days]
   int seg = 0, hold = 0;
-  int amt = 0;            // 建仓冲击金额段 (万) = 该层最小段; 0 = 无段 (Bar 层 / Day 型集合竞价) → 建仓也付一份 fixed_impact
-  std::vector<float> nav; // [kCurveLines][T = days · seg]
-  std::string error;      // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
-  const float *nav_at(int line) const { return nav.data() + static_cast<size_t>(line) * dates.size() * static_cast<size_t>(seg); }
+  int amt = 0;       // 建仓冲击金额段 (万) = 该层最小段; 0 = 无段 (Bar 层 / Day 型集合竞价) → 建仓也付一份 fixed_impact
+  BookLines nav;     // [kCurveLines][T = days · seg]
+  std::string error; // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
+  const float *nav_at(int line) const { return nav.at(line); }
 };
 // 一个池的日层篮子 (YPlanes 篮子原样搬来): 篮子 0 = 池整体, k = 1..kBaskets−1 = 本池按 SW2021 一级切的行业 (UI 只用 all 池的 = 申万一级)
 struct PoolCurve {
   std::string sig;                             // 算时的 PoolJob::sig
   std::vector<misc::Ymd> dates;                // [nd] 日层评估期
-  std::vector<float> index[kWeights];          // [Weight][kBaskets · nd] 篮子指数 (起点 1)
+  BookLines index;                             // [kBaskets · kWeights][nd] 篮子指数的日收益 (线序 YPlanes::index_line; UI compound 成点位)
   std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal][kBaskets · nd] 篮子估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值 / 加权 = 整体法收益率; NaN = 当日不可算)
   double turn[kWeights] = {};                  // [Weight] 篮子 0 日均单边换手 (YPlanes::turn; 再平衡 + 成分进出, 停牌 = 移出再移回)
   std::string error;
-  const float *index_of(size_t k, int w) const { return index[w].data() + k * dates.size(); } // 篮子 k 段 [nd]
+  const float *index_of(size_t k, int w) const { return index.at(YPlanes::index_line(k, w)); } // 篮子 k 的日收益 [nd]
   const float *val_of(size_t k, int w, int m) const { return val[w][m].data() + k * dates.size(); }
 };
 struct PortfolioResult {

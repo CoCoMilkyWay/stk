@@ -1,7 +1,7 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/PortfolioService.hpp"
 
-#include "gui/task_factors/services/FactorsBook.hpp"   // Line / fold_lines (G20 多头出参线)
+#include "gui/task_factors/services/FactorsBook.hpp"   // RankBasket / Line (G20 多头的篮子表 / 线表)
 #include "gui/task_factors/services/FactorsEngine.hpp" // FactorFlow / factor_pass / RankBook (只 CPU)
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/profiler.hpp"
@@ -39,17 +39,8 @@ int seg_of_level(const std::string &name) {
   __builtin_unreachable();
 }
 
-// 账本篮子 (RankBook): 一个 = rx 落 G20 (做多, 满仓倍数 1)
-struct G20Bits {
-  uint64_t operator()(uint16_t r16) const { return factor::stat::leg_code(r16) == factor::stat::kLcLong; }
-};
-RankBaskets<G20Bits> g20_baskets() {
-  RankBaskets<G20Bits> bk;
-  bk.nb = 1;
-  bk.side[0] = 1;
-  bk.cap[0] = 1.0;
-  return bk;
-}
+// 账本篮子表 (RankBook): 一个 = G20 (做多, 满仓倍数 1)
+const std::array<RankBasket, 1> kCurveBasketTable = {group_basket(factor::stat::leg_group(factor::stat::kLong), 1)};
 // 线表 (FactorCurve::nav 线序 = CurveLine): 篮子 0 的出参原样
 std::array<Line, kCurveLines> curve_lines() {
   std::array<Line, kCurveLines> ls{};
@@ -61,6 +52,7 @@ std::array<Line, kCurveLines> curve_lines() {
   return ls;
 }
 const std::array<Line, kCurveLines> kCurveLineTable = curve_lines();
+const BookPlan kCurvePlan{kCurveBasketTable, kCurveLineTable};
 
 } // namespace
 
@@ -331,7 +323,7 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   const std::vector<int> ck = keys_of(ft.y.costs);
   assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
   const YSpec ys{holds_of(F.holds.at(group_of(j))), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
-                 /*index=*/false, /*book=*/true};
+                 IndexKind::None, /*book=*/true};
   const double row_extra = sizeof(float) * (1.0 + static_cast<double>(kCurveLines)) + sizeof(double) * static_cast<double>(kCurveLines);
   FactorPass p;
   const Pass pr = factor_pass(F, j.f, PassSpec{ys, /*retain=*/true, "Portfolio", 0.0, row_extra, /*tail=*/1}, cancel_, *this, F.rx, p);
@@ -350,16 +342,13 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
     ++hi;
   assert(hi < y.hd.n && "组 Y 须含本因子的持有期");
 
-  // ---- N: G20 多头账本 (RankBook, 篮子表 g20_baskets) → 线表 kCurveLineTable 逐行出参 nav [kCurveLines][T] ----
+  // ---- N: G20 多头账本 (RankBook, 计划 kCurvePlan = 篮子表 + 线表) → 逐行出参 nav = [kCurveLines][T] ----
   {
     assert(y.ad.n <= 1);
     const int ci = y.ad.n && book_kind(j.hold) != BookKind::Day ? 0 : -1; // Day 型集合竞价成交, 无盘口冲击
     out.amt = ci < 0 ? 0 : y.ad.a[ci];
-    const RankBook book(F.ex, y, F.rx.data(), g20_baskets());
-    out.nav.assign(static_cast<size_t>(kCurveLines) * static_cast<size_t>(y.sh.T), 0.f);
-    BookOut bo;
-    book.run(hi, ci, bk_bit(kBkImp) | bk_bit(kBkFix) | bk_bit(kBkExpo), bo);
-    fold_lines(F.ex, bo, kCurveLineTable.data(), kCurveLines, /*stride=*/1, out.nav.data());
+    const RankBook book(F.ex, y, F.rx.data(), kCurvePlan);
+    book.lines(hi, ci, /*stride=*/1, out.nav);
   }
   publish(1);
   return !cancelled();
@@ -377,7 +366,7 @@ bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   }
   open_libs(j.scope, F.lr, &cancel_);
   const int days = static_cast<int>(es.dates.size()), A = static_cast<int>(es.rs.axis.size());
-  const YSpec ys{holds_of({ft.y.labels.front().key}), {}, 0.f, /*index=*/true};
+  const YSpec ys{holds_of({ft.y.labels.front().key}), {}, 0.f, IndexKind::Full};
   assert_fits("Portfolio", static_cast<double>(days) * A * cell_bytes(ys), days, A, ft.seg);
   ScopeCache c;
   const Load ld = ensure_xy(c, ft, es, F.lr, 0, es.days.size(), ys, {}, /*retain=*/true, F.ex, cancel_, *this);
@@ -387,11 +376,10 @@ bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
     return stale_out(F);
   const size_t n = YPlanes::kBaskets * es.dates.size();
   out.dates = es.dates;
-  for (int w = 0; w < kWeights; ++w) {
-    assert(c.y.index[w].size() == n);
-    out.index[w] = std::move(c.y.index[w]);
+  assert(c.y.index.n == static_cast<int>(YPlanes::kBaskets) * kWeights && c.y.index.P == days);
+  out.index = std::move(c.y.index);
+  for (int w = 0; w < kWeights; ++w)
     out.turn[w] = c.y.turn[w];
-  }
   for (int w = 0; w < kWeights; ++w)
     for (int m = 0; m < kPoolVals; ++m) {
       assert(c.y.val[w][m].size() == n);

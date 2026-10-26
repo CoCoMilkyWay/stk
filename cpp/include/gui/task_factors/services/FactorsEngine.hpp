@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -406,37 +407,44 @@ inline Pass factor_pass(FactorFlow &F, const FactorJob &j, const PassSpec &ps, s
   return cancelled() ? Pass::Cancel : Pass::Ok;
 }
 
-// 秩平面上的篮子表 (Inspect 分层 / Portfolio G20 同一形): 意向 = bits(r16), 满仓 = cap[b] · n_full, 腿向 side[b]
-template <class Bits>
-struct RankBaskets {
-  int nb = 0;
-  int8_t side[kBookMax] = {}; // ±1
-  double cap[kBookMax] = {};  // 满仓倍数 (× YPlanes::n_full)
-  Bits bits;                  // r16 → 意向篮子位
+// 秩平面账本的计划 (Inspect 分层 / Portfolio G20 同一形): 篮子表 (意向) + 线表 (出参字段 = 线表所用之并)
+struct BookPlan {
+  std::span<const RankBasket> baskets;
+  std::span<const Line> lines;
 };
-// 秩平面账本: 意向权构造时一次 (只看意向, 与持有期无关), 每持有期 run 一遍 FactorsBook (RankSrc: 收益 = 该持有期做多标签, 买得进 = 标签有效位)
-template <class Bits>
+// 秩平面账本: 意向 (RankIntent: 篮子位 + 意向权) 构造时一次 (只看意向, 与持有期无关); 每持有期 lines 一遍:
+//   时钟 = book_clock(该持有期) × 成交 = 型定 (Row / Close → LabelFill 该持有期标签; Day → PxFill 价格链) → run_book → fold_lines
 class RankBook {
 public:
-  RankBook(misc::exec::ForkJoin &ex, const YPlanes &y, const uint16_t *rx, const RankBaskets<Bits> &bk)
-      : ex_(ex), y_(y), rx_(rx), bk_(bk),
-        wt_(intent_weights(ex, rx, y.sh.T, y.sh.A, bk.nb, bk.bits, [&](int b) { return bk.cap[b] * y.n_full; })) {}
-  // hi = 持有期下标 (y.hd); ci = 建仓冲击金额段下标 (y.ad; −1 = 无段: 建仓付一份固定冲击); fields = 另要的出参 (bk_bit 位或)
-  void run(int hi, int ci, unsigned fields, BookOut &o) const {
-    BookSpec bs = book_spec(y_, y_.hd.h[hi]);
-    assert(hi >= 0 && hi < y_.hd.n && ci < y_.ad.n && (ci < 0 || bs.kind != BookKind::Day) && "Day 型集合竞价成交, 无盘口冲击");
-    bs.nb = bk_.nb, bs.fields = fields, bs.unit_in = ci < 0 ? 1.0 : 0.0;
-    std::copy(bk_.side, bk_.side + bk_.nb, bs.side);
-    const LegPlane &lab = y_.labels[static_cast<size_t>(hi)];
-    const uint16_t *imp = ci < 0 ? nullptr : y_.costs[static_cast<size_t>(ci)].v[factor::stat::kLong].data();
-    run_book(ex_, bs, RankSrc<Bits>{rx_, bk_.bits, wt_.data(), bk_.nb, lab.v[factor::stat::kLong].data(), lab.m.data(), imp, static_cast<size_t>(y_.sh.A)}, o);
+  RankBook(misc::exec::ForkJoin &ex, const YPlanes &y, const uint16_t *rx, const BookPlan &p)
+      : ex_(ex), y_(y), rx_(rx), p_(p), bits_(p.baskets), nb_(static_cast<int>(p.baskets.size())),
+        wt_(intent_weights(ex, rx, y.sh.T, y.sh.A, nb_, bits_, [&](int b) { return p.baskets[static_cast<size_t>(b)].cap * y.n_full; })) {}
+  // hi = 持有期下标 (y.hd); ci = 建仓冲击金额段下标 (y.ad; −1 = 无段: 建仓付一份固定冲击); stride = 折叠步长 (1 = 逐行 / S = 日)
+  void lines(int hi, int ci, int stride, BookLines &out) const {
+    assert(hi >= 0 && hi < y_.hd.n && ci < y_.ad.n);
+    const BookClock K = book_clock(y_.hd.h[hi], y_.sh.seg, y_.sh.T);
+    const BookMarket m = book_market(y_);
+    const RankIntent I{rx_, &bits_, wt_.data(), p_.baskets.data(), nb_, static_cast<size_t>(y_.sh.A)};
+    const unsigned fields = fields_of(p_.lines);
+    BookOut bo;
+    if (K.kind == BookKind::Day) {
+      assert(ci < 0 && "Day 型集合竞价成交, 无盘口冲击");
+      run_book(ex_, K, I, PxFill(ex_, K, m), fields, bo);
+    } else {
+      const LegPlane &lab = y_.labels[static_cast<size_t>(hi)];
+      const uint16_t *imp = ci < 0 ? nullptr : y_.costs[static_cast<size_t>(ci)].v[factor::stat::kLong].data();
+      run_book(ex_, K, I, LabelFill{m, lab.v[factor::stat::kLong].data(), lab.m.data(), imp, ci < 0 ? 1.0 : 0.0}, fields, bo);
+    }
+    fold_lines(ex_, bo, p_.lines, stride, out);
   }
 
 private:
   misc::exec::ForkJoin &ex_;
   const YPlanes &y_;
   const uint16_t *rx_;
-  RankBaskets<Bits> bk_;
+  BookPlan p_;
+  RankBits bits_;
+  int nb_;
   std::vector<float> wt_; // [T][nb] intent_weights
 };
 
