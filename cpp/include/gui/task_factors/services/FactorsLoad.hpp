@@ -4,7 +4,7 @@
 //   load_x / load_y 同一份逐天并行骨架 (n_full_of 只扫门控出满仓只数); ScopeCache + ensure_y / ensure_x = 作用域块 (Y 常驻, X 按服务策略留 / 补);
 //   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率;
 //   cost_tiers 换手成本; labels_of 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
-//   fold_exit 净值引擎 (Stat 契约【净值】: 逐行批收益在平仓行实现 1/h, 按 stride 求和; Inspect 分层 / Portfolio 因子线 / 池篮子指数同一份) + compound;
+//   fold_exit 净值引擎 (Stat 契约【净值】: 逐行批收益在平仓行实现 1/h̄, 按 stride 求和; Inspect 分层 / Portfolio 因子线 / 池篮子指数同一份) + compound;
 //   alpha_dist alpha 分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本);
 //   RootRaw → finish_root → EvalStat: 根评估的宿主收尾 (Run 两后端 / Inspect 同一份).
 // 三个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat (+ 因子表小图); InspectService 一棵 DAG 留一级 Row[H][T];
@@ -43,13 +43,13 @@ struct BookLines {
   std::vector<float> v;
   const float *at(int i) const { return v.data() + static_cast<size_t>(i) * static_cast<size_t>(P); }
 };
-// 逐行批收益 x(i, t) (线 i 行 t 这一批, 占这批资金; 不 ok 记 0) → 平仓行 u = hold_exit_row(t) 记 x / h (h = hold_rows) → 每 stride 行求和一点
+// 逐行批收益 x(i, t) (线 i 行 t 这一批, 占这批资金; 不 ok 记 0) → 平仓行 u = hold_exit_row(t) 记 x / h̄ (h̄ = hold_span) → 每 stride 行求和一点
 // (stride 1 = 逐行 / S = 日). 平仓行越过 T 的批不计. 线间并行, x 须可并发调
 template <class X>
 void fold_exit(misc::exec::ForkJoin &ex, int hold, int seg, int T, int n, int stride, const X &x, BookLines &out) {
   const factor::Geo g = factor::geo_of(seg);
   assert(n >= 1 && stride >= 1 && T % stride == 0 && T % g.S == 0);
-  const int h = factor::stat::hold_rows(hold, g);
+  const double h = factor::stat::hold_span(hold, g);
   out.n = n, out.P = T / stride;
   out.v.assign(static_cast<size_t>(n) * static_cast<size_t>(out.P), 0.f);
   ex.rows(n, [&](int i0, int i1, int) {
@@ -174,7 +174,7 @@ struct YPlanes {
   static constexpr int index_line(size_t k, int w) { return kWeights * static_cast<int>(k) + w; }
   BookLines index;                             // 指数的逐行收益 (stride 1; 净值 = compound, 调用方) = 净值引擎 fold_exit: 行 t 一批 = 成分 (行 t 在池 ∧ 该持有期
                                                //   标签有效; ∧ 该行 ind_l1 = k) 做多标签按权平均 (等权 1 / 总市值加权 = 行 t 的 close_day × total_shares, 不复权;
-                                               //   缺股本权 0), 平仓行实现 1/h. Full 日层 T+1C = C(D) → C(D+1) 复权, 可成交 / 顺延在标签里
+                                               //   缺股本权 0), 平仓行实现 1/h̄. Full 日层 T+1C = C(D) → C(D+1) 复权, 可成交 / 顺延在标签里
   std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal] 估值 (Full): 行 t 成分 = 上一行在池 (∧ 上一行 ind_l1 = k); 市值 = 本行收盘价 (停牌带上一有效价) × 上一行总股本;
                                                //   个股收益率 = 分子 / 市值, 按权平均: 等权 = 算术平均 (= 等权组合每元的分子) / 加权 (权 = 市值) = 整体法 Σ分子 / Σ市值;
                                                //   分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 分红,

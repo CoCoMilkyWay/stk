@@ -173,8 +173,9 @@ const factor::check::Plane *XPlanes::find(std::string_view code) const {
 
 namespace {
 
-// 篮子 (YPlanes::index / val / turn): 日层门控 = D 收盘定的池 (收盘换仓), 故 D 的收益按 D−1 收盘的成员; 停牌行不更新 ⇒ 持仓带到复牌, 复牌跳空计入.
-//   pool_index 出指数 (净值引擎 fold_exit, 标签); pool_baskets 出估值 + 各篮子两权重的逐行收益 / 权和 (BasketRows); pool_turn 只用篮子 0 的逐行收益 / 权和算换手.
+// 篮子 (YPlanes::index / val / turn): 日层门控 = D 收盘定的池 (收盘换仓), 故 D 的收益按 D−1 收盘的成员.
+//   pool_index 出指数 (净值引擎 fold_exit, 标签; 可成交 / 顺延在标签里); pool_baskets 出估值 + 各篮子两权重的逐行收益 / 权和 (BasketRows, 只给换手漂移;
+//   停牌行不更新 ⇒ 权带到复牌); pool_turn 只用篮子 0 的逐行收益 / 权和算换手.
 
 // 篮子逐行 [Weight][kBaskets · T]: 成分收益 r = Σ权·r / Σ权 (无成分 0) / 权和 Σ权 (等权 = 成分数)
 struct BasketRows {

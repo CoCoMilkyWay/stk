@@ -8,7 +8,7 @@
 //   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各金额段 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改 fixed_impact 都只是切片
 //   (UI 持锁派生 / 现算), 不发请求, 零延时
 // 下面 2×2 四图:
-//   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的复利净值 − 1 (InspectResult::nav, 净值引擎 fold_exit: 每行开 1/h 一批,
+//   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的复利净值 − 1 (InspectResult::nav, 净值引擎 fold_exit: 每行开 1/h̄ 一批,
 //        收益在平仓行实现; 可成交 / 顺延在标签里; 控件行 分层 选 超额 e = lv − mkt | 绝对 lv). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
 //        图例: 顶底 LS = HoldStat 的 LS 年化 / Sharpe (与看板同一份), 尾部 LS = 全段几何年化 + 日收益年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
 //        尾部 (InspectService TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
@@ -35,8 +35,8 @@
 //   右下 期限结构: 全部持有期 (1m … T+3C) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部金额段) 一次画全, 图例可点切, 默认只显 LS. 口径 = 全库全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
 //        净线 <amt>w = 毛 − leg_sign(腿) · 该腿该持有期的均摊换手成本 (L 线下移 / S 线按做多超额画, 空腿付成本 → 上移; LS = net_ls_period.
-//        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_rows: 只有两腿的组的新进者 (前一批不在该组) 付 lb_cost_{buy,sell}_<amt>w
-//        + Config::fixed_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
+//        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_rows: 两腿按 Δw, 增仓 Δw⁺ 付 lb_cost_{buy,sell}_<amt>w, 平仓量付
+//        Config::fixed_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
 //        Inspect 算过用算的, 没算过用 Factors 表里 (stat: 毛 + 各金额段成本, 同一份 CostTier) 的, 所以进页即有
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
 //   即开算, 不等切页; 缓存命中只补特征); Compute 按钮 = 弃缓存整体重读.
@@ -116,11 +116,13 @@ struct InspectUIState {
   int kline_days_applied = -1;               // x 域已应用的日数 (变了才复位视野)
   size_t kline_last_pub_days = ~0ull;        // 上次 y 贴合时的已发布日数 (换代 / 前缀增长 → 按当前 x 窗口重贴)
   uint8_t kline_shown = 0xFF;                // 上次 y 贴合时的指数线图例显隐位 (开关图例 → 重贴)
+  int kline_sel = -1;                        // 上次 y 贴合时的 Hold (derived_sel; 换 Hold → 池指数换线 → 重贴)
   double kline_x_lo = 0.0, kline_x_hi = 0.0; // 上帧 x 视野 (y 贴合只看窗口内的蜡烛)
-  // 滚动重锚指数线 (键: 代 / 已发布点数 / 派生 epoch 变才重算; 只用已发布前缀)
+  // 滚动重锚指数线 (键: 代 / 已发布点数 / 派生 epoch / Hold 变才重算; 只用已发布前缀)
   uint32_t ref_gen = ~0u;
   size_t ref_pts = ~0ull;
   uint64_t ref_epoch = ~0ull;
+  int ref_sel = -1;
   int ref_t0 = 0, ref_t1 = 0;  // 定义域 [t0, t1): t0 = 首根有效蜡烛 + L, t1 = 已发布日数 × kline_seg
   std::vector<float> ref_line; // [T], 定义域外无意义
 };

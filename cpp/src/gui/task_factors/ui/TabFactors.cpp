@@ -456,7 +456,7 @@ constexpr Metric kMetrics[] = {
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
     {Group::Shape, "turn", "turn", "年化换手 = (1 − rAC) × 每年期数", "[0, ∞)", "越小", "%.0f",
      [](const HS &h, const FR &) { return factor::stat::turnover_annual(h); }, line(1000, 100), true},
-    {Group::LS, "LS%", "LS%", "年化真实收益 % (不触发记 0)", "(-∞, ∞)", "越大", "%+.1f",
+    {Group::LS, "LS%", "LS%", "满仓年化真实收益 % (不触发记 0; 每批 1/h̄, 全日平均满仓)", "(-∞, ∞)", "越大", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
     {Group::LS, "SR", "SR", "年化真实 Sharpe (不触发记 0)", "(-∞, ∞)", "越大", "%+.2f",
      [](const HS &h, const FR &) { return factor::stat::sharpe_of(h); }, line(5, 10)},

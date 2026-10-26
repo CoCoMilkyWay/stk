@@ -217,8 +217,8 @@ struct StatScope {
   double n_full = 0.0;     // 满仓一腿只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
 // 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
-// 两腿按真实换手扣, 每 (t, h) 行只有新进者 (前一批不在该组) 付建仓冲击 + fixed_impact; 均摊成本 cost(腿) 随 h 变 (h 越长留仓越多).
-// 买入冲击按 Config::max_impact 封顶后进 (装载时; 池内恒有限, 特征层不产 NaN).
+// 两腿按 Δw 扣: 增仓 Δw⁺ 付建仓冲击, 平仓量付 fixed_impact (同一价点交接只算差额); 均摊成本 cost(腿) 随 h 变.
+// 买入冲击按 Config::max_impact 封顶后进 (装载时; 标签有效格恒有限, 建仓作废格特征层 NaN).
 // Run 每因子每金额段都攒 (落 stat.costs), Inspect 期限结构净线从它算
 struct CostTier {
   int amt = 0;                                            // 万 (= FeatureTable::costs[c].key)

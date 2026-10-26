@@ -283,40 +283,14 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     for (const size_t i : di)
       ++n_act[i];
 
-  // 仓位 (全段): 日均仓位 (行末仓位线 kCurveExpo 逐日均值) 的 均 / 峰; 组合 = 当日各因子仓位按同一份 1 / n_act 加权
-  const auto day_expo = [](const FactorCurve &f) {
-    const size_t S = static_cast<size_t>(f.seg);
-    const float *e = f.nav_at(kCurveExpo);
-    std::vector<double> o(f.dates.size(), 0.0);
-    for (size_t dd = 0; dd < o.size(); ++dd) {
-      for (size_t t = dd * S; t < (dd + 1) * S; ++t)
-        o[dd] += e[t];
-      o[dd] /= static_cast<double>(S);
-    }
-    return o;
-  };
-  const auto expo_text = [](const std::vector<double> &e) {
-    double s = 0.0, m = 0.0;
-    for (const double x : e)
-      s += x, m = std::max(m, x);
-    char b[48];
-    std::snprintf(b, sizeof(b), "仓位 均%.0f%% 峰%.0f%%", e.empty() ? 0.0 : 100.0 * s / static_cast<double>(e.size()), 100.0 * m);
-    return std::string(b);
-  };
-  std::vector<double> combo_expo(d.dates.size(), 0.0);
   std::vector<Inc> shares; // [因子] 份额流
   for (size_t q = 0; q < fc.size(); ++q) {
     const FactorCurve &f = *fc[q];
     const std::vector<size_t> &di = dix[q];
-    const std::vector<double> fe = day_expo(f);
-    assert(fe.size() == di.size());
-    for (size_t k = 0; k < di.size(); ++k)
-      combo_expo[di[k]] += fe[k] / n_act[di[k]];
     PortfolioFactor pf;
     pf.id = its[q]->e.key();
     pf.en = std::filesystem::path(its[q]->e.file).stem().string();
     pf.note = f.amt > 0 ? std::to_string(f.amt) + "w" : std::string("固定");
-    pf.expo = expo_text(fe);
     pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f.hold);
     pf.c = curve_of(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen) - kStartDx);
     pf.item = *its[q];
@@ -329,7 +303,6 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     s.id = std::string("pf_strat") + kImpactId[i];
     s.en = name, s.cn = kImpactName[i];
     s.tag = name + kImpactTag[i];
-    s.note = expo_text(combo_expo);
     s.on = i == kImpactNet; // 默认只显有冲击
     if (!d.dates.empty())
       s.c = curve_of(sum, i, x_of(0, kOpen) - kStartDx);
@@ -739,7 +712,7 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
   ImGui::TextDisabled("有冲击");
   if (ImGui::IsItemHovered())
     tip("换手成本 = 各因子自己的最小冲击段, 不可选\n"
-        "• 每行开 1/h 净值一批, 换手按 Δw: 上一批平仓与本批建仓同一价格点时只交接差额 (留仓不成交);\n"
+        "• 每行开 1/h̄ 净值一批 (h̄ = 平均持有行数, 全日平均满仓), 换手按 Δw: 上一批平仓与本批建仓同一价格点时只交接差额 (留仓不成交);\n"
         "  建仓不可两向成交的作废, 平仓不可成交的顺延 (都在标签里)\n"
         "• Lob 层: 增仓 × 最小金额段冲击 (封顶 max_impact) + 平仓量 × 固定冲击 %.1f bp\n"
         "• Bar 层 (无冲击段): 增仓量 / 平仓量都按固定冲击 %.1f bp\n"
@@ -809,7 +782,7 @@ bool pages() {
     const bool nav_open = ImGui::BeginTabItem("NAV");
     if (ImGui::IsItemHovered())
       tip("NAV = 资金曲线 (Net Asset Value, 净值)\n"
-          "• 橙线 = 本组合 G20 多头: 各因子独立回测 (分批 1/h, 能成交才成交) 的逐行增量等权聚合, 扣换手冲击 (细线 = 无冲击); 图例尾 = 全段仓位\n"
+          "• 橙线 = 本组合 G20 多头: 各因子独立回测 (分批 1/h̄, 全日平均满仓; 能成交才成交) 的逐行增量等权聚合, 扣换手冲击 (细线 = 无冲击)\n"
           "• 池指数线 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只显组合里因子所在的池\n"
           "• 右侧勾选 = 单因子各自的 G20 多头净值\n"
           "• 底部区间条选日段: 各线在区间起点归一 = 1, 年化按区间复利");
@@ -1077,15 +1050,14 @@ float end_table() {
   return t->ColumnsAutoFitWidth + ImGui::GetStyle().ScrollbarSize;
 }
 
-// ---- NAV 右图例: 单因子 G20 多头表格 (默认全关), 勾选 = 主图画该线; 列 = 池 / 层 / 持有期 / 因子 / 冲击 / 仓位 / 区间年化 ----
+// ---- NAV 右图例: 单因子 G20 多头表格 (默认全关), 勾选 = 主图画该线; 列 = 池 / 层 / 持有期 / 因子 / 冲击 / 区间年化 ----
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v) {
   ImGui::TextColored(kHead, "单因子 G20 多头");
   if (ImGui::IsItemHovered())
     tip("勾选 = 主图画该因子单独的 G20 多头净值\n"
         "• 带它自己的冲击 (冲击列: Lob 最小金额段 / Bar 固定冲击)\n"
-        "• 仓位列 = 全段日均仓位的均值 / 峰值 (组内不足满仓 / 建仓作废 → < 100%%)\n"
         "• 与组合同一区间起点归一; 年化按区间复利");
-  if (!ImGui::BeginTable("##pf_nav_tbl", 8, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV))
+  if (!ImGui::BeginTable("##pf_nav_tbl", 7, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV))
     return;
   ImGui::TableSetupScrollFreeze(0, 1);
   ImGui::TableSetupColumn("##on");
@@ -1094,7 +1066,6 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TableSetupColumn("持有");
   ImGui::TableSetupColumn("因子", ImGuiTableColumnFlags_WidthStretch);
   ImGui::TableSetupColumn("冲击");
-  ImGui::TableSetupColumn("仓位");
   ImGui::TableSetupColumn("年化");
   ImGui::TableHeadersRow();
   for (size_t i = 0; i < d.factors.size(); ++i) {
@@ -1123,8 +1094,6 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TableSetColumnIndex(5);
     ImGui::TextUnformatted(f.note.c_str());
     ImGui::TableSetColumnIndex(6);
-    ImGui::TextUnformatted(f.expo.c_str());
-    ImGui::TableSetColumnIndex(7);
     ImGui::Text("%+6.1f%%", v.factors[i].ann);
   }
   ui.legend_w[0] = end_table();

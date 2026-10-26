@@ -677,7 +677,7 @@ void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub
 
 // K 线 (右上的下图): 选中资产沿全部交易日的分钟 OHLC, 画 KlineService 已发布前缀 (gen 配对; 换代在途照画空图, 轴不撤). 每根色 = 该刻 R(t)
 // 组色 (ui.col_r; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
-// 视野: x 域 = 日数 × seg, 只在日数变时复位 (换资产不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长 / 图例开关时按**当前 x 窗口内**的已发布蜡烛
+// 视野: x 域 = 日数 × seg, 只在日数变时复位 (换资产不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长 / 图例开关 / 换 Hold (池指数换线) 时按**当前 x 窗口内**的已发布蜡烛
 // + 显示中的指数线重定 (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 换资产后窗口里的新价位自然贴合, 之后不打扰.
 // 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × seg): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
 // 染淡色竖带. 叠加 池等权指数 pool_idx [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚; 再叠加滚动重锚指数线 (derive_ref, 键变才重算).
@@ -721,7 +721,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
     };
     shown = static_cast<uint8_t>((on(kIdxName, false) ? 1 : 0) | (on(kRefName, true) ? 2 : 0));
   }
-  if (n > 0 && (ui.kline_last_pub_days != pub_days || ui.kline_shown != shown)) { // y 贴合当前 x 窗口内的已发布蜡烛 + 显示中的指数线
+  if (n > 0 && (ui.kline_last_pub_days != pub_days || ui.kline_shown != shown || ui.kline_sel != ui.derived_sel)) { // y 贴合当前 x 窗口内的已发布蜡烛 + 显示中的指数线
     const int w0 = static_cast<int>(std::lower_bound(xs, xs + n, ui.kline_x_lo) - xs), w1 = static_cast<int>(std::upper_bound(xs, xs + n, ui.kline_x_hi) - xs);
     if (w1 > w0) {
       double lo = ks.low[static_cast<size_t>(w0)], hi = ks.high[static_cast<size_t>(w0)];
@@ -741,6 +741,8 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
       ImPlot::SetupAxisLimits(ImAxis_Y1, lo - m, hi + m, ImPlotCond_Always);
       ui.kline_last_pub_days = pub_days;
       ui.kline_shown = shown;
+      if (!(shown & 2) || ui.ref_sel == ui.derived_sel) // 换 Hold 的那帧滚动重锚线还是旧的 (本帧稍后重算) → 下帧再贴一次
+        ui.kline_sel = ui.derived_sel;
     }
   }
   ImPlot::SetupFinish();
@@ -779,9 +781,9 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
       ImPlot::PlotLineG(kIdxName, rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
     }
   }
-  // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (pool_idx 已换)
-  if (ready && (ui.ref_gen != ui.kline_gen || ui.ref_pts != pub_pts || ui.ref_epoch != ui.derived_epoch)) {
-    ui.ref_gen = ui.kline_gen, ui.ref_pts = pub_pts, ui.ref_epoch = ui.derived_epoch;
+  // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch / Hold) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (pool_idx 已换)
+  if (ready && (ui.ref_gen != ui.kline_gen || ui.ref_pts != pub_pts || ui.ref_epoch != ui.derived_epoch || ui.ref_sel != ui.derived_sel)) {
+    ui.ref_gen = ui.kline_gen, ui.ref_pts = pub_pts, ui.ref_epoch = ui.derived_epoch, ui.ref_sel = ui.derived_sel;
     derive_ref(ks, S, pub_days, pub_pts, pool_idx, ui.ref_t0, ui.ref_t1, ui.ref_line);
   }
   const bool ref_ok = ready && ui.ref_gen == ui.kline_gen && ui.ref_t1 > ui.ref_t0;
@@ -1052,7 +1054,7 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
 // 三组 × (毛 + 全部金额段) 一次画全 (金额段越大线越细越淡), 成本只在这张图出现; L / S 默认隐藏, 点图例切 (图例项 = 组 × 金额段).
 // 口径 = Stat 契约【持仓口径】的每期真实收益 (HoldStat::grp = Σ 组持仓收益 / 全部行; ls_period = Σ ls / 全部行, 不触发行记 0).
 // 净线 = 毛二级 − leg_sign(腿) · 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; L / S 按做多超额画, 空腿付成本 = 线上移;
-// LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (金额段, h) 一份 CostAcc.
+// LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是腿成员 ∧ 标签有效格 (与组计数同口径)
 // hs[n_hold] 毛二级; costs[n_cost] 可空 (旧文件 stat 无 costs). n < 3 的持有期不作节点.
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的单边账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 (LS × 2 腿) = 画的年化
@@ -1113,7 +1115,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       for (int i = 0; i < n_hold; ++i) {
         if (hs[i].n < 3)
           continue;
-        const double ann = 100.0 * factor::stat::periods_per_year(hs[i]); // 每期均值 × 每年期数 → 年化 %, 跨持有期可比
+        const double ann = 100.0 * factor::stat::span_per_year(hs[i]); // 每期均值 × 每年满仓轮数 → 满仓年化 %, 跨持有期可比
         xk.push_back(i);
         yk.push_back(value(c, q, i) * ann);
       }
@@ -1151,7 +1153,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     const factor::stat::HoldStat &h = hs[pi];
     const bool ls = pc == kLegs;
     const double gross = ls ? 0.5 * factor::stat::ls_period(h) : h.grp[leg_group(pc)];
-    const double legs = ls ? 2.0 : 1.0, sign = ls ? 1.0 : leg_sign(pc), ppy = factor::stat::periods_per_year(h);
+    const double legs = ls ? 2.0 : 1.0, sign = ls ? 1.0 : leg_sign(pc), ppy = factor::stat::span_per_year(h);
     const char *tier = tier_names[static_cast<size_t>(pq)].c_str();
     // 一行一项, 三列定位 (SameLine 绝对 x, 不靠 printf 补空格 —— 中文字节宽 ≠ 字形宽): 名目 | 数值 | 注
     constexpr float kXVal = 90.f, kXNote = 230.f;

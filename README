@@ -189,7 +189,7 @@ stk/
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (各服务共用): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
 │   │   │       │   │                                 #    · 标签 / 成本恒取同池本层列 (同行); n_full_of: 满仓只数; cost_tiers: 换手成本 (Run / Inspect 同一份)
 │   │   │       │   │                                 #    · 篮子 (池整体 + 行业) 指数 / 估值 / 换手装完即算 (Pool 档每持有期一条; Full 档日层 T+1C)
-│   │   │       │   │                                 #    · fold_exit = 唯一净值引擎: Stat 逐行批收益在平仓行实现 1/h, 按日求和, compound 复利
+│   │   │       │   │                                 #    · fold_exit = 唯一净值引擎: Stat 逐行批收益在平仓行实现 1/h̄ (全日平均满仓), 按日求和, compound 复利
 │   │   │       │   │                                 #      (Inspect 分层 / Portfolio 因子线 / 池篮子指数同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】)
 │   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎: 作用域块上走 DAG + Stat / Search 会话, CPU / GPU 同一接口
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
@@ -254,7 +254,7 @@ stk/
 │   │   │   │   │                                           #    · 并列均秩 + 整数 Pearson ⇒ CPU ↔ GPU 逐位一致
 │   │   │   │   ├── Contract.hpp                            # 🧬   语义契约: Row / HoldStat + 可合并累加器 + 换手成本 (Cost / CostAcc / cost_row / net_ls)
 │   │   │   │   │                                           #      · 【协议表 1】持有期 (1m 5m 15m 30m 60m close T+1O T+1C T+2C T+3C) → 开仓 / 清仓 / 价
-│   │   │   │   │                                           #      · 【协议表 2】开关仓策略: 可成交判据 / 建仓作废 / 平仓顺延 / 仓位 1/h / 换手 Δw / 成本 / 净值
+│   │   │   │   │                                           #      · 【协议表 2】开关仓策略: 可成交判据 / 建仓作废 / 平仓顺延 / 仓位 1/h̄ / 换手 Δw / 成本 / 净值
 │   │   │   │   │                                           #      · 成本口径: Δw (同一价点才交接); 尾部行 (tail_masked) 不开仓不攒; Run / Inspect / Portfolio 同一份, Search 不看
 │   │   │   │   ├── Host.hpp                                # 🧬   行核宿主版: rank_row / row_stat / cost_row (Stat / Search 的 CPU 后端共用)
 │   │   │   │   ├── Dev.cuh                                 # 🧬   行核设备版: 与 Host.hpp 同名同参序 (Stat / Search 的 GPU 后端共用)

@@ -57,20 +57,22 @@
 //   【持有期键 hold】int, 与 features 层 LabelHold 的列名同源 (lb_<side>_<name>); 键的单位是**分钟**, 与因子所在层无关.
 //     层上合法 (hold_ok): 分钟型 n 是行长 N 的整数倍且首行 minute(0) + n ≤ kLastAnchorRow (尾部不吞整段); close 要求 S > 1
 //       (日层的行就在收盘, 即建即平); 日级型各层皆可.
-//     折算 / lag / 年化用的有效行数 h = hold_rows(hold, geo): 分钟型 = n / N; close 与 T+1 = S (同日各行共一个 exit →
-//     每日一个独立样本); T+N = N · S (相邻 N 日的窗口重叠). L_1min 上 = 分钟数.
+//     独立样本口径的行数 h = hold_rows(hold, geo) (lag / 交接 / 重叠折算 / Sharpe 与换手的年化): 分钟型 = n / N; close 与 T+1 = S
+//     (同日各行共一个 exit → 每日一个独立样本); T+N = N · S (相邻 N 日的窗口重叠). L_1min 上 = 分钟数.
+//     资金口径的行数 h̄ = hold_span(hold, geo) (净值每批资金 / 成本 / 均值超额的年化): 一日各开仓行的在持行数 (建仓行起, 平仓行
+//     hold_exit_row 止) 之和 / S, 尾部行不开仓不计 ⇒ 全日平均仓位恰为 1 (盘中在 1 上下摆); 日层 h̄ = h.
 //
 //   【协议表 1: 持有期 → 开仓 / 清仓 / 价】(features 标签 / Stat / 净值 / UI hold_desc 同一份; 改口径先改这里, 标签 kLabelSemver +1)
 //     价点: E    = 行末分钟价点. Lob 层 (min) = 锚点 (分钟末) + LABEL_DELAY_SECONDS 的可成交盘口中间价;
 //                  Bar 层 (5min..60min) = 之后首个有成交连续竞价分钟的 VWAP; 锚点后再无连续竞价 (≥ 14:57) → C(D)
 //           C(D) = D 日收盘集合竞价撮合价 (末笔成交);  O(D) = D 日 09:25 开盘撮合价 (无撮合 → 首个有成交连续竞价 bar 的 open)
-//     | 显示 (hold_name) | 列名 token | 键            | 适用层            | 开仓                     | 清仓                       | h (hold_rows) |
-//     |------------------|------------|---------------|-------------------|--------------------------|----------------------------|---------------|
-//     | 1m               | 1m         | 1             | min               | C(行) @ E                | C(行)+1m @ E               | n / N         |
-//     | 5m 15m 30m 60m   | <n>m       | n             | 行长 ≤ n 的分钟层 | C(行) @ E                | C(行)+n @ E (过 14:57 掩)  | n / N         |
-//     | close            | close      | kHoldClose    | 非 day            | C(行) @ E                | C(D) @ 收盘撮合            | S             |
-//     | T+1O             | t1o        | hold_open(1)  | 全部              | C(行) @ E; day 层 C(D)   | O(D+1) @ 开盘撮合          | S             |
-//     | T+1C T+2C T+3C   | t<N>c      | hold_close(N) | 全部              | C(行) @ E; day 层 C(D)   | C(D+N) @ 收盘撮合          | N · S         |
+//     | 显示 (hold_name) | 列名 token | 键            | 适用层            | 开仓                     | 清仓                       | h (hold_rows) | h̄ (hold_span; J = 日内开仓行数) |
+//     |------------------|------------|---------------|-------------------|--------------------------|----------------------------|---------------|---------------------------------|
+//     | 1m               | 1m         | 1             | min               | C(行) @ E                | C(行)+1m @ E               | n / N         | n / N · J / S                   |
+//     | 5m 15m 30m 60m   | <n>m       | n             | 行长 ≤ n 的分钟层 | C(行) @ E                | C(行)+n @ E (过 14:57 掩)  | n / N         | n / N · J / S                   |
+//     | close            | close      | kHoldClose    | 非 day            | C(行) @ E                | C(D) @ 收盘撮合            | S             | Σ_{j<J} (S − 1 − j) / S         |
+//     | T+1O             | t1o        | hold_open(1)  | 全部              | C(行) @ E; day 层 C(D)   | O(D+1) @ 开盘撮合          | S             | (S + 1) / 2                     |
+//     | T+1C T+2C T+3C   | t<N>c      | hold_close(N) | 全部              | C(行) @ E; day 层 C(D)   | C(D+N) @ 收盘撮合          | N · S         | N · S + (S − 1) / 2             |
 //
 //   【协议表 2: 开关仓策略】(可成交 / 作废 / 顺延全在 features 标签里定, 本契约与全部消费端只读标签, 不另读可成交列)
 //     | 环节       | 规则                                                                                                      | 落在          |
@@ -81,22 +83,23 @@
 //     | 平仓       | 名义价点该腿不可成交 (多腿卖不出 / 空腿买不回) 或名义日停牌 → 顺延到之后首个该腿可成交价点                | 标签          |
 //     |            |   (分钟级 / 日级同一规则, 可跨日); 行所在日起 8 个交易日 (PEND_DAYS − 1) 仍未平 → 最近收盘价结清          |               |
 //     | 尾部       | 分钟型 / 收盘型 minute(t) + n > kLastAnchorRow 的行不开仓 (tail_masked)                                   | Stat          |
-//     | 仓位       | 每行一批, 资金 1/h, 批内每只 1 / max(只数, cap) (【持仓口径】); 目标仓位 w_t = (1/h) Σ_{k<h} s_{t−k}      | Stat / 净值   |
+//     | 仓位       | 每行一批, 资金 1/h̄, 批内每只 1 / max(只数, cap) (【持仓口径】); 仓位 = 在持各批之和, 全日平均恰为 1       | Stat / 净值   |
+//     |            |   (盘中在 1 上下摆; 组内不足 cap / 建仓作废 → 少于 1); 不显示, 只给年化 / 净值定满仓口径                  |               |
 //     | 换手       | Δw 逐格 (微调照计); 只在行 t 建仓与行 t−h 平仓同一价点时交接 (hold_nets: 只交易差额), 否则整建整平        | 【换手成本】  |
 //     | 成本       | 增仓 Δw⁺ × 建仓冲击 (Lob 金额段, 买入封顶 max_impact) + 平仓量 × fixed_impact; 无金额段 (Bar) 增仓量也付  | 【换手成本】  |
 //     |            |   fixed_impact (Portfolio); 只在扣净线时扣, 标签恒毛                                                      |               |
-//     | 净值       | 行 t 的批收益在 hold_exit_row 实现 (顺延不改实现行) × 1/h, 日内求和, 跨日复利; 显示的 LS / SR 取 HoldStat | 【二级】净值  |
+//     | 净值       | 行 t 的批收益在 hold_exit_row 实现 (顺延不改实现行) × 1/h̄, 日内求和, 跨日复利; 显示的 LS / SR 取 HoldStat | 【二级】净值  |
 //     | 复权       | 标签价 × 当日复权比: 跨日收益不含除权缺口                                                                 | 标签          |
 //
 //   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行 (含尾部 / 不 ok, 整张量 = T):
 //     ric / rac / ls  三个逐行量沿 t 的同一套矩 (Moments, 同一个累加器 MomAcc; ric / ls 用 ok 行, rac 用 ok_rac 行):
 //       mean / sd (ddof=1) / ir = mean/sd / pos = >0 占比 / skew, kurt (总体矩, 超额峰度)
 //       t = ir · √(n/h): 持有期重叠 (相邻 h 行是同一段收益 / 同一段 lag, h = hold_rows), 有效样本按 n/h 折算, 不然 t 虚高 √h 倍
-//     真实收益 (派生, 不落 HoldStat): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all, ls_annual = × 每年期数,
-//       sharpe_of = 补 0 后的 mean / sd × √每年期数 (由 n / ls.mean / ls.sd 还原 Σ / Σ², ann_sharpe). 因子表 / Inspect / Portfolio / Search 同一份
-//     净值 (Inspect / Portfolio 曲线, 逐行结果按日折叠): 目标仓位 w_t = (1/h) Σ_{k<h} s_{t−k} (s = 行 t 的信号篮子, 每批资金 1/h),
-//       行 t 的批收益在其平仓行实现 (hold_exit_row): 日收益 R_D = (1/h) Σ_{exit_day(t) = D} r_t (r = Row 的 ls / grp, 不 ok 记 0),
-//       日内求和, 跨日复利. 沿全期 Σ R_D = Σr / h, 算术年化 = ls_annual (同一份收益, 只差落日); 显示的 LS / SR 一律取 HoldStat.
+//     真实收益 (派生, 不落 HoldStat): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all, ls_annual = × 每年满仓轮数 (span_per_year, 满仓一年),
+//       sharpe_of = 补 0 后的 mean / sd × √每年独立期数 (periods_per_year; 由 n / ls.mean / ls.sd 还原 Σ / Σ², ann_sharpe). 因子表 / Inspect / Portfolio / Search 同一份
+//     净值 (Inspect / Portfolio 曲线, 逐行结果按日折叠): 每行一批, 资金 1/h̄ (h̄ = hold_span),
+//       行 t 的批收益在其平仓行实现 (hold_exit_row): 日收益 R_D = (1/h̄) Σ_{exit_day(t) = D} r_t (r = Row 的 ls / grp, 不 ok 记 0),
+//       日内求和, 跨日复利. 沿全期 Σ R_D = Σr / h̄, 算术年化 = ls_annual (同一份收益, 只差落日); 显示的 LS / SR 一律取 HoldStat.
 //     beta   ls 对 mkt[kLong] 的 OLS 斜率 (alpha 略: beta ≈ 0 时 alpha ≈ ls.mean)
 //     grp[k] 各组每行持仓收益沿 t 的均值 (Σ grp / n_all, 不 ok 行记 0); mono = Spearman(组号, grp[k])
 //     n_trig 触发行数 = ok 行里至少一腿非空; trigger_of = n_trig / n (诊断)
@@ -115,7 +118,7 @@
 //     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付固定冲击).
 //     建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额段, 买入已按 Config::max_impact 封顶; 腿成员格恒有限, 装载层断言) + 平仓固定冲击 fixed_impact.
 //     每 h 一份 CostAcc 沿 t 求和; 每期成本 cost(腿) = (Σ Δ⁺·imp + Σ 平仓量 · fixed_impact) / n_all (与 ls_period 同分母). 尾部行不攒.
-//     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
+//     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × span_per_year (满仓一年).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
 //     Labels (持有期键 hd 与其标签 l[] 同处, 带满仓 cap) · Span (块形 T × A + 层每段行数 seg + 分块流式 t0_abs / t_lo; 整张量两者为 0).
@@ -189,7 +192,7 @@ inline constexpr bool hold_ok(int hold, const Geo &g) {
     return hold >= 1 && hold % g.N == 0 && g.minute(0) + hold <= kLastAnchorRow;
   return hold != kHoldClose || g.S > 1;
 }
-// 折算 / lag / 年化用的有效行数 (层 g 上): 分钟型 = n / N; close / T+1 = 一段 S 行; T+N = N 段
+// 独立样本口径的行数 h (层 g 上; lag / 交接 / 重叠折算 / Sharpe 与换手的年化): 分钟型 = n / N; close / T+1 = 一段 S 行; T+N = N 段. 资金口径见 hold_span
 FACTOR_HD inline constexpr int hold_rows(int hold, const Geo &g) {
   if (hold_intraday(hold))
     return hold / g.N;
@@ -308,9 +311,13 @@ struct HoldStat {
   float leg_n = 0.f;       // 平均每触发行一腿成员数 (两腿组计数的平均; util_of 的分子)
   float grp[kGroups] = {}; // 组每行持仓收益的均值 (Σ / n_all)
 };
-// 每年持有期数 = kDaysPerYear · S / h (一年 242 个交易日, 一天 S 行, h = hold_rows): 年化 (sharpe / 换手 / 均值超额) 统一走这一个
+// 每年独立期数 = kDaysPerYear · S / h (一年 242 个交易日, 一天 S 行, h = hold_rows): 独立样本口径的年化 (Sharpe 的 √期数 / 换手) 走这一个
 inline constexpr double periods_per_year(int hold, int seg) { return static_cast<double>(kDaysPerYear) * seg / hold_rows(hold, geo_of(seg)); }
 inline double periods_per_year(const HoldStat &s) { return periods_per_year(s.hold, s.seg); }
+inline double hold_span(int hold, const Geo &g);
+// 每年满仓轮数 = kDaysPerYear · S / h̄ (h̄ = hold_span): 金额口径的年化 (均值超额 / 均摊成本 = 满仓一年) 走这一个
+inline double span_per_year(int hold, int seg) { return static_cast<double>(kDaysPerYear) * seg / hold_span(hold, geo_of(seg)); }
+inline double span_per_year(const HoldStat &s) { return span_per_year(s.hold, s.seg); }
 // 真实收益 (见文件头【二级 HoldStat】): m = n 个 ok 行的矩, 其余 n_all − n 行记 0. 年化均值 = Σ / n_all × 每年期数 ppy
 inline double ann_mean(const Moments &m, int n, int n_all, double ppy) { return n_all > 0 ? static_cast<double>(m.mean) * n / n_all * ppy : 0.0; }
 // 补 0 后的年化 Sharpe: 由 (n, mean, sd) 还原 Σ = n·mean, Σ² = (n−1)·sd² + n·mean², 在 n_all 行上重算 mean / sd (ddof=1)
@@ -324,7 +331,7 @@ inline double ann_sharpe(const Moments &m, int n, int n_all, double ppy) {
 }
 // LS 每期真实收益 / 年化 / 年化 Sharpe. 派生量, 不落 HoldStat / 文件
 inline double ls_period(const HoldStat &s) { return s.n_all > 0 ? static_cast<double>(s.ls.mean) * s.n / s.n_all : 0.0; }
-inline double ls_annual(const HoldStat &s) { return ann_mean(s.ls, s.n, s.n_all, periods_per_year(s)); }
+inline double ls_annual(const HoldStat &s) { return ann_mean(s.ls, s.n, s.n_all, span_per_year(s)); }
 inline double sharpe_of(const HoldStat &s) { return ann_sharpe(s.ls, s.n, s.n_all, periods_per_year(s)); }
 // 触发率 = 触发行 / ok 行; n = 0 → 0 (诊断)
 inline double trigger_of(const HoldStat &s) { return s.n > 0 ? static_cast<double>(s.n_trig) / s.n : 0.0; }
@@ -387,6 +394,14 @@ inline int hold_exit_row(int t, int hold, const Geo &g) {
   const int d = t / g.S + hold_days(hold);
   return hold_is_open(hold) ? d * g.S : d * g.S + g.S - 1;
 }
+// 资金口径行数 h̄ (见文件头【持有期键】): 一日各开仓行的在持行数 (建仓行起, hold_exit_row 止; 尾部行不开仓不计) 之和 / S
+inline double hold_span(int hold, const Geo &g) {
+  int s = 0;
+  for (int j = 0; j < g.S; ++j)
+    s += tail_masked(j, hold, g) ? 0 : hold_exit_row(j, hold, g) - j;
+  assert(s > 0);
+  return static_cast<double>(s) / g.S;
+}
 
 // ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线共用) ----
 
@@ -397,7 +412,7 @@ struct Cost {
 };
 
 // 腿码 (两后端 / Inspect 同一份): r16 → 顶组 kLcLong / 底组 kLcShort / 其他组 kLcMid / rank 无效 kLcVoid. 前两个与 Leg 同值:
-// 腿成员 = lc ∈ {kLong, kShort}; 腿 l 的新进者 = 前一批腿码 ≠ l (含当时 rank 无效; 没有前一批 = 全 kLcVoid)
+// 腿成员 = lc ∈ {kLong, kShort} ∧ 该持有期标签有效位 (cost_row 逐格比本批 / 交接前一批的腿成员权)
 enum LegCode : uint8_t { kLcLong = kLong,
                          kLcShort = kShort,
                          kLcMid,
@@ -438,11 +453,11 @@ struct CostAcc {
   double entry(int l) const { return leg[l].buy > 0.0 ? leg[l].imp / leg[l].buy : 0.0; }
 };
 
-// 每期净多空 = ls_period − 两腿每期成本; 年化 = × periods_per_year (s.hold 由 finish 填)
+// 每期净多空 = ls_period − 两腿每期成本; 年化 = × span_per_year (s.hold 由 finish 填)
 inline double net_ls_period(const HoldStat &s, const CostAcc &c, double fixed_impact) {
   return ls_period(s) - c.cost(kLong, fixed_impact, s.n_all) - c.cost(kShort, fixed_impact, s.n_all);
 }
-inline double net_ls(const HoldStat &s, const CostAcc &c, double fixed_impact) { return net_ls_period(s, c, fixed_impact) * periods_per_year(s); }
+inline double net_ls(const HoldStat &s, const CostAcc &c, double fixed_impact) { return net_ls_period(s, c, fixed_impact) * span_per_year(s); }
 
 // 整数五和 + 计数 (rIC / rAC 的 Pearson 原料), 下标 s[kSn..kSxy]; 两后端同一份累加 (r16 ≤ 65534: 积 < 2³², 32 位乘后再加进 64 位)
 enum : int { kSn,
@@ -484,6 +499,8 @@ struct LegSum {
 FACTOR_HD inline double book_den(double n, double cap) { return n > cap ? n : cap; }
 // 一腿持仓收益 = Σ(标签 − 该腿基准) / max(只数, cap); 腿空 → 0
 FACTOR_HD inline double leg_excess(const LegSum &l, double base, double cap) { return (l.s - l.n * base) / book_den(l.n, cap); }
+// 超额持仓收益 → 绝对持仓收益 (组 / 尾部同式): excess + 只数 · 基准 / max(只数, cap)
+inline double book_abs(double excess, double n, double base, double cap) { return excess + n * base / book_den(n, cap); }
 // 多空 = 两腿持仓收益之和 (leg / mkt 按 [kLegs])
 FACTOR_HD inline double ls_of(const LegSum *leg, const double *mkt, double cap) {
   return leg_excess(leg[kLong], mkt[kLong], cap) + leg_excess(leg[kShort], mkt[kShort], cap);

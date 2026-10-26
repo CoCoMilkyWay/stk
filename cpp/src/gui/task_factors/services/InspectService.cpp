@@ -56,7 +56,7 @@ double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double ca
     const int l = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
     e = tr.sum[l][j], n = tr.cnt[l][j], c = cap * kTailOfGroup[j];
   }
-  return absolute ? e + n * r.mkt[kLong] / factor::stat::book_den(n, c) : e;
+  return absolute ? factor::stat::book_abs(e, n, r.mkt[kLong], c) : e;
 }
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
 struct TailExt {

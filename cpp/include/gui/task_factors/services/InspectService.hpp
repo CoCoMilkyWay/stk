@@ -15,13 +15,13 @@
 //   R  rank_x                                              → 直接秩进 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
 //                                                            之前多跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
 //   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsService.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsLoad
-//                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: t ≥ h 的行逐格比 t−h 腿码, 两腿新进者
-//                                                            累建仓冲击; 一遍 [T][A], 无排序无标签). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::fixed_impact), 全在 UI 现算
+//                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: 腿成员 = 腿码 ∧ 标签有效位, 逐格 Δw,
+//                                                            同一价点才与 t−h 交接; 一遍 [T][A], 无排序). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::fixed_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; fixed_impact 只进均摊公式, 不进请求)
 //   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all) + TailRow[H][T] (两腿组内更极端的
 //                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search),
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
-//   N  净值                                                → 每持有期 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h)
+//   N  净值                                                → 每持有期 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h̄)
 //                                                            stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛; 可成交 / 顺延在标签里)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //

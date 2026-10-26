@@ -6,7 +6,7 @@
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条前缀 (FactorsEngine factor_pass: 装载 → walk → rank_x), 再按该 hold 走
-//   Stat 逐行 (accum_rows 一级 Row + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_exit (Stat 契约【净值】: G20 多头, 每批 1/h, 平仓行实现;
+//   Stat 逐行 (accum_rows 一级 Row + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_exit (Stat 契约【净值】: G20 多头, 每批 1/h̄, 平仓行实现;
 //   可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
 //   成本按 Δw (契约【换手成本】): 有金额段 (Lob) = 增仓 Δw⁺ × 最小段买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 无段 (Bar) =
 //   增仓量 / 平仓量各付 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
@@ -90,10 +90,9 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 // ---- 结果 ----
 // 一个因子 (该 hold) 的 G20 多头出参线 (fold_exit stride 1 = 逐行; 线序 = CurveLine, 与 InspectResult::nav 同形):
 // 增量占净值; 收益记在平仓行 (hold_exit_row), 成本记在建仓行
-enum CurveLine : int { kCurvePnl,  // 毛收益
-                       kCurveImp,  // 建仓冲击
-                       kCurveFix,  // 固定冲击份数 (UI × Config::fixed_impact); 净 = pnl − imp − fix · fixed_impact
-                       kCurveExpo, // 行末仓位 (1 = 满仓)
+enum CurveLine : int { kCurvePnl, // 毛收益
+                       kCurveImp, // 建仓冲击
+                       kCurveFix, // 固定冲击份数 (UI × Config::fixed_impact); 净 = pnl − imp − fix · fixed_impact
                        kCurveLines };
 struct FactorCurve {
   std::string sig;              // 算时的 HoldJob::sig

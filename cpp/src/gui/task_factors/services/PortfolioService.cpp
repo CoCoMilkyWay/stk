@@ -305,12 +305,12 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
 
   // ---- S / Y / X / R: 单因子前缀 (factor_pass, 与 Inspect 同一份) ----
   //   Y = 同组全部 hold + 最小金额段 (组内因子共用); X 只留本因子的叶
-  //   另占: lc 1 (/ 格); Row + CostAcc + 出参线 float [kCurveLines] + 仓位差分 / 折叠 double 2 (/ 行); 收尾: 净值
+  //   另占: lc 1 (/ 格); Row + CostAcc + 出参线 float [kCurveLines] + 折叠 double 1 (/ 行); 收尾: 净值
   const std::vector<int> ck = keys_of(ft.y.costs);
   assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
   const YSpec ys{holds_of(F.holds.at(group_of(j))), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
                  IndexKind::None};
-  const double row_extra = sizeof(factor::stat::Row) + sizeof(factor::stat::CostAcc) + sizeof(float) * static_cast<double>(kCurveLines) + 2.0 * sizeof(double);
+  const double row_extra = sizeof(factor::stat::Row) + sizeof(factor::stat::CostAcc) + sizeof(float) * static_cast<double>(kCurveLines) + sizeof(double);
   FactorPass p;
   const Pass pr = factor_pass(F, j.f, PassSpec{ys, /*retain=*/true, "Portfolio", 1.0, row_extra, /*tail=*/1}, cancel_, *this, F.rx, p);
   if (pr == Pass::Empty || pr == Pass::Broken) {
@@ -328,10 +328,9 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
     ++hi;
   assert(hi < y.hd.n && "组 Y 须含本因子的持有期");
 
-  // ---- N: G20 多头 (Stat 契约【净值】/【换手成本】, 每批资金 1/h) → 逐行出参 nav = [kCurveLines][T] ----
+  // ---- N: G20 多头 (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄) → 逐行出参 nav = [kCurveLines][T] ----
   //   本 hold 一组标签: accum_rows 落一级 Row[T], cost_rows 落逐行换手 (最小金额段; 无段 C = 0 只出量).
-  //   pnl = G20 绝对收益 fold_exit 到平仓行; imp = 建仓冲击 / h, fix = (平仓量 (+ 无段时增仓量)) / h, 记在建仓行 (不交接批的平仓量一并);
-  //   expo = 在持各批 G20 仓位之和 / h (建仓行起, 平仓行止)
+  //   pnl = G20 绝对收益 fold_exit 到平仓行; imp = 建仓冲击 / h̄, fix = (平仓量 (+ 无段时增仓量)) / h̄, 记在建仓行 (不交接批的平仓量一并)
   {
     using factor::stat::kLong;
     factor::cpu::stat::StatSession &ss = F.E.stat_session();
@@ -339,7 +338,8 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
     L1.hd = holds_of({j.hold});
     L1.l[0] = ss.L.l[hi];
     L1.cap = ss.L.cap;
-    const int T = y.sh.T, G = factor::stat::leg_group(kLong), h = factor::stat::hold_rows(j.hold, ss.s.g);
+    const int T = y.sh.T, G = factor::stat::leg_group(kLong);
+    const double h = factor::stat::hold_span(j.hold, ss.s.g);
     F.rows.assign(static_cast<size_t>(T), factor::stat::Row{});
     factor::stat::Accum acc[1];
     factor::cpu::stat::accum_rows(F.ex, ss.s, F.rx.data(), L1, ss.w, acc, factor::cpu::stat::LandRows{F.rows.data(), T});
@@ -354,23 +354,16 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
     BookLines pnl;
     fold_exit(F.ex, j.hold, y.sh.seg, T, 1, 1, [&](int, int t) {
                 const factor::stat::Row &r = F.rows[static_cast<size_t>(t)];
-                return r.ok ? r.grp[G] + r.cnt[G] * static_cast<double>(r.mkt[kLong]) / factor::stat::book_den(r.cnt[G], L1.cap) : 0.0; }, pnl);
+                return r.ok ? factor::stat::book_abs(r.grp[G], r.cnt[G], r.mkt[kLong], L1.cap) : 0.0; }, pnl);
     out.nav.n = kCurveLines, out.nav.P = T;
     out.nav.v.assign(static_cast<size_t>(kCurveLines) * T, 0.f);
     std::copy(pnl.v.begin(), pnl.v.end(), out.nav.v.begin() + static_cast<long>(kCurvePnl) * T);
-    float *imp = out.nav.v.data() + static_cast<size_t>(kCurveImp) * T, *fix = out.nav.v.data() + static_cast<size_t>(kCurveFix) * T,
-          *expo = out.nav.v.data() + static_cast<size_t>(kCurveExpo) * T;
-    std::vector<double> de(static_cast<size_t>(T) + 1, 0.0); // 仓位差分
+    float *imp = out.nav.v.data() + static_cast<size_t>(kCurveImp) * T, *fix = out.nav.v.data() + static_cast<size_t>(kCurveFix) * T;
     for (int t = 0; t < T; ++t) {
       const factor::stat::CostLeg &c = F.cost[static_cast<size_t>(t)].leg[kLong];
       imp[t] = static_cast<float>(c.imp / h);
       fix[t] = static_cast<float>((c.sell + (y.ad.n ? 0.0 : c.buy)) / h);
-      de[static_cast<size_t>(t)] += c.w / h;
-      de[static_cast<size_t>(std::min(factor::stat::hold_exit_row(t, j.hold, ss.s.g), T))] -= c.w / h;
     }
-    double e = 0.0;
-    for (int t = 0; t < T; ++t)
-      expo[t] = static_cast<float>(e += de[static_cast<size_t>(t)]);
   }
   publish(1);
   return !cancelled();
