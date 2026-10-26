@@ -1261,7 +1261,7 @@ std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
   InspectRequest r;
   r.f.scope.seg = ctx.seg, r.f.scope.pool = ctx.pool;
   r.f.expr = row.expr;
-  r.file = row.key;
+  r.row = row.key;
   return r.key();
 }
 
@@ -1322,7 +1322,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     {
       std::lock_guard<std::mutex> lock(isvc.mutex);
       if (isvc.result.error.empty())
-        res_key = isvc.result.file;
+        res_key = isvc.result.row;
     }
     FactorRow r;
     if (!res_key.empty() && res_key != sel.key && view_row(fsvc, res_key, r))
@@ -1470,7 +1470,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   // ---- 结果快照 (持锁派生切片 (hold), 不拷 rows) ----
   const std::string key = probe_key(sel, ctx);
   const int sel_hold = ui.hold_idx;
-  std::string message, res_error, res_key, res_file;
+  std::string message, res_error, res_key, res_row;
   StatScope res_scope;
   float res_valid = 0.f, res_rank = 0.f;
   double res_ms = 0.0;
@@ -1488,7 +1488,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     if (!res.key.empty() && res.error.empty()) {
       assert(res.n_hold == n_hold && "Inspect 与 FeatureTable 的标签组不一致");
       res_has = true;
-      res_file = res.file;
+      res_row = res.row;
       res_scope = res.scope;
       res_valid = res.valid_pct;
       res_rank = res.rank_pct;
@@ -1558,7 +1558,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   // match = 结果就是当前请求 (选中行 + 作用域); 否则仍整页画旧结果 (服务不清旧 result), 新结果发布一次性换; 头部显示行 row 已随结果
   const bool match = res_has && res_key == key;
   const bool shown = res_has;
-  assert(!shown || res_file == row.key || row.key == sel.key); // 显示行 = 结果权重 (结果权重已不在表里时退回选中行)
+  assert(!shown || res_row == row.key || row.key == sel.key); // 显示行 = 结果权重 (结果权重已不在表里时退回选中行)
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {

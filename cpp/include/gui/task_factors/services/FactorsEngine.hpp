@@ -1,14 +1,17 @@
-// FactorsEngine — 因子评估引擎 (四服务同一条管线): 作用域块 (FactorsLoad ScopeCache) → 森林 (Dag) → 逐根原料 (RootView) → 探针元组 (Probes) → 出参.
+// FactorsEngine — 因子评估引擎 (四服务同一条管线): 作用域块 (FactorsLoad ScopeCache) → 森林 (Dag) → 逐根原料 (RootView) → 探针元组 (FactorsProbe) → 出参.
 //   探针 = 一个根的一种输出, 钩子同形 (见 Probes); 四服务的差别只在探针元组 (Run / Search / Inspect / Portfolio 各自声明), 引擎与管线同一份.
 //   引擎 Engine<Cpu | Gpu> 同一份接口 (后端只在构造处分叉: with_engine):
+//     host_bytes(n_slots, H)                 宿主另占 (字节 / 格; 预算); GPU 另有 dev_bytes (显存)
 //     bind(c)                                绑作用域块: 块 (或其代 gen) 变 → 会话作废, 下次用时重开 (Y 一个块只进会话一次)
 //     walk(d, need, visit(i, ms))            顺序走 Dag (叶 = 块里的 X 平面, 截面池 g = 块的 Y 门控); ms = 算子耗时 (叶 0), visit 返回 false → 停
 //     plant<Ps>(cands, C)                    一批候选的共享森林 (C 出 = 实际收的前 C 个): Ps::need = 0 → 只要 Accum, CPU ≤ batch / GPU 再按显存减半;
 //                                            否则全收
-//     forest(d, need, f, ps, node, done)     走森林, 每个同根首个 k (Dag::first_root) 评一次: 原料按 Ps::need 备齐 → ps(k).root → done(k);
-//                                            node(i, ms) 同 walk 的 visit. CPU: 根即算即放 (rank_x → accum_rows 进探针行钩子 → 腿码);
+//     forest(d, need, f, ps, node, done)     走森林, 每个同根首个 k (Dag::first_root_at) 评一次: 原料按 Ps::need 备齐 → ps(k).root → done(k);
+//                                            node(i, ms) 同 walk 的 visit. CPU: 根即算即放 (Stat run → accum_rows 进探针行钩子 → 腿码);
 //                                            GPU: Ps::need = 0 → 一批根同在显存一次 search_eval (keep_roots), 否则逐根 stat_eval 只拷回要的原料
-//   管线 eval_job (Run / Inspect / Portfolio 同一份; Search 分块自走 plant / forest): 作用域 → 开库 → 预算 → 装块 → plan_forest (值域, 逐根归因) → forest.
+//                                            (会话按 Y 全部持有期, 取 ps(k).hd 那几组)
+//   管线 open_job (作用域 → 开库; 四服务同一份) + eval_job (Run / Inspect / Portfolio 同一份; Search 分块自走 plant / forest):
+//   open_job → 预算 → 装块 → plan_forest (值域, 逐根归因) → forest.
 // 只给服务 .cpp include (EvalCpu → TS / CS Cpu.hpp, 受控浮点: CMake PRECISE_MATH 源).
 #pragma once
 
@@ -16,250 +19,17 @@
 #include "factor/EvalGpu.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Search/Contract.hpp" // Result
-#include "factor/Stat/Cpu.hpp"
-#include "gui/task_factors/services/FactorsLoad.hpp"
+#include "gui/task_factors/services/FactorsProbe.hpp"
 #include "misc/exec.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cmath>
-#include <limits>
 #include <string>
-#include <tuple>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 namespace GUI::Factors {
-
-// ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
-//   need              原料位 (引擎据此算 / 拷回)
-//   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
-//   open(c)           本块评前 (单线程; 落地平面在作用域首块定形)
-//   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内行 ∈ [t_lo, T), hi = Probes::hd 下标)
-//   root(c, v)        本块原料就绪 (全核)
-//   finish(c)         全部块之后 (c = 末块)
-//   bytes(sh, H)      宿主另占 (字节; 预算)
-// 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按绝对行 t0_abs + t)
-enum Need : uint8_t {
-  kNeedRows = 1,  // 一级 Row 进 row 钩子
-  kNeedRx = 2,    // r16(x) [T][A]
-  kNeedLc = 4,    // 腿码 [T][A]
-  kNeedMask = 8,  // 根掩码 [T][A]
-  kNeedAlpha = 16 // 根的输入平面
-};
-// 根的 r16 抽样行 (CPU 拷宿主 rx / GPU 批核 search_ranks): 行 t0 + i·stride (i < n_rows) → out[n_rows][A]
-struct Ranks {
-  void *src = nullptr;
-  int k = 0;
-  void (*fn)(void *src, int k, int t0, int stride, int n_rows, uint16_t *out) = nullptr;
-  void operator()(int t0, int stride, int n_rows, uint16_t *out) const {
-    assert(fn && "本路径无抽样行");
-    fn(src, k, t0, stride, n_rows, out);
-  }
-};
-// 一个根在本块的原料 (两后端同形; 块内 [T][A]); 缺的 (need 没要) 为空
-struct RootView {
-  factor::stat::Plane x;     // 根: m 要 kNeedMask; v 只 CPU
-  factor::stat::Plane alpha; // 根的输入 (kNeedAlpha)
-  factor::stat::Frame f = factor::stat::Frame::CS;
-  const uint16_t *rx = nullptr;             // r16(x) (kNeedRx)
-  const uint8_t *lc = nullptr;              // 腿码 (kNeedLc)
-  const factor::stat::Accum *acc = nullptr; // [L.hd.n] 本块累加
-  Ranks ranks;
-};
-// 探针的上下文 (一块)
-struct Ctx {
-  misc::exec::ForkJoin &ex;
-  const ScopeCache &c;
-  const factor::stat::Labels &L;             // 所评持有期 (Probes::hd) 的标签 + cap
-  factor::cpu::stat::Workspace *w = nullptr; // Stat 宿主工作区 (CPU / GPU 逐根时有; 批核 / finish 空)
-  factor::stat::Span s() const { return c.span(); }
-};
-// 落地平面: 作用域首块 (t0_abs = 0) 定形清零, 其后各块按绝对行写
-template <class T>
-void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s) {
-  if (s.t0_abs == 0)
-    v.assign(n, T{});
-  assert(v.size() == n && "落地平面与作用域不符");
-}
-
-template <class... P>
-struct Probes {
-  std::tuple<P...> p;
-  factor::stat::Holds hd; // 只评这些持有期 (n = 0 → Y 全部); 钩子的 hi 按它
-  static constexpr uint8_t need = (uint8_t{0} | ... | P::need);
-  static constexpr bool cells = (false || ... || !std::is_same_v<typename P::Ext, factor::cpu::stat::NoExt>);
-  struct Ext {
-    std::tuple<typename P::Ext...> e;
-    void cell(unsigned x, bool ok, const float *y) {
-      std::apply([&](auto &...q) { (q.cell(x, ok, y), ...); }, e);
-    }
-  };
-  template <class Q>
-  Q &at() { return std::get<Q>(p); }
-  template <class Q>
-  const Q &at() const { return std::get<Q>(p); }
-  static double bytes(const Shape &sh, int H) { return (0.0 + ... + P::bytes(sh, H)); }
-  Ext ext() const {
-    return std::apply([](const P &...q) { return Ext{std::tuple<typename P::Ext...>{q.ext()...}}; }, p);
-  }
-  void open(const Ctx &c) {
-    std::apply([&](P &...q) { (q.open(c), ...); }, p);
-  }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) {
-    [&]<size_t... I>(std::index_sequence<I...>) { (std::get<I>(p).row(hi, t, r, std::get<I>(e.e)), ...); }(std::index_sequence_for<P...>{});
-  }
-  void root(const Ctx &c, const RootView &v) {
-    std::apply([&](P &...q) { (q.root(c, v), ...); }, p);
-  }
-  void finish(misc::exec::ForkJoin &ex, const ScopeCache &c) {
-    const factor::stat::Labels L = labels_pick(labels_of(c.y), hd);
-    const Ctx cx{ex, c, L, nullptr};
-    std::apply([&](P &...q) { (q.finish(cx), ...); }, p);
-  }
-};
-// accum_rows 的 sink (Stat/Cpu.hpp): 行进探针
-template <class Ps>
-struct ProbeSink {
-  Ps *ps;
-  using Ext = typename Ps::Ext;
-  Ext ext() const { return ps->ext(); }
-  void row(int i, int t, const factor::stat::Row &r, const Ext &e) const { ps->row(i, t, r, e); }
-};
-
-// 探针的空钩子 (各探针按需遮蔽)
-struct ProbeBase {
-  using Ext = factor::cpu::stat::NoExt;
-  static double bytes(const Shape &, int) { return 0.0; }
-  Ext ext() const { return {}; }
-  void open(const Ctx &) {}
-  void row(int, int, const factor::stat::Row &, const Ext &) {}
-  void root(const Ctx &, const RootView &) {}
-  void finish(const Ctx &) {}
-};
-// 二级 HoldStat[H] (毛): 块间 Accum 续攒 → finish_all
-struct HoldP : ProbeBase {
-  static constexpr uint8_t need = 0;
-  factor::stat::Accum acc[factor::stat::kMaxHold];
-  int n_hold = 0;
-  factor::stat::HoldStat hold[factor::stat::kMaxHold];
-  void root(const Ctx &c, const RootView &v) {
-    for (int i = 0; i < c.L.hd.n; ++i)
-      acc[i].merge(v.acc[i]);
-  }
-  void finish(const Ctx &c) {
-    n_hold = c.L.hd.n;
-    factor::stat::finish_all(acc, c.L.hd, c.c.y.sh.seg, hold);
-  }
-};
-// 换手成本 CostTier[C] (契约【换手成本】): 块间续攒
-struct CostP : ProbeBase {
-  static constexpr uint8_t need = kNeedLc;
-  std::vector<CostTier> costs;
-  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs); }
-};
-// 池内有效率 valid% (统计行)
-struct ValidP : ProbeBase {
-  static constexpr uint8_t need = kNeedMask;
-  uint64_t on = 0, all = 0;
-  float pct = 0.f;
-  void root(const Ctx &c, const RootView &v) {
-    const factor::stat::Span s = c.s();
-    valid_count(v.x.m, c.c.y.gate.data(), static_cast<size_t>(s.t_lo) * s.A, s.n(), on, all);
-  }
-  void finish(const Ctx &) {
-    assert(all > 0 && "截面池全空: 区间内无在池格");
-    pct = 100.f * static_cast<float>(on) / static_cast<float>(all);
-  }
-};
-// 可秩率 rank% (统计行)
-struct RankP : ProbeBase {
-  static constexpr uint8_t need = kNeedRx | kNeedMask;
-  double sum = 0.0;
-  long long rows = 0;
-  float pct = 0.f;
-  void root(const Ctx &c, const RootView &v) {
-    const factor::stat::Span s = c.s();
-    rank_sum(c.ex, v.rx, v.x.m, c.c.y.gate.data(), s.t_lo, s.T, s.A, sum, rows);
-  }
-  void finish(const Ctx &) {
-    assert(rows > 0 && "截面池全空: 区间内无在池格");
-    pct = static_cast<float>(100.0 * sum / static_cast<double>(rows));
-  }
-};
-// alpha 分布 (与持有期无关; 两趟扫整张量 → 只整块)
-struct AlphaP : ProbeBase {
-  static constexpr uint8_t need = kNeedAlpha | kNeedRx;
-  AlphaDist d;
-  void root(const Ctx &c, const RootView &v) {
-    const factor::stat::Span s = c.s();
-    assert(s.t0_abs == 0 && s.t_lo == 0 && s.T == c.c.rows_all() && "alpha 分布只整块");
-    alpha_dist(c.ex, v.alpha.v, v.alpha.m, v.rx, s.T, s.A, d);
-  }
-};
-// 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 (与 Inspect 左下左半同一组样本)
-struct IcPdfP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
-  int T = 0;
-  std::vector<float> ric;    // 本块 [hi][T] (非 ok = NaN), root 收进 kll
-  std::vector<KLLcache> kll; // [hi]
-  MiniPdf pdf[factor::stat::kMaxHold];
-  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
-  void open(const Ctx &c) {
-    T = c.s().T;
-    ric.assign(static_cast<size_t>(c.L.hd.n) * T, std::numeric_limits<float>::quiet_NaN());
-    while (kll.size() < static_cast<size_t>(c.L.hd.n))
-      kll.emplace_back(analysis::kAggKllCapacity, analysis::kAggKllResolution);
-  }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
-    if (r.ok)
-      ric[static_cast<size_t>(hi) * T + t] = r.ric;
-  }
-  void root(const Ctx &c, const RootView &) {
-    std::vector<float> ok;
-    ok.reserve(static_cast<size_t>(T));
-    for (int i = 0; i < c.L.hd.n; ++i) {
-      ok.clear();
-      for (int t = 0; t < T; ++t)
-        if (const float v = ric[static_cast<size_t>(i) * T + t]; !std::isnan(v))
-          ok.push_back(v);
-      kll[static_cast<size_t>(i)].addBatch(ok);
-    }
-    ric = {};
-  }
-  void finish(const Ctx &c) {
-    for (int i = 0; i < c.L.hd.n; ++i) {
-      analysis::AggPdf p;
-      p.fill(kll[static_cast<size_t>(i)], 3);
-      pdf[i] = mini_pdf_of(p);
-    }
-  }
-};
-// 一级 Row 落地 [hd.n][rows_all]
-struct RowsP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
-  std::vector<factor::stat::Row> *dst = nullptr;
-  int T = 0, t0 = 0; // 行轴 rows_all / 本块绝对首行
-  static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::Row) * static_cast<double>(H) * sh.T; }
-  void open(const Ctx &c) {
-    const factor::stat::Span s = c.s();
-    T = c.c.rows_all(), t0 = s.t0_abs;
-    land_open(*dst, static_cast<size_t>(c.L.hd.n) * T, s);
-  }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) { (*dst)[static_cast<size_t>(hi) * T + t0 + t] = r; }
-};
-// 二级 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份; scope / eval_ms 归调用方)
-template <class Ps>
-void fill_eval(const Ps &p, EvalStat &st) {
-  const HoldP &h = p.template at<HoldP>();
-  st.valid_pct = p.template at<ValidP>().pct;
-  st.rank_pct = p.template at<RankP>().pct;
-  st.n_hold = h.n_hold;
-  std::copy_n(h.hold, h.n_hold, st.hold);
-  st.costs = p.template at<CostP>().costs;
-}
 
 struct Cpu {};
 struct Gpu {};
@@ -279,7 +49,7 @@ public:
     stat_on_ = false;
   }
   // 宿主另占 (字节 / 格): 活槽 + 标签秩 2H + rx 2 + lc 1
-  static double cell_bytes(const factor::Dag &d, int H) { return kPlaneBytes * d.n_slots + 2.0 * H + 3.0; }
+  static double host_bytes(int n_slots, int H) { return kPlaneBytes * n_slots + 2.0 * H + 3.0; }
 
   template <class Visit>
   bool walk(const factor::Dag &d, const uint8_t *need, Visit &&visit) {
@@ -310,9 +80,7 @@ public:
     return walk(d, need, [&](int i, double ms) {
       if (!node(i, ms))
         return false;
-      for (int k = 0; k < static_cast<int>(d.roots.size()); ++k) {
-        if (d.roots[static_cast<size_t>(k)] != i || d.first_root(k) != k)
-          continue;
+      if (const int k = d.first_root_at(i); k >= 0) {
         const factor::DagNode &nd = d.nodes[static_cast<size_t>(i)];
         assert(nd.op >= 0 && nd.n_in >= 1 && "根是归一算子, 至少一元");
         Ps &p = ps(k);
@@ -322,13 +90,11 @@ public:
         const factor::check::Plane *rp = plane(i), *ap = plane(nd.in[0]); // alpha = 根的输入: 根的 visit 内仍在槽里
         const factor::stat::Plane x{rp->v.data(), rp->m.data()};
         factor::stat::Accum acc[factor::stat::kMaxHold];
-        factor::cpu::stat::rank_x(ex_, x, c_->y.gate.data(), f[k], s, rx_.data(), ss.w);
-        factor::cpu::stat::accum_rows(ex_, s, rx_.data(), L, ss.w, acc, ProbeSink<Ps>{&p});
+        factor::cpu::stat::run(ex_, x, c_->y.gate.data(), f[k], s, L, rx_.data(), ss.w, acc, ProbeSink<Ps>{&p});
         if constexpr ((Ps::need & kNeedLc) != 0)
           factor::cpu::stat::leg_codes(ex_, rx_.data(), s, lc_.data());
         p.root(cx, RootView{x, {ap->v.data(), ap->m.data()}, f[k], rx_.data(), (Ps::need & kNeedLc) ? lc_.data() : nullptr, acc, Ranks{this, 0, &ranks_of}});
         done(k);
-        break;
       }
       return !cancelled();
     });
@@ -389,7 +155,10 @@ public:
   }
 
   // 宿主另占 (字节 / 格): 拷回的 根掩码 1 + rx 2 + lc 1 + alpha 5
-  static double cell_bytes(const factor::Dag &, int) { return 4.0 + kPlaneBytes; }
+  static double host_bytes(int, int) { return 4.0 + kPlaneBytes; }
+  // 显存常驻 (字节 / 格): 特征 5·nf + 门控 1 + 搜索会话标签 (lv, sv, m, ry) 7·H + 活槽 5·n_slots; 每个批核根另加 kDevRootBytes (根平面 5 + rx 2)
+  static double dev_bytes(int nf, int n_slots, int H) { return kPlaneBytes * nf + 1.0 + 7.0 * H + kPlaneBytes * n_slots; }
+  static constexpr double kDevRootBytes = kPlaneBytes + 2.0;
 
   template <class Visit>
   bool walk(const factor::Dag &d, const uint8_t *need, Visit &&visit) {
@@ -478,17 +247,21 @@ public:
         mask_.resize(n);
       if constexpr ((need_p & kNeedAlpha) != 0)
         av_.resize(n), am_.resize(n);
-      const factor::stat::Labels L = labels_of(y);
+      const factor::stat::Labels L0 = labels_of(y);
       return walk(d, need, [&](int i, double ms) {
         if (!node(i, ms))
           return false;
-        for (int k = 0; k < static_cast<int>(d.roots.size()); ++k) {
-          if (d.roots[static_cast<size_t>(k)] != i || d.first_root(k) != k)
-            continue;
+        if (const int k = d.first_root_at(i); k >= 0) {
           const factor::DagNode &nd = d.nodes[static_cast<size_t>(i)];
           assert(nd.op >= 0 && nd.n_in >= 1 && "根是归一算子, 至少一元");
           Ps &p = ps(k);
-          assert(p.hd.n == 0 && "GPU Stat 会话按 Y 全部持有期");
+          const factor::stat::Labels L = labels_pick(L0, p.hd); // 会话按 Y 全部持有期出, 取 p.hd 那几组: pick[hi] = 会话下标
+          int pick[factor::stat::kMaxHold];
+          for (int hi = 0; hi < L.hd.n; ++hi) {
+            pick[hi] = 0;
+            while (L0.hd.h[pick[hi]] != L.hd.h[hi])
+              ++pick[hi];
+          }
           const Ctx cx{ex_, *c_, L, &w_};
           p.open(cx);
           const factor::gpu::DevPlane *rp = at(i); // Stat 只看池内 (g 在算子内部)
@@ -498,9 +271,11 @@ public:
             factor::gpu::download(sess_, rp, nullptr, mask_.data());
             v.x.m = mask_.data();
           }
-          factor::stat::Accum acc[factor::stat::kMaxHold];
-          factor::gpu::stat_eval(stat_, rp, gate_, f[k], acc, (need_p & kNeedRows) ? rows_.data() : nullptr, (need_p & kNeedLc) ? lc_.data() : nullptr,
+          factor::stat::Accum all[factor::stat::kMaxHold], acc[factor::stat::kMaxHold];
+          factor::gpu::stat_eval(stat_, rp, gate_, f[k], all, (need_p & kNeedRows) ? rows_.data() : nullptr, (need_p & kNeedLc) ? lc_.data() : nullptr,
                                  (need_p & kNeedRx) ? rx_.data() : nullptr);
+          for (int hi = 0; hi < L.hd.n; ++hi)
+            acc[hi] = all[pick[hi]];
           v.acc = acc;
           v.rx = (need_p & kNeedRx) ? rx_.data() : nullptr;
           v.lc = (need_p & kNeedLc) ? lc_.data() : nullptr;
@@ -509,7 +284,7 @@ public:
             ex_.rows(s.T, [&](int t0, int t1, int) {
               for (int hi = 0; hi < L.hd.n; ++hi)
                 for (int t = t0; t < t1; ++t)
-                  p.row(hi, t, rows_[static_cast<size_t>(hi) * s.T + t], e);
+                  p.row(hi, t, rows_[static_cast<size_t>(pick[hi]) * s.T + t], e);
             });
           }
           if constexpr ((need_p & kNeedAlpha) != 0) { // alpha = 根的输入: 叶 = 宿主平面, 否则拷回
@@ -524,7 +299,6 @@ public:
           }
           p.root(cx, v);
           done(k);
-          break;
         }
         return !cancelled();
       });
@@ -643,9 +417,17 @@ inline factor::expr::Expr parse_job(const FactorJob &j) {
   (void)ok;
   return e;
 }
-// 森林 (eng.plant) → eval_scope → open_libs → assert_fits → ensure_xy → plan_forest (on_plan(): o.why 已定) → eng.forest:
+// 作用域 (叶 feats 所用库 + 评估期) → 开库 (四服务同一份). false = 作用域不成 (why; 正常输入)
+inline bool open_job(FactorFlow &F, const FeatureTable &ft, const FactorScope &sc, const std::vector<std::string> &feats, std::atomic<bool> &cancel,
+                     EvalScope &es, std::string &why) {
+  if (!eval_scope(ft, sc, feats, es, why))
+    return false;
+  open_libs(sc, F.lr, &cancel);
+  return true;
+}
+// 森林 (eng.plant) → open_job → assert_fits → ensure_xy → plan_forest (on_plan(): o.why 已定) → eng.forest:
 // 每个好根的同根首个 k0, ps(k0) 的钩子全部走完 (单块: root 后即 finish) → done(k0). o 须新建 (每次调用一个).
-// X: retain = 只留本森林的叶 / 否则作用域内读过的全留. 宿主峰值 = Y + X + 引擎 (E::cell_bytes) / 格 + 探针 (Ps::bytes).
+// X: retain = 只留本森林的叶 / 否则作用域内读过的全留. 宿主峰值 = Y + X + 引擎 (E::host_bytes) / 格 + 探针 (Ps::bytes).
 // 进度: Loading 期 = 天; Running 期 = 好根的算子节点 + 好根数. 结局 Ok / Empty (o.empty) / Broken (全部根坏, o.why) / Cancel / Stale
 template <class E, class Slot, class OnPlan, class Done>
 Rc eval_job(E &eng, FactorFlow &F, const FeatureTable &ft, const FactorScope &sc, const std::vector<const factor::expr::Expr *> &exprs,
@@ -661,9 +443,8 @@ Rc eval_job(E &eng, FactorFlow &F, const FeatureTable &ft, const FactorScope &sc
   const auto cancelled = [&] { return cancel.load(std::memory_order_relaxed); };
 
   // ---- S: 作用域 ----
-  if (!eval_scope(ft, sc, d.feats, o.es, o.empty))
+  if (!open_job(F, ft, sc, d.feats, cancel, o.es, o.empty))
     return Rc::Empty;
-  open_libs(sc, F.lr, &cancel);
   const size_t nd = o.es.days.size();
   { // 宿主峰值: X = retain ? 本森林 : 缓存 ∪ 本森林
     const bool hit = F.c.key == scope_key(ft, o.es, 0, nd, ys);
@@ -675,7 +456,7 @@ Rc eval_job(E &eng, FactorFlow &F, const FeatureTable &ft, const FactorScope &sc
     }
     const int days = static_cast<int>(nd), A = static_cast<int>(o.es.rs.axis.size()), H = ps(0).hd.n ? ps(0).hd.n : ys.hd.n;
     const Shape sh{days * ft.seg, A, days, ft.seg};
-    const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(nx) + E::cell_bytes(d, ys.hd.n);
+    const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(nx) + E::host_bytes(d.n_slots, ys.hd.n);
     assert_fits(who, static_cast<double>(sh.n()) * per + Ps::bytes(sh, H), days, A, ft.seg);
   }
 

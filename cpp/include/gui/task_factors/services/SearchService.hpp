@@ -2,20 +2,20 @@
 // (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 只搜调用方给定的一个持有期 h (Factors 页当前 Hold; 搜哪个周期由上层定), 目标 = 该 h 的
 // 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本), 按冗余规则终选持仓重合少的
 // 显著权重 (Contract【多权重】, 个数不设上限), picks 替换该因子文件里同 h 的 weights, 别的 h 的权重不动 (FactorsService WriteFactorWeights;
-// UI 随后自动 Run 重算每权重的 stat). 下文"全部 h"的流程对单个 h 原样成立 (H = 1).
+// UI 随后自动 Run 重算每权重的 stat).
 // 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
 // 唯一的预算量 = 第 0 趟点数 (Space kInit); 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
 //
-// 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 全部 h 的标签同在 (hd.n = H), 因子平面只算一遍; 趟与趟之间才有依赖):
+// 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 只装 h 一组标签 (hd.n = 1); 趟与趟之间才有依赖):
 //   准备          先装块 0: 满仓只数 n_full = 全期池内平均有效资产数 / kGroups (Labels::cap, 各块共用, 与 Run 同一个; 一块 = 块 0 的 YPlanes::n_full,
 //                 多块 = 预扫全期门控 FactorsLoad n_full_of); 槽区间按 A = n_full · kGroups 定 (Space slots_of).
 //                 阈值槽 (ANY / GE0) 由深到浅: 中性具体式 (Space neutral) 在 CPU 上走到它的输入节点, 取块 0 抽样行的池内有效值作分位表
 //                 (Space set_qtab); 输入是常量 → 整个搜索放弃
-//   趟 0 采样     R_d 低差异点 (Space design), 评一次得全部 h 的分 (自动定向: Contract【方向】)
-//   每趟之后      每 h (并行): 已评点拟合曲面 (Search/Surface.hpp, 噪声 = 各点 SE) → 峰 → pick_diverse 得活跃峰 (= 当前终选集)
-//   趟 1..        每 h 每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起 (夹到区间端), 落到已评点就减半再试; 新点的 μ + sd − μ_c > SE_c (可能显著胜过峰) 才评;
-//                 取整回到 c / 不合法 / 本趟已提 / 不值得 → 该方向止. 全部 h 的新点去重拼成一趟; 没有新点 → 停
-//   终            最后一次曲面的 pick_diverse 即 weights; 一个 h 都没有显著候选 → 文件不动
+//   趟 0 采样     R_d 低差异点 (Space design), 评一次得分 (自动定向: Contract【方向】)
+//   每趟之后      已评点拟合曲面 (Search/Surface.hpp, 噪声 = 各点 SE) → 峰 → pick_diverse 得活跃峰 (= 当前终选集)
+//   趟 1..        每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起 (夹到区间端), 落到已评点就减半再试; 新点的 μ + sd − μ_c > SE_c (可能显著胜过峰) 才评;
+//                 取整回到 c / 不合法 / 本趟已提 / 不值得 → 该方向止. 新点去重拼成一趟; 没有新点 → 停
+//   终            最后一次曲面的 pick_diverse 即 weights; 没有显著候选 → 文件不动
 //   r16 抽样      每趟顺带把每个候选的 kCorrRows 抽样行 r16 回宿主常驻 (约 kCorrRows × A × 2 字节 / 候选), 截面相关按需两两现算 (Stat/Host lag_row),
 //                 不另开一趟
 //
@@ -56,7 +56,7 @@ using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / wei
 // 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键
 bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, int hold, bool gpu, SearchRequest &req);
 
-// 评过的一个候选在一个 h 下的分 (UI 列表)
+// 评过的一个候选的分 (UI 列表)
 struct SearchCand {
   std::string expr;      // 具体规范串
   std::vector<double> u; // 坐标 (与 SearchResult::slots 对齐)
@@ -67,19 +67,12 @@ struct SearchCand {
   int sign = 1;               // 方向 (Contract score_signed)
   double se = 0.0;            // score 的标准误 (Contract【噪声】)
 };
-// 一个 h 的终选权重
+// 终选权重
 struct SearchPick {
   std::string expr;
   int sign = 1;
   double score = 0.0, ls = 0.0, ric = 0.0;
-  double corr = 0.0; // 与同 h 其他 pick 的最大截面相关 (单个 pick 时 0)
-};
-// 一个持有期的搜索状态 / 结果
-struct SearchHold {
-  int hold = 0;
-  int n_peak = 0;                // 最后一次曲面的峰数
-  std::vector<SearchCand> cands; // 全部评过的, score 降序
-  std::vector<SearchPick> picks; // 终选 (空 = 该 h 无显著候选)
+  double corr = 0.0; // 与其他 pick 的最大截面相关 (单个 pick 时 0)
 };
 
 // 一块的装载量
@@ -91,7 +84,10 @@ struct SearchChunk {
 struct SearchResult {
   std::string file, tmpl;         // 对象 + 模板规范串
   std::vector<std::string> slots; // 可搜槽名 ("TsDeltaRoll.d" …)
-  std::vector<SearchHold> holds;  // 搜的持有期 (一个)
+  int hold = 0;                   // 搜的持有期键
+  int n_peak = 0;                 // 最后一次曲面的峰数
+  std::vector<SearchCand> cands;  // 全部评过的, score 降序
+  std::vector<SearchPick> picks;  // 终选 (空 = 无显著候选)
   int n_pass = 0;                 // 跑完的趟数
   int n_chunk = 0, chunk_days = 0, batch = 0;
   int n_assets = 0;                    // 资产数
@@ -115,14 +111,14 @@ class SearchService : public Service<SearchService, SearchRequest>, public Publi
 
 public:
   static constexpr const char *kName = "SearchWorker";
-  SearchService(); // 两者都在 .cpp: Flow 不完整
+  SearchService(); // 两者都在 .cpp: FactorFlow 不完整
   ~SearchService();
 
   void SetFeatureTable(std::shared_ptr<const FeatureTable> t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
   const FeatureTable &feats() const { return *feats_; }
 
   SearchStage stage() const { return stage_.load(std::memory_order_relaxed); }
-  int alive() const { return alive_.load(std::memory_order_relaxed); }   // 活跃峰数, 全部 h 合计 (Refine 期)
+  int alive() const { return alive_.load(std::memory_order_relaxed); }   // 活跃峰数 (Refine 期)
   int pass() const { return pass_.load(std::memory_order_relaxed); }     // 当前趟 (0 = 采样)
   int chunk() const { return chunk_.load(std::memory_order_relaxed); }   // 本趟已过的块
   int chunks() const { return chunks_.load(std::memory_order_relaxed); } // 块数
@@ -131,14 +127,13 @@ public:
   SearchResult result;
 
 private:
-  struct Flow;
   static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return *this; }
   bool run(SearchRequest &req);
-  bool evaluate(const SearchRequest &req, Flow &F); // false = 取消
+  bool evaluate(const SearchRequest &req, FactorFlow &F); // false = 取消
 
   std::shared_ptr<const FeatureTable> feats_;
-  std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活
+  std::unique_ptr<FactorFlow> flow_; // 首个请求懒建, 随 worker 活 (线程池 + 库; 作用域块归每轮的 ChunkData)
   std::atomic<SearchStage> stage_{SearchStage::Prepare};
   std::atomic<int> alive_{0};
   std::atomic<int> pass_{0}, chunk_{0}, chunks_{0};

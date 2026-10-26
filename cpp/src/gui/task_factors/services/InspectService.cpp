@@ -2,8 +2,9 @@
 #include "gui/task_factors/services/InspectService.hpp"
 
 #include "factor/Stat/Cpu.hpp"
-#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / Probes (只 CPU)
-#include "gui/task_factors/services/FactorsLoad.hpp"   // fold_exit
+#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job (只 CPU)
+#include "gui/task_factors/services/FactorsLoad.hpp"   // fold_exit / pool_line / stat_scope
+#include "gui/task_factors/services/FactorsProbe.hpp"  // Probes / group_abs
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
@@ -49,14 +50,10 @@ double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double ca
   }
   const bool absolute = i < kNavLayers;
   const int k = absolute ? i : i - kNavLayers;
-  double e, n, c;
   if (k < factor::stat::kGroups)
-    e = r.grp[k], n = r.cnt[k], c = cap;
-  else {
-    const int l = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
-    e = tr.sum[l][j], n = tr.cnt[l][j], c = cap * kTailOfGroup[j];
-  }
-  return absolute ? factor::stat::book_abs(e, n, r.mkt[kLong], c) : e;
+    return absolute ? group_abs(r, k, cap) : r.grp[k];
+  const int l = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
+  return absolute ? factor::stat::book_abs(tr.sum[l][j], tr.cnt[l][j], r.mkt[kLong], cap * kTailOfGroup[j]) : tr.sum[l][j];
 }
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
 struct TailExt {
@@ -152,8 +149,10 @@ using InspectProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, RxP, RxAllP, R
 
 // 计算 flow 的状态 (worker 私有, 跨请求存活; 分级见头文件). 作用域块 c: Y 常驻, X = 作用域内读过的特征 (只增)
 struct InspectService::Flow : FactorFlow {
-  Engine<Cpu> E;    // 毛标签秩 (Stat 会话, 作用域内一次) + 活槽 (HostPool 常驻)
-  InspectPlanes pl; // 一级平面, 发布时与 result.pl 交换
+  Engine<Cpu> E;         // 毛标签秩 (Stat 会话, 作用域内一次) + 活槽 (HostPool 常驻)
+  InspectPlanes pl;      // 一级平面, 发布时与 result.pl 交换
+  BookLines pool;        // 池等权线 (pool_line), 随 Y 一代
+  uint64_t pool_gen = 0; // pool 算时的 c.gen
   explicit Flow(const std::atomic<bool> &cancel) : E(ex, cancel, 1) {}
 };
 
@@ -164,7 +163,7 @@ bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTab
   req.f.ft = std::move(ft);
   req.f.expr = row.expr;
   req.f.frame = row.frame;
-  req.file = row.key;
+  req.row = row.key;
   req.reload = reload;
   return MakeFactorScope(data, pool, seg, /*gpu=*/false, req.f.scope);
 }
@@ -183,13 +182,6 @@ bool InspectService::run(InspectRequest &req) {
   return eval(req, *flow_);
 }
 
-bool InspectService::stale_out(Flow &F) {
-  F.c.reset(); // 库换了, 缓存的一切不可信
-  std::lock_guard<std::mutex> lock(mutex);
-  message = kStaleMsg;
-  return false;
-}
-
 bool InspectService::eval(const InspectRequest &req, Flow &F) {
   TraceN("InspectEvaluate");
   const FeatureTable &ft = *req.f.ft;
@@ -198,8 +190,8 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
     F.c.reset();
 
   // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一棵树, 探针 InspectProbes ----
-  //   Y = 全部持有期 + 全部金额段 + 池等权指数 (每持有期一条); X = 作用域内读过的全留 (只增), 缺的补读
-  const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(sc.max_impact), IndexKind::Pool};
+  //   Y = 全部持有期 + 全部金额段; X = 作用域内读过的全留 (只增), 缺的补读
+  const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(sc.max_impact)};
   const factor::expr::Expr e = parse_job(req.f);
   InspectProbes ps;
   ps.at<RxP>().dst = &F.pl.rx;
@@ -220,29 +212,24 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   if (rc == Rc::Stale)
     return stale_out(F);
   const YPlanes &y = F.c.y;
-  const std::vector<misc::Ymd> &dates = o.es.dates;
-  const int H = y.hd.n, T = y.sh.T, A = static_cast<int>(o.es.rs.axis.size());
+  if (F.pool_gen != F.c.gen) {
+    F.pool = pool_line(F.ex, y);
+    F.pool_gen = F.c.gen;
+  }
 
   // ---- 结果骨架 ----
   InspectResult res;
   res.key = req.key();
-  res.file = req.file;
+  res.row = req.row;
   res.expr = req.f.expr;
   res.seg = sc.seg;
   res.frame = req.f.frame;
-  res.scope.pool = sc.pool;
-  res.scope.start_date = dates.front();
-  res.scope.end_date = dates.back();
-  res.scope.days = y.sh.days, res.scope.T = T, res.scope.A = A;
-  res.scope.backend = Engine<Cpu>::kName;
-  res.scope.n_full = y.n_full;
-  res.dates = dates;
+  res.scope = stat_scope(sc, o.es, y, Engine<Cpu>::kName);
+  res.dates = o.es.dates;
   res.read_scope = o.es.rs;
-  assert(y.index.n == H && y.index.P == T && "Pool 档: 每持有期一条池整体等权");
-  res.pool_index = y.index;
+  res.pool_index = F.pool;
   res.hd = y.hd;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
-    res.scope.time = now_string();
     std::swap(res.pl, F.pl);
     {
       std::lock_guard<std::mutex> lock(mutex);

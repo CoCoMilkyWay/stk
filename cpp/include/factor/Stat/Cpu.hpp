@@ -17,7 +17,7 @@
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     leg_codes     rx → 腿码 lc[T][A] (契约【换手成本】)
 //     cost_rows     lc × 标签有效位 × C 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
-//     StatSession   stat_open (标签 prep_label + 工作区, 一次) / stat_eval (run + leg_codes, 逐因子): 与 gpu::stat_open / stat_eval 同序
+//     StatSession   stat_open (标签 prep_label + 工作区, 一次; 与 gpu::stat_open 同序); 逐因子由调用方走 run (+ leg_codes)
 //     Search/Cpu.hpp 对每个候选走 rank_x + accum_rows, 不另写流程.
 //   r16(x) 平面 rx / 腿码 lc 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H])
 //   由调用方持有, ensure 幂等 → 稳态零分配; 搜索每 worker 一份, 交互一份常驻.
@@ -216,7 +216,7 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
 }
 
 // -----------------------------------------------------------------------------
-// 常驻会话 (与 gpu::StatSession 同名同参序, GpuRun.hpp): 一个作用域多因子 —— open 一次 (标签 rank 预处理 + 工作区), 逐因子 eval
+// 常驻会话 (与 gpu::StatSession 同名同参序, GpuRun.hpp): 一个作用域多因子 —— open 一次 (标签 rank 预处理 + 工作区), 逐因子 run
 // -----------------------------------------------------------------------------
 
 struct StatSession {
@@ -240,13 +240,6 @@ inline void stat_open(Exec &ex, StatSession &ss, int T, int A, int seg, const La
     prep_label(ex, L.l[i], ss.s, ry.data(), ss.w);
     ss.L.l[i].ry = ry.data();
   }
-}
-// 一个因子 (同 gpu::stat_eval 序; 一级 Row 走 sink 而不是 rows): run → rx (调用方持有) + acc[hd.n]; lc 非空再出腿码
-template <class Exec, class Sink>
-inline void stat_eval(Exec &ex, StatSession &ss, Plane x, const uint8_t *g, Frame f, Accum *acc, const Sink &sink, uint8_t *lc, uint16_t *rx) {
-  run(ex, x, g, f, ss.s, ss.L, rx, ss.w, acc, sink);
-  if (lc)
-    leg_codes(ex, rx, ss.s, lc);
 }
 
 } // namespace factor::cpu::stat

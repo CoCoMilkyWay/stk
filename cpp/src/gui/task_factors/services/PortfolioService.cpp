@@ -1,8 +1,9 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/PortfolioService.hpp"
 
-#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / Probes (只 CPU)
-#include "gui/task_factors/services/FactorsLoad.hpp"   // fold_exit
+#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / open_job (只 CPU)
+#include "gui/task_factors/services/FactorsLoad.hpp"   // fold_exit / load_b
+#include "gui/task_factors/services/FactorsProbe.hpp"  // Probes / CostRowsP / group_abs
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools
 #include "shared/SharedData.hpp"
@@ -210,23 +211,6 @@ struct PortfolioService::Flow : FactorFlow {
 
 namespace {
 
-// 本 hold 的逐行换手落地 [rows_all] (最小金额段; 无段 C = 0 只出量): cost_rows 的 land
-struct CostRowsP : ProbeBase {
-  static constexpr uint8_t need = kNeedLc;
-  std::vector<factor::stat::CostAcc> *dst = nullptr;
-  static double bytes(const Shape &sh, int) { return sizeof(factor::stat::CostAcc) * static_cast<double>(sh.T); }
-  void open(const Ctx &c) {
-    assert(c.L.hd.n == 1 && c.c.y.ad.n <= 1 && "Portfolio 一个持有期 × 至多一个金额段");
-    land_open(*dst, static_cast<size_t>(c.c.rows_all()), c.s());
-  }
-  void root(const Ctx &c, const RootView &v) {
-    const YPlanes &y = c.c.y;
-    const factor::stat::Span s = c.s();
-    const factor::stat::Cost cost = y.ad.n ? cost_of(y.costs[0]) : factor::stat::Cost{};
-    factor::stat::CostAcc tot;
-    factor::cpu::stat::cost_rows(c.ex, v.lc, s, c.L, y.ad.n ? &cost : nullptr, y.ad.n, *c.w, &tot, dst->data() + s.t0_abs);
-  }
-};
 // G20 多头出参线 (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄) → nav = [kCurveLines][rows_all]:
 //   pnl = G20 绝对收益 fold_exit 到平仓行; imp = 建仓冲击 / h̄, fix = (平仓量 (+ 无段时增仓量)) / h̄, 记在建仓行 (不交接批的平仓量一并)
 struct CurveP : ProbeBase {
@@ -241,12 +225,10 @@ struct CurveP : ProbeBase {
     const YPlanes &y = c.c.y;
     const int T = c.c.rows_all(), hold = c.L.hd.h[0], G = factor::stat::leg_group(kLong);
     const double h = factor::stat::hold_span(hold, factor::geo_of(y.sh.seg));
-    assert(rows->size() == static_cast<size_t>(T) && cost->size() == static_cast<size_t>(T));
+    assert(c.L.hd.n == 1 && rows->size() == static_cast<size_t>(T) && cost->size() == static_cast<size_t>(T));
     amt = y.ad.n ? y.ad.a[0] : 0;
     BookLines pnl;
-    fold_exit(c.ex, hold, y.sh.seg, T, 1, 1, [&](int, int t) {
-                const factor::stat::Row &r = (*rows)[static_cast<size_t>(t)];
-                return r.ok ? factor::stat::book_abs(r.grp[G], r.cnt[G], r.mkt[kLong], c.L.cap) : 0.0; }, pnl);
+    fold_exit(c.ex, hold, y.sh.seg, T, 1, 1, [&](int, int t) { return group_abs((*rows)[static_cast<size_t>(t)], G, c.L.cap); }, pnl);
     nav.n = kCurveLines, nav.P = T;
     nav.v.assign(static_cast<size_t>(kCurveLines) * T, 0.f);
     std::copy(pnl.v.begin(), pnl.v.end(), nav.v.begin() + static_cast<long>(kCurvePnl) * T);
@@ -277,7 +259,7 @@ std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<con
   return todo;
 }
 
-// Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_y 命中)
+// Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_xy 的 Y 键命中)
 std::string group_of(const HoldJob &j) { return std::to_string(j.f.scope.seg) + "|" + j.f.scope.pool; }
 
 } // namespace
@@ -336,13 +318,6 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return run_jobs(todo_f, result.factors, F) && run_jobs(todo_p, result.pools, F);
 }
 
-bool PortfolioService::stale_out(Flow &F) {
-  F.c.reset(); // 库换了, 缓存的一切不可信
-  std::lock_guard<std::mutex> lock(mutex);
-  message = kStaleMsg;
-  return false;
-}
-
 // 与 Run / Inspect 同一条管线 (eval_job), 探针只评该 hold: 一级 Row + 逐行换手 → 净值引擎 fold_exit (G20 多头)
 bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   TraceN("PortfolioFactor");
@@ -354,8 +329,7 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   // ---- 管线 eval_job: Y = 同组全部 hold + 最小金额段 (组内因子共用); X 只留本因子的叶; 探针 hd = {本 hold} ----
   const std::vector<int> ck = keys_of(ft.y.costs);
   assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
-  const YSpec ys{holds_of(F.holds.at(group_of(j))), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
-                 IndexKind::None};
+  const YSpec ys{holds_of(F.holds.at(group_of(j))), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact)};
   const factor::expr::Expr e = parse_job(j.f);
   PortfolioProbes ps;
   ps.hd = holds_of({j.hold});
@@ -379,38 +353,43 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   return true;
 }
 
-// 日层池篮子: 无叶作用域 (标签库 + 池成员) → load_y 顺带算篮子指数 / 估值 / 换手, 整块搬进 PoolCurve; 块用完即弃
+// 日层池篮子: 无叶作用域 (标签库 + 池成员) → 块 Y (门控 + T+1C 标签) → load_b 篮子指数 / 估值 / 换手, 整份搬进 PoolCurve; 块用完即弃
 bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   TraceN("PortfolioPool");
   const FeatureTable &ft = *j.ft;
   assert(j.scope.seg == ft.seg && ft.seg == kDaySeg);
   EvalScope es;
-  if (std::string why; !eval_scope(ft, j.scope, {}, es, why)) {
+  if (std::string why; !open_job(F, ft, j.scope, {}, cancel_, es, why)) {
     out.error = why;
     return true;
   }
-  open_libs(j.scope, F.lr, &cancel_);
   const int days = static_cast<int>(es.dates.size()), A = static_cast<int>(es.rs.axis.size());
   const std::vector<int> hk = keys_of(ft.y.labels);
   assert(std::find(hk.begin(), hk.end(), factor::stat::hold_close(1)) != hk.end() && "日层须有 T+1C 标签 (池指数 C(D) → C(D+1))");
-  const YSpec ys{holds_of({factor::stat::hold_close(1)}), {}, 0.f, IndexKind::Full};
-  assert_fits("Portfolio", static_cast<double>(days) * A * cell_bytes(ys), days, A, ft.seg);
+  const YSpec ys{holds_of({factor::stat::hold_close(1)}), {}, 0.f};
+  assert_fits("Portfolio", static_cast<double>(days) * A * (cell_bytes(ys) + kBasketCellBytes), days, A, ft.seg);
   ScopeCache c;
-  const Rc rc = ensure_xy(c, ft, es, F.lr, 0, es.days.size(), ys, {}, /*retain=*/true, F.ex, cancel_, *this);
+  BPlanes B;
+  Rc rc = ensure_xy(c, ft, es, F.lr, 0, es.days.size(), ys, {}, /*retain=*/true, F.ex, cancel_, *this);
+  if (rc == Rc::Ok) {
+    begin(Phase::Loading, es.days.size());
+    rc = load_b(ft, es, F.lr, c, B, F.ex, cancel_, *this) ? Rc::Ok : F.lr.stale() ? Rc::Stale
+                                                                                  : Rc::Cancel;
+  }
   if (rc == Rc::Cancel)
     return false;
   if (rc == Rc::Stale)
     return stale_out(F);
-  const size_t n = YPlanes::kBaskets * es.dates.size();
+  const size_t n = BPlanes::kBaskets * es.dates.size();
   out.dates = es.dates;
-  assert(c.y.index.n == static_cast<int>(YPlanes::kBaskets) * kWeights && c.y.index.P == days);
-  out.index = std::move(c.y.index);
+  assert(B.index.n == static_cast<int>(BPlanes::kBaskets) * kWeights && B.index.P == days);
+  out.index = std::move(B.index);
   for (int w = 0; w < kWeights; ++w)
-    out.turn[w] = c.y.turn[w];
+    out.turn[w] = B.turn[w];
   for (int w = 0; w < kWeights; ++w)
     for (int m = 0; m < kPoolVals; ++m) {
-      assert(c.y.val[w][m].size() == n);
-      out.val[w][m] = std::move(c.y.val[w][m]);
+      assert(B.val[w][m].size() == n);
+      out.val[w][m] = std::move(B.val[w][m]);
     }
   return true;
 }

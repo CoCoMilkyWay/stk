@@ -6,15 +6,15 @@
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 Flow : FactorFlow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算;
-// 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / N 是探针 (InspectProbes); N 用净值引擎 fold_exit (FactorsLoad.hpp, 与 Portfolio / 池指数同一份):
-//   S  作用域   FactorsLoad ScopeCache, key = scope_key (层 | EvalScope::key | 日段 | YSpec: 持有期 / 金额段 / 封顶 / 指数)
-//               → Y = 截面门控, 毛标签 [H], 成本 [C], 池等权指数 (IndexKind::Pool, 每持有期一条); X = 特征平面 (作用域内读过的全留, 只增)
+// 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / N 是探针 (InspectProbes); N 用净值引擎 fold_exit (FactorsLoad.hpp, 与 Portfolio / 池线同一份):
+//   S  作用域   FactorsLoad ScopeCache, key = scope_key (层 | EvalScope::key | 日段 | YSpec: 持有期 / 金额段 / 封顶)
+//               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 特征平面 (作用域内读过的全留, 只增). 池等权线 (pool_line, 每持有期一条) 随 Y 一代算一次
 //               (装载前 assert_fits: 放不下 = 因子层太细 / 评估期太长)
 //   Y  标签     随 S                                       → 毛标签秩: Engine<Cpu> 的 Stat 会话 (Stat/Cpu.hpp StatSession, 一次常驻); 没有净标签集
-//   X  因子                                                → 缺的特征补读 (ensure_x) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool 常驻)
+//   X  因子                                                → 缺的特征补读 (ensure_xy) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool 常驻)
 //   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
 //                                                            RxAllP 另跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
-//   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsService.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsLoad
+//   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsTable.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsProbe
 //                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: 腿成员 = 腿码 ∧ 标签有效位, 逐格 Δw,
 //                                                            同一价点才与 t−h 交接; 一遍 [T][A], 无排序). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::fixed_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; fixed_impact 只进均摊公式, 不进请求)
@@ -32,8 +32,8 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_factors/services/FactorsLoad.hpp"    // AlphaDist
-#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope
+#include "gui/task_factors/services/FactorsLoad.hpp"    // BookLines
+#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope / AlphaDist / FactorWorker
 #include "gui/util/Service.hpp"
 #include "shared/Analysis.hpp" // ReadScope / AggPdf
 
@@ -49,9 +49,9 @@ namespace GUI::Factors {
 // 请求 = 一个因子 (FactorJob, 与 Portfolio 条目同一份) + 权重行 key + 弃缓存. f.scope.max_impact 装载时生效 → 进作用域缓存键; f.scope.gpu 不看 (只 CPU)
 struct InspectRequest {
   FactorJob f;
-  std::string file;    // 权重行 key (FactorRow::key = 文件#权重号)
+  std::string row;     // 权重行 key (FactorRow::key = 文件#权重号)
   bool reload = false; // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
-  std::string key() const { return std::to_string(f.scope.seg) + "|" + file + "|" + f.expr + "|" + f.scope.pool; }
+  std::string key() const { return std::to_string(f.scope.seg) + "|" + row + "|" + f.expr + "|" + f.scope.pool; }
 };
 // 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int seg, const FactorRow &row,
@@ -89,13 +89,13 @@ struct InspectPlanes {
 // (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
 struct InspectResult : EvalStat {
   std::string key; // = InspectRequest::key; 空 = 无结果
-  std::string file, expr;
+  std::string row, expr;
   int seg = 0; // 因子层: T = days · seg, K 线 / 横轴按层
   factor::stat::Frame frame = factor::stat::Frame::CS;
   std::vector<misc::Ymd> dates;   // [days]
   factor::stat::Holds hd;         // hd.h[hi]
   analysis::ReadScope read_scope; // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
-  BookLines pool_index;           // [hd.n][T] 池等权指数的逐行收益 (= YPlanes::index, Pool 档, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
+  BookLines pool_index;           // [hd.n][T] 池等权线的逐行收益 (= pool_line, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
                                   //   UI compound 成点位后按视野左端个股价重锚
   InspectPlanes pl;               // 一级平面 (Row / 尾部 / 秩)
   std::vector<BookLines> nav;     // [hd.n] 分层累计的日收益 [kNavLines][days] (见 kNavLines)
@@ -108,7 +108,7 @@ struct InspectResult : EvalStat {
 };
 
 // 进度面 = 自身 (Published): Loading 期 done/total = 天; Running 期 = 算子节点 + 成本 + 评估
-class InspectService : public Service<InspectService, InspectRequest>, public Published {
+class InspectService : public Service<InspectService, InspectRequest>, public FactorWorker {
   friend Service<InspectService, InspectRequest>;
 
 public:
@@ -119,7 +119,6 @@ public:
   // UI 持 mutex 读 (不拷 rows)
   InspectResult result;
   uint64_t result_gen = 0; // result 每换一次 +1 (UI 派生缓存键; epoch 随进度跳, 不能当键)
-  std::string message;     // 本轮说明 (如 "特征库无数据"), 空 = 无
 
 private:
   struct Flow;
@@ -127,7 +126,6 @@ private:
   Progress &board() { return *this; }
   bool run(InspectRequest &req);
   bool eval(const InspectRequest &req, Flow &F); // false = 取消 / 判废
-  bool stale_out(Flow &F);                       // 库判废: 弃缓存 + 置 message; 恒 false
 
   std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活 (S / Y 缓存跨请求)
 };

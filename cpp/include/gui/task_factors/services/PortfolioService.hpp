@@ -10,7 +10,7 @@
 //   可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
 //   成本按 Δw (契约【换手成本】): 有金额段 (Lob) = 增仓 Δw⁺ × 最小段买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 无段 (Bar) =
 //   增仓量 / 平仓量各付 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes 篮子 → PoolCurve): 篮子 (池整体 + 行业) 两权重指数日收益 (净值引擎 fold_exit, T+1C 标签) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
+// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, FactorsLoad load_b → BPlanes → PoolCurve): 篮子 (池整体 + 行业) 两权重指数日收益 (净值引擎 fold_exit, T+1C 标签) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
 //   滚动分位 band 在 UI 按可调窗长现算) + 池整体日均单边换手.
 // 因子 ↔ 池 同一套缓存: 按 Job::key 存, 曲线记算时的 Job::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
 //
@@ -19,8 +19,8 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_factors/services/FactorsLoad.hpp"    // BookLines / YPlanes::index_line / compound
-#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorScope / Request
+#include "gui/task_factors/services/FactorsLoad.hpp"    // BookLines / BPlanes::index_line / compound
+#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorScope / Request / FactorWorker
 #include "gui/util/Service.hpp"
 
 #include <atomic>
@@ -103,15 +103,15 @@ struct FactorCurve {
   std::string error; // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
   const float *nav_at(int line) const { return nav.at(line); }
 };
-// 一个池的日层篮子 (YPlanes 篮子原样搬来): 篮子 0 = 池整体, k = 1..kBaskets−1 = 本池按 SW2021 一级切的行业 (UI 只用 all 池的 = 申万一级)
+// 一个池的日层篮子 (BPlanes 原样搬来): 篮子 0 = 池整体, k = 1..kBaskets−1 = 本池按 SW2021 一级切的行业 (UI 只用 all 池的 = 申万一级)
 struct PoolCurve {
   std::string sig;                             // 算时的 PoolJob::sig
   std::vector<misc::Ymd> dates;                // [nd] 日层评估期
-  BookLines index;                             // [kBaskets · kWeights][nd] 篮子指数的日收益 (线序 YPlanes::index_line; UI compound 成点位)
+  BookLines index;                             // [kBaskets · kWeights][nd] 篮子指数的日收益 (线序 BPlanes::index_line; UI compound 成点位)
   std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal][kBaskets · nd] 篮子估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值 / 加权 = 整体法收益率; NaN = 当日不可算)
-  double turn[kWeights] = {};                  // [Weight] 篮子 0 日均单边换手 (YPlanes::turn; 再平衡 + 成分进出, 停牌 = 移出再移回)
+  double turn[kWeights] = {};                  // [Weight] 篮子 0 日均单边换手 (BPlanes::turn; 再平衡 + 成分进出, 停牌 = 移出再移回)
   std::string error;
-  const float *index_of(size_t k, int w) const { return index.at(YPlanes::index_line(k, w)); } // 篮子 k 的日收益 [nd]
+  const float *index_of(size_t k, int w) const { return index.at(BPlanes::index_line(k, w)); } // 篮子 k 的日收益 [nd]
   const float *val_of(size_t k, int w, int m) const { return val[w][m].data() + k * dates.size(); }
 };
 struct PortfolioResult {
@@ -119,7 +119,7 @@ struct PortfolioResult {
   std::map<std::string, std::shared_ptr<const PoolCurve>> pools;     // PoolJob::key →
 };
 
-class PortfolioService : public Service<PortfolioService, PortfolioRequest>, public Published {
+class PortfolioService : public Service<PortfolioService, PortfolioRequest>, public FactorWorker {
   friend Service<PortfolioService, PortfolioRequest>;
 
 public:
@@ -130,7 +130,6 @@ public:
   // UI 持 mutex 读
   PortfolioResult result;
   uint64_t result_gen = 0;                      // result 每变一次 +1 (UI 派生缓存键)
-  std::string message;                          // 本轮说明 (如 "特征库判废"), 空 = 无
   std::atomic<int> jobs_done{0}, jobs_total{0}; // 本轮要算的 (因子 + 池)
 
 private:
@@ -142,7 +141,6 @@ private:
   bool run_jobs(const std::vector<const Job *> &todo, std::map<std::string, std::shared_ptr<const Curve>> &out, Flow &F); // false = 取消 / 判废
   bool eval(const HoldJob &j, Flow &F, FactorCurve &out);                                                                 // false = 取消 / 判废
   bool eval(const PoolJob &j, Flow &F, PoolCurve &out);                                                                   // false = 取消 / 判废
-  bool stale_out(Flow &F);                                                                                                // 库判废: 弃缓存 + 置 message; 恒 false
 
   std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活
 };

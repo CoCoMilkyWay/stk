@@ -1,0 +1,289 @@
+// FactorsProbe — 探针层 (一个根的一种输出; 引擎 FactorsEngine 按 need 备原料, 逐钩子调): 装载层 (FactorsLoad) 之上, 引擎之下.
+//   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
+//   通用探针 Hold / Cost / CostRows / Valid / Rank / Alpha / IcPdf / Rows 四服务共用, 服务私有探针 (Search 抽样 / Inspect 分层 / Portfolio 曲线) 在各自 .cpp;
+//   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); cost_tiers 换手成本 (块间续攒, 可另落逐行); alpha_dist alpha 分布
+//   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / Portfolio 曲线同一份).
+// include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
+#pragma once
+
+#include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Cpu.hpp" // Workspace / NoExt
+#include "gui/task_factors/services/FactorsLoad.hpp"
+#include "misc/exec.hpp"
+#include "shared/Analysis.hpp" // AggPdf / KLLcache
+
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace GUI::Factors {
+
+// ---- 根上的统计核 ----
+// 池内有效计数 (格 [i0, i1), 块间可加): on += Σ(m ∧ gate), all += Σgate (gate = 截面池 cs_valid; 池外格不进分子分母)
+void valid_count(const uint8_t *m, const uint8_t *gate, size_t i0, size_t i1, uint64_t &on, uint64_t &all);
+// 可秩率行和 (行 [t0, t1), 块间可加): 逐行 = 所在并列块 (同 r16) 不超过 ⌈nv / kGroups⌉ 只的格数 / nv (nv = 该行 m ∧ gate 格数;
+// 整行 kRankNone → 0), sum += 各 nv ≥ 1 行之和, rows += 行数. rx = 该因子的 r16 [T][A] (rank_x 出)
+void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, double &sum, long long &rows);
+// alpha 分布 (AlphaDist, FactorsTable.hpp) 两趟, 每趟条带并行: 每线程一份 KLL + 缓冲批量 addBatch, 末尾合并进线程 0 那份.
+//   趟 1: 全体样本 → 矩 + 截尾范围 [lo, hi]; 同趟逐行: 截面均值 (series) + 各组 min / max → 相邻组边界中点, 各组和 / 数
+//   趟 2: 只收 [lo, hi] 内样本 → pdf
+void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o);
+// 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
+MiniPdf mini_pdf_of(const analysis::AggPdf &p);
+// 换手成本 (Stat 契约【换手成本】, Run / Inspect / Portfolio 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份), s = 块形 (统计行 [t_lo, T)),
+// L = 所评持有期的标签 (有效位 / cap), Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → 续攒进 out[c].acc[hi] (c 按 y.ad 序, hi 按 L.hd 序;
+// out 空 → 先按 y.ad 建). w = Stat CPU 工作区 (ensure 过 C = y.ad.n); 无金额段 → out 空.
+// land 非空 → 另落逐行 land[(c·H + hi)·s.T + t] (cost_rows 的 land; 无金额段按一段排, 只出量)
+void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const factor::stat::Span &s, const factor::stat::Labels &L, const YPlanes &y,
+                factor::cpu::stat::Workspace &w, std::vector<CostTier> &out, factor::stat::CostAcc *land = nullptr);
+// 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 不 ok → 0)
+inline double group_abs(const factor::stat::Row &r, int k, double cap) {
+  return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt[factor::stat::kLong], cap) : 0.0;
+}
+
+// ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
+//   need              原料位 (引擎据此算 / 拷回)
+//   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
+//   open(c)           本块评前 (单线程; 落地平面在作用域首块定形)
+//   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内行 ∈ [t_lo, T), hi = Probes::hd 下标)
+//   root(c, v)        本块原料就绪 (全核)
+//   finish(c)         全部块之后 (c = 末块)
+//   bytes(sh, H)      宿主另占 (字节; 预算)
+// 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按绝对行 t0_abs + t)
+enum Need : uint8_t {
+  kNeedRows = 1,  // 一级 Row 进 row 钩子
+  kNeedRx = 2,    // r16(x) [T][A]
+  kNeedLc = 4,    // 腿码 [T][A]
+  kNeedMask = 8,  // 根掩码 [T][A]
+  kNeedAlpha = 16 // 根的输入平面
+};
+// 根的 r16 抽样行 (CPU 拷宿主 rx / GPU 批核 search_ranks): 行 t0 + i·stride (i < n_rows) → out[n_rows][A]
+struct Ranks {
+  void *src = nullptr;
+  int k = 0;
+  void (*fn)(void *src, int k, int t0, int stride, int n_rows, uint16_t *out) = nullptr;
+  void operator()(int t0, int stride, int n_rows, uint16_t *out) const {
+    assert(fn && "本路径无抽样行");
+    fn(src, k, t0, stride, n_rows, out);
+  }
+};
+// 一个根在本块的原料 (两后端同形; 块内 [T][A]); 缺的 (need 没要) 为空
+struct RootView {
+  factor::stat::Plane x;     // 根: m 要 kNeedMask; v 只 CPU
+  factor::stat::Plane alpha; // 根的输入 (kNeedAlpha)
+  factor::stat::Frame f = factor::stat::Frame::CS;
+  const uint16_t *rx = nullptr;             // r16(x) (kNeedRx)
+  const uint8_t *lc = nullptr;              // 腿码 (kNeedLc)
+  const factor::stat::Accum *acc = nullptr; // [L.hd.n] 本块累加
+  Ranks ranks;
+};
+// 探针的上下文 (一块)
+struct Ctx {
+  misc::exec::ForkJoin &ex;
+  const ScopeCache &c;
+  const factor::stat::Labels &L;             // 所评持有期 (Probes::hd) 的标签 + cap
+  factor::cpu::stat::Workspace *w = nullptr; // Stat 宿主工作区 (CPU / GPU 逐根时有; 批核 / finish 空)
+  factor::stat::Span s() const { return c.span(); }
+};
+// 落地平面: 作用域首块 (t0_abs = 0) 定形清零, 其后各块按绝对行写
+template <class T>
+void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s) {
+  if (s.t0_abs == 0)
+    v.assign(n, T{});
+  assert(v.size() == n && "落地平面与作用域不符");
+}
+
+template <class... P>
+struct Probes {
+  std::tuple<P...> p;
+  factor::stat::Holds hd; // 只评这些持有期 (n = 0 → Y 全部); 钩子的 hi 按它
+  static constexpr uint8_t need = (uint8_t{0} | ... | P::need);
+  static constexpr bool cells = (false || ... || !std::is_same_v<typename P::Ext, factor::cpu::stat::NoExt>);
+  struct Ext {
+    std::tuple<typename P::Ext...> e;
+    void cell(unsigned x, bool ok, const float *y) {
+      std::apply([&](auto &...q) { (q.cell(x, ok, y), ...); }, e);
+    }
+  };
+  template <class Q>
+  Q &at() { return std::get<Q>(p); }
+  template <class Q>
+  const Q &at() const { return std::get<Q>(p); }
+  static double bytes(const Shape &sh, int H) { return (0.0 + ... + P::bytes(sh, H)); }
+  Ext ext() const {
+    return std::apply([](const P &...q) { return Ext{std::tuple<typename P::Ext...>{q.ext()...}}; }, p);
+  }
+  void open(const Ctx &c) {
+    std::apply([&](P &...q) { (q.open(c), ...); }, p);
+  }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) {
+    [&]<size_t... I>(std::index_sequence<I...>) { (std::get<I>(p).row(hi, t, r, std::get<I>(e.e)), ...); }(std::index_sequence_for<P...>{});
+  }
+  void root(const Ctx &c, const RootView &v) {
+    std::apply([&](P &...q) { (q.root(c, v), ...); }, p);
+  }
+  void finish(misc::exec::ForkJoin &ex, const ScopeCache &c) {
+    const factor::stat::Labels L = labels_pick(labels_of(c.y), hd);
+    const Ctx cx{ex, c, L, nullptr};
+    std::apply([&](P &...q) { (q.finish(cx), ...); }, p);
+  }
+};
+// accum_rows 的 sink (Stat/Cpu.hpp): 行进探针
+template <class Ps>
+struct ProbeSink {
+  Ps *ps;
+  using Ext = typename Ps::Ext;
+  Ext ext() const { return ps->ext(); }
+  void row(int i, int t, const factor::stat::Row &r, const Ext &e) const { ps->row(i, t, r, e); }
+};
+
+// 探针的空钩子 (各探针按需遮蔽)
+struct ProbeBase {
+  using Ext = factor::cpu::stat::NoExt;
+  static double bytes(const Shape &, int) { return 0.0; }
+  Ext ext() const { return {}; }
+  void open(const Ctx &) {}
+  void row(int, int, const factor::stat::Row &, const Ext &) {}
+  void root(const Ctx &, const RootView &) {}
+  void finish(const Ctx &) {}
+};
+// 二级 HoldStat[H] (毛): 块间 Accum 续攒 → finish_all
+struct HoldP : ProbeBase {
+  static constexpr uint8_t need = 0;
+  factor::stat::Accum acc[factor::stat::kMaxHold];
+  int n_hold = 0;
+  factor::stat::HoldStat hold[factor::stat::kMaxHold];
+  void root(const Ctx &c, const RootView &v) {
+    for (int i = 0; i < c.L.hd.n; ++i)
+      acc[i].merge(v.acc[i]);
+  }
+  void finish(const Ctx &c) {
+    n_hold = c.L.hd.n;
+    factor::stat::finish_all(acc, c.L.hd, c.c.y.sh.seg, hold);
+  }
+};
+// 换手成本 CostTier[C] (契约【换手成本】): 块间续攒
+struct CostP : ProbeBase {
+  static constexpr uint8_t need = kNeedLc;
+  std::vector<CostTier> costs;
+  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs); }
+};
+// CostP + 逐行换手落地 [H][rows_all] (cost_tiers 的 land; 至多一个金额段, 无段只出量); H > 1 只整块 (land 行距 = 块行数)
+struct CostRowsP : CostP {
+  std::vector<factor::stat::CostAcc> *dst = nullptr;
+  static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::CostAcc) * static_cast<double>(H) * sh.T; }
+  void open(const Ctx &c) {
+    const factor::stat::Span s = c.s();
+    assert(c.c.y.ad.n <= 1 && (c.L.hd.n == 1 || (s.t0_abs == 0 && s.T == c.c.rows_all())) && "逐行换手: 至多一个金额段; 多持有期只整块");
+    land_open(*dst, static_cast<size_t>(c.L.hd.n) * c.c.rows_all(), s);
+  }
+  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs, dst->data() + c.s().t0_abs); }
+};
+// 池内有效率 valid% (统计行)
+struct ValidP : ProbeBase {
+  static constexpr uint8_t need = kNeedMask;
+  uint64_t on = 0, all = 0;
+  float pct = 0.f;
+  void root(const Ctx &c, const RootView &v) {
+    const factor::stat::Span s = c.s();
+    valid_count(v.x.m, c.c.y.gate.data(), static_cast<size_t>(s.t_lo) * s.A, s.n(), on, all);
+  }
+  void finish(const Ctx &) {
+    assert(all > 0 && "截面池全空: 区间内无在池格");
+    pct = 100.f * static_cast<float>(on) / static_cast<float>(all);
+  }
+};
+// 可秩率 rank% (统计行)
+struct RankP : ProbeBase {
+  static constexpr uint8_t need = kNeedRx | kNeedMask;
+  double sum = 0.0;
+  long long rows = 0;
+  float pct = 0.f;
+  void root(const Ctx &c, const RootView &v) {
+    const factor::stat::Span s = c.s();
+    rank_sum(c.ex, v.rx, v.x.m, c.c.y.gate.data(), s.t_lo, s.T, s.A, sum, rows);
+  }
+  void finish(const Ctx &) {
+    assert(rows > 0 && "截面池全空: 区间内无在池格");
+    pct = static_cast<float>(100.0 * sum / static_cast<double>(rows));
+  }
+};
+// alpha 分布 (与持有期无关; 两趟扫整张量 → 只整块)
+struct AlphaP : ProbeBase {
+  static constexpr uint8_t need = kNeedAlpha | kNeedRx;
+  AlphaDist d;
+  void root(const Ctx &c, const RootView &v) {
+    const factor::stat::Span s = c.s();
+    assert(s.t0_abs == 0 && s.t_lo == 0 && s.T == c.c.rows_all() && "alpha 分布只整块");
+    alpha_dist(c.ex, v.alpha.v, v.alpha.m, v.rx, s.T, s.A, d);
+  }
+};
+// 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 (与 Inspect 左下左半同一组样本)
+struct IcPdfP : ProbeBase {
+  static constexpr uint8_t need = kNeedRows;
+  int T = 0;
+  std::vector<float> ric;    // 本块 [hi][T] (非 ok = NaN), root 收进 kll
+  std::vector<KLLcache> kll; // [hi]
+  MiniPdf pdf[factor::stat::kMaxHold];
+  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
+  void open(const Ctx &c) {
+    T = c.s().T;
+    ric.assign(static_cast<size_t>(c.L.hd.n) * T, std::numeric_limits<float>::quiet_NaN());
+    while (kll.size() < static_cast<size_t>(c.L.hd.n))
+      kll.emplace_back(analysis::kAggKllCapacity, analysis::kAggKllResolution);
+  }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
+    if (r.ok)
+      ric[static_cast<size_t>(hi) * T + t] = r.ric;
+  }
+  void root(const Ctx &c, const RootView &) {
+    std::vector<float> ok;
+    ok.reserve(static_cast<size_t>(T));
+    for (int i = 0; i < c.L.hd.n; ++i) {
+      ok.clear();
+      for (int t = 0; t < T; ++t)
+        if (const float v = ric[static_cast<size_t>(i) * T + t]; !std::isnan(v))
+          ok.push_back(v);
+      kll[static_cast<size_t>(i)].addBatch(ok);
+    }
+    ric = {};
+  }
+  void finish(const Ctx &c) {
+    for (int i = 0; i < c.L.hd.n; ++i) {
+      analysis::AggPdf p;
+      p.fill(kll[static_cast<size_t>(i)], 3);
+      pdf[i] = mini_pdf_of(p);
+    }
+  }
+};
+// 一级 Row 落地 [hd.n][rows_all]
+struct RowsP : ProbeBase {
+  static constexpr uint8_t need = kNeedRows;
+  std::vector<factor::stat::Row> *dst = nullptr;
+  int T = 0, t0 = 0; // 行轴 rows_all / 本块绝对首行
+  static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::Row) * static_cast<double>(H) * sh.T; }
+  void open(const Ctx &c) {
+    const factor::stat::Span s = c.s();
+    T = c.c.rows_all(), t0 = s.t0_abs;
+    land_open(*dst, static_cast<size_t>(c.L.hd.n) * T, s);
+  }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &) { (*dst)[static_cast<size_t>(hi) * T + t0 + t] = r; }
+};
+// 二级 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份; scope / eval_ms 归调用方)
+template <class Ps>
+void fill_eval(const Ps &p, EvalStat &st) {
+  const HoldP &h = p.template at<HoldP>();
+  st.valid_pct = p.template at<ValidP>().pct;
+  st.rank_pct = p.template at<RankP>().pct;
+  st.n_hold = h.n_hold;
+  std::copy_n(h.hold, h.n_hold, st.hold);
+  st.costs = p.template at<CostP>().costs;
+}
+
+} // namespace GUI::Factors

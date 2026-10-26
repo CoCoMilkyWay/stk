@@ -1250,7 +1250,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     }
     const int sdone = static_cast<int>(ss.done.load(std::memory_order_relaxed)), stotal = static_cast<int>(ss.total.load(std::memory_order_relaxed)),
               nc = ss.chunks();
-    const int n_cand = s_sr.holds.empty() ? 0 : static_cast<int>(s_sr.holds[0].cands.size()); // 每 h 列的是同一批候选
+    const int n_cand = static_cast<int>(s_sr.cands.size());
     const ImVec4 busy = StatusColor(TaskStatus::Kind::Busy);
     // 评估行: "<阶段>: N 候选 × C 块 (done/total)" (单块不写块数)
     const auto eval_line = [&](const std::string &phase) {
