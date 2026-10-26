@@ -20,7 +20,7 @@
 //   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all) + TailRow[H][T] (两腿组内更极端的
 //                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search),
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
-//   N  净值                                                → 每持有期 FactorsBook run_book (分批 1/h, 买不进空着, 卖不出延长; Y 带 book 平面) → nav 日收益
+//   N  净值                                                → 每持有期 FactorsBook run_book (换仓点分批 1/h, 买不进空着, 卖不出延长; Y 带 book 平面) → nav 日收益
 //                                                            (分层 / 尾部 / LS 的绝对 + 超额, 只毛)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
@@ -67,8 +67,8 @@ struct TailRow {
 };
 
 // 分层累计净值 (FactorsBook 引擎, 每持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(腿, j) = 该腿组内第 j 级尾部 (全按做多);
-// LS 线 0 = 顶底 (G20 多 + G1 空, 两腿超额之和), 1 + j = 第 j 级尾部. 净值线 (InspectResult::nav) = 分层绝对 [0, kNavLayers) | 分层超额 (− 基准
-// Row::mkt[kLong]) [kNavLayers, 2 kNavLayers) | LS [2 kNavLayers, kNavLines); 值 = 日收益 (当日各行 (1 + 增量) 连乘 − 1)
+// LS 线 0 = 顶底 (G20 多 + G1 空, 两腿超额之和), 1 + j = 第 j 级尾部. 净值线 (InspectResult::nav) = 分层绝对 [0, kNavLayers) | 分层超额 (− 引擎基准:
+// 批的有秩 ∧ 买得进 资产收益等权均值, 分钟 / 收盘型即 Row::mkt[kLong]) [kNavLayers, 2 kNavLayers) | LS [2 kNavLayers, kNavLines); 值 = 日收益 (当日各行 (1 + 增量) 连乘 − 1)
 inline constexpr int kNavLayers = factor::stat::kGroups + factor::stat::kLegs * kTails;
 inline constexpr int kNavLs = 1 + kTails;
 inline constexpr int kNavLines = 2 * kNavLayers + kNavLs;

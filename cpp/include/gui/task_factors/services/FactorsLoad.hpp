@@ -33,6 +33,8 @@ struct Workspace;
 
 namespace GUI::Factors {
 
+struct BookSpec; // FactorsBook.hpp
+
 // ---- 评估作用域 (一个因子; 同文件各权重同叶 → 同一份) ----
 struct EvalScope {
   PoolId pool = kAllPool;            // 因子池 (目录)
@@ -82,17 +84,17 @@ struct YSpec {
   Amts ad;                // 成本段 (LegCol::key, 字段表里有; 空 = 不装)
   float max_impact = 0.f; // 买入冲击封顶 (Config::max_impact; ad 非空时 > 0): buy = min(原值, 封顶)
   bool index = false;     // 篮子 (池整体 + 行业) 两权重指数 / 估值 + 池换手 (close_adj + 权重 + 估值 + 行业平面装完即算, 不留)
-  bool book = false;      // 留净值引擎的可成交位 + 估值价 (YPlanes::trade / px / open; FactorsBook): Portfolio / Inspect 净值线
+  bool book = false;      // 留净值引擎的可成交位 + 估值价 (YPlanes::trade / px; FactorsBook): Portfolio / Inspect 净值线
   std::string key() const;
 };
 // 每格平面字节 (check::Plane: float + u8)
 inline constexpr double kPlaneBytes = 5.0;
-// 宿主装载量 (字节 / 格): X = 叶 5 · codes; Y = 门控 1 + 两腿 (lv, sv, m) 5 · (hd + ad) + close 5 + 权重 4 + 估值 (价 / 股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 28
-//   + 行业 1 + 上一有效 close 行 4 + 带值 close 4 + 可成交 1 (index, 装载期峰值) + 可成交 1 + 估值价 4 + 开盘价 4 (book, 开盘按日 ≤ 4)
+// 宿主装载量 (字节 / 格): X = 叶 5 · codes; Y = 门控 1 + 标签两腿 (lv, sv, m) 5 · hd + 成本两腿 (无 m) 4 · ad + close 5 + 权重 4 + 估值 (价 / 股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 28
+//   + 行业 1 + 上一有效 close 行 4 + 带值 close 4 + 可成交 1 (index, 装载期峰值) + 可成交 1 + 估值价 4 (book)
 double cell_bytes(const XSpec &s);
 double cell_bytes(const YSpec &s);
 
-// 两腿平面 (标签 / 成本同形): fp16 位 (与落盘同格式, Stat 直接吃) + 有效位 (池内 ∧ 两腿皆有限)
+// 两腿平面 (标签 / 成本同形): fp16 位 (与落盘同格式, Stat 直接吃) + 有效位 (标签: 池内 ∧ 两腿皆有限 ∧ 可成交; 成本无: 池内恒有限, 池外 0)
 struct LegPlane {
   std::vector<uint16_t> v[factor::stat::kLegs];
   std::vector<uint8_t> m;
@@ -101,7 +103,7 @@ struct LegPlane {
 inline factor::stat::Label label_of(const LegPlane &p, const uint16_t *ry) {
   return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data(), ry};
 }
-inline factor::stat::Cost cost_of(const LegPlane &p) { return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data()}; }
+inline factor::stat::Cost cost_of(const LegPlane &p) { return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}}; }
 
 struct XPlanes {
   Shape sh;
@@ -116,7 +118,7 @@ struct YPlanes {
   std::vector<LegPlane> labels; // [hold] 两腿毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t. 有效位另要建仓行两向可成交 (kTrBoth; 字段表有可成交列时),
                                 //   值照写 (留仓 / 交接不成交, 净值引擎照用它的收益)
   Amts ad;                      // [amt] = YSpec::ad
-  std::vector<LegPlane> costs;  // [amt] 两腿建仓冲击 (比例): 买入 (封顶) / 卖出; 采样同标签, 吃不到 = NaN → 无效
+  std::vector<LegPlane> costs;  // [amt] 两腿建仓冲击 (比例): 买入 (封顶) / 卖出; 采样同标签, 池内恒有限 (装载断言), 无有效位
   // 篮子 (YSpec::index, 只日层; 池整体与行业同形): 篮子 0 = 池整体, k = 1..kBaskets−1 = SW2021 一级行业 k (本池成分按行业切, 全A 池 = 申万一级;
   //   行业未知的只进篮子 0); [kBaskets · T], 篮子 k 行 t 在 [k · T + t]
   static constexpr size_t kBaskets = fund::SW2021_L1_COUNT;
@@ -133,17 +135,20 @@ struct YPlanes {
   double turn[kWeights] = {};                  // [Weight] 篮子 0 的每行单边换手 ½ Σ|w_t − w̃_{t−1}| (w̃ = 上一成分行的权按本行收益漂移; 含再平衡 + 成分进出)
                                                //   沿成分行均值, 首行建仓不计
   double n_full = 0.0;                         // 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 池内平均每行有效资产数 / kGroups: 池宽决定, 与因子无关
-  // 净值引擎 (YSpec::book ∧ 字段表有可成交列, FactorsBook BookSpec; 空 = 恒可成交, Lob 档):
-  std::vector<uint8_t> trade; // [T][A] kTr* 位 (本层 can_buy / can_sell 行末, can_buy_open / can_sell_open 当日开盘); index 装载期也用 (不 book 则算完即弃)
-  std::vector<float> px;      // [T][A] 本行有成交的后复权收盘 (否则 0): 卡住的仓估值
-  std::vector<float> open;    // [days][A] 当日后复权开盘 = 首个有成交行的 open × close_adj / close (否则 0): Open 型卡住的仓估值
+  // 净值引擎 (YSpec::book, FactorsBook BookSpec):
+  std::vector<uint8_t> trade; // [T][A] kTr* 位 (本层 can_buy / can_sell 行末; 字段表有可成交列才有, 空 = 恒可成交, Lob 档);
+                              //   index 装载期也用 (不 book 则算完即弃)
+  std::vector<float> px;      // [T][A] 本行有成交的后复权收盘 (否则 0): 卡住的仓估值 / Day 型 (T+N) 收盘换仓的成交价
 };
 // 标签的契约视图 (未预处理, ry 空; cap = n_full). 会话 open (cpu / gpu stat_open) 自己预处理
 factor::stat::Labels labels_of(const YPlanes &y);
+// 净值引擎的形 + 平面 (FactorsBook BookSpec, y 须 book 装): 持有期键 → 型 / 批数 / 尾部键.
+// 篮子 (nb / side / fields) 与成本份数 (unit_in) 归调用方
+BookSpec book_spec(const YPlanes &y, int hold);
 
 // 逐天并行读 (ex 抢单) es.days[d0, d1) 按 spec 装进 X / Y (覆盖; 形 days × A → T, 容量断言在此). 两侧同一份骨架:
 // 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影), 列全部 Col::ref(es.pool);
-// X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | 可成交 ×4 (有则装) | close_adj close (index / book) | open (book)
+// X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | 可成交 ×2 (有则装) | close_adj close (index / book)
 //   | total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm ind_l1 (index) | 标签 [hd][kLegs] | 成本 [ad][kLegs]
 // (标签库网格层本层列).
 // lr 须按 es.rs.libs 开好. 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 每天 prog.publish(1), 不 begin
@@ -214,7 +219,7 @@ MiniPdf mini_pdf_of(const analysis::AggPdf &p);
 void ic_mini_pdfs(const factor::stat::Row *rows, int H, int T, MiniPdf *out);
 
 // 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份),
-// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c) + cover) → out[c].acc[hi] (c 按 y.ad 序, hi 按 y.hd 序), cover = Σ(有秩 ∧ 成本有效) / Σ 有秩.
+// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → out[c].acc[hi] (c 按 y.ad 序, hi 按 y.hd 序).
 // w = Stat CPU 工作区 (ensure 过 C = y.ad.n); 无金额段 → out 空
 void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const YPlanes &y, factor::cpu::stat::Workspace &w, std::vector<CostTier> &out);
 

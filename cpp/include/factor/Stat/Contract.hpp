@@ -46,10 +46,11 @@
 //     ok     标签侧有效: 非段末尾部 (见下) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0). 组可空 (不再整行作废).
 //     rac    rank AC: Pearson(r16_x(t), r16_x(t−h)) over 两行都有效的资产 —— lag = h 行 (hold_rows) 才对应"一个持有期换多少仓".
 //     ok_rac t ≥ h ∧ n ≥ 2 ∧ 两侧方差 > 0. 与标签无关, 段末尾部也算.
-//     段末尾部 (仅分钟型): 行 t 的标签 = 该行末分钟 m = minute(t_seg) (Contract【层几何】) 的 L_1min 标签, entry 锚点 = 分钟 m+1 起始;
+//     段末尾部 (分钟型 / 收盘型): 行 t 的标签 = 该行末分钟 m = minute(t_seg) (Contract【层几何】) 的 L_1min 标签, entry 锚点 = 分钟 m+1 起始;
 //       最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前一分钟的起始 = L_1min 行 kLastAnchorRow 的锚点.
-//       exit = 分钟 m+n 的锚点, m + n 越过它就"持有到收盘", 持有期缩短 → 掩掉 minute(t_seg) + n > kLastAnchorRow 的行 (tail_masked).
-//       日级型全段 exit 同一时刻, 无尾部.
+//       分钟型 exit = 分钟 m+n 的锚点, m + n 越过它就"持有到收盘", 持有期缩短 → 掩掉 minute(t_seg) + n > kLastAnchorRow 的行 (tail_masked);
+//       收盘型 m 越过它 = 收盘价建仓即平 (标签恒 0) → 同式 n 取 0. 开盘型 exit 在次日之后, 无尾部.
+//       尾部行不开仓: 换手成本 / 净值引擎 (FactorsBook) 同一判据.
 //     ok / ok_rac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
 //
 //   【持有期键 hold】int, 与 features 层 LabelLob 的列名同源 (lb_<side>_<name>); 键的单位是**分钟**, 与因子所在层无关:
@@ -77,12 +78,13 @@
 //
 //   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Inspect 期限结构净线) 在二级上扣 (Search 不看成本, 只评排序):
 //     交易的只是两腿的组 (多腿 = 顶组, 空腿 = 底组). 成本只看**腿码** lc = leg_code(r16) ∈ {kLcLong, kLcShort, kLcMid, kLcVoid} (u8 平面,
-//     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx). 每 (t, h) 行, 腿成员 = lc(t) = 腿 ∧ 成本有效的格; 其中 lc(t−h) ≠ 该腿 (含当时
-//     rank 无效) 的记作**新进者**, 只有新进者付一次往返 = 建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额段, 买入已按
-//     Config::max_impact 封顶) + 平仓侧固定冲击 fixed_impact; 留仓成员不付. 每 h 一份 CostAcc, 按【持仓口径】逐行加权:
-//     每行一腿成本 = (Σ新进者冲击 + 新进者数 · fixed_impact) / max(腿样本数, cap), 沿 t 求和; 每期成本 cost(腿) = 该和 / n_all (与 ls_period 同分母).
-//     只在有 lag 行 (t ≥ h) 的行上攒, 不看 ok / 尾部 (entry 成本与标签无关). 未加权的计数 (腿样本 / 新进者 / 冲击和) 只给换手占比 / 均冲击显示.
-//     同一遍顺带 cover 计数 (lc ≠ kLcVoid 的格 / 其中成本有效的格, 与 h 无关).
+//     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx). 每 (t, h) 行, 腿成员 = lc(t) = 腿的格 (成本在池内恒有限, 装载层断言);
+//     其中前一批没持有该腿的记作**新进者**: 前一批 = t−h 行 (分钟型 / 开盘型, 须开过仓: t ≥ h 且 t−h 非尾部), 其 lc ≠ 该腿 (含当时
+//     rank 无效); 没有前一批 (区间首 h 行 / t−h 是尾部 / 收盘型当日全平) 则全部是新进者. 只有新进者付一次往返 = 建仓冲击 imp[腿][a]
+//     (多腿买入 / 空腿卖出, 单一金额段, 买入已按 Config::max_impact 封顶) + 平仓侧固定冲击 fixed_impact; 留仓成员不付.
+//     每 h 一份 CostAcc, 按【持仓口径】逐行加权: 每行一腿成本 = (Σ新进者冲击 + 新进者数 · fixed_impact) / max(腿样本数, cap),
+//     沿 t 求和; 每期成本 cost(腿) = 该和 / n_all (与 ls_period 同分母). 尾部行 (tail_masked, 不开仓) 不攒, 其余不看 ok (entry 成本与标签无关).
+//     未加权的计数 (腿样本 / 新进者 / 冲击和) 只给换手占比 / 均冲击显示.
 //     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
@@ -319,20 +321,22 @@ FACTOR_HD inline int grp_of(unsigned r16) {
   return g < kGroups - 1 ? g : kGroups - 1;
 }
 
-// 段末尾部 (exit 锚点 = 行末分钟 + n 的锚点越过最后可成交锚点 → 标签持有到收盘, 持有期缩短) → 掩掉; 日级型无尾部. t = 绝对行号
-FACTOR_HD inline bool tail_masked(int t, int hold, const Geo &g) { return hold_intraday(hold) && g.minute(t % g.S) + hold > kLastAnchorRow; }
+// 段末尾部 (见文件头【Row】段末尾部; 不开仓): 分钟型 exit 锚点越过最后可成交锚点 (持有期缩短) / 收盘型 entry 锚点越过 (收盘价建仓即平);
+// 开盘型无尾部. t = 绝对行号
+FACTOR_HD inline bool tail_masked(int t, int hold, const Geo &g) {
+  return hold <= kHoldClose && g.minute(t % g.S) + (hold_intraday(hold) ? hold : 0) > kLastAnchorRow;
+}
 
 // ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线共用) ----
 
-// 单一金额段的建仓冲击: 两腿冲击 + 有效位, [T][A] 平面的指针 (宿主或设备, 由后端定)
+// 单一金额段的建仓冲击: 两腿冲击, [T][A] 平面的指针 (宿主或设备, 由后端定); 池内恒有限 (装载层断言)
 struct Cost {
-  const uint16_t *imp[kLegs] = {};                                                         // 建仓冲击 fp16 位: 多腿买入 / 空腿卖出
-  const uint8_t *m = nullptr;                                                              // 有效位
-  FACTOR_HD Cost at(size_t i) const { return {{imp[kLong] + i, imp[kShort] + i}, m + i}; } // 偏到第 i 格 (行首 = t·A)
+  const uint16_t *imp[kLegs] = {};                                                  // 建仓冲击 fp16 位: 多腿买入 / 空腿卖出
+  FACTOR_HD Cost at(size_t i) const { return {{imp[kLong] + i, imp[kShort] + i}}; } // 偏到第 i 格 (行首 = t·A)
 };
 
 // 腿码 (两后端 / Inspect 同一份): r16 → 顶组 kLcLong / 底组 kLcShort / 其他组 kLcMid / rank 无效 kLcVoid. 前两个与 Leg 同值:
-// 腿成员 = lc ∈ {kLong, kShort} (还须成本有效, 调用方查 Cost::m); 腿 l 的新进者 = lc(t−h) ≠ l (含当时 rank 无效)
+// 腿成员 = lc ∈ {kLong, kShort}; 腿 l 的新进者 = 前一批腿码 ≠ l (含当时 rank 无效; 没有前一批 = 全 kLcVoid)
 enum LegCode : uint8_t { kLcLong = kLong,
                          kLcShort = kShort,
                          kLcMid,
@@ -347,15 +351,15 @@ FACTOR_HD inline uint8_t leg_code(unsigned x) {
 // 一腿的换手成本和
 struct CostLeg {
   double imp = 0.0;  // 新进者 Σ建仓冲击
-  long long n = 0;   // 腿样本数 (lc = 该腿 ∧ 成本有效)
-  long long e = 0;   // 其中新进者数 (t−h 时不在该组)
+  long long n = 0;   // 腿样本数 (lc = 该腿)
+  long long e = 0;   // 其中新进者数 (前一批不在该组)
   double wimp = 0.0; // 按持仓加权: Σ_行 (该行新进者冲击和 / max(该行腿样本数, cap))
   double we = 0.0;   // 按持仓加权: Σ_行 (该行新进者数 / max(该行腿样本数, cap))
 };
 // 一个持有期的换手成本累加器 (两腿); 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
 struct CostAcc {
   CostLeg leg[kLegs];
-  long long rows = 0; // 攒过的行数 (有 lag 的行各计一次)
+  long long rows = 0; // 攒过的行数 (非尾部行各计一次)
   FACTOR_HD void merge(const CostAcc &o) {
     for (int l = 0; l < kLegs; ++l) {
       leg[l].imp += o.leg[l].imp, leg[l].n += o.leg[l].n, leg[l].e += o.leg[l].e;

@@ -150,7 +150,6 @@ bool Config::SaveToFile() {
   j["stamp"] = stamp;
   j["fixed_impact"] = fixed_impact;
   j["max_impact"] = max_impact;
-
   std::ofstream file(filepath);
   if (!file.is_open()) {
     if (log_callback) {

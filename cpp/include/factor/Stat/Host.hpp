@@ -11,7 +11,7 @@
 //     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算; 满仓 cap 进持仓口径);
 //                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和, branchless select;
 //                 逐格扩展 Ext (调用方专属的附加统计, 同一遍同一个 J; NoExt 编译期消掉, Inspect 尾部分层用)
-//     cost_row    一行 t 的换手成本 + cover, H 个持有期 × C 个金额段一遍 A 轴 (契约腿码 lc 逐格) → CostAcc[C][H] + cover[1 + C].
+//     cost_row    一行 t 的换手成本, H 个持有期 × C 个金额段一遍 A 轴 (契约腿码 lc 逐格) → CostAcc[C][H].
 //                 Run (stat.costs) / Inspect 期限结构净线共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
@@ -141,10 +141,9 @@ inline void lag_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_rac = ok ? 1u : 0u;
 }
 
-// 换手成本 + cover (契约【换手成本】): lc = 本行腿码; lag[i] = t−h_i 行腿码 (没有 → nullptr, 该持有期不攒); c[k] 已偏到行首; cap = 满仓
-//   → acc[k·H + i] (腿计数, 新进者累建仓冲击; 本行先攒进 row 再按 max(腿样本数, cap) 折进加权和); cov[0] += 有秩格数, cov[1 + k] += 其中成本 k 有效
-//   (与 h 无关, 每行一次)
-inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const Cost *c, int C, int A, double cap, CostAcc *acc, long long *cov) {
+// 换手成本 (契约【换手成本】): lc = 本行腿码; lag[i] = 持有期 i 的前一批腿码 (没有前一批 → 全 kLcVoid 行; 本行尾部不开仓 → nullptr,
+//   该持有期不攒); c[k] 已偏到行首; cap = 满仓 → acc[k·H + i] (腿计数, 新进者累建仓冲击; 本行先攒进 row 再按 max(腿样本数, cap) 折进加权和)
+inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const Cost *c, int C, int A, double cap, CostAcc *acc) {
   CostLeg row[factor::stat::kMaxCost * factor::stat::kMaxHold][kLegs] = {};
   for (int i = 0; i < H; ++i)
     if (lag[i])
@@ -152,20 +151,13 @@ inline void cost_row(const uint8_t *lc, const uint8_t *const *lag, int H, const 
         ++acc[k * H + i].rows;
   for (int a = 0; a < A; ++a) {
     const int l = lc[a];
-    if (l == kLcVoid)
-      continue;
-    ++cov[0];
-    for (int k = 0; k < C; ++k)
-      cov[1 + k] += c[k].m[a] != 0;
-    if (l == kLcMid)
+    if (l >= kLcMid)
       continue;
     for (int i = 0; i < H; ++i) {
       if (!lag[i])
         continue;
       const bool ent = lag[i][a] != l;
       for (int k = 0; k < C; ++k) {
-        if (!c[k].m[a])
-          continue;
         CostLeg &g = row[k * H + i][l];
         ++g.n;
         if (ent)

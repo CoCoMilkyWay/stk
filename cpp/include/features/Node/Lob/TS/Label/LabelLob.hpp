@@ -26,9 +26,10 @@
 //     exit 锚点落在连续竞价结束之后 (行 m+n 的锚点 ≥ 14:57, 即 m+n ≥ kSegLen − kCloseAuction − 1; 永不捕获) → 持有到收盘 (T0 当日平仓):
 //       按当日末笔成交价 (= 收盘竞价撮合价, 无撮合则连续竞价末笔; 取 MinuteData 末 bar close) 平仓 —— 用成交而非时钟判收盘 (见 day_end)
 //     entry 锚点后再无可成交簿 (14:57 起) → 收盘价建仓 (mid = close, 冲击 0): 分钟型 / 收盘型 即建即平 = 0, 开盘型 = 收盘买次日开盘卖
-//     中间价: 买一 / 卖一 皆在取均值; 一侧全空 (涨跌停封板) 取另一侧 (= 涨跌停价); 双侧全空 → 无价, 这笔交易成不了, 收益 0 (未建仓)
-//     冲击成本: 全簿吃不完 / 封板该侧全空 → 余量按涨跌停价成交 (与 Book 吃单成本同约, 见 calc_vwap); 该侧全空且无涨跌停价可补
-//       (无限制股) → 吃不到, 成本 NaN (消费端扣减时该格无效) —— 这是成本特征唯一的 NaN 来源
+//     中间价: 买一 / 卖一 皆在取均值; 一侧全空 (涨跌停封板) 取另一侧 (= 涨跌停价)
+//     冲击成本: 全簿吃不完 / 封板该侧全空 → 余量按涨跌停价成交 (与 Book 吃单成本同约, 见 calc_vwap)
+//     可成交簿另要两侧都吃得到 (有中间价; 该侧全空须有涨跌停价补余量, 无限制股的单边簿 / 双侧全空不算) → 吃不到的簿同集合竞价簿,
+//       不入环, entry 顺延. 【不产 NaN (成本)】入环的簿两侧 VWAP 恒正, 成本恒有限, 消费端不判有效
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node). 一份盘口快照环 (中间价 + 各金额段冲击) 给 entry 用, 分钟型 exit 复用后续行的 entry:
 //   snapshot(t)                 每次 onDepth 先调: 只记账, 快照惰性结算 —— 同一秒内只有最后一次
@@ -72,11 +73,11 @@ inline constexpr size_t LABEL_AMT_COUNT = std::size(LABEL_AMOUNT_WAN);
 
 // 可成交盘口快照 (entry 用): 中间价 + 各金额段吃单冲击
 struct LobSnapshot {
-  float px = 0.0f;                       // 中间价 (建仓价); 0 = 双侧全空, 无价
-  float cost_buy[LABEL_AMT_COUNT] = {};  // 吃 ask a 万: VWAP^A/mid − 1 (≥0); NaN = 吃不到 (该侧全空且无涨停价)
-  float cost_sell[LABEL_AMT_COUNT] = {}; // 吃 bid a 万: 1 − VWAP^B/mid (≥0); NaN 同上
+  float px = 0.0f;                       // 中间价 (建仓价; 收盘价建仓 at_price 可为 0 = 全日无成交)
+  float cost_buy[LABEL_AMT_COUNT] = {};  // 吃 ask a 万: VWAP^A/mid − 1 (≥0)
+  float cost_sell[LABEL_AMT_COUNT] = {}; // 吃 bid a 万: 1 − VWAP^B/mid (≥0)
   size_t sec_index = 0;
-  bool valid = false;
+  bool valid = false; // 可成交簿 (两侧吃得到, 见 materialize)
 };
 
 class LabelLob : public LabelHold<LobSnapshot> {
@@ -194,10 +195,12 @@ private:
   }
 
   // 悬着的活跃秒结算入环: offset=1 在下一次盘口更新到来时 (Depth 环上一格 = 该秒终簿), offset=0 在收盘 (环末即该秒终簿)
+  //   终簿吃不到 (valid = false) 即不入环, 不算活跃秒
   inline void flush_pending(size_t offset) {
     Snapshot &s = ring_[pending_sec_ % RING_SIZE];
     materialize(s, pending_sec_, offset);
-    last_sec_ = pending_sec_;
+    if (s.valid)
+      last_sec_ = pending_sec_;
     pending_sec_ = kNoPending;
   }
 
@@ -224,33 +227,38 @@ private:
   }
 
   // 从 Depth 环末尾回退 offset 格的盘口状态结算快照 (0 = 当前更新, 1 = 上一次更新):
-  //   中间价 = (买一 + 卖一)/2; 一侧全空 (封板) 取另一侧 (= 涨跌停价); 双侧全空 → 0 (无价).
-  //   冲击 = 吃 a 万的 VWAP 相对中间价 (余量按涨跌停价, 见 calc_vwap); 吃不到 (VWAP 0) 或无中间价 → NaN
+  //   中间价 = (买一 + 卖一)/2; 一侧全空 (封板) 取另一侧 (= 涨跌停价).
+  //   可成交 (valid) = 有中间价 ∧ 两侧各自吃得到 (有挂单, 或有涨跌停价补余量; 边界 NaN 比较恒 false); 否则不结算冲击
+  //   冲击 = 吃 a 万的 VWAP 相对中间价 (余量按涨跌停价, 见 calc_vwap), 可成交簿恒有限
   //   px 存后复权价 (mid × 当日复权比); 冲击是同日比值, 按原始价算
   void materialize(Snapshot &snap, size_t t_sec, size_t offset) const {
     assert(px_scale_ > 0.0f && "有可成交盘口但当日无复权比 (bar1d adjust_factor 缺失)");
     snap.sec_index = t_sec;
-    snap.valid = true;
     assert(bid_price_[0].size() > offset && ask_price_[0].size() > offset && "materialize: Depth 环深度不足 offset");
     const size_t k = bid_price_[0].size() - 1 - offset;
     const float b1 = bid_price_[0][k], a1 = ask_price_[0][k];
     const bool has_b = b1 > 1e-6f && bid_qty_[0][k] > 1e-6f, has_a = a1 > 1e-6f && -ask_qty_[0][k] > 1e-6f;
     const float mid = has_b && has_a ? 0.5f * (b1 + a1) : (has_b ? b1 : (has_a ? a1 : 0.0f));
     snap.px = mid * px_scale_;
+    snap.valid = mid > 1e-6f && (has_a || lim_up_ > 0.0f) && (has_b || lim_dn_ > 0.0f);
+    if (!snap.valid)
+      return;
     for (size_t a = 0; a < AMT_COUNT; ++a) {
       const float amt = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f;
       const float vb = calc_vwap(ask_price_, ask_qty_, amt, true, offset, lim_up_);  // 吃 ask (买入): 余量按涨停
       const float vs = calc_vwap(bid_price_, bid_qty_, amt, false, offset, lim_dn_); // 吃 bid (卖出): 余量按跌停
-      snap.cost_buy[a] = mid > 1e-6f && vb > 1e-6f ? vb / mid - 1.0f : kNaN;
-      snap.cost_sell[a] = mid > 1e-6f && vs > 1e-6f ? 1.0f - vs / mid : kNaN;
+      assert(vb > 1e-6f && vs > 1e-6f && "materialize: 可成交簿两侧须吃得到");
+      snap.cost_buy[a] = vb / mid - 1.0f;
+      snap.cost_sell[a] = 1.0f - vs / mid;
     }
   }
 
   // 指定 t_sec 时刻的快照; 深度不是每秒都更新, 向前找 ≤60s 内最近的有效快照
   const Snapshot *get_snapshot(size_t target) const {
-    if (target == pending_sec_) { // 当前秒未结算: 从环末现算 (只有锚点查询走到, 频次 ~分钟级)
+    if (target == pending_sec_) { // 当前秒未结算: 从环末现算 (只有锚点查询走到, 频次 ~分钟级); 吃不到则照常回溯
       materialize(scratch_, target, 0);
-      return &scratch_;
+      if (scratch_.valid)
+        return &scratch_;
     }
     const auto &s = ring_[target % RING_SIZE];
     if (s.valid && s.sec_index == target)
@@ -272,7 +280,9 @@ private:
     for (size_t t_sec = target + 1; t_sec <= limit; ++t_sec) {
       if (t_sec == pending_sec_) { // 当前秒未结算, 同 get_snapshot: 从环末现算
         materialize(scratch_, t_sec, 0);
-        return &scratch_;
+        if (scratch_.valid)
+          return &scratch_;
+        continue;
       }
       const auto &s = ring_[t_sec % RING_SIZE];
       if (s.valid && s.sec_index == t_sec)
@@ -284,7 +294,7 @@ private:
   // 模拟吃单: 遍历盘口深度算 VWAP (返回; 吃不到一股 → 0). is_buy: 吃 ask (qty 存负值); 否则吃 bid (正值)
   // offset: 从 Depth 环末尾回退几格取盘口 (所有档的环长同步推进, 下标一致)
   // limit_px: 全簿吃不完时余量的成交价 (买 → 涨停, 卖 → 跌停), 与 Book 的吃单成本同约;
-  //           涨跌停封板 (该侧全空, 如涨停无卖盘) 也走这条; 边界 NaN (无限制股) 不补 → 可能 0
+  //           涨跌停封板 (该侧全空, 如涨停无卖盘) 也走这条; 边界 NaN (无限制股) 不补 → 该侧全空时 0 (materialize 已判不可成交)
   static inline float calc_vwap(const DepthSeries &price, const DepthSeries &qty, float amount, bool is_buy, size_t offset, float limit_px) {
     assert(price[0].size() > offset && "calc_vwap: Depth 环深度不足 offset");
     float cost = 0.0f, sh = 0.0f;
@@ -342,13 +352,13 @@ private:
 #define LABEL_ROW_LONG(name, kind, n, X, CAT1) LABEL_ROW(X, CAT1, long, "buy", "Long", "做多", R"(\frac{P_{exit}-P^{mid}_{entry}}{P^{mid}_{entry}})", name, kind, n)
 #define LABEL_ROW_SHORT(name, kind, n, X, CAT1) LABEL_ROW(X, CAT1, short, "sell", "Short", "做空", R"(\frac{P^{mid}_{entry}-P_{exit}}{P^{mid}_{entry}})", name, kind, n)
 #define LABEL_GROUP(name, kind, n, X, CAT1) LABEL_ROW_LONG(name, kind, n, X, CAT1) LABEL_ROW_SHORT(name, kind, n, X, CAT1)
-// 建仓冲击成本 (比例, ≥0): 与标签同一 entry 盘口, 吃 a 万元的成交 VWAP 相对中间价的偏离; 全簿不足余量按涨跌停价成交; 该侧全空且无涨跌停价 = NaN
+// 建仓冲击成本 (比例, ≥0): 与标签同一 entry 盘口, 吃 a 万元的成交 VWAP 相对中间价的偏离; 全簿不足余量按涨跌停价成交; 两侧吃不到的簿不入环 (顺延), 不产 NaN
 // 描述统一四段: 口径 | 吃单 | 边界 | 净收益换算 (买入 / 卖出逐词对应)
 #define LABEL_COST_BUY(a, X, CAT1)                                                         \
   X(lb_cost_buy_##a##w, CAT1, ratio_pos, "Entry Buy Impact " #a "w", "买入冲击(" #a "万)", \
-    "建仓买入冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价. 边界: 全簿不足余量按涨停价成交, 卖侧全空且无涨停价则NaN. 做多净收益=lb_long_*−本列−Config::fixed_impact", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LABEL)
+    "建仓买入冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价. 边界: 全簿不足余量按涨停价成交; 两侧吃不到的簿不算可成交, entry顺延. 做多净收益=lb_long_*−本列−Config::fixed_impact", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LABEL)
 #define LABEL_COST_SELL(a, X, CAT1)                                                          \
   X(lb_cost_sell_##a##w, CAT1, ratio_pos, "Entry Sell Impact " #a "w", "卖出冲击(" #a "万)", \
-    "建仓卖出冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃bid " #a "万元, 成交VWAP相对中间价的折价. 边界: 全簿不足余量按跌停价成交, 买侧全空且无跌停价则NaN. 做空净收益=lb_short_*−本列−Config::fixed_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LABEL)
+    "建仓卖出冲击(比例≥0; 标签不含). 吃单: entry同一盘口吃bid " #a "万元, 成交VWAP相对中间价的折价. 边界: 全簿不足余量按跌停价成交; 两侧吃不到的簿不算可成交, entry顺延. 做空净收益=lb_short_*−本列−Config::fixed_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LABEL)
 
 #define FIELDS_L_1min_LabelLob(X, CAT1) LABEL_GROUPS(LABEL_GROUP, X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)

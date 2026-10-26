@@ -212,19 +212,16 @@ PortfolioCurve compound(const Inc &s, int i, double x0) {
   return c;
 }
 // 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorsBook 逐行增量 (已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在实现时刻:
-//   Row 型 (分钟) = 行末分钟; Close 型 = 当日收盘; Open 型 (T+N) = 第 N 日起的日首行 → 开盘 (该行另有收盘建仓的成本, 一并记开盘), 其余行 → 行末分钟
+//   Row 型 (分钟) = 行末分钟; Close 型 / Day 型 (T+N) = 当日收盘
 template <class Wt>
 Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_impact, const Wt &wt) {
   const int S = f.seg;
   const factor::Geo g = factor::geo_of(S);
   const BookKind kind = book_kind(f.hold);
-  const size_t N = kind == BookKind::Open ? static_cast<size_t>(f.hold - factor::stat::kHoldDayBase) : 0;
   assert(!f.dates.empty() && f.pnl.size() == f.dates.size() * static_cast<size_t>(S));
   const auto row_x = [&](size_t dl, int ts) -> size_t {
-    if (kind == BookKind::Close)
+    if (kind != BookKind::Row)
       return x_at(di[dl], kClose);
-    if (kind == BookKind::Open && ts == 0 && dl >= N)
-      return x_at(di[dl], kOpen);
     return x_at(di[dl], static_cast<size_t>(g.minute(ts)));
   };
   Inc o;
@@ -738,9 +735,10 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
   ImGui::TextDisabled("有冲击");
   if (ImGui::IsItemHovered())
     tip("换手成本 = 各因子自己的最小冲击段, 不可选\n"
-        "• 只在真成交时记: 每行开 1/h 净值一批, 上一批已持有的留仓不成交; 买不进的空着, 卖不出的延长到下个平仓点再判\n"
-        "• Lob 层: 建仓 = 最小金额段冲击 (封顶 max_impact, 吃不到按封顶), 平仓 = 固定冲击 %.1f bp\n"
-        "• Bar 层 (无冲击段): 建仓 / 平仓都按固定冲击 %.1f bp\n"
+        "• 只在真成交时记: 每个换仓点开 1/h 净值一批 (分钟 / 收盘型每行, T+N 每日一次), 上一批已持有的留仓不成交;\n"
+        "  买不进的空着, 卖不出的延长到下个可成交时点再判\n"
+        "• Lob 层分钟 / 收盘型: 建仓 = 最小金额段冲击 (封顶 max_impact), 平仓 = 固定冲击 %.1f bp\n"
+        "• Bar 层 (无冲击段) 与 T+N (收盘集合竞价): 建仓 / 平仓都按固定冲击 %.1f bp\n"
         "• 组合只算 G20 多头; 无冲击线不扣",
         fixed_impact * 1e4, fixed_impact * 1e4);
   ImGui::SameLine();

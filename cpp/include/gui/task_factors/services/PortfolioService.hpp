@@ -6,9 +6,10 @@
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条 flow (FactorsLoad 装载 → Engine<Cpu> walk → rank_x), 再按该 hold 跑
-//   FactorsBook 净值引擎 (G20 多头一个篮子: 每行开 1/h 净值一批, 意向等权 1 / max(只数, 满仓), 买不进空着, 卖不出延长) → FactorCurve 逐行出参.
-//   成本只在真成交时记: Lob 层建仓 = 最小金额段买入冲击 (封顶 max_impact, 吃不到按封顶) + 平仓一份 Config::fixed_impact; Bar 层无金额段 = 建仓 / 平仓
-//   各一份 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
+//   FactorsBook 净值引擎 (G20 多头一个篮子: 每个换仓点开 1/h 净值一批 (换仓点 / 成交价见 FactorsBook.hpp【成交价】),
+//   意向等权 1 / max(只数, 满仓), 买不进空着, 卖不出延长) → FactorCurve 逐行出参.
+//   成本只在真成交时记: Lob 层分钟 / 收盘型建仓 = 最小金额段买入冲击 (封顶 max_impact) + 平仓一份 Config::fixed_impact; Bar 层无金额段 与 T+N
+//   (集合竞价) = 建仓 / 平仓各一份 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
 // 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes 篮子 → PoolCurve): 篮子 (池整体 + 行业) 两权重指数 (FactorsBook h = 1) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
 //   滚动分位 band 在 UI 按可调窗长现算) + 池整体日均单边换手.
 // 因子 ↔ 池 同一套缓存: 按 Job::key 存, 曲线记算时的 Job::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
@@ -90,12 +91,12 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 
 // ---- 结果 ----
 // 一个因子 (该 hold) 的 G20 多头净值引擎 (FactorsBook) 逐行出参 [T = days · seg]: 占净值的增量, 记在实现所在行 (Row 型 = 本行, Close 型 = 收盘行,
-// Open 型 = 开盘所在行; 交接 / 卡住实现 = 本行)
+// Day 型 = 当日收盘行; 卡住的卖出 / 转交 = 本行)
 struct FactorCurve {
   std::string sig;              // 算时的 FactorJob::sig
   std::vector<misc::Ymd> dates; // [days]
   int seg = 0, hold = 0;
-  int amt = 0;                      // 建仓冲击金额段 (万) = 该层最小段; 0 = 无段 (Bar 层) → 建仓也付一份 fixed_impact
+  int amt = 0;                      // 建仓冲击金额段 (万) = 该层最小段; 0 = 无段 (Bar 层 / Day 型集合竞价) → 建仓也付一份 fixed_impact
   std::vector<float> pnl, imp, fix; // [T] 毛收益 / 建仓冲击 / 固定冲击份数 (UI × Config::fixed_impact); 净 = pnl − imp − fix · fixed_impact
   std::vector<float> expo;          // [days] 当日各行行末仓位的均值 (1 = 满仓; 含卡住的)
   std::string error;                // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空

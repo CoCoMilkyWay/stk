@@ -237,29 +237,6 @@ std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<con
 // Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_y 命中)
 std::string group_of(const FactorJob &j) { return std::to_string(j.scope.seg) + "|" + j.scope.pool; }
 
-// run_book 的 src: G20 多头一个篮子. 意向 = rx 落 G20, 权 = wt[t] = 1 / book_den(意向只数, 满仓); 收益 = 做多标签; 建仓冲击 = 买入冲击 (Lob; 吃不到按封顶)
-struct LongSrc {
-  const uint16_t *rx;
-  const LegPlane *lab, *cost; // cost = nullptr: 无金额段 (Bar)
-  const float *wt;            // [T]
-  double max_impact;
-  size_t A;
-  uint64_t mask(int t, size_t a) const {
-    const uint16_t r = rx[static_cast<size_t>(t) * A + a];
-    return r != factor::stat::kRankNone && factor::stat::grp_of(r) == factor::stat::leg_group(kLong);
-  }
-  double weight(int t, size_t, int) const { return wt[t]; }
-  bool enter(int t, size_t a) const { return lab->m[static_cast<size_t>(t) * A + a]; }
-  double ret(int c, size_t a) const { return factor::cpu::stat::h2f(lab->v[kLong][static_cast<size_t>(c) * A + a]); }
-  double bench(int) const { return 0.0; }
-  double cost_in(int t, size_t a) const {
-    if (!cost)
-      return 0.0;
-    const size_t i = static_cast<size_t>(t) * A + a;
-    return cost->m[i] ? factor::cpu::stat::h2f(cost->v[kLong][i]) : max_impact;
-  }
-};
-
 } // namespace
 
 PortfolioService::PortfolioService() { Start(); }
@@ -407,28 +384,20 @@ bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
   if (cancelled())
     return false;
 
-  // ---- G20 多头净值引擎 (FactorsBook) ----
+  // ---- G20 多头净值引擎 (FactorsBook; 一个篮子 = rx 落 G20, 秩平面 RankSrc) ----
+  BookSpec bs = book_spec(y, j.hold);
   assert(y.ad.n <= 1);
-  out.amt = y.ad.n ? y.ad.a[0] : 0;
-  const size_t nA = static_cast<size_t>(A);
-  std::vector<float> wt(static_cast<size_t>(T));
-  F.ex.rows(T, [&](int t0, int t1, int) {
-    for (int t = t0; t < t1; ++t) {
-      int c = 0;
-      for (size_t a = 0; a < nA; ++a) {
-        const uint16_t r = F.rx[static_cast<size_t>(t) * nA + a];
-        c += r != factor::stat::kRankNone && factor::stat::grp_of(r) == factor::stat::leg_group(kLong);
-      }
-      wt[static_cast<size_t>(t)] = static_cast<float>(1.0 / factor::stat::book_den(c, cap));
-    }
-  });
-  BookSpec bs;
-  bs.T = T, bs.A = A, bs.S = y.sh.seg, bs.h = factor::stat::hold_rows(j.hold, factor::geo_of(sc.seg)), bs.hold = j.hold, bs.kind = book_kind(j.hold);
+  out.amt = y.ad.n && bs.kind != BookKind::Day ? y.ad.a[0] : 0; // Day 型集合竞价成交, 无盘口冲击
+  const auto g20 = [](uint16_t r16) { return uint64_t{factor::stat::leg_code(r16) == factor::stat::kLcLong}; };
+  const std::vector<float> wt = intent_weights(F.ex, F.rx.data(), T, A, 1, g20, [cap](int) { return cap; });
   bs.nb = 1, bs.side[0] = 1, bs.fields = bk_bit(kBkImp) | bk_bit(kBkFix) | bk_bit(kBkExpo);
-  bs.trade = y.trade.empty() ? nullptr : y.trade.data(), bs.px = y.px.empty() ? nullptr : y.px.data(), bs.open = y.open.empty() ? nullptr : y.open.data();
   bs.unit_in = out.amt > 0 ? 0.0 : 1.0;
+  const LegPlane &lab = y.labels[static_cast<size_t>(hi)];
   BookOut bo;
-  run_book(F.ex, bs, LongSrc{F.rx.data(), &y.labels[static_cast<size_t>(hi)], y.ad.n ? &y.costs[0] : nullptr, wt.data(), sc.max_impact, nA}, bo);
+  run_book(F.ex, bs,
+           RankSrc<decltype(g20)>{F.rx.data(), g20, wt.data(), 1, lab.v[kLong].data(), lab.m.data(), out.amt > 0 ? y.costs[0].v[kLong].data() : nullptr,
+                                  static_cast<size_t>(A)},
+           bo);
   const auto take = [&](BookField k, std::vector<float> &v) {
     const double *p = bo.at(k, 0);
     v.assign(p, p + T);

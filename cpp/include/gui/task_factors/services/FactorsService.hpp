@@ -17,7 +17,7 @@
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
-//         "costs": [{amt, cover, acc: [[CostAcc]…]}…],          //   每金额段 × 每持有期换手成本累加器 (Inspect 净线从它算)
+//         "costs": [{amt, acc: [[CostAcc]…]}…],               //   每金额段 × 每持有期换手成本累加器 (Inspect 净线从它算)
 //         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 因子表小图空): 每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
@@ -149,7 +149,7 @@ struct YCols {
   Col cs;                 // cs_valid (标签 + 截面门控平面)
   Col ohlc[4];            // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
   Col close_adj;          // 后复权收盘价 (池等权指数): lob_close_adj / close_adj_<n>min / close_adj_day
-  Col trade[4];           // 可成交 can_buy / can_sell (行末) / can_buy_open / can_sell_open (当日开盘): Bar 档 Tradable 本层列 <x>_<n>min / <x>_day (FactorsBook kTr* 同序)
+  Col trade[2];           // 可成交 can_buy / can_sell (行末): Bar 档 Tradable 本层列 <x>_<n>min / <x>_day (FactorsBook kTr* 同序)
   bool has_trade = false; // Lob 档无可成交列: 恒可成交
   Col total_shares;       // 总股本 / 归母净利 TTM (pl_npp_ttm) / 归母权益 MRQ (bs_eq) / 营业总收入 TTM (pl_rev_ttm) / 经营现金流 TTM (cf_ocf_ttm) /
                           // 股息率 TTM (dy_ttm): 只日层设, 池估值 EP / BP / SP / CP / DY (整体法); 总股本另作池加权指数的权重 = close_day × 本列
@@ -212,13 +212,12 @@ struct StatScope {
   double n_full = 0.0;     // 满仓一腿只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
 // 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
-// 两腿按真实换手扣, 每 (t, h) 行只有新进者 (t−h 不在该组) 付建仓冲击 + fixed_impact; 均摊成本 cost(腿) 随 h 变 (h 越长留仓越多).
-// 买入冲击按 Config::max_impact 封顶后进 (装载时). 吃不满深度的格 (成本 NaN) 不计入 → 大金额段均值偏低, cover 把它亮出来.
+// 两腿按真实换手扣, 每 (t, h) 行只有新进者 (前一批不在该组) 付建仓冲击 + fixed_impact; 均摊成本 cost(腿) 随 h 变 (h 越长留仓越多).
+// 买入冲击按 Config::max_impact 封顶后进 (装载时; 池内恒有限, 特征层不产 NaN).
 // Run 每因子每金额段都攒 (落 stat.costs), Inspect 期限结构净线从它算
 struct CostTier {
   int amt = 0;                                            // 万 (= FeatureTable::costs[c].key)
   factor::stat::CostAcc acc[factor::stat::kMaxHold] = {}; // [hd.n], 与 hold 同序
-  float cover = 0.f;                                      // Σ 成本有效 / Σ rx 有效 (格数比, 不分组不分 h)
 };
 // 因子表迷你 PDF: Inspect 同款 KLL PDF (AggPdf) 线性插值到 [lo, hi] 上等距 kMiniPdfPts 点, y 按峰值归一到 [0, 1]; lo == hi → 无 (不画)
 inline constexpr int kMiniPdfPts = 32;

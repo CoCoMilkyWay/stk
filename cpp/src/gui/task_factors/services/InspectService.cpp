@@ -10,7 +10,6 @@
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cassert>
 #include <cmath>
 #include <vector>
@@ -60,22 +59,6 @@ inline double nav_cap(int b, double cap) {
   const int j = b >= kNavG1 ? b - kNavG1 - 1 : b - factor::stat::kGroups;
   return j < 0 ? cap : cap * kTailOfGroup[j % kTails];
 }
-// run_book 的 src: 意向 = rx 落篮子, 权 = 1 / book_den(意向只数, 篮子满仓); 收益 = 做多标签 (空腿 sv = −lv, side 取负), 基准 = Row::mkt[kLong] (不 ok 行 0)
-struct NavSrc {
-  const uint16_t *rx;
-  const factor::stat::Row *rows;
-  const LegPlane *lab;
-  const float *wt; // [T][kNavBaskets]
-  const int (*thr)[kTails];
-  size_t A;
-  uint64_t mask(int t, size_t a) const { return nav_bits(rx[static_cast<size_t>(t) * A + a], thr); }
-  double weight(int t, size_t, int b) const { return wt[static_cast<size_t>(t) * kNavBaskets + static_cast<size_t>(b)]; }
-  bool enter(int t, size_t a) const { return lab->m[static_cast<size_t>(t) * A + a]; }
-  double ret(int c, size_t a) const { return factor::cpu::stat::h2f(lab->v[kLong][static_cast<size_t>(c) * A + a]); }
-  double bench(int c) const { return rows[c].ok ? rows[c].mkt[kLong] : 0.0; }
-  double cost_in(int, size_t) const { return 0.0; }
-};
-
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
 struct TailExt {
   const int (*thr)[kTails];
@@ -313,31 +296,20 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   if (cancelled())
     return false;
 
-  // ---- N: 分层累计净值 (FactorsBook, 每持有期一遍; 篮子见 NavSrc) → 日收益 nav [H][kNavLines][days] ----
+  // ---- N: 分层累计净值 (FactorsBook, 每持有期一遍; 篮子 = nav_bits, 秩平面 RankSrc) → 日收益 nav [H][kNavLines][days] ----
   {
     const size_t nA = static_cast<size_t>(A), D = static_cast<size_t>(y.sh.days), S = static_cast<size_t>(y.sh.seg);
-    std::vector<float> wt(static_cast<size_t>(T) * kNavBaskets); // 意向权与持有期无关 (只看 rx)
-    F.ex.rows(T, [&](int t0, int t1, int) {
-      for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
-        int c[kNavBaskets] = {};
-        for (size_t a = 0; a < nA; ++a)
-          for (uint64_t m = nav_bits(rx[t * nA + a], thr); m; m &= m - 1)
-            ++c[std::countr_zero(m)];
-        for (int b = 0; b < kNavBaskets; ++b)
-          wt[t * kNavBaskets + static_cast<size_t>(b)] = static_cast<float>(1.0 / factor::stat::book_den(c[b], nav_cap(b, ss.L.cap)));
-      }
-    });
+    const auto bits = [&thr](uint16_t r16) { return nav_bits(r16, thr); };
+    const std::vector<float> wt = intent_weights(F.ex, rx, T, A, kNavBaskets, bits, [&](int b) { return nav_cap(b, ss.L.cap); });
     res.nav.assign(static_cast<size_t>(H) * kNavLines * D, 0.f);
     for (int hi = 0; hi < H; ++hi) {
-      const int hold = y.hd.h[hi];
-      BookSpec bs;
-      bs.T = T, bs.A = A, bs.S = y.sh.seg, bs.h = factor::stat::hold_rows(hold, factor::geo_of(y.sh.seg)), bs.hold = hold, bs.kind = book_kind(hold);
+      BookSpec bs = book_spec(y, y.hd.h[hi]);
       bs.nb = kNavBaskets, bs.fields = bk_bit(kBkBench);
       std::fill(bs.side, bs.side + kNavG1, int8_t{1});
       std::fill(bs.side + kNavG1, bs.side + kNavBaskets, int8_t{-1});
-      bs.trade = y.trade.empty() ? nullptr : y.trade.data(), bs.px = y.px.empty() ? nullptr : y.px.data(), bs.open = y.open.empty() ? nullptr : y.open.data();
+      const LegPlane &lab = y.labels[static_cast<size_t>(hi)];
       BookOut bo;
-      run_book(F.ex, bs, NavSrc{rx, pl.rows.data() + static_cast<size_t>(hi) * T, &y.labels[static_cast<size_t>(hi)], wt.data(), thr, nA}, bo);
+      run_book(F.ex, bs, RankSrc<decltype(bits)>{rx, bits, wt.data(), kNavBaskets, lab.v[kLong].data(), lab.m.data(), nullptr, nA}, bo);
       // 行增量 → 日收益: 线 i 的行增量 = 绝对 pnl | 超额 pnl − bench | LS = 两腿超额之和
       F.ex.rows(kNavLines, [&](int i0, int i1, int) {
         for (int i = i0; i < i1; ++i) {

@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <type_traits>
 
 // 因子层几何 (factor::Geo) 与特征库层对账: 每日行数 = 层有效行数; 行 t 的末分钟 = L_1min 分钟号 (箱末 bin_last_min / 日层 = 收盘分钟)
 static_assert(factor::kSegMax == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegMax 必须等于 L_1min 每日分钟数");
@@ -161,8 +162,8 @@ std::string YSpec::key() const {
 
 double cell_bytes(const XSpec &s) { return kPlaneBytes * static_cast<double>(s.codes.size()); }
 double cell_bytes(const YSpec &s) {
-  return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n + s.ad.n + (s.index ? 1 : 0)) + (s.index ? 4.0 + 28.0 + 1.0 + 4.0 + 4.0 + 1.0 : 0.0) +
-         (s.book ? 1.0 + 4.0 + 4.0 : 0.0);
+  return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n + (s.index ? 1 : 0)) + 4.0 * s.ad.n + (s.index ? 4.0 + 28.0 + 1.0 + 4.0 + 4.0 + 1.0 : 0.0) +
+         (s.book ? 1.0 + 4.0 : 0.0);
 }
 
 const factor::check::Plane *XPlanes::find(std::string_view code) const {
@@ -338,7 +339,6 @@ void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, c
       const size_t i = static_cast<size_t>(c) * A + a;
       return pc[i] > 0.f ? static_cast<double>(pc[i + A]) / pc[i] - 1.0 : 0.0;
     }
-    double bench(int) const { return 0.0; }
     double cost_in(int, size_t) const { return 0.0; }
   };
   const Src src{close, mcap, pc.data(), ind, in, trade, wsum.data(), nA, nb, +bits_of};
@@ -559,9 +559,10 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | 可成交 ×4 (有则装) | close_adj close (index / book) | open (book) | total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm
+  // ---- 列段 ts_valid | cs_valid | 可成交 ×2 (有则装) | close_adj close (index / book) | total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm
   //      ind_l1 (index) | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行) ----
-  //      可成交: 标签有效位另要建仓行两向可成交 (Run / Search / Inspect / Portfolio 的 Stat 同口径); book = 净值引擎的平面 (Lob 档无可成交列 → 不装)
+  //      可成交: 标签有效位另要建仓行两向可成交 (Run / Search / Inspect / Portfolio 的 Stat 同口径); book = 净值引擎的平面
+  //      (估值价两档都装; 可成交位只在有可成交列的档, Lob 档无 → 恒可成交)
   std::vector<ColRef> cols;
   const auto add = [&](const Col &c) {
     cols.push_back(c.ref(es.pool));
@@ -569,13 +570,13 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   };
   const size_t ts_i = add(ft.y.ts), cs_i = add(ft.y.cs);
   assert((!spec.index || factor_level(ft.seg).lvl == L_1day) && "池指数只在日层 (成员位 = 本行收盘定的池)");
-  const bool tr_on = ft.y.has_trade, book = spec.book && tr_on, px_on = spec.index || book;
+  const bool tr_on = ft.y.has_trade, px_on = spec.index || spec.book;
   const size_t tr_i = cols.size();
   if (tr_on)
     for (const Col &c : ft.y.trade)
       add(c);
   const size_t close_i = px_on ? add(ft.y.close_adj) : SIZE_MAX;
-  const size_t px_i = px_on ? add(ft.y.ohlc[3]) : SIZE_MAX, op_i = book ? add(ft.y.ohlc[0]) : SIZE_MAX;
+  const size_t px_i = px_on ? add(ft.y.ohlc[3]) : SIZE_MAX;
   const size_t sh_i = spec.index ? add(ft.y.total_shares) : SIZE_MAX, np_i = spec.index ? add(ft.y.np_ttm) : SIZE_MAX,
                eq_i = spec.index ? add(ft.y.eq_mrq) : SIZE_MAX, rv_i = spec.index ? add(ft.y.rev_ttm) : SIZE_MAX,
                cf_i = spec.index ? add(ft.y.ocf_ttm) : SIZE_MAX, dy_i = spec.index ? add(ft.y.dy_ttm) : SIZE_MAX,
@@ -591,20 +592,21 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       add(l);
 
   Y.gate.assign(n, 0);
-  const auto alloc = [&](std::vector<LegPlane> &ps, size_t k) {
+  const auto alloc = [&](std::vector<LegPlane> &ps, size_t k, bool m) {
     ps.resize(k);
     for (LegPlane &p : ps) {
       for (std::vector<uint16_t> &v : p.v)
         v.assign(n, 0);
-      p.m.assign(n, 0);
+      if (m)
+        p.m.assign(n, 0);
     }
   };
-  alloc(Y.labels, H);
-  alloc(Y.costs, C);
+  alloc(Y.labels, H, true);
+  alloc(Y.costs, C, false);
   if (tr_on && (spec.book || spec.index))
     Y.trade.assign(n, 0);
-  if (book)
-    Y.px.assign(n, 0.f), Y.open.assign(static_cast<size_t>(Y.sh.days) * A, 0.f);
+  if (spec.book)
+    Y.px.assign(n, 0.f);
   std::vector<std::vector<uint8_t>> trb(tr_on && Y.trade.empty() ? static_cast<size_t>(ex.threads()) : 0, std::vector<uint8_t>(A)); // 不留平面时每线程一行
   factor::check::Plane close;                                                                                                       // 本行有成交的后复权 close (index, 跨日除权不进收益), 装完算指数即弃
   std::vector<float> mcap;                                                                                                          // 本行总市值 = close_day × total_shares (index 加权版的权; close 无效 / 缺股本 → 0)
@@ -620,9 +622,9 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
 
   const bool read = read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
-    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (gate) ∧ 两腿皆有限 → fp16 位, 其余 0 + 无效
-    // (成本吃不到 = NaN → 无效); tr 非空 (标签) 另要本行两向可成交才有效, 值照写 (净值引擎按值算卡住前的那段)
-    const auto fold_legs = [&](size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, const uint8_t *tr) {
+    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (gate) ∧ 两腿皆有限 → fp16 位, 其余 0.
+    // 标签: 有效位另要 tr 非空时本行两向可成交, 值照写 (净值引擎按值算卡住前的那段); 成本 (cost): 池内须恒有限 (特征层不产 NaN), 无有效位
+    const auto fold_legs = [&](size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, const uint8_t *tr, bool cost) {
       for (size_t k = 0; k < out.size(); ++k) {
         View w[K];
         feature_storage_t top[K];
@@ -639,7 +641,10 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
             ok = ok && cell(w[l], a, x[l], g) && fmeta::finite(x[l]);
           for (size_t l = 0; l < K; ++l)
             p.v[l][row + a] = ok ? std::bit_cast<uint16_t>(static_cast<float>(x[l]) > cap[l] ? top[l] : x[l]) : 0;
-          p.m[row + a] = ok && (!tr || (tr[a] & kTrBoth) == kTrBoth);
+          if (cost)
+            assert((ok || !Y.gate[row + a]) && "成本在池内须有且有限 (旧 Lob 标签库: 重算)");
+          else
+            p.m[row + a] = ok && (!tr || (tr[a] & kTrBoth) == kTrBoth);
         }
       }
     };
@@ -648,13 +653,14 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       const size_t row = (d * VR + t) * A;
       const uint8_t *tr = nullptr; // 本行 kTr* 位 (可成交列 > 0.5 置位)
       if (tr_on) {
-        View w[4];
-        for (size_t k = 0; k < 4; ++k)
+        constexpr size_t NT = std::extent_v<decltype(YCols::trade)>;
+        View w[NT];
+        for (size_t k = 0; k < NT; ++k)
           w[k] = view(tr_i + k, t);
         uint8_t *f = Y.trade.empty() ? trb[tid].data() : Y.trade.data() + row;
         for (size_t a = 0; a < A; ++a) {
           uint8_t b = 0;
-          for (size_t k = 0; k < 4; ++k) {
+          for (size_t k = 0; k < NT; ++k) {
             feature_storage_t x;
             float g;
             if (cell(w[k], a, x, g) && static_cast<float>(x) > 0.5f)
@@ -666,20 +672,15 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       }
       if (px_on) { // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限
         const View wt = view(ts_i, t), wl = view(close_i, t), wp = view(px_i, t);
-        const View wo = book ? view(op_i, t) : View{};
         for (size_t a = 0; a < A; ++a) {
-          feature_storage_t c, s, px, o;
+          feature_storage_t c, s, px;
           float g;
           const bool ok = cell(wl, a, c, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, c);
           const bool okp = ok && cell(wp, a, px, g) && static_cast<float>(px) > 0.f;
           if (spec.index)
             close.v[row + a] = ok ? static_cast<float>(c) : 0.f, close.m[row + a] = ok, vpx[row + a] = okp ? static_cast<float>(px) : 0.f;
-          if (book && okp && static_cast<float>(c) > 0.f) {
+          if (spec.book && okp && static_cast<float>(c) > 0.f)
             Y.px[row + a] = static_cast<float>(c);
-            float &op = Y.open[d * A + a];
-            if (op == 0.f && cell(wo, a, o, g) && static_cast<float>(o) > 0.f)
-              op = static_cast<float>(o) * static_cast<float>(c) / static_cast<float>(px);
-          }
         }
       }
       if (spec.index) {
@@ -702,8 +703,8 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
             vind[row + a] = static_cast<uint8_t>(static_cast<float>(x));
         }
       }
-      fold_legs(lab_i, lab_cap, Y.labels, t, row, tr);
-      fold_legs(cost_i, cost_cap, Y.costs, t, row, nullptr);
+      fold_legs(lab_i, lab_cap, Y.labels, t, row, tr, false);
+      fold_legs(cost_i, cost_cap, Y.costs, t, row, nullptr, true);
     }
   });
   if (!read)
@@ -714,7 +715,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
                  Y.sh.T, Y.sh.A, Y, rows);
     pool_turn(ex, close, mcap.data(), Y.gate.data(), Y.sh.T, Y.sh.A, rows, Y.turn);
   }
-  if (!book)
+  if (!spec.book)
     Y.trade = {};
   std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);
   ex.rows(Y.sh.T, [&](int t0, int t1, int tid) {
@@ -763,6 +764,17 @@ factor::stat::Labels labels_of(const YPlanes &y) {
   for (int h = 0; h < y.hd.n; ++h)
     out.l[h] = label_of(y.labels[static_cast<size_t>(h)], nullptr);
   return out;
+}
+
+BookSpec book_spec(const YPlanes &y, int hold) {
+  assert(!y.px.empty() && "净值引擎平面未装 (YSpec::book)");
+  BookSpec bs;
+  bs.T = y.sh.T, bs.A = y.sh.A, bs.S = y.sh.seg, bs.hold = hold, bs.kind = book_kind(hold);
+  bs.h = bs.kind == BookKind::Row     ? factor::stat::hold_rows(hold, factor::geo_of(y.sh.seg))
+         : bs.kind == BookKind::Close ? y.sh.seg
+                                      : hold - factor::stat::kHoldDayBase;
+  bs.trade = y.trade.empty() ? nullptr : y.trade.data(), bs.px = y.px.data();
+  return bs;
 }
 
 std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec) {
@@ -922,14 +934,12 @@ void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const YPlanes &y, f
   for (int c = 0; c < C; ++c)
     cost[static_cast<size_t>(c)] = cost_of(y.costs[static_cast<size_t>(c)]);
   std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [c][hi]
-  std::vector<long long> nx(static_cast<size_t>(1 + C));              // [0 = 有秩格数, 1 + c = 有秩 ∧ 成本 c 有效]
-  factor::cpu::stat::cost_rows(ex, lc, y.sh.span(), y.hd, cost.data(), C, y.n_full, w, acc.data(), nx.data());
+  factor::cpu::stat::cost_rows(ex, lc, y.sh.span(), y.hd, cost.data(), C, y.n_full, w, acc.data());
   for (int c = 0; c < C; ++c) {
     CostTier &tier = out[static_cast<size_t>(c)];
     tier.amt = y.ad.a[c];
     for (int i = 0; i < H; ++i)
       tier.acc[i] = acc[static_cast<size_t>(c) * H + i];
-    tier.cover = nx[0] ? static_cast<float>(static_cast<double>(nx[static_cast<size_t>(1 + c)]) / static_cast<double>(nx[0])) : 0.f;
   }
 }
 

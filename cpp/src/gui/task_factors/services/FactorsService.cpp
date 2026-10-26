@@ -18,9 +18,11 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string_view>
+#include <type_traits>
 
 namespace GUI::Factors {
 
@@ -44,11 +46,10 @@ void erase_stats(ojson &j) {
   j.erase("stats");
 }
 
-// 一个金额段的换手成本 ↔ JSON {amt, cover, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
+// 一个金额段的换手成本 ↔ JSON {amt, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
 ojson cost_json(const CostTier &c, int n_hold) {
   ojson o;
   o["amt"] = c.amt;
-  o["cover"] = sig4(c.cover);
   ojson acc = ojson::array();
   for (int k = 0; k < n_hold; ++k)
     acc.push_back(cost_acc_json(c.acc[k]));
@@ -59,10 +60,8 @@ bool load_cost(const json &o, int n_hold, CostTier &dst) {
   if (!o.is_object())
     return false;
   CostTier t;
-  double cover = 0.0;
-  if (!json_int(o, "amt", t.amt) || !json_num(o, "cover", cover))
+  if (!json_int(o, "amt", t.amt))
     return false;
-  t.cover = static_cast<float>(cover);
   const auto ait = o.find("acc");
   if (ait == o.end() || !ait->is_array() || ait->size() != static_cast<size_t>(n_hold))
     return false;
@@ -151,7 +150,7 @@ void load_stat(const json &run, const json &j, int seg, FactorRow &r) {
   for (int k = 0; k < t.n_hold; ++k)
     if (!load_hold((*hit)[static_cast<size_t>(k)], seg, t.hold[k]))
       return;
-  const auto cit = j.find("costs"); // [amt] 每金额段 cover + [n_hold] CostAcc (cost_json 的逆)
+  const auto cit = j.find("costs"); // [amt] 每金额段 [n_hold] CostAcc (cost_json 的逆)
   if (cit == j.end() || !cit->is_array())
     return;
   t.costs.resize(cit->size());
@@ -472,9 +471,9 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
     t.y.close_adj = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
   }
   if (lv.tier == TierId::Bar) {
-    const char *trade[4] = {"can_buy", "can_sell", "can_buy_open", "can_sell_open"};
+    const char *trade[std::extent_v<decltype(YCols::trade)>] = {"can_buy", "can_sell"};
     const std::string sfx = lv.lvl == L_1day ? std::string("_day") : "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
-    for (int i = 0; i < 4; ++i)
+    for (size_t i = 0; i < std::size(trade); ++i)
       t.y.trade[i] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, (trade[i] + sfx).c_str())));
     t.y.has_trade = true;
   }
