@@ -2,13 +2,12 @@
 //   open_libs / EvalScope = 一个因子的评估作用域 (eval_scope: 所用库 + 评估期 = 落盘日交集 + A 轴 + 子池成员), worker 按因子解析;
 //   XSpec → XPlanes (因子输入叶) ↔ YSpec → YPlanes (截面门控 + 两腿平面 标签 [hold] / 成本 [amt] + 池等权指数 + 满仓只数):
 //   load_x / load_y 同一份逐天并行骨架 (n_full_of 只扫门控出满仓只数); ScopeCache + ensure_y / ensure_x = 作用域块 (Y 常驻, X 按服务策略留 / 补);
-//   check_leaf_domains 按 OpTable in 列查特征叶数据值域; valid_pct_of / rank_pct_of 根平面有效率 / 可秩率;
-//   cost_tiers 换手成本; labels_of 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
+//   Rc = 装载 / 评估的唯一结局; plan_forest 按 OpTable in 列查特征叶数据值域, 逐根归因;
+//   valid_count / rank_sum 根平面有效率 / 可秩率 (块间可加); cost_tiers 换手成本 (块间续攒);
+//   labels_of / labels_pick 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
 //   fold_exit 净值引擎 (Stat 契约【净值】: 逐行批收益在平仓行实现 1/h̄, 按 stride 求和; Inspect 分层 / Portfolio 因子线 / 池篮子指数同一份) + compound;
-//   alpha_dist alpha 分布 / ic_mini_pdfs 逐行 rIC 分布 (Inspect 大图与因子表小图同一组样本);
-//   RootRaw → finish_root → EvalStat: 根评估的宿主收尾 (Run 两后端 / Inspect 同一份).
-// 三个服务的差别只在装载之后: FactorsService 共享 DAG 顺序走全部因子只留 HoldStat (+ 因子表小图); InspectService 一棵 DAG 留一级 Row[H][T];
-// SearchService 分块流式攒候选累加器.
+//   alpha_dist alpha 分布 (Inspect 大图与因子表小图同一份).
+// 四个服务的差别只在装载之后的探针 (FactorsEngine Probes): 引擎同一份, 探针元组各自声明.
 #pragma once
 
 #include "factor/Check.hpp" // check::Plane
@@ -25,9 +24,11 @@
 #include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace factor::cpu::stat {
@@ -187,6 +188,8 @@ struct YPlanes {
 };
 // 标签的契约视图 (未预处理, ry 空; cap = n_full). 会话 open (cpu / gpu stat_open) 自己预处理
 factor::stat::Labels labels_of(const YPlanes &y);
+// L 里只取 hd 的那几组 (hd.n = 0 → L 原样; 键须都在 L.hd 里), 预处理位跟着走
+factor::stat::Labels labels_pick(const factor::stat::Labels &L, const factor::stat::Holds &hd);
 
 // 逐天并行读 (ex 抢单) es.days[d0, d1) 按 spec 装进 X / Y (覆盖; 形 days × A → T, 容量断言在此). 两侧同一份骨架:
 // 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影), 列全部 Col::ref(es.pool);
@@ -203,20 +206,34 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
 bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, misc::exec::ForkJoin &ex,
                const std::atomic<bool> &cancel, Progress &prog, double &out);
 
+// ---- 评估结局 (装载 / 评估 / 四服务同一个) ----
+enum class Rc : uint8_t { Ok,
+                          Empty,  // 作用域不成 (所用库未建 / 无共同落盘日), why
+                          Broken, // 特征叶值域越界 (全部根), why
+                          Cancel,
+                          Stale }; // 库判废 (块已 reset; 调用方置 kStaleMsg)
+inline constexpr const char *kStaleMsg = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
+
 // ---- 作用域块: Y 按 (层, 作用域, 日段, YSpec) 常驻; X 挂在同一块上 (Y 换 → X 清) ----
 //   Run = 每轮一块 (Y 跨文件复用, X retain 只留本文件的叶); Inspect = 服务一块 (X 只增); Search = 每块一个
+//   块 = 作用域日 [d0, d1) 的行 [0, T); 统计只从 t_lo 起 ([0, t_lo) = 前带 carry, 只给回看 / lag; Search 契约【分块流式】)
 struct ScopeCache {
   std::string key; // scope_key; 空 = 未装
   std::vector<misc::Ymd> dates;
   size_t d0 = 0, d1 = 0;
+  size_t nd = 0;    // 作用域总日数 (跨块落地平面的行轴 = nd · seg)
+  int t_lo = 0;     // 块内统计首行 (调用方装完置)
   uint64_t gen = 0; // 每次 reset +1 (引擎据此判会话作废)
   XPlanes x;
   YPlanes y;
+  mutable std::map<std::pair<std::string, factor::Dom>, std::string> dom; // 叶值域缓存 (叶, 严格域) → 越界值 (空 = 合); plan_forest 填
   void reset() {
     const uint64_t g = gen + 1;
     *this = ScopeCache{};
     gen = g;
   }
+  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(d0) * y.sh.seg, t_lo}; }
+  int rows_all() const { return static_cast<int>(nd) * y.sh.seg; }
 };
 std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec);
 // 键 (或日序列) 变 → reset + 装 Y (prog.begin Loading). 键中 → 不动. false = 取消 / 判废 (块已 reset)
@@ -225,28 +242,21 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
 // 先 ensure_y. retain → 先丢 codes 以外的叶; 缺的叶补装 (prog.begin Loading). false = 取消 / 判废 (已有的叶不动)
 bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const std::vector<std::string> &codes,
               bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
-// 装载结局: 取消 / 库判废 分开报 (判废 = lr.stale(), 块已 reset; 调用方置 kStaleMsg)
-enum class Load : uint8_t { Ok,
-                            Cancel,
-                            Stale };
-inline constexpr const char *kStaleMsg = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
-// 作用域块一步装齐 (四服务同一份): ensure_y → ensure_x (codes 空 ∧ retain = 只 Y). 判废 → 块 reset
-Load ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
-               const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
+// 作用域块一步装齐 (四服务同一份): ensure_y → ensure_x (codes 空 ∧ retain = 只 Y). Ok / Cancel / Stale (判废 → 块 reset)
+Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
+             const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 // 叶平面视图 (DAG 输入: 下标 = codes 下标 = Dag::feats 下标); 全部须已装
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes);
 
-// 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN). in = leaves(c, d.feats)
-void check_leaf_domains(misc::exec::ForkJoin &ex, const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in,
-                        std::string &err);
-// 整棵 Dag 按节点序查, 首个越界 → err (Inspect / Portfolio / Search 同一份; Run 逐节点归因, 直接调 check_leaf_domains)
-void check_leaves(misc::exec::ForkJoin &ex, const factor::Dag &d, const ScopeCache &c, std::string &err);
+// 森林的评估计划 (四服务同一份): 算子节点的特征叶元按 OpTable in 列的严格域逐元查块上数据 (c.dom 缓存);
+// why[k] = 根 k 子树里首个越界 (非空 = BROKEN, 不评), need = 好根子树之并 (引擎 walk 掩码). 返回好根数
+int plan_forest(misc::exec::ForkJoin &ex, const ScopeCache &c, const factor::Dag &d, std::vector<std::string> &why, std::vector<uint8_t> &need);
 
-// 池内有效率: Σ(m ∧ gate) / Σgate (gate = 截面池 cs_valid; 池外格不进分子分母)
-float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);
-// 可秩率 (%): 逐行 = 所在并列块 (同 r16) 不超过 ⌈nv / kGroups⌉ 只的格数 / nv (nv = 该行 m ∧ gate 格数; 整行 kRankNone → 0),
-// 沿 nv ≥ 1 的行取均值. rx = 该因子的 r16 [T][A] (rank_x 出)
-float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A);
+// 池内有效计数 (格 [i0, i1), 块间可加): on += Σ(m ∧ gate), all += Σgate (gate = 截面池 cs_valid; 池外格不进分子分母)
+void valid_count(const uint8_t *m, const uint8_t *gate, size_t i0, size_t i1, uint64_t &on, uint64_t &all);
+// 可秩率行和 (行 [t0, t1), 块间可加): 逐行 = 所在并列块 (同 r16) 不超过 ⌈nv / kGroups⌉ 只的格数 / nv (nv = 该行 m ∧ gate 格数;
+// 整行 kRankNone → 0), sum += 各 nv ≥ 1 行之和, rows += 行数. rx = 该因子的 r16 [T][A] (rank_x 出)
+void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, double &sum, long long &rows);
 
 // alpha 分布 (Inspect 左下右半图 / Run 落因子表小图, 同一份): 样本 = 池内有效格 (rx 有效 ∧ alpha 有效), 组号 = grp_of(rx)
 // (与 Stat 同一组). 与持有期无关
@@ -267,25 +277,11 @@ void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, cons
 
 // 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
-// 逐行 rIC 分布: rows = 一级 Row[H][T] (LandRows / gpu stat_eval 落地), ok 行的 ric 进 KLL → AggPdf (n < 3 无, 与 Accum::finish 同口径) → out[H]
-void ic_mini_pdfs(const factor::stat::Row *rows, int H, int T, MiniPdf *out);
 
-// 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份),
-// Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → out[c].acc[hi] (c 按 y.ad 序, hi 按 y.hd 序).
-// w = Stat CPU 工作区 (ensure 过 C = y.ad.n); 无金额段 → out 空
-void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const YPlanes &y, factor::cpu::stat::Workspace &w, std::vector<CostTier> &out);
-
-// ---- 根评估 (Run 两后端 / Inspect 同一份收尾): 后端只出原料 RootRaw, 宿主 finish_root 直填 EvalStat ----
-//   CPU: stat_eval (rank_x + accum_rows, sink 落一级: Run LandRows / Inspect TailSink) + leg_codes; m = 根平面掩码
-//   GPU: download 根掩码 + stat_eval (acc / rows / lc / rx 拷回); alpha = 根的输入 (叶 = 宿主平面, 否则拷回)
-struct RootRaw {                            // [T][A] 视图, 两后端同形
-  const uint8_t *m = nullptr;               // 根掩码
-  const uint16_t *rx = nullptr;             // r16(x)
-  const uint8_t *lc = nullptr;              // 腿码
-  const factor::stat::Accum *acc = nullptr; // [hd.n] 一级累加
-  factor::stat::Plane alpha;                // 根的输入 (值 + 有效位)
-};
-// st 的 valid% / rank% / n_hold + hold (finish_all) / costs (cost_tiers; w ensure 过 C = y.ad.n) + adist (alpha_dist); scope / eval_ms 归调用方
-void finish_root(misc::exec::ForkJoin &ex, const YPlanes &y, const RootRaw &r, factor::cpu::stat::Workspace &w, EvalStat &st, AlphaDist &adist);
+// 换手成本 (Stat 契约【换手成本】, Run / Inspect 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份), s = 块形 (统计行 [t_lo, T)),
+// L = 所评持有期的标签 (有效位 / cap), Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → 续攒进 out[c].acc[hi] (c 按 y.ad 序, hi 按 L.hd 序;
+// out 空 → 先按 y.ad 建). w = Stat CPU 工作区 (ensure 过 C = y.ad.n); 无金额段 → out 空
+void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const factor::stat::Span &s, const factor::stat::Labels &L, const YPlanes &y,
+                factor::cpu::stat::Workspace &w, std::vector<CostTier> &out);
 
 } // namespace GUI::Factors

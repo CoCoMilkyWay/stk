@@ -50,7 +50,6 @@
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp" // RowStatus
 #include "gui/util/Service.hpp"
-#include "misc/exec.hpp"
 #include "shared/Analysis.hpp"   // ReadScope
 #include "shared/Feature.hpp"    // Feature
 #include "shared/FeatureLib.hpp" // FeatureLib (请求的库清单)
@@ -67,7 +66,8 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-struct ScopeCache; // FactorsLoad.hpp
+enum class Rc : uint8_t; // FactorsLoad.hpp
+struct FactorFlow;       // FactorsEngine.hpp
 
 // ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 网格层 / 标签档 / 因子子目录 ----
 //   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层, 因子文件在 <config.factor_dir>/<池>/<name>/.
@@ -231,11 +231,11 @@ struct MiniPdf {
   float y[kMiniPdfPts] = {};
   bool has() const { return hi > lo; }
 };
-// 一个根的评估结果 (Run 行 / Inspect 结果同一份; FactorsLoad finish_root 直填 valid% / rank% / hold / costs, scope / eval_ms 归调用方)
+// 一个根的评估结果 (Run 行 / Inspect 结果同一份; FactorsEngine fill_eval 从探针填 valid% / rank% / hold / costs, scope / eval_ms 归调用方)
 struct EvalStat {
   StatScope scope;                       // stat 的作用域
   double eval_ms = 0;                    // 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
-  float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsLoad valid_pct_of / rank_pct_of)
+  float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsEngine ValidP / RankP)
   int n_hold = 0;
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序, 每金额段 [n_hold] CostAcc (Inspect 净线从它算)
@@ -300,8 +300,8 @@ class FactorsService : public Service<FactorsService, FactorsRequest>, public Pu
 
 public:
   static constexpr const char *kName = "FactorsWorker";
-  FactorsService() { Start(); }
-  ~FactorsService() { Stop(); }
+  FactorsService(); // 两者都在 .cpp: FactorFlow 不完整
+  ~FactorsService();
 
   void SetFeatureTable(std::shared_ptr<const FeatureTable> t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
   const FeatureTable &feats() const { return *feats_; }
@@ -318,15 +318,15 @@ private:
   Progress &board() { return *this; }
   bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
-  bool evaluate(const FactorsRequest &req, misc::exec::ForkJoin &ex); // false = 取消
-  // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 作用域块补装 + 共享 DAG 走引擎 E
-  // (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). false = 取消
+  bool evaluate(const FactorsRequest &req, FactorFlow &F); // false = 取消 / 判废
+  // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 管线 eval_job (共享森林, 作用域块 F.c 补装)
+  // 走引擎 E (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). Ok (含该文件 Empty / Broken: 行已标) / Cancel / Stale
   template <class E>
-  bool evaluate_file(const FactorsRequest &req, misc::exec::ForkJoin &ex, LibReaders &lr, ScopeCache &sc, E &eng, const std::vector<size_t> &idx,
-                     const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames);
+  Rc evaluate_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx, const std::vector<factor::expr::Expr> &exprs,
+                   const std::vector<factor::stat::Frame> &frames);
 
   std::shared_ptr<const FeatureTable> feats_;
-  std::unique_ptr<misc::exec::ForkJoin> ex_; // 首个 evaluate 懒建, 随 worker 活
+  std::unique_ptr<FactorFlow> flow_; // 首个 evaluate 懒建, 随 worker 活 (作用域块每轮用完即弃)
   std::atomic<int> broken_{0};
 };
 

@@ -708,6 +708,22 @@ factor::stat::Labels labels_of(const YPlanes &y) {
   return out;
 }
 
+factor::stat::Labels labels_pick(const factor::stat::Labels &L, const factor::stat::Holds &hd) {
+  if (hd.n == 0)
+    return L;
+  factor::stat::Labels out;
+  out.hd = hd;
+  out.cap = L.cap;
+  for (int i = 0; i < hd.n; ++i) {
+    int j = 0;
+    while (j < L.hd.n && L.hd.h[j] != hd.h[i])
+      ++j;
+    assert(j < L.hd.n && "所取持有期不在标签组里");
+    out.l[i] = L.l[j];
+  }
+  return out;
+}
+
 std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec) {
   return std::to_string(ft.seg) + "|" + es.key() + "|" + std::to_string(d0) + "-" + std::to_string(d1) + "|" + spec.key();
 }
@@ -728,6 +744,7 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   c.key = key;
   c.dates.assign(first, last);
   c.d0 = d0, c.d1 = d1;
+  c.nd = es.days.size();
   c.x.sh = c.y.sh;
   return true;
 }
@@ -759,14 +776,14 @@ bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   return true;
 }
 
-Load ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
-               const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
+             const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
   if (ensure_y(c, ft, es, lr, d0, d1, ys, ex, cancel, prog) && ensure_x(c, ft, es, lr, codes, retain, ex, cancel, prog))
-    return Load::Ok;
+    return Rc::Ok;
   if (!lr.stale())
-    return Load::Cancel;
+    return Rc::Cancel;
   c.reset();
-  return Load::Stale;
+  return Rc::Stale;
 }
 
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes) {
@@ -778,66 +795,91 @@ std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std:
   return in;
 }
 
+namespace {
+
+// 叶 p 在严格域 dom 上首个越界格的值 (空 = 有效格全落在域内; 各条带首个越界格取全局最小, 与顺序扫同一格)
+std::string out_of_dom(misc::exec::ForkJoin &ex, const factor::check::Plane &p, factor::Dom dom) {
+  const size_t n = p.v.size();
+  std::vector<size_t> first(static_cast<size_t>(ex.threads()), n);
+  ex.rows(static_cast<int>(n), [&](int i0, int i1, int tid) {
+    for (size_t i = static_cast<size_t>(i0); i < static_cast<size_t>(i1); ++i)
+      if (p.m[i] && !factor::expr::dom_holds(dom, p.v[i])) {
+        first[static_cast<size_t>(tid)] = i;
+        return;
+      }
+  });
+  const size_t i = *std::min_element(first.begin(), first.end());
+  if (i == n)
+    return {};
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(p.v[i]));
+  return buf;
+}
+
+} // namespace
+
 // 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
-// (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判
-void check_leaf_domains(misc::exec::ForkJoin &ex, const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in,
-                        std::string &err) {
-  const factor::DagNode &nd = d.nodes[static_cast<size_t>(node)];
-  if (nd.op < 0 || nd.fu.n > 0) // 融合节点只装逐点 TS 算子, 无严格域元
-    return;
-  const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
-  assert(nd.n_in == o.arity);
-  for (int s = 0; s < o.arity; ++s) {
-    const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
-    if (g.op >= 0 || !factor::dom_strict(o.in[s]))
-      continue;
-    const factor::check::Plane &p = *in[static_cast<size_t>(g.feat)];
-    const size_t n = p.v.size();
-    std::vector<size_t> first(static_cast<size_t>(ex.threads()), n); // 各条带首个越界格 (取全局最小, 与顺序扫同一格)
-    ex.rows(static_cast<int>(n), [&](int i0, int i1, int tid) {
-      for (size_t i = static_cast<size_t>(i0); i < static_cast<size_t>(i1); ++i)
-        if (p.m[i] && !factor::expr::dom_holds(o.in[s], p.v[i])) {
-          first[static_cast<size_t>(tid)] = i;
-          return;
-        }
-    });
-    const size_t i = *std::min_element(first.begin(), first.end());
-    if (i == n)
-      continue;
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(p.v[i]));
-    err = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " +
-          d.feats[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
-    return;
-  }
-}
-
-void check_leaves(misc::exec::ForkJoin &ex, const factor::Dag &d, const ScopeCache &c, std::string &err) {
-  assert(err.empty());
+// (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判.
+// 融合节点只装逐点 TS 算子, 无严格域元
+int plan_forest(misc::exec::ForkJoin &ex, const ScopeCache &c, const factor::Dag &d, std::vector<std::string> &why, std::vector<uint8_t> &need) {
+  assert(!d.roots.empty() && "森林 (build_forest) 才有根表");
   const std::vector<const factor::check::Plane *> in = leaves(c, d.feats);
-  for (int i = 0; i < static_cast<int>(d.nodes.size()) && err.empty(); ++i)
-    check_leaf_domains(ex, d, i, in, err);
-}
-
-float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n) {
-  size_t c = 0, g = 0;
-  for (size_t i = 0; i < n; ++i) {
-    c += m[i] & gate[i];
-    g += gate[i];
+  const size_t N = d.nodes.size();
+  std::vector<std::string> err(N);
+  for (size_t i = 0; i < N; ++i) {
+    const factor::DagNode &nd = d.nodes[i];
+    if (nd.op < 0 || nd.fu.n > 0)
+      continue;
+    const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
+    assert(nd.n_in == o.arity);
+    for (int s = 0; s < o.arity && err[i].empty(); ++s) {
+      const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
+      if (g.op >= 0 || !factor::dom_strict(o.in[s]))
+        continue;
+      const std::string &code = d.feats[static_cast<size_t>(g.feat)];
+      const auto [it, fresh] = c.dom.try_emplace({code, o.in[s]});
+      if (fresh)
+        it->second = out_of_dom(ex, *in[static_cast<size_t>(g.feat)], o.in[s]);
+      if (!it->second.empty())
+        err[i] = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " + code + " 含越界值 " + it->second;
+    }
   }
-  assert(g > 0 && "截面池全空: 区间内无在池格");
-  return 100.f * static_cast<float>(c) / static_cast<float>(g);
+  why.assign(d.roots.size(), {});
+  need.assign(N, 0);
+  int good = 0;
+  for (size_t k = 0; k < d.roots.size(); ++k) {
+    const std::vector<int> sub = d.subtree(d.roots[k]);
+    for (const int i : sub)
+      if (!err[static_cast<size_t>(i)].empty()) {
+        why[k] = err[static_cast<size_t>(i)];
+        break;
+      }
+    if (!why[k].empty())
+      continue;
+    ++good;
+    for (const int i : sub)
+      need[static_cast<size_t>(i)] = 1;
+  }
+  return good;
 }
 
-float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int T, int A) {
+void valid_count(const uint8_t *m, const uint8_t *gate, size_t i0, size_t i1, uint64_t &on, uint64_t &all) {
+  for (size_t i = i0; i < i1; ++i) {
+    on += m[i] & gate[i];
+    all += gate[i];
+  }
+}
+
+void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, double &sum_out,
+              long long &rows_out) {
   const int nt = ex.threads();
   std::vector<double> sum(static_cast<size_t>(nt), 0.0);
   std::vector<long long> rows(static_cast<size_t>(nt), 0);
-  ex.rows(T, [&](int t0, int t1, int tid) {
+  ex.rows(t1 - t0, [&](int r0, int r1, int tid) {
     std::vector<uint16_t> buf(static_cast<size_t>(A));
     double s = 0.0;
     long long nr = 0;
-    for (int t = t0; t < t1; ++t) {
+    for (int t = t0 + r0; t < t0 + r1; ++t) {
       const size_t base = static_cast<size_t>(t) * A;
       int nv = 0, nb = 0;
       for (int a = 0; a < A; ++a) {
@@ -864,42 +906,30 @@ float rank_pct_of(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m
     sum[static_cast<size_t>(tid)] += s;
     rows[static_cast<size_t>(tid)] += nr;
   });
-  double s = 0.0;
-  long long nr = 0;
   for (int k = 0; k < nt; ++k)
-    s += sum[static_cast<size_t>(k)], nr += rows[static_cast<size_t>(k)];
-  assert(nr > 0 && "截面池全空: 区间内无在池格");
-  return static_cast<float>(100.0 * s / static_cast<double>(nr));
+    sum_out += sum[static_cast<size_t>(k)], rows_out += rows[static_cast<size_t>(k)];
 }
 
-void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const YPlanes &y, factor::cpu::stat::Workspace &w, std::vector<CostTier> &out) {
-  const int C = y.ad.n, H = y.hd.n;
+void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const factor::stat::Span &s, const factor::stat::Labels &L, const YPlanes &y,
+                factor::cpu::stat::Workspace &w, std::vector<CostTier> &out) {
+  const int C = y.ad.n, H = L.hd.n;
   assert(lc && y.costs.size() == static_cast<size_t>(C));
-  out.assign(static_cast<size_t>(C), CostTier{});
+  if (out.empty()) {
+    out.assign(static_cast<size_t>(C), CostTier{});
+    for (int c = 0; c < C; ++c)
+      out[static_cast<size_t>(c)].amt = y.ad.a[c];
+  }
+  assert(out.size() == static_cast<size_t>(C));
   if (C == 0)
     return;
   std::vector<factor::stat::Cost> cost(static_cast<size_t>(C));
   for (int c = 0; c < C; ++c)
     cost[static_cast<size_t>(c)] = cost_of(y.costs[static_cast<size_t>(c)]);
   std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [c][hi]
-  factor::cpu::stat::cost_rows(ex, lc, y.sh.span(), labels_of(y), cost.data(), C, w, acc.data());
-  for (int c = 0; c < C; ++c) {
-    CostTier &tier = out[static_cast<size_t>(c)];
-    tier.amt = y.ad.a[c];
+  factor::cpu::stat::cost_rows(ex, lc, s, L, cost.data(), C, w, acc.data());
+  for (int c = 0; c < C; ++c)
     for (int i = 0; i < H; ++i)
-      tier.acc[i] = acc[static_cast<size_t>(c) * H + i];
-  }
-}
-
-void finish_root(misc::exec::ForkJoin &ex, const YPlanes &y, const RootRaw &r, factor::cpu::stat::Workspace &w, EvalStat &st, AlphaDist &adist) {
-  assert(r.m && r.rx && r.lc && r.acc && r.alpha.v && r.alpha.m);
-  const uint8_t *gate = y.gate.data();
-  st.valid_pct = valid_pct_of(r.m, gate, y.sh.n());
-  st.rank_pct = rank_pct_of(ex, r.rx, r.m, gate, y.sh.T, y.sh.A);
-  st.n_hold = y.hd.n;
-  factor::stat::finish_all(r.acc, y.hd, y.sh.seg, st.hold);
-  alpha_dist(ex, r.alpha.v, r.alpha.m, r.rx, y.sh.T, y.sh.A, adist);
-  cost_tiers(ex, r.lc, y, w, st.costs);
+      out[static_cast<size_t>(c)].acc[i].merge(acc[static_cast<size_t>(c) * H + i]);
 }
 
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o) {
@@ -1041,23 +1071,6 @@ MiniPdf mini_pdf_of(const analysis::AggPdf &p) {
     for (float &y : o.y)
       y /= peak;
   return o;
-}
-
-void ic_mini_pdfs(const factor::stat::Row *rows, int H, int T, MiniPdf *out) {
-  std::vector<float> ics;
-  ics.reserve(static_cast<size_t>(T));
-  for (int i = 0; i < H; ++i) {
-    ics.clear();
-    const factor::stat::Row *r = rows + static_cast<size_t>(i) * T;
-    for (int t = 0; t < T; ++t)
-      if (r[t].ok)
-        ics.push_back(r[t].ric);
-    KLLcache kll(analysis::kAggKllCapacity, analysis::kAggKllResolution);
-    kll.addBatch(ics);
-    analysis::AggPdf p;
-    p.fill(kll, 3);
-    out[i] = mini_pdf_of(p);
-  }
 }
 
 } // namespace GUI::Factors

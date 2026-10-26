@@ -7,6 +7,8 @@
 //   时间戳 → L_1min 行: 09:25 → 行 10 (撮合 bar 本身), 其余 hh:mm → 分钟 hh:mm−1 的行 (09:31 → 15, 11:30 → 134,
 //   13:01 → 135, 15:00 → 254). 14:58 / 14:59 两根 (收盘竞价期, volume 0) 照填, 无成交.
 //   无 bar 的行全 0 (volume 0 = 无成交; CoreBar 携带日内最近成交价).
+//   有成交 bar 的 amount 夹到 [volume · low, volume · high] (源数据有 amount = 0 / 整数元截断 / 与 OHLC 不同口径的 bar; 缺 → 下界):
+//   amount / volume (VWAP: 标签 entry / Trade / Tod) 恒落在本 bar 价格区间内.
 //   读盘经 fundamental::daily (与基本面表同一读侧); 代码 → ids (A 轴码表, id = 轴下标), 不在 ids 的代码跳过.
 //   分片缺失 (只许日期轴尾部, 见 bar_pipeline) → present = false, 全部资产零事件日.
 // 本 TU (Bar1mDay.cpp) precise-math: parquet 缺失值是 NaN.

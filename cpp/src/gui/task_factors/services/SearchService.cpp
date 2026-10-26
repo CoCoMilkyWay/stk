@@ -33,7 +33,6 @@ namespace {
 namespace space = factor::search::space;
 namespace surface = factor::search::surface;
 namespace fs = factor::stat;
-using factor::search::Result;
 using factor::search::Score;
 using Clock = std::chrono::steady_clock;
 
@@ -106,26 +105,45 @@ const char *coord_name(const space::Slot &s) {
   }
 }
 
-// 一块的作用域块 (X 叶 + Y 门控 / 所搜持有期的标签); 整轮缓存或单块复用. 标签秩归引擎会话 (bind 到哪块算哪块)
+// 一块的作用域块 (X 叶 + Y 门控 / 所搜持有期的标签; c.t_lo = 前带行数); 整轮缓存或单块复用. 标签秩归引擎会话 (bind 到哪块算哪块)
 struct ChunkData {
   int idx = -1; // 块号; -1 = 空
-  int t_lo = 0, t0_abs = 0;
   ScopeCache c;
 };
+
+// 一块的抽样行 (契约【多权重】): 统计区 [t_lo, T) 里绝对行 ≡ 0 (mod stride) 的行 = 块内行 t_first + i·stride (i < n_rows)
+struct Samp {
+  int t_first = 0, n_rows = 0;
+};
+Samp samp_of(int T, int t_lo, int t0_abs, int stride) {
+  int t = t_lo;
+  while ((t0_abs + t) % stride != 0)
+    ++t;
+  return {t, t < T ? (T - 1 - t) / stride + 1 : 0};
+}
+// 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数)
+struct SampleP : ProbeBase {
+  static constexpr uint8_t need = 0;
+  std::vector<uint16_t> *dst = nullptr;
+  int stride = 1, off = 0;
+  void root(const Ctx &c, const RootView &v) {
+    const fs::Span s = c.s();
+    const Samp sm = samp_of(s.T, s.t_lo, s.t0_abs, stride);
+    if (sm.n_rows > 0)
+      v.ranks(sm.t_first, stride, sm.n_rows, dst->data() + static_cast<size_t>(off) * s.A);
+    off += sm.n_rows;
+  }
+};
+using SearchProbes = Probes<HoldP, SampleP>;
 
 // 一个候选 (评过 / 待评); 分数每 h 一份
 struct Entry {
   std::vector<double> u;
   factor::expr::Expr e;
-  Result r;
+  SearchProbes ps; // 跨块续攒 (每趟开头重置)
   Score sc[fs::kMaxHold];
   std::vector<uint16_t> r16; // 抽样行 r16 [行][A] (评时落, 截面相关用)
   int pass = -1;             // 评过的趟; -1 = 待评
-};
-
-// 一块的抽样行: 块内行 t_first + i·stride (i < n_rows), 落在候选 r16 的第 off 行起
-struct Samp {
-  int t_first = 0, n_rows = 0, off = 0;
 };
 
 // 一个 h 的曲面 + 终选 (每趟后重算)
@@ -138,19 +156,10 @@ struct Surface {
   std::vector<double> pmu; // picks 的 μ
 };
 
-enum class Rc : uint8_t { Ok,
-                          Cancel, // 取消 / 库判废 → run 返回 false
-                          Abort   // 正常输入问题, message 已填 → run 返回 true
-};
-
 } // namespace
 
-// worker 私有的常驻件 (线程池 + 库; 跨请求存活). 评估缓冲归每轮的引擎 (Engine<Cpu | Gpu>)
-struct SearchService::Flow {
-  misc::exec::ForkJoin ex;
-  LibReaders lr; // 已建的库 (清单没变的复用)
-  Flow() : ex(misc::exec::hw()) {}
-};
+// worker 私有的常驻件 (线程池 + 库; 跨请求存活; 作用域块归每轮的 ChunkData). 评估缓冲归每轮的引擎 (Engine<Cpu | Gpu>)
+struct SearchService::Flow : FactorFlow {};
 
 bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, int hold, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
@@ -253,8 +262,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const int look = space::lookback(e0), lag = factor::search::max_lag(hd, seg);
   const int carry = (look + lag + seg - 1) / seg;
   lg("前带: 模板回看 %d 行 + rAC lag %d 行 → %d 天", look, lag, carry);
-  const factor::expr::Expr ep = e0.placeholder();           // 结构 / 特征叶序 / 槽数与任一具体化相同
-  const factor::Dag d0 = factor::build(ep, /*fuse=*/false); // 值域检查按 keys 逐节点, 不融合
+  const factor::expr::Expr ep = e0.placeholder();                                           // 结构 / 特征叶序 / 槽数与任一具体化相同
+  const factor::Dag d0 = factor::build_forest({&ep}, /*keep_roots=*/false, /*fuse=*/false); // 值域检查 (plan_forest) 按根归因, 不融合
   const int nf = static_cast<int>(d0.feats.size()), s0 = d0.n_slots;
 
   // 候选表: 规范串去重
@@ -388,53 +397,39 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
 
   std::vector<ChunkData> chunks(cache_all ? static_cast<size_t>(n_chunks) : 1);
   bool domain_checked = false;
-  // 装一块: 交易日 [day0, day1), 前带 carry; 首块顺带查特征叶值域
+  // 装一块: 交易日 [day0, day1), 前带 carry; 首块顺带查特征叶值域. Ok / Cancel / Stale | Broken (res.message 已填)
   const auto load_chunk = [&](int ci, ChunkData &cd) -> Rc {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
     const Clock::time_point t_load = Clock::now();
     cd.idx = -1;
     cd.c.reset();
-    const Load ld = ensure_xy(cd.c, ft, es, F.lr, static_cast<size_t>(load0), static_cast<size_t>(day1), ys, xs.codes, /*retain=*/true, F.ex, cancel_, *this);
-    if (ld == Load::Cancel)
-      return Rc::Cancel;
-    if (ld == Load::Stale) {
+    const Rc rc = ensure_xy(cd.c, ft, es, F.lr, static_cast<size_t>(load0), static_cast<size_t>(day1), ys, xs.codes, /*retain=*/true, F.ex, cancel_, *this);
+    if (rc == Rc::Stale)
       res.message = kStaleMsg;
-      lg("中止: %s", res.message.c_str());
-      publish_result();
-      return Rc::Abort;
-    }
+    if (rc != Rc::Ok)
+      return rc;
     lg("装载块 %d/%d: %d 天, %.1fs", ci + 1, n_chunks, day1 - load0, std::chrono::duration<double>(Clock::now() - t_load).count());
     cd.idx = ci;
     if (n_chunks > 1)
       cd.c.y.n_full = n_full;
-    cd.t_lo = (day0 - load0) * seg;
-    cd.t0_abs = load0 * seg;
+    cd.c.t_lo = (day0 - load0) * seg;
     if (!domain_checked) {
       domain_checked = true;
-      std::string err;
-      check_leaves(F.ex, d0, cd.c, err);
-      if (!err.empty()) {
-        res.message = err;
-        lg("中止: %s", err.c_str());
-        publish_result();
-        return Rc::Abort;
+      std::vector<std::string> why;
+      std::vector<uint8_t> need;
+      if (plan_forest(F.ex, cd.c, d0, why, need) == 0) {
+        res.message = why[0];
+        return Rc::Broken;
       }
     }
     return Rc::Ok;
   };
 
-  // ---- r16 抽样行 (契约【多权重】): 各块统计区 [t_lo, T) 里绝对行 ≡ 0 (mod stride) 的行, 按块序拼成每候选一张 [R][A] ----
-  std::vector<Samp> samp(static_cast<size_t>(n_chunks));
+  // ---- r16 抽样行 (契约【多权重】): 各块的抽样行 (samp_of) 按块序拼成每候选一张 [R][A] ----
   int R = 0;
   for (int ci = 0; ci < n_chunks; ++ci) {
     const int day0 = ci * D, day1 = std::min(days, day0 + D), load0 = std::max(0, day0 - carry);
-    const int T = (day1 - load0) * seg, t0_abs = load0 * seg;
-    int t = (day0 - load0) * seg;
-    while ((t0_abs + t) % stride != 0)
-      ++t;
-    Samp &s = samp[static_cast<size_t>(ci)];
-    s.t_first = t, s.n_rows = t < T ? (T - 1 - t) / stride + 1 : 0, s.off = R;
-    R += s.n_rows;
+    R += samp_of((day1 - load0) * seg, (day0 - load0) * seg, load0 * seg, stride).n_rows;
   }
   // 截面相关 (不定向): 两候选抽样行逐行 Pearson (Stat/Host lag_row, lag 行换成另一候选) 的均值; 无一有效行 → 0 (视作不相关). 按需现算并缓存
   std::map<std::pair<int, int>, double> rho_raw;
@@ -475,26 +470,24 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   };
 
   // ---- 一块上评一批候选 (两后端同一份, 引擎 E 见 FactorsEngine): 每批一张共享森林 (CPU ≤ kCpuForest 根即算即放;
-  //      GPU ≤ batch 按显存减半, 一批根平面同在显存一次 search_eval), 评完逐候选攒 Result + 抽样 r16 ----
+  //      GPU ≤ batch 按显存减半, 一批根平面同在显存一次 search_eval), 评完逐候选进探针 (HoldP 续攒 Accum + SampleP 抽样 r16) ----
   std::optional<Engine<Cpu>> cpu;
   std::optional<Engine<Gpu>> gpu;
   const auto eval_chunk = [&](auto &E, ChunkData &cd, const std::vector<int> &ids) -> bool {
     E.bind(cd.c);
-    const Samp &sm = samp[static_cast<size_t>(cd.idx)];
     for (size_t b0 = 0; b0 < ids.size();) {
       std::vector<const factor::expr::Expr *> ptrs;
       for (size_t k = b0; k < ids.size(); ++k)
         ptrs.push_back(&ents[static_cast<size_t>(ids[k])].e);
       int C = 0;
-      const factor::Dag Fd = E.forest(ptrs, C);
+      const factor::Dag Fd = E.template plant<SearchProbes>(ptrs, C);
       assert(Fd.feats == d0.feats && "同结构候选的特征叶序必与基线一致 (平面下标按 d0.feats 装)");
-      if (!E.search(Fd, sp.frame, cd.t0_abs, cd.t_lo, [&](int k, const Result &out, const auto &ranks) {
-            Entry &en = ents[static_cast<size_t>(ids[b0 + static_cast<size_t>(k)])];
-            en.r.merge(out, H);
-            if (sm.n_rows > 0)
-              ranks(sm.t_first, stride, sm.n_rows, en.r16.data() + static_cast<size_t>(sm.off) * A);
-            publish(1);
-          }))
+      for (int k = 0; k < C; ++k)
+        assert(Fd.first_root(k) == k && "候选按规范串去重, 根两两不同");
+      const std::vector<fs::Frame> fr(static_cast<size_t>(C), sp.frame);
+      if (!E.forest(
+              Fd, nullptr, fr.data(), [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[b0 + static_cast<size_t>(k)])].ps; },
+              [&](int, double) { return !cancelled(); }, [&](int) { publish(1); }))
         return false;
       b0 += static_cast<size_t>(C);
     }
@@ -509,8 +502,10 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
       assert(en.pass < 0 && "每个候选只评一次");
-      en.r = Result{};
+      en.ps = SearchProbes{};
       en.r16.assign(static_cast<size_t>(R) * A, fs::kRankNone);
+      en.ps.at<SampleP>().dst = &en.r16; // ents 本趟不再增 → 地址稳
+      en.ps.at<SampleP>().stride = stride;
     }
     const Clock::time_point t_pass = Clock::now();
     double load_s = 0.0;
@@ -529,10 +524,15 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
         return Rc::Cancel;
       chunk_.store(ci + 1, std::memory_order_relaxed);
     }
+    const ScopeCache &last = chunks[cache_all ? static_cast<size_t>(n_chunks - 1) : 0].c;
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
+      assert(en.ps.at<SampleP>().off == R && "各块抽样行须拼满");
+      en.ps.finish(F.ex, last);
+      const HoldP &hp = en.ps.at<HoldP>();
+      assert(hp.n_hold == H);
       for (int hi = 0; hi < H; ++hi)
-        en.sc[hi] = factor::search::score_signed(en.r, hd, seg, hi);
+        en.sc[hi] = factor::search::score_signed(hp.hold[hi]);
       en.pass = pass;
     }
     std::string per;
@@ -553,9 +553,14 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     publish_result();
     return Rc::Ok;
   };
+  // 结局 → run 的返回: Cancel → false; Stale / Broken (正常输入问题, message 已填) → 发布 + true
   const auto handle = [&](Rc rc, bool &ret) {
     if (rc == Rc::Cancel)
       lg("已取消");
+    if (rc == Rc::Stale || rc == Rc::Broken) {
+      lg("中止: %s", res.message.c_str());
+      publish_result();
+    }
     ret = rc != Rc::Cancel;
     return rc != Rc::Ok;
   };
@@ -592,7 +597,8 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     std::vector<uint8_t> prefix(dc.nodes.size(), 0); // 走到该输入节点即止
     std::fill_n(prefix.begin(), want + 1, static_cast<uint8_t>(1));
     const ScopeCache &c = chunks[0].c;
-    const Samp &sm = samp[0];
+    const fs::Span s = c.span();
+    const Samp sm = samp_of(s.T, s.t_lo, s.t0_abs, stride);
     std::vector<float> tab;
     cpu->bind(c);
     if (!cpu->walk(dc, prefix.data(), [&](int i, double) {

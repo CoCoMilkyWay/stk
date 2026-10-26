@@ -2,8 +2,8 @@
 // CMake 里已列入 PRECISE_MATH 源 (-fno-fast-math), 与 OperatorsService 同待遇.
 #include "gui/task_factors/services/FactorsService.hpp"
 
-#include "gui/task_factors/services/FactorsEngine.hpp" // Engine<Cpu | Gpu> / with_engine (与 Inspect / Search 共用)
-#include "gui/task_factors/services/FactorsLoad.hpp"   // ScopeCache / ensure_y / ensure_x / check_leaf_domains
+#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / Probes / with_engine (四服务同一条管线)
+#include "gui/task_factors/services/FactorsLoad.hpp"   // mini_pdf_of / Rc
 #include "gui/task_factors/ui/StatJson.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
@@ -37,6 +37,9 @@ namespace {
 
 using json = nlohmann::json;
 using ojson = nlohmann::ordered_json;
+
+// Run 的探针: 二级 / 成本 / 有效率 / 可秩率 / alpha 分布 / rIC 分布 (一个根一份, 同根的只评首个)
+using RunProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, IcPdfP>;
 
 // 评估派生数据 (run + 表头 + stats): 只描述当前 weights, 权重整体换掉 / 清空时一起删
 void erase_stats(ojson &j) {
@@ -697,6 +700,9 @@ void WriteFactorWeights(const std::string &factor_dir, std::string_view file, in
 // Service
 // ============================================================================
 
+FactorsService::FactorsService() { Start(); }
+FactorsService::~FactorsService() { Stop(); }
+
 bool FactorsService::run(FactorsRequest &req) {
   std::vector<FactorRow> rs;
   scan(req, rs);
@@ -714,7 +720,11 @@ bool FactorsService::run(FactorsRequest &req) {
 
   if (!req.spec.evaluate)
     return true;
-  return evaluate(req, misc::exec::ensure(ex_, misc::exec::hw()));
+  if (!flow_)
+    flow_ = std::make_unique<FactorFlow>();
+  const bool ok = evaluate(req, *flow_);
+  flow_->c.reset(); // 作用域块只活一轮 (Y 跨文件复用)
+  return ok;
 }
 
 void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std::vector<FactorRow> &out) {
@@ -877,8 +887,8 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       r.status = RowStatus::Done;
 }
 
-// 装载 + 评估 (worker 线程; 返回 false = 取消): 逐因子文件 evaluate_file
-bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &ex) {
+// 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 evaluate_file
+bool FactorsService::evaluate(const FactorsRequest &req, FactorFlow &F) {
   TraceN("FactorsEvaluate");
   // 有效权重行 → Expr (scan 已校验过, 这里必成功), 按文件分组 (scan 出的行同文件相邻)
   std::vector<std::vector<size_t>> idx;
@@ -911,163 +921,82 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
     message = "无有效因子";
     return true;
   }
-  LibReaders lr;
-  open_libs(req.scope, lr, &cancel_);
-  ScopeCache sc; // 本轮作用域块: Y 跨文件复用 (同作用域), X 每文件 retain
-  return with_engine(req.scope.gpu, ex, cancel_, 1, [&](auto &eng) {
-    for (size_t f = 0; f < idx.size(); ++f)
-      if (!evaluate_file(req, ex, lr, sc, eng, idx[f], exprs[f], frames[f])) {
-        if (lr.stale()) {
-          std::lock_guard<std::mutex> lock(mutex);
-          for (FactorRow &r : rows)
-            r.status = RowStatus::Done;
-          message = kStaleMsg;
-        }
-        return false;
+  return with_engine(req.scope.gpu, F.ex, cancel_, 1, [&](auto &eng) {
+    for (size_t f = 0; f < idx.size(); ++f) {
+      const Rc rc = evaluate_file(req, F, eng, idx[f], exprs[f], frames[f]);
+      if (rc == Rc::Stale) {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (FactorRow &r : rows)
+          r.status = RowStatus::Done;
+        message = kStaleMsg;
       }
+      if (rc != Rc::Ok)
+        return false;
+    }
     return true;
   });
 }
 
 template <class E>
-bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJoin &ex, LibReaders &lr, ScopeCache &sc, E &eng,
-                                   const std::vector<size_t> &idx, const std::vector<factor::expr::Expr> &exprs,
-                                   const std::vector<factor::stat::Frame> &frames) {
+Rc FactorsService::evaluate_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx,
+                                 const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames) {
   TraceN("FactorsEvaluateFile");
-  // 该文件的权重 → 一张共享 DAG (F.roots[k] ↔ idx[k])
+  // 该文件的权重 → 一张共享森林 (roots[k] ↔ idx[k]); 同根的只评首个 (探针 ps[k0])
   std::vector<const factor::expr::Expr *> eptr;
   for (const factor::expr::Expr &e : exprs)
     eptr.push_back(&e);
-  const factor::Dag F = factor::build_forest(eptr);
-  const int N = static_cast<int>(F.nodes.size());
-  // 每因子的子树节点集 (eval_ms 归因 / 组 id 检查 / 跳过没人要的节点)
-  std::vector<std::vector<int>> sub(idx.size());
-  for (size_t k = 0; k < idx.size(); ++k) {
-    std::vector<uint8_t> seen(static_cast<size_t>(N), 0);
-    std::vector<int> stack{F.roots[k]};
-    while (!stack.empty()) {
-      const int i = stack.back();
-      stack.pop_back();
-      if (seen[static_cast<size_t>(i)])
-        continue;
-      seen[static_cast<size_t>(i)] = 1;
-      sub[k].push_back(i);
-      const factor::DagNode &nd = F.nodes[static_cast<size_t>(i)];
-      for (int a = 0; a < nd.n_in; ++a)
-        stack.push_back(nd.in[a]);
-    }
-  }
-
-  // ---- 评估期 / A 轴 (所用库落盘日交集; 不成 → 该文件各行 BROKEN) ----
   const FeatureTable &ft = feats();
-  EvalScope es;
-  std::string why;
-  if (!eval_scope(ft, req.scope, F.feats, es, why)) {
-    std::lock_guard<std::mutex> lock(mutex);
-    for (const size_t i : idx) {
-      rows[i].error = why;
-      rows[i].status = RowStatus::Done;
-      broken_.fetch_add(1, std::memory_order_relaxed);
-    }
-    publish();
-    return true;
-  }
-  // ---- 装载 (整张量): Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain, 共享 DAG 输入下标 = feats 下标) ----
-  //      宿主峰值 = Y + X + rx / lc + CPU 活槽 + 标签秩 | GPU 掩码 / alpha 拷回, + Row[H][T]
+  // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain)
   const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(req.scope.max_impact)};
-  {
-    const int days = static_cast<int>(es.days.size()), A = static_cast<int>(es.rs.axis.size());
-    const double H = ys.hd.n;
-    const double cells = static_cast<double>(days) * ft.seg * A, rows_T = static_cast<double>(days) * ft.seg;
-    const double per = cell_bytes(ys) + cell_bytes(XSpec{F.feats}) + 3.0 + (req.scope.gpu ? kPlaneBytes : kPlaneBytes * F.n_slots + 2.0 * H);
-    assert_fits("Run", cells * per + H * rows_T * sizeof(factor::stat::Row), days, A, ft.seg);
-  }
-  if (ensure_xy(sc, ft, es, lr, 0, es.days.size(), ys, F.feats, /*retain=*/true, ex, cancel_, *this) != Load::Ok)
-    return false;
-  const YPlanes &y = sc.y;
-
-  // ---- 特征叶元的值域数据检查 (每算子节点一次, 按 OpTable in 列; 子树含坏节点的因子 → BROKEN, 跳过) ----
-  std::vector<std::string> node_err(static_cast<size_t>(N));
-  {
-    const std::vector<const factor::check::Plane *> in = leaves(sc, F.feats);
-    for (int i = 0; i < N; ++i)
-      check_leaf_domains(ex, F, i, in, node_err[static_cast<size_t>(i)]);
-  }
-  std::vector<uint8_t> runnable(idx.size(), 1), needed(static_cast<size_t>(N), 0);
-  for (size_t k = 0; k < idx.size(); ++k) {
-    for (int i : sub[k]) {
-      if (node_err[static_cast<size_t>(i)].empty())
-        continue;
-      runnable[k] = 0;
-      std::lock_guard<std::mutex> lock(mutex);
-      rows[idx[k]].error = node_err[static_cast<size_t>(i)];
-      rows[idx[k]].status = RowStatus::Done;
-      broken_.fetch_add(1, std::memory_order_relaxed);
-      break;
-    }
-    if (runnable[k])
-      for (int i : sub[k])
-        needed[static_cast<size_t>(i)] = 1;
-  }
-
-  // ---- 评估 ----
-  {
-    size_t n_need = 0;
-    for (int i = 0; i < N; ++i)
-      n_need += needed[static_cast<size_t>(i)] && F.nodes[static_cast<size_t>(i)].op >= 0;
+  std::vector<RunProbes> ps(idx.size());
+  JobOut o;
+  const auto mark = [&](size_t k, const std::string &why) { // 行 BROKEN (调用方持锁)
+    rows[idx[k]].error = why;
+    rows[idx[k]].status = RowStatus::Done;
+    broken_.fetch_add(1, std::memory_order_relaxed);
+  };
+  const std::filesystem::path dir(req.scope.factor_dir);
+  const Rc rc = eval_job(
+      eng, F, ft, req.scope, eptr, frames.data(), ys, /*retain=*/true, "Run", [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; },
+      cancel_, *this, o,
+      [&] { // 值域已查: 坏根 BROKEN, 好根 Running
+        std::lock_guard<std::mutex> lock(mutex);
+        for (size_t k = 0; k < idx.size(); ++k)
+          if (!o.why[k].empty())
+            mark(k, o.why[k]);
+          else
+            rows[idx[k]].status = RowStatus::Running;
+      },
+      [&](int k0) { // 发布该根的全部权重 (dup 共根)
+        const RunProbes &p = ps[static_cast<size_t>(k0)];
+        EvalStat st;
+        fill_eval(p, st);
+        for (size_t k = 0; k < idx.size(); ++k) {
+          if (o.d.first_root(static_cast<int>(k)) != k0)
+            continue;
+          FactorRow r;
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            r = rows[idx[k]];
+          }
+          fill_stat(r, req, o.es, F.c.y, st, p.at<AlphaP>().d, p.at<IcPdfP>().pdf, E::kName);
+          r.eval_ms = o.eval_ms(static_cast<int>(k));
+          r.status = RowStatus::Done;
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            rows[idx[k]] = r;
+          }
+          write_back(dir / r.file, r);
+          publish();
+        }
+      });
+  if (rc == Rc::Empty) { // 评估期 / A 轴不成 → 该文件各行 BROKEN
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t k = 0; k < idx.size(); ++k)
-      if (runnable[k])
-        rows[idx[k]].status = RowStatus::Running;
-    begin(Phase::Running, n_need); // Running 期进度 = 共享 DAG 的算子节点
+      mark(k, o.empty);
   }
-  const int H = y.hd.n, T = y.sh.T;
-  const std::filesystem::path dir(req.scope.factor_dir);
-  std::vector<double> node_ms(static_cast<size_t>(N), 0.0);
-  std::vector<factor::stat::Row> lrows(static_cast<size_t>(H) * T); // 该根的一级 Row[H][T] (引擎落地), 只给 ic_pdf
-  EvalStat st;                                                      // 该根的宿主收尾
-  AlphaDist adist;
-  MiniPdf ic_pdf[factor::stat::kMaxHold]; // 该根的因子表小图 (与 Inspect 同一组样本)
-
-  // 共享 DAG 走过节点 i (ms = 算子耗时, 叶 0): 记时 + 进度; 到根: eng.stat → 发布该根的全部因子 (dup 共根)
-  eng.bind(sc);
-  return eng.walk(F, needed.data(), [&](int i, double ms) {
-    if (cancel_.load(std::memory_order_relaxed))
-      return false;
-    if (F.nodes[static_cast<size_t>(i)].op >= 0) {
-      node_ms[static_cast<size_t>(i)] = ms;
-      publish(1);
-    }
-    if (!F.is_root(i))
-      return true;
-    bool stat_done = false;
-    for (size_t k = 0; k < idx.size(); ++k) {
-      if (!runnable[k] || F.roots[k] != i)
-        continue;
-      if (!stat_done) {
-        eng.stat(i, frames[k], lrows.data(), st, adist);
-        ic_mini_pdfs(lrows.data(), H, T, ic_pdf);
-        stat_done = true;
-      }
-      FactorRow r;
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        r = rows[idx[k]];
-      }
-      fill_stat(r, req, es, y, st, adist, ic_pdf, E::kName);
-      r.eval_ms = 0.0;
-      for (int j : sub[k])
-        r.eval_ms += node_ms[static_cast<size_t>(j)];
-      r.status = RowStatus::Done;
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        rows[idx[k]] = r;
-      }
-      write_back(dir / r.file, r);
-      publish();
-    }
-    return true;
-  });
+  publish();
+  return rc == Rc::Empty || rc == Rc::Broken ? Rc::Ok : rc;
 }
 
 } // namespace GUI::Factors

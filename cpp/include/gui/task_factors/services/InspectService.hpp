@@ -6,14 +6,14 @@
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 Flow : FactorFlow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算;
-// S → Y → X → R 是单因子前缀 factor_pass (FactorsEngine.hpp, 与 Portfolio 同一份), N 是净值引擎 fold_exit (FactorsLoad.hpp, 与 Portfolio / 池指数同一份):
+// 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / N 是探针 (InspectProbes); N 用净值引擎 fold_exit (FactorsLoad.hpp, 与 Portfolio / 池指数同一份):
 //   S  作用域   FactorsLoad ScopeCache, key = scope_key (层 | EvalScope::key | 日段 | YSpec: 持有期 / 金额段 / 封顶 / 指数)
 //               → Y = 截面门控, 毛标签 [H], 成本 [C], 池等权指数 (IndexKind::Pool, 每持有期一条); X = 特征平面 (作用域内读过的全留, 只增)
 //               (装载前 assert_fits: 放不下 = 因子层太细 / 评估期太长)
-//   Y  标签     随 S                                       → 毛标签秩: Engine<Cpu>::stat_session (Stat/Cpu.hpp StatSession, 一次常驻); 没有净标签集
+//   Y  标签     随 S                                       → 毛标签秩: Engine<Cpu> 的 Stat 会话 (Stat/Cpu.hpp StatSession, 一次常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 (ensure_x) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool 常驻)
-//   R  rank_x                                              → 直接秩进 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
-//                                                            之前多跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
+//   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
+//                                                            RxAllP 另跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
 //   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsService.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsLoad
 //                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: 腿成员 = 腿码 ∧ 标签有效位, 逐格 Δw,
 //                                                            同一价点才与 t−h 交接; 一遍 [T][A], 无排序). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::fixed_impact), 全在 UI 现算

@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -57,6 +58,28 @@ struct Dag {
       if (r == i)
         return true;
     return false;
+  }
+  // 根 k 的同根首个 (roots 可重复: 同规范串 → 同节点, 只评首个)
+  int first_root(int k) const {
+    int j = 0;
+    while (roots[static_cast<size_t>(j)] != roots[static_cast<size_t>(k)])
+      ++j;
+    return j;
+  }
+  // 节点 r 的子树 (含 r, 升序; 拓扑序 ⇒ 逆扫一遍)
+  std::vector<int> subtree(int r) const {
+    assert(r >= 0 && r < static_cast<int>(nodes.size()));
+    std::vector<uint8_t> in(nodes.size(), 0);
+    in[static_cast<size_t>(r)] = 1;
+    for (int i = r; i >= 0; --i)
+      if (in[static_cast<size_t>(i)])
+        for (int a = 0; a < nodes[static_cast<size_t>(i)].n_in; ++a)
+          in[static_cast<size_t>(nodes[static_cast<size_t>(i)].in[a])] = 1;
+    std::vector<int> out;
+    for (int i = 0; i <= r; ++i)
+      if (in[static_cast<size_t>(i)])
+        out.push_back(i);
+    return out;
   }
 };
 

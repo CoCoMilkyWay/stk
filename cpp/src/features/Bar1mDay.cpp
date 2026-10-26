@@ -57,6 +57,12 @@ void Bar1mDay::load(const fundamental::Catalog &cat, const fundamental::Ids &ids
       b.close = c_close.f32(i);
       b.amount = c_amt.f32(i);
       b.volume = static_cast<uint32_t>(vol);
+      if (b.volume > 0 && b.close > 0.0f) { // 有成交 (同 ResamplerBar2Min 收 bar 判据): amount 夹到 [volume · low, volume · high] (缺 / ≤ 0 → 下界)
+        fundamental::expect(b.open > 0.0f && b.low > 0.0f && b.high >= b.low, kSpec, at, "有成交 bar 的 open / low 须 > 0 且 high ≥ low");
+        const double lo = static_cast<double>(b.volume) * b.low, hi = static_cast<double>(b.volume) * b.high, amt = b.amount;
+        b.amount = static_cast<float>(!(amt >= lo) ? lo : amt > hi ? hi
+                                                                   : amt);
+      }
       n_assets += has[a] == 0;
       has[a] = 1;
       ++hit;

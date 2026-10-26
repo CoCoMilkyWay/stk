@@ -5,7 +5,7 @@
 //   条目 = 权重粒度: (池, 因子层, 因子文件, 具体规范串) 定位 Factors 表里的一个权重 (FactorRow::expr); hold = 加入时 Factors 页的 Hold.
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
-// 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条前缀 (FactorsEngine factor_pass: 装载 → walk → rank_x), 再按该 hold 走
+// 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Run / Inspect 同一条管线 (FactorsEngine eval_job: 装载 → 森林 → 探针), 探针只评该 hold:
 //   Stat 逐行 (accum_rows 一级 Row + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_exit (Stat 契约【净值】: G20 多头, 每批 1/h̄, 平仓行实现;
 //   可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
 //   成本按 Δw (契约【换手成本】): 有金额段 (Lob) = 增仓 Δw⁺ × 最小段买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 无段 (Bar) =
