@@ -464,13 +464,8 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
                                                     : std::string(ohlc[i]) + "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
     t.y.ohlc[i] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
   }
-  {
-    const std::string code = lv.tier == TierId::Lob ? std::string("lob_close_adj")
-                             : lv.lvl == L_1day     ? std::string("close_adj_day")
-                                                    : "close_adj_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
-    t.y.close_adj = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
-  }
   if (lv.lvl == L_1day) {
+    t.y.adj_factor = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "adj_factor")));
     t.y.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
     t.y.np_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_npp_ttm")));
     t.y.eq_mrq = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "bs_eq")));

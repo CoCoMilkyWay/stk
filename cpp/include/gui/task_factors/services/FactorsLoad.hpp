@@ -127,7 +127,7 @@ struct XSpec {
 // 池篮子指数的档 (YSpec::index; 平面装完即算, 不留)
 enum class IndexKind : uint8_t { None, // 不装
                                  Pool, // 篮子 0 (池整体) 等权, 每持有期一条, 任意层; Inspect K 线叠加
-                                 Full  // 篮子 (池整体 + 行业) 两权重指数 / 估值 + 池换手, 只日层, 持有期只 T+1C (+ close_adj + 权重 + 估值 + 行业);
+                                 Full  // 篮子 (池整体 + 行业) 两权重指数 / 估值 + 池换手, 只日层, 持有期只 T+1C (+ close_day × adj_factor 现算后复权 + 权重 + 估值 + 行业);
                                        // Portfolio 池线
 };
 struct YSpec {
@@ -190,7 +190,7 @@ factor::stat::Labels labels_of(const YPlanes &y);
 
 // 逐天并行读 (ex 抢单) es.days[d0, d1) 按 spec 装进 X / Y (覆盖; 形 days × A → T, 容量断言在此). 两侧同一份骨架:
 // 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影), 列全部 Col::ref(es.pool);
-// X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | close_adj close total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm ind_l1
+// X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | close adj_factor total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm ind_l1
 //   (index Full) | 标签 [hd][kLegs] | 成本 [ad][kLegs]
 // (标签库网格层本层列).
 // lr 须按 es.rs.libs 开好. 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 每天 prog.publish(1), 不 begin

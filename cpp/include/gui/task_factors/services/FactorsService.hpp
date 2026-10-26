@@ -148,7 +148,7 @@ struct YCols {
   Col ts;           // ts_valid (当日有成交)
   Col cs;           // cs_valid (标签 + 截面门控平面)
   Col ohlc[4];      // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
-  Col close_adj;    // 后复权收盘价 (日层池篮子的估值换手漂移): lob_close_adj / close_adj_<n>min / close_adj_day
+  Col adj_factor;   // 复权因子 (只日层设; 行 D = D+1 日的因子): 日层池篮子换手漂移的后复权收盘 = close_day(D) × 行 D−1 的本列
   Col total_shares; // 总股本 / 归母净利 TTM (pl_npp_ttm) / 归母权益 MRQ (bs_eq) / 营业总收入 TTM (pl_rev_ttm) / 经营现金流 TTM (cf_ocf_ttm) /
                     // 股息率 TTM (dy_ttm): 只日层设, 池估值 EP / BP / SP / CP / DY (整体法); 总股本另作池加权指数的权重 = close_day × 本列
   Col np_ttm, eq_mrq, rev_ttm, ocf_ttm, dy_ttm;

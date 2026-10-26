@@ -161,7 +161,7 @@ std::string YSpec::key() const {
 double cell_bytes(const XSpec &s) { return kPlaneBytes * static_cast<double>(s.codes.size()); }
 double cell_bytes(const YSpec &s) {
   const bool full = s.index == IndexKind::Full;
-  return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (full ? kPlaneBytes + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 : 0.0);
+  return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (full ? kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 : 0.0);
 }
 
 const factor::check::Plane *XPlanes::find(std::string_view code) const {
@@ -246,7 +246,7 @@ void pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, int hi, const float 
 // 篮子估值 (YPlanes::val, 两权重) + 逐行收益 / 权和 (rows, 换手用), 两遍:
 //   1) 资产条带并行, 沿 t 就地把 px 补成上一有效收盘价 (停牌带着); prv = 有效 close 格的上一有效 close 行 (−1 = 无);
 //   2) 行并行, 每行一遍 A 轴攒进本行的篮子桶 (0 + 行业):
-//      收益成分 = 上一有效 close 行在池, 收益 = close_adj / 上一有效 close_adj − 1, 权 = 1 / 该行总市值 mcap, 行业取该行;
+//      收益成分 = 上一有效 close 行在池, 收益 = 后复权 close / 上一有效后复权 close − 1 (load_y 由 close_day × 复权因子现算), 权 = 1 / 该行总市值 mcap, 行业取该行;
 //      估值成分 = 上一行在池, 市值 = px × 上一行总股本, 净利 / 权益 / 营收 / 经营现金流 / 股息率 / 行业同取上一行.
 //   px = 本行有成交的收盘价 (否则 0), 就地改; ind = 行业 ID (0 = 未知 / 缺)
 void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const float *mcap, float *px, const float *sh, const float *np,
@@ -518,7 +518,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | close_adj close total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm ind_l1 (index Full) | 标签 [H][K] | 成本 [C][K],
+  // ---- 列段 ts_valid | cs_valid | close adj_factor total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm ind_l1 (index Full) | 标签 [H][K] | 成本 [C][K],
   //      全是标签库网格层本层列 (同行). 可成交 / 顺延已在标签里 (features LabelHold), 不另读 ----
   std::vector<ColRef> cols;
   const auto add = [&](const Col &c) {
@@ -529,8 +529,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   const bool idx = spec.index != IndexKind::None, full = spec.index == IndexKind::Full;
   assert((!full || factor_level(ft.seg).lvl == L_1day) && "池篮子全档只在日层 (成员位 = 本行收盘定的池)");
   assert((!full || (Y.hd.n == 1 && Y.hd.h[0] == factor::stat::hold_close(1))) && "池篮子全档的持有期只 T+1C (C(D) → C(D+1))");
-  const size_t close_i = full ? add(ft.y.close_adj) : SIZE_MAX;
-  const size_t px_i = full ? add(ft.y.ohlc[3]) : SIZE_MAX;
+  const size_t px_i = full ? add(ft.y.ohlc[3]) : SIZE_MAX, adj_i = full ? add(ft.y.adj_factor) : SIZE_MAX;
   const size_t sh_i = full ? add(ft.y.total_shares) : SIZE_MAX, np_i = full ? add(ft.y.np_ttm) : SIZE_MAX, eq_i = full ? add(ft.y.eq_mrq) : SIZE_MAX,
                rv_i = full ? add(ft.y.rev_ttm) : SIZE_MAX, cf_i = full ? add(ft.y.ocf_ttm) : SIZE_MAX, dy_i = full ? add(ft.y.dy_ttm) : SIZE_MAX,
                ind_i = full ? add(ft.y.ind_l1) : SIZE_MAX;
@@ -557,12 +556,13 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   alloc(Y.labels, H, true);
   alloc(Y.costs, C, false);
   factor::check::Plane close;                           // 本行有成交的后复权 close (index Full: 估值 / 换手漂移, 跨日除权不进收益), 装完即弃
+  std::vector<float> vadj;                              // 本行 adj_factor (index Full; = 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
   std::vector<float> mcap;                              // 本行总市值 = close_day × total_shares (index Full 加权版的权; close 无效 / 缺股本 → 0)
   std::vector<float> vpx, vsh, vnp, veq, vrv, vcf, vdy; // 估值 (index Full): 本行有成交的 close_day (否则 0) / 总股本 / 归母净利TTM / 归母权益MRQ /
                                                         //   营业总收入TTM / 经营现金流TTM / 股息率TTM (缺 → NaN), 装完算 val 即弃
   std::vector<uint8_t> vind;                            // 行业 ID (index Full; 0 = 未知 / 缺 / 越界)
   if (full)
-    close.resize(n), mcap.assign(n, 0.f), vpx.assign(n, 0.f), vsh.resize(n), vnp.resize(n), veq.resize(n), vrv.resize(n), vcf.resize(n), vdy.resize(n),
+    close.resize(n), vadj.assign(n, 0.f), mcap.assign(n, 0.f), vpx.assign(n, 0.f), vsh.resize(n), vnp.resize(n), veq.resize(n), vrv.resize(n), vcf.resize(n), vdy.resize(n),
         vind.assign(n, 0);
   // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
   constexpr float kNoCap = std::numeric_limits<float>::infinity();
@@ -600,15 +600,15 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
     gate_day(view, ts_i, cs_i, es, day, VR, A, has_data[tid], Y.gate.data() + d * VR * A);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      if (full) { // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限
-        const View wt = view(ts_i, t), wl = view(close_i, t), wp = view(px_i, t);
+      if (full) { // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限 ∧ > 0 (此处不复权, 装完乘复权因子)
+        const View wt = view(ts_i, t), wp = view(px_i, t), wa = view(adj_i, t);
         for (size_t a = 0; a < A; ++a) {
-          feature_storage_t c, s, px;
+          feature_storage_t s, px, f;
           float g;
-          const bool ok = cell(wl, a, c, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, c);
-          const bool okp = ok && cell(wp, a, px, g) && static_cast<float>(px) > 0.f;
-          close.v[row + a] = ok ? static_cast<float>(c) : 0.f, close.m[row + a] = ok;
-          vpx[row + a] = okp ? static_cast<float>(px) : 0.f;
+          const bool ok = cell(wp, a, px, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, px) && static_cast<float>(px) > 0.f;
+          close.v[row + a] = ok ? static_cast<float>(px) : 0.f, close.m[row + a] = ok;
+          vpx[row + a] = close.v[row + a];
+          vadj[row + a] = cell(wa, a, f, g) && fmeta::finite(f) && static_cast<float>(f) > 0.f ? static_cast<float>(f) : 0.f;
         }
         const View ws = view(sh_i, t), wn = view(np_i, t), we = view(eq_i, t), wr = view(rv_i, t), wc = view(cf_i, t), wd = view(dy_i, t), wi = view(ind_i, t);
         constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
@@ -636,6 +636,15 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   if (!read)
     return false;
   if (full) {
+    // 后复权 close(D) = close_day(D) × D 日复权因子 (= 行 D−1 的 adj_factor); 首行无前一行 → 不作漂移锚. 只比值进收益, 首日归一无关
+    ex.rows(Y.sh.T, [&](int t0, int t1, int) {
+      for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i) {
+        const float f = i >= A ? vadj[i - A] : 0.f;
+        close.m[i] = close.m[i] && f > 0.f;
+        close.v[i] = close.m[i] ? close.v[i] * f : 0.f;
+      }
+    });
+    vadj = {};
     pool_index(ex, Y, 0, mcap.data(), vind.data(), static_cast<int>(YPlanes::kBaskets), kWeights, Y.index);
     BasketRows rows;
     pool_baskets(ex, close, mcap.data(), vpx.data(), vsh.data(), vnp.data(), veq.data(), vrv.data(), vcf.data(), vdy.data(), vind.data(), Y.gate.data(),
