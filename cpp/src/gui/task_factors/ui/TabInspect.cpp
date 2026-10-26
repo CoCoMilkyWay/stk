@@ -66,9 +66,14 @@ void follow_centered(ImAxis ax, double half) {
   ImPlot::SetupAxisLinks(ax, &l.lo, &l.hi);
 }
 
-// AutoFit 的可缩放替身: 数据键 key 变了才让下一张图 (title) 对 axes 各 fit 一次; BeginPlot 前调
+// AutoFit 的可缩放替身: 数据键 key 或图例显隐 (上帧各 item 的 Show; 隐藏项不参与 fit) 变了才让下一张图 (title) 对 axes 各 fit 一次; BeginPlot 前调
 void fit_on_change(const char *title, ImGuiID key, std::initializer_list<ImAxis> axes) {
   static std::unordered_map<ImGuiID, ImGuiID> last;
+  if (ImPlotPlot *p = ImPlot::GetPlot(title)) // 首帧还没这张图 → 只看数据键
+    for (int i = 0; i < p->Items.GetItemCount(); ++i) {
+      const ImPlotItem &it = *p->Items.GetItemByIndex(i);
+      key = ImHashData(&it.Show, sizeof(it.Show), ImHashData(&it.ID, sizeof(it.ID), key));
+    }
   const auto [it, fresh] = last.try_emplace(ImGui::GetID(title), key);
   if (!fresh && it->second == key)
     return;
@@ -86,9 +91,10 @@ int date_formatter(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%06d", dates[static_cast<size_t>(i)] % 1000000);
 }
 
-// 分层色: 两端两色 (G1 深蓝 / G20 深红), 中段中性灰, 两侧各一条反向 tanh 台阶: 色度 w = ½(1 + tanh(kColGain·(|s| − c))) 归一到 [0, 1],
-// s ∈ [−1, 1] 为到中心的有符号距离, 台阶中心 c 落在从边数第 kColEdge + 1 组 (G3 / G18 半色), 边上 kColEdge 组 (G1 G2 / G19 G20) 近全色,
-// 再往里一组就基本灰了, 中间十几组全灰. 单调不翻色 (Jet 在中段来回翻色; 线性渐变两端不够跳; 只给最边 1 组上色则 G2 / G19 看不出)
+// 分层色: 两端两色 (G1 深蓝 / G20 深红), 中心中性灰, 色度 w = 线性底坡 + 两侧反向 tanh 台阶: w = kColRamp·|s| + (1 − kColRamp)·step,
+// step = ½(1 + tanh(kColGain·(|s| − c))) 归一到 [0, 1], s ∈ [−1, 1] 为到中心的有符号距离, 台阶中心 c 落在从边数第 kColEdge + 1 组;
+// 边上 kColEdge 组 (G1 G2 / G19 G20) 近全色, 台阶往里由底坡接着渐淡到中心灰 (中段仍分得出组序, 不全灰).
+// 单调不翻色 (Jet 在中段来回翻色; 纯线性渐变两端不够跳; 纯台阶中段全灰)
 constexpr ImVec4 kColBottom(0.00f, 0.20f, 0.70f, 1.f), kColTop(0.85f, 0.15f, 0.10f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
 constexpr ImVec4 kColNeutral(0.50f, 0.50f, 0.52f, 1.f);                   // 中段
 constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);                         // 光标 (左上图交易日 / 右上 K 线 / 资产轴), 对仗 OrderFlow 的锚
@@ -99,11 +105,13 @@ constexpr float kTailLsWeight[kTails] = {2.0f, 1.5f, 1.0f};               // 尾
 constexpr float kTailFillAlpha[kTails] = {0.08f, 0.15f, 0.24f};           // 相邻尾部分层线间色带 alpha: 越极端越重, 但不盖线
 constexpr float kHiScale = 2.f;                                           // 图例 hover 高亮倍数 (同 ImPlot 线宽 ITEM_HIGHLIGHT_LINE_SCALE; 线以外的件自己乘)
 constexpr float kColEdge = 2.f;                                           // 两端各留几组显色
-constexpr float kColGain = 12.f;                                          // tanh 增益: 越大台阶越陡 (12 → 相邻一组从 ~0.93 掉到 ~0.5 再到 ~0.07)
+constexpr float kColGain = 8.f;                                           // tanh 增益: 越大台阶越陡 (8 → 台阶上相邻组 ~0.84 / ~0.5 / ~0.16)
+constexpr float kColRamp = 0.3f;                                          // 线性底坡占比: 中段色度 ≈ kColRamp·|s|, 中心灰起渐变
 ImVec4 lerp_color(float t) {                                              // t ∈ [0, 1]: 0 = 深蓝 (G1 / 最负), 0.5 = 灰, 1 = 深红 (G20 / 最正)
   constexpr float mid = 1.f - kColEdge * 2.f / static_cast<float>(K - 1); // 台阶中心 = 从边数第 kColEdge + 1 组的 |s|
   const auto step = [](float a) { return 0.5f * (1.f + std::tanh(kColGain * (a - mid))); };
-  const float s = (t - 0.5f) * 2.f, w = (step(std::abs(s)) - step(0.f)) / (step(1.f) - step(0.f));
+  const float s = (t - 0.5f) * 2.f, a = std::abs(s);
+  const float w = kColRamp * a + (1.f - kColRamp) * (step(a) - step(0.f)) / (step(1.f) - step(0.f));
   const ImVec4 &c = s < 0.f ? kColBottom : kColTop;
   return ImVec4(kColNeutral.x + (c.x - kColNeutral.x) * w, kColNeutral.y + (c.y - kColNeutral.y) * w, kColNeutral.z + (c.z - kColNeutral.z) * w, 1.f);
 }
@@ -298,7 +306,8 @@ LayerRange layer_range(const InspectDerived &d, const bool *show) {
   return {lo - margin, hi + margin, lo - ls_lo};
 }
 
-// 左上右 1/4: 光标日截面 = 各分层线 section_at 的横柱, 在共享 y 范围里均匀排 (G1 下 … G20 上), x 范围 = y 范围 (只同步 range, 与左图同尺);
+// 左上右 1/4: 光标日截面 = 各分层线 section_at 的横柱, 在共享 y 范围里均匀排 (G1 下 … G20 上); x 范围 = 显示中的柱 (随图例 / 光标) 与 0 的
+// min / max 加边, 目标变才强设 (follow_limits, 之间可手动缩放);
 // 柱色按组号 (与左图同一 group_color, 两边对得上; 柱长非单调即分层破绽), 不标组号. 开着的尾部级 (show[1 + j], 同 layer_range) 两腿各加一柱:
 // 底腿排 G1 之下, 顶腿排 G20 之上, 越极端越靠外; 色 / 细度同左图尾部分层线 (饱和顶 / 底色, kTailLayerWeight). 须在 plot_layers 的子图内调 (y 由 LinkRows 跟左图)
 // hov[i] = 左图图例项 i hover: 该项的柱 (i = 0 → G1 / G20; i ≥ 1 → 尾部级 i − 1 两腿) 描白边高亮
@@ -307,10 +316,6 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *sho
     return;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines,
                     ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
-  follow_limits(ImAxis_X1, yr.y_lo, yr.y_hi);
-  const double zero = 0.0;
-  ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
-  ImPlot::PlotInfLines("##zero", &zero, 1);
   struct Slot {
     int line; // lay_cum 下标
     ImVec4 col;
@@ -336,9 +341,16 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *sho
   for (int j = 0; j < kTails; ++j)
     if (show[1 + j])
       tail(kLong, j);
-  float v[kLayerLines];
-  for (int i = 0; i < ns; ++i)
+  float v[kLayerLines], v_lo = 0.f, v_hi = 0.f; // 含 0 (柱从 0 起)
+  for (int i = 0; i < ns; ++i) {
     v[i] = section_at(d, d.lay_cum[s[i].line], cursor_day);
+    v_lo = std::min(v_lo, v[i]), v_hi = std::max(v_hi, v[i]);
+  }
+  const float margin = (v_hi > v_lo ? v_hi - v_lo : 1.f) * 0.03f;
+  follow_limits(ImAxis_X1, v_lo - margin, v_hi + margin);
+  const double zero = 0.0;
+  ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+  ImPlot::PlotInfLines("##zero", &zero, 1);
   const double slot = (yr.y_hi - yr.y_lo) / ns; // y 范围均分 ns 槽
   for (int i = 0; i < ns; ++i) {                // 逐线一柱: PlotBars 一次只能一色
     const double x = v[i], y = yr.y_lo + (i + 0.5) * slot;
@@ -657,11 +669,11 @@ void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub
 
 // K 线 (右上的下图): 选中资产沿全部交易日的分钟 OHLC, 画 KlineService 已发布前缀 (gen 配对; 换代在途照画空图, 轴不撤). 每根色 = 该刻 R(t)
 // 组色 (ui.col_r; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
-// 视野: x 域 = 日数 × seg, 只在日数变时复位 (换资产不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长时按**当前 x 窗口内**的已发布蜡烛重定
-// (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 换资产后窗口里的新价位自然贴合, 之后不打扰.
+// 视野: x 域 = 日数 × seg, 只在日数变时复位 (换资产不动 x, 手动缩放的窗口留着); y 在换代 / 前缀增长 / 图例开关时按**当前 x 窗口内**的已发布蜡烛
+// + 显示中的指数线重定 (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 换资产后窗口里的新价位自然贴合, 之后不打扰.
 // 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × seg): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
-// 染淡色竖带. 叠加 池等权指数 pool_idx [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚, 不参与 fit; 再叠加滚动重锚指数线 (derive_ref, 键变才重算,
-// 不参与 fit). 悬停报最近一根的时刻 / OHLC / R / 两条指数线 / 个股相对滚动重锚线的偏移
+// 染淡色竖带. 叠加 池等权指数 pool_idx [T] (x = t, 与蜡烛同格): 每帧按视野内个股首根蜡烛重锚; 再叠加滚动重锚指数线 (derive_ref, 键变才重算).
+// 两条指数线不参与双击 fit (NoFit), 只在显示时进上面的 y 贴合. 悬停报最近一根的时刻 / OHLC / R / 两条指数线 / 个股相对滚动重锚线的偏移
 void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<misc::Ymd> &dates, const std::vector<float> &pool_idx, int &cursor_day,
                 const char *title, const ImVec2 &size) {
   uint32_t pub_gen;
@@ -691,15 +703,36 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
   }
   const double *xs = ks.x.data();
   const int n = static_cast<int>(pub_pts);
-  if (n > 0 && ui.kline_last_pub_days != pub_days) { // y 贴合当前 x 窗口内的已发布蜡烛
+  constexpr const char *kIdxName = "池等权指数", *kRefName = "指数 滚动重锚 (1d)";
+  uint8_t shown = 0; // 上帧图例显隐 (bit0 池等权指数 / bit1 滚动重锚); Setup 阶段按 Items.ID 种子自己哈希 (同 plot_layers), 首帧取默认
+  {
+    ImPlotItemGroup &items = *GImPlot->CurrentItems;
+    const auto on = [&](const char *id, bool dflt) {
+      const ImPlotItem *it = items.GetItem(ImHashStr(id, 0, items.ID));
+      return it ? it->Show : dflt;
+    };
+    shown = static_cast<uint8_t>((on(kIdxName, false) ? 1 : 0) | (on(kRefName, true) ? 2 : 0));
+  }
+  if (n > 0 && (ui.kline_last_pub_days != pub_days || ui.kline_shown != shown)) { // y 贴合当前 x 窗口内的已发布蜡烛 + 显示中的指数线
     const int w0 = static_cast<int>(std::lower_bound(xs, xs + n, ui.kline_x_lo) - xs), w1 = static_cast<int>(std::upper_bound(xs, xs + n, ui.kline_x_hi) - xs);
     if (w1 > w0) {
       double lo = ks.low[static_cast<size_t>(w0)], hi = ks.high[static_cast<size_t>(w0)];
       for (int i = w0 + 1; i < w1; ++i)
         lo = std::min(lo, ks.low[static_cast<size_t>(i)]), hi = std::max(hi, ks.high[static_cast<size_t>(i)]);
+      const int T = static_cast<int>(pool_idx.size());
+      const int ta = std::clamp(static_cast<int>(std::floor(ui.kline_x_lo)), 0, T), tb = std::clamp(static_cast<int>(std::ceil(ui.kline_x_hi)) + 1, ta, T);
+      if (shown & 1) { // 与下面画线同一重锚: 窗口内首根蜡烛
+        const double k = ks.close[static_cast<size_t>(w0)] / static_cast<double>(pool_idx[static_cast<size_t>(xs[w0])]);
+        for (int t = ta; t < tb; ++t)
+          lo = std::min(lo, pool_idx[static_cast<size_t>(t)] * k), hi = std::max(hi, pool_idx[static_cast<size_t>(t)] * k);
+      }
+      if ((shown & 2) && ready && ui.ref_gen == ui.kline_gen) // 上帧算好的线 (前缀增长时稍旧, 下次增长再贴)
+        for (int t = std::max(ta, ui.ref_t0); t < std::min(tb, ui.ref_t1); ++t)
+          lo = std::min(lo, static_cast<double>(ui.ref_line[static_cast<size_t>(t)])), hi = std::max(hi, static_cast<double>(ui.ref_line[static_cast<size_t>(t)]));
       const double m = (hi > lo ? hi - lo : 1.0) * 0.05;
       ImPlot::SetupAxisLimits(ImAxis_Y1, lo - m, hi + m, ImPlotCond_Always);
       ui.kline_last_pub_days = pub_days;
+      ui.kline_shown = shown;
     }
   }
   ImPlot::SetupFinish();
@@ -735,7 +768,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
       };
       ImPlot::SetNextLineStyle(kColIndex, 1.5f);
       ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认隐藏 (带全区间历史), 点图例显; 重锚系数 uk 照算 (悬停仍报)
-      ImPlot::PlotLineG("池等权指数", rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
+      ImPlot::PlotLineG(kIdxName, rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
     }
   }
   // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (pool_idx 已换)
@@ -749,7 +782,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const std::vector<mis
     const int ta = std::clamp(static_cast<int>(std::floor(lim.X.Min)), ui.ref_t0, ui.ref_t1);
     const int tb = std::clamp(static_cast<int>(std::ceil(lim.X.Max)) + 1, ta, ui.ref_t1);
     ImPlot::SetNextLineStyle(kColRef, 1.5f);
-    ImPlot::PlotLine("指数 滚动重锚 (1d)", ui.ref_line.data() + ta, tb - ta, 1.0, static_cast<double>(ta), ImPlotItemFlags_NoFit);
+    ImPlot::PlotLine(kRefName, ui.ref_line.data() + ta, tb - ta, 1.0, static_cast<double>(ta), ImPlotItemFlags_NoFit);
   }
   if (n > 0 && ImPlot::BeginItem("##ohlc", ImPlotItemFlags_NoLegend)) { // 指数线之后画, 蜡烛压在指数线上
     if (ImPlot::FitThisFrame())
