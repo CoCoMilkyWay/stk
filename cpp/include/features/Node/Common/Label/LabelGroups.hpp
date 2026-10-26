@@ -26,6 +26,7 @@ enum class HoldKind : uint8_t { MIN,
                                 CLOSE,
                                 OPEN,
                                 CLOSE_N };
+constexpr bool hold_daily(HoldKind k) { return k == HoldKind::OPEN || k == HoldKind::CLOSE_N; } // 跨日平仓
 #define LABEL_KIND_ONE(name, kind, n, ...) HoldKind::kind,
 #define LABEL_N_ONE(name, kind, n, ...) n,
 #define LABEL_NAME_ONE(name, kind, n, ...) #name,

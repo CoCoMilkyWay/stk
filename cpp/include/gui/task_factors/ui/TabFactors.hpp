@@ -45,8 +45,10 @@ struct FactorsUIState {
   std::string view_file;
   bool view_defaulted = false;
   std::vector<std::string> expanded; // 展开的多权重因子文件
-  // Search (对象 = 高光行所在文件的模板, 搜索窗内全部持有期): 点下时把行拷给 search_row (TaskFactors 据此建请求)
+  // Search (对象 = 高光行所在文件的模板, 只搜当前 Hold): 点下时把行拷给 search_row, 当前 Hold 键记进 search_hold (TaskFactors 据此建请求;
+  // Search all 整轮同一个 search_hold, 中途改 Hold 不影响)
   FactorRow search_row;
+  int search_hold = 0;
   // Search all (当前池 / 层下全部可搜模板文件逐个搜, 全部搜完整目录 Run 一次): 点下时把各文件首个可搜行拷进队列, TaskFactors 逐个出队;
   // Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换池换层)
   std::vector<FactorRow> search_queue;
@@ -74,6 +76,13 @@ struct FactorsUIContext {
 // Factors / Inspect 两页所有文字提示走这一个: 固定宽度处折行 (SetTooltip 不折行, 长句会被视口裁掉).
 // 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
 void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+// 持有期在因子层 seg 上的完整写法 (UI 凡显示开关仓处同一份): "开仓: C(层) @ 价, 清仓: 点 @ 价" = Stat/Contract.hpp【协议表 1】的一行
+std::string hold_desc(int hold, int seg);
+// Hold 提示的公共尾段 = Stat/Contract.hpp【协议表 1 / 2】的 UI 摘要
+inline constexpr const char *kHoldRulesTip = "• 开仓 = 本层行收盘 C(层) 出信号, 按标签价成交; 日层 = 当日收盘建仓\n"
+                                             "    ◦ 盘口中间价 = 锚点 + 下单延迟的可成交盘口 (min 层, Lob); 次分钟VWAP = 之后首个有成交连续竞价分钟 (Bar 层)\n"
+                                             "    ◦ 收盘 / 开盘撮合价 = 集合竞价单一价\n"
+                                             "• 建仓不可两向成交 → 该行作废; 平仓不可成交 / 停牌 → 顺延到首个可成交价点";
 
 // 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row), 4 = Search all (ui.search_queue 已填),
 // -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)

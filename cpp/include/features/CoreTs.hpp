@@ -28,7 +28,7 @@
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列, 落到以 t_min 为行末分钟的各层行
 //         (哪层有哪些标签列由字段表定: Lob 只 L_1min; Bar 只 L_5min 及以上, 每层只留本层及以上的持有期组);
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
-//   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 开盘型 (T+N) 回填旧日张量, 旧日句柄持到结清才 ts_close.
+//   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close.
 //   档钩子 (Derived 实现):
 //     bool  member(misc::Ymd)  日开 (onDay 之后): 当日成员位 → cs_valid (Lob 池 / Bar 在市)
 //     auto &resampler()        源 → MinuteData 的重采样器 (ResamplerTick2Min / ResamplerBar2Min: reset / roll)

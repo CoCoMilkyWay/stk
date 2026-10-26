@@ -2,7 +2,7 @@
 // (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 三个逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / leg_n,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, n, e, wimp, we + rows).
+// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, buy, sell, w, n + rows).
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
@@ -58,7 +58,7 @@ inline constexpr const char *kMomentKeys[] = {"mean", "sd", "ir", "t", "pos", "s
 inline constexpr const char *kScalarKeys[] = {"beta", "mono", "leg_n"};
 // CostAcc 的两腿 (与 factor::stat::Leg 同序) × 每腿字段 (与 CostLeg 同序)
 inline constexpr const char *kLegKeys[factor::stat::kLegs] = {"long", "short"};
-inline constexpr const char *kCostLegKeys[] = {"imp", "n", "e", "wimp", "we"};
+inline constexpr const char *kCostLegKeys[] = {"imp", "buy", "sell", "w", "n"};
 
 namespace detail {
 template <class M>
@@ -170,15 +170,15 @@ inline bool load_hold(const nlohmann::json &o, int seg, factor::stat::HoldStat &
   return true;
 }
 
-// 换手成本累加器 (契约 CostAcc; 因子文件 stat.costs[].acc[]): 计数整数精确 (util / 换手占比的分子分母), 冲击和 4 位有效
+// 换手成本累加器 (契约 CostAcc; 因子文件 stat.costs[].acc[]): 计数整数精确, 量 / 冲击和 4 位有效
 inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
   for (const factor::stat::CostLeg &g : c.leg) {
     o.push_back(sig4(g.imp));
+    o.push_back(sig4(g.buy));
+    o.push_back(sig4(g.sell));
+    o.push_back(sig4(g.w));
     o.push_back(g.n);
-    o.push_back(g.e);
-    o.push_back(sig4(g.wimp));
-    o.push_back(sig4(g.we));
   }
   o.push_back(c.rows);
   return o;
@@ -200,7 +200,7 @@ inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
     return e.is_number_integer();
   };
   for (factor::stat::CostLeg &g : c.leg)
-    if (!num(g.imp) || !ll(g.n) || !ll(g.e) || !num(g.wimp) || !num(g.we))
+    if (!num(g.imp) || !num(g.buy) || !num(g.sell) || !num(g.w) || !ll(g.n))
       return false;
   if (!ll(c.rows))
     return false;

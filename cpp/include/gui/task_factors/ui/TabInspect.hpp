@@ -8,9 +8,9 @@
 //   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各金额段 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改 fixed_impact 都只是切片
 //   (UI 持锁派生 / 现算), 不发请求, 零延时
 // 下面 2×2 四图:
-//   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的复利净值 − 1 (InspectResult::nav, FactorsBook 引擎: 每个换仓点开 1/h 净值一批,
-//        买不进空着, 卖不出延长; 成交价见 FactorsBook.hpp【成交价】; 控件行 分层 选 超额 e = lv − mkt | 绝对 lv). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
-//        图例标注全段几何年化收益 + 日收益年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
+//   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的复利净值 − 1 (InspectResult::nav, 净值引擎 fold_exit: 每行开 1/h 一批,
+//        收益在平仓行实现; 可成交 / 顺延在标签里; 控件行 分层 选 超额 e = lv − mkt | 绝对 lv). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
+//        图例: 顶底 LS = HoldStat 的 LS 年化 / Sharpe (与看板同一份), 尾部 LS = 全段几何年化 + 日收益年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
 //        尾部 (InspectService TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
 //        (白, 越极端越细, 与 LS 同一平移量 → 同一起点); 相邻尾部分层线之间填淡色带 (G20↔50% / 50%↔20% / 20%↔5%, 越极端越重), 底侧同;
 //        一级一个图例项 ("LS 50%" + 年化收益 + Sharpe, 列与 LS 对齐) 管该级分层 + 色带 + LS, 默认隐藏; y 范围 / LS 平移量只按显示的簇合成, 开关图例即重贴
@@ -26,13 +26,13 @@
 //        K 线: 选中资产沿全部交易日的分钟 OHLC (KlineService 逐日流式, 画已发布前缀, 不等全载), 每根色 = 该刻 R(t) 组色; 池外段 (出 CS 池 /
 //        当日无成交, 秩不入评估, valid% 也不计) 用不看池的秩 (rx_all) 淡色显示, 因子无输出 = 暗灰; 阴线实心 / 阳线空心.
 //        x 窗口换资产不动, y 按窗口内蜡烛重贴; 光标 = 与左上图同一个 cursor_day (同色, 锚在日边界), 光标日染淡色竖带
-//        叠加 池等权指数线 (InspectResult::pool_index): 每帧按视野内个股首根蜡烛重锚 (该刻指数 = 该根 close), zoom / 平移跟着对齐; 显示时参与 y 贴合 (开关图例即重贴)
+//        叠加 池等权指数线 (InspectResult::pool_index 当前 Hold 那条, 与分层同一净值引擎): 每帧按视野内个股首根蜡烛重锚 (该刻指数 = 该根 close), zoom / 平移跟着对齐; 显示时参与 y 贴合 (开关图例即重贴)
 //        (默认隐藏, 点图例显; 带着全区间历史, 看不出近期)
 //        再叠加滚动重锚指数线 (青, 默认显), L = 1 天: line_t = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))),
 //        P = 个股 close 前值填充到分钟格, I = 指数, S = 10 分钟; = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移. UI 现算, 不发请求
 //   左下 两半对仗 (同一张 plot_dist): 左 rIC 分布 = 逐行 rank IC (ok 行) → KLL → PDF (与顶部 stat 同一组样本); 右 alpha 分布 = 池内有效格的 alpha
 //        → KLL → 截尾 PDF. 各带 PDF 光滑拟合 (λ 自适应 sd) / mean / 时序背景 (rIC(t) | 截面均值 alpha(t)); 右半另按组边界竖切分组 (G1~G20 组色)
-//   右下 期限结构: 全部持有期 (1m … t5) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
+//   右下 期限结构: 全部持有期 (1m … T+3C) 的 L (G20 做多超额) / S (G1 做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部金额段) 一次画全, 图例可点切, 默认只显 LS. 口径 = 全库全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
 //        净线 <amt>w = 毛 − leg_sign(腿) · 该腿该持有期的均摊换手成本 (L 线下移 / S 线按做多超额画, 空腿付成本 → 上移; LS = net_ls_period.
 //        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_rows: 只有两腿的组的新进者 (前一批不在该组) 付 lb_cost_{buy,sell}_<amt>w
@@ -63,11 +63,12 @@ inline constexpr int kLsLines = kNavLs;
 struct InspectDerived {
   int days = 0;
   std::vector<misc::Ymd> dates;            // [days] 轴刻度用
-  std::vector<float> pool_index;           // [T] InspectResult::pool_index 复利成的点位 (起点 1, 右上 K 线叠加)
+  std::vector<float> pool_index;           // [T] InspectResult::pool_index 选定 hold 那条复利成的点位 (起点 1, 右上 K 线叠加)
   std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
   std::vector<float> lay_cum[kLayerLines]; // [days + 1], 复利累计 % ((净值 − 1) × 100)
   std::vector<float> ls_cum[kLsLines];     // [days + 1], 同上
-  float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe (日收益 mean / sd × √kDaysPerYear)
+  float ls_ann[kLsLines] = {};             // LS 线的年化收益 %: 顶底 = HoldStat ls_annual (与看板同一份); 尾部 = 全段几何年化
+  float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe: 顶底 = HoldStat sharpe_of; 尾部 = 日收益 mean / sd × √kDaysPerYear
   // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围 / LS 平移量按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
   float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};

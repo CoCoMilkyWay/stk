@@ -470,13 +470,6 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
                                                     : "close_adj_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
     t.y.close_adj = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
   }
-  if (lv.tier == TierId::Bar) {
-    const char *trade[std::extent_v<decltype(YCols::trade)>] = {"can_buy", "can_sell"};
-    const std::string sfx = lv.lvl == L_1day ? std::string("_day") : "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
-    for (size_t i = 0; i < std::size(trade); ++i)
-      t.y.trade[i] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, (trade[i] + sfx).c_str())));
-    t.y.has_trade = true;
-  }
   if (lv.lvl == L_1day) {
     t.y.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
     t.y.np_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_npp_ttm")));
@@ -513,7 +506,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
     }
     const int got = std::sscanf(f.code, "lb_%7[a-z]_%15[a-z0-9]", side, name);
     assert(got == 2 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<long|short>_<name>");
-    const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N> → 持有期键 (Stat/Contract.hpp 【持有期键】)
+    const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N>o / t<N>c → 持有期键 (Stat/Contract.hpp 【持有期键】)
     labs.push_back({std::string_view(side) == "long", h, static_cast<uint32_t>(i)});
     holds.insert(h);
   }
@@ -677,7 +670,7 @@ factor::search::Score RowScore(const FactorRow &r, int hold) {
   return factor::search::score_of(*h);
 }
 
-void WriteFactorWeights(const std::string &factor_dir, std::string_view file, const std::vector<SearchWeight> &ws) {
+void WriteFactorWeights(const std::string &factor_dir, std::string_view file, int hold, const std::vector<SearchWeight> &ws) {
   assert(!ws.empty());
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
   std::ifstream f(path);
@@ -687,8 +680,14 @@ void WriteFactorWeights(const std::string &factor_dir, std::string_view file, co
   assert(j.is_object() && "搜索落盘: 因子文件扫描时已解析过, 不该变");
   erase_stats(j);
   ojson arr = ojson::array();
+  if (j.contains("weights")) {
+    assert(j["weights"].is_array() && "搜索落盘: weights 扫描时已校验过");
+    for (const ojson &o : j["weights"])
+      if (!o.is_object() || !o.contains("hold") || !o["hold"].is_number_integer() || o["hold"].get<int>() != hold)
+        arr.push_back(o);
+  }
   for (const SearchWeight &w : ws) {
-    assert(w.sign == 1 || w.sign == -1);
+    assert(w.hold == hold && (w.sign == 1 || w.sign == -1));
     ojson o = ojson::object();
     o["hold"] = w.hold;
     o["sign"] = w.sign;
@@ -798,6 +797,8 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
         W w;
         if (!o.is_object() || !json_int(o, "hold", w.hold)) {
           w.err = "weights[" + std::to_string(i) + "] 须是对象且有整数 hold";
+        } else if (w.hold != 0 && std::none_of(ft.y.labels.begin(), ft.y.labels.end(), [&](const auto &l) { return l.key == w.hold; })) {
+          w.err = "weights[" + std::to_string(i) + "] 的 hold " + std::to_string(w.hold) + " 不在本层持有期里 (已废的持有期, 作废)";
         } else if (o.find("sign") != o.end() && !(json_int(o, "sign", w.sign) && (w.sign == 1 || w.sign == -1))) {
           w.err = "weights[" + std::to_string(i) + "] 的 sign 须是 1 或 -1";
         } else if (const auto xit = o.find("expr"); xit == o.end() || !xit->is_string()) {

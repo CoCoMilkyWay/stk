@@ -106,7 +106,7 @@ const char *coord_name(const space::Slot &s) {
   }
 }
 
-// 一块的作用域块 (X 叶 + Y 门控 / 搜索窗标签); 整轮缓存或单块复用. 标签秩归引擎会话 (bind 到哪块算哪块)
+// 一块的作用域块 (X 叶 + Y 门控 / 所搜持有期的标签); 整轮缓存或单块复用. 标签秩归引擎会话 (bind 到哪块算哪块)
 struct ChunkData {
   int idx = -1; // 块号; -1 = 空
   int t_lo = 0, t0_abs = 0;
@@ -152,10 +152,10 @@ struct SearchService::Flow {
   Flow() : ex(misc::exec::hw()) {}
 };
 
-bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool gpu, SearchRequest &req) {
+bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, int hold, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  req.spec = SearchSpec{row.file, row.tmpl, row.frame};
+  req.spec = SearchSpec{row.file, row.tmpl, row.frame, hold};
   return MakeFactorScope(data, pool, seg, gpu, req.scope);
 }
 
@@ -188,11 +188,10 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const SearchSpec &sp = req.spec;
   assert(scope.seg == ft.seg && "请求层与字段表层不符");
   const int seg = ft.seg;
-  // 搜索窗内的持有期 (字段表升序), 全部同评 (契约: 不跨 h 比, 各自搜)
-  std::vector<int> holds;
-  for (const int h : keys_of(ft.y.labels))
-    if (factor::search::hold_in_window(h)) // 字段表已只收本层合法 (hold_ok) 的
-      holds.push_back(h);
+  // 给定的持有期 (字段表已只收本层合法 (hold_ok) 的)
+  const std::vector<int> keys = keys_of(ft.y.labels);
+  assert(std::find(keys.begin(), keys.end(), sp.hold) != keys.end() && "Search 的持有期须是字段表标签组之一");
+  const std::vector<int> holds{sp.hold};
   SearchResult res;
   res.file = sp.file;
   res.tmpl = sp.tmpl;
@@ -221,8 +220,6 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     result = res;
     return true;
   };
-  if (holds.empty())
-    return abort_with("字段表里没有搜索窗 (30m ~ T+1) 内的持有期标签");
   const int H = static_cast<int>(holds.size());
   fs::Holds hd;
   hd.n = H;
@@ -319,7 +316,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   const int stride = std::max(1, days * seg / factor::search::kCorrRows);
 
   // ---- 分块与预算 (字节 / 格; 见头文件【分块流式】) ----
-  //   L0  宿主作用域块 (ScopeCache): cell_bytes X (叶) + Y (截面门控 + 搜索窗标签, 不装成本 / 指数)
+  //   L0  宿主作用域块 (ScopeCache): cell_bytes X (叶) + Y (截面门控 + 所搜持有期的标签, 不装成本 / 指数)
   //   Wc  CPU 引擎 (随绑定的块重开): 会话 ry 2·H + rx 2 + 池 (s0+2)·5
   //   F0  设备常驻: 特征 5·nf + 门控 1 + 搜索会话标签 (lv,sv,m,ry) 7·H; 每候选 7 (根平面 5 + rx 2); 中间量 2·s0 槽
   //   r16 常驻: 每候选 (抽样行 × A × 2) 字节; 预留趟 0 的 kInit 个, 细化的随评随增
@@ -757,7 +754,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
       return ret;
   }
 
-  // ---- 终选: 最后一次曲面的活跃峰即 weights; 全部 h 的 picks 整个替换文件 weights ----
+  // ---- 终选: 最后一次曲面的活跃峰即 weights; picks 替换文件里同 h 的 weights ----
   std::vector<SearchWeight> ws;
   for (int hi = 0; hi < H; ++hi) {
     const Surface &S = surf[static_cast<size_t>(hi)];
@@ -776,9 +773,9 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
   }
   if (ws.empty()) {
     publish_result();
-    return abort_with("任一持有期都没有统计上显著的候选 (μ ≤ SE), 文件不动");
+    return abort_with("没有统计上显著的候选 (μ ≤ SE), 文件不动");
   }
-  WriteFactorWeights(scope.factor_dir, sp.file, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
+  WriteFactorWeights(scope.factor_dir, sp.file, sp.hold, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
   res.wrote = true;
   res.n_weights = static_cast<int>(ws.size());
   res.message = "weights 已写入 (" + std::to_string(ws.size()) + " 个权重, " + std::to_string(H) + " 个持有期), 自动 Run 重算 stat";

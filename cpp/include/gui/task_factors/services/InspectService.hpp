@@ -6,9 +6,9 @@
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 Flow : FactorFlow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算;
-// S → Y → X → R 是单因子前缀 factor_pass, N 是秩平面账本 RankBook (FactorsEngine.hpp, 与 Portfolio 同一份):
+// S → Y → X → R 是单因子前缀 factor_pass (FactorsEngine.hpp, 与 Portfolio 同一份), N 是净值引擎 fold_exit (FactorsLoad.hpp, 与 Portfolio / 池指数同一份):
 //   S  作用域   FactorsLoad ScopeCache, key = scope_key (层 | EvalScope::key | 日段 | YSpec: 持有期 / 金额段 / 封顶 / 指数)
-//               → Y = 截面门控, 毛标签 [H], 成本 [C], 池等权指数 (IndexKind::Pool), 可成交 / 估值价 (book); X = 特征平面 (作用域内读过的全留, 只增)
+//               → Y = 截面门控, 毛标签 [H], 成本 [C], 池等权指数 (IndexKind::Pool, 每持有期一条); X = 特征平面 (作用域内读过的全留, 只增)
 //               (装载前 assert_fits: 放不下 = 因子层太细 / 评估期太长)
 //   Y  标签     随 S                                       → 毛标签秩: Engine<Cpu>::stat_session (Stat/Cpu.hpp StatSession, 一次常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 (ensure_x) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool 常驻)
@@ -21,8 +21,8 @@
 //   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all) + TailRow[H][T] (两腿组内更极端的
 //                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search),
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
-//   N  净值                                                → 每持有期 RankBook::lines (计划 kNavPlan = 区间篮子表 + 线表; 换仓点分批 1/h, 买不进空着,
-//                                                            卖不出延长; Y 带 book 平面) stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛)
+//   N  净值                                                → 每持有期 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h)
+//                                                            stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛; 可成交 / 顺延在标签里)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; 新请求开跑不清旧 result: 页面继续整页画旧结果
@@ -68,9 +68,9 @@ struct TailRow {
   float ls[kTails] = {};                          // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 Row::ls 同式; 尾空 → 该腿 0)
 };
 
-// 分层累计净值 (FactorsBook 引擎, 每持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(腿, j) = 该腿组内第 j 级尾部 (全按做多);
-// LS 线 0 = 顶底 (G20 多 + G1 空, 两腿超额之和), 1 + j = 第 j 级尾部. 净值线 (InspectResult::nav) = 分层绝对 [0, kNavLayers) | 分层超额 (− 引擎基准:
-// 批的有秩 ∧ 买得进 资产收益等权均值, 分钟 / 收盘型即 Row::mkt[kLong]) [kNavLayers, 2 kNavLayers) | LS [2 kNavLayers, kNavLines); 值 = 日收益 (当日各行 (1 + 增量) 连乘 − 1)
+// 分层累计净值 (净值引擎 fold_exit, 每持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(腿, j) = 该腿组内第 j 级尾部 (全按做多);
+// LS 线 0 = 顶底 (Row::ls), 1 + j = 第 j 级尾部 (TailRow::ls). 净值线 (InspectResult::nav) = 分层绝对 [0, kNavLayers) | 分层超额 (− Row::mkt[kLong])
+// [kNavLayers, 2 kNavLayers) | LS [2 kNavLayers, kNavLines); 值 = 日收益 (当日平仓的各批收益 / h 之和)
 inline constexpr int kNavLayers = factor::stat::kGroups + factor::stat::kLegs * kTails;
 inline constexpr int kNavLs = 1 + kTails;
 inline constexpr int kNavLines = 2 * kNavLayers + kNavLs;
@@ -95,7 +95,8 @@ struct InspectResult : EvalStat {
   std::vector<misc::Ymd> dates;   // [days]
   factor::stat::Holds hd;         // hd.h[hi]
   analysis::ReadScope read_scope; // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
-  std::vector<float> pool_index;  // [T] 池等权指数的逐行收益 (= YPlanes::index 线 0, Pool 档, 作用域级): 右上 K 线叠加, UI compound 成点位后按视野左端个股价重锚
+  BookLines pool_index;           // [hd.n][T] 池等权指数的逐行收益 (= YPlanes::index, Pool 档, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
+                                  //   UI compound 成点位后按视野左端个股价重锚
   InspectPlanes pl;               // 一级平面 (Row / 尾部 / 秩)
   std::vector<BookLines> nav;     // [hd.n] 分层累计的日收益 [kNavLines][days] (见 kNavLines)
   AlphaDist alpha_dist;           // alpha 分布 (全体 + 各组, 左下右半图)

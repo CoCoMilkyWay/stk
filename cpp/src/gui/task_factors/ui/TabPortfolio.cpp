@@ -1,13 +1,12 @@
 // Factors→Portfolio — 见头文件
 #include "gui/task_factors/ui/TabPortfolio.hpp"
 
-#include "features/Method/Fundamental.hpp"           // fund::SW2021_L1_NAMES (VAL 行业)
-#include "features/TimeIndex.hpp"                    // TRADE_MINUTES_PER_DAY (横轴每日跨度)
-#include "gui/Tasks.hpp"                             // StatusColor
-#include "gui/task_factors/services/FactorsBook.hpp" // book_kind (增量的实现时刻)
-#include "gui/task_factors/ui/TabFactors.hpp"        // tip
-#include "misc/date.hpp"                             // to_days (滚动窗权重按日历天)
-#include "shared/FeatureLib.hpp"                     // feature_pools
+#include "features/Method/Fundamental.hpp"    // fund::SW2021_L1_NAMES (VAL 行业)
+#include "features/TimeIndex.hpp"             // TRADE_MINUTES_PER_DAY (横轴每日跨度)
+#include "gui/Tasks.hpp"                      // StatusColor
+#include "gui/task_factors/ui/TabFactors.hpp" // tip / hold_desc
+#include "misc/date.hpp"                      // to_days (滚动窗权重按日历天)
+#include "shared/FeatureLib.hpp"              // feature_pools
 
 #include "imgui.h"
 #include "implot.h"
@@ -207,20 +206,15 @@ PortfolioCurve curve_of(const Inc &s, int i, double x0) {
   compound(s.d[i].data(), s.x.size(), [&](size_t k, double l) { c.x.push_back(s.x[k]), c.y.push_back(l); });
   return c;
 }
-// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorsBook 逐行增量 (已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在实现时刻:
-//   Row 型 (分钟) = 行末分钟; Close 型 / Day 型 (T+N) = 当日收盘
+// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorCurve 逐行增量 (fold_exit 已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在行末:
+//   分钟层 = 行末分钟; 日层 = 当日收盘
 template <class Wt>
 Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_impact, const Wt &wt) {
   const int S = f.seg;
   const factor::Geo g = factor::geo_of(S);
-  const BookKind kind = book_kind(f.hold);
   assert(!f.dates.empty() && f.nav.n == kCurveLines && static_cast<size_t>(f.nav.P) == f.dates.size() * static_cast<size_t>(S));
   const float *pnl = f.nav_at(kCurvePnl), *imp = f.nav_at(kCurveImp), *fix = f.nav_at(kCurveFix);
-  const auto row_x = [&](size_t dl, int ts) -> size_t {
-    if (kind != BookKind::Row)
-      return x_at(di[dl], kClose);
-    return x_at(di[dl], static_cast<size_t>(g.minute(ts)));
-  };
+  const auto row_x = [&](size_t dl, int ts) -> size_t { return x_at(di[dl], S == 1 ? kClose : static_cast<size_t>(g.minute(ts))); };
   Inc o;
   for (size_t dl = 0; dl < di.size(); ++dl) {
     const double k = wt(di[dl]);
@@ -745,10 +739,10 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
   ImGui::TextDisabled("有冲击");
   if (ImGui::IsItemHovered())
     tip("换手成本 = 各因子自己的最小冲击段, 不可选\n"
-        "• 只在真成交时记: 每个换仓点开 1/h 净值一批 (分钟 / 收盘型每行, T+N 每日一次), 上一批已持有的留仓不成交;\n"
-        "  买不进的空着, 卖不出的延长到下个可成交时点再判\n"
-        "• Lob 层分钟 / 收盘型: 建仓 = 最小金额段冲击 (封顶 max_impact), 平仓 = 固定冲击 %.1f bp\n"
-        "• Bar 层 (无冲击段) 与 T+N (收盘集合竞价): 建仓 / 平仓都按固定冲击 %.1f bp\n"
+        "• 每行开 1/h 净值一批, 换手按 Δw: 上一批平仓与本批建仓同一价格点时只交接差额 (留仓不成交);\n"
+        "  建仓不可两向成交的作废, 平仓不可成交的顺延 (都在标签里)\n"
+        "• Lob 层: 增仓 × 最小金额段冲击 (封顶 max_impact) + 平仓量 × 固定冲击 %.1f bp\n"
+        "• Bar 层 (无冲击段): 增仓量 / 平仓量都按固定冲击 %.1f bp\n"
         "• 组合只算 G20 多头; 无冲击线不扣",
         fixed_impact * 1e4, fixed_impact * 1e4);
   ImGui::SameLine();
@@ -1089,7 +1083,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   if (ImGui::IsItemHovered())
     tip("勾选 = 主图画该因子单独的 G20 多头净值\n"
         "• 带它自己的冲击 (冲击列: Lob 最小金额段 / Bar 固定冲击)\n"
-        "• 仓位列 = 全段日均仓位的均值 / 峰值 (买不进的空着 → < 100%%, 卖不出的延长 → 可 > 100%%)\n"
+        "• 仓位列 = 全段日均仓位的均值 / 峰值 (组内不足满仓 / 建仓作废 → < 100%%)\n"
         "• 与组合同一区间起点归一; 年化按区间复利");
   if (!ImGui::BeginTable("##pf_nav_tbl", 8, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV))
     return;
@@ -1120,6 +1114,8 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TextUnformatted(factor_level(it.e.seg).name);
     ImGui::TableSetColumnIndex(3);
     ImGui::TextUnformatted(factor::stat::hold_name(it.e.hold).c_str());
+    if (ImGui::IsItemHovered())
+      tip("%s", hold_desc(it.e.hold, it.e.seg).c_str());
     ImGui::TableSetColumnIndex(4);
     ImGui::TextColored(col, "%s", f.en.c_str());
     if (ImGui::IsItemHovered())
@@ -1303,8 +1299,8 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
     else
       tip("把高光的权重加进组合\n"
           "• %s / %s  %s\n"
-          "• 持有期 = 本页 Hold (%s)",
-          pool.c_str(), factor_level(seg).name, view_row->key.c_str(), factor::stat::hold_name(hold).c_str());
+          "• 持有期 = 本页 Hold: %s",
+          pool.c_str(), factor_level(seg).name, view_row->key.c_str(), hold_desc(hold, seg).c_str());
   }
   ImGui::SameLine();
   const bool sel_ok = ui.sel >= 0 && ui.sel < static_cast<int>(ui.entries.size());
@@ -1331,9 +1327,10 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
       ImGui::PopStyleColor();
     if (ImGui::IsItemHovered())
       tip("%s / %s  %s  %s\n"
+          "• %s\n"
           "• 规范串 %s%s%s",
-          e.pool.c_str(), factor_level(e.seg).name, e.file.c_str(), it ? it->name_cn.c_str() : "", e.expr.c_str(), bad ? "\n• 失效: " : "",
-          bad ? it->missing.c_str() : "");
+          e.pool.c_str(), factor_level(e.seg).name, e.file.c_str(), it ? it->name_cn.c_str() : "", hold_desc(e.hold, e.seg).c_str(), e.expr.c_str(),
+          bad ? "\n• 失效: " : "", bad ? it->missing.c_str() : "");
   }
   ImGui::EndChild();
   ImGui::EndChild();

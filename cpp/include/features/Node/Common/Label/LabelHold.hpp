@@ -25,35 +25,49 @@
 #include "features/TimeIndex.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cstdint>
 #include <iterator>
 
-template <class Entry>
+#define LABEL_DELAY_NOTE "行所在日起8个交易日" // 字段描述用, = LabelHold::PEND_DAYS − 1
+
+// 价点: 后复权价 + 该价能否买入 / 卖出 (建仓要两向, 平仓只要本腿那一向)
+struct LabelPx {
+  float px = 0.0f;
+  bool buy = false, sell = false;
+  bool two_way() const { return buy && sell; }
+  bool exits(size_t side) const { return side == 0 ? sell : buy; } // 做多腿 (0) 卖出平仓, 做空腿 (1) 买回平仓
+};
+
 class LabelHold {
 public:
   static constexpr size_t HOLD_COUNT = std::size(LABEL_KIND);
   static constexpr size_t GROUP_SIZE = 2;                                 // 一个 hold 组: [long, short]
   static constexpr const char *SIDE_NAME[GROUP_SIZE] = {"long", "short"}; // 列名 lb_<side>_<name> 的 side
   static constexpr size_t hold_col(size_t h) { return h * GROUP_SIZE; }
-  static_assert(HOLD_COUNT <= 32, "开盘型结算位图用 uint32_t");
-
-  // 开盘型最大 N: 日 D 的 T+N 组最晚在 D+2N 结算 → 同时悬挂 (张量未结清, 写句柄未归还) 的日数 ≤ PEND_DAYS (含当日)
-  static constexpr size_t OPEN_MAX = [] {
-    size_t m = 0;
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
-      if (LABEL_KIND[h] == HoldKind::OPEN)
-        m = std::max(m, LABEL_N[h]);
-    return m;
-  }();
-  static constexpr size_t PEND_DAYS = 2 * OPEN_MAX + 1;
+  static constexpr size_t HOLD_COLS = HOLD_COUNT * GROUP_SIZE;
+  static_assert(HOLD_COUNT <= 32, "日级组排期位图用 uint32_t");
   static_assert([] {
     for (size_t h = 0; h < HOLD_COUNT; ++h)
       if (LABEL_KIND[h] != HoldKind::CLOSE && LABEL_N[h] < 1)
         return false;
     return true;
   }(),
-                "分钟型 / 开盘型的 n 须 ≥ 1");
+                "分钟型 / 日级型的 n 须 ≥ 1");
+
+  // 日级组最远名义平仓日 (行所在日起第几个交易日)
+  static constexpr size_t DAYS_MAX = [] {
+    size_t m = 0;
+    for (size_t h = 0; h < HOLD_COUNT; ++h)
+      if (hold_daily(LABEL_KIND[h]))
+        m = std::max(m, LABEL_N[h]);
+    return m;
+  }();
+  static constexpr size_t DELAY_DAYS = 5; // 名义平仓日之后至少还能顺延的交易日数 (环满按最近收盘价结清)
+  // 悬挂日环 (含当日): 同时未写完 (写句柄未归还) 的日数上限
+  static constexpr size_t PEND_DAYS = DAYS_MAX + DELAY_DAYS + 1;
+  static_assert(PEND_DAYS == 9, "LABEL_DELAY_NOTE 的天数随 PEND_DAYS − 1 改");
   // FeatureStore 日环下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进; 再 +1: IO(d) 等 CS(d+1) close (截面跨日读 d−1 槽位,
   // 见 FeatureStore::io_try_open), d 的 slot 要多持到 d+1 结清 (其余 CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
   static constexpr size_t MIN_RING_SLOTS = PEND_DAYS + 2;
@@ -66,171 +80,262 @@ public:
 
   // ---- 日历 (日期轴每一日各调一次, 无数据日也调) ----
 
-  // 新的一日: 悬挂环前进. 被顶掉的槽必已结清 (日 D 最晚 D+2N 结算, 环长 2N+1)
+  // 新的一日: 悬挂环前进. 被顶掉的槽必已结清 (close_day 每日按环满结清最老一日)
   inline void day_begin() {
     cur_ = (cur_ + 1) % PEND_DAYS;
     Pend &p = pend_[cur_];
-    assert(!p.active && "悬挂日环被顶掉的日尚未结清 (PEND_DAYS 与到期规则不符)");
+    assert(!p.held && "悬挂日环被顶掉的日尚未结清");
+    p.held = true;
+    p.sched = 0;
     p.n_entry = 0;
-    p.open_mask = 0;
   }
 
-  // 回测区间末: 悬挂日全部按最近一次收盘价结算 (持有到最后一日收盘), 全部释放
+  // 回测区间末: 悬挂日全部按最近一次收盘价结清 (持有到最后一日收盘), 全部释放
   template <class Writer, class Release>
   inline void finish_all(Writer &&writer, Release &&release) {
-    settle_open(writer, release, true);
+    for (size_t age = PEND_DAYS; age-- > 0;)
+      mark_close(age, writer);
+    release_settled(release);
+    assert(n_wait_[0] == 0 && n_wait_[1] == 0);
   }
 
-  // 每日重置: 行游标 / 当日开盘归零
-  inline void reset() {
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
-      next_label_min_[h] = 0;
-    open_ok_ = false;
-  }
+  // 每日重置: 当日开盘归零
+  inline void reset() { open_ok_ = false; }
 
 protected:
-  // 悬挂日槽: 一日的 entry (全部组共用) + 开盘型结算进度
-  struct Pend {
-    bool active = false;                // 有开盘型未结清 (写句柄未归还)
-    uint32_t open_mask = 0;             // 已结算的开盘型 (位 = h)
-    size_t n_entry = 0;                 // 已定 entry 的行数 (行按锚点单调, 前缀)
-    Entry entry[TRADE_MINUTES_PER_DAY]; // 各行 entry
-  };
+  float px_scale_ = 1.0f;               // 价格缩放 = 当日复权比 (两档 reset 时设; 跨日收益不含除权缺口)
+  float lim_up_ = kNaN, lim_dn_ = kNaN; // 当日涨跌停价 (原始价; 两档 reset 时设)
 
-  Pend &today() { return pend_[cur_]; }
+  // 单一价撮合 (开盘 / 收盘) 的价点: raw = 原始价
+  LabelPx auction_px(float raw) const { return {raw * px_scale_, !(raw >= lim_up_ - kPxEps), !(raw <= lim_dn_ + kPxEps)}; }
 
-  float px_scale_ = 1.0f; // 价格缩放 = 当日复权比 (两档 reset 时设; 开盘型跨日收益不含除权缺口)
+  // 当日已定 entry 的行数 (行按锚点单调, 前缀)
+  size_t n_entry() const { return pend_[cur_].n_entry; }
 
-  // 有成交的分钟 bar 截开盘价; 返回该 bar 是否连续竞价
-  inline bool open_at(size_t t_min, const MinuteData &md) {
-    if (t_min == kAuctionMin) {
-      assert(!open_ok_ && "09:25 撮合 bar 之前不该有开盘价");
-      open_px_ = md.close.back() * px_scale_;
-      open_ok_ = true;
-      return false;
-    }
-    if (t_min < kContOpenMin || t_min >= kContCloseMin)
-      return false;
-    if (!open_ok_) {
-      open_px_ = md.open.back() * px_scale_;
-      open_ok_ = true;
-    }
-    return true;
-  }
-
-  // 分钟型: 行 e 的 entry 到位 = 行 e−n 的 exit 到位, 每组游标 next_label_min_ 顺序推进 (days_ago 恒 0)
+  // 当日下一行的 entry 价点 (days_ago 恒 0): 非两向可成交 → 该行作废; 行 r 到位 = 行 r−n 的分钟型名义平仓到位; 再喂等待
   template <class Writer>
-  inline void emit_min(Writer &&writer) {
-    const Pend &p = pend_[cur_];
-    float values[GROUP_SIZE];
-    for (size_t h = 0; h < HOLD_COUNT; ++h) {
-      if (LABEL_KIND[h] != HoldKind::MIN)
-        continue;
-      for (size_t m = next_label_min_[h]; m + LABEL_N[h] < p.n_entry; m = ++next_label_min_[h]) {
-        fill_values(p.entry[m], p.entry[m + LABEL_N[h]].px, values);
-        writer(hold_col(h), GROUP_SIZE, m, static_cast<const float *>(values), size_t{0});
-      }
+  inline void push_entry(const LabelPx &e, Writer &&writer) {
+    Pend &p = pend_[cur_];
+    assert(p.n_entry < TRADE_MINUTES_PER_DAY);
+    const size_t r = p.n_entry++;
+    p.entry[r] = e;
+    if (!e.two_way()) {
+      float nan[HOLD_COLS];
+      std::fill(std::begin(nan), std::end(nan), kNaN);
+      writer(size_t{0}, HOLD_COLS, r, static_cast<const float *>(nan), size_t{0});
     }
+    for (size_t h = 0; h < HOLD_COUNT; ++h)
+      if (LABEL_KIND[h] == HoldKind::MIN && r >= LABEL_N[h])
+        exit_row(p, 0, h, r - LABEL_N[h], e, writer);
+    resolve(e, writer);
   }
 
-  // 收盘结算 (当日有无成交皆调). traded: 当日有收盘价 close_px; close_entry = 按收盘价建仓的 entry (尾部行);
-  // on_tail(m, entry) = 尾部行补齐时档自己的附带写 (Lob: 冲击成本列)
-  template <class Writer, class Release, class OnTail>
-  inline void close_day(bool traded, float close_px, const Entry &close_entry, Writer &&writer, Release &&release, OnTail &&on_tail) {
-    Pend &p = pend_[cur_];
-    if (traded) {
-      last_close_ = close_px;
-      has_last_ = true;
-      for (size_t m = p.n_entry; m < TRADE_MINUTES_PER_DAY; ++m) {
-        p.entry[m] = close_entry; // 其后再无可成交: 收盘价建仓
-        on_tail(m, close_entry);
-      }
-      p.n_entry = TRADE_MINUTES_PER_DAY;
-      float values[GROUP_SIZE];
-      for (size_t h = 0; h < HOLD_COUNT; ++h) {
-        if (LABEL_KIND[h] == HoldKind::OPEN)
-          continue;
-        const bool is_min = LABEL_KIND[h] == HoldKind::MIN;
-        for (size_t m = is_min ? next_label_min_[h] : 0; m < TRADE_MINUTES_PER_DAY; ++m) {
-          fill_values(p.entry[m], close_px, values);
-          writer(hold_col(h), GROUP_SIZE, m, static_cast<const float *>(values), size_t{0});
+  // 有成交的分钟 bar 截开盘价点 (当日首个: 09:25 撮合 bar 的撮合价, 无撮合则首个连续竞价 bar 的首笔成交价 = 交易所开盘价定义):
+  // 名义 T+n 开盘到期的组平仓, 再喂等待. 返回该 bar 是否连续竞价 (可作 entry)
+  template <class Writer>
+  inline bool open_at(size_t t_min, const MinuteData &md, Writer &&writer) {
+    assert((t_min != kAuctionMin || !open_ok_) && "09:25 撮合 bar 之前不该有开盘价");
+    const bool cont = t_min >= kContOpenMin && t_min < kContCloseMin;
+    if (open_ok_ || (t_min != kAuctionMin && !cont))
+      return cont;
+    open_ok_ = true;
+    const LabelPx o = auction_px(t_min == kAuctionMin ? md.close.back() : md.open.back());
+    for (size_t age = 1; age < PEND_DAYS; ++age) {
+      Pend &q = at(age);
+      for (size_t h = 0; h < HOLD_COUNT; ++h)
+        if (LABEL_KIND[h] == HoldKind::OPEN && LABEL_N[h] == age && (q.sched >> h & 1u)) {
+          exit_rows(q, age, h, o, writer);
+          q.sched &= ~(1u << h);
         }
-        if (is_min)
-          next_label_min_[h] = TRADE_MINUTES_PER_DAY;
-      }
-      p.active = kOpenMask != 0; // 有开盘型才悬挂
-    } else {
-      p.active = false;
     }
-    settle_open(writer, release, false);
+    resolve(o, writer);
+    return cont;
+  }
+
+  // 收盘结算 (当日有无成交皆调). traded: 当日有收盘价点 close.
+  //   尾部行 (其后再无盘中价点) 按收盘价点建仓, on_tail(m, close) = 档的附带写 (Lob: 冲击成本列);
+  //   分钟型尾部 (名义平仓过收盘) / 收盘型全行 → 收盘价点平仓; 名义今日收盘 (或今日开盘未到) 的日级组 → 收盘价点平仓; 再喂等待.
+  //   无成交: 名义今日到期的日级组全部进等待. 之后环满的最老一日按最近收盘价结清, 写完的日按日序释放
+  template <class Writer, class Release, class OnTail>
+  inline void close_day(bool traded, const LabelPx &close, Writer &&writer, Release &&release, OnTail &&on_tail) {
+    Pend &p = pend_[cur_];
+    for (size_t age = 1; age < PEND_DAYS; ++age) {
+      Pend &q = at(age);
+      for (size_t h = 0; h < HOLD_COUNT; ++h)
+        if ((q.sched >> h & 1u) && LABEL_N[h] <= age) { // OPEN 到期未开盘 (n == age) / CLOSE_N 到期 (n == age)
+          if (traded)
+            exit_rows(q, age, h, close, writer);
+          else
+            wait_rows(q, h);
+          q.sched &= ~(1u << h);
+        }
+    }
+    if (traded) {
+      last_close_ = close.px;
+      has_last_ = true;
+      while (p.n_entry < TRADE_MINUTES_PER_DAY) {
+        on_tail(p.n_entry, close);
+        push_entry(close, writer);
+      }
+      for (size_t h = 0; h < HOLD_COUNT; ++h) {
+        if (LABEL_KIND[h] == HoldKind::MIN)
+          for (size_t m = TRADE_MINUTES_PER_DAY - std::min(LABEL_N[h], TRADE_MINUTES_PER_DAY); m < TRADE_MINUTES_PER_DAY; ++m)
+            exit_row(p, 0, h, m, close, writer);
+        else if (LABEL_KIND[h] == HoldKind::CLOSE)
+          exit_rows(p, 0, h, close, writer);
+      }
+      resolve(close, writer);
+      p.sched = kDailyMask;
+    }
+    mark_close(PEND_DAYS - 1, writer);
+    release_settled(release);
   }
 
 private:
-  static constexpr uint32_t kOpenMask = [] {
+  static constexpr uint32_t kDailyMask = [] {
     uint32_t m = 0;
     for (size_t h = 0; h < HOLD_COUNT; ++h)
-      if (LABEL_KIND[h] == HoldKind::OPEN)
+      if (hold_daily(LABEL_KIND[h]))
         m |= 1u << h;
     return m;
   }();
 
-  // [long, short]: 建仓价 vs 平仓价 exit_px
-  static inline void fill_values(const Entry &entry, float exit_px, float *values) {
-    values[0] = calc_return(entry.px, exit_px, true);
-    values[1] = calc_return(entry.px, exit_px, false);
-  }
+  // 一日内的行集合 (等待平仓的行)
+  struct RowSet {
+    uint64_t w[(TRADE_MINUTES_PER_DAY + 63) / 64] = {};
+    void set(size_t m) { w[m / 64] |= uint64_t{1} << (m % 64); }
+    bool any() const {
+      for (uint64_t x : w)
+        if (x)
+          return true;
+      return false;
+    }
+    // 逐行回调并清空; 返回行数
+    template <class F>
+    size_t drain(F &&f) {
+      size_t n = 0;
+      for (size_t i = 0; i < std::size(w); ++i)
+        for (; w[i]; w[i] &= w[i] - 1, ++n)
+          f(i * 64 + static_cast<size_t>(std::countr_zero(w[i])));
+      return n;
+    }
+  };
 
-  // 单个 label 的价格收益率; 建仓无价 / 平仓无价 → 这笔交易根本成不了, 收益 0 (未建仓 = 无盈亏)
+  // 悬挂日槽: 一日的 entry 价点 (全部组共用) + 日级组排期 + 等待平仓的 (组, 腿) 行集
+  struct Pend {
+    bool held = false;                    // 写句柄未归还
+    uint32_t sched = 0;                   // 名义平仓未到的日级组 (位 = h)
+    size_t n_entry = 0;                   // 已定 entry 的行数
+    LabelPx entry[TRADE_MINUTES_PER_DAY]; // 各行 entry 价点
+    RowSet wait[HOLD_COUNT][GROUP_SIZE];  // 名义价点平不了, 等之后首个该腿可成交价点
+    bool busy() const {
+      if (sched)
+        return true;
+      for (const auto &hw : wait)
+        for (const RowSet &s : hw)
+          if (s.any())
+            return true;
+      return false;
+    }
+  };
+
+  Pend &at(size_t age) { return pend_[(cur_ + PEND_DAYS - age) % PEND_DAYS]; }
+
+  // 单个 label 的价格收益率
   static inline float calc_return(float entry_px, float exit_px, bool is_long) {
-    if (entry_px < 1e-6f || exit_px < 1e-6f)
-      return 0.0f;
+    assert(entry_px > 0.0f && exit_px > 0.0f && "两向可成交的 entry / 可平仓价点必有正价");
     return is_long ? (exit_px - entry_px) / entry_px : (entry_px - exit_px) / entry_px;
   }
 
-  // 开盘型到期结算 (close_day 尾 / finish_all): 遍历悬挂日 (老日先, 释放序随日序 —— FeatureStore 的"d+1 计满 ⇒ d 计满"),
-  //   到期组写出, 结清的日 release(age). final = 区间末: 不管到期, 全部按最近一次收盘价结算
-  template <class Writer, class Release>
-  inline void settle_open(Writer &&writer, Release &&release, bool final) {
-    float values[GROUP_SIZE];
-    for (size_t age = PEND_DAYS; age-- > 0;) {
-      Pend &q = pend_[(cur_ + PEND_DAYS - age) % PEND_DAYS];
-      if (!q.active) {
-        if (age == 0 && !final)
-          release(age); // 当日不悬挂 (无成交 / 无开盘型): 句柄当日归还
-        continue;
+  template <class Writer>
+  static inline void write_side(size_t age, size_t h, size_t s, size_t m, float entry_px, float exit_px, Writer &&writer) {
+    const float v = calc_return(entry_px, exit_px, s == 0);
+    writer(hold_col(h) + s, size_t{1}, m, &v, age);
+  }
+
+  // 行 m 的组 h 在价点 x 平仓: 平得了的腿写出, 平不了的腿进等待; 作废行跳过 (已写 NaN)
+  template <class Writer>
+  inline void exit_row(Pend &q, size_t age, size_t h, size_t m, const LabelPx &x, Writer &&writer) {
+    const LabelPx &e = q.entry[m];
+    if (!e.two_way())
+      return;
+    for (size_t s = 0; s < GROUP_SIZE; ++s)
+      if (x.exits(s)) {
+        write_side(age, h, s, m, e.px, x.px, writer);
+      } else {
+        q.wait[h][s].set(m);
+        ++n_wait_[s];
       }
-      assert(has_last_ && "悬挂日必有 entry ⇒ 必有过成交 ⇒ last_close_ 有值");
-      for (size_t h = 0; h < HOLD_COUNT; ++h) {
-        if (LABEL_KIND[h] != HoldKind::OPEN || (q.open_mask & (1u << h)))
-          continue;
-        const size_t n = LABEL_N[h];
-        float exit_px = 0.0f;
-        if (final || age >= 2 * n)
-          exit_px = last_close_; // 区间末 / 顺延到期仍无开盘: 最近一次收盘价
-        else if (age >= n && open_ok_)
-          exit_px = open_px_; // 到期 (或顺延中) 且今日有开盘
-        else
-          continue;
-        for (size_t m = 0; m < TRADE_MINUTES_PER_DAY; ++m) {
-          fill_values(q.entry[m], exit_px, values);
-          writer(hold_col(h), GROUP_SIZE, m, static_cast<const float *>(values), age);
+  }
+
+  template <class Writer>
+  inline void exit_rows(Pend &q, size_t age, size_t h, const LabelPx &x, Writer &&writer) {
+    for (size_t m = 0; m < q.n_entry; ++m)
+      exit_row(q, age, h, m, x, writer);
+  }
+
+  // 组 h 名义平仓日无成交: 全部有效行两腿进等待
+  inline void wait_rows(Pend &q, size_t h) {
+    for (size_t m = 0; m < q.n_entry; ++m)
+      if (q.entry[m].two_way())
+        for (size_t s = 0; s < GROUP_SIZE; ++s) {
+          q.wait[h][s].set(m);
+          ++n_wait_[s];
         }
-        q.open_mask |= 1u << h;
+  }
+
+  // 价点 x 喂等待: 该腿可成交 → 全部在等的 (日, 组, 行) 该腿按 x 平仓
+  template <class Writer>
+  inline void resolve(const LabelPx &x, Writer &&writer) {
+    for (size_t s = 0; s < GROUP_SIZE; ++s) {
+      if (!n_wait_[s] || !x.exits(s))
+        continue;
+      for (size_t age = 0; age < PEND_DAYS; ++age) {
+        Pend &q = at(age);
+        for (size_t h = 0; h < HOLD_COUNT; ++h)
+          q.wait[h][s].drain([&](size_t m) { write_side(age, h, s, m, q.entry[m].px, x.px, writer); });
       }
-      if (q.open_mask == kOpenMask) {
-        q.active = false;
-        release(age);
-      }
+      n_wait_[s] = 0;
     }
   }
 
-  size_t next_label_min_[HOLD_COUNT] = {}; // 分钟型: 各组下一个待写 L_1min 行 (收盘 / 开盘型不用)
-  float open_px_ = 0.0f;                   // 当日开盘价, open_ok_ = 已截到 (reset 清)
-  bool open_ok_ = false;
+  // 日 age 尚未写完的组 (排期未到 / 等待中) 全部按最近一次收盘价结清
+  template <class Writer>
+  inline void mark_close(size_t age, Writer &&writer) {
+    Pend &q = at(age);
+    if (!q.held || !q.busy())
+      return;
+    assert(has_last_ && "悬挂日必有 entry ⇒ 必有过成交 ⇒ last_close_ 有值");
+    const LabelPx mk{last_close_, true, true};
+    for (size_t h = 0; h < HOLD_COUNT; ++h)
+      if (q.sched >> h & 1u)
+        exit_rows(q, age, h, mk, writer);
+    q.sched = 0;
+    for (size_t h = 0; h < HOLD_COUNT; ++h)
+      for (size_t s = 0; s < GROUP_SIZE; ++s)
+        n_wait_[s] -= q.wait[h][s].drain([&](size_t m) { write_side(age, h, s, m, q.entry[m].px, mk.px, writer); });
+  }
+
+  // 写完的日按日序 release (老日先; 遇到未写完的日即停)
+  template <class Release>
+  inline void release_settled(Release &&release) {
+    for (size_t age = PEND_DAYS; age-- > 0;) {
+      Pend &q = at(age);
+      if (!q.held)
+        continue;
+      if (q.busy())
+        return;
+      q.held = false;
+      release(age);
+    }
+  }
+
+  bool open_ok_ = false; // 当日已截到开盘价点 (reset 清)
 
   // 跨日状态 (reset 不清)
   std::array<Pend, PEND_DAYS> pend_; // 悬挂日环, pend_[cur_] = 当日; 日 D 的槽 = (cur_ − age) mod PEND_DAYS
   size_t cur_ = PEND_DAYS - 1;       // 首个 day_begin 推到 0
-  float last_close_ = 0.0f;          // 最近一次收盘 (最近有成交日的末笔成交价), 停牌到期 / 区间末的 exit
+  size_t n_wait_[GROUP_SIZE] = {};   // 各腿等待中的 (日, 组, 行) 数 (0 → resolve 跳过)
+  float last_close_ = 0.0f;          // 最近一次收盘价 (后复权), 环满 / 区间末的估值价
   bool has_last_ = false;
 };

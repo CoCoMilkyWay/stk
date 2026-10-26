@@ -7,8 +7,8 @@
 //         不落一级 Row. 语义 = Stat: 候选 c 的 acc[h].finish(hold, seg) 与 Stat 对同一平面算出的 HoldStat 逐字段一致 (整数派生量逐位,
 //         浮点和只差求和序; 对拍 Search/Check.hpp). Stat 服务交互 (一因子一次, 要 Row), Search 服务搜索 (一因子上万次, 只要分数);
 //         两者同一后端共用同一组行核 (Stat/Host.hpp / Stat/Dev.cuh), 只在"行怎么排 / 攒到哪"上分叉.
-//         算子对持有期数 H 不设限 (hd.n ≤ kMaxHold); Search 服务传搜索窗内全部持有期 (hold_in_window: 30m ~ T+1), 每 h 各自打分 /
-//         各自搜 (见【目标】: 不跨 h 比), 因子平面只算一遍, 多 h 只多行统计.
+//         算子对持有期数 H 不设限 (hd.n ≤ kMaxHold), 每 h 各自打分 (见【目标】: 不跨 h 比), 因子平面只算一遍, 多 h 只多行统计;
+//         Search 服务只传上层给定的一个持有期 (搜哪个周期由上层定).
 //
 //   【分块流式】超大张量沿 T 切块: 一块 = 行 [0, T) 的平面 (因子 / 标签 / 池 同块同形), 带两个绝对量:
 //         t0_abs  块首行的绝对下标 (tail_masked 看 (t0_abs + t) % S)
@@ -39,7 +39,7 @@
 //         可选 = 与最高者之差 ≤ 两者 SE 的合成 (统计上分不开); 按分降序贪心, 候选 j 的新增价值 = μ_j · (1 − max_{已选 i} ρ_ij),
 //         > SE_j 才入选 (首个即要求 μ > SE: 不显著的 h 不出权重). 近似重复 (ρ → 1, 含镜像参数) 新增价值 → 0 自动出局, 分略低但不相关的反而能进.
 //         ρ = 截面相关 (定向后) = 同 t 两候选 r16 行的 Pearson (与 rAC 同一行核 lag_row, lag 换成另一候选), 沿抽样行取均值 (kCorrRows 行够估).
-//         每 h 独立做, 全部 h 的 picks 合为该模板的 weights.
+//         每 h 独立做, picks 替换该模板 weights 里同 h 的项.
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
@@ -58,13 +58,8 @@ using factor::stat::HoldStat;
 using factor::stat::kGroups;
 using factor::stat::kMaxHold;
 
-// ---- 搜索窗 / 抽样常量 (见【目标】【多权重】) ----
-inline constexpr int kHoldMinMinutes = 30; // 窗下沿: 30 分钟
-inline constexpr int kHoldMaxOpen = 1;     // 窗上沿: T+1 开盘
-inline constexpr int kCorrRows = 1024;     // r16 抽样行数 (整个作用域上均匀; 截面相关 + 阈值槽分位表)
-inline bool hold_in_window(int hold) {
-  return factor::stat::hold_intraday(hold) ? hold >= kHoldMinMinutes : hold <= factor::stat::hold_open(kHoldMaxOpen);
-}
+// ---- 抽样常量 (见【多权重】) ----
+inline constexpr int kCorrRows = 1024; // r16 抽样行数 (整个作用域上均匀; 截面相关 + 阈值槽分位表)
 
 // 终选 (见【多权重】): mu[M] = 分 (曲面均值), se[M] = 标准误, corr[M][M] 定向后截面相关 (对称, 对角不看).
 // 返回入选下标 (mu 降序; 可空 = 无显著候选)

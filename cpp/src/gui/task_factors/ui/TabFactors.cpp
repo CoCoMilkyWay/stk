@@ -1,12 +1,13 @@
 // Tab Factors — 见头文件
 #include "gui/task_factors/ui/TabFactors.hpp"
-#include "factor/Check.hpp"                     // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
-#include "factor/GpuRun.hpp"                    // available / device_name
-#include "factor/Search/Contract.hpp"           // 搜索窗 / 抽样常量: Search 提示
-#include "factor/Search/Space.hpp"              // kInit: Search 提示
-#include "gui/Tasks.hpp"                        // StatusColor
-#include "gui/task_factors/ui/TabPortfolio.hpp" // RenderPortfolioBoxes
-#include "gui/util/Sparkline.hpp"               // ic~ / alpha~ 列迷你图
+#include "factor/Check.hpp"                        // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
+#include "factor/GpuRun.hpp"                       // available / device_name
+#include "factor/Search/Contract.hpp"              // 抽样常量: Search 提示
+#include "factor/Search/Space.hpp"                 // kInit: Search 提示
+#include "features/Node/Lob/TS/Label/LabelLob.hpp" // LABEL_DELAY_SECONDS: 持有期写法
+#include "gui/Tasks.hpp"                           // StatusColor
+#include "gui/task_factors/ui/TabPortfolio.hpp"    // RenderPortfolioBoxes
+#include "gui/util/Sparkline.hpp"                  // ic~ / alpha~ 列迷你图
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
@@ -38,6 +39,22 @@ void tip(const char *fmt, ...) {
   va_end(args);
   ImGui::PopTextWrapPos();
   ImGui::EndTooltip();
+}
+
+std::string hold_desc(int hold, int seg) {
+  namespace st = factor::stat;
+  const FactorLevel &L = factor_level(seg);
+  const bool day = L.lvl == L_1day;
+  const std::string px = L.tier == TierId::Lob ? "+" + std::to_string(LABEL_DELAY_SECONDS) + "s盘口中间价" : "次分钟VWAP";
+  const std::string close_px = "收盘撮合价", open_px = "开盘撮合价";
+  const std::string at = day ? "C(T)" : "C(" + std::string(L.name) + ")";
+  const std::string s = "开仓: " + at + " @ " + (day ? close_px : px) + ", 清仓: ";
+  if (st::hold_intraday(hold))
+    return s + at + "+" + std::to_string(hold) + "m @ " + px;
+  if (hold == st::kHoldClose)
+    return s + "C(T) @ " + close_px;
+  const std::string n = std::to_string(st::hold_days(hold));
+  return s + (st::hold_is_open(hold) ? "O(T+" + n + ") @ " + open_px : "C(T+" + n + ") @ " + close_px);
 }
 
 namespace {
@@ -310,7 +327,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
         tip("自由参数开关\n"
             "• 勾上 = 自由参数\n"
             "    ◦ 表达式里写裸键名\n"
-            "    ◦ 值由 Search 在搜索窗内每个持有期搜出, 写进 weights\n"
+            "    ◦ 值由 Search 在当前 Hold 下搜出, 写进 weights\n"
             "• 不勾 = 固定, 按右边的值");
       return f;
     };
@@ -1004,7 +1021,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::BeginGroup();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
-  ImGui::Text("%s  %s", ctx.pool.c_str(), factor_level(ctx.seg).name);
+  ImGui::Text("%s  级别 %s", ctx.pool.c_str(), factor_level(ctx.seg).name);
   if (ImGui::IsItemHovered())
     tip("因子目录 %s\n"
         "• 作用域 = 池 × 因子层 (因子层 = 所用特征的最细层); 叶写全名 档.层.列, 如 lob.1m.x / bar.5m.x\n"
@@ -1043,21 +1060,23 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         g ? (std::string(g) + "\n    ◦ 输入上传一次\n    ◦ 中间量常驻显存\n    ◦ Stat 走常驻会话").c_str() : "off\n    ◦ 无 CUDA 设备或未编译: cmake -DGPU_BACKEND=CUDA");
   }
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(70);
-  if (ImGui::BeginCombo("Hold", ft.y.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str())) {
-    for (size_t i = 0; i < ft.y.labels.size(); ++i)
-      if (ImGui::Selectable(factor::stat::hold_name(ft.y.labels[i].key).c_str(), static_cast<int>(i) == ui.hold_idx))
-        ui.hold_idx = static_cast<int>(i);
-    ImGui::EndCombo();
+  {
+    const std::string preview = ft.y.labels.empty() ? "-" : hold_desc(cur_hold, ft.seg);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize(preview.c_str()).x + ImGui::GetFrameHeight() + 2.f * ImGui::GetStyle().FramePadding.x);
+    if (ImGui::BeginCombo("Hold", preview.c_str())) {
+      for (size_t i = 0; i < ft.y.labels.size(); ++i)
+        if (ImGui::Selectable(hold_desc(ft.y.labels[i].key, ft.seg).c_str(), static_cast<int>(i) == ui.hold_idx))
+          ui.hold_idx = static_cast<int>(i);
+      ImGui::EndCombo();
+    }
   }
   if (ImGui::IsItemHovered())
-    tip("表格 Stat 列显示哪个持有期\n"
+    tip("表格 Stat 列显示哪个持有期, Search 也只搜这个持有期\n"
         "• 多权重因子的父行 = 该持有期下 score (每期真实 LS × rIC, 同 Search) 最高的权重\n"
-        "• 不影响\n"
-        "    ◦ Run: 一次算全部持有期\n"
-        "    ◦ Search: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
-        "• 悬停 Stat 列格子看全部持有期",
-        factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen);
+        "• Run 不受影响: 一次算全部持有期\n"
+        "• 悬停 Stat 列格子看全部持有期\n"
+        "%s",
+        kHoldRulesTip);
   ImGui::SameLine();
 
   const bool can_run = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty();
@@ -1131,8 +1150,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
 
-  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 搜索窗内每个持有期各搜 (不跨 h 比), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
-  //      (Search/Contract.hpp【目标】【多权重】); 结果整体替换文件 weights, 随后 TaskFactors 自动 Run (因子表从新 stat 算) ----
+  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold, 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
+  //      (Search/Contract.hpp【目标】【多权重】); 结果替换文件里同 h 的 weights, 随后 TaskFactors 自动 Run (因子表从新 stat 算) ----
   {
     const FactorRow *view_row = nullptr;
     for (const FactorRow &r : s_rows)
@@ -1147,6 +1166,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       ImGui::BeginDisabled();
     if (ImGui::Button("Search", ImVec2(70, 0))) {
       ui.search_row = *view_row;
+      ui.search_hold = cur_hold;
       action = 3;
     }
     if (!can_search)
@@ -1160,7 +1180,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             view_row->file.c_str());
       else
         tip("搜 %s 模板里的自由参数 (裸键名 d / k / k2)\n"
-            "• 范围: 搜索窗 %s ~ T+%d 内每个持有期各搜一遍\n"
+            "• 范围: 只搜当前 Hold %s\n"
             "• 目标 = 每期真实毛 LS × rIC\n"
             "    ◦ 只评排序能力: 不看成本, 不跨持有期比\n"
             "    ◦ 真实 LS: 一腿满仓 cap 只 (池内平均有效资产数 / 20), 不足按只数/cap 建仓, 超出均分, 不触发记 0\n"
@@ -1169,18 +1189,16 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
             "• 搜索\n"
             "    ◦ 参数区间全由已有常数 / 池内有效资产数推出; 阈值类参数按其输入分布的分位搜\n"
             "    ◦ 采样: %d 个低差异点铺满参数空间, 一趟评完\n"
-            "    ◦ 曲面: 每个持有期用已评点拟合平滑曲面 (噪声 = 各点标准误), 取曲面的峰\n"
+            "    ◦ 曲面: 用已评点拟合平滑曲面 (噪声 = 各点标准误), 取曲面的峰\n"
             "    ◦ 细化: 每个活跃峰沿各参数 ± 试探, 只评可能显著胜过峰的新点; 没有新点就停\n"
-            "• 终选 (每个持有期)\n"
+            "• 终选\n"
             "    ◦ 与最高者统计上分不开的峰里, 按截面相关 (抽 %d 行) 贪心挑持仓重合少的, 新增价值 > 标准误才入选 (个数不设上限)\n"
-            "    ◦ 最高者都不显著 (μ ≤ SE) 的持有期不出权重\n"
+            "    ◦ 最高者都不显著 (μ ≤ SE) 则不出权重, 文件不动\n"
             "• 计算\n"
             "    ◦ 数据按天分块流式过, 块大小按内存 / 显存定\n"
-            "    ◦ 窗内标签一次装全, 因子平面只算一遍\n"
             "    ◦ 候选合成共享 DAG, 公共前缀只算一次\n"
-            "• 写回: 全部持有期的终选整体替换该文件 weights (旧的全丢), 并自动 Run 重算",
-            view_row->file.c_str(), factor::stat::hold_name(factor::search::kHoldMinMinutes).c_str(), factor::search::kHoldMaxOpen,
-            factor::search::space::kInit, factor::search::kCorrRows);
+            "• 写回: 终选替换该文件里同持有期的 weights (别的持有期不动), 并自动 Run 重算",
+            view_row->file.c_str(), factor::stat::hold_name(cur_hold).c_str(), factor::search::space::kInit, factor::search::kCorrRows);
     }
     // Search all: 各文件首个可搜行 (按文件去重), 表序
     std::vector<const FactorRow *> all_rows;
@@ -1196,13 +1214,14 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       for (const FactorRow *p : all_rows)
         ui.search_queue.push_back(*p);
       ui.search_all_n = static_cast<int>(ui.search_queue.size());
+      ui.search_hold = cur_hold;
       action = 4;
     }
     if (!can_search_all)
       ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       tip("逐个搜 %s 下全部模板文件 (%d 个)\n"
-          "• 每个文件同 Search: 搜索窗内每个持有期各搜, 终选整体替换该文件 weights (已有的也重搜)\n"
+          "• 每个文件同 Search: 只搜当前 Hold (整轮固定), 终选替换该文件同持有期的 weights (已有的也重搜)\n"
           "• 跳过: 模板无自由参数 / BROKEN 的文件\n"
           "• 收尾: 全部搜完整目录 Run 一次 (中间不 Run)\n"
           "• Cancel: 取消在跑的那个并清空队列 (已搜完的文件 weights 已写入, 不 Run)",

@@ -186,25 +186,24 @@ stk/
 │   │   │       │   │                                 #    · Run: 合成共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc) → 只回写 stats[i] (与 weights 同序)
 │   │   │       │   │                                 #    · expr / weights 不动; 破碎因子标 BROKEN, 不删
 │   │   │       │   │                                 #    · 表中 score / util 由 stat 现算
-│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (各服务共用): 特征 / 门控 / 标签 / 成本 / 可成交位 / 估值价 宿主平面
+│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (各服务共用): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
 │   │   │       │   │                                 #    · 标签 / 成本恒取同池本层列 (同行); n_full_of: 满仓只数; cost_tiers: 换手成本 (Run / Inspect 同一份)
-│   │   │       │   │                                 #    · 篮子 (池整体 + 行业) 指数 / 估值 / 换手装完即算; book_spec: 净值引擎的形 + 平面
+│   │   │       │   │                                 #    · 篮子 (池整体 + 行业) 指数 / 估值 / 换手装完即算 (Pool 档每持有期一条; Full 档日层 T+1C)
+│   │   │       │   │                                 #    · fold_exit = 唯一净值引擎: Stat 逐行批收益在平仓行实现 1/h, 按日求和, compound 复利
+│   │   │       │   │                                 #      (Inspect 分层 / Portfolio 因子线 / 池篮子指数同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】)
 │   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎: 作用域块上走 DAG + Stat / Search 会话, CPU / GPU 同一接口
-│   │   │       │   ├── FactorsBook.hpp               # 🖥️ 分批持仓净值引擎: Portfolio 因子线 / 池指数 / Inspect 分层累计同一份
-│   │   │       │   │                                 #    · 每个换仓点开 1/h 净值一批; 平仓点 = 后继批换仓点 (仍在意向 → 交接不成交)
-│   │   │       │   │                                 #    · 买不进空着, 卖不出卡住延长 (之后能卖就卖); 成本只在真成交时记; 基准引擎内算
-│   │   │       │   │                                 #    · 型: Row 分钟型 / Close 收盘型 (T0) / Day T+N (每日收盘换仓); 【成交价】表 = 各场景买卖价唯一出处
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
-│   │   │       │   │                                 #    · 期限结构净线的换手成本 = Stat cost_row (与 Run 同一份); 分层累计 = FactorsBook
-│   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: 每个因子独立回测 (FactorsBook G20 多头) + 各池日层篮子指数; 按条目缓存, 只算新增
+│   │   │       │   │                                 #    · 期限结构净线的换手成本 = Stat cost_row (与 Run 同一份); 分层累计 = Row / TailRow → fold_exit
+│   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: 每个因子独立回测 (G20 多头: Stat 逐行 + 逐行换手 → fold_exit) + 各池日层篮子指数; 按条目缓存, 只算新增
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Search 按钮, 单线程)
 │   │   │       │                                     #    · 流程: 模板自由参数低差异采样 → 每 h 拟合曲面取峰 → 活跃峰 ± 试探细化 (只评可能显著胜过峰的点) → 按截面相关挑显著且不冗余的 → 整体替换 weights
-│   │   │       │                                     #    · 窗口: 30m ~ T+1, 每个 h 各搜 (标签一次装全, 因子平面只算一遍)
+│   │   │       │                                     #    · 只搜给定持有期 (看板当前 Hold); 回写只替换该 h 的权重, 其余 h 的保留
 │   │   │       │                                     #    · 目标: 每期毛 LS (持仓口径, 已含资金利用率) · rIC (不看成本, 不跨 h 比)
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
+│   │   │           │                                 #    · 显示级别; Hold 一律写成 hold_desc "开仓: C(层) @ 价, 清仓: 点 @ 价" (看板 / Inspect / Portfolio 同一份)
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 控件只切结果立方体, 不发请求
 │   │   │           ├── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 单因子线, 区间条选日段
 │   │   │           └── StatJson.hpp                  # 🖥️ HoldStat ↔ JSON
@@ -253,8 +252,10 @@ stk/
 │   │   │   │   └── Stream.hpp / Cpu.hpp / Gpu.cuh          # 🧬   同上 (流式: 一个对象逐行推全部截面, 暂存是成员)
 │   │   │   ├── Stat/                                       # 🧬 因子评估器 (无流式后端): 因子 + 标签 → Row[H][T] (IC / 分组 / 多空) → HoldStat
 │   │   │   │   │                                           #    · 并列均秩 + 整数 Pearson ⇒ CPU ↔ GPU 逐位一致
-│   │   │   │   ├── Contract.hpp                            # 🧬   语义契约: Row / HoldStat + 可合并累加器 + 换手成本 (Cost / CostAcc / cost_cell / net_ls)
-│   │   │   │   │                                           #      · 成本口径: 顶底腿只有新进者付冲击; 尾部行 (tail_masked) 不开仓不攒; Run / Inspect 净线同一份, Search 不看
+│   │   │   │   ├── Contract.hpp                            # 🧬   语义契约: Row / HoldStat + 可合并累加器 + 换手成本 (Cost / CostAcc / cost_row / net_ls)
+│   │   │   │   │                                           #      · 【协议表 1】持有期 (1m 5m 15m 30m 60m close T+1O T+1C T+2C T+3C) → 开仓 / 清仓 / 价
+│   │   │   │   │                                           #      · 【协议表 2】开关仓策略: 可成交判据 / 建仓作废 / 平仓顺延 / 仓位 1/h / 换手 Δw / 成本 / 净值
+│   │   │   │   │                                           #      · 成本口径: Δw (同一价点才交接); 尾部行 (tail_masked) 不开仓不攒; Run / Inspect / Portfolio 同一份, Search 不看
 │   │   │   │   ├── Host.hpp                                # 🧬   行核宿主版: rank_row / row_stat / cost_row (Stat / Search 的 CPU 后端共用)
 │   │   │   │   ├── Dev.cuh                                 # 🧬   行核设备版: 与 Host.hpp 同名同参序 (Stat / Search 的 GPU 后端共用)
 │   │   │   │   ├── Check.hpp                               # 🧬   对拍公共件

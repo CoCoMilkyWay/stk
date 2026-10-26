@@ -114,7 +114,7 @@ static void search_all_next(const SharedData &data, TaskFactorsState &s) {
   const Factors::FactorRow row = std::move(ui.search_queue.front());
   ui.search_queue.erase(ui.search_queue.begin());
   Factors::SearchRequest req;
-  if (Factors::MakeSearchRequest(data, s.pool, s.seg, row, ui.backend == 1, req)) {
+  if (Factors::MakeSearchRequest(data, s.pool, s.seg, row, ui.search_hold, ui.backend == 1, req)) {
     s.search_service->Request(req);
   } else {
     ui.search_queue.clear();
@@ -423,7 +423,7 @@ TaskHandle CreateFactorsTask() {
           fs.RequestCancel();
         } else if (action == 3) {
           Factors::SearchRequest req;
-          if (Factors::MakeSearchRequest(data, state->pool, state->seg, state->factors_ui.search_row, state->factors_ui.backend == 1, req))
+          if (Factors::MakeSearchRequest(data, state->pool, state->seg, state->factors_ui.search_row, state->factors_ui.search_hold, state->factors_ui.backend == 1, req))
             ss.Request(req);
         } else if (action == 4) {
           search_all_next(data, *state);

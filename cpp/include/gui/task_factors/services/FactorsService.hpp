@@ -145,14 +145,12 @@ enum Weight : int { kWeightEq,    // 等权
                     kWeightCap }; // 总市值加权
 inline constexpr int kWeights = 2;
 struct YCols {
-  Col ts;                 // ts_valid (当日有成交)
-  Col cs;                 // cs_valid (标签 + 截面门控平面)
-  Col ohlc[4];            // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
-  Col close_adj;          // 后复权收盘价 (池等权指数): lob_close_adj / close_adj_<n>min / close_adj_day
-  Col trade[2];           // 可成交 can_buy / can_sell (行末): Bar 档 Tradable 本层列 <x>_<n>min / <x>_day (FactorsBook kTr* 同序)
-  bool has_trade = false; // Lob 档无可成交列: 恒可成交
-  Col total_shares;       // 总股本 / 归母净利 TTM (pl_npp_ttm) / 归母权益 MRQ (bs_eq) / 营业总收入 TTM (pl_rev_ttm) / 经营现金流 TTM (cf_ocf_ttm) /
-                          // 股息率 TTM (dy_ttm): 只日层设, 池估值 EP / BP / SP / CP / DY (整体法); 总股本另作池加权指数的权重 = close_day × 本列
+  Col ts;           // ts_valid (当日有成交)
+  Col cs;           // cs_valid (标签 + 截面门控平面)
+  Col ohlc[4];      // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
+  Col close_adj;    // 后复权收盘价 (日层池篮子的估值换手漂移): lob_close_adj / close_adj_<n>min / close_adj_day
+  Col total_shares; // 总股本 / 归母净利 TTM (pl_npp_ttm) / 归母权益 MRQ (bs_eq) / 营业总收入 TTM (pl_rev_ttm) / 经营现金流 TTM (cf_ocf_ttm) /
+                    // 股息率 TTM (dy_ttm): 只日层设, 池估值 EP / BP / SP / CP / DY (整体法); 总股本另作池加权指数的权重 = close_day × 本列
   Col np_ttm, eq_mrq, rev_ttm, ocf_ttm, dy_ttm;
   Col ind_l1;                 // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)
   std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
@@ -167,7 +165,7 @@ struct FeatureTable {
   // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调
   bool check_grid(const factor::expr::Expr &e, std::string &err) const;
 };
-// LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N> → 持有期键, Stat/Contract.hpp);
+// LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp);
 // lb_cost_<buy|sell>_<amt>w 建仓冲击成本
 FeatureTable BuildFeatureTable(const Feature &feature, int seg);
 
@@ -350,13 +348,13 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
                              std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err);
 void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
-// 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 整个换成 ws (每项 {hold, sign, expr}, 无 stat; 调用方随后 Run 重算,
-// 因子表 score / util 等全部由 stat 来), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
+// 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 里持有期 = hold 的项换成 ws (每项 {hold, sign, expr}, 无 stat), 别的项原样留;
+// 全部 stat 清掉 (调用方随后 Run 重算, 因子表 score / util 等全部由 stat 来), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
 struct SearchWeight {
   int hold = 0;
   int sign = 1;     // ±1
   std::string expr; // 具体规范串 (模板实例, 不含 sign)
 };
-void WriteFactorWeights(const std::string &factor_dir, std::string_view file, const std::vector<SearchWeight> &ws);
+void WriteFactorWeights(const std::string &factor_dir, std::string_view file, int hold, const std::vector<SearchWeight> &ws);
 
 } // namespace GUI::Factors

@@ -16,10 +16,10 @@
 //                   DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (Inspect 尾部分层)
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     leg_codes     rx → 腿码 lc[T][A] (契约【换手成本】)
-//     cost_rows     lc × C 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
+//     cost_rows     lc × 标签有效位 × C 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
 //     StatSession   stat_open (标签 prep_label + 工作区, 一次) / stat_eval (run + leg_codes, 逐因子): 与 gpu::stat_open / stat_eval 同序
 //     Search/Cpu.hpp 对每个候选走 rank_x + accum_rows, 不另写流程.
-//   r16(x) 平面 rx / 腿码 lc 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H] / 全 void 腿码行 [A])
+//   r16(x) 平面 rx / 腿码 lc 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H])
 //   由调用方持有, ensure 幂等 → 稳态零分配; 搜索每 worker 一份, 交互一份常驻.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
@@ -67,10 +67,9 @@ inline void rank_y_rows(const Label &lb, int t0, int t1, int A, uint16_t *ry, Sc
 
 // 调用方持有; ensure 幂等 (形状对得上零分配). C = 金额段数 (只 cost_rows 用; 不算成本给 0)
 struct Workspace {
-  std::vector<Scratch> sc;      // [tid]
-  std::vector<Accum> acc;       // [tid][H]
-  std::vector<CostAcc> cacc;    // [tid][C][H]
-  std::vector<uint8_t> lc_void; // [A] 全 kLcVoid: cost_rows 没有前一批时的腿码行
+  std::vector<Scratch> sc;   // [tid]
+  std::vector<Accum> acc;    // [tid][H]
+  std::vector<CostAcc> cacc; // [tid][C][H]
   int A = 0, H = 0, C = 0, threads = 0;
   void ensure(int A_, int H_, int C_, int threads_) {
     assert(A_ >= 1 && A_ <= kMaxA && H_ >= 1 && H_ <= kMaxHold && C_ >= 0 && threads_ >= 1);
@@ -81,10 +80,8 @@ struct Workspace {
         s.reserve(A_);
     if (acc.size() < static_cast<size_t>(threads_) * H_)
       acc.resize(static_cast<size_t>(threads_) * H_);
-    if (cacc.size() < static_cast<size_t>(threads_) * C_ * H_)
-      cacc.resize(static_cast<size_t>(threads_) * C_ * H_);
-    if (lc_void.size() != static_cast<size_t>(A_))
-      lc_void.assign(static_cast<size_t>(A_), kLcVoid);
+    if (cacc.size() < static_cast<size_t>(threads_) * std::max(C_, 1) * H_)
+      cacc.resize(static_cast<size_t>(threads_) * std::max(C_, 1) * H_);
     A = A_, H = H_, C = C_, threads = threads_;
   }
 };
@@ -166,32 +163,49 @@ inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *lc) 
   });
 }
 
-// 换手成本 (契约【换手成本】): lc × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次 cost_row
-// (H × C 一遍 A 轴); 本行尾部 → 不攒; 前一批 = t−h 行, 收盘型 / t < h / t−h 是尾部 → 没有 (全 kLcVoid, 全部是新进者); cap = 满仓 (持仓加权)
+// 换手成本 (契约【换手成本】): lc × L 的标签有效位 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次
+// cost_row; 本行尾部 → 不攒; 交接 (hold_nets, 块内 t ≥ h) → 前一批 = 行 t−h; 本批平仓不交接 (hold_nets(t + h) 假) → settle; cap = L.cap.
+// C = 0 → 只出量 (cost_row), out / land 按一个金额段排. land 非空 → 另落逐行 land[(k·H + i)·T + t] (只本行, 尾部行全 0; Portfolio 逐行成本)
 template <class Exec>
-inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Holds &hd, const Cost *c, int C, double cap, Workspace &w, CostAcc *out) {
+inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &L, const Cost *c, int C, Workspace &w, CostAcc *out,
+                      CostAcc *land = nullptr) {
   factor::stat::assert_span(s);
-  factor::stat::assert_holds(hd, s.g.S);
-  const int H = hd.n, A = s.A, nt = ex.threads();
-  assert(lc && c && out && C >= 1 && C <= kMaxCost && cap > 0.0 && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
-  const size_t per = static_cast<size_t>(C) * H;
+  factor::stat::assert_labels(L, s.g.S, false);
+  const int H = L.hd.n, A = s.A, nt = ex.threads(), K = C > 0 ? C : 1;
+  assert(lc && (c || C == 0) && out && C >= 0 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
+  const size_t per = static_cast<size_t>(K) * H;
   std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
   ex.rows(s.T - s.t_lo, [&](int r0, int r1, int tid) {
     CostAcc *acc = w.cacc.data() + static_cast<size_t>(tid) * per;
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
       const size_t base = static_cast<size_t>(t) * A;
       const int ta = s.t0_abs + t;
-      const uint8_t *lag[kMaxHold];
+      CostHold ch[kMaxHold];
       for (int i = 0; i < H; ++i) {
-        const int hold = hd.h[i], h = factor::stat::hold_rows(hold, s.g);
-        const bool prev = hold != factor::stat::kHoldClose && t >= h && !factor::stat::tail_masked(ta - h, hold, s.g);
-        lag[i] = factor::stat::tail_masked(ta, hold, s.g) ? nullptr : prev ? lc + base - static_cast<size_t>(h) * A
-                                                                           : w.lc_void.data();
+        const int hold = L.hd.h[i], h = factor::stat::hold_rows(hold, s.g);
+        if (factor::stat::tail_masked(ta, hold, s.g))
+          continue;
+        CostHold &q = ch[i];
+        q.m = L.l[i].m + base;
+        if (t >= h && factor::stat::hold_nets(ta, hold, s.g)) {
+          q.plc = lc + base - static_cast<size_t>(h) * A;
+          q.pm = q.m - static_cast<size_t>(h) * A;
+        }
+        q.settle = !factor::stat::hold_nets(ta + h, hold, s.g);
       }
       Cost cr[kMaxCost];
       for (int k = 0; k < C; ++k)
         cr[k] = c[k].at(base);
-      cost_row(lc + base, lag, H, cr, C, A, cap, acc);
+      if (!land) {
+        cost_row(lc + base, ch, H, cr, C, A, L.cap, acc);
+        continue;
+      }
+      CostAcc row[kMaxCost * kMaxHold] = {};
+      cost_row(lc + base, ch, H, cr, C, A, L.cap, row);
+      for (size_t j = 0; j < per; ++j) {
+        acc[j].merge(row[j]);
+        land[j * static_cast<size_t>(s.T) + static_cast<size_t>(t)] = row[j];
+      }
     }
   });
   for (size_t j = 0; j < per; ++j) {

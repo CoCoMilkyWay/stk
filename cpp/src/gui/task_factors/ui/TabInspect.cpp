@@ -205,8 +205,10 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
   ys.push_back(y.back());
 }
 
-// 选定 hold → 日级序列 + IC 分布 / 时序. 分层累计 = InspectResult::nav (FactorsBook 净值引擎: 分批 1/h, 买不进空着, 卖不出延长) 选定口径的
-// 日收益连乘, 画 (净值 − 1) × 100 %; LS Sharpe = 日收益 mean / sd × √kDaysPerYear;
+float section_at(const InspectDerived &d, const std::vector<float> &cum, int c);
+
+// 选定 hold → 日级序列 + IC 分布 / 时序. 分层累计 = InspectResult::nav (净值引擎 fold_exit) 选定口径的
+// 日收益连乘, 画 (净值 − 1) × 100 %; 顶底 LS 的年化 / Sharpe = HoldStat (与看板同一份), 尾部 LS = 几何年化 / 日收益 mean / sd × √kDaysPerYear;
 // rIC 分布 = ok 行的 ric 逐行进 KLL (与 HoldStat::ric 的 mean/sd/skew/kurt 同一组样本).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
@@ -221,9 +223,9 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   d.adist = res.alpha_dist;
   d.days = days;
   d.dates = res.dates;
-  assert(res.pool_index.size() == static_cast<size_t>(T));
+  assert(res.pool_index.n == res.hd.n && res.pool_index.P == T);
   d.pool_index.resize(static_cast<size_t>(T));
-  compound(res.pool_index.data(), static_cast<size_t>(T), [&](size_t t, double l) { d.pool_index[t] = static_cast<float>(l); });
+  compound(res.pool_index.at(sel), static_cast<size_t>(T), [&](size_t t, double l) { d.pool_index[t] = static_cast<float>(l); });
   d.x_day.resize(static_cast<size_t>(days) + 1);
   for (int i = 0; i <= days; ++i)
     d.x_day[static_cast<size_t>(i)] = static_cast<float>(i);
@@ -244,9 +246,15 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   for (int i = 0; i < kLsLines; ++i) {
     const float *v = res.nav_at(sel, 2 * kNavLayers + i);
     cum_of(v, d.ls_cum[i]);
+    if (i == 0) {
+      d.ls_ann[i] = static_cast<float>(100.0 * factor::stat::ls_annual(d.hs));
+      d.ls_sharpe[i] = static_cast<float>(factor::stat::sharpe_of(d.hs));
+      continue;
+    }
     factor::stat::MomAcc m;
     for (int day = 0; day < days; ++day)
       m.add(v[day]);
+    d.ls_ann[i] = section_at(d, d.ls_cum[i], days);
     d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(m.finish(1), m.n, days, factor::stat::kDaysPerYear));
   }
   // 各簇 / 各 LS 线的 min / max (含起点 0): y 范围 / LS 平移量按显示的簇每帧合成 (layer_range)
@@ -428,10 +436,10 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         const Shift &s = *static_cast<const Shift *>(ud);
         return ImPlotPoint(i, s.y[i] + s.off);
       };
-      // 图例列对齐 (等宽字体): "LS <tag:4> <+7.2f>%  SR <+5.2f>", 收益 = 全段几何年化 % (section_at 末日), 顶底 LS 的 tag 空
+      // 图例列对齐 (等宽字体): "LS <tag:4> <+7.2f>%  SR <+5.2f>", 收益 / SR = InspectDerived::ls_ann / ls_sharpe, 顶底 LS 的 tag 空
       constexpr const char *kLsFmt = "LS %-4s %+7.2f%%  SR %+5.2f###%s";
       char ll[64];
-      std::snprintf(ll, sizeof(ll), kLsFmt, "", section_at(d, d.ls_cum[0], d.days), d.ls_sharpe[0], "ls");
+      std::snprintf(ll, sizeof(ll), kLsFmt, "", d.ls_ann[0], d.ls_sharpe[0], "ls");
       Shift shift[kLsLines];
       shift[0] = Shift{d.ls_cum[0].data(), yr.ls_off};
       ImPlot::SetNextLineStyle(kColLS, 2.5f);
@@ -441,7 +449,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         char tag[8], id[8];
         std::snprintf(tag, sizeof(tag), "%g%%", static_cast<double>(kTailOfGroup[j]) * 100.0);
         std::snprintf(id, sizeof(id), "tls%d", j);
-        std::snprintf(ll, sizeof(ll), kLsFmt, tag, section_at(d, d.ls_cum[1 + j], d.days), d.ls_sharpe[1 + j], id);
+        std::snprintf(ll, sizeof(ll), kLsFmt, tag, d.ls_ann[1 + j], d.ls_sharpe[1 + j], id);
         ImPlot::HideNextItem(true, ImPlotCond_Once);
         for (int l = 0; l < kLegs; ++l) { // 色带: 本级线与上一级线 (j = 0 时是该腿的组线) 之间, 越极端越重
           const float *inner = (j ? d.lay_cum[layer_tail(l, j - 1)] : d.lay_cum[leg_group(l)]).data();
@@ -1045,7 +1053,7 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
 // 口径 = Stat 契约【持仓口径】的每期真实收益 (HoldStat::grp = Σ 组持仓收益 / 全部行; ls_period = Σ ls / 全部行, 不触发行记 0).
 // 净线 = 毛二级 − leg_sign(腿) · 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; L / S 按做多超额画, 空腿付成本 = 线上移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (h 越长留仓越多, 新进者越少), 所以每 (金额段, h) 一份 CostAcc.
-//   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是 t ≥ h 的 rx ∧ 成本有效格, 两者不完全重合 —— entry 成本与标签无关
+//   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是腿成员 ∧ 标签有效格 (与组计数同口径)
 // hs[n_hold] 毛二级; costs[n_cost] 可空 (旧文件 stat 无 costs). n < 3 的持有期不作节点.
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的单边账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 (LS × 2 腿) = 画的年化
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, double fixed_impact, int sel_hold,
@@ -1175,24 +1183,24 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       ImGui::Spacing();
       std::snprintf(v, sizeof(v), "%.2f bp", avg(entry) * bp);
       if (ls)
-        std::snprintf(note, sizeof(note), "新进者建仓冲击 %s: buy %.2f / sell %.2f 的平均", tier, entry(kLong) * bp, entry(kShort) * bp);
+        std::snprintf(note, sizeof(note), "增仓量加权建仓冲击 %s: buy %.2f / sell %.2f 的平均", tier, entry(kLong) * bp, entry(kShort) * bp);
       else
-        std::snprintf(note, sizeof(note), "新进者建仓冲击 %s (%s)", tier, pc == kLong ? "buy" : "sell");
+        std::snprintf(note, sizeof(note), "增仓量加权建仓冲击 %s (%s)", tier, pc == kLong ? "buy" : "sell");
       row("开仓冲击", v, note);
       std::snprintf(v, sizeof(v), "%.2f bp", fixed_impact * bp);
       row("固定冲击", v, "Config::fixed_impact");
       std::snprintf(v, sizeof(v), "%.0f %%", avg(turn) * 100.0);
       if (ls)
-        std::snprintf(note, sizeof(note), "新进者占比 (t−h 不在该组): L %.0f%% / S %.0f%% 的平均", turn(kLong) * 100.0, turn(kShort) * 100.0);
+        std::snprintf(note, sizeof(note), "增仓 Δw⁺ 占持仓: L %.0f%% / S %.0f%% 的平均", turn(kLong) * 100.0, turn(kShort) * 100.0);
       else
-        std::snprintf(note, sizeof(note), "新进者占比 (t−h 不在该组)");
+        std::snprintf(note, sizeof(note), "增仓 Δw⁺ 占持仓 (同一时刻交接的只算差额)");
       row("换手", v, note);
       std::snprintf(v, sizeof(v), "%.2f bp/期", amort * bp);
       if (ls)
-        std::snprintf(note, sizeof(note), "= 逐行 新进者 (开仓 + 关仓) / max(腿只数, 满仓) 的全部行均值, 两腿各算再平均 (L %.2f / S %.2f)", cost(kLong) * bp,
+        std::snprintf(note, sizeof(note), "= (Σ 增仓 × 建仓冲击 + Σ 平仓量 × 固定冲击) / 全部行, 两腿各算再平均 (L %.2f / S %.2f)", cost(kLong) * bp,
                       cost(kShort) * bp);
       else
-        std::snprintf(note, sizeof(note), "= 逐行 新进者 (开仓 + 关仓) / max(腿只数, 满仓) 的全部行均值");
+        std::snprintf(note, sizeof(note), "= (Σ 增仓 × 建仓冲击 + Σ 平仓量 × 固定冲击) / 全部行");
       row("均摊成本", v, note);
     }
     const double net = gross - sign * amort;
@@ -1369,18 +1377,25 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   }
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
   const int cur_hold = n_hold ? ft.y.labels[static_cast<size_t>(ui.hold_idx)].key : 0;
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("级别");
+  ImGui::SameLine(0.f, 4.f);
+  ImGui::TextUnformatted(factor_level(ft.seg).name);
+  ImGui::SameLine(0.f, kCtlGap);
   if (n_hold >= 2) {
     std::vector<std::string> names(static_cast<size_t>(n_hold));
     std::vector<const char *> cs(static_cast<size_t>(n_hold));
     for (int i = 0; i < n_hold; ++i)
-      names[static_cast<size_t>(i)] = factor::stat::hold_name(ft.y.labels[static_cast<size_t>(i)].key), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
+      names[static_cast<size_t>(i)] = hold_desc(ft.y.labels[static_cast<size_t>(i)].key, ft.seg), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
     cycler("Hold", ui.hold_idx, cs.data(), n_hold);
   } else {
-    ImGui::TextDisabled("Hold %s", n_hold ? factor::stat::hold_name(cur_hold).c_str() : "-");
+    ImGui::TextDisabled("Hold %s", n_hold ? hold_desc(cur_hold, ft.seg).c_str() : "-");
   }
   if (ImGui::IsItemHovered())
-    tip("分层累计 / IC 分布 / 顶部 stat 看哪个持有期\n"
-        "• 只影响显示, 一次算全部持有期");
+    tip("分层累计 / IC 分布 / 顶部 stat / K 线池指数 看哪个持有期\n"
+        "• 只影响显示, 一次算全部持有期\n"
+        "%s",
+        kHoldRulesTip);
   ImGui::SameLine(0.f, kCtlGap);
   {
     static const char *const kModes[2] = {"超额", "绝对"};

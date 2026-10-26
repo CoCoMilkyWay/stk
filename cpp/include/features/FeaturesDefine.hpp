@@ -93,7 +93,7 @@
 //       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 任意层) 的字段 src → cs::Tf::apply → cs::Method::apply.
 //                                  源行 = level_asof(lvl, 本层, t) (粗层读已收的上一行, 日内读 L_1day = 前一交易日行; 跨日只许 TS / 元列,
 //                                  区间首日无前日 → NaN). CS; 有效性随源层 (L_sec DATA / 其余 ALL); ns = 本档, 或 TIER_SIDES 登记的旁读档
-//       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写, 不产 NaN)
+//       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写; 唯一 NaN = 建仓作废, 见 LabelHold)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Node/<Tier>/TS/Meta/Meta.hpp,
@@ -250,7 +250,7 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 
 #define SRC_VALID_TS(node, ...) valid_of(kLevel, node_flush::node)
 #define SRC_VALID_CS(ns, l, ...) (l == L_sec ? L2::ValidType::DATA : L2::ValidType::ALL) // 截面随源层: L_1min / 分钟箱层 / L_1day 稠密 (门控本就只看 cs_valid)
-#define SRC_VALID_LABEL L2::ValidType::ALL                                               // 标签全行写 (不产 NaN, 缺口用可成交时刻顶上, 见 LabelLob 文件头), 与 L_1min 特征同稠密
+#define SRC_VALID_LABEL L2::ValidType::ALL                                               // 标签全行写 (缺口用可成交时刻顶上; 唯一 NaN = 建仓作废, 见 LabelHold), 与 L_1min 特征同稠密
 #define SRC_VALID_FLAG L2::ValidType::ALL
 
 // TS(node, Tf, Method) / TS(node, port, Tf, Method): 按参数个数取 Tf / Method (RowWriter 同法取 node/port)

@@ -49,25 +49,54 @@
 //     段末尾部 (分钟型 / 收盘型): 行 t 的标签 = 该行末分钟 m = minute(t_seg) (Contract【层几何】) 的 L_1min 标签, entry 锚点 = 分钟 m+1 起始;
 //       最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前一分钟的起始 = L_1min 行 kLastAnchorRow 的锚点.
 //       分钟型 exit = 分钟 m+n 的锚点, m + n 越过它就"持有到收盘", 持有期缩短 → 掩掉 minute(t_seg) + n > kLastAnchorRow 的行 (tail_masked);
-//       收盘型 m 越过它 = 收盘价建仓即平 (标签恒 0) → 同式 n 取 0. 开盘型 exit 在次日之后, 无尾部.
-//       尾部行不开仓: 换手成本 / 净值引擎 (FactorsBook) 同一判据.
+//       收盘型 m 越过它 = 收盘价建仓即平 (标签恒 0) → 同式 n 取 0. 日级型 (T+N 开盘 / 收盘) exit 在次日之后, 无尾部 (该行按收盘价建仓).
+//       尾部行不开仓: 换手成本 / 净值同一判据.
 //     ok / ok_rac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
+//     可成交 / 平仓顺延全在标签里 (features LabelHold): 建仓不可两向成交的格标签 NaN → 有效位 0, 不进 J; 本契约不另读可成交.
 //
-//   【持有期键 hold】int, 与 features 层 LabelLob 的列名同源 (lb_<side>_<name>); 键的单位是**分钟**, 与因子所在层无关:
-//     分钟型 <n>m   hold = n (1 ≤ n ≤ kLastAnchorRow), 持仓 n 分钟
-//     收盘型 close  hold = kHoldClose, 持有到当日收盘
-//     开盘型 t<N>   hold = hold_open(N), T+N 日开盘平仓
+//   【持有期键 hold】int, 与 features 层 LabelHold 的列名同源 (lb_<side>_<name>); 键的单位是**分钟**, 与因子所在层无关.
 //     层上合法 (hold_ok): 分钟型 n 是行长 N 的整数倍且首行 minute(0) + n ≤ kLastAnchorRow (尾部不吞整段); close 要求 S > 1
-//       (日层的行就在收盘, 即建即平); 开盘型各层皆可.
+//       (日层的行就在收盘, 即建即平); 日级型各层皆可.
 //     折算 / lag / 年化用的有效行数 h = hold_rows(hold, geo): 分钟型 = n / N; close 与 T+1 = S (同日各行共一个 exit →
 //     每日一个独立样本); T+N = N · S (相邻 N 日的窗口重叠). L_1min 上 = 分钟数.
+//
+//   【协议表 1: 持有期 → 开仓 / 清仓 / 价】(features 标签 / Stat / 净值 / UI hold_desc 同一份; 改口径先改这里, 标签 kLabelSemver +1)
+//     价点: E    = 行末分钟价点. Lob 层 (min) = 锚点 (分钟末) + LABEL_DELAY_SECONDS 的可成交盘口中间价;
+//                  Bar 层 (5min..60min) = 之后首个有成交连续竞价分钟的 VWAP; 锚点后再无连续竞价 (≥ 14:57) → C(D)
+//           C(D) = D 日收盘集合竞价撮合价 (末笔成交);  O(D) = D 日 09:25 开盘撮合价 (无撮合 → 首个有成交连续竞价 bar 的 open)
+//     | 显示 (hold_name) | 列名 token | 键            | 适用层            | 开仓                     | 清仓                       | h (hold_rows) |
+//     |------------------|------------|---------------|-------------------|--------------------------|----------------------------|---------------|
+//     | 1m               | 1m         | 1             | min               | C(行) @ E                | C(行)+1m @ E               | n / N         |
+//     | 5m 15m 30m 60m   | <n>m       | n             | 行长 ≤ n 的分钟层 | C(行) @ E                | C(行)+n @ E (过 14:57 掩)  | n / N         |
+//     | close            | close      | kHoldClose    | 非 day            | C(行) @ E                | C(D) @ 收盘撮合            | S             |
+//     | T+1O             | t1o        | hold_open(1)  | 全部              | C(行) @ E; day 层 C(D)   | O(D+1) @ 开盘撮合          | S             |
+//     | T+1C T+2C T+3C   | t<N>c      | hold_close(N) | 全部              | C(行) @ E; day 层 C(D)   | C(D+N) @ 收盘撮合          | N · S         |
+//
+//   【协议表 2: 开关仓策略】(可成交 / 作废 / 顺延全在 features 标签里定, 本契约与全部消费端只读标签, 不另读可成交列)
+//     | 环节       | 规则                                                                                                      | 落在          |
+//     |------------|-----------------------------------------------------------------------------------------------------------|---------------|
+//     | 可成交判据 | Lob 盘口: 可买 = 卖一侧有挂单, 可卖 = 买一侧有挂单; Bar 分钟 (Tradable): 可买 = low < 涨停 − ε,           | LabelHold     |
+//     |            |   可卖 = high > 跌停 + ε; 开盘 / 收盘撮合价: 价 < 涨停 − ε 可买, 价 > 跌停 + ε 可卖; 涨跌停 NaN → 可成交  |   LabelLob/Bar|
+//     | 开仓       | E 价点非两向可成交 → 该行全部持有期两腿 NaN (作废: 不进截面, 不建仓); 不顺延开仓                          | 标签          |
+//     | 平仓       | 名义价点该腿不可成交 (多腿卖不出 / 空腿买不回) 或名义日停牌 → 顺延到之后首个该腿可成交价点                | 标签          |
+//     |            |   (分钟级 / 日级同一规则, 可跨日); 行所在日起 8 个交易日 (PEND_DAYS − 1) 仍未平 → 最近收盘价结清          |               |
+//     | 尾部       | 分钟型 / 收盘型 minute(t) + n > kLastAnchorRow 的行不开仓 (tail_masked)                                   | Stat          |
+//     | 仓位       | 每行一批, 资金 1/h, 批内每只 1 / max(只数, cap) (【持仓口径】); 目标仓位 w_t = (1/h) Σ_{k<h} s_{t−k}      | Stat / 净值   |
+//     | 换手       | Δw 逐格 (微调照计); 只在行 t 建仓与行 t−h 平仓同一价点时交接 (hold_nets: 只交易差额), 否则整建整平        | 【换手成本】  |
+//     | 成本       | 增仓 Δw⁺ × 建仓冲击 (Lob 金额段, 买入封顶 max_impact) + 平仓量 × fixed_impact; 无金额段 (Bar) 增仓量也付  | 【换手成本】  |
+//     |            |   fixed_impact (Portfolio); 只在扣净线时扣, 标签恒毛                                                      |               |
+//     | 净值       | 行 t 的批收益在 hold_exit_row 实现 (顺延不改实现行) × 1/h, 日内求和, 跨日复利; 显示的 LS / SR 取 HoldStat | 【二级】净值  |
+//     | 复权       | 标签价 × 当日复权比: 跨日收益不含除权缺口                                                                 | 标签          |
 //
 //   【二级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行 (含尾部 / 不 ok, 整张量 = T):
 //     ric / rac / ls  三个逐行量沿 t 的同一套矩 (Moments, 同一个累加器 MomAcc; ric / ls 用 ok 行, rac 用 ok_rac 行):
 //       mean / sd (ddof=1) / ir = mean/sd / pos = >0 占比 / skew, kurt (总体矩, 超额峰度)
 //       t = ir · √(n/h): 持有期重叠 (相邻 h 行是同一段收益 / 同一段 lag, h = hold_rows), 有效样本按 n/h 折算, 不然 t 虚高 √h 倍
-//     真实收益 (派生, 不落 HoldStat): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all, ls_annual = × 每年期数 (= Inspect 累计曲线末点),
-//       sharpe_of = 补 0 后的 mean / sd × √每年期数 (由 n / ls.mean / ls.sd 还原 Σ / Σ², ann_sharpe). 因子表 / Inspect / Search 同一份
+//     真实收益 (派生, 不落 HoldStat): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all, ls_annual = × 每年期数,
+//       sharpe_of = 补 0 后的 mean / sd × √每年期数 (由 n / ls.mean / ls.sd 还原 Σ / Σ², ann_sharpe). 因子表 / Inspect / Portfolio / Search 同一份
+//     净值 (Inspect / Portfolio 曲线, 逐行结果按日折叠): 目标仓位 w_t = (1/h) Σ_{k<h} s_{t−k} (s = 行 t 的信号篮子, 每批资金 1/h),
+//       行 t 的批收益在其平仓行实现 (hold_exit_row): 日收益 R_D = (1/h) Σ_{exit_day(t) = D} r_t (r = Row 的 ls / grp, 不 ok 记 0),
+//       日内求和, 跨日复利. 沿全期 Σ R_D = Σr / h, 算术年化 = ls_annual (同一份收益, 只差落日); 显示的 LS / SR 一律取 HoldStat.
 //     beta   ls 对 mkt[kLong] 的 OLS 斜率 (alpha 略: beta ≈ 0 时 alpha ≈ ls.mean)
 //     grp[k] 各组每行持仓收益沿 t 的均值 (Σ grp / n_all, 不 ok 行记 0); mono = Spearman(组号, grp[k])
 //     n_trig 触发行数 = ok 行里至少一腿非空; trigger_of = n_trig / n (诊断)
@@ -78,13 +107,14 @@
 //
 //   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Inspect 期限结构净线) 在二级上扣 (Search 不看成本, 只评排序):
 //     交易的只是两腿的组 (多腿 = 顶组, 空腿 = 底组). 成本只看**腿码** lc = leg_code(r16) ∈ {kLcLong, kLcShort, kLcMid, kLcVoid} (u8 平面,
-//     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx). 每 (t, h) 行, 腿成员 = lc(t) = 腿的格 (成本在池内恒有限, 装载层断言);
-//     其中前一批没持有该腿的记作**新进者**: 前一批 = t−h 行 (分钟型 / 开盘型, 须开过仓: t ≥ h 且 t−h 非尾部), 其 lc ≠ 该腿 (含当时
-//     rank 无效); 没有前一批 (区间首 h 行 / t−h 是尾部 / 收盘型当日全平) 则全部是新进者. 只有新进者付一次往返 = 建仓冲击 imp[腿][a]
-//     (多腿买入 / 空腿卖出, 单一金额段, 买入已按 Config::max_impact 封顶) + 平仓侧固定冲击 fixed_impact; 留仓成员不付.
-//     每 h 一份 CostAcc, 按【持仓口径】逐行加权: 每行一腿成本 = (Σ新进者冲击 + 新进者数 · fixed_impact) / max(腿样本数, cap),
-//     沿 t 求和; 每期成本 cost(腿) = 该和 / n_all (与 ls_period 同分母). 尾部行 (tail_masked, 不开仓) 不攒, 其余不看 ok (entry 成本与标签无关).
-//     未加权的计数 (腿样本 / 新进者 / 冲击和) 只给换手占比 / 均冲击显示.
+//     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx) ∧ 该持有期的标签有效位 m (腿成员 = 真建了仓的格, 与 Row 的组计数同一集合).
+//     行 t 的批 (资金 1, 【持仓口径】) 每只权 w_t(a) = [a ∈ 腿] / max(腿样本数, cap). 换手 = 目标仓位之差 Δw (无限细粒度, 微调照计):
+//     【交接】行 t 建仓与行 t−h 平仓同一价点 (hold_nets: 分钟型恒是; T+N 收盘型只在行 t 按收盘价建仓时 (日层恒是); 收盘型 / 开盘型从不)
+//       → 两批在同一时刻对冲, 只交易差额: Δ = w_t − w_{t−h} 逐格, 增仓 Δ⁺ 付建仓冲击, 减仓 Δ⁻ 付平仓固定冲击;
+//       不交接 → 本批整建 (w_t 全付建仓冲击), 前一批的平仓由它自己记 (见下).
+//     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付固定冲击).
+//     建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额段, 买入已按 Config::max_impact 封顶; 腿成员格恒有限, 装载层断言) + 平仓固定冲击 fixed_impact.
+//     每 h 一份 CostAcc 沿 t 求和; 每期成本 cost(腿) = (Σ Δ⁺·imp + Σ 平仓量 · fixed_impact) / n_all (与 ls_period 同分母). 尾部行不攒.
 //     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × periods_per_year(h).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
@@ -136,11 +166,23 @@ enum class Frame : uint8_t { CS,
 inline constexpr const char *frame_name(Frame f) { return f == Frame::CS ? "CS" : "TS"; }
 
 // ---- 持有期键 (见文件头【持有期键】) ----
-inline constexpr int kHoldDayBase = 1000;                          // ≥ 此值为日级型
-inline constexpr int kHoldClose = kHoldDayBase;                    // 持有到当日收盘
-inline constexpr int kHoldOpenMax = 30;                            // T+N 的 N 上限 (键值域 / 断言用)
-inline constexpr int hold_open(int n) { return kHoldDayBase + n; } // T+n 开盘平仓
+inline constexpr int kHoldDayBase = 1000;                             // ≥ 此值为日级型 (含 close)
+inline constexpr int kHoldClose = kHoldDayBase;                       // 持有到当日收盘
+inline constexpr int kHoldCloseBase = 2000;                           // T+N 收盘型的基
+inline constexpr int kHoldDaysMax = 30;                               // T+N 的 N 上限 (键值域 / 断言用)
+inline constexpr int hold_open(int n) { return kHoldDayBase + n; }    // T+n 开盘平仓
+inline constexpr int hold_close(int n) { return kHoldCloseBase + n; } // T+n 收盘平仓
 FACTOR_HD inline constexpr bool hold_intraday(int hold) { return hold < kHoldDayBase; }
+FACTOR_HD inline constexpr bool hold_is_open(int hold) { return hold > kHoldDayBase && hold < kHoldCloseBase; }
+FACTOR_HD inline constexpr bool hold_is_close_n(int hold) { return hold > kHoldCloseBase; }
+// T+N 的 N (日级型平仓日偏移; 分钟型 / close 为 0)
+FACTOR_HD inline constexpr int hold_days(int hold) { return hold_is_open(hold) ? hold - kHoldDayBase : hold_is_close_n(hold) ? hold - kHoldCloseBase
+                                                                                                                             : 0; }
+// 键在值域内 (与层无关)
+inline constexpr bool hold_key_ok(int hold) {
+  return (hold >= 1 && hold <= kLastAnchorRow) || hold == kHoldClose ||
+         ((hold_is_open(hold) || hold_is_close_n(hold)) && hold_days(hold) <= kHoldDaysMax);
+}
 // 持有期在层 g 上是否合法 (见文件头【持有期键】)
 inline constexpr bool hold_ok(int hold, const Geo &g) {
   if (hold_intraday(hold))
@@ -151,31 +193,34 @@ inline constexpr bool hold_ok(int hold, const Geo &g) {
 FACTOR_HD inline constexpr int hold_rows(int hold, const Geo &g) {
   if (hold_intraday(hold))
     return hold / g.N;
-  const int n = hold - kHoldDayBase;
+  const int n = hold_days(hold);
   return g.S * (n < 1 ? 1 : n);
 }
-// 列名 token → 键: "<n>m" / "close" / "t<N>" (LabelLob LABEL_GROUPS 的 name); 不识别 → 断言
+// 列名 token → 键: "<n>m" / "close" / "t<N>o" / "t<N>c" (LabelGroups LABEL_GROUPS 的 name); 不识别 → 断言
 inline int hold_from_name(std::string_view name) {
   assert(!name.empty());
   if (name == "close")
     return kHoldClose;
-  const bool is_open = name.front() == 't';
-  const std::string_view digits = is_open ? name.substr(1) : name.substr(0, name.size() - 1);
-  assert(!digits.empty() && (is_open || name.back() == 'm') && "持有期 token 不合 <n>m / close / t<N>");
+  const bool day = name.front() == 't';
+  const char tail = name.back();
+  assert((day ? tail == 'o' || tail == 'c' : tail == 'm') && "持有期 token 不合 <n>m / close / t<N>o / t<N>c");
+  const std::string_view digits = day ? name.substr(1, name.size() - 2) : name.substr(0, name.size() - 1);
+  assert(!digits.empty());
   int n = 0;
   for (const char c : digits) {
     assert(c >= '0' && c <= '9' && "持有期 token 数字部分非数字");
     n = n * 10 + (c - '0');
   }
-  return is_open ? hold_open(n) : n;
+  return !day ? n : tail == 'o' ? hold_open(n)
+                                : hold_close(n);
 }
-// 键 → 显示名: "5m" / "close" / "T+3"
+// 键 → 显示名: "5m" / "close" / "T+1O" / "T+2C"
 inline std::string hold_name(int hold) {
   if (hold_intraday(hold))
     return std::to_string(hold) + "m";
   if (hold == kHoldClose)
     return "close";
-  return "T+" + std::to_string(hold - kHoldDayBase);
+  return "T+" + std::to_string(hold_days(hold)) + (hold_is_open(hold) ? "O" : "C");
 }
 
 // ---- 参数: 持有期键列表. 每个 h 对应一组标签 ----
@@ -188,7 +233,7 @@ inline void assert_holds(const Holds &hd, int seg) {
   assert(hd.n >= 1 && hd.n <= kMaxHold);
   for (int i = 0; i < hd.n; ++i) {
     const int h = hd.h[i];
-    assert((hold_intraday(h) || (h - kHoldDayBase >= 0 && h - kHoldDayBase <= kHoldOpenMax)) && "日级型键越界 (close = kHoldClose, T+N = hold_open(N))");
+    assert(hold_key_ok(h) && "持有期键越界 (close = kHoldClose, T+N = hold_open(N) / hold_close(N))");
     assert(hold_ok(h, geo_of(seg)) && "持有期在本层不合法 (分钟型须是行长整数倍且尾部不吞整段; 日层无 close)");
     (void)h;
   }
@@ -322,14 +367,30 @@ FACTOR_HD inline int grp_of(unsigned r16) {
 }
 
 // 段末尾部 (见文件头【Row】段末尾部; 不开仓): 分钟型 exit 锚点越过最后可成交锚点 (持有期缩短) / 收盘型 entry 锚点越过 (收盘价建仓即平);
-// 开盘型无尾部. t = 绝对行号
+// 日级型无尾部. t = 绝对行号
 FACTOR_HD inline bool tail_masked(int t, int hold, const Geo &g) {
   return hold <= kHoldClose && g.minute(t % g.S) + (hold_intraday(hold) ? hold : 0) > kLastAnchorRow;
+}
+// 交接 (见文件头【换手成本】): 行 t 建仓与行 t − h 平仓是同一价点 (两批同刻对冲, 只交易差额). t = 绝对行号;
+// 分钟型 = 行 t−h 的 exit 就是行 t 的 entry; T+N 收盘型 = 行 t 按收盘价建仓 (行末分钟越过最后可成交锚点; 日层恒是); 收盘型 / 开盘型从不
+inline bool hold_nets(int t, int hold, const Geo &g) {
+  const int h = hold_rows(hold, g);
+  if (t < h || tail_masked(t, hold, g) || tail_masked(t - h, hold, g))
+    return false;
+  return hold_intraday(hold) || (hold_is_close_n(hold) && g.minute(t % g.S) > kLastAnchorRow);
+}
+// 平仓行 (见文件头【净值】): 行 t 这一批的收益在哪一行实现. t = 绝对行号; 分钟型 = t + h; 收盘型 = 当日末行;
+// T+N 开盘型 = D+N 日首行; T+N 收盘型 = D+N 日末行 (日层 S = 1: 两者都是 t + N). 顺延不改实现行 (按名义平仓日记)
+inline int hold_exit_row(int t, int hold, const Geo &g) {
+  if (hold_intraday(hold))
+    return t + hold_rows(hold, g);
+  const int d = t / g.S + hold_days(hold);
+  return hold_is_open(hold) ? d * g.S : d * g.S + g.S - 1;
 }
 
 // ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线共用) ----
 
-// 单一金额段的建仓冲击: 两腿冲击, [T][A] 平面的指针 (宿主或设备, 由后端定); 池内恒有限 (装载层断言)
+// 单一金额段的建仓冲击: 两腿冲击, [T][A] 平面的指针 (宿主或设备, 由后端定); 标签有效格恒有限 (装载层断言)
 struct Cost {
   const uint16_t *imp[kLegs] = {};                                                  // 建仓冲击 fp16 位: 多腿买入 / 空腿卖出
   FACTOR_HD Cost at(size_t i) const { return {{imp[kLong] + i, imp[kShort] + i}}; } // 偏到第 i 格 (行首 = t·A)
@@ -348,33 +409,33 @@ FACTOR_HD inline uint8_t leg_code(unsigned x) {
                                                  : kLcMid;
 }
 
-// 一腿的换手成本和
+// 一腿的换手成本和 (沿行求和; 量按【持仓口径】的权, 每批资金 1)
 struct CostLeg {
-  double imp = 0.0;  // 新进者 Σ建仓冲击
-  long long n = 0;   // 腿样本数 (lc = 该腿)
-  long long e = 0;   // 其中新进者数 (前一批不在该组)
-  double wimp = 0.0; // 按持仓加权: Σ_行 (该行新进者冲击和 / max(该行腿样本数, cap))
-  double we = 0.0;   // 按持仓加权: Σ_行 (该行新进者数 / max(该行腿样本数, cap))
+  double imp = 0.0;  // Σ Δw⁺ · 建仓冲击
+  double buy = 0.0;  // Σ Δw⁺ (增仓量)
+  double sell = 0.0; // Σ 平仓量 (交接的 Δw⁻ + 不交接批的整批平仓)
+  double w = 0.0;    // Σ w (持仓量)
+  long long n = 0;   // 腿样本数 (腿成员格数)
 };
-// 一个持有期的换手成本累加器 (两腿); 可合并 (merge 是 FACTOR_HD, 设备侧归约也用它)
+// 一个持有期的换手成本累加器 (两腿); 可合并
 struct CostAcc {
   CostLeg leg[kLegs];
   long long rows = 0; // 攒过的行数 (非尾部行各计一次)
   FACTOR_HD void merge(const CostAcc &o) {
     for (int l = 0; l < kLegs; ++l) {
-      leg[l].imp += o.leg[l].imp, leg[l].n += o.leg[l].n, leg[l].e += o.leg[l].e;
-      leg[l].wimp += o.leg[l].wimp, leg[l].we += o.leg[l].we;
+      leg[l].imp += o.leg[l].imp, leg[l].buy += o.leg[l].buy, leg[l].sell += o.leg[l].sell;
+      leg[l].w += o.leg[l].w, leg[l].n += o.leg[l].n;
     }
     rows += o.rows;
   }
-  // 每期真实成本 (腿 l, 【持仓口径】): Σ_行 (建仓冲击 + 新进者数 · 固定冲击) / max(腿样本数, cap) / n_all (与 ls_period 同分母)
+  // 每期真实成本 (腿 l): (Σ Δw⁺ · 建仓冲击 + Σ 平仓量 · 固定冲击) / n_all (与 ls_period 同分母)
   double cost(int l, double fixed_impact, int n_all) const {
     const CostLeg &c = leg[l];
-    return n_all > 0 ? (c.wimp + c.we * fixed_impact) / static_cast<double>(n_all) : 0.0;
+    return n_all > 0 ? (c.imp + c.sell * fixed_impact) / static_cast<double>(n_all) : 0.0;
   }
-  // 换手 (新进者占比) / 新进者平均建仓冲击 (显示 / 对拍用)
-  double turn(int l) const { return leg[l].n > 0 ? static_cast<double>(leg[l].e) / static_cast<double>(leg[l].n) : 0.0; }
-  double entry(int l) const { return leg[l].e > 0 ? leg[l].imp / static_cast<double>(leg[l].e) : 0.0; }
+  // 换手 (每批增仓占持仓) / 增仓的平均建仓冲击 (显示用)
+  double turn(int l) const { return leg[l].w > 0.0 ? leg[l].buy / leg[l].w : 0.0; }
+  double entry(int l) const { return leg[l].buy > 0.0 ? leg[l].imp / leg[l].buy : 0.0; }
 };
 
 // 每期净多空 = ls_period − 两腿每期成本; 年化 = × periods_per_year (s.hold 由 finish 填)

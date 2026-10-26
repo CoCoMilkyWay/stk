@@ -1,7 +1,8 @@
 // SearchService — Factors 页 Search 的单 worker: 对表格高光的那一个因子文件 (模板 expr, Expr.hpp 自由参数) 搜它的**全部自由参数**
-// (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 搜索窗内每个持有期 h (Search/Contract.hpp hold_in_window: 30m ~ T+1) 各自独立搜, 目标 = 该 h 的
-// 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本), 每 h 按冗余规则终选持仓重合少的
-// 显著权重 (Contract【多权重】, 个数不设上限), 全部 h 的 picks 整个替换该因子文件的 weights (FactorsService WriteFactorWeights; UI 随后自动 Run 重算每权重的 stat).
+// (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 只搜调用方给定的一个持有期 h (Factors 页当前 Hold; 搜哪个周期由上层定), 目标 = 该 h 的
+// 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本), 按冗余规则终选持仓重合少的
+// 显著权重 (Contract【多权重】, 个数不设上限), picks 替换该因子文件里同 h 的 weights, 别的 h 的权重不动 (FactorsService WriteFactorWeights;
+// UI 随后自动 Run 重算每权重的 stat). 下文"全部 h"的流程对单个 h 原样成立 (H = 1).
 // 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
 // 唯一的预算量 = 第 0 趟点数 (Space kInit); 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
 //
@@ -18,7 +19,7 @@
 //   r16 抽样      每趟顺带把每个候选的 kCorrRows 抽样行 r16 回宿主常驻 (约 kCorrRows × A × 2 字节 / 候选), 截面相关按需两两现算 (Stat/Host lag_row),
 //                 不另开一趟
 //
-// 评估 (Search 算子, 两后端语义同 Stat; 装 / 评搜索窗内全部标签组):
+// 评估 (Search 算子, 两后端语义同 Stat; 只装 / 评给定持有期的标签组):
 //   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry = ⌈(模板回看 + max_lag) / seg⌉ 日 (Space lookback: 各路径 ROLL 窗长之和,
 //             自由 d 取 kMaxD), 统计从 t_lo 起 (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同
 //             (EXPAND 段界 reset; 唯 EXPO 全历史递推在块首重启, 差 (1−k)^carry 行, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
@@ -49,10 +50,11 @@ namespace GUI::Factors {
 struct SearchSpec {
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
+  int hold = 0;                                        // 搜的持有期键 (字段表标签组之一)
 };
 using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights); scope.max_impact 不看 (不评成本)
-// 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error)
-bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool gpu, SearchRequest &req);
+// 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键
+bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, int hold, bool gpu, SearchRequest &req);
 
 // 评过的一个候选在一个 h 下的分 (UI 列表)
 struct SearchCand {
@@ -89,7 +91,7 @@ struct SearchChunk {
 struct SearchResult {
   std::string file, tmpl;         // 对象 + 模板规范串
   std::vector<std::string> slots; // 可搜槽名 ("TsDeltaRoll.d" …)
-  std::vector<SearchHold> holds;  // 搜索窗内持有期, 升序
+  std::vector<SearchHold> holds;  // 搜的持有期 (一个)
   int n_pass = 0;                 // 跑完的趟数
   int n_chunk = 0, chunk_days = 0, batch = 0;
   int n_assets = 0;                    // 资产数
