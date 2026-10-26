@@ -5,9 +5,9 @@
 //   条目 = 权重粒度: (池, 因子层, 因子文件, 具体规范串) 定位 Factors 表里的一个权重 (FactorRow::expr); hold = 加入时 Factors 页的 Hold.
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
-// 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条 flow (FactorsLoad 装载 → Engine<Cpu> walk → rank_x), 再按该 hold 跑
-//   FactorsBook 净值引擎 (G20 多头一个篮子: 每个换仓点开 1/h 净值一批 (换仓点 / 成交价见 FactorsBook.hpp【成交价】),
-//   意向等权 1 / max(只数, 满仓), 买不进空着, 卖不出延长) → FactorCurve 逐行出参.
+// 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Inspect 同一条前缀 (FactorsEngine factor_pass: 装载 → walk → rank_x), 再按该 hold 跑
+//   秩平面账本 RankBook (G20 多头一个篮子: 每个换仓点开 1/h 净值一批 (换仓点 / 成交价见 FactorsBook.hpp【成交价】),
+//   意向等权 1 / max(只数, 满仓), 买不进空着, 卖不出延长) → fold_lines stride 1 → FactorCurve 逐行出参线.
 //   成本只在真成交时记: Lob 层分钟 / 收盘型建仓 = 最小金额段买入冲击 (封顶 max_impact) + 平仓一份 Config::fixed_impact; Bar 层无金额段 与 T+N
 //   (集合竞价) = 建仓 / 平仓各一份 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
 // 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, YPlanes 篮子 → PoolCurve): 篮子 (池整体 + 行业) 两权重指数 (FactorsBook h = 1) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
@@ -65,14 +65,11 @@ enum Impact : int { kImpactNet,     // 有冲击
 inline constexpr int kImpacts = 2;
 
 // ---- 请求 ----
-struct FactorJob {   // 一个有效条目
-  std::string key;   // PortfolioEntry::key
-  FactorScope scope; // 条目的 (池, 层)
-  std::shared_ptr<const FeatureTable> ft;
-  std::string expr;
-  factor::stat::Frame frame = factor::stat::Frame::CS;
+struct HoldJob {   // 一个有效条目 = 一个因子 (FactorJob, 与 Inspect 请求同一份; scope = 条目的 (池, 层)) + 持有期
+  std::string key; // PortfolioEntry::key
+  FactorJob f;
   int hold = 0;
-  std::string sig() const { return key + "|" + std::to_string(scope.max_impact); } // 买入冲击封顶变了重算
+  std::string sig() const { return key + "|" + std::to_string(f.scope.max_impact); } // 买入冲击封顶变了重算
 };
 struct PoolJob {     // 一个池的日层指数
   std::string key;   // 池名
@@ -81,7 +78,7 @@ struct PoolJob {     // 一个池的日层指数
   std::string sig() const { return key; }
 };
 struct PortfolioRequest {
-  std::vector<FactorJob> factors;
+  std::vector<HoldJob> factors;
   std::vector<PoolJob> pools; // 有因子才带 (标签库已建的全部池)
   bool reload = false;        // 弃缓存全部重算 (特征库重算过 / 手动 Recompute)
   std::string sig() const;    // 内容签名 (不含 reload): 没变就不发请求, 不打断在跑的
@@ -90,16 +87,21 @@ struct PortfolioRequest {
 void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::vector<PortfolioItem> &items, bool reload, PortfolioRequest &req);
 
 // ---- 结果 ----
-// 一个因子 (该 hold) 的 G20 多头净值引擎 (FactorsBook) 逐行出参 [T = days · seg]: 占净值的增量, 记在实现所在行 (Row 型 = 本行, Close 型 = 收盘行,
-// Day 型 = 当日收盘行; 卡住的卖出 / 转交 = 本行)
+// 一个因子 (该 hold) 的 G20 多头账本出参线 (fold_lines stride 1 = 逐行原值; 线序 = CurveLine, 与 InspectResult::nav 同形):
+// 增量占净值, 记在实现所在行 (Row 型 = 本行, Close 型 = 收盘行, Day 型 = 当日收盘行; 卡住的卖出 / 转交 = 本行)
+enum CurveLine : int { kCurvePnl,  // 毛收益
+                       kCurveImp,  // 建仓冲击
+                       kCurveFix,  // 固定冲击份数 (UI × Config::fixed_impact); 净 = pnl − imp − fix · fixed_impact
+                       kCurveExpo, // 行末仓位 (1 = 满仓; 含卡住的)
+                       kCurveLines };
 struct FactorCurve {
-  std::string sig;              // 算时的 FactorJob::sig
+  std::string sig;              // 算时的 HoldJob::sig
   std::vector<misc::Ymd> dates; // [days]
   int seg = 0, hold = 0;
-  int amt = 0;                      // 建仓冲击金额段 (万) = 该层最小段; 0 = 无段 (Bar 层 / Day 型集合竞价) → 建仓也付一份 fixed_impact
-  std::vector<float> pnl, imp, fix; // [T] 毛收益 / 建仓冲击 / 固定冲击份数 (UI × Config::fixed_impact); 净 = pnl − imp − fix · fixed_impact
-  std::vector<float> expo;          // [days] 当日各行行末仓位的均值 (1 = 满仓; 含卡住的)
-  std::string error;                // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
+  int amt = 0;            // 建仓冲击金额段 (万) = 该层最小段; 0 = 无段 (Bar 层 / Day 型集合竞价) → 建仓也付一份 fixed_impact
+  std::vector<float> nav; // [kCurveLines][T = days · seg]
+  std::string error;      // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
+  const float *nav_at(int line) const { return nav.data() + static_cast<size_t>(line) * dates.size() * static_cast<size_t>(seg); }
 };
 // 一个池的日层篮子 (YPlanes 篮子原样搬来): 篮子 0 = 池整体, k = 1..kBaskets−1 = 本池按 SW2021 一级切的行业 (UI 只用 all 池的 = 申万一级)
 struct PoolCurve {
@@ -113,7 +115,7 @@ struct PoolCurve {
   const float *val_of(size_t k, int w, int m) const { return val[w][m].data() + k * dates.size(); }
 };
 struct PortfolioResult {
-  std::map<std::string, std::shared_ptr<const FactorCurve>> factors; // FactorJob::key →
+  std::map<std::string, std::shared_ptr<const FactorCurve>> factors; // HoldJob::key →
   std::map<std::string, std::shared_ptr<const PoolCurve>> pools;     // PoolJob::key →
 };
 
@@ -138,9 +140,9 @@ private:
   bool run(PortfolioRequest &req);
   template <class Job, class Curve>
   bool run_jobs(const std::vector<const Job *> &todo, std::map<std::string, std::shared_ptr<const Curve>> &out, Flow &F); // false = 取消 / 判废
-  bool eval(const FactorJob &j, Flow &F, FactorCurve &out);                                                               // false = 取消 / 判废
+  bool eval(const HoldJob &j, Flow &F, FactorCurve &out);                                                                 // false = 取消 / 判废
   bool eval(const PoolJob &j, Flow &F, PoolCurve &out);                                                                   // false = 取消 / 判废
-  bool load_failed(Flow &F);                                                                                              // 装载没成: 库判废 → 弃缓存 + 置 message; 恒 false
+  bool stale_out(Flow &F);                                                                                                // 库判废: 弃缓存 + 置 message; 恒 false
 
   std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活
 };

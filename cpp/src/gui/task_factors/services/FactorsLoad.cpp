@@ -828,6 +828,16 @@ bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   return true;
 }
 
+Load ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
+               const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+  if (ensure_y(c, ft, es, lr, d0, d1, ys, ex, cancel, prog) && ensure_x(c, ft, es, lr, codes, retain, ex, cancel, prog))
+    return Load::Ok;
+  if (!lr.stale())
+    return Load::Cancel;
+  c.reset();
+  return Load::Stale;
+}
+
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes) {
   std::vector<const factor::check::Plane *> in(codes.size());
   for (size_t i = 0; i < codes.size(); ++i) {
@@ -869,6 +879,13 @@ void check_leaf_domains(misc::exec::ForkJoin &ex, const factor::Dag &d, int node
           d.feats[static_cast<size_t>(g.feat)] + " 含越界值 " + buf;
     return;
   }
+}
+
+void check_leaves(misc::exec::ForkJoin &ex, const factor::Dag &d, const ScopeCache &c, std::string &err) {
+  assert(err.empty());
+  const std::vector<const factor::check::Plane *> in = leaves(c, d.feats);
+  for (int i = 0; i < static_cast<int>(d.nodes.size()) && err.empty(); ++i)
+    check_leaf_domains(ex, d, i, in, err);
 }
 
 float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n) {

@@ -1,11 +1,9 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/PortfolioService.hpp"
 
-#include "factor/Stat/Cpu.hpp"
-#include "gui/task_factors/services/FactorsBook.hpp"   // run_book (G20 多头净值)
-#include "gui/task_factors/services/FactorsEngine.hpp" // Engine<Cpu> (只 CPU)
+#include "gui/task_factors/services/FactorsBook.hpp"   // Line / fold_lines (G20 多头出参线)
+#include "gui/task_factors/services/FactorsEngine.hpp" // FactorFlow / factor_pass / RankBook (只 CPU)
 #include "gui/task_factors/services/FactorsLoad.hpp"
-#include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools
 #include "shared/SharedData.hpp"
@@ -13,6 +11,7 @@
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -24,7 +23,6 @@ namespace {
 
 using json = nlohmann::json;
 using ojson = nlohmann::ordered_json;
-using factor::stat::kLong;
 
 constexpr int kDaySeg = 1; // 池指数的层 (日层)
 
@@ -40,6 +38,29 @@ int seg_of_level(const std::string &name) {
   assert(false && "组合文件: level 不是因子层名");
   __builtin_unreachable();
 }
+
+// 账本篮子 (RankBook): 一个 = rx 落 G20 (做多, 满仓倍数 1)
+struct G20Bits {
+  uint64_t operator()(uint16_t r16) const { return factor::stat::leg_code(r16) == factor::stat::kLcLong; }
+};
+RankBaskets<G20Bits> g20_baskets() {
+  RankBaskets<G20Bits> bk;
+  bk.nb = 1;
+  bk.side[0] = 1;
+  bk.cap[0] = 1.0;
+  return bk;
+}
+// 线表 (FactorCurve::nav 线序 = CurveLine): 篮子 0 的出参原样
+std::array<Line, kCurveLines> curve_lines() {
+  std::array<Line, kCurveLines> ls{};
+  const BookField f[kCurveLines] = {kBkPnl, kBkImp, kBkFix, kBkExpo};
+  for (int i = 0; i < kCurveLines; ++i) {
+    Line &l = ls[static_cast<size_t>(i)];
+    l.t[l.n++] = {0, f[i], 1.0};
+  }
+  return ls;
+}
+const std::array<Line, kCurveLines> kCurveLineTable = curve_lines();
 
 } // namespace
 
@@ -165,15 +186,15 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
   for (PortfolioItem &it : items) {
     if (!it.missing.empty())
       continue;
-    FactorJob j;
-    if (!MakeFactorScope(data, it.e.pool, it.e.seg, /*gpu=*/false, j.scope)) {
+    HoldJob j;
+    if (!MakeFactorScope(data, it.e.pool, it.e.seg, /*gpu=*/false, j.f.scope)) {
       it.missing = "标签库未建";
       continue;
     }
     j.key = it.e.key();
-    j.ft = table_of(tables, data.feature, it.e.seg);
-    j.expr = it.e.expr;
-    j.frame = it.frame;
+    j.f.ft = table_of(tables, data.feature, it.e.seg);
+    j.f.expr = it.e.expr;
+    j.f.frame = it.frame;
     j.hold = it.e.hold;
     req.factors.push_back(std::move(j));
   }
@@ -192,7 +213,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 
 std::string PortfolioRequest::sig() const {
   std::string s;
-  for (const FactorJob &j : factors)
+  for (const HoldJob &j : factors)
     s += j.sig() + "\n";
   for (const PoolJob &p : pools)
     s += p.sig() + "\n";
@@ -203,16 +224,11 @@ std::string PortfolioRequest::sig() const {
 // Service
 // ============================================================================
 
-// 计算 flow 的状态 (worker 私有, 跨请求存活)
-struct PortfolioService::Flow {
-  misc::exec::ForkJoin ex;
-  LibReaders lr; // 已建的库 (清单没变的复用)
-  ScopeCache c;  // 因子的作用域块: 同作用域的因子共用 Y, X 只留当前因子的叶
-  Engine<Cpu> E;
+// 计算 flow 的状态 (worker 私有, 跨请求存活). 作用域块 c: 同作用域的因子共用 Y, X 只留当前因子的叶
+struct PortfolioService::Flow : FactorFlow {
   std::vector<uint16_t> rx;                      // [T][A]
   std::map<std::string, std::vector<int>> holds; // 本轮请求: group_of → 该组全部因子的持有期 (升序去重; Y 一组一次装全)
-
-  explicit Flow(const std::atomic<bool> &cancel) : ex(misc::exec::hw()), E(ex, cancel, 1) {}
+  using FactorFlow::FactorFlow;
 };
 
 namespace {
@@ -235,7 +251,7 @@ std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<con
 }
 
 // Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_y 命中)
-std::string group_of(const FactorJob &j) { return std::to_string(j.scope.seg) + "|" + j.scope.pool; }
+std::string group_of(const HoldJob &j) { return std::to_string(j.f.scope.seg) + "|" + j.f.scope.pool; }
 
 } // namespace
 
@@ -276,12 +292,12 @@ bool PortfolioService::run(PortfolioRequest &req) {
   publish();
 
   // 只有 worker 写 result: 这里读不加锁
-  std::vector<const FactorJob *> todo_f = todo_of(result.factors, req.factors);
-  std::stable_sort(todo_f.begin(), todo_f.end(), [](const FactorJob *a, const FactorJob *b) {
-    return std::tie(a->scope.seg, a->scope.pool) < std::tie(b->scope.seg, b->scope.pool);
+  std::vector<const HoldJob *> todo_f = todo_of(result.factors, req.factors);
+  std::stable_sort(todo_f.begin(), todo_f.end(), [](const HoldJob *a, const HoldJob *b) {
+    return std::tie(a->f.scope.seg, a->f.scope.pool) < std::tie(b->f.scope.seg, b->f.scope.pool);
   });
   F.holds.clear();
-  for (const FactorJob &j : req.factors)
+  for (const HoldJob &j : req.factors)
     F.holds[group_of(j)].push_back(j.hold);
   for (auto &[g, hk] : F.holds) {
     std::sort(hk.begin(), hk.end());
@@ -293,125 +309,57 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return run_jobs(todo_f, result.factors, F) && run_jobs(todo_p, result.pools, F);
 }
 
-bool PortfolioService::load_failed(Flow &F) {
-  if (F.lr.stale()) { // 库换了, 缓存的一切不可信
-    F.c.reset();
-    std::lock_guard<std::mutex> lock(mutex);
-    message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
-  }
+bool PortfolioService::stale_out(Flow &F) {
+  F.c.reset(); // 库换了, 缓存的一切不可信
+  std::lock_guard<std::mutex> lock(mutex);
+  message = kStaleMsg;
   return false;
 }
 
-// 与 InspectService::evaluate 同一条 flow, 只留该 hold 的逐行序列
-bool PortfolioService::eval(const FactorJob &j, Flow &F, FactorCurve &out) {
+// 与 InspectService::eval 同一条前缀 (factor_pass), 再按该 hold 跑 G20 多头账本
+bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   TraceN("PortfolioFactor");
-  const FeatureTable &ft = *j.ft;
-  const FactorScope &sc = j.scope;
-  assert(sc.seg == ft.seg && "条目层与字段表层不符");
-  factor::expr::Expr e;
-  {
-    std::string err;
-    const bool ok = factor::expr::parse(j.expr, ft.lookup(), ft.seg, e, err);
-    assert(ok && "解析时找回的规范串必可再解析");
-    (void)ok;
-  }
-  const factor::Dag d = factor::build(e);
-  const int N = static_cast<int>(d.nodes.size()), root = d.root();
+  const FeatureTable &ft = *j.f.ft;
+  const FactorScope &sc = j.f.scope;
+  const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
   out.seg = sc.seg;
   out.hold = j.hold;
-  const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
 
-  // ---- 作用域 + 装载 (Y = 同组全部 hold + 最小金额段, 组内因子共用; X 只留本因子的叶) ----
-  EvalScope es;
-  if (std::string why; !eval_scope(ft, sc, d.feats, es, why)) {
-    out.error = why;
-    return true;
-  }
-  open_libs(sc, F.lr, &cancel_);
-  const int days = static_cast<int>(es.dates.size()), A = static_cast<int>(es.rs.axis.size());
+  // ---- S / Y / X / R: 单因子前缀 (factor_pass, 与 Inspect 同一份) ----
+  //   Y = 同组全部 hold + 最小金额段 (组内因子共用); X 只留本因子的叶
+  //   另占: 意向权 float + 出参线 float [kCurveLines] + 引擎出参 double [kCurveLines] (/ 行); 收尾: 账本
   const std::vector<int> ck = keys_of(ft.y.costs);
   assert((ck.empty() || ck.front() > 0) && "金额段须 > 0");
   const YSpec ys{holds_of(F.holds.at(group_of(j))), amts_of(ck.empty() ? std::vector<int>{} : std::vector<int>{ck.front()}), static_cast<float>(sc.max_impact),
                  /*index=*/false, /*book=*/true};
-  { // 宿主峰值: Y + X (本因子) + 活槽 + rx + 标签秩 + 权 / 出参 [T] (wt / pnl / imp / fix) + 引擎出参 [T] (double × 4)
-    const double cells = static_cast<double>(days) * ft.seg * A;
-    const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(d.feats.size() + static_cast<size_t>(d.n_slots)) + 2.0 + 2.0;
-    assert_fits("Portfolio", cells * per + static_cast<double>(days) * ft.seg * (sizeof(float) * 4 + sizeof(double) * 4), days, A, ft.seg);
+  const double row_extra = sizeof(float) * (1.0 + static_cast<double>(kCurveLines)) + sizeof(double) * static_cast<double>(kCurveLines);
+  FactorPass p;
+  const Pass pr = factor_pass(F, j.f, PassSpec{ys, /*retain=*/true, "Portfolio", 0.0, row_extra, /*tail=*/1}, cancel_, *this, F.rx, p);
+  if (pr == Pass::Empty || pr == Pass::Broken) {
+    out.error = p.why;
+    return true;
   }
-  if (!ensure_y(F.c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this) ||
-      !ensure_x(F.c, ft, es, F.lr, d.feats, /*retain=*/true, F.ex, cancel_, *this))
-    return load_failed(F);
+  if (pr == Pass::Cancel)
+    return false;
+  if (pr == Pass::Stale)
+    return stale_out(F);
   const YPlanes &y = F.c.y;
-  const int T = y.sh.T;
-  const size_t n = y.sh.n();
-  F.E.bind(F.c);
-  factor::cpu::stat::StatSession &ss = F.E.stat_session();
-  if (cancelled())
-    return false;
-
-  // ---- 数据检查 (与 Inspect / Run 同一套) ----
-  {
-    const std::vector<const factor::check::Plane *> in = leaves(F.c, d.feats);
-    for (int i = 0; i < N; ++i) {
-      check_leaf_domains(F.ex, d, i, in, out.error);
-      if (!out.error.empty())
-        return true;
-    }
-  }
-
-  // ---- 因子: Dag 后序顺序走 ----
-  begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 秩 + 净值引擎
-  if (!F.E.walk(d, nullptr, [&](int i, double) {
-        if (d.nodes[static_cast<size_t>(i)].op >= 0)
-          publish(1);
-        return !cancelled();
-      }))
-    return false;
-  const factor::check::Plane *rp = F.E.plane(root);
-
-  // ---- 秩 ----
-  const double cap = y.n_full;
-  assert(cap > 0.0);
-  F.rx.resize(n);
-  out.dates = es.dates;
-  const factor::stat::Span &s = ss.s;
-  factor::cpu::stat::rank_x(F.ex, factor::stat::Plane{rp->v.data(), rp->m.data()}, y.gate.data(), j.frame, s, F.rx.data(), ss.w);
+  out.dates = p.es.dates;
   int hi = 0;
   while (hi < y.hd.n && y.hd.h[hi] != j.hold)
     ++hi;
   assert(hi < y.hd.n && "组 Y 须含本因子的持有期");
-  publish(1);
-  if (cancelled())
-    return false;
 
-  // ---- G20 多头净值引擎 (FactorsBook; 一个篮子 = rx 落 G20, 秩平面 RankSrc) ----
-  BookSpec bs = book_spec(y, j.hold);
-  assert(y.ad.n <= 1);
-  out.amt = y.ad.n && bs.kind != BookKind::Day ? y.ad.a[0] : 0; // Day 型集合竞价成交, 无盘口冲击
-  const auto g20 = [](uint16_t r16) { return uint64_t{factor::stat::leg_code(r16) == factor::stat::kLcLong}; };
-  const std::vector<float> wt = intent_weights(F.ex, F.rx.data(), T, A, 1, g20, [cap](int) { return cap; });
-  bs.nb = 1, bs.side[0] = 1, bs.fields = bk_bit(kBkImp) | bk_bit(kBkFix) | bk_bit(kBkExpo);
-  bs.unit_in = out.amt > 0 ? 0.0 : 1.0;
-  const LegPlane &lab = y.labels[static_cast<size_t>(hi)];
-  BookOut bo;
-  run_book(F.ex, bs,
-           RankSrc<decltype(g20)>{F.rx.data(), g20, wt.data(), 1, lab.v[kLong].data(), lab.m.data(), out.amt > 0 ? y.costs[0].v[kLong].data() : nullptr,
-                                  static_cast<size_t>(A)},
-           bo);
-  const auto take = [&](BookField k, std::vector<float> &v) {
-    const double *p = bo.at(k, 0);
-    v.assign(p, p + T);
-  };
-  take(kBkPnl, out.pnl);
-  take(kBkImp, out.imp);
-  take(kBkFix, out.fix);
-  const size_t S = static_cast<size_t>(y.sh.seg);
-  out.expo.assign(static_cast<size_t>(y.sh.days), 0.f);
-  for (size_t dd = 0; dd < out.expo.size(); ++dd) {
-    double e = 0.0;
-    for (size_t t = dd * S; t < (dd + 1) * S; ++t)
-      e += bo.at(kBkExpo, 0)[t];
-    out.expo[dd] = static_cast<float>(e / static_cast<double>(S));
+  // ---- N: G20 多头账本 (RankBook, 篮子表 g20_baskets) → 线表 kCurveLineTable 逐行出参 nav [kCurveLines][T] ----
+  {
+    assert(y.ad.n <= 1);
+    const int ci = y.ad.n && book_kind(j.hold) != BookKind::Day ? 0 : -1; // Day 型集合竞价成交, 无盘口冲击
+    out.amt = ci < 0 ? 0 : y.ad.a[ci];
+    const RankBook book(F.ex, y, F.rx.data(), g20_baskets());
+    out.nav.assign(static_cast<size_t>(kCurveLines) * static_cast<size_t>(y.sh.T), 0.f);
+    BookOut bo;
+    book.run(hi, ci, bk_bit(kBkImp) | bk_bit(kBkFix) | bk_bit(kBkExpo), bo);
+    fold_lines(F.ex, bo, kCurveLineTable.data(), kCurveLines, /*stride=*/1, out.nav.data());
   }
   publish(1);
   return !cancelled();
@@ -432,8 +380,11 @@ bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   const YSpec ys{holds_of({ft.y.labels.front().key}), {}, 0.f, /*index=*/true};
   assert_fits("Portfolio", static_cast<double>(days) * A * cell_bytes(ys), days, A, ft.seg);
   ScopeCache c;
-  if (!ensure_y(c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this))
-    return load_failed(F);
+  const Load ld = ensure_xy(c, ft, es, F.lr, 0, es.days.size(), ys, {}, /*retain=*/true, F.ex, cancel_, *this);
+  if (ld == Load::Cancel)
+    return false;
+  if (ld == Load::Stale)
+    return stale_out(F);
   const size_t n = YPlanes::kBaskets * es.dates.size();
   out.dates = es.dates;
   for (int w = 0; w < kWeights; ++w) {

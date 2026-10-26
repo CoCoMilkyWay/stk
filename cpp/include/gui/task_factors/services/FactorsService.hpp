@@ -191,6 +191,13 @@ struct Request {
   FactorScope scope;
   Spec spec;
 };
+// 一个因子 (Inspect 请求 / Portfolio 条目同一份): 作用域 + 该层字段表 + 具体规范串 (已校验, worker 再 parse 必成功) + 口径
+struct FactorJob {
+  FactorScope scope;
+  std::shared_ptr<const FeatureTable> ft;
+  std::string expr;
+  factor::stat::Frame frame = factor::stat::Frame::CS;
+};
 struct RunSpec {
   bool evaluate = false; // false = 只扫描解析 (不读库)
   std::string only_file; // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat

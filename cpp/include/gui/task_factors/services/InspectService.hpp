@@ -5,7 +5,8 @@
 //
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
-// 计算 flow (worker 私有 Flow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算:
+// 计算 flow (worker 私有 Flow : FactorFlow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算;
+// S → Y → X → R 是单因子前缀 factor_pass, N 是秩平面账本 RankBook (FactorsEngine.hpp, 与 Portfolio 同一份):
 //   S  作用域   FactorsLoad ScopeCache, key = scope_key (层 | EvalScope::key | 日段 | YSpec: 持有期 / 金额段 / 封顶 / 指数)
 //               → Y = 截面门控, 毛标签 [H], 成本 [C], 池等权指数, 可成交 / 估值价 (book); X = 特征平面 (作用域内读过的全留, 只增)
 //               (装载前 assert_fits: 放不下 = 因子层太细 / 评估期太长)
@@ -20,8 +21,8 @@
 //   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all) + TailRow[H][T] (两腿组内更极端的
 //                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search),
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
-//   N  净值                                                → 每持有期 FactorsBook run_book (换仓点分批 1/h, 买不进空着, 卖不出延长; Y 带 book 平面) → nav 日收益
-//                                                            (分层 / 尾部 / LS 的绝对 + 超额, 只毛)
+//   N  净值                                                → 每持有期 RankBook::run (换仓点分批 1/h, 买不进空着, 卖不出延长; Y 带 book 平面) → fold_lines
+//                                                            stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; 新请求开跑不清旧 result: 页面继续整页画旧结果
@@ -45,15 +46,16 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-struct InspectSpec {
-  std::string file, expr; // 权重行 key (FactorRow::key = 文件#权重号) + 具体规范串 (Factors 表的有效行; expr 已校验, worker 再 parse 必成功)
-  factor::stat::Frame frame = factor::stat::Frame::CS;
+// 请求 = 一个因子 (FactorJob, 与 Portfolio 条目同一份) + 权重行 key + 弃缓存. f.scope.max_impact 装载时生效 → 进作用域缓存键; f.scope.gpu 不看 (只 CPU)
+struct InspectRequest {
+  FactorJob f;
+  std::string file;    // 权重行 key (FactorRow::key = 文件#权重号)
   bool reload = false; // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
-  std::string key(const FactorScope &sc) const { return std::to_string(sc.seg) + "|" + file + "|" + expr + "|" + sc.pool; }
+  std::string key() const { return std::to_string(f.scope.seg) + "|" + file + "|" + f.expr + "|" + f.scope.pool; }
 };
-using InspectRequest = Request<InspectSpec>; // scope.max_impact 装载时生效 → 进作用域缓存键; scope.gpu 不看 (只 CPU)
-// 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空)
-bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool reload, InspectRequest &req);
+// 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表
+bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int seg, const FactorRow &row,
+                        bool reload, InspectRequest &req);
 
 // 尾部分层 (Inspect 专属, 不进 Stat 契约): 两腿的组 (顶 / 底) 内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
 // j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径 (q = 1 即整组). 一级 [H][T], 只在 Row::ok 行有值, 其余全 0
@@ -86,7 +88,7 @@ struct InspectPlanes {
 // EvalStat (与 Run 行同一份): scope / eval_ms / valid% / rank% / 二级 hold[n_hold] (只毛口径) / costs [C] = FeatureTable::y.costs 序
 // (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
 struct InspectResult : EvalStat {
-  std::string key; // = InspectSpec::key(scope); 空 = 无结果
+  std::string key; // = InspectRequest::key; 空 = 无结果
   std::string file, expr;
   int seg = 0; // 因子层: T = days · seg, K 线 / 横轴按层
   factor::stat::Frame frame = factor::stat::Frame::CS;
@@ -113,9 +115,6 @@ public:
   InspectService(); // 两者都在 .cpp: Flow 不完整
   ~InspectService();
 
-  void SetFeatureTable(std::shared_ptr<const FeatureTable> t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
-  const FeatureTable &feats() const { return *feats_; }
-
   // UI 持 mutex 读 (不拷 rows)
   InspectResult result;
   uint64_t result_gen = 0; // result 每换一次 +1 (UI 派生缓存键; epoch 随进度跳, 不能当键)
@@ -126,9 +125,9 @@ private:
   static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return *this; }
   bool run(InspectRequest &req);
-  bool evaluate(const InspectRequest &req, Flow &F); // false = 取消
+  bool eval(const InspectRequest &req, Flow &F); // false = 取消 / 判废
+  bool stale_out(Flow &F);                       // 库判废: 弃缓存 + 置 message; 恒 false
 
-  std::shared_ptr<const FeatureTable> feats_;
   std::unique_ptr<Flow> flow_; // 首个请求懒建, 随 worker 活 (S / Y 缓存跨请求)
 };
 

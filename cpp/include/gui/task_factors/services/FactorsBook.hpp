@@ -17,7 +17,7 @@
 //   出参 (占净值, 已含 1/h) 逐篮子逐行, 按 BookSpec::fields 只出要的: pnl = 本行实现的收益 (平仓点 / 卡住的卖出或转交行),
 //     bench = 实现批的基准 Σ side·w·bench(c) (超额 = pnl − bench; bench(c) = 批 c 意向非空 ∧ 买得进 (多向) 的资产收益等权均值,
 //     Row / Close 即 Stat Row::mkt[kLong]), imp / fix = 成交冲击 / 固定冲击份数, expo = 行末仓位 (含卡住的, 1 = 满仓).
-//     净值 = 逐行 (1 + 增量) 连乘, 调用方做. 区间末仍卡住的按末次估值实现 (不计卖出成本).
+//     净值 = 逐行 (1 + 增量) 连乘, 调用方做 (线 Line → fold_lines). 区间末仍卡住的按末次估值实现 (不计卖出成本).
 //   空腿 (side −1): 收益取负, 建仓看可卖 (Row / Close 同 src.enter), 平仓看可买.
 //
 //   【成交价】Stat 标签 / 换手成本、本引擎、池指数的买卖价一张表 (D = 交易日, m = 行末分钟, n = 分钟型分钟数, N = T+N 日数):
@@ -385,6 +385,45 @@ void run_book(misc::exec::ForkJoin &ex, const BookSpec &s, const Src &src, BookO
       for (size_t t = 1; t < nT; ++t)
         e[t] += e[t - 1];
     }
+}
+
+// 线 = 出参的线性组合 Σ k · f(b) (Inspect 分层 / LS 线, Portfolio G20 出参线 同一份)
+inline constexpr int kLineTerms = 4;
+struct LineTerm {
+  int b = 0;            // 篮子
+  BookField f = kBkPnl; // 字段 (须在 BookSpec::fields 里; pnl 恒出)
+  double k = 1.0;
+};
+struct Line {
+  int n = 0;
+  LineTerm t[kLineTerms] = {};
+};
+// 折叠: 行值 x_t = Σ k · f(b)[t], 每 stride 行一点 = Π(1 + x_t) − 1 (stride 1 = 逐行原值; S = 日收益). out [n][T / stride]
+inline void fold_lines(misc::exec::ForkJoin &ex, const BookOut &o, const Line *ls, int n, int stride, float *out) {
+  assert(n >= 1 && stride >= 1 && o.T % stride == 0);
+  const size_t P = static_cast<size_t>(o.T / stride), S = static_cast<size_t>(stride);
+  ex.rows(n, [&](int i0, int i1, int) {
+    for (int i = i0; i < i1; ++i) {
+      const Line &l = ls[i];
+      assert(l.n >= 1 && l.n <= kLineTerms);
+      const double *f[kLineTerms] = {};
+      for (int j = 0; j < l.n; ++j) {
+        assert(l.t[j].b < o.nb && !o.f[l.t[j].f].empty() && "线用了没要的字段");
+        f[j] = o.at(l.t[j].f, l.t[j].b);
+      }
+      float *dst = out + static_cast<size_t>(i) * P;
+      for (size_t p = 0; p < P; ++p) {
+        double v = 1.0;
+        for (size_t t = p * S; t < (p + 1) * S; ++t) {
+          double x = 0.0;
+          for (int j = 0; j < l.n; ++j)
+            x += l.t[j].k * f[j][t];
+          v *= 1.0 + x;
+        }
+        dst[p] = static_cast<float>(v - 1.0);
+      }
+    }
+  });
 }
 
 } // namespace GUI::Factors

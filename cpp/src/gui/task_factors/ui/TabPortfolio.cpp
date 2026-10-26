@@ -218,7 +218,8 @@ Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_imp
   const int S = f.seg;
   const factor::Geo g = factor::geo_of(S);
   const BookKind kind = book_kind(f.hold);
-  assert(!f.dates.empty() && f.pnl.size() == f.dates.size() * static_cast<size_t>(S));
+  assert(!f.dates.empty() && f.nav.size() == static_cast<size_t>(kCurveLines) * f.dates.size() * static_cast<size_t>(S));
+  const float *pnl = f.nav_at(kCurvePnl), *imp = f.nav_at(kCurveImp), *fix = f.nav_at(kCurveFix);
   const auto row_x = [&](size_t dl, int ts) -> size_t {
     if (kind != BookKind::Row)
       return x_at(di[dl], kClose);
@@ -230,8 +231,8 @@ Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_imp
     for (int ts = 0; ts < S; ++ts) {
       const size_t t = dl * S + static_cast<size_t>(ts);
       double r[kImpacts];
-      r[kImpactNet] = (f.pnl[t] - f.imp[t] - f.fix[t] * fixed_impact) * k;
-      r[kImpactGross] = f.pnl[t] * k;
+      r[kImpactNet] = (pnl[t] - imp[t] - fix[t] * fixed_impact) * k;
+      r[kImpactGross] = pnl[t] * k;
       o.add(static_cast<double>(row_x(dl, ts)), r);
     }
   }
@@ -291,7 +292,18 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     for (const size_t i : di)
       ++n_act[i];
 
-  // 仓位 (全段): 日均仓位的 均 / 峰; 组合 = 当日各因子仓位按同一份 1 / n_act 加权
+  // 仓位 (全段): 日均仓位 (行末仓位线 kCurveExpo 逐日均值) 的 均 / 峰; 组合 = 当日各因子仓位按同一份 1 / n_act 加权
+  const auto day_expo = [](const FactorCurve &f) {
+    const size_t S = static_cast<size_t>(f.seg);
+    const float *e = f.nav_at(kCurveExpo);
+    std::vector<double> o(f.dates.size(), 0.0);
+    for (size_t dd = 0; dd < o.size(); ++dd) {
+      for (size_t t = dd * S; t < (dd + 1) * S; ++t)
+        o[dd] += e[t];
+      o[dd] /= static_cast<double>(S);
+    }
+    return o;
+  };
   const auto expo_text = [](const std::vector<double> &e) {
     double s = 0.0, m = 0.0;
     for (const double x : e)
@@ -305,14 +317,15 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
   for (size_t q = 0; q < fc.size(); ++q) {
     const FactorCurve &f = *fc[q];
     const std::vector<size_t> &di = dix[q];
-    assert(f.expo.size() == di.size());
+    const std::vector<double> fe = day_expo(f);
+    assert(fe.size() == di.size());
     for (size_t k = 0; k < di.size(); ++k)
-      combo_expo[di[k]] += f.expo[k] / n_act[di[k]];
+      combo_expo[di[k]] += fe[k] / n_act[di[k]];
     PortfolioFactor pf;
     pf.id = its[q]->e.key();
     pf.en = std::filesystem::path(its[q]->e.file).stem().string();
     pf.note = f.amt > 0 ? std::to_string(f.amt) + "w" : std::string("固定");
-    pf.expo = expo_text(std::vector<double>(f.expo.begin(), f.expo.end()));
+    pf.expo = expo_text(fe);
     pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f.hold);
     pf.c = compound(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen) - kStartDx);
     pf.item = *its[q];

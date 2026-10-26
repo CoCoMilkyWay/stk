@@ -1216,9 +1216,11 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
 std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
-  FactorScope sc;
-  sc.seg = ctx.seg, sc.pool = ctx.pool;
-  return InspectSpec{row.key, row.expr, row.frame}.key(sc);
+  InspectRequest r;
+  r.f.scope.seg = ctx.seg, r.f.scope.pool = ctx.pool;
+  r.f.expr = row.expr;
+  r.file = row.key;
+  return r.key();
 }
 
 } // namespace
@@ -1233,7 +1235,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUISta
         break;
       }
   }
-  if (fui.view_file.empty() || !ctx.axis_ready || isvc.feats().y.labels.empty())
+  if (fui.view_file.empty() || !ctx.axis_ready || fsvc.feats().y.labels.empty())
     return false;
   if (isvc.busy())
     return false;
@@ -1323,7 +1325,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
 
   // ---- 控件行 (各切换控件之间留宽间隔, 不然 "▸ 分层 ◂" 连成一片) ----
   constexpr float kCtlGap = 24.f;
-  const FeatureTable &ft = isvc.feats();
+  const FeatureTable &ft = fsvc.feats();
   const Phase st = isvc.phase.load(std::memory_order_acquire);
   const bool busy = isvc.busy();
   const int n_hold = static_cast<int>(ft.y.labels.size());

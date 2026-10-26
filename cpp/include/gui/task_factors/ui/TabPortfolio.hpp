@@ -52,7 +52,7 @@ struct PortfolioLine {
 // 单因子线 = 线 + 它的条目 (右表格的池 / 层 / 持有期 / 悬停)
 struct PortfolioFactor : PortfolioLine {
   PortfolioItem item;
-  std::string expo; // 右表格仓位列: 全段日均仓位的 均 / 峰 (FactorCurve::expo)
+  std::string expo; // 右表格仓位列: 全段日均仓位的 均 / 峰 (FactorCurve 行末仓位线 kCurveExpo 逐日均值)
 };
 // 篮子线 (NAV 池线 / VAL 篮子同形) = 线 + 它的源: PoolCurve 篮子 k 权重 w 的指数投影到日并集轴
 //   = 前收一点 (范围首日开盘; 源首日无) + 轴上每日收盘一点, 原值

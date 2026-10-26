@@ -183,12 +183,22 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
 // 先 ensure_y. retain → 先丢 codes 以外的叶; 缺的叶补装 (prog.begin Loading). false = 取消 / 判废 (已有的叶不动)
 bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const std::vector<std::string> &codes,
               bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
+// 装载结局: 取消 / 库判废 分开报 (判废 = lr.stale(), 块已 reset; 调用方置 kStaleMsg)
+enum class Load : uint8_t { Ok,
+                            Cancel,
+                            Stale };
+inline constexpr const char *kStaleMsg = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
+// 作用域块一步装齐 (四服务同一份): ensure_y → ensure_x (codes 空 ∧ retain = 只 Y). 判废 → 块 reset
+Load ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
+               const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 // 叶平面视图 (DAG 输入: 下标 = codes 下标 = Dag::feats 下标); 全部须已装
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes);
 
 // 算子节点的特征叶元: 按 OpTable in 列的严格域逐元查数据; 越界 → err 非空 (因子 BROKEN). in = leaves(c, d.feats)
 void check_leaf_domains(misc::exec::ForkJoin &ex, const factor::Dag &d, int node, const std::vector<const factor::check::Plane *> &in,
                         std::string &err);
+// 整棵 Dag 按节点序查, 首个越界 → err (Inspect / Portfolio / Search 同一份; Run 逐节点归因, 直接调 check_leaf_domains)
+void check_leaves(misc::exec::ForkJoin &ex, const factor::Dag &d, const ScopeCache &c, std::string &err);
 
 // 池内有效率: Σ(m ∧ gate) / Σgate (gate = 截面池 cs_valid; 池外格不进分子分母)
 float valid_pct_of(const uint8_t *m, const uint8_t *gate, size_t n);

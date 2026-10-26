@@ -407,7 +407,6 @@ TaskHandle CreateFactorsTask() {
       }
       if (!state->inspect_service) {
         state->inspect_service = std::make_unique<Factors::InspectService>();
-        state->inspect_service->SetFeatureTable(state->feature_table);
         state->kline_service = std::make_unique<Factors::KlineService>();
       }
       auto &is = *state->inspect_service;
@@ -437,7 +436,7 @@ TaskHandle CreateFactorsTask() {
         iaction = 1;
       if (iaction == 1) {
         Factors::InspectRequest req;
-        if (Factors::MakeInspectRequest(data, state->pool, state->seg, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
+        if (Factors::MakeInspectRequest(data, state->feature_table, state->pool, state->seg, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
           is.Request(req);
       } else if (iaction == -1) {
         is.RequestCancel();

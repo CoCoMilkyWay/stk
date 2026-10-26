@@ -382,7 +382,7 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     const Clock::time_point t_scan = Clock::now();
     if (!n_full_of(ft, es, F.lr, 0, static_cast<size_t>(days), F.ex, cancel_, *this, n_full)) {
       if (F.lr.stale())
-        return abort_with("特征库判废 (池轴/字段表与当前不符), 需重算特征");
+        return abort_with(kStaleMsg);
       lg("已取消");
       return false;
     }
@@ -397,15 +397,14 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     const Clock::time_point t_load = Clock::now();
     cd.idx = -1;
     cd.c.reset();
-    if (!ensure_y(cd.c, ft, es, F.lr, static_cast<size_t>(load0), static_cast<size_t>(day1), ys, F.ex, cancel_, *this) ||
-        !ensure_x(cd.c, ft, es, F.lr, xs.codes, /*retain=*/true, F.ex, cancel_, *this)) {
-      if (F.lr.stale()) {
-        res.message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
-        lg("中止: %s", res.message.c_str());
-        publish_result();
-        return Rc::Abort;
-      }
+    const Load ld = ensure_xy(cd.c, ft, es, F.lr, static_cast<size_t>(load0), static_cast<size_t>(day1), ys, xs.codes, /*retain=*/true, F.ex, cancel_, *this);
+    if (ld == Load::Cancel)
       return Rc::Cancel;
+    if (ld == Load::Stale) {
+      res.message = kStaleMsg;
+      lg("中止: %s", res.message.c_str());
+      publish_result();
+      return Rc::Abort;
     }
     lg("装载块 %d/%d: %d 天, %.1fs", ci + 1, n_chunks, day1 - load0, std::chrono::duration<double>(Clock::now() - t_load).count());
     cd.idx = ci;
@@ -415,16 +414,13 @@ bool SearchService::evaluate(const SearchRequest &req, Flow &F) {
     cd.t0_abs = load0 * seg;
     if (!domain_checked) {
       domain_checked = true;
-      const std::vector<const factor::check::Plane *> in = leaves(cd.c, d0.feats);
-      for (int i = 0; i < static_cast<int>(d0.nodes.size()); ++i) {
-        std::string err;
-        check_leaf_domains(F.ex, d0, i, in, err);
-        if (!err.empty()) {
-          res.message = err;
-          lg("中止: %s", err.c_str());
-          publish_result();
-          return Rc::Abort;
-        }
+      std::string err;
+      check_leaves(F.ex, d0, cd.c, err);
+      if (!err.empty()) {
+        res.message = err;
+        lg("中止: %s", err.c_str());
+        publish_result();
+        return Rc::Abort;
       }
     }
     return Rc::Ok;

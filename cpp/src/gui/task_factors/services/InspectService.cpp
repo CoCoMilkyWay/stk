@@ -2,14 +2,14 @@
 #include "gui/task_factors/services/InspectService.hpp"
 
 #include "factor/Stat/Cpu.hpp"
-#include "gui/task_factors/services/FactorsBook.hpp"   // run_book (分层累计净值)
-#include "gui/task_factors/services/FactorsEngine.hpp" // Engine<Cpu> (只 CPU)
+#include "gui/task_factors/services/FactorsBook.hpp"   // Line / fold_lines (分层累计净值)
+#include "gui/task_factors/services/FactorsEngine.hpp" // FactorFlow / factor_pass / RankBook (只 CPU)
 #include "gui/task_factors/services/FactorsLoad.hpp"
-#include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <vector>
@@ -34,31 +34,61 @@ void tail_thresholds(int (*thr)[kTails]) {
 }
 inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : r16 < thr; }
 
-// 净值篮子 (FactorsBook): [0, kNavLayers) = 分层线 (全做多, 线序同 kNavLayers), kNavG1 = G1 做空, kNavG1 + 1 + j = 底腿尾 j 做空
+// 净值篮子 (RankBook): [0, kNavLayers) = 分层线 (全做多, 线序同 kNavLayers), kNavG1 = G1 做空, kNavG1 + 1 + j = 底腿尾 j 做空
 inline constexpr int kNavG1 = kNavLayers, kNavBaskets = kNavLayers + 1 + kTails;
 static_assert(kNavBaskets <= kBookMax);
 // r16 → 意向篮子位 (与 grp_of / in_tail 同边界)
-inline uint64_t nav_bits(uint16_t r16, const int (*thr)[kTails]) {
-  if (r16 == factor::stat::kRankNone)
-    return 0;
-  const int g = factor::stat::grp_of(r16), x = r16;
-  uint64_t m = uint64_t{1} << g;
-  for (int j = 0; j < kTails; ++j)
-    if (in_tail(kLong, x, thr[kLong][j]))
-      m |= uint64_t{1} << layer_tail(kLong, j);
-  if (g == factor::stat::leg_group(kShort)) {
-    m |= uint64_t{1} << kNavG1;
+struct NavBits {
+  int thr[kLegs][kTails] = {};
+  uint64_t operator()(uint16_t r16) const {
+    if (r16 == factor::stat::kRankNone)
+      return 0;
+    const int g = factor::stat::grp_of(r16), x = r16;
+    uint64_t m = uint64_t{1} << g;
     for (int j = 0; j < kTails; ++j)
-      if (in_tail(kShort, x, thr[kShort][j]))
-        m |= uint64_t{1} << layer_tail(kShort, j) | uint64_t{1} << (kNavG1 + 1 + j);
+      if (in_tail(kLong, x, thr[kLong][j]))
+        m |= uint64_t{1} << layer_tail(kLong, j);
+    if (g == factor::stat::leg_group(kShort)) {
+      m |= uint64_t{1} << kNavG1;
+      for (int j = 0; j < kTails; ++j)
+        if (in_tail(kShort, x, thr[kShort][j]))
+          m |= uint64_t{1} << layer_tail(kShort, j) | uint64_t{1} << (kNavG1 + 1 + j);
+    }
+    return m;
   }
-  return m;
+};
+// 篮子表: 满仓倍数 组 / G1 空 = 1, 尾 j = kTailOfGroup[j]
+RankBaskets<NavBits> nav_baskets(const int (*thr)[kTails]) {
+  RankBaskets<NavBits> bk;
+  bk.nb = kNavBaskets;
+  for (int b = 0; b < kNavBaskets; ++b) {
+    const int j = b >= kNavG1 ? b - kNavG1 - 1 : b - factor::stat::kGroups;
+    bk.side[b] = b < kNavG1 ? 1 : -1;
+    bk.cap[b] = j < 0 ? 1.0 : kTailOfGroup[j % kTails];
+  }
+  std::copy(&thr[0][0], &thr[0][0] + kLegs * kTails, &bk.bits.thr[0][0]);
+  return bk;
 }
-// 篮子满仓: 组 / G1 空 = cap, 尾 j = cap · kTailOfGroup[j]
-inline double nav_cap(int b, double cap) {
-  const int j = b >= kNavG1 ? b - kNavG1 - 1 : b - factor::stat::kGroups;
-  return j < 0 ? cap : cap * kTailOfGroup[j % kTails];
+// 线表 (InspectResult::nav 线序, 见 kNavLines): 分层绝对 | 分层超额 (− 基准) | LS (两腿超额之和)
+std::array<Line, kNavLines> nav_lines() {
+  std::array<Line, kNavLines> ls{};
+  const auto excess = [](Line &l, int b) {
+    l.t[l.n++] = {b, kBkPnl, 1.0};
+    l.t[l.n++] = {b, kBkBench, -1.0};
+  };
+  for (int i = 0; i < kNavLayers; ++i) {
+    Line &a = ls[static_cast<size_t>(i)];
+    a.t[a.n++] = {i, kBkPnl, 1.0};
+    excess(ls[static_cast<size_t>(kNavLayers + i)], i);
+  }
+  for (int j = 0; j < kNavLs; ++j) { // j = 0 顶底 (G20 多 + G1 空), j ≥ 1 第 j − 1 级尾部
+    Line &l = ls[static_cast<size_t>(2 * kNavLayers + j)];
+    excess(l, j == 0 ? factor::stat::leg_group(kLong) : layer_tail(kLong, j - 1));
+    excess(l, kNavG1 + j);
+  }
+  return ls;
 }
+const std::array<Line, kNavLines> kNavLineTable = nav_lines();
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
 struct TailExt {
   const int (*thr)[kTails];
@@ -108,24 +138,24 @@ struct TailSink {
 
 } // namespace
 
-// 计算 flow 的状态 (worker 私有, 跨请求存活; 分级见头文件)
-struct InspectService::Flow {
-  misc::exec::ForkJoin ex;
-  LibReaders lr; // 已建的库 (清单没变的复用)
-  ScopeCache c;  // S 作用域: Y 常驻, X = 作用域内读过的特征 (只增)
-  Engine<Cpu> E; // Y 毛标签秩 (stat_session, 作用域内一次) + X 活槽 (HostPool 常驻)
+// 计算 flow 的状态 (worker 私有, 跨请求存活; 分级见头文件). 作用域块 c: Y 常驻, X = 作用域内读过的特征 (只增)
+struct InspectService::Flow : FactorFlow {
   // R / C / L 常驻缓冲
   InspectPlanes pl;        // 一级平面, 发布时与 result.pl 交换
   std::vector<uint8_t> lc; // 腿码 [T][A] (C 用)
-
-  explicit Flow(const std::atomic<bool> &cancel) : ex(misc::exec::hw()), E(ex, cancel, 1) {}
+  using FactorFlow::FactorFlow;
 };
 
-bool MakeInspectRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, bool reload, InspectRequest &req) {
+bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int seg, const FactorRow &row,
+                        bool reload, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
-  req.spec = InspectSpec{row.key, row.expr, row.frame, reload};
-  return MakeFactorScope(data, pool, seg, /*gpu=*/false, req.scope);
+  req.f.ft = std::move(ft);
+  req.f.expr = row.expr;
+  req.f.frame = row.frame;
+  req.file = row.key;
+  req.reload = reload;
+  return MakeFactorScope(data, pool, seg, /*gpu=*/false, req.f.scope);
 }
 
 InspectService::InspectService() { Start(); }
@@ -139,85 +169,53 @@ bool InspectService::run(InspectRequest &req) {
   publish();
   if (!flow_)
     flow_ = std::make_unique<Flow>(cancel_);
-  return evaluate(req, *flow_);
+  return eval(req, *flow_);
 }
 
-bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
+bool InspectService::stale_out(Flow &F) {
+  F.c.reset(); // 库换了, 缓存的一切不可信
+  std::lock_guard<std::mutex> lock(mutex);
+  message = kStaleMsg;
+  return false;
+}
+
+bool InspectService::eval(const InspectRequest &req, Flow &F) {
   TraceN("InspectEvaluate");
-  const FeatureTable &ft = feats();
-  const FactorScope &sc = req.scope;
-  const InspectSpec &sp = req.spec;
-  factor::expr::Expr e;
-  {
-    std::string err;
-    assert(sc.seg == ft.seg && "请求层与字段表层不符");
-    const bool ok = factor::expr::parse(sp.expr, ft.lookup(), ft.seg, e, err);
-    assert(ok && "Factors 表的规范串必可再解析");
-    (void)ok;
-  }
-  const factor::Dag d = factor::build(e);
-  const int N = static_cast<int>(d.nodes.size()), root = d.root();
-
-  const auto publish_message = [&](std::string msg) {
-    std::lock_guard<std::mutex> lock(mutex);
-    message = std::move(msg);
-  };
+  const FeatureTable &ft = *req.f.ft;
+  const FactorScope &sc = req.f.scope;
   const auto cancelled = [&] { return cancel_.load(std::memory_order_relaxed); };
-
-  // ---- S: 作用域 (标签 / 成本 / 门控 + 特征缓存) ----
-  EvalScope es;
-  {
-    std::string why;
-    if (!eval_scope(ft, sc, d.feats, es, why)) {
-      publish_message(why);
-      return true;
-    }
-  }
-  open_libs(sc, F.lr, &cancel_);
-  const std::vector<misc::Ymd> &dates = es.dates;
-  const int days = static_cast<int>(dates.size()), A = static_cast<int>(es.rs.axis.size());
-  const double cells = static_cast<double>(days) * ft.seg * A;
-  const auto stale_out = [&] {
-    if (F.lr.stale()) { // 库换了, 缓存的一切不可信
-      F.c.reset();
-      publish_message("特征库判废 (池轴/字段表与当前不符), 需重算特征");
-    }
-    return false;
-  };
-  // Y = 全部持有期 + 全部金额段 + 池等权指数 + 净值引擎平面; X = 作用域内读过的全留 (只增), 缺的补读
-  const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(sc.max_impact), /*index=*/true, /*book=*/true};
-  if (sp.reload)
+  if (req.reload)
     F.c.reset();
-  { // 宿主峰值: Y + X (缓存 ∪ 本因子) + 活槽 + rx / rx_all / lc + 标签秩 + Row / TailRow [H][T] + 净值引擎 (意向权 float + pnl / bench double) [T][篮子]
-    const bool hit = F.c.key == scope_key(ft, es, 0, es.days.size(), ys);
-    size_t nx = hit ? F.c.x.codes.size() : 0;
-    for (const std::string &c : d.feats)
-      nx += !(hit && F.c.x.find(c));
-    const double H = ys.hd.n;
-    const double per = cell_bytes(ys) + kPlaneBytes * static_cast<double>(nx + static_cast<size_t>(d.n_slots)) + 5.0 + 2.0 * H;
-    const double per_row = H * static_cast<double>(sizeof(factor::stat::Row) + sizeof(TailRow)) + kNavBaskets * (sizeof(float) + 2.0 * sizeof(double));
-    assert_fits("Inspect", cells * per + per_row * days * ft.seg, days, A, ft.seg);
-  }
-  if (!ensure_y(F.c, ft, es, F.lr, 0, es.days.size(), ys, F.ex, cancel_, *this) ||
-      !ensure_x(F.c, ft, es, F.lr, d.feats, /*retain=*/false, F.ex, cancel_, *this))
-    return stale_out();
-  const YPlanes &y = F.c.y;
-  const size_t n = y.sh.n();
-  const int H = y.hd.n, T = y.sh.T;
 
-  // ---- Y: 毛标签秩 [H] (作用域内一次) ----
-  F.E.bind(F.c);
-  factor::cpu::stat::StatSession &ss = F.E.stat_session();
-  if (cancelled())
+  // ---- S / Y / X / R: 单因子前缀 (factor_pass, 与 Portfolio 同一份) ----
+  //   Y = 全部持有期 + 全部金额段 + 池等权指数 + 净值引擎平面; X = 作用域内读过的全留 (只增), 缺的补读
+  //   另占: rx_all 2 + lc 1 (/ 格); Row / TailRow [H] + 净值引擎 (意向权 float + pnl / bench double) [篮子] (/ 行); 收尾: 评估 + 收尾
+  const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(sc.max_impact), /*index=*/true, /*book=*/true};
+  const double row_extra =
+      ys.hd.n * static_cast<double>(sizeof(factor::stat::Row) + sizeof(TailRow)) + kNavBaskets * (sizeof(float) + 2.0 * sizeof(double));
+  FactorPass p;
+  const Pass pr = factor_pass(F, req.f, PassSpec{ys, /*retain=*/false, "Inspect", 3.0, row_extra, /*tail=*/2}, cancel_, *this, F.pl.rx, p);
+  if (pr == Pass::Empty) {
+    std::lock_guard<std::mutex> lock(mutex);
+    message = p.why;
+    return true;
+  }
+  if (pr == Pass::Cancel)
     return false;
+  if (pr == Pass::Stale)
+    return stale_out(F);
+  const YPlanes &y = F.c.y;
+  const std::vector<misc::Ymd> &dates = p.es.dates;
+  const size_t n = y.sh.n();
+  const int H = y.hd.n, T = y.sh.T, A = static_cast<int>(p.es.rs.axis.size());
 
   // ---- 结果骨架 ----
   InspectResult res;
-  res.key = sp.key(sc);
-  res.file = sp.file;
-  res.expr = sp.expr;
+  res.key = req.key();
+  res.file = req.file;
+  res.expr = req.f.expr;
   res.seg = sc.seg;
-  res.frame = sp.frame;
+  res.frame = req.f.frame;
   res.scope.pool = sc.pool;
   res.scope.start_date = dates.front();
   res.scope.end_date = dates.back();
@@ -225,7 +223,7 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   res.scope.backend = Engine<Cpu>::kName;
   res.scope.n_full = y.n_full;
   res.dates = dates;
-  res.read_scope = es.rs;
+  res.read_scope = p.es.rs;
   res.pool_index.assign(y.index[kWeightEq].begin(), y.index[kWeightEq].begin() + T); // 篮子 0 = 池整体
   res.hd = y.hd;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
@@ -240,47 +238,26 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
     publish();
   };
 
-  // ---- 数据检查 (与 FactorsService 同一套) ----
-  {
-    const std::vector<const factor::check::Plane *> in = leaves(F.c, d.feats);
-    for (int i = 0; i < N; ++i) {
-      check_leaf_domains(F.ex, d, i, in, res.error);
-      if (!res.error.empty()) {
-        F.pl.clear(); // 无一级 / 无 rx
-        publish_result();
-        return true;
-      }
-    }
+  // ---- 叶值域越界 (与 FactorsService 同一套): 只发头部 + error ----
+  if (pr == Pass::Broken) {
+    res.error = p.why;
+    F.pl.clear(); // 无一级 / 无 rx
+    publish_result();
+    return true;
   }
+  res.eval_ms = p.eval_ms;
 
-  // ---- X: Dag 后序顺序走, 每节点全核 ----
-  begin(Phase::Running, static_cast<size_t>(d.n_ops + 2)); // 节点 + 评估 + 收尾
-  if (!F.E.walk(d, nullptr, [&](int i, double ms) {
-        if (d.nodes[static_cast<size_t>(i)].op >= 0) {
-          res.eval_ms += ms;
-          publish(1);
-        }
-        return !cancelled();
-      }))
-    return false;
-  const int ai = d.nodes[static_cast<size_t>(root)].in[0];
-  assert(ai >= 0 && "根是归一算子, 至少一元");
-  const factor::check::Plane *rp = F.E.plane(root); // Stat 只看池内 (g 在算子内部)
-  const factor::check::Plane *ap = F.E.plane(ai);   // alpha = 根的输入: 根的槽先于输入释放分配, 此刻仍在
-
-  // ---- R: rank_x ----
+  // ---- R: 池内秩 rx (前缀已出) + 不看池的秩 (g = xm) → rx_all (只给 K 线显示池外段) ----
+  factor::cpu::stat::StatSession &ss = F.E.stat_session();
   InspectPlanes &pl = F.pl;
   const size_t nrow = static_cast<size_t>(H) * T;
   pl.rows.resize(nrow);
   pl.tails.resize(nrow);
-  pl.rx.resize(n);
   pl.rx_all.resize(n);
   F.lc.resize(n);
   const factor::stat::Span &s = ss.s;
-  const factor::stat::Plane x{rp->v.data(), rp->m.data()};
-  // 先多跑一遍不看池的秩 (g = xm) → rx_all (只给 K 线显示池外段), 再跑评估用的池内秩 → rx
-  factor::cpu::stat::rank_x(F.ex, x, x.m, sp.frame, s, pl.rx_all.data(), ss.w);
-  factor::cpu::stat::rank_x(F.ex, x, y.gate.data(), sp.frame, s, pl.rx.data(), ss.w);
+  const factor::stat::Plane x{p.root->v.data(), p.root->m.data()};
+  factor::cpu::stat::rank_x(F.ex, x, x.m, req.f.frame, s, pl.rx_all.data(), ss.w);
   const uint16_t *rx = pl.rx.data();
   // ---- C: 腿码 (换手成本用) ----
   factor::cpu::stat::leg_codes(F.ex, rx, s, F.lc.data());
@@ -296,54 +273,22 @@ bool InspectService::evaluate(const InspectRequest &req, Flow &F) {
   if (cancelled())
     return false;
 
-  // ---- N: 分层累计净值 (FactorsBook, 每持有期一遍; 篮子 = nav_bits, 秩平面 RankSrc) → 日收益 nav [H][kNavLines][days] ----
+  // ---- N: 分层累计净值 (RankBook, 篮子表 nav_baskets; 每持有期一遍) → 线表 kNavLineTable 折成日收益 nav [H][kNavLines][days] ----
   {
-    const size_t nA = static_cast<size_t>(A), D = static_cast<size_t>(y.sh.days), S = static_cast<size_t>(y.sh.seg);
-    const auto bits = [&thr](uint16_t r16) { return nav_bits(r16, thr); };
-    const std::vector<float> wt = intent_weights(F.ex, rx, T, A, kNavBaskets, bits, [&](int b) { return nav_cap(b, ss.L.cap); });
+    const RankBook book(F.ex, y, rx, nav_baskets(thr));
+    const size_t D = static_cast<size_t>(y.sh.days);
     res.nav.assign(static_cast<size_t>(H) * kNavLines * D, 0.f);
+    BookOut bo;
     for (int hi = 0; hi < H; ++hi) {
-      BookSpec bs = book_spec(y, y.hd.h[hi]);
-      bs.nb = kNavBaskets, bs.fields = bk_bit(kBkBench);
-      std::fill(bs.side, bs.side + kNavG1, int8_t{1});
-      std::fill(bs.side + kNavG1, bs.side + kNavBaskets, int8_t{-1});
-      const LegPlane &lab = y.labels[static_cast<size_t>(hi)];
-      BookOut bo;
-      run_book(F.ex, bs, RankSrc<decltype(bits)>{rx, bits, wt.data(), kNavBaskets, lab.v[kLong].data(), lab.m.data(), nullptr, nA}, bo);
-      // 行增量 → 日收益: 线 i 的行增量 = 绝对 pnl | 超额 pnl − bench | LS = 两腿超额之和
-      F.ex.rows(kNavLines, [&](int i0, int i1, int) {
-        for (int i = i0; i < i1; ++i) {
-          int b[2] = {-1, -1};
-          bool ex_mode = true;
-          if (i < kNavLayers)
-            b[0] = i, ex_mode = false;
-          else if (i < 2 * kNavLayers)
-            b[0] = i - kNavLayers;
-          else if (i == 2 * kNavLayers)
-            b[0] = factor::stat::leg_group(kLong), b[1] = kNavG1;
-          else
-            b[0] = layer_tail(kLong, i - 2 * kNavLayers - 1), b[1] = kNavG1 + 1 + (i - 2 * kNavLayers - 1);
-          float *out = res.nav.data() + (static_cast<size_t>(hi) * kNavLines + static_cast<size_t>(i)) * D;
-          for (size_t dd = 0; dd < D; ++dd) {
-            double l = 1.0;
-            for (size_t t = dd * S; t < (dd + 1) * S; ++t) {
-              double x = 0.0;
-              for (const int k : b)
-                if (k >= 0)
-                  x += bo.at(kBkPnl, k)[t] - (ex_mode ? bo.at(kBkBench, k)[t] : 0.0);
-              l *= 1.0 + x;
-            }
-            out[dd] = static_cast<float>(l - 1.0);
-          }
-        }
-      });
+      book.run(hi, /*ci=*/-1, bk_bit(kBkBench), bo);
+      fold_lines(F.ex, bo, kNavLineTable.data(), kNavLines, /*stride=*/y.sh.seg, res.nav.data() + static_cast<size_t>(hi) * kNavLines * D);
       if (cancelled())
         return false;
     }
   }
 
   // ---- 收尾 (FactorsLoad finish_root, 与 Run 同一份): valid% / rank% / 二级 HoldStat[H] / alpha 分布 / 换手成本 (契约【换手成本】) ----
-  finish_root(F.ex, y, RootRaw{rp->m.data(), rx, F.lc.data(), acc, {ap->v.data(), ap->m.data()}}, ss.w, res, res.alpha_dist);
+  finish_root(F.ex, y, RootRaw{p.root->m.data(), rx, F.lc.data(), acc, p.alpha}, ss.w, res, res.alpha_dist);
   publish(1);
   if (cancelled())
     return false;

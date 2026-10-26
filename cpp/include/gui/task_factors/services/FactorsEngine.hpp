@@ -6,6 +6,7 @@
 //   forest(cands, C)                 一批候选的共享森林 (C 出 = 实际收的前 C 个: CPU ≤ batch, GPU 再按显存减半)
 //   search(d, f, t0_abs, t_lo, done(k, r, ranks))   一批候选评完逐个回调; ranks(t0, stride, n_rows, out) = 该候选 r16 抽样行
 // CPU: 根即算即放 (Stat / Search 都在根的 visit 里评); GPU: 输入 (X 叶 + 门控) 按 d.feats 上传, 叶集不变不重传; Search 森林 keep_roots, 一批一次 search_eval.
+// 单因子流程 (Inspect / Portfolio 同一份, 只 CPU): FactorFlow 常驻件 + factor_pass 前缀 (S → Y → X → R) + RankBook 秩平面账本 (N, FactorsBook)
 // 只给服务 .cpp include (EvalCpu → TS / CS Cpu.hpp, 受控浮点: CMake PRECISE_MATH 源).
 #pragma once
 
@@ -14,6 +15,7 @@
 #include "factor/GpuRun.hpp"
 #include "factor/Search/Cpu.hpp"
 #include "factor/Stat/Cpu.hpp"
+#include "gui/task_factors/services/FactorsBook.hpp"
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/exec.hpp"
 
@@ -295,5 +297,147 @@ bool with_engine(bool gpu, misc::exec::ForkJoin &ex, const std::atomic<bool> &ca
   Engine<Cpu> e(ex, cancel, batch);
   return fn(e);
 }
+
+// ---- 单因子流程 (Inspect / Portfolio 同一份) ----
+// worker 私有常驻件 (跨请求存活): 两服务的 Flow 由它派生, 各加自己的缓冲
+struct FactorFlow {
+  misc::exec::ForkJoin ex;
+  LibReaders lr; // 已建的库 (清单没变的复用)
+  ScopeCache c;  // 作用域块 (X 留法见 PassSpec::retain)
+  Engine<Cpu> E; // 毛标签秩 (stat_session, 作用域内一次) + 活槽 (HostPool 常驻)
+  explicit FactorFlow(const std::atomic<bool> &cancel) : ex(misc::exec::hw()), E(ex, cancel, 1) {}
+};
+// 前缀的口径 (调用方定)
+struct PassSpec {
+  YSpec ys;
+  bool retain = false;     // X: true = 只留本因子的叶 (Portfolio) / false = 作用域内读过的全留 (Inspect)
+  const char *who = "";    // assert_fits 消息
+  double cell_extra = 0.0; // 调用方另占 (字节 / 格)
+  double row_extra = 0.0;  // 调用方另占 (字节 / 行)
+  int tail = 0;            // Running 期进度: 算子节点 + 秩之后调用方 publish 的步数
+};
+enum class Pass : uint8_t { Ok,
+                            Empty,  // 作用域不成 (所用库未建 / 无共同落盘日), why
+                            Broken, // 特征叶值域越界, why (Y 已装)
+                            Cancel,
+                            Stale }; // 库判废 (块已 reset)
+struct FactorPass {
+  factor::Dag d;
+  EvalScope es;
+  const factor::check::Plane *root = nullptr; // 根平面 (Stat 只看池内); 下次 walk 前有效
+  factor::stat::Plane alpha;                  // 根的输入: 根的槽先于输入释放分配, walk 后仍在
+  double eval_ms = 0.0;                       // 算子节点 wall 之和
+  std::string why;                            // Empty / Broken 的原因
+};
+// 规范串 → Dag → eval_scope → open_libs → assert_fits → ensure_xy → check_leaves → walk (全核) → rank_x (g = Y 门控) 进 rx. o 须新建 (每次调用一个).
+// 宿主峰值 = Y + X + 活槽 + 标签秩 2H + rx 2 + cell_extra (/ 格) + row_extra (/ 行). 进度: Loading 期 = 天; Running 期 = 算子节点 + 秩 + tail
+inline Pass factor_pass(FactorFlow &F, const FactorJob &j, const PassSpec &ps, std::atomic<bool> &cancel, Progress &prog, std::vector<uint16_t> &rx,
+                        FactorPass &o) {
+  const FeatureTable &ft = *j.ft;
+  const FactorScope &sc = j.scope;
+  assert(sc.seg == ft.seg && "请求层与字段表层不符");
+  assert(!o.root && o.why.empty() && o.d.nodes.empty() && "o 须是新的");
+  {
+    factor::expr::Expr e;
+    std::string err;
+    const bool ok = factor::expr::parse(j.expr, ft.lookup(), ft.seg, e, err);
+    assert(ok && "Factors 表的规范串必可再解析");
+    (void)ok;
+    o.d = factor::build(e);
+  }
+  const factor::Dag &d = o.d;
+  const auto cancelled = [&] { return cancel.load(std::memory_order_relaxed); };
+
+  // ---- S: 作用域 ----
+  if (!eval_scope(ft, sc, d.feats, o.es, o.why))
+    return Pass::Empty;
+  open_libs(sc, F.lr, &cancel);
+  const EvalScope &es = o.es;
+  const size_t nd = es.days.size();
+  { // 宿主峰值: X = retain ? 本因子 : 缓存 ∪ 本因子
+    const bool hit = F.c.key == scope_key(ft, es, 0, nd, ps.ys);
+    size_t nx = d.feats.size();
+    if (hit && !ps.retain) {
+      nx = F.c.x.codes.size();
+      for (const std::string &c : d.feats)
+        nx += !F.c.x.find(c);
+    }
+    const int days = static_cast<int>(nd), A = static_cast<int>(es.rs.axis.size());
+    const double cells = static_cast<double>(days) * ft.seg * A;
+    const double per = cell_bytes(ps.ys) + kPlaneBytes * static_cast<double>(nx + static_cast<size_t>(d.n_slots)) + 2.0 * ps.ys.hd.n + 2.0 + ps.cell_extra;
+    assert_fits(ps.who, cells * per + ps.row_extra * days * ft.seg, days, A, ft.seg);
+  }
+
+  // ---- Y / X: 装载 + 叶值域 ----
+  const Load ld = ensure_xy(F.c, ft, es, F.lr, 0, nd, ps.ys, d.feats, ps.retain, F.ex, cancel, prog);
+  if (ld == Load::Cancel)
+    return Pass::Cancel;
+  if (ld == Load::Stale)
+    return Pass::Stale;
+  check_leaves(F.ex, d, F.c, o.why);
+  if (!o.why.empty())
+    return Pass::Broken;
+  F.E.bind(F.c);
+  factor::cpu::stat::StatSession &ss = F.E.stat_session();
+  if (cancelled())
+    return Pass::Cancel;
+
+  // ---- X: Dag 后序顺序走, 每节点全核 ----
+  prog.begin(Phase::Running, static_cast<size_t>(d.n_ops + 1 + ps.tail));
+  if (!F.E.walk(d, nullptr, [&](int i, double ms) {
+        if (d.nodes[static_cast<size_t>(i)].op >= 0) {
+          o.eval_ms += ms;
+          prog.publish(1);
+        }
+        return !cancelled();
+      }))
+    return Pass::Cancel;
+  const int root = d.root(), ai = d.nodes[static_cast<size_t>(root)].in[0];
+  assert(ai >= 0 && "根是归一算子, 至少一元");
+  o.root = F.E.plane(root);
+  const factor::check::Plane *ap = F.E.plane(ai);
+  o.alpha = {ap->v.data(), ap->m.data()};
+
+  // ---- R: 池内秩 ----
+  const YPlanes &y = F.c.y;
+  rx.resize(y.sh.n());
+  factor::cpu::stat::rank_x(F.ex, factor::stat::Plane{o.root->v.data(), o.root->m.data()}, y.gate.data(), j.frame, ss.s, rx.data(), ss.w);
+  prog.publish(1);
+  return cancelled() ? Pass::Cancel : Pass::Ok;
+}
+
+// 秩平面上的篮子表 (Inspect 分层 / Portfolio G20 同一形): 意向 = bits(r16), 满仓 = cap[b] · n_full, 腿向 side[b]
+template <class Bits>
+struct RankBaskets {
+  int nb = 0;
+  int8_t side[kBookMax] = {}; // ±1
+  double cap[kBookMax] = {};  // 满仓倍数 (× YPlanes::n_full)
+  Bits bits;                  // r16 → 意向篮子位
+};
+// 秩平面账本: 意向权构造时一次 (只看意向, 与持有期无关), 每持有期 run 一遍 FactorsBook (RankSrc: 收益 = 该持有期做多标签, 买得进 = 标签有效位)
+template <class Bits>
+class RankBook {
+public:
+  RankBook(misc::exec::ForkJoin &ex, const YPlanes &y, const uint16_t *rx, const RankBaskets<Bits> &bk)
+      : ex_(ex), y_(y), rx_(rx), bk_(bk),
+        wt_(intent_weights(ex, rx, y.sh.T, y.sh.A, bk.nb, bk.bits, [&](int b) { return bk.cap[b] * y.n_full; })) {}
+  // hi = 持有期下标 (y.hd); ci = 建仓冲击金额段下标 (y.ad; −1 = 无段: 建仓付一份固定冲击); fields = 另要的出参 (bk_bit 位或)
+  void run(int hi, int ci, unsigned fields, BookOut &o) const {
+    BookSpec bs = book_spec(y_, y_.hd.h[hi]);
+    assert(hi >= 0 && hi < y_.hd.n && ci < y_.ad.n && (ci < 0 || bs.kind != BookKind::Day) && "Day 型集合竞价成交, 无盘口冲击");
+    bs.nb = bk_.nb, bs.fields = fields, bs.unit_in = ci < 0 ? 1.0 : 0.0;
+    std::copy(bk_.side, bk_.side + bk_.nb, bs.side);
+    const LegPlane &lab = y_.labels[static_cast<size_t>(hi)];
+    const uint16_t *imp = ci < 0 ? nullptr : y_.costs[static_cast<size_t>(ci)].v[factor::stat::kLong].data();
+    run_book(ex_, bs, RankSrc<Bits>{rx_, bk_.bits, wt_.data(), bk_.nb, lab.v[factor::stat::kLong].data(), lab.m.data(), imp, static_cast<size_t>(y_.sh.A)}, o);
+  }
+
+private:
+  misc::exec::ForkJoin &ex_;
+  const YPlanes &y_;
+  const uint16_t *rx_;
+  RankBaskets<Bits> bk_;
+  std::vector<float> wt_; // [T][nb] intent_weights
+};
 
 } // namespace GUI::Factors

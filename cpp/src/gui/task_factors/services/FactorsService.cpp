@@ -925,7 +925,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, misc::exec::ForkJoin &e
           std::lock_guard<std::mutex> lock(mutex);
           for (FactorRow &r : rows)
             r.status = RowStatus::Done;
-          message = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
+          message = kStaleMsg;
         }
         return false;
       }
@@ -986,7 +986,7 @@ bool FactorsService::evaluate_file(const FactorsRequest &req, misc::exec::ForkJo
     const double per = cell_bytes(ys) + cell_bytes(XSpec{F.feats}) + 3.0 + (req.scope.gpu ? kPlaneBytes : kPlaneBytes * F.n_slots + 2.0 * H);
     assert_fits("Run", cells * per + H * rows_T * sizeof(factor::stat::Row), days, A, ft.seg);
   }
-  if (!ensure_y(sc, ft, es, lr, 0, es.days.size(), ys, ex, cancel_, *this) || !ensure_x(sc, ft, es, lr, F.feats, /*retain=*/true, ex, cancel_, *this))
+  if (ensure_xy(sc, ft, es, lr, 0, es.days.size(), ys, F.feats, /*retain=*/true, ex, cancel_, *this) != Load::Ok)
     return false;
   const YPlanes &y = sc.y;
 
