@@ -318,8 +318,7 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   ps.at<RowsP>().dst = &F.rows;
   ps.at<CostRowsP>().dst = &F.cost;
   JobOut o;
-  const Rc rc = eval_job(F.E, F, sc, {&e}, &j.f.frame, ys, /*retain=*/true, "Portfolio", [&](int) -> PortfolioProbes & { return ps; }, cancel_, *this, o,
-                         [](const std::vector<std::string> &) {}, [](int) {});
+  const Rc rc = eval_job(F.E, F, sc, {&e}, &j.f.frame, ys, /*retain=*/true, "Portfolio", [&](int) -> PortfolioProbes & { return ps; }, cancel_, *this, o, [](const std::vector<std::string> &) {}, [](int) {});
   if (aborted(rc))
     return abort_out(rc, F);
   if (rc != Rc::Ok) {

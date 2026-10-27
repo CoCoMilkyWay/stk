@@ -294,8 +294,7 @@ void pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mcap, c
           x[b * nT + t] = s[2 * b] / s[2 * b + 1];
     }
   });
-  fold_exit(ex, Y.sh.seg, Y.sh.T, static_cast<int>(H * nb), 1, [&](int i) { return Y.hd.h[static_cast<size_t>(i) / nb]; },
-            [&](int i, int t) { return x[static_cast<size_t>(i) * nT + static_cast<size_t>(t)]; }, out);
+  fold_exit(ex, Y.sh.seg, Y.sh.T, static_cast<int>(H * nb), 1, [&](int i) { return Y.hd.h[static_cast<size_t>(i) / nb]; }, [&](int i, int t) { return x[static_cast<size_t>(i) * nT + static_cast<size_t>(t)]; }, out);
 }
 
 // 篮子估值 (BPlanes::val, 两权重) + 逐行收益 / 权和 (rows, 换手用), 两遍:
@@ -627,7 +626,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   constexpr float kNoCap = std::numeric_limits<float>::infinity();
   const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {spec.max_impact, kNoCap};
   std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
-  std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);                                         // 每线程: 门控在池格数 (n_full)
+  std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);                                        // 每线程: 门控在池格数 (n_full)
 
   const bool read = read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
     // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (gate) ∧ 两腿皆有限 → fp16 位, 其余 0.
@@ -693,14 +692,14 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, c
     add(v);
   const size_t ind_i = add(ft.y.ind_l1);
   assert(cols[ts_i].pool == es.rs.main && "篮子列在标签库");
-  factor::check::Plane close;                     // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益), 装完即弃
-  std::vector<float> vadj(n, 0.f);                // 本行 adj_factor (= 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
-  std::vector<float> mcap(n, 0.f);                // 本行总市值 = close_day × total_shares (加权版的权; close 无效 / 缺股本 → 0)
-  std::vector<float> vpx(n, 0.f), vsh(n);         // 本行有成交的 close_day (否则 0) / 总股本 (缺 → NaN)
-  std::vector<float> vval[kPoolVals];             // [PoolVal] 估值输入 (YCols::val; 缺 → NaN), 装完算 val 即弃
+  factor::check::Plane close;             // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益), 装完即弃
+  std::vector<float> vadj(n, 0.f);        // 本行 adj_factor (= 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
+  std::vector<float> mcap(n, 0.f);        // 本行总市值 = close_day × total_shares (加权版的权; close 无效 / 缺股本 → 0)
+  std::vector<float> vpx(n, 0.f), vsh(n); // 本行有成交的 close_day (否则 0) / 总股本 (缺 → NaN)
+  std::vector<float> vval[kPoolVals];     // [PoolVal] 估值输入 (YCols::val; 缺 → NaN), 装完算 val 即弃
   for (std::vector<float> &v : vval)
     v.resize(n);
-  std::vector<uint8_t> vind(n, 0);                // 行业 ID (0 = 未知 / 缺 / 越界)
+  std::vector<uint8_t> vind(n, 0); // 行业 ID (0 = 未知 / 缺 / 越界)
   close.resize(n);
   const bool read = read_days(ft, es, lr, c.d0, c.d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
     for (size_t t = 0; t < VR; ++t) {

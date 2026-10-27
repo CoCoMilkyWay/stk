@@ -71,7 +71,7 @@ struct HoldJob {     // 一个有效条目 = 一个因子 (FactorJob, 与 Inspec
   FactorScope scope; // 条目的 (池, 层)
   FactorJob f;
   int hold = 0;
-  std::vector<int> group; // Y 共用组 (同 (层, 池)) 全部条目的持有期, 升序去重: Y 一组一次装全 (曲线与它无关, 不进 sig)
+  std::vector<int> group;                                                          // Y 共用组 (同 (层, 池)) 全部条目的持有期, 升序去重: Y 一组一次装全 (曲线与它无关, 不进 sig)
   std::string sig() const { return key + "|" + std::to_string(scope.max_impact); } // 买入冲击封顶变了重算
 };
 struct PoolJob {     // 一个池的日层指数

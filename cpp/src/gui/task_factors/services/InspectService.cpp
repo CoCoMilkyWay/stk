@@ -156,12 +156,9 @@ BookLines nav_of(misc::exec::ForkJoin &ex, const ScopeCache &c, const std::vecto
   const int H = y.hd.n, T = c.rows_all(), seg = y.sh.seg;
   assert(rows.size() == static_cast<size_t>(H) * T && tails.size() == rows.size());
   BookLines nav;
-  fold_exit(ex, seg, T, H * kNavLines, seg, [&](int i) { return y.hd.h[i / kNavLines]; },
-            [&](int i, int t) {
+  fold_exit(ex, seg, T, H * kNavLines, seg, [&](int i) { return y.hd.h[i / kNavLines]; }, [&](int i, int t) {
               const size_t o = static_cast<size_t>(i / kNavLines) * T + static_cast<size_t>(t);
-              return nav_value(rows[o], tails[o], i % kNavLines, y.n_full);
-            },
-            nav);
+              return nav_value(rows[o], tails[o], i % kNavLines, y.n_full); }, nav);
   return nav;
 }
 
@@ -216,8 +213,7 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   ps.at<RowsP>().dst = &F.pl.rows;
   ps.at<TailP>().dst = &F.pl.tails;
   JobOut o;
-  const Rc rc = eval_job(F.E, F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o,
-                         [](const std::vector<std::string> &) {}, [](int) {});
+  const Rc rc = eval_job(F.E, F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o, [](const std::vector<std::string> &) {}, [](int) {});
   if (aborted(rc))
     return abort_out(rc, F);
   if (rc == Rc::Empty) {

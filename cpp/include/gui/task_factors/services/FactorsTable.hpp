@@ -44,7 +44,7 @@ inline constexpr FactorLevel kFactorLevels[] = {
     {5, L_60min, TierId::Bar, "60min"},
     {1, L_1day, TierId::Bar, "day"},
 };
-const FactorLevel &factor_level(int seg);              // seg 不在表里 → assert
+const FactorLevel &factor_level(int seg);               // seg 不在表里 → assert
 const FactorLevel &factor_level(std::string_view name); // name (FactorLevel::name) 不在表里 → assert
 // 池 (档 pool_tier) 能用的因子层: Bar 标签层任何池都能用 (Lob 池 = all 标签 + 池成员门控); Lob 标签层只给 Lob 池
 inline constexpr bool level_for_pool(const FactorLevel &l, TierId pool_tier) { return l.tier == TierId::Bar || l.tier == pool_tier; }
@@ -101,10 +101,10 @@ enum Weight : int { kWeightEq,    // 等权
                     kWeightCap }; // 总市值加权
 inline constexpr int kWeights = 2;
 struct YCols {
-  Col ts;           // ts_valid (当日有成交)
-  Col cs;           // cs_valid (标签 + 截面门控平面)
-  Col ohlc[4];      // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
-  Col adj_factor;   // 复权因子 (只日层设; 行 D = D+1 日的因子): 日层池篮子换手漂移的后复权收盘 = close_day(D) × 行 D−1 的本列
+  Col ts;                     // ts_valid (当日有成交)
+  Col cs;                     // cs_valid (标签 + 截面门控平面)
+  Col ohlc[4];                // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
+  Col adj_factor;             // 复权因子 (只日层设; 行 D = D+1 日的因子): 日层池篮子换手漂移的后复权收盘 = close_day(D) × 行 D−1 的本列
   Col total_shares;           // 总股本 (只日层设): 池估值的市值 + 池加权指数的权重 = close_day × 本列
   Col val[kPoolVals];         // [PoolVal] 估值输入 (kPoolValCols; 只日层设): 池估值 EP / BP / SP / CP / DY (整体法)
   Col ind_l1;                 // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)
