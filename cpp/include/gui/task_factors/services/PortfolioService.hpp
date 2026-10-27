@@ -74,9 +74,9 @@ struct FactorTask {  // 一个有效条目 = 一个因子 (FactorRef, 与 Inspec
   std::string sig() const { return key + "|" + std::to_string(scope.max_impact); } // 买入冲击封顶变了重算
 };
 inline constexpr LevelId kBasketLevel = level_of(L_1day); // 池篮子的层 (PoolCurve 按日; 篮子本身任意层)
-struct PoolTask {                                          // 一个池的篮子
-  std::string key;                                         // 池名
-  FactorScope scope;                                       // (池, kBasketLevel)
+struct PoolTask {                                         // 一个池的篮子
+  std::string key;                                        // 池名
+  FactorScope scope;                                      // (池, kBasketLevel)
   std::string sig() const { return key; }
 };
 struct PortfolioRequest {
