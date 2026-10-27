@@ -39,15 +39,19 @@ using Clock = std::chrono::steady_clock;
 constexpr int kCpuForest = 64;  // CPU 一张共享 DAG 的候选数 (只为公共前缀, 根即算即放)
 constexpr int kGpuMinBatch = 8; // 定块大小时按至少这么多候选同在显存算 (核内 8 候选共用标签行)
 
-__attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
+std::string vstrf(const char *f, va_list ap) {
   char buf[4096];
-  va_list ap;
-  va_start(ap, f);
   const int n = std::vsnprintf(buf, sizeof(buf), f, ap);
-  va_end(ap);
   assert(n >= 0 && n < static_cast<int>(sizeof(buf)) && "格式化超长");
   (void)n;
   return buf;
+}
+__attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
+  va_list ap;
+  va_start(ap, f);
+  std::string s = vstrf(f, ap);
+  va_end(ap);
+  return s;
 }
 
 // 过程日志 <factor_dir>/log/<因子名>.log: 每次 Search 覆盖; 逐行即刷 (断言崩了也留得下); 行首 = 距开跑秒数.
@@ -56,14 +60,11 @@ struct RunLog {
   std::ofstream f;
   Clock::time_point t0;
   __attribute__((format(printf, 2, 3))) void operator()(const char *fmt, ...) {
-    char buf[4096];
     va_list ap;
     va_start(ap, fmt);
-    const int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    const std::string s = vstrf(fmt, ap);
     va_end(ap);
-    assert(n >= 0 && n < static_cast<int>(sizeof(buf)) && "日志行超长");
-    (void)n;
-    f << strf("[%8.1fs] ", std::chrono::duration<double>(Clock::now() - t0).count()) << buf << '\n';
+    f << strf("[%8.1fs] ", std::chrono::duration<double>(Clock::now() - t0).count()) << s << '\n';
     f.flush();
   }
 };
@@ -167,21 +168,12 @@ bool SearchService::run(SearchRequest &req) {
   chunk_.store(0, std::memory_order_relaxed);
   chunks_.store(0, std::memory_order_relaxed);
   stage_.store(SearchStage::Prepare, std::memory_order_relaxed);
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    result = SearchResult{};
-    message.clear();
-    result.file = req.spec.file;
-    result.tmpl = req.spec.tmpl;
-    result.backend = req.scope.gpu ? "gpu" : "cpu";
-  }
-  publish();
   if (!flow_)
     flow_ = std::make_unique<FactorFlow>();
-  return evaluate(req, *flow_);
+  return eval(req, *flow_);
 }
 
-bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
+bool SearchService::eval(const SearchRequest &req, FactorFlow &F) {
   TraceN("SearchRun");
   const Clock::time_point t_start = Clock::now();
   const FactorScope &scope = req.scope;
@@ -196,7 +188,13 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
   res.file = sp.file;
   res.tmpl = sp.tmpl;
   res.hold = sp.hold;
-  res.backend = scope.gpu ? "gpu" : "cpu";
+  res.backend = scope.gpu ? Engine<Gpu>::kName : Engine<Cpu>::kName;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    result = res;
+    message.clear();
+  }
+  publish();
   RunLog lg;
   lg.t0 = t_start;
   {
@@ -256,19 +254,9 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
     for (const Entry &en : ents) {
       if (en.pass < 0)
         continue;
-      SearchCand c;
-      c.expr = en.e.canon;
-      c.u = en.u;
-      c.pass = en.pass;
-      c.ok = en.sc.ok;
-      c.score = en.sc.score;
-      c.ls = en.sc.ls;
-      c.ric = en.sc.ric;
-      c.sign = en.sc.sign;
-      c.se = en.sc.se;
-      res.cands.push_back(std::move(c));
+      res.cands.push_back(SearchCand{en.e.canon, en.u, en.pass, en.sc});
     }
-    std::stable_sort(res.cands.begin(), res.cands.end(), [](const SearchCand &a, const SearchCand &b) { return a.score > b.score; });
+    std::stable_sort(res.cands.begin(), res.cands.end(), [](const SearchCand &a, const SearchCand &b) { return a.sc.score > b.sc.score; });
     {
       std::lock_guard<std::mutex> lock(mutex);
       result = res;
@@ -276,9 +264,10 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
     publish();
   };
   // ---- 作用域 / 日期 (评估期 = 模板叶所用库落盘日交集) ----
-  EvalScope es;
-  if (std::string why; !open_job(F, scope, d0.feats, cancel_, es, why))
-    return abort_with(why);
+  Job job;
+  if (!open_job(F, scope, d0.feats, cancel_, job))
+    return abort_with(job.why);
+  const EvalScope &es = job.es;
   const std::vector<misc::Ymd> &dates = es.dates;
   const int days = static_cast<int>(dates.size()), A = static_cast<int>(es.rs.axis.size());
   lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集)", misc::dash(dates.front()).c_str(), misc::dash(dates.back()).c_str(), days);
@@ -291,16 +280,18 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
   //   dev    显存: Engine<Gpu>::dev_bytes (中间量 2·s0 槽) + 至少 kGpuMinBatch 个候选的 Engine<Gpu>::kDevRootBytes
   //   fixed  r16 常驻: 每候选 (抽样行 × A × 2) 字节; 预留趟 0 的 kInit 个, 细化的随评随增
   const XSpec xs{d0.feats};
-  YSpec ys{hd, Amts{}, 0.f}; // cap: 多块时预扫后置全期 n_full
+  job.ys = YSpec{hd, Amts{}, 0.f}; // cap: 多块时预扫后置全期 n_full
   const double per_day = static_cast<double>(seg) * A;
   const double Dv = Engine<Gpu>::dev_bytes(nf, 2 * s0, hd.n);
   const double r16_bytes = (static_cast<double>(days) * seg / stride + 1.0) * A * sizeof(uint16_t);
   if (scope.gpu)
     assert(factor::gpu::available() && "GPU 后端不可用");
-  const Budget bud{cell_bytes(xs) + cell_bytes(ys), scope.gpu ? 0.0 : Engine<Cpu>::host_bytes(s0 + 2, hd.n), space::kInit * r16_bytes,
+  const Budget bud{cell_bytes(xs) + cell_bytes(job.ys), scope.gpu ? 0.0 : Engine<Cpu>::host_bytes(s0 + 2, hd.n), space::kInit * r16_bytes,
                    scope.gpu ? Dv + Engine<Gpu>::kDevRootBytes * kGpuMinBatch : 0.0};
-  const Plan P = plan_job(es, seg, bud, carry, "Search");
+  job.P = plan_job(es, seg, bud, carry, "Search");
+  const Plan &P = job.P;
   const int n_chunks = static_cast<int>(P.chunks.size());
+  job.own.resize(P.cache_all ? static_cast<size_t>(n_chunks) : 1); // 块缓存: 整轮缓存全部块 (装得下) 或一块复用 (ensure_xy 按日段 + YSpec 判, 键同则不重读)
   int batch = 1;
   if (scope.gpu) {
     const double nmax = static_cast<double>(P.max_days()) * per_day; // 最长一块的格数
@@ -325,14 +316,13 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
 
   // ---- 满仓只数 = 全期池宽 (与 Run 同一个 cap): 一块 = 块 0 的 YPlanes::n_full 即全期; 多块先预扫全期门控 → ys.cap, 各块装载即用它
   //      (引擎的 Search 会话取 y.n_full) ----
-  // 结局 → run 的返回: Cancel / Stale → abort_out (false); Broken (正常输入问题, broken 已填) → abort_with (true)
-  std::string broken;
+  // 结局 → run 的返回: Cancel / Stale → abort_out (false); Broken (正常输入问题, job.why 已填) → abort_with (true)
   const auto handle = [&](Rc rc, bool &ret) {
     if (rc == Rc::Ok)
       return false;
     if (rc == Rc::Broken) {
       publish_result();
-      ret = abort_with(broken);
+      ret = abort_with(job.why);
     } else {
       if (rc == Rc::Cancel)
         lg("已取消");
@@ -345,33 +335,20 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
   bool ret = false;
   if (n_chunks > 1) {
     const Clock::time_point t_scan = Clock::now();
-    if (handle(rc_of(n_full_of(ft, es, F.lr, 0, static_cast<size_t>(days), F.ex, cancel_, *this, ys.cap), F.lr), ret))
+    if (handle(rc_of(n_full_of(ft, es, F.lr, 0, static_cast<size_t>(days), F.ex, cancel_, *this, job.ys.cap), F.lr), ret))
       return ret;
     lg("预扫全期门控: %.1fs", std::chrono::duration<double>(Clock::now() - t_scan).count());
   }
 
-  // 块缓存: 整轮缓存全部块 (装得下) 或一块复用; 块号 = 键 (ensure_xy 按日段 + YSpec 判, 键同则不重读)
-  std::vector<ScopeCache> cs(P.cache_all ? static_cast<size_t>(n_chunks) : 1);
-  bool domain_checked = false;
-  // 块 ci 就位 (已在缓存则不读); 首块顺带查特征叶值域. Ok / Cancel / Stale | Broken (broken 已填)
+  // 块 ci 就位 (已在缓存则不读). Ok / Cancel / Stale
   const auto load_chunk = [&](int ci) -> Rc {
-    ScopeCache &c = cs[P.cache_all ? static_cast<size_t>(ci) : 0];
-    const Chunk &k = P.chunks[static_cast<size_t>(ci)];
+    const ScopeCache &c = block_of(F, job, static_cast<size_t>(ci));
     const std::string key0 = c.key;
     const Clock::time_point t_load = Clock::now();
-    if (const Rc rc = ensure_xy(c, ft, es, F.lr, k, ys, xs.codes, /*retain=*/true, F.ex, cancel_, *this); rc != Rc::Ok)
+    if (const Rc rc = load_block(F, ft, job, static_cast<size_t>(ci), cancel_, *this); rc != Rc::Ok)
       return rc;
     if (c.key != key0)
-      lg("装载块 %d/%d: %d 天, %.1fs", ci + 1, n_chunks, k.days(), std::chrono::duration<double>(Clock::now() - t_load).count());
-    if (!domain_checked) {
-      domain_checked = true;
-      std::vector<std::string> why;
-      std::vector<uint8_t> need;
-      if (plan_forest(F.ex, c, d0, why, need) == 0) {
-        broken = why[0];
-        return Rc::Broken;
-      }
-    }
+      lg("装载块 %d/%d: %d 天, %.1fs", ci + 1, n_chunks, P.chunks[static_cast<size_t>(ci)].days(), std::chrono::duration<double>(Clock::now() - t_load).count());
     return Rc::Ok;
   };
 
@@ -418,9 +395,12 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
   };
 
   // ---- 一块上评一批候选 (两后端同一份, 引擎 E 见 FactorsEngine): 每批一张共享森林 (CPU ≤ kCpuForest 根即算即放;
-  //      GPU ≤ batch 按显存减半, 一批根平面同在显存一次 search_eval), 评完逐候选进探针 (HoldP 续攒 Accum + SampleP 抽样 r16) ----
-  const auto eval_chunk = [&](auto &E, const ScopeCache &c, const std::vector<int> &ids) -> bool {
-    E.bind(c);
+  //      GPU ≤ batch 按显存减半, 一批根平面同在显存一次 search_eval), 评完逐候选进探针 (HoldP 续攒 Accum + SampleP 抽样 r16; 末块即 finish).
+  //      Ok / Broken (本块叶值域越界, job.why) / Cancel ----
+  const auto eval_chunk = [&](auto &E, int ci, const std::vector<int> &ids) -> Rc {
+    const ScopeCache &c = block_of(F, job, static_cast<size_t>(ci));
+    const bool last = ci + 1 == n_chunks;
+    E.bind(c); // GPU 批核的 plant 按块显存定批
     for (size_t b0 = 0; b0 < ids.size();) {
       std::vector<const factor::expr::Expr *> ptrs;
       for (size_t k = b0; k < ids.size(); ++k)
@@ -431,13 +411,14 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
       for (int k = 0; k < C; ++k)
         assert(Fd.first_root(k) == k && "候选按规范串去重, 根两两不同");
       const std::vector<fs::Frame> fr(static_cast<size_t>(C), sp.frame);
-      if (!forest(
-              E, Fd, nullptr, fr.data(), [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[b0 + static_cast<size_t>(k)])].ps; },
-              [&](int, double) { return !cancelled(); }, [&](int) { publish(1); }))
-        return false;
+      if (const Rc rc = eval_forest(
+              E, c, Fd, fr.data(), last, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[b0 + static_cast<size_t>(k)])].ps; }, job.why,
+              [](const std::vector<std::string> &, const std::vector<uint8_t> &) {}, [&](int, double) { return !cancelled(); }, [&](int) { publish(1); });
+          rc != Rc::Ok)
+        return rc;
       b0 += static_cast<size_t>(C);
     }
-    return true;
+    return Rc::Ok;
   };
 
   // ---- 一趟: ids (全是待评) 沿全部块流过 (引擎 E), 收尾打分 + 发布 ----
@@ -462,15 +443,13 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
       load_s += std::chrono::duration<double>(Clock::now() - t_load).count();
       begin(Phase::Running, ids.size() * static_cast<size_t>(n_chunks));
       publish(ids.size() * static_cast<size_t>(ci)); // 前面的块已评完
-      if (!eval_chunk(E, cs[P.cache_all ? static_cast<size_t>(ci) : 0], ids))
-        return Rc::Cancel;
+      if (const Rc rc = eval_chunk(E, ci, ids); rc != Rc::Ok)
+        return rc;
       chunk_.store(ci + 1, std::memory_order_relaxed);
     }
-    const ScopeCache &last = cs[P.cache_all ? static_cast<size_t>(n_chunks - 1) : 0];
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
       assert(en.ps.at<SampleP>().off == R && "各块抽样行须拼满");
-      en.ps.finish(F.ex, last);
       const HoldP &hp = en.ps.at<HoldP>();
       assert(hp.n_hold == 1);
       en.sc = factor::search::score_signed(hp.hold[0]);
@@ -493,7 +472,16 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
   // ---- 准备: 先装块 0 (趟 0 反正要) → A = n_full · kGroups 定槽区间 → 阈值槽分位表 ----
   if (handle(load_chunk(0), ret))
     return ret;
-  res.n_full = cs[0].y.n_full;
+  { // 分位表要在块 0 上走模板前缀: 先查叶值域 (各块的候选森林由 eval_forest 各查一次)
+    std::vector<std::string> why;
+    std::vector<uint8_t> need;
+    if (plan_forest(F.ex, block_of(F, job, 0), d0, why, need) == 0) {
+      job.why = why[0];
+      handle(Rc::Broken, ret);
+      return ret;
+    }
+  }
+  res.n_full = block_of(F, job, 0).y.n_full;
   lg("满仓一腿 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
   const double a_eff = res.n_full * fs::kGroups;
   slots = space::slots_of(e0, seg, a_eff);
@@ -521,7 +509,7 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
     const int want = static_cast<int>(it - dc.keys.begin());
     std::vector<uint8_t> prefix(dc.nodes.size(), 0); // 走到该输入节点即止
     std::fill_n(prefix.begin(), want + 1, static_cast<uint8_t>(1));
-    const ScopeCache &c = cs[0];
+    const ScopeCache &c = block_of(F, job, 0);
     const fs::Span s = c.span();
     const Samp sm = samp_of(s.T, s.t_lo, s.t0_abs, stride);
     std::vector<float> tab;
@@ -681,7 +669,7 @@ bool SearchService::evaluate(const SearchRequest &req, FactorFlow &F) {
     const Entry &en = ents[static_cast<size_t>(c)];
     SearchPick pk;
     pk.expr = en.e.canon;
-    pk.score = en.sc.score, pk.ls = en.sc.ls, pk.ric = en.sc.ric, pk.sign = en.sc.sign;
+    pk.sc = en.sc;
     for (const int o : S.picks)
       if (o != c)
         pk.corr = std::max(pk.corr, rho(c, o));

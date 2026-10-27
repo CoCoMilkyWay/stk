@@ -39,21 +39,22 @@ struct BookLines {
   std::vector<float> v;
   const float *at(int i) const { return v.data() + static_cast<size_t>(i) * static_cast<size_t>(P); }
 };
-// 逐行批收益 x(i, t) (线 i 行 t 这一批, 占这批资金; 不 ok 记 0) → 平仓行 u = hold_exit_row(t) 记 x / h̄ (h̄ = hold_span) → 每 stride 行求和一点
-// (stride 1 = 逐行 / S = 日). 平仓行越过 T 的批不计. 线间并行, x 须可并发调
-template <class X>
-void fold_exit(misc::exec::ForkJoin &ex, int hold, int seg, int T, int n, int stride, const X &x, BookLines &out) {
+// 逐行批收益 x(i, t) (线 i 行 t 这一批, 占这批资金; 不 ok 记 0) → 平仓行 u = hold_exit_row(t, hold(i)) 记 x / h̄ (h̄ = hold_span) → 每 stride 行求和一点
+// (stride 1 = 逐行 / S = 日). hold(i) = 线 i 的持有期键 (各线可不同: 多持有期一次折完). 平仓行越过 T 的批不计. 线间并行, x 须可并发调
+template <class Hold, class X>
+void fold_exit(misc::exec::ForkJoin &ex, int seg, int T, int n, int stride, const Hold &hold, const X &x, BookLines &out) {
   const factor::Geo g = factor::geo_of(seg);
   assert(n >= 1 && stride >= 1 && T % stride == 0 && T % g.S == 0);
-  const double h = factor::stat::hold_span(hold, g);
   out.n = n, out.P = T / stride;
   out.v.assign(static_cast<size_t>(n) * static_cast<size_t>(out.P), 0.f);
   ex.rows(n, [&](int i0, int i1, int) {
     std::vector<double> inc(static_cast<size_t>(T));
     for (int i = i0; i < i1; ++i) {
+      const int hd = hold(i);
+      const double h = factor::stat::hold_span(hd, g);
       std::fill(inc.begin(), inc.end(), 0.0);
       for (int t = 0; t < T; ++t)
-        if (const int u = factor::stat::hold_exit_row(t, hold, g); u < T)
+        if (const int u = factor::stat::hold_exit_row(t, hd, g); u < T)
           inc[static_cast<size_t>(u)] += x(i, t) / h;
       float *dst = out.v.data() + static_cast<size_t>(i) * static_cast<size_t>(out.P);
       for (int p = 0; p < out.P; ++p) {
@@ -215,18 +216,18 @@ factor::stat::Labels labels_pick(const factor::stat::Labels &L, const factor::st
 // 逐天并行读 (ex 抢单) es.days[d0, d1) 按 spec 装进 X / Y (覆盖; 形 days × A → T, 容量断言在此). 三侧同一份骨架:
 // 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影), 列全部 Col::ref(es.pool);
 // X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | 标签 [hd][kLegs] | 成本 [ad][kLegs];
-// B 列段 = ts_valid | close adj_factor total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm ind_l1 (标签库网格层本层列).
-// lr 须按 es.rs.libs 开好. 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 每天 prog.publish(1), 不 begin
+// B 列段 = ts_valid | close adj_factor total_shares val[kPoolVals] ind_l1 (标签库网格层本层列).
+// lr 须按 es.rs.libs 开好. 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 四个装载同一份进度: prog.begin Loading (日数), 每天 publish(1)
 bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const XSpec &spec, XPlanes &X,
             misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec, YPlanes &Y,
             misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 struct ScopeCache;
-// 篮子 (日层; 块 c 的 Y 已装, hd 只 T+1C): 读 c 的日段 → 指数 / 估值 / 换手 (BPlanes 注), 平面不留. prog.begin Loading
+// 篮子 (日层; 块 c 的 Y 已装, hd 只 T+1C): 读 c 的日段 → 指数 / 估值 / 换手 (BPlanes 注), 平面不留
 bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const ScopeCache &c, BPlanes &B, misc::exec::ForkJoin &ex,
             const std::atomic<bool> &cancel, Progress &prog);
 // es.days[d0, d1) 的满仓只数 (与 load_y 的 YPlanes::n_full 同一份门控同式), 只读 ts_valid / cs_valid 两列, 不留平面 (Search 多块时的全期 cap).
-// prog.begin Loading. false = 取消 / 库判废
+// false = 取消 / 库判废
 bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, misc::exec::ForkJoin &ex,
                const std::atomic<bool> &cancel, Progress &prog, double &out);
 
@@ -265,8 +266,8 @@ struct ScopeCache {
   int rows_all() const { return static_cast<int>(nd) * y.sh.seg; }
 };
 std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec);
-// 作用域块一步装齐块 k (四服务同一份): Y 键 (或日序列) 变 → reset + 装 Y; retain → 丢 codes 以外的叶; 缺的叶补装 (各自 prog.begin Loading;
-// codes 空 ∧ retain = 只 Y); t_lo = 前带行数. Ok / Cancel / Stale (判废 → 块 reset)
+// 作用域块一步装齐块 k (四服务同一份): Y 键 (或日序列) 变 → reset + 装 Y; retain → 丢 codes 以外的叶; 缺的叶补装
+// (codes 空 ∧ retain = 只 Y); t_lo = 前带行数. Ok / Cancel / Stale (判废 → 块 reset)
 Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const Chunk &k, const YSpec &ys,
              const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 // 叶平面视图 (DAG 输入: 下标 = codes 下标 = Dag::feats 下标); 全部须已装
@@ -276,7 +277,7 @@ std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std:
 // why[k] = 根 k 子树里首个越界 (非空 = BROKEN, 不评), need = 好根子树之并 (引擎 walk 掩码). 返回好根数
 int plan_forest(misc::exec::ForkJoin &ex, const ScopeCache &c, const factor::Dag &d, std::vector<std::string> &why, std::vector<uint8_t> &need);
 
-// 池整体等权线 (净值引擎 fold_exit; 线 i = 持有期 y.hd.h[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
+// 池整体等权线 (= pool_index 单篮子等权; 线 i = 持有期 y.hd.h[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
 BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y);
 
 // 结果的作用域头 (Run 行 / Inspect 结果同一份): 池 / 期 / 形 / 封顶 / 满仓只数 / 后端 / 时刻

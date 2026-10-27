@@ -336,6 +336,11 @@ inline double ann_sharpe(const Moments &m, int n, int n_all, double ppy) {
   const double M = s1 / N, v = (s2 - N * M * M) / (N - 1.0);
   return v > 0.0 ? M / std::sqrt(v) * std::sqrt(ppy) : 0.0;
 }
+// 净值几何年化: 净值 nav (起点 1) 历经 days 个交易日 → nav^(kDaysPerYear / days) − 1; nav ≤ 0 (亏光) → −1
+inline double ann_geo(double nav, double days) {
+  assert(days > 0.0);
+  return nav > 0.0 ? std::pow(nav, static_cast<double>(kDaysPerYear) / days) - 1.0 : -1.0;
+}
 // LS 每期真实收益 / 年化 / 年化 Sharpe. 派生量, 不落 HoldStat / 文件
 inline double ls_period(const HoldStat &s) { return s.n_all > 0 ? static_cast<double>(s.ls.mean) * s.n / s.n_all : 0.0; }
 inline double ls_annual(const HoldStat &s) { return ann_mean(s.ls, s.n, s.n_all, span_per_year(s)); }

@@ -94,21 +94,16 @@ struct TailExt {
     }
   }
 };
-// 尾部分层落地 [hd.n][rows_all] (与 RowsP 同布局): 逐格扩展 TailExt, 行收尾 finish
-struct TailP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
+// 尾部分层落地 [hd.n][rows_all] (与 RowsP 同形): 逐格扩展 TailExt, 行收尾 finish
+struct TailP : LandRowsP<TailRow> {
   using Ext = TailExt;
-  std::vector<TailRow> *dst = nullptr;
-  int T = 0, t0 = 0;
   double cap = 0.0;
-  static double bytes(const Shape &sh, int H) { return sizeof(TailRow) * static_cast<double>(H) * sh.T; }
   Ext ext() const { return {kTailThr.v, cap}; }
   void open(const Ctx &c) {
-    const factor::stat::Span s = c.s();
-    T = c.c.rows_all(), t0 = s.t0_abs, cap = c.L.cap;
-    land_open(*dst, static_cast<size_t>(c.L.hd.n) * T, s);
+    LandRowsP::open(c);
+    cap = c.L.cap;
   }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) { e.finish(r, (*dst)[static_cast<size_t>(hi) * T + t0 + t]); }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) { e.finish(r, at(hi, t)); }
 };
 // 各级尾部 LS 线两腿的换手量 acc[j][hi] (Stat 契约【换手成本】的 Δw, cost_rows 只出量 C = 0; 顶底线 = CostP 的 turn):
 // 第 j 级尾部腿码 tail_code, 满仓 cap · kTailOfGroup[j] (与 TailRow 同口径); 块间续攒
@@ -135,42 +130,38 @@ struct TurnP : ProbeBase {
   }
 };
 // 池内秩 rx 落地 [rows_all][A] (统计行; 右上资产轴 / K 线着色)
-struct RxP : ProbeBase {
+struct RxP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedRx;
-  std::vector<uint16_t> *dst = nullptr;
-  static double bytes(const Shape &sh, int) { return 2.0 * static_cast<double>(sh.n()); }
-  void open(const Ctx &c) { land_open(*dst, static_cast<size_t>(c.c.rows_all()) * c.s().A, c.s()); }
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + s.n(), dst->data() + static_cast<size_t>(s.t0_abs + s.t_lo) * s.A);
+    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + s.n(), stat_at(s));
   }
 };
 // 不看池的秩 (g = xm) 落地 [rows_all][A] (统计行; 只给 K 线显示池外段, 评估不用)
-struct RxAllP : ProbeBase {
+struct RxAllP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedMask;
-  std::vector<uint16_t> *dst = nullptr;
-  static double bytes(const Shape &sh, int) { return 2.0 * static_cast<double>(sh.n()); }
-  void open(const Ctx &c) { land_open(*dst, static_cast<size_t>(c.c.rows_all()) * c.s().A, c.s()); }
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
     const factor::stat::Plane x{v.x.v + o, v.x.m + o};
-    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.T - s.t_lo, s.A, s.g}, dst->data() + static_cast<size_t>(s.t0_abs) * s.A + o, *c.w);
+    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.T - s.t_lo, s.A, s.g}, stat_at(s), *c.w);
   }
 };
 using InspectProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, IcPdfP, RxP, RxAllP, RowsP, TailP, TurnP>;
 
-// 分层累计净值 (评估后纯函数; 净值引擎 fold_exit, 契约【净值】; 每持有期一遍, 吃落地的 Row / TailRow [y.hd.n][rows_all]) → 日收益 [hd.n] = [kNavLines][days]
-std::vector<BookLines> nav_of(misc::exec::ForkJoin &ex, const ScopeCache &c, const std::vector<factor::stat::Row> &rows, const std::vector<TailRow> &tails) {
+// 分层累计净值 (评估后纯函数; 净值引擎 fold_exit, 契约【净值】; 全部持有期一遍, 吃落地的 Row / TailRow [y.hd.n][rows_all])
+// → 日收益 [hd.n · kNavLines][days] (线 hi · kNavLines + i)
+BookLines nav_of(misc::exec::ForkJoin &ex, const ScopeCache &c, const std::vector<factor::stat::Row> &rows, const std::vector<TailRow> &tails) {
   const YPlanes &y = c.y;
   const int H = y.hd.n, T = c.rows_all(), seg = y.sh.seg;
   assert(rows.size() == static_cast<size_t>(H) * T && tails.size() == rows.size());
-  std::vector<BookLines> nav(static_cast<size_t>(H));
-  for (int hi = 0; hi < H; ++hi) {
-    const factor::stat::Row *r = rows.data() + static_cast<size_t>(hi) * T;
-    const TailRow *tr = tails.data() + static_cast<size_t>(hi) * T;
-    fold_exit(ex, y.hd.h[hi], seg, T, kNavLines, seg, [&](int i, int t) { return nav_value(r[t], tr[t], i, y.n_full); }, nav[static_cast<size_t>(hi)]);
-  }
+  BookLines nav;
+  fold_exit(ex, seg, T, H * kNavLines, seg, [&](int i) { return y.hd.h[i / kNavLines]; },
+            [&](int i, int t) {
+              const size_t o = static_cast<size_t>(i / kNavLines) * T + static_cast<size_t>(t);
+              return nav_value(rows[o], tails[o], i % kNavLines, y.n_full);
+            },
+            nav);
   return nav;
 }
 
@@ -225,15 +216,16 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   ps.at<RowsP>().dst = &F.pl.rows;
   ps.at<TailP>().dst = &F.pl.tails;
   JobOut o;
-  const Rc rc = eval_job(F.E, F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o, [] {}, [](int) {});
-  if (rc == Rc::Empty) {
-    std::lock_guard<std::mutex> lock(mutex);
-    message = o.empty;
-    return true;
-  }
+  const Rc rc = eval_job(F.E, F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o,
+                         [](const std::vector<std::string> &) {}, [](int) {});
   if (aborted(rc))
     return abort_out(rc, F);
-  const YPlanes &y = F.c.y;
+  if (rc == Rc::Empty) {
+    std::lock_guard<std::mutex> lock(mutex);
+    message = o.why;
+    return true;
+  }
+  const YPlanes &y = block_of(F, o, 0).y;
   if (F.pool_gen != F.c.gen) {
     F.pool = pool_line(F.ex, y);
     F.pool_gen = F.c.gen;
@@ -246,7 +238,7 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   res.expr = f.expr;
   res.seg = sc.seg;
   res.frame = f.frame;
-  res.scope = stat_scope(sc, o.es, y, Engine<Cpu>::kName);
+  const StatScope scope = stat_scope(sc, o.es, y, Engine<Cpu>::kName);
   res.dates = o.es.dates;
   res.read_scope = o.es.rs;
   res.pool_index = F.pool;
@@ -264,19 +256,18 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
 
   // ---- 叶值域越界 (与 Run 同一套 plan_forest): 只发头部 + error ----
   if (rc == Rc::Broken) {
-    res.error = o.why[0];
+    res.scope = scope;
+    res.error = o.why;
     F.pl.clear(); // 无一级 / 无 rx
     publish_result();
     return true;
   }
-  res.eval_ms = o.eval_ms(0);
-  fill_eval(ps, res);
+  fill_eval(ps, scope, o.eval_ms(0), res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);
   std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_pdf);
-  res.nav = nav_of(F.ex, F.c, F.pl.rows, F.pl.tails);
-  std::copy_n(res.turn, res.hd.n, res.ls_turn[0]);
+  res.nav = nav_of(F.ex, block_of(F, o, 0), F.pl.rows, F.pl.tails);
   for (int j = 0; j < kTails; ++j)
-    std::copy_n(ps.at<TurnP>().acc[j], res.hd.n, res.ls_turn[1 + j]);
+    std::copy_n(ps.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
   publish_result();
   return true;
 }

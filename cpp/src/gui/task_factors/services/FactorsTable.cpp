@@ -87,6 +87,14 @@ const FactorLevel &factor_level(int seg) {
   __builtin_unreachable();
 }
 
+const FactorLevel &factor_level(std::string_view name) {
+  for (const FactorLevel &l : kFactorLevels)
+    if (l.name == name)
+      return l;
+  assert(false && "name 不是因子层");
+  __builtin_unreachable();
+}
+
 std::string factor_dir_of(const SharedData &data, const std::string &pool, int seg) {
   const FactorLevel &l = factor_level(seg);
   assert(level_for_pool(l, pool_def(pool).tier) && "该池不能用这个因子层");
@@ -148,11 +156,8 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
   if (lv.lvl == L_1day) {
     t.y.adj_factor = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "adj_factor")));
     t.y.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
-    t.y.np_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_npp_ttm")));
-    t.y.eq_mrq = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "bs_eq")));
-    t.y.rev_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "pl_rev_ttm")));
-    t.y.ocf_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "cf_ocf_ttm")));
-    t.y.dy_ttm = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "dy_ttm")));
+    for (int m = 0; m < kPoolVals; ++m)
+      t.y.val[m] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, kPoolValCols[m])));
     t.y.ind_l1 = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "ind_l1")));
   }
   struct Lab {

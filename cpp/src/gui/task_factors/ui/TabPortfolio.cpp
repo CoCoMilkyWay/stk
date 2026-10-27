@@ -389,7 +389,7 @@ PortfolioSlice slice_of(const PortfolioCurve &c, double x0, double x1) {
     return s;
   const size_t e = s.size() - 1;
   const double days = std::floor(s.x(e) / kDayW) - std::floor(s.x(0) / kDayW) + 1.0;
-  s.ann = static_cast<float>(100.0 * (std::pow(s.y(e), static_cast<double>(factor::stat::kDaysPerYear) / days) - 1.0));
+  s.ann = static_cast<float>(100.0 * factor::stat::ann_geo(s.y(e), days));
   return s;
 }
 // 同一组线逐条切片

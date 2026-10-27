@@ -260,48 +260,52 @@ void index_strip(const factor::check::Plane &close, const float *wt, const uint8
     }
 }
 
-// 篮子指数 (BPlanes::index / pool_line) = 净值引擎 fold_exit, 持有期 Y.hd.h[hi]: 行 t 一批 = 成分 (该持有期标签有效, 已含在池; ∧ 该行 ind_l1 = k) 的做多标签
-//   按权平均 (等权 1 / 加权 mcap; Σ权 ≤ 0 → 0) → 线 index_line(k, w) 逐行收益 (stride 1). nk = 篮子数 (1 = 只池整体; ind 可空),
-//   nw = 权重数 (1 = 只等权; mcap 可空)
-void pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, int hi, const float *mcap, const uint8_t *ind, int nk, int nw, BookLines &out) {
+// 篮子指数 (BPlanes::index / pool_line) = 净值引擎 fold_exit, Y 的全部持有期一遍: 行 t 一批 = 成分 (该持有期标签有效, 已含在池; ∧ 该行 ind_l1 = k)
+//   的做多标签按权平均 (等权 1 / 加权 mcap; Σ权 ≤ 0 → 0) → 线 nb · hi + index_line(k, w) 逐行收益 (stride 1; nb = nk · nw). nk = 篮子数
+//   (1 = 只池整体; ind 可空), nw = 权重数 (1 = 只等权; mcap 可空)
+void pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mcap, const uint8_t *ind, int nk, int nw, BookLines &out) {
   static_assert(kWeightEq == 0, "只等权 (nw = 1) 的篮子线 = k");
-  assert(hi >= 0 && hi < Y.hd.n && (nk == 1 || ind) && (nw == 1 || mcap));
-  const LegPlane &lab = Y.labels[static_cast<size_t>(hi)];
-  const size_t nT = static_cast<size_t>(Y.sh.T), nA = static_cast<size_t>(Y.sh.A), nb = static_cast<size_t>(nk * nw);
-  std::vector<double> x(nb * nT, 0.0); // [线][T] 行 t 这一批的篮子收益
+  assert(Y.hd.n >= 1 && (nk == 1 || ind) && (nw == 1 || mcap));
+  const size_t nT = static_cast<size_t>(Y.sh.T), nA = static_cast<size_t>(Y.sh.A), nb = static_cast<size_t>(nk * nw), H = static_cast<size_t>(Y.hd.n);
+  std::vector<double> x(H * nb * nT, 0.0); // [hold][篮子线][T] 行 t 这一批的篮子收益
   ex.rows(Y.sh.T, [&](int t0, int t1, int) {
-    std::vector<double> s(2 * nb); // [线][Σ权·r, Σ权]
+    std::vector<double> s(2 * H * nb); // [hold][篮子线][Σ权·r, Σ权]
     for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
       std::fill(s.begin(), s.end(), 0.0);
       for (size_t a = 0; a < nA; ++a) {
         const size_t i = t * nA + a;
-        if (!lab.m[i])
-          continue;
-        const double r = factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]), om[kWeights] = {1.0, nw > 1 ? mcap[i] : 0.0};
-        each_basket(nk > 1 ? ind[i] : uint8_t{0}, [&](size_t k) {
-          for (int w = 0; w < nw; ++w) {
-            double *q = s.data() + 2 * (k * static_cast<size_t>(nw) + static_cast<size_t>(w));
-            q[0] += om[w] * r, q[1] += om[w];
-          }
-        });
+        const double om[kWeights] = {1.0, nw > 1 ? mcap[i] : 0.0};
+        const uint8_t k_ind = nk > 1 ? ind[i] : uint8_t{0};
+        for (size_t hi = 0; hi < H; ++hi) {
+          const LegPlane &lab = Y.labels[hi];
+          if (!lab.m[i])
+            continue;
+          const double r = factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]);
+          each_basket(k_ind, [&](size_t k) {
+            for (int w = 0; w < nw; ++w) {
+              double *q = s.data() + 2 * (hi * nb + k * static_cast<size_t>(nw) + static_cast<size_t>(w));
+              q[0] += om[w] * r, q[1] += om[w];
+            }
+          });
+        }
       }
-      for (size_t b = 0; b < nb; ++b)
+      for (size_t b = 0; b < H * nb; ++b)
         if (s[2 * b + 1] > 0.0)
           x[b * nT + t] = s[2 * b] / s[2 * b + 1];
     }
   });
-  fold_exit(ex, Y.hd.h[hi], Y.sh.seg, Y.sh.T, static_cast<int>(nb), 1, [&](int i, int t) { return x[static_cast<size_t>(i) * nT + static_cast<size_t>(t)]; }, out);
+  fold_exit(ex, Y.sh.seg, Y.sh.T, static_cast<int>(H * nb), 1, [&](int i) { return Y.hd.h[static_cast<size_t>(i) / nb]; },
+            [&](int i, int t) { return x[static_cast<size_t>(i) * nT + static_cast<size_t>(t)]; }, out);
 }
 
 // 篮子估值 (BPlanes::val, 两权重) + 逐行收益 / 权和 (rows, 换手用), 两遍:
 //   1) 资产条带并行, 沿 t 就地把 px 补成上一有效收盘价 (停牌带着); prv = 有效 close 格的上一有效 close 行 (−1 = 无);
 //   2) 行并行, 每行一遍 A 轴攒进本行的篮子桶 (0 + 行业):
 //      收益成分 = 上一有效 close 行在池, 收益 = 后复权 close / 上一有效后复权 close − 1 (load_b 由 close_day × 复权因子现算), 权 = 1 / 该行总市值 mcap, 行业取该行;
-//      估值成分 = 上一行在池, 市值 = px × 上一行总股本, 净利 / 权益 / 营收 / 经营现金流 / 股息率 / 行业同取上一行.
-//   px = 本行有成交的收盘价 (否则 0), 就地改; ind = 行业 ID (0 = 未知 / 缺)
-void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const float *mcap, float *px, const float *sh, const float *np,
-                  const float *eq, const float *rev, const float *ocf, const float *dy, const uint8_t *ind, const uint8_t *in, int T, int A, BPlanes &B,
-                  BasketRows &rows) {
+//      估值成分 = 上一行在池, 市值 = px × 上一行总股本, 估值输入 val [PoolVal] / 行业同取上一行.
+//   px = 本行有成交的收盘价 (否则 0), 就地改; val = YCols::val 原值 (DY 为股息率, 分子在此还原); ind = 行业 ID (0 = 未知 / 缺)
+void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, const float *mcap, float *px, const float *sh,
+                  const std::vector<float> (&val)[kPoolVals], const uint8_t *ind, const uint8_t *in, int T, int A, BPlanes &B, BasketRows &rows) {
   constexpr size_t K = BPlanes::kBaskets;
   const size_t nT = static_cast<size_t>(T), nA = static_cast<size_t>(A);
   std::vector<int32_t> prv(nT * nA, -1);
@@ -348,7 +352,11 @@ void pool_baskets(misc::exec::ForkJoin &ex, const factor::check::Plane &close, c
         const double mc = static_cast<double>(px[i]) * sh[p];
         if (!(mc > 0.0)) // 无价 / 缺股本 (NaN) / 非正
           continue;
-        const double num[kPoolVals] = {np[p], eq[p], rev[p], ocf[p], static_cast<double>(dy[p]) * px[p] * sh[p]}, om[kWeights] = {1.0, mc};
+        double num[kPoolVals];
+        for (int m = 0; m < kPoolVals; ++m)
+          num[m] = val[m][p];
+        num[kValDy] *= static_cast<double>(px[p]) * sh[p];
+        const double om[kWeights] = {1.0, mc};
         each_basket(ind[p], [&](size_t k) {
           for (int m = 0; m < kPoolVals; ++m)
             if (std::isfinite(num[m]))
@@ -415,9 +423,19 @@ void pool_turn(misc::exec::ForkJoin &ex, const factor::check::Plane &close, cons
   }
 }
 
-// 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 截面门控在池格数 on / 行数 T / kGroups (load_y / n_full_of 同一份)
-double n_full_from(long long on, int T) {
-  const double n = static_cast<double>(on) / static_cast<double>(T) / factor::stat::kGroups;
+// 一天门控 g[n] 的在池格数 (load_y / n_full_of 同一份: 逐天逐线程攒进 on[tid])
+long long gate_on(const uint8_t *g, size_t n) {
+  long long k = 0;
+  for (size_t i = 0; i < n; ++i)
+    k += g[i] != 0;
+  return k;
+}
+// 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 截面门控在池格数 Σon / 行数 T / kGroups (load_y / n_full_of 同一份)
+double n_full_from(const std::vector<long long> &on, int T) {
+  long long k = 0;
+  for (const long long x : on)
+    k += x;
+  const double n = static_cast<double>(k) / static_cast<double>(T) / factor::stat::kGroups;
   assert(n > 0.0 && "池内无有效资产");
   return n;
 }
@@ -453,12 +471,13 @@ Shape shape_of(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1
 }
 
 // 逐天并行读骨架 (load_x / load_y 同一份): cols → 一张读计划 (同 (池, 层) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
-// on_day(view, day, d, tid) 散进平面 (view(c, t) = 平面列 c 在网格行 t 的源行视图). 每天 prog.publish(1). false = 取消 / 库判废
+// on_day(view, day, d, tid) 散进平面 (view(c, t) = 平面列 c 在网格行 t 的源行视图). prog.begin Loading (日数), 每天 publish(1). false = 取消 / 库判废
 template <class OnDay>
 bool read_days(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, std::vector<ColRef> cols,
                misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog, OnDay &&on_day) {
   const size_t n_cols = cols.size();
   assert(n_cols > 0);
+  prog.begin(Phase::Loading, d1 - d0);
   const ReadPlan plan = analysis::read_plan(*ft.feature, factor_level(ft.seg).lvl, analysis::Rows::AsOf, /*carry=*/true, std::move(cols));
   std::vector<std::pair<uint32_t, uint32_t>> at(n_cols); // 平面列 → (源, 源内值列)
   for (size_t si = 0; si < plan.srcs.size(); ++si)
@@ -608,6 +627,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   constexpr float kNoCap = std::numeric_limits<float>::infinity();
   const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {spec.max_impact, kNoCap};
   std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
+  std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);                                         // 每线程: 门控在池格数 (n_full)
 
   const bool read = read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
     // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (gate) ∧ 两腿皆有限 → fp16 位, 其余 0.
@@ -637,7 +657,9 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
         }
       }
     };
-    gate_day(view, ts_i, cs_i, es, day, VR, A, has_data[tid], Y.gate.data() + d * VR * A);
+    uint8_t *gate = Y.gate.data() + d * VR * A;
+    gate_day(view, ts_i, cs_i, es, day, VR, A, has_data[tid], gate);
+    on[tid] += gate_on(gate, VR * A);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       fold_legs(lab_i, lab_cap, Y.labels, t, row, false);
@@ -646,21 +668,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   });
   if (!read)
     return false;
-  if (spec.cap > 0.0) {
-    Y.n_full = spec.cap;
-    return true;
-  }
-  std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);
-  ex.rows(Y.sh.T, [&](int t0, int t1, int tid) {
-    long long k = 0;
-    for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i)
-      k += Y.gate[i] != 0;
-    on[static_cast<size_t>(tid)] = k;
-  });
-  long long n_on = 0;
-  for (const long long k : on)
-    n_on += k;
-  Y.n_full = n_full_from(n_on, Y.sh.T);
+  Y.n_full = spec.cap > 0.0 ? spec.cap : n_full_from(on, Y.sh.T);
   return true;
 }
 
@@ -673,24 +681,27 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, c
   assert(Y.hd.n == 1 && Y.hd.h[0] == factor::stat::hold_close(1) && "篮子的持有期只 T+1C (C(D) → C(D+1))");
   B = BPlanes{};
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
-  // ---- 列段 ts_valid | close adj_factor total_shares np_ttm eq_mrq rev_ttm ocf_ttm dy_ttm ind_l1, 全是标签库网格层本层列 ----
+  // ---- 列段 ts_valid | close adj_factor total_shares val[kPoolVals] ind_l1, 全是标签库网格层本层列 ----
   std::vector<ColRef> cols;
   const auto add = [&](const Col &col) {
     cols.push_back(col.ref(es.pool));
     return cols.size() - 1;
   };
-  const size_t ts_i = add(ft.y.ts), px_i = add(ft.y.ohlc[3]), adj_i = add(ft.y.adj_factor);
-  const size_t sh_i = add(ft.y.total_shares), np_i = add(ft.y.np_ttm), eq_i = add(ft.y.eq_mrq), rv_i = add(ft.y.rev_ttm), cf_i = add(ft.y.ocf_ttm),
-               dy_i = add(ft.y.dy_ttm), ind_i = add(ft.y.ind_l1);
+  const size_t ts_i = add(ft.y.ts), px_i = add(ft.y.ohlc[3]), adj_i = add(ft.y.adj_factor), sh_i = add(ft.y.total_shares);
+  const size_t val_i = cols.size();
+  for (const Col &v : ft.y.val)
+    add(v);
+  const size_t ind_i = add(ft.y.ind_l1);
   assert(cols[ts_i].pool == es.rs.main && "篮子列在标签库");
-  factor::check::Plane close;                                                     // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益), 装完即弃
-  std::vector<float> vadj(n, 0.f);                                                // 本行 adj_factor (= 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
-  std::vector<float> mcap(n, 0.f);                                                // 本行总市值 = close_day × total_shares (加权版的权; close 无效 / 缺股本 → 0)
-  std::vector<float> vpx(n, 0.f), vsh(n), vnp(n), veq(n), vrv(n), vcf(n), vdy(n); // 估值: 本行有成交的 close_day (否则 0) / 总股本 / 归母净利TTM / 归母权益MRQ /
-                                                                                  //   营业总收入TTM / 经营现金流TTM / 股息率TTM (缺 → NaN), 装完算 val 即弃
-  std::vector<uint8_t> vind(n, 0);                                                // 行业 ID (0 = 未知 / 缺 / 越界)
+  factor::check::Plane close;                     // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益), 装完即弃
+  std::vector<float> vadj(n, 0.f);                // 本行 adj_factor (= 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
+  std::vector<float> mcap(n, 0.f);                // 本行总市值 = close_day × total_shares (加权版的权; close 无效 / 缺股本 → 0)
+  std::vector<float> vpx(n, 0.f), vsh(n);         // 本行有成交的 close_day (否则 0) / 总股本 (缺 → NaN)
+  std::vector<float> vval[kPoolVals];             // [PoolVal] 估值输入 (YCols::val; 缺 → NaN), 装完算 val 即弃
+  for (std::vector<float> &v : vval)
+    v.resize(n);
+  std::vector<uint8_t> vind(n, 0);                // 行业 ID (0 = 未知 / 缺 / 越界)
   close.resize(n);
-  prog.begin(Phase::Loading, c.d1 - c.d0);
   const bool read = read_days(ft, es, lr, c.d0, c.d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
@@ -704,7 +715,10 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, c
         vpx[row + a] = close.v[row + a];
         vadj[row + a] = cell(wa, a, f, g) && fmeta::finite(f) && static_cast<float>(f) > 0.f ? static_cast<float>(f) : 0.f;
       }
-      const View ws = view(sh_i, t), wn = view(np_i, t), we = view(eq_i, t), wr = view(rv_i, t), wc = view(cf_i, t), wd = view(dy_i, t), wi = view(ind_i, t);
+      const View ws = view(sh_i, t), wi = view(ind_i, t);
+      View wv[kPoolVals];
+      for (int m = 0; m < kPoolVals; ++m)
+        wv[m] = view(val_i + static_cast<size_t>(m), t);
       constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
       for (size_t a = 0; a < A; ++a) {
         feature_storage_t x;
@@ -714,11 +728,8 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, c
         vsh[row + a] = cell(ws, a, x, g) ? static_cast<float>(x) : kNaN;
         if (okp && vsh[row + a] > 0.f)
           mcap[row + a] = px * vsh[row + a];
-        vnp[row + a] = cell(wn, a, x, g) ? static_cast<float>(x) : kNaN;
-        veq[row + a] = cell(we, a, x, g) ? static_cast<float>(x) : kNaN;
-        vrv[row + a] = cell(wr, a, x, g) ? static_cast<float>(x) : kNaN;
-        vcf[row + a] = cell(wc, a, x, g) ? static_cast<float>(x) : kNaN;
-        vdy[row + a] = cell(wd, a, x, g) ? static_cast<float>(x) : kNaN;
+        for (int m = 0; m < kPoolVals; ++m)
+          vval[m][row + a] = cell(wv[m], a, x, g) ? static_cast<float>(x) : kNaN;
         if (cell(wi, a, x, g) && static_cast<float>(x) >= 1.f && static_cast<float>(x) < static_cast<float>(BPlanes::kBaskets))
           vind[row + a] = static_cast<uint8_t>(static_cast<float>(x));
       }
@@ -735,23 +746,16 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, c
     }
   });
   vadj = {};
-  pool_index(ex, Y, 0, mcap.data(), vind.data(), static_cast<int>(BPlanes::kBaskets), kWeights, B.index);
+  pool_index(ex, Y, mcap.data(), vind.data(), static_cast<int>(BPlanes::kBaskets), kWeights, B.index);
   BasketRows rows;
-  pool_baskets(ex, close, mcap.data(), vpx.data(), vsh.data(), vnp.data(), veq.data(), vrv.data(), vcf.data(), vdy.data(), vind.data(), Y.gate.data(),
-               Y.sh.T, Y.sh.A, B, rows);
+  pool_baskets(ex, close, mcap.data(), vpx.data(), vsh.data(), vval, vind.data(), Y.gate.data(), Y.sh.T, Y.sh.A, B, rows);
   pool_turn(ex, close, mcap.data(), Y.gate.data(), Y.sh.T, Y.sh.A, rows, B.turn);
   return true;
 }
 
 BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y) {
   BookLines out;
-  out.n = y.hd.n, out.P = y.sh.T;
-  out.v.resize(static_cast<size_t>(y.hd.n) * static_cast<size_t>(y.sh.T));
-  for (int hi = 0; hi < y.hd.n; ++hi) {
-    BookLines one;
-    pool_index(ex, y, hi, nullptr, nullptr, 1, 1, one);
-    std::copy(one.v.begin(), one.v.end(), out.v.begin() + static_cast<long>(hi) * y.sh.T);
-  }
+  pool_index(ex, y, nullptr, nullptr, 1, 1, out);
   return out;
 }
 
@@ -777,17 +781,12 @@ bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr
   assert(cols[0].pool == es.rs.main && "门控在标签库");
   std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
   std::vector<long long> on(nt, 0);
-  prog.begin(Phase::Loading, d1 - d0);
   if (!read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t, size_t tid) {
         gate_day(view, 0, 1, es, day, VR, A, has[tid], gate[tid].data());
-        for (const uint8_t g : gate[tid])
-          on[tid] += g != 0;
+        on[tid] += gate_on(gate[tid].data(), VR * A);
       }))
     return false;
-  long long n = 0;
-  for (const long long k : on)
-    n += k;
-  out = n_full_from(n, sh.T);
+  out = n_full_from(on, sh.T);
   return true;
 }
 
@@ -821,7 +820,7 @@ std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, si
 
 namespace {
 
-// 键 (或日序列) 变 → reset + 装 Y (prog.begin Loading). 键中 → 不动. false = 取消 / 判废 (块已 reset)
+// 键 (或日序列) 变 → reset + 装 Y. 键中 → 不动. false = 取消 / 判废 (块已 reset)
 bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec,
               misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
   assert(d0 < d1 && d1 <= es.dates.size());
@@ -830,7 +829,6 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   if (c.key == key && std::equal(c.dates.begin(), c.dates.end(), first, last))
     return true;
   c.reset();
-  prog.begin(Phase::Loading, d1 - d0);
   if (!load_y(ft, es, lr, d0, d1, spec, c.y, ex, cancel, prog)) {
     c.reset();
     return false;
@@ -843,7 +841,7 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   return true;
 }
 
-// 先 ensure_y. retain → 先丢 codes 以外的叶; 缺的叶补装 (prog.begin Loading). false = 取消 / 判废 (已有的叶不动)
+// 先 ensure_y. retain → 先丢 codes 以外的叶; 缺的叶补装. false = 取消 / 判废 (已有的叶不动)
 bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const std::vector<std::string> &codes,
               bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
   assert(!c.key.empty() && "先 ensure_y");
@@ -859,7 +857,6 @@ bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
       miss.codes.push_back(code);
   if (miss.codes.empty())
     return true;
-  prog.begin(Phase::Loading, c.d1 - c.d0);
   XPlanes add;
   if (!load_x(ft, es, lr, c.d0, c.d1, miss, add, ex, cancel, prog))
     return false;

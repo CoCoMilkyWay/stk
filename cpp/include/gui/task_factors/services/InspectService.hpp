@@ -23,7 +23,7 @@
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
 //   T  换手                                                → 各 LS 线两腿的换手量 CostAcc: 顶底 = C 的换手量 (EvalStat::turn); 各级尾部 = Stat cost_rows 只出量 (C = 0;
 //                                                            腿成员 = 该级腿码 ∧ 标签有效位, 满仓 = cap · kTailOfGroup[j]); 图例年换手 = turn_annual, UI 现算
-//   N  净值                                                → 评估后纯函数 nav_of: 每持有期 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h̄)
+//   N  净值                                                → 评估后纯函数 nav_of: 全部持有期一次 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h̄)
 //                                                            stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛; 可成交 / 顺延在标签里)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
@@ -74,7 +74,7 @@ struct TailRow {
   float ls[kTails] = {};                          // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 Row::ls 同式; 尾空 → 该腿 0)
 };
 
-// 分层累计净值 (净值引擎 fold_exit, 每持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(腿, j) = 该腿组内第 j 级尾部 (全按做多);
+// 分层累计净值 (净值引擎 fold_exit, 全部持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(腿, j) = 该腿组内第 j 级尾部 (全按做多);
 // LS 线 0 = 顶底 (Row::ls), 1 + j = 第 j 级尾部 (TailRow::ls). 净值线 (InspectResult::nav) = 分层绝对 [0, kNavLayers) | 分层超额 (− Row::mkt[kLong])
 // [kNavLayers, 2 kNavLayers) | LS [2 kNavLayers, kNavLines); 值 = 日收益 (当日平仓的各批收益 / h 之和)
 inline constexpr int kNavLayers = factor::stat::kGroups + factor::stat::kLegs * kTails;
@@ -104,15 +104,17 @@ struct InspectResult : EvalStat {
   BookLines pool_index;                                               // [hd.n][T] 池等权线的逐行收益 (= pool_line, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
                                                                       //   UI compound 成点位后按视野左端个股价重锚
   InspectPlanes pl;                                                   // 一级平面 (Row / 尾部 / 秩)
-  std::vector<BookLines> nav;                                         // [hd.n] 分层累计的日收益 [kNavLines][days] (见 kNavLines)
-  factor::stat::CostAcc ls_turn[kNavLs][factor::stat::kMaxHold] = {}; // [LS 线][hi] 两腿换手量 (只量, imp 恒 0; 线 0 = EvalStat::turn, 见 flow T)
+  BookLines nav;                                                      // 分层累计的日收益 [hd.n · kNavLines][days] (线 hi · kNavLines + i, 见 kNavLines)
+  factor::stat::CostAcc ls_turn[kTails][factor::stat::kMaxHold] = {}; // [尾部 j][hi] LS 线 1 + j 两腿换手量 (只量, imp 恒 0; 见 flow T); 取用 ls_turn_of
   analysis::AggPdf ic_pdf[factor::stat::kMaxHold];                    // [hi] 逐行 rIC (ok 行) 分布 (= Run 行小图同一份成品; 左下左半)
   AlphaDist alpha_dist;                                               // alpha 分布 (全体 + 各组, 左下右半图)
   std::string error;                                                  // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 
   const factor::stat::Row *rows_at(int hi) const { return pl.rows.data() + static_cast<size_t>(hi) * scope.T; }
   const TailRow *tails_at(int hi) const { return pl.tails.data() + static_cast<size_t>(hi) * scope.T; }
-  const float *nav_at(int hi, int line) const { return nav[static_cast<size_t>(hi)].at(line); }
+  const float *nav_at(int hi, int line) const { return nav.at(hi * kNavLines + line); }
+  // LS 线 line (0 = 顶底 = EvalStat::turn, 1 + j = 第 j 级尾部) 在持有期 hi 的两腿换手量
+  const factor::stat::CostAcc &ls_turn_of(int line, int hi) const { return line == 0 ? turn[hi] : ls_turn[line - 1][hi]; }
 };
 
 // 进度面 = 自身 (Published): Loading 期 done/total = 天; Running 期 = 算子节点 + 成本 + 评估

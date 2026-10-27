@@ -6,13 +6,15 @@
 //     walk(d, need, visit(i, ms))            顺序走 Dag (叶 = 块里的 X 平面, 截面池 g = 块的 Y 门控); ms = 算子耗时 (叶 0), visit 返回 false → 停
 //     plant<Ps>(cands, C)                    一批候选的共享森林 (C 出 = 实际收的前 C 个): Ps::need = 0 → 只要 Accum, CPU ≤ batch / GPU 再按显存减半;
 //                                            否则全收
-//     labels<B>() / work<B>()                会话的标签 (Y 全部持有期) / 探针工作区: B = 批核 (Search 会话) 或逐根 (Stat 会话)
-//     root<Ps>(d, i, f, L, p, acc)           walk 的 visit 内根 i 的原料: 批核 = Search 会话评这一个 (CPU); 逐根 = Stat 会话, 按 Ps::need 备齐
+//     labels<B>() / work<B>()                会话的标签 (Y 全部持有期) / 探针工作区: B = 批核 (search_session) 或逐根 (stat_session)
+//     root<Ps>(d, i, f, L, p, acc)           逐根 (Ps::need ≠ 0): walk 的 visit 内根 i 的原料, 按 Ps::need 备齐
 //                                            (CPU: run → accum_rows 进探针行钩子 → 腿码; GPU: stat_eval 只拷回要的原料, 会话按 Y 全部持有期, 取 L 那几组)
-//     batch(d, ks, f) / batch_view(f, r, j)  kDefer (GPU) 的批核: 走完森林, 一批根同在显存一次 search_eval (keep_roots)
+//     batch(d, ks, f) / batch_view(f, r, j, L, acc)  批核 (Ps::need = 0): 根 ks 一次 search_eval; kDefer (GPU) 走完森林一批根同在显存 (keep_roots),
+//                                            否则 (CPU) 走到根即评一个
 //   森林 forest(eng, d, need, f, ps, node, done) 两后端同一份骨架: 每个同根首个 k (Dag::first_root_at) 评一次: 探针 open → 原料 → root → done(k).
-//   管线 (四服务同一份): open_job (作用域 → 开库) → plan_job (预算 → 分块, FactorsLoad) → ensure_xy (装块) → plan_forest (值域, 逐根归因) → forest.
-//   eval_job = 整期一块 (Run / Inspect / Portfolio); Search 逐块逐趟自走 plant / forest; eval_basket = Portfolio 池线 (无叶, load_b).
+//   管线 (四服务同一份): Job (作用域 / 计划 / 块) — open_job (作用域 → 开库) → plan_job (预算 → 分块, FactorsLoad) → 逐块 load_block (ensure_xy)
+//   → eval_forest (plan_forest 值域逐根归因 → forest; 末块根即 finish). eval_job = 整期一块 (Run / Inspect / Portfolio); Search 逐块逐趟走同一组
+//   load_block / eval_forest; eval_basket = Portfolio 池线 (无叶无森林, load_b).
 // 只给服务 .cpp include (EvalCpu → TS / CS Cpu.hpp, 受控浮点: CMake PRECISE_MATH 源).
 #pragma once
 
@@ -82,49 +84,70 @@ public:
   template <bool Batch>
   factor::stat::Labels labels() {
     if constexpr (Batch)
-      return search().L;
+      return search_session().L;
     else
-      return session().L;
+      return stat_session().L;
   }
   template <bool Batch>
   factor::cpu::stat::Workspace *work() {
     if constexpr (Batch)
       return nullptr;
     else
-      return &session().w;
+      return &stat_session().w;
   }
+  // 逐根 (Stat 会话): run → accum_rows 进探针行钩子 → 腿码; 原料按 Ps::need 给 (x.v 恒给)
   template <class Ps>
   RootView root(const factor::Dag &d, int i, factor::stat::Frame f, const factor::stat::Labels &L, Ps &p, factor::stat::Accum *acc) {
+    constexpr uint8_t need_p = Ps::need;
+    static_assert(need_p != 0, "批核走 batch");
     const factor::stat::Span s = c_->span();
     const factor::check::Plane *rp = plane(i);
+    rx_.resize(s.n());
+    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate.data(), f, s, L, rx_.data(), stat_session().w, acc, ProbeSink<Ps>{&p});
     RootView v;
-    v.x = {rp->v.data(), rp->m.data()};
     v.f = f;
     v.acc = acc;
-    if constexpr (Ps::need == 0) {
-      factor::search::Result r;
-      factor::cpu::search::search_eval(ex_, search(), &v.x, 1, c_->y.gate.data(), f, s.t0_abs, s.t_lo, &r);
-      std::copy_n(r.acc, L.hd.n, acc);
-      v.ranks = Ranks{&sr_, 0, &search_ranks_of};
-    } else {
-      const factor::check::Plane *ap = plane(d.nodes[static_cast<size_t>(i)].in[0]); // alpha = 根的输入: 根的 visit 内仍在槽里
-      rx_.resize(s.n());
-      factor::cpu::stat::run(ex_, v.x, c_->y.gate.data(), f, s, L, rx_.data(), session().w, acc, ProbeSink<Ps>{&p});
-      if constexpr ((Ps::need & kNeedLc) != 0) {
-        lc_.resize(s.n());
-        factor::cpu::stat::leg_codes(ex_, rx_.data(), s, lc_.data());
-        v.lc = lc_.data();
-      }
-      v.alpha = {ap->v.data(), ap->m.data()};
-      v.rx = rx_.data();
-      v.ranks = Ranks{this, 0, &ranks_of};
+    v.x = {rp->v.data(), (need_p & kNeedMask) != 0 ? rp->m.data() : nullptr};
+    v.rx = (need_p & kNeedRx) != 0 ? rx_.data() : nullptr;
+    if constexpr ((need_p & kNeedLc) != 0) {
+      lc_.resize(s.n());
+      factor::cpu::stat::leg_codes(ex_, rx_.data(), s, lc_.data());
+      v.lc = lc_.data();
     }
+    if constexpr ((need_p & kNeedAlpha) != 0) {
+      const factor::check::Plane *ap = plane(d.nodes[static_cast<size_t>(i)].in[0]); // alpha = 根的输入: 根的 visit 内仍在槽里
+      v.alpha = {ap->v.data(), ap->m.data()};
+    }
+    return v;
+  }
+  // 批核 (Search 会话): 根 ks 一次 search_eval → [ks.size()]. kDefer 假: forest 走到根即评, ks = {该根} (根平面在 visit 内仍在槽里)
+  std::vector<factor::search::Result> batch(const factor::Dag &d, const std::vector<int> &ks, const factor::stat::Frame *f) {
+    const int C = static_cast<int>(ks.size());
+    assert(C >= 1 && "一批至少一个好根");
+    std::vector<factor::stat::Plane> roots;
+    for (const int k : ks) {
+      assert(f[k] == f[ks.front()] && "一批同口径");
+      const factor::check::Plane *rp = plane(d.roots[static_cast<size_t>(k)]);
+      roots.push_back({rp->v.data(), rp->m.data()});
+    }
+    const factor::stat::Span s = c_->span();
+    std::vector<factor::search::Result> out(static_cast<size_t>(C));
+    factor::cpu::search::search_eval(ex_, search_session(), roots.data(), C, c_->y.gate.data(), f[ks.front()], s.t0_abs, s.t_lo, out.data());
+    return out;
+  }
+  // 批核第 j 个根的原料: acc ← r.acc (L = Y 全部持有期)
+  RootView batch_view(factor::stat::Frame f, const factor::search::Result &r, int j, const factor::stat::Labels &L, factor::stat::Accum *acc) {
+    std::copy_n(r.acc, L.hd.n, acc);
+    RootView v;
+    v.f = f;
+    v.acc = acc;
+    v.ranks = Ranks{&sr_, j, &ranks_of};
     return v;
   }
 
 private:
   // Stat 会话 (Y 的标签秩 + 工作区, 绑定内一次)
-  factor::cpu::stat::StatSession &session() {
+  factor::cpu::stat::StatSession &stat_session() {
     assert(c_ && "先 bind");
     if (!stat_on_) {
       const YPlanes &y = c_->y;
@@ -133,29 +156,19 @@ private:
     }
     return ss_;
   }
-  // Search 会话 (批核; 与 GPU open_search 同一组原语, 绑定内一次)
-  factor::cpu::search::SearchSession &search() {
+  // Search 会话 (批核; 与 GPU search_session 同一组原语, 绑定内一次)
+  factor::cpu::search::SearchSession &search_session() {
     assert(c_ && "先 bind");
     if (!search_on_) {
       const YPlanes &y = c_->y;
-      factor::stat::Label lab[factor::stat::kMaxHold];
-      for (int hi = 0; hi < y.hd.n; ++hi)
-        lab[hi] = label_of(y.labels[static_cast<size_t>(hi)], nullptr);
       factor::cpu::search::search_open(ex_, sr_, y.sh.T, y.sh.A, y.sh.seg, y.hd, y.n_full);
-      factor::cpu::search::search_load(ex_, sr_, lab);
+      factor::cpu::search::search_load(ex_, sr_, labels_of(y).l);
       search_on_ = true;
     }
     return sr_;
   }
-  static void search_ranks_of(void *src, int k, int t0, int stride, int n_rows, uint16_t *out) {
+  static void ranks_of(void *src, int k, int t0, int stride, int n_rows, uint16_t *out) {
     factor::cpu::search::search_ranks(*static_cast<const factor::cpu::search::SearchSession *>(src), k, t0, stride, n_rows, out);
-  }
-  static void ranks_of(void *src, int, int t0, int stride, int n_rows, uint16_t *out) {
-    const Engine &e = *static_cast<const Engine *>(src);
-    const int A = e.c_->y.sh.A;
-    assert(t0 >= 0 && stride >= 1 && n_rows >= 0 && t0 + (n_rows - 1) * stride < e.c_->y.sh.T);
-    for (int i = 0; i < n_rows; ++i)
-      std::copy_n(e.rx_.data() + static_cast<size_t>(t0 + i * stride) * A, A, out + static_cast<size_t>(i) * A);
   }
 
   misc::exec::ForkJoin &ex_;
@@ -216,7 +229,7 @@ public:
       C = static_cast<int>(cands.size());
       return factor::build_forest(cands, /*keep_roots=*/false);
     }
-    open_search();
+    search_session();
     C = std::min(batch_, static_cast<int>(cands.size()));
     while (true) {
       factor::Dag d = factor::build_forest(std::vector<const factor::expr::Expr *>(cands.begin(), cands.begin() + C), /*keep_roots=*/true);
@@ -240,9 +253,9 @@ public:
   template <bool Batch>
   factor::stat::Labels labels() {
     if constexpr (Batch)
-      open_search();
+      search_session();
     else
-      session();
+      stat_session();
     return labels_of(c_->y);
   }
   template <bool Batch>
@@ -250,12 +263,13 @@ public:
     if constexpr (Batch)
       return nullptr;
     else
-      return &session();
+      return &stat_session();
   }
+  // 逐根 (Stat 会话): stat_eval 只拷回 Ps::need 要的原料; 会话按 Y 全部持有期, 取 L 那几组
   template <class Ps>
   RootView root(const factor::Dag &d, int i, factor::stat::Frame f, const factor::stat::Labels &L, Ps &p, factor::stat::Accum *acc) {
     constexpr uint8_t need_p = Ps::need;
-    static_assert(need_p != 0 && !Ps::cells, "GPU 批核走 batch; 逐格扩展只 CPU");
+    static_assert(need_p != 0 && !Ps::cells, "批核走 batch; 逐格扩展只 CPU");
     assert(stat_ && "先 labels<false>");
     const YPlanes &y = c_->y;
     const factor::stat::Span s = c_->span();
@@ -326,18 +340,19 @@ public:
     factor::gpu::search_eval(search_, roots.data(), C, gate_, f[ks.front()], s.t0_abs, s.t_lo, out.data());
     return out;
   }
-  // 批核第 j 个根的原料
-  RootView batch_view(factor::stat::Frame f, const factor::search::Result &r, int j) {
+  // 批核第 j 个根的原料: acc ← r.acc (L = Y 全部持有期)
+  RootView batch_view(factor::stat::Frame f, const factor::search::Result &r, int j, const factor::stat::Labels &L, factor::stat::Accum *acc) {
+    std::copy_n(r.acc, L.hd.n, acc);
     RootView v;
     v.f = f;
-    v.acc = r.acc;
+    v.acc = acc;
     v.ranks = Ranks{search_, j, &ranks_of};
     return v;
   }
 
 private:
-  // Stat 会话 (逐根; 绑定内一次) + 宿主探针工作区
-  factor::cpu::stat::Workspace &session() {
+  // Stat 会话 (逐根; 绑定内一次) → 宿主探针工作区
+  factor::cpu::stat::Workspace &stat_session() {
     assert(c_ && "先 bind");
     if (!stat_) {
       const YPlanes &y = c_->y;
@@ -364,16 +379,14 @@ private:
       dev_[i] = factor::gpu::upload(sess_, in[i]->v.data(), in[i]->m.data());
     gate_ = factor::gpu::upload_mask(sess_, c_->y.gate.data());
   }
-  void open_search() {
+  // Search 会话 (批核; 与 CPU search_session 同一组原语, 绑定内一次)
+  void search_session() {
     assert(c_ && "先 bind");
     if (search_)
       return;
     const YPlanes &y = c_->y;
-    factor::stat::Label lab[factor::stat::kMaxHold];
-    for (int hi = 0; hi < y.hd.n; ++hi)
-      lab[hi] = label_of(y.labels[static_cast<size_t>(hi)], nullptr);
     search_ = factor::gpu::search_open(y.sh.T, y.sh.A, y.sh.seg, batch_, y.hd, y.n_full);
-    factor::gpu::search_load(search_, lab);
+    factor::gpu::search_load(search_, labels_of(y).l);
   }
   void close_inputs() {
     dp_.release();
@@ -426,8 +439,8 @@ bool with_engine(bool gpu, misc::exec::ForkJoin &ex, const std::atomic<bool> &ca
 }
 
 // 走森林 (两后端同一份骨架; eng 须已 bind): 每个同根首个 k (Dag::first_root_at) 评一次: ps(k).open → 原料 → ps(k).root → done(k).
-// Ps::need = 0 → 批核 (出 Y 全部持有期, ps(k).hd 须空): kDefer 后端走完森林一次 batch, 否则走到根即评; 否则逐根 (eng.root 按 need 备原料).
-// node(i, ms) 同 walk 的 visit. false = 取消
+// Ps::need = 0 → 批核 batch / batch_view (出 Y 全部持有期, ps(k).hd 须空): kDefer 后端走完森林一批, 否则走到根即评 (一批一个);
+// 否则逐根 (eng.root 按 need 备原料). node(i, ms) 同 walk 的 visit. false = 取消
 template <class E, class Slot, class Node, class Done>
 bool forest(E &eng, const factor::Dag &d, const uint8_t *need, const factor::stat::Frame *f, Slot &&ps, Node &&node, Done &&done) {
   using Ps = std::remove_cvref_t<decltype(ps(0))>;
@@ -453,7 +466,10 @@ bool forest(E &eng, const factor::Dag &d, const uint8_t *need, const factor::sta
       assert(nd.op >= 0 && nd.n_in >= 1 && "根是归一算子, 至少一元");
       if constexpr (defer)
         ks.push_back(k);
-      else
+      else if constexpr (batch) {
+        const std::vector<factor::search::Result> out = eng.batch(d, {k}, f);
+        eval(k, [&](const factor::stat::Labels &L, Ps &, factor::stat::Accum *acc) { return eng.batch_view(f[k], out[0], 0, L, acc); });
+      } else
         eval(k, [&](const factor::stat::Labels &L, Ps &p, factor::stat::Accum *acc) { return eng.template root<Ps>(d, i, f[k], L, p, acc); });
     }
     return !eng.cancelled();
@@ -463,26 +479,34 @@ bool forest(E &eng, const factor::Dag &d, const uint8_t *need, const factor::sta
       return false;
     const std::vector<factor::search::Result> out = eng.batch(d, ks, f);
     for (size_t j = 0; j < ks.size(); ++j)
-      eval(ks[j], [&](const factor::stat::Labels &, Ps &, factor::stat::Accum *) { return eng.batch_view(f[ks[j]], out[j], static_cast<int>(j)); });
+      eval(ks[j], [&](const factor::stat::Labels &L, Ps &, factor::stat::Accum *acc) { return eng.batch_view(f[ks[j]], out[j], static_cast<int>(j), L, acc); });
   }
   return ok;
 }
 
-// ---- 管线 (四服务同一份: open_job → plan_job → ensure_xy → plan_forest → forest) ----
+// ---- 管线 (四服务同一份: open_job → plan_job → 逐块 load_block → eval_forest) ----
 // worker 私有常驻件 (跨请求存活): 各服务的 Flow 由它派生, 各加自己的引擎 / 缓冲
 struct FactorFlow {
   misc::exec::ForkJoin ex;
   LibReaders lr; // 已建的库 (清单没变的复用)
-  ScopeCache c;  // 作用域块 (X 留法见 eval_job 的 retain)
+  ScopeCache c;  // 作用域块 (X 留法见 Job::retain)
   FactorFlow() : ex(misc::exec::hw()) {}
 };
-// 一次评估的出参
-struct JobOut {
+// 一次作业 (四服务同一份): 作用域 es → 计划 P (分块) → 块. own 空 = 一块即 F.c (跨请求留 Y / X); 多块 (Search) / 用完即弃 (池篮子)
+// 的块在 own (P.cache_all ? 每块一个 : 一个复用)
+struct Job {
   EvalScope es;
+  Plan P;
+  YSpec ys;
+  std::vector<std::string> codes; // X 叶 (open_job 的 feats; 平面下标 = 此序)
+  bool retain = true;             // 块上只留 codes 的叶 / 否则作用域内读过的全留
+  std::vector<ScopeCache> own;
+  std::string why; // Rc::Empty (所用库未建 / 无共同落盘日) / Rc::Broken (首个坏根: 特征叶值域越界) 的原因
+};
+// 一次评估 (eval_job) 的出参
+struct JobOut : Job {
   factor::Dag d;                // 森林: roots[k] ↔ exprs[k]
   std::vector<double> ms;       // [node] 算子耗时 (叶 / 没走的 0)
-  std::vector<std::string> why; // [k] 非空 = 该根 BROKEN (特征叶值域越界), 不评
-  std::string empty;            // Rc::Empty 的原因 (所用库未建 / 无共同落盘日)
   double eval_ms(int k) const { // 根 k 子树的算子 wall 之和 (共享节点算给每个用它的根 = 单独算它要多久)
     double s = 0.0;
     for (const int i : d.subtree(d.roots[static_cast<size_t>(k)]))
@@ -490,19 +514,51 @@ struct JobOut {
     return s;
   }
 };
-// 作用域 (叶 feats 所用库 + 评估期) → 开库 (四服务同一份). false = 作用域不成 (why; 正常输入)
-inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std::string> &feats, std::atomic<bool> &cancel, EvalScope &es,
-                     std::string &why) {
+// 作业 j 的块 k
+inline ScopeCache &block_of(FactorFlow &F, Job &j, size_t k) {
+  assert(k < j.P.chunks.size() && (!j.own.empty() || j.P.chunks.size() == 1) && "多块的作业块在 own");
+  return j.own.empty() ? F.c : j.own[j.P.cache_all ? k : 0];
+}
+// 作用域 (叶 feats 所用库 + 评估期) → 开库; j.codes = feats. false = 作用域不成 (j.why; 正常输入)
+inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std::string> &feats, std::atomic<bool> &cancel, Job &j) {
   assert(sc.ft && sc.seg == sc.ft->seg && "作用域层与字段表层不符");
-  if (!eval_scope(*sc.ft, sc, feats, es, why))
+  j.codes = feats;
+  if (!eval_scope(*sc.ft, sc, feats, j.es, j.why))
     return false;
   open_libs(sc, F.lr, &cancel);
   return true;
 }
-// 森林 (eng.plant) → open_job → plan_job (整期一块) → ensure_xy → plan_forest (on_plan(): o.why 已定) → forest:
-// 每个好根的同根首个 k0, ps(k0) 的钩子全部走完 (单块: root 后即 finish) → done(k0). o 须新建 (每次调用一个).
+// 块 k 就位 (ensure_xy: j.ys / j.codes / j.retain → block_of(F, j, k)). Ok / Cancel / Stale
+inline Rc load_block(FactorFlow &F, const FeatureTable &ft, Job &j, size_t k, const std::atomic<bool> &cancel, Progress &prog) {
+  return ensure_xy(block_of(F, j, k), ft, j.es, F.lr, j.P.chunks[k], j.ys, j.codes, j.retain, F.ex, cancel, prog);
+}
+// 块 c 上评一张森林 (四服务同一份; eng 与 cancel 同旗): plan_forest (叶值域, 逐根归因) → on_plan(why[k], need) → forest;
+// last (末块) → 根评完即 ps(k).finish, 再 done(k). 无好根 → Broken (why = 首个坏根的原因). Ok / Broken / Cancel
+template <class E, class Slot, class OnPlan, class Node, class Done>
+Rc eval_forest(E &eng, const ScopeCache &c, const factor::Dag &d, const factor::stat::Frame *frames, bool last, Slot &&ps, std::string &why,
+               OnPlan &&on_plan, Node &&node, Done &&done) {
+  std::vector<std::string> bad;
+  std::vector<uint8_t> need;
+  const int good = plan_forest(eng.ex(), c, d, bad, need);
+  on_plan(bad, need);
+  if (good == 0) {
+    why = bad[0];
+    return Rc::Broken;
+  }
+  if (eng.cancelled())
+    return Rc::Cancel;
+  eng.bind(c);
+  const bool ok = forest(eng, d, need.data(), frames, ps, node, [&](int k0) {
+    if (last)
+      ps(k0).finish(eng.ex(), c);
+    done(k0);
+  });
+  return ok && !eng.cancelled() ? Rc::Ok : Rc::Cancel;
+}
+// 森林 (eng.plant) → open_job → plan_job (整期一块, 块即 F.c) → load_block → eval_forest (on_plan(why): why[k] 非空 = 根 k BROKEN, 不评):
+// 每个好根的同根首个 k0, ps(k0) 的钩子全部走完 (单块 = 末块: root 后即 finish) → done(k0). o 须新建 (每次调用一个).
 // X: retain = 只留本森林的叶 / 否则作用域内读过的全留. 预算 load = Y + X, work = 引擎 (E::host_bytes), fixed = 探针 (Ps::bytes).
-// 进度: Loading 期 = 天; Running 期 = 好根的算子节点 + 好根数. 结局 Ok / Empty (o.empty) / Broken (全部根坏, o.why) / Cancel / Stale
+// 进度: Loading 期 = 天; Running 期 = 好根的算子节点 + 好根数. 结局 Ok / Empty / Broken (全部根坏) / Cancel / Stale (Empty / Broken: o.why)
 template <class E, class Slot, class OnPlan, class Done>
 Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const std::vector<const factor::expr::Expr *> &exprs, const factor::stat::Frame *frames,
             const YSpec &ys, bool retain, const char *who, Slot &&ps, std::atomic<bool> &cancel, Progress &prog, JobOut &o, OnPlan &&on_plan,
@@ -517,9 +573,9 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const std::vector<cons
   const auto cancelled = [&] { return cancel.load(std::memory_order_relaxed); };
 
   // ---- S: 作用域 → 预算 (整期一块) ----
-  if (!open_job(F, sc, d.feats, cancel, o.es, o.empty))
+  if (!open_job(F, sc, d.feats, cancel, o))
     return Rc::Empty;
-  Plan P;
+  o.ys = ys, o.retain = retain;
   { // X = retain ? 本森林 : 缓存 ∪ 本森林
     const int days = static_cast<int>(o.es.days.size()), A = static_cast<int>(o.es.rs.axis.size()), H = ps(0).hd.n ? ps(0).hd.n : ys.hd.n;
     const bool hit = F.c.key == scope_key(ft, o.es, 0, static_cast<size_t>(days), ys);
@@ -531,32 +587,24 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const std::vector<cons
     }
     const Budget b{cell_bytes(ys) + kPlaneBytes * static_cast<double>(nx), E::host_bytes(d.n_slots, ys.hd.n),
                    Ps::bytes(Shape{days * ft.seg, A, days, ft.seg}, H)};
-    P = plan_job(o.es, ft.seg, b, -1, who);
+    o.P = plan_job(o.es, ft.seg, b, -1, who);
   }
 
-  // ---- Y / X: 装载 → 叶值域, 逐根归因 ----
-  if (const Rc rc = ensure_xy(F.c, ft, o.es, F.lr, P.chunks[0], ys, d.feats, retain, F.ex, cancel, prog); rc != Rc::Ok)
+  // ---- 块 → 森林: 后序顺序走, 每节点全核; 好根即评 ----
+  if (const Rc rc = load_block(F, ft, o, 0, cancel, prog); rc != Rc::Ok)
     return rc;
-  std::vector<uint8_t> need;
-  if (plan_forest(F.ex, F.c, d, o.why, need) == 0) {
-    on_plan();
-    return Rc::Broken;
-  }
-  on_plan();
-  if (cancelled())
-    return Rc::Cancel;
-
-  // ---- 森林: 后序顺序走, 每节点全核; 好根即评 ----
-  size_t n_run = 0;
-  for (size_t i = 0; i < d.nodes.size(); ++i)
-    n_run += need[i] && d.nodes[i].op >= 0;
-  for (int k = 0; k < static_cast<int>(d.roots.size()); ++k)
-    n_run += d.first_root(k) == k && o.why[static_cast<size_t>(k)].empty();
-  prog.begin(Phase::Running, n_run);
   o.ms.assign(d.nodes.size(), 0.0);
-  eng.bind(F.c);
-  const bool ok = forest(
-      eng, d, need.data(), frames, ps,
+  return eval_forest(
+      eng, block_of(F, o, 0), d, frames, /*last=*/true, ps, o.why,
+      [&](const std::vector<std::string> &why, const std::vector<uint8_t> &need) {
+        size_t n_run = 0;
+        for (size_t i = 0; i < d.nodes.size(); ++i)
+          n_run += need[i] && d.nodes[i].op >= 0;
+        for (int k = 0; k < static_cast<int>(d.roots.size()); ++k)
+          n_run += d.first_root(k) == k && why[static_cast<size_t>(k)].empty();
+        prog.begin(Phase::Running, n_run);
+        on_plan(why);
+      },
       [&](int i, double ms) {
         if (d.nodes[static_cast<size_t>(i)].op >= 0) {
           o.ms[static_cast<size_t>(i)] = ms;
@@ -565,25 +613,24 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const std::vector<cons
         return !cancelled();
       },
       [&](int k0) {
-        ps(k0).finish(F.ex, F.c);
         prog.publish(1);
         done(k0);
       });
-  return ok && !cancelled() ? Rc::Ok : Rc::Cancel;
 }
-// 日层池篮子 (Portfolio 池线; 与 eval_job 对仗, 无叶无森林): open_job → plan_job (整期一块) → ensure_xy (块 Y = 门控 + T+1C 标签) → load_b.
-// 块用完即弃 (不占 F.c). 结局 Ok / Empty (why) / Cancel / Stale
-inline Rc eval_basket(FactorFlow &F, const FactorScope &sc, std::atomic<bool> &cancel, Progress &prog, EvalScope &es, BPlanes &B, std::string &why) {
+// 日层池篮子 (Portfolio 池线; 与 eval_job 对仗, 无叶无森林): open_job → plan_job (整期一块) → load_block (块 Y = 门控 + T+1C 标签) → load_b.
+// 块在 j.own (用完即弃, 不占 F.c). 结局 Ok / Empty (j.why) / Cancel / Stale
+inline Rc eval_basket(FactorFlow &F, const FactorScope &sc, std::atomic<bool> &cancel, Progress &prog, Job &j, BPlanes &B) {
   const FeatureTable &ft = *sc.ft;
   assert(ft.seg == 1 && "池篮子只日层");
   assert(find_leg(ft.y.labels, factor::stat::hold_close(1)) && "日层须有 T+1C 标签 (池指数 C(D) → C(D+1))");
-  if (!open_job(F, sc, {}, cancel, es, why))
+  if (!open_job(F, sc, {}, cancel, j))
     return Rc::Empty;
-  const YSpec ys{holds_of({factor::stat::hold_close(1)}), {}, 0.f};
-  const Plan P = plan_job(es, ft.seg, Budget{cell_bytes(ys) + kBasketCellBytes}, -1, "Portfolio");
-  ScopeCache c;
-  const Rc rc = ensure_xy(c, ft, es, F.lr, P.chunks[0], ys, {}, /*retain=*/true, F.ex, cancel, prog);
-  return rc == Rc::Ok ? rc_of(load_b(ft, es, F.lr, c, B, F.ex, cancel, prog), F.lr) : rc;
+  j.ys = YSpec{holds_of({factor::stat::hold_close(1)}), {}, 0.f};
+  j.P = plan_job(j.es, ft.seg, Budget{cell_bytes(j.ys) + kBasketCellBytes}, -1, "Portfolio");
+  j.own.resize(1);
+  if (const Rc rc = load_block(F, ft, j, 0, cancel, prog); rc != Rc::Ok)
+    return rc;
+  return rc_of(load_b(ft, j.es, F.lr, j.own[0], B, F.ex, cancel, prog), F.lr);
 }
 
 } // namespace GUI::Factors

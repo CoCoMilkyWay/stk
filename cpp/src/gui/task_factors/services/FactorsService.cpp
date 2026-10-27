@@ -4,7 +4,7 @@
 
 #include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / Probes / with_engine (四服务同一条管线)
 #include "gui/task_factors/services/FactorsLoad.hpp"   // stat_scope / Rc
-#include "gui/task_factors/ui/StatJson.hpp"
+#include "gui/task_factors/services/StatJson.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -46,64 +45,6 @@ void erase_stats(ojson &j) {
   j.erase("hold_cols");
   j.erase("acc_cols");
   j.erase("stats");
-}
-
-// 一个金额段的换手成本 ↔ JSON {amt, acc: [n_hold 个 CostAcc]} (StatJson cost_acc_json / load_cost_acc)
-ojson cost_json(const CostTier &c, int n_hold) {
-  ojson o;
-  o["amt"] = c.amt;
-  ojson acc = ojson::array();
-  for (int k = 0; k < n_hold; ++k)
-    acc.push_back(cost_acc_json(c.acc[k]));
-  o["acc"] = acc;
-  return o;
-}
-bool load_cost(const json &o, int n_hold, CostTier &dst) {
-  if (!o.is_object())
-    return false;
-  CostTier t;
-  if (!json_int(o, "amt", t.amt))
-    return false;
-  const auto ait = o.find("acc");
-  if (ait == o.end() || !ait->is_array() || ait->size() != static_cast<size_t>(n_hold))
-    return false;
-  for (int k = 0; k < n_hold; ++k)
-    if (!load_cost_acc((*ait)[static_cast<size_t>(k)], t.acc[k]))
-      return false;
-  dst = t;
-  return true;
-}
-
-// 因子表迷你 PDF ↔ JSON {lo, hi, y: [kMiniPdfPts]} (y 已归一到 [0, 1], 3 位小数够画)
-ojson mini_pdf_json(const MiniPdf &p) {
-  ojson o;
-  o["lo"] = sig4(p.lo);
-  o["hi"] = sig4(p.hi);
-  ojson y = ojson::array();
-  for (const float v : p.y)
-    y.push_back(std::round(v * 1000.f) / 1000.0);
-  o["y"] = y;
-  return o;
-}
-bool load_mini_pdf(const json &o, MiniPdf &dst) {
-  if (!o.is_object())
-    return false;
-  MiniPdf t;
-  double lo = 0.0, hi = 0.0;
-  if (!json_num(o, "lo", lo) || !json_num(o, "hi", hi))
-    return false;
-  t.lo = static_cast<float>(lo), t.hi = static_cast<float>(hi);
-  const auto yit = o.find("y");
-  if (yit == o.end() || !yit->is_array() || yit->size() != static_cast<size_t>(kMiniPdfPts))
-    return false;
-  for (int i = 0; i < kMiniPdfPts; ++i) {
-    const json &v = (*yit)[static_cast<size_t>(i)];
-    if (!v.is_number())
-      return false;
-    t.y[i] = v.get<float>();
-  }
-  dst = t;
-  return true;
 }
 
 // 文件顶层 run (全部权重共用的口径) + 权重 stat → 行 (载入显示用); 任一处不合 / 口径与当前根不符 → 整块忽略
@@ -334,14 +275,12 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
   write_json(path, j);
 }
 
-// 根评估结果 → 行 (EvalStat 整块 + scope / 小图; eval_ms 归调用方); ic_pdf = [y.hd.n]
-void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, const YPlanes &y, const EvalStat &st, const AlphaDist &adist,
-               const analysis::AggPdf *ic_pdf, const char *backend) {
+// 根评估结果 → 行 (EvalStat 整块 + 小图)
+void fill_stat(FactorRow &r, const EvalStat &st, const RunProbes &p) {
   static_cast<EvalStat &>(r) = st;
-  r.scope = stat_scope(req.scope, es, y, backend);
-  for (int hi = 0; hi < y.hd.n; ++hi)
-    r.ic_pdf[hi] = mini_pdf_of(ic_pdf[hi]);
-  r.alpha_pdf = mini_pdf_of(adist.pdf);
+  for (int hi = 0; hi < st.n_hold; ++hi)
+    r.ic_pdf[hi] = mini_pdf_of(p.at<IcPdfP>().pdf[hi]);
+  r.alpha_pdf = mini_pdf_of(p.at<AlphaP>().d.pdf);
   r.has_stat = true;
   r.stat_from_file = false;
 }
@@ -520,7 +459,7 @@ bool FactorsService::run(FactorsRequest &req) {
     return true;
   if (!flow_)
     flow_ = std::make_unique<FactorFlow>();
-  const bool ok = evaluate(req, *flow_);
+  const bool ok = eval(req, *flow_);
   flow_->c.reset(); // 作用域块只活一轮 (Y 跨文件复用)
   return ok;
 }
@@ -680,8 +619,8 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
       r.status = RowStatus::Done;
 }
 
-// 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 evaluate_file
-bool FactorsService::evaluate(const FactorsRequest &req, FactorFlow &F) {
+// 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 eval_file
+bool FactorsService::eval(const FactorsRequest &req, FactorFlow &F) {
   TraceN("FactorsEvaluate");
   // 有效权重行 → Expr (scan 已校验过, 这里必成功), 按文件分组 (scan 出的行同文件相邻)
   std::vector<std::vector<size_t>> idx;
@@ -710,7 +649,7 @@ bool FactorsService::evaluate(const FactorsRequest &req, FactorFlow &F) {
   }
   return with_engine(req.scope.gpu, F.ex, cancel_, 1, [&](auto &eng) {
     for (size_t f = 0; f < idx.size(); ++f) {
-      const Rc rc = evaluate_file(req, F, eng, idx[f], exprs[f], frames[f]);
+      const Rc rc = eval_file(req, F, eng, idx[f], exprs[f], frames[f]);
       if (rc == Rc::Ok)
         continue;
       if (rc == Rc::Stale) {
@@ -725,8 +664,8 @@ bool FactorsService::evaluate(const FactorsRequest &req, FactorFlow &F) {
 }
 
 template <class E>
-Rc FactorsService::evaluate_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx,
-                                 const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames) {
+Rc FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx,
+                             const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames) {
   TraceN("FactorsEvaluateFile");
   // 该文件的权重 → 一张共享森林 (roots[k] ↔ idx[k]); 同根的只评首个 (探针 ps[k0])
   std::vector<const factor::expr::Expr *> eptr;
@@ -745,18 +684,18 @@ Rc FactorsService::evaluate_file(const FactorsRequest &req, FactorFlow &F, E &en
   const Rc rc = eval_job(
       eng, F, req.scope, eptr, frames.data(), ys, /*retain=*/true, "Run", [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; },
       cancel_, *this, o,
-      [&] { // 值域已查: 坏根 BROKEN, 好根 Running
+      [&](const std::vector<std::string> &why) { // 值域已查: 坏根 BROKEN, 好根 Running
         std::lock_guard<std::mutex> lock(mutex);
         for (size_t k = 0; k < idx.size(); ++k)
-          if (!o.why[k].empty())
-            mark(k, o.why[k]);
+          if (!why[k].empty())
+            mark(k, why[k]);
           else
             rows[idx[k]].status = RowStatus::Running;
       },
-      [&](int k0) { // 发布该根的全部权重 (dup 共根)
+      [&](int k0) { // 发布该根的全部权重 (dup 共根: 同一子树, eval_ms 同)
         const RunProbes &p = ps[static_cast<size_t>(k0)];
         EvalStat st;
-        fill_eval(p, st);
+        fill_eval(p, stat_scope(req.scope, o.es, block_of(F, o, 0).y, E::kName), o.eval_ms(k0), st);
         for (size_t k = 0; k < idx.size(); ++k) {
           if (o.d.first_root(static_cast<int>(k)) != k0)
             continue;
@@ -765,8 +704,7 @@ Rc FactorsService::evaluate_file(const FactorsRequest &req, FactorFlow &F, E &en
             std::lock_guard<std::mutex> lock(mutex);
             r = rows[idx[k]];
           }
-          fill_stat(r, req, o.es, F.c.y, st, p.at<AlphaP>().d, p.at<IcPdfP>().pdf, E::kName);
-          r.eval_ms = o.eval_ms(static_cast<int>(k));
+          fill_stat(r, st, p);
           r.status = RowStatus::Done;
           {
             std::lock_guard<std::mutex> lock(mutex);
@@ -779,7 +717,7 @@ Rc FactorsService::evaluate_file(const FactorsRequest &req, FactorFlow &F, E &en
   if (rc == Rc::Empty) { // 评估期 / A 轴不成 → 该文件各行 BROKEN
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t k = 0; k < idx.size(); ++k)
-      mark(k, o.empty);
+      mark(k, o.why);
   }
   publish();
   return rc == Rc::Empty || rc == Rc::Broken ? Rc::Ok : rc;

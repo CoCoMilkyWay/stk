@@ -30,13 +30,8 @@ std::filesystem::path portfolio_path(const std::string &dir, const std::string &
   return std::filesystem::path(dir) / (name + ".json");
 }
 
-int seg_of_level(const std::string &name) {
-  for (const FactorLevel &l : kFactorLevels)
-    if (name == l.name)
-      return l.seg;
-  assert(false && "组合文件: level 不是因子层名");
-  __builtin_unreachable();
-}
+// Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_xy 的 Y 键命中)
+std::string group_of(const HoldJob &j) { return std::to_string(j.scope.seg) + "|" + j.scope.pool; }
 
 } // namespace
 
@@ -65,7 +60,7 @@ std::vector<PortfolioEntry> LoadPortfolio(const std::string &dir, const std::str
            "组合文件: 条目缺键");
     PortfolioEntry e;
     e.pool = o["pool"].get<std::string>();
-    e.seg = seg_of_level(o["level"].get<std::string>());
+    e.seg = factor_level(o["level"].get<std::string>()).seg;
     e.file = o["file"].get<std::string>();
     e.expr = o["expr"].get<std::string>();
     e.hold = o["hold"].get<int>();
@@ -171,6 +166,15 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
     j.hold = it.e.hold;
     req.factors.push_back(std::move(j));
   }
+  std::map<std::string, std::vector<int>> holds; // group_of → 组内全部持有期
+  for (const HoldJob &j : req.factors)
+    holds[group_of(j)].push_back(j.hold);
+  for (auto &[g, hk] : holds) {
+    std::sort(hk.begin(), hk.end());
+    hk.erase(std::unique(hk.begin(), hk.end()), hk.end());
+  }
+  for (HoldJob &j : req.factors)
+    j.group = holds.at(group_of(j));
   if (req.factors.empty())
     return;
   for (const PoolDef &d : feature_pools()) {
@@ -197,10 +201,9 @@ std::string PortfolioRequest::sig() const {
 
 // 计算 flow 的状态 (worker 私有, 跨请求存活). 作用域块 c: 同作用域的因子共用 Y, X 只留当前因子的叶
 struct PortfolioService::Flow : FactorFlow {
-  Engine<Cpu> E;                                 // 毛标签秩 (Stat 会话, 作用域内一次) + 活槽 (HostPool 常驻)
-  std::vector<factor::stat::Row> rows;           // [T] 本 hold 的一级 Row
-  std::vector<factor::stat::CostAcc> cost;       // [T] 本 hold 的逐行换手
-  std::map<std::string, std::vector<int>> holds; // 本轮请求: group_of → 该组全部因子的持有期 (升序去重; Y 一组一次装全)
+  Engine<Cpu> E;                           // 毛标签秩 (Stat 会话, 作用域内一次) + 活槽 (HostPool 常驻)
+  std::vector<factor::stat::Row> rows;     // [T] 本 hold 的一级 Row
+  std::vector<factor::stat::CostAcc> cost; // [T] 本 hold 的逐行换手
   explicit Flow(const std::atomic<bool> &cancel) : E(ex, cancel, 1) {}
 };
 
@@ -210,8 +213,8 @@ using PortfolioProbes = Probes<RowsP, CostRowsP>;
 
 // G20 多头出参线 (评估后纯函数; Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; 吃落地的 Row / 逐行换手 [rows_all]) → [kCurveLines][rows_all]:
 //   pnl = G20 绝对收益 fold_exit 到平仓行; imp = 建仓冲击 / h̄, fix = (平仓量 (+ 无段时增仓量)) / h̄, 记在建仓行 (不交接批的平仓量一并)
-BookLines curve_of(misc::exec::ForkJoin &ex, const ScopeCache &c, int hold, const std::vector<factor::stat::Row> &rows,
-                   const std::vector<factor::stat::CostAcc> &cost) {
+BookLines nav_of(misc::exec::ForkJoin &ex, const ScopeCache &c, int hold, const std::vector<factor::stat::Row> &rows,
+                 const std::vector<factor::stat::CostAcc> &cost) {
   using factor::stat::kLong;
   static_assert(kCurvePnl == 0, "pnl 是首线: fold_exit 一线出完再接后两线");
   const YPlanes &y = c.y;
@@ -219,7 +222,7 @@ BookLines curve_of(misc::exec::ForkJoin &ex, const ScopeCache &c, int hold, cons
   const double h = factor::stat::hold_span(hold, factor::geo_of(y.sh.seg));
   assert(rows.size() == static_cast<size_t>(T) && cost.size() == static_cast<size_t>(T));
   BookLines nav;
-  fold_exit(ex, hold, y.sh.seg, T, 1, 1, [&](int, int t) { return group_abs(rows[static_cast<size_t>(t)], G, y.n_full); }, nav);
+  fold_exit(ex, y.sh.seg, T, 1, 1, [&](int) { return hold; }, [&](int, int t) { return group_abs(rows[static_cast<size_t>(t)], G, y.n_full); }, nav);
   nav.n = kCurveLines;
   nav.v.resize(static_cast<size_t>(kCurveLines) * T, 0.f);
   float *imp = nav.v.data() + static_cast<size_t>(kCurveImp) * T, *fix = nav.v.data() + static_cast<size_t>(kCurveFix) * T;
@@ -247,9 +250,6 @@ std::vector<const Job *> todo_of(const std::map<std::string, std::shared_ptr<con
       todo.push_back(&j);
   return todo;
 }
-
-// Y 共用组: 同 (层, 池) 的因子装同一份 Y (作用域相同时 ensure_xy 的 Y 键命中)
-std::string group_of(const HoldJob &j) { return std::to_string(j.scope.seg) + "|" + j.scope.pool; }
 
 } // namespace
 
@@ -294,20 +294,13 @@ bool PortfolioService::run(PortfolioRequest &req) {
   std::stable_sort(todo_f.begin(), todo_f.end(), [](const HoldJob *a, const HoldJob *b) {
     return std::tie(a->scope.seg, a->scope.pool) < std::tie(b->scope.seg, b->scope.pool);
   });
-  F.holds.clear();
-  for (const HoldJob &j : req.factors)
-    F.holds[group_of(j)].push_back(j.hold);
-  for (auto &[g, hk] : F.holds) {
-    std::sort(hk.begin(), hk.end());
-    hk.erase(std::unique(hk.begin(), hk.end()), hk.end());
-  }
   const std::vector<const PoolJob *> todo_p = todo_of(result.pools, req.pools);
   jobs_done.store(0, std::memory_order_relaxed);
   jobs_total.store(static_cast<int>(todo_f.size() + todo_p.size()), std::memory_order_relaxed);
   return run_jobs(todo_f, result.factors, F) && run_jobs(todo_p, result.pools, F);
 }
 
-// 与 Run / Inspect 同一条管线 (eval_job), 探针只评该 hold: 一级 Row + 逐行换手 → curve_of (G20 多头)
+// 与 Run / Inspect 同一条管线 (eval_job), 探针只评该 hold: 一级 Row + 逐行换手 → nav_of (G20 多头)
 bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   TraceN("PortfolioFactor");
   const FactorScope &sc = j.scope;
@@ -318,42 +311,42 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   Amts ad = all_amts(*sc.ft);
   ad.n = std::min(ad.n, 1);
   assert((ad.n == 0 || ad.a[0] > 0) && "金额段须 > 0");
-  const YSpec ys{holds_of(F.holds.at(group_of(j))), ad, static_cast<float>(sc.max_impact)};
+  const YSpec ys{holds_of(j.group), ad, static_cast<float>(sc.max_impact)};
   const factor::expr::Expr e = sc.ft->reparse(j.f.expr);
   PortfolioProbes ps;
   ps.hd = holds_of({j.hold});
   ps.at<RowsP>().dst = &F.rows;
   ps.at<CostRowsP>().dst = &F.cost;
   JobOut o;
-  const Rc rc = eval_job(F.E, F, sc, {&e}, &j.f.frame, ys, /*retain=*/true, "Portfolio", [&](int) -> PortfolioProbes & { return ps; }, cancel_, *this, o, [] {}, [](int) {});
-  if (rc == Rc::Empty || rc == Rc::Broken) {
-    out.error = rc == Rc::Empty ? o.empty : o.why[0];
-    return true;
-  }
+  const Rc rc = eval_job(F.E, F, sc, {&e}, &j.f.frame, ys, /*retain=*/true, "Portfolio", [&](int) -> PortfolioProbes & { return ps; }, cancel_, *this, o,
+                         [](const std::vector<std::string> &) {}, [](int) {});
   if (aborted(rc))
     return abort_out(rc, F);
+  if (rc != Rc::Ok) {
+    out.error = o.why;
+    return true;
+  }
   out.dates = o.es.dates;
   out.amt = ad.n ? ad.a[0] : 0;
-  out.nav = curve_of(F.ex, F.c, j.hold, F.rows, F.cost);
+  out.nav = nav_of(F.ex, block_of(F, o, 0), j.hold, F.rows, F.cost);
   return true;
 }
 
 // 日层池篮子 (eval_basket, 与 eval_job 对仗): 篮子指数 / 估值 / 换手, 整份搬进 PoolCurve
 bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
   TraceN("PortfolioPool");
-  EvalScope es;
+  Job o;
   BPlanes B;
-  std::string why;
-  const Rc rc = eval_basket(F, j.scope, cancel_, *this, es, B, why);
-  if (rc == Rc::Empty) {
-    out.error = why;
-    return true;
-  }
+  const Rc rc = eval_basket(F, j.scope, cancel_, *this, o, B);
   if (aborted(rc))
     return abort_out(rc, F);
-  const int days = static_cast<int>(es.dates.size());
-  const size_t n = BPlanes::kBaskets * es.dates.size();
-  out.dates = es.dates;
+  if (rc != Rc::Ok) {
+    out.error = o.why;
+    return true;
+  }
+  const int days = static_cast<int>(o.es.dates.size());
+  const size_t n = BPlanes::kBaskets * o.es.dates.size();
+  out.dates = o.es.dates;
   assert(B.index.n == static_cast<int>(BPlanes::kBaskets) * kWeights && B.index.P == days);
   out.index = std::move(B.index);
   for (int w = 0; w < kWeights; ++w)

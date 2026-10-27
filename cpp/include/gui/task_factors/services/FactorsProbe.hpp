@@ -1,7 +1,7 @@
 // FactorsProbe — 探针层 (一个根的一种输出; 引擎 FactorsEngine 按 need 备原料, 逐钩子调): 装载层 (FactorsLoad) 之上, 引擎之下.
 //   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
 //   通用探针 Hold / Cost / CostRows / Valid / Rank / Alpha / IcPdf / Rows 四服务共用, 服务私有探针 (Search 抽样 / Inspect 尾部 / 秩) 在各自 .cpp;
-//   评估后的纯函数 (Inspect nav_of / Portfolio curve_of) 吃落地的平面, 不是探针;
+//   落地探针的两种形 LandRowsP / LandCellsP; 评估后的纯函数 (Inspect / Portfolio 的 nav_of) 吃落地的平面, 不是探针;
 //   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); cost_tiers 换手成本 (块间续攒, 可另落逐行); alpha_dist alpha 分布
 //   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / Portfolio 曲线同一份).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
@@ -261,24 +261,40 @@ struct IcPdfP : ProbeBase {
       pdf[i].fill(kll[static_cast<size_t>(i)], 3);
   }
 };
-// 一级 Row 落地 [hd.n][rows_all]
-struct RowsP : ProbeBase {
+// 落地平面的两种形 (探针基类; dst = 调用方的缓冲, open 在作用域首块定形):
+//   LandRowsP<R>  逐行 [hd.n][rows_all] (RowsP / Inspect TailP): at(hi, t) = 块内行 t 的格
+//   LandCellsP<V> 逐格 [rows_all][A] (Inspect RxP / RxAllP): stat_at(s) = 本块统计首行的首格
+template <class R>
+struct LandRowsP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
-  std::vector<factor::stat::Row> *dst = nullptr;
+  std::vector<R> *dst = nullptr;
   int T = 0, t0 = 0; // 行轴 rows_all / 本块绝对首行
-  static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::Row) * static_cast<double>(H) * sh.T; }
+  static double bytes(const Shape &sh, int H) { return sizeof(R) * static_cast<double>(H) * sh.T; }
   void open(const Ctx &c) {
     const factor::stat::Span s = c.s();
     T = c.c.rows_all(), t0 = s.t0_abs;
     land_open(*dst, static_cast<size_t>(c.L.hd.n) * T, s);
   }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) { (*dst)[static_cast<size_t>(hi) * T + t0 + t] = r; }
+  R &at(int hi, int t) const { return (*dst)[static_cast<size_t>(hi) * T + t0 + t]; }
 };
-// 二级 / 换手 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份; scope / eval_ms 归调用方)
+template <class V>
+struct LandCellsP : ProbeBase {
+  std::vector<V> *dst = nullptr;
+  static double bytes(const Shape &sh, int) { return sizeof(V) * static_cast<double>(sh.n()); }
+  void open(const Ctx &c) { land_open(*dst, static_cast<size_t>(c.c.rows_all()) * c.s().A, c.s()); }
+  V *stat_at(const factor::stat::Span &s) const { return dst->data() + static_cast<size_t>(s.t0_abs + s.t_lo) * s.A; }
+};
+// 一级 Row 落地 [hd.n][rows_all]
+struct RowsP : LandRowsP<factor::stat::Row> {
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &) { at(hi, t) = r; }
+};
+// 作用域头 / 耗时 / 二级 / 换手 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份)
 template <class Ps>
-void fill_eval(const Ps &p, EvalStat &st) {
+void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st) {
   const HoldP &h = p.template at<HoldP>();
   const CostP &c = p.template at<CostP>();
+  st.scope = scope;
+  st.eval_ms = eval_ms;
   st.valid_pct = p.template at<ValidP>().pct;
   st.rank_pct = p.template at<RankP>().pct;
   st.n_hold = h.n_hold;

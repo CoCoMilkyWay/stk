@@ -2,13 +2,16 @@
 // (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 三个逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / leg_n,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, buy, sell, w, n + rows).
+// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, buy, sell, w, n + rows);
+// 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
+#include "gui/task_factors/services/FactorsTable.hpp" // CostTier / MiniPdf
 
 #include "nlohmann/json.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -205,6 +208,64 @@ inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
   if (!ll(c.rows))
     return false;
   dst = c;
+  return true;
+}
+
+// 一个金额段的换手成本 ↔ JSON {amt, acc: [n_hold 个 CostAcc]}
+inline nlohmann::ordered_json cost_json(const CostTier &c, int n_hold) {
+  nlohmann::ordered_json o;
+  o["amt"] = c.amt;
+  nlohmann::ordered_json acc = nlohmann::ordered_json::array();
+  for (int k = 0; k < n_hold; ++k)
+    acc.push_back(cost_acc_json(c.acc[k]));
+  o["acc"] = acc;
+  return o;
+}
+inline bool load_cost(const nlohmann::json &o, int n_hold, CostTier &dst) {
+  if (!o.is_object())
+    return false;
+  CostTier t;
+  if (!json_int(o, "amt", t.amt))
+    return false;
+  const auto ait = o.find("acc");
+  if (ait == o.end() || !ait->is_array() || ait->size() != static_cast<size_t>(n_hold))
+    return false;
+  for (int k = 0; k < n_hold; ++k)
+    if (!load_cost_acc((*ait)[static_cast<size_t>(k)], t.acc[k]))
+      return false;
+  dst = t;
+  return true;
+}
+
+// 因子表迷你 PDF ↔ JSON {lo, hi, y: [kMiniPdfPts]} (y 已归一到 [0, 1], 3 位小数够画)
+inline nlohmann::ordered_json mini_pdf_json(const MiniPdf &p) {
+  nlohmann::ordered_json o;
+  o["lo"] = sig4(p.lo);
+  o["hi"] = sig4(p.hi);
+  nlohmann::ordered_json y = nlohmann::ordered_json::array();
+  for (const float v : p.y)
+    y.push_back(std::round(v * 1000.f) / 1000.0);
+  o["y"] = y;
+  return o;
+}
+inline bool load_mini_pdf(const nlohmann::json &o, MiniPdf &dst) {
+  if (!o.is_object())
+    return false;
+  MiniPdf t;
+  double lo = 0.0, hi = 0.0;
+  if (!json_num(o, "lo", lo) || !json_num(o, "hi", hi))
+    return false;
+  t.lo = static_cast<float>(lo), t.hi = static_cast<float>(hi);
+  const auto yit = o.find("y");
+  if (yit == o.end() || !yit->is_array() || yit->size() != static_cast<size_t>(kMiniPdfPts))
+    return false;
+  for (int i = 0; i < kMiniPdfPts; ++i) {
+    const nlohmann::json &v = (*yit)[static_cast<size_t>(i)];
+    if (!v.is_number())
+      return false;
+    t.y[i] = v.get<float>();
+  }
+  dst = t;
   return true;
 }
 

@@ -32,13 +32,13 @@
 // 出错策略: 因子行 / 作用域不合是正常输入 → message; 契约不一致 → assert.
 #pragma once
 
+#include "factor/Search/Contract.hpp" // Score
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow
 #include "gui/util/Service.hpp"
 
 #include <atomic>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,20 +59,15 @@ bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTabl
 
 // 评过的一个候选的分 (UI 列表)
 struct SearchCand {
-  std::string expr;      // 具体规范串
-  std::vector<double> u; // 坐标 (与 SearchResult::slots 对齐)
-  int pass = 0;          // 第几趟评的 (0 = 采样)
-  bool ok = false;       // n ≥ 3
-  double score = -std::numeric_limits<double>::infinity();
-  double ls = 0.0, ric = 0.0; // 每期真实毛 LS (ls_period) / rIC (已按 sign 定向)
-  int sign = 1;               // 方向 (Contract score_signed)
-  double se = 0.0;            // score 的标准误 (Contract【噪声】)
+  std::string expr;         // 具体规范串
+  std::vector<double> u;    // 坐标 (与 SearchResult::slots 对齐)
+  int pass = 0;             // 第几趟评的 (0 = 采样)
+  factor::search::Score sc; // 分 (Contract score_signed: ok / score / ls / ric 已按 sign 定向 / sign / se)
 };
 // 终选权重
 struct SearchPick {
   std::string expr;
-  int sign = 1;
-  double score = 0.0, ls = 0.0, ric = 0.0;
+  factor::search::Score sc;
   double corr = 0.0; // 与其他 pick 的最大截面相关 (单个 pick 时 0)
 };
 
@@ -127,7 +122,7 @@ private:
   static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return *this; }
   bool run(SearchRequest &req);
-  bool evaluate(const SearchRequest &req, FactorFlow &F); // false = 取消 / 判废
+  bool eval(const SearchRequest &req, FactorFlow &F); // false = 取消 / 判废
 
   std::unique_ptr<FactorFlow> flow_; // 首个请求懒建, 随 worker 活 (线程池 + 库; 作用域块归每轮的块缓存)
   std::atomic<SearchStage> stage_{SearchStage::Prepare};

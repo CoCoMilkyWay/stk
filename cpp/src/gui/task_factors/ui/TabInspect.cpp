@@ -219,7 +219,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   const int T = res.scope.T, days = res.scope.days, S = res.seg;
   assert(T == days * S && days >= 1);
   const factor::stat::Row *r = res.rows_at(sel);
-  assert(res.nav.size() == static_cast<size_t>(res.hd.n) && res.nav[static_cast<size_t>(sel)].n == kNavLines && res.nav[static_cast<size_t>(sel)].P == days);
+  assert(res.nav.n == res.hd.n * kNavLines && res.nav.P == days);
   d.hs = res.hold[static_cast<size_t>(sel)];
   d.adist = res.alpha_dist;
   d.days = days;
@@ -247,7 +247,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   for (int i = 0; i < kLsLines; ++i) {
     const float *v = res.nav_at(sel, 2 * kNavLayers + i);
     cum_of(v, d.ls_cum[i]);
-    d.ls_turn[i] = static_cast<float>(factor::stat::turn_annual(d.hs, res.ls_turn[i][sel]));
+    d.ls_turn[i] = static_cast<float>(factor::stat::turn_annual(d.hs, res.ls_turn_of(i, sel)));
     factor::stat::MomAcc m;
     for (int day = 0; day < days; ++day)
       m.add(v[day]);
@@ -286,8 +286,7 @@ float section_at(const InspectDerived &d, const std::vector<float> &cum, int c) 
   assert(c >= 0 && c <= d.days);
   if (!c)
     return 0.f;
-  const double nav = 1.0 + cum[static_cast<size_t>(c)] / 100.0;
-  return nav > 0.0 ? static_cast<float>((std::pow(nav, static_cast<double>(factor::stat::kDaysPerYear) / c) - 1.0) * 100.0) : -100.f;
+  return static_cast<float>(100.0 * factor::stat::ann_geo(1.0 + cum[static_cast<size_t>(c)] / 100.0, c));
 }
 
 // 左上 y 范围: 显示中的分层簇 (簇 0 = 20 组恒显 + 开着的尾部级) min / max 加边; LS 线 (顶底 + 开着的尾部级) 不参与定范围, 而是共一个平移量把最低点贴 lo

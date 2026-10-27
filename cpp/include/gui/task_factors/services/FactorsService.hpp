@@ -147,14 +147,14 @@ private:
   Progress &board() { return *this; }
   bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
-  bool evaluate(const FactorsRequest &req, FactorFlow &F); // false = 取消 / 判废
+  bool eval(const FactorsRequest &req, FactorFlow &F); // false = 取消 / 判废
   // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 管线 eval_job (共享森林, 作用域块 F.c 补装)
   // 走引擎 E (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). Ok (含该文件 Empty / Broken: 行已标) / Cancel / Stale
   template <class E>
-  Rc evaluate_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx, const std::vector<factor::expr::Expr> &exprs,
-                   const std::vector<factor::stat::Frame> &frames);
+  Rc eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx, const std::vector<factor::expr::Expr> &exprs,
+               const std::vector<factor::stat::Frame> &frames);
 
-  std::unique_ptr<FactorFlow> flow_; // 首个 evaluate 懒建, 随 worker 活 (作用域块每轮用完即弃)
+  std::unique_ptr<FactorFlow> flow_; // 首个 eval 懒建, 随 worker 活 (作用域块每轮用完即弃)
   std::atomic<int> broken_{0};
 };
 
