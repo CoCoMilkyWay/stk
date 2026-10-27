@@ -90,16 +90,16 @@
 //     |------------|-----------------------------------------------------------------------------------------------------------|---------------|
 //     | 可成交判据 | Lob 盘口: 可买 = 卖一侧有挂单, 可卖 = 买一侧有挂单; Bar 分钟 (Tradable): 可买 = low < 涨停 − ε,           | LabelHold     |
 //     |            |   可卖 = high > 跌停 + ε; 开盘 / 收盘撮合价: 价 < 涨停 − ε 可买, 价 > 跌停 + ε 可卖; 涨跌停 NaN → 可成交  |   LabelLob/Bar|
-//     | 开仓       | E 价点本侧建仓方向可成交 (多买 / 空卖) 才新建; 交接的续持者不必成交 (held); 不顺延开仓                     | 【仓位感知】  |
-//     | 续持       | 下一批交接且同组合 → 不真平仓, 名义价点估值 (本侧标签或 −对侧标签)                                       | 【仓位感知】  |
+//     | 开仓       | E 价点本侧建仓方向可成交 (多买 / 空卖) 才新建; 交接的续持者不必成交 (held); 不顺延开仓                    | 【仓位感知】  |
+//     | 续持       | 下一批交接且同组合 → 不真平仓, 名义价点估值 (本侧标签或 −对侧标签)                                        | 【仓位感知】  |
 //     | 平仓       | 名义价点该腿不可成交 (多腿卖不出 / 空腿买不回) 或名义日停牌 → 顺延到之后首个该腿可成交价点                | 标签          |
 //     |            |   (分钟级 / 日级同一规则, 可跨日); 行所在日起 8 个交易日 (PEND_DAYS − 1) 仍未平 → 最近收盘价结清          |               |
 //     | 尾部       | 分钟型 / 收盘型 minute(t) + n > kLastAnchorRow 的行不开仓 (tail_masked)                                   | Stat          |
 //     | 仓位       | 每行一批, 资金 1/h̄, 批内每只 1 / max(只数, cap) (【持仓口径】); 仓位 = 在持各批之和, 全日平均恰为 1       | Stat / 净值   |
 //     |            |   (盘中在 1 上下摆; 组内不足 cap / 封板新进 → 少于 1); 不显示, 只给年化 / 净值定满仓口径                  |               |
 //     | 换手       | Δw 逐格 (微调照计); 只在行 t 建仓与行 t−h 平仓同一价点时交接 (hold_nets: 只交易差额), 否则整建整平        | 【换手成本】  |
-//     | 成本       | 增仓 Δw⁺ × 建仓冲击 (Lob 金额段, 买入封顶 max_impact) + 平仓量 × fixed_impact; 无金额段 (Bar) 增仓量也付  | 【换手成本】  |
-//     |            |   fixed_impact (Portfolio); 只在扣净线时扣, 标签恒毛                                                      |               |
+//     | 成本       | 盘口段 (Lob): 增仓 Δw⁺ × 建仓冲击 (买入封顶 max_impact) + 平仓量 × fixed_impact; 固定段 (无冲击列的层,    | 【换手成本】  |
+//     |            |   Bar): 增仓量 + 平仓量 × fixed_impact; 各层同一套 CostAcc, 只在扣净线时扣, 标签恒毛                      |               |
 //     | 净值       | 行 t 的批收益在 hold_exit_row 实现 (顺延不改实现行) × 1/h̄, 日内求和, 跨日复利; 显示的 LS / SR 取 HoldStat | 【二级】净值  |
 //     | 复权       | 标签价 × 当日复权比: 跨日收益不含除权缺口                                                                 | 标签          |
 //
@@ -129,8 +129,10 @@
 //       → 两批在同一时刻对冲, 只交易差额: Δ = w_t − w_{t−h} 逐格, 增仓 Δ⁺ 付建仓冲击, 减仓 Δ⁻ 付平仓固定冲击;
 //       不交接 → 本批整建 (w_t 全付建仓冲击), 前一批的平仓由它自己记 (见下).
 //     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付固定冲击).
-//     建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额段, 买入已按 Config::max_impact 封顶; 本侧可建仓的格恒有限, 装载层断言) + 平仓固定冲击 fixed_impact.
-//     每 h 一份 CostAcc 沿 t 求和; 每期成本 cost(腿) = (Σ Δ⁺·imp + Σ 平仓量 · fixed_impact) / n_all (与 ls_period 同分母). 尾部行不攒.
+//     金额段 (Cost) 两种, 每层至少一段, 换手量 (Δw) 各段同一份:
+//       盘口段 = 建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 买入已按 Config::max_impact 封顶; 本侧可建仓的格恒有限, 装载层断言), 平仓量付固定冲击;
+//       固定段 = 无冲击列 (imp 空), 增仓量与平仓量都付固定冲击 fixed_impact.
+//     每 h 一份 CostAcc 沿 t 求和; 每期成本 cost(腿) = (Σ Δ⁺·imp + Σ 固定量 · fixed_impact) / n_all (与 ls_period 同分母). 尾部行不攒.
 //     净多空 net_ls_period = ls_period − ½ (cost(kLong) + cost(kShort)) (两腿各半资金, 同 ls); 年化 net_ls = × span_per_year (满仓一年).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
@@ -329,7 +331,7 @@ struct Row {
 
 // ---- 二级输出: 每持有期一份 ----
 // 二级口径戳: 字段不变但口径变时 +1, 落盘 stat 与之不符读取即作废 (下次 Run 重算)
-inline constexpr int kStatSemver = 1;
+inline constexpr int kStatSemver = 2;
 // 一个逐行量 (rIC / rAC / LS) 沿 t 的矩 (见文件头【二级 HoldStat】)
 struct Moments {
   float mean = 0.f, sd = 0.f, ir = 0.f, t = 0.f, pos = 0.f, skew = 0.f, kurt = 0.f;
@@ -411,13 +413,15 @@ FACTOR_HD inline int grp_of(unsigned r16) {
 FACTOR_HD inline bool tail_masked(int t, int hold, const Geo &g) {
   return hold <= kHoldClose && g.minute(t % g.S) + (hold_intraday(hold) ? hold : 0) > kLastAnchorRow;
 }
+// 行 t 按收盘价建仓: 行末分钟越过最后可成交锚点, 价点 E 退化为 C(D) (协议表 1; 日层每行都是). t = 绝对行号
+FACTOR_HD inline bool close_entry(int t, const Geo &g) { return g.minute(t % g.S) > kLastAnchorRow; }
 // 交接 (见文件头【换手成本】): 行 t 建仓与行 t − h 平仓是同一价点 (两批同刻对冲, 只交易差额). t = 绝对行号;
-// 分钟型 = 行 t−h 的 exit 就是行 t 的 entry; T+N 收盘型 = 行 t 按收盘价建仓 (行末分钟越过最后可成交锚点; 日层恒是); 收盘型 / 开盘型从不
+// 分钟型 = 行 t−h 的 exit 就是行 t 的 entry; T+N 收盘型 = 行 t 按收盘价建仓 (close_entry); 收盘型 / 开盘型从不
 FACTOR_HD inline bool hold_nets(int t, int hold, const Geo &g) {
   const int h = hold_rows(hold, g);
   if (t < h || tail_masked(t, hold, g) || tail_masked(t - h, hold, g))
     return false;
-  return hold_intraday(hold) || (hold_is_close_n(hold) && g.minute(t % g.S) > kLastAnchorRow);
+  return hold_intraday(hold) || (hold_is_close_n(hold) && close_entry(t, g));
 }
 
 // ---- 仓位感知 (见文件头【仓位感知】; Row / 换手成本 / Inspect 尾部 / 池指数同一份) ----
@@ -489,12 +493,13 @@ inline double hold_span(int hold, const Geo &g) {
   return static_cast<double>(s) / g.S;
 }
 
-// ---- 换手成本 (见文件头【换手成本】; Run (stat.costs / stat.turn) / Inspect 期限结构净线共用) ----
+// ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线 / Portfolio 逐行成本共用) ----
 
-// 单一金额段的建仓冲击: 两腿冲击, [T][A] 平面的指针 (宿主或设备, 由后端定); 本侧可建仓 (eo) 的格恒有限 (装载层断言)
+// 一个金额段: 盘口段 = 两腿建仓冲击 [T][A] 平面的指针 (宿主或设备, 由后端定; 本侧可建仓 (eo) 的格恒有限, 装载层断言); 固定段 = 两腿皆空
 struct Cost {
-  const uint16_t *imp[kLegs] = {};                                                  // 建仓冲击 fp16 位: 多腿买入 / 空腿卖出
-  FACTOR_HD Cost at(size_t i) const { return {{imp[kLong] + i, imp[kShort] + i}}; } // 偏到第 i 格 (行首 = t·A)
+  const uint16_t *imp[kLegs] = {}; // 建仓冲击 fp16 位: 多腿买入 / 空腿卖出
+  FACTOR_HD bool flat() const { return !imp[kLong]; }
+  FACTOR_HD Cost at(size_t i) const { return flat() ? Cost{} : Cost{{imp[kLong] + i, imp[kShort] + i}}; } // 偏到第 i 格 (行首 = t·A)
 };
 
 // 腿码 (两后端 / Inspect 同一份): r16 → 顶组 kLcLong / 底组 kLcShort / 其他组 kLcMid / rank 无效 kLcVoid. 前两个与 Leg 同值:
@@ -515,6 +520,7 @@ struct CostLeg {
   double imp = 0.0;  // Σ Δw⁺ · 建仓冲击
   double buy = 0.0;  // Σ Δw⁺ (增仓量)
   double sell = 0.0; // Σ 平仓量 (交接的 Δw⁻ + 不交接批的整批平仓)
+  double fix = 0.0;  // Σ 付固定冲击的量 (盘口段 = 平仓量; 固定段 = 增仓量 + 平仓量)
   double w = 0.0;    // Σ w (持仓量)
   long long n = 0;   // 腿样本数 (腿成员格数)
 };
@@ -524,18 +530,21 @@ struct CostAcc {
   long long rows = 0; // 攒过的行数 (非尾部行各计一次)
   FACTOR_HD void merge(const CostAcc &o) {
     for (int l = 0; l < kLegs; ++l) {
-      leg[l].imp += o.leg[l].imp, leg[l].buy += o.leg[l].buy, leg[l].sell += o.leg[l].sell;
+      leg[l].imp += o.leg[l].imp, leg[l].buy += o.leg[l].buy, leg[l].sell += o.leg[l].sell, leg[l].fix += o.leg[l].fix;
       leg[l].w += o.leg[l].w, leg[l].n += o.leg[l].n;
     }
     rows += o.rows;
   }
-  // 每期真实成本 (腿 l): (Σ Δw⁺ · 建仓冲击 + Σ 平仓量 · 固定冲击) / n_all (与 ls_period 同分母)
+  // 每期真实成本 (腿 l): (Σ Δw⁺ · 建仓冲击 + Σ 固定量 · 固定冲击) / n_all (与 ls_period 同分母)
   double cost(int l, double fixed_impact, int n_all) const {
     const CostLeg &c = leg[l];
-    return n_all > 0 ? (c.imp + c.sell * fixed_impact) / static_cast<double>(n_all) : 0.0;
+    return n_all > 0 ? (c.imp + c.fix * fixed_impact) / static_cast<double>(n_all) : 0.0;
   }
-  // 增仓的平均建仓冲击 (显示用)
-  double entry(int l) const { return leg[l].buy > 0.0 ? leg[l].imp / leg[l].buy : 0.0; }
+  // 增仓的平均开仓冲击 (显示用): 盘口段 = 建仓冲击均值; 固定段 = fixed_impact (fix − sell = 付固定冲击的增仓量)
+  double entry(int l, double fixed_impact) const {
+    const CostLeg &c = leg[l];
+    return c.buy > 0.0 ? (c.imp + (c.fix - c.sell) * fixed_impact) / c.buy : 0.0;
+  }
 };
 
 // 每期净多空 = ls_period − 两腿每期成本的平均 (两腿各半资金, 同 ls_of); 年化 = × span_per_year (s.hold 由 finish 填)

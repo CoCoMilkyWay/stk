@@ -16,7 +16,7 @@
 //                   DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (Inspect 尾部分层)
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     leg_codes     rx → 腿码 lc[T][A] (契约【换手成本】)
-//     cost_rows     lc × 标签有效位 × C 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
+//     cost_rows     lc × 标签有效位 × C ≥ 1 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
 //     StatSession   stat_open (标签 prep_label + 工作区, 一次; 与 gpu::stat_open 同序); 逐因子由调用方走 run (+ leg_codes)
 //     Search/Cpu.hpp 对每个候选走 rank_x + accum_rows, 不另写流程.
 //   r16(x) 平面 rx / 腿码 lc 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H])
@@ -80,8 +80,8 @@ struct Workspace {
         s.reserve(A_);
     if (acc.size() < static_cast<size_t>(threads_) * H_)
       acc.resize(static_cast<size_t>(threads_) * H_);
-    if (cacc.size() < static_cast<size_t>(threads_) * std::max(C_, 1) * H_)
-      cacc.resize(static_cast<size_t>(threads_) * std::max(C_, 1) * H_);
+    if (cacc.size() < static_cast<size_t>(threads_) * C_ * H_)
+      cacc.resize(static_cast<size_t>(threads_) * C_ * H_);
     A = A_, H = H_, C = C_, threads = threads_;
   }
 };
@@ -165,15 +165,15 @@ inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *lc) 
 
 // 换手成本 (契约【换手成本】): lc × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次
 // cost_row; 本行尾部 → 不攒; 交接链 chain_of (块内 t ≥ h 且 hold_nets → 前一批 = 行 t−h); 本批平仓不交接 (hold_nets(t + h) 假) → settle; cap = L.cap.
-// C = 0 → 只出量 (cost_row), out / land 按一个金额段排. land 非空 → 另落逐行 land[(k·H + i)·T + t] (只本行, 尾部行全 0; Portfolio 逐行成本)
+// C ≥ 1 (固定段 = 空 Cost). land 非空 → 另落逐行 land[(k·H + i)·T + t] (只本行, 尾部行全 0; Portfolio 逐行成本)
 template <class Exec>
 inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &L, const Cost *c, int C, Workspace &w, CostAcc *out,
                       CostAcc *land = nullptr) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, false);
-  const int H = L.hd.n, A = s.A, nt = ex.threads(), K = C > 0 ? C : 1;
-  assert(lc && (c || C == 0) && out && C >= 0 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
-  const size_t per = static_cast<size_t>(K) * H;
+  const int H = L.hd.n, A = s.A, nt = ex.threads();
+  assert(lc && c && out && C >= 1 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
+  const size_t per = static_cast<size_t>(C) * H;
   std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
   ex.rows(s.T - s.t_lo, [&](int r0, int r1, int tid) {
     CostAcc *acc = w.cacc.data() + static_cast<size_t>(tid) * per;

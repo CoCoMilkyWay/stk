@@ -37,10 +37,10 @@
   X(st_level, CAT1, AUTO, "ST Level", "风险等级", "次日 0=正常/1=ST/2=*ST/3=退市整理期", R"(\mathrm{st}_{D} \in \{0,1,2,3\})", TS(Fund, st_level, None, None))                                               \
   X(is_new, CAT1, AUTO, "Is New Listing", "次新股", "上市龄 < 60 日历日", R"(\mathbf{1}[0 \leq D - D_{list} < 60])", TS(Fund, is_new, None, None))                                                           \
   X(total_shares, CAT1, AUTO, "Total Shares", "总股本", "次日总股本(亿股, PIT)", R"(S^{total}_{D})", TS(Fund, total_shares, None, None))                                                                     \
-  X(float_shares, CAT1, AUTO, "Float Shares", "流通股本", "次日A股流通股本(亿股, PIT); 日层换手率=volume_day/float_shares (as-of 同日)", R"(S^{float}_{D})", TS(Fund, float_shares, None, None))                         \
+  X(float_shares, CAT1, AUTO, "Float Shares", "流通股本", "次日A股流通股本(亿股, PIT); 日层换手率=volume_day/float_shares (as-of 同日)", R"(S^{float}_{D})", TS(Fund, float_shares, None, None))             \
   X(lim_up, CAT1, AUTO, "Upper Limit Price", "涨停价", "次日适用涨停价(元, 无限制→NaN)", R"(P^{up}_{D})", TS(Fund, lim_up, None, None))                                                                      \
   X(lim_dn, CAT1, AUTO, "Lower Limit Price", "跌停价", "次日适用跌停价(元, 无限制→NaN)", R"(P^{dn}_{D})", TS(Fund, lim_dn, None, None))                                                                      \
-  X(pre_close, CAT1, AUTO, "Pre Close", "前收", "次日除权后前收盘价(元); 日层隔夜收益=open_day/pre_close (as-of 同日)", R"(P^{pre}_{D})", TS(Fund, pre_close, None, None))                                        \
+  X(pre_close, CAT1, AUTO, "Pre Close", "前收", "次日除权后前收盘价(元); 日层隔夜收益=open_day/pre_close (as-of 同日)", R"(P^{pre}_{D})", TS(Fund, pre_close, None, None))                                   \
   X(adj_factor, CAT1, AUTO, "Adjust Factor", "复权因子", "次日复权因子; 跨日价格拼接", R"(\mathrm{adj}_{D})", TS(Fund, adj_factor, None, None))                                                              \
   X(rz_buy_amt, CAT1, AUTO, "Margin Buy Amount", "融资买入额", "融资买入额(亿元, 非资产→NaN)", R"(\frac{Buy^{rz}_{D}}{10^{8}})", TS(Fund, rz_buy_amt, None, None))                                           \
   X(rz_repay_amt, CAT1, AUTO, "Margin Repay Amount", "融资偿还额", "融资偿还额(亿元, 非资产→NaN)", R"(\frac{Repay^{rz}_{D}}{10^{8}})", TS(Fund, rz_repay_amt, None, None))                                   \

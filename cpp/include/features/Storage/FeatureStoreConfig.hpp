@@ -104,17 +104,17 @@ constexpr bool kind_contiguous(std::span<const FieldInfo> f, FeatureDataType k) 
   return true;
 }
 
-#define GENERATE_LEVEL_FIELDS(T, ns, name, num, fields, psd)                     \
-  namespace ns::name##_info_detail {                                             \
-    constexpr size_t kLevel = num; /* SRC_VALID_TS 按层推有效性; 盘后推导 */     \
-    constexpr TierId kTier = TierId::T;                                          \
-    namespace Fld = ns::name##_Field;                                            \
-    inline constexpr SettleLink SETTLE[] = {fields(SETTLE_LINK_ONE)};            \
-    inline constexpr FieldInfo TABLE[] = {fields(FIELD_INFO_ONE)};               \
-  }                                                                              \
-  namespace ns {                                                                 \
-  inline constexpr const auto &name##_FIELD_INFO = name##_info_detail::TABLE;    \
-  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);            \
+#define GENERATE_LEVEL_FIELDS(T, ns, name, num, fields, psd)                  \
+  namespace ns::name##_info_detail {                                          \
+    constexpr size_t kLevel = num; /* SRC_VALID_TS 按层推有效性; 盘后推导 */  \
+    constexpr TierId kTier = TierId::T;                                       \
+    namespace Fld = ns::name##_Field;                                         \
+    inline constexpr SettleLink SETTLE[] = {fields(SETTLE_LINK_ONE)};         \
+    inline constexpr FieldInfo TABLE[] = {fields(FIELD_INFO_ONE)};            \
+  }                                                                           \
+  namespace ns {                                                              \
+  inline constexpr const auto &name##_FIELD_INFO = name##_info_detail::TABLE; \
+  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);         \
   }
 TIER_LEVELS(GENERATE_LEVEL_FIELDS)
 

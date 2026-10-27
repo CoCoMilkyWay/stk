@@ -41,14 +41,14 @@ void tip(const char *fmt, ...) {
   ImGui::EndTooltip();
 }
 
-HoldPoints hold_points(int hold, int seg) {
+HoldPoints hold_points(int hold, LevelId lv) {
   namespace st = factor::stat;
-  const FactorLevel &L = factor_level(seg);
-  const bool day = L.lvl == L_1day;
+  const FactorLevel &L = factor_level(lv);
+  const bool at_close = st::close_entry(0, L.geo()); // 首行就按收盘价建仓 = 每行都是 (行即整日)
   const std::string px = L.tier == TierId::Lob ? "+" + std::to_string(LABEL_DELAY_SECONDS) + "s盘口中间价" : "次分钟VWAP";
   const std::string close_px = "收盘撮合价", open_px = "开盘撮合价";
-  const std::string at = day ? "C(T)" : "C(" + std::string(L.name) + ")";
-  const HoldPoint open{at, day ? close_px : px};
+  const std::string at = at_close ? "C(T)" : "C(" + std::string(L.name) + ")";
+  const HoldPoint open{at, at_close ? close_px : px};
   if (st::hold_intraday(hold))
     return {open, {at + "+" + std::to_string(hold) + "m", px}};
   if (hold == st::kHoldClose)
@@ -57,8 +57,8 @@ HoldPoints hold_points(int hold, int seg) {
   return {open, st::hold_is_open(hold) ? HoldPoint{"O(T+" + n + ")", open_px} : HoldPoint{"C(T+" + n + ")", close_px}};
 }
 
-std::string hold_desc(int hold, int seg) {
-  const HoldPoints p = hold_points(hold, seg);
+std::string hold_desc(int hold, LevelId lv) {
+  const HoldPoints p = hold_points(hold, lv);
   return "开仓: " + p.open.at + " @ " + p.open.px + ", 清仓: " + p.close.at + " @ " + p.close.px;
 }
 
@@ -1019,7 +1019,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   ImGui::BeginGroup();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
-  ImGui::Text("%s  级别 %s", ctx.pool.c_str(), factor_level(ctx.seg).name);
+  ImGui::Text("%s  级别 %s", ctx.pool.c_str(), factor_level(ctx.lv).name);
   // 作用域 = 池 × 因子层 (所用特征的最细层; 叶写全名 档.层.列); 评估期按因子定 = 所用特征库落盘日交集; Lob 池的 Bar 层因子 = all 池标签 + 当日池成员截面
   if (ImGui::IsItemHovered())
     tip("因子目录 %s", ctx.factor_dir.c_str());
@@ -1155,7 +1155,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   }
   if (!ft.y.labels.empty()) {
     ImGui::BeginGroup();
-    hold_points_line(hold_points(cur_hold, ft.seg));
+    hold_points_line(hold_points(cur_hold, ft.lv));
     ImGui::EndGroup();
     if (ImGui::IsItemHovered())
       hold_tip();
@@ -1300,7 +1300,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     const float pad = ImGui::GetContentRegionAvail().x - kBoxesW - ImGui::GetStyle().ItemSpacing.x;
     if (pad > 0.0f)
       ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad);
-    RenderPortfolioBoxes(pui, view_row, ctx.pool, ctx.seg, cur_hold);
+    RenderPortfolioBoxes(pui, view_row, ctx.pool, ctx.lv, cur_hold);
   }
 
   ImGui::Separator();

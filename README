@@ -184,22 +184,24 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (四子页)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
-│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc) → 逐根发布行, 文件走完 (未取消) 一次回写
+│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc; 每层至少一段: Lob 盘口段 / Bar 固定段) → 逐根发布行, 文件走完 (未取消) 一次回写
 │   │   │       │   │                                 #    · 表中 score / util 由 stat 现算
 │   │   │       │   │                                 #    · FactorWorker<D, Req>: 四服务同一份骨架 (进度面 + message + 常驻 FactorFlow + 结局收尾 settle / abort_out)
 │   │   │       │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorWeights (Search) / WriteFactorStats (Run)
 │   │   │       │   │                                 #    · Run 只回写 run + stats[i] (与 weights 同序), expr / weights 不动; 破碎因子标 BROKEN, 不删
 │   │   │       │   ├── FactorsTable.hpp              # 🖥️ 因子层公共类型: FactorLevel / FeatureTable / FactorScope / Request<Spec> / FactorRef / EvalStat (StatScope / HoldStat / CostTier / MiniPdf) / AlphaDist
+│   │   │       │   │                                 #    · 层表 FACTOR_LEVELS 唯一真相 (网格层 / 标签档 / 名 / K 线列名式; 加层只加一行) → LevelId / PerLevel; 服务 / 装载 / UI 不按层分支
+│   │   │       │   │                                 #    · 字段表视图按层建一次, 全页共享 (FeatureTables / table_of)
 │   │   │       │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): Domain 评估域 (库 + 评估期 + 资产轴) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
 │   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
-│   │   │       │   │                                 #      + 满仓只数) / load_b (日层篮子原料 BPlanes); XCols / YCols / BCols ↔ XPlanes / YPlanes / BPlanes 一一对仗
+│   │   │       │   │                                 #      + 满仓只数) / load_b (篮子原料 BPlanes, 层无关; 日频原料 as-of 取 bar.1d); XCols / YCols / BCols ↔ XPlanes / YPlanes / BPlanes 一一对仗
 │   │   │       │   │                                 #    · 标签 / 成本恒取同池本层列 (同行); YSpec::cap > 0 = 外给满仓只数 (n_full_of 预扫), 不自数
 │   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec / b 篮子) + ensure_block = 块 Block (Y 常驻, X 按服务留 / 补); stat_scope = 结果作用域头
 │   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集; Pick = 子集下标, labels_pick 取会话持有期子集
 │   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
 │   │   │       │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
-│   │   │       │   │                                 #    · baskets: 日层篮子 (池整体 + 行业) 指数 / 估值 (PoolVal 五口数组) / 换手, 吃 Y 的门控 + T+1C 标签与 BPlanes; pool_line = 池整体等权 (只吃 Y)
+│   │   │       │   │                                 #    · baskets: 篮子 (池整体 + 行业, 层无关) 指数 / 估值 (PoolVal 五口数组) / 换手, 吃 Y 的门控 + 标签与 BPlanes; pool_line = 池整体等权 (只吃 Y)
 │   │   │       │   ├── FactorsProbe.hpp              # 🖥️ 探针层 (一个根的一种输出): RootView / Ctx / Ranks 两后端同形, Probes<P...> 逐钩子 need / open / row / root / finish
 │   │   │       │   │                                 #    · 通用探针 Hold / Cost / Valid / Rank / Alpha / IcPdf 四服务共用; 服务私有探针在各自 .cpp
 │   │   │       │   │                                 #    · 根上统计核: valid_count / rank_sum / alpha_dist / mini_pdf_of / group_abs (换手成本三探针 CostP / TurnP / CurveP 平级直调 Stat cost_rows)

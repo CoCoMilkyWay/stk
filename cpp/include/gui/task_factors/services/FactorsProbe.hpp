@@ -167,12 +167,11 @@ struct HoldP : ProbeBase {
     factor::stat::finish_all(acc, c.L.hd, c.c.y.sh.seg, hold);
   }
 };
-// 换手成本 CostTier[C] + 换手量 turn[H] (契约【换手成本】): Stat cost_rows (腿码 lc × 全部金额段 costs_of(y)) 块间续攒.
-// 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部腿码只出量 (C = 0) / Portfolio CurveP 另落逐行 (land)
+// 换手成本 CostTier[C] (契约【换手成本】; C ≥ 1, 换手量各段同一份): Stat cost_rows (腿码 lc × 全部金额段 costs_of(y)) 块间续攒.
+// 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部腿码 (一个固定段) / Portfolio CurveP 另落逐行 (land)
 struct CostP : ProbeBase {
   static constexpr uint8_t need = kNeedLc;
-  std::vector<CostTier> costs;                             // [amt] = y.ad 序 (首块按 y.ad 建)
-  factor::stat::CostAcc turn[factor::stat::kMaxHold] = {}; // [hi] 量 (各段同一份: 取段 0, imp 清零; 无金额段也攒)
+  std::vector<CostTier> costs; // [amt] = y.ad 序 (首块按 y.ad 建)
   void root(const Ctx &c, const RootView &v);
 };
 // 池内有效率 valid% (统计行)
@@ -301,7 +300,7 @@ struct LinesP : ProbeBase {
 // EvalStat 的探针组 (Run 行 / Inspect 结果同一份): 通用六探针在前, X = 服务私有探针
 template <class... X>
 using EvalProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, IcPdfP, X...>;
-// 作用域头 / 耗时 / 二级 / 换手 / 成本 / 有效率 / 可秩率 / 小图 → EvalStat (EvalProbes 的成品)
+// 作用域头 / 耗时 / 二级 / 换手成本 / 有效率 / 可秩率 / 小图 → EvalStat (EvalProbes 的成品)
 template <class Ps>
 void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st) {
   const HoldP &h = p.template at<HoldP>();
@@ -313,7 +312,6 @@ void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st
   st.rank_pct = p.template at<RankP>().pct;
   st.n_hold = h.n_hold;
   std::copy_n(h.hold, h.n_hold, st.hold);
-  std::copy_n(c.turn, h.n_hold, st.turn);
   st.costs = c.costs;
   for (int hi = 0; hi < h.n_hold; ++hi)
     st.ic_pdf[hi] = mini_pdf_of(ic.pdf[hi]);

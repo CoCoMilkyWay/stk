@@ -38,7 +38,8 @@ ENABLE_CUDA = True
 
 def _cleanup_processes():
     """Kill old processes."""
-    subprocess.run(["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
+    subprocess.run(
+        ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
     time.sleep(0.3)
 
 

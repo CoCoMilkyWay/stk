@@ -18,8 +18,9 @@
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node + 常驻 ForkJoin, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), HoldStat 是毛口径;
-// 换手成本 (lb_cost_* 每金额段, 买入按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (FactorsProbe CostP → Stat cost_rows, 两后端同一份宿主代码:
-// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 换手量 (与金额段无关, 无段的层也攒) 落 stat.turn; 净线由 Inspect plot_term 在二级上现算, 因子表 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
+// 换手成本 (每金额段: lb_cost_* 盘口段, 买入按 Config::max_impact 封顶; 无冲击列的层 = 一个固定段) 用同一份秩再攒一遍 CostAcc (FactorsProbe CostP →
+// Stat cost_rows, 两后端同一份宿主代码: CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs (年换手取段 0); 净线由 Inspect plot_term 在二级上现算,
+// 因子表 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
 // Config::fixed_impact 只进公式不进文件. 因子表的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.

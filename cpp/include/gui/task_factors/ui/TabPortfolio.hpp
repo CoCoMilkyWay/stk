@@ -8,10 +8,10 @@
 //     因子增量 = 毛收益 − 建仓冲击 − 固定冲击份数 · fixed_impact (占净值), 记在行末 (收益 = 平仓行, 成本 = 建仓行;
 //       已实现口径, 与池指数对齐); 净值 = 同一 x 的增量和逐点复利连乘. 单因子线同式 (权 1) ⇒ 单因子线 ≡ 只含它的组合.
 //       只算 G20 多头 (无冲击 = 不扣, 细线; 默认只显有冲击). 成本按 Δw (Stat 契约【换手成本】), 冲击段 = 各因子自己的最小段, 不可选:
-//       Lob 层 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; Bar 层无金额段 = 增仓量 / 平仓量都按 fixed_impact
+//       Lob 层 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; Bar 层 = 固定段, 增仓量 / 平仓量都按 fixed_impact
 //     池指数线 (日层篮子 0, 每池一条等权; all 池两条 = 全A加权 (总市值) / 全A等权): 只画因子日并集轴范围内, 当日收盘一点; 默认只显组合里因子所在池的可成交线;
 //       每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (后复权收盘价收益, 不看可成交; 同色淡线, 默认关), 两者之差 = 可成交拖累;
-//       尾 = 年换手 (全评估期日均单边 PoolCurve::turn[该线权重] × kDaysPerYear, 倍; 指数线本身不扣成本)
+//       尾 = 年换手 (全评估期单边 PoolCurve::turn[该线权重], 倍/年; 指数线本身不扣成本)
 //     单因子线 (默认全关): 该因子单独的 G20 多头净值 (带它自己的冲击)
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     主图例 / 右图例 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
@@ -198,8 +198,8 @@ struct PortfolioUIState {
 
 // GUI 线程每帧 (两页都调): 目录变 → 重列, 当前组合不在了 → 选第一个 (载入内容, content_gen +1)
 void SyncPortfolioDir(PortfolioUIState &ui, const std::string &dir);
-// Factors 页 1. 区右侧两框. view_row = Factors 表高光行 (nullptr = 无); (pool, seg, hold) = Factors 页当前池 / 层 / Hold
-void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, int seg, int hold);
+// Factors 页 1. 区右侧两框. view_row = Factors 表高光行 (nullptr = 无); (pool, lv, hold) = Factors 页当前池 / 层 / Hold
+void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, LevelId lv, int hold);
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed_impact);
 

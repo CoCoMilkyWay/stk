@@ -2,7 +2,7 @@
 // (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 三个逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / leg_n,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, buy, sell, w, n + rows);
+// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, buy, sell, fix, w, n + rows);
 // 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
@@ -64,7 +64,7 @@ inline constexpr const char *kMomentKeys[] = {"mean", "sd", "ir", "t", "pos", "s
 inline constexpr const char *kScalarKeys[] = {"beta", "mono", "leg_n"};
 // CostAcc 的两腿 (与 factor::stat::Leg 同序) × 每腿字段 (与 CostLeg 同序)
 inline constexpr const char *kLegKeys[factor::stat::kLegs] = {"long", "short"};
-inline constexpr const char *kCostLegKeys[] = {"imp", "buy", "sell", "w", "n"};
+inline constexpr const char *kCostLegKeys[] = {"imp", "buy", "sell", "fix", "w", "n"};
 
 namespace detail {
 template <class M>
@@ -183,6 +183,7 @@ inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
     o.push_back(sig4(g.imp));
     o.push_back(sig4(g.buy));
     o.push_back(sig4(g.sell));
+    o.push_back(sig4(g.fix));
     o.push_back(sig4(g.w));
     o.push_back(g.n);
   }
@@ -206,7 +207,7 @@ inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
     return e.is_number_integer();
   };
   for (factor::stat::CostLeg &g : c.leg)
-    if (!num(g.imp) || !num(g.buy) || !num(g.sell) || !num(g.w) || !ll(g.n))
+    if (!num(g.imp) || !num(g.buy) || !num(g.sell) || !num(g.fix) || !num(g.w) || !ll(g.n))
       return false;
   if (!ll(c.rows))
     return false;
@@ -289,21 +290,19 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   return j;
 }
 
-// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / turn / costs / 小图各一段
+// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
   j["time"] = st.scope.time;
   j["valid_pct"] = sig4(st.valid_pct);
   j["rank_pct"] = sig4(st.rank_pct);
   j["eval_ms"] = sig4(st.eval_ms);
-  nlohmann::ordered_json holds = nlohmann::ordered_json::array(), turn = nlohmann::ordered_json::array(), ic = nlohmann::ordered_json::array();
+  nlohmann::ordered_json holds = nlohmann::ordered_json::array(), ic = nlohmann::ordered_json::array();
   for (int k = 0; k < st.n_hold; ++k) {
     holds.push_back(hold_json(st.hold[k]));
-    turn.push_back(cost_acc_json(st.turn[k]));
     ic.push_back(mini_pdf_json(st.ic_pdf[k]));
   }
   j["holds"] = holds;
-  j["turn"] = turn;
   nlohmann::ordered_json costs = nlohmann::ordered_json::array();
   for (const CostTier &c : st.costs)
     costs.push_back(cost_json(c, st.n_hold));
@@ -357,14 +356,11 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     return false;
   t.n_hold = static_cast<int>(hit->size());
   const size_t H = hit->size();
-  const auto tit = j.find("turn");
-  if (tit == j.end() || !tit->is_array() || tit->size() != H)
-    return false;
   for (size_t k = 0; k < H; ++k)
-    if (!load_hold((*hit)[k], seg, t.hold[k]) || !load_cost_acc((*tit)[k], t.turn[k]))
+    if (!load_hold((*hit)[k], seg, t.hold[k]))
       return false;
   const auto cit = j.find("costs");
-  if (cit == j.end() || !cit->is_array())
+  if (cit == j.end() || !cit->is_array() || cit->empty())
     return false;
   t.costs.resize(cit->size());
   for (size_t c = 0; c < cit->size(); ++c)

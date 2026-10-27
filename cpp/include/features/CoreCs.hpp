@@ -75,22 +75,22 @@ struct CsRef {
 
 template <class T, size_t LVL>
 struct CsLevel;
-#define CS_LEVEL_TRAITS(T, ns, name, num, fields, psd)                                                                          \
-  template <>                                                                                                                   \
-  struct CsLevel<ns::Tier, num> {                                                                                               \
-    static constexpr size_t kLevel = num;                                                                                       \
-    static constexpr bool kEmpty = count_of_kind(ns::name##_FIELD_INFO, FeatureDataType::CS) == 0;                              \
-    /* 首项哨兵 (档号越界, 不匹配任何档): 层内无 CS 行时数组也非空 */                                                           \
-    static constexpr auto kRefs = [] {                                                                                          \
-      namespace FO = ns::name##_Field;                                                                                          \
-      [[maybe_unused]] constexpr const auto &kInfo = ns::name##_FIELD_INFO;                                                     \
-      return std::array{CsRef{static_cast<TierId>(TIER_COUNT), 0, 0, false, false}, fields(CS_REF_ONE)};                        \
-    }();                                                                                                                        \
-    template <class Core>                                                                                                       \
-    [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) {                     \
-      namespace FO = ns::name##_Field;                                                                                          \
-      fields(CS_RUN_ONE)                                                                                                        \
-    }                                                                                                                           \
+#define CS_LEVEL_TRAITS(T, ns, name, num, fields, psd)                                                      \
+  template <>                                                                                               \
+  struct CsLevel<ns::Tier, num> {                                                                           \
+    static constexpr size_t kLevel = num;                                                                   \
+    static constexpr bool kEmpty = count_of_kind(ns::name##_FIELD_INFO, FeatureDataType::CS) == 0;          \
+    /* 首项哨兵 (档号越界, 不匹配任何档): 层内无 CS 行时数组也非空 */                                       \
+    static constexpr auto kRefs = [] {                                                                      \
+      namespace FO = ns::name##_Field;                                                                      \
+      [[maybe_unused]] constexpr const auto &kInfo = ns::name##_FIELD_INFO;                                 \
+      return std::array{CsRef{static_cast<TierId>(TIER_COUNT), 0, 0, false, false}, fields(CS_REF_ONE)};    \
+    }();                                                                                                    \
+    template <class Core>                                                                                   \
+    [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) { \
+      namespace FO = ns::name##_Field;                                                                      \
+      fields(CS_RUN_ONE)                                                                                    \
+    }                                                                                                       \
   };
 TIER_LEVELS(CS_LEVEL_TRAITS)
 #undef CS_LEVEL_TRAITS
@@ -396,8 +396,8 @@ private:
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
   size_t n_ = 0;                      // = valid_indices_.size()
   std::vector<float> input_fp32_;
-  std::vector<float> logmc_dense_;    // 中性化输入 (本拍本层)
-  std::vector<float> industry_dense_; // 中性化输入 (本拍本层)
+  std::vector<float> logmc_dense_;                                                      // 中性化输入 (本拍本层)
+  std::vector<float> industry_dense_;                                                   // 中性化输入 (本拍本层)
   int neutral_at_ = -1;                                                                 // 本拍已备上下文的目标盘后性 (-1 = 未备)
   bool neutral_ok_ = false;                                                             // 本拍上下文齐 (无前日 → false)
   const cs::NeutralRank::Ctx neutral_ctx_{logmc_dense_.data(), industry_dense_.data()}; // 向量在 ctor 定长, 指针稳定

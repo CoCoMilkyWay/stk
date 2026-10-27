@@ -9,10 +9,10 @@
 //   同 (层, 池) 的待算条目一组一张森林 (同 Y, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径), 探针 hd = 该根在组内的全部 hold;
 //   落线探针 CurveP (accum_rows 一级 Row 的 G20 绝对收益 + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_book (FactorsBook; Stat 契约【净值】:
 //   G20 多头, 每批 1/h̄, 平仓行实现; 可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
-//   成本按 Δw (契约【换手成本】): 有金额段 (Lob) = 增仓 Δw⁺ × 最小段买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 无段 (Bar) =
-//   增仓量 / 平仓量各付 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员; 同一条管线 eval_job 无根, 块钩子 baskets → PoolCurve): 篮子 (池整体 + 行业) 两权重指数日收益 (净值引擎 fold_book, T+1C 标签) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
-//   滚动分位 band 在 UI 按可调窗长现算) + 池整体日均单边换手.
+//   成本按 Δw (契约【换手成本】), 取该层首个金额段: 盘口段 = 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 固定段 =
+//   增仓量 / 平仓量各付 fixed_impact (固定量 UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
+// 池篮子: 每池一份, 在 kBasketLevel (Bar 标签库 + 池成员; 同一条管线 eval_job 无根, 块钩子 baskets → PoolCurve): 篮子 (池整体 + 行业) 两权重指数日收益 (净值引擎 fold_book, T+1C 标签) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
+//   滚动分位 band 在 UI 按可调窗长现算) + 池整体年化单边换手.
 // 因子 ↔ 池 同一套缓存: 按 Task::key 存, 曲线记算时的 Task::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑 (缓存已算的不丢); UI 持 mutex 读 result
@@ -38,11 +38,11 @@ namespace GUI::Factors {
 // ---- 组合文件 (GUI 线程读写) ----
 struct PortfolioEntry {
   std::string pool;
-  int seg = 0;      // 因子层 (FactorLevel::seg; 文件里存层名)
+  LevelId lv = 0;   // 因子层 (文件里存层名)
   std::string file; // 因子文件名 (含 .json)
   std::string expr; // 具体规范串 (FactorRow::expr, 已含 sign)
   int hold = 0;     // 持有期键
-  std::string key() const { return pool + "|" + std::to_string(seg) + "|" + file + "|" + expr + "|" + std::to_string(hold); }
+  std::string key() const { return pool + "|" + factor_level(lv).name + "|" + file + "|" + expr + "|" + std::to_string(hold); }
 };
 std::vector<std::string> ListPortfolios(const std::string &dir);                                            // 主干名, 字典序; 目录不存在 = 空
 std::vector<PortfolioEntry> LoadPortfolio(const std::string &dir, const std::string &name);                 // 格式不对 → assert (只本页写)
@@ -50,9 +50,7 @@ void SavePortfolio(const std::string &dir, const std::string &name, const std::v
 bool RenamePortfolio(const std::string &dir, const std::string &from, const std::string &to);               // to 已存在 → false
 void DeletePortfolio(const std::string &dir, const std::string &name);
 
-// ---- 解析 (GUI 线程): 条目 → 该 (池, 层) 目录下 ScanFactorFile 找回的权重行 ----
-using FeatureTables = std::map<int, std::shared_ptr<const FeatureTable>>; // seg → 字段表 (按需建一次)
-std::shared_ptr<const FeatureTable> table_of(FeatureTables &tables, const Feature &feature, int seg);
+// ---- 解析 (GUI 线程): 条目 → 该 (池, 层) 目录下 ScanFactorFile 找回的权重行 (字段表取全页共享的 FeatureTables) ----
 struct PortfolioItem {
   PortfolioEntry e;
   std::string name_en, name_cn;
@@ -75,9 +73,10 @@ struct FactorTask {  // 一个有效条目 = 一个因子 (FactorRef, 与 Inspec
   std::vector<int> group;                                                          // Y 共用组 (同 (层, 池)) 全部条目的持有期, 升序去重: Y 一组一次装全 (曲线与它无关, 不进 sig)
   std::string sig() const { return key + "|" + std::to_string(scope.max_impact); } // 买入冲击封顶变了重算
 };
-struct PoolTask {    // 一个池的日层指数
-  std::string key;   // 池名
-  FactorScope scope; // (池, 日层)
+inline constexpr LevelId kBasketLevel = level_of(L_1day); // 池篮子的层 (PoolCurve 按日; 篮子本身任意层)
+struct PoolTask {                                          // 一个池的篮子
+  std::string key;                                         // 池名
+  FactorScope scope;                                       // (池, kBasketLevel)
   std::string sig() const { return key; }
 };
 struct PortfolioRequest {
@@ -99,20 +98,21 @@ enum CurveLine : int { kCurvePnl, // 毛收益
 struct FactorCurve {
   std::string sig;              // 算时的 FactorTask::sig
   std::vector<misc::Ymd> dates; // [days]
-  int seg = 0, hold = 0;
-  int amt = 0;       // 建仓冲击金额段 (万) = 该层最小段; 0 = 无段 (Bar 层) → 增仓量也付 fixed_impact
+  LevelId lv = 0;
+  int hold = 0;
+  int amt = 0;       // 金额段 = 该层首段 (amt_name; kAmtFixed = 固定段, 增仓量也付 fixed_impact)
   BookLines nav;     // [kCurveLines][T = days · seg]
   std::string error; // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
   const float *nav_at(int line) const { return nav.at(line); }
 };
-// 一个池的日层篮子 (Baskets 原样搬来): 篮子 0 = 池整体, k = 1..kBaskets−1 = 本池按 SW2021 一级切的行业 (UI 只用 all 池的 = 申万一级)
+// 一个池的篮子 (Baskets 原样搬来): 篮子 0 = 池整体, k = 1..kBaskets−1 = 本池按 SW2021 一级切的行业 (UI 只用 all 池的 = 申万一级)
 struct PoolCurve {
   std::string sig;                             // 算时的 PoolTask::sig
-  std::vector<misc::Ymd> dates;                // [nd] 日层评估期
+  std::vector<misc::Ymd> dates;                // [nd] 评估期
   BookLines index;                             // [kBaskets · kWeights][nd] 篮子指数的日收益 (线序 Baskets::index_line; UI compound 成点位)
   BookLines index_px;                          // 同形, 收盘价指数 (Baskets::index_px, 不看可成交)
   std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal][kBaskets · nd] 篮子估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值 / 加权 = 整体法收益率; NaN = 当日不可算)
-  double turn[kWeights] = {};                  // [Weight] 篮子 0 日均单边换手 (Baskets::turn; 再平衡 + 成分进出, 停牌 = 移出再移回)
+  double turn[kWeights] = {};                  // [Weight] 篮子 0 年化单边换手 (倍; Baskets::turn × 每年行数; 再平衡 + 成分进出, 停牌 = 移出再移回)
   std::string error;
   const float *index_of(size_t k, int w, bool px) const { return (px ? index_px : index).at(Baskets::index_line(k, w)); } // 篮子 k 的日收益 [nd]
   const float *val_of(size_t k, int w, int m) const { return val[w][m].data() + k * dates.size(); }

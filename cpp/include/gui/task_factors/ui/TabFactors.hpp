@@ -68,9 +68,9 @@ struct FactorsUIState {
 
 // 当前作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域 (池) 对比着色; 评估期按因子定 (所用库落盘日交集), 不在这里
 struct FactorsUIContext {
-  int seg = 0;                                    // 因子层 (FactorLevel; 本页已生效的, 跟页顶 / 特征面板选择走) = ft->seg
+  LevelId lv = 0;                                 // 因子层 (本页已生效的, 跟页顶 / 特征面板选择走) = ft->lv
   std::shared_ptr<const FeatureTable> ft;         // 该层字段表 (四服务请求同一份)
-  std::string factor_dir;                         // factor_dir_of(pool, seg) = <factor_dir>/<池>/<层名>
+  std::string factor_dir;                         // factor_dir_of(pool, lv) = <factor_dir>/<池>/<层名>
   std::string pool;                               // 本页已生效的池名
   double fixed_impact = 0.0;                      // Config::fixed_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估
@@ -80,16 +80,16 @@ struct FactorsUIContext {
 // Factors / Inspect 两页所有文字提示走这一个: 固定宽度处折行 (SetTooltip 不折行, 长句会被视口裁掉).
 // 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
 void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-// 持有期在因子层 seg 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份)
+// 持有期在因子层 lv 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份; 由层表 + Geo 推, 不按层分支)
 struct HoldPoint {
   std::string at, px;
 };
 struct HoldPoints {
   HoldPoint open, close;
 };
-HoldPoints hold_points(int hold, int seg);
+HoldPoints hold_points(int hold, LevelId lv);
 // hold_points 的完整写法: "开仓: C(层) @ 价, 清仓: 点 @ 价"
-std::string hold_desc(int hold, int seg);
+std::string hold_desc(int hold, LevelId lv);
 // hold_points 分色一行 (时点 / 价各一色), 从当前光标处画; 返回排版宽. draw = false 只量不画 (调用方定宽占位用)
 float hold_points_line(const HoldPoints &p, bool draw = true);
 // 紧凑切换控件 (替代下拉): "label ◂ value ▸", 方形箭头循环切, 值占位定宽 (最宽一项, 居中) → 按钮位置不随值跳;

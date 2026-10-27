@@ -11,7 +11,7 @@
 //     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算; 满仓 cap 进持仓口径);
 //                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和 (组 / 两腿按契约【仓位感知】);
 //                 逐格扩展 Ext (调用方专属的附加统计, 同一遍同一个 J; NoExt 编译期消掉, Inspect 尾部分层用)
-//     cost_row    一行 t 的换手成本 (Δw), 每持有期两遍 A 轴 (腿只数 → 权; 逐格差额) × C 个金额段 (契约腿码 lc ∧ 标签有效位 ∧ 真持有) → CostAcc[C][H].
+//     cost_row    一行 t 的换手成本 (Δw), 每持有期两遍 A 轴 (腿只数 → 权; 逐格差额) × C ≥ 1 个金额段 (契约腿码 lc ∧ 标签有效位 ∧ 真持有) → CostAcc[C][H].
 //                 Run (stat.costs) / Inspect 期限结构净线 / Portfolio 逐行成本共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
@@ -152,9 +152,9 @@ struct CostHold {
 // 换手成本: lc = 本行腿码 (块形平面偏到行首, 交接链回看前行); ch[i] = 持有期 i 的输入; c[k] 已偏到行首; cap = 满仓 → acc[k·H + i].
 //   腿成员 = 腿码 ∧ m ∧ 本侧真持有 (契约 held, 与 Row 的腿同一集合); 两批各腿只数 → 每只权 1 / max(只数, cap);
 //   逐格 Δ = 本批权 − 前一批权: Δ⁺ 增仓 (付建仓冲击; 本格本侧不可建仓 (续持者封板) → 加不了仓, 记 0), Δ⁻ 减仓.
-//   C = 0 → 只出量 (buy / sell / w / n, imp 恒 0) 进 acc[i] (无金额段: Bar 层)
+//   固定段 (c[k].flat()) 无建仓冲击, 增仓量记进固定量 (契约【换手成本】)
 inline void cost_row(const uint8_t *lc, const CostHold *ch, int H, const Cost *c, int C, int A, double cap, CostAcc *acc) {
-  const int K = C > 0 ? C : 1;
+  assert(C >= 1 && C <= factor::stat::kMaxCost);
   for (int i = 0; i < H; ++i) {
     const CostHold &q = ch[i];
     if (!q.m)
@@ -198,19 +198,20 @@ inline void cost_row(const uint8_t *lc, const CostHold *ch, int H, const Cost *c
         if (d > 0.0) {
           buy[g] += d;
           for (int k = 0; k < C; ++k)
-            imp[k][g] += d * static_cast<double>(h2f(c[k].imp[g][a]));
+            if (!c[k].flat())
+              imp[k][g] += d * static_cast<double>(h2f(c[k].imp[g][a]));
         } else {
           sell[g] -= d;
         }
       }
     }
-    for (int k = 0; k < K; ++k) {
+    for (int k = 0; k < C; ++k) {
       CostAcc &o = acc[k * H + i];
       ++o.rows;
       for (int g = 0; g < kLegs; ++g) {
         CostLeg &e = o.leg[g];
-        const double wg = n[g] * w[g];
-        e.imp += imp[k][g], e.buy += buy[g], e.sell += sell[g] + (q.settle ? wg : 0.0);
+        const double wg = n[g] * w[g], out = sell[g] + (q.settle ? wg : 0.0);
+        e.imp += imp[k][g], e.buy += buy[g], e.sell += out, e.fix += out + (c[k].flat() ? buy[g] : 0.0);
         e.w += wg, e.n += n[g];
       }
     }

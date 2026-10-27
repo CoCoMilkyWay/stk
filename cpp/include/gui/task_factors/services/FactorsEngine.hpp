@@ -599,12 +599,12 @@ struct JobOut {
     return s;
   }
 };
-// 评估域 (叶 feats 所用库 + 评估期) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
+// 评估域 (叶 feats (+ j.spec.b: 篮子原料) 所用库 + 评估期) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
 inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std::string> &feats, Job &j) {
-  assert(sc.ft && sc.seg == sc.ft->seg && "作用域层与字段表层不符");
+  assert(sc.ft && sc.lv == sc.ft->lv && "作用域层与字段表层不符");
   j.ft = sc.ft.get();
   j.spec.x = sc.ft->x.ids(feats);
-  if (!domain_of(*sc.ft, sc, j.spec.x, j.dm, j.why))
+  if (!domain_of(*sc.ft, sc, j.spec.x, j.spec.b, j.dm, j.why))
     return false;
   open_libs(sc, F.lr, &F.cancel);
   return true;
@@ -615,7 +615,7 @@ template <class E, class Ps>
 Budget budget_of(const Job &j, const factor::Dag &d, size_t nx, int H) {
   const int seg = j.ft->seg, days = static_cast<int>(j.dm.days.size()), A = static_cast<int>(j.dm.rs.axis.size());
   Budget b = d.nodes.empty() ? Budget{} : E::template budget<Ps>(d, j.spec.y.hd.n);
-  b.load = cell_bytes(j.spec, nx);
+  b.load = cell_bytes(*j.ft, j.spec, nx);
   b.fixed = Ps::bytes(Shape{days * seg, A, days, seg}, H);
   return b;
 }

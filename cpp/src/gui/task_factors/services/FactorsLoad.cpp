@@ -14,23 +14,21 @@
 #include <cassert>
 #include <limits>
 
-// 因子层几何 (factor::Geo) 与特征库层对账: 每日行数 = 层有效行数; 行 t 的末分钟 = L_1min 分钟号 (箱末 bin_last_min / 日层 = 收盘分钟)
+// 因子层几何 (factor::Geo) 与特征库层对账: 下标 = id; 行 t 的末分钟 = 该行末秒所在的 L_1min 分钟 (每日行数已由 FactorLevel::seg 取自特征库层)
 static_assert(factor::kSegMax == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegMax 必须等于 L_1min 每日分钟数");
 static_assert([] {
-  for (const GUI::Factors::FactorLevel &l : GUI::Factors::kFactorLevels) {
-    const factor::Geo g = factor::geo_of(l.seg);
-    if (level_valid_rows(l.lvl) != static_cast<size_t>(l.seg))
+  for (size_t i = 0; i < GUI::Factors::kLevelCount; ++i) {
+    const GUI::Factors::FactorLevel &l = GUI::Factors::kFactorLevels[i];
+    const factor::Geo g = l.geo();
+    if (l.id != i)
       return false;
-    for (int t = 0; t < g.S; ++t) {
-      const size_t m = l.lvl == L_1min ? static_cast<size_t>(t) : l.lvl == L_1day ? TRADE_MINUTES_PER_DAY - 1
-                                                                                  : bin_last_min(level_bin_minutes(l.lvl), static_cast<size_t>(t));
-      if (static_cast<size_t>(g.minute(t)) != m)
+    for (int t = 0; t < g.S; ++t)
+      if (static_cast<size_t>(g.minute(t)) != L_sec_to_L_1min(level_end_sec(l.lvl, static_cast<size_t>(t)) - 1))
         return false;
-    }
   }
   return true;
 }(),
-              "kFactorLevels 与 factor::kGeos / 特征库层 (有效行数 / 箱末分钟) 不符");
+              "kFactorLevels 与 factor::kGeos / 特征库层 (行末分钟) 不符");
 // 尾部界对账: 标签层最后一个可成交 entry 锚点 = 连续竞价末分钟 (kContCloseMin − 1) 的起始 = 行 kContCloseMin − 2; Stat tail_masked 用同一条界
 static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelLob::kContCloseMin, "Stat 尾部界与 LabelLob 的收盘竞价起点不一致");
 
@@ -50,8 +48,11 @@ std::string YSpec::key() const {
   return k + "|cap" + std::to_string(max_impact) + "|n" + std::to_string(cap);
 }
 
-double cell_bytes(const BlockSpec &s, size_t nx) {
-  return kPlaneBytes * static_cast<double>(nx) + 2.0 + kPlaneBytes * s.y.hd.n + 4.0 * s.y.ad.n + (s.b ? kBasketCellBytes : 0.0);
+double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
+  int books = 0;
+  for (int c = 0; c < s.y.ad.n; ++c)
+    books += !leg_of(ft.y.costs, s.y.ad.k[c]).flat();
+  return kPlaneBytes * static_cast<double>(nx) + 2.0 + kPlaneBytes * s.y.hd.n + 4.0 * books + (s.b ? kBasketCellBytes : 0.0);
 }
 
 size_t XPlanes::count() const {
@@ -119,7 +120,6 @@ struct ColList {
 // 张量形 (容量断言在此): days × A → T = days · seg
 Shape shape_of(const Io &io, const Chunk &k) {
   assert(k.d0 < k.d1 && k.d1 <= io.dm.days.size());
-  assert(level_valid_rows(factor_level(io.ft.seg).lvl) == static_cast<size_t>(io.ft.seg));
   Shape s;
   s.days = k.days();
   s.A = static_cast<int>(io.dm.rs.axis.size());
@@ -137,7 +137,7 @@ bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&o
   const size_t n_cols = cols.size();
   assert(n_cols > 0);
   io.prog.begin(Phase::Loading, k.d1 - k.d0);
-  const ReadPlan plan = analysis::read_plan(*io.ft.feature, factor_level(io.ft.seg).lvl, analysis::Rows::AsOf, /*carry=*/true, std::move(cols));
+  const ReadPlan plan = analysis::read_plan(*io.ft.feature, factor_level(io.ft.lv).lvl, analysis::Rows::AsOf, /*carry=*/true, std::move(cols));
   std::vector<std::pair<uint32_t, uint32_t>> at(n_cols); // 平面列 → (源, 源内值列)
   for (size_t si = 0; si < plan.srcs.size(); ++si)
     for (size_t j = 0; j < plan.srcs[si].slot.size(); ++j)
@@ -248,8 +248,8 @@ bool load_x(const Io &io, const Chunk &k, const std::vector<LeafId> &ids, XPlane
 bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
   TraceN("FactorsLoadY");
   constexpr size_t K = factor::stat::kLegs;
+  constexpr size_t kFlat = SIZE_MAX; // 固定段: 无列无平面
   const FeatureTable &ft = io.ft;
-  assert((s.ad.n == 0 || s.max_impact > 0.f) && "装成本要封顶 (Config::max_impact)");
   Y = YPlanes{};
   Y.sh = shape_of(io, k);
   Y.hd = s.hd;
@@ -257,32 +257,40 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行). 顺延已在标签里 (features LabelHold) ----
+  // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] | 盘口段成本 [·][K], 全是标签库网格层本层列 (同行). 顺延已在标签里 (features LabelHold) ----
+  // 两腿列组 j 的列段起点 at[j] (固定段 = kFlat)
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
   assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签 / 成本在标签库");
-  const size_t lab_i = cols.refs.size();
-  for (size_t i = 0; i < H; ++i)
+  std::vector<size_t> lab_at(H), cost_at(C, kFlat);
+  for (size_t i = 0; i < H; ++i) {
+    lab_at[i] = cols.refs.size();
     for (const Col &c : leg_of(ft.y.labels, Y.hd.k[i]).leg)
       cols.add(c);
-  const size_t cost_i = cols.refs.size();
+  }
   for (size_t c = 0; c < C; ++c)
-    for (const Col &l : leg_of(ft.y.costs, Y.ad.k[c]).leg)
-      cols.add(l);
+    if (const LegCol &lc = leg_of(ft.y.costs, Y.ad.k[c]); !lc.flat()) {
+      assert(s.max_impact > 0.f && "装盘口成本要封顶 (Config::max_impact)");
+      cost_at[c] = cols.refs.size();
+      for (const Col &l : lc.leg)
+        cols.add(l);
+    }
 
   Y.gate.assign(n, 0);
   Y.eo.assign(n, 0);
-  const auto alloc = [&](std::vector<LegPlane> &ps, size_t k, bool m) {
-    ps.resize(k);
-    for (LegPlane &p : ps) {
-      for (std::vector<uint16_t> &v : p.v)
+  const auto alloc = [&](std::vector<LegPlane> &ps, const std::vector<size_t> &at, bool m) {
+    ps.resize(at.size());
+    for (size_t j = 0; j < at.size(); ++j) {
+      if (at[j] == kFlat)
+        continue;
+      for (std::vector<uint16_t> &v : ps[j].v)
         v.assign(n, 0);
       if (m)
-        p.m.assign(n, 0);
+        ps[j].m.assign(n, 0);
     }
   };
-  alloc(Y.labels, H, true);
-  alloc(Y.costs, C, false);
+  alloc(Y.labels, lab_at, true);
+  alloc(Y.costs, cost_at, false);
   // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
   constexpr float kNoCap = std::numeric_limits<float>::infinity();
   const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {s.max_impact, kNoCap};
@@ -301,15 +309,17 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
         Y.eo[row + a] = static_cast<uint8_t>(c);
       }
     };
-    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 j 的腿 l = 列 base + K·j + l.
+    // 两腿列组 (标签 / 成本同一份折叠): 组 j 的腿 l = 列 at[j] + l (固定段跳过).
     // 标签: 池内 (gate) ∧ 两腿皆有限 → fp16 位 + 有效位 (须有可成交码), 其余 0.
     // 成本 (cost): 逐腿 池内 ∧ 有限 → fp16 位, 其余 0; 该腿可建仓 (eo & eo_open(l)) 的格须有限 (cost_rows 只在可建仓时取), 无有效位
-    const auto fold_legs = [&](size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, bool cost) {
+    const auto fold_legs = [&](const std::vector<size_t> &at, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, bool cost) {
       for (size_t j = 0; j < out.size(); ++j) {
+        if (at[j] == kFlat)
+          continue;
         View w[K];
         feature_storage_t top[K];
         for (size_t l = 0; l < K; ++l) {
-          w[l] = view(base + K * j + l, t);
+          w[l] = view(at[j] + l, t);
           top[l] = static_cast<feature_storage_t>(cap[l]);
         }
         LegPlane &p = out[j];
@@ -337,8 +347,8 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       fold_eo(t, row);
-      fold_legs(lab_i, lab_cap, Y.labels, t, row, false);
-      fold_legs(cost_i, cost_cap, Y.costs, t, row, true);
+      fold_legs(lab_at, lab_cap, Y.labels, t, row, false);
+      fold_legs(cost_at, cost_cap, Y.costs, t, row, true);
     }
   });
   if (!read)
@@ -350,18 +360,17 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
 bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   TraceN("FactorsLoadB");
   const FeatureTable &ft = io.ft;
-  assert(factor_level(ft.seg).lvl == L_1day && "篮子只在日层 (行 D 成员位 = D−1 收盘定的池, D 收盘换仓)");
   B = BPlanes{};
   B.sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg);
-  // ---- 列段 ts_valid | close adj_factor total_shares val[kPoolVals] ind_l1, 全是标签库网格层本层列 ----
+  // ---- 列段 ts_valid close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 (日频原料 bar.1d, as-of 到网格行) ----
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), px_i = cols.add(ft.b.ohlc[3]), adj_i = cols.add(ft.b.adj_factor), sh_i = cols.add(ft.b.total_shares);
   const size_t val_i = cols.refs.size();
   for (const Col &v : ft.b.val)
     cols.add(v);
   const size_t ind_i = cols.add(ft.b.ind_l1);
-  assert(cols.refs[ts_i].pool == io.dm.rs.main && "篮子列在标签库");
+  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / K 线在标签库");
   std::vector<float> vadj(n, 0.f); // 本行 adj_factor (盘后列, as-of = 当日因子; 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
   B.close.resize(n);
   B.mcap.assign(n, 0.f);
@@ -402,7 +411,7 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   });
   if (!read)
     return false;
-  // 后复权 close(D) = close_day(D) × D 日复权因子 (本行 as-of). 只比值进收益, 首日归一无关
+  // 后复权 close = 本行 close × 当日复权因子 (本行 as-of). 只比值进收益, 首日归一无关
   io.ex.rows(B.sh.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i) {
       const float f = vadj[i];
@@ -478,7 +487,7 @@ factor::stat::Labels labels_pick(const factor::stat::Labels &L, const Pick &p) {
 }
 
 std::string block_key(const FeatureTable &ft, const Domain &dm, const Chunk &k, const BlockSpec &s) {
-  return std::to_string(ft.seg) + "|" + dm.key() + "|" + std::to_string(k.d0) + "-" + std::to_string(k.d1) + "|" + s.y.key() + (s.b ? "|b" : "");
+  return std::string(factor_level(ft.lv).name) + "|" + dm.key() + "|" + std::to_string(k.d0) + "-" + std::to_string(k.d1) + "|" + s.y.key() + (s.b ? "|b" : "");
 }
 
 namespace {

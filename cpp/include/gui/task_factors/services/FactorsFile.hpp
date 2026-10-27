@@ -16,8 +16,7 @@
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
-//         "turn": [[CostAcc]…],                               //   每持有期两腿换手量 (只量; 因子表年换手)
-//         "costs": [{amt, acc: [[CostAcc]…]}…],               //   每金额段 × 每持有期换手成本累加器 (Inspect 净线从它算)
+//         "costs": [{amt, acc: [[CostAcc]…]}…],               //   每金额段 (amt 0 = 固定段) × 每持有期换手成本累加器 (年换手 / Inspect 净线从它算)
 //         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 因子表小图空): 每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).

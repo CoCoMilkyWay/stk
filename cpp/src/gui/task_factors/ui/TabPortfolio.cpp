@@ -219,15 +219,15 @@ PortfolioCurve curve_of(const Inc &s, int i, double x0) {
   compound(s.d[i].data(), s.x.size(), [&](size_t k, double l) { c.x.push_back(s.x[k]), c.y.push_back(l); });
   return c;
 }
-// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorCurve 逐行增量 (fold_book 已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在行末:
-//   分钟层 = 行末分钟; 日层 = 当日收盘
+// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorCurve 逐行增量 (fold_book 已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在行末分钟
+// (日层行末 = 收盘)
 template <class Wt>
 Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_impact, const Wt &wt) {
-  const int S = f.seg;
-  const factor::Geo g = factor::geo_of(S);
+  const factor::Geo g = factor_level(f.lv).geo();
+  const int S = g.S;
   assert(!f.dates.empty() && f.nav.n == kCurveLines && static_cast<size_t>(f.nav.P) == f.dates.size() * static_cast<size_t>(S));
   const float *pnl = f.nav_at(kCurvePnl), *imp = f.nav_at(kCurveImp), *fix = f.nav_at(kCurveFix);
-  const auto row_x = [&](size_t dl, int ts) -> size_t { return x_at(di[dl], S == 1 ? kClose : static_cast<size_t>(g.minute(ts))); };
+  const auto row_x = [&](size_t dl, int ts) -> size_t { return x_at(di[dl], static_cast<size_t>(g.minute(ts))); };
   Inc o;
   for (size_t dl = 0; dl < di.size(); ++dl) {
     const double k = wt(di[dl]);
@@ -304,8 +304,8 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     pf.id = its[q]->e.key();
     pf.en = std::filesystem::path(its[q]->e.file).stem().string();
     pf.cn = its[q]->name_cn;
-    pf.kind = f.amt > 0 ? "冲击 " + std::to_string(f.amt) + "w" : std::string("冲击 固定");
-    pf.note = its[q]->e.pool + " " + factor_level(its[q]->e.seg).name + " " + factor::stat::hold_name(its[q]->e.hold);
+    pf.kind = "冲击 " + amt_name(f.amt);
+    pf.note = its[q]->e.pool + " " + factor_level(its[q]->e.lv).name + " " + factor::stat::hold_name(its[q]->e.hold);
     pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f.hold);
     pf.c = curve_of(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen) - kStartDx);
     pf.item = *its[q];
@@ -336,7 +336,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
     return b;
   };
 
-  // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; note = 年换手 (日均 × kDaysPerYear);
+  // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; note = 年换手;
   //      每条可成交线后接同池同权的理想 (收盘价) 线 (默认关) ----
   std::set<std::string> own; // 组合里有因子的池
   for (const PortfolioItem &it : items)
@@ -355,7 +355,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
       p.on = own.contains(pd.name);
       if (pc) {
         char turn[48];
-        std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", pc->turn[w] * factor::stat::kDaysPerYear);
+        std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", pc->turn[w]);
         p.note = q.note = turn;
       }
       d.pools.push_back(std::move(p));
@@ -735,7 +735,7 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
         "• 每行开 1/h̄ 净值一批 (h̄ = 平均持有行数, 全日平均满仓), 换手按 Δw: 上一批平仓与本批建仓同一价格点时只交接差额 (留仓不成交);\n"
         "  新进成交不了不建仓、续持者封板照持也加不了仓, 平仓成交不了的顺延\n"
         "• Lob 层: 增仓 × 最小金额段冲击 (封顶 max_impact) + 平仓量 × 固定冲击 %.1f bp\n"
-        "• Bar 层 (无冲击段): 增仓量 / 平仓量都按固定冲击 %.1f bp\n"
+        "• Bar 层 (固定段): 增仓量 / 平仓量都按固定冲击 %.1f bp\n"
         "• 组合只算 G20 多头; 无冲击线不扣",
         fixed_impact * 1e4, fixed_impact * 1e4);
   ImGui::SameLine();
@@ -1122,7 +1122,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     const PortfolioFactor &f = d.factors[i];
     const PortfolioItem &it = f.item;
     if (line(f, v.factors[i], factor_color(d, i)))
-      tip("%s  %s\n• %s\n• 规范串 %s", f.en.c_str(), it.name_cn.c_str(), hold_desc(it.e.hold, it.e.seg).c_str(), it.e.expr.c_str());
+      tip("%s  %s\n• %s\n• 规范串 %s", f.en.c_str(), it.name_cn.c_str(), hold_desc(it.e.hold, it.e.lv).c_str(), it.e.expr.c_str());
   }
   group("指数");
   for (size_t i = 0; i < d.pools.size(); ++i)
@@ -1198,7 +1198,7 @@ void SyncPortfolioDir(PortfolioUIState &ui, const std::string &dir) {
   relist(ui, ui.name);
 }
 
-void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, int seg, int hold) {
+void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, LevelId lv, int hold) {
   const ImGuiStyle &st = ImGui::GetStyle();
   const float h = 3.0f * ImGui::GetFrameHeightWithSpacing() - st.ItemSpacing.y + 2.0f * st.WindowPadding.y;
   constexpr float kW1 = 250.0f, kW2 = 380.0f;
@@ -1279,7 +1279,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
   const bool row_ok = view_row && view_row->error.empty() && !view_row->expr.empty();
   ImGui::BeginDisabled(ui.name.empty() || !row_ok || hold <= 0);
   if (ImGui::SmallButton("Add")) {
-    const PortfolioEntry e{pool, seg, view_row->file, view_row->expr, hold};
+    const PortfolioEntry e{pool, lv, view_row->file, view_row->expr, hold};
     const auto dup = std::find_if(ui.entries.begin(), ui.entries.end(), [&](const PortfolioEntry &x) { return x.key() == e.key(); });
     if (dup != ui.entries.end()) {
       ui.msg = entry_label(e) + " 已在组合里";
@@ -1326,7 +1326,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
       tip("%s / %s  %s  %s\n"
           "• %s\n"
           "• 规范串 %s%s%s",
-          e.pool.c_str(), factor_level(e.seg).name, e.file.c_str(), it ? it->name_cn.c_str() : "", hold_desc(e.hold, e.seg).c_str(), e.expr.c_str(),
+          e.pool.c_str(), factor_level(e.lv).name, e.file.c_str(), it ? it->name_cn.c_str() : "", hold_desc(e.hold, e.lv).c_str(), e.expr.c_str(),
           bad ? "\n• 失效: " : "", bad ? it->missing.c_str() : "");
   }
   ImGui::EndChild();

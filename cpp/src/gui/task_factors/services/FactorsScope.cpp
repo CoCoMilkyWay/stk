@@ -28,14 +28,14 @@ std::string Domain::key() const {
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
 
-bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, Domain &dm, std::string &why) {
+bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, bool basket, Domain &dm, std::string &why) {
   TraceN("Domain");
-  assert(sc.seg == ft.seg && "作用域层与字段表层不符");
-  const FactorLevel &lv = factor_level(ft.seg);
+  assert(sc.lv == ft.lv && "作用域层与字段表层不符");
+  const FactorLevel &lv = factor_level(ft.lv);
   const PoolId pool = pool_id(sc.pool);
   assert(level_for_pool(lv, pool_tier(pool)) && "该池不能用这个因子层");
   const PoolId lab = lv.lab(pool);
-  assert(ft.y.ts.ref(pool).pool == lab && ft.y.cs.ref(pool).pool == lab && "门控 / 标签 / 成本 / OHLC 在标签库");
+  assert(ft.y.ts.ref(pool).pool == lab && ft.y.cs.ref(pool).pool == lab && "门控 / 标签 / 成本 / K 线在标签库");
   const bool sub = pool != lab; // Lob 池 × Bar 标签: 截面再与上池成员
   const PerPool<FeatureLib> &libs = sc.libs;
   dm = Domain{};
@@ -46,6 +46,9 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
     assert(c.allowed);
     dm.used |= pool_bit(c.ref(pool).pool);
   }
+  if (basket)
+    for (const Col &c : ft.b.cols())
+      dm.used |= pool_bit(c.ref(pool).pool);
   for (const PoolId l : pool_ids())
     if (dm.used & pool_bit(l)) {
       assert(!libs[l].name.empty() && "请求没带该库清单 (factor_libs)");

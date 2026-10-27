@@ -43,8 +43,8 @@ BookLines fold_book(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int st
 
 namespace {
 
-// 篮子 (Baskets::index / val / turn; pool_line 只取篮子 0 等权): 日层门控行 D = D−1 收盘定的池 (盘中 as-of), D 收盘换仓, 故 D 的收益按行 D−1 的成员.
-//   B 的盘后列 (复权因子 / 股本 / 财务 / 行业) 经同一 as-of 已是行 D 当日适用值, 与 close_day 同行配对.
+// 篮子 (Baskets::index / val / turn; pool_line 只取篮子 0 等权): 门控行 = 当日池 (D−1 收盘定, 盘中 as-of, 整日常量), 行 t 的收益按上一有效 close 行的成员.
+//   B 的日频盘后列 (复权因子 / 股本 / 财务 / 行业) 经 as-of 已是当日适用值, 与本行 close 配对.
 //   pool_index 出指数 (fold_book, 标签; 顺延在标签里, 建仓 / 续持按 Stat 契约【仓位感知】); pool_baskets 出估值 + 篮子 0 两权重的逐行收益 / 权和 (BasketRows, 只给换手漂移;
 //   停牌行不更新 ⇒ 权带到复牌); pool_turn 用它算换手. 收益成分两者同一份 prev_rows (成分格 = 上一有效 close 行在池).
 
@@ -135,7 +135,8 @@ BookLines pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mc
 //   1) 资产条带并行, 沿 t 把 B.px 的副本补成上一有效收盘价 (停牌带着);
 //   2) 行并行, 每行一遍 A 轴:
 //      收益成分 (篮子 0 + 行业) = 上一有效 close 行 p (prev) 在池 (行业按行 p), 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 行 p 总市值 mcap;
-//      估值成分 (篮子 0 + 行业) = 上一行在池, 市值 = px × 本行总股本, 估值输入 val [PoolVal] / 行业取本行 (盘后列 as-of = 当日适用; DY 为股息率, 分子在此还原)
+//      估值成分 (篮子 0 + 行业) = 上一行在池, 市值 = px × 本行总股本, 估值输入 val [PoolVal] / 行业取本行 (盘后列 as-of = 当日适用; DY 为股息率, 分子在此还原:
+//      Fund 分母 = 算它那日 (前一交易日末行) 收盘 × 本行股本)
 void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const uint8_t *in, const std::vector<int32_t> &prev, Baskets &o, BasketRows &rows) {
   constexpr size_t K = Baskets::kBaskets;
   const factor::check::Plane &close = B.close;
@@ -143,7 +144,7 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const uint8_t *in,
   const uint8_t *ind = B.ind.data();
   std::vector<float> pxv = B.px;
   float *px = pxv.data();
-  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A);
+  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), S = static_cast<size_t>(B.sh.seg);
   ex.rows(B.sh.A, [&](int a0, int a1, int) {
     std::vector<float> lp(static_cast<size_t>(a1 - a0), 0.f);
     for (size_t t = 0; t < nT; ++t)
@@ -187,7 +188,8 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const uint8_t *in,
         double num[kPoolVals];
         for (int m = 0; m < kPoolVals; ++m)
           num[m] = B.val[m][i];
-        num[kValDy] *= static_cast<double>(px[i - nA]) * sh[i]; // Fund 分母 = 算它那日 (上一行) 收盘 × 其次日 (本行) 股本
+        const size_t d0 = t - t % S; // 当日首行
+        num[kValDy] *= d0 > 0 ? static_cast<double>(px[(d0 - 1) * nA + a]) * sh[i] : static_cast<double>(kNaN);
         const double om[kWeights] = {1.0, mc};
         each_basket(ind[i], [&](size_t k) {
           for (int m = 0; m < kPoolVals; ++m)
@@ -271,7 +273,7 @@ void pool_turn(misc::exec::ForkJoin &ex, const factor::check::Plane &close, cons
 
 Baskets baskets(misc::exec::ForkJoin &ex, const YPlanes &Y, const BPlanes &B) {
   assert(B.sh == Y.sh && "篮子原料与 Y 同块");
-  assert(Y.hd.n == 1 && Y.hd.k[0] == factor::stat::hold_close(1) && "篮子的持有期只 T+1C (C(D) → C(D+1))");
+  assert(Y.hd.n == 1 && Y.hd.k[0] == factor::stat::hold_close(1) && "篮子的持有期只 T+1C (C(行) → C(D+1))");
   Baskets o;
   o.index = pool_index(ex, Y, B.mcap.data(), B.ind.data(), static_cast<int>(Baskets::kBaskets), kWeights);
   const std::vector<int32_t> prev = prev_rows(ex, B.close, B.sh.T, B.sh.A);

@@ -179,7 +179,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   if (res.key.empty() || !res.error.empty() || res.pl.ric.empty())
     return;
   assert(sel >= 0 && sel < res.hd.n);
-  const int T = res.scope.T, days = res.scope.days, S = res.seg;
+  const int T = res.scope.T, days = res.scope.days, S = factor_level(res.lv).seg;
   assert(T == days * S && days >= 1);
   const float *ric = res.ric_at(sel);
   assert(res.nav.n == res.hd.n * kNavLines && res.nav.P == days);
@@ -454,7 +454,7 @@ void asset_label(const FactorsUIContext &ctx, uint32_t gid, char *buf, size_t n)
 
 // 资产轴派生: 光标日 (day = 交易日下标) 各资产的日内均 R (有效刻平均) → 降序 (左 = G20 侧; 并列按池轴序); 当日无一有效刻的资产不列
 void derive_axis(const InspectResult &res, int day, std::vector<int> &order, std::vector<uint32_t> &gid, std::vector<float> &r) {
-  const int A = res.scope.A, S = res.seg;
+  const int A = res.scope.A, S = factor_level(res.lv).seg;
   assert(day >= 0 && day < res.scope.days && res.pl.rx.size() == static_cast<size_t>(res.scope.T) * A);
   std::vector<float> mean(static_cast<size_t>(A), 0.f);
   std::vector<int> cnt(static_cast<size_t>(A), 0);
@@ -555,7 +555,7 @@ bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, 
   return changed;
 }
 
-// K 线横轴: 全局行 (日下标 × seg + 行) → "YYMMDD HH:MM" (行末分钟; 日层只到日期)
+// K 线横轴: 全局行 (日下标 × seg + 行) → "YYMMDD HH:MM" (行末分钟)
 struct KlineAxis {
   const std::vector<misc::Ymd> *dates = nullptr;
   int seg = 0;
@@ -568,8 +568,6 @@ int minute_formatter(double v, char *buf, int size, void *ud) {
   const int S = ax.seg, days = static_cast<int>(dates.size());
   const long long g = std::clamp(static_cast<long long>(std::floor(v)), 0LL, static_cast<long long>(days) * S - 1);
   const int d = static_cast<int>(g / S), m = factor::geo_of(S).minute(static_cast<int>(g % S));
-  if (S == 1)
-    return std::snprintf(buf, size, "%06d", dates[static_cast<size_t>(d)] % 1000000);
   const ClockTime ct = L_1min_to_Clock(static_cast<size_t>(m));
   return std::snprintf(buf, size, "%06d %02d:%02d", dates[static_cast<size_t>(d)] % 1000000, ct.hour, ct.minute);
 }
@@ -997,11 +995,11 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
 // 净线 = 毛二级 − leg_sign(腿) · 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; L / S 按做多超额画, 空腿付成本 = 线上移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是腿成员 ∧ 标签有效格 (与组计数同口径)
-// hs[n_hold] 毛二级; costs[n_cost] 可空 (Bar 层无金额段). n < 3 的持有期不作节点.
+// hs[n_hold] 毛二级; costs[n_cost] 该层金额段 (至少一段; Bar 层 = 固定段). n < 3 的持有期不作节点.
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 = 画的年化
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, double fixed_impact, int sel_hold,
                const char *source, const ImVec2 &size) {
-  assert(n_hold >= 1 && n_cost >= 0 && fixed_impact >= 0.0);
+  assert(n_hold >= 1 && n_cost >= 1 && fixed_impact >= 0.0);
   char title[128];
   std::snprintf(title, sizeof(title), "期限结构: 年化池化均值超额 / 持有期  (%s)###term", source);
   {
@@ -1023,7 +1021,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   }
   tier_names[0] = "毛";
   for (int q = 1; q < n_tier; ++q)
-    tier_names[static_cast<size_t>(q)] = std::to_string(costs[q - 1].amt) + "w";
+    tier_names[static_cast<size_t>(q)] = amt_name(costs[q - 1].amt);
   // 线 c (c < kLegs = 腿 c 的组, c = kLegs = LS) 在金额段 q 下每期均值 (未年化): 毛原值; 净 = 毛 − leg_sign(c) · 该腿该持有期均摊换手成本 (LS 走契约 net_ls_period)
   const auto value = [&](int c, int q, int i) {
     const factor::stat::HoldStat &h = hs[i];
@@ -1119,7 +1117,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     if (pq > 0) {
       const factor::stat::CostAcc &ca = costs[pq - 1].acc[pi];
       const auto avg = [&](auto f) { return ls ? 0.5 * (f(kLong) + f(kShort)) : f(pc); }; // LS = 两腿平均, 否则该腿
-      const auto entry = [&](int l) { return ca.entry(l); };
+      const auto entry = [&](int l) { return ca.entry(l, fixed_impact); };
       const auto turn = [&](int l) { return factor::stat::turn_annual(h, ca, l); };
       const auto cost = [&](int l) { return ca.cost(l, fixed_impact, h.n_all); };
       amort = avg(cost);
@@ -1196,7 +1194,7 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 }
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
-std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { return inspect_key(ctx.seg, ctx.pool, row.key, row.expr); }
+std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { return inspect_key(ctx.lv, ctx.pool, row.key, row.expr); }
 
 } // namespace
 
@@ -1327,17 +1325,17 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("级别");
   ImGui::SameLine(0.f, 4.f);
-  ImGui::TextUnformatted(factor_level(ft.seg).name);
+  ImGui::TextUnformatted(factor_level(ft.lv).name);
   ImGui::SameLine(0.f, kCtlGap);
   ImGui::BeginGroup(); // Hold 周期名 + 开 / 清仓 (时点 / 价分色; 占位 = 各持有期最宽一条, 后面的控件不随 Hold 跳)
   hold_cycler(ui.hold_idx, ft);
   if (n_hold) {
     float w_max = 0.f;
     for (int i = 0; i < n_hold; ++i)
-      w_max = std::max(w_max, hold_points_line(hold_points(ft.y.labels[static_cast<size_t>(i)].key, ft.seg), false));
+      w_max = std::max(w_max, hold_points_line(hold_points(ft.y.labels[static_cast<size_t>(i)].key, ft.lv), false));
     ImGui::SameLine(0.f, kCtlGap * 0.5f);
     const float x0 = ImGui::GetCursorPosX();
-    hold_points_line(hold_points(cur_hold, ft.seg));
+    hold_points_line(hold_points(cur_hold, ft.lv));
     ImGui::SameLine(0.f, 0.f);
     ImGui::Dummy(ImVec2(std::max(0.f, x0 + w_max - ImGui::GetCursorPosX()), 0.f));
   }
@@ -1470,11 +1468,11 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
         }
         if (ui.kline_key != res.key || ui.kline_sub != k_sub) { // 换结果 / 换资产 → 新代从头流
           ++ui.kline_gen;
-          ui.kline_key = res.key, ui.kline_sub = k_sub, ui.kline_days = res.scope.days, ui.kline_seg = res.seg, ui.kline_last_pub_days = ~0ull;
+          ui.kline_key = res.key, ui.kline_sub = k_sub, ui.kline_days = res.scope.days, ui.kline_seg = factor_level(res.lv).seg, ui.kline_last_pub_days = ~0ull;
           kreq.emplace();
           kreq->gen = ui.kline_gen, kreq->scope = res.read_scope, kreq->dates = res.dates, kreq->sub = k_sub;
-          assert(ft.seg == res.seg && "字段表层与结果层不符");
-          kreq->level = factor_level(res.seg).lvl;
+          assert(ft.lv == res.lv && "字段表层与结果层不符");
+          kreq->level = factor_level(res.lv).lvl;
           for (int i = 0; i < 4; ++i)
             kreq->col[i] = ft.b.ohlc[i].col;
           kreq->col[4] = ft.y.ts.col;

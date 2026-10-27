@@ -136,7 +136,7 @@ struct RicP : LandRowsP<float> {
       at(hi, t) = r.ric;
   }
 };
-// 各级尾部 LS 线两腿的换手量 acc[j][hi] (Stat 契约【换手成本】的 Δw, cost_rows 只出量 C = 0; 顶底线 = CostP 的 turn):
+// 各级尾部 LS 线两腿的换手量 acc[j][hi] (Stat 契约【换手成本】的 Δw, cost_rows 走一个固定段; 顶底线 = CostP 的段 0):
 // 第 j 级尾部腿码 tail_code, 满仓 cap · kTailOfGroup[j] (与 TailRow 同口径); 块间续攒
 struct TurnP : ProbeBase {
   static constexpr uint8_t need = kNeedRx;
@@ -153,8 +153,9 @@ struct TurnP : ProbeBase {
       });
       factor::stat::Labels L = c.L;
       L.cap = c.L.cap * kTailOfGroup[j];
+      const factor::stat::Cost flat{};
       factor::stat::CostAcc out[factor::stat::kMaxHold];
-      factor::cpu::stat::cost_rows(c.ex, lc.data(), s, L, nullptr, 0, *c.w, out);
+      factor::cpu::stat::cost_rows(c.ex, lc.data(), s, L, &flat, 1, *c.w, out);
       for (int hi = 0; hi < L.hd.n; ++hi)
         acc[j][hi].merge(out[hi]);
     }
@@ -241,10 +242,10 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
 
   // ---- 结果骨架 ----
   InspectResult res;
-  res.key = inspect_key(sc.seg, sc.pool, req.spec.row, f.expr);
+  res.key = inspect_key(sc.lv, sc.pool, req.spec.row, f.expr);
   res.row = req.spec.row;
   res.expr = f.expr;
-  res.seg = sc.seg;
+  res.lv = sc.lv;
   res.frame = f.frame;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 worker (下次原地写)
     std::swap(res.pl, pl_);
