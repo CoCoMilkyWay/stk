@@ -7,6 +7,7 @@
 #include "gui/task_factors/services/FactorsLoad.hpp" // YPlanes / BPlanes
 #include "misc/exec.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -18,6 +19,14 @@ struct BookLines {
   int n = 0, P = 0; // 线数 / 每线点数 (= T / stride)
   std::vector<float> v;
   const float *at(int i) const { return v.data() + static_cast<size_t>(i) * static_cast<size_t>(P); }
+  // 线 [i0, i0 + m) 拷成一张
+  BookLines slice(int i0, int m) const {
+    assert(i0 >= 0 && m >= 0 && i0 + m <= n);
+    BookLines o;
+    o.n = m, o.P = P;
+    o.v.assign(at(i0), at(i0) + static_cast<size_t>(m) * static_cast<size_t>(P));
+    return o;
+  }
 };
 // 逐行批收益 (fold_book 入): x [n][T] = 线 i 行 t 这一批的收益 (占这批资金; 不 ok 记 0); hold[i] = 线 i 的持有期键 (各线可不同: 多持有期一次折完);
 // at_exit[i]: 1 = 收益 (平仓行 hold_exit_row 实现, 平仓越过 T 的批不计) / 0 = 成本 (建仓行即付)

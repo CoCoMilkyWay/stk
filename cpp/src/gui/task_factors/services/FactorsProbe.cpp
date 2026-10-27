@@ -54,30 +54,28 @@ void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, co
     sum_out += sum[static_cast<size_t>(k)], rows_out += rows[static_cast<size_t>(k)];
 }
 
-void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const factor::stat::Span &s, const factor::stat::Labels &L, const YPlanes &y,
-                factor::cpu::stat::Workspace &w, std::vector<CostTier> &out, factor::stat::CostAcc *qty, factor::stat::CostAcc *land) {
-  const int C = y.ad.n, H = L.hd.n;
-  assert(lc && qty && y.costs.size() == static_cast<size_t>(C));
-  if (out.empty()) {
-    out.assign(static_cast<size_t>(C), CostTier{});
-    for (int c = 0; c < C; ++c)
-      out[static_cast<size_t>(c)].amt = y.ad.a[c];
+void CostP::root(const Ctx &c, const RootView &v) {
+  const YPlanes &y = c.c.y;
+  const int C = y.ad.n, H = c.L.hd.n;
+  assert(v.lc && y.costs.size() == static_cast<size_t>(C));
+  if (costs.empty()) {
+    costs.assign(static_cast<size_t>(C), CostTier{});
+    for (int k = 0; k < C; ++k)
+      costs[static_cast<size_t>(k)].amt = y.ad.a[k];
   }
-  assert(out.size() == static_cast<size_t>(C));
-  std::vector<factor::stat::Cost> cost(static_cast<size_t>(C));
-  for (int c = 0; c < C; ++c)
-    cost[static_cast<size_t>(c)] = cost_of(y.costs[static_cast<size_t>(c)]);
-  std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(std::max(C, 1)) * H); // [c][hi]
-  factor::cpu::stat::cost_rows(ex, lc, s, L, cost.data(), C, w, acc.data(), land);
-  for (int i = 0; i < H; ++i) { // 量各段同一份 (cost_row): 取段 0, 冲击清零
+  assert(costs.size() == static_cast<size_t>(C));
+  const std::vector<factor::stat::Cost> cs = costs_of(y);
+  std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(std::max(C, 1)) * H); // [k][hi]
+  factor::cpu::stat::cost_rows(c.ex, v.lc, c.s(), c.L, cs.data(), C, *c.w, acc.data());
+  for (int i = 0; i < H; ++i) {
     factor::stat::CostAcc q = acc[static_cast<size_t>(i)];
     for (factor::stat::CostLeg &e : q.leg)
       e.imp = 0.0;
-    qty[i].merge(q);
+    turn[i].merge(q);
   }
-  for (int c = 0; c < C; ++c)
+  for (int k = 0; k < C; ++k)
     for (int i = 0; i < H; ++i)
-      out[static_cast<size_t>(c)].acc[i].merge(acc[static_cast<size_t>(c) * H + i]);
+      costs[static_cast<size_t>(k)].acc[i].merge(acc[static_cast<size_t>(k) * H + i]);
 }
 
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o) {

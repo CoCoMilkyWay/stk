@@ -74,7 +74,7 @@ struct InspectDerived {
   // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围 / LS 平移量按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
   float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};
-  analysis::AggPdf ic_pdf;      // = InspectResult::ic_pdf 选定 hold (n_pts = 0 → 样本不足不画)
+  analysis::AggPdf ic_pdf;      // = InspectResult::ic_agg 选定 hold (n_pts = 0 → 样本不足不画)
   std::vector<float> ic_series; // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
   AlphaDist adist;              // = InspectResult::alpha_dist (左下右半, 与持有期无关)
   factor::stat::HoldStat hs;    // 选定 hold 的二级

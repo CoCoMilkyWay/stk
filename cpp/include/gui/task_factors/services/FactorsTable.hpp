@@ -1,6 +1,6 @@
 // FactorsTable — 因子层公共类型 (GUI 线程建, worker 只读; 四服务与装载层共用):
 //   因子层 FactorLevel ↔ 网格层 / 标签档 / 因子子目录; 字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 / OHLC / 估值列);
-//   作用域 FactorScope + 请求 Request<Spec> / FactorJob; 评估结果 EvalStat (StatScope / HoldStat / CostTier) + 小图 MiniPdf / AlphaDist.
+//   作用域 FactorScope + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat (StatScope / HoldStat / CostTier / MiniPdf) + AlphaDist.
 #pragma once
 
 #include "codec/L2_DataType.hpp" // L2::ValidType
@@ -149,7 +149,7 @@ struct Request {
   bool reload = false; // 弃作用域缓存整体重读 (特征库重算过 / 手动 Compute; 每轮本就重读的服务不看)
 };
 // 一个因子 (Inspect 请求 / Portfolio 条目同一份): 具体规范串 (已校验, worker 用 scope.ft->reparse 再解析) + 口径
-struct FactorJob {
+struct FactorRef {
   std::string expr;
   factor::stat::Frame frame = factor::stat::Frame::CS;
 };
@@ -189,7 +189,8 @@ struct AlphaDist {
   float gmean[factor::stat::kGroups] = {};            // 组均值
   std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
 };
-// 一个根的评估结果 (Run 行 / Inspect 结果同一份; FactorsProbe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针)
+// 一个根的评估结果 (Run 行 / Inspect 结果同一份; FactorsProbe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针;
+// StatJson scope_json + eval_json ⇄ load_eval)
 struct EvalStat {
   StatScope scope;                       // stat 的作用域 (FactorsLoad stat_scope)
   double eval_ms = 0;                    // 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
@@ -198,11 +199,17 @@ struct EvalStat {
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
   factor::stat::CostAcc turn[factor::stat::kMaxHold];  // [hold] 两腿换手量 (只量, imp 恒 0; 与金额段无关, 无段的层也有): 年换手 turn_annual
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序, 每金额段 [n_hold] CostAcc (Inspect 净线从它算)
+  MiniPdf ic_pdf[factor::stat::kMaxHold];              // [hold] 逐行 rIC (ok 行) 分布 (FactorsProbe IcPdfP; 因子表小图)
+  MiniPdf alpha_pdf;                                   // alpha 分布 (截尾; FactorsProbe AlphaP; 与持有期无关)
   const factor::stat::HoldStat *find_hold(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)
         return &hold[j];
     return nullptr;
+  }
+  const MiniPdf *find_ic_pdf(int hold_m) const {
+    const factor::stat::HoldStat *h = find_hold(hold_m);
+    return h ? &ic_pdf[h - hold] : nullptr;
   }
   const factor::stat::CostAcc &turn_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
     assert(&h >= hold && &h < hold + n_hold);

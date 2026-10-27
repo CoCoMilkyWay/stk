@@ -158,7 +158,7 @@ struct RxP : LandCellsP<uint16_t> {
 };
 // 不看池的秩 (g = xm) 落地 [rows_all][A] (统计行; 只给 K 线显示池外段, 评估不用)
 struct RxAllP : LandCellsP<uint16_t> {
-  static constexpr uint8_t need = kNeedMask;
+  static constexpr uint8_t need = kNeedMask | kNeedX;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
@@ -166,17 +166,17 @@ struct RxAllP : LandCellsP<uint16_t> {
     factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.T - s.t_lo, s.A, s.g}, stat_at(s), *c.w);
   }
 };
-using InspectProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, IcPdfP, RxP, RxAllP, RicP, NavP, TurnP>;
+using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP, TurnP>;
 
 } // namespace
 
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload,
-                        InspectRequest &req) {
+                        bool gpu, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
-  req.spec = InspectSpec{FactorJob{row.expr, row.frame}, row.key};
+  req.spec = InspectSpec{FactorRef{row.expr, row.frame}, row.key};
   req.reload = reload;
-  return MakeFactorScope(data, std::move(ft), pool, /*gpu=*/false, req.scope);
+  return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope);
 }
 
 InspectService::InspectService() { Start(); }
@@ -188,13 +188,15 @@ bool InspectService::run(InspectRequest &req) {
     message.clear();
   }
   publish();
-  return eval(req, flow());
+  const bool ok = eval(req, flow());
+  flow().drop_engines(); // 作用域块跨请求留, 引擎不留
+  return ok;
 }
 
 bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   TraceN("InspectEvaluate");
   const FactorScope &sc = req.scope;
-  const FactorJob &f = req.spec.f;
+  const FactorRef &f = req.spec.f;
   if (req.reload)
     F.c.reset();
 
@@ -207,15 +209,19 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   ps.at<RxAllP>().dst = &pl_.rx_all;
   ps.at<RicP>().dst = &pl_.ric;
   JobOut o;
-  const Rc rc = eval_job(F.engine<Cpu>(), F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o);
+  const char *backend = nullptr;
+  const Rc rc = F.with_engine<InspectProbes>(sc.gpu, [&](auto &eng) {
+    backend = std::remove_reference_t<decltype(eng)>::kName;
+    return eval_job(eng, F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o);
+  });
   if (aborted(rc))
     return abort_out(rc);
   if (rc == Rc::Empty) {
     std::lock_guard<std::mutex> lock(mutex);
-    message = o.why;
+    message = o.job.why;
     return true;
   }
-  const YPlanes &y = block_of(F, o, 0).y;
+  const YPlanes &y = o.job.blocks.of(0).y;
   if (pool_gen_ != F.c.gen) {
     pool_ = pool_line(F.ex, y);
     pool_gen_ = F.c.gen;
@@ -228,9 +234,9 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   res.expr = f.expr;
   res.seg = sc.seg;
   res.frame = f.frame;
-  const StatScope scope = stat_scope(sc, o.es, y, Engine<Cpu>::kName);
-  res.dates = o.es.dates;
-  res.read_scope = o.es.rs;
+  const StatScope scope = stat_scope(sc, o.job.es, y, backend);
+  res.dates = o.job.es.dates;
+  res.read_scope = o.job.es.rs;
   res.pool_index = pool_;
   res.hd = y.hd;
   const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 worker (下次原地写)
@@ -247,14 +253,14 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   // ---- 叶值域越界 (与 Run 同一套 plan_forest): 只发头部 + error ----
   if (rc == Rc::Broken) {
     res.scope = scope;
-    res.error = o.why;
+    res.error = o.job.why;
     pl_.clear(); // 无一级 / 无 rx
     publish_result();
     return true;
   }
   fill_eval(ps, scope, o.eval_ms(0), res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);
-  std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_pdf);
+  std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
   res.nav = std::move(ps.at<NavP>().out);
   for (int j = 0; j < kTails; ++j)
     std::copy_n(ps.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);

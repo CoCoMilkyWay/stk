@@ -16,7 +16,7 @@
 //   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
 //                                                            RxAllP 另跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
 //   C  成本                                                → leg_codes(rx) → CostTier[C] (FactorsTable.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsProbe
-//                                                            cost_tiers, 与 Run 同一份; Stat 契约【换手成本】: 腿成员 = 腿码 ∧ 标签有效位, 逐格 Δw,
+//                                                            CostP → cost_rows, 与 Run 同一份; Stat 契约【换手成本】: 腿成员 = 腿码 ∧ 标签有效位, 逐格 Δw,
 //                                                            同一价点才与 t−h 交接; 一遍 [T][A], 无排序). 期限结构的净线 = 毛二级 − 两腿均摊成本 (含 Config::fixed_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; fixed_impact 只进均摊公式, 不进请求)
 //   L  评估 + 尾部                                         → 一级 Row (逐行, 不落) + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all); 逐行 rIC 落 InspectPlanes::ric;
@@ -50,10 +50,10 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-// 请求 = 一个因子 (FactorJob, 与 Portfolio 条目同一份) + 权重行 key; reload = 弃缓存整体重读 (特征库重算过 / 手动 Compute).
+// 请求 = 一个因子 (FactorRef, 与 Portfolio 条目同一份) + 权重行 key; reload = 弃缓存整体重读 (特征库重算过 / 手动 Compute).
 // scope.max_impact 装载时生效 → 进作用域缓存键; scope.gpu 不看 (只 CPU)
 struct InspectSpec {
-  FactorJob f;
+  FactorRef f;
   std::string row; // 权重行 key (FactorRow::key = 文件#权重号)
 };
 using InspectRequest = Request<InspectSpec>;
@@ -62,7 +62,7 @@ inline std::string inspect_key(int seg, const std::string &pool, const std::stri
   return std::to_string(seg) + "|" + row + "|" + expr + "|" + pool;
 }
 // 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表
-bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload,
+bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload, bool gpu,
                         InspectRequest &req);
 
 // 尾部分层 (Inspect 专属, 不进 Stat 契约): 两腿的组 (顶 / 底) 内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
@@ -102,7 +102,7 @@ struct InspectResult : EvalStat {
   InspectPlanes pl;                                                   // 一级平面 (rIC / 秩)
   BookLines nav;                                                      // 分层累计的日收益 [hd.n · kNavLines][days] (线 hi · kNavLines + i, 见 kNavLines)
   factor::stat::CostAcc ls_turn[kTails][factor::stat::kMaxHold] = {}; // [尾部 j][hi] LS 线 1 + j 两腿换手量 (只量, imp 恒 0; 见 flow T); 取用 ls_turn_of
-  analysis::AggPdf ic_pdf[factor::stat::kMaxHold];                    // [hi] 逐行 rIC (ok 行) 分布 (= Run 行小图同一份成品; 左下左半)
+  analysis::AggPdf ic_agg[factor::stat::kMaxHold];                    // [hi] 逐行 rIC (ok 行) 分布全分辨率 (EvalStat::ic_pdf 是它的迷你版; 左下左半)
   AlphaDist alpha_dist;                                               // alpha 分布 (全体 + 各组, 左下右半图)
   std::string error;                                                  // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 

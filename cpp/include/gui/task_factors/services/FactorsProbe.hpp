@@ -2,7 +2,7 @@
 //   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
 //   通用探针 Hold / Cost / Valid / Rank / Alpha / IcPdf 四服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
 //   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
-//   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); cost_tiers 换手成本 (块间续攒, 可另落逐行); alpha_dist alpha 分布
+//   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / CurveP 平级); alpha_dist alpha 分布
 //   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / Portfolio 曲线同一份).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
 #pragma once
@@ -38,12 +38,6 @@ void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, co
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o);
 // 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
-// 换手成本 (Stat 契约【换手成本】, Run / Inspect / Portfolio 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份), s = 块形 (统计行 [t_lo, T)),
-// L = 所评持有期的标签 (有效位 / cap), Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → 续攒进 out[c].acc[hi] (c 按 y.ad 序, hi 按 L.hd 序;
-// out 空 → 先按 y.ad 建) + 量 qty[hi] (与金额段无关, imp 恒 0; 无金额段也攒). w = Stat CPU 工作区 (ensure 过 C = y.ad.n); 无金额段 → out 空.
-// land 非空 → 另落逐行 land[(c·H + hi)·s.T + t] (cost_rows 的 land; 无金额段按一段排, 只出量)
-void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const factor::stat::Span &s, const factor::stat::Labels &L, const YPlanes &y,
-                factor::cpu::stat::Workspace &w, std::vector<CostTier> &out, factor::stat::CostAcc *qty, factor::stat::CostAcc *land = nullptr);
 // 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 不 ok → 0)
 inline double group_abs(const factor::stat::Row &r, int k, double cap) {
   return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt[factor::stat::kLong], cap) : 0.0;
@@ -59,11 +53,12 @@ inline double group_abs(const factor::stat::Row &r, int k, double cap) {
 //   bytes(sh, H)      宿主另占 (字节; 预算)
 // 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按绝对行 t0_abs + t)
 enum Need : uint8_t {
-  kNeedRows = 1,  // 一级 Row 进 row 钩子
-  kNeedRx = 2,    // r16(x) [T][A]
-  kNeedLc = 4,    // 腿码 [T][A]
-  kNeedMask = 8,  // 根掩码 [T][A]
-  kNeedAlpha = 16 // 根的输入平面
+  kNeedRows = 1,   // 一级 Row 进 row 钩子
+  kNeedRx = 2,     // r16(x) [T][A]
+  kNeedLc = 4,     // 腿码 [T][A]
+  kNeedMask = 8,   // 根掩码 [T][A]
+  kNeedAlpha = 16, // 根的输入平面
+  kNeedX = 32      // 根值 [T][A]
 };
 // 根的 r16 抽样行 (CPU 拷宿主 rx / GPU 批核 search_ranks): 行 t0 + i·stride (i < n_rows) → out[n_rows][A]
 struct Ranks {
@@ -77,7 +72,7 @@ struct Ranks {
 };
 // 一个根在本块的原料 (两后端同形; 块内 [T][A]); 缺的 (need 没要) 为空
 struct RootView {
-  factor::stat::Plane x;     // 根: m 要 kNeedMask; v 只 CPU
+  factor::stat::Plane x;     // 根: v 要 kNeedX, m 要 kNeedMask
   factor::stat::Plane alpha; // 根的输入 (kNeedAlpha)
   factor::stat::Frame f = factor::stat::Frame::CS;
   const uint16_t *rx = nullptr;             // r16(x) (kNeedRx)
@@ -170,12 +165,13 @@ struct HoldP : ProbeBase {
     factor::stat::finish_all(acc, c.L.hd, c.c.y.sh.seg, hold);
   }
 };
-// 换手成本 CostTier[C] + 换手量 turn[H] (契约【换手成本】): 块间续攒
+// 换手成本 CostTier[C] + 换手量 turn[H] (契约【换手成本】): Stat cost_rows (腿码 lc × 全部金额段 costs_of(y)) 块间续攒.
+// 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部腿码只出量 (C = 0) / Portfolio CurveP 另落逐行 (land)
 struct CostP : ProbeBase {
   static constexpr uint8_t need = kNeedLc;
-  std::vector<CostTier> costs;
-  factor::stat::CostAcc turn[factor::stat::kMaxHold] = {};
-  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs, turn); }
+  std::vector<CostTier> costs;                             // [amt] = y.ad 序 (首块按 y.ad 建)
+  factor::stat::CostAcc turn[factor::stat::kMaxHold] = {}; // [hi] 量 (各段同一份: 取段 0, imp 清零; 无金额段也攒)
+  void root(const Ctx &c, const RootView &v);
 };
 // 池内有效率 valid% (统计行)
 struct ValidP : ProbeBase {
@@ -299,11 +295,15 @@ struct LinesP : ProbeBase {
     x = {};
   }
 };
-// 作用域头 / 耗时 / 二级 / 换手 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份)
+// EvalStat 的探针组 (Run 行 / Inspect 结果同一份): 通用六探针在前, X = 服务私有探针
+template <class... X>
+using EvalProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, IcPdfP, X...>;
+// 作用域头 / 耗时 / 二级 / 换手 / 成本 / 有效率 / 可秩率 / 小图 → EvalStat (EvalProbes 的成品)
 template <class Ps>
 void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st) {
   const HoldP &h = p.template at<HoldP>();
   const CostP &c = p.template at<CostP>();
+  const IcPdfP &ic = p.template at<IcPdfP>();
   st.scope = scope;
   st.eval_ms = eval_ms;
   st.valid_pct = p.template at<ValidP>().pct;
@@ -312,6 +312,9 @@ void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st
   std::copy_n(h.hold, h.n_hold, st.hold);
   std::copy_n(c.turn, h.n_hold, st.turn);
   st.costs = c.costs;
+  for (int hi = 0; hi < h.n_hold; ++hi)
+    st.ic_pdf[hi] = mini_pdf_of(ic.pdf[hi]);
+  st.alpha_pdf = mini_pdf_of(p.template at<AlphaP>().d.pdf);
 }
 
 } // namespace GUI::Factors

@@ -90,6 +90,13 @@ struct YPlanes {
   std::vector<LegPlane> costs;  // [amt] 两腿建仓冲击 (比例): 买入 (封顶) / 卖出; 采样同标签, 标签有效格恒有限 (装载断言), 无有效位
   double n_full = 0.0;          // 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 池内平均每行有效资产数 / kGroups: 池宽决定, 与因子无关 (YSpec::cap > 0 → 它)
 };
+// 全部金额段的成本视图 [amt] (= y.ad 序; cost_rows 的 c, C = y.ad.n)
+inline std::vector<factor::stat::Cost> costs_of(const YPlanes &y) {
+  std::vector<factor::stat::Cost> c;
+  for (const LegPlane &p : y.costs)
+    c.push_back(cost_of(p));
+  return c;
+}
 // 日层篮子原料 (load_b; 标签库网格层本层列, 交 FactorsBook baskets)
 struct BPlanes {
   Shape sh;
@@ -146,6 +153,8 @@ std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, si
 // (codes 空 ∧ retain = 只 Y); t_lo = 前带行数. Ok / Cancel / Stale (判废 → 块 reset)
 Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const Chunk &k, const YSpec &ys,
              const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
+// ensure_xy 之后块上的叶数 (预算): retain 或键 key 不中 → codes; 否则 = 已留 ∪ codes
+size_t resident_leaves(const ScopeCache &c, const std::string &key, const std::vector<std::string> &codes, bool retain);
 // 叶平面视图 (DAG 输入: 下标 = codes 下标 = Dag::feats 下标); 全部须已装
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes);
 

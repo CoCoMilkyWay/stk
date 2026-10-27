@@ -111,15 +111,34 @@ struct View {
   const uint32_t *ids = nullptr;
   L2::ValidType vt = L2::ValidType::ALL;
 };
-// 格 a: 有源 → x = 值, g = 同行门控 (不门控 = 1)
+// 格 a 的源下标 (kAbsent = 无源 / 资产不在该库)
+uint32_t src_of(const View &w, size_t a) { return !w.v ? kAbsent : w.ids ? w.ids[a] : static_cast<uint32_t>(a); }
+// 格 a: 有源 → x = 值 (+ g = 同行门控, 不门控 = 1)
+bool cell(const View &w, size_t a, feature_storage_t &x) {
+  const uint32_t i = src_of(w, a);
+  if (i == kAbsent)
+    return false;
+  x = w.v[i];
+  return true;
+}
 bool cell(const View &w, size_t a, feature_storage_t &x, float &g) {
-  const uint32_t i = w.ids ? w.ids[a] : static_cast<uint32_t>(a);
-  if (!w.v || i == kAbsent)
+  const uint32_t i = src_of(w, a);
+  if (i == kAbsent)
     return false;
   x = w.v[i];
   g = w.g ? static_cast<float>(w.g[i]) : 1.f;
   return true;
 }
+
+// 一张读计划的列段 (load_x / load_y / load_b / n_full_of 同一份): 各列按因子池投影, add → 平面列号
+struct ColList {
+  PoolId pool;
+  std::vector<ColRef> refs;
+  size_t add(const Col &c) {
+    refs.push_back(c.ref(pool));
+    return refs.size() - 1;
+  }
+};
 
 // 张量形 (容量断言在此): days × A → T = days · seg
 Shape shape_of(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1) {
@@ -190,12 +209,11 @@ template <class ViewFn>
 void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const EvalScope &es, const Day &day, size_t VR, size_t A, std::vector<uint8_t> &has,
               uint8_t *gate) {
   feature_storage_t x;
-  float g;
   std::fill(has.begin(), has.end(), static_cast<uint8_t>(0));
   for (size_t t = 0; t < VR; ++t) {
     const View wt = view(ts_i, t);
     for (size_t a = 0; a < A; ++a)
-      has[a] |= cell(wt, a, x, g) && fmeta::data_valid(static_cast<float>(x));
+      has[a] |= cell(wt, a, x) && fmeta::data_valid(static_cast<float>(x));
   }
   if (es.member) {
     const uint8_t *mem = es.member->row(day.date);
@@ -205,7 +223,7 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const EvalScope &es,
   for (size_t t = 0; t < VR; ++t) {
     const View wc = view(cs_i, t);
     for (size_t a = 0; a < A; ++a)
-      gate[t * A + a] = cell(wc, a, x, g) && fmeta::data_valid(static_cast<float>(x)) && has[a];
+      gate[t * A + a] = cell(wc, a, x) && fmeta::data_valid(static_cast<float>(x)) && has[a];
   }
 }
 
@@ -219,16 +237,16 @@ bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   X.codes = spec.codes;
   const size_t A = static_cast<size_t>(X.sh.A), n = X.sh.n(), VR = static_cast<size_t>(ft.seg), nf = spec.codes.size();
   // ---- 列段 叶 [nf], 各按所在 (池, 层) 投影到网格行 ----
-  std::vector<ColRef> cols;
+  ColList cols{es.pool, {}};
   for (const std::string &f : spec.codes) {
     const FeatCol *c = ft.x.find(f);
     assert(c && c->allowed);
-    cols.push_back(c->ref(es.pool));
+    cols.add(*c);
   }
   X.v.resize(nf);
   for (factor::check::Plane &p : X.v)
     p.resize(n);
-  return read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
+  return read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
     feature_storage_t x;
     float g;
     for (size_t t = 0; t < VR; ++t) {
@@ -260,21 +278,17 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
   // ---- 列段 ts_valid | cs_valid | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行). 可成交 / 顺延已在标签里 (features LabelHold), 不另读 ----
-  std::vector<ColRef> cols;
-  const auto add = [&](const Col &c) {
-    cols.push_back(c.ref(es.pool));
-    return cols.size() - 1;
-  };
-  const size_t ts_i = add(ft.y.ts), cs_i = add(ft.y.cs);
-  assert(cols[ts_i].pool == es.rs.main && "门控 / 标签 / 成本在标签库");
-  const size_t lab_i = cols.size();
+  ColList cols{es.pool, {}};
+  const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs);
+  assert(cols.refs[ts_i].pool == es.rs.main && "门控 / 标签 / 成本在标签库");
+  const size_t lab_i = cols.refs.size();
   for (size_t i = 0; i < H; ++i)
     for (const Col &c : leg_of(ft.y.labels, Y.hd.h[i]).leg)
-      add(c);
-  const size_t cost_i = cols.size();
+      cols.add(c);
+  const size_t cost_i = cols.refs.size();
   for (size_t c = 0; c < C; ++c)
     for (const Col &l : leg_of(ft.y.costs, Y.ad.a[c]).leg)
-      add(l);
+      cols.add(l);
 
   Y.gate.assign(n, 0);
   const auto alloc = [&](std::vector<LegPlane> &ps, size_t k, bool m) {
@@ -294,7 +308,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
   std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);                                        // 每线程: 门控在池格数 (n_full)
 
-  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
+  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
     // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (gate) ∧ 两腿皆有限 → fp16 位, 其余 0.
     // 标签: 有效位 = 同条件; 成本 (cost): 标签有效格须恒有限 (建仓非两向 → 特征层 NaN, 标签同 NaN), 无有效位 (cost_rows 吃标签有效位)
     const auto fold_legs = [&](size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, bool cost) {
@@ -308,10 +322,9 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
         LegPlane &p = out[k];
         for (size_t a = 0; a < A; ++a) {
           feature_storage_t x[K] = {};
-          float g;
           bool ok = Y.gate[row + a];
           for (size_t l = 0; l < K; ++l)
-            ok = ok && cell(w[l], a, x[l], g) && fmeta::finite(x[l]);
+            ok = ok && cell(w[l], a, x[l]) && fmeta::finite(x[l]);
           for (size_t l = 0; l < K; ++l)
             p.v[l][row + a] = ok ? std::bit_cast<uint16_t>(static_cast<float>(x[l]) > cap[l] ? top[l] : x[l]) : 0;
           if (cost)
@@ -345,17 +358,13 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   B.sh = shape_of(ft, es, d0, d1);
   const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg);
   // ---- 列段 ts_valid | close adj_factor total_shares val[kPoolVals] ind_l1, 全是标签库网格层本层列 ----
-  std::vector<ColRef> cols;
-  const auto add = [&](const Col &col) {
-    cols.push_back(col.ref(es.pool));
-    return cols.size() - 1;
-  };
-  const size_t ts_i = add(ft.y.ts), px_i = add(ft.y.ohlc[3]), adj_i = add(ft.y.adj_factor), sh_i = add(ft.y.total_shares);
-  const size_t val_i = cols.size();
+  ColList cols{es.pool, {}};
+  const size_t ts_i = cols.add(ft.y.ts), px_i = cols.add(ft.y.ohlc[3]), adj_i = cols.add(ft.y.adj_factor), sh_i = cols.add(ft.y.total_shares);
+  const size_t val_i = cols.refs.size();
   for (const Col &v : ft.y.val)
-    add(v);
-  const size_t ind_i = add(ft.y.ind_l1);
-  assert(cols[ts_i].pool == es.rs.main && "篮子列在标签库");
+    cols.add(v);
+  const size_t ind_i = cols.add(ft.y.ind_l1);
+  assert(cols.refs[ts_i].pool == es.rs.main && "篮子列在标签库");
   std::vector<float> vadj(n, 0.f); // 本行 adj_factor (= 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
   B.close.resize(n);
   B.mcap.assign(n, 0.f);
@@ -364,18 +373,17 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   for (std::vector<float> &v : B.val)
     v.resize(n);
   B.ind.assign(n, 0);
-  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
+  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限 ∧ > 0 (此处不复权, 装完乘复权因子)
       const View wt = view(ts_i, t), wp = view(px_i, t), wa = view(adj_i, t);
       for (size_t a = 0; a < A; ++a) {
         feature_storage_t s, px, f;
-        float g;
-        const bool ok = cell(wp, a, px, g) && cell(wt, a, s, g) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, px) && static_cast<float>(px) > 0.f;
+        const bool ok = cell(wp, a, px) && cell(wt, a, s) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, px) && static_cast<float>(px) > 0.f;
         B.close.v[row + a] = ok ? static_cast<float>(px) : 0.f, B.close.m[row + a] = ok;
         B.px[row + a] = B.close.v[row + a];
-        vadj[row + a] = cell(wa, a, f, g) && fmeta::finite(f) && static_cast<float>(f) > 0.f ? static_cast<float>(f) : 0.f;
+        vadj[row + a] = cell(wa, a, f) && fmeta::finite(f) && static_cast<float>(f) > 0.f ? static_cast<float>(f) : 0.f;
       }
       const View ws = view(sh_i, t), wi = view(ind_i, t);
       View wv[kPoolVals];
@@ -384,14 +392,13 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
       for (size_t a = 0; a < A; ++a) {
         feature_storage_t x;
-        float g;
         const float px = B.px[row + a];
-        B.shares[row + a] = cell(ws, a, x, g) ? static_cast<float>(x) : kNaN;
+        B.shares[row + a] = cell(ws, a, x) ? static_cast<float>(x) : kNaN;
         if (px > 0.f && B.shares[row + a] > 0.f)
           B.mcap[row + a] = px * B.shares[row + a];
         for (int m = 0; m < kPoolVals; ++m)
-          B.val[m][row + a] = cell(wv[m], a, x, g) ? static_cast<float>(x) : kNaN;
-        if (cell(wi, a, x, g) && static_cast<float>(x) >= 1.f && static_cast<float>(x) < static_cast<float>(fund::SW2021_L1_COUNT))
+          B.val[m][row + a] = cell(wv[m], a, x) ? static_cast<float>(x) : kNaN;
+        if (cell(wi, a, x) && static_cast<float>(x) >= 1.f && static_cast<float>(x) < static_cast<float>(fund::SW2021_L1_COUNT))
           B.ind[row + a] = static_cast<uint8_t>(static_cast<float>(x));
       }
     }
@@ -427,12 +434,13 @@ bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr
   TraceN("FactorsNFull");
   const Shape sh = shape_of(ft, es, d0, d1);
   const size_t A = static_cast<size_t>(sh.A), VR = static_cast<size_t>(ft.seg), nt = static_cast<size_t>(ex.threads());
-  std::vector<ColRef> cols{ft.y.ts.ref(es.pool), ft.y.cs.ref(es.pool)};
-  assert(cols[0].pool == es.rs.main && "门控在标签库");
+  ColList cols{es.pool, {}};
+  const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs);
+  assert(cols.refs[ts_i].pool == es.rs.main && "门控在标签库");
   std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
   std::vector<long long> on(nt, 0);
-  if (!read_days(ft, es, lr, d0, d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &day, size_t, size_t tid) {
-        gate_day(view, 0, 1, es, day, VR, A, has[tid], gate[tid].data());
+  if (!read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &day, size_t, size_t tid) {
+        gate_day(view, ts_i, cs_i, es, day, VR, A, has[tid], gate[tid].data());
         on[tid] += gate_on(gate[tid].data(), VR * A);
       }))
     return false;
@@ -528,6 +536,15 @@ Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const L
   if (rc == Rc::Ok)
     c.t_lo = static_cast<int>(k.s0 - k.d0) * ft.seg;
   return rc;
+}
+
+size_t resident_leaves(const ScopeCache &c, const std::string &key, const std::vector<std::string> &codes, bool retain) {
+  if (retain || c.key != key)
+    return codes.size();
+  size_t n = c.x.codes.size();
+  for (const std::string &code : codes)
+    n += !c.x.find(code);
+  return n;
 }
 
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes) {

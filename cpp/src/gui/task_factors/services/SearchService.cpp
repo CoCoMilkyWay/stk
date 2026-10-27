@@ -280,7 +280,7 @@ struct SearchService::Searcher {
     stride = std::max(1, days * seg / factor::search::kCorrRows);
 
     job.ys = YSpec{hd, Amts{}, 0.f};
-    job.own = true, job.who = "Search";
+    job.who = "Search";
     const double per_day = static_cast<double>(seg) * A;
     const double r16_bytes = (static_cast<double>(days) * seg / stride + 1.0) * A * sizeof(uint16_t);
     Budget bud = budget_of<E, SearchProbes>(job, seg, d0, d0.feats.size(), hd.n);
@@ -316,7 +316,7 @@ struct SearchService::Searcher {
   }
   // 块 ci 就位 (已在缓存则不读). Ok / Cancel / Stale
   Rc load_chunk(int ci) {
-    const ScopeCache &c = block_of(F, job, static_cast<size_t>(ci));
+    const ScopeCache &c = job.blocks.of(static_cast<size_t>(ci));
     const std::string key0 = c.key;
     const Clock::time_point t_load = Clock::now();
     if (const Rc rc = load_block(F, ft, job, static_cast<size_t>(ci), W.cancel_, W); rc != Rc::Ok)
@@ -334,12 +334,12 @@ struct SearchService::Searcher {
     { // 分位表要在块 0 上走模板前缀: 先查叶值域 (各块的候选森林由 eval_forest 各查一次)
       std::vector<std::string> why;
       std::vector<uint8_t> need;
-      if (plan_forest(F.ex, block_of(F, job, 0), d0, why, need) == 0) {
+      if (plan_forest(F.ex, job.blocks.of(0), d0, why, need) == 0) {
         job.why = why[0];
         return go(Rc::Broken);
       }
     }
-    res.n_full = block_of(F, job, 0).y.n_full;
+    res.n_full = job.blocks.of(0).y.n_full;
     lg("满仓一腿 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
     const double a_eff = res.n_full * fs::kGroups;
     slots = space::slots_of(e0, seg, a_eff);
@@ -368,7 +368,7 @@ struct SearchService::Searcher {
     const int want = static_cast<int>(it - dc.keys.begin());
     std::vector<uint8_t> prefix(dc.nodes.size(), 0); // 走到该输入节点即止
     std::fill_n(prefix.begin(), want + 1, static_cast<uint8_t>(1));
-    const ScopeCache &c = block_of(F, job, 0);
+    const ScopeCache &c = job.blocks.of(0);
     const fs::Span s = c.span();
     const Samp sm = samp_of(s.T, s.t_lo, s.t0_abs, stride);
     std::vector<float> tab;
@@ -476,9 +476,10 @@ struct SearchService::Searcher {
   //      评完逐候选进探针 (HoldP 续攒 Accum + SampleP 抽样 r16; 末块即 finish). Ok / Broken (本块叶值域越界, job.why) / Cancel ----
   template <class E>
   Rc eval_chunk(E &eng, int ci, const std::vector<int> &ids) {
-    const ScopeCache &c = block_of(F, job, static_cast<size_t>(ci));
+    const ScopeCache &c = job.blocks.of(static_cast<size_t>(ci));
     const bool last = ci + 1 == n_chunks;
-    eng.bind(c); // GPU 批核的 plant 按块显存定批
+    eng.bind(c);
+    eng.open_batch(batch); // GPU 批核的 plant 按块显存定批
     for (size_t b0 = 0; b0 < ids.size();) {
       std::vector<const factor::expr::Expr *> ptrs;
       for (size_t k = b0; k < std::min(ids.size(), b0 + static_cast<size_t>(batch)); ++k)
@@ -701,7 +702,7 @@ bool SearchService::run(SearchRequest &req) {
 bool SearchService::eval(const SearchRequest &req, FactorFlow &F) {
   TraceN("SearchRun");
   Searcher s(*this, F, req);
-  if (!F.with_engine(req.scope.gpu, [&](auto &E) { return s.run(E); }))
+  if (!F.with_engine<SearchProbes>(req.scope.gpu, [&](auto &E) { return s.run(E); }))
     return s.ret;
   s.finish();
   return true;

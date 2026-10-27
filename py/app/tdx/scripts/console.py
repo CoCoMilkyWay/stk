@@ -423,22 +423,32 @@ VK_RETURN, SC_RETURN = 0x0D, 0x1C
 WM_MDIGETACTIVE = 0x229
 AFX_PANE = 59648  # MFC AFX_IDW_PANE_FIRST：主框架下的 MDIClient、MDI 子窗下的视图都是这个 id
 MAIN_WND = "class=TdxW_MainFrame_Class"
-# 闪电窗：主窗命令 id、窗标题、控件 id（证券代码 / 价格 / 数量 / 数量单位 / 报价方式 / 提交）
+# 闪电窗：主窗命令 id、窗标题、控件 id（证券代码 / 价格 / 数量 / 数量单位 / 报价方式 /
+# 最大可买·可卖·可融（股）/ 提交）
 _FLASH_IDS = {
     "code": 12005,
     "price": 12006,
     "qty": 12007,
     "unit": 12016,
     "quote": 3067,
+    "max": 2022,
     "ok": 1,
 }
 FLASH = {
     "buy": (0x13DD, "闪电买入", _FLASH_IDS),
-    "sell": (0x1404, "闪电卖出", _FLASH_IDS),
+    "sell": (0x1404, "闪电卖出", {**_FLASH_IDS, "max": 2065}),
     "margin": (
         0x1441,
         "闪电融资买入",
-        {"code": 313, "price": 314, "qty": 315, "unit": 320, "quote": 220, "ok": 1},
+        {
+            "code": 313,
+            "price": 314,
+            "qty": 315,
+            "unit": 320,
+            "quote": 220,
+            "max": 199,
+            "ok": 1,
+        },
     ),
 }
 CONFIRM_TITLES = ("买入交易确认", "卖出交易确认", "交易确认")
@@ -458,17 +468,25 @@ def _order_px(q, s, mode):
     return book[0][0] * (1 + s * pct / 100)
 
 
-def _order_qty(code, px, size, s, avail):
+def _order_qty(code, px, size, s, cap):
     """size 元（0 = 最小单位）折股：科创板起 200 股、零股递增，北交所起 100 股、零股递增，其余整手；
-    卖出不超过可卖（不足即全卖，零股只能一次卖完）。"""
+    再以闪电窗给的最大可买 / 可卖 cap 封顶（钱或券不够就按能做的最大量）：买入按步长取整、须够起买量，
+    卖出不足即全卖（零股只能一次卖完）。"""
     lot = 200 if code.startswith("688") else 100
     step = 1 if code.startswith(("688", "4", "8", "92")) else 100
     n = int(size / px) // step * step if size else lot
     assert n >= lot, f"{size} 元按 {px} 不足最小单位 {lot} 股"
-    if s == SELL:
-        assert avail and avail >= 1, "无可卖数量"
-        n = min(n, int(avail))
-    return n
+    if s == BUY:
+        cap = cap // step * step
+        assert cap >= lot, f"最大可买 {cap} 股，不足最小单位 {lot} 股"
+    assert cap >= 1, "最大可卖为 0"
+    return min(n, cap)
+
+
+def _max_qty(h):
+    t = _text(h)
+    assert re.fullmatch(r"\d+(\.\d+)?", t), f"最大可买/可卖读到 {t!r}"
+    return int(float(t))
 
 
 def _post(h, msg, wp, lp=0):
@@ -668,12 +686,17 @@ class Orders:
         dflt = _wait("闪电窗默认价", lambda: _text(c["price"]), 1)
         assert "." in dflt, f"默认价 {dflt!r} 定不出小数位"
         px_s = f"{px:.{len(dflt.split('.')[1])}f}"
-        n = _order_qty(code, float(px_s), size, s, p["available"])
         unit = _text(c["unit"])
         assert unit in ("股", "元"), f"数量单位「{unit}」不认识"
+        _wait("闪电窗最大可买/可卖", lambda: _text(c["max"]), 1)
+        cap0 = _max_qty(c["max"])
         _settext(c["price"], px_s)
+        # 最大可买按默认价算；改价后客户端未必即时重算，按价反比折一份，与重读的取小
+        cap = _max_qty(c["max"])
+        cap = min(cap, int(cap0 * float(dflt) / float(px_s)) if s == BUY else cap0)
+        n = _order_qty(code, float(px_s), size, s, cap)
         _settext(c["qty"], str(n) if unit == "股" else f"{n * float(px_s):.2f}")
-        self._put(job, detail=f"{n}股 @ {px_s}")
+        self._put(job, detail=f"{n}股 @ {px_s}（最大 {cap}）")
 
         self._step(job, "确认")
         before = _tops()

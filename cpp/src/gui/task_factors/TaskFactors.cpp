@@ -137,7 +137,7 @@ static void portfolio_sync(const SharedData &data, TaskFactorsState &s, bool rel
   if ((s.portfolio_dirty || reload) && !data.asset.items.empty()) {
     s.portfolio_dirty = false;
     Factors::PortfolioRequest req;
-    Factors::MakePortfolioRequest(data, s.portfolio_tables, pui.items, reload, req);
+    Factors::MakePortfolioRequest(data, s.portfolio_tables, pui.items, reload, s.factors_ui.backend == 1, req);
     ++pui.items_gen; // 作用域建不成的条目在这里标失效
     std::string sig = req.sig();
     if (reload || sig != s.portfolio_sig) {
@@ -439,7 +439,8 @@ TaskHandle CreateFactorsTask() {
         iaction = 1;
       if (iaction == 1) {
         Factors::InspectRequest req;
-        if (Factors::MakeInspectRequest(data, state->feature_table, state->pool, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
+        if (Factors::MakeInspectRequest(data, state->feature_table, state->pool, state->inspect_ui.req_row, state->inspect_ui.req_reload,
+                                        state->factors_ui.backend == 1, req))
           is.Request(req);
       } else if (iaction == -1) {
         is.RequestCancel();

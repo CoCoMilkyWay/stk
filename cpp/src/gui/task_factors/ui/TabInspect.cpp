@@ -210,7 +210,7 @@ float section_at(const InspectDerived &d, const std::vector<float> &cum, int c);
 
 // 选定 hold → 日级序列 + IC 分布 / 时序. 分层累计 = InspectResult::nav (净值引擎 fold_book) 选定口径的
 // 日收益连乘, 画 (净值 − 1) × 100 %; 各 LS 线的年化 / Sharpe 同一口径 = 净值几何年化 / 日收益 mean / sd × √kDaysPerYear;
-// rIC 分布 = InspectResult::ic_pdf (IcPdfP 成品, 与 Run 行小图同一份).
+// rIC 分布 = InspectResult::ic_agg (IcPdfP 成品, Run 行小图是它的迷你版).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
   if (res.key.empty() || !res.error.empty() || res.pl.ric.empty())
@@ -266,7 +266,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
       span(d.lay_cum[layer_tail(l, j)], d.lay_lo[1 + j], d.lay_hi[1 + j]);
   for (int i = 0; i < kLsLines; ++i)
     span(d.ls_cum[i], d.ls_lo[i], d.ls_hi[i]);
-  d.ic_pdf = res.ic_pdf[sel];
+  d.ic_pdf = res.ic_agg[sel];
   d.valid = true;
 }
 
