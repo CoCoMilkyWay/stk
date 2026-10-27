@@ -10,7 +10,7 @@
 //
 // 装载: 逐因子文件 (各文件评估期 / A 轴不同, 见 FactorLevel) 把该文件用到的特征 (去重, 跨库跨层 level_asof 投影) + 标签库 ts_valid / cs_valid
 // + 全部持有期标签列读进宿主 (逐天并行, 门控 fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
-// 装载前按宿主内存预算断言放得下 (FactorsLoad assert_fits; 放不下 = 该因子层太细 / 评估期太长).
+// 装载前按宿主内存预算定评估期: 整期装不下 → 只留最近的日 (FactorsEngine fit_recent; 单日都装不下 = 该因子层太细, assert).
 // 两张门控列的分工 (features/MetaFlag.hpp): 特征输入按 ts_valid 门控 (TS 节点要跨进出池的历史); 标签按 cs_valid 门控 (只被 Stat 吃,
 // rank(y) 得在池内排); cs_valid 的有效位另成一张截面池掩码平面 g, 原样递给 CS 节点的算子与 Stat (factor/Contract.hpp【截面池 g】:
 // 池内统计 / 池外就近取值全在算子内部, 评估器不做二次门控).

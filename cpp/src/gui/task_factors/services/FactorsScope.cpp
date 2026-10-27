@@ -8,7 +8,7 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cstdio>
+#include <cstddef>
 
 namespace GUI::Factors {
 
@@ -28,9 +28,10 @@ std::string Domain::key() const {
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
 
-bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, bool basket, Domain &dm, std::string &why) {
+bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, bool basket, size_t keep, Domain &dm, std::string &why) {
   TraceN("Domain");
   assert(sc.lv == ft.lv && "作用域层与字段表层不符");
+  assert(keep >= 1);
   const FactorLevel &lv = factor_level(ft.lv);
   const PoolId pool = pool_id(sc.pool);
   assert(level_for_pool(lv, pool_tier(pool)) && "该池不能用这个因子层");
@@ -81,6 +82,11 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
         why += std::string(" ") + pool_def(l).name;
     return false;
   }
+  if (dm.days.size() > keep) {
+    const auto cut = static_cast<std::ptrdiff_t>(dm.days.size() - keep);
+    dm.dates.erase(dm.dates.begin(), dm.dates.begin() + cut);
+    dm.days.erase(dm.days.begin(), dm.days.begin() + cut);
+  }
   if (sub)
     dm.member = pool::Panel::build(libs[kAllPool], pool_def(pool).pool_col, dm.dates);
   dm.rs.main = lab;
@@ -92,15 +98,11 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
 
 double host_budget() {
   const MemoryUsage mu = memory_usage();
-  return kHostFrac * static_cast<double>(mu.total_bytes - mu.used_bytes);
+  return kHostFrac * static_cast<double>(mu.total_bytes) - static_cast<double>(mu.used_bytes);
 }
 
-void assert_fits(const char *who, double bytes, int days, int A, int seg) {
-  const double budget = host_budget();
-  if (bytes > budget)
-    std::fprintf(stderr, "[factors] %s: 装载 %.1f GB > 内存预算 %.1f GB (%d 天 × %d 行 × %d 只); 换更粗的因子层\n", who, bytes / 1e9, budget / 1e9, days,
-                 seg, A);
-  assert(bytes <= budget && "因子整张量装载放不下内存 (因子层太细 / 评估期太长), 拒绝评估");
+double whole_bytes(const Domain &dm, int seg, const Budget &b) {
+  return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()) * (b.load + b.work) + b.fixed;
 }
 
 int Plan::max_days() const {
@@ -110,14 +112,13 @@ int Plan::max_days() const {
   return m;
 }
 
-Plan plan_chunks(const Domain &dm, int seg, const Budget &b, int carry, const char *who) {
+Plan plan_chunks(const Domain &dm, int seg, const Budget &b, int carry) {
   const int days = static_cast<int>(dm.days.size()), A = static_cast<int>(dm.rs.axis.size());
   assert(days > 0 && A > 0);
   const double per_day = static_cast<double>(seg) * A;
   Plan P;
   P.host = host_budget() - b.fixed;
   if (carry < 0) {
-    assert_fits(who, days * per_day * (b.load + b.work) + b.fixed, days, A, seg);
     P.chunks = {Chunk{0, 0, static_cast<size_t>(days)}};
     P.D = days;
     P.cache = days * per_day * b.load;

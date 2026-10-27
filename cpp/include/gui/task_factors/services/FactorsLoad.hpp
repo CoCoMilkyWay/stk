@@ -182,6 +182,7 @@ struct Block {
   }
   factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(d0) * y.sh.seg, t_lo}; }
   int rows_all() const { return static_cast<int>(nd) * y.sh.seg; }
+  double bytes() const; // X / Y / B 平面占的宿主字节
 };
 // 块键 = 层 | 评估域 | 日段 | Y 规格 | B (X 不进键: 叶挂在块上按 ids 补)
 std::string block_key(const FeatureTable &ft, const Domain &dm, const Chunk &k, const BlockSpec &s);

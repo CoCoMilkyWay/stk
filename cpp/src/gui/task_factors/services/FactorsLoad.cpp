@@ -62,6 +62,27 @@ size_t XPlanes::count() const {
   return n;
 }
 
+double Block::bytes() const {
+  const auto vb = [](const auto &v) { return static_cast<double>(v.size() * sizeof(v[0])); };
+  const auto pb = [&](const factor::check::Plane &p) { return vb(p.v) + vb(p.m); };
+  const auto lb = [&](const LegPlane &p) {
+    double s = vb(p.m);
+    for (const std::vector<uint16_t> &v : p.v)
+      s += vb(v);
+    return s;
+  };
+  double s = vb(y.gate) + vb(y.eo) + pb(b.close) + vb(b.mcap) + vb(b.px) + vb(b.shares) + vb(b.ind);
+  for (const factor::check::Plane &p : x.v)
+    s += pb(p);
+  for (const LegPlane &p : y.labels)
+    s += lb(p);
+  for (const LegPlane &p : y.costs)
+    s += lb(p);
+  for (const std::vector<float> &v : b.val)
+    s += vb(v);
+  return s;
+}
+
 namespace {
 
 // 一天门控 g[n] 的在池格数 (load_y / n_full_of 同一份: 逐天逐线程攒进 on[tid])
