@@ -22,7 +22,7 @@ stk/
 │   │   │   ├── Asset.hpp / AssetInfo.hpp             # 📦 资产定义 / 元数据
 │   │   │   ├── AssetEvent.hpp                        # 📦 个股历史事件 (AssetInfo 内): 种类表 = 单点 / 区间 × 4 组; OrderFlow 图2 时间轴标注
 │   │   │   ├── AssetAxis.hpp                         # 📦 资产轴 (A 轴) 码表 + 池轴 PoolAxis: Lob = 池轴 pool_axis / Bar = 全轴 full_axis
-│   │   │   ├── FeatureLib.hpp                       # 📦 FeatureLib = 池名 + 档 + A 轴 + 目录 + 日期轴
+│   │   │   ├── FeatureLib.hpp                        # 📦 FeatureLib = 池名 + 档 + A 轴 + 目录 + 日期轴
 │   │   │   │                                         #    · 池表 feature_pools (PoolDef = 池名 + 档 + 池列): all → Bar 池; <pool> → Lob 池 (<pool> 来自 Bar 池 pool_<pool> 列)
 │   │   │   │                                         #    · 清单 lib.json: 写端 (ComputeService) 规划后落, 读端只读 ⇒ 两端口径一致; 无清单 = 未建库
 │   │   │   ├── Pool.hpp                              # 📦 pool::Panel 池逐日成员 (日频 PIT, 与 fund::Panel 对仗)
@@ -224,7 +224,7 @@ stk/
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
-│   │   │           │                                 #    · 显示级别; Hold 一律写成 hold_desc "开仓: C(层) @ 价, 清仓: 点 @ 价" (看板 / Portfolio; Inspect = 周期名 + hold_points 分色, 同一份)
+│   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 控件只切结果立方体, 不发请求
 │   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 单因子线, 区间条选日段
 │   │   │   GUI布局:

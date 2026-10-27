@@ -365,14 +365,13 @@ TaskHandle CreateFactorsTask() {
           ImGui::EndDisabled();
         }
         ImGui::EndGroup();
+        // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); min 层盘口标签 + 冲击成本, 5min .. day 用 all 池标签, Lob 池 = 当日池成员截面;
+        // 因子目录 <factor_dir>/<池>/<层>/
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-          Factors::tip("池 + 因子层 (Factors / Inspect 共用; 与特征面板的池 / 层双向同步)\n"
-                       "• 因子层 = 所用特征的最细层; 叶写全名 档.层.列 (lob.1m.x / bar.5m.x …)\n"
-                       "• min: 只 Lob 池 (盘口标签 + 冲击成本, 可混 bar.* 叶)\n"
-                       "• 5min .. day: 任何池 (all 池标签, 无冲击成本); Lob 池 = 当日池成员截面\n"
-                       "• 评估期 = 所用特征库落盘日交集 (不看 config 区间)\n"
-                       "• 窗长 d 等参数按本层行计\n"
-                       "• 因子目录 <factor_dir>/<池>/<层>/; 有服务在跑时, 跑完才切过去");
+          Factors::tip("池 + 因子层 (与特征面板同步; 括号里是因子数)\n"
+                       "• min 层只有 Lob 池能用\n"
+                       "• 窗长 d 等参数按本层行数计\n"
+                       "• 有计算在跑时, 跑完才切过去");
       }
       {
         const bool busy = (state->factors_service && state->factors_service->busy()) || (state->search_service && state->search_service->busy()) ||

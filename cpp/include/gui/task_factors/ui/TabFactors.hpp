@@ -90,11 +90,17 @@ struct HoldPoints {
 HoldPoints hold_points(int hold, int seg);
 // hold_points 的完整写法: "开仓: C(层) @ 价, 清仓: 点 @ 价"
 std::string hold_desc(int hold, int seg);
-// Hold 提示的公共尾段 = Stat/Contract.hpp【协议表 1 / 2】的 UI 摘要
-inline constexpr const char *kHoldRulesTip = "• 开仓 = 本层行收盘 C(层) 出信号, 按标签价成交; 日层 = 当日收盘建仓\n"
-                                             "    ◦ 盘口中间价 = 锚点 + 下单延迟的可成交盘口 (min 层, Lob); 次分钟VWAP = 之后首个有成交连续竞价分钟 (Bar 层)\n"
-                                             "    ◦ 收盘 / 开盘撮合价 = 集合竞价单一价\n"
-                                             "• 建仓不可两向成交 → 该行作废; 平仓不可成交 / 停牌 → 顺延到首个可成交价点";
+// hold_points 分色一行 (时点 / 价各一色), 从当前光标处画; 返回排版宽. draw = false 只量不画 (调用方定宽占位用)
+float hold_points_line(const HoldPoints &p, bool draw = true);
+// 紧凑切换控件 (替代下拉): "label ◂ value ▸", 方形箭头循环切, 值占位定宽 (最宽一项, 居中) → 按钮位置不随值跳;
+// 只有两项时省掉箭头, 定宽按钮点一下 toggle. 返回是否切了. 整体一个 Group, 调用方紧接着 IsItemHovered() 对整个控件生效
+bool cycler(const char *label, int &idx, const char *const *values, int n);
+// 持有期切换 "Hold ◂ 周期名 ▸" (cycler, idx = ft.y.labels 下标); 不足两项只显示名字. 返回是否切了
+bool hold_cycler(int &hold_idx, const FeatureTable &ft);
+// Hold 提示的公共尾段 = Stat/Contract.hpp【协议表 1 / 2】的 UI 摘要. 细节: 开仓 = 本层行收盘 C(层) 出信号, 日层 = 当日收盘建仓;
+// 盘口中间价 = 锚点 + 下单延迟的可成交盘口 (min 层, Lob); 次分钟VWAP = 之后首个有成交连续竞价分钟 (Bar 层); 收盘 / 开盘撮合价 = 集合竞价单一价;
+// 建仓不可两向成交 → 该行作废; 平仓不可成交 / 停牌 → 顺延到首个可成交价点
+inline constexpr const char *kHoldRulesTip = "• 建仓成交不了 → 该行作废; 平仓成交不了 → 顺延到可成交时";
 
 // 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row),
 // 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)

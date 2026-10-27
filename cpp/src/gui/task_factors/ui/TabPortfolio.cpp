@@ -1184,11 +1184,8 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
       }
     ImGui::EndCombo();
   }
-  if (ImGui::IsItemHovered())
-    tip("当前组合 (%s/<name>.json)\n"
-        "• 组合内容 = 文件, 改了即存; 选哪个只在内存\n"
-        "• Portfolio 页画它的等权组合曲线",
-        ui.dir.c_str());
+  if (ImGui::IsItemHovered()) // 组合内容 = <dir>/<name>.json, 改了即存; 选哪个只在内存
+    tip("当前组合 (改动即存盘; Portfolio 页画它的曲线)");
   const std::string nm = ui.name_buf;
   const bool nm_ok = ValidFactorName(nm) && std::find(ui.names.begin(), ui.names.end(), nm) == ui.names.end();
   ImGui::SetNextItemWidth(96);
@@ -1264,12 +1261,9 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
     if (ui.name.empty())
       tip("先在左框新建 / 选一个组合");
     else if (!row_ok)
-      tip("先在表格里点一行高光 (有效权重; 父行 = 选定 Hold 下 score 最高的权重)");
+      tip("先在表格里点一行");
     else
-      tip("把高光的权重加进组合\n"
-          "• %s / %s  %s\n"
-          "• 持有期 = 本页 Hold: %s",
-          pool.c_str(), factor_level(seg).name, view_row->key.c_str(), hold_desc(hold, seg).c_str());
+      tip("把 %s 加进组合 (持有期 = 当前 Hold %s)", view_row->key.c_str(), factor::stat::hold_name(hold).c_str());
   }
   ImGui::SameLine();
   const bool sel_ok = ui.sel >= 0 && ui.sel < static_cast<int>(ui.entries.size());
