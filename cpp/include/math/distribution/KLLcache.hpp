@@ -1338,7 +1338,7 @@ inline void KLLcache::buildCache() const {
  * 【算法】阶梯 CDF (右连续) 在 resolution 个均匀点上直接求值, 再高斯滤波。
  *   等价于对加权样本做固定带宽 KDE 的 CDF —— 连续/离散统一:
  *   点质量 (如 0/1 特征) 保持垂直跳变 → 滤波后成等面积窄峰,
- *   不再被跨空隙插值抹成斜线 (伪均匀分布)。
+ *   不会被跨空隙插值抹成斜线 (伪均匀分布)。
  */
 inline void KLLcache::buildCDF_PCHIP() const {
   const size_t n = resolution_;
@@ -1415,7 +1415,7 @@ inline void KLLcache::buildPDF_PCHIP() const {
  *
  * 【算法】广义逆 Q(u) = min{Q_j : u_j ≥ u} 在 resolution 个均匀点上求值,
  *   再高斯滤波。与 CDF 侧对偶: 点质量在 u 轴呈平台 (真实分位),
- *   不再被跨平台插值出不存在的中间取值。
+ *   不会被跨平台插值出不存在的中间取值。
  */
 inline void KLLcache::buildICDF_PCHIP() const {
   const size_t n = resolution_;

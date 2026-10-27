@@ -7,24 +7,25 @@
 
 namespace pool {
 
-Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates, size_t grid) {
+Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
   assert(bar.tier == TierId::Bar && bar.ready() && "池源 = Bar 池 (先算 Bar 池)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
-  // 第 D 日成员 = grid 层 as-of 的 L_1day 列 (与读端同一投影): L_sec / 日内层 → -1 = D−1 收盘行; L_1day → 0 = D 收盘行
+  // 第 D 日成员 = 盘中 as-of 的池列 (与读端同一投影): 盘后列对任何网格都是 -1 = D−1 收盘行, 故各层同一份
   const PoolId pool = pool_id(bar.name);
-  Source s{.pool = pool, .level = L_1day};
+  Source s{.pool = pool, .level = L_1day, .settle = level_info(TierId::Bar, L_1day).fields[col].settle};
+  assert(s.settle && "池列须是盘后列 (池键 onSettle 的同层截面)");
   s.cs.io = {col};
   s.cs.vts = {L2::ValidType::ALL};
   s.slot = {0};
-  project_rows(s, grid, level_valid_rows(grid));
-  assert(s.cur != s.carry && std::ranges::all_of(s.row, [&](int32_t r) { return r == s.row[0]; }) && "日层 as-of 须整日常量");
+  project_rows(s, L_1day, level_valid_rows(L_1day));
+  assert(!s.cur && s.carry && "盘后列的盘中 as-of 须是 D−1 收盘行");
 
   FeatureRead reader(bar);
   Readers rd;
   rd.rd[pool] = &reader;
   IoSlot::Buf b;
   const size_t As = bar.axis.size();
-  (s.cur ? b.cur : b.prev).preallocate(As, s.level, 1);
+  b.prev.preallocate(As, s.level, 1);
 
   // 全轴逐日成员位 [date_i][a_bar], 顺带记并集
   std::vector<uint8_t> full(dates.size() * As, 0);
@@ -32,14 +33,14 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   for (size_t i = 0; i < dates.size(); ++i) {
     const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
     assert(it != bar.dates.end() && *it == dates[i] && "回测日不在 Bar 池日期轴: 重算 Bar 池覆盖到 end_date");
-    assert((s.cur || it != bar.dates.begin()) && "回测日是 Bar 池首日, 无 D−1 池源");
-    const misc::Ymd prev = it != bar.dates.begin() ? *(it - 1) : 0;
-    assert((s.cur ? reader.has_date(dates[i]) : reader.has_date(prev)) && "Bar 池缺池源日: 先把 Bar 池算完");
-    load_source(rd, s, Day{dates[i], prev, s.cur ? pool_bit(pool) : 0u, s.carry ? pool_bit(pool) : 0u}, s.cs.io, b);
+    assert(it != bar.dates.begin() && "回测日是 Bar 池首日, 无 D−1 池源");
+    const misc::Ymd prev = *(it - 1);
+    assert(reader.has_date(prev) && "Bar 池缺池源日: 先把 Bar 池算完");
+    load_source(rd, s, Day{dates[i], prev, 0u, pool_bit(pool)}, s.cs.io, b);
     assert(!reader.stale() && "Bar 库判废 (头不符): 重算 Bar 池");
     size_t r = 0;
     const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);
-    assert(dc && "盘前 as-of 无源");
+    assert(dc && "盘中 as-of 无源");
     const feature_storage_t *row = dc->col(0) + r * As;
     uint8_t *dst = full.data() + i * As;
     for (size_t a = 0; a < As; ++a) {

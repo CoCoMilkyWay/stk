@@ -50,7 +50,4 @@ struct FileCheckResult {
 FileCheckResult check_src_archives(const std::string &archive_base_dir,
                                    ProgressCallback progress = nullptr);
 
-// Legacy function for backward compatibility (prints to stdout)
-bool check_src_archives_print(const std::string &archive_base_dir);
-
 } // namespace FileCheck

@@ -44,7 +44,7 @@ struct Quota {
 // 生命周期:
 //   - 构造即可用; Flight 客户端 + JWT 在首次 query() 时 lazy 建立.
 //   - JWT TTL 约 12h, 过期由调用方重建 Client.
-//   - 所有错误一律 assert; gRPC 自带 backoff, 这里不再做应用层重试.
+//   - 所有错误一律 assert; gRPC 自带 backoff, 这里不做应用层重试.
 class Client {
 public:
   // 缺省构造: ak/sk 取 config.hpp::BIGQUANT_AK/SK

@@ -107,7 +107,7 @@ public:
 
   // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
   // 换秒 (或本次更新不可成交) 时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
-  // 一次更新的盘口 —— 与旧实现"每次更新覆盖写"的最终留存值逐位相同. Depth 每次 onDepth 必推一格
+  // 一次更新的盘口. Depth 每次 onDepth 必推一格
   // (集合竞价的更新也推), 所以不管本次可不可成交都得立刻结算, 否则 offset 对不上.
   // 可成交 = 连续竞价时段 (订单簿的 market_state); 集合竞价期的簿不入环, pending 清空 → minute_anchored 本次不推进.
   inline void snapshot(size_t t) {

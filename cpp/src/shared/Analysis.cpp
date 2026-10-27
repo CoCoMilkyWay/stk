@@ -9,6 +9,7 @@
 #include <map>
 #include <numeric>
 #include <random>
+#include <tuple>
 
 namespace analysis {
 
@@ -161,7 +162,7 @@ DateList enumerate_dates(const ReadScope &s) {
   return out;
 }
 
-// 同 (池, 层) 的列并成一个源 (槽 = 请求序), 源行由 rows 定
+// 同 (池, 层, 盘后) 的列并成一个源 (槽 = 请求序), 源行由 rows 定
 ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, std::vector<ColRef> cols) {
   assert(!cols.empty() && level < LEVEL_COUNT);
   assert((rows == Rows::Tail || carry) && "网格行恒承接 (as-of 投影到 -1 即前日末行)");
@@ -169,13 +170,18 @@ ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, 
   ReadPlan p;
   p.level = level;
   p.cols = std::move(cols);
-  std::map<std::pair<PoolId, size_t>, std::vector<uint32_t>> groups; // (池, 层) → 平面列 (请求序)
-  for (size_t c = 0; c < p.cols.size(); ++c)
-    groups[{p.cols[c].pool, p.cols[c].level}].push_back(static_cast<uint32_t>(c));
+  std::map<std::tuple<PoolId, size_t, bool>, std::vector<uint32_t>> groups; // (池, 层, 盘后) → 平面列 (请求序)
+  for (size_t c = 0; c < p.cols.size(); ++c) {
+    const ColRef &r = p.cols[c];
+    const LevelInfo &li = level_info(r.tier(), r.level);
+    assert(r.col < li.field_count);
+    groups[{r.pool, r.level, li.fields[r.col].settle}].push_back(static_cast<uint32_t>(c));
+  }
   for (auto &[key, slot] : groups) {
     Source s;
-    s.pool = key.first;
-    s.level = key.second;
+    s.pool = std::get<0>(key);
+    s.level = std::get<1>(key);
+    s.settle = std::get<2>(key);
     std::vector<size_t> io;
     io.reserve(slot.size());
     for (const uint32_t c : slot)

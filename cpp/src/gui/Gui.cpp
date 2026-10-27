@@ -22,7 +22,7 @@ static void DrawRowStatus(const SharedData &data, const TaskHandle &t, int idx) 
 void DrawGUILayout(SharedData &data, TaskTree &tree) {
 
   // 帧首: 全部任务 Update (无论选中) —— 状态标签/使能同帧就绪,
-  // 左栏不再依赖 "打开过页面" 的上一帧缓存
+  // 左栏不依赖 "打开过页面" 的上一帧缓存
   for (auto &t : tree.tasks)
     if (t.Update)
       t.Update(data);

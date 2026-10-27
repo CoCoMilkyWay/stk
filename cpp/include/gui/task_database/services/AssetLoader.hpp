@@ -1,6 +1,6 @@
 // Asset Loader — A 轴物化 (注册表 → Asset::items)
 //
-// 资产集不再由人工名单 (config/assets.json) 决定: encode 与 features 两级
+// 资产集不由人工名单决定: encode 与 features 两级
 // cache 都是全市场日频. 来源 = 基本面 cn_stock_basic_info 的股票全量 (含已退市,
 // 天然不含 ETF/基金 — archive 里那 ~2200 个基金目录不进 A 轴).
 //

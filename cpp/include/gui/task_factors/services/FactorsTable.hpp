@@ -26,7 +26,7 @@ namespace GUI::Factors {
 // ---- 因子层 (factor/Contract.hpp【层几何】: 段长 seg 唯一确定层) ↔ 网格层 / 标签档 / 因子子目录 ----
 //   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层, 因子文件在 <config.factor_dir>/<池>/<name>/.
 //   标签库 (门控 ts / cs_valid + 标签 + 成本 + OHLC, 恒取网格层本层列, 同行): tier = Lob → 该 Lob 池 (盘口特征 + 冲击成本);
-//   tier = Bar → all 池 (无冲击成本), 因子池是 Lob 池时截面再与上池成员 (pool::Panel 网格层 as-of).
+//   tier = Bar → all 池 (无冲击成本), 因子池是 Lob 池时截面再与上池成员 (pool::Panel: 第 D 日 = D−1 收盘行, 各层同一份).
 //   特征叶写全名 档.层.列 (kLevelToken): lob.* = 因子池的库, bar.* = all 池; 叶可来自任意不细于网格的层 (level_asof 投影).
 //   评估期 = 标签库 + 叶所在库 落盘日的交集 (不看 config 区间)
 // 档 → 库 (因子池 pool 下): Lob 档列在 pool 库, Bar 档列在 all 库. 叶 / 门控 / 标签 / 成本 / OHLC 同一条
@@ -115,7 +115,7 @@ struct YCols {
 };
 struct BCols {
   Col ohlc[4];        // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
-  Col adj_factor;     // 复权因子 (只日层设; 行 D = D+1 日的因子): 日层池篮子换手漂移的后复权收盘 = close_day(D) × 行 D−1 的本列
+  Col adj_factor;     // 复权因子 (只日层设; 盘后列, 日层 as-of 行 D = D 日因子): 日层池篮子换手漂移的后复权收盘 = close_day(D) × 同行本列
   Col total_shares;   // 总股本 (只日层设): 池估值的市值 + 池加权指数的权重 = close_day × 本列
   Col val[kPoolVals]; // [PoolVal] 估值输入 (kPoolValCols; 只日层设): 池估值 EP / BP / SP / CP / DY (整体法)
   Col ind_l1;         // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)

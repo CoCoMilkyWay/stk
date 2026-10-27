@@ -5,7 +5,6 @@
 #include "features/Bar/FieldsGenerated.hpp" // IWYU pragma: keep
 #include "features/FeaturesDefine.hpp"
 #include "features/Lob/FieldsGenerated.hpp" // IWYU pragma: keep
-#include "features/Method/TS.hpp"           // TS 行 Tf (FieldInfo.ts_tf → 指纹; RowWriter 落盘套用)
 #include "features/TimeIndex.hpp"
 #include <array>
 #include <cstddef>
@@ -22,7 +21,7 @@
 // 增删改特征只重编写端 + FeatureMeta.cpp.
 //   布局: 每层平铺 [T][F][A], data[(t * F + f) * A + a]
 //   TIER_LEVELS 每格 (档 <tier>, 层 <LVL>) 生成 (消费者统一签名 GEN(T, ns, LVL, index, fields, psd), 自己进 ns):
-//     <tier>::<LVL>_FIELD_INFO[]     每列 {code, valid, kind, ts_tf} (有效性 / 类型均由 SRC 列推出)
+//     <tier>::<LVL>_FIELD_INFO[]     每列 {code, valid, kind, ts_tf, settle} (有效性 / 类型 / 盘后均由 SRC 列推出)
 //     <tier>::<LVL>_Field::<code>    列下标枚举
 //     <tier>::<LVL>_FINGERPRINT      字段表指纹 (落文件头)
 //   汇总成 <tier>::LEVELS[lvl] (LevelInfo, 按语义层号; 档缺的层 fields == nullptr), 编译期/运行时按层取 rows / field_count / fingerprint;
@@ -45,8 +44,43 @@ ALL_TIERS(TIER_NODE_FLUSH)
 // ============================================================================
 // 字段: 每层一张 FieldInfo 表 + 下标枚举 (FieldInfo 结构体在 FeatureLevels.hpp)
 // ============================================================================
-#define FIELD_INFO_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_VALID_##src, SRC_KIND_##src, SRC_TS_TF_##src},
 #define FIELD_CODE_ONE(code, c1, c2, en, cn, desc, formula, src) code,
+// 下标枚举先于全部 FieldInfo 表 (盘后推导按源列下标查, 源列可在任一档任一层)
+#define GENERATE_LEVEL_CODES(T, ns, name, num, fields, psd) \
+  namespace ns::name##_Field {                              \
+    enum : size_t { fields(FIELD_CODE_ONE) };               \
+  }
+TIER_LEVELS(GENERATE_LEVEL_CODES)
+#undef GENERATE_LEVEL_CODES
+
+// 盘后 (FieldInfo::settle) 推导: TS = 本层 L_1day ∧ 节点 flush 域 onSettle; CS = 同档同层源列的盘后性 (同行继承, 链式);
+// 跨层 CS 不继承 (源行按 as-of 已定, 本行 emit 随本层); LABEL / FLAG 盘中
+struct SettleLink {
+  bool ts;    // TS 列本身盘后
+  size_t src; // 同档同层 CS 源列下标 (kNoLink = 不继承)
+};
+inline constexpr size_t kNoLink = SIZE_MAX;
+constexpr size_t settle_link(bool same_level, bool same_tier, size_t lvl, size_t src) {
+  assert((same_tier || !same_level || lvl != L_1day) && "跨档同层 L_1day 截面: 源档盘后性不可见");
+  return same_level && same_tier ? src : kNoLink;
+}
+template <size_t N>
+constexpr bool settle_at(const SettleLink (&t)[N], size_t i) {
+  for (size_t k = 0; k <= N; ++k) {
+    if (t[i].src == kNoLink)
+      return t[i].ts;
+    i = t[i].src;
+  }
+  assert(false && "盘后继承成环 (同层 CS 源链)");
+  return false;
+}
+#define SETTLE_LINK_TS(code, node, ...) {kLevel == L_1day && node_flush::node == Trigger::onSettle, kNoLink},
+#define SETTLE_LINK_CS(code, sns, l, s, tf, m) {false, settle_link(l == kLevel, tier_of::sns == kTier, l, sns::l##_Field::s)},
+#define SETTLE_LINK_LABEL(code) {false, kNoLink},
+#define SETTLE_LINK_FLAG(code) {false, kNoLink},
+#define SETTLE_LINK_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(SETTLE_LINK, code, src)
+#define FIELD_INFO_ONE(code, c1, c2, en, cn, desc, formula, src) \
+  {#code, SRC_VALID_##src, SRC_KIND_##src, SRC_TS_TF_##src, settle_at(SETTLE, Fld::code)},
 
 // 某类型 (LB 等) 列的首下标 / 个数 (标签回填按此定位, 不依赖列名)
 constexpr size_t first_of_kind(std::span<const FieldInfo> f, FeatureDataType k) {
@@ -70,17 +104,17 @@ constexpr bool kind_contiguous(std::span<const FieldInfo> f, FeatureDataType k) 
   return true;
 }
 
-#define GENERATE_LEVEL_FIELDS(T, ns, name, num, fields, psd)                  \
-  namespace ns::name##_info_detail {                                          \
-    constexpr size_t kLevel = num; /* SRC_VALID_TS 按层推有效性 */            \
-    inline constexpr FieldInfo TABLE[] = {fields(FIELD_INFO_ONE)};            \
-  }                                                                           \
-  namespace ns {                                                              \
-  inline constexpr const auto &name##_FIELD_INFO = name##_info_detail::TABLE; \
-  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);         \
-  namespace name##_Field {                                                    \
-    enum : size_t { fields(FIELD_CODE_ONE) };                                 \
-  }                                                                           \
+#define GENERATE_LEVEL_FIELDS(T, ns, name, num, fields, psd)                     \
+  namespace ns::name##_info_detail {                                             \
+    constexpr size_t kLevel = num; /* SRC_VALID_TS 按层推有效性; 盘后推导 */     \
+    constexpr TierId kTier = TierId::T;                                          \
+    namespace Fld = ns::name##_Field;                                            \
+    inline constexpr SettleLink SETTLE[] = {fields(SETTLE_LINK_ONE)};            \
+    inline constexpr FieldInfo TABLE[] = {fields(FIELD_INFO_ONE)};               \
+  }                                                                              \
+  namespace ns {                                                                 \
+  inline constexpr const auto &name##_FIELD_INFO = name##_info_detail::TABLE;    \
+  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);            \
   }
 TIER_LEVELS(GENERATE_LEVEL_FIELDS)
 
@@ -128,7 +162,7 @@ TIER_LEVELS(GENERATE_LEVEL_SOURCES)
 
 // ============================================================================
 // 编译期一致性检查: 列所在层 == 来源允许的层
-//   CS 源层任意 (CoreCs 按 level_asof(源层, 本层, t) 投影; 跨日只许 TS / 元列, CoreCs 编译期查); TS 任意 (节拍取 Series 最新值, 见 Level);
+//   CS 源层任意 (CoreCs 按 level_asof 投影; 跨日只许 TS / 元列, CoreCs 编译期查); TS 任意 (节拍取 Series 最新值, 见 Level);
 //   LABEL / FLAG 任意 —— 目前全部放行, 留作挂点
 // ============================================================================
 #define SRC_LEVEL_TS(...) kLevel
@@ -146,14 +180,12 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 
 // ============================================================================
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
-//   FNV-1a 64 over "code:1:kind" 逐字段拼接 (顺序敏感; 1 = 已废的列宽, 恒折入以保旧库指纹)
-//   LB 列另折入 kLabelSemver: 标签列名 / 宽度不变但口径变 (LabelLob 的 entry / exit 定义) 时 +1, 旧库读取即判废而非静默错义
+//   FNV-1a 64 over (code, kind, ts_tf) 逐字段拼接 (顺序敏感)
+//   LB 列另折入 kLabelSemver: 标签列名不变但口径变 (LabelLob / LabelBar 的 entry / exit 定义) 时 +1, 库读取即判废而非静默错义
 //   L_1day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
-constexpr uint64_t kLabelSemver = 5; // 1: 分钟型 exit = 成交 VWAP; 2: exit = 行 m+n 的 entry 中间价 (entry / exit 同基准); 3: 价格 × 当日复权比 (开盘型跨除权);
-                                     // 4: 可成交进标签 (建仓非两向 → NaN, 平仓顺延; 见 LabelHold);
-                                     // 5: 建仓不作废, 可成交码进 lb_entry_ok (消费端仓位感知); Lob 冲击成本逐侧
-constexpr uint64_t kDaySemver = 1;   // 1: 行 D = 次日盘前态 (Fund / PoolKey onSettle, 见 Fund.hpp 逐表对齐)
+constexpr uint64_t kLabelSemver = 1;
+constexpr uint64_t kDaySemver = 1;
 constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
   for (; *s; ++s)
     h = (h ^ static_cast<uint8_t>(*s)) * 0x100000001b3ULL;
@@ -168,9 +200,7 @@ template <size_t N>
 constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
   uint64_t h = 0xcbf29ce484222325ULL;
   for (size_t i = 0; i < N; ++i) {
-    h = fnv1a_u64(fnv1a_u64(fnv1a_str(h, f[i].code), 1), static_cast<uint64_t>(f[i].kind));
-    if (f[i].ts_tf != ts::TfId::None) // Tf 改变落盘值; None 不折入, 旧文件 (无 Tf 时代) 指纹不变
-      h = fnv1a_u64(h, static_cast<uint64_t>(f[i].ts_tf));
+    h = fnv1a_u64(fnv1a_u64(fnv1a_str(h, f[i].code), static_cast<uint64_t>(f[i].kind)), static_cast<uint64_t>(f[i].ts_tf));
     if (f[i].kind == FeatureDataType::LB)
       h = fnv1a_u64(h, kLabelSemver);
   }

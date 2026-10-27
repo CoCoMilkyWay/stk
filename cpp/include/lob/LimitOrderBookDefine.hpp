@@ -351,7 +351,7 @@ static_assert(std::is_trivial_v<Order>, "OrderTable 用 memset 建/清槽, Order
 //   查找 = 1 次探针 (通常 1 条缓存行); 建单 = 同一次探针里完成 (find_or_insert); 删除 = 就地打墓碑, 零探针.
 //   墓碑不搬槽 → Order* 整日稳定: process_impl 入口查好的指针可以跨 compute_and_store 复用.
 //   表长按当日事件数定 (reserve: ≥ 2× 事件数 → 计墓碑的负载 ≤ 0.5, 每笔至多建 1 条委托), 冷门资产的表小到
-//   能进 L2; clear 只清用过的前缀 —— 换日成本与当日工作量成比例, 不再是固定的整表 memset.
+//   能进 L2; clear 只清用过的前缀 —— 换日成本与当日工作量成比例, 不是固定的整表 memset.
 //   id 直接取模做桶号: 沪市委托号按证券连续, 相邻委托落相邻槽, 零冲突; 深市按通道连续, 对单只股票近似均匀.
 class OrderTable {
 public:

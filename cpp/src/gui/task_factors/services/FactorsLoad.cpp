@@ -130,7 +130,7 @@ Shape shape_of(const Io &io, const Chunk &k) {
   return s;
 }
 
-// 逐天并行读骨架 (load_x / load_y / load_b / n_full_of 同一份): cols → 一张读计划 (同 (池, 层) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
+// 逐天并行读骨架 (load_x / load_y / load_b / n_full_of 同一份): cols → 一张读计划 (同 (池, 层, 盘后) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
 // on_day(view, day, d, tid) 散进平面 (view(c, t) = 平面列 c 在网格行 t 的源行视图). prog.begin Loading (日数), 每天 publish(1). false = 取消 / 库判废
 template <class OnDay>
 bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&on_day) {
@@ -350,7 +350,7 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
 bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   TraceN("FactorsLoadB");
   const FeatureTable &ft = io.ft;
-  assert(factor_level(ft.seg).lvl == L_1day && "篮子只在日层 (成员位 = 本行收盘定的池)");
+  assert(factor_level(ft.seg).lvl == L_1day && "篮子只在日层 (行 D 成员位 = D−1 收盘定的池, D 收盘换仓)");
   B = BPlanes{};
   B.sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg);
@@ -362,7 +362,7 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
     cols.add(v);
   const size_t ind_i = cols.add(ft.b.ind_l1);
   assert(cols.refs[ts_i].pool == io.dm.rs.main && "篮子列在标签库");
-  std::vector<float> vadj(n, 0.f); // 本行 adj_factor (= 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
+  std::vector<float> vadj(n, 0.f); // 本行 adj_factor (盘后列, as-of = 当日因子; 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
   B.close.resize(n);
   B.mcap.assign(n, 0.f);
   B.px.assign(n, 0.f);
@@ -402,10 +402,10 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   });
   if (!read)
     return false;
-  // 后复权 close(D) = close_day(D) × D 日复权因子 (= 行 D−1 的 adj_factor); 首行无前一行 → 不作漂移锚. 只比值进收益, 首日归一无关
+  // 后复权 close(D) = close_day(D) × D 日复权因子 (本行 as-of). 只比值进收益, 首日归一无关
   io.ex.rows(B.sh.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i) {
-      const float f = i >= A ? vadj[i - A] : 0.f;
+      const float f = vadj[i];
       B.close.m[i] = B.close.m[i] && f > 0.f;
       B.close.v[i] = B.close.m[i] ? B.close.v[i] * f : 0.f;
     }

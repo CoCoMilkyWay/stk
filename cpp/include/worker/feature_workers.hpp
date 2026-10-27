@@ -211,7 +211,7 @@ struct TsSchedule {
 // ============================================================================
 // 特征计算进度 —— 拉取式仪表盘 (总条 + 四类核心统一热力图 + 慢核明细)
 //
-// worker 不再各持一行进度句柄: 各段已完成天数在 FeatureStore (query_*_done), TS 逐核
+// worker 不持进度句柄: 各段已完成天数在 FeatureStore (query_*_done), TS 逐核
 // 前沿/持仓在 TsSchedule, worker 只发布统一的两件事 (ComputeStats::Core, 单写者,
 // 渲染线程只读): 单调工作量计数 work + 累计干等微秒 idle_us.
 // FeatureProgress 的采样线程每 100ms 拉取全量状态, 原地重画固定 5 行:

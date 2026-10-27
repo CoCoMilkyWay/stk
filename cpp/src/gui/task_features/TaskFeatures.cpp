@@ -146,7 +146,7 @@ TaskHandle CreateFeaturesTask() {
   handle.tabs = {"Compute", "Feature", "Corr", "Dist", "Transform", "OrderFlow"};
 
   // Update: 每帧 (无论选中) 更新 taskstate.features + tab 锁定/使能 ——
-  // 左栏标签/使能同帧读取, 不再依赖 "打开过 Features 页" 的上一帧缓存
+  // 左栏标签/使能同帧读取, 不依赖 "打开过 Features 页" 的上一帧缓存
   handle.Update = [state](SharedData &data) {
     auto &fs = data.taskstate.features;
     state->inputs_ready =
@@ -387,7 +387,7 @@ TaskHandle CreateFeaturesTask() {
       state->prev_compute_phase = current_phase;
     }
 
-    // Tab 锁定/使能已移到 Update (帧首, 无论选中都跑), 这里只管渲染与生命周期
+    // Tab 锁定/使能在 Update (帧首, 无论选中都跑), 这里只管渲染与生命周期
 
     // 流式 tab 生命周期 (Transform / Distribution 完全对仗): 基于 active_tab 判定 open
     // (同一时刻仅一个 open); 切回时 Transform 用 UI 当前参数重算

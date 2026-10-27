@@ -42,8 +42,9 @@ PsdAxis psd_axis(size_t N) {
 struct Preview::Level {
   size_t level = 0, rpd = 0, days = 1;
   SegPlan plan;
-  std::vector<ReadPlan> blocks;                  // [块] 单源读计划 (预览列 [f0[b], f0[b] + n) + 该层 ts_valid)
-  std::vector<size_t> f0;                        // [块] 块首预览列下标
+  std::vector<ReadPlan> blocks;                  // [块] 单源读计划 (一源的 ≤ kPvBlockCols 列 + 该层 ts_valid)
+  std::vector<std::vector<uint32_t>> fcol;       // [块][块列] 预览列下标
+  std::vector<size_t> bsrc;                      // [块] 所属预览源 (L_1day 盘中 / 盘后两源, 其余层一源)
   std::unique_ptr<std::mutex[]> fold_mu;         // [块] 同块跨轮任务的 fold + 发布互斥
   std::unique_ptr<std::atomic<uint32_t>[]> left; // [轮] 未完成块数 (归零那个任务计一轮进度)
   // ---- 每特征累积 (跨轮, 持 fold_mu[块] 写) ----
@@ -53,7 +54,7 @@ struct Preview::Level {
   std::vector<uint8_t> int_only;           // [n_preview] flag 探测: 有效值至今全整数 (粘性)
   // ---- 线程私有 (按 tid) ----
   std::vector<TsPlane> planes;                // [块列][n_draw][1][R] (只转置本轮抽样资产)
-  std::vector<IoSlot> io;                     // IO 暂存
+  std::vector<std::vector<IoSlot>> io;        // [tid][预览源] IO 暂存 (按该源首块备容量)
   std::vector<std::vector<KLLcache>> kll_loc; // [tid][块列] 本 (块, 轮) sketch (锁外 addBatch, 锁内 merge)
   // ---- 笼相预载, 块任务只读 ----
   std::vector<float> cage_dn, cage_up; // [轮][n_draw][days] 各轮抽样资产的逐日笼 (NaN = 当日无值 / 空位)
@@ -73,9 +74,10 @@ struct Preview::Runtime {
     std::array<Cell, kPvBlockCols> cells; // 块成品 staging (fold 锁内填, 短锁拷贝)
     std::vector<float> samples;           // 单 (特征, 轮) 有效样本缓冲
     std::vector<uint32_t> draw;           // [n_draw] 本轮抽样资产 → 主池源轴下标 (平面 k ← draw[k])
-    FeatureRead::DayColumns cage_day;     // L_1day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 池轴)
+    IoSlot::Buf cage;                     // 笼源暂存: L_1day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 池轴)
   };
   std::vector<Shard> shards; // [n_threads]
+  Source cage;               // 笼源 (all 池 L_1day {lim_dn, lim_up}; 当日适用值 = 盘中 as-of, 与读端同一投影)
   std::unique_ptr<misc::exec::ForkJoin> ex;
 };
 
@@ -103,26 +105,34 @@ struct Preview::LevelOf final : Preview::Level {
     cage_n.assign(n_pv, 0);
     cage_miss.assign(n_pv, 0);
     int_only.assign(n_pv, 1);
-    assert(pv_plan.srcs.size() == 1 && "预览列 = 主池该层 (Preview::reset 核对主池)");
-    const Source &src = pv_plan.srcs[0];
+    // 预览列 = 主池该层 (Preview::reset 核对主池), 按盘后分源; 各源按列切块
     blocks.clear();
-    f0.clear();
-    for (size_t b = 0; b < n_pv; b += kBlk) {
-      const size_t e = std::min(b + kBlk, n_pv);
-      ReadPlan bp;
-      bp.level = pv_plan.level;
-      bp.cols.assign(pv_plan.cols.begin() + b, pv_plan.cols.begin() + e);
-      Source s = src;
-      s.cs.io.assign(src.cs.io.begin() + b, src.cs.io.begin() + e);
-      s.cs.vts.assign(src.cs.vts.begin() + b, src.cs.vts.begin() + e);
-      if (src.cs.gated())
-        s.cs.io.push_back(src.cs.gate());
-      s.slot.resize(e - b);
-      for (size_t i = 0; i < e - b; ++i)
-        s.slot[i] = static_cast<uint32_t>(i);
-      bp.srcs.push_back(std::move(s));
-      blocks.push_back(std::move(bp));
-      f0.push_back(b);
+    fcol.clear();
+    bsrc.clear();
+    std::vector<size_t> src_b0; // [预览源] 首块
+    for (size_t si = 0; si < pv_plan.srcs.size(); ++si) {
+      const Source &src = pv_plan.srcs[si];
+      src_b0.push_back(blocks.size());
+      for (size_t b = 0; b < src.cs.n(); b += kBlk) {
+        const size_t e = std::min(b + kBlk, src.cs.n());
+        ReadPlan bp;
+        bp.level = pv_plan.level;
+        Source s = src;
+        s.cs.io.assign(src.cs.io.begin() + b, src.cs.io.begin() + e);
+        s.cs.vts.assign(src.cs.vts.begin() + b, src.cs.vts.begin() + e);
+        if (src.cs.gated())
+          s.cs.io.push_back(src.cs.gate());
+        s.slot.resize(e - b);
+        std::vector<uint32_t> f(src.slot.begin() + b, src.slot.begin() + e);
+        for (size_t i = 0; i < e - b; ++i) {
+          s.slot[i] = static_cast<uint32_t>(i);
+          bp.cols.push_back(pv_plan.cols[f[i]]);
+        }
+        bp.srcs.push_back(std::move(s));
+        blocks.push_back(std::move(bp));
+        fcol.push_back(std::move(f));
+        bsrc.push_back(si);
+      }
     }
     fold_mu = std::make_unique<std::mutex[]>(blocks.size());
     planes.resize(n_threads);
@@ -132,7 +142,9 @@ struct Preview::LevelOf final : Preview::Level {
     ws.resize(n_threads);
     bufs.resize(n_threads);
     for (size_t i = 0; i < n_threads; ++i) {
-      io[i].prepare(blocks[0], As, kBlk);
+      io[i].resize(src_b0.size());
+      for (size_t si = 0; si < src_b0.size(); ++si)
+        io[i][si].prepare(blocks[src_b0[si]], As, kBlk);
       prepare_slots(kll_loc[i], kBlk, kPvKllCapacity, kPvKllResolution);
       psd_loc[i].resize(kBlk);
       if (!ws[i])
@@ -174,7 +186,7 @@ void Preview::reset(ReadScope scope, Spec sp) {
       continue;
     assert(p.level == l && std::is_sorted(p.cols.begin(), p.cols.end()));
     assert(p.cols.back().level == l && p.cols.back().col < sp.n_features[l]);
-    assert(p.srcs.size() == 1 && p.srcs[0].pool == scope.main && pool_tier(scope.main) == sp.tier);
+    assert(pool_tier(scope.main) == sp.tier && std::ranges::all_of(p.srcs, [&](const Source &s) { return s.pool == scope.main; }));
   }
   assert(sp.cage.size() == 2 && scope.has(kAllPool) && "price 笼读 all 池");
   assert(scope.axis.size() > 0 && !scope.months.empty());
@@ -217,12 +229,23 @@ bool Preview::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bo
     max_tasks += p.n() * kPvRounds;
   const size_t n_threads = threads_for(max_tasks);
   misc::exec::ensure(rt.ex, static_cast<int>(n_threads));
+  Source &cg = rt.cage;
+  const FieldInfo *bar_day = level_info(TierId::Bar, L_1day).fields;
+  cg = Source{.pool = kAllPool, .level = L_1day, .settle = bar_day[spec.cage[0]].settle};
+  assert(bar_day[spec.cage[1]].settle == cg.settle && "笼两列同盘后性 (同一源)");
+  cg.cs.io = spec.cage;
+  cg.cs.vts.assign(2, L2::ValidType::ALL);
+  cg.slot = {0, 1};
+  project_rows(cg, L_1day, level_valid_rows(L_1day));
   rt.shards.resize(n_threads);
   const size_t n_draw = std::min(kPvAssetsPerRound, A);
   for (Runtime::Shard &sh : rt.shards) {
     sh.samples.reserve(kPvAssetsPerRound * TRADE_MINUTES_PER_DAY);
     sh.draw.resize(n_draw);
-    sh.cage_day.preallocate(As[kAllPool], L_1day, 2);
+    if (cg.cur)
+      sh.cage.cur.preallocate(As[kAllPool], L_1day, 2);
+    if (cg.carry)
+      sh.cage.prev.preallocate(As[kAllPool], L_1day, 2);
   }
   rt.asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
 
@@ -299,17 +322,17 @@ void Preview::Level::cage(const Preview &pv, Runtime &rt, const Readers &rd, siz
   const size_t n_draw = std::min(kPvAssetsPerRound, A);
   const size_t a_off = (r * n_draw) % A;       // 洗牌序旋转取片
   const uint32_t *cage_ids = rd.ids[kAllPool]; // nullptr = 主池即 all (同轴); all = 全轴, 不会 kAbsent
-  FeatureRead::DayColumns &cd = rt.shards[tid].cage_day;
-  const Day day = plan.day(r * days + d);
-  const bool has = day.has_prev & pool_bit(kAllPool); // 当日适用涨跌停 = 前一交易日 L_1day 行; all 池那天没落盘 / 轴首 = 笼缺 (NaN)
-  if (has)
-    rd.of(kAllPool).load_day_columns(day.prev, pv.spec.cage, cd);
+  IoSlot::Buf &cb = rt.shards[tid].cage;
+  load_source(rd, rt.cage, plan.day(r * days + d), rt.cage.cs.io, cb);
+  size_t row = 0;
+  const FeatureRead::DayColumns *cd = source_row(rt.cage, cb, 0, row); // 日常量 (L_1day 网格行 0); 无源 (all 池那天没落盘 / 轴首) = 笼缺 (NaN)
+  const feature_storage_t *lim_dn = col_row(cd, 0, row), *lim_up = col_row(cd, 1, row);
   float *c_dn = cage_dn.data() + r * n_draw * days, *c_up = cage_up.data() + r * n_draw * days;
   for (size_t k = 0; k < n_draw; ++k) {
     const size_t a = rt.asset_order[(a_off + k) % A];
     const size_t s = cage_ids ? cage_ids[a] : a;
-    const float dn = has ? static_cast<float>(cd.col(0)[s]) : kNaN; // L_1day 行 0 (日常量)
-    const float up = has ? static_cast<float>(cd.col(1)[s]) : kNaN;
+    const float dn = cd ? static_cast<float>(lim_dn[s]) : kNaN;
+    const float up = cd ? static_cast<float>(lim_up[s]) : kNaN;
     c_dn[k * days + d] = dn - (std::fabs(dn) * kF16Rel + kPxEps);
     c_up[k * days + d] = up + (std::fabs(up) * kF16Rel + kPxEps);
   }
@@ -343,7 +366,7 @@ void Preview::LevelOf<G>::block(Preview &pv, Runtime &rt, const Readers &rd, siz
     std::array<Cell, kPvBlockCols> &block_cells = sh.cells;
     const ReadPlan &bp = blocks[blk];
     const size_t nb = bp.n();
-    const size_t fb = f0[blk];
+    const std::vector<uint32_t> &fc = fcol[blk];
 
     // 块 IO: nb 值列 + 该层 ts_valid (各列按自己的 vt 折哨兵); 只转置本轮抽样资产:
     // 平面 A = n_draw, 主池映射换成 抽样下标 k → 主池源轴下标 (fold_span 经 ids 取格)
@@ -358,7 +381,7 @@ void Preview::LevelOf<G>::block(Preview &pv, Runtime &rt, const Readers &rd, siz
       Readers sub = rd;
       sub.ids[p] = sh.draw.data();
       plane.prepare(n_draw, G::kLevel, 1, nb);
-      plane.load_seg(sub, bp, plan, r, 0, io[tid]);
+      plane.load_seg(sub, bp, plan, r, 0, io[tid][bsrc[blk]]);
     }
 
     // 块扫描: 每特征抽 n_draw 个资产 → 线程私有累积 (it_t / kll_t / psd_t / 笼 / flag)
@@ -402,7 +425,7 @@ void Preview::LevelOf<G>::block(Preview &pv, Runtime &rt, const Readers &rd, siz
 
         // 单段谱 → Parseval 归一累加: 除以当段总功率 (k ∈ [1, N/2], 跳 DC) → 每 bin = 方差占比.
         // 特征量纲被除掉, 跨特征绝对可比 (白噪声参照 = 1/(N/2), 发布时 × N/2 → 全层恒 1);
-        // 每 (资产, 段) 一票, 高波动段不再以方差加权主导谱形.
+        // 每 (资产, 段) 一票, 不按方差加权 (否则高波动段主导谱形).
         // 有一个有效值就算谱 (ffill 后稠密; 稀疏段 = 阶梯序列, 谱偏红是其真实形态, 不设最少样本门槛 ——
         // 门控只留少数行的特征否则整列无谱). 恒值段 (日频常量 / 停牌) total = 0 谱无定义, 按
         // "占比全 0" 投一票: 曲线整体下沉 log10(有动的段占比), 图上同时看到 "多久动一次" (高度) 与
@@ -427,7 +450,7 @@ void Preview::LevelOf<G>::block(Preview &pv, Runtime &rt, const Readers &rd, siz
       TraceN("PreviewPublish");
       std::lock_guard<std::mutex> fold(fold_mu[blk]);
       for (size_t i = 0; i < nb; ++i) {
-        const size_t slot = fb + i;
+        const size_t slot = fc[i];
         klls[slot].mergeWith(kll_t[i]);
         integ[slot].add(it_t[i]);
         psd[slot].merge_from(psd_t[i]);
@@ -456,7 +479,7 @@ void Preview::LevelOf<G>::block(Preview &pv, Runtime &rt, const Readers &rd, siz
       }
       std::lock_guard<std::mutex> lock(pv.mutex);
       for (size_t i = 0; i < nb; ++i)
-        pv.snap.cells[G::kLevel][pv_plan.cols[fb + i].col] = block_cells[i];
+        pv.snap.cells[G::kLevel][pv_plan.cols[fc[i]].col] = block_cells[i];
     }
     pv.epoch.fetch_add(1, std::memory_order_release);
   }

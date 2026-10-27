@@ -29,7 +29,7 @@ namespace GUI::Factors {
 //   输入  按 (槽位 x/y/z, Gen) 懒造一次 (并行 fill, 主 rng 派生) + 上传显存一次, 全表复用; 最多 8 张 ≈ 960MB 宿主
 //   输出  cpu 参考 / stream / gpu 三块, 开轮 resize 预触页, 跨算子只 ensure 不清 (契约: 后端写满每格)
 //   GPU   常驻 Session (输出平面 / 工作区在里面), gpu 输出宿主缓冲 pin 住走 DMA
-// 算子之间除一张输出的 D2H 与 compare 外不留 overhead, cpu_ms / stream_ms 里也不再混首次触页
+// 算子之间除一张输出的 D2H 与 compare 外不留 overhead, cpu_ms / stream_ms 里也不混首次触页
 struct RoundCtx {
   static constexpr int kSlots = 3, kGens = 4; // Gen: NORM / POS / SMALL / GROUP
   const OperatorsRequest &rq;

@@ -1,10 +1,10 @@
 {
  "type": "alpha",
  "name_cn": "非流动性",
- "expr": "CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsLogRatio(bar.1d.close_day, TsDelayRoll(bar.1d.pre_close, d=1))), bar.1d.amount_day), bar.1d.amount_day), d))",
+ "expr": "CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), bar.1d.amount_day), bar.1d.amount_day), d))",
  "note": "Amihud: d 日 |r| / 成交额 均值 (零成交日掩掉, TsDiv 分母 0 会给 0); 东方 因子选股-014 非流动性溢价, 方向正",
  "weights": [
-  {"hold":1001,"sign":-1,"expr":"CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsLogRatio(bar.1d.close_day, TsDelayRoll(bar.1d.pre_close, d=1))), bar.1d.amount_day), bar.1d.amount_day), d=9))"}
+  {"hold":1001,"sign":-1,"expr":"CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), bar.1d.amount_day), bar.1d.amount_day), d=9))"}
  ],
  "run": {"stat_ver":2,"pool":"all","start_date":"2015-01-05","end_date":"2026-10-13","days":2859,"T":2859,"A":5921,"backend":"cpu","frame":"CS","max_impact":0.001,"n_full":200.0},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],

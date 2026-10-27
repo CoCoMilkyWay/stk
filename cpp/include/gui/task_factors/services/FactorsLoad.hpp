@@ -146,7 +146,7 @@ struct Io {
 };
 // 逐天并行读 (ex 抢单) 评估域日 [k.d0, k.d1) 装进 X (叶 ids, 须未装; 其余叶不动, 失败 → ids 的平面清空) / Y / B (覆盖)
 // (形 days × A → T, 容量断言在此). 三侧同一份骨架:
-// 一张读计划 (analysis::read_plan, 同 (池, 层) 一源, 网格行 level_asof 投影), 列全部 Col::ref(dm.pool);
+// 一张读计划 (analysis::read_plan, 同 (池, 层, 盘后) 一源, 网格行 level_asof 投影), 列全部 Col::ref(dm.pool);
 // X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | 标签 [hd][kLegs] | 成本 [ad][kLegs];
 // B 列段 = ts_valid | close adj_factor total_shares val[kPoolVals] ind_l1 (标签库网格层本层列).
 // 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 四个装载同一份进度: prog.begin Loading (日数), 每天 publish(1)

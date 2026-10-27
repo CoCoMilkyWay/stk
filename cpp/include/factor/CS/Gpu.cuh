@@ -624,7 +624,7 @@ __device__ inline void gh_prefix(k::Sh &sh) {
     row[lane * 4 + k] = static_cast<uint32_t>(c[2 * k] + ex) | (static_cast<uint32_t>(c[2 * k + 1] + ex) << 16);
 }
 
-// 组内 pct rank 的公共实现 (单趟分组统计, 不再逐组重扫):
+// 组内 pct rank 的公共实现 (单趟分组统计, 不逐组重扫):
 //   趟 1: 组 cnt / lo / hi 一次 shared 原子算完 (极值走 ord 保序整数编码的 atomicMin/Max);
 //   然后每 kGB 组一批: 一趟建 kGB 张 256 桶直方图 → 一 warp 一组原地前缀 → 一趟输出该批的资产.
 //   G ≈ 30 → 2 批 ≈ 6 趟 + 几次同步, 旧法是 (G+1)·3 趟 + 3(G+1) 次块归约.

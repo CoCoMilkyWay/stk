@@ -24,7 +24,7 @@ struct Domain {
   analysis::ReadScope rs;            // main = 标签库, libs = used 各库清单, axis = A 轴 (标签库轴 / 子池并集), to = A → 各库轴
   std::vector<misc::Ymd> dates;      // 评估期 = used 各库落盘日交集 (升序, 非空)
   std::vector<Day> days;             // [dates] 当日 + 承接日 (标签库日期轴上的前一日, 0 = 轴首) 及其落盘位 (承接日按库判)
-  std::optional<pool::Panel> member; // 子池成员 (Lob 池 × Bar 标签层; 网格层 as-of, 池轴 = A 轴)
+  std::optional<pool::Panel> member; // 子池成员 (Lob 池 × Bar 标签层; 第 D 日 = D−1 收盘行, 各层同一份, 池轴 = A 轴)
   std::string key() const;           // 缓存键: 池 | 所用库目录 + 池轴 | 评估期首末 + 天数
 };
 // worker: 作用域 sc 里已建的库全开 (清单没变的复用; 各因子只读自己用到的). abort = 库判废时拉起的取消旗

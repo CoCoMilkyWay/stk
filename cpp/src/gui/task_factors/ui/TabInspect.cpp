@@ -576,7 +576,7 @@ int minute_formatter(double v, char *buf, int size, void *ud) {
 
 // 滚动重锚指数线: line[t] = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))). P = 选中资产 close 前值填充到逐行格 (无成交行持平), I = 池等权指数
 // 等权指数 [T]. 基准取 L 分钟前的 EMA_L: 当前价不进基准 (近期偏移不被吸收), 基准本身平滑 (过去的高频波动不干扰当前); 指数偏移再 EMA_S 压指数自身
-// 的分钟噪声 (个股侧 EMA_L(P) 已平滑, 不再压). 线 = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移.
+// 的分钟噪声 (个股侧 EMA_L(P) 已平滑, 不另压). 线 = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移.
 // 跨日连续算 (EMA 不按日重置); pandas ewm(span, adjust=False) 口径: α = 2/(span+1), 首个样本起算. 只用已发布前缀 [0, pub_pts), 个股在
 // [首根有效蜡烛, pub_days·S) 有值; 线定义域 [t0, t1) = [首根 + L, pub_days·S) (基准要 L 分钟前有值). 全量重算 (T ≤ 几万, 微秒级)
 // L = 1 交易日 = seg 行
@@ -997,7 +997,7 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
 // 净线 = 毛二级 − leg_sign(腿) · 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; L / S 按做多超额画, 空腿付成本 = 线上移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是腿成员 ∧ 标签有效格 (与组计数同口径)
-// hs[n_hold] 毛二级; costs[n_cost] 可空 (旧文件 stat 无 costs). n < 3 的持有期不作节点.
+// hs[n_hold] 毛二级; costs[n_cost] 可空 (Bar 层无金额段). n < 3 的持有期不作节点.
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 = 画的年化
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, double fixed_impact, int sel_hold,
                const char *source, const ImVec2 &size) {

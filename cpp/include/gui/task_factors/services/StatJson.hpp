@@ -313,7 +313,7 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   return j;
 }
 
-// scope_json + eval_json 的逆: run 口径与 f 不符 / stat_ver ≠ kStatSemver / 任一处不合 → false (dst 不动). 小图可选 (老文件没有 → 空)
+// scope_json + eval_json 的逆: run 口径与 f 不符 / stat_ver ≠ kStatSemver / 任一处不合 → false (dst 不动)
 inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int seg, factor::stat::Frame f, EvalStat &dst) {
   if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)))
     return false;
@@ -370,14 +370,14 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
   for (size_t c = 0; c < cit->size(); ++c)
     if (!load_cost((*cit)[c], t.n_hold, t.costs[c]))
       return false;
-  if (const auto pit = j.find("ic_pdf"); pit != j.end()) {
-    if (!pit->is_array() || pit->size() != H)
+  const auto pit = j.find("ic_pdf");
+  if (pit == j.end() || !pit->is_array() || pit->size() != H)
+    return false;
+  for (size_t k = 0; k < H; ++k)
+    if (!load_mini_pdf((*pit)[k], t.ic_pdf[k]))
       return false;
-    for (size_t k = 0; k < H; ++k)
-      if (!load_mini_pdf((*pit)[k], t.ic_pdf[k]))
-        return false;
-  }
-  if (const auto pit = j.find("alpha_pdf"); pit != j.end() && !load_mini_pdf(*pit, t.alpha_pdf))
+  const auto ait = j.find("alpha_pdf");
+  if (ait == j.end() || !load_mini_pdf(*ait, t.alpha_pdf))
     return false;
   dst = std::move(t);
   return true;

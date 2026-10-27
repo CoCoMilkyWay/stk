@@ -103,7 +103,7 @@ bool ScanService::run(ScanRequest &req) {
   result.binary.total_dates = result.binary.available_dates.size();
   result.archive.total_dates = result.archive.available_dates.size();
 
-  // Decision Tree (覆盖判定以交易日历为 ground truth, 不再看 archive/binary 的 min/max 区间)
+  // Decision Tree (覆盖判定以交易日历为 ground truth, 不看 archive/binary 的 min/max 区间)
   assert(result.required_dates > 0 && "回测区间内无交易日 (config 日期错误?)");
   if (result.missing_dates.empty()) {
     // binary 覆盖全部交易日

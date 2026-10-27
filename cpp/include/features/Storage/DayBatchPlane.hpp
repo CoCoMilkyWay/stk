@@ -51,39 +51,40 @@ struct SegPlan {
   Day day(size_t i) const { return {dates[i], prev[i], has[i], has_prev[i]}; }
 };
 
-// 源 = 同 (池, 层) 的一组值列: 一天一次选列读 (cs 末位带该层 ts_valid), 行映射二选一 (row gather / at scatter)
+// 源 = 同 (池, 层, 盘后) 的一组值列: 一天一次选列读 (cs 末位带该层 ts_valid), 行映射二选一 (row gather / at scatter)
 // 读端 (平面) 与写端上游读 (CoreCs 旁读 / pool::Panel 池成员位) 同一份: 跨池跨层一律 level_asof, 不另写特例
 struct Source {
   PoolId pool = kAllPool; // 平面 a ← 该池轴 Readers::ids[pool][a] (nullptr = 同轴)
   size_t level = L_1min;
+  bool settle = false;        // 盘后列 (FieldInfo::settle): emit 晚于同层盘中列, 盘中网格 as-of 恒落前一交易日
   fmeta::ColumnSet cs;        // 值列 (+ 门控列)
   std::vector<uint32_t> slot; // [cs.n()] 值列 → 平面列
   std::vector<int32_t> row;   // 网格行: [网格每日有效行] → 源行; -1 = 前一交易日末行
-  std::vector<uint32_t> at;   // 尾部行: [源层有效行] → 网格行 (行末秒 − 1 所在)
+  std::vector<uint32_t> at;   // 尾部行: [源层有效行] → 网格行 (行末秒 − 1 所在; 盘后 = 网格有效行数, 收盘之后)
   bool cur = false;           // 读当日 (网格: row 含 ≥ 0; 尾部: 恒读)
   bool carry = false;         // 读前一交易日 (网格: row 含 -1; 尾部: 要承接且开盘 as-of 落在前日)
 };
-// 网格行: 网格层 grid 的 rows 个行 → level_asof(源层, grid, t)
+// 网格行 (盘中): 网格层 grid 的 rows 个行 → level_asof(源层, 源盘后, grid, 盘中, t)
 inline void project_rows(Source &s, size_t grid, size_t rows) {
   s.row.resize(rows);
   s.at.clear();
   s.cur = s.carry = false;
   for (size_t t = 0; t < rows; ++t) {
-    s.row[t] = static_cast<int32_t>(level_asof(s.level, grid, t));
+    s.row[t] = static_cast<int32_t>(level_asof(s.level, s.settle, grid, false, t));
     s.cur |= s.row[t] >= 0;
     s.carry |= s.row[t] < 0;
   }
 }
-// 尾部行: 源行 r → 网格层 grid 中含 level_end_sec(源层, r) − 1 的行; 承接 = carry 且网格开盘首行的 as-of 落在前一交易日
-// (该时刻源层尚无当日行, 已知值 = 前日末行)
+// 尾部行: 源行 r → 网格层 grid 中含 level_end_sec(源层, r) − 1 的行; 盘后列 → 收盘之后 (网格末哨兵位 = 有效行数);
+// 承接 = carry 且网格开盘首行的 as-of 落在前一交易日 (该时刻源层尚无当日行, 已知值 = 前日末行)
 inline void tail_rows(Source &s, size_t grid, bool carry) {
   const size_t R = level_valid_rows(s.level);
   s.row.clear();
   s.at.resize(R);
   for (size_t r = 0; r < R; ++r)
-    s.at[r] = static_cast<uint32_t>(level_row_of_sec(grid, level_end_sec(s.level, r) - 1));
+    s.at[r] = static_cast<uint32_t>(s.settle ? level_valid_rows(grid) : level_row_of_sec(grid, level_end_sec(s.level, r) - 1));
   s.cur = true;
-  s.carry = carry && level_asof(s.level, grid, 0) < 0;
+  s.carry = carry && level_asof(s.level, s.settle, grid, false, 0) < 0;
 }
 // 读计划: 一组 ColRef → 网格层上的平面列 (GUI 线程构建, 见 analysis::read_plan); 源池 = 列所在池, 主池在 ReadScope
 struct ReadPlan {

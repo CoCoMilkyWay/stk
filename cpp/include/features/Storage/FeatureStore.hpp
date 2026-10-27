@@ -148,7 +148,7 @@ struct StoreSlot {
 };
 
 // 日句柄 (TS/CS/IO 同一形态): open 时定址一次, 之后所有读写是纯指针算术 ——
-// 热路径不再有字符串比较 / 原子验证 / slot 查找 (原先每 tick 4-6 次).
+// 热路径没有字符串比较 / 原子验证 / slot 查找.
 // 空句柄 = 没拿到 (池满 / 本日未就绪), try_open 以此表示失败.
 template <class T>
 struct StoreDay {

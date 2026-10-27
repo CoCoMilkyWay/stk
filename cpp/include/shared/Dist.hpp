@@ -52,7 +52,7 @@ static constexpr size_t kMinSamples = 1000; // 全局 sketch 达到此样本数�
 static constexpr int kW2Deciles = 19;       // W2 用的分位点: 5%, 10%, ..., 95%
 
 // 总样本预算: 超出则洗牌后截断天数 (洗牌不锁星期). 分批后平面只存一批,
-// 内存不再约束天数 —— 这个预算只是总扫描/IO 时长的旋钮, 5 年 × 5000 资产在预算内全量.
+// 内存不约束天数 —— 这个预算只是总扫描/IO 时长的旋钮, 5 年 × 5000 资产在预算内全量.
 static constexpr size_t kMaxTotalSamples = size_t(2) << 30;
 
 // 日内桶: 按时钟 10 分钟对齐 (09:15-09:19 单独一桶 = 集合竞价; 午休不跨桶), 共 kTodBins 个.

@@ -91,7 +91,7 @@
 //                                  有效性: L_1min / 分钟箱层 / L_1day → ALL (稠密), L_sec: onDepth → DEPTH, 其余 → DATA
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
 //       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 任意层) 的字段 src → cs::Tf::apply → cs::Method::apply.
-//                                  源行 = level_asof(lvl, 本层, t) (粗层读已收的上一行, 日内读 L_1day = 前一交易日行; 跨日只许 TS / 元列,
+//                                  源行 = level_asof(源列, 本列, t) (粗层 / 盘后列读已收的上一行, 日内读 L_1day = 前一交易日行; 跨日只许 TS / 元列,
 //                                  区间首日无前日 → NaN). CS; 有效性随源层 (L_sec DATA / 其余 ALL); ns = 本档, 或 TIER_SIDES 登记的旁读档
 //       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写; 收益无 NaN, 建仓可成交码 lb_entry_ok, 见 LabelHold; Lob 冲击成本不可成交侧 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
@@ -145,7 +145,7 @@ struct EnumStr {
   X(LB, 2, "标签")            \
   X(META, 3, "元数据")
 
-// Transform 探索用的时序归一化 (math/normalize/Normalize.hpp, Params::ts_norm). 字段表不再有此列:
+// Transform 探索用的时序归一化 (math/normalize/Normalize.hpp, Params::ts_norm). 字段表无此列:
 // 落盘归一化由 SRC 列声明 (TS(..., Tf, Method) → ts::, CS(..., Tf, Method) → cs::), GUI 从 SRC 推导显示
 #define NORM_METHODS(X)                                       \
   X(NONE, 0, "无") /* x */                                    \
@@ -312,6 +312,8 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 //            on5Min / on15Min / on30Min / on60Min 节点的原生层
 //   L_1day    日频 (T = L_1DAY_ROWS): 收盘行 (= 整日箱, CoreTs::close_row 末分钟写, onSettle 之后); onClose / onSettle 节点的原生层.
 //            行 D = D 日收盘后至 D+1 开盘前可知的值, D+1 盘中全程可 act on (高频读它即读前一交易日行).
+//            onSettle 节点的列 (+ 同层继承它的 CS) 是盘后列 (FieldInfo::settle): 含收盘后信息 (次日盘前态), 本层盘中网格
+//            (读端日层 / 非盘后截面) 也读前一交易日行 (= 当日适用), 不必手工 TsDelayRoll; onClose 节点的列本层读当日行
 //            本身是日频的数据 (基本面 / 状态 / 池) 放这里, 不在分钟层逐分钟复写
 //   每层每天一个日文件, 内带列目录, 按列选读 (见 FeatureDay.hpp; 列是否沿 T 轴 XOR 差分由写端逐列按数据定)
 //   psd = 该层特征的推荐频谱 (秒/分/时 能量占比提示, 仅 GUI 元数据)

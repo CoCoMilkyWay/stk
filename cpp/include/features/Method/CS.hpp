@@ -166,8 +166,9 @@ ColumnFn column_fn(TfId tf, MethodId m);
 
 } // namespace cs
 
-// NeutralRank 上下文源列 (层, 字段 code): CoreCs / Transform 每拍按 level_asof(层, 本层, t) 投影 gather 一次
-//   市值随 5 分钟箱末价 (L_5min, 与其余估值列同层; L_1min 读到上一箱, 首箱前 = 前一交易日末箱); 行业日频 (L_1day; 日内层读到前一交易日行 = 当日适用, L_1day 本层读当日行)
+// NeutralRank 上下文源列 (层, 字段 code): CoreCs / Transform 每拍按 level_asof 投影 gather 一次
+//   市值随 5 分钟箱末价 (L_5min, 与其余估值列同层; L_1min 读到上一箱, 首箱前 = 前一交易日末箱); 行业日频 (L_1day 盘后列;
+//   盘中行 (日内层 / 读端网格) 读到前一交易日行 = 当日适用, L_1day 盘后截面本层读当日行)
 #define NEUTRAL_RANK_MCAP_LEVEL L_5min
 #define NEUTRAL_RANK_MCAP mcap
 #define NEUTRAL_RANK_INDUSTRY_LEVEL L_1day

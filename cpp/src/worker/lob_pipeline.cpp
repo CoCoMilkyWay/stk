@@ -76,7 +76,7 @@ struct TierFeed<lob::Tier> {
       lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_); // 追踪: 当前驱动核
       lob_.begin_day(date, day);                                    // 盘前: DAG reset / 日频节点承接 + onDay
 
-      // 帧的位置/条数/价位基准都在扫描灌好的帧目录里, 不再读任何头; 同一天的
+      // 帧的位置/条数/价位基准都在扫描灌好的帧目录里, 不读任何头; 同一天的
       // 资产共用 reader 里那一个 fd.
       L2::FrameView view;
       {

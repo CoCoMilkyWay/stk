@@ -280,8 +280,8 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
     }
   });
 
-  // 每资产的常量先摊平: 交易所小写全码 / 上市 / 退市. 这些原先是在
-  // 日期×资产的内循环里现算的, 五百万次 string 拼接 + map 查找.
+  // 每资产的常量先摊平: 交易所小写全码 / 上市 / 退市. 不在日期×资产的内循环里
+  // 现算 (那是五百万次 string 拼接 + map 查找).
   struct AssetKey {
     std::string full_code;     // "sh.600128"
     misc::Ymd list_date = 0;   // 0 = 不限
@@ -319,7 +319,7 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
   // stock_days, 同序), bidx 逐个对上.
   struct DayJob {
     misc::Ymd date;
-    size_t didx; // 日期轴下标, 内循环 O(1) 定址 (原先是 资产数 次 hash find)
+    size_t didx; // 日期轴下标, 内循环 O(1) 定址
     size_t bidx; // 回测日历行 (in_backtest 时有效)
     bool in_db_range;
     bool in_backtest;

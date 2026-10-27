@@ -450,7 +450,7 @@ private:
   }
 
   void DrawTabBrowser() {
-    // date_stats 由扫描的 Phase 5 统一产出 (ScanService::run → Asset::adopt), 这里不再
+    // date_stats 由扫描的 Phase 5 统一产出 (ScanService::run → Asset::adopt), 这里不
     // 惰性补算: 渲染帧里现算是双重遍历, 而且会跟扫描抢着写同一份统计.
     // 扫描没跑完时 date_stats 是空的, 表格照常渲染, 数字等扫描落地.
     RenderTabBrowser(

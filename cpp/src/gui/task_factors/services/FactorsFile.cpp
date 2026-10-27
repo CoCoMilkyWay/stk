@@ -224,7 +224,7 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
       if (!o.is_object() || !json_int(o, "hold", w.hold)) {
         w.err = "weights[" + std::to_string(i) + "] 须是对象且有整数 hold";
       } else if (w.hold != 0 && !find_leg(ft.y.labels, w.hold)) {
-        w.err = "weights[" + std::to_string(i) + "] 的 hold " + std::to_string(w.hold) + " 不在本层持有期里 (已废的持有期, 作废)";
+        w.err = "weights[" + std::to_string(i) + "] 的 hold " + std::to_string(w.hold) + " 不在本层持有期里, 作废";
       } else if (o.find("sign") != o.end() && !(json_int(o, "sign", w.sign) && (w.sign == 1 || w.sign == -1))) {
         w.err = "weights[" + std::to_string(i) + "] 的 sign 须是 1 或 -1";
       } else if (const auto xit = o.find("expr"); xit == o.end() || !xit->is_string()) {

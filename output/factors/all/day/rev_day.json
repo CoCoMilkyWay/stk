@@ -1,10 +1,10 @@
 {
  "type": "alpha",
  "name_cn": "短期反转",
- "expr": "CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.close_day, TsDelayRoll(bar.1d.pre_close, d=1)), d)))",
+ "expr": "CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d)))",
  "note": "d 日复权对数收益和取负 (日收益 = close / 前一行 pre_close, 除权已处理); 广发 多因子-025 5日反转 rankIC -0.0787 (周)",
  "weights": [
-  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.close_day, TsDelayRoll(bar.1d.pre_close, d=1)), d=6)))"}
+  {"hold":1001,"sign":1,"expr":"CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=6)))"}
  ],
  "run": {"stat_ver":2,"pool":"all","start_date":"2015-01-05","end_date":"2026-10-13","days":2859,"T":2859,"A":5921,"backend":"cpu","frame":"CS","max_impact":0.001,"n_full":200.0},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","leg_n","grp"],

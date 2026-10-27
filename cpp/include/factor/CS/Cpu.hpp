@@ -639,7 +639,7 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
       }
       bool any_spread = false;
       const double mxa = sxa / std::max(na, 1), mya = sya / std::max(na, 1);
-      for (size_t q = 0; q < GS; ++q) { // 组均值按组算 G 次, 每元素不再除; 无组槽恒 = 全池
+      for (size_t q = 0; q < GS; ++q) { // 组均值按组算 G 次, 不逐元素除; 无组槽恒 = 全池
         any_spread = any_spread || (cn[q] >= 1 && spread(lo[q], hi[q]));
         const bool own = q < static_cast<size_t>(G) && cn[q] >= 1;
         mx[q] = own ? sx[q] / cn[q] : mxa;

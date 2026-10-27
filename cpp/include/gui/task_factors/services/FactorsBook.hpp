@@ -55,7 +55,7 @@ void compound(const R *r, size_t n, Put &&put) {
   }
 }
 
-inline constexpr int kBasketSeg = 1; // 篮子的层 (日层: 成员位 = 本行收盘定的池)
+inline constexpr int kBasketSeg = 1; // 篮子的层 (日层: 行 D 成员位 = D−1 收盘定的池, D 收盘换仓)
 // 日层篮子 (baskets; 池整体与行业同形): 篮子 0 = 池整体, k = 1..kBaskets−1 = SW2021 一级行业 k (本池成分按行业切, 全A 池 = 申万一级;
 //   行业未知的只进篮子 0); 线 index_line(k, w) = kWeights · k + w
 struct Baskets {
@@ -66,11 +66,11 @@ struct Baskets {
                                                //   缺股本权 0), 平仓行实现 1/h̄. 日层 T+1C = C(D) → C(D+1) 复权, 顺延在标签里, 建仓 / 续持仓位感知 (Stat 契约)
   BookLines index_px;                          // 收盘价指数的逐行收益 (线序 / 权同 index; 不看可成交): 行 t 成分 = 上一有效 close 行 p 在池 (∧ 行 p ind_l1 = k),
                                                //   收益 = 后复权 close_t / close_p − 1, 权 = 等权 1 / 行 p 总市值; 无成分 → 0. 与 index 之差 = 可成交 / 顺延的拖累
-  std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal] 估值: 行 t 成分 = 上一行在池 (∧ 上一行 ind_l1 = k); 市值 = 本行收盘价 (停牌带上一有效价) × 上一行总股本;
+  std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal] 估值: 行 t 成分 = 上一行在池 (∧ 本行 ind_l1 = k); 市值 = 本行收盘价 (停牌带上一有效价) × 本行总股本;
                                                //   个股收益率 = 分子 / 市值, 按权平均: 等权 = 算术平均 (= 等权组合每元的分子) / 加权 (权 = 市值) = 整体法 Σ分子 / Σ市值;
                                                //   分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 分红,
-                                               //   分红 = 上一行 dy_ttm × 上一行收盘价 × 上一行总股本 (= Fund 的分母口径还原近 365 日税前分红额);
-                                               //   财务同取上一行 (Fund 行 D = 次日盘前态 ⇒ 上一行 = 当日适用); 每口只收该口输入有限的成分 (亏损 / 负权益 / 负现金流照计为负);
+                                               //   分红 = 本行 dy_ttm × 上一行收盘价 × 本行总股本 (= Fund 的分母口径还原近 365 日税前分红额);
+                                               //   股本 / 财务 / 行业是盘后列, 日层 as-of 读到的本行 = 当日适用; 每口只收该口输入有限的成分 (亏损 / 负权益 / 负现金流照计为负);
                                                //   Σ权 ≤ 0 / 无成分 → NaN
   double turn[kWeights] = {};                  // [Weight] 篮子 0 的每行单边换手 ½ Σ|w_t − w̃_{t−1}| (w̃ = 上一成分行的权按本行收益漂移; 含再平衡 + 成分进出)
                                                //   沿成分行均值, 首行建仓不计

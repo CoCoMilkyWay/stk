@@ -431,7 +431,7 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
            });
 
   // ---- cn_stock_shares (CUTOFF=0: 按生效日记账, 除权日与 adj_factor 同日变动, 盘前公告可知;
-  //      曾误按 -1 → 送转/除权日股本滞后一天而价格已调整, mcap/换手率当日错位) ----
+  //      按 -1 则送转/除权日股本滞后一天而价格已调整, mcap/换手率当日错位) ----
   scan.add(shares, spec("cn_stock_shares"), {"total_shares", "a_float_shares"}, Sink{},
            [&axes, &p, n_d](const Rows &r, Sink &) {
              const pq::Col ts = r.col("total_shares"), fs = r.col("a_float_shares");
@@ -447,7 +447,7 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
            });
 
   // ---- cn_stock_limit_price (CUTOFF=0: date=T 行即 T 当日适用涨跌停, 由 pre_close(T) 推出,
-  //      盘前可知, 同 pre_close/adj_factor; 曾误按 -1 解析 → 全列滞后一天, 涨跌停次日必被打穿) ----
+  //      盘前可知, 同 pre_close/adj_factor; 按 -1 则全列滞后一天, 涨跌停次日必被打穿) ----
   scan.add(limit, spec("cn_stock_limit_price"), {"upper_limit", "lower_limit"}, Sink{},
            [&axes, &p, n_d](const Rows &r, Sink &) {
              const pq::Col up = r.col("upper_limit"), dn = r.col("lower_limit");
@@ -485,7 +485,7 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
 
   // ---- cn_stock_margin_trading_detail (CUTOFF=-1; 不 ffill): date=T 行是 T 日盘后余额/流量
   //      (余额差 = 当行买入-偿还, 已验证), 交易所 T+1 盘前公布 → T+1 起可用;
-  //      曾误按 0 解析 = 盘中用当日盘后数据 (未来函数) ----
+  //      按 0 则盘中用当日盘后数据 (未来函数) ----
   scan.add(margin, spec("cn_stock_margin_trading_detail"),
            {"financing_balance", "securities_lending_balance", "financing_purchase", "financing_repayment",
             "securities_lending_sales_quantity", "securities_lending_repayment_quantity"},
@@ -523,7 +523,7 @@ void GridScan::finish(const Axes &axes, PitPool &p) const {
 }
 
 // 事件表 (9 张): fold 只产命中 (Hits, 段内追加), Scan::run 之后 finish 按资产分桶成链 (v 升序).
-// 原先逐资产一把 mutex + 追加顺序随线程调度漂移; 现在零锁且同 v 事件的先后确定.
+// 零锁, 且同 v 事件的先后确定 (不随线程调度漂移).
 struct IncomeHits {
   Hits<YtdEv<INC_COUNT>> ytd;
   Hits<FinancialIncomeAnnualEv> annual;

@@ -430,7 +430,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
     const ImVec2 map_size(avail.x - kScaleW - ImGui::GetStyle().ItemSpacing.x, avail.y);
     if (ImPlot::BeginPlot("##corr", map_size,
                           ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_Equal)) {
-      // PlotHeatmap 自己把第 0 行画在 bounds 上沿 (reverse_y), 故 Y 轴不再 Invert:
+      // PlotHeatmap 自己把第 0 行画在 bounds 上沿 (reverse_y), 故 Y 轴不 Invert:
       // 屏幕第 r 行 ↔ y ∈ [n-r-1, n-r)
       ImPlot::SetupAxes(nullptr, nullptr,
                         ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoGridLines,

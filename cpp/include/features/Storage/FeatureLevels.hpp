@@ -1,7 +1,7 @@
 #pragma once
 
 // ============================================================================
-// FEATURE LEVELS — 特征存储的"字段表无关"稳定层 (从 FeatureStoreConfig.hpp 拆出)
+// FEATURE LEVELS — 特征存储的"字段表无关"稳定层
 // ============================================================================
 // 读端 (FeatureRead / GUI / shared) 只需要这里的结构体 + 运行时层表访问, 不 include
 // 字段表 (FieldsGenerated) —— 增删改特征不触发它们重编, 只重编 FeatureMeta.cpp + 写端.
@@ -27,12 +27,14 @@
 // 存储类型: _Float16 (内存/磁盘减半, F16C/AVX-512 FP16/NEON 硬件转换, ±65504, ~3.3 位有效数字)
 using feature_storage_t = _Float16;
 
-// 每列 {code, valid, kind, ts_tf} (由字段表 SRC 列推出); 列下标 = 存储列
+// 每列 {code, valid, kind, ts_tf, settle} (由字段表 SRC 列推出); 列下标 = 存储列
 struct FieldInfo {
   const char *code;
   L2::ValidType valid;
   FeatureDataType kind;
   ts::TfId ts_tf; // TS 行落盘前套用的元素变换 (改变落盘值 → 进指纹); 非 TS 行 None
+  bool settle;    // 盘后列: 行值含收盘后才可知的信息 (L_1day 的 onSettle 节点 TS 列 + 同档同层继承它的 CS 列), emit 晚于同层盘中列;
+                  // 只定读端 as-of (level_asof), 不改落盘值 → 不进指纹
 };
 
 // 档: 数据源 (见 FeaturesDefine.hpp ALL_TIERS)
@@ -155,7 +157,8 @@ inline constexpr size_t level_valid_rows(size_t lvl) {
 }
 
 // ---- 行时间代数 (与档无关): 行 t 覆盖交易秒 [., level_end_sec) ----
-// 节点 emit 全序 = (行末秒, 层): 同刻细层先写 (for_each_close 级联, CoreTs / CoreCs 同一路径); L_1day = 收盘一行
+// 列 emit 全序 = (行末秒, 层, 盘后): 同刻细层先写 (for_each_close 级联, CoreTs / CoreCs 同一路径); L_1day = 收盘一行,
+// 其盘后列 (FieldInfo::settle) 再晚于同层盘中列 (onClose → onSettle). 读端网格行一律盘中 (settle = false)
 inline constexpr size_t level_end_sec(size_t lvl, size_t t) {
   assert(t < level_valid_rows(lvl));
   return lvl == L_sec ? t + 1 : lvl == L_1min ? L_1min_to_L_sec(t) + 60
@@ -169,11 +172,15 @@ inline constexpr size_t level_row_of_sec(size_t lvl, size_t s) {
                         : lvl == L_1day   ? 0
                                           : L_1min_to_bin(level_bin_minutes(lvl), L_sec_to_L_1min(s));
 }
-// as-of 投影: dst 层行 t emit 时刻, src 层已 emit 的最新一行 (同日); -1 = 当日尚无 → 前一交易日末行.
-// src 不粗于 dst → 含 dst 末秒的那行 (同刻细层先写, 已可见); 更粗 → 其前一行 (同刻粗层后写 / 尚未收)
-inline constexpr ptrdiff_t level_asof(size_t src, size_t dst, size_t t) {
+// 同刻次序: src 列 (层, 盘后) 晚于 dst 列 emit
+inline constexpr bool level_later(size_t src, bool src_settle, size_t dst, bool dst_settle) {
+  return std::pair(src, src_settle) > std::pair(dst, dst_settle);
+}
+// as-of 投影: dst 列行 t emit 时刻, src 列已 emit 的最新一行 (同日); -1 = 当日尚无 → 前一交易日末行.
+// src 不晚于 dst → 含 dst 末秒的那行 (同刻先写, 已可见); 晚于 → 其前一行 (同刻后写 / 尚未收; L_1day 盘后列对盘中网格恒 -1)
+inline constexpr ptrdiff_t level_asof(size_t src, bool src_settle, size_t dst, bool dst_settle, size_t t) {
   const ptrdiff_t r = static_cast<ptrdiff_t>(level_row_of_sec(src, level_end_sec(dst, t) - 1));
-  return src <= dst ? r : r - 1;
+  return level_later(src, src_settle, dst, dst_settle) ? r - 1 : r;
 }
 
 // 收行 (哪层在哪刻收行的唯一判据): 层 lvl 在交易秒 s 末收行 ⇔ s 所在行的末秒 = s

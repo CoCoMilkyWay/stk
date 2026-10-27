@@ -669,7 +669,7 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
       ImGui::SameLine();
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Encoding in progress...");
     } else {
-      // File Check 不再硬性挡住入口 — 未通过时在确认弹窗里要求"风险自负"勾选
+      // File Check 不硬性挡住入口 — 未通过时在确认弹窗里要求"风险自负"勾选
       bool file_check_ok = file_check_result.was_run() &&
                            (file_check_result.passed || !file_check_result.archive_dir_exists);
 
@@ -740,7 +740,7 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
                          (file_check_result.passed || !file_check_result.archive_dir_exists);
 
     // Encode 按天增量, 归档不存在/不覆盖全区间时也能先编已有的部分 —— 三条
-    // 硬性前置条件都留一个"风险自负"的旁路, 不再是全有全无.
+    // 硬性前置条件都留一个"风险自负"的旁路, 不是全有全无.
     bool can_encode = (asset.archive.exists || state.skip_archive_exists_ack) &&
                       (archive_in_range || state.skip_archive_range_ack) &&
                       (file_check_ok || state.skip_file_check_ack);

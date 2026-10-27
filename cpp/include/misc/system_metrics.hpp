@@ -7,7 +7,7 @@
 #include <vector>
 
 // 系统监控采集层。GUI 的 SystemInfo 面板与左下角 IconBar 共用这一份数据,
-// 不再各自去读一遍 /proc (Windows 下也不再各开一个 PDH query)。
+// 不各自去读一遍 /proc (Windows 下也不各开一个 PDH query)。
 //
 // 机器的算力要留给编码/特征计算, 监控本身必须近乎免费:
 //   * 静态信息 (OS / CPU 型号 / 缓存 / 指令集 / 内存总量) 只在构造时探测一次;

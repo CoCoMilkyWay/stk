@@ -11,7 +11,7 @@
 //     行先落设备再折, 不在 warp 内攒: 攒要么每 h 一块重读 rx 行 (H 倍 rx 流量), 要么 H 份累加器压寄存器; 落行的读写远小于前者.
 //   【fold_rows】一 warp 一 (h, 行块 tb) (kRows 行): 契约 Accum 的两半, lane 0 攒 Accum::Head, lane q < kGroups 攒 Accum::Grp[q]
 //     (调的就是契约的 add) → 分片 part[h][tb]. 【reduce_parts】每 h 一线程沿 tb 升序 merge (固定序 → 逐次确定) → acc[h].
-//     宿主只拷回 acc[H] (+ 要时 rows / lc), 不再拷一级回来做二级.
+//     宿主只拷回 acc[H] (+ 要时 rows / lc), 不拷一级回来做二级.
 //   【leg_codes】rx → 腿码 lc (契约 leg_code 逐格): 换手成本在宿主算 (成本平面上显存装不下), 只回传 u8 腿码, 不回 u16 rx.
 //   【禁用】--use_fast_math.
 // =============================================================================

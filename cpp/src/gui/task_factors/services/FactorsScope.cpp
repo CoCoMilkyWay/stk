@@ -55,9 +55,9 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
       }
       dm.rs.libs[l] = libs[l];
     }
-  // 评估期: 标签库日期轴上 used 各库都落了盘的日; 子池 × 日内网格的成员读 D−1 收盘行, 还要 all 池前一日落盘
+  // 评估期: 标签库日期轴上 used 各库都落了盘的日; 子池的成员读 D−1 收盘行, 还要 all 池前一日落盘
   const FeatureLib &L0 = libs[lab];
-  const bool need_prev = sub && lv.lvl != L_1day;
+  const bool need_prev = sub;
   PoolMask m_prev = 0; // 标签库日期轴前一日的落盘位
   for (size_t i = 0; i < L0.dates.size(); ++i) {
     const misc::Ymd d = L0.dates[i];
@@ -79,7 +79,7 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
     return false;
   }
   if (sub)
-    dm.member = pool::Panel::build(libs[kAllPool], pool_def(pool).pool_col, dm.dates, lv.lvl);
+    dm.member = pool::Panel::build(libs[kAllPool], pool_def(pool).pool_col, dm.dates);
   dm.rs.main = lab;
   dm.rs.days = dm.used;
   dm.rs.months = misc::months_between(dm.dates.front(), dm.dates.back());

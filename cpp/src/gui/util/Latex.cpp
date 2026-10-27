@@ -1,4 +1,4 @@
-// 见头文件. 原为 TabFeature.cpp 的文件内静态函数, Operators 表也要用, 抽到这里.
+// 见头文件.
 #include "gui/util/Latex.hpp"
 
 #include "graphic/graphic_basic.h"

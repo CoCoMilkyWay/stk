@@ -23,14 +23,15 @@
 //   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, for_each_close 同一级联) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
-//   源层任意: 源行 = level_asof(源层, 本层, t) (细层读同刻行, 粗层读已收的上一行; −1 = 前一交易日末行, 与读端同一投影).
+//   源层任意: 源行 = level_asof(源列, 本列, t) (同刻先写的读同刻行, 后写的 (粗层 / 盘后列) 读已收的上一行; −1 = 前一交易日末行,
+//   与读端同一投影; 本列盘后 = FieldInfo::settle, 同层 CS 继承源列, 故 L_1day 盘后截面读同行).
 //   跨日 (−1): 本档读日环 d−1 槽位 (FeatureStore::cs_prev; IO(d−1) 等本日 cs_close 才放行), 只许 TS / 元列 —— d−1 的截面可能还在写;
 //   区间首日无前日 → 该行 NaN.
 //   节点契约见 DataDefine.hpp; 方法在 Method/CS.hpp (实现 precise TU). NeutralRank 的上下文 (log 市值 + 行业,
 //   源列 (层, code) 由 Method/CS.hpp 声明, as-of 投影到本层) 每拍按需准备一次, 全部 NeutralRank 行复用; L_sec 用 NeutralRank = 编译错误.
 //
 //   旁读 (TIER_SIDES, 两档共有的任意层): 源档 ns ≠ 本档的行 + 本档没有的 NeutralRank 上下文列 = 按源层的旁读列集 (CsSide<T, 源层>, 编译期去重).
-//   begin_day 从旁读档的池读入各源层这些列的当日 (+ 读它的本档层更细时承接日) 整日张量 (上游读 = 读端同一个 Source;
+//   begin_day 从旁读档的池读入各源层这些列的当日 (+ 源列晚于读它的本档行时承接日) 整日张量 (上游读 = 读端同一个 Source;
 //   取用时按 level_asof 投影, gather 时经 ids 取本档 A 轴); 当日缺池 / 头不符 → 断言 (旁读档池须先算完覆盖本池日期轴, 不等它, 不替它算).
 //   旁读列是上游档落盘的张量行, 与本档张量行同属"CS 只看张量行"的输入契约.
 //
@@ -64,8 +65,9 @@ struct CsRef {
   size_t lvl;
   size_t field;
   bool neutral; // 方法要 NeutralRank 上下文
+  bool settle;  // 本行 (目标列) 盘后 (定源列 as-of 是否落前一交易日)
 };
-#define CS_REF_CS(code, ns, src_lvl, s, tf, m) CsRef{ns::Tier::kId, src_lvl, ns::src_lvl##_Field::s, cs::m::kNeutral},
+#define CS_REF_CS(code, ns, src_lvl, s, tf, m) CsRef{ns::Tier::kId, src_lvl, ns::src_lvl##_Field::s, cs::m::kNeutral, kInfo[FO::code].settle},
 #define CS_REF_TS(code, ...)
 #define CS_REF_LABEL(code)
 #define CS_REF_FLAG(code)
@@ -73,18 +75,22 @@ struct CsRef {
 
 template <class T, size_t LVL>
 struct CsLevel;
-#define CS_LEVEL_TRAITS(T, ns, name, num, fields, psd)                                                          \
-  template <>                                                                                                   \
-  struct CsLevel<ns::Tier, num> {                                                                               \
-    static constexpr size_t kLevel = num;                                                                       \
-    static constexpr bool kEmpty = count_of_kind(ns::name##_FIELD_INFO, FeatureDataType::CS) == 0;              \
-    /* 首项哨兵 (档号越界, 不匹配任何档): 层内无 CS 行时数组也非空 */                                           \
-    static constexpr CsRef kRefs[] = {CsRef{static_cast<TierId>(TIER_COUNT), 0, 0, false}, fields(CS_REF_ONE)}; \
-    template <class Core>                                                                                       \
-    [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) {     \
-      namespace FO = ns::name##_Field;                                                                          \
-      fields(CS_RUN_ONE)                                                                                        \
-    }                                                                                                           \
+#define CS_LEVEL_TRAITS(T, ns, name, num, fields, psd)                                                                          \
+  template <>                                                                                                                   \
+  struct CsLevel<ns::Tier, num> {                                                                                               \
+    static constexpr size_t kLevel = num;                                                                                       \
+    static constexpr bool kEmpty = count_of_kind(ns::name##_FIELD_INFO, FeatureDataType::CS) == 0;                              \
+    /* 首项哨兵 (档号越界, 不匹配任何档): 层内无 CS 行时数组也非空 */                                                           \
+    static constexpr auto kRefs = [] {                                                                                          \
+      namespace FO = ns::name##_Field;                                                                                          \
+      [[maybe_unused]] constexpr const auto &kInfo = ns::name##_FIELD_INFO;                                                     \
+      return std::array{CsRef{static_cast<TierId>(TIER_COUNT), 0, 0, false, false}, fields(CS_REF_ONE)};                        \
+    }();                                                                                                                        \
+    template <class Core>                                                                                                       \
+    [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) {                     \
+      namespace FO = ns::name##_Field;                                                                                          \
+      fields(CS_RUN_ONE)                                                                                                        \
+    }                                                                                                                           \
   };
 TIER_LEVELS(CS_LEVEL_TRAITS)
 #undef CS_LEVEL_TRAITS
@@ -99,36 +105,29 @@ constexpr bool owns_neutral_ctx() {
   return T::has(ML) && T::has(IL) && field_of<T>(ML, CS_STR(NEUTRAL_RANK_MCAP)) < T::LEVELS[ML].field_count &&
          field_of<T>(IL, CS_STR(NEUTRAL_RANK_INDUSTRY)) < T::LEVELS[IL].field_count;
 }
-template <class T, size_t LVL>
-constexpr bool uses_neutral() {
-  if constexpr (T::has(LVL)) {
-    for (const CsRef &r : CsLevel<T, LVL>::kRefs)
-      if (r.neutral)
-        return true;
-  }
-  return false;
-}
-
-// 档 T 的 G 层截面读旁读档 S 源层 SL 的列 → m; 读到且 G 比 SL 细 (as-of 可落到前一交易日) → prev
+// 档 T 的 G 层截面读旁读档 S 源层 SL 的列 → m; 读到且源列晚于读它的行 (as-of 可落到前一交易日) → prev
 template <class T, class S, size_t SL, size_t G, size_t F>
 constexpr void side_scan(std::array<bool, F> &m, bool &prev) {
   if constexpr (T::has(G)) {
-    bool hit = false;
-    for (const CsRef &r : CsLevel<T, G>::kRefs)
+    const auto see = [&](size_t f, bool dst_settle) {
+      m[f] = true;
+      prev |= level_later(SL, S::LEVELS[SL].fields[f].settle, G, dst_settle);
+    };
+    for (const CsRef &r : CsLevel<T, G>::kRefs) {
       if (r.tier == S::kId && r.lvl == SL)
-        m[r.field] = hit = true;
-    if (uses_neutral<T, G>() && !owns_neutral_ctx<T>()) {
-      if (SL == NEUTRAL_RANK_MCAP_LEVEL)
-        m[field_of<S>(SL, CS_STR(NEUTRAL_RANK_MCAP))] = hit = true;
-      if (SL == NEUTRAL_RANK_INDUSTRY_LEVEL)
-        m[field_of<S>(SL, CS_STR(NEUTRAL_RANK_INDUSTRY))] = hit = true;
+        see(r.field, r.settle);
+      if (r.neutral && !owns_neutral_ctx<T>()) {
+        if (SL == NEUTRAL_RANK_MCAP_LEVEL)
+          see(field_of<S>(SL, CS_STR(NEUTRAL_RANK_MCAP)), r.settle);
+        if (SL == NEUTRAL_RANK_INDUSTRY_LEVEL)
+          see(field_of<S>(SL, CS_STR(NEUTRAL_RANK_INDUSTRY)), r.settle);
+      }
     }
-    prev |= hit && G < SL;
   }
 }
 
 // 旁读列集: 档 T 截面 (任一层) 要读的旁读档 S (= TierSide<T>) 源层 SL 的列下标 (升序去重). 无旁读档 / 该源层无旁读列 → 空
-//   kPrev = 要读承接日 (有读它的本档层比 SL 细)
+//   kPrev = 要读承接日 (有旁读列晚于读它的本档行: 本档层比 SL 细, 或盘后列)
 template <class T, size_t SL, class S = typename TierSide<T>::type>
 struct CsSide {
   static constexpr size_t N = 0;
@@ -232,12 +231,13 @@ public:
   template <size_t LVL, class S, size_t SRC_LVL, size_t SRC, size_t DST, class Tf, class Method>
   [[gnu::always_inline]] inline void run_one(size_t t) {
     static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_1min / bin / L_1day context (mcap / industry)");
+    constexpr bool kSettle = T::LEVELS[LVL].fields[DST].settle;
 
     float *y = input_fp32_.data();
-    gather_(src_col_<S, SRC_LVL, SRC, LVL>(t), ids_<S>(), y);
+    gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), ids_<S>(), y);
     Tf::apply(y, n_);
     if constexpr (Method::kNeutral) {
-      if (const cs::NeutralRank::Ctx *c = neutral_<LVL>(t))
+      if (const cs::NeutralRank::Ctx *c = neutral_<LVL, kSettle>(t))
         Method::apply(y, n_, *c);
       else // 上下文落到前一交易日而无前日 (区间首日): 该行无效
         std::fill_n(y, n_, std::numeric_limits<float>::quiet_NaN());
@@ -268,22 +268,20 @@ private:
       if (valid_indices_.empty())
         return;
       n_ = valid_indices_.size();
-      neutral_ready_ = false;
+      neutral_at_ = -1;
       CsLevel<T, LVL>::run(*this, t);
     }
   }
 
-  // 源档 S 源层 SRC_LVL 的列 SRC 在本层 LVL 行 t 的 as-of 段 (全部资产连续, 源档 A 轴, 经 ids_<S> 取本档资产):
+  // 源档 S 源层 SRC_LVL 的列 SRC 在本层 LVL 行 t (目标列盘后 SETTLE) 的 as-of 段 (全部资产连续, 源档 A 轴, 经 ids_<S> 取本档资产):
   //   本档 → 当日张量 / 日环 d−1 槽位; 旁读档 → 本日 / 承接日旁读张量. nullptr = 落到前一交易日而无前日 (区间首日)
-  template <class S, size_t SRC_LVL, size_t SRC, size_t LVL>
+  template <class S, size_t SRC_LVL, size_t SRC, size_t LVL, bool SETTLE>
   const feature_storage_t *src_col_(size_t t) {
-    if constexpr (std::is_same_v<S, T> && SRC_LVL == LVL) {
-      return fstore::cs_col<LVL>(day_, t, SRC);
-    } else if constexpr (std::is_same_v<S, T>) {
-      static_assert(SRC_LVL < LVL || S::LEVELS[SRC_LVL].fields[SRC].kind == FeatureDataType::TS ||
-                        S::LEVELS[SRC_LVL].fields[SRC].kind == FeatureDataType::META,
-                    "本档粗层 as-of 会落到前一交易日, 那天的截面 / 标签可能还在写: 跨日只读 TS / 元列");
-      const ptrdiff_t x = level_asof(SRC_LVL, LVL, t);
+    constexpr FieldInfo kSrc = S::LEVELS[SRC_LVL].fields[SRC];
+    const ptrdiff_t x = level_asof(SRC_LVL, kSrc.settle, LVL, SETTLE, t);
+    if constexpr (std::is_same_v<S, T>) {
+      static_assert(!level_later(SRC_LVL, kSrc.settle, LVL, SETTLE) || kSrc.kind == FeatureDataType::TS || kSrc.kind == FeatureDataType::META,
+                    "本档源列晚于本行, as-of 会落到前一交易日, 那天的截面 / 标签可能还在写: 跨日只读 TS / 元列");
       if (x >= 0)
         return fstore::cs_col<SRC_LVL>(day_, static_cast<size_t>(x), SRC);
       return prev_ ? fstore::cs_col<SRC_LVL>(prev_, level_valid_rows(SRC_LVL) - 1, SRC) : nullptr;
@@ -292,7 +290,6 @@ private:
       constexpr size_t i = Side<SRC_LVL>::index_of(SRC);
       static_assert(i < Side<SRC_LVL>::N);
       const IoSlot::Buf &b = side_buf_[SRC_LVL];
-      const ptrdiff_t x = level_asof(SRC_LVL, LVL, t);
       assert(b.has_cur && (x >= 0 || Side<SRC_LVL>::kPrev) && "旁读源本日未读");
       if (x < 0 && !b.has_prev)
         return nullptr;
@@ -310,9 +307,9 @@ private:
       return side_ids_.data();
   }
 
-  // NeutralRank 上下文 (Method/CS.hpp 声明的 (层, code), as-of 投影到本层行 t): 首个 NeutralRank 行触发, 本拍内复用.
+  // NeutralRank 上下文 (Method/CS.hpp 声明的 (层, code), as-of 投影到本层行 t, 目标列盘后 SETTLE): 首个同盘后性的 NeutralRank 行触发, 本拍内复用.
   // 源列按名定址: 本档有就用本档, 否则旁读档. nullptr = 某上下文列落到前一交易日而无前日 (区间首日)
-  template <size_t LVL>
+  template <size_t LVL, bool SETTLE>
   const cs::NeutralRank::Ctx *neutral_(size_t t) {
     using NS = std::conditional_t<owns_neutral_ctx<T>(), T, typename TierSide<T>::type>;
     static_assert(!std::is_void_v<NS>, "用 NeutralRank 须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列 (本档或旁读档)");
@@ -321,15 +318,15 @@ private:
     constexpr size_t INDUSTRY = field_of<NS>(IL, CS_STR(NEUTRAL_RANK_INDUSTRY));
     static_assert(MCAP < NS::LEVELS[ML].field_count && INDUSTRY < NS::LEVELS[IL].field_count,
                   "NeutralRank 上下文档须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列 (各在其声明层)");
-    if (!neutral_ready_) {
-      const feature_storage_t *mc = src_col_<NS, ML, MCAP, LVL>(t), *ind = src_col_<NS, IL, INDUSTRY, LVL>(t);
+    if (neutral_at_ != int{SETTLE}) {
+      const feature_storage_t *mc = src_col_<NS, ML, MCAP, LVL, SETTLE>(t), *ind = src_col_<NS, IL, INDUSTRY, LVL, SETTLE>(t);
       neutral_ok_ = mc && ind;
       if (neutral_ok_) {
         gather_(mc, ids_<NS>(), logmc_dense_.data());
         cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n_);
         gather_(ind, ids_<NS>(), industry_dense_.data());
       }
-      neutral_ready_ = true;
+      neutral_at_ = int{SETTLE};
     }
     return neutral_ok_ ? &neutral_ctx_ : nullptr;
   }
@@ -401,7 +398,7 @@ private:
   std::vector<float> input_fp32_;
   std::vector<float> logmc_dense_;    // 中性化输入 (本拍本层)
   std::vector<float> industry_dense_; // 中性化输入 (本拍本层)
-  bool neutral_ready_ = false;
+  int neutral_at_ = -1;                                                                 // 本拍已备上下文的目标盘后性 (-1 = 未备)
   bool neutral_ok_ = false;                                                             // 本拍上下文齐 (无前日 → false)
   const cs::NeutralRank::Ctx neutral_ctx_{logmc_dense_.data(), industry_dense_.data()}; // 向量在 ctor 定长, 指针稳定
 };

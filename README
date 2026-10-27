@@ -26,7 +26,7 @@ stk/
 │   │   │   │                                         #    · 池表 feature_pools (PoolDef = 池名 + 档 + 池列): all → Bar 池; <pool> → Lob 池 (<pool> 来自 Bar 池 pool_<pool> 列)
 │   │   │   │                                         #    · 清单 lib.json: 写端 (ComputeService) 规划后落, 读端只读 ⇒ 两端口径一致; 无清单 = 未建库
 │   │   │   ├── Pool.hpp                              # 📦 pool::Panel 池逐日成员 (日频 PIT, 与 fund::Panel 对仗)
-│   │   │   │                                         #    · 第 D 日成员 = Bar 池 D−1 收盘行的 pool_<pool> 列 (= 盘前 as-of, 与读端同一 Source 投影) → Lob 池 cs_valid
+│   │   │   │                                         #    · 第 D 日成员 = Bar 池 D−1 收盘行的 pool_<pool> 列 (盘后列的盘中 as-of, 与读端同一 Source 投影) → Lob 池 cs_valid
 │   │   │   │                                         #    · 池轴 = 日期轴内进过池的资产并集; 轴上资产全程算 TS, 日后进池不补历史
 │   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 多选 picked = set<ColRef> (跨池跨层; 选中绑定当时的当前池, 切池 / 切层保留; 首个 = primary)
 │   │   │   │                                         #    · 当前池 pools = PerTier<池名> (每档一个, 切档保留); ref(池, 层, code) → ColRef
@@ -83,7 +83,7 @@ stk/
 │   │   │   ├── CoreBar.hpp                           # 🧮 Bar 档单资产时序: bar1m 分钟 K → L_1min (255 行稠密) + 分钟箱层 (49 / 17 / 9 / 5 箱) + L_1day 收盘行 + 标签
 │   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 (fundamental::daily) → 稠密 [A][255] 分钟 K (Bar 档 TS 输入)
 │   │   │   ├── CoreCs.hpp                            # 🧮 截面 (按档模板): 节拍 Lob = L_sec / Bar = L_1min, 每拍按 for_each_close 级联本拍收行的各层
-│   │   │   │                                         #    · 源层任意: 源行 = level_asof(源层, 本层, t); 落到前一交易日 → 读日环 d−1 槽位 (cs_prev, 只许 TS / 元列); 区间首日 NaN
+│   │   │   │                                         #    · 源层任意: 源行 = level_asof(源列, 本列, t); 落到前一交易日 → 读日环 d−1 槽位 (cs_prev, 只许 TS / 元列); 区间首日 NaN
 │   │   │   │                                         #    · 旁读档上游读 = 读端同一个 Source; 旁读档池缺日 → 断言
 │   │   │   ├── MetaFlag.hpp                          # 🧮 元列 (_meta) 编解码 (消费端不依赖 Meta 节点)
 │   │   │   ├── Node/Lob/TS/<分类>/                   # 🧮 Lob 档节点: 节点类 + NODE_ / FIELDS_ 宏 (暂无 CS)
@@ -98,8 +98,10 @@ stk/
 │   │   │       ├── FeatureLevels.hpp                 # 🧮 读端层表: 运行时 (与字段表解耦, 增删特征不触发读端重编)
 │   │   │       │                                     #    · 池 PoolId = 池表下标 ([0] = all); PerPool<X> (与 PerTier 对仗) / PoolMask 池集位
 │   │   │       │                                     #    · ColRef = (池, 层, 列), 档 = 池的档: 跨池跨层选择 / 分析请求的列单位; 序 = (档, 池, 层, 列)
-│   │   │       │                                     #    · 行时间代数: emit 全序 = (行末秒, 层), 同刻细层先写; L_1day = 收盘一行 (尾部对齐)
-│   │   │       │                                     #    · level_asof(src, dst, t): src 不粗于 dst → 含 dst 末秒的行; 更粗 → 其前一行 (−1 = 前一交易日末行)
+│   │   │       │                                     #    · 行时间代数: emit 全序 = (行末秒, 层, 盘后), 同刻细层先写; L_1day = 收盘一行 (尾部对齐), 其盘后列 (FieldInfo::settle:
+│   │   │       │                                     #      onSettle 节点 TS 列 + 同档同层继承它的 CS) 晚于同层盘中列; 读端网格一律盘中
+│   │   │       │                                     #    · level_asof(src, dst, t): src 不晚于 dst → 含 dst 末秒的行; 晚于 → 其前一行 (−1 = 前一交易日末行;
+│   │   │       │                                     #      盘后列对盘中网格恒 −1 = 当日适用值, 日层因子不必手工 TsDelayRoll)
 │   │   │       │                                     #    · 收行判据 level_closes / for_each_close: 哪层在哪秒末收行的唯一判据 (CoreTs / CoreCs 同一路径)
 │   │   │       ├── FeatureDay.hpp                    # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录 ColSpan); 落盘编码在此选型
 │   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 日环; TS / CS / IO 三段 open-close; 热路径只许指针算术
@@ -107,7 +109,7 @@ stk/
 │   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 单日按列选读 [n][T][A]; 删库与多 reader 并发安全
 │   │   │       ├── DayBatchPlane.hpp                 # 🧮 多段并行载入平面: TsPlane / CsPlane (网格行; Dist / Transform / Corr / Preview) + RowPlane (尾部行; OrderFlow)
 │   │   │       │                                     #    · 段 = 平面一个 j: 日内层 1 天, L_1day 连续 255 个交易日; 三平面同一契约 prepare / load_batch + 同一折叠核 fold_span
-│   │   │       │                                     #    · ReadPlan → 每 (池, 层) 一个 Source: 一天一次选列读 + column_set 门控; 行映射 row (gather, level_asof) / at (scatter, 行末对齐)
+│   │   │       │                                     #    · ReadPlan → 每 (池, 层, 盘后) 一个 Source: 一天一次选列读 + column_set 门控; 行映射 row (gather, level_asof) / at (scatter, 行末对齐; 盘后 = 收盘之后)
 │   │   │       │                                     #    · 列所在池经 Readers::ids[池] 收拢到 A 轴; 资产不在该池 / 该池这天没落盘 (Day::has) = 无源
 │   │   │       │                                     #    · 写端上游读 (CoreCs 旁读 / pool::Panel 成员位) 与读端同一个 Source
 │   │   │       │                                     #    · Prefetch::stream: 流式批骨架 (算本批同时预读下一批; Dist / Transform / Corr / OrderFlow Kline 共用)
@@ -192,7 +194,7 @@ stk/
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
 │   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
 │   │   │       │   │                                 #      + 满仓只数) / load_b (日层篮子原料 BPlanes); XCols / YCols / BCols ↔ XPlanes / YPlanes / BPlanes 一一对仗
-│   │   │       │   │                                 #    · 标签 / 成本恒取同池本层列 (同行); YSpec::cap > 0 = 外给满仓只数 (n_full_of 预扫), 不再自数
+│   │   │       │   │                                 #    · 标签 / 成本恒取同池本层列 (同行); YSpec::cap > 0 = 外给满仓只数 (n_full_of 预扫), 不自数
 │   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec / b 篮子) + ensure_block = 块 Block (Y 常驻, X 按服务留 / 补); stat_scope = 结果作用域头
 │   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集; Pick = 子集下标, labels_pick 取会话持有期子集
 │   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
@@ -405,7 +407,7 @@ stk/
 #       · 行末源标: TS(<节点>[, <口>], Tf, Method)
 #   - 截面列:   Node/<Tier>/CS/<分类>/<源节点>.hpp
 #       · 内容: 只有 FIELDS_ 行; owner 名 Cs<源节点>; 方法在 Method/CS.hpp
-#       · 行末源标: CS(<源档>, <层>, <源列>, Tf, Method); <层> 任意: 源行 = level_asof(<层>, 本层, t)
+#       · 行末源标: CS(<源档>, <层>, <源列>, Tf, Method); <层> 任意: 源行 = level_asof(源列, 本列, t)
 #         (粗层读已收的上一行; 落到前一交易日只许 TS / 元列, 区间首日 NaN)
 #   - 两档都要: 节点类放 Node/Common/<分类>/, 两档各写各的 NODE_ / FIELDS_
 #       · TS / CS 列名跨档不许重名 (FeatureMeta.cpp 编译期断言); Lob K 线用 lob_* 前缀

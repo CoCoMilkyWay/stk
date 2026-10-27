@@ -384,7 +384,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   // ---- 元数据 + id 空间 ← cn_stock_basic_info (_meta 单文件, 全市场含退市) ----
   // 必须先于并行扫描: 后面每段的累加器都按这里定下的 id 空间定长分配.
   // 月度表里它之外的 instrument (换号老代码 / 尚未收录的新股) → Rows::each 跳过;
-  // id → StockInfo* 直连 (std::map 节点地址稳定), 归约不再逐股查表.
+  // id → StockInfo* 直连 (std::map 节点地址稳定), 归约不逐股查表.
   job.set_message("构建股票元数据 (cn_stock_basic_info)");
   auto &stock_info = job.assetinfo.mutable_stock_info();
   stock_info.clear();
@@ -812,8 +812,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   stock_factor.clear();
   {
     // 段按 ym 升序连续切分且按段序归约, 文件内按 (id, date) 升序 ⇒ 桶式
-    // 分发后每个 id 的序列已是 date 全局升序, 原先千万级元素的 std::sort 因此
-    // 完全消失 (下面的 assert 兜住这个不变量).
+    // 分发后每个 id 的序列已是 date 全局升序, 无需排序 (下面的 assert 兜住这个不变量).
     std::vector<std::size_t> counts(nid, 0);
     for (const AdjPoint &p : bar.points.v)
       ++counts[p.id];

@@ -18,10 +18,7 @@ struct DividendEvent {
   float ratio = 0.0; // factor_curr / factor_prev
 };
 
-// Daily statistics aggregated for a single date.
-//
-// 早先这里按"快照 / 逐笔 / 两者都有"分三种视角看覆盖率. 快照不再编码后, L2
-// 覆盖率只剩一个口径 (逐笔), 三种视角合成一种, 视图模式的枚举也就没了.
+// Daily statistics aggregated for a single date. L2 覆盖率只有一个口径 (逐笔).
 struct DailyStats {
   misc::Ymd date = 0;
   bool is_trading_day = false;
@@ -53,7 +50,7 @@ struct LayerVisibility {
 // 黄色达到满饱和度所需的当日除权除息资产数.
 //
 // 全市场口径下几乎每个交易日都有除权除息, 铺成实心黄会把下面三层全盖掉,
-// 所以黄色改成按当日事件数定 alpha 的叠加层: 到这个数就是满黄, 越少越透.
+// 所以黄色是按当日事件数定 alpha 的叠加层: 到这个数就是满黄, 越少越透.
 inline constexpr float kDividendSaturationCount = 50.0f;
 
 // 只有 1~2 个资产时 alpha 趋 0 会彻底看不见, 给条下限

@@ -38,7 +38,8 @@ struct Feature;
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
 //   → 导出 staging Snap → 短锁 swap 发布
 //   - A 轴 = ReadScope::axis (主池轴; 槽位 = 主池轴下标, 查 items 经 global_ids)
-//   - 网格 = 分析的行轴层 (Spec 里的 level): 列是任意 (池, 层) 的 ColRef, 一律按 level_asof 投影到网格;
+//   - 网格 = 分析的行轴层 (Spec 里的 level, 盘中): 列是任意 (池, 层) 的 ColRef, 一律按 level_asof 投影到网格
+//     (盘后列 L_1day 对任何网格都读前一交易日行 = 当日适用值);
 //     要编译期段长 (FFT / LUT) 的目标经 with_grid 分派到 Grid<L>
 //   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
 //     reset 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
@@ -251,9 +252,9 @@ struct DateList {
 DateList enumerate_dates(const ReadScope &scope);
 
 // 行映射: 平面行怎么由源行得到 (gather / scatter 对仗)
-enum class Rows : uint8_t { AsOf,   // gather: 网格行 t ← 源行 level_asof(源层, 网格层, t)   (TsPlane / CsPlane)
-                            Tail }; // scatter: 源行 r → 网格行 (行末秒 − 1 所在), 原生行  (RowPlane)
-// GUI 线程: 一组 ColRef → 读计划. 同 (池, 层) 的列并成一个源 (column_set 定门控). carry = 开盘承接前日末行 (AsOf 必须)
+enum class Rows : uint8_t { AsOf,   // gather: 网格行 t ← 源行 level_asof(源列, 网格层, t)   (TsPlane / CsPlane)
+                            Tail }; // scatter: 源行 r → 网格行 (行末秒 − 1 所在; 盘后 = 收盘之后), 原生行  (RowPlane)
+// GUI 线程: 一组 ColRef → 读计划. 同 (池, 层, 盘后) 的列并成一个源 (column_set 定门控). carry = 开盘承接前日末行 (AsOf 必须)
 ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, std::vector<ColRef> cols);
 
 // 读请求 = 主池 × 日轴 × A 轴 × 行映射 × 列

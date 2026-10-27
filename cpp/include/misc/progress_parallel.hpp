@@ -331,7 +331,7 @@ private:
           buffer << " ";
       }
 
-      // 定宽字段 (百分比 3, 计数各 3) 保证多行并排滚动时列对齐; 标签不再
+      // 定宽字段 (百分比 3, 计数各 3) 保证多行并排滚动时列对齐; 标签不
       // 补齐到固定列宽 —— 同一 stage 的标签天然等宽, 紧凑优先.
       buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% "
              << "(" << std::setw(3) << current << "/" << std::setw(3) << total << ") "

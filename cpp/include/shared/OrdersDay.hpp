@@ -153,7 +153,7 @@ struct DayIndex {
 // 构造即 open (同 DayWriter 构造即建 .tmp), 析构 close. 日文件必须存在 —— 调用方
 // 凭帧目录 / 增量新鲜度判定确认过才来读, 打不开直接 assert.
 //
-// 帧的位置/条数/价位基准都在 FrameRef 里, get 凭它 pread 一帧, 不再读任何头;
+// 帧的位置/条数/价位基准都在 FrameRef 里, get 凭它 pread 一帧, 不读任何头;
 // index 只在要账目或目录时才读 (头 + 尾部目录, 两次 pread).
 // 一个 reader 一个 fd, 多线程各持一个并发 pread, 无锁.
 class DayReader {

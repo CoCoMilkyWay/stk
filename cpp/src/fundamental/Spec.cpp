@@ -7,7 +7,7 @@ namespace fundamental {
 
 namespace {
 
-// Spec 不变式的唯一检查点 (见 Spec.hpp snap 注释); 下游 (Remote / Store / Scan) 不再逐处重判
+// Spec 不变式的唯一检查点 (见 Spec.hpp snap 注释); 下游 (Remote / Store / Scan) 不逐处重判
 std::vector<Spec> checked(std::vector<Spec> v) {
   std::set<std::string_view> names;
   for (const Spec &s : v) {
@@ -42,7 +42,7 @@ const std::vector<Spec> SPECS = checked({
     // ======================== BigQuant DAI ========================
     // all_trading_days = 中国 A 股全年日历 (节假日预计算, 排程提前入库) → avail_hour=0, 当日行随时可拉
     //   (D 轴 last_d 依赖). Partition 未验证, 纯 WHERE 任何表成立 (配额按返回 cell 计, 无差价).
-    //   ⚠ 多市场 trading_days 已弃用: 其 CN 行当日盘后 ~19:00 才入库, 盘中 D 轴缺当日 ⇒ overlay 新鲜度断言必炸;
+    //   ⚠ 不用多市场 trading_days: 其 CN 行当日盘后 ~19:00 才入库, 盘中 D 轴缺当日 ⇒ overlay 新鲜度断言必炸;
     //   且 UK/IT 等早到行把开放月水位推过 CN 缺行日 ⇒ 当月 CN 行永久缺失, 只能关月兜回.
     {"all_trading_days",                        "date",         Month, All, 0,  Bq{Where},
      "A 股交易日历 (节前预排入库) — D 轴唯一来源, 取 market_code='CN'"},

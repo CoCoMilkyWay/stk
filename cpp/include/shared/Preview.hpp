@@ -20,8 +20,8 @@ class FeatureRead;
 //
 //   每层各跑一份 (网格 = 该层, 段 = 日内层 1 天 / L_1day 连续 255 天), 各层轮交错 (层 0 轮 0, 层 1 轮 0, …);
 //   轮 = 一个抽样段 (plan_segs Shuffle 取前 kPvRounds 个 → 无偏覆盖);
-//   笼相 (先一次 dispatch, 任务 = (层, 轮, 日)): Bar 档 L_1day lim_dn / lim_up 逐日读 (当日常量, 盘前已知 → 同日对照,
-//     不走 as-of; 按 lib.axis.ids 取全轴) → 各轮抽样资产笼快照;
+//   笼相 (先一次 dispatch, 任务 = (层, 轮, 日)): Bar 档 L_1day lim_dn / lim_up 逐日读 (当日常量, 盘中 as-of 即当日适用值,
+//     与读端同一投影; 按 lib.axis.ids 取全轴) → 各轮抽样资产笼快照;
 //   块相 (再一次 dispatch, 任务 = (层, 轮, 块), 无轮间栅栏; Runtime 常驻 ForkJoin): 轮内按特征分块 (每块 kPvBlockCols 列),
 //     各自按块读计划读块列 (+ 该层 ts_valid) → 私有 TsPlane 只转置本轮抽样资产 (各列按自己的 valid_type 折哨兵);
 //     扫描进线程私有累积, 块锁内并进每特征累积器 + 发布 (同块跨轮并发只在 fold 处互斥);
