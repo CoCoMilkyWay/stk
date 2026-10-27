@@ -332,8 +332,11 @@ set(MATH_PRECISE
     gui/task_features/ui/TabTransform.cpp
     # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) 的消费者
     gui/task_factors/TaskFactors.cpp
+    gui/task_factors/services/FactorsBook.cpp
+    gui/task_factors/services/FactorsEngine.cpp
     gui/task_factors/services/FactorsLoad.cpp
     gui/task_factors/services/FactorsProbe.cpp
+    gui/task_factors/services/FactorsScope.cpp
     gui/task_factors/services/FactorsService.cpp
     gui/task_factors/services/FactorsTable.cpp
     gui/task_factors/services/InspectService.cpp

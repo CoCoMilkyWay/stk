@@ -1,14 +1,15 @@
-// FactorsProbe — 探针层 (一个根的一种输出; 引擎 FactorsEngine 按 need 备原料, 逐钩子调): 装载层 (FactorsLoad) 之上, 引擎之下.
+// FactorsProbe — 探针层 (一个根的一种输出; 引擎 FactorsEngine 按 need 备原料, 逐钩子调): 装载层 (FactorsLoad) / 净值引擎 (FactorsBook) 之上, 引擎之下.
 //   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
-//   通用探针 Hold / Cost / CostRows / Valid / Rank / Alpha / IcPdf / Rows 四服务共用, 服务私有探针 (Search 抽样 / Inspect 尾部 / 秩) 在各自 .cpp;
-//   落地探针的两种形 LandRowsP / LandCellsP; 评估后的纯函数 (Inspect / Portfolio 的 nav_of) 吃落地的平面, 不是探针;
+//   通用探针 Hold / Cost / Valid / Rank / Alpha / IcPdf 四服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
+//   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
 //   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); cost_tiers 换手成本 (块间续攒, 可另落逐行); alpha_dist alpha 分布
 //   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / Portfolio 曲线同一份).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "factor/Stat/Cpu.hpp" // Workspace / NoExt
+#include "factor/Stat/Cpu.hpp"                       // Workspace / NoExt
+#include "gui/task_factors/services/FactorsBook.hpp" // RowLines / fold_book
 #include "gui/task_factors/services/FactorsLoad.hpp"
 #include "misc/exec.hpp"
 #include "shared/Analysis.hpp" // AggPdf / KLLcache
@@ -92,11 +93,11 @@ struct Ctx {
   factor::cpu::stat::Workspace *w = nullptr; // Stat 宿主工作区 (CPU / GPU 逐根时有; 批核 / finish 空)
   factor::stat::Span s() const { return c.span(); }
 };
-// 落地平面: 作用域首块 (t0_abs = 0) 定形清零, 其后各块按绝对行写
+// 落地平面: 作用域首块 (t0_abs = 0) 定形填 fill, 其后各块按绝对行写
 template <class T>
-void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s) {
+void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s, T fill = T{}) {
   if (s.t0_abs == 0)
-    v.assign(n, T{});
+    v.assign(n, fill);
   assert(v.size() == n && "落地平面与作用域不符");
 }
 
@@ -176,17 +177,6 @@ struct CostP : ProbeBase {
   factor::stat::CostAcc turn[factor::stat::kMaxHold] = {};
   void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs, turn); }
 };
-// CostP + 逐行换手落地 [H][rows_all] (cost_tiers 的 land; 至多一个金额段, 无段只出量); H > 1 只整块 (land 行距 = 块行数)
-struct CostRowsP : CostP {
-  std::vector<factor::stat::CostAcc> *dst = nullptr;
-  static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::CostAcc) * static_cast<double>(H) * sh.T; }
-  void open(const Ctx &c) {
-    const factor::stat::Span s = c.s();
-    assert(c.c.y.ad.n <= 1 && (c.L.hd.n == 1 || (s.t0_abs == 0 && s.T == c.c.rows_all())) && "逐行换手: 至多一个金额段; 多持有期只整块");
-    land_open(*dst, static_cast<size_t>(c.L.hd.n) * c.c.rows_all(), s);
-  }
-  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs, turn, dst->data() + c.s().t0_abs); }
-};
 // 池内有效率 valid% (统计行)
 struct ValidP : ProbeBase {
   static constexpr uint8_t need = kNeedMask;
@@ -261,19 +251,21 @@ struct IcPdfP : ProbeBase {
       pdf[i].fill(kll[static_cast<size_t>(i)], 3);
   }
 };
-// 落地平面的两种形 (探针基类; dst = 调用方的缓冲, open 在作用域首块定形):
-//   LandRowsP<R>  逐行 [hd.n][rows_all] (RowsP / Inspect TailP): at(hi, t) = 块内行 t 的格
-//   LandCellsP<V> 逐格 [rows_all][A] (Inspect RxP / RxAllP): stat_at(s) = 本块统计首行的首格
+// 落地探针的三种形 (探针基类; open 在作用域首块定形, 其后各块按绝对行写):
+//   LandRowsP<R>  逐行 [hd.n][rows_all] 进 dst (调用方的缓冲; Inspect RicP): at(hi, t) = 块内行 t 的格
+//   LandCellsP<V> 逐格 [rows_all][A] 进 dst (Inspect RxP / RxAllP): stat_at(s) = 本块统计首行的首格
+//   LinesP<K>     净值线 (FactorsBook RowLines, 线 hi · K + k; Inspect NavP / Portfolio CurveP): at(hi, k, t) = 块内行 t 这一批的收益;
+//                 finish 折成 out (fold_book; stride / at_exit 由派生 open 定: 缺省逐行 / 全收益)
 template <class R>
 struct LandRowsP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
   std::vector<R> *dst = nullptr;
   int T = 0, t0 = 0; // 行轴 rows_all / 本块绝对首行
   static double bytes(const Shape &sh, int H) { return sizeof(R) * static_cast<double>(H) * sh.T; }
-  void open(const Ctx &c) {
+  void open(const Ctx &c, R fill = R{}) {
     const factor::stat::Span s = c.s();
     T = c.c.rows_all(), t0 = s.t0_abs;
-    land_open(*dst, static_cast<size_t>(c.L.hd.n) * T, s);
+    land_open(*dst, static_cast<size_t>(c.L.hd.n) * T, s, fill);
   }
   R &at(int hi, int t) const { return (*dst)[static_cast<size_t>(hi) * T + t0 + t]; }
 };
@@ -284,9 +276,28 @@ struct LandCellsP : ProbeBase {
   void open(const Ctx &c) { land_open(*dst, static_cast<size_t>(c.c.rows_all()) * c.s().A, c.s()); }
   V *stat_at(const factor::stat::Span &s) const { return dst->data() + static_cast<size_t>(s.t0_abs + s.t_lo) * s.A; }
 };
-// 一级 Row 落地 [hd.n][rows_all]
-struct RowsP : LandRowsP<factor::stat::Row> {
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) { at(hi, t) = r; }
+template <int K>
+struct LinesP : ProbeBase {
+  static constexpr uint8_t need = kNeedRows;
+  RowLines x;
+  BookLines out;
+  int stride = 1, t0 = 0; // 折点行数 / 本块绝对首行
+  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(K) * H * sh.T; }
+  void open(const Ctx &c) {
+    const factor::stat::Span s = c.s();
+    if (s.t0_abs == 0) {
+      x.reset(c.L.hd.n * K, c.c.rows_all());
+      for (int i = 0; i < x.n; ++i)
+        x.hold[static_cast<size_t>(i)] = c.L.hd.h[i / K];
+    }
+    assert(x.n == c.L.hd.n * K && x.T == c.c.rows_all() && "净值线与作用域不符");
+    t0 = s.t0_abs;
+  }
+  float &at(int hi, int k, int t) { return x.x[static_cast<size_t>(hi * K + k) * x.T + t0 + t]; }
+  void finish(const Ctx &c) {
+    out = fold_book(c.ex, c.c.y.sh.seg, x, stride);
+    x = {};
+  }
 };
 // 作用域头 / 耗时 / 二级 / 换手 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份)
 template <class Ps>

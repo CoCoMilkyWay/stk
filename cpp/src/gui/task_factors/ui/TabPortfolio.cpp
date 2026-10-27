@@ -206,7 +206,7 @@ PortfolioCurve curve_of(const Inc &s, int i, double x0) {
   compound(s.d[i].data(), s.x.size(), [&](size_t k, double l) { c.x.push_back(s.x[k]), c.y.push_back(l); });
   return c;
 }
-// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorCurve 逐行增量 (fold_exit 已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在行末:
+// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorCurve 逐行增量 (fold_book 已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在行末:
 //   分钟层 = 行末分钟; 日层 = 当日收盘
 template <class Wt>
 Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_impact, const Wt &wt) {

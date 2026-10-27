@@ -8,7 +8,7 @@
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 只装 h 一组标签 (hd.n = 1); 趟与趟之间才有依赖):
 //   准备          先装块 0: 满仓只数 n_full = 全期池内平均有效资产数 / kGroups (Labels::cap, 各块共用, 与 Run 同一个; 一块 = 块 0 的 YPlanes::n_full,
-//                 多块 = 预扫全期门控 FactorsLoad n_full_of); 槽区间按 A = n_full · kGroups 定 (Space slots_of).
+//                 多块 = FactorsEngine plan_job 预扫全期门控); 槽区间按 A = n_full · kGroups 定 (Space slots_of).
 //                 阈值槽 (ANY / GE0) 由深到浅: 中性具体式 (Space neutral) 在 CPU 上走到它的输入节点, 取块 0 抽样行的池内有效值作分位表
 //                 (Space set_qtab); 输入是常量 → 整个搜索放弃
 //   趟 0 采样     R_d 低差异点 (Space design), 评一次得分 (自动定向: Contract【方向】)
@@ -23,8 +23,8 @@
 //   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry = ⌈(模板回看 + max_lag) / seg⌉ 日 (Space lookback: 各路径 ROLL 窗长之和,
 //             自由 d 取 kMaxD), 统计从 t_lo 起 (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同
 //             (EXPAND 段界 reset; 唯 EXPO 全历史递推在块首重启, 差 (1−k)^carry 行, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
-//   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次).
-//             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + accum_rows), 不留根平面;
+//   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次); 批 = 引擎 batch_of (FactorsEngine).
+//             CPU: 每节点全核 (run_node), 根算完立刻全核 Search (rank_x + accum_rows), 不留根平面; 批 = kBatch;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
@@ -101,7 +101,7 @@ enum class SearchStage : uint8_t { Prepare,
                                    Refine };
 
 // 进度面 = 自身 (FactorWorker; message = 结论 / 没算成的原因): Loading 期 done/total = 块内天; Running 期 = 候选 × 块
-class SearchService : public Service<SearchService, SearchRequest>, public FactorWorker {
+class SearchService : public FactorWorker<SearchService, SearchRequest> {
   friend Service<SearchService, SearchRequest>;
 
 public:
@@ -119,12 +119,11 @@ public:
   SearchResult result;
 
 private:
+  struct Searcher; // 一轮搜索的状态 + 步骤 (.cpp)
   static constexpr Phase kStart = Phase::Loading;
-  Progress &board() { return *this; }
   bool run(SearchRequest &req);
   bool eval(const SearchRequest &req, FactorFlow &F); // false = 取消 / 判废
 
-  std::unique_ptr<FactorFlow> flow_; // 首个请求懒建, 随 worker 活 (线程池 + 库; 作用域块归每轮的块缓存)
   std::atomic<SearchStage> stage_{SearchStage::Prepare};
   std::atomic<int> alive_{0};
   std::atomic<int> pass_{0}, chunk_{0}, chunks_{0};

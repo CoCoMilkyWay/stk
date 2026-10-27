@@ -2,15 +2,14 @@
 #include "gui/task_factors/services/InspectService.hpp"
 
 #include "factor/Stat/Cpu.hpp"
-#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job (只 CPU)
-#include "gui/task_factors/services/FactorsLoad.hpp"   // fold_exit / pool_line / stat_scope
-#include "gui/task_factors/services/FactorsProbe.hpp"  // Probes / group_abs
+#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job (只 CPU) / Probes / LinesP / pool_line
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace GUI::Factors {
@@ -47,6 +46,12 @@ uint8_t tail_code(uint16_t r16, int j) {
                                                        : factor::stat::kLcMid;
 }
 
+// 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
+struct TailRow {
+  float sum[kLegs][kTails] = {};    // 两腿尾部做多超额 e 的持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
+  uint16_t cnt[kLegs][kTails] = {}; // 两腿尾部样本数
+  float ls[kTails] = {};            // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 Row::ls 同式; 尾空 → 该腿 0)
+};
 // 净值线 i (InspectResult::nav 线序, 见 kNavLines) 在行 t 这一批的收益, 全取 Row / TailRow 现成值 (不 ok → 0): 分层超额 = grp / 尾部 sum;
 //   分层绝对 = 超额 + 只数 · mkt[kLong] / 持仓分母 (组 cap, 尾 j cap · kTailOfGroup[j]); LS 0 = Row::ls, 1 + j = TailRow::ls[j]
 double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double cap) {
@@ -94,16 +99,30 @@ struct TailExt {
     }
   }
 };
-// 尾部分层落地 [hd.n][rows_all] (与 RowsP 同形): 逐格扩展 TailExt, 行收尾 finish
-struct TailP : LandRowsP<TailRow> {
+// 分层 / 尾部 / LS 净值线 [hd.n · kNavLines] (契约【净值】; 全部持有期一次 fold_book, stride = S → 日收益):
+// 逐格扩展 TailExt, 行收尾出本行尾部 → 各线这一批的收益 nav_value
+struct NavP : LinesP<kNavLines> {
   using Ext = TailExt;
   double cap = 0.0;
   Ext ext() const { return {kTailThr.v, cap}; }
   void open(const Ctx &c) {
-    LandRowsP::open(c);
-    cap = c.L.cap;
+    LinesP::open(c);
+    cap = c.L.cap, stride = c.c.y.sh.seg;
   }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) { e.finish(r, at(hi, t)); }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) {
+    TailRow tr;
+    e.finish(r, tr);
+    for (int i = 0; i < kNavLines; ++i)
+      at(hi, i, t) = static_cast<float>(nav_value(r, tr, i, cap));
+  }
+};
+// 逐行 rIC 落地 [hd.n][rows_all] (非 ok / 预热行 = NaN): IC 时序
+struct RicP : LandRowsP<float> {
+  void open(const Ctx &c) { LandRowsP::open(c, std::numeric_limits<float>::quiet_NaN()); }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
+    if (r.ok)
+      at(hi, t) = r.ric;
+  }
 };
 // 各级尾部 LS 线两腿的换手量 acc[j][hi] (Stat 契约【换手成本】的 Δw, cost_rows 只出量 C = 0; 顶底线 = CostP 的 turn):
 // 第 j 级尾部腿码 tail_code, 满仓 cap · kTailOfGroup[j] (与 TailRow 同口径); 块间续攒
@@ -147,31 +166,9 @@ struct RxAllP : LandCellsP<uint16_t> {
     factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.T - s.t_lo, s.A, s.g}, stat_at(s), *c.w);
   }
 };
-using InspectProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, IcPdfP, RxP, RxAllP, RowsP, TailP, TurnP>;
-
-// 分层累计净值 (评估后纯函数; 净值引擎 fold_exit, 契约【净值】; 全部持有期一遍, 吃落地的 Row / TailRow [y.hd.n][rows_all])
-// → 日收益 [hd.n · kNavLines][days] (线 hi · kNavLines + i)
-BookLines nav_of(misc::exec::ForkJoin &ex, const ScopeCache &c, const std::vector<factor::stat::Row> &rows, const std::vector<TailRow> &tails) {
-  const YPlanes &y = c.y;
-  const int H = y.hd.n, T = c.rows_all(), seg = y.sh.seg;
-  assert(rows.size() == static_cast<size_t>(H) * T && tails.size() == rows.size());
-  BookLines nav;
-  fold_exit(ex, seg, T, H * kNavLines, seg, [&](int i) { return y.hd.h[i / kNavLines]; }, [&](int i, int t) {
-              const size_t o = static_cast<size_t>(i / kNavLines) * T + static_cast<size_t>(t);
-              return nav_value(rows[o], tails[o], i % kNavLines, y.n_full); }, nav);
-  return nav;
-}
+using InspectProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, IcPdfP, RxP, RxAllP, RicP, NavP, TurnP>;
 
 } // namespace
-
-// 计算 flow 的状态 (worker 私有, 跨请求存活; 分级见头文件). 作用域块 c: Y 常驻, X = 作用域内读过的特征 (只增)
-struct InspectService::Flow : FactorFlow {
-  Engine<Cpu> E;         // 毛标签秩 (Stat 会话, 作用域内一次) + 活槽 (HostPool 常驻)
-  InspectPlanes pl;      // 一级平面, 发布时与 result.pl 交换
-  BookLines pool;        // 池等权线 (pool_line), 随 Y 一代
-  uint64_t pool_gen = 0; // pool 算时的 c.gen
-  explicit Flow(const std::atomic<bool> &cancel) : E(ex, cancel, 1) {}
-};
 
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload,
                         InspectRequest &req) {
@@ -191,12 +188,10 @@ bool InspectService::run(InspectRequest &req) {
     message.clear();
   }
   publish();
-  if (!flow_)
-    flow_ = std::make_unique<Flow>(cancel_);
-  return eval(req, *flow_);
+  return eval(req, flow());
 }
 
-bool InspectService::eval(const InspectRequest &req, Flow &F) {
+bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   TraceN("InspectEvaluate");
   const FactorScope &sc = req.scope;
   const FactorJob &f = req.spec.f;
@@ -208,23 +203,22 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   const YSpec ys = y_full(*sc.ft, sc.max_impact);
   const factor::expr::Expr e = sc.ft->reparse(f.expr);
   InspectProbes ps;
-  ps.at<RxP>().dst = &F.pl.rx;
-  ps.at<RxAllP>().dst = &F.pl.rx_all;
-  ps.at<RowsP>().dst = &F.pl.rows;
-  ps.at<TailP>().dst = &F.pl.tails;
+  ps.at<RxP>().dst = &pl_.rx;
+  ps.at<RxAllP>().dst = &pl_.rx_all;
+  ps.at<RicP>().dst = &pl_.ric;
   JobOut o;
-  const Rc rc = eval_job(F.E, F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o, [](const std::vector<std::string> &) {}, [](int) {});
+  const Rc rc = eval_job(F.engine<Cpu>(), F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o);
   if (aborted(rc))
-    return abort_out(rc, F);
+    return abort_out(rc);
   if (rc == Rc::Empty) {
     std::lock_guard<std::mutex> lock(mutex);
     message = o.why;
     return true;
   }
   const YPlanes &y = block_of(F, o, 0).y;
-  if (F.pool_gen != F.c.gen) {
-    F.pool = pool_line(F.ex, y);
-    F.pool_gen = F.c.gen;
+  if (pool_gen_ != F.c.gen) {
+    pool_ = pool_line(F.ex, y);
+    pool_gen_ = F.c.gen;
   }
 
   // ---- 结果骨架 ----
@@ -237,16 +231,16 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   const StatScope scope = stat_scope(sc, o.es, y, Engine<Cpu>::kName);
   res.dates = o.es.dates;
   res.read_scope = o.es.rs;
-  res.pool_index = F.pool;
+  res.pool_index = pool_;
   res.hd = y.hd;
-  const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 Flow (下次原地写)
-    std::swap(res.pl, F.pl);
+  const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 worker (下次原地写)
+    std::swap(res.pl, pl_);
     {
       std::lock_guard<std::mutex> lock(mutex);
       std::swap(result, res);
       ++result_gen;
     }
-    F.pl = std::move(res.pl);
+    pl_ = std::move(res.pl);
     publish();
   };
 
@@ -254,14 +248,14 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   if (rc == Rc::Broken) {
     res.scope = scope;
     res.error = o.why;
-    F.pl.clear(); // 无一级 / 无 rx
+    pl_.clear(); // 无一级 / 无 rx
     publish_result();
     return true;
   }
   fill_eval(ps, scope, o.eval_ms(0), res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);
   std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_pdf);
-  res.nav = nav_of(F.ex, block_of(F, o, 0), F.pl.rows, F.pl.tails);
+  res.nav = std::move(ps.at<NavP>().out);
   for (int j = 0; j < kTails; ++j)
     std::copy_n(ps.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
   publish_result();

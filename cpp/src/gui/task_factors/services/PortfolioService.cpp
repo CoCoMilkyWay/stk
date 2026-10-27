@@ -1,9 +1,7 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/PortfolioService.hpp"
 
-#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / open_job (只 CPU)
-#include "gui/task_factors/services/FactorsLoad.hpp"   // fold_exit / load_b
-#include "gui/task_factors/services/FactorsProbe.hpp"  // Probes / CostRowsP / group_abs
+#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / eval_basket (只 CPU) / Probes / LinesP / group_abs
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools
 #include "shared/SharedData.hpp"
@@ -22,8 +20,6 @@ namespace {
 
 using json = nlohmann::json;
 using ojson = nlohmann::ordered_json;
-
-constexpr int kDaySeg = 1; // 池指数的层 (日层)
 
 std::filesystem::path portfolio_path(const std::string &dir, const std::string &name) {
   assert(ValidFactorName(name) && "组合名: 仅 [A-Za-z0-9_]");
@@ -179,7 +175,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
     return;
   for (const PoolDef &d : feature_pools()) {
     PoolJob p;
-    if (!MakeFactorScope(data, table_of(tables, data.feature, kDaySeg), d.name, /*gpu=*/false, p.scope))
+    if (!MakeFactorScope(data, table_of(tables, data.feature, kBasketSeg), d.name, /*gpu=*/false, p.scope))
       continue;
     p.key = d.name;
     req.pools.push_back(std::move(p));
@@ -199,40 +195,38 @@ std::string PortfolioRequest::sig() const {
 // Service
 // ============================================================================
 
-// 计算 flow 的状态 (worker 私有, 跨请求存活). 作用域块 c: 同作用域的因子共用 Y, X 只留当前因子的叶
-struct PortfolioService::Flow : FactorFlow {
-  Engine<Cpu> E;                           // 毛标签秩 (Stat 会话, 作用域内一次) + 活槽 (HostPool 常驻)
-  std::vector<factor::stat::Row> rows;     // [T] 本 hold 的一级 Row
-  std::vector<factor::stat::CostAcc> cost; // [T] 本 hold 的逐行换手
-  explicit Flow(const std::atomic<bool> &cancel) : E(ex, cancel, 1) {}
-};
-
 namespace {
 
-using PortfolioProbes = Probes<RowsP, CostRowsP>;
-
-// G20 多头出参线 (评估后纯函数; Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; 吃落地的 Row / 逐行换手 [rows_all]) → [kCurveLines][rows_all]:
-//   pnl = G20 绝对收益 fold_exit 到平仓行; imp = 建仓冲击 / h̄, fix = (平仓量 (+ 无段时增仓量)) / h̄, 记在建仓行 (不交接批的平仓量一并)
-BookLines nav_of(misc::exec::ForkJoin &ex, const ScopeCache &c, int hold, const std::vector<factor::stat::Row> &rows,
-                 const std::vector<factor::stat::CostAcc> &cost) {
-  using factor::stat::kLong;
-  static_assert(kCurvePnl == 0, "pnl 是首线: fold_exit 一线出完再接后两线");
-  const YPlanes &y = c.y;
-  const int T = c.rows_all(), G = factor::stat::leg_group(kLong);
-  const double h = factor::stat::hold_span(hold, factor::geo_of(y.sh.seg));
-  assert(rows.size() == static_cast<size_t>(T) && cost.size() == static_cast<size_t>(T));
-  BookLines nav;
-  fold_exit(ex, y.sh.seg, T, 1, 1, [&](int) { return hold; }, [&](int, int t) { return group_abs(rows[static_cast<size_t>(t)], G, y.n_full); }, nav);
-  nav.n = kCurveLines;
-  nav.v.resize(static_cast<size_t>(kCurveLines) * T, 0.f);
-  float *imp = nav.v.data() + static_cast<size_t>(kCurveImp) * T, *fix = nav.v.data() + static_cast<size_t>(kCurveFix) * T;
-  for (int t = 0; t < T; ++t) {
-    const factor::stat::CostLeg &cl = cost[static_cast<size_t>(t)].leg[kLong];
-    imp[t] = static_cast<float>(cl.imp / h);
-    fix[t] = static_cast<float>((cl.sell + (y.ad.n ? 0.0 : cl.buy)) / h);
+// G20 多头出参线 [kCurveLines][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
+//   pnl = 行的 G20 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 平仓量 (+ 无段时增仓量), 建仓行即付 (不交接批的平仓量一并)
+struct CurveP : LinesP<kCurveLines> {
+  static constexpr uint8_t need = kNeedRows | kNeedLc;
+  double cap = 0.0;
+  std::vector<CostTier> tiers;                            // cost_tiers 的分段攒 (出参线不用)
+  factor::stat::CostAcc qty[factor::stat::kMaxHold] = {}; // cost_tiers 的量攒 (出参线不用)
+  std::vector<factor::stat::CostAcc> land;                // 本块逐行换手 [T]
+  static double bytes(const Shape &sh, int H) { return LinesP::bytes(sh, H) + sizeof(factor::stat::CostAcc) * static_cast<double>(sh.T); }
+  void open(const Ctx &c) {
+    assert(c.L.hd.n == 1 && c.c.y.ad.n <= 1 && "出参线: 一个持有期, 至多一个金额段");
+    LinesP::open(c);
+    x.at_exit[kCurveImp] = x.at_exit[kCurveFix] = 0;
+    cap = c.L.cap;
   }
-  return nav;
-}
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
+    at(hi, kCurvePnl, t) = static_cast<float>(group_abs(r, factor::stat::leg_group(factor::stat::kLong), cap));
+  }
+  void root(const Ctx &c, const RootView &v) {
+    const factor::stat::Span s = c.s();
+    land.assign(static_cast<size_t>(s.T), factor::stat::CostAcc{});
+    cost_tiers(c.ex, v.lc, s, c.L, c.c.y, *c.w, tiers, qty, land.data());
+    for (int t = s.t_lo; t < s.T; ++t) {
+      const factor::stat::CostLeg &cl = land[static_cast<size_t>(t)].leg[factor::stat::kLong];
+      at(0, kCurveImp, t) = static_cast<float>(cl.imp);
+      at(0, kCurveFix, t) = static_cast<float>(cl.sell + (c.c.y.ad.n ? 0.0 : cl.buy));
+    }
+  }
+};
+using PortfolioProbes = Probes<CurveP>;
 
 // 缓存跟请求走 (因子 / 池同一条): reload → 全丢; 请求里没有的 key 丢掉
 template <class Job, class Curve>
@@ -257,7 +251,7 @@ PortfolioService::PortfolioService() { Start(); }
 PortfolioService::~PortfolioService() { Stop(); }
 
 template <class Job, class Curve>
-bool PortfolioService::run_jobs(const std::vector<const Job *> &todo, std::map<std::string, std::shared_ptr<const Curve>> &out, Flow &F) {
+bool PortfolioService::run_jobs(const std::vector<const Job *> &todo, std::map<std::string, std::shared_ptr<const Curve>> &out, FactorFlow &F) {
   for (const Job *j : todo) {
     auto c = std::make_shared<Curve>();
     c->sig = j->sig();
@@ -275,9 +269,7 @@ bool PortfolioService::run_jobs(const std::vector<const Job *> &todo, std::map<s
 }
 
 bool PortfolioService::run(PortfolioRequest &req) {
-  if (!flow_)
-    flow_ = std::make_unique<Flow>(cancel_);
-  Flow &F = *flow_;
+  FactorFlow &F = flow(); // 作用域块: 同作用域的因子共用 Y, X 只留当前因子的叶
   {
     std::lock_guard<std::mutex> lock(mutex);
     message.clear();
@@ -300,8 +292,8 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return run_jobs(todo_f, result.factors, F) && run_jobs(todo_p, result.pools, F);
 }
 
-// 与 Run / Inspect 同一条管线 (eval_job), 探针只评该 hold: 一级 Row + 逐行换手 → nav_of (G20 多头)
-bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
+// 与 Run / Inspect 同一条管线 (eval_job), 探针只评该 hold: 落线 CurveP (G20 多头)
+bool PortfolioService::eval(const HoldJob &j, FactorFlow &F, FactorCurve &out) {
   TraceN("PortfolioFactor");
   const FactorScope &sc = j.scope;
   out.seg = sc.seg;
@@ -315,38 +307,36 @@ bool PortfolioService::eval(const HoldJob &j, Flow &F, FactorCurve &out) {
   const factor::expr::Expr e = sc.ft->reparse(j.f.expr);
   PortfolioProbes ps;
   ps.hd = holds_of({j.hold});
-  ps.at<RowsP>().dst = &F.rows;
-  ps.at<CostRowsP>().dst = &F.cost;
   JobOut o;
-  const Rc rc = eval_job(F.E, F, sc, {&e}, &j.f.frame, ys, /*retain=*/true, "Portfolio", [&](int) -> PortfolioProbes & { return ps; }, cancel_, *this, o, [](const std::vector<std::string> &) {}, [](int) {});
+  const Rc rc = eval_job(F.engine<Cpu>(), F, sc, {&e}, &j.f.frame, ys, /*retain=*/true, "Portfolio", [&](int) -> PortfolioProbes & { return ps; }, cancel_, *this, o);
   if (aborted(rc))
-    return abort_out(rc, F);
+    return abort_out(rc);
   if (rc != Rc::Ok) {
     out.error = o.why;
     return true;
   }
   out.dates = o.es.dates;
   out.amt = ad.n ? ad.a[0] : 0;
-  out.nav = nav_of(F.ex, block_of(F, o, 0), j.hold, F.rows, F.cost);
+  out.nav = std::move(ps.at<CurveP>().out);
   return true;
 }
 
 // 日层池篮子 (eval_basket, 与 eval_job 对仗): 篮子指数 / 估值 / 换手, 整份搬进 PoolCurve
-bool PortfolioService::eval(const PoolJob &j, Flow &F, PoolCurve &out) {
+bool PortfolioService::eval(const PoolJob &j, FactorFlow &F, PoolCurve &out) {
   TraceN("PortfolioPool");
   Job o;
-  BPlanes B;
+  Baskets B;
   const Rc rc = eval_basket(F, j.scope, cancel_, *this, o, B);
   if (aborted(rc))
-    return abort_out(rc, F);
+    return abort_out(rc);
   if (rc != Rc::Ok) {
     out.error = o.why;
     return true;
   }
   const int days = static_cast<int>(o.es.dates.size());
-  const size_t n = BPlanes::kBaskets * o.es.dates.size();
+  const size_t n = Baskets::kBaskets * o.es.dates.size();
   out.dates = o.es.dates;
-  assert(B.index.n == static_cast<int>(BPlanes::kBaskets) * kWeights && B.index.P == days);
+  assert(B.index.n == static_cast<int>(Baskets::kBaskets) * kWeights && B.index.P == days);
   out.index = std::move(B.index);
   for (int w = 0; w < kWeights; ++w)
     out.turn[w] = B.turn[w];

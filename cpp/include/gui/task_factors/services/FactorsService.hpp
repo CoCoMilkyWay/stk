@@ -62,20 +62,28 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-enum class Rc : uint8_t; // FactorsLoad.hpp
+enum class Rc : uint8_t; // FactorsScope.hpp
 struct FactorFlow;       // FactorsEngine.hpp
 
-// 因子服务的进度面 + 本轮说明 + 库判废收尾 (Run / Search / Inspect / Portfolio 同一份)
-struct FactorWorker : Published {
+// 因子服务骨架 (Run / Search / Inspect / Portfolio 同一份): 进度面 = 自身 + 本轮说明 + worker 常驻件 FactorFlow (首个请求懒建, 随 worker 活)
+// + 库判废收尾. 成员函数定义在 FactorsEngine.hpp (FactorFlow 完整处); 派生类的 ctor / dtor 须在 .cpp
+template <class D, class Req>
+class FactorWorker : public Service<D, Req>, public Published {
+public:
   std::string message; // 本轮说明 (如 "特征库无数据"), 空 = 无; UI 持 mutex 读
 
 protected:
-  bool abort_out(Rc rc, FactorFlow &F); // 中断收尾 (rc 须 aborted): Stale → 弃作用域块 + 置 message; 恒 false
+  Progress &board() { return *this; }
+  FactorFlow &flow();
+  bool abort_out(Rc rc); // 中断收尾 (rc 须 aborted): Stale → 弃作用域块 + 置 message; 恒 false
+
+private:
+  std::unique_ptr<FactorFlow> flow_;
 };
 
 struct RunSpec {
   bool evaluate = false; // false = 只扫描解析 (不读库)
-  std::string only_file; // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat
+  std::string only_file; // 非空 = 只评这个因子文件的权重 (Run / Search 写完后), 其余行保留文件里的 stat; 空 = Run all
 };
 using FactorsRequest = Request<RunSpec>;
 // 只扫描恒成; evaluate 要作用域可用 (MakeFactorScope). ft = 该层字段表
@@ -128,7 +136,7 @@ factor::search::Score RowScore(const FactorRow &r, int hold);
 void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std::vector<FactorRow> &out);
 
 // 进度面 = 自身 (FactorWorker): Scanning → (evaluate) Loading 期 done/total = 天 → Running 期 = 共享 DAG 算子节点
-class FactorsService : public Service<FactorsService, FactorsRequest>, public FactorWorker {
+class FactorsService : public FactorWorker<FactorsService, FactorsRequest> {
   friend Service<FactorsService, FactorsRequest>;
 
 public:
@@ -144,7 +152,6 @@ public:
 
 private:
   static constexpr Phase kStart = Phase::Scanning;
-  Progress &board() { return *this; }
   bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
   bool eval(const FactorsRequest &req, FactorFlow &F); // false = 取消 / 判废
@@ -154,7 +161,6 @@ private:
   Rc eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx, const std::vector<factor::expr::Expr> &exprs,
                const std::vector<factor::stat::Frame> &frames);
 
-  std::unique_ptr<FactorFlow> flow_; // 首个 eval 懒建, 随 worker 活 (作用域块每轮用完即弃)
   std::atomic<int> broken_{0};
 };
 

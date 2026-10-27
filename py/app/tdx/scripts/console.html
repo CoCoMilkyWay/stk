@@ -349,6 +349,10 @@
       .bars i {
         flex: 1;
       }
+      button.ord {
+        padding: 0 4px;
+        font-size: 11px;
+      }
       .kv {
         color: var(--mut);
       }
@@ -469,8 +473,24 @@
                 <option value="300">5min</option>
               </select></label
             >
+            <label class="kv"
+              >委托价
+              <select id="ordPx">
+                <option value="opp" selected>对手价</option>
+                <option value="opp1">对手价偏1%</option>
+                <option value="own">本方价</option>
+              </select></label
+            >
+            <label class="kv"
+              >买入方式
+              <select id="ordCredit">
+                <option value="plain" selected>担保品买入</option>
+                <option value="margin">融资买入</option>
+              </select></label
+            >
           </h2>
           <div id="posInfo" class="kv">（切到此页自动读取内存持仓表）</div>
+          <div id="ordInfo" class="kv"></div>
           <!-- 两表同在一个滚动区：放得下就全展开，超出整页才滚 -->
           <div style="overflow: auto; flex: 1; min-height: 0">
             <table id="posTbl">
@@ -1681,10 +1701,73 @@
         v == null ? "" : paint(v >= 0 ? "#f14c4c" : "#6a9955", fmt(v, d));
       // 数字列：右对齐，按原值排序
       const numCol = (h, k, f = fmt) => [h, (p) => f(p[k]), (p) => p[k], "num"];
+      // 下单：行内按钮 → POST /api/order（后台跑闪电窗），各单逐步状态经 /api/ordwatch 推送
+      const ORD_SIZES = [
+        [0, "最小"],
+        [10000, "1W"],
+        [50000, "5W"],
+      ];
+      const ORD_SIDES = [
+        ["buy", "#f14c4c"],
+        ["sell", "#6a9955"],
+      ];
+      const ordBtns = (p) =>
+        ORD_SIDES.map(([side, c]) =>
+          ORD_SIZES.map(
+            ([n, t]) =>
+              `<button class="ord" style="color:${c}" data-code="${p.code}" data-side="${side}" data-size="${n}">${t}</button>`,
+          ).join(""),
+        ).join(" ");
+      document.getElementById("posTbl").onclick = async (e) => {
+        const b = e.target.closest("button.ord");
+        if (!b) return;
+        const r = await api("/api/order", {
+          code: b.dataset.code,
+          side: b.dataset.side,
+          size: +b.dataset.size,
+          px: document.getElementById("ordPx").value,
+          credit: document.getElementById("ordCredit").value,
+        });
+        if (r.err)
+          document.getElementById("ordInfo").innerHTML =
+            `<span class="off">✗ 下单 ${esc(r.err)}</span>`;
+      };
+      // 每单一行：步骤条（已过绿 / 当前黄，失败红 / 未到灰）+ 结果
+      const ORD_ST = { run: "进行中", ok: "✓", err: "✗" };
+      function showOrders(jobs) {
+        document.getElementById("ordInfo").innerHTML = jobs
+          .slice(0, 5)
+          .map((j) => {
+            const steps = j.steps
+              .map((s, i) =>
+                paint(
+                  i < j.at || j.state === "ok"
+                    ? "#6a9955"
+                    : i > j.at
+                      ? "var(--mut)"
+                      : j.state === "err"
+                        ? "#f14c4c"
+                        : "var(--hot)",
+                  s,
+                ),
+              )
+              .join(" › ");
+            const side = paint(
+              j.side === "buy" ? "#f14c4c" : "#6a9955",
+              j.side === "buy" ? "买" : "卖",
+            );
+            return (
+              `<div>${j.t} ${side}${j.label} ${j.code} ${esc(j.name)} ${esc(j.detail)}` +
+              ` · ${steps} · ${ORD_ST[j.state]} ${esc(j.msg)}</div>`
+            );
+          })
+          .join("");
+      }
       const POS_COLS = [
         ["代码", (p) => p.code, (p) => p.code],
         numCol("仓位%", "position_pct"),
         ["名称", (p) => esc(p.name), (p) => p.name],
+        ["买 / 卖", ordBtns],
         ["滑点", (p) => slipBars(p.slips)],
         numCol("当日盈亏%", "day_pnl_pct", fmtPnl),
         numCol("当日盈亏", "day_pnl", fmtPnl),
@@ -1700,6 +1783,7 @@
       // 只在持仓页可见且浏览器标签在前台时连着；断开后服务端即停取行情。出错只改提示行，表留上一帧。
       // 自动刷新只作兜底（客户端自己重查已即时跟上）：到点 POST /api/refresh，新帧仍经推送到达。
       let posES = null;
+      let ordES = null;
       let autoRefreshTried = false;
       let nextRefresh = 0; // 下次自动刷新时刻（performance.now）
       const posShown = () =>
@@ -1711,6 +1795,11 @@
         if (!on && posES) {
           posES.close();
           posES = null;
+        }
+        if (on && !ordES) ordES = subscribe("/api/ordwatch", showOrders);
+        if (!on && ordES) {
+          ordES.close();
+          ordES = null;
         }
       }
       const posErr = (r) =>

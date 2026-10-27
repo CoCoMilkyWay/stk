@@ -2,8 +2,7 @@
 // CMake 里已列入 PRECISE_MATH 源 (-fno-fast-math), 与 OperatorsService 同待遇.
 #include "gui/task_factors/services/FactorsService.hpp"
 
-#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / Probes / with_engine (四服务同一条管线)
-#include "gui/task_factors/services/FactorsLoad.hpp"   // stat_scope / Rc
+#include "gui/task_factors/services/FactorsEngine.hpp" // eval_job / Probes / FactorFlow (四服务同一条管线)
 #include "gui/task_factors/services/StatJson.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
@@ -20,16 +19,6 @@
 #include <string_view>
 
 namespace GUI::Factors {
-
-bool FactorWorker::abort_out(Rc rc, FactorFlow &F) {
-  assert(aborted(rc) && "只收中断结局");
-  if (rc == Rc::Cancel)
-    return false;
-  F.c.reset(); // 库换了, 缓存的一切不可信
-  std::lock_guard<std::mutex> lock(mutex);
-  message = kStaleMsg;
-  return false;
-}
 
 namespace {
 
@@ -457,10 +446,8 @@ bool FactorsService::run(FactorsRequest &req) {
 
   if (!req.spec.evaluate)
     return true;
-  if (!flow_)
-    flow_ = std::make_unique<FactorFlow>();
-  const bool ok = eval(req, *flow_);
-  flow_->c.reset(); // 作用域块只活一轮 (Y 跨文件复用)
+  const bool ok = eval(req, flow());
+  flow().drop(); // 作用域块 / 引擎只活一轮 (Y 跨文件复用)
   return ok;
 }
 
@@ -647,7 +634,7 @@ bool FactorsService::eval(const FactorsRequest &req, FactorFlow &F) {
     message = "无有效因子";
     return true;
   }
-  return with_engine(req.scope.gpu, F.ex, cancel_, 1, [&](auto &eng) {
+  return F.with_engine(req.scope.gpu, [&](auto &eng) {
     for (size_t f = 0; f < idx.size(); ++f) {
       const Rc rc = eval_file(req, F, eng, idx[f], exprs[f], frames[f]);
       if (rc == Rc::Ok)
@@ -657,7 +644,7 @@ bool FactorsService::eval(const FactorsRequest &req, FactorFlow &F) {
         for (FactorRow &r : rows)
           r.status = RowStatus::Done;
       }
-      return abort_out(rc, F);
+      return abort_out(rc);
     }
     return true;
   });

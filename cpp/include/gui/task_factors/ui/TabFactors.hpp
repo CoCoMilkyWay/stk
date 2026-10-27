@@ -50,6 +50,8 @@ struct FactorsUIState {
   // Search all 整轮同一个 search_hold, 中途改 Hold 不影响)
   FactorRow search_row;
   int search_hold = 0;
+  // Run (对象 = 高光行所在文件, 只评它的全部权重) / Run all (整目录): 点 Run 时把文件名记进 run_file (TaskFactors 据此建请求 only_file)
+  std::string run_file;
   // Search all (当前池 / 层下全部可搜模板文件逐个搜, 全部搜完整目录 Run 一次): 点下时把各文件首个可搜行拷进队列, TaskFactors 逐个出队;
   // Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换池换层)
   std::vector<FactorRow> search_queue;
@@ -94,8 +96,8 @@ inline constexpr const char *kHoldRulesTip = "• 开仓 = 本层行收盘 C(层
                                              "    ◦ 收盘 / 开盘撮合价 = 集合竞价单一价\n"
                                              "• 建仓不可两向成交 → 该行作废; 平仓不可成交 / 停牌 → 顺延到首个可成交价点";
 
-// 返回值: 1 = Run (评估), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row), 4 = Search all (ui.search_queue 已填),
-// -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)
+// 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row),
+// 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)
 int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors

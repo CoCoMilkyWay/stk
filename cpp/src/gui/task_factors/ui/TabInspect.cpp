@@ -208,17 +208,17 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
 
 float section_at(const InspectDerived &d, const std::vector<float> &cum, int c);
 
-// 选定 hold → 日级序列 + IC 分布 / 时序. 分层累计 = InspectResult::nav (净值引擎 fold_exit) 选定口径的
+// 选定 hold → 日级序列 + IC 分布 / 时序. 分层累计 = InspectResult::nav (净值引擎 fold_book) 选定口径的
 // 日收益连乘, 画 (净值 − 1) × 100 %; 各 LS 线的年化 / Sharpe 同一口径 = 净值几何年化 / 日收益 mean / sd × √kDaysPerYear;
 // rIC 分布 = InspectResult::ic_pdf (IcPdfP 成品, 与 Run 行小图同一份).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
-  if (res.key.empty() || !res.error.empty() || res.pl.rows.empty())
+  if (res.key.empty() || !res.error.empty() || res.pl.ric.empty())
     return;
   assert(sel >= 0 && sel < res.hd.n);
   const int T = res.scope.T, days = res.scope.days, S = res.seg;
   assert(T == days * S && days >= 1);
-  const factor::stat::Row *r = res.rows_at(sel);
+  const float *ric = res.ric_at(sel);
   assert(res.nav.n == res.hd.n * kNavLines && res.nav.P == days);
   d.hs = res.hold[static_cast<size_t>(sel)];
   d.adist = res.alpha_dist;
@@ -237,8 +237,8 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   std::vector<float> &ics = d.ic_series;
   ics.reserve(static_cast<size_t>(T));
   for (int t = 0; t < T; ++t)
-    if (r[t].ok)
-      ics.push_back(r[t].ric);
+    if (!std::isnan(ric[t]))
+      ics.push_back(ric[t]);
   const auto cum_of = [&](const float *v, std::vector<float> &cum) {
     compound(v, static_cast<size_t>(days), [&](size_t day, double l) { cum[day + 1] = static_cast<float>((l - 1.0) * 100.0); });
   };
@@ -1486,7 +1486,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     break;
   }
 
-  // ---- 结果快照 (持锁派生切片 (hold), 不拷 rows) ----
+  // ---- 结果快照 (持锁派生切片 (hold), 不拷平面) ----
   const std::string key = probe_key(sel, ctx);
   const int sel_hold = ui.hold_idx;
   std::string message, res_error, res_key, res_row;

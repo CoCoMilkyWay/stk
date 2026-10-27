@@ -18,9 +18,12 @@
 #   GET  /api/recwatch                       SSE：录制器 {st 状态, recs 新记录}，{} 为心跳
 #   POST /api/rec             {on}           开 / 停录制
 #   POST /api/recmark         {text}         录制中打点
+#   POST /api/order {code,side,size,px,credit} 持仓行闪电下单（后台跑），回该单状态
+#   GET  /api/ordwatch                       SSE：最近各单状态（逐步），{} 为心跳
 # 任何失败（assert 等）统一回 {err}。
 
 import os
+import re
 import sys
 import json
 import time
@@ -40,6 +43,7 @@ from mem import positions as mempos  # noqa: E402  内存持仓方案（含完�
 
 HTML_FILE = os.path.join(HERE, "console.html")
 REFRESH_BTN = {"class": "MHPToolBar", "title": "MainViewBar", "text": "刷新"}
+POS_BTN = {**REFRESH_BTN, "text": "持仓"}  # 刷新只刷当前页，下单后客户端会切去委托 / 成交页
 SHIM = Shim()
 
 
@@ -261,9 +265,10 @@ class Hub:
             time.sleep(TICK)
 
     def refresh(self):
-        """点交易栏「刷新」让客户端重查，等活动块换代即重读并推帧（实测约 0.25s）。"""
+        """点交易栏「持仓」再「刷新」让客户端重查，等活动块换代即重读并推帧（实测约 0.25s）。"""
         with self.lock:
             snap = self._snap()
+            click_text(POS_BTN)
             click_text(REFRESH_BTN)
             self._put("mem", mempos.wait(snap))
             self.stale = True  # 没换代也推一帧，前端借此结束「刷新中」
@@ -405,6 +410,304 @@ def slippage(positions, q):
         "agg": [_agg(rows, i) for i in range(len(SLIP_COLS))],
         "rows": rows,
     }
+
+
+# ---------- 下单（闪电下单窗 UI 自动化）----------
+# 流程照录像 rec-20261026-143432：主窗 WM_COMMAND 打开图表当前证券的闪电窗 → 填价格 / 数量 → IDOK
+# → 「…交易确认」框核对正文（代码 / 价格 / 数量）后点 7015 → 「提示」框读回报（成功含合同号）点 7015 关掉。
+# 闪电窗只认图表当前证券：先向主窗投代码按键 + 回车（键盘精灵）切过去，窗内证券代码再核一遍。
+# 一次只跑一单，逐步推状态；任一步不符或超时即停在那一步，已弹出的窗口留给人工处理。
+
+WM_KEYDOWN, WM_KEYUP, WM_COMMAND = 0x100, 0x101, 0x111
+VK_RETURN, SC_RETURN = 0x0D, 0x1C
+WM_MDIGETACTIVE = 0x229
+AFX_PANE = 59648  # MFC AFX_IDW_PANE_FIRST：主框架下的 MDIClient、MDI 子窗下的视图都是这个 id
+MAIN_WND = "class=TdxW_MainFrame_Class"
+# 闪电窗：主窗命令 id、窗标题、控件 id（证券代码 / 价格 / 数量 / 数量单位 / 报价方式 / 提交）
+_FLASH_IDS = {
+    "code": 12005,
+    "price": 12006,
+    "qty": 12007,
+    "unit": 12016,
+    "quote": 3067,
+    "ok": 1,
+}
+FLASH = {
+    "buy": (0x13DD, "闪电买入", _FLASH_IDS),
+    "sell": (0x1404, "闪电卖出", _FLASH_IDS),
+    "margin": (
+        0x1441,
+        "闪电融资买入",
+        {"code": 313, "price": 314, "qty": 315, "unit": 320, "quote": 220, "ok": 1},
+    ),
+}
+CONFIRM_TITLES = ("买入交易确认", "卖出交易确认", "交易确认")
+RESULT_TITLE = "提示"
+MSG_TEXT, MSG_YES = 7013, 7015  # 确认框 / 回报框：正文 Static、确认按钮
+PX_MODES = {"opp": (True, 0), "opp1": (True, 1), "own": (False, 0)}  # (吃对手盘, 再偏 %)
+ORDER_STEPS = ("行情", "切换", "开窗", "填单", "确认", "回报")
+ORDER_CAP = 20
+
+
+def _order_px(q, s, mode):
+    """方向 s 按 mode 定委托价（未舍入）：对手价 / 对手价再朝成交方向偏 1% / 本方价。"""
+    opp, pct = PX_MODES[mode]
+    assert not _auction(q), "集合竞价中，盘口无连续价"
+    book = _book(q, s if opp else -s)
+    assert book, "盘口为空"
+    return book[0][0] * (1 + s * pct / 100)
+
+
+def _order_qty(code, px, size, s, avail):
+    """size 元（0 = 最小单位）折股：科创板起 200 股、零股递增，北交所起 100 股、零股递增，其余整手；
+    卖出不超过可卖（不足即全卖，零股只能一次卖完）。"""
+    lot = 200 if code.startswith("688") else 100
+    step = 1 if code.startswith(("688", "4", "8", "92")) else 100
+    n = int(size / px) // step * step if size else lot
+    assert n >= lot, f"{size} 元按 {px} 不足最小单位 {lot} 股"
+    if s == SELL:
+        assert avail and avail >= 1, "无可卖数量"
+        n = min(n, int(avail))
+    return n
+
+
+def _post(h, msg, wp, lp=0):
+    assert SHIM("post", h, msg, wp, lp)[0]["ret"], f"PostMessage {h} {msg:#x} 失败"
+
+
+def _press(h, vk, sc):
+    """投递按下 + 抬起（同 shim post_key），WM_CHAR 由客户端消息泵照常生成。"""
+    lp = 1 | sc << 16
+    _post(h, WM_KEYDOWN, vk, lp)
+    _post(h, WM_KEYUP, vk, lp | 0xC0000000)
+
+
+def _title(h):
+    return SHIM("rect", h)[0]["title"]
+
+
+def _text(h):
+    return SHIM("gettext", h)[0]["text"]
+
+
+def _ctls(h, ids):
+    """对话框 h 的直接子控件，按 {名: 控件 id} 各取唯一一个 → {名: hwnd}。"""
+    kids = [n for n in SHIM("enum", h) if n["depth"] == 1]
+    out = {}
+    for k, cid in ids.items():
+        hits = [n["hwnd"] for n in kids if n["id"] == cid]
+        assert len(hits) == 1, f"{h}「{_title(h)}」控件 {k}({cid}) 命中 {len(hits)} 个"
+        out[k] = hits[0]
+    return out
+
+
+def _tops():
+    """可见顶层窗口 {hwnd: 节点}。"""
+    return {n["hwnd"]: n for n in SHIM("enum") if n["depth"] == 0 and n["vis"]}
+
+
+def _wait(what, fn, timeout):
+    """what 可为可调用（超时时才求值，好报出当时的状态）。"""
+    end = time.monotonic() + timeout
+    while not (r := fn()):
+        assert (
+            time.monotonic() < end
+        ), f"{timeout}s 内未等到{what() if callable(what) else what}"
+        time.sleep(0.05)
+    return r
+
+
+def _body(h):
+    """确认 / 提示框正文（7013），没有该控件回空串。"""
+    hits = [n["hwnd"] for n in SHIM("enum", h) if n["depth"] == 1 and n["id"] == MSG_TEXT]
+    return " ".join(_text(hits[0]).split()) if len(hits) == 1 else ""
+
+
+def _dialog(before, titles, timeout):
+    """等 before 之后新出现、标题在 titles 内的可见对话框（须唯一）；超时报出期间冒出的新窗口及正文。"""
+    end = time.monotonic() + timeout
+    while True:
+        new = {
+            h: n
+            for h, n in _tops().items()
+            if h not in before and n["class"] == "#32770"
+        }
+        got = [h for h, n in new.items() if n["title"] in titles]
+        assert len(got) <= 1, f"「{'/'.join(titles)}」同时出现 {len(got)} 个"
+        if got:
+            return got[0]
+        assert time.monotonic() < end, (
+            f"{timeout}s 内未等到「{'/'.join(titles)}」，期间新窗口："
+            + ("；".join(f"「{n['title']}」{_body(h)}" for h, n in new.items()) or "无")
+        )
+        time.sleep(0.05)
+
+
+def _goto(main, code, name):
+    """图表切到 code：主窗标题已是「…-名称]」即跳过，否则向活动 MDI 子窗的视图投代码按键
+    （键盘精灵由视图处理，投给主框架不经过它），等精灵弹出后向其输入框投回车，再等标题换过来。"""
+    want = f"-{name}]"
+    if _title(main).endswith(want):
+        return
+    mdi = _ctls(main, {"mdi": AFX_PANE})["mdi"]
+    child = f"0x{SHIM('send', mdi, WM_MDIGETACTIVE, 0, 0)[0]['ret'] & 0xFFFFFFFF:08x}"
+    view = _ctls(child, {"view": AFX_PANE})["view"]
+    before = _tops()
+    for ch in code:
+        _press(view, ord(ch), 11 if ch == "0" else int(ch) + 1)  # 数字键扫描码 1..9→2..10、0→11
+    spirit = _wait(
+        f"键盘精灵弹出（已向「{_title(child)}」视图 {view} 投 {code}）",
+        lambda: next((h for h in _tops() if h not in before), None),
+        1,
+    )
+    time.sleep(0.3)  # 精灵按输入筛候选，留出时间再回车
+    edits = [
+        n["hwnd"]
+        for n in SHIM("enum", spirit)
+        if n["depth"] == 1 and n["class"] == "Edit"
+    ]
+    _press(edits[0] if len(edits) == 1 else spirit, VK_RETURN, SC_RETURN)
+    _wait(
+        lambda: f"主窗切到「{name}」，现为「{_title(main)}」",
+        lambda: _title(main).endswith(want),
+        3,
+    )
+
+
+def _settext(h, s):
+    assert SHIM("settext", h, s)[0]["ret"], f"写 {h} 失败"
+    got = _text(h)
+    assert got == s, f"写入 {s!r} 后读回 {got!r}"
+
+
+def _field(body, pat, what):
+    m = re.search(pat, body)
+    assert m, f"确认框缺{what}：{body}"
+    return m.group(1)
+
+
+class Orders:
+    def __init__(self):
+        self.cond = threading.Condition()  # 管 jobs/seq：下单线程改状态，唤醒订阅者
+        self.jobs, self.seq = collections.deque(maxlen=ORDER_CAP), 0
+        self.ids = itertools.count(1)
+
+    def _put(self, job, **kw):
+        with self.cond:
+            job.update(kw)
+            self.seq += 1
+            self.cond.notify_all()
+
+    def _step(self, job, name, **kw):
+        self._put(job, at=ORDER_STEPS.index(name), **kw)
+
+    def submit(self, b):
+        """b = {code, side: buy|sell, size: 元（0 = 最小单位）, px: PX_MODES 键, credit: plain|margin}。"""
+        side, size = b["side"], int(b["size"])
+        assert side in ("buy", "sell") and size >= 0, f"参数不对：{b}"
+        assert b["px"] in PX_MODES and b["credit"] in ("plain", "margin"), f"参数不对：{b}"
+        with HUB.lock:
+            ps = [p for p in HUB._snap().rows if p["code"] == b["code"]]
+        assert len(ps) == 1, f"持仓里 {b['code']} 命中 {len(ps)} 只"
+        with self.cond:
+            assert not any(j["state"] == "run" for j in self.jobs), "上一单还没结束"
+            job = {
+                "id": next(self.ids),
+                "t": time.strftime("%H:%M:%S"),
+                "code": b["code"],
+                "name": ps[0]["name"],
+                "side": side,
+                "label": f"{size // 10000}W" if size else "最小",
+                "steps": ORDER_STEPS,
+                "at": 0,
+                "state": "run",
+                "detail": "",
+                "msg": "",
+            }
+            self.jobs.append(job)
+            self.seq += 1
+            self.cond.notify_all()
+        kind = "sell" if side == "sell" else "margin" if b["credit"] == "margin" else "buy"
+        threading.Thread(
+            target=self._run, args=(job, ps[0], kind, size, b["px"]), daemon=True
+        ).start()
+        return job
+
+    def _run(self, job, p, kind, size, mode):
+        try:
+            self._place(job, p, kind, size, mode)
+        except Exception as e:  # 错误边界（同 Hub.run）：停在当前步，报原因
+            self._put(job, state="err", msg=f"{type(e).__name__}: {e}")
+
+    def _place(self, job, p, kind, size, mode):
+        code = p["code"]
+        s = SELL if kind == "sell" else BUY
+        cmd, title, ids = FLASH[kind]
+        px = _order_px(quotes([p])[_sym(p)], s, mode)
+
+        self._step(job, "切换")
+        main = SHIM("find", MAIN_WND)
+        assert len(main) == 1, "找不到通达信主窗"
+        main = main[0]["hwnd"]
+        _goto(main, code, p["name"])
+
+        self._step(job, "开窗")
+        before = _tops()
+        assert all(
+            n["title"] != title for n in before.values()
+        ), f"已有未关的「{title}」窗"
+        _post(main, WM_COMMAND, cmd)
+        dlg = _dialog(before, (title,), 3)
+
+        self._step(job, "填单")
+        c = _ctls(dlg, ids)
+        got = _text(c["code"])
+        assert got == code, f"闪电窗证券 {got} ≠ {code}"
+        quote = _text(c["quote"])
+        assert "限价" in quote, f"报价方式为「{quote}」，需限价委托"
+        dflt = _wait("闪电窗默认价", lambda: _text(c["price"]), 1)
+        assert "." in dflt, f"默认价 {dflt!r} 定不出小数位"
+        px_s = f"{px:.{len(dflt.split('.')[1])}f}"
+        n = _order_qty(code, float(px_s), size, s, p["available"])
+        unit = _text(c["unit"])
+        assert unit in ("股", "元"), f"数量单位「{unit}」不认识"
+        _settext(c["price"], px_s)
+        _settext(c["qty"], str(n) if unit == "股" else f"{n * float(px_s):.2f}")
+        self._put(job, detail=f"{n}股 @ {px_s}")
+
+        self._step(job, "确认")
+        before = _tops()
+        _post(dlg, WM_COMMAND, ids["ok"], c["ok"])
+        box = _dialog(before, CONFIRM_TITLES, 5)
+        body = _body(box)
+        got = (
+            _field(body, r"股票代码: *(\d{6})", "股票代码"),
+            float(_field(body, r"委托价格: *([\d.]+)", "委托价格")),
+            int(_field(body, r"委托数量: *(\d+)股", "委托数量")),
+        )
+        assert got == (code, float(px_s), n), f"确认框 {got} ≠ 预期 {(code, px_s, n)}：{body}"
+        before = _tops()
+        _post(box, WM_COMMAND, MSG_YES, _ctls(box, {"yes": MSG_YES})["yes"])
+
+        self._step(job, "回报")
+        res = _dialog(before, (RESULT_TITLE,), 10)
+        body = _body(res)
+        _post(res, WM_COMMAND, MSG_YES, _ctls(res, {"yes": MSG_YES})["yes"])
+        assert "合同号" in body, f"委托未成功：{body}"
+        self._put(job, state="ok", msg=body)
+
+    def watch(self):
+        """SSE：最近各单（新在前），有变化即推；HEARTBEAT 秒无变化推 {}。"""
+        seen = -1
+        while True:
+            with self.cond:
+                self.cond.wait_for(lambda: self.seq != seen, HEARTBEAT)
+                fresh, seen = self.seq != seen, self.seq
+                data = json.dumps(list(self.jobs)[::-1], ensure_ascii=False)
+            yield data if fresh else "{}"
+
+
+ORDERS = Orders()
 
 
 # ---------- 录制器（只读，不投递任何输入）----------
@@ -561,6 +864,7 @@ GET = {
     "/api/gdiwatch": lambda b: SHIM.lines("gdiwatch"),
     "/api/poswatch": lambda b: HUB.frames(),
     "/api/recwatch": lambda b: REC.watch(),
+    "/api/ordwatch": lambda b: ORDERS.watch(),
 }
 
 POST = {
@@ -569,6 +873,7 @@ POST = {
     "/api/refresh": lambda b: HUB.refresh(),
     "/api/rec": lambda b: REC.start() if b["on"] else REC.stop(),
     "/api/recmark": lambda b: REC.mark(b["text"]),
+    "/api/order": ORDERS.submit,
 }
 
 

@@ -414,10 +414,13 @@ TaskHandle CreateFactorsTask() {
         iaction = Factors::RenderTabInspect(fs, is, *state->kline_service, state->factors_ui, state->inspect_ui, ctx);
       } else {
         const int action = Factors::RenderTabFactors(fs, ss, state->factors_ui, state->portfolio_ui, ctx);
-        if (action == 1 || action == 2) {
+        if (action == 1 || action == 5 || action == 2) {
           Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, state->feature_table, state->pool, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
+          if (Factors::MakeFactorsRequest(data, state->feature_table, state->pool, /*evaluate=*/action != 2, state->factors_ui.backend == 1, req)) {
+            if (action == 1)
+              req.spec.only_file = state->factors_ui.run_file;
             fs.Request(req);
+          }
         } else if (action == -1) {
           fs.RequestCancel();
         } else if (action == 3) {

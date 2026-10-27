@@ -1084,16 +1084,53 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         kHoldRulesTip);
   ImGui::SameLine();
 
-  const bool can_run = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty();
+  // 短锁拷快照 (Run / Search 的对象 = 高光行)
+  static std::vector<FactorRow> s_rows;
+  std::string message;
+  {
+    std::lock_guard<std::mutex> lock(svc.mutex);
+    s_rows = svc.rows;
+    message = svc.message;
+  }
+  const FactorRow *view_row = nullptr;
+  for (const FactorRow &r : s_rows)
+    if (r.key == ui.view_file)
+      view_row = &r;
+
+  // Run (高光行所在文件) / Run all (整目录): 同一份评估, 对象不同
+  const bool can_run_all = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty();
+  const bool can_run = can_run_all && view_row && view_row->error.empty() && !view_row->expr.empty();
   if (!can_run)
     ImGui::BeginDisabled();
-  if (ImGui::Button("Run", ImVec2(60, 0)))
+  if (ImGui::Button("Run", ImVec2(60, 0))) {
+    ui.run_file = view_row->file;
     action = 1;
+  }
   if (!can_run)
     ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    if (!ctx.axis_ready)
+      tip("资产轴未就绪, 读不了特征库\n"
+          "• 先在 Database 页扫描");
+    else if (!view_row)
+      tip("先在表格里点一行高光 (与 Inspect / Search 同一对象)");
+    else if (!can_run_all || !view_row->error.empty() || view_row->expr.empty())
+      tip("%s 无可评权重 (BROKEN / 模板未搜索)", view_row->file.c_str());
+    else
+      tip("评估 %s 的全部权重\n"
+          "• 流程: 读特征库 → 共享 DAG eval → Stat\n"
+          "• 结果回写该因子文件 stats[i], 其余文件不动",
+          view_row->file.c_str());
+  }
+  ImGui::SameLine();
+  if (!can_run_all)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("Run all", ImVec2(70, 0)))
+    action = 5;
+  if (!can_run_all)
+    ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip(ctx.axis_ready ? "评估全目录\n"
-                         "• 流程: 扫描 → 读特征库 → 逐权重 eval → Stat\n"
+    tip(ctx.axis_ready ? "评估全目录 (逐文件同 Run)\n"
                          "• 结果回写各因子文件 stats[i]\n"
                          "• 未搜索 (模板含自由参数而无 weights) 不评, 先 Search"
                        : "资产轴未就绪, 读不了特征库\n"
@@ -1142,14 +1179,6 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     break;
   }
 
-  // 短锁拷快照
-  static std::vector<FactorRow> s_rows;
-  std::string message;
-  {
-    std::lock_guard<std::mutex> lock(svc.mutex);
-    s_rows = svc.rows;
-    message = svc.message;
-  }
   if (!message.empty()) {
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
@@ -1158,10 +1187,6 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold, 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
   //      (Search/Contract.hpp【目标】【多权重】); 结果替换文件里同 h 的 weights, 随后 TaskFactors 自动 Run (因子表从新 stat 算) ----
   {
-    const FactorRow *view_row = nullptr;
-    for (const FactorRow &r : s_rows)
-      if (r.key == ui.view_file)
-        view_row = &r;
     const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }; // 模板有自由参数
     const bool tmpl_ok = view_row && searchable(*view_row);
     const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty() && tmpl_ok;
@@ -1312,10 +1337,6 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   }
   ImGui::EndGroup();
   {
-    const FactorRow *view_row = nullptr;
-    for (const FactorRow &r : s_rows)
-      if (r.key == ui.view_file)
-        view_row = &r;
     constexpr float kBoxesW = 250.0f + 380.0f; // = RenderPortfolioBoxes 两框宽 (框间再隔一个 ItemSpacing)
     ImGui::SameLine();
     const float pad = ImGui::GetContentRegionAvail().x - kBoxesW - ImGui::GetStyle().ItemSpacing.x;
