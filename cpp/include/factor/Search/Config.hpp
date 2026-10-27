@@ -9,13 +9,19 @@
 namespace factor::search {
 
 // ---- 持有期 (Contract【目标】) ----
-// 可搜集合 (持有期键, 按时间序列出); 层上合法另看 hold_ok. 分钟型 ≥ 30m = 不看成本的前提 (换手 ≈ 100%)
+// 可搜集合 (持有期键, 按时间序列出全部标签组, 注释掉 = 不搜); 层上合法另看 hold_ok. 分钟型 ≥ 30m = 不看成本的前提 (换手 ≈ 100%)
 inline constexpr int kSearchHolds[] = {
-    30,                          // 30m
-    60,                          // 60m
-    factor::stat::kHoldClose,    // close
-    factor::stat::hold_open(1),  // T+1O
+    // 1,                           // 1m
+    // 5,                           // 5m
+    // 15,                          // 15m
+
+    30,                       // 30m
+    60,                       // 60m
+    factor::stat::kHoldClose, // close
+    // factor::stat::hold_open(1),  // T+1O
     factor::stat::hold_close(1), // T+1C
+                                 // factor::stat::hold_close(2), // T+2C
+                                 // factor::stat::hold_close(3), // T+3C
 };
 
 // ---- 硬门槛 (Contract【目标】) ----
