@@ -1,0 +1,2056 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>shim 接口控制台</title>
+    <style>
+      :root {
+        --bg: #1e1e1e;
+        --panel: #252526;
+        --line: #333;
+        --fg: #ddd;
+        --mut: #888;
+        --acc: #4ec9b0;
+        --hot: #d7ba7d;
+        --sel: #094771;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          13px/1.5 ui-monospace,
+          Consolas,
+          monospace;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 12px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+      }
+      header h1 {
+        font-size: 14px;
+        margin: 0;
+        color: var(--acc);
+      }
+      #status {
+        font-size: 12px;
+      }
+      .on {
+        color: #6a9955;
+      }
+      .off {
+        color: #f14c4c;
+      }
+      button {
+        background: #333;
+        color: var(--fg);
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 3px 8px;
+        cursor: pointer;
+        font: inherit;
+      }
+      button:hover {
+        background: #3a3a3a;
+      }
+      button:active {
+        background: var(--sel);
+      }
+      input,
+      select {
+        background: #1b1b1b;
+        color: var(--fg);
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 3px 6px;
+        font: inherit;
+      }
+      .wrap {
+        display: flex;
+        gap: 6px;
+        padding: 8px;
+        height: calc(100vh - 45px);
+      }
+      .col {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+      }
+      .pane {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+        min-height: 0;
+      }
+      #leftPane {
+        flex: 0 0 55%;
+      }
+      .grow-pane {
+        flex: 1 1 0;
+      }
+      #gutter {
+        flex: 0 0 6px;
+        cursor: col-resize;
+        background: var(--line);
+        border-radius: 3px;
+      }
+      #gutter:hover {
+        background: #555;
+      }
+      .tabbar {
+        display: flex;
+        gap: 4px;
+      }
+      .tabbar button.on {
+        background: var(--sel);
+        color: #fff;
+      }
+      .tabpane {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+      }
+      .tnode.hl {
+        outline: 1px solid var(--hot);
+        background: #3a3320;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .panel h2 {
+        font-size: 12px;
+        margin: 0 0 6px;
+        color: var(--hot);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .grow {
+        flex: 1;
+        min-width: 0;
+      }
+      #tree {
+        overflow: auto;
+        flex: 1;
+        white-space: nowrap;
+      }
+      .tnode {
+        padding: 1px 4px;
+        cursor: pointer;
+        border-radius: 3px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tnode:hover {
+        background: #2d2d2d;
+      }
+      .tnode.active {
+        background: var(--sel);
+      }
+      .tnode .cls {
+        color: var(--acc);
+      }
+      .tnode .ttl {
+        color: var(--hot);
+      }
+      .tnode .meta {
+        color: var(--mut);
+      }
+      .tnode.invis {
+        opacity: 0.45;
+      }
+      .fold {
+        display: inline-block;
+        width: 12px;
+        text-align: center;
+        color: var(--mut);
+        cursor: pointer;
+      }
+      .tabs button.on {
+        background: var(--sel);
+        color: #fff;
+      }
+      #mapWrap {
+        flex: 1;
+        overflow: auto;
+        background: #141414;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+      }
+      #mapWrap:focus {
+        outline: 1px solid var(--acc);
+      }
+      /* 块级：免得 inline 基线留白让刚好放下时也冒出竖滚动条 */
+      #map {
+        display: block;
+      }
+      /* 只有窗口底板 rect.win 接鼠标（data-hwnd），装饰/文字一律穿透 */
+      #map * {
+        pointer-events: none;
+      }
+      #map rect,
+      #map line {
+        vector-effect: non-scaling-stroke;
+        stroke-width: 1;
+      }
+      #map .win {
+        pointer-events: all;
+      }
+      /* 绘制层元素：透明命中框（data-hwnd = 窗口#客户区左,上），盖在画面上 */
+      #map .elem {
+        pointer-events: all;
+        fill: transparent;
+        stroke: none;
+      }
+      #map .win.frame {
+        fill: #1e1e1e;
+        stroke: #333;
+      }
+      #map .win.btn,
+      #map .btnface {
+        fill: #3a3a3a;
+        stroke: #5a5a5a;
+      }
+      #map .win.bare {
+        fill: transparent;
+        stroke: none;
+      }
+      #map .win.group {
+        fill: transparent;
+        stroke: #555;
+      }
+      #map .win.field {
+        fill: #111;
+        stroke: #444;
+      }
+      #map .win.hdr,
+      #map .hdritem {
+        fill: #2d2d2d;
+        stroke: #4a4a4a;
+      }
+      #map .win.menu {
+        fill: #2b2b2b;
+        stroke: #777;
+      }
+      #map .win.self {
+        fill: url(#hatch);
+        stroke: #3a3a3a;
+      }
+      #map .win.web {
+        fill: #18222c;
+        stroke: #2d4256;
+      }
+      #map .pressed {
+        fill: #1f1f1f;
+        stroke: #222;
+      }
+      #map .selbar {
+        fill: var(--sel);
+      }
+      #map .sep {
+        stroke: #555;
+      }
+      #map text {
+        fill: #ddd;
+        font-size: 12px;
+        font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      }
+      #map text.gray {
+        fill: #777;
+      }
+      #map text.self-lbl {
+        fill: #666;
+        font-size: 9px;
+      }
+      #mapHl {
+        fill: rgba(215, 186, 125, 0.15);
+        stroke: var(--hot);
+        stroke-width: 2 !important;
+      }
+      #mapSel {
+        fill: none;
+        stroke: #fff;
+        stroke-width: 2 !important;
+      }
+      pre.out {
+        background: #161616;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 6px;
+        margin: 6px 0 0;
+        max-height: 160px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 2px 5px;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+      th {
+        color: var(--mut);
+        position: sticky;
+        top: 0;
+        background: var(--panel);
+      }
+      th.sortable {
+        cursor: pointer;
+        user-select: none;
+      }
+      th.sortable:hover {
+        color: var(--fg);
+      }
+      /* 数字列：右对齐 + 等宽数位，小数点上下对齐 */
+      .num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      /* 滑点小盘口：6 条横杠叠成一个字高，自上而下 10W/5W/1W 买、1W/5W/10W 卖 */
+      .bars {
+        display: inline-flex;
+        flex-direction: column;
+        gap: 1px;
+        height: 1em;
+        width: 16px;
+        vertical-align: middle;
+      }
+      .bars i {
+        flex: 1;
+      }
+      .kv {
+        color: var(--mut);
+      }
+      .kv b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .spy-list {
+        overflow: auto;
+        max-height: 260px;
+      }
+      label.ck {
+        color: var(--mut);
+        display: inline-flex;
+        gap: 3px;
+        align-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>shim 接口控制台</h1>
+      <span id="status">…</span>
+      <span class="grow"></span>
+      <label class="ck"
+        ><input
+          type="checkbox"
+          id="noraise"
+          checked
+          onchange="setNoraise(this.checked ? 'on' : 'off')"
+        />不抬窗</label
+      >
+      <span class="kv" id="noraiseLbl"></span>
+      <button onclick="refreshTree()">刷新窗口树</button>
+      <button onclick="ping()">ping</button>
+    </header>
+
+    <div class="wrap">
+      <!-- 左：布局图 / 持仓 可切换 -->
+      <div class="pane" id="leftPane">
+        <div class="tabbar">
+          <button data-tab="layout" onclick="setTab('leftPane', 'layout')">
+            布局图
+          </button>
+          <button data-tab="pos" onclick="setTab('leftPane', 'pos')">
+            持仓
+          </button>
+        </div>
+        <div class="panel" data-view="layout" style="flex: 1">
+          <h2>
+            布局图
+            <button onclick="zoomReset()">复位</button>
+            <span class="kv" id="zoomLbl" style="margin-left: 4px"></span>
+            <label class="ck" style="margin-left: 8px"
+              ><input type="checkbox" id="autoUpd" checked />自动更新</label
+            >
+            <label class="ck"
+              ><input type="checkbox" id="interact" checked />交互</label
+            >
+            <label class="ck" title="按客户端真实绘制的文字/色块画（shim gdi）"
+              ><input
+                type="checkbox"
+                id="gdiOn"
+                checked
+                onchange="renderMap()"
+              />绘制层</label
+            >
+            <span class="kv">(点图后可键盘输入 · Ctrl+滚轮缩放)</span>
+            <label class="ck"
+              >轮询<input
+                type="number"
+                id="pollFps"
+                value="2"
+                min="0"
+                max="10"
+                style="width: 46px"
+              />fps</label
+            >
+          </h2>
+          <div class="row" style="margin-bottom: 6px">
+            <input
+              class="grow"
+              id="filter"
+              placeholder="过滤 class/title/hwnd/id…"
+              oninput="render()"
+            />
+            <label class="ck"
+              ><input
+                type="checkbox"
+                id="onlyVis"
+                onchange="render()"
+              />只看可见</label
+            >
+            <label class="ck"
+              ><input
+                type="checkbox"
+                id="hideZero"
+                checked
+                onchange="render()"
+              />隐藏零矩形</label
+            >
+          </div>
+          <div id="mapWrap" tabindex="0">
+            <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+        </div>
+
+        <div class="panel" data-view="pos" style="flex: 1">
+          <h2>
+            账户持仓
+            <button onclick="refreshPos()">刷新</button>
+            <label class="kv"
+              >自动刷新
+              <select id="posAuto">
+                <option value="0">关</option>
+                <option value="15">15s</option>
+                <option value="60" selected>60s</option>
+                <option value="300">5min</option>
+              </select></label
+            >
+          </h2>
+          <div id="posInfo" class="kv">（切到此页自动读取内存持仓表）</div>
+          <!-- 两表同在一个滚动区：放得下就全展开，超出整页才滚 -->
+          <div style="overflow: auto; flex: 1; min-height: 0">
+            <table id="posTbl">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+            <div id="slipInfo" class="kv" style="margin-top: 8px"></div>
+            <table id="slipTbl">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="gutter"></div>
+
+      <!-- 右：工具 / 列表 -->
+      <div class="pane grow-pane" id="rightPane">
+        <div class="tabbar">
+          <button data-tab="tools" onclick="setTab('rightPane', 'tools')">
+            工具
+          </button>
+          <button data-tab="list" onclick="setTab('rightPane', 'list')">
+            列表
+          </button>
+          <button data-tab="rec" onclick="setTab('rightPane', 'rec')">
+            录制 <span id="recDot"></span>
+          </button>
+        </div>
+
+        <div class="tabpane" data-view="rec">
+          <div class="panel" style="flex: 1">
+            <h2>录制器（消息 / 内部请求 / 窗口树 / 绘制层 → jsonl）</h2>
+            <div class="row">
+              <button id="recBtn" onclick="recToggle()">…</button>
+              <span class="kv grow" id="recSt"></span>
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <button onclick="reqAttach()">接入所选窗口</button>
+              <input
+                id="reqOff"
+                placeholder="对象偏移（自动识别失败时填写）"
+                style="width: 210px"
+              />
+              <span class="kv grow" id="reqSt"
+                >先开始录制，再打开闪电下单窗口并选中其顶层窗口</span
+              >
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <input
+                class="grow"
+                id="recMarkTxt"
+                placeholder="打点说明（回车），如：买入挂单开始"
+                onkeydown="event.key === 'Enter' && recMark()"
+              />
+              <button onclick="recMark()">打点</button>
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recMsg"
+                  checked
+                  onchange="recSoon()"
+                />消息</label
+              >
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recReq"
+                  checked
+                  onchange="recSoon()"
+                />请求</label
+              >
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recWin"
+                  checked
+                  onchange="recSoon()"
+                />窗口</label
+              >
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recGdi"
+                  onchange="recSoon()"
+                />绘制层</label
+              >
+              <input
+                class="grow"
+                id="recExcl"
+                placeholder="排除含这些子串的行（逗号分隔），如 0x000007ea"
+                oninput="recSoon()"
+              />
+            </div>
+            <pre
+              class="out"
+              id="recLog"
+              style="flex: 1; max-height: none"
+            ></pre>
+          </div>
+        </div>
+
+        <div class="tabpane" data-view="list">
+          <div class="panel" style="flex: 1">
+            <h2>窗口树列表（点 ▸/▾ 折叠）</h2>
+            <div id="tree" style="overflow: auto; flex: 1"></div>
+          </div>
+        </div>
+
+        <div class="tabpane" data-view="tools">
+          <div class="panel">
+            <h2>选中控件</h2>
+            <div id="sel" class="kv">（点左侧树节点选中）</div>
+            <div class="row" style="margin-top: 6px">
+              <button onclick="act('gettext')">读文本</button>
+              <button onclick="act('click')">点击(BM_CLICK)</button>
+              <button onclick="act('highlight')">闪烁</button>
+              <button onclick="act('rect')">取矩形</button>
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <input
+                class="grow"
+                id="setval"
+                placeholder="要写入的文本（UTF-8）"
+              />
+              <button onclick="doSettext()">设文本</button>
+            </div>
+            <pre class="out" id="selOut"></pre>
+          </div>
+
+          <div class="panel">
+            <h2>原始消息 (post / send)</h2>
+            <div class="row">
+              <span class="kv">target</span
+              ><input
+                id="mTarget"
+                placeholder="0x…. 或 class=…"
+                style="width: 180px"
+              />
+              <span class="kv">msg</span
+              ><input id="mMsg" value="0x0111" style="width: 90px" />
+              <span class="kv">wparam</span
+              ><input id="mWp" value="0" style="width: 110px" />
+              <span class="kv">lparam</span
+              ><input id="mLp" value="0" style="width: 110px" />
+              <button onclick="rawMsg('post')">post</button>
+              <button onclick="rawMsg('send')">send</button>
+            </div>
+            <pre class="out" id="msgOut"></pre>
+          </div>
+
+          <div class="panel">
+            <h2>Spy 录制（抓手点产生的消息）</h2>
+            <div class="row">
+              <span class="kv">filter</span>
+              <input
+                id="spyFilter"
+                value="msg=0x0111"
+                style="width: 150px"
+                placeholder="msg=0x0111 或 all"
+              />
+              <button onclick="spy('on')">开</button>
+              <button onclick="spy('off')">关</button>
+              <button onclick="spy('clear')">清</button>
+              <button onclick="spy('dump')">抓一次</button>
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="spyAuto"
+                  onchange="toggleAuto()"
+                />自动(1s)</label
+              >
+            </div>
+            <div class="spy-list">
+              <table id="spyTbl">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let TREE = []; // 最近一次窗口树
+      let NODE = new Map(); // hwnd → 节点（随 TREE 重建）
+      let SELECTED = null; // 选中节点
+      const COLLAPSED = new Set(); // 折叠的节点 hwnd
+      let mapScale = null; // 布局图缩放；null = 待适配（有尺寸时取刚好放下）
+      let MAP = null; // 布局图世界坐标 {x0,y0,W,H}
+      let HOVER = null; // 悬停节点 hwnd（重画后恢复浮框）
+      // 两种图层记录同形 {hwnd, off:[客户区相对窗口左上], items:[[l,t,r,b,v,text?]]}
+      const DETAIL = new Map(); // hwnd → shim detail（v = st 位）
+      const GDI = new Map(); // hwnd → shim gdiwatch（v = 色）
+      // detail 子项 st 位，与 shim.c ST_* 一致
+      const ST = {
+        SEL: 1,
+        CHECK: 2,
+        KIDS: 4,
+        OPEN: 8,
+        GRAY: 16,
+        SEP: 32,
+        SUB: 64,
+        ROW: 128,
+      };
+
+      async function api(path, body) {
+        const opt = body
+          ? {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            }
+          : {};
+        const r = await fetch(path, opt);
+        return r.json();
+      }
+      // shim 命令统一入口：回 JSON 记录数组，失败回 {err}
+      const shim = (cmd, ...args) => api("/api/shim", { cmd, args });
+      // shim 长连接（treewatch / gdiwatch）：一行一条记录，{} 为心跳
+      function subscribe(path, onRec) {
+        const es = new EventSource(path);
+        es.onmessage = (e) => {
+          const r = JSON.parse(e.data);
+          if (Object.keys(r).length) onRec(r);
+        };
+        return es;
+      }
+
+      // 调度：drop = 上次没完就丢；coalesce = 上次没完就等它完再补跑一次；
+      // batch = 首次调用排一次 schedule，触发前的调用并入这一次
+      function drop(fn) {
+        let busy = false;
+        return async (...a) => {
+          if (busy) return;
+          busy = true;
+          try {
+            return await fn(...a);
+          } finally {
+            busy = false;
+          }
+        };
+      }
+      function coalesce(fn) {
+        let busy = false,
+          again = false;
+        return async () => {
+          if (busy) return void (again = true);
+          busy = true;
+          try {
+            do {
+              again = false;
+              await fn();
+            } while (again);
+          } finally {
+            busy = false;
+          }
+        };
+      }
+      function batch(fn, schedule) {
+        let armed = false;
+        return () => {
+          if (armed) return;
+          armed = true;
+          schedule(() => {
+            armed = false;
+            fn();
+          });
+        };
+      }
+      function esc(s) {
+        return (s == null ? "" : String(s)).replace(
+          /[&<>]/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c],
+        );
+      }
+      function oneLine(s) {
+        return (s || "").replace(/\s+/g, " ").trim();
+      }
+
+      async function ping() {
+        const r = await api("/api/ping");
+        const el = document.getElementById("status");
+        el.className = r.pid ? "on" : "off";
+        el.textContent = r.pid
+          ? "shim 在线 · pid=" + r.pid
+          : "shim 离线 — 重启 console.py 自动注入";
+        if (r.pid) await setNoraise();
+        return !!r.pid;
+      }
+      // 不抬窗开关（shim noraise）：无参只读状态
+      async function setNoraise(arg) {
+        const r = await shim("noraise", ...(arg ? [arg] : []));
+        if (r.err) return out("selOut", r);
+        document.getElementById("noraise").checked = !!r[0].on;
+        document.getElementById("noraiseLbl").textContent =
+          `已拦 ${r[0].blocked} 次`;
+      }
+
+      // force=false（轮询）：树和子项都没变就不重画
+      let treeKey = "";
+      async function refreshTree(force = true) {
+        const t0 = performance.now();
+        const r = await shim("tree");
+        const key = JSON.stringify(r);
+        const changed = key !== treeKey;
+        treeKey = key;
+        TREE = r.err ? [] : r;
+        NODE = new Map(TREE.map((n) => [n.hwnd, n]));
+        if (changed && !r.err) {
+          // 已销毁窗口：只删拉树前就到的（树发出后才建的窗口不在这棵树里，其图层
+          // 可能先到，删了就再也不会重推）
+          const live = new Set(TREE.map((n) => n.hwnd));
+          for (const [h, g] of GDI)
+            if (!live.has(h) && g.at < t0) GDI.delete(h);
+        }
+        const dchanged = await pullDetails();
+        if (force || changed || dchanged) render();
+      }
+
+      function needsDetail(n) {
+        const [l, t, r, b] = n.rect;
+        return n.vis && r > l && b > t && !!CLASS[n.class]?.[2](n);
+      }
+      // 列表/勾选等内容变化不发 WinEvent，靠轮询；回 true = 内容有变（丢弃时回 undefined）
+      let detailKey = "";
+      const pullDetails = drop(async () => {
+        const ns = TREE.filter(needsDetail);
+        const rs = await Promise.all(ns.map((n) => shim("detail", n.hwnd)));
+        DETAIL.clear();
+        ns.forEach((n, i) => rs[i].err || DETAIL.set(n.hwnd, rs[i][0]));
+        const key = JSON.stringify(rs);
+        const changed = key !== detailKey;
+        detailKey = key;
+        return changed;
+      });
+      // 树的三个触发源（treewatch 推送 / 轮询 / 交互后）都走这里，拉取中再触发只补拉一次
+      const pullTree = coalesce(() => refreshTree(false));
+      const autoUpd = () => document.getElementById("autoUpd").checked;
+      // 轮询连树一起拉：Wine 9 改标题（WM_SETTEXT）不发 WinEvent，推送收不到
+      async function pollLoop() {
+        const fps = +document.getElementById("pollFps").value;
+        const on = fps > 0 && autoUpd();
+        if (on) await pullTree();
+        setTimeout(pollLoop, on ? 1000 / fps : 500);
+      }
+      // 交互后稍等客户端处理完再补拉一次，不等下个轮询周期
+      function pollSoon() {
+        setTimeout(async () => {
+          await pullTree();
+          await setNoraise();
+        }, 120);
+      }
+
+      // 左右两侧同构：pane 下 .tabbar 按钮 data-tab ↔ 视图 data-view，切入即跑 ON_TAB[v]
+      const ON_TAB = {
+        layout: () => render(),
+        pos: () => {},
+        tools: () => {},
+        list: () => renderTree(),
+        rec: () => recSoon(),
+      };
+      function setTab(pane, v) {
+        for (const b of document.querySelectorAll(`#${pane} > .tabbar button`))
+          b.classList.toggle("on", b.dataset.tab === v);
+        for (const el of document.querySelectorAll(`#${pane} > [data-view]`))
+          el.style.display = el.dataset.view === v ? "flex" : "none";
+        ON_TAB[v]();
+        syncPosStream();
+      }
+
+      // 布局图恒显、列表在 tab 里，两边都渲染（互相 hover 同步）。
+      function render() {
+        renderMap();
+        renderTree();
+      }
+
+      function applyMapSize() {
+        if (!MAP) return;
+        if (mapScale === null) {
+          const wrap = document.getElementById("mapWrap");
+          if (!wrap.clientWidth) return; // 布局 tab 隐藏中，切回时再适配
+          mapScale = Math.min(
+            wrap.clientWidth / MAP.W,
+            wrap.clientHeight / MAP.H,
+          );
+        }
+        const svg = document.getElementById("map");
+        svg.setAttribute("width", MAP.W * mapScale);
+        svg.setAttribute("height", MAP.H * mapScale);
+        document.getElementById("zoomLbl").textContent =
+          "×" + mapScale.toFixed(2);
+      }
+      function zoomReset() {
+        mapScale = null;
+        applyMapSize();
+        const wrap = document.getElementById("mapWrap");
+        wrap.scrollLeft = wrap.scrollTop = 0;
+      }
+      // 鼠标事件 → 布局图世界坐标（即屏幕坐标，GetWindowRect 本就是屏幕系）
+      function svgPoint(ev) {
+        const svg = document.getElementById("map");
+        const p = svg.createSVGPoint();
+        p.x = ev.clientX;
+        p.y = ev.clientY;
+        return p.matrixTransform(svg.getScreenCTM().inverse());
+      }
+
+      // 布局图矩形 ↔ 列表行 同一 hover：两边都先清再点亮；hwnd=null 即全清
+      function hover(hwnd) {
+        HOVER = hwnd;
+        for (const el of document.querySelectorAll(".tnode.hl"))
+          el.classList.remove("hl");
+        mark("mapHl", hwnd);
+        if (!hwnd) return;
+        const row = document.querySelector(`#tree .tnode[data-hwnd="${hwnd}"]`);
+        if (row) {
+          row.classList.add("hl");
+          row.scrollIntoView({ block: "nearest" });
+        }
+      }
+      // 布局图最上层浮框（hover / 选中）：按节点矩形摆放，不被子窗口遮住
+      function mark(id, hwnd) {
+        const box = document.getElementById(id);
+        if (!box) return;
+        const n = nodeOf(hwnd);
+        if (!n) return box.setAttribute("display", "none");
+        box.removeAttribute("display");
+        attrs(box, rectAttrs(n.rect));
+      }
+
+      // 某节点是否有子节点（下一个节点 depth 更深）
+      function hasChildren(i) {
+        return i + 1 < TREE.length && TREE[i + 1].depth > TREE[i].depth;
+      }
+
+      function nodeVisibleByFilter(n) {
+        if (document.getElementById("onlyVis").checked && !n.vis) return false;
+        if (document.getElementById("hideZero").checked) {
+          const [l, t, rr, b] = n.rect;
+          if (l === rr || t === b) return false;
+        }
+        return matchFilter(n);
+      }
+      function matchFilter(n) {
+        const f = document.getElementById("filter").value.trim().toLowerCase();
+        if (!f) return true;
+        return (n.class + " " + n.title + " " + n.hwnd + " " + n.id)
+          .toLowerCase()
+          .includes(f);
+      }
+
+      function renderTree() {
+        const box = document.getElementById("tree");
+        box.innerHTML = "";
+        const hasFilter = document.getElementById("filter").value.trim().length;
+        let hideDepth = null; // 折叠时跳过比它更深的节点
+        for (let i = 0; i < TREE.length; i++) {
+          const n = TREE[i];
+          // 折叠：有过滤时不折叠（要能搜到深处）
+          if (!hasFilter) {
+            if (hideDepth !== null) {
+              if (n.depth > hideDepth) continue;
+              hideDepth = null;
+            }
+            if (COLLAPSED.has(n.hwnd) && hasChildren(i)) hideDepth = n.depth;
+          }
+          const els = elemsOf(n); // 绘制元素排在子窗口前，随本窗口折叠
+          if (nodeVisibleByFilter(n))
+            box.appendChild(treeRow(n, hasChildren(i) || els.length > 0));
+          if (hasFilter || !COLLAPSED.has(n.hwnd))
+            for (const e of els)
+              if (matchFilter(e)) box.appendChild(treeRow(e));
+        }
+      }
+      function treeRow(n, kids = false) {
+        const foldChar = !kids ? "" : COLLAPSED.has(n.hwnd) ? "▸" : "▾";
+        const div = document.createElement("div");
+        div.className =
+          "tnode" +
+          (n.vis ? "" : " invis") +
+          (SELECTED && SELECTED.hwnd === n.hwnd ? " active" : "");
+        div.style.paddingLeft = 4 + n.depth * 14 + "px";
+        const ttl = n.title
+          ? ` <span class="ttl">"${esc(oneLine(n.title)).slice(0, 60)}"</span>`
+          : "";
+        div.innerHTML = n.host
+          ? `<span class="fold"></span><span class="cls">${n.class}</span>${ttl}` +
+            ` <span class="meta">[${n.rect.join(",")}]</span>`
+          : `<span class="fold">${foldChar}</span>` +
+            `<span class="meta">${n.hwnd} id=${n.id}</span> <span class="cls">${esc(n.class)}</span>${ttl}` +
+            ` <span class="meta">[${n.rect.join(",")}] v${n.vis}e${n.en}</span>`;
+        div.title = `${n.class} | ${n.title}`;
+        div.dataset.hwnd = n.hwnd;
+        div.querySelector(".fold").onclick = (ev) => {
+          ev.stopPropagation();
+          if (!kids) return;
+          if (COLLAPSED.has(n.hwnd)) COLLAPSED.delete(n.hwnd);
+          else COLLAPSED.add(n.hwnd);
+          renderTree();
+        };
+        div.onmouseenter = () => hover(n.hwnd);
+        div.onmouseleave = () => hover(null);
+        div.onclick = () => select(n);
+        div.ondblclick = () => {
+          select(n);
+          act("highlight");
+        };
+        return div;
+      }
+
+      // 布局图：按屏幕坐标、按 Win32 z 序还原控件外观（标准控件按类画，自绘区打斜纹）。
+      const NS = "http://www.w3.org/2000/svg";
+      function attrs(e, a) {
+        for (const k in a) e.setAttribute(k, a[k]);
+        return e;
+      }
+      function el(parent, tag, a = {}, text) {
+        const e = attrs(document.createElementNS(NS, tag), a);
+        if (text != null) e.textContent = text;
+        parent.appendChild(e);
+        return e;
+      }
+      const rectAttrs = ([l, t, r, b], cls) => ({
+        x: l,
+        y: t,
+        width: Math.max(0, r - l),
+        height: Math.max(0, b - t),
+        ...(cls ? { class: cls } : {}),
+      });
+      // 嵌套 svg 作裁剪框：viewBox 与位置一致，内部仍用屏幕坐标
+      function clipBox(parent, [l, t, r, b]) {
+        return el(parent, "svg", {
+          ...rectAttrs([l, t, r, b]),
+          viewBox: `${l} ${t} ${Math.max(0, r - l)} ${Math.max(0, b - t)}`,
+        });
+      }
+      // 矩形内单行文字，超出裁掉；align = start/middle/end
+      function textIn(parent, R, s, align = "start", cls = "") {
+        const [l, t, r, b] = R;
+        if (!s || r <= l || b <= t) return;
+        const x =
+          align === "middle" ? (l + r) / 2 : align === "end" ? r - 3 : l + 3;
+        el(
+          clipBox(parent, R),
+          "text",
+          {
+            x,
+            y: (t + b) / 2,
+            "text-anchor": align,
+            "dominant-baseline": "central",
+            class: cls,
+          },
+          s,
+        );
+      }
+      const mnem = (s) => (s || "").replace(/&(.)/g, "$1"); // 去助记符 &X / &&
+
+      const btnType = (n) => n.style & 0xf; // BS_TYPEMASK
+      const isCheckLike = (n) =>
+        [2, 3, 4, 5, 6, 9].includes(btnType(n)) && !(n.style & 0x1000); // 非 BS_PUSHLIKE
+      const btnSkin = (n) =>
+        btnType(n) === 7 ? "group" : isCheckLike(n) ? "bare" : "btn";
+      const is = (v) => () => v;
+      const isWeb = (n) => /^(Chrome_|Cef)/.test(n.class);
+
+      // 子项 [l,t,r,b,st,text]（已换到屏幕坐标）
+      function drawButton(g, n, items) {
+        const st = items[0]?.[4] || 0;
+        const text = mnem(oneLine(n.title));
+        const cls = n.en ? "" : "gray";
+        const [l, t, r] = n.rect;
+        if (btnType(n) === 7)
+          return textIn(g, [l + 6, t, r, t + 14], text, "start", cls); // 分组框
+        if (isCheckLike(n)) {
+          const radio = [4, 9].includes(btnType(n));
+          const on = st & ST.CHECK;
+          return textIn(
+            g,
+            n.rect,
+            (radio ? (on ? "◉" : "○") : on ? "☑" : "☐") + " " + text,
+            "start",
+            cls,
+          );
+        }
+        if (st & (ST.SEL | ST.CHECK))
+          el(g, "rect", rectAttrs(n.rect, "pressed"));
+        textIn(g, n.rect, text, "middle", cls);
+      }
+      function drawCombo(g, n) {
+        const [l, t, r, b] = n.rect;
+        const a = Math.min(b - t, 18);
+        el(g, "rect", rectAttrs([r - a, t, r, b], "btnface"));
+        textIn(g, [r - a, t, r, b], "▾", "middle");
+        textIn(
+          g,
+          [l, t, r - a, b],
+          oneLine(n.title),
+          "start",
+          n.en ? "" : "gray",
+        );
+      }
+      // ListBox / ComboLBox / SysListView32：ST_ROW 行先铺选中底色，其后各格文字
+      function drawList(g, n, items) {
+        for (const it of items) {
+          const [, , , , st, text] = it;
+          if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
+          if (!(st & ST.ROW))
+            textIn(g, it, text, "start", st & ST.GRAY ? "gray" : "");
+        }
+      }
+      function drawHeader(g, n, items) {
+        for (const it of items) {
+          el(g, "rect", rectAttrs(it, "hdritem"));
+          textIn(g, it, it[5]);
+        }
+      }
+      function drawTreeItems(g, n, items) {
+        for (const it of items) {
+          const [l, t, , b, st, text] = it;
+          if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
+          if (st & ST.KIDS)
+            textIn(
+              g,
+              [l - 14, t, l, b],
+              st & ST.OPEN ? "▾" : "▸",
+              "middle",
+              "gray",
+            );
+          textIn(g, [l, t, n.rect[2], b], text); // 文字矩形按原字体量的，放宽到右边界免得被裁
+        }
+      }
+      function drawMenu(g, n, items) {
+        for (const it of items) {
+          const [l, t, r, b, st, text] = it;
+          if (st & ST.SEP) {
+            el(g, "line", {
+              x1: l + 2,
+              x2: r - 2,
+              y1: (t + b) / 2,
+              y2: (t + b) / 2,
+              class: "sep",
+            });
+            continue;
+          }
+          if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
+          const cls = st & ST.GRAY ? "gray" : "";
+          const [txt, acc] = mnem(text).split("\t");
+          if (st & ST.CHECK) textIn(g, [l, t, l + 18, b], "✓", "middle", cls);
+          textIn(g, [l + 18, t, r - 14, b], txt, "start", cls);
+          if (acc) textIn(g, [l, t, r - 14, b], acc, "end", cls);
+          if (st & ST.SUB) textIn(g, [r - 14, t, r, b], "▸", "middle", cls);
+        }
+      }
+      function drawOther(g, n, items, leaf) {
+        const [l, t, r, b] = n.rect;
+        if (!leaf || r - l < 30 || b - t < 10) return;
+        if (isWeb(n)) return textIn(g, n.rect, "网页 (CEF)", "middle", "gray");
+        textIn(
+          g,
+          [l, t, r, Math.min(b, t + 12)],
+          oneLine(n.title) || n.class,
+          "start",
+          "self-lbl",
+        );
+      }
+      function drawStatic(g, n) {
+        textIn(
+          g,
+          n.rect,
+          mnem(oneLine(n.title)),
+          ["start", "middle", "end"][n.style & 0x1f] || "start",
+          n.en ? "" : "gray",
+        );
+      }
+      function drawEdit(g, n) {
+        textIn(
+          g,
+          n.rect,
+          n.style & 0x20 ? "●".repeat(n.title.length) : oneLine(n.title), // ES_PASSWORD
+        );
+      }
+
+      // 标准控件按类：底板皮肤、画法、要不要拉 detail 子项（各为 n 的函数）。
+      // 表外的类即自绘窗口：皮肤 web / self / frame，内容靠绘制层，其文字段为绘制元素。
+      // prettier-ignore
+      const CLASS = {
+        //               皮肤             画法            detail
+        Button:          [btnSkin,       drawButton,     isCheckLike],
+        Static:          [is("bare"),    drawStatic,     is(false)],
+        Edit:            [is("field"),   drawEdit,       is(false)],
+        ComboBox:        [is("field"),   drawCombo,      is(false)],
+        ListBox:         [is("field"),   drawList,       is(true)],
+        ComboLBox:       [is("field"),   drawList,       is(true)],
+        SysListView32:   [is("field"),   drawList,       is(true)],
+        SysTreeView32:   [is("field"),   drawTreeItems,  is(true)],
+        SysHeader32:     [is("hdr"),     drawHeader,     is(true)],
+        "#32768":        [is("menu"),    drawMenu,       is(true)],
+      };
+      const skinOf = (n, leaf) =>
+        CLASS[n.class]?.[0](n) || (isWeb(n) ? "web" : leaf ? "self" : "frame");
+
+      // 图层记录的客户区原点（屏幕坐标），及子项平移到屏幕
+      const originOf = (n, rec) => [
+        n.rect[0] + rec.off[0],
+        n.rect[1] + rec.off[1],
+      ];
+      const shift = ([l, t, r, b, ...rest], [x, y]) => [
+        l + x,
+        t + y,
+        r + x,
+        b + y,
+        ...rest,
+      ];
+
+      // 一个窗口：底板 rect.win（接鼠标、带 data-hwnd）+ 按类装饰（有绘制层则由它代替）
+      function drawNode(g, n, leaf) {
+        const base = el(g, "rect", rectAttrs(n.rect, "win " + skinOf(n, leaf)));
+        base.dataset.hwnd = n.hwnd;
+        el(
+          base,
+          "title",
+          {},
+          `${n.hwnd} id=${n.id} ${n.class} "${oneLine(n.title)}" [${n.rect}]`,
+        );
+        base.onmouseenter = () => hover(n.hwnd);
+        base.onmouseleave = () => hover(null);
+        if (!gdiOf(n)) {
+          const rec = DETAIL.get(n.hwnd);
+          const o = rec && originOf(n, rec);
+          const items = rec ? rec.items.map((it) => shift(it, o)) : [];
+          return (CLASS[n.class]?.[1] || drawOther)(g, n, items, leaf);
+        }
+        const lg = el(clipBox(g, n.rect), "g");
+        GDI_G.set(n.hwnd, { g: lg, n });
+        drawGdi(lg, n);
+      }
+
+      // 绘制层（shim gdiwatch）：每窗口一份客户区坐标的色块/文字，后画的在上。
+      // 推送来一层只重写该窗口的 <g>（rAF 合帧）；窗口第一次有内容才整图重画。
+      const GDI_G = new Map(); // hwnd → {g, n}：当前图里该窗口的绘制层容器
+      const SHOWN = new Set(); // 当前图里画了的 hwnd
+      const gdiDirty = new Set();
+      const gdiShown = () => document.getElementById("gdiOn").checked;
+      const gdiOf = (n) =>
+        gdiShown() && GDI.get(n.hwnd)?.items.length ? GDI.get(n.hwnd) : null;
+      // 绘制元素：自绘窗口（CLASS 表外）绘制层里的每段文字（按钮/页签/格子），当作该
+      // 窗口的子节点；hwnd = 窗口#客户区左,上（重画不变），host = 所画窗口，rect 为屏幕坐标
+      const elemHost = (n) => n.vis && !CLASS[n.class];
+      function elemsOf(n) {
+        const rec = elemHost(n) && gdiOf(n);
+        if (!rec) return [];
+        const o = originOf(n, rec);
+        const out = [];
+        for (const it of rec.items)
+          if (it[5]?.trim())
+            out.push({
+              depth: n.depth + 1,
+              hwnd: `${n.hwnd}#${it[0]},${it[1]}`,
+              host: n.hwnd,
+              class: "绘",
+              title: it[5].trim(),
+              rect: shift(it, o).slice(0, 4),
+              vis: 1,
+              en: 1,
+            });
+        return out;
+      }
+      // hwnd 或元素 id → 节点
+      function nodeOf(id) {
+        if (!id) return null;
+        const host = id.split("#")[0];
+        const n = NODE.get(host);
+        return n && id !== host ? elemsOf(n).find((e) => e.hwnd === id) : n;
+      }
+      // COLORREF 是 0x00BBGGRR
+      const bgr = (c) =>
+        "#" +
+        [c & 255, (c >> 8) & 255, (c >> 16) & 255]
+          .map((v) => v.toString(16).padStart(2, "0"))
+          .join("");
+      function drawGdi(g, n) {
+        const rec = GDI.get(n.hwnd);
+        const [x, y] = originOf(n, rec);
+        g.setAttribute("transform", `translate(${x},${y})`);
+        let s = "";
+        for (const [l, t, r, b, c, txt] of rec.items) {
+          if (txt == null) {
+            s += `<rect x="${l}" y="${t}" width="${r - l}" height="${b - t}" style="fill:${bgr(c)}"/>`;
+            continue;
+          }
+          // 字框宽是客户端按原字体量的：textLength 压到同宽，位置才对得上
+          s +=
+            `<text x="${l}" y="${(t + b) / 2}" dominant-baseline="central" textLength="${Math.max(1, r - l)}"` +
+            ` lengthAdjust="spacingAndGlyphs" style="fill:${bgr(c)};font-size:${Math.max(6, (b - t) * 0.8)}px">${esc(txt)}</text>`;
+        }
+        for (const [l, t, r, b, , txt] of elemHost(n) ? rec.items : [])
+          if (txt?.trim())
+            s += `<rect class="elem" data-hwnd="${n.hwnd}#${l},${t}" x="${l}" y="${t}" width="${r - l}" height="${b - t}"/>`;
+        g.innerHTML = s;
+      }
+      // 列表跟绘制元素走：开着「列表」页时最多 500ms 重建一次（行情文字刷得勤）
+      const listShown = () =>
+        document.querySelector('#rightPane > [data-view="list"]').style
+          .display !== "none";
+      const listSoon = batch(
+        () => listShown() && renderTree(),
+        (f) => setTimeout(f, 500),
+      );
+      const gdiSoon = batch(() => {
+        let full = false;
+        for (const h of gdiDirty) {
+          const at = GDI_G.get(h);
+          if (at) drawGdi(at.g, at.n);
+          else if (SHOWN.has(h) && GDI.get(h).items.length) full = true;
+        }
+        gdiDirty.clear();
+        if (full) renderMap();
+        listSoon();
+      }, requestAnimationFrame);
+
+      function renderMap() {
+        const svg = document.getElementById("map");
+        svg.innerHTML = "";
+        GDI_G.clear();
+        SHOWN.clear();
+        // 先序 + depth → 父子表；兄弟顺序即 z 序（先 = 上层）
+        const kids = TREE.map(() => []);
+        const roots = [];
+        const stack = [];
+        TREE.forEach((n, i) => {
+          while (stack.length && TREE[stack.at(-1)].depth >= n.depth)
+            stack.pop();
+          (stack.length ? kids[stack.at(-1)] : roots).push(i);
+          stack.push(i);
+        });
+        const shown = (i) => {
+          const {
+            vis,
+            rect: [l, t, r, b],
+          } = TREE[i];
+          return vis && r > l && b > t;
+        };
+        const vis = roots.filter(shown);
+        // 排除跑到屏外的窗口：最小化时 Win32 把窗口挪到 -32000 一带（right/bottom 为负）
+        const tops = vis.filter(
+          (i) => TREE[i].rect[2] > 0 && TREE[i].rect[3] > 0,
+        );
+        const ns = tops.map((i) => TREE[i]);
+        if (!ns.length) {
+          const msg = vis.length
+            ? "主窗口已最小化 / 不在前台（切回客户端即恢复）"
+            : "无可见控件（切到列表或刷新窗口树）";
+          svg.setAttribute("viewBox", "0 0 340 40");
+          svg.setAttribute("width", 340);
+          svg.setAttribute("height", 40);
+          svg.innerHTML = `<text x="6" y="22">${msg}</text>`;
+          return;
+        }
+        const x0 = Math.min(...ns.map((n) => n.rect[0]));
+        const y0 = Math.min(...ns.map((n) => n.rect[1]));
+        const x1 = Math.max(...ns.map((n) => n.rect[2]));
+        const y1 = Math.max(...ns.map((n) => n.rect[3]));
+        const W = x1 - x0,
+          H = y1 - y0;
+        MAP = { x0, y0, W, H };
+        svg.setAttribute("viewBox", `${x0} ${y0} ${W} ${H}`);
+        applyMapSize();
+        const defs = el(svg, "defs");
+        const hatch = el(defs, "pattern", {
+          id: "hatch",
+          width: 6,
+          height: 6,
+          patternUnits: "userSpaceOnUse",
+          patternTransform: "rotate(45)",
+        });
+        el(hatch, "rect", {
+          width: 6,
+          height: 6,
+          fill: "#1c1c1c",
+          stroke: "none",
+        });
+        el(hatch, "line", {
+          x1: 0,
+          y1: 0,
+          x2: 0,
+          y2: 6,
+          stroke: "#2a2a2a",
+          "stroke-width": 2,
+        });
+        // 画家算法：先画父，子窗口裁在父矩形内；兄弟从下层往上层画。过滤不中的只调暗自身。
+        const dim = document.getElementById("filter").value.trim();
+        const paint = (i, parent) => {
+          if (!shown(i)) return; // IsWindowVisible 已含祖先，隐藏即整棵子树不可见
+          const n = TREE[i];
+          const sub = kids[i].filter(shown);
+          const g = el(
+            parent,
+            "g",
+            dim && !matchFilter(n) ? { opacity: 0.3 } : {},
+          );
+          drawNode(g, n, !sub.length);
+          SHOWN.add(n.hwnd);
+          if (!sub.length) return;
+          const clip = clipBox(parent, n.rect);
+          for (const k of sub.slice().reverse()) paint(k, clip);
+        };
+        for (const i of tops.slice().reverse()) paint(i, svg);
+        el(svg, "rect", { id: "mapSel", display: "none" });
+        el(svg, "rect", { id: "mapHl", display: "none" });
+        mark("mapSel", SELECTED && SELECTED.hwnd);
+        mark("mapHl", HOVER);
+      }
+
+      function select(n) {
+        SELECTED = n;
+        document.getElementById("sel").innerHTML = n.host
+          ? `绘制元素 <b>"${esc(n.title)}"</b> · 画在 <b>${n.host}</b> · rect=[${n.rect.join(",")}]`
+          : `<b>${n.hwnd}</b> · id=<b>${n.id}</b> · class=<b>${esc(n.class)}</b>` +
+            `<br>title=<b>${esc(oneLine(n.title)) || "(空)"}</b> · rect=[${n.rect.join(",")}] · vis=${n.vis} en=${n.en}`;
+        document.getElementById("mTarget").value = n.host || n.hwnd;
+        render();
+      }
+
+      async function act(kind, ...args) {
+        if (!SELECTED) return out("selOut", "先选一个控件");
+        if (SELECTED.host) return out("selOut", elemAct(kind));
+        out("selOut", await shim(kind, SELECTED.hwnd, ...args));
+      }
+      // 绘制元素没有自己的窗口：点击 = 往所画窗口投其中心点，文本/矩形取自绘制层，
+      // 闪烁即布局图上的选中框
+      function elemAct(kind) {
+        const { host, title, rect } = SELECTED;
+        const [l, t, r, b] = rect;
+        if (kind === "click") {
+          sendInput("clickat", host, (l + r) >> 1, (t + b) >> 1);
+          return `已向 ${host} 投中心点击`;
+        }
+        if (kind === "gettext") return { text: title };
+        if (kind === "rect") return { rect };
+        if (kind === "highlight") return "";
+        return `${kind} 对绘制元素无效（它没有自己的窗口）`;
+      }
+      function doSettext() {
+        return act("settext", document.getElementById("setval").value);
+      }
+      function out(id, t) {
+        document.getElementById(id).textContent =
+          typeof t === "string" ? t : JSON.stringify(t, null, 1);
+      }
+      // 整表重填：cols 每列 [表头 html, 行 → 单元格 html, 行 → 排序键?, 单元格 class?]；
+      // wire(tr, row) 可选接按钮。有排序键的列点表头排序：首点降序、再点反向，空值恒在末尾；
+      // 排序状态按表记住，重填（如行情刷新）沿用。
+      const SORT = {}; // sel → {i 列号, dir ±1}
+      const cmpKey = (x, y, dir) =>
+        x == null
+          ? +(y != null)
+          : y == null
+            ? -1
+            : dir *
+              (typeof x === "number"
+                ? x - y
+                : String(x).localeCompare(String(y), "zh"));
+      function table(sel, cols, rows, wire) {
+        const st = (SORT[sel] ??= { i: -1, dir: -1 });
+        const thead = document.querySelector(sel + " thead");
+        thead.innerHTML =
+          "<tr>" +
+          cols
+            .map(([h, , key, cls], i) => {
+              const c = [key && "sortable", cls].filter(Boolean).join(" ");
+              const arrow = i === st.i ? (st.dir > 0 ? " ▲" : " ▼") : "";
+              return `<th class="${c}" data-i="${i}">${h}${arrow}</th>`;
+            })
+            .join("") +
+          "</tr>";
+        thead.onclick = (e) => {
+          const th = e.target.closest("th.sortable");
+          if (!th) return;
+          st.dir = st.i === +th.dataset.i ? -st.dir : -1;
+          st.i = +th.dataset.i;
+          table(sel, cols, rows, wire);
+        };
+        const key = cols[st.i]?.[2];
+        const list = key
+          ? [...rows].sort((a, b) => cmpKey(key(a), key(b), st.dir))
+          : rows;
+        const tb = document.querySelector(sel + " tbody");
+        tb.innerHTML = "";
+        for (const row of list) {
+          const tr = tb.insertRow();
+          tr.innerHTML = cols
+            .map(([, f, , cls]) => `<td class="${cls ?? ""}">${f(row)}</td>`)
+            .join("");
+          if (wire) wire(tr, row);
+        }
+      }
+      const paint = (c, s) => (c ? `<span style="color:${c}">${s}</span>` : s);
+
+      // 原始消息栏 ↔ spy 记录 {hwnd,msg,wparam,lparam}
+      const MSG_FIELDS = ["mTarget", "mMsg", "mWp", "mLp"];
+      function fillMsg(e) {
+        [e.hwnd, e.msg, e.wparam, e.lparam].forEach(
+          (v, i) => (document.getElementById(MSG_FIELDS[i]).value = v),
+        );
+      }
+      async function rawMsg(kind) {
+        const args = MSG_FIELDS.map((id) => document.getElementById(id).value);
+        out("msgOut", await shim(kind, ...args));
+      }
+
+      async function spy(action) {
+        const filter = document.getElementById("spyFilter").value;
+        const r = await shim(
+          "spy",
+          action,
+          ...(action === "on" ? [filter] : []),
+        );
+        if (action === "dump" && !r.err) renderSpy(r);
+      }
+      const SPY_COLS = [
+        ["msg", (e) => e.msg],
+        ["hwnd", (e) => e.hwnd],
+        ["class", (e) => esc(e.class)],
+        ["wparam", (e) => e.wparam],
+        ["lparam", (e) => e.lparam],
+        ["", () => "<button>回放</button> <button>定位</button>"],
+      ];
+      function renderSpy(events) {
+        table("#spyTbl", SPY_COLS, events, (tr, e) => {
+          const [bReplay, bLoc] = tr.querySelectorAll("button");
+          // 回放：把这条消息 post 回其 hwnd
+          bReplay.onclick = () => {
+            fillMsg(e);
+            rawMsg("post");
+          };
+          // 定位：在当前树里选中该 hwnd，消息填进原始消息栏
+          bLoc.onclick = () => {
+            const n = NODE.get(e.hwnd);
+            if (!n)
+              return out("selOut", "当前树里没有 " + e.hwnd + "，先刷新窗口树");
+            select(n);
+            fillMsg(e);
+          };
+        });
+      }
+
+      let autoTimer = null;
+      function toggleAuto() {
+        if (document.getElementById("spyAuto").checked)
+          autoTimer = setInterval(() => spy("dump"), 1000);
+        else {
+          clearInterval(autoTimer);
+          autoTimer = null;
+        }
+      }
+
+      // 录制器：订阅 /api/recwatch，每推 {st 状态, recs 新记录}；页面只留尾巴，全量在 st.file
+      const REC_CAP = 2000;
+      let REC_RECS = [];
+      let REC_ST = null;
+      // kind → 显示开关 id；未列的（start/mark/err/stop）恒显
+      const REC_SHOW = {
+        msg: "recMsg",
+        req: "recReq",
+        new: "recWin",
+        del: "recWin",
+        chg: "recWin",
+        gdi: "recGdi",
+      };
+      const recWin = (n) =>
+        `${n.hwnd} ${n.class}#${n.id}「${oneLine(n.title)}」`;
+      function recLine(r) {
+        const t = r.t.toFixed(2).padStart(8);
+        switch (r.kind) {
+          case "msg":
+            return (
+              `${t} msg ${r.msg} → ${recWin(r)}` +
+              ` wp=${r.wparam} lp=${r.lparam}` +
+              (r.n > 1 ? ` ×${r.n}` : "") +
+              (r.vis ? "" : " (隐藏)")
+            );
+          case "req": {
+            const at = `req=${r.obj}`;
+            if (r.op === "str")
+              return `${t} req ${at} str[${r.id},${r.aux}]=${JSON.stringify(r.value)}`;
+            if (r.op === "int" || r.op === "float")
+              return `${t} req ${at} ${r.op}[${r.id}]=${r.value}`;
+            if (r.op === "func")
+              return `${t} req ${at} func=${r.value} (0x${r.value.toString(16)})`;
+            if (r.op === "init") return `${t} req ${at} init=${r.value}`;
+            if (r.op === "send")
+              return `${t} req ${at} SEND args=${JSON.stringify(r.args)}`;
+            return `${t} req ${JSON.stringify(r)}`;
+          }
+          case "new":
+          case "del":
+            return `${t} ${r.kind} ${recWin(r.node)}${r.node.vis ? "" : " (隐藏)"}`;
+          case "chg":
+            return (
+              `${t} chg ${recWin(r.node)} ` +
+              Object.entries(r.diff)
+                .map(
+                  ([k, [a, b]]) =>
+                    `${k}: ${JSON.stringify(a)} → ${JSON.stringify(b)}`,
+                )
+                .join("; ")
+            );
+          case "gdi":
+            return `${t} gdi ${r.hwnd} ${r.cls}#${r.id} | ${oneLine(r.texts.join(" | ")).slice(0, 300)}`;
+          case "mark":
+            return `${t} ===== ${r.text} =====`;
+          default: {
+            const { t: _t, kind, ...rest } = r;
+            return `${t} ${kind} ${JSON.stringify(rest)}`;
+          }
+        }
+      }
+      function recRender() {
+        const st = REC_ST;
+        if (st) {
+          document.getElementById("recDot").innerHTML = st.on
+            ? '<span class="off">●</span>'
+            : "";
+          document.getElementById("recBtn").textContent = st.on
+            ? "停止"
+            : "开始";
+          document.getElementById("recSt").textContent = st.file
+            ? `${st.on ? "录制中" : "已停"} · ${st.n} 条 · ${st.file}`
+            : "未录制";
+        }
+        if (
+          document.querySelector('#rightPane > [data-view="rec"]').style
+            .display === "none"
+        )
+          return;
+        const excl = document
+          .getElementById("recExcl")
+          .value.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const lines = REC_RECS.filter((r) => {
+          const id = REC_SHOW[r.kind];
+          return !id || document.getElementById(id).checked;
+        })
+          .map(recLine)
+          .filter((s) => !excl.some((x) => s.includes(x)));
+        const pre = document.getElementById("recLog");
+        const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+        pre.textContent = lines.join("\n");
+        if (atEnd) pre.scrollTop = pre.scrollHeight;
+      }
+      const recSoon = batch(recRender, requestAnimationFrame);
+      function recOn(r) {
+        REC_ST = r.st;
+        REC_RECS = REC_RECS.concat(r.recs).slice(-REC_CAP);
+        recSoon();
+      }
+      async function recToggle() {
+        const r = await api("/api/rec", { on: !REC_ST?.on });
+        if (r.err) document.getElementById("recSt").textContent = "✗ " + r.err;
+      }
+      async function reqAttach() {
+        const st = document.getElementById("reqSt");
+        if (!REC_ST?.on) return (st.textContent = "✗ 请先开始录制");
+        if (!SELECTED || SELECTED.host)
+          return (st.textContent = "✗ 请在窗口树中选择闪电下单顶层窗口");
+        const off = document.getElementById("reqOff").value.trim();
+        const r = await shim(
+          "req",
+          "attach",
+          SELECTED.hwnd,
+          ...(off ? [off] : []),
+        );
+        if (r.err) return (st.textContent = "✗ " + r.err);
+        if (!r.some((x) => x.attached))
+          return (st.textContent =
+            "发现多个候选，请把对象偏移填为：" +
+            r
+              .filter((x) => x.candidate)
+              .map((x) => x.offset)
+              .join(" / "));
+        st.textContent = `✓ 已接入 ${SELECTED.hwnd}，请手动买入、卖出或撤单`;
+      }
+      async function recMark() {
+        const el = document.getElementById("recMarkTxt");
+        const r = await api("/api/recmark", {
+          text: el.value.trim() || "mark",
+        });
+        if (r.err)
+          return (document.getElementById("recSt").textContent = "✗ " + r.err);
+        el.value = "";
+      }
+
+      // 一次性加载：id → #{id}Info 提示行、#{id}Tbl 表；出错只显示 err（滑点用）
+      const fmt = (v, d = 2) =>
+        v == null
+          ? ""
+          : v.toLocaleString("zh-CN", {
+              minimumFractionDigits: d,
+              maximumFractionDigits: d,
+            });
+      const fmtPnl = (v, d) =>
+        v == null ? "" : paint(v >= 0 ? "#f14c4c" : "#6a9955", fmt(v, d));
+      // 数字列：右对齐，按原值排序
+      const numCol = (h, k, f = fmt) => [h, (p) => f(p[k]), (p) => p[k], "num"];
+      const POS_COLS = [
+        ["代码", (p) => p.code, (p) => p.code],
+        numCol("仓位%", "position_pct"),
+        ["名称", (p) => esc(p.name), (p) => p.name],
+        ["滑点", (p) => slipBars(p.slips)],
+        numCol("当日盈亏%", "day_pnl_pct", fmtPnl),
+        numCol("当日盈亏", "day_pnl", fmtPnl),
+        numCol("盈亏%", "pnl_pct", fmtPnl),
+        numCol("盈亏", "pnl", fmtPnl),
+        numCol("总市值", "market_value"),
+        numCol("融资市值", "margin_value"),
+        numCol("可卖市值", "sellable_value"),
+        numCol("担保折算率", "collateral"),
+      ];
+
+      // 持仓页：订阅 /api/poswatch，服务端在内存（客户端重查过）或行情变了才推一帧。
+      // 只在持仓页可见且浏览器标签在前台时连着；断开后服务端即停取行情。出错只改提示行，表留上一帧。
+      // 自动刷新只作兜底（客户端自己重查已即时跟上）：到点 POST /api/refresh，新帧仍经推送到达。
+      let posES = null;
+      let autoRefreshTried = false;
+      let nextRefresh = 0; // 下次自动刷新时刻（performance.now）
+      const posShown = () =>
+        document.querySelector('#leftPane > [data-view="pos"]').style
+          .display !== "none";
+      function syncPosStream() {
+        const on = posShown() && !document.hidden;
+        if (on && !posES) posES = subscribe("/api/poswatch", showFrame);
+        if (!on && posES) {
+          posES.close();
+          posES = null;
+        }
+      }
+      const posErr = (r) =>
+        (document.getElementById("posInfo").innerHTML =
+          `<span class="off">✗ ${esc(r.err)}</span>`);
+      function showFrame(r) {
+        if (r.err) return void posErr(r);
+        r.slippage.rows.forEach((s, i) => {
+          if (s.code !== r.positions[i].code)
+            throw new Error(
+              `滑点行与持仓行错位: ${s.code} ≠ ${r.positions[i].code}`,
+            );
+          r.positions[i].slips = s.slips;
+        });
+        showPositions(r, document.getElementById("posInfo"));
+        showSlippage(r.slippage);
+      }
+      function showPositions(r, info) {
+        table("#posTbl", POS_COLS, r.positions);
+        if (!r.positions.length) {
+          // 按需：内存里没持仓表时，自动点一次交易栏「刷新」让客户端查一遍
+          if (!autoRefreshTried) return refreshPos();
+          return void (info.textContent = "无持仓");
+        }
+        const t = r.totals;
+        info.innerHTML =
+          `${r.positions.length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
+          ` · 盈亏 ${fmtPnl(t.pnl)} · 当日盈亏 ${fmtPnl(t.day_pnl)}` +
+          ` · 行情 ${r.time} · pid=${r.pid}`;
+      }
+      async function refreshPos(quiet) {
+        autoRefreshTried = true; // 手动刷新也算一次尝试，避免空内存再自动重触发
+        nextRefresh =
+          performance.now() + +document.getElementById("posAuto").value * 1000;
+        if (!quiet)
+          document.getElementById("posInfo").textContent =
+            "刷新中…（触发客户端刷新持仓）";
+        const r = await api("/api/refresh", {});
+        if (r.err) posErr(r);
+      }
+      async function posAutoLoop() {
+        const auto = +document.getElementById("posAuto").value;
+        if (auto && posES && performance.now() >= nextRefresh)
+          await refreshPos(true);
+        setTimeout(posAutoLoop, 1000);
+      }
+
+      // 滑点正=成本
+      function slipColor(v) {
+        if (v == null) return "";
+        return v < 10 ? "#6a9955" : v < 20 ? "#d7ba7d" : "#f14c4c";
+      }
+      // 按 slip_cols 顺序自上而下画；无行情 / 无数据画灰
+      const slipBars = (slips) =>
+        `<span class="bars">${(slips ?? Array(6).fill(null))
+          .map(
+            (x) =>
+              `<i style="background:${slipColor(x?.pct) || "var(--line)"}"></i>`,
+          )
+          .join("")}</span>`;
+      // 方向 s：买 +1 / 卖 -1；滑点列 (n, s)、价位列 (p, s) 同构
+      const SIDE = { 1: "买", "-1": "卖" };
+      const slipHead = ([n, s]) => `${n / 10000}W${SIDE[s]}`;
+      const levelHead = ([p, s]) => `${s > 0 ? "+" : "-"}${p}%`;
+      const slipCell = (x) =>
+        x.pct == null ? "N/A" : `${x.full ? "" : ">"}${x.pct.toFixed(1)}p`;
+      const levelCell = (v) => `<span class="kv">${v.toFixed(2)}</span>`;
+      const GROUP_COLOR = {
+        green: "#6a9955",
+        red: "#f14c4c",
+        "": "var(--hot)",
+      };
+      // 列随后端列定义生成；无行情的行 slips / levels 皆 null，两组都出 N/A；竞价时 slips null 出「竞价」
+      const slipCols = (r) => [
+        ["代码", (row) => row.code, (row) => row.code],
+        [
+          "名称",
+          (row) => paint(GROUP_COLOR[row.group], esc(row.name)),
+          (row) => row.name,
+        ],
+        ...r.slip_cols.map((c, i) => [
+          paint(slipColor(r.agg[i]) || "var(--mut)", slipHead(c)),
+          (row) =>
+            row.slips
+              ? paint(slipColor(row.slips[i].pct), slipCell(row.slips[i]))
+              : row.auction
+                ? '<span class="kv">竞价</span>'
+                : "N/A",
+          (row) => row.slips?.[i].pct,
+          "num",
+        ]),
+        ...r.level_cols.map((c, i) => [
+          levelHead(c),
+          (row) => (row.levels ? levelCell(row.levels[i]) : "N/A"),
+          (row) => row.levels?.[i],
+          "num",
+        ]),
+        [
+          "占比",
+          (row) => (row.weight * 100).toFixed(1) + "%",
+          (row) => row.weight,
+          "num",
+        ],
+      ];
+      // 滑点随持仓帧推送（同一份行情的 5 档），不另取
+      function showSlippage(r) {
+        table("#slipTbl", slipCols(r), r.rows);
+        document.getElementById("slipInfo").textContent =
+          "滑点（p=万分之一，正=成本；> 表示 5 档吃不满、实际更差；价位相对参考价）";
+      }
+
+      // 交互：鼠标/键盘只给屏幕坐标，目标窗口由 shim 定（坐标下最深子窗口 / 捕获 / 菜单）。
+      // 所有输入串成一条队列，保证到达客户端的顺序与操作顺序一致。
+      let inputQ = Promise.resolve();
+      const interacting = () => document.getElementById("interact").checked;
+      function sendInput(cmd, ...args) {
+        inputQ = inputQ.then(async () => {
+          const r = await shim(cmd, ...args);
+          if (r.err) out("selOut", r);
+          pollSoon();
+        });
+        return inputQ;
+      }
+      // Win32 MK_*：LBUTTON 1 / RBUTTON 2 / SHIFT 4 / CONTROL 8 / MBUTTON 0x10
+      const mk = (e) =>
+        (e.buttons & 1 ? 1 : 0) |
+        (e.buttons & 2 ? 2 : 0) |
+        (e.shiftKey ? 4 : 0) |
+        (e.ctrlKey ? 8 : 0) |
+        (e.buttons & 4 ? 0x10 : 0);
+      function mouseAt(e, kind, ...extra) {
+        const w = svgPoint(e);
+        return sendInput(
+          "mouse",
+          kind,
+          Math.round(w.x),
+          Math.round(w.y),
+          mk(e),
+          ...extra,
+        );
+      }
+      // 非可打印键 → 虚拟键码；可打印字符走 char（shim 内按 VkKeyScan 决定投键还是 WM_CHAR）
+      const VK = {
+        Backspace: 8,
+        Tab: 9,
+        Enter: 13,
+        Escape: 27,
+        PageUp: 33,
+        PageDown: 34,
+        End: 35,
+        Home: 36,
+        ArrowLeft: 37,
+        ArrowUp: 38,
+        ArrowRight: 39,
+        ArrowDown: 40,
+        Insert: 45,
+        Delete: 46,
+      };
+      for (let i = 1; i <= 12; i++) VK["F" + i] = 111 + i;
+
+      // 左/右键按下抬起分开投（可拖拽），第二下按下投双击；中键归平移。交互关时左键=选中+闪烁。
+      function initMapInput() {
+        const wrap = document.getElementById("mapWrap");
+        const svg = document.getElementById("map");
+        const BIT = { 0: 1, 2: 2 }; // 浏览器 button → 按住位
+        const SIDE = { 1: "l", 2: "r" };
+        let held = 0;
+        const moveTo = drop((e) => mouseAt(e, "move")); // 拖拽移动：上一条没回来就丢
+        // 绘制元素命中框随绘制层整段重写，hover 走委托
+        svg.addEventListener("mouseover", (e) => {
+          if (e.target.classList.contains("elem")) hover(e.target.dataset.hwnd);
+        });
+        svg.addEventListener("mouseout", (e) => {
+          if (e.target.classList.contains("elem")) hover(null);
+        });
+        svg.addEventListener("mousedown", (e) => {
+          const bit = BIT[e.button];
+          if (!bit) return;
+          wrap.focus();
+          const n = e.target.dataset && nodeOf(e.target.dataset.hwnd);
+          if (!interacting()) {
+            if (n && bit === 1) {
+              select(n);
+              act("highlight");
+            }
+            return;
+          }
+          held |= bit;
+          mouseAt(e, SIDE[bit] + (e.detail === 2 ? "dbl" : "down"));
+          if (n && bit === 1) select(n);
+        });
+        window.addEventListener("mousemove", (e) => held && moveTo(e));
+        window.addEventListener("mouseup", (e) => {
+          const bit = BIT[e.button];
+          if (!(held & bit)) return;
+          held &= ~bit;
+          mouseAt(e, SIDE[bit] + "up");
+        });
+        svg.addEventListener("contextmenu", (e) => e.preventDefault());
+        wrap.addEventListener("keydown", (e) => {
+          if (
+            !interacting() ||
+            e.isComposing ||
+            e.ctrlKey ||
+            e.altKey ||
+            e.metaKey
+          )
+            return;
+          if (e.key.length === 1) sendInput("char", e.key.codePointAt(0));
+          else if (VK[e.key]) sendInput("key", VK[e.key]);
+          else return;
+          e.preventDefault();
+        });
+      }
+
+      // 滚轮：交互开时投给客户端（WM_MOUSEWHEEL，±120/格），Ctrl+滚轮或交互关时缩放，围绕光标
+      function initMapZoom() {
+        const wrap = document.getElementById("mapWrap");
+        // 上一格没回来就丢，免得触控板刷屏
+        const wheelAt = drop((ev) =>
+          mouseAt(ev, "wheel", ev.deltaY < 0 ? 120 : -120),
+        );
+        wrap.addEventListener(
+          "wheel",
+          (ev) => {
+            ev.preventDefault();
+            if (interacting() && !ev.ctrlKey) return void wheelAt(ev);
+            if (mapScale === null) return; // 还没有布局图可缩放
+            const r = wrap.getBoundingClientRect();
+            const cx = ev.clientX - r.left,
+              cy = ev.clientY - r.top;
+            const contentX = wrap.scrollLeft + cx,
+              contentY = wrap.scrollTop + cy;
+            const old = mapScale;
+            mapScale *= ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+            mapScale = Math.min(20, Math.max(0.15, mapScale));
+            applyMapSize();
+            const ratio = mapScale / old;
+            wrap.scrollLeft = contentX * ratio - cx;
+            wrap.scrollTop = contentY * ratio - cy;
+          },
+          { passive: false },
+        );
+      }
+
+      // 布局图：中键拖拽平移；中键单击（未拖动）= 选中光标下的元素
+      function initMapPan() {
+        const wrap = document.getElementById("mapWrap");
+        let panning = false,
+          moved = false,
+          sx = 0,
+          sy = 0,
+          sl = 0,
+          st = 0;
+        wrap.addEventListener("mousedown", (e) => {
+          if (e.button !== 1) return;
+          e.preventDefault();
+          panning = true;
+          moved = false;
+          sx = e.clientX;
+          sy = e.clientY;
+          sl = wrap.scrollLeft;
+          st = wrap.scrollTop;
+        });
+        window.addEventListener("mousemove", (e) => {
+          if (!panning) return;
+          const dx = e.clientX - sx,
+            dy = e.clientY - sy;
+          if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+          wrap.scrollLeft = sl - dx;
+          wrap.scrollTop = st - dy;
+        });
+        window.addEventListener("mouseup", (e) => {
+          if (e.button !== 1 || !panning) return;
+          panning = false;
+          if (!moved) {
+            const el = document.elementFromPoint(e.clientX, e.clientY);
+            if (el && el.tagName === "rect" && el.dataset.hwnd) {
+              const n = nodeOf(el.dataset.hwnd);
+              if (n) select(n);
+            }
+          }
+        });
+        // 屏蔽中键默认的自动滚动
+        wrap.addEventListener("auxclick", (e) => {
+          if (e.button === 1) e.preventDefault();
+        });
+      }
+
+      // 两条推送同构：treewatch 来 {gen} 即重拉树；gdiwatch 来一层即记下并合帧重画
+      function startWatch() {
+        subscribe("/api/treewatch", () => autoUpd() && pullTree());
+        subscribe("/api/gdiwatch", (r) => {
+          r.at = performance.now();
+          GDI.set(r.hwnd, r);
+          if (!gdiShown()) return;
+          gdiDirty.add(r.hwnd);
+          gdiSoon();
+        });
+      }
+
+      // 中间 gutter 左右拖拽，改左 pane 宽度
+      function initGutter() {
+        const g = document.getElementById("gutter");
+        const left = document.getElementById("leftPane");
+        const wrap = document.querySelector(".wrap");
+        let dragging = false;
+        g.addEventListener("mousedown", (e) => {
+          dragging = true;
+          document.body.style.cursor = "col-resize";
+          e.preventDefault();
+        });
+        window.addEventListener("mousemove", (e) => {
+          if (!dragging) return;
+          const r = wrap.getBoundingClientRect();
+          let px = e.clientX - r.left;
+          px = Math.max(220, Math.min(r.width - 220, px));
+          left.style.flex = "0 0 " + px + "px";
+        });
+        window.addEventListener("mouseup", () => {
+          dragging = false;
+          document.body.style.cursor = "";
+        });
+      }
+
+      (async function init() {
+        initGutter();
+        initMapZoom();
+        initMapPan();
+        initMapInput();
+        setTab("leftPane", "layout");
+        setTab("rightPane", "tools");
+        renderSpy([]);
+        if (await ping()) await refreshTree();
+        startWatch();
+        subscribe("/api/recwatch", recOn);
+        document.addEventListener("visibilitychange", syncPosStream);
+        posAutoLoop();
+        pollLoop();
+      })();
+    </script>
+  </body>
+</html>

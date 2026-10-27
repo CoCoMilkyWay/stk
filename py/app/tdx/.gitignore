@@ -1,0 +1,6 @@
+__pycache__/
+gjzq/
+scripts/bridge/shim/*.dll
+scripts/bridge/shim/inject.exe
+scripts/.sudo_pass
+logs/
