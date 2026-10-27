@@ -2,15 +2,17 @@
 //   小框 1: 选组合 (<portfolio_dir>/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
 //   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD; 不画个股):
-//     组合策略线 (有冲击 / 无冲击两条, 图例 = 组合名 | 冲击口径 | 区间年化, 与池线同格式列对齐) = 各因子独立回测 (PortfolioService FactorCurve,
+//   NAV 右表 = 全部线分组勾选 (因子 / 指数 / 策略; 列 = 名 | 中文名 | 口径 | 区间年化 | 尾), 主图只画勾上的; 主图例只读, 只列画出的线 (同列, 补空格对齐)
+//     组合策略线 (有冲击 / 无冲击两条) = 各因子独立回测 (PortfolioService FactorCurve,
 //     各自的层, 净值引擎 fold_book: 每行开 1/h̄ 一批 (全日平均满仓), 收益在平仓行实现; 可成交 / 顺延在标签里) 的逐行增量等权聚合: 每个交易日在当日有数据的 n 个因子间等分 (按实现日),
 //     因子增量 = 毛收益 − 建仓冲击 − 固定冲击份数 · fixed_impact (占净值), 记在行末 (收益 = 平仓行, 成本 = 建仓行;
 //       已实现口径, 与池指数对齐); 净值 = 同一 x 的增量和逐点复利连乘. 单因子线同式 (权 1) ⇒ 单因子线 ≡ 只含它的组合.
 //       只算 G20 多头 (无冲击 = 不扣, 细线; 默认只显有冲击). 成本按 Δw (Stat 契约【换手成本】), 冲击段 = 各因子自己的最小段, 不可选:
 //       Lob 层 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; Bar 层无金额段 = 增仓量 / 平仓量都按 fixed_impact
-//     池指数线 (日层篮子 0, 每池一条等权; all 池两条 = 全A加权 (总市值) / 全A等权; 全部在主图例): 只画因子日并集轴范围内, 当日收盘一点; 默认只显组合里因子所在的池;
-//       图例 = 池名 | 中文名 | 区间年化 | 年换手 (全评估期日均单边 PoolCurve::turn[该线权重] × kDaysPerYear, 倍; 指数线本身不扣成本)
-//     单因子线 (右侧图例, 默认全关): 该因子单独的 G20 多头净值 (带它自己的冲击)
+//     池指数线 (日层篮子 0, 每池一条等权; all 池两条 = 全A加权 (总市值) / 全A等权): 只画因子日并集轴范围内, 当日收盘一点; 默认只显组合里因子所在池的可成交线;
+//       每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (后复权收盘价收益, 不看可成交; 同色淡线, 默认关), 两者之差 = 可成交拖累;
+//       尾 = 年换手 (全评估期日均单边 PoolCurve::turn[该线权重] × kDaysPerYear, 倍; 指数线本身不扣成本)
+//     单因子线 (默认全关): 该因子单独的 G20 多头净值 (带它自己的冲击)
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     主图例 / 右图例 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
 //   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用): 右侧表格单选一个池或申万一级行业 (全A 内按上一行 ind_l1 切;
@@ -40,11 +42,12 @@ struct PortfolioCurve {
   std::vector<double> x, y;
 };
 
-// 一条图例线, 全段. 主图例 = en | cn 两列 (补空格对齐) + 区间年化 + note; 排版 / 年化在渲染时拼
+// 一条图例线, 全段. NAV 右表 / 主图例同列 = en | cn | kind | 区间年化 | note (主图例补空格对齐); 排版 / 年化在渲染时拼
 struct PortfolioLine {
   std::string id;     // ImGui ID (###id) / 显隐键 / 单选键
-  std::string en, cn; // 图例两列
-  std::string note;   // 图例尾 (池线: 年换手; 单因子: 冲击口径)
+  std::string en, cn; // 名 / 中文名
+  std::string kind;   // 口径 (策略: 有冲击 / 无冲击; 池线: 可成交 / 理想; 单因子: 冲击段)
+  std::string note;   // 尾 (池线: 年换手; 单因子: 池 层 持有期)
   std::string tag;    // 线尾小字
   bool on = false;    // 默认显示
   PortfolioCurve c;
@@ -59,15 +62,18 @@ struct PortfolioBasket : PortfolioLine {
   std::shared_ptr<const PoolCurve> pc; // 全史 (滚动窗要看日并集轴以外的历史); 空 = 池没算成 (c 空)
   size_t k = 0;                        // 篮子号 (0 = 池整体, ≥ 1 = 行业)
   Weight w = kWeightEq;
+  bool px = false;          // 源 = 收盘价指数 (PoolCurve::index_px, 不看可成交); 否则可成交标签指数 (index)
   std::vector<uint32_t> at; // [c.x] → pc->dates 下标 (严格升序)
 };
 
 // Portfolio 页派生 (UI 线程, 结果 / 内容 / fixed_impact 变才重算): 全段
 struct PortfolioDerived {
   std::vector<misc::Ymd> dates;         // 日并集轴 (横轴 day 下标)
-  PortfolioLine strat[kImpacts];        // 组合策略 (G20 多头): 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | 冲击口径, note 空
-  std::vector<PortfolioFactor> factors; // [items 序, 只含算成的] 该因子单独的 G20 多头 (有冲击), 与组合同式; id = PortfolioEntry::key, en = 因子文件主干, note = 冲击口径
-  std::vector<PortfolioBasket> pools;   // [池线序] 篮子 0; en | cn = 池名 | 中文名, note = 年换手, on = 组合里有因子在这个池
+  PortfolioLine strat[kImpacts];        // 组合策略 (G20 多头): 首日开盘前 1 + 每个有增量的 x; en | cn | kind = 组合名 | G20 多头 | 冲击口径, note 空
+  std::vector<PortfolioFactor> factors; // [items 序, 只含算成的] 该因子单独的 G20 多头 (有冲击), 与组合同式; id = PortfolioEntry::key,
+                                        //   en | cn | kind | note = 因子文件主干 | 中文名 | 冲击段 | 池 层 持有期
+  std::vector<PortfolioBasket> pools;   // [池线序] 篮子 0, 成对: 可成交标签线 (偶下标) + 同池同权的理想收盘价线 (px, 奇下标, 恒默认关);
+                                        //   en | cn | kind = 池名 | 中文名 | 可成交 / 理想, note = 年换手, on = 组合里有因子在这个池 (仅可成交线)
   std::vector<PortfolioBasket> vals;    // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 总市值加权);
                                         //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | 中文名 (all 池 = kWeightName) / sw<ID> | 行业名,
                                         //   tag = 池名 (all 池 = kWeightName) / 行业名
@@ -183,9 +189,9 @@ struct PortfolioUIState {
   std::string val_for;            // val_pool 对应的组合 (换组合 → 回默认)
   int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
-  std::map<std::string, bool> factor_show; // 右图例: PortfolioEntry::key → 显示 (缺 = 关)
-  std::string vis_key;                     // 池线默认显隐已按它设过 (组合 + 其因子所在池; 变了重设)
-  std::string shown_key;                   // 上帧各线显隐 + log (变了 → 下帧重新 fit)
+  std::map<std::string, bool> show; // NAV 右表勾选: PortfolioLine::id → 显示 (缺 = PortfolioLine::on)
+  std::string vis_key;              // 策略 / 池线勾选已按默认设过 (组合 + 其因子所在池; 变了 → 清掉它们的勾选回默认)
+  std::string shown_key;            // 上帧各线显隐 + log (变了 → 下帧重新 fit)
   bool refit = false;
   float legend_w[2] = {400.0f, 380.0f}; // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
 };

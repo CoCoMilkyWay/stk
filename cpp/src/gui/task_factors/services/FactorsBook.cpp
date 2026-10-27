@@ -116,10 +116,10 @@ BookLines pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mc
   return fold_book(ex, Y.sh.seg, x, 1);
 }
 
-// 篮子估值 (Baskets::val, 两权重) + 篮子 0 逐行收益 / 权和 (rows, 换手用), 两遍:
+// 篮子估值 (Baskets::val, 两权重) + 收盘价指数 (Baskets::index_px) + 篮子 0 逐行收益 / 权和 (rows, 换手用), 两遍:
 //   1) 资产条带并行, 沿 t 把 B.px 的副本补成上一有效收盘价 (停牌带着);
 //   2) 行并行, 每行一遍 A 轴:
-//      收益成分 (篮子 0) = 上一有效 close 行 (prev) 在池, 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 该行总市值 mcap;
+//      收益成分 (篮子 0 + 行业) = 上一有效 close 行 p (prev) 在池 (行业按行 p), 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 行 p 总市值 mcap;
 //      估值成分 (篮子 0 + 行业) = 上一行在池, 市值 = px × 上一行总股本, 估值输入 val [PoolVal] / 行业同取上一行 (DY 为股息率, 分子在此还原)
 void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const uint8_t *in, const std::vector<int32_t> &prev, Baskets &o, BasketRows &rows) {
   constexpr size_t K = Baskets::kBaskets;
@@ -146,18 +146,22 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const uint8_t *in,
       o.val[w][m].assign(K * nT, kNaN);
   for (int w = 0; w < kWeights; ++w)
     rows.r[w].assign(nT, 0.0), rows.w[w].assign(nT, 0.0);
+  o.index_px.n = static_cast<int>(K) * kWeights, o.index_px.P = B.sh.T;
+  o.index_px.v.assign(static_cast<size_t>(o.index_px.n) * nT, 0.f);
   ex.rows(B.sh.T, [&](int t0, int t1, int) {
     for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
-      // 收益 [Weight][Σ权·r, Σ权]; 估值 [篮子][Weight][PoolVal][Σ权·收益率, Σ权] (收益率 = 分子 / 市值; 权 = 等权 1 / 加权 市值 ⇒ 整体法 Σ分子 / Σ市值)
-      double x[kWeights][2] = {}, v[K][kWeights][kPoolVals][2] = {};
+      // 收益 [篮子][Weight][Σ权·r, Σ权]; 估值 [篮子][Weight][PoolVal][Σ权·收益率, Σ权] (收益率 = 分子 / 市值; 权 = 等权 1 / 加权 市值 ⇒ 整体法 Σ分子 / Σ市值)
+      double x[K][kWeights][2] = {}, v[K][kWeights][kPoolVals][2] = {};
       for (size_t a = 0; a < nA; ++a) {
         const size_t i = t * nA + a;
         if (const int32_t q = prev[i]; q >= 0) {
           const size_t p = static_cast<size_t>(q) * nA + a;
           if (in[p]) {
             const double r = close.v[i] / close.v[p] - 1.0, om[kWeights] = {1.0, mcap[p]};
-            for (int w = 0; w < kWeights; ++w)
-              x[w][0] += om[w] * r, x[w][1] += om[w];
+            each_basket(ind[p], [&](size_t k) {
+              for (int w = 0; w < kWeights; ++w)
+                x[k][w][0] += om[w] * r, x[k][w][1] += om[w];
+            });
           }
         }
         if (t == 0 || !in[i - nA])
@@ -179,8 +183,12 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const uint8_t *in,
         });
       }
       for (int w = 0; w < kWeights; ++w)
-        if (x[w][1] > 0.0)
-          rows.r[w][t] = x[w][0] / x[w][1], rows.w[w][t] = x[w][1];
+        if (x[0][w][1] > 0.0)
+          rows.r[w][t] = x[0][w][0] / x[0][w][1], rows.w[w][t] = x[0][w][1];
+      for (size_t k = 0; k < K; ++k)
+        for (int w = 0; w < kWeights; ++w)
+          if (x[k][w][1] > 0.0)
+            o.index_px.v[static_cast<size_t>(Baskets::index_line(k, w)) * nT + t] = static_cast<float>(x[k][w][0] / x[k][w][1]);
       for (size_t k = 0; k < K; ++k)
         for (int w = 0; w < kWeights; ++w)
           for (int m = 0; m < kPoolVals; ++m)

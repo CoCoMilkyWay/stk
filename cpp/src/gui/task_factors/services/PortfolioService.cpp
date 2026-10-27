@@ -413,6 +413,8 @@ bool PortfolioService::eval(const PoolTask &t, FactorFlow &F) {
   c->dates = dates;
   assert(B.index.n == static_cast<int>(Baskets::kBaskets) * kWeights && B.index.P == days);
   c->index = std::move(B.index);
+  assert(B.index_px.n == c->index.n && B.index_px.P == days);
+  c->index_px = std::move(B.index_px);
   for (int w = 0; w < kWeights; ++w)
     c->turn[w] = B.turn[w];
   for (int w = 0; w < kWeights; ++w)

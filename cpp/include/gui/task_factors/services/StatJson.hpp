@@ -275,6 +275,7 @@ inline bool load_mini_pdf(const nlohmann::json &o, MiniPdf &dst) {
 // 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径; time 各权重各自, 在 eval_json)
 inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame f) {
   nlohmann::ordered_json j;
+  j["stat_ver"] = factor::stat::kStatSemver;
   j["pool"] = s.pool;
   j["start_date"] = misc::dash(s.start_date);
   j["end_date"] = misc::dash(s.end_date);
@@ -312,9 +313,11 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   return j;
 }
 
-// scope_json + eval_json 的逆: run 口径与 f 不符 / 任一处不合 → false (dst 不动). 小图可选 (老文件没有 → 空)
+// scope_json + eval_json 的逆: run 口径与 f 不符 / stat_ver ≠ kStatSemver / 任一处不合 → false (dst 不动). 小图可选 (老文件没有 → 空)
 inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int seg, factor::stat::Frame f, EvalStat &dst) {
   if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)))
+    return false;
+  if (int ver = 0; !json_int(run, "stat_ver", ver) || ver != factor::stat::kStatSemver)
     return false;
   EvalStat t;
   const auto str = [](const nlohmann::json &o, const char *key, std::string &out) {

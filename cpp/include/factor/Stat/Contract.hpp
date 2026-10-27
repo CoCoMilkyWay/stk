@@ -40,7 +40,8 @@
 //     ric    rank IC = Spearman = Pearson(r16_x, r16_y) over J. 五个和都是整数 (pair_add → pearson_int), 两后端逐位一致.
 //     grp[k] 第 k 组 (k = grp_of(r16_x), 等分 kGroups 组) 做多超额 e 的**持仓收益** (Σe / max(cnt, cap), 代数上 Σlv − cnt·mkt 再除, 一遍 A 轴);
 //            cnt[k] = 组样本数. 二级沿 t 取均值 (Σ / n_all, 见【二级】).
-//     ls     顶底多空 LS(tp-dn) = 两腿持仓收益之和 = 多腿 (顶组) 做多超额 + 空腿 (底组) 做空超额, 各按【持仓口径】—— 相对市场; 腿空 → 该项 0.
+//     ls     顶底多空 LS(tp-dn) = 两腿持仓收益平均 = ½ (多腿 (顶组) 做多超额 + 空腿 (底组) 做空超额), 各按【持仓口径】—— 相对市场; 腿空 → 该项 0.
+//            资金 1 两腿各半, 无杠杆: 与单组 grp 同一资金尺度 (超额口径下 ≈ ½ (grp[G20] − grp[G1])).
 //            二级 HoldStat 的 LS 系 (Moments ls / ls_annual / sharpe_of / beta) 全部基于它. 无信号时 ≈ 0 (原值口径会 ≈ −市场往返成本).
 //     mkt    [kLegs] J 上做多 / 做空标签原值均值 = 两腿的超额基准 (grp 与二级回归 beta 用 mkt[kLong]).
 //     ok     标签侧有效: 非段末尾部 (见下) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0). 组可空 (不再整行作废).
@@ -118,7 +119,7 @@
 //     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付固定冲击).
 //     建仓冲击 imp[腿][a] (多腿买入 / 空腿卖出, 单一金额段, 买入已按 Config::max_impact 封顶; 腿成员格恒有限, 装载层断言) + 平仓固定冲击 fixed_impact.
 //     每 h 一份 CostAcc 沿 t 求和; 每期成本 cost(腿) = (Σ Δ⁺·imp + Σ 平仓量 · fixed_impact) / n_all (与 ls_period 同分母). 尾部行不攒.
-//     净多空 net_ls_period = ls_period − cost(kLong) − cost(kShort); 年化 net_ls = × span_per_year (满仓一年).
+//     净多空 net_ls_period = ls_period − ½ (cost(kLong) + cost(kShort)) (两腿各半资金, 同 ls); 年化 net_ls = × span_per_year (满仓一年).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
 //     Labels (持有期键 hd 与其标签 l[] 同处, 带满仓 cap) · Span (块形 T × A + 层每段行数 seg + 分块流式 t0_abs / t_lo; 整张量两者为 0).
@@ -305,6 +306,8 @@ struct Row {
 };
 
 // ---- 二级输出: 每持有期一份 ----
+// 二级口径版本: 字段不变但口径变时 +1, 落盘的旧 stat 读取即作废 (下次 Run 重算)
+inline constexpr int kStatSemver = 1; // 1: ls = 两腿平均 (原为两腿之和)
 // 一个逐行量 (rIC / rAC / LS) 沿 t 的矩 (见文件头【二级 HoldStat】)
 struct Moments {
   float mean = 0.f, sd = 0.f, ir = 0.f, t = 0.f, pos = 0.f, skew = 0.f, kurt = 0.f;
@@ -460,9 +463,9 @@ struct CostAcc {
   double entry(int l) const { return leg[l].buy > 0.0 ? leg[l].imp / leg[l].buy : 0.0; }
 };
 
-// 每期净多空 = ls_period − 两腿每期成本; 年化 = × span_per_year (s.hold 由 finish 填)
+// 每期净多空 = ls_period − 两腿每期成本的平均 (两腿各半资金, 同 ls_of); 年化 = × span_per_year (s.hold 由 finish 填)
 inline double net_ls_period(const HoldStat &s, const CostAcc &c, double fixed_impact) {
-  return ls_period(s) - c.cost(kLong, fixed_impact, s.n_all) - c.cost(kShort, fixed_impact, s.n_all);
+  return ls_period(s) - 0.5 * (c.cost(kLong, fixed_impact, s.n_all) + c.cost(kShort, fixed_impact, s.n_all));
 }
 inline double net_ls(const HoldStat &s, const CostAcc &c, double fixed_impact) { return net_ls_period(s, c, fixed_impact) * span_per_year(s); }
 // 年化换手 (倍/年, 单边, 每腿资金 1; 与成本同一份 Δw): 腿 l = Σ Δw⁺ / n_all × span_per_year; 两腿 = 两腿均. 越低越好
@@ -513,9 +516,9 @@ FACTOR_HD inline double book_den(double n, double cap) { return n > cap ? n : ca
 FACTOR_HD inline double leg_excess(const LegSum &l, double base, double cap) { return (l.s - l.n * base) / book_den(l.n, cap); }
 // 超额持仓收益 → 绝对持仓收益 (组 / 尾部同式): excess + 只数 · 基准 / max(只数, cap)
 inline double book_abs(double excess, double n, double base, double cap) { return excess + n * base / book_den(n, cap); }
-// 多空 = 两腿持仓收益之和 (leg / mkt 按 [kLegs])
+// 多空 = 两腿持仓收益平均 (两腿各半资金, 无杠杆; leg / mkt 按 [kLegs])
 FACTOR_HD inline double ls_of(const LegSum *leg, const double *mkt, double cap) {
-  return leg_excess(leg[kLong], mkt[kLong], cap) + leg_excess(leg[kShort], mkt[kShort], cap);
+  return 0.5 * (leg_excess(leg[kLong], mkt[kLong], cap) + leg_excess(leg[kShort], mkt[kShort], cap));
 }
 
 // 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 / 组计数 → grp (持仓收益) / cnt; 两腿 → ls; 两腿基准 → mkt.

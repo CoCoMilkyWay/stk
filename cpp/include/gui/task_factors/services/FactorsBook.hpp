@@ -64,6 +64,8 @@ struct Baskets {
   BookLines index;                             // 指数的逐行收益 (stride 1; 净值 = compound, 调用方) = fold_book: 行 t 一批 = 成分 (行 t 在池 ∧ T+1C
                                                //   标签有效; ∧ 该行 ind_l1 = k) 做多标签按权平均 (等权 1 / 总市值加权 = 行 t 的 close_day × total_shares, 不复权;
                                                //   缺股本权 0), 平仓行实现 1/h̄. 日层 T+1C = C(D) → C(D+1) 复权, 可成交 / 顺延在标签里
+  BookLines index_px;                          // 收盘价指数的逐行收益 (线序 / 权同 index; 不看可成交): 行 t 成分 = 上一有效 close 行 p 在池 (∧ 行 p ind_l1 = k),
+                                               //   收益 = 后复权 close_t / close_p − 1, 权 = 等权 1 / 行 p 总市值; 无成分 → 0. 与 index 之差 = 可成交 / 顺延的拖累
   std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal] 估值: 行 t 成分 = 上一行在池 (∧ 上一行 ind_l1 = k); 市值 = 本行收盘价 (停牌带上一有效价) × 上一行总股本;
                                                //   个股收益率 = 分子 / 市值, 按权平均: 等权 = 算术平均 (= 等权组合每元的分子) / 加权 (权 = 市值) = 整体法 Σ分子 / Σ市值;
                                                //   分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 分红,

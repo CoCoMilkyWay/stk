@@ -110,10 +110,11 @@ struct PoolCurve {
   std::string sig;                             // 算时的 PoolTask::sig
   std::vector<misc::Ymd> dates;                // [nd] 日层评估期
   BookLines index;                             // [kBaskets · kWeights][nd] 篮子指数的日收益 (线序 Baskets::index_line; UI compound 成点位)
+  BookLines index_px;                          // 同形, 收盘价指数 (Baskets::index_px, 不看可成交)
   std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal][kBaskets · nd] 篮子估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值 / 加权 = 整体法收益率; NaN = 当日不可算)
   double turn[kWeights] = {};                  // [Weight] 篮子 0 日均单边换手 (Baskets::turn; 再平衡 + 成分进出, 停牌 = 移出再移回)
   std::string error;
-  const float *index_of(size_t k, int w) const { return index.at(Baskets::index_line(k, w)); } // 篮子 k 的日收益 [nd]
+  const float *index_of(size_t k, int w, bool px) const { return (px ? index_px : index).at(Baskets::index_line(k, w)); } // 篮子 k 的日收益 [nd]
   const float *val_of(size_t k, int w, int m) const { return val[w][m].data() + k * dates.size(); }
 };
 struct PortfolioResult {
