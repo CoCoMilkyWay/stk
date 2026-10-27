@@ -47,8 +47,22 @@ bool FactorsService::run(FactorsRequest &req) {
   if (!req.spec.evaluate)
     return true;
   const bool ok = eval(req, flow());
-  flow().drop(); // 作用域块 / 引擎只活一轮 (Y 跨文件复用)
+  flow().drop(); // 块 / 引擎只活一轮 (Y 跨文件复用)
+  if (!ok) {     // 中断: 没评到的行也收尾 (判废后不再有新请求刷新)
+    std::lock_guard<std::mutex> lock(mutex);
+    for (FactorRow &r : rows)
+      r.status = RowStatus::Done;
+  }
   return ok;
+}
+
+void FactorsService::mark(size_t i, const std::string &why) {
+  FactorRow &r = rows[i];
+  if (r.status == RowStatus::Done)
+    return;
+  r.error = why;
+  r.status = RowStatus::Done;
+  broken_.fetch_add(1, std::memory_order_relaxed);
 }
 
 // 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)
@@ -75,10 +89,8 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
 // 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 eval_file
 bool FactorsService::eval(const FactorsRequest &req, FactorFlow &F) {
   TraceN("FactorsEvaluate");
-  // 有效权重行 → Expr (scan 已校验过, 这里必成功), 按文件分组 (scan 出的行同文件相邻)
+  // 待评行 (有效权重; scan 已校验过), 按文件分组 (scan 出的行同文件相邻)
   std::vector<std::vector<size_t>> idx;
-  std::vector<std::vector<factor::expr::Expr>> exprs;
-  std::vector<std::vector<factor::stat::Frame>> frames; // [k] 口径 (根 = 式 + 口径)
   {
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t i = 0; i < rows.size(); ++i) {
@@ -87,10 +99,8 @@ bool FactorsService::eval(const FactorsRequest &req, FactorFlow &F) {
         continue;
       }
       if (idx.empty() || rows[idx.back().front()].file != rows[i].file)
-        idx.emplace_back(), exprs.emplace_back(), frames.emplace_back();
+        idx.emplace_back();
       idx.back().push_back(i);
-      exprs.back().push_back(req.scope.ft->reparse(rows[i].expr));
-      frames.back().push_back(rows[i].frame);
     }
   }
   if (idx.empty()) {
@@ -101,81 +111,80 @@ bool FactorsService::eval(const FactorsRequest &req, FactorFlow &F) {
     return true;
   }
   return F.with_engine<RunProbes>(req.scope.gpu, [&](auto &eng) {
-    for (size_t f = 0; f < idx.size(); ++f) {
-      const Rc rc = eval_file(req, F, eng, idx[f], exprs[f], frames[f]);
-      if (rc == Rc::Ok)
-        continue;
-      if (rc == Rc::Stale) {
-        std::lock_guard<std::mutex> lock(mutex);
-        for (FactorRow &r : rows)
-          r.status = RowStatus::Done;
-      }
-      return abort_out(rc);
-    }
+    for (const std::vector<size_t> &f : idx)
+      if (!eval_file(req, F, eng, f))
+        return false;
     return true;
   });
 }
 
 template <class E>
-Rc FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx,
-                             const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames) {
+bool FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx) {
   TraceN("FactorsEvaluateFile");
-  // 该文件的权重 → 一张共享森林 (根 k ↔ idx[k]); 同根 (同式同口径) 的只评首个 (探针 ps[k0])
-  std::vector<Root> roots;
-  for (size_t k = 0; k < exprs.size(); ++k)
-    roots.push_back({&exprs[k], frames[k]});
-  std::vector<RunProbes> ps(idx.size());
+  // 该文件的权重 (条目 e ↔ 行 idx[e]) → 根集 (同式同口径共根, 只评一次) → 一张共享森林. rows 只本 worker 写, 读不用锁
+  RootSet rs;
+  for (const size_t i : idx)
+    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame);
   // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain)
   JobOut o;
-  o.job.ys = y_full(*req.scope.ft, req.scope.max_impact);
+  o.job.spec.y = y_full(*req.scope.ft, req.scope.max_impact);
   o.job.who = "Run";
-  std::vector<size_t> done;                                 // 本轮评完的 idx 下标 (森林走完 Ok 才一次回写)
-  const auto mark = [&](size_t k, const std::string &why) { // 行 BROKEN (调用方持锁)
-    rows[idx[k]].error = why;
-    rows[idx[k]].status = RowStatus::Done;
-    broken_.fetch_add(1, std::memory_order_relaxed);
-  };
-  const Rc rc = eval_job(
-      eng, F, req.scope, roots, [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; }, cancel_, *this, o, Nop{},
-      [&](const std::vector<std::string> &why) { // 值域已查: 坏根 BROKEN, 好根 Running
-        std::lock_guard<std::mutex> lock(mutex);
-        for (size_t k = 0; k < idx.size(); ++k)
-          if (!why[k].empty())
-            mark(k, why[k]);
-          else
-            rows[idx[k]].status = RowStatus::Running;
-      },
-      [&](int k0) { // 发布该根的全部权重 (dup 共根: 同一子树, eval_ms 同)
-        EvalStat st;
-        fill_eval(ps[static_cast<size_t>(k0)], stat_scope(req.scope, o.job.es, o.job.blocks.of(0).y, E::kName), o.eval_ms(k0), st);
-        {
-          std::lock_guard<std::mutex> lock(mutex);
-          for (size_t k = 0; k < idx.size(); ++k) {
-            if (o.fr.head[k] != k0)
-              continue;
-            FactorRow &r = rows[idx[k]];
-            static_cast<EvalStat &>(r) = st;
-            r.has_stat = true;
-            r.stat_from_file = false;
-            r.status = RowStatus::Done;
-            done.push_back(k);
-          }
+  std::vector<RunProbes> ps(rs.size());
+  for (RunProbes &p : ps)
+    p.hd = o.job.spec.y.hd;
+  std::vector<size_t> fin; // 本轮评完的条目 (森林走完 Ok 才一次回写)
+  struct Hooks : HookBase {
+    FactorsService &W;
+    const FactorsRequest &req;
+    const std::vector<size_t> &idx;
+    const RootSet &rs;
+    const std::vector<RunProbes> &ps;
+    JobOut &o;
+    std::vector<size_t> &fin;
+    // 值域已查: 坏根的条目 BROKEN, 好根的 Running
+    void plan(size_t b0, const Forest &, const std::vector<std::string> &why, const std::vector<uint8_t> &) {
+      assert(b0 == 0 && "eval_job 根全进一张森林");
+      std::lock_guard<std::mutex> lock(W.mutex);
+      for (size_t e = 0; e < idx.size(); ++e)
+        if (const std::string &w = why[static_cast<size_t>(rs.of[e])]; !w.empty())
+          W.mark(idx[e], w);
+        else
+          W.rows[idx[e]].status = RowStatus::Running;
+    }
+    // 发布根 k 的全部条目 (同根共一份 stat, eval_ms 同)
+    void done(int k) {
+      EvalStat st;
+      fill_eval(ps[static_cast<size_t>(k)], stat_scope(req.scope, o.job.dm, o.job.blocks.of(0).y, E::kName), o.eval_ms(k), st);
+      {
+        std::lock_guard<std::mutex> lock(W.mutex);
+        for (size_t e = 0; e < idx.size(); ++e) {
+          if (rs.of[e] != k)
+            continue;
+          FactorRow &r = W.rows[idx[e]];
+          static_cast<EvalStat &>(r) = st;
+          r.has_stat = true;
+          r.stat_from_file = false;
+          r.status = RowStatus::Done;
+          fin.push_back(e);
         }
-        publish();
-      });
-  if (rc == Rc::Empty) { // 评估期 / A 轴不成 → 该文件各行 BROKEN
+      }
+      W.publish();
+    }
+  };
+  const Rc rc = eval_job(eng, F, req.scope, rs.roots(), [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; }, o, Hooks{{}, *this, req, idx, rs, ps, o, fin});
+  const bool ok = settle(rc, o.job.why, [&](const std::string &why) { // 评估域不成 / 全部根坏 → 没收尾的行 BROKEN
     std::lock_guard<std::mutex> lock(mutex);
-    for (size_t k = 0; k < idx.size(); ++k)
-      mark(k, o.job.why);
-  }
-  if (rc == Rc::Ok && !done.empty()) { // 回写在锁外 (rows 只本 worker 写, 读不用锁)
-    std::vector<const FactorRow *> rs;
-    for (size_t k : done)
-      rs.push_back(&rows[idx[k]]);
-    WriteFactorStats(std::filesystem::path(req.scope.factor_dir) / rows[idx.front()].file, rs);
+    for (const size_t i : idx)
+      mark(i, why);
+  });
+  if (rc == Rc::Ok && !fin.empty()) { // 回写在锁外
+    std::vector<const FactorRow *> out;
+    for (const size_t e : fin)
+      out.push_back(&rows[idx[e]]);
+    WriteFactorStats(std::filesystem::path(req.scope.factor_dir) / rows[idx.front()].file, out);
   }
   publish();
-  return rc == Rc::Empty || rc == Rc::Broken ? Rc::Ok : rc;
+  return ok;
 }
 
 } // namespace GUI::Factors

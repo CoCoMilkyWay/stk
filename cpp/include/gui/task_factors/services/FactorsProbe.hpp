@@ -47,10 +47,10 @@ inline double group_abs(const factor::stat::Row &r, int k, double cap) {
 //   need              原料位 (引擎据此算 / 拷回)
 //   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
 //   whole             只整期一块 (不能分块流式; 有则作业整期一块)
-//   open(c)           本块评前 (单线程; 落地平面在作用域首块定形)
+//   open(c)           本块评前 (单线程; 落地平面在评估域首块定形)
 //   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内行 ∈ [t_lo, T), hi = Probes::hd 下标)
 //   root(c, v)        本块原料就绪 (全核)
-//   finish(c)         全部块之后 (c = 末块)
+//   finish(c)         末块 root 之后 (c 同 root)
 //   bytes(sh, H)      宿主另占 (字节; 预算)
 // 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按绝对行 t0_abs + t)
 enum Need : uint8_t {
@@ -82,15 +82,15 @@ struct RootView {
   const factor::stat::Accum *acc = nullptr; // [L.hd.n] 本块累加
   Ranks ranks;                              // (kNeedRanks)
 };
-// 探针的上下文 (一块)
+// 探针的上下文 (一块; 引擎 EngineBase::roots 建, 同根的 open / root / finish 同一份)
 struct Ctx {
   misc::exec::ForkJoin &ex;
-  const ScopeCache &c;
-  const factor::stat::Labels &L;             // 所评持有期 (Probes::hd) 的标签 + cap
-  factor::cpu::stat::Workspace *w = nullptr; // Stat 宿主工作区 (CPU / GPU 逐根时有; 批核 / finish 空)
+  const Block &c;
+  const factor::stat::Labels &L;             // 所评持有期 (Probes::hd) 的标签 + cap (引擎会话那份: CPU 已预处理)
+  factor::cpu::stat::Workspace *w = nullptr; // Stat 宿主工作区 (CPU / GPU 逐根时有; 批核空)
   factor::stat::Span s() const { return c.span(); }
 };
-// 落地平面: 作用域首块 (t0_abs = 0) 定形填 fill, 其后各块按绝对行写
+// 落地平面: 评估域首块 (t0_abs = 0) 定形填 fill, 其后各块按绝对行写
 template <class T>
 void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s, T fill = T{}) {
   if (s.t0_abs == 0)
@@ -101,7 +101,7 @@ void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s, T fill 
 template <class... P>
 struct Probes {
   std::tuple<P...> p;
-  factor::stat::Holds hd; // 只评这些持有期 (n = 0 → Y 全部); 钩子的 hi 按它
+  Holds hd; // 所评持有期 (键须都在 Y 里; 调用方恒填); 钩子的 hi 按它
   static constexpr uint8_t need = (uint8_t{0} | ... | P::need);
   static constexpr bool cells = (false || ... || !std::is_same_v<typename P::Ext, factor::cpu::stat::NoExt>);
   static constexpr bool whole = (false || ... || P::whole);
@@ -128,10 +128,8 @@ struct Probes {
   void root(const Ctx &c, const RootView &v) {
     std::apply([&](P &...q) { (q.root(c, v), ...); }, p);
   }
-  void finish(misc::exec::ForkJoin &ex, const ScopeCache &c) {
-    const factor::stat::Labels L = labels_pick(labels_of(c.y), hd);
-    const Ctx cx{ex, c, L, nullptr};
-    std::apply([&](P &...q) { (q.finish(cx), ...); }, p);
+  void finish(const Ctx &c) {
+    std::apply([&](P &...q) { (q.finish(c), ...); }, p);
   }
 };
 // accum_rows 的 sink (Stat/Cpu.hpp): 行进探针
@@ -252,7 +250,7 @@ struct IcPdfP : ProbeBase {
       pdf[i].fill(kll[static_cast<size_t>(i)], 3);
   }
 };
-// 落地探针的三种形 (探针基类; open 在作用域首块定形, 其后各块按绝对行写):
+// 落地探针的三种形 (探针基类; open 在评估域首块定形, 其后各块按绝对行写):
 //   LandRowsP<R>  逐行 [hd.n][rows_all] 进 dst (调用方的缓冲; Inspect RicP): at(hi, t) = 块内行 t 的格
 //   LandCellsP<V> 逐格 [rows_all][A] 进 dst (Inspect RxP / RxAllP): stat_at(s) = 本块统计首行的首格
 //   LinesP<K>     净值线 (FactorsBook RowLines, 线 hi · K + k; Inspect NavP / Portfolio CurveP): at(hi, k, t) = 块内行 t 这一批的收益;
@@ -289,7 +287,7 @@ struct LinesP : ProbeBase {
     if (s.t0_abs == 0) {
       x.reset(c.L.hd.n * K, c.c.rows_all());
       for (int i = 0; i < x.n; ++i)
-        x.hold[static_cast<size_t>(i)] = c.L.hd.h[i / K];
+        x.hold[static_cast<size_t>(i)] = c.L.hd.k[i / K];
     }
     assert(x.n == c.L.hd.n * K && x.T == c.c.rows_all() && "净值线与作用域不符");
     t0 = s.t0_abs;

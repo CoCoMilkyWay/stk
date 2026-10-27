@@ -1476,7 +1476,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
           assert(ft.seg == res.seg && "字段表层与结果层不符");
           kreq->level = factor_level(res.seg).lvl;
           for (int i = 0; i < 4; ++i)
-            kreq->col[i] = ft.y.ohlc[i].col;
+            kreq->col[i] = ft.b.ohlc[i].col;
           kreq->col[4] = ft.y.ts.col;
         }
       }

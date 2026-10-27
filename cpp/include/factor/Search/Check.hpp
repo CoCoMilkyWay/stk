@@ -81,7 +81,7 @@ inline void reference(const Data &d, int c, int threads, Ref &r) {
 inline void to_ref(const Result &res, const factor::stat::Holds &hd, int seg, Ref &r) {
   r.stat.resize(static_cast<size_t>(hd.n));
   for (int i = 0; i < hd.n; ++i)
-    r.stat[static_cast<size_t>(i)] = res.acc[i].finish(hd.h[i], seg);
+    r.stat[static_cast<size_t>(i)] = res.acc[i].finish(hd.k[i], seg);
 }
 
 // ---- 比较: 二级逐字段 (compare_stat) ----

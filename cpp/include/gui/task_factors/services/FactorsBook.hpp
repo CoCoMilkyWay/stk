@@ -77,7 +77,7 @@ struct Baskets {
 };
 // 篮子 (日层; Y = 块的门控 + T+1C 标签, B = 同块的原料) → 指数 / 估值 / 换手 (Baskets 注)
 Baskets baskets(misc::exec::ForkJoin &ex, const YPlanes &Y, const BPlanes &B);
-// 池整体等权线 (= 篮子 0 等权指数; 线 i = 持有期 y.hd.h[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
+// 池整体等权线 (= 篮子 0 等权指数; 线 i = 持有期 y.hd.k[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
 BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y);
 
 } // namespace GUI::Factors

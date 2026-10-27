@@ -378,7 +378,7 @@ struct DevLabels {
     factor::stat::assert_labels(host, s.g.S, false);
     assert(host.hd.n == H);
     for (int i = 0; i < H; ++i)
-      assert(host.hd.h[i] == L.hd.h[i] && "标签持有期与会话不符");
+      assert(host.hd.k[i] == L.hd.k[i] && "标签持有期与会话不符");
     L.cap = host.cap;
     for (int i = 0; i < H; ++i)
       assert(host.l[i].eo == host.l[0].eo && "各持有期的可成交码须是同一张");

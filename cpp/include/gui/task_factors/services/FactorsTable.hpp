@@ -1,5 +1,5 @@
 // FactorsTable — 因子层公共类型 (GUI 线程建, worker 只读; 四服务与装载层共用):
-//   因子层 FactorLevel ↔ 网格层 / 标签档 / 因子子目录; 字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 / OHLC / 估值列);
+//   因子层 FactorLevel ↔ 网格层 / 标签档 / 因子子目录; 字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 ↔ B OHLC / 复权 / 股本 / 估值 / 行业);
 //   作用域 FactorScope + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat (StatScope / HoldStat / CostTier / MiniPdf) + AlphaDist.
 #pragma once
 
@@ -80,10 +80,10 @@ struct LegCol {
 };
 const LegCol *find_leg(const std::vector<LegCol> &cols, int key); // key 不在 → nullptr
 const LegCol &leg_of(const std::vector<LegCol> &cols, int key);   // key 不在 → assert
-// X ↔ Y ↔ B 三侧 (FactorsLoad: 叶 LeafId / YSpec → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
+// X ↔ Y ↔ B 三侧 (XCols / YCols / BCols ↔ FactorsLoad 叶 LeafId / YSpec / 篮子 → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
 //   X = 因子输入叶 = 标签档及 Bar 档 (Lob 标签层才有 lob.*) 不细于网格的各层全部列, 随因子变
-//   Y = 门控 / 标签 / 成本 = 标签档网格层本层列, 只随作用域变
-//   B = 篮子 (OHLC close / 复权 / 股本 / 估值 / 行业) = 日层本层列, 只 Portfolio 池线
+//   Y = 门控 / 标签 / 成本 = 标签档网格层本层列, 只随评估域变
+//   B = 价格 / 篮子原料 (OHLC / 复权 / 股本 / 估值 / 行业) = 标签档网格层本层列 (OHLC 各层: Inspect K 线; 其余只日层: Portfolio 池线)
 // 叶的身份 = leaves 下标 (字段表编译期定 → 同层进程内不变; 叶名只在 Dag / 解析边界, 装载 / 缓存 / 引擎全按 LeafId)
 using LeafId = uint32_t;
 struct XCols {
@@ -100,7 +100,7 @@ enum PoolVal : int { kValEp,
                      kValCp,
                      kValDy };
 inline constexpr int kPoolVals = 5;
-// 各口的日层输入列 (YCols::val 下标 = PoolVal): 归母净利 TTM / 归母权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM (DY 的分子 load_b 还原)
+// 各口的日层输入列 (BCols::val 下标 = PoolVal): 归母净利 TTM / 归母权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM (DY 的分子 load_b 还原)
 inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm"};
 // 篮子指数 / 估值两权重 (FactorsLoad load_b → PoolCurve → Portfolio NAV 池线 / VAL 价格线 + Band)
 enum Weight : int { kWeightEq,    // 等权
@@ -109,20 +109,23 @@ inline constexpr int kWeights = 2;
 struct YCols {
   Col ts;                     // ts_valid (当日有成交)
   Col cs;                     // cs_valid (标签 + 截面门控平面)
-  Col ohlc[4];                // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
-  Col adj_factor;             // 复权因子 (只日层设; 行 D = D+1 日的因子): 日层池篮子换手漂移的后复权收盘 = close_day(D) × 行 D−1 的本列
-  Col total_shares;           // 总股本 (只日层设): 池估值的市值 + 池加权指数的权重 = close_day × 本列
-  Col val[kPoolVals];         // [PoolVal] 估值输入 (kPoolValCols; 只日层设): 池估值 EP / BP / SP / CP / DY (整体法)
-  Col ind_l1;                 // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)
   Col entry;                  // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 契约【仓位感知】)
   std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
   std::vector<LegCol> costs;  // 按 key 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 标签无)
+};
+struct BCols {
+  Col ohlc[4];        // open high low close (K 线, 不复权): lob_<x> / <x>_<n>min / <x>_day
+  Col adj_factor;     // 复权因子 (只日层设; 行 D = D+1 日的因子): 日层池篮子换手漂移的后复权收盘 = close_day(D) × 行 D−1 的本列
+  Col total_shares;   // 总股本 (只日层设): 池估值的市值 + 池加权指数的权重 = close_day × 本列
+  Col val[kPoolVals]; // [PoolVal] 估值输入 (kPoolValCols; 只日层设): 池估值 EP / BP / SP / CP / DY (整体法)
+  Col ind_l1;         // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)
 };
 struct FeatureTable {
   int seg = 0;                      // 因子层 (factor_level(seg))
   const Feature *feature = nullptr; // 元数据 (读计划 analysis::read_plan; SharedData 常驻)
   XCols x;
   YCols y;
+  BCols b;
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER)
   // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调
   bool check_grid(const factor::expr::Expr &e, std::string &err) const;
@@ -137,7 +140,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg);
 std::string now_string();
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) = 作用域 + 服务自己的 Spec (与 analysis::Request<Spec> 对仗) ----
-// 作用域: 四服务同一份; 评估期 / A 轴按因子在 worker 解析 (FactorsLoad eval_scope)
+// 作用域: 四服务同一份; 评估期 / A 轴按因子在 worker 解析 (FactorsScope domain_of)
 struct FactorScope {
   int seg = 0;                            // 因子层 (= ft->seg)
   std::string pool;                       // 因子池
@@ -221,12 +224,6 @@ struct EvalStat {
   const factor::stat::CostAcc &turn_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
     assert(&h >= hold && &h < hold + n_hold);
     return turn[&h - hold];
-  }
-  const CostTier *find_cost(int amt) const {
-    for (const CostTier &c : costs)
-      if (c.amt == amt)
-        return &c;
-    return nullptr;
   }
 };
 

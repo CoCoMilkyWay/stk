@@ -29,17 +29,16 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
   }
 }
 
-namespace {
-// 池 l 落了第 d 天 (按库清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
-bool landed(const ReadScope &s, PoolId l, misc::Ymd d) {
-  const FeatureLib &lib = s.libs[l];
+bool landed(const FeatureLib &lib, misc::Ymd d) {
   return std::binary_search(lib.dates.begin(), lib.dates.end(), d) && FeatureRead::has_date(lib.tier, lib.dir, d);
 }
+
+namespace {
 // 第 d 天池集里落了盘的池
 PoolMask landed_mask(const ReadScope &s, misc::Ymd d) {
   PoolMask m = 0;
   for (const PoolId l : pool_ids())
-    if (s.has(l) && landed(s, l, d))
+    if (s.has(l) && landed(s.libs[l], d))
       m |= pool_bit(l);
   return m;
 }
@@ -209,7 +208,7 @@ SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t l
       return memo;
     PoolMask m = all.has[i];
     for (const PoolId l : pool_ids())
-      if (scope.has(l) && !(scope.days & pool_bit(l)) && landed(scope, l, all.dates[i]))
+      if (scope.has(l) && !(scope.days & pool_bit(l)) && landed(scope.libs[l], all.dates[i]))
         m |= pool_bit(l);
     memo_i = i;
     memo = m;

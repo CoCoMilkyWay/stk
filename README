@@ -184,15 +184,17 @@ stk/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
 │   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc) → 逐根发布行, 文件走完 (未取消) 一次回写
 │   │   │       │   │                                 #    · 表中 score / util 由 stat 现算
-│   │   │       │   │                                 #    · FactorWorker<D, Req>: 四服务同一份骨架 (进度面 + message + 常驻 FactorFlow + 库判废收尾 abort_out)
+│   │   │       │   │                                 #    · FactorWorker<D, Req>: 四服务同一份骨架 (进度面 + message + 常驻 FactorFlow + 结局收尾 settle / abort_out)
 │   │   │       │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorWeights (Search) / WriteFactorStats (Run)
 │   │   │       │   │                                 #    · Run 只回写 run + stats[i] (与 weights 同序), expr / weights 不动; 破碎因子标 BROKEN, 不删
 │   │   │       │   ├── FactorsTable.hpp              # 🖥️ 因子层公共类型: FactorLevel / FeatureTable / FactorScope / Request<Spec> / FactorRef / EvalStat (StatScope / HoldStat / CostTier / MiniPdf) / AlphaDist
-│   │   │       │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): EvalScope (库 + 评估期 + 资产轴) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
+│   │   │       │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): Domain 评估域 (库 + 评估期 + 资产轴) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
-│   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架: load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt] + 满仓只数) / load_b (日层篮子原料 BPlanes)
+│   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
+│   │   │       │   │                                 #      + 满仓只数) / load_b (日层篮子原料 BPlanes); XCols / YCols / BCols ↔ XPlanes / YPlanes / BPlanes 一一对仗
 │   │   │       │   │                                 #    · 标签 / 成本恒取同池本层列 (同行); YSpec::cap > 0 = 外给满仓只数 (n_full_of 预扫), 不再自数
-│   │   │       │   │                                 #    · ScopeCache + ensure_xy = 作用域块 (Y 常驻, X 按服务留 / 补); stat_scope = 结果作用域头
+│   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec / b 篮子) + ensure_block = 块 Block (Y 常驻, X 按服务留 / 补); stat_scope = 结果作用域头
+│   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集; Pick = 子集下标, labels_pick 取会话持有期子集
 │   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
 │   │   │       │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
 │   │   │       │   │                                 #    · baskets: 日层篮子 (池整体 + 行业) 指数 / 估值 (PoolVal 五口数组) / 换手, 吃 Y 的门控 + T+1C 标签与 BPlanes; pool_line = 池整体等权 (只吃 Y)
@@ -203,17 +205,19 @@ stk/
 │   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / eval (森林单入口, 原料后端 ready / view)
 │   │   │       │   │                                 #      CPU 恒逐根 Stat (Search 也是, 抽样行拷 rx); GPU 逐根 stat_eval / 批核 (kBatched: 只累加 + 抽样行) 走完森林一次 search_eval
 │   │   │       │   │                                 #      FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU; 每轮 drop_engines)
-│   │   │       │   │                                 #    · 管线 (四服务同一份): Job → open_job (作用域 + 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块 load_block
-│   │   │       │   │                                 #      → 块探针 on_block → 逐批 plant → plan_forest (坏根跨块粘住) → eval, 末块 finish); Run / Inspect / Portfolio 走 eval_job (一趟一张森林;
-│   │   │       │   │                                 #      根 = 式 + 口径; 探针 whole (AlphaP) 或无根 → 整期一块, 否则前带 = 回看 + lag 按预算分块); Search 每趟一次 pass
+│   │   │       │   │                                 #    · 管线 (四服务同一份): Job → open_job (评估域 + 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块 load_block
+│   │   │       │   │                                 #      → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node), 末块 finish → hk.done); Run / Inspect / Portfolio
+│   │   │       │   │                                 #      走 eval_job (根集 RootSet 去重 → 一趟一张森林; 探针 whole (AlphaP) 或无根 → 整期一块, 否则前带 = 回看 + lag 按预算分块); Search 每趟一次 pass
+│   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
+│   │   │       │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
 │   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
 │   │   │       │   │                                 #    · Job = 规格 + 作用域 + 计划 + 块 (Blocks: 共享 F.c / 作业自有); JobOut = Job + 森林 + 节点耗时
-│   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: aborted → abort_out; 非 Ok → Job::why
+│   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: settle (aborted → abort_out; Empty / Broken → fail(Job::why))
 │   │   │       │   │                                 #    · 四服务的差别只在探针元组; GPU 逐根路径按探针 hd 取会话持有期子集
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
 │   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池) 一张森林 (根 = 去重规范串, CurveP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
-│   │   │       │   │                                 #    · PoolTask 各池日层篮子 (eval_job 无根, 块探针 baskets); 按条目缓存, 只算新增, 根评完即逐条发布
+│   │   │       │   │                                 #    · PoolTask 各池日层篮子 (eval_job 无根, 块钩子 baskets); 按条目缓存, 只算新增, 根评完即逐条发布
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── StatJson.hpp                  # 🖥️ HoldStat / CostTier / MiniPdf ↔ JSON; EvalStat = scope_json (run) + eval_json (stats[i]) ⇄ load_eval
 │   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Search 按钮, 单线程)

@@ -33,7 +33,7 @@ std::string out_of_dom(misc::exec::ForkJoin &ex, const factor::check::Plane &p, 
 // 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
 // (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判.
 // 融合节点只装逐点 TS 算子, 无严格域元
-int plan_forest(misc::exec::ForkJoin &ex, const ScopeCache &c, const factor::Dag &d, std::vector<std::string> &why, std::vector<uint8_t> &need) {
+int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, std::vector<std::string> &why, std::vector<uint8_t> &need) {
   assert(!d.roots.empty() && "森林 (build_forest) 才有根表");
   assert((why.empty() || why.size() == d.roots.size()) && "why 入参 = 空 或 各根的已知坏因");
   const std::vector<LeafId> ids = c.ft->x.ids(d.feats);

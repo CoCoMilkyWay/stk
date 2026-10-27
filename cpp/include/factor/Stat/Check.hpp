@@ -85,7 +85,7 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, int seg, std::mt199
   d.hd.n = 0;
   for (int h : kHolds)
     if (hold_ok(h, geo_of(seg)))
-      d.hd.h[d.hd.n++] = h;
+      d.hd.k[d.hd.n++] = h;
   assert_holds(d.hd, seg);
   Plane z;
   factor::check::fill(z, Gen::NORM, pr, T, A, seg, rng);

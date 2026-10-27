@@ -162,14 +162,14 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
     const std::string code = lv.tier == TierId::Lob ? std::string("lob_") + ohlc[i]
                              : lv.lvl == L_1day     ? std::string(ohlc[i]) + "_day"
                                                     : std::string(ohlc[i]) + "_" + std::to_string(level_bin_minutes(lv.lvl)) + "min";
-    t.y.ohlc[i] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
+    t.b.ohlc[i] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, code.c_str())));
   }
   if (lv.lvl == L_1day) {
-    t.y.adj_factor = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "adj_factor")));
-    t.y.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
+    t.b.adj_factor = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "adj_factor")));
+    t.b.total_shares = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "total_shares")));
     for (int m = 0; m < kPoolVals; ++m)
-      t.y.val[m] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, kPoolValCols[m])));
-    t.y.ind_l1 = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "ind_l1")));
+      t.b.val[m] = own(static_cast<uint32_t>(meta.col_of(lv.lvl, kPoolValCols[m])));
+    t.b.ind_l1 = own(static_cast<uint32_t>(meta.col_of(lv.lvl, "ind_l1")));
   }
   struct Lab {
     bool is_long;

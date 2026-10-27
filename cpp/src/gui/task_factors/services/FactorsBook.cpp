@@ -88,7 +88,7 @@ BookLines pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mc
   RowLines x; // [hold][篮子线][T] 行 t 这一批的篮子收益
   x.reset(static_cast<int>(H * nb), Y.sh.T);
   for (size_t i = 0; i < H * nb; ++i)
-    x.hold[i] = Y.hd.h[i / nb];
+    x.hold[i] = Y.hd.k[i / nb];
   ex.rows(Y.sh.T, [&](int t0, int t1, int) {
     std::vector<double> s(2 * H * nb); // [hold][篮子线][Σ权·r, Σ权]
     for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
@@ -101,7 +101,7 @@ BookLines pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mc
           const LegPlane &lab = Y.labels[hi];
           if (!lab.m[i])
             continue;
-          const factor::stat::Chain c = factor::stat::chain_of(static_cast<int>(t), Y.sh.T, Y.sh.A, Y.hd.h[hi], g, 0);
+          const factor::stat::Chain c = factor::stat::chain_of(static_cast<int>(t), Y.sh.T, Y.sh.A, Y.hd.k[hi], g, 0);
           const float y[factor::stat::kLegs] = {factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]), factor::cpu::stat::h2f(lab.v[factor::stat::kShort][i])};
           // 篮子 k 的成员码 code (已偏到本格) / 判据 in
           const auto book = [&](size_t k, const uint8_t *code, const auto &in) {
@@ -271,7 +271,7 @@ void pool_turn(misc::exec::ForkJoin &ex, const factor::check::Plane &close, cons
 
 Baskets baskets(misc::exec::ForkJoin &ex, const YPlanes &Y, const BPlanes &B) {
   assert(B.sh == Y.sh && "篮子原料与 Y 同块");
-  assert(Y.hd.n == 1 && Y.hd.h[0] == factor::stat::hold_close(1) && "篮子的持有期只 T+1C (C(D) → C(D+1))");
+  assert(Y.hd.n == 1 && Y.hd.k[0] == factor::stat::hold_close(1) && "篮子的持有期只 T+1C (C(D) → C(D+1))");
   Baskets o;
   o.index = pool_index(ex, Y, B.mcap.data(), B.ind.data(), static_cast<int>(Baskets::kBaskets), kWeights);
   const std::vector<int32_t> prev = prev_rows(ex, B.close, B.sh.T, B.sh.A);

@@ -243,23 +243,28 @@ inline std::string hold_name(int hold) {
   return "T+" + std::to_string(hold_days(hold)) + (hold_is_open(hold) ? "O" : "C");
 }
 
-// ---- 参数: 持有期键列表. 每个 h 对应一组标签 ----
-struct Holds {
+// ---- 参数: 键列表 (持有期键 Holds: 每个对应一组标签; 金额段键 Amts: 每个对应一组成本) ----
+template <int N>
+struct Keys {
   int n = 0;
-  int h[kMaxHold] = {};
+  int k[N] = {};
 };
-// hold 在 hd 里的下标; 不在 → −1
-inline int hold_index(const Holds &hd, int hold) {
-  for (int i = 0; i < hd.n; ++i)
-    if (hd.h[i] == hold)
+using Holds = Keys<kMaxHold>;
+using Amts = Keys<kMaxCost>;
+// key 在 ks 里的下标; 不在 → −1
+template <int N>
+inline int key_index(const Keys<N> &ks, int key) {
+  for (int i = 0; i < ks.n; ++i)
+    if (ks.k[i] == key)
       return i;
   return -1;
 }
+inline int hold_index(const Holds &hd, int hold) { return key_index(hd, hold); }
 
 inline void assert_holds(const Holds &hd, int seg) {
   assert(hd.n >= 1 && hd.n <= kMaxHold);
   for (int i = 0; i < hd.n; ++i) {
-    const int h = hd.h[i];
+    const int h = hd.k[i];
     assert(hold_key_ok(h) && "持有期键越界 (close = kHoldClose, T+N = hold_open(N) / hold_close(N))");
     assert(hold_ok(h, geo_of(seg)) && "持有期在本层不合法 (分钟型须是行长整数倍且尾部不吞整段; 日层无 close)");
     (void)h;
@@ -288,7 +293,7 @@ struct Batch { // C 个同形候选 (同池 g / 同口径 / 同标签集); Stat 
   int C = 0;
   Plane x[kMaxBatch];
 };
-struct Labels { // l[i] ↔ hd.h[i]
+struct Labels { // l[i] ↔ hd.k[i]
   Holds hd;
   Label l[kMaxHold];
   double cap = 0.0; // 满仓一腿只数 (【持仓口径】; 调用方给 n_full)
@@ -758,7 +763,7 @@ struct Accum {
 inline void finish_all(const Accum *acc, const Holds &hd, int seg, HoldStat *out) {
   assert(acc && out);
   for (int i = 0; i < hd.n; ++i)
-    out[i] = acc[i].finish(hd.h[i], seg);
+    out[i] = acc[i].finish(hd.k[i], seg);
 }
 
 } // namespace factor::stat

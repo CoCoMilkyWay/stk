@@ -36,47 +36,23 @@ static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelLob:
 
 namespace GUI::Factors {
 
-factor::stat::Holds holds_of(const std::vector<int> &keys) {
-  assert(keys.size() <= static_cast<size_t>(factor::stat::kMaxHold) && "持有期数超 Stat 标签组容量 (kMaxHold)");
-  factor::stat::Holds hd;
-  hd.n = static_cast<int>(keys.size());
-  std::copy(keys.begin(), keys.end(), hd.h);
-  return hd;
+YSpec y_full(const FeatureTable &ft, double max_impact) {
+  return {keys_of<Holds>(ft.y.labels), keys_of<Amts>(ft.y.costs), static_cast<float>(max_impact)};
 }
-
-Amts amts_of(const std::vector<int> &keys) {
-  assert(keys.size() <= static_cast<size_t>(factor::stat::kMaxCost) && "金额段数超 Stat 成本容量 (kMaxCost)");
-  Amts ad;
-  ad.n = static_cast<int>(keys.size());
-  std::copy(keys.begin(), keys.end(), ad.a);
-  return ad;
-}
-
-namespace {
-std::vector<int> keys_of(const std::vector<LegCol> &cols) {
-  std::vector<int> keys;
-  for (const LegCol &c : cols)
-    keys.push_back(c.key);
-  return keys;
-}
-} // namespace
-
-factor::stat::Holds all_holds(const FeatureTable &ft) { return holds_of(keys_of(ft.y.labels)); }
-Amts all_amts(const FeatureTable &ft) { return amts_of(keys_of(ft.y.costs)); }
-
-YSpec y_full(const FeatureTable &ft, double max_impact) { return {all_holds(ft), all_amts(ft), static_cast<float>(max_impact)}; }
 
 std::string YSpec::key() const {
   std::string k = "h";
   for (int i = 0; i < hd.n; ++i)
-    k += "," + std::to_string(hd.h[i]);
+    k += "," + std::to_string(hd.k[i]);
   k += "|a";
   for (int i = 0; i < ad.n; ++i)
-    k += "," + std::to_string(ad.a[i]);
-  return k + "|cap" + std::to_string(max_impact) + "|n" + std::to_string(cap) + (basket ? "|b" : "");
+    k += "," + std::to_string(ad.k[i]);
+  return k + "|cap" + std::to_string(max_impact) + "|n" + std::to_string(cap);
 }
 
-double cell_bytes(const YSpec &s) { return 2.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (s.basket ? kBasketCellBytes : 0.0); }
+double cell_bytes(const BlockSpec &s, size_t nx) {
+  return kPlaneBytes * static_cast<double>(nx) + 2.0 + kPlaneBytes * s.y.hd.n + 4.0 * s.y.ad.n + (s.b ? kBasketCellBytes : 0.0);
+}
 
 size_t XPlanes::count() const {
   size_t n = 0;
@@ -141,64 +117,63 @@ struct ColList {
 };
 
 // 张量形 (容量断言在此): days × A → T = days · seg
-Shape shape_of(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1) {
-  assert(d0 < d1 && d1 <= es.days.size());
-  assert(level_valid_rows(factor_level(ft.seg).lvl) == static_cast<size_t>(ft.seg));
+Shape shape_of(const Io &io, const Chunk &k) {
+  assert(k.d0 < k.d1 && k.d1 <= io.dm.days.size());
+  assert(level_valid_rows(factor_level(io.ft.seg).lvl) == static_cast<size_t>(io.ft.seg));
   Shape s;
-  s.days = static_cast<int>(d1 - d0);
-  s.A = static_cast<int>(es.rs.axis.size());
-  s.seg = ft.seg;
+  s.days = k.days();
+  s.A = static_cast<int>(io.dm.rs.axis.size());
+  s.seg = io.ft.seg;
   s.T = s.days * s.seg;
   assert(s.A >= 2 && s.A <= factor::stat::kMaxA && "资产轴超 Stat 容量 (kMaxA)");
   assert(static_cast<long long>(s.T) * s.A < (1LL << 31));
   return s;
 }
 
-// 逐天并行读骨架 (load_x / load_y 同一份): cols → 一张读计划 (同 (池, 层) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
+// 逐天并行读骨架 (load_x / load_y / load_b / n_full_of 同一份): cols → 一张读计划 (同 (池, 层) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
 // on_day(view, day, d, tid) 散进平面 (view(c, t) = 平面列 c 在网格行 t 的源行视图). prog.begin Loading (日数), 每天 publish(1). false = 取消 / 库判废
 template <class OnDay>
-bool read_days(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, std::vector<ColRef> cols,
-               misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog, OnDay &&on_day) {
+bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&on_day) {
   const size_t n_cols = cols.size();
   assert(n_cols > 0);
-  prog.begin(Phase::Loading, d1 - d0);
-  const ReadPlan plan = analysis::read_plan(*ft.feature, factor_level(ft.seg).lvl, analysis::Rows::AsOf, /*carry=*/true, std::move(cols));
+  io.prog.begin(Phase::Loading, k.d1 - k.d0);
+  const ReadPlan plan = analysis::read_plan(*io.ft.feature, factor_level(io.ft.seg).lvl, analysis::Rows::AsOf, /*carry=*/true, std::move(cols));
   std::vector<std::pair<uint32_t, uint32_t>> at(n_cols); // 平面列 → (源, 源内值列)
   for (size_t si = 0; si < plan.srcs.size(); ++si)
-    for (size_t k = 0; k < plan.srcs[si].slot.size(); ++k)
-      at[plan.srcs[si].slot[k]] = {static_cast<uint32_t>(si), static_cast<uint32_t>(k)};
-  const Readers rd = es.rs.readers(lr.ptr);
-  std::vector<IoSlot> slots(static_cast<size_t>(ex.threads()));
+    for (size_t j = 0; j < plan.srcs[si].slot.size(); ++j)
+      at[plan.srcs[si].slot[j]] = {static_cast<uint32_t>(si), static_cast<uint32_t>(j)};
+  const Readers rd = io.dm.rs.readers(io.lr.ptr);
+  std::vector<IoSlot> slots(static_cast<size_t>(io.ex.threads()));
   for (IoSlot &s : slots)
-    s.prepare(plan, es.rs.sizes(), n_cols);
+    s.prepare(plan, io.dm.rs.sizes(), n_cols);
 
-  ex.tasks(static_cast<int>(d1 - d0), [&](int di, int ti) {
-    if (cancel.load(std::memory_order_relaxed))
+  io.ex.tasks(static_cast<int>(k.d1 - k.d0), [&](int di, int ti) {
+    if (io.cancel.load(std::memory_order_relaxed))
       return;
     const size_t d = static_cast<size_t>(di), tid = static_cast<size_t>(ti);
-    const Day &day = es.days[d0 + d];
-    IoSlot &io = slots[tid];
+    const Day &day = io.dm.days[k.d0 + d];
+    IoSlot &slot = slots[tid];
     for (size_t si = 0; si < plan.srcs.size(); ++si)
-      load_source(rd, plan.srcs[si], day, plan.srcs[si].cs.io, io.src[si]);
-    if (lr.stale())
+      load_source(rd, plan.srcs[si], day, plan.srcs[si].cs.io, slot.src[si]);
+    if (io.lr.stale())
       return;
     const auto view = [&](size_t c, size_t t) {
-      const auto [si, k] = at[c];
+      const auto [si, j] = at[c];
       const Source &s = plan.srcs[si];
       View w;
       w.ids = rd.ids[s.pool];
-      w.vt = s.cs.vts[k];
+      w.vt = s.cs.vts[j];
       size_t r = 0;
-      if (const FeatureRead::DayColumns *dc = source_row(s, io.src[si], t, r)) {
-        w.v = col_row(dc, k, r);
+      if (const FeatureRead::DayColumns *dc = source_row(s, slot.src[si], t, r)) {
+        w.v = col_row(dc, j, r);
         w.g = s.cs.gated() ? col_row(dc, s.cs.n(), r) : nullptr;
       }
       return w;
     };
     on_day(view, day, d, tid);
-    prog.publish(1);
+    io.prog.publish(1);
   });
-  return !cancel.load(std::memory_order_relaxed) && !lr.stale();
+  return !io.cancel.load(std::memory_order_relaxed) && !io.lr.stale();
 }
 
 // 一天的截面门控 (load_y / n_full_of 同一份): gate[t·A + a], t < VR = cs_valid ∧ 当日有数据 (∧ 子池成员); has = 本线程 [A] 暂存.
@@ -206,7 +181,7 @@ bool read_days(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr
 // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
 // 子池 (Bar 标签层): 再与当日成员相与, 池外格同样不进截面
 template <class ViewFn>
-void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const EvalScope &es, const Day &day, size_t VR, size_t A, std::vector<uint8_t> &has,
+void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const Domain &dm, const Day &day, size_t VR, size_t A, std::vector<uint8_t> &has,
               uint8_t *gate) {
   feature_storage_t x;
   std::fill(has.begin(), has.end(), static_cast<uint8_t>(0));
@@ -215,8 +190,8 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const EvalScope &es,
     for (size_t a = 0; a < A; ++a)
       has[a] |= cell(wt, a, x) && fmeta::data_valid(static_cast<float>(x));
   }
-  if (es.member) {
-    const uint8_t *mem = es.member->row(day.date);
+  if (dm.member) {
+    const uint8_t *mem = dm.member->row(day.date);
     for (size_t a = 0; a < A; ++a)
       has[a] &= mem[a];
   }
@@ -229,16 +204,16 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const EvalScope &es,
 
 } // namespace
 
-bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const std::vector<LeafId> &ids, XPlanes &X,
-            misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+bool load_x(const Io &io, const Chunk &k, const std::vector<LeafId> &ids, XPlanes &X) {
   TraceN("FactorsLoadX");
-  const Shape sh = shape_of(ft, es, d0, d1);
+  const FeatureTable &ft = io.ft;
+  const Shape sh = shape_of(io, k);
   assert((X.v.empty() || X.sh == sh) && "X 与块不同形");
   X.sh = sh;
   X.v.resize(ft.x.leaves.size());
   const size_t A = static_cast<size_t>(sh.A), n = sh.n(), VR = static_cast<size_t>(ft.seg), nf = ids.size();
   // ---- 列段 叶 [nf], 各按所在 (池, 层) 投影到网格行 ----
-  ColList cols{es.pool, {}};
+  ColList cols{io.dm.pool, {}};
   std::vector<factor::check::Plane *> out(nf);
   for (size_t i = 0; i < nf; ++i) {
     const FeatCol &c = ft.x.leaves[ids[i]];
@@ -247,7 +222,7 @@ bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
     out[i] = &X.v[ids[i]];
     out[i]->resize(n);
   }
-  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
+  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t) {
     feature_storage_t x;
     float g;
     for (size_t t = 0; t < VR; ++t) {
@@ -270,29 +245,29 @@ bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   return read;
 }
 
-bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec, YPlanes &Y,
-            misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
   TraceN("FactorsLoadY");
   constexpr size_t K = factor::stat::kLegs;
-  assert((spec.ad.n == 0 || spec.max_impact > 0.f) && "装成本要封顶 (Config::max_impact)");
+  const FeatureTable &ft = io.ft;
+  assert((s.ad.n == 0 || s.max_impact > 0.f) && "装成本要封顶 (Config::max_impact)");
   Y = YPlanes{};
-  Y.sh = shape_of(ft, es, d0, d1);
-  Y.hd = spec.hd;
-  Y.ad = spec.ad;
+  Y.sh = shape_of(io, k);
+  Y.hd = s.hd;
+  Y.ad = s.ad;
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
   // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行). 顺延已在标签里 (features LabelHold) ----
-  ColList cols{es.pool, {}};
+  ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
-  assert(cols.refs[ts_i].pool == es.rs.main && "门控 / 标签 / 成本在标签库");
+  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签 / 成本在标签库");
   const size_t lab_i = cols.refs.size();
   for (size_t i = 0; i < H; ++i)
-    for (const Col &c : leg_of(ft.y.labels, Y.hd.h[i]).leg)
+    for (const Col &c : leg_of(ft.y.labels, Y.hd.k[i]).leg)
       cols.add(c);
   const size_t cost_i = cols.refs.size();
   for (size_t c = 0; c < C; ++c)
-    for (const Col &l : leg_of(ft.y.costs, Y.ad.a[c]).leg)
+    for (const Col &l : leg_of(ft.y.costs, Y.ad.k[c]).leg)
       cols.add(l);
 
   Y.gate.assign(n, 0);
@@ -310,11 +285,11 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   alloc(Y.costs, C, false);
   // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
   constexpr float kNoCap = std::numeric_limits<float>::infinity();
-  const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {spec.max_impact, kNoCap};
-  std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
-  std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);                                        // 每线程: 门控在池格数 (n_full)
+  const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {s.max_impact, kNoCap};
+  std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(io.ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
+  std::vector<long long> on(static_cast<size_t>(io.ex.threads()), 0);                                        // 每线程: 门控在池格数 (n_full)
 
-  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
+  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
     // 建仓可成交码: 池内 (gate) ∧ 有限 → 码 (1..3), 其余 0
     const auto fold_eo = [&](size_t t, size_t row) {
       const View w = view(eo_i, t);
@@ -326,18 +301,18 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
         Y.eo[row + a] = static_cast<uint8_t>(c);
       }
     };
-    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l.
+    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 j 的腿 l = 列 base + K·j + l.
     // 标签: 池内 (gate) ∧ 两腿皆有限 → fp16 位 + 有效位 (须有可成交码), 其余 0.
     // 成本 (cost): 逐腿 池内 ∧ 有限 → fp16 位, 其余 0; 该腿可建仓 (eo & eo_open(l)) 的格须有限 (cost_rows 只在可建仓时取), 无有效位
     const auto fold_legs = [&](size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, bool cost) {
-      for (size_t k = 0; k < out.size(); ++k) {
+      for (size_t j = 0; j < out.size(); ++j) {
         View w[K];
         feature_storage_t top[K];
         for (size_t l = 0; l < K; ++l) {
-          w[l] = view(base + K * k + l, t);
+          w[l] = view(base + K * j + l, t);
           top[l] = static_cast<feature_storage_t>(cap[l]);
         }
-        LegPlane &p = out[k];
+        LegPlane &p = out[j];
         for (size_t a = 0; a < A; ++a) {
           feature_storage_t x[K] = {};
           bool fin[K];
@@ -357,7 +332,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       }
     };
     uint8_t *gate = Y.gate.data() + d * VR * A;
-    gate_day(view, ts_i, cs_i, es, day, VR, A, has_data[tid], gate);
+    gate_day(view, ts_i, cs_i, io.dm, day, VR, A, has_data[tid], gate);
     on[tid] += gate_on(gate, VR * A);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
@@ -368,25 +343,25 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   });
   if (!read)
     return false;
-  Y.n_full = spec.cap > 0.0 ? spec.cap : n_full_from(on, Y.sh.T);
+  Y.n_full = s.cap > 0.0 ? s.cap : n_full_from(on, Y.sh.T);
   return true;
 }
 
-bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, BPlanes &B, misc::exec::ForkJoin &ex,
-            const std::atomic<bool> &cancel, Progress &prog) {
+bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   TraceN("FactorsLoadB");
+  const FeatureTable &ft = io.ft;
   assert(factor_level(ft.seg).lvl == L_1day && "篮子只在日层 (成员位 = 本行收盘定的池)");
   B = BPlanes{};
-  B.sh = shape_of(ft, es, d0, d1);
+  B.sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg);
   // ---- 列段 ts_valid | close adj_factor total_shares val[kPoolVals] ind_l1, 全是标签库网格层本层列 ----
-  ColList cols{es.pool, {}};
-  const size_t ts_i = cols.add(ft.y.ts), px_i = cols.add(ft.y.ohlc[3]), adj_i = cols.add(ft.y.adj_factor), sh_i = cols.add(ft.y.total_shares);
+  ColList cols{io.dm.pool, {}};
+  const size_t ts_i = cols.add(ft.y.ts), px_i = cols.add(ft.b.ohlc[3]), adj_i = cols.add(ft.b.adj_factor), sh_i = cols.add(ft.b.total_shares);
   const size_t val_i = cols.refs.size();
-  for (const Col &v : ft.y.val)
+  for (const Col &v : ft.b.val)
     cols.add(v);
-  const size_t ind_i = cols.add(ft.y.ind_l1);
-  assert(cols.refs[ts_i].pool == es.rs.main && "篮子列在标签库");
+  const size_t ind_i = cols.add(ft.b.ind_l1);
+  assert(cols.refs[ts_i].pool == io.dm.rs.main && "篮子列在标签库");
   std::vector<float> vadj(n, 0.f); // 本行 adj_factor (= 次日因子, 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
   B.close.resize(n);
   B.mcap.assign(n, 0.f);
@@ -395,7 +370,7 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   for (std::vector<float> &v : B.val)
     v.resize(n);
   B.ind.assign(n, 0);
-  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
+  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t) {
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限 ∧ > 0 (此处不复权, 装完乘复权因子)
@@ -428,7 +403,7 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   if (!read)
     return false;
   // 后复权 close(D) = close_day(D) × D 日复权因子 (= 行 D−1 的 adj_factor); 首行无前一行 → 不作漂移锚. 只比值进收益, 首日归一无关
-  ex.rows(B.sh.T, [&](int t0, int t1, int) {
+  io.ex.rows(B.sh.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i) {
       const float f = i >= A ? vadj[i - A] : 0.f;
       B.close.m[i] = B.close.m[i] && f > 0.f;
@@ -438,11 +413,11 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   return true;
 }
 
-StatScope stat_scope(const FactorScope &sc, const EvalScope &es, const YPlanes &y, const char *backend) {
+StatScope stat_scope(const FactorScope &sc, const Domain &dm, const YPlanes &y, const char *backend) {
   StatScope o;
   o.pool = sc.pool;
-  o.start_date = es.dates.front();
-  o.end_date = es.dates.back();
+  o.start_date = dm.dates.front();
+  o.end_date = dm.dates.back();
   o.days = y.sh.days, o.T = y.sh.T, o.A = y.sh.A;
   o.max_impact = sc.max_impact;
   o.n_full = y.n_full;
@@ -451,18 +426,18 @@ StatScope stat_scope(const FactorScope &sc, const EvalScope &es, const YPlanes &
   return o;
 }
 
-bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, misc::exec::ForkJoin &ex,
-               const std::atomic<bool> &cancel, Progress &prog, double &out) {
+bool n_full_of(const Io &io, const Chunk &k, double &out) {
   TraceN("FactorsNFull");
-  const Shape sh = shape_of(ft, es, d0, d1);
-  const size_t A = static_cast<size_t>(sh.A), VR = static_cast<size_t>(ft.seg), nt = static_cast<size_t>(ex.threads());
-  ColList cols{es.pool, {}};
+  const FeatureTable &ft = io.ft;
+  const Shape sh = shape_of(io, k);
+  const size_t A = static_cast<size_t>(sh.A), VR = static_cast<size_t>(ft.seg), nt = static_cast<size_t>(io.ex.threads());
+  ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs);
-  assert(cols.refs[ts_i].pool == es.rs.main && "门控在标签库");
+  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控在标签库");
   std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
   std::vector<long long> on(nt, 0);
-  if (!read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &day, size_t, size_t tid) {
-        gate_day(view, ts_i, cs_i, es, day, VR, A, has[tid], gate[tid].data());
+  if (!read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t, size_t tid) {
+        gate_day(view, ts_i, cs_i, io.dm, day, VR, A, has[tid], gate[tid].data());
         on[tid] += gate_on(gate[tid].data(), VR * A);
       }))
     return false;
@@ -481,52 +456,57 @@ factor::stat::Labels labels_of(const YPlanes &y) {
   return out;
 }
 
-factor::stat::Labels labels_pick(const factor::stat::Labels &L, const factor::stat::Holds &hd) {
-  if (hd.n == 0)
-    return L;
+Pick pick_of(const Holds &all, const Holds &want) {
+  Pick p;
+  p.n = want.n;
+  for (int i = 0; i < want.n; ++i) {
+    p.at[i] = factor::stat::hold_index(all, want.k[i]);
+    assert(p.at[i] >= 0 && "所评持有期不在 Y 的标签组里");
+  }
+  return p;
+}
+
+factor::stat::Labels labels_pick(const factor::stat::Labels &L, const Pick &p) {
   factor::stat::Labels out;
-  out.hd = hd;
+  out.hd.n = p.n;
   out.cap = L.cap;
-  for (int i = 0; i < hd.n; ++i) {
-    const int j = factor::stat::hold_index(L.hd, hd.h[i]);
-    assert(j >= 0 && "所取持有期不在标签组里");
-    out.l[i] = L.l[j];
+  for (int i = 0; i < p.n; ++i) {
+    out.hd.k[i] = L.hd.k[p.at[i]];
+    out.l[i] = L.l[p.at[i]];
   }
   return out;
 }
 
-std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec) {
-  return std::to_string(ft.seg) + "|" + es.key() + "|" + std::to_string(d0) + "-" + std::to_string(d1) + "|" + spec.key();
+std::string block_key(const FeatureTable &ft, const Domain &dm, const Chunk &k, const BlockSpec &s) {
+  return std::to_string(ft.seg) + "|" + dm.key() + "|" + std::to_string(k.d0) + "-" + std::to_string(k.d1) + "|" + s.y.key() + (s.b ? "|b" : "");
 }
 
 namespace {
 
-// 键 (或日序列) 变 → reset + 装 Y (+ B). 键中 → 不动. false = 取消 / 判废 (块已 reset)
-bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec,
-              misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
-  assert(d0 < d1 && d1 <= es.dates.size());
-  const std::string key = scope_key(ft, es, d0, d1, spec);
-  const auto first = es.dates.begin() + static_cast<long>(d0), last = es.dates.begin() + static_cast<long>(d1);
-  c.ft = &ft;
+// Y 侧 (+ B): 键 (或日序列) 变 → reset + 装 Y (+ B). 键中 → 不动. false = 取消 / 判废 (块已 reset)
+bool ensure_yb(Block &c, const Io &io, const Chunk &k, const BlockSpec &s) {
+  assert(k.d0 < k.d1 && k.d1 <= io.dm.dates.size());
+  const std::string key = block_key(io.ft, io.dm, k, s);
+  const auto first = io.dm.dates.begin() + static_cast<long>(k.d0), last = io.dm.dates.begin() + static_cast<long>(k.d1);
+  c.ft = &io.ft;
   if (c.key == key && std::equal(c.dates.begin(), c.dates.end(), first, last))
     return true;
   c.reset();
-  c.ft = &ft;
-  if (!load_y(ft, es, lr, d0, d1, spec, c.y, ex, cancel, prog) || (spec.basket && !load_b(ft, es, lr, d0, d1, c.b, ex, cancel, prog))) {
+  c.ft = &io.ft;
+  if (!load_y(io, k, s.y, c.y) || (s.b && !load_b(io, k, c.b))) {
     c.reset();
     return false;
   }
   c.key = key;
   c.dates.assign(first, last);
-  c.d0 = d0, c.d1 = d1;
-  c.nd = es.days.size();
+  c.d0 = k.d0, c.d1 = k.d1;
+  c.nd = io.dm.days.size();
   return true;
 }
 
-// 先 ensure_y. retain → 先丢 ids 以外的叶; 缺的叶补装. false = 取消 / 判废 (已有的叶不动)
-bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const std::vector<LeafId> &ids, bool retain,
-              misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
-  assert(!c.key.empty() && "先 ensure_y");
+// X 侧 (先 ensure_yb): retain → 先丢 s.x 以外的叶; 缺的叶补装. false = 取消 / 判废 (已有的叶不动)
+bool ensure_x(Block &c, const Io &io, const Chunk &k, const std::vector<LeafId> &ids, bool retain) {
+  assert(!c.key.empty() && "先 ensure_yb");
   if (retain)
     for (LeafId id = 0; id < c.x.v.size(); ++id)
       if (std::find(ids.begin(), ids.end(), id) == ids.end())
@@ -535,23 +515,22 @@ bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   for (const LeafId id : ids)
     if (!c.x.find(id))
       miss.push_back(id);
-  return miss.empty() || load_x(ft, es, lr, c.d0, c.d1, miss, c.x, ex, cancel, prog);
+  return miss.empty() || load_x(io, k, miss, c.x);
 }
 
 } // namespace
 
-Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const Chunk &k, const YSpec &ys,
-             const std::vector<LeafId> &ids, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+Rc ensure_block(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, bool retain) {
   assert(k.d0 <= k.s0 && k.s0 < k.d1);
-  const Rc rc = rc_of(ensure_y(c, ft, es, lr, k.d0, k.d1, ys, ex, cancel, prog) && ensure_x(c, ft, es, lr, ids, retain, ex, cancel, prog), lr);
+  const Rc rc = rc_of(ensure_yb(c, io, k, s) && ensure_x(c, io, k, s.x, retain), io.lr);
   if (rc == Rc::Stale)
     c.reset();
   if (rc == Rc::Ok)
-    c.t_lo = static_cast<int>(k.s0 - k.d0) * ft.seg;
+    c.t_lo = static_cast<int>(k.s0 - k.d0) * io.ft.seg;
   return rc;
 }
 
-size_t resident_leaves(const ScopeCache &c, const std::string &key, const std::vector<LeafId> &ids, bool retain) {
+size_t resident_leaves(const Block &c, const std::string &key, const std::vector<LeafId> &ids, bool retain) {
   if (retain || c.key != key)
     return ids.size();
   size_t n = c.x.count();
@@ -560,12 +539,12 @@ size_t resident_leaves(const ScopeCache &c, const std::string &key, const std::v
   return n;
 }
 
-std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &feats) {
-  assert(c.ft && "先 ensure_xy");
+std::vector<const factor::check::Plane *> leaves(const Block &c, const std::vector<std::string> &feats) {
+  assert(c.ft && "先 ensure_block");
   std::vector<const factor::check::Plane *> in;
   for (const LeafId id : c.ft->x.ids(feats)) {
     in.push_back(c.x.find(id));
-    assert(in.back() && "叶未装 (ensure_xy)");
+    assert(in.back() && "叶未装 (ensure_block)");
   }
   return in;
 }

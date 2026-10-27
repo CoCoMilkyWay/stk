@@ -90,7 +90,7 @@ inline std::vector<int> pick_diverse(const std::vector<double> &mu, const std::v
 inline int max_lag(const Holds &hd, int seg) {
   int m = 0;
   for (int i = 0; i < hd.n; ++i)
-    m = std::max(m, factor::stat::hold_rows(hd.h[i], geo_of(seg)));
+    m = std::max(m, factor::stat::hold_rows(hd.k[i], geo_of(seg)));
   return m;
 }
 
@@ -129,7 +129,7 @@ inline Score score_of(const HoldStat &hs) {
 inline Score score_of(const Result &r, const Holds &hd, int seg, int hi) {
   factor::stat::assert_holds(hd, seg);
   assert(hi >= 0 && hi < hd.n);
-  return score_of(r.acc[hi].finish(hd.h[hi], seg));
+  return score_of(r.acc[hi].finish(hd.k[hi], seg));
 }
 
 // 自动定向 (见【方向】): ls / rIC 同负 → 按取反计 (sign −1, ls / ric 翻成正); 顺带 g / se (见【噪声】)
@@ -154,7 +154,7 @@ inline Score score_signed(const HoldStat &hs) {
 inline Score score_signed(const Result &r, const Holds &hd, int seg, int hi) {
   factor::stat::assert_holds(hd, seg);
   assert(hi >= 0 && hi < hd.n);
-  return score_signed(r.acc[hi].finish(hd.h[hi], seg));
+  return score_signed(r.acc[hi].finish(hd.k[hi], seg));
 }
 
 } // namespace factor::search

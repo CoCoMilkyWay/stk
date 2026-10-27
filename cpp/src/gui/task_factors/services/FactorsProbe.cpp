@@ -61,7 +61,7 @@ void CostP::root(const Ctx &c, const RootView &v) {
   if (costs.empty()) {
     costs.assign(static_cast<size_t>(C), CostTier{});
     for (int k = 0; k < C; ++k)
-      costs[static_cast<size_t>(k)].amt = y.ad.a[k];
+      costs[static_cast<size_t>(k)].amt = y.ad.k[k];
   }
   assert(costs.size() == static_cast<size_t>(C));
   const std::vector<factor::stat::Cost> cs = costs_of(y);

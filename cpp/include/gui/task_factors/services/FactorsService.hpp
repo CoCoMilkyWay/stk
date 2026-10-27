@@ -43,7 +43,7 @@ enum class Rc : uint8_t; // FactorsScope.hpp
 struct FactorFlow;       // FactorsEngine.hpp
 
 // 因子服务骨架 (Run / Search / Inspect / Portfolio 同一份): 进度面 = 自身 + 本轮说明 + worker 常驻件 FactorFlow (首个请求懒建, 随 worker 活)
-// + 库判废收尾. 成员函数定义在 FactorsEngine.hpp (FactorFlow 完整处); 派生类的 ctor / dtor 须在 .cpp
+// + 结局收尾. 成员函数定义在 FactorsEngine.hpp (FactorFlow 完整处); 派生类的 ctor / dtor 须在 .cpp
 template <class D, class Req>
 class FactorWorker : public Service<D, Req>, public Published {
 public:
@@ -52,7 +52,10 @@ public:
 protected:
   Progress &board() { return *this; }
   FactorFlow &flow();
-  bool abort_out(Rc rc); // 中断收尾 (rc 须 aborted): Stale → 弃作用域块 + 置 message; 恒 false
+  bool abort_out(Rc rc); // 中断收尾 (rc 须 aborted): Stale → 弃块 + 置 message; 恒 false
+  // 作业结局 (四服务同一份): 中断 (Cancel / Stale) → abort_out (false); Empty / Broken (正常输入) → fail(why) (true); Ok → true
+  template <class Fail>
+  bool settle(Rc rc, const std::string &why, Fail &&fail);
 
 private:
   std::unique_ptr<FactorFlow> flow_;
@@ -87,11 +90,11 @@ private:
   bool run(FactorsRequest &req);
   void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
   bool eval(const FactorsRequest &req, FactorFlow &F); // false = 取消 / 判废
-  // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 管线 eval_job (共享森林, 作用域块 F.c 补装)
-  // 走引擎 E (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). Ok (含该文件 Empty / Broken: 行已标) / Cancel / Stale
+  // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 根集 → 管线 eval_job (共享森林, 块 F.c 补装)
+  // 走引擎 E (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). false = 取消 / 判废 (该文件 Empty / Broken: 行已标, true)
   template <class E>
-  Rc eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx, const std::vector<factor::expr::Expr> &exprs,
-               const std::vector<factor::stat::Frame> &frames);
+  bool eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx);
+  void mark(size_t i, const std::string &why); // 行 i 收尾为 BROKEN (调用方持锁; 已收尾的行不动)
 
   std::atomic<int> broken_{0};
 };

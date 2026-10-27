@@ -128,7 +128,7 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
       const size_t base = static_cast<size_t>(t) * A;
       for (int i = 0; i < H; ++i) {
-        const int hold = L.hd.h[i], h = factor::stat::hold_rows(hold, s.g);
+        const int hold = L.hd.k[i], h = factor::stat::hold_rows(hold, s.g);
         typename Sink::Ext e = sink.ext();
         const Row r = row_stat(rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base),
                                factor::stat::chain_of(t, s.T, A, hold, s.g, s.t0_abs), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g), e);
@@ -182,7 +182,7 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
       const int ta = s.t0_abs + t;
       CostHold ch[kMaxHold];
       for (int i = 0; i < H; ++i) {
-        const int hold = L.hd.h[i], h = factor::stat::hold_rows(hold, s.g);
+        const int hold = L.hd.k[i], h = factor::stat::hold_rows(hold, s.g);
         if (factor::stat::tail_masked(ta, hold, s.g))
           continue;
         CostHold &q = ch[i];

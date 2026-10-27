@@ -272,7 +272,7 @@ void run_search(RoundCtx &R, OperatorRow &row) {
     for (int c = 0; c < sk::kCands; ++c)
       for (int hi = 0; hi < hd.n; ++hi) {
         const factor::search::Score s = factor::search::score_of(full[c], hd, factor::kSegMax, hi);
-        detail_line(scores, "  c%d  h=%-5s ls %+.5f rIC %+.4f score %+.3g", c, factor::stat::hold_name(hd.h[hi]).c_str(), s.ls, s.ric, s.score);
+        detail_line(scores, "  c%d  h=%-5s ls %+.5f rIC %+.4f score %+.3g", c, factor::stat::hold_name(hd.k[hi]).c_str(), s.ls, s.ric, s.score);
       }
     if (!has_gpu)
       continue;

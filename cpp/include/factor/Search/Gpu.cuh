@@ -58,7 +58,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
   const int c = blockIdx.x * kWarps + warp;
   if (c >= C) // warp 一致; 核内没有块级同步, 整 warp 直接退出安全
     return;
-  const int hi = blockIdx.z, hold = hd.h[hi], h = factor::stat::hold_rows(hold, g);
+  const int hi = blockIdx.z, hold = hd.k[hi], h = factor::stat::hold_rows(hold, g);
   const Label lb = L.l[hi];
   const int tb = blockIdx.y, t_beg = t_lo + tb * kRows, t_end = min(T, t_beg + kRows);
   const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;

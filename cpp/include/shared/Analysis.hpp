@@ -228,6 +228,8 @@ ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &
                      DayAxis days = DayAxis::Main);
 // A 轴 + 各池映射 (s.libs / s.main 已定; assets 空 = 主池轴, 主池同轴不映射)
 void map_axis(ReadScope &s, std::vector<uint32_t> assets);
+// 库 lib 落了第 d 天 (按库清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
+bool landed(const FeatureLib &lib, misc::Ymd d);
 
 // ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
 template <class Spec>
