@@ -1,8 +1,8 @@
 // FactorsLoad — 见头文件. include 因子契约头 (Stat/Contract.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/FactorsLoad.hpp"
 
-#include "features/Method/Fundamental.hpp"         // fund::SW2021_L1_COUNT (行业 ID 上界)
 #include "features/MetaFlag.hpp"                   // fmeta::valid / keep / finite
+#include "features/Method/Fundamental.hpp"         // fund::SW2021_L1_COUNT (行业 ID 上界)
 #include "features/Node/Lob/TS/Label/LabelLob.hpp" // 只取 kContCloseMin 对账尾部界 (不含字段表)
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
@@ -112,7 +112,8 @@ struct View {
   L2::ValidType vt = L2::ValidType::ALL;
 };
 // 格 a 的源下标 (kAbsent = 无源 / 资产不在该库)
-uint32_t src_of(const View &w, size_t a) { return !w.v ? kAbsent : w.ids ? w.ids[a] : static_cast<uint32_t>(a); }
+uint32_t src_of(const View &w, size_t a) { return !w.v ? kAbsent : w.ids ? w.ids[a]
+                                                                         : static_cast<uint32_t>(a); }
 // 格 a: 有源 → x = 值 (+ g = 同行门控, 不门控 = 1)
 bool cell(const View &w, size_t a, feature_storage_t &x) {
   const uint32_t i = src_of(w, a);

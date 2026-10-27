@@ -128,7 +128,7 @@ Rc FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, c
   const YSpec ys = y_full(*req.scope.ft, req.scope.max_impact);
   std::vector<RunProbes> ps(idx.size());
   JobOut o;
-  std::vector<size_t> done; // 本轮评完的 idx 下标 (森林走完 Ok 才一次回写)
+  std::vector<size_t> done;                                 // 本轮评完的 idx 下标 (森林走完 Ok 才一次回写)
   const auto mark = [&](size_t k, const std::string &why) { // 行 BROKEN (调用方持锁)
     rows[idx[k]].error = why;
     rows[idx[k]].status = RowStatus::Done;

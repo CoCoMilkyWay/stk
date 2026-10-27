@@ -547,8 +547,8 @@ struct Job {
 // 一次评估 (eval_job) 的出参: 作业 + 森林 + 节点耗时
 struct JobOut {
   Job job;
-  factor::Dag d;          // 森林: roots[k] ↔ exprs[k]
-  std::vector<double> ms; // [node] 算子耗时 (叶 / 没走的 0)
+  factor::Dag d;                // 森林: roots[k] ↔ exprs[k]
+  std::vector<double> ms;       // [node] 算子耗时 (叶 / 没走的 0)
   double eval_ms(int k) const { // 根 k 子树的算子 wall 之和 (共享节点算给每个用它的根 = 单独算它要多久)
     double s = 0.0;
     for (const int i : d.subtree(d.roots[static_cast<size_t>(k)]))
