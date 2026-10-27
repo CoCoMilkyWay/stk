@@ -1,8 +1,8 @@
 // Factors→Inspect: 单因子展示页. 对象 = Factors 页表格里点行高光的那一个 (FactorsUIState::view_file); 数据 = InspectService
 // 对它算出的一级 Row[H][T] (沿时间) + 二级 HoldStat (每持有期).
 //
-// 布局: 顶部 头信息 (◂ ▸ 按表序切相邻有效因子 / 中文名 英文名 / 口径 / 规范串 / note) + 控件 (◂ Hold ▸ / 分层 toggle / Compute / Cancel /
-//   状态; 箭头循环切, 不用下拉) + 选定持有期的一行 stat.
+// 布局: 顶部 头信息 (◂ ▸ 按表序切相邻有效因子 / 中文名 英文名 / 口径 / 规范串 / note) + 控件 (◂ Hold ▸ 周期名 hold_name + 开 / 清仓 hold_points
+//   (时点 / 价分色) / 分层 toggle / Compute / Cancel / 状态; 箭头循环切, 不用下拉) + 选定持有期的一行 stat.
 //   整页 (头部文字 + 四图) 画的是**现结果**的因子: 切因子后服务不清旧 result, 旧的继续画, 头部标 "→ 新因子 (计算中…)", 新结果发布时一次性覆盖, 不闪
 //   成本只进期限结构 (右下): 分层 / IC / 顶部 stat 全是毛价格收益 (与 Factors Run 同), 拿来看分层 / 拟合形状; 成本与仓位映射另做.
 //   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各金额段 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改 fixed_impact 都只是切片
@@ -10,10 +10,11 @@
 // 下面 2×2 四图:
 //   左上 分层累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的复利净值 − 1 (InspectResult::nav, 净值引擎 fold_exit: 每行开 1/h̄ 一批,
 //        收益在平仓行实现; 可成交 / 顺延在标签里; 控件行 分层 选 超额 e = lv − mkt | 绝对 lv). y 范围按分层线定; 顶底多空 LS 粗线平移到最低点贴范围底 (跨度更大则抬高范围, 刚好填满;
-//        图例: 顶底 LS = HoldStat 的 LS 年化 / Sharpe (与看板同一份), 尾部 LS = 全段几何年化 + 日收益年化 Sharpe; LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
+//        图例 (对仗 Portfolio, 逐列定宽): "LS 100%" (顶底 = 整组) / "LS 50%" … + 年化 + 夏普 + 年换手; 顶底 LS 的年化 / 夏普 = HoldStat (与看板同一份),
+//        尾部 LS = 全段几何年化 + 日收益年化 Sharpe; 年换手 = 该级两腿 Δw 换手 (InspectResult::turn); LS 本就市场中性, 两模式同一条). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
 //        尾部 (InspectService TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
 //        (白, 越极端越细, 与 LS 同一平移量 → 同一起点); 相邻尾部分层线之间填淡色带 (G20↔50% / 50%↔20% / 20%↔5%, 越极端越重), 底侧同;
-//        一级一个图例项 ("LS 50%" + 年化收益 + Sharpe, 列与 LS 对齐) 管该级分层 + 色带 + LS, 默认隐藏; y 范围 / LS 平移量只按显示的簇合成, 开关图例即重贴
+//        一级一个图例项 ("LS 50%" …, 列与 LS 100% 对齐) 管该级分层 + 色带 + LS, 默认隐藏; y 范围 / LS 平移量只按显示的簇合成, 开关图例即重贴
 //        时序上一条可拖光标 (cursor_day, 锚在交易日边界, 双击落点, 默认末日; 与右上 K 线共享, 拖哪边另一边同步; 不做 hover 列表)
 //        右 1/4 光标日截面 = 各组到光标日的复利累计按已过天数几何年化 (section_at, 唯一出口) 的横柱, 按组号在 y 范围里均匀排
 //        (G1 下 … G20 上), x 范围随显示中的柱 (图例 / 光标) 自动贴满;
@@ -69,6 +70,7 @@ struct InspectDerived {
   std::vector<float> ls_cum[kLsLines];     // [days + 1], 同上
   float ls_ann[kLsLines] = {};             // LS 线的年化收益 %: 顶底 = HoldStat ls_annual (与看板同一份); 尾部 = 全段几何年化
   float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe: 顶底 = HoldStat sharpe_of; 尾部 = 日收益 mean / sd × √kDaysPerYear
+  float ls_turn[kLsLines] = {};            // LS 线的年换手 (倍): InspectResult::turn 两腿均 Σ Δw⁺ / n_all × span_per_year (每腿资金 1, 单边)
   // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围 / LS 平移量按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
   float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};

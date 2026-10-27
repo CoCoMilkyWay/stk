@@ -21,6 +21,8 @@
 //   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all) + TailRow[H][T] (两腿组内更极端的
 //                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search),
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
+//   T  换手                                                → 各 LS 线 (顶底 + 各级尾部) 两腿的换手量 CostAcc (Stat cost_rows 只出量, C = 0; 腿成员 = 该级腿码 ∧ 标签有效位,
+//                                                            满仓 = cap · kTailOfGroup[j]); 图例年换手 = 两腿均 Σ Δw⁺ / n_all × span_per_year, UI 现算
 //   N  净值                                                → 每持有期 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h̄)
 //                                                            stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛; 可成交 / 顺延在标签里)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
@@ -92,15 +94,16 @@ struct InspectResult : EvalStat {
   std::string row, expr;
   int seg = 0; // 因子层: T = days · seg, K 线 / 横轴按层
   factor::stat::Frame frame = factor::stat::Frame::CS;
-  std::vector<misc::Ymd> dates;   // [days]
-  factor::stat::Holds hd;         // hd.h[hi]
-  analysis::ReadScope read_scope; // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
-  BookLines pool_index;           // [hd.n][T] 池等权线的逐行收益 (= pool_line, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
-                                  //   UI compound 成点位后按视野左端个股价重锚
-  InspectPlanes pl;               // 一级平面 (Row / 尾部 / 秩)
-  std::vector<BookLines> nav;     // [hd.n] 分层累计的日收益 [kNavLines][days] (见 kNavLines)
-  AlphaDist alpha_dist;           // alpha 分布 (全体 + 各组, 左下右半图)
-  std::string error;              // 非空 = 没算成 (特征叶值域越界等), 其余字段空
+  std::vector<misc::Ymd> dates;                                    // [days]
+  factor::stat::Holds hd;                                          // hd.h[hi]
+  analysis::ReadScope read_scope;                                  // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
+  BookLines pool_index;                                            // [hd.n][T] 池等权线的逐行收益 (= pool_line, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
+                                                                   //   UI compound 成点位后按视野左端个股价重锚
+  InspectPlanes pl;                                                // 一级平面 (Row / 尾部 / 秩)
+  std::vector<BookLines> nav;                                      // [hd.n] 分层累计的日收益 [kNavLines][days] (见 kNavLines)
+  factor::stat::CostAcc turn[kNavLs][factor::stat::kMaxHold] = {}; // [LS 线][hi] 两腿换手量 (只量, imp 恒 0; 见 flow T)
+  AlphaDist alpha_dist;                                            // alpha 分布 (全体 + 各组, 左下右半图)
+  std::string error;                                               // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 
   const factor::stat::Row *rows_at(int hi) const { return pl.rows.data() + static_cast<size_t>(hi) * scope.T; }
   const TailRow *tails_at(int hi) const { return pl.tails.data() + static_cast<size_t>(hi) * scope.T; }

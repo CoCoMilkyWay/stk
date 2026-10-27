@@ -76,7 +76,15 @@ struct FactorsUIContext {
 // Factors / Inspect 两页所有文字提示走这一个: 固定宽度处折行 (SetTooltip 不折行, 长句会被视口裁掉).
 // 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
 void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-// 持有期在因子层 seg 上的完整写法 (UI 凡显示开关仓处同一份): "开仓: C(层) @ 价, 清仓: 点 @ 价" = Stat/Contract.hpp【协议表 1】的一行
+// 持有期在因子层 seg 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份)
+struct HoldPoint {
+  std::string at, px;
+};
+struct HoldPoints {
+  HoldPoint open, close;
+};
+HoldPoints hold_points(int hold, int seg);
+// hold_points 的完整写法: "开仓: C(层) @ 价, 清仓: 点 @ 价"
 std::string hold_desc(int hold, int seg);
 // Hold 提示的公共尾段 = Stat/Contract.hpp【协议表 1 / 2】的 UI 摘要
 inline constexpr const char *kHoldRulesTip = "• 开仓 = 本层行收盘 C(层) 出信号, 按标签价成交; 日层 = 当日收盘建仓\n"

@@ -96,19 +96,20 @@ int date_formatter(double v, char *buf, int size, void *ud) {
 // 边上 kColEdge 组 (G1 G2 / G19 G20) 近全色, 台阶往里由底坡接着渐淡到中心灰 (中段仍分得出组序, 不全灰).
 // 单调不翻色 (Jet 在中段来回翻色; 纯线性渐变两端不够跳; 纯台阶中段全灰)
 constexpr ImVec4 kColBottom(0.00f, 0.20f, 0.70f, 1.f), kColTop(0.85f, 0.15f, 0.10f, 1.f), kColLS(1.f, 1.f, 1.f, 1.f);
-constexpr ImVec4 kColNeutral(0.50f, 0.50f, 0.52f, 1.f);                   // 中段
-constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);                         // 光标 (左上图交易日 / 右上 K 线 / 资产轴), 对仗 OrderFlow 的锚
-constexpr ImVec4 kColIndex(0.55f, 0.47f, 0.15f, 0.40f);                   // 右上 K 线叠加的 池等权指数线 (视野首根重锚; 背景, 深淡)
-constexpr ImVec4 kColRef(0.15f, 0.45f, 0.48f, 0.40f);                     // 右上 K 线叠加的滚动重锚指数线 (背景, 深淡)
-constexpr float kTailLayerWeight[kTails] = {1.0f, 0.75f, 0.5f};           // 尾部分层线宽 (组线 1.2): 越极端越细
-constexpr float kTailLsWeight[kTails] = {2.0f, 1.5f, 1.0f};               // 尾部 LS 线宽 (LS 2.5): 同上
-constexpr float kTailFillAlpha[kTails] = {0.08f, 0.15f, 0.24f};           // 相邻尾部分层线间色带 alpha: 越极端越重, 但不盖线
-constexpr float kHiScale = 2.f;                                           // 图例 hover 高亮倍数 (同 ImPlot 线宽 ITEM_HIGHLIGHT_LINE_SCALE; 线以外的件自己乘)
-constexpr float kColEdge = 2.f;                                           // 两端各留几组显色
-constexpr float kColGain = 8.f;                                           // tanh 增益: 越大台阶越陡 (8 → 台阶上相邻组 ~0.84 / ~0.5 / ~0.16)
-constexpr float kColRamp = 0.3f;                                          // 线性底坡占比: 中段色度 ≈ kColRamp·|s|, 中心灰起渐变
-ImVec4 lerp_color(float t) {                                              // t ∈ [0, 1]: 0 = 深蓝 (G1 / 最负), 0.5 = 灰, 1 = 深红 (G20 / 最正)
-  constexpr float mid = 1.f - kColEdge * 2.f / static_cast<float>(K - 1); // 台阶中心 = 从边数第 kColEdge + 1 组的 |s|
+constexpr ImVec4 kColNeutral(0.50f, 0.50f, 0.52f, 1.f);                                  // 中段
+constexpr ImVec4 kColCursor(1.f, 0.5f, 0.f, 1.f);                                        // 光标 (左上图交易日 / 右上 K 线 / 资产轴), 对仗 OrderFlow 的锚
+constexpr ImVec4 kColIndex(0.55f, 0.47f, 0.15f, 0.40f);                                  // 右上 K 线叠加的 池等权指数线 (视野首根重锚; 背景, 深淡)
+constexpr ImVec4 kColRef(0.15f, 0.45f, 0.48f, 0.40f);                                    // 右上 K 线叠加的滚动重锚指数线 (背景, 深淡)
+constexpr ImVec4 kColHoldAt(0.45f, 0.75f, 1.f, 1.f), kColHoldPx(1.f, 0.78f, 0.40f, 1.f); // 控件行 开 / 清仓: 时点 / 价
+constexpr float kTailLayerWeight[kTails] = {1.0f, 0.75f, 0.5f};                          // 尾部分层线宽 (组线 1.2): 越极端越细
+constexpr float kTailLsWeight[kTails] = {2.0f, 1.5f, 1.0f};                              // 尾部 LS 线宽 (LS 2.5): 同上
+constexpr float kTailFillAlpha[kTails] = {0.08f, 0.15f, 0.24f};                          // 相邻尾部分层线间色带 alpha: 越极端越重, 但不盖线
+constexpr float kHiScale = 2.f;                                                          // 图例 hover 高亮倍数 (同 ImPlot 线宽 ITEM_HIGHLIGHT_LINE_SCALE; 线以外的件自己乘)
+constexpr float kColEdge = 2.f;                                                          // 两端各留几组显色
+constexpr float kColGain = 8.f;                                                          // tanh 增益: 越大台阶越陡 (8 → 台阶上相邻组 ~0.84 / ~0.5 / ~0.16)
+constexpr float kColRamp = 0.3f;                                                         // 线性底坡占比: 中段色度 ≈ kColRamp·|s|, 中心灰起渐变
+ImVec4 lerp_color(float t) {                                                             // t ∈ [0, 1]: 0 = 深蓝 (G1 / 最负), 0.5 = 灰, 1 = 深红 (G20 / 最正)
+  constexpr float mid = 1.f - kColEdge * 2.f / static_cast<float>(K - 1);                // 台阶中心 = 从边数第 kColEdge + 1 组的 |s|
   const auto step = [](float a) { return 0.5f * (1.f + std::tanh(kColGain * (a - mid))); };
   const float s = (t - 0.5f) * 2.f, a = std::abs(s);
   const float w = kColRamp * a + (1.f - kColRamp) * (step(a) - step(0.f)) / (step(1.f) - step(0.f));
@@ -246,6 +247,8 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   for (int i = 0; i < kLsLines; ++i) {
     const float *v = res.nav_at(sel, 2 * kNavLayers + i);
     cum_of(v, d.ls_cum[i]);
+    const factor::stat::CostAcc &ta = res.turn[i][sel];
+    d.ls_turn[i] = d.hs.n_all > 0 ? static_cast<float>(0.5 * (ta.leg[kLong].buy + ta.leg[kShort].buy) / d.hs.n_all * factor::stat::span_per_year(d.hs)) : 0.f;
     if (i == 0) {
       d.ls_ann[i] = static_cast<float>(100.0 * factor::stat::ls_annual(d.hs));
       d.ls_sharpe[i] = static_cast<float>(factor::stat::sharpe_of(d.hs));
@@ -436,10 +439,11 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         const Shift &s = *static_cast<const Shift *>(ud);
         return ImPlotPoint(i, s.y[i] + s.off);
       };
-      // 图例列对齐 (等宽字体): "LS <tag:4> <+7.2f>%  SR <+5.2f>", 收益 / SR = InspectDerived::ls_ann / ls_sharpe, 顶底 LS 的 tag 空
-      constexpr const char *kLsFmt = "LS %-4s %+7.2f%%  SR %+5.2f###%s";
-      char ll[64];
-      std::snprintf(ll, sizeof(ll), kLsFmt, "", d.ls_ann[0], d.ls_sharpe[0], "ls");
+      // 图例 (对仗 Portfolio, 等宽字体逐列定宽): "LS <tag:4>  年化=<+8.2f>%  夏普=<+6.2f>  年换手=<7.1f>倍", 值 = InspectDerived::ls_ann / ls_sharpe / ls_turn;
+      // tag = 占组比例 (顶底 = 100%, 整组)
+      constexpr const char *kLsFmt = "LS %4s  年化=%+8.2f%%  夏普=%+6.2f  年换手=%7.1f倍###%s";
+      char ll[128];
+      std::snprintf(ll, sizeof(ll), kLsFmt, "100%", d.ls_ann[0], d.ls_sharpe[0], d.ls_turn[0], "ls");
       Shift shift[kLsLines];
       shift[0] = Shift{d.ls_cum[0].data(), yr.ls_off};
       ImPlot::SetNextLineStyle(kColLS, 2.5f);
@@ -449,7 +453,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         char tag[8], id[8];
         std::snprintf(tag, sizeof(tag), "%g%%", static_cast<double>(kTailOfGroup[j]) * 100.0);
         std::snprintf(id, sizeof(id), "tls%d", j);
-        std::snprintf(ll, sizeof(ll), kLsFmt, tag, d.ls_ann[1 + j], d.ls_sharpe[1 + j], id);
+        std::snprintf(ll, sizeof(ll), kLsFmt, tag, d.ls_ann[1 + j], d.ls_sharpe[1 + j], d.ls_turn[1 + j], id);
         ImPlot::HideNextItem(true, ImPlotCond_Once);
         for (int l = 0; l < kLegs; ++l) { // 色带: 本级线与上一级线 (j = 0 时是该腿的组线) 之间, 越极端越重
           const float *inner = (j ? d.lay_cum[layer_tail(l, j - 1)] : d.lay_cum[leg_group(l)]).data();
@@ -1384,15 +1388,45 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
   ImGui::SameLine(0.f, 4.f);
   ImGui::TextUnformatted(factor_level(ft.seg).name);
   ImGui::SameLine(0.f, kCtlGap);
+  ImGui::BeginGroup(); // Hold 周期名 + 开 / 清仓 (时点 / 价分色; 占位 = 各持有期最宽一条, 后面的控件不随 Hold 跳)
   if (n_hold >= 2) {
     std::vector<std::string> names(static_cast<size_t>(n_hold));
     std::vector<const char *> cs(static_cast<size_t>(n_hold));
     for (int i = 0; i < n_hold; ++i)
-      names[static_cast<size_t>(i)] = hold_desc(ft.y.labels[static_cast<size_t>(i)].key, ft.seg), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
+      names[static_cast<size_t>(i)] = factor::stat::hold_name(ft.y.labels[static_cast<size_t>(i)].key), cs[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
     cycler("Hold", ui.hold_idx, cs.data(), n_hold);
   } else {
-    ImGui::TextDisabled("Hold %s", n_hold ? hold_desc(cur_hold, ft.seg).c_str() : "-");
+    ImGui::TextDisabled("Hold %s", n_hold ? factor::stat::hold_name(cur_hold).c_str() : "-");
   }
+  if (n_hold) {
+    constexpr float kSep = 4.f;
+    const auto width = [](const HoldPoints &p) { // = 下面 point 两次的排版宽 (每次 3 个 kSep)
+      const auto tw = [](const std::string &s) { return ImGui::CalcTextSize(s.c_str()).x; };
+      return ImGui::CalcTextSize("开仓:").x + ImGui::CalcTextSize(", 清仓:").x + 2.f * ImGui::CalcTextSize("@").x + 6.f * kSep + tw(p.open.at) + tw(p.open.px) +
+             tw(p.close.at) + tw(p.close.px);
+    };
+    float w_max = 0.f;
+    for (int i = 0; i < n_hold; ++i)
+      w_max = std::max(w_max, width(hold_points(ft.y.labels[static_cast<size_t>(i)].key, ft.seg)));
+    const HoldPoints hp = hold_points(cur_hold, ft.seg);
+    const auto point = [&](const char *tag, const HoldPoint &p) {
+      ImGui::TextDisabled("%s", tag);
+      ImGui::SameLine(0.f, kSep);
+      ImGui::TextColored(kColHoldAt, "%s", p.at.c_str());
+      ImGui::SameLine(0.f, kSep);
+      ImGui::TextDisabled("@");
+      ImGui::SameLine(0.f, kSep);
+      ImGui::TextColored(kColHoldPx, "%s", p.px.c_str());
+    };
+    ImGui::SameLine(0.f, kCtlGap * 0.5f);
+    const float x0 = ImGui::GetCursorPosX();
+    point("开仓:", hp.open);
+    ImGui::SameLine(0.f, 0.f);
+    point(", 清仓:", hp.close);
+    ImGui::SameLine(0.f, 0.f);
+    ImGui::Dummy(ImVec2(std::max(0.f, x0 + w_max - ImGui::GetCursorPosX()), 0.f));
+  }
+  ImGui::EndGroup();
   if (ImGui::IsItemHovered())
     tip("分层累计 / IC 分布 / 顶部 stat / K 线池指数 看哪个持有期\n"
         "• 只影响显示, 一次算全部持有期\n"

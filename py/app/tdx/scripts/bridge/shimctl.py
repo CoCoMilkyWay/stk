@@ -93,6 +93,7 @@ def _clang_base():
         "--target=i686-w64-windows-gnu",
         f"--sysroot={MINGW_SYSROOT}",
         "-fuse-ld=lld",
+        "-static-libgcc",  # 否则 -shared 时先链 -lgcc_s，导入 Wine 里没有的 libgcc_s_dw2-1.dll
         f"-L{_libgcc_dir()}",
     ]
 

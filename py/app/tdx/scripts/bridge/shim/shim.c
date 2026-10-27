@@ -2085,6 +2085,8 @@ static struct hooktab *g_htab;
 // 跳转/调用搬进跳板会指错）。
 static int insn_len(const BYTE *p) {
   BYTE op = p[0];
+  if (op == 0xf3 && p[1] == 0x0f && p[2] == 0x1e && p[3] == 0xfb) // endbr32
+    return 4;
   if (op >= 0x50 && op <= 0x5f) // push/pop r32
     return 1;
   if (op == 0x6a)

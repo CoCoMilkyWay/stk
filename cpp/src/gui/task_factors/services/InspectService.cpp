@@ -38,6 +38,14 @@ TailThr tail_thresholds() {
 }
 const TailThr kTailThr = tail_thresholds();
 inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : r16 < thr; }
+// 第 j 级尾部的腿码 (与契约 LegCode 同值, 给 cost_rows): 多腿尾 kLcLong / 空腿尾 kLcShort / 其余有秩 kLcMid / 无秩 kLcVoid
+uint8_t tail_code(uint16_t r16, int j) {
+  if (r16 == factor::stat::kRankNone)
+    return factor::stat::kLcVoid;
+  return in_tail(kLong, r16, kTailThr.v[kLong][j])     ? factor::stat::kLcLong
+         : in_tail(kShort, r16, kTailThr.v[kShort][j]) ? factor::stat::kLcShort
+                                                       : factor::stat::kLcMid;
+}
 
 // 净值线 i (InspectResult::nav 线序, 见 kNavLines) 在行 t 这一批的收益, 全取 Row / TailRow 现成值 (不 ok → 0): 分层超额 = grp / 尾部 sum;
 //   分层绝对 = 超额 + 只数 · mkt[kLong] / 持仓分母 (组 cap, 尾 j cap · kTailOfGroup[j]); LS 0 = Row::ls, 1 + j = TailRow::ls[j]
@@ -102,6 +110,34 @@ struct TailP : ProbeBase {
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &e) { e.finish(r, (*dst)[static_cast<size_t>(hi) * T + t0 + t]); }
 };
+// 各 LS 线两腿的换手量 acc[线][hi] (Stat 契约【换手成本】的 Δw, cost_rows 只出量 C = 0): 线 0 = 顶底组 (引擎腿码, 与 CostP 同一批成员),
+// 1 + j = 第 j 级尾部 (tail_code, 满仓 cap · kTailOfGroup[j], 与 TailRow 同口径); 块间续攒
+struct TurnP : ProbeBase {
+  static constexpr uint8_t need = kNeedRx | kNeedLc;
+  factor::stat::CostAcc acc[kNavLs][factor::stat::kMaxHold] = {};
+  std::vector<uint8_t> lc; // 尾部腿码 [T][A], 逐级复用
+  static double bytes(const Shape &sh, int) { return static_cast<double>(sh.n()); }
+  void root(const Ctx &c, const RootView &v) {
+    const factor::stat::Span s = c.s();
+    const auto add = [&](int i, const uint8_t *codes, double cap) {
+      factor::stat::Labels L = c.L;
+      L.cap = cap;
+      factor::stat::CostAcc out[factor::stat::kMaxHold];
+      factor::cpu::stat::cost_rows(c.ex, codes, s, L, nullptr, 0, *c.w, out);
+      for (int hi = 0; hi < L.hd.n; ++hi)
+        acc[i][hi].merge(out[hi]);
+    };
+    add(0, v.lc, c.L.cap);
+    lc.resize(s.n());
+    for (int j = 0; j < kTails; ++j) {
+      c.ex.rows(s.T, [&](int t0, int t1, int) {
+        for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
+          lc[k] = tail_code(v.rx[k], j);
+      });
+      add(1 + j, lc.data(), c.L.cap * kTailOfGroup[j]);
+    }
+  }
+};
 // 池内秩 rx 落地 [rows_all][A] (统计行; 右上资产轴 / K 线着色)
 struct RxP : ProbeBase {
   static constexpr uint8_t need = kNeedRx;
@@ -143,7 +179,7 @@ struct NavP : ProbeBase {
     }
   }
 };
-using InspectProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, RxP, RxAllP, RowsP, TailP, NavP>;
+using InspectProbes = Probes<HoldP, CostP, ValidP, RankP, AlphaP, RxP, RxAllP, RowsP, TailP, TurnP, NavP>;
 
 } // namespace
 
@@ -251,6 +287,8 @@ bool InspectService::eval(const InspectRequest &req, Flow &F) {
   fill_eval(ps, res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);
   res.nav = std::move(ps.at<NavP>().nav);
+  for (int i = 0; i < kNavLs; ++i)
+    std::copy_n(ps.at<TurnP>().acc[i], res.hd.n, res.turn[i]);
   publish_result();
   return true;
 }

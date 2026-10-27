@@ -41,20 +41,25 @@ void tip(const char *fmt, ...) {
   ImGui::EndTooltip();
 }
 
-std::string hold_desc(int hold, int seg) {
+HoldPoints hold_points(int hold, int seg) {
   namespace st = factor::stat;
   const FactorLevel &L = factor_level(seg);
   const bool day = L.lvl == L_1day;
   const std::string px = L.tier == TierId::Lob ? "+" + std::to_string(LABEL_DELAY_SECONDS) + "s盘口中间价" : "次分钟VWAP";
   const std::string close_px = "收盘撮合价", open_px = "开盘撮合价";
   const std::string at = day ? "C(T)" : "C(" + std::string(L.name) + ")";
-  const std::string s = "开仓: " + at + " @ " + (day ? close_px : px) + ", 清仓: ";
+  const HoldPoint open{at, day ? close_px : px};
   if (st::hold_intraday(hold))
-    return s + at + "+" + std::to_string(hold) + "m @ " + px;
+    return {open, {at + "+" + std::to_string(hold) + "m", px}};
   if (hold == st::kHoldClose)
-    return s + "C(T) @ " + close_px;
+    return {open, {"C(T)", close_px}};
   const std::string n = std::to_string(st::hold_days(hold));
-  return s + (st::hold_is_open(hold) ? "O(T+" + n + ") @ " + open_px : "C(T+" + n + ") @ " + close_px);
+  return {open, st::hold_is_open(hold) ? HoldPoint{"O(T+" + n + ")", open_px} : HoldPoint{"C(T+" + n + ")", close_px}};
+}
+
+std::string hold_desc(int hold, int seg) {
+  const HoldPoints p = hold_points(hold, seg);
+  return "开仓: " + p.open.at + " @ " + p.open.px + ", 清仓: " + p.close.at + " @ " + p.close.px;
 }
 
 namespace {

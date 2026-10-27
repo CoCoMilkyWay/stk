@@ -213,7 +213,7 @@ stk/
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
-│   │   │           │                                 #    · 显示级别; Hold 一律写成 hold_desc "开仓: C(层) @ 价, 清仓: 点 @ 价" (看板 / Inspect / Portfolio 同一份)
+│   │   │           │                                 #    · 显示级别; Hold 一律写成 hold_desc "开仓: C(层) @ 价, 清仓: 点 @ 价" (看板 / Portfolio; Inspect = 周期名 + hold_points 分色, 同一份)
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 控件只切结果立方体, 不发请求
 │   │   │           ├── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 单因子线, 区间条选日段
 │   │   │           └── StatJson.hpp                  # 🖥️ HoldStat ↔ JSON
