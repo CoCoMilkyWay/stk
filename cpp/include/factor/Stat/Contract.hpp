@@ -231,6 +231,13 @@ struct Holds {
   int n = 0;
   int h[kMaxHold] = {};
 };
+// hold 在 hd 里的下标; 不在 → −1
+inline int hold_index(const Holds &hd, int hold) {
+  for (int i = 0; i < hd.n; ++i)
+    if (hd.h[i] == hold)
+      return i;
+  return -1;
+}
 
 inline void assert_holds(const Holds &hd, int seg) {
   assert(hd.n >= 1 && hd.n <= kMaxHold);
@@ -340,10 +347,6 @@ inline double util_of(const HoldStat &s, double cap) {
   assert(cap > 0.0);
   return static_cast<double>(s.leg_n) / cap;
 }
-// 年化换手 (倍/年) = 每持有期换手 (1 − rAC 均值, 秩重排占比) × 每年持有期数.
-// rAC 的 lag = h 随持有期变, 本身不可跨期比; 折到同一时间轴后可比, 越低越好. 派生量, 不落 HoldStat / 文件
-inline double turnover_annual(const HoldStat &s) { return (1.0 - s.rac.mean) * periods_per_year(s); }
-
 // ---- 共享公式 (FACTOR_HD: 两后端同一份) ----
 
 // float → 保序无符号键 (a < b ⟺ ord(a) < ord(b)); ±0 先归一为 +0
@@ -403,7 +406,7 @@ inline double hold_span(int hold, const Geo &g) {
   return static_cast<double>(s) / g.S;
 }
 
-// ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线共用) ----
+// ---- 换手成本 (见文件头【换手成本】; Run (stat.costs / stat.turn) / Inspect 期限结构净线共用) ----
 
 // 单一金额段的建仓冲击: 两腿冲击, [T][A] 平面的指针 (宿主或设备, 由后端定); 标签有效格恒有限 (装载层断言)
 struct Cost {
@@ -448,8 +451,7 @@ struct CostAcc {
     const CostLeg &c = leg[l];
     return n_all > 0 ? (c.imp + c.sell * fixed_impact) / static_cast<double>(n_all) : 0.0;
   }
-  // 换手 (每批增仓占持仓) / 增仓的平均建仓冲击 (显示用)
-  double turn(int l) const { return leg[l].w > 0.0 ? leg[l].buy / leg[l].w : 0.0; }
+  // 增仓的平均建仓冲击 (显示用)
   double entry(int l) const { return leg[l].buy > 0.0 ? leg[l].imp / leg[l].buy : 0.0; }
 };
 
@@ -458,6 +460,11 @@ inline double net_ls_period(const HoldStat &s, const CostAcc &c, double fixed_im
   return ls_period(s) - c.cost(kLong, fixed_impact, s.n_all) - c.cost(kShort, fixed_impact, s.n_all);
 }
 inline double net_ls(const HoldStat &s, const CostAcc &c, double fixed_impact) { return net_ls_period(s, c, fixed_impact) * span_per_year(s); }
+// 年化换手 (倍/年, 单边, 每腿资金 1; 与成本同一份 Δw): 腿 l = Σ Δw⁺ / n_all × span_per_year; 两腿 = 两腿均. 越低越好
+inline double turn_annual(const HoldStat &s, const CostAcc &c, int l) {
+  return s.n_all > 0 ? c.leg[l].buy / static_cast<double>(s.n_all) * span_per_year(s) : 0.0;
+}
+inline double turn_annual(const HoldStat &s, const CostAcc &c) { return 0.5 * (turn_annual(s, c, kLong) + turn_annual(s, c, kShort)); }
 
 // 整数五和 + 计数 (rIC / rAC 的 Pearson 原料), 下标 s[kSn..kSxy]; 两后端同一份累加 (r16 ≤ 65534: 积 < 2³², 32 位乘后再加进 64 位)
 enum : int { kSn,

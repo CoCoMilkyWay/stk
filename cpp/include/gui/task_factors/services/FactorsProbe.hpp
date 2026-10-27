@@ -1,6 +1,7 @@
 // FactorsProbe — 探针层 (一个根的一种输出; 引擎 FactorsEngine 按 need 备原料, 逐钩子调): 装载层 (FactorsLoad) 之上, 引擎之下.
 //   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
-//   通用探针 Hold / Cost / CostRows / Valid / Rank / Alpha / IcPdf / Rows 四服务共用, 服务私有探针 (Search 抽样 / Inspect 分层 / Portfolio 曲线) 在各自 .cpp;
+//   通用探针 Hold / Cost / CostRows / Valid / Rank / Alpha / IcPdf / Rows 四服务共用, 服务私有探针 (Search 抽样 / Inspect 尾部 / 秩) 在各自 .cpp;
+//   评估后的纯函数 (Inspect nav_of / Portfolio curve_of) 吃落地的平面, 不是探针;
 //   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); cost_tiers 换手成本 (块间续攒, 可另落逐行); alpha_dist alpha 分布
 //   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / Portfolio 曲线同一份).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
@@ -38,10 +39,10 @@ void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, cons
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
 // 换手成本 (Stat 契约【换手成本】, Run / Inspect / Portfolio 同一份): lc = 腿码 [T][A] (leg_codes(rx); 两后端同一份), s = 块形 (统计行 [t_lo, T)),
 // L = 所评持有期的标签 (有效位 / cap), Stat cost_rows (每 t 一遍 A 轴攒全部 (h, c)) → 续攒进 out[c].acc[hi] (c 按 y.ad 序, hi 按 L.hd 序;
-// out 空 → 先按 y.ad 建). w = Stat CPU 工作区 (ensure 过 C = y.ad.n); 无金额段 → out 空.
+// out 空 → 先按 y.ad 建) + 量 qty[hi] (与金额段无关, imp 恒 0; 无金额段也攒). w = Stat CPU 工作区 (ensure 过 C = y.ad.n); 无金额段 → out 空.
 // land 非空 → 另落逐行 land[(c·H + hi)·s.T + t] (cost_rows 的 land; 无金额段按一段排, 只出量)
 void cost_tiers(misc::exec::ForkJoin &ex, const uint8_t *lc, const factor::stat::Span &s, const factor::stat::Labels &L, const YPlanes &y,
-                factor::cpu::stat::Workspace &w, std::vector<CostTier> &out, factor::stat::CostAcc *land = nullptr);
+                factor::cpu::stat::Workspace &w, std::vector<CostTier> &out, factor::stat::CostAcc *qty, factor::stat::CostAcc *land = nullptr);
 // 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 不 ok → 0)
 inline double group_abs(const factor::stat::Row &r, int k, double cap) {
   return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt[factor::stat::kLong], cap) : 0.0;
@@ -168,11 +169,12 @@ struct HoldP : ProbeBase {
     factor::stat::finish_all(acc, c.L.hd, c.c.y.sh.seg, hold);
   }
 };
-// 换手成本 CostTier[C] (契约【换手成本】): 块间续攒
+// 换手成本 CostTier[C] + 换手量 turn[H] (契约【换手成本】): 块间续攒
 struct CostP : ProbeBase {
   static constexpr uint8_t need = kNeedLc;
   std::vector<CostTier> costs;
-  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs); }
+  factor::stat::CostAcc turn[factor::stat::kMaxHold] = {};
+  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs, turn); }
 };
 // CostP + 逐行换手落地 [H][rows_all] (cost_tiers 的 land; 至多一个金额段, 无段只出量); H > 1 只整块 (land 行距 = 块行数)
 struct CostRowsP : CostP {
@@ -183,7 +185,7 @@ struct CostRowsP : CostP {
     assert(c.c.y.ad.n <= 1 && (c.L.hd.n == 1 || (s.t0_abs == 0 && s.T == c.c.rows_all())) && "逐行换手: 至多一个金额段; 多持有期只整块");
     land_open(*dst, static_cast<size_t>(c.L.hd.n) * c.c.rows_all(), s);
   }
-  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs, dst->data() + c.s().t0_abs); }
+  void root(const Ctx &c, const RootView &v) { cost_tiers(c.ex, v.lc, c.s(), c.L, c.c.y, *c.w, costs, turn, dst->data() + c.s().t0_abs); }
 };
 // 池内有效率 valid% (统计行)
 struct ValidP : ProbeBase {
@@ -224,13 +226,13 @@ struct AlphaP : ProbeBase {
     alpha_dist(c.ex, v.alpha.v, v.alpha.m, v.rx, s.T, s.A, d);
   }
 };
-// 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 (与 Inspect 左下左半同一组样本)
+// 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 / Inspect 左下左半 (同一份成品; n < 3 与 Accum::finish 同口径: 不画)
 struct IcPdfP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
   int T = 0;
   std::vector<float> ric;    // 本块 [hi][T] (非 ok = NaN), root 收进 kll
   std::vector<KLLcache> kll; // [hi]
-  MiniPdf pdf[factor::stat::kMaxHold];
+  analysis::AggPdf pdf[factor::stat::kMaxHold];
   static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
   void open(const Ctx &c) {
     T = c.s().T;
@@ -255,11 +257,8 @@ struct IcPdfP : ProbeBase {
     ric = {};
   }
   void finish(const Ctx &c) {
-    for (int i = 0; i < c.L.hd.n; ++i) {
-      analysis::AggPdf p;
-      p.fill(kll[static_cast<size_t>(i)], 3);
-      pdf[i] = mini_pdf_of(p);
-    }
+    for (int i = 0; i < c.L.hd.n; ++i)
+      pdf[i].fill(kll[static_cast<size_t>(i)], 3);
   }
 };
 // 一级 Row 落地 [hd.n][rows_all]
@@ -275,15 +274,17 @@ struct RowsP : ProbeBase {
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &) { (*dst)[static_cast<size_t>(hi) * T + t0 + t] = r; }
 };
-// 二级 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份; scope / eval_ms 归调用方)
+// 二级 / 换手 / 成本 / 有效率 / 可秩率 → EvalStat (Run 行 / Inspect 结果同一份; scope / eval_ms 归调用方)
 template <class Ps>
 void fill_eval(const Ps &p, EvalStat &st) {
   const HoldP &h = p.template at<HoldP>();
+  const CostP &c = p.template at<CostP>();
   st.valid_pct = p.template at<ValidP>().pct;
   st.rank_pct = p.template at<RankP>().pct;
   st.n_hold = h.n_hold;
   std::copy_n(h.hold, h.n_hold, st.hold);
-  st.costs = p.template at<CostP>().costs;
+  std::copy_n(c.turn, h.n_hold, st.turn);
+  st.costs = c.costs;
 }
 
 } // namespace GUI::Factors

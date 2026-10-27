@@ -91,11 +91,35 @@ void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
 // 所用库未建 / 无共同落盘日 → false + why (正常输入)
 bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector<std::string> &feats, EvalScope &es, std::string &why);
 
-// 宿主内存预算: 可用内存 × kHostFrac (Search 分块同一口径)
+// 宿主内存预算: 可用内存 × kHostFrac; 显存预算: 空闲显存 × kVramFrac (GPU 批核)
 inline constexpr double kHostFrac = 0.6;
+inline constexpr double kVramFrac = 0.85;
 double host_budget();
 // 整张量装载 (Run / Inspect) 放不下 → assert (who / 规模进消息): 该因子层太细或评估期太长, 拒绝评估
 void assert_fits(const char *who, double bytes, int days, int A, int seg);
+
+// ---- 计划: 预算 → 分块 (四服务同一份口径) ----
+// 一块 = 作用域日 [d0, d1), 前带 [d0, s0) 只给回看 / lag, 统计日 [s0, d1); 各块统计段首尾相接覆盖全期 (Search 契约【分块流式】)
+struct Chunk {
+  size_t d0 = 0, s0 = 0, d1 = 0;
+  int days() const { return static_cast<int>(d1 - d0); }
+};
+// 字节 / 格: load = 宿主作用域块 (X + Y, 池线另 + B 装载峰值); work = 引擎 + 探针 (同时只一块在用); dev = 显存 (> 0 = 也按显存限块).
+// fixed = 与格无关的宿主常驻 (字节)
+struct Budget {
+  double load = 0.0, work = 0.0, fixed = 0.0, dev = 0.0;
+};
+struct Plan {
+  std::vector<Chunk> chunks;
+  int D = 0;             // 每块统计日上限
+  bool cache_all = true; // 全部块常驻 (各占一个作用域块); 否则一块复用 (每趟逐块重读)
+  double host = 0.0;     // 宿主预算 (字节, 已扣 fixed)
+  double vram = 0.0;     // 显存预算 (字节; dev = 0 → 0)
+  double cache = 0.0;    // 全部块常驻的装载量 (字节)
+  int max_days() const;  // 最长一块的日数 (含前带)
+};
+// carry < 0 → 整期一块, 放不下 assert_fits (who / 规模进消息); 否则块 = 尽量多的统计日 (≥ 1) + 前带 carry 日, 块数最少
+Plan plan_job(const EvalScope &es, int seg, const Budget &b, int carry, const char *who);
 
 // ---- 装载: X ↔ Y ↔ B 三侧同形 (Spec → Planes, load_x / load_y / load_b 同一份逐天骨架) ----
 //   X = 因子输入叶 (随因子变): 叶按各自 ts_valid 门控
@@ -117,6 +141,8 @@ struct Amts {
 };
 factor::stat::Holds holds_of(const std::vector<int> &keys); // 容量断言 kMaxHold; 非空再 assert_holds 由装载按 seg 做
 Amts amts_of(const std::vector<int> &keys);                 // 容量断言 kMaxCost
+factor::stat::Holds all_holds(const FeatureTable &ft);      // 字段表全部持有期 (y.labels 序)
+Amts all_amts(const FeatureTable &ft);                      // 字段表全部金额段 (y.costs 序)
 
 struct XSpec {
   std::vector<std::string> codes; // 叶 (FeatureTable 叶名; 平面下标 = 此序)
@@ -128,6 +154,8 @@ struct YSpec {
   double cap = 0.0;       // 满仓只数 n_full: 0 = 本块门控自算; > 0 = 用它 (Search 多块 = 全期池宽 n_full_of, 各块同一个)
   std::string key() const;
 };
+// 全部持有期 + 全部金额段 (Run / Inspect)
+YSpec y_full(const FeatureTable &ft, double max_impact);
 // 每格平面字节 (check::Plane: float + u8)
 inline constexpr double kPlaneBytes = 5.0;
 // 宿主装载量 (字节 / 格): X = 叶 5 · codes; Y = 门控 1 + 标签两腿 (lv, sv, m) 5 · hd + 成本两腿 (无 m) 4 · ad
@@ -194,7 +222,7 @@ bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
 bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec, YPlanes &Y,
             misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 struct ScopeCache;
-// 篮子 (日层; 块 c 的 Y 已装, hd 只 T+1C): 读 c 的日段 → 指数 / 估值 / 换手 (BPlanes 注), 平面不留
+// 篮子 (日层; 块 c 的 Y 已装, hd 只 T+1C): 读 c 的日段 → 指数 / 估值 / 换手 (BPlanes 注), 平面不留. prog.begin Loading
 bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const ScopeCache &c, BPlanes &B, misc::exec::ForkJoin &ex,
             const std::atomic<bool> &cancel, Progress &prog);
 // es.days[d0, d1) 的满仓只数 (与 load_y 的 YPlanes::n_full 同一份门控同式), 只读 ts_valid / cs_valid 两列, 不留平面 (Search 多块时的全期 cap).
@@ -209,6 +237,11 @@ enum class Rc : uint8_t { Ok,
                           Cancel,
                           Stale }; // 库判废 (块已 reset; 调用方置 kStaleMsg)
 inline constexpr const char *kStaleMsg = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
+// 装载的 bool 结局 → Rc: 成 → Ok; 败 → 库判废 Stale, 否则 Cancel
+inline Rc rc_of(bool ok, const LibReaders &lr) { return ok ? Rc::Ok : lr.stale() ? Rc::Stale
+                                                                                 : Rc::Cancel; }
+// 中断结局 (Cancel / Stale): 本轮作废
+inline bool aborted(Rc rc) { return rc == Rc::Cancel || rc == Rc::Stale; }
 
 // ---- 作用域块: Y 按 (层, 作用域, 日段, YSpec) 常驻; X 挂在同一块上 (Y 换 → X 清) ----
 //   Run = 每轮一块 (Y 跨文件复用, X retain 只留本文件的叶); Inspect = 服务一块 (X 只增); Search = 每块一个
@@ -218,7 +251,7 @@ struct ScopeCache {
   std::vector<misc::Ymd> dates;
   size_t d0 = 0, d1 = 0;
   size_t nd = 0;    // 作用域总日数 (跨块落地平面的行轴 = nd · seg)
-  int t_lo = 0;     // 块内统计首行 (调用方装完置)
+  int t_lo = 0;     // 块内统计首行 (= 前带行数, ensure_xy 置)
   uint64_t gen = 0; // 每次 reset +1 (引擎据此判会话作废)
   XPlanes x;
   YPlanes y;
@@ -232,9 +265,9 @@ struct ScopeCache {
   int rows_all() const { return static_cast<int>(nd) * y.sh.seg; }
 };
 std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, size_t d1, const YSpec &spec);
-// 作用域块一步装齐 (四服务同一份): Y 键 (或日序列) 变 → reset + 装 Y; retain → 丢 codes 以外的叶; 缺的叶补装 (各自 prog.begin Loading;
-// codes 空 ∧ retain = 只 Y). Ok / Cancel / Stale (判废 → 块 reset)
-Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
+// 作用域块一步装齐块 k (四服务同一份): Y 键 (或日序列) 变 → reset + 装 Y; retain → 丢 codes 以外的叶; 缺的叶补装 (各自 prog.begin Loading;
+// codes 空 ∧ retain = 只 Y); t_lo = 前带行数. Ok / Cancel / Stale (判废 → 块 reset)
+Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const Chunk &k, const YSpec &ys,
              const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog);
 // 叶平面视图 (DAG 输入: 下标 = codes 下标 = Dag::feats 下标); 全部须已装
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes);

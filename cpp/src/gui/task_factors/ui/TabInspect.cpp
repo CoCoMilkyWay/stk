@@ -209,8 +209,8 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
 float section_at(const InspectDerived &d, const std::vector<float> &cum, int c);
 
 // 选定 hold → 日级序列 + IC 分布 / 时序. 分层累计 = InspectResult::nav (净值引擎 fold_exit) 选定口径的
-// 日收益连乘, 画 (净值 − 1) × 100 %; 顶底 LS 的年化 / Sharpe = HoldStat (与看板同一份), 尾部 LS = 几何年化 / 日收益 mean / sd × √kDaysPerYear;
-// rIC 分布 = ok 行的 ric 逐行进 KLL (与 HoldStat::ric 的 mean/sd/skew/kurt 同一组样本).
+// 日收益连乘, 画 (净值 − 1) × 100 %; 各 LS 线的年化 / Sharpe 同一口径 = 净值几何年化 / 日收益 mean / sd × √kDaysPerYear;
+// rIC 分布 = InspectResult::ic_pdf (IcPdfP 成品, 与 Run 行小图同一份).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
   if (res.key.empty() || !res.error.empty() || res.pl.rows.empty())
@@ -247,13 +247,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   for (int i = 0; i < kLsLines; ++i) {
     const float *v = res.nav_at(sel, 2 * kNavLayers + i);
     cum_of(v, d.ls_cum[i]);
-    const factor::stat::CostAcc &ta = res.turn[i][sel];
-    d.ls_turn[i] = d.hs.n_all > 0 ? static_cast<float>(0.5 * (ta.leg[kLong].buy + ta.leg[kShort].buy) / d.hs.n_all * factor::stat::span_per_year(d.hs)) : 0.f;
-    if (i == 0) {
-      d.ls_ann[i] = static_cast<float>(100.0 * factor::stat::ls_annual(d.hs));
-      d.ls_sharpe[i] = static_cast<float>(factor::stat::sharpe_of(d.hs));
-      continue;
-    }
+    d.ls_turn[i] = static_cast<float>(factor::stat::turn_annual(d.hs, res.ls_turn[i][sel]));
     factor::stat::MomAcc m;
     for (int day = 0; day < days; ++day)
       m.add(v[day]);
@@ -272,9 +266,7 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
       span(d.lay_cum[layer_tail(l, j)], d.lay_lo[1 + j], d.lay_hi[1 + j]);
   for (int i = 0; i < kLsLines; ++i)
     span(d.ls_cum[i], d.ls_lo[i], d.ls_hi[i]);
-  KLLcache kll(analysis::kAggKllCapacity, analysis::kAggKllResolution);
-  kll.addBatch(ics);
-  d.ic_pdf.fill(kll, 3); // n < 3 与 Accum::finish 同口径: 无 stat 也无 PDF
+  d.ic_pdf = res.ic_pdf[sel];
   d.valid = true;
 }
 
@@ -1183,7 +1175,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       const factor::stat::CostAcc &ca = costs[pq - 1].acc[pi];
       const auto avg = [&](auto f) { return ls ? 0.5 * (f(kLong) + f(kShort)) : f(pc); }; // LS = 两腿平均, 否则该腿
       const auto entry = [&](int l) { return ca.entry(l); };
-      const auto turn = [&](int l) { return ca.turn(l); };
+      const auto turn = [&](int l) { return factor::stat::turn_annual(h, ca, l); };
       const auto cost = [&](int l) { return ca.cost(l, fixed_impact, h.n_all); };
       amort = avg(cost);
       ImGui::Spacing();
@@ -1195,12 +1187,12 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       row("开仓冲击", v, note);
       std::snprintf(v, sizeof(v), "%.2f bp", fixed_impact * bp);
       row("固定冲击", v, "Config::fixed_impact");
-      std::snprintf(v, sizeof(v), "%.0f %%", avg(turn) * 100.0);
+      std::snprintf(v, sizeof(v), "%.1f 倍/年", avg(turn));
       if (ls)
-        std::snprintf(note, sizeof(note), "增仓 Δw⁺ 占持仓: L %.0f%% / S %.0f%% 的平均", turn(kLong) * 100.0, turn(kShort) * 100.0);
+        std::snprintf(note, sizeof(note), "单边 Σ Δw⁺ / 全部行 × 每年满仓轮数: L %.1f / S %.1f 的平均", turn(kLong), turn(kShort));
       else
-        std::snprintf(note, sizeof(note), "增仓 Δw⁺ 占持仓 (同一时刻交接的只算差额)");
-      row("换手", v, note);
+        std::snprintf(note, sizeof(note), "单边 Σ Δw⁺ / 全部行 × 每年满仓轮数 (同一时刻交接的只算差额)");
+      row("年换手", v, note);
       std::snprintf(v, sizeof(v), "%.2f bp/期", amort * bp);
       if (ls)
         std::snprintf(note, sizeof(note), "= (Σ 增仓 × 建仓冲击 + Σ 平仓量 × 固定冲击) / 全部行, 两腿各算再平均 (L %.2f / S %.2f)", cost(kLong) * bp,
@@ -1261,13 +1253,7 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 }
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
-std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
-  InspectRequest r;
-  r.f.scope.seg = ctx.seg, r.f.scope.pool = ctx.pool;
-  r.f.expr = row.expr;
-  r.row = row.key;
-  return r.key();
-}
+std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { return inspect_key(ctx.seg, ctx.pool, row.key, row.expr); }
 
 } // namespace
 
@@ -1281,7 +1267,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUISta
         break;
       }
   }
-  if (fui.view_file.empty() || !ctx.axis_ready || fsvc.feats().y.labels.empty())
+  if (fui.view_file.empty() || !ctx.axis_ready || ctx.ft->y.labels.empty())
     return false;
   if (isvc.busy())
     return false;
@@ -1371,7 +1357,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
 
   // ---- 控件行 (各切换控件之间留宽间隔, 不然 "▸ 分层 ◂" 连成一片) ----
   constexpr float kCtlGap = 24.f;
-  const FeatureTable &ft = fsvc.feats();
+  const FeatureTable &ft = *ctx.ft;
   const Phase st = isvc.phase.load(std::memory_order_acquire);
   const bool busy = isvc.busy();
   const int n_hold = static_cast<int>(ft.y.labels.size());

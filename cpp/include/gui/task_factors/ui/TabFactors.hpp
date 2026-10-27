@@ -8,6 +8,7 @@
 #include "gui/task_factors/services/SearchService.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -65,7 +66,8 @@ struct FactorsUIState {
 
 // 当前作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域 (池) 对比着色; 评估期按因子定 (所用库落盘日交集), 不在这里
 struct FactorsUIContext {
-  int seg = 0;                                    // 因子层 (FactorLevel; 本页已生效的, 跟页顶 / 特征面板选择走)
+  int seg = 0;                                    // 因子层 (FactorLevel; 本页已生效的, 跟页顶 / 特征面板选择走) = ft->seg
+  std::shared_ptr<const FeatureTable> ft;         // 该层字段表 (四服务请求同一份)
   std::string factor_dir;                         // factor_dir_of(pool, seg) = <factor_dir>/<池>/<层名>
   std::string pool;                               // 本页已生效的池名
   double fixed_impact = 0.0;                      // Config::fixed_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)

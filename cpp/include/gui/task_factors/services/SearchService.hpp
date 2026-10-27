@@ -29,7 +29,7 @@
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
 // 进度走原子: Loading 期 done/total = 块内天; Running 期 = 候选 × 块. 服务间互斥由 UI 保证 (Factors Run 与 Search 不同时跑: 都写因子文件).
-// 出错策略: 因子行 / 作用域不合是正常输入 → result.message; 契约不一致 → assert.
+// 出错策略: 因子行 / 作用域不合是正常输入 → message; 契约不一致 → assert.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
@@ -53,8 +53,9 @@ struct SearchSpec {
   int hold = 0;                                        // 搜的持有期键 (字段表标签组之一)
 };
 using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights); scope.max_impact 不看 (不评成本)
-// 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键
-bool MakeSearchRequest(const SharedData &data, const std::string &pool, int seg, const FactorRow &row, int hold, bool gpu, SearchRequest &req);
+// 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键; ft = 该层字段表
+bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool gpu,
+                       SearchRequest &req);
 
 // 评过的一个候选的分 (UI 列表)
 struct SearchCand {
@@ -97,7 +98,6 @@ struct SearchResult {
   double n_full = 0.0; // 满仓一腿只数 (Labels::cap, 各块共用; 全期池内平均有效资产数 / kGroups)
   int n_weights = 0;   // 写入的权重数
   bool wrote = false;  // 已写 weights (UI 据此重扫 + Run)
-  std::string message; // 结论 / 没算成的原因
 };
 
 // 搜索阶段 (UI 显示): 准备 (装块 0 + 阈值槽分位表) → 采样 (趟 0) → 细化 (趟 1..)
@@ -105,17 +105,14 @@ enum class SearchStage : uint8_t { Prepare,
                                    Design,
                                    Refine };
 
-// 进度面 = 自身 (Published): Loading 期 done/total = 块内天; Running 期 = 候选 × 块
-class SearchService : public Service<SearchService, SearchRequest>, public Published {
+// 进度面 = 自身 (FactorWorker; message = 结论 / 没算成的原因): Loading 期 done/total = 块内天; Running 期 = 候选 × 块
+class SearchService : public Service<SearchService, SearchRequest>, public FactorWorker {
   friend Service<SearchService, SearchRequest>;
 
 public:
   static constexpr const char *kName = "SearchWorker";
   SearchService(); // 两者都在 .cpp: FactorFlow 不完整
   ~SearchService();
-
-  void SetFeatureTable(std::shared_ptr<const FeatureTable> t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
-  const FeatureTable &feats() const { return *feats_; }
 
   SearchStage stage() const { return stage_.load(std::memory_order_relaxed); }
   int alive() const { return alive_.load(std::memory_order_relaxed); }   // 活跃峰数 (Refine 期)
@@ -130,10 +127,9 @@ private:
   static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return *this; }
   bool run(SearchRequest &req);
-  bool evaluate(const SearchRequest &req, FactorFlow &F); // false = 取消
+  bool evaluate(const SearchRequest &req, FactorFlow &F); // false = 取消 / 判废
 
-  std::shared_ptr<const FeatureTable> feats_;
-  std::unique_ptr<FactorFlow> flow_; // 首个请求懒建, 随 worker 活 (线程池 + 库; 作用域块归每轮的 ChunkData)
+  std::unique_ptr<FactorFlow> flow_; // 首个请求懒建, 随 worker 活 (线程池 + 库; 作用域块归每轮的块缓存)
   std::atomic<SearchStage> stage_{SearchStage::Prepare};
   std::atomic<int> alive_{0};
   std::atomic<int> pass_{0}, chunk_{0}, chunks_{0};

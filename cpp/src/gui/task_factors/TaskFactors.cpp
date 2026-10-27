@@ -107,14 +107,14 @@ static void search_all_next(const SharedData &data, TaskFactorsState &s) {
   if (ui.search_queue.empty()) {
     ui.search_all_n = 0;
     Factors::FactorsRequest req;
-    if (Factors::MakeFactorsRequest(data, s.pool, s.seg, /*evaluate=*/true, ui.backend == 1, req))
+    if (Factors::MakeFactorsRequest(data, s.feature_table, s.pool, /*evaluate=*/true, ui.backend == 1, req))
       s.factors_service->Request(req);
     return;
   }
   const Factors::FactorRow row = std::move(ui.search_queue.front());
   ui.search_queue.erase(ui.search_queue.begin());
   Factors::SearchRequest req;
-  if (Factors::MakeSearchRequest(data, s.pool, s.seg, row, ui.search_hold, ui.backend == 1, req)) {
+  if (Factors::MakeSearchRequest(data, s.feature_table, s.pool, row, ui.search_hold, ui.backend == 1, req)) {
     s.search_service->Request(req);
   } else {
     ui.search_queue.clear();
@@ -148,11 +148,12 @@ static void portfolio_sync(const SharedData &data, TaskFactorsState &s, bool rel
 }
 
 // Factors 子页的作用域 (每帧从 config 取; 池 / 层取本页已生效的)
-static Factors::FactorsUIContext factors_context(const SharedData &data, const std::string &pool, int seg) {
+static Factors::FactorsUIContext factors_context(const SharedData &data, std::shared_ptr<const Factors::FeatureTable> ft, const std::string &pool) {
   Factors::FactorsUIContext c;
-  c.seg = seg;
+  c.seg = ft->seg;
   c.pool = pool;
-  c.factor_dir = Factors::factor_dir_of(data, pool, seg);
+  c.factor_dir = Factors::factor_dir_of(data, pool, c.seg);
+  c.ft = std::move(ft);
   c.fixed_impact = data.config.fixed_impact;
   c.axis_ready = !data.asset.items.empty();
   c.assets = &data.asset.items;
@@ -195,7 +196,7 @@ TaskHandle CreateFactorsTask() {
         }
         if (wrote) {
           Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
+          if (Factors::MakeFactorsRequest(data, state->feature_table, state->pool, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
             req.spec.only_file = file;
             state->factors_service->Request(req);
           }
@@ -392,17 +393,15 @@ TaskHandle CreateFactorsTask() {
         state->feature_table = std::make_shared<Factors::FeatureTable>(Factors::BuildFeatureTable(data.feature, state->seg));
       if (!state->factors_service) {
         state->factors_service = std::make_unique<Factors::FactorsService>();
-        state->factors_service->SetFeatureTable(state->feature_table);
         state->search_service = std::make_unique<Factors::SearchService>();
-        state->search_service->SetFeatureTable(state->feature_table);
       }
       auto &fs = *state->factors_service;
       auto &ss = *state->search_service;
-      const Factors::FactorsUIContext ctx = factors_context(data, state->pool, state->seg);
+      const Factors::FactorsUIContext ctx = factors_context(data, state->feature_table, state->pool);
       if (state->factors_scanned_dir != ctx.factor_dir) {
         state->factors_scanned_dir = ctx.factor_dir;
         Factors::FactorsRequest req;
-        Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/false, false, req);
+        Factors::MakeFactorsRequest(data, state->feature_table, state->pool, /*evaluate=*/false, false, req);
         fs.Request(req);
       }
       if (!state->inspect_service) {
@@ -417,13 +416,14 @@ TaskHandle CreateFactorsTask() {
         const int action = Factors::RenderTabFactors(fs, ss, state->factors_ui, state->portfolio_ui, ctx);
         if (action == 1 || action == 2) {
           Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, state->pool, state->seg, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
+          if (Factors::MakeFactorsRequest(data, state->feature_table, state->pool, /*evaluate=*/action == 1, state->factors_ui.backend == 1, req))
             fs.Request(req);
         } else if (action == -1) {
           fs.RequestCancel();
         } else if (action == 3) {
           Factors::SearchRequest req;
-          if (Factors::MakeSearchRequest(data, state->pool, state->seg, state->factors_ui.search_row, state->factors_ui.search_hold, state->factors_ui.backend == 1, req))
+          if (Factors::MakeSearchRequest(data, state->feature_table, state->pool, state->factors_ui.search_row, state->factors_ui.search_hold,
+                                         state->factors_ui.backend == 1, req))
             ss.Request(req);
         } else if (action == 4) {
           search_all_next(data, *state);
@@ -436,7 +436,7 @@ TaskHandle CreateFactorsTask() {
         iaction = 1;
       if (iaction == 1) {
         Factors::InspectRequest req;
-        if (Factors::MakeInspectRequest(data, state->feature_table, state->pool, state->seg, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
+        if (Factors::MakeInspectRequest(data, state->feature_table, state->pool, state->inspect_ui.req_row, state->inspect_ui.req_reload, req))
           is.Request(req);
       } else if (iaction == -1) {
         is.RequestCancel();

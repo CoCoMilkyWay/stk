@@ -27,19 +27,17 @@ const FeatCol *XCols::find(std::string_view code) const {
   return nullptr;
 }
 
-const LegCol &leg_of(const std::vector<LegCol> &cols, int key) {
+const LegCol *find_leg(const std::vector<LegCol> &cols, int key) {
   for (const LegCol &c : cols)
     if (c.key == key)
-      return c;
-  assert(false && "key 不在字段表两腿列里");
-  __builtin_unreachable();
+      return &c;
+  return nullptr;
 }
 
-std::vector<int> keys_of(const std::vector<LegCol> &cols) {
-  std::vector<int> keys;
-  for (const LegCol &c : cols)
-    keys.push_back(c.key);
-  return keys;
+const LegCol &leg_of(const std::vector<LegCol> &cols, int key) {
+  const LegCol *c = find_leg(cols, key);
+  assert(c && "key 不在字段表两腿列里");
+  return *c;
 }
 
 factor::expr::FeatureLookup FeatureTable::lookup() const {
@@ -70,6 +68,15 @@ bool FeatureTable::check_grid(const factor::expr::Expr &e, std::string &err) con
   assert(finest > lv.lvl);
   err = std::string("最细的特征层是 ") + kLevelToken[finest] + ", 比因子层 " + lv.name + " 粗: 因子层 = 所用特征的最细层, 放到对应层目录";
   return false;
+}
+
+factor::expr::Expr FeatureTable::reparse(std::string_view canon) const {
+  factor::expr::Expr e;
+  std::string err;
+  const bool ok = factor::expr::parse(canon, lookup(), seg, e, err);
+  assert(ok && "已校验的规范串必可再解析");
+  (void)ok;
+  return e;
 }
 
 const FactorLevel &factor_level(int seg) {
@@ -209,11 +216,14 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
   return t;
 }
 
-bool MakeFactorScope(const SharedData &data, const std::string &pool, int seg, bool gpu, FactorScope &sc) {
+bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool gpu, FactorScope &sc) {
+  assert(ft);
+  const int seg = ft->seg;
   sc = FactorScope{};
   sc.seg = seg;
   sc.pool = pool;
   sc.factor_dir = factor_dir_of(data, pool, seg);
+  sc.ft = std::move(ft);
   sc.max_impact = data.config.max_impact;
   sc.gpu = gpu;
   if (data.asset.items.empty())

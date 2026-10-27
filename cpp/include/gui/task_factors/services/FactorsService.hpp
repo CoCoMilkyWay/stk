@@ -17,6 +17,7 @@
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
+//         "turn": [[CostAcc]…],                               //   每持有期两腿换手量 (只量; 因子表年换手)
 //         "costs": [{amt, acc: [[CostAcc]…]}…],               //   每金额段 × 每持有期换手成本累加器 (Inspect 净线从它算)
 //         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 因子表小图空): 每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
@@ -38,7 +39,7 @@
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), HoldStat 是毛口径;
 // 换手成本 (lb_cost_* 每金额段, 买入按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (FactorsProbe cost_tiers, 两后端同一份宿主代码:
-// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 净线由 Inspect plot_term 在二级上现算, 因子表 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
+// CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs; 换手量 (与金额段无关, 无段的层也攒) 落 stat.turn; 净线由 Inspect plot_term 在二级上现算, 因子表 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
 // Config::fixed_impact 只进公式不进文件. 因子表的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
@@ -64,12 +65,12 @@ namespace GUI::Factors {
 enum class Rc : uint8_t; // FactorsLoad.hpp
 struct FactorFlow;       // FactorsEngine.hpp
 
-// 因子服务的进度面 + 本轮说明 + 库判废收尾 (Run / Inspect / Portfolio 同一份; Search 的说明在 result 里)
+// 因子服务的进度面 + 本轮说明 + 库判废收尾 (Run / Search / Inspect / Portfolio 同一份)
 struct FactorWorker : Published {
   std::string message; // 本轮说明 (如 "特征库无数据"), 空 = 无; UI 持 mutex 读
 
 protected:
-  bool stale_out(FactorFlow &F); // 库判废: 弃作用域块 + 置 message; 恒 false
+  bool abort_out(Rc rc, FactorFlow &F); // 中断收尾 (rc 须 aborted): Stale → 弃作用域块 + 置 message; 恒 false
 };
 
 struct RunSpec {
@@ -77,8 +78,9 @@ struct RunSpec {
   std::string only_file; // 非空 = 只评这个因子文件的权重 (Search 写完后), 其余行保留文件里的 stat
 };
 using FactorsRequest = Request<RunSpec>;
-// 只扫描恒成; evaluate 要作用域可用 (MakeFactorScope)
-bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg, bool evaluate, bool gpu, FactorsRequest &req);
+// 只扫描恒成; evaluate 要作用域可用 (MakeFactorScope). ft = 该层字段表
+bool MakeFactorsRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool evaluate, bool gpu,
+                        FactorsRequest &req);
 
 // ---- 行 ----
 // 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 只留位, 扫描到即标 error
@@ -112,10 +114,8 @@ struct FactorRow : EvalStat {
   MiniPdf ic_pdf[factor::stat::kMaxHold]; // [hold] 逐行 rIC (ok 行) 分布, 与 Inspect 左下左半同一组样本
   MiniPdf alpha_pdf;                      // alpha 分布 (截尾, 与 Inspect 左下右半同一份 alpha_dist; 与持有期无关)
   const MiniPdf *find_ic_pdf(int hold_m) const {
-    for (int j = 0; j < n_hold; ++j)
-      if (hold[j].hold == hold_m)
-        return &ic_pdf[j];
-    return nullptr;
+    const factor::stat::HoldStat *h = find_hold(hold_m);
+    return h ? &ic_pdf[h - hold] : nullptr;
   }
 };
 
@@ -136,9 +136,6 @@ public:
   FactorsService(); // 两者都在 .cpp: FactorFlow 不完整
   ~FactorsService();
 
-  void SetFeatureTable(std::shared_ptr<const FeatureTable> t) { feats_ = std::move(t); } // 首个 Request 前 (进页) 调一次
-  const FeatureTable &feats() const { return *feats_; }
-
   int broken() const { return broken_.load(std::memory_order_relaxed); }
 
   // UI 持 mutex 读
@@ -157,7 +154,6 @@ private:
   Rc evaluate_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx, const std::vector<factor::expr::Expr> &exprs,
                    const std::vector<factor::stat::Frame> &frames);
 
-  std::shared_ptr<const FeatureTable> feats_;
   std::unique_ptr<FactorFlow> flow_; // 首个 evaluate 懒建, 随 worker 活 (作用域块每轮用完即弃)
   std::atomic<int> broken_{0};
 };

@@ -1,6 +1,7 @@
 // FactorsLoad — 见头文件. include 因子契约 / Stat 行核头 (h2f), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/FactorsLoad.hpp"
 
+#include "factor/GpuRun.hpp"                       // mem_info (显存预算)
 #include "factor/Stat/Host.hpp"                    // h2f
 #include "features/MetaFlag.hpp"                   // fmeta::valid / keep / finite
 #include "features/Node/Lob/TS/Label/LabelLob.hpp" // 只取 kContCloseMin 对账尾部界 (不含字段表)
@@ -132,6 +133,44 @@ void assert_fits(const char *who, double bytes, int days, int A, int seg) {
   assert(bytes <= budget && "因子整张量装载放不下内存 (因子层太细 / 评估期太长), 拒绝评估");
 }
 
+int Plan::max_days() const {
+  int m = 0;
+  for (const Chunk &k : chunks)
+    m = std::max(m, k.days());
+  return m;
+}
+
+Plan plan_job(const EvalScope &es, int seg, const Budget &b, int carry, const char *who) {
+  const int days = static_cast<int>(es.days.size()), A = static_cast<int>(es.rs.axis.size());
+  assert(days > 0 && A > 0);
+  const double per_day = static_cast<double>(seg) * A;
+  Plan P;
+  P.host = host_budget() - b.fixed;
+  if (carry < 0) {
+    assert_fits(who, days * per_day * (b.load + b.work) + b.fixed, days, A, seg);
+    P.chunks = {Chunk{0, 0, static_cast<size_t>(days)}};
+    P.D = days;
+    P.cache = days * per_day * b.load;
+    return P;
+  }
+  assert(P.host > 0.0 && "内存预算装不下与格无关的常驻量");
+  int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - carry, 1, days);
+  if (b.dev > 0.0) {
+    size_t vfree = 0, vtotal = 0;
+    factor::gpu::mem_info(&vfree, &vtotal);
+    P.vram = kVramFrac * static_cast<double>(vfree);
+    D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - carry, 1, days));
+  }
+  P.D = D;
+  for (int s0 = 0; s0 < days; s0 += D) {
+    const Chunk k{static_cast<size_t>(std::max(0, s0 - carry)), static_cast<size_t>(s0), static_cast<size_t>(std::min(days, s0 + D))};
+    P.chunks.push_back(k);
+    P.cache += k.days() * per_day * b.load;
+  }
+  P.cache_all = P.cache + P.max_days() * per_day * b.work <= P.host;
+  return P;
+}
+
 factor::stat::Holds holds_of(const std::vector<int> &keys) {
   assert(keys.size() <= static_cast<size_t>(factor::stat::kMaxHold) && "持有期数超 Stat 标签组容量 (kMaxHold)");
   factor::stat::Holds hd;
@@ -147,6 +186,20 @@ Amts amts_of(const std::vector<int> &keys) {
   std::copy(keys.begin(), keys.end(), ad.a);
   return ad;
 }
+
+namespace {
+std::vector<int> keys_of(const std::vector<LegCol> &cols) {
+  std::vector<int> keys;
+  for (const LegCol &c : cols)
+    keys.push_back(c.key);
+  return keys;
+}
+} // namespace
+
+factor::stat::Holds all_holds(const FeatureTable &ft) { return holds_of(keys_of(ft.y.labels)); }
+Amts all_amts(const FeatureTable &ft) { return amts_of(keys_of(ft.y.costs)); }
+
+YSpec y_full(const FeatureTable &ft, double max_impact) { return {all_holds(ft), all_amts(ft), static_cast<float>(max_impact)}; }
 
 std::string YSpec::key() const {
   std::string k = "h";
@@ -360,6 +413,13 @@ void pool_turn(misc::exec::ForkJoin &ex, const factor::check::Plane &close, cons
     }
     turn[w] = n > 0 ? s / n : 0.0;
   }
+}
+
+// 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 截面门控在池格数 on / 行数 T / kGroups (load_y / n_full_of 同一份)
+double n_full_from(long long on, int T) {
+  const double n = static_cast<double>(on) / static_cast<double>(T) / factor::stat::kGroups;
+  assert(n > 0.0 && "池内无有效资产");
+  return n;
 }
 
 // 平面列 c 在网格行 t 的源行视图 (v nullptr = 无源); 格 a ← ids[a] (nullptr = 同轴; kAbsent = 资产不在该库)
@@ -600,8 +660,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   long long n_on = 0;
   for (const long long k : on)
     n_on += k;
-  Y.n_full = static_cast<double>(n_on) / static_cast<double>(Y.sh.T) / factor::stat::kGroups;
-  assert(Y.n_full > 0.0 && "池内无有效资产");
+  Y.n_full = n_full_from(n_on, Y.sh.T);
   return true;
 }
 
@@ -631,6 +690,7 @@ bool load_b(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, c
                                                                                   //   营业总收入TTM / 经营现金流TTM / 股息率TTM (缺 → NaN), 装完算 val 即弃
   std::vector<uint8_t> vind(n, 0);                                                // 行业 ID (0 = 未知 / 缺 / 越界)
   close.resize(n);
+  prog.begin(Phase::Loading, c.d1 - c.d0);
   const bool read = read_days(ft, es, lr, c.d0, c.d1, std::move(cols), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
@@ -727,8 +787,7 @@ bool n_full_of(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr
   long long n = 0;
   for (const long long k : on)
     n += k;
-  out = static_cast<double>(n) / static_cast<double>(sh.T) / factor::stat::kGroups;
-  assert(out > 0.0 && "池内无有效资产");
+  out = n_full_from(n, sh.T);
   return true;
 }
 
@@ -749,10 +808,8 @@ factor::stat::Labels labels_pick(const factor::stat::Labels &L, const factor::st
   out.hd = hd;
   out.cap = L.cap;
   for (int i = 0; i < hd.n; ++i) {
-    int j = 0;
-    while (j < L.hd.n && L.hd.h[j] != hd.h[i])
-      ++j;
-    assert(j < L.hd.n && "所取持有期不在标签组里");
+    const int j = factor::stat::hold_index(L.hd, hd.h[i]);
+    assert(j >= 0 && "所取持有期不在标签组里");
     out.l[i] = L.l[j];
   }
   return out;
@@ -816,14 +873,15 @@ bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
 
 } // namespace
 
-Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &ys,
+Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const Chunk &k, const YSpec &ys,
              const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
-  if (ensure_y(c, ft, es, lr, d0, d1, ys, ex, cancel, prog) && ensure_x(c, ft, es, lr, codes, retain, ex, cancel, prog))
-    return Rc::Ok;
-  if (!lr.stale())
-    return Rc::Cancel;
-  c.reset();
-  return Rc::Stale;
+  assert(k.d0 <= k.s0 && k.s0 < k.d1);
+  const Rc rc = rc_of(ensure_y(c, ft, es, lr, k.d0, k.d1, ys, ex, cancel, prog) && ensure_x(c, ft, es, lr, codes, retain, ex, cancel, prog), lr);
+  if (rc == Rc::Stale)
+    c.reset();
+  if (rc == Rc::Ok)
+    c.t_lo = static_cast<int>(k.s0 - k.d0) * ft.seg;
+  return rc;
 }
 
 std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes) {

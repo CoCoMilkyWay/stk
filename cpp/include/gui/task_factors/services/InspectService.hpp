@@ -6,7 +6,7 @@
 // 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 Flow : FactorFlow; 缓冲常驻, 稳态零分配). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算;
-// 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / N 是探针 (InspectProbes); N 用净值引擎 fold_exit (FactorsLoad.hpp, 与 Portfolio / 池线同一份):
+// 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / T 是探针 (InspectProbes); N 用净值引擎 fold_exit (FactorsLoad.hpp, 与 Portfolio / 池线同一份):
 //   S  作用域   FactorsLoad ScopeCache, key = scope_key (层 | EvalScope::key | 日段 | YSpec: 持有期 / 金额段 / 封顶)
 //               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 特征平面 (作用域内读过的全留, 只增). 池等权线 (pool_line, 每持有期一条) 随 Y 一代算一次
 //               (装载前 assert_fits: 放不下 = 因子层太细 / 评估期太长)
@@ -21,9 +21,9 @@
 //   L  评估 + 尾部                                         → 一级 Row[H][T] + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all) + TailRow[H][T] (两腿组内更极端的
 //                                                            kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search),
 //                                                            尾部是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
-//   T  换手                                                → 各 LS 线 (顶底 + 各级尾部) 两腿的换手量 CostAcc (Stat cost_rows 只出量, C = 0; 腿成员 = 该级腿码 ∧ 标签有效位,
-//                                                            满仓 = cap · kTailOfGroup[j]); 图例年换手 = 两腿均 Σ Δw⁺ / n_all × span_per_year, UI 现算
-//   N  净值                                                → 每持有期 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h̄)
+//   T  换手                                                → 各 LS 线两腿的换手量 CostAcc: 顶底 = C 的换手量 (EvalStat::turn); 各级尾部 = Stat cost_rows 只出量 (C = 0;
+//                                                            腿成员 = 该级腿码 ∧ 标签有效位, 满仓 = cap · kTailOfGroup[j]); 图例年换手 = turn_annual, UI 现算
+//   N  净值                                                → 评估后纯函数 nav_of: 每持有期 fold_exit (Stat 契约【净值】: L 的 Row / TailRow 逐行批收益在平仓行实现 1/h̄)
 //                                                            stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛; 可成交 / 顺延在标签里)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
@@ -48,16 +48,20 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-// 请求 = 一个因子 (FactorJob, 与 Portfolio 条目同一份) + 权重行 key + 弃缓存. f.scope.max_impact 装载时生效 → 进作用域缓存键; f.scope.gpu 不看 (只 CPU)
-struct InspectRequest {
+// 请求 = 一个因子 (FactorJob, 与 Portfolio 条目同一份) + 权重行 key; reload = 弃缓存整体重读 (特征库重算过 / 手动 Compute).
+// scope.max_impact 装载时生效 → 进作用域缓存键; scope.gpu 不看 (只 CPU)
+struct InspectSpec {
   FactorJob f;
-  std::string row;     // 权重行 key (FactorRow::key = 文件#权重号)
-  bool reload = false; // 弃缓存整体重读 (特征库重算过 / 手动 Compute)
-  std::string key() const { return std::to_string(f.scope.seg) + "|" + row + "|" + f.expr + "|" + f.scope.pool; }
+  std::string row; // 权重行 key (FactorRow::key = 文件#权重号)
 };
+using InspectRequest = Request<InspectSpec>;
+// 请求 / 结果 key: 层 | 权重行 | 具体规范串 | 池
+inline std::string inspect_key(int seg, const std::string &pool, const std::string &row, const std::string &expr) {
+  return std::to_string(seg) + "|" + row + "|" + expr + "|" + pool;
+}
 // 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表
-bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int seg, const FactorRow &row,
-                        bool reload, InspectRequest &req);
+bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload,
+                        InspectRequest &req);
 
 // 尾部分层 (Inspect 专属, 不进 Stat 契约): 两腿的组 (顶 / 底) 内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
 // j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径 (q = 1 即整组). 一级 [H][T], 只在 Row::ok 行有值, 其余全 0
@@ -90,20 +94,21 @@ struct InspectPlanes {
 // EvalStat (与 Run 行同一份): scope / eval_ms / valid% / rank% / 二级 hold[n_hold] (只毛口径) / costs [C] = FeatureTable::y.costs 序
 // (期限结构净线: 毛二级 − 两腿均摊换手成本, UI 现算)
 struct InspectResult : EvalStat {
-  std::string key; // = InspectRequest::key; 空 = 无结果
+  std::string key; // = inspect_key; 空 = 无结果
   std::string row, expr;
   int seg = 0; // 因子层: T = days · seg, K 线 / 横轴按层
   factor::stat::Frame frame = factor::stat::Frame::CS;
-  std::vector<misc::Ymd> dates;                                    // [days]
-  factor::stat::Holds hd;                                          // hd.h[hi]
-  analysis::ReadScope read_scope;                                  // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
-  BookLines pool_index;                                            // [hd.n][T] 池等权线的逐行收益 (= pool_line, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
-                                                                   //   UI compound 成点位后按视野左端个股价重锚
-  InspectPlanes pl;                                                // 一级平面 (Row / 尾部 / 秩)
-  std::vector<BookLines> nav;                                      // [hd.n] 分层累计的日收益 [kNavLines][days] (见 kNavLines)
-  factor::stat::CostAcc turn[kNavLs][factor::stat::kMaxHold] = {}; // [LS 线][hi] 两腿换手量 (只量, imp 恒 0; 见 flow T)
-  AlphaDist alpha_dist;                                            // alpha 分布 (全体 + 各组, 左下右半图)
-  std::string error;                                               // 非空 = 没算成 (特征叶值域越界等), 其余字段空
+  std::vector<misc::Ymd> dates;                                       // [days]
+  factor::stat::Holds hd;                                             // hd.h[hi]
+  analysis::ReadScope read_scope;                                     // 特征库作用域 (EvalScope::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
+  BookLines pool_index;                                               // [hd.n][T] 池等权线的逐行收益 (= pool_line, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
+                                                                      //   UI compound 成点位后按视野左端个股价重锚
+  InspectPlanes pl;                                                   // 一级平面 (Row / 尾部 / 秩)
+  std::vector<BookLines> nav;                                         // [hd.n] 分层累计的日收益 [kNavLines][days] (见 kNavLines)
+  factor::stat::CostAcc ls_turn[kNavLs][factor::stat::kMaxHold] = {}; // [LS 线][hi] 两腿换手量 (只量, imp 恒 0; 线 0 = EvalStat::turn, 见 flow T)
+  analysis::AggPdf ic_pdf[factor::stat::kMaxHold];                    // [hi] 逐行 rIC (ok 行) 分布 (= Run 行小图同一份成品; 左下左半)
+  AlphaDist alpha_dist;                                               // alpha 分布 (全体 + 各组, 左下右半图)
+  std::string error;                                                  // 非空 = 没算成 (特征叶值域越界等), 其余字段空
 
   const factor::stat::Row *rows_at(int hi) const { return pl.rows.data() + static_cast<size_t>(hi) * scope.T; }
   const TailRow *tails_at(int hi) const { return pl.tails.data() + static_cast<size_t>(hi) * scope.T; }

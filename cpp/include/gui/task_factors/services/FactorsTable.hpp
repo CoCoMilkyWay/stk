@@ -10,6 +10,7 @@
 #include "shared/Feature.hpp"    // Feature
 #include "shared/FeatureLib.hpp" // FeatureLib (请求的库清单)
 
+#include <cassert>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -74,8 +75,8 @@ struct LegCol {
   int key = 0;
   Col leg[factor::stat::kLegs];
 };
-const LegCol &leg_of(const std::vector<LegCol> &cols, int key); // key 不在 → assert
-std::vector<int> keys_of(const std::vector<LegCol> &cols);      // 全部 key (同序)
+const LegCol *find_leg(const std::vector<LegCol> &cols, int key); // key 不在 → nullptr
+const LegCol &leg_of(const std::vector<LegCol> &cols, int key);   // key 不在 → assert
 // X ↔ Y ↔ B 三侧 (FactorsLoad: XSpec / YSpec → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
 //   X = 因子输入叶 = 标签档及 Bar 档 (Lob 标签层才有 lob.*) 不细于网格的各层全部列, 随因子变
 //   Y = 门控 / 标签 / 成本 = 标签档网格层本层列, 只随作用域变
@@ -116,6 +117,8 @@ struct FeatureTable {
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER)
   // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调
   bool check_grid(const factor::expr::Expr &e, std::string &err) const;
+  // 已校验过的规范串 (scan / 构建器出的模板 / 权重 / 取反串) 再解析; 不成 → assert
+  factor::expr::Expr reparse(std::string_view canon) const;
 };
 // LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp);
 // lb_cost_<buy|sell>_<amt>w 建仓冲击成本
@@ -127,24 +130,24 @@ std::string now_string();
 // ---- 请求 (GUI 线程解析 config, worker 不碰) = 作用域 + 服务自己的 Spec (与 analysis::Request<Spec> 对仗) ----
 // 作用域: 四服务同一份; 评估期 / A 轴按因子在 worker 解析 (FactorsLoad eval_scope)
 struct FactorScope {
-  int seg = 0;              // 因子层
-  std::string pool;         // 因子池
-  std::string factor_dir;   // factor_dir_of(pool, seg)
-  PerPool<FeatureLib> libs; // factor_libs
-  double max_impact = 0.0;  // Config::max_impact (买入冲击封顶, 成本装载时生效)
+  int seg = 0;                            // 因子层 (= ft->seg)
+  std::string pool;                       // 因子池
+  std::string factor_dir;                 // factor_dir_of(pool, seg)
+  std::shared_ptr<const FeatureTable> ft; // 该层字段表 (每层建一次, 各请求共享; worker 只读)
+  PerPool<FeatureLib> libs;               // factor_libs
+  double max_impact = 0.0;                // Config::max_impact (买入冲击封顶, 成本装载时生效)
   bool gpu = false;
 };
-// 层 / 池 / 目录 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
-bool MakeFactorScope(const SharedData &data, const std::string &pool, int seg, bool gpu, FactorScope &sc);
+// 层 / 池 / 目录 / 字段表 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
+bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool gpu, FactorScope &sc);
 template <class Spec>
 struct Request {
   FactorScope scope;
   Spec spec;
+  bool reload = false; // 弃作用域缓存整体重读 (特征库重算过 / 手动 Compute; 每轮本就重读的服务不看)
 };
-// 一个因子 (Inspect 请求 / Portfolio 条目同一份): 作用域 + 该层字段表 + 具体规范串 (已校验, worker 再 parse 必成功) + 口径
+// 一个因子 (Inspect 请求 / Portfolio 条目同一份): 具体规范串 (已校验, worker 用 scope.ft->reparse 再解析) + 口径
 struct FactorJob {
-  FactorScope scope;
-  std::shared_ptr<const FeatureTable> ft;
   std::string expr;
   factor::stat::Frame frame = factor::stat::Frame::CS;
 };
@@ -184,19 +187,24 @@ struct AlphaDist {
   float gmean[factor::stat::kGroups] = {};            // 组均值
   std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
 };
-// 一个根的评估结果 (Run 行 / Inspect 结果同一份; FactorsProbe fill_eval 从探针填 valid% / rank% / hold / costs, scope / eval_ms 归调用方)
+// 一个根的评估结果 (Run 行 / Inspect 结果同一份; FactorsProbe fill_eval 从探针填 valid% / rank% / hold / turn / costs, scope / eval_ms 归调用方)
 struct EvalStat {
   StatScope scope;                       // stat 的作用域 (FactorsLoad stat_scope)
   double eval_ms = 0;                    // 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
   float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsProbe ValidP / RankP)
   int n_hold = 0;
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
+  factor::stat::CostAcc turn[factor::stat::kMaxHold];  // [hold] 两腿换手量 (只量, imp 恒 0; 与金额段无关, 无段的层也有): 年换手 turn_annual
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序, 每金额段 [n_hold] CostAcc (Inspect 净线从它算)
   const factor::stat::HoldStat *find_hold(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)
         return &hold[j];
     return nullptr;
+  }
+  const factor::stat::CostAcc &turn_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
+    assert(&h >= hold && &h < hold + n_hold);
+    return turn[&h - hold];
   }
   const CostTier *find_cost(int amt) const {
     for (const CostTier &c : costs)

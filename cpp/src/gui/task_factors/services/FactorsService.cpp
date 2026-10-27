@@ -22,7 +22,10 @@
 
 namespace GUI::Factors {
 
-bool FactorWorker::stale_out(FactorFlow &F) {
+bool FactorWorker::abort_out(Rc rc, FactorFlow &F) {
+  assert(aborted(rc) && "只收中断结局");
+  if (rc == Rc::Cancel)
+    return false;
   F.c.reset(); // 库换了, 缓存的一切不可信
   std::lock_guard<std::mutex> lock(mutex);
   message = kStaleMsg;
@@ -149,6 +152,12 @@ void load_stat(const json &run, const json &j, int seg, FactorRow &r) {
   for (int k = 0; k < t.n_hold; ++k)
     if (!load_hold((*hit)[static_cast<size_t>(k)], seg, t.hold[k]))
       return;
+  const auto tit = j.find("turn"); // [n_hold] 只量 CostAcc
+  if (tit == j.end() || !tit->is_array() || tit->size() != static_cast<size_t>(t.n_hold))
+    return;
+  for (int k = 0; k < t.n_hold; ++k)
+    if (!load_cost_acc((*tit)[static_cast<size_t>(k)], t.turn[k]))
+      return;
   const auto cit = j.find("costs"); // [amt] 每金额段 [n_hold] CostAcc (cost_json 的逆)
   if (cit == j.end() || !cit->is_array())
     return;
@@ -172,6 +181,7 @@ void load_stat(const json &run, const json &j, int seg, FactorRow &r) {
   r.n_hold = t.n_hold;
   for (int k = 0; k < t.n_hold; ++k) {
     r.hold[k] = t.hold[k];
+    r.turn[k] = t.turn[k];
     r.ic_pdf[k] = t.ic_pdf[k];
   }
   r.alpha_pdf = t.alpha_pdf;
@@ -206,6 +216,10 @@ ojson stat_json(const FactorRow &r) {
   for (int k = 0; k < r.n_hold; ++k)
     holds.push_back(hold_json(r.hold[k]));
   j["holds"] = holds;
+  ojson turn = ojson::array();
+  for (int k = 0; k < r.n_hold; ++k)
+    turn.push_back(cost_acc_json(r.turn[k]));
+  j["turn"] = turn;
   ojson costs = ojson::array();
   for (const CostTier &c : r.costs)
     costs.push_back(cost_json(c, r.n_hold));
@@ -322,11 +336,11 @@ void write_back(const std::filesystem::path &path, const FactorRow &r) {
 
 // 根评估结果 → 行 (EvalStat 整块 + scope / 小图; eval_ms 归调用方); ic_pdf = [y.hd.n]
 void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, const YPlanes &y, const EvalStat &st, const AlphaDist &adist,
-               const MiniPdf *ic_pdf, const char *backend) {
+               const analysis::AggPdf *ic_pdf, const char *backend) {
   static_cast<EvalStat &>(r) = st;
   r.scope = stat_scope(req.scope, es, y, backend);
   for (int hi = 0; hi < y.hd.n; ++hi)
-    r.ic_pdf[hi] = ic_pdf[hi];
+    r.ic_pdf[hi] = mini_pdf_of(ic_pdf[hi]);
   r.alpha_pdf = mini_pdf_of(adist.pdf);
   r.has_stat = true;
   r.stat_from_file = false;
@@ -334,10 +348,11 @@ void fill_stat(FactorRow &r, const FactorsRequest &req, const EvalScope &es, con
 
 } // namespace
 
-bool MakeFactorsRequest(const SharedData &data, const std::string &pool, int seg, bool evaluate, bool gpu, FactorsRequest &req) {
+bool MakeFactorsRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool evaluate, bool gpu,
+                        FactorsRequest &req) {
   req = FactorsRequest{};
   req.spec.evaluate = evaluate;
-  return MakeFactorScope(data, pool, seg, gpu, req.scope) || !evaluate;
+  return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope) || !evaluate;
 }
 
 // ============================================================================
@@ -585,7 +600,7 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
         W w;
         if (!o.is_object() || !json_int(o, "hold", w.hold)) {
           w.err = "weights[" + std::to_string(i) + "] 须是对象且有整数 hold";
-        } else if (w.hold != 0 && std::none_of(ft.y.labels.begin(), ft.y.labels.end(), [&](const auto &l) { return l.key == w.hold; })) {
+        } else if (w.hold != 0 && !find_leg(ft.y.labels, w.hold)) {
           w.err = "weights[" + std::to_string(i) + "] 的 hold " + std::to_string(w.hold) + " 不在本层持有期里 (已废的持有期, 作废)";
         } else if (o.find("sign") != o.end() && !(json_int(o, "sign", w.sign) && (w.sign == 1 || w.sign == -1))) {
           w.err = "weights[" + std::to_string(i) + "] 的 sign 须是 1 或 -1";
@@ -630,12 +645,8 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
         continue;
       }
       w.sign = ws[i].sign;
-      if (w.sign < 0) { // 评估对象 = 根下插 TsNeg
-        std::string err;
-        const bool ok = factor::expr::parse(factor::expr::negated_canon(e), fl, ft.seg, e, err);
-        assert(ok && "合法实例的取反串必可解析");
-        (void)ok;
-      }
+      if (w.sign < 0) // 评估对象 = 根下插 TsNeg
+        e = ft.reparse(factor::expr::negated_canon(e));
       w.expr = e.canon;
       w.n_ops = e.n_ops;
       const factor::Dag d = factor::build(e);
@@ -652,8 +663,7 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
 void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out) {
   TraceN("FactorsScan");
   out.clear();
-  const FeatureTable &ft = feats();
-  assert(req.scope.seg == ft.seg && "请求层与字段表层不符");
+  const FeatureTable &ft = *req.scope.ft;
   for (const std::filesystem::path &p : list_factor_files(req.scope.factor_dir))
     ScanFactorFile(p, ft, out);
   std::map<std::pair<int, std::string>, std::string> seen; // (hold, 具体规范串) → 首行 key
@@ -679,21 +689,15 @@ bool FactorsService::evaluate(const FactorsRequest &req, FactorFlow &F) {
   std::vector<std::vector<factor::stat::Frame>> frames; // [k] 口径 (同根的因子规范串相同 → 口径相同)
   {
     std::lock_guard<std::mutex> lock(mutex);
-    const factor::expr::FeatureLookup fl = feats().lookup();
     for (size_t i = 0; i < rows.size(); ++i) {
       if (!rows[i].error.empty() || rows[i].expr.empty() || (!req.spec.only_file.empty() && rows[i].file != req.spec.only_file)) {
         rows[i].status = RowStatus::Done; // BROKEN / 未搜索 / 不在 only_file 的行本轮不算
         continue;
       }
-      factor::expr::Expr e;
-      std::string err;
-      const bool ok = factor::expr::parse(rows[i].expr, fl, feats().seg, e, err);
-      assert(ok && "scan 过的规范串必可再解析");
-      (void)ok;
       if (idx.empty() || rows[idx.back().front()].file != rows[i].file)
         idx.emplace_back(), exprs.emplace_back(), frames.emplace_back();
       idx.back().push_back(i);
-      exprs.back().push_back(std::move(e));
+      exprs.back().push_back(req.scope.ft->reparse(rows[i].expr));
       frames.back().push_back(rows[i].frame);
     }
   }
@@ -707,14 +711,14 @@ bool FactorsService::evaluate(const FactorsRequest &req, FactorFlow &F) {
   return with_engine(req.scope.gpu, F.ex, cancel_, 1, [&](auto &eng) {
     for (size_t f = 0; f < idx.size(); ++f) {
       const Rc rc = evaluate_file(req, F, eng, idx[f], exprs[f], frames[f]);
+      if (rc == Rc::Ok)
+        continue;
       if (rc == Rc::Stale) {
-        stale_out(F);
         std::lock_guard<std::mutex> lock(mutex);
         for (FactorRow &r : rows)
           r.status = RowStatus::Done;
       }
-      if (rc != Rc::Ok)
-        return false;
+      return abort_out(rc, F);
     }
     return true;
   });
@@ -728,9 +732,8 @@ Rc FactorsService::evaluate_file(const FactorsRequest &req, FactorFlow &F, E &en
   std::vector<const factor::expr::Expr *> eptr;
   for (const factor::expr::Expr &e : exprs)
     eptr.push_back(&e);
-  const FeatureTable &ft = feats();
   // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain)
-  const YSpec ys{holds_of(keys_of(ft.y.labels)), amts_of(keys_of(ft.y.costs)), static_cast<float>(req.scope.max_impact)};
+  const YSpec ys = y_full(*req.scope.ft, req.scope.max_impact);
   std::vector<RunProbes> ps(idx.size());
   JobOut o;
   const auto mark = [&](size_t k, const std::string &why) { // 行 BROKEN (调用方持锁)
@@ -740,7 +743,7 @@ Rc FactorsService::evaluate_file(const FactorsRequest &req, FactorFlow &F, E &en
   };
   const std::filesystem::path dir(req.scope.factor_dir);
   const Rc rc = eval_job(
-      eng, F, ft, req.scope, eptr, frames.data(), ys, /*retain=*/true, "Run", [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; },
+      eng, F, req.scope, eptr, frames.data(), ys, /*retain=*/true, "Run", [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; },
       cancel_, *this, o,
       [&] { // 值域已查: 坏根 BROKEN, 好根 Running
         std::lock_guard<std::mutex> lock(mutex);

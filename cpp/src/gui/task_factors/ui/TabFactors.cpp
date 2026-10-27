@@ -402,7 +402,7 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 //   get    (HoldStat, 该行 FactorRow: 满仓 cap = scope.n_full, 行级 val% / rank%) → double (整数计数也走这里, fmt 用 %.0f)
 //   grade  固定区间着色 (主表 / 悬停表共用, 不随样本变): line(差端, 好端) 线性 (好端 < 差端 即越小越好); band(a, b) 中点最好 → 两端差;
 //          区间外钳位到端色; 默认不着色 (诊断量 / 尺度随 h 变的)
-//   lag    样本 = ok_rac 行 (n_rac; rAC 系 / turn), 否则 ok 行 (n); 对应行数 < 3 → 空
+//   lag    样本 = ok_rac 行 (n_rac; rAC 系), 否则 ok 行 (n); 对应行数 < 3 → 空
 //   公式见 factor/Stat/Contract.hpp【持仓口径】【二级 HoldStat】(rIC / rAC 同一套矩; t 值按 n/h 折算重叠持有期; LS% / SR 是不触发记 0 的真实收益,
 //   与 Inspect 累计线 / 图例同一份 ls_annual / ann_sharpe)
 // ============================================================================
@@ -459,8 +459,8 @@ constexpr Metric kMetrics[] = {
      [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "组均值 对组号 Spearman", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
-    {Group::Shape, "turn", "turn", "年化换手 = (1 − rAC) × 每年期数", "[0, ∞)", "越小", "%.0f",
-     [](const HS &h, const FR &) { return factor::stat::turnover_annual(h); }, line(1000, 100), true},
+    {Group::Shape, "turn", "turn", "年化换手 (倍/年, 单边) = 两腿均 Σ Δw⁺ / 行数 × 每年满仓轮数", "[0, ∞)", "越小", "%.1f",
+     [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h)); }, line(1000, 100)},
     {Group::LS, "LS%", "LS%", "满仓年化真实收益 % (不触发记 0; 每批 1/h̄, 全日平均满仓)", "(-∞, ∞)", "越大", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
     {Group::LS, "SR", "SR", "年化真实 Sharpe (不触发记 0)", "(-∞, ∞)", "越大", "%+.2f",
@@ -484,7 +484,7 @@ constexpr Metric kMetrics[] = {
      line(0.8, 1), true},
     {Group::RAC, "sd", nullptr, "rAC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h, const FR &) { return static_cast<double>(h.rac.sd); }, {}, true},
     {Group::Sample, "n", nullptr, "标签 ok 行数", "[0, T]", "越大, <3 标签侧空", "%.0f", [](const HS &h, const FR &) { return static_cast<double>(h.n); }},
-    {Group::Sample, "n_rac", nullptr, "rAC 可算行数", "[0, T]", "越大, <3 rAC / turn 空", "%.0f",
+    {Group::Sample, "n_rac", nullptr, "rAC 可算行数", "[0, T]", "越大, <3 rAC 空", "%.0f",
      [](const HS &h, const FR &) { return static_cast<double>(h.n_rac); }},
 };
 constexpr bool grades_ok() {
@@ -1011,7 +1011,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
   const Phase sst = ss.phase.load(std::memory_order_acquire);
   const bool sbusy = ss.busy();                // Search 在跑: 它要写因子文件, Run 让路
   const bool all_active = ui.search_all_n > 0; // Search all 整轮 (含队列项之间的空闲帧与收尾 Run) 同样让路
-  const FeatureTable &ft = svc.feats();
+  const FeatureTable &ft = *ctx.ft;
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
     ui.backend = 0;
@@ -1249,9 +1249,11 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
     ImGui::Text("状态:");
     ImGui::SameLine();
     static SearchResult s_sr; // 短锁拷快照 (每趟结束才变)
+    std::string s_msg;
     {
       std::lock_guard<std::mutex> lock(ss.mutex);
       s_sr = ss.result;
+      s_msg = ss.message;
     }
     const int sdone = static_cast<int>(ss.done.load(std::memory_order_relaxed)), stotal = static_cast<int>(ss.total.load(std::memory_order_relaxed)),
               nc = ss.chunks();
@@ -1298,10 +1300,13 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       if (s_sr.wrote)
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "完成: 写入 %d 个权重 (%d 候选, %d 趟, %.0fs)", s_sr.n_weights, n_cand, s_sr.n_pass, s_sr.seconds);
       else
-        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "未写入: %s", s_sr.message.c_str());
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "未写入: %s", s_msg.c_str());
       break;
     case Phase::Cancelled:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "已取消");
+      if (s_msg.empty())
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "已取消");
+      else
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "中止: %s", s_msg.c_str());
       break;
     }
   }
@@ -1743,14 +1748,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
           } else {
             ui.edit_file = r.file;
             ui.build = BuildNode{};
-            if (!r.tmpl.empty()) { // 模板规范串来自 scan 的 parse, 必可再解析 (根非归一的 BROKEN 行也有, 载入后套个根即可); 其他 BROKEN 行留空
-              factor::expr::Expr e;
-              std::string err;
-              const bool ok = factor::expr::parse(r.tmpl, ft.lookup(), ft.seg, e, err);
-              assert(ok);
-              (void)ok;
-              from_expr(e, 0, ft.seg, ui.build);
-            }
+            if (!r.tmpl.empty()) // 模板规范串来自 scan 的 parse (根非归一的 BROKEN 行也有, 载入后套个根即可); 其他 BROKEN 行留空
+              from_expr(ft.reparse(r.tmpl), 0, ft.seg, ui.build);
             std::snprintf(ui.name_buf, sizeof(ui.name_buf), "%s", r.name_en.c_str());
             std::snprintf(ui.name_cn_buf, sizeof(ui.name_cn_buf), "%s", r.name_cn.c_str());
             std::snprintf(ui.note_buf, sizeof(ui.note_buf), "%s", r.note.c_str());
