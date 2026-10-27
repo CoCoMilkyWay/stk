@@ -73,11 +73,11 @@ std::string YSpec::key() const {
   k += "|a";
   for (int i = 0; i < ad.n; ++i)
     k += "," + std::to_string(ad.a[i]);
-  return k + "|cap" + std::to_string(max_impact) + "|n" + std::to_string(cap);
+  return k + "|cap" + std::to_string(max_impact) + "|n" + std::to_string(cap) + (basket ? "|b" : "");
 }
 
 double cell_bytes(const XSpec &s) { return kPlaneBytes * static_cast<double>(s.codes.size()); }
-double cell_bytes(const YSpec &s) { return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n; }
+double cell_bytes(const YSpec &s) { return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (s.basket ? kBasketCellBytes : 0.0); }
 
 const factor::check::Plane *XPlanes::find(std::string_view code) const {
   for (size_t i = 0; i < codes.size(); ++i)
@@ -479,7 +479,7 @@ std::string scope_key(const FeatureTable &ft, const EvalScope &es, size_t d0, si
 
 namespace {
 
-// 键 (或日序列) 变 → reset + 装 Y. 键中 → 不动. false = 取消 / 判废 (块已 reset)
+// 键 (或日序列) 变 → reset + 装 Y (+ B). 键中 → 不动. false = 取消 / 判废 (块已 reset)
 bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec,
               misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
   assert(d0 < d1 && d1 <= es.dates.size());
@@ -488,7 +488,7 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   if (c.key == key && std::equal(c.dates.begin(), c.dates.end(), first, last))
     return true;
   c.reset();
-  if (!load_y(ft, es, lr, d0, d1, spec, c.y, ex, cancel, prog)) {
+  if (!load_y(ft, es, lr, d0, d1, spec, c.y, ex, cancel, prog) || (spec.basket && !load_b(ft, es, lr, d0, d1, c.b, ex, cancel, prog))) {
     c.reset();
     return false;
   }

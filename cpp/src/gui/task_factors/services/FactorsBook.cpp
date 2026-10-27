@@ -117,16 +117,17 @@ BookLines pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mc
 }
 
 // 篮子估值 (Baskets::val, 两权重) + 篮子 0 逐行收益 / 权和 (rows, 换手用), 两遍:
-//   1) 资产条带并行, 沿 t 就地把 B.px 补成上一有效收盘价 (停牌带着);
+//   1) 资产条带并行, 沿 t 把 B.px 的副本补成上一有效收盘价 (停牌带着);
 //   2) 行并行, 每行一遍 A 轴:
 //      收益成分 (篮子 0) = 上一有效 close 行 (prev) 在池, 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 该行总市值 mcap;
 //      估值成分 (篮子 0 + 行业) = 上一行在池, 市值 = px × 上一行总股本, 估值输入 val [PoolVal] / 行业同取上一行 (DY 为股息率, 分子在此还原)
-void pool_baskets(misc::exec::ForkJoin &ex, BPlanes &B, const uint8_t *in, const std::vector<int32_t> &prev, Baskets &o, BasketRows &rows) {
+void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const uint8_t *in, const std::vector<int32_t> &prev, Baskets &o, BasketRows &rows) {
   constexpr size_t K = Baskets::kBaskets;
   const factor::check::Plane &close = B.close;
   const float *mcap = B.mcap.data(), *sh = B.shares.data();
   const uint8_t *ind = B.ind.data();
-  float *px = B.px.data();
+  std::vector<float> pxv = B.px;
+  float *px = pxv.data();
   const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A);
   ex.rows(B.sh.A, [&](int a0, int a1, int) {
     std::vector<float> lp(static_cast<size_t>(a1 - a0), 0.f);
@@ -246,7 +247,7 @@ void pool_turn(misc::exec::ForkJoin &ex, const factor::check::Plane &close, cons
 
 } // namespace
 
-Baskets baskets(misc::exec::ForkJoin &ex, const YPlanes &Y, BPlanes &&B) {
+Baskets baskets(misc::exec::ForkJoin &ex, const YPlanes &Y, const BPlanes &B) {
   assert(B.sh == Y.sh && "篮子原料与 Y 同块");
   assert(Y.hd.n == 1 && Y.hd.h[0] == factor::stat::hold_close(1) && "篮子的持有期只 T+1C (C(D) → C(D+1))");
   Baskets o;

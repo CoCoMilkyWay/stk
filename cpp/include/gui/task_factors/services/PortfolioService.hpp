@@ -6,12 +6,12 @@
 //   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Run / Inspect 同一条管线 (FactorsEngine eval_job: 装载 → 森林 → 探针).
-//   同 (层, 池) 的待算条目一组一张森林 (同 Y, 公共子式只算一次; 同串异框架切下一张): 根 = 去重的具体规范串, 探针 hd = 该式在组内的全部 hold;
+//   同 (层, 池) 的待算条目一组一张森林 (同 Y, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径), 探针 hd = 该根在组内的全部 hold;
 //   落线探针 CurveP (accum_rows 一级 Row 的 G20 绝对收益 + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_book (FactorsBook; Stat 契约【净值】:
 //   G20 多头, 每批 1/h̄, 平仓行实现; 可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
 //   成本按 Δw (契约【换手成本】): 有金额段 (Lob) = 增仓 Δw⁺ × 最小段买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 无段 (Bar) =
 //   增仓量 / 平仓量各付 fixed_impact (UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员, FactorsEngine eval_basket → Baskets → PoolCurve): 篮子 (池整体 + 行业) 两权重指数日收益 (净值引擎 fold_book, T+1C 标签) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
+// 池篮子: 每池日层一份 (日层 Bar 标签库 + 池成员; 同一条管线 eval_job 无根, 块探针 baskets → PoolCurve): 篮子 (池整体 + 行业) 两权重指数日收益 (净值引擎 fold_book, T+1C 标签) + 两权重估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率;
 //   滚动分位 band 在 UI 按可调窗长现算) + 池整体日均单边换手.
 // 因子 ↔ 池 同一套缓存: 按 Task::key 存, 曲线记算时的 Task::sig (变了重算); 请求里没有的丢掉 (加一个因子只算它).
 //

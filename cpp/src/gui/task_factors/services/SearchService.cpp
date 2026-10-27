@@ -481,18 +481,17 @@ struct SearchService::Searcher {
     eng.bind(c);
     eng.open_batch(batch); // GPU 批核的 plant 按块显存定批
     for (size_t b0 = 0; b0 < ids.size();) {
-      std::vector<const factor::expr::Expr *> ptrs;
+      std::vector<Root> roots;
       for (size_t k = b0; k < std::min(ids.size(), b0 + static_cast<size_t>(batch)); ++k)
-        ptrs.push_back(&ents[static_cast<size_t>(ids[k])].e);
+        roots.push_back({&ents[static_cast<size_t>(ids[k])].e, sp.frame});
       int C = 0;
-      const factor::Dag Fd = eng.template plant<SearchProbes>(ptrs, batch, C);
-      assert(Fd.feats == d0.feats && "同结构候选的特征叶序必与基线一致 (平面下标按 d0.feats 装)");
+      const Forest Fr = eng.template plant<SearchProbes>(roots, batch, C);
+      assert(Fr.d.feats == d0.feats && "同结构候选的特征叶序必与基线一致 (平面下标按 d0.feats 装)");
       for (int k = 0; k < C; ++k)
-        assert(Fd.first_root(k) == k && "候选按规范串去重, 根两两不同");
-      const std::vector<fs::Frame> fr(static_cast<size_t>(C), sp.frame);
+        assert(Fr.head[static_cast<size_t>(k)] == k && "候选按规范串去重, 根两两不同");
       if (const Rc rc = eval_forest(
-              eng, c, Fd, fr.data(), last, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[b0 + static_cast<size_t>(k)])].ps; }, job.why,
-              Nop{}, Nop{}, [&](int) { W.publish(1); });
+              eng, c, Fr, last, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[b0 + static_cast<size_t>(k)])].ps; }, job.why, Nop{},
+              Nop{}, [&](int) { W.publish(1); });
           rc != Rc::Ok)
         return rc;
       b0 += static_cast<size_t>(C);

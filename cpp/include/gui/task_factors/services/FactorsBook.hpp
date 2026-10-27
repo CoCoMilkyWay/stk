@@ -73,8 +73,8 @@ struct Baskets {
   double turn[kWeights] = {};                  // [Weight] 篮子 0 的每行单边换手 ½ Σ|w_t − w̃_{t−1}| (w̃ = 上一成分行的权按本行收益漂移; 含再平衡 + 成分进出)
                                                //   沿成分行均值, 首行建仓不计
 };
-// 篮子 (日层; Y = 块的门控 + T+1C 标签, B = 同日段的原料, 吃掉: px 就地补成上一有效价) → 指数 / 估值 / 换手 (Baskets 注)
-Baskets baskets(misc::exec::ForkJoin &ex, const YPlanes &Y, BPlanes &&B);
+// 篮子 (日层; Y = 块的门控 + T+1C 标签, B = 同块的原料) → 指数 / 估值 / 换手 (Baskets 注)
+Baskets baskets(misc::exec::ForkJoin &ex, const YPlanes &Y, const BPlanes &B);
 // 池整体等权线 (= 篮子 0 等权指数; 线 i = 持有期 y.hd.h[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
 BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y);
 

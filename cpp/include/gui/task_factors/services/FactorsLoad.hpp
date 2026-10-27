@@ -25,7 +25,7 @@ namespace GUI::Factors {
 //   X = 因子输入叶 (随因子变): 叶按各自 ts_valid 门控
 //   Y = 门控 + 两腿平面 (只随作用域变): 截面门控 = cs_valid ∧ 当日有成交 (∧ 子池成员); 两腿同一份折叠 (池内 ∧ 两腿有限, 腿按封顶截;
 //   可成交 / 顺延已在标签里, 不另读)
-//   B = 日层篮子原料 (只 Portfolio 池线): close / 复权 / 股本 / 估值 / 行业, 装完即交 FactorsBook baskets (与同块 Y 合算), 不进作用域块
+//   B = 日层篮子原料 (只 Portfolio 池线): close / 复权 / 股本 / 估值 / 行业, YSpec::basket 时随 Y 进作用域块, 块探针交 FactorsBook baskets
 // 张量形 (三侧同一份; T = days · seg)
 struct Shape {
   int T = 0, A = 0, days = 0;
@@ -51,18 +51,19 @@ struct YSpec {
   Amts ad;                // 成本段 (LegCol::key, 字段表里有; 空 = 不装)
   float max_impact = 0.f; // 买入冲击封顶 (Config::max_impact; ad 非空时 > 0): buy = min(原值, 封顶)
   double cap = 0.0;       // 满仓只数 n_full: 0 = 本块门控自算; > 0 = 用它 (多块作业 = 全期池宽 n_full_of, 各块同一个; FactorsEngine plan_job 置)
+  bool basket = false;    // 另装 B (日层篮子原料, 随 Y 进作用域块; 只日层)
   std::string key() const;
 };
 // 全部持有期 + 全部金额段 (Run / Inspect)
 YSpec y_full(const FeatureTable &ft, double max_impact);
 // 每格平面字节 (check::Plane: float + u8)
 inline constexpr double kPlaneBytes = 5.0;
-// 宿主装载量 (字节 / 格): X = 叶 5 · codes; Y = 门控 1 + 标签两腿 (lv, sv, m) 5 · hd + 成本两腿 (无 m) 4 · ad
+// B 装载 + 篮子期峰值 (字节 / 格): close 5 + 价 4 + 权重 4 + 复权 4 + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1
+// + 上一有效 close 行 4 + 补价副本 4 (baskets)
+inline constexpr double kBasketCellBytes = kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 + 4.0;
+// 宿主装载量 (字节 / 格): X = 叶 5 · codes; Y = 门控 1 + 标签两腿 (lv, sv, m) 5 · hd + 成本两腿 (无 m) 4 · ad (+ B: kBasketCellBytes)
 double cell_bytes(const XSpec &s);
 double cell_bytes(const YSpec &s);
-// B 装载 + 篮子期峰值 (字节 / 格): close 5 + 价 4 + 权重 4 + 复权 4 + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1
-// + 上一有效 close 行 4 (baskets)
-inline constexpr double kBasketCellBytes = kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0;
 
 // 两腿平面 (标签 / 成本同形): fp16 位 (与落盘同格式, Stat 直接吃) + 有效位 (标签: 池内 ∧ 两腿皆有限; 成本无: 标签有效格恒有限, 其余 0)
 struct LegPlane {
@@ -97,7 +98,7 @@ inline std::vector<factor::stat::Cost> costs_of(const YPlanes &y) {
     c.push_back(cost_of(p));
   return c;
 }
-// 日层篮子原料 (load_b; 标签库网格层本层列, 交 FactorsBook baskets)
+// 日层篮子原料 (load_b; 标签库网格层本层列, YSpec::basket 时随 Y 进作用域块, 交 FactorsBook baskets)
 struct BPlanes {
   Shape sh;
   factor::check::Plane close;        // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益)
@@ -139,6 +140,7 @@ struct ScopeCache {
   uint64_t gen = 0; // 每次 reset +1 (引擎据此判会话作废)
   XPlanes x;
   YPlanes y;
+  BPlanes b;                                                              // YSpec::basket 时随 Y 装
   mutable std::map<std::pair<std::string, factor::Dom>, std::string> dom; // 叶值域缓存 (叶, 严格域) → 越界值 (空 = 合); FactorsEngine plan_forest 填
   void reset() {
     const uint64_t g = gen + 1;

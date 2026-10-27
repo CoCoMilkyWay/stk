@@ -200,19 +200,23 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   if (req.reload)
     F.c.reset();
 
-  // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一棵树, 探针 InspectProbes ----
+  // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一棵树, 探针 InspectProbes; 块探针 = 池等权线 (随 Y 一代) ----
   //   Y = 全部持有期 + 全部金额段; X = 作用域内读过的全留 (只增), 缺的补读
-  const YSpec ys = y_full(*sc.ft, sc.max_impact);
   const factor::expr::Expr e = sc.ft->reparse(f.expr);
   InspectProbes ps;
   ps.at<RxP>().dst = &pl_.rx;
   ps.at<RxAllP>().dst = &pl_.rx_all;
   ps.at<RicP>().dst = &pl_.ric;
   JobOut o;
+  o.job.ys = y_full(*sc.ft, sc.max_impact);
+  o.job.retain = false;
+  o.job.who = "Inspect";
   const char *backend = nullptr;
   const Rc rc = F.with_engine<InspectProbes>(sc.gpu, [&](auto &eng) {
     backend = std::remove_reference_t<decltype(eng)>::kName;
-    return eval_job(eng, F, sc, {&e}, &f.frame, ys, /*retain=*/false, "Inspect", [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o);
+    return eval_job(eng, F, sc, {{&e, f.frame}}, [&](int) -> InspectProbes & { return ps; }, cancel_, *this, o, [&](const ScopeCache &c) {
+      if (pool_gen_ != c.gen)
+        pool_ = pool_line(F.ex, c.y), pool_gen_ = c.gen; });
   });
   if (aborted(rc))
     return abort_out(rc);
@@ -222,10 +226,6 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     return true;
   }
   const YPlanes &y = o.job.blocks.of(0).y;
-  if (pool_gen_ != F.c.gen) {
-    pool_ = pool_line(F.ex, y);
-    pool_gen_ = F.c.gen;
-  }
 
   // ---- 结果骨架 ----
   InspectResult res;

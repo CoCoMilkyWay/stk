@@ -1,7 +1,7 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/PortfolioService.hpp"
 
-#include "gui/task_factors/services/FactorsEngine.hpp" // with_engine / eval_job / eval_basket / Probes / LinesP / group_abs
+#include "gui/task_factors/services/FactorsEngine.hpp" // with_engine / eval_job / Probes / LinesP / group_abs
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools
 #include "shared/SharedData.hpp"
@@ -277,7 +277,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
     F.c.reset();
   publish();
 
-  // 只有 worker 写 result: 这里读不加锁. 因子按 (层, 池, 串, 框架) 排: 一张森林 = 同 (层, 池) 的一段, 同串异框架 (同节点不能两评) 切到下一张
+  // 只有 worker 写 result: 这里读不加锁. 因子按 (层, 池, 串, 口径) 排: 一张森林 = 同 (层, 池) 的一段
   std::vector<const FactorTask *> todo_f = todo_of(result.factors, req.factors);
   std::sort(todo_f.begin(), todo_f.end(), [](const FactorTask *a, const FactorTask *b) {
     return std::tie(a->scope.seg, a->scope.pool, a->f.expr, a->f.frame) < std::tie(b->scope.seg, b->scope.pool, b->f.expr, b->f.frame);
@@ -287,11 +287,9 @@ bool PortfolioService::run(PortfolioRequest &req) {
   jobs_total.store(static_cast<int>(todo_f.size() + todo_p.size()), std::memory_order_relaxed);
   const bool ok = [&] {
     for (size_t i0 = 0, i1 = 0; i0 < todo_f.size(); i0 = i1) {
-      for (i1 = i0 + 1; i1 < todo_f.size(); ++i1) {
-        const FactorTask &a = *todo_f[i1 - 1], &b = *todo_f[i1];
-        if (group_of(a) != group_of(b) || (a.f.expr == b.f.expr && a.f.frame != b.f.frame))
-          break;
-      }
+      i1 = i0 + 1;
+      while (i1 < todo_f.size() && group_of(*todo_f[i1]) == group_of(*todo_f[i0]))
+        ++i1;
       if (!eval(std::vector<const FactorTask *>(todo_f.begin() + static_cast<ptrdiff_t>(i0), todo_f.begin() + static_cast<ptrdiff_t>(i1)), F))
         return false;
     }
@@ -304,7 +302,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return ok;
 }
 
-// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的规范串, 探针 hd = 该式的全部 hold; 落线 CurveP (G20 多头), 根评完即逐条发布
+// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径), 探针 hd = 该根的全部 hold; 落线 CurveP (G20 多头), 根评完即逐条发布
 bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlow &F) {
   TraceN("PortfolioForest");
   const FactorScope &sc = ts.front()->scope;
@@ -314,20 +312,19 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   std::vector<factor::stat::Frame> frames;
   for (size_t i = 0; i < ts.size(); ++i) {
     const FactorTask &t = *ts[i];
-    if (i == 0 || t.f.expr != ts[i - 1]->f.expr) {
+    if (i == 0 || t.f.expr != ts[i - 1]->f.expr || t.f.frame != ts[i - 1]->f.frame) {
       es.push_back(sc.ft->reparse(t.f.expr));
       frames.push_back(t.f.frame);
       hk.emplace_back();
     }
-    assert(t.f.frame == frames.back() && "同串必同框架 (run 切森林)");
     root[i] = static_cast<int>(es.size()) - 1;
     hk.back().push_back(t.hold);
   }
   const size_t K = es.size();
-  std::vector<const factor::expr::Expr *> eptr;
+  std::vector<Root> roots;
   std::vector<PortfolioProbes> ps(K);
   for (size_t k = 0; k < K; ++k) {
-    eptr.push_back(&es[k]);
+    roots.push_back({&es[k], frames[k]});
     std::sort(hk[k].begin(), hk[k].end());
     hk[k].erase(std::unique(hk[k].begin(), hk[k].end()), hk[k].end());
     ps[k].hd = holds_of(hk[k]);
@@ -337,7 +334,6 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   Amts ad = all_amts(*sc.ft);
   ad.n = std::min(ad.n, 1);
   assert((ad.n == 0 || ad.a[0] > 0) && "金额段须 > 0");
-  const YSpec ys{holds_of(ts.front()->group), ad, static_cast<float>(sc.max_impact)};
   const auto curve_of = [&](const FactorTask &t) {
     auto c = std::make_shared<FactorCurve>();
     c->sig = t.sig();
@@ -346,15 +342,16 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     return c;
   };
   JobOut o;
+  o.job.ys = YSpec{holds_of(ts.front()->group), ad, static_cast<float>(sc.max_impact)};
+  o.job.who = "Portfolio";
   std::vector<std::string> bad;              // 根 → 坏因 (on_plan; 空 = 未到计划即 Empty)
   std::vector<uint8_t> posted(ts.size(), 0); // 条目已发布
   const Rc rc = F.with_engine<PortfolioProbes>(sc.gpu, [&](auto &eng) {
     return eval_job(
-        eng, F, sc, eptr, frames.data(), ys, /*retain=*/true, "Portfolio", [&](int k) -> PortfolioProbes & { return ps[static_cast<size_t>(k)]; },
-        cancel_, *this, o,
+        eng, F, sc, roots, [&](int k) -> PortfolioProbes & { return ps[static_cast<size_t>(k)]; }, cancel_, *this, o, Nop{},
         [&](const std::vector<std::string> &why) {
           for (size_t k = 0; k < K; ++k)
-            assert(o.d.first_root(static_cast<int>(k)) == static_cast<int>(k) && "根按规范串去重, 两两不同");
+            assert(o.fr.head[k] == static_cast<int>(k) && "根按 (规范串, 口径) 去重, 两两不同");
           bad = why;
         },
         [&](int k0) { // 发布该根的全部条目: 线 hi · kCurveLines 起的一段
@@ -385,24 +382,35 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return true;
 }
 
-// 日层池篮子 (eval_basket, 与 eval_job 对仗): 篮子指数 / 估值 / 换手, 整份搬进 PoolCurve
+// 日层池篮子 (同一条管线 eval_job, 无根; 块 = 门控 + T+1C 标签 + B, 归作业不占 F.c): 块探针 baskets → 指数 / 估值 / 换手, 整份搬进 PoolCurve
 bool PortfolioService::eval(const PoolTask &t, FactorFlow &F) {
   TraceN("PortfolioPool");
+  const FeatureTable &ft = *t.scope.ft;
+  assert(ft.seg == kBasketSeg && "池篮子只日层");
+  assert(find_leg(ft.y.labels, factor::stat::hold_close(1)) && "日层须有 T+1C 标签 (池指数 C(D) → C(D+1))");
   auto c = std::make_shared<PoolCurve>();
   c->sig = t.sig();
-  Job o;
+  JobOut o;
+  o.job.ys = YSpec{holds_of({factor::stat::hold_close(1)}), {}, 0.f};
+  o.job.ys.basket = true;
+  o.job.own = true;
+  o.job.who = "Portfolio";
+  Probes<> none;
   Baskets B;
-  const Rc rc = eval_basket(F, t.scope, cancel_, *this, o, B);
+  const Rc rc = F.with_engine<Probes<>>(false, [&](auto &eng) {
+    return eval_job(eng, F, t.scope, {}, [&](int) -> Probes<> & { return none; }, cancel_, *this, o, [&](const ScopeCache &blk) { B = baskets(F.ex, blk.y, blk.b); });
+  });
   if (aborted(rc))
     return abort_out(rc);
   if (rc != Rc::Ok) {
-    c->error = o.why;
+    c->error = o.job.why;
     put(result.pools, t.key, std::move(c));
     return true;
   }
-  const int days = static_cast<int>(o.es.dates.size());
-  const size_t n = Baskets::kBaskets * o.es.dates.size();
-  c->dates = o.es.dates;
+  const std::vector<misc::Ymd> &dates = o.job.es.dates;
+  const int days = static_cast<int>(dates.size());
+  const size_t n = Baskets::kBaskets * dates.size();
+  c->dates = dates;
   assert(B.index.n == static_cast<int>(Baskets::kBaskets) * kWeights && B.index.P == days);
   c->index = std::move(B.index);
   for (int w = 0; w < kWeights; ++w)

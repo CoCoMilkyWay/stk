@@ -78,7 +78,7 @@ bool FactorsService::eval(const FactorsRequest &req, FactorFlow &F) {
   // 有效权重行 → Expr (scan 已校验过, 这里必成功), 按文件分组 (scan 出的行同文件相邻)
   std::vector<std::vector<size_t>> idx;
   std::vector<std::vector<factor::expr::Expr>> exprs;
-  std::vector<std::vector<factor::stat::Frame>> frames; // [k] 口径 (同根的因子规范串相同 → 口径相同)
+  std::vector<std::vector<factor::stat::Frame>> frames; // [k] 口径 (根 = 式 + 口径)
   {
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t i = 0; i < rows.size(); ++i) {
@@ -120,14 +120,15 @@ template <class E>
 Rc FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx,
                              const std::vector<factor::expr::Expr> &exprs, const std::vector<factor::stat::Frame> &frames) {
   TraceN("FactorsEvaluateFile");
-  // 该文件的权重 → 一张共享森林 (roots[k] ↔ idx[k]); 同根的只评首个 (探针 ps[k0])
-  std::vector<const factor::expr::Expr *> eptr;
-  for (const factor::expr::Expr &e : exprs)
-    eptr.push_back(&e);
-  // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain)
-  const YSpec ys = y_full(*req.scope.ft, req.scope.max_impact);
+  // 该文件的权重 → 一张共享森林 (根 k ↔ idx[k]); 同根 (同式同口径) 的只评首个 (探针 ps[k0])
+  std::vector<Root> roots;
+  for (size_t k = 0; k < exprs.size(); ++k)
+    roots.push_back({&exprs[k], frames[k]});
   std::vector<RunProbes> ps(idx.size());
+  // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain)
   JobOut o;
+  o.job.ys = y_full(*req.scope.ft, req.scope.max_impact);
+  o.job.who = "Run";
   std::vector<size_t> done;                                 // 本轮评完的 idx 下标 (森林走完 Ok 才一次回写)
   const auto mark = [&](size_t k, const std::string &why) { // 行 BROKEN (调用方持锁)
     rows[idx[k]].error = why;
@@ -135,8 +136,7 @@ Rc FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, c
     broken_.fetch_add(1, std::memory_order_relaxed);
   };
   const Rc rc = eval_job(
-      eng, F, req.scope, eptr, frames.data(), ys, /*retain=*/true, "Run", [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; },
-      cancel_, *this, o,
+      eng, F, req.scope, roots, [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; }, cancel_, *this, o, Nop{},
       [&](const std::vector<std::string> &why) { // 值域已查: 坏根 BROKEN, 好根 Running
         std::lock_guard<std::mutex> lock(mutex);
         for (size_t k = 0; k < idx.size(); ++k)
@@ -151,7 +151,7 @@ Rc FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, c
         {
           std::lock_guard<std::mutex> lock(mutex);
           for (size_t k = 0; k < idx.size(); ++k) {
-            if (o.d.first_root(static_cast<int>(k)) != k0)
+            if (o.fr.head[k] != k0)
               continue;
             FactorRow &r = rows[idx[k]];
             static_cast<EvalStat &>(r) = st;

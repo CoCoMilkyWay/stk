@@ -59,20 +59,6 @@ struct Dag {
         return true;
     return false;
   }
-  // 根 k 的同根首个 (roots 可重复: 同规范串 → 同节点, 只评首个)
-  int first_root(int k) const {
-    int j = 0;
-    while (roots[static_cast<size_t>(j)] != roots[static_cast<size_t>(k)])
-      ++j;
-    return j;
-  }
-  // 以节点 i 为根的首个 k (-1 = i 不是根); 节点 i 走完时该评的根 = first_root_at(i)
-  int first_root_at(int i) const {
-    for (size_t k = 0; k < roots.size(); ++k)
-      if (roots[k] == i)
-        return static_cast<int>(k);
-    return -1;
-  }
   // 节点 r 的子树 (含 r, 升序; 拓扑序 ⇒ 逆扫一遍)
   std::vector<int> subtree(int r) const {
     assert(r >= 0 && r < static_cast<int>(nodes.size()));
