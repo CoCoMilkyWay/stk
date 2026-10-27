@@ -35,6 +35,8 @@ std::string out_of_dom(misc::exec::ForkJoin &ex, const factor::check::Plane &p, 
 // 融合节点只装逐点 TS 算子, 无严格域元
 int plan_forest(misc::exec::ForkJoin &ex, const ScopeCache &c, const factor::Dag &d, std::vector<std::string> &why, std::vector<uint8_t> &need) {
   assert(!d.roots.empty() && "森林 (build_forest) 才有根表");
+  assert((why.empty() || why.size() == d.roots.size()) && "why 入参 = 空 或 各根的已知坏因");
+  const std::vector<LeafId> ids = c.ft->x.ids(d.feats);
   const std::vector<const factor::check::Plane *> in = leaves(c, d.feats);
   const size_t N = d.nodes.size();
   std::vector<std::string> err(N);
@@ -48,18 +50,20 @@ int plan_forest(misc::exec::ForkJoin &ex, const ScopeCache &c, const factor::Dag
       const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
       if (g.op >= 0 || !factor::dom_strict(o.in[s]))
         continue;
-      const std::string &code = d.feats[static_cast<size_t>(g.feat)];
-      const auto [it, fresh] = c.dom.try_emplace({code, o.in[s]});
+      const size_t f = static_cast<size_t>(g.feat);
+      const auto [it, fresh] = c.dom.try_emplace({ids[f], o.in[s]});
       if (fresh)
-        it->second = out_of_dom(ex, *in[static_cast<size_t>(g.feat)], o.in[s]);
+        it->second = out_of_dom(ex, *in[f], o.in[s]);
       if (!it->second.empty())
-        err[i] = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " + code + " 含越界值 " + it->second;
+        err[i] = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " + d.feats[f] + " 含越界值 " + it->second;
     }
   }
-  why.assign(d.roots.size(), {});
+  why.resize(d.roots.size());
   need.assign(N, 0);
   int good = 0;
   for (size_t k = 0; k < d.roots.size(); ++k) {
+    if (!why[k].empty())
+      continue;
     const std::vector<int> sub = d.subtree(d.roots[k]);
     for (const int i : sub)
       if (!err[static_cast<size_t>(i)].empty()) {

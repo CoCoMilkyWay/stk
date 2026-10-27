@@ -25,6 +25,7 @@
 #include <numeric>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace GUI::Factors {
@@ -559,7 +560,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
     {Edit, "edit",
      "勾选 → 编辑模式: 载入上方构建器, 可改 / 删\n"
      "• 同时只勾一个\n"
-     "• 排序 = 文件名序 (默认)",
+     "• 排序 = 文件名序 (表默认按 rIC 降序)",
      true},
     {Type, "type",
      "因子类型 (文件 type 键)\n"
@@ -692,6 +693,11 @@ const char *col_name(int c) {
 bool col_sortable(int c) {
   const ColRef &r = kColLayout[static_cast<size_t>(c)];
   return r.fixed >= 0 ? kFixedCols[r.fixed].sortable : true;
+}
+// 默认排序列 = rIC 降序 (与 Inspect 默认高光同一键)
+bool col_default_sort(int c) {
+  const Metric *m = col_metric(c);
+  return m && m->group == Group::RIC && std::string_view(m->col) == "rIC";
 }
 std::string grade_text(const Grade &g) {
   char buf[96];
@@ -1614,7 +1620,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         "• 子行\n"
         "    ◦ 点行: 高光 → Inspect\n"
         "    ◦ 悬停 Stat 列: 看该权重全部持有期\n"
-        "• 排序: 按父行 (代表权重) 的值; 展开的子行在父行下按同一键排");
+        "• 排序: 默认 rIC 降序; 按父行 (代表权重) 的值, 展开的子行在父行下按同一键排");
   ImGui::SameLine();
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", factor::stat::hold_name(cur_hold).c_str());
 
@@ -1635,7 +1641,8 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
                             ImGuiTableFlags_NoSavedSettings,
                         ImVec2(0, 0))) {
     for (int c = 0; c < kNumCols; ++c)
-      ImGui::TableSetupColumn(col_name(c), ImGuiTableColumnFlags_WidthFixed | (col_sortable(c) ? 0 : ImGuiTableColumnFlags_NoSort));
+      ImGui::TableSetupColumn(col_name(c), ImGuiTableColumnFlags_WidthFixed | (col_sortable(c) ? 0 : ImGuiTableColumnFlags_NoSort) |
+                                               (col_default_sort(c) ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending : 0));
     ImGui::TableSetupScrollFreeze(0, 1);
     if (ui.fit_frames > 0) {
       ui.fit_frames--;

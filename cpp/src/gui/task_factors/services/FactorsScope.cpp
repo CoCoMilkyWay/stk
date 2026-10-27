@@ -29,7 +29,7 @@ std::string EvalScope::key() const {
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
 
-bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector<std::string> &feats, EvalScope &es, std::string &why) {
+bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, EvalScope &es, std::string &why) {
   TraceN("EvalScope");
   assert(sc.seg == ft.seg && "作用域层与字段表层不符");
   const FactorLevel &lv = factor_level(ft.seg);
@@ -42,10 +42,10 @@ bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector
   es = EvalScope{};
   es.pool = pool;
   es.used = pool_bit(lab);
-  for (const std::string &f : feats) {
-    const FeatCol *c = ft.x.find(f);
-    assert(c && c->allowed);
-    es.used |= pool_bit(c->ref(pool).pool);
+  for (const LeafId id : leaves) {
+    const FeatCol &c = ft.x.leaves[id];
+    assert(c.allowed);
+    es.used |= pool_bit(c.ref(pool).pool);
   }
   for (const PoolId l : pool_ids())
     if (es.used & pool_bit(l)) {

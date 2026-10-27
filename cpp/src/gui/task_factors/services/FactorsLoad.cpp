@@ -76,14 +76,13 @@ std::string YSpec::key() const {
   return k + "|cap" + std::to_string(max_impact) + "|n" + std::to_string(cap) + (basket ? "|b" : "");
 }
 
-double cell_bytes(const XSpec &s) { return kPlaneBytes * static_cast<double>(s.codes.size()); }
 double cell_bytes(const YSpec &s) { return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (s.basket ? kBasketCellBytes : 0.0); }
 
-const factor::check::Plane *XPlanes::find(std::string_view code) const {
-  for (size_t i = 0; i < codes.size(); ++i)
-    if (codes[i] == code)
-      return &v[i];
-  return nullptr;
+size_t XPlanes::count() const {
+  size_t n = 0;
+  for (const factor::check::Plane &p : v)
+    n += !p.v.empty();
+  return n;
 }
 
 namespace {
@@ -230,32 +229,33 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const EvalScope &es,
 
 } // namespace
 
-bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const XSpec &spec, XPlanes &X,
+bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const std::vector<LeafId> &ids, XPlanes &X,
             misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
   TraceN("FactorsLoadX");
-  X = XPlanes{};
-  X.sh = shape_of(ft, es, d0, d1);
-  X.codes = spec.codes;
-  const size_t A = static_cast<size_t>(X.sh.A), n = X.sh.n(), VR = static_cast<size_t>(ft.seg), nf = spec.codes.size();
+  const Shape sh = shape_of(ft, es, d0, d1);
+  assert((X.v.empty() || X.sh == sh) && "X 与块不同形");
+  X.sh = sh;
+  X.v.resize(ft.x.leaves.size());
+  const size_t A = static_cast<size_t>(sh.A), n = sh.n(), VR = static_cast<size_t>(ft.seg), nf = ids.size();
   // ---- 列段 叶 [nf], 各按所在 (池, 层) 投影到网格行 ----
   ColList cols{es.pool, {}};
-  for (const std::string &f : spec.codes) {
-    const FeatCol *c = ft.x.find(f);
-    assert(c && c->allowed);
-    cols.add(*c);
+  std::vector<factor::check::Plane *> out(nf);
+  for (size_t i = 0; i < nf; ++i) {
+    const FeatCol &c = ft.x.leaves[ids[i]];
+    assert(c.allowed && !X.find(ids[i]));
+    cols.add(c);
+    out[i] = &X.v[ids[i]];
+    out[i]->resize(n);
   }
-  X.v.resize(nf);
-  for (factor::check::Plane &p : X.v)
-    p.resize(n);
-  return read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
+  const bool read = read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &, size_t d, size_t) {
     feature_storage_t x;
     float g;
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       for (size_t i = 0; i < nf; ++i) {
         const View w = view(i, t);
-        float *v = X.v[i].v.data() + row;
-        uint8_t *m = X.v[i].m.data() + row;
+        float *v = out[i]->v.data() + row;
+        uint8_t *m = out[i]->m.data() + row;
         for (size_t a = 0; a < A; ++a) {
           const bool ok = cell(w, a, x, g) && fmeta::keep(g, w.vt, x);
           v[a] = ok ? static_cast<float>(x) : 0.f;
@@ -264,6 +264,10 @@ bool load_x(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       }
     }
   });
+  if (!read)
+    for (factor::check::Plane *p : out)
+      *p = {};
+  return read;
 }
 
 bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, size_t d0, size_t d1, const YSpec &spec, YPlanes &Y,
@@ -485,9 +489,11 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   assert(d0 < d1 && d1 <= es.dates.size());
   const std::string key = scope_key(ft, es, d0, d1, spec);
   const auto first = es.dates.begin() + static_cast<long>(d0), last = es.dates.begin() + static_cast<long>(d1);
+  c.ft = &ft;
   if (c.key == key && std::equal(c.dates.begin(), c.dates.end(), first, last))
     return true;
   c.reset();
+  c.ft = &ft;
   if (!load_y(ft, es, lr, d0, d1, spec, c.y, ex, cancel, prog) || (spec.basket && !load_b(ft, es, lr, d0, d1, c.b, ex, cancel, prog))) {
     c.reset();
     return false;
@@ -499,39 +505,27 @@ bool ensure_y(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const 
   return true;
 }
 
-// 先 ensure_y. retain → 先丢 codes 以外的叶; 缺的叶补装. false = 取消 / 判废 (已有的叶不动)
-bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const std::vector<std::string> &codes,
-              bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+// 先 ensure_y. retain → 先丢 ids 以外的叶; 缺的叶补装. false = 取消 / 判废 (已有的叶不动)
+bool ensure_x(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const std::vector<LeafId> &ids, bool retain,
+              misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
   assert(!c.key.empty() && "先 ensure_y");
   if (retain)
-    for (size_t i = c.x.codes.size(); i-- > 0;)
-      if (std::find(codes.begin(), codes.end(), c.x.codes[i]) == codes.end()) {
-        c.x.codes.erase(c.x.codes.begin() + static_cast<long>(i));
-        c.x.v.erase(c.x.v.begin() + static_cast<long>(i));
-      }
-  XSpec miss;
-  for (const std::string &code : codes)
-    if (!c.x.find(code))
-      miss.codes.push_back(code);
-  if (miss.codes.empty())
-    return true;
-  XPlanes add;
-  if (!load_x(ft, es, lr, c.d0, c.d1, miss, add, ex, cancel, prog))
-    return false;
-  assert(add.sh == c.y.sh);
-  for (size_t i = 0; i < add.codes.size(); ++i) {
-    c.x.codes.push_back(std::move(add.codes[i]));
-    c.x.v.push_back(std::move(add.v[i]));
-  }
-  return true;
+    for (LeafId id = 0; id < c.x.v.size(); ++id)
+      if (std::find(ids.begin(), ids.end(), id) == ids.end())
+        c.x.v[id] = {};
+  std::vector<LeafId> miss;
+  for (const LeafId id : ids)
+    if (!c.x.find(id))
+      miss.push_back(id);
+  return miss.empty() || load_x(ft, es, lr, c.d0, c.d1, miss, c.x, ex, cancel, prog);
 }
 
 } // namespace
 
 Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, const Chunk &k, const YSpec &ys,
-             const std::vector<std::string> &codes, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
+             const std::vector<LeafId> &ids, bool retain, misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel, Progress &prog) {
   assert(k.d0 <= k.s0 && k.s0 < k.d1);
-  const Rc rc = rc_of(ensure_y(c, ft, es, lr, k.d0, k.d1, ys, ex, cancel, prog) && ensure_x(c, ft, es, lr, codes, retain, ex, cancel, prog), lr);
+  const Rc rc = rc_of(ensure_y(c, ft, es, lr, k.d0, k.d1, ys, ex, cancel, prog) && ensure_x(c, ft, es, lr, ids, retain, ex, cancel, prog), lr);
   if (rc == Rc::Stale)
     c.reset();
   if (rc == Rc::Ok)
@@ -539,20 +533,21 @@ Rc ensure_xy(ScopeCache &c, const FeatureTable &ft, const EvalScope &es, const L
   return rc;
 }
 
-size_t resident_leaves(const ScopeCache &c, const std::string &key, const std::vector<std::string> &codes, bool retain) {
+size_t resident_leaves(const ScopeCache &c, const std::string &key, const std::vector<LeafId> &ids, bool retain) {
   if (retain || c.key != key)
-    return codes.size();
-  size_t n = c.x.codes.size();
-  for (const std::string &code : codes)
-    n += !c.x.find(code);
+    return ids.size();
+  size_t n = c.x.count();
+  for (const LeafId id : ids)
+    n += !c.x.find(id);
   return n;
 }
 
-std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &codes) {
-  std::vector<const factor::check::Plane *> in(codes.size());
-  for (size_t i = 0; i < codes.size(); ++i) {
-    in[i] = c.x.find(codes[i]);
-    assert(in[i] && "叶未装 (ensure_xy)");
+std::vector<const factor::check::Plane *> leaves(const ScopeCache &c, const std::vector<std::string> &feats) {
+  assert(c.ft && "先 ensure_xy");
+  std::vector<const factor::check::Plane *> in;
+  for (const LeafId id : c.ft->x.ids(feats)) {
+    in.push_back(c.x.find(id));
+    assert(in.back() && "叶未装 (ensure_xy)");
   }
   return in;
 }

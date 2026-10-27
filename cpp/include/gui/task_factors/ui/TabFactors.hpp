@@ -42,7 +42,7 @@ struct FactorsUIState {
   std::string edit_file;
   // 点行高光 = 单权重展示 (Inspect 页) 的对象 (FactorRow::key), 与 edit_file 互不干涉; 再点同一行 → 取消.
   // 多权重因子: 父行 = 选定 Hold 下 score 最高的权重, 点父行即高光它; 展开 (expanded 里的文件) 后可点各权重子行
-  // 首次扫出表后默认高光第一个有效权重 (InspectAutoRequest 置, 只一次: 之后用户取消高光不再自动补)
+  // 扫出表后默认高光当前 Hold 下 rIC 最高的有效权重 (InspectAutoRequest 置, 每作用域一次: 之后用户取消高光不再自动补; 换池 / 换层由 TaskFactors 复位)
   std::string view_file;
   bool view_defaulted = false;
   std::vector<std::string> expanded; // 展开的多权重因子文件

@@ -131,7 +131,8 @@ struct InspectUIState {
 
 // 自动起算 (Factors / Inspect 两页都每帧调, 不管哪页在前: Factors 页点行高光即起算): 高光因子有效 且 服务空闲 且 请求 key (因子 / 作用域)
 // 与现结果和上次请求都不同 → 填 ui.req_row / req_reload = false, 返回 true (调用方 MakeInspectRequest + Request)
-// 顺带默认高光: 还没高光过 (fui.view_defaulted = false) 且表已扫出 → 高光表序第一个有效因子 (只一次), 进 Inspect 即有东西看
+// 顺带默认高光: 还没高光过 (fui.view_defaulted = false) 且本作用域的表已扫出 → 高光当前 Hold 下 rIC 最高的有效权重 (无 stat → 表序第一个),
+// 进 Inspect 即有东西看; 换池 / 换层后重新默认一次
 bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
 // 返回值: 1 = 手动 Compute (ui.req_row / ui.req_reload 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.

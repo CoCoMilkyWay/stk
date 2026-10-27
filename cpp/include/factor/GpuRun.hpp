@@ -75,11 +75,12 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
 // Stat 常驻会话 (因子表: 一个作用域多因子): 标签上传 + rank 预处理只做一次, 逐因子只跑 run,
 // x 是设备常驻平面 (DAG 根槽), g 是设备常驻池掩码平面 (只用 g->m), 口径 f 逐因子给 (会话与口径无关), acc[L.hd.n] 拷回;
 // rows 非空再拷回一级; lc 非空再拷回腿码 [T][A] (宿主侧换手成本 cost_rows 要, 与 CPU 后端 leg_codes 同一份; 整数, 两后端逐位同);
-// rx 非空再拷回 r16 [T][A] (宿主侧可秩率 rank_sum 要). run_stat 一次性版 = open + 上传 x / g + eval + close.
+// rx 非空再拷回 r16 [T][A] (宿主侧可秩率 rank_sum 要). t0_abs / t_lo 同 search_eval (契约【分块流式】: 一级只出行 [t_lo, T)).
+// run_stat 一次性版 = open + 上传 x / g + eval (整块) + close.
 struct StatSession;
 StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, double *prep_ms = nullptr);
-void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Accum *acc, factor::stat::Row *rows = nullptr,
-               uint8_t *lc = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
+void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo, factor::stat::Accum *acc,
+               factor::stat::Row *rows = nullptr, uint8_t *lc = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
 void stat_close(StatSession *s);
 
 // Search 批评估算子 (factor/Search/Gpu.cuh; 契约 factor/Search/Contract.hpp): 一个会话 = 一块 (chunk) 的形状 (T, A) + 候选上限 Cmax + 持有期,

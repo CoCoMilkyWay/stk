@@ -429,12 +429,15 @@ StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, dou
   return s;
 }
 
-void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Accum *acc, factor::stat::Row *rows,
-               uint8_t *lc, uint16_t *rx, double *eval_ms) {
+void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo, factor::stat::Accum *acc,
+               factor::stat::Row *rows, uint8_t *lc, uint16_t *rx, double *eval_ms) {
   assert(s && x && x->v && x->m && g && g->m && acc);
+  assert(t0_abs >= 0 && t_lo >= 0 && t_lo < s->s.T);
+  factor::stat::Span sp = s->s; // 分片数 n_parts 随 t_lo 只减 (open 按 t_lo = 0 的上界分配)
+  sp.t0_abs = t0_abs, sp.t_lo = t_lo;
   if (eval_ms)
     s->tm.begin();
-  stat::run(factor::stat::Plane{x->v, x->m}, g->m, f, s->s, s->lab.L, s->rx.p, s->w, nullptr);
+  stat::run(factor::stat::Plane{x->v, x->m}, g->m, f, sp, s->lab.L, s->rx.p, s->w, nullptr);
   if (eval_ms)
     *eval_ms = s->tm.end();
   const int H = s->lab.L.hd.n;
@@ -465,7 +468,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
   xv.up(x.v, n), xm.up(x.m, n), g.up(gm, n);
   const DevPlane xp{xv.p, xm.p}, gp{nullptr, g.p};
   StatSession *s = stat_open(T, A, seg, L, prep_ms);
-  stat_eval(s, &xp, &gp, f, acc, rows, nullptr, nullptr, eval_ms);
+  stat_eval(s, &xp, &gp, f, 0, 0, acc, rows, nullptr, nullptr, eval_ms);
   stat_close(s);
   xv.free_(), xm.free_(), g.free_();
 }

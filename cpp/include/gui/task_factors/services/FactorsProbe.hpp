@@ -46,6 +46,7 @@ inline double group_abs(const factor::stat::Row &r, int k, double cap) {
 // ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
 //   need              原料位 (引擎据此算 / 拷回)
 //   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
+//   whole             只整期一块 (不能分块流式; 有则作业整期一块)
 //   open(c)           本块评前 (单线程; 落地平面在作用域首块定形)
 //   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内行 ∈ [t_lo, T), hi = Probes::hd 下标)
 //   root(c, v)        本块原料就绪 (全核)
@@ -58,7 +59,8 @@ enum Need : uint8_t {
   kNeedLc = 4,     // 腿码 [T][A]
   kNeedMask = 8,   // 根掩码 [T][A]
   kNeedAlpha = 16, // 根的输入平面
-  kNeedX = 32      // 根值 [T][A]
+  kNeedX = 32,     // 根值 [T][A]
+  kNeedRanks = 64  // r16 抽样行 (Ranks; GPU 批核也给)
 };
 // 根的 r16 抽样行 (CPU 拷宿主 rx / GPU 批核 search_ranks): 行 t0 + i·stride (i < n_rows) → out[n_rows][A]
 struct Ranks {
@@ -78,7 +80,7 @@ struct RootView {
   const uint16_t *rx = nullptr;             // r16(x) (kNeedRx)
   const uint8_t *lc = nullptr;              // 腿码 (kNeedLc)
   const factor::stat::Accum *acc = nullptr; // [L.hd.n] 本块累加
-  Ranks ranks;
+  Ranks ranks;                              // (kNeedRanks)
 };
 // 探针的上下文 (一块)
 struct Ctx {
@@ -102,6 +104,7 @@ struct Probes {
   factor::stat::Holds hd; // 只评这些持有期 (n = 0 → Y 全部); 钩子的 hi 按它
   static constexpr uint8_t need = (uint8_t{0} | ... | P::need);
   static constexpr bool cells = (false || ... || !std::is_same_v<typename P::Ext, factor::cpu::stat::NoExt>);
+  static constexpr bool whole = (false || ... || P::whole);
   struct Ext {
     std::tuple<typename P::Ext...> e;
     void cell(unsigned x, bool ok, const float *y) {
@@ -143,6 +146,7 @@ struct ProbeSink {
 // 探针的空钩子 (各探针按需遮蔽)
 struct ProbeBase {
   using Ext = factor::cpu::stat::NoExt;
+  static constexpr bool whole = false;
   static double bytes(const Shape &, int) { return 0.0; }
   Ext ext() const { return {}; }
   void open(const Ctx &) {}
@@ -205,6 +209,7 @@ struct RankP : ProbeBase {
 // alpha 分布 (与持有期无关; 两趟扫整张量 → 只整块)
 struct AlphaP : ProbeBase {
   static constexpr uint8_t need = kNeedAlpha | kNeedRx;
+  static constexpr bool whole = true;
   AlphaDist d;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();

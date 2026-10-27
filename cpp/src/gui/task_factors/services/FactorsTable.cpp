@@ -21,10 +21,18 @@ std::string now_string() {
 }
 
 const FeatCol *XCols::find(std::string_view code) const {
-  for (const FeatCol &c : leaves)
-    if (c.code == code)
-      return &c;
-  return nullptr;
+  const auto it = index.find(code);
+  return it == index.end() ? nullptr : &leaves[it->second];
+}
+
+std::vector<LeafId> XCols::ids(const std::vector<std::string> &codes) const {
+  std::vector<LeafId> out;
+  for (const std::string &code : codes) {
+    const auto it = index.find(code);
+    assert(it != index.end() && "叶不在字段表里");
+    out.push_back(it->second);
+  }
+  return out;
 }
 
 const LegCol *find_leg(const std::vector<LegCol> &cols, int key) {
@@ -138,6 +146,9 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
       for (size_t i = 0; i < list.size(); ++i) {
         const FeatureMetadata &f = list[i];
         t.x.leaves.push_back({{tier, l, static_cast<uint32_t>(i)}, pre + f.code, f.valid_type, f.data_type == FeatureDataType::TS || f.data_type == FeatureDataType::CS});
+        const bool fresh = t.x.index.emplace(t.x.leaves.back().code, static_cast<LeafId>(t.x.leaves.size() - 1)).second;
+        assert(fresh && "叶名重复");
+        (void)fresh;
       }
     }
   }

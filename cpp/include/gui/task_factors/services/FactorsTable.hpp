@@ -11,7 +11,9 @@
 #include "shared/FeatureLib.hpp" // FeatureLib (请求的库清单)
 
 #include <cassert>
+#include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -78,13 +80,17 @@ struct LegCol {
 };
 const LegCol *find_leg(const std::vector<LegCol> &cols, int key); // key 不在 → nullptr
 const LegCol &leg_of(const std::vector<LegCol> &cols, int key);   // key 不在 → assert
-// X ↔ Y ↔ B 三侧 (FactorsLoad: XSpec / YSpec → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
+// X ↔ Y ↔ B 三侧 (FactorsLoad: 叶 LeafId / YSpec → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
 //   X = 因子输入叶 = 标签档及 Bar 档 (Lob 标签层才有 lob.*) 不细于网格的各层全部列, 随因子变
 //   Y = 门控 / 标签 / 成本 = 标签档网格层本层列, 只随作用域变
 //   B = 篮子 (OHLC close / 复权 / 股本 / 估值 / 行业) = 日层本层列, 只 Portfolio 池线
+// 叶的身份 = leaves 下标 (字段表编译期定 → 同层进程内不变; 叶名只在 Dag / 解析边界, 装载 / 缓存 / 引擎全按 LeafId)
+using LeafId = uint32_t;
 struct XCols {
-  std::vector<FeatCol> leaves; // 全部叶 (可选与不可选)
-  const FeatCol *find(std::string_view code) const;
+  std::vector<FeatCol> leaves;                                          // 全部叶 (可选与不可选)
+  std::map<std::string, LeafId, std::less<>> index;                     // 叶名 → LeafId
+  const FeatCol *find(std::string_view code) const;                     // 不在 → nullptr
+  std::vector<LeafId> ids(const std::vector<std::string> &codes) const; // 须都在
 };
 // 池估值五口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; FactorsLoad load_b → PoolCurve → Portfolio VAL 页):
 // EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续)

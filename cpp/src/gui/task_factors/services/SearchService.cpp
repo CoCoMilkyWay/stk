@@ -114,7 +114,7 @@ Samp samp_of(int T, int t_lo, int t0_abs, int stride) {
 }
 // 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数)
 struct SampleP : ProbeBase {
-  static constexpr uint8_t need = 0;
+  static constexpr uint8_t need = kNeedRanks;
   std::vector<uint16_t> *dst = nullptr;
   int stride = 1, off = 0;
   void root(const Ctx &c, const RootView &v) {
@@ -166,6 +166,7 @@ struct SearchService::Searcher {
   factor::Dag d0;                 // 占位具体化的森林: 结构 / 特征叶序 / 槽数与任一候选同 (值域检查 plan_forest 按根归因, 不融合)
   std::vector<space::Slot> slots; // 可搜槽 (区间要 A, 装完块 0 才建)
   Job job;                        // 块归作业: P.cache_all ? 整轮缓存全部块 : 一块复用 (ensure_xy 按日段 + YSpec 判, 键同则不重读)
+  std::vector<uint64_t> gens;     // [块位] 上次记过装载的块代 (loaded)
   int A = 0, stride = 1, R = 0;   // 资产数 / r16 抽样步长 (绝对行 ≡ 0 mod stride, 全作用域约 kCorrRows 行) / 每候选抽样行数 (各块拼)
   int n_chunks = 0, batch = 1;    // 块数 / 一张森林的候选数 (引擎 batch_of)
   std::vector<Entry> ents;        // 候选表: 规范串去重
@@ -266,9 +267,9 @@ struct SearchService::Searcher {
     if (!e0.is_template())
       return give_up("模板无自由参数 (裸键名 d / k / k2 才搜; 写了数字的参数固定)");
     // 块首前带: 统计首行的 rAC lag 行 (t_lo − max_lag) 也须整窗 ⇒ 行数 ≥ 模板回看 + max_lag
-    const int look = space::lookback(e0), lag = factor::search::max_lag(hd, seg);
-    job.carry = (look + lag + seg - 1) / seg;
-    lg("前带: 模板回看 %d 行 + rAC lag %d 行 → %d 天", look, lag, job.carry);
+    const int look = space::lookback(e0);
+    job.carry = carry_days(look, hd, seg);
+    lg("前带: 模板回看 %d 行 + rAC lag %d 行 → %d 天", look, factor::search::max_lag(hd, seg), job.carry);
     const factor::expr::Expr ep = e0.placeholder();
     d0 = factor::build_forest({&ep}, /*keep_roots=*/false, /*fuse=*/false);
     if (!open_job(F, scope, d0.feats, W.cancel_, job))
@@ -280,6 +281,7 @@ struct SearchService::Searcher {
     stride = std::max(1, days * seg / factor::search::kCorrRows);
 
     job.ys = YSpec{hd, Amts{}, 0.f};
+    job.own = true;
     job.who = "Search";
     const double per_day = static_cast<double>(seg) * A;
     const double r16_bytes = (static_cast<double>(days) * seg / stride + 1.0) * A * sizeof(uint16_t);
@@ -312,26 +314,25 @@ struct SearchService::Searcher {
     // r16 抽样行 (契约【多权重】): 各块的抽样行 (samp_of) 按块序拼成每候选一张 [R][A]
     for (const Chunk &k : P.chunks)
       R += samp_of(k.days() * seg, static_cast<int>(k.s0 - k.d0) * seg, static_cast<int>(k.d0) * seg, stride).n_rows;
+    gens.assign(job.blocks.own.size(), 0);
     return true;
   }
-  // 块 ci 就位 (已在缓存则不读). Ok / Cancel / Stale
-  Rc load_chunk(int ci) {
-    const ScopeCache &c = job.blocks.of(static_cast<size_t>(ci));
-    const std::string key0 = c.key;
-    const Clock::time_point t_load = Clock::now();
-    if (const Rc rc = load_block(F, ft, job, static_cast<size_t>(ci), W.cancel_, W); rc != Rc::Ok)
-      return rc;
-    if (c.key != key0)
-      lg("装载块 %d/%d: %d 天, %.1fs", ci + 1, n_chunks, job.P.chunks[static_cast<size_t>(ci)].days(),
-         std::chrono::duration<double>(Clock::now() - t_load).count());
-    return Rc::Ok;
+  // 块 ci 刚就位 (pass 的 on_block / prepare): 真读了 (块的代变了) 才记
+  void loaded(const ScopeCache &c, size_t ci, double load_s) {
+    uint64_t &g = gens[job.P.cache_all ? ci : 0];
+    if (c.gen == g)
+      return;
+    g = c.gen;
+    lg("装载块 %d/%d: %d 天, %.1fs", static_cast<int>(ci) + 1, n_chunks, job.P.chunks[ci].days(), load_s);
   }
 
   // ---- 准备: 先装块 0 (趟 0 反正要) → 叶值域 → A = n_full · kGroups 定槽区间 → 阈值槽分位表 ----
   bool prepare() {
-    if (!go(load_chunk(0)))
+    const Clock::time_point t_load = Clock::now();
+    if (!go(load_block(F, ft, job, 0, W.cancel_, W)))
       return false;
-    { // 分位表要在块 0 上走模板前缀: 先查叶值域 (各块的候选森林由 eval_forest 各查一次)
+    loaded(job.blocks.of(0), 0, std::chrono::duration<double>(Clock::now() - t_load).count());
+    { // 分位表要在块 0 上走模板前缀: 先查叶值域 (各块的候选森林由 pass 各查一次)
       std::vector<std::string> why;
       std::vector<uint8_t> need;
       if (plan_forest(F.ex, job.blocks.of(0), d0, why, need) == 0) {
@@ -472,38 +473,14 @@ struct SearchService::Searcher {
     return ents[static_cast<size_t>(a)].sc.sign * ents[static_cast<size_t>(b)].sc.sign * it->second;
   }
 
-  // ---- 一块上评一批候选 (两后端同一份, 引擎 E 见 FactorsEngine): 每批一张共享森林 (plant 收前 ≤ batch 个; GPU 批核再按显存减半),
-  //      评完逐候选进探针 (HoldP 续攒 Accum + SampleP 抽样 r16; 末块即 finish). Ok / Broken (本块叶值域越界, job.why) / Cancel ----
-  template <class E>
-  Rc eval_chunk(E &eng, int ci, const std::vector<int> &ids) {
-    const ScopeCache &c = job.blocks.of(static_cast<size_t>(ci));
-    const bool last = ci + 1 == n_chunks;
-    eng.bind(c);
-    eng.open_batch(batch); // GPU 批核的 plant 按块显存定批
-    for (size_t b0 = 0; b0 < ids.size();) {
-      std::vector<Root> roots;
-      for (size_t k = b0; k < std::min(ids.size(), b0 + static_cast<size_t>(batch)); ++k)
-        roots.push_back({&ents[static_cast<size_t>(ids[k])].e, sp.frame});
-      int C = 0;
-      const Forest Fr = eng.template plant<SearchProbes>(roots, batch, C);
-      assert(Fr.d.feats == d0.feats && "同结构候选的特征叶序必与基线一致 (平面下标按 d0.feats 装)");
-      for (int k = 0; k < C; ++k)
-        assert(Fr.head[static_cast<size_t>(k)] == k && "候选按规范串去重, 根两两不同");
-      if (const Rc rc = eval_forest(
-              eng, c, Fr, last, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[b0 + static_cast<size_t>(k)])].ps; }, job.why, Nop{},
-              Nop{}, [&](int) { W.publish(1); });
-          rc != Rc::Ok)
-        return rc;
-      b0 += static_cast<size_t>(C);
-    }
-    return Rc::Ok;
-  }
-  // ---- 一趟: ids (全是待评) 沿全部块流过 (引擎 E), 收尾打分 + 发布 ----
+  // ---- 一趟: ids (全是待评) 沿全部块流过 (FactorsEngine pass, 引擎 E: 每批一张共享森林, plant 收前 ≤ batch 个, GPU 批核再按显存减半;
+  //      逐候选进探针 HoldP 续攒 Accum + SampleP 抽样 r16, 末块即 finish), 收尾打分 + 发布. 坏根 (某块叶值域越界) 不打分 (score −∞) ----
   template <class E>
   Rc run_pass(E &eng, const std::vector<int> &ids, int pass) {
     assert(!ids.empty());
     W.pass_.store(pass, std::memory_order_relaxed);
     W.chunk_.store(0, std::memory_order_relaxed);
+    std::vector<Root> roots;
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
       assert(en.pass < 0 && "每个候选只评一次");
@@ -511,27 +488,32 @@ struct SearchService::Searcher {
       en.r16.assign(static_cast<size_t>(R) * A, fs::kRankNone);
       en.ps.at<SampleP>().dst = &en.r16; // ents 本趟不再增 → 地址稳
       en.ps.at<SampleP>().stride = stride;
+      roots.push_back({&en.e, sp.frame});
     }
     const Clock::time_point t_pass = Clock::now();
     double load_s = 0.0;
-    for (int ci = 0; ci < n_chunks; ++ci) {
-      const Clock::time_point t_load = Clock::now();
-      if (const Rc rc = load_chunk(ci); rc != Rc::Ok)
-        return rc;
-      load_s += std::chrono::duration<double>(Clock::now() - t_load).count();
-      W.begin(Phase::Running, ids.size() * static_cast<size_t>(n_chunks));
-      W.publish(ids.size() * static_cast<size_t>(ci)); // 前面的块已评完
-      if (const Rc rc = eval_chunk(eng, ci, ids); rc != Rc::Ok)
-        return rc;
-      W.chunk_.store(ci + 1, std::memory_order_relaxed);
-    }
+    const Rc rc = GUI::Factors::pass(
+        eng, F, ft, job, roots, batch, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, W.cancel_, W,
+        [&](const ScopeCache &c, size_t ci, double s) {
+          loaded(c, ci, s);
+          load_s += s;
+          W.chunk_.store(static_cast<int>(ci), std::memory_order_relaxed);
+          W.begin(Phase::Running, ids.size() * static_cast<size_t>(n_chunks));
+          W.publish(ids.size() * ci); // 前面的块已评完
+        },
+        Nop{}, Nop{}, [&](int) { W.publish(1); });
+    if (rc != Rc::Ok)
+      return rc;
+    W.chunk_.store(n_chunks, std::memory_order_relaxed);
     for (int id : ids) {
       Entry &en = ents[static_cast<size_t>(id)];
-      assert(en.ps.at<SampleP>().off == R && "各块抽样行须拼满");
       const HoldP &hp = en.ps.at<HoldP>();
+      en.pass = pass;
+      if (hp.n_hold == 0) // 坏根: 没 finish
+        continue;
+      assert(en.ps.at<SampleP>().off == R && "各块抽样行须拼满");
       assert(hp.n_hold == 1);
       en.sc = factor::search::score_signed(hp.hold[0]);
-      en.pass = pass;
     }
     int n_pos = 0;
     double best = -std::numeric_limits<double>::infinity();

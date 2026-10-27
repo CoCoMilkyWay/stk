@@ -28,9 +28,9 @@ struct EvalScope {
 };
 // worker: 作用域 sc 里已建的库全开 (清单没变的复用; 各因子只读自己用到的). abort = 库判废时拉起的取消旗
 void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
-// 作用域 sc + 叶 feats (FeatureTable 叶名) → 作用域. 所用库 = 读计划各列的库 (Col::ref) 之并 (+ all: 池成员);
+// 作用域 sc + 叶 leaves → 作用域. 所用库 = 读计划各列的库 (Col::ref) 之并 (+ all: 池成员);
 // 所用库未建 / 无共同落盘日 → false + why (正常输入)
-bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector<std::string> &feats, EvalScope &es, std::string &why);
+bool eval_scope(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, EvalScope &es, std::string &why);
 
 // 宿主内存预算: 可用内存 × kHostFrac; 显存预算: 空闲显存 × kVramFrac (GPU 批核)
 inline constexpr double kHostFrac = 0.6;

@@ -200,10 +200,13 @@ stk/
 │   │   │       │   │                                 #    · 通用探针 Hold / Cost / Valid / Rank / Alpha / IcPdf 四服务共用; 服务私有探针在各自 .cpp
 │   │   │       │   │                                 #    · 根上统计核: valid_count / rank_sum / alpha_dist / mini_pdf_of / group_abs (换手成本三探针 CostP / TurnP / CurveP 平级直调 Stat cost_rows)
 │   │   │       │   │                                 #    · 落地基类 LandRowsP (逐持有期逐行) / LandCellsP (逐行逐资产) / LinesP (净值线 → fold_book); EvalProbes<X...> + fill_eval → EvalStat (Run 行 / Inspect 结果同一份)
-│   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / root / batch / batch_view / forest
-│   │   │       │   │                                 #      labels() / work() (统计会话) / open_batch (搜索会话); FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU; 每轮 drop_engines)
-│   │   │       │   │                                 #    · 管线 (四服务同一份): Job → open_job (作用域 + 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → load_block (ensure_xy)
-│   │   │       │   │                                 #      → eval_forest (plan_forest → forest, 末块 finish); Run / Inspect / Portfolio 走 eval_job (整期一块; 根 = 式 + 口径; 块探针 on_block); Search 逐块逐趟
+│   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / eval (森林单入口, 原料后端 ready / view)
+│   │   │       │   │                                 #      CPU 恒逐根 Stat (Search 也是, 抽样行拷 rx); GPU 逐根 stat_eval / 批核 (kBatched: 只累加 + 抽样行) 走完森林一次 search_eval
+│   │   │       │   │                                 #      FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU; 每轮 drop_engines)
+│   │   │       │   │                                 #    · 管线 (四服务同一份): Job → open_job (作用域 + 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块 load_block
+│   │   │       │   │                                 #      → 块探针 on_block → 逐批 plant → plan_forest (坏根跨块粘住) → eval, 末块 finish); Run / Inspect / Portfolio 走 eval_job (一趟一张森林;
+│   │   │       │   │                                 #      根 = 式 + 口径; 探针 whole (AlphaP) 或无根 → 整期一块, 否则前带 = 回看 + lag 按预算分块); Search 每趟一次 pass
+│   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
 │   │   │       │   │                                 #    · Job = 规格 + 作用域 + 计划 + 块 (Blocks: 共享 F.c / 作业自有); JobOut = Job + 森林 + 节点耗时
 │   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: aborted → abort_out; 非 Ok → Job::why
 │   │   │       │   │                                 #    · 四服务的差别只在探针元组; GPU 逐根路径按探针 hd 取会话持有期子集

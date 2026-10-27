@@ -57,6 +57,7 @@ struct TaskFactorsState {
   // 页顶层按钮后的因子文件数 (所选池各因子层目录): 池变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
   std::string counted_key; // config.factor_dir | 所选池; 空 = 没数过
   size_t level_files[std::size(Factors::kFactorLevels)] = {};
+  bool level_defaulted = false;   // 首次进页已按因子文件数定过默认层 (只一次, 之后随用户 / 特征面板)
   std::vector<size_t> pool_files; // [PoolId] 页顶池下拉里各池因子文件数 (该池各因子层之和): 每次打开下拉重数
   Phase prev_factors_phase = Phase::Idle;
   std::shared_ptr<const Factors::FeatureTable> feature_table; // 本层字段表视图 (按层建一次, Factors / Search / Inspect 共享)
@@ -340,6 +341,14 @@ TaskHandle CreateFactorsTask() {
             }
           }
           state->prev_factors_phase = fst;
+          if (!state->level_defaulted) { // 首次进页: 切到该池最低频的有因子文件的层 (都没有 → 不动)
+            state->level_defaulted = true;
+            for (size_t i = std::size(Factors::kFactorLevels); i-- > 0;)
+              if (state->level_files[i] > 0) {
+                sel.selected_level = static_cast<int>(Factors::kFactorLevels[i].lvl);
+                break;
+              }
+          }
         }
         for (size_t i = 0; i < std::size(Factors::kFactorLevels); ++i) {
           const Factors::FactorLevel &l = Factors::kFactorLevels[i];
@@ -371,6 +380,10 @@ TaskHandle CreateFactorsTask() {
         const int want_seg = selected_factor_seg(sel);
         const std::string want_pool = want_seg != 0 ? sel.pool() : std::string{};
         if (!busy) {
+          if (want_seg != state->seg || want_pool != state->pool) { // 换作用域: 高光作废, 新表扫出后重新默认高光 (rIC 最高)
+            state->factors_ui.view_file.clear();
+            state->factors_ui.view_defaulted = false;
+          }
           if (want_seg != state->seg) {
             reset_level_services(*state);
             state->seg = want_seg;
@@ -475,6 +488,7 @@ TaskHandle CreateFactorsTask() {
     state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放
     state->inspect_ui = Factors::InspectUIState{};
     state->feature_table.reset();
+    state->level_defaulted = false;
     state->portfolio_service.reset(); // 析构 Stop() join worker, 缓存随之释放
     state->portfolio_ui = Factors::PortfolioUIState{};
     state->portfolio_tables.clear();

@@ -1257,14 +1257,27 @@ std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { retur
 } // namespace
 
 bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
-  if (!fui.view_defaulted && fui.view_file.empty()) { // 默认高光表序第一个有效权重 (表还没扫出 → 下帧再试)
+  // 默认高光: 因子表当前 Hold 下 rIC 最高的有效权重 (都无该 Hold 的 stat → 表序第一个); 本作用域的表还没扫出 → 下帧再试
+  if (!fui.view_defaulted && fui.view_file.empty()) {
+    const auto &labels = ctx.ft->y.labels;
+    const int hold = labels.empty() ? 0 : labels[static_cast<size_t>(std::clamp(fui.hold_idx, 0, static_cast<int>(labels.size()) - 1))].key;
     std::lock_guard<std::mutex> lock(fsvc.mutex);
-    for (const FactorRow &r : fsvc.rows)
-      if (inspectable(r)) {
-        fui.view_file = r.key;
-        fui.view_defaulted = true;
-        break;
+    if (fsvc.current.scope.factor_dir == ctx.factor_dir) {
+      const FactorRow *first = nullptr, *best = nullptr;
+      for (const FactorRow &r : fsvc.rows) {
+        if (!inspectable(r))
+          continue;
+        if (!first)
+          first = &r;
+        const factor::stat::HoldStat *h = r.has_stat ? r.find_hold(hold) : nullptr;
+        if (h && h->n >= 3 && (!best || h->ric.mean > best->find_hold(hold)->ric.mean))
+          best = &r;
       }
+      if (const FactorRow *pick = best ? best : first) {
+        fui.view_file = pick->key;
+        fui.view_defaulted = true;
+      }
+    }
   }
   if (fui.view_file.empty() || !ctx.axis_ready || ctx.ft->y.labels.empty())
     return false;
