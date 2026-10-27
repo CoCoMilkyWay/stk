@@ -283,7 +283,7 @@ void run_search(RoundCtx &R, OperatorRow &row) {
       const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out, double *prep_ms, double *eval_ms) {
         const size_t off = static_cast<size_t>(row0) * A;
         for (int i = 0; i < H; ++i)
-          lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr, off);
+          lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], d.base.eo, nullptr, off);
         for (int c = 0; c < sk::kCands; ++c)
           xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
         factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, factor::kSegMax, row0, t_lo, hd, d.base.cap, lab.data(), out, prep_ms, eval_ms);

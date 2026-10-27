@@ -107,8 +107,8 @@ struct Probes {
   static constexpr bool whole = (false || ... || P::whole);
   struct Ext {
     std::tuple<typename P::Ext...> e;
-    void cell(unsigned x, bool ok, const float *y) {
-      std::apply([&](auto &...q) { (q.cell(x, ok, y), ...); }, e);
+    void cell(const factor::cpu::stat::RxCell &cl) {
+      std::apply([&](auto &...q) { (q.cell(cl), ...); }, e);
     }
   };
   template <class Q>

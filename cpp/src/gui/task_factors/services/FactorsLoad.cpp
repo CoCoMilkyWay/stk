@@ -76,7 +76,7 @@ std::string YSpec::key() const {
   return k + "|cap" + std::to_string(max_impact) + "|n" + std::to_string(cap) + (basket ? "|b" : "");
 }
 
-double cell_bytes(const YSpec &s) { return 1.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (s.basket ? kBasketCellBytes : 0.0); }
+double cell_bytes(const YSpec &s) { return 2.0 + kPlaneBytes * static_cast<double>(s.hd.n) + 4.0 * s.ad.n + (s.basket ? kBasketCellBytes : 0.0); }
 
 size_t XPlanes::count() const {
   size_t n = 0;
@@ -282,9 +282,9 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行). 可成交 / 顺延已在标签里 (features LabelHold), 不另读 ----
+  // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] | 成本 [C][K], 全是标签库网格层本层列 (同行). 顺延已在标签里 (features LabelHold) ----
   ColList cols{es.pool, {}};
-  const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs);
+  const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
   assert(cols.refs[ts_i].pool == es.rs.main && "门控 / 标签 / 成本在标签库");
   const size_t lab_i = cols.refs.size();
   for (size_t i = 0; i < H; ++i)
@@ -296,6 +296,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
       cols.add(l);
 
   Y.gate.assign(n, 0);
+  Y.eo.assign(n, 0);
   const auto alloc = [&](std::vector<LegPlane> &ps, size_t k, bool m) {
     ps.resize(k);
     for (LegPlane &p : ps) {
@@ -314,8 +315,20 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
   std::vector<long long> on(static_cast<size_t>(ex.threads()), 0);                                        // 每线程: 门控在池格数 (n_full)
 
   const bool read = read_days(ft, es, lr, d0, d1, std::move(cols.refs), ex, cancel, prog, [&](const auto &view, const Day &day, size_t d, size_t tid) {
-    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l; 池内 (gate) ∧ 两腿皆有限 → fp16 位, 其余 0.
-    // 标签: 有效位 = 同条件; 成本 (cost): 标签有效格须恒有限 (建仓非两向 → 特征层 NaN, 标签同 NaN), 无有效位 (cost_rows 吃标签有效位)
+    // 建仓可成交码: 池内 (gate) ∧ 有限 → 码 (1..3), 其余 0
+    const auto fold_eo = [&](size_t t, size_t row) {
+      const View w = view(eo_i, t);
+      for (size_t a = 0; a < A; ++a) {
+        feature_storage_t x = {};
+        const bool ok = Y.gate[row + a] && cell(w, a, x) && fmeta::finite(x);
+        const float c = ok ? static_cast<float>(x) : 0.f;
+        assert((c == 0.f || c == 1.f || c == 2.f || c == 3.f) && "lb_entry_ok 须是 kEoBuy | kEoSell");
+        Y.eo[row + a] = static_cast<uint8_t>(c);
+      }
+    };
+    // 两腿列组 (标签 / 成本同一份折叠): 列段起点 base, 组 k 的腿 l = 列 base + K·k + l.
+    // 标签: 池内 (gate) ∧ 两腿皆有限 → fp16 位 + 有效位 (须有可成交码), 其余 0.
+    // 成本 (cost): 逐腿 池内 ∧ 有限 → fp16 位, 其余 0; 该腿可建仓 (eo & eo_open(l)) 的格须有限 (cost_rows 只在可建仓时取), 无有效位
     const auto fold_legs = [&](size_t base, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, bool cost) {
       for (size_t k = 0; k < out.size(); ++k) {
         View w[K];
@@ -327,16 +340,19 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
         LegPlane &p = out[k];
         for (size_t a = 0; a < A; ++a) {
           feature_storage_t x[K] = {};
-          bool ok = Y.gate[row + a];
+          bool fin[K];
           for (size_t l = 0; l < K; ++l)
-            ok = ok && cell(w[l], a, x[l]) && fmeta::finite(x[l]);
+            fin[l] = Y.gate[row + a] && cell(w[l], a, x[l]) && fmeta::finite(x[l]);
+          const bool ok = fin[factor::stat::kLong] && fin[factor::stat::kShort];
           for (size_t l = 0; l < K; ++l)
-            p.v[l][row + a] = ok ? std::bit_cast<uint16_t>(static_cast<float>(x[l]) > cap[l] ? top[l] : x[l]) : 0;
-          if (cost)
-            assert((ok || std::none_of(Y.labels.begin(), Y.labels.end(), [&](const LegPlane &q) { return q.m[row + a]; })) &&
-                   "成本在标签有效格须有且有限 (旧 Lob 标签库: 重算)");
-          else
+            p.v[l][row + a] = (cost ? fin[l] : ok) ? std::bit_cast<uint16_t>(static_cast<float>(x[l]) > cap[l] ? top[l] : x[l]) : 0;
+          if (cost) {
+            for (size_t l = 0; l < K; ++l)
+              assert((fin[l] || !(Y.eo[row + a] & factor::stat::eo_open(static_cast<int>(l)))) && "可建仓侧的冲击成本须有且有限 (旧 Lob 标签库: 重算)");
+          } else {
+            assert((!ok || Y.eo[row + a]) && "标签有效格须有建仓可成交码 (旧标签库: 重算)");
             p.m[row + a] = ok;
+          }
         }
       }
     };
@@ -345,6 +361,7 @@ bool load_y(const FeatureTable &ft, const EvalScope &es, const LibReaders &lr, s
     on[tid] += gate_on(gate, VR * A);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
+      fold_eo(t, row);
       fold_legs(lab_i, lab_cap, Y.labels, t, row, false);
       fold_legs(cost_i, cost_cap, Y.costs, t, row, true);
     }
@@ -458,8 +475,9 @@ factor::stat::Labels labels_of(const YPlanes &y) {
   factor::stat::Labels out;
   out.hd = y.hd;
   out.cap = y.n_full;
+  assert(y.eo.size() == y.sh.n() && "建仓可成交码未装");
   for (int h = 0; h < y.hd.n; ++h)
-    out.l[h] = label_of(y.labels[static_cast<size_t>(h)], nullptr);
+    out.l[h] = label_of(y.labels[static_cast<size_t>(h)], y.eo.data(), nullptr);
   return out;
 }
 

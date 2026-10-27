@@ -93,7 +93,7 @@
 //       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 任意层) 的字段 src → cs::Tf::apply → cs::Method::apply.
 //                                  源行 = level_asof(lvl, 本层, t) (粗层读已收的上一行, 日内读 L_1day = 前一交易日行; 跨日只许 TS / 元列,
 //                                  区间首日无前日 → NaN). CS; 有效性随源层 (L_sec DATA / 其余 ALL); ns = 本档, 或 TIER_SIDES 登记的旁读档
-//       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写; 唯一 NaN = 建仓作废, 见 LabelHold)
+//       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写; 收益无 NaN, 建仓可成交码 lb_entry_ok, 见 LabelHold; Lob 冲击成本不可成交侧 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Node/<Tier>/TS/Meta/Meta.hpp,

@@ -733,7 +733,7 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
   if (ImGui::IsItemHovered())
     tip("换手成本 = 各因子自己的最小冲击段, 不可选\n"
         "• 每行开 1/h̄ 净值一批 (h̄ = 平均持有行数, 全日平均满仓), 换手按 Δw: 上一批平仓与本批建仓同一价格点时只交接差额 (留仓不成交);\n"
-        "  建仓不可两向成交的作废, 平仓不可成交的顺延 (都在标签里)\n"
+        "  新进成交不了不建仓、续持者封板照持也加不了仓, 平仓成交不了的顺延\n"
         "• Lob 层: 增仓 × 最小金额段冲击 (封顶 max_impact) + 平仓量 × 固定冲击 %.1f bp\n"
         "• Bar 层 (无冲击段): 增仓量 / 平仓量都按固定冲击 %.1f bp\n"
         "• 组合只算 G20 多头; 无冲击线不扣",

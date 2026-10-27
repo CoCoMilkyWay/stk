@@ -125,10 +125,12 @@ __device__ __forceinline__ void lag_row(const uint16_t *rx, const uint16_t *rlag
   r.ok_rac = ok ? 1 : 0;
 }
 
-// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首, cap = 满仓 → r 的 ric / mkt / grp / cnt / ls / ok (全 lane 同值). gs / gc = 本 warp 的分组槽,
+// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
+// → r 的 ric / mkt / grp / cnt / ls / ok (全 lane 同值; 组 / 两腿按契约【仓位感知】, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
 // 连续调用间的槽复用由函数内首个 __syncwarp 保护. 调用方已排除段末尾部
-__device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, int A, double cap, Row &r, float (*gs)[32], uint16_t (*gc)[32],
-                                          int lane) {
+__device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, Row &r, float (*gs)[32],
+                                          uint16_t (*gc)[32], int lane) {
+  constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
   __syncwarp(); // 上一行的广播读 (gs[q][0]) 全部结束, 才能清槽
 #pragma unroll
   for (int q = 0; q < kGroups; ++q) {
@@ -136,8 +138,9 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, i
     gc[q][lane] = 0;
   }
   unsigned long long s[kSums] = {}; // rIC
-  float fs[kLegs + 1] = {};         // [kLegs] J 上 Σlv / Σsv (两腿基准) + [kLegs] 空腿 (底组) 的 Σsv
-  for (int a = lane; a < A; a += 32) {
+  float fs[kLegs + 1] = {};         // [kLegs] J 上 Σlv / Σsv (两腿基准) + [kLegs] 空腿 (底组) 做空侧真持有的 Σ 收益
+  int ns[1] = {};                   // 空腿做空侧真持有只数
+  for (int a = lane; a < c.A; a += 32) {
     const unsigned x = rx[a], y = lb.ry[a];
     const bool ok = x != kRankNone && y != kRankNone;
     factor::stat::pair_add(s, x, y, ok);
@@ -145,15 +148,25 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, i
 #pragma unroll
     for (int l = 0; l < kLegs; ++l)
       fs[l] += ok ? yv[l] : 0.f;
-    const int g = ok ? factor::stat::grp_of(x) : -1; // 20 组 (多腿的 Σlv 与两腿计数就是组槽, 另记空腿的 Σsv)
-    if (ok) {                                        // 自己的槽, 无竞争
-      gs[g][lane] += yv[kLong];
+    if (!ok)
+      continue;
+    const int g = factor::stat::grp_of(x); // 20 组 (多腿的 Σ 与只数就是组槽, 另记空腿)
+    const auto in = [g](uint16_t v) { return v != kRankNone && factor::stat::grp_of(v) == g; };
+    const factor::stat::Cell<uint16_t> cl{c, rx + a, lb.m + a, lb.eo + a, yv};
+    const bool hl = cl.held(kLong, in), hs = g == gb && cl.held(kShort, in);
+    const bool cont = (hl || hs) && cl.continues(in);
+    if (hl) { // 自己的槽, 无竞争
+      gs[g][lane] += cl.ret(kLong, cont);
       gc[g][lane] += 1;
     }
-    fs[kLegs] += g == factor::stat::leg_group(kShort) ? yv[kShort] : 0.f;
+    if (hs) {
+      fs[kLegs] += cl.ret(kShort, cont);
+      ns[0] += 1;
+    }
   }
   warp_sum(s);
   warp_sum(fs);
+  warp_sum(ns);
   __syncwarp();         // 各 lane 的槽写完, 下面跨 lane 读
   if (lane < kGroups) { // lane q 收组 q: 沿 32 lane 串行加, 起点旋转 → 32 个 lane 落 32 个 bank
     float sg = 0.f;
@@ -175,20 +188,20 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, i
     gsd[q] = static_cast<double>(gs[q][0]);
     gci[q] = gc[q][0];
   }
-  constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
   const double sm[kLegs] = {static_cast<double>(fs[kLong]), static_cast<double>(fs[kShort])};
-  const LegSum leg[kLegs] = {{static_cast<double>(gci[gl]), gsd[gl]}, {static_cast<double>(gci[gb]), static_cast<double>(fs[kLegs])}};
+  const LegSum leg[kLegs] = {{static_cast<double>(gci[gl]), gsd[gl]}, {static_cast<double>(ns[0]), static_cast<double>(fs[kLegs])}};
   factor::stat::finish_row(s, sm, gsd, gci, leg, cap, r);
 }
 
-// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; cap = 满仓; tail = 段末尾部 (tail_masked)
-__device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, int A, double cap, bool tail, float (*gs)[32],
-                                        uint16_t (*gc)[32], int lane) {
+// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; cap = 满仓;
+// tail = 段末尾部 (tail_masked)
+__device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, bool tail,
+                                        float (*gs)[32], uint16_t (*gc)[32], int lane) {
   Row r;
   if (rlag)
-    lag_row(rx, rlag, A, r, lane);
+    lag_row(rx, rlag, c.A, r, lane);
   if (!tail)
-    label_row(rx, lb, A, cap, r, gs, gc, lane);
+    label_row(rx, lb, c, cap, r, gs, gc, lane);
   return r;
 }
 

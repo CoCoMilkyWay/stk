@@ -114,6 +114,7 @@ struct YCols {
   Col total_shares;           // 总股本 (只日层设): 池估值的市值 + 池加权指数的权重 = close_day × 本列
   Col val[kPoolVals];         // [PoolVal] 估值输入 (kPoolValCols; 只日层设): 池估值 EP / BP / SP / CP / DY (整体法)
   Col ind_l1;                 // SW2021 一级行业 ID (只日层设; 池估值页的行业切分)
+  Col entry;                  // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 契约【仓位感知】)
   std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
   std::vector<LegCol> costs;  // 按 key 升序 (Run / Inspect 每金额段攒 CostAcc; Search 不看成本; Bar 标签无)
 };
@@ -170,7 +171,7 @@ struct StatScope {
 };
 // 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
 // 两腿按 Δw 扣: 增仓 Δw⁺ 付建仓冲击, 平仓量付 fixed_impact (同一价点交接只算差额); 均摊成本 cost(腿) 随 h 变.
-// 买入冲击按 Config::max_impact 封顶后进 (装载时; 标签有效格恒有限, 建仓作废格特征层 NaN).
+// 买入冲击按 Config::max_impact 封顶后进 (装载时; 本侧可建仓的格恒有限, 不可成交那侧特征层 NaN).
 // Run 每因子每金额段都攒 (落 stat.costs), Inspect 期限结构净线从它算
 struct CostTier {
   int amt = 0;                                            // 万 (= FeatureTable::costs[c].key)

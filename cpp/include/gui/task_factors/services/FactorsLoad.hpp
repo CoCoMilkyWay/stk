@@ -57,17 +57,18 @@ inline constexpr double kPlaneBytes = 5.0;
 // B 装载 + 篮子期峰值 (字节 / 格): close 5 + 价 4 + 权重 4 + 复权 4 + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1
 // + 上一有效 close 行 4 + 补价副本 4 (baskets)
 inline constexpr double kBasketCellBytes = kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 + 4.0;
-// 宿主装载量 (字节 / 格): X = 叶 kPlaneBytes · 叶数; Y = 门控 1 + 标签两腿 (lv, sv, m) 5 · hd + 成本两腿 (无 m) 4 · ad (+ B: kBasketCellBytes)
+// 宿主装载量 (字节 / 格): X = 叶 kPlaneBytes · 叶数; Y = 门控 1 + 建仓可成交码 1 + 标签两腿 (lv, sv, m) 5 · hd + 成本两腿 (无 m) 4 · ad
+// (+ B: kBasketCellBytes)
 double cell_bytes(const YSpec &s);
 
-// 两腿平面 (标签 / 成本同形): fp16 位 (与落盘同格式, Stat 直接吃) + 有效位 (标签: 池内 ∧ 两腿皆有限; 成本无: 标签有效格恒有限, 其余 0)
+// 两腿平面 (标签 / 成本同形): fp16 位 (与落盘同格式, Stat 直接吃) + 有效位 (标签: 池内 ∧ 两腿皆有限; 成本无: 逐腿池内 ∧ 有限, 其余 0)
 struct LegPlane {
   std::vector<uint16_t> v[factor::stat::kLegs];
   std::vector<uint8_t> m;
 };
-// 宿主平面 → 契约视图 (整张量, 未偏). ry = 预处理的做多标签 r16 (nullptr = 未预处理, 会话 open 时做)
-inline factor::stat::Label label_of(const LegPlane &p, const uint16_t *ry) {
-  return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data(), ry};
+// 宿主平面 → 契约视图 (整张量, 未偏). eo = 建仓可成交码平面 (YPlanes::eo); ry = 预处理的做多标签 r16 (nullptr = 未预处理, 会话 open 时做)
+inline factor::stat::Label label_of(const LegPlane &p, const uint8_t *eo, const uint16_t *ry) {
+  return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data(), eo, ry};
 }
 inline factor::stat::Cost cost_of(const LegPlane &p) { return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}}; }
 
@@ -80,10 +81,11 @@ struct XPlanes {
 struct YPlanes {
   Shape sh;
   std::vector<uint8_t> gate;    // 截面池掩码 g = 当日在池 ∧ cs_valid ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
+  std::vector<uint8_t> eo;      // 建仓可成交码 kEoBuy | kEoSell (lb_entry_ok; 池外 / 缺 → 0); 各持有期共用 (Stat 契约【仓位感知】)
   factor::stat::Holds hd;       // [hold] = YSpec::hd
-  std::vector<LegPlane> labels; // [hold] 两腿毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t (建仓非两向可成交 → 特征层 NaN → 有效位 0; 平仓顺延已在值里)
+  std::vector<LegPlane> labels; // [hold] 两腿毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t (封板照写, 能否建仓看 eo; 平仓顺延已在值里)
   Amts ad;                      // [amt] = YSpec::ad
-  std::vector<LegPlane> costs;  // [amt] 两腿建仓冲击 (比例): 买入 (封顶) / 卖出; 采样同标签, 标签有效格恒有限 (装载断言), 无有效位
+  std::vector<LegPlane> costs;  // [amt] 两腿建仓冲击 (比例): 买入 (封顶) / 卖出; 采样同标签, 该腿可建仓 (eo) 的格恒有限 (装载断言), 无有效位
   double n_full = 0.0;          // 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 池内平均每行有效资产数 / kGroups: 池宽决定, 与因子无关 (YSpec::cap > 0 → 它)
 };
 // 全部金额段的成本视图 [amt] (= y.ad 序; cost_rows 的 c, C = y.ad.n)

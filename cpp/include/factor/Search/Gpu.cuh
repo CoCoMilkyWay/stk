@@ -71,7 +71,8 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
-    const Row r = dev::row_stat(xr, xl, lb.at(base), A, L.cap, factor::stat::tail_masked(t0_abs + t, hold, g), sh.gs[warp], sh.gc[warp], lane);
+    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, T, A, hold, g, t0_abs), L.cap, factor::stat::tail_masked(t0_abs + t, hold, g),
+                                sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       head.add(r);
     if (r.ok) {

@@ -9,7 +9,7 @@
 //   造数沿用 factor/Check.hpp 的 Profile (HOLES 打整行缺失 / CONSTCOL 打全并列 / TINY 打量级), 两口径各一份 (Data::frame):
 //     x     CS: NORM (按 profile); TS: 同一 NORM 经 Φ 映到 (0,1) 当分位 (TsRankRoll 的输出形状)
 //     标签  每持有期 long = 0.3·z + NORM 噪声 (z = 造数用的 NORM 平面; IC ≈ 0.3, 二级统计有东西可比); short = −(0.3·z + 0.7·噪声);
-//           掩码取噪声平面的空洞; 值经 fp16 往返 (与常驻格式同)
+//           掩码取噪声平面的空洞; 值经 fp16 往返 (与常驻格式同); 可成交码 eo 各持有期共用, 10% 单向 (仓位感知的交接链有东西可比)
 //   本头只依赖 Contract / Check / Exec / GpuRun / Stat/Contract / Stat/Cpu; 消费者 TU 编进 -fno-fast-math.
 // =============================================================================
 
@@ -52,15 +52,16 @@ struct LabelHost {
   std::vector<uint16_t> v[kLegs];
   std::vector<uint8_t> m;
 };
-// 宿主标签 + 预处理 ry → 契约 Label (偏 off 格; ry 为空 = 未预处理)
-inline Label label_of(const LabelHost &L, const uint16_t *ry, size_t off = 0) {
-  return {{L.v[kLong].data() + off, L.v[kShort].data() + off}, L.m.data() + off, ry ? ry + off : nullptr};
+// 宿主标签 + 可成交码 eo + 预处理 ry → 契约 Label (偏 off 格; ry 为空 = 未预处理)
+inline Label label_of(const LabelHost &L, const std::vector<uint8_t> &eo, const uint16_t *ry, size_t off = 0) {
+  return {{L.v[kLong].data() + off, L.v[kShort].data() + off}, L.m.data() + off, eo.data() + off, ry ? ry + off : nullptr};
 }
 
 struct Data {
   Frame frame = Frame::CS;
   Plane x;
   Plane g;                    // 截面池掩码 (只用 m; factor::check::fill_gate)
+  std::vector<uint8_t> eo;    // 建仓可成交码 (各持有期共用): 多数两向, 少量单向 (封板, 走交接链)
   std::vector<LabelHost> lab; // 按 hd 序
   Holds hd;                   // kHolds 里本层合法的 (hold_ok)
   int T = 0, A = 0, seg = 0;  // seg = 段长 (Contract【层几何】)
@@ -74,7 +75,7 @@ inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> 
   L.hd = d.hd;
   L.cap = d.cap;
   for (int i = 0; i < d.hd.n; ++i)
-    L.l[i] = label_of(d.lab[static_cast<size_t>(i)], ry.empty() ? nullptr : ry[static_cast<size_t>(i)].data(), off);
+    L.l[i] = label_of(d.lab[static_cast<size_t>(i)], d.eo, ry.empty() ? nullptr : ry[static_cast<size_t>(i)].data(), off);
   return L;
 }
 
@@ -99,6 +100,13 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, int seg, std::mt199
   if (f == Frame::TS) // 标准正态 → 分位 Φ(z) ∈ (0,1); 无效格值本就是 0
     for (size_t i = 0; i < n; ++i)
       d.x.v[i] = d.x.m[i] ? static_cast<float>(0.5 * (1.0 + std::erf(static_cast<double>(z.v[i]) / std::sqrt(2.0)))) : 0.f;
+  d.eo.resize(n);
+  std::uniform_int_distribution<int> pct(0, 99);
+  for (size_t i = 0; i < n; ++i) { // 90% 两向, 5% 只可买 (封跌停), 5% 只可卖 (封涨停)
+    const int p = pct(rng);
+    d.eo[i] = p < 90 ? (kEoBuy | kEoSell) : p < 95 ? kEoBuy
+                                                   : kEoSell;
+  }
   d.lab.assign(static_cast<size_t>(d.hd.n), LabelHost{});
   for (LabelHost &L : d.lab) {
     Plane e;
@@ -215,7 +223,7 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   std::vector<Accum> acc(static_cast<size_t>(H));
   Clock::time_point t0 = Clock::now();
   for (int i = 0; i < H; ++i)
-    factor::cpu::stat::prep_label(ex, label_of(d.lab[static_cast<size_t>(i)], nullptr), s, ry[static_cast<size_t>(i)].data(), w);
+    factor::cpu::stat::prep_label(ex, label_of(d.lab[static_cast<size_t>(i)], d.eo, nullptr), s, ry[static_cast<size_t>(i)].data(), w);
   r.prep_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   r.rows.assign(static_cast<size_t>(H) * d.T, Row{});
   r.stat.resize(static_cast<size_t>(H));

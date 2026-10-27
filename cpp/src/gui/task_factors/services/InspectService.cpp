@@ -49,7 +49,7 @@ uint8_t tail_code(uint16_t r16, int j) {
 // 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
 struct TailRow {
   float sum[kLegs][kTails] = {};    // 两腿尾部做多超额 e 的持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
-  uint16_t cnt[kLegs][kTails] = {}; // 两腿尾部样本数
+  uint16_t cnt[kLegs][kTails] = {}; // 两腿尾部做多侧真持有只数 (与 Row::cnt 同口径)
   float ls[kTails] = {};            // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 Row::ls 同式; 尾空 → 该腿 0)
 };
 // 净值线 i (InspectResult::nav 线序, 见 kNavLines) 在行 t 这一批的收益, 全取 Row / TailRow 现成值 (不 ok → 0): 分层超额 = grp / 尾部 sum;
@@ -68,19 +68,31 @@ double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double ca
   const int l = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
   return absolute ? factor::stat::book_abs(tr.sum[l][j], tr.cnt[l][j], r.mkt[kLong], cap * kTailOfGroup[j]) : tr.sum[l][j];
 }
-// 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效)
+// 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效);
+// 尾 (l, j) 是一个组合, 成员 / 收益按契约【仓位感知】(同一尾部沿交接链): ls 腿只收本侧 l 真持有的格, 分层只收做多侧真持有的格
 struct TailExt {
   const int (*thr)[kTails];
   double cap;                                   // 满仓 (Labels::cap); 尾 j 的满仓 = cap · kTailOfGroup[j]
-  factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (样本数, 本腿标签和): ls 用
-  double slv[kLegs][kTails] = {};               // 尾部 Σlv: 分层用
-  void cell(unsigned x, bool ok, const float *y) {
+  factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (本侧真持有只数, 本侧收益和): ls 用
+  double slv[kLegs][kTails] = {};               // 尾部做多侧真持有的 Σ 收益: 分层用
+  int nlv[kLegs][kTails] = {};                  // 同上只数
+  void cell(const factor::cpu::stat::RxCell &cl) {
+    const int x = *cl.code;
     for (int l = 0; l < kLegs; ++l)
       for (int j = 0; j < kTails; ++j) {
-        const bool in = ok && in_tail(l, static_cast<int>(x), thr[l][j]);
-        leg[j][l].n += in;
-        leg[j][l].s += in ? y[l] : 0.f;
-        slv[l][j] += in ? y[kLong] : 0.f;
+        const int th = thr[l][j];
+        if (!in_tail(l, x, th))
+          continue;
+        const auto in = [l, th](uint16_t v) { return v != factor::stat::kRankNone && in_tail(l, v, th); };
+        const bool hl = cl.held(kLong, in), hs = l == kShort && cl.held(kShort, in);
+        const bool cont = (hl || hs) && cl.continues(in);
+        const float rl = hl ? cl.ret(kLong, cont) : 0.f;
+        nlv[l][j] += hl;
+        slv[l][j] += rl;
+        const bool hside = l == kLong ? hl : hs;
+        leg[j][l].n += hside;
+        leg[j][l].s += !hside ? 0.f : l == kLong ? rl
+                                                 : cl.ret(kShort, cont);
       }
   }
   // r = 本行 Row (基准 mkt[kLegs] 直接用); 只在 Row::ok 行有值, 其余全 0
@@ -92,8 +104,8 @@ struct TailExt {
     for (int j = 0; j < kTails; ++j) {
       const double cj = cap * kTailOfGroup[j];
       for (int l = 0; l < kLegs; ++l) {
-        o.cnt[l][j] = static_cast<uint16_t>(leg[j][l].n);
-        o.sum[l][j] = static_cast<float>((slv[l][j] - leg[j][l].n * mkt[kLong]) / factor::stat::book_den(leg[j][l].n, cj));
+        o.cnt[l][j] = static_cast<uint16_t>(nlv[l][j]);
+        o.sum[l][j] = static_cast<float>((slv[l][j] - nlv[l][j] * mkt[kLong]) / factor::stat::book_den(nlv[l][j], cj));
       }
       o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt, cj));
     }

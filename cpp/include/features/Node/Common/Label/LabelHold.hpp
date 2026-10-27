@@ -6,7 +6,8 @@
 //   价点 LabelPx = 一次报价: 后复权价 + 该价能否买入 / 卖出. 档只管价点怎么来, 骨架管持有期组的全部日历与结算.
 //   可成交性全在标签里定 (消费端只读标签, 不另读可成交列):
 //     行 m 的 entry 价点 (档 push_entry): 行末分钟 m 之后首个价点 (Lob 可成交盘口 / Bar 有成交连续竞价分钟; 再无 → 收盘价点).
-//     【建仓作废】entry 价点非两向可成交 (封涨停买不进 / 封跌停卖不出) → 该行全部组两腿写 NaN, 不进截面.
+//     【建仓可成交码】ENTRY_COL (lb_entry_ok) = entry 价点 可买 1 | 可卖 2 (封涨停只可卖, 封跌停只可买). 两腿收益照写 (不作废):
+//       该行能否真建仓 / 已持仓能否续持 由消费端按持仓判 (Stat 契约【仓位感知】). 价点上不可能两向都堵 (无价点 = 无行).
 //     名义平仓价点: MIN = 行 m+n 的 entry 价点 (越过收盘 → 收盘价点); CLOSE = 当日收盘; OPEN = T+n 开盘; CLOSE_N = T+n 收盘.
 //     【平仓顺延】名义价点上该腿平不了 (做多腿卖不出 / 做空腿买不回), 或名义日无成交 (停牌) → 该 (行, 组, 腿) 进等待,
 //       之后首个该腿可成交的价点平仓 (盘中价点 / 收盘 / 开盘; 分钟级 / 日级同一规则, 可跨日).
@@ -32,12 +33,12 @@
 
 #define LABEL_DELAY_NOTE "行所在日起8个交易日" // 字段描述用, = LabelHold::PEND_DAYS − 1
 
-// 价点: 后复权价 + 该价能否买入 / 卖出 (建仓要两向, 平仓只要本腿那一向)
+// 价点: 后复权价 + 该价能否买入 / 卖出 (建仓的两向记进可成交码, 平仓只要本腿那一向)
 struct LabelPx {
   float px = 0.0f;
   bool buy = false, sell = false;
-  bool two_way() const { return buy && sell; }
-  bool exits(size_t side) const { return side == 0 ? sell : buy; } // 做多腿 (0) 卖出平仓, 做空腿 (1) 买回平仓
+  float code() const { return static_cast<float>((buy ? 1 : 0) | (sell ? 2 : 0)); } // lb_entry_ok
+  bool exits(size_t side) const { return side == 0 ? sell : buy; }                  // 做多腿 (0) 卖出平仓, 做空腿 (1) 买回平仓
 };
 
 class LabelHold {
@@ -47,6 +48,7 @@ public:
   static constexpr const char *SIDE_NAME[GROUP_SIZE] = {"long", "short"}; // 列名 lb_<side>_<name> 的 side
   static constexpr size_t hold_col(size_t h) { return h * GROUP_SIZE; }
   static constexpr size_t HOLD_COLS = HOLD_COUNT * GROUP_SIZE;
+  static constexpr size_t ENTRY_COL = HOLD_COLS; // lb_entry_ok (建仓可成交码); 档附带列从 ENTRY_COL + 1 起
   static_assert(HOLD_COUNT <= 32, "日级组排期位图用 uint32_t");
   static_assert([] {
     for (size_t h = 0; h < HOLD_COUNT; ++h)
@@ -112,18 +114,16 @@ protected:
   // 当日已定 entry 的行数 (行按锚点单调, 前缀)
   size_t n_entry() const { return pend_[cur_].n_entry; }
 
-  // 当日下一行的 entry 价点 (days_ago 恒 0): 非两向可成交 → 该行作废; 行 r 到位 = 行 r−n 的分钟型名义平仓到位; 再喂等待
+  // 当日下一行的 entry 价点 (days_ago 恒 0): 写可成交码; 行 r 到位 = 行 r−n 的分钟型名义平仓到位; 再喂等待
   template <class Writer>
   inline void push_entry(const LabelPx &e, Writer &&writer) {
     Pend &p = pend_[cur_];
     assert(p.n_entry < TRADE_MINUTES_PER_DAY);
+    assert((e.buy || e.sell) && "价点不可能两向都不可成交");
     const size_t r = p.n_entry++;
     p.entry[r] = e;
-    if (!e.two_way()) {
-      float nan[HOLD_COLS];
-      std::fill(std::begin(nan), std::end(nan), kNaN);
-      writer(size_t{0}, HOLD_COLS, r, static_cast<const float *>(nan), size_t{0});
-    }
+    const float code = e.code();
+    writer(ENTRY_COL, size_t{1}, r, &code, size_t{0});
     for (size_t h = 0; h < HOLD_COUNT; ++h)
       if (LABEL_KIND[h] == HoldKind::MIN && r >= LABEL_N[h])
         exit_row(p, 0, h, r - LABEL_N[h], e, writer);
@@ -243,7 +243,7 @@ private:
 
   // 单个 label 的价格收益率
   static inline float calc_return(float entry_px, float exit_px, bool is_long) {
-    assert(entry_px > 0.0f && exit_px > 0.0f && "两向可成交的 entry / 可平仓价点必有正价");
+    assert(entry_px > 0.0f && exit_px > 0.0f && "entry / 可平仓价点必有正价");
     return is_long ? (exit_px - entry_px) / entry_px : (entry_px - exit_px) / entry_px;
   }
 
@@ -253,15 +253,12 @@ private:
     writer(hold_col(h) + s, size_t{1}, m, &v, age);
   }
 
-  // 行 m 的组 h 在价点 x 平仓: 平得了的腿写出, 平不了的腿进等待; 作废行跳过 (已写 NaN)
+  // 行 m 的组 h 在价点 x 平仓: 平得了的腿写出, 平不了的腿进等待
   template <class Writer>
   inline void exit_row(Pend &q, size_t age, size_t h, size_t m, const LabelPx &x, Writer &&writer) {
-    const LabelPx &e = q.entry[m];
-    if (!e.two_way())
-      return;
     for (size_t s = 0; s < GROUP_SIZE; ++s)
       if (x.exits(s)) {
-        write_side(age, h, s, m, e.px, x.px, writer);
+        write_side(age, h, s, m, q.entry[m].px, x.px, writer);
       } else {
         q.wait[h][s].set(m);
         ++n_wait_[s];
@@ -274,14 +271,13 @@ private:
       exit_row(q, age, h, m, x, writer);
   }
 
-  // 组 h 名义平仓日无成交: 全部有效行两腿进等待
+  // 组 h 名义平仓日无成交: 全部行两腿进等待
   inline void wait_rows(Pend &q, size_t h) {
     for (size_t m = 0; m < q.n_entry; ++m)
-      if (q.entry[m].two_way())
-        for (size_t s = 0; s < GROUP_SIZE; ++s) {
-          q.wait[h][s].set(m);
-          ++n_wait_[s];
-        }
+      for (size_t s = 0; s < GROUP_SIZE; ++s) {
+        q.wait[h][s].set(m);
+        ++n_wait_[s];
+      }
   }
 
   // 价点 x 喂等待: 该腿可成交 → 全部在等的 (日, 组, 行) 该腿按 x 平仓

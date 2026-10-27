@@ -15,7 +15,7 @@
 //     OPEN    T+n 开盘价 = 09:25 撮合 bar 的价, 无撮合则首个有成交连续竞价 bar 的 open
 //     CLOSE_N T+n 收盘价
 //   可成交: 分钟价点 = Tradable 节点本分钟 can_buy / can_sell (整分钟封板判); 开盘 / 收盘价点按单一价撮合判 (LabelHold::auction_px).
-//     建仓作废 / 平仓顺延 / 环满按最近收盘价结清 见 Common/Label/LabelHold.hpp (两档同一骨架).
+//     建仓可成交码 (lb_entry_ok) / 平仓顺延 / 环满按最近收盘价结清 见 Common/Label/LabelHold.hpp (两档同一骨架).
 //   全日无成交 (停牌 / 无 bar1m): 当日行无 entry, 不写; 名义今日到期的组进等待.
 //   价格均为 bar1m 价 × 当日复权比 (Fund adj_ratio, 日内恒定): 日内型与不复权同值, 日级型跨除权日的收益不含除权缺口 (与 Lob 档同约).
 //   落盘层: 不落 L_1min (255 行代价太大), 只落 L_5min / L_15min / L_30min / L_60min / L_1day —— 行 = 该层行的末分钟 m 的标签;
@@ -33,7 +33,7 @@
 
 class LabelBar : public LabelHold {
 public:
-  static constexpr size_t MIN_LABEL_COUNT = HOLD_COLS; // LB 块总列数
+  static constexpr size_t MIN_LABEL_COUNT = ENTRY_COL + 1; // LB 块总列数 (持有期组 + 建仓可成交码)
 
   // can_buy / can_sell = Tradable 节点本分钟的可成交标记 (onMinute 已算, 先于 minute_closed)
   LabelBar(const MinuteData &md, const float &can_buy, const float &can_sell, const Series &lim_up, const Series &lim_dn, const Series &adj_ratio)
@@ -77,7 +77,8 @@ private:
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 行序: 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序; 层内按名定址回 LB 块 hold_col(h), 见 CoreTs). 英 / 中片段见 LabelGroups.hpp
+// 行序: 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序; 层内按名定址回 LB 块 hold_col(h), 见 CoreTs), 之后 lb_entry_ok (ENTRY_COL).
+// 英 / 中片段见 LabelGroups.hpp
 #define LBAR_NOTE_MIN(n) "行m+" #n "的entry(其后首个有成交连续竞价分钟的VWAP, 与entry同基准, 相邻行精确伸缩); 过收盘则按当日收盘价"
 #define LBAR_NOTE_CLOSE(n) "当日收盘价(末笔成交价)"
 #define LBAR_NOTE_OPEN(n) "T+" #n "日开盘价(09:25集合竞价撮合价, 无撮合则连续竞价首个有成交bar的开盘价)"
@@ -88,13 +89,15 @@ private:
 #define LBAR_TEX_CLOSE_N(n) R"(, \quad P_{exit}=P^{close}_{D+)" #n "}"
 #define LBAR_ROW(X, CAT1, side, en, cn, formula, name, kind, n)                                       \
   X(lb_##side##_##name, CAT1, ret, en " " LABEL_EN_##kind(n) " Return", cn LABEL_CN_##kind(n) "收益", \
-    cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry: 其后首个有成交连续竞价分钟的VWAP, 无成交顺延, 再无则按收盘价建仓; entry价不可两向成交(封板)则本行NaN. exit: " LBAR_NOTE_##kind(n) "; 该腿不可成交(封板)或停牌则顺延至之后首个该腿可成交价点, 环满(" LABEL_DELAY_NOTE ")按最近收盘价; 越过区间末则按最后一日收盘价", formula LBAR_TEX_##kind(n), LABEL)
+    cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry: 其后首个有成交连续竞价分钟的VWAP, 无成交顺延, 再无则按收盘价建仓; entry价可否买卖见lb_entry_ok(封板照写, 消费端按持仓判). exit: " LBAR_NOTE_##kind(n) "; 该腿不可成交(封板)或停牌则顺延至之后首个该腿可成交价点, 环满(" LABEL_DELAY_NOTE ")按最近收盘价; 越过区间末则按最后一日收盘价", formula LBAR_TEX_##kind(n), LABEL)
 #define LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, long, "Long", "做多", R"(\frac{P_{exit}-\mathrm{VWAP}_{entry}}{\mathrm{VWAP}_{entry}})", name, kind, n)
 #define LBAR_ROW_SHORT(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}_{entry}-P_{exit}}{\mathrm{VWAP}_{entry}})", name, kind, n)
 #define LBAR_GROUP(name, kind, n, X, CAT1) LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW_SHORT(name, kind, n, X, CAT1)
+#define LBAR_ENTRY(X, CAT1) \
+  X(lb_entry_ok, CAT1, flag, "Entry Tradable", "建仓可成交", "entry价点可成交码: 可买=1 | 可卖=2 (封涨停=2, 封跌停=1, 两向=3; 分钟价点按Tradable整分钟封板判, 收盘价点按单一价撮合判). 各持有期组共用", LABEL_ENTRY_TEX, LABEL)
 
-#define FIELDS_L_5min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_5min(LBAR_GROUP, X, CAT1)
-#define FIELDS_L_15min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_15min(LBAR_GROUP, X, CAT1)
-#define FIELDS_L_30min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_30min(LBAR_GROUP, X, CAT1)
-#define FIELDS_L_60min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_60min(LBAR_GROUP, X, CAT1)
-#define FIELDS_L_1day_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_1day(LBAR_GROUP, X, CAT1)
+#define FIELDS_L_5min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_5min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_15min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_15min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_30min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_30min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_60min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_60min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_1day_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_1day(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)

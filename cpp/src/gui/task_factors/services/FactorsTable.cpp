@@ -184,10 +184,15 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
   std::vector<Lab> labs;
   std::vector<Cost> costs;
   std::set<int> holds, amts;
+  t.y.entry = own(UINT32_MAX);
   for (size_t i = 0; i < level.size(); ++i) {
     const FeatureMetadata &f = level[i];
     if (f.data_type != FeatureDataType::LB)
       continue;
+    if (std::string_view(f.code) == "lb_entry_ok") {
+      t.y.entry = own(static_cast<uint32_t>(i));
+      continue;
+    }
     char side[8] = {}, name[16] = {};
     int amt = 0;
     if (std::sscanf(f.code, "lb_cost_%7[a-z]_%dw", side, &amt) == 2) {
@@ -203,6 +208,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, int seg) {
     holds.insert(h);
   }
   assert(!labs.empty() && "字段表无标签列");
+  assert(t.y.entry.col != UINT32_MAX && "字段表无建仓可成交码 lb_entry_ok");
   const auto legs = [&](int key) {
     LegCol lc;
     lc.key = key;

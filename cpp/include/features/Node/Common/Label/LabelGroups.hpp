@@ -37,6 +37,9 @@ inline constexpr const char *LABEL_NAME[] = {LABEL_GROUPS(LABEL_NAME_ONE)}; // �
 #undef LABEL_N_ONE
 #undef LABEL_NAME_ONE
 
+// lb_entry_ok (建仓可成交码, LabelHold::ENTRY_COL) 的公式 (两档同)
+#define LABEL_ENTRY_TEX R"(\mathbf{1}[\mathrm{buy}_{entry}] + 2\cdot\mathbf{1}[\mathrm{sell}_{entry}])"
+
 // 列名片段 (英 / 中), 两档描述按 kind token 拼接
 #define LABEL_EN_MIN(n) #n "min"
 #define LABEL_EN_CLOSE(n) "to-Close"

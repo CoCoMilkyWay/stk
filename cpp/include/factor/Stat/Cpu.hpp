@@ -130,8 +130,8 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
       for (int i = 0; i < H; ++i) {
         const int hold = L.hd.h[i], h = factor::stat::hold_rows(hold, s.g);
         typename Sink::Ext e = sink.ext();
-        const Row r = row_stat(rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base), A, L.cap,
-                               factor::stat::tail_masked(s.t0_abs + t, hold, s.g), e);
+        const Row r = row_stat(rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base),
+                               factor::stat::chain_of(t, s.T, A, hold, s.g, s.t0_abs), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g), e);
         sink.row(i, t, r, e);
         a[i].add(r);
       }
@@ -163,8 +163,8 @@ inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *lc) 
   });
 }
 
-// 换手成本 (契约【换手成本】): lc × L 的标签有效位 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次
-// cost_row; 本行尾部 → 不攒; 交接 (hold_nets, 块内 t ≥ h) → 前一批 = 行 t−h; 本批平仓不交接 (hold_nets(t + h) 假) → settle; cap = L.cap.
+// 换手成本 (契约【换手成本】): lc × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次
+// cost_row; 本行尾部 → 不攒; 交接链 chain_of (块内 t ≥ h 且 hold_nets → 前一批 = 行 t−h); 本批平仓不交接 (hold_nets(t + h) 假) → settle; cap = L.cap.
 // C = 0 → 只出量 (cost_row), out / land 按一个金额段排. land 非空 → 另落逐行 land[(k·H + i)·T + t] (只本行, 尾部行全 0; Portfolio 逐行成本)
 template <class Exec>
 inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &L, const Cost *c, int C, Workspace &w, CostAcc *out,
@@ -187,10 +187,8 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
           continue;
         CostHold &q = ch[i];
         q.m = L.l[i].m + base;
-        if (t >= h && factor::stat::hold_nets(ta, hold, s.g)) {
-          q.plc = lc + base - static_cast<size_t>(h) * A;
-          q.pm = q.m - static_cast<size_t>(h) * A;
-        }
+        q.eo = L.l[i].eo + base;
+        q.c = factor::stat::chain_of(t, s.T, A, hold, s.g, s.t0_abs);
         q.settle = !factor::stat::hold_nets(ta + h, hold, s.g);
       }
       Cost cr[kMaxCost];

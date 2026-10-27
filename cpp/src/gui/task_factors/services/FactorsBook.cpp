@@ -44,7 +44,7 @@ BookLines fold_book(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int st
 namespace {
 
 // 篮子 (Baskets::index / val / turn; pool_line 只取篮子 0 等权): 日层门控 = D 收盘定的池 (收盘换仓), 故 D 的收益按 D−1 收盘的成员.
-//   pool_index 出指数 (fold_book, 标签; 可成交 / 顺延在标签里); pool_baskets 出估值 + 篮子 0 两权重的逐行收益 / 权和 (BasketRows, 只给换手漂移;
+//   pool_index 出指数 (fold_book, 标签; 顺延在标签里, 建仓 / 续持按 Stat 契约【仓位感知】); pool_baskets 出估值 + 篮子 0 两权重的逐行收益 / 权和 (BasketRows, 只给换手漂移;
 //   停牌行不更新 ⇒ 权带到复牌); pool_turn 用它算换手. 收益成分两者同一份 prev_rows (成分格 = 上一有效 close 行在池).
 
 // 篮子 0 逐行 [Weight][T]: 成分收益 r = Σ权·r / Σ权 (无成分 0) / 权和 Σ权 (等权 = 成分数)
@@ -77,11 +77,13 @@ std::vector<int32_t> prev_rows(misc::exec::ForkJoin &ex, const factor::check::Pl
 }
 
 // 篮子指数 (Baskets::index / pool_line) = fold_book, Y 的全部持有期一遍: 行 t 一批 = 成分 (该持有期标签有效, 已含在池; ∧ 该行 ind_l1 = k)
-//   的做多标签按权平均 (等权 1 / 加权 mcap; Σ权 ≤ 0 → 0) → 线 nb · hi + index_line(k, w) 逐行收益 (stride 1; nb = nk · nw). nk = 篮子数
+//   里做多侧真持有的格 (Stat 契约【仓位感知】: 篮子沿交接链 = 池整体看在池, 行业篮子看同一行业), 收益按续持取名义值, 按权平均
+//   (等权 1 / 加权 mcap; Σ权 ≤ 0 → 0) → 线 nb · hi + index_line(k, w) 逐行收益 (stride 1; nb = nk · nw). nk = 篮子数
 //   (1 = 只池整体; ind 可空), nw = 权重数 (1 = 只等权; mcap 可空)
 BookLines pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mcap, const uint8_t *ind, int nk, int nw) {
   static_assert(kWeightEq == 0, "只等权 (nw = 1) 的篮子线 = k");
-  assert(Y.hd.n >= 1 && (nk == 1 || ind) && (nw == 1 || mcap));
+  assert(Y.hd.n >= 1 && (nk == 1 || ind) && (nw == 1 || mcap) && Y.eo.size() == Y.sh.n());
+  const factor::Geo g = factor::geo_of(Y.sh.seg);
   const size_t nT = static_cast<size_t>(Y.sh.T), nA = static_cast<size_t>(Y.sh.A), nb = static_cast<size_t>(nk * nw), H = static_cast<size_t>(Y.hd.n);
   RowLines x; // [hold][篮子线][T] 行 t 这一批的篮子收益
   x.reset(static_cast<int>(H * nb), Y.sh.T);
@@ -99,12 +101,24 @@ BookLines pool_index(misc::exec::ForkJoin &ex, const YPlanes &Y, const float *mc
           const LegPlane &lab = Y.labels[hi];
           if (!lab.m[i])
             continue;
-          const double r = factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]);
-          each_basket(k_ind, [&](size_t k) {
+          const factor::stat::Chain c = factor::stat::chain_of(static_cast<int>(t), Y.sh.T, Y.sh.A, Y.hd.h[hi], g, 0);
+          const float y[factor::stat::kLegs] = {factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]), factor::cpu::stat::h2f(lab.v[factor::stat::kShort][i])};
+          // 篮子 k 的成员码 code (已偏到本格) / 判据 in
+          const auto book = [&](size_t k, const uint8_t *code, const auto &in) {
+            const factor::stat::Cell<uint8_t> cl{c, code, lab.m.data() + i, Y.eo.data() + i, y};
+            if (!cl.held(factor::stat::kLong, in))
+              return;
+            const double r = cl.ret(factor::stat::kLong, cl.continues(in));
             for (int w = 0; w < nw; ++w) {
               double *q = s.data() + 2 * (hi * nb + k * static_cast<size_t>(nw) + static_cast<size_t>(w));
               q[0] += om[w] * r, q[1] += om[w];
             }
+          };
+          each_basket(k_ind, [&](size_t k) {
+            if (k == 0)
+              book(k, lab.m.data() + i, [](uint8_t v) { return v != 0; });
+            else
+              book(k, ind + i, [k_ind](uint8_t v) { return v == k_ind; });
           });
         }
       }

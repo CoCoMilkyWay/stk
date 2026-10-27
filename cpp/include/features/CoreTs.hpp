@@ -195,9 +195,11 @@ private:
   }
 
   // 标签列定址: LB 块偏移 → 层 LVL 的列下标 (本层没有 = kNoCol). 持有期列 hold_col(h) + side 按名 lb_<side>_<name> 找;
-  // 块尾的档附带列 (Lob 冲击成本, 偏移 ≥ kHoldCols) = 本层按名对不上的 LB 列, 按序对应, 要么全在要么全无. 对不齐 → 编译期失败
+  // 建仓可成交码 ENTRY_COL 按名 lb_entry_ok 找 (落标签的层必有); 块尾的档附带列 (Lob 冲击成本, 偏移 > ENTRY_COL) = 本层按名对不上的 LB 列,
+  // 按序对应, 要么全在要么全无. 对不齐 → 编译期失败
   static constexpr size_t kNoCol = SIZE_MAX;
-  static constexpr size_t kHoldCols = Label::HOLD_COUNT * Label::GROUP_SIZE;
+  static constexpr size_t kFixedCols = Label::ENTRY_COL + 1; // 按名定址的列 (持有期组 + 可成交码)
+  static_assert(Label::ENTRY_COL == Label::HOLD_COUNT * Label::GROUP_SIZE);
   struct LabLayout { // 无默认成员初始化器: 外层类未完整时 (下方静态成员初始化) 不许用
     std::array<std::array<size_t, Label::MIN_LABEL_COUNT>, LEVEL_COUNT> col;
     std::array<size_t, LEVEL_COUNT> count;
@@ -223,7 +225,7 @@ private:
         continue;
       }
       std::array<bool, Label::MIN_LABEL_COUNT> named{}; // 层内第 f − base 个 LB 列已按名对上
-      for (size_t f = base; f < base + cnt; ++f)
+      for (size_t f = base; f < base + cnt; ++f) {
         for (size_t h = 0; h < Label::HOLD_COUNT; ++h)
           for (size_t s = 0; s < Label::GROUP_SIZE; ++s)
             if (is_label_code(fs[f].code, h, s)) {
@@ -231,14 +233,21 @@ private:
               L.col[l][Label::hold_col(h) + s] = f;
               named[f - base] = true;
             }
-      size_t extra = kHoldCols;
+        if (std::string_view(fs[f].code) == "lb_entry_ok") {
+          L.ok = L.ok && L.col[l][Label::ENTRY_COL] == kNoCol;
+          L.col[l][Label::ENTRY_COL] = f;
+          named[f - base] = true;
+        }
+      }
+      L.ok = L.ok && (cnt == 0 || L.col[l][Label::ENTRY_COL] != kNoCol);
+      size_t extra = kFixedCols;
       for (size_t f = base; f < base + cnt; ++f)
         if (!named[f - base]) {
           L.ok = L.ok && extra < Label::MIN_LABEL_COUNT;
           if (extra < Label::MIN_LABEL_COUNT)
             L.col[l][extra++] = f;
         }
-      L.ok = L.ok && (extra == kHoldCols || extra == Label::MIN_LABEL_COUNT);
+      L.ok = L.ok && (extra == kFixedCols || extra == Label::MIN_LABEL_COUNT);
     }
     size_t total = 0;
     for (const size_t c : L.count)
@@ -246,7 +255,7 @@ private:
     L.ok = L.ok && total > 0; // 至少一层落标签
     return L;
   }();
-  static_assert(kLab.ok, "各层 LB 列须连续, 且每列都能按名 (lb_<side>_<name>) 或块尾附带列 (全在 / 全无) 定址回标签 LB 块");
+  static_assert(kLab.ok, "各层 LB 列须连续, 且每列都能按名 (lb_<side>_<name> / lb_entry_ok) 或块尾附带列 (全在 / 全无) 定址回标签 LB 块");
   static constexpr const auto &kLabCount = kLab.count;
   static constexpr const auto &kLabCol = kLab.col;
 

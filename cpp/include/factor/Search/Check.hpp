@@ -18,7 +18,6 @@
 #include "misc/exec.hpp"
 
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <random>
 #include <vector>
@@ -110,7 +109,7 @@ inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, Re
   const size_t off = static_cast<size_t>(row0) * A;
   Clock::time_point t0 = Clock::now();
   for (int i = 0; i < H; ++i)
-    factor::cpu::stat::prep_label(ex, factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], nullptr), all, ry[static_cast<size_t>(i)].data(),
+    factor::cpu::stat::prep_label(ex, factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], d.base.eo, nullptr), all, ry[static_cast<size_t>(i)].data(),
                                   w);
   if (prep_ms)
     *prep_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();

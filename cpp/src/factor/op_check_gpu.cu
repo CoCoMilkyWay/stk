@@ -355,21 +355,22 @@ struct Timer {
   }
 };
 
-// 一组设备常驻标签 (两腿 v / m 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图 (契约 Labels)
+// 一组设备常驻标签 (两腿 v / m / 可成交码 eo 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图 (契约 Labels)
 struct DevLabels {
   static constexpr int kLegs = factor::stat::kLegs, kLong = factor::stat::kLong, kShort = factor::stat::kShort;
   int H = 0;
   DevBuf<uint16_t> v[kLegs][factor::stat::kMaxHold], ry[factor::stat::kMaxHold];
-  DevBuf<uint8_t> m[factor::stat::kMaxHold];
+  DevBuf<uint8_t> m[factor::stat::kMaxHold], eo; // eo 各持有期共用一张
   factor::stat::Labels L;
   void alloc(const factor::stat::Holds &hd, int seg, size_t n) {
     factor::stat::assert_holds(hd, seg);
     H = hd.n, L.hd = hd;
+    eo.alloc(n);
     for (int i = 0; i < H; ++i) {
       for (int l = 0; l < kLegs; ++l)
         v[l][i].alloc(n);
       m[i].alloc(n), ry[i].alloc(n);
-      L.l[i] = {{v[kLong][i].p, v[kShort][i].p}, m[i].p, ry[i].p};
+      L.l[i] = {{v[kLong][i].p, v[kShort][i].p}, m[i].p, eo.p, ry[i].p};
     }
   }
   // 宿主标签 (持有期须与 alloc 同) 拷入 + ry 预处理 (纯 kernel 计时)
@@ -379,6 +380,9 @@ struct DevLabels {
     for (int i = 0; i < H; ++i)
       assert(host.hd.h[i] == L.hd.h[i] && "标签持有期与会话不符");
     L.cap = host.cap;
+    for (int i = 0; i < H; ++i)
+      assert(host.l[i].eo == host.l[0].eo && "各持有期的可成交码须是同一张");
+    eo.put(host.l[0].eo, s.n());
     for (int i = 0; i < H; ++i) {
       for (int l = 0; l < kLegs; ++l)
         v[l][i].put(host.l[i].v[l], s.n());
@@ -395,6 +399,7 @@ struct DevLabels {
         v[l][i].free_();
       m[i].free_(), ry[i].free_();
     }
+    eo.free_();
   }
 };
 
