@@ -92,14 +92,15 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
                              std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err);
 void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
 
-// 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 里持有期 = hold 的项换成 ws (每项 {hold, sign, expr}, 无 stat), 别的项原样留;
+// 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 里持有期 = hold 的项换成 ws (每项 {hold, sign, expr}, 无 stat; 可空 = 清掉该 h),
+// 不可搜档 (search_hold 假) 的项一并丢掉, 别的项原样留; fresh → 原有 weights 全丢, 只剩 ws; 结果为空 → 删 weights 键 (回到未搜索).
 // 全部 stat 清掉 (调用方随后 Run 重算, 因子表 score / util 等全部由 stat 来), 其他键保留. 文件须存在且是对象 (扫描时已解析过)
 struct SearchWeight {
   int hold = 0;
   int sign = 1;     // ±1
   std::string expr; // 具体规范串 (模板实例, 不含 sign)
 };
-void WriteFactorWeights(const std::string &factor_dir, std::string_view file, int hold, const std::vector<SearchWeight> &ws);
+void WriteFactorWeights(const std::string &factor_dir, std::string_view file, int hold, bool fresh, const std::vector<SearchWeight> &ws);
 
 // Run 回写 (一个文件一次): rs = 该文件本轮评完的权重行 (同一 run 口径), 只动 stats[widx] + 顶层 run / 表头, 其他键 (expr / note / 人加的任何东西)
 // 原样保留. stats 与 weights 同长同序 (没评的位置 null); run / 表头与已有的不同 (换了区间 / 池 / 后端…) → 别的权重的 stat 不再对应 run,

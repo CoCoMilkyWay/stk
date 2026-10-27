@@ -16,24 +16,27 @@
 //         块内 t − h < 0 → ok_rac = 0. 调用方保证 carry ≥ max_lag(hd) (首块除外: 整张量里 t < h 本就无 rAC) 则分块 ≡ 整张量;
 //         跨块 Result::merge 续攒 (Accum 可合并). 一块内候选之间互不相干, 后端怎么并行由后端定.
 //
-//   【目标】只评**排序能力**, 一次搜索针对一个固定持有期 h (调用方选), 不跨 h 比 (不同周期的每笔收益 / 执行方式不可公平折算), 不看成本
-//         (h ≥ 30m 时换手 ≈ 100%, 建仓冲击对参数几乎是常数, 减常数不改变 argmax; 成本 / 执行在选出因子之后独立处理):
-//         score = ls_period · ric.mean;  ls_period / rIC 任一 ≤ 0 或 n < 3 → −∞
+//   【目标】只评**排序能力**, 一次搜索针对一个固定持有期 h (调用方选, 限 Config kSearchHolds: search_hold), 不跨 h 比 (不同周期的每笔收益 /
+//         执行方式不可公平折算), 不看成本 (h ≥ 30m 时换手 ≈ 100%, 建仓冲击对参数几乎是常数, 减常数不改变 argmax; 成本 / 执行在选出因子之后独立处理):
+//         score = ls_period · ric.mean (按方向, 见【方向】);  ls_period / rIC 任一 ≤ 0 或 mono < kMinMono 或 n < 3 → −∞
 //         · ls_period  每期真实毛多空 (Stat 契约【持仓口径】: 不触发行记 0, 不足满仓按只数 / cap 建仓; 固定 h 下年化系数是常数, 不乘).
 //                      触发率 / 资金利用率已在持仓口径里定价, 不另设活跃度项 / 样本数 / 显著性硬阈值: 稀疏触发的候选 ls_period → 0,
 //                      10 行里挑出来的噪声赢不了; 超满仓均分, 不奖励超出.
 //         · rIC        正则项: 要求全截面排序也成立, 不只尾部
-//         有意不进目标的: 成本 / 换手 / mono / 显著性 (ls.t, ric.ir) / 样本外 —— 搜索要快.
+//         · mono       硬门槛 (不进分值): kGroups 组收益对组号的 Spearman ≥ kMinMono (Config), 只认各组逐级单调的; 曲面仍拟合 g (连续),
+//                      不过门槛的点只是当不了峰 / 终选
+//         有意不进目标的: 成本 / 换手 / 显著性 (ls.t, ric.ir) / 样本外 —— 搜索要快.
 //         同一份 score_of 两个入口: Search 吃 Result (Accum 先 finish), 因子表吃 stat 里该 h 的 HoldStat —— Search 只在内部用分数挑候选,
 //         不往文件写结论.
-//   【方向】Search 自动定向 (score_signed): 因子取反 ⇒ rIC 精确变号, LS 两腿互换近似变号 (多腿吃 lv、空腿吃 sv, 两列不严格对称).
-//         ls / rIC 同号即可用: score = |ls|·|rIC|, sign = rIC 的号; 异号 → −∞. sign 落进 weights, 因子表 / Inspect 评估
-//         根下插 TsNeg 的表达式 (Expr negated), 精确统计由 Run 在它上算. 因子表 / 算子表仍用 score_of (只认正向).
-//         带符号目标 g = ls_period · rIC (不定向): 同号 > 0 且 = score, 异号 < 0 —— 处处有限连续, Search 的曲面拟合吃它.
+//   【方向】Search 自动定向 (score_signed): 方向 d = rIC 的号 (≥ 0 正向 kFwd, 否则反向 kRev; Stat 契约【方向 Dir】), sign = ±1.
+//         取反 ⇒ rIC / mono 变号; LS 取该方向的精确值 ls_period(d) (反向两腿是另外两批格子, 不是 −正向). 定向后 ls > 0 且 mono 过门槛即可用,
+//         否则 −∞. sign 落进 weights, 因子表 / Inspect 评估根下插 TsNeg 的表达式 (Expr negated), 其正向 = 这里的方向 d, Run 的统计与之一致.
+//         因子表 / 算子表用 score_of (只认正向). 两个入口同一份 score_dir.
+//         定向目标 g = ls_period(d) · |rIC|: 可用时 = score; rIC 过 0 两侧都 → 0 —— 处处有限连续, Search 的曲面拟合吃它.
 //
 //   【噪声】每个候选自带标准误, 不分折、不加参数: 由 HoldStat 的矩按持有期重叠折算有效样本 (n / h, h = hold_rows):
 //         SE(rIC) = ric.sd / √(n/h);  SE(ls_period) = 补 0 序列 (n_all 行, 同 ann_sharpe 还原) 的 sd / √(n_all/h);
-//         SE(g) = √((rIC·SE_ls)² + (ls·SE_rIC)²) (delta 法). 忽略 ls / rIC 正相关与 h 之外的自相关 ⇒ 偏小, 后果只是多算 / 高原窄 (保守).
+//         SE(g) = √((rIC·SE_ls)² + (ls·SE_rIC)²) (delta 法; ls / SE_ls 取定向后那一向). 忽略 ls / rIC 正相关与 h 之外的自相关 ⇒ 偏小, 后果只是多算 / 高原窄 (保守).
 //
 //   【多权重】一个模板在一个 h 下不止一个好参数 (曲面的多个峰). 终选 pick_diverse, 只认统计量, 无比例 / 个数 / 相关上限常数:
 //         可选 = 与最高者之差 ≤ 两者 SE 的合成 (统计上分不开); 按分降序贪心, 候选 j 的新增价值 = μ_j · (1 − max_{已选 i} ρ_ij),
@@ -42,6 +45,7 @@
 //         每 h 独立做, picks 替换该模板 weights 里同 h 的项.
 // =============================================================================
 
+#include "factor/Search/Config.hpp"
 #include "factor/Stat/Contract.hpp"
 
 #include <algorithm>
@@ -57,9 +61,6 @@ using factor::stat::Holds;
 using factor::stat::HoldStat;
 using factor::stat::kGroups;
 using factor::stat::kMaxHold;
-
-// ---- 抽样常量 (见【多权重】) ----
-inline constexpr int kCorrRows = 1024; // r16 抽样行数 (整个作用域上均匀; 截面相关 + 阈值槽分位表)
 
 // 终选 (见【多权重】): mu[M] = 分 (曲面均值), se[M] = 标准误, corr[M][M] 定向后截面相关 (对称, 对角不看).
 // 返回入选下标 (mu 降序; 可空 = 无显著候选)
@@ -86,6 +87,14 @@ inline std::vector<int> pick_diverse(const std::vector<double> &mu, const std::v
   return out;
 }
 
+// 可搜的持有期档 (见【目标】): Config kSearchHolds
+inline constexpr bool search_hold(int hold) {
+  for (const int h : kSearchHolds)
+    if (h == hold)
+      return true;
+  return false;
+}
+
 // rAC 需要的最大 lag 行数 (= carry 下限; seg = 因子所在层)
 inline int max_lag(const Holds &hd, int seg) {
   int m = 0;
@@ -104,27 +113,39 @@ struct Result {
   }
 };
 
-// ---- 目标 (主机, double; 见【目标】【噪声】) ----
+// ---- 目标 (主机, double; 见【目标】【方向】【噪声】) ----
 struct Score {
-  bool ok = false;            // n ≥ 3 (假 → 其余字段 0, score −∞)
-  double ls = 0.0, ric = 0.0; // 每期真实毛多空 (ls_period) / rIC 均值 (score_signed: 已按 sign 定向, 可用时都 > 0)
+  bool ok = false;                        // n ≥ 3 (假 → 其余字段 0, score −∞)
+  double ls = 0.0, ric = 0.0, mono = 0.0; // 按 sign 定向后的 每期真实毛多空 (ls_period) / rIC 均值 / 分层单调性 (可用时 ls / ric > 0, mono ≥ kMinMono)
   double score = -std::numeric_limits<double>::infinity();
-  int sign = 1;             // score_signed 定的方向 (+1 原样 / −1 取反); score_of 恒 +1
-  double g = 0.0, se = 0.0; // 带符号目标 ls·rIC (不定向) / 其标准误 (只 score_signed 填)
+  int sign = 1;             // 方向 (+1 正向 / −1 取反); score_of 恒 +1
+  double g = 0.0, se = 0.0; // 定向目标 ls·ric / 其标准误
 };
 
-// 二级入口 (因子表用: 该 h 的 HoldStat 已 finish); Search 的 Result 入口在下面, 先 finish 再走这一份
-inline Score score_of(const HoldStat &hs) {
+// 方向 d 的打分 (见【目标】【方向】【噪声】): ls 取该方向的精确值, ric / mono 按方向变号
+inline Score score_dir(const HoldStat &hs, int d) {
   Score s;
   if (hs.n < 3)
     return s;
   s.ok = true;
-  s.ls = factor::stat::ls_period(hs);
-  s.ric = hs.ric.mean;
-  if (s.ls > 0.0 && s.ric > 0.0)
-    s.score = s.ls * s.ric;
+  s.sign = d == factor::stat::kFwd ? 1 : -1;
+  s.ls = factor::stat::ls_period(hs, d);
+  s.ric = s.sign * static_cast<double>(hs.ric.mean);
+  s.mono = s.sign * static_cast<double>(hs.mono);
+  const double h = factor::stat::hold_rows(hs.hold, geo_of(hs.seg));
+  const double nn = hs.n, N = hs.n_all, mu = hs.ls[d].mean, sd = hs.ls[d].sd;
+  const double s1 = nn * mu, s2 = (nn - 1.0) * sd * sd + nn * mu * mu, M = s1 / N;
+  const double se_ls = std::sqrt(std::fmax(s2 - N * M * M, 0.0) / (N - 1.0) / (N / h));
+  const double se_ric = hs.ric.sd / std::sqrt(nn / h);
+  s.g = s.ls * s.ric;
+  s.se = std::hypot(s.ric * se_ls, s.ls * se_ric);
+  if (s.ls > 0.0 && s.ric > 0.0 && s.mono >= kMinMono)
+    s.score = s.g;
   return s;
 }
+
+// 二级入口 (因子表用: 该 h 的 HoldStat 已 finish; 只认正向); Search 的 Result 入口在下面, 先 finish 再走这一份
+inline Score score_of(const HoldStat &hs) { return score_dir(hs, factor::stat::kFwd); }
 // hi = hd 下标; seg = 因子所在层
 inline Score score_of(const Result &r, const Holds &hd, int seg, int hi) {
   factor::stat::assert_holds(hd, seg);
@@ -132,25 +153,8 @@ inline Score score_of(const Result &r, const Holds &hd, int seg, int hi) {
   return score_of(r.acc[hi].finish(hd.k[hi], seg));
 }
 
-// 自动定向 (见【方向】): ls / rIC 同负 → 按取反计 (sign −1, ls / ric 翻成正); 顺带 g / se (见【噪声】)
-inline Score score_signed(const HoldStat &hs) {
-  Score s = score_of(hs);
-  if (!s.ok)
-    return s;
-  const double h = factor::stat::hold_rows(hs.hold, geo_of(hs.seg));
-  const double nn = hs.n, N = hs.n_all, mu = hs.ls.mean, sd = hs.ls.sd;
-  const double s1 = nn * mu, s2 = (nn - 1.0) * sd * sd + nn * mu * mu, M = s1 / N;
-  const double se_ls = std::sqrt(std::fmax(s2 - N * M * M, 0.0) / (N - 1.0) / (N / h));
-  const double se_ric = hs.ric.sd / std::sqrt(nn / h);
-  s.g = s.ls * s.ric;
-  s.se = std::hypot(s.ric * se_ls, s.ls * se_ric);
-  if (s.ls < 0.0 && s.ric < 0.0) {
-    s.sign = -1;
-    s.ls = -s.ls, s.ric = -s.ric;
-    s.score = s.ls * s.ric;
-  }
-  return s;
-}
+// 自动定向 (见【方向】): 方向 = rIC 的号
+inline Score score_signed(const HoldStat &hs) { return score_dir(hs, hs.ric.mean >= 0.f ? factor::stat::kFwd : factor::stat::kRev); }
 inline Score score_signed(const Result &r, const Holds &hd, int seg, int hi) {
   factor::stat::assert_holds(hd, seg);
   assert(hi >= 0 && hi < hd.n);

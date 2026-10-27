@@ -122,7 +122,7 @@ inline void make(Data &d, Frame f, Profile pr, int T, int A, int seg, std::mt199
   }
 }
 
-// ---- 容差: 整数派生量 (ric / rac) 两后端本应逐位一致, 浮点和 (grp / ls / mkt[腿]) 只差求和序 ----
+// ---- 容差: 整数派生量 (ric / rac) 两后端本应逐位一致, 浮点和 (grp / leg / mkt[腿]) 只差求和序 ----
 inline Tol tol_of(Profile pr) {
   Tol t{1e-5, 1e-4};
   if (pr == Profile::TINY)
@@ -157,7 +157,10 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
       bool cnt_ok = true;
       for (int k = 0; k < kGroups; ++k)
         cnt_ok = cnt_ok && a.cnt[k] == b.cnt[k];
-      if (!cnt_ok) { // 组计数是整数, 两后端必须逐位一致
+      for (int e = 0; e < kDirs; ++e)
+        for (int l = 0; l < kLegs; ++l)
+          cnt_ok = cnt_ok && a.leg_cnt[e][l] == b.leg_cnt[e][l];
+      if (!cnt_ok) { // 组 / 腿计数是整数, 两后端必须逐位一致
         if (d.mask_bad++ == 0)
           d.worst_at = at;
         continue;
@@ -165,7 +168,9 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
       detail::cmp1(d, a.ric, b.ric, tol, at);
       for (int l = 0; l < kLegs; ++l)
         detail::cmp1(d, a.mkt[l], b.mkt[l], tol, at);
-      detail::cmp1(d, a.ls, b.ls, tol, at);
+      for (int e = 0; e < kDirs; ++e)
+        for (int l = 0; l < kLegs; ++l)
+          detail::cmp1(d, a.leg[e][l], b.leg[e][l], tol, at);
       for (int k = 0; k < kGroups; ++k)
         detail::cmp1(d, a.grp[k], b.grp[k], tol, at);
     }
@@ -192,11 +197,15 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
     };
     cmp_mom(a.ric, b.ric);
     cmp_mom(a.rac, b.rac);
-    cmp_mom(a.ls, b.ls);
-    const float fa[] = {a.beta, a.mono, a.leg_n};
-    const float fb[] = {b.beta, b.mono, b.leg_n};
+    for (int e = 0; e < kDirs; ++e)
+      cmp_mom(a.ls[e], b.ls[e]);
+    const float fa[] = {a.beta[kFwd], a.beta[kRev], a.mono, a.leg_n};
+    const float fb[] = {b.beta[kFwd], b.beta[kRev], b.mono, b.leg_n};
     for (size_t j = 0; j < sizeof(fa) / sizeof(fa[0]); ++j)
       detail::cmp1(d, fa[j], fb[j], tol, i);
+    for (int e = 0; e < kDirs; ++e)
+      for (int l = 0; l < kLegs; ++l)
+        detail::cmp1(d, a.leg[e][l], b.leg[e][l], tol, i);
     for (int k = 0; k < kGroups; ++k)
       detail::cmp1(d, a.grp[k], b.grp[k], tol, i);
   }

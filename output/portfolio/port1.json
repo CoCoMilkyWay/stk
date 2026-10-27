@@ -1,5 +1,5 @@
 {
   "factors": [
-    {"pool":"all","level":"day","file":"amp_day.json","hold":1001,"expr":"CsRank(TsNeg(TsMeanRoll(TsLogRatio(bar.1d.high_day, bar.1d.low_day), d=1)))"}
+    {"pool":"all","level":"day","file":"vol_day.json","hold":1001,"expr":"CsRank(TsNeg(TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=21)))"}
   ]
 }

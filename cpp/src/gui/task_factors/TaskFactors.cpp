@@ -57,9 +57,8 @@ struct TaskFactorsState {
   std::optional<Factors::LevelId> lv;
   std::string pool;
   // 页顶层按钮后的因子文件数 (所选池各因子层目录): 池变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
-  std::string counted_key; // config.factor_dir | 所选池; 空 = 没数过
+  std::string counted_key; // config.factor_dir | 所选池; 空 = 没数过. 变 (进页 / 换池) → 按因子文件数重定默认层
   Factors::PerLevel<size_t> level_files;
-  bool level_defaulted = false;   // 首次进页已按因子文件数定过默认层 (只一次, 之后随用户 / 特征面板)
   std::vector<size_t> pool_files; // [PoolId] 页顶池下拉里各池因子文件数 (该池各因子层之和): 每次打开下拉重数
   Phase prev_factors_phase = Phase::Idle;
   Factors::FeatureTables tables; // 各层字段表视图 (按层建一次, Factors / Search / Inspect / Portfolio 共享, 换层不重建)
@@ -107,10 +106,13 @@ static void reset_level_services(TaskFactorsState &s) {
   s.inspect_ui = Factors::InspectUIState{};
 }
 
-// Search all 出队一个发 Search; 队空 = 整目录 Run 一次并收尾. 请求建不成 (资产轴 / 区间) = 整轮放弃
-static void search_all_next(const SharedData &data, TaskFactorsState &s) {
+// Search all 出队一个发 Search; 队空 = 整目录 Run 一次并收尾. 请求建不成 (资产轴 / 区间) = 整轮放弃.
+// wrote = 上一项落盘了; 没落盘的 fresh 项把 fresh 顺延给同文件下一档 (该文件仍须整份覆盖)
+static void search_all_next(const SharedData &data, TaskFactorsState &s, bool wrote) {
   Factors::FactorsUIState &ui = s.factors_ui;
   assert(ui.search_all_n > 0 && s.factors_service && s.search_service);
+  if (!wrote && ui.search_cur.fresh && !ui.search_queue.empty() && ui.search_queue.front().row.file == ui.search_cur.row.file)
+    ui.search_queue.front().fresh = true;
   if (ui.search_queue.empty()) {
     ui.search_all_n = 0;
     Factors::FactorsRequest req;
@@ -118,10 +120,11 @@ static void search_all_next(const SharedData &data, TaskFactorsState &s) {
       s.factors_service->Request(req);
     return;
   }
-  const Factors::FactorRow row = std::move(ui.search_queue.front());
+  ui.search_cur = std::move(ui.search_queue.front());
   ui.search_queue.erase(ui.search_queue.begin());
+  const Factors::SearchJob &job = ui.search_cur;
   Factors::SearchRequest req;
-  if (Factors::MakeSearchRequest(data, level_table(data, s), s.pool, row, ui.search_hold, ui.backend == 1, req)) {
+  if (Factors::MakeSearchRequest(data, level_table(data, s), s.pool, job.row, job.hold, job.fresh, ui.backend == 1, req)) {
     s.search_service->Request(req);
   } else {
     ui.search_queue.clear();
@@ -188,7 +191,12 @@ TaskHandle CreateFactorsTask() {
       const bool finished = (sst == Phase::Done || sst == Phase::Cancelled) && (prev == Phase::Scanning || prev == Phase::Loading || prev == Phase::Running);
       if (finished && state->factors_ui.search_all_n > 0) {
         if (sst == Phase::Done) {
-          search_all_next(data, *state);
+          bool wrote = false;
+          {
+            std::lock_guard<std::mutex> lock(state->search_service->mutex);
+            wrote = state->search_service->result.wrote;
+          }
+          search_all_next(data, *state, wrote);
         } else {
           state->factors_ui.search_queue.clear();
           state->factors_ui.search_all_n = 0;
@@ -338,21 +346,20 @@ TaskHandle CreateFactorsTask() {
         {
           const std::string key = data.config.factor_dir + "|" + sel.pool();
           const Phase fst = state->factors_service ? state->factors_service->phase.load(std::memory_order_acquire) : Phase::Idle;
-          if (key != state->counted_key || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
+          const bool repool = key != state->counted_key;
+          if (repool || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
             state->counted_key = key;
             for (const Factors::FactorLevel &l : Factors::kFactorLevels)
               state->level_files[l.id] =
                   Factors::level_for_pool(l, sel.tier) ? Factors::list_factor_files(Factors::factor_dir_of(data, sel.pool(), l.id)).size() : 0;
           }
           state->prev_factors_phase = fst;
-          if (!state->level_defaulted) { // 首次进页: 切到该池最低频的有因子文件的层 (都没有 → 不动)
-            state->level_defaulted = true;
+          if (repool) // 进页 / 换池: 切到该池最低频的有因子文件的层 (都没有 → 不动)
             for (const Factors::FactorLevel &l : Factors::kFactorLevels | std::views::reverse)
               if (state->level_files[l.id] > 0) {
                 sel.selected_level = static_cast<int>(l.lvl);
                 break;
               }
-          }
         }
         for (const Factors::FactorLevel &l : Factors::kFactorLevels) {
           const bool usable = Factors::level_for_pool(l, sel.tier);
@@ -439,11 +446,12 @@ TaskHandle CreateFactorsTask() {
           fs.RequestCancel();
         } else if (action == 3) {
           Factors::SearchRequest req;
-          if (Factors::MakeSearchRequest(data, ft, state->pool, state->factors_ui.search_row, state->factors_ui.search_hold,
-                                         state->factors_ui.backend == 1, req))
+          if (Factors::MakeSearchRequest(data, ft, state->pool, state->factors_ui.search_one.row, state->factors_ui.search_one.hold,
+                                         state->factors_ui.search_one.fresh, state->factors_ui.backend == 1, req))
             ss.Request(req);
         } else if (action == 4) {
-          search_all_next(data, *state);
+          state->factors_ui.search_cur = Factors::SearchJob{};
+          search_all_next(data, *state, /*wrote=*/true);
         } else if (action == -3) {
           ss.RequestCancel();
         }
@@ -489,7 +497,7 @@ TaskHandle CreateFactorsTask() {
     state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放
     state->inspect_ui = Factors::InspectUIState{};
     state->tables = {};
-    state->level_defaulted = false;
+    state->counted_key.clear();
     state->portfolio_service.reset(); // 析构 Stop() join worker, 缓存随之释放
     state->portfolio_ui = Factors::PortfolioUIState{};
     state->portfolio_gen = ~0ull;

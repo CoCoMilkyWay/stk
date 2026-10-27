@@ -361,16 +361,16 @@ void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
   std::filesystem::remove(path);
 }
 
-void WriteFactorWeights(const std::string &factor_dir, std::string_view file, int hold, const std::vector<SearchWeight> &ws) {
-  assert(!ws.empty());
+void WriteFactorWeights(const std::string &factor_dir, std::string_view file, int hold, bool fresh, const std::vector<SearchWeight> &ws) {
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
   ojson j = read_json(path);
   erase_stats(j);
   ojson arr = ojson::array();
-  if (j.contains("weights")) {
+  if (!fresh && j.contains("weights")) {
     assert(j["weights"].is_array() && "搜索落盘: weights 扫描时已校验过");
     for (const ojson &o : j["weights"])
-      if (!o.is_object() || !o.contains("hold") || !o["hold"].is_number_integer() || o["hold"].get<int>() != hold)
+      if (!o.is_object() || !o.contains("hold") || !o["hold"].is_number_integer() ||
+          (o["hold"].get<int>() != hold && factor::search::search_hold(o["hold"].get<int>())))
         arr.push_back(o);
   }
   for (const SearchWeight &w : ws) {
@@ -381,7 +381,10 @@ void WriteFactorWeights(const std::string &factor_dir, std::string_view file, in
     o["expr"] = w.expr;
     arr.push_back(std::move(o));
   }
-  j["weights"] = std::move(arr);
+  if (arr.empty())
+    j.erase("weights");
+  else
+    j["weights"] = std::move(arr);
   write_json(path, j);
 }
 

@@ -3,7 +3,7 @@
 //   通用探针 Hold / Cost / Valid / Rank / Alpha / IcPdf 四服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
 //   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
 //   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / CurveP 平级); alpha_dist alpha 分布
-//   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / Portfolio 曲线同一份).
+//   (Inspect 大图与因子表小图同一份); group_abs / leg_abs 组 / 腿的绝对持仓收益 (Inspect 分层 / Portfolio 曲线).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
 #pragma once
 
@@ -38,9 +38,14 @@ void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, co
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o);
 // 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
-// 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 不 ok → 0)
+// 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 分层侧基准, 做多视角同 grp; 不 ok → 0)
 inline double group_abs(const factor::stat::Row &r, int k, double cap) {
-  return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt[factor::stat::kLong], cap) : 0.0;
+  const double sg = factor::stat::grp_sign(k);
+  return r.ok ? sg * factor::stat::book_abs(sg * r.grp[k], r.cnt[k], r.mkt[factor::stat::grp_leg(k)], cap) : 0.0;
+}
+// 方向 d 腿 l 的本侧绝对持仓收益 (同上)
+inline double leg_abs(const factor::stat::Row &r, int d, int l, double cap) {
+  return r.ok ? factor::stat::book_abs(r.leg[d][l], r.leg_cnt[d][l], r.mkt[l], cap) : 0.0;
 }
 
 // ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----

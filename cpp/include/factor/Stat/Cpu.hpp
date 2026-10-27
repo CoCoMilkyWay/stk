@@ -164,15 +164,16 @@ inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *lc) 
 }
 
 // 换手成本 (契约【换手成本】): lc × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次
-// cost_row; 本行尾部 → 不攒; 交接链 chain_of (块内 t ≥ h 且 hold_nets → 前一批 = 行 t−h); 本批平仓不交接 (hold_nets(t + h) 假) → settle; cap = L.cap.
-// C ≥ 1 (固定段 = 空 Cost). land 非空 → 另落逐行 land[(k·H + i)·T + t] (只本行, 尾部行全 0; Portfolio 逐行成本)
+// cost_row; 本行尾部 → 不攒; 交接链 chain_of (块内 t ≥ h 且 hold_nets → 前一批 = 行 t−h); 本批平仓不交接 (hold_nets(t + h) 假) → settle;
+// cap = 一腿满仓 (腿码 = 两端组 → L.cap; Inspect 尾部另给). C ≥ 1 (固定段 = 空 Cost). land 非空 → 另落逐行 land[(k·H + i)·T + t]
+// (只本行, 尾部行全 0; Portfolio 逐行成本)
 template <class Exec>
-inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &L, const Cost *c, int C, Workspace &w, CostAcc *out,
+inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &L, double cap, const Cost *c, int C, Workspace &w, CostAcc *out,
                       CostAcc *land = nullptr) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, false);
   const int H = L.hd.n, A = s.A, nt = ex.threads();
-  assert(lc && c && out && C >= 1 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
+  assert(lc && c && out && cap > 0.0 && C >= 1 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
   const size_t per = static_cast<size_t>(C) * H;
   std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
   ex.rows(s.T - s.t_lo, [&](int r0, int r1, int tid) {
@@ -195,11 +196,11 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
       for (int k = 0; k < C; ++k)
         cr[k] = c[k].at(base);
       if (!land) {
-        cost_row(lc + base, ch, H, cr, C, A, L.cap, acc);
+        cost_row(lc + base, ch, H, cr, C, A, cap, acc);
         continue;
       }
       CostAcc row[kMaxCost * kMaxHold] = {};
-      cost_row(lc + base, ch, H, cr, C, A, L.cap, row);
+      cost_row(lc + base, ch, H, cr, C, A, cap, row);
       for (size_t j = 0; j < per; ++j) {
         acc[j].merge(row[j]);
         land[j * static_cast<size_t>(s.T) + static_cast<size_t>(t)] = row[j];

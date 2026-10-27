@@ -37,6 +37,9 @@ TailThr tail_thresholds() {
 }
 const TailThr kTailThr = tail_thresholds();
 inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : r16 < thr; }
+// 腿 l 尾部的分层侧 / 做多视角符号 = 所在端组的 grp_leg / grp_sign (与 Row::grp 同开关)
+constexpr int tail_leg(int l) { return factor::stat::grp_leg(factor::stat::leg_group(factor::stat::kFwd, l)); }
+constexpr double tail_sign(int l) { return factor::stat::grp_sign(factor::stat::leg_group(factor::stat::kFwd, l)); }
 // 第 j 级尾部的腿码 (与契约 LegCode 同值, 给 cost_rows): 多腿尾 kLcLong / 空腿尾 kLcShort / 其余有秩 kLcMid / 无秩 kLcVoid
 uint8_t tail_code(uint16_t r16, int j) {
   if (r16 == factor::stat::kRankNone)
@@ -48,34 +51,41 @@ uint8_t tail_code(uint16_t r16, int j) {
 
 // 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
 struct TailRow {
-  float sum[kLegs][kTails] = {};    // 两腿尾部做多超额 e 的持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
-  uint16_t cnt[kLegs][kTails] = {}; // 两腿尾部做多侧真持有只数 (与 Row::cnt 同口径)
-  float ls[kTails] = {};            // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 Row::ls 同式; 尾空 → 该腿 0)
+  float sum[kLegs][kTails] = {};    // 两腿尾部分层侧的做多视角超额持仓收益 ± Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
+  uint16_t cnt[kLegs][kTails] = {}; // 两腿尾部分层侧真持有只数 (与 Row::cnt 同口径)
+  float ls[kTails] = {};            // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 ls_row 同式; 尾空 → 该腿 0)
+  float ls_abs[kTails] = {};        // 同上绝对 (基准 0: 两腿本侧原值持仓收益平均)
 };
 // 净值线 i (InspectResult::nav 线序, 见 kNavLines) 在行 t 这一批的收益, 全取 Row / TailRow 现成值 (不 ok → 0): 分层超额 = grp / 尾部 sum;
-//   分层绝对 = 超额 + 只数 · mkt[kLong] / 持仓分母 (组 cap, 尾 j cap · kTailOfGroup[j]); LS 0 = Row::ls, 1 + j = TailRow::ls[j]
+//   分层绝对 = 超额 + 只数 · 分层侧基准 / 持仓分母 (组 cap, 尾 j cap · kTailOfGroup[j]; 做多视角同超额);
+//   LS 超额 0 = ls_row(kFwd), 1 + j = TailRow::ls[j]; LS 绝对 0 = 正向两腿 leg_abs 平均, 1 + j = TailRow::ls_abs[j]
 double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double cap) {
   if (!r.ok)
     return 0.0;
   if (i >= 2 * kNavLayers) {
-    const int j = i - 2 * kNavLayers;
-    return j == 0 ? r.ls : tr.ls[j - 1];
+    const bool absolute = i < 2 * kNavLayers + kNavLs;
+    const int j = i - 2 * kNavLayers - (absolute ? 0 : kNavLs);
+    using factor::stat::kFwd;
+    if (absolute)
+      return j == 0 ? 0.5 * (leg_abs(r, kFwd, kLong, cap) + leg_abs(r, kFwd, kShort, cap)) : tr.ls_abs[j - 1];
+    return j == 0 ? factor::stat::ls_row(r, kFwd) : tr.ls[j - 1];
   }
   const bool absolute = i < kNavLayers;
   const int k = absolute ? i : i - kNavLayers;
   if (k < factor::stat::kGroups)
     return absolute ? group_abs(r, k, cap) : r.grp[k];
   const int l = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
-  return absolute ? factor::stat::book_abs(tr.sum[l][j], tr.cnt[l][j], r.mkt[kLong], cap * kTailOfGroup[j]) : tr.sum[l][j];
+  const double sg = tail_sign(l);
+  return absolute ? sg * factor::stat::book_abs(sg * tr.sum[l][j], tr.cnt[l][j], r.mkt[tail_leg(l)], cap * kTailOfGroup[j]) : tr.sum[l][j];
 }
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效);
-// 尾 (l, j) 是一个组合, 成员 / 收益按契约【仓位感知】(同一尾部沿交接链): ls 腿只收本侧 l 真持有的格, 分层只收做多侧真持有的格
+// 尾 (l, j) 是一个组合, 成员 / 收益按契约【仓位感知】(同一尾部沿交接链): ls 腿只收本侧 l 真持有的格, 分层只收分层侧 tail_leg(l) 真持有的格
 struct TailExt {
   const int (*thr)[kTails];
   double cap;                                   // 满仓 (Labels::cap); 尾 j 的满仓 = cap · kTailOfGroup[j]
   factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (本侧真持有只数, 本侧收益和): ls 用
-  double slv[kLegs][kTails] = {};               // 尾部做多侧真持有的 Σ 收益: 分层用
-  int nlv[kLegs][kTails] = {};                  // 同上只数
+  double slay[kLegs][kTails] = {};              // 尾部分层侧真持有的 Σ 收益: 分层用
+  int nlay[kLegs][kTails] = {};                 // 同上只数
   void cell(const factor::cpu::stat::RxCell &cl) {
     const int x = *cl.code;
     for (int l = 0; l < kLegs; ++l)
@@ -84,15 +94,15 @@ struct TailExt {
         if (!in_tail(l, x, th))
           continue;
         const auto in = [l, th](uint16_t v) { return v != factor::stat::kRankNone && in_tail(l, v, th); };
-        const bool hl = cl.held(kLong, in), hs = l == kShort && cl.held(kShort, in);
-        const bool cont = (hl || hs) && cl.continues(in);
-        const float rl = hl ? cl.ret(kLong, cont) : 0.f;
-        nlv[l][j] += hl;
-        slv[l][j] += rl;
-        const bool hside = l == kLong ? hl : hs;
-        leg[j][l].n += hside;
-        leg[j][l].s += !hside ? 0.f : l == kLong ? rl
-                                                 : cl.ret(kShort, cont);
+        const int tl = tail_leg(l);
+        const bool hs = cl.held(l, in), ht = tl == l ? hs : cl.held(tl, in);
+        const bool cont = (hs || ht) && cl.continues(in);
+        const float rs = hs ? cl.ret(l, cont) : 0.f;
+        nlay[l][j] += ht;
+        slay[l][j] += !ht ? 0.f : tl == l ? rs
+                                          : cl.ret(tl, cont);
+        leg[j][l].n += hs;
+        leg[j][l].s += rs;
       }
   }
   // r = 本行 Row (基准 mkt[kLegs] 直接用); 只在 Row::ok 行有值, 其余全 0
@@ -100,14 +110,15 @@ struct TailExt {
     o = TailRow{};
     if (!r.ok)
       return;
-    const double mkt[kLegs] = {r.mkt[kLong], r.mkt[kShort]};
+    const double mkt[kLegs] = {r.mkt[kLong], r.mkt[kShort]}, zero[kLegs] = {};
     for (int j = 0; j < kTails; ++j) {
       const double cj = cap * kTailOfGroup[j];
       for (int l = 0; l < kLegs; ++l) {
-        o.cnt[l][j] = static_cast<uint16_t>(nlv[l][j]);
-        o.sum[l][j] = static_cast<float>((slv[l][j] - nlv[l][j] * mkt[kLong]) / factor::stat::book_den(nlv[l][j], cj));
+        o.cnt[l][j] = static_cast<uint16_t>(nlay[l][j]);
+        o.sum[l][j] = static_cast<float>(tail_sign(l) * (slay[l][j] - nlay[l][j] * mkt[tail_leg(l)]) / factor::stat::book_den(nlay[l][j], cj));
       }
       o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt, cj));
+      o.ls_abs[j] = static_cast<float>(factor::stat::ls_of(leg[j], zero, cj));
     }
   }
 };
@@ -151,12 +162,10 @@ struct TurnP : ProbeBase {
         for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
           lc[k] = tail_code(v.rx[k], j);
       });
-      factor::stat::Labels L = c.L;
-      L.cap = c.L.cap * kTailOfGroup[j];
       const factor::stat::Cost flat{};
       factor::stat::CostAcc out[factor::stat::kMaxHold];
-      factor::cpu::stat::cost_rows(c.ex, lc.data(), s, L, &flat, 1, *c.w, out);
-      for (int hi = 0; hi < L.hd.n; ++hi)
+      factor::cpu::stat::cost_rows(c.ex, lc.data(), s, c.L, c.L.cap * kTailOfGroup[j], &flat, 1, *c.w, out);
+      for (int hi = 0; hi < c.L.hd.n; ++hi)
         acc[j][hi].merge(out[hi]);
     }
   }
@@ -230,8 +239,18 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     InspectService &W;
     FactorFlow &F;
     void block(const Block &c, size_t, double) {
-      if (W.pool_gen_ != c.gen)
-        W.pool_ = pool_line(F.ex, c.y), W.pool_gen_ = c.gen;
+      if (W.pool_gen_ == c.gen)
+        return;
+      W.pool_ = pool_line(F.ex, c.y), W.pool_gen_ = c.gen;
+      const int seg = c.y.sh.seg, days = W.pool_.P / seg; // 逐行收益 (每批 1/h̄, 平仓行实现) 全期之和 = 算术总收益, 按日折年 (与期限结构 × span_per_year 同口径)
+      assert(days >= 1 && W.pool_.P == days * seg && W.pool_.n == c.y.hd.n);
+      for (int hi = 0; hi < W.pool_.n; ++hi) {
+        const float *v = W.pool_.at(hi);
+        double s = 0.0;
+        for (int t = 0; t < W.pool_.P; ++t)
+          s += v[t];
+        W.pool_ann_[hi] = static_cast<float>(s / days * factor::stat::kDaysPerYear);
+      }
     }
   };
   const char *backend = nullptr;
@@ -272,6 +291,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   res.dates = o.job.dm.dates;
   res.read_scope = o.job.dm.rs;
   res.pool_index = pool_;
+  std::copy_n(pool_ann_, pool_.n, res.pool_ann);
   res.hd = y.hd;
   fill_eval(ps, scope, o.eval_ms(0), res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);

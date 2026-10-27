@@ -9,7 +9,7 @@
 //                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone. 标签行 = rank_row(KeyY)
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里
 //     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算; 满仓 cap 进持仓口径);
-//                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和 (组 / 两腿按契约【仓位感知】);
+//                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和 (组 / 两向两腿按契约【仓位感知】);
 //                 逐格扩展 Ext (调用方专属的附加统计, 同一遍同一个 J; NoExt 编译期消掉, Inspect 尾部分层用)
 //     cost_row    一行 t 的换手成本 (Δw), 每持有期两遍 A 轴 (腿只数 → 权; 逐格差额) × C ≥ 1 个金额段 (契约腿码 lc ∧ 标签有效位 ∧ 真持有) → CostAcc[C][H].
 //                 Run (stat.costs) / Inspect 期限结构净线 / Portfolio 逐行成本共用, 不进 Row
@@ -31,6 +31,7 @@ using factor::stat::Cost;
 using factor::stat::CostAcc;
 using factor::stat::CostLeg;
 using factor::stat::Frame;
+using factor::stat::kDirs;
 using factor::stat::kGroups;
 using factor::stat::kLcMid;
 using factor::stat::kLcVoid;
@@ -149,7 +150,7 @@ struct CostHold {
   bool settle = false;
 };
 
-// 换手成本: lc = 本行腿码 (块形平面偏到行首, 交接链回看前行); ch[i] = 持有期 i 的输入; c[k] 已偏到行首; cap = 满仓 → acc[k·H + i].
+// 换手成本: lc = 本行腿码 (块形平面偏到行首, 交接链回看前行); ch[i] = 持有期 i 的输入; c[k] 已偏到行首; cap = 一腿满仓 → acc[k·H + i].
 //   腿成员 = 腿码 ∧ m ∧ 本侧真持有 (契约 held, 与 Row 的腿同一集合); 两批各腿只数 → 每只权 1 / max(只数, cap);
 //   逐格 Δ = 本批权 − 前一批权: Δ⁺ 增仓 (付建仓冲击; 本格本侧不可建仓 (续持者封板) → 加不了仓, 记 0), Δ⁻ 减仓.
 //   固定段 (c[k].flat()) 无建仓冲击, 增仓量记进固定量 (契约【换手成本】)
@@ -226,16 +227,15 @@ struct NoExt {
 };
 
 // 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (两者交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
-//   → r 的 ric / mkt / grp / cnt / ls / ok. ric / mkt 在 J 上 (与可成交无关); 组 / 两腿只收本侧真持有的格, 收益按续持取名义值 (契约【仓位感知】).
+//   → r 的 ric / mkt / grp / cnt / leg / leg_cnt / ok. ric / mkt 在 J 上 (与可成交无关); 组 (分层侧 grp_leg) / 两腿只收本侧真持有的格,
+//   收益按续持取名义值 (契约【仓位感知】).
 //   调用方已排除段末尾部
 template <class Ext>
 inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, Row &r, Ext &ext) {
-  constexpr int gl = factor::stat::leg_group(kLong), gb = factor::stat::leg_group(kShort);
   unsigned long long s[kSums] = {};
   double sm[kLegs] = {}, gs[kGroups] = {};
   int gc[kGroups] = {};
-  double sv_bot = 0.0; // 空腿 (底组) 做空侧真持有的 Σ 收益 / 只数 (多腿就是组 gl 的 gs / gc)
-  int ns = 0;
+  LegSum lg[kDirs][kLegs] = {}; // 两向两腿本侧真持有的 (只数, Σ 收益)
   for (int a = 0; a < c.A; ++a) {
     const bool ok = rx[a] != kRankNone && lb.ry[a] != kRankNone;
     factor::stat::pair_add(s, rx[a], lb.ry[a], ok);
@@ -247,20 +247,20 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
     const int g = factor::stat::grp_of(rx[a]);
     const auto in = [g](uint16_t x) { return x != kRankNone && factor::stat::grp_of(x) == g; };
     const RxCell cl{c, rx + a, lb.m + a, lb.eo + a, y};
-    const bool hl = cl.held(kLong, in), hs = g == gb && cl.held(kShort, in);
-    const bool cont = (hl || hs) && cl.continues(in);
-    if (hl) {
-      gs[g] += cl.ret(kLong, cont);
+    const bool cont = cl.continues(in);
+    if (const int gl = factor::stat::grp_leg(g); cl.held(gl, in)) {
+      gs[g] += cl.ret(gl, cont);
       ++gc[g];
     }
-    if (hs) {
-      sv_bot += cl.ret(kShort, cont);
-      ++ns;
+    if (const int d = factor::stat::long_dir(g); d >= 0) { // 端组: 做多侧 → 方向 d 多腿, 做空侧 → 方向 d ^ 1 空腿
+      if (cl.held(kLong, in))
+        lg[d][kLong].n += 1, lg[d][kLong].s += cl.ret(kLong, cont);
+      if (cl.held(kShort, in))
+        lg[d ^ 1][kShort].n += 1, lg[d ^ 1][kShort].s += cl.ret(kShort, cont);
     }
     ext.cell(cl);
   }
-  const LegSum leg[kLegs] = {{static_cast<double>(gc[gl]), gs[gl]}, {static_cast<double>(ns), sv_bot}};
-  factor::stat::finish_row(s, sm, gs, gc, leg, cap, r);
+  factor::stat::finish_row(s, sm, gs, gc, lg, cap, r);
 }
 
 // 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; tail = 段末尾部 (tail_masked, 为真则 ext 不动)

@@ -1,10 +1,10 @@
 // SearchService — Factors 页 Search 的单 worker: 对表格高光的那一个因子文件 (模板 expr, Expr.hpp 自由参数) 搜它的**全部自由参数**
-// (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 只搜调用方给定的一个持有期 h (Factors 页当前 Hold; 搜哪个周期由上层定), 目标 = 该 h 的
-// 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本), 按冗余规则终选持仓重合少的
-// 显著权重 (Contract【多权重】, 个数不设上限), picks 替换该因子文件里同 h 的 weights, 别的 h 的权重不动 (FactorsService WriteFactorWeights;
-// UI 随后自动 Run 重算每权重的 stat).
+// (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 只搜调用方给定的一个持有期 h (限 Search/Config kSearchHolds; 搜哪个周期由上层定), 目标 = 该 h 的
+// 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本; 硬门槛 mono ≥ kMinMono), 按冗余规则终选持仓重合少的
+// 显著权重 (Contract【多权重】, 个数不设上限), picks 替换该因子文件里同 h 的 weights (空 picks = 清掉该 h), 别的 h 的权重不动; fresh 先清空
+// 全部 weights (Search all 每文件首档: 该文件各档整份重搜) (FactorsFile WriteFactorWeights; UI 随后自动 Run 重算每权重的 stat).
 // 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
-// 唯一的预算量 = 第 0 趟点数 (Space kInit); 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
+// 配置全在 factor/Search/Config.hpp. 唯一的预算量 = 第 0 趟点数 kInit; 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 只装 h 一组标签 (hd.n = 1); 趟与趟之间才有依赖):
 //   准备          先装块 0: 满仓只数 n_full = 全期池内平均有效资产数 / kGroups (Labels::cap, 各块共用, 与 Run 同一个; 一块 = 块 0 的 YPlanes::n_full,
@@ -15,7 +15,7 @@
 //   每趟之后      已评点拟合曲面 (Search/Surface.hpp, 噪声 = 各点 SE) → 峰 → pick_diverse 得活跃峰 (= 当前终选集)
 //   趟 1..        每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起 (夹到区间端), 落到已评点就减半再试; 新点的 μ + sd − μ_c > SE_c (可能显著胜过峰) 才评;
 //                 取整回到 c / 不合法 / 本趟已提 / 不值得 → 该方向止. 新点去重拼成一趟; 没有新点 → 停
-//   终            最后一次曲面的 pick_diverse 即 weights; 没有显著候选 → 文件不动
+//   终            最后一次曲面的 pick_diverse 即 weights (可空) 落盘; 中途放弃 (输入问题 / 取消) → 文件不动
 //   r16 抽样      每趟顺带把每个候选的 kCorrRows 抽样行 r16 回宿主常驻 (约 kCorrRows × A × 2 字节 / 候选), 截面相关按需两两现算 (Stat/Host lag_row),
 //                 不另开一趟
 //
@@ -50,19 +50,20 @@ namespace GUI::Factors {
 struct SearchSpec {
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
-  int hold = 0;                                        // 搜的持有期键 (字段表标签组之一)
+  int hold = 0;                                        // 搜的持有期键 (字段表标签组之一, search_hold)
+  bool fresh = false;                                  // 落盘前先清空文件全部 weights (否则只换 hold 的)
 };
 using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights); scope.max_impact 不看 (不评成本)
 // 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键; ft = 该层字段表
-bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool gpu,
-                       SearchRequest &req);
+bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool fresh,
+                       bool gpu, SearchRequest &req);
 
 // 评过的一个候选的分 (UI 列表)
 struct SearchCand {
   std::string expr;         // 具体规范串
   std::vector<double> u;    // 坐标 (与 SearchResult::slots 对齐)
   int pass = 0;             // 第几趟评的 (0 = 采样)
-  factor::search::Score sc; // 分 (Contract score_signed: ok / score / ls / ric 已按 sign 定向 / sign / se)
+  factor::search::Score sc; // 分 (Contract score_signed: ok / score / ls / ric / mono 已按 sign 定向 / sign / se)
 };
 // 终选权重
 struct SearchPick {
@@ -91,8 +92,8 @@ struct SearchResult {
   std::string backend;
   double seconds = 0.0;
   double n_full = 0.0; // 满仓一腿只数 (Labels::cap, 各块共用; 全期池内平均有效资产数 / kGroups)
-  int n_weights = 0;   // 写入的权重数
-  bool wrote = false;  // 已写 weights (UI 据此重扫 + Run)
+  int n_weights = 0;   // 写入的权重数 (0 = 该 h 已清空)
+  bool wrote = false;  // 已落盘 (搜索走完; UI 据此重扫 + Run)
 };
 
 // 搜索阶段 (UI 显示): 准备 (装块 0 + 阈值槽分位表) → 采样 (趟 0) → 细化 (趟 1..)

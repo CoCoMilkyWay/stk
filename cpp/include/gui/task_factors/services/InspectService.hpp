@@ -71,12 +71,13 @@ inline constexpr int kTails = 3;
 inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
 static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
 
-// 分层累计净值 (净值引擎 fold_book, 全部持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(腿, j) = 该腿组内第 j 级尾部 (全按做多);
-// LS 线 0 = 顶底 (Row::ls), 1 + j = 第 j 级尾部多空. 净值线 (InspectResult::nav) = 分层绝对 [0, kNavLayers) | 分层超额 (− Row::mkt[kLong])
-// [kNavLayers, 2 kNavLayers) | LS [2 kNavLayers, kNavLines); 值 = 日收益 (当日平仓的各批收益 / h 之和)
+// 分层累计净值 (净值引擎 fold_book, 全部持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(腿, j) = 该腿组内第 j 级尾部 (分层侧同所在组的 Row::grp);
+// LS 线 0 = 顶底 (ls_row(kFwd)), 1 + j = 第 j 级尾部多空; LS 绝对 = 两腿本侧原值持仓收益平均 (½ (Σlv / 分母 + Σsv / 分母)), 超额 = 两腿减各自基准.
+// 净值线 (InspectResult::nav) = 分层绝对 [0, kNavLayers) | 分层超额 (− 分层侧 Row::mkt) [kNavLayers, 2 kNavLayers) | LS 绝对 [2 kNavLayers, + kNavLs)
+// | LS 超额 [2 kNavLayers + kNavLs, kNavLines); 值 = 日收益 (当日平仓的各批收益 / h 之和)
 inline constexpr int kNavLayers = factor::stat::kGroups + factor::stat::kLegs * kTails;
 inline constexpr int kNavLs = 1 + kTails;
-inline constexpr int kNavLines = 2 * kNavLayers + kNavLs;
+inline constexpr int kNavLines = 2 * (kNavLayers + kNavLs);
 inline constexpr int layer_tail(int l, int j) { return factor::stat::kGroups + l * kTails + j; }
 
 // Inspect 的一级平面: worker 写进自己那份, 发布时与结果整体交换 (旧缓冲回收给 worker, 下次原地写)
@@ -99,6 +100,7 @@ struct InspectResult : EvalStat {
   analysis::ReadScope read_scope;                                     // 特征库作用域 (Domain::rs: 所用库 + A 轴 + 月份): 右下 K 线按它读标签库 (main); axis 做 A 轴 ↔ 全局 id
   BookLines pool_index;                                               // [hd.n][T] 池等权线的逐行收益 (= pool_line, 每持有期一条, 作用域级): 右上 K 线叠加当前 Hold 那条,
                                                                       //   UI compound 成点位后按视野左端个股价重锚
+  float pool_ann[factor::stat::kMaxHold] = {};                        // [hi] 池等权线的算术年化 (Σ 逐行收益 / days × kDaysPerYear; 与 pool_index 同代): 右下期限结构的池指数线
   InspectPlanes pl;                                                   // 一级平面 (rIC / 秩)
   BookLines nav;                                                      // 分层累计的日收益 [hd.n · kNavLines][days] (线 hi · kNavLines + i, 见 kNavLines)
   factor::stat::CostAcc ls_turn[kTails][factor::stat::kMaxHold] = {}; // [尾部 j][hi] LS 线 1 + j 两腿换手量 (固定段; 见 flow T); 取用 ls_turn_of
@@ -131,9 +133,10 @@ private:
   bool eval(const InspectRequest &req, FactorFlow &F); // false = 取消 / 判废
 
   // worker 私有 (跨请求存活): 块在 FactorFlow (Y 常驻, X = 评估域内读过的特征, 只增)
-  InspectPlanes pl_;      // 一级平面, 发布时与 result.pl 交换
-  BookLines pool_;        // 池等权线 (pool_line), 随 Y 一代
-  uint64_t pool_gen_ = 0; // pool_ 算时的 c.gen
+  InspectPlanes pl_;                            // 一级平面, 发布时与 result.pl 交换
+  BookLines pool_;                              // 池等权线 (pool_line), 随 Y 一代
+  float pool_ann_[factor::stat::kMaxHold] = {}; // pool_ 各持有期的算术年化, 同代
+  uint64_t pool_gen_ = 0;                       // pool_ 算时的 c.gen
 };
 
 } // namespace GUI::Factors

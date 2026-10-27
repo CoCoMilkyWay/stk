@@ -27,6 +27,13 @@ struct BuildNode {
   uint8_t free = 0;            // 自由参数位 (expr::kFreeD / K / K2): 源串打裸键名, 由 Search 搜
 };
 
+// 一次 Search 的对象: 模板行 + 持有期键 (search_hold) + 落盘前是否清空文件全部 weights (SearchSpec::fresh)
+struct SearchJob {
+  FactorRow row;
+  int hold = 0;
+  bool fresh = false;
+};
+
 struct FactorsUIState {
   int backend = -1;          // 0 = CPU, 1 = GPU; -1 = 未定, 首帧按 GPU 可用性定 (有 GPU 默认 GPU)
   int hold_idx = 0;          // FeatureTable::labels 下标 (表列显示哪个持有期; 多权重因子的父行取该 h 下 score 最高的权重)
@@ -46,16 +53,16 @@ struct FactorsUIState {
   std::string view_file;
   bool view_defaulted = false;
   std::vector<std::string> expanded; // 展开的多权重因子文件
-  // Search (对象 = 高光行所在文件的模板, 只搜当前 Hold): 点下时把行拷给 search_row, 当前 Hold 键记进 search_hold (TaskFactors 据此建请求;
-  // Search all 整轮同一个 search_hold, 中途改 Hold 不影响)
-  FactorRow search_row;
-  int search_hold = 0;
+  // Search (对象 = 高光行所在文件的模板, 只搜当前 Hold, 须在 Search/Config kSearchHolds): 点下时把行 + 当前 Hold 键拷给 search_one (TaskFactors 据此建请求)
+  SearchJob search_one;
   // Run (对象 = 高光行所在文件, 只评它的全部权重) / Run all (整目录): 点 Run 时把文件名记进 run_file (TaskFactors 据此建请求 only_file)
   std::string run_file;
-  // Search all (当前池 / 层下全部可搜模板文件逐个搜, 全部搜完整目录 Run 一次): 点下时把各文件首个可搜行拷进队列, TaskFactors 逐个出队;
-  // Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换池换层)
-  std::vector<FactorRow> search_queue;
-  int search_all_n = 0;  // 本轮文件总数; 0 = 没在 Search all
+  // Search all (当前池 / 层下全部可搜模板文件 × 本层 kSearchHolds 内各档逐个搜, 不看 Hold 选择; 全部搜完整目录 Run 一次):
+  // 点下时把 (各文件首个可搜行, 档) 拷进队列, TaskFactors 逐个出队; 每文件首档 fresh (该文件 weights 整份覆盖), 它没落盘 (中途放弃) 则 fresh
+  // 顺延给同文件下一档. Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换池换层)
+  std::vector<SearchJob> search_queue;
+  SearchJob search_cur;  // 在跑的那一项 (fresh 顺延用)
+  int search_all_n = 0;  // 本轮队列项总数; 0 = 没在 Search all
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
   // 表列宽贴合 (对仗 TabOperators)
@@ -102,7 +109,7 @@ bool hold_cycler(int &hold_idx, const FeatureTable &ft);
 // 仓位感知 (契约【仓位感知】): 新进须本侧可成交, 交接的续持者封板照持 (名义价估值); 平仓不可成交 / 停牌 → 顺延到首个可成交价点
 inline constexpr const char *kHoldRulesTip = "• 新进成交不了 → 不建仓; 已持有的续持不需成交 (封板照持); 平仓成交不了 → 顺延到可成交时";
 
-// 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_row),
+// 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_one),
 // 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)
 int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx);
 

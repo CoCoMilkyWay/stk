@@ -178,6 +178,7 @@ struct SearchService::Searcher {
   Searcher(SearchService &w, FactorFlow &f, const SearchRequest &req)
       : W(w), F(f), scope(req.scope), ft(*req.scope.ft), sp(req.spec), seg(ft.seg), hd(keys_of<fs::Holds>(std::vector<int>{sp.hold})) {
     assert(find_leg(ft.y.labels, sp.hold) && "Search 的持有期须是字段表标签组之一");
+    assert(factor::search::search_hold(sp.hold) && "Search 只搜 kSearchHolds 档");
     fs::assert_holds(hd, seg);
     res.file = sp.file;
     res.tmpl = sp.tmpl;
@@ -285,7 +286,7 @@ struct SearchService::Searcher {
     const double per_day = static_cast<double>(seg) * A;
     const double r16_bytes = (static_cast<double>(days) * seg / stride + 1.0) * A * sizeof(uint16_t);
     Budget bud = budget_of<E, SearchProbes>(job, d0, d0.feats.size(), hd.n);
-    bud.fixed += space::kInit * r16_bytes;
+    bud.fixed += factor::search::kInit * r16_bytes;
     const Clock::time_point t_plan = Clock::now();
     if (!go(plan_job(F, job, bud)))
       return false;
@@ -422,14 +423,14 @@ struct SearchService::Searcher {
   // 趟 0 的点: R_d 低差异采样 (Space design), 不合法的丢, 取整去重
   bool design(std::vector<int> &ids) {
     int n_bad = 0;
-    for (const std::vector<double> &u : space::design(slots, space::kInit)) {
+    for (const std::vector<double> &u : space::design(slots, factor::search::kInit)) {
       const int id = add_cand(u);
       if (id < 0)
         ++n_bad;
       else if (std::find(ids.begin(), ids.end(), id) == ids.end())
         ids.push_back(id);
     }
-    lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选; r16 抽样步长 %d 行 (每候选 %d 行)", space::kInit, n_bad, static_cast<int>(ids.size()), stride, R);
+    lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选; r16 抽样步长 %d 行 (每候选 %d 行)", factor::search::kInit, n_bad, static_cast<int>(ids.size()), stride, R);
     if (ids.empty())
       return give_up("采样点无一参数合法 (值域互斥?), 文件不动");
     return true;
@@ -580,7 +581,8 @@ struct SearchService::Searcher {
        static_cast<int>(M), static_cast<int>(S.picks.size()));
     for (size_t a = 0; a < M; ++a) {
       const bool on = std::find(S.picks.begin(), S.picks.end(), pk[a]) != S.picks.end();
-      lg("  %s μ %.4g  SE %.4g  观测 %.4g @ %s", on ? "*" : " ", mu[a], se_pk[a], ents[static_cast<size_t>(pk[a])].sc.g, params_at(pk[a]).c_str());
+      const Score &sc = ents[static_cast<size_t>(pk[a])].sc;
+      lg("  %s μ %.4g  SE %.4g  观测 %.4g  mono %+.3f @ %s", on ? "*" : " ", mu[a], se_pk[a], sc.g, sc.mono, params_at(pk[a]).c_str());
     }
   }
   // ---- 趟 1..: 每趟前拟合曲面; 每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起 (夹到区间端), 落到已评点就减半再试; 新点 μ + sd − μ_c > SE_c 才评;
@@ -630,7 +632,7 @@ struct SearchService::Searcher {
     }
   }
 
-  // ---- 终选: 最后一次曲面的活跃峰即 weights; picks 替换文件里同 h 的 weights ----
+  // ---- 终选: 最后一次曲面的活跃峰即 weights; picks 替换文件里同 h 的 weights (sp.fresh: 先清空全部); 空 picks 也写 (= 清掉该 h) ----
   void finish() {
     std::vector<SearchWeight> ws;
     for (const int c : S.picks) {
@@ -644,17 +646,13 @@ struct SearchService::Searcher {
       res.picks.push_back(std::move(pk));
       ws.push_back(SearchWeight{sp.hold, en.sc.sign, en.e.canon});
     }
-    if (ws.empty()) {
-      publish_result();
-      give_up("没有统计上显著的候选 (μ ≤ SE), 文件不动");
-      return;
-    }
-    WriteFactorWeights(scope.factor_dir, sp.file, sp.hold, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
+    WriteFactorWeights(scope.factor_dir, sp.file, sp.hold, sp.fresh, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
     {
       std::lock_guard<std::mutex> lock(W.mutex);
-      W.message = "weights 已写入 (" + std::to_string(ws.size()) + " 个权重), 自动 Run 重算 stat";
+      W.message = ws.empty() ? strf("没有显著 (μ > SE) 且 mono ≥ %.2f 的候选, 已清掉该 Hold 的权重", factor::search::kMinMono)
+                             : "weights 已写入 (" + std::to_string(ws.size()) + " 个权重), 自动 Run 重算 stat";
     }
     int n_eval = 0;
     for (const Entry &en : ents)
@@ -664,11 +662,11 @@ struct SearchService::Searcher {
   }
 };
 
-bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool gpu,
-                       SearchRequest &req) {
+bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool fresh,
+                       bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  req.spec = SearchSpec{row.file, row.tmpl, row.frame, hold};
+  req.spec = SearchSpec{row.file, row.tmpl, row.frame, hold, fresh};
   return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope);
 }
 

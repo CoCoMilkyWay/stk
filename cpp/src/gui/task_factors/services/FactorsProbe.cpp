@@ -66,7 +66,7 @@ void CostP::root(const Ctx &c, const RootView &v) {
   assert(costs.size() == static_cast<size_t>(C));
   const std::vector<factor::stat::Cost> cs = costs_of(y);
   std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [k][hi]
-  factor::cpu::stat::cost_rows(c.ex, v.lc, c.s(), c.L, cs.data(), C, *c.w, acc.data());
+  factor::cpu::stat::cost_rows(c.ex, v.lc, c.s(), c.L, c.L.cap, cs.data(), C, *c.w, acc.data());
   for (int k = 0; k < C; ++k)
     for (int i = 0; i < H; ++i)
       costs[static_cast<size_t>(k)].acc[i].merge(acc[static_cast<size_t>(k) * H + i]);

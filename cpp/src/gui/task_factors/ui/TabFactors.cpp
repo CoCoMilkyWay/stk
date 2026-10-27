@@ -472,6 +472,8 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 // ============================================================================
 using HS = factor::stat::HoldStat;
 using FR = FactorRow;
+using factor::stat::kFwd;
+using factor::stat::kRev;
 enum class Group : uint8_t { Cover,
                              Shape,
                              LS,
@@ -530,16 +532,19 @@ constexpr Metric kMetrics[] = {
     {Group::Shape, "turn", "turn", "年化单边换手 (倍/年)", "[0, ∞)", "越小", "%.1f",
      [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h)); }, line(1000, 100)},
     {Group::LS, "LS%", "LS%", "满仓年化多空收益 %", "(-∞, ∞)", "越大", "%+.1f",
-     [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
+     [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h, kFwd); }, line(10, 50)},
     {Group::LS, "SR", "SR", "年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f",
-     [](const HS &h, const FR &) { return factor::stat::sharpe_of(h); }, line(5, 10)},
-    {Group::LS, "mean", nullptr, "每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.mean); }},
-    {Group::LS, "sd", nullptr, "每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.sd); }},
-    {Group::LS, "IR", nullptr, "每期多空 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.ir); }},
-    {Group::LS, "t", nullptr, "每期多空 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.t); }},
+     [](const HS &h, const FR &) { return factor::stat::sharpe_of(h, kFwd); }, line(5, 10)},
+    {Group::LS, "mean", nullptr, "每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].mean); }},
+    {Group::LS, "sd", nullptr, "每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].sd); }},
+    {Group::LS, "IR", nullptr, "每期多空 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].ir); }},
+    {Group::LS, "t", nullptr, "每期多空 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f",
+     [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].t); }},
     {Group::LS, "pos", nullptr, "每期多空 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f",
-     [](const HS &h, const FR &) { return static_cast<double>(h.ls.pos); }},
-    {Group::LS, "β", nullptr, "每期多空 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.beta); }},
+     [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].pos); }},
+    {Group::LS, "β", nullptr, "每期多空 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.beta[kFwd]); }},
+    {Group::LS, "rev%", nullptr, "取反后的满仓年化多空 % (G1 做多 + G20 做空)", "(-∞, ∞)", "越小", "%+.1f",
+     [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h, kRev); }},
     {Group::RIC, "mean", "rIC", "rIC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h, const FR &) { return static_cast<double>(h.ric.mean); },
      line(0.03, 0.05)},
     {Group::RIC, "sd", nullptr, "rIC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h, const FR &) { return static_cast<double>(h.ric.sd); }},
@@ -840,7 +845,7 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
 // 一行在选定持有期的目标分 (RowScore 的压缩; 不显示, 只挑父行代表权重; hold = 0 即无)
 struct ScoreCell {
   int hold = 0;
-  double score = 0.0; // −∞ = LS / rIC ≤ 0
+  double score = 0.0; // −∞ = LS / rIC ≤ 0 或 mono < kMinMono
 };
 
 // 表的一行怎么画: 平铺 (单权重 / 文件级行) / 父 (多权重因子的代表权重, 表达式列显示模板) / 子 (展开后的一个权重, 名字列显示权重号)
@@ -1051,11 +1056,14 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         "• GPU: %s",
         g ? g : "不可用 (无 CUDA 设备或未用 -DGPU_BACKEND=CUDA 编译)");
   }
+  std::string search_range;
+  for (const int h : factor::search::kSearchHolds)
+    search_range += (search_range.empty() ? "" : " / ") + factor::stat::hold_name(h);
   // 多权重因子的父行 = 该持有期下 score (每期真实 LS × rIC, 同 Search) 最高的权重
-  const auto hold_tip = [] {
-    tip("表格 Stat 列与 Search 用哪个持有期 (Run 一次算全部)\n"
+  const auto hold_tip = [&] {
+    tip("表格 Stat 列与 Search 用哪个持有期 (Run 一次算全部; Search 限 %s, Search all 不看它)\n"
         "%s",
-        kHoldRulesTip);
+        search_range.c_str(), kHoldRulesTip);
   };
   hold_cycler(ui.hold_idx, ft); // Hold .. Status 单独一行, 开 / 清仓写在其下一行
   if (ImGui::IsItemHovered())
@@ -1161,59 +1169,70 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       hold_tip();
   }
 
-  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold, 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
+  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的 毛 LS · 资金利用率 · rIC
   //      (Search/Contract.hpp【目标】【多权重】); 结果替换文件里同 h 的 weights, 随后 TaskFactors 自动 Run (因子表从新 stat 算) ----
   {
     const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }; // 模板有自由参数
     const bool tmpl_ok = view_row && searchable(*view_row);
-    const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty() && tmpl_ok;
+    const bool hold_ok = !ft.y.labels.empty() && factor::search::search_hold(cur_hold);
+    const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && hold_ok && tmpl_ok;
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Search:");
     ImGui::SameLine();
     if (!can_search)
       ImGui::BeginDisabled();
     if (ImGui::Button("Search", ImVec2(70, 0))) {
-      ui.search_row = *view_row;
-      ui.search_hold = cur_hold;
+      ui.search_one = SearchJob{*view_row, cur_hold, false};
       action = 3;
     }
     if (!can_search)
       ImGui::EndDisabled();
-    // 搜索细节 (Search/Contract.hpp): 目标 = 每期真实毛 LS × rIC (不看成本, 不跨持有期比; LS 与 rIC 同负 → 取反, sign = -1);
+    // 搜索细节 (Search/Contract.hpp): 目标 = 每期真实毛 LS × rIC (不看成本, 不跨持有期比; 方向 = rIC 的号, rIC < 0 → 取反 sign = -1, LS 取反向精确值);
     // 参数区间由已有常数 / 池内有效资产数推出, 阈值类按输入分位; kInit 个低差异点采样 → 拟合曲面取峰 → 活跃峰 ± 试探细化;
-    // 终选 = 与最高者分不开的峰里按截面相关 (抽 kCorrRows 行) 贪心挑重合少的; 最高者不显著 (μ ≤ SE) 不出权重, 文件不动
+    // mono < kMinMono 的点当不了峰; 终选 = 与最高者分不开的峰里按截面相关 (抽 kCorrRows 行) 贪心挑重合少的; 最高者不显著 (μ ≤ SE) 不出权重 (该 Hold 的旧权重清掉)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-      if (!view_row)
+      if (!hold_ok)
+        tip("Search 只搜 %s 档 (当前 Hold %s)", search_range.c_str(), ft.y.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str());
+      else if (!view_row)
         tip("先在表格里点一行");
       else if (!tmpl_ok)
         tip("%s 的模板没有自由参数: 勾选编辑, 把要搜的参数勾成自由, 再 Save", view_row->file.c_str());
       else
         tip("搜 %s 的自由参数 (只搜当前 Hold %s)\n"
-            "• 目标 = 每期毛 LS × rIC, 不看成本\n"
-            "• 结果替换该 Hold 的权重, 然后自动 Run",
-            view_row->file.c_str(), factor::stat::hold_name(cur_hold).c_str());
+            "• 目标 = 每期毛 LS × rIC, 不看成本; 方向随 rIC 的号 (取反的 LS 两腿另算); 硬门槛 mono ≥ %.2f\n"
+            "• 结果替换该 Hold 的权重 (搜不出则清空该 Hold), 然后自动 Run",
+            view_row->file.c_str(), factor::stat::hold_name(cur_hold).c_str(), factor::search::kMinMono);
     }
-    // Search all: 各文件首个可搜行 (按文件去重), 表序
+    // Search all: 各文件首个可搜行 (按文件去重, 表序) × 本层 kSearchHolds 内各档 (标签组序), 不看 Hold 选择
     std::vector<const FactorRow *> all_rows;
     for (const FactorRow &r : s_rows)
       if (searchable(r) && std::none_of(all_rows.begin(), all_rows.end(), [&](const FactorRow *p) { return p->file == r.file; }))
         all_rows.push_back(&r);
-    const bool can_search_all = !busy && !sbusy && !all_active && ctx.axis_ready && !ft.y.labels.empty() && !all_rows.empty();
+    std::vector<int> all_holds;
+    std::string holds_desc;
+    for (const auto &lg : ft.y.labels)
+      if (factor::search::search_hold(lg.key)) {
+        all_holds.push_back(lg.key);
+        holds_desc += (holds_desc.empty() ? "" : " ") + factor::stat::hold_name(lg.key);
+      }
+    const bool can_search_all = !busy && !sbusy && !all_active && ctx.axis_ready && !all_holds.empty() && !all_rows.empty();
     ImGui::SameLine();
     if (!can_search_all)
       ImGui::BeginDisabled();
     if (ImGui::Button("Search all", ImVec2(90, 0))) {
       ui.search_queue.clear();
       for (const FactorRow *p : all_rows)
-        ui.search_queue.push_back(*p);
+        for (const int h : all_holds)
+          ui.search_queue.push_back(SearchJob{*p, h, h == all_holds.front()});
       ui.search_all_n = static_cast<int>(ui.search_queue.size());
-      ui.search_hold = cur_hold;
       action = 4;
     }
     if (!can_search_all)
       ImGui::EndDisabled();
-    // 整轮 Hold 固定; 已有 weights 的也重搜; 跳过无自由参数 / BROKEN; 中间不 Run; Cancel = 取消在跑的并清空队列 (已写入的保留, 不 Run)
+    // 各文件 weights 整份覆盖 (只剩本轮搜出的); 跳过无自由参数 / BROKEN; 中间不 Run; Cancel = 取消在跑的并清空队列 (已写入的保留, 不 Run)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      tip("逐个 Search 全部模板 (%d 个), 搜完整目录 Run 一次", static_cast<int>(all_rows.size()));
+      tip("逐个 Search 全部模板 (%d 个) × 持有期 (%s), 搜完整目录 Run 一次\n"
+          "• 各文件 weights 整份覆盖: 只剩本轮搜出的",
+          static_cast<int>(all_rows.size()), holds_desc.empty() ? ("本层无 " + search_range + " 档").c_str() : holds_desc.c_str());
     ImGui::SameLine();
     if (!sbusy && !all_active)
       ImGui::BeginDisabled();
@@ -1280,8 +1299,10 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       }
       break;
     case Phase::Done:
-      if (s_sr.wrote)
+      if (s_sr.wrote && s_sr.n_weights > 0)
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "完成: 写入 %d 个权重 (%d 候选, %d 趟, %.0fs)", s_sr.n_weights, n_cand, s_sr.n_pass, s_sr.seconds);
+      else if (s_sr.wrote)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "完成: %s (%d 候选, %d 趟, %.0fs)", s_msg.c_str(), n_cand, s_sr.n_pass, s_sr.seconds);
       else
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "未写入: %s", s_msg.c_str());
       break;

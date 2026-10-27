@@ -191,7 +191,7 @@ std::string PortfolioRequest::sig() const {
 namespace {
 
 // G20 多头出参线 [kCurveLines][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
-//   pnl = 行的 G20 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 固定量 (CostLeg::fix), 建仓行即付 (不交接批的平仓量一并)
+//   pnl = 行的 G20 (正向多腿) 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 固定量 (CostLeg::fix), 建仓行即付 (不交接批的平仓量一并)
 struct CurveP : LinesP<kCurveLines> {
   static constexpr uint8_t need = kNeedRows | kNeedLc;
   double cap = 0.0;
@@ -205,7 +205,7 @@ struct CurveP : LinesP<kCurveLines> {
     cap = c.L.cap;
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
-    at(hi, kCurvePnl, t) = static_cast<float>(group_abs(r, factor::stat::leg_group(factor::stat::kLong), cap));
+    at(hi, kCurvePnl, t) = static_cast<float>(leg_abs(r, factor::stat::kFwd, factor::stat::kLong, cap));
   }
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
@@ -213,7 +213,7 @@ struct CurveP : LinesP<kCurveLines> {
     land.assign(static_cast<size_t>(H) * s.T, factor::stat::CostAcc{});
     const std::vector<factor::stat::Cost> cs = costs_of(c.c.y);
     factor::stat::CostAcc acc[factor::stat::kMaxHold];
-    factor::cpu::stat::cost_rows(c.ex, v.lc, s, c.L, cs.data(), 1, *c.w, acc, land.data());
+    factor::cpu::stat::cost_rows(c.ex, v.lc, s, c.L, cap, cs.data(), 1, *c.w, acc, land.data());
     for (int hi = 0; hi < H; ++hi)
       for (int t = s.t_lo; t < s.T; ++t) {
         const factor::stat::CostLeg &cl = land[static_cast<size_t>(hi) * s.T + t].leg[factor::stat::kLong];
