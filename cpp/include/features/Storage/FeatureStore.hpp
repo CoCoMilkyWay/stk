@@ -3,6 +3,7 @@
 #include "FeatureStoreConfig.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -279,11 +280,15 @@ public:
 
     // Detailed dimension breakdown
     std::cout << "Dimension Details:\n";
+    int name_w = 0;
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+      if (T::has(lvl))
+        name_w = std::max(name_w, static_cast<int>(std::strlen(T::LEVELS[lvl].level_name)));
     for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
       if (!T::has(lvl))
         continue;
       const auto &L = T::LEVELS[lvl];
-      printf("  %-6s [T=%6zu][F=%4zu][A=%4zu] = %.2f MB\n", L.level_name, L.rows, L.field_count, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
+      printf("  %-*s [T=%4zu][F=%4zu][A=%5zu] = %7.2f MB\n", name_w, L.level_name, L.rows, L.field_count, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
     }
 
     printf("\nPer-day tensor: %.2f MB | Ring size: %zu slots | Total: %.2f GB\n",

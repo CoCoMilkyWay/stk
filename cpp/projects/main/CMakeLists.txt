@@ -71,10 +71,10 @@ set(BUILD_MODE_DEBUG_DEF        DEBUG_MODE)
 set(BUILD_MODE_PROFILE_OPT      -O2)
 set(BUILD_MODE_PROFILE_CC       -g)
 set(BUILD_MODE_PROFILE_LD       "")
-set(BUILD_MODE_PROFILE_DEF      PROFILE_MODE TRACY_ENABLE TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING)
+set(BUILD_MODE_PROFILE_DEF      PROFILE_MODE)
 
 set(BUILD_MODE_ASSERT_OPT       -O2)
-set(BUILD_MODE_ASSERT_CC        -g)
+set(BUILD_MODE_ASSERT_CC        "")
 set(BUILD_MODE_ASSERT_LD        "")
 set(BUILD_MODE_ASSERT_DEF       ASSERT_MODE)
 
@@ -252,7 +252,6 @@ set(MATH_FAST
     # worker: Lob 档管线 + 档无关的截面 / 落盘
     worker/crosssectional_worker.cpp
     worker/encoding_worker.cpp
-    worker/feature_profile.cpp
     worker/feature_progress.cpp
     worker/io_worker.cpp
     worker/lob_pipeline.cpp
@@ -315,8 +314,9 @@ set(MATH_PRECISE
     features/Bar1mDay.cpp
     features/Method/CS.cpp
     features/Method/Fundamental.cpp
-    # worker: Bar 档管线 (TS: Fund 缺失值 / PoolKey 母集 / cs_valid 依赖 NaN 比较)
+    # worker: Bar 档管线 (TS: Fund 缺失值 / PoolKey 母集 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
     worker/bar_pipeline.cpp
+    worker/feature_profile.cpp
     # gui
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/AssetLoader.cpp

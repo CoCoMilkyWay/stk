@@ -178,7 +178,7 @@ inline constexpr misc::Ymd PIPELINE_START_DATE = 20150101;
 inline constexpr int PIPELINE_LOOKBACK_DAYS = 7;
 inline constexpr int PIPELINE_DEDUP_WINDOW_SECONDS = 60 * 60;
 
-// ---- 特征计算 perf 采样落地 (ASSERT 模式, 见 worker/feature_workers.hpp FeatureProfile) ----
+// ---- 特征计算 perf 采样落地 (PROFILE 模式, 见 worker/feature_workers.hpp FeatureProfile) ----
 inline constexpr const char *PROFILE_DIR = "../../../../output/profile";
 
 } // namespace config

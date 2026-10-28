@@ -289,7 +289,7 @@ private:
 };
 
 // ============================================================================
-// 特征计算采样 (misc::perf::kEnabled = ASSERT 模式, 否则全空): 协调线程每 100ms tick, 管线收尾 finish.
+// 特征计算采样 (misc::perf::kEnabled = PROFILE 模式, 否则全空): 协调线程每 100ms tick, 管线收尾 finish.
 //   首日落盘起 (流水线已灌满, 不含 InitCores / 灌池) perf record 本进程, 满 misc::perf::kSeconds 或管线收尾即停,
 //   落 <config::PROFILE_DIR>/<池>/<开采时刻 YYYYMMDD_HHMMSS>/ (每轮一目录, 前后两轮可对比):
 //     meta.json   本轮配置 (池 / 档 / A 轴 / 日期轴 / 日环 / 领养 / 核布局) + 采样窗实测 (落盘天速; 逐核工作量速率 / 忙碌占比)

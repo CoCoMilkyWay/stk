@@ -6,8 +6,8 @@ Usage:
 Modes:
     - TSAN:       Race condition detection (5-15x slower)
     - DEBUG:      Interactive debugging (very slow)
-    - PROFILE:    CPU profiling with Tracy
-    - ASSERT:     Optimized build with assertions; feature compute is perf-sampled into output/profile/
+    - PROFILE:    Feature compute perf-sampled into output/profile/
+    - ASSERT:     Optimized build with assertions
     - PRODUCTION: Maximum performance (-O3, fastest)
 """
 
@@ -38,8 +38,7 @@ ENABLE_CUDA = True
 
 def _cleanup_processes():
     """Kill old processes."""
-    subprocess.run(
-        ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
+    subprocess.run(["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
     time.sleep(0.3)
 
 

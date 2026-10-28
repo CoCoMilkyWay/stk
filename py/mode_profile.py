@@ -1,10 +1,14 @@
-"""Profile Mode - CPU profiling with Tracy"""
+"""Profile Mode - 特征计算 perf 采样 (落 output/profile/, 布局见 README)"""
 
 import os
+import shutil
 import subprocess
 import sys
 import time
 from typing import Optional
+
+# Tracy UI 自动拉起: 与 CMake PROFILE 行的 TRACY_ENABLE 同开同关 (默认 perf 采样, Tracy 不激活)
+TRACY_UI = False
 
 
 def _repo_root() -> str:
@@ -94,23 +98,35 @@ def _launch_tracy_ui(tracy_exe: str) -> Optional[subprocess.Popen]:
         return None
 
 
+def _check_perf_or_exit() -> None:
+    """启动前检查 perf 可用 + perf_event_paranoid ≤ 1 (app 内开采时同样断言, 这里提前失败)."""
+    if not shutil.which("perf"):
+        print("[perf] perf not found. Install with:\n  sudo apt install -y linux-tools-$(uname -r)")
+        sys.exit(1)
+    with open("/proc/sys/kernel/perf_event_paranoid") as f:
+        paranoid = int(f.read())
+    if paranoid > 1:
+        print(f"[perf] kernel.perf_event_paranoid = {paranoid} (须 ≤ 1):\n  sudo sysctl kernel.perf_event_paranoid=1")
+        sys.exit(1)
+
+
 def run(binary_path, working_dir):
-    """Run with Tracy profiler."""
+    """Run with feature-compute perf sampling."""
     print(f"\n{'='*80}")
-    print("Tracy Profiler Mode")
+    print("Profile Mode - perf sampling feature compute → output/profile/")
     print(f"{'='*80}\n")
 
-    # Locate tracy-profiler, gate on deps, then launch UI with auto-connect
-    tracy_exe = _find_tracy_profiler_exe()
-    if not tracy_exe:
-        print("[Tracy] tracy-profiler not found (skipping UI auto-launch).")
-    else:
-        _check_tracy_deps_or_exit(tracy_exe)
-        _launch_tracy_ui(tracy_exe)
-    time.sleep(1.0)
+    _check_perf_or_exit()
+    if TRACY_UI:
+        # Locate tracy-profiler, gate on deps, then launch UI with auto-connect
+        tracy_exe = _find_tracy_profiler_exe()
+        if not tracy_exe:
+            print("[Tracy] tracy-profiler not found (skipping UI auto-launch).")
+        else:
+            _check_tracy_deps_or_exit(tracy_exe)
+            _launch_tracy_ui(tracy_exe)
+        time.sleep(1.0)
 
-    print("Starting application with tracy profiling...")
-    print("Tracy UI will auto-connect to localhost")
     print("Press Ctrl+C to stop\n")
 
     # Run binary

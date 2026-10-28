@@ -345,7 +345,7 @@ stk/
 │   │   ├── worker/{lob,bar}_pipeline.cpp                   # 💾 两档的源 TierFeed + pipeline<T> 实例化 (Lob fast-math / Bar precise-math)
 │   │   ├── worker/{crosssectional_worker,io_worker}.cpp    # 💾 截面 cs_loop / 落盘 io_loop (档无关)
 │   │   ├── worker/{feature_progress,encoding_worker}.cpp   # 💾 特征计算终端仪表盘 / 逐笔编码 worker
-│   │   ├── worker/feature_profile.cpp                      # 💾 特征计算 perf 采样窗 (ASSERT 模式, 落 output/profile)
+│   │   ├── worker/feature_profile.cpp                      # 💾 特征计算 perf 采样窗 (PROFILE 模式, 落 output/profile)
 │   │   ├── gui/Gui.cpp / Tasks.cpp                         # 💾 GUI 主循环 / 任务注册
 │   │   ├── gui/Run_OpenGL.cpp                              # 💾 OpenGL 后端入口
 │   │   └── gui/Run_Vulkan.cpp                              # 💾 Vulkan 后端入口
@@ -390,7 +390,7 @@ stk/
     │                                                       #    · 可选: note / run / hold_cols / acc_cols
     │                                                       #    · weights: [{hold, sign?, expr (具体)}]; Search 整体替换, 改 expr 即清空
     │                                                       #    · stats: [stat | null], 与 weights 同序
-    ├── profile/<pool>/<YYYYMMDD_HHMMSS>/                   # 特征计算 perf 采样 (ASSERT 模式, 每轮一目录; 需 kernel.perf_event_paranoid ≤ 1)
+    ├── profile/<pool>/<YYYYMMDD_HHMMSS>/                   # 特征计算 perf 采样 (PROFILE 模式, 每轮一目录; 需 kernel.perf_event_paranoid ≤ 1)
     │   ├── meta.json                                       # 本轮配置 (池 / 档 / A 轴 / 日期轴 / 核布局) + 采样窗逐核速率 / 忙碌占比
     │   ├── threads.txt                                     # 线程间样本分布 (线程名 = <段 tag>_<段内序号>: pf / ts / cs / io)
     │   ├── <段>/<线程>.txt                                 # 逐核热点 (dso, sym)

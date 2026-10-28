@@ -13,12 +13,12 @@
 //   <dir>/<组>/<线程>.txt              组内逐线程: (dso, 符号) 热点
 //   <dir>/<组>.sym.txt / .srcline.txt  组内线程合并: 符号 / 源码行热点
 //   <dir>/report.done                 报告出齐 (之前读到的是半成品)
-// 百分比 = 本文件所含线程的样本 (--percentage relative). 源码行要 -g (ASSERT / PROFILE 模式带).
+// 百分比 = 本文件所含线程的样本 (--percentage relative). 源码行要 -g (PROFILE 模式带).
 // 采样要 kernel.perf_event_paranoid ≤ 1.
 // ============================================================================
 namespace misc::perf {
 
-#ifdef ASSERT_MODE
+#ifdef PROFILE_MODE
 inline constexpr bool kEnabled = true;
 #else
 inline constexpr bool kEnabled = false;

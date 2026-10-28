@@ -1,6 +1,6 @@
 #pragma once
 
-#ifdef PROFILE_MODE
+#ifdef TRACY_ENABLE
 #include <Tracy.hpp>
 
 // ===== Zone Marking =====
