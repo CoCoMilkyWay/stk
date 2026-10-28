@@ -51,7 +51,7 @@ struct TableView {
   bool built = false;
 
   // 失效判据快照
-  uint64_t generation = 0;     // 对应的 Asset::asset_stats_generation
+  uint64_t generation = 0;     // 对应的 Asset::generation
   size_t asset_count = 0;      // 对应的 Asset::items.size()
   size_t stock_info_count = 0; // 对应的 stock_info.size() (基本面首次载入)
   int sort_column = -1;        // 对应的排序列

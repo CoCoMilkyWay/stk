@@ -79,7 +79,8 @@ struct AssetInfo {
   StockFactorMap stock_factor_;
   StockDaysVec stock_days_;
   SuspendedMap suspended_;
-  AssetEvents events_; // 个股历史事件 (shared/AssetEvent.hpp)
+  AssetEvents events_;     // 个股历史事件 (shared/AssetEvent.hpp)
+  misc::Ymd bar1m_end = 0; // 末个 bar1m 分片日 (0 = 未同步); 缺日由同步保证不出现
 
   const StockInfoMap &get_stock_info() const { return stock_info_; }
   const StockFactorMap &get_stock_factor() const { return stock_factor_; }

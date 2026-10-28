@@ -6,6 +6,7 @@
 #include "misc/affinity.hpp"
 #include "shared/Config.hpp"
 #include "shared/FeatureLib.hpp"
+#include "shared/SharedData.hpp"
 
 #include "imgui.h"
 
@@ -33,7 +34,8 @@ static LibStatus lib_status(const Config &config, const StockDaysVec &stock_days
   return s;
 }
 
-void RenderTabCompute(ComputeService *service, ComputeState &state, const StockDaysVec &stock_days, Config &config) {
+void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &data) {
+  const Config &config = data.config;
   const bool is_running = service->busy();
   const bool is_cancelling = service->cancelling();
 
@@ -381,32 +383,49 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, const StockD
   if (ImGui::SmallButton("Refresh"))
     state.libs_dirty = true;
   ImGui::SameLine();
-  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起至末个 bar1m 日; 池: 订单簿还原, %s 起至末个已编码日 (不晚于 all), "
-                      "成员 = Bar 池 D−1 收盘 pool_* 列 → 先算 all; T-n = 末日之后的交易日数)",
+  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起至末个 bar1m 日; 池: 订单簿还原, %s 起至末个已编码日 (不晚于 all 末日), "
+                      "成员 = Bar 池 D−1 收盘 pool_* 列 → 先把 all 算齐; T-n = 末日之后的交易日数; 数据末日 = 现在重算能到的末日)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
   ImGui::Spacing();
 
+  // 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫: 数据末日 / T-n 随之前移
+  if (state.generation != data.asset.generation) {
+    state.generation = data.asset.generation;
+    state.libs_dirty = true;
+  }
   if (state.libs_dirty && !is_running) {
     state.libs_dirty = false;
     state.libs.clear();
     for (const PoolDef &d : feature_pools())
-      state.libs.push_back(lib_status(config, stock_days, d.name));
+      state.libs.push_back(lib_status(config, data.assetinfo.get_stock_days(), d.name));
+    // 规划: 本档源日历截到各旁读档当前池的库末日; 旁读库未落盘齐 → 不可算
+    PerTier<std::vector<misc::Ymd>> source;
+    for (const TierId t : TIER_IDS)
+      source[t] = source_dates(data, t);
+    for (LibStatus &s : state.libs) {
+      s.plan = source[s.tier];
+      for (const TierId t : TIER_IDS) {
+        if (!tier_side(s.tier, t))
+          continue;
+        const LibStatus &side = *std::ranges::find(state.libs, data.feature.selection.pool_of(t), &LibStatus::name);
+        if (side.complete())
+          std::erase_if(s.plan, [&](misc::Ymd d) { return d > side.last; });
+        else
+          s.plan.clear();
+      }
+    }
   }
-  // 旁读档的库落盘齐全才放行本档 (池的成员来自 Bar 池)
-  PerTier<bool> tier_complete;
-  for (const TierId t : TIER_IDS)
-    tier_complete[t] = std::ranges::all_of(state.libs, [&](const LibStatus &s) { return s.tier != t || (s.ready && s.done == s.days); });
-  const auto sides_complete = [&](TierId t) {
-    return std::ranges::all_of(TIER_IDS, [&](TierId s) { return !tier_side(t, s) || tier_complete[s]; });
-  };
+  // 编码在飞不开算: Lob 按帧目录快照读日文件, 编码会 rename 换掉它们
+  const bool encoding = data.taskstate.database.encode_inflight;
 
-  if (ImGui::BeginTable("Pools", 8,
+  if (ImGui::BeginTable("Pools", 9,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("池");
     ImGui::TableSetupColumn("中文名");
     ImGui::TableSetupColumn("档");
     ImGui::TableSetupColumn("区间");
+    ImGui::TableSetupColumn("数据末日");
     ImGui::TableSetupColumn("资产");
     ImGui::TableSetupColumn("已落盘");
     ImGui::TableSetupColumn("状态");
@@ -425,6 +444,11 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, const StockD
       if (s.ready)
         ImGui::Text("%s ~ %s (T-%zu)", misc::dash(s.first).c_str(), misc::dash(s.last).c_str(), s.lag);
       ImGui::TableNextColumn();
+      if (!s.plan.empty())
+        ImGui::Text("%s", misc::dash(s.plan.back()).c_str());
+      else
+        ImGui::TextDisabled("-");
+      ImGui::TableNextColumn();
       if (s.ready)
         ImGui::Text("%zu", s.assets);
       ImGui::TableNextColumn();
@@ -438,15 +462,18 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, const StockD
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "stale");
       else if (!s.ready)
         ImGui::TextDisabled("未建");
-      else if (s.done == s.days)
-        ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
-      else
+      else if (!s.complete())
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "partial");
+      else if (!s.plan.empty() && s.plan.back() > s.last)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "behind");
+      else
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
       ImGui::TableNextColumn();
-      const bool blocked = state.ui_state != ComputeUIState::Idle || !sides_complete(s.tier);
+      const bool blocked = state.ui_state != ComputeUIState::Idle || s.plan.empty() || encoding;
       ImGui::BeginDisabled(blocked);
       if (ImGui::SmallButton(("Compute##" + s.name).c_str())) {
         state.config.pool = s.name;
+        state.config.dates = s.plan;
         state.ui_state = ComputeUIState::ShowingPopup;
         state.popup_frame_count = 0;
       }
@@ -498,11 +525,10 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, const StockD
     ImGui::Spacing();
 
     const TierId run_tier = pool_def(state.config.pool).tier;
-    const bool bar_tier = run_tier == TierId::Bar;
     ImGui::Text("Pool %s, Period:", state.config.pool.c_str());
     ImGui::Indent();
-    ImGui::BulletText("Start: %s", misc::dash(bar_tier ? ::config::PIPELINE_START_DATE : config.start_date).c_str());
-    ImGui::BulletText("End: %s", bar_tier ? "末个 bar1m 日 (须有次日交易日)" : "min(末个已编码日, all 末日)");
+    ImGui::BulletText("Start: %s", misc::dash(state.config.dates.front()).c_str());
+    ImGui::BulletText("End: %s (%zu days)", misc::dash(state.config.dates.back()).c_str(), state.config.dates.size());
     ImGui::Unindent();
 
     ImGui::Spacing();
@@ -511,7 +537,6 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, const StockD
     ImGui::BulletText("GUI entering low-refresh mode");
     ImGui::BulletText("%s", StageLayout::make(topo, state.config.pf_cores[run_tier], state.config.cs_cores[run_tier], state.config.io_cores[run_tier]).summary().c_str());
     ImGui::BulletText("Allocating %d ring slots", state.config.ring_slots(run_tier));
-    ImGui::BulletText("Processing backtest period only");
     ImGui::Unindent();
 
     ImGui::Spacing();

@@ -288,8 +288,7 @@ public:
 
       const int workers = encode_state_.num_workers > 0 ? encode_state_.num_workers : misc::exec::hw();
 
-      if (!state_mgr_->syncing() && !state_mgr_->scanning() && !state_mgr_->encoding())
-        state_mgr_->encode(workers, encode_state_.skip_existing);
+      state_mgr_->encode(workers, encode_state_.skip_existing);
     }
   }
 

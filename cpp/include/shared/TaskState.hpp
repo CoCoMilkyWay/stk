@@ -46,6 +46,7 @@ struct TaskState {
     // 流水线在飞 (StateManager 每帧写)
     bool json_update_inflight = false;
     bool l2_scan_inflight = false;
+    bool encode_inflight = false; // 编码改写日文件: 在飞时特征计算不开跑
   } database;
 
   // ==========================================================================
@@ -60,7 +61,7 @@ struct TaskState {
                         Error };
     Status status = Status::None;
 
-    bool computing = false;
+    bool computing = false;     // 特征计算在飞 (点下 Compute 起到收尾): 共享数据冻结 (Database 件留邮箱, 不发编码)
     bool has_selection = false; // 主 feature 已选好
   } features;
 };

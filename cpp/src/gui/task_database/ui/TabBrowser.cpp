@@ -405,7 +405,8 @@ void RenderTabBrowser(
   }
 
   // Build or reuse daily statistics cache
-  if (browser_state.daily_stats_cache.empty()) {
+  if (browser_state.generation != asset_data.generation) {
+    browser_state.generation = asset_data.generation;
     browser_state.daily_stats_cache = BuildDailyStats(
         stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
   }

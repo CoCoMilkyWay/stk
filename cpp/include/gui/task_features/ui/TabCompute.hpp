@@ -5,12 +5,12 @@
 #include "features/Storage/FeatureLevels.hpp" // TierId
 #include "gui/task_features/services/ComputeService.hpp"
 #include "misc/date.hpp"
-#include "shared/AssetInfo.hpp" // StockDaysVec
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
-struct Config;
+struct SharedData;
 
 namespace GUI::Features {
 
@@ -18,7 +18,7 @@ namespace GUI::Features {
 // Compute Tab State
 // ============================================================================
 
-// 库状态行 (库清单 + 已落盘日数; 扫盘有成本, 只在进页 / 一轮算完 / Refresh 时重扫)
+// 库状态行 (库清单 + 已落盘日数 + 规划; 扫盘有成本, 只在进页 / 一轮算完 / 数据换进 / Refresh 时重扫)
 struct LibStatus {
   std::string name;
   TierId tier = TierId::Lob;
@@ -26,6 +26,8 @@ struct LibStatus {
   misc::Ymd first = 0, last = 0;
   size_t lag = 0;                        // T-lag: 交易日历里 last 之后的交易日数
   size_t assets = 0, days = 0, done = 0; // A 轴 / 日期轴长 / 已落盘日
+  std::vector<misc::Ymd> plan;           // 现在重算的日期轴 (见 source_dates; 空 = 不可算), 末日 > last 即落后
+  bool complete() const { return ready && done == days; }
 };
 
 enum class ComputeUIState {
@@ -48,7 +50,8 @@ struct ComputeState {
 
   // 池表: all + 各池 (行序 = all 在前, 池按字段表序)
   std::vector<LibStatus> libs;
-  bool libs_dirty = true; // 下一帧重扫
+  bool libs_dirty = true;  // 下一帧重扫
+  uint64_t generation = 0; // 对应的 Asset::generation (数据换进即重扫)
 };
 
 // ============================================================================
@@ -58,7 +61,6 @@ struct ComputeState {
 void RenderTabCompute(
     ComputeService *service,
     ComputeState &state,
-    const StockDaysVec &stock_days,
-    Config &config);
+    SharedData &data);
 
 } // namespace GUI::Features

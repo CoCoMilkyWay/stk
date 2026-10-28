@@ -6,14 +6,22 @@
 
 #include "features/Storage/FeatureLevels.hpp" // TierId / PerTier
 #include "gui/util/Service.hpp"
+#include "misc/date.hpp"
 #include "worker/feature_workers.hpp" // StageLayout (UI 核布局表)
 
 #include <string>
+#include <vector>
 
 // Forward declarations
 struct SharedData;
 
 namespace GUI::Features {
+
+// 档的源日历: 本档原始数据现在能服务的交易日, 只读数据层已换进的产物 (GUI 线程), 随同步 / 编码前移.
+//   Bar  交易日 [PIPELINE_START_DATE, assetinfo.bar1m_end]; Fund 收盘推进到次日盘前 ⇒ 还须早于日历末个交易日 (日历截到 today)
+//   Lob  回测日历 ≤ 末个已编码日 (中间缺编码的日也在轴内, 落默认张量)
+// 本池日期轴 = 源日历截到各旁读档 (tier_side) 当前池的库末日, 旁读库须落盘齐 (池表规划, 随请求快照给 worker) ⇒ Bar 末日 ≥ Lob 末日
+std::vector<misc::Ymd> source_dates(const SharedData &data, TierId tier);
 
 // ============================================================================
 // Compute Config (= 请求)
@@ -31,8 +39,9 @@ struct ComputeConfig {
   PerTier<int> pf_cores{{1, 1}};
   PerTier<int> cs_cores{{1, 1}};
   PerTier<int> io_cores{{1, 1}};
-  int adopt_pct = 50; // TS 负载再平衡阈值 N (%), 0 = 关闭领养
-  std::string pool;   // 算哪个池 (池名, 档由名定, 见 FeatureLib.hpp; Compute 页每池一个按钮)
+  int adopt_pct = 50;           // TS 负载再平衡阈值 N (%), 0 = 关闭领养
+  std::string pool;             // 算哪个池 (池名, 档由名定, 见 FeatureLib.hpp; Compute 页每池一个按钮)
+  std::vector<misc::Ymd> dates; // 本池日期轴 (池表规划, 见 source_dates)
 };
 
 // ============================================================================

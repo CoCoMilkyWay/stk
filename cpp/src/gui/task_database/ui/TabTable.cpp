@@ -321,7 +321,7 @@ void RebuildCrossSectionColors(TableView &view,
 bool ViewIsStale(const TableView &view, const Asset &asset,
                  const StockInfoMap &stock_info, const TableState &state) {
   return !view.built ||
-         view.generation != asset.asset_stats_generation ||
+         view.generation != asset.generation ||
          view.asset_count != asset.items.size() ||
          view.stock_info_count != stock_info.size() ||
          view.sort_column != state.sort_column ||
@@ -440,7 +440,7 @@ void RebuildView(TableView &view, const Asset &asset,
   RebuildCrossSectionColors(view, infos);
 
   view.built = true;
-  view.generation = asset.asset_stats_generation;
+  view.generation = asset.generation;
   view.asset_count = count;
   view.stock_info_count = stock_info.size();
   view.sort_column = state.sort_column;

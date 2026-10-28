@@ -63,6 +63,7 @@ struct BrowserState {
   int selected_day = -1;
   misc::Ymd hover_date = 0;
   std::map<misc::Ymd, DailyStats> daily_stats_cache; // date -> stats
+  uint64_t generation = 0;                           // 缓存对应的 Asset::generation
   LayerVisibility layers;
 };
 

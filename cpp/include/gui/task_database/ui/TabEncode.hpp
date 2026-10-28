@@ -30,7 +30,7 @@ namespace GUI::Database {
 // 规则变化时重建.
 struct AssetTableView {
   std::vector<size_t> rows; // asset_id, 只含该维度确有缺失的
-  uint64_t generation = 0;  // 对应的 Asset::asset_stats_generation
+  uint64_t generation = 0;  // 对应的 Asset::generation
   bool built = false;
 };
 
@@ -57,7 +57,7 @@ struct DateTableView {
   int sort_column = 1;         // 默认按 Miss
   bool sort_ascending = false; // 缺得最多的排最前
 
-  uint64_t generation = 0; // 对应的 Asset::asset_stats_generation
+  uint64_t generation = 0; // 对应的 Asset::generation
   bool built = false;
 };
 

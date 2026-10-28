@@ -121,7 +121,6 @@ struct Asset {
     }
   };
   std::vector<AssetStats> asset_stats; // 按 asset_id 索引; 空 = 待重算
-  uint64_t asset_stats_generation = 0; // 每次换进 +1, 驱动 GUI 表格视图失效
 
   // ========================================
   // 二进制库元数据
@@ -231,6 +230,7 @@ struct Asset {
 
   // GUI 线程: 一趟扫描的产物整体换进 (帧目录随之发布)
   void adopt(AssetScan &&scan);
+  uint64_t generation = 0; // 数据代: 每次 adopt +1 (同步 / 编码都以扫描换进收尾), 驱动 GUI 视图失效
 
 private:
   mutable std::mutex orders_mutex_;

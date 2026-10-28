@@ -107,14 +107,14 @@ void rebuild_table_view(AssetTableView &view, const Asset &asset, const MissingD
   }
 
   view.built = true;
-  view.generation = asset.asset_stats_generation;
+  view.generation = asset.generation;
 }
 
 // 视图过期就重建. 排序规则变化由 ImGui 的 SpecsDirty 告知.
 void sync_table_view(AssetTableView &view, const Asset &asset, const MissingDim &dim) {
   ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs();
   const bool specs_dirty = sort_specs && sort_specs->SpecsDirty;
-  if (!view.built || view.generation != asset.asset_stats_generation || specs_dirty) {
+  if (!view.built || view.generation != asset.generation || specs_dirty) {
     rebuild_table_view(view, asset, dim, sort_specs);
     if (sort_specs)
       sort_specs->SpecsDirty = false;
@@ -376,11 +376,11 @@ void rebuild_date_view(DateTableView &view, const Asset &asset, const OrdersCata
     view.rows.push_back(entry.first);
 
   view.built = true;
-  view.generation = asset.asset_stats_generation;
+  view.generation = asset.generation;
 }
 
 void sync_date_view(DateTableView &view, const Asset &asset, const OrdersCatalog &orders, DateDim dim) {
-  if (!view.built || view.generation != asset.asset_stats_generation)
+  if (!view.built || view.generation != asset.generation)
     rebuild_date_view(view, asset, orders, dim);
 }
 
@@ -485,8 +485,8 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
 
   // 在飞 (请求发出到交接收下), 不是进度面忙: 刚确认开跑那几帧 worker 还没摘请求, 全屏进度不能因此关掉
   const bool is_running = sm.encoding();
-  // 开跑须同步 / 扫描都不在飞 (编码读 assetinfo / items / 回测日历)
-  const bool start_blocked = sm.syncing() || sm.scanning();
+  // 开跑须同步 / 扫描都不在飞 (编码读 assetinfo / items / 回测日历), 且共享数据未冻结 (特征计算在读日文件)
+  const bool start_blocked = !sm.can_encode();
   // 这两个按引用接 —— 里面的缺失日期/错误文件列表是几千条
   // std::string, 逐帧整份复制就是逐帧几千次分配
   const auto &check_result = sm.get_state().check;
@@ -683,7 +683,7 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
       }
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && start_blocked)
-        ImGui::SetTooltip("基本面同步 / 覆盖扫描进行中");
+        ImGui::SetTooltip("基本面同步 / 覆盖扫描 / 特征计算进行中");
 
       ImGui::SameLine();
       if (!file_check_result.was_run()) {

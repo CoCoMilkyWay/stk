@@ -26,8 +26,10 @@ void StateManager::refresh() {
   fund_.Request({fund_ch_.next(), data_.config.sync_fundamental, data_.config.sync_bar1m});
 }
 
+bool StateManager::frozen() const { return data_.taskstate.features.computing; }
+
 void StateManager::encode(int workers, bool skip_existing) {
-  assert(!syncing() && !scanning() && !encoding() && "encode: 同步 / 扫描 / 编码在飞");
+  assert(can_encode() && "encode: 同步 / 扫描 / 编码在飞, 或共享数据冻结");
   enc_.Request({enc_ch_.next(), workers, skip_existing});
 }
 
@@ -67,18 +69,20 @@ void StateManager::tick() {
       scan(ScanMode::RescanStorage);
   }
 
-  // 扫描: 产物换进 Asset + 留存覆盖结论 (scan 空 = 两库皆无, Asset 不动)
-  if (auto r = scan_.handoff.take()) {
-    scan_ch_.taken = r->seq;
-    if (scan_ch_.latest(r->seq)) {
-      if (r->scan)
-        data_.asset.adopt(std::move(*r->scan));
-      state_.check = std::move(r->check);
+  // 扫描: 产物换进 Asset + 留存覆盖结论 (scan 空 = 两库皆无, Asset 不动); 冻结时不收
+  if (!frozen()) {
+    if (auto r = scan_.handoff.take()) {
+      scan_ch_.taken = r->seq;
+      if (scan_ch_.latest(r->seq)) {
+        if (r->scan)
+          data_.asset.adopt(std::move(*r->scan));
+        state_.check = std::move(r->check);
+      }
     }
   }
 
-  // 基本面: 扫描 / 编码在飞时不收 (它们正读 assetinfo / items), 件留在邮箱里等
-  if (!scanning() && !encoding()) {
+  // 基本面: 扫描 / 编码在飞时不收 (它们正读 assetinfo / items), 冻结时不收, 件留在邮箱里等
+  if (!frozen() && !scanning() && !encoding()) {
     if (auto r = fund_.handoff.take()) {
       fund_ch_.taken = r->seq;
       if (fund_ch_.latest(r->seq)) {
@@ -122,6 +126,7 @@ void StateManager::publish_task_state() {
 
   ts.json_update_inflight = syncing();
   ts.l2_scan_inflight = scanning();
+  ts.encode_inflight = encoding();
   ts.binary_scanned = (check.status != DatabaseStatus::Unchecked);
   ts.binary_pass = (check.status == DatabaseStatus::Pass);
   ts.all_json_ready = state_.all_json_ready();

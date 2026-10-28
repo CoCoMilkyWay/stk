@@ -50,7 +50,7 @@ void Asset::adopt(AssetScan &&scan) {
   date_stats = std::move(scan.date_stats);
   date_gaps = std::move(scan.date_gaps);
   asset_stats = std::move(scan.asset_stats);
-  ++asset_stats_generation;
+  ++generation;
 }
 
 // ============================================================================

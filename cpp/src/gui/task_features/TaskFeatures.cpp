@@ -159,20 +159,17 @@ TaskHandle CreateFeaturesTask() {
 
     // Services 懒创建 (首次 Draw), 未创建 = 必然没在算
     const bool compute_busy = state->compute_service && state->compute_service->busy();
+    // 点下 Compute 起到一轮收尾 (弹窗状态机非 Idle): 共享数据冻结
+    fs.computing = state->compute_state.ui_state != Features::ComputeUIState::Idle;
 
-    if (!state->inputs_ready) {
+    if (!state->inputs_ready)
       fs.status = TaskState::Features::Status::Waiting;
-      fs.computing = false;
-    } else if (compute_busy) {
+    else if (compute_busy)
       fs.status = TaskState::Features::Status::Computing;
-      fs.computing = true;
-    } else if (!has_selection) {
+    else if (!has_selection)
       fs.status = TaskState::Features::Status::Selecting;
-      fs.computing = false;
-    } else {
+    else
       fs.status = TaskState::Features::Status::Ready;
-      fs.computing = false;
-    }
 
     // Tab 锁定: 计算期间锁住其它 tab (Dist/Transform 是流式构建, 切走即取消, 不参与锁)
     if (compute_busy) {
@@ -408,8 +405,7 @@ TaskHandle CreateFeaturesTask() {
       Features::RenderTabFeature(data, state->feature_ui_state);
       break;
     case TAB_COMPUTE:
-      Features::RenderTabCompute(state->compute_service.get(), state->compute_state,
-                                 data.assetinfo.get_stock_days(), data.config);
+      Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data);
       break;
     case TAB_TRANSFORM:
       Features::RenderTabTransform(state->transform_service.get(), data,
