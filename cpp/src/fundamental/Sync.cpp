@@ -34,7 +34,7 @@ std::vector<Task> plan(const Round &r, const Keep &keep) {
       if (keep && !keep(s, sl))
         continue;
       if (auto t = todo(s, sl))
-        out.push_back(std::move(*t));
+        add(out, std::move(*t));
     }
   }
   return out;
@@ -48,9 +48,10 @@ std::int64_t run(typename Src::Client &client, const Task &t) {
 }
 
 std::string label(const Task &t) {
-  const std::string at = t.spec->name + " " +
-                         (t.spec->shape == Shape::Daily ? misc::dash(t.w.lo) : t.ym == 0 ? "_meta"
-                                                                                         : misc::dash_ym(t.ym));
+  if (t.spec->shape == Shape::Daily)
+    return t.spec->name + " " + misc::dash(t.w.lo) + (t.w.hi > t.w.lo ? " ~ " + misc::dash(t.w.hi) : "") + " [" +
+           std::to_string(t.keys.size()) + " 日]";
+  const std::string at = t.spec->name + " " + (t.ym == 0 ? "_meta" : misc::dash_ym(t.ym));
   switch (t.how) {
   case Write::Replace:
     return at;
@@ -70,17 +71,16 @@ std::string label(const Task &t) {
 Budget budget(bigquant::Client &client, const std::vector<Task> &tasks) {
   assert(!tasks.empty() && "budget: 计划为空");
   const Spec &s = *tasks.front().spec;
-  Budget b{tasks.size(), tasks.front().w.lo, tasks.back().w.hi};
+  Budget b{.tasks = tasks.size(), .lo = tasks.front().w.lo, .hi = tasks.back().w.hi};
   std::vector<std::string> keys;
   for (const Task &t : tasks) {
-    assert(t.spec == &s && s.shape == Shape::Daily && t.how == Write::Replace && "budget: 只估单张 Daily 表的整日计划");
-    assert((keys.empty() || group_key(Grain::Day, t.w.lo) > keys.back()) && "budget: 计划日须升序");
-    keys.push_back(group_key(Grain::Day, t.w.lo));
+    assert(t.spec == &s && s.shape == Shape::Daily && t.how == Write::Replace && "budget: 只估单张 Daily 表的打包计划");
+    assert((keys.empty() || t.keys.front() > keys.back()) && "budget: 计划日须升序");
+    keys.insert(keys.end(), t.keys.begin(), t.keys.end());
   }
-  const Window w{b.lo, b.hi};
-  b.cols = client.query(select(s, "*", w, " LIMIT 0"))->num_columns();
-  const misc::pq::TableView v(
-      client.query(select(s, group_expr(s, Grain::Day) + " AS g, COUNT(*) AS n", w, key_filter(s, keys) + " GROUP BY 1")));
+  b.days = keys.size();
+  const misc::pq::TableView v(client.query(
+      select(s, group_expr(s, Grain::Day) + " AS g, COUNT(*) AS n", {b.lo, b.hi}, key_filter(s, keys) + " GROUP BY 1")));
   const misc::pq::Col g = v.col("g"), n = v.col("n");
   std::map<std::string_view, std::int64_t> rows;
   for (std::int64_t i = 0; i < v.rows(); ++i)
@@ -90,7 +90,11 @@ Budget budget(bigquant::Client &client, const std::vector<Task> &tasks) {
     assert(it != rows.end() && it->second > 0 && "budget: 计划日远端 0 行 (未入库)");
     b.rows += it->second;
   }
-  b.cells = b.rows * b.cols;
+  for (const std::int64_t p : pack_rows(client, tasks)) {
+    assert(p > 0 && "budget: 打包任务远端 0 资产");
+    b.packs += p;
+  }
+  b.cells = b.packs * kPackCols;
   return b;
 }
 

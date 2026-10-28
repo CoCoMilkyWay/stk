@@ -198,8 +198,9 @@ public:
       ImGui::SeparatorText("本次拉取");
       if (begin_kv("##pull")) {
         kv_row("缺失交易日", std::to_string(b.days) + " 天", misc::dash(b.lo) + " ~ " + misc::dash(b.hi));
-        kv_row("远端行数", human(b.rows), "逐日精确计数");
-        kv_row("返回列数", std::to_string(b.cols), "实付 = 行数 × 列数");
+        kv_row("分钟行", human(b.rows), "拆回落盘");
+        kv_row("打包查询", std::to_string(b.tasks) + " 条", "每条 ≤ " + std::to_string(config::BIGQUANT_PACK_DAYS) + " 日");
+        kv_row("返回行", human(b.packs), "一资产一行, 分钟线收进一格");
         ImGui::EndTable();
       }
       ImGui::Spacing();

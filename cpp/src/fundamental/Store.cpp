@@ -326,7 +326,7 @@ std::string slot_key(const Spec &s, const Slot &sl) { return group_key(slot_grai
 std::optional<Task> todo(const Spec &s, const Slot &sl) {
   if (sl.st == State::Frozen)
     return std::nullopt;
-  Task t{&s, sl.ym, sl.w};
+  Task t = whole(s, sl);
   const Ymd w = sl.st == State::Open ? mark(s, *sl.sh) : 0; // 水位; 0 = 整段覆盖 (Missing / Stale / 0 行文件)
   if (w != 0) {
     if (s.snap == Snap::Day)
@@ -337,6 +337,26 @@ std::optional<Task> todo(const Spec &s, const Slot &sl) {
   if (t.w.lo > t.w.hi)
     return std::nullopt; // 已到水位; {0, 0} (vd 空) 照拉
   return t;
+}
+
+Task whole(const Spec &s, const Slot &sl) {
+  Task t{&s, sl.ym, sl.w};
+  if (s.shape == Shape::Daily)
+    t.keys = {slot_key(s, sl)};
+  return t;
+}
+
+void add(std::vector<Task> &plan, Task t) {
+  if (t.spec->shape == Shape::Daily && !plan.empty()) {
+    Task &b = plan.back();
+    if (b.spec == t.spec && b.ym == t.ym && static_cast<int>(b.keys.size()) < ::config::BIGQUANT_PACK_DAYS) {
+      assert(t.keys.size() == 1 && t.w.lo > b.w.hi && "add: Daily 逐日升序并入");
+      b.w.hi = t.w.hi;
+      b.keys.push_back(std::move(t.keys.front()));
+      return;
+    }
+  }
+  plan.push_back(std::move(t));
 }
 
 Ymd mark(const Spec &s, const Shard &sh) {
@@ -371,9 +391,19 @@ void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
   const Spec &s = *t.spec;
   assert((t.ym == 0) == (s.shape == Shape::Meta) && "put: 分片与表形态不符");
   if (s.shape == Shape::Daily) {
-    assert(t.how == Write::Replace && t.w.lo == t.w.hi && misc::ym_of(t.w.lo) == t.ym && "put: Daily 只整日 Replace");
-    assert(tbl->num_rows() > 0 && "put: Daily 交易日 0 行 (远端未入库)");
-    pq::write_table_atomic(day_path(s.name, t.w.lo), tbl);
+    assert(t.how == Write::Replace && !t.keys.empty() && "put: Daily 只整日 Replace, keys = 待拉日");
+    const auto vd = tbl->GetColumnByName(s.vd);
+    assert(vd && vd->num_chunks() == static_cast<int>(t.keys.size()) && "put: Daily 须一日一块, 与待拉日一一对应 (交易日远端未入库?)");
+    std::vector<Ymd> d;
+    std::int64_t at = 0;
+    for (int c = 0; c < vd->num_chunks(); ++c) {
+      const Ymd day = key_day(t.keys[static_cast<std::size_t>(c)]);
+      pq::Col(vd->chunk(c)).yyyymmdd_all(d);
+      assert(grain_of(t.keys[static_cast<std::size_t>(c)]) == Grain::Day && misc::ym_of(day) == t.ym && "put: Daily 待拉日须为 ym 内的 Day 键");
+      assert(!d.empty() && std::all_of(d.begin(), d.end(), [day](Ymd x) { return x == day; }) && "put: Daily 块内日与待拉日不符");
+      pq::write_table_atomic(day_path(s.name, day), tbl->Slice(at, static_cast<std::int64_t>(d.size())));
+      at += static_cast<std::int64_t>(d.size());
+    }
     return;
   }
   const fs::path p = path(s.name, t.ym);

@@ -65,8 +65,9 @@ struct Unit {
 // 一月的本地清点 (覆盖率分母 + 流量): 本地逐日基格的副产品 (Daily: 该月各日分片累加)
 struct Inv {
   std::int64_t rows = 0;
-  std::int64_t days = 0; // 出现过的 vd 天数
-  std::int64_t cols = 0; // 分片列数 (Daily: 各日最大)
+  std::int64_t days = 0;   // 出现过的 vd 天数
+  std::int64_t cols = 0;   // 分片列数 (Daily: 各日最大)
+  std::int64_t assets = 0; // Daily: 各日资产数最大 (打包流量的单位, 见 Remote.hpp); 其余 0
 };
 
 struct Diff {
@@ -108,6 +109,7 @@ std::string label(const Unit &u);
 // 差异组键 (Diff::group) → 修复任务, 槽序 ((ym, 日) 升序) —— 槽即组, Month / Daily 同一条规则:
 //   差异键归入与之相交的冻结槽 (槽键是其前缀 = 在槽内; 其是槽键前缀 = 盖住槽);
 //   槽内有不细于槽级的键 → Replace 整槽; 否则 Splice 这些键 (槽窗口). 差异键须全落在冻结槽里 (assert)
+//   任务经 Store::add 入列 (Daily 同月日槽并成打包任务, 与 sync::plan 同形)
 std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::string> &groups);
 
 // ============================================================================

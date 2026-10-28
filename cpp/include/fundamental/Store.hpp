@@ -38,7 +38,7 @@
 //     Missing  无文件 / Stale 不新鲜 → 整刷; Frozen 新鲜 → 不动
 //     新鲜 = vd 空: 写盘时刻 ≥ horizon 日 avail_hour 点 (当日新股随其他表同点入盘); 否则: mark ≥ horizon
 //   Daily (槽位 = Round::days 里 [start, horizon] 的交易日; 日历未入盘 → 无槽):
-//     Missing  无文件                                        → 拉该日, 覆盖
+//     Missing  无文件                                        → 拉该日, 覆盖 (同月缺日经 add 并成打包任务)
 //     Frozen   有文件                                        → 不动 (avail_hour=24 ⇒ 只拉到昨天, 落盘即整日; 回填靠 audit)
 //   (右列动作 = todo; dedup 节流在 sync::plan)
 //
@@ -129,6 +129,13 @@ using Keep = std::function<bool(const Spec &, const Slot &)>;
 //   Open 槽在这里读水位 (唯一一处), 其余零 IO
 std::optional<Task> todo(const Spec &s, const Slot &sl);
 
+// 整槽 Replace (todo 与 audit::repair 共用); Daily 带该日 Day 键
+Task whole(const Spec &s, const Slot &sl);
+
+// 计划追加 t (sync::plan / audit::repair 共用): Daily 与末个任务同表同月且未满 BIGQUANT_PACK_DAYS → 并入
+//   (w.hi 延到该日, keys 追加), 一条打包查询拉齐; 其余照常追加
+void add(std::vector<Task> &plan, Task t);
+
 // 水位 = 分片内 max(vd); 0 行 / 全 null → 0. 只读 footer 列统计 (vd 空 → assert)
 Ymd mark(const Spec &s, const Shard &sh);
 
@@ -140,7 +147,8 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
 //   Splice: 分片须已存在; 组键 ∈ t.keys 的旧行换成 tbl (tbl 每行须命中 t.keys);
 //           新行插回所属日的行块 (布局同整拉的 "按日成块"); 列序 / 列型同旧分片
 //           (全 null 的 NA 列按新行提升), 新行带新列 → assert
-//   Daily: 落 w.lo 那日的文件; 0 行 → assert (交易日远端未入库, 落盘即冻结不可留空文件)
+//   Daily: tbl 一日一 chunk, 与 t.keys 逐一对应 (Remote::fetch 的打包拆回即此布局), 逐日落文件;
+//          某日 0 行 → assert (交易日远端未入库, 落盘即冻结不可留空文件)
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
 
 // 外来写者的分片 (远端 pyarrow / 换版前的本库, 见 misc::pq::foreign_writer) 以本库原样重写; 本库写的 → 不动.

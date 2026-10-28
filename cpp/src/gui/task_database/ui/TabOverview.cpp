@@ -12,6 +12,7 @@
 #include "fundamental/Spec.hpp"
 #include "imgui.h"
 #include "misc/date.hpp"
+#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -201,7 +202,9 @@ void audit_cells(const std::string &name, const AuditTableStat *a, const AuditVi
   }
   text_cells(a->repair_cells, weekly);
   if (a->repair_cells > 0 && ImGui::IsItemHovered())
-    ImGui::SetTooltip("每个定位组 (日 / 资产): 远端行 × 列; 整月 %zu 月: 整月远端行 × 列", a->whole_months);
+    ImGui::SetTooltip("每个定位组 (日 / 资产): 远端行 × 列; 整月 %zu 月: 整月远端行 × 列\n"
+                      "分钟线按资产打包: 每月 ⌈日数 / %d⌉ 条 × 资产数 × 2",
+                      a->whole_months, config::BIGQUANT_PACK_DAYS);
 
   ImGui::TableNextColumn();
   text_cells(a->full_cells, weekly);

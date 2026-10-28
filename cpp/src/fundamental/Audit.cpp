@@ -24,6 +24,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fundamental::audit {
@@ -361,6 +362,19 @@ std::vector<Ymd> days_of(const arrow::Table &t, const Spec &s, Ym ym) {
   return out;
 }
 
+// t 里资产键的不同值数
+std::int64_t distinct_keys(const arrow::Table &t, const Spec &s) {
+  const auto key = t.GetColumnByName(std::string(key_col(s)));
+  assert(key && "audit: 本地分片缺资产键列");
+  std::unordered_set<std::string_view> seen;
+  for (const auto &chunk : key->chunks()) {
+    const pq::Col k(chunk);
+    for (std::int64_t i = 0; i < chunk->length(); ++i)
+      seen.insert(k.str(i));
+  }
+  return static_cast<std::int64_t>(seen.size());
+}
+
 // 本地: 一个月 (同月的槽). 构造即读盘一次 → 逐日基格 (与 L.all 同序) + 清点;
 //   Month / Day 级指纹 = 逐日基格按所查格线性导出 (零再读); Asset 级再读一次, 只解所查列 + vd + 资产键
 class Local {
@@ -378,6 +392,8 @@ public:
       const auto t = read(*sl.sh);
       inv_.rows += t->num_rows();
       inv_.cols = std::max<std::int64_t>(inv_.cols, t->num_columns());
+      if (s.shape == Shape::Daily)
+        inv_.assets = std::max(inv_.assets, distinct_keys(*t, s));
       const std::vector<Ymd> d = days_of(*t, s, sl.ym);
       std::vector<std::vector<i128> *> acc(d.size());
       std::vector<i128> *cur = nullptr;
@@ -652,7 +668,7 @@ bool valid_group(const std::string &g) {
 }
 
 // 状态文件 <表>.tsv (# 起头为注释):
-//   month \t YYYY-MM \t 核对时刻 \t 版本 \t 本地行 \t 本地天数 \t 列数
+//   month \t YYYY-MM \t 核对时刻 \t 版本 \t 本地行 \t 本地天数 \t 列数 \t 资产数
 //         \t 问题天数 \t 行差+ \t 行差−   (末三列由 diff 导出, 只供人看, 读时不用)
 //   diff  \t 组 \t local_n \t remote_n \t 列 \t nn|s \t 本地 \t 远端
 void save(const std::string &name, const Book::Sheet &t) {
@@ -677,13 +693,13 @@ void save(const std::string &name, const Book::Sheet &t) {
     std::ofstream out(tmp);
     assert(out && "audit: 状态文件无法写入");
     out << "# " << name << "\n"
-        << "# month\tym\taudited_at\tver\tlocal_rows\tlocal_days\tcols\tbad_days\tadded\tremoved\n"
+        << "# month\tym\taudited_at\tver\tlocal_rows\tlocal_days\tcols\tassets\tbad_days\tadded\tremoved\n"
         << "# diff\tgroup\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
     for (const auto &[ym, m] : t.months) {
       const auto s = sum.find(ym);
       const bool bad = s != sum.end();
       out << "month\t" << ym << '\t' << m.at << '\t' << m.ver << '\t' << m.inv.rows << '\t' << m.inv.days << '\t'
-          << m.inv.cols << '\t' << (bad ? s->second.bad.size() : 0) << '\t' << (bad ? s->second.added : 0) << '\t'
+          << m.inv.cols << '\t' << m.inv.assets << '\t' << (bad ? s->second.bad.size() : 0) << '\t' << (bad ? s->second.added : 0) << '\t'
           << (bad ? s->second.removed : 0) << '\n';
     }
     std::vector<const Book::Row *> rows;
@@ -715,13 +731,14 @@ std::optional<Book::Sheet> parse(const fs::path &p) {
       continue;
     const std::vector<std::string> f = split_tab(line);
     if (f[0] == "month") {
-      if (f.size() != 10 || misc::parse_ym(f[1]) == 0 || f[2].empty())
+      if (f.size() != 11 || misc::parse_ym(f[1]) == 0 || f[2].empty())
         return std::nullopt;
       const auto ver = to_num<std::uint64_t>(f[3]);
-      const auto rows = to_num<std::int64_t>(f[4]), days = to_num<std::int64_t>(f[5]), cols = to_num<std::int64_t>(f[6]);
-      if (!ver || !rows || !days || !cols)
+      const auto rows = to_num<std::int64_t>(f[4]), days = to_num<std::int64_t>(f[5]), cols = to_num<std::int64_t>(f[6]),
+                 assets = to_num<std::int64_t>(f[7]);
+      if (!ver || !rows || !days || !cols || !assets)
         return std::nullopt;
-      t.months[f[1]] = {{*rows, *days, *cols}, f[2], *ver};
+      t.months[f[1]] = {{*rows, *days, *cols, *assets}, f[2], *ver};
       continue;
     }
     if (f[0] != "diff" || f.size() != 8 || !valid_group(f[1]))
@@ -826,21 +843,21 @@ std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::s
   for (const Slot &sl : frozen(s, r)) {
     const std::string k = slot_key(s, sl);
     std::vector<std::string> in; // 与槽相交的差异键 (升序)
-    bool whole = false;
+    bool cover = false;
     for (const std::string &g : keys)
       if (g.starts_with(k) || k.starts_with(g)) {
         in.push_back(g);
-        whole = whole || grain_of(g) <= sg;
+        cover = cover || grain_of(g) <= sg;
       }
     if (in.empty())
       continue;
     hit.insert(in.begin(), in.end());
-    if (whole) {
-      out.push_back({&s, sl.ym, sl.w, Write::Replace});
+    if (cover) {
+      add(out, whole(s, sl));
       continue;
     }
     assert(finest(s) > sg && "repair: 槽级以下不可 Splice");
-    out.push_back({&s, sl.ym, sl.w, Write::Splice, std::move(in)});
+    add(out, {&s, sl.ym, sl.w, Write::Splice, std::move(in)});
   }
   assert(hit.size() == keys.size() && "repair: 差异键不全落在冻结槽里");
   return out;
