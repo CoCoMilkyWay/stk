@@ -7,7 +7,7 @@ Modes:
     - TSAN:       Race condition detection (5-15x slower)
     - DEBUG:      Interactive debugging (very slow)
     - PROFILE:    CPU profiling with Tracy
-    - ASSERT:     Optimized build with assertions
+    - ASSERT:     Optimized build with assertions; feature compute is perf-sampled into output/profile/
     - PRODUCTION: Maximum performance (-O3, fastest)
 """
 

@@ -17,6 +17,7 @@
 
 #include "features/DataDefine.hpp"
 #include "features/TimeIndex.hpp"
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -71,23 +72,22 @@ private:
       short_mask_ |= static_cast<uint16_t>(1u << ((col_ + D_MAX - k) % D_MAX));
   }
 
-  // 两遍算方差: 成交额 ~1e6..1e7, 单遍 Σx²−nμ² 在 fp32 下抵消到只剩舍入噪声, σ 假小 → z 上万
+  // 两遍算方差: 成交额 ~1e6..1e7, 单遍 Σx²−nμ² 在 fp32 下抵消到只剩舍入噪声, σ 假小 → z 上万.
+  // 缺位按选择取 +0 (非乘掩码: 被清位的列仍留旧值), 累加序不变; 有效位随日轮换, 分支预测不住
   static inline float zscore(const float (&ring)[D_MAX], uint16_t valid, float x) {
-    float s = 0.0f;
-    uint32_t n = 0;
-    for (size_t i = 0; i < D_MAX; ++i)
-      if (valid & (1u << i))
-        s += ring[i], ++n;
+    const uint32_t n = static_cast<uint32_t>(std::popcount(valid));
     if (n < MIN_N)
       return 0.0f; // 槽内样本不足 (上市初期 / 稀疏槽): z 的中性值 = 0 (与历史均值一致), 不产 NaN
+    float s = 0.0f;
+    for (size_t i = 0; i < D_MAX; ++i)
+      s += (valid >> i & 1u) ? ring[i] : 0.0f;
     const float nf = static_cast<float>(n);
     const float mean = s / nf;
     float ss = 0.0f;
-    for (size_t i = 0; i < D_MAX; ++i)
-      if (valid & (1u << i)) {
-        const float d = ring[i] - mean;
-        ss += d * d;
-      }
+    for (size_t i = 0; i < D_MAX; ++i) {
+      const float d = ring[i] - mean;
+      ss += (valid >> i & 1u) ? d * d : 0.0f;
+    }
     const float var = ss / (nf - 1.0f);
     return var > 0.0f ? (x - mean) / std::sqrt(var) : 0.0f; // σ = 0 (历史全同值): 无离散度可归一, 同样落中性 0
   }

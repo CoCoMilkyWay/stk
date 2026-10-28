@@ -127,11 +127,12 @@ private:
   void close_minute(size_t m) {
     const MinuteData &md = dag_.minute_data;
     assert(!md.close.empty() && m == md.index && "close_minute: MinuteData 末 bar 不是分钟 m");
-    const bool traded = md.close.back() > 0 && (md.bid_volume.back() + md.ask_volume.back()) > 0;
+    const MinuteData::Bar bar = md.back();
+    const bool traded = bar.close > 0 && (bar.bid_volume + bar.ask_volume) > 0;
     meta_.on_minute(traded);
     for (ResamplerMin2Bin &r : min2bin_)
-      r.accumulate();
-    for_each_close<L_1min>(level_end_sec(L_1min, m) - 1, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
+      r.accumulate(bar);
+    for_each_close<L_1min>(m, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
     if (traded)
       dag_.label.minute_closed(m, writer());
   }
@@ -186,7 +187,7 @@ private:
   void write_label(size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) {
     assert(n >= 1 && col + n <= Label::MIN_LABEL_COUNT);
     const Day &d = day_at(days_ago);
-    for_each_close<L_1min>(level_end_sec(L_1min, label_min) - 1, [&]<size_t LVL>(size_t r) {
+    for_each_close<L_1min>(label_min, [&]<size_t LVL>(size_t r) {
       if constexpr (kLabCount[LVL] != 0)
         for (size_t i = 0; i < n; ++i)
           if (const size_t f = kLabCol[LVL][col + i]; f != kNoCol)

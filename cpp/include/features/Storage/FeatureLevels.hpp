@@ -190,13 +190,42 @@ static_assert(level_closes(L_sec, 0) && !level_closes(L_1min, 58) && level_close
                   level_closes(L_1day, TRADE_SECONDS_PER_DAY - 1) && level_closes(L_60min, TRADE_SECONDS_PER_DAY - 1),
               "收行: 每秒收 L_sec, 分钟末秒收 L_1min, 箱末分钟末秒收箱层, 收盘末秒全层收行");
 
-// 交易秒 s 末收行的层 (层号 ≥ From), 细 → 粗逐层 f.template operator()<LVL>(该层行)
+// 分钟收行表: L_1min 及以上只在分钟末秒收行, 收哪些层 / 各层第几行只随分钟 m 变 (level_closes 判据逐分钟展开)
+struct MinuteClose {
+  uint8_t mask = 0;                       // 位 lvl = 层 lvl 在分钟 m 末收行
+  std::array<uint8_t, LEVEL_COUNT> row{}; // 收行层的行
+};
+inline constexpr std::array<MinuteClose, TRADE_MINUTES_PER_DAY> MINUTE_CLOSE = [] {
+  static_assert(L_1MIN_ROWS <= 256 && LEVEL_COUNT <= 8, "MinuteClose: 行 / 层位宽 uint8_t");
+  std::array<MinuteClose, TRADE_MINUTES_PER_DAY> table{};
+  for (size_t m = 0; m < TRADE_MINUTES_PER_DAY; ++m) {
+    const size_t s = level_end_sec(L_1min, m) - 1;
+    for (size_t lvl = L_1min; lvl < LEVEL_COUNT; ++lvl)
+      if (level_closes(lvl, s)) {
+        table[m].mask = static_cast<uint8_t>(table[m].mask | 1u << lvl);
+        table[m].row[lvl] = static_cast<uint8_t>(level_row_of_sec(lvl, s));
+      }
+  }
+  return table;
+}();
+
+// 层 From (节拍层: L_sec / L_1min) 行 t 末收行的层 (层号 ≥ From), 细 → 粗逐层 f.template operator()<LVL>(该层行);
+// L_1min 及以上查分钟收行表 MINUTE_CLOSE
 template <size_t From, class F>
-[[gnu::always_inline]] inline void for_each_close(size_t s, F &&f) {
-  assert(s < TRADE_SECONDS_PER_DAY);
+[[gnu::always_inline]] inline void for_each_close(size_t t, F &&f) {
+  static_assert(From == L_sec || From == L_1min, "节拍层只有 L_sec / L_1min");
+  assert(t < level_valid_rows(From));
+  size_t m = t;
+  if constexpr (From == L_sec) {
+    f.template operator()<L_sec>(t);
+    if (!level_closes(L_1min, t))
+      return;
+    m = L_sec_to_L_1min(t);
+  }
+  const MinuteClose &c = MINUTE_CLOSE[m];
   [&]<size_t... L>(std::index_sequence<L...>) {
-    ((level_closes(From + L, s) ? f.template operator()<From + L>(level_row_of_sec(From + L, s)) : void()), ...);
-  }(std::make_index_sequence<LEVEL_COUNT - From>{});
+    (((c.mask >> (L_1min + L) & 1u) ? f.template operator()<L_1min + L>(c.row[L_1min + L]) : void()), ...);
+  }(std::make_index_sequence<LEVEL_COUNT - L_1min>{});
 }
 
 // 一列特征的全局身份 (池 × 层 × 存储列; 档 = 池的档, 列下标 = 该 (档, 层) 字段表行号): GUI 跨池跨层选择 / 分析请求的列单位.

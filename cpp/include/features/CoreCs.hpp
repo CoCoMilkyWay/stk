@@ -225,7 +225,7 @@ public:
     assert(day_ && "compute_and_store: 本日未 begin_day");
     // 节拍行 t 末秒收行的各层逐层截面 (细 → 粗, 与 CoreTs::close_minute 同一 for_each_close). 读层 LVL 行 r 的前提 = 全部资产已收该行:
     // 回测由按日流控保证; 实盘须先对全部资产 CoreTs::advance(m + 1) (L_1min 及以上在分钟 m 末收行, L_1day 随末分钟收)
-    for_each_close<kBeatLevel>(level_end_sec(kBeatLevel, t) - 1, [&]<size_t LVL>(size_t r) { run<LVL>(r); });
+    for_each_close<kBeatLevel>(t, [&]<size_t LVL>(size_t r) { run<LVL>(r); });
   }
 
   // 一行 CS 字段 (CsLevel<LVL>::run 展开调用): 源档 S 源层 SRC_LVL 的列 SRC (as-of 投影到本层行 t) → Tf → Method → 本层列 DST

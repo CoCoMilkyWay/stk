@@ -20,8 +20,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <iterator>
 #include <utility>
 #include <vector>
@@ -173,32 +175,63 @@ void z(float *x, std::size_t n) {
   }
 }
 
-void pct_rank(float *x, std::size_t n) {
-  // (值, 下标) 对排序: 比较不经 x[idx] 间接寻址; 并列组内次序不影响输出 (组内同一均秩)
-  thread_local std::vector<std::pair<float, std::size_t>> sv;
-  sv.clear();
-  sv.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
+// 排名键 = 值键 << 32 | 下标. 值键: 有限 float 的保序无符号映射, −0 并入 +0 (与 float 比较同为并列) ⇒ 值键相等 ⇔ 值相等;
+// 键序 = (值, 下标) 序
+inline std::uint64_t rank_key(float v, std::size_t i) {
+  const std::uint32_t u = std::bit_cast<std::uint32_t>(v == 0.0f ? 0.0f : v);
+  const std::uint32_t k = (u >> 31) ? ~u : (u | 0x80000000u);
+  return (std::uint64_t{k} << 32) | i;
+}
+inline std::uint32_t rank_value(std::uint64_t key) { return static_cast<std::uint32_t>(key >> 32); }
+inline std::size_t rank_index(std::uint64_t key) { return static_cast<std::size_t>(key & 0xFFFFFFFFu); }
+
+// 有限值的排名键 (下标升序构造), 按键升序: 值键 LSD 基数排序 (每趟 8 位, 稳定 ⇒ 并列保持下标升序 = 按整键排序);
+// 直方图一遍扫出, 全落一个桶的趟 (值域窄的高位字节) 跳过
+std::vector<std::uint64_t> &sorted_rank_keys(const float *x, std::size_t n) {
+  assert(n <= 0xFFFFFFFFu && "排名键: 下标 32 位");
+  thread_local std::vector<std::uint64_t> keys, tmp;
+  keys.clear();
+  keys.reserve(n);
+  for (std::size_t i = 0; i < n; ++i)
     if (std::isfinite(x[i]))
-      sv.emplace_back(x[i], i);
+      keys.push_back(rank_key(x[i], i));
+  const std::size_t m = keys.size();
+  if (m == 0)
+    return keys;
+  constexpr std::size_t kPasses = 4;
+  std::array<std::array<std::uint32_t, 256>, kPasses> hist{};
+  for (const std::uint64_t key : keys)
+    for (std::size_t p = 0; p < kPasses; ++p)
+      ++hist[p][rank_value(key) >> (8 * p) & 0xFFu];
+  tmp.resize(m);
+  for (std::size_t p = 0; p < kPasses; ++p) {
+    std::array<std::uint32_t, 256> &h = hist[p];
+    if (h[rank_value(keys[0]) >> (8 * p) & 0xFFu] == m)
+      continue;
+    std::uint32_t sum = 0;
+    for (std::uint32_t &c : h)
+      sum += std::exchange(c, sum);
+    for (const std::uint64_t key : keys)
+      tmp[h[rank_value(key) >> (8 * p) & 0xFFu]++] = key;
+    keys.swap(tmp);
   }
-  if (sv.empty())
-    return;
+  return keys;
+}
 
-  std::sort(sv.begin(), sv.end(),
-            [](const std::pair<float, std::size_t> &a, const std::pair<float, std::size_t> &b) { return a.first < b.first; });
-
+void pct_rank(float *x, std::size_t n) {
+  // 并列组内次序不影响输出 (组内同一均秩)
+  const std::vector<std::uint64_t> &sv = sorted_rank_keys(x, n);
   std::size_t m = sv.size();
   std::size_t i = 0;
   while (i < m) {
     std::size_t j = i + 1;
-    while (j < m && sv[j].first == sv[i].first)
+    while (j < m && rank_value(sv[j]) == rank_value(sv[i]))
       ++j;
     float avg_rank = static_cast<float>(i + 1 + j) * 0.5f;
     float pct = (m > 1) ? (avg_rank - 1.0f) / static_cast<float>(m - 1)
                         : 0.5f;
     for (std::size_t k = i; k < j; ++k)
-      x[sv[k].second] = pct;
+      x[rank_index(sv[k])] = pct;
     i = j;
   }
 }
@@ -307,21 +340,14 @@ void mean_fill(float *y, std::size_t n) {
 
 // 普通方法: rank → inverse normal, 缺失 → 0
 void rank_inverse_normal(float *y, std::size_t n) {
-  thread_local std::vector<std::pair<float, std::size_t>> sv;
-  sv.clear();
-  sv.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    if (std::isfinite(y[i]))
-      sv.emplace_back(y[i], i);
-  }
+  const std::vector<std::uint64_t> &sv = sorted_rank_keys(y, n);
   std::fill(y, y + n, 0.0f);
   const std::size_t N = sv.size();
   if (N == 0)
     return;
-  std::sort(sv.begin(), sv.end());
   const float scale = 1.0f / (static_cast<float>(N) + 1.0f);
   for (std::size_t rank = 0; rank < N; ++rank)
-    y[sv[rank].second] = inverse_normal_cdf((static_cast<float>(rank) + 1.0f) * scale);
+    y[rank_index(sv[rank])] = inverse_normal_cdf((static_cast<float>(rank) + 1.0f) * scale);
 }
 
 // 池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选;

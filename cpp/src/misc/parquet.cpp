@@ -20,7 +20,6 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <limits>
 #include <string>
 
 namespace misc::pq {
@@ -143,9 +142,12 @@ bool renative(const fs::path &path) {
 // Col
 // ----------------------------------------------------------------------------
 Col::Col(std::shared_ptr<arrow::Array> a)
-    : arr_(std::move(a)), type_(static_cast<int>(arr_->type_id())) {}
-
-bool Col::null(std::int64_t i) const { return arr_->IsNull(i); }
+    : arr_(std::move(a)), type_(static_cast<int>(arr_->type_id())), offset_(arr_->offset()),
+      nulls_(arr_->null_count() != 0 ? arr_->null_bitmap_data() : nullptr) {
+  const arrow::ArrayData &d = *arr_->data();
+  if (d.buffers.size() > 1 && d.buffers[1])
+    values_ = d.buffers[1]->data();
+}
 
 namespace {
 
@@ -212,7 +214,7 @@ std::int32_t max_yyyymmdd(const fs::path &path, const std::string &column) {
 }
 
 std::int32_t Col::yyyymmdd(std::int64_t i) const {
-  if (arr_->IsNull(i))
+  if (null(i))
     return 0;
   switch (type_) {
   case arrow::Type::TIMESTAMP:
@@ -233,7 +235,7 @@ std::int32_t Col::yyyymmdd(std::int64_t i) const {
 }
 
 int Col::minute_of_day(std::int64_t i) const {
-  if (arr_->IsNull(i))
+  if (null(i))
     return -1;
   assert(type_ == arrow::Type::TIMESTAMP && "Col::minute_of_day: 列类型须为 timestamp");
   constexpr std::int64_t kNsPerMin = 60'000'000'000LL;
@@ -251,12 +253,11 @@ void Col::yyyymmdd_all(std::vector<std::int32_t> &out) const {
   if (type_ == arrow::Type::TIMESTAMP) {
     const std::int64_t *v =
         static_cast<const arrow::TimestampArray &>(*arr_).raw_values();
-    const bool nullable = arr_->null_count() != 0;
     std::int64_t prev_ns = 0;
     std::int32_t prev_ymd = 0;
     bool have = false;
     for (std::int64_t i = 0; i < n; ++i) {
-      if (nullable && arr_->IsNull(i)) {
+      if (null(i)) {
         out[static_cast<std::size_t>(i)] = 0;
         continue;
       }
@@ -277,35 +278,8 @@ void Col::yyyymmdd_all(std::vector<std::int32_t> &out) const {
     out[static_cast<std::size_t>(i)] = yyyymmdd(i);
 }
 
-float Col::f32(std::int64_t i) const {
-  if (arr_->IsNull(i))
-    return std::numeric_limits<float>::quiet_NaN();
-  switch (type_) {
-  case arrow::Type::DOUBLE:
-    return static_cast<float>(
-        static_cast<const arrow::DoubleArray &>(*arr_).Value(i));
-  case arrow::Type::FLOAT:
-    return static_cast<const arrow::FloatArray &>(*arr_).Value(i);
-  case arrow::Type::INT64:
-    return static_cast<float>(
-        static_cast<const arrow::Int64Array &>(*arr_).Value(i));
-  case arrow::Type::INT32:
-    return static_cast<float>(
-        static_cast<const arrow::Int32Array &>(*arr_).Value(i));
-  case arrow::Type::INT16:
-    return static_cast<float>(
-        static_cast<const arrow::Int16Array &>(*arr_).Value(i));
-  case arrow::Type::INT8:
-    return static_cast<float>(
-        static_cast<const arrow::Int8Array &>(*arr_).Value(i));
-  default:
-    assert(false && "Col::f32: 列类型须为 double / float / int");
-    return std::numeric_limits<float>::quiet_NaN();
-  }
-}
-
 int Col::i32(std::int64_t i, int def) const {
-  if (arr_->IsNull(i))
+  if (null(i))
     return def;
   switch (type_) {
   case arrow::Type::INT8:
@@ -333,7 +307,7 @@ int Col::i32(std::int64_t i, int def) const {
 }
 
 std::string_view Col::str(std::int64_t i) const {
-  if (arr_->IsNull(i))
+  if (null(i))
     return {};
   switch (type_) {
   case arrow::Type::STRING: {

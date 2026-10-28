@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <sstream>
 #include <string>
@@ -51,6 +52,7 @@ struct StageLayout {
 
   struct Stage {
     ComputeStage kind = ComputeStage::Prefetch;
+    const char *tag = ""; // 短名: 线程名 <tag>_<段内序号> (perf / top 按线程分核, 见 thread_name)
     const char *name = "";
     const char *desc = "";
     int threads = 0;      // worker thread 数
@@ -76,16 +78,16 @@ struct StageLayout {
     const int cs = num_ts_phys, io = cs + num_cs, pf = io + num_io;
     switch (kind) {
     case ComputeStage::Prefetch:
-      return {kind, "预取 Prefetch", "顺日期备源 (Lob: 逐笔帧读进 page cache; Bar: 解码 bar1m 进源环), 领先最慢时序核不超过 ring slots + 2 天; 多核按日轮转",
+      return {kind, "pf", "预取 Prefetch", "顺日期备源 (Lob: 逐笔帧读进 page cache; Bar: 解码 bar1m 进源环), 领先最慢时序核不超过 ring slots + 2 天; 多核按日轮转",
               num_pf, num_pf, num_ts + num_cs + num_io, pf, pf + num_pf - 1};
     case ComputeStage::TS:
-      return {kind, "时序 TS", "逐资产喂源 + DAG, 写 L_sec/L_1min 张量; 领跑核自动接手落后核的资产 (处置权转移)",
+      return {kind, "ts", "时序 TS", "逐资产喂源 + DAG, 写 L_sec/L_1min 张量; 领跑核自动接手落后核的资产 (处置权转移)",
               num_ts, num_ts_phys, 0, 0, num_ts_phys - 1};
     case ComputeStage::CS:
-      return {kind, "截面 CS", "本日全部时序核写完后逐拍重放截面 (与实盘同一调用); 多核按日轮转",
+      return {kind, "cs", "截面 CS", "本日全部时序核写完后逐拍重放截面 (与实盘同一调用); 多核按日轮转",
               num_cs, num_cs, num_ts, cs, io - 1};
     case ComputeStage::IO:
-      return {kind, "落盘 IO", "本日截面写完后逐层落盘, 清零交还 slot; 多核按日轮转",
+      return {kind, "io", "落盘 IO", "本日截面写完后逐层落盘, 清零交还 slot; 多核按日轮转",
               num_io, num_io, num_ts + num_cs, io, pf - 1};
     }
     assert(false && "unknown compute stage");
@@ -110,6 +112,9 @@ struct StageLayout {
     assert(false && "TS worker 序号越界");
     return {};
   }
+
+  // stage 内第 i 个 worker 的线程名
+  static std::string thread_name(const Stage &s, int i) { return std::string(s.tag) + "_" + std::to_string(i); }
 
   static std::string core_text(const Stage &s) {
     std::ostringstream os;
@@ -281,6 +286,58 @@ private:
 
   std::atomic<bool> running_{true};
   std::thread refresh_thread_;
+};
+
+// ============================================================================
+// 特征计算采样 (misc::perf::kEnabled = ASSERT 模式, 否则全空): 协调线程每 100ms tick, 管线收尾 finish.
+//   首日落盘起 (流水线已灌满, 不含 InitCores / 灌池) perf record 本进程, 满 misc::perf::kSeconds 或管线收尾即停,
+//   落 <config::PROFILE_DIR>/<池>/<开采时刻 YYYYMMDD_HHMMSS>/ (每轮一目录, 前后两轮可对比):
+//     meta.json   本轮配置 (池 / 档 / A 轴 / 日期轴 / 日环 / 领养 / 核布局) + 采样窗实测 (落盘天速; 逐核工作量速率 / 忙碌占比)
+//     perf 报告   按段分组 (组名 = 段 tag, 组内线程 = StageLayout::thread_name), 组内逐核 + 全段合并 (见 misc/perf.hpp)
+//   忙碌占比口径同仪表盘 (1 − 干等 / 墙钟); perf 样本只计在 CPU 上的时间, 两者之差 = 缺页 / 抢占等非干等的阻塞.
+// ============================================================================
+namespace misc::perf {
+class Capture;
+}
+
+struct ProfileSpec {
+  std::string pool;
+  TierId tier;
+  const char *unit; // 时序工作量单位 (TierFeed::kUnit)
+  size_t assets;
+  std::span<const misc::Ymd> dates;
+  size_t ring_slots;
+  uint64_t adopt_pct;
+};
+
+class FeatureProfile {
+public:
+  FeatureProfile(ProfileSpec spec, const StageLayout &layout, const StoreRing &store, const ComputeStats &stats);
+  ~FeatureProfile();
+  FeatureProfile(const FeatureProfile &) = delete;
+  FeatureProfile &operator=(const FeatureProfile &) = delete;
+
+  void tick();
+  void finish(); // 停采 + 落 meta.json + 起报告 (幂等; 未开采则无产物)
+
+private:
+  // 核序 = layout.stages() 段序 × 段内序号
+  struct Snap {
+    std::chrono::steady_clock::time_point t;
+    size_t io_done = 0;
+    std::vector<size_t> work, idle_us;
+  };
+  Snap snap() const;
+  void write_meta(const Snap &end) const;
+
+  ProfileSpec spec_;
+  const StageLayout &layout_;
+  const StoreRing &store_;
+  const ComputeStats &stats_;
+  std::string dir_;
+  std::unique_ptr<misc::perf::Capture> capture_;
+  Snap start_;
+  bool done_ = false;
 };
 
 // ============================================================================

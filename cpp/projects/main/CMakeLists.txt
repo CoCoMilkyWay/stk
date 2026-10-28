@@ -74,7 +74,7 @@ set(BUILD_MODE_PROFILE_LD       "")
 set(BUILD_MODE_PROFILE_DEF      PROFILE_MODE TRACY_ENABLE TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING)
 
 set(BUILD_MODE_ASSERT_OPT       -O2)
-set(BUILD_MODE_ASSERT_CC        "")
+set(BUILD_MODE_ASSERT_CC        -g)
 set(BUILD_MODE_ASSERT_LD        "")
 set(BUILD_MODE_ASSERT_DEF       ASSERT_MODE)
 
@@ -239,6 +239,7 @@ set(MATH_FAST
     misc/archive.cpp
     misc/file_check.cpp
     misc/logging.cpp
+    misc/perf.cpp
     misc/system_metrics.cpp
     # api
     # fundamental
@@ -251,6 +252,7 @@ set(MATH_FAST
     # worker: Lob 档管线 + 档无关的截面 / 落盘
     worker/crosssectional_worker.cpp
     worker/encoding_worker.cpp
+    worker/feature_profile.cpp
     worker/feature_progress.cpp
     worker/io_worker.cpp
     worker/lob_pipeline.cpp

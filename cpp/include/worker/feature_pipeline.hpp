@@ -408,17 +408,19 @@ bool pipeline(const PipelineArgs &args) {
   std::vector<std::unique_ptr<CoreOf<T>>> cores(num_assets);
   TsRole<T> role{feed, sched, cores};
 
-  // 统一 launch(worker_id, cpus, fn): pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
-  // 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
+  // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
+  // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 采样窗 (ASSERT 模式) 同样拉取式, 见 FeatureProfile.
   ComputeStats stats(num_pf, num_ts, num_cs, num_io);
   FeatureProgress progress(store, sched, stats, dates, TierFeed<T>::kUnit);
+  FeatureProfile profile({lib.name, T::kId, TierFeed<T>::kUnit, num_assets, dates, args.ring_slots, args.adopt_pct}, L, store, stats);
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
     return StageCtx<T>{worker_id, store, args.libs, dates, args.cancel, stat};
   };
   std::vector<std::future<void>> workers;
   workers.reserve(static_cast<size_t>(L.total_threads()));
-  auto launch = [&](int worker_id, std::vector<unsigned int> cpus, auto fn) {
-    workers.push_back(std::async(std::launch::async, [worker_id, cpus = std::move(cpus), fn]() {
+  auto launch = [&](int worker_id, std::string name, std::vector<unsigned int> cpus, auto fn) {
+    workers.push_back(std::async(std::launch::async, [worker_id, name = std::move(name), cpus = std::move(cpus), fn]() {
+      misc::name_thread(name);
       if (misc::Affinity::supported()) {
         const bool pinned = misc::Affinity::pin_to_cores(cpus);
         assert(pinned && "worker pin 失败");
@@ -430,33 +432,36 @@ bool pipeline(const PipelineArgs &args) {
   for (const StageLayout::Stage &s : L.stages())
     for (int i = 0; i < s.threads; ++i) {
       const int id = s.first_worker + i;
+      std::string name = StageLayout::thread_name(s, i);
       switch (s.kind) {
       case ComputeStage::Prefetch:
-        launch(id, L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { prefetch_loop<T>(ctx(w, stats.prefetch[lane]), feed, lane, num_pf); });
+        launch(id, std::move(name), L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { prefetch_loop<T>(ctx(w, stats.prefetch[lane]), feed, lane, num_pf); });
         break;
       case ComputeStage::TS:
-        launch(id, L.cpus_of(s, i), [&](int w) { ts_loop<T>(ctx(w, stats.ts[static_cast<size_t>(w)]), role); });
+        launch(id, std::move(name), L.cpus_of(s, i), [&](int w) { ts_loop<T>(ctx(w, stats.ts[static_cast<size_t>(w)]), role); });
         break;
       case ComputeStage::CS:
-        launch(id, L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { cs_loop<T>(ctx(w, stats.cs[lane]), lane, num_cs); });
+        launch(id, std::move(name), L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { cs_loop<T>(ctx(w, stats.cs[lane]), lane, num_cs); });
         break;
       case ComputeStage::IO:
-        launch(id, L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { io_loop<T>(ctx(w, stats.io[lane]), lane, num_io); });
+        launch(id, std::move(name), L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { io_loop<T>(ctx(w, stats.io[lane]), lane, num_io); });
         break;
       }
     }
 
-  // 等收尾: 已落盘天数镜像进进度面 (worker 自己查 cancel, 这里只报一声)
+  // 等收尾: 已落盘天数镜像进进度面, 采样窗随之推进 (worker 自己查 cancel, 这里只报一声)
   bool announced = false;
   for (auto &worker : workers)
     while (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
       args.on_io(store.query_io_done());
+      profile.tick();
       if (!announced && args.cancel.load(std::memory_order_relaxed)) {
         announced = true;
         std::cout << "[Compute] Cancelling..." << std::endl;
       }
     }
   args.on_io(store.query_io_done());
+  profile.finish();
   // 仪表盘引用 store/sched/dates, 必须先于它们的析构停掉
   progress.stop();
 

@@ -150,6 +150,16 @@ struct Bars {
   CBuffer<Amt, Cap> bid_amount;
   CBuffer<Amt, Cap> ask_amount;
 
+  // 一根 bar (末 bar 的快照: 多个消费方收同一根时只读一次环)
+  struct Bar {
+    float open, high, low, close;
+    Vol bid_volume, ask_volume;
+    Amt bid_amount, ask_amount;
+  };
+  Bar back() const {
+    return {open.back(), high.back(), low.back(), close.back(), bid_volume.back(), ask_volume.back(), bid_amount.back(), ask_amount.back()};
+  }
+
   void clear() {
     open.clear();
     high.clear();

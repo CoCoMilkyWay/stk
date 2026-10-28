@@ -15,6 +15,15 @@
 
 namespace misc {
 
+// 当前线程名 (Linux comm, ≤ 15 字节): perf / top / gdb 按它区分线程
+inline void name_thread(const std::string &name) {
+  assert(name.size() <= 15 && "线程名超过 comm 上限 15 字节");
+#if defined(__linux__)
+  [[maybe_unused]] const int rc = pthread_setname_np(pthread_self(), name.c_str());
+  assert(rc == 0 && "pthread_setname_np 失败");
+#endif
+}
+
 class Affinity {
 public:
   // Set current thread to single core

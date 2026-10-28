@@ -2,8 +2,10 @@
 
 #include <arrow/table.h>
 
+#include <cassert>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -61,16 +63,41 @@ bool foreign_writer(const std::filesystem::path &path);
 //   mtime 还原 (写盘日承载 "数据何时拉的", 换编码不算重拉).
 bool renative(const std::filesystem::path &path);
 
+// null / f32 内联直读缓存的位图与值缓冲 (逐行热路径: 千万行扫描每行每列一调)
 class Col {
 public:
   Col() = default;
   explicit Col(std::shared_ptr<arrow::Array> a);
 
   bool valid() const { return arr_ != nullptr; }
-  bool null(std::int64_t i) const;
+  bool null(std::int64_t i) const {
+    const std::int64_t j = offset_ + i;
+    return nulls_ != nullptr && !(nulls_[j >> 3] >> (j & 7) & 1);
+  }
   std::int32_t yyyymmdd(std::int64_t i) const;
   int minute_of_day(std::int64_t i) const;
-  float f32(std::int64_t i) const;
+  float f32(std::int64_t i) const {
+    if (null(i))
+      return std::numeric_limits<float>::quiet_NaN();
+    const std::int64_t j = offset_ + i;
+    switch (type_) {
+    case arrow::Type::DOUBLE:
+      return static_cast<float>(value<double>(j));
+    case arrow::Type::FLOAT:
+      return value<float>(j);
+    case arrow::Type::INT64:
+      return static_cast<float>(value<std::int64_t>(j));
+    case arrow::Type::INT32:
+      return static_cast<float>(value<std::int32_t>(j));
+    case arrow::Type::INT16:
+      return static_cast<float>(value<std::int16_t>(j));
+    case arrow::Type::INT8:
+      return static_cast<float>(value<std::int8_t>(j));
+    default:
+      assert(false && "Col::f32: 列类型须为 double / float / int");
+      return std::numeric_limits<float>::quiet_NaN();
+    }
+  }
   int i32(std::int64_t i, int def) const;
   std::string_view str(std::int64_t i) const;
 
@@ -81,8 +108,14 @@ public:
   void yyyymmdd_all(std::vector<std::int32_t> &out) const;
 
 private:
+  template <class V>
+  V value(std::int64_t j) const { return static_cast<const V *>(values_)[j]; }
+
   std::shared_ptr<arrow::Array> arr_;
-  int type_ = -1; // arrow::Type::type 缓存
+  int type_ = -1;                       // arrow::Type::type 缓存
+  std::int64_t offset_ = 0;             // 切片偏移 (位图 / 值缓冲下标 = offset_ + i)
+  const std::uint8_t *nulls_ = nullptr; // validity 位图; 无 null → nullptr
+  const void *values_ = nullptr;        // buffers[1] 起点 (定宽数值列 = 值数组)
 };
 
 // 字典编码 string 列 — parquet 的 BYTE_ARRAY 本就是 RLE_DICTIONARY, read_table
