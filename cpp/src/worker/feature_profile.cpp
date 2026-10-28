@@ -2,6 +2,7 @@
 #include "worker/feature_workers.hpp"
 
 #include "features/Storage/FeatureStore.hpp"
+#include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "misc/perf.hpp"
 #include "nlohmann/json.hpp"
@@ -61,7 +62,7 @@ std::string stamp_now() {
 FeatureProfile::FeatureProfile(ProfileSpec spec, const StageLayout &layout, const StoreRing &store, const ComputeStats &stats)
     : spec_(std::move(spec)), layout_(layout), store_(store), stats_(stats) {}
 
-FeatureProfile::~FeatureProfile() { assert((done_ || !capture_) && "FeatureProfile: 开采后析构前须 finish"); }
+FeatureProfile::~FeatureProfile() { assert((done_ || !capture_) && !report_.joinable() && "FeatureProfile: 开采后析构前须 finish"); }
 
 FeatureProfile::Snap FeatureProfile::snap() const {
   Snap s{std::chrono::steady_clock::now(), store_.query_io_done(), {}, {}};
@@ -88,10 +89,16 @@ void FeatureProfile::tick() {
     return;
   }
   if (capture_->seconds() >= misc::perf::kSeconds)
-    finish();
+    close();
 }
 
 void FeatureProfile::finish() {
+  close();
+  if (report_.joinable())
+    report_.join();
+}
+
+void FeatureProfile::close() {
   if (done_)
     return;
   done_ = true;
@@ -108,9 +115,12 @@ void FeatureProfile::finish() {
       g.comms.push_back(StageLayout::thread_name(st, i));
     groups.push_back(std::move(g));
   }
-  capture_->report(groups);
-  // 进日志不进终端: 采样窗多在管线中途收, 终端正被仪表盘原地重画
-  Logger::log("perf", std::to_string(capture_->seconds()) + "s → " + std::filesystem::absolute(dir_).string() + " (报告后台生成, 出齐见 report.done)");
+  report_ = std::thread([this, groups = std::move(groups)] {
+    misc::name_thread("perf_report");
+    capture_->report(groups);
+    // 进日志不进终端: 采样窗多在管线中途收, 终端正被仪表盘原地重画
+    Logger::log("perf", std::to_string(capture_->seconds()) + "s → " + std::filesystem::absolute(dir_).string() + " (报告已出齐)");
+  });
 }
 
 void FeatureProfile::write_meta(const Snap &end) const {

@@ -12,7 +12,6 @@
 #include <future>
 #include <iostream>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
@@ -391,19 +390,23 @@ bool pipeline(const PipelineArgs &args) {
 
   TierFeed<T> feed(args, store);
 
-  // 初始分配: 按权重降序 + 轮询 —— 资产数每核严格均匀 (±1), 权重也近似均衡. 贪心 LPT 会把大量小资产堆到
-  // 少数核上 (资产数悬殊), 而每日固定开销 (decode/begin_day/分钟网格) 随资产数走, 反而更歪.
+  // 初始分配: A 轴切 num_ts 个连续段, 各段权重和均衡 (资产归其权重中点所在的那一份).
+  // 张量 [T][F][A] 的一条缓存行 = 相邻 32 个资产的同一 (t, f): 连续段同核写, 核间只在段界共一行;
+  // 交错分配则每次写都跨核 (跨插槽) 抢行, TS 退化为缓存一致性流量.
   // 运行期差距由 worker 间的处置权转移收敛 (见 ts_loop 的 try_adopt), 这里只求起点均衡.
   TsSchedule sched(num_assets, num_ts);
   sched.adopt_pct = args.adopt_pct;
   {
-    std::vector<size_t> order(num_assets);
-    std::iota(order.begin(), order.end(), size_t{0});
+    size_t total = 0;
     for (size_t sub = 0; sub < num_assets; ++sub)
-      sched.weight[sub] = feed.weight(sub);
-    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sched.weight[a] > sched.weight[b]; });
-    for (size_t k = 0; k < num_assets; ++k)
-      sched.owner[order[k]].store(static_cast<int32_t>(k % num_ts), std::memory_order_relaxed);
+      total += sched.weight[sub] = feed.weight(sub);
+    assert(total > 0 && "初始分配: 全轴权重为 0");
+    size_t acc = 0;
+    for (size_t sub = 0; sub < num_assets; ++sub) {
+      const size_t w = std::min(num_ts - 1, (2 * acc + sched.weight[sub]) * num_ts / (2 * total));
+      sched.owner[sub].store(static_cast<int32_t>(w), std::memory_order_relaxed);
+      acc += sched.weight[sub];
+    }
   }
   std::vector<std::unique_ptr<CoreOf<T>>> cores(num_assets);
   TsRole<T> role{feed, sched, cores};
@@ -449,7 +452,7 @@ bool pipeline(const PipelineArgs &args) {
       }
     }
 
-  // 等收尾: 已落盘天数镜像进进度面, 采样窗随之推进 (worker 自己查 cancel, 这里只报一声)
+  // 等收尾: 已落盘天数镜像进进度面, 采样窗随之推进 (worker 自己查 cancel, 这里报一声并就地收采样窗出报告)
   bool announced = false;
   for (auto &worker : workers)
     while (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
@@ -458,6 +461,7 @@ bool pipeline(const PipelineArgs &args) {
       if (!announced && args.cancel.load(std::memory_order_relaxed)) {
         announced = true;
         std::cout << "[Compute] Cancelling..." << std::endl;
+        profile.finish();
       }
     }
   args.on_io(store.query_io_done());

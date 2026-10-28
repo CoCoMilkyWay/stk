@@ -393,7 +393,7 @@ stk/
     ├── profile/<pool>/<YYYYMMDD_HHMMSS>/                   # 特征计算 perf 采样 (PROFILE 模式, 每轮一目录; 需 kernel.perf_event_paranoid ≤ 1)
     │   ├── meta.json                                       # 本轮配置 (池 / 档 / A 轴 / 日期轴 / 核布局) + 采样窗逐核速率 / 忙碌占比
     │   ├── threads.txt                                     # 线程间样本分布 (线程名 = <段 tag>_<段内序号>: pf / ts / cs / io)
-    │   ├── <段>/<线程>.txt                                 # 逐核热点 (dso, sym)
+    │   ├── <段>/<线程>.txt                                 # 段首 / 段尾两核热点 (dso, sym)
     │   ├── <段>.sym.txt / <段>.srcline.txt                 # 全段合并热点 (函数 / 源码行)
     │   └── perf.data / perf.log / report.done              # 原始样本 / perf 输出 / 报告出齐标记
     └── log/                                                # 运行日志

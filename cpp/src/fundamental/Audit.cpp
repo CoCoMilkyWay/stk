@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -835,17 +836,36 @@ Result run(typename Src::Client &client, const Unit &u) {
   const auto all = std::make_shared<const Cells>(L.all);
   const std::vector<i128> zeros(all->size(), 0);
 
-  // 月级 (第一遍扫描), 全部格: 远端整单元一次查询; 本地逐月读盘一次 (Local, 清点随之得出)
-  const Fps rm = Remote{client, s, L, u.w}.fps(*all, Grain::Month, {});
+  // 月级 (第一遍扫描), 全部格: 远端整单元一次查询 (后台线程, 期间 client 不另用) 与本地读盘重叠;
+  //   本地各月并行各读一次 (Local, 清点随之得出)
+  std::future<Fps> rm_f = std::async(std::launch::async, [&] { return Remote{client, s, L, u.w}.fps(*all, Grain::Month, {}); });
 
   // 同月的槽成组 (Month 一月一槽, Daily 一月多日槽); 组窗口 = 首槽 w.lo .. 末槽 w.hi
-  Result out;
+  struct MonthSlots {
+    Ym ym;
+    Window w;
+    std::vector<Slot> slots;
+  };
+  std::vector<MonthSlots> months;
   for (auto b = u.slots.begin(); b != u.slots.end();) {
     const auto e = std::find_if(b, u.slots.end(), [&](const Slot &x) { return x.ym != b->ym; });
-    const Ym ym = b->ym;
-    const Window w{b->w.lo, std::prev(e)->w.hi};
-    const Local local(s, L, std::vector<Slot>(b, e));
+    months.push_back({b->ym, {b->w.lo, std::prev(e)->w.hi}, std::vector<Slot>(b, e)});
     b = e;
+  }
+  std::vector<std::optional<Local>> locals(months.size());
+  misc::exec::ForkJoin ex(misc::exec::fit(months.size()));
+  ex.tasks(static_cast<int>(months.size()), [&](int k, int) {
+    MonthSlots &m = months[static_cast<std::size_t>(k)];
+    locals[static_cast<std::size_t>(k)].emplace(s, L, std::move(m.slots));
+  });
+  const Fps rm = rm_f.get();
+
+  // 逐级定位逐月串行 (共用 client)
+  Result out;
+  for (std::size_t k = 0; k < months.size(); ++k) {
+    const Ym ym = months[k].ym;
+    const Window w = months[k].w;
+    const Local &local = *locals[k];
     out.inv[ym] = local.inv();
     const std::string key = group_key(Grain::Month, w.lo);
     const Fps lm = local.fps(*all, Grain::Month, {});

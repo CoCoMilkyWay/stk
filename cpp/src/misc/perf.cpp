@@ -1,11 +1,16 @@
 #include "misc/perf.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <csignal>
+#include <cstdint>
+#include <cstdio>
 #include <fcntl.h>
 #include <fstream>
+#include <map>
+#include <span>
 #include <spawn.h>
-#include <sstream>
+#include <string_view>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -25,33 +30,97 @@ int paranoid() {
   return v;
 }
 
-// argv 起子进程, stdout / stderr 追加进 log; detach = 新会话 (本进程退出 / Ctrl+C 不连带)
-pid_t spawn(const std::vector<std::string> &argv, const fs::path &log, bool detach) {
+// argv 起子进程: stderr 追加进 log, stdout 进 out (−1 = 同 log).
+// setpriv --pdeathsig: 起它的线程一死子进程即被杀, 本进程退出 (含崩溃) 不留残余
+pid_t spawn(const std::vector<std::string> &argv, const fs::path &log, int out = -1) {
+  std::vector<std::string> full{"setpriv", "--pdeathsig", "KILL", "--"};
+  full.insert(full.end(), argv.begin(), argv.end());
   std::vector<char *> args;
-  for (const std::string &a : argv)
-    args.push_back(const_cast<char *>(a.c_str()));
+  for (std::string &a : full)
+    args.push_back(a.data());
   args.push_back(nullptr);
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
-  posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, log.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-  posix_spawn_file_actions_adddup2(&fa, STDOUT_FILENO, STDERR_FILENO);
-  posix_spawnattr_t attr;
-  posix_spawnattr_init(&attr);
-  if (detach)
-    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+  posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, log.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+  posix_spawn_file_actions_adddup2(&fa, out >= 0 ? out : STDERR_FILENO, STDOUT_FILENO);
   pid_t pid = -1;
-  [[maybe_unused]] const int rc = posix_spawnp(&pid, args[0], &fa, &attr, args.data(), environ);
+  [[maybe_unused]] const int rc = posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), environ);
   assert(rc == 0 && "posix_spawnp 失败");
-  posix_spawnattr_destroy(&attr);
   posix_spawn_file_actions_destroy(&fa);
   return pid;
 }
 
-std::string join(const std::vector<std::string> &v, char sep) {
-  std::string s;
-  for (const std::string &x : v)
-    s += (s.empty() ? "" : std::string(1, sep)) + x;
-  return s;
+void wait_ok(pid_t pid) {
+  int status = 0;
+  [[maybe_unused]] const pid_t r = waitpid(pid, &status, 0);
+  assert(r == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0 && "perf report 异常退出, 见 perf.log");
+}
+
+// perf report 一遍: 每行 = period + sort 键列 (tab 分隔, 列内去空白), 表头 / 空行跳过
+template <class F>
+void scan(const fs::path &dir, const std::string &sort, F &&row) {
+  int fd[2];
+  [[maybe_unused]] const int rc = pipe2(fd, O_CLOEXEC);
+  assert(rc == 0);
+  const pid_t pid = spawn({"perf", "report", "-i", (dir / "perf.data").string(), "--stdio", "--no-children",
+                           "--sort", sort, "-F", "period," + sort, "-t", "\t"},
+                          dir / "perf.log", fd[1]);
+  close(fd[1]);
+  std::string out;
+  char buf[1 << 16];
+  for (ssize_t n; (n = read(fd[0], buf, sizeof(buf))) > 0;)
+    out.append(buf, static_cast<size_t>(n));
+  close(fd[0]);
+  wait_ok(pid);
+
+  std::vector<std::string_view> cols;
+  for (size_t at = 0; at < out.size();) {
+    const size_t eol = std::min(out.find('\n', at), out.size());
+    const std::string_view line(out.data() + at, eol - at);
+    at = eol + 1;
+    if (line.empty() || line.front() == '#')
+      continue;
+    cols.clear();
+    for (size_t b = 0; b <= line.size();) {
+      const size_t e = std::min(line.find('\t', b), line.size());
+      std::string_view c = line.substr(b, e - b);
+      c.remove_prefix(std::min(c.find_first_not_of(' '), c.size()));
+      c.remove_suffix(c.size() - std::min(c.find_last_not_of(' ') + 1, c.size()));
+      cols.push_back(c);
+      b = e + 1;
+    }
+    row(std::stoull(std::string(cols[0])), std::span<const std::string_view>(cols).subspan(1));
+  }
+}
+
+// 热点表: 键 → period. 落盘按 period 降序, 百分比 = 占本表合计, 低于 limit (%) 的不列
+using Hot = std::map<std::string, uint64_t>;
+
+void write_hot(const fs::path &path, const std::string &title, const Hot &hot, double limit) {
+  uint64_t total = 0;
+  for (const auto &[k, p] : hot)
+    total += p;
+  std::vector<std::pair<uint64_t, const std::string *>> rows;
+  for (const auto &[k, p] : hot)
+    rows.emplace_back(p, &k);
+  std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+  std::ofstream f(path);
+  assert(f && "报告文件写不开");
+  f << "# " << title << "  period " << total << "\n";
+  for (const auto &[p, k] : rows) {
+    const double pct = total ? 100.0 * static_cast<double>(p) / static_cast<double>(total) : 0.0;
+    if (pct < limit)
+      break;
+    char head[16];
+    std::snprintf(head, sizeof(head), "%7.2f%%  ", pct);
+    f << head << *k << "\n";
+  }
+}
+
+std::string dso_sym(std::string_view dso, std::string_view sym) {
+  std::string k(dso);
+  k.resize(std::max<size_t>(k.size(), 24), ' ');
+  return k.append("  ").append(sym);
 }
 
 } // namespace
@@ -61,7 +130,7 @@ Capture::Capture(const fs::path &dir) : dir_(fs::absolute(dir)) {
   fs::create_directories(dir_);
   t0_ = t1_ = std::chrono::steady_clock::now();
   pid_ = spawn({"perf", "record", "-F", std::to_string(kFreq), "-p", std::to_string(getpid()), "-o", (dir_ / "perf.data").string()},
-               dir_ / "perf.log", false);
+               dir_ / "perf.log");
 }
 
 Capture::~Capture() { assert(pid_ < 0 && "Capture: 析构前须 stop"); }
@@ -88,26 +157,42 @@ void Capture::stop() {
 
 void Capture::report(const std::vector<Group> &groups) const {
   assert(pid_ < 0 && "report: 须先 stop");
-  // 慢的 (srcline 逐地址 addr2line) 排最后; 先出的文件先可读
-  const std::string R = "perf report -i perf.data --stdio --no-children --percentage relative";
-  std::ostringstream sh;
-  sh << "cd '" << dir_.string() << "' || exit 1\n";
-  sh << R << " --sort comm > threads.txt 2>/dev/null\n";
-  for (const Group &g : groups) {
-    sh << "mkdir -p '" << g.name << "'\n";
-    for (const std::string &c : g.comms)
-      sh << R << " --comms " << c << " --sort dso,sym --percent-limit 0.3 > '" << g.name << "/" << c << ".txt' 2>/dev/null\n";
+  std::map<std::string, size_t, std::less<>> group_of; // comm → 组下标
+  for (size_t g = 0; g < groups.size(); ++g) {
+    assert(!groups[g].comms.empty());
+    for (const std::string &c : groups[g].comms)
+      group_of.emplace(c, g);
   }
-  for (const Group &g : groups)
-    sh << R << " --comms " << join(g.comms, ',') << " --sort dso,sym --percent-limit 0.2 > '" << g.name << ".sym.txt' 2>/dev/null\n";
-  for (const Group &g : groups)
-    sh << R << " --comms " << join(g.comms, ',') << " --sort srcline --percent-limit 0.2 > '" << g.name << ".srcline.txt' 2>/dev/null\n";
-  sh << "touch report.done\n";
-  // 外层 sh 把报告脚本甩进后台即退 (收尸即返回), 报告进程归 init 收养, 不留僵尸
-  const pid_t pid = spawn({"sh", "-c", "nice -n 19 sh -c \"$1\" &", "sh", sh.str()}, dir_ / "perf.log", true);
-  int status = 0;
-  [[maybe_unused]] const pid_t r = waitpid(pid, &status, 0);
-  assert(r == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  auto dumped = [](const Group &g, std::string_view c) { return c == g.comms.front() || c == g.comms.back(); };
+
+  Hot threads;
+  std::map<std::string, Hot, std::less<>> per_comm;
+  std::vector<Hot> per_group(groups.size()), per_group_src(groups.size());
+  scan(dir_, "comm,dso,sym", [&](uint64_t p, std::span<const std::string_view> c) {
+    threads[std::string(c[0])] += p;
+    if (const auto it = group_of.find(c[0]); it != group_of.end()) {
+      const std::string k = dso_sym(c[1], c[2]);
+      if (dumped(groups[it->second], c[0]))
+        per_comm[it->first][k] += p;
+      per_group[it->second][k] += p;
+    }
+  });
+  write_hot(dir_ / "threads.txt", "threads", threads, 0.0);
+  for (size_t g = 0; g < groups.size(); ++g) {
+    fs::create_directories(dir_ / groups[g].name);
+    for (const std::string &c : {groups[g].comms.front(), groups[g].comms.back()})
+      write_hot(dir_ / groups[g].name / (c + ".txt"), c, per_comm[c], 0.3);
+    write_hot(dir_ / (groups[g].name + ".sym.txt"), groups[g].name, per_group[g], 0.2);
+  }
+
+  scan(dir_, "comm,srcline", [&](uint64_t p, std::span<const std::string_view> c) {
+    if (const auto it = group_of.find(c[0]); it != group_of.end())
+      per_group_src[it->second][std::string(c[1])] += p;
+  });
+  for (size_t g = 0; g < groups.size(); ++g)
+    write_hot(dir_ / (groups[g].name + ".srcline.txt"), groups[g].name, per_group_src[g], 0.2);
+
+  std::ofstream(dir_ / "report.done");
 }
 
 } // namespace misc::perf

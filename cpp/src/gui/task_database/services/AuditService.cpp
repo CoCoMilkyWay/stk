@@ -304,10 +304,8 @@ bool AuditService::repair(const std::string &table) {
     years.insert(t.ym / 100);
   }
   w.begin(tasks.size() + years.size());
-  const Outcome pulled = drive(*this, cancel_, "bigquant.repair", tasks, [&](const std::string &l) { w.say("重拉 " + l); }, [&](const Task &t) {
-                              const std::int64_t rows = fundamental::sync::run<fundamental::Bq>(client, t);
-                              w.quota(client);
-                              return std::to_string(rows) + " rows"; });
+  const Outcome pulled = drive(*this, cancel_, "bigquant.repair", tasks, [&](const std::string &l) { w.say("重拉 " + l); }, [&](const Task &t) { return std::to_string(fundamental::sync::run<fundamental::Bq>(client, t)) + " rows"; });
+  w.quota(client);
   if (pulled != Outcome::Done)
     return false;
 
