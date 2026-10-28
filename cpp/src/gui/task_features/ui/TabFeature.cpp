@@ -1426,7 +1426,9 @@ static double sig4(float v) {
 void SaveFeatureTableJson(SharedData &data) {
   using json = nlohmann::json;
   const Feature::Metadata &meta = data.feature.meta();
-  const std::filesystem::path dir = data.config.FeatureLibDir(data.feature.selection.pool());
+  const FeatureLib lib = load_lib(data.config, data.feature.selection.pool());
+  assert(lib.ready() && "features.json: 当前池未建库");
+  const std::filesystem::path dir = lib.dir;
 
   const std::filesystem::path path = dir / "features.json";
   std::filesystem::create_directories(path.parent_path());
@@ -1437,8 +1439,8 @@ void SaveFeatureTableJson(SharedData &data) {
     file << "{\n";
     file << " \"tier\": " << json(tier_name(meta.tier)).dump() << ",\n";
     file << " \"pool\": " << json(dir.filename().string()).dump() << ",\n";
-    file << " \"start_date\": " << json(misc::dash(data.config.start_date)).dump() << ",\n";
-    file << " \"end_date\": " << json(misc::dash(data.config.end_date)).dump() << ",\n";
+    file << " \"start_date\": " << json(misc::dash(lib.dates.front())).dump() << ",\n";
+    file << " \"end_date\": " << json(misc::dash(lib.dates.back())).dump() << ",\n";
     file << " \"preview\": {\"rounds\": " << data.preview.done.load(std::memory_order_relaxed)
          << ", \"assets_per_round\": " << kPvAssetsPerRound << "},\n";
 

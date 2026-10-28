@@ -102,7 +102,7 @@ struct FeatureDay {
     case Status::Format:
       return "日文件格式版本不符 (特征库是旧格式写的)";
     case Status::AxisSize:
-      return "池轴大小不符 (特征库是旧 库清单/回测区间写的)";
+      return "池轴大小不符 (特征库是旧库清单写的)";
     case Status::AxisHash:
       return "池轴指纹不符 (特征库与当前库清单/asset_axis.json 列序不一致)";
     case Status::Fields:

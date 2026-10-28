@@ -28,7 +28,7 @@ std::string Domain::key() const {
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
 
-bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, bool basket, size_t keep, Domain &dm, std::string &why) {
+bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why) {
   TraceN("Domain");
   assert(sc.lv == ft.lv && "作用域层与字段表层不符");
   assert(keep >= 1);
@@ -47,9 +47,6 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
     assert(c.allowed);
     dm.used |= pool_bit(c.ref(pool).pool);
   }
-  if (basket)
-    for (const Col &c : ft.b.cols())
-      dm.used |= pool_bit(c.ref(pool).pool);
   for (const PoolId l : pool_ids())
     if (dm.used & pool_bit(l)) {
       assert(!libs[l].name.empty() && "请求没带该库清单 (factor_libs)");

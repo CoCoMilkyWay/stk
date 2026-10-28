@@ -583,8 +583,8 @@ private:
         data_->assetinfo.get_stock_factor(),
         data_->assetinfo.get_stock_info(),
         data_->asset,
-        config_->start_date,
-        config_->end_date,
+        data_->asset.backtest.start,
+        data_->asset.backtest.end,
         browser_state_);
   }
 

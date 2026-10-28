@@ -19,18 +19,8 @@ struct StockInfo {
   StockInfo() : is_delisted(false) {}
 };
 
-// Application configuration
-struct AppConfig {
-  std::string dir;
-  std::chrono::year_month_day start_date; // Lower bound date for data availability
-  std::chrono::year_month_day end_date;   // Upper bound date for data availability
-};
-
 // Stock info parser
 std::unordered_map<std::string, StockInfo> ParseStockInfo(const std::string &stock_info_file);
-
-// Config parser
-AppConfig ParseAppConfig(const std::string &config_file);
 
 // Date utilities
 // Accepts "YYYY-MM" or "YYYY-MM-DD"

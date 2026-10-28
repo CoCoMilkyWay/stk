@@ -1,8 +1,9 @@
 #pragma once
 
 // 特征库 = 名 + 档 + A 轴 + 目录 + 日期轴. 池名即目录名 (<feature_dir>/<name>/), 档由名定:
-//   all        Bar 档 (bar1m + 基本面), 全轴, 交易日 [PIPELINE_START_DATE, end_date]
-//   <pool>     Lob 档 (逐笔 → 订单簿), 池轴, 回测日历; <pool> = all 池的 pool_<pool> 列 (feature_pools)
+//   all        Bar 档 (bar1m + 基本面), 全轴, 交易日 [PIPELINE_START_DATE, 末个 bar1m 日]
+//   <pool>     Lob 档 (逐笔 → 订单簿), 池轴, 回测日历截到 min(末个已编码日, all 末日); <pool> = all 池的 pool_<pool> 列 (feature_pools)
+//   末日随数据走, 各库首末日只在清单里 (重算即前移).
 // 写端 (ComputeService) 规划后落清单 <dir>/lib.json (save_lib); 读端 (FeatureRead / ReadScope / 截面旁读) 只读清单 (load_lib),
 // 两端永远同一 (档, 轴, 日期轴). 无清单 = 未建库 (空轴, ready() == false).
 //

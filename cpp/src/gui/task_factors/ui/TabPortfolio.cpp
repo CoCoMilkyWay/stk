@@ -372,8 +372,8 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
     const std::shared_ptr<const PoolCurve> pc = pool_of(res, pd.name);
     if (!pc)
       continue;
-    assert(pc->index.n == static_cast<int>(fund::SW2021_L1_COUNT) * kWeights && static_cast<size_t>(pc->index.P) == pc->dates.size());
     const bool is_all = pd.pool_col == SIZE_MAX;
+    assert(pc->baskets() == (is_all ? fund::SW2021_L1_COUNT : 1) && static_cast<size_t>(pc->index.P) == pc->dates.size());
     if (is_all)
       all = pc;
     for (const Weight w : {kWeightCap, kWeightEq})

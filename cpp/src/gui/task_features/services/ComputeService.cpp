@@ -5,6 +5,7 @@
 #include "features/Node/Lob/TS/Label/LabelLob.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/Storage/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
+#include "fundamental/Store.hpp"
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/FeatureLib.hpp"
@@ -38,8 +39,9 @@ void ComputeService::Request(ComputeConfig config) {
 // 两档同一流程: 规划本池 → fund_panel → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
 bool ComputeService::run(ComputeConfig &config) {
   // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
-  //   Bar (all)  交易日 [PIPELINE_START_DATE, end_date] × 全轴: 整段算, 不随回测窗口收窄; 无旁读档
-  //   Lob (池) 回测日历 (交易日历 ∩ 回测区间, 与编码同一条轴: binary/archive 缺日也要落一份默认张量)
+  //   Bar (all)  交易日 [PIPELINE_START_DATE, 末个 bar1m 日] × 全轴: 整段算, 不随回测日历收窄; 无旁读档.
+  //              Fund 收盘推进到次日盘前 ⇒ 末日还须早于日历末个交易日 (日历截到 today); 基本面完整性归同步
+  //   Lob (池) 回测日历截到 min(末个已编码日, Bar 池末日) (中间缺日也要落一份默认张量)
   //              × 池并集 (Bar 池 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 Bar 池
   // 张量/调度/落盘全按本池 A 轴, 需要 items/码表时经 axis.global() 映射.
   // 一次只算一个池 (TS + CS 同池一趟, 不拆不跨池去重: 将来 TS 可吃池内 CS 输出, 见 FeatureLib.hpp); Lob 只在本池轴内算
@@ -53,14 +55,23 @@ bool ComputeService::run(ComputeConfig &config) {
   FeatureLib &lib = libs[def.tier];
   lib = FeatureLib{.tier = def.tier, .name = config.pool, .dir = data_.config.FeatureLibDir(config.pool)};
   if (lib.tier == TierId::Lob) {
-    assert(data_.asset.backtest.start == data_.config.start_date && data_.asset.backtest.end == data_.config.end_date &&
-           "回测日历与配置区间不符 (改配置后没重算覆盖?)");
-    lib.dates = data_.asset.backtest_dates();
-    data_.pool_panel = pool::Panel::build(libs[TierId::Bar], def.pool_col, lib.dates);
+    assert(data_.asset.backtest.start == data_.config.start_date && "回测日历与配置起点不符 (改配置后没重算覆盖?)");
+    const FeatureLib &bar = libs[TierId::Bar];
+    assert(bar.ready() && "池源 = Bar 池 (先算 Bar 池)");
+    const misc::Ymd last = std::min(data_.asset.binary.max_date, bar.dates.back());
+    for (const misc::Ymd d : data_.asset.backtest_dates())
+      if (d <= last)
+        lib.dates.push_back(d);
+    data_.pool_panel = pool::Panel::build(bar, def.pool_col, lib.dates);
     lib.axis = data_.pool_panel.axis();
   } else {
-    for (const CalendarDay &day : data_.assetinfo.get_stock_days())
-      if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data_.config.end_date)
+    const fundamental::Catalog cat;
+    const std::vector<fundamental::Shard> &bar1m = cat.shards("bar1m");
+    assert(!bar1m.empty() && "bar1m 未同步");
+    const StockDaysVec &days = data_.assetinfo.get_stock_days();
+    assert(!days.empty() && days.back().trading && "交易日历未就绪 / 末行不是交易日");
+    for (const CalendarDay &day : days)
+      if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= bar1m.back().day && day.date < days.back().date)
         lib.dates.push_back(day.date);
     lib.axis = full_axis(data_.asset.items.size());
   }

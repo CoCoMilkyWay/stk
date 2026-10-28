@@ -3,7 +3,6 @@
 #include "gui/task_features/ui/Common.hpp"
 #include "misc/date.hpp"
 #include "shared/Asset.hpp"
-#include "shared/Config.hpp"
 #include "shared/Dist.hpp"
 #include "shared/SharedData.hpp"
 
@@ -127,12 +126,12 @@ static const char *kWeekdayNames[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
 // Format month YYYYMM -> "YYYY/MM"
 static std::string format_month(misc::Ym m) { return misc::slash(misc::first_day(m)).substr(0, 7); }
 
-// 槽数 (滑条范围). 月取 config 区间月份表 (构建前也有), 资产取 池轴
-// (dist.lines, reset 时定; 首次构建前为空 → 滑条不显示)
-static int DimCount(const Dist::Snap &dist, const DistUIState &ui, int dim) {
+// 槽数 (滑条范围). 月取 scope 月份表 (dist.month_keys), 资产取 池轴
+// (dist.lines); 两者 reset 时定, 首次构建前为空 → 滑条不显示
+static int DimCount(const Dist::Snap &dist, int dim) {
   switch (dim) {
   case DIM_MONTH:
-    return static_cast<int>(ui.months.size());
+    return static_cast<int>(dist.month_keys.size());
   case DIM_WEEKDAY:
     return 7;
   case DIM_TOD:
@@ -163,10 +162,10 @@ static const AggPdf *DimSlot(const Dist::Snap &dist, int dim, int i) {
 }
 
 // 槽名 (不含样本数): "2024/01" / "Mon" / "09:15" / "000001 平安银行" (资产维 i = 池轴下标)
-static std::string DimName(const Dist::Snap &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
+static std::string DimName(const Dist::Snap &dist, const Asset &asset, int dim, int i) {
   switch (dim) {
   case DIM_MONTH:
-    return format_month(ui.months[i]);
+    return format_month(dist.month_keys[i]);
   case DIM_WEEKDAY:
     return kWeekdayNames[i];
   case DIM_TOD: {
@@ -195,8 +194,8 @@ static uint64_t DimSamples(const Dist::Snap &dist, int dim, int i) {
 }
 
 // 滑条标签: "槽名 (n)" / "槽名"
-static std::string DimLabel(const Dist::Snap &dist, const DistUIState &ui, const Asset &asset, int dim, int i) {
-  std::string label = DimName(dist, ui, asset, dim, i);
+static std::string DimLabel(const Dist::Snap &dist, const Asset &asset, int dim, int i) {
+  std::string label = DimName(dist, asset, dim, i);
   const uint64_t n = DimSamples(dist, dim, i);
   if (n > 0)
     label += " (" + std::to_string(n) + ")";
@@ -220,18 +219,13 @@ static void RenderWindowControl(DistService *service, SharedData &data,
   else if (action < 0)
     service->RequestCancel();
 
-  // Row 2: 焦点滑条 (月份表来自 config 区间, 缓存; 枚举与 ReadScope 同一函数)
-  if (ui.months_lo != data.config.start_date || ui.months_hi != data.config.end_date) {
-    ui.months_lo = data.config.start_date;
-    ui.months_hi = data.config.end_date;
-    ui.months = misc::months_between(data.config.start_date, data.config.end_date);
-  }
+  // Row 2: 焦点滑条
   const int dim = ui.selected_dimension;
-  const int n = DimCount(dist.snap, ui, dim);
+  const int n = DimCount(dist.snap, dim);
   if (n > 0) {
     int &focus = ui.focus[dim];
     focus = std::clamp(focus, 0, n - 1);
-    const std::string label = DimLabel(dist.snap, ui, data.asset, dim, focus);
+    const std::string label = DimLabel(dist.snap, data.asset, dim, focus);
     ImGui::SetNextItemWidth(-1);
     ImGui::SliderInt("##Focus", &focus, 0, n - 1, label.c_str());
     ui.focus_active = ImGui::IsItemActive(); // 按住拖动中 → 该维度的图高亮焦点
@@ -368,7 +362,7 @@ static void RenderPDFByDim(const Dist::Snap &dist, DistUIState &ui, const Asset 
   ImGui::TextUnformatted(kDimTitles[dim]);
   ImGui::Separator();
 
-  const int n_items = DimCount(dist, ui, dim);
+  const int n_items = DimCount(dist, dim);
   if (n_items == 0 || DimSlot(dist, dim, 0) == nullptr) {
     ImGui::Text("No data");
     ImGui::EndChild();
@@ -450,7 +444,7 @@ static void RenderPDFByDim(const Dist::Snap &dist, DistUIState &ui, const Asset 
   if (hovered_idx >= 0 && min_dist_sq < kHoverDistSq) {
     const AggPdf &p = *DimSlot(dist, dim, hovered_idx);
     ImGui::BeginTooltip();
-    ImGui::TextUnformatted(DimName(dist, ui, asset, dim, hovered_idx).c_str());
+    ImGui::TextUnformatted(DimName(dist, asset, dim, hovered_idx).c_str());
     ImGui::Text("n=%llu", static_cast<unsigned long long>(p.n));
     ImGui::Text("mean=%.4f std=%.4f", p.mean, p.sd());
     ImGui::Text("skew=%.4f kurt=%.4f", p.skew, p.kurt);

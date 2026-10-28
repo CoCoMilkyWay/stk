@@ -6,7 +6,7 @@
 stk/
 ├── run.py                 # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/main.py
 ├── config/                # ⚙️ 全局配置
-│   ├── config.json        # ⚙️ 路径 / 日期区间 / 交易成本 (池不在此, 见 Bar 池 pool_<pool> 列)
+│   ├── config.json        # ⚙️ 路径 / 回测日历起点 (末日随数据) / 交易成本 (池不在此, 见 Bar 池 pool_<pool> 列)
 │   └── sample/            # ⚙️ 样例数据 (Level-1 / Level-2 行情 / 财务报表)
 ├── py/                    # 🐍 Python 工具链
 │   ├── main.py            # 🐍 构建脚本 (调 CMake)
@@ -195,13 +195,13 @@ stk/
 │   │   │       │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): Domain 评估域 (库 + 评估期 + 资产轴) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
 │   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
-│   │   │       │   │                                 #      + 满仓只数) / load_b (篮子原料 BPlanes, 层无关; 日频原料 as-of 取 bar.1d); XCols / YCols / BCols ↔ XPlanes / YPlanes / BPlanes 一一对仗
+│   │   │       │   │                                 #      + 满仓只数) / load_b (池篮子输入 BPlanes: all 池全轴, 全部池成员位 PoolMask + T+1C 标签 + 原料一趟读齐, 不进块; 日频原料 / 池列 as-of 取 bar.1d)
 │   │   │       │   │                                 #    · 标签 / 成本恒取同池本层列 (同行); YSpec::cap > 0 = 外给满仓只数 (n_full_of 预扫), 不自数
-│   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec / b 篮子) + ensure_block = 块 Block (Y 常驻, X 按服务留 / 补); stat_scope = 结果作用域头
+│   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec) + ensure_block = 块 Block (Y 常驻, X 按服务留 / 补); stat_scope = 结果作用域头
 │   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集; Pick = 子集下标, labels_pick 取会话持有期子集
 │   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
 │   │   │       │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
-│   │   │       │   │                                 #    · baskets: 篮子 (池整体 + 行业, 层无关) 指数 / 估值 (PoolVal 五口数组) / 换手, 吃 Y 的门控 + 标签与 BPlanes; pool_line = 池整体等权 (只吃 Y)
+│   │   │       │   │                                 #    · baskets: 全部池 + all 内行业篮子一趟出指数 / 估值 / 换手 (吃 B); pool_line = 池整体等权 (吃 Y)
 │   │   │       │   ├── FactorsProbe.hpp              # 🖥️ 探针层 (一个根的一种输出): RootView / Ctx / Ranks 两后端同形, Probes<P...> 逐钩子 need / open / row / root / finish
 │   │   │       │   │                                 #    · 通用探针 Hold / Cost / Valid / Rank / Alpha / IcPdf 四服务共用; 服务私有探针在各自 .cpp
 │   │   │       │   │                                 #    · 根上统计核: valid_count / rank_sum / alpha_dist / mini_pdf_of / group_abs (换手成本三探针 CostP / TurnP / CurveP 平级直调 Stat cost_rows)
@@ -221,7 +221,7 @@ stk/
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
 │   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池) 一张森林 (根 = 去重规范串, CurveP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
-│   │   │       │   │                                 #    · PoolTask 各池日层篮子 (eval_job 无根, 块钩子 baskets); 按条目缓存, 只算新增, 根评完即逐条发布
+│   │   │       │   │                                 #    · PoolTask 全部池日层篮子一个作业 (不走森林: open_job → load_b → baskets → 按池切 PoolCurve); 因子按条目缓存, 只算新增, 根评完即逐条发布
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── StatJson.hpp                  # 🖥️ HoldStat / CostTier / MiniPdf ↔ JSON; EvalStat = scope_json (run) + eval_json (stats[i]) ⇄ load_eval
 │   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Search 按钮, 单线程)

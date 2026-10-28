@@ -10,7 +10,7 @@
 //   有成交 bar 的 amount 夹到 [volume · low, volume · high] (源数据有 amount = 0 / 整数元截断 / 与 OHLC 不同口径的 bar; 缺 → 下界):
 //   amount / volume (VWAP: 标签 entry / Trade / Tod) 恒落在本 bar 价格区间内.
 //   读盘经 fundamental::daily (与基本面表同一读侧); 代码 → ids (A 轴码表, id = 轴下标), 不在 ids 的代码跳过.
-//   分片缺失 (只许日期轴尾部, 见 bar_pipeline) → present = false, 全部资产零事件日.
+//   分片缺失 → assert (日期轴止于末个 bar1m 日, 见 bar_pipeline).
 // 本 TU (Bar1mDay.cpp) precise-math: parquet 缺失值是 NaN.
 // =============================================================================
 
@@ -34,7 +34,6 @@ struct Bar1m {
 
 struct Bar1mDay {
   misc::Ymd date = 0;
-  bool present = false;      // 当日分片存在
   size_t A = 0;              // 资产轴前缀长度 (= Bar 档张量 A)
   std::vector<Bar1m> rows;   // [A][TRADE_MINUTES_PER_DAY]
   std::vector<uint8_t> has;  // [A] 本资产当日有任一 bar

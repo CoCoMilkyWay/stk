@@ -170,8 +170,8 @@ struct Asset {
   // ========================================
   // 回测日历 (覆盖分析产出): 交易日历 ∩ [start, end], 一天一行
   // ========================================
-  // 编码 / 特征计算 / 覆盖判定共用的唯一日期轴. 两源有无按行对齐, 缺失 / 可编 /
-  // 需下载都是行上的谓词, 不另存集合.
+  // 编码 / 覆盖判定共用的唯一日期轴; Lob 库日期轴是它截到末个已编码日的前缀. 两源有无按行对齐,
+  // 缺失 / 可编 / 需下载都是行上的谓词, 不另存集合.
   struct BacktestDay {
     misc::Ymd date = 0;
     bool binary = false;  // 日文件里至少一帧
@@ -182,8 +182,8 @@ struct Asset {
     bool need_download() const { return !binary && !archive; }
   };
   struct Backtest {
-    misc::Ymd start = 0;           // 回测起始日 (来自配置)
-    misc::Ymd end = 0;             // 回测结束日 (来自配置)
+    misc::Ymd start = 0;           // 起始日 (Config::start_date)
+    misc::Ymd end = 0;             // 末个 L2 日 (binary / archive 任一有的最晚日)
     std::vector<BacktestDay> days; // 升序
 
     template <typename Pred>
@@ -195,7 +195,7 @@ struct Asset {
     }
   } backtest;
 
-  // 回测日历的日期列: 编码 producer 与特征计算的日期轴
+  // 回测日历的日期列: 编码 producer 的日期轴
   std::vector<misc::Ymd> backtest_dates() const;
 
   // ========================================
@@ -208,9 +208,9 @@ struct Asset {
   static void scan_archive(AssetScan &out, const std::string &archive_dir, const std::string &archive_extension,
                            misc::exec::ForkJoin &ex, Progress &p);
 
-  // 覆盖分析: 建回测日历 —— 行 = 基本面交易日历 (assetinfo.stock_days) ∩ [start, end], 每行标两源有无 (out 的两源缓存).
+  // 覆盖分析: 建回测日历 —— 行 = 基本面交易日历 (assetinfo.stock_days) ∩ [start, 末个 L2 日], 每行标两源有无 (out 的两源缓存).
   // 几百个日期, 单线程. 区间内的条数/体积 (要遍历帧目录) 归 compute_coverage_statistics 那趟一起算.
-  static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, misc::Ymd end, const AssetInfo &assetinfo);
+  static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &assetinfo);
 
   // 按日统计 (Browser 完整性 / Table 的 Orders% / Encode 的缺失表,
   // 同一份统计一次算完)

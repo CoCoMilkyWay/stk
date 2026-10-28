@@ -355,7 +355,7 @@ private:
 // 段间握手只经 FeatureStore 的各段已完成天数 (日环, 见 FeatureStore.hpp).
 //
 // StageCtx = 四角色共有的面; 预取 / 时序另带档的源 (TierFeed) / 调度面 (TsSchedule), 见 feature_pipeline.hpp.
-// dates = 档的日期轴 (Lob: 回测日历; Bar: 交易日 [PIPELINE_START_DATE, end_date]), 四角色的 date_idx 都是它的下标.
+// dates = 档的日期轴 (Lob: 回测日历前缀; Bar: 交易日 [PIPELINE_START_DATE, 末个 bar1m 日]; 见 FeatureLib.hpp), 四角色的 date_idx 都是它的下标.
 // worker_id = 全局 worker 序号 (TS 0..N−1 在前, 见 StageLayout), 与 pin 的 CPU 号无关; pin 由 launch 侧完成,
 // worker 内只用它做日志 / stats / frontier 下标.
 // ============================================================================

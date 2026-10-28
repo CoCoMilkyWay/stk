@@ -10,9 +10,8 @@
 
 struct Config {
 
-  // Backtest/Analysis Period [start_date, end_date] (config.json 里存 "YYYY-MM-DD")
+  // 回测日历起点 (config.json 里存 "YYYY-MM-DD"); 末日由数据定 (Asset::Backtest = 末个 L2 日, Lob 库 = 末个已编码日)
   misc::Ymd start_date = 20250101;
-  misc::Ymd end_date = 20250201;
 
   // Paths
   std::string archive_dir = "/mnt/dev/sde/A_stock/L2";
@@ -50,7 +49,6 @@ struct Config {
 
   // String buffers for GUI (max 512 chars for path)
   char start_date_buf[64] = "";
-  char end_date_buf[64] = "";
   char archive_dir_buf[512] = "";
   char orders_dir_buf[512] = "";
   char feature_dir_buf[512] = "";
@@ -170,8 +168,8 @@ inline constexpr int TUSHARE_HTTP_RETRY_INTERVAL_SECONDS = 30;
 
 // ---- 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet, 调度 fundamental::sync::plan) ----
 //   PIPELINE_START_DATE: 数据同步起点 (A 股财报电子化从 2015 起逐渐完整).
-//     与 Config::start_date (回测/分析窗口) 语义不同, 不合并 — 基本面历史
-//     要为后续特征表全周期服务, 不随回测窗口收窄.
+//     与 Config::start_date (回测日历起点) 语义不同, 不合并 — 基本面历史
+//     要为后续特征表全周期服务, 不随回测日历收窄.
 //   LOOKBACK_DAYS: 月末仍在该窗口内的月视为开放月 (兜服务端回填修订)
 //   DEDUP_WINDOW_SECONDS: parquet mtime 距今 < 该值则本表跳过 (连跑零网络)
 inline constexpr misc::Ymd PIPELINE_START_DATE = 20150101;

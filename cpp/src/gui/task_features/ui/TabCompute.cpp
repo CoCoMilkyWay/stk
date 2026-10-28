@@ -4,7 +4,6 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_features/services/ComputeService.hpp"
 #include "misc/affinity.hpp"
-#include "shared/Asset.hpp"
 #include "shared/Config.hpp"
 #include "shared/FeatureLib.hpp"
 
@@ -17,7 +16,7 @@
 namespace GUI::Features {
 
 // 库清单 + 逐日 stat 已落盘 (以档内末层日文件为 commit 标记, 见 FeatureRead::has_date)
-static LibStatus lib_status(const Config &config, std::string_view name) {
+static LibStatus lib_status(const Config &config, const StockDaysVec &stock_days, std::string_view name) {
   const FeatureLib lib = load_lib(config, name);
   LibStatus s{lib.name, lib.tier};
   if (!lib.ready())
@@ -25,6 +24,8 @@ static LibStatus lib_status(const Config &config, std::string_view name) {
   s.ready = true;
   s.first = lib.dates.front();
   s.last = lib.dates.back();
+  s.lag = static_cast<size_t>(std::count_if(stock_days.begin(), stock_days.end(),
+                                            [&](const CalendarDay &d) { return d.trading && d.date > s.last; }));
   s.assets = lib.axis.size();
   s.days = lib.dates.size();
   s.done = static_cast<size_t>(std::count_if(lib.dates.begin(), lib.dates.end(),
@@ -32,7 +33,7 @@ static LibStatus lib_status(const Config &config, std::string_view name) {
   return s;
 }
 
-void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*asset*/, Config &config) {
+void RenderTabCompute(ComputeService *service, ComputeState &state, const StockDaysVec &stock_days, Config &config) {
   const bool is_running = service->busy();
   const bool is_cancelling = service->cancelling();
 
@@ -380,15 +381,16 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
   if (ImGui::SmallButton("Refresh"))
     state.libs_dirty = true;
   ImGui::SameLine();
-  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起; 池: 订单簿还原, 回测区间, 成员 = Bar 池 D−1 收盘 pool_* 列 → 先算 all)",
-                      misc::dash(::config::PIPELINE_START_DATE).c_str());
+  ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起至末个 bar1m 日; 池: 订单簿还原, %s 起至末个已编码日 (不晚于 all), "
+                      "成员 = Bar 池 D−1 收盘 pool_* 列 → 先算 all; T-n = 末日之后的交易日数)",
+                      misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
   ImGui::Spacing();
 
   if (state.libs_dirty && !is_running) {
     state.libs_dirty = false;
     state.libs.clear();
     for (const PoolDef &d : feature_pools())
-      state.libs.push_back(lib_status(config, d.name));
+      state.libs.push_back(lib_status(config, stock_days, d.name));
   }
   // 旁读档的库落盘齐全才放行本档 (池的成员来自 Bar 池)
   PerTier<bool> tier_complete;
@@ -421,7 +423,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
       ImGui::Text("%s", tier_name(s.tier));
       ImGui::TableNextColumn();
       if (s.ready)
-        ImGui::Text("%s ~ %s", misc::dash(s.first).c_str(), misc::dash(s.last).c_str());
+        ImGui::Text("%s ~ %s (T-%zu)", misc::dash(s.first).c_str(), misc::dash(s.last).c_str(), s.lag);
       ImGui::TableNextColumn();
       if (s.ready)
         ImGui::Text("%zu", s.assets);
@@ -497,10 +499,10 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, Asset & /*as
 
     const TierId run_tier = pool_def(state.config.pool).tier;
     const bool bar_tier = run_tier == TierId::Bar;
-    ImGui::Text("Pool %s, %s:", state.config.pool.c_str(), bar_tier ? "Bar Tier Period" : "Backtest Period");
+    ImGui::Text("Pool %s, Period:", state.config.pool.c_str());
     ImGui::Indent();
     ImGui::BulletText("Start: %s", misc::dash(bar_tier ? ::config::PIPELINE_START_DATE : config.start_date).c_str());
-    ImGui::BulletText("End: %s", misc::dash(config.end_date).c_str());
+    ImGui::BulletText("End: %s", bar_tier ? "末个 bar1m 日 (须有次日交易日)" : "min(末个已编码日, all 末日)");
     ImGui::Unindent();
 
     ImGui::Spacing();

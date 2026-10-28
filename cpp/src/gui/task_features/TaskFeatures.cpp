@@ -82,9 +82,8 @@ struct TaskFeaturesState {
   bool streams_started = false;
   // Auto-compute tracking (Dist / Transform 共用): 主特征 (池/层/列) 变了即重算 (无论当前在哪个 tab)
   std::optional<ColRef> prev_primary;
-  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 池 / 日期区间变了自动重算 (快照做变更检测)
+  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 池变了自动重算 (快照做变更检测), 库重算收尾另起
   std::string preview_pool;
-  misc::Ymd preview_start = 0, preview_end = 0;
   // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
   Phase prev_preview_phase = Phase::Idle;
   size_t prev_preview_done = 0;
@@ -332,18 +331,11 @@ TaskHandle CreateFeaturesTask() {
       state->preview_service->RequestCompute(data);
       state->streams_started = true;
       state->preview_pool = pool;
-      state->preview_start = data.config.start_date;
-      state->preview_end = data.config.end_date;
-    } else if (state->streams_started &&
-               (state->preview_pool != pool ||
-                state->preview_start != data.config.start_date ||
-                state->preview_end != data.config.end_date)) {
-      // 池 / 日期区间变了 → 预览重算 (特征库目录/文件列序都跟着池走)
+    } else if (state->streams_started && state->preview_pool != pool) {
+      // 池变了 → 预览重算 (特征库目录/文件列序/日期轴都跟着池走)
       state->preview_pool = pool;
-      state->preview_start = data.config.start_date;
-      state->preview_end = data.config.end_date;
       state->preview_service->RequestCompute(data);
-      // 相关矩阵也跟着池 / 区间走: 清掉请求快照, TabCorr 下一帧自发重算
+      // 相关矩阵也跟着池走: 清掉请求快照, TabCorr 下一帧自发重算
       Features::InvalidateCorrRequests(state->corr_ui_state);
     }
 
@@ -417,7 +409,7 @@ TaskHandle CreateFeaturesTask() {
       break;
     case TAB_COMPUTE:
       Features::RenderTabCompute(state->compute_service.get(), state->compute_state,
-                                 data.asset, data.config);
+                                 data.assetinfo.get_stock_days(), data.config);
       break;
     case TAB_TRANSFORM:
       Features::RenderTabTransform(state->transform_service.get(), data,

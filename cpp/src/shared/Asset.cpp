@@ -198,18 +198,18 @@ void Asset::scan_archive(AssetScan &out, const std::string &archive_dir, const s
 // Backtest Coverage Analysis
 // ============================================================================
 
-void Asset::compute_backtest_coverage(AssetScan &out, misc::Ymd start, misc::Ymd end, const AssetInfo &assetinfo) {
+void Asset::compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &assetinfo) {
   Backtest &bt = out.backtest;
   bt = Backtest{};
   bt.start = start;
-  bt.end = end;
+  bt.end = std::max(out.binary.max_date, out.archive.max_date);
 
   // 行 = 基本面交易日历 (权威, archive 自身缺日也能发现); 调用方保证基本面 Ready (ScanService assert).
   // 两源未扫描 / 不存在时其日期集为空, 行上自然标"无".
   const auto &stock_days = assetinfo.get_stock_days();
   assert(!stock_days.empty() && "基本面交易日历未就绪");
   for (const CalendarDay &day : stock_days)
-    if (day.trading && day.date >= start && day.date <= end)
+    if (day.trading && day.date >= bt.start && day.date <= bt.end)
       bt.days.push_back({day.date, out.binary.dates.count(day.date) > 0, out.archive.dates.count(day.date) > 0});
   assert(std::is_sorted(bt.days.begin(), bt.days.end(),
                         [](const BacktestDay &a, const BacktestDay &b) { return a.date < b.date; }) &&

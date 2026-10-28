@@ -38,7 +38,7 @@ void Bar1mDay::load(const fundamental::Catalog &cat, const fundamental::Ids &ids
   n_assets = 0;
   n_skipped_rows = 0;
 
-  present = fundamental::daily(cat, ids, kSpec, d, kCols, x, [&](const fundamental::Rows &r) {
+  [[maybe_unused]] const bool present = fundamental::daily(cat, ids, kSpec, d, kCols, x, [&](const fundamental::Rows &r) {
     const misc::pq::Col c_date = r.col("date"), c_open = r.col("open"), c_high = r.col("high"), c_low = r.col("low"),
                         c_close = r.col("close"), c_vol = r.col("volume"), c_amt = r.col("amount");
     std::int64_t hit = 0;
@@ -69,4 +69,5 @@ void Bar1mDay::load(const fundamental::Catalog &cat, const fundamental::Ids &ids
     });
     n_skipped_rows = static_cast<size_t>(r.size() - hit);
   });
+  assert(present && "bar1m: 分片缺失");
 }

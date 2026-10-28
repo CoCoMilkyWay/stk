@@ -144,11 +144,10 @@ void encoding_producer(SharedData &data,
   assert(worker_count > 0 && "encoding_producer: worker_count 必须为正");
   const MemberFiles files = member_files(data.config);
 
-  // 编码日期轴 = 回测日历 (交易日历 ∩ 回测区间), 与特征计算同一条轴; 进度条总量
+  // 编码日期轴 = 回测日历 (交易日历 ∩ [start_date, 末个 L2 日]), Lob 库日期轴是它的前缀; 进度条总量
   // (EncodingService) 也是它. 归档缺的天在列举处按 Missing 跳过.
   const std::vector<misc::Ymd> dates = data.asset.backtest_dates();
-  assert(data.asset.backtest.start == data.config.start_date && data.asset.backtest.end == data.config.end_date &&
-         "回测日历与配置区间不符 (改配置后没重算覆盖?)");
+  assert(data.asset.backtest.start == data.config.start_date && "回测日历与配置起点不符 (改配置后没重算覆盖?)");
 
   const size_t total_days = dates.size();
 

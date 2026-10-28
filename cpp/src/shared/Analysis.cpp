@@ -72,7 +72,9 @@ ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &
   s.main = main;
   if (days == DayAxis::Main) {
     s.days = pool_bit(main);
-    s.months = misc::months_between(cfg.start_date, cfg.end_date);
+    const std::vector<misc::Ymd> &d = s.libs[main].dates;
+    assert(!d.empty() && "已建库日期轴为空");
+    s.months = misc::months_between(d.front(), d.back());
   } else {
     misc::Ymd lo = 0, hi = 0;
     for (const PoolId l : pool_ids())

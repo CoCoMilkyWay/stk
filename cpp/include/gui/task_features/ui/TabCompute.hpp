@@ -5,11 +5,11 @@
 #include "features/Storage/FeatureLevels.hpp" // TierId
 #include "gui/task_features/services/ComputeService.hpp"
 #include "misc/date.hpp"
+#include "shared/AssetInfo.hpp" // StockDaysVec
 
 #include <string>
 #include <vector>
 
-struct Asset;
 struct Config;
 
 namespace GUI::Features {
@@ -24,6 +24,7 @@ struct LibStatus {
   TierId tier = TierId::Lob;
   bool ready = false; // 有清单 (已建库)
   misc::Ymd first = 0, last = 0;
+  size_t lag = 0;                        // T-lag: 交易日历里 last 之后的交易日数
   size_t assets = 0, days = 0, done = 0; // A 轴 / 日期轴长 / 已落盘日
 };
 
@@ -57,7 +58,7 @@ struct ComputeState {
 void RenderTabCompute(
     ComputeService *service,
     ComputeState &state,
-    Asset &asset,
+    const StockDaysVec &stock_days,
     Config &config);
 
 } // namespace GUI::Features

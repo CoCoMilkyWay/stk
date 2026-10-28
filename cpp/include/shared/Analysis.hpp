@@ -205,11 +205,11 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
     lines[order[i]].draw = 1;
 }
 
-// ---- 读取范围 (Request 公共头): GUI 线程从 config + 库清单解析, worker 只消费 ----
+// ---- 读取范围 (Request 公共头): GUI 线程从库清单解析, worker 只消费 ----
 // 池集 = 主池 + 各列所在池 (同档多池 / 跨档一视同仁; 资产不在列所在池 / 该池这天没落盘 = 无源), 余池空
 inline constexpr PoolId kAutoMain = UINT8_MAX; // 主池 = 列所在池里池轴最短者 (Lob 池优先: Bar 列旁读 all, 池外格不算)
 // 日轴: 段序 / 承接日取哪些池的落盘日
-enum class DayAxis : uint8_t { Main,    // config 区间 × 主池 (流式分析: 主池日 = 样本日, 余池只旁读)
+enum class DayAxis : uint8_t { Main,    // 主池日期轴首尾 × 主池 (流式分析: 主池日 = 样本日, 余池只旁读)
                                Union }; // 各池日期轴首尾 × 池集并集 (OrderFlow: 各池自画自的, 叠加)
 struct ReadScope {
   std::vector<misc::Ym> months;      // 升序 (日轴区间覆盖的月); 池集任一未建 → 空

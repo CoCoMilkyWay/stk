@@ -42,29 +42,6 @@ std::unordered_map<std::string, StockInfo> ParseStockInfo(const std::string &sto
   return result;
 }
 
-AppConfig ParseAppConfig(const std::string &config_file) {
-  std::ifstream file(config_file);
-  if (!file.is_open()) {
-    throw std::runtime_error("Failed to open config file: " + config_file);
-  }
-
-  nlohmann::json j;
-  file >> j;
-
-  AppConfig config;
-  config.dir = j["dir"];
-
-  // lower bound date for data availability
-  std::string start_date_str = j.value("start_date", "");
-  config.start_date = ParseDateStringFull(start_date_str);
-
-  // upper bound date for data availability
-  std::string end_date_str = j.value("end_date", "");
-  config.end_date = ParseDateStringFull(end_date_str);
-
-  return config;
-}
-
 std::chrono::year_month ParseDateString(const std::string &date_str) {
   // Expected formats: "YYYY-MM" or "YYYY-MM-DD"
   if (date_str.length() < 7) {

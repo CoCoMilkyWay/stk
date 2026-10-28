@@ -14,8 +14,6 @@
 //   - Computation via DistService 单 worker 线程 (分批流式, 批末发布快照)
 #pragma once
 
-#include "misc/date.hpp"
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -49,10 +47,6 @@ struct DistUIState {
 
   // 跨帧 hover 的线 (dist.lines 下标; 资产截面图输出, 左栏详情面板消费; 无 hover 时详情落到 focus[3])
   int hovered_line = -1;
-
-  // config 区间月份表缓存 (滑条每帧要用, 日期变了才重算)
-  std::vector<misc::Ym> months;
-  misc::Ymd months_lo = 0, months_hi = 0; // 缓存对应的 config start_date / end_date
 
   // 行业色缓存 (资产表静态, 构建一次): 一个行业一个颜色
   std::vector<int> industry_idx;           // [A], -1 = 未知

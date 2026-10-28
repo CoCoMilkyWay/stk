@@ -30,8 +30,7 @@ bool ScanService::run(ScanRequest &req) {
   // Phase 1: Validate config (before any FS operations)
   // ========================================
   const misc::Ymd backtest_start = data_.config.start_date;
-  const misc::Ymd backtest_end = data_.config.end_date;
-  assert(backtest_start && backtest_end && "回测区间未配置 (Config::Load 已校验)");
+  assert(backtest_start && "回测起点未配置 (Config::Load 已校验)");
 
   // ========================================
   // Phase 2: Check file system
@@ -69,7 +68,7 @@ bool ScanService::run(ScanRequest &req) {
   // ========================================
   // 回测日历的 ground truth = 基本面交易日历 (StateManager 只在基本面交接 ok 后请求扫描)
   assert(!data_.assetinfo.get_stock_days().empty() && "基本面日历未就绪, 不应触发扫描");
-  Asset::compute_backtest_coverage(s, backtest_start, backtest_end, data_.assetinfo);
+  Asset::compute_backtest_coverage(s, backtest_start, data_.assetinfo);
 
   // Encode 的缺失表、Table 的 Orders%、Browser 的完整性是同一份统计, 在这里
   // 一次算完. 放在扫描里而不是各页首帧惰性算: 那是 885 天 × 5800 资产的双重
@@ -104,7 +103,7 @@ bool ScanService::run(ScanRequest &req) {
   result.archive.total_dates = result.archive.available_dates.size();
 
   // Decision Tree (覆盖判定以交易日历为 ground truth, 不看 archive/binary 的 min/max 区间)
-  assert(result.required_dates > 0 && "回测区间内无交易日 (config 日期错误?)");
+  assert(result.required_dates > 0 && "start_date 之后无 L2 交易日 (start_date 晚于末个 L2 日?)");
   if (result.missing_dates.empty()) {
     // binary 覆盖全部交易日
     result.status = DatabaseStatus::Pass;

@@ -1583,7 +1583,7 @@ void Panel::build(const std::vector<std::string> &codes,
   for (const Ymd s : dates) {
     const int d = axes.exact(s);
     assert(d >= 0 && "回测日不在交易日历里");
-    assert(d + 1 < n_d && "回测日无次日交易日 (回测区间不能含 today)");
+    assert(d + 1 < n_d && "库日无次日交易日 (末日须早于日历末个交易日)");
     first_d = std::min(first_d, d);
   }
   const int g0 = std::max(0, first_d - 15); // 网格切片起点: 首回测日前留 15 日 (trading_st 连续 15 日计数)

@@ -52,7 +52,7 @@ double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
   int books = 0;
   for (int c = 0; c < s.y.ad.n; ++c)
     books += !leg_of(ft.y.costs, s.y.ad.k[c]).flat();
-  return kPlaneBytes * static_cast<double>(nx) + 2.0 + kPlaneBytes * s.y.hd.n + 4.0 * books + (s.b ? kBasketCellBytes : 0.0);
+  return kPlaneBytes * static_cast<double>(nx) + 2.0 + kPlaneBytes * s.y.hd.n + 4.0 * books;
 }
 
 size_t XPlanes::count() const {
@@ -71,15 +71,13 @@ double Block::bytes() const {
       s += vb(v);
     return s;
   };
-  double s = vb(y.gate) + vb(y.eo) + pb(b.close) + vb(b.mcap) + vb(b.px) + vb(b.shares) + vb(b.ind);
+  double s = vb(y.gate) + vb(y.eo);
   for (const factor::check::Plane &p : x.v)
     s += pb(p);
   for (const LegPlane &p : y.labels)
     s += lb(p);
   for (const LegPlane &p : y.costs)
     s += lb(p);
-  for (const std::vector<float> &v : b.val)
-    s += vb(v);
   return s;
 }
 
@@ -197,7 +195,7 @@ bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&o
   return !io.cancel.load(std::memory_order_relaxed) && !io.lr.stale();
 }
 
-// 一天的截面门控 (load_y / n_full_of 同一份): gate[t·A + a], t < VR = 截面池 ∧ 当日有数据; has = 本线程 [A] 暂存.
+// 一天的截面门控 (load_y / load_b / n_full_of 同一份): gate[t·A + a], t < VR = 截面池 ∧ 当日有数据; has = 本线程 [A] 暂存, 出 = 当日有数据 (∧ 子池成员).
 // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
 // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
 // 截面池 = 标签库 cs_valid (all = 母集; Lob 池 = 当日在池); 子池 (Bar 标签层) = 当日成员, 不看 cs_valid
@@ -384,19 +382,35 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
 
 bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   TraceN("FactorsLoadB");
+  constexpr size_t K = factor::stat::kLegs;
   const FeatureTable &ft = io.ft;
+  assert(io.dm.pool == kAllPool && !io.dm.member && "池篮子在 all 池评估域 (全轴; 各池成员读池列)");
   B = BPlanes{};
   B.sh = shape_of(io, k);
-  const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg);
-  // ---- 列段 ts_valid close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 (日频原料 bar.1d, as-of 到网格行) ----
+  const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg), NP = ft.b.pools.size();
+  assert(NP == pool_count());
+  // ---- 列段 ts_valid cs_valid lb_entry_ok T+1C 标签 [K] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 池列 [1, NP)
+  //      (日频原料 bar.1d, as-of 到网格行) ----
   ColList cols{io.dm.pool, {}};
-  const size_t ts_i = cols.add(ft.y.ts), px_i = cols.add(ft.b.ohlc[3]), adj_i = cols.add(ft.b.adj_factor), sh_i = cols.add(ft.b.total_shares);
+  const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
+  const size_t lab_i = cols.refs.size();
+  for (const Col &c : leg_of(ft.y.labels, factor::stat::hold_close(1)).leg)
+    cols.add(c);
+  const size_t px_i = cols.add(ft.b.ohlc[3]), adj_i = cols.add(ft.b.adj_factor), sh_i = cols.add(ft.b.total_shares);
   const size_t val_i = cols.refs.size();
   for (const Col &v : ft.b.val)
     cols.add(v);
   const size_t ind_i = cols.add(ft.b.ind_l1);
-  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / K 线在标签库");
+  const size_t pool_i = cols.refs.size(); // 池 p 的列 = pool_i + p − 1
+  for (size_t p = 1; p < NP; ++p)
+    cols.add(ft.b.pools[p]);
+  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签 / K 线在标签库");
   std::vector<float> vadj(n, 0.f); // 本行 adj_factor (盘后列, as-of = 当日因子; 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
+  B.in.assign(n, 0);
+  for (std::vector<uint16_t> &v : B.lab.v)
+    v.assign(n, 0);
+  B.lab.m.assign(n, 0);
+  B.eo.assign(n, 0);
   B.close.resize(n);
   B.mcap.assign(n, 0.f);
   B.px.assign(n, 0.f);
@@ -404,9 +418,42 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   for (std::vector<float> &v : B.val)
     v.resize(n);
   B.ind.assign(n, 0);
-  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t) {
+  const size_t nt = static_cast<size_t>(io.ex.threads());
+  std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A)); // 每线程: 当日有成交 / all 截面门控
+  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
+    gate_day(view, ts_i, cs_i, io.dm, day, VR, A, has[tid], gate[tid].data());
+    const std::vector<uint8_t> &on = has[tid];
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
+      // 池成员位: 位 kAllPool = all 截面门控; 位 p = 池列 > 0.5 (NaN = 母集外 → 不在池) ∧ 当日有成交
+      PoolMask *in = B.in.data() + row;
+      for (size_t a = 0; a < A; ++a)
+        in[a] = gate[tid][t * A + a] ? pool_bit(kAllPool) : PoolMask{0};
+      for (size_t p = 1; p < NP; ++p) {
+        const View w = view(pool_i + p - 1, t);
+        const PoolMask bit = pool_bit(static_cast<PoolId>(p));
+        for (size_t a = 0; a < A; ++a) {
+          feature_storage_t x;
+          if (on[a] && cell(w, a, x) && static_cast<float>(x) > 0.5f)
+            in[a] |= bit;
+        }
+      }
+      // 建仓可成交码 / T+1C 两腿 (同 load_y 的折叠, 池内 = 在任一池)
+      const View we = view(eo_i, t), wl[K] = {view(lab_i, t), view(lab_i + 1, t)};
+      for (size_t a = 0; a < A; ++a) {
+        feature_storage_t e = {}, x[K] = {};
+        const bool ok_e = in[a] && cell(we, a, e) && fmeta::finite(e);
+        const float c = ok_e ? static_cast<float>(e) : 0.f;
+        assert((c == 0.f || c == 1.f || c == 2.f || c == 3.f) && "lb_entry_ok 须是 kEoBuy | kEoSell");
+        B.eo[row + a] = static_cast<uint8_t>(c);
+        bool ok = in[a] != 0;
+        for (size_t l = 0; l < K; ++l)
+          ok = ok && cell(wl[l], a, x[l]) && fmeta::finite(x[l]);
+        for (size_t l = 0; l < K; ++l)
+          B.lab.v[l][row + a] = ok ? std::bit_cast<uint16_t>(x[l]) : 0;
+        B.lab.m[row + a] = ok;
+        assert((!ok || B.eo[row + a]) && "标签有效格须有建仓可成交码 (旧标签库: 重算)");
+      }
       // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限 ∧ > 0 (此处不复权, 装完乘复权因子)
       const View wt = view(ts_i, t), wp = view(px_i, t), wa = view(adj_i, t);
       for (size_t a = 0; a < A; ++a) {
@@ -512,12 +559,12 @@ factor::stat::Labels labels_pick(const factor::stat::Labels &L, const Pick &p) {
 }
 
 std::string block_key(const FeatureTable &ft, const Domain &dm, const Chunk &k, const BlockSpec &s) {
-  return std::string(factor_level(ft.lv).name) + "|" + dm.key() + "|" + std::to_string(k.d0) + "-" + std::to_string(k.d1) + "|" + s.y.key() + (s.b ? "|b" : "");
+  return std::string(factor_level(ft.lv).name) + "|" + dm.key() + "|" + std::to_string(k.d0) + "-" + std::to_string(k.d1) + "|" + s.y.key();
 }
 
 namespace {
 
-// Y 侧 (+ B): 键 (或日序列) 变 → reset + 装 Y (+ B). 键中 → 不动. false = 取消 / 判废 (块已 reset)
+// Y 侧: 键 (或日序列) 变 → reset + 装 Y. 键中 → 不动. false = 取消 / 判废 (块已 reset)
 bool ensure_yb(Block &c, const Io &io, const Chunk &k, const BlockSpec &s) {
   assert(k.d0 < k.d1 && k.d1 <= io.dm.dates.size());
   const std::string key = block_key(io.ft, io.dm, k, s);
@@ -527,7 +574,7 @@ bool ensure_yb(Block &c, const Io &io, const Chunk &k, const BlockSpec &s) {
     return true;
   c.reset();
   c.ft = &io.ft;
-  if (!load_y(io, k, s.y, c.y) || (s.b && !load_b(io, k, c.b))) {
+  if (!load_y(io, k, s.y, c.y)) {
     c.reset();
     return false;
   }

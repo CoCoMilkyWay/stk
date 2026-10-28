@@ -162,8 +162,10 @@ void Dist::reset(ReadScope scope, Spec sp) {
   if (snap.lines.size() != A || axis_changed)
     snap.lines.assign(A, AssetLine{});
   init_lines(snap.lines, scope_.axis.ids);
-  if (snap.months.size() != scope_.months.size())
+  if (snap.month_keys != scope_.months) {
+    snap.month_keys = scope_.months;
     snap.months.assign(scope_.months.size(), AggPdf{});
+  }
   if (snap.by_weekday.size() != 7)
     snap.by_weekday.assign(7, AggPdf{});
   if (snap.by_tod.size() != kTodBins)

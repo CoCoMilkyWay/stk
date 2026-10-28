@@ -36,7 +36,6 @@ private:
     bool is_open = false;
   };
   DatePickerState start_picker;
-  DatePickerState end_picker;
 
   // Helper: Draw date picker
   bool DrawDatePicker(const char *label, const char *popup_id, char *date_buf, size_t buf_size, DatePickerState &state) {
@@ -231,7 +230,7 @@ private:
 
   bool DrawPeriodSection(Config &cfg) {
     bool changed = false;
-    if (ImGui::CollapsingHeader("回测/分析周期: YYYY-MM-DD", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("回测日历起点 / 联网同步", ImGuiTreeNodeFlags_DefaultOpen)) {
       if (ImGui::BeginTable("period_table", 2,
                             ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable |
                                 ImGuiTableFlags_NoSavedSettings)) {
@@ -243,26 +242,13 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("开始日期");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("回测/分析开始日期 (YYYY-MM-DD)");
+          ImGui::SetTooltip("回测日历 (L2 编码 / Lob 库) 起始日 (YYYY-MM-DD).\n"
+                            "末日由数据定: 编码到末个 L2 日, Lob 库到末个已编码日, all 库到末个 bar1m 日.");
         }
         ImGui::TableNextColumn();
         if (DrawDatePicker("##start", "start_date_picker", cfg.start_date_buf, sizeof(cfg.start_date_buf), start_picker)) {
           cfg.start_date = misc::parse_ymd(cfg.start_date_buf);
           assert(cfg.start_date);
-          changed = true;
-        }
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("结束日期");
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("回测/分析结束日期 (YYYY-MM-DD)");
-        }
-        ImGui::TableNextColumn();
-        if (DrawDatePicker("##end", "end_date_picker", cfg.end_date_buf, sizeof(cfg.end_date_buf), end_picker)) {
-          cfg.end_date = misc::parse_ymd(cfg.end_date_buf);
-          assert(cfg.end_date);
           changed = true;
         }
 

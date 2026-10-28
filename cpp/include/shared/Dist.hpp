@@ -97,7 +97,8 @@ struct Dist : Published {
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   struct Snap {
-    std::vector<analysis::AggPdf> months;     // [n_months] 月度漂移 (月键 = config 区间月份表, UI 自持)
+    std::vector<misc::Ym> month_keys;         // [n_months] 月键 (= scope 月份表, reset 时定)
+    std::vector<analysis::AggPdf> months;     // [n_months] 月度漂移
     std::vector<analysis::AggPdf> by_weekday; // [7]
     std::vector<analysis::AggPdf> by_tod;     // [kTodBins] 日内 10 分钟桶
     analysis::AggPdf global;                  // 全区间

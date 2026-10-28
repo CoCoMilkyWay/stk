@@ -32,7 +32,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   std::vector<uint8_t> seen(As, 0);
   for (size_t i = 0; i < dates.size(); ++i) {
     const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
-    assert(it != bar.dates.end() && *it == dates[i] && "回测日不在 Bar 池日期轴: 重算 Bar 池覆盖到 end_date");
+    assert(it != bar.dates.end() && *it == dates[i] && "回测日不在 Bar 池日期轴 (Lob 日期轴须截到 Bar 池末日)");
     assert(it != bar.dates.begin() && "回测日是 Bar 池首日, 无 D−1 池源");
     const misc::Ymd prev = *(it - 1);
     assert(reader.has_date(prev) && "Bar 池缺池源日: 先把 Bar 池算完");
