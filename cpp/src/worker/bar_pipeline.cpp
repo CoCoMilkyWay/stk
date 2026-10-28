@@ -34,7 +34,7 @@ struct TierFeed<bar::Tier> {
   TierFeed(const PipelineArgs &args, const StoreRing &store)
       : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), dates(args.dates),
         ring(store.feed_ring_size()), scratch(ring.size()) {
-    assert(axis.size() == asset_axis().size() && "Bar 档 A 轴 = 全轴");
+    assert(axis.size() <= asset_axis().size() && "Bar 档 A 轴 = 全轴前缀 (建库时的全轴; 之后新上市的在轴外)");
     for (size_t sub = 0; sub < axis.size(); ++sub)
       ids.add(asset_axis().code(axis.global(sub)));
     assert(std::ranges::all_of(dates, [this](misc::Ymd d) { return catalog.find_day("bar1m", d) != nullptr; }) &&
@@ -81,3 +81,4 @@ struct TierFeed<bar::Tier> {
 };
 
 template bool pipeline<bar::Tier>(const PipelineArgs &);
+template SnapHeader snap_header<bar::Tier>(const FeatureLib &, misc::Ymd);

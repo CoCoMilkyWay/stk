@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FeatureDay.hpp" // 续算尾窗读回 (seed)
 #include "FeatureStoreConfig.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
@@ -14,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -80,6 +82,9 @@ inline constexpr size_t kDefaultRingSlots = 4;
 //   CS: cs_try_open(d)  本日计满全轴 → 逐拍扫 (cs_prev: 跨日只读 d−1 槽位 TS 列) → cs_close → slot.cs_closed
 //   IO: io_try_open(d)  d < io_done_ + P ∧ slot.cs_closed ∧ (末日 ∨ CS(d+1) 已 close) → 落盘 (FeatureDay::write, 池不碰格式)
 //                       → io_close (清零) → slot.io_mark → 推进 io_done_
+//
+// 续算: 日期轴前 tail 日 = 库末 tail 日 (尾窗, 标签可能仍悬挂), 启动前 seed 从盘整层读回各自的 slot (IO 的逆);
+// 之后四段照常握手 —— 预取 / 截面对尾窗日只 close 不干活, TS 由 CoreTs::resume 接回句柄, IO 照常重落盘.
 //
 // TS 按 (asset, d) 计数 (而非按 worker) 使资产处置权可在 worker 间转移: 领跑 worker 可接手
 // 落后 worker 的资产并回填旧日 (旧日未计满 ⇒ 仍在飞, ts_try_open 必得), 见 TsSchedule.
@@ -322,6 +327,26 @@ public:
     if (ring_) {
       delete[] ring_; // Slot destructors called automatically
     }
+  }
+
+  // ===== 续算: 尾窗日读回 =====
+
+  // 管线启动前调: 日 d = 0..n−1 的 slot (空闲态) ← 库里 dates[d] 的日文件, 逐层整层读回; 一日一任务.
+  // 尾窗日之后照常 ts_close / cs_close / io (见文件头), 读不回 = 库被改过 (清单与日文件不符) → 断言
+  void seed(std::span<const misc::Ymd> dates) {
+    assert(!dates.empty() && dates.size() < ring_size_ && io_done_.load(std::memory_order_relaxed) == 0 && "seed: 只在管线启动前填尾窗");
+    misc::exec::ForkJoin ex(misc::exec::fit(dates.size()));
+    ex.tasks(static_cast<int>(dates.size()), [&](int d, int) {
+      FeatureDay::Scratch s;
+      const std::string day_dir = feature_day_dir(output_dir_, dates[static_cast<size_t>(d)]);
+      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+        if (!T::has(lvl))
+          continue;
+        const FeatureDay::Status st = FeatureDay::read_layer(feature_file(day_dir, lvl), T::LEVELS[lvl], ring_[d].data[lvl], num_assets_, axis_hash_, s);
+        assert(st == FeatureDay::Status::Ok && "续算: 尾窗日文件读不回");
+        (void)st;
+      }
+    });
   }
 
   // ===== TS: open 按 d, close 按 (asset, d) =====

@@ -168,6 +168,14 @@ public:
     px_last_ = path_len_ = 0.0f;
   }
 
+  template <class Ar>
+  void snap(Ar &ar) {
+    ar(g3_.theta);
+    ar(g3_.day_bpv);
+    ar(g15_.theta);
+    ar(g15_.day_bpv);
+  }
+
 private:
   template <uint32_t D>
   inline void write(const Grid<D> &g, size_t base) {

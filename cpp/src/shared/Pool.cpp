@@ -7,7 +7,7 @@
 
 namespace pool {
 
-Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates) {
+Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates, const PoolAxis *frozen) {
   assert(bar.tier == TierId::Bar && bar.ready() && "池源 = Bar 池 (先算 Bar 池)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
   // 第 D 日成员 = 盘中 as-of 的池列 (与读端同一投影): 盘后列对任何网格都是 -1 = D−1 收盘行, 故各层同一份
@@ -49,18 +49,31 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
     }
   }
 
+  // 池轴: 并集 / 冻结轴 (区间内进过池而不在轴上的记入 outside_)
+  Panel p;
   std::vector<uint32_t> ids;
   std::vector<size_t> pick; // 池轴 sub → Bar 池下标
-  for (size_t a = 0; a < As; ++a)
-    if (seen[a]) {
-      ids.push_back(bar.axis.global(a));
-      pick.push_back(a);
+  if (frozen) {
+    ids = frozen->ids;
+    for (const uint32_t g : ids) {
+      pick.push_back(bar.axis.sub_of(g));
+      assert(pick.back() < As && "冻结池轴有资产不在 Bar 池轴上");
     }
+    for (size_t a = 0; a < As; ++a)
+      if (seen[a] && frozen->sub_of(bar.axis.global(a)) == frozen->size())
+        p.outside_.push_back(bar.axis.global(a));
+  } else {
+    for (size_t a = 0; a < As; ++a)
+      if (seen[a]) {
+        ids.push_back(bar.axis.global(a));
+        pick.push_back(a);
+      }
+  }
   assert(!ids.empty() && "池在回测区间内并集为空");
 
-  Panel p;
   p.dates_.assign(dates.begin(), dates.end());
   p.axis_ = pool_axis(std::move(ids));
+  assert((!frozen || p.axis_.hash == frozen->hash) && "冻结池轴重建出的指纹不符 (asset_axis 被改过?)");
   const size_t A = pick.size();
   p.member_.resize(dates.size() * A);
   for (size_t i = 0; i < dates.size(); ++i)

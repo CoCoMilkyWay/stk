@@ -157,7 +157,7 @@ PoolAxis pool_axis(std::vector<uint32_t> ids) {
 }
 
 // ============================================================================
-// 特征库清单 (见 FeatureLib.hpp): <dir>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...]}
+// 特征库清单 (见 FeatureLib.hpp): <dir>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...], "outside": [...] (非空才有)}
 // ============================================================================
 namespace {
 std::string lib_manifest(const std::string &dir) { return dir + "/lib.json"; }
@@ -187,6 +187,14 @@ FeatureLib load_lib(const Config &cfg, std::string_view name) {
     ids.push_back(static_cast<uint32_t>(id));
   }
   lib.axis = pool_axis(std::move(ids));
+
+  if (const auto it = j.find("outside"); it != j.end())
+    for (const auto &c : *it) {
+      const std::size_t id = table.find(c.get_ref<const std::string &>());
+      assert(id < table.size() && "库清单轴外代码不在 A 轴上");
+      lib.outside.push_back(static_cast<uint32_t>(id));
+    }
+  assert(std::is_sorted(lib.outside.begin(), lib.outside.end()) && "库清单轴外须按全局 id 升序");
   return lib;
 }
 
@@ -202,6 +210,13 @@ void save_lib(const FeatureLib &lib) {
   j["tier"] = tier_name(lib.tier);
   j["dates"] = lib.dates;
   j["codes"] = codes;
+  if (!lib.outside.empty()) {
+    std::vector<std::string> outside;
+    outside.reserve(lib.outside.size());
+    for (const uint32_t a : lib.outside)
+      outside.push_back(table.code(a));
+    j["outside"] = outside;
+  }
 
   std::filesystem::create_directories(lib.dir);
   const std::string path = lib_manifest(lib.dir);

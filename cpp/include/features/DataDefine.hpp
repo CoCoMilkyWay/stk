@@ -74,6 +74,9 @@ inline constexpr float kPxEps = 1e-4f;
 //   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后发布)
 //   void reset();   (可选)                   // 有跨天状态才写 (日内节点; 日频节点不 reset)
 //   bool carry();   (可选, 日频节点)         // 盘前承接: 输出口不是当日盘前态 (区间首日 / 日期轴跳日) → 写 y 并返回 true, Node 发布
+//   template <class Ar> void snap(Ar &ar);   // (可选) 续算点: 逐个 ar(成员) 列出 reset 不清的成员 (跨天窗口 / 昨值 / 分布)
+//                                            //   (misc/snap.hpp); y / 输出口 / hist 由 Node 存. 漏列 = 续算与全量不再逐位一致
+//                                            //   能由 fund::Panel 从头重推的 (Fund 的状态机) 不必列; 状态只许依赖库首日, 不许依赖本轮首日
 // 单侧节点 (只看一侧盘口) 只收那一侧的 DepthPorts, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
 // 输出口由 graph::Node 持有, 默认只存最新值; 下游用 Up.out(口) 接 Port, 字段表用 TS(节点, 口) 引用. 回看两条路:
 //   同域 (消费方每次发布恰读一次上游): 消费方自持窗口 (如 Momentum), 窗长归消费方;

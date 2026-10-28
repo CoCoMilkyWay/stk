@@ -4,6 +4,7 @@
 #include "features/Node/Bar/TS/Label/LabelBar.hpp"
 #include "features/Node/Lob/TS/Label/LabelLob.hpp"
 #include "features/Storage/FeatureRead.hpp"
+#include "features/Storage/FeatureSnap.hpp"
 #include "features/Storage/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
@@ -13,8 +14,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <vector>
 
 namespace GUI::Features {
@@ -45,6 +48,18 @@ std::vector<misc::Ymd> source_dates(const SharedData &data, TierId tier) {
   return dates;
 }
 
+bool resumable(const FeatureLib &lib) {
+  if (!lib.ready())
+    return false;
+  SnapHeader want;
+#define TIER_SNAP_HEADER(T, ns) \
+  if (lib.tier == TierId::T)    \
+    want = snap_header<ns::Tier>(lib, lib.dates.back());
+  ALL_TIERS(TIER_SNAP_HEADER)
+#undef TIER_SNAP_HEADER
+  return FeatureSnap::head(lib.dir) == want;
+}
+
 void ComputeService::Request(ComputeConfig config) {
   for (const TierId t : TIER_IDS)
     assert(config.pf_cores[t] >= 1 && config.cs_cores[t] >= 1 && config.io_cores[t] >= 1 && "预取 / 截面 / 落盘各至少 1 核");
@@ -54,6 +69,7 @@ void ComputeService::Request(ComputeConfig config) {
 }
 
 // 两档同一流程: 规划本池 → fund_panel → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
+// 续算同一流程, 只差: 轴沿用旧清单, 管线日期轴 = 尾窗 + 新日, 不清库, 跑完才落新清单
 bool ComputeService::run(ComputeConfig &config) {
   // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
   //   日期轴 = 请求带来的规划 (见 source_dates), 末日不晚于各旁读库末日
@@ -72,16 +88,39 @@ bool ComputeService::run(ComputeConfig &config) {
   lib = FeatureLib{.tier = def.tier, .name = config.pool, .dir = data_.config.FeatureLibDir(config.pool), .dates = std::move(config.dates)};
   for (const TierId s : TIER_IDS)
     assert((!tier_side(def.tier, s) || (libs[s].ready() && lib.dates.back() <= libs[s].dates.back())) && "日期轴越过旁读库末日 (先把旁读档算到这天)");
+  // 续算: 旧日期轴须是规划的真前缀; 尾窗 = 旧末 min(PEND_DAYS, 旧日数) 日 (标签可能仍悬挂, 此轮结清), 管线日期轴从尾窗起
+  size_t tail = 0, first = 0; // first = 管线日期轴在库日期轴里的起点
+  if (config.resume) {
+    const FeatureLib old = load_lib(data_.config, config.pool);
+    assert(resumable(old) && "续算: 库没有对得上的续算点 (先全量)");
+    assert(lib.dates.size() > old.dates.size() && std::equal(old.dates.begin(), old.dates.end(), lib.dates.begin()) &&
+           "续算: 库日期轴须是规划的真前缀");
+    lib.axis = old.axis;
+    lib.outside = old.outside;
+    tail = std::min(old.dates.size(), LabelHold::PEND_DAYS);
+    first = old.dates.size() - tail;
+  }
+  const std::vector<misc::Ymd> dates(lib.dates.begin() + static_cast<std::ptrdiff_t>(first), lib.dates.end());
   if (lib.tier == TierId::Lob) {
-    data_.pool_panel = pool::Panel::build(libs[TierId::Bar], def.pool_col, lib.dates);
-    lib.axis = data_.pool_panel.axis();
+    data_.pool_panel = pool::Panel::build(libs[TierId::Bar], def.pool_col, dates, config.resume ? &lib.axis : nullptr);
+    if (config.resume) {
+      std::vector<uint32_t> outside;
+      std::ranges::set_union(lib.outside, data_.pool_panel.outside(), std::back_inserter(outside));
+      lib.outside = std::move(outside);
+    } else {
+      lib.axis = data_.pool_panel.axis();
+    }
+  } else if (config.resume) {
+    lib.outside.clear();
+    for (size_t g = lib.axis.size(); g < data_.asset.items.size(); ++g)
+      lib.outside.push_back(static_cast<uint32_t>(g));
   } else {
     lib.axis = full_axis(data_.asset.items.size());
   }
-  const std::vector<misc::Ymd> &dates = lib.dates;
   const size_t num_assets = lib.axis.size();
   std::cout << "Lib " << lib.name << " (" << tier_name(lib.tier) << "): " << lib.dir << " → " << num_assets << " / "
-            << data_.asset.items.size() << " assets\n"
+            << data_.asset.items.size() << " assets (轴外 " << lib.outside.size() << ")"
+            << (config.resume ? " | 续算 " + std::to_string(dates.size() - tail) + " 日 + 尾窗 " + std::to_string(tail) + " 日" : "") << "\n"
             << std::endl;
 
   // Enable High Performance Mode: GUI low-refresh, compute owns cores
@@ -91,19 +130,22 @@ bool ComputeService::run(ComputeConfig &config) {
   begin(Phase::Running, dates.size());
 
   // 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 节点在 worker 内逐日推进; worker 只读.
-  // 只 build 本档 A 轴码表 × 本档日期轴 —— 池大小随轴缩.
+  // 只 build 本档 A 轴码表 × 库日期轴 (不是管线日期轴: 切片起点 / 复权锚随库首日, 续算与全量同一面板) —— 池大小随轴缩.
   {
     std::vector<std::string> axis_codes(num_assets);
     for (size_t sub = 0; sub < num_assets; ++sub)
       axis_codes[sub] = asset_axis().code(lib.axis.global(sub));
-    data_.fund_panel.build(axis_codes, dates, lib.tier != TierId::Lob);
+    data_.fund_panel.build(axis_codes, lib.dates, lib.tier != TierId::Lob);
   }
 
   // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;
-  // 别的池不碰 —— 按目录分片, 见 Config), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集)
-  FeatureRead::wipe_dir(lib.dir); // 可能与 reader 判废删库并发
-  FeatureRead::set_dir_stale(lib.dir, false);
-  save_lib(lib);
+  // 别的池不碰 —— 按目录分片, 见 Config), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集).
+  // 续算: 不清库, 跑完才落新清单 (中途取消 = 旧清单 + 旧续算点仍对得上, 再续即可; 已重落盘的尾窗日标签按新日结清, 再续同值重写)
+  if (!config.resume) {
+    FeatureRead::wipe_dir(lib.dir); // 可能与 reader 判废删库并发
+    FeatureRead::set_dir_stale(lib.dir, false);
+    save_lib(lib);
+  }
 
   // 日志: 先关 (释放上一轮文件句柄), 清空重建 log_dir, 全部 worker 共用一个日志文件
   namespace fs = std::filesystem;
@@ -116,7 +158,7 @@ bool ComputeService::run(ComputeConfig &config) {
 
   // 已落盘天数镜像进进度面
   const TierId tier = lib.tier;
-  const PipelineArgs args{data_, libs, dates, static_cast<size_t>(config.ring_slots(tier)), static_cast<uint64_t>(config.adopt_pct),
+  const PipelineArgs args{data_, libs, dates, tail, static_cast<size_t>(config.ring_slots(tier)), static_cast<uint64_t>(config.adopt_pct),
                           config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;
@@ -125,6 +167,8 @@ bool ComputeService::run(ComputeConfig &config) {
     completed = pipeline<ns::Tier>(args);
   ALL_TIERS(TIER_PIPELINE)
 #undef TIER_PIPELINE
+  if (completed && config.resume)
+    save_lib(lib);
 
   // Disable High Performance Mode: GUI resumes
   data_.DisableHighPerformanceMode();

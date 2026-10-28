@@ -30,6 +30,7 @@
 //         writer.rows(col) = 该列落盘的行 (编译期 kLabRows), LabelHold 只结算这些行;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
 //   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close.
+//   续算: snap = 区间末日的跨天态 (节点 + 标签), resume = 下一轮把尾窗日 (≤ PEND_DAYS, 张量已从盘读回) 的句柄接回环, 之后同一路径.
 //   档钩子 (Derived 实现):
 //     bool  member(misc::Ymd)  日开 (onDay 之后): 当日成员位 → cs_valid (Lob 池 / Bar 母集)
 //     auto &resampler()        源 → MinuteData 的重采样器 (ResamplerTick2Min / ResamplerBar2Min: reset / roll)
@@ -88,6 +89,31 @@ public:
 
   // 回测区间末 (最后一日 end_day 之后): 悬挂日全部按最近收盘价结算并归还句柄
   void finish_all(Store &store) { dag_.label.finish_all(writer(), releaser(store)); }
+
+  // 续算点 (区间末日 end_day 之后 / finish_all 之前): 日句柄环游标 + DAG (节点跨天态 + 标签悬挂环).
+  // 句柄不存 (槽位随轮而变), 续算时由 resume 按尾窗日重给; 元数据 / 重采样器 / 分钟箱都是日内态 (begin_day 归零)
+  template <class Ar>
+  void snap(Ar &ar) {
+    ar(cur_);
+    dag_.snap(ar);
+  }
+
+  // 续算接回 (快照读回之后, 首个新日 begin_day 之前): tail = 尾窗日句柄 (老 → 新, 末个 = 快照日) 依次进日句柄环.
+  // 快照时已归还的尾窗日在本轮计数里即刻 ts_close (老日先, 与 release_settled 同序); 仍持的随标签结清归还
+  void resume(std::span<const Day> tail, Store &store) {
+    assert(!tail.empty() && tail.size() <= kPendDays);
+    for (size_t age = 0; age < kPendDays; ++age)
+      days_[(cur_ + kPendDays - age) % kPendDays] = age < tail.size() ? tail[tail.size() - 1 - age] : Day{};
+    day_ = days_[cur_];
+    for (size_t age = kPendDays; age-- > 0;) {
+      if (age >= tail.size()) {
+        assert(!dag_.label.held(age) && "续算: 尾窗之外仍有悬挂日 (尾窗须覆盖悬挂日环)");
+        continue;
+      }
+      if (!dag_.label.held(age))
+        store.ts_close(day_at(age));
+    }
+  }
 
 protected:
   template <class... Args>

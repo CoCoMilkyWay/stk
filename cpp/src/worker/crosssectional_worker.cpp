@@ -52,6 +52,13 @@ void cs_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes) {
     if (!day)
       break;
 
+    // 尾窗日 (续算): 截面列随张量读回, 照旧有效 (截面只读 TS 列) → 只 close 交给 IO
+    if (date_idx < ctx.tail) {
+      store.cs_close(day);
+      ++completed_dates;
+      continue;
+    }
+
     // 有效拍 (Lob = 秒 [0, 15300), Bar = 分钟 [0, 255)): 末行是哨兵 (label lookahead 落点), 不进截面
     core.begin_day(day, store.cs_prev(day), date, date_idx > 0 ? dates[date_idx - 1] : misc::Ymd{0});
     const size_t beats = level_valid_rows(Core::kBeatLevel);

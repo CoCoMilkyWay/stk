@@ -22,6 +22,7 @@ class Panel;
 //   node.flush()                     节点类有 flush() 先调 (降频型结算到 y), 然后 y → 输出口
 //   node.reset()                     跨天 (日内节点): 输出口置 NaN (不留昨日尾值), 节点类有 reset() 再调
 //   node.carry()                     跨天 (日频节点, 见 is_day_trigger): 输出口保留; 节点类有 carry() 且返回 true → y → 输出口 (盘前承接)
+//   node.snap<kDay>(ar)              续算点 (misc/snap.hpp): y (reset 不清) + 日频节点的输出口 / hist (carry 保留) + 节点类有 snap(ar) 再调
 //   node.out(i) / node.out()         第 i 个输出口 (下游节点输入 / 字段表写回); 单口默认 0
 //   node.outs()                      全部输出口 Ports<K> (下游按口成组消费)
 //   node.hist()                      节点类声明 kHist = H 才有: 最近 H 次发布的 History<K, H> (每次发布推一行, 与输出口同步;
@@ -75,6 +76,17 @@ struct Node : Impl {
       if (Impl::carry())
         publish();
   }
+  template <bool kDay, class Ar>
+  void snap(Ar &ar) {
+    ar(Impl::y);
+    if constexpr (kDay) {
+      ar(ports_);
+      if constexpr (H > 0)
+        ar(hist_);
+    }
+    if constexpr (requires(Impl &o) { o.snap(ar); })
+      Impl::snap(ar);
+  }
 
 private:
   [[gnu::always_inline]] inline void publish() {
@@ -104,6 +116,11 @@ struct Node<Impl, 0> : Impl {
     if constexpr (requires(Impl &o) { o.reset(); })
       Impl::reset();
   }
+  template <bool kDay, class Ar>
+  void snap(Ar &ar) {
+    if constexpr (requires(Impl &o) { o.snap(ar); })
+      Impl::snap(ar);
+  }
 };
 
 // 跨天: 按节点 flush 域分派 (日频节点承接, 日内节点清空)
@@ -113,6 +130,12 @@ inline void day_start(N &node) {
     node.carry();
   else
     node.reset();
+}
+
+// 续算点: 同一分派 (日频节点连输出口一起存, 与 day_start 承接 / 清空对仗)
+template <Trigger Flush, class Ar, class N>
+inline void snap(Ar &ar, N &node) {
+  node.template snap<is_day_trigger(Flush)>(ar);
 }
 
 // 两档共有的源: 分钟 K + 分钟箱 K + 日 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
@@ -145,6 +168,7 @@ static_assert(L_5min + std::size(BIN_DATA) == L_1day + 1);
 //     run<trig>()        对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush()
 //     at_day_start(date) 设日期 → 日内节点 reset / 日频节点 carry (按行序) → 标签 reset → onDay 域
 //     at_day_end()       盘尾钩子 (目前无事可做; 留给需要收盘结算的特征)
+//     snap(ar)           续算点: 各节点 graph::snap (按行序) → 标签 snap; 与 at_day_start 同表同序
 // ============================================================================
 #define DAG_CAT_(a, b) a##b
 #define DAG_CAT(a, b) DAG_CAT_(a, b)
@@ -161,6 +185,7 @@ static_assert(L_5min + std::size(BIN_DATA) == L_1day + 1);
   if constexpr (NODE_FLUSH(__VA_ARGS__) == trig)   \
     name.flush();
 #define DAG_RESET_NODE(name, type, args, ...) graph::day_start<NODE_FLUSH(__VA_ARGS__)>(name);
+#define DAG_SNAP_NODE(name, type, args, ...) graph::snap<NODE_FLUSH(__VA_ARGS__)>(ar, name);
 #define TIER_DAG(LabelType, ...)                                                                \
   DAG_CAT(DAG_TIER, _NODES)(DAG_DECLARE_NODE) class DAG : public DAG_CAT(DAG_TIER, _DAG_LAST) { \
   public:                                                                                       \
@@ -176,4 +201,9 @@ static_assert(L_5min + std::size(BIN_DATA) == L_1day + 1);
       run<Trigger::onDay>();                                                                    \
     }                                                                                           \
     void at_day_end() {}                                                                        \
+    template <class Ar>                                                                         \
+    void snap(Ar &ar) {                                                                         \
+      DAG_CAT(DAG_TIER, _NODES)(DAG_SNAP_NODE)                                                  \
+          label.snap(ar);                                                                       \
+    }                                                                                           \
   };

@@ -28,6 +28,9 @@ public:
     y[ret_20d] = win_.full() ? close_adj_ / win_.front() - 1.0f : kNaN;
   }
 
+  template <class Ar>
+  void snap(Ar &ar) { ar(win_); }
+
 private:
   const Port &close_adj_;        // CloseAdjDay.value (同域 onClose, 拓扑序在前, 即本日收盘)
   CBuffer<float, kLag + 1> win_; // 回看窗: front() = D − kLag, back() = D

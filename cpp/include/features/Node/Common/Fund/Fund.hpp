@@ -188,6 +188,11 @@ public:
     return true;
   }
 
+  // 续算点: 只存 at_ (y / 输出口由 Node 存, 次日 carry 照旧无事); stream_ 不存 —— advance_to 按 D 轴日逐步推进, 只依赖日下标,
+  // 读回后下一次推进从头重推, 与逐日推进同值
+  template <class Ar>
+  void snap(Ar &ar) { ar(at_); }
+
 private:
   int today() const {
     const int d = panel_.date_index(date_);

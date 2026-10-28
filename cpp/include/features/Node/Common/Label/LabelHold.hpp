@@ -15,6 +15,7 @@
 //     价点来源: 盘中 = 档 push_entry; 开盘 = open_at (09:25 撮合价, 无撮合则首个有成交连续竞价 bar 的 open); 收盘 = close_day (档给).
 //     开盘 / 收盘价点的可成交 (auction_px, 单一价撮合): 价 < 涨停 − ε 可买, 价 > 跌停 + ε 可卖; 涨跌停 NaN (无限制) → 可成交.
 //     day_begin / finish_all / reset   日历 / 区间末 (全部按最近收盘价结清) / 每日重置
+//     snap / held                      续算点 (跨日状态全部) / 日 age 的写句柄是否仍持 (续算接回尾窗日时 CoreTs 据此归还)
 //   跨日回填: 日 D 的行 entry 存在悬挂槽里, 日级组 / 等待中的组写完前 D 的写句柄由 CoreTs 持着 (writer 带 days_ago);
 //   写完的日在收盘 / 区间末按日序 release (老日未写完则新日也不放: FeatureStore "d+1 计满 ⇒ d 计满").
 //   writer(col, n, t_min, values, days_ago) 写 LB 块内偏移 col 起的 n 列 (分钟 t_min 的标签; 落哪些层的哪行由 CoreTs 定);
@@ -154,6 +155,17 @@ public:
 
   // 每日重置: 当日开盘归零
   inline void reset() { open_ok_ = false; }
+
+  // 续算点: 跨日状态 (悬挂日环 + 等待计数 + 估值价); 日内状态由次日 reset / 档 reset 重给
+  template <class Ar>
+  void snap(Ar &ar) {
+    ar(pend_);
+    ar(cur_);
+    ar(n_wait_);
+    ar(last_close_);
+    ar(has_last_);
+  }
+  bool held(size_t age) const { return pend_[(cur_ + PEND_DAYS - age) % PEND_DAYS].held; }
 
 protected:
   float px_scale_ = 1.0f;               // 价格缩放 = 当日复权比 (两档 reset 时设; 跨日收益不含除权缺口)

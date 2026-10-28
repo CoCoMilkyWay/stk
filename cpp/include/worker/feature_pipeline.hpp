@@ -1,17 +1,22 @@
 #pragma once
 
+#include "features/Storage/FeatureSnap.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
+#include "misc/snap.hpp"
 #include "shared/FeatureLib.hpp"
 #include "worker/feature_workers.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,12 +42,26 @@ template <class T>
 using CoreOf = typename TierFeed<T>::Core;
 
 // 时序角色另带的面: 档的源 + 调度面 + per-asset 跨日状态 (领养方经 frontier 的 release/acquire 链接手)
+//   + 续算点: 读入 (续算, 各资产构造后接回) / 写出 (末日收盘各资产一条, 跑完由 pipeline 落盘)
 template <class T>
 struct TsRole {
   TierFeed<T> &feed;
   TsSchedule &sched;
   std::vector<std::unique_ptr<CoreOf<T>>> &cores;
+  const FeatureSnap *snap_in;                          // 全量 = nullptr
+  std::span<const typename FeatureStore<T>::Day> tail; // 尾窗日句柄 (老 → 新; 全量空)
+  std::vector<std::vector<std::byte>> &snap_out;       // [A] 末日记录 (各由处理该资产末日的 worker 写)
 };
+
+// 续算点头: 状态指纹 = kSnapSemver (snap 清单口径) + 各层字段表指纹 (张量口径) + 核布局 (sizeof Core)
+template <class T>
+SnapHeader snap_header(const FeatureLib &lib, misc::Ymd date) {
+  uint64_t state = fnv1a_u64(0xcbf29ce484222325ULL, kSnapSemver);
+  for (const LevelInfo &L : T::LEVELS)
+    state = fnv1a_u64(state, L.fingerprint);
+  state = fnv1a_u64(state, sizeof(CoreOf<T>));
+  return {SnapHeader::kMagic, static_cast<uint64_t>(T::kId), static_cast<uint64_t>(date), lib.axis.size(), lib.axis.hash, state};
+}
 
 // 预取: 第 lane 核 (共 lanes 核) 备日 lane, lane + lanes, ... 的源 (各日写各自的源环格, 互不握手).
 // 流控 = store.pf_try_open (领先最慢 TS 不超过 P + 余量; 硬源的源环格由此可复用, 见 feed_ring_size).
@@ -82,7 +101,7 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed, size_t lane, size_
     if (!open)
       break;
 
-    {
+    if (date_idx >= ctx.tail) { // 尾窗日只 close (TS 不读其源)
       TraceN("ReadFiles");
       cumulative_bytes += feed.prefetch(date_idx);
       stat.work.store(cumulative_bytes, std::memory_order_relaxed);
@@ -148,11 +167,19 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
 
   // Per-asset 跨日状态 (DAG 暖历史 + Fund 状态机 + 分钟缓冲 [+ TickData]), ~百 KB/资产.
   // 初始 owner 在本核构造 (first-touch); 处置权转移时对象不动, 只换驱动它的工作区.
+  // 续算: 构造后读回续算点 (尾窗末日收盘态), 再把尾窗日句柄接回 (已结清的尾窗日即刻 ts_close)
   {
     TraceN("InitCores");
     // asset_id = A 轴下标: 既是张量列 (fstore::ts_write), 也是 fund_panel 的 A 轴下标 (Panel::build 用同一码表)
-    for (const size_t asset_id : my_asset_ids)
+    for (const size_t asset_id : my_asset_ids) {
       cores[asset_id] = feed.make_core(asset_id, worker_id);
+      if (role.snap_in) {
+        misc::snap::Load in(role.snap_in->record(asset_id));
+        cores[asset_id]->snap(in);
+        assert(in.done() && "续算点记录长于核的 snap 清单");
+        cores[asset_id]->resume(role.tail, store);
+      }
+    }
   }
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(my_asset_ids.size()) + " assets, " +
@@ -298,7 +325,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     }
   };
 
-  for (size_t date_idx = 0; date_idx < total_dates; ++date_idx) {
+  for (size_t date_idx = ctx.tail; date_idx < total_dates; ++date_idx) {
     if (cancel_requested.load(std::memory_order_relaxed))
       break;
 
@@ -335,8 +362,12 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
         continue;
       }
       const size_t work = process_asset_day(asset_id, date_idx, day);
-      if (date_idx + 1 == total_dates)
+      if (date_idx + 1 == total_dates) {
+        // 续算点 = 末日收盘态 (先于 finish_all: 区间末的估值结清是本轮的收尾, 不是跨天态)
+        misc::snap::Save out(role.snap_out[asset_id]);
+        cores[asset_id]->snap(out);
         cores[asset_id]->finish_all(store); // 区间末: 悬挂的开盘型按最近收盘价结算, 旧日句柄全部归还
+      }
       date_work += work;
       cumulative_work += work;
       sched.done[asset_id].store(static_cast<int32_t>(date_idx), std::memory_order_release);
@@ -375,18 +406,32 @@ bool pipeline(const PipelineArgs &args) {
   const size_t num_ts = static_cast<size_t>(L.num_ts);
   const size_t num_cs = static_cast<size_t>(L.num_cs);
   const size_t num_io = static_cast<size_t>(L.num_io);
+  const size_t tail = args.tail;
   assert(!dates.empty() && num_assets >= 1);
+  assert(tail < dates.size() && tail <= CoreOf<T>::Label::PEND_DAYS && "续算: 尾窗之后须有新日, 且不超过悬挂日环");
 
   std::cout << "\n=== Phase 2: Feature Computation (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
             << "Assets: " << num_assets
             << " | Ring slots: " << args.ring_slots
             << " | Adopt pct: " << args.adopt_pct << "%"
-            << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")\n"
+            << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")"
+            << " | Tail: " << tail << "\n"
             << std::endl;
 
   FeatureStore<T> store(num_assets, lib.axis.hash, lib.dir, args.ring_slots);
   assert(store.query_slots() >= CoreOf<T>::kMinRingSlots && "内存上限把日环砍到 MIN_RING_SLOTS 之下, 会死锁");
+
+  // 续算: 尾窗日张量读回日环 + 续算点整读 (头须对上尾窗末日 / 本库轴 / 状态指纹), 尾窗日句柄给 TS 接回
+  std::optional<FeatureSnap> snap_in;
+  std::vector<typename FeatureStore<T>::Day> tail_days;
+  if (tail > 0) {
+    store.seed(std::span(dates).first(tail));
+    snap_in.emplace(lib.dir, snap_header<T>(lib, dates[tail - 1]));
+    for (size_t d = 0; d < tail; ++d)
+      tail_days.push_back(store.ts_try_open(d));
+  }
+  std::vector<std::vector<std::byte>> snap_out(num_assets);
 
   TierFeed<T> feed(args, store);
 
@@ -394,7 +439,7 @@ bool pipeline(const PipelineArgs &args) {
   // 张量 [T][F][A] 的一条缓存行 = 相邻 32 个资产的同一 (t, f): 连续段同核写, 核间只在段界共一行;
   // 交错分配则每次写都跨核 (跨插槽) 抢行, TS 退化为缓存一致性流量.
   // 运行期差距由 worker 间的处置权转移收敛 (见 ts_loop 的 try_adopt), 这里只求起点均衡.
-  TsSchedule sched(num_assets, num_ts);
+  TsSchedule sched(num_assets, num_ts, tail);
   sched.adopt_pct = args.adopt_pct;
   {
     size_t total = 0;
@@ -409,7 +454,7 @@ bool pipeline(const PipelineArgs &args) {
     }
   }
   std::vector<std::unique_ptr<CoreOf<T>>> cores(num_assets);
-  TsRole<T> role{feed, sched, cores};
+  TsRole<T> role{feed, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out};
 
   // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
   // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 采样窗 (PROFILE 模式) 同样拉取式, 见 FeatureProfile.
@@ -417,7 +462,7 @@ bool pipeline(const PipelineArgs &args) {
   FeatureProgress progress(store, sched, stats, dates, TierFeed<T>::kUnit);
   FeatureProfile profile({lib.name, T::kId, TierFeed<T>::kUnit, num_assets, dates, args.ring_slots, args.adopt_pct}, L, store, stats);
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
-    return StageCtx<T>{worker_id, store, args.libs, dates, args.cancel, stat};
+    return StageCtx<T>{worker_id, store, args.libs, dates, tail, args.cancel, stat};
   };
   std::vector<std::future<void>> workers;
   workers.reserve(static_cast<size_t>(L.total_threads()));
@@ -470,6 +515,8 @@ bool pipeline(const PipelineArgs &args) {
   progress.stop();
 
   const bool completed = !args.cancel.load(std::memory_order_relaxed);
+  if (completed)
+    FeatureSnap::write(lib.dir, snap_header<T>(lib, dates.back()), snap_out);
   std::cout << "\n=== Feature Computation (" << tier_name(T::kId) << ") " << (completed ? "Complete" : "Cancelled") << " ===\n"
             << "Processed: " << store.query_io_done() << "/" << dates.size() << " dates\n"
             << std::endl;

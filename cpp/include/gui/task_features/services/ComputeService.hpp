@@ -14,6 +14,7 @@
 
 // Forward declarations
 struct SharedData;
+struct FeatureLib;
 
 namespace GUI::Features {
 
@@ -42,7 +43,12 @@ struct ComputeConfig {
   int adopt_pct = 50;           // TS 负载再平衡阈值 N (%), 0 = 关闭领养
   std::string pool;             // 算哪个池 (池名, 档由名定, 见 FeatureLib.hpp; Compute 页每池一个按钮)
   std::vector<misc::Ymd> dates; // 本池日期轴 (池表规划, 见 source_dates)
+  bool resume = false;          // 续算 (库末日之后接着算, 须 resumable); 否则全量 (清库重算)
 };
+
+// 可续算: 库清单末日的续算点在, 且对得上清单轴 + 当前状态指纹 (见 FeatureSnap.hpp); 否则只能全量.
+// 续算 ≡ 同清单全量 (逐位一致): 轴随清单冻结 (轴外见 FeatureLib::outside), 日频面板按库首日起建, 尾窗日标签此轮结清后重落盘
+bool resumable(const FeatureLib &lib);
 
 // ============================================================================
 // Compute Service

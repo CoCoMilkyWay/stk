@@ -130,3 +130,4 @@ struct TierFeed<lob::Tier> {
 };
 
 template bool pipeline<lob::Tier>(const PipelineArgs &);
+template SnapHeader snap_header<lob::Tier>(const FeatureLib &, misc::Ymd);

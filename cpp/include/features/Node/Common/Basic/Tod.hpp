@@ -64,6 +64,15 @@ public:
     update_short_mask();
   }
 
+  template <class Ar>
+  void snap(Ar &ar) {
+    ar(ring_a_);
+    ar(ring_v_);
+    ar(valid_);
+    ar(short_mask_);
+    ar(col_);
+  }
+
 private:
   // 最近 D_SHORT 个已写列 = col_-1 .. col_-D_SHORT (mod D_MAX); 今天的 col_ 在 compute 前尚未写入, 不在掩码内
   void update_short_mask() {

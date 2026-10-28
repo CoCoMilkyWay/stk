@@ -199,6 +199,9 @@ public:
       tw_[i] = tt_[i] = cur_[i] = 0.0f;
   }
 
+  template <class Ar>
+  void snap(Ar &ar) { ar(last_); }
+
 private:
   // 当前状态持有 w ms: 有定义的口累加 值 × 时长 与 时长
   inline void hold(float w) {

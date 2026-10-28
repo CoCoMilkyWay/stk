@@ -75,6 +75,9 @@ public:
     clear();
   }
 
+  template <class Ar>
+  void snap(Ar &ar) { thr_.snap(ar); }
+
 private:
   void clear() {
     for (auto &side : bucket_)

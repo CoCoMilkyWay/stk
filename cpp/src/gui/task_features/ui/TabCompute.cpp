@@ -31,6 +31,9 @@ static LibStatus lib_status(const Config &config, const StockDaysVec &stock_days
   s.days = lib.dates.size();
   s.done = static_cast<size_t>(std::count_if(lib.dates.begin(), lib.dates.end(),
                                              [&](misc::Ymd d) { return FeatureRead::has_date(lib.tier, lib.dir, d); }));
+  s.outside = lib.outside.size();
+  s.resumable = resumable(lib);
+  s.dates = lib.dates;
   return s;
 }
 
@@ -384,7 +387,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
     state.libs_dirty = true;
   ImGui::SameLine();
   ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起至末个 bar1m 日; 池: 订单簿还原, %s 起至末个已编码日 (不晚于 all 末日), "
-                      "成员 = Bar 池 D−1 收盘 pool_* 列 → 先把 all 算齐; T-n = 末日之后的交易日数; 数据末日 = 现在重算能到的末日)",
+                      "成员 = Bar 池 D−1 收盘 pool_* 列 → 先把 all 算齐; T-n = 末日之后的交易日数; 数据末日 = 现在重算能到的末日; "
+                      "Append = 从库末日续算新日 (沿用库的资产轴, 与同轴全量逐位一致); 轴外 = 沿用的轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
   ImGui::Spacing();
 
@@ -418,7 +422,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
   // 编码在飞不开算: Lob 按帧目录快照读日文件, 编码会 rename 换掉它们
   const bool encoding = data.taskstate.database.encode_inflight;
 
-  if (ImGui::BeginTable("Pools", 9,
+  if (ImGui::BeginTable("Pools", 10,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("池");
@@ -427,6 +431,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
     ImGui::TableSetupColumn("区间");
     ImGui::TableSetupColumn("数据末日");
     ImGui::TableSetupColumn("资产");
+    ImGui::TableSetupColumn("轴外");
     ImGui::TableSetupColumn("已落盘");
     ImGui::TableSetupColumn("状态");
     ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthStretch);
@@ -452,6 +457,11 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
       if (s.ready)
         ImGui::Text("%zu", s.assets);
       ImGui::TableNextColumn();
+      if (s.ready && s.outside > 0)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%zu", s.outside);
+      else if (s.ready)
+        ImGui::TextDisabled("0");
+      ImGui::TableNextColumn();
       if (s.ready)
         ImGui::Text("%zu / %zu", s.done, s.days);
       ImGui::TableNextColumn();
@@ -470,13 +480,21 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
       ImGui::TableNextColumn();
       const bool blocked = state.ui_state != ComputeUIState::Idle || s.plan.empty() || encoding;
-      ImGui::BeginDisabled(blocked);
-      if (ImGui::SmallButton(("Compute##" + s.name).c_str())) {
+      const auto start = [&](bool resume) {
         state.config.pool = s.name;
         state.config.dates = s.plan;
+        state.config.resume = resume;
         state.ui_state = ComputeUIState::ShowingPopup;
         state.popup_frame_count = 0;
-      }
+      };
+      ImGui::BeginDisabled(blocked);
+      if (ImGui::SmallButton(("Compute##" + s.name).c_str()))
+        start(false);
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(blocked || !s.appendable());
+      if (ImGui::SmallButton(("Append##" + s.name).c_str()))
+        start(true);
       ImGui::EndDisabled();
     }
     ImGui::EndTable();
@@ -525,7 +543,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
     ImGui::Spacing();
 
     const TierId run_tier = pool_def(state.config.pool).tier;
-    ImGui::Text("Pool %s, Period:", state.config.pool.c_str());
+    ImGui::Text("Pool %s (%s), Period:", state.config.pool.c_str(), state.config.resume ? "Append" : "Full");
     ImGui::Indent();
     ImGui::BulletText("Start: %s", misc::dash(state.config.dates.front()).c_str());
     ImGui::BulletText("End: %s (%zu days)", misc::dash(state.config.dates.back()).c_str(), state.config.dates.size());

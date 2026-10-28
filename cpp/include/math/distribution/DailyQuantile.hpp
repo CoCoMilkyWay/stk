@@ -3,15 +3,16 @@
 // =============================================================================
 // DailyQuantile - 前 N_DAYS 日分位阈值 (日更, 节点自持的短周期因果基准)
 // =============================================================================
-//   每日一只 KLL (log x), roll() 归档当日并以各日 ICDF 分位均值更新阈值.
+//   当日一只 KLL (log x); 归档 = 当日 ICDF 折成 NQ 个分位存日环 (sketch 换新), roll() 先归档再以各日分位均值更新阈值.
 //   用法: add(log x) 逐样本攒批, flush_batch() 每分钟入 sketch, reset 时 roll(thr) 取阈值 (无历史返回 false).
+//   续算点 (snap): 当日先归档 (早于次日 roll 归档, 结果相同), 记录只有日环分位 —— sketch 不入快照.
 //   使用方: TradeSize (单笔成交额), OrderQuad (委托申报额).
 // =============================================================================
 
 #include "math/distribution/KLLcache.hpp"
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
-#include <utility>
 #include <vector>
 
 template <size_t NQ, size_t N_DAYS>
@@ -23,8 +24,6 @@ public:
   explicit DailyQuantile(const float (&probs)[NQ]) : cur_(KLL_K, KLL_RECON) {
     for (size_t i = 0; i < NQ; ++i)
       probs_[i] = probs[i];
-    for (auto &d : days_)
-      d = KLLcache(KLL_K, KLL_RECON);
     buf_.reserve(1024);
   }
 
@@ -37,23 +36,16 @@ public:
     }
   }
 
-  // 跨日: 归档当日 (空 sketch 不入), 阈值 ← 历史各日分位均值; 返回是否有可用阈值
+  // 跨日: 归档当日, 阈值 ← 历史各日分位均值 (新 → 老累加); 返回是否有可用阈值
   bool roll(float (&thr)[NQ]) {
-    flush_batch();
-    if (!cur_.empty()) {
-      days_[write_] = std::move(cur_);
-      cur_ = KLLcache(KLL_K, KLL_RECON);
-      write_ = (write_ + 1) % N_DAYS;
-      if (n_days_ < N_DAYS)
-        ++n_days_;
-    }
+    archive();
     if (n_days_ == 0)
       return false;
     float sum[NQ] = {};
     for (size_t i = 0; i < n_days_; ++i) {
-      const KLLcache::LinePtr icdf = days_[(write_ + N_DAYS - 1 - i) % N_DAYS].exportICDF();
+      const float (&q)[NQ] = q_[(write_ + N_DAYS - 1 - i) % N_DAYS];
       for (size_t j = 0; j < NQ; ++j)
-        sum[j] += query(icdf, probs_[j]);
+        sum[j] += q[j];
     }
     const float inv = 1.0f / static_cast<float>(n_days_);
     for (size_t j = 0; j < NQ; ++j)
@@ -61,7 +53,31 @@ public:
     return true;
   }
 
+  template <class Ar>
+  void snap(Ar &ar) {
+    if constexpr (!Ar::kLoad)
+      archive();
+    assert(cur_.empty() && buf_.empty() && "续算点: 当日 sketch 须已归档");
+    ar(q_);
+    ar(write_);
+    ar(n_days_);
+  }
+
 private:
+  // 当日 sketch (含未入批样本) 折成分位入日环, sketch 换新; 空 sketch 不入
+  void archive() {
+    flush_batch();
+    if (cur_.empty())
+      return;
+    const KLLcache::LinePtr icdf = cur_.exportICDF();
+    for (size_t j = 0; j < NQ; ++j)
+      q_[write_][j] = query(icdf, probs_[j]);
+    cur_ = KLLcache(KLL_K, KLL_RECON);
+    write_ = (write_ + 1) % N_DAYS;
+    if (n_days_ < N_DAYS)
+      ++n_days_;
+  }
+
   static float query(const KLLcache::LinePtr &icdf, float p) {
     const float u0 = icdf.x[0], u1 = icdf.x[icdf.n - 1];
     if (u1 <= u0)
@@ -76,7 +92,7 @@ private:
 
   float probs_[NQ];
   KLLcache cur_;
-  KLLcache days_[N_DAYS];
+  float q_[N_DAYS][NQ] = {}; // 日环: 各日 log 分位 (q_[write_ − 1] = 最近一日)
   size_t write_ = 0, n_days_ = 0;
   std::vector<float> buf_;
 };

@@ -19,6 +19,7 @@
 // Forward declarations
 struct SharedData;
 struct FeatureLib;
+struct SnapHeader;
 class StoreRing;
 template <class T>
 class FeatureStore;
@@ -174,7 +175,8 @@ struct StageLayout {
 //   claimed:  谁处理 (asset, d) 由 CAS claimed d-1→d 唯一裁决 (转移瞬间的
 //             双写/漏写由它兜底, owner 只是"该不该去试"的提示)
 //   done:     已完成日 didx, release 发布 core 状态 (接手方 acquire 后可续算)
-//   frontier: per-worker 已完成日数 (领养的观测面)
+//             (两者从 first − 1 起: first = 首个要算的日, 续算 = 尾窗日数, 全量 0)
+//   frontier: per-worker 已完成日数 (领养的观测面; 0 起 —— 续算也是, f ≥ 1 才说明对方的核已构造 / 接回)
 //
 // cores (per-asset 跨日状态, 档的 Core, 见 feature_pipeline.hpp TsRole) 由初始 owner 在自己核上构造 (first-touch);
 // 领养方经 frontier 的 release/acquire 链观察到构造完成后才会触碰.
@@ -182,8 +184,8 @@ struct StageLayout {
 struct TsSchedule {
   // 全部数组按档 A 轴下标 (sub) 索引, 大小 = A 轴大小 (= 张量 A 维)
   std::vector<std::atomic<int32_t>> owner;   // 处置权 worker id (每个资产都有 owner)
-  std::vector<std::atomic<int32_t>> claimed; // 已认领日 didx, -1 起
-  std::vector<std::atomic<int32_t>> done;    // 已完成日 didx, -1 起
+  std::vector<std::atomic<int32_t>> claimed; // 已认领日 didx, first − 1 起
+  std::vector<std::atomic<int32_t>> done;    // 已完成日 didx, first − 1 起
   std::vector<size_t> weight;                // 区间内源负载 (Lob: 逐笔总条数; Bar: 均匀) —— 初始分配 / 领养挑最轻
 
   // Per-worker 已完成日数 (worker 自报, release; 领养方 acquire 读 —— 与被领养资产的
@@ -198,13 +200,14 @@ struct TsSchedule {
   // 0 = 关闭领养.
   uint64_t adopt_pct = 10;
 
-  TsSchedule(size_t num_assets, size_t num_workers)
+  TsSchedule(size_t num_assets, size_t num_workers, size_t first)
       : owner(num_assets), claimed(num_assets), done(num_assets),
         weight(num_assets, 0), frontier(num_workers), adopt_window(num_workers) {
+    const int32_t before = static_cast<int32_t>(first) - 1;
     for (size_t i = 0; i < num_assets; ++i) {
       owner[i].store(-1, std::memory_order_relaxed);
-      claimed[i].store(-1, std::memory_order_relaxed);
-      done[i].store(-1, std::memory_order_relaxed);
+      claimed[i].store(before, std::memory_order_relaxed);
+      done[i].store(before, std::memory_order_relaxed);
     }
     for (size_t w = 0; w < num_workers; ++w) {
       frontier[w].store(0, std::memory_order_relaxed);
@@ -356,6 +359,8 @@ private:
 //
 // StageCtx = 四角色共有的面; 预取 / 时序另带档的源 (TierFeed) / 调度面 (TsSchedule), 见 feature_pipeline.hpp.
 // dates = 档的日期轴 (Lob: 回测日历前缀; Bar: 交易日 [PIPELINE_START_DATE, 末个 bar1m 日]; 见 FeatureLib.hpp), 四角色的 date_idx 都是它的下标.
+//   续算: dates = 库末 tail 日 (尾窗) + 新日; 尾窗日张量启动前已读回日环 (FeatureStore::seed),
+//   预取 / 截面对它们只 close, 时序从 tail 起 (核由续算点接回, CoreTs::resume), 落盘照常重写 (标签此轮才结清).
 // worker_id = 全局 worker 序号 (TS 0..N−1 在前, 见 StageLayout), 与 pin 的 CPU 号无关; pin 由 launch 侧完成,
 // worker 内只用它做日志 / stats / frontier 下标.
 // ============================================================================
@@ -365,6 +370,7 @@ struct StageCtx {
   FeatureStore<T> &store;
   const PerTier<FeatureLib> &libs; // 本档池 libs[T::kId] (A 轴 / 目录) + CS 旁读档的池 libs[TierSide<T>] (无旁读列时不读); 余档空
   std::span<const misc::Ymd> dates;
+  size_t tail; // 尾窗日数 (dates 前 tail 日; 全量 0)
   const std::atomic<bool> &cancel;
   ComputeStats::Core &stat; // 本核发布槽 (单写者)
 };
@@ -406,11 +412,13 @@ void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
 // ============================================================================
 // 特征管线入口 (两档同一骨架, 定义见 feature_pipeline.hpp, 档 TU 显式实例化): ComputeService 备好共享前置
 // (日期轴 / 写读库 / fund_panel / 清库 / 日志) 后调用, 返回 = 未取消. on_io(n) = 已落盘天数 (协调线程每 100ms 调, 进度面镜像)
+// 跑完 (未取消) 即落本库续算点 (末日 = dates.back(), 见 FeatureSnap.hpp); tail > 0 = 续算, 从 dates[tail − 1] 的续算点接着算
 // ============================================================================
 struct PipelineArgs {
   SharedData &data;
   const PerTier<FeatureLib> &libs; // 本档池 + CS 旁读档的池 (余档空), 见 StageCtx
   const std::vector<misc::Ymd> &dates;
+  size_t tail; // 尾窗日数, 见 StageCtx
   size_t ring_slots;
   uint64_t adopt_pct;
   int pf_cores; // 预取核数 (按日轮转, 见 StageLayout)
@@ -421,3 +429,7 @@ struct PipelineArgs {
 };
 template <class T>
 bool pipeline(const PipelineArgs &args);
+
+// 续算点头 (FeatureSnap.hpp): 库 lib 截到 date 可续算的全部前提 (状态指纹要档的 Core 完整类型, 档 TU 显式实例化)
+template <class T>
+SnapHeader snap_header(const FeatureLib &lib, misc::Ymd date);

@@ -28,6 +28,7 @@ stk/
 │   │   │   ├── Pool.hpp                              # 📦 pool::Panel 池逐日成员 (日频 PIT, 与 fund::Panel 对仗)
 │   │   │   │                                         #    · 第 D 日成员 = Bar 池 D−1 收盘行的 pool_<pool> 列 (盘后列的盘中 as-of, 与读端同一 Source 投影) → Lob 池 cs_valid
 │   │   │   │                                         #    · 池轴 = 日期轴内进过池的资产并集; 轴上资产全程算 TS, 日后进池不补历史
+│   │   │   │                                         #    · 续算: 池轴冻结 = 库清单轴; 新进池的记轴外 (lib.json outside), 要收进轴就全量重算
 │   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 多选 picked = set<ColRef> (跨池跨层; 选中绑定当时的当前池, 切池 / 切层保留; 首个 = primary)
 │   │   │   │                                         #    · 当前池 pools = PerTier<池名> (每档一个, 切档保留); ref(池, 层, code) → ColRef
 │   │   │   ├── OrderFlow.hpp                         # 📦 订单流数据: 主池 = 当前档当前池 (Lob / Bar 皆可; 图1 VWAP / 候选轴)
@@ -75,10 +76,12 @@ stk/
 │   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData / BinData + Trigger 触发域 + 节点契约 / 截面列契约
 │   │   │   │                                         #    · 触发域: 盘前 onDay → 盘中 onTick / onDepth / onMinute → 箱末 on<n>Min → 收盘 onClose → 盘后 onSettle (日频 PIT 推进到次日)
 │   │   │   ├── GraphNode.hpp                         # 🧮 graph::Node: 节点类实例 + 输出口 Ports<K> (最新值) + 可选回看 hist() (节点类声明 kHist 才有; 两档构图共用); 跨天: 日内节点 reset / 日频节点 carry (输出口保留)
+│   │   │   │                                         #    · 续算快照 snap: y + 日频节点输出口 / 回看 + 节点类自报的跨天成员 (节点契约 snap); TIER_DAG 按节点表展开
 │   │   │   ├── LobGraph.hpp                          # 🧮 Lob 档计算图 DAG (节点表由 CMake 扫描生成 <Tier>/NodesGenerated.hpp)
 │   │   │   ├── BarGraph.hpp                          # 🧮 Bar 档计算图 DAG (与 LobGraph 对仗; 一个 TU 只许 include 其一)
 │   │   │   ├── CoreTs.hpp                            # 🧮 单资产时序骨架 (档无关, CRTP): 日 / 分钟 / 标签日历 + 日句柄环; 档钩子 = member / resampler
 │   │   │   │                                         #    · 收行级联 for_each_close (细 → 粗): L_1min / 分钟箱层 / L_1day 同一路径 close_row
+│   │   │   │                                         #    · 续算: snap (日句柄环游标 + DAG + 标签) 读回后 resume, 日句柄环重绑尾窗日, 已结清的尾窗日交还
 │   │   │   ├── CoreLob.hpp                           # 🧮 Lob 档单资产时序: 逐笔 → 订单簿 → L_sec → 重采样 L_1min + 标签
 │   │   │   ├── CoreBar.hpp                           # 🧮 Bar 档单资产时序: bar1m 分钟 K → L_1min (255 行稠密) + 分钟箱层 (49 / 17 / 9 / 5 箱) + L_1day 收盘行 + 标签
 │   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 (fundamental::daily) → 稠密 [A][255] 分钟 K (Bar 档 TS 输入)
@@ -106,6 +109,9 @@ stk/
 │   │   │       ├── FeatureDay.hpp                    # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录 ColSpan); 落盘编码在此选型
 │   │   │       ├── FeatureStore.hpp                  # 🧮 存储引擎: [T][F][A] Float16 日环; TS / CS / IO 三段 open-close; 热路径只许指针算术
 │   │   │       │                                     #    · CS 跨日只读 d−1 槽位 TS 列 (cs_prev); IO(d) 等 CS(d+1) close 才放行 (末日除外)
+│   │   │       │                                     #    · 续算: seed 把尾窗日 (库末 ≤ PEND_DAYS 日) 从盘上读回日环 (FeatureDay::read_layer)
+│   │   │       ├── FeatureSnap.hpp                   # 🧮 续算快照文件 snapshot.bin: 头 (档 / 末日 / A 轴 / 状态指纹) + 每资产一条 Core::snap 记录; 跑完才落
+│   │   │       │                                     #    · 续算 ≡ 全量: 同一日期轴下, 库前缀 + 快照续跑与从头跑逐位一致
 │   │   │       ├── FeatureRead.hpp                   # 🧮 读取引擎: 单日按列选读 [n][T][A]; 删库与多 reader 并发安全
 │   │   │       ├── DayBatchPlane.hpp                 # 🧮 多段并行载入平面: TsPlane / CsPlane (网格行; Dist / Transform / Corr / Preview) + RowPlane (尾部行; OrderFlow)
 │   │   │       │                                     #    · 段 = 平面一个 j: 日内层 1 天, L_1day 连续 255 个交易日; 三平面同一契约 prepare / load_batch + 同一折叠核 fold_span
@@ -131,6 +137,7 @@ stk/
 │   │   │                                             #    · 分核: 时序是瓶颈, 其余核全给它; 回测与实盘同一套分核
 │   │   │                                             #    · 领养: 各核专注自己的资产, 持续落后才被领跑核永久领养 (不自由领, 不按日窃取)
 │   │   │                                             #    · 两档只差源: Lob 软源 (预取只暖 page cache) / Bar 硬源 (预取解码 bar1m 进源环, 时序等它)
+│   │   │                                             #    · 续算: 日期轴 = 尾窗日 + 新日; 尾窗日预取 / 截面只交还, 时序从快照接着新日算, 落盘重写尾窗日 (标签补结清)
 │   │   ├── label/                                    # 🏷️ 标签生成
 │   │   │   └── LabelCalmar.hpp                       # 🏷️ Calmar 比率标签
 │   │   ├── gui/                                      # 🖥️ GUI (ImGui + Service 后台线程); 每任务分两层:
@@ -162,6 +169,7 @@ stk/
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
 │   │   │   │   ├── services/                         # 🖥️ 服务层
 │   │   │   │   │   ├── ComputeService.hpp            # 🖥️ 特征计算: 请求 = 池名 (档由池名定), 两档同一管线 pipeline<T>
+│   │   │   │   │   │                                 #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与库清单、字段表对得上才可续)
 │   │   │   │   │   ├── StreamService.hpp             # 🖥️ 流式分析服务骨架 (CRTP, 派生自 Service)
 │   │   │   │   │   ├── DistService.hpp               # 🖥️ 分布分析 (StreamService)
 │   │   │   │   │   ├── TransformService.hpp          # 🖥️ 特征变换 (StreamService)
@@ -171,7 +179,7 @@ stk/
 │   │   │   │   └── ui/                               # 🖥️ UI
 │   │   │   │       ├── Common.hpp                    # 🖥️ 流式 tab 公共件
 │   │   │   │       ├── TabFeature.hpp                # 🖥️ 特征表: 过滤 + 跨池跨层多选 (同列在不同池各选一次); 预览列按 (档, 层) 取
-│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: 池表 (all + 各池; 池名 + 中文名), 每池一个 Compute 按钮; 旁读档池未算完则本档池禁用
+│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: 池表 (all + 各池; 池名 + 中文名), 每池 Compute (全量) / Append (续算) 按钮 + 轴外资产数列; 旁读档池未算完则本档池禁用
 │   │   │   │       ├── TabOrderFlow.hpp              # 🖥️ 订单流
 │   │   │   │       ├── TabDist.hpp                   # 🖥️ 分布 PDF
 │   │   │   │       ├── TabTransform.hpp              # 🖥️ 变换链 + 平稳性诊断
@@ -327,6 +335,7 @@ stk/
 │   │       ├── format.hpp                                  # 🔧 定宽数值格式化 (UI 表格 / 日志对齐)
 │   │       ├── timer.hpp / profiler.hpp                    # 🔧 计时器 / 性能剖析
 │   │       ├── progress_single.hpp / progress_parallel.hpp # 🔧 单行 / 多线程进度条
+│   │       ├── snap.hpp                                    # 🔧 快照归档 Save ⇄ Load: 每类型一份成员清单 snap(ar), 两向同一份
 │   │       ├── exec.hpp                                    # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致; 接口 rows(t0, t1, tid) / tasks(i, tid); 线程数 hw() / fit(n)
 │   │       ├── affinity.hpp                                # 🔧 CPU 亲和性 / 线程命名
 │   │       ├── perf.hpp                                    # 🔧 perf record 本进程 + 按线程组出报告
@@ -365,7 +374,8 @@ stk/
     ├── orders/                                             # Level-2 逐笔编码 (逐笔委托 + 成交合并)
     │   └── YYYY/MM/YYYYMMDD.bin                            # 一天全市场一个文件: 每资产一个 zstd 帧 + 账目 + 尾部目录
     ├── features/                                           # 特征张量库 (Float16); 一库一目录, 池名 = 目录名
-    │   ├── <pool>/lib.json                                # 库清单 (档 / A 轴 / 日期轴): 写端规划后落, 读端只读; 无清单 = 未建库
+    │   ├── <pool>/lib.json                                # 库清单 (档 / A 轴 / 日期轴 / 轴外资产): 写端规划后落, 读端只读; 无清单 = 未建库
+    │   ├── <pool>/snapshot.bin                            # 续算快照 (末日各资产时序状态); 库跑完才落
     │   ├── <pool>/features.json                            # 特征表预览成品 (每轮落地)
     │   ├── <pool>/YYYY/MM/DD/                              # Lob 池 (池轴; <pool> = all 池的 pool_<pool> 列)
     │   │   ├── features_L_sec.bin                          # L_sec (秒频) 一天一个: 头 + 列目录 + 逐列载荷 [T×A]
@@ -405,7 +415,7 @@ stk/
 #
 # 动手前必读 (按序):
 #   1. cpp/include/features/FeaturesDefine.hpp   NODE_ / FIELDS_ 宏格式 + 公式符号规范 (索引 τ/c/j/i/t/D; P 价格族; O 订单流; ε 容差)
-#   2. cpp/include/features/DataDefine.hpp       节点契约 (enum Out / y[] / compute / flush / reset / carry / kHist) + 输出口 (Port / History) + Trigger 触发域 + 输入红线 (只准本资产数据 + 日频 PIT)
+#   2. cpp/include/features/DataDefine.hpp       节点契约 (enum Out / y[] / compute / flush / reset / carry / kHist / snap) + 输出口 (Port / History) + Trigger 触发域 + 输入红线 (只准本资产数据 + 日频 PIT)
 #   3. cpp/include/features/Node/unused/         想要的节点可能已有半成品
 #   4. 同类现有节点 1-2 个作模板 (命名 / 公式 / 注释风格照抄):
 #        - 累计降频型:   Node/Lob/TS/OrderFlow/Flow.hpp
@@ -443,5 +453,7 @@ stk/
 #       · 单价位用 l5, 前 N 价位累计用裸 5; 缩写忌歧义
 #   - 缺失: 一律 NaN, 不用 0; fast-math TU 不写 isnan, 无定义用位图 / 守卫显式表示
 #   - 出错: 只用断言, 不做错误处理; 失败越早越好
+#   - 跨天状态: reset 不清的成员一律列进 snap (续算 ≡ 全量); 状态只许依赖库首日, 不许依赖本轮首日
 #   - 重算: 改字段表 (含加列) = 落盘指纹变化, 旧特征文件读取即断言失败, 需全量重算
 #       · 列名不变但口径变: 标签 kLabelSemver / L_1day 行 kDaySemver +1 (FeatureStoreConfig.hpp), 同样判废
+#       · 改节点跨天状态 (snap 成员清单 / 含义): kSnapSemver +1 (FeatureSnap.hpp), 旧快照不可续, 只能全量

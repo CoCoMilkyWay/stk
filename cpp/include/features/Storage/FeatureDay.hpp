@@ -34,8 +34,9 @@
 //
 // 两端互逆, 共用一个 Scratch (稳态零分配):
 //
-//   FeatureDay::write(path, L = level_info(tier, lvl), layer [T][F][A], A, hash, s) → 字节数
-//   FeatureDay::read (path, L, cols[n], dst [n][T][A], A, hash, s) → Status
+//   FeatureDay::write     (path, L = level_info(tier, lvl), layer [T][F][A], A, hash, s) → 字节数
+//   FeatureDay::read      (path, L, cols[n], dst [n][T][A], A, hash, s) → Status
+//   FeatureDay::read_layer(path, L, layer [T][F][A], A, hash, s) → Status   (整层读回, write 的逆; 续算尾窗日)
 //
 // 与 orders 日文件 (shared/OrdersDay.hpp) 同形: 头 + 载荷 + 目录. 这里单写者顺序
 // 追加且 F 已知, 目录放前部; orders 多 worker 并发追加, 目录只能放尾部.
@@ -123,7 +124,7 @@ struct FeatureDay {
     assert(fd >= 0 && "特征日文件 .tmp 建不出来");
 
     const size_t words = T * A;
-    const size_t group = std::clamp<size_t>(kGatherBytes / (words * sizeof(feature_storage_t)), 1, kGatherMaxCols);
+    const size_t group = gather_group_(words);
     s.column.resize(group * words);
     s.buf.resize(FeatureCodec::bound(words));
     s.dir.resize(F);
@@ -225,6 +226,27 @@ struct FeatureDay {
     return Status::Ok;
   }
 
+  // 一层一天整层读回 layer [T][F][A] (write 的逆): 按 write 的同一列组, 一组 read 进 s.column 再散回 layer. 非 Ok 时 layer 不动.
+  static Status read_layer(const std::string &path, const LevelInfo &L, feature_storage_t *layer, size_t A,
+                           std::uint64_t axis_hash, Scratch &s) {
+    TraceN("FeatureDayReadLayer");
+    const size_t T = L.rows, F = L.field_count, words = T * A;
+    const size_t group = gather_group_(words);
+    s.column.resize(group * words);
+    size_t cols[kGatherMaxCols];
+    for (size_t f0 = 0; f0 < F; f0 += group) {
+      const size_t nf = std::min(group, F - f0);
+      for (size_t j = 0; j < nf; ++j)
+        cols[j] = f0 + j;
+      if (const Status st = read(path, L, cols, nf, s.column.data(), A, axis_hash, s); st != Status::Ok) {
+        assert(f0 == 0 && "整层读回中途头不符 (日文件被换掉)");
+        return st;
+      }
+      scatter_(s.column.data(), T, F, A, f0, nf, layer);
+    }
+    return Status::Ok;
+  }
+
 private:
   // 首尾相接的列载荷并成一段读, 一段最多这么大
   static constexpr size_t kRunCap = size_t(4) << 20;
@@ -234,6 +256,9 @@ private:
   // 缓冲要留在 L2/L3 里给紧随的编码读; 单列就超限的层 (L_sec) 退化为逐列.
   static constexpr size_t kGatherBytes = size_t(2) << 20;
   static constexpr size_t kGatherMaxCols = 32;
+  static size_t gather_group_(size_t words) {
+    return std::clamp<size_t>(kGatherBytes / (words * sizeof(feature_storage_t)), 1, kGatherMaxCols);
+  }
 
   // 抽相邻 nf 列 [f0, f0 + nf) → cols 第 j 段 [T][A] = 列 f0 + j, 同一遍数原值 / T 轴差分的非零字:
   // delta[j] = 差分零字更多才差分 (SparseCodec 载荷 ∝ 非零字数; 对 zstd 也是好代理)
@@ -272,5 +297,13 @@ private:
     }
     for (size_t j = 0; j < nf; ++j)
       delta[j] = nz_delta[j] < nz_raw[j];
+  }
+
+  // gather_ 的逆: cols 第 j 段 [T][A] → layer 列 f0 + j
+  static void scatter_(const feature_storage_t *cols, size_t T, size_t F, size_t A, size_t f0, size_t nf,
+                       feature_storage_t *layer) {
+    for (size_t t = 0; t < T; ++t)
+      for (size_t j = 0; j < nf; ++j)
+        std::copy_n(cols + (j * T + t) * A, A, layer + (t * F + f0 + j) * A);
   }
 };

@@ -40,6 +40,9 @@ struct FeatureLib {
   PoolAxis axis;                // A 轴: 张量列 / 文件列序 / 头指纹 (空 = 未建库)
   std::string dir;              // 库目录 (日文件落在其下)
   std::vector<misc::Ymd> dates; // 日期轴 (升序; 已落盘的是其子集, 见 FeatureRead::has_date)
+  // 轴外 (全局 id 升序): 续算沿用清单轴, 之后本该在轴上的资产 (Bar 新上市 / Lob 新进池) 不进库, 记在这里供 UI 提示;
+  // 全量重算即并入轴 (清空). 只在非空时落清单
+  std::vector<uint32_t> outside;
   bool ready() const { return axis.size() > 0; }
 };
 FeatureLib load_lib(const Config &cfg, std::string_view name); // 读清单; 无清单 → 未建库 (tier / name / dir 仍有效)

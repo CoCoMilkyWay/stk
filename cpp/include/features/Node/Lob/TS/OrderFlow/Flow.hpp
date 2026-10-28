@@ -137,6 +137,9 @@ public:
     t_start_ = t_last_ = 0;
   }
 
+  template <class Ar>
+  void snap(Ar &ar) { ar(vwap_last_); }
+
 private:
   void clear() {
     for (auto &g : acc_)

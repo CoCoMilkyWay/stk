@@ -76,6 +76,9 @@ public:
     run_sum_[0] = run_sum_[1] = run_n_[0] = run_n_[1] = 0.0f;
   }
 
+  template <class Ar>
+  void snap(Ar &ar) { ar(run_last_); }
+
 private:
   const TickData &td_;
   int8_t ring_[RING] = {};

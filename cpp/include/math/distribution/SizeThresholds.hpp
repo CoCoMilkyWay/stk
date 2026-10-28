@@ -38,6 +38,10 @@ public:
     rebuild();
   }
 
+  // 续算点: 只有分位日环; 生效阈值 / 槽序由次日 roll 重给
+  template <class Ar>
+  void snap(Ar &ar) { dq_.snap(ar); }
+
   inline size_t bucket(float a) const {
     size_t b = 0;
     while (b < n_ && a >= thr_[b])

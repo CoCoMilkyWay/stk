@@ -6,6 +6,7 @@
 #include "gui/task_features/services/ComputeService.hpp"
 #include "misc/date.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -26,8 +27,15 @@ struct LibStatus {
   misc::Ymd first = 0, last = 0;
   size_t lag = 0;                        // T-lag: 交易日历里 last 之后的交易日数
   size_t assets = 0, days = 0, done = 0; // A 轴 / 日期轴长 / 已落盘日
+  size_t outside = 0;                    // 轴外资产数 (FeatureLib::outside; 要纳入就全量重算)
+  bool resumable = false;                // 续算点对得上清单 (见 ComputeService resumable)
+  std::vector<misc::Ymd> dates;          // 库日期轴
   std::vector<misc::Ymd> plan;           // 现在重算的日期轴 (见 source_dates; 空 = 不可算), 末日 > last 即落后
   bool complete() const { return ready && done == days; }
+  // 可续算: 落盘齐 + 续算点在 + 库日期轴是规划的真前缀 (有新日)
+  bool appendable() const {
+    return complete() && resumable && plan.size() > dates.size() && std::equal(dates.begin(), dates.end(), plan.begin());
+  }
 };
 
 enum class ComputeUIState {
