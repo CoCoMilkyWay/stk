@@ -1708,10 +1708,15 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(col_of(Edit));
       ImGui::PushID(static_cast<int>(oi));
-      // 整行可点 (先提交, AllowOverlap 让后面的勾选框盖在上面): 点行高光 → Inspect 页的对象; 再点 → 取消
+      // 整行可点 (先提交, AllowOverlap 让后面的勾选框盖在上面): 点行高光 → Inspect 页的对象, Hold 切到它搜出来的持有期 (手填权重无, 不动); 再点 → 取消
       const ImVec2 cell_pos = ImGui::GetCursorPos();
-      if (ImGui::Selectable("##row", group_viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+      if (ImGui::Selectable("##row", group_viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
         ui.view_file = viewing ? std::string{} : r.key;
+        if (!viewing)
+          for (size_t i = 0; i < ft.y.labels.size(); ++i)
+            if (ft.y.labels[i].key == r.hold_src)
+              ui.hold_idx = static_cast<int>(i);
+      }
       if (ImGui::IsItemHovered())
         row_tooltip(r, ctx);
       if (kind != RowKind::Child) {
