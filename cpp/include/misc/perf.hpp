@@ -39,8 +39,8 @@ public:
   Capture(const Capture &) = delete;
   Capture &operator=(const Capture &) = delete;
 
-  double seconds() const; // 已采时长 (停后定格)
-  void stop();            // SIGINT → 等 perf 落盘 (幂等)
+  double seconds() const;                              // 已采时长 (停后定格)
+  void stop();                                         // SIGINT → 等 perf 落盘 (幂等)
   void report(const std::vector<Group> &groups) const; // 后台出报告 (须已 stop)
 
 private:

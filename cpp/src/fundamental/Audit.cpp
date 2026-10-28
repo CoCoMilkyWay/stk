@@ -1,6 +1,7 @@
 #include "fundamental/Audit.hpp"
 
 #include "fundamental/Remote.hpp"
+#include "misc/exec.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 
@@ -375,7 +376,7 @@ std::int64_t distinct_keys(const arrow::Table &t, const Spec &s) {
   return static_cast<std::int64_t>(seen.size());
 }
 
-// 本地: 一个月 (同月的槽). 构造即读盘一次 → 逐日基格 (与 L.all 同序) + 清点;
+// 本地: 一个月 (同月的槽). 构造即读盘一次 (各槽并行) → 逐日基格 (与 L.all 同序) + 清点;
 //   Month / Day 级指纹 = 逐日基格按所查格线性导出 (零再读); Asset 级再读一次, 只解所查列 + vd + 资产键
 class Local {
 public:
@@ -388,30 +389,58 @@ public:
       if (L.s[c] >= 0)
         uses[c].push_back({static_cast<std::size_t>(L.s[c]), true, 1});
     }
-    for (const Slot &sl : month_) {
+    // 各槽各读各算 (分片互不依赖; Daily 一月二十余个日文件并行), 再按槽序合并: 基格是整数和, 与合并次序无关
+    struct Part {
+      Inv inv;
+      std::map<Ymd, std::vector<i128>> days;
+      std::vector<char> has;
+    };
+    std::vector<Part> parts(month_.size());
+    misc::exec::ForkJoin ex(misc::exec::fit(month_.size()));
+    ex.tasks(static_cast<int>(month_.size()), [&](int k, int) {
+      const Slot &sl = month_[static_cast<std::size_t>(k)];
+      Part &p = parts[static_cast<std::size_t>(k)];
       const auto t = read(*sl.sh);
-      inv_.rows += t->num_rows();
-      inv_.cols = std::max<std::int64_t>(inv_.cols, t->num_columns());
+      p.inv.rows = t->num_rows();
+      p.inv.cols = t->num_columns();
       if (s.shape == Shape::Daily)
-        inv_.assets = std::max(inv_.assets, distinct_keys(*t, s));
+        p.inv.assets = distinct_keys(*t, s);
       const std::vector<Ymd> d = days_of(*t, s, sl.ym);
       std::vector<std::vector<i128> *> acc(d.size());
       std::vector<i128> *cur = nullptr;
       for (std::size_t i = 0; i < d.size(); ++i) {
         if (i == 0 || d[i] != d[i - 1]) {
-          cur = &days_[d[i]];
+          cur = &p.days[d[i]];
           if (cur->empty())
             cur->assign(L.all.size(), 0);
         }
         acc[i] = cur;
         ++(*cur)[0];
       }
+      p.has.assign(L.names.size(), 0);
       for (std::size_t c = 0; c < L.names.size(); ++c) {
         const auto col = t->GetColumnByName(L.names[c]);
         if (!col)
           continue; // 本地缺列 = 全 null
-        has_[c] = 1;
+        p.has[c] = 1;
         accumulate(*col, L.kinds[c], uses[c], acc);
+      }
+    });
+    for (Part &p : parts) {
+      inv_.rows += p.inv.rows;
+      inv_.cols = std::max(inv_.cols, p.inv.cols);
+      inv_.assets = std::max(inv_.assets, p.inv.assets);
+      for (std::size_t c = 0; c < L.names.size(); ++c)
+        if (p.has[c])
+          has_[c] = 1;
+      for (auto &[d, b] : p.days) {
+        std::vector<i128> &o = days_[d];
+        if (o.empty()) {
+          o = std::move(b);
+          continue;
+        }
+        for (std::size_t k = 0; k < o.size(); ++k)
+          o[k] += b[k];
       }
     }
     inv_.days = static_cast<std::int64_t>(days_.size());
