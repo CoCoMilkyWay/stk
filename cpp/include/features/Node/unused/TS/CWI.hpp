@@ -22,8 +22,8 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  CWI(const DepthSeries &bid_qty,
-      const DepthSeries &ask_qty)
+  CWI(const DepthPorts &bid_qty,
+      const DepthPorts &ask_qty)
       : bid_qty_(bid_qty), ask_qty_(ask_qty) {
     for (size_t i = 0; i < DEPTH_SIZE; ++i)
       weights_[i] = 1.0f / std::pow(static_cast<float>(i + 1) + EPSILON, GAMMA);
@@ -33,8 +33,8 @@ public:
     float numer = 0.0f;
     float denom = 0.0f;
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
-      float b = bid_qty_[i].back();
-      float a = -ask_qty_[i].back(); // 卖方存负值
+      float b = bid_qty_[i];
+      float a = -ask_qty_[i]; // 卖方存负值
       float w = weights_[i];
       numer += w * (b - a);
       denom += w * (b + a);
@@ -43,8 +43,8 @@ public:
   }
 
 private:
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
   float weights_[DEPTH_SIZE];
 };
 

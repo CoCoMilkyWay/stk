@@ -14,7 +14,7 @@
 
 #include "features/DataDefine.hpp"
 
-template <class Bars>
+template <class Bar>
 class KlineT {
 public:
   enum Out : size_t { open,
@@ -24,23 +24,23 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  KlineT(const Bars &md, const Series &pre_close) : md_(md), pre_close_(pre_close) {}
+  KlineT(const Bar &md, const Port &pre_close) : md_(md), pre_close_(pre_close) {}
 
   inline void compute() {
-    const float c = md_.close.back();
+    const float c = md_.close;
     if (c > 0.0f) [[likely]] {
-      y[open] = md_.open.back();
-      y[high] = md_.high.back();
-      y[low] = md_.low.back();
+      y[open] = md_.open;
+      y[high] = md_.high;
+      y[low] = md_.low;
       y[close] = c;
     } else { // 日内尚无成交: 四价 = 前收
-      y[open] = y[high] = y[low] = y[close] = pre_close_.back();
+      y[open] = y[high] = y[low] = y[close] = pre_close_;
     }
   }
 
 private:
-  const Bars &md_;
-  const Series &pre_close_; // Fund 日频口 (back() = 当日前收; Fund 的 onSettle 晚于 onClose, 日 K 收盘时仍是当日值)
+  const Bar &md_;
+  const Port &pre_close_; // Fund 日频口 (当日前收; Fund 的 onSettle 晚于 onClose, 日 K 收盘时仍是当日值)
 };
 using Kline = KlineT<MinuteData>;
 
@@ -51,11 +51,11 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  AdjClose(const Series &close, const Series &adj_ratio) : close_(close), adj_ratio_(adj_ratio) {}
+  AdjClose(const Port &close, const Port &adj_ratio) : close_(close), adj_ratio_(adj_ratio) {}
 
-  inline void compute() { y[value] = close_.back() * adj_ratio_.back(); }
+  inline void compute() { y[value] = close_ * adj_ratio_; }
 
 private:
-  const Series &close_;     // 本层 Kline close (同域, 拓扑序在前, back() 即本行值)
-  const Series &adj_ratio_; // Fund 日频口 (back() = 当日; Fund 的 onSettle 晚于 onClose, 日 K 收盘时仍是当日值)
+  const Port &close_;     // 本层 Kline close (同域, 拓扑序在前, 即本行值)
+  const Port &adj_ratio_; // Fund 日频口 (当日; Fund 的 onSettle 晚于 onClose, 日 K 收盘时仍是当日值)
 };

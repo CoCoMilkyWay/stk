@@ -18,6 +18,8 @@
 //   跨日回填: 日 D 的行 entry 存在悬挂槽里, 日级组 / 等待中的组写完前 D 的写句柄由 CoreTs 持着 (writer 带 days_ago);
 //   写完的日在收盘 / 区间末按日序 release (老日未写完则新日也不放: FeatureStore "d+1 计满 ⇒ d 计满").
 //   writer(col, n, t_min, values, days_ago) 写 LB 块内偏移 col 起的 n 列 (分钟 t_min 的标签; 落哪些层的哪行由 CoreTs 定);
+//   writer.rows(col) = 列 col 落盘的行集 (行末分钟): 骨架只结算落盘行 —— 不落盘的 (行, 列) 不写可成交码, 不平仓, 不进等待;
+//     entry 价点逐行照收 (分钟型名义平仓 = 后续行的 entry). 一组两腿落盘行相同.
 //   release(days_ago) = 该日全部组已写完, 写句柄可归还.
 // =============================================================================
 
@@ -80,6 +82,55 @@ public:
   static constexpr size_t kContCloseMin = MORNING_MINUTES + (AFTERNOON_END_MIN - AFTERNOON_START_MIN);
   static_assert(kAuctionMin == 10 && kContOpenMin == 15 && kContCloseMin == 252);
 
+  // 一日内的行集合 (位 = L_1min 行): 列的落盘行 (writer.rows) / 等待平仓的行
+  struct RowSet {
+    uint64_t w[(TRADE_MINUTES_PER_DAY + 63) / 64] = {};
+    constexpr void set(size_t m) { w[m / 64] |= uint64_t{1} << (m % 64); }
+    constexpr bool has(size_t m) const { return w[m / 64] >> (m % 64) & 1u; }
+    constexpr bool operator==(const RowSet &) const = default;
+    bool any() const {
+      for (uint64_t x : w)
+        if (x)
+          return true;
+      return false;
+    }
+    // 行 < n 的子集
+    RowSet below(size_t n) const {
+      RowSet r;
+      for (size_t i = 0; i < std::size(w); ++i) {
+        const size_t lo = i * 64;
+        r.w[i] = n >= lo + 64 ? w[i] : n > lo ? w[i] & ((uint64_t{1} << (n - lo)) - 1)
+                                              : 0;
+      }
+      return r;
+    }
+    // 并入 s; 返回新增行数
+    size_t merge(const RowSet &s) {
+      size_t n = 0;
+      for (size_t i = 0; i < std::size(w); ++i) {
+        n += static_cast<size_t>(std::popcount(s.w[i] & ~w[i]));
+        w[i] |= s.w[i];
+      }
+      return n;
+    }
+    // 逐行回调
+    template <class F>
+    void each(F &&f) const {
+      for (size_t i = 0; i < std::size(w); ++i)
+        for (uint64_t x = w[i]; x; x &= x - 1)
+          f(i * 64 + static_cast<size_t>(std::countr_zero(x)));
+    }
+    // 逐行回调并清空; 返回行数
+    template <class F>
+    size_t drain(F &&f) {
+      size_t n = 0;
+      for (size_t i = 0; i < std::size(w); ++i)
+        for (; w[i]; w[i] &= w[i] - 1, ++n)
+          f(i * 64 + static_cast<size_t>(std::countr_zero(w[i])));
+      return n;
+    }
+  };
+
   // ---- 日历 (日期轴每一日各调一次, 无数据日也调) ----
 
   // 新的一日: 悬挂环前进. 被顶掉的槽必已结清 (close_day 每日按环满结清最老一日)
@@ -122,10 +173,12 @@ protected:
     assert((e.buy || e.sell) && "价点不可能两向都不可成交");
     const size_t r = p.n_entry++;
     p.entry[r] = e;
-    const float code = e.code();
-    writer(ENTRY_COL, size_t{1}, r, &code, size_t{0});
+    if (writer.rows(ENTRY_COL).has(r)) {
+      const float code = e.code();
+      writer(ENTRY_COL, size_t{1}, r, &code, size_t{0});
+    }
     for (size_t h = 0; h < HOLD_COUNT; ++h)
-      if (LABEL_KIND[h] == HoldKind::MIN && r >= LABEL_N[h])
+      if (LABEL_KIND[h] == HoldKind::MIN && r >= LABEL_N[h] && writer.rows(hold_col(h)).has(r - LABEL_N[h]))
         exit_row(p, 0, h, r - LABEL_N[h], e, writer);
     resolve(e, writer);
   }
@@ -139,7 +192,7 @@ protected:
     if (open_ok_ || (t_min != kAuctionMin && !cont))
       return cont;
     open_ok_ = true;
-    const LabelPx o = auction_px(t_min == kAuctionMin ? md.close.back() : md.open.back());
+    const LabelPx o = auction_px(t_min == kAuctionMin ? md.close : md.open);
     for (size_t age = 1; age < PEND_DAYS; ++age) {
       Pend &q = at(age);
       for (size_t h = 0; h < HOLD_COUNT; ++h)
@@ -166,7 +219,7 @@ protected:
           if (traded)
             exit_rows(q, age, h, close, writer);
           else
-            wait_rows(q, h);
+            wait_rows(q, h, writer.rows(hold_col(h)));
           q.sched &= ~(1u << h);
         }
     }
@@ -178,11 +231,13 @@ protected:
         push_entry(close, writer);
       }
       for (size_t h = 0; h < HOLD_COUNT; ++h) {
-        if (LABEL_KIND[h] == HoldKind::MIN)
+        if (LABEL_KIND[h] == HoldKind::MIN) {
           for (size_t m = TRADE_MINUTES_PER_DAY - std::min(LABEL_N[h], TRADE_MINUTES_PER_DAY); m < TRADE_MINUTES_PER_DAY; ++m)
-            exit_row(p, 0, h, m, close, writer);
-        else if (LABEL_KIND[h] == HoldKind::CLOSE)
+            if (writer.rows(hold_col(h)).has(m))
+              exit_row(p, 0, h, m, close, writer);
+        } else if (LABEL_KIND[h] == HoldKind::CLOSE) {
           exit_rows(p, 0, h, close, writer);
+        }
       }
       resolve(close, writer);
       p.sched = kDailyMask;
@@ -199,27 +254,6 @@ private:
         m |= 1u << h;
     return m;
   }();
-
-  // 一日内的行集合 (等待平仓的行)
-  struct RowSet {
-    uint64_t w[(TRADE_MINUTES_PER_DAY + 63) / 64] = {};
-    void set(size_t m) { w[m / 64] |= uint64_t{1} << (m % 64); }
-    bool any() const {
-      for (uint64_t x : w)
-        if (x)
-          return true;
-      return false;
-    }
-    // 逐行回调并清空; 返回行数
-    template <class F>
-    size_t drain(F &&f) {
-      size_t n = 0;
-      for (size_t i = 0; i < std::size(w); ++i)
-        for (; w[i]; w[i] &= w[i] - 1, ++n)
-          f(i * 64 + static_cast<size_t>(std::countr_zero(w[i])));
-      return n;
-    }
-  };
 
   // 悬挂日槽: 一日的 entry 价点 (全部组共用) + 日级组排期 + 等待平仓的 (组, 腿) 行集
   struct Pend {
@@ -265,19 +299,17 @@ private:
       }
   }
 
+  // 组 h 的全部落盘行在价点 x 平仓
   template <class Writer>
   inline void exit_rows(Pend &q, size_t age, size_t h, const LabelPx &x, Writer &&writer) {
-    for (size_t m = 0; m < q.n_entry; ++m)
-      exit_row(q, age, h, m, x, writer);
+    writer.rows(hold_col(h)).below(q.n_entry).each([&](size_t m) { exit_row(q, age, h, m, x, writer); });
   }
 
-  // 组 h 名义平仓日无成交: 全部行两腿进等待
-  inline void wait_rows(Pend &q, size_t h) {
-    for (size_t m = 0; m < q.n_entry; ++m)
-      for (size_t s = 0; s < GROUP_SIZE; ++s) {
-        q.wait[h][s].set(m);
-        ++n_wait_[s];
-      }
+  // 组 h 名义平仓日无成交: 全部落盘行 (rows) 两腿进等待
+  inline void wait_rows(Pend &q, size_t h, const RowSet &rows) {
+    const RowSet r = rows.below(q.n_entry);
+    for (size_t s = 0; s < GROUP_SIZE; ++s)
+      n_wait_[s] += q.wait[h][s].merge(r);
   }
 
   // 价点 x 喂等待: 该腿可成交 → 全部在等的 (日, 组, 行) 该腿按 x 平仓

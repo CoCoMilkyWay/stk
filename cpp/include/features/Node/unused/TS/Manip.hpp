@@ -26,8 +26,8 @@ public:
   float y[kCount] = {}; // 秒结算写入, 分钟末由 Node 推出
 
   Manip(TickData &td,
-        const DepthSeries &bid_qty,
-        const DepthSeries &ask_qty)
+        const DepthPorts &bid_qty,
+        const DepthPorts &ask_qty)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
   inline void compute() {
@@ -84,8 +84,8 @@ private:
     // 4. 老单占比 = 1 - 深度变化率
     float depth_bid = 0.0f, depth_ask = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH; ++i) {
-      depth_bid += bid_qty_[i].back();
-      depth_ask += -ask_qty_[i].back(); // 卖方存负值
+      depth_bid += bid_qty_[i];
+      depth_ask += -ask_qty_[i]; // 卖方存负值
     }
     float delta_bid = std::fabs(depth_bid - prev_depth_bid_);
     float delta_ask = std::fabs(depth_ask - prev_depth_ask_);
@@ -101,8 +101,8 @@ private:
   }
 
   TickData &td_;
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
 
   // 秒内累计
   float vol_maker_ = 0.0f, vol_cancel_ = 0.0f, vol_spoof_ = 0.0f;

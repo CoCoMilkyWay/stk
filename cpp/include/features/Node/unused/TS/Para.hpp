@@ -51,13 +51,13 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit Para(const DepthSeries &qty) : qty_(qty) {}
+  explicit Para(const DepthPorts &qty) : qty_(qty) {}
 
   inline void compute() {
     // X'y = [Σv, Σi·v, Σi²·v]
     float xy0 = 0.0f, xy1 = 0.0f, xy2 = 0.0f;
     for (size_t i = 0; i < N; ++i) {
-      float v = IS_BID ? qty_[i].back() : -qty_[i].back();
+      float v = IS_BID ? qty_[i] : -qty_[i];
       float fi = static_cast<float>(i);
       xy0 += v;
       xy1 += fi * v;
@@ -68,7 +68,7 @@ public:
   }
 
 private:
-  const DepthSeries &qty_;
+  const DepthPorts &qty_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

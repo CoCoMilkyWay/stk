@@ -15,20 +15,20 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  GradImba(const Series &bid_grad,
-           const Series &ask_grad)
+  GradImba(const Port &bid_grad,
+           const Port &ask_grad)
       : bid_grad_(bid_grad), ask_grad_(ask_grad) {}
 
   inline void compute() {
-    float abs_b = std::abs(bid_grad_.back());
-    float abs_a = std::abs(ask_grad_.back());
+    float abs_b = std::abs(bid_grad_);
+    float abs_a = std::abs(ask_grad_);
     float denom = abs_b + abs_a;
     y[value] = denom > 1e-6f ? (abs_b - abs_a) / denom : 0.0f;
   }
 
 private:
-  const Series &bid_grad_;
-  const Series &ask_grad_;
+  const Port &bid_grad_;
+  const Port &ask_grad_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

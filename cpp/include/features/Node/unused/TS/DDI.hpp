@@ -20,10 +20,10 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  DDI(const DepthSeries &bid_qty,
-      const DepthSeries &ask_qty,
-      const DepthSeries &bid_price,
-      const DepthSeries &ask_price)
+  DDI(const DepthPorts &bid_qty,
+      const DepthPorts &ask_qty,
+      const DepthPorts &bid_price,
+      const DepthPorts &ask_price)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), bid_price_(bid_price), ask_price_(ask_price) {}
 
   // e^x ≈ 1 + x + x²/2 + x³/6, x ∈ [-10, 0]
@@ -35,13 +35,13 @@ public:
   }
 
   inline void compute() {
-    float mid = (bid_price_[0].back() + ask_price_[0].back()) * 0.5f;
+    float mid = (bid_price_[0] + ask_price_[0]) * 0.5f;
     float numer = 0.0f;
     float denom = 0.0f;
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
-      float b = bid_qty_[i].back();
-      float a = -ask_qty_[i].back(); // 卖方存负值
-      float dist = ((mid - bid_price_[i].back()) + (ask_price_[i].back() - mid)) * 0.5f;
+      float b = bid_qty_[i];
+      float a = -ask_qty_[i]; // 卖方存负值
+      float dist = ((mid - bid_price_[i]) + (ask_price_[i] - mid)) * 0.5f;
       float w = fast_exp(-LAMBDA * dist);
       numer += w * (b - a);
       denom += w * (b + a);
@@ -50,10 +50,10 @@ public:
   }
 
 private:
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
-  const DepthSeries &bid_price_;
-  const DepthSeries &ask_price_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
+  const DepthPorts &bid_price_;
+  const DepthPorts &ask_price_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

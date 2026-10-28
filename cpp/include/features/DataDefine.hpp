@@ -2,6 +2,7 @@
 
 #include "define/CBuffer.hpp"
 #include "lob/LimitOrderBookDefine.hpp" // IWYU pragma: export
+#include <array>
 #include <cstdint>
 #include <limits>
 
@@ -11,10 +12,9 @@
 // Defines shared data structures across feature computation hierarchy:
 // Tick (LOB_Feature) -> Minute (MinuteData) -> n-Minute bins + whole-day bin (BinData, n ∈ BIN_MINUTES)
 //
-// Design: Each level stores time-series data in CBuffers
-// - No duplication: CBuffer serves as both storage and current value access
-// - Resamplers write directly to CBuffers
-// - Feature processors read from CBuffers (latest = back())
+// Design:
+// - Source levels hold only the last bar (plain fields): resamplers assign it, nodes read it in that level's beat
+// - Node outputs hold the latest value per port (Port); history is opt-in (producer kHist → History, or a consumer-owned window)
 //========================================================================================
 
 //----------------------------------------------------------------------------------------
@@ -37,18 +37,24 @@ enum class Trigger : uint8_t {
   onSettle, // 盘后 (onClose 之后, L_1day 行写之前): 日频 PIT 推进到次日盘前 (Fund); 本域节点读到的是本日收盘全部节点值
 };
 // onMinute .. onClose = 层 L_1min .. L_1day 的收行节拍 (同序连续, 见 FeaturesDefine.hpp beat_of)
-// 日频节点 = flush 域 onClose / onSettle: Series 跨天保留 (不 reset), 盘中下游读 back() = 前一交易日 L_1day 行的值
+// 日频节点 = flush 域 onClose / onSettle: 输出口跨天保留 (不 reset), 盘中下游读到的 = 前一交易日 L_1day 行的值
 inline constexpr bool is_day_trigger(Trigger t) { return t == Trigger::onClose || t == Trigger::onSettle; }
-
-//----------------------------------------------------------------------------------------
-// 节点间数据流的统一类型: 一条时序 = Series; 一侧盘口 N 个价位 = DepthSeries (Depth 的 bid_qty 等)
-//----------------------------------------------------------------------------------------
-using Series = CBuffer<float, L2::BLEN>;
-using DepthSeries = Series[L2::LOB_DEPTH];
 
 // 缺失值约定 (全部节点 / 标签 / Fund 同一口径): "无定义" (空盘口 / 零分母 / 无标签 / PIT 缺失) 一律 NaN,
 // 不用 0 —— 0 是合法取值 (零收益 / 完全均衡), 消费端无法区分. 【fast-math 契约】只生产 NaN, 不 isnan.
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+
+//----------------------------------------------------------------------------------------
+// 节点间数据流的统一类型: 一个输出口 = Port (该口最近一次 flush 的值, 尚无输出 NaN); K 个口 = Ports<K>;
+// 一侧盘口 N 个价位 = DepthPorts (Depth 的 bid_qty 等, 当前簿). 下游按 const 引用接, 读到的永远是最新值.
+// 回看 = History<K, H>: 最近 H 次发布的 Ports<K> 行环 (back() = 当前输出口, [size() − 1 − j][口] = 前 j 次), 上游声明 kHist 才有
+//----------------------------------------------------------------------------------------
+using Port = float;
+template <size_t K>
+using Ports = std::array<Port, K>;
+using DepthPorts = Ports<L2::LOB_DEPTH>;
+template <size_t K, size_t H>
+using History = CBuffer<Ports<K>, H>;
 
 // 价格比较容差 (元): 价位价 / 委托价 / 成交价由整数分换算成 float, 与解析的涨跌停价可能差 1 ulp.
 // 涨跌停判定 (Depth 钳价位 / Flow 彩票委托 / Valuation 触板标记) 统一用它, 不各写一个.
@@ -58,17 +64,20 @@ inline constexpr float kPxEps = 1e-4f;
 // NODE CONTRACT (节点统一接口)
 //----------------------------------------------------------------------------------------
 //   enum Out : size_t { <名>..., kCount };   // 输出口; 单输出用 { value, kCount }; 无输出 (源层) kCount = 0
-//   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域推入 CBuffer
-//   <NodeType>(<输入引用>...);               // 只接输入 (const Series & / const DepthSeries & / 数据结构引用), 不接输出
-// 输入红线: 只准接本资产的数据 (Series/DepthSeries/TickData/MinuteData/BinData) 与日频 PIT (fund::Panel).
+//   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域发布到输出口
+//   static constexpr size_t kHist = H;       // (可选) 下游要回看本节点最近 H 次发布: Node 另持 History<kCount, H>, 下游接 Up.hist(); 不声明零开销
+//   <NodeType>(<输入引用>...);               // 只接输入 (const Port & / const Ports<K> & / const History<K, H> & / const DepthPorts & / 数据结构引用), 不接输出
+// 输入红线: 只准接本资产的数据 (Port/History/DepthPorts/TickData/MinuteData/BinData) 与日频 PIT (fund::Panel).
 // 跨资产 / 全局状态 / CS 结果一律禁止 —— TS 必须保持资产局部纯函数, 回测重放可任意重排
 // (串行/并行/分片) 且与实盘推流逐值一致, 全系于此; 截面信息的表达一律走 CS 层与因子层.
 //   void compute();                          // 采样型: 直接写 y
-//   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后推入)
+//   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后发布)
 //   void reset();   (可选)                   // 有跨天状态才写 (日内节点; 日频节点不 reset)
-//   bool carry();   (可选, 日频节点)         // 盘前承接: 输出 Series 不是当日盘前态 (区间首日 / 日期轴跳日) → 写 y 并返回 true, Node 推入一格
-// 单侧节点 (只看一侧盘口) 只收那一侧的 DepthSeries, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
-// 输出缓冲由 graph::Node 持有; 下游用 Up.out(口) 拿 Series, 字段表用 TS(节点, 口) 引用.
+//   bool carry();   (可选, 日频节点)         // 盘前承接: 输出口不是当日盘前态 (区间首日 / 日期轴跳日) → 写 y 并返回 true, Node 发布
+// 单侧节点 (只看一侧盘口) 只收那一侧的 DepthPorts, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
+// 输出口由 graph::Node 持有, 默认只存最新值; 下游用 Up.out(口) 接 Port, 字段表用 TS(节点, 口) 引用. 回看两条路:
+//   同域 (消费方每次发布恰读一次上游): 消费方自持窗口 (如 Momentum), 窗长归消费方;
+//   跨域 (要上游按它自己的 flush 节奏产出的序列, 消费方采样不到): 上游声明 kHist, 下游接 Up.hist().
 // 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在节点文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
 //----------------------------------------------------------------------------------------
 
@@ -126,50 +135,27 @@ inline bool ord_filled_before(const LOB_Feature &lob, size_t s, uint32_t &f) {
 }
 
 //----------------------------------------------------------------------------------------
-// BAR LEVELS (L_1min / L_5min .. L_60min / L_1day): 每层一份 bar 环, 同一结构, 只差容量与量额宽度
+// BAR LEVELS (L_1min / L_5min .. L_60min / L_1day): 每层一根末 bar, 同一结构, 只差量额宽度
 //   MinuteData  L_1min: 档的重采样器填充 (Lob ResamplerTick2Min 逐笔 / Bar ResamplerBar2Min bar1m)
 //   BinData     分钟箱层 + L_1day (整日箱): ResamplerMin2Bin 由 MinuteData 重采样 (箱见 TimeIndex.hpp);
-//               量额宽累计 (整日成交量可超 uint32); 64 ≥ 最细箱层一日箱数
+//               量额宽累计 (整日成交量可超 uint32)
+//   本层节拍域内末 bar = 刚收的这一行; 日末归零 (价 0 = 尚无成交价)
 //----------------------------------------------------------------------------------------
-template <size_t Cap, class Vol, class Amt>
-struct Bars {
+template <class Vol, class Amt>
+struct BarData {
   // Metadata
   uint32_t asset_id{0}; // static: asset identifier
   uint32_t core_id{0};  // static: core identifier
   uint32_t index{0};    // dynamic: 末 bar 的本层行 (L_1min 0-254 / 箱 0 .. bins_per_day(n) - 1 / L_1day 0)
 
-  // Time-series: OHLC (环形窗口, 节点只读 back()/尾部窗口, 不按绝对行下标访问)
-  CBuffer<float, Cap> open;
-  CBuffer<float, Cap> high;
-  CBuffer<float, Cap> low;
-  CBuffer<float, Cap> close;
+  // 末 bar: OHLC + 分侧量额
+  float open{0}, high{0}, low{0}, close{0};
+  Vol bid_volume{0}, ask_volume{0};
+  Amt bid_amount{0}, ask_amount{0};
 
-  // Time-series: Volume and amount by side
-  CBuffer<Vol, Cap> bid_volume;
-  CBuffer<Vol, Cap> ask_volume;
-  CBuffer<Amt, Cap> bid_amount;
-  CBuffer<Amt, Cap> ask_amount;
+  bool traded() const { return close > 0 && bid_volume + ask_volume > 0; } // 本 bar 有成交
 
-  // 一根 bar (末 bar 的快照: 多个消费方收同一根时只读一次环)
-  struct Bar {
-    float open, high, low, close;
-    Vol bid_volume, ask_volume;
-    Amt bid_amount, ask_amount;
-  };
-  Bar back() const {
-    return {open.back(), high.back(), low.back(), close.back(), bid_volume.back(), ask_volume.back(), bid_amount.back(), ask_amount.back()};
-  }
-
-  void clear() {
-    open.clear();
-    high.clear();
-    low.clear();
-    close.clear();
-    bid_volume.clear();
-    ask_volume.clear();
-    bid_amount.clear();
-    ask_amount.clear();
-  }
+  void clear() { *this = BarData{asset_id, core_id}; }
 };
-using MinuteData = Bars<240, uint32_t, float>;
-using BinData = Bars<64, uint64_t, double>;
+using MinuteData = BarData<uint32_t, float>;
+using BinData = BarData<uint64_t, double>;

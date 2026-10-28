@@ -137,14 +137,14 @@ public:
   static_assert(rv_15s == NG && path_len == 2 * NG);
   float y[kCount] = {};
 
-  Realized(const TickData &td, const MinuteData &md, const Series &taker_dlogp) : td_(td), md_(md), taker_dlogp_(taker_dlogp) {}
+  Realized(const TickData &td, const MinuteData &md, const Port &taker_dlogp) : td_(td), md_(md), taker_dlogp_(taker_dlogp) {}
 
   inline void compute() {
     const float p = td_.lob.price;
     if (p <= 0.0f) [[unlikely]]
       return;
     const uint32_t t_sec = td_.sec_index;
-    path_len_ += std::fabs(taker_dlogp_.back()); // TakerRet 同域已 flush; 首笔 = 0, 加零无影响
+    path_len_ += std::fabs(taker_dlogp_); // TakerRet 同域已 flush; 首笔 = 0, 加零无影响
     g3_.on_trade(t_sec, px_last_ > 0.0f ? px_last_ : p);
     g15_.on_trade(t_sec, px_last_ > 0.0f ? px_last_ : p);
     px_last_ = p;
@@ -182,7 +182,7 @@ private:
 
   const TickData &td_;
   const MinuteData &md_;
-  const Series &taker_dlogp_; // TakerRet 输出口 (同域 onTaker, 拓扑序在前, back() 即本笔值)
+  const Port &taker_dlogp_; // TakerRet 输出口 (同域 onTaker, 拓扑序在前, 即本笔值)
   Grid<3> g3_;
   Grid<15> g15_;
   float px_last_ = 0.0f;

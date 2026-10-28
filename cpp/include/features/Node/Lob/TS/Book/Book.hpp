@@ -90,15 +90,15 @@ public:
   float y[kCount] = {};
 
   Book(const TickData &td, const MinuteData &md,
-       const DepthSeries &bid_price, const DepthSeries &ask_price,
-       const DepthSeries &bid_qty, const DepthSeries &ask_qty,
-       const Series &mid_price, const Series &micro_price,
-       const Series &lim_up, const Series &lim_dn, const Series &pre_close)
+       const DepthPorts &bid_price, const DepthPorts &ask_price,
+       const DepthPorts &bid_qty, const DepthPorts &ask_qty,
+       const Port &mid_price, const Port &micro_price,
+       const Port &lim_up, const Port &lim_dn, const Port &pre_close)
       : td_(td), md_(md), bp_(bid_price), ap_(ask_price), bq_(bid_qty), aq_(ask_qty), mid_(mid_price), micro_(micro_price),
         lim_up_(lim_up), lim_dn_(lim_dn), pre_close_(pre_close) {}
 
   inline void compute() {
-    const float b1 = bp_[0].back(), a1 = ap_[0].back();
+    const float b1 = bp_[0], a1 = ap_[0];
     if (b1 <= 0.0f || a1 <= 0.0f) [[unlikely]]
       return; // 一侧为空: 持有上一状态
     const uint32_t t = tick_ms(td_);
@@ -108,15 +108,15 @@ public:
     has_state_ = true;
 
     // ---- 一次扫描: 前 10 个价位累计深度 / 价差, 全 30 个价位吃单成本 ----
-    const float mid = mid_.back();
+    const float mid = mid_;
     const float inv_mid = kBp / mid;
     ok_ = ~0ull; // 先全有效, 下面按分母逐口清位
     float qb = 0.0f, qa = 0.0f, ab = 0.0f, aa = 0.0f, ws = 0.0f, wq = 0.0f;
     float eb_pv = 0.0f, eb_v = 0.0f, ea_pv = 0.0f, ea_v = 0.0f; // 吃单已累计 金额 / 股数 (bid 侧 / ask 侧)
     size_t kb = 0, ka = 0;                                      // 已到达的吃单目标数 (吃 bid = sell, 吃 ask = buy)
     for (size_t i = 0; i < DEPTH_SIZE; ++i) {
-      const float pb = bp_[i].back(), pa = ap_[i].back();
-      const float vb = bq_[i].back(), va = -aq_[i].back(); // ask 存负值 (Depth 已钳)
+      const float pb = bp_[i], pa = ap_[i];
+      const float vb = bq_[i], va = -aq_[i]; // ask 存负值 (Depth 已钳)
       if (i < 10) {
         qb += vb, qa += va;
         ab += pb * vb, aa += pa * va;
@@ -148,9 +148,9 @@ public:
     }
     // 全簿吃不完: 余量假设在涨跌停价成交 (买吃卖盘 → 涨停, 卖吃买盘 → 跌停), 当一个无限量价位再吃一次即补齐剩余目标.
     // 边界 NaN (无限制股 / 缺失) → 比较恒 false → 不补 (与 Depth 同约)
-    if (const float dn = lim_dn_.back(); kb < NCOST && dn > 0.0f)
+    if (const float dn = lim_dn_; kb < NCOST && dn > 0.0f)
       kb = eat(cost_sell_10w, kb, dn, LIMIT_FILL_QTY, eb_pv, eb_v, mid, false);
-    if (const float up = lim_up_.back(); ka < NCOST && up > 0.0f)
+    if (const float up = lim_up_; ka < NCOST && up > 0.0f)
       ka = eat(cost_buy_10w, ka, up, LIMIT_FILL_QTY, ea_pv, ea_v, mid, true);
     // 仍未补齐 (涨跌停价缺失): 该快照该列无定义, 由 flush 延续上一有效值
     for (size_t k = kb; k < NCOST; ++k)
@@ -164,7 +164,7 @@ public:
     imbalance(obi_all, all_b, all_a);
     ratio(tlr_bid_1, cur_[qty_bid_1], all_b), ratio(tlr_bid_5, cur_[qty_bid_5], all_b), ratio(tlr_bid_10, cur_[qty_bid_10], all_b);
     ratio(tlr_ask_1, cur_[qty_ask_1], all_a), ratio(tlr_ask_5, cur_[qty_ask_5], all_a), ratio(tlr_ask_10, cur_[qty_ask_10], all_a);
-    cur_[micro] = micro_.back();
+    cur_[micro] = micro_;
     cur_[Out::mid] = mid; // 局部变量 mid 遮蔽枚举名, 用 Out:: 限定
   }
 
@@ -184,8 +184,8 @@ public:
     // 价列例外: 当日尚无有效盘口时用本分钟 bar 收盘价做代理 (有成交 = 成交价, 09:25 即集合竞价撮合价; 无成交 = 日内携带价;
     // 日内尚无成交 (bar 价 0) → 前收). 不沿用昨日盘口原值 —— 除权会造成假跳变; bar 价与 OHLC / vwap 同源同刻, 天然对齐.
     if (!has_state_) {
-      const float bar = md_.close.back();
-      const float px = bar > 0.0f ? bar : pre_close_.back();
+      const float bar = md_.close;
+      const float px = bar > 0.0f ? bar : pre_close_;
       y[micro] = last_[micro] = px;
       y[Out::mid] = last_[Out::mid] = px;
     }
@@ -231,10 +231,10 @@ private:
 
   const TickData &td_;
   const MinuteData &md_;
-  const DepthSeries &bp_, &ap_, &bq_, &aq_;
-  const Series &mid_, &micro_;
-  const Series &lim_up_, &lim_dn_; // Fund 日频口: 当日涨跌停价, 吃单成本吃不完时补齐余量用
-  const Series &pre_close_;        // Fund 日频口: 当日前收, 当日无盘口无成交时的价代理
+  const DepthPorts &bp_, &ap_, &bq_, &aq_;
+  const Port &mid_, &micro_;
+  const Port &lim_up_, &lim_dn_; // Fund 日频口: 当日涨跌停价, 吃单成本吃不完时补齐余量用
+  const Port &pre_close_;        // Fund 日频口: 当日前收, 当日无盘口无成交时的价代理
 
   bool has_state_ = false;
   uint32_t t_prev_ = 0;  // 当前状态起点 (ms)

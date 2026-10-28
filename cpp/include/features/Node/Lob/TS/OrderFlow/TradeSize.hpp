@@ -37,7 +37,7 @@ public:
   static_assert(kCount == 2 * NB * ND);
   float y[kCount] = {};
 
-  TradeSize(const TickData &td, const Series &taker_dlogp) : td_(td), taker_dlogp_(taker_dlogp), thr_(FIX, PROBS) {}
+  TradeSize(const TickData &td, const Port &taker_dlogp) : td_(td), taker_dlogp_(taker_dlogp), thr_(FIX, PROBS) {}
 
   inline void compute() {
     const auto &lob = td_.lob;
@@ -50,7 +50,7 @@ public:
     const size_t s = lob.order_dir == L2::OrderDirection::BID ? 0 : 1;
     float (&bk)[ND] = bucket_[s][thr_.bucket(a)];
     bk[0] += a, bk[1] += v, bk[2] += 1.0f;
-    bk[3] += taker_dlogp_.back(); // TakerRet 同域已 flush; 首笔 = 0, 加零无影响
+    bk[3] += taker_dlogp_; // TakerRet 同域已 flush; 首笔 = 0, 加零无影响
   }
 
   // ≥ 第 k 个 (升序) 阈值 ⇔ 桶 ≥ k+1: 后缀和写到该阈值的输出槽; 无阈值的 q 轴槽 (首日) 归 0 = 该桶无笔数
@@ -84,7 +84,7 @@ private:
   }
 
   const TickData &td_;
-  const Series &taker_dlogp_; // TakerRet 输出口 (同域 onTaker, 拓扑序在前, back() 即本笔值)
+  const Port &taker_dlogp_; // TakerRet 输出口 (同域 onTaker, 拓扑序在前, 即本笔值)
   SizeThresholds<NFIX, NQ, N_DAYS> thr_;
   float bucket_[2][NB + 1][ND] = {}; // [侧][桶][amt, vol, n, dlogp]
 };

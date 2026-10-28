@@ -21,13 +21,13 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit Peak(const DepthSeries &qty) : qty_(qty) {}
+  explicit Peak(const DepthPorts &qty) : qty_(qty) {}
 
   inline void compute() {
     float max_v = 0.0f, sum_v = 0.0f;
     size_t max_idx = 0;
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      float v = IS_BID ? qty_[i].back() : -qty_[i].back(); // ask 存负值
+      float v = IS_BID ? qty_[i] : -qty_[i]; // ask 存负值
       sum_v += v;
       if (v > max_v) {
         max_v = v;
@@ -40,7 +40,7 @@ public:
   }
 
 private:
-  const DepthSeries &qty_;
+  const DepthPorts &qty_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

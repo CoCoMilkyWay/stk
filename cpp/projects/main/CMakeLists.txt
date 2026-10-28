@@ -539,7 +539,7 @@ macro(dag_scan)
             list(APPEND DAG_NODES ${node_name})
             # 依赖 = 该行里所有 "<Ident>." (先全收, 排序时只认节点名)
             # 单口引用 Up.out(Up.port) / Up.y[Up.port] 另记成 "Up.port" (GUI 依赖解析按口过滤, 不把上游整节点的字段都算进来);
-            # 其余形态 (Up.out() / Up.outs() / Up.y / Up.member) = 整节点
+            # 其余形态 (Up.out() / Up.outs() / Up.hist() / Up.y / Up.member) = 整节点
             string(REGEX MATCH "(^|\n) *#define NODE_${node_name}\\([^\n]*" node_line "${scan_defs}")
             set(port_ref_re "[A-Za-z_][A-Za-z0-9_]*\\.(out\\( *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\)|y\\[ *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\])")
             string(REGEX MATCHALL "${port_ref_re}" port_refs "${node_line}")

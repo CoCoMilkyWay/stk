@@ -36,17 +36,17 @@ public:
   static constexpr size_t MIN_LABEL_COUNT = ENTRY_COL + 1; // LB 块总列数 (持有期组 + 建仓可成交码)
 
   // can_buy / can_sell = Tradable 节点本分钟的可成交标记 (onMinute 已算, 先于 minute_closed)
-  LabelBar(const MinuteData &md, const float &can_buy, const float &can_sell, const Series &lim_up, const Series &lim_dn, const Series &adj_ratio)
+  LabelBar(const MinuteData &md, const float &can_buy, const float &can_sell, const Port &lim_up, const Port &lim_dn, const Port &adj_ratio)
       : md_(md), can_buy_(can_buy), can_sell_(can_sell), lim_up_src_(lim_up), lim_dn_src_(lim_dn), adj_ratio_(adj_ratio) {}
 
   // 有成交的分钟 bar 结算后 (CoreTs 只在有成交的分钟调). writer(col, n, t_min, values, days_ago)
   template <class Writer>
   inline void minute_closed(size_t t_min, Writer &&writer) {
     assert(px_scale_ > 0.0f && "有成交但当日无复权比 (bar1d adjust_factor 缺失)");
-    last_raw_ = md_.close.back(); // 当日末笔成交价 (收盘价候选)
+    last_raw_ = md_.close; // 当日末笔成交价 (收盘价候选)
     if (!open_at(t_min, md_, writer))
       return; // 集合竞价 bar 不作 entry
-    const LabelPx e{md_.bid_amount.back() / static_cast<float>(md_.bid_volume.back()) * px_scale_, can_buy_ != 0.0f, can_sell_ != 0.0f};
+    const LabelPx e{md_.bid_amount / static_cast<float>(md_.bid_volume) * px_scale_, can_buy_ != 0.0f, can_sell_ != 0.0f};
     while (n_entry() < t_min)
       push_entry(e, writer); // 行 m < t_min (m+1 ≤ t_min) 悬着的 entry 全部到位
   }
@@ -57,21 +57,20 @@ public:
     close_day(last_raw_ > 0.0f, auction_px(last_raw_), writer, release, [](size_t, const LabelPx &) {});
   }
 
-  // 每日重置: 当日开盘 / 当日末笔归零; 取当日涨跌停 / 复权比 (节点 carry 之后调, Fund back() = 当日)
+  // 每日重置: 当日开盘 / 当日末笔归零; 取当日涨跌停 / 复权比 (节点 carry 之后调, Fund 口 = 当日)
   inline void reset() {
     LabelHold::reset();
-    assert(!lim_up_src_.empty() && !lim_dn_src_.empty() && !adj_ratio_.empty() && "LabelBar: Fund 日频口盘前须已承接");
     last_raw_ = 0.0f;
-    lim_up_ = lim_up_src_.back();
-    lim_dn_ = lim_dn_src_.back();
-    px_scale_ = adj_ratio_.back();
+    lim_up_ = lim_up_src_;
+    lim_dn_ = lim_dn_src_;
+    px_scale_ = adj_ratio_;
   }
 
 private:
-  const MinuteData &md_;                   // 当前 bar (close / open / bid 侧 = bar1m 总量额)
-  const float &can_buy_, &can_sell_;       // Tradable 节点 y (本分钟)
-  const Series &lim_up_src_, &lim_dn_src_; // Fund 日频口 (lim_up / lim_dn)
-  const Series &adj_ratio_;                // Fund 日频口
+  const MinuteData &md_;                 // 当前 bar (close / open / bid 侧 = bar1m 总量额)
+  const float &can_buy_, &can_sell_;     // Tradable 节点 y (本分钟)
+  const Port &lim_up_src_, &lim_dn_src_; // Fund 日频口 (lim_up / lim_dn)
+  const Port &adj_ratio_;                // Fund 日频口
 
   float last_raw_ = 0.0f; // 当日末笔成交价 (原始价; 0 = 当日尚无成交; reset 清)
 };

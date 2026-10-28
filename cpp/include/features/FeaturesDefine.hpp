@@ -69,14 +69,14 @@
 //     Name     节点名 (DAG 成员名); 同一节点类可有多个实例 (不同模板参数), 目前每个节点类一个节点, 同族列在节点内用口区分
 //     NodeType 节点类, 必须加括号 (模板参数里有逗号)
 //     inputs   构造参数 (不含输出口), 引用 DAG 成员: tick_data / minute_data / min{5,15,30,60}_data / day_data / fund_panel / asset_code_ / asset_id_ / date_ /
-//              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 源层数组 Depth.bid_qty 等;
-//              盘前即需的日频值直接引 y 槽 Up.y[Up.port] (Fund 的 Series 首个分钟 flush 才有值, 见 Fund.hpp).
+//              上游节点: 单口 Up.out(), 多口 Up.out(Up.port), 全口 Up.outs(), 回看 Up.hist() (上游声明 kHist), 源层数组 Depth.bid_qty 等;
+//              盘前即需的日频值直接引 y 槽 Up.y[Up.port] (Fund 的输出口首个分钟 flush 才有值, 见 Fund.hpp).
 //              必须字面写在这一行 (CMake 按 "Up." 抽依赖; Up.out(Up.port) / Up.y[Up.port] 记单口, 其余记整节点), 不要藏进 helper 宏
 //     触发域   Trigger:: 下的名字. 采样型只写一个 (compute 与 flush 同域);
 //              降频型写两个: compute=onTick, flush=onMinute;
 //              分钟箱型: on5Min / on15Min / on30Min / on60Min (读 min<n>_data n 分钟 K, 箱末结算); 日型: onClose (读 day_data 整日 K, 收盘结算);
 //              盘后型: onSettle (onClose 之后; 日频 PIT 推进到次日盘前, 如 Fund).
-//              日型 / 盘后型 = 日频节点: Series 跨天保留, 盘中下游读 back() = 前一交易日 L_1day 行的值 (当日盘中全程可 act on)
+//              日型 / 盘后型 = 日频节点: 输出口跨天保留, 盘中下游读到的 = 前一交易日 L_1day 行的值 (当日盘中全程可 act on)
 //     依赖     就是 inputs 里出现的 "Up." — 不需要写别的, 也不需要 #include 上游节点
 //
 // 截面列文件 (Node/<Tier>/CS/<分类>/<源节点>.hpp) = 只有 FIELDS_ 宏 (方法在 Method/CS.hpp, 契约见 DataDefine.hpp); 无 NODE_.
@@ -87,7 +87,7 @@
 //       写别的 token = 人类强行赋值, 覆盖探测 (表格绿字). 不参与落盘指纹, 改了不用重算.
 //     同族列 (Flow 的 {amt,vol,n}_{taker,maker,cancel}_{bid,ask}, Book 的 qty_{bid,ask}_{1,5,10,all} …) 在文件内用 helper 宏生成行, ## 拼进名字, 字面串拼进 EN/CN/公式.
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 有效性标志 / 归一化 (GUI 两列 TS Norm / CS Norm) 全部由它推出:
-//       TS(Node[, port], Tf, Method)  节点输出口. TS; 任意层可引任意 flush 域的节点 (本层节拍取 Series 最新值, 见 FeatureLevel);
+//       TS(Node[, port], Tf, Method)  节点输出口. TS; 任意层可引任意 flush 域的节点 (本层节拍取输出口最新值, 见 FeatureLevel);
 //                                  有效性: L_1min / 分钟箱层 / L_1day → ALL (稠密), L_sec: onDepth → DEPTH, 其余 → DATA
 //                                  Tf / Method 是 ts:: 下的名字 (Method/TS.hpp): 落盘值 = ts::Tf::apply(节点输出); Method 目前占位 (仅元数据)
 //       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 任意层) 的字段 src → cs::Tf::apply → cs::Method::apply.
@@ -205,10 +205,10 @@ inline constexpr EnumStr to_string(L2::ValidType t) {
 //   L_sec 秒: 事件秒才有行 (稀疏)    L_1min 分钟: 每分钟边界一行 (稠密)
 //   L_5min / L_15min / L_30min / L_60min 分钟箱: 每箱末一行 (稠密, 箱长 = BIN_MINUTES, 箱见 TimeIndex.hpp)
 //   L_1day 日: 收盘一行
-// 行由 worker 在本层节拍写 (CoreTs / CoreLob), 值 = 被引节点 Series 的最新值 (Node::last), 与节点 flush 域无关:
+// 行由 worker 在本层节拍写 (CoreTs / CoreLob), 值 = 被引节点输出口的最新值 (Node::out), 与节点 flush 域无关:
 //   高频行引低频节点 = 最近一次低频值 (日频节点 → 分钟行读到前一交易日 L_1day 行的值; on30Min 节点 → 分钟行读到上一箱值);
 //   低频行引高频节点 = 节拍时刻 (箱末 / 收盘) 的值.
-//   节点间只经 Series 传值, 对齐由 Series 天然完成, DAG 里不写对齐; 张量只经 worker 预设接口 (fstore) 读写, 节点不碰.
+//   节点间只经输出口传值, 对齐由输出口天然完成, DAG 里不写对齐; 张量只经 worker 预设接口 (fstore) 读写, 节点不碰.
 enum FeatureLevel : size_t { L_sec,
                              L_1min,
                              L_5min,

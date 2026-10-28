@@ -1,10 +1,10 @@
 #pragma once
 
 // =============================================================================
-// Fund - 日频 PIT 基本面 (日频节点: compute=flush=onSettle, 每个交易日收盘后推一格; Series 跨天保留)
+// Fund - 日频 PIT 基本面 (日频节点: compute=flush=onSettle, 每个交易日收盘后发布一次; 输出口跨天保留)
 //        持一个 fund::Stream (per-资产日频状态机), 收盘后沿 D 轴推进到次日 (d+1) 算出全部口 (估值分母 / 因子 raw / filter):
-//        L_1day 行 D = 次日盘前态; 下游 (Valuation / Depth / Flow / Book / Auction / Kline / LabelLob) 按口取 Series,
-//        盘中读 back() = 前一交易日 L_1day 行 = 当日适用值; 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
+//        L_1day 行 D = 次日盘前态; 下游 (Valuation / Depth / Flow / Book / Auction / Kline / LabelLob) 按口引用,
+//        盘中读到的 = 前一交易日 L_1day 行 = 当日适用值; 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
 //        两档共用类; 节点实例 / 落盘列见 Node/{Bar,Lob}/TS/Fund/Fund.hpp
 // =============================================================================
 //   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.
@@ -167,18 +167,18 @@ public:
   // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / Bar 档 cs_valid / PoolKey 全读这一份)
   //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
   //   母集 = 活跃 ∧ 非 ST / *ST / 退市整理期 ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0
-  // 节点侧读 back() (Bar 档 cs_valid 盘中 = 当日, PoolKey onSettle = 次日)
-  static bool is_live(const Series (&f)[kCount]) { return f[live].back() != 0.0f; }
-  static bool is_base(const Series (&f)[kCount]) { return f[base].back() != 0.0f; }
+  // 节点侧读输出口 (Bar 档 cs_valid 盘中 = 当日, PoolKey onSettle = 次日)
+  static bool is_live(const Ports<kCount> &f) { return f[live] != 0.0f; }
+  static bool is_base(const Ports<kCount> &f) { return f[base] != 0.0f; }
 
-  // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 推入 = L_1day 行 D
+  // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 发布 = L_1day 行 D
   void compute() {
     const int d = today();
     stream_.advance_to(d + 1, y);
     at_ = d + 1;
   }
 
-  // 盘前承接: Series 末格须是当日盘前态 (状态 d). 前一回测日已推到 d → 无事; 区间首日 / 日期轴跳日 → 推进到 d 补一格
+  // 盘前承接: 输出口须是当日盘前态 (状态 d). 前一回测日已推到 d → 无事; 区间首日 / 日期轴跳日 → 推进到 d 补发布一次
   bool carry() {
     const int d = today();
     if (at_ == d)
@@ -198,5 +198,5 @@ private:
   const fund::Panel &panel_; // DAG_Root::fund_panel (只读共享数据源)
   const misc::Ymd &date_;    // DAG_Root::date_ (begin_day 设置)
   fund::Stream stream_;      // 本资产的日频状态机
-  int at_ = -1;              // y / Series 末格对应的 D 轴日
+  int at_ = -1;              // y / 输出口对应的 D 轴日
 };

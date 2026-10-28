@@ -23,7 +23,7 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  TLR(const DepthSeries &qty, TickData &td)
+  TLR(const DepthPorts &qty, TickData &td)
       : qty_(qty), td_(td) {}
 
   inline void compute() {
@@ -33,14 +33,14 @@ public:
     }
     float top_sum = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i)
-      top_sum += IS_BID ? qty_[i].back() : -qty_[i].back(); // ask 存负值
+      top_sum += IS_BID ? qty_[i] : -qty_[i]; // ask 存负值
 
     float total_sum = static_cast<float>(IS_BID ? td_.lob.all_bid_volume : td_.lob.all_ask_volume);
     y[value] = total_sum > 1e-6f ? top_sum / total_sum : kNaN;
   }
 
 private:
-  const DepthSeries &qty_;
+  const DepthPorts &qty_;
   TickData &td_;
 };
 

@@ -32,10 +32,10 @@
 //     冲击成本: 逐侧算 (买入冲击要可买, 卖出冲击要可卖; 不可成交的那侧 NaN); 全簿吃不完 → 余量按涨跌停价成交 (与 Book 吃单成本同约, 见 calc_vwap)
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node). 一份盘口快照环 (中间价 + 各金额段冲击) 给 entry 用, 分钟型 exit 复用后续行的 entry:
-//   snapshot(t)                 每次 onDepth 先调: 只记账, 快照惰性结算 —— 同一秒内只有最后一次
-//                               盘口状态会被消费, 所以等下一次盘口更新到来时才从 Depth 环的上一格结算
-//                               入环 (materialize offset=1); 查询目标恰为当前秒 (还没结算) 时从环末现算
-//                               (offset=0). 与"每次更新都算"逐值一致, 计算次数从每笔盘口更新降到每活跃秒一次.
+//   snapshot(t)                 每次盘口更新在 onDepth 之前调: 只记账, 快照惰性结算 —— 同一秒内只有最后一次
+//                               盘口状态会被消费, 所以等下一次盘口更新到来时 (Depth 尚未覆写 = 上一秒终簿)
+//                               才结算入环; 查询目标恰为当前秒 (还没结算) 时从 Depth 当前簿现算.
+//                               与"每次更新都算"逐值一致, 计算次数从每笔盘口更新降到每活跃秒一次.
 //                               只有可成交簿记为活跃秒.
 //   minute_anchored(t, writer)  L_1min 分钟锚定 entry 捕获 (锚点 = 分钟末, 与行 m 特征的可知时刻对齐), 只在可成交更新上推进:
 //                               把 entry 秒已完结的行的 entry 快照存进当日悬挂槽 (所有组共用一份 entry), 同时写该行的冲击成本列;
@@ -99,21 +99,20 @@ public:
   // 分钟型 exit 不看 bar: 行 m+n 的 entry 锚点 ≥ 14:57 (m+n ≥ kContCloseMin − 1) 永不捕获 → 持有到收盘 (与 Stat tail_masked 同一条界).
 
   LabelLob(const TickData &td, const MinuteData &md,
-           const DepthSeries &bid_price, const DepthSeries &ask_price,
-           const DepthSeries &bid_qty, const DepthSeries &ask_qty,
-           const Series &lim_up, const Series &lim_dn, const Series &adj_ratio)
+           const DepthPorts &bid_price, const DepthPorts &ask_price,
+           const DepthPorts &bid_qty, const DepthPorts &ask_qty,
+           const Port &lim_up, const Port &lim_dn, const Port &adj_ratio)
       : td_(td), md_(md), bid_price_(bid_price), ask_price_(ask_price), bid_qty_(bid_qty), ask_qty_(ask_qty),
         lim_up_src_(lim_up), lim_dn_src_(lim_dn), adj_ratio_(adj_ratio) {}
 
-  // 记录当前秒有盘口更新 (每次 onDepth 调一次, 先于 second / minute_anchored).
-  // 换秒 (或本次更新不可成交) 时把上一个活跃秒结算入环: Depth 环的上一格 (offset=1) 正是那一秒最后
-  // 一次更新的盘口. Depth 每次 onDepth 必推一格
-  // (集合竞价的更新也推), 所以不管本次可不可成交都得立刻结算, 否则 offset 对不上.
+  // 记录当前秒有盘口更新 (每次盘口更新调一次, 先于 onDepth 与 minute_anchored).
+  // 换秒 (或本次更新不可成交) 时把上一个活跃秒结算入环: Depth 此刻尚未被本次更新覆写, 正是那一秒最后
+  // 一次更新的盘口. 集合竞价的更新同样覆写 Depth, 所以不管本次可不可成交都得此刻结算.
   // 可成交 = 连续竞价时段 (订单簿的 market_state); 集合竞价期的簿不入环, pending 清空 → minute_anchored 本次不推进.
   inline void snapshot(size_t t) {
     const bool ok = tradable();
     if (pending_sec_ != kNoPending && (pending_sec_ != t || !ok))
-      flush_pending(1);
+      flush_pending();
     if (ok)
       pending_sec_ = t;
   }
@@ -160,9 +159,9 @@ public:
   template <class Writer, class Release>
   inline void day_end(Writer &&writer, Release &&release) {
     if (pending_sec_ != kNoPending)
-      flush_pending(0); // 最后一个可成交秒之后再无盘口更新: 环末就是它的终簿
+      flush_pending(); // 最后一个可成交秒之后再无盘口更新: Depth 当前簿就是它的终簿
     const bool traded = last_sec_ != kNoPending;
-    const float bar_close = md_.close.empty() ? 0.0f : md_.close.back();
+    const float bar_close = md_.close;
     LabelPx close;
     if (traded)
       close = bar_close > 0.0f ? auction_px(bar_close) : px_of(ring_[last_sec_ % RING_SIZE]); // 全日无成交 (极罕见) → 最后可成交簿
@@ -170,13 +169,12 @@ public:
     close_day(traded, close, writer, release, [&](size_t m, const LabelPx &c) { write_cost(m, at_price(c), writer); });
   }
 
-  // 每日重置: 快照环作废, 行游标归零; 当日涨跌停价 / 复权比取 Fund 日频口 back() (盘前承接之后 = 当日适用, 收盘后 Fund 已推进到次日)
+  // 每日重置: 快照环作废, 行游标归零; 当日涨跌停价 / 复权比取 Fund 日频口 (盘前承接之后 = 当日适用, 收盘后 Fund 已推进到次日)
   inline void reset() {
     LabelHold::reset();
-    assert(!lim_up_src_.empty() && !lim_dn_src_.empty() && !adj_ratio_.empty() && "LabelLob: Fund 日频口盘前须已承接");
-    lim_up_ = lim_up_src_.back();
-    lim_dn_ = lim_dn_src_.back();
-    px_scale_ = adj_ratio_.back();
+    lim_up_ = lim_up_src_;
+    lim_dn_ = lim_dn_src_;
+    px_scale_ = adj_ratio_;
     for (auto &snap : ring_)
       snap.valid = false;
     pending_sec_ = kNoPending; // 昨日最后一个活跃秒不结算 (当日 ring 已整体作废)
@@ -190,11 +188,11 @@ private:
     return s == L2::MarketState::CONTINUOUS_TRADING_MORNING || s == L2::MarketState::CONTINUOUS_TRADING_AFTERNOON;
   }
 
-  // 悬着的活跃秒结算入环: offset=1 在下一次盘口更新到来时 (Depth 环上一格 = 该秒终簿), offset=0 在收盘 (环末即该秒终簿)
+  // 悬着的活跃秒结算入环: 下一次盘口更新到来时 (onDepth 之前) 或收盘时, Depth 当前簿都是该秒终簿
   //   终簿吃不到 (valid = false) 即不入环, 不算活跃秒
-  inline void flush_pending(size_t offset) {
+  inline void flush_pending() {
     Snapshot &s = ring_[pending_sec_ % RING_SIZE];
-    materialize(s, pending_sec_, offset);
+    materialize(s, pending_sec_);
     if (s.valid)
       last_sec_ = pending_sec_;
     pending_sec_ = kNoPending;
@@ -226,18 +224,16 @@ private:
     writer(COST_COL, COST_COUNT, m, static_cast<const float *>(values), size_t{0});
   }
 
-  // 从 Depth 环末尾回退 offset 格的盘口状态结算快照 (0 = 当前更新, 1 = 上一次更新):
+  // Depth 当前簿结算快照:
   //   中间价 = (买一 + 卖一)/2; 一侧全空 (封板) 取另一侧 (= 涨跌停价).
   //   入环 (valid) = 有中间价; 可买 = 卖一侧有挂单, 可卖 = 买一侧有挂单 (封涨停 → 只可卖, 封跌停 → 只可买)
   //   冲击 (逐侧: 买入要可买, 卖出要可卖) = 吃 a 万的 VWAP 相对中间价 (余量按涨跌停价, 见 calc_vwap), 恒有限; 不可成交的那侧 NaN
   //   px 存后复权价 (mid × 当日复权比); 冲击是同日比值, 按原始价算
-  void materialize(Snapshot &snap, size_t t_sec, size_t offset) const {
+  void materialize(Snapshot &snap, size_t t_sec) const {
     assert(px_scale_ > 0.0f && "有可成交盘口但当日无复权比 (bar1d adjust_factor 缺失)");
     snap.sec_index = t_sec;
-    assert(bid_price_[0].size() > offset && ask_price_[0].size() > offset && "materialize: Depth 环深度不足 offset");
-    const size_t k = bid_price_[0].size() - 1 - offset;
-    const float b1 = bid_price_[0][k], a1 = ask_price_[0][k];
-    const bool has_b = b1 > 1e-6f && bid_qty_[0][k] > 1e-6f, has_a = a1 > 1e-6f && -ask_qty_[0][k] > 1e-6f;
+    const float b1 = bid_price_[0], a1 = ask_price_[0];
+    const bool has_b = b1 > 1e-6f && bid_qty_[0] > 1e-6f, has_a = a1 > 1e-6f && -ask_qty_[0] > 1e-6f;
     const float mid = has_b && has_a ? 0.5f * (b1 + a1) : (has_b ? b1 : (has_a ? a1 : 0.0f));
     snap.px = mid * px_scale_;
     snap.valid = mid > 1e-6f;
@@ -245,8 +241,8 @@ private:
     snap.sell = has_b;
     for (size_t a = 0; a < AMT_COUNT; ++a) {
       const float amt = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f;
-      const float vb = has_a ? calc_vwap(ask_price_, ask_qty_, amt, true, offset, lim_up_) : 0.0f;  // 吃 ask (买入): 余量按涨停
-      const float vs = has_b ? calc_vwap(bid_price_, bid_qty_, amt, false, offset, lim_dn_) : 0.0f; // 吃 bid (卖出): 余量按跌停
+      const float vb = has_a ? calc_vwap(ask_price_, ask_qty_, amt, true, lim_up_) : 0.0f;  // 吃 ask (买入): 余量按涨停
+      const float vs = has_b ? calc_vwap(bid_price_, bid_qty_, amt, false, lim_dn_) : 0.0f; // 吃 bid (卖出): 余量按跌停
       assert((!has_a || vb > 1e-6f) && (!has_b || vs > 1e-6f) && "materialize: 有挂单的一侧须吃得到");
       snap.cost_buy[a] = has_a ? vb / mid - 1.0f : kNaN;
       snap.cost_sell[a] = has_b ? 1.0f - vs / mid : kNaN;
@@ -255,8 +251,8 @@ private:
 
   // 指定 t_sec 时刻的快照; 深度不是每秒都更新, 向前找 ≤60s 内最近的有效快照
   const Snapshot *get_snapshot(size_t target) const {
-    if (target == pending_sec_) { // 当前秒未结算: 从环末现算 (只有锚点查询走到, 频次 ~分钟级); 吃不到则照常回溯
-      materialize(scratch_, target, 0);
+    if (target == pending_sec_) { // 当前秒未结算: 从 Depth 当前簿现算 (只有锚点查询走到, 频次 ~分钟级); 吃不到则照常回溯
+      materialize(scratch_, target);
       if (scratch_.valid)
         return &scratch_;
     }
@@ -278,8 +274,8 @@ private:
     if (const auto *s = get_snapshot(target))
       return s;
     for (size_t t_sec = target + 1; t_sec <= limit; ++t_sec) {
-      if (t_sec == pending_sec_) { // 当前秒未结算, 同 get_snapshot: 从环末现算
-        materialize(scratch_, t_sec, 0);
+      if (t_sec == pending_sec_) { // 当前秒未结算, 同 get_snapshot: 从 Depth 当前簿现算
+        materialize(scratch_, t_sec);
         if (scratch_.valid)
           return &scratch_;
         continue;
@@ -292,16 +288,13 @@ private:
   }
 
   // 模拟吃单: 遍历盘口深度算 VWAP (返回; 吃不到一股 → 0). is_buy: 吃 ask (qty 存负值); 否则吃 bid (正值)
-  // offset: 从 Depth 环末尾回退几格取盘口 (所有档的环长同步推进, 下标一致)
   // limit_px: 全簿吃不完时余量的成交价 (买 → 涨停, 卖 → 跌停), 与 Book 的吃单成本同约;
   //           涨跌停封板 (该侧全空, 如涨停无卖盘) 也走这条; 边界 NaN (无限制股) 不补 → 该侧全空时 0 (materialize 已判不可成交)
-  static inline float calc_vwap(const DepthSeries &price, const DepthSeries &qty, float amount, bool is_buy, size_t offset, float limit_px) {
-    assert(price[0].size() > offset && "calc_vwap: Depth 环深度不足 offset");
+  static inline float calc_vwap(const DepthPorts &price, const DepthPorts &qty, float amount, bool is_buy, float limit_px) {
     float cost = 0.0f, sh = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH && amount > 1e-6f; ++i) {
-      const size_t k = price[i].size() - 1 - offset;
-      const float p = price[i][k];
-      const float q = is_buy ? -qty[i][k] : qty[i][k];
+      const float p = price[i];
+      const float q = is_buy ? -qty[i] : qty[i];
       if (p < 1e-6f || q < 1e-6f)
         continue;
       const float fill = std::min(amount, p * q); // 本档成交金额
@@ -316,14 +309,14 @@ private:
     return sh > 1e-6f ? cost / sh : 0.0f;
   }
 
-  const TickData &td_;   // market_state: 当前簿可成交与否
-  const MinuteData &md_; // 末 bar close = 当日末笔成交价 (收盘)
-  const DepthSeries &bid_price_;
-  const DepthSeries &ask_price_;
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
-  const Series &lim_up_src_, &lim_dn_src_; // Fund 日频口 (lim_up / lim_dn)
-  const Series &adj_ratio_;                // Fund 日频口 (当日复权比 → px_scale_); 当日涨跌停价在 LabelHold (簿子吃不完时补齐余量也用)
+  const TickData &td_;          // market_state: 当前簿可成交与否
+  const MinuteData &md_;        // 末 bar close = 当日末笔成交价 (收盘)
+  const DepthPorts &bid_price_; // Depth 当前簿 (见 snapshot: 调用时序决定它是哪一次更新的簿)
+  const DepthPorts &ask_price_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
+  const Port &lim_up_src_, &lim_dn_src_; // Fund 日频口 (lim_up / lim_dn)
+  const Port &adj_ratio_;                // Fund 日频口 (当日复权比 → px_scale_); 当日涨跌停价在 LabelHold (簿子吃不完时补齐余量也用)
 
   static constexpr size_t kNoPending = SIZE_MAX;
 

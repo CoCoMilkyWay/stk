@@ -246,7 +246,7 @@ void Feature::Metadata::init_from_compile_time(TierId t) {
     features[lvl].assign((*tm.meta)[lvl].begin(), (*tm.meta)[lvl].end());
 
   // 2. 节点上游依赖表: node name → 直接依赖项 (来自 CMake 生成的 <tier>::node_deps::TABLE)
-  //    项 = "Up" (整节点: Up.out() / Up.outs() / Up.member) 或 "Up.port" (单口: Up.out(Up.port))
+  //    项 = "Up" (整节点: Up.out() / Up.outs() / Up.hist() / Up.member) 或 "Up.port" (单口: Up.out(Up.port))
   std::unordered_map<std::string, std::vector<std::string>> node_deps_map;
   auto load_deps = [&](const auto &table) {
     for (const auto &e : table)

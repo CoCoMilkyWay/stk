@@ -1,11 +1,11 @@
 #pragma once
 
 // =============================================================================
-// TodT<Bars, SLOTS> - 同时段历史基准 z 值 (feature_list.md 1.8, 前 D 日版, D ∈ {5, 10}; 20 / 60 跨周版不做)
+// TodT<Bar, SLOTS> - 同时段历史基准 z 值 (feature_list.md 1.8, 前 D 日版, D ∈ {5, 10}; 20 / 60 跨周版不做)
 // =============================================================================
-//   槽 = 本层行 (Bars::index): Tod = 分钟版 (compute=onMinute, 255 槽; Lob); Bar 档用 5 分钟箱版 (compute=on5Min, 49 槽, 读 min5_data).
+//   槽 = 本层行 (Bar::index): Tod = 分钟版 (compute=onMinute, 255 槽; Lob); Bar 档用 5 分钟箱版 (compute=on5Min, 49 槽, 读 min5_data).
 //   下文"分钟"对箱版即"箱".
-//   x_t = 本分钟成交额 / 成交量 (Bars 买 + 卖; Bar: bar1m 总量, 与 Trade 同源; Lob: 主动买 + 卖, 与 Flow 同源),
+//   x_t = 本分钟成交额 / 成交量 (bar 买 + 卖; Bar 档: bar1m 总量, 与 Trade 同源; Lob 档: 主动买 + 卖, 与 Flow 同源),
 //   μ_t / σ_t = 前 D 个交易日 同一分钟槽 的均值 / 样本标准差 (不含今天; 因果):
 //     amt_todz_{D}d = (amt_t − μ_t) / σ_t      vol_todz_{D}d = (vol_t − μ_t) / σ_t
 //   槽内有效样本 < 3 或 σ = 0 → 0 (z 的中性值 = 与历史均值一致; 不产 NaN, 下游多日序列无缺口).
@@ -22,7 +22,7 @@
 #include <cmath>
 #include <cstdint>
 
-template <class Bars, size_t SLOTS>
+template <class Bar, size_t SLOTS>
 class TodT {
   static constexpr size_t D_MAX = 10;
   static constexpr size_t D_SHORT = 5;
@@ -37,13 +37,13 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit TodT(const Bars &md) : md_(md) { update_short_mask(); }
+  explicit TodT(const Bar &md) : md_(md) { update_short_mask(); }
 
   inline void compute() {
     const size_t slot = md_.index;
     assert(slot < SLOTS && "Tod: 本层行超出槽数");
-    const float xa = static_cast<float>(md_.bid_amount.back() + md_.ask_amount.back());
-    const float xv = static_cast<float>(md_.bid_volume.back() + md_.ask_volume.back());
+    const float xa = static_cast<float>(md_.bid_amount + md_.ask_amount);
+    const float xv = static_cast<float>(md_.bid_volume + md_.ask_volume);
     const uint16_t v_all = valid_[slot];
     const uint16_t v_short = static_cast<uint16_t>(v_all & short_mask_);
     y[amt_todz_5d] = zscore(ring_a_[slot], v_short, xa);
@@ -92,7 +92,7 @@ private:
     return var > 0.0f ? (x - mean) / std::sqrt(var) : 0.0f; // σ = 0 (历史全同值): 无离散度可归一, 同样落中性 0
   }
 
-  const Bars &md_;
+  const Bar &md_;
   float ring_a_[SLOTS][D_MAX] = {};
   float ring_v_[SLOTS][D_MAX] = {};
   uint16_t valid_[SLOTS] = {};

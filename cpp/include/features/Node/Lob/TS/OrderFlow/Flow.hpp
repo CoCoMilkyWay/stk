@@ -59,7 +59,7 @@ public:
   static_assert(vol_maker_lim_bid == NG * 2);
   float y[kCount] = {};
 
-  Flow(const TickData &td, const MinuteData &md, const Series &taker_dlogp, const Series &lim_up, const Series &lim_dn)
+  Flow(const TickData &td, const MinuteData &md, const Port &taker_dlogp, const Port &lim_up, const Port &lim_dn)
       : td_(td), md_(md), taker_dlogp_(taker_dlogp), lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   inline void compute() {
@@ -71,7 +71,7 @@ public:
     case L2::OrderType::TAKER: {
       const float p = lob.price;
       acc_[0][s] += p * v, acc_[1][s] += v, acc_[2][s] += 1.0f;
-      acc_[3][s] += taker_dlogp_.back(); // TakerRet 同 tick 的 onTaker 域已 flush; 无效笔 = 0, 加零无影响
+      acc_[3][s] += taker_dlogp_; // TakerRet 同 tick 的 onTaker 域已 flush; 无效笔 = 0, 加零无影响
       if (td_.sec_index % 60 < 30)
         vol_30a_ += v;
       if (p > 0.0f) { // 时间加权: 上一有效成交价持有到本笔 (哨兵秒内 ms 回绕 → 钳零, 同 Book)
@@ -88,9 +88,9 @@ public:
       acc_[4][s] += lob.price * v, acc_[5][s] += v, acc_[6][s] += 1.0f; // price=0 (市价单) → 额 0
       // 彩票委托: 买单挂跌停价 / 卖单挂涨停价 (边界 NaN → 比较恒 false → 不计)
       if (s == 0) {
-        if (lob.price <= lim_dn_.back() + kPxEps && lob.price > 0.0f)
+        if (lob.price <= lim_dn_ + kPxEps && lob.price > 0.0f)
           vol_lim_[0] += v;
-      } else if (lob.price >= lim_up_.back() - kPxEps) {
+      } else if (lob.price >= lim_up_ - kPxEps) {
         vol_lim_[1] += v;
       }
       break;
@@ -116,8 +116,8 @@ public:
     const float vol_total = acc_[1][0] + acc_[1][1];
     if (vol_total > 0.0f)
       vwap_last_ = amt_total / vol_total;
-    else if (vwap_last_ <= 0.0f && lim_up_.back() > 0.0f)
-      vwap_last_ = (lim_up_.back() + lim_dn_.back()) * 0.5f;
+    else if (vwap_last_ <= 0.0f && lim_up_ > 0.0f)
+      vwap_last_ = (lim_up_ + lim_dn_) * 0.5f;
     y[vwap] = vwap_last_;
 
     // twap: 末笔持有到分钟末; 当日尚无成交 (span 0) → 退 vwap (同源同刻, 不产 NaN)
@@ -147,8 +147,8 @@ private:
 
   const TickData &td_;
   const MinuteData &md_;
-  const Series &taker_dlogp_;      // TakerRet 输出口 (onTaker 先于 onTick, back() 即本笔值)
-  const Series &lim_up_, &lim_dn_; // Fund 日频口: 当日涨 / 跌停价 (元)
+  const Port &taker_dlogp_;      // TakerRet 输出口 (onTaker 先于 onTick, 即本笔值)
+  const Port &lim_up_, &lim_dn_; // Fund 日频口: 当日涨 / 跌停价 (元)
 
   float acc_[NG][2] = {}; // [组][侧]: 组序 = enum 前 NG 组; 侧 = {bid, ask}
   float vol_30a_ = 0.0f;

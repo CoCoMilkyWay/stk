@@ -19,8 +19,8 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  CI(const DepthSeries &bid_qty,
-     const DepthSeries &ask_qty)
+  CI(const DepthPorts &bid_qty,
+     const DepthPorts &ask_qty)
       : bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
   inline void compute() {
@@ -31,16 +31,16 @@ public:
     float sum_bid = 0.0f;
     float sum_ask = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      sum_bid += bid_qty_[i].back();
-      sum_ask += -ask_qty_[i].back(); // 卖方存负值
+      sum_bid += bid_qty_[i];
+      sum_ask += -ask_qty_[i]; // 卖方存负值
     }
     float denom = sum_bid + sum_ask;
     y[value] = denom > 1e-6f ? (sum_bid - sum_ask) / denom : kNaN;
   }
 
 private:
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

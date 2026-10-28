@@ -1,19 +1,19 @@
 #pragma once
 
 // =============================================================================
-// Depth - 盘口数据提取层: depth_buffer 的 N 个价位 → 4 组独立 CBuffer, 供下游节点复用
+// Depth - 盘口数据提取层: depth_buffer 的 N 个价位 → 4 组 DepthPorts (当前簿), 供下游节点复用
 // =============================================================================
 //   单位: 价格(元), 数量(股); 卖方数量存负值
 //   布局: depth_buffer [0:N-1]=ask(N→1), [N:2N-1]=bid(1→N); 本类 bid_*[i]/ask_*[i] = 买/卖 i+1 价位
 //   符号钳制: 订单簿抵扣模型下 Level::net_quantity 可能反号 (乱序/过度抵扣), 这里统一钳成 bid ≥ 0 / ask ≤ 0,
 //            下游 (Book / MidPrice / MicroPrice / Spread / LabelLob) 只依赖这一处的符号约定.
-//   集合竞价簿也到这里: 订单簿竞价分支每节流点整簿重建并置 depth_updated, 买一 ≥ 卖一 (交叉) 照推 —— 本类
-//            每次 compute 必推一格, 环长与 onDepth 次数严格同步 (LabelLob 的 offset 依赖这条);
+//   集合竞价簿也到这里: 订单簿竞价分支每节流点整簿重建并置 depth_updated, 买一 ≥ 卖一 (交叉) 照写;
 //            可不可成交由消费方按 lob.market_state 自判 (LabelLob 只收连续竞价簿).
-//   跨天: reset() 清空 4 组序列 —— 当日首次盘口更新前序列为空, onMinute 采样节点据此给 NaN, 不读昨日尾值.
+//   只存当前簿: onDepth 之前读 = 上一次更新的终簿 (LabelLob 结算上一活跃秒即靠这一点), 之后读 = 本次更新.
+//   跨天: reset() 置 NaN —— 当日首次盘口更新前无簿, 不读昨日尾值.
 //   涨跌停保护: 边界 = Fund 的当日适用涨跌停价 (PIT, 与 Valuation 同源; ST 5% / 无限制 NaN 都在数据里),
 //              超限价位强制为边界价, qty=1股. 边界 NaN (无限制 / 缺失) → 比较恒 false → 不钳.
-//   只接 Fund.out(Fund.lim_up) / Fund.out(Fund.lim_dn) 两口: Fund 是日频节点, 盘前承接后 back() 即当日适用值 (9:15 起可读).
+//   只接 Fund.out(Fund.lim_up) / Fund.out(Fund.lim_dn) 两口: Fund 是日频节点, 盘前承接后即当日适用值 (9:15 起可读).
 //   单口引用也让 CMake 依赖表只记这两列.
 //   【fast-math 契约】不做 isnan; NaN 边界靠 "比较遇 NaN 恒 false" 透传 (与 Valuation 同约).
 // =============================================================================
@@ -27,22 +27,22 @@ class Depth {
 public:
   static constexpr float LIMIT_QTY = 1.0f; // 超限价位数量: 1股
 
-  // 源层节点: 无标量输出口 (kCount = 0), 自持 4 组 N 个价位 CBuffer, 下游按 Depth.bid_qty 等直接引用
+  // 源层节点: 无标量输出口 (kCount = 0), 自持 4 组 N 个价位, 下游按 Depth.bid_qty 等直接引用
   enum Out : size_t { kCount = 0 };
 
-  Depth(const TickData &tick_data, const Series &lim_up, const Series &lim_dn)
+  Depth(const TickData &tick_data, const Port &lim_up, const Port &lim_dn)
       : tick_data_(tick_data), lim_up_(lim_up), lim_dn_(lim_dn) {}
 
-  Series bid_price[N_LEVELS];
-  Series ask_price[N_LEVELS];
-  Series bid_qty[N_LEVELS];
-  Series ask_qty[N_LEVELS];
+  Ports<N_LEVELS> bid_price{};
+  Ports<N_LEVELS> ask_price{};
+  Ports<N_LEVELS> bid_qty{};
+  Ports<N_LEVELS> ask_qty{};
 
-  // compute 与 flush 同域 (onDepth) 且相邻, 直接推入 CBuffer
+  // compute 与 flush 同域 (onDepth) 且相邻, 直接写当前簿
   inline void compute() {
     const LOB_Feature &lob = tick_data_.lob;
     const auto &depth = lob.depth_buffer;
-    const float lim_up = lim_up_.back(), lim_dn = lim_dn_.back();
+    const float lim_up = lim_up_, lim_dn = lim_dn_;
     const float limit_up = lim_up + kPxEps;
     const float limit_down = lim_dn - kPxEps;
 
@@ -67,26 +67,24 @@ public:
         ap = lim_dn, aq = -LIMIT_QTY;
       }
 
-      bid_price[i].push_back(bp);
-      ask_price[i].push_back(ap);
-      bid_qty[i].push_back(bq);
-      ask_qty[i].push_back(aq);
+      bid_price[i] = bp;
+      ask_price[i] = ap;
+      bid_qty[i] = bq;
+      ask_qty[i] = aq;
     }
   }
 
-  // 跨天: 清空序列 (昨日盘口对今日无意义)
+  // 跨天: 置 NaN (昨日盘口对今日无意义)
   void reset() {
-    for (size_t i = 0; i < N_LEVELS; ++i) {
-      bid_price[i].clear();
-      ask_price[i].clear();
-      bid_qty[i].clear();
-      ask_qty[i].clear();
-    }
+    bid_price.fill(kNaN);
+    ask_price.fill(kNaN);
+    bid_qty.fill(kNaN);
+    ask_qty.fill(kNaN);
   }
 
 private:
   const TickData &tick_data_;
-  const Series &lim_up_, &lim_dn_; // Fund 日频口: 当日涨 / 跌停价 (元)
+  const Port &lim_up_, &lim_dn_; // Fund 日频口: 当日涨 / 跌停价 (元)
 };
 
 // ---- 节点实例 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

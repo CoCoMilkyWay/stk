@@ -19,7 +19,7 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 归零分钟 / 分钟箱缓冲 (日 bar 跨天保留)
+//         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 各层末 bar 归零
 //         empty_day  无数据日 = 零事件日, 同一路径
 //   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_1min 以上各层当前行
 //                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_1min 已出) → 该层节拍域 (beat_of; L_1day 另跟 onSettle) → 写该层行 + ts_valid
@@ -27,6 +27,7 @@
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列, 落到以 t_min 为行末分钟的各层行
 //         (哪层有哪些标签列由字段表定: Lob 只 L_1min; Bar 只 L_5min 及以上, 每层只留本层及以上的持有期组);
+//         writer.rows(col) = 该列落盘的行 (编译期 kLabRows), LabelHold 只结算这些行;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
 //   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close.
 //   档钩子 (Derived 实现):
@@ -39,6 +40,7 @@ public:
   using Store = FeatureStore<T>;
   using Day = typename Store::Day;
   using Label = decltype(Dag::label);
+  using LabelRows = typename Label::RowSet;
   static constexpr size_t kMinRingSlots = Label::MIN_RING_SLOTS; // 日环下限 (见 LabelHold)
 
   void begin_day(misc::Ymd date, const Day &day) {
@@ -62,8 +64,7 @@ public:
     dag_.at_day_end();
     dag_.minute_data.clear();
     for (BinData graph::Root::*b : graph::BIN_DATA)
-      if (b != &graph::Root::day_data)
-        (dag_.*b).clear();
+      (dag_.*b).clear();
   }
 
   // 无数据日 (缺 binary / 无 bar1m) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟级联收行 / 标签日历),
@@ -97,10 +98,19 @@ protected:
       (dag_.*b).asset_id = static_cast<uint32_t>(asset_id);
   }
 
+  // 标签落盘口 (LabelHold 的 writer): 调用 = write_label; rows(col) = LB 块偏移 col 的落盘行 (kLabRows)
+  struct LabelWriter {
+    CoreTs *core;
+    void operator()(size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) const {
+      core->write_label(col, n, label_min, values, days_ago);
+    }
+    static const LabelRows &rows(size_t col) {
+      assert(col < Label::MIN_LABEL_COUNT);
+      return kLabRows[col];
+    }
+  };
   // 标签回调 (L_sec 路径的分钟锚定也用)
-  auto writer() {
-    return [this](size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) { write_label(col, n, label_min, values, days_ago); };
-  }
+  LabelWriter writer() { return {this}; }
   auto releaser(Store &store) {
     return [this, &store](size_t days_ago) { store.ts_close(day_at(days_ago)); };
   }
@@ -125,13 +135,11 @@ private:
   // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 分钟 bar + 成交位并入 L_1min 以上各层当前行 → 分钟 m 末秒收行的层逐层 close_row (细 → 粗)
   // → 有成交则标签 (只读 MinuteData, 写标签列; 与各层行无关)
   void close_minute(size_t m) {
-    const MinuteData &md = dag_.minute_data;
-    assert(!md.close.empty() && m == md.index && "close_minute: MinuteData 末 bar 不是分钟 m");
-    const MinuteData::Bar bar = md.back();
-    const bool traded = bar.close > 0 && (bar.bid_volume + bar.ask_volume) > 0;
+    assert(m == dag_.minute_data.index && "close_minute: MinuteData 末 bar 不是分钟 m");
+    const bool traded = dag_.minute_data.traded();
     meta_.on_minute(traded);
     for (ResamplerMin2Bin &r : min2bin_)
-      r.accumulate(bar);
+      r.accumulate();
     for_each_close<L_1min>(m, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
     if (traded)
       dag_.label.minute_closed(m, writer());
@@ -259,6 +267,26 @@ private:
   static_assert(kLab.ok, "各层 LB 列须连续, 且每列都能按名 (lb_<side>_<name> / lb_entry_ok) 或块尾附带列 (全在 / 全无) 定址回标签 LB 块");
   static constexpr const auto &kLabCount = kLab.count;
   static constexpr const auto &kLabCol = kLab.col;
+
+  // 标签列落盘行: LB 块偏移 c → 以 m 为行末分钟的层里有 c 列的 m 集 (LabelHold 只结算这些行)
+  static constexpr std::array<LabelRows, Label::MIN_LABEL_COUNT> kLabRows = [] {
+    std::array<LabelRows, Label::MIN_LABEL_COUNT> rows{};
+    for (size_t m = 0; m < TRADE_MINUTES_PER_DAY; ++m)
+      for (size_t l = L_1min; l < LEVEL_COUNT; ++l)
+        if (MINUTE_CLOSE[m].mask >> l & 1u)
+          for (size_t c = 0; c < Label::MIN_LABEL_COUNT; ++c)
+            if (kLabCol[l][c] != kNoCol)
+              rows[c].set(m);
+    return rows;
+  }();
+  static_assert([] {
+    for (size_t h = 0; h < Label::HOLD_COUNT; ++h)
+      for (size_t s = 1; s < Label::GROUP_SIZE; ++s)
+        if (!(kLabRows[Label::hold_col(h) + s] == kLabRows[Label::hold_col(h)]))
+          return false;
+    return true;
+  }(),
+                "一组两腿的落盘行须相同 (LabelHold 按组结算)");
 
   std::array<Day, kPendDays> days_{}; // 日句柄环 (开盘型跨日回填 / 延迟 ts_close)
   size_t cur_ = kPendDays - 1;        // 首个 push_day 推到 0

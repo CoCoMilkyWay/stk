@@ -22,9 +22,9 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  Cost(const DepthSeries &price,
-       const DepthSeries &qty,
-       const Series &mid_price)
+  Cost(const DepthPorts &price,
+       const DepthPorts &qty,
+       const Port &mid_price)
       : price_(price), qty_(qty), mid_price_(mid_price) {}
 
   inline void compute() {
@@ -35,15 +35,15 @@ public:
     float sum_pv = 0.0f;
     float sum_v = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      float p = price_[i].back();
-      float v = qty_[i].back();
+      float p = price_[i];
+      float v = qty_[i];
       if constexpr (IS_BUY)
         v = -v; // ask qty 存负值 (Depth 已钳符号, 此处 v ≥ 0)
       sum_pv += p * v;
       sum_v += v;
     }
 
-    float mid = mid_price_.back();
+    float mid = mid_price_;
     float cost = kNaN;
     if (sum_v > 1e-6f && mid > 1e-6f) {
       float vwap = sum_pv / sum_v;
@@ -53,9 +53,9 @@ public:
   }
 
 private:
-  const DepthSeries &price_;
-  const DepthSeries &qty_;
-  const Series &mid_price_; // 引用 (按值拷贝会拿到构造时的空环, back() 读垃圾)
+  const DepthPorts &price_;
+  const DepthPorts &qty_;
+  const Port &mid_price_; // 引用 (按值拷贝只拿到构造时的值, 不随上游更新)
 };
 
 // =============================================================================
@@ -73,9 +73,9 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  CostAmt(const DepthSeries &price,
-          const DepthSeries &qty,
-          const Series &mid_price)
+  CostAmt(const DepthPorts &price,
+          const DepthPorts &qty,
+          const Port &mid_price)
       : price_(price), qty_(qty), mid_price_(mid_price) {}
 
   inline void compute() {
@@ -86,8 +86,8 @@ public:
     float sum_pv = 0.0f; // 已吃金额
     float sum_v = 0.0f;  // 已吃股数
     for (size_t i = 0; i < DEPTH_SIZE && sum_pv < TARGET; ++i) {
-      const float p = price_[i].back();
-      float v = qty_[i].back();
+      const float p = price_[i];
+      float v = qty_[i];
       if constexpr (IS_BUY)
         v = -v;
       if (p <= 0.0f || v <= 0.0f)
@@ -102,7 +102,7 @@ public:
         sum_pv += amt;
       }
     }
-    const float mid = mid_price_.back();
+    const float mid = mid_price_;
     float cost = kNaN;
     if (sum_pv >= TARGET && sum_v > 0.0f && mid > 1e-6f) {
       const float vwap = sum_pv / sum_v;
@@ -112,9 +112,9 @@ public:
   }
 
 private:
-  const DepthSeries &price_;
-  const DepthSeries &qty_;
-  const Series &mid_price_;
+  const DepthPorts &price_;
+  const DepthPorts &qty_;
+  const Port &mid_price_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

@@ -29,13 +29,13 @@ public:
   static_assert(size_t{kCount} == size_t{RetMoments::kCount});
   float y[kCount] = {};
 
-  RealizedMid(const Series &bid_price_0, const Series &ask_price_0, const Series &mid_price)
+  RealizedMid(const Port &bid_price_0, const Port &ask_price_0, const Port &mid_price)
       : bp_(bid_price_0), ap_(ask_price_0), mid_(mid_price) {}
 
   inline void compute() {
-    if (bp_.back() <= 0.0f || ap_.back() <= 0.0f) [[unlikely]]
+    if (bp_ <= 0.0f || ap_ <= 0.0f) [[unlikely]]
       return; // 一侧为空: 中间价无定义, 跳过 (同 Book)
-    const float mid = mid_.back();
+    const float mid = mid_;
     if (mid_prev_ > 0.0f)
       mom_.add(kBp * std::log(mid / mid_prev_));
     mid_prev_ = mid;
@@ -52,7 +52,7 @@ public:
   }
 
 private:
-  const Series &bp_, &ap_, &mid_;
+  const Port &bp_, &ap_, &mid_;
   float mid_prev_ = 0.0f;
   RetMoments mom_;
 };

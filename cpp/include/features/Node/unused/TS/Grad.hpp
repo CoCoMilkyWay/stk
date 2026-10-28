@@ -19,17 +19,17 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit Grad(const DepthSeries &qty) : qty_(qty) {}
+  explicit Grad(const DepthPorts &qty) : qty_(qty) {}
 
   inline void compute() {
-    float v_first = qty_[0].back(), v_last = qty_[N_LEVELS - 1].back();
+    float v_first = qty_[0], v_last = qty_[N_LEVELS - 1];
     if constexpr (!IS_BID)
       v_first = -v_first, v_last = -v_last;
     y[value] = (v_last - v_first) / static_cast<float>(N_LEVELS - 1);
   }
 
 private:
-  const DepthSeries &qty_;
+  const DepthPorts &qty_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

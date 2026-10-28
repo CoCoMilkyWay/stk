@@ -20,13 +20,13 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit Entropy(const DepthSeries &qty) : qty_(qty) {}
+  explicit Entropy(const DepthPorts &qty) : qty_(qty) {}
 
   inline void compute() {
     float v[N_LEVELS];
     float total = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      v[i] = std::max(IS_BID ? qty_[i].back() : -qty_[i].back(), 0.0f);
+      v[i] = std::max(IS_BID ? qty_[i] : -qty_[i], 0.0f);
       total += v[i];
     }
 
@@ -42,7 +42,7 @@ public:
   }
 
 private:
-  const DepthSeries &qty_;
+  const DepthPorts &qty_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

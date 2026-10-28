@@ -30,7 +30,6 @@ inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增
 inline constexpr size_t LOB_ORDER_CAPACITY = 1000000;
 
 // Data Struct
-inline constexpr int BLEN = 100;            // default length for Cbuffers (feature computation)
 inline constexpr int SNAPSHOT_INTERVAL = 3; // 全量快照间隔
 inline constexpr int TRADE_HRS_PER_DAY = 4; // 单日交易时间
 

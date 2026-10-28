@@ -93,10 +93,10 @@ private:
 
     const bool depth_updated = lob.depth_updated;
     if (depth_updated) {
-      dag_.run<Trigger::onDepth>();
-
-      // 标签: 盘口快照入环, 然后 L_1min 分钟锚定捕获 entry (+ 写该行冲击成本列 + 以此为 exit 的分钟型行); 开盘价走分钟 bar (close_minute → minute_closed)
+      // 标签: onDepth 之前把上一活跃秒的终簿结算入环 (Depth 尚未覆写), 之后按本次簿做 L_1min 分钟锚定捕获 entry
+      // (+ 写该行冲击成本列 + 以此为 exit 的分钟型行); 开盘价走分钟 bar (close_minute → minute_closed)
       dag_.label.snapshot(t);
+      dag_.run<Trigger::onDepth>();
       dag_.label.minute_anchored(t, writer());
     }
 
@@ -105,10 +105,10 @@ private:
     fstore::ts_write_row<L_sec>(day_, t, asset_id_, dag_);
 
     // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, begin_day 已写)
-    // 盘口价只在 depth_updated 时取 (Depth 序列每日清空, 首次更新前为空环)
-    meta_.on_tick(t, depth_updated, dag_.MicroPrice.last(),
-                  depth_updated ? dag_.Depth.bid_price[0].back() : 0.0f,
-                  depth_updated ? dag_.Depth.ask_price[0].back() : 0.0f, lob.price);
+    // 盘口价只在 depth_updated 时取 (Depth 每日置 NaN, 首次更新前无簿)
+    meta_.on_tick(t, depth_updated, dag_.MicroPrice.out(),
+                  depth_updated ? dag_.Depth.bid_price[0] : 0.0f,
+                  depth_updated ? dag_.Depth.ask_price[0] : 0.0f, lob.price);
     fstore::ts_write<L_sec>(day_, t, lob::L_sec_Field::ts_valid, asset_id_, meta_.flag<L_sec>());
   }
 

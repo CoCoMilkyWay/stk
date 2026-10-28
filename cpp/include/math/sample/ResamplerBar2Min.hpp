@@ -43,18 +43,19 @@ private:
   bool emit_before(size_t min_end) noexcept {
     if (next_min_ >= min_end) [[likely]]
       return false;
-    output_.index = static_cast<uint32_t>(next_min_++);
     const bool traded = bar_.volume > 0;
     const float px = last_price_; // 有成交 = 本 bar close
 
-    output_.open.push_back(traded ? bar_.open : px);
-    output_.high.push_back(traded ? bar_.high : px);
-    output_.low.push_back(traded ? bar_.low : px);
-    output_.close.push_back(px);
-    output_.bid_volume.push_back(bar_.volume);
-    output_.ask_volume.push_back(0u);
-    output_.bid_amount.push_back(bar_.amount);
-    output_.ask_amount.push_back(0.0f);
+    MinuteData &o = output_;
+    o.index = static_cast<uint32_t>(next_min_++);
+    o.open = traded ? bar_.open : px;
+    o.high = traded ? bar_.high : px;
+    o.low = traded ? bar_.low : px;
+    o.close = px;
+    o.bid_volume = bar_.volume;
+    o.ask_volume = 0u;
+    o.bid_amount = bar_.amount;
+    o.ask_amount = 0.0f;
 
     bar_ = {}; // 下一分钟由收进的 bar 重新开
     return true;

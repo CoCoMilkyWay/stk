@@ -30,7 +30,7 @@ public:
 
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日在母集: Fund base 口 back() (盘前承接之后 = 当日盘前态)
+  // 当日在母集: Fund base 口 (盘前承接之后 = 当日盘前态)
   bool member(misc::Ymd) const { return Fund::is_base(dag_.Fund.outs()); }
   ResamplerBar2Min &resampler() { return bar2min_; }
 

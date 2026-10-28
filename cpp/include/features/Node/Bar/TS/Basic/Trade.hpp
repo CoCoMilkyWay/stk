@@ -11,7 +11,7 @@
 
 #include "features/DataDefine.hpp"
 
-template <class Bars>
+template <class Bar>
 class TradeT {
 public:
   enum Out : size_t { volume,
@@ -19,15 +19,15 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  explicit TradeT(const Bars &md) : md_(md) {}
+  explicit TradeT(const Bar &md) : md_(md) {}
 
   inline void compute() {
-    y[volume] = static_cast<float>(md_.bid_volume.back() + md_.ask_volume.back());
-    y[amount] = static_cast<float>(md_.bid_amount.back() + md_.ask_amount.back());
+    y[volume] = static_cast<float>(md_.bid_volume + md_.ask_volume);
+    y[amount] = static_cast<float>(md_.bid_amount + md_.ask_amount);
   }
 
 private:
-  const Bars &md_;
+  const Bar &md_;
 };
 using Trade = TradeT<MinuteData>;
 

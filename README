@@ -74,7 +74,7 @@ stk/
 │   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L_sec ↔ L_1min → n 分钟箱 (首箱 = 09:15-09:30 竞价; L_1day 一日一行) + 交易时段常数
 │   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData / BinData + Trigger 触发域 + 节点契约 / 截面列契约
 │   │   │   │                                         #    · 触发域: 盘前 onDay → 盘中 onTick / onDepth / onMinute → 箱末 on<n>Min → 收盘 onClose → 盘后 onSettle (日频 PIT 推进到次日)
-│   │   │   ├── GraphNode.hpp                         # 🧮 graph::Node: 节点类实例 + 输出 Series (两档构图共用); 跨天: 日内节点 reset / 日频节点 carry (Series 保留)
+│   │   │   ├── GraphNode.hpp                         # 🧮 graph::Node: 节点类实例 + 输出口 Ports<K> (最新值) + 可选回看 hist() (节点类声明 kHist 才有; 两档构图共用); 跨天: 日内节点 reset / 日频节点 carry (输出口保留)
 │   │   │   ├── LobGraph.hpp                          # 🧮 Lob 档计算图 DAG (节点表由 CMake 扫描生成 <Tier>/NodesGenerated.hpp)
 │   │   │   ├── BarGraph.hpp                          # 🧮 Bar 档计算图 DAG (与 LobGraph 对仗; 一个 TU 只许 include 其一)
 │   │   │   ├── CoreTs.hpp                            # 🧮 单资产时序骨架 (档无关, CRTP): 日 / 分钟 / 标签日历 + 日句柄环; 档钩子 = member / resampler
@@ -405,15 +405,16 @@ stk/
 #
 # 动手前必读 (按序):
 #   1. cpp/include/features/FeaturesDefine.hpp   NODE_ / FIELDS_ 宏格式 + 公式符号规范 (索引 τ/c/j/i/t/D; P 价格族; O 订单流; ε 容差)
-#   2. cpp/include/features/DataDefine.hpp       节点契约 (enum Out / y[] / compute / flush / reset) + Trigger 触发域 + 输入红线 (只准本资产数据 + 日频 PIT)
+#   2. cpp/include/features/DataDefine.hpp       节点契约 (enum Out / y[] / compute / flush / reset / carry / kHist) + 输出口 (Port / History) + Trigger 触发域 + 输入红线 (只准本资产数据 + 日频 PIT)
 #   3. cpp/include/features/Node/unused/         想要的节点可能已有半成品
 #   4. 同类现有节点 1-2 个作模板 (命名 / 公式 / 注释风格照抄):
 #        - 累计降频型:   Node/Lob/TS/OrderFlow/Flow.hpp
 #        - 盘口时间加权: Node/Lob/TS/Book/Book.hpp
 #        - 分钟采样型:   Node/Common/Basic/Kline.hpp + Node/{Lob,Bar}/TS/Basic/Kline.hpp
-#        - 日频型:       Node/Common/Fund/Fund.hpp + Node/Bar/TS/Fund/Fund.hpp (onSettle; Series 跨天保留, 盘中读 back() = 当日适用值)
+#        - 回看型:       同域 = 消费方自持窗口 (Node/Bar/TS/Basic/Momentum.hpp); 跨域 = 上游声明 kHist, 下游接 Up.hist() (见 DataDefine.hpp)
+#        - 日频型:       Node/Common/Fund/Fund.hpp + Node/Bar/TS/Fund/Fund.hpp (onSettle; 输出口跨天保留, 盘中读到的 = 当日适用值)
 #                        (Lob 档的 Fund 节点只供盘中节点取前收 / 涨跌停, 不落盘)
-#                        全市场截面 / 超 BLEN 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Method/Fundamental.cpp build_market), 经 Fund 口进 TS
+#                        全市场截面 / 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Method/Fundamental.cpp build_market), 经 Fund 口进 TS
 #        - 截面列:       Node/Bar/CS/Fund/Valuation.hpp
 #        - 池列:       Node/Bar/CS/Pool/Pool.hpp
 #

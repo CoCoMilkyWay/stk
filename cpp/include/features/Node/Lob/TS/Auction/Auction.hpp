@@ -76,7 +76,7 @@ public:
   static_assert(qty_imb_auc2 == n_snap_auc1 + 15);
   float y[kCount] = {};
 
-  Auction(const TickData &td, const Series &pre_close) : td_(td), pre_close_(pre_close) {}
+  Auction(const TickData &td, const Port &pre_close) : td_(td), pre_close_(pre_close) {}
 
   inline void compute() {
     const uint32_t t_sec = td_.sec_index;
@@ -159,7 +159,7 @@ public:
         y[qty_match_auc2] = match_end_[0];
         y[qty_imb_auc2] = imb_end_[0];
       } else { // 至此全日无委托: 簿空, 价取前收 (Fund 日频 PIT), 量口 0
-        y[px_auc1 + k] = y[px_max_auc1 + k] = y[px_min_auc1 + k] = pre_close_.back();
+        y[px_auc1 + k] = y[px_max_auc1 + k] = y[px_min_auc1 + k] = pre_close_;
         y[qty_match_auc1 + k] = y[qty_imb_auc1 + k] = 0.0f;
       }
     }
@@ -184,7 +184,7 @@ public:
 
 private:
   const TickData &td_;
-  const Series &pre_close_; // Fund 日频口: 当日前收 (元); 全日无委托时的簿价兜底
+  const Port &pre_close_; // Fund 日频口: 当日前收 (元); 全日无委托时的簿价兜底
 
   float maker_vol_[2][2] = {}, maker_n_[2][2] = {}; // [阶段][侧]
   float cancel_vol_[2] = {}, cancel_n_[2] = {};     // [侧], 仅 𝒯₁

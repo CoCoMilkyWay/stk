@@ -6,7 +6,7 @@
 //   bar1m 无盘口, 封板用整分钟价判: 最近一个有成交分钟 low ≥ P_up − ε → 封涨停, 买不进; high ≤ P_dn + ε → 封跌停, 卖不出.
 //   无成交分钟延续上一有成交分钟的状态; 当日首笔成交前 (含全日停牌) 两者皆 0.
 //   无涨跌幅限制 (涨跌停价 NaN): 比较恒 false → 可成交.
-//   各层行取本层行末分钟的值 (本层节拍取 Series 最新值); L_1day 行 = 收盘竞价分钟.
+//   各层行取本层行末分钟的值 (本层节拍取输出口最新值); L_1day 行 = 收盘竞价分钟.
 //   LabelBar 的分钟价点直接读本节点 y (标签里的可成交性同源; 开盘 / 收盘价点另按单一价撮合判, 见 LabelHold::auction_px).
 // =============================================================================
 
@@ -19,12 +19,12 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  Tradable(const MinuteData &md, const Series &lim_up, const Series &lim_dn) : md_(md), lim_up_(lim_up), lim_dn_(lim_dn) {}
+  Tradable(const MinuteData &md, const Port &lim_up, const Port &lim_dn) : md_(md), lim_up_(lim_up), lim_dn_(lim_dn) {}
 
   inline void compute() {
-    if (md_.close.back() > 0 && md_.bid_volume.back() + md_.ask_volume.back() > 0) {
-      y[can_buy] = md_.low.back() >= lim_up_.back() - kPxEps ? 0.0f : 1.0f;
-      y[can_sell] = md_.high.back() <= lim_dn_.back() + kPxEps ? 0.0f : 1.0f;
+    if (md_.traded()) {
+      y[can_buy] = md_.low >= lim_up_ - kPxEps ? 0.0f : 1.0f;
+      y[can_sell] = md_.high <= lim_dn_ + kPxEps ? 0.0f : 1.0f;
     }
   }
 
@@ -35,7 +35,7 @@ public:
 
 private:
   const MinuteData &md_;
-  const Series &lim_up_, &lim_dn_; // Fund 日频口 (盘中 back() = 当日适用)
+  const Port &lim_up_, &lim_dn_; // Fund 日频口 (盘中 = 当日适用)
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

@@ -437,7 +437,7 @@ using BarFeatureStore = FeatureStore<bar::Tier>;
 //   ts_write<L>(day, t, field, a, value)   单资产单列 (TS: 列间跨步 A)
 //   ts_write_row<L>(day, t, a, dag)        按字段表 SRC 列写一行全部 TS 列
 //   cs_col<L>(day, t, field)               单列全部资产的连续段 (CS 读源列 / 就地写目标列)
-//   TS(node[, port], Tf, Method) → ts::Tf::apply(dag.node.last(port)); CS/LABEL/FLAG/META 不在 row 写
+//   TS(node[, port], Tf, Method) → ts::Tf::apply(dag.node.out(port)); CS/LABEL/FLAG/META 不在 row 写
 // ============================================================================
 namespace fstore {
 
@@ -455,8 +455,8 @@ struct RowWriter;
   };
 
 // TS(node, Tf, Method) / TS(node, port, Tf, Method): 落盘值 = ts::Tf::apply(节点输出). Method 占位未接入 (Method/TS.hpp ★)
-#define STORE_ROW_TS_3(node, tf, m) ts::tf::apply(dag.node.last())
-#define STORE_ROW_TS_4(node, port, tf, m) ts::tf::apply(dag.node.last(dag.node.port))
+#define STORE_ROW_TS_3(node, tf, m) ts::tf::apply(dag.node.out())
+#define STORE_ROW_TS_4(node, port, tf, m) ts::tf::apply(dag.node.out(dag.node.port))
 #define STORE_ROW_TS(code, ...) row[FO::code * A] = SRC_NODE_PICK(__VA_ARGS__, STORE_ROW_TS_4, STORE_ROW_TS_3, , )(__VA_ARGS__);
 #define STORE_ROW_CS(code, ...)
 #define STORE_ROW_LABEL(code)

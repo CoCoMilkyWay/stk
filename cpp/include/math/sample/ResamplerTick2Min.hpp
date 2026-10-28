@@ -81,18 +81,19 @@ private:
   bool emit_before(size_t min_end) noexcept {
     if (next_min_ >= min_end) [[likely]]
       return false;
-    output_.index = static_cast<uint32_t>(next_min_++);
     const bool traded = bar_open_ > 0.0f;
     const float px = traded ? bar_close_ : last_price_;
 
-    output_.open.push_back(traded ? bar_open_ : px);
-    output_.high.push_back(traded ? bar_high_ : px);
-    output_.low.push_back(traded ? bar_low_ : px);
-    output_.close.push_back(px);
-    output_.bid_volume.push_back(bar_bid_volume_);
-    output_.ask_volume.push_back(bar_ask_volume_);
-    output_.bid_amount.push_back(bar_bid_amount_);
-    output_.ask_amount.push_back(bar_ask_amount_);
+    MinuteData &o = output_;
+    o.index = static_cast<uint32_t>(next_min_++);
+    o.open = traded ? bar_open_ : px;
+    o.high = traded ? bar_high_ : px;
+    o.low = traded ? bar_low_ : px;
+    o.close = px;
+    o.bid_volume = bar_bid_volume_;
+    o.ask_volume = bar_ask_volume_;
+    o.bid_amount = bar_bid_amount_;
+    o.ask_amount = bar_ask_amount_;
 
     bar_open_ = bar_high_ = bar_low_ = bar_close_ = 0.0f; // 下一分钟由首笔成交重新开 bar
     bar_bid_volume_ = 0;

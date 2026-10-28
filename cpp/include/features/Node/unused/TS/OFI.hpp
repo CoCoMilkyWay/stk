@@ -20,10 +20,10 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  OFI(const DepthSeries &bid_qty,
-      const DepthSeries &ask_qty,
-      const DepthSeries &bid_price,
-      const DepthSeries &ask_price)
+  OFI(const DepthPorts &bid_qty,
+      const DepthPorts &ask_qty,
+      const DepthPorts &bid_price,
+      const DepthPorts &ask_price)
       : bid_qty_(bid_qty), ask_qty_(ask_qty), bid_price_(bid_price), ask_price_(ask_price) {
     float w_sum = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
@@ -37,10 +37,10 @@ public:
   inline void compute() {
     float ofi = 0.0f;
     for (size_t i = 0; i < N_LEVELS; ++i) {
-      float bp = bid_price_[i].back();
-      float bq = bid_qty_[i].back();
-      float ap = ask_price_[i].back();
-      float aq = -ask_qty_[i].back(); // ask 存负值
+      float bp = bid_price_[i];
+      float bq = bid_qty_[i];
+      float ap = ask_price_[i];
+      float aq = -ask_qty_[i]; // ask 存负值
 
       float delta_bid = bp < prev_bp_[i] ? 0.0f : bp == prev_bp_[i] ? bq - prev_bq_[i]
                                                                     : bq;
@@ -62,10 +62,10 @@ public:
   }
 
 private:
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
-  const DepthSeries &bid_price_;
-  const DepthSeries &ask_price_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
+  const DepthPorts &bid_price_;
+  const DepthPorts &ask_price_;
 
   float weights_[N_LEVELS];
   float prev_bp_[N_LEVELS] = {}, prev_bq_[N_LEVELS] = {};

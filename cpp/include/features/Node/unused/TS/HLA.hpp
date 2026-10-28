@@ -17,8 +17,8 @@ public:
   float y[kCount] = {};
 
   HLA(TickData &td,
-      const DepthSeries &bid_qty,
-      const DepthSeries &ask_qty)
+      const DepthPorts &bid_qty,
+      const DepthPorts &ask_qty)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty) {}
 
   // 每笔订单: 累计挂单/撤单量 (成交不计)
@@ -41,8 +41,8 @@ public:
 
   // 分钟末结算
   inline void flush() {
-    float v_bid = bid_qty_[0].back();
-    float v_ask = -ask_qty_[0].back(); // ask 存负值
+    float v_bid = bid_qty_[0];
+    float v_ask = -ask_qty_[0]; // ask 存负值
 
     float sum_bid = vol_maker_bid_ + vol_cancel_bid_;
     float sum_ask = vol_maker_ask_ + vol_cancel_ask_;
@@ -64,8 +64,8 @@ public:
 
 private:
   TickData &td_;
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
 
   float vol_maker_bid_ = 0.0f, vol_maker_ask_ = 0.0f;
   float vol_cancel_bid_ = 0.0f, vol_cancel_ask_ = 0.0f;

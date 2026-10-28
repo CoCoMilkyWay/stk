@@ -1,34 +1,36 @@
 #pragma once
 
 // =============================================================================
-// Momentum - 日频动量 (compute=onClose, 日频节点; Series 跨天保留)
+// Momentum - 日频动量 (compute=onClose, 日频节点; 回看窗自持, 跨天保留)
 // =============================================================================
 //   ret_20d = P^adj_D / P^adj_{D−20} − 1   (CloseAdjDay 后复权收盘价; 回看 20 个交易日, 停牌日 = 携带价, 照常占一格)
-//   历史不足 21 格 → NaN. 本 TU (bar_pipeline.cpp) precise-math: 缺失 NaN 经除法透传.
+//   窗 = 最近 kLag + 1 个交易日的 CloseAdjDay.value (同域 onClose, 每日 compute 一次推一格); 不满 → NaN.
+//   本 TU (bar_pipeline.cpp) precise-math: 缺失 NaN 经除法透传.
 // =============================================================================
 
+#include "define/CBuffer.hpp"
 #include "features/DataDefine.hpp"
 
 #include <cstddef>
-#include <limits>
 
 class Momentum {
+  static constexpr size_t kLag = 20;
+
 public:
   enum Out : size_t { ret_20d,
                       kCount };
   float y[kCount] = {};
 
-  explicit Momentum(const Series &close_adj) : close_adj_(close_adj) {}
+  explicit Momentum(const Port &close_adj) : close_adj_(close_adj) {}
 
   inline void compute() {
-    constexpr size_t kLag = 20;
-    static_assert(kLag < L2::BLEN, "Series 容量不足以回看 kLag 格");
-    const size_t n = close_adj_.size();
-    y[ret_20d] = n > kLag ? close_adj_.back() / close_adj_[n - 1 - kLag] - 1.0f : std::numeric_limits<float>::quiet_NaN();
+    win_.push_back(close_adj_);
+    y[ret_20d] = win_.full() ? close_adj_ / win_.front() - 1.0f : kNaN;
   }
 
 private:
-  const Series &close_adj_; // CloseAdjDay.value (同域 onClose, 拓扑序在前, back() = 本日收盘)
+  const Port &close_adj_;        // CloseAdjDay.value (同域 onClose, 拓扑序在前, 即本日收盘)
+  CBuffer<float, kLag + 1> win_; // 回看窗: front() = D − kLag, back() = D
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

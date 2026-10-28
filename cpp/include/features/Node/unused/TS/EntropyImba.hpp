@@ -15,20 +15,20 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  EntropyImba(const Series &bid_entropy,
-              const Series &ask_entropy)
+  EntropyImba(const Port &bid_entropy,
+              const Port &ask_entropy)
       : bid_entropy_(bid_entropy), ask_entropy_(ask_entropy) {}
 
   inline void compute() {
-    float b = bid_entropy_.back();
-    float a = ask_entropy_.back();
+    float b = bid_entropy_;
+    float a = ask_entropy_;
     float denom = b + a;
     y[value] = denom > 1e-6f ? (b - a) / denom : 0.0f;
   }
 
 private:
-  const Series &bid_entropy_;
-  const Series &ask_entropy_;
+  const Port &bid_entropy_;
+  const Port &ask_entropy_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

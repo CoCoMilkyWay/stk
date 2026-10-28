@@ -30,8 +30,8 @@ public:
   float y[kCount] = {}; // 秒结算写入, 分钟末由 Node 推出
 
   Resiliency(TickData &td,
-             const DepthSeries &bid_qty,
-             const DepthSeries &ask_qty)
+             const DepthPorts &bid_qty,
+             const DepthPorts &ask_qty)
       : td_(td), bid_qty_(bid_qty), ask_qty_(ask_qty) {
     reset();
   }
@@ -81,8 +81,8 @@ private:
     // 1. 当前总深度
     float depth_bid = 0.0f, depth_ask = 0.0f;
     for (size_t i = 0; i < L2::LOB_DEPTH; ++i) {
-      depth_bid += bid_qty_[i].back();
-      depth_ask += -ask_qty_[i].back(); // ask 存负值
+      depth_bid += bid_qty_[i];
+      depth_ask += -ask_qty_[i]; // ask 存负值
     }
 
     // 2. 60 秒滚动均值
@@ -129,8 +129,8 @@ private:
   }
 
   TickData &td_;
-  const DepthSeries &bid_qty_;
-  const DepthSeries &ask_qty_;
+  const DepthPorts &bid_qty_;
+  const DepthPorts &ask_qty_;
 
   // 秒内累计量
   float vol_maker_bid_ = 0.0f, vol_maker_ask_ = 0.0f;

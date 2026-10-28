@@ -3,7 +3,7 @@
 // =============================================================================
 // Valuation - 实时估值: 5 分钟箱末最新价 (Kline5min.close) × 当日基本面 (Fund 节点输出口, PIT 预计算, 缺失=NaN)
 // =============================================================================
-//   落 L_5min (不落 L_1min: 逐分钟代价太大); 更粗层截面 / 日频节点经 as-of / Series 读它 (L_1day 读到收盘箱值)
+//   落 L_5min (不落 L_1min: 逐分钟代价太大); 更粗层截面 / 日频节点经 as-of / 输出口读它 (L_1day 读到收盘箱值)
 //   mcap    = P_t × S_total   (亿元)       fmcap   = P_t × S_float   (亿元)
 //   pe_ttm  = mcap / NP_ttm                pb_mrq  = mcap / EQ_mrq
 //   ps_ttm  = mcap / REV_ttm               pcf_ttm = mcap / CF_ttm
@@ -37,11 +37,11 @@ public:
   float y[kCount] = {};
 
   // 只接用到的 Fund 口 (不接 Fund.outs()): 依赖表按口解析, 这些口都不落盘 → 估值列无字段级依赖
-  Valuation(const Series &close,
-            const Series &total_shares, const Series &float_shares,
-            const Series &net_profit_ttm, const Series &equity_mrq,
-            const Series &revenue_ttm, const Series &cffoa_ttm,
-            const Series &lim_up, const Series &lim_dn, const Series &low_mc_thr)
+  Valuation(const Port &close,
+            const Port &total_shares, const Port &float_shares,
+            const Port &net_profit_ttm, const Port &equity_mrq,
+            const Port &revenue_ttm, const Port &cffoa_ttm,
+            const Port &lim_up, const Port &lim_dn, const Port &low_mc_thr)
       : close_(close),
         total_shares_(total_shares), float_shares_(float_shares),
         net_profit_ttm_(net_profit_ttm), equity_mrq_(equity_mrq),
@@ -49,19 +49,19 @@ public:
         lim_up_(lim_up), lim_dn_(lim_dn), low_mc_thr_(low_mc_thr) {}
 
   void compute() {
-    const float close = close_.back(); // [元] Kline5min.close (无成交箱的携带 / 前收兜底在 Kline)
+    const float close = close_; // [元] Kline5min.close (无成交箱的携带 / 前收兜底在 Kline)
 
-    const float mc = close * total_shares_.back(); // [亿元]
+    const float mc = close * total_shares_; // [亿元]
     y[mcap] = sat(mc);
-    y[fmcap] = sat(close * float_shares_.back());
-    y[pe_ttm] = sat(mc / net_profit_ttm_.back());
-    y[pb_mrq] = sat(mc / equity_mrq_.back());
-    y[ps_ttm] = sat(mc / revenue_ttm_.back());
-    y[pcf_ttm] = sat(mc / cffoa_ttm_.back());
-    y[is_limit_up] = (close >= lim_up_.back() - kPxEps) ? 1.0f : 0.0f;
-    y[is_limit_dn] = (close <= lim_dn_.back() + kPxEps) ? 1.0f : 0.0f;
+    y[fmcap] = sat(close * float_shares_);
+    y[pe_ttm] = sat(mc / net_profit_ttm_);
+    y[pb_mrq] = sat(mc / equity_mrq_);
+    y[ps_ttm] = sat(mc / revenue_ttm_);
+    y[pcf_ttm] = sat(mc / cffoa_ttm_);
+    y[is_limit_up] = (close >= lim_up_ - kPxEps) ? 1.0f : 0.0f;
+    y[is_limit_dn] = (close <= lim_dn_ + kPxEps) ? 1.0f : 0.0f;
     y[is_low_px] = (close < 1.0f) ? 1.0f : 0.0f;
-    y[is_low_mcap] = (mc < low_mc_thr_.back()) ? 1.0f : 0.0f;
+    y[is_low_mcap] = (mc < low_mc_thr_) ? 1.0f : 0.0f;
   }
 
 private:
@@ -73,11 +73,11 @@ private:
                : std::numeric_limits<float>::quiet_NaN();
   }
 
-  const Series &close_; // Kline5min.close (同域 on5Min, 拓扑序在前, back() 即本箱值)
+  const Port &close_; // Kline5min.close (同域 on5Min, 拓扑序在前, 即本箱值)
   // Fund 节点输出口 (同上)
-  const Series &total_shares_, &float_shares_;
-  const Series &net_profit_ttm_, &equity_mrq_, &revenue_ttm_, &cffoa_ttm_;
-  const Series &lim_up_, &lim_dn_, &low_mc_thr_;
+  const Port &total_shares_, &float_shares_;
+  const Port &net_profit_ttm_, &equity_mrq_, &revenue_ttm_, &cffoa_ttm_;
+  const Port &lim_up_, &lim_dn_, &low_mc_thr_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

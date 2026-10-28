@@ -11,11 +11,11 @@
 // RESAMPLER: MINUTE -> 本层 BAR (分钟箱层 + L_1day 整日箱; 与 ResamplerTick2Min / ResamplerBar2Min 对仗: 源 = 已结算的分钟 bar)
 //========================================================================================
 // 职责 / 调用序 (CoreTs::close_minute, 每分钟收行之前 / close_row 收本层行时):
-// - accumulate(bar): 刚结算的分钟 bar (MinuteData::back(), 调用方读一次各层共用) 收进本层当前行
+// - accumulate(): 刚结算的分钟 bar (MinuteData 末 bar) 收进本层当前行
 // - emit(k):      本层行 k 末分钟 accumulate 之后, 出行 k 一根 bar 并开新行 (行划分见 FeatureLevels.hpp, 箱首箱 15 分钟)
 // 分钟 bar 已稠密 (每分钟恰一根), 所以本层每行恰出一根 bar.
 // bar 口径: open = 行内首个有成交分钟的 open, high/low 只含有成交分钟, close = 行末分钟 close (日内最近成交价);
-//   无成交行 O=H=L=C=日内最近成交价 (日内尚无成交 → 0 = 无价), 量额 0. "有成交" 与 CoreTs::close_minute 同判据.
+//   无成交行 O=H=L=C=日内最近成交价 (日内尚无成交 → 0 = 无价), 量额 0. "有成交" = MinuteData::traded.
 //   量额宽累计 (uint64 / double): 整日成交量可超 uint32.
 //   本类纯重采样, 不认识任何特征 / 日频数据.
 //========================================================================================
@@ -32,36 +32,38 @@ public:
     bid_amount_ = ask_amount_ = 0.0;
   }
 
-  void accumulate(const MinuteData::Bar &bar) noexcept {
-    if (bar.close > 0.0f && bar.bid_volume + bar.ask_volume > 0) {
+  void accumulate() noexcept {
+    const MinuteData &m = input_;
+    if (m.traded()) {
       if (!traded_) {
-        open_ = bar.open;
-        high_ = bar.high;
-        low_ = bar.low;
+        open_ = m.open;
+        high_ = m.high;
+        low_ = m.low;
         traded_ = true;
       } else {
-        high_ = std::max(high_, bar.high);
-        low_ = std::min(low_, bar.low);
+        high_ = std::max(high_, m.high);
+        low_ = std::min(low_, m.low);
       }
     }
-    bid_volume_ += bar.bid_volume;
-    ask_volume_ += bar.ask_volume;
-    bid_amount_ += bar.bid_amount;
-    ask_amount_ += bar.ask_amount;
+    bid_volume_ += m.bid_volume;
+    ask_volume_ += m.ask_volume;
+    bid_amount_ += m.bid_amount;
+    ask_amount_ += m.ask_amount;
   }
 
   void emit(size_t k) noexcept {
     assert(level_end_sec(lvl_, k) == level_end_sec(L_1min, input_.index) && "emit: MinuteData 末 bar 不是本层行 k 末分钟");
-    const float px = input_.close.back();
-    output_.index = static_cast<uint32_t>(k);
-    output_.open.push_back(traded_ ? open_ : px);
-    output_.high.push_back(traded_ ? high_ : px);
-    output_.low.push_back(traded_ ? low_ : px);
-    output_.close.push_back(px);
-    output_.bid_volume.push_back(bid_volume_);
-    output_.ask_volume.push_back(ask_volume_);
-    output_.bid_amount.push_back(bid_amount_);
-    output_.ask_amount.push_back(ask_amount_);
+    const float px = input_.close;
+    BinData &o = output_;
+    o.index = static_cast<uint32_t>(k);
+    o.open = traded_ ? open_ : px;
+    o.high = traded_ ? high_ : px;
+    o.low = traded_ ? low_ : px;
+    o.close = px;
+    o.bid_volume = bid_volume_;
+    o.ask_volume = ask_volume_;
+    o.bid_amount = bid_amount_;
+    o.ask_amount = ask_amount_;
     reset();
   }
 

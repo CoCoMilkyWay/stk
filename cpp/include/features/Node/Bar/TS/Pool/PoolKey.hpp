@@ -3,7 +3,7 @@
 // =============================================================================
 // PoolKey - 池排序键 (compute=onSettle, 日频节点): 母集外 → NaN, 母集内 = 键值 (键缺 → +inf); CS 池列 (CS/Pool/Pool.hpp) 在其上取两端前 N
 // =============================================================================
-//   范围 (全部只看本资产 Fund 次日盘前态 (onSettle 之后 back()) + 收盘市值 / 收盘价 → 资产局部纯函数):
+//   范围 (全部只看本资产 Fund 次日盘前态 (onSettle 之后的输出口) + 收盘市值 / 收盘价 → 资产局部纯函数):
 //     活跃 = Fund live 口 (在市: 非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌; 非次新: 上市满 365 日历日; 申万一级行业已知) ∧ 收盘市值 > 0
 //     母集 = Fund base 口 (活跃 ∧ st_level == 0 (含退市整理期) ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0) ∧ 收盘市值 > 0
 //     两口都由 fund::Panel 全史判定一次, 与 Bar 档 cs_valid / 行情派生截面同一份 (那边按当日盘前态)
@@ -59,12 +59,11 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  PoolKey(const Series (&fund)[Fund::kCount], const Series &mcap, const Series &close)
+  PoolKey(const Ports<Fund::kCount> &fund, const Port &mcap, const Port &close)
       : fund_(fund), mcap_(mcap), close_(close) {}
 
   inline void compute() {
-    constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-    const float mc = mcap_.back();
+    const float mc = mcap_;
     const float lvl = f(Fund::st_level);
     const bool live = Fund::is_live(fund_) && mc > 0.0f;
     y[st] = (live && lvl == 1.0f) ? mc : kNaN;
@@ -88,18 +87,18 @@ public:
     y[resvol] = f(Fund::resvol);
     y[beta] = f(Fund::beta);
     y[trend] = f(Fund::trend);
-    y[price] = close_.back();
+    y[price] = close_;
     for (size_t k = 0; k < st; ++k)
       if (!std::isfinite(y[k]))
         y[k] = std::numeric_limits<float>::infinity();
   }
 
 private:
-  float f(size_t port) const { return fund_[port].back(); }
+  float f(size_t port) const { return fund_[port]; }
 
-  const Series (&fund_)[Fund::kCount]; // Fund 全部口 (同域 onSettle, 拓扑序在前 → back() = 次日盘前态)
-  const Series &mcap_;                 // Valuation.mcap (back() = 收盘箱值)
-  const Series &close_;                // KlineDay.close (日频节点, back() = 本日收盘价, 不复权)
+  const Ports<Fund::kCount> &fund_; // Fund 全部口 (同域 onSettle, 拓扑序在前 → 次日盘前态)
+  const Port &mcap_;                // Valuation.mcap (收盘箱值)
+  const Port &close_;               // KlineDay.close (日频节点, 本日收盘价, 不复权)
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

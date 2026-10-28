@@ -17,19 +17,19 @@ public:
   float y[kCount] = {};
 
   MidPrice(const TickData &tick_data,
-           const Series &bid_price_0,
-           const Series &ask_price_0)
+           const Port &bid_price_0,
+           const Port &ask_price_0)
       : tick_data_(tick_data), bid_price_0_(bid_price_0), ask_price_0_(ask_price_0) {}
 
   inline void compute() {
     const float ref = tick_data_.lob.auction_ref_price; // 竞价预撮合价 (连续竞价恒 0)
-    y[value] = ref > 0.0f ? ref : (bid_price_0_.back() + ask_price_0_.back()) * 0.5f;
+    y[value] = ref > 0.0f ? ref : (bid_price_0_ + ask_price_0_) * 0.5f;
   }
 
 private:
   const TickData &tick_data_;
-  const Series &bid_price_0_;
-  const Series &ask_price_0_;
+  const Port &bid_price_0_;
+  const Port &ask_price_0_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

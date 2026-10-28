@@ -16,10 +16,10 @@ public:
   float y[kCount] = {};
 
   MicroPrice(const TickData &tick_data,
-             const Series &bid_price_0,
-             const Series &ask_price_0,
-             const Series &bid_qty_0,
-             const Series &ask_qty_0)
+             const Port &bid_price_0,
+             const Port &ask_price_0,
+             const Port &bid_qty_0,
+             const Port &ask_qty_0)
       : tick_data_(tick_data),
         bid_price_0_(bid_price_0), ask_price_0_(ask_price_0),
         bid_qty_0_(bid_qty_0), ask_qty_0_(ask_qty_0) {}
@@ -30,10 +30,10 @@ public:
       y[value] = ref;
       return;
     }
-    float bid_price = bid_price_0_.back();
-    float ask_price = ask_price_0_.back();
-    float bid_qty = bid_qty_0_.back();
-    float ask_qty = -ask_qty_0_.back(); // 卖方存负值
+    float bid_price = bid_price_0_;
+    float ask_price = ask_price_0_;
+    float bid_qty = bid_qty_0_;
+    float ask_qty = -ask_qty_0_; // 卖方存负值
     const float denom = bid_qty + ask_qty;
     // 两侧最优价位量皆为 0 (挂单全撤, 价位仍在): 权重退化, 取普通中间价 —— 仍是价格量纲, 不产 NaN 污染下游时间加权
     y[value] = denom > 0.0f ? (ask_price * bid_qty + bid_price * ask_qty) / denom : (bid_price + ask_price) * 0.5f;
@@ -41,10 +41,10 @@ public:
 
 private:
   const TickData &tick_data_;
-  const Series &bid_price_0_;
-  const Series &ask_price_0_;
-  const Series &bid_qty_0_;
-  const Series &ask_qty_0_;
+  const Port &bid_price_0_;
+  const Port &ask_price_0_;
+  const Port &bid_qty_0_;
+  const Port &ask_qty_0_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

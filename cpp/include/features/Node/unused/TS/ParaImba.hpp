@@ -17,22 +17,22 @@ public:
                       kCount };
   float y[kCount] = {};
 
-  ParaImba(const Series (&bid_coef)[kCount],
-           const Series (&ask_coef)[kCount])
+  ParaImba(const Ports<kCount> &bid_coef,
+           const Ports<kCount> &ask_coef)
       : bid_coef_(bid_coef), ask_coef_(ask_coef) {}
 
   inline void compute() {
     for (size_t k = 0; k < kCount; ++k) {
-      float abs_b = std::abs(bid_coef_[k].back());
-      float abs_a = std::abs(ask_coef_[k].back());
+      float abs_b = std::abs(bid_coef_[k]);
+      float abs_a = std::abs(ask_coef_[k]);
       float denom = abs_b + abs_a;
       y[k] = denom > 1e-6f ? (abs_b - abs_a) / denom : 0.0f;
     }
   }
 
 private:
-  const Series (&bid_coef_)[kCount];
-  const Series (&ask_coef_)[kCount];
+  const Ports<kCount> &bid_coef_;
+  const Ports<kCount> &ask_coef_;
 };
 
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
