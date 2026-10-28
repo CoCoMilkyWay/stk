@@ -102,7 +102,6 @@ struct RowRead {
   // 换代: 按范围开库 (新请求 = 重读库: 重算后新库已落地, 判废解除; 判废拉起 abort), 按计划 × 批段数备容量
   void reset(const analysis::ReadScope &scope, const ReadPlan &plan, size_t segs, std::atomic<bool> *abort) {
     libs.open(scope.libs, abort);
-    libs.revive();
     rd = scope.readers(libs.ptr);
     pf.prepare(analysis::threads_for(segs), plan, scope.sizes(), SIZE_MAX);
     for (RowPlane &p : pf.buf)

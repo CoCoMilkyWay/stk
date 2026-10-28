@@ -104,7 +104,8 @@ bool Config::LoadFromFile() {
   csv_market_data = j.value("csv_market_data", csv_market_data);
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
   csv_market_order = j.value("csv_market_order", csv_market_order);
-  network_sync = j.value("network_sync", network_sync);
+  sync_fundamental = j.value("sync_fundamental", sync_fundamental);
+  sync_bar1m = j.value("sync_bar1m", sync_bar1m);
   // 数值配置: 越界则警告并保留旧值 (不读入越界值), 避免手动编辑文件导致 assert 退出
   auto try_assign = [&](double &dst, double src, bool ok, const char *msg) {
     if (ok) {
@@ -145,7 +146,8 @@ bool Config::SaveToFile() {
   j["csv_market_data"] = csv_market_data;
   j["csv_market_trade"] = csv_market_trade;
   j["csv_market_order"] = csv_market_order;
-  j["network_sync"] = network_sync;
+  j["sync_fundamental"] = sync_fundamental;
+  j["sync_bar1m"] = sync_bar1m;
   j["commission"] = commission;
   j["stamp"] = stamp;
   j["fixed_impact"] = fixed_impact;

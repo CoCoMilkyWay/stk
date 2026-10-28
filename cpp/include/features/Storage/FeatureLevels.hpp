@@ -88,9 +88,9 @@ struct PerPool {
   bool operator==(const PerPool &) const = default;
 };
 // 池集位 (位 = PoolId; PerPool<bool> 的紧凑形): 日轴每天哪些池落了盘 / 日轴取哪些池
-using PoolMask = uint32_t;
+using PoolMask = uint64_t;
 inline constexpr PoolMask pool_bit(PoolId l) {
-  assert(l < 32 && "池表超出 PoolMask 位宽");
+  assert(l < 64 && "池表超出 PoolMask 位宽");
   return PoolMask{1} << l;
 }
 

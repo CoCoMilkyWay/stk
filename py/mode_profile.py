@@ -74,11 +74,17 @@ def _check_tracy_deps_or_exit(tracy_exe: str) -> None:
 def _launch_tracy_ui(tracy_exe: str) -> Optional[subprocess.Popen]:
     # start_new_session: detach from current process group so Ctrl+C
     # only affects the build/run pipeline, not the Tracy UI.
+    # 系统 GLFW 3.4 在 Wayland 会话下优先选 Wayland, 而 tracy-profiler 每帧调 X11 专属接口
+    # (刷屏 "X11: Platform not initialized"). GLFW 按 XDG_SESSION_TYPE (+ DISPLAY) 选平台,
+    # 缺 WAYLAND_DISPLAY 时 libwayland 仍默认连 wayland-0, 故须改会话类型才能与 app_main 一样走 XWayland.
+    env = os.environ.copy()
+    env["XDG_SESSION_TYPE"] = "x11"
     try:
         # Launch with auto-connect to localhost
         proc = subprocess.Popen(
             [tracy_exe, "-a", "localhost"],
             cwd=os.path.dirname(tracy_exe),
+            env=env,
             start_new_session=True,
         )
         print(f"[Tracy] UI launched with auto-connect: {tracy_exe}")

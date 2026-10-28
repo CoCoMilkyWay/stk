@@ -88,7 +88,7 @@ struct Spec {
                   //   0 = 排程提前入库; 9/10 = 真盘前; 20 = 盘后批; 24 = 全天涓流, 次日才完整
   std::variant<Bq, Tu> src;
   std::string desc;                   // 表内容一句话 (GUI Database → Overview)
-  std::vector<std::string> drop = {}; // 不落盘的列: vd 之后才回填的未来信息 / 远端存储分区列 (两源同一步剥离)
+  std::vector<std::string> drop = {}; // 不落盘的列: vd 之后才回填的未来信息 (两源同一步剥离)
 };
 
 // 资产键列 (两源同为 "000001.SZ" 形)

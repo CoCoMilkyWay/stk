@@ -36,7 +36,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
     assert(it != bar.dates.begin() && "回测日是 Bar 池首日, 无 D−1 池源");
     const misc::Ymd prev = *(it - 1);
     assert(reader.has_date(prev) && "Bar 池缺池源日: 先把 Bar 池算完");
-    load_source(rd, s, Day{dates[i], prev, 0u, pool_bit(pool)}, s.cs.io, b);
+    load_source(rd, s, Day{dates[i], prev, PoolMask{0}, pool_bit(pool)}, s.cs.io, b);
     assert(!reader.stale() && "Bar 库判废 (头不符): 重算 Bar 池");
     size_t r = 0;
     const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);

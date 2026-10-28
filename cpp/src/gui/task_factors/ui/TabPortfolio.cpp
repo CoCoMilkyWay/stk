@@ -22,6 +22,7 @@
 #include <limits>
 #include <ranges>
 #include <set>
+#include <string_view>
 
 namespace GUI::Factors {
 
@@ -147,7 +148,7 @@ ImVec4 pool_color(const PortfolioDerived &d, size_t i) {
   return c;
 }
 ImVec4 factor_color(const PortfolioDerived &d, size_t i) { return ImPlot::GetColormapColor(static_cast<int>(d.pools.size() / 2 + i)); }
-// NAV 线显示: 右表勾选 (缺 = 默认 PortfolioLine::on)
+// NAV 右表行选中 (l = 行首线; 缺 = 默认 PortfolioLine::on)
 bool shown(const PortfolioUIState &ui, const PortfolioLine &l) {
   const auto it = ui.show.find(l.id);
   return it != ui.show.end() ? it->second : l.on;
@@ -318,7 +319,7 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     s.id = std::string("pf_strat") + kImpactId[i];
     s.en = name, s.cn = "G20 多头", s.kind = kImpactName[i];
     s.tag = name + kImpactTag[i];
-    s.on = i == kImpactNet; // 默认只显有冲击
+    s.on = true; // 策略行默认选中
     if (!d.dates.empty())
       s.c = curve_of(sum, i, x_of(0, kOpen) - kStartDx);
   }
@@ -337,7 +338,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
   };
 
   // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; note = 年换手;
-  //      每条可成交线后接同池同权的理想 (收盘价) 线 (默认关) ----
+  //      每条可成交线 (行首) 后接同池同权的理想 (收盘价) 线, 右表同一行 ----
   std::set<std::string> own; // 组合里有因子的池
   for (const PortfolioItem &it : items)
     if (it.missing.empty())
@@ -536,6 +537,23 @@ double last_pct(const PortfolioBasket &s, const PortfolioSlice &sl, int b, int y
   return std::numeric_limits<double>::quiet_NaN();
 }
 
+// 截面名次 (VAL 格 / NAV 年化同一份): x(i) (i < n) 在有限值里的名次 ∈ [0, 1] (0 = 最小, 并列取中; 只一个 = 0.5) → put(i, r); 不可算的不排
+template <class X, class Put>
+void ranks(size_t n, const X &x, const Put &put) {
+  for (size_t i = 0; i < n; ++i) {
+    const double p = x(i);
+    if (!std::isfinite(p))
+      continue;
+    int m = 0, lt = 0, eq = 0;
+    for (size_t j = 0; j < n; ++j)
+      if (const double q = x(j); std::isfinite(q))
+        ++m, lt += q < p, eq += q == p;
+    put(i, m > 1 ? (lt + 0.5 * (eq - 1)) / (m - 1) : 0.5);
+  }
+}
+// 切片的区间年化 (%); 不足两点 → NaN
+double ann_of(const PortfolioSlice &s) { return s.size() >= 2 ? static_cast<double>(s.ann) : std::numeric_limits<double>::quiet_NaN(); }
+
 // 区间视图 (见 PortfolioView). vs = VAL 选中篮子 (der.vals 下标, −1 = 无), roll = 它的滚动分位, years = 窗长
 void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, const std::array<PortfolioRoll, kPoolVals> &roll, PortfolioView &v) {
   const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
@@ -546,23 +564,22 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
   slice_all(d.pools, x0, x1, v.pools);
   slice_all(d.vals, x0, x1, v.vals);
 
-  // ---- VAL 表格: 各篮子各口切片内末个可算点的估值分位 + 同组 (池 / 行业) 同口内的截面名次 (并列取中) ----
+  // ---- NAV 右表: 区间年化在同组同口内的截面名次 (因子之间; 池之间, 可成交 / 理想各自) ----
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  v.factor_rank.assign(d.factors.size(), kNaN);
+  v.pool_rank.assign(d.pools.size(), kNaN);
+  ranks(d.factors.size(), [&](size_t i) { return ann_of(v.factors[i]); }, [&](size_t i, double r) { v.factor_rank[i] = r; });
+  for (size_t p = 0; p < 2; ++p)
+    ranks(d.pools.size() / 2, [&](size_t i) { return ann_of(v.pools[2 * i + p]); }, [&](size_t i, double r) { v.pool_rank[2 * i + p] = r; });
+
+  // ---- VAL 表格: 各篮子各口切片内末个可算点的估值分位 + 同组 (池 / 行业) 同口内的截面名次 ----
   v.cell.assign(d.vals.size(), {});
   for (size_t i = 0; i < d.vals.size(); ++i)
     for (int b = 0; b < kPoolVals; ++b)
       v.cell[i][b].pct = last_pct(d.vals[i], v.vals[i], b, years);
   for (int b = 0; b < kPoolVals; ++b)
     for (const auto &[g0, g1] : {std::pair{size_t{0}, d.n_val_pools}, std::pair{d.n_val_pools, d.vals.size()}})
-      for (size_t i = g0; i < g1; ++i) {
-        const double p = v.cell[i][b].pct;
-        if (!std::isfinite(p))
-          continue;
-        int n = 0, lt = 0, eq = 0;
-        for (size_t j = g0; j < g1; ++j)
-          if (const double q = v.cell[j][b].pct; std::isfinite(q))
-            ++n, lt += q < p, eq += q == p;
-        v.cell[i][b].rank = n > 1 ? (lt + 0.5 * (eq - 1)) / (n - 1) : 0.5;
-      }
+      ranks(g1 - g0, [&](size_t i) { return v.cell[g0 + i][b].pct; }, [&](size_t i, double r) { v.cell[g0 + i][b].rank = r; });
 
   // ---- VAL 选中篮子各口 band: 与价格线同一切片, y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画) ----
   v.band_x.clear();
@@ -803,11 +820,11 @@ bool pages() {
     if (ImGui::IsItemHovered())
       tip("NAV = 资金曲线 (Net Asset Value, 净值)\n"
           "• 橙线 = 本组合 G20 多头: 各因子独立回测 (分批 1/h̄, 全日平均满仓; 能成交才成交) 的逐行增量等权聚合, 扣换手冲击 (细线 = 无冲击)\n"
-          "• 池指数线 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只显组合里因子所在池的可成交线\n"
+          "• 池指数线 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只选组合里因子所在池\n"
           "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
           "    ◦ 理想 = 后复权收盘价指数 (不看可成交, 同中证 / 万得口径; 同色淡线); 两者之差 = 可成交拖累\n"
           "• 单因子线 = 各自的 G20 多头净值\n"
-          "• 右侧表格分组勾选 (因子 / 指数 / 策略) 决定画哪些线; 主图例只读, 只列画出的线\n"
+          "• 右侧表格点行选中 (因子 / 指数 / 策略) = 画该行全部线; 主图例只列画出的线, 点掉单条; 显隐变了自动重新 fit\n"
           "• 底部区间条选日段: 各线在区间起点归一 = 1, 年化按区间复利");
     if (nav_open)
       ImGui::EndTabItem();
@@ -829,27 +846,28 @@ bool pages() {
   return nav;
 }
 
-// ---- NAV 主图: 只画右表勾上的线, 池线 → 单因子 → 策略线 (最上层). 主图例 (只读) = en | cn | kind | 区间年化 | note (align_cols), ###id 定 ID (年化变了不换 item) ----
-void plot_nav(const PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PlotFrame &pf) {
+// ---- NAV 主图: 画右表选中行的全部线, 池线 → 单因子 → 策略线 (最上层). 主图例 = en | cn | kind | 区间年化 | note (align_cols), ###id 定 ID (年化变了不换 item);
+//      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制显示一次) ----
+void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PlotFrame &pf) {
   struct Draw {
     const PortfolioLine *l;
     const PortfolioSlice *s;
     ImVec4 col;
     float width;
   };
-  std::vector<Draw> ds; // 画序, 只含勾上的
-  const auto add = [&](const PortfolioLine &l, const PortfolioSlice &s, const ImVec4 &col, float width) {
-    const bool on = shown(ui, l);
+  std::vector<Draw> ds; // 画序, 只含选中行的
+  const auto add = [&](const PortfolioLine &head, const PortfolioLine &l, const PortfolioSlice &s, const ImVec4 &col, float width) {
+    const bool on = shown(ui, head);
     pf.shown += on ? '1' : '0';
     if (on)
       ds.push_back({&l, &s, col, width});
   };
   for (size_t i = 0; i < d.pools.size(); ++i)
-    add(d.pools[i], v.pools[i], pool_color(d, i), 1.0f);
+    add(d.pools[i & ~size_t{1}], d.pools[i], v.pools[i], pool_color(d, i), 1.0f);
   for (size_t i = 0; i < d.factors.size(); ++i)
-    add(d.factors[i], v.factors[i], factor_color(d, i), 1.0f);
+    add(d.factors[i], d.factors[i], v.factors[i], factor_color(d, i), 1.0f);
   for (int i = 0; i < kImpacts; ++i)
-    add(d.strat[i], v.strat[i], strat_color(i), kImpactWidth[i]);
+    add(d.strat[0], d.strat[i], v.strat[i], strat_color(i), kImpactWidth[i]);
   std::vector<std::array<std::string, 5>> rows;
   for (const Draw &x : ds) {
     char ann[48];
@@ -860,10 +878,12 @@ void plot_nav(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
   for (size_t r = 0; r < ds.size(); ++r) {
     const Draw &x = ds[r];
     const std::string lb = texts[r] + "###" + x.l->id;
-    ImPlot::HideNextItem(false, ImPlotCond_Always);
+    if (ui.reveal.erase(x.l->id))
+      ImPlot::HideNextItem(false, ImPlotCond_Always);
     ImPlot::SetNextLineStyle(x.col, x.width);
     plot_slice(lb.c_str(), *x.s);
-    push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.l->tag);
+    if (pf.item(lb.c_str()))
+      push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.l->tag);
   }
 }
 
@@ -1070,70 +1090,128 @@ float end_table() {
   return t->ColumnsAutoFitWidth + ImGui::GetStyle().ScrollbarSize;
 }
 
-// ---- NAV 右图例: 全部线分组勾选 (因子 / 指数 / 策略), 勾选 = 主图画该线; 列 = 名 (勾选框, 线色) | 中文名 | 口径 | 区间年化 | 尾 ----
+// 右图例表头排序 (NAV / VAL 同一份; 三态: 升 → 降 → 原序): order (组内原序下标) 按当前排序列重排;
+// 前 kTextCols 列按 text(i, 列) 字典序, 其余按 num(i, 列), 不可算的恒在末
+constexpr int kTextCols = 2;
+template <class Text, class Num>
+void sort_rows(std::vector<size_t> &order, const Text &text, const Num &num) {
+  const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
+  if (!ss || ss->SpecsCount == 0)
+    return;
+  const int c = ss->Specs[0].ColumnIndex;
+  const bool desc = ss->Specs[0].SortDirection == ImGuiSortDirection_Descending;
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    if (c < kTextCols) {
+      const int r = text(a, c).compare(text(b, c));
+      return desc ? r > 0 : r < 0;
+    }
+    const double x = num(a, c), y = num(b, c);
+    if (!std::isfinite(x) || !std::isfinite(y))
+      return std::isfinite(x) && !std::isfinite(y);
+    return desc ? x > y : x < y;
+  });
+}
+// 组内原序下标 0..n−1
+std::vector<size_t> iota_n(size_t n) {
+  std::vector<size_t> o(n);
+  for (size_t i = 0; i < n; ++i)
+    o[i] = i;
+  return o;
+}
+// 右图例分组头行
+void group_row(const char *h) {
+  ImGui::TableNextRow();
+  ImGui::TableSetColumnIndex(0);
+  ImGui::TextColored(kHead, "%s", h);
+}
+
+// ---- NAV 右图例: 分组 (因子 / 指数 / 策略) 一行一个, 点行 = 选中 / 取消 (选中 = 主图画该行全部线, 单条在主图例里再点掉);
+//      列 = 名 (线色) | 中文名 | 可成交 | 理想 (区间年化; 底色 = 同组同列截面名次, 高绿 → 低红) | 尾; 表头点排序 (组内) ----
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v) {
-  ImGui::TextColored(kHead, "线 (勾选 = 画)");
+  ImGui::TextColored(kHead, "线 (点行 = 画)");
   if (ImGui::IsItemHovered())
-    tip("勾选 = 主图画该线; 主图例只列画出的线\n"
+    tip("点行 = 选中 / 取消, 选中 = 主图画该行全部线; 不想看其中一条就在主图例里点掉 (显隐变了自动重新 fit)\n"
         "• 因子 = 单因子各自的 G20 多头净值, 带它自己的冲击 (Lob 最小金额段 / Bar 固定冲击)\n"
-        "• 指数 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只勾组合里因子所在池的可成交线\n"
+        "• 指数 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只选组合里因子所在池; 一行两条:\n"
         "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
         "    ◦ 理想 = 后复权收盘价指数 (不看可成交, 同中证 / 万得口径; 同色淡线); 两者之差 = 可成交拖累\n"
-        "• 策略 = 本组合 G20 多头 (有冲击 / 无冲击)\n"
-        "• 同一区间起点归一; 年化按区间复利");
-  if (!ImGui::BeginTable("##pf_nav_tbl", 5, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV))
+        "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
+        "• 可成交 / 理想两列 = 区间年化 (同一区间起点归一, 按区间复利); 底色 = 该列在同组内的名次 (高绿 → 低红)\n"
+        "• 点表头排序 (组内): 升序 → 降序 → 原序");
+  if (!ImGui::BeginTable("##pf_nav_tbl", 5,
+                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
+                             ImGuiTableFlags_SortTristate))
     return;
   ImGui::TableSetupScrollFreeze(0, 1);
   ImGui::TableSetupColumn("名");
   ImGui::TableSetupColumn("中文名", ImGuiTableColumnFlags_WidthStretch);
-  ImGui::TableSetupColumn("口径");
-  ImGui::TableSetupColumn("年化");
-  ImGui::TableSetupColumn("尾");
+  ImGui::TableSetupColumn("可成交");
+  ImGui::TableSetupColumn("理想");
+  ImGui::TableSetupColumn("尾", ImGuiTableColumnFlags_NoSort);
   ImGui::TableHeadersRow();
-  const auto group = [&](const char *h) {
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextColored(kHead, "%s", h);
+  // 一行 = 行首线 l[0] (选中键) + 成对线 l[1] (可空); s / rank 同下标
+  struct Row {
+    const PortfolioLine *l[2];
+    const PortfolioSlice *s[2];
+    double rank[2];
+    ImVec4 col;
+    const PortfolioFactor *f; // 因子行 (悬停提示), 其余空
   };
-  // 一行; 返回名格是否悬停 (调用方补提示)
-  const auto line = [&](const PortfolioLine &l, const PortfolioSlice &s, const ImVec4 &col) {
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    bool on = shown(ui, l);
-    ImGui::PushStyleColor(ImGuiCol_CheckMark, col);
-    ImGui::PushStyleColor(ImGuiCol_Text, col);
-    if (ImGui::Checkbox((l.en + "##pfl_" + l.id).c_str(), &on))
-      ui.show[l.id] = on;
-    ImGui::PopStyleColor(2);
-    const bool hov = ImGui::IsItemHovered();
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(l.cn.c_str());
-    ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted(l.kind.c_str());
-    ImGui::TableSetColumnIndex(3);
-    ImGui::Text("%+6.1f%%", s.ann);
-    ImGui::TableSetColumnIndex(4);
-    ImGui::TextUnformatted(l.note.c_str());
-    return hov;
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  const auto group = [&](const char *h, const std::vector<Row> &rows) {
+    if (rows.empty())
+      return;
+    group_row(h);
+    std::vector<size_t> order = iota_n(rows.size());
+    sort_rows(order, [&](size_t i, int c) { return std::string_view(c == 0 ? rows[i].l[0]->en : rows[i].l[0]->cn); }, [&](size_t i, int c) { const PortfolioSlice *s = rows[i].s[c - kTextCols]; return s ? ann_of(*s) : kNaN; });
+    for (const size_t i : order) {
+      const Row &r = rows[i];
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      const bool on = shown(ui, *r.l[0]);
+      ImGui::PushStyleColor(ImGuiCol_Text, r.col);
+      if (ImGui::Selectable((r.l[0]->en + "##pfl_" + r.l[0]->id).c_str(), on, ImGuiSelectableFlags_SpanAllColumns)) {
+        ui.show[r.l[0]->id] = !on;
+        if (!on)
+          for (const PortfolioLine *l : r.l)
+            if (l)
+              ui.reveal.insert(l->id);
+      }
+      ImGui::PopStyleColor();
+      if (r.f && ImGui::IsItemHovered()) {
+        const PortfolioItem &it = r.f->item;
+        tip("%s  %s\n• %s\n• %s\n• 规范串 %s", r.f->en.c_str(), it.name_cn.c_str(), r.f->kind.c_str(), hold_desc(it.e.hold, it.e.lv).c_str(), it.e.expr.c_str());
+      }
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextUnformatted(r.l[0]->cn.c_str());
+      for (int k = 0; k < 2; ++k) {
+        ImGui::TableSetColumnIndex(kTextCols + k);
+        const double a = r.s[k] ? ann_of(*r.s[k]) : kNaN;
+        if (!std::isfinite(a)) {
+          ImGui::TextDisabled("     -");
+          continue;
+        }
+        if (std::isfinite(r.rank[k]))
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(1.0 - r.rank[k], kValCellA)));
+        ImGui::Text("%+6.1f%%", a);
+      }
+      ImGui::TableSetColumnIndex(4);
+      ImGui::TextUnformatted(r.l[0]->note.c_str());
+    }
   };
-  if (!d.factors.empty())
-    group("因子");
-  for (size_t i = 0; i < d.factors.size(); ++i) {
-    const PortfolioFactor &f = d.factors[i];
-    const PortfolioItem &it = f.item;
-    if (line(f, v.factors[i], factor_color(d, i)))
-      tip("%s  %s\n• %s\n• 规范串 %s", f.en.c_str(), it.name_cn.c_str(), hold_desc(it.e.hold, it.e.lv).c_str(), it.e.expr.c_str());
-  }
-  group("指数");
-  for (size_t i = 0; i < d.pools.size(); ++i)
-    line(d.pools[i], v.pools[i], pool_color(d, i));
-  group("策略");
-  for (int i = 0; i < kImpacts; ++i)
-    line(d.strat[i], v.strat[i], strat_color(i));
+  std::vector<Row> rows;
+  for (size_t i = 0; i < d.factors.size(); ++i)
+    rows.push_back({{&d.factors[i], nullptr}, {&v.factors[i], nullptr}, {v.factor_rank[i], kNaN}, factor_color(d, i), &d.factors[i]});
+  group("因子", rows);
+  rows.clear();
+  for (size_t i = 0; i + 1 < d.pools.size(); i += 2)
+    rows.push_back({{&d.pools[i], &d.pools[i + 1]}, {&v.pools[i], &v.pools[i + 1]}, {v.pool_rank[i], v.pool_rank[i + 1]}, pool_color(d, i), nullptr});
+  group("指数", rows);
+  group("策略", {{{&d.strat[kImpactNet], &d.strat[kImpactGross]}, {&v.strat[kImpactNet], &v.strat[kImpactGross]}, {kNaN, kNaN}, strat_color(kImpactNet), nullptr}});
   ui.legend_w[0] = end_table();
 }
 
-// ---- VAL 右图例: 滚动窗长 + 篮子单选表格 (池 / 申万一级); 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红) ----
+// ---- VAL 右图例: 滚动窗长 + 篮子单选表格 (池 / 申万一级); 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
 void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, int vs) {
   ImGui::SetNextItemWidth(-FLT_MIN);
   ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
@@ -1153,8 +1231,11 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• Band = 价格 × 当日收益率 / q, q = 窗内 5/10/25/50/75/90/95%% 贵度分位的收益率 (与倍数口径的 Band 同一条线);\n"
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
         "• 表格 = 区间末各口的估值分位 (高 = 贵); 绝对值看主图 Band 图例 / 线尾\n"
-        "• 底色 = 该分位在同组 (池之间 / 行业之间) 同一口内的截面名次: 组内最便宜绿 → 最贵红");
-  if (!ImGui::BeginTable("##pf_val_tbl", 2 + kPoolVals, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV))
+        "• 底色 = 该分位在同组 (池之间 / 行业之间) 同一口内的截面名次: 组内最便宜绿 → 最贵红\n"
+        "• 点表头排序 (组内): 升序 → 降序 → 原序");
+  if (!ImGui::BeginTable("##pf_val_tbl", kTextCols + kPoolVals,
+                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
+                             ImGuiTableFlags_SortTristate))
     return;
   ImGui::TableSetupScrollFreeze(0, 1);
   ImGui::TableSetupColumn("池 / 行业");
@@ -1162,28 +1243,31 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   for (const ValMeta &m : kVal)
     ImGui::TableSetupColumn(m.name, ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("100%").x);
   ImGui::TableHeadersRow();
-  for (size_t i = 0; i < d.vals.size(); ++i) {
-    const PortfolioBasket &s = d.vals[i];
-    if (i == 0 || i == d.n_val_pools) {
+  for (const auto &[g0, g1] : {std::pair{size_t{0}, d.n_val_pools}, std::pair{d.n_val_pools, d.vals.size()}}) {
+    if (g0 == g1)
+      continue;
+    group_row(g0 == 0 ? "池" : "申万一级 (全A)");
+    std::vector<size_t> order = iota_n(g1 - g0);
+    sort_rows(order, [&](size_t i, int c) { return std::string_view(c == 0 ? d.vals[g0 + i].en : d.vals[g0 + i].cn); }, [&](size_t i, int c) { return v.cell[g0 + i][c - kTextCols].pct; });
+    for (const size_t o : order) {
+      const size_t i = g0 + o;
+      const PortfolioBasket &s = d.vals[i];
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextColored(kHead, i == 0 ? "池" : "申万一级 (全A)");
-    }
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    if (ImGui::Selectable((s.en + "##pfv" + std::to_string(i)).c_str(), vs == static_cast<int>(i), ImGuiSelectableFlags_SpanAllColumns))
-      ui.val_pool = s.id;
-    ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(s.cn.c_str());
-    for (int b = 0; b < kPoolVals; ++b) {
-      ImGui::TableSetColumnIndex(2 + b);
-      const PortfolioCell &c = v.cell[i][b];
-      if (!std::isfinite(c.pct)) {
-        ImGui::TextDisabled("   -");
-        continue;
+      if (ImGui::Selectable((s.en + "##pfv" + std::to_string(i)).c_str(), vs == static_cast<int>(i), ImGuiSelectableFlags_SpanAllColumns))
+        ui.val_pool = s.id;
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextUnformatted(s.cn.c_str());
+      for (int b = 0; b < kPoolVals; ++b) {
+        ImGui::TableSetColumnIndex(kTextCols + b);
+        const PortfolioCell &c = v.cell[i][b];
+        if (!std::isfinite(c.pct)) {
+          ImGui::TextDisabled("   -");
+          continue;
+        }
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(c.rank, kValCellA)));
+        ImGui::Text("%3.0f%%", c.pct);
       }
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(c.rank, kValCellA)));
-      ImGui::Text("%3.0f%%", c.pct);
     }
   }
   ui.legend_w[1] = end_table();
@@ -1395,7 +1479,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const bool nav = pages();
 
   // ---- 图: 左 = 主图 (plot_nav ↔ plot_val) / 区间条; 右 = 图例 (legend_nav ↔ legend_val) ----
-  bool set_vis = false; // NAV 策略 / 池线勾选回默认 (组合 + 其因子所在池变了)
+  bool set_vis = false; // NAV 策略 / 池行选中回默认 (组合 + 其因子所在池变了), 其线在主图例里重新显示
   if (nav) {
     std::string k = ui.name;
     for (const PortfolioBasket &p : d.pools)
@@ -1404,9 +1488,9 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ui.vis_key = std::move(k);
     if (set_vis) {
       for (const PortfolioBasket &p : d.pools)
-        ui.show.erase(p.id);
+        ui.show.erase(p.id), ui.reveal.insert(p.id);
       for (const PortfolioLine &s : d.strat)
-        ui.show.erase(s.id);
+        ui.show.erase(s.id), ui.reveal.insert(s.id);
     }
   }
   if (refit || set_vis)
@@ -1426,7 +1510,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     else
       ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].SetMin(0.0, /*force=*/true);
-    ImPlot::SetupLegend(ImPlotLocation_NorthWest, nav ? ImPlotLegendFlags_NoButtons : ImPlotLegendFlags_None); // NAV 显隐只在右表
+    ImPlot::SetupLegend(ImPlotLocation_NorthWest);
     // fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
     PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}};

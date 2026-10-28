@@ -1,9 +1,10 @@
-// Fundamental Service - 基本面数据 sync (BigQuant DAI + Tushare HTTP)
-// 数据落地 = output/fundamental/YYYY-MM/*.parquet
-// (fundamental/ 月度分片 + _meta 单文件, 水位增量, 常量见 shared/Config.hpp)
+// Fundamental Service - 基本面 + 分钟线数据 sync (BigQuant DAI + Tushare HTTP)
+// 数据落地 = output/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet
+// (fundamental/ 月度分片 + _meta 单文件 + Daily 日文件, 水位增量, 常量见 shared/Config.hpp)
 // AssetInfo 从 parquet 构建内存结构.
 #pragma once
 
+#include "fundamental/Sync.hpp"
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "shared/AssetInfo.hpp"
@@ -39,6 +40,9 @@ struct FundamentalState {
   std::int64_t quota_used = 0;
   std::string quota_time; // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
 
+  // 分钟线缺日的精确预算 (Ask::Bar1m 弹窗; 本轮基本面同步之后取, 配额读数同刻刷新)
+  fundamental::sync::Budget bar1m;
+
   // 构建结果统计 (最近一次构建成功的)
   std::size_t stock_count = 0;        // stock_info 条数
   std::size_t factor_stock_count = 0; // 有复权因子序列的股票数
@@ -54,9 +58,17 @@ struct FundamentalState {
 };
 
 struct FundamentalRequest {
-  uint64_t seq = 0; // 请求代 (StateManager 发), 交接原样带回
-  bool with_network = false;
+  uint64_t seq = 0;         // 请求代 (StateManager 发), 交接原样带回
+  bool fundamental = false; // 联网同步基本面 (BigQuant 日频表 + Tushare)
+  bool bar1m = false;       // 联网补齐分钟线 (基本面之后, 弹窗确认预算)
 };
+
+// worker 挂起等弹窗的事由 (GUI 线程按事由画模态, 回答经 confirm)
+//   Quota: 基本面 BigQuant 表待拉且周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO
+//   Bar1m: 分钟线有缺日; 预算 (state.bar1m) 超本周余额则只许跳过
+enum class Ask { None,
+                 Quota,
+                 Bar1m };
 
 // 交接件: ok = false ⇒ 本地 parquet 缺失 (需先联网同步), assetinfo 空
 struct FundamentalResult {
@@ -70,10 +82,11 @@ struct FundamentalResult {
 //
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::assetinfo (只在 GUI 线程替换)
-//   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> (Round) → [drive 三道: bq → ts → bq.daily] → 构建 → post
-//               (两份计划皆空 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
+//   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> (Round)
+//               → 基本面 [drive: bq → ts] → 分钟线 [budget → Ask::Bar1m → drive bq.bar1m] → 构建 → post
+//               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;
-//               state 持 mutex 读; confirm_pending = 配额待确认 (worker 挂起等 confirm)
+//               state 持 mutex 读; asking = 待确认事由 (worker 挂起等 confirm)
 // ============================================================================
 class FundamentalService : public Service<FundamentalService, FundamentalRequest>, public Published {
   friend Service<FundamentalService, FundamentalRequest>;
@@ -83,20 +96,20 @@ public:
   FundamentalService(); // 末尾 Start
   ~FundamentalService() { Stop(); }
 
-  // 待确认的弹窗回答: proceed=true 照常同步 BigQuant, false 跳过 BigQuant
-  // (Tushare / 本地构建照常). 只在 confirm_pending 时可调, 每轮只回答一次.
+  // 待确认的弹窗回答: proceed=true 照常同步该道, false 跳过该道 (其余道 / 本地构建照常).
+  // 只在 asking != None 时可调, 每问只回答一次; Bar1m 预算超本周余额时不得 proceed.
   void confirm(bool proceed);
 
-  FundamentalState state;                   // UI 持 mutex 读
-  std::atomic<bool> confirm_pending{false}; // BigQuant 周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, worker 挂起等弹窗
-  Mailbox<FundamentalResult> handoff;       // worker 每轮收尾 post, StateManager 帧首 take
+  FundamentalState state;             // UI 持 mutex 读
+  std::atomic<Ask> asking{Ask::None}; // worker 挂起等弹窗的事由
+  Mailbox<FundamentalResult> handoff; // worker 每轮收尾 post, StateManager 帧首 take
 
 private:
   static constexpr Phase kStart = Phase::Scanning;
   Progress &board() { return *this; }
   bool run(FundamentalRequest &req);
 
-  std::atomic<int> decision_{0}; // 弹窗决定 → worker: 0 = 未答, 1 = 继续, 2 = 跳过 BigQuant
+  std::atomic<int> decision_{0}; // 弹窗决定 → worker: 0 = 未答, 1 = 继续, 2 = 跳过该道
 };
 
 } // namespace GUI::Database

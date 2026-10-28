@@ -2,6 +2,7 @@
 
 #include "fundamental/Store.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,5 +31,16 @@ std::int64_t run(typename Src::Client &client, const Task &t);
 
 // "cn_stock_status 2024-05 +[20240510..]" / "... ~[1 日 + 4 资产]" (进度展示)
 std::string label(const Task &t);
+
+// 一份 Daily 计划 (单表, 整日 Replace, 日升序) 的精确配额: cells = Σ 各日远端行数 × 返回列数 —— 与 run 实付同口径
+struct Budget {
+  std::size_t days = 0;
+  Ymd lo = 0, hi = 0; // 首 / 末缺日
+  std::int64_t rows = 0;
+  int cols = 0;
+  std::int64_t cells = 0;
+};
+// 列数 = LIMIT 0 schema (0 cell); 行数 = 缺日键 GROUP BY 计数 (2 cell / 日). 计划日远端 0 行 → assert
+Budget budget(bigquant::Client &client, const std::vector<Task> &tasks);
 
 } // namespace fundamental::sync

@@ -15,7 +15,7 @@
 //               CS 本就该在平稳可比的信息上算, 池内资产在有效行上理应全部有值 (Fund 族 PIT 列除外) —— 因子层对喂 CS 的叶
 //               assert 掩码 ⊇ cs_valid, 不满足就是数据脏或用法错 (拿 CS 套 PIT 事件), 让人 think again
 //   成员位是日频 PIT 输入, 各档自定 (CoreTs 档钩子 member): Lob = 池 (pool::Panel, 第 D 日由 Bar 池 D−1 收盘行定),
-//   Bar = 在市 (Fund::in_market). 对本类只是一个 (资产, 日) 的 bool —— TS 行仍只看本资产 + 日频 PIT, 不破一致性红线.
+//   Bar = 母集 (Fund base 口). 对本类只是一个 (资产, 日) 的 bool —— TS 行仍只看本资产 + 日频 PIT, 不破一致性红线.
 
 #include "features/MetaFlag.hpp"              // fmeta:: 编码/解码 (稳定头, 消费端直接用它, 不依赖本节点文件)
 #include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / L_sec_to_L_1min

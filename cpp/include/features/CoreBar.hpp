@@ -20,7 +20,7 @@ class CoreBar : public CoreTs<CoreBar, bar::Tier, bar::DAG> {
 
 public:
   CoreBar(const fund::Panel &fund_panel, const std::string &code_ex, size_t asset_id)
-      : Base(asset_id, fund_panel, code_ex, asset_id), bj_(code_ex.ends_with(".BJ")), bar2min_(dag_.minute_data) {}
+      : Base(asset_id, fund_panel, code_ex, asset_id), bar2min_(dag_.minute_data) {}
 
   // 每分钟一调 (L_1min 节拍): 先把时钟推进到分钟 m (逐根结算之前的分钟), 再把本分钟 bar1m 收进重采样器
   void compute_and_store(size_t m, const Bar1m &bar) noexcept {
@@ -30,11 +30,9 @@ public:
 
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日在市: 本资产代码 + Fund 日频口 back() (盘前承接之后 = 当日盘前态)
-  bool member(misc::Ymd) const { return Fund::in_market(dag_.Fund.outs(), bj_); }
+  // 当日在母集: Fund base 口 back() (盘前承接之后 = 当日盘前态)
+  bool member(misc::Ymd) const { return Fund::is_base(dag_.Fund.outs()); }
   ResamplerBar2Min &resampler() { return bar2min_; }
-
-  bool bj_; // 北交所: 不在市 (cs_valid 0)
 
   ResamplerBar2Min bar2min_;
 };

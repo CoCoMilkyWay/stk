@@ -27,8 +27,8 @@ APP_NAME = "main"
 # Build & Run modes (set ONLY ONE to True)
 ENABLE_TSAN = False
 ENABLE_DEBUG = False
-ENABLE_PROFILE = False
-ENABLE_ASSERT = True
+ENABLE_PROFILE = True
+ENABLE_ASSERT = False
 ENABLE_PRODUCTION = False  # Auto-enabled if all others are False
 
 # 因子 GPU 后端 (factor/*/Gpu.cuh, nvcc): 与上面的模式正交. ON 需要完整 CUDA Toolkit (nvcc + CCCL),

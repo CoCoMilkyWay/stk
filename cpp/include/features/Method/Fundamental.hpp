@@ -3,12 +3,17 @@
 //   Panel    数据源. Phase 2 前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × AssetAxis A 轴的
 //           原始网格 (close/股本/涨跌停/状态/两融, cutoff 已套, ffill 已做) + per-A 事件链 (ttm/资产负债/年报/分红/预告/行业).
 //           网格只保留 [首回测日 − 15, 末] (trading_st 连续 15 日计数所需), 历史依赖全在事件链上; 只读, 全部 TS worker 共享.
+//           行情派生 (Market, 只全市场码表 full 时算): 切片前在全史网格上一次扫出, 只留切片窗口 —— 长窗时序 (12−1 月动量 / 换手比)
+//           与全市场截面 (母集等权市场收益 → 特质波动 / β; 均线截面回归 → 趋势预期收益; 三项波动合成正交 → 残差波动).
+//           截面一律取母集: 切片前让状态机沿全 D 轴只推事件 + 状态口, 出全史资产态掩码 (活跃 / 母集; 两档 Panel 皆存, 经 Fund live / base 口供节点读).
+//           每格只用 ≤ T 收盘的数据 (行 T+1 起可见), 对 TS 是与基本面同级的日频 PIT 输入; 截面归约按固定资产块定序,
+//           结果与线程数无关. 各窗按可得史扩张 (数据起点 / 新股同规则), 有价次日起即有值.
 //   Stream  per-资产日频状态机 (Fund 节点各持一个). advance_to(d) 沿 D 轴逐日推进到 d (回测日之间的非回测日也走,
 //           状态才对; 回测日前只推事件指针, 不碰网格), 然后产出当日 Fund::kCount 列 (布局 Fund::Out, 缺失 = NaN,
 //           fp16 存不下的极值也归 NaN). 总算力 = per-A 沿 D 轴一遍, 与预计算相同.
 //
 // PIT 口径 (row D = D 日盘前可知; 逐表见 .cpp GridScan / EventScan, Fund 节点前另列 L_1day 对齐):
-//   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast
+//   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast / 行情派生
 //   cutoff=0  (T 盘前可知): status(st/susp), shares, limit_price, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
 //   涨跌停价: row T 即 "T 当日适用涨跌停" (由 pre_close(T) 推出), 直接配盘中实时价判触板.
 //   D 轴 = 交易日历截到 today (Fund 收盘推进到 d+1 ⇒ 末回测日须早于 today, 其次日在轴内).
@@ -48,6 +53,10 @@ inline std::uint8_t sw2021_l1_name_to_id(std::string_view name) {
       return i;
   return 0;
 }
+
+// 次新股: 上市龄 < kNewListDays 日历日 (落盘列 is_new; 活跃的门槛 ⇒ 母集 / Bar 档 cs_valid 不含次新).
+// 覆盖上市初期连板炒作与 6 / 12 个月限售解禁窗口
+inline constexpr float kNewListDays = 365.0f;
 
 struct Data;  // 轴 / meta / 网格切片 / 事件链 (定义在 .cpp)
 struct State; // Stream 内部状态 (定义在 .cpp)

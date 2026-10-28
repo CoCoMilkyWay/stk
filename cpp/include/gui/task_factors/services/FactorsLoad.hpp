@@ -25,7 +25,7 @@ namespace GUI::Factors {
 
 // ---- 装载: X ↔ Y ↔ B 三侧同形 (XCols / YCols / BCols → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b 同一份逐天骨架) ----
 //   X = 因子输入叶 (随因子变): 叶按各自 ts_valid 门控
-//   Y = 门控 + 两腿平面 (只随评估域变): 截面门控 = cs_valid ∧ 当日有成交 (∧ 子池成员); 两腿同一份折叠 (池内 ∧ 两腿有限, 腿按封顶截;
+//   Y = 门控 + 两腿平面 (只随评估域变): 截面门控 = (子池 = 当日成员, 其余 = cs_valid) ∧ 当日有成交; 两腿同一份折叠 (池内 ∧ 两腿有限, 腿按封顶截;
 //   可成交 / 顺延已在标签里, 不另读)
 //   B = 篮子原料 (Portfolio 池线): 本层 close + 日频复权 / 股本 / 估值 / 行业 (as-of), BlockSpec::b 时随 Y 进块, 块钩子交 FactorsBook baskets
 // 张量形 (三侧同一份; T = days · seg)
@@ -102,7 +102,7 @@ struct XPlanes {
 };
 struct YPlanes {
   Shape sh;
-  std::vector<uint8_t> gate;    // 截面池掩码 g = 当日在池 ∧ cs_valid ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
+  std::vector<uint8_t> gate;    // 截面池掩码 g = 当日在池 (子池 = 当日成员, 其余 = cs_valid) ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
   std::vector<uint8_t> eo;      // 建仓可成交码 kEoBuy | kEoSell (lb_entry_ok; 池外 / 缺 → 0); 各持有期共用 (Stat 契约【仓位感知】)
   Holds hd;                     // [hold] = YSpec::hd
   std::vector<LegPlane> labels; // [hold] 两腿毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t (封板照写, 能否建仓看 eo; 平仓顺延已在值里)

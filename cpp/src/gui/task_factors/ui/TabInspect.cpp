@@ -1606,7 +1606,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
       ImGui::Text("%s  #%d/%d  R %.3f (G%d)", name, pos + 1, n, ui.ax_r[static_cast<size_t>(pos)], r_group(ui.ax_r[static_cast<size_t>(pos)]) + 1);
     else
       ImGui::Text("%s  (光标日池外)  池内 n=%d", name, n);
-    // R(t) = r16(x) / kRankMax (CS 截面秩 / TS 自身分位), 与组号同向; 池 = cs_valid ∧ 当日有成交, 出池段秩不入评估 (K 线用不看池的秩淡色显示);
+    // R(t) = r16(x) / kRankMax (CS 截面秩 / TS 自身分位), 与组号同向; 池 = 截面门控 g, 出池段秩不入评估 (K 线用不看池的秩淡色显示);
     // 选中沿资产粘住: 拖光标只换序, K 线不重载, 换池轴才重选
     if (ImGui::IsItemHovered())
       tip("选中资产在光标日的排名 (#1 = 因子值最高, G20 侧)\n"

@@ -2,6 +2,7 @@
 //
 // 结构: Panel::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
 //                     全部 15 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
+//                     全市场码表另在切片前从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面)
 //       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与 qmt 批量扫描逐日等价:
 //                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红 365 日滑窗 + 3 年双阈值,
 //                       预亏/营收区间 = "d < max{off : on ≤ d}" (区间并集的流式形式), 行业 replay, trading_st 连续计数
@@ -46,6 +47,7 @@ using misc::Ymd;
 
 constexpr float NaNF = std::numeric_limits<float>::quiet_NaN();
 constexpr float InfF = std::numeric_limits<float>::infinity();
+constexpr double NaND = std::numeric_limits<double>::quiet_NaN();
 
 // NaN (缺失) 透传给 ffill; finite 违反约束 → +inf 标记"业务异常" (ffill 不传播).
 inline float positive_or_inf(float v) {
@@ -71,6 +73,9 @@ inline float sum_nan0(std::initializer_list<float> xs) {
 }
 // 首选缺失 → 回退
 inline float first_finite(float a, float b) { return std::isfinite(a) ? a : b; }
+
+// 资产态掩码位 (univ_mask; 母集 ⊂ 活跃)
+constexpr std::uint8_t kLive = 1, kBase = 2;
 
 inline int year_of(Ymd d) { return d / 10000; }
 inline int month_of(Ymd d) { return d / 100 % 100; }
@@ -108,6 +113,7 @@ struct Meta {
   std::vector<Ymd> list, delist;
   std::vector<std::chrono::sys_days> list_day, delist_day; // 同上, 仅 != 0 时有效
   std::vector<std::uint8_t> main_board;                    // list_sector == 1
+  std::vector<std::uint8_t> bj;                            // 北交所 (代码 .BJ)
 };
 
 // 上市日在 D 轴的 lower_bound; 无 list_date → n_d (永未上市)
@@ -240,6 +246,7 @@ struct PitPool {
   std::vector<float> fin_repayment;    // 融资偿还额
   std::vector<float> sec_sales_qty;    // 融券卖出量 [股]
   std::vector<float> sec_repay_qty;    // 融券偿还量 [股]
+  std::vector<std::uint8_t> univ;      // 资产态掩码 (univ_mask: 行 d = d 日盘前态的 kLive | kBase; 切片前写入)
 
   // 事件 (per-a, v 升序)
   std::vector<std::vector<FinancialTtmEv>> ttm;
@@ -282,8 +289,30 @@ struct PitPool {
     cut(fin_repayment);
     cut(sec_sales_qty);
     cut(sec_repay_qty);
+    cut(univ);
     g0 = new_g0;
     n_g = nn;
+  }
+};
+
+// 行情派生网格 (build_market 产出, 只留切片窗口; 行 = 状态日, 数据日 T 的值落行 T+1, 同 close 的 cutoff −1); 项名 = Fund 口名
+enum MarketItem : std::size_t {
+  mk_ret_12_1,
+  mk_ret_1m,
+  mk_turn,
+  mk_ivol,
+  mk_resvol,
+  mk_beta,
+  mk_trend,
+  MK_COUNT
+};
+struct Market {
+  int g0 = 0, n_g = 0;
+  std::vector<float> v[MK_COUNT]; // [a·n_g + (d − g0)]; 空 = 未算 (池轴 Panel)
+  bool built() const { return !v[0].empty(); }
+  float at(MarketItem c, int a, int d) const {
+    assert(d >= g0 && d < g0 + n_g && "行情派生窗口不覆盖该日");
+    return v[c][static_cast<std::size_t>(a) * static_cast<std::size_t>(n_g) + static_cast<std::size_t>(d - g0)];
   }
 };
 
@@ -296,6 +325,7 @@ struct Data {
   Axes axes;
   Meta meta;
   PitPool pit;
+  Market market;
   int axes_warmup_d = 0; // dividend_st 数据轴 warmup: 轴起点 + 3 年
 };
 
@@ -382,6 +412,7 @@ void grid_ffill(std::vector<float> &grid, int n_a, int n_d) {
 // 是双射) ⇒ 分片写集不相交, 免锁 (Sink). add 登记, Scan::run 之后 finish 做 ffill.
 struct GridScan {
   Part<Sink> bar, shares, limit, status, margin;
+  std::vector<float> volume; // bar1d.volume [股] (cutoff=0, 不 ffill; 无行 = NaN). 只供 build_market, 不进 PitPool
   void add(fundamental::Scan &scan, const Axes &axes, PitPool &p);
   void finish(const Axes &axes, PitPool &p) const;
 };
@@ -411,11 +442,14 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
   p.st_status.assign(n, 0);
   p.suspended.assign(n, 0);
   p.is_margin.assign(n, 0);
+  volume.assign(n, NaNF);
 
-  // ---- cn_stock_real_bar1d: close CUTOFF=-1; pre_close / adjust_factor CUTOFF=0 (盘前可知: 交易所公布前收, 除权事先公告) ----
-  scan.add(bar, spec("cn_stock_real_bar1d"), {"close", "pre_close", "adjust_factor"}, Sink{},
-           [&axes, &p, n_d](const Rows &r, Sink &) {
+  // ---- cn_stock_real_bar1d: close CUTOFF=-1; pre_close / adjust_factor CUTOFF=0 (盘前可知: 交易所公布前收, 除权事先公告);
+  //      volume CUTOFF=0 (row T = T 日成交, build_market 按数据日读) ----
+  scan.add(bar, spec("cn_stock_real_bar1d"), {"close", "pre_close", "adjust_factor", "volume"}, Sink{},
+           [&axes, &p, this, n_d](const Rows &r, Sink &) {
              const pq::Col close = r.col("close"), pre = r.col("pre_close"), adj = r.col("adjust_factor");
+             const pq::Col vol = r.col("volume");
              RowOf row_of(axes, Align::Exact, -1), row0_of(axes, Align::Exact, 0);
              r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
                const std::size_t base = static_cast<std::size_t>(a) * n_d;
@@ -426,6 +460,7 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
                if (row0 >= 0) {
                  p.pre_close[base + static_cast<std::size_t>(row0)] = positive_or_inf(pre.f32(i));
                  p.adj_factor[base + static_cast<std::size_t>(row0)] = positive_or_inf(adj.f32(i));
+                 volume[base + static_cast<std::size_t>(row0)] = vol.f32(i);
                }
              });
            });
@@ -520,6 +555,528 @@ void GridScan::finish(const Axes &axes, PitPool &p) const {
   grid_ffill(p.a_float_shares, axes.n_a(), axes.n_d());
   grid_ffill(p.lim_up, axes.n_a(), axes.n_d());
   grid_ffill(p.lim_dn, axes.n_a(), axes.n_d());
+}
+
+// ============================================================================
+// 行情派生 build_market: 全史网格 (切片前, g0 = 0) + 全史母集掩码 → Market (只留 [g0, n_d)); 数据日 T 的值落行 T+1.
+//   截面一律取母集 (univ_mask 的 kBase 位, 与节点侧 Fund base 口同一份): 数据日 T 的成员 = T 日盘前母集 (当日池),
+//   键的截面 (resvol) = T+1 日盘前母集 (PoolKey 在 T 收盘按次日态取母集)
+//   后复权价 P_T = close_T · adj_T (停牌携带), 成交 = volume_T > 0, 日收益 r_T = P_T / P_{T−1} − 1 (T 有成交)
+//   市场收益 m_T = 母集当日有成交者 r 的等权均值 (= 母集等权指数日收益), 市场累计 I_T = Π (1 + m) (无 m 的日计 0)
+//   扩张窗: 各口标称窗 W 取 min(W, 本资产可得史) (首个有价日起; 数据起点 / 新股同一条规则, 数据起点上全市场同窗长),
+//           同口的短窗 / 跳过段 / 最少样本按 窗 / W 同比例缩 ⇒ 史满 W 后即标称口径, 之前也一直有值
+//   ret_12_1  P_{T−20} / P_{T−250} − 1
+//   ret_1m    P_T / P_{T−20} − 1
+//   turn      换手 20 日均 / 250 日均 (换手 = volume / A 股流通股本, 首个成交日起停牌计 0)
+//   ivol      近 250 日 (r, m) 成对 OLS 残差标准差 (≥ 120 对)
+//   beta      近 156 周周收益对市场周收益 OLS 斜率 (≥ 52 周): 周收益 = 5 日滚动收益 P_T / P_{T−5} − 1 逐日采样
+//             (对 I 同取), 窗 156 × 5 日, 不依赖自然周界; 扩张期周长取 min(5, 可得史)
+//   trend     均线信号 A_L(T) = MA_L(P)_T / P_T (L ∈ kTrendLags). 每日截面回归 (T−h 日母集, T−h 与 T 皆有成交, ≥ 200 只)
+//             P_T / P_{T−h} − 1 ~ 1 + A(T−h) 得系数 b_T (h = 20, 数据起点后先按 h ≤ 已过日数 / 2 扩张; 去均值 + 相对岭:
+//             史不满时长短均线重合, 协方差奇异); trend = Σ_L b̄_L · A_L(T), b̄ = 近 250 日有效 b_T 均值 (≥ 120 日)
+//   resvol    残差波动 (Barra RESVOL 结构, 权重数据驱动). 三项: dastd = 近 250 日日收益标准差 (与 ivol 同窗同对),
+//             cmra = 近 12 月 (21 日 / 月) 月末价 (含当前) 对数极差, hsigma = ivol. 键截面上 (≥ 200 只):
+//             各项 z (等权均值 / 标准差, 截 ±3) → 合成 c = Σ w z, w = 近 250 日三项相关阵均值的第一主成分 (Σ w = 1)
+//             → c 对 1 + beta + log 市值 截面 OLS 取残差 e → resvol = e / σ_e
+//   遍: A 固定资产块并行累加截面和 (块序归约, 与线程数无关) → B 串行解市场收益 / 回归系数 → C per-A 并行前缀和出各列
+//       → D resvol 三次截面归约 (矩 → 相关阵 → 正交回归) + per-A 写出
+// ============================================================================
+constexpr int kRet12Skip = 20, kRet12Look = 250; // ret_12_1
+constexpr int kRet1Look = 20;                    // ret_1m
+constexpr int kTurnShort = 20, kTurnLong = 250;
+constexpr int kIvolWin = 250, kIvolMin = 120, kIvolFloor = 3;                           // 窗 / 最少对数 / 扩张期下限 (残差标准差须 ≥ 3 对)
+constexpr int kWeek = 5, kBetaWin = 156 * kWeek, kBetaMin = 52 * kWeek, kBetaFloor = 2; // β: 周长 / 窗 / 最少对数 / 扩张期下限
+constexpr int kTrendLags[] = {3, 5, 10, 20, 50, 100, 200, 300, 400};
+constexpr int kTrendK = static_cast<int>(std::size(kTrendLags));
+constexpr int kTrendZZ = kTrendK * (kTrendK + 1) / 2;           // Σ A Aᵀ 上三角
+constexpr int kTrendAcc = 1 + kTrendK + kTrendZZ + 1 + kTrendK; // 每日截面累加: n | Σ A | Σ A Aᵀ | Σ y | Σ A y
+constexpr int kTrendH = 20;
+constexpr int kTrendAvg = 250, kTrendAvgMin = 120;
+constexpr double kTrendRidge = 1e-4; // 相对岭: 协方差对角 × (1 + λ)
+constexpr int kMonth = 21, kCmraMonths = 12;
+constexpr int kResK = 5;          // resvol 暂存项: dastd | cmra | hsigma (= ivol) | beta | log 市值 (非样本格全 NaN)
+constexpr int kResAvg = 250;      // 相关阵平滑窗
+constexpr double kResClip = 3.0;  // z 截尾
+constexpr int kCsMinN = 200;      // 截面最少只数 (trend / resvol)
+constexpr int kMarketBlocks = 16; // 截面累加的固定资产块数
+
+// 扩张窗内按比例缩的量 k · w / W: 下取整 (跳过段) / 上取整 (短窗 / 最少样本)
+constexpr int scale_dn(int k, int w, int W) { return k * w / W; }
+constexpr int scale_up(int k, int w, int W) { return (k * w + W - 1) / W; }
+
+// per-A 数据日序列 + 价格前缀和 (线程私有, 逐资产复用)
+struct Quote {
+  std::vector<double> P, cs; // 后复权价 (无价 NaN) / Σ 有价 P
+  std::vector<float> V;      // 成交量 (无行 NaN)
+  std::vector<int> cn;       // Σ 有价日数
+  int first = -1;            // 首个有价日 (−1 = 无)
+  explicit Quote(int n_d)
+      : P(static_cast<std::size_t>(n_d)), cs(static_cast<std::size_t>(n_d) + 1),
+        V(static_cast<std::size_t>(n_d)), cn(static_cast<std::size_t>(n_d) + 1) {}
+
+  void load(const PitPool &p, const std::vector<float> &volume, int a) {
+    const int n_d = p.n_g;
+    const std::size_t base = static_cast<std::size_t>(a) * static_cast<std::size_t>(n_d);
+    first = -1;
+    for (int T = 0; T < n_d; ++T) {
+      const std::size_t o = base + static_cast<std::size_t>(T);
+      const float c = T + 1 < n_d ? p.close[o + 1] : NaNF;
+      const double v = static_cast<double>(c) * static_cast<double>(p.adj_factor[o]);
+      const bool ok = std::isfinite(v);
+      if (ok && first < 0)
+        first = T;
+      P[static_cast<std::size_t>(T)] = ok ? v : NaND;
+      V[static_cast<std::size_t>(T)] = volume[o];
+      cs[static_cast<std::size_t>(T) + 1] = cs[static_cast<std::size_t>(T)] + (ok ? v : 0.0);
+      cn[static_cast<std::size_t>(T) + 1] = cn[static_cast<std::size_t>(T)] + (ok ? 1 : 0);
+    }
+  }
+  bool traded(int T) const { return V[static_cast<std::size_t>(T)] > 0.0f; }
+  double px(int T) const { return P[static_cast<std::size_t>(T)]; }
+  // T 日可得的日收益数 (首个有价日起; 无价 → −1)
+  int hist(int T) const { return first >= 0 && T >= first ? T - first : -1; }
+  // A_L(T) = MA_L(P)_T / P_T, L 扩张到 min(L, 可得史); 窗内有缺价 / T 无价 → NaN
+  double sig(int T, int L) const {
+    const int h = hist(T);
+    if (h < 0)
+      return NaND;
+    L = std::min(L, h + 1);
+    const int i1 = T + 1, i0 = i1 - L;
+    if (cn[static_cast<std::size_t>(i1)] - cn[static_cast<std::size_t>(i0)] != L)
+      return NaND;
+    return (cs[static_cast<std::size_t>(i1)] - cs[static_cast<std::size_t>(i0)]) / L / px(T);
+  }
+};
+
+// 趋势截面回归 (去均值, 截距不出): 由累加 c (布局 kTrendAcc) 解 (C + λ diag C) b = c_Ay, C = 信号协方差; n 不足 / 非正定 → false
+bool solve_trend(const double *c, double (&b)[kTrendK]) {
+  const double n = c[0];
+  if (n < kCsMinN)
+    return false;
+  const double *sa = c + 1, *saa = sa + kTrendK, sy = saa[kTrendZZ], *say = saa + kTrendZZ + 1;
+  double L[kTrendK][kTrendK] = {};
+  for (int i = 0, o = 0; i < kTrendK; ++i)
+    for (int j = i; j < kTrendK; ++j, ++o)
+      L[j][i] = saa[o] - sa[i] * sa[j] / n;
+  for (int j = 0; j < kTrendK; ++j) {
+    L[j][j] *= 1.0 + kTrendRidge;
+    const double g = L[j][j];
+    double d = g;
+    for (int k = 0; k < j; ++k)
+      d -= L[j][k] * L[j][k];
+    if (!(d > 1e-12 * g))
+      return false;
+    L[j][j] = std::sqrt(d);
+    for (int i = j + 1; i < kTrendK; ++i) {
+      double s = L[i][j];
+      for (int k = 0; k < j; ++k)
+        s -= L[i][k] * L[j][k];
+      L[i][j] = s / L[j][j];
+    }
+  }
+  for (int i = 0; i < kTrendK; ++i) {
+    double s = say[i] - sa[i] * sy / n;
+    for (int k = 0; k < i; ++k)
+      s -= L[i][k] * b[k];
+    b[i] = s / L[i][i];
+  }
+  for (int i = kTrendK - 1; i >= 0; --i) {
+    double s = b[i];
+    for (int k = i + 1; k < kTrendK; ++k)
+      s -= L[k][i] * b[k];
+    b[i] = s / L[i][i];
+  }
+  return true;
+}
+
+// 截面归约: 资产切 kMarketBlocks 个固定块并行, put(a, T, acc) 往 acc[0, W) 累加 (T ∈ [T0, T0 + n_T)),
+// 块序求和 → [n_T × W] (与线程数无关)
+template <class F>
+std::vector<double> cross_sum(misc::exec::ForkJoin &pool, int n_a, int T0, int n_T, int W, F put) {
+  const std::size_t span = static_cast<std::size_t>(n_T) * static_cast<std::size_t>(W);
+  std::vector<double> acc(static_cast<std::size_t>(kMarketBlocks) * span, 0.0);
+  pool.tasks(kMarketBlocks, [&](int blk, int) {
+    double *at = acc.data() + static_cast<std::size_t>(blk) * span;
+    const int a1 = static_cast<int>(static_cast<long>(n_a) * (blk + 1) / kMarketBlocks);
+    for (int a = static_cast<int>(static_cast<long>(n_a) * blk / kMarketBlocks); a < a1; ++a)
+      for (int i = 0; i < n_T; ++i)
+        put(a, T0 + i, at + static_cast<std::size_t>(i) * static_cast<std::size_t>(W));
+  });
+  std::vector<double> s(span, 0.0);
+  for (int blk = 0; blk < kMarketBlocks; ++blk)
+    for (std::size_t j = 0; j < span; ++j)
+      s[j] += acc[static_cast<std::size_t>(blk) * span + j];
+  return s;
+}
+
+// 正相关阵 (3×3) 第一主成分: 幂迭代 (起点全 1, 收敛到全正特征向量), 归一到 Σ w = 1
+void pc1(const double (&c)[3][3], double (&w)[3]) {
+  double v[3] = {1.0, 1.0, 1.0};
+  for (int it = 0; it < 64; ++it) {
+    double u[3], n = 0.0;
+    for (int i = 0; i < 3; ++i) {
+      u[i] = c[i][0] * v[0] + c[i][1] * v[1] + c[i][2] * v[2];
+      n += u[i] * u[i];
+    }
+    n = std::sqrt(n);
+    for (int i = 0; i < 3; ++i)
+      v[i] = u[i] / n;
+  }
+  const double s = v[0] + v[1] + v[2];
+  for (int i = 0; i < 3; ++i)
+    w[i] = v[i] / s;
+}
+
+Market build_market(const Axes &axes, const PitPool &p, const std::vector<float> &volume, int g0) {
+  const int n_a = axes.n_a(), n_d = axes.n_d();
+  assert(p.g0 == 0 && p.n_g == n_d && "build_market 须在切片前");
+  assert(p.univ.size() == static_cast<std::size_t>(n_a) * static_cast<std::size_t>(n_d) && "资产态掩码须先于行情派生");
+  const auto sz = [](int i) { return static_cast<std::size_t>(i); };
+  const auto member = [&](int a, int d) { return (p.univ[sz(a) * sz(n_d) + sz(d)] & kBase) != 0; };
+  misc::exec::ForkJoin pool(misc::exec::hw());
+
+  // 数据起点 t0 = 最早有价的母集日 (趋势回归的扩张基准)
+  int t0 = n_d;
+  for (int a = 0; a < n_a; ++a) {
+    const std::size_t o = sz(a) * sz(n_d);
+    for (int T = 0; T < std::min(t0, n_d - 1); ++T)
+      if (member(a, T) && std::isfinite(static_cast<double>(p.close[o + sz(T) + 1]) * static_cast<double>(p.adj_factor[o + sz(T)]))) {
+        t0 = T;
+        break;
+      }
+  }
+  const auto horizon = [t0](int T) { return std::max(1, std::min(kTrendH, (T - t0) / 2)); };
+
+  // ---- A: 固定资产块累加 市场收益和 / 成员数 [T], 趋势截面 [T − t_lo] ----
+  const int t_lo = std::max(t0 + 1, g0 - kTrendAvg); // b̄ 最早窗的起点
+  const int n_t = std::max(0, n_d - t_lo);
+  std::vector<double> acc_m(sz(kMarketBlocks) * sz(2 * n_d), 0.0);
+  std::vector<double> acc_t(sz(kMarketBlocks) * sz(n_t) * sz(kTrendAcc), 0.0);
+  {
+    std::vector<Quote> qs(sz(pool.threads()), Quote(n_d));
+    pool.tasks(kMarketBlocks, [&](int blk, int tid) {
+      Quote &q = qs[sz(tid)];
+      double *am = acc_m.data() + sz(blk) * sz(2 * n_d);
+      double *at = acc_t.data() + sz(blk) * sz(n_t) * sz(kTrendAcc);
+      const int a1 = static_cast<int>(static_cast<long>(n_a) * (blk + 1) / kMarketBlocks);
+      for (int a = static_cast<int>(static_cast<long>(n_a) * blk / kMarketBlocks); a < a1; ++a) {
+        q.load(p, volume, a);
+        for (int T = 1; T < n_d; ++T) {
+          if (!(member(a, T) && q.traded(T)))
+            continue;
+          const double r = q.px(T) / q.px(T - 1) - 1.0;
+          if (!std::isfinite(r))
+            continue;
+          am[T] += r;
+          am[n_d + T] += 1.0;
+        }
+        for (int T = t_lo; T < n_d; ++T) {
+          const int s = T - horizon(T);
+          if (!(member(a, s) && q.traded(T) && q.traded(s)))
+            continue;
+          double z[kTrendK];
+          bool ok = true;
+          for (int k = 0; k < kTrendK && ok; ++k)
+            ok = std::isfinite(z[k] = q.sig(s, kTrendLags[k]));
+          const double y = q.px(T) / q.px(s) - 1.0;
+          if (!(ok && std::isfinite(y)))
+            continue;
+          double *c = at + sz(T - t_lo) * sz(kTrendAcc);
+          double *sa = c + 1, *saa = sa + kTrendK, *say = saa + kTrendZZ + 1;
+          c[0] += 1.0;
+          for (int i = 0, o = 0; i < kTrendK; ++i) {
+            sa[i] += z[i];
+            say[i] += z[i] * y;
+            for (int j = i; j < kTrendK; ++j, ++o)
+              saa[o] += z[i] * z[j];
+          }
+          saa[kTrendZZ] += y;
+        }
+      }
+    });
+  }
+
+  // ---- B: 市场日收益 / 趋势系数前缀和 ----
+  std::vector<double> m(sz(n_d), NaND);
+  for (int T = 1; T < n_d; ++T) {
+    double num = 0.0, den = 0.0;
+    for (int blk = 0; blk < kMarketBlocks; ++blk) {
+      num += acc_m[sz(blk) * sz(2 * n_d) + sz(T)];
+      den += acc_m[sz(blk) * sz(2 * n_d) + sz(n_d + T)];
+    }
+    if (den > 0.0)
+      m[sz(T)] = num / den;
+  }
+  std::vector<double> I(sz(n_d), 1.0);
+  for (int T = 1; T < n_d; ++T)
+    I[sz(T)] = I[sz(T - 1)] * (1.0 + (std::isfinite(m[sz(T)]) ? m[sz(T)] : 0.0));
+  std::vector<double> bsum(sz(n_t + 1) * sz(kTrendK), 0.0); // 有效 b_T 的前缀和
+  std::vector<int> bcnt(sz(n_t + 1), 0);
+  for (int i = 0; i < n_t; ++i) {
+    double c[kTrendAcc] = {};
+    for (int blk = 0; blk < kMarketBlocks; ++blk) {
+      const double *src = acc_t.data() + (sz(blk) * sz(n_t) + sz(i)) * sz(kTrendAcc);
+      for (int k = 0; k < kTrendAcc; ++k)
+        c[k] += src[k];
+    }
+    double b[kTrendK];
+    const bool ok = solve_trend(c, b);
+    for (int k = 0; k < kTrendK; ++k)
+      bsum[sz(i + 1) * sz(kTrendK) + sz(k)] = bsum[sz(i) * sz(kTrendK) + sz(k)] + (ok ? b[k] : 0.0);
+    bcnt[sz(i + 1)] = bcnt[sz(i)] + (ok ? 1 : 0);
+  }
+  std::vector<double>().swap(acc_t);
+
+  // ---- C: per-A 前缀和出各列 (数据日 T ∈ [T_lo = g0 − 1, n_d − 1) → 行 T + 1); resvol 暂存项从 T_c 起 (相关阵平滑窗) ----
+  Market mk;
+  mk.g0 = g0;
+  mk.n_g = n_d - g0;
+  for (auto &v : mk.v)
+    v.assign(sz(n_a) * sz(mk.n_g), NaNF);
+  const int T_lo = std::max(0, g0 - 1), T_c = std::max(0, T_lo - kResAvg), n_c = n_d - 1 - T_c;
+  std::vector<float> res(sz(n_a) * sz(n_c) * sz(kResK), NaNF);
+  const auto res_at = [&](int a, int T) { return res.data() + (sz(a) * sz(n_c) + sz(T - T_c)) * sz(kResK); };
+  pool.rows(n_a, [&](int a0, int a1, int) {
+    Quote q(n_d);
+    std::vector<double> ts(sz(n_d) + 1), ix(sz(n_d) + 1), iy(sz(n_d) + 1), ixx(sz(n_d) + 1), iyy(sz(n_d) + 1), ixy(sz(n_d) + 1);
+    std::vector<double> wx(sz(n_d) + 1), wy(sz(n_d) + 1), wxx(sz(n_d) + 1), wxy(sz(n_d) + 1);
+    std::vector<int> tn(sz(n_d) + 1), in(sz(n_d) + 1), wn(sz(n_d) + 1);
+    for (int a = a0; a < a1; ++a) {
+      q.load(p, volume, a);
+      if (q.first < 0)
+        continue;
+      const std::size_t oa = sz(a) * sz(n_d);
+      int ft = -1; // 首个成交日
+      for (int T = 0; T < n_d; ++T) {
+        const std::size_t i = sz(T);
+        if (ft < 0 && q.traded(T))
+          ft = T;
+        const double fs = p.a_float_shares[oa + i];
+        const double tv = (ft >= 0 && std::isfinite(fs)) ? (q.traded(T) ? q.V[i] / fs : 0.0) : NaND;
+        const bool tv_ok = std::isfinite(tv);
+        ts[i + 1] = ts[i] + (tv_ok ? tv : 0.0);
+        tn[i + 1] = tn[i] + (tv_ok ? 1 : 0);
+        const double r = (T > 0 && q.traded(T)) ? q.px(T) / q.px(T - 1) - 1.0 : NaND;
+        const bool pr = std::isfinite(r) && std::isfinite(m[i]);
+        const double x = pr ? m[i] : 0.0, y = pr ? r : 0.0;
+        in[i + 1] = in[i] + (pr ? 1 : 0);
+        ix[i + 1] = ix[i] + x;
+        iy[i + 1] = iy[i] + y;
+        ixx[i + 1] = ixx[i] + x * x;
+        iyy[i + 1] = iyy[i] + y * y;
+        ixy[i + 1] = ixy[i] + x * y;
+        const int k = std::min(kWeek, q.hist(T));
+        const double rw = (k > 0 && q.traded(T)) ? q.px(T) / q.px(T - k) - 1.0 : NaND;
+        const bool pw = std::isfinite(rw);
+        const double xw = pw ? I[i] / I[i - sz(k)] - 1.0 : 0.0, yw = pw ? rw : 0.0;
+        wn[i + 1] = wn[i] + (pw ? 1 : 0);
+        wx[i + 1] = wx[i] + xw;
+        wy[i + 1] = wy[i] + yw;
+        wxx[i + 1] = wxx[i] + xw * xw;
+        wxy[i + 1] = wxy[i] + xw * yw;
+      }
+
+      const std::size_t ob = sz(a) * sz(mk.n_g);
+      for (int T = T_c; T + 1 < n_d; ++T) {
+        const int h = q.hist(T);
+        if (h < 0)
+          continue;
+        const std::size_t i1 = sz(T) + 1;
+        float v[MK_COUNT];
+        std::fill(std::begin(v), std::end(v), NaNF);
+        float *r = res_at(a, T);
+        // ivol (= hsigma) / dastd
+        {
+          const int win = std::min(kIvolWin, h);
+          const std::size_t i0 = i1 - sz(win);
+          const int n = in[i1] - in[i0];
+          if (n >= std::max(kIvolFloor, scale_up(kIvolMin, win, kIvolWin))) {
+            const double sx = ix[i1] - ix[i0], sy = iy[i1] - iy[i0];
+            const double cxx = ixx[i1] - ixx[i0] - sx * sx / n, cyy = iyy[i1] - iyy[i0] - sy * sy / n;
+            const double cxy = ixy[i1] - ixy[i0] - sx * sy / n;
+            r[0] = static_cast<float>(std::sqrt(std::max(0.0, cyy / (n - 1))));
+            if (cxx > 0.0)
+              r[2] = v[mk_ivol] = static_cast<float>(std::sqrt(std::max(0.0, (cyy - cxy * cxy / cxx) / (n - 2))));
+          }
+        }
+        // beta
+        {
+          const int win = std::min(kBetaWin, h);
+          const std::size_t i0 = i1 - sz(win);
+          const int n = wn[i1] - wn[i0];
+          if (n >= std::max(kBetaFloor, scale_up(kBetaMin, win, kBetaWin))) {
+            const double sx = wx[i1] - wx[i0], sy = wy[i1] - wy[i0];
+            const double cxx = wxx[i1] - wxx[i0] - sx * sx / n, cxy = wxy[i1] - wxy[i0] - sx * sy / n;
+            if (cxx > 0.0)
+              r[3] = v[mk_beta] = static_cast<float>(cxy / cxx);
+          }
+        }
+        // resvol 暂存: 样本 = 键截面 (T+1 日盘前母集) ∧ 五项皆有限, 否则整格记无. 只供 resvol 的两项只给键截面算:
+        //   cmra = 月末价 P_{T − k·L} (k = 0..K) 的对数极差, 月长 L 随可得史扩张; log 市值 = log(收盘 × 总股本)
+        if (member(a, T + 1)) {
+          const int L = std::max(1, std::min(kMonth * kCmraMonths, h) / kCmraMonths), K = std::min(kCmraMonths, h / L);
+          double hi = q.px(T), lo = hi;
+          for (int k = 1; k <= K; ++k) {
+            hi = std::max(hi, q.px(T - k * L));
+            lo = std::min(lo, q.px(T - k * L));
+          }
+          r[1] = static_cast<float>(std::log(hi / lo));
+          r[4] = static_cast<float>(std::log(static_cast<double>(p.close[oa + i1]) * static_cast<double>(p.total_shares[oa + sz(T)])));
+        }
+        if (!std::isfinite(r[0] + r[1] + r[2] + r[3] + r[4]))
+          std::fill_n(r, kResK, NaNF);
+        if (T < T_lo)
+          continue;
+        // ret_12_1 / ret_1m
+        if (const int look = std::min(kRet12Look, h); look > 0)
+          v[mk_ret_12_1] = static_cast<float>(q.px(T - scale_dn(kRet12Skip, look, kRet12Look)) / q.px(T - look) - 1.0);
+        if (const int look = std::min(kRet1Look, h); look > 0)
+          v[mk_ret_1m] = static_cast<float>(q.px(T) / q.px(T - look) - 1.0);
+        // turn
+        if (ft >= 0 && T >= ft) {
+          const int lw = std::min(kTurnLong, T - ft + 1), sw = std::max(1, scale_up(kTurnShort, lw, kTurnLong));
+          if (tn[i1] - tn[i1 - sz(lw)] == lw && tn[i1] - tn[i1 - sz(sw)] == sw) {
+            const double lo = (ts[i1] - ts[i1 - sz(lw)]) / lw, sh = (ts[i1] - ts[i1 - sz(sw)]) / sw;
+            if (lo > 0.0)
+              v[mk_turn] = static_cast<float>(sh / lo);
+          }
+        }
+        // trend
+        if (T >= t_lo) {
+          const int bw = std::min(kTrendAvg, T - t0);
+          const std::size_t j1 = sz(T - t_lo) + 1, j0 = sz(std::max(0, T + 1 - bw - t_lo));
+          const int n = bcnt[j1] - bcnt[j0];
+          if (n >= std::max(1, scale_up(kTrendAvgMin, bw, kTrendAvg))) {
+            double e = 0.0;
+            for (int k = 0; k < kTrendK; ++k)
+              e += (bsum[j1 * sz(kTrendK) + sz(k)] - bsum[j0 * sz(kTrendK) + sz(k)]) / n * q.sig(T, kTrendLags[k]);
+            v[mk_trend] = static_cast<float>(e);
+          }
+        }
+        for (std::size_t c = 0; c < MK_COUNT; ++c)
+          mk.v[c][ob + sz(T + 1 - g0)] = v[c];
+      }
+    }
+  });
+
+  // ---- D: resvol (样本格 = res 有值格, C 里已判) ----
+  // D1 三项截面矩: n | Σ x | Σ x²
+  const std::vector<double> moments = cross_sum(pool, n_a, T_c, n_c, 7, [&](int a, int T, double *acc) {
+    const float *r = res_at(a, T);
+    if (!std::isfinite(r[0]))
+      return;
+    acc[0] += 1.0;
+    for (int k = 0; k < 3; ++k) {
+      acc[1 + k] += r[k];
+      acc[4 + k] += static_cast<double>(r[k]) * r[k];
+    }
+  });
+  // 截面 z (截 ±kResClip); 非样本格 / 该日样本不足 / 某项无离散 → 无
+  std::vector<double> mu(sz(n_c) * 3, NaND), sd(sz(n_c) * 3, NaND);
+  for (int i = 0; i < n_c; ++i) {
+    const double *s = moments.data() + sz(i) * 7, n = s[0];
+    if (n < kCsMinN)
+      continue;
+    for (int k = 0; k < 3; ++k) {
+      const double u = s[1 + k] / n, var = s[4 + k] / n - u * u;
+      if (var > 0.0) {
+        mu[sz(i) * 3 + sz(k)] = u;
+        sd[sz(i) * 3 + sz(k)] = std::sqrt(var);
+      }
+    }
+  }
+  const auto zs = [&](int a, int T, double (&z)[3]) {
+    const std::size_t i = sz(T - T_c) * 3;
+    const float *r = res_at(a, T);
+    for (int k = 0; k < 3; ++k)
+      z[k] = std::clamp((r[k] - mu[i + sz(k)]) / sd[i + sz(k)], -kResClip, kResClip);
+    return std::isfinite(z[0] + z[1] + z[2]);
+  };
+  // D2 相关阵: Σ z_i z_j (上三角 00 01 02 11 12 22) → 逐日相关阵前缀和
+  const std::vector<double> zz = cross_sum(pool, n_a, T_c, n_c, 6, [&](int a, int T, double *acc) {
+    double z[3];
+    if (!zs(a, T, z))
+      return;
+    for (int i = 0, o = 0; i < 3; ++i)
+      for (int j = i; j < 3; ++j, ++o)
+        acc[o] += z[i] * z[j];
+  });
+  std::vector<double> rho(sz(n_c + 1) * 6, 0.0);
+  std::vector<int> rho_n(sz(n_c + 1), 0);
+  for (int i = 0; i < n_c; ++i) {
+    const double *s = zz.data() + sz(i) * 6;
+    const double d0 = std::sqrt(s[0]), d1 = std::sqrt(s[3]), d2 = std::sqrt(s[5]);
+    const double c[6] = {1.0, s[1] / (d0 * d1), s[2] / (d0 * d2), 1.0, s[4] / (d1 * d2), 1.0};
+    const bool ok = d0 > 0.0 && d1 > 0.0 && d2 > 0.0; // 该日无 z (样本不足 / 无离散) ⇒ 和为 0
+    for (int k = 0; k < 6; ++k)
+      rho[sz(i + 1) * 6 + sz(k)] = rho[sz(i) * 6 + sz(k)] + (ok ? c[k] : 0.0);
+    rho_n[sz(i + 1)] = rho_n[sz(i)] + (ok ? 1 : 0);
+  }
+  // 合成权重 w_T = 近 kResAvg 日相关阵均值的第一主成分 (T ∈ [T_lo, n_d − 1))
+  const int n_o = n_d - 1 - T_lo;
+  std::vector<double> wt(sz(n_o) * 3, NaND);
+  for (int T = T_lo; T + 1 < n_d; ++T) {
+    const std::size_t j1 = sz(T - T_c) + 1, j0 = sz(std::max(0, T - T_c + 1 - kResAvg));
+    const int n = rho_n[j1] - rho_n[j0];
+    if (n == 0)
+      continue;
+    double s[6];
+    for (int k = 0; k < 6; ++k)
+      s[k] = (rho[j1 * 6 + sz(k)] - rho[j0 * 6 + sz(k)]) / n;
+    const double c[3][3] = {{s[0], s[1], s[2]}, {s[1], s[3], s[4]}, {s[2], s[4], s[5]}};
+    double w[3];
+    pc1(c, w);
+    std::copy(std::begin(w), std::end(w), wt.begin() + static_cast<std::ptrdiff_t>(sz(T - T_lo) * 3));
+  }
+  const auto comp = [&](int a, int T, double &c) {
+    double z[3];
+    const double *w = wt.data() + sz(T - T_lo) * 3;
+    if (!zs(a, T, z))
+      return false;
+    c = w[0] * z[0] + w[1] * z[1] + w[2] * z[2];
+    return std::isfinite(c);
+  };
+  // D3 正交回归 c ~ 1 + β + s: n | Σβ Σs | Σββ Σβs Σss | Σc Σβc Σsc Σcc
+  const std::vector<double> reg = cross_sum(pool, n_a, T_lo, n_o, 10, [&](int a, int T, double *acc) {
+    double c;
+    if (!comp(a, T, c))
+      return;
+    const float *r = res_at(a, T);
+    const double b = r[3], s = r[4];
+    const double row[10] = {1.0, b, s, b * b, b * s, s * s, c, b * c, s * c, c * c};
+    for (int k = 0; k < 10; ++k)
+      acc[k] += row[k];
+  });
+  struct Fit {
+    double c0, b0, s0, gb, gs, se; // 均值 c̄ β̄ s̄ | 斜率 | 残差标准差
+  };
+  std::vector<Fit> fit(sz(n_o), Fit{NaND, NaND, NaND, NaND, NaND, NaND});
+  for (int i = 0; i < n_o; ++i) {
+    const double *s = reg.data() + sz(i) * 10, n = s[0];
+    if (n < kCsMinN)
+      continue;
+    const double bb = s[3] - s[1] * s[1] / n, bs = s[4] - s[1] * s[2] / n, ss = s[5] - s[2] * s[2] / n;
+    const double bc = s[7] - s[1] * s[6] / n, sc = s[8] - s[2] * s[6] / n, cc = s[9] - s[6] * s[6] / n;
+    const double det = bb * ss - bs * bs;
+    if (!(det > 1e-12 * bb * ss))
+      continue;
+    const double gb = (ss * bc - bs * sc) / det, gs = (bb * sc - bs * bc) / det;
+    const double ssr = cc - gb * bc - gs * sc;
+    if (ssr > 0.0)
+      fit[sz(i)] = {s[6] / n, s[1] / n, s[2] / n, gb, gs, std::sqrt(ssr / n)};
+  }
+  pool.rows(n_a, [&](int a0, int a1, int) {
+    for (int a = a0; a < a1; ++a)
+      for (int T = T_lo; T + 1 < n_d; ++T) {
+        double c;
+        const Fit &f = fit[sz(T - T_lo)];
+        const float *r = res_at(a, T);
+        if (std::isfinite(f.se) && comp(a, T, c))
+          mk.v[mk_resvol][sz(a) * sz(mk.n_g) + sz(T + 1 - g0)] =
+              static_cast<float>((c - f.c0 - f.gb * (r[3] - f.b0) - f.gs * (r[4] - f.s0)) / f.se);
+      }
+  });
+  return mk;
 }
 
 // 事件表 (9 张): fold 只产命中 (Hits, 段内追加), Scan::run 之后 finish 按资产分桶成链 (v 升序).
@@ -982,6 +1539,8 @@ inline int year_of_d(const Axes &axes, int d) {
 // 首个年份 ≥ y 的 D 轴下标; 无 → n_d
 inline int first_d_of_year(const Axes &axes, int y) { return axes.lower(y * 10000 + 101); }
 
+std::vector<std::uint8_t> univ_mask(const Data &data); // 定义在 State 之后
+
 } // namespace
 
 // ============================================================================
@@ -1027,6 +1586,7 @@ void Panel::build(const std::vector<std::string> &codes,
     assert(d + 1 < n_d && "回测日无次日交易日 (回测区间不能含 today)");
     first_d = std::min(first_d, d);
   }
+  const int g0 = std::max(0, first_d - 15); // 网格切片起点: 首回测日前留 15 日 (trading_st 连续 15 日计数)
 
   // ---- 静态 meta: cn_stock_basic_info (_meta) ----
   meta.list.assign(static_cast<std::size_t>(n_a), 0);
@@ -1034,6 +1594,10 @@ void Panel::build(const std::vector<std::string> &codes,
   meta.list_day.assign(static_cast<std::size_t>(n_a), {});
   meta.delist_day.assign(static_cast<std::size_t>(n_a), {});
   meta.main_board.assign(static_cast<std::size_t>(n_a), 0);
+  assert(static_cast<int>(codes.size()) == n_a && "AssetAxis 有重复代码");
+  meta.bj.resize(static_cast<std::size_t>(n_a));
+  for (int a = 0; a < n_a; ++a)
+    meta.bj[static_cast<std::size_t>(a)] = codes[static_cast<std::size_t>(a)].ends_with(".BJ");
   fundamental::meta(cat, ids, fundamental::spec("cn_stock_basic_info"), {"list_date", "delist_date", "list_sector"},
                     [&](const Rows &r) {
                       const pq::Col ld = r.col("list_date"), dd = r.col("delist_date"), ls = r.col("list_sector");
@@ -1050,6 +1614,7 @@ void Panel::build(const std::vector<std::string> &codes,
                     });
 
   // ---- PIT 池: 15 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
+  std::vector<float> volume;
   {
     fundamental::Scan scan(cat, ids, static_cast<size_t>(misc::exec::hw()));
     GridScan grids;
@@ -1060,6 +1625,7 @@ void Panel::build(const std::vector<std::string> &codes,
     scan.run(done);
     grids.finish(axes, pit);
     std::move(events).finish(n_a, pit);
+    volume = std::move(grids.volume);
   }
 
   // ---- 分红事件标注公告日股本快照 (需全史网格, 在切片之前) ----
@@ -1090,8 +1656,16 @@ void Panel::build(const std::vector<std::string> &codes,
   // ---- dividend_st 数据轴 warmup (轴起点 + 3 年) ----
   data->axes_warmup_d = first_d_of_year(axes, year_of_d(axes, 0) + 3);
 
-  // ---- 网格切片: 首回测日前留 15 日 (trading_st 连续 15 日计数), 其余历史只在事件链上 ----
-  pit.slice(n_a, std::max(0, first_d - 15));
+  // ---- 全史资产态掩码 (状态机全史推进, 须在切片前) → 行情派生截面 + Fund live / base 口 ----
+  pit.univ = univ_mask(*data);
+
+  // ---- 行情派生: 全市场码表才有截面 (池轴 Panel 留空 → Fund 口 NaN) ----
+  if (full)
+    data->market = build_market(axes, pit, volume, g0);
+  std::vector<float>().swap(volume);
+
+  // ---- 网格切片: 其余历史只在事件链上 ----
+  pit.slice(n_a, g0);
 
   d_ = std::move(data);
 
@@ -1315,26 +1889,100 @@ struct State {
     cur_d = d;
   }
 
-  // 当日行 (布局 Fund::Out; 亿单位; fp16 饱和: 极值 / +inf 违约束标记 → NaN)
-  void emit(int d, float *out) const {
+  const FinancialTtmEv *ttm() const {
+    return last_ttm >= 0 ? &D.pit.ttm[static_cast<std::size_t>(a)][static_cast<std::size_t>(last_ttm)] : nullptr;
+  }
+  // 营收 TTM: 负营收是源脏值 (qmt ps_raw 口径): ≤0 → NaN
+  float rev_ttm() const {
+    const FinancialTtmEv *t = ttm();
+    const float r = t ? t->total_operating_revenue_ttm : NaNF;
+    return (std::isfinite(r) && r > 0.0f) ? r : NaNF;
+  }
+  // ni_raw: 最近两份年报 (按 PIT 首见序) 归母净利均值
+  float ni_raw() const {
+    int i0 = -1, i1 = -1, v0 = -1, v1 = -1;
+    for (std::size_t i = 0; i < annuals.size(); ++i) {
+      const int v = annuals[i].last_v;
+      if (v > v0) {
+        v1 = v0;
+        i1 = i0;
+        v0 = v;
+        i0 = static_cast<int>(i);
+      } else if (v > v1) {
+        v1 = v;
+        i1 = static_cast<int>(i);
+      }
+    }
+    if (i0 >= 0 && i1 >= 0)
+      return (annuals[static_cast<std::size_t>(i0)].val + annuals[static_cast<std::size_t>(i1)].val) * 0.5f;
+    return i0 >= 0 ? annuals[static_cast<std::size_t>(i0)].val : NaNF;
+  }
+
+  // 母集判定所用的状态口 (上市龄 / 退市龄 / 行业 / 停牌 / ST 与四项 filter / 次新); emit 与全史母集掩码共用
+  void emit_status(int d, float *out) const {
     const Axes &axes = D.axes;
     const Meta &meta = D.meta;
     const PitPool &p = D.pit;
     const std::size_t ai = static_cast<std::size_t>(a);
+
+    // 上市龄 / 退市龄 (日历日; 未上市/未退市 = NaN)
+    const auto day = axes.date_days[static_cast<std::size_t>(d)];
+    float lage = NaNF, dage = NaNF;
+    if (meta.list[ai]) {
+      const float age = static_cast<float>((day - meta.list_day[ai]).count());
+      if (age >= 0.0f)
+        lage = age;
+    }
+    if (meta.delist[ai]) {
+      const float age = static_cast<float>((day - meta.delist_day[ai]).count());
+      if (age >= 0.0f)
+        dage = age;
+    }
+    out[Fund::list_age] = lage;
+    out[Fund::delist_age] = dage;
+
+    // filter
+    const float rev = rev_ttm(), ni = ni_raw();
+    const bool profit_st = d < profit_until;
+    const bool revenue_st = mb && std::isfinite(rev) &&
+                            ((d < rev_until_1e8 && rev < 1e8f) || (d < rev_until_3e8 && rev < 3e8f));
+    const bool dividend_st = mb && d >= warmup_d && std::isfinite(ni) && ni > 0.0f &&
+                             sum_3y < 0.30f * ni && sum_3y < 5e7f;
+
+    // 状态 / filter (0/1 常量)
+    out[Fund::ind_l1] = static_cast<float>(industry);
+    out[Fund::is_susp] = static_cast<float>(p.at(p.suspended, a, d));
+    out[Fund::st_level] = static_cast<float>(p.at(p.st_status, a, d));
+    out[Fund::st_profit] = profit_st ? 1.0f : 0.0f;
+    out[Fund::st_revenue] = revenue_st ? 1.0f : 0.0f;
+    out[Fund::st_dividend] = dividend_st ? 1.0f : 0.0f;
+    out[Fund::st_trading] = (run >= 15) ? 1.0f : 0.0f;
+    out[Fund::is_new] = (std::isfinite(lage) && lage < kNewListDays) ? 1.0f : 0.0f;
+  }
+
+  // 当日行 (布局 Fund::Out; 亿单位; fp16 饱和: 极值 / +inf 违约束标记 → NaN)
+  void emit(int d, float *out) const {
+    const Axes &axes = D.axes;
+    const PitPool &p = D.pit;
+    const std::size_t ai = static_cast<std::size_t>(a);
+    const auto day = axes.date_days[static_cast<std::size_t>(d)];
     constexpr float kFp16Max = 65504.0f;
     auto sat = [](float v) { return (std::isfinite(v) && v > -kFp16Max && v < kFp16Max) ? v : NaNF; };
     auto pos = [](float v) { return (std::isfinite(v) && v > 0.0f) ? v : NaNF; };
 
+    emit_status(d, out);
+    const std::uint8_t u = p.at(p.univ, a, d); // 状态口的全史判定结果 (univ_mask)
+    out[Fund::live] = (u & kLive) ? 1.0f : 0.0f;
+    out[Fund::base] = (u & kBase) ? 1.0f : 0.0f;
     const float m = mcap_raw(d);
-    const FinancialTtmEv *t = (last_ttm >= 0) ? &p.ttm[ai][static_cast<std::size_t>(last_ttm)] : nullptr;
+    const FinancialTtmEv *t = ttm();
 
     // -- 财务分母 / cffoa 改善 --
-    float np = NaNF, rev = NaNF, cf = NaNF, cf_chg = NaNF;
+    const float rev = rev_ttm();
+    float np = NaNF, cf = NaNF, cf_chg = NaNF;
     if (t) {
       const float n = t->net_profit_to_parent_shareholders_ttm;
       np = (std::isfinite(n) && n != 0.0f) ? n : NaNF;
-      const float r = t->total_operating_revenue_ttm; // 负营收是源脏值 (qmt ps_raw 口径): ≤0 → NaN
-      rev = (std::isfinite(r) && r > 0.0f) ? r : NaNF;
       const float c = t->net_cffoa_ttm;
       cf = (std::isfinite(c) && c != 0.0f) ? c : NaNF;
       const float c0 = t->net_cffoa_ttm, c4 = t->net_cffoa_ttm_shift4;
@@ -1359,33 +2007,6 @@ struct State {
     }
     // -- dy: 365 日税前分红总额 / mcap --
     const float dy = (std::isfinite(m) && m > 0.0f) ? std::max(cash_sum / m, 0.0f) : NaNF;
-    // -- ni_raw: 最近两份年报 (按 PIT 首见序) 归母净利均值 --
-    float ni = NaNF;
-    if (!annuals.empty()) {
-      int i0 = -1, i1 = -1, v0 = -1, v1 = -1;
-      for (std::size_t i = 0; i < annuals.size(); ++i) {
-        const int v = annuals[i].last_v;
-        if (v > v0) {
-          v1 = v0;
-          i1 = i0;
-          v0 = v;
-          i0 = static_cast<int>(i);
-        } else if (v > v1) {
-          v1 = v;
-          i1 = static_cast<int>(i);
-        }
-      }
-      if (i0 >= 0 && i1 >= 0)
-        ni = (annuals[static_cast<std::size_t>(i0)].val + annuals[static_cast<std::size_t>(i1)].val) * 0.5f;
-      else if (i0 >= 0)
-        ni = annuals[static_cast<std::size_t>(i0)].val;
-    }
-    // -- filter --
-    const bool profit_st = d < profit_until;
-    const bool revenue_st = mb && std::isfinite(rev) &&
-                            ((d < rev_until_1e8 && rev < 1e8f) || (d < rev_until_3e8 && rev < 3e8f));
-    const bool dividend_st = mb && d >= warmup_d && std::isfinite(ni) && ni > 0.0f &&
-                             sum_3y < 0.30f * ni && sum_3y < 5e7f;
 
     // 股本 / 估值分母 (亿单位)
     out[Fund::total_shares] = pos(p.at(p.total_shares, a, d)) * 1e-8f;
@@ -1405,33 +2026,7 @@ struct State {
     out[Fund::cfo_chg_ttm] = sat(cf_chg);
     out[Fund::rz_bal] = sat(p.at(p.fin_balance, a, d) * 1e-8f);
     out[Fund::rq_bal] = sat(p.at(p.sec_balance, a, d) * 1e-8f);
-
-    // 上市龄 / 退市龄 (日历日; 未上市/未退市 = NaN)
-    const auto day = axes.date_days[static_cast<std::size_t>(d)];
-    float lage = NaNF, dage = NaNF;
-    if (meta.list[ai]) {
-      const float age = static_cast<float>((day - meta.list_day[ai]).count());
-      if (age >= 0.0f)
-        lage = age;
-    }
-    if (meta.delist[ai]) {
-      const float age = static_cast<float>((day - meta.delist_day[ai]).count());
-      if (age >= 0.0f)
-        dage = age;
-    }
-    out[Fund::list_age] = lage;
-    out[Fund::delist_age] = dage;
-
-    // 状态 / filter (0/1 常量)
-    out[Fund::ind_l1] = static_cast<float>(industry);
     out[Fund::is_margin] = static_cast<float>(p.at(p.is_margin, a, d));
-    out[Fund::is_susp] = static_cast<float>(p.at(p.suspended, a, d));
-    out[Fund::st_level] = static_cast<float>(p.at(p.st_status, a, d));
-    out[Fund::st_profit] = profit_st ? 1.0f : 0.0f;
-    out[Fund::st_revenue] = revenue_st ? 1.0f : 0.0f;
-    out[Fund::st_dividend] = dividend_st ? 1.0f : 0.0f;
-    out[Fund::st_trading] = (run >= 15) ? 1.0f : 0.0f;
-    out[Fund::is_new] = (std::isfinite(lage) && lage < 60.0f) ? 1.0f : 0.0f;
 
     // ---- 行情日线项 / 两融明细 ----
     out[Fund::pre_close] = pos(p.at(p.pre_close, a, d));
@@ -1484,6 +2079,27 @@ struct State {
       out[Fund::bs_intang_gw] = bs(&FinancialBalanceEv::intang_gw);
       out[Fund::bs_eq] = bs(&FinancialBalanceEv::total_equity_to_parent_shareholders);
       out[Fund::bs_minority] = bs(&FinancialBalanceEv::minority_interests);
+      // 总资产同比: 最近报告期 R 对 R − 1 年 (同报告期, 两端 > 0)
+      float ta_yoy = NaNF;
+      if (b) {
+        const auto ago = latest_by_rd.find(latest_by_rd.rbegin()->first - 10000);
+        if (ago != latest_by_rd.end() && b->total_assets > 0.0f && ago->second.total_assets > 0.0f)
+          ta_yoy = b->total_assets / ago->second.total_assets - 1.0f;
+      }
+      out[Fund::ta_yoy] = sat(ta_yoy);
+    }
+
+    // ---- 行情派生 (全市场预计算; 池轴 Panel 未算 → NaN) ----
+    {
+      const Market &mk = D.market;
+      auto mkt = [&](MarketItem c) { return mk.built() ? sat(mk.at(c, a, d)) : NaNF; };
+      out[Fund::ret_12_1] = mkt(mk_ret_12_1);
+      out[Fund::ret_1m] = mkt(mk_ret_1m);
+      out[Fund::turn] = mkt(mk_turn);
+      out[Fund::ivol] = mkt(mk_ivol);
+      out[Fund::resvol] = mkt(mk_resvol);
+      out[Fund::beta] = mkt(mk_beta);
+      out[Fund::trend] = mkt(mk_trend);
     }
 
     // ---- 利润表 / 现金流量表 三口径 (亿元; eps 元) ----
@@ -1534,6 +2150,36 @@ struct State {
     }
   }
 };
+
+namespace {
+// 全史资产态掩码 [a · n_d + d] = d 日盘前态的 kLive | kBase (全系统唯一一次判定; 切片前调, 状态机沿全 D 轴只推事件 + 状态口)
+//   活跃 kLive = 非北交所 ∧ 上市满 kNewListDays 日历日 ∧ 未退市 (delist_age 未定义) ∧ 非停牌 ∧ 申万一级行业已知
+//   母集 kBase = 活跃 ∧ st_level == 0 (非 ST / *ST / 退市整理期) ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0
+std::vector<std::uint8_t> univ_mask(const Data &data) {
+  const int n_a = data.axes.n_a(), n_d = data.axes.n_d();
+  assert(data.pit.g0 == 0 && data.pit.n_g == n_d && "univ_mask 须在切片前");
+  std::vector<std::uint8_t> m(static_cast<std::size_t>(n_a) * static_cast<std::size_t>(n_d));
+  misc::exec::ForkJoin pool(misc::exec::hw());
+  pool.rows(n_a, [&](int a0, int a1, int) {
+    float y[Fund::kCount];
+    for (int a = a0; a < a1; ++a) {
+      State s(data, a);
+      const bool bj = data.meta.bj[static_cast<std::size_t>(a)] != 0;
+      std::uint8_t *row = m.data() + static_cast<std::size_t>(a) * static_cast<std::size_t>(n_d);
+      for (int d = 0; d < n_d; ++d) {
+        s.step(d);
+        s.emit_status(d, y);
+        const bool live = !bj && y[Fund::list_age] >= kNewListDays && !(y[Fund::delist_age] >= 0.0f) &&
+                          y[Fund::is_susp] == 0.0f && y[Fund::ind_l1] > 0.0f;
+        const bool base = live && y[Fund::st_level] == 0.0f && y[Fund::st_trading] == 0.0f && y[Fund::st_profit] == 0.0f &&
+                          y[Fund::st_revenue] == 0.0f && y[Fund::st_dividend] == 0.0f;
+        row[d] = static_cast<std::uint8_t>((live ? kLive : 0) | (base ? kBase : 0));
+      }
+    }
+  });
+  return m;
+}
+} // namespace
 
 Stream::Stream(const Panel &panel, std::size_t asset_id)
     : s_(std::make_unique<State>(panel.data(), static_cast<int>(asset_id))) {

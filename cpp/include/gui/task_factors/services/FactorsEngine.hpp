@@ -497,7 +497,7 @@ private:
 // worker 私有常驻件 (跨请求存活; 各服务一份): 线程池 / 库 / 块 / worker 的取消旗与进度面 / 引擎 (懒建; 后端只在 with_engine 分叉)
 struct FactorFlow {
   misc::exec::ForkJoin ex;
-  LibReaders lr;             // 已建的库 (清单没变的复用)
+  LibReaders lr;             // 已建的库 (清单没变且未判废的复用)
   Block c;                   // worker 的块 (X 留法见 Job::retain)
   std::atomic<bool> &cancel; // worker 的取消旗 (库判废时 open_libs 也拉它)
   Progress &prog;            // worker 的进度面

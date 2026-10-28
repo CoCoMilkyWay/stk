@@ -23,6 +23,7 @@
 //     dividend / forecast                                    公告日 T 盘后          −1       公告日 ≤ D
 //     industry component / change                            T 盘后                 −1       T ≤ D
 //     日历派生 (list_age / delist_age / is_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
+//     行情派生 (ret_12_1 / ret_1m / turn / ivol / resvol / beta / trend; 全市场预计算, 见 Method/Fundamental.hpp)   T 收盘后  −1   T ≤ D
 //   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_1day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
 //   回测区间末日的 D+1 须在 D 轴内 (D 轴截到 today ⇒ 回测区间不含 today; fund::Panel::build 断言).
 //
@@ -75,6 +76,18 @@ public:
     rq_repay_vol,      // [万股] 融券偿还量
     days_since_report, // [日历日] 距最近财报公告日 (无财报 → NaN)
     shares_yoy,        // [ratio] 总股本同比 (回看 365 日历日)
+    ta_yoy,            // [ratio] 总资产 MRQ 同比 (对去年同报告期)
+    // ---- 资产态位 (fund::Panel 全史资产态掩码; 不落盘) ----
+    live, // 0/1 活跃
+    base, // 0/1 母集 (⊂ 活跃)
+    // ---- 行情派生 (全市场预计算, 窗按可得史扩张; 池轴 Panel 无全市场 → NaN) ----
+    ret_12_1, // [ratio] 12−1 月动量 P^adj_{D−20} / P^adj_{D−250} − 1
+    ret_1m,   // [ratio] 1 月收益 P^adj_D / P^adj_{D−20} − 1
+    turn,     // [ratio] 20 日均换手 / 250 日均换手 (换手 = 成交量 / A 股流通股本)
+    ivol,     // [日收益] 近 250 日日收益对等权市场收益回归的残差标准差
+    resvol,   // [z] 残差波动: dastd / cmra / hsigma 三项 z 按相关阵第一主成分合成, 对 β / log 市值截面正交 (母集外 NaN)
+    beta,     // 近 156 周周收益对等权市场周收益的 β (周收益 = 5 日滚动, 逐日采样)
+    trend,    // [20 日收益] 均线截面回归的预期收益 (系数取近 250 日均值)
     // ---- 资产负债表 MRQ [亿元] ----
     bs_ta,        // 总资产
     bs_tl,        // 总负债
@@ -151,11 +164,12 @@ public:
   Fund(const fund::Panel &panel, size_t asset_id, const misc::Ymd &date)
       : panel_(panel), date_(date), stream_(panel, asset_id) {}
 
-  // 在市可交易 (Fund 口 back() 那一格适用日): 非北交所 ∧ 已上市 (list_age ≥ 0) ∧ 未退市 (delist_age 未定义) ∧ 非停牌.
-  // 只许 precise-math TU 调 (NaN 比较语义; 违反本文件 fast-math 契约的唯一入口): Bar 档 cs_valid (盘中 = 当日) / PoolKey 母集 (onSettle = 次日)
-  static bool in_market(const Series (&f)[kCount], bool bj) {
-    return !bj && f[list_age].back() >= 0.0f && !(f[delist_age].back() >= 0.0f) && f[is_susp].back() == 0.0f;
-  }
+  // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / Bar 档 cs_valid / PoolKey 全读这一份)
+  //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
+  //   母集 = 活跃 ∧ 非 ST / *ST / 退市整理期 ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0
+  // 节点侧读 back() (Bar 档 cs_valid 盘中 = 当日, PoolKey onSettle = 次日)
+  static bool is_live(const Series (&f)[kCount]) { return f[live].back() != 0.0f; }
+  static bool is_base(const Series (&f)[kCount]) { return f[base].back() != 0.0f; }
 
   // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 推入 = L_1day 行 D
   void compute() {

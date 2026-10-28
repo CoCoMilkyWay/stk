@@ -1,11 +1,14 @@
 #include "fundamental/Sync.hpp"
 
 #include "fundamental/Remote.hpp"
+#include "misc/parquet.hpp"
 #include "shared/Config.hpp"
 
 #include <cassert>
 #include <chrono>
+#include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace fundamental::sync {
@@ -62,6 +65,33 @@ std::string label(const Task &t) {
   }
   assert(false && "sync::label: 未知写法");
   return at;
+}
+
+Budget budget(bigquant::Client &client, const std::vector<Task> &tasks) {
+  assert(!tasks.empty() && "budget: 计划为空");
+  const Spec &s = *tasks.front().spec;
+  Budget b{tasks.size(), tasks.front().w.lo, tasks.back().w.hi};
+  std::vector<std::string> keys;
+  for (const Task &t : tasks) {
+    assert(t.spec == &s && s.shape == Shape::Daily && t.how == Write::Replace && "budget: 只估单张 Daily 表的整日计划");
+    assert((keys.empty() || group_key(Grain::Day, t.w.lo) > keys.back()) && "budget: 计划日须升序");
+    keys.push_back(group_key(Grain::Day, t.w.lo));
+  }
+  const Window w{b.lo, b.hi};
+  b.cols = client.query(select(s, "*", w, " LIMIT 0"))->num_columns();
+  const misc::pq::TableView v(
+      client.query(select(s, group_expr(s, Grain::Day) + " AS g, COUNT(*) AS n", w, key_filter(s, keys) + " GROUP BY 1")));
+  const misc::pq::Col g = v.col("g"), n = v.col("n");
+  std::map<std::string_view, std::int64_t> rows;
+  for (std::int64_t i = 0; i < v.rows(); ++i)
+    rows[g.str(i)] = n.i32(i, 0);
+  for (const std::string &k : keys) {
+    const auto it = rows.find(k);
+    assert(it != rows.end() && it->second > 0 && "budget: 计划日远端 0 行 (未入库)");
+    b.rows += it->second;
+  }
+  b.cells = b.rows * b.cols;
+  return b;
 }
 
 template std::vector<Task> plan<Bq>(const Round &, const Keep &);

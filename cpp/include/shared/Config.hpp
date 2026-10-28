@@ -28,9 +28,11 @@ struct Config {
   std::string csv_market_trade = "逐笔成交.csv";
   std::string csv_market_order = "逐笔委托.csv";
 
-  // 基本面联网同步开关: false 时启动只本地构建 AssetInfo (零网络, 不碰 BigQuant/Tushare).
-  //   配额耗尽 / 离线时关掉即可绕过 BigQuant sync 的 assert; 本地 parquet 仍照常消费.
-  bool network_sync = true;
+  // 联网同步开关 (两项独立; 全关 = 只本地构建 AssetInfo, 零网络): 本地 parquet 照常消费.
+  //   sync_fundamental: 基本面 (BigQuant 日频表 + Tushare)
+  //   sync_bar1m      : 分钟线 bar1m (基本面之后; 有缺日即弹窗报预算, 确认才拉)
+  bool sync_fundamental = true;
+  bool sync_bar1m = true;
 
   // 交易税佣 (比率, 不分日期, 统一按现行标准): 标签 (LabelLob) 是毛收益不含它, 消费端事后扣 (Inspect 图 1 按钮).
   //   一次往返 = 2 × commission + stamp (印花税只卖出单边)
@@ -153,12 +155,9 @@ inline constexpr const char *TUSHARE_TOKEN = "6b5ea435a4626b1eeedefb2115bcf9e84f
 //   超时 = 单次连接+读写整体时长; 重试 = RETRY_MAX 次额外重试, 线性间隔
 inline constexpr const char *BIGQUANT_FLIGHT_URI = "grpc+tcp://bigquant.com:17010";
 inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
-// 周配额 preflight: 剩余比例 < 该值时同步前弹窗确认 (BigQuant sync 不自己判, 由 GUI 决定)
+// 周配额 preflight: 剩余比例 < 该值时基本面 BigQuant 表同步前弹窗确认 (BigQuant sync 不自己判, 由 GUI 决定);
+//   分钟线不看该值: 有缺日必弹窗报精确预算
 inline constexpr double BIGQUANT_QUOTA_CONFIRM_RATIO = 0.3;
-// Daily 表 (分钟线, 单日 ~1200 万 cell): 每天开拉前重取配额, 剩余比例 < 该值即跳过余下各天 (不弹窗)
-inline constexpr double BIGQUANT_QUOTA_DAILY_RATIO = 0.2;
-// Daily 表是否联网 (同步 + audit 核对). false: 只留本地清点 / renative, 不拉不核 (本地 AK/SK 无 cn_stock_bar1m_c 读权限)
-inline constexpr bool BIGQUANT_SYNC_DAILY = false;
 
 inline constexpr const char *TUSHARE_HTTP_HOST = "api.tushare.pro";
 inline constexpr const char *TUSHARE_HTTP_PORT = "80";  // 走 80, 省掉 SSL 依赖

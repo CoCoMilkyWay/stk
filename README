@@ -63,7 +63,7 @@ stk/
 │   │   ├── features/                                 # 🧮 特征工程: 事件驱动, 回测与实盘逐值一致
 │   │   │   │                                         #    两档 (TierId):
 │   │   │   │                                         #    · Lob: Level-2 逐笔 → 订单簿还原; L_sec 秒 + L_1min 分钟; 池轴 (features/<pool>/); cs_valid = 当日在池
-│   │   │   │                                         #    · Bar: bar1m 分钟 K + 日频基本面; L_1min 分钟 + L_5min / L_15min / L_30min / L_60min 分钟箱 + L_1day 日 (基本面 / 池); 全轴, 2015-01-01 起 (features/all/); cs_valid = 在市
+│   │   │   │                                         #    · Bar: bar1m 分钟 K + 日频基本面; L_1min 分钟 + L_5min / L_15min / L_30min / L_60min 分钟箱 + L_1day 日 (基本面 / 池); 全轴, 2015-01-01 起 (features/all/); cs_valid = 母集 (在市 ∧ 上市满 365 日 ∧ 行业已知 ∧ 无 ST / 风险警示)
 │   │   │   │                                         #    · 标签: Lob 只落 L_1min; Bar 只落 L_5min 及以上 (每层只留本层及以上的持有期组)
 │   │   │   │                                         #    L_1day 行 D = 次日盘前态 (D 收盘后至 D+1 开盘前可知, D+1 盘中全程可 act on; 高频读它即读前一交易日行)
 │   │   │   │                                         #    档间规矩:
@@ -405,6 +405,7 @@ stk/
 #        - 分钟采样型:   Node/Common/Basic/Kline.hpp + Node/{Lob,Bar}/TS/Basic/Kline.hpp
 #        - 日频型:       Node/Common/Fund/Fund.hpp + Node/Bar/TS/Fund/Fund.hpp (onSettle; Series 跨天保留, 盘中读 back() = 当日适用值)
 #                        (Lob 档的 Fund 节点只供盘中节点取前收 / 涨跌停, 不落盘)
+#                        全市场截面 / 超 BLEN 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Method/Fundamental.cpp build_market), 经 Fund 口进 TS
 #        - 截面列:       Node/Bar/CS/Fund/Valuation.hpp
 #        - 池列:       Node/Bar/CS/Pool/Pool.hpp
 #

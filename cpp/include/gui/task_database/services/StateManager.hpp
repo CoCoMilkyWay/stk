@@ -68,7 +68,7 @@ public:
   // 每帧帧首 (GUI 线程): 收交接 → 换进共享状态 → 推下一站 → 刷解锁 + taskstate.database
   void tick();
 
-  // 唯一刷新链入口: 基本面同步 (联网按 config.network_sync) → AssetInfo/items 重建 → L2 覆盖扫描.
+  // 唯一刷新链入口: 基本面 / 分钟线同步 (联网按 config.sync_fundamental / sync_bar1m) → AssetInfo/items 重建 → L2 覆盖扫描.
   // GUI 启动、Overview Update、修复收尾都走这里, 不各写一份流程.
   void refresh();
   // 编码 / 核对请求 (调用方按 syncing / scanning / encoding / auditing 使能)

@@ -269,14 +269,27 @@ private:
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("基本面联网同步");
+        ImGui::Text("同步基本面");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("启动时是否联网同步 BigQuant/Tushare 基本面 parquet.\n"
-                            "关闭 = 只本地构建 AssetInfo (零网络, 绕过配额/离线); "
-                            "本地 parquet 照常消费.");
+          ImGui::SetTooltip("启动 / Update 时是否联网同步 BigQuant 日频表 + Tushare 基本面 parquet.\n"
+                            "关闭 = 不拉基本面 (零配额); 本地 parquet 照常消费.");
         }
         ImGui::TableNextColumn();
-        if (ImGui::Checkbox("##network_sync", &cfg.network_sync)) {
+        if (ImGui::Checkbox("##sync_fundamental", &cfg.sync_fundamental)) {
+          changed = true;
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("同步分钟线");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("基本面之后是否联网补齐 BigQuant 分钟线 bar1m (单日 ~1200 万 cell).\n"
+                            "有缺日即弹窗报精确预算, 确认才拉; 预算超本周余额不可确认.\n"
+                            "两项全关 = 只本地构建 AssetInfo (零网络), Audit 不可用.");
+        }
+        ImGui::TableNextColumn();
+        if (ImGui::Checkbox("##sync_bar1m", &cfg.sync_bar1m)) {
           changed = true;
         }
 

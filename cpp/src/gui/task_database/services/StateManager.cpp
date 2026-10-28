@@ -23,7 +23,7 @@ StateManager::StateManager(SharedData &data, FundamentalService &fund, ScanServi
 }
 
 void StateManager::refresh() {
-  fund_.Request({fund_ch_.next(), data_.config.network_sync});
+  fund_.Request({fund_ch_.next(), data_.config.sync_fundamental, data_.config.sync_bar1m});
 }
 
 void StateManager::encode(int workers, bool skip_existing) {

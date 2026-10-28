@@ -1,7 +1,6 @@
 #pragma once
 
 #include "fundamental/Store.hpp"
-#include "shared/Config.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -50,9 +49,9 @@
 // ============================================================================
 namespace fundamental::audit {
 
-// 参与核对的表: 精确源的 Month / Daily (Daily 受 BIGQUANT_SYNC_DAILY 门控)
+// 参与核对的表: 精确源的 Month / Daily
 inline bool audited(const Spec &s) {
-  return exact(s) && (s.shape == Shape::Month || (s.shape == Shape::Daily && ::config::BIGQUANT_SYNC_DAILY));
+  return exact(s) && (s.shape == Shape::Month || s.shape == Shape::Daily);
 }
 
 // 一单元 = 一表 × 一年 = 一次月级查询 (+ 不一致月的逐级定位)

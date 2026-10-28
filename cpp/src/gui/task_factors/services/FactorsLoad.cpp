@@ -197,10 +197,11 @@ bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&o
   return !io.cancel.load(std::memory_order_relaxed) && !io.lr.stale();
 }
 
-// 一天的截面门控 (load_y / n_full_of 同一份): gate[t·A + a], t < VR = cs_valid ∧ 当日有数据 (∧ 子池成员); has = 本线程 [A] 暂存.
+// 一天的截面门控 (load_y / n_full_of 同一份): gate[t·A + a], t < VR = 截面池 ∧ 当日有数据; has = 本线程 [A] 暂存.
 // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
 // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
-// 子池 (Bar 标签层): 再与当日成员相与, 池外格同样不进截面
+// 截面池 = 标签库 cs_valid (all = 母集; Lob 池 = 当日在池); 子池 (Bar 标签层) = 当日成员, 不看 cs_valid
+// (ST 池在母集外; 其余子池 ⊂ 母集, 同一份盘前态)
 template <class ViewFn>
 void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const Domain &dm, const Day &day, size_t VR, size_t A, std::vector<uint8_t> &has,
               uint8_t *gate) {
@@ -215,6 +216,9 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const Domain &dm, co
     const uint8_t *mem = dm.member->row(day.date);
     for (size_t a = 0; a < A; ++a)
       has[a] &= mem[a];
+    for (size_t t = 0; t < VR; ++t)
+      std::copy(has.begin(), has.end(), gate + t * A);
+    return;
   }
   for (size_t t = 0; t < VR; ++t) {
     const View wc = view(cs_i, t);

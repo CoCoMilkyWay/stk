@@ -324,13 +324,23 @@ void rank_inverse_normal(float *y, std::size_t n) {
     y[sv[rank].second] = inverse_normal_cdf((static_cast<float>(rank) + 1.0f) * scale);
 }
 
-// 池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选
+// 池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选;
+// 有限值不足非 NaN (母集) 的 kMinCover → 非 NaN 全选
+constexpr double kMinCover = 0.8;
 template <bool kHigh>
 void select_top(float *y, std::size_t n, std::size_t N) {
   std::vector<std::size_t> &idx = scratch_idx(n);
-  for (std::size_t i = 0; i < n; ++i)
+  std::size_t base = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    base += !std::isnan(y[i]);
     if (std::isfinite(y[i]))
       idx.push_back(i);
+  }
+  if (static_cast<double>(idx.size()) < kMinCover * static_cast<double>(base)) {
+    for (std::size_t i = 0; i < n; ++i)
+      y[i] = std::isnan(y[i]) ? 0.0f : 1.0f;
+    return;
+  }
   auto before = [y](std::size_t a, std::size_t b) {
     if (y[a] != y[b])
       return kHigh ? y[a] > y[b] : y[a] < y[b];

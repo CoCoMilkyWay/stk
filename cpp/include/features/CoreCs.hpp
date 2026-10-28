@@ -8,10 +8,10 @@
 #include "shared/FeatureLib.hpp"
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -22,7 +22,7 @@
 //   每拍按收行判据 (for_each_close) 级联本拍末秒收行的各层 (节拍层 → L_1min → 分钟箱层 → L_1day, 细 → 粗); 档有该层才算
 //   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, for_each_close 同一级联) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
-//   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (无效资产输出 0)
+//   每行 = run_one<...>: gather(valid 子集 dense; 池方法 cs::FullAxis 取全轴) → Tf::apply → Method::apply → scatter (子集外资产输出 0)
 //   源层任意: 源行 = level_asof(源列, 本列, t) (同刻先写的读同刻行, 后写的 (粗层 / 盘后列) 读已收的上一行; −1 = 前一交易日末行,
 //   与读端同一投影; 本列盘后 = FieldInfo::settle, 同层 CS 继承源列, 故 L_1day 盘后截面读同行).
 //   跨日 (−1): 本档读日环 d−1 槽位 (FeatureStore::cs_prev; IO(d−1) 等本日 cs_close 才放行), 只许 TS / 元列 —— d−1 的截面可能还在写;
@@ -180,8 +180,9 @@ public:
 
   // libs[T::kId] = 本档池 (轴 sub → global); libs[旁读档] = 旁读档的池 (无旁读列时不读)
   CoreCs(FeatureStore<T> &store, [[maybe_unused]] const PerTier<FeatureLib> &libs)
-      : A_(store.query_A()), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
+      : A_(store.query_A()), axis_indices_(A_), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
+    std::iota(axis_indices_.begin(), axis_indices_.end(), size_t{0});
     if constexpr (kSides) {
       using S = typename TierSide<T>::type;
       const PoolAxis &axis = libs[T::kId].axis;
@@ -233,18 +234,21 @@ public:
     static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_1min / bin / L_1day context (mcap / industry)");
     constexpr bool kSettle = T::LEVELS[LVL].fields[DST].settle;
 
+    static_assert(!(cs::FullAxis<Method> && Method::kNeutral), "全轴方法无中性化上下文");
+    const std::vector<size_t> &idx = cs::FullAxis<Method> ? axis_indices_ : valid_indices_;
+    const size_t n = idx.size();
     float *y = input_fp32_.data();
-    gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), ids_<S>(), y);
-    Tf::apply(y, n_);
+    gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), ids_<S>(), idx, y);
+    Tf::apply(y, n);
     if constexpr (Method::kNeutral) {
       if (const cs::NeutralRank::Ctx *c = neutral_<LVL, kSettle>(t))
-        Method::apply(y, n_, *c);
+        Method::apply(y, n, *c);
       else // 上下文落到前一交易日而无前日 (区间首日): 该行无效
-        std::fill_n(y, n_, std::numeric_limits<float>::quiet_NaN());
+        std::fill_n(y, n, std::numeric_limits<float>::quiet_NaN());
     } else {
-      Method::apply(y, n_);
+      Method::apply(y, n);
     }
-    scatter_<LVL>(t, DST, y);
+    scatter_<LVL>(t, DST, idx, y);
   }
 
 private:
@@ -256,7 +260,8 @@ private:
       return;
     } else {
       TraceN(level_name(LVL));
-      // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面.
+      // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面
+      // (池方法 cs::FullAxis 除外: 全轴, 成员范围由键掩码定).
       // 虽是整日常量仍逐行读第 t 行: CS 在 t 的输入只许来自张量第 t 行 (行自足), 实盘逐秒推进时也成立 —— 别挪成每日向量
       constexpr size_t VALID = field_of<T>(LVL, "cs_valid");
       static_assert(VALID < T::LEVELS[LVL].field_count, "有 CS 行的层必须有 cs_valid 列");
@@ -267,7 +272,6 @@ private:
           valid_indices_.push_back(a);
       if (valid_indices_.empty())
         return;
-      n_ = valid_indices_.size();
       neutral_at_ = -1;
       CsLevel<T, LVL>::run(*this, t);
     }
@@ -322,9 +326,9 @@ private:
       const feature_storage_t *mc = src_col_<NS, ML, MCAP, LVL, SETTLE>(t), *ind = src_col_<NS, IL, INDUSTRY, LVL, SETTLE>(t);
       neutral_ok_ = mc && ind;
       if (neutral_ok_) {
-        gather_(mc, ids_<NS>(), logmc_dense_.data());
-        cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n_);
-        gather_(ind, ids_<NS>(), industry_dense_.data());
+        gather_(mc, ids_<NS>(), valid_indices_, logmc_dense_.data());
+        cs::NeutralRank::prepare_logmc(logmc_dense_.data(), valid_indices_.size());
+        gather_(ind, ids_<NS>(), valid_indices_, industry_dense_.data());
       }
       neutral_at_ = int{SETTLE};
     }
@@ -362,25 +366,26 @@ private:
     }
   }
 
-  // 源列 valid 子集 → dense fp32 (ids = 源档 A 轴 ← 本档 a, nullptr = 同轴); src nullptr (无前日) → NaN
-  void gather_(const _Float16 *src, const uint32_t *ids, float *dst) const {
+  // 源列截面子集 idx → dense fp32 (ids = 源档 A 轴 ← 本档 a, nullptr = 同轴); src nullptr (无前日) → NaN
+  void gather_(const _Float16 *src, const uint32_t *ids, const std::vector<size_t> &idx, float *dst) const {
+    const size_t n = idx.size();
     if (!src)
-      std::fill_n(dst, n_, std::numeric_limits<float>::quiet_NaN());
+      std::fill_n(dst, n, std::numeric_limits<float>::quiet_NaN());
     else if (ids)
-      for (size_t i = 0; i < n_; ++i)
-        dst[i] = static_cast<float>(src[ids[valid_indices_[i]]]);
+      for (size_t i = 0; i < n; ++i)
+        dst[i] = static_cast<float>(src[ids[idx[i]]]);
     else
-      for (size_t i = 0; i < n_; ++i)
-        dst[i] = static_cast<float>(src[valid_indices_[i]]);
+      for (size_t i = 0; i < n; ++i)
+        dst[i] = static_cast<float>(src[idx[i]]);
   }
 
-  // dense fp32 → 目标列就地写 (清零后只写有效资产): 无中转缓冲, 全 A 只扫一遍
+  // dense fp32 → 目标列就地写 (清零后只写子集 idx): 无中转缓冲, 全 A 只扫一遍
   template <size_t LVL>
-  void scatter_(size_t t, size_t dst, const float *y) {
+  void scatter_(size_t t, size_t dst, const std::vector<size_t> &idx, const float *y) {
     feature_storage_t *col = fstore::cs_col<LVL>(day_, t, dst);
     std::memset(col, 0, A_ * sizeof(feature_storage_t)); // fp16 的 0 是全零位
-    for (size_t i = 0; i < n_; ++i)
-      col[valid_indices_[i]] = static_cast<feature_storage_t>(y[i]);
+    for (size_t i = 0; i < idx.size(); ++i)
+      col[idx[i]] = static_cast<feature_storage_t>(y[i]);
   }
 
   Day day_{};  // 本日读写句柄, begin_day 换入 / end_day 交还
@@ -394,7 +399,7 @@ private:
   std::array<IoSlot::Buf, LEVEL_COUNT> side_buf_{}; // [源层] 本日 (+ 承接日) 旁读张量 (旁读档 A 轴)
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
-  size_t n_ = 0;                      // = valid_indices_.size()
+  std::vector<size_t> axis_indices_;  // 全轴 0..A−1 (池方法 cs::FullAxis 的截面)
   std::vector<float> input_fp32_;
   std::vector<float> logmc_dense_;                                                      // 中性化输入 (本拍本层)
   std::vector<float> industry_dense_;                                                   // 中性化输入 (本拍本层)

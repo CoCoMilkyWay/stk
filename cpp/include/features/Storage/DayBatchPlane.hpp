@@ -104,7 +104,8 @@ struct Readers {
     return *rd[l];
   }
 };
-// 池集 reader 组 (worker 线程按库清单开, 池集外 = 空清单): 拿到取消旗 (库判废时拉起); 清单没变 (目录 + 池轴) 的池复用
+// 池集 reader 组 (worker 线程按库清单开, 池集外 = 空清单): 拿到取消旗 (库判废时拉起);
+// 清单没变 (目录 + 池轴) 且未判废的池复用, 判废的重开 (重算后新库已落地, 新请求即自愈)
 struct LibReaders {
   PerPool<FeatureLib> libs;
   PerPool<std::optional<FeatureRead>> at;
@@ -120,7 +121,7 @@ struct LibReaders {
         continue;
       }
       assert(w.ready() && "池集含未建库 (请求方按 months 为空放弃)");
-      if (!at[l] || libs[l].dir != w.dir || libs[l].axis.hash != w.axis.hash || libs[l].axis.size() != w.axis.size()) {
+      if (!at[l] || at[l]->stale() || libs[l].dir != w.dir || libs[l].axis.hash != w.axis.hash || libs[l].axis.size() != w.axis.size()) {
         libs[l] = w;
         at[l].emplace(libs[l], abort);
       }
@@ -129,11 +130,6 @@ struct LibReaders {
   }
   bool stale() const {
     return std::ranges::any_of(at.v, [](const std::optional<FeatureRead> &r) { return r && r->stale(); });
-  }
-  void revive() { // 重读库 (重算清库 / 判废后新库落地), 判废解除
-    for (std::optional<FeatureRead> &r : at.v)
-      if (r)
-        r->revive();
   }
 };
 
