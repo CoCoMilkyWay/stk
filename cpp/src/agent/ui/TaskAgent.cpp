@@ -660,8 +660,9 @@ void reply_panel(State &s) {
 
 void results_table(State &s) {
   ImGui::TextDisabled("候选 %zu (会话目录, 本持有期 score 降序)", s.results.size());
-  constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-                                     ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable;
+  // 不可拖宽: FixedFit 列每帧按内容重算宽, 新行再长也不截断
+  constexpr ImGuiTableFlags kFlags =
+      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
   if (!ImGui::BeginTable("##results", 8, kFlags, ImVec2(-1, -1)))
     return;
   ImGui::TableSetupScrollFreeze(2, 1);
