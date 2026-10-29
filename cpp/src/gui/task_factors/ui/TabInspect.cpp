@@ -383,7 +383,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         }
         yr = layer_range(d, show);
       }
-      ImPlot::SetupAxes(nullptr, absolute ? "Σln(1+r) × 年/全段  (%)" : "超额 Σln(1+r) × 年/全段  (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+      ImPlot::SetupAxes(nullptr, absolute ? "对数年化(%)" : "超额对数年化(%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
       ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
       ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<misc::Ymd> *>(&d.dates));
       follow_limits(ImAxis_X1, 0, std::max(1, d.days) * (1.0 + kCursorPad));
@@ -529,7 +529,7 @@ int fallback_asset(const InspectResult &res) {
 }
 
 // 资产轴 (右上的头行条, 单行高): 一资产一格 x ∈ [i, i+1), 格色 = R 组色 (不足 1px 补到 1px); 定死全部资产, 不缩放 / 平移 / 框选.
-// 光标 DragLineX 吸附整格 (pos < 0 = 选中资产当日无值, 不画光标), 单击落点; 悬停报该格资产.
+// 光标 = 选中格中线 (pos < 0 = 选中资产当日无值, 不画); 按下即选中所指格, 按住拖动连续换 (ui.ax_scrub, 出条也跟随); 悬停报该格资产.
 // 返回 pos 是否变 (调用方按 ax_gid[pos] 换资产)
 bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, const ImVec2 &size) {
   const int n = static_cast<int>(ui.ax_order.size());
@@ -557,19 +557,23 @@ bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, 
   }
   if (pos >= 0 && pos < n) {
     double cx = pos + 0.5;
-    if (ImPlot::DragLineX(0, &cx, kColCursor, 2.f, ImPlotDragToolFlags_NoFit)) {
-      const int p = std::clamp(static_cast<int>(std::floor(cx)), 0, n - 1);
-      changed = p != pos;
-      pos = p;
-    }
+    ImPlot::DragLineX(0, &cx, kColCursor, 2.f, ImPlotDragToolFlags_NoFit | ImPlotDragToolFlags_NoInputs);
   }
   if (n > 0 && ImPlot::IsPlotHovered()) {
+    if (ImGui::IsMouseClicked(0))
+      ui.ax_scrub = true;
     const int i = std::clamp(static_cast<int>(std::floor(ImPlot::GetPlotMousePos().x)), 0, n - 1);
     char name[96];
     asset_label(ctx, ui.ax_gid[static_cast<size_t>(i)], name, sizeof(name));
-    ImGui::SetTooltip("#%d/%d  %s  R %.3f (G%d)\n单击选中", i + 1, n, name, ui.ax_r[static_cast<size_t>(i)], r_group(ui.ax_r[static_cast<size_t>(i)]) + 1);
-    if (ImGui::IsMouseClicked(0)) {
-      changed = i != pos;
+    ImGui::SetTooltip("#%d/%d  %s  R %.3f (G%d)\n按下选中, 按住拖动连续换", i + 1, n, name, ui.ax_r[static_cast<size_t>(i)],
+                      r_group(ui.ax_r[static_cast<size_t>(i)]) + 1);
+  }
+  if (!ImGui::IsMouseDown(0))
+    ui.ax_scrub = false;
+  if (n > 0 && ui.ax_scrub) { // 按住期间跟随鼠标 (出条也跟, 夹到两端)
+    const int i = std::clamp(static_cast<int>(std::floor(ImPlot::GetPlotMousePos().x)), 0, n - 1);
+    if (i != pos) {
+      changed = true;
       pos = i;
     }
   }
@@ -730,29 +734,31 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
       ImPlot::PopPlotClipRect();
     }
   }
-  double uk = 0.0; // 指数重锚系数 (价格 / 指数点); 0 = 视野内无蜡烛, 不画
-  if (n > 0) {
+  // 图例三项每帧都提交 (无数据 = 空线): 换代在途 / 视野内无蜡烛时图例不缺项, 拖资产条连续换资产时不闪
+  double uk = 0.0; // 指数重锚系数 (价格 / 指数点); 0 = 视野内无蜡烛, 画空线
+  {
+    struct Rebased {
+      const float *v;
+      long long t0;
+      double k;
+    };
     const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const long long t0 = std::clamp(static_cast<long long>(std::floor(lim.X.Min)), 0LL, static_cast<long long>(pool_idx.size()));
+    long long t1 = t0;
     const int ia = static_cast<int>(std::lower_bound(xs, xs + n, lim.X.Min) - xs);
     if (ia < n && xs[ia] <= lim.X.Max) {
       uk = ks.close[static_cast<size_t>(ia)] / static_cast<double>(pool_idx[static_cast<size_t>(xs[ia])]);
-      struct Rebased {
-        const float *v;
-        long long t0;
-        double k;
-      };
-      const long long t0 = std::clamp(static_cast<long long>(std::floor(lim.X.Min)), 0LL, static_cast<long long>(pool_idx.size()));
-      const long long t1 = std::clamp(static_cast<long long>(std::ceil(lim.X.Max)) + 1, t0, static_cast<long long>(pool_idx.size()));
-      Rebased rb{pool_idx.data(), t0, uk};
-      const auto rebased = [](int i, void *ud) {
-        const Rebased &r = *static_cast<const Rebased *>(ud);
-        const long long t = r.t0 + i;
-        return ImPlotPoint(static_cast<double>(t), r.v[t] * r.k);
-      };
-      ImPlot::SetNextLineStyle(kColIndex, 1.5f);
-      ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认隐藏 (带全区间历史), 点图例显; 重锚系数 uk 照算 (悬停仍报)
-      ImPlot::PlotLineG(kIdxName, rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
+      t1 = std::clamp(static_cast<long long>(std::ceil(lim.X.Max)) + 1, t0, static_cast<long long>(pool_idx.size()));
     }
+    Rebased rb{pool_idx.data(), t0, uk};
+    const auto rebased = [](int i, void *ud) {
+      const Rebased &r = *static_cast<const Rebased *>(ud);
+      const long long t = r.t0 + i;
+      return ImPlotPoint(static_cast<double>(t), r.v[t] * r.k);
+    };
+    ImPlot::SetNextLineStyle(kColIndex, 1.5f);
+    ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认隐藏 (带全区间历史), 点图例显; 重锚系数 uk 照算 (悬停仍报)
+    ImPlot::PlotLineG(kIdxName, rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
   }
   // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch / Hold) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (pool_idx 已换)
   if (ready && (ui.ref_gen != ui.kline_gen || ui.ref_pts != pub_pts || ui.ref_epoch != ui.derived_epoch || ui.ref_sel != ui.derived_sel)) {
@@ -760,10 +766,13 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
     derive_ref(ks, S, pub_days, pub_pts, pool_idx, ui.ref_t0, ui.ref_t1, ui.ref_line);
   }
   const bool ref_ok = ready && ui.ref_gen == ui.kline_gen && ui.ref_t1 > ui.ref_t0;
-  if (ref_ok) {
-    const ImPlotRect lim = ImPlot::GetPlotLimits();
-    const int ta = std::clamp(static_cast<int>(std::floor(lim.X.Min)), ui.ref_t0, ui.ref_t1);
-    const int tb = std::clamp(static_cast<int>(std::ceil(lim.X.Max)) + 1, ta, ui.ref_t1);
+  {
+    int ta = 0, tb = 0; // 无线 → 空线
+    if (ref_ok) {
+      const ImPlotRect lim = ImPlot::GetPlotLimits();
+      ta = std::clamp(static_cast<int>(std::floor(lim.X.Min)), ui.ref_t0, ui.ref_t1);
+      tb = std::clamp(static_cast<int>(std::ceil(lim.X.Max)) + 1, ta, ui.ref_t1);
+    }
     ImPlot::SetNextLineStyle(kColRef, 1.5f);
     ImPlot::PlotLine(kRefName, ui.ref_line.data() + ta, tb - ta, 1.0, static_cast<double>(ta), ImPlotItemFlags_NoFit);
   }
@@ -1668,7 +1677,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     // 黄线每帧按视野内首根蜡烛重锚, 带着全区间历史, 长视野下与个股渐行渐远
     if (ImGui::IsItemHovered())
       tip("资产条 = 光标日池内全部资产按因子值排序 (左 = 因子值最高, G20 侧), 格色 = 组色\n"
-          "• 换资产: ◂ ▸ / 单击条\n"
+          "• 换资产: ◂ ▸ / 在条上按下选中, 按住拖动连续换\n"
           "K 线图例\n"
           "• 蜡烛色 = 该刻因子组色 (G1 蓝 → G20 橙; 淡 = 池外, 暗灰 = 无值)\n"
           "• 青线 = 个股跟着指数近期走势应在的价; 蜡烛 − 青线 = 相对指数的偏移\n"
@@ -1678,7 +1687,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     if (moved && pos >= 0 && pos < n)
       ui.asset_gid = ui.ax_gid[static_cast<size_t>(pos)];
     char title[160];
-    std::snprintf(title, sizeof(title), "分钟 K 线  %s###kline", name);
+    std::snprintf(title, sizeof(title), "分钟K %s###kline", name);
     const float kh = std::max(60.f, cell.y - ImGui::GetFrameHeight() - sp_y);
     plot_kline(ui, ksvc.stream(), ui.der, ui.cursor_day, title, ImVec2(cell.x, kh));
     ImGui::EndGroup();
