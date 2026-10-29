@@ -50,6 +50,12 @@ std::string cell(std::string s) { // 表格单元: 竖线转义, 换行压成空
   return o;
 }
 
+std::string num(double v) {
+  char b[32];
+  std::snprintf(b, sizeof(b), "%.3g", v);
+  return b;
+}
+
 std::string stat_of(const Weight &w) {
   char b[256];
   std::snprintf(b, sizeof(b), "score %.3g, 每期毛多空 %.1fbp, rIC %.4f (IR %.2f, t %.1f), mono %.2f, 有效率 %.0f%%", w.score, w.ls * 1e4, w.ric, w.ir, w.t, w.mono,
@@ -69,7 +75,62 @@ std::string outcome(const Result &r) {
   return s;
 }
 
+// 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块)
+bool object_of(std::string_view text, nlohmann::json &j, std::string &err) {
+  const size_t a = text.find('{'), b = text.rfind('}');
+  if (a == std::string_view::npos || b == std::string_view::npos || b < a) {
+    err = "回复里没有 JSON 对象";
+    return false;
+  }
+  j = nlohmann::json::parse(text.substr(a, b - a + 1), nullptr, false);
+  if (j.is_discarded() || !j.is_object()) {
+    err = "回复不是合法的 JSON 对象";
+    return false;
+  }
+  return true;
+}
+
+// 可缺省的字符串数组字段
+bool strings_of(const nlohmann::json &j, const char *key, std::vector<std::string> &out, std::string &err) {
+  out.clear();
+  if (!j.contains(key))
+    return true;
+  if (!j[key].is_array()) {
+    err = std::string(key) + " 须是字符串数组";
+    return false;
+  }
+  for (const nlohmann::json &x : j[key]) {
+    if (!x.is_string()) {
+      err = std::string(key) + " 须是字符串数组";
+      return false;
+    }
+    out.push_back(x.get<std::string>());
+  }
+  return true;
+}
+
 } // namespace
+
+std::string GateMiss(const Gate &g, const Result &r) {
+  if (!r.error.empty())
+    return "BROKEN: " + r.error;
+  for (const Weight &w : r.ws)
+    if (w.has && w.score >= g.score && w.t >= g.t && w.mono >= g.mono && w.valid >= g.valid)
+      return "";
+  const Weight *w = r.best();
+  if (!w)
+    return "本持有期无显著权重";
+  std::string s = "最佳权重未达门槛:";
+  if (w->score < g.score)
+    s += " score " + num(w->score) + " < " + num(g.score);
+  if (w->t < g.t)
+    s += " t " + num(w->t) + " < " + num(g.t);
+  if (w->mono < g.mono)
+    s += " mono " + num(w->mono) + " < " + num(g.mono);
+  if (w->valid < g.valid)
+    s += " 有效率 " + num(w->valid) + " < " + num(g.valid);
+  return s;
+}
 
 std::string LoadPrompt(std::string_view name) {
   std::ifstream f(path_of(name), std::ios::binary);
@@ -83,7 +144,7 @@ void SavePrompt(std::string_view name, const std::string &text) {
   f << text;
 }
 
-std::string SystemPrompt(const Context &c) {
+std::string SystemPrompt(const Context &c, const Gate &g) {
   std::string leaves = "| 叶 | 中文名 | 公式 | 说明 |\n|---|---|---|---|\n";
   for (const Leaf &l : c.leaves)
     leaves += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " |\n";
@@ -110,6 +171,10 @@ std::string SystemPrompt(const Context &c) {
                          {"ts_root_d", std::to_string(c.ts_root_d)},
                          {"max_d", std::to_string(c.max_d)},
                          {"batch", std::to_string(kBatch)},
+                         {"gate_score", num(g.score)},
+                         {"gate_t", num(g.t)},
+                         {"gate_mono", num(g.mono)},
+                         {"gate_valid", num(g.valid * 100.0)},
                          {"leaves", leaves},
                          {"ops", ops},
                          {"library", lib}});
@@ -125,10 +190,31 @@ std::string FirstMessage(const Context &c, const std::vector<Result> &tried) {
   }
   if (s.empty())
     s = "(无)\n";
-  return fill("first", {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"tried", s}});
+  return fill("first", {{"hold", c.hold}, {"tried", s}});
 }
 
-std::string RoundMessage(const Context &c, const std::vector<Staged> &batch, const std::vector<Result> &results) {
+std::string AnswerMessage(const std::vector<Question> &qs, const std::vector<std::vector<bool>> &picks, const std::string &note) {
+  assert(picks.size() == qs.size());
+  std::string s;
+  for (size_t i = 0; i < qs.size(); ++i) {
+    assert(picks[i].size() == qs[i].options.size());
+    std::string sel;
+    for (size_t j = 0; j < qs[i].options.size(); ++j)
+      if (picks[i][j])
+        sel += (sel.empty() ? "" : "; ") + qs[i].options[j];
+    s += "### " + std::to_string(i + 1) + ". " + qs[i].prompt + "\n- " + (sel.empty() ? std::string("(未选, 你自定)") : sel) + "\n";
+  }
+  if (s.empty())
+    s = "(无问题)\n";
+  return fill("answer", {{"answers", s}, {"note", note.empty() ? std::string("(无)") : note}, {"batch", std::to_string(kBatch)}});
+}
+
+std::string RoundMessage(const Context &c, const std::vector<Submitted> &subs, const std::vector<Staged> &batch, const std::vector<Result> &results) {
+  std::string ss;
+  for (const Submitted &x : subs)
+    ss += "- " + x.name + ": " + (x.err.empty() ? std::string("已入库") : "未入库, " + x.err) + "\n";
+  if (ss.empty())
+    ss = "(上次未提交)\n";
   std::string s;
   for (const Staged &st : batch) {
     s += "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
@@ -140,25 +226,69 @@ std::string RoundMessage(const Context &c, const std::vector<Staged> &batch, con
     assert(it != results.end() && "已落的候选应在结果里");
     s += outcome(*it);
   }
-  return fill("round", {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"results", s}});
+  return fill("round", {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"submits", ss}, {"results", s}});
 }
 
 std::string RetryMessage(const std::string &err) { return fill("retry", {{"error", err}}); }
 
-bool ParseReply(std::string_view text, std::vector<Cand> &out, std::string &err) {
+bool ParseQuestions(std::string_view text, std::vector<Question> &out, std::string &err) {
   out.clear();
-  const size_t a = text.find('{'), b = text.rfind('}');
-  if (a == std::string_view::npos || b == std::string_view::npos || b < a) {
-    err = "回复里没有 JSON 对象";
+  nlohmann::json j;
+  if (!object_of(text, j, err))
+    return false;
+  if (!j.contains("questions") || !j["questions"].is_array()) {
+    err = "缺数组 questions (没有问题就给空数组)";
     return false;
   }
-  const nlohmann::json j = nlohmann::json::parse(text.substr(a, b - a + 1), nullptr, false);
-  if (j.is_discarded() || !j.is_object()) {
-    err = "回复不是合法的 JSON 对象";
+  for (size_t i = 0; i < j["questions"].size(); ++i) {
+    const nlohmann::json &q = j["questions"][i];
+    const std::string at = "questions[" + std::to_string(i) + "]";
+    if (!q.is_object() || !q.contains("prompt") || !q["prompt"].is_string()) {
+      err = at + " 缺字符串字段 prompt";
+      return false;
+    }
+    Question x;
+    x.prompt = q["prompt"].get<std::string>();
+    if (!strings_of(q, "options", x.options, err) || x.options.size() < 2) {
+      err = at + " 的 options 须是至少 2 项的字符串数组";
+      return false;
+    }
+    if (q.contains("multiple")) {
+      if (!q["multiple"].is_boolean()) {
+        err = at + " 的 multiple 须是布尔";
+        return false;
+      }
+      x.multiple = q["multiple"].get<bool>();
+    }
+    out.push_back(std::move(x));
+  }
+  return true;
+}
+
+bool ParseMine(std::string_view text, MineReply &out, std::string &err) {
+  out = {};
+  nlohmann::json j;
+  if (!object_of(text, j, err))
+    return false;
+  if (j.contains("questions")) {
+    err = "挖掘阶段不得提问; 疑问写进 issues";
     return false;
   }
-  if (!j.contains("factors") || !j["factors"].is_array() || j["factors"].empty()) {
-    err = "缺非空数组 factors";
+  if (j.contains("done")) {
+    if (!j["done"].is_boolean()) {
+      err = "done 须是布尔";
+      return false;
+    }
+    out.done = j["done"].get<bool>();
+  }
+  if (!strings_of(j, "submit", out.submit, err) || !strings_of(j, "issues", out.issues, err))
+    return false;
+  if (!j.contains("factors") || !j["factors"].is_array()) {
+    err = "缺数组 factors";
+    return false;
+  }
+  if (out.done != j["factors"].empty()) {
+    err = out.done ? "done = true 时 factors 须为空" : "factors 为空 (挖完请置 done = true)";
     return false;
   }
   for (size_t i = 0; i < j["factors"].size(); ++i) {
@@ -173,7 +303,7 @@ bool ParseReply(std::string_view text, std::vector<Cand> &out, std::string &err)
         return false;
       }
     }
-    out.push_back(std::move(c));
+    out.factors.push_back(std::move(c));
   }
   return true;
 }

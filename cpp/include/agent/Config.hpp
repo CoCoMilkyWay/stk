@@ -32,10 +32,16 @@ inline constexpr int kBatch = 8;     // 每轮要的模板数 (提示词 {{batch
 inline constexpr int kLibTop = 40;   // 系统提示里列的正式因子 (按该持有期 score 降序)
 inline constexpr int kTriedTop = 80; // 首条消息里列的本作用域已试候选 (新的在前)
 
+// 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
+inline constexpr double kGateScore = 0.0;
+inline constexpr double kGateT = 3.0;
+inline constexpr double kGateMono = 0.95;
+inline constexpr double kGateValid = 0.5; // 池内有效率
+
 // ---- 目录 ----
 //   kWorkDir/<池>/<层>/<持有期>/factors/   候选因子文件 (与正式因子同格式; Search 日志在其 log/)
-//   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段对话: system.md + 每轮 NN.user.md / NN.reply.md / NN.thinking.md + rounds.jsonl
-//   kPromptDir/{system,first,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
+//   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话: system.md + 每轮 NN.user.md / NN.reply.md / NN.thinking.md + rounds.jsonl + report.md (结束报告)
+//   kPromptDir/{system,first,answer,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kPromptDir = "../../../../config/agent/prompt";
 

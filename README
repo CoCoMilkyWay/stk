@@ -8,7 +8,7 @@ stk/
 ├── config/                # ⚙️ 全局配置
 │   ├── config.json        # ⚙️ 路径 / 回测日历起点 (末日随数据) / 交易成本 (池不在此, 见 Bar 池 pool_<pool> 列)
 │   ├── sample/            # ⚙️ 样例数据 (Level-1 / Level-2 行情 / 财务报表)
-│   └── agent/prompt/      # ⚙️ Agent 提示词模板 system / first / round / retry (.md, {{键}} 占位; Agent → Config 页可编辑)
+│   └── agent/prompt/      # ⚙️ Agent 提示词模板 system / first / answer / round / retry (.md, {{键}} 占位; Agent → Config 页可编辑)
 ├── py/                    # 🐍 Python 工具链
 │   ├── main.py            # 🐍 构建脚本 (调 CMake)
 │   ├── mode_*.py          # 🐍 模式开关: tsan / debug / profile / assert / production
@@ -264,17 +264,17 @@ stk/
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── agent/                                          # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / GUI 任务; 与项目只经 Bridge)
-│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的 key · 端点 · 模型, 超时 / 重试, 每轮模板数, 会话目录 / 提示词目录
+│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的 key · 端点 · 模型, 超时 / 重试, 每轮模板数, 入库门槛默认值, 会话目录 / 提示词目录
 │   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL): send 阻塞收齐一轮, 增量回调
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
 │   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: open / ask / cancel; 逐轮落盘 (user / reply / thinking + rounds.jsonl)
-│   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 模板填充 (系统提示 / 首条 / 反馈 / 重发) + 回复解析 {"factors": [{name, name_cn, expr, note}]}
+│   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 模板填充 (系统提示 / 首条 / 答复 / 反馈 / 重发) + 回复解析 (澄清 questions / 挖掘 factors · submit · issues · done) + 入库门槛 Gate
 │   │   │   ├── Bridge.hpp                                  # 🤖 与项目的唯一接口面 (实现是 agent 里唯一 include 因子 / 特征 / 服务头的 TU):
 │   │   │   │                                               #    · 作用域 pools / levels / holds (持有期限 Search 档); 上下文 context (特征叶 / 算子表 / 正式因子库统计)
 │   │   │   │                                               #    · 落地 stage (校验 + 写因子文件); 评估 eval → update 每帧推进 (逐文件 Search → Run, 会话常驻块: SearchSpec / RunSpec keep)
 │   │   │   │                                               #    · 结果 results (扫目录读回各权重统计); 采纳 adopt (拷进正式因子目录)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务: Mine (作用域 → New → Ask → Eval → 反馈进编辑框 → Ask …; 结果表 + Adopt) / Config / Log
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务: Mine (状态机见 AGENT.md: New → 澄清 (agent 提问, 人选) → Start → 全自动挖掘 → 结束报告) / Config / Log
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -418,8 +418,8 @@ stk/
     │                                                       #    · weights: [{hold, sign?, expr (具体)}]; Search 整体替换, 改 expr 即清空
     │                                                       #    · stats: [stat | null], 与 weights 同序
     ├── agent/<pool>/<层>/<持有期>/                         # Agent 挖掘会话 (池 × 因子层 × 持有期)
-    │   ├── factors/*.json                                  # 候选因子文件 (与正式因子同格式; Search 日志在 factors/log/); Adopt 拷进 factors/<pool>/<层>/
-    │   └── chat/<YYYYMMDD-HHMMSS>/                         # 一段对话: system.md + NN.{user,reply,thinking}.md + rounds.jsonl (后端 / 模型 / 结局 / 用量 / 耗时)
+    │   ├── factors/*.json                                  # 候选因子文件 (与正式因子同格式; Search 日志在 factors/log/); 提交且达门槛的拷进 factors/<pool>/<层>/
+    │   └── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + rounds.jsonl (后端 / 模型 / 结局 / 用量 / 耗时) + report.md (结束报告)
     ├── profile/<pool>/<YYYYMMDD_HHMMSS>/                   # 特征计算 perf 采样 (PROFILE 模式, 每轮一目录; 需 kernel.perf_event_paranoid ≤ 1)
     │   ├── meta.json                                       # 本轮配置 (池 / 档 / A 轴 / 日期轴 / 核布局) + 采样窗逐核速率 / 忙碌占比
     │   ├── threads.txt                                     # 线程间样本分布 (线程名 = <段 tag>_<段内序号>: pf / ts / cs / io)

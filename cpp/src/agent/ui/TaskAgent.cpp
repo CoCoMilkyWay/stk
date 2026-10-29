@@ -12,10 +12,13 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace agent {
@@ -34,6 +37,22 @@ enum TabIdx {
 
 constexpr ImVec4 kColHead(0.4f, 0.8f, 1.0f, 1.0f);
 
+// 会话阶段 (AGENT.md 状态图): 澄清 = Digest (agent 消化提问) → Choose (人选答案); 挖掘 = Mine; 结束 = Report
+enum class Phase : uint8_t { None,
+                             Digest,
+                             Choose,
+                             Mine,
+                             Report };
+
+struct Submit {
+  int round = 0;
+  Submitted s;
+};
+struct Issue {
+  int round = 0;
+  std::string text;
+};
+
 struct State {
   std::unique_ptr<Bridge> bridge; // 首次 Draw 建 (Destroy 释放: 两个 worker 与常驻块)
   std::unique_ptr<Chat> chat;
@@ -42,27 +61,43 @@ struct State {
   std::string pool;
   int level = -1, hold = 0;
 
-  // Config (下次 New / Eval 生效)
+  // Config (下次 New 生效)
   int backend = 0;
   std::string model = kZhipuModels[0];
   int gpu = -1; // -1 = 未定 (有 GPU 默认 GPU)
+  Gate gate{kGateScore, kGateT, kGateMono, kGateValid};
   int prompt_idx = 0;
   std::string prompt_text;
   bool prompt_loaded = false;
 
   // 会话 (New 定)
-  bool live = false;
+  Phase phase = Phase::None;
   Scope sc;
+  Gate sgate;
+  bool sgpu = false;
   std::string dir; // kWorkDir/<池>/<层>/<持有期>
   Context ctx;
-  std::string editor; // 下一条 user (可改)
+  uint64_t seen_turns = 0; // 已处理到的 chat.done()
+  bool stop = false;       // 按了 Stop: 本步做完即结束
+  // 澄清
+  std::vector<Question> questions;
+  std::vector<std::vector<bool>> picks;
+  std::string note;
+  // 挖掘
   std::vector<Staged> batch;
-  bool batch_pending = false; // 本批在评, 评完 (或取消) 在 Update 里组反馈
-  size_t evaled = 0;          // 已 Eval 过的轮数 (每轮回复只评一次)
+  bool batch_pending = false;       // 本批在评, 评完在 Update 里发反馈
+  std::vector<Submitted> submitted; // 上一条回复的提交结局, 进下一条反馈
+  std::vector<Submit> submits;      // 全会话
+  std::vector<Issue> issues;
+  std::set<std::string> adopted; // 本会话入库的英文名
   std::vector<Result> results;
   uint64_t seen_evals = 0;
+  // 结束
+  std::string reason, report;
   std::string message;
 };
+
+bool live(const State &s) { return s.phase == Phase::Digest || s.phase == Phase::Choose || s.phase == Phase::Mine; }
 
 std::string factors_dir(const State &s) { return (fs::path(s.dir) / "factors").string(); }
 
@@ -73,6 +108,11 @@ std::string stamp() {
   char b[32];
   std::strftime(b, sizeof(b), "%Y%m%d-%H%M%S", std::localtime(&now));
   return b;
+}
+
+int rounds_of(Chat &chat) {
+  std::lock_guard<std::mutex> lock(chat.mutex);
+  return static_cast<int>(chat.turns.size());
 }
 
 // ---- std::string 输入框 (imgui 缓冲随串扩) ----
@@ -101,51 +141,143 @@ void tip(const char *s) {
 // ---- 会话 ----
 void new_session(const SharedData &data, State &s) {
   s.sc = Scope{s.pool, s.level, s.hold};
+  s.sgate = s.gate;
+  s.sgpu = s.gpu == 1;
   s.ctx = s.bridge->context(data, s.sc);
   s.dir = (fs::path(kWorkDir) / s.pool / s.ctx.level / s.ctx.hold).string();
-  s.chat->open(llm::Options{static_cast<llm::Backend>(s.backend), s.model, SystemPrompt(s.ctx)}, (fs::path(s.dir) / "chat" / stamp()).string());
+  s.chat->open(llm::Options{static_cast<llm::Backend>(s.backend), s.model, SystemPrompt(s.ctx, s.sgate)}, (fs::path(s.dir) / "chat" / stamp()).string());
   s.results = s.bridge->results(data, s.sc, factors_dir(s));
   s.seen_evals = s.bridge->evals();
-  s.editor = FirstMessage(s.ctx, s.results);
-  s.batch.clear();
+  s.seen_turns = s.chat->done();
+  s.stop = false;
+  s.questions.clear(), s.picks.clear(), s.note.clear();
+  s.batch.clear(), s.submitted.clear(), s.submits.clear(), s.issues.clear(), s.adopted.clear();
   s.batch_pending = false;
-  s.evaled = 0;
-  s.message.clear();
-  s.live = true;
+  s.reason.clear(), s.report.clear(), s.message.clear();
+  s.phase = Phase::Digest;
+  s.chat->ask(FirstMessage(s.ctx, s.results));
 }
 
-// 末轮回复 → 候选落进会话目录 → 排队评估; 解析失败 → 编辑框填重发要求. 未 ready 不消耗本轮 (就绪后可再 Eval)
-void eval_reply(const SharedData &data, State &s) {
-  if (!s.bridge->ready(data, s.sc, s.gpu == 1)) {
-    s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
-    return;
+std::string report_of(const State &s, int rounds) {
+  std::string r = "# 结束报告\n\n- 结束原因: " + s.reason + "\n- 轮数: " + std::to_string(rounds) + "\n\n";
+  std::string in, out;
+  int n_in = 0, n_out = 0;
+  for (const Submit &x : s.submits) {
+    const std::string line = "- 第 " + std::to_string(x.round) + " 轮 " + x.s.name + (x.s.err.empty() ? "" : ": " + x.s.err) + "\n";
+    (x.s.err.empty() ? in : out) += line;
+    ++(x.s.err.empty() ? n_in : n_out);
   }
-  std::string reply;
-  {
-    std::lock_guard<std::mutex> lock(s.chat->mutex);
-    assert(!s.chat->turns.empty());
-    reply = s.chat->turns.back().reply.text;
-    s.evaled = s.chat->turns.size();
+  r += "## 入库 (" + std::to_string(n_in) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
+  r += "## 未入库的提交 (" + std::to_string(n_out) + ")\n\n" + (out.empty() ? "(无)\n" : out) + "\n";
+  r += "## issues (" + std::to_string(s.issues.size()) + ")\n\n";
+  for (const Issue &x : s.issues)
+    r += "- 第 " + std::to_string(x.round) + " 轮: " + x.text + "\n";
+  if (s.issues.empty())
+    r += "(无)\n";
+  return r;
+}
+
+// 结束: 在跑的回复 / 评估作废, 出报告落进会话日志
+void finish(State &s, std::string reason) {
+  assert(live(s));
+  if (s.chat->busy())
+    s.chat->cancel();
+  s.bridge->cancel();
+  s.batch_pending = false;
+  s.reason = std::move(reason);
+  s.report = report_of(s, rounds_of(*s.chat));
+  std::ofstream f(fs::path(s.chat->log_dir()) / "report.md", std::ios::binary | std::ios::trunc);
+  assert(f.is_open());
+  f << s.report;
+  s.phase = Phase::Report;
+}
+
+// 提交一个已评候选: 会话目录里有 → 达门槛 → 拷进正式因子库
+Submitted submit_one(const SharedData &data, State &s, const std::string &name) {
+  Submitted x{name, {}};
+  const auto it = std::find_if(s.results.begin(), s.results.end(), [&](const Result &r) { return r.name == name; });
+  if (it == s.results.end()) {
+    x.err = "会话目录里没有这个候选";
+    return x;
   }
-  std::vector<Cand> cs;
+  x.err = GateMiss(s.sgate, *it);
+  if (x.err.empty() && s.bridge->adopt(data, s.sc, factors_dir(s), it->file, x.err))
+    s.adopted.insert(name);
+  return x;
+}
+
+void on_digest(State &s, const std::string &text) {
   std::string err;
-  s.message.clear();
-  if (!ParseReply(reply, cs, err)) {
-    s.editor = RetryMessage(err);
-    return;
+  if (!ParseQuestions(text, s.questions, err))
+    return s.stop ? finish(s, "按 Stop") : s.chat->ask(RetryMessage(err));
+  s.picks.clear();
+  for (const Question &q : s.questions)
+    s.picks.emplace_back(q.options.size(), false);
+  s.phase = Phase::Choose;
+  if (s.stop)
+    finish(s, "按 Stop");
+}
+
+void on_mine(const SharedData &data, State &s, const std::string &text, int round) {
+  MineReply m;
+  std::string err;
+  if (!ParseMine(text, m, err))
+    return s.stop ? finish(s, "按 Stop") : s.chat->ask(RetryMessage(err));
+  for (std::string &x : m.issues)
+    s.issues.push_back({round, std::move(x)});
+  s.submitted.clear();
+  for (const std::string &name : m.submit) {
+    s.submitted.push_back(submit_one(data, s, name));
+    s.submits.push_back({round, s.submitted.back()});
   }
+  if (m.done)
+    return finish(s, "agent 宣布挖完");
+  if (s.stop)
+    return finish(s, "按 Stop");
   s.batch.clear();
   std::vector<std::string> files;
-  for (Cand &c : cs) {
+  for (Cand &c : m.factors) {
     Staged st{std::move(c), {}, {}};
     st.file = s.bridge->stage(data, s.sc, factors_dir(s), st.cand, st.err);
     if (!st.file.empty())
       files.push_back(st.file);
     s.batch.push_back(std::move(st));
   }
-  if (!files.empty())
-    s.bridge->eval(data, s.sc, factors_dir(s), files, s.gpu == 1);
+  s.results = s.bridge->results(data, s.sc, factors_dir(s));
+  s.bridge->eval(data, s.sc, factors_dir(s), files, s.sgpu);
   s.batch_pending = true;
+}
+
+// 每帧推进: 评完发反馈; 收齐一轮按阶段处理
+void step(const SharedData &data, State &s) {
+  if (s.phase != Phase::Digest && s.phase != Phase::Mine)
+    return;
+  if (s.batch_pending) {
+    if (s.bridge->state().busy)
+      return;
+    s.batch_pending = false;
+    if (s.stop)
+      return finish(s, "按 Stop");
+    s.chat->ask(RoundMessage(s.ctx, s.submitted, s.batch, s.results));
+    return;
+  }
+  if (s.chat->busy() || s.chat->done() == s.seen_turns)
+    return;
+  s.seen_turns = s.chat->done();
+  llm::Reply r;
+  int round = 0;
+  {
+    std::lock_guard<std::mutex> lock(s.chat->mutex);
+    assert(!s.chat->turns.empty());
+    r = s.chat->turns.back().reply;
+    round = static_cast<int>(s.chat->turns.size());
+  }
+  if (!r.ok())
+    return finish(s, "回复失败 (" + r.finish + ")");
+  if (s.phase == Phase::Digest)
+    on_digest(s, r.text);
+  else
+    on_mine(data, s, r.text, round);
 }
 
 // ---- Mine ----
@@ -194,59 +326,54 @@ void session_row(const SharedData &data, State &s) {
   Chat &chat = *s.chat;
   const EvalState es = s.bridge->state();
   const bool chat_busy = chat.busy();
-  bool last_ok = false;
-  int rounds = 0;
-  {
-    std::lock_guard<std::mutex> lock(chat.mutex);
-    rounds = static_cast<int>(chat.turns.size());
-    last_ok = rounds > 0 && chat.turns.back().reply.ok();
-  }
   const bool has_hold = !s.bridge->holds(data, s.level).empty();
   const bool has_key = *key_of(s.backend) != '\0';
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
-  const bool can_new = !chat_busy && !es.busy && has_hold && has_key;
+  const bool can_new = !live(s) && !chat_busy && !es.busy && has_key && has_hold;
   ImGui::BeginDisabled(!can_new);
-  if (ImGui::Button("New", ImVec2(60, 0)))
-    new_session(data, s);
-  ImGui::EndDisabled();
-  tip(has_key ? "按当前作用域与 Config 开新对话\n• 系统提示 = 特征叶 / 算子表 / 正式因子库\n• 首条 = 本作用域已试过的候选"
-              : "Config 页所选后端的 key 未填 (agent/Config.hpp)");
-  ImGui::SameLine();
-  const bool can_ask = s.live && !chat_busy && !es.busy && !s.batch_pending && !s.editor.empty();
-  ImGui::BeginDisabled(!can_ask);
-  if (ImGui::Button("Ask", ImVec2(60, 0))) {
-    chat.ask(s.editor);
-    s.editor.clear();
+  if (ImGui::Button("New", ImVec2(60, 0))) {
+    if (s.bridge->ready(data, Scope{s.pool, s.level, s.hold}, s.gpu == 1))
+      new_session(data, s);
+    else
+      s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
   }
   ImGui::EndDisabled();
-  tip("把编辑框里的消息发出");
+  tip(has_key ? "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成" : "Config 页所选后端的 key 未填 (agent/Config.hpp)");
   ImGui::SameLine();
-  const bool can_eval = s.live && !chat_busy && !es.busy && !s.batch_pending && last_ok && static_cast<size_t>(rounds) > s.evaled;
-  ImGui::BeginDisabled(!can_eval);
-  if (ImGui::Button("Eval", ImVec2(60, 0)))
-    eval_reply(data, s);
-  ImGui::EndDisabled();
-  tip("解析末轮回复 (每轮一次): 候选落进会话目录 → 逐个 Search → Run; 评完 / 取消把反馈填进编辑框 (未评的标未评估)");
-  ImGui::SameLine();
-  ImGui::BeginDisabled(!chat_busy && !es.busy);
-  if (ImGui::Button("Cancel", ImVec2(60, 0))) {
-    if (chat_busy)
-      chat.cancel();
-    if (es.busy)
-      s.bridge->cancel();
+  ImGui::BeginDisabled(s.phase != Phase::Choose);
+  if (ImGui::Button("Start", ImVec2(60, 0))) {
+    chat.ask(AnswerMessage(s.questions, s.picks, s.note));
+    s.phase = Phase::Mine;
   }
   ImGui::EndDisabled();
+  tip("把选好的答案与附言发给 agent, 开始全自动挖掘");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!live(s) || s.stop);
+  if (ImGui::Button("Stop", ImVec2(60, 0))) {
+    s.stop = true;
+    if (s.phase == Phase::Choose)
+      finish(s, "按 Stop");
+  }
+  ImGui::EndDisabled();
+  tip("当前这步做完再结束");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!live(s));
+  if (ImGui::Button("Cancel", ImVec2(60, 0)))
+    finish(s, "按 Cancel");
+  ImGui::EndDisabled();
+  tip("立即结束, 在跑的回复 / 回测作废");
 
   ImGui::SameLine();
-  if (!s.live) {
-    ImGui::TextDisabled("无会话");
-  } else {
-    ImGui::TextDisabled("%s / %s / %s · %s %s · %d 轮", s.sc.pool.c_str(), s.ctx.level.c_str(), s.ctx.hold.c_str(),
-                        llm::kBackendNames[static_cast<int>(chat.options().backend)], chat.options().model.c_str(), rounds);
+  static constexpr const char *kPhaseNames[] = {"无会话", "澄清", "选答案", "挖掘", "已结束"};
+  ImGui::TextDisabled("%s", kPhaseNames[static_cast<int>(s.phase)]);
+  if (s.phase != Phase::None) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("· %s / %s / %s · %s %s · %d 轮 · 入库 %zu", s.sc.pool.c_str(), s.ctx.level.c_str(), s.ctx.hold.c_str(),
+                        llm::kBackendNames[static_cast<int>(chat.options().backend)], chat.options().model.c_str(), rounds_of(chat), s.adopted.size());
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s", s.dir.c_str());
+      ImGui::SetTooltip("%s", chat.log_dir().c_str());
   }
   if (chat_busy) {
     ImGui::SameLine();
@@ -256,10 +383,42 @@ void session_row(const SharedData &data, State &s) {
     ImGui::SameLine();
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Busy), "eval %d/%d %s %s %.0f%%", es.done, es.total, es.stage.c_str(), es.file.c_str(), es.frac * 100.0);
   }
+  if (s.stop && live(s)) {
+    ImGui::SameLine();
+    ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "stopping");
+  }
   if (!es.message.empty() || !s.message.empty()) {
     ImGui::SameLine();
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "| %s", (s.message.empty() ? es.message : s.message).c_str());
   }
+}
+
+// 澄清: 逐题点选 + 附言
+void questions_panel(State &s) {
+  ImGui::TextDisabled("agent 的问题 (%zu); 选完按 Start", s.questions.size());
+  ImGui::BeginChild("##questions", ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.6f), true);
+  for (size_t i = 0; i < s.questions.size(); ++i) {
+    const Question &q = s.questions[i];
+    ImGui::PushID(static_cast<int>(i));
+    ImGui::TextWrapped("%zu. %s%s", i + 1, q.prompt.c_str(), q.multiple ? " (可多选)" : "");
+    for (size_t j = 0; j < q.options.size(); ++j) {
+      ImGui::PushID(static_cast<int>(j));
+      bool on = s.picks[i][j];
+      if (q.multiple ? ImGui::Checkbox(q.options[j].c_str(), &on) : ImGui::RadioButton(q.options[j].c_str(), on)) {
+        if (!q.multiple) {
+          s.picks[i].assign(q.options.size(), false);
+          on = true;
+        }
+        s.picks[i][j] = on;
+      }
+      ImGui::PopID();
+    }
+    ImGui::Spacing();
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  ImGui::TextDisabled("附言 (可空)");
+  input_multiline("##note", s.note, ImVec2(-1, -1));
 }
 
 void reply_panel(State &s) {
@@ -287,7 +446,7 @@ void reply_panel(State &s) {
   text_box("##reply", std::move(text), ImVec2(-1, -1));
 }
 
-void results_table(const SharedData &data, State &s) {
+void results_table(State &s) {
   ImGui::TextDisabled("候选 %zu (会话目录, 本持有期 score 降序)", s.results.size());
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                                      ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable;
@@ -313,16 +472,13 @@ void results_table(const SharedData &data, State &s) {
         ImGui::SetTooltip("%s", r.error.c_str());
     } else if (!w) {
       ImGui::TextDisabled("%s", r.ws.empty() && r.searched ? "无显著" : "未评");
+    } else if (s.adopted.count(r.name)) {
+      ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Ready), "入库");
     } else {
-      ImGui::PushID(r.file.c_str());
-      if (ImGui::SmallButton("Adopt")) {
-        std::string err;
-        s.message = s.bridge->adopt(data, s.sc, factors_dir(s), r.file, err) ? "已采纳 " + r.file : err;
-      }
-      ImGui::PopID();
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("拷进正式因子目录 (含权重与统计); %zu 个权重\n%s", r.ws.size(), w->expr.c_str());
+      ImGui::TextUnformatted("有权重");
     }
+    if (w && ImGui::IsItemHovered())
+      ImGui::SetTooltip("%zu 个权重\n%s", r.ws.size(), w->expr.c_str());
     ImGui::TableNextColumn();
     if (w) {
       ImGui::Text("%.3g", w->score);
@@ -347,20 +503,22 @@ void results_table(const SharedData &data, State &s) {
 }
 
 void render_mine(const SharedData &data, State &s) {
-  const bool locked = s.chat->busy() || s.bridge->state().busy;
-  scope_row(data, s, locked);
+  scope_row(data, s, live(s));
   session_row(data, s);
   ImGui::Separator();
   const float w = ImGui::GetContentRegionAvail().x;
   ImGui::BeginChild("##left", ImVec2(w * 0.5f, 0), false);
-  const float h = ImGui::GetContentRegionAvail().y;
-  ImGui::TextDisabled("下一条 (可改; Eval 评完自动填反馈)");
-  input_multiline("##editor", s.editor, ImVec2(-1, h * 0.4f));
-  reply_panel(s);
+  if (s.phase == Phase::Choose) {
+    questions_panel(s);
+  } else {
+    if (s.phase == Phase::Report)
+      text_box("##report", s.report, ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.4f));
+    reply_panel(s);
+  }
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("##right", ImVec2(0, 0), false);
-  results_table(data, s);
+  results_table(s);
   ImGui::EndChild();
 }
 
@@ -406,7 +564,22 @@ void render_config(State &s) {
   ImGui::SameLine();
   ImGui::RadioButton("GPU", &s.gpu, 1);
   ImGui::EndDisabled();
-  ImGui::TextDisabled("会话目录 %s/<池>/<层>/<持有期>", kWorkDir);
+  ImGui::TextDisabled("会话目录 %s/<池>/<层>/<持有期>; 下次 New 生效", kWorkDir);
+
+  ImGui::Spacing();
+  ImGui::TextColored(kColHead, "入库门槛");
+  ImGui::TextDisabled("agent 提交的候选至少一个权重全部达到才进正式因子库; 下次 New 生效");
+  const auto field = [](const char *label, double &v, const char *fmt) {
+    ImGui::SetNextItemWidth(120);
+    ImGui::InputDouble(label, &v, 0.0, 0.0, fmt);
+  };
+  field("score >=", s.gate.score, "%.3g");
+  ImGui::SameLine();
+  field("t >=", s.gate.t, "%.2f");
+  ImGui::SameLine();
+  field("mono >=", s.gate.mono, "%.2f");
+  ImGui::SameLine();
+  field("有效率 >=", s.gate.valid, "%.2f");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "提示词");
@@ -422,7 +595,7 @@ void render_config(State &s) {
   if (ImGui::Button("Save"))
     SavePrompt(kPrompts[s.prompt_idx], s.prompt_text);
   ImGui::SameLine();
-  ImGui::TextDisabled("%s/%s.md ({{键}} 占位; 下次 New / Eval 生效)", kPromptDir, kPrompts[s.prompt_idx]);
+  ImGui::TextDisabled("%s/%s.md ({{键}} 占位; 下次组消息生效)", kPromptDir, kPrompts[s.prompt_idx]);
   input_multiline("##prompt", s.prompt_text, ImVec2(-1, -1));
 }
 
@@ -471,22 +644,19 @@ GUI::TaskHandle CreateAgentTask() {
   handle.storage = state;
   handle.tabs = {"Mine", "Config", "Log"};
 
-  // 每帧 (无论是否选中): 推进评估队列; 评完的文件变了 → 重扫结果; 本批评完或取消 → 组反馈进编辑框
+  // 每帧 (无论是否选中): 推进评估队列; 评完的文件变了 → 重扫结果; 推进会话
   handle.Update = [state](SharedData &data) {
     State &s = *state;
     if (!s.bridge)
       return;
     s.bridge->update(data);
-    if (!s.live)
+    if (s.phase == Phase::None)
       return;
     if (s.bridge->evals() != s.seen_evals) {
       s.seen_evals = s.bridge->evals();
       s.results = s.bridge->results(data, s.sc, factors_dir(s));
     }
-    if (s.batch_pending && !s.bridge->state().busy) {
-      s.batch_pending = false;
-      s.editor = RoundMessage(s.ctx, s.batch, s.results);
-    }
+    step(data, s);
   };
 
   handle.Status = [state](const SharedData &, int idx) -> TaskStatus {
@@ -498,11 +668,15 @@ GUI::TaskHandle CreateAgentTask() {
       return *key_of(s.backend) ? TaskStatus{} : TaskStatus{TaskStatus::Kind::Warn, "no key"};
     if (idx != TAB_MINE)
       return {};
+    if (s.phase == Phase::Choose)
+      return {TaskStatus::Kind::Warn, "selecting"};
     if (s.chat->busy())
       return {TaskStatus::Kind::Busy, "asking"};
     if (const EvalState es = s.bridge->state(); es.busy)
       return {TaskStatus::Kind::Busy, "eval " + std::to_string(es.done) + "/" + std::to_string(es.total)};
-    return s.live ? TaskStatus{TaskStatus::Kind::Ready, "live"} : TaskStatus{};
+    if (s.phase == Phase::Report)
+      return {TaskStatus::Kind::Ready, "done"};
+    return {};
   };
 
   handle.Draw = [state](SharedData &data, int idx) {
@@ -540,7 +714,7 @@ GUI::TaskHandle CreateAgentTask() {
       s.bridge->cancel();
     s.chat.reset(); // 析构 join worker
     s.bridge.reset();
-    s.live = false;
+    s.phase = Phase::None;
     s.batch_pending = false;
   };
 
