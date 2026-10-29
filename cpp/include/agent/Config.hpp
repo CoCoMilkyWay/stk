@@ -3,7 +3,7 @@
 // =============================================================================
 // agent 配置 (自成一体, 不进 shared/Config.hpp)
 // =============================================================================
-//   LLM 两后端都走 HTTPS 443 (agent/Llm.hpp):
+//   LLM 两后端都走 HTTPS 443 (agent/Llm.hpp); key 不进仓库, 放本地 kKeyFile (gitignore):
 //     智谱    对话补全 chat/completions; key = 开放平台 API Keys
 //     Cursor  Cloud Agents API; key = Dashboard → API Keys 的 user API key (无仓库 agent, 起 VM 分钟级)
 //   读超时 = 流里两次增量之间的最长静默 (思考期也有思考增量 / 心跳); 重试 = 网络瞬抖 + 智谱限流 (429 1302 / 1305)
@@ -13,13 +13,11 @@
 namespace agent {
 
 // ---- LLM ----
-inline constexpr const char *kZhipuKey = "";
 inline constexpr const char *kZhipuHost = "open.bigmodel.cn";
 inline constexpr const char *kZhipuTarget = "/api/paas/v4/chat/completions";
 inline constexpr const char *kZhipuModels[] = {"glm-5.2", "glm-5.3", "glm-5.3-flash"};
 inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
 
-inline constexpr const char *kCursorKey = "";
 inline constexpr const char *kCursorHost = "api.cursor.com";
 inline constexpr const char *kCursorModels[] = {"default", "composer-latest"}; // default = 账号默认模型 (请求不带 model); 其余 id 见 GET /v1/models
 
@@ -44,5 +42,6 @@ inline constexpr double kGateValid = 0.5; // 池内有效率
 //   kPromptDir/{system,first,answer,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kPromptDir = "../../../../config/agent/prompt";
+inline constexpr const char *kKeyFile = "../../../../config/agent/keys.json"; // {"zhipu": "...", "cursor": "..."}; 无文件 = 都未填
 
 } // namespace agent

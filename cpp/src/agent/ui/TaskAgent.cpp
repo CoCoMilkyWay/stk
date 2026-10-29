@@ -101,7 +101,7 @@ bool live(const State &s) { return s.phase == Phase::Digest || s.phase == Phase:
 
 std::string factors_dir(const State &s) { return (fs::path(s.dir) / "factors").string(); }
 
-const char *key_of(int backend) { return backend == static_cast<int>(llm::Backend::Zhipu) ? kZhipuKey : kCursorKey; }
+bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
 std::string stamp() {
   const std::time_t now = std::time(nullptr);
@@ -217,8 +217,7 @@ void finish(State &s, std::string reason) {
   s.batch_pending = false;
   s.reason = std::move(reason);
   s.report = report_of(s, rounds_of(*s.chat));
-  s.chat->event("finish", {{"reason", s.reason}, {"rounds", std::to_string(rounds_of(*s.chat))}, {"adopted", std::to_string(s.adopted.size())},
-                           {"issues", std::to_string(s.issues.size())}});
+  s.chat->event("finish", {{"reason", s.reason}, {"rounds", std::to_string(rounds_of(*s.chat))}, {"adopted", std::to_string(s.adopted.size())}, {"issues", std::to_string(s.issues.size())}});
   std::ofstream f(fs::path(s.chat->log_dir()) / "report.md", std::ios::binary | std::ios::trunc);
   assert(f.is_open());
   f << s.report;
@@ -287,8 +286,7 @@ void on_mine(const SharedData &data, State &s, const std::string &text, int roun
     st.file = s.bridge->stage(data, s.sc, factors_dir(s), st.cand, st.err);
     if (!st.file.empty())
       files.push_back(st.file);
-    s.chat->event("stage", {{"round", std::to_string(round)}, {"name", st.cand.name}, {"expr", st.cand.expr}, {"note", st.cand.note},
-                            {"result", st.err.empty() ? "落文件 " + st.file : "未落文件: " + st.err}});
+    s.chat->event("stage", {{"round", std::to_string(round)}, {"name", st.cand.name}, {"expr", st.cand.expr}, {"note", st.cand.note}, {"result", st.err.empty() ? "落文件 " + st.file : "未落文件: " + st.err}});
     s.batch.push_back(std::move(st));
   }
   s.results = s.bridge->results(data, s.sc, factors_dir(s));
@@ -392,11 +390,11 @@ void session_row(const SharedData &data, State &s) {
   const EvalState es = s.bridge->state();
   const bool chat_busy = chat.busy();
   const bool has_hold = !s.bridge->holds(data, s.level).empty();
-  const bool has_key = *key_of(s.backend) != '\0';
+  const bool keyed = has_key(s.backend);
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
-  const bool can_new = !live(s) && !chat_busy && !es.busy && has_key && has_hold;
+  const bool can_new = !live(s) && !chat_busy && !es.busy && keyed && has_hold;
   ImGui::BeginDisabled(!can_new);
   if (ImGui::Button("New", ImVec2(60, 0))) {
     if (s.bridge->ready(data, Scope{s.pool, s.level, s.hold}, s.gpu == 1))
@@ -405,7 +403,7 @@ void session_row(const SharedData &data, State &s) {
       s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
   }
   ImGui::EndDisabled();
-  tip(has_key ? "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成" : "Config 页所选后端的 key 未填 (agent/Config.hpp)");
+  tip(keyed ? "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成" : "所选后端的 key 未填 (config/agent/keys.json)");
   ImGui::SameLine();
   ImGui::BeginDisabled(s.phase != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0))) {
@@ -605,10 +603,10 @@ void render_config(State &s) {
   if (ImGui::Combo("后端", &s.backend, llm::kBackendNames, llm::kBackendCount))
     s.model = s.backend == static_cast<int>(llm::Backend::Zhipu) ? kZhipuModels[0] : kCursorModels[0];
   ImGui::SameLine();
-  if (*key_of(s.backend))
+  if (has_key(s.backend))
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Ready), "key 已填");
   else
-    ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "key 未填 (agent/Config.hpp)");
+    ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "key 未填 (config/agent/keys.json)");
   ImGui::SetNextItemWidth(200);
   if (ImGui::BeginCombo("##model_preset", "预设")) {
     const bool zhipu = s.backend == static_cast<int>(llm::Backend::Zhipu);
@@ -741,7 +739,7 @@ GUI::TaskHandle CreateAgentTask() {
     if (!s.bridge)
       return {};
     if (idx == TAB_CONFIG)
-      return *key_of(s.backend) ? TaskStatus{} : TaskStatus{TaskStatus::Kind::Warn, "no key"};
+      return has_key(s.backend) ? TaskStatus{} : TaskStatus{TaskStatus::Kind::Warn, "no key"};
     if (idx != TAB_MINE)
       return {};
     if (s.phase == Phase::Choose)

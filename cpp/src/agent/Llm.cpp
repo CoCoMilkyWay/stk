@@ -8,9 +8,11 @@
 #include <boost/beast/http.hpp>
 #include <openssl/ssl.h>
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <thread>
 
 namespace agent::llm {
@@ -206,7 +208,7 @@ std::string str_of(const json &j, const char *k) { return j.contains(k) && j[k].
 
 // Cursor JSON 接口 (非流式, 不重试: POST 非幂等)
 json cursor_call(http::verb verb, const std::string &target, const std::string &body) {
-  const Resp r = request(kCursorHost, verb, target, kCursorKey, body, {}, nullptr, nullptr);
+  const Resp r = request(kCursorHost, verb, target, key(Backend::Cursor).c_str(), body, {}, nullptr, nullptr);
   if (r.status / 100 != 2)
     fail_status(target.c_str(), r);
   return r.body.empty() ? json::object() : json::parse(r.body);
@@ -214,12 +216,27 @@ json cursor_call(http::verb verb, const std::string &target, const std::string &
 
 } // namespace
 
+const std::string &key(Backend b) {
+  static const std::array<std::string, kBackendCount> keys = [] {
+    std::array<std::string, kBackendCount> k;
+    std::ifstream f(kKeyFile);
+    if (!f.is_open())
+      return k;
+    const json j = json::parse(f, nullptr, false);
+    assert(!j.is_discarded() && j.is_object() && "kKeyFile 须是 JSON 对象");
+    k[static_cast<int>(Backend::Zhipu)] = str_of(j, "zhipu");
+    k[static_cast<int>(Backend::Cursor)] = str_of(j, "cursor");
+    return k;
+  }();
+  return keys[static_cast<int>(b)];
+}
+
 Session::Session(Options o) : o_(std::move(o)) {
   if (o_.backend == Backend::Zhipu) {
-    assert(*kZhipuKey && "agent/Config.hpp kZhipuKey 未填");
+    assert(!key(Backend::Zhipu).empty() && "kKeyFile 里 zhipu 未填");
     assert(!o_.model.empty());
   } else {
-    assert(*kCursorKey && "agent/Config.hpp kCursorKey 未填");
+    assert(!key(Backend::Cursor).empty() && "kKeyFile 里 cursor 未填");
   }
 }
 
@@ -287,7 +304,7 @@ Reply Session::send_zhipu(const std::string &user, const Delta &on_delta, const 
     Resp resp;
     bool again = false; // 网络瞬抖 / 限流: 等一会整轮重发
     try {
-      resp = request(kZhipuHost, http::verb::post, kZhipuTarget, kZhipuKey, payload, {{"Accept", "text/event-stream"}}, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
+      resp = request(kZhipuHost, http::verb::post, kZhipuTarget, key(Backend::Zhipu).c_str(), payload, {{"Accept", "text/event-stream"}}, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
     } catch (const boost::system::system_error &e) {
       again = true;
       resp.cancelled = !wait_retry("zhipu", attempt, e.what(), cancel);
@@ -360,7 +377,7 @@ Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const
     Sse sse;
     Resp resp;
     try {
-      resp = request(kCursorHost, http::verb::get, run_path + "/stream", kCursorKey, "", h, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
+      resp = request(kCursorHost, http::verb::get, run_path + "/stream", key(Backend::Cursor).c_str(), "", h, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
     } catch (const boost::system::system_error &e) {
       cancelled = !wait_retry("cursor stream", attempt++, e.what(), cancel);
       if (cancelled)
@@ -377,7 +394,7 @@ Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const
       break;
   }
   if (cancelled) {
-    const Resp c = request(kCursorHost, http::verb::post, run_path + "/cancel", kCursorKey, "", {}, nullptr, nullptr);
+    const Resp c = request(kCursorHost, http::verb::post, run_path + "/cancel", key(Backend::Cursor).c_str(), "", {}, nullptr, nullptr);
     if (c.status / 100 != 2 && c.status != 409) // 409 = 已是终态
       fail_status("cursor cancel", c);
     r.finish = "cancelled";

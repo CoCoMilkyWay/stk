@@ -8,7 +8,8 @@ stk/
 ├── config/                # ⚙️ 全局配置
 │   ├── config.json        # ⚙️ 路径 / 回测日历起点 (末日随数据) / 交易成本 (池不在此, 见 Bar 池 pool_<pool> 列)
 │   ├── sample/            # ⚙️ 样例数据 (Level-1 / Level-2 行情 / 财务报表)
-│   └── agent/prompt/      # ⚙️ Agent 提示词模板 system / first / answer / round / retry (.md, {{键}} 占位; Agent → Config 页可编辑)
+│   └── agent/             # ⚙️ Agent: prompt/ 提示词模板 system / first / answer / round / retry (.md, {{键}} 占位; Agent → Config 页可编辑)
+│                          #    keys.json 智谱 / Cursor 的 key {"zhipu", "cursor"} (本地, gitignore)
 ├── py/                    # 🐍 Python 工具链
 │   ├── main.py            # 🐍 构建脚本 (调 CMake)
 │   ├── mode_*.py          # 🐍 模式开关: tsan / debug / profile / assert / production
@@ -264,7 +265,7 @@ stk/
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── agent/                                          # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / GUI 任务; 与项目只经 Bridge)
-│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的 key · 端点 · 模型, 超时 / 重试, 每轮模板数, 入库门槛默认值, 会话目录 / 提示词目录
+│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的端点 · 模型, 超时 / 重试, 每轮模板数, 入库门槛默认值, 会话目录 / 提示词目录 / 密钥文件
 │   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL): send 阻塞收齐一轮, 增量回调
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续

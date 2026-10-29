@@ -25,6 +25,9 @@ enum class Backend : uint8_t { Zhipu,
 inline constexpr const char *kBackendNames[] = {"Zhipu", "Cursor"};
 inline constexpr int kBackendCount = 2;
 
+// 该后端的 key (首次调用读 kKeyFile, 之后不再读); 空 = 未填
+const std::string &key(Backend b);
+
 struct Options {
   Backend backend = Backend::Zhipu;
   std::string model;  // Cursor "default" / 空 = 账号默认模型
