@@ -31,10 +31,27 @@ MODE = "assert"
 ENABLE_CUDA = True
 
 
+def _sync_remote():
+    """Fast-forward to upstream if behind, then re-exec so run.py itself is fresh."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    subprocess.run(["git", "fetch", "--quiet"], env=env, timeout=15, check=True)
+    behind = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD..@{u}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if behind == "0":
+        return
+    print(f"Pulling {behind} new commit(s)...")
+    subprocess.run(["git", "pull", "--ff-only", "--autostash"], env=env, check=True)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 def _cleanup_processes():
     """Kill old processes."""
-    subprocess.run(
-        ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
+    subprocess.run(["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
     time.sleep(0.3)
 
 
@@ -80,6 +97,9 @@ def _run(binary_path, working_dir, mode):
 def main():
     assert MODE in ("tsan", "debug", "profile", "assert", "production"), MODE
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+    print("Syncing remote...")
+    _sync_remote()
 
     print("Cleanup...")
     _cleanup_processes()

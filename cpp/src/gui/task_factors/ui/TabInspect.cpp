@@ -1,5 +1,6 @@
 // Tab Inspect — 见头文件
 #include "gui/task_factors/ui/TabInspect.hpp"
+#include "factor/Expr.hpp"        // kOps / op_index (表达式着色)
 #include "features/TimeIndex.hpp" // L_1min_to_Clock (K 线横轴刻度)
 #include "gui/Tasks.hpp"          // StatusColor
 #include "shared/Asset.hpp"       // AssetItem (资产代码 / 名称)
@@ -11,11 +12,13 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace GUI::Factors {
@@ -949,7 +952,7 @@ struct DistView {
   const AlphaDist *bands = nullptr; // 非空 = 分组 (边界 / 组占比 / 组均)
 };
 void plot_dist(const DistView &v, const ImVec2 &size) {
-  const ImGuiID key = ImHashData(v.pdf.y.data(), v.pdf.y.size() * sizeof(float), ImHashStr(v.title)); // 标题带矩 + PDF 本身
+  const ImGuiID key = ImHashData(v.pdf.y.data(), v.pdf.y.size() * sizeof(float), ImHashStr(v.title));
   fit_on_change(v.title, key, {ImAxis_Y1});
   if (!ImPlot::BeginPlot(v.title, size, ImPlotFlags_NoMenus))
     return;
@@ -1043,25 +1046,22 @@ void plot_dist(const DistView &v, const ImVec2 &size) {
   ImPlot::EndPlot();
 }
 
-// 左下左半: rIC 分布 — 逐行 rank IC 当随机变量 (标题的矩与顶部 stat 行同一组样本); x 默认 ±0.5, 0 居中: 换持有期 / 因子时分布位置可直接比
+// 左下左半: rIC 分布 — 逐行 rank IC 当随机变量 (与顶部 stat 同一组样本); x 默认 ±0.5, 0 居中: 换持有期 / 因子时分布位置可直接比
 void plot_ic(const InspectDerived &d, const ImVec2 &size) {
-  char title[160];
-  std::snprintf(title, sizeof(title), "rIC 分布 (逐行 rank IC)  sd %.4f  skew %+.2f  kurt %+.2f###ic", d.hs.ric.sd, d.hs.ric.skew, d.hs.ric.kurt);
-  plot_dist({title, "IC", "rIC(t)", d.ic_pdf, d.ic_series, d.hs.ric.mean, 0.5, nullptr}, size);
+  plot_dist({"rIC 分布###ic", "IC", "rIC(t)", d.ic_pdf, d.ic_series, d.hs.ric.mean, 0.5, nullptr}, size);
 }
 
-// 左下右半: alpha 分布 — 池内有效格的 alpha (标题的矩 = 全体, 不截尾); PDF 已截尾 → x 半宽贴 PDF 两端 max |alpha| 即按主体缩放 (0 居中); 时序 = 逐行截面均值; 组边界竖切分组
+// 左下右半: 因子分布 — 池内有效格的 alpha; PDF 截 0.4% ~ 99.6% → x 半宽贴 PDF 两端 max |alpha| 即按主体缩放 (0 居中); 时序 = 逐行截面均值; 组边界竖切分组
 void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
   const AlphaDist &a = d.adist;
-  char title[160];
-  std::snprintf(title, sizeof(title), "alpha 分布 (PDF 截 0.4%%~99.6%%)  mean %+.4g  sd %.4g  skew %+.2f  kurt %+.2f###alpha", a.mean, a.sd, a.skew,
-                a.kurt);
-  plot_dist({title, "alpha", "alpha(t)", a.pdf, a.series, a.mean, 0.0, &a}, size);
+  plot_dist({"因子分布###alpha", "alpha", "alpha(t)", a.pdf, a.series, a.mean, 0.0, &a}, size);
 }
 
 // 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做空超额) / LS (= ½ (L + S)) 均值, PCHIP 圆滑折线 + 节点圆点.
-// 三组 × (毛 + 全部金额段) 一次画全 (金额段越大线越细越淡), 成本只在这张图出现; L / S 默认隐藏, 点图例切 (图例项 = 组 × 金额段, 左上, 两列对齐).
-// 另一条池指数线 (池等权做多的绝对年化, 与因子无关): 看池本身在各持有期的漂移, 与超额线同轴对照.
+// 三组 × (毛 + 全部金额段) 一次画全 (金额段越大线越细越淡), 成本只在这张图出现; L / S 默认隐藏.
+// 另一条池均线 (池等权做多的绝对年化, 与因子无关; 不扣成本 = "池均 无冲击"): 看池本身在各持有期的漂移, 与超额线同轴对照.
+// 图例 = 自绘矩阵 (ImPlot 图例只能单列 / 单行), 左上: 行 = 组 (L / S / LS / 池均), 列 = 金额段 (无冲击 / 固定冲击 / 各金额), 格 = 该线色块;
+//   点格切该线, 点行头 / 列头切整行 / 整列 (有显示的 → 全隐, 否则全显); 悬停格 / 头 → 对应线加粗 (下帧)
 // 口径 = Stat 契约【持仓口径】的每期真实收益 (正向; 腿 = leg_period = HoldStat::leg; ls_period = Σ ls / 全部行, 不触发行记 0).
 // 净线 = 毛二级 − 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; 两腿都按本侧超额画, 成本都使线下移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
@@ -1081,7 +1081,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     key = ImHashData(&n_cost, sizeof(n_cost), key);
     fit_on_change(title, ImHashData(&fixed_impact, sizeof(fixed_impact), key), {ImAxis_Y1});
   }
-  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
+  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus | ImPlotFlags_NoLegend))
     return;
   CompactLegend cl;
   const int n_tier = n_cost + 1; // q = 0 毛, q ≥ 1 = costs[q − 1]
@@ -1109,10 +1109,23 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -100.0, 200.0); // 年化 < −100% (高金额段净线会砸穿) / > 200% 无意义: 轴夹在 [−100, 200], 线出界即裁
   ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), n_hold, labels.data());
   follow_limits(ImAxis_X1, -0.6, n_hold - 0.4);
-  ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
-  constexpr int kIdx = kLegs + 1; // 命中码: 池指数线
-  const char *items[kLegs + 1] = {"L", "S", "LS"};
+  constexpr int kIdx = kLegs + 1; // 组码 / 命中码: 池均线 (只有 无冲击 一列)
+  const char *rows[kIdx + 1] = {"L", "S", "LS", "池均"};
   const ImVec4 cols[kLegs + 1] = {kColTop, kColBottom, kColLS};
+  const int n_row = pool_ann ? kIdx + 1 : kIdx;
+  // 上帧悬停的图例格 (hl_c / hl_q: −1 = 整列 / 整行); 本图唯一实例
+  static bool s_hl = false;
+  static int s_hl_c = -1, s_hl_q = -1;
+  const auto highlit = [&](int c, int q) { return s_hl && (s_hl_c < 0 || s_hl_c == c) && (s_hl_q < 0 || s_hl_q == q); };
+  const auto has_cell = [&](int c, int q) { return c < n_row && (c < kIdx || q == 0); };
+  const auto line_name = [&](int c, int q, char (&buf)[64]) {
+    std::snprintf(buf, sizeof(buf), "%s %s", rows[c], tier_names[static_cast<size_t>(q)].c_str());
+  };
+  const auto fade_of = [&](int q) { return n_tier > 1 ? 1.f - 0.6f * static_cast<float>(q) / static_cast<float>(n_tier - 1) : 1.f; }; // 金额段越大越淡
+  const auto line_col = [&](int c, int q) {
+    return c == kIdx ? ImVec4(kColIndex.x, kColIndex.y, kColIndex.z, 1.f) // 与 K 线叠加的指数同色相, 这里是前景线: 不透明
+                     : ImVec4(cols[c].x, cols[c].y, cols[c].z, fade_of(q));
+  };
   // 就近命中: 可见项的数据点里离鼠标最近且 ≤ kPick 像素的那个 (组 c / 金额段 q / 持有期 i)
   constexpr float kPick = 10.f;
   const bool hovered = ImPlot::IsPlotHovered();
@@ -1134,16 +1147,16 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
         yk.push_back(value(c, q, i) * ann);
       }
       pchip_dense(xk, yk, xs, ys);
-      const float fade = n_tier > 1 ? 1.f - 0.6f * static_cast<float>(q) / static_cast<float>(n_tier - 1) : 1.f; // 金额段越大越淡
-      const ImVec4 col(cols[c].x, cols[c].y, cols[c].z, fade);
-      const float wt = (c == kLegs ? 2.5f : 1.5f) * (0.5f + 0.5f * fade);
+      const ImVec4 col = line_col(c, q);
+      const float hl = highlit(c, q) ? kHiScale : 1.f;
+      const float wt = (c == kLegs ? 2.5f : 1.5f) * (0.5f + 0.5f * col.w) * hl;
       char name[64];
-      std::snprintf(name, sizeof(name), "%-2s %s", items[c], tier_names[static_cast<size_t>(q)].c_str()); // 等宽字体: 组名定宽, 金额段列对齐
-      if (c < kLegs)
-        ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认只显 LS (全部金额段), 图例可点开
+      line_name(c, q, name);
+      if (c < kLegs || (q > 0 && costs[q - 1].amt == kAmtFixed))
+        ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认只显 LS (除固定冲击外的金额段), 图例可点开
       ImPlot::SetNextLineStyle(col, wt);
       ImPlot::PlotLine(name, xs.data(), ys.data(), static_cast<int>(xs.size()));
-      ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f, col, IMPLOT_AUTO, col);
+      ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f * hl, col, IMPLOT_AUTO, col);
       ImPlot::PlotScatter(name, xk.data(), yk.data(), static_cast<int>(xk.size())); // 同名 → 同一图例项, 一起显隐
       const ImPlotItem *item = ImPlot::GetItem(name);                               // 刚 Plot 过, 必在池里
       assert(item);
@@ -1156,7 +1169,8 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
           pd2 = d2, pc = c, pq = q, pi = static_cast<int>(xk[k]), ppx = px, pcol = ImVec4(col.x, col.y, col.z, 1.f);
       }
     }
-  constexpr const char *kIdxName = "池指数 (绝对)";
+  char idx_name[64];
+  line_name(kIdx, 0, idx_name);
   if (pool_ann) { // 池等权指数: 与因子无关的绝对基准, 全部持有期作节点
     xk.clear();
     yk.clear();
@@ -1165,12 +1179,13 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       yk.push_back(100.0 * pool_ann[i]);
     }
     pchip_dense(xk, yk, xs, ys);
-    const ImVec4 icol(kColIndex.x, kColIndex.y, kColIndex.z, 1.f); // 与 K 线叠加的指数同色相, 这里是前景线: 不透明
-    ImPlot::SetNextLineStyle(icol, 1.5f);
-    ImPlot::PlotLine(kIdxName, xs.data(), ys.data(), static_cast<int>(xs.size()));
-    ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, 3.f, icol, IMPLOT_AUTO, icol);
-    ImPlot::PlotScatter(kIdxName, xk.data(), yk.data(), static_cast<int>(xk.size()));
-    const ImPlotItem *item = ImPlot::GetItem(kIdxName);
+    const ImVec4 icol = line_col(kIdx, 0);
+    const float hl = highlit(kIdx, 0) ? kHiScale : 1.f;
+    ImPlot::SetNextLineStyle(icol, 1.5f * hl);
+    ImPlot::PlotLine(idx_name, xs.data(), ys.data(), static_cast<int>(xs.size()));
+    ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, 3.f * hl, icol, IMPLOT_AUTO, icol);
+    ImPlot::PlotScatter(idx_name, xk.data(), yk.data(), static_cast<int>(xk.size()));
+    const ImPlotItem *item = ImPlot::GetItem(idx_name);
     assert(item);
     if (hovered && item->Show)
       for (size_t k = 0; k < xk.size(); ++k) {
@@ -1179,6 +1194,117 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
         if (d2 < pd2)
           pd2 = d2, pc = kIdx, pq = 0, pi = static_cast<int>(xk[k]), ppx = px, pcol = icol;
       }
+  }
+  { // 图例矩阵: 背景 / 行头 / 列头 / 格都是 AllowOverlap 按钮 (同 ImPlot 图例), 盖住绘图区的点击 / 框选
+    const ImPlotStyle &ps = ImPlot::GetStyle();
+    const ImVec2 inner = ps.LegendInnerPadding;
+    const float th = ImGui::GetTextLineHeight(), sw = th * 0.7f, gx = 2.f * ImGui::GetStyle().ItemSpacing.x;
+    float w_head = 0.f;
+    for (int c = 0; c < n_row; ++c)
+      w_head = std::max(w_head, ImGui::CalcTextSize(rows[c]).x);
+    std::vector<float> w_col(static_cast<size_t>(n_tier)), x_col(static_cast<size_t>(n_tier));
+    const ImVec2 p0 = ImPlot::GetPlotPos(), o(p0.x + ps.LegendPadding.x, p0.y + ps.LegendPadding.y);
+    float x = o.x + inner.x + w_head;
+    for (int q = 0; q < n_tier; ++q) {
+      w_col[static_cast<size_t>(q)] = std::max(ImGui::CalcTextSize(tier_names[static_cast<size_t>(q)].c_str()).x, sw);
+      x_col[static_cast<size_t>(q)] = x + gx;
+      x = x_col[static_cast<size_t>(q)] + w_col[static_cast<size_t>(q)];
+    }
+    const ImRect box(o, ImVec2(x + inner.x, o.y + 2.f * inner.y + static_cast<float>(n_row + 1) * th));
+    const auto y_row = [&](int c) { return box.Min.y + inner.y + static_cast<float>(c + 1) * th; }; // c = −1 → 列头行
+    const auto button = [&](const ImRect &r, const char *id, bool &hov) {
+      bool held = false;
+      const ImGuiID gid = ImGui::GetID(id);
+      ImGui::KeepAliveID(gid);
+      return ImGui::ButtonBehavior(r, gid, &hov, &held, ImGuiButtonFlags_AllowOverlap | ImGuiButtonFlags_PressedOnClick);
+    };
+    const auto item_of = [&](int c, int q) {
+      char nm[64];
+      line_name(c, q, nm);
+      ImPlotItem *it = ImPlot::GetItem(nm); // 本帧刚 Plot 过, 必在池里
+      assert(it);
+      return it;
+    };
+    // 整行 / 整列切换: 集合里有显示的 → 全隐, 否则全显 (c / q = −1 = 不限)
+    const auto toggle_set = [&](int c0, int q0) {
+      bool any = false;
+      for (int c = 0; c < n_row; ++c)
+        for (int q = 0; q < n_tier; ++q)
+          if (has_cell(c, q) && (c0 < 0 || c == c0) && (q0 < 0 || q == q0))
+            any = any || item_of(c, q)->Show;
+      for (int c = 0; c < n_row; ++c)
+        for (int q = 0; q < n_tier; ++q)
+          if (has_cell(c, q) && (c0 < 0 || c == c0) && (q0 < 0 || q == q0))
+            item_of(c, q)->Show = !any;
+    };
+    const auto set_shown = [&](int c0, int q0) {
+      for (int c = 0; c < n_row; ++c)
+        for (int q = 0; q < n_tier; ++q)
+          if (has_cell(c, q) && (c0 < 0 || c == c0) && (q0 < 0 || q == q0) && item_of(c, q)->Show)
+            return true;
+      return false;
+    };
+    bool bg_hov = false;
+    button(box, "##term_legend", bg_hov);
+    ImDrawList &dl = *ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    dl.AddRectFilled(box.Min, box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBg));
+    dl.AddRect(box.Min, box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBorder));
+    const ImU32 c_txt = ImGui::GetColorU32(ImGuiCol_Text), c_dis = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    bool hl = false;
+    int hl_c = -1, hl_q = -1;
+    char id[48];
+    for (int q = 0; q < n_tier; ++q) { // 列头
+      const float xq = x_col[static_cast<size_t>(q)], wq = w_col[static_cast<size_t>(q)];
+      const ImRect r(ImVec2(xq, y_row(-1)), ImVec2(xq + wq, y_row(-1) + th));
+      std::snprintf(id, sizeof(id), "##term_lg_q%d", q);
+      bool hov = false;
+      if (button(r, id, hov))
+        toggle_set(-1, q);
+      if (hov)
+        hl = true, hl_c = -1, hl_q = q;
+      const char *t = tier_names[static_cast<size_t>(q)].c_str();
+      dl.AddText(ImVec2(xq + (wq - ImGui::CalcTextSize(t).x) * 0.5f, r.Min.y), hov ? ImGui::GetColorU32(ImGuiCol_PlotLinesHovered) : set_shown(-1, q) ? c_txt
+                                                                                                                                                      : c_dis,
+                 t);
+    }
+    for (int c = 0; c < n_row; ++c) {
+      const float yc = y_row(c);
+      { // 行头
+        const ImRect r(ImVec2(box.Min.x + inner.x, yc), ImVec2(box.Min.x + inner.x + w_head, yc + th));
+        std::snprintf(id, sizeof(id), "##term_lg_c%d", c);
+        bool hov = false;
+        if (button(r, id, hov))
+          toggle_set(c, -1);
+        if (hov)
+          hl = true, hl_c = c, hl_q = -1;
+        dl.AddText(r.Min, hov ? ImGui::GetColorU32(ImGuiCol_PlotLinesHovered) : set_shown(c, -1) ? c_txt
+                                                                                                 : c_dis,
+                   rows[c]);
+      }
+      for (int q = 0; q < n_tier; ++q) {
+        if (!has_cell(c, q))
+          continue;
+        const float xq = x_col[static_cast<size_t>(q)], wq = w_col[static_cast<size_t>(q)];
+        const ImVec2 sq(xq + (wq - sw) * 0.5f, yc + (th - sw) * 0.5f);
+        const ImRect r(ImVec2(xq, yc), ImVec2(xq + wq, yc + th));
+        std::snprintf(id, sizeof(id), "##term_lg_%d_%d", c, q);
+        bool hov = false;
+        ImPlotItem *it = item_of(c, q);
+        if (button(r, id, hov))
+          it->Show = !it->Show;
+        if (hov)
+          hl = true, hl_c = c, hl_q = q;
+        ImVec4 lc = line_col(c, q);
+        lc.w = std::max(lc.w, 0.4f) * (hov ? 0.75f : 1.f);
+        if (it->Show)
+          dl.AddRectFilled(sq, ImVec2(sq.x + sw, sq.y + sw), ImGui::ColorConvertFloat4ToU32(lc));
+        else
+          dl.AddRect(sq, ImVec2(sq.x + sw, sq.y + sw), hov ? ImGui::ColorConvertFloat4ToU32(lc) : c_dis);
+      }
+    }
+    ImPlot::PopPlotClipRect();
+    s_hl = hl, s_hl_c = hl_c, s_hl_q = hl_q;
   }
   if (sel_hold >= 0 && sel_hold < n_hold)
     ImPlot::TagX(static_cast<double>(sel_hold), ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "sel");
@@ -1189,7 +1315,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   }
   if (pc == kIdx) {
     ImGui::BeginTooltip();
-    ImGui::Text("%s  h=%s", kIdxName, labels[static_cast<size_t>(pi)]);
+    ImGui::Text("%s  h=%s", idx_name, labels[static_cast<size_t>(pi)]);
     ImGui::Separator();
     ImGui::Text("年化 %+.2f %%", 100.0 * pool_ann[pi]);
     ImGui::TextDisabled("池内全部成分等权做多 (可买才建仓), 每批 1/h̄, 不扣成本; 全期逐行收益和 / 天数 × %d", factor::stat::kDaysPerYear);
@@ -1213,7 +1339,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     };
     char v[64], note[192];
     ImGui::BeginTooltip();
-    ImGui::Text("%s %s  h=%s", items[pc], tier, labels[static_cast<size_t>(pi)]);
+    ImGui::Text("%s %s  h=%s", rows[pc], tier, labels[static_cast<size_t>(pi)]);
     ImGui::Separator();
     std::snprintf(v, sizeof(v), "%+.2f bp/期", gross * bp);
     if (ls)
@@ -1303,6 +1429,96 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
 std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { return inspect_key(ctx.lv, ctx.pool, row.key, row.expr); }
+
+// 表达式着色 (按语法结构, 同类同色; 只做词法, 显示的都是解析通过的规范串): 算子按类 (逐点 / 时序窗 / 截面 / 组截面, OpTable 的 t / a 列),
+// 特征 (档.层. 淡 + 列名), 参数 (键 / 值 / 裸键 = 自由参数), 括号按嵌套深度轮换色, 逗号 / 等号淡. 按词折行 (不超出当前可用宽; 特征整词不拆),
+// 悬停算子给中文名 + 说明
+constexpr ImVec4 kExOpPoint(0.72f, 0.66f, 0.98f, 1.f), kExOpRoll(0.45f, 0.85f, 0.55f, 1.f), kExOpCs(1.00f, 0.65f, 0.30f, 1.f),
+    kExOpGroup(0.95f, 0.50f, 0.75f, 1.f);
+constexpr ImVec4 kExFeatPre(0.38f, 0.58f, 0.66f, 1.f), kExFeatCol(0.45f, 0.85f, 0.95f, 1.f);
+constexpr ImVec4 kExKey(0.85f, 0.80f, 0.45f, 1.f), kExNum(1.00f, 0.90f, 0.60f, 1.f), kExFree(0.95f, 0.40f, 0.95f, 1.f);
+constexpr ImVec4 kExParen[] = {{0.85f, 0.85f, 0.55f, 1.f}, {0.55f, 0.70f, 0.95f, 1.f}, {0.80f, 0.55f, 0.85f, 1.f}, {0.50f, 0.80f, 0.65f, 1.f}};
+void expr_text(std::string_view s) {
+  const ImVec4 dim = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+  const float space_w = ImGui::CalcTextSize(" ").x;
+  bool first = true;
+  float gap = 0.f; // 前面攒的空格宽 (折行时丢掉)
+  // wrap_w = 折行判据宽 (整词不拆: 首段给整词宽, 续段给 0 = 不折); 返回是否悬停
+  const auto emit = [&](std::string_view t, const ImVec4 &c, float wrap_w) {
+    if (!first) {
+      ImGui::SameLine(0.f, gap);
+      if (ImGui::GetContentRegionAvail().x < wrap_w)
+        ImGui::NewLine();
+    }
+    first = false;
+    gap = 0.f;
+    ImGui::PushStyleColor(ImGuiCol_Text, c);
+    ImGui::TextUnformatted(t.data(), t.data() + t.size());
+    ImGui::PopStyleColor();
+    return ImGui::IsItemHovered();
+  };
+  const auto width = [](std::string_view t) { return ImGui::CalcTextSize(t.data(), t.data() + t.size()).x; };
+  const auto one = [&](std::string_view t, const ImVec4 &c) { return emit(t, c, width(t)); };
+  const auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.'; };
+  const size_t n = s.size();
+  int depth = 0;
+  for (size_t i = 0; i < n;) {
+    const char ch = s[i];
+    if (ch == ' ') {
+      gap += space_w, ++i;
+    } else if (ch == '(') {
+      one(s.substr(i++, 1), kExParen[depth++ % std::size(kExParen)]);
+    } else if (ch == ')') {
+      depth = std::max(0, depth - 1);
+      one(s.substr(i++, 1), kExParen[depth % std::size(kExParen)]);
+    } else if (ch == ',' || ch == '=') {
+      one(s.substr(i++, 1), dim);
+    } else if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_') {
+      size_t j = i;
+      while (j < n && ident(s[j]))
+        ++j;
+      const std::string_view tok = s.substr(i, j - i);
+      size_t k = j;
+      while (k < n && s[k] == ' ')
+        ++k;
+      const char nx = k < n ? s[k] : '\0';
+      if (nx == '(') { // 算子
+        const int oi = factor::expr::op_index(tok);
+        ImVec4 c = StatusColor(TaskStatus::Kind::Error);
+        if (oi >= 0) {
+          const factor::expr::OpInfo &o = factor::expr::kOps[oi];
+          c = o.a == factor::A::ALL ? kExOpCs : o.a == factor::A::GROUP ? kExOpGroup
+                                            : o.t == factor::T::POINT   ? kExOpPoint
+                                                                        : kExOpRoll;
+        }
+        if (one(tok, c) && oi >= 0)
+          tip("%s  %s\n%s", factor::expr::kOps[oi].name, factor::expr::kOps[oi].c_name, factor::expr::kOps[oi].note);
+      } else if (tok == "d" || tok == "k" || tok == "k2") { // 参数键; 后面不跟 '=' = 自由参数
+        if (one(tok, nx == '=' ? kExKey : kExFree) && nx != '=')
+          tip("自由参数 %.*s: 值待 Search 定", static_cast<int>(tok.size()), tok.data());
+      } else if (const size_t dot = tok.rfind('.'); dot != std::string_view::npos) { // 特征 档.层.列
+        emit(tok.substr(0, dot + 1), kExFeatPre, width(tok));
+        emit(tok.substr(dot + 1), kExFeatCol, 0.f);
+      } else {
+        one(tok, kExFeatCol);
+      }
+      i = j;
+    } else if (std::isdigit(static_cast<unsigned char>(ch)) || ch == '-' || ch == '+' || ch == '.') {
+      size_t j = i + 1;
+      while (j < n && (std::isdigit(static_cast<unsigned char>(s[j])) || s[j] == '.' || s[j] == 'e' || s[j] == 'E' ||
+                       ((s[j] == '-' || s[j] == '+') && (s[j - 1] == 'e' || s[j - 1] == 'E'))))
+        ++j;
+      one(s.substr(i, j - i), kExNum);
+      i = j;
+    } else { // 其余整段 (到下一个结构字符) 原色, 不拆 UTF-8
+      size_t j = i + 1;
+      while (j < n && std::string_view(" (),=").find(s[j]) == std::string_view::npos)
+        ++j;
+      one(s.substr(i, j - i), text);
+      i = j;
+    }
+  }
+}
 
 } // namespace
 
@@ -1422,7 +1638,15 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     ImGui::EndTable();
     return 0;
   }
-  ImGui::Text("[%s] %s", factor::stat::frame_name(row.frame), row.expr.c_str());
+  ImGui::Text("[%s]", factor::stat::frame_name(row.frame));
+  if (ImGui::IsItemHovered())
+    tip("表达式按语法着色\n"
+        "• 算子: 紫 = 逐点, 绿 = 时序窗, 橙 = 截面, 粉 = 组截面 (悬停看说明)\n"
+        "• 特征: 青 (前缀 档.层. 淡)\n"
+        "• 参数: 黄 = d= / k= 及其值, 品红 = 自由参数 (待 Search)\n"
+        "• 括号按嵌套层轮换色");
+  ImGui::SameLine();
+  expr_text(row.expr);
   if (!row.note.empty())
     ImGui::TextDisabled("%s", row.note.c_str());
 
@@ -1695,7 +1919,7 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
     empty_plot("资产 K 线###kline", cell, wait_hint);
   }
 
-  if (shown && ui.der.valid) { // 左下一格分两半: rIC 分布 | alpha 分布
+  if (shown && ui.der.valid) { // 左下一格分两半: rIC 分布 | 因子分布
     const ImVec2 half(std::max(50.f, (cell.x - sp) * 0.5f), cell.y);
     plot_ic(ui.der, half);
     ImGui::SameLine();
