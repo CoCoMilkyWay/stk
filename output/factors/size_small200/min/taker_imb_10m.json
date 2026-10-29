@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "十分钟主动失衡",
+ "expr": "CsZ(TsMeanRoll(TsImb(lob.1m.amt_taker_bid, lob.1m.amt_taker_ask), d))",
+ "note": "主动买卖成交额失衡的 10 分钟均值, 截面标准化"
+}

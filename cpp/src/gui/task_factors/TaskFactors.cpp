@@ -293,7 +293,7 @@ TaskHandle CreateFactorsTask() {
     case TAB_INSPECT: {
       // 池 + 层 = data.feature.selection (与特征面板双向同步: 页顶控件直接改它, 特征面板改了这里跟着变).
       // 本页 (pool, lv) 在所有服务空闲时追上选择: 换层 = 四个服务整体重建 (目录 / Inspect 缓存都随层, 字段表按层常驻);
-      // 同层换池只换目录 (下方自动重扫); 有服务在跑 = 旧作用域跑完再切
+      // 同层换池只换目录 (下方自动重扫); 有服务在跑 = 取消旧作用域, 停下再切
       Feature::Selection &sel = data.feature.selection;
       {
         ImGui::BeginGroup();
@@ -381,7 +381,7 @@ TaskHandle CreateFactorsTask() {
           Factors::tip("池 + 因子层 (与特征面板同步; 括号里是因子数)\n"
                        "• min 层只有 Lob 池能用\n"
                        "• 窗长 d 等参数按本层行数计\n"
-                       "• 有计算在跑时, 跑完才切过去");
+                       "• 有计算在跑时, 先取消, 停下后切过去");
       }
       {
         const bool busy = (state->factors_service && state->factors_service->busy()) || (state->search_service && state->search_service->busy()) ||
@@ -401,9 +401,17 @@ TaskHandle CreateFactorsTask() {
             state->prev_search_phase = Phase::Idle; // 旧池那轮 Search 的结束不再触发 Update 的自动 Run
             state->pool = want_pool;
           }
-        } else if (want_lv != state->lv || want_pool != state->pool) {
+        } else if (want_lv != state->lv || want_pool != state->pool) { // 换作用域 = 取消旧作用域在跑的 (Search all 整轮放弃), 停下那帧再切
+          if (state->factors_service)
+            state->factors_service->RequestCancel();
+          if (state->search_service)
+            state->search_service->RequestCancel();
+          if (state->inspect_service)
+            state->inspect_service->RequestCancel();
+          state->factors_ui.search_queue.clear();
+          state->factors_ui.search_all_n = 0;
           ImGui::SameLine();
-          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(服务跑完后切到 %s / %s)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
         }
       }
       if (!state->lv) {

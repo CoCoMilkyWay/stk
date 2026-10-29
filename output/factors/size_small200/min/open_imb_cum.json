@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "开盘量失衡累计",
+ "expr": "CsRank(TsMeanCum(TsMask(TsImb(lob.1m.vol_taker_bid, lob.1m.vol_taker_ask), TsTodMask(k, k2))))",
+ "note": "开盘半小时 (09:30-10:00, 段内分钟 15..44) 主动成交量失衡的当日累计均值 (演示时段掩码 + 段内 expanding), 截面秩"
+}

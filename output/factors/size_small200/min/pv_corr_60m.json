@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "一小时量价相关",
+ "expr": "CsRank(TsCorrRoll(TsDeltaRoll(TsLog(lob.1m.lob_close), d), lob.1m.lob_vol_todz_5d, d))",
+ "note": "量价相关: 1 分钟收益与成交量同分钟 z 值近 60 分钟的相关系数, 截面秩"
+}

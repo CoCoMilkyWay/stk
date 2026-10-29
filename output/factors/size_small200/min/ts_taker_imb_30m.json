@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "时序半小时买压",
+ "expr": "TsRankRoll(TsMeanRoll(TsImb(lob.1m.amt_taker_bid, lob.1m.amt_taker_ask), d), d=255)",
+ "note": "主动买卖成交额失衡的 30 分钟均值在自身近 1 日的分位 (时序口径: 本标的买压相对自身常态的强弱)"
+}
