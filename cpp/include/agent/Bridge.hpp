@@ -98,8 +98,9 @@ public:
   // ③ 落地: 返回文件名; 名字 / 模板不合法或同名已在 → 空 + err
   std::string stage(const SharedData &data, const Scope &sc, const std::string &dir, const Cand &c, std::string &err);
 
-  // ④ 评估: files 排进队列 (忙时 assert). 资产轴未就绪 / 标签库未建 → false
-  bool eval(const SharedData &data, const Scope &sc, const std::string &dir, const std::vector<std::string> &files, bool gpu);
+  // ④ 评估: ready = 资产轴就绪且标签库已建; eval 把 files 排进队列 (忙或未 ready 时 assert)
+  bool ready(const SharedData &data, const Scope &sc, bool gpu) const;
+  void eval(const SharedData &data, const Scope &sc, const std::string &dir, const std::vector<std::string> &files, bool gpu);
   void update(const SharedData &data); // 每帧 (无论是否选中)
   void cancel();                       // 取消在跑的并清空队列
   EvalState state() const;

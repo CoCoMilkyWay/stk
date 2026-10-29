@@ -167,12 +167,15 @@ std::string Bridge::stage(const SharedData &data, const Scope &sc, const std::st
 }
 
 // ---- ④ 评估 ----
-bool Bridge::eval(const SharedData &data, const Scope &sc, const std::string &dir, const std::vector<std::string> &files, bool gpu) {
+bool Bridge::ready(const SharedData &data, const Scope &sc, bool gpu) const {
+  F::FactorScope probe;
+  return F::MakeFactorScope(data, p_->ft(data, sc.level), sc.pool, gpu, probe);
+}
+
+void Bridge::eval(const SharedData &data, const Scope &sc, const std::string &dir, const std::vector<std::string> &files, bool gpu) {
   Impl &I = *p_;
   assert(I.step == Impl::Step::Idle && "评估队列忙");
-  F::FactorScope probe;
-  if (!F::MakeFactorScope(data, I.ft(data, sc.level), sc.pool, gpu, probe))
-    return false;
+  assert(ready(data, sc, gpu));
   if (!I.searcher || sc != I.cur || dir != I.dir || gpu != I.gpu) {
     I.searcher.reset(), I.runner.reset(); // 析构 Stop() join worker, 常驻块随之释放
     I.searcher = std::make_unique<F::SearchService>();
@@ -182,7 +185,6 @@ bool Bridge::eval(const SharedData &data, const Scope &sc, const std::string &di
   I.queue = files;
   I.total = static_cast<int>(files.size()), I.done = 0;
   I.next(data);
-  return true;
 }
 
 void Bridge::update(const SharedData &data) {

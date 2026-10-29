@@ -57,7 +57,8 @@ struct State {
   Context ctx;
   std::string editor; // 下一条 user (可改)
   std::vector<Staged> batch;
-  bool batch_pending = false; // 本批在评, 评完在 Update 里组反馈
+  bool batch_pending = false; // 本批在评, 评完 (或取消) 在 Update 里组反馈
+  size_t evaled = 0;          // 已 Eval 过的轮数 (每轮回复只评一次)
   std::vector<Result> results;
   uint64_t seen_evals = 0;
   std::string message;
@@ -108,17 +109,23 @@ void new_session(const SharedData &data, State &s) {
   s.editor = FirstMessage(s.ctx, s.results);
   s.batch.clear();
   s.batch_pending = false;
+  s.evaled = 0;
   s.message.clear();
   s.live = true;
 }
 
-// 末轮回复 → 候选落进会话目录 → 排队评估; 解析失败 → 编辑框填重发要求
+// 末轮回复 → 候选落进会话目录 → 排队评估; 解析失败 → 编辑框填重发要求. 未 ready 不消耗本轮 (就绪后可再 Eval)
 void eval_reply(const SharedData &data, State &s) {
+  if (!s.bridge->ready(data, s.sc, s.gpu == 1)) {
+    s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
+    return;
+  }
   std::string reply;
   {
     std::lock_guard<std::mutex> lock(s.chat->mutex);
     assert(!s.chat->turns.empty());
     reply = s.chat->turns.back().reply.text;
+    s.evaled = s.chat->turns.size();
   }
   std::vector<Cand> cs;
   std::string err;
@@ -136,10 +143,8 @@ void eval_reply(const SharedData &data, State &s) {
       files.push_back(st.file);
     s.batch.push_back(std::move(st));
   }
-  if (!files.empty() && !s.bridge->eval(data, s.sc, factors_dir(s), files, s.gpu == 1)) {
-    s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
-    return;
-  }
+  if (!files.empty())
+    s.bridge->eval(data, s.sc, factors_dir(s), files, s.gpu == 1);
   s.batch_pending = true;
 }
 
@@ -218,21 +223,19 @@ void session_row(const SharedData &data, State &s) {
   ImGui::EndDisabled();
   tip("把编辑框里的消息发出");
   ImGui::SameLine();
-  const bool can_eval = s.live && !chat_busy && !es.busy && !s.batch_pending && last_ok;
+  const bool can_eval = s.live && !chat_busy && !es.busy && !s.batch_pending && last_ok && static_cast<size_t>(rounds) > s.evaled;
   ImGui::BeginDisabled(!can_eval);
   if (ImGui::Button("Eval", ImVec2(60, 0)))
     eval_reply(data, s);
   ImGui::EndDisabled();
-  tip("解析末轮回复: 候选落进会话目录 → 逐个 Search → Run; 评完把反馈填进编辑框");
+  tip("解析末轮回复 (每轮一次): 候选落进会话目录 → 逐个 Search → Run; 评完 / 取消把反馈填进编辑框 (未评的标未评估)");
   ImGui::SameLine();
   ImGui::BeginDisabled(!chat_busy && !es.busy);
   if (ImGui::Button("Cancel", ImVec2(60, 0))) {
     if (chat_busy)
       chat.cancel();
-    if (es.busy) {
+    if (es.busy)
       s.bridge->cancel();
-      s.batch_pending = false;
-    }
   }
   ImGui::EndDisabled();
 
@@ -468,7 +471,7 @@ GUI::TaskHandle CreateAgentTask() {
   handle.storage = state;
   handle.tabs = {"Mine", "Config", "Log"};
 
-  // 每帧 (无论是否选中): 推进评估队列; 评完的文件变了 → 重扫结果; 本批评完 → 组反馈进编辑框
+  // 每帧 (无论是否选中): 推进评估队列; 评完的文件变了 → 重扫结果; 本批评完或取消 → 组反馈进编辑框
   handle.Update = [state](SharedData &data) {
     State &s = *state;
     if (!s.bridge)
