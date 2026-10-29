@@ -1,5 +1,5 @@
 {
   "factors": [
-    {"pool":"all","level":"day","file":"rev_day.json","hold":2001,"expr":"CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=34)))"}
+    {"pool":"size_small200","level":"5min","file":"amtconc_dual_smooth_rank.json","hold":2001,"expr":"CsRank(TsAdd(CsRank(TsMeanRoll(TsNeg(TsEntropyCum(bar.5m.amount_5min)), d=9)), CsRank(TsMeanRoll(TsNeg(TsDiv(TsMaxCum(bar.5m.amount_5min), TsSumCum(bar.5m.amount_5min))), d=1))))"}
   ]
 }

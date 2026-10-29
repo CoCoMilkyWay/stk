@@ -49,11 +49,21 @@ struct Weight {
   double mono = 0, ls = 0, ric = 0; // 分层单调性 / 每期毛多空 / rIC 均值
   double score = 0, valid = 0;      // Search 目标 / 池内有效率 (0..1)
 };
+// Search 无显著时定向目标 g 最高的候选 (不看门槛): 告诉 agent 差在哪
+struct Top {
+  std::string expr;
+  int sign = 1;                     // 方向 (−1 = 取反后才是这组统计)
+  double mono = 0, ls = 0, ric = 0; // 定向后, 同 Weight
+  double g = 0, se = 0;             // 定向目标 ls·rIC / 其标准误
+  std::string miss;                 // 落选原因
+};
 // 一个因子文件
 struct Result {
   std::string file, name, name_cn, tmpl, note, error; // error 非空 = BROKEN
   bool searched = false;                              // 候选目录 log/ 下有它的 Search 日志
-  std::vector<Weight> ws;                             // 按 score 降序
+  bool has_top = false;                               // top 有效 (本次运行里 Search 过且无显著)
+  Top top;
+  std::vector<Weight> ws; // 按 score 降序
   const Weight *best() const { return ws.empty() || !ws.front().has ? nullptr : &ws.front(); }
 };
 struct Context {

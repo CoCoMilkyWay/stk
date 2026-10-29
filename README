@@ -222,7 +222,7 @@ stk/
 │   │   │       │   │                                 #      FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU; 每轮 drop_engines)
 │   │   │       │   │                                 #    · 管线 (四服务同一份): Job → open_job (评估域 + 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块 load_block
 │   │   │       │   │                                 #      → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node), 末块 finish → hk.done); Run / Inspect / Portfolio
-│   │   │       │   │                                 #      走 eval_job (根集 RootSet 去重 → 一趟一张森林; 探针 whole (AlphaP) 或无根 → 整期一块, 否则前带 = 回看 + lag 按预算分块); Search 每趟一次 pass
+│   │   │       │   │                                 #      走 eval_job (根集 RootSet 去重 → 一趟一张森林; Job::whole_only (Inspect) 或无根 → 整期一块, 否则前带 = 回看 + lag 按预算分块); Search 每趟一次 pass
 │   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
 │   │   │       │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
 │   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界

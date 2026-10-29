@@ -107,8 +107,8 @@ PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool,
   assert(level_for_pool(l, pool_def(pool).tier) && "该池不能用这个因子层");
   PerPool<FeatureLib> libs;
   libs[kAllPool] = load_lib(data.config, pool_def(kAllPool).name);
-  if (const PoolId lab = l.lab(pool_id(pool)); lab != kAllPool)
-    libs[lab] = load_lib(data.config, pool);
+  if (const PoolId p = pool_id(pool); p != kAllPool)
+    libs[p] = load_lib(data.config, pool);
   return libs;
 }
 
@@ -255,7 +255,8 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   sc.libs = factor_libs(data, pool, lv);
-  return sc.libs[factor_level(lv).lab(pool_id(pool))].ready(); // 标签库未建 → false
+  const PoolId p = pool_id(pool);
+  return sc.libs[p].ready() && sc.libs[factor_level(lv).lab(p)].ready(); // 因子池库 / 标签库未建 → false
 }
 
 } // namespace GUI::Factors

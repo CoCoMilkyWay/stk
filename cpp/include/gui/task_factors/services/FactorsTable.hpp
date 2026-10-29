@@ -89,7 +89,7 @@ inline constexpr bool level_for_pool(const FactorLevel &l, TierId pool_tier) { r
 inline constexpr const char *kLevelToken[LEVEL_COUNT] = {"1s", "1m", "5m", "15m", "30m", "60m", "1d"};
 // 该层因子目录 = <config.factor_dir>/<pool>/<name> (level_for_pool)
 std::string factor_dir_of(const SharedData &data, const std::string &pool, LevelId lv);
-// 请求的库清单 (GUI 线程读): 标签库 + all 池 (bar.* 叶 / 日频原料 / 池成员); 余池空. 未建库的清单 ready() == false
+// 请求的库清单 (GUI 线程读): 因子池库 (定评估期; Lob 标签层兼标签库) + all 池 (bar.* 叶 / 日频原料 / 池成员); 余池空. 未建库的清单 ready() == false
 PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool, LevelId lv);
 // 因子目录下的因子文件 (*.json 普通文件, 不进子目录), 路径序; 目录不存在 = 空
 std::vector<std::filesystem::path> list_factor_files(const std::string &dir);

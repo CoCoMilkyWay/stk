@@ -499,7 +499,7 @@ StatScope stat_scope(const FactorScope &sc, const Domain &dm, const YPlanes &y, 
   o.pool = sc.pool;
   o.start_date = dm.dates.front();
   o.end_date = dm.dates.back();
-  o.days = y.sh.days, o.T = y.sh.T, o.A = y.sh.A;
+  o.days = static_cast<int>(dm.days.size()), o.T = o.days * y.sh.seg, o.A = y.sh.A; // 评估域全期 (分块时 y 只是一块)
   o.max_impact = sc.max_impact;
   o.n_full = y.n_full;
   o.backend = backend;

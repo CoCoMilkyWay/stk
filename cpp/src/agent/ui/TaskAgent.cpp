@@ -405,6 +405,8 @@ void results_table(const Mine &m) {
         ImGui::SetTooltip("%s", r.error.c_str());
     } else if (!w) {
       ImGui::TextDisabled("%s", r.ws.empty() && r.searched ? "无显著" : "未评");
+      if (r.has_top && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s\n目标最高 %s%s", r.top.miss.c_str(), r.top.expr.c_str(), r.top.sign < 0 ? " (取反)" : "");
     } else if (m.adopted.count(r.name)) {
       ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Ready), "入库");
     } else {
@@ -421,6 +423,14 @@ void results_table(const Mine &m) {
       ImGui::Text("%.4f", w->ric);
       ImGui::TableNextColumn();
       ImGui::Text("%.3g", w->score);
+    } else if (r.has_top) {
+      ImGui::TextDisabled("%.3f", r.top.mono);
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%.2f", r.top.ls * 1e4);
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%.4f", r.top.ric);
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("-");
     } else {
       for (int i = 0; i < 3; ++i)
         ImGui::TableNextColumn();

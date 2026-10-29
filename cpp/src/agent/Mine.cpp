@@ -37,6 +37,9 @@ std::string brief(const Result &r) {
   if (!r.error.empty())
     return "BROKEN: " + r.error;
   const Weight *w = r.best();
+  if (!w && r.ws.empty() && r.has_top)
+    return "无显著 (" + r.top.miss + "), 目标最高 mono " + num(r.top.mono) + " ls " + num(r.top.ls * 1e4) + "bp rIC " + num(r.top.ric) + " g " + num(r.top.g) +
+           " ± " + num(r.top.se);
   if (!w)
     return r.ws.empty() && r.searched ? "无显著" : "未评估";
   return std::to_string(r.ws.size()) + " 个权重, 最佳 mono " + num(w->mono) + " ls " + num(w->ls * 1e4) + "bp rIC " + num(w->ric) + " score " + num(w->score) +

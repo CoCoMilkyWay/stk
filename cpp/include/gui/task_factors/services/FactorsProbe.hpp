@@ -51,7 +51,6 @@ inline double leg_abs(const factor::stat::Row &r, int d, int l, double cap) {
 // ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
 //   need              原料位 (引擎据此算 / 拷回)
 //   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
-//   whole             只整期一块 (不能分块流式; 有则作业整期一块)
 //   open(c)           本块评前 (单线程; 落地平面在评估域首块定形)
 //   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内行 ∈ [t_lo, T), hi = Probes::hd 下标)
 //   root(c, v)        本块原料就绪 (全核)
@@ -109,7 +108,6 @@ struct Probes {
   Holds hd; // 所评持有期 (键须都在 Y 里; 调用方恒填); 钩子的 hi 按它
   static constexpr uint8_t need = (uint8_t{0} | ... | P::need);
   static constexpr bool cells = (false || ... || !std::is_same_v<typename P::Ext, factor::cpu::stat::NoExt>);
-  static constexpr bool whole = (false || ... || P::whole);
   struct Ext {
     std::tuple<typename P::Ext...> e;
     void cell(const factor::cpu::stat::RxCell &cl) {
@@ -149,7 +147,6 @@ struct ProbeSink {
 // 探针的空钩子 (各探针按需遮蔽)
 struct ProbeBase {
   using Ext = factor::cpu::stat::NoExt;
-  static constexpr bool whole = false;
   static double bytes(const Shape &, int) { return 0.0; }
   Ext ext() const { return {}; }
   void open(const Ctx &) {}
@@ -208,15 +205,16 @@ struct RankP : ProbeBase {
     pct = static_cast<float>(100.0 * sum / static_cast<double>(rows));
   }
 };
-// alpha 分布 (与持有期无关; 两趟扫整张量 → 只整块)
+// alpha 分布 (与持有期无关; 两趟扫张量, 不跨块合并 → 只取末块的统计行: 整期一块 = 全期, 分块 = 最近一块)
 struct AlphaP : ProbeBase {
   static constexpr uint8_t need = kNeedAlpha | kNeedRx;
-  static constexpr bool whole = true;
   AlphaDist d;
   void root(const Ctx &c, const RootView &v) {
+    if (c.c.d1 != c.c.nd)
+      return;
     const factor::stat::Span s = c.s();
-    assert(s.t0_abs == 0 && s.t_lo == 0 && s.T == c.c.rows_all() && "alpha 分布只整块");
-    alpha_dist(c.ex, v.alpha.v, v.alpha.m, v.rx, s.T, s.A, d);
+    const size_t o = static_cast<size_t>(s.t_lo) * s.A;
+    alpha_dist(c.ex, v.alpha.v + o, v.alpha.m + o, v.rx + o, s.T - s.t_lo, s.A, d);
   }
 };
 // 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 / Inspect 左下左半 (同一份成品; n < 3 与 Accum::finish 同口径: 不画)

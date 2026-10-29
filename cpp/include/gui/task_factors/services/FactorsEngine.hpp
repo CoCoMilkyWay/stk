@@ -12,7 +12,7 @@
 //                                            GPU 逐根 = stat_eval 只拷回 Ps::need 要的; 批核 (kBatched<Ps>: 只累加 + 抽样行) = kDefer 走完森林一批根同在显存一次 search_eval
 //   管线 (四服务同一份): Job (规格 → 评估域 / 计划 / 块) — open_job (评估域 → 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块
 //   load_block (ensure_block) → hk.block → 逐批 plant → plan_forest (值域逐根归因, 坏根跨块粘住) → hk.plan → eval (hk.node / hk.done); 末块根即 finish).
-//   eval_job = 一趟一张森林 (Run / Inspect / Portfolio; 探针 whole 或无根 → 整期一块 (装不下截最近的日), 否则按预算分块);
+//   eval_job = 一趟一张森林 (Run / Inspect / Portfolio; Job::whole_only 或无根 → 整期一块 (装不下截最近的日), 否则按预算分块);
 //   Search 自己 plan_job, 每趟一次 pass. 结局统一 FactorWorker::settle.
 // 只给服务 .cpp include (EvalCpu → TS / CS Cpu.hpp, 受控浮点: CMake PRECISE_MATH 源).
 #pragma once
@@ -578,12 +578,13 @@ struct Blocks {
     return own.size() == 1 ? own[0] : own[k];
   }
 };
-// 一次作业 (四服务同一份): 规格 (调用方填 spec.y / retain / own / who; carry 由 eval_job 或调用方定) → open_job (评估域 dm + 叶 spec.x)
+// 一次作业 (四服务同一份): 规格 (调用方填 spec.y / retain / own / whole_only / who; carry 由 eval_job 或调用方定) → open_job (评估域 dm + 叶 spec.x)
 // → plan_job (计划 P + 块位) → pass
 struct Job {
   BlockSpec spec;                   // 块两侧: x = 叶 (open_job 定) / y (调用方填)
   bool retain = true;               // 块上只留 spec.x / 否则评估域内读过的全留
   bool own = false;                 // 块归作业 (用完即弃, 不占 F.c)
+  bool whole_only = false;          // eval_job 只整期一块 (块钩子 / alpha 分布要整期; 装不下截最近的日)
   int carry = -1;                   // 前带日 (< 0 = 整期一块)
   const char *who = "";             // 整期截近期时的消息
   const FeatureTable *ft = nullptr; // open_job 定
@@ -751,9 +752,9 @@ struct JobHooks : HookBase {
     h.done(k);
   }
 };
-// 一次作业 = 一趟, 根全进一张森林 (Run / Inspect / Portfolio; 根可空, 来自 RootSet 即两两不同): open_job → plan_job (探针要整期 (Ps::whole)
+// 一次作业 = 一趟, 根全进一张森林 (Run / Inspect / Portfolio; 根可空, 来自 RootSet 即两两不同): open_job → plan_job (j.whole_only
 // 或无根 → 整期一块, 装不下则评估期截最近的日 (fit_recent); 否则前带 = 根的最长回看 + lag, 按预算分块) → pass (钩子 hk 外包 JobHooks). o 须新建, 调用方先填 o.job 的 spec.y /
-// retain / own / who. X: retain = 只留本森林的叶 / 否则评估域内读过的全留 (预算按缓存 ∪ 本森林). 块钩子只整期一块的作业用.
+// retain / own / whole_only / who. X: retain = 只留本森林的叶 / 否则评估域内读过的全留 (预算按缓存 ∪ 本森林). 块钩子只整期一块的作业用.
 // 进度: Loading 期 = 天; Running 期 (每块) = 好根的算子节点 + 好根数. 结局 Ok / Empty / Broken (全部根坏) / Cancel / Stale (Empty / Broken: o.job.why)
 template <class E, class Slot, class H>
 Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const std::vector<Root> &roots, Slot &&ps, JobOut &o, H &&hk) {
@@ -769,7 +770,7 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const std::vector<Root
   // ---- 评估域 → 前带 → 预算 → 分块 (探针按最多持有期的根) ----
   if (!open_job(F, sc, d.feats, j))
     return Rc::Empty;
-  if (C > 0 && !Ps::whole) {
+  if (C > 0 && !j.whole_only) {
     int look = 0;
     for (const Root &r : roots)
       look = std::max(look, factor::search::space::lookback(*r.e));

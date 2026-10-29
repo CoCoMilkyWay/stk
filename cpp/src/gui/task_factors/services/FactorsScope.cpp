@@ -41,7 +41,7 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
   const PerPool<FeatureLib> &libs = sc.libs;
   dm = Domain{};
   dm.pool = pool;
-  dm.used = pool_bit(lab);
+  dm.used = pool_bit(lab) | pool_bit(pool); // 因子池库恒在: Lob 池的评估期 = 池库落盘日 (只用 Bar 叶也不越出)
   for (const LeafId id : leaves) {
     const FeatCol &c = ft.x.leaves[id];
     assert(c.allowed);

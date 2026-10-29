@@ -17,6 +17,7 @@
 #include <deque>
 #include <filesystem>
 #include <iterator>
+#include <map>
 #include <mutex>
 
 namespace agent {
@@ -82,6 +83,30 @@ void sort_results(std::vector<Result> &v) {
     const Weight *x = a.best(), *y = b.best();
     return (x != nullptr) != (y != nullptr) ? x != nullptr : x && x->score > y->score;
   });
+}
+
+// 一趟 Search 的结局 → 无显著时的 top (有终选或无可用候选 → 假)
+bool top_of(const F::SearchResult &sr, Top &t) {
+  if (!sr.picks.empty())
+    return false;
+  const F::SearchCand *b = nullptr;
+  for (const F::SearchCand &c : sr.cands)
+    if (c.sc.ok && (!b || c.sc.g > b->sc.g))
+      b = &c;
+  if (!b)
+    return false;
+  const factor::search::Score &s = b->sc;
+  t.expr = b->expr, t.sign = s.sign;
+  t.mono = s.mono, t.ls = s.ls, t.ric = s.ric, t.g = s.g, t.se = s.se;
+  if (!(s.ls > 0.0))
+    t.miss = "每期毛多空 ≤ 0";
+  else if (!(s.ric > 0.0))
+    t.miss = "rIC = 0";
+  else if (s.mono < factor::search::kMinMono)
+    t.miss = "mono " + num(s.mono) + " < " + num(factor::search::kMinMono);
+  else
+    t.miss = "不显著 (曲面峰值不超过标准误)";
+  return true;
 }
 
 std::vector<Result> scan(const F::FeatureTable &ft, const std::string &dir, int hold) {
@@ -212,8 +237,16 @@ struct Lab::Impl {
   int total = 0, done = 0;
   std::string file;
   std::vector<Result> results;
+  std::map<std::string, Top> tops; // 文件 → 最近一趟 Search 无显著时的 top (同作用域跨会话留着)
 
   std::shared_ptr<const F::FeatureTable> ft() const { return table(*data, sc.level); }
+
+  void put_top(Result &r) const {
+    const auto it = tops.find(r.file);
+    r.has_top = it != tops.end();
+    if (r.has_top)
+      r.top = it->second;
+  }
 
   // 在跑的那道
   template <class Fn>
@@ -241,14 +274,22 @@ struct Lab::Impl {
     run.send(std::move(req));
     step = Step::Run;
   }
-  bool search_wrote() const {
+  // Search 跑完: 记下 top (无显著才有), 返回是否已落盘
+  bool search_done() {
     std::lock_guard<std::mutex> lock(search.svc->mutex);
-    return search.svc->result.wrote;
+    const F::SearchResult &sr = search.svc->result;
+    Top t;
+    if (top_of(sr, t))
+      tops[file] = std::move(t);
+    else
+      tops.erase(file);
+    return sr.wrote;
   }
 
   // 重扫一个文件, 结果表保序
   void refresh(const std::string &f) {
     Result r = result_of(*ft(), fs::path(dir) / f, sc.hold);
+    put_top(r);
     const auto it = std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == f; });
     if (it == results.end())
       results.push_back(std::move(r));
@@ -290,9 +331,12 @@ void Lab::bind(const SharedData &data, const Scope &sc, std::string dir, bool gp
   if (!I.search.svc || sc != I.sc || dir != I.dir || gpu != I.gpu) {
     I.search.reset(), I.run.reset();
     I.sc = sc, I.dir = std::move(dir), I.gpu = gpu;
+    I.tops.clear();
   }
   I.data = &data;
   I.results = scan(*I.ft(), I.dir, I.sc.hold);
+  for (Result &r : I.results)
+    I.put_top(r);
 }
 
 void Lab::stage(Staged &s) {
@@ -344,7 +388,7 @@ void Lab::update() {
     I.step = Step::Idle;
     return;
   }
-  if (I.step == Step::Search && I.search_wrote())
+  if (I.step == Step::Search && I.search_done())
     return I.send_run();
   I.settle();
   I.next();

@@ -523,16 +523,22 @@ struct SearchService::Searcher {
       assert(hp.n_hold == 1);
       en.sc = factor::search::score_signed(hp.hold[0]);
     }
-    int n_pos = 0;
+    int n_pos = 0, top = -1; // top = 定向目标 g 最高的候选 (不看门槛)
     double best = -std::numeric_limits<double>::infinity();
     for (int id : ids) {
-      const double sc = ents[static_cast<size_t>(id)].sc.score;
-      n_pos += std::isfinite(sc);
-      best = std::max(best, sc);
+      const Score &sc = ents[static_cast<size_t>(id)].sc;
+      n_pos += std::isfinite(sc.score);
+      best = std::max(best, sc.score);
+      if (sc.ok && (top < 0 || sc.g > ents[static_cast<size_t>(top)].sc.g))
+        top = id;
     }
     const double pass_s = std::chrono::duration<double>(Clock::now() - t_pass).count();
     lg("第 %d 趟完成: %d 候选 × %d 块, %.1fs (装载 %.1fs, 评估 %.1fs, %.1f ms/候选·块) | 正分 %d 最高 %.4g", pass, static_cast<int>(ids.size()), n_chunks, pass_s,
        load_s, pass_s - load_s, 1e3 * (pass_s - load_s) / (static_cast<double>(ids.size()) * n_chunks), n_pos, best);
+    if (top >= 0) {
+      const Score &sc = ents[static_cast<size_t>(top)].sc;
+      lg("  g 最高 %.3g ± %.3g: 每期毛多空 %.2fbp rIC %.4f mono %+.3f @ %s", sc.g, sc.se, 1e4 * sc.ls, sc.ric, sc.mono, params_at(top).c_str());
+    }
     res.n_pass = pass + 1;
     publish_result();
     return Rc::Ok;

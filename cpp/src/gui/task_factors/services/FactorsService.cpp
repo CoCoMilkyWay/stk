@@ -128,7 +128,7 @@ bool FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng,
   RootSet rs;
   for (const size_t i : idx)
     rs.add(*req.scope.ft, rows[i].expr, rows[i].frame);
-  // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain; keep → 读过的全留)
+  // Y = 全部持有期 + 全部金额段, 整期一块时同作用域跨文件复用 (分块 = 作业自有, 逐文件重读); X = 本文件的叶 (retain; keep → 读过的全留)
   JobOut o;
   o.job.spec.y = y_full(*req.scope.ft, req.scope.max_impact);
   o.job.retain = !req.spec.keep;

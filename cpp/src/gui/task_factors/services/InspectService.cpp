@@ -229,6 +229,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   JobOut o;
   o.job.spec.y = y_full(*sc.ft, sc.max_impact);
   o.job.retain = false;
+  o.job.whole_only = true; // 块钩子的池等权线 / alpha 分布要整期
   o.job.who = "Inspect";
   InspectProbes ps;
   ps.hd = o.job.spec.y.hd;

@@ -67,10 +67,19 @@ std::string stat_of(const Weight &w) {
   return b;
 }
 
+std::string stat_of(const Top &t) {
+  char b[256];
+  std::snprintf(b, sizeof(b), "mono %.3f, 每期毛多空 %.2fbp, rIC %.4f; 目标 ls·rIC %.3g ± %.3g (标准误)", t.mono, t.ls * 1e4, t.ric, t.g, t.se);
+  return b;
+}
+
 // 一个因子文件的结局 (多行, 每行 "- " 起)
 std::string outcome(const Result &r) {
   if (!r.error.empty())
     return "- BROKEN: " + r.error + "\n";
+  if (r.ws.empty() && r.has_top)
+    return "- Search 无显著权重, 落选原因: " + r.top.miss + "\n- 目标最高的候选 `" + r.top.expr + "`" + (r.top.sign < 0 ? " (取反)" : "") + ": " + stat_of(r.top) +
+           "\n";
   if (r.ws.empty())
     return r.searched ? "- Search 无显著权重 (本持有期 score 不显著为正, 或 mono 不达标)\n" : "- 未评估\n";
   std::string s;
