@@ -87,11 +87,10 @@ struct ValMeta {
   int prec;
 };
 constexpr ValMeta kVal[kPoolVals] = {{"EP", 2}, {"BP", 1}, {"SP", 1}, {"CP", 2}, {"DY", 2}};
-// VAL 线表: 价格线色; band 线尾小字的分位名 [kBandQ] (与 kBandQs 同序); band 填色 / 线 / 小字 / 右表格底色的 alpha
+// VAL 线表: 价格线色; band 填色 / 线 / 线尾刻度 / 右表格底色的 alpha
 const ImVec4 kValPxCol(0.95f, 0.95f, 0.95f, 1.0f);
-constexpr const char *kBandQName[kBandQ] = {"5%", "10%", "25%", "50%", "75%", "90%", "95%"};
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f, kValCellA = 0.45f;
-// VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 Band 小字看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
+// VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 band 线看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
 struct ValMark {
   double r, u;
 };
@@ -633,8 +632,6 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
       continue;
     bd.ok = true;
     bd.now = hv[s.at[last]], bd.pct = r.pct[last];
-    for (int q = 0; q < kBandQ; ++q)
-      bd.q[q] = r.q[q][last];
   }
 }
 
@@ -844,7 +841,7 @@ bool pages() {
           "• EP 盈利收益率 (1/PE) / BP 账面市值比 (1/PB) / SP 营收市值比 (1/PS) / CP 现金流收益率 (1/PCF) / DY 股息率\n"
           "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值; 高 = 便宜, 亏损照计为负, 过 0 连续), 主图例逐个开关\n"
           "• Band = 把过去 N 年的估值分位换算成价格线: 指数落在哪档 = 当前估值在历史里的位置 (绿 = 便宜, 红 = 贵)\n"
-          "• 线尾刻度 = 指数末点 +10%% / -5%% / -10%% / -20%% / -30%% 的点位: 对照 Band 小字看还要涨跌多少到哪档\n"
+          "• 线尾刻度 = 指数末点 +10%% / -5%% / -10%% / -20%% / -30%% 的点位: 对照 Band 线看还要涨跌多少到哪档\n"
           "• 区间 / log 与 NAV 页共用");
     if (val_open) {
       nav = false;
@@ -940,12 +937,7 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
       ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), j == kBandQ / 2 ? 1.5f : 1.0f);
       ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags_SkipNaN);
     }
-    if (pf.item(lb) && bd.ok)
-      for (int j = 0; j < kBandQ; ++j) {
-        char q[24];
-        fmt_val(b, bd.q[j], q, sizeof(q));
-        push_tag(pf.tags, pf.lim, v.band_x.size(), [&](size_t i) { return ImPlotPoint(bx[i], bd.y[j][i]); }, ImGui::ColorConvertFloat4ToU32(band_col((j + 0.5) / kBandQ, kBandTagA)), std::string(kBandQName[j]) + " " + q);
-      }
+    pf.item(lb);
   }
   const std::string plb = texts[kPoolVals] + "###pf_val_px";
   ImPlot::SetNextLineStyle(kValPxCol, 2.0f);

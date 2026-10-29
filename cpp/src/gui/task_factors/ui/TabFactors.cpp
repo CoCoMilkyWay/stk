@@ -471,7 +471,7 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 //   与 Inspect 累计线 / 图例同一份 ls_annual / ann_sharpe)
 // ============================================================================
 using HS = factor::stat::HoldStat;
-using FR = FactorRow;
+using FR = EvalStat;
 using factor::stat::kFwd;
 using factor::stat::kRev;
 enum class Group : uint8_t { Cover,
@@ -1001,6 +1001,60 @@ void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
 }
 
 } // namespace
+
+void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h) {
+  assert(&h >= e.hold && &h < e.hold + e.n_hold);
+  struct Cell {
+    Group g;
+    const char *name, *label; // name = kMetrics 组内短名; label = 面板上显示的名
+  };
+  struct Col {
+    Group g; // 列头 = 组名, 列底色 = 组色
+    Cell cells[3];
+  };
+  static constexpr Col kCols[] = {
+      {Group::RIC, {{Group::RIC, "mean", "mean"}, {Group::RIC, "t", "t"}, {Group::RIC, "pos", "> 0"}}},
+      {Group::LS, {{Group::LS, "LS%", "年化%"}, {Group::LS, "SR", "SR"}, {Group::LS, "β", "β"}}},
+      {Group::Cover, {{Group::Cover, "val%", "val%"}, {Group::Cover, "trig%", "trig%"}, {Group::Cover, "util%", "util%"}}},
+      {Group::Shape, {{Group::Shape, "mono", "mono"}, {Group::Shape, "turn", "turn"}, {Group::RAC, "mean", "rAC"}}},
+  };
+  constexpr int kRows = static_cast<int>(std::size(kCols[0].cells));
+  const auto metric = [](const Cell &c) -> const Metric & {
+    for (const Metric &m : kMetrics)
+      if (m.group == c.g && std::string_view(m.name) == c.name)
+        return m;
+    assert(false && "面板指标不在 kMetrics");
+    return kMetrics[0];
+  };
+  ImGui::TextDisabled("%s  n=%d%s", factor::stat::hold_name(h.hold).c_str(), h.n, h.n >= 3 ? "" : "  (有效行不足)");
+  if (!ImGui::BeginTable("##hold_stat", static_cast<int>(std::size(kCols)), ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV))
+    return;
+  for (const Col &c : kCols)
+    ImGui::TableSetupColumn(kGroupInfo[static_cast<size_t>(c.g)].name);
+  ImGui::TableHeadersRow();
+  const float gap = 2.f * ImGui::GetStyle().ItemSpacing.x;
+  for (int r = 0; r < kRows; ++r) {
+    ImGui::TableNextRow();
+    for (const Col &c : kCols) {
+      ImGui::TableNextColumn();
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, group_bg(c.g));
+      float lw = 0.f; // 值列对齐: 本列最长指标名之后
+      for (const Cell &k : c.cells)
+        lw = std::max(lw, ImGui::CalcTextSize(k.label).x);
+      const Cell &k = c.cells[r];
+      const Metric &m = metric(k);
+      const float x0 = ImGui::GetCursorScreenPos().x;
+      ImGui::TextDisabled("%s", k.label);
+      ImGui::SameLine();
+      ImGui::SetCursorScreenPos(ImVec2(x0 + lw + gap, ImGui::GetCursorScreenPos().y));
+      const std::optional<ImVec4> col = grade_color(m, &h, e);
+      metric_cell(&h, m, e, col ? &*col : nullptr);
+      if (ImGui::IsItemHovered())
+        tip("%s\n• 范围 %s\n• 最优 %s", m.desc, m.range, m.best);
+    }
+  }
+  ImGui::EndTable();
+}
 
 int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx) {
   int action = 0;

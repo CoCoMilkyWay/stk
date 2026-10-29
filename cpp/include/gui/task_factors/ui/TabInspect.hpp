@@ -1,8 +1,9 @@
 // Factors→Inspect: 单因子展示页. 对象 = Factors 页表格里点行高光的那一个 (FactorsUIState::view_file); 数据 = InspectService
 // 对它算出的一级 Row[H][T] (沿时间) + 二级 HoldStat (每持有期).
 //
-// 布局: 顶部 头信息 (◂ ▸ 按表序切相邻有效因子 / 中文名 英文名 / 口径 / 规范串 / note) + 控件 (◂ Hold ▸ 周期名 hold_name + 开 / 清仓 hold_points
-//   (时点 / 价分色) / 分层 toggle / Compute / Cancel / 状态; 箭头循环切, 不用下拉) + 选定持有期的一行 stat.
+// 布局: 顶部 2:1 两栏. 左 = 头信息 (◂ ▸ 按表序切相邻有效因子 / 中文名 英文名 / 口径 / 规范串 / note) + 控件 (◂ Hold ▸ 周期名 hold_name + 开 / 清仓
+//   hold_points (时点 / 价分色) / 分层 toggle / Compute / Cancel / 状态; 箭头循环切, 不用下拉) + 作用域行; 右 = 选定持有期的 stat 面板
+//   (hold_stat_panel: 按组分列, 定义 / 着色与因子表同一份).
 //   整页 (头部文字 + 四图) 画的是**现结果**的因子: 切因子后服务不清旧 result, 旧的继续画, 头部标 "→ 新因子 (计算中…)", 新结果发布时一次性覆盖, 不闪
 //   成本只进期限结构 (右下): 分层 / IC / 顶部 stat 全是毛价格收益 (与 Factors Run 同), 拿来看分层 / 拟合形状; 成本与仓位映射另做.
 //   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各金额段 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改 fixed_impact 都只是切片
@@ -22,18 +23,20 @@
 //        右 1/4 光标日截面 = 各组左图线在光标日的值 (与左图同一量) 的横柱, 按组号在 y 范围里均匀排
 //        (G1 下 … G20 上), x 范围随显示中的柱 (图例 / 光标) 自动贴满;
 //        柱色按组号 (与左图同一组色, 两边对得上), 柱长非单调处一眼可见
-//   右上 资产 K 线 (因子具体怎么交易的; 对仗 OrderFlow 的图 2): 上一条资产轴 + 下面选中资产的分钟 K 线.
+//   右上 资产 K 线 (因子具体怎么交易的; 对仗 OrderFlow 的图 2): 头行一条资产轴 + 下面选中资产的分钟 K 线.
 //        R(t) = r16(x) / kRankMax ∈ [0,1] (CS = 截面秩, TS = 自身分位; 与组号同向: 1 = G20 侧), 色 = lerp(G1 蓝 → G20 橙)
-//        资产轴: 光标日池内 (截面门控 g) 资产的日内均 R 降序 (左 = G20 侧), 一资产一格, 格色 = R 组色; 光标 (拖 / 双击 / ◂ ▸ 步进)
+//        资产轴: 光标日池内 (截面门控 g) 资产的日内均 R 降序 (左 = G20 侧), 一资产一格, 格色 = R 组色; 光标 (拖 / 单击 / ◂ ▸ 步进)
 //        选资产, 选中沿全局 id 粘住 (拖光标只换序不换资产, K 线不重载); 未选 / 换池轴 → 光标日 R 最高者 (无池内资产 → 全区间有效刻
 //        最多者), 结果一到就有 K 线
 //        K 线: 选中资产沿全部交易日的分钟 OHLC (KlineService 逐日流式, 画已发布前缀, 不等全载), 每根色 = 该刻 R(t) 组色; 池外段 (出 CS 池 /
 //        当日无成交, 秩不入评估, valid% 也不计) 用不看池的秩 (rx_all) 淡色显示, 因子无输出 = 暗灰; 阴线实心 / 阳线空心.
-//        x 窗口换资产不动, y 按窗口内蜡烛重贴; 光标 = 与左上图同一个 cursor_day (同色, 锚在日边界), 光标日染淡色竖带
+//        换资产 → x 复位到全段历史 (不按个股上市区间; 双击 fit 同), y 按窗口内蜡烛重贴; 光标 = 与左上图同一个 cursor_day (同色, 锚在日边界), 光标日染淡色竖带
 //        叠加 池等权指数线 (InspectResult::pool_index 当前 Hold 那条, 与分层同一净值引擎): 每帧按视野内个股首根蜡烛重锚 (该刻指数 = 该根 close), zoom / 平移跟着对齐; 显示时参与 y 贴合 (开关图例即重贴)
 //        (默认隐藏, 点图例显; 带着全区间历史, 看不出近期)
 //        再叠加滚动重锚指数线 (青, 默认显), L = 1 天: line_t = EMA_L(P)_{t−L} · exp(EMA_S(log(I_t / EMA_L(I)_{t−L}))),
 //        P = 个股 close 前值填充到分钟格, I = 指数, S = 10 分钟; = "个股若跟着指数近期走应在的价", 自发贴住蜡烛, 蜡烛 − 线 = 个股相对指数的近期偏移. UI 现算, 不发请求
+//        再叠加累计 rIC (右轴, 默认显): 当前 Hold 的逐行 rIC 沿全部行累加 (非 ok 行持平), 右轴贴合视野内这段; 斜率 = 该段因子有效性, 与蜡烛对着看.
+//        线色按回撤渐变: 新高 = 蓝, 回撤越深越红 (√(回撤 / 全段最大回撤))
 //   左下 两半对仗 (同一张 plot_dist): 左 rIC 分布 = 逐行 rank IC (ok 行) → KLL → PDF (与顶部 stat 同一组样本); 右 alpha 分布 = 池内有效格的 alpha
 //        → KLL → 截尾 PDF. 各带 PDF 光滑拟合 (λ 自适应 sd) / mean / 时序背景 (rIC(t) | 截面均值 alpha(t)); 右半另按组边界竖切分组 (G1~G20 组色)
 //   右下 期限结构: 全部持有期 (1m … T+3C) 的 L (G20 做多超额) / S (G1 做空超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
@@ -79,6 +82,9 @@ struct InspectDerived {
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};
   analysis::AggPdf ic_pdf;      // = InspectResult::ic_agg 选定 hold (n_pts = 0 → 样本不足不画)
   std::vector<float> ic_series; // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
+  std::vector<float> ic_cum;    // [T] 逐行 rank IC 累计 (非 ok 行持平): 右上 K 线右轴叠加
+  std::vector<float> ic_dd;     // [T] ic_cum 距此前最高 (含起点 0) 的回撤 ≥ 0: 累计线着色
+  float ic_dd_max = 0.f;        // ic_dd 全段最大值 (着色归一)
   AlphaDist adist;              // = InspectResult::alpha_dist (左下右半, 与持有期无关)
   factor::stat::HoldStat hs;    // 选定 hold 的二级
   bool valid = false;
@@ -106,7 +112,6 @@ struct InspectUIState {
   std::vector<int> ax_order;    // [n] 池轴下标 (R 降序, 左 = G20 侧)
   std::vector<uint32_t> ax_gid; // [n] 对应全局 id
   std::vector<float> ax_r;      // [n] R ∈ [0,1]
-  int ax_n_applied = -1;        // 资产轴 x 域已应用的 n (变了才复位视野)
   // 选中资产的 R(t) 列派生 (键: epoch / 池轴下标)
   uint64_t col_epoch = ~0ull;
   int col_sub = -1;
@@ -118,7 +123,7 @@ struct InspectUIState {
   int kline_sub = -1;
   int kline_days = 0;                        // 本代日数 (x 域 = days × kline_seg)
   int kline_seg = 0;                         // 本代因子层每日行数 (x = 日下标 × kline_seg + 行)
-  int kline_days_applied = -1;               // x 域已应用的日数 (变了才复位视野)
+  uint32_t kline_gen_applied = ~0u;          // x 视野已复位到全段的代 (换代 = 换资产 / 换结果 → 复位)
   size_t kline_last_pub_days = ~0ull;        // 上次 y 贴合时的已发布日数 (换代 / 前缀增长 → 按当前 x 窗口重贴)
   uint8_t kline_shown = 0xFF;                // 上次 y 贴合时的指数线图例显隐位 (开关图例 → 重贴)
   int kline_sel = -1;                        // 上次 y 贴合时的 Hold (derived_sel; 换 Hold → 池指数换线 → 重贴)
