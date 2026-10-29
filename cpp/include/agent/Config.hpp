@@ -6,6 +6,7 @@
 //   LLM 两后端都走 HTTPS 443 (agent/Llm.hpp); key 不进仓库, 放本地 kKeyFile (gitignore):
 //     智谱    对话补全 chat/completions; key = 开放平台 API Keys
 //     Cursor  Cloud Agents API; key = Dashboard → API Keys 的 user API key (无仓库 agent, 起 VM 分钟级)
+//   模型不写死: 各后端的模型表由 GET models 嗅探 (llm::models), Config 页从中选
 //   读超时 = 流里两次增量之间的最长静默 (思考期也有思考增量 / 心跳); 重试 = 网络瞬抖 + 智谱限流 (429 1302 / 1305)
 //   目录相对 app 工作目录 (与 shared::Config 的默认目录同一个基准)
 // =============================================================================
@@ -15,11 +16,10 @@ namespace agent {
 // ---- LLM ----
 inline constexpr const char *kZhipuHost = "open.bigmodel.cn";
 inline constexpr const char *kZhipuTarget = "/api/paas/v4/chat/completions";
-inline constexpr const char *kZhipuModels[] = {"glm-5.2", "glm-5.3", "glm-5.3-flash"};
+inline constexpr const char *kZhipuModelsTarget = "/api/paas/v4/models";
 inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
 
 inline constexpr const char *kCursorHost = "api.cursor.com";
-inline constexpr const char *kCursorModels[] = {"default", "composer-latest"}; // default = 账号默认模型 (请求不带 model); 其余 id 见 GET /v1/models
 
 inline constexpr int kReadTimeoutSeconds = 600;
 inline constexpr int kRetryMax = 4; // 共 5 次尝试

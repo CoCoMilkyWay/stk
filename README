@@ -265,8 +265,8 @@ stk/
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── agent/                                          # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / GUI 任务; 与项目只经 Bridge)
-│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的端点 · 模型, 超时 / 重试, 每轮模板数, 入库门槛默认值, 会话目录 / 提示词目录 / 密钥文件
-│   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL): send 阻塞收齐一轮, 增量回调
+│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的端点 (模型不写死, 运行时嗅探), 超时 / 重试, 每轮模板数, 入库门槛默认值, 会话目录 / 提示词目录 / 密钥文件
+│   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL): send 阻塞收齐一轮, 增量回调; models 嗅探账号可用模型 (GET models, Config 页下拉选)
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
 │   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: open / ask / cancel; 逐轮落盘 (user / reply / thinking + rounds.jsonl) + 交互流水 events.jsonl
@@ -319,7 +319,7 @@ stk/
 │   │   │   │   ├── Cpu.hpp                                 # 🧬   CPU 后端: 行区间核 + 流程
 │   │   │   │   └── Gpu.cuh                                 # 🧬   GPU 后端: 一 warp 一行 t (持有期在 warp 内串行)
 │   │   │   └── Search/                                     # 🧬 参数搜索评估 (建在 Stat 上): 一批同形候选直接攒累加器, 不落 Row
-│   │   │       ├── Config.hpp                              # 🧬   全部配置 (编译期常量): 可搜持有期集合 kSearchHolds (30m / 60m / close / T+1O / T+1C) / 硬门槛 kMinMono (0.95)
+│   │   │       ├── Config.hpp                              # 🧬   全部配置 (编译期常量): 可搜持有期集合 kSearchHolds (30m / 60m / close / T+1O / T+1C) / 硬门槛 kMinMono
 │   │   │       │                                           #      / 第 0 趟采样点数 kInit / r16 抽样行数 kCorrRows
 │   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 + 目标函数 + 噪声 + 终选
 │   │   │       │                                           #      · 目标 = 固定 h 的 ls_period · rIC; 任一 ≤ 0 或 mono < kMinMono → −∞; 不看成本, 不跨 h 比

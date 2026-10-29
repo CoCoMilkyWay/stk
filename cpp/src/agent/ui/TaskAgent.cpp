@@ -8,11 +8,15 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -61,10 +65,15 @@ struct State {
   std::string pool;
   int level = -1, hold = 0;
 
+  // 模型嗅探: 有 key 的后端首次 Draw 各起一个后台 GET models; sniff_cancel 须声明在 sniff 前 (future 析构 join 时它还活着)
+  std::atomic<bool> sniff_cancel{false};
+  std::array<std::future<std::vector<llm::Model>>, llm::kBackendCount> sniff;
+  std::array<std::vector<llm::Model>, llm::kBackendCount> models;
+
   // Config (下次 New 生效)
   int backend = 0;
-  std::string model = kZhipuModels[0];
-  int gpu = -1; // -1 = 未定 (有 GPU 默认 GPU)
+  std::string model; // models[backend] 的 id; 空 = 还没嗅探到
+  int gpu = -1;      // -1 = 未定 (有 GPU 默认 GPU)
   Gate gate{kGateScore, kGateT, kGateMono, kGateValid};
   int prompt_idx = 0;
   std::string prompt_text;
@@ -103,6 +112,28 @@ std::string factors_dir(const State &s) { return (fs::path(s.dir) / "factors").s
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
+// ---- 模型嗅探 ----
+void start_sniff(State &s) {
+  s.sniff_cancel.store(false, std::memory_order_relaxed);
+  for (int b = 0; b < llm::kBackendCount; ++b)
+    if (has_key(b))
+      s.sniff[b] = std::async(std::launch::async, [b, &c = s.sniff_cancel] { return llm::models(static_cast<llm::Backend>(b), c); });
+}
+bool sniffing(const State &s, int backend) { return s.sniff[backend].valid(); }
+std::string first_model(const State &s, int backend) { return s.models[backend].empty() ? std::string() : s.models[backend].front().id; }
+// 收齐的嗅探结果进表; 当前后端还没选模型 → 取表首
+void poll_sniff(State &s) {
+  for (int b = 0; b < llm::kBackendCount; ++b) {
+    std::future<std::vector<llm::Model>> &f = s.sniff[b];
+    if (!f.valid() || f.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+      continue;
+    s.models[b] = f.get();
+    if (b == s.backend && s.model.empty())
+      s.model = first_model(s, b);
+  }
+}
+std::string model_label(const llm::Model &m) { return m.name == m.id ? m.id : m.name + "  (" + m.id + ")"; }
+
 std::string stamp() {
   const std::time_t now = std::time(nullptr);
   char b[32];
@@ -123,9 +154,6 @@ int resize_cb(ImGuiInputTextCallbackData *d) {
     d->Buf = s->data();
   }
   return 0;
-}
-bool input_text(const char *id, std::string &s) {
-  return ImGui::InputText(id, s.data(), s.capacity() + 1, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
 }
 bool input_multiline(const char *id, std::string &s, ImVec2 size) {
   return ImGui::InputTextMultiline(id, s.data(), s.capacity() + 1, size, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
@@ -394,7 +422,7 @@ void session_row(const SharedData &data, State &s) {
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
-  const bool can_new = !live(s) && !chat_busy && !es.busy && keyed && has_hold;
+  const bool can_new = !live(s) && !chat_busy && !es.busy && keyed && !s.model.empty() && has_hold;
   ImGui::BeginDisabled(!can_new);
   if (ImGui::Button("New", ImVec2(60, 0))) {
     if (s.bridge->ready(data, Scope{s.pool, s.level, s.hold}, s.gpu == 1))
@@ -403,7 +431,9 @@ void session_row(const SharedData &data, State &s) {
       s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
   }
   ImGui::EndDisabled();
-  tip(keyed ? "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成" : "所选后端的 key 未填 (config/agent/keys.json)");
+  tip(!keyed            ? "所选后端的 key 未填 (config/agent/keys.json)"
+      : s.model.empty() ? "模型未选 (Config 页; 嗅探中或该后端无可用模型)"
+                        : "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成");
   ImGui::SameLine();
   ImGui::BeginDisabled(s.phase != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0))) {
@@ -601,29 +631,30 @@ void render_config(State &s) {
   ImGui::TextColored(kColHead, "LLM");
   ImGui::SetNextItemWidth(120);
   if (ImGui::Combo("后端", &s.backend, llm::kBackendNames, llm::kBackendCount))
-    s.model = s.backend == static_cast<int>(llm::Backend::Zhipu) ? kZhipuModels[0] : kCursorModels[0];
+    s.model = first_model(s, s.backend);
   ImGui::SameLine();
   if (has_key(s.backend))
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Ready), "key 已填");
   else
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "key 未填 (config/agent/keys.json)");
-  ImGui::SetNextItemWidth(200);
-  if (ImGui::BeginCombo("##model_preset", "预设")) {
-    const bool zhipu = s.backend == static_cast<int>(llm::Backend::Zhipu);
-    const auto list = [&](const char *const *ms, size_t n) {
-      for (size_t i = 0; i < n; ++i)
-        if (ImGui::Selectable(ms[i], s.model == ms[i]))
-          s.model = ms[i];
-    };
-    if (zhipu)
-      list(kZhipuModels, std::size(kZhipuModels));
-    else
-      list(kCursorModels, std::size(kCursorModels));
+  const std::vector<llm::Model> &ms = s.models[s.backend];
+  const auto cur = std::find_if(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == s.model; });
+  ImGui::SetNextItemWidth(320);
+  ImGui::BeginDisabled(ms.empty());
+  if (ImGui::BeginCombo("模型", cur == ms.end() ? s.model.c_str() : model_label(*cur).c_str())) {
+    for (const llm::Model &m : ms)
+      if (ImGui::Selectable(model_label(m).c_str(), m.id == s.model))
+        s.model = m.id;
     ImGui::EndCombo();
   }
+  ImGui::EndDisabled();
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(260);
-  input_text("模型", s.model);
+  if (sniffing(s, s.backend))
+    ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Busy), "嗅探中");
+  else if (has_key(s.backend) && ms.empty())
+    ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "该后端无可用模型");
+  else
+    ImGui::TextDisabled("%zu 个可用", ms.size());
   ImGui::TextDisabled("下次 New 生效");
 
   ImGui::Spacing();
@@ -723,6 +754,7 @@ GUI::TaskHandle CreateAgentTask() {
     State &s = *state;
     if (!s.bridge)
       return;
+    poll_sniff(s);
     s.bridge->update(data);
     if (s.phase == Phase::None)
       return;
@@ -738,8 +770,13 @@ GUI::TaskHandle CreateAgentTask() {
     const State &s = *state;
     if (!s.bridge)
       return {};
-    if (idx == TAB_CONFIG)
-      return has_key(s.backend) ? TaskStatus{} : TaskStatus{TaskStatus::Kind::Warn, "no key"};
+    if (idx == TAB_CONFIG) {
+      if (!has_key(s.backend))
+        return {TaskStatus::Kind::Warn, "no key"};
+      if (sniffing(s, s.backend))
+        return {TaskStatus::Kind::Busy, "sniffing"};
+      return s.model.empty() ? TaskStatus{TaskStatus::Kind::Warn, "no model"} : TaskStatus{};
+    }
     if (idx != TAB_MINE)
       return {};
     if (s.phase == Phase::Choose)
@@ -759,6 +796,7 @@ GUI::TaskHandle CreateAgentTask() {
     if (!s.bridge) {
       s.bridge = std::make_unique<Bridge>();
       s.chat = std::make_unique<Chat>();
+      start_sniff(s);
     }
     if (s.pool.empty())
       s.pool = Bridge::pools().front().name;
@@ -786,6 +824,9 @@ GUI::TaskHandle CreateAgentTask() {
       s.chat->cancel();
     if (s.bridge)
       s.bridge->cancel();
+    s.sniff_cancel.store(true, std::memory_order_relaxed);
+    for (std::future<std::vector<llm::Model>> &f : s.sniff)
+      f = {};       // 释放即 join
     s.chat.reset(); // 析构 join worker
     s.bridge.reset();
     s.phase = Phase::None;

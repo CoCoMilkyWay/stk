@@ -28,9 +28,16 @@ inline constexpr int kBackendCount = 2;
 // 该后端的 key (首次调用读 kKeyFile, 之后不再读); 空 = 未填
 const std::string &key(Backend b);
 
+struct Model {
+  std::string id, name; // name = 显示名 (Zhipu 不给, = id)
+};
+// 嗅探该后端账号可用的模型 (GET models, 阻塞; key 须已填): Zhipu 新的在前 / Cursor 按服务端序 (default = 账号默认模型在首).
+// 网络瞬抖按 Config 重试; 非 2xx → assert; cancel 置位 → 空
+std::vector<Model> models(Backend b, const std::atomic<bool> &cancel);
+
 struct Options {
   Backend backend = Backend::Zhipu;
-  std::string model;  // Cursor "default" / 空 = 账号默认模型
+  std::string model;  // models() 的 id; Cursor "default" = 账号默认模型 (请求不带 model)
   std::string system; // 静态前缀
 };
 

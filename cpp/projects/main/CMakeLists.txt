@@ -763,6 +763,8 @@ add_executable(op_check ${SRC_ROOT}/${SRC_OP_CHECK})
 target_link_libraries(op_check PRIVATE factor_gpu)
 
 # OpenSSL: agent/Llm 的 LLM 接口走 HTTPS (asio ssl::stream)
+#   须链在 arrow 前: vendored libparquet 静态打包了一份 libcrypto 并导出无版本符号 (X509_* / EVP_* / ERR_* …),
+#   排在前面会抢占全局符号查找, asio / libssl 调到它 → 结构体不对位崩溃. NEEDED 序 = 链接序
 find_package(OpenSSL REQUIRED)
 
 list(TRANSFORM SRC_APP PREPEND ${SRC_ROOT}/)
@@ -775,11 +777,11 @@ target_link_libraries(app_main PRIVATE
     microtex
     tracy
     yyjson
+    OpenSSL::SSL
+    OpenSSL::Crypto
     arrow::arrow_flight
     arrow::parquet
     arrow::arrow
-    OpenSSL::SSL
-    OpenSSL::Crypto
     dl
 )
 # 运行时让 ld.so 找到 vendored libarrow*.so

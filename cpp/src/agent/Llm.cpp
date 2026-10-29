@@ -6,8 +6,10 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <dlfcn.h>
 #include <openssl/ssl.h>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -47,6 +49,12 @@ struct Conn {
     [[maybe_unused]] auto shutdown_ec = beast::get_lowest_layer(s).socket().shutdown(tcp::socket::shutdown_both, ec);
   }
   static ssl::context make_ctx() {
+    // 全局符号查找须先落到系统 libcrypto (CMake 链接序): 别的库打包导出的 OpenSSL 符号若排在前面, asio 会调到它
+    [[maybe_unused]] static const bool own_crypto = [] {
+      Dl_info i{};
+      return dladdr(dlsym(RTLD_DEFAULT, "X509_STORE_CTX_get_ex_data"), &i) != 0 && std::string_view(i.dli_fname).find("libcrypto") != std::string_view::npos;
+    }();
+    assert(own_crypto && "OpenSSL 符号被别的库抢占: app_main 须先链 OpenSSL 再链 arrow");
     ssl::context c(ssl::context::tls_client);
     c.set_default_verify_paths();
     c.set_verify_mode(ssl::verify_peer);
@@ -229,6 +237,43 @@ const std::string &key(Backend b) {
     return k;
   }();
   return keys[static_cast<int>(b)];
+}
+
+std::vector<Model> models(Backend b, const std::atomic<bool> &cancel) {
+  assert(!key(b).empty());
+  const bool zhipu = b == Backend::Zhipu;
+  const char *host = zhipu ? kZhipuHost : kCursorHost;
+  const char *target = zhipu ? kZhipuModelsTarget : "/v1/models";
+  for (int attempt = 0;; ++attempt) {
+    Resp r;
+    try {
+      r = request(host, http::verb::get, target, key(b).c_str(), "", {}, nullptr, &cancel);
+    } catch (const boost::system::system_error &e) {
+      if (!wait_retry("models", attempt, e.what(), cancel))
+        return {};
+      continue;
+    }
+    if (r.cancelled)
+      return {};
+    if (r.status / 100 != 2)
+      fail_status(target, r);
+    const json j = json::parse(r.body);
+    std::vector<Model> out;
+    if (zhipu) {
+      std::vector<std::pair<int64_t, std::string>> v;
+      for (const json &m : j.at("data"))
+        v.emplace_back(m.value("created", int64_t{0}), m.at("id").get<std::string>());
+      std::stable_sort(v.begin(), v.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
+      for (auto &[t, id] : v)
+        out.push_back({id, id});
+    } else {
+      for (const json &m : j.at("items")) {
+        const std::string id = m.at("id").get<std::string>();
+        out.push_back({id, m.value("displayName", id)});
+      }
+    }
+    return out;
+  }
 }
 
 Session::Session(Options o) : o_(std::move(o)) {
