@@ -92,7 +92,7 @@
 
 // ---- 0 元 × SELF (1) ----
 #define OP_TS0(X) \
-  X(TsTodMask, "时段掩", 0, POINT, SELF, MAP, TOD, OP_IN0(), BIN, R"tex(\mathbf{1}[k \le t_D < k_2])tex", "选日内时段 (0 = 09:15 竞价首分钟, 15 = 09:30 开盘); 造 0/1 掩码, 配 TsMask 做分时段统计")
+  X(TsTodMask, "时段掩", 0, POINT, SELF, MAP, TOD, OP_IN0(), BIN, R"tex(\mathbf{1}[k \le t_D < k_2])tex", "选日内时段 (k / k2 = 本层行号, 0 = 集合竞价段); 造 0/1 掩码, 配 TsMask 做分时段统计")
 
 // ---- 1 元 × SELF (41 = POINT 9 + EXPAND 13 + ROLL 18 + EXPO 1) ----
 #define OP_TS1(X)                                                                                                                                                                                                          \
