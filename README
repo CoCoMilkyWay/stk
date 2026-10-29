@@ -268,16 +268,20 @@ stk/
 │   │   │   │                                               #    · 两后端同一个 send, 各持各的对话态; 结局在边界归一 End (Ok / Cut / Error / Cancelled); 重试一处 (幂等请求任何网络错重发, 非幂等 POST 只重发未发出的)
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
-│   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: open / ask / cancel / poll (收齐的一轮, 取走即空) / live (在收的一轮, 与收齐同形); 不留历史, 不落盘
+│   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: ask → poll 逐个取走 Tick (Think / Write / Restart / End = 收齐) / live (在收那轮增量同步进调用方镜像); 不留历史, 不落盘
 │   │   │   ├── Journal.hpp                                 # 🤖 一段会话的日志目录 (只 GUI 线程写): system.md / 逐轮 NN.{user,reply,thinking}.md / 交互流水 events.jsonl / report.md
 │   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 发 (模板填充, Msg = system / first / answer / round / retry) ↔ 收 (回复解析 Parse: 澄清 Questions / 挖掘 Proposal; 逐字段读取器带路径报错)
-│   │   │   │                                               #    · 两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer; 挖掘 Proposal ─系统评→ Mined ─→ round; 结局文本 (反馈 / 流水 / 界面) 同一份
+│   │   │   │                                               #    · 两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer; 挖掘 Proposal ─系统评→ Mined ─→ round
+│   │   │   │                                               #    · 结局文本两档 (反馈 / 流水 / 界面同一份): Brief 一行 ↔ Detail 多行; 时段 Span (Round ⊃ think / write ↔ Trial ⊃ search / run)
 │   │   │   ├── Bridge.hpp                                  # 🤖 与项目的唯一接口面 (实现是 agent 里唯一 include 因子 / 特征 / 服务头的 TU):
-│   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready; 上下文 context (特征叶 / 算子表 / 正式因子库统计)
-│   │   │   │                                               #    · Lab (会话工作区): 候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict 扫描时定) ─adopt (过门槛 Gate)→ 正式因子目录
-│   │   │   │                                               #      eval 由 poll 推进 (每步一个 Tick): Search / Run 两道同构 (Lane), 逐文件 Search → Run; 评完一个只重扫它; 会话常驻块 (SearchSpec / RunSpec keep)
-│   │   │   │                                               #      与 Chat 同一套 ask / poll / live / busy / cancel
-│   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Digest / Choose ↔ Propose / Eval, Report); 转移唯一入口 go 兑现 Stop; 时间线 = 全会话唯一真相; 无 ImGui
+│   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
+│   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 / 算子表 / 正式因子库统计) + 候选目录 results
+│   │   │   │                                               #      候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict) ─adopt (过门槛 Gate)→ 正式因子目录
+│   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 逐文件 Search → Run, 评完一个只重扫它; 两道首次 eval 才建, 常驻块 (SearchSpec / RunSpec keep)
+│   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ eval) → poll 逐个取走 Tick, 末个 End → live → busy / cancel
+│   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Digest / Choose ↔ Propose / Eval, Report); 转移唯一入口 go 兑现 Stop; 无 ImGui
+│   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ evaluated
+│   │   │   │                                               #    · 时间线 = 全会话唯一真相; total = 其累计 (随事件增量加, 不回扫)
 │   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 · 候选表 · 特征 / 算子表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存

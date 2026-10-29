@@ -62,6 +62,10 @@ struct Options {
 
 struct Usage {
   int prompt = 0, cached = 0, completion = 0; // Cursor 流里不报 (0)
+  Usage &operator+=(const Usage &o) {
+    prompt += o.prompt, cached += o.cached, completion += o.completion;
+    return *this;
+  }
 };
 
 // 一轮的结局: Ok 正常收尾 / Cut 平台收尾但不完整 (截断 / 拒答 / 过期 …) / Error 接口失败 / Cancelled 本地取消
@@ -80,7 +84,6 @@ struct Reply {
   Usage usage;
   std::string id; // 对账: Zhipu 响应 id / Cursor run id
   double seconds = 0.0;
-  double think_s = -1.0; // 发出到首个正文增量 (思考 + 排队; agent/Chat 量): 在收时 −1 = 还在思考; 收齐无正文 = seconds
   bool ok() const { return end == End::Ok; }
 };
 

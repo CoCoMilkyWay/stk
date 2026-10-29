@@ -61,29 +61,6 @@ std::string num(double v) {
   return b;
 }
 
-// 一个因子文件的结局 (多行, 每行 "- " 起)
-std::string outcome(const Result &r) {
-  switch (r.verdict) {
-  case Verdict::Broken:
-    return "- BROKEN: " + r.error + "\n";
-  case Verdict::Weights: {
-    std::string s;
-    for (const Weight &w : r.ws)
-      s += "- `" + w.expr + "`: " + Text(w) + "\n";
-    return s;
-  }
-  case Verdict::Null:
-    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 目标最高的候选 `" + r.top->expr + "`: " + Text(*r.top) + "\n"
-                 : std::string("- Search 无显著权重 (本持有期 score 不显著为正, 或 mono 不达标)\n");
-  case Verdict::Pending:
-    return "- 未评估\n";
-  case Verdict::Unstaged:
-    break;
-  }
-  assert(false && "未落文件的候选没有因子文件");
-  return {};
-}
-
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
 
 // 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块)
@@ -193,6 +170,11 @@ void SavePrompt(Msg m, const std::string &text) {
   f << text;
 }
 
+Asked::Asked(Questions q) : qs(std::move(q)) {
+  for (const Question &x : qs)
+    picks.push_back({x.recommended, false, {}});
+}
+
 std::string Picked(const Question &q, const std::vector<bool> &mask) {
   assert(mask.size() == q.options.size());
   std::string s;
@@ -232,15 +214,35 @@ std::string Text(const Top &t) {
 
 std::string Brief(const Result &r) {
   switch (r.verdict) {
+  case Verdict::Unstaged:
   case Verdict::Broken:
-    return "BROKEN: " + r.error;
+    return std::string(name(r.verdict)) + ": " + r.error;
   case Verdict::Weights:
     return std::to_string(r.ws.size()) + " 个权重, 最佳 " + Text(*r.best());
   case Verdict::Null:
-    return r.top ? "无显著 (" + r.top->miss + "), 目标最高 " + Text(*r.top) : std::string(name(r.verdict));
-  case Verdict::Unstaged:
+    return r.top ? std::string(name(r.verdict)) + " (" + r.top->miss + "), 目标最高 " + Text(*r.top) : std::string(name(r.verdict));
   case Verdict::Pending:
     return name(r.verdict);
+  }
+  return {};
+}
+
+std::string Detail(const Result &r) {
+  switch (r.verdict) {
+  case Verdict::Unstaged:
+  case Verdict::Broken:
+    return "- " + std::string(name(r.verdict)) + ": " + r.error + "\n";
+  case Verdict::Weights: {
+    std::string s;
+    for (const Weight &w : r.ws)
+      s += "- `" + w.expr + "`: " + Text(w) + "\n";
+    return s;
+  }
+  case Verdict::Null:
+    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 目标最高的候选 `" + r.top->expr + "`: " + Text(*r.top) + "\n"
+                 : std::string("- Search 无显著权重 (本持有期 score 不显著为正, 或 mono 不达标)\n");
+  case Verdict::Pending:
+    return "- " + std::string(name(r.verdict)) + "\n";
   }
   return {};
 }
@@ -281,11 +283,11 @@ Message SystemMessage(const Context &c, const Gate &g) {
 Message FirstMessage(const Context &c, const std::vector<Result> &tried) {
   std::string s;
   for (size_t i = 0; i < tried.size() && i < static_cast<size_t>(kTriedTop); ++i)
-    s += "### " + tried[i].name + " (" + tried[i].name_cn + ")\n`" + tried[i].tmpl + "`\n" + outcome(tried[i]);
+    s += "### " + tried[i].name + " (" + tried[i].name_cn + ")\n`" + tried[i].tmpl + "`\n" + Detail(tried[i]);
   return fill(Msg::First, {{"hold", c.hold}, {"tried", or_none(std::move(s), "(无)\n")}});
 }
 
-Message AnswerMessage(const Asked &a) {
+Message AnswerMessage(const Context &c, const Asked &a) {
   assert(a.picks.size() == a.qs.size());
   std::string s;
   for (size_t i = 0; i < a.qs.size(); ++i) {
@@ -295,7 +297,7 @@ Message AnswerMessage(const Asked &a) {
     if (p.on != q.recommended || (p.other && !p.text.empty()))
       s += "- (未照你的推荐: " + Picked(q, q.recommended) + ")\n";
   }
-  return fill(Msg::Answer, {{"answers", or_none(std::move(s), "(无问题)\n")}, {"note", or_none(a.note, "(无)")}, {"batch", std::to_string(kBatch)}});
+  return fill(Msg::Answer, {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"answers", or_none(std::move(s), "(无问题)\n")}, {"note", or_none(a.note, "(无)")}});
 }
 
 Message RoundMessage(const Context &c, const Mined &m) {
@@ -303,11 +305,8 @@ Message RoundMessage(const Context &c, const Mined &m) {
   for (const Submitted &x : m.submitted)
     ss += "- " + x.name + ": " + (x.err.empty() ? std::string("已入库") : "未入库, " + x.err) + "\n";
   std::string s;
-  for (const Trial &k : m.batch) {
-    const Staged &st = k.st;
-    s += "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
-    s += st.res.verdict == Verdict::Unstaged ? "- 未落文件: " + st.err + "\n" : outcome(st.res);
-  }
+  for (const Trial &k : m.batch)
+    s += "### " + k.st.cand.name + " (" + k.st.cand.name_cn + ")\n`" + k.st.cand.expr + "`\n" + Detail(k.st.res);
   return fill(Msg::Round, {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"submits", or_none(std::move(ss), "(上次未提交)\n")}, {"results", s}});
 }
 

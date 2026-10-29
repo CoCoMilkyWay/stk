@@ -13,6 +13,7 @@
 //     澄清 (一次)  {"questions": [{"prompt", "options": [..], "multiple", "recommended": [下标]}]} (单选推荐恰 1 项, 多选 ≥ 1 项) → Questions
 //     挖掘 (每轮)  {"factors": [{"name", "name_cn", "expr", "note"}], "submit": [英文名], "issues": [文本], "done"}               → Proposal
 //   两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer;  挖掘 Proposal ─系统评→ Mined ─→ round
+//   结局文本两档: Brief 一行 (流水 / 界面标题) ↔ Detail 多行 (反馈消息 / 界面展开); 五种结局 (Verdict) 一处写全
 // =============================================================================
 
 #include "agent/Bridge.hpp"
@@ -64,6 +65,8 @@ struct Asked {
   Questions qs;
   std::vector<Pick> picks; // 与 qs 对齐, 初值 = 推荐
   std::string note;        // 附言
+  Asked() = default;
+  explicit Asked(Questions q);
 };
 // mask 选中的选项, "; " 连接
 std::string Picked(const Question &q, const std::vector<bool> &mask);
@@ -76,30 +79,47 @@ struct Proposal {
   std::vector<std::string> submit, issues;
   bool done = false;
 };
-// 一个候选: 落文件 → 回测. 时刻 = 会话起算秒, −1 = 未到 (队列里直接跳过的只有 t1)
+// 时段: 会话起算秒; t0 < 0 = 未开, t1 < 0 = 在走
+struct Span {
+  double t0 = -1, t1 = -1;
+  bool began() const { return t0 >= 0; }
+  bool ended() const { return t1 >= 0; }
+  bool running() const { return began() && !ended(); }
+  double len(double now) const { return began() ? (ended() ? t1 : now) - t0 : 0.0; }
+  void begin(double t) {
+    if (!began())
+      t0 = t;
+  }
+  void end(double t) {
+    if (running())
+      t1 = t;
+  }
+};
+// 一个候选: 落文件 → 回测. span = 开评 → 评完 (队列里直接跳过的开评即评完), 其内 search / run 两段
 struct Trial {
   Staged st;
-  double t0 = -1, t_run = -1, t1 = -1; // 开评 / 转 Run / 评完
+  Span span, search, run;
 };
-// factors → batch, submit → submitted
+// factors → batch, submit → submitted. span = 本批开评 → 评完
 struct Mined {
   std::vector<Trial> batch;
   std::vector<Submitted> submitted;
   std::vector<std::string> issues;
   bool done = false;
-  double t_eval0 = -1, t_eval1 = -1; // 开评 / 评完
+  Span span;
 };
 
 // ---- 结局文本 (反馈 / 流水 / 界面同一份) ----
-std::string Text(const Stat &s);    // mono · 每期毛多空 · rIC
-std::string Text(const Weight &w);  // + score · 有效率; 无本持有期统计另说
-std::string Text(const Top &t);     // + 目标 ± 标准误 (+ 取反)
-std::string Brief(const Result &r); // 一行: 结局 + 最佳权重 / 目标最高的候选
+std::string Text(const Stat &s);     // mono · 每期毛多空 · rIC
+std::string Text(const Weight &w);   // + score · 有效率; 无本持有期统计另说
+std::string Text(const Top &t);      // + 目标 ± 标准误 (+ 取反)
+std::string Brief(const Result &r);  // 一行: 结局 + 原因 / 最佳权重 / 目标最高的候选
+std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每个权重 / 落选原因与目标最高的候选
 
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g);
 Message FirstMessage(const Context &c, const std::vector<Result> &tried);
-Message AnswerMessage(const Asked &a); // 与推荐不同的题附上推荐
+Message AnswerMessage(const Context &c, const Asked &a); // 与推荐不同的题附上推荐
 Message RoundMessage(const Context &c, const Mined &m);
 Message RetryMessage(const std::string &err);
 

@@ -4,13 +4,12 @@
 // Bridge — agent 与项目的唯一接口面
 // =============================================================================
 //   agent/ 其余代码不碰项目的因子 / 特征 / 服务头, 只经这里 (实现 Bridge.cpp 是唯一 include 它们的 TU). 两半:
-//     catalog  作用域目录 (无状态, 开会话前用): 可挖的 (池, 因子层, 持有期; 持有期限 Search 档) / 就绪判据 /
-//              上下文 (该层可作输入的特征叶 / 算子表 / 正式因子库在该持有期的统计)
-//     Lab      会话工作区 (bind 一个作用域 + 候选目录). 候选的一生:
-//                Cand ─stage→ 候选目录里的因子文件 (与正式因子同格式) ─eval→ Result ─adopt (过门槛)→ 正式因子目录
-//              eval 由 poll 推进 (每帧取到空): 逐文件 Search (有自由参数) → Run, 结果写回文件, 每步出一个 Tick; 评完一个只重扫它 (results 增量维护);
-//              作用域不变的连续会话共用两个 worker 的常驻块 (SearchSpec / RunSpec keep), 换作用域即弃
-//              与 agent/Chat.hpp 同一套 ask (eval) / poll / live / busy / cancel
+//     catalog  作用域目录 (无状态): 可挖的 (池, 因子层, 持有期; 持有期限 Search 档) / 就绪判据 / 会话目录
+//     Lab      作用域工作区 (bind 一个作用域): 上下文 ctx (该层可作输入的特征叶 / 算子表 / 正式因子库在该持有期的统计) + 候选目录 results.
+//              候选的一生: Cand ─stage→ 候选目录里的因子文件 (与正式因子同格式) ─eval→ Result ─adopt (过门槛)→ 正式因子目录
+//              eval: 逐文件 Search (有自由参数) → Run, 结果写回文件; 评完一个只重扫它 (results 增量维护)
+//              两道 (Search / Run) 同构, 首次 eval 才建; 作用域与评估后端不变的连续会话共用其常驻块 (SearchSpec / RunSpec keep), 变了即弃
+//   worker 协议 (与 agent/Chat.hpp 对仗): 交一件事 (eval ↔ ask) → poll 逐个取走 Tick, 末个 = End → live 看在跑那步 → busy / cancel
 //   全部 GUI 线程调用; 正式因子目录 / 字段表 / 资产轴由项目定, agent 只给候选目录
 // =============================================================================
 
@@ -73,10 +72,11 @@ inline constexpr const char *kVerdictNames[] = {"未落文件", "BROKEN", "有�
 inline const char *name(Verdict v) { return kVerdictNames[static_cast<int>(v)]; }
 // 一个因子文件
 struct Result {
-  std::string file, name, name_cn, tmpl, note, error; // error 非空 = BROKEN
-  Verdict verdict = Verdict::Pending;                 // 扫描时定
-  std::optional<Top> top;                             // 本次运行里最近一趟 Search 无显著 (同作用域跨会话留着)
-  std::vector<Weight> ws;                             // 按 score 降序
+  std::string file, name, name_cn, tmpl, note;
+  std::string error;                  // 没落文件 (Unstaged) / 回测算不出 (Broken) 的原因
+  Verdict verdict = Verdict::Pending; // 扫描时定 (Unstaged 由 stage 定)
+  std::optional<Top> top;             // 本次运行里最近一趟 Search 无显著 (同作用域跨会话留着)
+  std::vector<Weight> ws;             // 按 score 降序
   const Weight *best() const { return ws.empty() || !ws.front().has ? nullptr : &ws.front(); }
 };
 struct Context {
@@ -94,37 +94,17 @@ struct Gate {
   double mono = 0, ric = 0;
 };
 
-// ---- 候选的一生: 进候选目录 (stage) ↔ 进正式库 (adopt), err 空 = 成 ----
+// ---- 候选的一生: 进候选目录 (stage) ↔ 进正式库 (adopt) ----
 struct Cand {
   std::string name, name_cn, expr, note;
 };
 struct Staged {
   Cand cand;
-  std::string file, err; // 已落的文件名 / 未落的原因
-  Result res;            // 没落 = Unstaged; 落了 = 落时的扫描 (Pending), 评完由 Tick 换成定论
+  std::string file; // 已落的文件名; 空 = 没落
+  Result res;       // 没落 = Unstaged (error = 原因); 落了 = 落时的扫描 (Pending), 评完由 Settle 换成定论
 };
 struct Submitted {
-  std::string name, err; // 提交的英文名 / 未入库的原因
-};
-
-// ---- 评估 ----
-enum class Step : uint8_t { Idle,
-                            Search,
-                            Run };
-inline constexpr const char *kStepNames[] = {"idle", "search", "run"};
-inline const char *name(Step s) { return kStepNames[static_cast<int>(s)]; }
-struct EvalState {
-  Step step = Step::Idle;
-  int done = 0, total = 0; // 队列: 已完成 / 总文件数
-  std::string file;        // 在评的文件
-  double frac = 0.0;       // 在评文件该步的进度
-  std::string message;     // 服务给的结论 / 没算成的原因
-};
-// 一步: file 进 Search / Run; Idle = 评完, res = 定论 (队列里直接跳过的只出这一步)
-struct Tick {
-  Step step = Step::Idle;
-  std::string file;
-  Result res;
+  std::string name, err; // 提交的英文名 / 未入库的原因 (空 = 入库)
 };
 
 namespace catalog {
@@ -135,28 +115,44 @@ std::vector<Choice> holds(const SharedData &data, int level);
 std::string hold_desc(int hold, int level); // 开 / 清仓规则
 bool gpu();
 bool ready(const SharedData &data, const Scope &sc, bool gpu); // 资产轴就绪且标签库已建
-Context context(const SharedData &data, const Scope &sc);
-std::string dir(const Scope &sc);                                   // 会话目录 kWorkDir/<池>/<层>/<持有期>
-std::vector<Result> tried(const SharedData &data, const Scope &sc); // 会话目录 factors/ 里的候选, 本持有期 score 降序 (无 Search top)
+std::string label(const Scope &sc);                            // 池 / 层 / 持有期
+std::string dir(const Scope &sc);                              // 会话目录 kWorkDir/<池>/<层>/<持有期>
 } // namespace catalog
 
 class Lab {
 public:
+  // 评估一步 (poll 逐个取走): file 进 Search / 进 Run / 评完 (res = 定论; 队列里直接跳过的只出这一步); 本批评完 End (file 空)
+  enum class Step : uint8_t { Search,
+                              Run,
+                              Settle,
+                              End };
+  struct Tick {
+    Step step;
+    std::string file;
+    Result res;
+  };
+  // 在评那步此刻的样子 (调用方持有, live 整份刷新)
+  struct Live {
+    double frac = 0.0;   // 该步进度
+    std::string message; // 服务给的结论 / 没算成的原因
+  };
+
   Lab();
   ~Lab();
 
-  void bind(const SharedData &data, const Scope &sc, std::string dir, bool gpu); // 须 ready 且不忙; data 须比 Lab 活得久
+  void bind(const SharedData &data, const Scope &sc); // 须不忙, 作用域须有该持有期; 重扫上下文与候选目录, 未取走的 Tick 作废; data 须比 Lab 活得久
+  const Scope &scope() const;
+  const Context &ctx() const;
+  const std::vector<Result> &results() const; // 候选目录全部文件, 本持有期 score 降序
 
-  void stage(Staged &s);                   // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → err
+  void stage(Staged &s);                   // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
   void adopt(Submitted &s, const Gate &g); // 候选目录里没有 / 不达门槛 / 正式目录已有同名 → err
 
-  void eval(std::vector<std::string> files); // 排进队列; 须不忙
-  void cancel();                             // 取消在跑的并清空队列 (之后不再出 Tick)
-  bool busy() const;
-  std::optional<Tick> poll(); // 推进队列, 取走一步; 每帧取到空
-  EvalState live() const;
-
-  const std::vector<Result> &results() const; // 候选目录全部文件, 本持有期 score 降序
+  void eval(std::vector<std::string> files, bool gpu); // 须已 bind 且作用域 ready, 不忙
+  void cancel();                                       // 清空队列, 取消在评那步; 它收尾即 End
+  bool busy() const;                                   // eval 起, 到 End 入队
+  std::optional<Tick> poll();
+  void live(Live &l) const;
 
 private:
   struct Impl;

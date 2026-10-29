@@ -20,6 +20,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <tuple>
 
 namespace agent {
 
@@ -53,6 +54,7 @@ int ops_of(const F::FeatureTable &ft, const std::string &src) {
 }
 
 bool searchable(const F::FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }
+bool runnable(const F::FactorRow &r) { return r.error.empty() && !r.expr.empty(); }
 
 using Tops = std::map<std::string, Top>; // 文件 → 最近一趟 Search 无显著时的 top
 
@@ -161,6 +163,7 @@ struct Lane {
   uint64_t e0 = 0;
 
   void reset() { svc.reset(), svc = std::make_unique<Svc>(); } // 先析构旧的: Stop() join worker, 常驻块随之释放
+  void drop() { svc.reset(); }
   template <class Req>
   void send(Req req) {
     e0 = svc->epoch.load(std::memory_order_acquire);
@@ -175,13 +178,36 @@ struct Lane {
   }
   bool cancelled() const { return svc->phase.load(std::memory_order_acquire) == Phase::Cancelled; }
   void cancel() const { svc->RequestCancel(); }
-  void read(EvalState &s) const {
+  void read(Lab::Live &l) const {
     const size_t n = svc->total.load(std::memory_order_relaxed);
-    s.frac = n > 0 ? static_cast<double>(svc->done.load(std::memory_order_relaxed)) / static_cast<double>(n) : 0.0;
+    l.frac = n > 0 ? static_cast<double>(svc->done.load(std::memory_order_relaxed)) / static_cast<double>(n) : 0.0;
     std::lock_guard<std::mutex> lock(svc->mutex);
-    s.message = svc->message;
+    l.message = svc->message;
   }
 };
+
+Context context_of(const SharedData &data, const Scope &sc) {
+  const std::shared_ptr<const F::FeatureTable> ft = table(data, sc.level);
+  Context c;
+  c.pool = sc.pool;
+  c.pool_cn = catalog::pool_cn(sc.pool);
+  c.level = F::factor_level(level_id(sc.level)).name;
+  c.hold = factor::stat::hold_name(sc.hold);
+  c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
+  c.seg = ft->seg;
+  c.ts_root_d = factor::stat::ts_norm_d(ft->seg);
+  c.max_d = factor::kMaxD;
+  for (const F::FeatCol &l : ft->x.leaves) {
+    if (!l.allowed)
+      continue;
+    const FeatureMetadata &m = ft->feature->meta(l.tier).features[l.level][l.col];
+    c.leaves.push_back({l.code, m.name_cn, m.formula, m.description});
+  }
+  for (const factor::expr::OpInfo &o : factor::expr::kOps)
+    c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
+  c.library = scan(*ft, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
+  return c;
+}
 
 } // namespace
 
@@ -218,89 +244,80 @@ bool ready(const SharedData &data, const Scope &sc, bool gpu) {
   return F::MakeFactorScope(data, table(data, sc.level), sc.pool, gpu, probe);
 }
 
-Context context(const SharedData &data, const Scope &sc) {
-  const std::shared_ptr<const F::FeatureTable> ft = table(data, sc.level);
-  Context c;
-  c.pool = sc.pool;
-  c.pool_cn = pool_cn(sc.pool);
-  c.level = F::factor_level(level_id(sc.level)).name;
-  c.hold = factor::stat::hold_name(sc.hold);
-  c.hold_desc = hold_desc(sc.hold, sc.level);
-  c.seg = ft->seg;
-  c.ts_root_d = factor::stat::ts_norm_d(ft->seg);
-  c.max_d = factor::kMaxD;
-  for (const F::FeatCol &l : ft->x.leaves) {
-    if (!l.allowed)
-      continue;
-    const FeatureMetadata &m = ft->feature->meta(l.tier).features[l.level][l.col];
-    c.leaves.push_back({l.code, m.name_cn, m.formula, m.description});
-  }
-  for (const factor::expr::OpInfo &o : factor::expr::kOps)
-    c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
-  c.library = scan(*ft, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
-  return c;
+std::string label(const Scope &sc) {
+  return sc.pool + " / " + F::factor_level(level_id(sc.level)).name + " / " + factor::stat::hold_name(sc.hold);
 }
-
 std::string dir(const Scope &sc) {
   return (fs::path(kWorkDir) / sc.pool / F::factor_level(level_id(sc.level)).name / factor::stat::hold_name(sc.hold)).string();
 }
-
-std::vector<Result> tried(const SharedData &data, const Scope &sc) { return scan(*table(data, sc.level), dir(sc) + "/factors", sc.hold, {}); }
 
 } // namespace catalog
 
 // ---- Lab ----
 struct Lab::Impl {
+  // 作用域
   const SharedData *data = nullptr;
   Scope sc;
-  std::string dir;
-  bool gpu = false;
-  Lane<F::SearchService> search;
-  Lane<F::FactorsService> run;
-  // 队列
-  Step step = Step::Idle;
-  std::deque<std::string> queue;
-  int total = 0, done = 0;
-  std::string file;
-  bool halt = false;      // 已 cancel: 在跑的那道收尾后不再续下一步
-  std::deque<Tick> ticks; // 未取走的步
+  std::string dir; // 候选目录
+  Context ctx;
   std::vector<Result> results;
   Tops tops; // 同作用域跨会话留着
+  // 两道 (下标 = Step), 首次 eval 才建
+  static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1);
+  bool gpu = false;
+  std::tuple<Lane<F::SearchService>, Lane<F::FactorsService>> lanes;
+  // 队列
+  bool running = false; // eval 起, 到 End 入队
+  bool halt = false;    // 已 cancel: 在评那步收尾即 End
+  Step at = Step::End;  // 在评那步的道; End = 无
+  std::deque<std::string> queue;
+  std::string file;       // 在评的文件
+  F::FactorRow row;       // 其首行 (Search 的模板)
+  std::deque<Tick> ticks; // 未取走的步
 
   std::shared_ptr<const F::FeatureTable> ft() const { return table(*data, sc.level); }
-
-  // 在跑的那道
+  bool built() const { return std::get<0>(lanes).svc != nullptr; }
   template <class Fn>
-  decltype(auto) lane(Fn &&fn) const {
-    assert(step != Step::Idle);
-    return step == Step::Search ? fn(search) : fn(run);
+  void each_lane(Fn &&fn) {
+    std::apply([&](auto &...l) { (fn(l), ...); }, lanes);
+  }
+  // 在评那步的道
+  template <class Fn>
+  decltype(auto) on_lane(Fn &&fn) const {
+    assert(at == Step::Search || at == Step::Run);
+    return at == Step::Search ? fn(std::get<0>(lanes)) : fn(std::get<1>(lanes));
   }
 
-  void send_search(const F::FactorRow &row) {
+  // 一道的请求 (按道的服务分派)
+  F::SearchRequest request(const Lane<F::SearchService> &) const {
     F::SearchRequest req;
     [[maybe_unused]] const bool ok = F::MakeSearchRequest(*data, ft(), sc.pool, row, sc.hold, /*fresh=*/true, gpu, req);
-    assert(ok && "bind 时已验过 ready");
+    assert(ok && "作用域须 ready");
     req.scope.factor_dir = dir;
     req.spec.keep = true;
-    search.send(std::move(req));
-    step = Step::Search;
-    ticks.push_back({step, file, {}});
+    return req;
   }
-  void send_run() {
+  F::FactorsRequest request(const Lane<F::FactorsService> &) const {
     F::FactorsRequest req;
     [[maybe_unused]] const bool ok = F::MakeFactorsRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
-    assert(ok && "bind 时已验过 ready");
+    assert(ok && "作用域须 ready");
     req.scope.factor_dir = dir;
     req.spec.only_file = file;
     req.spec.keep = true;
-    run.send(std::move(req));
-    step = Step::Run;
-    ticks.push_back({step, file, {}});
+    return req;
   }
-  // Search 跑完: 记下 top (无显著才有), 返回是否已落盘
-  bool search_done() {
-    std::lock_guard<std::mutex> lock(search.svc->mutex);
-    const F::SearchResult &sr = search.svc->result;
+  template <Step S>
+  void send() {
+    auto &l = std::get<static_cast<size_t>(S)>(lanes);
+    l.send(request(l));
+    at = S;
+    ticks.push_back({S, file, {}});
+  }
+  // Search 跑完: 记下 top (无显著才有), 返回是否已落盘 (落了 → Run)
+  bool searched() {
+    F::SearchService &svc = *std::get<0>(lanes).svc;
+    std::lock_guard<std::mutex> lock(svc.mutex);
+    const F::SearchResult &sr = svc.result;
     Top t;
     if (top_of(sr, t))
       tops[file] = std::move(t);
@@ -311,48 +328,47 @@ struct Lab::Impl {
 
   // 重扫一个文件, 结果表保序
   const Result &refresh(const std::string &f) {
-    const auto at = [&] { return std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == f; }); };
+    const auto find = [&] { return std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == f; }); };
     Result r = result_of(*ft(), fs::path(dir) / f, sc.hold, tops);
-    if (const auto it = at(); it == results.end())
+    if (const auto it = find(); it == results.end())
       results.push_back(std::move(r));
     else
       *it = std::move(r);
     sort_results(results);
-    return *at();
+    return *find();
   }
-  // 出队下一个: 有自由参数 → Search (随后 Run); 具体式 → 直接 Run; BROKEN → 跳过
+  // 出队下一个: 有自由参数 → Search (随后 Run); 具体式 → Run; BROKEN → 直接评完; 队空 → End
   void next() {
-    step = Step::Idle;
     while (!queue.empty()) {
       file = std::move(queue.front());
       queue.pop_front();
       std::vector<F::FactorRow> rows;
       F::ScanFactorFile(fs::path(dir) / file, *ft(), rows);
       assert(!rows.empty());
-      if (searchable(rows.front()))
-        return send_search(rows.front());
-      if (rows.front().error.empty() && !rows.front().expr.empty())
-        return send_run();
+      row = std::move(rows.front());
+      if (searchable(row))
+        return send<Step::Search>();
+      if (runnable(row))
+        return send<Step::Run>();
       settle();
     }
-    file.clear();
+    close();
   }
-  // 在评的文件评完
-  void settle() {
-    ++done;
-    ticks.push_back({Step::Idle, file, refresh(file)});
+  void settle() { ticks.push_back({Step::Settle, file, refresh(file)}); }
+  void close() {
+    queue.clear(), file.clear();
+    at = Step::End;
+    running = false;
+    ticks.push_back({Step::End, {}, {}});
   }
-  // 在跑的那道跑完一轮 → 下一步
+  // 在评那步的道跑完一轮 → 下一步
   void pump() {
-    if (step == Step::Idle || !lane([](const auto &l) { return l.finished(); }))
+    if (at == Step::End || !on_lane([](const auto &l) { return l.finished(); }))
       return;
-    if (halt || lane([](const auto &l) { return l.cancelled(); })) {
-      queue.clear();
-      step = Step::Idle;
-      return;
-    }
-    if (step == Step::Search && search_done())
-      return send_run();
+    if (halt || on_lane([](const auto &l) { return l.cancelled(); }))
+      return close();
+    if (at == Step::Search && searched())
+      return send<Step::Run>();
     settle();
     next();
   }
@@ -361,33 +377,39 @@ struct Lab::Impl {
 Lab::Lab() : p_(std::make_unique<Impl>()) {}
 Lab::~Lab() = default;
 
-void Lab::bind(const SharedData &data, const Scope &sc, std::string dir, bool gpu) {
+void Lab::bind(const SharedData &data, const Scope &sc) {
   Impl &I = *p_;
-  assert(I.step == Step::Idle && "评估队列忙");
-  assert(catalog::ready(data, sc, gpu));
-  if (!I.search.svc || sc != I.sc || dir != I.dir || gpu != I.gpu) {
-    I.search.reset(), I.run.reset();
-    I.sc = sc, I.dir = std::move(dir), I.gpu = gpu;
+  assert(!I.running && "评估队列忙");
+  if (sc != I.sc) {
+    I.each_lane([](auto &l) { l.drop(); });
     I.tops.clear();
   }
   I.data = &data;
+  I.sc = sc;
+  I.dir = (fs::path(catalog::dir(sc)) / "factors").string();
+  I.ctx = context_of(data, sc);
+  I.results = scan(*I.ft(), I.dir, sc.hold, I.tops);
   I.ticks.clear();
-  I.results = scan(*I.ft(), I.dir, I.sc.hold, I.tops);
 }
+
+const Scope &Lab::scope() const { return p_->sc; }
+const Context &Lab::ctx() const { return p_->ctx; }
+const std::vector<Result> &Lab::results() const { return p_->results; }
 
 void Lab::stage(Staged &s) {
   Impl &I = *p_;
   const Cand &c = s.cand;
+  std::string err;
   if (!F::ValidFactorName(c.name))
-    s.err = "英文名须非空, ≤ 64, 仅 [A-Za-z0-9_]";
+    err = "英文名须非空, ≤ 64, 仅 [A-Za-z0-9_]";
   else if (!F::ValidFactorNameCn(c.name_cn))
-    s.err = "中文名须 1..10 个汉字";
+    err = "中文名须 1..10 个汉字";
   else if (const int n = ops_of(*I.ft(), c.expr); n > kMaxOps)
-    s.err = "算子 " + std::to_string(n) + " 个, 超过上限 " + std::to_string(kMaxOps) + " (建议 " + std::to_string(kGoodOps) + " 个左右)";
+    err = "算子 " + std::to_string(n) + " 个, 超过上限 " + std::to_string(kMaxOps) + " (建议 " + std::to_string(kGoodOps) + " 个左右)";
   else
-    s.file = F::AddFactorFile(I.dir, *I.ft(), c.name, c.name_cn, c.expr, c.note, s.err);
+    s.file = F::AddFactorFile(I.dir, *I.ft(), c.name, c.name_cn, c.expr, c.note, err);
   if (s.file.empty())
-    s.res.verdict = Verdict::Unstaged;
+    s.res.error = std::move(err), s.res.verdict = Verdict::Unstaged;
   else
     s.res = I.refresh(s.file);
 }
@@ -411,27 +433,30 @@ void Lab::adopt(Submitted &s, const Gate &g) {
   fs::copy_file(fs::path(I.dir) / it->file, to);
 }
 
-void Lab::eval(std::vector<std::string> files) {
+void Lab::eval(std::vector<std::string> files, bool gpu) {
   Impl &I = *p_;
-  assert(I.step == Step::Idle && I.search.svc && "评估队列忙或未 bind");
+  assert(!I.running && I.data && "评估队列忙或未 bind");
+  if (!I.built() || gpu != I.gpu) {
+    I.each_lane([](auto &l) { l.reset(); });
+    I.gpu = gpu;
+  }
   I.queue.assign(std::make_move_iterator(files.begin()), std::make_move_iterator(files.end()));
-  I.total = static_cast<int>(I.queue.size()), I.done = 0;
-  I.halt = false;
+  I.running = true, I.halt = false;
   I.next();
 }
 
 void Lab::cancel() {
   Impl &I = *p_;
+  if (!I.running)
+    return;
   I.halt = true;
   I.queue.clear();
-  I.ticks.clear();
-  if (I.step != Step::Idle)
-    I.lane([](const auto &l) { l.cancel(); });
+  I.on_lane([](const auto &l) { l.cancel(); });
 }
 
-bool Lab::busy() const { return p_->step != Step::Idle; }
+bool Lab::busy() const { return p_->running; }
 
-std::optional<Tick> Lab::poll() {
+std::optional<Lab::Tick> Lab::poll() {
   Impl &I = *p_;
   if (I.ticks.empty())
     I.pump();
@@ -442,14 +467,12 @@ std::optional<Tick> Lab::poll() {
   return t;
 }
 
-EvalState Lab::live() const {
+void Lab::live(Live &l) const {
   const Impl &I = *p_;
-  EvalState s{.step = I.step, .done = I.done, .total = I.total, .file = I.file};
-  if (I.step != Step::Idle)
-    I.lane([&](const auto &l) { l.read(s); });
-  return s;
+  if (I.at == Step::End)
+    l = {};
+  else
+    I.on_lane([&](const auto &x) { x.read(l); });
 }
-
-const std::vector<Result> &Lab::results() const { return p_->results; }
 
 } // namespace agent

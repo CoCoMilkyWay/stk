@@ -27,17 +27,18 @@ std::string net_name(const llm::Net &n) { return n.proxy ? "proxy " + n.host + "
 // ---- 人的操作 ----
 void Mine::open(const SharedData &data, Setup s) {
   assert(!live() && !chat.busy() && !lab.busy());
+  assert(catalog::ready(data, s.sc, s.gpu));
   setup = std::move(s);
-  ctx = catalog::context(data, setup.sc);
-  const fs::path dir = catalog::dir(setup.sc);
-  lab.bind(data, setup.sc, (dir / "factors").string(), setup.gpu);
+  lab.bind(data, setup.sc);
+  const Context &ctx = lab.ctx();
   setup.llm.system = SystemMessage(ctx, setup.gate).text;
   chat.open(setup.llm);
-  log_.open((dir / "chat" / stamp()).string(), setup.llm.system);
+  log_.open((fs::path(catalog::dir(setup.sc)) / "chat" / stamp()).string(), setup.llm.system);
   phase_ = Phase::Digest;
   stop_ = false;
   t0_ = std::chrono::steady_clock::now(), t_end_ = -1;
   timeline.clear();
+  total = {};
   adopted.clear();
   reason.clear(), report.clear();
   log_.event("open", {{"pool", setup.sc.pool},
@@ -61,7 +62,7 @@ void Mine::start() {
   }
   log_.event("start", {{"note", a.note}});
   if (go(Phase::Propose))
-    ask(AnswerMessage(a));
+    ask(AnswerMessage(lab.ctx(), a));
 }
 
 void Mine::stop() {
@@ -81,43 +82,84 @@ void Mine::cancel() {
 double Mine::now() const { return t_end_ >= 0 ? t_end_ : std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count(); }
 
 Mine::Tally &Mine::Tally::operator+=(const Tally &o) {
-  staged += o.staged, unstaged += o.unstaged, hits += o.hits;
+  staged += o.staged, unstaged += o.unstaged, settled += o.settled, hits += o.hits;
   submits += o.submits, adopted += o.adopted, issues += o.issues;
   return *this;
 }
 
-Mine::Tally Mine::tally(const Round &rd) {
-  Tally t;
-  const Mined *m = std::get_if<Mined>(&rd.got);
-  if (!m)
-    return t;
-  for (const Trial &k : m->batch) {
-    ++(k.st.res.verdict == Verdict::Unstaged ? t.unstaged : t.staged);
-    t.hits += k.st.res.verdict == Verdict::Weights;
-  }
-  t.submits = static_cast<int>(m->submitted.size());
-  t.adopted = static_cast<int>(std::count_if(m->submitted.begin(), m->submitted.end(), [](const Submitted &x) { return x.err.empty(); }));
-  t.issues = static_cast<int>(m->issues.size());
-  return t;
-}
+void Mine::add(const Tally &d) { timeline.back().tally += d, total.tally += d; }
 
 // ---- 每帧: 两个 worker 同样 poll ----
 void Mine::update() {
-  while (std::optional<llm::Reply> r = chat.poll())
-    on(std::move(*r));
-  while (std::optional<Tick> t = lab.poll())
+  while (std::optional<Chat::Tick> t = chat.poll())
     on(std::move(*t));
-  if (phase_ == Phase::Eval && !lab.busy())
-    evaluated();
+  while (std::optional<Lab::Tick> t = lab.poll())
+    on(std::move(*t));
 }
 
-// 收齐一轮 (含会话结束后才收尾的那轮): 落盘; 等 agent 的阶段按它推进
-void Mine::on(llm::Reply r) {
+// 对话一步: 思考 / 正文开始各记时刻, 重来作废已记的; 收齐 (含会话结束后才收尾的那轮) → replied
+void Mine::on(Chat::Tick t) {
+  Round &rd = timeline.back();
+  const double now_s = now();
+  switch (t.step) {
+  case Chat::Step::Think:
+    rd.think.begin(now_s);
+    break;
+  case Chat::Step::Write:
+    rd.think.end(now_s), rd.write.begin(now_s);
+    break;
+  case Chat::Step::Restart:
+    rd.think = {}, rd.write = {};
+    break;
+  case Chat::Step::End:
+    rd.think.end(now_s), rd.write.end(now_s), rd.span.end(now_s);
+    replied(std::move(t.reply));
+    break;
+  }
+}
+
+// 评估一步 (只在 Eval): 在评的候选记 Search / Run 时刻, 评完换上定论; 本批评完 → evaluated
+void Mine::on(Lab::Tick t) {
+  if (phase_ != Phase::Eval)
+    return;
+  const double now_s = now();
+  const auto trial = [&]() -> Trial & {
+    std::vector<Trial> &b = std::get<Mined>(timeline.back().got).batch;
+    const auto it = std::find_if(b.begin(), b.end(), [&](const Trial &k) { return k.st.file == t.file; });
+    assert(it != b.end() && "评估的文件应在本批");
+    it->span.begin(now_s);
+    return *it;
+  };
+  switch (t.step) {
+  case Lab::Step::Search:
+    trial().search.begin(now_s);
+    break;
+  case Lab::Step::Run: {
+    Trial &k = trial();
+    k.search.end(now_s), k.run.begin(now_s);
+    break;
+  }
+  case Lab::Step::Settle: {
+    Trial &k = trial();
+    k.search.end(now_s), k.run.end(now_s), k.span.end(now_s);
+    k.st.res = std::move(t.res);
+    log_.event("eval", {{"name", k.st.cand.name}, {"result", Brief(k.st.res)}});
+    add({.settled = 1, .hits = k.st.res.verdict == Verdict::Weights});
+    break;
+  }
+  case Lab::Step::End:
+    evaluated();
+    break;
+  }
+}
+
+// 收齐一轮: 落盘, 累计; 等 agent 的阶段按它推进
+void Mine::replied(llm::Reply r) {
   Round &rd = timeline.back();
   const int round = static_cast<int>(timeline.size());
-  rd.t_reply = now();
   rd.reply = std::move(r);
   const llm::Reply &x = rd.reply;
+  total.llm_s += rd.span.len(now()), total.usage += x.usage;
   if (!x.ok())
     rd.err = "回复失败 (" + std::string(llm::name(x.end)) + (x.why.empty() ? "" : ": " + x.why) + ")";
   log_.turn(round, rd.user, x);
@@ -126,7 +168,7 @@ void Mine::on(llm::Reply r) {
                        {"why", x.why},
                        {"id", x.id},
                        {"seconds", x.seconds},
-                       {"think_seconds", x.think_s},
+                       {"think_seconds", (rd.write.began() ? rd.write.t0 : rd.span.t1) - rd.span.t0},
                        {"prompt_tokens", x.usage.prompt},
                        {"cached_tokens", x.usage.cached},
                        {"completion_tokens", x.usage.completion},
@@ -136,33 +178,17 @@ void Mine::on(llm::Reply r) {
     return;
   if (!x.ok())
     return finish(rd.err);
-  return phase_ == Phase::Digest ? reply<Questions>(round) : reply<Proposal>(round);
+  return phase_ == Phase::Digest ? parse<Questions>(round) : parse<Proposal>(round);
 }
 
-// 评估一步: 在评的候选记开评 / 转 Run / 评完 (评完换上定论)
-void Mine::on(Tick t) {
-  if (phase_ != Phase::Eval)
-    return;
+// 评完一批: 累计, 发反馈
+void Mine::evaluated() {
   Mined &m = std::get<Mined>(timeline.back().got);
-  const auto it = std::find_if(m.batch.begin(), m.batch.end(), [&](const Trial &k) { return k.st.file == t.file; });
-  assert(it != m.batch.end() && "评估的文件应在本批");
-  Trial &k = *it;
-  const double now_s = now();
-  switch (t.step) {
-  case Step::Search:
-    k.t0 = now_s;
-    break;
-  case Step::Run:
-    if (k.t0 < 0)
-      k.t0 = now_s;
-    k.t_run = now_s;
-    break;
-  case Step::Idle:
-    k.t1 = now_s;
-    k.st.res = std::move(t.res);
-    log_.event("eval", {{"name", k.st.cand.name}, {"result", Brief(k.st.res)}});
-    break;
-  }
+  m.span.end(now());
+  total.eval_s += m.span.len(now());
+  log_.event("eval_end");
+  if (go(Phase::Propose))
+    ask(RoundMessage(lab.ctx(), m));
 }
 
 // ---- 转移 ----
@@ -177,28 +203,24 @@ bool Mine::go(Phase next) {
 
 void Mine::ask(Message m) {
   log_.event("ask", {{"round", timeline.size() + 1}, {"kind", def(m.kind).id}, {"chars", m.text.size()}});
-  timeline.push_back({.kind = m.kind, .user = m.text, .t_ask = now()});
+  timeline.push_back({.kind = m.kind, .user = m.text, .span = {.t0 = now()}});
   chat.ask(std::move(m.text));
 }
 
 void Mine::finish(std::string why) {
   assert(live());
-  if (chat.busy())
-    chat.cancel();
+  chat.cancel();
   lab.cancel();
   t_end_ = now();
   reason = std::move(why);
   report = report_of(reason);
-  Tally all;
-  for (const Round &rd : timeline)
-    all += tally(rd);
-  log_.event("finish", {{"reason", reason}, {"rounds", timeline.size()}, {"adopted", all.adopted}, {"issues", all.issues}});
+  log_.event("finish", {{"reason", reason}, {"rounds", timeline.size()}, {"adopted", total.tally.adopted}, {"issues", total.tally.issues}});
   log_.report(report);
   phase_ = Phase::Report;
 }
 
 template <class T>
-void Mine::reply(int round) {
+void Mine::parse(int round) {
   T x;
   std::string err;
   if (!Parse(timeline.back().reply.text, x, err)) {
@@ -211,28 +233,28 @@ void Mine::reply(int round) {
   on(std::move(x), round);
 }
 
+// 澄清合格: 问题 → Asked (按推荐预选), 等人选
 void Mine::on(Questions qs, int round) {
   log_.event("questions", {{"round", round}, {"n", qs.size()}});
-  Asked a;
-  for (const Question &q : qs)
-    a.picks.push_back({q.recommended, false, {}});
-  a.qs = std::move(qs);
-  timeline.back().got = std::move(a);
+  timeline.back().got.emplace<Asked>(std::move(qs));
   go(Phase::Choose);
 }
 
+// 挖掘合格: issues / submit → Mined; 未宣布挖完则落候选, 开评
 void Mine::on(Proposal p, int round) {
   log_.event("mine_reply", {{"round", round}, {"factors", p.factors.size()}, {"submit", p.submit.size()}, {"issues", p.issues.size()}, {"done", p.done}});
   Mined &m = timeline.back().got.emplace<Mined>();
   m.issues = std::move(p.issues), m.done = p.done;
   for (const std::string &x : m.issues)
     log_.event("issue", {{"round", round}, {"text", x}});
+  add({.issues = static_cast<int>(m.issues.size())});
   for (std::string &s : p.submit) {
     Submitted x{std::move(s), {}};
     lab.adopt(x, setup.gate);
     if (x.err.empty())
       adopted.insert(x.name);
     log_.event("submit", {{"round", round}, {"name", x.name}, {"result", x.err.empty() ? std::string("入库") : x.err}});
+    add({.submits = 1, .adopted = x.err.empty()});
     m.submitted.push_back(std::move(x));
   }
   if (m.done)
@@ -241,50 +263,41 @@ void Mine::on(Proposal p, int round) {
     return;
   std::vector<std::string> files;
   for (Cand &c : p.factors) {
-    Trial k{.st = {std::move(c), {}, {}, {}}};
+    Trial k{.st = {std::move(c), {}, {}}};
     lab.stage(k.st);
-    if (!k.st.file.empty())
+    const bool staged = !k.st.file.empty();
+    if (staged)
       files.push_back(k.st.file);
     log_.event("stage", {{"round", round},
                          {"name", k.st.cand.name},
                          {"expr", k.st.cand.expr},
                          {"note", k.st.cand.note},
-                         {"result", k.st.file.empty() ? "未落文件: " + k.st.err : "落文件 " + k.st.file}});
+                         {"result", staged ? "落文件 " + k.st.file : Brief(k.st.res)}});
+    add({.staged = staged, .unstaged = !staged});
     m.batch.push_back(std::move(k));
   }
-  m.t_eval0 = now();
+  m.span.begin(now());
   log_.event("eval_begin", {{"round", round}, {"files", files.size()}});
-  lab.eval(std::move(files));
-}
-
-void Mine::evaluated() {
-  Mined &m = std::get<Mined>(timeline.back().got);
-  m.t_eval1 = now();
-  log_.event("eval_end");
-  Message next = RoundMessage(ctx, m);
-  if (go(Phase::Propose))
-    ask(std::move(next));
+  lab.eval(std::move(files), setup.gpu);
 }
 
 std::string Mine::report_of(const std::string &why) const {
+  const Tally &c = total.tally;
   std::string r = "# 结束报告\n\n- 结束原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n\n";
   std::string in, out, issues;
-  int n_in = 0, n_out = 0, n_issue = 0;
   for (size_t i = 0; i < timeline.size(); ++i) {
     const Mined *m = std::get_if<Mined>(&timeline[i].got);
     if (!m)
       continue;
     const std::string at = "- 第 " + std::to_string(i + 1) + " 轮";
-    for (const Submitted &x : m->submitted) {
+    for (const Submitted &x : m->submitted)
       (x.err.empty() ? in : out) += at + " " + x.name + (x.err.empty() ? "" : ": " + x.err) + "\n";
-      ++(x.err.empty() ? n_in : n_out);
-    }
     for (const std::string &x : m->issues)
-      issues += at + ": " + x + "\n", ++n_issue;
+      issues += at + ": " + x + "\n";
   }
-  r += "## 入库 (" + std::to_string(n_in) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
-  r += "## 未入库的提交 (" + std::to_string(n_out) + ")\n\n" + (out.empty() ? "(无)\n" : out) + "\n";
-  r += "## issues (" + std::to_string(n_issue) + ")\n\n" + (issues.empty() ? "(无)\n" : issues);
+  r += "## 入库 (" + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
+  r += "## 未入库的提交 (" + std::to_string(c.submits - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out) + "\n";
+  r += "## issues (" + std::to_string(c.issues) + ")\n\n" + (issues.empty() ? "(无)\n" : issues);
   return r;
 }
 
