@@ -31,11 +31,16 @@ MODE = "assert"
 ENABLE_CUDA = True
 
 
-def _sync_remote():
-    """Fast-forward to upstream if behind, then re-exec so run.py itself is fresh."""
+def _start_fetch():
+    """Fetch upstream in background; overlaps network latency with cleanup/format."""
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
-    subprocess.run(["git", "fetch", "--quiet"], env=env, timeout=15, check=True)
+    return subprocess.Popen(["git", "fetch", "--quiet"], env=env)
+
+
+def _sync_remote(fetch):
+    """Fast-forward to upstream if behind, then re-exec so run.py itself is fresh."""
+    assert fetch.wait(timeout=15) == 0, "git fetch failed"
     behind = subprocess.run(
         ["git", "rev-list", "--count", "HEAD..@{u}"],
         capture_output=True,
@@ -45,7 +50,7 @@ def _sync_remote():
     if behind == "0":
         return
     print(f"Pulling {behind} new commit(s)...")
-    subprocess.run(["git", "pull", "--ff-only", "--autostash"], env=env, check=True)
+    subprocess.run(["git", "merge", "--ff-only", "--autostash", "@{u}"], check=True)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
@@ -98,8 +103,7 @@ def main():
     assert MODE in ("tsan", "debug", "profile", "assert", "production"), MODE
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    print("Syncing remote...")
-    _sync_remote()
+    fetch = _start_fetch()
 
     print("Cleanup...")
     _cleanup_processes()
@@ -108,6 +112,9 @@ def main():
     result = subprocess.run(["python", "py/app/format_cpp.py"])
     if result.returncode != 0:
         sys.exit(1)
+
+    print("Syncing remote...")
+    _sync_remote(fetch)
 
     print("Building...")
     _build(APP_NAME, MODE, ENABLE_CUDA)
