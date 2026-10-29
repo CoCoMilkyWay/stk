@@ -38,35 +38,21 @@ std::string now() {
 
 } // namespace
 
-void Journal::open(std::string dir, const llm::Options &o) {
+void Journal::open(std::string dir, const std::string &system) {
   dir_ = std::move(dir);
-  backend_ = llm::def(o.backend).name;
-  model_ = o.model;
   fs::create_directories(dir_);
-  write_file(fs::path(dir_) / "system.md", o.system);
+  write_file(fs::path(dir_) / "system.md", system);
 }
 
-void Journal::turn(int n, const Turn &t) const {
+void Journal::turn(int n, const std::string &user, const llm::Reply &r) const {
   assert(!dir_.empty());
-  const fs::path dir(dir_);
   char stem[16];
   std::snprintf(stem, sizeof(stem), "%02d", n);
-  write_file(dir / (std::string(stem) + ".user.md"), t.user);
-  write_file(dir / (std::string(stem) + ".reply.md"), t.reply.text);
-  if (!t.reply.thinking.empty())
-    write_file(dir / (std::string(stem) + ".thinking.md"), t.reply.thinking);
-  const llm::Reply &r = t.reply;
-  append_line(dir / "rounds.jsonl", {{"round", n},
-                                     {"time", now()},
-                                     {"backend", backend_},
-                                     {"model", model_},
-                                     {"end", llm::kEndNames[static_cast<int>(r.end)]},
-                                     {"why", r.why},
-                                     {"id", r.id},
-                                     {"prompt_tokens", r.usage.prompt},
-                                     {"cached_tokens", r.usage.cached},
-                                     {"completion_tokens", r.usage.completion},
-                                     {"seconds", r.seconds}});
+  const fs::path base = fs::path(dir_) / stem;
+  write_file(base.string() + ".user.md", user);
+  write_file(base.string() + ".reply.md", r.text);
+  if (!r.thinking.empty())
+    write_file(base.string() + ".thinking.md", r.thinking);
 }
 
 void Journal::event(std::string_view name, const nlohmann::ordered_json &fields) const {

@@ -70,7 +70,9 @@ enum class End : uint8_t { Ok,
                            Error,
                            Cancelled };
 inline constexpr const char *kEndNames[] = {"ok", "cut", "error", "cancelled"};
+inline const char *name(End e) { return kEndNames[static_cast<int>(e)]; }
 
+// 一轮回复: 在收 (增量累积) 与收齐同形
 struct Reply {
   std::string text, thinking;
   End end = End::Error;
@@ -78,6 +80,7 @@ struct Reply {
   Usage usage;
   std::string id; // 对账: Zhipu 响应 id / Cursor run id
   double seconds = 0.0;
+  double think_s = -1.0; // 发出到首个正文增量 (思考 + 排队; agent/Chat 量): 在收时 −1 = 还在思考; 收齐无正文 = seconds
   bool ok() const { return end == End::Ok; }
 };
 

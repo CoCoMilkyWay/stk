@@ -42,6 +42,8 @@ inline constexpr int kCancelTimeoutSeconds = 5;  // 取消后通知远端停 run
 
 // ---- 挖掘 ----
 inline constexpr int kBatch = 8;     // 每轮变体数上限 (提示词 {{batch}})
+inline constexpr int kMaxOps = 10;   // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
+inline constexpr int kGoodOps = 5;   // 建议的算子数 (提示词 {{good_ops}})
 inline constexpr int kLibTop = 40;   // 系统提示里列的正式因子 (按该持有期 score 降序)
 inline constexpr int kTriedTop = 80; // 首条消息里列的本作用域已试候选 (新的在前)
 

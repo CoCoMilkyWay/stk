@@ -11,12 +11,14 @@
 //     retry   回复解析失败: 原因 + 按协议重发
 //   收: 回复 = JSON 对象 (外层可包 ```json 代码块); 不合协议 → false + err (首个不合处, 带字段路径; 原样经 retry 反馈给模型)
 //     澄清 (一次)  {"questions": [{"prompt", "options": [..], "multiple", "recommended": [下标]}]} (单选推荐恰 1 项, 多选 ≥ 1 项) → Questions
-//     挖掘 (每轮)  {"factors": [{"name", "name_cn", "expr", "note"}], "submit": [英文名], "issues": [文本], "done"}               → MineReply
+//     挖掘 (每轮)  {"factors": [{"name", "name_cn", "expr", "note"}], "submit": [英文名], "issues": [文本], "done"}               → Proposal
+//   两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer;  挖掘 Proposal ─系统评→ Mined ─→ round
 // =============================================================================
 
 #include "agent/Bridge.hpp"
 
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,7 +30,13 @@ enum class Msg : uint8_t { System,
                            Answer,
                            Round,
                            Retry };
-inline constexpr const char *kPrompts[] = {"system", "first", "answer", "round", "retry"}; // 下标 = Msg; 模板名 = 流水里的 kind
+// 消息表 (下标 = Msg): id = 模板名 = 流水里的 kind; cn = 界面名
+struct MsgDef {
+  const char *id, *cn;
+};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"answer", "答案"}, {"round", "反馈"}, {"retry", "重发"}};
+inline constexpr int kMsgCount = static_cast<int>(std::size(kMsgs));
+inline const MsgDef &def(Msg m) { return kMsgs[static_cast<int>(m)]; }
 struct Message {
   Msg kind;
   std::string text;
@@ -38,7 +46,7 @@ struct Message {
 std::string LoadPrompt(Msg m);
 void SavePrompt(Msg m, const std::string &text);
 
-// ---- 澄清 ----
+// ---- 澄清: agent 的问题 → 人的选择 ----
 struct Question {
   std::string prompt;
   std::vector<std::string> options;
@@ -52,27 +60,51 @@ struct Pick {
   bool other = false;
   std::string text;
 };
+struct Asked {
+  Questions qs;
+  std::vector<Pick> picks; // 与 qs 对齐, 初值 = 推荐
+  std::string note;        // 附言
+};
 // mask 选中的选项, "; " 连接
 std::string Picked(const Question &q, const std::vector<bool> &mask);
 // 选中的选项 + "其他: 意见" (other 且 text 非空), "; " 连接
 std::string Answered(const Question &q, const Pick &p);
 
-// ---- 挖掘 ----
-struct MineReply {
+// ---- 挖掘: agent 的一批 → 系统的处理 ----
+struct Proposal {
   std::vector<Cand> factors;
   std::vector<std::string> submit, issues;
   bool done = false;
 };
+// 一个候选: 落文件 → 回测. 时刻 = 会话起算秒, −1 = 未到 (队列里直接跳过的只有 t1)
+struct Trial {
+  Staged st;
+  double t0 = -1, t_run = -1, t1 = -1; // 开评 / 转 Run / 评完
+};
+// factors → batch, submit → submitted
+struct Mined {
+  std::vector<Trial> batch;
+  std::vector<Submitted> submitted;
+  std::vector<std::string> issues;
+  bool done = false;
+  double t_eval0 = -1, t_eval1 = -1; // 开评 / 评完
+};
+
+// ---- 结局文本 (反馈 / 流水 / 界面同一份) ----
+std::string Text(const Stat &s);    // mono · 每期毛多空 · rIC
+std::string Text(const Weight &w);  // + score · 有效率; 无本持有期统计另说
+std::string Text(const Top &t);     // + 目标 ± 标准误 (+ 取反)
+std::string Brief(const Result &r); // 一行: 结局 + 最佳权重 / 目标最高的候选
 
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g);
 Message FirstMessage(const Context &c, const std::vector<Result> &tried);
-Message AnswerMessage(const Questions &qs, const std::vector<Pick> &picks, const std::string &note); // 与推荐不同的题附上推荐
-Message RoundMessage(const Context &c, const std::vector<Submitted> &subs, const std::vector<Staged> &batch);
+Message AnswerMessage(const Asked &a); // 与推荐不同的题附上推荐
+Message RoundMessage(const Context &c, const Mined &m);
 Message RetryMessage(const std::string &err);
 
 // ---- 收 ----
 bool Parse(std::string_view text, Questions &out, std::string &err);
-bool Parse(std::string_view text, MineReply &out, std::string &err);
+bool Parse(std::string_view text, Proposal &out, std::string &err);
 
 } // namespace agent

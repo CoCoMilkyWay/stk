@@ -74,10 +74,10 @@ stateDiagram-v2
     }
 
     state "自动挖掘" as GMine {
-        state "agent 作答" as Asking
-        Asking : 交一批变体 (同一个因子)
-        Asking : 改不动时提交最好的版本
-        Asking : 疑问写进 issues, 不再提问
+        state "agent 作答" as Propose
+        Propose : 交一批变体 (同一个因子)
+        Propose : 改不动时提交最好的版本
+        Propose : 疑问写进 issues, 不再提问
         state Format <<choice>>
         state "要求重发" as Retry
         Retry : 发出重发要求 (不限次)
@@ -112,15 +112,15 @@ stateDiagram-v2
             Round --> [*]
         }
 
-        [*] --> Asking
-        Asking --> Format
+        [*] --> Propose
+        Propose --> Format
         Format --> Retry : JSON 不合格
         Format --> Submit : JSON 合格
-        Retry --> Asking
+        Retry --> Propose
         Submit --> Fin
         Fin --> GEval : 未宣布挖完
         Fin --> [*] : 宣布挖完
-        GEval --> Asking
+        GEval --> Propose
     }
 
     state "结束报告" as Report
@@ -140,7 +140,7 @@ stateDiagram-v2
     classDef agent fill:#e4d4f4,stroke:#7b4fa0,color:#000
     classDef sys fill:#d4e8f8,stroke:#3a6ea5,color:#000
     class None, Choose human
-    class Digest, Asking agent
+    class Digest, Propose agent
     class Pack, QRetry, Retry, Submit, Stage, Next, Search, Run, Round, Report sys
 ```
 
@@ -209,8 +209,8 @@ stateDiagram-v2
 | ------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `open`       | 按 New                 | pool / level / hold / backend / model / net (`direct` / `proxy 主机:端口`) / eval / gate (`{mono, ric}`) / tried (已试候选数)                          |
 | `ask`        | 发出一条消息           | round / kind (first / answer / round / retry) / chars                                                                                                  |
-| `reply`      | 收齐一条回复           | round / end (ok / cut / error / cancelled) / why (非 ok 的原因) / seconds / prompt_tokens / cached_tokens / completion_tokens / chars / thinking_chars |
-| `parse_fail` | 回复不合格式           | round / phase (digest / asking) / error                                                                                                                |
+| `reply`      | 收齐一条回复           | round / end (ok / cut / error / cancelled) / why (非 ok 的原因) / id (Zhipu 响应 id / Cursor run id) / seconds / think_seconds (发出到首个正文增量) / prompt_tokens / cached_tokens / completion_tokens / chars / thinking_chars |
+| `parse_fail` | 回复不合格式           | round / phase (digest / propose) / error                                                                                                                |
 | `questions`  | 澄清回复合格           | round / n                                                                                                                                              |
 | `pick`       | 按 Start, 每题一行     | question / picked (含 "其他: 意见") / recommended                                                                                                      |
 | `start`      | 按 Start               | note                                                                                                                                                   |
@@ -219,7 +219,7 @@ stateDiagram-v2
 | `submit`     | 每个提交               | round / name / result (入库 / 未入库原因)                                                                                                              |
 | `stage`      | 每个新候选             | round / name / expr / note / result (落文件 / 未落原因)                                                                                                |
 | `eval_begin` | 开始回测本批           | round / files                                                                                                                                          |
-| `eval`       | 本批评完, 每个文件一行 | name / result (权重数与最佳统计 / 无显著 / BROKEN)                                                                                                     |
+| `eval`       | 每个文件评完           | name / result (权重数与最佳统计 / 无显著 / BROKEN)                                                                                                     |
 | `eval_end`   | 本批评完               | —                                                                                                                                                      |
 | `stop`       | 按 Stop                | —                                                                                                                                                      |
 | `cancel`     | 按 Cancel              | —                                                                                                                                                      |

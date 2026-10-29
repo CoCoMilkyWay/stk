@@ -280,6 +280,14 @@ std::optional<Resp> retried(const char *what, Resend rs, const std::atomic<bool>
   }
 }
 
+// 一段增量: 记进本轮 + 交回调
+void put(Reply &r, const Delta &on_delta, Part part, std::string_view chunk) {
+  if (chunk.empty())
+    return;
+  (part == Part::Text ? r.text : r.thinking).append(chunk);
+  on_delta(part, chunk);
+}
+
 // 响应体 / 流事件必是合法 JSON (服务端契约), 否则断言
 json parse_json(std::string_view s) {
   json j = json::parse(s, nullptr, false);
@@ -438,15 +446,8 @@ Reply Session::send(Zhipu &c, const std::string &user, const Delta &on_delta, co
       return true;
     const json &c0 = j["choices"][0];
     if (c0.contains("delta") && c0["delta"].is_object()) {
-      const json &d = c0["delta"];
-      if (const std::string t = str_of(d, "reasoning_content"); !t.empty()) {
-        r.thinking += t;
-        on_delta(Part::Thinking, t);
-      }
-      if (const std::string t = str_of(d, "content"); !t.empty()) {
-        r.text += t;
-        on_delta(Part::Text, t);
-      }
+      put(r, on_delta, Part::Thinking, str_of(c0["delta"], "reasoning_content"));
+      put(r, on_delta, Part::Text, str_of(c0["delta"], "content"));
     }
     if (const std::string f = str_of(c0, "finish_reason"); !f.empty())
       finish = f;
@@ -507,9 +508,7 @@ Reply Session::send(Cursor &c, const std::string &user, const Delta &on_delta, c
     if (!id.empty())
       last_id = id;
     if (ev == "assistant" || ev == "thinking") {
-      const std::string t = str_of(parse_json(data), "text");
-      (ev == "assistant" ? r.text : r.thinking) += t;
-      on_delta(ev == "assistant" ? Part::Text : Part::Thinking, t);
+      put(r, on_delta, ev == "assistant" ? Part::Text : Part::Thinking, str_of(parse_json(data), "text"));
     } else if (ev == "result") {
       const json x = parse_json(data);
       status = str_of(x, "status");

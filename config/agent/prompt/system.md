@@ -52,6 +52,7 @@ param := key '=' 数字 | key            key ∈ d / k / k2
   - 时序口径: `TsRankRoll(x, d={{ts_root_d}})` (d 必须写死 {{ts_root_d}})
 - 根的输入不能是离散值域 (0/1 掩码 / 符号 / 桶号, 先套窗口统计再归一), 也不能沿资产轴不变 (纯截面广播量).
 - 组 id 类输入 (值域 INT) 只能接输出为 INT / BIN 的子式.
+- **算子数 (含根) 至多 {{max_ops}} 个, 超了系统直接拒收不评**; 建议 {{good_ops}} 个左右. 每个算子都要说得出它在机制上的作用, 不要堆叠算子凑分.
 
 例: `CsRank(TsMeanRoll(TsLog(bar.5m.amt_todz_5d), d))`
 

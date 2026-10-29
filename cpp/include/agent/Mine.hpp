@@ -5,13 +5,14 @@
 // =============================================================================
 //   Phase    等谁    完成信号     转移
 //   Digest   agent   收齐一轮     合格 → Choose; 不合格 → 发 retry, 留 Digest
-//   Choose   人      start        发 answer → Asking
-//   Asking   agent   收齐一轮     合格 → 记 issues, 处理 submit; done → Report, 否则落候选 → Eval; 不合格 → 发 retry, 留 Asking
-//   Eval     系统    Lab 不忙     发 round → Asking
+//   Choose   人      start        发 answer → Propose
+//   Propose  agent   收齐一轮     合格 → 记 issues, 处理 submit; done → Report, 否则落候选 → Eval; 不合格 → 发 retry, 留 Propose
+//   Eval     系统    Lab 不忙     发 round → Propose
 //   Report   人      open         开下一段
+//   两阶段对仗: Digest (agent 问) → Choose (人答) ↔ Propose (agent 交) → Eval (系统评)
 //   结束: 回复失败 / agent 宣布挖完 / cancel 立即; stop = 本步做完即结束 (转移唯一入口 go 处兑现; Choose 中立即)
-//   GUI 线程: open / start / stop / cancel = 人的操作, update 每帧推进 (含 Lab 评估队列与会话日志);
-//   成员 UI 只读, 除 picks / note (Choose 中人改)
+//   GUI 线程: open / start / stop / cancel = 人的操作, update 每帧从 chat / lab 两个 worker 同样 poll 推进 (含会话日志)
+//   timeline = 全会话唯一真相 (每条发出的消息一轮: 原文 / 回复 / 回复的处理); UI 只读, 除 Choose 中末轮的 Asked (picks / note)
 // =============================================================================
 
 #include "agent/Bridge.hpp"
@@ -19,10 +20,11 @@
 #include "agent/Journal.hpp"
 #include "agent/Prompt.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <set>
 #include <string>
-#include <string_view>
+#include <variant>
 #include <vector>
 
 namespace agent {
@@ -32,10 +34,10 @@ public:
   enum class Phase : uint8_t { None,
                                Digest,
                                Choose,
-                               Asking,
+                               Propose,
                                Eval,
                                Report };
-  static constexpr const char *kPhaseNames[] = {"无会话", "澄清", "选答案", "作答", "回测", "已结束"};
+  static constexpr const char *kPhaseNames[] = {"none", "digest", "choose", "propose", "eval", "report"}; // 流水里的阶段名
 
   // 一段会话不变的设定 (New 定)
   struct Setup {
@@ -51,53 +53,55 @@ public:
   void cancel();
   void update();
 
+  // 一轮 = 一条发出的消息. 时刻 = 会话起算秒 (now())
+  struct Round {
+    Msg kind = Msg::First;
+    std::string user;
+    double t_ask = 0, t_reply = -1; // 发出 / 收齐 (−1 = 在收)
+    llm::Reply reply;               // 收齐后有效
+    std::string err;                // 回复失败 / 不合协议的原因
+    std::variant<std::monostate, Asked, Mined> got;
+  };
+  // 一轮或一段的计数 (+= 累加)
+  struct Tally {
+    int staged = 0, unstaged = 0, hits = 0, submits = 0, adopted = 0, issues = 0;
+    Tally &operator+=(const Tally &o);
+  };
+  static Tally tally(const Round &rd);
+
   Phase phase() const { return phase_; }
   bool live() const { return phase_ != Phase::None && phase_ != Phase::Report; }
   bool stopping() const { return stop_ && live(); }
-  int rounds() const { return rounds_; }
   const std::string &log_dir() const { return log_.dir(); }
+  double now() const; // 会话起算秒 (结束后停在结束时刻)
 
   Chat chat;
   Lab lab;
   Setup setup;
   Context ctx;
-  // 澄清
-  Questions questions;
-  std::vector<Pick> picks; // 初值 = 推荐
-  std::string note;
-  // 挖掘 / 结束
+  std::vector<Round> timeline;
   std::set<std::string> adopted; // 本会话入库的英文名
-  std::string report;
+  std::string reason, report;    // 结束原因 / 结束报告
 
 private:
-  struct Issue {
-    int round = 0;
-    std::string text;
-  };
-  struct Submit {
-    int round = 0;
-    Submitted s;
-  };
-
   bool go(Phase next); // 转移的唯一入口: 按过 Stop → 结束报告, false; 否则进 next
   void ask(Message m);
-  void finish(std::string reason);
+  void finish(std::string why);
   template <class T>
-  void reply(std::string_view text, int round);
+  void reply(int round);
+  void on(llm::Reply r);
+  void on(Tick t);
   void on(Questions qs, int round);
-  void on(MineReply m, int round);
+  void on(Proposal p, int round);
   void evaluated();
-  std::string report_of(const std::string &reason) const;
+  std::string report_of(const std::string &why) const;
 
   Journal log_;
   Phase phase_ = Phase::None;
   bool stop_ = false;
-  uint64_t seen_ = 0; // 已处理到的 chat.done()
-  int rounds_ = 0;    // 本会话收齐的轮数
-  std::vector<Staged> batch_;
-  std::vector<Submitted> submitted_; // 上一条回复的提交结局, 进下一条反馈
-  std::vector<Submit> submits_;      // 全会话
-  std::vector<Issue> issues_;
+  std::chrono::steady_clock::time_point t0_;
+  double t_end_ = -1; // 结束时刻 (−1 = 未结束)
 };
+inline const char *name(Mine::Phase p) { return Mine::kPhaseNames[static_cast<int>(p)]; }
 
 } // namespace agent

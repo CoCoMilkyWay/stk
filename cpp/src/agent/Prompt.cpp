@@ -18,7 +18,7 @@ namespace {
 using json = nlohmann::json;
 using KV = std::vector<std::pair<std::string_view, std::string>>;
 
-std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(kPrompts[static_cast<int>(m)]) + ".md"); }
+std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(def(m).id) + ".md"); }
 
 // {{键}} → 值; 模板里的键都须在 kv 里
 Message fill(Msg m, const KV &kv) {
@@ -36,7 +36,7 @@ Message fill(Msg m, const KV &kv) {
     const std::string_view key(t.data() + a + 2, b - a - 2);
     const auto it = std::find_if(kv.begin(), kv.end(), [&](const auto &p) { return p.first == key; });
     if (it == kv.end())
-      std::fprintf(stderr, "[agent] %s.md: 未知占位 {{%.*s}}\n", kPrompts[static_cast<int>(m)], static_cast<int>(key.size()), key.data());
+      std::fprintf(stderr, "[agent] %s.md: 未知占位 {{%.*s}}\n", def(m).id, static_cast<int>(key.size()), key.data());
     assert(it != kv.end() && "模板占位键未知");
     out.append(t, i, a - i);
     out += it->second;
@@ -61,31 +61,27 @@ std::string num(double v) {
   return b;
 }
 
-std::string stat_of(const Weight &w) {
-  char b[256];
-  std::snprintf(b, sizeof(b), "mono %.3f, 每期毛多空 %.2fbp, rIC %.4f; score %.3g, 有效率 %.0f%%", w.mono, w.ls * 1e4, w.ric, w.score, w.valid * 100.0);
-  return b;
-}
-
-std::string stat_of(const Top &t) {
-  char b[256];
-  std::snprintf(b, sizeof(b), "mono %.3f, 每期毛多空 %.2fbp, rIC %.4f; 目标 ls·rIC %.3g ± %.3g (标准误)", t.mono, t.ls * 1e4, t.ric, t.g, t.se);
-  return b;
-}
-
 // 一个因子文件的结局 (多行, 每行 "- " 起)
 std::string outcome(const Result &r) {
-  if (!r.error.empty())
+  switch (r.verdict) {
+  case Verdict::Broken:
     return "- BROKEN: " + r.error + "\n";
-  if (r.ws.empty() && r.has_top)
-    return "- Search 无显著权重, 落选原因: " + r.top.miss + "\n- 目标最高的候选 `" + r.top.expr + "`" + (r.top.sign < 0 ? " (取反)" : "") + ": " + stat_of(r.top) +
-           "\n";
-  if (r.ws.empty())
-    return r.searched ? "- Search 无显著权重 (本持有期 score 不显著为正, 或 mono 不达标)\n" : "- 未评估\n";
-  std::string s;
-  for (const Weight &w : r.ws)
-    s += "- `" + w.expr + "`: " + (w.has ? stat_of(w) : std::string("无该持有期统计")) + "\n";
-  return s;
+  case Verdict::Weights: {
+    std::string s;
+    for (const Weight &w : r.ws)
+      s += "- `" + w.expr + "`: " + Text(w) + "\n";
+    return s;
+  }
+  case Verdict::Null:
+    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 目标最高的候选 `" + r.top->expr + "`: " + Text(*r.top) + "\n"
+                 : std::string("- Search 无显著权重 (本持有期 score 不显著为正, 或 mono 不达标)\n");
+  case Verdict::Pending:
+    return "- 未评估\n";
+  case Verdict::Unstaged:
+    break;
+  }
+  assert(false && "未落文件的候选没有因子文件");
+  return {};
 }
 
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
@@ -213,6 +209,42 @@ std::string Answered(const Question &q, const Pick &p) {
   return s;
 }
 
+// ---- 结局文本 ----
+std::string Text(const Stat &s) {
+  char b[128];
+  std::snprintf(b, sizeof(b), "mono %.3f · 每期毛多空 %.2fbp · rIC %.4f", s.mono, s.ls * 1e4, s.ric);
+  return b;
+}
+
+std::string Text(const Weight &w) {
+  if (!w.has)
+    return "无该持有期统计";
+  char b[64];
+  std::snprintf(b, sizeof(b), " · score %.3g · 有效率 %.0f%%", w.score, w.valid * 100.0);
+  return Text(w.st) + b;
+}
+
+std::string Text(const Top &t) {
+  char b[64];
+  std::snprintf(b, sizeof(b), " · 目标 ls·rIC %.3g ± %.3g", t.g, t.se);
+  return Text(t.st) + b + (t.sign < 0 ? " · 取反" : "");
+}
+
+std::string Brief(const Result &r) {
+  switch (r.verdict) {
+  case Verdict::Broken:
+    return "BROKEN: " + r.error;
+  case Verdict::Weights:
+    return std::to_string(r.ws.size()) + " 个权重, 最佳 " + Text(*r.best());
+  case Verdict::Null:
+    return r.top ? "无显著 (" + r.top->miss + "), 目标最高 " + Text(*r.top) : std::string(name(r.verdict));
+  case Verdict::Unstaged:
+  case Verdict::Pending:
+    return name(r.verdict);
+  }
+  return {};
+}
+
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g) {
   std::string leaves = "| 叶 | 中文名 | 公式 | 说明 |\n|---|---|---|---|\n";
@@ -226,7 +258,7 @@ Message SystemMessage(const Context &c, const Gate &g) {
     const Result &r = c.library[i];
     const Weight *w = r.best();
     lib += "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n";
-    lib += w ? "  - 最佳权重 `" + w->expr + "`: " + stat_of(*w) + "\n" : std::string("  - 本持有期无统计\n");
+    lib += w ? "  - 最佳权重 `" + w->expr + "`: " + Text(*w) + "\n" : std::string("  - 本持有期无统计\n");
   }
   return fill(Msg::System, {{"pool", c.pool},
                             {"pool_cn", c.pool_cn},
@@ -237,6 +269,8 @@ Message SystemMessage(const Context &c, const Gate &g) {
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
                             {"batch", std::to_string(kBatch)},
+                            {"max_ops", std::to_string(kMaxOps)},
+                            {"good_ops", std::to_string(kGoodOps)},
                             {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
                             {"leaves", leaves},
@@ -251,26 +285,28 @@ Message FirstMessage(const Context &c, const std::vector<Result> &tried) {
   return fill(Msg::First, {{"hold", c.hold}, {"tried", or_none(std::move(s), "(无)\n")}});
 }
 
-Message AnswerMessage(const Questions &qs, const std::vector<Pick> &picks, const std::string &note) {
-  assert(picks.size() == qs.size());
+Message AnswerMessage(const Asked &a) {
+  assert(a.picks.size() == a.qs.size());
   std::string s;
-  for (size_t i = 0; i < qs.size(); ++i) {
-    const std::string sel = Answered(qs[i], picks[i]);
-    s += "### " + std::to_string(i + 1) + ". " + qs[i].prompt + "\n- " + or_none(sel, "(未选, 你自定)") + "\n";
-    if (picks[i].on != qs[i].recommended || (picks[i].other && !picks[i].text.empty()))
-      s += "- (未照你的推荐: " + Picked(qs[i], qs[i].recommended) + ")\n";
+  for (size_t i = 0; i < a.qs.size(); ++i) {
+    const Question &q = a.qs[i];
+    const Pick &p = a.picks[i];
+    s += "### " + std::to_string(i + 1) + ". " + q.prompt + "\n- " + or_none(Answered(q, p), "(未选, 你自定)") + "\n";
+    if (p.on != q.recommended || (p.other && !p.text.empty()))
+      s += "- (未照你的推荐: " + Picked(q, q.recommended) + ")\n";
   }
-  return fill(Msg::Answer, {{"answers", or_none(std::move(s), "(无问题)\n")}, {"note", or_none(note, "(无)")}, {"batch", std::to_string(kBatch)}});
+  return fill(Msg::Answer, {{"answers", or_none(std::move(s), "(无问题)\n")}, {"note", or_none(a.note, "(无)")}, {"batch", std::to_string(kBatch)}});
 }
 
-Message RoundMessage(const Context &c, const std::vector<Submitted> &subs, const std::vector<Staged> &batch) {
+Message RoundMessage(const Context &c, const Mined &m) {
   std::string ss;
-  for (const Submitted &x : subs)
+  for (const Submitted &x : m.submitted)
     ss += "- " + x.name + ": " + (x.err.empty() ? std::string("已入库") : "未入库, " + x.err) + "\n";
   std::string s;
-  for (const Staged &st : batch) {
+  for (const Trial &k : m.batch) {
+    const Staged &st = k.st;
     s += "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
-    s += st.file.empty() ? "- 未落文件: " + st.err + "\n" : outcome(st.res);
+    s += st.res.verdict == Verdict::Unstaged ? "- 未落文件: " + st.err + "\n" : outcome(st.res);
   }
   return fill(Msg::Round, {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"submits", or_none(std::move(ss), "(上次未提交)\n")}, {"results", s}});
 }
@@ -308,7 +344,7 @@ bool Parse(std::string_view text, Questions &out, std::string &err) {
   return in.ok();
 }
 
-bool Parse(std::string_view text, MineReply &out, std::string &err) {
+bool Parse(std::string_view text, Proposal &out, std::string &err) {
   out = {}, err.clear();
   json j;
   if (!object_of(text, j, err))
