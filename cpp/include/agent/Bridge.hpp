@@ -47,7 +47,7 @@ struct Weight {
   int hold_src = 0; // 搜出它的持有期 (0 = 手填具体式)
   bool has = false;
   double mono = 0, ls = 0, ric = 0; // 分层单调性 / 每期毛多空 / rIC 均值
-  double score = 0, valid = 0;                            // Search 目标 / 池内有效率 (0..1)
+  double score = 0, valid = 0;      // Search 目标 / 池内有效率 (0..1)
 };
 // 一个因子文件
 struct Result {

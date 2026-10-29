@@ -277,7 +277,6 @@ set(MATH_FAST
     gui/task_settings/TaskSettings.cpp
     gui/task_system_info/TaskSystemInfo.cpp
     # agent
-    agent/ui/TaskAgent.cpp
     # factor
     # 入口
     main.cpp
@@ -360,6 +359,7 @@ set(MATH_PRECISE
     agent/Chat.cpp
     agent/Llm.cpp
     agent/Prompt.cpp
+    agent/ui/TaskAgent.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
     factor/op_check.cpp
     factor/op_check_gpu.cu
