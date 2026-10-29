@@ -258,22 +258,23 @@ public:
     return false;
   }
 
-  // Status: 行状态标签. idx == -1 任务行 (总体), 0 Overview (基本面), 1 Encode
+  // Status: 子行状态标签 (任务行由子行聚合). 0 Overview (基本面), 1 Encode
   // (编码进度/覆盖检查结果), 2 Table / 3 Browser (纯浏览: 前置计算中显示进行中,
   // 解锁后 done, 锁定且无在跑 none)
   TaskStatus Status(const SharedData &data, int idx) const {
     switch (idx) {
-    case -1:
-      return TaskLevelStatus(data);
     case 0:
       return OverviewStatus();
     case 1:
-      return EncodeStatus(data);
+      if (!state_mgr_)
+        return {TaskStatus::Kind::Muted, "initializing"};
+      return GUI::Database::EncodeStatus(*state_mgr_, *encoding_svc_, *scan_svc_);
     case 2:
       return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_table);
     case 3:
       return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_browser);
     }
+    assert(false && "Database 子行越界");
     return {};
   }
 
@@ -322,30 +323,7 @@ private:
       return {TaskStatus::Kind::Ready, "done"};
     if (state_mgr_->get_state().fundamental_taken)
       return {TaskStatus::Kind::Error, "error"};
-    return {TaskStatus::Kind::Muted, "idle"};
-  }
-
-  // 任务行标签: taskstate.database.status → (Kind, text)
-  TaskStatus TaskLevelStatus(const SharedData &data) const {
-    switch (data.taskstate.database.status) {
-    case TaskState::Database::Status::Initializing:
-      return {TaskStatus::Kind::Muted, "initializing"};
-    case TaskState::Database::Status::Syncing:
-      return {TaskStatus::Kind::Busy, "syncing"};
-    case TaskState::Database::Status::Scanning:
-      return {TaskStatus::Kind::Busy, "scanning"};
-    case TaskState::Database::Status::NotScanned:
-      return {TaskStatus::Kind::Warn, "not scanned"};
-    case TaskState::Database::Status::Incomplete:
-      return {TaskStatus::Kind::Warn, "incomplete"};
-    case TaskState::Database::Status::Error:
-      return {TaskStatus::Kind::Error, "error"};
-    case TaskState::Database::Status::Ready:
-      return {TaskStatus::Kind::Ready, "done"};
-    case TaskState::Database::Status::None:
-      break;
-    }
-    return {};
+    return {TaskStatus::Kind::Muted, "waiting"};
   }
 
   // Overview 子行标签: 基本面流水线状态 (BigQuant + Tushare → AssetInfo)
@@ -360,38 +338,6 @@ private:
         return {TaskStatus::Kind::Busy, "repairing"};
     }
     return FundamentalStatus();
-  }
-
-  // Encode 子行标签: 编码进行中显示进度, 否则显示 L2 覆盖检查结果
-  TaskStatus EncodeStatus(const SharedData & /*data*/) const {
-    if (!state_mgr_)
-      return {};
-    if (encoding_svc_->cancelling())
-      return {TaskStatus::Kind::Busy, "cancelling"};
-    if (encoding_svc_->busy())
-      return ProgressStatus(*encoding_svc_);
-    if (state_mgr_->encoding())
-      return {TaskStatus::Kind::Busy, "encoding"};
-    if (scan_svc_->busy())
-      return ProgressStatus(*scan_svc_);
-    if (state_mgr_->scanning())
-      return {TaskStatus::Kind::Busy, "scanning"};
-    switch (state_mgr_->get_state().check.status) {
-    case DatabaseStatus::Unchecked:
-      return {}; // 未扫描时任务行已有 not scanned, 子行不重复
-    case DatabaseStatus::Pass:
-      return {TaskStatus::Kind::Ready, "done"};
-    case DatabaseStatus::Incomplete:
-      return {TaskStatus::Kind::Warn, "incomplete"};
-    case DatabaseStatus::NotEncoded:
-      return {TaskStatus::Kind::Warn, "not encoded"};
-    case DatabaseStatus::NeedArchive:
-      return {TaskStatus::Kind::Error, "need archive"};
-    case DatabaseStatus::NoData:
-    case DatabaseStatus::Error:
-      return {TaskStatus::Kind::Error, "error"};
-    }
-    return {};
   }
 
   // Table / Browser 子行标签: 纯浏览页, 状态跟随前置计算.
@@ -431,48 +377,16 @@ private:
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
+    const TaskStatus estatus = GUI::Database::EncodeStatus(*state_mgr_, *encoding_svc_, *scan_svc_);
     ImGui::Text("L2 Database: ");
     ImGui::SameLine();
-
-    // L2 database coverage check (required_dates = 基本面交易日历)
-    switch (check_result.status) {
-    case DatabaseStatus::Unchecked:
-      ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[Not checked]");
+    ImGui::TextColored(StatusColor(estatus.kind), "[%s]", estatus.text.c_str());
+    if (estatus.kind == TaskStatus::Kind::Warn) {
       ImGui::SameLine();
-      ImGui::TextDisabled("(scans after fundamental sync)");
-      break;
-
-    case DatabaseStatus::Pass:
-      ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "[Pass]");
-      break;
-
-    case DatabaseStatus::Incomplete:
-      ImGui::TextColored(ImVec4(1.0f, 0.95f, 0.3f, 1.0f), "[Incomplete]");
-      ImGui::SameLine();
-      ImGui::TextDisabled("(Missing %zu dates, %zu can encode)",
-                          check_result.missing_dates.size(),
-                          check_result.missing_can_encode.size());
-      break;
-
-    case DatabaseStatus::NeedArchive:
-      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.0f, 1.0f), "[NeedArchive]");
-      ImGui::SameLine();
-      ImGui::TextDisabled("(Missing %zu dates without archive)",
-                          check_result.missing_no_archive.size());
-      break;
-
-    case DatabaseStatus::NotEncoded:
-      ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[NotEncoded]");
-      ImGui::SameLine();
-      ImGui::TextDisabled("(Archive available, need to encode)");
-      break;
-
-    case DatabaseStatus::NoData:
-    case DatabaseStatus::Error:
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "[ERROR]");
+      ImGui::TextDisabled("%zu days pending", check_result.pending.size());
+    } else if (estatus.kind == TaskStatus::Kind::Error) {
       ImGui::SameLine();
       ImGui::TextDisabled("%s", check_result.error_message.c_str());
-      break;
     }
 
     ImGui::Separator();

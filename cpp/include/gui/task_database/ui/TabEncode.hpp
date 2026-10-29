@@ -2,6 +2,7 @@
 // Controls CSV→Binary conversion with worker management
 #pragma once
 
+#include "gui/Tasks.hpp"
 #include "misc/file_check.hpp"
 
 #include <cstdint>
@@ -79,10 +80,8 @@ struct EncodeState {
   bool show_progress_fullscreen = false;
   bool skip_file_check_ack = false; // 未通过 File Check 时的"风险自负"确认
 
-  // Encode 支持增量: 归档不存在/不覆盖回测区间时也能先编已有的部分, 慢慢补.
-  // 这两个"风险自负"确认解锁对应的硬性前置条件.
+  // Encode 支持增量: 归档路径不存在时也能先编已有的部分, 慢慢补. "风险自负"确认解锁该前置条件.
   bool skip_archive_exists_ack = false;
-  bool skip_archive_range_ack = false;
 
   // Trigger for starting encoding (set by UI, consumed by TaskDatabase)
   bool trigger_start = false;
@@ -95,6 +94,9 @@ struct EncodeState {
 // ============================================================================
 // Render Function
 // ============================================================================
+
+// Encode 状态标签 (左栏子行 / 状态头 / Coverage Check 共用): 取消 > 编码 > 扫描 > 覆盖结论
+TaskStatus EncodeStatus(const StateManager &sm, const EncodingService &encoding_service, const ScanService &scan_service);
 
 // sm: 覆盖结论 + 流水线在飞 (编码 / 扫描 / 同步); 服务: 进度面 + 请求 / 取消
 void RenderTabEncode(

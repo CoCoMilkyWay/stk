@@ -111,7 +111,7 @@ void StateManager::tick() {
   state_.tabs.can_access_encode = ready;
 
   // Table/Browser: 基本面 Ready 且 L2 覆盖检查至少跑过一遍 (Encode 页扫描
-  // 完成) —— 不要求覆盖 100% Pass, Table 看的是基本面, Browser 本身就是
+  // 完成) —— 不要求编码全部 done, Table 看的是基本面, Browser 本身就是
   // 来看覆盖缺口的. 扫描前 Asset::items 等数据还没建好, 依然要灰着.
   const bool scanned = state_.check.status != DatabaseStatus::Unchecked;
   state_.tabs.can_access_table = ready && scanned;
@@ -128,25 +128,7 @@ void StateManager::publish_task_state() {
   ts.l2_scan_inflight = scanning();
   ts.encode_inflight = encoding();
   ts.binary_scanned = (check.status != DatabaseStatus::Unchecked);
-  ts.binary_pass = (check.status == DatabaseStatus::Pass);
   ts.all_json_ready = state_.all_json_ready();
-
-  // busy 态优先: 流水线顺序 基本面同步 → L2 扫描
-  if (ts.json_update_inflight) {
-    ts.status = TaskState::Database::Status::Syncing;
-  } else if (ts.l2_scan_inflight) {
-    ts.status = TaskState::Database::Status::Scanning;
-  } else if (check.status == DatabaseStatus::Error ||
-             check.status == DatabaseStatus::NoData ||
-             check.status == DatabaseStatus::NeedArchive) {
-    ts.status = TaskState::Database::Status::Error;
-  } else if (check.status == DatabaseStatus::Unchecked) {
-    ts.status = TaskState::Database::Status::NotScanned;
-  } else if (check.status != DatabaseStatus::Pass || !state_.all_json_ready()) {
-    ts.status = TaskState::Database::Status::Incomplete;
-  } else {
-    ts.status = TaskState::Database::Status::Ready;
-  }
 }
 
 } // namespace GUI::Database

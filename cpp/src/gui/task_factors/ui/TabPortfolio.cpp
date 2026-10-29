@@ -138,7 +138,7 @@ std::vector<std::string> align_cols(const std::vector<std::array<std::string, N>
   return out;
 }
 
-// NAV 线色 (主图 / 右表同一份): 策略 = kStratCol (透明度按冲击); 池线按池对取色表 (理想 = 同色淡); 单因子接在池对之后
+// NAV 线色 (主图 / 右表同一份): 策略 = kStratCol (透明度按冲击); 池线按池对取色表 (理想 = 同色淡); 单因子对接在池对之后 (无冲击 = 同色淡)
 constexpr float kIdealAlpha = 0.5f;
 ImVec4 strat_color(int i) { return ImVec4(kStratCol.x, kStratCol.y, kStratCol.z, kImpactAlpha[i]); }
 ImVec4 pool_color(const PortfolioDerived &d, size_t i) {
@@ -147,7 +147,11 @@ ImVec4 pool_color(const PortfolioDerived &d, size_t i) {
   c.w = d.pools[i].px ? kIdealAlpha : 1.0f;
   return c;
 }
-ImVec4 factor_color(const PortfolioDerived &d, size_t i) { return ImPlot::GetColormapColor(static_cast<int>(d.pools.size() / 2 + i)); }
+ImVec4 factor_color(const PortfolioDerived &d, size_t i) {
+  ImVec4 c = ImPlot::GetColormapColor(static_cast<int>(d.pools.size() / 2 + i / 2));
+  c.w = kImpactAlpha[i % 2];
+  return c;
+}
 // NAV 右表行选中 (l = 行首线; 缺 = 默认 PortfolioLine::on)
 bool shown(const PortfolioUIState &ui, const PortfolioLine &l) {
   const auto it = ui.show.find(l.id);
@@ -266,6 +270,13 @@ std::shared_ptr<const PoolCurve> pool_of(const PortfolioResult &res, const char 
   return it != res.pools.end() && it->second->error.empty() ? it->second : nullptr;
 }
 
+// NAV 右表 / 主图例的尾 = 年化单边换手 (倍/年; 因子 / 组合 = Σ 增仓量 / 交易日数 × 每年交易日, 指数 = PoolCurve::turn)
+std::string turn_note(double per_year) {
+  char b[48];
+  std::snprintf(b, sizeof(b), "(年换手=%5.1f倍)", per_year);
+  return b;
+}
+
 // 组合 + 单因子 (见头文件): 每因子两条增量流 — 自身 (权 1) → 单因子线; 份额 (权 1 / 当日因子数) → Σ → 组合线. 单因子线 ≡ 只含它的组合
 void derive_factors(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res, double fixed_impact,
                     PortfolioDerived &d) {
@@ -298,19 +309,32 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
       ++n_act[i];
 
   std::vector<Inc> shares; // [因子] 份额流
+  double strat_buy = 0.0;  // Σ 份额 · 增仓量 (组合年换手)
   for (size_t q = 0; q < fc.size(); ++q) {
     const FactorCurve &f = *fc[q];
     const std::vector<size_t> &di = dix[q];
-    PortfolioFactor pf;
-    pf.id = its[q]->e.key();
-    pf.en = std::filesystem::path(its[q]->e.file).stem().string();
-    pf.cn = its[q]->name_cn;
-    pf.kind = "冲击 " + amt_name(f.amt);
-    pf.note = its[q]->e.pool + " " + factor_level(its[q]->e.lv).name + " " + factor::stat::hold_name(its[q]->e.hold);
-    pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f.hold);
-    pf.c = curve_of(inc_of(f, di, fixed_impact, [](size_t) { return 1.0; }), kImpactNet, x_of(di.front(), kOpen) - kStartDx);
-    pf.item = *its[q];
-    d.factors.push_back(std::move(pf));
+    const size_t S = static_cast<size_t>(factor_level(f.lv).geo().S);
+    const float *buy = f.nav_at(kCurveBuy);
+    double own_buy = 0.0;
+    for (size_t dl = 0; dl < di.size(); ++dl)
+      for (size_t ts = 0; ts < S; ++ts) {
+        own_buy += buy[dl * S + ts];
+        strat_buy += buy[dl * S + ts] / n_act[di[dl]];
+      }
+    const Inc own = inc_of(f, di, fixed_impact, [](size_t) { return 1.0; });
+    for (int i = 0; i < kImpacts; ++i) {
+      PortfolioFactor pf;
+      pf.id = its[q]->e.key() + kImpactId[i];
+      pf.en = std::filesystem::path(its[q]->e.file).stem().string();
+      pf.cn = its[q]->name_cn;
+      pf.kind = kImpactName[i];
+      pf.note = turn_note(own_buy / static_cast<double>(f.dates.size()) * factor::stat::kDaysPerYear);
+      pf.tag = its[q]->name_en + " " + factor::stat::hold_name(f.hold) + kImpactTag[i];
+      pf.amt = amt_name(f.amt);
+      pf.c = curve_of(own, i, x_of(di.front(), kOpen) - kStartDx);
+      pf.item = *its[q];
+      d.factors.push_back(std::move(pf));
+    }
     shares.push_back(inc_of(f, di, fixed_impact, [&](size_t i) { return 1.0 / n_act[i]; }));
   }
   const Inc sum = shares.empty() ? Inc{} : sum_of(std::move(shares));
@@ -320,13 +344,15 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     s.en = name, s.cn = "G20 多头", s.kind = kImpactName[i];
     s.tag = name + kImpactTag[i];
     s.on = true; // 策略行默认选中
-    if (!d.dates.empty())
+    if (!d.dates.empty()) {
       s.c = curve_of(sum, i, x_of(0, kOpen) - kStartDx);
+      s.note = turn_note(strat_buy / static_cast<double>(d.dates.size()) * factor::stat::kDaysPerYear);
+    }
   }
 }
 
 // 池线 + VAL 篮子 (见头文件): 同一 PortfolioBasket + project
-void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResult &res, PortfolioDerived &d) {
+void derive_baskets(const PortfolioResult &res, PortfolioDerived &d) {
   const auto basket = [&](std::string id, std::string en, std::string cn, std::string tag, std::shared_ptr<const PoolCurve> pc, size_t k, Weight w,
                           bool px = false) {
     PortfolioBasket b;
@@ -338,11 +364,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
   };
 
   // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; note = 年换手;
-  //      每条可成交线 (行首) 后接同池同权的理想 (收盘价) 线, 右表同一行 ----
-  std::set<std::string> own; // 组合里有因子的池
-  for (const PortfolioItem &it : items)
-    if (it.missing.empty())
-      own.insert(it.e.pool);
+  //      每条可成交线 (行首) 后接同池同权的理想 (收盘价) 线, 右表同一行; 默认只选全A等权, 行选中时可成交线在主图例里默认隐 ----
   for (const PoolDef &pd : feature_pools()) {
     const bool all = pd.pool_col == SIZE_MAX;
     const std::shared_ptr<const PoolCurve> pc = pool_of(res, pd.name);
@@ -353,12 +375,10 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
       PortfolioBasket p = basket(std::string("pf_pool_") + pd.name + kWeightId[w], pd.name, cn, tag + " 可成交", pc, 0, w);
       PortfolioBasket q = basket(p.id + "_px", pd.name, cn, tag + " 理想", pc, 0, w, true);
       p.kind = "可成交", q.kind = "理想";
-      p.on = own.contains(pd.name);
-      if (pc) {
-        char turn[48];
-        std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", pc->turn[w]);
-        p.note = q.note = turn;
-      }
+      p.on = all && w == kWeightEq;
+      p.hide = true;
+      if (pc)
+        p.note = q.note = turn_note(pc->turn[w]);
       d.pools.push_back(std::move(p));
       d.pools.push_back(std::move(q));
     }
@@ -393,7 +413,7 @@ void derive_baskets(const std::vector<PortfolioItem> &items, const PortfolioResu
 void derive(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res, double fixed_impact, PortfolioDerived &d) {
   d = PortfolioDerived{};
   derive_factors(items, name, res, fixed_impact, d);
-  derive_baskets(items, res, d);
+  derive_baskets(res, d);
 }
 
 // 曲线 c 在 [x0, x1) 的切片 (见 PortfolioSlice); 整条在区间外 → 空. 年化 = 末点净值按首末点所跨交易日数复利折年 (%)
@@ -568,9 +588,10 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   v.factor_rank.assign(d.factors.size(), kNaN);
   v.pool_rank.assign(d.pools.size(), kNaN);
-  ranks(d.factors.size(), [&](size_t i) { return ann_of(v.factors[i]); }, [&](size_t i, double r) { v.factor_rank[i] = r; });
-  for (size_t p = 0; p < 2; ++p)
+  for (size_t p = 0; p < 2; ++p) {
+    ranks(d.factors.size() / 2, [&](size_t i) { return ann_of(v.factors[2 * i + p]); }, [&](size_t i, double r) { v.factor_rank[2 * i + p] = r; });
     ranks(d.pools.size() / 2, [&](size_t i) { return ann_of(v.pools[2 * i + p]); }, [&](size_t i, double r) { v.pool_rank[2 * i + p] = r; });
+  }
 
   // ---- VAL 表格: 各篮子各口切片内末个可算点的估值分位 + 同组 (池 / 行业) 同口内的截面名次 ----
   v.cell.assign(d.vals.size(), {});
@@ -820,10 +841,10 @@ bool pages() {
     if (ImGui::IsItemHovered())
       tip("NAV = 资金曲线 (Net Asset Value, 净值)\n"
           "• 橙线 = 本组合 G20 多头: 各因子独立回测 (分批 1/h̄, 全日平均满仓; 能成交才成交) 的逐行增量等权聚合, 扣换手冲击 (细线 = 无冲击)\n"
-          "• 池指数线 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只选组合里因子所在池\n"
+          "• 池指数线 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只选全A等权; 选中只显理想, 可成交点图例显\n"
           "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
           "    ◦ 理想 = 后复权收盘价指数 (不看可成交, 同中证 / 万得口径; 同色淡线); 两者之差 = 可成交拖累\n"
-          "• 单因子线 = 各自的 G20 多头净值\n"
+          "• 单因子线 = 各自的 G20 多头净值 (细淡线 = 无冲击)\n"
           "• 右侧表格点行选中 (因子 / 指数 / 策略) = 画该行全部线; 主图例只列画出的线, 点掉单条; 显隐变了自动重新 fit\n"
           "• 底部区间条选日段: 各线在区间起点归一 = 1, 年化按区间复利");
     if (nav_open)
@@ -847,7 +868,7 @@ bool pages() {
 }
 
 // ---- NAV 主图: 画右表选中行的全部线, 池线 → 单因子 → 策略线 (最上层). 主图例 = en | cn | kind | 区间年化 | note (align_cols), ###id 定 ID (年化变了不换 item);
-//      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制显示一次) ----
+//      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制回默认显隐一次: PortfolioLine::hide 隐, 其余显) ----
 void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PlotFrame &pf) {
   struct Draw {
     const PortfolioLine *l;
@@ -865,7 +886,7 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
   for (size_t i = 0; i < d.pools.size(); ++i)
     add(d.pools[i & ~size_t{1}], d.pools[i], v.pools[i], pool_color(d, i), 1.0f);
   for (size_t i = 0; i < d.factors.size(); ++i)
-    add(d.factors[i], d.factors[i], v.factors[i], factor_color(d, i), 1.0f);
+    add(d.factors[i & ~size_t{1}], d.factors[i], v.factors[i], factor_color(d, i), 1.0f);
   for (int i = 0; i < kImpacts; ++i)
     add(d.strat[0], d.strat[i], v.strat[i], strat_color(i), kImpactWidth[i]);
   std::vector<std::array<std::string, 5>> rows;
@@ -879,7 +900,7 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
     const Draw &x = ds[r];
     const std::string lb = texts[r] + "###" + x.l->id;
     if (ui.reveal.erase(x.l->id))
-      ImPlot::HideNextItem(false, ImPlotCond_Always);
+      ImPlot::HideNextItem(x.l->hide, ImPlotCond_Always);
     ImPlot::SetNextLineStyle(x.col, x.width);
     plot_slice(lb.c_str(), *x.s);
     if (pf.item(lb.c_str()))
@@ -1131,12 +1152,13 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TextColored(kHead, "线 (点行 = 画)");
   if (ImGui::IsItemHovered())
     tip("点行 = 选中 / 取消, 选中 = 主图画该行全部线; 不想看其中一条就在主图例里点掉 (显隐变了自动重新 fit)\n"
-        "• 因子 = 单因子各自的 G20 多头净值, 带它自己的冲击 (Lob 最小金额段 / Bar 固定冲击)\n"
-        "• 指数 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只选组合里因子所在池; 一行两条:\n"
+        "• 因子 = 单因子各自的 G20 多头净值: 可成交列 = 有冲击 (它自己的冲击段: Lob 最小金额段 / Bar 固定冲击), 理想列 = 无冲击\n"
+        "• 指数 = 各池等权指数 (all 池拆 全A等权 / 全A加权), 默认只选全A等权; 一行两条 (选中只显理想, 可成交点主图例显):\n"
         "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
         "    ◦ 理想 = 后复权收盘价指数 (不看可成交, 同中证 / 万得口径; 同色淡线); 两者之差 = 可成交拖累\n"
         "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
         "• 可成交 / 理想两列 = 区间年化 (同一区间起点归一, 按区间复利); 底色 = 该列在同组内的名次 (高绿 → 低红)\n"
+        "• 尾 = 全评估期年化单边换手 (倍/年); 策略 = 各因子换手按当日份额加权 (不计因子间对冲)\n"
         "• 点表头排序 (组内): 升序 → 降序 → 原序");
   if (!ImGui::BeginTable("##pf_nav_tbl", 5,
                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
@@ -1180,7 +1202,8 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
       ImGui::PopStyleColor();
       if (r.f && ImGui::IsItemHovered()) {
         const PortfolioItem &it = r.f->item;
-        tip("%s  %s\n• %s\n• %s\n• 规范串 %s", r.f->en.c_str(), it.name_cn.c_str(), r.f->kind.c_str(), hold_desc(it.e.hold, it.e.lv).c_str(), it.e.expr.c_str());
+        tip("%s  %s\n• %s %s\n• %s\n• 冲击 %s\n• 规范串 %s", r.f->en.c_str(), it.name_cn.c_str(), it.e.pool.c_str(), factor_level(it.e.lv).name,
+            hold_desc(it.e.hold, it.e.lv).c_str(), r.f->amt.c_str(), it.e.expr.c_str());
       }
       ImGui::TableSetColumnIndex(1);
       ImGui::TextUnformatted(r.l[0]->cn.c_str());
@@ -1200,8 +1223,8 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     }
   };
   std::vector<Row> rows;
-  for (size_t i = 0; i < d.factors.size(); ++i)
-    rows.push_back({{&d.factors[i], nullptr}, {&v.factors[i], nullptr}, {v.factor_rank[i], kNaN}, factor_color(d, i), &d.factors[i]});
+  for (size_t i = 0; i + 1 < d.factors.size(); i += 2)
+    rows.push_back({{&d.factors[i], &d.factors[i + 1]}, {&v.factors[i], &v.factors[i + 1]}, {v.factor_rank[i], v.factor_rank[i + 1]}, factor_color(d, i), &d.factors[i]});
   group("因子", rows);
   rows.clear();
   for (size_t i = 0; i + 1 < d.pools.size(); i += 2)
@@ -1479,13 +1502,10 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const bool nav = pages();
 
   // ---- 图: 左 = 主图 (plot_nav ↔ plot_val) / 区间条; 右 = 图例 (legend_nav ↔ legend_val) ----
-  bool set_vis = false; // NAV 策略 / 池行选中回默认 (组合 + 其因子所在池变了), 其线在主图例里重新显示
+  bool set_vis = false; // NAV 策略 / 池行选中回默认 (换组合), 其线在主图例里回默认显隐
   if (nav) {
-    std::string k = ui.name;
-    for (const PortfolioBasket &p : d.pools)
-      k += p.on ? "1" : "0";
-    set_vis = k != ui.vis_key;
-    ui.vis_key = std::move(k);
+    set_vis = ui.name != ui.vis_key;
+    ui.vis_key = ui.name;
     if (set_vis) {
       for (const PortfolioBasket &p : d.pools)
         ui.show.erase(p.id), ui.reveal.insert(p.id);

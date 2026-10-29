@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cassert>
 #include <charconv>
-#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <iostream>
@@ -213,17 +212,7 @@ private:
       return;
     }
 
-    if (cfg.dirty) {
-      auto now = std::chrono::steady_clock::now();
-      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - cfg.last_modified);
-      if (elapsed.count() >= 150 && elapsed.count() < 250) {
-        ts.status = TaskState::Settings::Status::Writing;
-      } else {
-        ts.status = TaskState::Settings::Status::Syncing;
-      }
-    } else {
-      ts.status = TaskState::Settings::Status::Synced;
-    }
+    ts.status = cfg.dirty ? TaskState::Settings::Status::Syncing : TaskState::Settings::Status::Synced;
 
     cfg.AutoSync();
   }
@@ -609,8 +598,6 @@ public:
       return {TaskStatus::Kind::Muted, "initializing"};
     case TaskState::Settings::Status::Syncing:
       return {TaskStatus::Kind::Busy, "syncing"};
-    case TaskState::Settings::Status::Writing:
-      return {TaskStatus::Kind::Warn, "writing"};
     case TaskState::Settings::Status::Synced:
       return {TaskStatus::Kind::Ready, "done"};
     case TaskState::Settings::Status::None:

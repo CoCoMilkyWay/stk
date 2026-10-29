@@ -32,14 +32,12 @@ enum class ScanMode {
 // Database Check Types
 // ============================================================================
 
+// 只看有没有能做的事: archive 有而 binary 无的天 = 待编码; 两者皆无的天 = raw 缺口, 编码补不上, 不影响状态
 enum class DatabaseStatus {
-  Unchecked,   // Not checked yet (initial state)
-  Pass,        // Binary fully covers backtest period
-  Incomplete,  // Binary incomplete but can encode from archive
-  NeedArchive, // Binary incomplete, missing dates have no archive
-  NotEncoded,  // Binary doesn't exist, needs encoding
-  NoData,      // Both binary and archive don't exist
-  Error        // Configuration error or other exception
+  Unchecked, // 未扫描
+  Pending,   // 有待编码的天
+  Done,      // 无待编码的天 (raw 缺口不计)
+  NoData     // binary 与 archive 都不存在
 };
 
 struct BinaryDatabaseInfo {
@@ -70,35 +68,9 @@ struct DatabaseCheckResult {
   size_t required_dates = 0;  // Required trading days in backtest period
   size_t binary_coverage = 0; // Binary covered dates
 
-  // Missing details
-  std::vector<misc::Ymd> missing_dates;      // All missing dates
-  std::vector<misc::Ymd> missing_can_encode; // Missing but has archive
-  std::vector<misc::Ymd> missing_no_archive; // Missing without archive
-
-  // Helper: L2 覆盖检查通过 (binary 覆盖回测区间内全部交易日)
-  bool is_pass() const {
-    return status == DatabaseStatus::Pass;
-  }
-
-  const char *get_status_string() const {
-    switch (status) {
-    case DatabaseStatus::Unchecked:
-      return "Not checked";
-    case DatabaseStatus::Pass:
-      return "Pass";
-    case DatabaseStatus::Incomplete:
-      return "Incomplete";
-    case DatabaseStatus::NeedArchive:
-      return "NeedArchive";
-    case DatabaseStatus::NotEncoded:
-      return "NotEncoded";
-    case DatabaseStatus::NoData:
-      return "NoData";
-    case DatabaseStatus::Error:
-      return "ERROR";
-    }
-    return "UNKNOWN";
-  }
+  // Missing details (binary 缺的天 = pending ∪ gaps)
+  std::vector<misc::Ymd> pending; // 有 archive, 待编码
+  std::vector<misc::Ymd> gaps;    // raw 缺口: archive 也没有
 };
 
 // ============================================================================

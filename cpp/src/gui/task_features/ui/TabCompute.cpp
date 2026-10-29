@@ -37,6 +37,36 @@ static LibStatus lib_status(const Config &config, const StockDaysVec &stock_days
   return s;
 }
 
+// 池行操作按钮悬浮: 禁用 (灰) 时给原因, 可用时给将要算的日期段
+static void action_tooltip(const LibStatus &s, const char *busy, bool resume) {
+  if (!ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    return;
+  const bool prefix = s.plan.size() >= s.dates.size() && std::equal(s.dates.begin(), s.dates.end(), s.plan.begin());
+  if (busy)
+    ImGui::SetTooltip("%s", busy);
+  else if (s.plan.empty() && !s.side_partial.empty())
+    ImGui::SetTooltip("旁读池 %s 未落盘齐, 本池日期轴截不到它的末日: 先把它算完", s.side_partial.c_str());
+  else if (s.plan.empty())
+    ImGui::SetTooltip("源日历无可算日");
+  else if (!resume)
+    ImGui::SetTooltip("全量: %s ~ %s (%zu 日), 按规划重建资产轴从头算",
+                      misc::dash(s.plan.front()).c_str(), misc::dash(s.plan.back()).c_str(), s.plan.size());
+  else if (!s.ready)
+    ImGui::SetTooltip("库未建: 先 Compute 全量");
+  else if (!s.complete())
+    ImGui::SetTooltip("库未落盘齐 (%zu / %zu): 只能 Compute 全量", s.done, s.days);
+  else if (!s.resumable)
+    ImGui::SetTooltip("末日续算点与库清单对不上: 只能 Compute 全量");
+  else if (!prefix)
+    ImGui::SetTooltip("库日期轴不是当前规划的前缀 (源日历 / 旁读池末日变了): 只能 Compute 全量");
+  else if (s.plan.size() == s.dates.size())
+    ImGui::SetTooltip("无新日: 库已到数据末日 %s", misc::dash(s.last).c_str());
+  else
+    ImGui::SetTooltip("续算: %s ~ %s (%zu 新日), 沿用库资产轴 (%zu 资产), 轴外 %zu 个不纳入",
+                      misc::dash(s.plan[s.dates.size()]).c_str(), misc::dash(s.plan.back()).c_str(),
+                      s.plan.size() - s.dates.size(), s.assets, s.outside);
+}
+
 void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &data) {
   const Config &config = data.config;
   const bool is_running = service->busy();
@@ -387,12 +417,12 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
     state.libs_dirty = true;
   ImGui::SameLine();
   ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起至末个 bar1m 日; 池: 订单簿还原, %s 起至末个已编码日 (不晚于 all 末日), "
-                      "成员 = Bar 池 D−1 收盘 pool_* 列 → 先把 all 算齐; T-n = 末日之后的交易日数; 数据末日 = 现在重算能到的末日; "
+                      "成员 = Bar 池 D−1 收盘 pool_* 列 → 先把 all 算齐; 未计算 = 库末日之后的交易日数; 数据末日 = 现在重算能到的末日; "
                       "Append = 从库末日续算新日 (沿用库的资产轴, 与同轴全量逐位一致); 轴外 = 沿用的轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
   ImGui::Spacing();
 
-  // 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫: 数据末日 / T-n 随之前移
+  // 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫: 数据末日 / 未计算随之前移
   if (state.generation != data.asset.generation) {
     state.generation = data.asset.generation;
     state.libs_dirty = true;
@@ -412,17 +442,29 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
         if (!tier_side(s.tier, t))
           continue;
         const LibStatus &side = *std::ranges::find(state.libs, data.feature.selection.pool_of(t), &LibStatus::name);
-        if (side.complete())
+        if (side.complete()) {
           std::erase_if(s.plan, [&](misc::Ymd d) { return d > side.last; });
-        else
+        } else {
           s.plan.clear();
+          s.side_partial = side.name;
+        }
       }
     }
   }
   // 编码在飞不开算: Lob 按帧目录快照读日文件, 编码会 rename 换掉它们
-  const bool encoding = data.taskstate.database.encode_inflight;
+  const char *const busy = state.ui_state != ComputeUIState::Idle    ? "特征计算进行中"
+                           : data.taskstate.database.encode_inflight ? "编码进行中: 编码会 rename 换掉日文件, 收尾后再算"
+                                                                     : nullptr;
 
-  if (ImGui::BeginTable("Pools", 10,
+  const auto start = [&](const LibStatus &s, bool resume) {
+    state.config.pool = s.name;
+    state.config.dates = s.plan;
+    state.config.resume = resume;
+    state.ui_state = ComputeUIState::ShowingPopup;
+    state.popup_frame_count = 0;
+  };
+
+  if (ImGui::BeginTable("Pools", 12,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("池");
@@ -431,6 +473,8 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
     ImGui::TableSetupColumn("区间");
     ImGui::TableSetupColumn("数据末日");
     ImGui::TableSetupColumn("资产");
+    ImGui::TableSetupColumn("天数");
+    ImGui::TableSetupColumn("未计算");
     ImGui::TableSetupColumn("轴外");
     ImGui::TableSetupColumn("已落盘");
     ImGui::TableSetupColumn("状态");
@@ -447,7 +491,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
       ImGui::Text("%s", tier_name(s.tier));
       ImGui::TableNextColumn();
       if (s.ready)
-        ImGui::Text("%s ~ %s (T-%zu)", misc::dash(s.first).c_str(), misc::dash(s.last).c_str(), s.lag);
+        ImGui::Text("%s ~ %s", misc::dash(s.first).c_str(), misc::dash(s.last).c_str());
       ImGui::TableNextColumn();
       if (!s.plan.empty())
         ImGui::Text("%s", misc::dash(s.plan.back()).c_str());
@@ -456,6 +500,14 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
       ImGui::TableNextColumn();
       if (s.ready)
         ImGui::Text("%zu", s.assets);
+      ImGui::TableNextColumn();
+      if (s.ready)
+        ImGui::Text("%zu", s.days);
+      ImGui::TableNextColumn();
+      if (s.ready && s.lag > 0)
+        ImGui::Text("%zu", s.lag);
+      else if (s.ready)
+        ImGui::TextDisabled("0");
       ImGui::TableNextColumn();
       if (s.ready && s.outside > 0)
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%zu", s.outside);
@@ -479,25 +531,56 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
       else
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
       ImGui::TableNextColumn();
-      const bool blocked = state.ui_state != ComputeUIState::Idle || s.plan.empty() || encoding;
-      const auto start = [&](bool resume) {
-        state.config.pool = s.name;
-        state.config.dates = s.plan;
-        state.config.resume = resume;
-        state.ui_state = ComputeUIState::ShowingPopup;
-        state.popup_frame_count = 0;
-      };
+      const bool blocked = busy || s.plan.empty();
       ImGui::BeginDisabled(blocked);
       if (ImGui::SmallButton(("Compute##" + s.name).c_str()))
-        start(false);
+        state.confirm_pool = s.name;
       ImGui::EndDisabled();
+      action_tooltip(s, busy, false);
       ImGui::SameLine();
       ImGui::BeginDisabled(blocked || !s.appendable());
       if (ImGui::SmallButton(("Append##" + s.name).c_str()))
-        start(true);
+        start(s, true);
       ImGui::EndDisabled();
+      action_tooltip(s, busy, true);
     }
     ImGui::EndTable();
+  }
+
+  // 全量确认: 弹窗期间池表可能重扫 / 编码开跑, 确认时按当前行重判
+  if (!state.confirm_pool.empty())
+    ImGui::OpenPopup("确认全量计算##Compute");
+  if (ImGui::BeginPopupModal("确认全量计算##Compute", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const auto it = std::ranges::find(state.libs, state.confirm_pool, &LibStatus::name);
+    const bool ok = it != state.libs.end() && !busy && !it->plan.empty();
+    if (it != state.libs.end()) {
+      const LibStatus &s = *it;
+      ImGui::Text("池 %s (%s): 全量 Compute", s.name.c_str(), pool_def(s.name).name_cn);
+      if (!s.plan.empty())
+        ImGui::BulletText("区间 %s ~ %s (%zu 天), 按规划重建资产轴从头算", misc::dash(s.plan.front()).c_str(),
+                          misc::dash(s.plan.back()).c_str(), s.plan.size());
+      if (s.ready)
+        ImGui::BulletText("现有库 %s ~ %s (%zu 天, %zu 资产, 已落盘 %zu) 开跑即清空", misc::dash(s.first).c_str(),
+                          misc::dash(s.last).c_str(), s.days, s.assets, s.done);
+      if (s.appendable())
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "可 Append 续算 %zu 个新日, 不必全量", s.plan.size() - s.days);
+    }
+    if (!ok)
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%s", busy ? busy : "当前不可算");
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!ok);
+    if (ImGui::Button("Compute", ImVec2(120, 0))) {
+      start(*it, false);
+      state.confirm_pool.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+      state.confirm_pool.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
   }
 
   if (state.ui_state != ComputeUIState::Idle) {

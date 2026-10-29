@@ -91,34 +91,18 @@ bool ScanService::run(ScanRequest &req) {
       result.binary.available_dates.push_back(day.date);
     if (day.archive)
       result.archive.available_dates.push_back(day.date);
-    if (day.missing())
-      result.missing_dates.push_back(day.date);
-    if (day.can_encode())
-      result.missing_can_encode.push_back(day.date);
-    if (day.need_download())
-      result.missing_no_archive.push_back(day.date);
+    if (day.pending())
+      result.pending.push_back(day.date);
+    if (day.gap())
+      result.gaps.push_back(day.date);
   }
   result.binary_coverage = result.binary.available_dates.size();
   result.binary.total_dates = result.binary.available_dates.size();
   result.archive.total_dates = result.archive.available_dates.size();
 
-  // Decision Tree (覆盖判定以交易日历为 ground truth, 不看 archive/binary 的 min/max 区间)
+  // 交易日历为 ground truth (archive 自身缺日在 gaps 里暴露, 只提示不判状态)
   assert(result.required_dates > 0 && "start_date 之后无 L2 交易日 (start_date 晚于末个 L2 日?)");
-  if (result.missing_dates.empty()) {
-    // binary 覆盖全部交易日
-    result.status = DatabaseStatus::Pass;
-  } else if (!result.missing_no_archive.empty()) {
-    // 有交易日既无 binary 也无 archive — 日历为准, archive 自身缺日在此暴露
-    result.status = DatabaseStatus::NeedArchive;
-    result.error_message = std::to_string(result.missing_no_archive.size()) +
-                           " trading days have no archive";
-  } else if (binary_exists) {
-    // 缺失日全部可从 archive encode
-    result.status = DatabaseStatus::Incomplete;
-  } else {
-    // binary 尚不存在, archive 覆盖完整
-    result.status = DatabaseStatus::NotEncoded;
-  }
+  result.status = result.pending.empty() ? DatabaseStatus::Done : DatabaseStatus::Pending;
 
   handoff.post(std::move(r));
   return true;

@@ -10,6 +10,7 @@
 
 #include <cassert>
 #include <string>
+#include <utility>
 
 namespace GUI {
 
@@ -35,6 +36,7 @@ ImVec4 StatusColor(TaskStatus::Kind kind) {
 TaskStatus::Kind PhaseKind(Phase p) {
   switch (p) {
   case Phase::Idle:
+  case Phase::Cancelled:
     return TaskStatus::Kind::Muted;
   case Phase::Scanning:
   case Phase::Loading:
@@ -42,8 +44,6 @@ TaskStatus::Kind PhaseKind(Phase p) {
     return TaskStatus::Kind::Busy;
   case Phase::Done:
     return TaskStatus::Kind::Ready;
-  case Phase::Cancelled:
-    return TaskStatus::Kind::Warn;
   }
   assert(false && "unknown Phase");
   return TaskStatus::Kind::None;
@@ -61,6 +61,43 @@ TaskStatus ProgressStatus(const Progress &p) {
 }
 
 void TextPhase(Phase p) { ImGui::TextColored(StatusColor(PhaseKind(p)), "%s", PhaseName(p)); }
+
+namespace {
+int rank(TaskStatus::Kind k) {
+  switch (k) {
+  case TaskStatus::Kind::None:
+    return 0;
+  case TaskStatus::Kind::Muted:
+    return 1;
+  case TaskStatus::Kind::Ready:
+    return 2;
+  case TaskStatus::Kind::Warn:
+    return 3;
+  case TaskStatus::Kind::Error:
+    return 4;
+  case TaskStatus::Kind::Busy:
+    return 5;
+  }
+  assert(false && "unknown TaskStatus::Kind");
+  return 0;
+}
+} // namespace
+
+TaskStatus RowStatus(const SharedData &data, const TaskHandle &t, int idx) {
+  if (!t.Status)
+    return {};
+  if (idx >= 0 || t.tabs.empty())
+    return t.Status(data, idx);
+  TaskStatus top;
+  for (int j = 0; j < (int)t.tabs.size(); j++) {
+    TaskStatus s = t.Status(data, j);
+    if (rank(s.kind) > rank(top.kind))
+      top = std::move(s);
+  }
+  if (top.kind == TaskStatus::Kind::Ready)
+    top.text = "done";
+  return top;
+}
 
 // 切换选中叶子: 跨任务时触发 OnCollapse/OnExpand, 同任务内切 tab 不触发
 void TaskTree::Select(int task_idx, int tab_idx) {

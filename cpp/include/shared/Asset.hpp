@@ -170,15 +170,14 @@ struct Asset {
   // 回测日历 (覆盖分析产出): 交易日历 ∩ [start, end], 一天一行
   // ========================================
   // 编码 / 覆盖判定共用的唯一日期轴; Lob 库日期轴是它截到末个已编码日的前缀. 两源有无按行对齐,
-  // 缺失 / 可编 / 需下载都是行上的谓词, 不另存集合.
+  // 待编码 / raw 缺口都是行上的谓词, 不另存集合.
   struct BacktestDay {
     misc::Ymd date = 0;
     bool binary = false;  // 日文件里至少一帧
     bool archive = false; // 归档有这天
 
-    bool missing() const { return !binary; }
-    bool can_encode() const { return !binary && archive; }
-    bool need_download() const { return !binary && !archive; }
+    bool pending() const { return !binary && archive; }
+    bool gap() const { return !binary && !archive; }
   };
   struct Backtest {
     misc::Ymd start = 0;           // 起始日 (Config::start_date)

@@ -19,11 +19,11 @@ namespace GUI {
 struct TaskStatus {
   enum class Kind {
     None,  // 无标签
-    Muted, // 灰: 空闲/未就绪/背景常态
-    Busy,  // 紫: 进行中 (同步/扫描/计算/编码)
-    Warn,  // 黄: 需要用户动作或结果不完整
-    Error, // 红: 出错
-    Ready, // 绿: 就绪/通过
+    Muted, // 灰: 前置未满足 / 已取消 / 背景常态 (waiting / cancelled / live)
+    Busy,  // 紫: 进行中, 动词 -ing (+ 百分比) (syncing / encoding 45% / cancelling)
+    Warn,  // 黄: 需要用户点一下 (pending / selecting / confirm xxx / N broken)
+    Error, // 红: 出错 (error / N failed)
+    Ready, // 绿: 产物齐全 (done)
   };
   Kind kind = Kind::None;
   std::string text;
@@ -32,8 +32,8 @@ struct TaskStatus {
 ImVec4 StatusColor(TaskStatus::Kind kind);
 
 // 后台进度 (shared/Progress.hpp) 的唯一展示口径, 全部 Service 共用:
-//   PhaseKind:      Idle 灰 / 忙 紫 / Done 绿 / Cancelled 黄
-//   ProgressStatus: 行标签 = 阶段名 (+ 有总量时百分比); Idle 无标签. 带业务结论的 Done (BROKEN / FAIL) 由调用方先判
+//   PhaseKind:      Idle / Cancelled 灰 / 忙 紫 / Done 绿
+//   ProgressStatus: 行标签 = 阶段名 (+ 有总量时百分比); Idle 无标签. 带业务结论的 Done (broken / failed) 由调用方先判
 //   TextPhase:      tab 内一段彩色阶段名
 TaskStatus::Kind PhaseKind(Phase p);
 TaskStatus ProgressStatus(const Progress &p);
@@ -43,7 +43,7 @@ void TextPhase(Phase p);
 // 任务节点: 左栏一行 (tabs 空 = 任务本身是叶子) 或一个可展开父节点 (tabs = 子叶子).
 //
 // 行接口三件套统一用 idx 寻址 (最大化对仗): idx == -1 任务行, idx >= 0 子行.
-//   Status(data, idx)  -> 该行状态标签 (缺省无标签)
+//   Status(data, idx)  -> 该行状态标签 (缺省无标签; 有子项任务只答子行, 任务行由 RowStatus 聚合)
 //   Enabled(data, idx) -> 该行是否可点 (缺省可点)
 //   Draw(data, idx)    -> 右栏内容 (选中行才调; 无子项任务 idx == -1)
 //
@@ -74,6 +74,10 @@ struct TaskHandle {
 
   std::shared_ptr<void> storage;
 };
+
+// 左栏行标签的唯一入口. 有子项任务的任务行 = 子行聚合: 档位 Busy > Error > Warn > Ready > Muted
+// 取最高档, 同档取首个子行的文字; Ready 档统一显示 done
+TaskStatus RowStatus(const SharedData &data, const TaskHandle &t, int idx);
 
 // ============================================================================
 // 任务树: 左栏全部状态收敛于此 (tasks + 唯一选中态), Run_* 只持有一个 TaskTree.

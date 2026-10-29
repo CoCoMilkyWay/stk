@@ -25,6 +25,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1303,7 +1304,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   const bool min_ready = of.min.prefix(ui.min.gen).ready;
   if (min_ready && ui.min_rescan_pending) {
     ui.min_rescan_pending = false; // dates 已随新代落定
-    // 锚点日须在新日轴上: 在 = 按新轴重定位, 不在 = 回末日
+    // 锚点日须在新日轴上: 在 = 按新轴重定位, 不在 = 回默认锚点
     const auto &dates = of.min.dates;
     const auto it = std::lower_bound(dates.begin(), dates.end(), ui.min_anchor_date);
     if (it != dates.end() && *it == ui.min_anchor_date)
@@ -1312,10 +1313,14 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
       ui.min_anchor_date = 0;
   }
 
-  // 默认锚点 = 末日 (轴首无承接日, Pick 状态读不到)
+  // 默认锚点 = 日轴上末个已编码日 (图1 / 深度图有逐笔可重放; 无已编码日 = 末日). 不取轴首: 无承接日, Pick 状态读不到
   if (!ui.min_anchor_date && min_ready && !of.min.dates.empty()) {
-    ui.min_anchor_x = static_cast<double>((of.min.dates.size() - 1) * OrderFlowConst::MIN_CAPACITY);
-    ui.min_anchor_date = of.min.dates.back();
+    const auto &dates = of.min.dates;
+    const std::set<misc::Ymd> &encoded = data.asset.binary.dates;
+    const auto it = std::find_if(dates.rbegin(), dates.rend(), [&](misc::Ymd d) { return encoded.contains(d); });
+    const size_t d = it == dates.rend() ? dates.size() - 1 : static_cast<size_t>(dates.rend() - it) - 1;
+    ui.min_anchor_x = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);
+    ui.min_anchor_date = dates[d];
   }
 
   // 图1 / Pick 只取锚点日 (日轴重扫在途时不发: 锚点日待核对)

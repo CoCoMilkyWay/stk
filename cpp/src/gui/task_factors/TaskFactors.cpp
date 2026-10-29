@@ -230,7 +230,7 @@ TaskHandle CreateFactorsTask() {
   };
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
-    assert(idx == -1 || idx < TAB_COUNT);
+    assert(idx >= 0 && idx < TAB_COUNT);
     if (idx == TAB_FACTORS) {
       if (state->search_service && state->search_service->busy()) { // Search 在跑时 Factors 行显示它的进度 (Run 此时被禁)
         const auto &ss = *state->search_service;
@@ -241,19 +241,19 @@ TaskHandle CreateFactorsTask() {
         return {};
       const auto &fs = *state->factors_service;
       if (fs.phase.load(std::memory_order_acquire) == Phase::Done && fs.broken() > 0)
-        return {TaskStatus::Kind::Warn, std::to_string(fs.broken()) + " BROKEN"};
+        return {TaskStatus::Kind::Warn, std::to_string(fs.broken()) + " broken"};
       return ProgressStatus(fs);
     }
     if (idx == TAB_INSPECT)
       return state->inspect_service ? ProgressStatus(*state->inspect_service) : TaskStatus{};
     if (idx == TAB_PORTFOLIO)
       return state->portfolio_service ? ProgressStatus(*state->portfolio_service) : TaskStatus{};
-    // 任务行与 Operators 行同一状态
+    // Operators
     if (!state->operators_service)
       return {};
     const auto &svc = *state->operators_service;
     if (svc.phase.load(std::memory_order_acquire) == Phase::Done && svc.failed() > 0)
-      return {TaskStatus::Kind::Error, std::to_string(svc.failed()) + " FAIL"};
+      return {TaskStatus::Kind::Error, std::to_string(svc.failed()) + " failed"};
     return ProgressStatus(svc);
   };
 

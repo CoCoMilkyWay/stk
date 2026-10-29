@@ -9,9 +9,7 @@ namespace GUI {
 
 // 行状态标签: 行名后画 [text], 颜色查全局色表 (idx == -1 任务行, >= 0 子行)
 static void DrawRowStatus(const SharedData &data, const TaskHandle &t, int idx) {
-  if (!t.Status)
-    return;
-  TaskStatus s = t.Status(data, idx);
+  const TaskStatus s = RowStatus(data, t, idx);
   if (s.kind == TaskStatus::Kind::None || s.text.empty())
     return;
   ImGui::SameLine();

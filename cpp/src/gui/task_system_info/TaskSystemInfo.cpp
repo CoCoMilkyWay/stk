@@ -121,7 +121,7 @@ public:
   // 任务行状态标签: 选中采样中 = live, 其余无 (关着不采样)
   TaskStatus Status(const SharedData & /*data*/, int /*idx*/) const {
     if (is_live_)
-      return {TaskStatus::Kind::Ready, "live"};
+      return {TaskStatus::Kind::Muted, "live"};
     return {};
   }
 

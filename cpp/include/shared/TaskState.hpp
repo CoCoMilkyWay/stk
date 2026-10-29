@@ -15,7 +15,6 @@ struct TaskState {
     enum class Status { None,
                         Initializing,
                         Syncing,
-                        Writing,
                         Synced };
     Status status = Status::None;
     bool initialized = false;
@@ -25,23 +24,9 @@ struct TaskState {
   // Database Task
   // ==========================================================================
   struct Database {
-    enum class Status { None,
-                        Initializing,
-                        Syncing,  // 基本面同步中 (json_update_inflight)
-                        Scanning, // L2 覆盖扫描中 (l2_scan_inflight)
-                        NotScanned,
-                        Incomplete,
-                        Error,
-                        Ready };
-    Status status = Status::NotScanned;
-
     // 关键状态标志 (其他 Task 可读取)
     bool binary_scanned = false; // 二进制数据库已扫描
-    bool binary_pass = false;    // 覆盖检查通过
     bool all_json_ready = false; // AssetInfo 已从 parquet 构建
-
-    // 便捷方法
-    bool ready() const { return binary_pass && all_json_ready; }
 
     // 流水线在飞 (StateManager 每帧写)
     bool json_update_inflight = false;
@@ -53,14 +38,6 @@ struct TaskState {
   // Features Task
   // ==========================================================================
   struct Features {
-    enum class Status { None,
-                        Waiting,
-                        Selecting,
-                        Computing,
-                        Ready,
-                        Error };
-    Status status = Status::None;
-
     bool computing = false;     // 特征计算在飞 (点下 Compute 起到收尾): 共享数据冻结 (Database 件留邮箱, 不发编码)
     bool has_selection = false; // 主 feature 已选好
   } features;

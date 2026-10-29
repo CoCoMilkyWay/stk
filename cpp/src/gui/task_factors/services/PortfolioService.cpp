@@ -187,7 +187,7 @@ std::string PortfolioRequest::sig() const {
 namespace {
 
 // G20 多头出参线 [kCurveLines][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
-//   pnl = 行的 G20 (正向多腿) 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 固定量 (CostLeg::fix), 建仓行即付 (不交接批的平仓量一并)
+//   pnl = 行的 G20 (正向多腿) 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 固定量 (CostLeg::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
 struct CurveP : LinesP<kCurveLines> {
   static constexpr uint8_t need = kNeedRows | kNeedLc;
   double cap = 0.0;
@@ -197,7 +197,8 @@ struct CurveP : LinesP<kCurveLines> {
     assert(c.c.y.ad.n == 1 && "出参线: 一个金额段");
     LinesP::open(c);
     for (int hi = 0; hi < c.L.hd.n; ++hi)
-      x.at_exit[static_cast<size_t>(hi * kCurveLines + kCurveImp)] = x.at_exit[static_cast<size_t>(hi * kCurveLines + kCurveFix)] = 0;
+      for (const int k : {kCurveImp, kCurveFix, kCurveBuy})
+        x.at_exit[static_cast<size_t>(hi * kCurveLines + k)] = 0;
     cap = c.L.cap;
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
@@ -215,6 +216,7 @@ struct CurveP : LinesP<kCurveLines> {
         const factor::stat::CostLeg &cl = land[static_cast<size_t>(hi) * s.T + t].leg[factor::stat::kLong];
         at(hi, kCurveImp, t) = static_cast<float>(cl.imp);
         at(hi, kCurveFix, t) = static_cast<float>(cl.fix);
+        at(hi, kCurveBuy, t) = static_cast<float>(cl.buy);
       }
   }
 };

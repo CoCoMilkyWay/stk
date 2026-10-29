@@ -146,11 +146,14 @@ stk/
 │   │   │   ├── Gui.hpp                               # 🖥️ 主循环: ImGui 渲染 + 事件分发
 │   │   │   ├── Config.hpp                            # 🖥️ 颜色 / 字体 / 布局
 │   │   │   ├── Tasks.hpp                             # 🖥️ 任务树: 左栏选中 / 状态标签 / 生命周期
+│   │   │   │                                         #    · 标签词表: 灰 waiting / cancelled / live · 紫 -ing (+ %) · 黄 pending / selecting / confirm · 红 error / N failed · 绿 done
+│   │   │   │                                         #    · 有子项任务的任务行 = 子行聚合 (Busy > Error > Warn > Ready > Muted)
+│   │   │   │                                         #    · Encode: 有 archive 未编码 = pending; raw 缺口 (archive 也没有) 只在页内提示, 不影响 done
 │   │   │   ├── util/{Color,AssetFilter,Latex}.hpp    # 🖥️ 颜色 / 资产过滤 / LaTeX 渲染
 │   │   │   ├── util/Sparkline.hpp                    # 🖥️ 表格格内迷你图 (Features 预览 / Factors 因子表共用)
 │   │   │   ├── util/Service.hpp                      # 🖥️ 后台单线程服务骨架 GUI::Service<Derived, Req> (CRTP): 新请求覆盖旧请求; 全部 GUI 服务共用
 │   │   │   ├── task_settings/                        # 🖥️ 设置
-│   │   │   │   └── TaskSettings.hpp                  # 🖥️ 设置: 配置管理 [synced / syncing / writing]
+│   │   │   │   └── TaskSettings.hpp                  # 🖥️ 设置: 配置管理 [done / syncing]
 │   │   │   ├── task_system_info/                     # 🖥️ 系统信息
 │   │   │   │   └── TaskSystemInfo.hpp                # 🖥️ 系统信息: CPU / 内存 / 磁盘监控 [live]
 │   │   │   ├── task_icon_bar/                        # 🖥️ 图标栏
@@ -179,7 +182,7 @@ stk/
 │   │   │   │   └── ui/                               # 🖥️ UI
 │   │   │   │       ├── Common.hpp                    # 🖥️ 流式 tab 公共件
 │   │   │   │       ├── TabFeature.hpp                # 🖥️ 特征表: 过滤 + 跨池跨层多选 (同列在不同池各选一次); 预览列按 (档, 层) 取
-│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: 池表 (all + 各池; 池名 + 中文名), 每池 Compute (全量) / Append (续算) 按钮 + 轴外资产数列; 旁读档池未算完则本档池禁用
+│   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: 池表 (all + 各池; 池名 + 中文名), 每池 Compute (全量) / Append (续算) 按钮 (Compute 先弹窗确认) + 资产 / 天数 / 轴外资产数列; 旁读档池未算完则本档池禁用; 按钮悬浮给禁用原因 / 将算日期段
 │   │   │   │       ├── TabOrderFlow.hpp              # 🖥️ 订单流
 │   │   │   │       ├── TabDist.hpp                   # 🖥️ 分布 PDF
 │   │   │   │       ├── TabTransform.hpp              # 🖥️ 变换链 + 平稳性诊断
@@ -247,7 +250,7 @@ stk/
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
 │   │   │   │ Tasks                                │ Panel:                             │
-│   │   │   │  > Settings[synced/syncing/writing]  │                                    │
+│   │   │   │  > Settings[done/syncing]            │                                    │
 │   │   │   │  > SystemInfo[""/live]               │                                    │
 │   │   │   │  > DataBase                          │ Overview / Encode / Table / Browser│
 │   │   │   │  > Features                          │ Compute / Feature / Corr / Dist /  │

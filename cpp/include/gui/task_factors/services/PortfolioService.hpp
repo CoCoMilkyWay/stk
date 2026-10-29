@@ -95,6 +95,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 enum CurveLine : int { kCurvePnl, // 毛收益
                        kCurveImp, // 建仓冲击
                        kCurveFix, // 固定冲击份数 (UI × Config::fixed_impact); 净 = pnl − imp − fix · fixed_impact
+                       kCurveBuy, // 增仓量 Δw⁺ (建仓行; UI 折年化单边换手, 同 PoolCurve::turn)
                        kCurveLines };
 struct FactorCurve {
   std::string sig;              // 算时的 FactorTask::sig

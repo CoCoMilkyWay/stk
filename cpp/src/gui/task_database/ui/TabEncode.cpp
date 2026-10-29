@@ -474,6 +474,31 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
 
 } // namespace
 
+TaskStatus EncodeStatus(const StateManager &sm, const EncodingService &encoding_service, const ScanService &scan_service) {
+  if (encoding_service.cancelling())
+    return {TaskStatus::Kind::Busy, "cancelling"};
+  if (encoding_service.busy())
+    return ProgressStatus(encoding_service);
+  if (sm.encoding())
+    return {TaskStatus::Kind::Busy, "encoding"};
+  if (scan_service.busy())
+    return ProgressStatus(scan_service);
+  if (sm.scanning())
+    return {TaskStatus::Kind::Busy, "scanning"};
+  switch (sm.get_state().check.status) {
+  case DatabaseStatus::Unchecked:
+    return {TaskStatus::Kind::Muted, "waiting"};
+  case DatabaseStatus::Pending:
+    return {TaskStatus::Kind::Warn, "pending"};
+  case DatabaseStatus::Done:
+    return {TaskStatus::Kind::Ready, "done"};
+  case DatabaseStatus::NoData:
+    return {TaskStatus::Kind::Error, "error"};
+  }
+  assert(false && "unknown DatabaseStatus");
+  return {};
+}
+
 void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, FileCheckService &file_check_service,
                      const ScanService &scan_service, EncodeState &state, Asset &asset) {
   if (auto r = file_check_service.handoff.take())
@@ -553,86 +578,52 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
 
     // 状态一行说完, 解释挂在 hover 上 —— 这些说明每次都一样, 常驻会把
     // 下面的表挤下去
-    if (sm.scanning()) {
-      const std::string s = scan_service.busy() ? ProgressStatus(scan_service).text : "scanning";
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "%s", s.c_str());
-    } else {
-      // 每个 DatabaseStatus 都要有分支 —— 漏掉的会掉进 default 显示成
-      // "没检查", 而它其实刚检查完.
-      ImVec4 color(0.7f, 0.7f, 0.7f, 1.0f);
-      const char *name = "";
+    const TaskStatus status = EncodeStatus(sm, encoding_service, scan_service);
+    ImGui::TextColored(StatusColor(status.kind), "%s", status.text.c_str());
+    if (!sm.scanning() && !sm.encoding()) {
       const char *hint = "";
       switch (check_result.status) {
       case DatabaseStatus::Unchecked:
-        color = ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-        name = "Not checked";
         hint = "Coverage check runs automatically after fundamental sync";
         break;
-      case DatabaseStatus::Error:
-        color = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
-        name = "ERROR";
-        hint = check_result.error_message.c_str();
+      case DatabaseStatus::Pending:
+        hint = "Some days have archives but are not encoded yet — run encoding";
         break;
-      case DatabaseStatus::Pass:
-        color = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
-        name = "Pass";
-        hint = "All required dates for backtest period are encoded";
-        break;
-      case DatabaseStatus::Incomplete:
-        color = ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
-        name = "Incomplete";
-        hint = "Missing dates all have archives — run encoding to fill them";
-        break;
-      case DatabaseStatus::NotEncoded:
-        color = ImVec4(0.3f, 0.7f, 1.0f, 1.0f);
-        name = "NotEncoded";
-        hint = "Archives cover the backtest period, nothing encoded yet";
-        break;
-      case DatabaseStatus::NeedArchive:
-        color = ImVec4(1.0f, 0.5f, 0.0f, 1.0f);
-        name = "NeedArchive";
-        hint = "Those days must be downloaded before they can be encoded";
+      case DatabaseStatus::Done:
+        hint = "Every day with an archive is encoded; raw gaps (no archive) cannot be filled by encoding";
         break;
       case DatabaseStatus::NoData:
-        color = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
-        name = "NoData";
         hint = check_result.error_message.c_str();
         break;
       }
-      ImGui::TextColored(color, "%s", name);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", hint);
 
-      if (!check_result.error_message.empty() &&
-          (check_result.status == DatabaseStatus::NeedArchive ||
-           check_result.status == DatabaseStatus::Error ||
-           check_result.status == DatabaseStatus::NoData)) {
+      if (check_result.status == DatabaseStatus::NoData) {
         ImGui::SameLine();
-        ImGui::TextColored(color, "— %s", check_result.error_message.c_str());
+        ImGui::TextColored(StatusColor(status.kind), "— %s", check_result.error_message.c_str());
       }
 
-      // 覆盖进度与缺口明细对所有"检查跑完且有缺口"的状态都适用
-      if (!check_result.missing_dates.empty() && check_result.required_dates > 0) {
+      // binary 有缺的天就给覆盖进度与明细: 待编码 (黄) 与 raw 缺口 (灰, 只提示)
+      if (!check_result.pending.empty() || !check_result.gaps.empty()) {
         ImGui::SameLine(0.0f, 24.0f);
         ImGui::Text("Covered %zu / %zu days (%.1f%%)",
                     check_result.binary_coverage,
                     check_result.required_dates,
                     100.0 * check_result.binary_coverage / check_result.required_dates);
         ImGui::SameLine(0.0f, 24.0f);
-        ImGui::Text("can encode %zu / need download %zu",
-                    check_result.missing_can_encode.size(),
-                    check_result.missing_no_archive.size());
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%zu pending", check_result.pending.size());
+        ImGui::SameLine(0.0f, 12.0f);
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "%zu raw gaps", check_result.gaps.size());
 
         ImGui::SameLine(0.0f, 24.0f);
         ImGui::Checkbox("dates", &state.show_missing_details);
         if (state.show_missing_details) {
           ImGui::BeginChild("MissingDates", ImVec2(0, 100), true);
-          for (const auto &date : check_result.missing_no_archive) {
-            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%s  (no archive)", misc::dense(date).c_str());
-          }
-          for (const auto &date : check_result.missing_can_encode) {
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s  (can encode)", misc::dense(date).c_str());
-          }
+          for (const auto &date : check_result.pending)
+            ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%s  (pending)", misc::dense(date).c_str());
+          for (const auto &date : check_result.gaps)
+            ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "%s  (no raw)", misc::dense(date).c_str());
           ImGui::EndChild();
         }
       }
@@ -678,7 +669,6 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
         // 每次打开弹窗都要重新勾 —— 风险自负不跨会话累积
         state.skip_file_check_ack = false;
         state.skip_archive_exists_ack = false;
-        state.skip_archive_range_ack = false;
         state.show_confirm_dialog = true;
       }
       ImGui::EndDisabled();
@@ -733,16 +723,12 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
     ImGui::Spacing();
 
     // Check prerequisites
-    const bool archive_in_range = !asset.backtest.days.empty() &&
-                                  asset.backtest.count([](const Asset::BacktestDay &d) { return d.need_download(); }) == 0;
-
     bool file_check_ok = file_check_result.was_run() &&
                          (file_check_result.passed || !file_check_result.archive_dir_exists);
 
-    // Encode 按天增量, 归档不存在/不覆盖全区间时也能先编已有的部分 —— 三条
+    // Encode 按天增量, 只编 archive 有的天 (raw 缺口照常跳过) —— 两条
     // 硬性前置条件都留一个"风险自负"的旁路, 不是全有全无.
     bool can_encode = (asset.archive.exists || state.skip_archive_exists_ack) &&
-                      (archive_in_range || state.skip_archive_range_ack) &&
                       (file_check_ok || state.skip_file_check_ack);
 
     ImGui::Text("Prerequisites:");
@@ -764,9 +750,6 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
 
     render_prereq_row("Archive Path Exists:", asset.archive.exists, asset.archive.exists ? "Yes" : "No",
                       &state.skip_archive_exists_ack, "风险自负##skip_archive_exists");
-
-    render_prereq_row("Archive In Range:", archive_in_range, archive_in_range ? "Yes" : "No",
-                      &state.skip_archive_range_ack, "风险自负##skip_archive_range");
 
     if (!can_encode) {
       ImGui::Spacing();

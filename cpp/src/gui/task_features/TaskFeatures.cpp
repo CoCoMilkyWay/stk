@@ -162,15 +162,6 @@ TaskHandle CreateFeaturesTask() {
     // 点下 Compute 起到一轮收尾 (弹窗状态机非 Idle): 共享数据冻结
     fs.computing = state->compute_state.ui_state != Features::ComputeUIState::Idle;
 
-    if (!state->inputs_ready)
-      fs.status = TaskState::Features::Status::Waiting;
-    else if (compute_busy)
-      fs.status = TaskState::Features::Status::Computing;
-    else if (!has_selection)
-      fs.status = TaskState::Features::Status::Selecting;
-    else
-      fs.status = TaskState::Features::Status::Ready;
-
     // Tab 锁定: 计算期间锁住其它 tab (Dist/Transform 是流式构建, 切走即取消, 不参与锁)
     if (compute_busy) {
       if (!state->tabs_locked) {
@@ -220,26 +211,9 @@ TaskHandle CreateFeaturesTask() {
     return state->tab_enabled[idx];
   };
 
-  // Status: 行状态标签. 任务行 = 总体状态, 子行 = 各 tab 实际进展
+  // Status: 子行状态标签 = 各 tab 实际进展 (任务行由子行聚合)
   handle.Status = [state](const SharedData &data, int idx) -> TaskStatus {
     switch (idx) {
-    case -1: // 任务行: taskstate.features.status
-      switch (data.taskstate.features.status) {
-      case TaskState::Features::Status::Waiting:
-        return {TaskStatus::Kind::Muted, "waiting"};
-      case TaskState::Features::Status::Selecting:
-        return {TaskStatus::Kind::Warn, "selecting"};
-      case TaskState::Features::Status::Computing:
-        return {TaskStatus::Kind::Busy, "computing"};
-      case TaskState::Features::Status::Ready:
-        return {TaskStatus::Kind::Ready, "done"};
-      case TaskState::Features::Status::Error:
-        return {TaskStatus::Kind::Error, "error"};
-      case TaskState::Features::Status::None:
-        break;
-      }
-      return {};
-
     case TAB_FEATURE: // 主 feature 选没选
       if (!state->inputs_ready)
         return {};
@@ -248,11 +222,13 @@ TaskHandle CreateFeaturesTask() {
                  : TaskStatus{TaskStatus::Kind::Warn, "selecting"};
 
     case TAB_COMPUTE: { // 全量特征计算
+      if (!state->inputs_ready)
+        return {TaskStatus::Kind::Muted, "waiting"};
       const bool running = state->compute_service && state->compute_service->busy();
-      // 任一 reader (含 Factors 页) 判废删了某个池 → 提示重算 (该池 compute 开跑即撤销登记; 哪个池见 Compute 页池表)
+      // 任一 reader (含 Factors 页) 判废删了某个池 → 待重算 (该池 compute 开跑即撤销登记; 哪个池见 Compute 页池表)
       const auto lib_stale = [&](const PoolDef &d) { return FeatureRead::dir_stale(data.config.FeatureLibDir(d.name)); };
       if (!running && std::ranges::any_of(feature_pools(), lib_stale))
-        return {TaskStatus::Kind::Warn, "stale"};
+        return {TaskStatus::Kind::Warn, "pending"};
       if (!state->compute_service)
         return {};
       if (state->compute_service->cancelling())
@@ -271,9 +247,10 @@ TaskHandle CreateFeaturesTask() {
 
     case TAB_ORDERFLOW: // 后台流式 worker 常驻 (背景常态, 灰色)
       if (state->orderflow_service && state->orderflow_service->is_running())
-        return {TaskStatus::Kind::Muted, "streaming"};
+        return {TaskStatus::Kind::Muted, "live"};
       return {};
     }
+    assert(false && "Features 子行越界");
     return {};
   };
 
