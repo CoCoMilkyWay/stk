@@ -65,6 +65,7 @@ private:
 struct RunSpec {
   bool evaluate = false; // false = 只扫描解析 (不读库)
   std::string only_file; // 非空 = 只评这个因子文件的权重 (Run / Search 写完后), 其余行保留文件里的 stat; 空 = Run all
+  bool keep = false;     // 块跨请求常驻 (agent 会话: 叶只增不丢); 否则请求末弃块
 };
 using FactorsRequest = Request<RunSpec>;
 // 只扫描恒成; evaluate 要作用域可用 (MakeFactorScope). ft = 该层字段表

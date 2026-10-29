@@ -229,7 +229,7 @@ assert_partition(源表 SRC_ALL ${SRC_PARTS})
 set(MATH_FAST_FLAGS    -ffast-math)
 set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 
-# 两表同一段序 (shared → misc → api → fundamental → codec → features → worker → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
+# 两表同一段序 (shared → misc → api → fundamental → codec → features → worker → gui → agent → factor → 入口), 段内按路径序; 某档无文件的段留空
 set(MATH_FAST
     # shared
     shared/Asset.cpp
@@ -276,6 +276,8 @@ set(MATH_FAST
     gui/task_icon_bar/TaskIconBar.cpp
     gui/task_settings/TaskSettings.cpp
     gui/task_system_info/TaskSystemInfo.cpp
+    # agent
+    agent/ui/TaskAgent.cpp
     # factor
     # 入口
     main.cpp
@@ -355,6 +357,11 @@ set(MATH_PRECISE
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
+    # agent: Bridge = agent 里唯一的因子契约头消费者; 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
+    agent/Bridge.cpp
+    agent/Chat.cpp
+    agent/Llm.cpp
+    agent/Prompt.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
     factor/op_check.cpp
     factor/op_check_gpu.cu
@@ -755,6 +762,9 @@ target_link_libraries(factor_gpu PUBLIC ${GPU_BACKEND_LINK})
 add_executable(op_check ${SRC_ROOT}/${SRC_OP_CHECK})
 target_link_libraries(op_check PRIVATE factor_gpu)
 
+# OpenSSL: agent/Llm 的 LLM 接口走 HTTPS (asio ssl::stream)
+find_package(OpenSSL REQUIRED)
+
 list(TRANSFORM SRC_APP PREPEND ${SRC_ROOT}/)
 add_executable(app_main ${SRC_APP} ${SRC_ROOT}/${GUI_BACKEND_SRC})
 target_link_libraries(app_main PRIVATE
@@ -768,6 +778,8 @@ target_link_libraries(app_main PRIVATE
     arrow::arrow_flight
     arrow::parquet
     arrow::arrow
+    OpenSSL::SSL
+    OpenSSL::Crypto
     dl
 )
 # 运行时让 ld.so 找到 vendored libarrow*.so

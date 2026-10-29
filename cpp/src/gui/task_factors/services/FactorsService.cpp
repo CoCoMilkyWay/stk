@@ -47,8 +47,11 @@ bool FactorsService::run(FactorsRequest &req) {
   if (!req.spec.evaluate)
     return true;
   const bool ok = eval(req, flow());
-  flow().drop(); // 块 / 引擎只活一轮 (Y 跨文件复用)
-  if (!ok) {     // 中断: 没评到的行也收尾 (判废后不再有新请求刷新)
+  if (req.spec.keep)
+    flow().drop_engines(); // 块留给会话的下一个请求
+  else
+    flow().drop(); // 块 / 引擎只活一轮 (Y 跨文件复用)
+  if (!ok) {       // 中断: 没评到的行也收尾 (判废后不再有新请求刷新)
     std::lock_guard<std::mutex> lock(mutex);
     for (FactorRow &r : rows)
       r.status = RowStatus::Done;
@@ -125,9 +128,10 @@ bool FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng,
   RootSet rs;
   for (const size_t i : idx)
     rs.add(*req.scope.ft, rows[i].expr, rows[i].frame);
-  // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain)
+  // Y = 全部持有期 + 全部金额段, 同作用域跨文件复用; X = 本文件的叶 (retain; keep → 读过的全留)
   JobOut o;
   o.job.spec.y = y_full(*req.scope.ft, req.scope.max_impact);
+  o.job.retain = !req.spec.keep;
   o.job.who = "Run";
   std::vector<RunProbes> ps(rs.size());
   for (RunProbes &p : ps)

@@ -519,7 +519,7 @@ struct FactorFlow {
     }
     return fn(engine<Cpu>());
   }
-  // 弃引擎 (每个请求用完: 宿主工作区 / 显存不跨请求占) / 再弃块 (Run / Search: Y / X 也不跨请求留)
+  // 弃引擎 (每个请求用完: 宿主工作区 / 显存不跨请求占) / 再弃块 (Run / Search: Y / X 也不跨请求留; 请求带 keep 则只弃引擎)
   void drop_engines() { cpu_.reset(), gpu_.reset(); }
   void drop() {
     drop_engines();

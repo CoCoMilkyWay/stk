@@ -281,11 +281,13 @@ struct SearchService::Searcher {
     stride = std::max(1, days * seg / factor::search::kCorrRows);
 
     job.spec.y = YSpec{hd, Amts{}, 0.f};
-    job.own = true;
+    job.own = !sp.keep;
+    job.retain = !sp.keep;
     job.who = "Search";
     const double per_day = static_cast<double>(seg) * A;
     const double r16_bytes = (static_cast<double>(days) * seg / stride + 1.0) * A * sizeof(uint16_t);
-    Budget bud = budget_of<E, SearchProbes>(job, d0, d0.feats.size(), hd.n);
+    const size_t nx = job.own ? job.spec.x.size() : resident_leaves(F.c, block_key(ft, job.dm, job.whole(), job.spec), job.spec.x, job.retain);
+    Budget bud = budget_of<E, SearchProbes>(job, d0, nx, hd.n);
     bud.fixed += factor::search::kInit * r16_bytes;
     const Clock::time_point t_plan = Clock::now();
     if (!go(plan_job(F, job, bud)))
@@ -314,7 +316,7 @@ struct SearchService::Searcher {
     // r16 抽样行 (契约【多权重】): 各块的抽样行 (samp_of) 按块序拼成每候选一张 [R][A]
     for (const Chunk &k : P.chunks)
       R += samp_of(k.days() * seg, static_cast<int>(k.s0 - k.d0) * seg, static_cast<int>(k.d0) * seg, stride).n_rows;
-    gens.assign(job.blocks.own.size(), 0);
+    gens.assign(std::max<size_t>(job.blocks.own.size(), 1), 0);
     return true;
   }
   // 块 ci 刚就位 (pass 的块钩子 / prepare): 真读了 (块的代变了) 才记
@@ -679,7 +681,10 @@ bool SearchService::run(SearchRequest &req) {
   chunks_.store(0, std::memory_order_relaxed);
   stage_.store(SearchStage::Prepare, std::memory_order_relaxed);
   const bool ok = eval(req, flow());
-  flow().drop(); // 块 / 引擎只活一轮 (宿主 / 显存不跨请求占)
+  if (req.spec.keep)
+    flow().drop_engines(); // 块留给会话的下一个请求, 引擎照弃
+  else
+    flow().drop(); // 块 / 引擎只活一轮 (宿主 / 显存不跨请求占)
   return ok;
 }
 
