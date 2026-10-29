@@ -185,10 +185,11 @@ inline bool walk(Exec &ex, const Dag &d, const std::vector<const check::Plane *>
   return true;
 }
 
-// 整张 Dag 走完, 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方). 进度 / 计时 / 取消要逐节点的调用方用 walk
+// 整张单树 Dag 走完, 返回根平面 (生存期: 池槽到下次 eval / 输入平面归调用方). 进度 / 计时 / 取消要逐节点的调用方用 walk; 多根森林也只能用 walk 边走边消费
 template <class Exec>
 inline const check::Plane *eval(Exec &ex, const Dag &d, const std::vector<const check::Plane *> &inputs, HostPool &hp, std::vector<check::Arena> &sc,
                                 int T, int A, int seg, const uint8_t *cs_gate) {
+  assert(d.roots.empty() && "eval 只给单树; 森林用 walk 逐根消费");
   walk(ex, d, inputs, hp, sc, T, A, seg, cs_gate, nullptr, [](int, const auto &, double) { return true; });
   return plane_at(d, inputs, hp, d.root());
 }

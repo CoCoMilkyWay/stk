@@ -31,6 +31,7 @@ constexpr size_t next_pow2(size_t v) {
 
 template <size_t VR>
 struct DayPSD {
+  static_assert(VR > 1, "Hann 窗分母 VR − 1");
   static constexpr size_t N = next_pow2(VR);
   static constexpr size_t N_FREQS = N / 2 + 1;
   static constexpr size_t kMinValid = VR / 4; // 有效样本太少 → 该天不计谱

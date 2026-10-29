@@ -185,7 +185,7 @@ struct IIRCoeffs {
         std::abs(f_hi - f_hi_) < 1e-7f &&
         order == order_ &&
         type == type_ &&
-        n_sections > 0) [[unlikely]]
+        n_sections > 0)
       return;
 
     f_lo_ = f_lo;

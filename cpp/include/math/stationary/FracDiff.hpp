@@ -52,7 +52,7 @@ struct FFDWeights {
     if (std::abs(d - d_) < 1e-7f &&
         window == window_ &&
         std::abs(threshold - threshold_) < 1e-7f &&
-        !data.empty()) [[unlikely]]
+        !data.empty())
       return;
 
     d_ = d;

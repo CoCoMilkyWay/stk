@@ -10,7 +10,7 @@
 //     round.md   每轮反馈: 上次提交的入库结果 + 本批各候选的结局 (落文件失败原因 / Search 结论 / 各权重统计) + 续挖指令
 //     retry.md   回复解析失败: 原因 + 按协议重发
 //   回复协议 (JSON 对象, 外层可包 ```json 代码块):
-//     澄清 (一次)  {"questions": [{"prompt", "options": [..], "multiple"}]}
+//     澄清 (一次)  {"questions": [{"prompt", "options": [..], "multiple", "recommended": [下标]}]} (单选推荐恰 1 项, 多选 ≥ 1 项)
 //     挖掘 (每轮)  {"factors": [{"name", "name_cn", "expr", "note"}], "submit": [英文名], "issues": [文本], "done"}
 // =============================================================================
 
@@ -42,9 +42,12 @@ std::string FirstMessage(const Context &c, const std::vector<Result> &tried);
 struct Question {
   std::string prompt;
   std::vector<std::string> options;
+  std::vector<bool> recommended; // 与 options 同长
   bool multiple = false;
 };
-// picks[i][j] = 第 i 题选了第 j 项
+// mask 选中的选项, "; " 连接
+std::string Picked(const Question &q, const std::vector<bool> &mask);
+// picks[i][j] = 第 i 题选了第 j 项; 与推荐不同的题附上推荐
 std::string AnswerMessage(const std::vector<Question> &qs, const std::vector<std::vector<bool>> &picks, const std::string &note);
 
 // ---- 挖掘 ----

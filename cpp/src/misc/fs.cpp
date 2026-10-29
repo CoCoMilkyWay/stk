@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <fstream>
-#include <sstream>
 
 namespace misc {
 
@@ -28,13 +27,6 @@ fs::path find_git_root() {
 fs::path git_root() {
   static fs::path root = find_git_root();
   return root;
-}
-
-std::string read_file_all(const fs::path &path) {
-  std::ifstream f(path, std::ios::binary);
-  std::stringstream ss;
-  ss << f.rdbuf();
-  return ss.str();
 }
 
 void atomic_write(const fs::path &path, const char *data, std::size_t len) {

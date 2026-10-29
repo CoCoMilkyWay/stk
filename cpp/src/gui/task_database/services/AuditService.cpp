@@ -6,6 +6,7 @@
 #include "fundamental/Store.hpp"
 #include "fundamental/Sync.hpp"
 #include "gui/task_database/services/Drive.hpp"
+#include "misc/cross_platform.hpp"
 #include "misc/date.hpp"
 #include "shared/Config.hpp"
 
@@ -34,8 +35,7 @@ using fundamental::audit::Unit;
 
 // "YYYY-MM-DD HH:MM" (本地时区)
 std::string stamp(std::time_t t) {
-  std::tm tm_buf{};
-  localtime_r(&t, &tm_buf);
+  const std::tm tm_buf = safe_localtime(&t);
   char buf[20];
   std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
   return buf;

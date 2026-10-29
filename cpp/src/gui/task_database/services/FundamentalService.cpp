@@ -26,6 +26,7 @@
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
 #include "gui/task_database/services/Drive.hpp"
+#include "misc/cross_platform.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/parquet.hpp"
@@ -107,8 +108,7 @@ std::string halfwidth_ascii(std::string_view text) {
 
 std::string now_str() {
   std::time_t t = std::time(nullptr);
-  std::tm tm_buf{};
-  localtime_r(&t, &tm_buf);
+  const std::tm tm_buf = safe_localtime(&t);
   char buf[20];
   std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
                 tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
@@ -135,8 +135,7 @@ std::vector<TableFileStat> collect_table_stats(const Catalog &cat) {
     }
     const std::time_t t = std::chrono::system_clock::to_time_t(
         std::chrono::clock_cast<std::chrono::system_clock>(newest));
-    std::tm tm_buf{};
-    localtime_r(&t, &tm_buf);
+    const std::tm tm_buf = safe_localtime(&t);
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", tm_buf.tm_mon + 1,
                   tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min);

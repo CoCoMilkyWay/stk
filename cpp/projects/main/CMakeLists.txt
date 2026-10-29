@@ -310,8 +310,6 @@ set(MATH_PRECISE
     fundamental/Spec.cpp
     fundamental/Store.cpp
     fundamental/Sync.cpp
-    # codec
-    codec/json_config.cpp
     # features
     features/Bar1mDay.cpp
     features/Method/CS.cpp

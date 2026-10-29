@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstring>
 #include <iomanip>
@@ -87,8 +88,16 @@ private:
     // 本 worker 上次真正写汇总附注的时刻 (ms), -1 = 从未写过.
     // 节流用, 见 set_summary_note_from_worker.
     std::atomic<long long> last_note_ms{-1};
+    // 守 label / message: worker 写、刷新线程读, 持锁只做一次定长拷贝 (几乎无争用)
+    std::atomic_flag text_lock;
     char label[64] = {0};
     char message[96] = {0};
+
+    void lock() {
+      while (text_lock.test_and_set(std::memory_order_acquire))
+        std::this_thread::yield();
+    }
+    void unlock() { text_lock.clear(std::memory_order_release); }
   };
 
 public:
@@ -124,6 +133,7 @@ public:
 
   // Get handle for specific worker slot (no acquisition, just direct binding)
   ProgressHandle get_handle(int worker_id) {
+    assert(worker_id >= 0 && worker_id < num_workers_);
     return ProgressHandle(this, worker_id);
   }
 
@@ -191,8 +201,10 @@ private:
 
     if (!msg.empty()) {
       size_t len = std::min(msg.size(), sizeof(slot.message) - 1);
+      slot.lock();
       std::memcpy(slot.message, msg.c_str(), len);
       slot.message[len] = '\0';
+      slot.unlock();
     }
 
     slot.dirty.store(true, std::memory_order_release);
@@ -202,8 +214,10 @@ private:
   void set_label_internal(int worker_id, const std::string &label) {
     WorkerSlot &slot = slots_[worker_id];
     size_t len = std::min(label.size(), sizeof(slot.label) - 1);
+    slot.lock();
     std::memcpy(slot.label, label.c_str(), len);
     slot.label[len] = '\0';
+    slot.unlock();
   }
 
   void bump_summary_internal(size_t n, bool worked) {
@@ -317,6 +331,12 @@ private:
       int lines_up = num_workers_ - i;
       buffer << "\033[" << lines_up << "A\r";
 
+      char label[sizeof(slot.label)], message[sizeof(slot.message)];
+      slot.lock();
+      std::memcpy(label, slot.label, sizeof(label));
+      std::memcpy(message, slot.message, sizeof(message));
+      slot.unlock();
+
       // Render progress bar
       float progress = (total > 0) ? static_cast<float>(current) / total : 0.0f;
       int filled = static_cast<int>(bar_width_ * progress);
@@ -335,10 +355,10 @@ private:
       // 补齐到固定列宽 —— 同一 stage 的标签天然等宽, 紧凑优先.
       buffer << "] " << std::setw(3) << static_cast<int>(progress * 100) << "% "
              << "(" << std::setw(3) << current << "/" << std::setw(3) << total << ") "
-             << slot.label;
+             << label;
 
-      if (slot.message[0] != '\0') {
-        buffer << " " << slot.message;
+      if (message[0] != '\0') {
+        buffer << " " << message;
       }
 
       buffer << "\033[K";

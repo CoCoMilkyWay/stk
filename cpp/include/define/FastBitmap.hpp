@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -35,16 +37,19 @@ public:
 
   // Set bit at index
   inline void set(size_t idx) {
+    assert(idx < SIZE);
     words_[idx / 64] |= (1ULL << (idx % 64));
   }
 
   // Clear bit at index
   inline void clear(size_t idx) {
+    assert(idx < SIZE);
     words_[idx / 64] &= ~(1ULL << (idx % 64));
   }
 
   // Test bit at index
   inline bool test(size_t idx) const {
+    assert(idx < SIZE);
     return (words_[idx / 64] >> (idx % 64)) & 1;
   }
 

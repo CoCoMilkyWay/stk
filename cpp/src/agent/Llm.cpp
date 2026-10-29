@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <string_view>
 #include <thread>
 
 namespace agent::llm {
@@ -220,6 +221,13 @@ bool wait_retry(const char *what, int attempt, const std::string &why, const std
   return !cancel.load(std::memory_order_relaxed);
 }
 
+// 响应体 / 流事件必是合法 JSON (服务端契约), 否则断言
+json parse_json(std::string_view s) {
+  json j = json::parse(s, nullptr, false);
+  assert(!j.is_discarded() && "响应不是合法 JSON");
+  return j;
+}
+
 // 非 2xx → Fail: 两家错误体都是 {"error": {"code", "message"}}, 取出来; 否则原样截断
 [[noreturn]] void fail_status(const char *what, const Resp &r) {
   std::fprintf(stderr, "[agent] %s: HTTP %u\n%s\n", what, r.status, r.body.substr(0, 2048).c_str());
@@ -255,7 +263,7 @@ json cursor_call(const Net &net, http::verb verb, const std::string &target, con
   const Resp r = request(net, kCursorHost, verb, target, key(Backend::Cursor).c_str(), body, {}, nullptr, nullptr);
   if (r.status / 100 != 2)
     fail_status(target.c_str(), r);
-  return r.body.empty() ? json::object() : json::parse(r.body);
+  return r.body.empty() ? json::object() : parse_json(r.body);
 }
 
 } // namespace
@@ -296,17 +304,19 @@ Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
         return out;
       if (r.status / 100 != 2)
         fail_status(target, r);
-      const json j = json::parse(r.body);
+      const json j = parse_json(r.body);
       if (zhipu) {
+        assert(j.contains("data"));
         std::vector<std::pair<int64_t, std::string>> v;
-        for (const json &m : j.at("data"))
-          v.emplace_back(m.value("created", int64_t{0}), m.at("id").get<std::string>());
+        for (const json &m : j["data"])
+          v.emplace_back(m.value("created", int64_t{0}), str_of(m, "id"));
         std::stable_sort(v.begin(), v.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
         for (auto &[t, id] : v)
           out.list.push_back({id, id});
       } else {
-        for (const json &m : j.at("items")) {
-          const std::string id = m.at("id").get<std::string>();
+        assert(j.contains("items"));
+        for (const json &m : j["items"]) {
+          const std::string id = str_of(m, "id");
           out.list.push_back({id, m.value("displayName", id)});
         }
       }
@@ -368,7 +378,7 @@ Reply Session::send_zhipu(const std::string &user, const Delta &on_delta, const 
     const auto on_event = [&](const std::string &, const std::string &data, const std::string &) {
       if (data == "[DONE]")
         return false;
-      const json j = json::parse(data);
+      const json j = parse_json(data);
       if (const std::string id = str_of(j, "id"); !id.empty())
         r.id = id;
       if (j.contains("usage") && j["usage"].is_object()) {
@@ -437,10 +447,12 @@ Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const
     body["prompt"]["text"] = user;
   }
   const json j = cursor_call(o_.net, http::verb::post, agent_.empty() ? std::string("/v1/agents") : "/v1/agents/" + agent_ + "/runs", body.dump());
+  assert(j.contains("run") && (!agent_.empty() || j.contains("agent")));
   if (agent_.empty())
-    agent_ = j["agent"]["id"].get<std::string>();
+    agent_ = str_of(j["agent"], "id");
   Reply r;
-  r.id = j["run"]["id"].get<std::string>();
+  r.id = str_of(j["run"], "id");
+  assert(!agent_.empty() && !r.id.empty());
   const std::string run_path = "/v1/agents/" + agent_ + "/runs/" + r.id;
 
   std::string last_id; // 断线续流 (Last-Event-ID)
@@ -449,11 +461,11 @@ Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const
     if (!id.empty())
       last_id = id;
     if (ev == "assistant" || ev == "thinking") {
-      const std::string t = str_of(json::parse(data), "text");
+      const std::string t = str_of(parse_json(data), "text");
       (ev == "assistant" ? r.text : r.thinking) += t;
       on_delta(ev == "assistant" ? Part::Text : Part::Thinking, t);
     } else if (ev == "result") {
-      const json x = json::parse(data);
+      const json x = parse_json(data);
       r.finish = str_of(x, "status");
       if (const std::string t = str_of(x, "text"); !t.empty())
         r.text = t; // 终稿为准

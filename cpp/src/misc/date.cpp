@@ -1,4 +1,5 @@
 #include "misc/date.hpp"
+#include "misc/cross_platform.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -13,8 +14,7 @@ using namespace std::chrono;
 // ============================================================================
 Ymd today_ymd() {
   const std::time_t t = std::time(nullptr);
-  std::tm tm_buf{};
-  localtime_r(&t, &tm_buf);
+  const std::tm tm_buf = safe_localtime(&t);
   return (tm_buf.tm_year + 1900) * 10000 + (tm_buf.tm_mon + 1) * 100 + tm_buf.tm_mday;
 }
 
@@ -82,17 +82,21 @@ int digits(std::string_view s, std::size_t i, std::size_t n) {
   return v;
 }
 
+// 真实存在的日历日 (月 / 日越界、非闰年 2 月 29 都不算) → Ymd; 否则 0
+Ymd checked(int y, int m, int d) {
+  if (y < 0 || m < 0 || d < 0)
+    return 0;
+  const year_month_day ymd{year{y} / month{static_cast<unsigned>(m)} / day{static_cast<unsigned>(d)}};
+  return ymd.ok() ? y * 10000 + m * 100 + d : 0;
+}
+
 } // namespace
 
 Ymd parse_ymd(std::string_view s) {
-  if (s.size() == 8) {
-    const int v = digits(s, 0, 8);
-    return v < 0 ? 0 : v;
-  }
-  if (s.size() == 10 && s[4] == '-' && s[7] == '-') {
-    const int y = digits(s, 0, 4), m = digits(s, 5, 2), d = digits(s, 8, 2);
-    return (y < 0 || m < 0 || d < 0) ? 0 : y * 10000 + m * 100 + d;
-  }
+  if (s.size() == 8)
+    return checked(digits(s, 0, 4), digits(s, 4, 2), digits(s, 6, 2));
+  if (s.size() == 10 && s[4] == '-' && s[7] == '-')
+    return checked(digits(s, 0, 4), digits(s, 5, 2), digits(s, 8, 2));
   return 0;
 }
 

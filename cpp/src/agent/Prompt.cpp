@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -193,16 +194,23 @@ std::string FirstMessage(const Context &c, const std::vector<Result> &tried) {
   return fill("first", {{"hold", c.hold}, {"tried", s}});
 }
 
+std::string Picked(const Question &q, const std::vector<bool> &mask) {
+  assert(mask.size() == q.options.size());
+  std::string s;
+  for (size_t j = 0; j < q.options.size(); ++j)
+    if (mask[j])
+      s += (s.empty() ? "" : "; ") + q.options[j];
+  return s;
+}
+
 std::string AnswerMessage(const std::vector<Question> &qs, const std::vector<std::vector<bool>> &picks, const std::string &note) {
   assert(picks.size() == qs.size());
   std::string s;
   for (size_t i = 0; i < qs.size(); ++i) {
-    assert(picks[i].size() == qs[i].options.size());
-    std::string sel;
-    for (size_t j = 0; j < qs[i].options.size(); ++j)
-      if (picks[i][j])
-        sel += (sel.empty() ? "" : "; ") + qs[i].options[j];
+    const std::string sel = Picked(qs[i], picks[i]);
     s += "### " + std::to_string(i + 1) + ". " + qs[i].prompt + "\n- " + (sel.empty() ? std::string("(未选, 你自定)") : sel) + "\n";
+    if (picks[i] != qs[i].recommended)
+      s += "- (未照你的推荐: " + Picked(qs[i], qs[i].recommended) + ")\n";
   }
   if (s.empty())
     s = "(无问题)\n";
@@ -259,6 +267,24 @@ bool ParseQuestions(std::string_view text, std::vector<Question> &out, std::stri
         return false;
       }
       x.multiple = q["multiple"].get<bool>();
+    }
+    const std::string rec_err = at + " 的 recommended 须是选项下标数组 (从 0 起, 不重复; 单选恰 1 个, 多选至少 1 个)";
+    if (!q.contains("recommended") || !q["recommended"].is_array()) {
+      err = rec_err;
+      return false;
+    }
+    x.recommended.assign(x.options.size(), false);
+    for (const nlohmann::json &k : q["recommended"]) {
+      if (!k.is_number_integer() || k.get<int64_t>() < 0 || k.get<int64_t>() >= static_cast<int64_t>(x.options.size()) || x.recommended[k.get<size_t>()]) {
+        err = rec_err;
+        return false;
+      }
+      x.recommended[k.get<size_t>()] = true;
+    }
+    const size_t n_rec = q["recommended"].size();
+    if (x.multiple ? n_rec < 1 : n_rec != 1) {
+      err = rec_err;
+      return false;
     }
     out.push_back(std::move(x));
   }

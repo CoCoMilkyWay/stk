@@ -5,12 +5,13 @@
 // =============================================================================
 //   build:  Expr 各子树按规范串去重 (TsAdd(x, x) / 多处引用同一子式只算一次), 后序拓扑排 (根 = 末节点);
 //           特征叶也是节点 (op = -1, feat = 输入平面下标), 算子输入统一指向节点.
-//   plan:   活性分析 → 槽复用: 节点 i 的输出占一个槽, 最后一个消费者 i' 执行完即释放 (free_after[i']);
+//   plan:   活性分析 → 槽复用: 节点 i 的输出占一个槽, 最后一个消费者执行完即回收其槽;
 //           n_slots = 峰值同时存活的中间量数, 通常 2..3, 与树大小无关 → 内存 / 显存按槽数预分配, eval 期零分配.
-//   evaluator 只按计划走: 取输入槽 → 跑算子写输出槽 → 释放 free_after; 参数搜索时改 nodes[].p 重跑即可
+//   evaluator 只按计划走: 取输入槽 → 跑算子写输出槽 (复用已在计划里排好); 参数搜索时改 nodes[].p 重跑即可
 //   (以后做增量: 只重算改动节点的下游, 计划不变).
 //   build_forest: 多个 Expr 合成一张 DAG (跨因子公共子式只算一次 = tensor share); roots[k] = 第 k 棵的根 (同规范串 → 同节点).
-//           根节点算完要先被调用方消费 (Stat), 再释放: plan 把根视作"自己消费自己", 无后续消费者时 free_after[根] 含自己的槽.
+//           根节点算完要先被调用方消费 (Stat), 再被覆盖: plan 把根视作"自己消费自己", 无后续消费者时其槽在自己执行完即回收,
+//           后面的节点可能覆盖它 ⇒ 多根森林只能边走边消费 (walk), 不能走完再按根取 (eval 只给单树).
 //           keep_roots = true: 根的槽永不回收 (每根独占一槽, 全部根同时存活到走完), 调用方一批一起消费 (Search GPU 批评估要 C 张根平面同在).
 //   fuse:   逐点链融合 (build / build_forest 默认开): 非根、只有一个消费者且消费者也是逐点 (POINT × SELF) 的逐点节点
 //           并进消费者, 一组 = 一个融合节点 (Contract Fuse 程序, 外部输入走 in[0..n_in)), 中间量不落平面.
@@ -44,7 +45,6 @@ struct Dag {
   std::vector<DagNode> nodes;               // 后序拓扑, 根 = 末节点
   std::vector<std::string> keys;            // 节点子树规范串 (下标同 nodes): 外部按 Expr 子树 (expr::to_string(e, ei)) 找节点
   std::vector<std::string> feats;           // 去重特征 code (首见序), 下标 = 输入平面下标
-  std::vector<std::vector<int>> free_after; // free_after[i] = 节点 i 执行完 (含消费根) 可释放的槽
   std::vector<int> roots;                   // build_forest: roots[k] = 第 k 个 Expr 的根节点 (可重复); build: 空
   int n_slots = 0;
   int n_ops = 0;
@@ -233,9 +233,8 @@ inline void plan(Dag &d, bool keep_roots = false) {
     for (int a = 0; a < n.n_in; ++a)
       last_use[static_cast<size_t>(n.in[a])] = i;
   }
-  for (int r : d.roots) // 根自己消费自己 (调用方在 free_after[r] 之前取走结果)
+  for (int r : d.roots) // 根自己消费自己 (调用方在该根执行完当下取走结果)
     last_use[static_cast<size_t>(r)] = std::max(last_use[static_cast<size_t>(r)], r);
-  d.free_after.assign(static_cast<size_t>(N), {});
   std::vector<int> free_slots;
   d.n_slots = 0;
   for (int i = 0; i < N; ++i) {
@@ -262,15 +261,12 @@ inline void plan(Dag &d, bool keep_roots = false) {
       if (dup)
         continue;
       free_slots.push_back(src.slot);
-      d.free_after[static_cast<size_t>(i)].push_back(src.slot);
     }
-    // 森林的根且无后续消费者: 调用方消费完即释放 (keep_roots: 不回收, 根平面活到走完)
-    if (!keep_roots && last_use[static_cast<size_t>(i)] == i && d.is_root(i)) {
+    // 森林的根且无后续消费者: 调用方消费完即回收 (keep_roots: 不回收, 根平面活到走完)
+    if (!keep_roots && last_use[static_cast<size_t>(i)] == i && d.is_root(i))
       free_slots.push_back(n.slot);
-      d.free_after[static_cast<size_t>(i)].push_back(n.slot);
-    }
   }
-  // 单树 (roots 空) 的根不在任何 free_after 里, 留给调用方取结果
+  // 单树 (roots 空) 的根槽不回收, 留给调用方取结果
 }
 
 inline Dag build(const expr::Expr &e, bool fuse = true) {

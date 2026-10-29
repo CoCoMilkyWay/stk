@@ -3,6 +3,7 @@
 
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
+#include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
 #include "misc/perf.hpp"
 #include "nlohmann/json.hpp"
@@ -50,8 +51,7 @@ const char *work_unit(ComputeStage kind, const char *ts_unit) {
 // 本地墙钟 YYYYMMDD_HHMMSS (目录名: 字典序 = 时间序)
 std::string stamp_now() {
   const std::time_t t = std::time(nullptr);
-  std::tm tm{};
-  localtime_r(&t, &tm);
+  const std::tm tm = safe_localtime(&t);
   char buf[32];
   std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
   return buf;

@@ -4,6 +4,7 @@
 
 ```
 stk/
+├── AGENT.md               # 🤖 Agent 挖因子: 状态机 / 会话流水 (events.jsonl) 字段表
 ├── run.py                 # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/main.py
 ├── config/                # ⚙️ 全局配置
 │   ├── config.json        # ⚙️ 路径 / 回测日历起点 (末日随数据) / 交易成本 (池不在此, 见 Bar 池 pool_<pool> 列)
@@ -14,7 +15,7 @@ stk/
 │   ├── main.py            # 🐍 构建脚本 (调 CMake)
 │   ├── mode_*.py          # 🐍 模式开关: tsan / debug / profile / assert / production
 │   ├── rank.py            # 🐍 自选资产区间位置排序 (读 output/fundamental)
-│   └── app/               # 🐍 Fetch (BigQuant 下载) / FileRepair (文件修复) / format_cpp (clang-format) / lint_cpp (clangd 诊断)
+│   └── app/               # 🐍 Fetch (BigQuant 下载) / FileRepair (文件修复) / format_cpp (clang-format) / lint_cpp (clangd 诊断) / tdx (通达信本地数据说明与脚本)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                   # 📦 跨模块数据层 (GUI 任务与 worker 共享的状态)
@@ -61,8 +62,7 @@ stk/
 │   │   │   ├── L2_Gateway_DataType.hpp               # 🔄 Level-2 网关数据类型
 │   │   │   ├── OrderEncoder.hpp                      # 🔄 CSV → 排序后的逐笔 (FrameView)
 │   │   │   ├── OrderFrame.hpp                        # 🔄 逐笔 ↔ zstd 帧 (FrameEncoder ↔ FrameDecoder)
-│   │   │   ├── L2_Validator.hpp                      # 🔄 逐笔数据准入校验 (编码期)
-│   │   │   └── json_config.hpp                       # 🔄 JSON 配置解析
+│   │   │   └── L2_Validator.hpp                      # 🔄 逐笔数据准入校验 (编码期)
 │   │   ├── features/                                 # 🧮 特征工程: 事件驱动, 回测与实盘逐值一致
 │   │   │   │                                         #    两档 (TierId):
 │   │   │   │                                         #    · Lob: Level-2 逐笔 → 订单簿还原; L_sec 秒 + L_1min 分钟; 池轴 (features/<pool>/); cs_valid = 当日在池
@@ -140,8 +140,6 @@ stk/
 │   │   │                                             #    · 领养: 各核专注自己的资产, 持续落后才被领跑核永久领养 (不自由领, 不按日窃取)
 │   │   │                                             #    · 两档只差源: Lob 软源 (预取只暖 page cache) / Bar 硬源 (预取解码 bar1m 进源环, 时序等它)
 │   │   │                                             #    · 续算: 日期轴 = 尾窗日 + 新日; 尾窗日预取 / 截面只交还, 时序从快照接着新日算, 落盘重写尾窗日 (标签补结清)
-│   │   ├── label/                                    # 🏷️ 标签生成
-│   │   │   └── LabelCalmar.hpp                       # 🏷️ Calmar 比率标签
 │   │   ├── gui/                                      # 🖥️ GUI (ImGui + Service 后台线程); 每任务分两层:
 │   │   │   │                                         #    · services: 后台线程计算, 持锁发布结果
 │   │   │   │                                         #    · ui: 每帧持锁读结果, 不拷贝大块数据
@@ -167,7 +165,7 @@ stk/
 │   │   │   ├── task_database/                        # 🖥️ 数据库管理
 │   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
-│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager
+│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager; Drive = 同步 / 核对共用的逐项驱动骨架
 │   │   │   │   │                                     #    · Audit: 远端 ↔ 本地冻结月核对 + 修复
 │   │   │   │   └── ui/                               # 🖥️ UI: TabOverview (基本面同步) / TabBrowser / TabTable / TabEncode / CrossSectionAnalysis
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
@@ -247,7 +245,7 @@ stk/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
 │   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
-│   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 控件只切结果立方体, 不发请求
+│   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层等) 只切结果立方体, 不发请求; 只有 Compute / 自动 Inspect / Kline 才发
 │   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 单因子线, 区间条选日段
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
@@ -275,7 +273,7 @@ stk/
 │   │   │   │                                               #    · 作用域 pools / levels / holds (持有期限 Search 档); 上下文 context (特征叶 / 算子表 / 正式因子库统计)
 │   │   │   │                                               #    · 落地 stage (校验 + 写因子文件); 评估 eval → update 每帧推进 (逐文件 Search → Run, 会话常驻块: SearchSpec / RunSpec keep)
 │   │   │   │                                               #    · 结果 results (扫目录读回各权重统计); 采纳 adopt (拷进正式因子目录)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务: Mine (状态机见 AGENT.md: New → 澄清 (agent 提问, 人选) → Start → 全自动挖掘 → 结束报告) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 提示词) / Log
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务: Mine (状态机见 AGENT.md: New → 澄清 (agent 提问带推荐, 人改选; 左栏可查特征 / 算子表) → Start → 全自动挖掘 → 结束报告) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 提示词) / Log
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -319,7 +317,7 @@ stk/
 │   │   │   │   ├── Cpu.hpp                                 # 🧬   CPU 后端: 行区间核 + 流程
 │   │   │   │   └── Gpu.cuh                                 # 🧬   GPU 后端: 一 warp 一行 t (持有期在 warp 内串行)
 │   │   │   └── Search/                                     # 🧬 参数搜索评估 (建在 Stat 上): 一批同形候选直接攒累加器, 不落 Row
-│   │   │       ├── Config.hpp                              # 🧬   全部配置 (编译期常量): 可搜持有期集合 kSearchHolds (30m / 60m / close / T+1O / T+1C) / 硬门槛 kMinMono
+│   │   │       ├── Config.hpp                              # 🧬   全部配置 (编译期常量): 可搜持有期集合 kSearchHolds (30m / 60m / close / T+1C) / 硬门槛 kMinMono
 │   │   │       │                                           #      / 第 0 趟采样点数 kInit / r16 抽样行数 kCorrRows
 │   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 + 目标函数 + 噪声 + 终选
 │   │   │       │                                           #      · 目标 = 固定 h 的 ls_period · rIC; 任一 ≤ 0 或 mono < kMinMono → −∞; 不看成本, 不跨 h 比
@@ -335,8 +333,13 @@ stk/
 │   │   │   ├── Step.hpp                                    # 📐 变换步元数据 / 定义 (ParamMeta / StepDef → Step, 编译期注册)
 │   │   │   ├── sample/ResamplerTick2Min / ResamplerBar2Min # 📐 两档重采样器: 逐笔 / bar1m → 稠密分钟 K (255 根; 无成交分钟用携带价补齐)
 │   │   │   ├── sample/ResamplerMin2Bin                     # 📐 分钟 K → 本层 bar (分钟箱层 + L_1day 整日箱, 两档共用)
-│   │   │   ├── stationary/TodProfile.hpp                   # 📐 日内轮廓去季节 (TodSub / TodZ, expanding 因果)
-│   │   │   └── spectral/IIRBandpass.hpp                    # 📐 因果 IIR 带通
+│   │   │   ├── sample/ResampleRunBar.hpp                   # 📐 逐笔 → 买卖量失衡 run bar (阈值按日统计 EMA 自适应)
+│   │   │   ├── distribution/                               # 📐 分位 / 矩: DailyQuantile · KLLcache (流式分位草图) · RetMoments · SizeThresholds
+│   │   │   ├── normalize/                                  # 📐 expanding / rolling 归一: Normalize (zscore / robust / rank / winsor / clip …) · RollingZScore
+│   │   │   ├── stationary/                                 # 📐 平稳化与诊断: ADF · KPSS · FracDiff · IntDiff · MADetrend · TodProfile (日内轮廓去季节, TodSub / TodZ, expanding 因果)
+│   │   │   ├── spectral/                                   # 📐 谱: DayPSD (按日 Hann + 去均值偏差修正) · MultiResPSD · IIRBandpass (因果 IIR 带通, RBJ biquad 级联; 类型只调 Q)
+│   │   │   ├── timeseries/AutoCorrelation.hpp              # 📐 ACF / PACF + Bartlett 置信带
+│   │   │   └── autoencoder/ · model/                       # 📐 仅设计笔记 (README / 图), 无代码
 │   │   ├── api/                                            # 🌐 数据源 API: 纯传输, 不知 Spec; 两客户端对仗 (query → arrow::Table)
 │   │   │   ├── bigquant/client.hpp                         # 🌐 BigQuant DAI: query(Query{sql, filters}) / quota
 │   │   │   └── tushare/client.hpp                          # 🌐 Tushare HTTP: query(Query{api, params, num})
@@ -347,7 +350,7 @@ stk/
 │   │   │   ├── Sync.hpp                                    # 📊   写侧: plan<Src> → sync(client, tasks) = put(t, fetch(client, t))
 │   │   │   ├── Scan.hpp                                    # 📊   读侧: 分段并行 map-reduce + meta / daily / calendar (AssetInfo / fund::Panel / Bar1mDay 共用)
 │   │   │   └── Audit.hpp                                   # 📊   核对: 远端指纹 ↔ 本地指纹 (仅 DAI 冻结月 / 冻结日)
-│   │   ├── mining/                                         # ⛏️ 数据挖掘设计文档 (特征 → 因子)
+│   │   ├── mining/                                         # ⛏️ 数据挖掘设计文档 (特征 → 因子): README.md 方法论 / COPULA.md
 │   │   └── misc/                                           # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                     # 🔧 日志 / STL 容器格式化打印
 │   │       ├── format.hpp                                  # 🔧 定宽数值格式化 (UI 表格 / 日志对齐)
@@ -418,6 +421,7 @@ stk/
     │                                                       #    · 可选: note / run / hold_cols / acc_cols
     │                                                       #    · weights: [{hold, sign?, expr (具体)}]; Search 整体替换, 改 expr 即清空
     │                                                       #    · stats: [stat | null], 与 weights 同序
+    ├── portfolio/<name>.json                               # 因子组合 (一组合一文件): {"factors": [{pool, level, file, expr, hold}]}, 条目 = Factors 表里的一个权重
     ├── agent/<pool>/<层>/<持有期>/                         # Agent 挖掘会话 (池 × 因子层 × 持有期)
     │   ├── factors/*.json                                  # 候选因子文件 (与正式因子同格式; Search 日志在 factors/log/); 提交且达门槛的拷进 factors/<pool>/<层>/
     │   └── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + rounds.jsonl (后端 / 模型 / 结局 / 用量 / 耗时) + events.jsonl (毫秒时间的交互流水) + report.md (结束报告)
@@ -473,6 +477,7 @@ stk/
 #       · measure = amt / vol / n / qty (qty = 存量, vol = 流量); event = taker / maker / cancel; side = bid / ask; qualifier = 窗口 / 价位 / 阈值
 #       · 单价位用 l5, 前 N 价位累计用裸 5; 缩写忌歧义
 #   - 缺失: 一律 NaN, 不用 0; fast-math TU 不写 isnan, 无定义用位图 / 守卫显式表示
+#       · 例外: CS 列在母集 (cs_valid) 外的资产落 0, 读端由 cs_valid 门控, 不当值读
 #   - 出错: 只用断言, 不做错误处理; 失败越早越好
 #   - 跨天状态: reset 不清的成员一律列进 snap (续算 ≡ 全量); 状态只许依赖库首日, 不许依赖本轮首日
 #   - 重算: 改字段表 (含加列) = 落盘指纹变化, 旧特征文件读取即断言失败, 需全量重算

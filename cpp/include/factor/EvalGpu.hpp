@@ -84,6 +84,7 @@ inline bool walk(Session *s, const Dag &d, const std::vector<const DevPlane *> &
 
 inline const DevPlane *eval(const Dag &d, const std::vector<const DevPlane *> &inputs, DevPool &dp, Session *s, int T, int A, int seg,
                             const DevPlane *cs_gate, double *kernel_ms = nullptr) {
+  assert(d.roots.empty() && "eval 只给单树; 森林用 walk 逐根消费");
   double total = 0.0;
   walk(s, d, inputs, dp, T, A, seg, cs_gate, nullptr, [&](int, const auto &, double ms) {
     total += ms;

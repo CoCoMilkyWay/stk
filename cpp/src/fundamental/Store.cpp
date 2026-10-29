@@ -1,5 +1,6 @@
 #include "fundamental/Store.hpp"
 
+#include "misc/cross_platform.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 #include "shared/Config.hpp"
@@ -26,9 +27,7 @@ const std::vector<Shard> kNoShards;
 // file_clock 时刻 → 本地时区 (Now 与写盘日同一换算)
 std::tm local_tm(fs::file_time_type t) {
   const std::time_t tt = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(t));
-  std::tm tm{};
-  localtime_r(&tt, &tm);
-  return tm;
+  return safe_localtime(&tt);
 }
 
 Ymd ymd_of(const std::tm &tm) { return (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday; }

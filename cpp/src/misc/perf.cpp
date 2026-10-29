@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -89,7 +90,10 @@ void scan(const fs::path &dir, const std::string &sort, F &&row) {
       cols.push_back(c);
       b = e + 1;
     }
-    row(std::stoull(std::string(cols[0])), std::span<const std::string_view>(cols).subspan(1));
+    uint64_t period = 0;
+    const auto [end, ec] = std::from_chars(cols[0].data(), cols[0].data() + cols[0].size(), period);
+    assert(ec == std::errc() && end == cols[0].data() + cols[0].size() && "perf 输出首列须是 period 整数");
+    row(period, std::span<const std::string_view>(cols).subspan(1));
   }
 }
 

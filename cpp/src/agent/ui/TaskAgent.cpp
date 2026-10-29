@@ -95,8 +95,11 @@ struct State {
   bool stop = false;       // 按了 Stop: 本步做完即结束
   // 澄清
   std::vector<Question> questions;
-  std::vector<std::vector<bool>> picks;
+  std::vector<std::vector<bool>> picks; // 初值 = 推荐
   std::string note;
+  bool show_questions = false; // 问题刚到: 左栏切到问题页一次
+  // 参考 (本会话发给 agent 的特征表 / 算子表)
+  ImGuiTextFilter leaf_filter, op_filter;
   // 挖掘
   std::vector<Staged> batch;
   bool batch_pending = false;       // 本批在评, 评完在 Update 里发反馈
@@ -122,8 +125,10 @@ std::string net_name(const llm::Net &n) { return n.proxy ? "proxy " + n.host + "
 
 // ---- 模型嗅探 ----
 bool sniffing(const State &s, int backend) { return s.sniff[backend].valid(); }
-bool any_sniffing(const State &s) { return std::any_of(s.sniff.begin(), s.sniff.end(), [](const auto &f) { return f.valid(); }); }
-// 须不在嗅探 (换 future 会 join 旧的)
+bool any_sniffing(const State &s) {
+  return std::any_of(s.sniff.begin(), s.sniff.end(), [](const auto &f) { return f.valid(); });
+}
+// 须不在嗅探 (赋值新 future 会先 join 被替换的那个)
 void sniff(State &s, int backend) {
   assert(!sniffing(s, backend));
   if (!has_key(backend))
@@ -301,7 +306,8 @@ void on_digest(State &s, const std::string &text, int round) {
   s.chat->event("questions", {{"round", std::to_string(round)}, {"n", std::to_string(s.questions.size())}});
   s.picks.clear();
   for (const Question &q : s.questions)
-    s.picks.emplace_back(q.options.size(), false);
+    s.picks.push_back(q.recommended);
+  s.show_questions = true;
   s.phase = Phase::Choose;
   if (s.stop)
     finish(s, "按 Stop");
@@ -466,11 +472,8 @@ void session_row(const SharedData &data, State &s) {
   ImGui::BeginDisabled(s.phase != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0))) {
     for (size_t i = 0; i < s.questions.size(); ++i) {
-      std::string sel;
-      for (size_t j = 0; j < s.questions[i].options.size(); ++j)
-        if (s.picks[i][j])
-          sel += (sel.empty() ? "" : "; ") + s.questions[i].options[j];
-      chat.event("pick", {{"question", s.questions[i].prompt}, {"picked", sel}});
+      const Question &q = s.questions[i];
+      chat.event("pick", {{"question", q.prompt}, {"picked", Picked(q, s.picks[i])}, {"recommended", Picked(q, q.recommended)}});
     }
     chat.event("start", {{"note", s.note}});
     ask(s, "answer", AnswerMessage(s.questions, s.picks, s.note));
@@ -525,9 +528,9 @@ void session_row(const SharedData &data, State &s) {
   }
 }
 
-// 澄清: 逐题点选 + 附言
+// 澄清: 逐题点选 (已按推荐预选) + 附言
 void questions_panel(State &s) {
-  ImGui::TextDisabled("agent 的问题 (%zu); 选完按 Start", s.questions.size());
+  ImGui::TextDisabled("agent 的问题 (%zu); 已按推荐预选, 只改不同意的, 改完按 Start", s.questions.size());
   ImGui::BeginChild("##questions", ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.6f), true);
   for (size_t i = 0; i < s.questions.size(); ++i) {
     const Question &q = s.questions[i];
@@ -542,6 +545,10 @@ void questions_panel(State &s) {
           on = true;
         }
         s.picks[i][j] = on;
+      }
+      if (q.recommended[j]) {
+        ImGui::SameLine();
+        ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Ready), "推荐");
       }
       ImGui::PopID();
     }
@@ -634,19 +641,100 @@ void results_table(State &s) {
   ImGui::EndTable();
 }
 
+// ---- 参考: 本会话发给 agent 的特征表 / 算子表 ----
+constexpr ImGuiTableFlags kRefFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                                      ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable;
+
+void leaves_panel(State &s) {
+  s.leaf_filter.Draw("过滤##leaf", 240);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu 个叶, 模板里写全名; 悬浮看公式", s.ctx.leaves.size());
+  if (!ImGui::BeginTable("##leaves", 3, kRefFlags, ImVec2(-1, -1)))
+    return;
+  ImGui::TableSetupScrollFreeze(1, 1);
+  for (const char *h : {"叶", "中文名", "说明"})
+    ImGui::TableSetupColumn(h);
+  ImGui::TableHeadersRow();
+  for (const Leaf &l : s.ctx.leaves) {
+    if (!s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc).c_str()))
+      continue;
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(l.code.c_str());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", l.formula.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(l.name_cn.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(l.desc.c_str());
+  }
+  ImGui::EndTable();
+}
+
+void ops_panel(State &s) {
+  s.op_filter.Draw("过滤##op", 240);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu 个算子; 悬浮看签名与定义", s.ctx.ops.size());
+  if (!ImGui::BeginTable("##ops", 4, kRefFlags, ImVec2(-1, -1)))
+    return;
+  ImGui::TableSetupScrollFreeze(1, 1);
+  for (const char *h : {"算子", "中文名", "输出域", "说明"})
+    ImGui::TableSetupColumn(h);
+  ImGui::TableHeadersRow();
+  for (const Op &o : s.ctx.ops) {
+    if (!s.op_filter.PassFilter((o.name + ' ' + o.name_cn + ' ' + o.note).c_str()))
+      continue;
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(o.name.c_str());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("签名: %s\n定义: %s", o.sig.c_str(), o.tex.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(o.name_cn.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(o.out.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(o.note.c_str());
+  }
+  ImGui::EndTable();
+}
+
+// 左栏: 问题 / 回复 + 本会话的特征表 / 算子表
+void left_panel(State &s) {
+  if (s.phase == Phase::None)
+    return reply_panel(s);
+  if (!ImGui::BeginTabBar("##left_tabs"))
+    return;
+  const ImGuiTabItemFlags talk_flags = s.show_questions ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+  s.show_questions = false;
+  if (ImGui::BeginTabItem(s.phase == Phase::Choose ? "问题###talk" : "回复###talk", nullptr, talk_flags)) {
+    if (s.phase == Phase::Choose) {
+      questions_panel(s);
+    } else {
+      if (s.phase == Phase::Report)
+        text_box("##report", s.report, ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.4f));
+      reply_panel(s);
+    }
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("特征")) {
+    leaves_panel(s);
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("算子")) {
+    ops_panel(s);
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
+}
+
 void render_mine(const SharedData &data, State &s) {
   scope_row(data, s, live(s));
   session_row(data, s);
   ImGui::Separator();
   const float w = ImGui::GetContentRegionAvail().x;
   ImGui::BeginChild("##left", ImVec2(w * 0.5f, 0), false);
-  if (s.phase == Phase::Choose) {
-    questions_panel(s);
-  } else {
-    if (s.phase == Phase::Report)
-      text_box("##report", s.report, ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.4f));
-    reply_panel(s);
-  }
+  left_panel(s);
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("##right", ImVec2(0, 0), false);
@@ -760,7 +848,7 @@ void render_config(State &s) {
   if (ImGui::Button("Save"))
     SavePrompt(kPrompts[s.prompt_idx], s.prompt_text);
   ImGui::SameLine();
-  ImGui::TextDisabled("%s/%s.md ({{键}} 占位; 下次组消息生效)", kPromptDir, kPrompts[s.prompt_idx]);
+  ImGui::TextDisabled("%s/%s.md ({{键}} 占位; 保存后, 下次组消息生效)", kPromptDir, kPrompts[s.prompt_idx]);
   input_multiline("##prompt", s.prompt_text, ImVec2(-1, -1));
 }
 
