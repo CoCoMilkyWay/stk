@@ -265,8 +265,8 @@ stk/
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── agent/                                          # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / GUI 任务; 与项目只经 Bridge)
-│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的端点 (模型不写死, 运行时嗅探), 超时 / 重试, 每轮模板数, 入库门槛默认值, 会话目录 / 提示词目录 / 密钥文件
-│   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL): send 阻塞收齐一轮, 增量回调; models 嗅探账号可用模型 (GET models, Config 页下拉选)
+│   │   │   ├── Config.hpp                                  # 🤖 配置: 智谱 / Cursor 的端点 (模型不写死, 运行时嗅探), 直连 / 代理默认值, 超时 / 重试, 每轮模板数, 入库门槛默认值, 会话目录 / 提示词目录 / 密钥文件
+│   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL, 直连 / HTTP 代理 CONNECT): send 阻塞收齐一轮, 增量回调; models 嗅探账号可用模型 (GET models, Config 页下拉选)
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
 │   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: open / ask / cancel; 逐轮落盘 (user / reply / thinking + rounds.jsonl) + 交互流水 events.jsonl
@@ -275,7 +275,7 @@ stk/
 │   │   │   │                                               #    · 作用域 pools / levels / holds (持有期限 Search 档); 上下文 context (特征叶 / 算子表 / 正式因子库统计)
 │   │   │   │                                               #    · 落地 stage (校验 + 写因子文件); 评估 eval → update 每帧推进 (逐文件 Search → Run, 会话常驻块: SearchSpec / RunSpec keep)
 │   │   │   │                                               #    · 结果 results (扫目录读回各权重统计); 采纳 adopt (拷进正式因子目录)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务: Mine (状态机见 AGENT.md: New → 澄清 (agent 提问, 人选) → Start → 全自动挖掘 → 结束报告) / Config / Log
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务: Mine (状态机见 AGENT.md: New → 澄清 (agent 提问, 人选) → Start → 全自动挖掘 → 结束报告) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 提示词) / Log
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

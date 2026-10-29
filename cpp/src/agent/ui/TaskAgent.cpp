@@ -65,10 +65,15 @@ struct State {
   std::string pool;
   int level = -1, hold = 0;
 
+  // 连接 (每后端直连 / 代理, 代理地址共用): 改了即重新嗅探该后端, 下次 New 生效
+  std::array<bool, llm::kBackendCount> via_proxy{kZhipuProxy, kCursorProxy};
+  std::string proxy_host = kProxyHost;
+  int proxy_port = kProxyPort;
+
   // 模型嗅探: 有 key 的后端首次 Draw 各起一个后台 GET models; sniff_cancel 须声明在 sniff 前 (future 析构 join 时它还活着)
   std::atomic<bool> sniff_cancel{false};
-  std::array<std::future<std::vector<llm::Model>>, llm::kBackendCount> sniff;
-  std::array<std::vector<llm::Model>, llm::kBackendCount> models;
+  std::array<std::future<llm::Models>, llm::kBackendCount> sniff;
+  std::array<llm::Models, llm::kBackendCount> models;
 
   // Config (下次 New 生效)
   int backend = 0;
@@ -112,23 +117,39 @@ std::string factors_dir(const State &s) { return (fs::path(s.dir) / "factors").s
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
+llm::Net net_of(const State &s, int backend) { return {s.via_proxy[backend], s.proxy_host, s.proxy_port}; }
+std::string net_name(const llm::Net &n) { return n.proxy ? "proxy " + n.host + ":" + std::to_string(n.port) : std::string("direct"); }
+
 // ---- 模型嗅探 ----
+bool sniffing(const State &s, int backend) { return s.sniff[backend].valid(); }
+bool any_sniffing(const State &s) { return std::any_of(s.sniff.begin(), s.sniff.end(), [](const auto &f) { return f.valid(); }); }
+// 须不在嗅探 (换 future 会 join 旧的)
+void sniff(State &s, int backend) {
+  assert(!sniffing(s, backend));
+  if (!has_key(backend))
+    return;
+  s.models[backend] = {};
+  if (s.via_proxy[backend] && s.proxy_host.empty()) {
+    s.models[backend].error = "代理地址为空";
+    return;
+  }
+  s.sniff[backend] = std::async(std::launch::async, [b = static_cast<llm::Backend>(backend), n = net_of(s, backend), &c = s.sniff_cancel] { return llm::models(b, n, c); });
+}
 void start_sniff(State &s) {
   s.sniff_cancel.store(false, std::memory_order_relaxed);
   for (int b = 0; b < llm::kBackendCount; ++b)
-    if (has_key(b))
-      s.sniff[b] = std::async(std::launch::async, [b, &c = s.sniff_cancel] { return llm::models(static_cast<llm::Backend>(b), c); });
+    sniff(s, b);
 }
-bool sniffing(const State &s, int backend) { return s.sniff[backend].valid(); }
-std::string first_model(const State &s, int backend) { return s.models[backend].empty() ? std::string() : s.models[backend].front().id; }
-// 收齐的嗅探结果进表; 当前后端还没选模型 → 取表首
+std::string first_model(const State &s, int backend) { return s.models[backend].list.empty() ? std::string() : s.models[backend].list.front().id; }
+// 收齐的嗅探结果进表; 当前后端所选模型不在表里 → 取表首
 void poll_sniff(State &s) {
   for (int b = 0; b < llm::kBackendCount; ++b) {
-    std::future<std::vector<llm::Model>> &f = s.sniff[b];
+    std::future<llm::Models> &f = s.sniff[b];
     if (!f.valid() || f.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
       continue;
     s.models[b] = f.get();
-    if (b == s.backend && s.model.empty())
+    const std::vector<llm::Model> &ms = s.models[b].list;
+    if (b == s.backend && std::none_of(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == s.model; }))
       s.model = first_model(s, b);
   }
 }
@@ -154,6 +175,9 @@ int resize_cb(ImGuiInputTextCallbackData *d) {
     d->Buf = s->data();
   }
   return 0;
+}
+bool input_text(const char *id, std::string &s) {
+  return ImGui::InputText(id, s.data(), s.capacity() + 1, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
 }
 bool input_multiline(const char *id, std::string &s, ImVec2 size) {
   return ImGui::InputTextMultiline(id, s.data(), s.capacity() + 1, size, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
@@ -196,7 +220,8 @@ void new_session(const SharedData &data, State &s) {
   s.sgpu = s.gpu == 1;
   s.ctx = s.bridge->context(data, s.sc);
   s.dir = (fs::path(kWorkDir) / s.pool / s.ctx.level / s.ctx.hold).string();
-  s.chat->open(llm::Options{static_cast<llm::Backend>(s.backend), s.model, SystemPrompt(s.ctx, s.sgate)}, (fs::path(s.dir) / "chat" / stamp()).string());
+  s.chat->open(llm::Options{static_cast<llm::Backend>(s.backend), net_of(s, s.backend), s.model, SystemPrompt(s.ctx, s.sgate)},
+               (fs::path(s.dir) / "chat" / stamp()).string());
   s.results = s.bridge->results(data, s.sc, factors_dir(s));
   s.seen_evals = s.bridge->evals();
   s.seen_turns = s.chat->done();
@@ -211,6 +236,7 @@ void new_session(const SharedData &data, State &s) {
                          {"hold", s.ctx.hold},
                          {"backend", llm::kBackendNames[s.backend]},
                          {"model", s.model},
+                         {"net", net_name(s.chat->options().net)},
                          {"eval", s.sgpu ? "GPU" : "CPU"},
                          {"gate", "score " + num(s.sgate.score) + " t " + num(s.sgate.t) + " mono " + num(s.sgate.mono) + " valid " + num(s.sgate.valid)},
                          {"tried", std::to_string(s.results.size())}});
@@ -357,6 +383,7 @@ void step(const SharedData &data, State &s) {
   }
   s.chat->event("reply", {{"round", std::to_string(round)},
                           {"finish", r.finish},
+                          {"error", r.error},
                           {"seconds", num(r.seconds)},
                           {"prompt_tokens", std::to_string(r.usage.prompt)},
                           {"cached_tokens", std::to_string(r.usage.cached)},
@@ -364,7 +391,7 @@ void step(const SharedData &data, State &s) {
                           {"chars", std::to_string(r.text.size())},
                           {"thinking_chars", std::to_string(r.thinking.size())}});
   if (!r.ok())
-    return finish(s, "回复失败 (" + r.finish + ")");
+    return finish(s, "回复失败 (" + r.finish + (r.error.empty() ? "" : ": " + r.error) + ")");
   if (s.phase == Phase::Digest)
     on_digest(s, r.text, round);
   else
@@ -419,10 +446,11 @@ void session_row(const SharedData &data, State &s) {
   const bool chat_busy = chat.busy();
   const bool has_hold = !s.bridge->holds(data, s.level).empty();
   const bool keyed = has_key(s.backend);
+  const bool model_ok = !sniffing(s, s.backend) && s.models[s.backend].error.empty() && !s.model.empty(); // 按当前连接方式嗅探成功且已选
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
-  const bool can_new = !live(s) && !chat_busy && !es.busy && keyed && !s.model.empty() && has_hold;
+  const bool can_new = !live(s) && !chat_busy && !es.busy && keyed && model_ok && has_hold;
   ImGui::BeginDisabled(!can_new);
   if (ImGui::Button("New", ImVec2(60, 0))) {
     if (s.bridge->ready(data, Scope{s.pool, s.level, s.hold}, s.gpu == 1))
@@ -431,9 +459,9 @@ void session_row(const SharedData &data, State &s) {
       s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
   }
   ImGui::EndDisabled();
-  tip(!keyed            ? "所选后端的 key 未填 (config/agent/keys.json)"
-      : s.model.empty() ? "模型未选 (Config 页; 嗅探中或该后端无可用模型)"
-                        : "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成");
+  tip(!keyed      ? "所选后端的 key 未填 (config/agent/keys.json)"
+      : !model_ok ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
+                  : "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成");
   ImGui::SameLine();
   ImGui::BeginDisabled(s.phase != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0))) {
@@ -637,7 +665,32 @@ void render_config(State &s) {
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Ready), "key 已填");
   else
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "key 未填 (config/agent/keys.json)");
-  const std::vector<llm::Model> &ms = s.models[s.backend];
+  ImGui::BeginDisabled(any_sniffing(s));
+  int via = s.via_proxy[s.backend];
+  bool toggled = ImGui::RadioButton("直连", &via, 0);
+  ImGui::SameLine();
+  toggled |= ImGui::RadioButton("代理", &via, 1);
+  if (toggled && static_cast<bool>(via) != s.via_proxy[s.backend]) {
+    s.via_proxy[s.backend] = via;
+    sniff(s, s.backend);
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  input_text("##proxy_host", s.proxy_host);
+  bool addr = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(70);
+  ImGui::InputInt("HTTP 代理##proxy_port", &s.proxy_port, 0, 0);
+  s.proxy_port = std::clamp(s.proxy_port, 1, 65535);
+  addr |= ImGui::IsItemDeactivatedAfterEdit();
+  if (addr)
+    for (int b = 0; b < llm::kBackendCount; ++b)
+      if (s.via_proxy[b])
+        sniff(s, b);
+  ImGui::EndDisabled();
+  tip("各后端分别选直连 / 代理, 代理地址共用 (HTTP CONNECT); 改了即重新嗅探模型");
+  const std::vector<llm::Model> &ms = s.models[s.backend].list;
+  const std::string &sniff_err = s.models[s.backend].error;
   const auto cur = std::find_if(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == s.model; });
   ImGui::SetNextItemWidth(320);
   ImGui::BeginDisabled(ms.empty());
@@ -649,12 +702,19 @@ void render_config(State &s) {
   }
   ImGui::EndDisabled();
   ImGui::SameLine();
-  if (sniffing(s, s.backend))
+  if (sniffing(s, s.backend)) {
     ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Busy), "嗅探中");
-  else if (has_key(s.backend) && ms.empty())
-    ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "该后端无可用模型");
-  else
-    ImGui::TextDisabled("%zu 个可用", ms.size());
+  } else if (has_key(s.backend)) {
+    if (ImGui::SmallButton("重新嗅探"))
+      sniff(s, s.backend);
+    ImGui::SameLine();
+    if (!sniff_err.empty())
+      ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Error), "嗅探失败: %s", sniff_err.c_str());
+    else if (ms.empty())
+      ImGui::TextColored(GUI::StatusColor(TaskStatus::Kind::Warn), "该后端无可用模型");
+    else
+      ImGui::TextDisabled("%zu 个可用", ms.size());
+  }
   ImGui::TextDisabled("下次 New 生效");
 
   ImGui::Spacing();
@@ -775,6 +835,8 @@ GUI::TaskHandle CreateAgentTask() {
         return {TaskStatus::Kind::Warn, "no key"};
       if (sniffing(s, s.backend))
         return {TaskStatus::Kind::Busy, "sniffing"};
+      if (!s.models[s.backend].error.empty())
+        return {TaskStatus::Kind::Error, "sniff failed"};
       return s.model.empty() ? TaskStatus{TaskStatus::Kind::Warn, "no model"} : TaskStatus{};
     }
     if (idx != TAB_MINE)
@@ -825,7 +887,7 @@ GUI::TaskHandle CreateAgentTask() {
     if (s.bridge)
       s.bridge->cancel();
     s.sniff_cancel.store(true, std::memory_order_relaxed);
-    for (std::future<std::vector<llm::Model>> &f : s.sniff)
+    for (std::future<llm::Models> &f : s.sniff)
       f = {};       // 释放即 join
     s.chat.reset(); // 析构 join worker
     s.bridge.reset();

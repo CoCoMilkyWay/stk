@@ -21,6 +21,12 @@ inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
 
 inline constexpr const char *kCursorHost = "api.cursor.com";
 
+// 连接默认值 (Config 页可改): 各后端直连 / 经 HTTP 代理 (CONNECT); Cursor 的部分模型按出口地区限售, 默认走代理
+inline constexpr bool kZhipuProxy = false;
+inline constexpr bool kCursorProxy = true;
+inline constexpr const char *kProxyHost = "127.0.0.1";
+inline constexpr int kProxyPort = 10808;
+
 inline constexpr int kReadTimeoutSeconds = 600;
 inline constexpr int kRetryMax = 4; // 共 5 次尝试
 inline constexpr int kRetryIntervalSeconds = 30;

@@ -132,6 +132,8 @@ void Chat::log_turn(const Turn &t, int n) const {
   j["backend"] = llm::kBackendNames[static_cast<int>(opts_.backend)];
   j["model"] = opts_.model;
   j["finish"] = t.reply.finish;
+  if (!t.reply.error.empty())
+    j["error"] = t.reply.error;
   j["id"] = t.reply.id;
   j["prompt_tokens"] = t.reply.usage.prompt;
   j["cached_tokens"] = t.reply.usage.cached;
