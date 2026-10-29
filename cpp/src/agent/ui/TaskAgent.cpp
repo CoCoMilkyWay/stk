@@ -613,8 +613,10 @@ bool asked_block(Asked &a, bool edit) {
 
 using Names = std::set<std::string>; // 入库的英文名
 
-// 结局的颜色 (入库另标绿)
+// 结局的颜色 (入库另标绿; agent 看不见的灰)
 TaskStatus::Kind kind_of(const Names &in, const Result &r) {
+  if (!r.visible)
+    return TaskStatus::Kind::Muted;
   switch (r.verdict) {
   case Verdict::Unstaged:
   case Verdict::Broken:
@@ -1000,7 +1002,7 @@ void results_table(const View &v) {
     ImGui::TableNextColumn();
     ImGui::TextColored(color(kind_of(v.adopted, r)), "%s", v.adopted.count(r.name) ? "入库" : name(r.verdict));
     tip_long(detail(r));
-    // 统计列: 最佳权重; 无显著则目标最高的候选 (灰)
+    // 统计列: 最佳权重; 无显著则代表点 (灰)
     const Weight *w = r.best();
     const Stat *st = w ? &w->st : r.top ? &r.top->st
                                         : nullptr;

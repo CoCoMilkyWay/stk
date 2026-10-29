@@ -31,9 +31,9 @@ using factor::stat::kLegs;
 using factor::stat::kLong;
 using factor::stat::kShort;
 using factor::stat::leg_period;
-// 正向腿 l 的组号 (G20 / G1)
+// 所评方向腿 l 的组号 (G20 / G1; 结果已按权重方向定向)
 constexpr int leg_group(int l) { return factor::stat::leg_group(kFwd, l); }
-// 组 k 是正向两腿之一 (LS 图例项 hover 时高亮)
+// 组 k 是所评方向两腿之一 (LS 图例项 hover 时高亮)
 constexpr bool is_leg(int k) { return k == leg_group(kLong) || k == leg_group(kShort); }
 
 // 竖轴刻度统一定宽 (字体是等宽的 Maple Mono, 7 字符 = 定像素): 切因子 / 持有期 / 光标时数字位数变也不改绘图区左边界, 图不震
@@ -1062,7 +1062,7 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
 // 另一条池均线 (池等权做多的绝对年化, 与因子无关; 不扣成本 = "池均 无冲击"): 看池本身在各持有期的漂移, 与超额线同轴对照.
 // 图例 = 自绘矩阵 (ImPlot 图例只能单列 / 单行), 左上: 行 = 组 (L / S / LS / 池均), 列 = 金额段 (无冲击 / 固定冲击 / 各金额), 格 = 该线色块;
 //   点格切该线, 点行头 / 列头切整行 / 整列 (有显示的 → 全隐, 否则全显); 悬停格 / 头 → 对应线加粗 (下帧)
-// 口径 = Stat 契约【持仓口径】的每期真实收益 (正向; 腿 = leg_period = HoldStat::leg; ls_period = Σ ls / 全部行, 不触发行记 0).
+// 口径 = Stat 契约【持仓口径】的每期真实收益 (所评方向; 腿 = leg_period = HoldStat::leg; ls_period = Σ ls / 全部行, 不触发行记 0).
 // 净线 = 毛二级 − 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; 两腿都按本侧超额画, 成本都使线下移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
 //   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是腿成员 ∧ 标签有效格 (与组计数同口径)
@@ -1428,7 +1428,7 @@ bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std:
 }
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
-std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { return inspect_key(ctx.lv, ctx.pool, row.key, row.expr); }
+std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { return inspect_key(ctx.lv, ctx.pool, row.key, row.expr, factor::stat::dir_of(row.sign)); }
 
 // 表达式着色 (按语法结构, 同类同色; 只做词法, 显示的都是解析通过的规范串): 算子按类 (逐点 / 时序窗 / 截面 / 组截面, OpTable 的 t / a 列),
 // 特征 (档.层. 淡 + 列名), 参数 (键 / 值 / 裸键 = 自由参数), 括号按嵌套深度轮换色, 逗号 / 等号淡. 按词折行 (不超出当前可用宽; 特征整词不拆),
@@ -1647,6 +1647,10 @@ int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &k
         "• 括号按嵌套层轮换色");
   ImGui::SameLine();
   expr_text(row.expr);
+  if (row.sign < 0) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("· 取反");
+  }
   if (!row.note.empty())
     ImGui::TextDisabled("%s", row.note.c_str());
 

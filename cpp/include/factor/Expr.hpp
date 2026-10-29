@@ -296,6 +296,14 @@ inline bool arg_ok(const Node &child, const OpInfo &parent, int slot) {
   return child.op < 0 || !dom_strict(parent.in[slot]) || dom_sub(kOps[child.op].out, parent.in[slot]);
 }
 // ---- 序列化 ----
+// k / k2 在规范串里的写法 (唯一一处); kv_of = 值经规范串往返 (写出再解析) 后的 float. 程序落值 (Search) 先过它,
+// 树上的值与解析规范串所得逐位相同 ⇒ 评过的就是落盘的
+inline std::string k_text(double v) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%g", v);
+  return buf;
+}
+inline float kv_of(double v) { return static_cast<float>(std::strtod(k_text(static_cast<float>(v)).c_str(), nullptr)); }
 namespace detail {
 // 项之间 ", " 分隔: 序列参数 → d → k → k2 (与 OpTable operand 列同序)
 inline void sep(std::string &s, bool &first) {
@@ -325,13 +333,11 @@ inline void to_string_rec(const Expr &e, int i, std::string &s) {
   }
   if (declares(o.params, "k")) {
     sep(s, first);
-    std::snprintf(buf, sizeof(buf), "k=%g", static_cast<double>(n.p.k));
-    s += (n.free & kFreeK) ? "k" : buf;
+    s += (n.free & kFreeK) ? std::string("k") : "k=" + k_text(n.p.k);
   }
   if (declares(o.params, "k2")) {
     sep(s, first);
-    std::snprintf(buf, sizeof(buf), "k2=%g", static_cast<double>(n.p.k2));
-    s += (n.free & kFreeK2) ? "k2" : buf;
+    s += (n.free & kFreeK2) ? std::string("k2") : "k2=" + k_text(n.p.k2);
   }
   s += ')';
 }
@@ -342,15 +348,6 @@ inline std::string to_string(const Expr &e, int i = 0) {
   std::string s;
   detail::to_string_rec(e, i, s);
   return s;
-}
-
-// 取反的规范串: 一元根 R(x, 参数…) → R(TsNeg(x), 参数…) (归一根下取反 = 秩 / z 精确翻转; weights 的 sign = −1 时评它)
-inline std::string negated_canon(const Expr &e) {
-  const Node &r = e.root();
-  assert(r.op >= 0 && kOps[r.op].arity == 1 && "取反只给一元归一根");
-  const std::string head = std::string(kOps[r.op].name) + "(" + to_string(e, r.args[0]);
-  assert(e.canon.compare(0, head.size(), head) == 0 && "canon 须与树同步");
-  return std::string(kOps[r.op].name) + "(TsNeg(" + to_string(e, r.args[0]) + ")" + e.canon.substr(head.size());
 }
 
 inline Expr Expr::placeholder() const {

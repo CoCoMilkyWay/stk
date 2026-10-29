@@ -13,11 +13,12 @@
 //
 //   【腿 Leg】kLong = 做多标签 lv · 建仓买入冲击; kShort = 做空标签 sv · 建仓卖出冲击. 一腿 = 一端的组 (G20 / G1), 落在哪一端由方向定 (leg_group(d, l)).
 //     两腿成对的量 (Label::v / Row::mkt / LegSum / Cost::imp / CostAcc::leg) 一律按 [kLegs] 下标, 不各写一份.
-//   【方向 Dir】kFwd = 正向 (G20 做多 / G1 做空); kRev = 反向 (G1 做多 / G20 做空) = 因子取反后的正向.
-//     取反 ⇒ rIC / mono 变号、grp 近似倒序 (rIC 精确), 都从正向读出; 腿不行: 反向两腿是另外两批格子 (多腿看本侧可买,
-//     空腿看本侧可卖, 单边封板与平仓顺延使 sv ≠ −lv), 只能各算. 所以腿系 (Row::leg / HoldStat::ls / leg / beta) 按 [kDirs][kLegs] 两向各一份,
-//     同一遍 A 轴: 两端组的格做多侧记进该端为多腿的方向 (long_dir), 做空侧记进另一方向. 腿占用 (n_trig / leg_n) / 换手成本 / 净值 /
-//     Inspect 尾部只描述正向 (评估对象已带 sign: 因子表达式根下插 TsNeg); 反向 LS 只给 Search 定向用.
+//   【方向 Dir】kFwd = 正向 (G20 做多 / G1 做空); kRev = 反向 (G1 做多 / G20 做空). 方向是评估参数 (因子行的 sign), 不改写表达式:
+//     Row / Accum 恒按正向攒, 反向由 oriented 改读 —— rIC 变号, 组号倒序 (k ↔ K−1−k), 两向腿系互换; 同一份数两种读法,
+//     Search 定向与 Run / Inspect / Portfolio 按 sign 评逐位同值. 腿系须两向各算: 反向两腿是另外两批格子 (多腿看本侧可买,
+//     空腿看本侧可卖, 单边封板与平仓顺延使 sv ≠ −lv), 所以腿系 (Row::leg / leg_cnt, Accum 腿和 / 腿占用) 按 [kDirs][kLegs] 两向各一份,
+//     同一遍 A 轴: 两端组的格做多侧记进该端为多腿的方向 (long_dir), 做空侧记进另一方向. HoldStat 的 ls / leg / beta [d] = 所评方向 (kFwd) 与其反向 (kRev).
+//     腿码 (换手成本) / Inspect 尾部 / alpha 分布由 rx 按所评方向现取 (leg_code(x, d)).
 //   输出  两级:
 //     一级 Row[H][T]  每 (持有期, 时刻) 一行沿 A 轴归约的统计 (两后端各算, 对拍在此级)
 //     二级 HoldStat   每持有期 沿 T 轴汇总成十几个标量 (Accum 一遍可合并累加器 → finish; 主机 double, 两后端共用同一份代码)
@@ -44,10 +45,8 @@
 //
 //   【一级 Row (每 h, t)】J = {a : rx ≠ None ∧ ry ≠ None}; e = 超额标签 (lv − mkt[kLong]; 空腿 sv − mkt[kShort])
 //     ric    rank IC = Spearman = Pearson(r16_x, r16_y) over J. 五个和都是整数 (pair_add → pearson_int), 两后端逐位一致.
-//     grp[k] 第 k 组 (k = grp_of(r16_x), 等分 kGroups 组) 在分层侧 grp_leg(k) 上的**持仓收益**, 做多视角 (grp_sign: 做多侧 +e, 做空侧 −e):
-//            Σe / max(cnt, cap), 代数上 Σ 本侧标签 − cnt·mkt[本侧] 再除, 一遍 A 轴. 分层侧: 全做多侧, 或 kGrpSplit (Config.hpp) 时下半做空侧
-//            (G1 = −正向 S 腿, 两端与 LS 同幅度; 组号单调的方向不变, mono 照算). cnt[k] = 组分层侧真持有只数 (【仓位感知】; 收益按续持取名义值).
-//            二级沿 t 取均值 (Σ / n_all, 见【二级】).
+//     grp[k] 第 k 组 (k = grp_of(r16_x), 等分 kGroups 组) 做多侧的**持仓收益** Σe / max(cnt, cap), 代数上 Σlv − cnt·mkt[kLong] 再除, 一遍 A 轴.
+//            cnt[k] = 组做多侧真持有只数 (【仓位感知】; 收益按续持取名义值). 二级沿 t 取均值 (Σ / n_all, 见【二级】).
 //     leg[d][l] 方向 d 腿 l 的本侧超额持仓收益 (Σe / max(只数, cap)); leg_cnt[d][l] = 本侧真持有只数. 多腿 = 该端组的做多侧 (标签 lv);
 //            空腿 = 该端组的做空侧 (本侧可卖才建仓, 标签 sv), 不是 −多腿. 腿空 → 0.
 //     ls_row(d) 方向 d 的多空 = ½ (leg[d][kLong] + leg[d][kShort]) —— 资金 1 两腿各半, 无杠杆, 相对市场.
@@ -66,7 +65,9 @@
 //
 //   【仓位感知】一个组合 (组 k / 两腿 / Inspect 尾部 / 池篮子; 成员判据 in 由调用方给) 每行一批, 格 a 在行 t 的批里 side 腿:
 //     真持有 held: 行 t 价点本侧建仓方向可成交 (eo & eo_open(side): 多买 / 空卖), 或 与前一批交接 (hold_nets(t)) 且前一批同组合
-//       (m ∧ in) 并真持有 —— 续持者不必成交, 封板也照持. 递归沿链回走到可成交为止; 块外视为断链 (流式块首 h 行退化为严格建仓).
+//       (m ∧ in) 并真持有 —— 续持者不必成交, 封板也照持. 递归沿链回走到可成交为止, 前一批至多在 t 前 kChainDays 个交易日
+//       (= 平仓结清窗; 更早视为断链), 所以每格只看 [t − kChainDays 日 − h, t + h] 的行: 分块带够前后带即与整张量一致 (Search 契约【分块流式】);
+//       块外 (评估域首尾) 视为断链.
 //     收益 side_ret: 下一批 (t + h) 交接且同组合 (continues) → 不真平仓, 按名义价点估值: 价点上不可能两向都堵 (封涨停可卖, 封跌停可买,
 //       停牌无价点 = 无行), 本侧平仓方向可成交 → 本侧标签即名义值, 否则 = −对侧标签 (同一 entry / 同一名义 exit 价点); 不续持 → 本侧标签 (含顺延).
 //     非交接持有期 (收盘型 / 开盘型 / 盘中建仓的 T+N 收盘型) 无链, 自然退化为"建仓须本侧可成交, 平仓顺延".
@@ -124,15 +125,16 @@
 //     beta[d] ls[d] 对 mkt[kLong] 的 OLS 斜率 (alpha 略: beta ≈ 0 时 alpha ≈ ls.mean)
 //     grp[k] 各组每行持仓收益沿 t 的均值 (Σ grp / n_all, 不 ok 行记 0); mono = Spearman(组号, grp[k])
 //     leg[d][l] 两向两腿每行持仓收益沿 t 的均值 (同 grp)
-//     n_trig 触发行数 = ok 行里正向至少一腿非空; trigger_of = n_trig / n (诊断)
-//     leg_n  平均每触发行一腿成员数 = Σ (正向两腿 leg_cnt) / (2 n_trig); util_of = leg_n / cap, 不封顶 (> 1 = 并列把腿塞过满仓; 诊断)
+//     n_trig 触发行数 = ok 行里所评方向至少一腿非空; trigger_of = n_trig / n (诊断)
+//     leg_n  平均每触发行一腿成员数 = Σ (所评方向两腿 leg_cnt) / (2 n_trig); util_of = leg_n / cap, 不封顶 (> 1 = 并列把腿塞过满仓; 诊断)
 //     n < 3 → 标签侧 (ric / ls / grp / leg / mono / leg_n) 全 0; n_rac < 3 → rac 全 0 (消费端先看对应计数)
-//     累加器 Accum = Head (ric / rac / 两向 ls 的 MomAcc + beta 幂和 + 两向两腿和 + n_all / n_trig) + Grp[kGroups] (组收益和 / 组计数), 可合并: 行区间并行各攒一份 merge; 超大张量沿 T
-//     分块流式时跨块续攒, 不必落 Row. 拆两半是给 GPU 一 warp 一候选: lane 0 攒 Head, lane k 攒 Grp[k]; CPU 整行 add = 两半串起来
+//     累加器 Accum = Head (ric / rac / 两向 ls 的 MomAcc + beta 幂和 + 两向两腿和 / 腿占用 + n_all) + Grp[kGroups] (组收益和 / 组计数), 可合并: 行区间并行各攒一份 merge; 超大张量沿 T
+//     分块流式时跨块续攒, 不必落 Row. 拆两半是给 GPU 一 warp 一候选: lane 0 攒 Head, lane k 攒 Grp[k]; CPU 整行 add = 两半串起来.
+//     oriented(acc, d) = 由正向攒的 acc 改读成方向 d 的 (与逐行 oriented(Row, d) 再攒逐位同), finish 恒出所评方向
 //
 //   【换手成本 (每 hold)】Row / HoldStat 全是毛口径; 净多空由消费端 (Inspect 期限结构净线) 在二级上扣 (Search 不看成本, 只评排序):
-//     交易的只是正向两腿 (多腿 = G20, 空腿 = G1). 成本只看**腿码** lc = leg_code(r16) ∈ {kLcLong, kLcShort, kLcMid, kLcVoid} (u8 平面,
-//     两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx) ∧ 该持有期的标签有效位 m ∧ 本侧真持有 (held, 链上成员 = 同腿码;
+//     交易的只是所评方向的两腿 (正向 多腿 = G20 / 空腿 = G1, 反向对调). 成本只看**腿码** lc = leg_code(r16, d) ∈ {kLcLong, kLcShort, kLcMid, kLcVoid}
+//     (u8 平面, 两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx) ∧ 该持有期的标签有效位 m ∧ 本侧真持有 (held, 链上成员 = 同腿码;
 //     腿成员 = 真建了仓的格, 与 Row 的两腿同一集合). 增仓 Δ⁺ 要本格本侧可建仓 (续持者封板加不了仓 → 记 0).
 //     行 t 的批 (资金 1, 【持仓口径】) 每只权 w_t(a) = [a ∈ 腿] / max(腿样本数, 腿满仓) (腿满仓由调用方给: 两腿 = cap, Inspect 尾部另给). 换手 = 目标仓位之差 Δw (无限细粒度, 微调照计):
 //     【交接】行 t 建仓与行 t−h 平仓同一价点 (hold_nets: 分钟型恒是; T+N 收盘型只在行 t 按收盘价建仓时 (日层恒是); 收盘型 / 开盘型从不)
@@ -146,7 +148,7 @@
 //     净多空 net_ls_period = ls_period(kFwd) − ½ (cost(kLong) + cost(kShort)) (两腿各半资金, 同 ls); 年化 net_ls = × span_per_year (满仓一年).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
-//     Labels (持有期键 hd 与其标签 l[] 同处, 带满仓 cap) · Span (块形 T × A + 层每段行数 seg + 分块流式 t0_abs / t_lo; 整张量两者为 0).
+//     Labels (持有期键 hd 与其标签 l[] 同处, 带满仓 cap) · Span (块形 T × A + 层每段行数 seg + 分块流式 t0_abs / t_lo / t_back; 整张量三者为 0).
 //     流程出口统一是二级累加器 Accum[H] (两后端同), HoldStat 由 finish_all 现算; 一级 Row 是可选的 sink.
 //
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA → n·Σx² < 2^58, 有符号 64 位不溢); 浮点和 (标签值) 两后端
@@ -157,7 +159,6 @@
 // =============================================================================
 
 #include "factor/Contract.hpp"
-#include "factor/Stat/Config.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -165,6 +166,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace factor::stat {
 
@@ -179,7 +181,7 @@ inline constexpr int kDaysPerYear = 242;                           // 年化用�
 inline constexpr uint16_t kRankNone = 0xFFFF;                      // r16 无效
 inline constexpr int kRankMax = 65534;                             // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
 inline constexpr unsigned kNoKey = 0xFFFFFFFFu;                    // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
-// TS 口径根 TsRankRoll 的窗长 (行) = ≤ kMaxD 行的最大整交易日数 (整数天窗跨日 deseason; ≤ kMaxD 故 Search carry 盖得住)
+// TS 口径根 TsRankRoll 的窗长 (行) = ≤ kMaxD 行的最大整交易日数 (整数天窗跨日 deseason; ≤ kMaxD 故分块前带盖得住)
 constexpr int ts_norm_d(int seg) { return kMaxD / seg * seg; }
 
 // ---- 腿 / 方向 (见文件头【腿 Leg】【方向 Dir】) ----
@@ -189,14 +191,12 @@ inline constexpr int kLegs = 2;
 enum Dir : int { kFwd = 0,
                  kRev = 1 };
 inline constexpr int kDirs = 2;
+inline constexpr Dir dir_of(int sign) { return sign < 0 ? kRev : kFwd; } // 权重行的 sign (±1) → 方向
 // 方向 d 腿 l → 组号: 正向 多 G20 / 空 G1, 反向 多 G1 / 空 G20
 FACTOR_HD inline constexpr int leg_group(int d, int l) { return (l == kLong) == (d == kFwd) ? kGroups - 1 : 0; }
 // 组 g 是哪个方向的多腿 (G20 kFwd / G1 kRev; 其余组 −1); 同一组的做空侧是另一方向 (d ^ 1) 的空腿
 FACTOR_HD inline constexpr int long_dir(int g) { return g == kGroups - 1 ? kFwd : g == 0 ? kRev
                                                                                          : -1; }
-// 组 g 的分层侧 (【一级 Row】grp): kGrpSplit 时下半做空侧, 否则全做多侧; grp_sign = 做多视角的符号 (做空侧 −1)
-FACTOR_HD inline constexpr int grp_leg(int g) { return kGrpSplit && g < kGroups / 2 ? kShort : kLong; }
-FACTOR_HD inline constexpr double grp_sign(int g) { return grp_leg(g) == kLong ? 1.0 : -1.0; }
 // 建仓可成交码 (features lb_entry_ok, 见【仓位感知】): 价点可买 | 可卖. 腿 side 建仓要的方向 / 平仓要的方向
 inline constexpr uint8_t kEoBuy = 1, kEoSell = 2;
 FACTOR_HD inline constexpr uint8_t eo_open(int side) { return side == kLong ? kEoBuy : kEoSell; }
@@ -320,17 +320,18 @@ struct Labels { // l[i] ↔ hd.k[i]
   Label l[kMaxHold];
   double cap = 0.0; // 满仓一腿只数 (【持仓口径】; 调用方给 n_full)
 };
-struct Span { // 块形 + 层几何 + 分块流式 (Search 契约【分块流式】); 整张量 t0_abs = t_lo = 0
+struct Span { // 块形 + 层几何 + 分块流式 (Search 契约【分块流式】); 整张量 t0_abs = t_lo = t_back = 0
   int T = 0, A = 0;
   Geo g; // 因子所在层 (Contract【层几何】): tail_masked / hold_rows 用
-  int t0_abs = 0, t_lo = 0;
+  int t0_abs = 0, t_lo = 0, t_back = 0;
   FACTOR_HD size_t n() const { return static_cast<size_t>(T) * A; }
+  FACTOR_HD int t_hi() const { return T - t_back; } // 统计行 [t_lo, t_hi)
 };
 
 inline void assert_span(const Span &s) {
   assert(s.T >= 1 && s.A >= 1 && s.A <= kMaxA && static_cast<long long>(s.T) * s.A < (1LL << 31));
   assert(is_seg(s.g.S) && geo_of(s.g.S).N == s.g.N && geo_of(s.g.S).M0 == s.g.M0 && "Span::g 须是 kGeos 之一");
-  assert(s.t0_abs >= 0 && s.t_lo >= 0 && s.t_lo < s.T);
+  assert(s.t0_abs >= 0 && s.t_lo >= 0 && s.t_back >= 0 && s.t_lo < s.t_hi());
 }
 // prepped = ry 已由 prep_label 填 (评估入口); 假 = 只要两腿 + 掩码 (GPU 会话的宿主输入). seg = 因子所在层 (持有期按层校验)
 inline void assert_labels(const Labels &L, int seg, bool prepped) {
@@ -346,16 +347,31 @@ struct Row {
   float leg[kDirs][kLegs] = {};        // 两向两腿本侧超额的持仓收益 Σe / max(只数, cap) (【方向 Dir】)
   uint16_t leg_cnt[kDirs][kLegs] = {}; // 两向两腿本侧真持有只数
   float mkt[kLegs] = {};               // J 上做多 / 做空标签原值均值 (两腿的超额基准)
-  float grp[kGroups] = {};             // 组在分层侧的做多视角超额持仓收益 grp_sign · Σe / max(cnt, cap)
-  uint16_t cnt[kGroups] = {};          // 组分层侧样本数 (A ≤ kMaxA < 65536)
+  float grp[kGroups] = {};             // 组做多侧的超额持仓收益 Σe / max(cnt, cap)
+  uint16_t cnt[kGroups] = {};          // 组做多侧样本数 (A ≤ kMaxA < 65536)
   uint8_t ok = 0, ok_rac = 0;
 };
 // 方向 d 的多空 = 两腿持仓收益平均 (两腿各半资金, 无杠杆)
 FACTOR_HD inline float ls_row(const Row &r, int d) { return 0.5f * (r.leg[d][kLong] + r.leg[d][kShort]); }
+// 正向攒的行改读成方向 d (【方向 Dir】): 反向 = rIC 变号, 组号倒序, 两向腿系互换
+inline Row oriented(Row r, int d) {
+  if (d == kFwd)
+    return r;
+  r.ric = -r.ric;
+  for (int l = 0; l < kLegs; ++l) {
+    std::swap(r.leg[kFwd][l], r.leg[kRev][l]);
+    std::swap(r.leg_cnt[kFwd][l], r.leg_cnt[kRev][l]);
+  }
+  for (int k = 0; k < kGroups / 2; ++k) {
+    std::swap(r.grp[k], r.grp[kGroups - 1 - k]);
+    std::swap(r.cnt[k], r.cnt[kGroups - 1 - k]);
+  }
+  return r;
+}
 
 // ---- 二级输出: 每持有期一份 ----
 // 二级口径戳: 字段不变但口径变时 +1, 落盘 stat 与之不符读取即作废 (下次 Run 重算)
-inline constexpr int kStatSemver = 2;
+inline constexpr int kStatSemver = 3;
 // 一个逐行量 (rIC / rAC / LS) 沿 t 的矩 (见文件头【二级 HoldStat】)
 struct Moments {
   float mean = 0.f, sd = 0.f, ir = 0.f, t = 0.f, pos = 0.f, skew = 0.f, kurt = 0.f;
@@ -363,10 +379,10 @@ struct Moments {
 struct HoldStat {
   int seg = 0; // 因子所在层的每段行数 (finish 填; 不落文件, 载入时由因子目录的层给): 年化 / 换手折算用
   int hold = 0, n = 0, n_rac = 0;
-  int n_all = 0, n_trig = 0;   // 攒过的全部行 (真实收益的分母) / 触发行 (ok 且至少一腿非空)
+  int n_all = 0, n_trig = 0;   // 攒过的全部行 (真实收益的分母) / 触发行 (ok 且所评方向至少一腿非空)
   Moments ric, rac, ls[kDirs]; // 逐行量 (ric / ls: ok 行; rac: ok_rac 行); ls 两向
   float beta[kDirs] = {}, mono = 0.f;
-  float leg_n = 0.f;            // 平均每触发行一腿成员数 (正向两腿只数的平均; util_of 的分子)
+  float leg_n = 0.f;            // 平均每触发行一腿成员数 (所评方向两腿只数的平均; util_of 的分子)
   float leg[kDirs][kLegs] = {}; // 两向两腿每行持仓收益的均值 (Σ / n_all)
   float grp[kGroups] = {};      // 组每行持仓收益的均值 (Σ / n_all)
 };
@@ -453,13 +469,18 @@ FACTOR_HD inline bool hold_nets(int t, int hold, const Geo &g) {
 
 // ---- 仓位感知 (见文件头【仓位感知】; Row / 换手成本 / Inspect 尾部 / 池指数同一份) ----
 
-// 行 t 的批沿交接链的几何: t = 块内行号, 交接按绝对行 t0_abs + u 判; 块外 (u − h < 0 / u ≥ T) 视为断链
+// 交接链至多回走的交易日数 (【仓位感知】) = 平仓结清窗 (features LabelHold: PEND_DAYS − 1)
+inline constexpr int kChainDays = 8;
+
+// 行 t 的批沿交接链的几何: t = 块内行号, 交接按绝对行 t0_abs + u 判; 前一批越过 t 前 kChainDays 日 / 块外 (u − h < 0 / u ≥ T) 视为断链
 struct Chain {
   int t = 0, T = 0, A = 0, h = 0, hold = 0, t0_abs = 0;
   Geo g;
-  FACTOR_HD bool nets(int u) const { return u >= h && u < T && hold_nets(t0_abs + u, hold, g); } // 行 u 的批与行 u − h 的批交接
+  FACTOR_HD bool nets(int u) const { // 行 u 的批与行 u − h 的批交接
+    return u >= h && u < T && t - (u - h) <= kChainDays * g.S && hold_nets(t0_abs + u, hold, g);
+  }
 };
-FACTOR_HD inline Chain chain_of(int t, int T, int A, int hold, const Geo &g, int t0_abs) { return {t, T, A, hold_rows(hold, g), hold, t0_abs, g}; }
+FACTOR_HD inline Chain chain_of(int t, const Span &s, int hold) { return {t, s.T, s.A, hold_rows(hold, s.g), hold, s.t0_abs, s.g}; }
 
 // side 腿在行 t 的批里是否真持有: 行 t 价点本侧建仓方向可成交 → 是; 否则须与前一批交接且前一批同一组合 (m ∧ in(code)) 并真持有, 沿链回走.
 //   code / m / eo 已偏到行 t 的本格 (行 u 的格 = p[(u − t)·A]); 调用方保证本格在行 t 是成员 (m ∧ in)
@@ -529,17 +550,17 @@ struct Cost {
   FACTOR_HD Cost at(size_t i) const { return flat() ? Cost{} : Cost{{imp[kLong] + i, imp[kShort] + i}}; } // 偏到第 i 格 (行首 = t·A)
 };
 
-// 腿码 (两后端 / Inspect 同一份; 正向): r16 → 顶组 kLcLong / 底组 kLcShort / 其他组 kLcMid / rank 无效 kLcVoid. 前两个与 Leg 同值:
+// 腿码 (两后端 / Inspect 同一份): r16 → 方向 d 的多腿组 kLcLong / 空腿组 kLcShort / 其他组 kLcMid / rank 无效 kLcVoid. 前两个与 Leg 同值:
 // 腿成员 = lc ∈ {kLong, kShort} ∧ 该持有期标签有效位 (cost_row 逐格比本批 / 交接前一批的腿成员权)
 enum LegCode : uint8_t { kLcLong = kLong,
                          kLcShort = kShort,
                          kLcMid,
                          kLcVoid };
-FACTOR_HD inline uint8_t leg_code(unsigned x) {
+FACTOR_HD inline uint8_t leg_code(unsigned x, int d) {
   const int g = x != kRankNone ? grp_of(x) : -1;
-  return g < 0 ? kLcVoid : g == leg_group(kFwd, kLong) ? kLcLong
-                       : g == leg_group(kFwd, kShort)  ? kLcShort
-                                                       : kLcMid;
+  return g < 0 ? kLcVoid : g == leg_group(d, kLong) ? kLcLong
+                       : g == leg_group(d, kShort)  ? kLcShort
+                                                    : kLcMid;
 }
 
 // 一腿的换手成本和 (沿行求和; 量按【持仓口径】的权, 每批资金 1)
@@ -574,7 +595,7 @@ struct CostAcc {
   }
 };
 
-// 每期净多空 (正向) = ls_period − 两腿每期成本的平均 (两腿各半资金, 同 ls_of); 年化 = × span_per_year (s.hold 由 finish 填)
+// 每期净多空 (所评方向) = ls_period − 两腿每期成本的平均 (两腿各半资金, 同 ls_of); 年化 = × span_per_year (s.hold 由 finish 填)
 inline double net_ls_period(const HoldStat &s, const CostAcc &c, double fixed_impact) {
   return ls_period(s, kFwd) - 0.5 * (c.cost(kLong, fixed_impact, s.n_all) + c.cost(kShort, fixed_impact, s.n_all));
 }
@@ -633,7 +654,7 @@ FACTOR_HD inline double ls_of(const LegSum *leg, const double *mkt, double cap) 
 }
 
 // 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 / 组计数 → grp (持仓收益) / cnt; 两向两腿 → leg / leg_cnt; 两腿基准 → mkt.
-//   sm[kLegs] = J 上 Σlv / Σsv; gs[k] / gc[k] = 组 k 分层侧 (grp_leg) 的 Σ 本侧标签 / 只数; lg[d][l] = 方向 d 腿 l 本侧真持有的 (只数, Σ 本侧标签);
+//   sm[kLegs] = J 上 Σlv / Σsv; gs[k] / gc[k] = 组 k 做多侧的 Σlv / 只数; lg[d][l] = 方向 d 腿 l 本侧真持有的 (只数, Σ 本侧标签);
 //   cap = 满仓. 不 ok → r 标签侧字段保持 0
 FACTOR_HD inline void finish_row(const unsigned long long *s, const double *sm, const double *gs, const int *gc, const LegSum (*lg)[kLegs], double cap,
                                  Row &r) {
@@ -647,9 +668,9 @@ FACTOR_HD inline void finish_row(const unsigned long long *s, const double *sm, 
   r.ric = ric;
   for (int l = 0; l < kLegs; ++l)
     r.mkt[l] = static_cast<float>(mkt[l]);
-  for (int k = 0; k < kGroups; ++k) { // 超额和 Σ(y − mkt) = Σy − cnt·mkt, 按持仓分母折成收益, 再转做多视角
+  for (int k = 0; k < kGroups; ++k) { // 超额和 Σ(y − mkt) = Σy − cnt·mkt, 按持仓分母折成收益
     r.cnt[k] = static_cast<uint16_t>(gc[k]);
-    r.grp[k] = static_cast<float>(grp_sign(k) * (gs[k] - gc[k] * mkt[grp_leg(k)]) / book_den(gc[k], cap));
+    r.grp[k] = static_cast<float>((gs[k] - gc[k] * mkt[kLong]) / book_den(gc[k], cap));
   }
   for (int d = 0; d < kDirs; ++d)
     for (int l = 0; l < kLegs; ++l) {
@@ -688,17 +709,24 @@ inline double mono_of(const double *g, int K) {
 
 // 一个逐行量 (rIC / rAC / LS 同一份) 的幂和 → Moments; n < 3 → 全 0
 struct MomAcc {
-  int n = 0, npos = 0; // 行数 / > 0 行数
+  int n = 0, npos = 0, nneg = 0; // 行数 / > 0 行数 / < 0 行数
   double s1 = 0.0, s2 = 0.0, s3 = 0.0, s4 = 0.0;
   FACTOR_HD void add(float v) {
     ++n;
-    npos += v > 0.f;
+    npos += v > 0.f, nneg += v < 0.f;
     const double x = v, x2 = x * x;
     s1 += x, s2 += x2, s3 += x2 * x, s4 += x2 * x2;
   }
   FACTOR_HD void merge(const MomAcc &o) {
-    n += o.n, npos += o.npos;
+    n += o.n, npos += o.npos, nneg += o.nneg;
     s1 += o.s1, s2 += o.s2, s3 += o.s3, s4 += o.s4;
+  }
+  // 逐行量取负后的幂和 (奇次变号, 正负计数互换): 与逐行 add(−v) 逐位同
+  MomAcc negated() const {
+    MomAcc m = *this;
+    m.npos = nneg, m.nneg = npos;
+    m.s1 = -s1, m.s3 = -s3;
+    return m;
   }
   // h = 持有期折成的行数 (hold_rows; t 值的重叠折算 n/h)
   Moments finish(int h) const {
@@ -730,18 +758,18 @@ struct Accum {
     MomAcc ric, rac, ls[kDirs];                    // ric.n = ls[d].n = ok 行数 (标签侧全部统计的样本), rac.n = ok_rac 行数
     double smk = 0.0, smk2 = 0.0, slm[kDirs] = {}; // mkt[kLong] 幂和 + ls[d]·mkt 交叉 (beta[d])
     double sleg[kDirs][kLegs] = {};                // 两向两腿持仓收益和
-    long long nleg = 0;                            // 正向两腿只数和 (leg_n)
-    int n_all = 0, n_trig = 0;                     // 全部行 / 触发行 (ok 且正向至少一腿非空)
+    long long nleg[kDirs] = {};                    // 两向两腿只数和 (leg_n)
+    int n_all = 0, n_trig[kDirs] = {};             // 全部行 / 两向触发行 (ok 且该向至少一腿非空)
     FACTOR_HD void add(const Row &w) {
       ++n_all;
       if (w.ok) {
-        const unsigned c2 = w.leg_cnt[kFwd][kLong] + w.leg_cnt[kFwd][kShort];
-        n_trig += c2 > 0;
-        nleg += c2;
         ric.add(w.ric);
         const double mk = w.mkt[kLong];
         smk += mk, smk2 += mk * mk;
         for (int d = 0; d < kDirs; ++d) {
+          const unsigned c2 = w.leg_cnt[d][kLong] + w.leg_cnt[d][kShort];
+          n_trig[d] += c2 > 0;
+          nleg[d] += c2;
           const float v = ls_row(w, d);
           ls[d].add(v);
           slm[d] += static_cast<double>(v) * mk;
@@ -759,9 +787,9 @@ struct Accum {
         ls[d].merge(o.ls[d]), slm[d] += o.slm[d];
         for (int l = 0; l < kLegs; ++l)
           sleg[d][l] += o.sleg[d][l];
+        nleg[d] += o.nleg[d], n_trig[d] += o.n_trig[d];
       }
-      nleg += o.nleg;
-      n_all += o.n_all, n_trig += o.n_trig;
+      n_all += o.n_all;
     }
   };
   // 一个组: 组持仓收益 / 组样本数 沿 t 的和 (GPU 上 lane k 攒组 k; 只收 ok 行, 由调用方判)
@@ -796,7 +824,7 @@ struct Accum {
     s.n = head.ric.n;
     s.n_rac = head.rac.n;
     s.n_all = head.n_all;
-    s.n_trig = head.n_trig;
+    s.n_trig = head.n_trig[kFwd];
     s.ric = head.ric.finish(h);
     s.rac = head.rac.finish(h);
     for (int d = 0; d < kDirs; ++d)
@@ -817,10 +845,26 @@ struct Accum {
     for (int d = 0; d < kDirs; ++d)
       for (int l = 0; l < kLegs; ++l)
         s.leg[d][l] = static_cast<float>(head.sleg[d][l] / static_cast<double>(s.n_all));
-    s.leg_n = s.n_trig > 0 ? static_cast<float>(static_cast<double>(head.nleg) / (2.0 * s.n_trig)) : 0.f;
+    s.leg_n = s.n_trig > 0 ? static_cast<float>(static_cast<double>(head.nleg[kFwd]) / (2.0 * s.n_trig)) : 0.f;
     return s;
   }
 };
+// 正向攒的累加器改读成方向 d (与逐行 oriented(Row, d) 再攒逐位同): 反向 = rIC 幂和取负, 组倒序, 两向腿系互换
+inline Accum oriented(Accum a, int d) {
+  if (d == kFwd)
+    return a;
+  Accum::Head &h = a.head;
+  h.ric = h.ric.negated();
+  std::swap(h.ls[kFwd], h.ls[kRev]);
+  std::swap(h.slm[kFwd], h.slm[kRev]);
+  std::swap(h.nleg[kFwd], h.nleg[kRev]);
+  std::swap(h.n_trig[kFwd], h.n_trig[kRev]);
+  for (int l = 0; l < kLegs; ++l)
+    std::swap(h.sleg[kFwd][l], h.sleg[kRev][l]);
+  for (int k = 0; k < kGroups / 2; ++k)
+    std::swap(a.grp[k], a.grp[kGroups - 1 - k]);
+  return a;
+}
 
 // 流程出口 Accum[hd.n] → HoldStat[hd.n] (两后端同一份; 见文件头【视图】)
 inline void finish_all(const Accum *acc, const Holds &hd, int seg, HoldStat *out) {

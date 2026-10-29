@@ -1371,29 +1371,54 @@ struct TsWMeanRoll {
 };
 
 // =============================================================================
-// EXPO (1): 全程递推, 不按段重置
+// EXPO (1): 最近 kMaxD 行按行龄加权, 不按段重置
 // =============================================================================
-// TsMeanEma: x 有效时 y = 已出现过有效值 ? k·x + (1−k)·y : x; x 无效时 y 不动; 尚无有效样本 → 0
+// TsMeanEma: y = Σ q^{t−u} x_u / Σ q^{t−u} (q = 1−k, u 取窗 (t−kMaxD, t] 内有效格); 窗内无有效样本 → 0.
+//   滑动递推, 权以窗内最新有效格 tv 为 1 (s, sw 同乘公因子, 比值不变; 不下溢): 新有效格进 → 旧和 × q^{t−tv} 再加;
+//   滑出格 u 有效 → 减 q^{tv−u}·x_u; 窗内空了归零 (不留减法残差). q^i 查表 (i < kMaxD)
 struct TsMeanEma {
-  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<double>(kTileA), b.take<uint8_t>(kTileA)}; }
+  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<double>(kTileA), b.take<double>(kTileA), b.take<int>(kTileA), b.take<int>(kTileA)}; }
   CP_SCRATCH
   CP_RUN {
     Bump b{static_cast<char *>(ws)};
-    const auto [y, on] = carve(b, c);
+    const auto [s, sw, n, tv] = carve(b, c);
     assert(c.p.k > 0.f && c.p.k <= 1.f);
-    const double k = c.p.k;
+    double qp[kMaxD];
+    qp[0] = 1.0;
+    for (int i = 1; i < kMaxD; ++i)
+      qp[i] = qp[i - 1] * (1.0 - static_cast<double>(c.p.k));
     for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
       const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
-      std::fill_n(y, w, 0.0);
-      std::fill_n(on, w, 0);
+      std::fill_n(s, w, 0.0);
+      std::fill_n(sw, w, 0.0);
+      std::fill_n(n, w, 0);
+      std::fill_n(tv, w, -1);
       for (int t = 0; t < T; ++t) {
         const size_t r = static_cast<size_t>(t) * A;
-        FACTOR_COLS for (int a = 0; a < w; ++a) {
-          const bool m = xm[r + a] != 0;
-          const double x = xv[r + a];
-          y[a] = m ? (on[a] ? k * x + (1.0 - k) * y[a] : x) : y[a];
-          on[a] |= m;
-          detail::put(ov, om, r + a, y[a], true);
+        if (t >= kMaxD) {
+          const int u = t - kMaxD;
+          const size_t q = static_cast<size_t>(u) * A;
+          for (int a = 0; a < w; ++a) {
+            if (!xm[q + a])
+              continue;
+            if (--n[a] == 0) {
+              s[a] = 0.0, sw[a] = 0.0;
+            } else {
+              const double f = qp[tv[a] - u];
+              s[a] -= f * xv[q + a];
+              sw[a] -= f;
+            }
+          }
+        }
+        for (int a = 0; a < w; ++a) {
+          if (xm[r + a]) {
+            const double f = n[a] > 0 ? qp[t - tv[a]] : 0.0;
+            s[a] = f * s[a] + xv[r + a];
+            sw[a] = f * sw[a] + 1.0;
+            ++n[a];
+            tv[a] = t;
+          }
+          detail::put(ov, om, r + a, n[a] > 0 ? s[a] / sw[a] : 0.0, true);
         }
       }
     }

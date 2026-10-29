@@ -9,6 +9,7 @@
 #include <cassert>
 #include <filesystem>
 #include <map>
+#include <tuple>
 
 namespace GUI::Factors {
 
@@ -75,14 +76,14 @@ void FactorsService::scan(const FactorsRequest &req, std::vector<FactorRow> &out
   const FeatureTable &ft = *req.scope.ft;
   for (const std::filesystem::path &p : list_factor_files(req.scope.factor_dir))
     ScanFactorFile(p, ft, out);
-  std::map<std::pair<int, std::string>, std::string> seen; // (hold, 具体规范串) → 首行 key
+  std::map<std::tuple<int, int, std::string>, std::string> seen; // (hold, 方向, 具体规范串) → 首行 key
   for (FactorRow &w : out) {
     if (w.expr.empty())
       continue;
-    if (const auto it = seen.find({w.hold_src, w.expr}); it != seen.end())
+    if (const auto it = seen.find({w.hold_src, w.sign, w.expr}); it != seen.end())
       w.dup_of = it->second;
     else
-      seen.emplace(std::pair{w.hold_src, w.expr}, w.key);
+      seen.emplace(std::tuple{w.hold_src, w.sign, w.expr}, w.key);
   }
   if (!req.spec.evaluate) // 只扫描: BROKEN 行也算"处理完"
     for (FactorRow &r : out)
@@ -127,7 +128,7 @@ bool FactorsService::eval_file(const FactorsRequest &req, FactorFlow &F, E &eng,
   // 该文件的权重 (条目 e ↔ 行 idx[e]) → 根集 (同式同口径共根, 只评一次) → 一张共享森林. rows 只本 worker 写, 读不用锁
   RootSet rs;
   for (const size_t i : idx)
-    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame);
+    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
   // Y = 全部持有期 + 全部金额段, 整期一块时同作用域跨文件复用 (分块 = 作业自有, 逐文件重读); X = 本文件的叶 (retain; keep → 读过的全留)
   JobOut o;
   o.job.spec.y = y_full(*req.scope.ft, req.scope.max_impact);

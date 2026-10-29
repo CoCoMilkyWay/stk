@@ -153,14 +153,15 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     const auto in = [g](uint16_t v) { return v != kRankNone && factor::stat::grp_of(v) == g; };
     const factor::stat::Cell<uint16_t> cl{c, rx + a, lb.m + a, lb.eo + a, yv};
     const bool cont = cl.continues(in);
-    const bool gsh = factor::stat::grp_leg(g) == kShort;  // 分层侧分支各用常量腿 (yv 动态下标会落 local memory)
-    if (gsh ? cl.held(kShort, in) : cl.held(kLong, in)) { // 自己的槽, 无竞争
-      gs[g][lane] += gsh ? cl.ret(kShort, cont) : cl.ret(kLong, cont);
+    const bool bl = cl.held(kLong, in);
+    const float vl = bl ? cl.ret(kLong, cont) : 0.f;
+    if (bl) { // 组按做多侧; 自己的槽, 无竞争
+      gs[g][lane] += vl;
       gc[g][lane] += 1;
     }
     if (const int d = factor::stat::long_dir(g); d >= 0) { // 端组: 做多侧 → 方向 d 多腿, 做空侧 → 方向 d ^ 1 空腿
-      const bool bl = cl.held(kLong, in), bs = cl.held(kShort, in);
-      const float vl = bl ? cl.ret(kLong, cont) : 0.f, vs = bs ? cl.ret(kShort, cont) : 0.f;
+      const bool bs = cl.held(kShort, in);
+      const float vs = bs ? cl.ret(kShort, cont) : 0.f;
 #pragma unroll
       for (int e = 0; e < kDirs; ++e) { // 编译期展开的 select: 累加器留在寄存器 (动态下标会落 local memory)
         fs[kLegs + e * kLegs + kLong] += e == d ? vl : 0.f;
@@ -327,7 +328,7 @@ inline void rank_launch(const Src &src, uint16_t *out, int T, int A, int C, cuda
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 阶段 1: 候选批 B (口径 f, 只看池内 g ∧ m) → rx[c][T][A] (块内全部行, 含 carry). 口径分叉只在这里
+// 阶段 1: 候选批 B (口径 f, 只看池内 g ∧ m) → rx[c][T][A] (块内全部行, 含前后带). 口径分叉只在这里
 inline void rank_x(const Batch &B, const uint8_t *g, Frame f, const Span &s, uint16_t *rx, cudaStream_t stream) {
   factor::stat::assert_span(s);
   assert(B.C >= 1 && B.C <= kMaxBatch && g && rx);

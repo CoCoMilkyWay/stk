@@ -1,9 +1,10 @@
 // SearchService — Factors 页 Search 的单 worker: 对表格高光的那一个因子文件 (模板 expr, Expr.hpp 自由参数) 搜它的**全部自由参数**
 // (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 只搜调用方给定的一个持有期 h (限 Search/Config kSearchHolds; 搜哪个周期由上层定), 目标 = 该 h 的
-// 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本; 硬门槛 mono ≥ kMinMono), 按冗余规则终选持仓重合少的
+// 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC · mono² (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本; 硬门槛 mono ≥ kMinMono), 按冗余规则终选持仓重合少的
 // 显著权重 (Contract【多权重】, 个数不设上限), picks 替换该因子文件里同 h 的 weights (空 picks = 清掉该 h), 别的 h 的权重不动; fresh 先清空
-// 全部 weights (Search all 每文件首档: 该文件各档整份重搜) (FactorsFile WriteFactorWeights; UI 随后自动 Run 重算每权重的 stat).
-// 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算, 文件里不留搜索结论.
+// 全部 weights (Search all 每文件首档: 该文件各档整份重搜) (FactorsFile WriteFactorSearch; UI 随后自动 Run 重算每权重的 stat).
+// 无自由参数的具体式也可搜: 只评它本身一个点 (定方向, μ = 观测 g 判显著).
+// 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算; 文件里只留结局 (search[]: 评估期 + 无显著时的代表点).
 // 配置全在 factor/Search/Config.hpp. 唯一的预算量 = 第 0 趟点数 kInit; 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 只装 h 一组标签 (hd.n = 1); 趟与趟之间才有依赖):
@@ -15,14 +16,16 @@
 //   每趟之后      已评点拟合曲面 (Search/Surface.hpp, 噪声 = 各点 SE) → 峰 → pick_diverse 得活跃峰 (= 当前终选集)
 //   趟 1..        每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起 (夹到区间端), 落到已评点就减半再试; 新点的 μ + sd − μ_c > SE_c (可能显著胜过峰) 才评;
 //                 取整回到 c / 不合法 / 本趟已提 / 不值得 → 该方向止. 新点去重拼成一趟; 没有新点 → 停
-//   终            最后一次曲面的 pick_diverse 即 weights (可空) 落盘; 中途放弃 (输入问题 / 取消) → 文件不动
+//   终            最后一次曲面的 pick_diverse 即 weights (可空) 落盘, 连同结局 search[] (无显著时的代表点: 过门槛的峰里 μ 最高的,
+//                 没有峰则可用点里 mono 最高的); 中途放弃 (输入问题 / 取消) → 文件不动
 //   r16 抽样      每趟顺带把每个候选的 kCorrRows 抽样行 r16 回宿主常驻 (约 kCorrRows × A × 2 字节 / 候选), 截面相关按需两两现算 (Stat/Host lag_row),
 //                 不另开一趟
 //
 // 评估 (Search 算子, 两后端语义同 Stat; 只装 / 评给定持有期的标签组):
-//   分块流式  按天切块, 块 i = 交易日 [i·D, (i+1)·D), 装载时前面多带 carry = ⌈(模板回看 + max_lag) / seg⌉ 日 (Space lookback: 各路径 ROLL 窗长之和,
-//             自由 d 取 kMaxD), 统计从 t_lo 起 (首块无 carry); 块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量逐位同
-//             (EXPAND 段界 reset; 唯 EXPO 全历史递推在块首重启, 差 (1−k)^carry 行, 可忽略); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
+//   分块流式  按天切块, 块 i 统计交易日 [i·D, (i+1)·D), 装载时前后多带 FactorsEngine bands_of 日: 前带 = ⌈(模板回看 + 持有期行) / seg⌉
+//             + kChainDays (Space lookback: 各路径 ROLL 窗长之和, 自由 d 取 kMaxD), 后带 = ⌈持有期行 / seg⌉ (首块无前带 / 末块无后带);
+//             块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量一致 (EXPAND 段界 reset; 各窗回看与交接链都有限,
+//             前后带盖住); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
 //   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次); 批 = 引擎 batch_of (FactorsEngine).
 //             CPU: 每节点全核 (run_node), 根算完立刻全核 Stat (rank_x + accum_rows, 与 Run 同一条; 抽样行拷 rx), 不留根平面; 批 = kBatch;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
@@ -48,13 +51,13 @@ struct SharedData;
 namespace GUI::Factors {
 
 struct SearchSpec {
-  std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl, 须含自由参数)
+  std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl; 无自由参数 = 只评本身)
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
   int hold = 0;                                        // 搜的持有期键 (字段表标签组之一, search_hold)
   bool fresh = false;                                  // 落盘前先清空文件全部 weights (否则只换 hold 的)
   bool keep = false;                                   // 块跨请求常驻 (agent 会话: 整期一块进 worker 的块, 叶只增不丢; 否则作业自有, 用完即弃)
 };
-using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights); scope.max_impact 不看 (不评成本)
+using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights / search); scope.max_impact 不看 (不评成本)
 // 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键; ft = 该层字段表
 bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool fresh,
                        bool gpu, SearchRequest &req);
@@ -75,13 +78,13 @@ struct SearchPick {
 
 // 一块的装载量
 struct SearchChunk {
-  int days = 0;    // 装载天数 (含前带 carry)
+  int days = 0;    // 装载天数 (含前后带)
   double mb = 0.0; // 宿主装载量 (特征 + 门控 + 标签; CPU 另含预处理标签)
 };
 
 struct SearchResult {
   std::string file, tmpl;         // 对象 + 模板规范串
-  std::vector<std::string> slots; // 可搜槽名 ("TsDeltaRoll.d" …)
+  std::vector<std::string> slots; // 可搜槽名 ("TsDeltaRoll.d" …; 空 = 无自由参数)
   int hold = 0;                   // 搜的持有期键
   int n_peak = 0;                 // 最后一次曲面的峰数
   std::vector<SearchCand> cands;  // 全部评过的, score 降序

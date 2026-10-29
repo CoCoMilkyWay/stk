@@ -10,8 +10,8 @@
 //     rank_x_rows / rank_y_rows   行区间核 [t0,t1) (单线程, 绝对 t)
 //     prep_label    ry[T][A]                                     ← exec.rows(rank_y_rows)
 //     rank_x        rx[T][A]                                     ← exec.rows(rank_x_rows)
-//     accum_rows    rx × 标签集 → 行 [t_lo,T) 的 Row 折进 Accum[H]  ← exec.rows(每 t 每 h row_stat → sink → Accum[tid]) → merge
-//                   块语义 (Search 契约【分块流式】): t0_abs 只给 tail_masked; 块内 t − h < 0 → 无 AC; [0,t_lo) 是 carry 只给 lag 行
+//     accum_rows    rx × 标签集 → 统计行 [t_lo,t_hi) 的 Row 折进 Accum[H]  ← exec.rows(每 t 每 h row_stat → sink → Accum[tid]) → merge
+//                   块语义 (Search 契约【分块流式】): t0_abs 给 tail_masked / 交接; 块内 t − h < 0 → 无 AC; 前带只给 lag 行 / 交接链, 后带只给续持
 //                   sink 每行一次 (线程内, 行不相交): ext() 给本行 label_row 的逐格扩展, row(i, t, r, ext) 收行;
 //                   DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (Inspect 尾部分层)
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
@@ -107,7 +107,7 @@ inline void prep_label(Exec &ex, const Label &lb, const Span &s, uint16_t *ry, W
   ex.rows(s.T, [&](int t0, int t1, int tid) { rank_y_rows(lb, t0, t1, s.A, ry, w.sc[static_cast<size_t>(tid)]); });
 }
 
-// 阶段 1: r16(x) → rx [T][A] (块内全部行, 含 carry)
+// 阶段 1: r16(x) → rx [T][A] (块内全部行, 含前后带)
 template <class Exec>
 inline void rank_x(Exec &ex, Plane x, const uint8_t *g, Frame f, const Span &s, uint16_t *rx, Workspace &w) {
   factor::stat::assert_span(s);
@@ -115,7 +115,7 @@ inline void rank_x(Exec &ex, Plane x, const uint8_t *g, Frame f, const Span &s, 
   ex.rows(s.T, [&](int t0, int t1, int tid) { rank_x_rows(x, g, f, t0, t1, s.A, rx, w.sc[static_cast<size_t>(tid)]); });
 }
 
-// 阶段 2: rx × L 组标签 → 行 [t_lo,T) 的 Row, 每行先 sink.row 再折进 acc[hd.n] (覆盖)
+// 阶段 2: rx × L 组标签 → 统计行 [t_lo, t_hi) 的 Row, 每行先 sink.row 再折进 acc[hd.n] (覆盖)
 template <class Exec, class Sink>
 inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels &L, Workspace &w, Accum *acc, const Sink &sink) {
   factor::stat::assert_span(s);
@@ -123,7 +123,7 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
   const int H = L.hd.n, A = s.A, nt = ex.threads();
   assert(rx && acc && w.A == A && w.H >= H && w.threads >= nt);
   std::fill(w.acc.begin(), w.acc.begin() + static_cast<size_t>(nt) * H, Accum{});
-  ex.rows(s.T - s.t_lo, [&](int r0, int r1, int tid) {
+  ex.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int tid) {
     Accum *a = w.acc.data() + static_cast<size_t>(tid) * H;
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
       const size_t base = static_cast<size_t>(t) * A;
@@ -131,7 +131,7 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
         const int hold = L.hd.k[i], h = factor::stat::hold_rows(hold, s.g);
         typename Sink::Ext e = sink.ext();
         const Row r = row_stat(rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base),
-                               factor::stat::chain_of(t, s.T, A, hold, s.g, s.t0_abs), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g), e);
+                               factor::stat::chain_of(t, s, hold), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g), e);
         sink.row(i, t, r, e);
         a[i].add(r);
       }
@@ -152,18 +152,18 @@ inline void run(Exec &ex, Plane x, const uint8_t *g, Frame f, const Span &s, con
   accum_rows(ex, s, rx, L, w, acc, sink);
 }
 
-// 腿码: rx → lc [T][A] (契约 leg_code 逐格)
+// 腿码: rx → lc [T][A] (契约 leg_code 逐格; d = 所评方向)
 template <class Exec>
-inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *lc) {
+inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, int d, uint8_t *lc) {
   factor::stat::assert_span(s);
   assert(rx && lc);
   ex.rows(s.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; i < e; ++i)
-      lc[i] = factor::stat::leg_code(rx[i]);
+      lc[i] = factor::stat::leg_code(rx[i], d);
   });
 }
 
-// 换手成本 (契约【换手成本】): lc × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo,T) (同 accum_rows), 每 t 一次
+// 换手成本 (契约【换手成本】): lc × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo, t_hi) (同 accum_rows), 每 t 一次
 // cost_row; 本行尾部 → 不攒; 交接链 chain_of (块内 t ≥ h 且 hold_nets → 前一批 = 行 t−h); 本批平仓不交接 (hold_nets(t + h) 假) → settle;
 // cap = 一腿满仓 (腿码 = 两端组 → L.cap; Inspect 尾部另给). C ≥ 1 (固定段 = 空 Cost). land 非空 → 另落逐行 land[(k·H + i)·T + t]
 // (只本行, 尾部行全 0; Portfolio 逐行成本)
@@ -176,7 +176,7 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
   assert(lc && c && out && cap > 0.0 && C >= 1 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
   const size_t per = static_cast<size_t>(C) * H;
   std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
-  ex.rows(s.T - s.t_lo, [&](int r0, int r1, int tid) {
+  ex.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int tid) {
     CostAcc *acc = w.cacc.data() + static_cast<size_t>(tid) * per;
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
       const size_t base = static_cast<size_t>(t) * A;
@@ -189,7 +189,7 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
         CostHold &q = ch[i];
         q.m = L.l[i].m + base;
         q.eo = L.l[i].eo + base;
-        q.c = factor::stat::chain_of(t, s.T, A, hold, s.g, s.t0_abs);
+        q.c = factor::stat::chain_of(t, s, hold);
         q.settle = !factor::stat::hold_nets(ta + h, hold, s.g);
       }
       Cost cr[kMaxCost];

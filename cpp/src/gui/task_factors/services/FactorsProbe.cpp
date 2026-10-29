@@ -72,11 +72,13 @@ void CostP::root(const Ctx &c, const RootView &v) {
       costs[static_cast<size_t>(k)].acc[i].merge(acc[static_cast<size_t>(k) * H + i]);
 }
 
-void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o) {
+void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o) {
   constexpr int K = factor::stat::kGroups;
   constexpr size_t kBuf = 4096;
   const int nt = ex.threads();
+  const bool rev = d == factor::stat::kRev;
   const auto ok = [&](size_t i) { return rx[i] != factor::stat::kRankNone && m[i] != 0; };
+  const auto val = [&](size_t i) { return rev ? -v[i] : v[i]; };
   std::vector<KLLcache> kll;
   const auto sketch_begin = [&] {
     kll.clear();
@@ -109,8 +111,8 @@ void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, cons
         const size_t i = static_cast<size_t>(t) * A + a;
         if (!ok(i))
           continue;
-        const float x = v[i];
-        const int g = factor::stat::grp_of(rx[i]);
+        const float x = val(i);
+        const int g = rev ? K - 1 - factor::stat::grp_of(rx[i]) : factor::stat::grp_of(rx[i]);
         mn[g] = cnt[g] ? std::min(mn[g], x) : x;
         mx[g] = cnt[g] ? std::max(mx[g], x) : x;
         ++cnt[g];
@@ -175,9 +177,12 @@ void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, cons
     std::vector<float> buf;
     buf.reserve(kBuf);
     for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i) {
-      if (!ok(i) || v[i] < lo || v[i] > hi)
+      if (!ok(i))
         continue;
-      buf.push_back(v[i]);
+      const float x = val(i);
+      if (x < lo || x > hi)
+        continue;
+      buf.push_back(x);
       if (buf.size() == kBuf) {
         kll[static_cast<size_t>(tid)].addBatch(buf);
         buf.clear();

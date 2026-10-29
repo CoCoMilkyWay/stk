@@ -602,12 +602,12 @@ bool ensure_x(Block &c, const Io &io, const Chunk &k, const std::vector<LeafId> 
 } // namespace
 
 Rc ensure_block(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, bool retain) {
-  assert(k.d0 <= k.s0 && k.s0 < k.d1);
+  assert(k.d0 <= k.s0 && k.s0 < k.s1 && k.s1 <= k.d1);
   const Rc rc = rc_of(ensure_yb(c, io, k, s) && ensure_x(c, io, k, s.x, retain), io.lr);
   if (rc == Rc::Stale)
     c.reset();
   if (rc == Rc::Ok)
-    c.t_lo = static_cast<int>(k.s0 - k.d0) * io.ft.seg;
+    c.t_lo = static_cast<int>(k.s0 - k.d0) * io.ft.seg, c.t_back = static_cast<int>(k.d1 - k.s1) * io.ft.seg;
   return rc;
 }
 

@@ -25,7 +25,7 @@ inline constexpr int kSearchHolds[] = {
 };
 
 // ---- 硬门槛 (Contract【目标】) ----
-inline constexpr double kMinMono = 0.9; // 分层单调性 mono (定向后) 下限
+inline constexpr double kMinMono = 0.95; // 分层单调性 mono (定向后) 下限: 分层不清的因子没有分析价值
 
 // ---- 预算 ----
 inline constexpr int kInit = 64;       // 第 0 趟采样点数 (Space【采样】; 唯一的预算量, 整数槽取整去重后可能更少)

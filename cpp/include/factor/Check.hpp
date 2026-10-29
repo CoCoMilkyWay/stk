@@ -236,7 +236,7 @@ inline constexpr KParam kKParams[] = {
     {"TsGt", 0.f, 0.f}, // 正态数据下约一半过阈
     {"TsTodMask", 30.f, 90.f},
     {"TsQuantileRoll", 0.25f, 0.f}, // 非 0.5: 打一般分位的取整边界
-    {"TsMeanEma", 0.2f, 0.f},
+    {"TsMeanEma", 0.02f, 0.f},      // 衰减慢: 滑出窗的样本权重不可忽略, 打窗截断
     {"CsQuantile", 0.25f, 0.f},
     {"CsWinsor", 0.05f, 0.f},
     {"CsBucket", 5.f, 0.f},

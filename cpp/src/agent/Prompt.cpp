@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -198,18 +199,29 @@ std::string Text(const Stat &s) {
   return b;
 }
 
+// 目标 ± 标准误 (t = 目标 / 标准误)
+std::string Text(double g, double se) {
+  char b[64];
+  std::snprintf(b, sizeof(b), "%.3g ± %.2g (t %.1f)", g, se, se > 0.0 ? g / se : 0.0);
+  return b;
+}
+
 std::string Text(const Weight &w) {
   if (!w.has)
     return "无该持有期统计";
-  char b[64];
-  std::snprintf(b, sizeof(b), " · score %.3g · 有效率 %.0f%%", w.score, w.valid * 100.0);
-  return Text(w.st) + b;
+  char b[48];
+  std::snprintf(b, sizeof(b), " · 有效率 %.0f%%", w.valid * 100.0);
+  return Text(w.st) + " · score " + (std::isfinite(w.score) ? Text(w.score, w.se) : std::string("不过门槛")) + b + (w.sign < 0 ? " · 取反" : "");
 }
 
 std::string Text(const Top &t) {
-  char b[64];
-  std::snprintf(b, sizeof(b), " · 目标 ls·rIC %.3g ± %.3g", t.g, t.se);
-  return Text(t.st) + b + (t.sign < 0 ? " · 取反" : "");
+  std::string s = Text(t.st) + " · 目标 " + Text(t.g, t.se);
+  if (t.peak) {
+    char b[48];
+    std::snprintf(b, sizeof(b), " · 曲面估计 %.3g", t.mu);
+    s += b;
+  }
+  return s + (t.sign < 0 ? " · 取反" : "");
 }
 
 std::string Brief(const Result &r) {
@@ -220,7 +232,7 @@ std::string Brief(const Result &r) {
   case Verdict::Weights:
     return std::to_string(r.ws.size()) + " 个权重, 最佳 " + Text(*r.best());
   case Verdict::Null:
-    return r.top ? std::string(name(r.verdict)) + " (" + r.top->miss + "), 目标最高 " + Text(*r.top) : std::string(name(r.verdict));
+    return r.top ? std::string(name(r.verdict)) + " (" + r.top->miss + "), 代表点 " + Text(*r.top) : std::string(name(r.verdict));
   case Verdict::Pending:
     return name(r.verdict);
   }
@@ -228,6 +240,8 @@ std::string Brief(const Result &r) {
 }
 
 std::string Detail(const Result &r) {
+  if (!r.visible)
+    return "- 统计不在当前评估期上 (不可比), 不作数\n";
   switch (r.verdict) {
   case Verdict::Unstaged:
   case Verdict::Broken:
@@ -239,8 +253,9 @@ std::string Detail(const Result &r) {
     return s;
   }
   case Verdict::Null:
-    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 目标最高的候选 `" + r.top->expr + "`: " + Text(*r.top) + "\n"
-                 : std::string("- Search 无显著权重 (本持有期 score 不显著为正, 或 mono 不达标)\n");
+    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + (r.top->peak ? "过门槛的峰" : "mono 最高的点") + ") `" + r.top->expr +
+                       "`: " + Text(*r.top) + "\n"
+                 : std::string("- Search 无显著权重 (没有一个点算得出该持有期统计)\n");
   case Verdict::Pending:
     return "- " + std::string(name(r.verdict)) + "\n";
   }
@@ -256,8 +271,11 @@ Message SystemMessage(const Context &c, const Gate &g) {
   for (const Op &o : c.ops)
     ops += "| " + o.name + " | " + cell(o.name_cn) + " | $" + cell(o.sig) + "$ | " + o.out + " | $" + cell(o.tex) + "$ | " + cell(o.note) + " |\n";
   std::string lib;
-  for (size_t i = 0; i < c.library.size() && i < static_cast<size_t>(kLibTop); ++i) {
-    const Result &r = c.library[i];
+  int n_lib = 0;
+  for (const Result &r : c.library) {
+    if (!r.visible || n_lib == kLibTop)
+      continue;
+    ++n_lib;
     const Weight *w = r.best();
     lib += "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n";
     lib += w ? "  - 最佳权重 `" + w->expr + "`: " + Text(*w) + "\n" : std::string("  - 本持有期无统计\n");
@@ -268,6 +286,8 @@ Message SystemMessage(const Context &c, const Gate &g) {
                             {"seg", std::to_string(c.seg)},
                             {"hold", c.hold},
                             {"hold_desc", c.hold_desc},
+                            {"window", c.window},
+                            {"search_mono", num(c.min_mono)},
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
                             {"batch", std::to_string(kBatch)},
@@ -282,8 +302,12 @@ Message SystemMessage(const Context &c, const Gate &g) {
 
 Message FirstMessage(const Context &c, const std::vector<Result> &tried) {
   std::string s;
-  for (size_t i = 0; i < tried.size() && i < static_cast<size_t>(kTriedTop); ++i)
-    s += "### " + tried[i].name + " (" + tried[i].name_cn + ")\n`" + tried[i].tmpl + "`\n" + Detail(tried[i]);
+  int n = 0;
+  for (const Result &r : tried)
+    if (r.visible && n < kTriedTop) {
+      ++n;
+      s += "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r);
+    }
   return fill(Msg::First, {{"hold", c.hold}, {"tried", or_none(std::move(s), "(无)\n")}});
 }
 

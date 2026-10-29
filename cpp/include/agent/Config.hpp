@@ -44,8 +44,8 @@ inline constexpr int kCancelTimeoutSeconds = 5;  // 取消后通知远端停 run
 inline constexpr int kBatch = 8;     // 每轮变体数上限 (提示词 {{batch}})
 inline constexpr int kMaxOps = 10;   // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
 inline constexpr int kGoodOps = 5;   // 建议的算子数 (提示词 {{good_ops}})
-inline constexpr int kLibTop = 40;   // 系统提示里列的正式因子 (按该持有期 score 降序)
-inline constexpr int kTriedTop = 80; // 首条消息里列的本作用域已试候选 (新的在前)
+inline constexpr int kLibTop = 40;   // 系统提示里列的正式因子 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
+inline constexpr int kTriedTop = 80; // 首条消息里列的本作用域已试候选 (只列可见的)
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
 inline constexpr double kGateMono = 0.95; // 分层单调性

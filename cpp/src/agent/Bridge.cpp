@@ -2,18 +2,22 @@
 #include "agent/Bridge.hpp"
 #include "agent/Config.hpp" // kMaxOps / kGoodOps / kWorkDir
 
+#include "factor/Dag.hpp"             // build (叶 → 评估期)
 #include "factor/Expr.hpp"            // kOps / operand_tex
 #include "factor/GpuRun.hpp"          // available
-#include "factor/Search/Contract.hpp" // search_hold / Score
+#include "factor/Search/Contract.hpp" // search_hold / Score / kMinMono
 #include "gui/task_factors/services/FactorsFile.hpp"
+#include "gui/task_factors/services/FactorsScope.hpp" // span_of
 #include "gui/task_factors/services/FactorsService.hpp"
 #include "gui/task_factors/services/SearchService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp" // hold_desc
+#include "misc/date.hpp"                      // dash
 #include "shared/FeatureLib.hpp"              // feature_pools
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
@@ -53,21 +57,76 @@ int ops_of(const F::FeatureTable &ft, const std::string &src) {
   return factor::expr::parse(src, ft.lookup(), ft.seg, e, err) ? e.n_ops : 0;
 }
 
-bool searchable(const F::FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }
-bool runnable(const F::FactorRow &r) { return r.error.empty() && !r.expr.empty(); }
+bool searchable(const F::FactorRow &r) { return r.error.empty() && !r.tmpl.empty(); }
 
-using Tops = std::map<std::string, Top>; // 文件 → 最近一趟 Search 无显著时的 top
+using Fails = std::map<std::string, std::string>; // 文件 → Search 中途放弃的原因 (本次运行里, 同作用域跨会话留着)
 
-// 一个因子文件 → 本持有期下的结果 (权重按 score 降序, 结局随之定)
-Result result_of(const F::FeatureTable &ft, const fs::path &p, int hold, const Tops &tops) {
+// 作用域此刻的数据: 未就绪 → 空 (此时一切统计都不可见)
+std::optional<F::FactorScope> fscope_of(const SharedData &data, const std::shared_ptr<const F::FeatureTable> &ft, const std::string &pool) {
+  F::FactorScope fsc;
+  if (!F::MakeFactorScope(data, ft, pool, /*gpu=*/false, fsc))
+    return std::nullopt;
+  return fsc;
+}
+
+// 评估期 (同池 + 首末 + 天数); days = 0 → 不成 (与任何统计都不同窗)
+struct Period {
+  std::string pool;
+  misc::Ymd start = 0, end = 0;
+  int days = 0;
+  bool same(const std::string &p, misc::Ymd s, misc::Ymd e, int n) const { return days > 0 && p == pool && s == start && e == end && n == days; }
+  std::string text() const { return misc::dash(start) + " ~ " + misc::dash(end) + ", " + std::to_string(days) + " 天"; }
+};
+// 叶为模板 tmpl 的叶 (空 = 只有标签库与因子池库) 时此刻的评估期
+Period period_of(const std::optional<F::FactorScope> &fsc, const F::FeatureTable &ft, const std::string &tmpl) {
+  Period s;
+  if (!fsc)
+    return s;
+  std::vector<F::LeafId> leaves;
+  if (!tmpl.empty())
+    leaves = ft.x.ids(factor::build(ft.reparse(tmpl).placeholder()).feats);
+  F::Domain dm;
+  std::string why;
+  if (!F::span_of(ft, *fsc, leaves, SIZE_MAX, dm, why))
+    return s;
+  s.pool = fsc->pool, s.start = dm.dates.front(), s.end = dm.dates.back(), s.days = static_cast<int>(dm.dates.size());
+  return s;
+}
+
+// 因子文件 search[] 的代表点 → Top (落选原因按统计定)
+Top top_of(const F::SearchTop &t) {
+  Top x;
+  x.expr = t.expr, x.sign = t.sign;
+  x.st = {t.mono, t.ls, t.ric};
+  x.g = t.g, x.se = t.se, x.mu = t.mu, x.peak = t.peak;
+  if (t.peak)
+    x.miss = "mono 过门槛, 但曲面估计 " + num(t.mu) + " ≤ 标准误 " + num(t.se) + " (不显著)";
+  else if (t.mono < factor::search::kMinMono)
+    x.miss = "没有点 mono ≥ " + num(factor::search::kMinMono) + " (最高 " + num(t.mono) + ")";
+  else
+    x.miss = "mono 过门槛的点每期毛多空都 ≤ 0 (或 rIC = 0)";
+  return x;
+}
+
+// 一个因子文件 → 本持有期下的结果 (权重按 score 降序, 结局随之定; 可见性按此刻评估期)
+Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, const fs::path &p, int hold, const Fails &fails) {
   std::vector<F::FactorRow> rows;
   F::ScanFactorFile(p, ft, rows);
   assert(!rows.empty());
   const F::FactorRow &r0 = rows.front();
   Result r;
   r.file = r0.file, r.name = r0.name_en, r.name_cn = r0.name_cn, r.tmpl = r0.tmpl, r.note = r0.note;
-  if (const auto it = tops.find(r.file); it != tops.end())
-    r.top = it->second;
+  r.ops = ops_of(ft, r0.tmpl);
+  const Period now = r0.tmpl.empty() ? Period{} : period_of(fsc, ft, r0.tmpl);
+  bool fresh = true; // 证据都在此刻评估期上
+  const auto mk = std::find_if(r0.searched.begin(), r0.searched.end(), [&](const F::SearchMark &m) { return m.hold == hold; });
+  if (mk != r0.searched.end()) {
+    fresh = now.same(now.pool, mk->start_date, mk->end_date, mk->days);
+    if (mk->top)
+      r.top = top_of(*mk->top);
+  }
+  if (const auto it = fails.find(r.file); it != fails.end())
+    r.error = "Search 放弃: " + it->second;
   bool run = true; // 权重都 Run 过
   for (const F::FactorRow &w : rows) {
     if (!w.error.empty()) {
@@ -78,19 +137,21 @@ Result result_of(const F::FeatureTable &ft, const fs::path &p, int hold, const T
     if (w.expr.empty())
       continue;
     run = run && w.has_stat;
+    if (w.has_stat)
+      fresh = fresh && now.same(w.scope.pool, w.scope.start_date, w.scope.end_date, w.scope.days);
     Weight x;
-    x.expr = w.expr, x.hold_src = w.hold_src;
+    x.expr = w.expr, x.sign = w.sign, x.hold_src = w.hold_src;
     const factor::search::Score s = F::RowScore(w, hold);
     x.has = s.ok;
     if (s.ok) {
       x.st = {s.mono, s.ls, s.ric};
-      x.score = s.score, x.valid = w.valid_pct / 100.0;
+      x.score = s.score, x.se = s.se, x.valid = w.valid_pct / 100.0;
     }
     r.ws.push_back(std::move(x));
   }
   std::stable_sort(r.ws.begin(), r.ws.end(), [](const Weight &a, const Weight &b) { return a.has != b.has ? a.has : a.score > b.score; });
-  const bool searched = fs::exists(p.parent_path() / "log" / (r0.name_en + ".log"));
-  const bool null = r.ws.empty() ? searched || r.top.has_value() : run; // 搜过无显著 / 权重都 Run 过却无本持有期统计
+  r.visible = fresh && r.ops <= kMaxOps;
+  const bool null = r.ws.empty() ? mk != r0.searched.end() : run; // 搜过无显著 / 权重都 Run 过却无本持有期统计
   r.verdict = !r.error.empty() ? Verdict::Broken : r.best() ? Verdict::Weights
                                                : null       ? Verdict::Null
                                                             : Verdict::Pending;
@@ -105,35 +166,10 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-// 一趟 Search 的结局 → 无显著时的 top (有终选或无可用候选 → 假)
-bool top_of(const F::SearchResult &sr, Top &t) {
-  if (!sr.picks.empty())
-    return false;
-  const F::SearchCand *b = nullptr;
-  for (const F::SearchCand &c : sr.cands)
-    if (c.sc.ok && (!b || c.sc.g > b->sc.g))
-      b = &c;
-  if (!b)
-    return false;
-  const factor::search::Score &s = b->sc;
-  t.expr = b->expr, t.sign = s.sign;
-  t.st = {s.mono, s.ls, s.ric};
-  t.g = s.g, t.se = s.se;
-  if (!(s.ls > 0.0))
-    t.miss = "每期毛多空 ≤ 0";
-  else if (!(s.ric > 0.0))
-    t.miss = "rIC = 0";
-  else if (s.mono < factor::search::kMinMono)
-    t.miss = "mono " + num(s.mono) + " < " + num(factor::search::kMinMono);
-  else
-    t.miss = "不显著 (曲面峰值不超过标准误)";
-  return true;
-}
-
-std::vector<Result> scan(const F::FeatureTable &ft, const std::string &dir, int hold, const Tops &tops) {
+std::vector<Result> scan(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, const std::string &dir, int hold, const Fails &fails) {
   std::vector<Result> out;
   for (const fs::path &p : F::list_factor_files(dir))
-    out.push_back(result_of(ft, p, hold, tops));
+    out.push_back(result_of(ft, fsc, p, hold, fails));
   sort_results(out);
   return out;
 }
@@ -194,9 +230,13 @@ Context context_of(const SharedData &data, const Scope &sc) {
   c.level = F::factor_level(level_id(sc.level)).name;
   c.hold = factor::stat::hold_name(sc.hold);
   c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
+  const std::optional<F::FactorScope> fsc = fscope_of(data, ft, sc.pool);
+  const Period base = period_of(fsc, *ft, "");
+  c.window = base.days > 0 ? base.text() : "未就绪";
   c.seg = ft->seg;
   c.ts_root_d = factor::stat::ts_norm_d(ft->seg);
   c.max_d = factor::kMaxD;
+  c.min_mono = factor::search::kMinMono;
   for (const F::FeatCol &l : ft->x.leaves) {
     if (!l.allowed)
       continue;
@@ -205,7 +245,7 @@ Context context_of(const SharedData &data, const Scope &sc) {
   }
   for (const factor::expr::OpInfo &o : factor::expr::kOps)
     c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
-  c.library = scan(*ft, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
+  c.library = scan(*ft, fsc, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
   return c;
 }
 
@@ -261,7 +301,7 @@ struct Lab::Impl {
   std::string dir; // 候选目录
   Context ctx;
   std::vector<Result> results;
-  Tops tops; // 同作用域跨会话留着
+  Fails fails; // 同作用域跨会话留着
   // 两道 (下标 = Step), 首次 eval 才建
   static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1);
   bool gpu = false;
@@ -276,6 +316,7 @@ struct Lab::Impl {
   std::deque<Tick> ticks; // 未取走的步
 
   std::shared_ptr<const F::FeatureTable> ft() const { return table(*data, sc.level); }
+  std::optional<F::FactorScope> fsc() const { return fscope_of(*data, ft(), sc.pool); }
   bool built() const { return std::get<0>(lanes).svc != nullptr; }
   template <class Fn>
   void each_lane(Fn &&fn) {
@@ -313,23 +354,21 @@ struct Lab::Impl {
     at = S;
     ticks.push_back({S, file, {}});
   }
-  // Search 跑完: 记下 top (无显著才有), 返回是否已落盘 (落了 → Run)
+  // Search 跑完: 落了盘 → true (随后 Run); 中途放弃 → 记下原因 (该文件 BROKEN)
   bool searched() {
     F::SearchService &svc = *std::get<0>(lanes).svc;
     std::lock_guard<std::mutex> lock(svc.mutex);
-    const F::SearchResult &sr = svc.result;
-    Top t;
-    if (top_of(sr, t))
-      tops[file] = std::move(t);
+    if (svc.result.wrote)
+      fails.erase(file);
     else
-      tops.erase(file);
-    return sr.wrote;
+      fails[file] = svc.message;
+    return svc.result.wrote;
   }
 
   // 重扫一个文件, 结果表保序
   const Result &refresh(const std::string &f) {
     const auto find = [&] { return std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == f; }); };
-    Result r = result_of(*ft(), fs::path(dir) / f, sc.hold, tops);
+    Result r = result_of(*ft(), fsc(), fs::path(dir) / f, sc.hold, fails);
     if (const auto it = find(); it == results.end())
       results.push_back(std::move(r));
     else
@@ -337,7 +376,7 @@ struct Lab::Impl {
     sort_results(results);
     return *find();
   }
-  // 出队下一个: 有自由参数 → Search (随后 Run); 具体式 → Run; BROKEN → 直接评完; 队空 → End
+  // 出队下一个: 模板合法 → Search (定方向 + 搜参, 落了盘随后 Run); BROKEN → 直接评完; 队空 → End
   void next() {
     while (!queue.empty()) {
       file = std::move(queue.front());
@@ -348,8 +387,6 @@ struct Lab::Impl {
       row = std::move(rows.front());
       if (searchable(row))
         return send<Step::Search>();
-      if (runnable(row))
-        return send<Step::Run>();
       settle();
     }
     close();
@@ -382,13 +419,13 @@ void Lab::bind(const SharedData &data, const Scope &sc) {
   assert(!I.running && "评估队列忙");
   if (sc != I.sc) {
     I.each_lane([](auto &l) { l.drop(); });
-    I.tops.clear();
+    I.fails.clear();
   }
   I.data = &data;
   I.sc = sc;
   I.dir = (fs::path(catalog::dir(sc)) / "factors").string();
   I.ctx = context_of(data, sc);
-  I.results = scan(*I.ft(), I.dir, sc.hold, I.tops);
+  I.results = scan(*I.ft(), I.fsc(), I.dir, sc.hold, I.fails);
   I.ticks.clear();
 }
 
@@ -417,7 +454,7 @@ void Lab::stage(Staged &s) {
 void Lab::adopt(Submitted &s, const Gate &g) {
   const Impl &I = *p_;
   const auto it = std::find_if(I.results.begin(), I.results.end(), [&](const Result &r) { return r.name == s.name; });
-  if (it == I.results.end()) {
+  if (it == I.results.end() || !it->visible) {
     s.err = "会话目录里没有这个候选";
     return;
   }

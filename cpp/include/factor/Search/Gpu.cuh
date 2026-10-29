@@ -41,7 +41,7 @@ using factor::stat::Labels;
 using factor::stat::Row;
 using factor::stat::Span;
 
-inline constexpr int kRows = 128; // stat_batch 每 block 的行数 (分片粒度; NB = ⌈(T − t_lo)/kRows⌉)
+inline constexpr int kRows = 128; // stat_batch 每 block 的行数 (分片粒度; NB = ⌈(t_hi − t_lo)/kRows⌉)
 
 // 一个 (候选, 持有期, 行块) 的分片 = 契约累加器原样
 struct Slice {
@@ -50,18 +50,17 @@ struct Slice {
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, int T, int A, Geo g, int t0_abs, int t_lo, Labels L, int NB,
-                                                     Slice *part) {
+__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, Span s, Labels L, int NB, Slice *part) {
   const auto &hd = L.hd;
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const int c = blockIdx.x * kWarps + warp;
   if (c >= C) // warp 一致; 核内没有块级同步, 整 warp 直接退出安全
     return;
-  const int hi = blockIdx.z, hold = hd.k[hi], h = factor::stat::hold_rows(hold, g);
+  const int A = s.A, hi = blockIdx.z, hold = hd.k[hi], h = factor::stat::hold_rows(hold, s.g);
   const Label lb = L.l[hi];
-  const int tb = blockIdx.y, t_beg = t_lo + tb * kRows, t_end = min(T, t_beg + kRows);
-  const uint16_t *rxc = rx + static_cast<size_t>(c) * T * A;
+  const int tb = blockIdx.y, t_beg = s.t_lo + tb * kRows, t_end = min(s.t_hi(), t_beg + kRows);
+  const uint16_t *rxc = rx + static_cast<size_t>(c) * s.n();
 
   // warp 私有分片 (= 契约 Accum 的两半: lane 0 攒 head, lane q < kGroups 攒 grp = 组 q)
   Accum::Head head;
@@ -71,7 +70,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
-    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, T, A, hold, g, t0_abs), L.cap, factor::stat::tail_masked(t0_abs + t, hold, g),
+    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hold), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g),
                                 sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       head.add(r);
@@ -115,29 +114,30 @@ __global__ void __launch_bounds__(kWB) reduce_slices(const Slice *part, int NB, 
 
 // 一次 eval 的形状与工作区尺寸 (调用方按它分配: rx / part / out); g = 因子所在层 (seg 定)
 struct Work {
-  int C = 0, T = 0, A = 0, H = 0, t_lo = 0, NB = 0;
+  int C = 0, T = 0, A = 0, H = 0, t_lo = 0, t_back = 0, NB = 0;
   Geo g;
   size_t rx_elems() const { return static_cast<size_t>(C) * T * A; }
   size_t part_elems() const { return static_cast<size_t>(C) * H * NB; }
   size_t out_elems() const { return static_cast<size_t>(C); }
 };
-inline Work plan(int C, int T, int A, int seg, int H, int t_lo) {
+inline Work plan(int C, int T, int A, int seg, int H, int t_lo, int t_back) {
   assert(C >= 1 && C <= kMaxBatch && T >= 1 && A >= 1 && A <= kMaxA && static_cast<long long>(T) * A < (1LL << 31));
-  assert(H >= 1 && H <= kMaxHold && t_lo >= 0 && t_lo < T && is_seg(seg));
+  assert(H >= 1 && H <= kMaxHold && t_lo >= 0 && t_back >= 0 && t_lo < T - t_back && is_seg(seg));
   Work w;
-  w.C = C, w.T = T, w.A = A, w.H = H, w.t_lo = t_lo, w.g = geo_of(seg);
-  w.NB = (T - t_lo + kRows - 1) / kRows;
+  w.C = C, w.T = T, w.A = A, w.H = H, w.t_lo = t_lo, w.t_back = t_back, w.g = geo_of(seg);
+  w.NB = (T - t_back - t_lo + kRows - 1) / kRows;
   return w;
 }
 
-// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + L (L.hd.n 组预处理标签, 设备指针) → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo
+// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + L (L.hd.n 组预处理标签, 设备指针) → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo / t_back
 inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t0_abs, const Labels &L, uint16_t *rx, Slice *part, Result *out,
                  cudaStream_t stream) {
   factor::stat::assert_labels(L, w.g.S, true);
   assert(B.C == w.C && L.hd.n == w.H && g && rx && part && out && t0_abs >= 0);
-  factor::gpu::stat::rank_x(B, g, f, Span{w.T, w.A, w.g, t0_abs, w.t_lo}, rx, stream);
+  const Span s{w.T, w.A, w.g, t0_abs, w.t_lo, w.t_back};
+  factor::gpu::stat::rank_x(B, g, f, s, rx, stream);
   const dim3 grid(static_cast<unsigned>((w.C + kWarps - 1) / kWarps), static_cast<unsigned>(w.NB), static_cast<unsigned>(w.H));
-  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, w.C, w.T, w.A, w.g, t0_abs, w.t_lo, L, w.NB, part);
+  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, w.C, s, L, w.NB, part);
   FACTOR_CUDA_OK(cudaGetLastError());
   const int P = w.C * w.H;
   k::reduce_slices<<<(P + kWB - 1) / kWB, kWB, 0, stream>>>(part, w.NB, w.C, w.H, out);

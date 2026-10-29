@@ -1,12 +1,12 @@
 // PortfolioService — Factors→Portfolio 页的单 worker: 因子组合 (一组合一文件) 里每个因子**独立**回测 + 各池等权指数.
 //
 // 组合文件 <config.portfolio_dir>/<name>.json (name = 主干, ValidFactorName):
-//   { "factors": [ { "pool": "all", "level": "5min", "file": "mom30.json", "expr": "<具体规范串, 已含 sign>", "hold": 30 }, … ] }
-//   条目 = 权重粒度: (池, 因子层, 因子文件, 具体规范串) 定位 Factors 表里的一个权重 (FactorRow::expr); hold = 加入时 Factors 页的 Hold.
-//   因子文件里找不到该规范串 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
+//   { "factors": [ { "pool": "all", "level": "5min", "file": "mom30.json", "hold": 30, "sign": -1, "expr": "<具体规范串>" }, … ] }
+//   条目 = 权重粒度: (池, 因子层, 因子文件, 具体规范串, 方向) 定位 Factors 表里的一个权重 (FactorRow::expr / sign; sign 缺 = +1); hold = 加入时 Factors 页的 Hold.
+//   因子文件里找不到该规范串 + 方向 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Run / Inspect 同一条管线 (FactorsEngine eval_job: 装载 → 森林 → 探针).
-//   同 (层, 池) 的待算条目一组一张森林 (同 Y, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径), 探针 hd = 该根在组内的全部 hold;
+//   同 (层, 池) 的待算条目一组一张森林 (同 Y, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径, 方向), 探针 hd = 该根在组内的全部 hold;
 //   落线探针 CurveP (accum_rows 一级 Row 的 G20 绝对收益 + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_book (FactorsBook; Stat 契约【净值】:
 //   G20 多头, 每批 1/h̄, 平仓行实现; 可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
 //   成本按 Δw (契约【换手成本】), 取该层首个金额段: 盘口段 = 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 固定段 =
@@ -43,9 +43,12 @@ struct PortfolioEntry {
   std::string pool;
   LevelId lv = 0;   // 因子层 (文件里存层名)
   std::string file; // 因子文件名 (含 .json)
-  std::string expr; // 具体规范串 (FactorRow::expr, 已含 sign)
+  std::string expr; // 具体规范串 (FactorRow::expr)
   int hold = 0;     // 持有期键
-  std::string key() const { return pool + "|" + factor_level(lv).name + "|" + file + "|" + expr + "|" + std::to_string(hold); }
+  int sign = 1;     // 方向 (FactorRow::sign)
+  std::string key() const {
+    return pool + "|" + factor_level(lv).name + "|" + file + "|" + expr + "|" + std::to_string(sign) + "|" + std::to_string(hold);
+  }
 };
 std::vector<std::string> ListPortfolios(const std::string &dir);                                            // 主干名, 字典序; 目录不存在 = 空
 std::vector<PortfolioEntry> LoadPortfolio(const std::string &dir, const std::string &name);                 // 格式不对 → assert (只本页写)

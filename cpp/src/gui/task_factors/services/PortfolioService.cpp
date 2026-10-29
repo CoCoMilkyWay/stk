@@ -60,6 +60,8 @@ std::vector<PortfolioEntry> LoadPortfolio(const std::string &dir, const std::str
     e.file = o["file"].get<std::string>();
     e.expr = o["expr"].get<std::string>();
     e.hold = o["hold"].get<int>();
+    e.sign = o.value("sign", 1);
+    assert((e.sign == 1 || e.sign == -1) && "组合文件: sign 须是 ±1");
     es.push_back(std::move(e));
   }
   return es;
@@ -81,6 +83,7 @@ void SavePortfolio(const std::string &dir, const std::string &name, const std::v
       o["level"] = factor_level(e.lv).name;
       o["file"] = e.file;
       o["hold"] = e.hold;
+      o["sign"] = e.sign;
       o["expr"] = e.expr;
       f << (i ? ",\n    " : "\n    ") << o.dump();
     }
@@ -122,11 +125,11 @@ void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::
     auto [sit, fresh] = scanned.try_emplace(p.string());
     if (fresh && exists)
       ScanFactorFile(p, *ft, sit->second);
-    const auto rit = std::find_if(sit->second.begin(), sit->second.end(), [&](const FactorRow &r) { return r.expr == e.expr; });
+    const auto rit = std::find_if(sit->second.begin(), sit->second.end(), [&](const FactorRow &r) { return r.expr == e.expr && r.sign == e.sign; });
     if (!exists) {
       it.missing = "因子文件不存在: " + p.string();
     } else if (rit == sit->second.end()) {
-      it.missing = "因子文件里没有这个权重 (规范串已变)";
+      it.missing = "因子文件里没有这个权重 (规范串 / 方向已变)";
     } else {
       assert(rit->error.empty() && "有具体规范串的行必是有效权重");
       it.name_cn = rit->name_cn;
@@ -151,7 +154,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
       continue;
     }
     t.key = it.e.key();
-    t.f = FactorRef{it.e.expr, it.frame};
+    t.f = FactorRef{it.e.expr, it.frame, factor::stat::dir_of(it.e.sign)};
     t.hold = it.e.hold;
     req.factors.push_back(std::move(t));
   }
@@ -187,7 +190,7 @@ std::string PortfolioRequest::sig() const {
 namespace {
 
 // G20 多头出参线 [kCurveLines][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
-//   pnl = 行的 G20 (正向多腿) 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 固定量 (CostLeg::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
+//   pnl = 行的 G20 (所评方向的多腿; 行已定向) 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 固定量 (CostLeg::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
 struct CurveP : LinesP<kCurveLines> {
   static constexpr uint8_t need = kNeedRows | kNeedLc;
   double cap = 0.0;
@@ -212,7 +215,7 @@ struct CurveP : LinesP<kCurveLines> {
     factor::stat::CostAcc acc[factor::stat::kMaxHold];
     factor::cpu::stat::cost_rows(c.ex, v.lc, s, c.L, cap, cs.data(), 1, *c.w, acc, land.data());
     for (int hi = 0; hi < H; ++hi)
-      for (int t = s.t_lo; t < s.T; ++t) {
+      for (int t = s.t_lo; t < s.t_hi(); ++t) {
         const factor::stat::CostLeg &cl = land[static_cast<size_t>(hi) * s.T + t].leg[factor::stat::kLong];
         at(hi, kCurveImp, t) = static_cast<float>(cl.imp);
         at(hi, kCurveFix, t) = static_cast<float>(cl.fix);
@@ -266,10 +269,10 @@ bool PortfolioService::run(PortfolioRequest &req) {
     F.c.reset();
   publish();
 
-  // 只有 worker 写 result: 这里读不加锁. 因子按 (层, 池, 串, 口径) 排: 一张森林 = 同 (层, 池) 的一段
+  // 只有 worker 写 result: 这里读不加锁. 因子按 (层, 池, 串, 口径, 方向) 排: 一张森林 = 同 (层, 池) 的一段
   std::vector<const FactorTask *> todo_f = todo_of(result.factors, req.factors);
   std::sort(todo_f.begin(), todo_f.end(), [](const FactorTask *a, const FactorTask *b) {
-    return std::tie(a->scope.lv, a->scope.pool, a->f.expr, a->f.frame) < std::tie(b->scope.lv, b->scope.pool, b->f.expr, b->f.frame);
+    return std::tie(a->scope.lv, a->scope.pool, a->f.expr, a->f.frame, a->f.dir) < std::tie(b->scope.lv, b->scope.pool, b->f.expr, b->f.frame, b->f.dir);
   });
   const bool todo_p = req.pools && result.pools.empty();
   jobs_done.store(0, std::memory_order_relaxed);
@@ -288,14 +291,14 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return ok;
 }
 
-// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径), 探针 hd = 该根的全部 hold; 落线 CurveP (G20 多头), 根评完即逐条发布
+// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 探针 hd = 该根的全部 hold; 落线 CurveP (G20 多头), 根评完即逐条发布
 bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlow &F) {
   TraceN("PortfolioForest");
   const FactorScope &sc = ts.front()->scope;
   RootSet rs;                       // 条目 i ↔ ts[i]
   std::vector<std::vector<int>> hk; // 根 → 持有期
   for (const FactorTask *t : ts) {
-    rs.add(*sc.ft, t->f.expr, t->f.frame);
+    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir);
     hk.resize(rs.size());
     hk[static_cast<size_t>(rs.of.back())].push_back(t->hold);
   }

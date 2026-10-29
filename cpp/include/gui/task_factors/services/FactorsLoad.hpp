@@ -165,13 +165,13 @@ bool n_full_of(const Io &io, const Chunk &k, double &out);
 
 // ---- 块: Y 按 (层, 评估域, 日段, YSpec) 常驻; X 挂在同一块上 (Y 换 → X 清) ----
 //   整期一块 = worker 的一块 (Run: Y 跨文件复用, X retain 只留本文件的叶; Inspect: X 只增); 多块 / Search = 作业自有
-//   块 = 评估域日 [d0, d1) 的行 [0, T); 统计只从 t_lo 起 ([0, t_lo) = 前带 carry, 只给回看 / lag; Search 契约【分块流式】)
+//   块 = 评估域日 [d0, d1) 的行 [0, T); 统计行 [t_lo, T − t_back) (前带只给回看 / lag / 交接链, 后带只给续持; Search 契约【分块流式】)
 struct Block {
   std::string key; // block_key; 空 = 未装
   std::vector<misc::Ymd> dates;
   size_t d0 = 0, d1 = 0;
   size_t nd = 0;                    // 评估域总日数 (跨块落地平面的行轴 = nd · seg)
-  int t_lo = 0;                     // 块内统计首行 (= 前带行数, ensure_block 置)
+  int t_lo = 0, t_back = 0;         // 前带 / 后带行数 (ensure_block 置)
   uint64_t gen = 0;                 // 每次 reset 取进程内新值 (引擎据此判会话作废; 作业自有块析构后同址新建也不撞)
   const FeatureTable *ft = nullptr; // 叶名 → LeafId (ensure_block 每次置; 同层字段表进程内不变)
   XPlanes x;
@@ -182,14 +182,14 @@ struct Block {
     *this = Block{};
     gen = ++next;
   }
-  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(d0) * y.sh.seg, t_lo}; }
+  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(d0) * y.sh.seg, t_lo, t_back}; }
   int rows_all() const { return static_cast<int>(nd) * y.sh.seg; }
   double bytes() const; // X / Y 平面占的宿主字节
 };
 // 块键 = 层 | 评估域 | 日段 | Y 规格 (X 不进键: 叶挂在块上按 ids 补)
 std::string block_key(const FeatureTable &ft, const Domain &dm, const Chunk &k, const BlockSpec &s);
 // 一步装齐块 k (四服务同一份): 键 (或日序列) 变 → reset + 装 Y; retain → 丢 s.x 以外的叶; 缺的叶补装
-// (s.x 空 ∧ retain = 只 Y); t_lo = 前带行数. Ok / Cancel / Stale (判废 → 块 reset)
+// (s.x 空 ∧ retain = 只 Y); t_lo / t_back = 前带 / 后带行数. Ok / Cancel / Stale (判废 → 块 reset)
 Rc ensure_block(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, bool retain);
 // ensure_block 之后块上的叶数 (预算): retain 或键 key 不中 → ids; 否则 = 已留 ∪ ids
 size_t resident_leaves(const Block &c, const std::string &key, const std::vector<LeafId> &ids, bool retain);

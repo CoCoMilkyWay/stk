@@ -20,8 +20,8 @@ using factor::stat::kLegs;
 using factor::stat::kLong;
 using factor::stat::kShort;
 
-// 尾部阈值 (r16): 多腿尾 = r16 ≥ thr[kLong], 空腿尾 = r16 < thr[kShort], 尾占整截面 q = kTailOfGroup / kGroups. 与 grp_of 同一条边界公式
-// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时两条阈值正好是 G20 / G1 的组边界
+// 尾部阈值 (r16): 顶端尾 = r16 ≥ thr[kLong], 底端尾 = r16 < thr[kShort], 尾占整截面 q = kTailOfGroup / kGroups. 与 grp_of 同一条边界公式
+// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时两条阈值正好是 G20 / G1 的组边界. 方向 d 腿 l 的尾在 l ^ d 那端 (正向 多腿在顶, 反向对调)
 struct TailThr {
   int v[kLegs][kTails] = {};
 };
@@ -36,29 +36,28 @@ TailThr tail_thresholds() {
   return o;
 }
 const TailThr kTailThr = tail_thresholds();
-inline bool in_tail(int l, int r16, int thr) { return l == kLong ? r16 >= thr : r16 < thr; }
-// 腿 l 尾部的分层侧 / 做多视角符号 = 所在端组的 grp_leg / grp_sign (与 Row::grp 同开关)
-constexpr int tail_leg(int l) { return factor::stat::grp_leg(factor::stat::leg_group(factor::stat::kFwd, l)); }
-constexpr double tail_sign(int l) { return factor::stat::grp_sign(factor::stat::leg_group(factor::stat::kFwd, l)); }
-// 第 j 级尾部的腿码 (与契约 LegCode 同值, 给 cost_rows): 多腿尾 kLcLong / 空腿尾 kLcShort / 其余有秩 kLcMid / 无秩 kLcVoid
-uint8_t tail_code(uint16_t r16, int j) {
+// e = 端 (kLong 顶 / kShort 底)
+inline bool in_tail(int e, int r16, int thr) { return e == kLong ? r16 >= thr : r16 < thr; }
+// 方向 d 第 j 级尾部的腿码 (与契约 LegCode 同值, 给 cost_rows): 多腿尾 kLcLong / 空腿尾 kLcShort / 其余有秩 kLcMid / 无秩 kLcVoid
+uint8_t tail_code(uint16_t r16, int j, int d) {
   if (r16 == factor::stat::kRankNone)
     return factor::stat::kLcVoid;
-  return in_tail(kLong, r16, kTailThr.v[kLong][j])     ? factor::stat::kLcLong
-         : in_tail(kShort, r16, kTailThr.v[kShort][j]) ? factor::stat::kLcShort
-                                                       : factor::stat::kLcMid;
+  const int el = kLong ^ d, es = kShort ^ d;
+  return in_tail(el, r16, kTailThr.v[el][j])   ? factor::stat::kLcLong
+         : in_tail(es, r16, kTailThr.v[es][j]) ? factor::stat::kLcShort
+                                               : factor::stat::kLcMid;
 }
 
 // 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
 struct TailRow {
-  float sum[kLegs][kTails] = {};    // 两腿尾部分层侧的做多视角超额持仓收益 ± Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
-  uint16_t cnt[kLegs][kTails] = {}; // 两腿尾部分层侧真持有只数 (与 Row::cnt 同口径)
+  float sum[kLegs][kTails] = {};    // 两腿尾部做多侧的超额持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
+  uint16_t cnt[kLegs][kTails] = {}; // 两腿尾部做多侧真持有只数 (与 Row::cnt 同口径)
   float ls[kTails] = {};            // 尾部多空 = ls_of(两腿尾部, Row::mkt, cap_j) (与 ls_row 同式; 尾空 → 该腿 0)
   float ls_abs[kTails] = {};        // 同上绝对 (基准 0: 两腿本侧原值持仓收益平均)
 };
 // 净值线 i (InspectResult::nav 线序, 见 kNavLines) 在行 t 这一批的收益, 全取 Row / TailRow 现成值 (不 ok → 0): 分层超额 = grp / 尾部 sum;
-//   分层绝对 = 超额 + 只数 · 分层侧基准 / 持仓分母 (组 cap, 尾 j cap · kTailOfGroup[j]; 做多视角同超额);
-//   LS 超额 0 = ls_row(kFwd), 1 + j = TailRow::ls[j]; LS 绝对 0 = 正向两腿 leg_abs 平均, 1 + j = TailRow::ls_abs[j]
+//   分层绝对 = 超额 + 只数 · 做多基准 / 持仓分母 (组 cap, 尾 j cap · kTailOfGroup[j]);
+//   LS 超额 0 = ls_row(kFwd), 1 + j = TailRow::ls[j]; LS 绝对 0 = 所评方向两腿 leg_abs 平均, 1 + j = TailRow::ls_abs[j] (r 已定向)
 double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double cap) {
   if (!r.ok)
     return 0.0;
@@ -75,32 +74,31 @@ double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double ca
   if (k < factor::stat::kGroups)
     return absolute ? group_abs(r, k, cap) : r.grp[k];
   const int l = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
-  const double sg = tail_sign(l);
-  return absolute ? sg * factor::stat::book_abs(sg * tr.sum[l][j], tr.cnt[l][j], r.mkt[tail_leg(l)], cap * kTailOfGroup[j]) : tr.sum[l][j];
+  return absolute ? factor::stat::book_abs(tr.sum[l][j], tr.cnt[l][j], r.mkt[kLong], cap * kTailOfGroup[j]) : tr.sum[l][j];
 }
 // 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效);
-// 尾 (l, j) 是一个组合, 成员 / 收益按契约【仓位感知】(同一尾部沿交接链): ls 腿只收本侧 l 真持有的格, 分层只收分层侧 tail_leg(l) 真持有的格
+// 尾 (l, j) 是一个组合 (方向 d: 落在 l ^ d 端), 成员 / 收益按契约【仓位感知】(同一尾部沿交接链): ls 腿只收本侧 l 真持有的格, 分层只收做多侧真持有的格
 struct TailExt {
   const int (*thr)[kTails];
   double cap;                                   // 满仓 (Labels::cap); 尾 j 的满仓 = cap · kTailOfGroup[j]
+  int d = factor::stat::kFwd;                   // 所评方向
   factor::stat::LegSum leg[kTails][kLegs] = {}; // 尾部 (本侧真持有只数, 本侧收益和): ls 用
-  double slay[kLegs][kTails] = {};              // 尾部分层侧真持有的 Σ 收益: 分层用
+  double slay[kLegs][kTails] = {};              // 尾部做多侧真持有的 Σ 收益: 分层用
   int nlay[kLegs][kTails] = {};                 // 同上只数
   void cell(const factor::cpu::stat::RxCell &cl) {
     const int x = *cl.code;
     for (int l = 0; l < kLegs; ++l)
       for (int j = 0; j < kTails; ++j) {
-        const int th = thr[l][j];
-        if (!in_tail(l, x, th))
+        const int e = l ^ d, th = thr[e][j];
+        if (!in_tail(e, x, th))
           continue;
-        const auto in = [l, th](uint16_t v) { return v != factor::stat::kRankNone && in_tail(l, v, th); };
-        const int tl = tail_leg(l);
-        const bool hs = cl.held(l, in), ht = tl == l ? hs : cl.held(tl, in);
-        const bool cont = (hs || ht) && cl.continues(in);
+        const auto in = [e, th](uint16_t v) { return v != factor::stat::kRankNone && in_tail(e, v, th); };
+        const bool hs = cl.held(l, in), hl = l == kLong ? hs : cl.held(kLong, in);
+        const bool cont = (hs || hl) && cl.continues(in);
         const float rs = hs ? cl.ret(l, cont) : 0.f;
-        nlay[l][j] += ht;
-        slay[l][j] += !ht ? 0.f : tl == l ? rs
-                                          : cl.ret(tl, cont);
+        nlay[l][j] += hl;
+        slay[l][j] += !hl ? 0.f : l == kLong ? rs
+                                             : cl.ret(kLong, cont);
         leg[j][l].n += hs;
         leg[j][l].s += rs;
       }
@@ -115,7 +113,7 @@ struct TailExt {
       const double cj = cap * kTailOfGroup[j];
       for (int l = 0; l < kLegs; ++l) {
         o.cnt[l][j] = static_cast<uint16_t>(nlay[l][j]);
-        o.sum[l][j] = static_cast<float>(tail_sign(l) * (slay[l][j] - nlay[l][j] * mkt[tail_leg(l)]) / factor::stat::book_den(nlay[l][j], cj));
+        o.sum[l][j] = static_cast<float>((slay[l][j] - nlay[l][j] * mkt[kLong]) / factor::stat::book_den(nlay[l][j], cj));
       }
       o.ls[j] = static_cast<float>(factor::stat::ls_of(leg[j], mkt, cj));
       o.ls_abs[j] = static_cast<float>(factor::stat::ls_of(leg[j], zero, cj));
@@ -127,10 +125,11 @@ struct TailExt {
 struct NavP : LinesP<kNavLines> {
   using Ext = TailExt;
   double cap = 0.0;
-  Ext ext() const { return {kTailThr.v, cap}; }
+  int d = factor::stat::kFwd;
+  Ext ext() const { return {kTailThr.v, cap, d}; }
   void open(const Ctx &c) {
     LinesP::open(c);
-    cap = c.L.cap, stride = c.c.y.sh.seg;
+    cap = c.L.cap, stride = c.c.y.sh.seg, d = c.d;
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &e) {
     TailRow tr;
@@ -160,7 +159,7 @@ struct TurnP : ProbeBase {
     for (int j = 0; j < kTails; ++j) {
       c.ex.rows(s.T, [&](int t0, int t1, int) {
         for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
-          lc[k] = tail_code(v.rx[k], j);
+          lc[k] = tail_code(v.rx[k], j, c.d);
       });
       const factor::stat::Cost flat{};
       factor::stat::CostAcc out[factor::stat::kMaxHold];
@@ -170,12 +169,22 @@ struct TurnP : ProbeBase {
     }
   }
 };
+// 秩按所评方向显示: 反向 = kRankMax − r16 (高 = 做多端; 无效不动), 就地
+void orient_rx(misc::exec::ForkJoin &ex, uint16_t *rx, int T, int A, int d) {
+  if (d == factor::stat::kFwd)
+    return;
+  ex.rows(T, [&](int t0, int t1, int) {
+    for (size_t k = static_cast<size_t>(t0) * A, e = static_cast<size_t>(t1) * A; k < e; ++k)
+      rx[k] = rx[k] == factor::stat::kRankNone ? rx[k] : static_cast<uint16_t>(factor::stat::kRankMax - rx[k]);
+  });
+}
 // 池内秩 rx 落地 [rows_all][A] (统计行; 右上资产轴 / K 线着色)
 struct RxP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedRx;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + s.n(), stat_at(s));
+    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + static_cast<size_t>(s.t_hi()) * s.A, stat_at(s));
+    orient_rx(c.ex, stat_at(s), s.t_hi() - s.t_lo, s.A, c.d);
   }
 };
 // 不看池的秩 (g = xm) 落地 [rows_all][A] (统计行; 只给 K 线显示池外段, 评估不用)
@@ -185,7 +194,8 @@ struct RxAllP : LandCellsP<uint16_t> {
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
     const factor::stat::Plane x{v.x.v + o, v.x.m + o};
-    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.T - s.t_lo, s.A, s.g}, stat_at(s), *c.w);
+    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.t_hi() - s.t_lo, s.A, s.g}, stat_at(s), *c.w);
+    orient_rx(c.ex, stat_at(s), s.t_hi() - s.t_lo, s.A, c.d);
   }
 };
 using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP, TurnP>;
@@ -196,7 +206,7 @@ bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTab
                         bool gpu, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
-  req.spec = InspectSpec{FactorRef{row.expr, row.frame}, row.key};
+  req.spec = InspectSpec{FactorRef{row.expr, row.frame, factor::stat::dir_of(row.sign)}, row.key};
   req.reload = reload;
   return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope);
 }
@@ -225,7 +235,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一个根, 探针 InspectProbes; 块钩子 = 池等权线 (随 Y 一代) ----
   //   Y = 全部持有期 + 全部金额段; X = 评估域内读过的全留 (只增), 缺的补读
   RootSet rs;
-  rs.add(*sc.ft, f.expr, f.frame);
+  rs.add(*sc.ft, f.expr, f.frame, f.dir);
   JobOut o;
   o.job.spec.y = y_full(*sc.ft, sc.max_impact);
   o.job.retain = false;
@@ -262,7 +272,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
 
   // ---- 结果骨架 ----
   InspectResult res;
-  res.key = inspect_key(sc.lv, sc.pool, req.spec.row, f.expr);
+  res.key = inspect_key(sc.lv, sc.pool, req.spec.row, f.expr, f.dir);
   res.row = req.spec.row;
   res.expr = f.expr;
   res.lv = sc.lv;

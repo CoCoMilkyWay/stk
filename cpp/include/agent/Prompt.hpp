@@ -111,10 +111,10 @@ struct Mined {
 
 // ---- 结局文本 (反馈 / 流水 / 界面同一份) ----
 std::string Text(const Stat &s);     // mono · 每期毛多空 · rIC
-std::string Text(const Weight &w);   // + score · 有效率; 无本持有期统计另说
-std::string Text(const Top &t);      // + 目标 ± 标准误 (+ 取反)
-std::string Brief(const Result &r);  // 一行: 结局 + 原因 / 最佳权重 / 目标最高的候选
-std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每个权重 / 落选原因与目标最高的候选
+std::string Text(const Weight &w);   // + score ± 标准误 (t) · 有效率; 无本持有期统计另说
+std::string Text(const Top &t);      // + 目标 ± 标准误 (t) (+ 曲面估计) (+ 取反)
+std::string Brief(const Result &r);  // 一行: 结局 + 原因 / 最佳权重 / 代表点
+std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每个权重 / 落选原因与代表点; 不可见的只说不可比
 
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g);

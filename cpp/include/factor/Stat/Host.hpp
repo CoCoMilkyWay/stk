@@ -227,7 +227,7 @@ struct NoExt {
 };
 
 // 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (两者交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
-//   → r 的 ric / mkt / grp / cnt / leg / leg_cnt / ok. ric / mkt 在 J 上 (与可成交无关); 组 (分层侧 grp_leg) / 两腿只收本侧真持有的格,
+//   → r 的 ric / mkt / grp / cnt / leg / leg_cnt / ok. ric / mkt 在 J 上 (与可成交无关); 组 (做多侧) / 两腿只收本侧真持有的格,
 //   收益按续持取名义值 (契约【仓位感知】).
 //   调用方已排除段末尾部
 template <class Ext>
@@ -248,13 +248,15 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
     const auto in = [g](uint16_t x) { return x != kRankNone && factor::stat::grp_of(x) == g; };
     const RxCell cl{c, rx + a, lb.m + a, lb.eo + a, y};
     const bool cont = cl.continues(in);
-    if (const int gl = factor::stat::grp_leg(g); cl.held(gl, in)) {
-      gs[g] += cl.ret(gl, cont);
+    const bool bl = cl.held(kLong, in);
+    const float vl = bl ? cl.ret(kLong, cont) : 0.f;
+    if (bl) {
+      gs[g] += vl;
       ++gc[g];
     }
     if (const int d = factor::stat::long_dir(g); d >= 0) { // 端组: 做多侧 → 方向 d 多腿, 做空侧 → 方向 d ^ 1 空腿
-      if (cl.held(kLong, in))
-        lg[d][kLong].n += 1, lg[d][kLong].s += cl.ret(kLong, cont);
+      if (bl)
+        lg[d][kLong].n += 1, lg[d][kLong].s += vl;
       if (cl.held(kShort, in))
         lg[d ^ 1][kShort].n += 1, lg[d ^ 1][kShort].s += cl.ret(kShort, cont);
     }

@@ -372,7 +372,7 @@ void check_stat(int A, unsigned seed, Report &rep) {
 }
 
 // Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat; Search cpu / gpu 各与它比,
-//   再比 分块 (两块带 carry, merge) ≡ 整块. 层 × 两口径 × profile 全扫; 无 GPU 时只跑 cpu 两项
+//   再比 分块 (两块带前后带, merge) ≡ 整块. 层 × 两口径 × profile 全扫; 无 GPU 时只跑 cpu 两项
 void check_search(int A, unsigned seed, Report &rep) {
   namespace sk = factor::search::check;
   ++rep.ops;
@@ -417,9 +417,9 @@ void check_search(int A, unsigned seed, Report &rep) {
         };
         {
           factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
-          sk::run_cpu(d, threads, 0, T, 0, full);
-          sk::run_cpu(d, threads, 0, sp.T1, 0, c1);
-          sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, c2);
+          sk::run_cpu(d, threads, 0, T, 0, 0, full);
+          sk::run_cpu(d, threads, 0, sp.e1, 0, sp.e1 - sp.T1, c1);
+          sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, 0, c2);
           ++rep.cases;
           if (judge("cpu", full, c1, c2))
             ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
@@ -438,18 +438,18 @@ void check_search(int A, unsigned seed, Report &rep) {
           std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
           const float *xv[sk::kCands];
           const uint8_t *xm[sk::kCands];
-          const auto run = [&](int row0, int rows, int t_lo, factor::search::Result *out) {
+          const auto run = [&](int row0, int rows, int t_lo, int t_back, factor::search::Result *out) {
             const size_t off = static_cast<size_t>(row0) * A;
             for (int i = 0; i < H; ++i)
               lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], d.base.eo, nullptr, off);
             for (int c = 0; c < sk::kCands; ++c)
               xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-            factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, S, row0, t_lo, hd, d.base.cap, lab.data(), out);
+            factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, S, row0, t_lo, t_back, hd, d.base.cap, lab.data(), out);
           };
           factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
-          run(0, T, 0, full);
-          run(0, sp.T1, 0, c1);
-          run(sp.s, T - sp.s, sp.t_lo, c2);
+          run(0, T, 0, 0, full);
+          run(0, sp.e1, 0, sp.e1 - sp.T1, c1);
+          run(sp.s, T - sp.s, sp.t_lo, 0, c2);
           ++rep.cases;
           if (judge("gpu", full, c1, c2))
             ++rep.gpu_bad;

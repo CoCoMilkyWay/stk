@@ -102,15 +102,15 @@ const char *coord_name(const space::Slot &s) {
   }
 }
 
-// 一块的抽样行 (契约【多权重】): 统计区 [t_lo, T) 里绝对行 ≡ 0 (mod stride) 的行 = 块内行 t_first + i·stride (i < n_rows)
+// 一块的抽样行 (契约【多权重】): 统计区 [t_lo, t_hi) 里绝对行 ≡ 0 (mod stride) 的行 = 块内行 t_first + i·stride (i < n_rows)
 struct Samp {
   int t_first = 0, n_rows = 0;
 };
-Samp samp_of(int T, int t_lo, int t0_abs, int stride) {
+Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
   int t = t_lo;
   while ((t0_abs + t) % stride != 0)
     ++t;
-  return {t, t < T ? (T - 1 - t) / stride + 1 : 0};
+  return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
 // 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数)
 struct SampleP : ProbeBase {
@@ -119,7 +119,7 @@ struct SampleP : ProbeBase {
   int stride = 1, off = 0;
   void root(const Ctx &c, const RootView &v) {
     const fs::Span s = c.s();
-    const Samp sm = samp_of(s.T, s.t_lo, s.t0_abs, stride);
+    const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
     if (sm.n_rows > 0)
       v.ranks(sm.t_first, stride, sm.n_rows, dst->data() + static_cast<size_t>(off) * s.A);
     off += sm.n_rows;
@@ -264,12 +264,11 @@ struct SearchService::Searcher {
   template <class E>
   bool plan() {
     e0 = ft.reparse(sp.tmpl);
-    if (!e0.is_template())
-      return give_up("模板无自由参数 (裸键名 d / k / k2 才搜; 写了数字的参数固定)");
-    // 块首前带: 统计首行的 rAC lag 行 (t_lo − max_lag) 也须整窗 ⇒ 行数 ≥ 模板回看 + max_lag
+    // 前后带 (bands_of): 统计首行的 lag 行 / 交接链所及的行也须整窗, 末统计行的续持要看后一批
     const int look = space::lookback(e0);
-    job.carry = carry_days(look, hd, seg);
-    lg("前带: 模板回看 %d 行 + rAC lag %d 行 → %d 天", look, factor::search::max_lag(hd, seg), job.carry);
+    job.bands = bands_of(look, hd, seg);
+    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
+       job.bands.front, job.bands.back);
     const factor::expr::Expr ep = e0.placeholder();
     d0 = factor::build_forest({&ep}, /*keep_roots=*/false, /*fuse=*/false);
     if (!open_job(F, scope, d0.feats, job))
@@ -305,17 +304,17 @@ struct SearchService::Searcher {
     publish_result(); // 装载前先发布分块计划
     lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, static_cast<int>(d0.feats.size()),
        hd.n, d0.n_slots, bud.load, bud.work);
-    lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", P.host / kMiB,
-       scope.gpu ? strf(", 显存 %.0f MB", P.vram / kMiB).c_str() : "", P.D, job.carry, n_chunks, P.cache_all ? "是" : "否 (每趟逐块重读)", P.cache / kMiB,
+    lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天 + 后带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", P.host / kMiB,
+       scope.gpu ? strf(", 显存 %.0f MB", P.vram / kMiB).c_str() : "", P.D, job.bands.front, job.bands.back, n_chunks, P.cache_all ? "是" : "否 (每趟逐块重读)", P.cache / kMiB,
        scope.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
     for (int ci = 0; ci < n_chunks; ++ci) {
       const Chunk &k = P.chunks[static_cast<size_t>(ci)];
-      lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, misc::dense(dates[k.s0]).c_str(), misc::dense(dates[k.d1 - 1]).c_str(),
-         static_cast<int>(k.d1 - k.s0), k.days(), res.chunk_plan[static_cast<size_t>(ci)].mb);
+      lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, misc::dense(dates[k.s0]).c_str(), misc::dense(dates[k.s1 - 1]).c_str(),
+         static_cast<int>(k.s1 - k.s0), k.days(), res.chunk_plan[static_cast<size_t>(ci)].mb);
     }
     // r16 抽样行 (契约【多权重】): 各块的抽样行 (samp_of) 按块序拼成每候选一张 [R][A]
     for (const Chunk &k : P.chunks)
-      R += samp_of(k.days() * seg, static_cast<int>(k.s0 - k.d0) * seg, static_cast<int>(k.d0) * seg, stride).n_rows;
+      R += samp_of(static_cast<int>(k.s1 - k.d0) * seg, static_cast<int>(k.s0 - k.d0) * seg, static_cast<int>(k.d0) * seg, stride).n_rows;
     gens.assign(std::max<size_t>(job.blocks.own.size(), 1), 0);
     return true;
   }
@@ -346,10 +345,13 @@ struct SearchService::Searcher {
     lg("满仓一腿 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
     const double a_eff = res.n_full * fs::kGroups;
     slots = space::slots_of(e0, seg, a_eff);
-    assert(!slots.empty());
+    assert(slots.empty() == !e0.is_template());
     for (const space::Slot &s : slots)
       res.slots.push_back(s.name);
-    lg("自由参数 %d 个 (区间按池内平均有效资产数 %.0f 定):", static_cast<int>(slots.size()), a_eff);
+    if (slots.empty())
+      lg("无自由参数: 只评模板本身 (定方向 + 判显著)");
+    else
+      lg("自由参数 %d 个 (区间按池内平均有效资产数 %.0f 定):", static_cast<int>(slots.size()), a_eff);
     for (const space::Slot &s : slots)
       lg("  %-24s 坐标 %-8s 区间 [%.3g, %.3g] 中性 u0=%.3g%s", s.name.c_str(), coord_name(s), s.u_lo, s.u_hi, s.u0, s.integer ? " 整数" : "");
     // 阈值槽 (ANY / GE0) 由深到浅 (前序逆序: 子树先于祖先)
@@ -373,7 +375,7 @@ struct SearchService::Searcher {
     std::fill_n(prefix.begin(), want + 1, static_cast<uint8_t>(1));
     const Block &c = job.blocks.of(0);
     const fs::Span s = c.span();
-    const Samp sm = samp_of(s.T, s.t_lo, s.t0_abs, stride);
+    const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
     std::vector<float> tab;
     Engine<Cpu> qe(F.ex, W.cancel_);
     qe.bind(c);
@@ -422,8 +424,12 @@ struct SearchService::Searcher {
     const Entry &en = ents[static_cast<size_t>(id)];
     return (en.sc.sign < 0 ? std::string("取反 ") : std::string()) + params_of(slots, en.u);
   }
-  // 趟 0 的点: R_d 低差异采样 (Space design), 不合法的丢, 取整去重
+  // 趟 0 的点: R_d 低差异采样 (Space design), 不合法的丢, 取整去重; 无自由参数 → 模板本身一个点
   bool design(std::vector<int> &ids) {
+    if (slots.empty()) {
+      ids.push_back(add_cand({}));
+      return true;
+    }
     int n_bad = 0;
     for (const std::vector<double> &u : space::design(slots, factor::search::kInit)) {
       const int id = add_cand(u);
@@ -521,7 +527,7 @@ struct SearchService::Searcher {
         continue;
       assert(en.ps.at<SampleP>().off == R && "各块抽样行须拼满");
       assert(hp.n_hold == 1);
-      en.sc = factor::search::score_signed(hp.hold[0]);
+      en.sc = factor::search::score_signed(hp.acc[0], hp.hold[0].hold, hp.hold[0].seg);
     }
     int n_pos = 0, top = -1; // top = 定向目标 g 最高的候选 (不看门槛)
     double best = -std::numeric_limits<double>::infinity();
@@ -544,7 +550,8 @@ struct SearchService::Searcher {
     return Rc::Ok;
   }
 
-  // ---- 曲面: 已评且 ok 的点 (x = 单位立方坐标, y = g, 噪声 = SE) 拟合 GP → 峰 → pick_diverse 得活跃峰 (= 当前终选) ----
+  // ---- 曲面: 已评且 ok 的点 (x = 单位立方坐标, y = g, 噪声 = SE) 拟合 GP → 峰 → pick_diverse 得活跃峰 (= 当前终选).
+  //      无自由参数: 唯一的点即峰, μ = 观测 g ----
   void fit() {
     S = Surface{};
     std::vector<std::vector<double>> x;
@@ -558,7 +565,11 @@ struct SearchService::Searcher {
       y.push_back(en.sc.g);
       se.push_back(en.sc.se);
     }
-    if (!S.ids.empty()) {
+    if (!S.ids.empty() && slots.empty()) {
+      S.mu = y;
+      if (std::isfinite(ents[static_cast<size_t>(S.ids[0])].sc.score))
+        S.peaks = {0};
+    } else if (!S.ids.empty()) {
       S.M = surface::fit(x, y, se);
       std::vector<uint8_t> usable;
       for (size_t i = 0; i < x.size(); ++i) {
@@ -585,8 +596,11 @@ struct SearchService::Searcher {
     std::string ell;
     for (const double l : S.M.ell)
       ell += strf("%s%.3g", ell.empty() ? "" : " ", l);
-    lg("曲面: %d 点, ℓ = [%s], σf = %.3g; 峰 %d, 活跃 %d", static_cast<int>(S.ids.size()), ell.c_str(), S.ids.empty() ? 0.0 : std::sqrt(S.M.sf2) * S.M.ys,
-       static_cast<int>(M), static_cast<int>(S.picks.size()));
+    if (slots.empty())
+      lg("单点: 峰 %d, 活跃 %d", static_cast<int>(M), static_cast<int>(S.picks.size()));
+    else
+      lg("曲面: %d 点, ℓ = [%s], σf = %.3g; 峰 %d, 活跃 %d", static_cast<int>(S.ids.size()), ell.c_str(), S.ids.empty() ? 0.0 : std::sqrt(S.M.sf2) * S.M.ys,
+         static_cast<int>(M), static_cast<int>(S.picks.size()));
     for (size_t a = 0; a < M; ++a) {
       const bool on = std::find(S.picks.begin(), S.picks.end(), pk[a]) != S.picks.end();
       const Score &sc = ents[static_cast<size_t>(pk[a])].sc;
@@ -640,7 +654,28 @@ struct SearchService::Searcher {
     }
   }
 
-  // ---- 终选: 最后一次曲面的活跃峰即 weights; picks 替换文件里同 h 的 weights (sp.fresh: 先清空全部); 空 picks 也写 (= 清掉该 h) ----
+  // 无显著时的代表点: 过门槛的峰里 μ 最高的 (差在显著); 没有峰 → 可用点里 mono 最高的 (差在分层); 一个可用点都没有 → 无
+  std::optional<SearchTop> top_of() const {
+    int id = -1;
+    double mu = 0.0;
+    if (!S.peaks.empty()) {
+      id = S.ids[static_cast<size_t>(S.peaks[0])], mu = S.mu[static_cast<size_t>(S.peaks[0])];
+    } else {
+      for (int i = 0; i < static_cast<int>(ents.size()); ++i) {
+        const Score &sc = ents[static_cast<size_t>(i)].sc;
+        if (ents[static_cast<size_t>(i)].pass >= 0 && sc.ok &&
+            (id < 0 || sc.mono > ents[static_cast<size_t>(id)].sc.mono || (sc.mono == ents[static_cast<size_t>(id)].sc.mono && sc.g > ents[static_cast<size_t>(id)].sc.g)))
+          id = i;
+      }
+    }
+    if (id < 0)
+      return std::nullopt;
+    const Entry &en = ents[static_cast<size_t>(id)];
+    return SearchTop{en.e.canon, en.sc.sign, en.sc.mono, en.sc.ls, en.sc.ric, en.sc.g, en.sc.se, mu, !S.peaks.empty()};
+  }
+
+  // ---- 终选: 最后一次曲面的活跃峰即 weights; picks 替换文件里同 h 的 weights (sp.fresh: 先清空全部); 空 picks 也写 (= 清掉该 h).
+  //      结局 (评估期 + 无显著时的代表点) 同落 search[] ----
   void finish() {
     std::vector<SearchWeight> ws;
     for (const int c : S.picks) {
@@ -654,9 +689,14 @@ struct SearchService::Searcher {
       res.picks.push_back(std::move(pk));
       ws.push_back(SearchWeight{sp.hold, en.sc.sign, en.e.canon});
     }
-    WriteFactorWeights(scope.factor_dir, sp.file, sp.hold, sp.fresh, ws); // 只写权重; 因子表数据由随后的 Run 用同一份目标从 stat 算
+    const std::vector<misc::Ymd> &dates = job.dm.dates;
+    SearchMark mk{sp.hold, dates.front(), dates.back(), static_cast<int>(dates.size()), ws.empty() ? top_of() : std::nullopt};
+    WriteFactorSearch(scope.factor_dir, sp.file, sp.fresh, mk, ws); // 不写 stat; 因子表数据由随后的 Run 用同一份目标从 stat 算
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
+    if (mk.top)
+      lg("无显著, 代表点 (%s): g %.3g ± %.3g μ %.3g mono %+.3f @ %s", mk.top->peak ? "峰" : "mono 最高", mk.top->g, mk.top->se, mk.top->mu, mk.top->mono,
+         mk.top->expr.c_str());
     {
       std::lock_guard<std::mutex> lock(W.mutex);
       W.message = ws.empty() ? strf("没有显著 (μ > SE) 且 mono ≥ %.2f 的候选, 已清掉该 Hold 的权重", factor::search::kMinMono)

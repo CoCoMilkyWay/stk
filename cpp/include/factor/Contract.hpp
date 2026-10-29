@@ -4,7 +4,7 @@
 // 因子算子语义契约 (三后端唯一共享件之一, 另一件是 factor/OpTable.hpp)
 // =============================================================================
 //   【分类】算子 = 核作用在支撑集 S(t,a) 上, 三个正交维度各取一值 (每维穷尽互斥):
-//     T 窗 (enum T)    输出在 t 依赖的时间支撑: POINT 当前点 / EXPAND 段内 expanding / ROLL 最近 d 期 / EXPO 指数加权全历史
+//     T 窗 (enum T)    输出在 t 依赖的时间支撑: POINT 当前点 / EXPAND 段内 expanding / ROLL 最近 d 期 / EXPO 最近 kMaxD 期按行龄指数加权
 //     A 域 (enum A)    资产支撑: SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 列给组)
 //     核类 (Kern)   统计核的代数类: MAP 逐元素变换 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) /
 //                   EXTREME 极值及 arg 族 (半群不可逆) / ORDER 序统计 / RECUR 递推
@@ -36,7 +36,8 @@
 //     段 = 一个交易日 = S 行 (层几何 Geo, 见下【层几何】; L_1min S = 255: 15 分钟集合竞价 + 240 分钟连续竞价, 竞价段也要有因子值).
 //     S 是运行期量 (Call::geo.S). 段内位置 t_seg = t % S (块起点对齐段起点).
 //     Expand 窗按段 reset (流式实现在 t_seg = 0 归零); Roll 窗**跨段**不 reset (窗口单位是行, 与日界无关);
-//     Expo 窗全程递推, 不 reset.
+//     Expo 窗 = 最近 kMaxD 行 (同 Roll 跨段不 reset, 未满窗取已有前缀), 权 (1−k)^行龄, 按有效格的权和归一.
+//     各窗回看都有限 (≤ kMaxD 行) ⇒ 分块评估只要前带盖住回看, 块内值与整张量一致.
 //
 //   【层几何 Geo】因子在哪一层上算 (L_1min / 分钟箱 n / 日), 只由三个数刻画: S = 每段行数, N = 每行分钟数, M0 = 行 0 的末分钟.
 //     行 t_seg 覆盖的最后一分钟 (L_1min 分钟号 0..254) = minute(t_seg) = M0 + t_seg·N:
@@ -73,7 +74,7 @@
 //          Hhi                  Σx 相消 → 1/n (均匀的极限)        Entropy 无正样本 → 0 (单样本熵 = 0 的极限)
 //          WMean                Σy 相消 → Σx/n (等权的极限)       Product 精确算 Π(1+x) − 1 (含 1+x ≤ 0: 零因子 → −1, 负因子计奇偶)
 //          Imb / Share          和相消 → 0 / 0.5                 Div / Recip  除数 0 → 0
-//          Ema                  尚无有效样本 → 0                  LogRatio 比值夹到 [ε, 1/ε] (ε = kRelEps): x ≤ 0 → −kLogCap, y ≤ 0 → +kLogCap, 双非正 → 0
+//          Ema                  窗内无有效样本 → 0                 LogRatio 比值夹到 [ε, 1/ε] (ε = kRelEps): x ≤ 0 → −kLogCap, y ≤ 0 → +kLogCap, 双非正 → 0
 //          CS 同表: 空池行广播 0, Demean / Winsor → x 原值, Z → 0, Resid → x − μ^x, Rank / GroupRank → 0.5,
 //                   NormRank → Φ⁻¹(0.5) = 0, Bucket → floor(0.5·k), GroupMean 组空 → 全池, 全池空 → 0.
 //                   Group*: 组 id 格有效但 < 0 (未知行业) = 无组 → 以全池为组 (GroupMean 全池均值, GroupRank 全池分位, GroupResid 按全池去均值);

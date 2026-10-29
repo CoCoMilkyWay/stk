@@ -175,7 +175,7 @@ struct FeatureTable {
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER)
   // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调
   bool check_grid(const factor::expr::Expr &e, std::string &err) const;
-  // 已校验过的规范串 (scan / 构建器出的模板 / 权重 / 取反串) 再解析; 不成 → assert
+  // 已校验过的规范串 (scan / 构建器出的模板 / 权重) 再解析; 不成 → assert
   factor::expr::Expr reparse(std::string_view canon) const;
 };
 // LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp);
@@ -207,10 +207,11 @@ struct Request {
   Spec spec;
   bool reload = false; // 弃作用域缓存整体重读 (特征库重算过 / 手动 Compute; 每轮本就重读的服务不看)
 };
-// 一个因子 (Inspect 请求 / Portfolio 条目同一份): 具体规范串 (已校验, worker 用 scope.ft->reparse 再解析) + 口径
+// 一个因子 (Inspect 请求 / Portfolio 条目同一份): 具体规范串 (已校验, worker 用 scope.ft->reparse 再解析) + 口径 + 所评方向 (权重行的 sign)
 struct FactorRef {
   std::string expr;
   factor::stat::Frame frame = factor::stat::Frame::CS;
+  factor::stat::Dir dir = factor::stat::kFwd;
 };
 
 // ---- 评估结果 (Run 行 / Inspect 结果同一份) ----
@@ -237,7 +238,7 @@ struct MiniPdf {
   bool has() const { return hi > lo; }
 };
 // alpha 分布 (Inspect 左下右半图 / Run 落因子表小图, 同一份 FactorsProbe alpha_dist): 样本 = 池内有效格 (rx 有效 ∧ alpha 有效), 组号 = grp_of(rx)
-// (与 Stat 同一组). 与持有期无关
+// (与 Stat 同一组); 按所评方向取值 (反向 = −alpha, 组倒序, 与 oriented 同读法). 与持有期无关
 struct AlphaDist {
   analysis::AggPdf pdf;                               // 截尾 [lo, hi] 内样本的 PDF (255 点全落在主体上, 重尾不压扁); 只画图, 矩不用它
   uint64_t n = 0;                                     // 全体样本数 (不截尾, 下同)

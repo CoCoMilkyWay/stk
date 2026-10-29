@@ -198,12 +198,12 @@ stk/
 │   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc; 每层至少一段: Lob 盘口段 / Bar 固定段) → 逐根发布行, 文件走完 (未取消) 一次回写
 │   │   │       │   │                                 #    · 表中 score / util 由 stat 现算
 │   │   │       │   │                                 #    · FactorWorker<D, Req>: 四服务同一份骨架 (进度面 + message + 常驻 FactorFlow + 结局收尾 settle / abort_out)
-│   │   │       │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorWeights (Search) / WriteFactorStats (Run)
+│   │   │       │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorSearch (Search) / WriteFactorStats (Run)
 │   │   │       │   │                                 #    · Run 只回写 run + stats[i] (与 weights 同序), expr / weights 不动; 破碎因子标 BROKEN, 不删
 │   │   │       │   ├── FactorsTable.hpp              # 🖥️ 因子层公共类型: FactorLevel / FeatureTable / FactorScope / Request<Spec> / FactorRef / EvalStat (StatScope / HoldStat / CostTier / MiniPdf) / AlphaDist
 │   │   │       │   │                                 #    · 层表 FACTOR_LEVELS 唯一真相 (网格层 / 标签档 / 名 / K 线列名式; 加层只加一行) → LevelId / PerLevel; 服务 / 装载 / UI 不按层分支
 │   │   │       │   │                                 #    · 字段表视图按层建一次, 全页共享 (FeatureTables / table_of)
-│   │   │       │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): Domain 评估域 (库 + 评估期 + 资产轴) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
+│   │   │       │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): Domain 评估域 (库 + 评估期 + 资产轴; span_of 只取评估期) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
 │   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
 │   │   │       │   │                                 #      + 满仓只数) / load_b (池篮子输入 BPlanes: all 池全轴, 全部池成员位 PoolMask + T+1C 标签 + 原料一趟读齐, 不进块; 日频原料 / 池列 as-of 取 bar.1d)
@@ -222,7 +222,7 @@ stk/
 │   │   │       │   │                                 #      FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU; 每轮 drop_engines)
 │   │   │       │   │                                 #    · 管线 (四服务同一份): Job → open_job (评估域 + 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块 load_block
 │   │   │       │   │                                 #      → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node), 末块 finish → hk.done); Run / Inspect / Portfolio
-│   │   │       │   │                                 #      走 eval_job (根集 RootSet 去重 → 一趟一张森林; Job::whole_only (Inspect) 或无根 → 整期一块, 否则前带 = 回看 + lag 按预算分块); Search 每趟一次 pass
+│   │   │       │   │                                 #      走 eval_job (根集 RootSet 去重 → 一趟一张森林; Job::whole_only (Inspect) 或无根 → 整期一块, 否则前后带 bands_of 按预算分块); Search 每趟一次 pass
 │   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
 │   │   │       │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
 │   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
@@ -240,7 +240,9 @@ stk/
 │   │   │       │                                     #    · 结果 SearchResult: hold / n_peak / cands / picks (单持有期, 扁平)
 │   │   │       │                                     #    · 只搜给定持有期, 限 Search/Config 区间 (Search = 看板当前 Hold; Search all = 各模板 × 本层该区间内各档, 不看 Hold)
 │   │   │       │                                     #    · 回写: Search 只替换该 h 的权重 (搜不出 = 清空该 h); Search all 整份覆盖各文件 weights
-│   │   │       │                                     #    · 目标: 每期毛 LS (持仓口径, 已含资金利用率, 按 rIC 定向) · rIC (不看成本, 不跨 h 比); 硬门槛 mono ≥ kMinMono
+│   │   │       │                                     #    · 目标: 每期毛 LS (持仓口径, 已含资金利用率, 按 rIC 定向) · rIC · mono² (不看成本, 不跨 h 比); 硬门槛 mono ≥ kMinMono (分层先于收益)
+│   │   │       │                                     #    · 无自由参数的具体式也走它: 只评本身, 定方向 + 判显著
+│   │   │       │                                     #    · 结局: 评估期 + 无显著时的代表点 (过门槛的曲面峰, 否则 mono 最高的点) 落进因子文件 search[]
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
@@ -277,7 +279,8 @@ stk/
 │   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
 │   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 / 算子表 / 正式因子库统计) + 候选目录 results
 │   │   │   │                                               #      候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict) ─adopt (过门槛 Gate)→ 正式因子目录
-│   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 逐文件 Search → Run, 评完一个只重扫它; 两道首次 eval 才建, 常驻块 (SearchSpec / RunSpec keep)
+│   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 逐文件 Search (具体式也走, 定方向) → Run, 评完一个只重扫它; 两道首次 eval 才建, 常驻块 (SearchSpec / RunSpec keep)
+│   │   │   │                                               #      可见 Result::visible: 统计与 Search 结局都在作用域此刻评估期 (span_of) 上且算子不超上限, 才进提示词 / 可入库
 │   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ eval) → poll 逐个取走 Tick, 末个 End → live → busy / cancel
 │   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Digest / Choose ↔ Propose / Eval, Report); 转移唯一入口 go 兑现 Stop; 无 ImGui
 │   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ evaluated
@@ -314,9 +317,10 @@ stk/
 │   │   │   │   └── Stream.hpp / Cpu.hpp / Gpu.cuh          # 🧬   同上 (流式: 一个对象逐行推全部截面, 暂存是成员)
 │   │   │   ├── Stat/                                       # 🧬 因子评估器 (无流式后端): 因子 + 标签 → Row[H][T] (IC / 分组 / 多空) → HoldStat
 │   │   │   │   │                                           #    · 并列均秩 + 整数 Pearson ⇒ CPU ↔ GPU 逐位一致
-│   │   │   │   ├── Config.hpp                              # 🧬   配置 (编译期常量): 分层两侧 kGrpSplit (false = 20 组全做多侧; true = 上半做多 / 下半做空, 与 LS 同幅度); 落盘 stat 记它, 改了即作废重算
 │   │   │   │   ├── Contract.hpp                            # 🧬   语义契约: Row / HoldStat + 可合并累加器 + 换手成本 (Cost / CostAcc / cost_row / net_ls)
-│   │   │   │   │                                           #      · 两腿各看本侧可成交 (多 = 可买 / 空 = 可卖) ⇒ 取反 ≠ −正向: 腿系 (leg / ls / beta) 按方向 (正向 / 取反) 各算一份, 同一遍 A 轴
+│   │   │   │   │                                           #      · 方向 Dir = 评估参数 (权重 sign), 不改写表达式: Row / Accum 恒正向攒, oriented 改读 (rIC 变号 / 组倒序 / 两向腿系互换)
+│   │   │   │   │                                           #      · 两腿各看本侧可成交 (多 = 可买 / 空 = 可卖) ⇒ 反向 ≠ −正向: 腿系 (leg / ls / beta) 两向各算一份, 同一遍 A 轴; 分层组只看做多侧
+│   │   │   │   │                                           #      · 仓位感知: 续持者沿交接链免成交, 链至多回走 kChainDays = 8 交易日 (平仓结清窗) ⇒ 分块带够前后带与整张量一致
 │   │   │   │   │                                           #      · 【协议表 1】持有期 (1m 5m 15m 30m 60m close T+1O T+1C T+2C T+3C) → 开仓 / 清仓 / 价
 │   │   │   │   │                                           #      · 【协议表 2】开关仓策略: 可成交判据 / 建仓作废 / 平仓顺延 / 仓位 1/h̄ / 换手 Δw / 成本 / 净值
 │   │   │   │   │                                           #      · 成本口径: Δw (同一价点才交接); 尾部行 (tail_masked) 不开仓不攒; Run / Inspect / Portfolio 同一份, Search 不看
@@ -328,9 +332,9 @@ stk/
 │   │   │   └── Search/                                     # 🧬 参数搜索评估 (建在 Stat 上): 一批同形候选直接攒累加器, 不落 Row
 │   │   │       ├── Config.hpp                              # 🧬   全部配置 (编译期常量): 可搜持有期集合 kSearchHolds (30m / 60m / close / T+1C) / 硬门槛 kMinMono
 │   │   │       │                                           #      / 第 0 趟采样点数 kInit / r16 抽样行数 kCorrRows
-│   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 + 目标函数 + 噪声 + 终选
-│   │   │       │                                           #      · 目标 = 固定 h 的 ls_period · rIC; 任一 ≤ 0 或 mono < kMinMono → −∞; 不看成本, 不跨 h 比
-│   │   │       │                                           #      · 方向 = rIC 的号 (负 → 取反, sign = −1); ls_period 取该方向的精确值, rIC / mono 随方向变号
+│   │   │       ├── Contract.hpp                            # 🧬   语义契约: 分块流式 (前带 t_lo / 后带 t_back) + 目标函数 + 噪声 + 终选
+│   │   │       │                                           #      · 目标 = 固定 h 的 ls_period · rIC · mono²; 任一 ≤ 0 或 mono < kMinMono → −∞; 不看成本, 不跨 h 比
+│   │   │       │                                           #      · 方向 = rIC 的号 (负 → 取反, sign = −1): 累加器按方向 oriented 后 finish, 与 Run / Inspect / Portfolio 按 sign 评同一式同值
 │   │   │       │                                           #      · ls_period = 每期真实毛多空 (持仓口径: 触发率 / 资金利用率已在内, 不另设活跃度项)
 │   │   │       │                                           #      · 噪声 = 解析标准误 (按 n/h 有效样本); 终选 pick_diverse 只认统计量, 无个数 / 相关上限
 │   │   │       ├── Space.hpp                               # 🧬   参数空间 (纯逻辑): 可搜槽 → 单调坐标 + 区间 (由已有常数推出; 阈值按输入分位) → R_d 采样
@@ -428,9 +432,10 @@ stk/
     │       └── *.json                                      # 因子文件字段:
     │                                                       #    · 必填: type / name_cn / expr (模板, 自由参数用裸键名)
     │                                                       #    · 可选: note / run / hold_cols / acc_cols
-    │                                                       #    · weights: [{hold, sign?, expr (具体)}]; Search 整体替换, 改 expr 即清空
+    │                                                       #    · weights: [{hold, sign?, expr (具体)}]; sign = 所评方向 (−1 = 取反, 表达式不变); Search 整体替换, 改 expr 即清空
+    │                                                       #    · search: [{hold, start_date, end_date, days, top?}]; Search 的结局 (评估期 + 无显著时的代表点), 改 expr 即清空
     │                                                       #    · stats: [stat | null], 与 weights 同序
-    ├── portfolio/<name>.json                               # 因子组合 (一组合一文件): {"factors": [{pool, level, file, expr, hold}]}, 条目 = Factors 表里的一个权重
+    ├── portfolio/<name>.json                               # 因子组合 (一组合一文件): {"factors": [{pool, level, file, expr, hold, sign}]}, 条目 = Factors 表里的一个权重
     ├── agent/<pool>/<层>/<持有期>/                         # Agent 挖掘会话 (池 × 因子层 × 持有期)
     │   ├── factors/*.json                                  # 候选因子文件 (与正式因子同格式; Search 日志在 factors/log/); 提交且达门槛的拷进 factors/<pool>/<层>/
     │   └── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + events.jsonl (毫秒时间的交互流水) + report.md (结束报告)

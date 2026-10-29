@@ -1209,75 +1209,39 @@ __global__ void __launch_bounds__(NT, (NCAP <= 256 ? 4 : (NCAP <= 2048 ? 2 : 1))
 }
 
 // =============================================================================
-// 7. RECUR: TsMeanEma 的仿射分块 scan
-//    元素 (a,b): y ← a·y + b. 复合 (a,b)∘(c,d) = (a·c, b·c+d)
-//      无效点            → (1, 0) 恒等 (y 与掩码保持)
-//      本资产首个有效点  → (0, x)     **首值播种**: y ← x (不是 k·x)
-//      其余有效点        → (1−k, k·x)
-//    "是否首个" 是个 OR 前缀, 所以每块出**两份**复合: 假设块前已有有效点的 (a, b_seen),
-//    和假设本块含首个有效点的 b_seed (该变体 a ≡ 0, 入口 y 被首元素抹掉, 不必存).
-//    块间 scan 时按 OR 前缀二选一 → 仍是一趟结合扫描, 没有退化成串行.
-//    分块: 块内串行复合 → 块间 scan → 回填. (1−k)^len 下溢到 0 是良性的.
+// 7. RECUR: TsMeanEma 有限窗 (kMaxD 行) 加权均值, 一线程一 (资产, 长 C 的块)
+//    窗有限 ⇒ 块首前 kMaxD − 1 行起空状态预热即得精确入口状态, 块间无依赖.
+//    状态 (s, sw) = 窗内有效格的 Σ w·x / Σ w, 权以最新有效格 tv 为 1 (不下溢): 进格 → × q^{t−tv} 再加, 出格 → 减 q^{tv−u};
+//    窗内空了归零. q^i 每 block 一张共享表 (double, 幂和同精度)
 // =============================================================================
-__global__ void ema_local(const float *xv, const uint8_t *xm, float *ca, float *cb, float *cd, uint8_t *cs, int T, int A, float k) {
+__global__ void ema_roll(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int C, float k) {
+  __shared__ double qp[kMaxD];
+  for (int i = threadIdx.x; i < kMaxD; i += blockDim.x)
+    qp[i] = pow(1.0 - static_cast<double>(k), static_cast<double>(i));
+  __syncthreads();
   const int a = blockIdx.x * blockDim.x + threadIdx.x;
   if (a >= A)
     return;
-  const int c = blockIdx.y;
-  const int s0 = c * kSegMax, e = min(s0 + kSegMax, T);
-  float pa = 1.f, pb = 0.f; // 变体 1: 块前已见过有效点
-  float qb = 0.f;           // 变体 2: 本块的首个有效点做播种 (a 恒为 0)
-  uint8_t sn = 0, sn2 = 0;
-  for (int s = s0; s < e; ++s) {
-    const int i = s * A + a;
-    const bool g = xm[i] != 0;
-    const float x = xv[i];
-    const float ea = g ? (1.f - k) : 1.f, eb = g ? k * x : 0.f;
-    pa = pa * ea;
-    pb = pb * ea + eb;
-    const bool seed = g && !sn2; // 本块内的首个有效点
-    qb = seed ? x : (g ? (qb * (1.f - k) + k * x) : qb);
-    sn2 = static_cast<uint8_t>(sn2 | (g ? 1 : 0));
-    sn = static_cast<uint8_t>(sn | (g ? 1 : 0));
-  }
-  ca[c * A + a] = pa;
-  cb[c * A + a] = pb;
-  cd[c * A + a] = qb;
-  cs[c * A + a] = sn;
-}
-// 块间 exclusive scan: y₀ = 0 是已知常数, 故只需沿块传一个标量 y 与 seen 位 (nc = 80, 一线程串行足够)
-__global__ void ema_carry(float *ca, float *cb, const float *cd, uint8_t *cs, int A, int nc) {
-  const int a = blockIdx.x * blockDim.x + threadIdx.x;
-  if (a >= A)
-    return;
-  float y = 0.f;
-  uint8_t sn = 0;
-  for (int c = 0; c < nc; ++c) {
-    const int i = c * A + a;
-    const float na = ca[i], nb = cb[i], nd = cd[i];
-    const uint8_t ns = cs[i];
-    ca[i] = y; // 本块入口的 y
-    cs[i] = sn;
-    y = sn ? (na * y + nb) : (ns ? nd : y); // 块前没见过有效点且本块有 → 走播种变体
-    sn = static_cast<uint8_t>(sn | ns);
-    (void)nb;
-  }
-}
-__global__ void ema_apply(const float *xv, const uint8_t *xm, const float *ca, const uint8_t *cs, float *ov, uint8_t *om, int T, int A, float k) {
-  const int a = blockIdx.x * blockDim.x + threadIdx.x;
-  if (a >= A)
-    return;
-  const int c = blockIdx.y;
-  const int s0 = c * kSegMax, e = min(s0 + kSegMax, T);
-  float y = ca[c * A + a]; // 块入口的 y
-  bool seen = cs[c * A + a] != 0;
-  for (int s = s0; s < e; ++s) {
-    const int i = s * A + a;
-    const bool g = xm[i] != 0;
-    const float x = xv[i];
-    y = g ? (seen ? (k * x + (1.f - k) * y) : x) : y; // 首个有效点播种, 无效点保持; 尚无有效点 → y = 0
-    seen = seen || g;
-    dev::store(ov, om, i, y, true);
+  const int c0 = blockIdx.y * C, c1 = min(c0 + C, T), t0 = max(0, c0 - (kMaxD - 1));
+  double s = 0.0, sw = 0.0;
+  int n = 0, tv = -1;
+  for (int t = t0; t < c1; ++t) {
+    const int u = t - kMaxD;
+    if (u >= t0 && xm[u * A + a]) {
+      --n;
+      const double f = n > 0 ? qp[tv - u] : 0.0;
+      s = n > 0 ? s - f * xv[u * A + a] : 0.0;
+      sw = n > 0 ? sw - f : 0.0;
+    }
+    const int i = t * A + a;
+    if (xm[i]) {
+      const double f = n > 0 ? qp[t - tv] : 0.0;
+      s = f * s + xv[i];
+      sw = f * sw + 1.0;
+      ++n, tv = t;
+    }
+    if (t >= c0)
+      dev::store(ov, om, i, static_cast<float>(n > 0 ? s / sw : 0.0), true);
   }
 }
 
@@ -1473,31 +1437,13 @@ FACTOR_TS_HIST(TsQuantileRoll, 1, HQuantile)
 
 // ---- EXPO (1) ----
 struct TsMeanEma {
-  // 块前缀 (a, b_seen, b_seed, seen) × nc 块 (块长 kSegMax, 与层无关): 80×5000×(4+4+4+1) = 5.2 MB
-  static size_t scratch(const Call &c) {
-    const size_t nc = static_cast<size_t>((c.T + kSegMax - 1) / kSegMax);
-    return nc * c.A * (3 * sizeof(float) + sizeof(uint8_t));
-  }
+  FACTOR_TS_NOWS
   FACTOR_TS_RUN {
     FACTOR_TS_CHECK(c);
-    assert(ws != nullptr);
-    const float *xv = c.x.v;
-    const uint8_t *xm = c.x.m;
-    float *ov = c.o.v;
-    uint8_t *om = c.o.m;
-    const int T = c.T, A = c.A;
-    const Param &p = c.p;
-    const int nc = (T + kSegMax - 1) / kSegMax;
-    float *ca = static_cast<float *>(ws);
-    float *cb = ca + static_cast<size_t>(nc) * A;
-    float *cd = cb + static_cast<size_t>(nc) * A;
-    uint8_t *cs = reinterpret_cast<uint8_t *>(cd + static_cast<size_t>(nc) * A);
-    const dim3 g = k::g_seg(T, A, kSegMax);
-    k::ema_local<<<g, kTB, 0, stream>>>(xv, xm, ca, cb, cd, cs, T, A, p.k);
-    FACTOR_CUDA_OK(cudaGetLastError());
-    k::ema_carry<<<(A + kTB - 1) / kTB, kTB, 0, stream>>>(ca, cb, cd, cs, A, nc);
-    FACTOR_CUDA_OK(cudaGetLastError());
-    k::ema_apply<<<g, kTB, 0, stream>>>(xv, xm, ca, cs, ov, om, T, A, p.k);
+    (void)ws;
+    assert(c.p.k > 0.f && c.p.k <= 1.f);
+    const int C = k::roll_chunk(kMaxD);
+    k::ema_roll<<<k::g_roll(c.T, c.A, C), kTB, 0, stream>>>(c.x.v, c.x.m, c.o.v, c.o.m, c.T, c.A, C, c.p.k);
     FACTOR_CUDA_OK(cudaGetLastError());
   }
 };

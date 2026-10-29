@@ -25,7 +25,7 @@
 //     T窗    POINT  当前点 (无时间状态)
 //            EXPAND 段内 expanding (段 = 交易日 = 本层 S 行, 段界 reset; Contract【层几何】)
 //            ROLL   最近 d 期滚动 (期 = 本层的行, 跨段不 reset)
-//            EXPO   指数加权全历史 (系数 k, 全程不 reset)
+//            EXPO   最近 kMaxD 期按行龄指数加权 (系数 k, 跨段不 reset)
 //     A域    SELF 只看本资产 / ALL 同一时刻全截面 / GROUP 同一时刻组内 (整数组 id 由 y 或 z 给)
 //     核类   MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /
 //            ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级
@@ -84,7 +84,7 @@
 //     中位   med           = TsQuantileRoll(k=0.5) / CsQuantile(k=0.5)
 //     子集统计  只在某时段/某条件上统计 = TsMask(x, 掩码) 再套窗 (掩码由 TsTodMask / TsGt 造)
 //     超前相关  corr(x_s, y_{s+k}) = TsCorr{Cum,Roll}(TsDelayRoll(x, k), y) —— 换边即换符号方向
-//     TsYoY    = TsDelayRoll + TsDiv, 且 d 需一年分钟数, 超出块 carry 上限
+//     TsYoY    = TsDelayRoll + TsDiv, 且 d 需一年分钟数, 超出块前带上限
 //
 //   加算子 = 本表一行 + TS(或 CS) 的 Stream / Cpu / Gpu 各一个同名 struct; 缺任一侧 → op_check 编译错;
 //   流式 TS struct::kT 与本表 T 窗列不符 → op_check static_assert 错 (A 域/核类是纯语义列, 无实现侧载荷).
@@ -136,7 +136,7 @@
   X(TsMinRoll, "时滚最小", 1, ROLL, SELF, EXTREME, NONE, OP_IN1(REAL), REAL, R"tex(\mathrm{min}_{W_t}\,x_s)tex", "近 d 期的最低; 近期低点")                                                                                \
   X(TsQuantileRoll, "时滚分位", 1, ROLL, SELF, ORDER, OPEN01, OP_IN1(REAL), REAL, R"tex(Q_k(\{x_s : s \in W_t\}))tex", "近 d 期的 k 分位值; k = 0.5 即中位")                                                               \
   X(TsRankRoll, "时滚秩", 1, ROLL, SELF, ORDER, NONE, OP_IN1(REAL), UNIT, R"tex(\mathrm{pct}(x_t;\,\{x_s : s \in W_t\}))tex", "本值在近 d 期的分位; 近期相对位置")                                                         \
-  X(TsMeanEma, "时指均值", 1, EXPO, SELF, RECUR, OPEN0_CLOSED1, OP_IN1(REAL), REAL, R"tex(e_t = k\,x_t + (1-k)\,e_{t-1})tex", "指数衰减均值; 无窗平滑, 对标 d 期取 k = 2/(d+1)")
+  X(TsMeanEma, "时指均值", 1, EXPO, SELF, RECUR, OPEN0_CLOSED1, OP_IN1(REAL), REAL, R"tex(e_t = \frac{\sum_{j<D} (1-k)^j\,x_{t-j}}{\sum_{j<D} (1-k)^j},\ D = 255)tex", "指数衰减均值, 窗 = 最近 255 期 (只计有效格); 对标 d 期取 k = 2/(d+1)")
 
 // ---- 1 元 × 截面 (9 = ALL 9) ----
 #define OP_CS1(X)                                                                                                                                                                                          \

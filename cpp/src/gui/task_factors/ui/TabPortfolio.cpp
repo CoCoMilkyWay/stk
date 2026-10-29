@@ -326,7 +326,7 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
       l.note = turn_note(own_buy / static_cast<double>(f.dates.size()) * factor::stat::kDaysPerYear);
       l.tag = it.name_en + " " + factor::stat::hold_name(f.hold) + kImpactTag[i];
       l.hover = l.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + hold_desc(it.e.hold, it.e.lv) +
-                "\n• 冲击 " + amt_name(f.amt) + "\n• 规范串 " + it.e.expr;
+                "\n• 冲击 " + amt_name(f.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
       l.c = curve_of(own, i, x_of(di.front(), kOpen) - kStartDx);
       d.nav[kNavFactor].push_back(std::move(l));
     }
@@ -1341,7 +1341,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
   const bool row_ok = view_row && view_row->error.empty() && !view_row->expr.empty();
   ImGui::BeginDisabled(ui.name.empty() || !row_ok || hold <= 0);
   if (ImGui::SmallButton("Add")) {
-    const PortfolioEntry e{pool, lv, view_row->file, view_row->expr, hold};
+    const PortfolioEntry e{pool, lv, view_row->file, view_row->expr, hold, view_row->sign};
     const auto dup = std::find_if(ui.entries.begin(), ui.entries.end(), [&](const PortfolioEntry &x) { return x.key() == e.key(); });
     if (dup != ui.entries.end()) {
       ui.msg = entry_label(e) + " 已在组合里";
@@ -1387,9 +1387,9 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
     if (ImGui::IsItemHovered())
       tip("%s / %s  %s  %s\n"
           "• %s\n"
-          "• 规范串 %s%s%s",
+          "• 规范串 %s%s%s%s",
           e.pool.c_str(), factor_level(e.lv).name, e.file.c_str(), it ? it->name_cn.c_str() : "", hold_desc(e.hold, e.lv).c_str(), e.expr.c_str(),
-          bad ? "\n• 失效: " : "", bad ? it->missing.c_str() : "");
+          e.sign < 0 ? " · 取反" : "", bad ? "\n• 失效: " : "", bad ? it->missing.c_str() : "");
   }
   ImGui::EndChild();
   ImGui::EndChild();

@@ -61,8 +61,8 @@ StatSession *stat_open(int, int, int, const factor::stat::Labels &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
   return nullptr;
 }
-void stat_eval(StatSession *, const DevPlane *, const DevPlane *, factor::stat::Frame, int, int, factor::stat::Accum *, factor::stat::Row *,
-               uint8_t *, uint16_t *, double *) {
+void stat_eval(StatSession *, const DevPlane *, const DevPlane *, factor::stat::Frame, factor::stat::Dir, int, int, int, factor::stat::Accum *,
+               factor::stat::Row *, uint8_t *, uint16_t *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 void stat_close(StatSession *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
@@ -72,13 +72,13 @@ SearchSession *search_open(int, int, int, int, const factor::stat::Holds &, doub
   return nullptr;
 }
 void search_load(SearchSession *, const factor::stat::Label *, double *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
-void search_eval(SearchSession *, const DevPlane *const *, int, const DevPlane *, factor::stat::Frame, int, int, factor::search::Result *,
+void search_eval(SearchSession *, const DevPlane *const *, int, const DevPlane *, factor::stat::Frame, int, int, int, factor::search::Result *,
                  double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 void search_ranks(SearchSession *, int, int, int, int, uint16_t *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 void search_close(SearchSession *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
-void run_search(int, const float *const *, const uint8_t *const *, const uint8_t *, factor::stat::Frame, int, int, int, int, int,
+void run_search(int, const float *const *, const uint8_t *const *, const uint8_t *, factor::stat::Frame, int, int, int, int, int, int,
                 const factor::stat::Holds &, double, const factor::stat::Label *, factor::search::Result *, double *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }

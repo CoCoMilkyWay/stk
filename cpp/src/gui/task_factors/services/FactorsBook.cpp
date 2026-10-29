@@ -97,7 +97,7 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
                      const float *mcap, Each &&each) {
   static_assert(kWeightEq == 0, "只等权 (nw = 1) 的篮子线 = b");
   assert(hd.n >= 1 && labels.size() == static_cast<size_t>(hd.n) && (nw == 1 || mcap));
-  const factor::Geo g = factor::geo_of(sh.seg);
+  const factor::stat::Span sp{sh.T, sh.A, factor::geo_of(sh.seg)};
   const size_t nT = static_cast<size_t>(sh.T), nA = static_cast<size_t>(sh.A), nl = nb * static_cast<size_t>(nw), H = static_cast<size_t>(hd.n);
   RowLines x; // [hold][篮子线][T] 行 t 这一批的篮子收益
   x.reset(static_cast<int>(H * nl), sh.T);
@@ -114,7 +114,7 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
           const LegPlane &lab = labels[hi];
           if (!lab.m[i])
             continue;
-          const factor::stat::Chain c = factor::stat::chain_of(static_cast<int>(t), sh.T, sh.A, hd.k[hi], g, 0);
+          const factor::stat::Chain c = factor::stat::chain_of(static_cast<int>(t), sp, hd.k[hi]);
           const float y[factor::stat::kLegs] = {factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]), factor::cpu::stat::h2f(lab.v[factor::stat::kShort][i])};
           each(hi, i, [&]<class Code, class In>(size_t b, const Code *code, const In &in) {
             const factor::stat::Cell<Code> cl{c, code, lab.m.data() + i, eo + i, y};

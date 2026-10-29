@@ -34,14 +34,13 @@ void valid_count(const uint8_t *m, const uint8_t *gate, size_t i0, size_t i1, ui
 void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, double &sum, long long &rows);
 // alpha 分布 (AlphaDist, FactorsTable.hpp) 两趟, 每趟条带并行: 每线程一份 KLL + 缓冲批量 addBatch, 末尾合并进线程 0 那份.
 //   趟 1: 全体样本 → 矩 + 截尾范围 [lo, hi]; 同趟逐行: 截面均值 (series) + 各组 min / max → 相邻组边界中点, 各组和 / 数
-//   趟 2: 只收 [lo, hi] 内样本 → pdf
-void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, AlphaDist &o);
+//   趟 2: 只收 [lo, hi] 内样本 → pdf. d = 所评方向 (反向: 值取负, 组倒序; Stat 契约【方向 Dir】)
+void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o);
 // 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
-// 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 分层侧基准, 做多视角同 grp; 不 ok → 0)
+// 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 做多侧基准; 不 ok → 0)
 inline double group_abs(const factor::stat::Row &r, int k, double cap) {
-  const double sg = factor::stat::grp_sign(k);
-  return r.ok ? sg * factor::stat::book_abs(sg * r.grp[k], r.cnt[k], r.mkt[factor::stat::grp_leg(k)], cap) : 0.0;
+  return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt[factor::stat::kLong], cap) : 0.0;
 }
 // 方向 d 腿 l 的本侧绝对持仓收益 (同上)
 inline double leg_abs(const factor::stat::Row &r, int d, int l, double cap) {
@@ -52,8 +51,8 @@ inline double leg_abs(const factor::stat::Row &r, int d, int l, double cap) {
 //   need              原料位 (引擎据此算 / 拷回)
 //   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
 //   open(c)           本块评前 (单线程; 落地平面在评估域首块定形)
-//   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内行 ∈ [t_lo, T), hi = Probes::hd 下标)
-//   root(c, v)        本块原料就绪 (全核)
+//   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内统计行 ∈ [t_lo, t_hi), hi = Probes::hd 下标); r 已按根的方向定向 (oriented)
+//   root(c, v)        本块原料就绪 (全核); v.acc / v.lc 已按根的方向, v.rx 是原值的秩 (按 c.d 自取)
 //   finish(c)         末块 root 之后 (c 同 root)
 //   bytes(sh, H)      宿主另占 (字节; 预算)
 // 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按绝对行 t0_abs + t)
@@ -92,6 +91,7 @@ struct Ctx {
   const Block &c;
   const factor::stat::Labels &L;             // 所评持有期 (Probes::hd) 的标签 + cap (引擎会话那份: CPU 已预处理)
   factor::cpu::stat::Workspace *w = nullptr; // Stat 宿主工作区 (CPU / GPU 逐根时有; 批核空)
+  factor::stat::Dir d = factor::stat::kFwd;  // 根的方向 (Root::d)
   factor::stat::Span s() const { return c.span(); }
 };
 // 落地平面: 评估域首块 (t0_abs = 0) 定形填 fill, 其后各块按绝对行写
@@ -135,13 +135,14 @@ struct Probes {
     std::apply([&](P &...q) { (q.finish(c), ...); }, p);
   }
 };
-// accum_rows 的 sink (Stat/Cpu.hpp): 行进探针
+// accum_rows 的 sink (Stat/Cpu.hpp): 行按根的方向定向后进探针
 template <class Ps>
 struct ProbeSink {
   Ps *ps;
+  factor::stat::Dir d;
   using Ext = typename Ps::Ext;
   Ext ext() const { return ps->ext(); }
-  void row(int i, int t, const factor::stat::Row &r, const Ext &e) const { ps->row(i, t, r, e); }
+  void row(int i, int t, const factor::stat::Row &r, const Ext &e) const { ps->row(i, t, factor::stat::oriented(r, d), e); }
 };
 
 // 探针的空钩子 (各探针按需遮蔽)
@@ -183,7 +184,7 @@ struct ValidP : ProbeBase {
   float pct = 0.f;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    valid_count(v.x.m, c.c.y.gate.data(), static_cast<size_t>(s.t_lo) * s.A, s.n(), on, all);
+    valid_count(v.x.m, c.c.y.gate.data(), static_cast<size_t>(s.t_lo) * s.A, static_cast<size_t>(s.t_hi()) * s.A, on, all);
   }
   void finish(const Ctx &) {
     assert(all > 0 && "截面池全空: 区间内无在池格");
@@ -198,7 +199,7 @@ struct RankP : ProbeBase {
   float pct = 0.f;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    rank_sum(c.ex, v.rx, v.x.m, c.c.y.gate.data(), s.t_lo, s.T, s.A, sum, rows);
+    rank_sum(c.ex, v.rx, v.x.m, c.c.y.gate.data(), s.t_lo, s.t_hi(), s.A, sum, rows);
   }
   void finish(const Ctx &) {
     assert(rows > 0 && "截面池全空: 区间内无在池格");
@@ -210,11 +211,11 @@ struct AlphaP : ProbeBase {
   static constexpr uint8_t need = kNeedAlpha | kNeedRx;
   AlphaDist d;
   void root(const Ctx &c, const RootView &v) {
-    if (c.c.d1 != c.c.nd)
+    if (c.c.d1 != c.c.nd || c.c.t_back > 0)
       return;
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
-    alpha_dist(c.ex, v.alpha.v + o, v.alpha.m + o, v.rx + o, s.T - s.t_lo, s.A, d);
+    alpha_dist(c.ex, v.alpha.v + o, v.alpha.m + o, v.rx + o, s.t_hi() - s.t_lo, s.A, c.d, d);
   }
 };
 // 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 / Inspect 左下左半 (同一份成品; n < 3 与 Accum::finish 同口径: 不画)

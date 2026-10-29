@@ -157,8 +157,8 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
   return out;
 }
 
-// 模板子树 i 的最长回看行数 = 沿各条到叶的路径累加 ROLL 窗长 d (自由 d 取上界 kMaxD; 用 d 而非 d−1 以盖住 Delay / Delta 的 x_{t−d}).
-// EXPAND 段内 reset (块首对齐段首) 不计; EXPO 全历史递推不计 (块首重启, 由调用方接受)
+// 模板子树 i 的最长回看行数 = 沿各条到叶的路径累加窗长: ROLL 取 d (自由 d 取上界 kMaxD; 用 d 而非 d−1 以盖住 Delay / Delta 的 x_{t−d}),
+// EXPO 取 kMaxD. EXPAND 段内 reset (块首对齐段首) 不计
 inline int lookback(const expr::Expr &e, int i = 0) {
   const expr::Node &n = e.nodes[static_cast<size_t>(i)];
   if (n.op < 0)
@@ -167,7 +167,8 @@ inline int lookback(const expr::Expr &e, int i = 0) {
   int m = 0;
   for (int a = 0; a < o.arity; ++a)
     m = std::max(m, lookback(e, n.args[a]));
-  return m + (o.t == T::ROLL ? ((n.free & expr::kFreeD) ? kMaxD : n.p.d) : 0);
+  return m + (o.t == T::ROLL ? ((n.free & expr::kFreeD) ? kMaxD : n.p.d) : o.t == T::EXPO ? kMaxD
+                                                                                          : 0);
 }
 
 // 阈值槽装上分位表 (升序, ≥ 2 个且不全等: 常量输入调用方先拦)
@@ -178,15 +179,15 @@ inline void set_qtab(Slot &s, std::vector<float> t) {
 
 inline bool in_range(const Slot &s, double u) { return u >= s.u_lo - 1e-9 && u <= s.u_hi + 1e-9; }
 
-// 槽参数落值 v 并清自由位 (不刷 canon)
+// 槽参数落值 v 并清自由位 (不刷 canon); k / k2 落规范串往返值 (expr::kv_of), 评的与写进 weights 的同一个式子
 inline void put(expr::Expr &e, const Slot &s, double v) {
   expr::Node &n = e.nodes[static_cast<size_t>(s.node)];
   if (s.key == Key::D)
     n.p.d = static_cast<int>(v), n.free &= static_cast<uint8_t>(~expr::kFreeD);
   else if (s.key == Key::K)
-    n.p.k = static_cast<float>(v), n.free &= static_cast<uint8_t>(~expr::kFreeK);
+    n.p.k = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK);
   else
-    n.p.k2 = static_cast<float>(v), n.free &= static_cast<uint8_t>(~expr::kFreeK2);
+    n.p.k2 = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK2);
 }
 
 // 坐标 u[P] → 具体表达式 (base 模板的拷贝, 槽参数落值并清自由位, 刷新 canon); 任一槽出界 / 参数值域不合 → false.

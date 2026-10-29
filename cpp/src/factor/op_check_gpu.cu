@@ -434,12 +434,12 @@ StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, dou
   return s;
 }
 
-void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo, factor::stat::Accum *acc,
-               factor::stat::Row *rows, uint8_t *lc, uint16_t *rx, double *eval_ms) {
+void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
+               factor::stat::Accum *acc, factor::stat::Row *rows, uint8_t *lc, uint16_t *rx, double *eval_ms) {
   assert(s && x && x->v && x->m && g && g->m && acc);
-  assert(t0_abs >= 0 && t_lo >= 0 && t_lo < s->s.T);
-  factor::stat::Span sp = s->s; // 分片数 n_parts 随 t_lo 只减 (open 按 t_lo = 0 的上界分配)
-  sp.t0_abs = t0_abs, sp.t_lo = t_lo;
+  factor::stat::Span sp = s->s; // 分片数 n_parts 随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
+  sp.t0_abs = t0_abs, sp.t_lo = t_lo, sp.t_back = t_back;
+  factor::stat::assert_span(sp);
   if (eval_ms)
     s->tm.begin();
   stat::run(factor::stat::Plane{x->v, x->m}, g->m, f, sp, s->lab.L, s->rx.p, s->w, nullptr);
@@ -450,7 +450,7 @@ void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::sta
   if (rows)
     s->rows.down(rows, static_cast<size_t>(H) * s->s.T);
   if (lc) {
-    stat::leg_codes(s->rx.p, s->s, s->lc.p, nullptr);
+    stat::leg_codes(s->rx.p, s->s, d, s->lc.p, nullptr);
     s->lc.down(lc, s->s.n());
   }
   if (rx)
@@ -473,7 +473,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
   xv.up(x.v, n), xm.up(x.m, n), g.up(gm, n);
   const DevPlane xp{xv.p, xm.p}, gp{nullptr, g.p};
   StatSession *s = stat_open(T, A, seg, L, prep_ms);
-  stat_eval(s, &xp, &gp, f, 0, 0, acc, rows, nullptr, nullptr, eval_ms);
+  stat_eval(s, &xp, &gp, f, factor::stat::kFwd, 0, 0, 0, acc, rows, nullptr, nullptr, eval_ms);
   stat_close(s);
   xv.free_(), xm.free_(), g.free_();
 }
@@ -498,7 +498,7 @@ SearchSession *search_open(int T, int A, int seg, int Cmax, const factor::stat::
   SearchSession *s = new SearchSession;
   s->T = T, s->A = A, s->seg = seg, s->Cmax = Cmax, s->hd = hd, s->cap = cap;
   s->lab.alloc(hd, seg, n);
-  const search::Work w = search::plan(Cmax, T, A, seg, hd.n, 0); // t_lo = 0 是分片数上界
+  const search::Work w = search::plan(Cmax, T, A, seg, hd.n, 0, 0); // t_lo = t_back = 0 是分片数上界
   s->rx.alloc(w.rx_elems());
   s->part.alloc(w.part_elems());
   s->out.alloc(w.out_elems());
@@ -518,7 +518,7 @@ void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_
   s->loaded = true;
 }
 
-void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo,
+void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo, int t_back,
                  factor::search::Result *out, double *eval_ms) {
   assert(s && s->loaded && x && C >= 1 && C <= s->Cmax && g && g->m && out);
   stat::Batch B;
@@ -527,7 +527,7 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
     assert(x[c] && x[c]->v && x[c]->m);
     B.x[c] = {x[c]->v, x[c]->m};
   }
-  const search::Work w = search::plan(C, s->T, s->A, s->seg, s->hd.n, t_lo);
+  const search::Work w = search::plan(C, s->T, s->A, s->seg, s->hd.n, t_lo, t_back);
   if (eval_ms)
     s->tm.begin();
   search::eval(B, g->m, f, w, t0_abs, s->lab.L, s->rx.p, s->part.p, s->out.p, nullptr);
@@ -553,7 +553,7 @@ void search_close(SearchSession *s) {
 }
 
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg,
-                int t0_abs, int t_lo, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out,
+                int t0_abs, int t_lo, int t_back, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out,
                 double *prep_ms, double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = static_cast<size_t>(T) * A;
@@ -571,7 +571,7 @@ void run_search(int C, const float *const *xv, const uint8_t *const *xm, const u
   const DevPlane gp{nullptr, g.p};
   SearchSession *s = search_open(T, A, seg, C, hd, cap);
   search_load(s, lab, prep_ms);
-  search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, out, eval_ms);
+  search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, t_back, out, eval_ms);
   search_close(s);
   for (int c = 0; c < C; ++c)
     x[static_cast<size_t>(c)].free_(), m[static_cast<size_t>(c)].free_();

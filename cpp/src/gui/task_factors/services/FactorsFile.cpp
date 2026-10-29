@@ -53,15 +53,71 @@ std::string stat_block(const ojson &st) {
   return "{" + head + body + "}";
 }
 
-// 因子文件排版 (给人看, 合法 JSON): 顶层一键一行, 人写的键 (type / name_cn / expr / note / …) 在前, 之后 weights → 评估派生
-// (run / hold_cols / acc_cols / stats); weights 一元素一行, stats 一元素一块 (stat_block; stats[i] ↔ weights[i]), 数值表密排不展开
+// search[] 一项 ↔ SearchMark (数值 4 位有效)
+ojson search_json(const SearchMark &mk) {
+  ojson o;
+  o["hold"] = mk.hold;
+  o["start_date"] = misc::dash(mk.start_date);
+  o["end_date"] = misc::dash(mk.end_date);
+  o["days"] = mk.days;
+  if (mk.top) {
+    const SearchTop &t = *mk.top;
+    ojson p;
+    p["expr"] = t.expr;
+    p["sign"] = t.sign;
+    p["mono"] = sig4(t.mono);
+    p["ls"] = sig4(t.ls);
+    p["ric"] = sig4(t.ric);
+    p["g"] = sig4(t.g);
+    p["se"] = sig4(t.se);
+    p["mu"] = sig4(t.mu);
+    p["peak"] = t.peak;
+    o["top"] = std::move(p);
+  }
+  return o;
+}
+
+// search_json 的逆: 不合 → false (派生数据, 略去即可, 下次 Search 覆盖)
+bool load_search(const json &o, SearchMark &mk) {
+  if (!o.is_object() || !json_int(o, "hold", mk.hold) || !json_int(o, "days", mk.days))
+    return false;
+  const auto ymd = [&](const char *key, misc::Ymd &out) {
+    const auto it = o.find(key);
+    if (it == o.end() || !it->is_string())
+      return false;
+    out = misc::parse_ymd(it->get<std::string>());
+    return out != 0;
+  };
+  if (!ymd("start_date", mk.start_date) || !ymd("end_date", mk.end_date))
+    return false;
+  const auto tit = o.find("top");
+  if (tit == o.end())
+    return true;
+  if (!tit->is_object())
+    return false;
+  const json &p = *tit;
+  SearchTop t;
+  const auto xit = p.find("expr"), kit = p.find("peak");
+  if (xit == p.end() || !xit->is_string() || kit == p.end() || !kit->is_boolean() || !json_int(p, "sign", t.sign) || (t.sign != 1 && t.sign != -1))
+    return false;
+  if (!json_num(p, "mono", t.mono) || !json_num(p, "ls", t.ls) || !json_num(p, "ric", t.ric) || !json_num(p, "g", t.g) || !json_num(p, "se", t.se) ||
+      !json_num(p, "mu", t.mu))
+    return false;
+  t.expr = xit->get<std::string>();
+  t.peak = kit->get<bool>();
+  mk.top = std::move(t);
+  return true;
+}
+
+// 因子文件排版 (给人看, 合法 JSON): 顶层一键一行, 人写的键 (type / name_cn / expr / note / …) 在前, 之后 weights → search → 评估派生
+// (run / hold_cols / acc_cols / stats); weights / search 一元素一行, stats 一元素一块 (stat_block; stats[i] ↔ weights[i]), 数值表密排不展开
 std::string format_factor(const ojson &j) {
   assert(j.is_object());
-  static constexpr std::string_view kTail[] = {"weights", "run", "hold_cols", "acc_cols", "stats"};
+  static constexpr std::string_view kTail[] = {"weights", "search", "run", "hold_cols", "acc_cols", "stats"};
   std::vector<std::string> top; // 顶层一键一段 (段间 ",\n")
   const auto add = [&](const std::string &k, const ojson &v) {
     std::string s = " " + ojson(k).dump() + ": ";
-    if ((k == "weights" || k == "stats") && v.is_array() && !v.empty()) {
+    if ((k == "weights" || k == "search" || k == "stats") && v.is_array() && !v.empty()) {
       s += "[\n";
       for (size_t i = 0; i < v.size(); ++i)
         s += "  " + (k == "stats" ? stat_block(v[i]) : v[i].dump()) + (i + 1 < v.size() ? ",\n" : "\n");
@@ -206,7 +262,11 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
     emit(r);
     return;
   }
-  // 权重: weights 数组每项一行; 无 weights 时, 模板具体 → 手填唯一权重, 否则 "未搜索" 一行
+  if (const auto sit = j.find("search"); sit != j.end() && sit->is_array())
+    for (const json &o : *sit)
+      if (SearchMark mk; load_search(o, mk) && find_leg(ft.y.labels, mk.hold))
+        r.searched.push_back(std::move(mk));
+  // 权重: weights 数组每项一行; 无 weights 时, 模板具体且没搜过 → 手填唯一权重, 否则 "未搜索 / 无显著" 一行
   struct W {
     int hold = 0, sign = 1;
     std::string expr, err;
@@ -234,10 +294,10 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
       }
       ws.push_back(std::move(w));
     }
-  } else if (!t.is_template()) {
+  } else if (!t.is_template() && r.searched.empty()) {
     ws.push_back(W{0, 1, t.canon, {}});
   }
-  if (ws.empty()) { // 模板未搜索
+  if (ws.empty()) { // 未搜索 / 无显著
     r.status = RowStatus::Done;
     emit(r);
     return;
@@ -268,8 +328,6 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
       continue;
     }
     w.sign = ws[i].sign;
-    if (w.sign < 0) // 评估对象 = 根下插 TsNeg
-      e = ft.reparse(factor::expr::negated_canon(e));
     w.expr = e.canon;
     w.n_ops = e.n_ops;
     const factor::Dag d = factor::build(e);
@@ -283,7 +341,7 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
 }
 
 // ============================================================================
-// 写: 构建器 Add / Update / Delete, Search WriteFactorWeights, Run WriteFactorStats
+// 写: 构建器 Add / Update / Delete, Search WriteFactorSearch, Run WriteFactorStats
 // ============================================================================
 
 std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view name_cn,
@@ -346,7 +404,8 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
   else
     j["note"] = std::string(note);
   if (expr_changed) {
-    j.erase("weights"); // 旧权重是别的模板的实例
+    j.erase("weights"); // 旧权重 / 搜索结局是别的模板的
+    j.erase("search");
     erase_stats(j);
   }
   write_json(from, j);
@@ -361,16 +420,29 @@ void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
   std::filesystem::remove(path);
 }
 
-void WriteFactorWeights(const std::string &factor_dir, std::string_view file, int hold, bool fresh, const std::vector<SearchWeight> &ws) {
+void WriteFactorSearch(const std::string &factor_dir, std::string_view file, bool fresh, const SearchMark &mk, const std::vector<SearchWeight> &ws) {
+  const int hold = mk.hold;
+  assert(mk.start_date && mk.end_date && mk.days > 0);
   const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
   ojson j = read_json(path);
   erase_stats(j);
+  // 别的可搜档 (≠ hold) 的项留; 不合的 weights 项也留 (扫描时 BROKEN, 人处理), 不合的 search 项丢 (派生数据)
+  const auto keep = [&](const ojson &o) {
+    return o.is_object() && o.contains("hold") && o["hold"].is_number_integer() && o["hold"].get<int>() != hold &&
+           factor::search::search_hold(o["hold"].get<int>());
+  };
+  ojson marks = ojson::array();
+  if (!fresh && j.contains("search") && j["search"].is_array())
+    for (const ojson &o : j["search"])
+      if (keep(o))
+        marks.push_back(o);
+  marks.push_back(search_json(mk));
+  j["search"] = std::move(marks);
   ojson arr = ojson::array();
   if (!fresh && j.contains("weights")) {
     assert(j["weights"].is_array() && "搜索落盘: weights 扫描时已校验过");
     for (const ojson &o : j["weights"])
-      if (!o.is_object() || !o.contains("hold") || !o["hold"].is_number_integer() ||
-          (o["hold"].get<int>() != hold && factor::search::search_hold(o["hold"].get<int>())))
+      if (!o.is_object() || !o.contains("hold") || !o["hold"].is_number_integer() || keep(o))
         arr.push_back(o);
   }
   for (const SearchWeight &w : ws) {

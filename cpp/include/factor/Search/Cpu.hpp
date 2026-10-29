@@ -26,7 +26,7 @@ using factor::stat::Frame;
 using factor::stat::Labels;
 using factor::stat::Span;
 
-// 一批候选: B.x[c] 各一张 [T][A] (块形), 统计 [s.t_lo,T), 绝对首行 s.t0_abs (契约【分块流式】) → out[c] (覆盖).
+// 一批候选: B.x[c] 各一张 [T][A] (块形), 统计 [s.t_lo, s.t_hi), 绝对首行 s.t0_abs (契约【分块流式】) → out[c] (覆盖).
 // rx = r16 工作平面 [T][A] (候选间复用, 调用方持有; 跑完是最后一个候选的秩), w = Stat 的工作区
 template <class Exec>
 inline void run(Exec &ex, const Batch &B, const uint8_t *g, Frame f, const Span &s, const Labels &L, uint16_t *rx,

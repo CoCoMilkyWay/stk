@@ -653,6 +653,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
     {Status, "status",
      "• BROKEN: 文件有错, 悬停看原因\n"
      "• 未搜索: 模板含自由参数, 先 Search\n"
+     "• 无显著: Search 过, 没有显著胜出的参数点\n"
      "• ok: 有 stat\n"
      "• file≠scope: 文件里的 stat 是别的池算的\n"
      "• no stat: 还没评估\n"
@@ -805,7 +806,7 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::EndTable();
 }
 
-// status 列: BROKEN / 未搜索 / … / running / no stat / ok / file / file≠scope (+ dup)
+// status 列: BROKEN / 未搜索 / 无显著 / … / running / no stat / ok / file / file≠scope (+ dup)
 void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   if (!r.error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN");
@@ -813,8 +814,8 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
       tip("%s", r.error.c_str());
     return;
   }
-  if (r.widx < 0) { // 模板含自由参数而无 weights
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "未搜索");
+  if (r.widx < 0) { // 无可评权重: 没搜过 / 搜过无显著
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), r.searched.empty() ? "未搜索" : "无显著");
     return;
   }
   switch (r.status) {
@@ -954,9 +955,9 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
   }
   case AlphaPdf:
     return mini_pdf_cell(r.has_stat ? &r.alpha_pdf : nullptr, "##alpha_pdf", "alpha 分布 (截尾, 峰值归一)", false);
-  case Expr: // 父 / 文件级行 = 模板 (自由参数裸键名); 子 / 平铺权重 = 具体串; 模板解析不过 → 文件原串 (红)
+  case Expr: // 父 / 文件级行 = 模板 (自由参数裸键名); 子 / 平铺权重 = 具体串 (反向权重后缀 · 取反); 模板解析不过 → 文件原串 (红)
     if (kind != RowKind::Parent && !r.expr.empty())
-      ImGui::TextUnformatted(r.expr.c_str());
+      ImGui::Text("%s%s", r.expr.c_str(), r.sign < 0 ? " · 取反" : "");
     else if (!r.tmpl.empty())
       ImGui::TextUnformatted(r.tmpl.c_str());
     else if (!r.expr_raw.empty())
@@ -1223,7 +1224,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
       hold_tip();
   }
 
-  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的 毛 LS · rIC (资金利用率已在 LS 的持仓口径里)
+  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的 毛 LS · rIC · mono² (资金利用率已在 LS 的持仓口径里)
   //      (Search/Contract.hpp【目标】【多权重】); 结果替换文件里同 h 的 weights, 随后 TaskFactors 自动 Run (因子表从新 stat 算) ----
   {
     const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }; // 模板有自由参数

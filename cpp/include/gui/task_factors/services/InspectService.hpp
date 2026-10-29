@@ -57,9 +57,9 @@ struct InspectSpec {
   std::string row; // 权重行 key (FactorRow::key = 文件#权重号)
 };
 using InspectRequest = Request<InspectSpec>;
-// 请求 / 结果 key: 层 | 权重行 | 具体规范串 | 池
-inline std::string inspect_key(LevelId lv, const std::string &pool, const std::string &row, const std::string &expr) {
-  return std::string(factor_level(lv).name) + "|" + row + "|" + expr + "|" + pool;
+// 请求 / 结果 key: 层 | 权重行 | 具体规范串 | 方向 | 池
+inline std::string inspect_key(LevelId lv, const std::string &pool, const std::string &row, const std::string &expr, factor::stat::Dir dir) {
+  return std::string(factor_level(lv).name) + "|" + row + "|" + expr + (dir == factor::stat::kRev ? "|-" : "|+") + "|" + pool;
 }
 // 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload, bool gpu,

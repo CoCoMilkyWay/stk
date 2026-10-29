@@ -439,20 +439,35 @@ private:
   C c_;
 };
 
-// ---- 窗: EXPO (指数递推, 全程不重置 → 没有 reset; 核与窗一体, 只服务均值) ----
+// ---- 窗: EXPO (最近 kMaxD 期按行龄 (1−k)^j 加权, 跨段不重置 → 没有 reset; 核与窗一体, 只服务均值; 每步整窗重放) ----
+//   Horner 从最旧格推到窗内最新有效格: 年龄以它为 0 (与以 t 为 0 只差公共因子, 比值相同; 老样本下溢只丢可忽略项)
 class Ema {
 public:
   static constexpr T kT = T::EXPO;
-  explicit Ema(const Param &p) : k_(p.k) { assert(k_ > 0.f && k_ <= 1.f); }
-  Val step(Val x, Val, Val, int) { // x 无效 → 状态保持; 尚无有效样本 → 0
-    if (x.m)
-      y_ = on_ ? k_ * x.v + (1.0 - k_) * y_ : x.v, on_ = true;
-    return mk(y_, true);
+  explicit Ema(const Param &p) : q_(1.0 - p.k), bx_(static_cast<size_t>(kMaxD)) { assert(p.k > 0.f && p.k <= 1.f); }
+  Val step(Val x, Val, Val, int) { // 窗内无有效样本 → 0
+    bx_[head_] = x;
+    if (++head_ == kMaxD)
+      head_ = 0;
+    n_ = std::min(n_ + 1, kMaxD);
+    const int j0 = n_ < kMaxD ? 0 : head_; // 最旧格
+    int last = -1;                         // 最新有效格距最旧格的位置
+    for (int i = 0; i < n_; ++i)
+      if (bx_[(j0 + i) % kMaxD].m)
+        last = i;
+    double s = 0.0, w = 0.0;
+    for (int i = 0; i <= last; ++i) {
+      const Val &v = bx_[(j0 + i) % kMaxD];
+      s = s * q_ + (v.m ? static_cast<double>(v.v) : 0.0);
+      w = w * q_ + (v.m ? 1.0 : 0.0);
+    }
+    return mk(last >= 0 ? s / w : 0.0, true);
   }
 
 private:
-  double k_, y_ = 0.0;
-  bool on_ = false;
+  double q_;
+  std::vector<Val> bx_;
+  int head_ = 0, n_ = 0;
 };
 
 // =========================== 实例化: 核 × 窗 ===========================

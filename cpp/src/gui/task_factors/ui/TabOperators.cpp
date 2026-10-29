@@ -355,7 +355,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• POINT   当前点\n"
         "• EXPAND  段内 expanding (段界 reset)\n"
         "• ROLL    最近 d 期 (跨段)\n"
-        "• EXPO    指数加权全历史\n"
+        "• EXPO    最近 255 期指数加权 (跨段)\n"
         "• 截面算子恒 POINT",
         // A
         "A 域 = 资产支撑\n"

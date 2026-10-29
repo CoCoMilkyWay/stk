@@ -28,8 +28,7 @@ std::string Domain::key() const {
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
 
-bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why) {
-  TraceN("Domain");
+bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why) {
   assert(sc.lv == ft.lv && "作用域层与字段表层不符");
   assert(keep >= 1);
   const FactorLevel &lv = factor_level(ft.lv);
@@ -84,8 +83,17 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
     dm.dates.erase(dm.dates.begin(), dm.dates.begin() + cut);
     dm.days.erase(dm.days.begin(), dm.days.begin() + cut);
   }
+  return true;
+}
+
+bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why) {
+  TraceN("Domain");
+  if (!span_of(ft, sc, leaves, keep, dm, why))
+    return false;
+  const PoolId lab = factor_level(ft.lv).lab(dm.pool);
+  const bool sub = dm.pool != lab;
   if (sub)
-    dm.member = pool::Panel::build(libs[kAllPool], pool_def(pool).pool_col, dm.dates);
+    dm.member = pool::Panel::build(sc.libs[kAllPool], pool_def(dm.pool).pool_col, dm.dates);
   dm.rs.main = lab;
   dm.rs.days = dm.used;
   dm.rs.months = misc::months_between(dm.dates.front(), dm.dates.back());
@@ -119,27 +127,30 @@ int Plan::max_days() const {
   return m;
 }
 
-Plan plan_chunks(const Domain &dm, int seg, const Budget &b, int carry) {
+Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd) {
   const int days = static_cast<int>(dm.days.size()), A = static_cast<int>(dm.rs.axis.size());
-  assert(days > 0 && A > 0);
+  assert(days > 0 && A > 0 && bd.back >= 0);
   const double per_day = static_cast<double>(seg) * A;
   Plan P;
   P.host = host_budget() - b.fixed;
   if (b.dev > 0.0)
     P.vram = vram_budget();
-  if (carry < 0) {
-    P.chunks = {Chunk{0, 0, static_cast<size_t>(days)}};
+  if (bd.front < 0) {
+    P.chunks = {Chunk{0, 0, static_cast<size_t>(days), static_cast<size_t>(days)}};
     P.D = days;
     P.cache = days * per_day * b.load;
     return P;
   }
   assert(P.host > 0.0 && "内存预算装不下与格无关的常驻量");
-  int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - carry, 1, days);
+  const int band = bd.front + bd.back;
+  int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - band, 1, days);
   if (b.dev > 0.0)
-    D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - carry, 1, days));
+    D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - band, 1, days));
   P.D = D;
   for (int s0 = 0; s0 < days; s0 += D) {
-    const Chunk k{static_cast<size_t>(std::max(0, s0 - carry)), static_cast<size_t>(s0), static_cast<size_t>(std::min(days, s0 + D))};
+    const int s1 = std::min(days, s0 + D);
+    const Chunk k{static_cast<size_t>(std::max(0, s0 - bd.front)), static_cast<size_t>(s0), static_cast<size_t>(s1),
+                  static_cast<size_t>(std::min(days, s1 + bd.back))};
     P.chunks.push_back(k);
     P.cache += k.days() * per_day * b.load;
   }

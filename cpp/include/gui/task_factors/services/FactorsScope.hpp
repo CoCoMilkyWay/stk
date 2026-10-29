@@ -1,5 +1,5 @@
 // FactorsScope — 因子评估的作用域层 (四服务共用, 管线最底层): 一个因子的评估域 Domain (domain_of: 所用库 + 评估期 = 落盘日交集 + A 轴 +
-//   子池成员, worker 按因子解析) / open_libs; 预算 Budget → 分块 Plan (plan_chunks: 整期一块 或 尽量多统计日 + 前带); Rc = 装载 / 评估的唯一结局.
+//   子池成员, worker 按因子解析) / open_libs; 预算 Budget → 分块 Plan (plan_chunks: 整期一块 或 尽量多统计日 + 前后带); Rc = 装载 / 评估的唯一结局.
 //   之上: FactorsLoad (装载) → FactorsProbe (探针) → FactorsEngine (引擎 + 管线); 净值引擎 FactorsBook 吃装载层的 Y / B.
 #pragma once
 
@@ -32,6 +32,8 @@ void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
 // 作用域 sc + 叶 leaves → 评估域, 评估期只留最近 keep 日 (≥ 1; 子池成员 / A 轴按留下的日建).
 // 所用库 = 因子池库 ∪ 读计划各列的库 (Col::ref) (+ all: 池成员); 所用库未建 / 无共同落盘日 → false + why (正常输入)
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
+// domain_of 的前半 (pool / used / rs.libs / dates / days; 不建子池成员与 A 轴, 不读库): 只问评估期时用
+bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
 
 // 宿主内存预算: 总内存 × kHostFrac − 已用 (整机占用封顶 kHostFrac); 显存预算: 空闲显存 × kVramFrac
 inline constexpr double kHostFrac = 0.8;
@@ -40,9 +42,10 @@ double host_budget();
 double vram_budget();
 
 // ---- 计划: 预算 → 分块 (四服务同一份口径) ----
-// 一块 = 评估域日 [d0, d1), 前带 [d0, s0) 只给回看 / lag, 统计日 [s0, d1); 各块统计段首尾相接覆盖全期 (Search 契约【分块流式】)
+// 一块 = 评估域日 [d0, d1), 前带 [d0, s0) 只给回看 / lag / 交接链, 统计日 [s0, s1), 后带 [s1, d1) 只给续持;
+// 各块统计段首尾相接覆盖全期 (Search 契约【分块流式】)
 struct Chunk {
-  size_t d0 = 0, s0 = 0, d1 = 0;
+  size_t d0 = 0, s0 = 0, s1 = 0, d1 = 0;
   int days() const { return static_cast<int>(d1 - d0); }
 };
 // 字节 / 格: load = 宿主块 (X + Y; 池篮子作业 = B 装载峰值); work = 引擎 + 探针 (同时只一块在用); dev = 显存 (> 0 = 也按显存限块).
@@ -62,8 +65,12 @@ struct Plan {
 // 整期一块的宿主装载量 (字节): 全部日 × (load + work) + fixed; 显存量: 全部日 × dev
 double whole_bytes(const Domain &dm, int seg, const Budget &b);
 double whole_dev_bytes(const Domain &dm, int seg, const Budget &b);
-// carry < 0 → 整期一块 (评估期已按宿主 / 显存预算截过: FactorsEngine fit_recent); 否则块 = 尽量多的统计日 (≥ 1) + 前带 carry 日, 块数最少
-Plan plan_chunks(const Domain &dm, int seg, const Budget &b, int carry);
+// 前后带日数 (FactorsEngine bands_of); front < 0 → 整期一块 (评估期已按宿主 / 显存预算截过: FactorsEngine fit_recent)
+struct Bands {
+  int front = -1, back = 0;
+};
+// 整期一块 或 块 = 尽量多的统计日 (≥ 1) + 前带 front 日 + 后带 back 日, 块数最少
+Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd);
 
 // ---- 评估结局 (装载 / 评估 / 四服务同一个) ----
 enum class Rc : uint8_t { Ok,
