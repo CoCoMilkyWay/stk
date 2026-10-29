@@ -136,7 +136,7 @@
   X(TsMinRoll, "时滚最小", 1, ROLL, SELF, EXTREME, NONE, OP_IN1(REAL), REAL, R"tex(\mathrm{min}_{W_t}\,x_s)tex", "近 d 期的最低; 近期低点")                                                                                \
   X(TsQuantileRoll, "时滚分位", 1, ROLL, SELF, ORDER, OPEN01, OP_IN1(REAL), REAL, R"tex(Q_k(\{x_s : s \in W_t\}))tex", "近 d 期的 k 分位值; k = 0.5 即中位")                                                               \
   X(TsRankRoll, "时滚秩", 1, ROLL, SELF, ORDER, NONE, OP_IN1(REAL), UNIT, R"tex(\mathrm{pct}(x_t;\,\{x_s : s \in W_t\}))tex", "本值在近 d 期的分位; 近期相对位置")                                                         \
-  X(TsMeanEma, "时指均值", 1, EXPO, SELF, RECUR, OPEN0_CLOSED1, OP_IN1(REAL), REAL, R"tex(e_t = \frac{\sum_{j<D} (1-k)^j\,x_{t-j}}{\sum_{j<D} (1-k)^j},\ D = 255)tex", "指数衰减均值, 窗 = 最近 255 期 (只计有效格); 对标 d 期取 k = 2/(d+1)")
+  X(TsMeanEma, "时指均值", 1, EXPO, SELF, RECUR, OPEN0_CLOSED1, OP_IN1(REAL), REAL, R"tex(\Sigma_{j<D}\,(1-k)^j\,x_{t-j} \;/\; \Sigma_{j<D}\,(1-k)^j,\; D = 255)tex", "指数衰减均值, 窗 = 最近 255 期 (只计有效格); 对标 d 期取 k = 2/(d+1)")
 
 // ---- 1 元 × 截面 (9 = ALL 9) ----
 #define OP_CS1(X)                                                                                                                                                                                          \
