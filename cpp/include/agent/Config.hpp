@@ -7,7 +7,8 @@
 //     智谱    对话补全 chat/completions; key = 开放平台 API Keys
 //     Cursor  Cloud Agents API; key = Dashboard → API Keys 的 user API key (无仓库 agent, 起 VM 分钟级)
 //   模型不写死: 各后端的模型表由 GET models 嗅探 (llm::models), Config 页从中选
-//   读超时 = 流里两次增量之间的最长静默 (思考期也有思考增量 / 心跳); 重试 = 网络瞬抖 + 智谱限流 (429 1302 / 1305)
+//   读超时 = 流里两次增量之间的最长静默 (思考期也有思考增量 / 心跳); 重试 = 网络瞬抖 + 智谱限流 (429 1302 / 1305), 不限次数
+//   退出: 任务 Destroy 置取消旗, 全部请求 / 重试等待 1 秒内收手 (只剩 Cursor 远端取消, 限时 kCancelTimeoutSeconds)
 //   目录相对 app 工作目录 (与 shared::Config 的默认目录同一个基准)
 // =============================================================================
 
@@ -28,19 +29,17 @@ inline constexpr const char *kProxyHost = "127.0.0.1";
 inline constexpr int kProxyPort = 10808;
 
 inline constexpr int kReadTimeoutSeconds = 600;
-inline constexpr int kRetryMax = 4; // 共 5 次尝试
-inline constexpr int kRetryIntervalSeconds = 30;
+inline constexpr int kRetryIntervalSeconds = 30; // 不限次数, 直到成功或取消
+inline constexpr int kCancelTimeoutSeconds = 5;  // 取消后通知远端停 run (Cursor) 的每步限时: 取消 / 退出时唯一不看取消旗的请求
 
 // ---- 挖掘 ----
-inline constexpr int kBatch = 8;     // 每轮要的模板数 (提示词 {{batch}})
+inline constexpr int kBatch = 8;     // 每轮变体数上限 (提示词 {{batch}})
 inline constexpr int kLibTop = 40;   // 系统提示里列的正式因子 (按该持有期 score 降序)
 inline constexpr int kTriedTop = 80; // 首条消息里列的本作用域已试候选 (新的在前)
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
-inline constexpr double kGateScore = 0.0;
-inline constexpr double kGateT = 3.0;
-inline constexpr double kGateMono = 0.95;
-inline constexpr double kGateValid = 0.5; // 池内有效率
+inline constexpr double kGateMono = 0.95; // 分层单调性
+inline constexpr double kGateRic = 0.03;  // rIC 均值
 
 // ---- 目录 ----
 //   kWorkDir/<池>/<层>/<持有期>/factors/   候选因子文件 (与正式因子同格式; Search 日志在其 log/)
@@ -49,5 +48,6 @@ inline constexpr double kGateValid = 0.5; // 池内有效率
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kPromptDir = "../../../../config/agent/prompt";
 inline constexpr const char *kKeyFile = "../../../../config/agent/keys.json"; // {"zhipu": "...", "cursor": "..."}; 无文件 = 都未填
+inline constexpr const char *kUiFile = "../../../../config/agent/ui.json";    // Mine / Config 页的选项 (gitignore): 改了即写, 首次 Draw 读回; 无文件 = 用上面的默认值
 
 } // namespace agent

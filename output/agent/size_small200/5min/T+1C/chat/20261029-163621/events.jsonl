@@ -1,2 +1,0 @@
-{"time":"2026-10-29 16:36:21.413","event":"open","pool":"size_small200","level":"5min","hold":"T+1C","backend":"Cursor","model":"claude-opus-5-5","eval":"CPU","gate":"score 0 t 3 mono 0.95 valid 0.5","tried":"0"}
-{"time":"2026-10-29 16:36:21.413","event":"ask","round":"1","kind":"first","chars":"240"}

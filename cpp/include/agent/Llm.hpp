@@ -39,7 +39,7 @@ struct Model {
   std::string id, name; // name = 显示名 (Zhipu 不给, = id)
 };
 // 嗅探该后端账号可用的模型 (GET models, 阻塞; key 须已填): Zhipu 新的在前 / Cursor 按服务端序 (default = 账号默认模型在首).
-// 网络瞬抖按 Config 重试; 非 2xx / 重试用尽 / 代理拒绝 → error; cancel 置位 → 都空
+// 网络瞬抖按 Config 一直重试; 非 2xx / 代理拒绝 → error; cancel 置位 → 都空
 struct Models {
   std::vector<Model> list;
   std::string error; // 非空 = 嗅探失败的原因 (UI 显示)
@@ -60,7 +60,7 @@ struct Usage {
 struct Reply {
   std::string text, thinking;
   std::string finish; // Zhipu finish_reason (stop / length / sensitive …) | Cursor 终态 (FINISHED / ERROR / EXPIRED …) | cancelled (本地取消) | error (接口失败)
-  std::string error;  // 失败原因 (finish = error: HTTP 非 2xx / 重试用尽 / 代理拒绝 / 流异常收尾; Cursor ERROR: 流里的错误)
+  std::string error;  // 失败原因 (finish = error: HTTP 非 2xx / 代理拒绝 / 流异常收尾 / Cursor 的 POST 发出后断网; Cursor ERROR: 流里的错误)
   Usage usage;
   std::string id; // 对账: Zhipu 响应 id / Cursor run id
   double seconds = 0.0;
@@ -81,8 +81,10 @@ public:
   int rounds() const { return rounds_; }
   const std::string &agent_id() const { return agent_; } // Cursor (首轮后)
 
-  // 发一条 user 消息, 阻塞到整轮收齐. cancel 置位 → 断流, finish = "cancelled" (Zhipu: 本轮不进上下文; Cursor: 远端 run 一并取消).
-  // 网络瞬抖 / 智谱限流按 Config 重试; 其余失败不抛, finish = "error" + error 说明 (stderr 另打响应体)
+  // 发一条 user 消息, 阻塞到整轮收齐. cancel 置位 → 1 秒内断流, finish = "cancelled" (Zhipu: 本轮不进上下文;
+  // Cursor: 已拿到 run id 则远端 run 一并取消, 建 run 的 POST 途中取消则远端那轮不管).
+  // 网络瞬抖 / 智谱限流按 Config 一直重试 (Cursor 的 POST 非幂等, 只重试发出前 —— 连接 / 代理隧道 / TLS 握手 —— 的网络错);
+  // 其余失败不抛, finish = "error" + error 说明 (stderr 另打响应体)
   Reply send(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel);
 
 private:

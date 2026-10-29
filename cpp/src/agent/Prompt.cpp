@@ -59,8 +59,7 @@ std::string num(double v) {
 
 std::string stat_of(const Weight &w) {
   char b[256];
-  std::snprintf(b, sizeof(b), "score %.3g, 每期毛多空 %.1fbp, rIC %.4f (IR %.2f, t %.1f), mono %.2f, 有效率 %.0f%%", w.score, w.ls * 1e4, w.ric, w.ir, w.t, w.mono,
-                w.valid * 100.0);
+  std::snprintf(b, sizeof(b), "mono %.3f, 每期毛多空 %.2fbp, rIC %.4f; score %.3g, 有效率 %.0f%%", w.mono, w.ls * 1e4, w.ric, w.score, w.valid * 100.0);
   return b;
 }
 
@@ -116,20 +115,16 @@ std::string GateMiss(const Gate &g, const Result &r) {
   if (!r.error.empty())
     return "BROKEN: " + r.error;
   for (const Weight &w : r.ws)
-    if (w.has && w.score >= g.score && w.t >= g.t && w.mono >= g.mono && w.valid >= g.valid)
+    if (w.has && w.mono >= g.mono && w.ric >= g.ric)
       return "";
   const Weight *w = r.best();
   if (!w)
     return "本持有期无显著权重";
   std::string s = "最佳权重未达门槛:";
-  if (w->score < g.score)
-    s += " score " + num(w->score) + " < " + num(g.score);
-  if (w->t < g.t)
-    s += " t " + num(w->t) + " < " + num(g.t);
   if (w->mono < g.mono)
     s += " mono " + num(w->mono) + " < " + num(g.mono);
-  if (w->valid < g.valid)
-    s += " 有效率 " + num(w->valid) + " < " + num(g.valid);
+  if (w->ric < g.ric)
+    s += " rIC " + num(w->ric) + " < " + num(g.ric);
   return s;
 }
 
@@ -172,10 +167,8 @@ std::string SystemPrompt(const Context &c, const Gate &g) {
                          {"ts_root_d", std::to_string(c.ts_root_d)},
                          {"max_d", std::to_string(c.max_d)},
                          {"batch", std::to_string(kBatch)},
-                         {"gate_score", num(g.score)},
-                         {"gate_t", num(g.t)},
                          {"gate_mono", num(g.mono)},
-                         {"gate_valid", num(g.valid * 100.0)},
+                         {"gate_ric", num(g.ric)},
                          {"leaves", leaves},
                          {"ops", ops},
                          {"library", lib}});
@@ -203,13 +196,20 @@ std::string Picked(const Question &q, const std::vector<bool> &mask) {
   return s;
 }
 
-std::string AnswerMessage(const std::vector<Question> &qs, const std::vector<std::vector<bool>> &picks, const std::string &note) {
+std::string Answered(const Question &q, const Pick &p) {
+  std::string s = Picked(q, p.on);
+  if (p.other && !p.text.empty())
+    s += (s.empty() ? "" : "; ") + ("其他: " + p.text);
+  return s;
+}
+
+std::string AnswerMessage(const std::vector<Question> &qs, const std::vector<Pick> &picks, const std::string &note) {
   assert(picks.size() == qs.size());
   std::string s;
   for (size_t i = 0; i < qs.size(); ++i) {
-    const std::string sel = Picked(qs[i], picks[i]);
+    const std::string sel = Answered(qs[i], picks[i]);
     s += "### " + std::to_string(i + 1) + ". " + qs[i].prompt + "\n- " + (sel.empty() ? std::string("(未选, 你自定)") : sel) + "\n";
-    if (picks[i] != qs[i].recommended)
+    if (picks[i].on != qs[i].recommended || (picks[i].other && !picks[i].text.empty()))
       s += "- (未照你的推荐: " + Picked(qs[i], qs[i].recommended) + ")\n";
   }
   if (s.empty())
@@ -315,6 +315,10 @@ bool ParseMine(std::string_view text, MineReply &out, std::string &err) {
   }
   if (out.done != j["factors"].empty()) {
     err = out.done ? "done = true 时 factors 须为空" : "factors 为空 (挖完请置 done = true)";
+    return false;
+  }
+  if (j["factors"].size() > static_cast<size_t>(kBatch)) {
+    err = "factors 至多 " + std::to_string(kBatch) + " 个";
     return false;
   }
   for (size_t i = 0; i < j["factors"].size(); ++i) {

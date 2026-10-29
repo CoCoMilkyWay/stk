@@ -273,10 +273,7 @@ std::vector<Result> Bridge::results(const SharedData &data, const Scope &sc, con
       x.has = s.ok;
       if (s.ok) {
         x.score = s.score, x.ls = s.ls, x.ric = s.ric, x.mono = s.mono;
-        const factor::stat::HoldStat *h = w.find_hold(sc.hold);
-        assert(h);
-        x.ir = h->ric.ir, x.t = h->ric.t;
-        x.valid = w.valid_pct;
+        x.valid = w.valid_pct / 100.0;
       }
       r.ws.push_back(std::move(x));
     }

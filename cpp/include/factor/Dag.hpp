@@ -42,10 +42,10 @@ struct DagNode {
 static_assert(kFuseIn >= 3, "融合节点的输入槽要盖住普通算子的元数");
 
 struct Dag {
-  std::vector<DagNode> nodes;               // 后序拓扑, 根 = 末节点
-  std::vector<std::string> keys;            // 节点子树规范串 (下标同 nodes): 外部按 Expr 子树 (expr::to_string(e, ei)) 找节点
-  std::vector<std::string> feats;           // 去重特征 code (首见序), 下标 = 输入平面下标
-  std::vector<int> roots;                   // build_forest: roots[k] = 第 k 个 Expr 的根节点 (可重复); build: 空
+  std::vector<DagNode> nodes;     // 后序拓扑, 根 = 末节点
+  std::vector<std::string> keys;  // 节点子树规范串 (下标同 nodes): 外部按 Expr 子树 (expr::to_string(e, ei)) 找节点
+  std::vector<std::string> feats; // 去重特征 code (首见序), 下标 = 输入平面下标
+  std::vector<int> roots;         // build_forest: roots[k] = 第 k 个 Expr 的根节点 (可重复); build: 空
   int n_slots = 0;
   int n_ops = 0;
 

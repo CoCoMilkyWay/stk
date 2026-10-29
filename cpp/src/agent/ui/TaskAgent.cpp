@@ -6,6 +6,8 @@
 #include "agent/Prompt.hpp"
 
 #include "imgui.h"
+#include "misc/fs.hpp"
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <array>
@@ -79,10 +81,11 @@ struct State {
   int backend = 0;
   std::string model; // models[backend] 的 id; 空 = 还没嗅探到
   int gpu = -1;      // -1 = 未定 (有 GPU 默认 GPU)
-  Gate gate{kGateScore, kGateT, kGateMono, kGateValid};
+  Gate gate{kGateMono, kGateRic};
   int prompt_idx = 0;
   std::string prompt_text;
   bool prompt_loaded = false;
+  std::string ui_saved; // kUiFile 当前内容; 选项序列化后与之不同才写
 
   // 会话 (New 定)
   Phase phase = Phase::None;
@@ -95,7 +98,7 @@ struct State {
   bool stop = false;       // 按了 Stop: 本步做完即结束
   // 澄清
   std::vector<Question> questions;
-  std::vector<std::vector<bool>> picks; // 初值 = 推荐
+  std::vector<Pick> picks; // 初值 = 推荐
   std::string note;
   bool show_questions = false; // 问题刚到: 左栏切到问题页一次
   // 参考 (本会话发给 agent 的特征表 / 算子表)
@@ -146,7 +149,7 @@ void start_sniff(State &s) {
     sniff(s, b);
 }
 std::string first_model(const State &s, int backend) { return s.models[backend].list.empty() ? std::string() : s.models[backend].list.front().id; }
-// 收齐的嗅探结果进表; 当前后端所选模型不在表里 → 取表首
+// 收齐的嗅探结果进表; 嗅探成功而当前后端所选模型不在表里 → 取表首 (失败则留着所选, 重嗅成功再核)
 void poll_sniff(State &s) {
   for (int b = 0; b < llm::kBackendCount; ++b) {
     std::future<llm::Models> &f = s.sniff[b];
@@ -154,11 +157,63 @@ void poll_sniff(State &s) {
       continue;
     s.models[b] = f.get();
     const std::vector<llm::Model> &ms = s.models[b].list;
-    if (b == s.backend && std::none_of(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == s.model; }))
+    if (b == s.backend && s.models[b].error.empty() && std::none_of(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == s.model; }))
       s.model = first_model(s, b);
   }
 }
 std::string model_label(const llm::Model &m) { return m.name == m.id ? m.id : m.name + "  (" + m.id + ")"; }
+
+// ---- 选项落盘 (kUiFile) ----
+std::string ui_text(const State &s) {
+  nlohmann::ordered_json j;
+  j["pool"] = s.pool;
+  j["level"] = s.level;
+  j["hold"] = s.hold;
+  j["backend"] = s.backend;
+  j["model"] = s.model;
+  j["via_proxy"] = s.via_proxy;
+  j["proxy_host"] = s.proxy_host;
+  j["proxy_port"] = s.proxy_port;
+  j["gpu"] = s.gpu;
+  j["gate"] = {{"mono", s.gate.mono}, {"ric", s.gate.ric}};
+  j["prompt"] = s.prompt_idx;
+  return j.dump(2);
+}
+// 池 / 层 / 持有期 / 模型失效由各自的选择逻辑回落; GPU 不在了回落 CPU
+void load_ui(State &s) {
+  std::ifstream f(kUiFile);
+  if (!f.is_open())
+    return;
+  const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
+  assert(!j.is_discarded() && j.is_object() && "kUiFile 须是 JSON 对象");
+  j.at("pool").get_to(s.pool);
+  j.at("level").get_to(s.level);
+  j.at("hold").get_to(s.hold);
+  j.at("backend").get_to(s.backend);
+  j.at("model").get_to(s.model);
+  j.at("via_proxy").get_to(s.via_proxy);
+  j.at("proxy_host").get_to(s.proxy_host);
+  j.at("proxy_port").get_to(s.proxy_port);
+  j.at("gpu").get_to(s.gpu);
+  const nlohmann::json &g = j.at("gate");
+  g.at("mono").get_to(s.gate.mono);
+  g.at("ric").get_to(s.gate.ric);
+  j.at("prompt").get_to(s.prompt_idx);
+  assert(s.backend >= 0 && s.backend < llm::kBackendCount);
+  assert(s.proxy_port > 0 && s.proxy_port < 65536);
+  assert(s.gpu >= -1 && s.gpu <= 1);
+  assert(s.prompt_idx >= 0 && s.prompt_idx < static_cast<int>(std::size(kPrompts)));
+  if (!Bridge::gpu_available())
+    s.gpu = 0;
+  s.ui_saved = ui_text(s);
+}
+void save_ui(State &s) {
+  std::string text = ui_text(s);
+  if (text == s.ui_saved)
+    return;
+  misc::atomic_write(kUiFile, text.data(), text.size());
+  s.ui_saved = std::move(text);
+}
 
 std::string stamp() {
   const std::time_t now = std::time(nullptr);
@@ -181,8 +236,8 @@ int resize_cb(ImGuiInputTextCallbackData *d) {
   }
   return 0;
 }
-bool input_text(const char *id, std::string &s) {
-  return ImGui::InputText(id, s.data(), s.capacity() + 1, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
+bool input_text(const char *id, std::string &s, const char *hint = nullptr) {
+  return ImGui::InputTextWithHint(id, hint, s.data(), s.capacity() + 1, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
 }
 bool input_multiline(const char *id, std::string &s, ImVec2 size) {
   return ImGui::InputTextMultiline(id, s.data(), s.capacity() + 1, size, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
@@ -215,8 +270,7 @@ std::string brief(const Result &r) {
   const Weight *w = r.best();
   if (!w)
     return r.ws.empty() && r.searched ? "无显著" : "未评估";
-  return std::to_string(r.ws.size()) + " 个权重, 最佳 score " + num(w->score) + " ls " + num(w->ls * 1e4) + "bp rIC " + num(w->ric) + " t " + num(w->t) + " mono " +
-         num(w->mono) + " 有效率 " + num(w->valid);
+  return std::to_string(r.ws.size()) + " 个权重, 最佳 mono " + num(w->mono) + " ls " + num(w->ls * 1e4) + "bp rIC " + num(w->ric) + " score " + num(w->score) + " 有效率 " + num(w->valid);
 }
 
 void new_session(const SharedData &data, State &s) {
@@ -243,7 +297,7 @@ void new_session(const SharedData &data, State &s) {
                          {"model", s.model},
                          {"net", net_name(s.chat->options().net)},
                          {"eval", s.sgpu ? "GPU" : "CPU"},
-                         {"gate", "score " + num(s.sgate.score) + " t " + num(s.sgate.t) + " mono " + num(s.sgate.mono) + " valid " + num(s.sgate.valid)},
+                         {"gate", "mono " + num(s.sgate.mono) + " ric " + num(s.sgate.ric)},
                          {"tried", std::to_string(s.results.size())}});
   ask(s, "first", FirstMessage(s.ctx, s.results));
 }
@@ -306,7 +360,7 @@ void on_digest(State &s, const std::string &text, int round) {
   s.chat->event("questions", {{"round", std::to_string(round)}, {"n", std::to_string(s.questions.size())}});
   s.picks.clear();
   for (const Question &q : s.questions)
-    s.picks.push_back(q.recommended);
+    s.picks.push_back({q.recommended, false, {}});
   s.show_questions = true;
   s.phase = Phase::Choose;
   if (s.stop)
@@ -473,7 +527,7 @@ void session_row(const SharedData &data, State &s) {
   if (ImGui::Button("Start", ImVec2(60, 0))) {
     for (size_t i = 0; i < s.questions.size(); ++i) {
       const Question &q = s.questions[i];
-      chat.event("pick", {{"question", q.prompt}, {"picked", Picked(q, s.picks[i])}, {"recommended", Picked(q, q.recommended)}});
+      chat.event("pick", {{"question", q.prompt}, {"picked", Answered(q, s.picks[i])}, {"recommended", Picked(q, q.recommended)}});
     }
     chat.event("start", {{"note", s.note}});
     ask(s, "answer", AnswerMessage(s.questions, s.picks, s.note));
@@ -528,23 +582,25 @@ void session_row(const SharedData &data, State &s) {
   }
 }
 
-// 澄清: 逐题点选 (已按推荐预选) + 附言
+// 澄清: 逐题点选 (已按推荐预选; 末项 "其他" 自己写意见) + 附言
 void questions_panel(State &s) {
-  ImGui::TextDisabled("agent 的问题 (%zu); 已按推荐预选, 只改不同意的, 改完按 Start", s.questions.size());
+  ImGui::TextDisabled("agent 的问题 (%zu); 已按推荐预选, 只改不同意的 (可选 \"其他\" 自己写), 改完按 Start", s.questions.size());
   ImGui::BeginChild("##questions", ImVec2(-1, ImGui::GetContentRegionAvail().y * 0.6f), true);
   for (size_t i = 0; i < s.questions.size(); ++i) {
     const Question &q = s.questions[i];
+    Pick &p = s.picks[i];
     ImGui::PushID(static_cast<int>(i));
     ImGui::TextWrapped("%zu. %s%s", i + 1, q.prompt.c_str(), q.multiple ? " (可多选)" : "");
     for (size_t j = 0; j < q.options.size(); ++j) {
       ImGui::PushID(static_cast<int>(j));
-      bool on = s.picks[i][j];
+      bool on = p.on[j];
       if (q.multiple ? ImGui::Checkbox(q.options[j].c_str(), &on) : ImGui::RadioButton(q.options[j].c_str(), on)) {
         if (!q.multiple) {
-          s.picks[i].assign(q.options.size(), false);
+          p.on.assign(q.options.size(), false);
+          p.other = false;
           on = true;
         }
-        s.picks[i][j] = on;
+        p.on[j] = on;
       }
       if (q.recommended[j]) {
         ImGui::SameLine();
@@ -552,6 +608,23 @@ void questions_panel(State &s) {
       }
       ImGui::PopID();
     }
+    // 其他: 打字即选中; 单选与选项互斥
+    const auto pick_other = [&] {
+      if (!q.multiple)
+        p.on.assign(q.options.size(), false);
+      p.other = true;
+    };
+    bool other = p.other;
+    if (q.multiple ? ImGui::Checkbox("其他##other", &other) : ImGui::RadioButton("其他##other", other)) {
+      if (q.multiple)
+        p.other = other;
+      else
+        pick_other();
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+    if (input_text("##other_text", p.text, "自己的意见") && !p.text.empty() && !p.other)
+      pick_other();
     ImGui::Spacing();
     ImGui::PopID();
   }
@@ -589,10 +662,10 @@ void results_table(State &s) {
   ImGui::TextDisabled("候选 %zu (会话目录, 本持有期 score 降序)", s.results.size());
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                                      ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable;
-  if (!ImGui::BeginTable("##results", 10, kFlags, ImVec2(-1, -1)))
+  if (!ImGui::BeginTable("##results", 8, kFlags, ImVec2(-1, -1)))
     return;
   ImGui::TableSetupScrollFreeze(2, 1);
-  for (const char *h : {"名", "中文", "结局", "score", "多空bp", "rIC", "IR", "t", "mono", "模板"})
+  for (const char *h : {"名", "中文", "结局", "mono", "多空bp", "rIC", "score", "模板"})
     ImGui::TableSetupColumn(h);
   ImGui::TableHeadersRow();
   for (const Result &r : s.results) {
@@ -620,19 +693,15 @@ void results_table(State &s) {
       ImGui::SetTooltip("%zu 个权重\n%s", r.ws.size(), w->expr.c_str());
     ImGui::TableNextColumn();
     if (w) {
-      ImGui::Text("%.3g", w->score);
+      ImGui::Text("%.3f", w->mono);
       ImGui::TableNextColumn();
-      ImGui::Text("%.1f", w->ls * 1e4);
+      ImGui::Text("%.2f", w->ls * 1e4);
       ImGui::TableNextColumn();
       ImGui::Text("%.4f", w->ric);
       ImGui::TableNextColumn();
-      ImGui::Text("%.2f", w->ir);
-      ImGui::TableNextColumn();
-      ImGui::Text("%.1f", w->t);
-      ImGui::TableNextColumn();
-      ImGui::Text("%.2f", w->mono);
+      ImGui::Text("%.3g", w->score);
     } else {
-      for (int i = 0; i < 5; ++i)
+      for (int i = 0; i < 3; ++i)
         ImGui::TableNextColumn();
     }
     ImGui::TableNextColumn();
@@ -826,13 +895,9 @@ void render_config(State &s) {
     ImGui::SetNextItemWidth(120);
     ImGui::InputDouble(label, &v, 0.0, 0.0, fmt);
   };
-  field("score >=", s.gate.score, "%.3g");
-  ImGui::SameLine();
-  field("t >=", s.gate.t, "%.2f");
-  ImGui::SameLine();
   field("mono >=", s.gate.mono, "%.2f");
   ImGui::SameLine();
-  field("有效率 >=", s.gate.valid, "%.2f");
+  field("rIC >=", s.gate.ric, "%.3f");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "提示词");
@@ -946,10 +1011,12 @@ GUI::TaskHandle CreateAgentTask() {
     if (!s.bridge) {
       s.bridge = std::make_unique<Bridge>();
       s.chat = std::make_unique<Chat>();
+      load_ui(s);
       start_sniff(s);
     }
-    if (s.pool.empty())
-      s.pool = Bridge::pools().front().name;
+    const std::vector<Choice> pools = Bridge::pools();
+    if (std::none_of(pools.begin(), pools.end(), [&](const Choice &p) { return p.name == s.pool; }))
+      s.pool = pools.front().name;
     ImGui::BeginChild("AgentTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     switch (idx) {
@@ -966,6 +1033,7 @@ GUI::TaskHandle CreateAgentTask() {
       break;
     }
     ImGui::EndChild();
+    save_ui(s);
   };
 
   handle.Destroy = [state]() {

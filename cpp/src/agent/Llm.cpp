@@ -33,9 +33,14 @@ namespace {
 using Headers = std::vector<std::pair<std::string, std::string>>;
 using Chunk = std::function<bool(std::string_view)>; // body 增量; false = 停读
 
-// 接口失败 (非 2xx / 重试用尽 / 代理拒绝 / 流异常收尾): 抛到 send / models 顶层, 变成给 UI 的原因
+// 接口失败 (非 2xx / 代理拒绝 / 流异常收尾): 抛到 send / models 顶层, 变成给 UI 的原因
 struct Fail {
   std::string why;
+};
+
+// 请求发出前 (连接 / 代理隧道 / TLS 握手) 的网络错: 服务端没收到请求, 非幂等的 POST 也能重发
+struct Unsent : boost::system::system_error {
+  using boost::system::system_error::system_error;
 };
 
 // 一次请求一条 HTTPS 连接 (不复用). 同步外观、内部异步: tcp_stream 的超时只管异步操作, 且等待中要能看取消旗
@@ -44,8 +49,9 @@ struct Conn {
   ssl::context ctx;
   ssl::stream<beast::tcp_stream> s;
   const std::atomic<bool> *cancel; // 可空
+  int timeout;                     // 每步限时 (秒)
   bool cancelled = false;
-  Conn(const char *host, const std::atomic<bool> *cancel) : ctx(make_ctx()), s(ioc, ctx), cancel(cancel) {
+  Conn(const char *host, const std::atomic<bool> *cancel, int timeout) : ctx(make_ctx()), s(ioc, ctx), cancel(cancel), timeout(timeout) {
     [[maybe_unused]] const long sni = SSL_set_tlsext_host_name(s.native_handle(), const_cast<char *>(host));
     assert(sni == 1);
     s.set_verify_callback(ssl::host_name_verification(host));
@@ -66,13 +72,13 @@ struct Conn {
     c.set_verify_mode(ssl::verify_peer);
     return c;
   }
-  // 跑一个异步操作到完成 (每步限时 kReadTimeoutSeconds); 每 200ms 看一次取消旗, 置位 → 关流等它以 operation_aborted 收尾.
+  // 跑一个异步操作到完成 (每步限时 timeout); 每 200ms 看一次取消旗, 置位 → 关流等它以 operation_aborted 收尾.
   // false = 取消; 其余错误抛 system_error (调用方按网络瞬抖重试)
   template <class Start>
   bool run(Start &&start) {
     beast::error_code ec;
     bool done = false;
-    beast::get_lowest_layer(s).expires_after(std::chrono::seconds(kReadTimeoutSeconds));
+    beast::get_lowest_layer(s).expires_after(std::chrono::seconds(timeout));
     start([&](beast::error_code e, auto &&...) { ec = e, done = true; });
     ioc.restart();
     while (!done) {
@@ -115,16 +121,20 @@ struct Resp {
 
 // on_chunk 非空且 2xx → 逐段交 body 增量; 否则读全
 Resp request(const Net &net, const char *host, http::verb verb, const std::string &target, const char *key, const std::string &body,
-             const Headers &hdrs, const Chunk &on_chunk, const std::atomic<bool> *cancel) {
-  Conn c(host, cancel);
+             const Headers &hdrs, const Chunk &on_chunk, const std::atomic<bool> *cancel, int timeout = kReadTimeoutSeconds) {
+  Conn c(host, cancel, timeout);
   Resp r;
   beast::tcp_stream &raw = beast::get_lowest_layer(c.s);
   tcp::resolver resolver(c.ioc);
-  const tcp::resolver::results_type eps = net.proxy ? resolver.resolve(net.host, std::to_string(net.port)) : resolver.resolve(host, "443");
-  if (!c.run([&](auto h) { raw.async_connect(eps, h); }) || (net.proxy && !c.tunnel(host)) ||
-      !c.run([&](auto h) { c.s.async_handshake(ssl::stream_base::client, h); })) {
-    r.cancelled = true;
-    return r;
+  try {
+    const tcp::resolver::results_type eps = net.proxy ? resolver.resolve(net.host, std::to_string(net.port)) : resolver.resolve(host, "443");
+    if (!c.run([&](auto h) { raw.async_connect(eps, h); }) || (net.proxy && !c.tunnel(host)) ||
+        !c.run([&](auto h) { c.s.async_handshake(ssl::stream_base::client, h); })) {
+      r.cancelled = true;
+      return r;
+    }
+  } catch (const boost::system::system_error &e) {
+    throw Unsent(e.code(), "发出前");
   }
   http::request<http::string_body> req{verb, target, 11};
   req.set(http::field::host, host);
@@ -208,11 +218,9 @@ struct Sse {
   }
 };
 
-// 重试前等一会 (逐秒看取消旗); false = 等待中被取消; 次数用尽 → Fail
+// 重试前等一会 (逐秒看取消旗; 不限次数, 直到成功或取消); false = 等待中被取消
 bool wait_retry(const char *what, int attempt, const std::string &why, const std::atomic<bool> &cancel) {
-  std::fprintf(stderr, "[agent] %s: %s (第 %d/%d 次)\n", what, why.c_str(), attempt + 1, kRetryMax + 1);
-  if (attempt >= kRetryMax)
-    throw Fail{std::string(what) + " 重试用尽: " + why};
+  std::fprintf(stderr, "[agent] %s: %s (第 %d 次失败, %ds 后重试)\n", what, why.c_str(), attempt + 1, kRetryIntervalSeconds);
   for (int i = 0; i < kRetryIntervalSeconds; ++i) {
     if (cancel.load(std::memory_order_relaxed))
       return false;
@@ -258,12 +266,23 @@ bool zhipu_busy(const Resp &r) {
 
 std::string str_of(const json &j, const char *k) { return j.contains(k) && j[k].is_string() ? j[k].get<std::string>() : std::string(); }
 
-// Cursor JSON 接口 (非流式, 不重试: POST 非幂等)
-json cursor_call(const Net &net, http::verb verb, const std::string &target, const std::string &body) {
-  const Resp r = request(net, kCursorHost, verb, target, key(Backend::Cursor).c_str(), body, {}, nullptr, nullptr);
-  if (r.status / 100 != 2)
-    fail_status(target.c_str(), r);
-  return r.body.empty() ? json::object() : parse_json(r.body);
+// Cursor JSON 接口 (非流式). POST 非幂等: 只重试发出前的网络错 (Unsent), 发出后的照抛; null = 被取消
+json cursor_call(const Net &net, http::verb verb, const std::string &target, const std::string &body, const std::atomic<bool> &cancel) {
+  for (int attempt = 0;; ++attempt) {
+    Resp r;
+    try {
+      r = request(net, kCursorHost, verb, target, key(Backend::Cursor).c_str(), body, {}, nullptr, &cancel);
+    } catch (const Unsent &e) {
+      if (!wait_retry(target.c_str(), attempt, e.what(), cancel))
+        return nullptr;
+      continue;
+    }
+    if (r.cancelled)
+      return nullptr;
+    if (r.status / 100 != 2)
+      fail_status(target.c_str(), r);
+    return r.body.empty() ? json::object() : parse_json(r.body);
+  }
 }
 
 } // namespace
@@ -345,7 +364,7 @@ Reply Session::send(const std::string &user, const Delta &on_delta, const std::a
     r = o_.backend == Backend::Zhipu ? send_zhipu(user, on_delta, cancel) : send_cursor(user, on_delta, cancel);
   } catch (const Fail &f) {
     r = Reply{.finish = "error", .error = f.why};
-  } catch (const boost::system::system_error &e) { // Cursor 不重试的 POST 遇网络错
+  } catch (const boost::system::system_error &e) { // Cursor 的 POST 发出后遇网络错 (不重发)
     r = Reply{.finish = "error", .error = std::string("网络: ") + e.what()};
   }
   r.seconds = std::chrono::duration<double>(Clock::now() - t0).count();
@@ -446,7 +465,9 @@ Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const
   } else {
     body["prompt"]["text"] = user;
   }
-  const json j = cursor_call(o_.net, http::verb::post, agent_.empty() ? std::string("/v1/agents") : "/v1/agents/" + agent_ + "/runs", body.dump());
+  const json j = cursor_call(o_.net, http::verb::post, agent_.empty() ? std::string("/v1/agents") : "/v1/agents/" + agent_ + "/runs", body.dump(), cancel);
+  if (j.is_null())
+    return Reply{.finish = "cancelled"};
   assert(j.contains("run") && (!agent_.empty() || j.contains("agent")));
   if (agent_.empty())
     agent_ = str_of(j["agent"], "id");
@@ -504,7 +525,7 @@ Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const
       break;
   }
   if (cancelled) {
-    const Resp c = request(o_.net, kCursorHost, http::verb::post, run_path + "/cancel", key(Backend::Cursor).c_str(), "", {}, nullptr, nullptr);
+    const Resp c = request(o_.net, kCursorHost, http::verb::post, run_path + "/cancel", key(Backend::Cursor).c_str(), "", {}, nullptr, nullptr, kCancelTimeoutSeconds);
     if (c.status / 100 != 2 && c.status != 409) // 409 = 已是终态
       fail_status("cursor cancel", c);
     r.finish = "cancelled";
