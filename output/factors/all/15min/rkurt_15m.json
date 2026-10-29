@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "高频峰度",
+ "expr": "CsRank(TsNeg(TsKurtRoll(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17)), d)))",
+ "note": "近 d 箱 15 分钟收益峰度取负 (掩首箱); 国泰君安 权益配置因子-004 5分钟收益率峰度 rankIC 0.0595 方向负 (周)"
+}

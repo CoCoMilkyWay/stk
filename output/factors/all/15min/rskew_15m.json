@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "高频偏度",
+ "expr": "CsRank(TsNeg(TsSkewRoll(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17)), d)))",
+ "note": "近 d 箱 15 分钟收益偏度取负 (掩首箱); 海通 选股因子-019 高频收益偏度 rankIC -0.053 (月), 长江 高频因子-016 收益偏度方向负"
+}
