@@ -136,6 +136,8 @@ std::string hold_desc(int hold, int level); // 开 / 清仓规则
 bool gpu();
 bool ready(const SharedData &data, const Scope &sc, bool gpu); // 资产轴就绪且标签库已建
 Context context(const SharedData &data, const Scope &sc);
+std::string dir(const Scope &sc);                                   // 会话目录 kWorkDir/<池>/<层>/<持有期>
+std::vector<Result> tried(const SharedData &data, const Scope &sc); // 会话目录 factors/ 里的候选, 本持有期 score 降序 (无 Search top)
 } // namespace catalog
 
 class Lab {

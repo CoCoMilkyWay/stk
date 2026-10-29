@@ -1,6 +1,5 @@
 // Mine — 见头文件
 #include "agent/Mine.hpp"
-#include "agent/Config.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -30,7 +29,7 @@ void Mine::open(const SharedData &data, Setup s) {
   assert(!live() && !chat.busy() && !lab.busy());
   setup = std::move(s);
   ctx = catalog::context(data, setup.sc);
-  const fs::path dir = fs::path(kWorkDir) / setup.sc.pool / ctx.level / ctx.hold;
+  const fs::path dir = catalog::dir(setup.sc);
   lab.bind(data, setup.sc, (dir / "factors").string(), setup.gpu);
   setup.llm.system = SystemMessage(ctx, setup.gate).text;
   chat.open(setup.llm);

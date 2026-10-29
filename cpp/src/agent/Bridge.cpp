@@ -1,6 +1,6 @@
 // Bridge — 见头文件. agent/ 里唯一 include 项目因子 / 特征 / 服务头的 TU (CMake PRECISE: 因子契约头的消费者)
 #include "agent/Bridge.hpp"
-#include "agent/Config.hpp" // kMaxOps / kGoodOps
+#include "agent/Config.hpp" // kMaxOps / kGoodOps / kWorkDir
 
 #include "factor/Expr.hpp"            // kOps / operand_tex
 #include "factor/GpuRun.hpp"          // available
@@ -240,6 +240,12 @@ Context context(const SharedData &data, const Scope &sc) {
   c.library = scan(*ft, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
   return c;
 }
+
+std::string dir(const Scope &sc) {
+  return (fs::path(kWorkDir) / sc.pool / F::factor_level(level_id(sc.level)).name / factor::stat::hold_name(sc.hold)).string();
+}
+
+std::vector<Result> tried(const SharedData &data, const Scope &sc) { return scan(*table(data, sc.level), dir(sc) + "/factors", sc.hold, {}); }
 
 } // namespace catalog
 
