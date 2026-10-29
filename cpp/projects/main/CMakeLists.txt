@@ -357,7 +357,9 @@ set(MATH_PRECISE
     # agent: Bridge = agent 里唯一的因子契约头消费者; 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     agent/Bridge.cpp
     agent/Chat.cpp
+    agent/Journal.cpp
     agent/Llm.cpp
+    agent/Mine.cpp
     agent/Prompt.cpp
     agent/ui/TaskAgent.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端

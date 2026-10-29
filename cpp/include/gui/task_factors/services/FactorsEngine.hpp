@@ -104,6 +104,11 @@ public:
     self().unbind();
     c_ = &c, gen_ = c.gen;
   }
+  // 弃会话 (显存还回, 绑定作废; 下次 bind 重开)
+  void release() {
+    self().unbind();
+    c_ = nullptr;
+  }
   misc::exec::ForkJoin &ex() const { return ex_; }
   const Block &block() const {
     assert(c_ && "先 bind");
@@ -276,13 +281,13 @@ public:
   Engine(const Engine &) = delete;
   Engine &operator=(const Engine &) = delete;
 
-  // 预算 (字节 / 格): 显存 = 特征 5·nf + 门控 1 + 会话标签 (lv, sv, m, ry) 7·H + 活槽 5·n_slots.
-  // 逐根: 宿主 = 拷回的 根掩码 1 + rx 2 + lc 1 + alpha 5. 批核 (d = 一个候选): 宿主不拷回; 活槽 ×2 (keep_roots) + kBatch 根各 kDevRootBytes
+  // 预算 (字节 / 格): 显存 = 会话输出平面 5 + 特征 5·nf + 门控 1 + 会话标签 (lv, sv, m, ry) 7·H + 可成交码 eo 1 + 活槽 5·n_slots.
+  // 逐根: 显存另 Stat 会话 rx 2 + lc 1; 宿主 = 拷回的 根掩码 1 + rx 2 + lc 1 + alpha 5. 批核 (d = 一个候选): 宿主不拷回; 活槽 ×2 (keep_roots) + kBatch 根各 kDevRootBytes
   template <class Ps>
   static Budget budget(const factor::Dag &d, int H) {
     constexpr bool batch = kBatched<Ps>;
-    const double dev = kPlaneBytes * static_cast<double>(d.feats.size()) + 1.0 + 7.0 * H + kPlaneBytes * d.n_slots * (batch ? 2 : 1);
-    return {0.0, batch ? 0.0 : 4.0 + kPlaneBytes, 0.0, batch ? dev + kDevRootBytes * kBatch : dev};
+    const double dev = kPlaneBytes * (1.0 + static_cast<double>(d.feats.size())) + 2.0 + 7.0 * H + kPlaneBytes * d.n_slots * (batch ? 2 : 1);
+    return {0.0, batch ? 0.0 : 4.0 + kPlaneBytes, 0.0, batch ? dev + kDevRootBytes * kBatch : dev + 3.0};
   }
   // 批核实际批: 最长一块的格数下, 显存预算扣掉非根部分后能同在的根数 (b = budget 出的, ≤ search_max_batch)
   static int batch_of(const Plan &P, const Budget &b, double per_day) {
@@ -611,26 +616,28 @@ inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std
   open_libs(sc, F.lr, &F.cancel);
   return true;
 }
-// 整期一块 (j.carry < 0) 装不下宿主预算 → 评估期只留最近的日 (按超出比例缩, 重解析评估域, 至放得下; 单日都放不下 → assert).
-// bud() = 当前评估域的作业预算. 共享块 F.c 在本作业里要么命中要么被换掉, 它占的内存算回预算
+// 整期一块 (j.carry < 0) 装不下宿主 / 显存预算 → 评估期只留最近的日 (按超出比例缩, 重解析评估域, 至放得下; 单日都放不下 → assert).
+// bud() = 当前评估域的作业预算. 共享块 F.c 在本作业里要么命中要么被换掉, 它占的内存算回预算; 显存按空闲量 (引擎须已 release)
 template <class B>
 void fit_recent(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
   const size_t all = j.dm.days.size();
   const double held = j.own ? 0.0 : F.c.bytes();
+  const double vram = bud().dev > 0.0 ? vram_budget() : 0.0;
   for (;;) {
-    const double bytes = whole_bytes(j.dm, j.ft->seg, bud()), budget = host_budget() + held;
-    if (bytes <= budget)
+    const Budget b = bud();
+    const double fit = std::min((host_budget() + held) / whole_bytes(j.dm, j.ft->seg, b), b.dev > 0.0 ? vram / whole_dev_bytes(j.dm, j.ft->seg, b) : 1.0);
+    if (fit >= 1.0)
       break;
     const size_t n = j.dm.days.size();
-    assert(n > 1 && "单日的整张量装载都放不下内存 (因子层太细)");
-    const size_t keep = std::clamp(static_cast<size_t>(static_cast<double>(n) * budget / bytes), size_t{1}, n - 1);
+    assert(n > 1 && "单日的整张量装载都放不下内存 / 显存 (因子层太细)");
+    const size_t keep = std::clamp(static_cast<size_t>(static_cast<double>(n) * fit), size_t{1}, n - 1);
     std::string why;
     const bool ok = domain_of(*sc.ft, sc, j.spec.x, keep, j.dm, why);
     assert(ok && "近期子期是整期的后缀, 评估域必成");
   }
   if (j.dm.days.size() < all)
-    std::fprintf(stderr, "[factors] %s: 整期 %zu 天装不下内存预算, 只评最近 %zu 天 (%d - %d)\n", j.who, all, j.dm.days.size(), j.dm.dates.front(),
-                 j.dm.dates.back());
+    std::fprintf(stderr, "[factors] %s: 整期 %zu 天装不下内存 / 显存预算, 只评最近 %zu 天 (%d - %d)\n", j.who, all, j.dm.days.size(),
+                 j.dm.dates.front(), j.dm.dates.back());
 }
 // 作业预算 (字节 / 格): load = 块两侧 (nx 个叶 + Y); work / dev = 引擎 (E::budget, d = 一张森林 / 批核的一个候选; 空 = 无森林);
 // fixed = 探针 (Ps::bytes, H 个持有期)
@@ -776,6 +783,7 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const std::vector<Root
       const size_t nx = j.own ? j.spec.x.size() : resident_leaves(F.c, block_key(ft, j.dm, j.whole(), j.spec), j.spec.x, j.retain);
       return budget_of<E, Ps>(j, d, nx, nh);
     };
+    eng.release();
     if (j.carry < 0)
       fit_recent(F, sc, j, bud);
     if (const Rc rc = plan_job(F, j, bud()); rc != Rc::Ok)

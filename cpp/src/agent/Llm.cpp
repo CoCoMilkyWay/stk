@@ -1,5 +1,5 @@
 #include "agent/Llm.hpp"
-#include "agent/Config.hpp"
+#include "misc/fs.hpp"
 #include "nlohmann/json.hpp"
 
 #include <boost/asio.hpp>
@@ -14,7 +14,9 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string_view>
 #include <thread>
 
@@ -43,15 +45,32 @@ struct Unsent : boost::system::system_error {
   using boost::system::system_error::system_error;
 };
 
+bool valid(const Net &n) { return !n.proxy || (!n.host.empty() && n.port > 0 && n.port < 65536); }
+
+// 全部连接共用的 TLS 上下文 (CA 证书只读一次; 建好后多线程只读)
+ssl::context &tls() {
+  static ssl::context c = [] {
+    // 全局符号查找须先落到系统 libcrypto (CMake 链接序): 别的库打包导出的 OpenSSL 符号若排在前面, asio 会调到它
+    Dl_info i{};
+    [[maybe_unused]] const bool own_crypto =
+        dladdr(dlsym(RTLD_DEFAULT, "X509_STORE_CTX_get_ex_data"), &i) != 0 && std::string_view(i.dli_fname).find("libcrypto") != std::string_view::npos;
+    assert(own_crypto && "OpenSSL 符号被别的库抢占: app_main 须先链 OpenSSL 再链 arrow");
+    ssl::context x(ssl::context::tls_client);
+    x.set_default_verify_paths();
+    x.set_verify_mode(ssl::verify_peer);
+    return x;
+  }();
+  return c;
+}
+
 // 一次请求一条 HTTPS 连接 (不复用). 同步外观、内部异步: tcp_stream 的超时只管异步操作, 且等待中要能看取消旗
 struct Conn {
   net::io_context ioc;
-  ssl::context ctx;
   ssl::stream<beast::tcp_stream> s;
   const std::atomic<bool> *cancel; // 可空
   int timeout;                     // 每步限时 (秒)
   bool cancelled = false;
-  Conn(const char *host, const std::atomic<bool> *cancel, int timeout) : ctx(make_ctx()), s(ioc, ctx), cancel(cancel), timeout(timeout) {
+  Conn(const char *host, const std::atomic<bool> *cancel, int timeout) : s(ioc, tls()), cancel(cancel), timeout(timeout) {
     [[maybe_unused]] const long sni = SSL_set_tlsext_host_name(s.native_handle(), const_cast<char *>(host));
     assert(sni == 1);
     s.set_verify_callback(ssl::host_name_verification(host));
@@ -59,18 +78,6 @@ struct Conn {
   ~Conn() {
     beast::error_code ec;
     [[maybe_unused]] auto shutdown_ec = beast::get_lowest_layer(s).socket().shutdown(tcp::socket::shutdown_both, ec);
-  }
-  static ssl::context make_ctx() {
-    // 全局符号查找须先落到系统 libcrypto (CMake 链接序): 别的库打包导出的 OpenSSL 符号若排在前面, asio 会调到它
-    [[maybe_unused]] static const bool own_crypto = [] {
-      Dl_info i{};
-      return dladdr(dlsym(RTLD_DEFAULT, "X509_STORE_CTX_get_ex_data"), &i) != 0 && std::string_view(i.dli_fname).find("libcrypto") != std::string_view::npos;
-    }();
-    assert(own_crypto && "OpenSSL 符号被别的库抢占: app_main 须先链 OpenSSL 再链 arrow");
-    ssl::context c(ssl::context::tls_client);
-    c.set_default_verify_paths();
-    c.set_verify_mode(ssl::verify_peer);
-    return c;
   }
   // 跑一个异步操作到完成 (每步限时 timeout); 每 200ms 看一次取消旗, 置位 → 关流等它以 operation_aborted 收尾.
   // false = 取消; 其余错误抛 system_error (调用方按网络瞬抖重试)
@@ -119,9 +126,10 @@ struct Resp {
   bool cancelled = false; // 取消旗打断
 };
 
-// on_chunk 非空且 2xx → 逐段交 body 增量; 否则读全
-Resp request(const Net &net, const char *host, http::verb verb, const std::string &target, const char *key, const std::string &body,
-             const Headers &hdrs, const Chunk &on_chunk, const std::atomic<bool> *cancel, int timeout = kReadTimeoutSeconds) {
+// 对该后端主机发一个请求; on_chunk 非空且 2xx → 逐段交 body 增量; 否则读全
+Resp request(Backend b, const Net &net, http::verb verb, const std::string &target, const std::string &body, const Headers &hdrs, const Chunk &on_chunk,
+             const std::atomic<bool> *cancel, int timeout = kReadTimeoutSeconds) {
+  const char *host = def(b).host;
   Conn c(host, cancel, timeout);
   Resp r;
   beast::tcp_stream &raw = beast::get_lowest_layer(c.s);
@@ -139,7 +147,7 @@ Resp request(const Net &net, const char *host, http::verb verb, const std::strin
   http::request<http::string_body> req{verb, target, 11};
   req.set(http::field::host, host);
   req.set(http::field::user_agent, "stk-agent/1.0");
-  req.set(http::field::authorization, std::string("Bearer ") + key);
+  req.set(http::field::authorization, "Bearer " + key(b));
   if (!body.empty()) {
     req.set(http::field::content_type, "application/json");
     req.body() = body;
@@ -179,46 +187,57 @@ Resp request(const Net &net, const char *host, http::verb verb, const std::strin
   return r;
 }
 
-// SSE 切帧: 空行收一帧 (event / data 多行以 \n 连 / id); 注释行 (':' 开头) 丢
+// SSE 切帧: 空行收一帧 (event / data 多行以 \n 连 / id); 注释行 (':' 开头) 丢. 一段增量扫一遍, 末尾半行留到下段
 struct Sse {
   std::string buf, event, data, id;
   // f(event, data, id) → false = 停; 返回 false 若被叫停
   template <class F>
   bool feed(std::string_view s, F &&f) {
     buf.append(s);
-    size_t nl;
-    while ((nl = buf.find('\n')) != std::string::npos) {
-      std::string line = buf.substr(0, nl);
-      buf.erase(0, nl + 1);
+    size_t at = 0, nl;
+    bool go = true;
+    while (go && (nl = buf.find('\n', at)) != std::string::npos) {
+      std::string_view line(buf.data() + at, nl - at);
+      at = nl + 1;
       if (!line.empty() && line.back() == '\r')
-        line.pop_back();
-      if (line.empty()) {
-        const bool any = !event.empty() || !data.empty();
-        const bool go = !any || f(event, data, id);
-        event.clear(), data.clear(), id.clear();
-        if (!go)
-          return false;
-        continue;
-      }
-      if (line[0] == ':')
-        continue;
-      const size_t c = line.find(':');
-      const std::string field = line.substr(0, c);
-      std::string value = c == std::string::npos ? std::string() : line.substr(c + 1);
-      if (!value.empty() && value[0] == ' ')
-        value.erase(0, 1);
-      if (field == "event")
-        event = std::move(value);
-      else if (field == "data")
-        data += (data.empty() ? "" : "\n") + value;
-      else if (field == "id")
-        id = std::move(value);
+        line.remove_suffix(1);
+      if (line.empty())
+        go = flush(f);
+      else
+        take(line);
     }
-    return true;
+    buf.erase(0, at);
+    return go;
+  }
+
+private:
+  template <class F>
+  bool flush(F &f) {
+    const bool go = (event.empty() && data.empty()) || f(event, data, id);
+    event.clear(), data.clear(), id.clear();
+    return go;
+  }
+  void take(std::string_view line) {
+    if (line.front() == ':')
+      return;
+    const size_t c = line.find(':');
+    const std::string_view field = line.substr(0, c);
+    std::string_view value = c == std::string_view::npos ? std::string_view() : line.substr(c + 1);
+    if (!value.empty() && value.front() == ' ')
+      value.remove_prefix(1);
+    if (field == "event") {
+      event = value;
+    } else if (field == "data") {
+      if (!data.empty())
+        data += '\n';
+      data += value;
+    } else if (field == "id") {
+      id = value;
+    }
   }
 };
 
-// 重试前等一会 (逐秒看取消旗; 不限次数, 直到成功或取消); false = 等待中被取消
+// 重试前等一会 (逐秒看取消旗); false = 等待中被取消
 bool wait_retry(const char *what, int attempt, const std::string &why, const std::atomic<bool> &cancel) {
   std::fprintf(stderr, "[agent] %s: %s (第 %d 次失败, %ds 后重试)\n", what, why.c_str(), attempt + 1, kRetryIntervalSeconds);
   for (int i = 0; i < kRetryIntervalSeconds; ++i) {
@@ -229,6 +248,38 @@ bool wait_retry(const char *what, int attempt, const std::string &why, const std
   return !cancel.load(std::memory_order_relaxed);
 }
 
+// 网络错的重发范围: 幂等请求任何网络错都重发; 非幂等 POST 只重发未发出的 (Unsent)
+enum class Resend : uint8_t { Any,
+                              Unsent };
+
+// 响应一到即收
+std::string never(const Resp &) { return {}; }
+
+// 一个请求发到有响应为止 (不限次数, 每次等 kRetryIntervalSeconds): 范围内的网络错 / again(响应) 非空 (= 重发原因) → 重发.
+// send(attempt) 发一次; nullopt = 取消 (请求途中或等待中)
+template <class Send, class Again>
+std::optional<Resp> retried(const char *what, Resend rs, const std::atomic<bool> &cancel, Send &&send, Again &&again) {
+  for (int attempt = 0;; ++attempt) {
+    std::string why;
+    try {
+      Resp r = send(attempt);
+      if (r.cancelled)
+        return std::nullopt;
+      why = again(r);
+      if (why.empty())
+        return r;
+    } catch (const Unsent &e) {
+      why = e.what();
+    } catch (const boost::system::system_error &e) {
+      if (rs == Resend::Unsent)
+        throw;
+      why = e.what();
+    }
+    if (!wait_retry(what, attempt, why, cancel))
+      return std::nullopt;
+  }
+}
+
 // 响应体 / 流事件必是合法 JSON (服务端契约), 否则断言
 json parse_json(std::string_view s) {
   json j = json::parse(s, nullptr, false);
@@ -236,8 +287,12 @@ json parse_json(std::string_view s) {
   return j;
 }
 
+std::string str_of(const json &j, const char *k) { return j.contains(k) && j[k].is_string() ? j[k].get<std::string>() : std::string(); }
+
 // 非 2xx → Fail: 两家错误体都是 {"error": {"code", "message"}}, 取出来; 否则原样截断
-[[noreturn]] void fail_status(const char *what, const Resp &r) {
+void expect_2xx(const char *what, const Resp &r) {
+  if (r.status / 100 == 2)
+    return;
   std::fprintf(stderr, "[agent] %s: HTTP %u\n%s\n", what, r.status, r.body.substr(0, 2048).c_str());
   std::string why = std::string(what) + ": HTTP " + std::to_string(r.status);
   const json j = json::parse(r.body, nullptr, false);
@@ -245,138 +300,114 @@ json parse_json(std::string_view s) {
     const json &e = j["error"];
     if (e.contains("code"))
       why += " " + (e["code"].is_string() ? e["code"].get<std::string>() : e["code"].dump());
-    if (e.contains("message") && e["message"].is_string())
-      why += ": " + e["message"].get<std::string>();
+    if (const std::string m = str_of(e, "message"); !m.empty())
+      why += ": " + m;
   } else if (!r.body.empty()) {
     why += ": " + r.body.substr(0, 300);
   }
   throw Fail{why};
 }
 
-// 智谱限流 / 过载: 429 + 业务码 1302 (并发超限) / 1305 (过载)
-bool zhipu_busy(const Resp &r) {
+// 智谱限流 / 过载: 429 + 业务码 1302 (并发超限) / 1305 (过载) → 重发原因
+std::string zhipu_busy(const Resp &r) {
   if (r.status != 429)
-    return false;
+    return {};
   const json j = json::parse(r.body, nullptr, false);
   if (j.is_discarded() || !j.contains("error"))
-    return false;
+    return {};
   const std::string code = j["error"].value("code", "");
-  return code == "1302" || code == "1305";
+  return code == "1302" || code == "1305" ? "限流 " + r.body : std::string();
 }
 
-std::string str_of(const json &j, const char *k) { return j.contains(k) && j[k].is_string() ? j[k].get<std::string>() : std::string(); }
-
-// Cursor JSON 接口 (非流式). POST 非幂等: 只重试发出前的网络错 (Unsent), 发出后的照抛; null = 被取消
-json cursor_call(const Net &net, http::verb verb, const std::string &target, const std::string &body, const std::atomic<bool> &cancel) {
-  for (int attempt = 0;; ++attempt) {
-    Resp r;
-    try {
-      r = request(net, kCursorHost, verb, target, key(Backend::Cursor).c_str(), body, {}, nullptr, &cancel);
-    } catch (const Unsent &e) {
-      if (!wait_retry(target.c_str(), attempt, e.what(), cancel))
-        return nullptr;
-      continue;
-    }
-    if (r.cancelled)
-      return nullptr;
-    if (r.status / 100 != 2)
-      fail_status(target.c_str(), r);
-    return r.body.empty() ? json::object() : parse_json(r.body);
+// 模型表响应 → 模型 (下标 = Backend)
+std::vector<Model> zhipu_models(const json &j) {
+  assert(j.contains("data"));
+  std::vector<std::pair<int64_t, std::string>> v;
+  for (const json &m : j["data"])
+    v.emplace_back(m.value("created", int64_t{0}), str_of(m, "id"));
+  std::stable_sort(v.begin(), v.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
+  std::vector<Model> out;
+  for (auto &[t, id] : v)
+    out.push_back({id, id});
+  return out;
+}
+std::vector<Model> cursor_models(const json &j) {
+  assert(j.contains("items"));
+  std::vector<Model> out;
+  for (const json &m : j["items"]) {
+    const std::string id = str_of(m, "id");
+    out.push_back({id, m.value("displayName", id)});
   }
+  return out;
 }
+constexpr std::vector<Model> (*kModelsOf[])(const json &) = {zhipu_models, cursor_models};
+static_assert(static_cast<int>(std::size(kModelsOf)) == kBackendCount);
 
 } // namespace
 
 const std::string &key(Backend b) {
   static const std::array<std::string, kBackendCount> keys = [] {
-    std::array<std::string, kBackendCount> k;
+    if (!std::filesystem::exists(kKeyFile)) {
+      json j;
+      for (const BackendDef &d : kBackends)
+        j[d.field] = d.fake;
+      const std::string text = j.dump(2) + "\n";
+      misc::atomic_write(kKeyFile, text.data(), text.size());
+    }
     std::ifstream f(kKeyFile);
-    if (!f.is_open())
-      return k;
+    assert(f.is_open());
     const json j = json::parse(f, nullptr, false);
     assert(!j.is_discarded() && j.is_object() && "kKeyFile 须是 JSON 对象");
-    k[static_cast<int>(Backend::Zhipu)] = str_of(j, "zhipu");
-    k[static_cast<int>(Backend::Cursor)] = str_of(j, "cursor");
+    std::array<std::string, kBackendCount> k;
+    for (int i = 0; i < kBackendCount; ++i)
+      if (std::string s = str_of(j, kBackends[i].field); s != kBackends[i].fake)
+        k[i] = std::move(s);
     return k;
   }();
   return keys[static_cast<int>(b)];
 }
 
 Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
-  assert(!key(b).empty());
-  assert(!net.proxy || (!net.host.empty() && net.port > 0 && net.port < 65536));
-  const bool zhipu = b == Backend::Zhipu;
-  const char *host = zhipu ? kZhipuHost : kCursorHost;
-  const char *target = zhipu ? kZhipuModelsTarget : "/v1/models";
+  assert(!key(b).empty() && valid(net));
+  const char *target = def(b).models;
   Models out;
   try {
-    for (int attempt = 0;; ++attempt) {
-      Resp r;
-      try {
-        r = request(net, host, http::verb::get, target, key(b).c_str(), "", {}, nullptr, &cancel);
-      } catch (const boost::system::system_error &e) {
-        if (!wait_retry("models", attempt, e.what(), cancel))
-          return out;
-        continue;
-      }
-      if (r.cancelled)
-        return out;
-      if (r.status / 100 != 2)
-        fail_status(target, r);
-      const json j = parse_json(r.body);
-      if (zhipu) {
-        assert(j.contains("data"));
-        std::vector<std::pair<int64_t, std::string>> v;
-        for (const json &m : j["data"])
-          v.emplace_back(m.value("created", int64_t{0}), str_of(m, "id"));
-        std::stable_sort(v.begin(), v.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
-        for (auto &[t, id] : v)
-          out.list.push_back({id, id});
-      } else {
-        assert(j.contains("items"));
-        for (const json &m : j["items"]) {
-          const std::string id = str_of(m, "id");
-          out.list.push_back({id, m.value("displayName", id)});
-        }
-      }
+    const std::optional<Resp> r = retried("models", Resend::Any, cancel, [&](int) { return request(b, net, http::verb::get, target, "", {}, nullptr, &cancel); }, never);
+    if (!r)
       return out;
-    }
+    expect_2xx(target, *r);
+    out.list = kModelsOf[static_cast<int>(b)](parse_json(r->body));
   } catch (const Fail &f) {
     out.error = f.why;
-    return out;
   }
+  return out;
 }
 
-Session::Session(Options o) : o_(std::move(o)) {
-  assert(!o_.net.proxy || (!o_.net.host.empty() && o_.net.port > 0 && o_.net.port < 65536));
-  if (o_.backend == Backend::Zhipu) {
-    assert(!key(Backend::Zhipu).empty() && "kKeyFile 里 zhipu 未填");
-    assert(!o_.model.empty());
-  } else {
-    assert(!key(Backend::Cursor).empty() && "kKeyFile 里 cursor 未填");
-  }
+Session::Session(Options o) : o_(std::move(o)), conv_(o_.backend == Backend::Zhipu ? Conv(Zhipu{}) : Conv(Cursor{})) {
+  assert(valid(o_.net));
+  assert(!key(o_.backend).empty() && "kKeyFile 里该后端未填");
+  assert(!o_.model.empty());
 }
 
 Reply Session::send(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
   const Clock::time_point t0 = Clock::now();
   Reply r;
   try {
-    r = o_.backend == Backend::Zhipu ? send_zhipu(user, on_delta, cancel) : send_cursor(user, on_delta, cancel);
+    r = std::visit([&](auto &c) { return send(c, user, on_delta, cancel); }, conv_);
   } catch (const Fail &f) {
-    r = Reply{.finish = "error", .error = f.why};
-  } catch (const boost::system::system_error &e) { // Cursor 的 POST 发出后遇网络错 (不重发)
-    r = Reply{.finish = "error", .error = std::string("网络: ") + e.what()};
+    r = Reply{.end = End::Error, .why = f.why};
+  } catch (const boost::system::system_error &e) { // 非幂等 POST 发出后遇网络错 (不重发)
+    r = Reply{.end = End::Error, .why = std::string("网络: ") + e.what()};
   }
   r.seconds = std::chrono::duration<double>(Clock::now() - t0).count();
-  rounds_ += r.ok();
   return r;
 }
 
-Reply Session::send_zhipu(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
+Reply Session::send(Zhipu &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json msgs = json::array();
   if (!o_.system.empty())
     msgs.push_back({{"role", "system"}, {"content", o_.system}});
-  for (const auto &[role, content] : msgs_)
+  for (const auto &[role, content] : c.msgs)
     msgs.push_back({{"role", role}, {"content", content}});
   msgs.push_back({{"role", "user"}, {"content", user}});
   json body;
@@ -389,95 +420,89 @@ Reply Session::send_zhipu(const std::string &user, const Delta &on_delta, const 
   const std::string payload = body.dump();
 
   Reply r;
-  for (int attempt = 0;; ++attempt) {
-    if (attempt > 0)
-      on_delta(Part::Restart, {});
-    r = Reply{};
-    Sse sse;
-    const auto on_event = [&](const std::string &, const std::string &data, const std::string &) {
-      if (data == "[DONE]")
-        return false;
-      const json j = parse_json(data);
-      if (const std::string id = str_of(j, "id"); !id.empty())
-        r.id = id;
-      if (j.contains("usage") && j["usage"].is_object()) {
-        const json &u = j["usage"];
-        r.usage.prompt = u.value("prompt_tokens", 0);
-        r.usage.completion = u.value("completion_tokens", 0);
-        if (u.contains("prompt_tokens_details") && u["prompt_tokens_details"].is_object())
-          r.usage.cached = u["prompt_tokens_details"].value("cached_tokens", 0);
-      }
-      if (!j.contains("choices") || j["choices"].empty())
-        return true;
-      const json &c0 = j["choices"][0];
-      if (c0.contains("delta") && c0["delta"].is_object()) {
-        const json &d = c0["delta"];
-        if (const std::string t = str_of(d, "reasoning_content"); !t.empty()) {
-          r.thinking += t;
-          on_delta(Part::Thinking, t);
-        }
-        if (const std::string t = str_of(d, "content"); !t.empty()) {
-          r.text += t;
-          on_delta(Part::Text, t);
-        }
-      }
-      if (const std::string f = str_of(c0, "finish_reason"); !f.empty())
-        r.finish = f;
+  std::string finish; // finish_reason
+  const auto on_event = [&](const std::string &, const std::string &data, const std::string &) {
+    if (data == "[DONE]")
+      return false;
+    const json j = parse_json(data);
+    if (const std::string id = str_of(j, "id"); !id.empty())
+      r.id = id;
+    if (j.contains("usage") && j["usage"].is_object()) {
+      const json &u = j["usage"];
+      r.usage.prompt = u.value("prompt_tokens", 0);
+      r.usage.completion = u.value("completion_tokens", 0);
+      if (u.contains("prompt_tokens_details") && u["prompt_tokens_details"].is_object())
+        r.usage.cached = u["prompt_tokens_details"].value("cached_tokens", 0);
+    }
+    if (!j.contains("choices") || j["choices"].empty())
       return true;
-    };
-    Resp resp;
-    bool again = false; // 网络瞬抖 / 限流: 等一会整轮重发
-    try {
-      resp = request(o_.net, kZhipuHost, http::verb::post, kZhipuTarget, key(Backend::Zhipu).c_str(), payload, {{"Accept", "text/event-stream"}}, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
-    } catch (const boost::system::system_error &e) {
-      again = true;
-      resp.cancelled = !wait_retry("zhipu", attempt, e.what(), cancel);
+    const json &c0 = j["choices"][0];
+    if (c0.contains("delta") && c0["delta"].is_object()) {
+      const json &d = c0["delta"];
+      if (const std::string t = str_of(d, "reasoning_content"); !t.empty()) {
+        r.thinking += t;
+        on_delta(Part::Thinking, t);
+      }
+      if (const std::string t = str_of(d, "content"); !t.empty()) {
+        r.text += t;
+        on_delta(Part::Text, t);
+      }
     }
-    if (!again && !resp.cancelled && zhipu_busy(resp)) {
-      again = true;
-      resp.cancelled = !wait_retry("zhipu", attempt, "限流 " + resp.body, cancel);
-    }
-    if (resp.cancelled) {
-      r.finish = "cancelled";
-      return r;
-    }
-    if (again)
-      continue;
-    if (resp.status / 100 != 2)
-      fail_status("zhipu", resp);
-    break;
+    if (const std::string f = str_of(c0, "finish_reason"); !f.empty())
+      finish = f;
+    return true;
+  };
+  // 整轮可重发 (平台无对话态): 网络瞬抖 / 限流都从头再来
+  const std::optional<Resp> resp = retried(
+      "zhipu", Resend::Any, cancel,
+      [&](int attempt) {
+        if (attempt > 0)
+          on_delta(Part::Restart, {});
+        r = Reply{}, finish.clear();
+        Sse sse;
+        return request(Backend::Zhipu, o_.net, http::verb::post, kZhipuChat, payload, {{"Accept", "text/event-stream"}}, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
+      },
+      zhipu_busy);
+  if (!resp) {
+    r.end = End::Cancelled;
+    return r;
   }
-  if (r.finish.empty())
+  expect_2xx("zhipu", *resp);
+  if (finish.empty())
     throw Fail{"智谱流结束却没有 finish_reason"};
-  if (r.ok()) {
-    msgs_.emplace_back("user", user);
-    msgs_.emplace_back("assistant", r.text);
+  r.end = finish == "stop" ? End::Ok : End::Cut;
+  if (!r.ok()) {
+    r.why = finish;
+    return r;
   }
+  c.msgs.emplace_back("user", user);
+  c.msgs.emplace_back("assistant", r.text);
   return r;
 }
 
-Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
+Reply Session::send(Cursor &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json body;
-  if (agent_.empty()) {
-    body["prompt"]["text"] = o_.system.empty() ? user : o_.system + "\n\n---\n\n" + user;
-    if (!o_.model.empty() && o_.model != "default")
-      body["model"]["id"] = o_.model;
-  } else {
-    body["prompt"]["text"] = user;
-  }
-  const json j = cursor_call(o_.net, http::verb::post, agent_.empty() ? std::string("/v1/agents") : "/v1/agents/" + agent_ + "/runs", body.dump(), cancel);
-  if (j.is_null())
-    return Reply{.finish = "cancelled"};
-  assert(j.contains("run") && (!agent_.empty() || j.contains("agent")));
-  if (agent_.empty())
-    agent_ = str_of(j["agent"], "id");
+  body["prompt"]["text"] = c.agent.empty() && !o_.system.empty() ? o_.system + "\n\n---\n\n" + user : user;
+  if (c.agent.empty() && o_.model != "default")
+    body["model"]["id"] = o_.model;
+  const std::string target = c.agent.empty() ? std::string("/v1/agents") : "/v1/agents/" + c.agent + "/runs";
+  const std::string payload = body.dump();
+  const std::optional<Resp> made = retried(
+      "cursor", Resend::Unsent, cancel, [&](int) { return request(Backend::Cursor, o_.net, http::verb::post, target, payload, {}, nullptr, &cancel); }, never);
+  if (!made)
+    return Reply{.end = End::Cancelled};
+  expect_2xx("cursor", *made);
+  const json j = parse_json(made->body);
+  assert(j.contains("run") && (!c.agent.empty() || j.contains("agent")));
+  if (c.agent.empty())
+    c.agent = str_of(j["agent"], "id");
   Reply r;
   r.id = str_of(j["run"], "id");
-  assert(!agent_.empty() && !r.id.empty());
-  const std::string run_path = "/v1/agents/" + agent_ + "/runs/" + r.id;
+  assert(!c.agent.empty() && !r.id.empty());
+  const std::string run = "/v1/agents/" + c.agent + "/runs/" + r.id;
 
-  std::string last_id; // 断线续流 (Last-Event-ID)
-  bool cancelled = false, done = false;
+  std::string last_id, status, error; // 断线续流游标 (Last-Event-ID) / result 终态 / 流里的错误
+  bool done = false;
   const auto on_event = [&](const std::string &ev, const std::string &data, const std::string &id) {
     if (!id.empty())
       last_id = id;
@@ -487,51 +512,47 @@ Reply Session::send_cursor(const std::string &user, const Delta &on_delta, const
       on_delta(ev == "assistant" ? Part::Text : Part::Thinking, t);
     } else if (ev == "result") {
       const json x = parse_json(data);
-      r.finish = str_of(x, "status");
+      status = str_of(x, "status");
       if (const std::string t = str_of(x, "text"); !t.empty())
         r.text = t; // 终稿为准
     } else if (ev == "error") {
       std::fprintf(stderr, "[agent] cursor stream error: %s\n", data.c_str());
       const json x = json::parse(data, nullptr, false);
-      r.finish = "ERROR";
-      r.error = x.is_object() ? str_of(x, "code") + ": " + str_of(x, "message") : data;
+      error = x.is_object() ? str_of(x, "code") + ": " + str_of(x, "message") : data;
     } else if (ev == "done") {
       done = true;
       return false;
     }
     return true;
   };
-  for (int attempt = 0; !done;) {
-    Headers h{{"Accept", "text/event-stream"}};
-    if (!last_id.empty())
-      h.emplace_back("Last-Event-ID", last_id);
-    Sse sse;
-    Resp resp;
-    try {
-      resp = request(o_.net, kCursorHost, http::verb::get, run_path + "/stream", key(Backend::Cursor).c_str(), "", h, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
-    } catch (const boost::system::system_error &e) {
-      cancelled = !wait_retry("cursor stream", attempt++, e.what(), cancel);
-      if (cancelled)
-        break;
-      continue;
-    }
-    if ((cancelled = resp.cancelled))
-      break;
-    if (resp.status / 100 != 2)
-      fail_status("cursor stream", resp);
-    if (!done && !r.finish.empty()) // 收到终态后服务端先断了
-      break;
-    if (!done && (cancelled = !wait_retry("cursor stream", attempt++, "流提前断开", cancel)))
-      break;
+  // 流 GET 幂等: 断线按 Last-Event-ID 接着读; 收到终态后服务端先断了也算收齐
+  const std::optional<Resp> streamed = retried(
+      "cursor stream", Resend::Any, cancel,
+      [&](int) {
+        Headers h{{"Accept", "text/event-stream"}};
+        if (!last_id.empty())
+          h.emplace_back("Last-Event-ID", last_id);
+        Sse sse;
+        return request(Backend::Cursor, o_.net, http::verb::get, run + "/stream", "", h, [&](std::string_view chunk) { return sse.feed(chunk, on_event); }, &cancel);
+      },
+      [&](const Resp &x) { return x.status / 100 == 2 && !done && status.empty() && error.empty() ? std::string("流提前断开") : std::string(); });
+  if (!streamed) {
+    const Resp x = request(Backend::Cursor, o_.net, http::verb::post, run + "/cancel", "", {}, nullptr, nullptr, kCancelTimeoutSeconds);
+    if (x.status != 409) // 409 = 已是终态
+      expect_2xx("cursor cancel", x);
+    r.end = End::Cancelled;
+    return r;
   }
-  if (cancelled) {
-    const Resp c = request(o_.net, kCursorHost, http::verb::post, run_path + "/cancel", key(Backend::Cursor).c_str(), "", {}, nullptr, nullptr, kCancelTimeoutSeconds);
-    if (c.status / 100 != 2 && c.status != 409) // 409 = 已是终态
-      fail_status("cursor cancel", c);
-    r.finish = "cancelled";
+  expect_2xx("cursor stream", *streamed);
+  if (!error.empty()) {
+    r.end = End::Error, r.why = error;
+    return r;
   }
-  if (r.finish.empty())
+  if (status.empty())
     throw Fail{"Cursor 流结束却没有 result"};
+  r.end = status == "FINISHED" ? End::Ok : End::Cut;
+  if (!r.ok())
+    r.why = status;
   return r;
 }
 

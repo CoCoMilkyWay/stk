@@ -3,7 +3,7 @@
 // =============================================================================
 // agent 配置 (自成一体, 不进 shared/Config.hpp)
 // =============================================================================
-//   LLM 两后端都走 HTTPS 443 (agent/Llm.hpp); key 不进仓库, 放本地 kKeyFile (gitignore):
+//   LLM 两后端都走 HTTPS 443 (agent/Llm.hpp), 端点 / key / 默认连接见后端表 kBackends; key 不进仓库, 放本地 kKeyFile (gitignore):
 //     智谱    对话补全 chat/completions; key = 开放平台 API Keys
 //     Cursor  Cloud Agents API; key = Dashboard → API Keys 的 user API key (无仓库 agent, 起 VM 分钟级)
 //   模型不写死: 各后端的模型表由 GET models 嗅探 (llm::models), Config 页从中选
@@ -15,16 +15,24 @@
 namespace agent {
 
 // ---- LLM ----
-inline constexpr const char *kZhipuHost = "open.bigmodel.cn";
-inline constexpr const char *kZhipuTarget = "/api/paas/v4/chat/completions";
-inline constexpr const char *kZhipuModelsTarget = "/api/paas/v4/models";
+// 后端表 (唯一真相, 下标 = llm::Backend)
+//   fake: 假 key, 格式同真 key (智谱 {id}.{secret}, Cursor crsr_ + 64 位 hex), 全 0; 读到等同未填
+//   proxy: 默认连接 (Config 页可改); Cursor 的部分模型按出口地区限售, 默认走代理
+struct BackendDef {
+  const char *name;   // 显示名 (Config 页 / 会话日志)
+  const char *field;  // kKeyFile 里的字段
+  const char *fake;   // 假 key
+  const char *host;   // HTTPS 443
+  const char *models; // GET 模型表
+  bool proxy;         // 默认经 HTTP 代理 (CONNECT)
+};
+inline constexpr BackendDef kBackends[] = {
+    {"Zhipu", "zhipu", "00000000000000000000000000000000.0000000000000000", "open.bigmodel.cn", "/api/paas/v4/models", false},
+    {"Cursor", "cursor", "crsr_0000000000000000000000000000000000000000000000000000000000000000", "api.cursor.com", "/v1/models", true},
+};
+inline constexpr const char *kZhipuChat = "/api/paas/v4/chat/completions";
 inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
 
-inline constexpr const char *kCursorHost = "api.cursor.com";
-
-// 连接默认值 (Config 页可改): 各后端直连 / 经 HTTP 代理 (CONNECT); Cursor 的部分模型按出口地区限售, 默认走代理
-inline constexpr bool kZhipuProxy = false;
-inline constexpr bool kCursorProxy = true;
 inline constexpr const char *kProxyHost = "127.0.0.1";
 inline constexpr int kProxyPort = 10808;
 
@@ -43,11 +51,11 @@ inline constexpr double kGateRic = 0.03;  // rIC 均值
 
 // ---- 目录 ----
 //   kWorkDir/<池>/<层>/<持有期>/factors/   候选因子文件 (与正式因子同格式; Search 日志在其 log/)
-//   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话: system.md + 每轮 NN.user.md / NN.reply.md / NN.thinking.md + rounds.jsonl + events.jsonl (带时间的交互流水) + report.md (结束报告)
+//   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话的日志 (agent/Journal.hpp)
 //   kPromptDir/{system,first,answer,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kPromptDir = "../../../../config/agent/prompt";
-inline constexpr const char *kKeyFile = "../../../../config/agent/keys.json"; // {"zhipu": "...", "cursor": "..."}; 无文件 = 都未填
+inline constexpr const char *kKeyFile = "../../../../config/agent/keys.json"; // {<BackendDef::field>: key}; 无文件则按后端表填假 key 生成
 inline constexpr const char *kUiFile = "../../../../config/agent/ui.json";    // Mine / Config 页的选项 (gitignore): 改了即写, 首次 Draw 读回; 无文件 = 用上面的默认值
 
 } // namespace agent

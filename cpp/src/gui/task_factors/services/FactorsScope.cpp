@@ -98,8 +98,18 @@ double host_budget() {
   return kHostFrac * static_cast<double>(mu.total_bytes) - static_cast<double>(mu.used_bytes);
 }
 
+double vram_budget() {
+  size_t vfree = 0, vtotal = 0;
+  factor::gpu::mem_info(&vfree, &vtotal);
+  return kVramFrac * static_cast<double>(vfree);
+}
+
 double whole_bytes(const Domain &dm, int seg, const Budget &b) {
   return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()) * (b.load + b.work) + b.fixed;
+}
+
+double whole_dev_bytes(const Domain &dm, int seg, const Budget &b) {
+  return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()) * b.dev;
 }
 
 int Plan::max_days() const {
@@ -115,6 +125,8 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, int carry) {
   const double per_day = static_cast<double>(seg) * A;
   Plan P;
   P.host = host_budget() - b.fixed;
+  if (b.dev > 0.0)
+    P.vram = vram_budget();
   if (carry < 0) {
     P.chunks = {Chunk{0, 0, static_cast<size_t>(days)}};
     P.D = days;
@@ -123,12 +135,8 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, int carry) {
   }
   assert(P.host > 0.0 && "内存预算装不下与格无关的常驻量");
   int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - carry, 1, days);
-  if (b.dev > 0.0) {
-    size_t vfree = 0, vtotal = 0;
-    factor::gpu::mem_info(&vfree, &vtotal);
-    P.vram = kVramFrac * static_cast<double>(vfree);
+  if (b.dev > 0.0)
     D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - carry, 1, days));
-  }
   P.D = D;
   for (int s0 = 0; s0 < days; s0 += D) {
     const Chunk k{static_cast<size_t>(std::max(0, s0 - carry)), static_cast<size_t>(s0), static_cast<size_t>(std::min(days, s0 + D))};

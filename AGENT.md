@@ -203,24 +203,24 @@ stateDiagram-v2
 
 ## 交互流水
 
-会话日志里的 `events.jsonl`, 一行一个事件: `time` (毫秒) + `event` + 下表字段 (值都是字符串).
+会话日志里的 `events.jsonl`, 一行一个事件: `time` (毫秒) + `event` + 下表字段 (值为原生类型: 轮次 / 计数 / 耗时是数, done 是布尔, gate 是对象, 其余是字符串).
 
-| event        | 何时                   | 字段                                                                                                          |
-| ------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `open`       | 按 New                 | pool / level / hold / backend / model / net (`direct` / `proxy 主机:端口`) / eval / gate / tried (已试候选数) |
-| `ask`        | 发出一条消息           | round / kind (first / answer / round / retry) / chars                                                         |
-| `reply`      | 收齐一条回复           | round / finish / error / seconds / prompt_tokens / cached_tokens / completion_tokens / chars / thinking_chars |
-| `parse_fail` | 回复不合格式           | round / phase (digest / mine) / error                                                                         |
-| `questions`  | 澄清回复合格           | round / n                                                                                                     |
-| `pick`       | 按 Start, 每题一行     | question / picked (含 "其他: 意见") / recommended                                                             |
-| `start`      | 按 Start               | note                                                                                                          |
-| `mine_reply` | 挖掘回复合格           | round / factors / submit / issues / done                                                                      |
-| `issue`      | 每条 issue             | round / text                                                                                                  |
-| `submit`     | 每个提交               | round / name / result (入库 / 未入库原因)                                                                     |
-| `stage`      | 每个新候选             | round / name / expr / note / result (落文件 / 未落原因)                                                       |
-| `eval_begin` | 开始回测本批           | round / files                                                                                                 |
-| `eval`       | 本批评完, 每个文件一行 | name / result (权重数与最佳统计 / 无显著 / BROKEN)                                                            |
-| `eval_end`   | 本批评完               | —                                                                                                             |
-| `stop`       | 按 Stop                | —                                                                                                             |
-| `cancel`     | 按 Cancel              | —                                                                                                             |
-| `finish`     | 进结束报告             | reason / rounds / adopted / issues                                                                            |
+| event        | 何时                   | 字段                                                                                                                                                   |
+| ------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `open`       | 按 New                 | pool / level / hold / backend / model / net (`direct` / `proxy 主机:端口`) / eval / gate (`{mono, ric}`) / tried (已试候选数)                          |
+| `ask`        | 发出一条消息           | round / kind (first / answer / round / retry) / chars                                                                                                  |
+| `reply`      | 收齐一条回复           | round / end (ok / cut / error / cancelled) / why (非 ok 的原因) / seconds / prompt_tokens / cached_tokens / completion_tokens / chars / thinking_chars |
+| `parse_fail` | 回复不合格式           | round / phase (digest / asking) / error                                                                                                                |
+| `questions`  | 澄清回复合格           | round / n                                                                                                                                              |
+| `pick`       | 按 Start, 每题一行     | question / picked (含 "其他: 意见") / recommended                                                                                                      |
+| `start`      | 按 Start               | note                                                                                                                                                   |
+| `mine_reply` | 挖掘回复合格           | round / factors / submit / issues / done                                                                                                               |
+| `issue`      | 每条 issue             | round / text                                                                                                                                           |
+| `submit`     | 每个提交               | round / name / result (入库 / 未入库原因)                                                                                                              |
+| `stage`      | 每个新候选             | round / name / expr / note / result (落文件 / 未落原因)                                                                                                |
+| `eval_begin` | 开始回测本批           | round / files                                                                                                                                          |
+| `eval`       | 本批评完, 每个文件一行 | name / result (权重数与最佳统计 / 无显著 / BROKEN)                                                                                                     |
+| `eval_end`   | 本批评完               | —                                                                                                                                                      |
+| `stop`       | 按 Stop                | —                                                                                                                                                      |
+| `cancel`     | 按 Cancel              | —                                                                                                                                                      |
+| `finish`     | 进结束报告             | reason / rounds / adopted / issues                                                                                                                     |

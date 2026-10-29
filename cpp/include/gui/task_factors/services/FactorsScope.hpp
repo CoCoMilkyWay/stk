@@ -33,10 +33,11 @@ void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
 // 所用库 = 读计划各列的库 (Col::ref) 之并 (+ all: 池成员); 所用库未建 / 无共同落盘日 → false + why (正常输入)
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
 
-// 宿主内存预算: 总内存 × kHostFrac − 已用 (整机占用封顶 kHostFrac); 显存预算: 空闲显存 × kVramFrac (GPU 批核)
+// 宿主内存预算: 总内存 × kHostFrac − 已用 (整机占用封顶 kHostFrac); 显存预算: 空闲显存 × kVramFrac
 inline constexpr double kHostFrac = 0.8;
 inline constexpr double kVramFrac = 0.85;
 double host_budget();
+double vram_budget();
 
 // ---- 计划: 预算 → 分块 (四服务同一份口径) ----
 // 一块 = 评估域日 [d0, d1), 前带 [d0, s0) 只给回看 / lag, 统计日 [s0, d1); 各块统计段首尾相接覆盖全期 (Search 契约【分块流式】)
@@ -58,9 +59,10 @@ struct Plan {
   double cache = 0.0;    // 全部块常驻的装载量 (字节)
   int max_days() const;  // 最长一块的日数 (含前带)
 };
-// 整期一块的宿主装载量 (字节): 全部日 × (load + work) + fixed
+// 整期一块的宿主装载量 (字节): 全部日 × (load + work) + fixed; 显存量: 全部日 × dev
 double whole_bytes(const Domain &dm, int seg, const Budget &b);
-// carry < 0 → 整期一块 (评估期已按预算截过: FactorsEngine fit_recent); 否则块 = 尽量多的统计日 (≥ 1) + 前带 carry 日, 块数最少
+double whole_dev_bytes(const Domain &dm, int seg, const Budget &b);
+// carry < 0 → 整期一块 (评估期已按宿主 / 显存预算截过: FactorsEngine fit_recent); 否则块 = 尽量多的统计日 (≥ 1) + 前带 carry 日, 块数最少
 Plan plan_chunks(const Domain &dm, int seg, const Budget &b, int carry);
 
 // ---- 评估结局 (装载 / 评估 / 四服务同一个) ----
