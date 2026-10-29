@@ -139,6 +139,29 @@ void tip(const char *s) {
 }
 
 // ---- 会话 ----
+std::string num(double v) {
+  char b[32];
+  std::snprintf(b, sizeof(b), "%.4g", v);
+  return b;
+}
+
+// 发一条 user 并记流水; kind = first / answer / round / retry
+void ask(State &s, const char *kind, std::string text) {
+  s.chat->event("ask", {{"round", std::to_string(rounds_of(*s.chat) + 1)}, {"kind", kind}, {"chars", std::to_string(text.size())}});
+  s.chat->ask(std::move(text));
+}
+
+// 一个候选文件的结局 (流水用)
+std::string brief(const Result &r) {
+  if (!r.error.empty())
+    return "BROKEN: " + r.error;
+  const Weight *w = r.best();
+  if (!w)
+    return r.ws.empty() && r.searched ? "无显著" : "未评估";
+  return std::to_string(r.ws.size()) + " 个权重, 最佳 score " + num(w->score) + " ls " + num(w->ls * 1e4) + "bp rIC " + num(w->ric) + " t " + num(w->t) + " mono " +
+         num(w->mono) + " 有效率 " + num(w->valid);
+}
+
 void new_session(const SharedData &data, State &s) {
   s.sc = Scope{s.pool, s.level, s.hold};
   s.sgate = s.gate;
@@ -155,7 +178,15 @@ void new_session(const SharedData &data, State &s) {
   s.batch_pending = false;
   s.reason.clear(), s.report.clear(), s.message.clear();
   s.phase = Phase::Digest;
-  s.chat->ask(FirstMessage(s.ctx, s.results));
+  s.chat->event("open", {{"pool", s.sc.pool},
+                         {"level", s.ctx.level},
+                         {"hold", s.ctx.hold},
+                         {"backend", llm::kBackendNames[s.backend]},
+                         {"model", s.model},
+                         {"eval", s.sgpu ? "GPU" : "CPU"},
+                         {"gate", "score " + num(s.sgate.score) + " t " + num(s.sgate.t) + " mono " + num(s.sgate.mono) + " valid " + num(s.sgate.valid)},
+                         {"tried", std::to_string(s.results.size())}});
+  ask(s, "first", FirstMessage(s.ctx, s.results));
 }
 
 std::string report_of(const State &s, int rounds) {
@@ -186,6 +217,8 @@ void finish(State &s, std::string reason) {
   s.batch_pending = false;
   s.reason = std::move(reason);
   s.report = report_of(s, rounds_of(*s.chat));
+  s.chat->event("finish", {{"reason", s.reason}, {"rounds", std::to_string(rounds_of(*s.chat))}, {"adopted", std::to_string(s.adopted.size())},
+                           {"issues", std::to_string(s.issues.size())}});
   std::ofstream f(fs::path(s.chat->log_dir()) / "report.md", std::ios::binary | std::ios::trunc);
   assert(f.is_open());
   f << s.report;
@@ -206,10 +239,13 @@ Submitted submit_one(const SharedData &data, State &s, const std::string &name) 
   return x;
 }
 
-void on_digest(State &s, const std::string &text) {
+void on_digest(State &s, const std::string &text, int round) {
   std::string err;
-  if (!ParseQuestions(text, s.questions, err))
-    return s.stop ? finish(s, "按 Stop") : s.chat->ask(RetryMessage(err));
+  if (!ParseQuestions(text, s.questions, err)) {
+    s.chat->event("parse_fail", {{"round", std::to_string(round)}, {"phase", "digest"}, {"error", err}});
+    return s.stop ? finish(s, "按 Stop") : ask(s, "retry", RetryMessage(err));
+  }
+  s.chat->event("questions", {{"round", std::to_string(round)}, {"n", std::to_string(s.questions.size())}});
   s.picks.clear();
   for (const Question &q : s.questions)
     s.picks.emplace_back(q.options.size(), false);
@@ -221,14 +257,24 @@ void on_digest(State &s, const std::string &text) {
 void on_mine(const SharedData &data, State &s, const std::string &text, int round) {
   MineReply m;
   std::string err;
-  if (!ParseMine(text, m, err))
-    return s.stop ? finish(s, "按 Stop") : s.chat->ask(RetryMessage(err));
-  for (std::string &x : m.issues)
+  if (!ParseMine(text, m, err)) {
+    s.chat->event("parse_fail", {{"round", std::to_string(round)}, {"phase", "mine"}, {"error", err}});
+    return s.stop ? finish(s, "按 Stop") : ask(s, "retry", RetryMessage(err));
+  }
+  s.chat->event("mine_reply", {{"round", std::to_string(round)},
+                               {"factors", std::to_string(m.factors.size())},
+                               {"submit", std::to_string(m.submit.size())},
+                               {"issues", std::to_string(m.issues.size())},
+                               {"done", m.done ? "true" : "false"}});
+  for (std::string &x : m.issues) {
+    s.chat->event("issue", {{"round", std::to_string(round)}, {"text", x}});
     s.issues.push_back({round, std::move(x)});
+  }
   s.submitted.clear();
   for (const std::string &name : m.submit) {
     s.submitted.push_back(submit_one(data, s, name));
     s.submits.push_back({round, s.submitted.back()});
+    s.chat->event("submit", {{"round", std::to_string(round)}, {"name", name}, {"result", s.submitted.back().err.empty() ? "入库" : s.submitted.back().err}});
   }
   if (m.done)
     return finish(s, "agent 宣布挖完");
@@ -241,9 +287,12 @@ void on_mine(const SharedData &data, State &s, const std::string &text, int roun
     st.file = s.bridge->stage(data, s.sc, factors_dir(s), st.cand, st.err);
     if (!st.file.empty())
       files.push_back(st.file);
+    s.chat->event("stage", {{"round", std::to_string(round)}, {"name", st.cand.name}, {"expr", st.cand.expr}, {"note", st.cand.note},
+                            {"result", st.err.empty() ? "落文件 " + st.file : "未落文件: " + st.err}});
     s.batch.push_back(std::move(st));
   }
   s.results = s.bridge->results(data, s.sc, factors_dir(s));
+  s.chat->event("eval_begin", {{"round", std::to_string(round)}, {"files", std::to_string(files.size())}});
   s.bridge->eval(data, s.sc, factors_dir(s), files, s.sgpu);
   s.batch_pending = true;
 }
@@ -256,9 +305,17 @@ void step(const SharedData &data, State &s) {
     if (s.bridge->state().busy)
       return;
     s.batch_pending = false;
+    for (const Staged &st : s.batch) {
+      if (st.file.empty())
+        continue;
+      const auto it = std::find_if(s.results.begin(), s.results.end(), [&](const Result &r) { return r.file == st.file; });
+      assert(it != s.results.end());
+      s.chat->event("eval", {{"name", st.cand.name}, {"result", brief(*it)}});
+    }
+    s.chat->event("eval_end");
     if (s.stop)
       return finish(s, "按 Stop");
-    s.chat->ask(RoundMessage(s.ctx, s.submitted, s.batch, s.results));
+    ask(s, "round", RoundMessage(s.ctx, s.submitted, s.batch, s.results));
     return;
   }
   if (s.chat->busy() || s.chat->done() == s.seen_turns)
@@ -272,10 +329,18 @@ void step(const SharedData &data, State &s) {
     r = s.chat->turns.back().reply;
     round = static_cast<int>(s.chat->turns.size());
   }
+  s.chat->event("reply", {{"round", std::to_string(round)},
+                          {"finish", r.finish},
+                          {"seconds", num(r.seconds)},
+                          {"prompt_tokens", std::to_string(r.usage.prompt)},
+                          {"cached_tokens", std::to_string(r.usage.cached)},
+                          {"completion_tokens", std::to_string(r.usage.completion)},
+                          {"chars", std::to_string(r.text.size())},
+                          {"thinking_chars", std::to_string(r.thinking.size())}});
   if (!r.ok())
     return finish(s, "回复失败 (" + r.finish + ")");
   if (s.phase == Phase::Digest)
-    on_digest(s, r.text);
+    on_digest(s, r.text, round);
   else
     on_mine(data, s, r.text, round);
 }
@@ -344,7 +409,15 @@ void session_row(const SharedData &data, State &s) {
   ImGui::SameLine();
   ImGui::BeginDisabled(s.phase != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0))) {
-    chat.ask(AnswerMessage(s.questions, s.picks, s.note));
+    for (size_t i = 0; i < s.questions.size(); ++i) {
+      std::string sel;
+      for (size_t j = 0; j < s.questions[i].options.size(); ++j)
+        if (s.picks[i][j])
+          sel += (sel.empty() ? "" : "; ") + s.questions[i].options[j];
+      chat.event("pick", {{"question", s.questions[i].prompt}, {"picked", sel}});
+    }
+    chat.event("start", {{"note", s.note}});
+    ask(s, "answer", AnswerMessage(s.questions, s.picks, s.note));
     s.phase = Phase::Mine;
   }
   ImGui::EndDisabled();
@@ -352,6 +425,7 @@ void session_row(const SharedData &data, State &s) {
   ImGui::SameLine();
   ImGui::BeginDisabled(!live(s) || s.stop);
   if (ImGui::Button("Stop", ImVec2(60, 0))) {
+    chat.event("stop");
     s.stop = true;
     if (s.phase == Phase::Choose)
       finish(s, "按 Stop");
@@ -360,8 +434,10 @@ void session_row(const SharedData &data, State &s) {
   tip("当前这步做完再结束");
   ImGui::SameLine();
   ImGui::BeginDisabled(!live(s));
-  if (ImGui::Button("Cancel", ImVec2(60, 0)))
+  if (ImGui::Button("Cancel", ImVec2(60, 0))) {
+    chat.event("cancel");
     finish(s, "按 Cancel");
+  }
   ImGui::EndDisabled();
   tip("立即结束, 在跑的回复 / 回测作废");
 

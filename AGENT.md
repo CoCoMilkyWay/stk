@@ -17,7 +17,7 @@
 | 入库门槛   | Config 页设的统计下限 (score / t / 单调性 / 池内有效率); agent 提交的候选至少有一组参数全部达到才入库                 |
 | 会话       | 按 New 开始的一段连续对话. 池 / 层 / 持有期 / 后端 / 模型 / 入库门槛在会话内不变                                      |
 | 会话目录   | `output/agent/<池>/<层>/<持有期>/`: `factors/` 放候选因子文件 (历次会话累积), `chat/<时间>/` 放会话日志               |
-| 会话日志   | 这段对话发收的每条消息 + 每次提交的入库结果 + 结束报告                                                                |
+| 会话日志   | 这段对话发收的每条消息 + 带毫秒时间的交互流水 `events.jsonl` (每一步一行) + 结束报告                                                                |
 | 提问面板   | Mine 页左上: agent 的问题逐题列出选项, 底下一个附言框                                                                 |
 | 结果表     | Mine 页右侧: 会话目录里全部候选及其回测统计, 按 score 降序; 入库的标出                                                |
 | 正式因子库 | `output/factors/<池>/<层>/`: Factors 页用的因子                                                                       |
@@ -190,3 +190,27 @@ stateDiagram-v2
 | 无显著   | Search 找不到显著的参数                                                     |
 | 有参数组 | 每组参数给 score / 每期多空收益 / rIC 及其 IR 和 t 值 / 单调性 / 池内有效率 |
 | 未评估   | 会话中途结束时还没轮到                                                      |
+
+## 交互流水
+
+会话日志里的 `events.jsonl`, 一行一个事件: `time` (毫秒) + `event` + 下表字段 (值都是字符串).
+
+| event        | 何时                     | 字段                                                                        |
+| ------------ | ------------------------ | --------------------------------------------------------------------------- |
+| `open`       | 按 New                   | pool / level / hold / backend / model / eval / gate / tried (已试候选数)    |
+| `ask`        | 发出一条消息             | round / kind (first / answer / round / retry) / chars                       |
+| `reply`      | 收齐一条回复             | round / finish / seconds / prompt_tokens / cached_tokens / completion_tokens / chars / thinking_chars |
+| `parse_fail` | 回复不合格式             | round / phase (digest / mine) / error                                       |
+| `questions`  | 澄清回复合格             | round / n                                                                   |
+| `pick`       | 按 Start, 每题一行       | question / picked                                                           |
+| `start`      | 按 Start                 | note                                                                        |
+| `mine_reply` | 挖掘回复合格             | round / factors / submit / issues / done                                    |
+| `issue`      | 每条 issue               | round / text                                                                |
+| `submit`     | 每个提交                 | round / name / result (入库 / 未入库原因)                                   |
+| `stage`      | 每个新候选               | round / name / expr / note / result (落文件 / 未落原因)                     |
+| `eval_begin` | 开始回测本批             | round / files                                                               |
+| `eval`       | 本批评完, 每个文件一行   | name / result (权重数与最佳统计 / 无显著 / BROKEN)                          |
+| `eval_end`   | 本批评完                 | —                                                                           |
+| `stop`       | 按 Stop                  | —                                                                           |
+| `cancel`     | 按 Cancel                | —                                                                           |
+| `finish`     | 进结束报告               | reason / rounds / adopted / issues                                          |

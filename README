@@ -268,7 +268,7 @@ stk/
 │   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL): send 阻塞收齐一轮, 增量回调
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
-│   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: open / ask / cancel; 逐轮落盘 (user / reply / thinking + rounds.jsonl)
+│   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: open / ask / cancel; 逐轮落盘 (user / reply / thinking + rounds.jsonl) + 交互流水 events.jsonl
 │   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 模板填充 (系统提示 / 首条 / 答复 / 反馈 / 重发) + 回复解析 (澄清 questions / 挖掘 factors · submit · issues · done) + 入库门槛 Gate
 │   │   │   ├── Bridge.hpp                                  # 🤖 与项目的唯一接口面 (实现是 agent 里唯一 include 因子 / 特征 / 服务头的 TU):
 │   │   │   │                                               #    · 作用域 pools / levels / holds (持有期限 Search 档); 上下文 context (特征叶 / 算子表 / 正式因子库统计)
@@ -419,7 +419,7 @@ stk/
     │                                                       #    · stats: [stat | null], 与 weights 同序
     ├── agent/<pool>/<层>/<持有期>/                         # Agent 挖掘会话 (池 × 因子层 × 持有期)
     │   ├── factors/*.json                                  # 候选因子文件 (与正式因子同格式; Search 日志在 factors/log/); 提交且达门槛的拷进 factors/<pool>/<层>/
-    │   └── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + rounds.jsonl (后端 / 模型 / 结局 / 用量 / 耗时) + report.md (结束报告)
+    │   └── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + rounds.jsonl (后端 / 模型 / 结局 / 用量 / 耗时) + events.jsonl (毫秒时间的交互流水) + report.md (结束报告)
     ├── profile/<pool>/<YYYYMMDD_HHMMSS>/                   # 特征计算 perf 采样 (PROFILE 模式, 每轮一目录; 需 kernel.perf_event_paranoid ≤ 1)
     │   ├── meta.json                                       # 本轮配置 (池 / 档 / A 轴 / 日期轴 / 核布局) + 采样窗逐核速率 / 忙碌占比
     │   ├── threads.txt                                     # 线程间样本分布 (线程名 = <段 tag>_<段内序号>: pf / ts / cs / io)

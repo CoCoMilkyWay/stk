@@ -2,6 +2,7 @@
 #include "nlohmann/json.hpp"
 
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -63,6 +64,24 @@ void Chat::ask(std::string user) {
 }
 
 void Chat::cancel() { cancel_.store(true, std::memory_order_relaxed); }
+
+void Chat::event(std::string_view name, const Fields &f) const {
+  assert(opened_);
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t sec = std::chrono::system_clock::to_time_t(now);
+  const int ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+  char ts[48];
+  const size_t n = std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&sec));
+  std::snprintf(ts + n, sizeof(ts) - n, ".%03d", ms);
+  nlohmann::ordered_json j;
+  j["time"] = ts;
+  j["event"] = name;
+  for (const auto &[k, v] : f)
+    j[k] = v;
+  std::ofstream o(std::filesystem::path(log_dir_) / "events.jsonl", std::ios::app);
+  assert(o.is_open());
+  o << j.dump() << '\n';
+}
 
 void Chat::loop() {
   for (;;) {

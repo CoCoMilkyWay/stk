@@ -40,7 +40,7 @@ inline constexpr double kGateValid = 0.5; // 池内有效率
 
 // ---- 目录 ----
 //   kWorkDir/<池>/<层>/<持有期>/factors/   候选因子文件 (与正式因子同格式; Search 日志在其 log/)
-//   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话: system.md + 每轮 NN.user.md / NN.reply.md / NN.thinking.md + rounds.jsonl + report.md (结束报告)
+//   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话: system.md + 每轮 NN.user.md / NN.reply.md / NN.thinking.md + rounds.jsonl + events.jsonl (带时间的交互流水) + report.md (结束报告)
 //   kPromptDir/{system,first,answer,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kPromptDir = "../../../../config/agent/prompt";
