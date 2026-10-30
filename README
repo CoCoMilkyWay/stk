@@ -282,17 +282,17 @@ stk/
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
 │   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: ask → poll 逐个取走 Tick (Think / Write / Restart / End = 收齐) / live (在收那轮增量同步进调用方镜像); 不留历史, 不落盘
-│   │   │   ├── Text.hpp                                    # 🤖 成文公共件: 字 (UTF-8 码点计数 / 前进后退 / 截断补 …) / 数的写法
+│   │   │   ├── Text.hpp                                    # 🤖 成文公共件: 字 (UTF-8 码点计数 / 前进后退 / 截断补 …) / 数的写法 / 本地时刻 / 检索 (小写分词 + Filter: 具名条件之合取, 零命中报各条件单独命中数)
 │   │   │   ├── Journal.hpp                                 # 🤖 一段会话的日志目录 (只 GUI 线程写): system.md / 逐轮 NN.{user,reply,thinking}.md / 交互流水 events.jsonl (事件表 kEvents) / report.md
 │   │   │   │                                               #    · 工具样本 (不随会话): 每个工具留最近一次交给 agent 的结果 <工具名>.md (互相覆盖); 开会话时删掉工具表里已没有的
-│   │   │   ├── Tools.hpp                                   # 🤖 工具箱 (类 MCP): 一张工具表 (名 / 执行方 Now · Human · Eval · Look · Docs / 参数表 / 做什么 / 返回什么) → 系统提示的工具节 / 回复解析 / 参数校验 / 界面名
+│   │   │   ├── Tools.hpp                                   # 🤖 工具箱 (类 MCP): 一张工具表 (名 / 执行方 Run: Now · Human · Eval · Look · Book · Docs / 用途类 Cat / 折叠法 Fold / 参数表 / 做什么 / 返回什么) → 系统提示的工具节 / 回复解析 / 参数校验 / 折叠 / 计数 / 界面名
 │   │   │   │                                               #    · 回复 = {"calls": [{"tool", "args"}]}, ParseCalls 按参数表校验并补缺省 (带字段路径报错); 加工具 = 表里一行 + 执行方一个分支
 │   │   │   │                                               #    · 执行记录 Act: 调用 + 时段 Span + 交给 agent 的结果 + 带状态的过程 (eval_factor → Trial ⊃ search / run; ask_human → Asked)
-│   │   │   ├── Views.hpp                                   # 🤖 观察工具的两半: 调用 → LookSpec (经 Lab 校验因子 / 特征 / 代码) ↔ Look → markdown (表 + 火花线; 口径同分层回测)
+│   │   │   ├── Views.hpp                                   # 🤖 观察工具的两半: Spec 调用 → LookSpec / BookSpec (经 Lab 校验因子 / 特征 / 代码) ↔ Render Look / Book → markdown (表 + 火花线; 口径同分层回测); 一视图一行表 kViews {spec, view}
 │   │   │   │                                               #    · view_feature / view_layers (尾部表; cond: 按特征分位切开各看分层) / view_trades (交割单: 段合并 / 盘面标签提升 / 明细; 日段 / 时段窗) / view_holders
 │   │   │   │                                               #      / view_response (开仓前后的累计超额) / view_explain (成分剥离: 因子秩对特征秩逐行回归, 残差的分层) / view_snapshot (某一行的截面两端)
 │   │   │   │                                               #      / view_stock_day (rows: 分钟窗逐行表) / view_stock_days
-│   │   │   │                                               #    · view_book 不走 Look: BookOf → Lab::book (逐笔重放) → RenderBook (逐时表 / 大单事件 / 全簿剖面)
+│   │   │   │                                               #    · view_book: BookSpec → Book (逐笔重放) → 逐时表 / 大单事件 / 全簿剖面
 │   │   │   │                                               #    · cond / explain 按别的分数重新分组, 用标签口径近似 (逐行在池 ∧ 标签有效等分 20 组), 只作同一视图内对照
 │   │   │   ├── Docs.hpp                                    # 🤖 研报库工具 (GUI 线程当场查, 只读 output/doc): 标注作索引 (首次全量读入), tag_stat.md 给阶段 → 流派骨架, 全文按需读
 │   │   │   │                                               #    · search_docs / search_factors: 命中集合的分面 (阶段 → 流派 / 机构 / 年份 / 价值; 类别 / 数据周期 × 预测期) + 条目, agent 从全库版图逐层收窄
@@ -303,16 +303,18 @@ stk/
 │   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
 │   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 (带族 = 节点文件) / 算子表 / K 线叶 / 正式因子库统计) + 候选目录 results
 │   │   │   │                                               #      候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict) ─adopt (过门槛 Gate)→ 正式因子目录
-│   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 一次一个文件: Search (具体式也走, 定方向) → Run, 评完只重扫它; 首次用到才建, 常驻块 (SearchSpec / RunSpec keep)
-│   │   │   │                                               #      look: 第三道 LensService, 因子 (候选名 / 具体根式) + 特征式 (+ 本层 K 线叶) → Look ([T][A] 平面: r16 定向秩 / 特征原值 / K 线 / 门控 / 标签; 行统计 / 尾部 / 两端格)
-│   │   │   │                                               #      book: 第四道 ReplayService, 一只票一天里的一段逐笔 → Book (逐秒盘口与流量 / 大单事件 / 某秒全簿); 不经特征库, 不限评估期
+│   │   │   │                                               #      四道 Search / Run / Look / Book 同构 (Lane 元组, 下标 = Step), 首次用到才建, 常驻块 keep; Job = EvalSpec | LookSpec | BookSpec, 结果 Got 同序
+│   │   │   │                                               #      EvalSpec → Eval: 一次一个文件, Search (具体式也走, 定方向) → Run, 评完只重扫它; 无显著而有代表点 → 再 Look 它一次
+│   │   │   │                                               #      LookSpec → Look: LensService, 因子 (候选名 / 具体根式) + 特征式 (+ 本层 K 线叶) → [T][A] 平面 (r16 定向秩 / 特征原值 / K 线 / 门控 / 标签; 行统计 / 尾部 / 两端格)
+│   │   │   │                                               #      BookSpec → Book: ReplayService, 一只票一天里的一段逐笔 → 逐秒盘口与流量 / 大单事件 / 某秒全簿; 不经特征库, 不限评估期
+│   │   │   │                                               #      模板: delta (相对 base 的改动归类) / leaves_of (用到的叶) / parts_miss (功能块覆盖), 只查字段表与模板
 │   │   │   │                                               #      可见 Result::visible: 统计与 Search 结局都在作用域此刻评估期 (span_of) 上且算子不超上限, 才给 agent 看 / 可入库
-│   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ eval / look / book) → poll 逐个取走 Tick, 末个 End → live → busy / cancel
+│   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ send) → poll 逐个取走 Tick: 进某段 (Think / Write ↔ Search / Run / Look / Book), 末个 End 带结果 (Reply ↔ Got) → live → busy / cancel
 │   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Think (agent 发调用) ↔ Act (系统逐个执行; ask_human 进 Choose 等人), Report); 转移唯一入口 go 兑现 Stop; 无 ImGui
-│   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ 该调用做完
-│   │   │   │                                               #    · Desk = 会话状态 (worker / 设定 / 日志 / 全局记录 / 时间线 / 计数), Mine = Desk + 转移; 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (按工具计数, 随事件增量加, 不回扫)
+│   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied(Reply) ↔ settled(Got)
+│   │   │   │                                               #    · Desk = 会话状态 (worker / 设定 / 日志 / 全局记录 / 时间线 / 计数), Mine = Desk + 转移; 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (Tally = 各工具调用数 + 各结局数 + 入库数; 按执行方 / 用途类的数由工具表聚合; 随事件增量加, 不回扫)
 │   │   │   ├── Notes.hpp                                   # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话跨作用域累积; 编号 = 类前缀 + 序号, ref 附议同类已有的; list_notes 成文
-│   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (take 每步) / 等人 (answer) → 做完; 只经 Desk 读写会话
+│   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (enter 每段, settle 收结果) / 等人 (answer) → 做完; 回复级约束 RuleMiss; 只经 Desk 读写会话
 │   │   │   │                                               #    · eval_factor 只收本会话 search_leaves 查过定义的叶 (Desk::seen); 带回测的回复须同带至少一个观察调用 (ParseCalls 查)
 │   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)

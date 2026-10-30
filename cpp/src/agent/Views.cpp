@@ -363,6 +363,10 @@ const LookRoot *root_of(const Look &L, std::string &out) {
   }
   return &r;
 }
+// "E i = `式`" 一行; 没算成的带原因
+std::string expr_line(size_t i, const std::string &x, const LookFeat &f, const char *miss = "没算成") {
+  return "E" + str(i + 1) + " = `" + x + "`" + (f.error.empty() ? "" : std::string(" (") + miss + ": " + f.error + ")") + "\n";
+}
 
 // ---- view_feature ----
 bool feature_view(const Call &c, const Look &L, const Context &, std::string &out) {
@@ -543,6 +547,9 @@ bool feature_view(const Call &c, const Look &L, const Context &, std::string &ou
 }
 
 // ---- view_layers ----
+std::string layers_head(const std::string &first) {
+  return "| " + first + " | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+}
 std::string layers_row(const std::string &name, const Layer &b) {
   return "| " + name + " | " + std::to_string(b.rows) + " | " + std::to_string(b.ok) + " | " + r3(b.mono()) + " | " + bp(b.ls()) + " | " + r3(b.ric.mean()) + " | " +
          bp(b.grp(kG1)) + " | " + bp(b.grp(kGroups / 2 - 1)) + " | " + bp(b.grp(kG20)) + " | `" + bars(b.grps()) + "` |\n";
@@ -591,7 +598,7 @@ std::string cond_view(const std::string &cond, const LookRoot &r, const Look &L)
   s += "条件与因子的截面秩相关 " + r3(rho.mean()) + " · 条件自身 rIC " + r3(cric.mean()) + "\n";
   s += "每行按条件值把池子截面三等分 (条件离散时并列落同一段, 三段不均), 段内按因子分位重新分 20 组; 组超额 = 组内 (标签 − 本行在池均值) 等权均值, 建不了仓的格不剔, "
        "与上面的真持有口径略有出入, 只作这四行之间对照\n\n";
-  s += "| 条件段 | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+  s += layers_head("条件段");
   s += layers_row("全体 (同口径)", b[0]) + layers_row("低 1/3", b[1]) + layers_row("中 1/3", b[2]) + layers_row("高 1/3", b[3]);
   return s;
 }
@@ -658,7 +665,7 @@ bool layers_view(const Call &c, const Look &L, const Context &, std::string &out
       for (auto &[m, b] : by)
         bs.push_back({date_of(m * 100 + 1).substr(0, 7), b});
     }
-    s += "\n| " + std::string(split == "tod" ? "时段" : "月份") + " | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+    s += "\n" + layers_head(split == "tod" ? "时段" : "月份");
     for (const auto &[name, b] : bs)
       s += layers_row(name, b);
   }
@@ -669,6 +676,17 @@ bool layers_view(const Call &c, const Look &L, const Context &, std::string &out
 }
 
 // ---- view_trades ----
+// 一端真持有过的格 (行过 keep), 按 (资产, 行) 排
+template <class Keep>
+std::vector<LookCell> side_cells(const LookRoot &r, bool top, Keep keep) {
+  std::vector<LookCell> cs;
+  for (const LookCell &x : r.cells)
+    if (x.top == top && keep(x.t))
+      cs.push_back(x);
+  std::sort(cs.begin(), cs.end(), [](const LookCell &x, const LookCell &y) { return x.a != y.a ? x.a < y.a : x.t < y.t; });
+  return cs;
+}
+
 struct Trade {
   int a, t0, t1, n; // 资产 / 首末行 / 行数
   double ex;        // 各行超额的均值
@@ -710,15 +728,11 @@ bool trades_view(const Call &c, const Look &L, const Context &, std::string &out
     out = s + "窗口里没有行 (评估期 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + ")";
     return false;
   }
-  std::vector<LookCell> cs;
-  for (const LookCell &x : r->cells)
-    if (x.top == top && in_win(x.t))
-      cs.push_back(x);
+  const std::vector<LookCell> cs = side_cells(*r, top, in_win);
   if (cs.empty()) {
     out = s + "本端没有真持有过的格\n";
     return true;
   }
-  std::sort(cs.begin(), cs.end(), [](const LookCell &x, const LookCell &y) { return x.a != y.a ? x.a < y.a : x.t < y.t; });
   const auto ex_of = [&](const LookCell &x) { return static_cast<double>(x.ret) - r->rows[static_cast<size_t>(x.t)].mkt; };
   std::vector<Trade> ts;
   Mean cell;
@@ -958,11 +972,7 @@ bool response_view(const Call &c, const Look &L, const Context &, std::string &o
   const std::string side = top ? "做多端 G20" : "最低组 G1";
   std::string s = "## 因子 `" + r->label + "` · " + side + " · 开仓前后的累计超额\n";
   // 事件 = 真持有段 (同资产同日相邻行连成一段, 同 view_trades merge=run) 的开仓行
-  std::vector<LookCell> cs;
-  for (const LookCell &x : r->cells)
-    if (x.top == top)
-      cs.push_back(x);
-  std::sort(cs.begin(), cs.end(), [](const LookCell &x, const LookCell &y) { return x.a != y.a ? x.a < y.a : x.t < y.t; });
+  const std::vector<LookCell> cs = side_cells(*r, top, [](int) { return true; });
   std::vector<LookCell> ev;
   for (size_t i = 0; i < cs.size(); ++i)
     if (i == 0 || cs[i - 1].a != cs[i].a || cs[i - 1].t + 1 != cs[i].t || cs[i - 1].t / seg != cs[i].t / seg)
@@ -1142,7 +1152,7 @@ bool explain_view(const Call &c, const Look &L, const Context &, std::string &ou
   bs.push_back({"价格", [&](int t, int a) { return px(Bar::Close, t, a); }});
   std::string s = "## 因子 `" + r->label + "` 的成分\n";
   for (size_t i = 0; i < xs.size(); ++i) {
-    s += "E" + str(i + 1) + " = `" + xs[i] + "`" + (L.feats[i].error.empty() ? "" : " (没算成, 不进基准: " + L.feats[i].error + ")") + "\n";
+    s += expr_line(i, xs[i], L.feats[i], "没算成, 不进基准");
     if (L.feats[i].error.empty())
       bs.push_back({"E" + str(i + 1), [&, i](int t, int a) { return static_cast<double>(L.feats[i].v[L.at(t, a)]); }});
   }
@@ -1219,7 +1229,7 @@ bool explain_view(const Call &c, const Look &L, const Context &, std::string &ou
     s += "| " + bs[j].first + " | " + r3(corr[j].mean()) + " | " + r3(bric[j].mean()) + " | " + r3(sric[j].mean()) + " |\n";
   s += "\n全部基准一起剥 (每行把因子秩对全部基准秩做截面回归, 取残差): 平均 R² " + r3(r2.mean()) + " · 因子 rIC " + r3(fric.mean()) + " → 剩余部分 " + r3(rric.mean()) + "\n";
   s += "20 组按标签逐行近似分 (组超额 = 组内 (标签 − 本行在池均值) 等权均值, 建不了仓的格不剔), 与回测 / view_layers 的真持有口径略有出入, 只作两行之间对照\n\n";
-  s += "|  | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+  s += layers_head("");
   s += layers_row("原因子", orig) + layers_row("剩余部分", rest);
   out = std::move(s);
   return true;
@@ -1245,7 +1255,7 @@ double feat_at(const LookFeat *f, size_t k) { return f->error.empty() ? f->v[k] 
 std::string over_head(const Over &o) {
   std::string s;
   for (size_t i = 0; i < o.xs.size(); ++i)
-    s += "E" + str(i + 1) + " = `" + o.xs[i] + "`" + (o.fs[i]->error.empty() ? "" : " (没算成: " + o.fs[i]->error + ")") + "\n";
+    s += expr_line(i, o.xs[i], *o.fs[i]);
   return s;
 }
 
@@ -1495,7 +1505,7 @@ bool snapshot_view(const Call &c, const Look &L, const Context &ctx, std::string
   s += "在池且有秩 " + str(cs.size()) + " 只 · 本行" + (w.ok ? "有统计: rIC " + r3(w.ric) + " · G20 超额 " + bp(w.grp[kG20]) + "bp (真持有 " + std::to_string(w.cnt[kG20]) + " 只) · G1 超额 " + bp(w.grp[kG1]) + "bp (" + std::to_string(w.cnt[kG1]) + " 只)" : std::string("无统计 (建不了仓 / 标签无效)")) +
        " · 后续超额 = 本行开仓的持有期收益 − 在池均值\n";
   for (size_t i = 0; i < xs.size(); ++i)
-    s += "E" + str(i + 1) + " = `" + xs[i] + "`" + (L.feats[i].error.empty() ? "" : " (没算成: " + L.feats[i].error + ")") + "\n";
+    s += expr_line(i, xs[i], L.feats[i]);
   const auto ev = [&](size_t i, const Cell &x) { return L.feats[i].error.empty() ? static_cast<double>(L.feats[i].v[L.at(t, x.a)]) : kNaN; };
 
   // 与因子分位的截面 Spearman (全部在池有秩格)
@@ -1809,7 +1819,7 @@ bool Spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error) {
   }
   if (const int st = c.num("step"); st > 0 && (n + st - 1) / st > kBookRows) {
     error = "step: 窗口 " + std::to_string(n) + " 秒按每行 " + std::to_string(st) + " 秒有 " + std::to_string((n + st - 1) / st) + " 行, 至多 " + std::to_string(kBookRows) +
-          " 行; 加大 step 或给 0 自动";
+            " 行; 加大 step 或给 0 自动";
     return false;
   }
   out.from = from, out.to = to, out.at = to - 1;
