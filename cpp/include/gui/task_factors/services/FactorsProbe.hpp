@@ -3,7 +3,8 @@
 //   通用探针 Hold / Cost / Cover / Alpha / IcPdf 四服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
 //   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
 //   根上的统计核: cover_rows 有效率 / 可秩率 (一遍, 块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / CurveP 平级); alpha_dist alpha 分布
-//   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / LS 绝对 / Portfolio 曲线).
+//   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / LS 绝对 / Portfolio 曲线);
+//   尾部分层的阈值 / 端码 / 逐格扩展 TailExt (Inspect 净值线与尾部换手 / Lens 逐行同一份).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
 #pragma once
 
@@ -48,6 +49,70 @@ MiniPdf mini_pdf_of(const analysis::AggPdf &p);
 inline double group_abs(const factor::stat::Row &r, int k, double cap) {
   return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt, cap) : 0.0;
 }
+
+// ---- 尾部分层 (TailRow, FactorsTable.hpp; Inspect 净值线 / 尾部换手, Lens 逐行) ----
+// 阈值 (r16): 顶端尾 = r16 ≥ thr[kTop], 底端尾 = r16 < thr[kBot], 尾占整截面 q = kTailOfGroup / kGroups. 与 grp_of 同一条边界公式
+// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时两条阈值正好是 G20 / G1 的组边界. 方向 d 端 e 的尾在 r16 的 e ^ d 那端 (反向对调)
+struct TailThr {
+  int v[factor::stat::kEnds][kTails] = {};
+};
+inline TailThr tail_thresholds() {
+  using factor::stat::kBot, factor::stat::kTop;
+  TailThr o;
+  for (int j = 0; j < kTails; ++j) {
+    const double q = static_cast<double>(kTailOfGroup[j]) / factor::stat::kGroups, span = factor::stat::kRankMax + 1;
+    o.v[kTop][j] = static_cast<int>(std::ceil((1.0 - q) * span));
+    o.v[kBot][j] = static_cast<int>(std::ceil(q * span));
+    assert(o.v[kBot][j] >= 1 && o.v[kTop][j] <= factor::stat::kRankMax && o.v[kBot][j] < o.v[kTop][j]);
+  }
+  return o;
+}
+inline const TailThr kTailThr = tail_thresholds();
+// re = r16 的端 (kTop 顶 / kBot 底)
+inline bool in_tail(int re, int r16, int thr) { return re == factor::stat::kTop ? r16 >= thr : r16 < thr; }
+// 方向 d 第 j 级尾部的端码 (与契约 EndCode 同值, 给 cost_rows): 高端尾 kEcTop / 低端尾 kEcBot / 其余有秩 kEcMid / 无秩 kEcVoid
+inline uint8_t tail_code(uint16_t r16, int j, int d) {
+  if (r16 == factor::stat::kRankNone)
+    return factor::stat::kEcVoid;
+  const int et = factor::stat::kTop ^ d, eb = factor::stat::kBot ^ d;
+  return in_tail(et, r16, kTailThr.v[et][j])   ? factor::stat::kEcTop
+         : in_tail(eb, r16, kTailThr.v[eb][j]) ? factor::stat::kEcBot
+                                               : factor::stat::kEcMid;
+}
+// 尾部分层 = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效);
+// 尾 (e, j) 是一本做多账本 (方向 d: 落在 r16 的 e ^ d 端), 成员 / 收益按契约【仓位感知】(同一尾部沿交接链), 只收真持有的格
+struct TailExt {
+  const int (*thr)[kTails];
+  double cap;                                 // 满仓 (Labels::cap); 尾 j 的满仓 = cap · kTailOfGroup[j]
+  int d = factor::stat::kFwd;                 // 所评方向
+  double s[factor::stat::kEnds][kTails] = {}; // 尾部真持有的 Σ 收益
+  int n[factor::stat::kEnds][kTails] = {};    // 同上只数
+  void cell(const factor::cpu::stat::RxCell &cl) {
+    const int x = *cl.code;
+    for (int e = 0; e < factor::stat::kEnds; ++e)
+      for (int j = 0; j < kTails; ++j) {
+        const int re = e ^ d, th = thr[re][j];
+        if (!in_tail(re, x, th))
+          continue;
+        const auto in = [re, th](uint16_t v) { return v != factor::stat::kRankNone && in_tail(re, v, th); };
+        if (!cl.held(in))
+          continue;
+        ++n[e][j];
+        s[e][j] += cl.ret(cl.continues(in));
+      }
+  }
+  // r = 本行 Row (已定向; 基准 mkt 直接用); 只在 Row::ok 行有值, 其余全 0
+  void finish(const factor::stat::Row &r, TailRow &o) const {
+    o = TailRow{};
+    if (!r.ok)
+      return;
+    for (int j = 0; j < kTails; ++j)
+      for (int e = 0; e < factor::stat::kEnds; ++e) {
+        o.cnt[e][j] = static_cast<uint16_t>(n[e][j]);
+        o.sum[e][j] = static_cast<float>(factor::stat::book_excess(s[e][j], n[e][j], r.mkt, cap * kTailOfGroup[j]));
+      }
+  }
+};
 
 // ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
 //   need / need_last  原料位: 每块要的 / 只末块另要的 (引擎据此算 / 拷回; 本块给 Probes::need_at(last))

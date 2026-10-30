@@ -15,9 +15,10 @@
 #include "gui/task_factors/services/RunService.hpp"
 #include "gui/task_factors/services/SearchService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp" // hold_desc
-#include "misc/date.hpp"                      // dash
-#include "shared/AssetAxis.hpp"               // 码 ↔ 全局资产下标
-#include "shared/FeatureLib.hpp"              // feature_pools
+#include "gui/task_features/services/ReplayService.hpp"
+#include "misc/date.hpp"         // dash
+#include "shared/AssetAxis.hpp"  // 码 ↔ 全局资产下标
+#include "shared/FeatureLib.hpp" // feature_pools
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -36,8 +37,15 @@ namespace F = GUI::Factors;
 namespace fs = std::filesystem;
 
 static_assert(kGroups == factor::stat::kGroups && kRankNone == factor::stat::kRankNone && kRankMax == factor::stat::kRankMax);
+static_assert(kTails == F::kTails && kTailOfGroup[0] == F::kTailOfGroup[0] && kTailOfGroup[1] == F::kTailOfGroup[1] && kTailOfGroup[2] == F::kTailOfGroup[2] &&
+              factor::stat::kTop == 0 && factor::stat::kEnds == 2);
+static_assert(static_cast<int>(BookKind::New) == static_cast<int>(GUI::Features::ReplayKind::New) &&
+              static_cast<int>(BookKind::Cancel) == static_cast<int>(GUI::Features::ReplayKind::Cancel) &&
+              static_cast<int>(BookKind::Filled) == static_cast<int>(GUI::Features::ReplayKind::Filled) &&
+              static_cast<int>(BookKind::Sweep) == static_cast<int>(GUI::Features::ReplayKind::Sweep) && GUI::Features::kBigQuantile == 0.99f);
 
 double Mono(const double *g, int n) { return factor::stat::mono_of(g, n); }
+int TradeSec(int clock) { return static_cast<int>(GUI::Features::trade_sec(static_cast<uint32_t>(clock))); }
 
 namespace {
 
@@ -217,11 +225,17 @@ Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std
     LookRoot y;
     y.label = labels[j];
     y.error = std::move(x.error), y.rx = std::move(x.rx);
-    for (const factor::stat::Row &w : x.rows) {
+    assert(x.tails.size() == x.rows.size());
+    for (size_t t = 0; t < x.rows.size(); ++t) {
+      const factor::stat::Row &w = x.rows[t];
+      const F::TailRow &tr = x.tails[t];
       LookRow z;
       z.ok = w.ok, z.ric = w.ric, z.mkt = w.mkt;
       std::copy_n(w.grp, kGroups, z.grp);
       std::copy_n(w.cnt, kGroups, z.cnt);
+      for (int e = 0; e < 2; ++e)
+        for (int j = 0; j < kTails; ++j)
+          z.tail[e][j] = tr.sum[e][j], z.tcnt[e][j] = tr.cnt[e][j];
       y.rows.push_back(z);
     }
     for (const F::LensCell &c : x.cells)
@@ -538,12 +552,13 @@ struct Lab::Impl {
   Context ctx;
   std::vector<Result> results;
   Fails fails; // 同作用域跨会话留着
-  // 三道 (下标 = Step), 首次用到才建; Search / Run 随评估后端重建
-  static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1 && static_cast<size_t>(Step::Look) == 2);
+  // 四道 (下标 = Step), 首次用到才建; Search / Run 随评估后端重建
+  static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1 && static_cast<size_t>(Step::Look) == 2 &&
+                static_cast<size_t>(Step::Book) == 3);
   bool gpu = false;
-  std::tuple<Lane<F::SearchService>, Lane<F::RunService>, Lane<F::LensService>> lanes;
+  std::tuple<Lane<F::SearchService>, Lane<F::RunService>, Lane<F::LensService>, Lane<GUI::Features::ReplayService>> lanes;
   // 在做的那件事
-  bool running = false;              // eval / look 起, 到 End 入队
+  bool running = false;              // eval / look / book 起, 到 End 入队
   bool halt = false;                 // 已 cancel: 在跑那步收尾即 End
   Step at = Step::End;               // 在跑那步的道; End = 无
   std::string file;                  // eval: 在评的文件
@@ -552,6 +567,7 @@ struct Lab::Impl {
   std::vector<std::string> labels;   // look: 因子的名字
   std::vector<std::string> feat_err; // look: 与 LookSpec::feats 对齐, 非空 = 该式不成 (没发)
   PerBar<bool> bars;                 // look: 取了的 K 线叶
+  BookSpec spec;                     // book: 在放的那段
   std::deque<Tick> ticks;            // 未取走的步
 
   std::shared_ptr<const F::FeatureTable> ft() const { return table(*data, sc.level); }
@@ -570,6 +586,8 @@ struct Lab::Impl {
       return fn(std::get<1>(lanes));
     case Step::Look:
       return fn(std::get<2>(lanes));
+    case Step::Book:
+      return fn(std::get<3>(lanes));
     default:
       assert(false && "无在跑的道");
       __builtin_unreachable();
@@ -667,6 +685,38 @@ struct Lab::Impl {
     }
     ticks.push_back({Step::Look, look_of(std::move(r), *ft(), labels, std::move(feat_err), bars, ctx.kline)});
   }
+  // 重放跑完: 取走结果, 交易秒 → 钟面秒
+  void booked() {
+    GUI::Features::ReplayService &svc = *std::get<3>(lanes).svc;
+    GUI::Features::ReplayResult r;
+    {
+      std::lock_guard<std::mutex> lock(svc.mutex);
+      r = std::move(svc.result);
+    }
+    Book b{.spec = spec,
+           .error = std::move(r.error),
+           .orders = static_cast<int>(r.orders),
+           .open = r.open,
+           .high = r.high,
+           .low = r.low,
+           .close = r.close,
+           .amount = r.amount,
+           .big = r.big};
+    const uint32_t s0 = GUI::Features::trade_sec(static_cast<uint32_t>(spec.from));
+    for (size_t i = 0; i < r.secs.size(); ++i) {
+      const GUI::Features::ReplaySec &x = r.secs[i];
+      BookSec &y = b.secs.emplace_back();
+      y.clock = static_cast<int>(GUI::Features::trade_clock(s0 + static_cast<uint32_t>(i)));
+      y.bid = x.bid, y.ask = x.ask, y.ref = x.ref, y.matched = x.matched, y.imbalance = x.imbalance, y.last = x.last;
+      for (int s = 0; s < 2; ++s)
+        y.depth[s] = x.depth[s], y.taker[s] = x.taker[s], y.maker[s] = x.maker[s], y.cancel[s] = x.cancel[s];
+    }
+    for (const GUI::Features::ReplayEvent &e : r.events)
+      b.events.push_back({L2::tick_hour(e.tick) * 3600 + L2::tick_minute(e.tick) * 60 + L2::tick_second(e.tick), L2::tick_millisecond(e.tick), static_cast<BookKind>(e.kind), e.side,
+                          e.levels, e.price, e.first, e.amount, e.life});
+    b.book = std::move(r.book);
+    ticks.push_back({Step::Book, std::move(b)});
+  }
   // 在跑那步的道跑完一轮 → 下一步
   void pump() {
     if (at == Step::End || !on_lane([](const auto &l) { return l.finished(); }))
@@ -675,6 +725,10 @@ struct Lab::Impl {
       return close();
     if (at == Step::Look) {
       looked();
+      return close();
+    }
+    if (at == Step::Book) {
+      booked();
       return close();
     }
     if (at == Step::Search && searched())
@@ -750,6 +804,31 @@ struct Lab::Impl {
     }
     l.send(std::move(req));
     at = Step::Look;
+    running = true, halt = false;
+  }
+  // 发一次重放 (参数已校验)
+  void book(const BookSpec &s) {
+    namespace X = GUI::Features;
+    assert(s.from < s.to && s.at >= s.from && s.at < s.to);
+    Lane<X::ReplayService> &l = std::get<3>(lanes);
+    if (!l.svc)
+      l.reset();
+    const size_t id = asset_axis().find(s.code);
+    assert(id < asset_axis().size() && id < data->asset.items.size() && "码须经 code_of");
+    X::ReplayRequest req;
+    req.orders = data->asset.orders();
+    assert(req.orders && "逐笔帧目录未扫描");
+    req.dir = data->config.orders_dir;
+    req.asset = static_cast<uint32_t>(id);
+    req.exchange = data->asset.items[id].exchange_type;
+    req.date = s.date;
+    req.s0 = X::trade_sec(static_cast<uint32_t>(s.from));
+    req.s1 = X::trade_sec(static_cast<uint32_t>(s.to - 1)) + 1;
+    req.at = X::trade_sec(static_cast<uint32_t>(s.at));
+    req.big = static_cast<float>(s.big);
+    l.send(std::move(req));
+    spec = s;
+    at = Step::Book;
     running = true, halt = false;
   }
 };
@@ -863,6 +942,12 @@ void Lab::look(LookSpec s) {
   Impl &I = *p_;
   assert(!I.running && I.data && "评估忙或未 bind");
   I.look(std::move(s));
+}
+
+void Lab::book(BookSpec s) {
+  Impl &I = *p_;
+  assert(!I.running && I.data && "评估忙或未 bind");
+  I.book(s);
 }
 
 void Lab::cancel() {

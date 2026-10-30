@@ -20,8 +20,8 @@
 //                                                            同一价点才与 t−h 交接; 一遍 [T][A], 无排序). 期限结构的净线 = 毛二级 − 两端均摊成本 (含 Config::fixed_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; fixed_impact 只进均摊公式, 不进请求)
 //   L  评估 + 尾部                                         → 一级 Row (逐行, 不落) + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all); 逐行 rIC 落 InspectPlanes::ric;
-//                                                            尾部 (两端组内更极端的 kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; Inspect 专属, 不进 Stat 契约 / Search)
-//                                                            是 label_row 的逐格扩展 (TailExt), 与标签侧同一遍 A 轴
+//                                                            尾部 (两端组内更极端的 kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; 不进 Stat 契约 / Search, 见 FactorsTable TailRow)
+//                                                            是 label_row 的逐格扩展 (FactorsProbe TailExt), 与标签侧同一遍 A 轴
 //   T  换手                                                → 各 LS 线两端的换手量 CostAcc: 顶底 = C 的段 0 (各段同一份 Δw); 各级尾部 = Stat cost_rows 一个固定段
 //                                                            (端成员 = 该级端码 ∧ 标签有效位, 满仓 = cap · kTailOfGroup[j]); 图例年换手 = turn_annual, UI 现算
 //   N  净值                                                → 落线探针 NavP: 每行由 Row + 尾部算各线这一批的收益 (FactorsBook RowLines), 全部持有期一次 fold_book
@@ -64,12 +64,6 @@ inline std::string inspect_key(LevelId lv, const std::string &pool, const std::s
 // 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload, bool gpu,
                         InspectRequest &req);
-
-// 尾部分层 (Inspect 专属, 不进 Stat 契约): 两端组 (顶 / 底) 内更极端的一截, 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%),
-// j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径 (q = 1 即整组). 逐行只在 Row::ok 行有值
-inline constexpr int kTails = 3;
-inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
-static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
 
 // 分层累计净值 (净值引擎 fold_book, 全部持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(端, j) = 该端组内第 j 级尾部 (口径同 Row::grp);
 // LS 线 0 = 顶底 (ls_row), 1 + j = 第 j 级尾部多空; LS = ½ (顶端 − 底端), 绝对 / 超额只差两端只数不同时的基准项.

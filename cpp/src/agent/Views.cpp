@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -169,6 +170,36 @@ std::vector<int> part_of_row(const std::vector<Part> &ps, int seg) {
   return o;
 }
 
+// "HH:MM" 的写法
+bool hm_shape(const std::string &s, size_t at = 0) {
+  return s.size() >= at + 5 && s[at + 2] == ':' && std::isdigit(static_cast<unsigned char>(s[at])) && std::isdigit(static_cast<unsigned char>(s[at + 1])) &&
+         std::isdigit(static_cast<unsigned char>(s[at + 3])) && std::isdigit(static_cast<unsigned char>(s[at + 4]));
+}
+// 参数 key 的 "HH:MM-HH:MM" → 行末时刻落在其中 (含两端) 的日内行 [k0, k1); 写法不对 / 没有行 / 超过 cap 行 (cap > 0) → false + err
+bool rows_in(const char *key, const std::string &s, const std::vector<std::string> &clock, int cap, int &k0, int &k1, std::string &err) {
+  if (s.size() != 11 || !hm_shape(s) || s[5] != '-' || !hm_shape(s, 6)) {
+    err = std::string(key) + ": 写成 HH:MM-HH:MM (如 10:00-10:30)";
+    return false;
+  }
+  const std::string a = s.substr(0, 5), b = s.substr(6, 5);
+  const int seg = static_cast<int>(clock.size());
+  k0 = 0;
+  while (k0 < seg && clock[static_cast<size_t>(k0)] < a)
+    ++k0;
+  k1 = k0;
+  while (k1 < seg && clock[static_cast<size_t>(k1)] <= b)
+    ++k1;
+  if (k1 == k0) {
+    err = std::string(key) + ": " + s + " 里没有行 (本层行末时刻 " + clock.front() + ", " + clock[1] + " … " + clock.back() + ")";
+    return false;
+  }
+  if (cap > 0 && k1 - k0 > cap) {
+    err = std::string(key) + ": " + s + " 有 " + std::to_string(k1 - k0) + " 行, 至多 " + std::to_string(cap) + " 行; 收窄时段";
+    return false;
+  }
+  return true;
+}
+
 // 观察所在的日段与作用域评估期不同 (用到的叶落盘日更短) 才写
 std::string head(const Look &L, const Context &ctx) {
   if (L.dates.front() == ctx.first && L.dates.back() == ctx.last)
@@ -273,6 +304,7 @@ std::string tags_of(uint32_t m) {
 struct Layer {
   int rows = 0, ok = 0;
   double g[kGroups] = {}, cnt[kGroups] = {};
+  double tl[2][kTails] = {}, tc[2][kTails] = {}; // 尾部 [端][j] (端 0 = G20 内 / 1 = G1 内)
   Mean ric;
   void add(const LookRow &w) {
     ++rows;
@@ -281,9 +313,14 @@ struct Layer {
     ++ok;
     for (int k = 0; k < kGroups; ++k)
       g[k] += w.grp[k], cnt[k] += w.cnt[k];
+    for (int e = 0; e < 2; ++e)
+      for (int j = 0; j < kTails; ++j)
+        tl[e][j] += w.tail[e][j], tc[e][j] += w.tcnt[e][j];
     ric.add(w.ric);
   }
   double grp(int k) const { return rows ? g[k] / rows : kNaN; }
+  double tail(int e, int j) const { return rows ? tl[e][j] / rows : kNaN; }
+  double tail_held(int e, int j) const { return ok ? tc[e][j] / ok : kNaN; }
   std::vector<double> grps() const {
     std::vector<double> v(kGroups);
     for (int k = 0; k < kGroups; ++k)
@@ -582,6 +619,12 @@ bool layers_view(const Call &c, const Look &L, std::string &out) {
   for (int k = 5; k < 15; ++k)
     mid += all.grp(k) / 10.0;
   s += "\n\n做多端 G20 " + bp(all.grp(kG20)) + "bp · 最低组 G1 " + bp(all.grp(kG1)) + "bp · 中段 G6–G15 均值 " + bp(mid) + "bp\n";
+  s += "\n两端组内按池内秩再截更极端的一截 (同一份真持有判据, 满仓按宽度折算, 每期超额口径同上):\n| 截取 | 占截面 | G20 端 bp | G20 行均只数 | G1 端 bp | G1 行均只数 | 多空 bp |\n|---|---|---|---|---|---|---|\n";
+  s += "| 整组 | " + fmt("%g%%", 100.0 / kGroups) + " | " + bp(all.grp(kG20)) + " | " + fmt("%.1f", all.held(kG20)) + " | " + bp(all.grp(kG1)) + " | " + fmt("%.1f", all.held(kG1)) +
+       " | " + bp(all.ls()) + " |\n";
+  for (int j = 0; j < kTails; ++j)
+    s += "| 组内最极端 " + fmt("%g%%", kTailOfGroup[j] * 100.0) + " | " + fmt("%g%%", kTailOfGroup[j] * 100.0 / kGroups) + " | " + bp(all.tail(0, j)) + " | " +
+         fmt("%.1f", all.tail_held(0, j)) + " | " + bp(all.tail(1, j)) + " | " + fmt("%.1f", all.tail_held(1, j)) + " | " + bp((all.tail(0, j) - all.tail(1, j)) / 2.0) + " |\n";
 
   const std::string split = c.str("split"), cond = c.str("cond");
   if (split == "tod" && seg == 1) {
@@ -625,12 +668,39 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
   const bool top = c.str("side") == "top";
   const std::string merge = c.str("merge"), sort = c.str("sort");
   const int seg = L.seg, T = L.T(), A = L.A();
+  // 行窗: 日期 [from, to] ∧ 日内行 [k0, k1) (tod); 格与池内基准格都只取窗内的行
+  const std::string from = c.str("from"), to = c.str("to"), tod = c.str("tod");
+  const int ymd0 = from.empty() ? 0 : ymd_of(from), ymd1 = to.empty() ? 99999999 : ymd_of(to);
+  int k0 = 0, k1 = seg;
+  if (!tod.empty()) {
+    std::string err;
+    [[maybe_unused]] const bool ok = rows_in("tod", tod, L.clock, 0, k0, k1, err);
+    assert(ok && "LookOf 已查过");
+  }
+  const auto in_win = [&](int t) {
+    const int ymd = L.dates[static_cast<size_t>(t / seg)], k = t % seg;
+    return ymd >= ymd0 && ymd <= ymd1 && k >= k0 && k < k1;
+  };
+  int rows = 0;
+  for (int t = 0; t < T; ++t)
+    rows += in_win(t);
+  const std::string side = top ? "做多端 G20" : "最低组 G1";
+  std::string win;
+  if (!from.empty() || !to.empty())
+    win += (from.empty() ? "…" : from) + " ~ " + (to.empty() ? "…" : to) + " ";
+  if (!tod.empty())
+    win += "行末 " + tod + " ";
+  if (!win.empty())
+    win = " · 只看 " + win + "的行 (" + std::to_string(rows) + " 行)";
+  std::string s = "## 因子 `" + r->label + "` · " + side + " · 合并 " + merge + win + "\n";
+  if (!rows) {
+    out = s + "窗口里没有行 (评估期 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + ")";
+    return false;
+  }
   std::vector<LookCell> cs;
   for (const LookCell &x : r->cells)
-    if (x.top == top)
+    if (x.top == top && in_win(x.t))
       cs.push_back(x);
-  const std::string side = top ? "做多端 G20" : "最低组 G1";
-  std::string s = "## 因子 `" + r->label + "` · " + side + " · 合并 " + merge + "\n";
   if (cs.empty()) {
     out = s + "本端没有真持有过的格\n";
     return true;
@@ -667,7 +737,7 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
   double worst = 0.0, best = 0.0;
   for (size_t i = 0; i < tenth; ++i)
     worst += std::min(0.0, contrib[i]), best += std::max(0.0, contrib[M - 1 - i]);
-  s += "真持有 " + str(cs.size()) + " 格 (每行平均 " + fmt("%.1f", static_cast<double>(cs.size()) / T) + " 只) → " + str(M) + " 段, 段均 " +
+  s += "真持有 " + str(cs.size()) + " 格 (每行平均 " + fmt("%.1f", static_cast<double>(cs.size()) / rows) + " 只) → " + str(M) + " 段, 段均 " +
        fmt("%.1f", static_cast<double>(cs.size()) / M) + " 行\n";
   s += "格超额均值 " + bp(cell.mean()) + "bp (胜率 " + pct(cell.up()) + ") · 段超额: 均值 " + bp(seg_ex.mean()) + " · 中位 " + bp(quant(sx, 0.5)) + " · p10 " + bp(quant(sx, 0.1)) +
        " · p90 " + bp(quant(sx, 0.9)) + " · 胜率 " + pct(seg_ex.up()) + "\n";
@@ -704,7 +774,7 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
     std::uniform_int_distribution<size_t> pick(0, static_cast<size_t>(T) * A - 1);
     for (size_t tries = 0; nb < kBase && tries < kBase * 20; ++tries) {
       const size_t k = pick(rng);
-      if (!L.gate[k] || !std::isfinite(L.label[k]))
+      if (!L.gate[k] || !std::isfinite(L.label[k]) || !in_win(static_cast<int>(k / A)))
         continue;
       const Mark m = mark_of(px, static_cast<int>(k / A), static_cast<int>(k % A));
       ++nb;
@@ -1176,34 +1246,6 @@ int day_of(const Look &L, const std::string &arg, std::string &out) {
   return static_cast<int>(it - L.dates.begin());
 }
 
-// "HH:MM-HH:MM" → 行末时刻落在其中 (含两端) 的日内行 [k0, k1); 写法不对 / 没有行 / 超过 kStockRows → false + err
-bool rows_in(const std::string &s, const std::vector<std::string> &clock, int &k0, int &k1, std::string &err) {
-  constexpr size_t kDigits[] = {0, 1, 3, 4, 6, 7, 9, 10};
-  const bool shape = s.size() == 11 && s[2] == ':' && s[5] == '-' && s[8] == ':' &&
-                     std::all_of(std::begin(kDigits), std::end(kDigits), [&](size_t i) { return s[i] >= '0' && s[i] <= '9'; });
-  if (!shape) {
-    err = "rows: 写成 HH:MM-HH:MM (如 10:00-10:30)";
-    return false;
-  }
-  const std::string a = s.substr(0, 5), b = s.substr(6, 5);
-  const int seg = static_cast<int>(clock.size());
-  k0 = 0;
-  while (k0 < seg && clock[static_cast<size_t>(k0)] < a)
-    ++k0;
-  k1 = k0;
-  while (k1 < seg && clock[static_cast<size_t>(k1)] <= b)
-    ++k1;
-  if (k1 == k0) {
-    err = "rows: " + s + " 里没有行 (本层行末时刻 " + clock.front() + ", " + clock[1] + " … " + clock.back() + ")";
-    return false;
-  }
-  if (k1 - k0 > kStockRows) {
-    err = "rows: " + s + " 有 " + std::to_string(k1 - k0) + " 行, 至多 " + std::to_string(kStockRows) + " 行; 收窄时段";
-    return false;
-  }
-  return true;
-}
-
 bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &out) {
   assert(L.A() == 1 && L.seg > 1);
   const int d = day_of(L, c.str("date"), out);
@@ -1282,7 +1324,7 @@ bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &ou
   if (const std::string w = c.str("rows"); !w.empty()) {
     int k0 = 0, k1 = 0;
     std::string err;
-    [[maybe_unused]] const bool ok = rows_in(w, L.clock, k0, k1, err);
+    [[maybe_unused]] const bool ok = rows_in("rows", w, L.clock, kStockRows, k0, k1, err);
     assert(ok && "LookOf 已查过");
     const auto whole = [](double x) { return std::isfinite(x) ? fmt("%.0f", x) : std::string("—"); };
     s += "\n逐行 " + w + " (涨跌 = 对上一行收盘; 当日 = 对昨收; 额 万元):\n| 时刻 | 收 | 涨跌 | 当日 | 量 | 额 |" + std::string(o.f ? " 因子分位 | 组 |" : "") + " 后续超额 bp |";
@@ -1381,6 +1423,158 @@ bool stock_days(const Call &c, const Look &L, const Context &ctx, std::string &o
   return true;
 }
 
+// ---- view_snapshot ----
+// 日内层: "HH:MM" = 行末时刻 → 日内行; 日层恒 0. 没有该行 → −1
+int row_at(const std::vector<std::string> &clock, const std::string &hm) {
+  if (clock.size() == 1)
+    return 0;
+  const auto it = std::find(clock.begin(), clock.end(), hm);
+  return it == clock.end() ? -1 : static_cast<int>(it - clock.begin());
+}
+
+bool snapshot_view(const Call &c, const Look &L, const Context &ctx, std::string &out) {
+  const LookRoot *r = root_of(L, out);
+  if (!r)
+    return false;
+  const int d = day_of(L, c.str("date"), out);
+  if (d < 0)
+    return false;
+  const int seg = L.seg, A = L.A(), k = row_at(L.clock, c.str("time")), t = d * seg + k, t0 = d * seg;
+  assert(k >= 0 && "LookOf 已查过");
+  const Px px(L);
+  const std::vector<std::string> xs = c.strs("exprs");
+  assert(xs.size() == L.feats.size());
+  // 本行的一格: 分位 / 当日至此成交额 / 本行涨跌 (日层 = 当日涨跌) / 后续超额 / 开仓那行的盘面 / 真持有端 (+1 做多端 / −1 最低组 / 0)
+  struct Cell {
+    int a = 0;
+    double rank = kNaN, amt = 0.0, step = kNaN, ex = kNaN;
+    Mark m;
+    int held = 0;
+  };
+  std::vector<int> held(static_cast<size_t>(A), 0);
+  for (const LookCell &x : r->cells)
+    if (x.t == t)
+      held[static_cast<size_t>(x.a)] = x.top ? 1 : -1;
+  std::vector<Cell> cs;
+  for (int a = 0; a < A; ++a) {
+    const size_t q = L.at(t, a);
+    if (!L.gate[q] || !std::isfinite(r->rank(q)))
+      continue;
+    Cell x{a, r->rank(q)};
+    for (int u = t0; u <= t; ++u)
+      if (const double v = px(Bar::Amount, u, a); std::isfinite(v))
+        x.amt += v;
+    const double cl = px(Bar::Close, t, a), prev = k == 0 ? px.pre(t, a) : px(Bar::Close, t - 1, a);
+    x.step = cl / prev - 1.0;
+    x.ex = static_cast<double>(L.label[q]) - L.mkt[static_cast<size_t>(t)];
+    x.m = mark_of(px, t, a);
+    x.held = held[static_cast<size_t>(a)];
+    cs.push_back(x);
+  }
+  const std::string when = date_of(L.dates[static_cast<size_t>(d)]) + (seg > 1 ? " " + L.clock[static_cast<size_t>(k)] : "");
+  std::string s = "## 因子 `" + r->label + "` · " + when + " 那一行的截面 (" + ctx.level + "; 分位 / 组号已定向: G20 = 做多端)\n";
+  if (cs.size() < static_cast<size_t>(kMinCs)) {
+    out = s + "本行在池且因子有秩的只有 " + str(cs.size()) + " 只";
+    return false;
+  }
+  std::sort(cs.begin(), cs.end(), [](const Cell &x, const Cell &y) { return x.rank > y.rank; });
+  const LookRow &w = r->rows[static_cast<size_t>(t)];
+  s += "在池且有秩 " + str(cs.size()) + " 只 · 本行" + (w.ok ? "有统计: rIC " + r3(w.ric) + " · G20 超额 " + bp(w.grp[kG20]) + "bp (真持有 " + std::to_string(w.cnt[kG20]) + " 只) · G1 超额 " + bp(w.grp[kG1]) + "bp (" + std::to_string(w.cnt[kG1]) + " 只)" : std::string("无统计 (建不了仓 / 标签无效)")) +
+       " · 后续超额 = 本行开仓的持有期收益 − 在池均值\n";
+  for (size_t i = 0; i < xs.size(); ++i)
+    s += "E" + str(i + 1) + " = `" + xs[i] + "`" + (L.feats[i].error.empty() ? "" : " (没算成: " + L.feats[i].error + ")") + "\n";
+  const auto ev = [&](size_t i, const Cell &x) { return L.feats[i].error.empty() ? static_cast<double>(L.feats[i].v[L.at(t, x.a)]) : kNaN; };
+
+  // 与因子分位的截面 Spearman (全部在池有秩格)
+  const auto corr = [&](auto &&f) {
+    std::vector<double> u, v;
+    for (const Cell &x : cs)
+      if (const double y = f(x); std::isfinite(y))
+        u.push_back(x.rank), v.push_back(y);
+    return u.size() >= static_cast<size_t>(kMinCs) ? spearman(u, v) : kNaN;
+  };
+  s += "与因子分位的截面秩相关: 当日涨跌 " + r3(corr([](const Cell &x) { return x.m.chg; })) + (seg > 1 ? " · 本行涨跌 " + r3(corr([](const Cell &x) { return x.step; })) : std::string()) +
+       " · 日内位置 " + r3(corr([](const Cell &x) { return x.m.pos; })) + " · 当日至此成交额 " + r3(corr([](const Cell &x) { return x.amt; })) + " · 后续超额 " +
+       r3(corr([](const Cell &x) { return x.ex; }));
+  for (size_t i = 0; i < xs.size(); ++i)
+    s += " · E" + str(i + 1) + " " + r3(corr([&](const Cell &x) { return ev(i, x); }));
+  s += "\n\n| 端 | 代码 | 分位 | 组 | 真持有 | 当日涨跌 |" + std::string(seg > 1 ? " 本行涨跌 | 日内位置 |" : "") + " 至此额 万 | 后续超额 bp | 盘面 |";
+  for (size_t i = 0; i < xs.size(); ++i)
+    s += " E" + str(i + 1) + " |";
+  s += "\n|---|---|---|---|---|---|" + std::string(seg > 1 ? "---|---|" : "") + "---|---|---|";
+  for (size_t i = 0; i < xs.size(); ++i)
+    s += "---|";
+  s += "\n";
+  const auto line = [&](const std::string &end, const Cell &x) {
+    s += "| " + end + " | " + L.codes[static_cast<size_t>(x.a)] + " | " + rk(x.rank) + " | " + gname(r->grp(L.at(t, x.a))) + " | " + (x.held > 0 ? "多" : x.held < 0 ? "空"
+                                                                                                                                                                     : "") +
+         " | " + chg(x.m.chg) +
+         " |" + (seg > 1 ? " " + chg(x.step) + " | " + pos(x.m.pos) + " |" : std::string()) + " " + fmt("%.0f", x.amt / 1e4) + " | " + bp(x.ex) + " | " + tags_of(x.m.m) + " |";
+    for (size_t i = 0; i < xs.size(); ++i)
+      s += " " + num(ev(i, x)) + " |";
+    s += "\n";
+  };
+  const size_t n = std::min(cs.size() / 2, static_cast<size_t>(c.num("n")));
+  for (size_t i = 0; i < n; ++i)
+    line("高", cs[i]);
+  // 池中位: 各列的截面中位数
+  {
+    std::vector<double> chs, sts, pss, ams, exs;
+    for (const Cell &x : cs)
+      chs.push_back(x.m.chg), sts.push_back(x.step), pss.push_back(x.m.pos), ams.push_back(x.amt), exs.push_back(x.ex);
+    s += "| 池中位 | | 50 | | | " + chg(median_of(chs)) + " |" + (seg > 1 ? " " + chg(median_of(sts)) + " | " + pos(median_of(pss)) + " |" : std::string()) + " " +
+         fmt("%.0f", median_of(ams) / 1e4) + " | " + bp(median_of(exs)) + " | |";
+    for (size_t i = 0; i < xs.size(); ++i) {
+      std::vector<double> v;
+      for (const Cell &x : cs)
+        v.push_back(ev(i, x));
+      s += " " + num(median_of(v)) + " |";
+    }
+    s += "\n";
+  }
+  for (size_t i = 0; i < n; ++i)
+    line("低", cs[cs.size() - 1 - i]);
+  out = std::move(s);
+  return true;
+}
+
+// ---- view_book ----
+constexpr int kAm0 = 9 * 3600 + 15 * 60, kAm1 = 11 * 3600 + 30 * 60, kPm0 = 13 * 3600, kPm1 = 15 * 3600; // 交易时段 (钟面秒)
+constexpr int kOpenCall = 9 * 3600 + 25 * 60, kCloseCall = 14 * 3600 + 57 * 60;                          // 开盘竞价 [kAm0, kOpenCall) / 收盘竞价 [kCloseCall, kPm1)
+constexpr size_t kProfile = 8;                                                                           // 剖面每侧几个价位
+constexpr int kBarCells = 12;                                                                            // 剖面条形图的满格
+constexpr int kSteps[] = {1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600};                                // 自动 step 的候选
+constexpr const char *kKindCn[] = {"新挂", "撤单", "被吃完", "扫单"};                                    // 下标 = BookKind
+
+bool in_session(int c) { return (c >= kAm0 && c < kAm1) || (c >= kPm0 && c < kPm1); }
+// "HH:MM" / "HH:MM:SS" → 钟面秒; 不成 → −1
+int clock_of(const std::string &s) {
+  if (!hm_shape(s) || !(s.size() == 5 || (s.size() == 8 && s[5] == ':' && std::isdigit(static_cast<unsigned char>(s[6])) && std::isdigit(static_cast<unsigned char>(s[7])))))
+    return -1;
+  const int h = std::stoi(s.substr(0, 2)), m = std::stoi(s.substr(3, 2)), x = s.size() == 8 ? std::stoi(s.substr(6, 2)) : 0;
+  return h < 24 && m < 60 && x < 60 ? h * 3600 + m * 60 + x : -1;
+}
+std::string hms(int c) {
+  char b[16];
+  std::snprintf(b, sizeof(b), "%02d:%02d:%02d", c / 3600, c / 60 % 60, c % 60);
+  return b;
+}
+// 逐时表每行几秒: 给了照用, 0 = 候选里使行数 ≤ kBookRows 的最小者
+int step_of(int want, int secs) {
+  if (want > 0)
+    return want;
+  for (const int s : kSteps)
+    if ((secs + s - 1) / s <= kBookRows)
+      return s;
+  return kSteps[std::size(kSteps) - 1];
+}
+std::string w4(double yuan) { // 元 → 万元
+  const double v = yuan / 1e4;
+  return v == 0.0 ? "0" : std::fabs(v) < 10.0 ? fmt("%.1f", v)
+                                              : fmt("%.0f", v);
+}
+std::string px2(double p) { return p > 0.0 ? fmt("%.2f", p) : "—"; } // 无 (0 / NaN) → —
+
 } // namespace
 
 bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
@@ -1431,9 +1625,34 @@ bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
   case Tool::ViewHolders:
     return factor(c.str("factor"));
   case Tool::ViewTrades:
+    if (!date("from") || !date("to"))
+      return false;
+    if (const std::string w = c.str("tod"); !w.empty()) {
+      if (ctx.seg == 1) {
+        err = "tod: 日层每天只有一行, 没有日内时段可选";
+        return false;
+      }
+      if (int k0 = 0, k1 = 0; !rows_in("tod", w, ctx.clock, 0, k0, k1, err))
+        return false;
+    }
+    out.kline = true;
+    return factor(c.str("factor"));
   case Tool::ViewResponse:
     out.kline = true;
     return factor(c.str("factor"));
+  case Tool::ViewSnapshot:
+    if (!date("date"))
+      return false;
+    if (ctx.seg > 1 && (c.str("time").empty() || row_at(ctx.clock, c.str("time")) < 0)) {
+      err = "time: 写成本层某一行的行末时刻 HH:MM (本层 " + ctx.clock.front() + ", " + ctx.clock[1] + " … " + ctx.clock.back() + ")";
+      return false;
+    }
+    out.kline = true;
+    if (!factor(c.str("factor")))
+      return false;
+    feats(c.strs("exprs"));
+    err.clear();
+    return true;
   case Tool::ViewExplain:
     out.kline = true;
     if (!factor(c.str("factor")))
@@ -1453,7 +1672,7 @@ bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
     }
     if (c.tool == Tool::ViewStockDay ? !date("date") : !date("from") || !date("to"))
       return false;
-    if (int k0 = 0, k1 = 0; c.tool == Tool::ViewStockDay && !c.str("rows").empty() && !rows_in(c.str("rows"), ctx.clock, k0, k1, err))
+    if (int k0 = 0, k1 = 0; c.tool == Tool::ViewStockDay && !c.str("rows").empty() && !rows_in("rows", c.str("rows"), ctx.clock, kStockRows, k0, k1, err))
       return false;
     if (const std::string f = c.str("factor"); !f.empty() && !factor(f))
       return false;
@@ -1525,11 +1744,189 @@ bool Render(const Call &c, const Look &L, const Context &ctx, std::string &out) 
   case Tool::ViewStockDays:
     ok = stock_days(c, L, ctx, body);
     break;
+  case Tool::ViewSnapshot:
+    ok = snapshot_view(c, L, ctx, body);
+    break;
   default:
     assert(false && "不是观察工具");
   }
   out = ok ? head(L, ctx) + body : body;
   return ok;
+}
+
+bool BookOf(const Call &c, const Lab &lab, BookSpec &out, std::string &err) {
+  out = {};
+  if (!lab.code_of(c.str("code"), out.code, err)) {
+    err = "code: " + err;
+    return false;
+  }
+  if (out.date = ymd_of(c.str("date")); out.date == 0) {
+    err = "date: 日期写成 YYYY-MM-DD";
+    return false;
+  }
+  const std::string w = c.str("time");
+  const size_t dash = w.find('-');
+  const int from = dash == std::string::npos ? -1 : clock_of(w.substr(0, dash)), to = dash == std::string::npos ? -1 : clock_of(w.substr(dash + 1));
+  if (from < 0 || to < 0) {
+    err = "time: 写成 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS (如 10:00-10:30)";
+    return false;
+  }
+  if (from >= to || !in_session(from) || !in_session(to - 1)) {
+    err = "time: " + w + " 须起 < 止, 两端在 09:15–11:30 / 13:00–15:00 内 (止是开区间, 可写 11:30 / 15:00)";
+    return false;
+  }
+  const int n = TradeSec(to - 1) + 1 - TradeSec(from);
+  if (n > kBookMins * 60) {
+    err = "time: " + w + " 有 " + std::to_string((n + 59) / 60) + " 分钟交易时间, 至多 " + std::to_string(kBookMins) + " 分钟; 收窄窗口";
+    return false;
+  }
+  if (const int st = c.num("step"); st > 0 && (n + st - 1) / st > kBookRows) {
+    err = "step: 窗口 " + std::to_string(n) + " 秒按每行 " + std::to_string(st) + " 秒有 " + std::to_string((n + st - 1) / st) + " 行, 至多 " + std::to_string(kBookRows) +
+          " 行; 加大 step 或给 0 自动";
+    return false;
+  }
+  out.from = from, out.to = to, out.at = to - 1;
+  if (const std::string a = c.str("at"); !a.empty()) {
+    out.at = clock_of(a);
+    if (out.at < from || out.at >= to || !in_session(out.at)) {
+      err = "at: 写成窗口内交易时段里的 HH:MM:SS";
+      return false;
+    }
+  }
+  out.big = c.num("big") * 1e4;
+  return true;
+}
+
+bool RenderBook(const Call &c, const Book &b, std::string &out) {
+  const BookSpec &sp = b.spec;
+  std::string s = "## " + sp.code + " · " + date_of(sp.date) + " · " + hms(sp.from) + "–" + hms(sp.to) + " 逐笔重放";
+  if (!b.error.empty()) {
+    out = s + "\n没重放成: " + b.error;
+    return false;
+  }
+  const int n = static_cast<int>(b.secs.size()), st = step_of(c.num("step"), n), R = (n + st - 1) / st;
+  assert(n > 0 && R <= kBookRows);
+  s += " (额 万元; 价差 / 距盘口按 0.01 元一跳)\n";
+  s += "当日: 逐笔 " + std::to_string(b.orders) + " 条 · " +
+       (b.close > 0 ? "开 " + px2(b.open) + " 高 " + px2(b.high) + " 低 " + px2(b.low) + " 收 " + px2(b.close) + " · 成交额 " + w4(b.amount) : std::string("无成交")) + " · 大单门槛 " +
+       w4(b.big) + (c.num("big") > 0 ? " (给定)" : " (当日新挂单额 99 分位)") + "\n";
+
+  // 窗口汇总 + 逐秒序列 (成交价无成交沿用上一笔)
+  double tk[2] = {}, mk[2] = {}, cx[2] = {}, spread = 0.0, cum = 0.0;
+  int nsp = 0;
+  float first = 0.f, carry = 0.f;
+  std::vector<double> lastp(static_cast<size_t>(n), kNaN), net(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const BookSec &x = b.secs[static_cast<size_t>(i)];
+    for (int e = 0; e < 2; ++e)
+      tk[e] += x.taker[e], mk[e] += x.maker[e], cx[e] += x.cancel[e];
+    if (x.last > 0.f)
+      first = first > 0.f ? first : x.last, carry = x.last;
+    lastp[static_cast<size_t>(i)] = carry > 0.f ? carry : kNaN;
+    cum += x.taker[0] - x.taker[1], net[static_cast<size_t>(i)] = cum / 1e4;
+    if (x.bid > 0.f && x.ask > x.bid)
+      spread += (x.ask - x.bid) * 100.0, ++nsp;
+  }
+  s += "窗口: 主动买 " + w4(tk[0]) + " / 主动卖 " + w4(tk[1]) + " · 新挂 买 " + w4(mk[0]) + " / 卖 " + w4(mk[1]) + " · 撤单 买 " + w4(cx[0]) + " / 卖 " + w4(cx[1]) +
+       (carry > 0.f ? " · 成交价 " + px2(first) + " → " + px2(carry) : std::string(" · 无成交")) + (nsp ? " · 平均价差 " + fmt("%.1f", spread / nsp) + " 跳" : std::string()) + "\n";
+  s += "- 逐秒成交价 " + spark(lastp) + "\n- 累计主动买 − 主动卖 (万) " + spark(net) + "\n";
+
+  // 逐时表: 行 = [起, 起 + step) 秒; 流量为行内合计, 盘口 / 竞价为行末那秒末
+  const bool call = sp.from < kOpenCall || sp.to > kCloseCall;
+  s += "\n逐时表 (每行 " + std::to_string(st) + " 秒; 主买 / 主卖 = 主动成交额, 挂 / 撤 = 新挂 / 撤单额, 五档 = 前 5 价位挂单额" +
+       (call ? std::string("; 竞价段: 参考价 / 匹配额 / 未匹配额 (+ 买剩 − 卖剩)") : std::string()) + ")\n| 起 | 末价 | 买一 | 卖一 | 价差 | 主买 | 主卖 | 挂买 | 挂卖 | 撤买 | 撤卖 | 买五档 | 卖五档 |" +
+       (call ? " 参考价 | 匹配 | 未匹配 |" : "") + "\n|---|---|---|---|---|---|---|---|---|---|---|---|---|" + (call ? "---|---|---|" : "") + "\n";
+  for (int r = 0; r < R; ++r) {
+    const int i0 = r * st, i1 = std::min(n, i0 + st);
+    double t2[2] = {}, m2[2] = {}, c2[2] = {};
+    for (int i = i0; i < i1; ++i)
+      for (int e = 0; e < 2; ++e) {
+        const BookSec &x = b.secs[static_cast<size_t>(i)];
+        t2[e] += x.taker[e], m2[e] += x.maker[e], c2[e] += x.cancel[e];
+      }
+    const BookSec &z = b.secs[static_cast<size_t>(i1 - 1)];
+    s += "| " + hms(b.secs[static_cast<size_t>(i0)].clock) + " | " + px2(lastp[static_cast<size_t>(i1 - 1)]) + " | " + px2(z.bid) + " | " + px2(z.ask) + " | " +
+         (z.bid > 0.f && z.ask > 0.f ? fmt("%.0f", std::round((z.ask - z.bid) * 100.0)) : std::string("—")) + " | " + w4(t2[0]) + " | " + w4(t2[1]) + " | " + w4(m2[0]) + " | " + w4(m2[1]) +
+         " | " + w4(c2[0]) + " | " + w4(c2[1]) + " | " + w4(z.depth[0]) + " | " + w4(z.depth[1]) + " |" +
+         (call ? " " + px2(z.ref) + " | " + w4(z.matched) + " | " + w4(z.imbalance) + " |" : std::string()) + "\n";
+  }
+
+  // 大单事件: 计数 (分侧) + 额最大的 n 起按时序
+  int cnt[4][2] = {};
+  double amt[4][2] = {}, lv[2] = {};
+  std::vector<double> life[2];
+  for (const BookEvent &e : b.events) {
+    const size_t k = static_cast<size_t>(e.kind);
+    ++cnt[k][e.side], amt[k][e.side] += e.amount;
+    if (e.kind == BookKind::Sweep)
+      lv[e.side] += e.levels;
+    if (e.kind == BookKind::Cancel && e.life >= 0.f)
+      life[e.side].push_back(e.life);
+  }
+  s += "\n大单事件 (窗口内共 " + str(b.events.size()) + " 起; 侧 = 委托所在侧, 扫单 = 主动方; 寿命 = 挂出到撤 / 吃完的交易秒):\n";
+  for (size_t k = 0; k < std::size(kKindCn); ++k) {
+    s += "- " + std::string(kKindCn[k]) + ": 买 " + std::to_string(cnt[k][0]) + " 起 " + w4(amt[k][0]) + " / 卖 " + std::to_string(cnt[k][1]) + " 起 " + w4(amt[k][1]);
+    if (static_cast<BookKind>(k) == BookKind::Sweep && cnt[k][0] + cnt[k][1] > 0)
+      s += " · 平均吃 买 " + (cnt[k][0] ? fmt("%.1f", lv[0] / cnt[k][0]) : std::string("—")) + " / 卖 " + (cnt[k][1] ? fmt("%.1f", lv[1] / cnt[k][1]) : std::string("—")) + " 价位";
+    if (static_cast<BookKind>(k) == BookKind::Cancel && (!life[0].empty() || !life[1].empty()))
+      s += " · 寿命中位 买 " + (life[0].empty() ? std::string("—") : fmt("%.1f", median_of(life[0]))) + " / 卖 " + (life[1].empty() ? std::string("—") : fmt("%.1f", median_of(life[1]))) + " 秒";
+    s += "\n";
+  }
+  std::vector<size_t> ix(b.events.size());
+  std::iota(ix.begin(), ix.end(), size_t{0});
+  const size_t m = std::min(ix.size(), static_cast<size_t>(c.num("n")));
+  std::partial_sort(ix.begin(), ix.begin() + static_cast<std::ptrdiff_t>(m), ix.end(), [&](size_t x, size_t y) { return b.events[x].amount > b.events[y].amount; });
+  ix.resize(m);
+  std::sort(ix.begin(), ix.end()); // 事件本按时序
+  if (m > 0) {
+    s += "\n额最大的 " + str(m) + " 起 (按时序; 距盘口 = 与上一秒末同侧最优价差几跳: 0 在盘口, + 在盘口后方, − 越过盘口):\n| 时刻 | 事件 | 侧 | 价 | 距盘口 | 额 | 寿命 秒 |\n|---|---|---|---|---|---|---|\n";
+    const int t0 = TradeSec(sp.from);
+    for (const size_t i : ix) {
+      const BookEvent &e = b.events[i];
+      const BookSec &z = b.secs[static_cast<size_t>(std::clamp(TradeSec(e.clock) - t0 - 1, 0, n - 1))];
+      const float best = e.side == 0 ? z.bid : z.ask;
+      const bool sweep = e.kind == BookKind::Sweep;
+      const std::string dist = sweep        ? "吃 " + std::to_string(e.levels) + " 价位"
+                               : best > 0.f ? fmt("%+.0f", std::round((e.side == 0 ? best - e.price : e.price - best) * 100.0))
+                                            : std::string("—");
+      s += "| " + hms(e.clock) + fmt(".%02.0f", e.cs) + " | " + kKindCn[static_cast<size_t>(e.kind)] + " | " + (e.side == 0 ? "买" : "卖") + " | " +
+           (sweep ? px2(e.first) + "→" + px2(e.price) : px2(e.price)) + " | " + dist + " | " + w4(e.amount) + " | " + (e.life >= 0.f ? fmt("%.1f", e.life) : std::string("—")) + " |\n";
+    }
+  }
+
+  // 全簿剖面: 盘口两侧各至多 kProfile 个价位 (卖高 → 卖一 → 买一 → 买低)
+  std::vector<std::pair<float, float>> bids, asks; // (价, 额) 由盘口往外
+  double tb = 0.0, ta = 0.0;
+  for (const auto &[p, a] : b.book)
+    if (a > 0.f)
+      bids.emplace_back(p, a), tb += a;
+    else
+      asks.emplace_back(p, -a), ta -= a;
+  std::reverse(bids.begin(), bids.end());
+  bids.resize(std::min(bids.size(), kProfile)), asks.resize(std::min(asks.size(), kProfile));
+  s += "\n全簿剖面 @ " + hms(sp.at) + " 秒末 (全簿 买 " + w4(tb) + " / 卖 " + w4(ta) + "; 列盘口两侧各至多 " + str(kProfile) + " 价位):\n";
+  if (bids.empty() && asks.empty()) {
+    out = s + "簿空\n";
+    return true;
+  }
+  float mx = 0.f;
+  for (const auto &[p, a] : bids)
+    mx = std::max(mx, a);
+  for (const auto &[p, a] : asks)
+    mx = std::max(mx, a);
+  s += "| 档 | 价 | 额 | |\n|---|---|---|---|\n";
+  const auto level = [&](const char *side, size_t i, const std::pair<float, float> &x) {
+    std::string bar;
+    for (long k = std::lround(x.second / mx * kBarCells); k > 0; --k)
+      bar += "█";
+    s += "| " + std::string(side) + str(i + 1) + " | " + px2(x.first) + " | " + w4(x.second) + " | " + bar + " |\n";
+  };
+  for (size_t i = asks.size(); i-- > 0;)
+    level("卖", i, asks[i]);
+  for (size_t i = 0; i < bids.size(); ++i)
+    level("买", i, bids[i]);
+  out = std::move(s);
+  return true;
 }
 
 } // namespace agent

@@ -325,6 +325,7 @@ set(MATH_PRECISE
     gui/task_database/ui/CrossSectionAnalysis.cpp
     gui/task_database/ui/TabTable.cpp
     gui/task_features/services/OrderFlowService.cpp
+    gui/task_features/services/ReplayService.cpp
     gui/task_features/ui/Common.cpp
     gui/task_features/ui/TabCorr.cpp
     gui/task_features/ui/TabDist.cpp

@@ -34,7 +34,16 @@ constexpr ArgDef kTradesArgs[] = {
     {"side", Arg::Str, "\"top\"", 0, 0, "top|bottom", kSideDesc},
     {"sort", Arg::Str, "\"random\"", 0, 0, "random|worst|best", "明细挑哪些段: random 随机 (固定种子, 看典型持仓) / worst 超额最低 / best 最高 (两端是尾部个例)"},
     {"n", Arg::Int, "12", 1, 30, nullptr, "明细段数"},
-    {"merge", Arg::Str, "\"run\"", 0, 0, "none|run|day", "合并成段: none 每行一笔 / run 同一资产同日相邻行连成一段 / day 同一资产同日并成一段"}};
+    {"merge", Arg::Str, "\"run\"", 0, 0, "none|run|day", "合并成段: none 每行一笔 / run 同一资产同日相邻行连成一段 / day 同一资产同日并成一段"},
+    {"from", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 只看此日 (YYYY-MM-DD) 及之后的行"},
+    {"to", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 只看此日及之前的行"},
+    {"tod", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 只看行末时刻在 HH:MM-HH:MM 内 (含两端) 的行 (日层不可用); 持仓格与对照的池内格同窗, 跨窗的段被窗口截断"}};
+constexpr ArgDef kSnapshotArgs[] = {
+    {"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
+    {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (须在评估期内)"},
+    {"time", Arg::Str, "\"\"", 0, 0, nullptr, "日内层: 哪一行, 写该行的行末时刻 HH:MM (如 10:30); 日层不填"},
+    {"n", Arg::Int, "10", 1, 20, nullptr, "两端各列几只"},
+    {"exprs", Arg::Strs, "[]", 0, 3, nullptr, "可选: 一并列出的特征式 (写法同 view_feature)"}};
 constexpr ArgDef kHoldersArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
                                    {"side", Arg::Str, "\"top\"", 0, 0, "top|bottom", kSideDesc},
                                    {"n", Arg::Int, "15", 1, 30, nullptr, "列几只"}};
@@ -53,6 +62,15 @@ constexpr ArgDef kStockDaysArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, 
                                      {"to", Arg::Str, "\"\"", 0, 0, nullptr, "末日 YYYY-MM-DD; 空 = 评估期末日"},
                                      {"factor", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 叠加看的因子"},
                                      {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 叠加看的特征式 (各日取收盘行的值)"}};
+constexpr ArgDef kBookArgs[] = {
+    {"code", Arg::Str, nullptr, 0, 0, nullptr, "6 位代码或 代码.交易所"},
+    {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (有逐笔数据的日子, 不限评估期)"},
+    {"time", Arg::Str, nullptr, 0, 0, nullptr,
+     "重放窗口 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS (左闭右开), 在 09:15–11:30 / 13:00–15:00 内 (可跨午休), 至多 {book_mins} 分钟交易时间; 含 09:15–09:25 / 14:57–15:00 即看开盘 / 收盘集合竞价"},
+    {"step", Arg::Int, "0", 0, 600, nullptr, "逐时表每行几秒; 0 = 自动 (窗口分成不超过 {book_rows} 行的整齐秒数)"},
+    {"at", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 全簿剖面的时刻 HH:MM:SS (取该秒末的簿, 须在窗口内); 空 = 窗口最后一秒"},
+    {"big", Arg::Int, "0", 0, 100000, nullptr, "大单门槛 (万元, 按委托额); 0 = 当日全部新挂单额的 99 分位"},
+    {"n", Arg::Int, "20", 1, 40, nullptr, "大单事件列几条 (按额取最大的, 再按时序列)"}};
 constexpr ArgDef kLeavesArgs[] = {{"query", Arg::Str, nullptr, 0, 0, nullptr, "关键词, 查叶名 / 中文名 / 公式 / 说明; 空格隔开的几个须同时出现 (英文不分大小写)"},
                                   {"n", Arg::Int, "30", 1, 60, nullptr, "列几个"}};
 // 研报库的词表 (标注体系的 code)
@@ -105,13 +123,14 @@ constexpr ToolDef kTools[] = {
      "给多个时附两两截面相关. 造新特征前先看原料, 造完看它是否如你所想",
      "每个式子一节统计 (带火花线; 写错的式子在它那节给原因, 其余照算) + 多个时的相关矩阵"},
     {Tool::ViewLayers, "view_layers", "看分层", Run::Look, kLayersArgs,
-     "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 切开看分层在哪些时段 / 月份成立、哪些失效; 给 cond 再按条件三等分看各段的分层",
-     "全期 20 组 + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组) + 给 cond 时条件三段各一行"},
+     "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 两端组内再截最极端的 50% / 20% / 5% 看尾部 (越极端越强 = 信号集中在极值, "
+     "可加强截面根的区分度; 尾部反而回落 = 极值多是事件 / 数据噪声); 切开看分层在哪些时段 / 月份成立、哪些失效; 给 cond 再按条件三等分看各段的分层",
+     "全期 20 组 + 尾部表 (各截取宽度两端的每期超额 / 只数 / 多空) + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组) + 给 cond 时条件三段各一行"},
     {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
      "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列若干段的明细 (代码与日期可接 view_stock_day). 汇总与两张表看收益从哪类情形来、亏在哪类情形; "
      "明细只用来挑票对着盘面看机制, 尾部个例 (worst / best) 多是个股事件或数据缺失, 不代表信号",
-     "汇总 + 时段表 + 标签表 + 明细表"},
+     "汇总 + 时段表 + 标签表 + 明细表; 给 from / to / tod 只看该日段 / 时段 (看收益集中在哪段行情、开盘还是尾盘)"},
     {Tool::ViewHolders, "view_holders", "看常客", Run::Look, kHoldersArgs,
      "看哪些资产最常落在因子一端: 本端行数 / 占其在池行的比例 / 涉及天数 / 平均连续行数 / 本端持仓平均超额, 附集中度. 用来看因子是否只在少数票上起作用、在挑哪类票",
      "集中度一行 + 资产表"},
@@ -124,6 +143,10 @@ constexpr ToolDef kTools[] = {
      "加你给的特征式, 每个给与因子的截面秩相关、它自身的 rIC、只剥掉它之后因子剩下的 rIC; 再把全部基准一起剥掉 (每行截面回归取残差), 给剩余部分与原因子的 rIC / mono / 多空 对照. "
      "新方向起步、每次显著改进后都看一次: 剥掉之后还剩下的才是新信息, 被哪个基准吃掉就说明它是谁的影子",
      "基准表 (与因子的相关 / 基准自身 rIC / 只剥它后的因子 rIC) + 全剥离对照 (原因子与剩余部分的 rIC · mono · 多空 · 20 组火花线)"},
+    {Tool::ViewSnapshot, "view_snapshot", "看截面快照", Run::Look, kSnapshotArgs,
+     "看某一天某一行的截面: 因子分位最高 / 最低的各 n 只 (分位 · 组 · 是否真持有 · 当日涨跌 · 本行涨跌 · 日内位置 · 当日至此成交额 · 后续超额 · 盘面标签 · 特征值), 中间夹一行池中位作对照, "
+     "附各列与因子分位的截面秩相关. 用来看同一时刻两端各是什么样的票 (同涨同跌的一批? 刚异动的? 小票?), 与 view_trades 的明细互补: 那里是一只票的一段, 这里是一个时刻的全池",
+     "本行概况 + 截面秩相关一行 + 两端表 (中夹池中位)"},
     {Tool::ViewStockDay, "view_stock_day", "看个股一天", Run::Look, kStockDayArgs,
      "看一只股票一天的逐行走势: 价 / 量 / 因子分位 / 特征的火花线, 加分段表 (竞价段 + 每段约 30 分钟: 涨跌 / 段内高低 / 量占比 / 因子分位 / 后续持有期超额 / 特征段末值). "
      "给 rows 另附该时段逐行表 (价 / 涨跌 / 高低 / 量额 / 因子分位与组 / 后续超额 / 特征值), 对着分钟看机制里说的那个行为是否真的发生. 用来对照盘面现象与因子何时高、何时低",
@@ -131,6 +154,12 @@ constexpr ToolDef kTools[] = {
     {Tool::ViewStockDays, "view_stock_days", "看个股多日", Run::Look, kStockDaysArgs,
      "看一只股票连续多日 (至多 {stock_days} 日) 的日级概况: 每日一行 (涨跌 / 振幅 / 成交额 / 在池 / 因子日均与收盘分位 / 两端行数 / 收盘开仓的后续超额 / 特征收盘值), 附日级火花线",
      "火花线 + 逐日表"},
+    {Tool::ViewBook, "view_book", "看盘口重放", Run::Look, kBookArgs,
+     "逐笔重放一只股票一天里的一段 (至多 {book_mins} 分钟; 不经特征库, 任何有逐笔数据的日子都能看): 逐时表 (每行 step 秒: 末买一卖一 / 价差 / 末价 / 主动买卖额 / 新挂与撤单额 (分买卖侧) / 前五档挂单额, "
+     "竞价段另有预撮合参考价与未匹配额), 大单事件 (≥ 门槛的新挂 / 撤单 / 被吃完, 带距盘口几档与挂了多久; 一个主动单连吃多个价位的扫单), 某一秒的全簿剖面 (盘口两侧各若干价位的挂单额). "
+     "用来亲眼看特征叶背后的行为: 大单是挂在盘口还是远处、挂多久撤、被谁吃; 撤单是不是集中在价格变动之前; 主动扫单之后盘口怎么补; 竞价里谁在挂撤. "
+     "挑 view_trades / view_snapshot 里的票与时刻来看",
+     "当日与窗口概况 + 逐时表 + 大单事件 (计数 + 明细) + 全簿剖面"},
     {Tool::SearchLeaves, "search_leaves", "查特征叶", Run::Now, kLeavesArgs,
      "查特征叶的公式与说明 (系统提示的特征表只列族卡、叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见、落盘值是不是原量. "
      "这里列出过的叶才能写进 eval_factor 的式子 (本会话内有效; 观察工具不限)",
@@ -344,8 +373,12 @@ const ToolDef &def(Tool t) { return kTools[static_cast<size_t>(t)]; }
 
 std::string ToolText(const char *s) {
   std::string t = s;
-  for (const auto &[key, v] : {std::pair<std::string_view, int>{"{batch}", kBatch}, {"{stock_days}", kStockDays}, {"{stock_rows}", kStockRows}})
-    if (const size_t p = t.find(key); p != std::string::npos)
+  for (const auto &[key, v] : {std::pair<std::string_view, int>{"{batch}", kBatch},
+                               {"{stock_days}", kStockDays},
+                               {"{stock_rows}", kStockRows},
+                               {"{book_rows}", kBookRows},
+                               {"{book_mins}", kBookMins}})
+    for (size_t p = t.find(key); p != std::string::npos; p = t.find(key, p))
       t.replace(p, key.size(), std::to_string(v));
   return t;
 }

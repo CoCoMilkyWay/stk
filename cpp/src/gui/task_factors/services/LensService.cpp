@@ -46,28 +46,37 @@ struct EndsExt {
   }
 };
 
-// 一个根的落地: as_root = 秩 / Row / 两端格; as_feat = 根的输入原值. 同一规范串两种条目都有时一个根两份都落
+// 一行的逐格扩展: 两端格 + 尾部分层
+struct LensExt {
+  EndsExt ends;
+  TailExt tails;
+  void cell(const factor::cpu::stat::RxCell &cl) { ends.cell(cl), tails.cell(cl); }
+};
+
+// 一个根的落地: as_root = 秩 / Row / 尾部 / 两端格; as_feat = 根的输入原值. 同一规范串两种条目都有时一个根两份都落
 struct LensP : ProbeBase {
   static constexpr uint8_t need = kNeedRows | kNeedRx | kNeedAlpha;
-  using Ext = EndsExt;
+  using Ext = LensExt;
   const Land *land = nullptr;
   bool as_root = false, as_feat = false;
   const uint8_t *m0 = nullptr;
   int d = st::kFwd, A = 0;
+  double cap = 0.0;
   LensRoot r;
   LensFeat f;
   std::vector<std::vector<LensCell>> by_row; // [T] row 钩子收, root 按行序并进 r.cells
   static double bytes(const Shape &sh, int) {
     return (sizeof(uint16_t) + sizeof(float)) * static_cast<double>(sh.n()) + sizeof(st::Row) * static_cast<double>(sh.T);
   }
-  Ext ext() const { return {m0, d, {}}; }
+  Ext ext() const { return {{m0, d, {}}, {kTailThr.v, cap, d}}; }
   void open(const Ctx &c) {
     const st::Span s = c.s();
     assert(s.t0_abs == 0 && s.t_lo == 0 && s.t_back == 0 && s.T == c.c.rows_all() && "整期一块");
     assert(c.L.hd.n == 1 && "单持有期");
-    m0 = c.L.l[0].m, d = c.d, A = s.A;
+    m0 = c.L.l[0].m, d = c.d, A = s.A, cap = c.L.cap;
     if (as_root) {
       r.rows.assign(static_cast<size_t>(s.T), st::Row{});
+      r.tails.assign(static_cast<size_t>(s.T), TailRow{});
       by_row.assign(static_cast<size_t>(s.T), {});
     }
   }
@@ -76,7 +85,8 @@ struct LensP : ProbeBase {
       return;
     const size_t base = static_cast<size_t>(t) * A;
     r.rows[static_cast<size_t>(t)] = w;
-    for (const EndsExt::Got &g : e.got) {
+    e.tails.finish(w, r.tails[static_cast<size_t>(t)]);
+    for (const EndsExt::Got &g : e.ends.got) {
       assert(g.k >= base && g.k < base + static_cast<size_t>(A) && "格不在本行");
       if (const int a = land->col_of[g.k - base]; a >= 0)
         by_row[static_cast<size_t>(t)].push_back({t, a, g.e, g.ret});
@@ -232,7 +242,7 @@ bool LensService::eval(const LensRequest &req, FactorFlow &F, LensResult &res) {
   for (size_t e = 0; e < rs.of.size(); ++e) {
     const LensP &p = ps[static_cast<size_t>(rs.of[e])].at<LensP>();
     if (e < n_roots)
-      res.roots.push_back(why[e].empty() ? p.r : LensRoot{why[e], {}, {}, {}});
+      res.roots.push_back(why[e].empty() ? p.r : LensRoot{why[e], {}, {}, {}, {}});
     else
       res.feats.push_back(why[e].empty() ? p.f : LensFeat{why[e], {}});
   }

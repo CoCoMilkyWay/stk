@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -17,42 +16,8 @@ namespace GUI::Factors {
 namespace {
 
 using factor::stat::kBot;
-using factor::stat::kEnds;
 using factor::stat::kTop;
 
-// 尾部阈值 (r16): 顶端尾 = r16 ≥ thr[kTop], 底端尾 = r16 < thr[kBot], 尾占整截面 q = kTailOfGroup / kGroups. 与 grp_of 同一条边界公式
-// (r16 · kGroups / (kRankMax + 1) 取整): q = 1/kGroups 时两条阈值正好是 G20 / G1 的组边界. 方向 d 端 e 的尾在 r16 的 e ^ d 那端 (反向对调)
-struct TailThr {
-  int v[kEnds][kTails] = {};
-};
-TailThr tail_thresholds() {
-  TailThr o;
-  for (int j = 0; j < kTails; ++j) {
-    const double q = static_cast<double>(kTailOfGroup[j]) / factor::stat::kGroups, span = factor::stat::kRankMax + 1;
-    o.v[kTop][j] = static_cast<int>(std::ceil((1.0 - q) * span));
-    o.v[kBot][j] = static_cast<int>(std::ceil(q * span));
-    assert(o.v[kBot][j] >= 1 && o.v[kTop][j] <= factor::stat::kRankMax && o.v[kBot][j] < o.v[kTop][j]);
-  }
-  return o;
-}
-const TailThr kTailThr = tail_thresholds();
-// re = r16 的端 (kTop 顶 / kBot 底)
-inline bool in_tail(int re, int r16, int thr) { return re == kTop ? r16 >= thr : r16 < thr; }
-// 方向 d 第 j 级尾部的端码 (与契约 EndCode 同值, 给 cost_rows): 高端尾 kEcTop / 低端尾 kEcBot / 其余有秩 kEcMid / 无秩 kEcVoid
-uint8_t tail_code(uint16_t r16, int j, int d) {
-  if (r16 == factor::stat::kRankNone)
-    return factor::stat::kEcVoid;
-  const int et = kTop ^ d, eb = kBot ^ d;
-  return in_tail(et, r16, kTailThr.v[et][j])   ? factor::stat::kEcTop
-         : in_tail(eb, r16, kTailThr.v[eb][j]) ? factor::stat::kEcBot
-                                               : factor::stat::kEcMid;
-}
-
-// 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
-struct TailRow {
-  float sum[kEnds][kTails] = {};    // 两端尾部的超额持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
-  uint16_t cnt[kEnds][kTails] = {}; // 两端尾部真持有只数 (与 Row::cnt 同口径)
-};
 // 端 e 第 j 级尾部的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母, 同 group_abs)
 double tail_abs(const factor::stat::Row &r, const TailRow &tr, int e, int j, double cap) {
   return factor::stat::book_abs(tr.sum[e][j], tr.cnt[e][j], r.mkt, cap * kTailOfGroup[j]);
@@ -78,40 +43,6 @@ double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double ca
   const int e = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
   return absolute ? tail_abs(r, tr, e, j, cap) : tr.sum[e][j];
 }
-// 尾部分层 (TailRow, 见头文件) = Stat label_row 的逐格扩展 (Host.hpp Ext): 与标签侧同一遍 A 轴, J 同集 (x ∧ ry 有效);
-// 尾 (e, j) 是一本做多账本 (方向 d: 落在 r16 的 e ^ d 端), 成员 / 收益按契约【仓位感知】(同一尾部沿交接链), 只收真持有的格
-struct TailExt {
-  const int (*thr)[kTails];
-  double cap;                   // 满仓 (Labels::cap); 尾 j 的满仓 = cap · kTailOfGroup[j]
-  int d = factor::stat::kFwd;   // 所评方向
-  double s[kEnds][kTails] = {}; // 尾部真持有的 Σ 收益
-  int n[kEnds][kTails] = {};    // 同上只数
-  void cell(const factor::cpu::stat::RxCell &cl) {
-    const int x = *cl.code;
-    for (int e = 0; e < kEnds; ++e)
-      for (int j = 0; j < kTails; ++j) {
-        const int re = e ^ d, th = thr[re][j];
-        if (!in_tail(re, x, th))
-          continue;
-        const auto in = [re, th](uint16_t v) { return v != factor::stat::kRankNone && in_tail(re, v, th); };
-        if (!cl.held(in))
-          continue;
-        ++n[e][j];
-        s[e][j] += cl.ret(cl.continues(in));
-      }
-  }
-  // r = 本行 Row (基准 mkt 直接用); 只在 Row::ok 行有值, 其余全 0
-  void finish(const factor::stat::Row &r, TailRow &o) const {
-    o = TailRow{};
-    if (!r.ok)
-      return;
-    for (int j = 0; j < kTails; ++j)
-      for (int e = 0; e < kEnds; ++e) {
-        o.cnt[e][j] = static_cast<uint16_t>(n[e][j]);
-        o.sum[e][j] = static_cast<float>(factor::stat::book_excess(s[e][j], n[e][j], r.mkt, cap * kTailOfGroup[j]));
-      }
-  }
-};
 // 分层 / 尾部 / LS 净值线 [hd.n · kNavLines] (契约【净值】; 全部持有期一次 fold_book, stride = S → 日收益):
 // 逐格扩展 TailExt, 行收尾出本行尾部 → 各线这一批的收益 nav_value
 struct NavP : LinesP<kNavLines> {

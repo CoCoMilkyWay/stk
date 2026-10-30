@@ -425,8 +425,14 @@ private:
   int seg_; // 本层每段行数 (TOD 上界)
 
   // 原因前附位置与其前后片段 (‸ 指位; 片段端点退到 UTF-8 码点首字节)
+  bool lead(size_t i) const { return i >= s_.size() || (static_cast<unsigned char>(s_[i]) & 0xC0) != 0x80; }
+  std::string_view char_at(size_t i) const { // i 处的一个完整 UTF-8 字
+    size_t j = i + 1;
+    while (!lead(j))
+      ++j;
+    return s_.substr(i, j - i);
+  }
   bool fail(size_t pos, const std::string &msg) {
-    const auto lead = [&](size_t i) { return i >= s_.size() || (static_cast<unsigned char>(s_[i]) & 0xC0) != 0x80; };
     size_t a = pos > 24 ? pos - 24 : 0, b = std::min(s_.size(), pos + 16);
     while (!lead(a))
       --a;
@@ -523,7 +529,7 @@ private:
     if (!ident(id)) {
       if (i_ < s_.size() && is_num0(s_[i_]))
         return fail(pos0, "没有标量常量: 阈值写成算子的参数 k / k2, 窗长写成 d=数字");
-      return fail(pos0, i_ < s_.size() ? std::string("期望算子名或特征 code, 遇到 '") + s_[i_] + "'" : "表达式不完整");
+      return fail(pos0, i_ < s_.size() ? std::string("期望算子名或特征 code, 遇到 '") + std::string(char_at(i_)) + "'" : "表达式不完整");
     }
     if (i_ < s_.size() && s_[i_] == '.') { // 限定名: 紧跟的 '.' 段并入 (段可数字开头, 如 5m)
       const size_t b = i_ - id.size();

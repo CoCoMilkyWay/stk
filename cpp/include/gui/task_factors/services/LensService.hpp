@@ -1,5 +1,6 @@
 // LensService — agent 观察工具的单 worker: 一组因子根 + 一组特征式, 在作用域评估期上整期一块评一次 (eval_job, 与 Inspect 同一条管线), 落地原料不做汇总:
-//   每个因子根: 已定向的池内秩 [T][A'] / 一级 Row [T] (单持有期) / 两端组真持有的格 (行 / 列 / 端 / 持有毛收益, 与 Row::grp 同一份判据: label_row 的逐格扩展);
+//   每个因子根: 已定向的池内秩 [T][A'] / 一级 Row [T] (单持有期) + 同行的尾部分层 TailRow [T] (与 Inspect 同一份 TailExt) /
+//               两端组真持有的格 (行 / 列 / 端 / 持有毛收益, 与 Row::grp 同一份判据: label_row 的逐格扩展);
 //   每个特征式: 包一层 CsRank 进森林, 取根的输入 (kNeedAlpha) = 特征原值 [T][A'];
 //   块上: 截面门控 / 该持有期毛标签 [T][A'] + 逐行池内标签均值 [T] (超额基准).
 // A' = 落地列: 整截面 = 评估期内进过池的资产; 给了资产 = 只那一列 (个股视图, 不看池也落).
@@ -35,6 +36,7 @@ struct LensRoot {
   std::string error;                   // 非空 = 该根没算成 (叶值域越界)
   std::vector<uint16_t> rx;            // [T][A'] r16 (已定向: 高 = 做多端; kRankNone 无效)
   std::vector<factor::stat::Row> rows; // [T] (已定向)
+  std::vector<TailRow> tails;          // [T] 两端组内的尾部分层 (已定向; 只在 Row::ok 行有值)
   std::vector<LensCell> cells;         // 行序
 };
 struct LensFeat {

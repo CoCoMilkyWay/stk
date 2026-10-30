@@ -238,6 +238,17 @@ struct MiniPdf {
   float y[kMiniPdfPts] = {};
   bool has() const { return hi > lo; }
 };
+// 尾部分层 (不进 Stat 契约 / Search; Inspect 净值线与 Lens 逐行同一份, 逐格扩展 TailExt 在 FactorsProbe): 两端组 (顶 / 底) 内更极端的一截,
+// 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%), j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径
+// (q = 1 即整组). 逐行只在 Row::ok 行有值
+inline constexpr int kTails = 3;
+inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
+static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
+// 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
+struct TailRow {
+  float sum[factor::stat::kEnds][kTails] = {};    // 两端尾部的超额持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
+  uint16_t cnt[factor::stat::kEnds][kTails] = {}; // 两端尾部真持有只数 (与 Row::cnt 同口径)
+};
 // alpha 分布 (Inspect 左下右半图 / Run 落因子表小图, 同一份 FactorsProbe alpha_dist): 样本 = 池内有效格 (rx 有效 ∧ alpha 有效), 组号 = grp_of(rx)
 // (与 Stat 同一组); 按所评方向取值 (反向 = −alpha, 组倒序, 与 oriented 同读法). 与持有期无关
 struct AlphaDist {

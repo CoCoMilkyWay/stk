@@ -110,6 +110,15 @@ Wait eval(Act &a, Desk &d) {
 }
 
 Wait look(Act &a, Desk &d) {
+  if (a.call.tool == Tool::ViewBook) {
+    BookSpec bs;
+    if (!BookOf(a.call, d.lab, bs, a.out)) {
+      a.ok = false;
+      return Wait::None;
+    }
+    d.lab.book(std::move(bs));
+    return Wait::Lab;
+  }
   LookSpec sp;
   if (!LookOf(a.call, d.lab, sp, a.out)) {
     a.ok = false;
@@ -159,6 +168,9 @@ void take(Act &a, Lab::Tick &&t, Desk &d) {
       a.out = TrialText(std::get<Trial>(a.got).st, RepText(std::get<Look>(t.got)));
     else
       a.ok = Render(a.call, std::get<Look>(t.got), d.lab.ctx(), a.out);
+    break;
+  case Lab::Step::Book:
+    a.ok = RenderBook(a.call, std::get<Book>(t.got), a.out);
     break;
   case Lab::Step::End:
     assert(false && "End 由 Mine 收");

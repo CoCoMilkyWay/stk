@@ -6,15 +6,16 @@
 //   agent/ 其余代码不碰项目的因子 / 特征 / 服务头, 只经这里 (实现 Bridge.cpp 是唯一 include 它们的 TU). 两半:
 //     catalog  作用域目录 (无状态): 可挖的 (池, 因子层, 持有期; 持有期限 Search 档) / 就绪判据 / 会话目录
 //     Lab      作用域工作区 (bind 一个作用域): 上下文 ctx (该层可作输入的特征叶 / 算子表 / K 线叶 / 正式因子库在该持有期的统计) + 候选目录 results.
-//              两件事:
+//              三件事:
 //              eval  候选的一生: Cand ─stage→ 候选目录里的因子文件 (与正式因子同格式) ─eval→ Result ─adopt (过门槛)→ 正式因子目录;
 //                    一次评一个文件: Search (定方向 + 搜自由参数; 具体式只评本身) → Run, 结果写回文件; 评完只重扫它 (results 增量维护);
 //                    无显著而有代表点 → 再观察代表点一次 (给 agent 看它的分层差在哪)
 //              look  观察: 一组因子 (候选英文名 / 具体根式) + 一组特征式 (+ 本层 K 线叶) → 评估期上整期一块的原料 Look (r16 秩 / 行统计 /
 //                    两端持仓 / 特征原值 / K 线 / 门控 / 标签), 不写文件; 汇总成文在 agent/Views
+//              book  盘口重放: 一只股票一天里的一段逐笔重放进订单簿 → 逐秒盘口与流量 + 大单事件 + 某一秒的全簿 (Book); 不经特征库, 不限评估期
 //              可见: 只有统计与 Search 结局都在作用域此刻评估期上的因子才给 agent 看 (Result::visible), 不同窗口的数不可比
-//              三道 (Search / Run / Look) 同构, 首次用到才建; 作用域与评估后端不变的连续会话共用其常驻块 (keep / Life::Worker), 变了即弃
-//   worker 协议 (与 agent/Chat.hpp 对仗): 交一件事 (eval / look ↔ ask) → poll 逐个取走 Tick, 末个 = End → live 看在跑那步 → busy / cancel
+//              四道 (Search / Run / Look / Book) 同构, 首次用到才建; 作用域与评估后端不变的连续会话共用其常驻块 (keep / Life::Worker), 变了即弃
+//   worker 协议 (与 agent/Chat.hpp 对仗): 交一件事 (eval / look / book ↔ ask) → poll 逐个取走 Tick, 末个 = End → live 看在跑那步 → busy / cancel
 //   全部 GUI 线程调用; 正式因子目录 / 字段表 / 资产轴由项目定, agent 只给候选目录
 // =============================================================================
 
@@ -26,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -163,6 +165,8 @@ using Plane = std::vector<X>;
 inline constexpr int kGroups = 20;            // 截面分组数 (= Stat 契约, Bridge.cpp 核对)
 inline constexpr uint16_t kRankNone = 0xFFFF; // r16 无效 (同上)
 inline constexpr int kRankMax = 65534;        // r16 = round(分位 · kRankMax) (同上)
+inline constexpr int kTails = 3;              // 两端组内的尾部: 尾 j 占该组 kTailOfGroup[j] (同 Inspect 尾部分层, 同上)
+inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
 // 一个要看的因子: 具体根式 (已校验) + 口径 + 方向 (−1 = 取反后高 = 做多端); label = 给 agent 看的名字 (候选英文名, 或根式本身)
 struct LookFactor {
   std::string expr, label;
@@ -180,11 +184,14 @@ struct LookSpec {
   std::string code;   // 非空 = 只取该资产一列 (个股视图, 不在池的行也落)
 };
 // 一级行 (已定向): 组的超额持仓收益 / 真持有只数; ok = 本行有统计
+// 尾部 [端][j]: 端 0 = 做多端 G20 内 / 1 = G1 内更极端的一截 (按池内秩), 口径同 grp (满仓按尾部宽度 kTailOfGroup[j] 折算); 只在 ok 行有值
 struct LookRow {
   bool ok = false;
   float ric = 0, mkt = 0; // rIC / 本行基准 (超额 = 毛 − mkt)
   float grp[kGroups] = {};
   int cnt[kGroups] = {};
+  float tail[2][kTails] = {};
+  int tcnt[2][kTails] = {};
 };
 // 两端组真持有的一格: 行 t 开仓那批里资产 a 在做多端 (top) / 做空端组; ret = 持有毛收益 (超额 = ret − rows[t].mkt)
 struct LookCell {
@@ -226,6 +233,50 @@ struct Look {
 // 分层单调性: 组号 0..n−1 与 g 的 Spearman (Stat 契约 mono 同一份)
 double Mono(const double *g, int n);
 
+// ---- 盘口重放 (Lab::book): 一只股票一天的逐笔重放进订单簿, 不经特征库; 时刻一律钟面秒 (h·3600 + m·60 + s) ----
+struct BookSpec {
+  std::string code;             // 经 Lab::code_of
+  int date = 0;                 // YYYYMMDD
+  int from = 0, to = 0, at = 0; // 窗口 [from, to) / 全簿剖面取 at 这一秒末 (∈ 窗口); 都在交易时段 09:15–11:30 / 13:00–14:57 内
+  double big = 0;               // 大单门槛 (元); 0 = 当日新挂单额的 99 分位
+};
+// 窗口里的一秒 (下标 0 = 买侧 / 1 = 卖侧; 额 = 元)
+struct BookSec {
+  int clock = 0;                                      // 钟面秒
+  float bid = 0, ask = 0;                             // 秒末买一 / 卖一 (该侧无挂单 = 0)
+  float depth[2] = {};                                // 秒末前 5 价位挂单额
+  float ref = 0, matched = 0, imbalance = 0;          // 秒末竞价预撮合: 参考价 / 匹配额 / 未匹配额 (+ 买剩 − 卖剩); 非竞价或簿未交叉 = 0
+  float taker[2] = {}, maker[2] = {}, cancel[2] = {}; // 秒内主动成交额 (按主动方) / 新挂额 / 撤单额
+  float last = 0;                                     // 秒内末笔成交价 (无成交 = 0)
+};
+enum class BookKind : uint8_t { New,     // 新挂
+                                Cancel,  // 撤单
+                                Filled,  // 挂单被吃完
+                                Sweep }; // 扫单: 连续竞价里一个主动单连吃 ≥ 2 个价位, 或成交额 ≥ 门槛
+struct BookEvent {
+  int clock = 0, cs = 0; // 钟面秒 + 10ms
+  BookKind kind = BookKind::New;
+  int side = 0;     // 委托所在侧 (Sweep = 主动方)
+  int levels = 0;   // Sweep 吃过的价位数
+  float price = 0;  // 元 (Sweep = 末笔价)
+  float first = 0;  // Sweep = 首笔价; 其余 = price
+  float amount = 0; // 元: New / Cancel = 本笔委托 / 撤单额; Filled = 申报额; Sweep = 成交额
+  float life = -1;  // Cancel / Filled: 距挂出的交易秒 (午休不计); 不知 = −1
+};
+struct Book {
+  BookSpec spec;     // 所放的那段
+  std::string error; // 非空 = 没重放成 (当日无逐笔), 以下字段空
+  int orders = 0;    // 当日逐笔条数
+  float open = 0, high = 0, low = 0, close = 0;
+  double amount = 0;                         // 当日成交额 (元)
+  double big = 0;                            // 所用大单门槛 (元)
+  std::vector<BookSec> secs;                 // 窗口逐秒
+  std::vector<BookEvent> events;             // 窗口内的大单事件, 时序
+  std::vector<std::pair<float, float>> book; // 剖面: (价, 挂单额 元; + 买 − 卖), 价升序
+};
+// 钟面秒 → 交易秒 (两个交易时段上的连续编号: 09:15:00 → 0, 13:00:00 → 8100, 14:59:59 → 15299; 午休钳到 8100)
+int TradeSec(int clock);
+
 // 入库门槛: 一个权重 mono / rIC 均值都不低于下限才算达标 (多空不设门槛, 只比大小)
 struct Gate {
   double mono = 0, ric = 0;
@@ -262,15 +313,16 @@ std::string dir(const Scope &sc, bool test);                   // 会话目录 k
 class Lab {
 public:
   // 一步 (poll 逐个取走): eval = 进 Search / 进 Run / 评完 (got = 定论 Result; 模板坏的直接评完) / 无显著时再观察代表点 (got = Look);
-  // look = 观察完 (got = Look); 这件事做完 End
+  // look = 观察完 (got = Look); book = 重放完 (got = Book); 这件事做完 End
   enum class Step : uint8_t { Search,
                               Run,
                               Look,
+                              Book,
                               Settle,
                               End };
   struct Tick {
     Step step;
-    std::variant<std::monostate, Result, agent::Look> got;
+    std::variant<std::monostate, Result, agent::Look, agent::Book> got;
   };
   // 在评那步此刻的样子 (调用方持有, live 整份刷新)
   struct Live {
@@ -299,8 +351,9 @@ public:
 
   void eval(std::string file, bool gpu); // 一个已落的候选文件; 须已 bind 且作用域 ready, 不忙
   void look(LookSpec s);                 // 同上; 参数须经上面三个校验
+  void book(BookSpec s);                 // 须已 bind, 不忙; code 须经 code_of, 时刻须在交易时段内
   void cancel();                         // 取消在跑那步; 它收尾即 End
-  bool busy() const;                     // eval / look 起, 到 End 入队
+  bool busy() const;                     // eval / look / book 起, 到 End 入队
   std::optional<Tick> poll();
   void live(Live &l) const;
 
