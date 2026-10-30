@@ -102,6 +102,8 @@ const char *coord_name(const space::Slot &s) {
   }
 }
 
+// r16 抽样步长: 全作用域 T 行抽约 kCorrRows 行
+int stride_of(int T) { return std::max(1, T / factor::search::kCorrRows); }
 // 一块的抽样行 (契约【多权重】): 统计区 [t_lo, t_hi) 里绝对行 ≡ 0 (mod stride) 的行 = 块内行 t_first + i·stride (i < n_rows)
 struct Samp {
   int t_first = 0, n_rows = 0;
@@ -112,11 +114,14 @@ Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
     ++t;
   return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
-// 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数)
+// 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数). 常驻: 预留趟 0 的 kInit 个候选, 细化的随评随增
 struct SampleP : ProbeBase {
   static constexpr uint8_t need = kNeedRanks;
   std::vector<uint16_t> *dst = nullptr;
   int stride = 1, off = 0;
+  static double bytes(const Shape &sh, int) {
+    return factor::search::kInit * (static_cast<double>(sh.T) / stride_of(sh.T) + 1.0) * sh.A * sizeof(uint16_t);
+  }
   void root(const Ctx &c, const RootView &v) {
     const fs::Span s = c.s();
     const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
@@ -165,7 +170,7 @@ struct SearchService::Searcher {
   factor::expr::Expr e0;          // 模板
   factor::Dag d0;                 // 占位具体化的森林: 结构 / 特征叶序 / 槽数与任一候选同 (值域检查 plan_forest 按根归因, 不融合)
   std::vector<space::Slot> slots; // 可搜槽 (区间要 A, 装完块 0 才建)
-  Job job;                        // 块归作业: P.cache_all ? 整轮缓存全部块 : 一块复用 (ensure_block 按日段 + 块规格判, 键同则不重读)
+  Job job;                        // 块归作业 (keep = Life::Worker 且整期一块 → F.c): P.cache_all ? 整轮缓存全部块 : 一块复用 (ensure_block 按日段 + 块规格判, 键同则不重读)
   std::vector<uint64_t> gens;     // [块位] 上次记过装载的块代 (loaded)
   int A = 0, stride = 1, R = 0;   // 资产数 / r16 抽样步长 (绝对行 ≡ 0 mod stride, 全作用域约 kCorrRows 行) / 每候选抽样行数 (各块拼)
   int n_chunks = 0, batch = 1;    // 块数 / 一张森林的候选数 (引擎 batch_of)
@@ -208,7 +213,7 @@ struct SearchService::Searcher {
   template <class E>
   bool run(E &eng) {
     std::vector<int> ids;
-    if (!plan<E>() || !prepare() || !design(ids))
+    if (!plan(eng) || !prepare() || !design(ids))
       return false;
     W.stage_.store(SearchStage::Design, std::memory_order_relaxed);
     return go(run_pass(eng, ids, 0)) && refine(eng, ids);
@@ -216,7 +221,7 @@ struct SearchService::Searcher {
 
   // ---- 结局 ----
   bool cancelled() const { return W.cancel_.load(std::memory_order_relaxed); }
-  // Ok → 续; 其余 → settle: Empty / Broken (正常输入问题, job.why 已填) → give_up; Cancel / Stale → abort_out (判废)
+  // Ok → 续; 其余停: Empty / Broken (正常输入问题, job.why 已填) → give_up; Cancel / Stale → settle (判废)
   bool go(Rc rc) {
     if (rc == Rc::Ok)
       return true;
@@ -224,10 +229,11 @@ struct SearchService::Searcher {
       lg("已取消");
     else if (rc == Rc::Stale)
       lg("中止: %s", kStaleMsg);
-    ret = W.settle(rc, job.why, [&](const std::string &why) {
+    ret = W.settle(rc);
+    if (ret) {
       publish_result();
-      give_up(why);
-    });
+      give_up(job.why);
+    }
     return false;
   }
   // 正常输入问题 (作用域 / 模板 / 值域 / 无显著候选): 发布当前 res + message, 停
@@ -256,46 +262,36 @@ struct SearchService::Searcher {
     W.publish();
   }
 
-  // ---- 模板 → 作用域 (评估期 = 模板叶所用库落盘日交集) → 预算 → 分块 (FactorsEngine plan_job; 见头文件【分块流式】) ----
+  // ---- 模板 → 作用域 (评估期 = 模板叶所用库落盘日交集) → 预算 → 分块 (FactorsEngine prepare; 见头文件【分块流式】) ----
   //   load   宿主作用域块: 叶 + Y (截面门控 + 所搜持有期的标签, 不装成本)
   //   work   宿主引擎 (随绑定的块重开) / dev 显存: 引擎 E::budget 的批核口径 (d0 = 一个候选)
-  //   fixed  r16 常驻: 每候选 (抽样行 × A × 2) 字节; 预留趟 0 的 kInit 个, 细化的随评随增
-  // 多块 → plan_job 先预扫全期门控定满仓只数 job.spec.y.cap (与 Run 同一个 cap; 各块装载即用它, 引擎的 Search 会话取 y.n_full)
+  //   fixed  探针: r16 常驻 (SampleP::bytes)
+  // 多块 → prepare 先预扫全期门控定满仓只数 job.spec.y.cap (与 Run 同一个 cap; 各块装载即用它, 引擎的 Search 会话取 y.n_full)
   template <class E>
-  bool plan() {
+  bool plan(E &eng) {
     e0 = ft.reparse(sp.tmpl);
-    // 前后带 (bands_of): 统计首行的 lag 行 / 交接链所及的行也须整窗, 末统计行的续持要看后一批
     const int look = space::lookback(e0);
-    job.bands = bands_of(look, hd, seg);
-    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
-       job.bands.front, job.bands.back);
     const factor::expr::Expr ep = e0.placeholder();
     d0 = factor::build_forest({&ep}, /*keep_roots=*/false, /*fuse=*/false);
-    if (!open_job(F, scope, d0.feats, job))
-      return go(Rc::Empty);
+    job.life = sp.keep ? Life::Worker : Life::Job;
+    job.who = "Search";
+    const Clock::time_point t_plan = Clock::now();
+    if (!go(Factors::prepare<E, SearchProbes>(eng, F, scope, d0, look, hd, job)))
+      return false;
+    // 前后带 (bands_of): 统计首行的 lag 行 / 交接链所及的行也须整窗, 末统计行的续持要看后一批
+    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
+       job.bands.front, job.bands.back);
     const std::vector<misc::Ymd> &dates = job.dm.dates;
     const int days = static_cast<int>(dates.size());
     A = static_cast<int>(job.dm.rs.axis.size());
     lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集)", misc::dash(dates.front()).c_str(), misc::dash(dates.back()).c_str(), days);
-    stride = std::max(1, days * seg / factor::search::kCorrRows);
-
-    job.spec.y = YSpec{hd, Amts{}, 0.f};
-    job.own = !sp.keep;
-    job.retain = !sp.keep;
-    job.who = "Search";
+    stride = stride_of(days * seg);
     const double per_day = static_cast<double>(seg) * A;
-    const double r16_bytes = (static_cast<double>(days) * seg / stride + 1.0) * A * sizeof(uint16_t);
-    const size_t nx = job.own ? job.spec.x.size() : resident_leaves(F.c, block_key(ft, job.dm, job.whole(), job.spec), job.spec.x, job.retain);
-    Budget bud = budget_of<E, SearchProbes>(job, d0, nx, hd.n);
-    bud.fixed += factor::search::kInit * r16_bytes;
-    const Clock::time_point t_plan = Clock::now();
-    if (!go(plan_job(F, job, bud)))
-      return false;
     const Plan &P = job.P;
+    const Budget &bud = job.b;
     n_chunks = static_cast<int>(P.chunks.size());
     batch = E::batch_of(P, bud, per_day);
-    if (n_chunks > 1)
-      lg("预扫全期门控: %.1fs", std::chrono::duration<double>(Clock::now() - t_plan).count());
+    lg("开库 + 分块%s: %.1fs", n_chunks > 1 ? " (含预扫全期门控)" : "", std::chrono::duration<double>(Clock::now() - t_plan).count());
     res.n_chunk = n_chunks, res.chunk_days = P.D, res.batch = batch;
     res.n_assets = A;
     for (const Chunk &k : P.chunks)
@@ -727,10 +723,7 @@ bool SearchService::run(SearchRequest &req) {
   chunks_.store(0, std::memory_order_relaxed);
   stage_.store(SearchStage::Prepare, std::memory_order_relaxed);
   const bool ok = eval(req, flow());
-  if (req.spec.keep)
-    flow().drop_engines(); // 块留给会话的下一个请求, 引擎照弃
-  else
-    flow().drop(); // 块 / 引擎只活一轮 (宿主 / 显存不跨请求占)
+  flow().end(req.spec.keep ? Life::Worker : Life::Job);
   return ok;
 }
 

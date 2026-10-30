@@ -1395,7 +1395,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
 bool inspectable(const FactorRow &r) { return r.error.empty() && !r.expr.empty(); }
 
 // 高光行 (fui.view_file = FactorRow::key) 短锁拷出 (rows 由 worker 重扫时整体替换); 顺带给出相邻有效权重行的 key (箭头循环切权重用). 找不到 → false
-bool view_row(FactorsService &fsvc, const std::string &key, FactorRow &row, std::string *prev_key = nullptr, std::string *next_key = nullptr) {
+bool view_row(RunService &fsvc, const std::string &key, FactorRow &row, std::string *prev_key = nullptr, std::string *next_key = nullptr) {
   std::lock_guard<std::mutex> lock(fsvc.mutex);
   const auto &rows = fsvc.rows;
   const int n = static_cast<int>(rows.size());
@@ -1520,7 +1520,7 @@ void expr_text(std::string_view s) {
 
 } // namespace
 
-bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
+bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
   // 默认高光: 因子表当前 Hold 下 rIC 最高的有效权重 (都无该 Hold 的 stat → 表序第一个); 本作用域的表还没扫出 → 下帧再试
   if (!fui.view_defaulted && fui.view_file.empty()) {
     const auto &labels = ctx.ft->y.labels;
@@ -1564,7 +1564,7 @@ bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUISta
   return true;
 }
 
-int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
+int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
   int action = 0;
   // 左键 = 框选缩放 (K 线 / 分层图手动 zoom), 右键 = 平移 (对仗 OrderFlow); 全局, 但本页与 OrderFlow 同向, 不冲突
   ImPlot::MapInputReverse();

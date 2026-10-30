@@ -1,5 +1,5 @@
 // FactorsFile — 因子文件 (一因子一文件) 的读写: 扫描 ScanFactorFile → 行 FactorRow; 构建器 Add / Update / Delete; Search 落权重与结局 WriteFactorSearch;
-// Run 回写 WriteFactorStats. 计算服务 (FactorsService / Search / Inspect / Portfolio) 只经这里碰文件.
+// Run 回写 WriteFactorStats. 计算服务 (Run / Search / Inspect / Portfolio) 只经这里碰文件.
 //
 // 因子文件 (独立落盘, 格式破碎也**绝不删**: 表里标 BROKEN + 原因, 人手动处理):
 //   { "type":   "alpha",                                      // 必有: alpha (选股 / 择时, 走 Stat) | beta (风险暴露, 未实现, 留位)
@@ -95,7 +95,7 @@ struct FactorRow : EvalStat {
 factor::search::Score RowScore(const FactorRow &r, int hold);
 
 // 一个因子文件 → 行 (每权重一行; 文件级问题一行 widx −1) 追加进 out; 解析 / 校验失败 → error (文件不动). 跨行查重 (dup_of) 不在这里.
-// FactorsService::scan 逐文件调; Portfolio 按 (文件, 具体规范串) 找回条目的权重也走它
+// RunService::scan 逐文件调; Portfolio 按 (文件, 具体规范串) 找回条目的权重也走它
 void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std::vector<FactorRow> &out);
 
 // 英文名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]

@@ -213,7 +213,7 @@ bool InspectService::run(InspectRequest &req) {
   }
   publish();
   const bool ok = eval(req, flow());
-  flow().drop_engines(); // 块跨请求留, 引擎不留
+  flow().end(Life::Worker);
   return ok;
 }
 
@@ -222,23 +222,22 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   const FactorScope &sc = req.scope;
   const FactorRef &f = req.spec.f;
   if (req.reload)
-    F.c.reset();
+    F.reset();
 
   // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一个根, 探针 InspectProbes; 块钩子 = 池等权线 (随 Y 一代) ----
-  //   Y = 全部持有期 + 全部金额段; X = 评估域内读过的全留 (只增), 缺的补读
+  //   Y = 全部持有期 + 全部金额段; X = 评估域内读过的全留 (Life::Worker), 缺的补读
   RootSet rs;
   rs.add(*sc.ft, f.expr, f.frame, f.dir);
   JobOut o;
-  o.job.spec.y = y_full(*sc.ft, sc.max_impact);
-  o.job.retain = false;
-  o.job.whole_only = true; // 块钩子的池等权线 / alpha 分布要整期
+  o.job.life = Life::Worker;
   o.job.who = "Inspect";
   InspectProbes ps;
-  ps.hd = o.job.spec.y.hd;
+  ps.hd = keys_of<Holds>(sc.ft->y.labels);
   ps.at<RxP>().dst = &pl_.rx;
   ps.at<RxAllP>().dst = &pl_.rx_all;
   ps.at<RicP>().dst = &pl_.ric;
   struct Hooks : HookBase {
+    static constexpr bool whole = true; // 池等权线 / alpha 分布要整期
     InspectService &W;
     FactorFlow &F;
     void block(const Block &c, size_t, double) {
@@ -256,11 +255,11 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
       }
     }
   };
-  const char *backend = nullptr;
   const Rc rc = F.with_engine<InspectProbes>(sc.gpu, [&](auto &eng) {
-    backend = std::remove_reference_t<decltype(eng)>::kName;
-    return eval_job(eng, F, sc, rs.roots(), [&](int) -> InspectProbes & { return ps; }, o, Hooks{{}, *this, F});
+    return eval_job(eng, F, sc, rs, [&](int) -> InspectProbes & { return ps; }, o, Hooks{{}, *this, F});
   });
+  if (!settle(rc))
+    return false;
 
   // ---- 结果骨架 ----
   InspectResult res;
@@ -280,23 +279,19 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     publish();
   };
 
-  // ---- 评估域不成 / 叶值域越界 (与 Run 同一套 settle): 只发头部 + error ----
-  if (!settle(rc, o.job.why, [&](const std::string &why) {
-        res.error = why;
-        pl_.clear(); // 无一级 / 无 rx
-        publish_result();
-      }))
-    return false;
-  if (rc != Rc::Ok)
+  // ---- 评估域不成 / 叶值域越界: 只发头部 + error ----
+  if (rc != Rc::Ok) {
+    res.error = o.job.why;
+    pl_.clear(); // 无一级 / 无 rx
+    publish_result();
     return true;
-  const YPlanes &y = o.job.blocks.of(0).y;
-  const StatScope scope = stat_scope(sc, o.job.dm, y, backend);
+  }
   res.dates = o.job.dm.dates;
   res.read_scope = o.job.dm.rs;
   res.pool_index = pool_;
   std::copy_n(pool_ann_, pool_.n, res.pool_ann);
-  res.hd = y.hd;
-  fill_eval(ps, scope, o.eval_ms(0), res);
+  res.hd = o.job.spec.y.hd;
+  fill_eval(ps, o.scope(sc), o.eval_ms(0), res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);
   std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
   res.nav = std::move(ps.at<NavP>().out);

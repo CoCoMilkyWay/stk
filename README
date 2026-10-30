@@ -9,7 +9,7 @@ stk/
 ├── config/                # ⚙️ 全局配置
 │   ├── config.json        # ⚙️ 路径 / 回测日历起点 (末日随数据) / 交易成本 (池不在此, 见 Bar 池 pool_<pool> 列)
 │   ├── sample/            # ⚙️ 样例数据 (Level-1 / Level-2 行情 / 财务报表)
-│   └── agent/             # ⚙️ Agent: prompt/ 提示词模板 system / first / answer / round / retry (.md, {{键}} 占位; Agent → Config 页可编辑)
+│   └── agent/             # ⚙️ Agent: prompt/ 提示词模板 system / first / go / answer / round / retry (.md, {{键}} 占位; Agent → Config 页可编辑)
 │                          #    keys.json 智谱 / Cursor 的 key {"zhipu", "cursor"} (本地, gitignore; 无则按后端表填全 0 假 key 生成, 格式同真 key)
 ├── py/                    # 🐍 Python 工具链
 │   ├── main.py            # 🐍 构建脚本 (调 CMake)
@@ -195,9 +195,9 @@ stk/
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (四子页)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
-│   │   │       │   ├── FactorsService.hpp            # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc; 每层至少一段: Lob 盘口段 / Bar 固定段) → 逐根发布行, 文件走完 (未取消) 一次回写
+│   │   │       │   ├── RunService.hpp                # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc; 每层至少一段: Lob 盘口段 / Bar 固定段) → 逐条目发布行, 文件走完 (未取消) 一次回写
 │   │   │       │   │                                 #    · 表中 score / util 由 stat 现算
-│   │   │       │   │                                 #    · FactorWorker<D, Req>: 四服务同一份骨架 (进度面 + message + 常驻 FactorFlow + 结局收尾 settle / abort_out)
+│   │   │       │   ├── FactorsWorker.hpp             # 🖥️ FactorWorker<D, Req>: 四服务同一份骨架 (进度面 + message + 常驻 FactorFlow + 中断收尾 settle)
 │   │   │       │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorSearch (Search) / WriteFactorStats (Run)
 │   │   │       │   │                                 #    · Run 只回写 run + stats[i] (与 weights 同序), expr / weights 不动; 破碎因子标 BROKEN, 不删
 │   │   │       │   ├── FactorsTable.hpp              # 🖥️ 因子层公共类型: FactorLevel / FeatureTable / FactorScope / Request<Spec> / FactorRef / EvalStat (StatScope / HoldStat / CostTier / MiniPdf) / AlphaDist
@@ -219,15 +219,17 @@ stk/
 │   │   │       │   │                                 #    · 落地基类 LandRowsP (逐持有期逐行) / LandCellsP (逐行逐资产) / LinesP (净值线 → fold_book); EvalProbes<X...> + fill_eval → EvalStat (Run 行 / Inspect 结果同一份)
 │   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / eval (森林单入口, 原料后端 ready / view)
 │   │   │       │   │                                 #      CPU 恒逐根 Stat (Search 也是, 抽样行拷 rx); GPU 逐根 stat_eval / 批核 (kBatched: 只累加 + 抽样行) 走完森林一次 search_eval
-│   │   │       │   │                                 #      FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU; 每轮 drop_engines)
-│   │   │       │   │                                 #    · 管线 (四服务同一份): Job → open_job (评估域 + 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块 load_block
-│   │   │       │   │                                 #      → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node), 末块 finish → hk.done); Run / Inspect / Portfolio
-│   │   │       │   │                                 #      走 eval_job (根集 RootSet 去重 → 一趟一张森林; Job::whole_only (Inspect) 或无根 → 整期一块, 否则前后带 bands_of 按预算分块); Search 每趟一次 pass
-│   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
+│   │   │       │   │                                 #      FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU) + 驻留块 + 多块满仓只数缓存 (按评估域); 请求末 end(Life)
+│   │   │       │   │                                 #    · 块驻留 Life: Job (块归作业) / Request (块在 worker, 请求末弃) / Worker (块在 worker, X 只增, 跨请求留); 块位 / X 留法 / 收尾全由它推
+│   │   │       │   │                                 #    · 管线 (四服务同一份): Job → prepare (open_job 评估域 + 开库 → y_spec (持有期 + 探针 Ps::segs 成本段) → 前后带 → budget_of → plan_job
+│   │   │       │   │                                 #      分块 + 多块满仓只数) → pass (一趟: 逐块 load_block → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node),
+│   │   │       │   │                                 #      末块 finish → hk.done); Run / Inspect / Portfolio 走 eval_job (根集 RootSet 去重 → 一趟一张森林; Y 持有期 = 各根探针 hd 之并;
+│   │   │       │   │                                 #      钩子 whole (Inspect) → 整期一块, 否则前后带 bands_of 按预算分块; 条目终局下沉: 每条目恰一个 hk.fail / hk.post); Search 一次 prepare, 每趟一次 pass
+│   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done / fail / post, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
 │   │   │       │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
 │   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
-│   │   │       │   │                                 #    · Job = 规格 + 作用域 + 计划 + 块 (Blocks: 共享 F.c / 作业自有); JobOut = Job + 森林 + 节点耗时
-│   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: settle (aborted → abort_out; Empty / Broken → fail(Job::why))
+│   │   │       │   │                                 #    · Job = 驻留 + 规格 + 作用域 + 预算 + 计划 + 块 (Blocks: 共享 F.c / 作业自有); JobOut = Job + 森林 + 节点耗时 + 后端
+│   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: settle (中断 → false, Stale 弃块; 否则 true, Empty / Broken 的条目已由 fail 收尾)
 │   │   │       │   │                                 #    · 四服务的差别只在探针元组; GPU 逐根路径按探针 hd 取会话持有期子集
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
@@ -272,8 +274,8 @@ stk/
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
 │   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: ask → poll 逐个取走 Tick (Think / Write / Restart / End = 收齐) / live (在收那轮增量同步进调用方镜像); 不留历史, 不落盘
 │   │   │   ├── Journal.hpp                                 # 🤖 一段会话的日志目录 (只 GUI 线程写): system.md / 逐轮 NN.{user,reply,thinking}.md / 交互流水 events.jsonl / report.md
-│   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 发 (模板填充, Msg = system / first / answer / round / retry) ↔ 收 (回复解析 Parse: 澄清 Questions / 挖掘 Proposal; 逐字段读取器带路径报错)
-│   │   │   │                                               #    · 两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer; 挖掘 Proposal ─系统评→ Mined ─→ round
+│   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 发 (模板填充, Msg = system / first / go / answer / round / retry) ↔ 收 (回复解析 Parse: 澄清 Questions / 挖掘 Proposal; 逐字段读取器带路径报错)
+│   │   │   │                                               #    · 两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer; 挖掘 Proposal ─系统评→ Mined ─→ round; 首条 first (澄清) / go (直挖)
 │   │   │   │                                               #    · 结局文本两档 (反馈 / 流水 / 界面同一份): Brief 一行 ↔ Detail 多行; 时段 Span (Round ⊃ think / write ↔ Trial ⊃ search / run)
 │   │   │   ├── Bridge.hpp                                  # 🤖 与项目的唯一接口面 (实现是 agent 里唯一 include 因子 / 特征 / 服务头的 TU):
 │   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
@@ -282,10 +284,10 @@ stk/
 │   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 逐文件 Search (具体式也走, 定方向) → Run, 评完一个只重扫它; 两道首次 eval 才建, 常驻块 (SearchSpec / RunSpec keep)
 │   │   │   │                                               #      可见 Result::visible: 统计与 Search 结局都在作用域此刻评估期 (span_of) 上且算子不超上限, 才进提示词 / 可入库
 │   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ eval) → poll 逐个取走 Tick, 末个 End → live → busy / cancel
-│   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Digest / Choose ↔ Propose / Eval, Report); 转移唯一入口 go 兑现 Stop; 无 ImGui
+│   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Digest / Choose ↔ Propose / Eval, Report; 澄清可关, 关则 New 即进 Propose); 转移唯一入口 go 兑现 Stop; 无 ImGui
 │   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ evaluated
 │   │   │   │                                               #    · 时间线 = 全会话唯一真相; total = 其累计 (随事件增量加, 不回扫)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 · 候选表 · 特征 / 算子表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 提示词)
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 · 候选表 · 特征 / 算子表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 澄清开关 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

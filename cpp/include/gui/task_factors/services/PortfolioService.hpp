@@ -6,7 +6,7 @@
 //   因子文件里找不到该规范串 + 方向 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Run / Inspect 同一条管线 (FactorsEngine eval_job: 装载 → 森林 → 探针).
-//   同 (层, 池) 的待算条目一组一张森林 (同 Y, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径, 方向), 探针 hd = 该根在组内的全部 hold;
+//   同 (层, 池) 的待算条目一组一张森林 (同 Y = 各根 hd 之并, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径, 方向), 探针 hd = 该根在组内的全部 hold;
 //   落线探针 CurveP (accum_rows 一级 Row 的 G20 绝对收益 + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_book (FactorsBook; Stat 契约【净值】:
 //   G20 多头, 每批 1/h̄, 平仓行实现; 可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
 //   成本按 Δw (契约【换手成本】), 取该层首个金额段: 盘口段 = 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 固定段 =
@@ -21,9 +21,8 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_factors/services/FactorsBook.hpp"    // BookLines / Baskets::index_line / compound
-#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorScope / Request / FactorWorker
-#include "gui/util/Service.hpp"
+#include "gui/task_factors/services/FactorsBook.hpp"   // BookLines / Baskets::index_line / compound
+#include "gui/task_factors/services/FactorsWorker.hpp" // FactorWorker
 
 #include <atomic>
 #include <cassert>
@@ -65,7 +64,7 @@ struct PortfolioItem {
 };
 void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
 
-// ---- 线的轴: 组合线 (G20 多头, 扣其换手成本) = 冲击 Impact; 池线 = 权重 Weight (FactorsService.hpp; Service 出毛序列, UI 组线) ----
+// ---- 线的轴: 组合线 (G20 多头, 扣其换手成本) = 冲击 Impact; 池线 = 权重 Weight (FactorsTable.hpp; Service 出毛序列, UI 组线) ----
 enum Impact : int { kImpactNet,     // 有冲击
                     kImpactGross }; // 无冲击
 inline constexpr int kImpacts = 2;
@@ -76,7 +75,6 @@ struct FactorTask {  // 一个有效条目 = 一个因子 (FactorRef, 与 Inspec
   FactorScope scope; // 条目的 (池, 层)
   FactorRef f;
   int hold = 0;
-  std::vector<int> group;                                                          // Y 共用组 (同 (层, 池)) 全部条目的持有期, 升序去重: Y 一组一次装全 (曲线与它无关, 不进 sig)
   std::string sig() const { return key + "|" + std::to_string(scope.max_impact); } // 买入冲击封顶变了重算
 };
 inline constexpr LevelId kBasketLevel = level_of(L_1day); // 池篮子的层 (PoolCurve 按日)

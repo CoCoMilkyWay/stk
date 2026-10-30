@@ -4,7 +4,7 @@
 // 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 模板载入构建器编辑, 点行高光 → 给 Inspect 页).
 #pragma once
 
-#include "gui/task_factors/services/FactorsService.hpp"
+#include "gui/task_factors/services/RunService.hpp"
 #include "gui/task_factors/services/SearchService.hpp"
 
 #include <cstdint>
@@ -114,6 +114,6 @@ void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h);
 
 // 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_one),
 // 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)
-int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx);
+int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors

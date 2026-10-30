@@ -4,12 +4,13 @@
 // Mine — 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态; 无 ImGui, 界面见 agent/ui/TaskAgent)
 // =============================================================================
 //   Phase    等谁    完成信号     转移
+//   None     人      open         澄清 → 发 first, 进 Digest; 不澄清 → 发 go, 进 Propose
 //   Digest   agent   chat End     合格 → Choose; 不合格 → 发 retry, 留 Digest
 //   Choose   人      start        发 answer → Propose
 //   Propose  agent   chat End     合格 → 记 issues, 处理 submit; done → Report, 否则落候选 → Eval; 不合格 → 发 retry, 留 Propose
 //   Eval     系统    lab End      发 round → Propose
 //   Report   人      open         开下一段
-//   两阶段对仗: Digest (agent 问) → Choose (人答) ↔ Propose (agent 交) → Eval (系统评)
+//   两阶段对仗: Digest (agent 问) → Choose (人答) ↔ Propose (agent 交) → Eval (系统评); 澄清可关 (Setup::ask)
 //   两个 worker 对仗: chat (ask → Think / Write / End) ↔ lab (eval → Search / Run / Settle / End); update 每帧同样 poll, 各步时刻记进时间线的 Span
 //   结束: 回复失败 / agent 宣布挖完 / cancel 立即; stop = 本步做完即结束 (转移唯一入口 go 处兑现; Choose 中立即)
 //   GUI 线程: open / start / stop / cancel = 人的操作, update 每帧推进 (含会话日志)
@@ -46,6 +47,7 @@ public:
     Scope sc;
     Gate gate;
     bool gpu = false;
+    bool ask = true;  // 澄清: agent 先提问由人选答; 否则 agent 自定因子与方向直接挖
     llm::Options llm; // system 由 open 填
   };
 

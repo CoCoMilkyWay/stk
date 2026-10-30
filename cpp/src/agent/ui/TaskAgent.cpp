@@ -46,7 +46,7 @@ constexpr ImVec4 kColHead(0.4f, 0.8f, 1.0f, 1.0f);
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
-// Mine / Config 页的选项 (kUiFile 读写同一份字段清单): 作用域 / 连接 / 模型 / 评估后端 / 入库门槛 (下次 New 生效) + Config 页在看的模板
+// Mine / Config 页的选项 (kUiFile 读写同一份字段清单): 作用域 / 连接 / 模型 / 评估后端 / 入库门槛 / 澄清 (下次 New 生效) + Config 页在看的模板
 struct Options {
   Scope sc;
   int backend = 0;
@@ -61,12 +61,15 @@ struct Options {
   int proxy_port = kProxyPort;
   int gpu = -1; // -1 = 未定 (有 GPU 默认 GPU)
   Gate gate{kGateMono, kGateRic};
-  int prompt = 0; // Msg 下标
+  bool ask = true; // 首轮让 agent 提问
+  int prompt = 0;  // Msg 下标
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, prompt)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, ask, prompt)
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
-Mine::Setup setup_of(const Options &o) { return {o.sc, o.gate, o.gpu == 1, {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model, {}}}; }
+Mine::Setup setup_of(const Options &o) {
+  return {o.sc, o.gate, o.gpu == 1, o.ask, {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model, {}}};
+}
 
 // 模型嗅探: 每后端一个后台 GET models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
 struct Sniffer {
@@ -151,22 +154,27 @@ bool model_ok(const State &s) {
 }
 
 // ---- 选项落盘 (kUiFile) ----
+// 无文件 / 读不出 / 字段对不上 / 取值越界 ⇒ 整份回默认值, 首次 save_ui 按当前字段清单重写
 // 池 / 层 / 持有期 / 模型失效由各自的选择逻辑回落; GPU 不在了回落 CPU
 void load_ui(State &s) {
   std::ifstream f(kUiFile);
+  bool ok = false;
   if (f.is_open()) {
     const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
-    assert(!j.is_discarded() && j.is_object() && "kUiFile 须是 JSON 对象");
-    j.get_to(s.opt);
+    try {
+      j.get_to(s.opt);
+      ok = true;
+    } catch (const nlohmann::json::exception &) {
+    }
   }
   const Options &o = s.opt;
-  assert(o.backend >= 0 && o.backend < llm::kBackendCount);
-  assert(o.proxy_port > 0 && o.proxy_port < 65536);
-  assert(o.gpu >= -1 && o.gpu <= 1);
-  assert(o.prompt >= 0 && o.prompt < kMsgCount);
+  ok = ok && o.backend >= 0 && o.backend < llm::kBackendCount && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
+       o.prompt >= 0 && o.prompt < kMsgCount;
+  if (!ok)
+    s.opt = Options{};
   if (!catalog::gpu())
     s.opt.gpu = 0;
-  s.opt_saved = nlohmann::ordered_json(s.opt).dump(2);
+  s.opt_saved = ok ? nlohmann::ordered_json(s.opt).dump(2) : std::string();
 }
 void save_ui(State &s) {
   std::string text = nlohmann::ordered_json(s.opt).dump(2);
@@ -271,7 +279,7 @@ void session_row(const SharedData &data, State &s) {
   ImGui::EndDisabled();
   tip(!keyed         ? "所选后端的 key 未填 (config/agent/keys.json)"
       : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                     : "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问\n资产轴与标签就绪才开得成");
+                     : "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问 (Config 页开了澄清) 或直接开挖\n资产轴与标签就绪才开得成");
   ImGui::SameLine();
   ImGui::BeginDisabled(m.phase() != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0)))
@@ -294,7 +302,8 @@ void session_row(const SharedData &data, State &s) {
   if (m.phase() != Phase::None) {
     const Mine::Setup &st = m.setup;
     ImGui::SameLine();
-    ImGui::TextDisabled("%s · %s %s · %s", catalog::label(st.sc).c_str(), llm::def(st.llm.backend).name, st.llm.model.c_str(), st.gpu ? "GPU" : "CPU");
+    ImGui::TextDisabled("%s · %s %s · %s · %s", catalog::label(st.sc).c_str(), llm::def(st.llm.backend).name, st.llm.model.c_str(), st.gpu ? "GPU" : "CPU",
+                        st.ask ? "澄清" : "直挖");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", m.log_dir().c_str());
   }
@@ -898,7 +907,7 @@ void timeline_panel(State &s, Mine &m, const Flow &f, bool to_end) {
     s.pinned = false; // 点开合 = 在读: 不把读的地方拖走
   bool start = false;
   if (m.phase() == Phase::None) {
-    ImGui::TextDisabled("选好作用域按 New: 系统把规则打包发给 agent, 它先提问");
+    ImGui::TextDisabled("选好作用域按 New: 系统把规则打包发给 agent, 它先提问 (Config 页开了澄清) 或直接开挖");
   } else {
     const size_t n = m.timeline.size();
     const bool fresh = n != s.flow_rounds, grouped = n > kGroupRounds;
@@ -1199,6 +1208,13 @@ void render_config(State &s) {
   field("mono >=", o.gate.mono, "%.2f");
   ImGui::SameLine();
   field("rIC >=", o.gate.ric, "%.3f");
+
+  ImGui::Spacing();
+  ImGui::TextColored(kColHead, "澄清");
+  ImGui::Checkbox("首轮让 agent 提问", &o.ask);
+  tip("开: agent 先提一次问题 (每题带推荐) 由你选答, 再全自动挖掘\n关: 不提问, agent 按自己的理解定因子与方向, 直接全自动挖掘");
+  ImGui::SameLine();
+  ImGui::TextDisabled("下次 New 生效");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "提示词");

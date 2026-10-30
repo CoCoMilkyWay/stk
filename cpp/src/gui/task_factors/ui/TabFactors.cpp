@@ -1057,7 +1057,7 @@ void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h) {
   ImGui::EndTable();
 }
 
-int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx) {
+int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx) {
   int action = 0;
   const Phase st = svc.phase.load(std::memory_order_acquire);
   const bool busy = svc.busy();

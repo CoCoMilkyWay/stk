@@ -1,4 +1,4 @@
-// FactorsService — Factors→Factors 表的单 worker: 扫 <factor_dir>/<pool>/*.json 因子文件 → 解析 / 校验模板与权重表达式
+// RunService — Factors→Factors 表 (因子看板) 的单 worker: 扫 <factor_dir>/<pool>/*.json 因子文件 → 解析 / 校验模板与权重表达式
 // (factor/Expr.hpp) → (Run 时) 读特征库把因子输入 + 标签装成 [T = days·seg][A] 平面 (seg = 因子层, 见 FactorLevel) → 每权重 Expr → Dag →
 // CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行; 一个文件的森林走完 (未取消) 一次回写它全部权重的 stat (FactorsFile WriteFactorStats).
 //
@@ -27,12 +27,11 @@
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
 #pragma once
 
-#include "gui/task_factors/services/FactorsFile.hpp"  // FactorRow (+ 文件增删改, 调用方经本头一并可见)
-#include "gui/task_factors/services/FactorsTable.hpp" // FeatureTable / FactorScope
-#include "gui/util/Service.hpp"
+#include "gui/task_factors/services/FactorsFile.hpp"   // FactorRow (+ 文件增删改, 调用方经本头一并可见)
+#include "gui/task_factors/services/FactorsTable.hpp"  // FeatureTable / FactorScope
+#include "gui/task_factors/services/FactorsWorker.hpp" // FactorWorker
 
 #include <atomic>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,63 +40,40 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-enum class Rc : uint8_t; // FactorsScope.hpp
-struct FactorFlow;       // FactorsEngine.hpp
-
-// 因子服务骨架 (Run / Search / Inspect / Portfolio 同一份): 进度面 = 自身 + 本轮说明 + worker 常驻件 FactorFlow (首个请求懒建, 随 worker 活)
-// + 结局收尾. 成员函数定义在 FactorsEngine.hpp (FactorFlow 完整处); 派生类的 ctor / dtor 须在 .cpp
-template <class D, class Req>
-class FactorWorker : public Service<D, Req>, public Published {
-public:
-  std::string message; // 本轮说明 (如 "特征库无数据"), 空 = 无; UI 持 mutex 读
-
-protected:
-  Progress &board() { return *this; }
-  FactorFlow &flow();
-  bool abort_out(Rc rc); // 中断收尾 (rc 须 aborted): Stale → 弃块 + 置 message; 恒 false
-  // 作业结局 (四服务同一份): 中断 (Cancel / Stale) → abort_out (false); Empty / Broken (正常输入) → fail(why) (true); Ok → true
-  template <class Fail>
-  bool settle(Rc rc, const std::string &why, Fail &&fail);
-
-private:
-  std::unique_ptr<FactorFlow> flow_;
-};
-
 struct RunSpec {
   bool evaluate = false; // false = 只扫描解析 (不读库)
   std::string only_file; // 非空 = 只评这个因子文件的权重 (Run / Search 写完后), 其余行保留文件里的 stat; 空 = Run all
-  bool keep = false;     // 块跨请求常驻 (agent 会话: 叶只增不丢); 否则请求末弃块
+  bool keep = false;     // 块跨请求常驻 (agent 会话: Life::Worker); 否则 Life::Request
 };
-using FactorsRequest = Request<RunSpec>;
+using RunRequest = Request<RunSpec>;
 // 只扫描恒成; evaluate 要作用域可用 (MakeFactorScope). ft = 该层字段表
-bool MakeFactorsRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool evaluate, bool gpu,
-                        FactorsRequest &req);
+bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool evaluate, bool gpu, RunRequest &req);
 
 // 进度面 = 自身 (FactorWorker): Scanning → (evaluate) Loading 期 done/total = 天 → Running 期 = 共享 DAG 算子节点
-class FactorsService : public FactorWorker<FactorsService, FactorsRequest> {
-  friend Service<FactorsService, FactorsRequest>;
+class RunService : public FactorWorker<RunService, RunRequest> {
+  friend Service<RunService, RunRequest>;
 
 public:
-  static constexpr const char *kName = "FactorsWorker";
-  FactorsService(); // 两者都在 .cpp: FactorFlow 不完整
-  ~FactorsService();
+  static constexpr const char *kName = "RunWorker";
+  RunService(); // 两者都在 .cpp: FactorFlow 不完整
+  ~RunService();
 
   int broken() const { return broken_.load(std::memory_order_relaxed); }
 
   // UI 持 mutex 读
   std::vector<FactorRow> rows;
-  FactorsRequest current;
+  RunRequest current;
 
 private:
   static constexpr Phase kStart = Phase::Scanning;
-  bool run(FactorsRequest &req);
-  void scan(const FactorsRequest &req, std::vector<FactorRow> &out);
-  bool eval(const FactorsRequest &req, FactorFlow &F); // false = 取消 / 判废
+  bool run(RunRequest &req);
+  void scan(const RunRequest &req, std::vector<FactorRow> &out);
+  bool eval(const RunRequest &req, FactorFlow &F); // false = 取消 / 判废
   // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 根集 → 管线 eval_job (共享森林, 块 F.c 补装)
   // 走引擎 E (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). false = 取消 / 判废 (该文件 Empty / Broken: 行已标, true)
   template <class E>
-  bool eval_file(const FactorsRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx);
-  void mark(size_t i, const std::string &why); // 行 i 收尾为 BROKEN (调用方持锁; 已收尾的行不动)
+  bool eval_file(const RunRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx);
+  void mark(size_t i, const std::string &why); // 行 i 收尾为 BROKEN (调用方持锁; 每行至多一次)
 
   std::atomic<int> broken_{0};
 };

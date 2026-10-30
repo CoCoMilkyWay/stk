@@ -339,12 +339,12 @@ set(MATH_PRECISE
     gui/task_factors/services/FactorsLoad.cpp
     gui/task_factors/services/FactorsProbe.cpp
     gui/task_factors/services/FactorsScope.cpp
-    gui/task_factors/services/FactorsService.cpp
     gui/task_factors/services/FactorsTable.cpp
     gui/task_factors/services/InspectService.cpp
     gui/task_factors/services/KlineService.cpp
     gui/task_factors/services/OperatorsService.cpp
     gui/task_factors/services/PortfolioService.cpp
+    gui/task_factors/services/RunService.cpp
     gui/task_factors/services/SearchService.cpp
     gui/task_factors/ui/TabFactors.cpp
     gui/task_factors/ui/TabInspect.cpp

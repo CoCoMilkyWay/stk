@@ -34,8 +34,15 @@ static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelLob:
 
 namespace GUI::Factors {
 
-YSpec y_full(const FeatureTable &ft, double max_impact) {
-  return {keys_of<Holds>(ft.y.labels), keys_of<Amts>(ft.y.costs), static_cast<float>(max_impact)};
+YSpec y_spec(const FeatureTable &ft, const Holds &hd, Segs sg, double max_impact) {
+  YSpec s{hd, {}, 0.f};
+  if (sg == Segs::None)
+    return s;
+  s.ad = keys_of<Amts>(ft.y.costs);
+  if (sg == Segs::First)
+    s.ad.n = 1;
+  s.max_impact = static_cast<float>(max_impact);
+  return s;
 }
 
 std::string YSpec::key() const {

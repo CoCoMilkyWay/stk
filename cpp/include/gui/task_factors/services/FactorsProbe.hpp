@@ -45,6 +45,7 @@ inline double group_abs(const factor::stat::Row &r, int k, double cap) {
 
 // ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
 //   need              原料位 (引擎据此算 / 拷回)
+//   segs              要装的成本段 (Segs; Probes 取各探针之最, 管线据此定 YSpec::ad); hd 由 Probes 带, 块 Y 的持有期 = 各根 hd 之并
 //   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
 //   open(c)           本块评前 (单线程; 落地平面在评估域首块定形)
 //   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内统计行 ∈ [t_lo, t_hi), hi = Probes::hd 下标); r 已按根的方向定向 (oriented)
@@ -101,8 +102,9 @@ void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s, T fill 
 template <class... P>
 struct Probes {
   std::tuple<P...> p;
-  Holds hd; // 所评持有期 (键须都在 Y 里; 调用方恒填); 钩子的 hi 按它
+  Holds hd; // 所评持有期 (字段表里有; 调用方恒填); 钩子的 hi 按它
   static constexpr uint8_t need = (uint8_t{0} | ... | P::need);
+  static constexpr Segs segs = std::max({Segs::None, P::segs...});
   static constexpr bool cells = (false || ... || !std::is_same_v<typename P::Ext, factor::cpu::stat::NoExt>);
   struct Ext {
     std::tuple<typename P::Ext...> e;
@@ -144,6 +146,7 @@ struct ProbeSink {
 // 探针的空钩子 (各探针按需遮蔽)
 struct ProbeBase {
   using Ext = factor::cpu::stat::NoExt;
+  static constexpr Segs segs = Segs::None;
   static double bytes(const Shape &, int) { return 0.0; }
   Ext ext() const { return {}; }
   void open(const Ctx &) {}
@@ -170,6 +173,7 @@ struct HoldP : ProbeBase {
 // 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部端码 (一个固定段) / Portfolio CurveP 另落逐行 (land)
 struct CostP : ProbeBase {
   static constexpr uint8_t need = kNeedEc;
+  static constexpr Segs segs = Segs::All;
   std::vector<CostTier> costs; // [amt] = y.ad 序 (首块按 y.ad 建)
   void root(const Ctx &c, const RootView &v);
 };

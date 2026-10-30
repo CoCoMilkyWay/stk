@@ -37,8 +37,8 @@
 
 #include "factor/Search/Contract.hpp" // Score
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow
-#include "gui/util/Service.hpp"
+#include "gui/task_factors/services/FactorsFile.hpp"   // FeatureTable / FactorRow
+#include "gui/task_factors/services/FactorsWorker.hpp" // FactorWorker
 
 #include <atomic>
 #include <cstdint>
@@ -55,7 +55,7 @@ struct SearchSpec {
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
   int hold = 0;                                        // 搜的持有期键 (字段表标签组之一, search_hold)
   bool fresh = false;                                  // 落盘前先清空文件全部 weights (否则只换 hold 的)
-  bool keep = false;                                   // 块跨请求常驻 (agent 会话: 整期一块进 worker 的块, 叶只增不丢; 否则作业自有, 用完即弃)
+  bool keep = false;                                   // 块跨请求常驻 (agent 会话: Life::Worker); 否则 Life::Job
 };
 using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights / search); scope.max_impact 不看 (不评成本)
 // 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键; ft = 该层字段表

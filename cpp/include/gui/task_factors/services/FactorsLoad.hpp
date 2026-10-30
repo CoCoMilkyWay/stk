@@ -1,7 +1,7 @@
 // FactorsLoad — 因子评估的特征库装载层 (四服务共用; 只装数据, 根上的统计归 FactorsProbe, 净值 / 篮子归 FactorsBook): 作用域层 (FactorsScope) 之上.
 //   X ↔ Y ↔ B 三侧同一份逐天并行骨架 (read_days, 环境 Io): 叶 LeafId → XPlanes (因子输入叶) / YSpec → YPlanes (截面门控 + 标签两侧平面 [hold] /
 //   买入冲击 [amt] + 满仓只数) / 池篮子 → BPlanes (全部池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业, 一趟装齐, 不进块); n_full_of 只扫门控出满仓只数;
-//   Block + ensure_block = 块 (BlockSpec 两侧: Y 常驻, X 按服务策略留 / 补); labels_of / labels_pick 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
+//   Block + ensure_block = 块 (BlockSpec 两侧: Y 常驻, X 按驻留留 / 补); y_spec = Y 规格 (持有期 + 探针要的成本段 Segs); labels_of / labels_pick 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
 //   stat_scope = 结果的作用域头.
 #pragma once
 
@@ -63,8 +63,12 @@ struct YSpec {
   double cap = 0.0;       // 满仓只数 n_full: 0 = 本块门控自算; > 0 = 用它 (多块作业 = 全期池宽 n_full_of, 各块同一个; FactorsEngine plan_job 置)
   std::string key() const;
 };
-// 全部持有期 + 全部金额段 (Run / Inspect)
-YSpec y_full(const FeatureTable &ft, double max_impact);
+// 成本段取法 (探针声明 FactorsProbe Ps::segs, 管线据此定 YSpec::ad): 不装 (Search) / 首段 (Portfolio 出参线) / 全部 (Run / Inspect 各段 CostAcc)
+enum class Segs : uint8_t { None,
+                            First,
+                            All };
+// 块的 Y 规格: 持有期 hd (字段表里有) + 成本段 sg; 有段才带封顶 max_impact
+YSpec y_spec(const FeatureTable &ft, const Holds &hd, Segs sg, double max_impact);
 // 块规格 (X ↔ Y 两侧各一项): X = 叶 / Y = YSpec
 struct BlockSpec {
   std::vector<LeafId> x;
@@ -162,7 +166,8 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B);
 bool n_full_of(const Io &io, const Chunk &k, double &out);
 
 // ---- 块: Y 按 (层, 评估域, 日段, YSpec) 常驻; X 挂在同一块上 (Y 换 → X 清) ----
-//   整期一块 = worker 的一块 (Run: Y 跨文件复用, X retain 只留本文件的叶; Inspect: X 只增); 多块 / Search = 作业自有
+//   块位随作业驻留 (FactorsEngine Life): 整期一块 ∧ 非 Life::Job = worker 的一块 (Life::Request: Y 跨文件复用, X 只留本森林的叶; Life::Worker: X 只增);
+//   多块 / Life::Job = 作业自有
 //   块 = 评估域日 [d0, d1) 的行 [0, T); 统计行 [t_lo, T − t_back) (前带只给回看 / lag / 交接链, 后带只给续持; Search 契约【分块流式】)
 struct Block {
   std::string key; // block_key; 空 = 未装

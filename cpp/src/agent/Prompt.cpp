@@ -157,6 +157,18 @@ private:
 
 std::string at(const char *k, size_t i) { return std::string(k) + "[" + std::to_string(i) + "]"; }
 
+// 首条消息里的已试候选 (只列可见的, 至多 kTriedTop 个)
+std::string tried_of(const std::vector<Result> &tried) {
+  std::string s;
+  int n = 0;
+  for (const Result &r : tried)
+    if (r.visible && n < kTriedTop) {
+      ++n;
+      s += "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r);
+    }
+  return or_none(std::move(s), "(无)\n");
+}
+
 } // namespace
 
 std::string LoadPrompt(Msg m) {
@@ -300,15 +312,10 @@ Message SystemMessage(const Context &c, const Gate &g) {
                             {"library", or_none(std::move(lib), "(空)\n")}});
 }
 
-Message FirstMessage(const Context &c, const std::vector<Result> &tried) {
-  std::string s;
-  int n = 0;
-  for (const Result &r : tried)
-    if (r.visible && n < kTriedTop) {
-      ++n;
-      s += "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r);
-    }
-  return fill(Msg::First, {{"hold", c.hold}, {"tried", or_none(std::move(s), "(无)\n")}});
+Message FirstMessage(const Context &c, const std::vector<Result> &tried) { return fill(Msg::First, {{"hold", c.hold}, {"tried", tried_of(tried)}}); }
+
+Message GoMessage(const Context &c, const std::vector<Result> &tried) {
+  return fill(Msg::Go, {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"tried", tried_of(tried)}});
 }
 
 Message AnswerMessage(const Context &c, const Asked &a) {

@@ -4,17 +4,17 @@
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
 //   Factors: <factor_dir>/<池>/<层>/ 一因子一文件的整体面板 (池 + 层 = 页顶全局选择, Factors / Inspect 共用, 与特征面板双向同步; 换层 = 服务整体重建,
 //     字段表按层建一次全页共享). 进页只扫描解析 (任何时候可进); Run 才读特征库评估 (要资产轴就绪), 结果回写各因子文件.
-//   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 FactorsService; 一级 Row 由自己的
+//   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 RunService; 一级 Row 由自己的
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
 //   Portfolio: 因子组合 (<portfolio_dir>/<name>.json; 在 Factors 页 1. 区右侧两小框选 / 编辑) 的等权组合曲线 + 池指数. 跨池跨层,
 //     与页顶池 / 层无关 (换层不重建); 组合内容变 / 因子重扫后重解析, 有效条目变才发请求 (PortfolioService 只算新增的因子).
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/task_factors/services/FactorsService.hpp"
 #include "gui/task_factors/services/InspectService.hpp"
 #include "gui/task_factors/services/KlineService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
 #include "gui/task_factors/services/PortfolioService.hpp"
+#include "gui/task_factors/services/RunService.hpp"
 #include "gui/task_factors/services/SearchService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp"
 #include "gui/task_factors/ui/TabInspect.hpp"
@@ -62,10 +62,10 @@ struct TaskFactorsState {
   std::vector<size_t> pool_files; // [PoolId] 页顶池下拉里各池因子文件数 (该池各因子层之和): 每次打开下拉重数
   Phase prev_factors_phase = Phase::Idle;
   Factors::FeatureTables tables; // 各层字段表视图 (按层建一次, Factors / Search / Inspect / Portfolio 共享, 换层不重建)
-  std::unique_ptr<Factors::FactorsService> factors_service;
+  std::unique_ptr<Factors::RunService> run_service;
   Factors::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                        // 上次扫描的目录 (池切换 → 自动重扫)
-  std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Search (与 factors_service 同建); 写了 weights 的那一轮结束 → 自动 Run
+  std::unique_ptr<Factors::SearchService> search_service; // Factors 页 Search (与 run_service 同建); 写了 weights 的那一轮结束 → 自动 Run
   Phase prev_search_phase = Phase::Idle;
 
   std::unique_ptr<Factors::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (构造即起 worker); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
@@ -99,7 +99,7 @@ static std::shared_ptr<const Factors::FeatureTable> level_table(const SharedData
 static void reset_level_services(TaskFactorsState &s) {
   s.search_service.reset();
   s.prev_search_phase = Phase::Idle;
-  s.factors_service.reset();
+  s.run_service.reset();
   s.factors_scanned_dir.clear();
   s.kline_service.reset();
   s.inspect_service.reset();
@@ -110,14 +110,14 @@ static void reset_level_services(TaskFactorsState &s) {
 // wrote = 上一项落盘了; 没落盘的 fresh 项把 fresh 顺延给同文件下一档 (该文件仍须整份覆盖)
 static void search_all_next(const SharedData &data, TaskFactorsState &s, bool wrote) {
   Factors::FactorsUIState &ui = s.factors_ui;
-  assert(ui.search_all_n > 0 && s.factors_service && s.search_service);
+  assert(ui.search_all_n > 0 && s.run_service && s.search_service);
   if (!wrote && ui.search_cur.fresh && !ui.search_queue.empty() && ui.search_queue.front().row.file == ui.search_cur.row.file)
     ui.search_queue.front().fresh = true;
   if (ui.search_queue.empty()) {
     ui.search_all_n = 0;
-    Factors::FactorsRequest req;
-    if (Factors::MakeFactorsRequest(data, level_table(data, s), s.pool, /*evaluate=*/true, ui.backend == 1, req))
-      s.factors_service->Request(req);
+    Factors::RunRequest req;
+    if (Factors::MakeRunRequest(data, level_table(data, s), s.pool, /*evaluate=*/true, ui.backend == 1, req))
+      s.run_service->Request(req);
     return;
   }
   ui.search_cur = std::move(ui.search_queue.front());
@@ -135,7 +135,7 @@ static void search_all_next(const SharedData &data, TaskFactorsState &s, bool wr
 // 组合: 内容变 / 因子服务进 Done → 重解析; 有效条目 / 池集合变 (或 reload) 才发请求, 不打断在跑的
 static void portfolio_sync(const SharedData &data, TaskFactorsState &s, bool reload) {
   Factors::PortfolioUIState &pui = s.portfolio_ui;
-  const Phase fst = s.factors_service ? s.factors_service->phase.load(std::memory_order_acquire) : Phase::Idle;
+  const Phase fst = s.run_service ? s.run_service->phase.load(std::memory_order_acquire) : Phase::Idle;
   const bool fs_done = fst == Phase::Done && s.portfolio_prev_fs != Phase::Done;
   s.portfolio_prev_fs = fst;
   if (pui.content_gen != s.portfolio_gen || fs_done) {
@@ -185,7 +185,7 @@ TaskHandle CreateFactorsTask() {
   handle.Update = [state](SharedData &data) {
     // Search all: 一个文件搜完 (忙 → Done / Cancelled, 含 Loading 期就放弃的) → 出队下一个, 队空整目录 Run; 被取消 → 整轮放弃
     // 单个 Search 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
-    if (state->search_service && state->factors_service) {
+    if (state->search_service && state->run_service) {
       const Phase sst = state->search_service->phase.load(std::memory_order_acquire);
       const Phase prev = state->prev_search_phase;
       const bool finished = (sst == Phase::Done || sst == Phase::Cancelled) && (prev == Phase::Scanning || prev == Phase::Loading || prev == Phase::Running);
@@ -210,10 +210,10 @@ TaskHandle CreateFactorsTask() {
           file = state->search_service->result.file;
         }
         if (wrote) {
-          Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, level_table(data, *state), state->pool, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
+          Factors::RunRequest req;
+          if (Factors::MakeRunRequest(data, level_table(data, *state), state->pool, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
             req.spec.only_file = file;
-            state->factors_service->Request(req);
+            state->run_service->Request(req);
           }
         }
       }
@@ -237,9 +237,9 @@ TaskHandle CreateFactorsTask() {
         const size_t total = ss.total.load(std::memory_order_relaxed);
         return {TaskStatus::Kind::Busy, "optimizing " + std::to_string(total > 0 ? 100 * ss.done.load(std::memory_order_relaxed) / total : 0) + "%"};
       }
-      if (!state->factors_service)
+      if (!state->run_service)
         return {};
-      const auto &fs = *state->factors_service;
+      const auto &fs = *state->run_service;
       if (fs.phase.load(std::memory_order_acquire) == Phase::Done && fs.broken() > 0)
         return {TaskStatus::Kind::Warn, std::to_string(fs.broken()) + " broken"};
       return ProgressStatus(fs);
@@ -345,7 +345,7 @@ TaskHandle CreateFactorsTask() {
         ImGui::TextUnformatted("Level:");
         {
           const std::string key = data.config.factor_dir + "|" + sel.pool();
-          const Phase fst = state->factors_service ? state->factors_service->phase.load(std::memory_order_acquire) : Phase::Idle;
+          const Phase fst = state->run_service ? state->run_service->phase.load(std::memory_order_acquire) : Phase::Idle;
           const bool repool = key != state->counted_key;
           if (repool || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
             state->counted_key = key;
@@ -384,7 +384,7 @@ TaskHandle CreateFactorsTask() {
                        "• 有计算在跑时, 先取消, 停下后切过去");
       }
       {
-        const bool busy = (state->factors_service && state->factors_service->busy()) || (state->search_service && state->search_service->busy()) ||
+        const bool busy = (state->run_service && state->run_service->busy()) || (state->search_service && state->search_service->busy()) ||
                           (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
         const std::optional<Factors::LevelId> want_lv = selected_factor_level(sel);
         const std::string want_pool = want_lv ? sel.pool() : std::string{};
@@ -402,8 +402,8 @@ TaskHandle CreateFactorsTask() {
             state->pool = want_pool;
           }
         } else if (want_lv != state->lv || want_pool != state->pool) { // 换作用域 = 取消旧作用域在跑的 (Search all 整轮放弃), 停下那帧再切
-          if (state->factors_service)
-            state->factors_service->RequestCancel();
+          if (state->run_service)
+            state->run_service->RequestCancel();
           if (state->search_service)
             state->search_service->RequestCancel();
           if (state->inspect_service)
@@ -420,17 +420,17 @@ TaskHandle CreateFactorsTask() {
       }
       // 首次进页 / 换层: 只扫描不算 (字段表视图按层建一次, 编译期字段表, 不随运行变); 池切换 → 目录变 → 自动重扫
       const std::shared_ptr<const Factors::FeatureTable> ft = level_table(data, *state);
-      if (!state->factors_service) {
-        state->factors_service = std::make_unique<Factors::FactorsService>();
+      if (!state->run_service) {
+        state->run_service = std::make_unique<Factors::RunService>();
         state->search_service = std::make_unique<Factors::SearchService>();
       }
-      auto &fs = *state->factors_service;
+      auto &fs = *state->run_service;
       auto &ss = *state->search_service;
       const Factors::FactorsUIContext ctx = factors_context(data, ft, state->pool);
       if (state->factors_scanned_dir != ctx.factor_dir) {
         state->factors_scanned_dir = ctx.factor_dir;
-        Factors::FactorsRequest req;
-        Factors::MakeFactorsRequest(data, ft, state->pool, /*evaluate=*/false, false, req);
+        Factors::RunRequest req;
+        Factors::MakeRunRequest(data, ft, state->pool, /*evaluate=*/false, false, req);
         fs.Request(req);
       }
       if (!state->inspect_service) {
@@ -444,8 +444,8 @@ TaskHandle CreateFactorsTask() {
       } else {
         const int action = Factors::RenderTabFactors(fs, ss, state->factors_ui, state->portfolio_ui, ctx);
         if (action == 1 || action == 5 || action == 2) {
-          Factors::FactorsRequest req;
-          if (Factors::MakeFactorsRequest(data, ft, state->pool, /*evaluate=*/action != 2, state->factors_ui.backend == 1, req)) {
+          Factors::RunRequest req;
+          if (Factors::MakeRunRequest(data, ft, state->pool, /*evaluate=*/action != 2, state->factors_ui.backend == 1, req)) {
             if (action == 1)
               req.spec.only_file = state->factors_ui.run_file;
             fs.Request(req);
@@ -499,7 +499,7 @@ TaskHandle CreateFactorsTask() {
     state->prev_search_phase = Phase::Idle;
     state->factors_ui.search_queue.clear(); // Search all 随服务一起作废
     state->factors_ui.search_all_n = 0;
-    state->factors_service.reset();
+    state->run_service.reset();
     state->factors_scanned_dir.clear();
     state->kline_service.reset();   // 析构 Stop() join worker
     state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放

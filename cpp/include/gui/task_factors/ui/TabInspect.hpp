@@ -51,9 +51,9 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_factors/services/FactorsService.hpp"
 #include "gui/task_factors/services/InspectService.hpp"
 #include "gui/task_factors/services/KlineService.hpp"
+#include "gui/task_factors/services/RunService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp" // FactorsUIState / FactorsUIContext
 #include "shared/Analysis.hpp"                // AggPdf (KLL 成品快照)
 
@@ -142,10 +142,10 @@ struct InspectUIState {
 // 与现结果和上次请求都不同 → 填 ui.req_row / req_reload = false, 返回 true (调用方 MakeInspectRequest + Request)
 // 顺带默认高光: 还没高光过 (fui.view_defaulted = false) 且本作用域的表已扫出 → 高光当前 Hold 下 rIC 最高的有效权重 (无 stat → 表序第一个),
 // 进 Inspect 即有东西看; 换池 / 换层后重新默认一次
-bool InspectAutoRequest(FactorsService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
+bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
 // 返回值: 1 = 手动 Compute (ui.req_row / ui.req_reload 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
 // ksvc: 右上 K 线流 (页内按期望态直接 Request, 不经返回值)
-int RenderTabInspect(FactorsService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
+int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Factors

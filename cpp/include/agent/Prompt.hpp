@@ -5,13 +5,14 @@
 // =============================================================================
 //   发: 模板 = kPromptDir/<名>.md (agent/Config.hpp), {{键}} 占位; 模板里出现未给的键 → assert (模板与代码脱节立刻暴露)
 //     system  静态前缀 (一段对话内逐字节不变): 作用域 / 语法与口径 / 入库门槛 / 做法 (一段会话精修一个因子) / 两阶段回复协议 / 特征叶 / 算子表 / 正式因子库
-//     first   首条 user: 本作用域已试过的候选 (可作起点) + 消化规则、提出拿不准的问题
+//     first   首条 user (要澄清): 本作用域已试过的候选 (可作起点) + 消化规则、提出拿不准的问题
+//     go      首条 user (不澄清): 同上的已试候选 + 自定因子与方向, 直接交第一批 (不得提问)
 //     answer  人对各题的选择 (含 "其他" 自写意见; 没照推荐的附上推荐) + 附言 + 开挖 (此后不得提问)
 //     round   每轮反馈: 上次提交的入库结果 + 本批各变体的结局 (落文件失败原因 / Search 结论 / 各权重统计) + 对照最好版本续改
 //     retry   回复解析失败: 原因 + 按协议重发
 //   收: 回复 = JSON 对象 (外层可包 ```json 代码块); 不合协议 → false + err (首个不合处, 带字段路径; 原样经 retry 反馈给模型)
-//     澄清 (一次)  {"questions": [{"prompt", "options": [..], "multiple", "recommended": [下标]}]} (单选推荐恰 1 项, 多选 ≥ 1 项) → Questions
-//     挖掘 (每轮)  {"factors": [{"name", "name_cn", "expr", "note"}], "submit": [英文名], "issues": [文本], "done"}               → Proposal
+//     澄清 (至多一次)  {"questions": [{"prompt", "options": [..], "multiple", "recommended": [下标]}]} (单选推荐恰 1 项, 多选 ≥ 1 项) → Questions
+//     挖掘 (每轮)      {"factors": [{"name", "name_cn", "expr", "note"}], "submit": [英文名], "issues": [文本], "done"}               → Proposal
 //   两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer;  挖掘 Proposal ─系统评→ Mined ─→ round
 //   结局文本两档: Brief 一行 (流水 / 界面标题) ↔ Detail 多行 (反馈消息 / 界面展开); 五种结局 (Verdict) 一处写全
 // =============================================================================
@@ -28,6 +29,7 @@ namespace agent {
 
 enum class Msg : uint8_t { System,
                            First,
+                           Go,
                            Answer,
                            Round,
                            Retry };
@@ -35,7 +37,7 @@ enum class Msg : uint8_t { System,
 struct MsgDef {
   const char *id, *cn;
 };
-inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"answer", "答案"}, {"round", "反馈"}, {"retry", "重发"}};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"go", "开挖"}, {"answer", "答案"}, {"round", "反馈"}, {"retry", "重发"}};
 inline constexpr int kMsgCount = static_cast<int>(std::size(kMsgs));
 inline const MsgDef &def(Msg m) { return kMsgs[static_cast<int>(m)]; }
 struct Message {
@@ -119,6 +121,7 @@ std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g);
 Message FirstMessage(const Context &c, const std::vector<Result> &tried);
+Message GoMessage(const Context &c, const std::vector<Result> &tried);
 Message AnswerMessage(const Context &c, const Asked &a); // 与推荐不同的题附上推荐
 Message RoundMessage(const Context &c, const Mined &m);
 Message RetryMessage(const std::string &err);

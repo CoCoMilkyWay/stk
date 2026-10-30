@@ -1,16 +1,16 @@
 // InspectService — Factors→Inspect 页的单 worker: 对 Factors 表里高光的那一个因子 (view_file) 读特征库 → 一棵 Dag → CPU
-// evaluator → Stat, **沿时间落一级量** (逐行 rIC + 分层 / 多空净值线; FactorsService 全表 Run 只留二级 HoldStat) 给页面画分层累计 / 多空 / IC 分布.
-// 装载层与 FactorsService 共用 (FactorsLoad.hpp); 算子 / 流程层 (factor/Stat/Cpu.hpp run / EvalCpu.hpp run_node) 与搜索共用, 并行由
+// evaluator → Stat, **沿时间落一级量** (逐行 rIC + 分层 / 多空净值线; RunService 全表 Run 只留二级 HoldStat) 给页面画分层累计 / 多空 / IC 分布.
+// 装载层与 RunService 共用 (FactorsLoad.hpp); 算子 / 流程层 (factor/Stat/Cpu.hpp run / EvalCpu.hpp run_node) 与搜索共用, 并行由
 // 常驻 ForkJoin 出 (misc/exec.hpp).
 //
-// 与 FactorsService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
+// 与 RunService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 私有 FactorFlow + 本服务的平面缓冲, 常驻). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算;
 // 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / T / N 是探针 (InspectProbes); N 落线进净值引擎 fold_book
 // (FactorsBook.hpp, 与 Portfolio / 池线同一份):
 //   S  块       FactorsLoad Block, key = block_key (层 | Domain::key | 日段 | YSpec: 持有期 / 金额段 / 封顶 | B)
-//               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 特征平面 (评估域内读过的全留, 只增). 池等权线 (pool_line, 每持有期一条) 随 Y 一代算一次
-//               (块钩子; 整期装不下内存预算 → 评估期只留最近的日, fit_recent)
+//               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 特征平面 (Life::Worker: 评估域内读过的全留, 只增). 池等权线 (pool_line, 每持有期一条) 随 Y 一代算一次
+//               (块钩子, whole: 整期一块; 装不下内存预算 → 评估期只留最近的日, fit_recent)
 //   Y  标签     随 S                                       → 毛标签秩: Engine<Cpu> 的 Stat 会话 (Stat/Cpu.hpp StatSession, 一次常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 (ensure_block) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool 常驻)
 //   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
@@ -36,10 +36,10 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_factors/services/FactorsBook.hpp"    // BookLines
-#include "gui/task_factors/services/FactorsService.hpp" // FeatureTable / FactorRow / StatScope / AlphaDist / FactorWorker
-#include "gui/util/Service.hpp"
-#include "shared/Analysis.hpp" // ReadScope / AggPdf
+#include "gui/task_factors/services/FactorsBook.hpp"   // BookLines
+#include "gui/task_factors/services/FactorsFile.hpp"   // FeatureTable / FactorRow / StatScope / AlphaDist
+#include "gui/task_factors/services/FactorsWorker.hpp" // FactorWorker
+#include "shared/Analysis.hpp"                         // ReadScope / AggPdf
 
 #include <cstdint>
 #include <memory>

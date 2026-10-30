@@ -8,7 +8,7 @@
 #include "factor/Search/Contract.hpp" // search_hold / Score / kMinMono
 #include "gui/task_factors/services/FactorsFile.hpp"
 #include "gui/task_factors/services/FactorsScope.hpp" // span_of
-#include "gui/task_factors/services/FactorsService.hpp"
+#include "gui/task_factors/services/RunService.hpp"
 #include "gui/task_factors/services/SearchService.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp" // hold_desc
 #include "misc/date.hpp"                      // dash
@@ -305,7 +305,7 @@ struct Lab::Impl {
   // 两道 (下标 = Step), 首次 eval 才建
   static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1);
   bool gpu = false;
-  std::tuple<Lane<F::SearchService>, Lane<F::FactorsService>> lanes;
+  std::tuple<Lane<F::SearchService>, Lane<F::RunService>> lanes;
   // 队列
   bool running = false; // eval 起, 到 End 入队
   bool halt = false;    // 已 cancel: 在评那步收尾即 End
@@ -338,9 +338,9 @@ struct Lab::Impl {
     req.spec.keep = true;
     return req;
   }
-  F::FactorsRequest request(const Lane<F::FactorsService> &) const {
-    F::FactorsRequest req;
-    [[maybe_unused]] const bool ok = F::MakeFactorsRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
+  F::RunRequest request(const Lane<F::RunService> &) const {
+    F::RunRequest req;
+    [[maybe_unused]] const bool ok = F::MakeRunRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
     assert(ok && "作用域须 ready");
     req.scope.factor_dir = dir;
     req.spec.only_file = file;

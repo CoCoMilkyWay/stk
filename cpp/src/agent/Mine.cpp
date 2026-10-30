@@ -34,7 +34,7 @@ void Mine::open(const SharedData &data, Setup s) {
   setup.llm.system = SystemMessage(ctx, setup.gate).text;
   chat.open(setup.llm);
   log_.open((fs::path(catalog::dir(setup.sc)) / "chat" / stamp()).string(), setup.llm.system);
-  phase_ = Phase::Digest;
+  phase_ = setup.ask ? Phase::Digest : Phase::Propose;
   stop_ = false;
   t0_ = std::chrono::steady_clock::now(), t_end_ = -1;
   timeline.clear();
@@ -49,8 +49,9 @@ void Mine::open(const SharedData &data, Setup s) {
                       {"net", net_name(setup.llm.net)},
                       {"eval", setup.gpu ? "GPU" : "CPU"},
                       {"gate", {{"mono", setup.gate.mono}, {"ric", setup.gate.ric}}},
+                      {"ask", setup.ask},
                       {"tried", lab.results().size()}});
-  ask(FirstMessage(ctx, lab.results()));
+  ask(setup.ask ? FirstMessage(ctx, lab.results()) : GoMessage(ctx, lab.results()));
 }
 
 void Mine::start() {

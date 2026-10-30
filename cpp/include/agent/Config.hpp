@@ -54,7 +54,7 @@ inline constexpr double kGateRic = 0.03;  // rIC 均值
 // ---- 目录 ----
 //   kWorkDir/<池>/<层>/<持有期>/factors/   候选因子文件 (与正式因子同格式; Search 日志在其 log/)
 //   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话的日志 (agent/Journal.hpp)
-//   kPromptDir/{system,first,answer,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
+//   kPromptDir/{system,first,go,answer,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kPromptDir = "../../../../config/agent/prompt";
 inline constexpr const char *kKeyFile = "../../../../config/agent/keys.json"; // {<BackendDef::field>: key}; 无文件则按后端表填假 key 生成
