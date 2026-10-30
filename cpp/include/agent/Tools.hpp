@@ -69,6 +69,9 @@ struct ToolDef {
 };
 std::span<const ToolDef> Tools(); // 下标 = Tool
 const ToolDef &def(Tool t);
+std::string ToolText(const char *s);  // 工具说明 (desc / out) 的占位填实: {batch} → kBatch, {stock_days} → kStockDays
+std::string ArgType(const ArgDef &a); // 参数的类型与取值 (可选值 / 范围 / 个数)
+std::string ArgText(const ArgDef &a); // 参数一行: `键` (类型, 缺省 / 必填): 说明 (工具节与界面同一份)
 
 // 一个调用 (已按参数表校验, 缺省已补, 键按参数表序)
 struct Call {

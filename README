@@ -303,7 +303,7 @@ stk/
 │   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ 该调用做完
 │   │   │   │                                               #    · Desk = 会话状态 (worker / 设定 / 日志 / 时间线 / 计数), Mine = Desk + 转移; 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (按工具计数, 随事件增量加, 不回扫)
 │   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (take 每步) / 等人 (answer) → 做完; 只经 Desk 读写会话
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选进 test 目录, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选表 · 特征 / 算子表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选进 test 目录, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选表 · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

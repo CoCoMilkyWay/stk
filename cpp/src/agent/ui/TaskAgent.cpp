@@ -117,7 +117,7 @@ struct State {
   std::string prompt_text;
   bool prompt_loaded = false;
   // Mine 页
-  ImGuiTextFilter leaf_filter, op_filter;
+  ImGuiTextFilter leaf_filter, op_filter, tool_filter;
   Phase seen_phase = Phase::None; // 刚进 Choose: 切到过程页一次
   size_t flow_rounds = 0;         // 过程页上一帧画过的轮数
   std::string message;
@@ -1039,7 +1039,7 @@ void results_table(const View &v) {
   ImGui::EndTable();
 }
 
-// ---- 参考: 发给 agent 的特征表 / 算子表 ----
+// ---- 参考: 发给 agent 的特征表 / 算子表 / 工具表 ----
 void leaves_panel(State &s, const Context &c) {
   const std::vector<Leaf> &leaves = c.leaves;
   s.leaf_filter.Draw("过滤##leaf", 240);
@@ -1088,7 +1088,40 @@ void ops_panel(State &s, const Context &c) {
   ImGui::EndTable();
 }
 
-// 过程 (全宽时间线) / 候选表 / 特征表 / 算子表 (后三页不必开会话, 随作用域); 刚进 Choose 切回过程并滚到底 (问题在那)
+// 工具表 = 系统提示 "工具" 节的同一份 (kTools); ask_human 只在可提问的会话里发给 agent
+void tools_panel(State &s) {
+  static constexpr const char *kRunCn[kRunCount] = {"当场", "等人", "回测", "观察", "研报库"};
+  s.tool_filter.Draw("过滤##tool", 240);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", Tools().size());
+  if (!begin_table("##tools", {"工具", "中文名", "执行", "参数", "说明"}))
+    return;
+  for (const ToolDef &d : Tools()) {
+    const std::string desc = ToolText(d.desc);
+    if (!s.tool_filter.PassFilter((std::string(d.name) + ' ' + d.cn + ' ' + desc).c_str()))
+      continue;
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(d.name);
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(d.cn);
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(kRunCn[static_cast<size_t>(d.run)]);
+    ImGui::TableNextColumn();
+    std::string keys, args;
+    for (const ArgDef &a : d.args)
+      keys += (keys.empty() ? "" : " ") + std::string(a.key), args += (args.empty() ? "" : "\n") + ArgText(a);
+    ImGui::TextUnformatted(keys.empty() ? "—" : keys.c_str());
+    if (!args.empty())
+      tip_long(args);
+    ImGui::TableNextColumn();
+    wrapped(desc + (d.id == Tool::AskHuman ? " (只在可提问的会话里给)" : ""));
+    tip_long("返回: " + ToolText(d.out));
+  }
+  ImGui::EndTable();
+}
+
+// 过程 (全宽时间线) / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定); 刚进 Choose 切回过程并滚到底 (问题在那)
 void render_mine(const SharedData &data, State &s) {
   Mine &m = *s.mine;
   scope_row(data, s, m.live());
@@ -1119,6 +1152,10 @@ void render_mine(const SharedData &data, State &s) {
   }
   if (ImGui::BeginTabItem("算子")) {
     ops_panel(s, v.ctx);
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("工具")) {
+    tools_panel(s);
     ImGui::EndTabItem();
   }
   ImGui::EndTabBar();

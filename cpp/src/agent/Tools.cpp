@@ -164,15 +164,6 @@ const ToolDef *find(std::string_view name) {
   return it == std::end(kTools) ? nullptr : &*it;
 }
 
-// 工具说明里的占位: {batch} → kBatch, {stock_days} → kStockDays
-std::string text_of(const char *s) {
-  std::string t = s;
-  for (const auto &[key, v] : {std::pair<std::string_view, int>{"{batch}", kBatch}, {"{stock_days}", kStockDays}})
-    if (const size_t p = t.find(key); p != std::string::npos)
-      t.replace(p, key.size(), std::to_string(v));
-  return t;
-}
-
 // ---- 回复解析 ----
 // 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块); 同一对象里键重复也不收 (解析器会静默丢掉一个)
 bool object_of(std::string_view text, json &j, std::string &err) {
@@ -337,6 +328,31 @@ std::string brief(const json &v) {
 std::span<const ToolDef> Tools() { return kTools; }
 const ToolDef &def(Tool t) { return kTools[static_cast<size_t>(t)]; }
 
+std::string ToolText(const char *s) {
+  std::string t = s;
+  for (const auto &[key, v] : {std::pair<std::string_view, int>{"{batch}", kBatch}, {"{stock_days}", kStockDays}})
+    if (const size_t p = t.find(key); p != std::string::npos)
+      t.replace(p, key.size(), std::to_string(v));
+  return t;
+}
+
+std::string ArgType(const ArgDef &a) {
+  switch (a.type) {
+  case Arg::Str:
+    return a.choices ? std::string("取 ") + a.choices : "字符串";
+  case Arg::Int:
+    return "整数 " + std::to_string(a.lo) + ".." + std::to_string(a.hi);
+  case Arg::Strs:
+    return "字符串数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 个";
+  case Arg::Questions:
+    return "数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 题";
+  }
+  assert(false && "未知参数类型");
+  return {};
+}
+
+std::string ArgText(const ArgDef &a) { return "`" + std::string(a.key) + "` (" + ArgType(a) + (a.def ? ", 缺省 " + std::string(a.def) : std::string(", 必填")) + "): " + a.desc; }
+
 std::string Call::str(const char *k) const { return args.at(k).get<std::string>(); }
 int Call::num(const char *k) const { return args.at(k).get<int>(); }
 std::vector<std::string> Call::strs(const char *k) const { return args.at(k).get<std::vector<std::string>>(); }
@@ -437,29 +453,13 @@ std::string ToolsDoc(bool ask) {
   for (const ToolDef &d : kTools) {
     if (d.id == Tool::AskHuman && !ask)
       continue;
-    s += "## " + std::string(d.name) + " — " + d.cn + "\n" + text_of(d.desc) + "\n\n";
+    s += "## " + std::string(d.name) + " — " + d.cn + "\n" + ToolText(d.desc) + "\n\n";
     if (d.args.empty()) {
       s += "参数: 无\n";
     } else {
       s += "参数:\n";
-      for (const ArgDef &a : d.args) {
-        std::string t;
-        switch (a.type) {
-        case Arg::Str:
-          t = a.choices ? std::string("取 ") + a.choices : "字符串";
-          break;
-        case Arg::Int:
-          t = "整数 " + std::to_string(a.lo) + ".." + std::to_string(a.hi);
-          break;
-        case Arg::Strs:
-          t = "字符串数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 个";
-          break;
-        case Arg::Questions:
-          t = "数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 题";
-          break;
-        }
-        s += "- `" + std::string(a.key) + "` (" + t + (a.def ? ", 缺省 " + std::string(a.def) : std::string(", 必填")) + "): " + a.desc + "\n";
-      }
+      for (const ArgDef &a : d.args)
+        s += "- " + ArgText(a) + "\n";
     }
     s += "返回: " + std::string(d.out) + "\n\n";
   }
