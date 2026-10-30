@@ -664,7 +664,7 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
   else
     std::stable_sort(ix.begin(), ix.end(), [&](size_t x, size_t y) { return sort == "worst" ? ex[x] < ex[y] : ex[x] > ex[y]; });
   ix.resize(std::min<size_t>(M, static_cast<size_t>(c.num("n"))));
-  s += "\n明细 (" + sort + "):\n| # | 代码 | 日期 | 时刻 | 行 | 开仓分位 | 段超额 bp | 开仓时当日涨跌 | 开仓时日内位置 | 盘面 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+  s += "\n明细 (" + sort + (sort == "random" ? "" : "; 尾部个例, 多是个股事件或数据缺失, 不代表信号") + "):\n| # | 代码 | 日期 | 时刻 | 行 | 开仓分位 | 段超额 bp | 开仓时当日涨跌 | 开仓时日内位置 | 盘面 |\n|---|---|---|---|---|---|---|---|---|---|\n";
   for (size_t q = 0; q < ix.size(); ++q) {
     const Trade &x = ts[ix[q]];
     const Mark &m = mk[ix[q]];

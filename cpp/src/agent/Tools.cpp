@@ -29,7 +29,7 @@ constexpr ArgDef kLayersArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, k
 constexpr ArgDef kTradesArgs[] = {
     {"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
     {"side", Arg::Str, "\"top\"", 0, 0, "top|bottom", kSideDesc},
-    {"sort", Arg::Str, "\"worst\"", 0, 0, "worst|best|random", "明细挑哪些段: worst 超额最低 / best 最高 / random 随机 (固定种子)"},
+    {"sort", Arg::Str, "\"random\"", 0, 0, "random|worst|best", "明细挑哪些段: random 随机 (固定种子, 看典型持仓) / worst 超额最低 / best 最高 (两端是尾部个例)"},
     {"n", Arg::Int, "12", 1, 30, nullptr, "明细段数"},
     {"merge", Arg::Str, "\"run\"", 0, 0, "none|run|day", "合并成段: none 每行一笔 / run 同一资产同日相邻行连成一段 / day 同一资产同日并成一段"}};
 constexpr ArgDef kHoldersArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
@@ -99,7 +99,8 @@ constexpr ToolDef kTools[] = {
      "全期 20 组 + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组)"},
     {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
-     "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列最差 / 最好 / 随机若干段的明细 (代码与日期可接 view_stock_day). 用来找收益从哪来、亏在哪类情形",
+     "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列若干段的明细 (代码与日期可接 view_stock_day). 汇总与两张表看收益从哪类情形来、亏在哪类情形; "
+     "明细只用来挑票对着盘面看机制, 尾部个例 (worst / best) 多是个股事件或数据缺失, 不代表信号",
      "汇总 + 时段表 + 标签表 + 明细表"},
     {Tool::ViewHolders, "view_holders", "看常客", Run::Look, kHoldersArgs,
      "看哪些资产最常落在因子一端: 本端行数 / 占其在池行的比例 / 涉及天数 / 平均连续行数 / 本端持仓平均超额, 附集中度. 用来看因子是否只在少数票上起作用、在挑哪类票",

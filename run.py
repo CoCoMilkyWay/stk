@@ -38,19 +38,39 @@ def _start_fetch():
     return subprocess.Popen(["git", "fetch", "--quiet"], env=env)
 
 
+def _git(*args):
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _git_paths(*args):
+    return [p for p in _git(*args, "-z").split("\0") if p]
+
+
 def _sync_remote(fetch):
-    """Fast-forward to upstream if behind, then re-exec so run.py itself is fresh."""
+    """Fast-forward to upstream if behind, then re-exec so run.py itself is fresh.
+    Upstream wins on collisions: untracked files in the way are deleted, conflicting local edits are discarded.
+    """
     assert fetch.wait(timeout=15) == 0, "git fetch failed"
-    behind = subprocess.run(
-        ["git", "rev-list", "--count", "HEAD..@{u}"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    behind = _git("rev-list", "--count", "HEAD..@{u}").strip()
     if behind == "0":
         return
     print(f"Pulling {behind} new commit(s)...")
+    for path in _git_paths("diff", "--name-only", "--diff-filter=A", "HEAD", "@{u}"):
+        if os.path.lexists(path):
+            print(f"  overwrite local: {path}")
+            os.remove(path)
     subprocess.run(["git", "merge", "--ff-only", "--autostash", "@{u}"], check=True)
+    # autostash 回放冲突时 merge 仍返回 0: 冲突文件留着冲突标记, 整份本地改动另存进 stash
+    unmerged = _git_paths("diff", "--name-only", "--diff-filter=U")
+    if unmerged:
+        for path in unmerged:
+            print(f"  overwrite local: {path}")
+        subprocess.run(["git", "checkout", "HEAD", "--", *unmerged], check=True)
+        subprocess.run(["git", "reset", "--quiet"], check=True)
+        subprocess.run(["git", "stash", "drop", "--quiet"], check=True)
+    assert not _git_paths("diff", "--name-only", "--diff-filter=U")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
