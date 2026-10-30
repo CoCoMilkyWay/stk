@@ -22,6 +22,7 @@
 
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsBook.hpp"   // BookLines / Baskets::index_line / compound
+#include "gui/task_factors/services/FactorsTable.hpp"  // FactorScope / FactorRef / kWeights
 #include "gui/task_factors/services/FactorsWorker.hpp" // FactorWorker
 
 #include <atomic>

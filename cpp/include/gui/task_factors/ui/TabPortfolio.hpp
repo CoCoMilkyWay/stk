@@ -26,6 +26,7 @@
 //     不可算 / v ≤ 0 / 窗内有 v ≤ 0 的点断开, q_j ≤ 0 的档单独断开
 #pragma once
 
+#include "gui/task_factors/services/FactorsFile.hpp" // FactorRow
 #include "gui/task_factors/services/PortfolioService.hpp"
 
 #include <algorithm>

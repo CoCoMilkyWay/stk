@@ -730,9 +730,9 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
 //   node(b0, Fr, i, ms)      走完节点 i (ms = 算子耗时, 叶 0)
 //   done(k)                  根 k 的探针钩子全部走完 (末块 finish 后); k = roots 下标
 //   fail(e, why) / post(e, k) (eval_job) 条目 e 的终局, 每条目恰一个 (中断不发): 没算成 (根坏 / 评估域不成 / 全部根坏) / 根 k 评完
-//   whole                    eval_job 只整期一块 (块钩子 / alpha 分布要整期; 装不下截最近的日)
+//   whole()                  eval_job 只整期一块 (块钩子 / alpha 分布要整期; 装不下截最近的日)
 struct HookBase {
-  static constexpr bool whole = false;
+  static constexpr bool whole() { return false; }
   void block(const Block &, size_t, double) {}
   void plan(size_t, const Forest &, const std::vector<std::string> &, const std::vector<uint8_t> &) {}
   void node(size_t, const Forest &, int, double) {}
@@ -824,7 +824,7 @@ struct JobHooks : HookBase {
       fin[e] = 1, h.fail(static_cast<int>(e), why);
   }
 };
-// 一次作业 = 一趟, 根集 rs (非空) 全进一张森林 (Run / Inspect / Portfolio): prepare (Y 持有期 = 各根探针 hd 之并; H::whole → 整期一块,
+// 一次作业 = 一趟, 根集 rs (非空) 全进一张森林 (Run / Inspect / Portfolio): prepare (Y 持有期 = 各根探针 hd 之并; H::whole() → 整期一块,
 // 装不下截最近的日; 否则前后带 = 根的最长回看, 按预算分块) → pass (钩子 hk 外包 JobHooks) → 条目终局: 每条目恰一个 hk.fail / hk.post (中断不发).
 // o 须新建, 调用方先填 o.job 的 life / who. 进度: Loading 期 = 天; Running 期 (每块) = 好根的算子节点 + 好根数.
 // 结局 Ok / Empty / Broken (全部根坏) / Cancel / Stale (Empty / Broken: o.job.why)
@@ -838,11 +838,11 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, Slo
   o.fr = plant_forest(roots, /*keep_roots=*/false);
   o.backend = E::kName;
   std::vector<int> hk_all;
-  int look = Hk::whole ? -1 : 0;
+  int look = Hk::whole() ? -1 : 0;
   for (int k = 0; k < C; ++k) {
     const Holds &h = ps(k).hd;
     hk_all.insert(hk_all.end(), h.k, h.k + h.n);
-    if (!Hk::whole)
+    if (!Hk::whole())
       look = std::max(look, factor::search::space::lookback(*roots[static_cast<size_t>(k)].e));
   }
   std::sort(hk_all.begin(), hk_all.end());

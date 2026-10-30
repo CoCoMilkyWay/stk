@@ -2,6 +2,7 @@
 #include "gui/task_factors/services/PortfolioService.hpp"
 
 #include "gui/task_factors/services/FactorsEngine.hpp" // with_engine / eval_job / open_job / fit_recent / Probes / LinesP / group_abs
+#include "gui/task_factors/services/FactorsFile.hpp"   // ValidFactorName / FactorRow / ScanFactorFile
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools
 #include "shared/SharedData.hpp"

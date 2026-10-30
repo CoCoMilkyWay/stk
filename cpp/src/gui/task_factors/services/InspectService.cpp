@@ -237,7 +237,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   ps.at<RxAllP>().dst = &pl_.rx_all;
   ps.at<RicP>().dst = &pl_.ric;
   struct Hooks : HookBase {
-    static constexpr bool whole = true; // 池等权线 / alpha 分布要整期
+    static constexpr bool whole() { return true; } // 池等权线 / alpha 分布要整期
     InspectService &W;
     FactorFlow &F;
     void block(const Block &c, size_t, double) {
