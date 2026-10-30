@@ -76,7 +76,7 @@ private:
 };
 
 // preflight 探针 — 取本周配额 (不消耗配额), 终端彩色打印一行剩余比例 (绿 ≥ 50% / 黄 ≥ 20% / 红),
-// 返回原值. 是否放行由调用方按 config::BIGQUANT_QUOTA_CONFIRM_RATIO 决定 (GUI 弹窗), 这里只报不判.
+// 返回原值. 只报不判.
 Quota preflight(Client &client);
 
 } // namespace bigquant

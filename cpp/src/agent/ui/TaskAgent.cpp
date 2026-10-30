@@ -117,7 +117,7 @@ struct State {
   std::string prompt_text;
   bool prompt_loaded = false;
   // Mine 页
-  ImGuiTextFilter leaf_filter, op_filter, tool_filter;
+  ImGuiTextFilter leaf_filter, op_filter, tool_filter, note_filter;
   Phase seen_phase = Phase::None; // 刚进 Choose: 切到过程页一次
   size_t flow_rounds = 0;         // 过程页上一帧画过的轮数
   std::string message;
@@ -291,8 +291,8 @@ void session_row(const SharedData &data, State &s) {
     begin_session(true);
   ImGui::EndDisabled();
   tip(why_not ? why_not
-              : "开一段自检会话: 同样的系统提示, 首条换成 test 模板, 让 agent 把每个工具都调一遍, 问题记 issue, 末了总评\n"
-                "候选与日志进作用域的 test 目录, submit_factor 只查门槛不拷进正式库");
+              : "开一段自检会话: 同样的系统提示, 首条换成 test 模板, 让 agent 把每个工具都调一遍, 问题记 report_issue, 末了总评\n"
+                "候选 / 日志 / 全局记录进 global/test 目录, submit_factor 只查门槛不拷进正式库");
   ImGui::SameLine();
   ImGui::BeginDisabled(m.phase() != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0)))
@@ -780,8 +780,8 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
     h += " · 候选 " + std::to_string(c.staged()) + (c.unstaged ? " (未落 " + std::to_string(c.unstaged) + ")" : "") + " · 有权重 " + std::to_string(c.hits);
   if (const int n = c.n(Tool::SubmitFactor); n > 0)
     h += " · 提交 " + std::to_string(n) + " (入库 " + std::to_string(c.adopted) + ")";
-  if (const int n = c.n(Tool::NoteIssue); n > 0)
-    h += " · issue " + std::to_string(n);
+  if (const int n = c.noted(); n > 0)
+    h += " · 记录 " + std::to_string(n);
   if (std::any_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::Finish; }))
     h += " · 宣布挖完";
   if (i + 1 == m.timeline.size() && m.phase() == Phase::Choose)
@@ -979,11 +979,13 @@ bool begin_table(const char *id, std::initializer_list<const char *> heads) {
 }
 
 // 特征 / 算子 / 候选 三页的数据 = Lab (会话中候选随评估实时更新). 无在跑会话时随作用域重绑; 绑不上 (该层无可搜持有期 / 评估在收尾) = 空表
+// 全局记录不随作用域, 随 Lab 的候选目录 (自检的 / 正式的) 读
 struct View {
   const Context &ctx;
   const std::vector<Result> &results;
   const Names &adopted;
-  bool test; // 候选是自检会话的 (test 目录)
+  bool test; // 候选与全局记录是自检会话的 (global/test 目录)
+  const Notes &notes;
 };
 
 View view_of(const SharedData &data, State &s) {
@@ -991,17 +993,19 @@ View view_of(const SharedData &data, State &s) {
   const Scope &sc = s.opt.sc;
   if (!m.live() && !m.lab.busy() && m.lab.scope() != sc && !catalog::holds(data, sc.level).empty())
     m.lab.bind(data, sc, false);
+  if (!m.notes.loaded(m.lab.test()))
+    m.notes.load(m.lab.test());
   static const Context kNoCtx;
   static const std::vector<Result> kNoResults;
   static const Names kNone;
   if (m.lab.scope() != sc)
-    return {kNoCtx, kNoResults, kNone, false};
-  return {m.lab.ctx(), m.lab.results(), m.phase() != Phase::None && m.setup.sc == sc ? m.adopted : kNone, m.lab.test()};
+    return {kNoCtx, kNoResults, kNone, m.lab.test(), m.notes};
+  return {m.lab.ctx(), m.lab.results(), m.phase() != Phase::None && m.setup.sc == sc ? m.adopted : kNone, m.lab.test(), m.notes};
 }
 
 void results_table(const View &v) {
   const std::vector<Result> &results = v.results;
-  ImGui::TextDisabled("候选 %zu (%s, 本持有期 score 降序)", results.size(), v.test ? "自检的 test 目录" : "会话目录");
+  ImGui::TextDisabled("候选 %zu (%s, 本持有期 score 降序)", results.size(), v.test ? "自检的 global/test 目录" : "会话目录");
   if (!begin_table("##results", {"名", "中文", "结局", "mono", "多空bp", "rIC", "score", "模板"}))
     return;
   for (const Result &r : results) {
@@ -1035,6 +1039,40 @@ void results_table(const View &v) {
     ImGui::PopStyleColor();
     ImGui::TableNextColumn();
     wrapped(r.tmpl);
+  }
+  ImGui::EndTable();
+}
+
+// 一类全局记录, 新到旧 (只读); 编号悬浮看出处
+void notes_table(State &s, const View &v, NoteKind k) {
+  const std::vector<Note> &all = v.notes.of(k);
+  s.note_filter.Draw("过滤##note", 240);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu 条 (%s, 新到旧)", all.size(), v.test ? "自检的 global/test 目录" : "global 目录");
+  if (!begin_table("##notes", {"编号", "时间", "作用域", "附议", "内容"}))
+    return;
+  for (auto it = all.rbegin(); it != all.rend(); ++it) {
+    const Note &x = *it;
+    const std::string title = x.title(), body = x.body();
+    if (!s.note_filter.PassFilter((x.id + ' ' + x.scope + ' ' + title + ' ' + body).c_str()))
+      continue;
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(x.id.c_str());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s · 第 %d 轮", x.session.c_str(), x.round);
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(x.time.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(x.scope.c_str());
+    ImGui::TableNextColumn();
+    if (!x.ref.empty())
+      ImGui::Text("附议 %s", x.ref.c_str());
+    if (const int b = v.notes.backers(x); b > 0)
+      ImGui::TextColored(color(TaskStatus::Kind::Ready), "%d 条附议", b);
+    ImGui::TableNextColumn();
+    wrapped(kColHead, title);
+    wrapped_dim(body);
   }
   ImGui::EndTable();
 }
@@ -1141,9 +1179,23 @@ void render_mine(const SharedData &data, State &s) {
     ImGui::EndTabItem();
   }
   const View v = view_of(data, s);
-  const std::string cands = "候选 (" + std::to_string(v.results.size()) + ")###cands";
-  if (ImGui::BeginTabItem(cands.c_str())) {
-    results_table(v);
+  if (ImGui::BeginTabItem("候选###cands")) {
+    if (ImGui::BeginTabBar("##cand_tabs")) {
+      const std::string factors = "因子 (" + std::to_string(v.results.size()) + ")###factors";
+      if (ImGui::BeginTabItem(factors.c_str())) {
+        results_table(v);
+        ImGui::EndTabItem();
+      }
+      for (size_t i = 0; i < kNoteKindCount; ++i) {
+        const NoteKind k = static_cast<NoteKind>(i);
+        const std::string label = std::string(def(k).cn) + " (" + std::to_string(v.notes.of(k).size()) + ")###" + def(k).id;
+        if (ImGui::BeginTabItem(label.c_str())) {
+          notes_table(s, v, k);
+          ImGui::EndTabItem();
+        }
+      }
+      ImGui::EndTabBar();
+    }
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem("特征")) {

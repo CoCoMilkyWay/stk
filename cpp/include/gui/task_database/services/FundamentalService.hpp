@@ -8,7 +8,6 @@
 #include "misc/date.hpp"
 #include "shared/AssetInfo.hpp"
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -33,7 +32,7 @@ struct FundamentalState {
   std::string message;     // 当前阶段说明 (工作线程实时更新)
   std::string last_update; // 最近一次构建成功时刻
 
-  // BigQuant 周配额 (preflight 结果, 单位 cell; Overview 常显 + 待确认弹窗)
+  // BigQuant 周配额 (preflight 结果, 单位 cell; Overview 常显)
   //   每轮联网同步开头 preflight 一次, 每个 BigQuant 任务后再取; 未联网的轮次沿用上次
   std::int64_t quota_weekly = 0;
   std::int64_t quota_used = 0;
@@ -59,11 +58,6 @@ struct FundamentalRequest {
   bool bar1m = false;       // 联网补齐分钟线 (基本面之后)
 };
 
-// worker 挂起等弹窗的事由 (GUI 线程按事由画模态, 回答经 confirm)
-//   Quota: BigQuant 表 (基本面 / 分钟线) 待拉且周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO
-enum class Ask { None,
-                 Quota };
-
 // 交接件: ok = false ⇒ 本地 parquet 缺失 (需先联网同步), assetinfo 空
 struct FundamentalResult {
   uint64_t seq = 0;
@@ -77,10 +71,10 @@ struct FundamentalResult {
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::assetinfo (只在 GUI 线程替换)
 //   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> (Round)
-//               → [Ask::Quota] → 基本面 [drive: bq → ts] → 分钟线 [drive bq.bar1m] → 构建 → post
+//               → 基本面 [drive: bq → ts] → 分钟线 [drive bq.bar1m] → 构建 → post
 //               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;
-//               state 持 mutex 读; asking = 待确认事由 (worker 挂起等 confirm)
+//               state 持 mutex 读
 // ============================================================================
 class FundamentalService : public Service<FundamentalService, FundamentalRequest>, public Published {
   friend Service<FundamentalService, FundamentalRequest>;
@@ -90,20 +84,13 @@ public:
   FundamentalService(); // 末尾 Start
   ~FundamentalService() { Stop(); }
 
-  // 待确认的弹窗回答: proceed=true 照常同步该道, false 跳过该道 (其余道 / 本地构建照常).
-  // 只在 asking != None 时可调, 每问只回答一次.
-  void confirm(bool proceed);
-
   FundamentalState state;             // UI 持 mutex 读
-  std::atomic<Ask> asking{Ask::None}; // worker 挂起等弹窗的事由
   Mailbox<FundamentalResult> handoff; // worker 每轮收尾 post, StateManager 帧首 take
 
 private:
   static constexpr Phase kStart = Phase::Scanning;
   Progress &board() { return *this; }
   bool run(FundamentalRequest &req);
-
-  std::atomic<int> decision_{0}; // 弹窗决定 → worker: 0 = 未答, 1 = 继续, 2 = 跳过该道
 };
 
 } // namespace GUI::Database

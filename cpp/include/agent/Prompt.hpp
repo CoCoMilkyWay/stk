@@ -6,8 +6,8 @@
 //   模板 = kPromptDir/<名>.md (agent/Config.hpp), {{键}} 占位; 模板里出现未给的键 → assert (模板与代码脱节立刻暴露)
 //     system  静态前缀 (一段对话内逐字节不变): 作用域 / 本层的行与时刻 / 语法与口径 / 入库门槛 / 做法 (先看后改, 一段会话精修一个因子) / 调用协议 /
 //             工具表 / 特征叶 (按族分节: 族卡 (kFamilyFile) + 按 档.层 分组的 列名 + 中文名 + 落盘变换; 公式与说明经 search_leaves) / 算子表
-//     first   首条 user: 已试候选与正式库的规模 (用 list_tried / list_library 看) + 能否提问 + 开工
-//     test    自检会话的首条 (代替 first): 把每个工具都调一遍, 对照说明查结果, 问题记 note_issue, 末了总评再 finish
+//     first   首条 user: 已试候选 / 正式库 / 全局记录的规模 (用 list_tried / list_library / list_notes 看) + 能否提问 + 开工
+//     test    自检会话的首条 (代替 first): 把每个工具都调一遍, 对照说明查结果, 问题记 report_issue, 末了总评再 finish
 //     round   每条回复的调用结果, 按调用序 (调用一行 + 结果) + 下一步 (挖掘 / 自检各一种); 较早的在会话历史里成批换成折叠版 (FoldedText)
 //     retry   回复不合协议: 原因 + 按协议重发
 //   回复的解析 / 工具表见 agent/Tools.hpp; 观察工具的成文见 agent/Views.hpp
@@ -63,8 +63,8 @@ std::string AnswerText(const Asked &a); // ask_human: 每题的选择 (没照推
 std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n, std::vector<std::string> &shown);
 
 // ---- 发 ----
-Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold); // fold = 会话历史折叠旧结果 (agent/Mine)
-Message FirstMessage(const Context &c, int tried, bool ask);                 // tried = 可见的已试候选数
+Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold);           // fold = 会话历史折叠旧结果 (agent/Mine)
+Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask); // tried = 可见的已试候选数; notes = 全局记录的条数 (NotesBrief)
 Message TestMessage(bool ask);
 Message RoundMessage(const std::vector<Act> &acts, bool test); // 一条回复的全部调用, 按序; test = 自检会话
 Message RetryMessage(const std::string &err);

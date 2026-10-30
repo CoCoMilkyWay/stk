@@ -382,7 +382,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"good_ops", std::to_string(kGoodOps)},
                             {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
-                            {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 note_issue"},
+                            {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
                             {"history", fold ? "最近 " + std::to_string(kKeepRounds) + "~" + std::to_string(2 * kKeepRounds) +
                                                    " 条消息原样留在对话里, 更早的结果消息会成批折叠 (观察与查询只留标题, 回测只留一行结局); 还要用的数在 eval_factor 的 note 里记下, 或重调"
                                              : "对话里的结果消息原样保留"},
@@ -391,10 +391,11 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"ops", ops}});
 }
 
-Message FirstMessage(const Context &c, int tried, bool ask) {
+Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask) {
   return fill(Msg::First, {{"hold", c.hold},
                            {"tried", std::to_string(tried)},
                            {"library", std::to_string(visible(c.library))},
+                           {"notes", notes},
                            {"start", ask ? "要研究员定的事 (从哪个因子起步、往哪个方向挖) 可以先看几眼数据再用 ask_human 一次问完, 也可以不问"
                                          : "自己定下要做的那一个因子 (新起, 或从已试候选 / 正式库里挑) 和方向"}});
 }
@@ -421,7 +422,7 @@ Message RoundMessage(const std::vector<Act> &acts, bool test) {
   }
   const std::string batch = std::to_string(kBatch);
   const std::string next = test ? "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch +
-                                      " 个, 同条回复带一个观察); 对照工具说明查上面每个结果, 有问题即 note_issue. 全部调过后 note_issue 写总评, 再 finish."
+                                      " 个, 同条回复带一个观察); 对照工具说明查上面每个结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish."
                                 : "对照当前最好版本, 按系统提示 \"做法\" 里的判据判断每个回测的改动是好是坏, 再对照 note 里写下的预测: 机制假设是被支持还是落空; "
                                   "从观察里找下一个要修的现象, 再发下一串调用 (eval_factor 至多 " +
                                       batch + " 个, 同条回复带至少一个观察). 改不动了就 submit_factor 交最好的版本, 再 finish.";
@@ -438,7 +439,7 @@ std::string FoldedText(const std::vector<Act> &acts) {
     if (run == Run::Eval && a.ok) {
       const Staged &st = std::get<Trial>(a.got).st;
       s += "- " + st.cand.name + " `" + st.cand.expr + "`: " + Brief(st.res) + "\n";
-    } else if (!a.ok || run == Run::Human || (run == Run::Now && t != Tool::SearchLeaves && t != Tool::ListTried && t != Tool::ListLibrary)) {
+    } else if (!a.ok || run == Run::Human || (run == Run::Now && t != Tool::SearchLeaves && t != Tool::ListTried && t != Tool::ListLibrary && t != Tool::ListNotes)) {
       s += a.out + (a.out.ends_with('\n') ? "" : "\n");
     }
   }

@@ -307,7 +307,7 @@ std::string hold_desc(int hold, int level); // 开 / 清仓规则
 bool gpu();
 bool ready(const SharedData &data, const Scope &sc, bool gpu); // 资产轴就绪且标签库已建
 std::string label(const Scope &sc);                            // 池 / 层 / 持有期
-std::string dir(const Scope &sc, bool test);                   // 会话目录 kWorkDir/<池>/<层>/<持有期>; test = 其下 test/ (自检会话的候选与日志)
+std::string dir(const Scope &sc, bool test);                   // 会话目录 kWorkDir/<池>/<层>/<持有期>; test = kGlobalDir/test/<池>/<层>/<持有期> (自检会话的候选与日志)
 } // namespace catalog
 
 class Lab {

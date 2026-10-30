@@ -41,8 +41,12 @@ enum class Tool : uint8_t { ViewFeature,
                             EvalFactor,
                             ListTried,
                             ListLibrary,
+                            ListNotes,
                             SubmitFactor,
-                            NoteIssue,
+                            RequestFeature,
+                            RequestTool,
+                            NoteInsight,
+                            ReportIssue,
                             Finish,
                             AskHuman };
 inline constexpr size_t kToolCount = static_cast<size_t>(Tool::AskHuman) + 1;

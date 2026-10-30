@@ -1,11 +1,12 @@
-@AGENT.md @config/agent/prompt @cpp/src/agent @output/agent/<池>/<层>/<持有期>/test/chat/<时间>
+@AGENT.md @config/agent/prompt @cpp/src/agent @output/agent/global/test/<池>/<层>/<持有期>/chat/<时间> @output/agent/global/test
 
 继续优化 agent 工具 (类 MCP) 与第三方 LLM agent 的交互. 先读材料再下结论, 不要凭印象.
 
 材料:
 - 设计: AGENT.md; 工具表在 cpp/src/agent/Tools.cpp (kTools); 观察成文在 Views.cpp; 回测结局文本在 Prompt.cpp; 状态机在 Mine.cpp / Acts.cpp; 与项目的接口在 Bridge.cpp
 - 提示词: config/agent/prompt/{system,first,round,retry,test}.md
-- 最近一次会话日志 (上面 @ 的目录): 每轮的 user / reply、events.jsonl、结束报告里的 issues
+- 最近一次会话日志 (上面 @ 的目录): 每轮的 user / reply、events.jsonl、结束报告里的全局记录
+- 自检会话的全局记录: output/agent/global/test/{feature,tool,insight,issue}.jsonl
 
 要做的:
 1. 逐轮读日志, 找 agent 实际卡住或浪费的地方, 每条都要有日志里的证据 (第几轮、哪个调用、原文片段). 重点看:
@@ -14,7 +15,7 @@
    - 结果被截断的 (kOutChars), 以及明显冗余、重复、占 token 的段落
    - agent 误读的数或口径 (时刻 / 行号 / 方向 / 单位 / 超额定义 / 代表点 / 参数曲面)
    - agent 想要却没有的信息, 或绕了几轮才拿到的信息 (缺工具 / 缺参数 / 缺字段)
-   - note_issue 里 agent 自己提的问题
+   - agent 自己提的全局记录 (report_issue 的 bug / idea / question, request_feature / request_tool)
    - 折叠后的旧结果 (智谱后端) 是否让 agent 丢了还要用的数
    - prompt_tokens / cached_tokens 随轮次的走势, 以及系统提示的体量
 2. 再从代码侧核对: 工具说明与实际输出是否一致, 各层 (min / 5min / … / day) 是否都对, 边界情况 (日层、无数据、无显著、模板无自由参数) 是否给了可读的结果.

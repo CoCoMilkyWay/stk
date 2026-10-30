@@ -44,10 +44,24 @@ Wait now(Act &a, Desk &d) {
     d.add({.adopted = a.ok});
     break;
   }
-  case Tool::NoteIssue:
-    a.out = "已记下, 会话结束后交给研究员";
-    d.log.event(Event::Issue, {{"round", d.round()}, {"text", c.str("text")}});
+  case Tool::ListNotes:
+    a.out = NotesText(d.notes, c.str("kind"), c.str("scope") == "here" ? catalog::label(d.setup.sc) : "", c.str("query"), c.num("n"));
     break;
+  case Tool::RequestFeature:
+  case Tool::RequestTool:
+  case Tool::NoteInsight:
+  case Tool::ReportIssue: {
+    const NoteKind k = NoteOf(c.tool);
+    if (const std::string ref = c.str("ref"); !ref.empty() && !d.notes.find(k, ref)) {
+      a.ok = false;
+      a.out = "没有" + std::string(def(k).cn) + " " + ref + ": ref 写 list_notes 里同类已有一条的编号 (编号首字母 " + def(k).prefix + "), 新提的不写";
+      break;
+    }
+    const Note &x = d.notes.add(c, catalog::label(d.setup.sc), d.log.dir(), d.round());
+    a.out = "已记为 " + x.id + (x.ref.empty() ? "" : " (附议 " + x.ref + ")") + "; 全局可见: 研究员在界面里看, 后续会话用 list_notes 查得到";
+    d.log.event(Event::Note, {{"round", d.round()}, {"id", x.id}, {"ref", x.ref}, {"title", x.title()}});
+    break;
+  }
   case Tool::Finish:
     d.done = true;
     a.out = "本条回复的调用做完后会话结束";

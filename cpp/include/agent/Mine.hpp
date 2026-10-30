@@ -22,6 +22,7 @@
 #include "agent/Bridge.hpp"
 #include "agent/Chat.hpp"
 #include "agent/Journal.hpp"
+#include "agent/Notes.hpp"
 #include "agent/Prompt.hpp"
 #include "agent/Tools.hpp"
 
@@ -41,7 +42,7 @@ struct Desk {
     Gate gate;
     bool gpu = false;
     bool ask = true;   // agent 可用 ask_human 向人提一次问
-    bool test = false; // 自检: 首条换成 test (每个工具调一遍); 候选与日志进 test 目录, submit_factor 只查门槛不拷
+    bool test = false; // 自检: 首条换成 test (每个工具调一遍); 候选 / 日志 / 全局记录进 global/test 目录, submit_factor 只查门槛不拷
     llm::Options llm;  // system 由 open 填
   };
   // 计数 (+= 累加): calls = 各工具开始执行的次数; 其余是结局
@@ -54,6 +55,7 @@ struct Desk {
     int n(Run r) const; // 该执行方的工具之和
     int all() const;
     int staged() const { return n(Tool::EvalFactor) - unstaged; }
+    int noted() const; // 四个提交全局记录的工具之和
   };
   // 一轮 = 一条发出的消息. span = 发出 → 收齐, 其内 think / write = 首个思考增量 / 首个正文增量起 (无思考则 think 未开); acts = 回复里的调用, 按序执行
   struct Round {
@@ -75,6 +77,7 @@ struct Desk {
   Lab lab; // 上下文 = lab.ctx()
   Setup setup;
   Journal log;
+  Notes notes; // 全局记录 (open 按 setup.test 读回; 无在跑会话时界面按候选目录重读)
   std::vector<Round> timeline;
   Total total;
   std::set<std::string> adopted; // 本会话入库的英文名

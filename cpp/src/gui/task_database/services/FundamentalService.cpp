@@ -50,7 +50,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -994,19 +993,6 @@ bool FundamentalService::run(FundamentalRequest &req) {
       state.quota_time = now_str();
       publish();
     };
-    auto left = [&job]() {
-      return 1.0 - static_cast<double>(job.quota.used) / static_cast<double>(job.quota.weekly);
-    };
-    // 挂起等弹窗 (GUI 线程 confirm); 取消 (新请求 / Stop) 视同跳过
-    auto ask = [this, &job](Ask a, std::string msg) {
-      job.set_message(std::move(msg));
-      decision_.store(0, std::memory_order_relaxed);
-      asking.store(a, std::memory_order_release);
-      while (decision_.load(std::memory_order_acquire) == 0 && !cancel_.load(std::memory_order_relaxed))
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      asking.store(Ask::None, std::memory_order_release);
-      return decision_.load(std::memory_order_acquire) == 1;
-    };
     auto go = [this]() { return !cancel_.load(std::memory_order_relaxed); };
     job.set_message("preflight: BigQuant 周配额");
     job.quota = bigquant::preflight(bq);
@@ -1038,15 +1024,12 @@ bool FundamentalService::run(FundamentalRequest &req) {
     };
     std::cout << "[sync] from " << config::PIPELINE_START_DATE << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
               << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
-    // BigQuant 两道 (基本面 / 分钟线) 有待拉且剩余 < 阈值 ⇒ 先弹窗一次, 拒绝只跳过这两道
-    const bool bq_go = (!bq_tasks.empty() || !bar1m_tasks.empty()) && go() &&
-                       (left() >= config::BIGQUANT_QUOTA_CONFIRM_RATIO || ask(Ask::Quota, "等待确认: BigQuant 周配额不足"));
-    if (bq_go && !bq_tasks.empty())
+    if (!bq_tasks.empty() && go())
       lane("bigquant", bq_tasks, run_bq);
     if (!ts_tasks.empty() && go())
       lane("tushare", ts_tasks, run_tu);
     // 分钟线: 基本面之后 (一日一条, 量大耗时长)
-    if (bq_go && !bar1m_tasks.empty() && go())
+    if (!bar1m_tasks.empty() && go())
       lane("bigquant.bar1m", bar1m_tasks, run_bq);
   }
   // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)
@@ -1076,12 +1059,6 @@ bool FundamentalService::run(FundamentalRequest &req) {
   }
   handoff.post(std::move(out));
   return true;
-}
-
-void FundamentalService::confirm(bool proceed) {
-  assert(asking.load(std::memory_order_acquire) != Ask::None && decision_.load() == 0 && "confirm: 不在待确认 / 本问已回答");
-  decision_.store(proceed ? 1 : 2, std::memory_order_release);
-  asking.store(Ask::None, std::memory_order_release); // 同帧退出待确认, 弹窗不重开
 }
 
 } // namespace GUI::Database

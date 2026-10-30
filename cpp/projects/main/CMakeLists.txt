@@ -364,6 +364,7 @@ set(MATH_PRECISE
     agent/Journal.cpp
     agent/Llm.cpp
     agent/Mine.cpp
+    agent/Notes.cpp
     agent/Prompt.cpp
     agent/Tools.cpp
     agent/Views.cpp

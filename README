@@ -310,10 +310,11 @@ stk/
 │   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ eval / look / book) → poll 逐个取走 Tick, 末个 End → live → busy / cancel
 │   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Think (agent 发调用) ↔ Act (系统逐个执行; ask_human 进 Choose 等人), Report); 转移唯一入口 go 兑现 Stop; 无 ImGui
 │   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ 该调用做完
-│   │   │   │                                               #    · Desk = 会话状态 (worker / 设定 / 日志 / 时间线 / 计数), Mine = Desk + 转移; 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (按工具计数, 随事件增量加, 不回扫)
+│   │   │   │                                               #    · Desk = 会话状态 (worker / 设定 / 日志 / 全局记录 / 时间线 / 计数), Mine = Desk + 转移; 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (按工具计数, 随事件增量加, 不回扫)
+│   │   │   ├── Notes.hpp                                   # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话跨作用域累积; 编号 = 类前缀 + 序号, ref 附议同类已有的; list_notes 成文
 │   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (take 每步) / 等人 (answer) → 做完; 只经 Desk 读写会话
 │   │   │   │                                               #    · eval_factor 只收本会话 search_leaves 查过定义的叶 (Desk::seen); 带回测的回复须同带至少一个观察调用 (ParseCalls 查)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选进 test 目录, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选表 · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -465,9 +466,11 @@ stk/
     ├── portfolio/<name>.json                               # 因子组合 (一组合一文件): {"factors": [{pool, level, file, expr, hold, sign}]}, 条目 = Factors 表里的一个权重
     ├── agent/<pool>/<层>/<持有期>/                         # Agent 挖掘会话 (池 × 因子层 × 持有期)
     │   ├── factors/*.json                                  # 候选因子文件 (与正式因子同格式; Search 日志在 factors/log/); 提交且达门槛的拷进 factors/<pool>/<层>/
-    │   ├── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + events.jsonl (毫秒时间的交互流水) + report.md (结束报告)
-    │   └── test/{factors,chat}/                            # 自检会话 (Test): 结构同上两项; 提交只查门槛, 不拷进正式库
-    ├── agent/tools/<工具名>.md                             # 各工具最近一次交给 agent 的结果 (调用 + 出处 + 截断后的原文; 跨会话互相覆盖)
+    │   └── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + events.jsonl (毫秒时间的交互流水) + report.md (结束报告)
+    ├── agent/global/                                       # Agent 不随作用域的东西 (不与会话目录混放)
+    │   ├── {feature,tool,insight,issue}.jsonl              # 全局记录, 一类一个文件 (特征申请 F / 工具申请 T / 发现 I / 建议与 bug R), 一条一行: 编号 / 时间 / 作用域 / 出处 / 附议 / 字段
+    │   ├── tools/<工具名>.md                               # 各工具最近一次交给 agent 的结果 (调用 + 出处 + 截断后的原文; 跨会话互相覆盖)
+    │   └── test/                                           # 自检会话 (Test): <pool>/<层>/<持有期>/{factors,chat}/ (同会话目录) + 自检的全局记录 <类>.jsonl; 提交只查门槛, 不拷进正式库
     ├── profile/<pool>/<YYYYMMDD_HHMMSS>/                   # 特征计算 perf 采样 (PROFILE 模式, 每轮一目录; 需 kernel.perf_event_paranoid ≤ 1)
     │   ├── meta.json                                       # 本轮配置 (池 / 档 / A 轴 / 日期轴 / 核布局) + 采样窗逐核速率 / 忙碌占比
     │   ├── threads.txt                                     # 线程间样本分布 (线程名 = <段 tag>_<段内序号>: pf / ts / cs / io)

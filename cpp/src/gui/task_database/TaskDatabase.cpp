@@ -13,9 +13,6 @@
 #include "misc/exec.hpp"
 #include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
-#include <algorithm>
-#include <cstdint>
-#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,70 +21,6 @@ namespace GUI::Tasks {
 namespace {
 
 using namespace GUI::Database;
-
-// ---- 同步确认弹窗的排版件 ----
-constexpr float kConfirmWidth = 440.0f;
-const ImVec4 kWarn(1.0f, 0.6f, 0.2f, 1.0f);
-
-// 168812345 → "168.81M"
-std::string human(std::int64_t v) {
-  const double d = static_cast<double>(v);
-  char buf[32];
-  if (v >= 1'000'000'000)
-    std::snprintf(buf, sizeof(buf), "%.2fG", d / 1e9);
-  else if (v >= 1'000'000)
-    std::snprintf(buf, sizeof(buf), "%.2fM", d / 1e6);
-  else if (v >= 1'000)
-    std::snprintf(buf, sizeof(buf), "%.1fK", d / 1e3);
-  else
-    std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
-  return buf;
-}
-
-std::string percent(double ratio) {
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%.1f%%", ratio * 100.0);
-  return buf;
-}
-
-void right_text(const std::string &s, const ImVec4 &c) {
-  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(s.c_str()).x);
-  ImGui::TextColored(c, "%s", s.c_str());
-}
-
-// 三列: 标签 | 数值 (右对齐) | 占比 / 备注 (右对齐); 调用方 EndTable
-bool begin_kv(const char *id) {
-  if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_None, ImVec2(kConfirmWidth, 0.0f)))
-    return false;
-  ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthFixed, 110.0f);
-  ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch);
-  ImGui::TableSetupColumn("n", ImGuiTableColumnFlags_WidthFixed, 190.0f);
-  return true;
-}
-
-// color 空: 数值常色, 备注灰; 非空: 两者同色
-void kv_row(const char *label, const std::string &value, const std::string &note, const ImVec4 *color = nullptr) {
-  const ImVec4 &text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-  const ImVec4 &dim = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
-  ImGui::TableNextRow();
-  ImGui::TableNextColumn();
-  ImGui::TextDisabled("%s", label);
-  ImGui::TableNextColumn();
-  right_text(value, color ? *color : text);
-  ImGui::TableNextColumn();
-  right_text(note, color ? *color : dim);
-}
-
-// 周配额条: 已用 (灰) | 剩余 (暗)
-void quota_bar(std::int64_t weekly, std::int64_t used) {
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-  const ImVec2 p = ImGui::GetCursorScreenPos();
-  const float h = ImGui::GetTextLineHeight() * 0.5f;
-  const float x = p.x + kConfirmWidth * std::clamp(static_cast<float>(used) / static_cast<float>(weekly), 0.0f, 1.0f);
-  dl->AddRectFilled(p, ImVec2(p.x + kConfirmWidth, p.y + h), IM_COL32(55, 55, 60, 255), 2.0f);
-  dl->AddRectFilled(p, ImVec2(x, p.y + h), IM_COL32(140, 140, 145, 255), 2.0f);
-  ImGui::Dummy(ImVec2(kConfirmWidth, h));
-}
 
 class DatabaseTask {
 private:
@@ -142,58 +75,6 @@ public:
   void Update(SharedData & /*data*/) {
     if (state_mgr_)
       state_mgr_->tick();
-    // 同步确认弹窗放这里而非 Draw: 启动即后台同步, 用户可能根本没点开 Database,
-    // 模态必须每帧都在 (工作线程此刻挂起, 不答就一直等)
-    DrawConfirm();
-  }
-
-  // worker 挂起等弹窗 (FundamentalService::asking == Ask::Quota) ⇒ 画模态, 答案回给 FundamentalService::confirm
-  //   BigQuant 表 (基本面 / 分钟线) 待拉且周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, 二选一
-  void DrawConfirm() {
-    if (!fundamental_svc_)
-      return;
-    if (fundamental_svc_->asking.load(std::memory_order_acquire) == Ask::None)
-      return;
-    std::lock_guard lk(fundamental_svc_->mutex);
-    const auto &fs = fundamental_svc_->state;
-    const char *id = "BigQuant 周配额不足##QuotaConfirm";
-    if (!ImGui::IsPopupOpen(id)) {
-      ImGui::OpenPopup(id);
-      ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
-                              ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    }
-    if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-      return;
-    const std::int64_t weekly = fs.quota_weekly, used = fs.quota_used, remain = weekly - used;
-    const auto pct = [weekly](std::int64_t c) { return percent(static_cast<double>(c) / static_cast<double>(weekly)); };
-    ImGui::SeparatorText("BigQuant 周配额");
-    if (begin_kv("##quota")) {
-      kv_row("本周剩余", human(remain) + " cells", pct(remain), &kWarn);
-      kv_row("确认阈值", "", percent(config::BIGQUANT_QUOTA_CONFIRM_RATIO));
-      kv_row("已用 / 周额", human(used) + " / " + human(weekly), pct(used));
-      ImGui::EndTable();
-    }
-    ImGui::Spacing();
-    quota_bar(weekly, used);
-    ImGui::Spacing();
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kConfirmWidth);
-    ImGui::TextDisabled("%s", "有待拉的 BigQuant 分片, 继续会消耗配额 (1 cell / 条查询). 跳过则本轮不拉 BigQuant 表 "
-                              "(基本面 / 分钟线; Tushare / 本地构建照常), 下次 Update 再问. 配额每周重置, 服务端不给重置时刻.");
-    ImGui::PopTextWrapPos();
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    const ImVec2 button((kConfirmWidth - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 0.0f);
-    if (ImGui::Button("继续同步", button)) {
-      fundamental_svc_->confirm(true);
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("跳过 BigQuant", button)) {
-      fundamental_svc_->confirm(false);
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
   }
 
   // Enabled: 左栏叶子是否可点, 直读 StateManager 的解锁进度 (Update 同帧已刷新)
@@ -262,10 +143,8 @@ private:
     state_mgr_ = std::make_unique<StateManager>(data, *fundamental_svc_, *scan_svc_, *encoding_svc_, *audit_svc_);
   }
 
-  // 基本面状态标签: 待确认 > 在跑 (进度面) > 在飞未起跑 / 件待收 > 最近一件结论
+  // 基本面状态标签: 在跑 (进度面) > 在飞未起跑 / 件待收 > 最近一件结论
   TaskStatus FundamentalStatus() const {
-    if (fundamental_svc_->asking.load(std::memory_order_acquire) == Ask::Quota)
-      return {TaskStatus::Kind::Warn, "confirm quota"};
     if (fundamental_svc_->busy())
       return ProgressStatus(*fundamental_svc_);
     if (state_mgr_->syncing())

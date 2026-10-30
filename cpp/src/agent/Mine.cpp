@@ -44,6 +44,7 @@ void Mine::open(const SharedData &data, Setup s) {
   assert(catalog::ready(data, s.sc, s.gpu));
   setup = std::move(s);
   lab.bind(data, setup.sc, setup.test);
+  notes.load(setup.test);
   const Context &ctx = lab.ctx();
   setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask, llm::def(setup.llm.backend).local).text;
   chat.open(setup.llm);
@@ -72,7 +73,7 @@ void Mine::open(const SharedData &data, Setup s) {
                           {"ask", setup.ask},
                           {"test", setup.test},
                           {"tried", tried}});
-  ask(setup.test ? TestMessage(setup.ask) : FirstMessage(ctx, tried, setup.ask));
+  ask(setup.test ? TestMessage(setup.ask) : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask));
 }
 
 void Mine::start() {
@@ -123,6 +124,13 @@ int Desk::Tally::n(Run r) const {
 }
 
 int Desk::Tally::all() const { return std::accumulate(calls.begin(), calls.end(), 0); }
+
+int Desk::Tally::noted() const {
+  int s = 0;
+  for (const NoteKindDef &k : kNoteKinds)
+    s += n(k.tool);
+  return s;
+}
 
 // ---- 每帧: 两个 worker 同样 poll ----
 void Mine::update() {
@@ -281,30 +289,33 @@ void Mine::finish(std::string why) {
   t_end = now();
   reason = std::move(why);
   report = report_of(reason);
-  log.event(Event::Finish, {{"reason", reason}, {"rounds", round()}, {"adopted", total.tally.adopted}, {"issues", total.tally.n(Tool::NoteIssue)}});
+  log.event(Event::Finish, {{"reason", reason}, {"rounds", round()}, {"adopted", total.tally.adopted}, {"notes", total.tally.noted()}});
   log.report(report);
   phase_ = Phase::Report;
 }
 
 std::string Mine::report_of(const std::string &why) const {
   const Tally &c = total.tally;
-  std::string r = std::string(setup.test ? "# 自检报告\n\n- 自检会话: 候选与日志在 test 目录, 提交只查门槛不拷进正式库" : "# 结束报告\n") + "\n- 结束原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
+  std::string r = std::string(setup.test ? "# 自检报告\n\n- 自检会话: 候选 / 日志 / 全局记录在 global/test 目录, 提交只查门槛不拷进正式库" : "# 结束报告\n") + "\n- 结束原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
                   std::to_string(c.n(Run::Look)) + ", 查研报 " + std::to_string(c.n(Run::Docs)) + ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n\n";
-  std::string in, out, issues;
-  for (size_t i = 0; i < timeline.size(); ++i) {
-    const std::string at = "- 第 " + std::to_string(i + 1) + " 轮";
-    for (const Act &a : timeline[i].acts) {
-      if (!a.span.ended())
-        continue;
-      if (a.call.tool == Tool::SubmitFactor)
-        (a.ok ? in : out) += at + " " + a.call.str("name") + (a.ok ? "" : " — " + a.out) + "\n";
-      if (a.call.tool == Tool::NoteIssue)
-        issues += at + ": " + a.call.str("text") + "\n";
-    }
-  }
+  std::string in, out;
+  for (size_t i = 0; i < timeline.size(); ++i)
+    for (const Act &a : timeline[i].acts)
+      if (a.span.ended() && a.call.tool == Tool::SubmitFactor)
+        (a.ok ? in : out) += "- 第 " + std::to_string(i + 1) + " 轮 " + a.call.str("name") + (a.ok ? "" : " — " + a.out) + "\n";
   r += std::string(setup.test ? "## 达门槛 (" : "## 入库 (") + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
-  r += "## 未入库的提交 (" + std::to_string(c.n(Tool::SubmitFactor) - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out) + "\n";
-  r += "## issues (" + std::to_string(c.n(Tool::NoteIssue)) + ")\n\n" + (issues.empty() ? "(无)\n" : issues);
+  r += "## 未入库的提交 (" + std::to_string(c.n(Tool::SubmitFactor) - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out);
+  for (size_t i = 0; i < kNoteKindCount; ++i) {
+    const NoteKind k = static_cast<NoteKind>(i);
+    std::string s;
+    int n = 0;
+    for (const Note &x : notes.of(k))
+      if (x.session == log.dir()) {
+        ++n;
+        s += "\n### " + x.id + " " + x.title() + " (第 " + std::to_string(x.round) + " 轮" + (x.ref.empty() ? "" : ", 附议 " + x.ref) + ")\n\n" + x.body();
+      }
+    r += "\n## " + std::string(def(k).cn) + " (" + std::to_string(n) + ")\n" + (s.empty() ? "\n(无)\n" : s);
+  }
   return r;
 }
 

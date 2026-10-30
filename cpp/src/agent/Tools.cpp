@@ -113,7 +113,37 @@ constexpr ArgDef kEvalArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "英�
                                  "借鉴研报的写明研报 id 与借的是什么"}};
 constexpr ArgDef kTopArgs[] = {{"top", Arg::Int, "20", 1, kListTop, nullptr, "列前几个"}};
 constexpr ArgDef kNameArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "已评候选的英文名 (本作用域历次会话的都可以)"}};
-constexpr ArgDef kIssueArgs[] = {{"text", Arg::Str, nullptr, 0, 0, nullptr, "疑问 / 建议"}};
+// 全局记录 (agent/Notes)
+constexpr const char *kRefDesc = "可选: 同类已有一条的编号 (list_notes 里的, 如 F3): 附议或补充它, 只写新的部分; 空 = 新提";
+constexpr ArgDef kNotesArgs[] = {
+    {"kind", Arg::Str, "\"\"", 0, 0, "feature|tool|insight|issue",
+     "哪类: feature 特征申请 / tool 工具申请 / insight 发现 / issue 建议与 bug; 空 = 各类的条数与最近几条的标题"},
+    {"scope", Arg::Str, "\"all\"", 0, 0, "all|here", "all = 全部 / here = 只看本作用域 (池 / 层 / 持有期) 提的"},
+    {"query", Arg::Str, "\"\"", 0, 0, nullptr, "关键词, 查标题与正文; 空格隔开的几个须同时出现 (英文不分大小写); 空 = 不限"},
+    {"n", Arg::Int, "15", 1, kNotesTop, nullptr, "列几条 (新到旧)"}};
+constexpr ArgDef kFeatureReqArgs[] = {
+    {"title", Arg::Str, nullptr, 0, 0, nullptr, "一句话: 要的是什么量 (例: 撤单前挂单存续时长的分布)"},
+    {"define", Arg::Str, nullptr, 0, 0, nullptr, "怎么算: 原料 (逐笔成交 / 委托 / 撤单 / 快照)、谁的哪一侧、窗口与归一、在哪个时点可见"},
+    {"mechanism", Arg::Str, nullptr, 0, 0, nullptr, "它记的是谁的什么行为, 为什么可能预示后续收益; 你打算拿它验证哪个假设"},
+    {"gap", Arg::Str, nullptr, 0, 0, nullptr, "现有的叶为什么不够: 读过哪些族卡、search_leaves 查过哪些叶, 差在哪 (口径 / 维度 / 时点 / 根本没有)"},
+    {"ref", Arg::Str, "\"\"", 0, 0, nullptr, kRefDesc}};
+constexpr ArgDef kToolReqArgs[] = {
+    {"title", Arg::Str, nullptr, 0, 0, nullptr, "一句话: 要个什么工具"},
+    {"want", Arg::Str, nullptr, 0, 0, nullptr, "想给什么参数、看到什么 (哪几张表 / 哪些统计 / 怎么切)"},
+    {"purpose", Arg::Str, nullptr, 0, 0, nullptr, "拿它验证什么假设、决定什么改动"},
+    {"gap", Arg::Str, nullptr, 0, 0, nullptr, "现有工具哪里看不到: 试过哪些调用, 差在哪"},
+    {"ref", Arg::Str, "\"\"", 0, 0, nullptr, kRefDesc}};
+constexpr ArgDef kInsightArgs[] = {
+    {"title", Arg::Str, nullptr, 0, 0, nullptr, "一句话结论 (被证实或被证伪的都算; 例: 尾盘 14:30 后主动买大单的信号在次日开盘前兑现完)"},
+    {"evidence", Arg::Str, nullptr, 0, 0, nullptr, "证据: 哪个调用 (工具 + 因子 / 参数) 看到了哪些数; 有对照的写对照"},
+    {"reach", Arg::Str, nullptr, 0, 0, nullptr, "适用范围: 在什么条件下成立 (本作用域 / 某类票 / 某时段 / 某类盘面), 哪里没验证过"},
+    {"use", Arg::Str, nullptr, 0, 0, nullptr, "对挖因子意味着什么: 该做什么、别做什么"},
+    {"ref", Arg::Str, "\"\"", 0, 0, nullptr, kRefDesc}};
+constexpr ArgDef kIssueArgs[] = {
+    {"type", Arg::Str, nullptr, 0, 0, "bug|idea|question", "bug 工具结果不对 / idea 对规则或系统的改进建议 / question 想问研究员的疑问"},
+    {"title", Arg::Str, nullptr, 0, 0, nullptr, "一句话"},
+    {"detail", Arg::Str, nullptr, 0, 0, nullptr, "bug: 工具 + 参数 + 看到了什么 + 预期是什么; idea: 现在怎样、改成怎样、为什么; question: 问什么、卡在哪"},
+    {"ref", Arg::Str, "\"\"", 0, 0, nullptr, kRefDesc}};
 constexpr ArgDef kAskArgs[] = {{"questions", Arg::Questions, nullptr, 1, 8, nullptr,
                                 "问题数组, 每题 {\"prompt\": 题干, \"options\": [2..5 个字符串], \"multiple\": 可多选 (缺省 false), \"recommended\": [推荐的选项下标]}"}};
 
@@ -184,9 +214,21 @@ constexpr ToolDef kTools[] = {
      "每个候选: 模板 + 结局"},
     {Tool::ListLibrary, "list_library", "列正式库", Run::Now, kTopArgs,
      "列正式因子库里同一评估期且算子不超上限的因子在本持有期的成绩, 按 score 降序; 可作起点接着做", "每个因子: 模板 + 思路 + 最佳权重"},
+    {Tool::ListNotes, "list_notes", "查全局记录", Run::Now, kNotesArgs,
+     "查历次会话 (各作用域) 留下的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提",
+     "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 各字段)"},
     {Tool::SubmitFactor, "submit_factor", "提交入库", Run::Now, kNameArgs, "把一个已评候选提交入库 (至少一个权重过入库门槛才入); 一般只在最后交最好的版本",
      "入库 / 未入库的原因"},
-    {Tool::NoteIssue, "note_issue", "记 issue", Run::Now, kIssueArgs, "记下想问研究员的疑问、对规则或系统的建议; 不阻塞, 会话结束后一起交给研究员", "已记下"},
+    {Tool::RequestFeature, "request_feature", "申请特征", Run::Now, kFeatureReqArgs,
+     "申请一个新特征叶: 要表达的行为在现有叶里做不出来 (读过族卡、search_leaves 查清之后). 全局记录, 研究员会看, 不阻塞; 本会话照常用现有的叶接着做",
+     "编号"},
+    {Tool::RequestTool, "request_tool", "申请工具", Run::Now, kToolReqArgs,
+     "申请一个新工具或给现有工具加功能: 验证假设要看的东西现有工具看不到. 全局记录, 研究员会看, 不阻塞", "编号"},
+    {Tool::NoteInsight, "note_insight", "记发现", Run::Now, kInsightArgs,
+     "记下一条被观察 / 回测证实或证伪的规律 (市场微观结构、某类叶或算子的脾性、哪条路走不通), 对别的因子与后续会话也有用的才记. 全局记录, 后续会话的 agent 经 list_notes 看得到",
+     "编号"},
+    {Tool::ReportIssue, "report_issue", "报问题", Run::Now, kIssueArgs,
+     "报工具的 bug、对规则或系统的建议、想问研究员的疑问. 全局记录, 研究员会看, 不阻塞", "编号"},
     {Tool::Finish, "finish", "结束", Run::Now, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行后会话结束", "—"},
     {Tool::AskHuman, "ask_human", "问研究员", Run::Human, kAskArgs,
      "向研究员提问 (每题带推荐), 等他选答; 整个会话只有一次机会. 只问研究员才能定的事 (从哪个因子起步、往哪个方向挖); 系统提示已定的不问也不确认. "
