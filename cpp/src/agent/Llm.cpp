@@ -411,6 +411,12 @@ Reply Session::send(const std::string &user, const Delta &on_delta, const std::a
   return r;
 }
 
+void Session::fold(size_t turn, std::string text) {
+  Zhipu &c = std::get<Zhipu>(conv_);
+  assert(2 * turn + 1 < c.msgs.size() && c.msgs[2 * turn].first == "user");
+  c.msgs[2 * turn].second = std::move(text);
+}
+
 Reply Session::send(Zhipu &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json msgs = json::array();
   if (!o_.system.empty())

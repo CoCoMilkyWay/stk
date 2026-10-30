@@ -16,6 +16,9 @@ namespace {
 Wait now(Act &a, Desk &d) {
   const Call &c = a.call;
   switch (c.tool) {
+  case Tool::SearchLeaves:
+    a.out = LeavesText(d.lab.ctx().leaves, c.str("query"), c.num("n"));
+    break;
   case Tool::ListTried:
     a.out = TriedText(d.lab.results(), c.num("top"));
     break;
@@ -94,7 +97,7 @@ static_assert(std::size(kBegin) == kRunCount);
 
 Wait begin(Act &a, Desk &d) { return kBegin[static_cast<size_t>(def(a.call.tool).run)](a, d); }
 
-// 回测记 Search / Run 时刻, 评完换上定论; 观察成文
+// 回测记 Search / Run 时刻, 评完换上定论 (无显著另接代表点的分层摘要); 观察成文
 void take(Act &a, Lab::Tick &&t, Desk &d) {
   const double now_s = d.now();
   switch (t.step) {
@@ -118,7 +121,10 @@ void take(Act &a, Lab::Tick &&t, Desk &d) {
     break;
   }
   case Lab::Step::Look:
-    a.ok = Render(a.call, std::get<Look>(t.got), d.lab.ctx(), a.out);
+    if (a.call.tool == Tool::EvalFactor)
+      a.out = TrialText(std::get<Trial>(a.got).st, RepText(std::get<Look>(t.got)));
+    else
+      a.ok = Render(a.call, std::get<Look>(t.got), d.lab.ctx(), a.out);
     break;
   case Lab::Step::End:
     assert(false && "End 由 Mine 收");

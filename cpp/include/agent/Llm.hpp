@@ -4,7 +4,7 @@
 // LLM 对话客户端: 纯传输, 不知因子. 一个 Session = 一段多轮对话, send 阻塞到整轮收齐
 // =============================================================================
 //   两后端同一个 send, 各持各的对话态 (Session::Zhipu / Cursor); 结局在边界归一成 End
-//   Zhipu   chat/completions: 本地留全部 messages 每轮重发; stream=true (思考可达数分钟, 非流式会读超时);
+//   Zhipu   chat/completions: 本地留全部 messages 每轮重发 (调用方可把旧的 user 换成折叠版: fold); stream=true (思考可达数分钟, 非流式会读超时);
 //           JSON 模式 (response_format json_object) + 思考 (thinking enabled, reasoning_effort); system 逐字节不变 → 平台隐式缓存
 //   Cursor  Cloud Agents API: 首轮 POST /v1/agents 建无仓库 agent (无 system 角色: system 拼在首条 prompt 前), 之后 POST runs 续同一段对话;
 //           回复走 run 的 SSE 流 (assistant / thinking 增量, result 收尾; 断线按 Last-Event-ID 续); 无 JSON 模式, 靠提示词约束
@@ -105,6 +105,8 @@ public:
   // 发一条 user 消息, 阻塞到整轮收齐. cancel 置位 → 1 秒内断流, End::Cancelled (Zhipu: 本轮不进上下文;
   // Cursor: 已拿到 run id 则远端 run 一并取消, 建 run 的 POST 途中取消则远端那轮不管). 失败不抛, End::Error + why (stderr 另打响应体)
   Reply send(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel);
+  // 第 turn 轮 (从 0 起, 只数收齐的) 的 user 换成 text, 下一轮起照它重发; 只 BackendDef::local 的后端
+  void fold(size_t turn, std::string text);
 
 private:
   struct Zhipu {

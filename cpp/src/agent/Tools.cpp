@@ -1,6 +1,7 @@
 // Tools — 见头文件
 #include "agent/Tools.hpp"
 #include "agent/Config.hpp"
+#include "agent/Text.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -17,7 +18,8 @@ using json = nlohmann::ordered_json;
 
 // ---- 工具表 ----
 // 因子目标 (观察工具共用一个写法)
-constexpr const char *kFactorDesc = "候选英文名 (取它在本持有期的最佳权重, 含方向) 或具体根式 (根须是归一算子, 参数写数字; 按原方向看)";
+constexpr const char *kFactorDesc =
+    "候选英文名 (取它在本持有期的最佳权重, 含方向; 无显著的取其代表点) 或具体根式 (根须是归一算子, 参数写数字; 按原方向看)";
 constexpr const char *kSideDesc = "看哪端: top = 做多端 (最高组 G20) / bottom = 最低组 G1";
 constexpr const char *kExprsDesc = "特征式: 任意不含自由参数的子式, 不必套根, 单个叶也行";
 
@@ -42,6 +44,8 @@ constexpr ArgDef kStockDaysArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, 
                                      {"to", Arg::Str, "\"\"", 0, 0, nullptr, "末日 YYYY-MM-DD; 空 = 评估期末日"},
                                      {"factor", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 叠加看的因子"},
                                      {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 叠加看的特征式 (各日取收盘行的值)"}};
+constexpr ArgDef kLeavesArgs[] = {{"query", Arg::Str, nullptr, 0, 0, nullptr, "关键词, 查叶名 / 中文名 / 公式 / 说明; 空格隔开的几个须同时出现 (英文不分大小写)"},
+                                  {"n", Arg::Int, "30", 1, 60, nullptr, "列几个"}};
 // 研报库的词表 (标注体系的 code)
 constexpr const char *kStages = "L0_data|L1_factor|L2_process|L3_alpha|L4_risk|L5_portfolio|L6_evaluation|L7_execution|L8_timing";
 constexpr const char *kAssets = "stock_cn|stock_hk|stock_us|future_index|future_commodity|future_bond|bond|option|convertible|fund|multi";
@@ -95,18 +99,20 @@ constexpr ToolDef kTools[] = {
      "全期 20 组 + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组)"},
     {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
-     "竞价行) 的占比提升与段收益, 再列最差 / 最好 / 随机若干段的明细 (代码与日期可接 view_stock_day). 用来找收益从哪来、亏在哪类情形",
+     "竞价段 · 尾盘) 的占比提升与段收益, 再列最差 / 最好 / 随机若干段的明细 (代码与日期可接 view_stock_day). 用来找收益从哪来、亏在哪类情形",
      "汇总 + 时段表 + 标签表 + 明细表"},
     {Tool::ViewHolders, "view_holders", "看常客", Run::Look, kHoldersArgs,
      "看哪些资产最常落在因子一端: 本端行数 / 占其在池行的比例 / 涉及天数 / 平均连续行数 / 本端持仓平均超额, 附集中度. 用来看因子是否只在少数票上起作用、在挑哪类票",
      "集中度一行 + 资产表"},
     {Tool::ViewStockDay, "view_stock_day", "看个股一天", Run::Look, kStockDayArgs,
-     "看一只股票一天的逐行走势: 价 / 量 / 因子分位 / 特征的火花线, 加分段表 (竞价行 + 每段约 30 分钟: 涨跌 / 段内高低 / 量占比 / 因子分位 / 后续持有期超额 / 特征段末值). "
+     "看一只股票一天的逐行走势: 价 / 量 / 因子分位 / 特征的火花线, 加分段表 (竞价段 + 每段约 30 分钟: 涨跌 / 段内高低 / 量占比 / 因子分位 / 后续持有期超额 / 特征段末值). "
      "用来对照盘面现象与因子何时高、何时低",
      "当日概况 + 火花线 + 分段表"},
     {Tool::ViewStockDays, "view_stock_days", "看个股多日", Run::Look, kStockDaysArgs,
      "看一只股票连续多日 (至多 {stock_days} 日) 的日级概况: 每日一行 (涨跌 / 振幅 / 成交额 / 在池 / 因子日均与收盘分位 / 两端行数 / 收盘开仓的后续超额 / 特征收盘值), 附日级火花线",
      "火花线 + 逐日表"},
+    {Tool::SearchLeaves, "search_leaves", "查特征叶", Run::Now, kLeavesArgs,
+     "查特征叶的公式与说明 (系统提示的特征表只列叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见", "命中数 + 叶行 (叶 / 中文名 / 公式 / 说明)"},
     {Tool::SearchDocs, "search_docs", "查研报", Run::Docs, kDocsArgs,
      "查研报库 (券商金工研报的标注与全文): 先给命中研报的分面 —— 阶段 → 流派树 (篇数) / 机构 / 年份 / 价值 (我们对研报的判断: high 可直接复用 / medium 有参考 / low 有水分), "
      "再列研报. 不带条件 = 全库版图; 从上往下逐层加条件 (阶段 → 流派 → 关键词) 收窄到感兴趣的几篇, 再用 read_doc 读",
@@ -121,7 +127,7 @@ constexpr ToolDef kTools[] = {
      "标注卡 / 目录 / 原文一段"},
     {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, kEvalArgs,
      "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体",
-     "结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点) / 各权重的统计"},
+     "结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (+ 最佳权重的 20 组); 有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
     {Tool::ListTried, "list_tried", "列已试", Run::Now, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
      "每个候选: 模板 + 结局"},
     {Tool::ListLibrary, "list_library", "列正式库", Run::Now, kTopArgs,
@@ -159,16 +165,35 @@ std::string text_of(const char *s) {
 }
 
 // ---- 回复解析 ----
-// 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块)
+// 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块); 同一对象里键重复也不收 (解析器会静默丢掉一个)
 bool object_of(std::string_view text, json &j, std::string &err) {
   const size_t a = text.find('{'), b = text.rfind('}');
   if (a == std::string_view::npos || b == std::string_view::npos || b < a) {
     err = "回复里没有 JSON 对象";
     return false;
   }
-  j = json::parse(text.substr(a, b - a + 1), nullptr, false);
+  std::vector<std::vector<std::string>> keys; // 在开的各层对象已见的键
+  std::string dup;
+  const json::parser_callback_t seen = [&](int, json::parse_event_t ev, json &v) {
+    if (ev == json::parse_event_t::object_start) {
+      keys.emplace_back();
+    } else if (ev == json::parse_event_t::object_end) {
+      keys.pop_back();
+    } else if (ev == json::parse_event_t::key) {
+      const std::string k = v.get<std::string>();
+      if (dup.empty() && std::find(keys.back().begin(), keys.back().end(), k) != keys.back().end())
+        dup = k;
+      keys.back().push_back(k);
+    }
+    return true;
+  };
+  j = json::parse(text.substr(a, b - a + 1), seen, false);
   if (j.is_discarded() || !j.is_object()) {
     err = "回复不是合法的 JSON 对象";
+    return false;
+  }
+  if (!dup.empty()) {
+    err = "同一个 JSON 对象里键 \"" + dup + "\" 出现了两次 (常见于把两个调用写进一个 {...}: 每个调用单独一个 {\"tool\": ..., \"args\": {...}}, 之间用逗号隔开)";
     return false;
   }
   return true;
@@ -290,7 +315,7 @@ std::string Call::str(const char *k) const { return args.at(k).get<std::string>(
 int Call::num(const char *k) const { return args.at(k).get<int>(); }
 std::vector<std::string> Call::strs(const char *k) const { return args.at(k).get<std::vector<std::string>>(); }
 
-std::string Call::text() const {
+std::string Call::text(size_t cap) const {
   std::string s = std::string(def(tool).name) + "(";
   bool first = true;
   for (const ArgDef &a : def(tool).args) {
@@ -300,7 +325,7 @@ std::string Call::text() const {
     } else {
       if (a.def && v == json::parse(a.def)) // 缺省值不写
         continue;
-      s += (first ? "" : ", ") + std::string(a.key) + "=" + brief(v);
+      s += (first ? "" : ", ") + std::string(a.key) + "=" + (cap ? agent::text::head(brief(v), cap) : brief(v));
     }
     first = false;
   }
@@ -318,7 +343,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
   }
   const json &cs = j["calls"];
   if (cs.empty() || cs.size() > static_cast<size_t>(kMaxCalls)) {
-    err = "calls 须有 1.." + std::to_string(kMaxCalls) + " 个调用";
+    err = "calls 须有 1.." + std::to_string(kMaxCalls) + " 个调用 (收到 " + std::to_string(cs.size()) + " 个; 多的留到下一条)";
     return false;
   }
   int evals = 0;
@@ -342,7 +367,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
       return false;
     }
     if (d->id == Tool::EvalFactor && ++evals > kBatch) {
-      err = "一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor";
+      err = p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)";
       return false;
     }
     const json args = c.contains("args") ? c["args"] : json::object();
@@ -352,7 +377,10 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
     }
     for (const auto &[k, v] : args.items())
       if (std::none_of(d->args.begin(), d->args.end(), [&](const ArgDef &a) { return k == a.key; })) {
-        err = p + ".args." + k + ": " + name + " 没有这个参数";
+        std::string keys;
+        for (const ArgDef &a : d->args)
+          keys += (keys.empty() ? "" : " / ") + std::string(a.key);
+        err = p + ".args." + k + ": " + name + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")";
         return false;
       }
     Call call{d->id, json::object()};

@@ -25,10 +25,11 @@ struct BackendDef {
   const char *host;   // HTTPS 443
   const char *models; // GET 模型表
   bool proxy;         // 默认经 HTTP 代理 (CONNECT)
+  bool local;         // 对话历史留在本地每轮重发 (旧消息可换成折叠版); 否则在远端
 };
 inline constexpr BackendDef kBackends[] = {
-    {"Zhipu", "zhipu", "00000000000000000000000000000000.0000000000000000", "open.bigmodel.cn", "/api/paas/v4/models", false},
-    {"Cursor", "cursor", "crsr_0000000000000000000000000000000000000000000000000000000000000000", "api.cursor.com", "/v1/models", true},
+    {"Zhipu", "zhipu", "00000000000000000000000000000000.0000000000000000", "open.bigmodel.cn", "/api/paas/v4/models", false, true},
+    {"Cursor", "cursor", "crsr_0000000000000000000000000000000000000000000000000000000000000000", "api.cursor.com", "/v1/models", true, false},
 };
 inline constexpr const char *kZhipuChat = "/api/paas/v4/chat/completions";
 inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
@@ -48,6 +49,7 @@ inline constexpr int kGoodOps = 5;     // 建议的算子数 (提示词 {{good_o
 inline constexpr int kListTop = 80;    // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
 inline constexpr int kOutChars = 6000; // 一个调用的结果交给 agent 的字数上限 (超了截断并说明; 提示词 {{out_chars}})
 inline constexpr int kStockDays = 60;  // view_stock_days 一次至多看几日
+inline constexpr int kKeepRounds = 3;  // 会话历史里原样留着的最近几条 user 消息; 更早的结果消息换成折叠版 (只智谱: 本地留历史; 提示词 {{history}})
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
 inline constexpr double kGateMono = 0.95; // 分层单调性

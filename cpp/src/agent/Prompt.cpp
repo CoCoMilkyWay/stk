@@ -15,8 +15,12 @@ namespace agent {
 
 namespace {
 
+using text::fmt;
 using text::num;
 using KV = std::vector<std::pair<std::string_view, std::string>>;
+
+constexpr size_t kTitleChars = 40; // 结果标题里每个参数值至多几字 (全文在 agent 自己的回复里)
+constexpr size_t kSurfBins = 6;    // 参数曲面: 每个参数至多分几段
 
 std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(def(m).id) + ".md"); }
 
@@ -74,6 +78,63 @@ std::string list_of(const std::vector<Result> &rs, int top, Fn &&one) {
   if (const int all = visible(rs); all > n)
     s += "(另有 " + std::to_string(all - n) + " 个未列)\n";
   return s;
+}
+
+std::string lower(std::string s) { // 只动 ASCII
+  for (char &ch : s)
+    if (ch >= 'A' && ch <= 'Z')
+      ch = static_cast<char>(ch - 'A' + 'a');
+  return s;
+}
+
+std::string bp_of(double r) { return fmt("%+.1f", r * 1e4); }
+std::string bp_spark(const std::vector<double> &v) {
+  const auto [lo, hi] = std::minmax_element(v.begin(), v.end());
+  return "`" + text::bars(v) + "`  [" + bp_of(*lo) + ", " + bp_of(*hi) + "] bp";
+}
+
+// 参数值: 整数不带小数
+std::string param(double v) { return v == std::round(v) ? fmt("%.0f", v) : fmt("%.4g", v); }
+
+// 参数曲面: 每个参数按取值分至多 kSurfBins 段 (等点数, 同值不拆), 段内取 mono 最高的点 (其余参数随该点)
+std::string surface_text(const Surface &sf) {
+  if (sf.slots.empty() || sf.pts.size() < 2)
+    return "";
+  const size_t n = sf.pts.size(), per = (n + kSurfBins - 1) / kSurfBins;
+  std::string s = "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 每个参数按取值分段, 段内取 mono 最高的点, 其余参数随该点):\n";
+  for (size_t j = 0; j < sf.slots.size(); ++j) {
+    std::vector<size_t> ix(n);
+    for (size_t i = 0; i < n; ++i)
+      ix[i] = i;
+    const auto v = [&](size_t i) { return sf.pts[ix[i]].v[j]; };
+    std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return sf.pts[a].v[j] < sf.pts[b].v[j]; });
+    s += "\n| " + sf.slots[j] + " | 点 | mono | 每期毛多空 bp | rIC |\n|---|---|---|---|---|\n";
+    for (size_t a = 0; a < n;) {
+      size_t b = std::min(n, a + per);
+      while (b < n && v(b) == v(b - 1))
+        ++b;
+      size_t best = a;
+      for (size_t i = a; i < b; ++i)
+        if (sf.pts[ix[i]].st.mono > sf.pts[ix[best]].st.mono)
+          best = i;
+      const Stat &st = sf.pts[ix[best]].st;
+      s += "| " + (v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1))) + " | " + std::to_string(b - a) + " | " + fmt("%.3f", st.mono) + " | " +
+           fmt("%+.2f", st.ls * 1e4) + " | " + fmt("%.4f", st.ric) + " |\n";
+      a = b;
+    }
+  }
+  return s;
+}
+
+// 本层的行 (系统提示 "行与时刻"): 竞价段几行 + 连续竞价的行末时刻
+std::string rows_of(const Context &c) {
+  if (c.seg == 1)
+    return "本层 (" + c.level + ") 每天 1 行: 15:00 算因子, 按当日收盘撮合价开仓 (同上表末行).";
+  const size_t o = static_cast<size_t>(c.open);
+  const std::string open = o == 1 ? "第 0 行 = 集合竞价段 [09:15, 09:30)"
+                                  : "第 0.." + std::to_string(o - 1) + " 行 = 集合竞价段 [09:15, 09:30) 逐分钟一行 (行末 " + c.clock[0] + " … " + c.clock[o - 1] + ")";
+  return "本层 (" + c.level + ") 每天 " + std::to_string(c.seg) + " 行: " + open + "; 第 " + std::to_string(o) + " 行起连续竞价 (行末 " + c.clock[o] + ", " + c.clock[o + 1] +
+         " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价).";
 }
 
 } // namespace
@@ -175,7 +236,36 @@ std::string LibraryText(const std::vector<Result> &lib, int top) {
                  "(空)\n");
 }
 
-std::string TrialText(const Staged &st) { return "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + Detail(st.res); }
+std::string TrialText(const Staged &st, const std::string &rep) {
+  const Result &r = st.res;
+  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + Detail(r) + rep;
+  if (!r.visible)
+    return s;
+  if (const Weight *w = r.best(); w && !w->grp.empty())
+    s += "- 最佳权重的 20 组每期毛收益 (减组间均值) G1 → G20: " + bp_spark(w->grp) + "\n";
+  return s + surface_text(r.surf);
+}
+
+std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n) {
+  std::vector<std::string> ws;
+  for (size_t a = 0, b; a < query.size(); a = b + 1) {
+    b = std::min(query.find(' ', a), query.size());
+    if (b > a)
+      ws.push_back(lower(query.substr(a, b - a)));
+  }
+  std::string rows;
+  int hit = 0;
+  for (const Leaf &l : leaves) {
+    const std::string hay = lower(l.code + "\n" + l.name_cn + "\n" + l.formula + "\n" + l.desc);
+    if (!std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; }))
+      continue;
+    if (++hit <= n)
+      rows += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " |\n";
+  }
+  if (!hit)
+    return "(无命中; 换个写法或少给几个词)\n";
+  return "命中 " + std::to_string(hit) + " 个" + (hit > n ? ", 列前 " + std::to_string(n) + " 个" : std::string()) + "\n\n| 叶 | 中文名 | 公式 | 说明 |\n|---|---|---|---|\n" + rows;
+}
 
 std::string AnswerText(const Asked &a) {
   assert(a.picks.size() == a.qs.size());
@@ -191,10 +281,10 @@ std::string AnswerText(const Asked &a) {
 }
 
 // ---- 发 ----
-Message SystemMessage(const Context &c, const Gate &g, bool ask) {
-  std::string leaves = "| 叶 | 中文名 | 公式 | 说明 |\n|---|---|---|---|\n";
+Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
+  std::string leaves = "| 叶 | 中文名 |\n|---|---|\n";
   for (const Leaf &l : c.leaves)
-    leaves += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " |\n";
+    leaves += "| " + l.code + " | " + cell(l.name_cn) + " |\n";
   std::string ops = "| 算子 | 中文名 | 签名 (元与参数的值域) | 输出域 | 定义 | 说明 |\n|---|---|---|---|---|---|\n";
   for (const Op &o : c.ops)
     ops += "| " + o.name + " | " + cell(o.name_cn) + " | $" + cell(o.sig) + "$ | " + o.out + " | $" + cell(o.tex) + "$ | " + cell(o.note) + " |\n";
@@ -202,6 +292,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"pool_cn", c.pool_cn},
                             {"level", c.level},
                             {"seg", std::to_string(c.seg)},
+                            {"rows", rows_of(c)},
                             {"hold", c.hold},
                             {"hold_desc", c.hold_desc},
                             {"window", c.window},
@@ -216,6 +307,9 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
                             {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 note_issue"},
+                            {"history", fold ? "最近 " + std::to_string(kKeepRounds) +
+                                                   " 条结果消息原样留在对话里, 更早的会折叠 (观察与查询只留标题, 回测只留一行结局); 还要用的数在 eval_factor 的 note 里记下, 或重调"
+                                             : "对话里的结果消息原样保留"},
                             {"tools", ToolsDoc(ask)},
                             {"leaves", leaves},
                             {"ops", ops}});
@@ -244,12 +338,29 @@ Message RoundMessage(const std::vector<Act> &acts) {
   std::string s;
   for (size_t i = 0; i < acts.size(); ++i) {
     const Act &a = acts[i];
-    s += "## [" + std::to_string(i + 1) + "] " + a.call.text() + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
+    s += "## [" + std::to_string(i + 1) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
     if (!s.ends_with('\n'))
       s += '\n';
     s += '\n';
   }
   return fill(Msg::Round, {{"results", s}, {"batch", std::to_string(kBatch)}});
+}
+
+std::string FoldedText(const std::vector<Act> &acts) {
+  std::string s = "# 一条较早回复的调用结果 (已折叠: 观察与查询只留标题, 回测只留结局; 要细节就重调)\n\n";
+  for (size_t i = 0; i < acts.size(); ++i) {
+    const Act &a = acts[i];
+    const Tool t = a.call.tool;
+    s += "## [" + std::to_string(i + 1) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n";
+    const Run run = def(t).run;
+    if (run == Run::Eval && a.ok) {
+      const Staged &st = std::get<Trial>(a.got).st;
+      s += "- " + st.cand.name + " `" + st.cand.expr + "`: " + Brief(st.res) + "\n";
+    } else if (!a.ok || run == Run::Human || (run == Run::Now && t != Tool::SearchLeaves && t != Tool::ListTried && t != Tool::ListLibrary)) {
+      s += a.out + (a.out.ends_with('\n') ? "" : "\n");
+    }
+  }
+  return s;
 }
 
 Message RetryMessage(const std::string &err) { return fill(Msg::Retry, {{"error", err}}); }

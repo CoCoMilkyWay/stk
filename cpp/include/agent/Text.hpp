@@ -1,15 +1,17 @@
 #pragma once
 
 // =============================================================================
-// Text — agent 成文的公共件: 字 (UTF-8 码点) / 数的写法
+// Text — agent 成文的公共件: 字 (UTF-8 码点) / 数的写法 / 火花线
 // =============================================================================
 //   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界
 // =============================================================================
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace agent::text {
 
@@ -42,5 +44,31 @@ inline std::string fmt(const char *f, double v) {
   return b;
 }
 inline std::string num(double v) { return fmt("%.3g", v); } // 门槛 / 统计量
+
+// ---- 火花线 ----
+inline constexpr size_t kSparkChars = 60; // 一条至多几字 (长序列等宽分箱取均值)
+inline size_t spark_bin(size_t n) { return (n + kSparkChars - 1) / kSparkChars; }
+// 有限值线性映到 ▁..█ (箱内无有限值 ·); 每字 = spark_bin(v.size()) 个值的均值
+inline std::string bars(const std::vector<double> &v) {
+  static constexpr const char *kBar[8] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+  const size_t w = std::max<size_t>(1, spark_bin(v.size()));
+  std::vector<double> b;
+  for (size_t i = 0; i < v.size(); i += w) {
+    double s = 0.0;
+    int n = 0;
+    for (size_t j = i; j < std::min(v.size(), i + w); ++j)
+      if (std::isfinite(v[j]))
+        s += v[j], ++n;
+    b.push_back(n ? s / n : NAN);
+  }
+  double lo = INFINITY, hi = -INFINITY;
+  for (const double x : b)
+    if (std::isfinite(x))
+      lo = std::min(lo, x), hi = std::max(hi, x);
+  std::string s;
+  for (const double x : b)
+    s += !std::isfinite(x) ? "·" : kBar[hi > lo ? std::min(7, static_cast<int>((x - lo) / (hi - lo) * 8.0)) : 3];
+  return s;
+}
 
 } // namespace agent::text

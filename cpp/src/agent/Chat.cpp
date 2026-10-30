@@ -38,6 +38,11 @@ void Chat::ask(std::string user) {
   cv_.notify_all();
 }
 
+void Chat::fold(size_t turn, std::string text) {
+  assert(sess_ && !busy());
+  sess_->fold(turn, std::move(text));
+}
+
 void Chat::cancel() { cancel_.store(true, std::memory_order_relaxed); }
 
 std::optional<Chat::Tick> Chat::poll() {

@@ -30,6 +30,7 @@
 #include "factor/OpTable.hpp"
 #include "factor/Stat/Contract.hpp" // Frame / ts_norm_d (root_frame)
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -423,8 +424,16 @@ private:
   const FeatureLookup &fl_;
   int seg_; // 本层每段行数 (TOD 上界)
 
+  // 原因前附位置与其前后片段 (‸ 指位; 片段端点退到 UTF-8 码点首字节)
   bool fail(size_t pos, const std::string &msg) {
-    err_ = "位置 " + std::to_string(pos) + ": " + msg;
+    const auto lead = [&](size_t i) { return i >= s_.size() || (static_cast<unsigned char>(s_[i]) & 0xC0) != 0x80; };
+    size_t a = pos > 24 ? pos - 24 : 0, b = std::min(s_.size(), pos + 16);
+    while (!lead(a))
+      --a;
+    while (!lead(b))
+      ++b;
+    err_ = "位置 " + std::to_string(pos) + " (" + (a ? "…" : "") + std::string(s_.substr(a, pos - a)) + "‸" + std::string(s_.substr(pos, b - pos)) + (b < s_.size() ? "…" : "") +
+           "): " + msg;
     return false;
   }
   void skip_ws() {

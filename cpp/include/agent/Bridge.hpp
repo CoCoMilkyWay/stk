@@ -8,7 +8,8 @@
 //     Lab      作用域工作区 (bind 一个作用域): 上下文 ctx (该层可作输入的特征叶 / 算子表 / K 线叶 / 正式因子库在该持有期的统计) + 候选目录 results.
 //              两件事:
 //              eval  候选的一生: Cand ─stage→ 候选目录里的因子文件 (与正式因子同格式) ─eval→ Result ─adopt (过门槛)→ 正式因子目录;
-//                    一次评一个文件: Search (定方向 + 搜自由参数; 具体式只评本身) → Run, 结果写回文件; 评完只重扫它 (results 增量维护)
+//                    一次评一个文件: Search (定方向 + 搜自由参数; 具体式只评本身) → Run, 结果写回文件; 评完只重扫它 (results 增量维护);
+//                    无显著而有代表点 → 再观察代表点一次 (给 agent 看它的分层差在哪)
 //              look  观察: 一组因子 (候选英文名 / 具体根式) + 一组特征式 (+ 本层 K 线叶) → 评估期上整期一块的原料 Look (r16 秩 / 行统计 /
 //                    两端持仓 / 特征原值 / K 线 / 门控 / 标签), 不写文件; 汇总成文在 agent/Views
 //              可见: 只有统计与 Search 结局都在作用域此刻评估期上的因子才给 agent 看 (Result::visible), 不同窗口的数不可比
@@ -63,6 +64,7 @@ struct Weight {
   bool has = false;
   Stat st;
   double score = 0, se = 0, valid = 0; // Search 目标 (不过门槛 = −∞) / 目标的标准误 / 池内有效率 (0..1)
+  std::vector<double> grp;             // [kGroups] 组每期毛收益减组间均值 (已定向; has 才有)
 };
 // Search 无显著时的代表点 (因子文件 search[]): 过 mono 门槛的峰里曲面估计最高的 (peak), 没有峰则 mono 最高的点 —— 告诉 agent 差在哪
 struct Top {
@@ -86,6 +88,16 @@ struct VerdictDef {
 inline constexpr VerdictDef kVerdicts[] = {{"未落文件"}, {"BROKEN"}, {"有参数组"}, {"无显著"}, {"未评估"}};
 static_assert(std::size(kVerdicts) == static_cast<size_t>(Verdict::Pending) + 1);
 inline const VerdictDef &def(Verdict v) { return kVerdicts[static_cast<int>(v)]; }
+// Search 评过的一个点: 各自由参数的取值 + 定向统计
+struct Probe {
+  std::vector<double> v; // 与 Surface::slots 对齐
+  Stat st;
+};
+// Search 的参数曲面 (只有刚评完的 Settle 带; 扫描文件得不到)
+struct Surface {
+  std::vector<std::string> slots; // 自由参数 "<算子>.<键>", 模板前序; 空 = 具体式
+  std::vector<Probe> pts;         // 算得出统计的点
+};
 // 一个因子文件
 struct Result {
   std::string file, name, name_cn, tmpl, note;
@@ -93,6 +105,7 @@ struct Result {
   Verdict verdict = Verdict::Pending; // 扫描时定 (Unstaged 由 stage 定)
   std::optional<Top> top;             // 本持有期 Search 无显著时的代表点
   std::vector<Weight> ws;             // 按 score 降序
+  Surface surf;                       // 本次 Search 的曲面 (Settle 才有)
   int ops = 0;                        // 模板算子节点数
   bool visible = true;                // 统计 / Search 结局全在作用域此刻的评估期上 (同池同评估期) 且 ops ≤ kMaxOps; 否则 agent 看不见
   const Weight *best() const { return ws.empty() || !ws.front().has ? nullptr : &ws.front(); }
@@ -122,9 +135,12 @@ struct PerBar {
 };
 struct Context {
   std::string pool, pool_cn, level, hold, hold_desc;
-  std::string window; // 评估期 (标签库与因子池库落盘日交集; 用到别的库的叶再交)
-  int seg = 0;        // 本层每日行数 (d 的单位)
-  int ts_root_d = 0;  // 时序口径根 TsRankRoll 须写死的 d
+  std::string window;             // 评估期 (标签库与因子池库落盘日交集; 用到别的库的叶再交)
+  int first = 0, last = 0;        // 评估期首末日 YYYYMMDD (未就绪 0)
+  int seg = 0;                    // 本层每日行数 (d 的单位)
+  int open = 0;                   // 每日开头属集合竞价段 [09:15, 09:30) 的行数 (日层 0)
+  std::vector<std::string> clock; // [seg] 行的收盘时刻 HH:MM
+  int ts_root_d = 0;              // 时序口径根 TsRankRoll 须写死的 d
   int max_d = 0;
   double min_mono = 0; // Search 的 mono 硬门槛
   std::vector<Leaf> leaves;
@@ -165,6 +181,7 @@ struct LookCell {
   float ret = 0;
 };
 struct LookRoot {
+  std::string label;           // = LookFactor::label
   std::string error;           // 非空 = 没算成
   Plane<uint16_t> rx;          // r16 池内秩 (已定向: 高 = 做多端; kRankNone 无效)
   std::vector<LookRow> rows;   // [T]
@@ -181,6 +198,7 @@ struct Look {
   std::string error;              // 非空 = 没算成 (评估域不成 / 资产不在池轴 / 全部根坏), 其余字段空
   std::vector<int> dates;         // [天] YYYYMMDD
   int seg = 0;                    // 每日行数
+  int open = 0;                   // = Context::open
   std::vector<std::string> clock; // [seg] 行的收盘时刻 HH:MM
   std::vector<std::string> codes; // [A]
   Plane<uint8_t> gate;            // 当行在池
@@ -231,8 +249,8 @@ std::string dir(const Scope &sc, bool test);                   // 会话目录 k
 
 class Lab {
 public:
-  // 一步 (poll 逐个取走): eval = 进 Search / 进 Run / 评完 (got = 定论 Result; 模板坏的直接评完); look = 观察完 (got = Look);
-  // 这件事做完 End
+  // 一步 (poll 逐个取走): eval = 进 Search / 进 Run / 评完 (got = 定论 Result; 模板坏的直接评完) / 无显著时再观察代表点 (got = Look);
+  // look = 观察完 (got = Look); 这件事做完 End
   enum class Step : uint8_t { Search,
                               Run,
                               Look,
@@ -263,7 +281,7 @@ public:
   Adopted adopt(std::string name, const Gate &g); // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err; 否则拷进正式目录 (test 不拷)
 
   // 观察的参数 (只查字段表 / 候选目录 / 码表, 不碰数据): 不成 → false + err (原样给 agent)
-  bool factor_of(const std::string &arg, LookFactor &out, std::string &err) const;    // 候选英文名 (取最佳权重) 或具体根式
+  bool factor_of(const std::string &arg, LookFactor &out, std::string &err) const;    // 候选英文名 (取最佳权重; 无显著取代表点) 或具体根式
   bool feature_of(const std::string &src, std::string &root, std::string &err) const; // 具体特征式 (任意子式) → CsRank 包装的规范串
   bool code_of(const std::string &arg, std::string &code, std::string &err) const;    // "000001" / "000001.SZ" → 码表里的码
 

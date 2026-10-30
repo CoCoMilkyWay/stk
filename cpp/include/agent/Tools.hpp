@@ -29,6 +29,7 @@ enum class Tool : uint8_t { ViewFeature,
                             ViewHolders,
                             ViewStockDay,
                             ViewStockDays,
+                            SearchLeaves,
                             SearchDocs,
                             SearchFactors,
                             ReadDoc,
@@ -75,7 +76,7 @@ struct Call {
   std::string str(const char *k) const;
   int num(const char *k) const;
   std::vector<std::string> strs(const char *k) const;
-  std::string text() const; // 一行: 名(键=值, …) (流水 / 界面 / 结果标题)
+  std::string text(size_t cap = 0) const; // 一行: 名(键=值, …) (流水 / 界面); cap > 0 = 每个值至多 cap 字 (结果标题)
 };
 // ask = 本条回复可用 ask_human; 不合协议 → false + err (首个不合处, 带字段路径; 原样经 retry 反馈给模型)
 bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &err);

@@ -44,7 +44,7 @@ void Mine::open(const SharedData &data, Setup s) {
   setup = std::move(s);
   lab.bind(data, setup.sc, setup.test);
   const Context &ctx = lab.ctx();
-  setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask).text;
+  setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask, llm::def(setup.llm.backend).local).text;
   chat.open(setup.llm);
   log.open((fs::path(catalog::dir(setup.sc, setup.test)) / "chat" / stamp()).string(), setup.llm.system);
   phase_ = Phase::Think;
@@ -253,7 +253,11 @@ bool Mine::go(Phase next) {
   return true;
 }
 
+// 发第 n 条前, 第 n − kKeepRounds 条若是结果消息就在会话历史里换成折叠版 (它的调用在前一轮); 此前各轮的回复都收齐了, 条序 = 会话的轮序
 void Mine::ask(Message m) {
+  if (const size_t n = timeline.size(), keep = static_cast<size_t>(kKeepRounds); llm::def(setup.llm.backend).local && n >= keep)
+    if (const size_t j = n - keep; timeline[j].kind == Msg::Round)
+      chat.fold(j, FoldedText(timeline[j - 1].acts));
   log.event(Event::Ask, {{"round", round() + 1}, {"kind", def(m.kind).id}, {"chars", m.text.size()}});
   timeline.push_back({.kind = m.kind, .user = m.text, .span = {.t0 = now()}});
   chat.ask(std::move(m.text));
