@@ -463,7 +463,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"gate_ric", num(g.ric)},
                             {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
                             {"history", fold ? "最近 " + std::to_string(kKeepRounds) + "~" + std::to_string(2 * kKeepRounds) +
-                                                   " 条消息原样留在对话里, 更早的结果消息会成批折叠 (观察与查询只留标题, 回测只留一行结局); 还要用的数在 eval_factor 的 note 里记下, 或重调"
+                                                   " 条消息原样留在对话里, 更早的结果消息会成批折叠 (观察与查询只留标题, 回测只留一行结局; 提交 / 问答 / 假设与判定 / 没做成的原因原样); 还要用的数写进 judge 的 result, 或重调"
                                              : "对话里的结果消息原样保留"},
                             {"tools", ToolsDoc(ask)},
                             {"leaves", leaves_text(c.leaves)},
@@ -472,6 +472,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
 
 Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask) {
   return fill(Msg::First, {{"hold", c.hold},
+                           {"max_calls", std::to_string(kMaxCalls)},
                            {"tried", std::to_string(tried)},
                            {"library", std::to_string(visible(c.library))},
                            {"notes", notes},
@@ -504,10 +505,13 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
   if (test) {
     next = "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch + " 个); 对照工具说明查上面每个结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish.";
   } else {
-    next = "先想清楚再发调用: 结果对照各假设的 expect / refute, 哪个被支持、哪个落空、哪个还不清 (证据够的 judge, 不够的想清还差哪个观察); 为什么是这样, 错在假设的哪一环; "
-           "有没有更直接捕捉它的特征; 下一步用哪个工具查什么; 值得跨会话留下的认识 note_insight 记.\n";
-    next += evaled ? "\n这一条不能回测 (上一条有落了文件的回测): 用观察诊断本批变体为什么好 / 差, 再对挂了变体的假设 judge —— 判支持要引用观察, 把观察排在 judge 前面."
-                   : "\n只有判为支持的假设能挂 eval_factor (至多 " + batch + " 个, 每个写清 base / 改动 / 预期 / 功能块). 按系统提示 \"做法\" 的判据比当前最好版本; 改不动了就 submit_factor 交最好的版本, 再 finish.";
+    next = "先对照, 再发调用:\n"
+           "- **判**: 结果对照各假设的 expect / refute, 哪个被支持、哪个落空、哪个还不清; 证据够的 judge, 不够的补哪个观察\n"
+           "- **因**: 为什么是这样, 错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)\n"
+           "- **料**: 有没有更直接捕捉这一现象的特征\n"
+           "- **记**: 值得跨会话留下的认识用 note_insight 记\n\n";
+    next += evaled ? "本条只诊断 (上一条有落了文件的回测, 本条不能回测): 用观察查本批最好与最差的变体为什么好 / 差, 再对挂了变体的假设 judge; 观察排在 judge 前面, 判支持才引用得到."
+                   : "本条可回测: 只挂判为支持的假设 (至多 " + batch + " 个 eval_factor, 各写清 base / change / expect / parts); 按系统提示 \"判优\" 比当前最好版本; 改不动了就 submit_factor 交最好的版本, 再 finish.";
   }
   return fill(Msg::Round, {{"results", s}, {"board", board.text()}, {"next", next}});
 }
