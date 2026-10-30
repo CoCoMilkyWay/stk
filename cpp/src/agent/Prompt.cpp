@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -69,19 +70,101 @@ int visible(const std::vector<Result> &rs) {
   return static_cast<int>(std::count_if(rs.begin(), rs.end(), [](const Result &r) { return r.visible; }));
 }
 
-// 可见的前 top 个, 每个一节; 余下的只报个数
-template <class Fn>
-std::string list_of(const std::vector<Result> &rs, int top, Fn &&one) {
+// 可见且 keep 的跳过前 skip 个, 再列 top 个, 每个一节; 没列完的报总数与接着看的 skip
+template <class Keep, class Fn>
+std::string list_of(const std::vector<Result> &rs, int skip, int top, Keep &&keep, Fn &&one) {
   std::string s;
-  int n = 0;
+  int all = 0, n = 0;
   for (const Result &r : rs)
-    if (r.visible && n < top) {
+    if (r.visible && keep(r) && all++ >= skip && n < top) {
       ++n;
       s += one(r);
     }
-  if (const int all = visible(rs); all > n)
-    s += "(另有 " + std::to_string(all - n) + " 个未列)\n";
+  if (n < all)
+    s += !n ? "(共 " + std::to_string(all) + " 个, skip=" + std::to_string(skip) + " 已过末尾)\n"
+            : "(共 " + std::to_string(all) + " 个, 这里是第 " + std::to_string(skip + 1) + "–" + std::to_string(skip + n) + " 个" +
+                  (skip + n < all ? "; 接着看给 skip=" + std::to_string(skip + n) : std::string()) + ")\n";
   return s;
+}
+
+// 权重 / 代表点的具体式相对模板只差自由参数: 按出现序写 键=值 (无自由参数 = 即模板); 对不上 = 整个具体式
+std::string fills(const std::string &tmpl, const std::string &expr) {
+  const std::string whole = "`" + expr + "`";
+  std::string s;
+  size_t i = 0, j = 0;
+  while (i < tmpl.size() && j < expr.size()) {
+    if (tmpl[i] == expr[j]) {
+      ++i, ++j;
+      continue;
+    }
+    const size_t e = expr.find_first_of(",)", j);
+    if (expr[j] != '=' || (tmpl[i] != ',' && tmpl[i] != ')') || e == std::string::npos)
+      return whole;
+    size_t k = i;
+    while (k > 0 && std::isalnum(static_cast<unsigned char>(tmpl[k - 1])))
+      --k;
+    s += (s.empty() ? "" : ", ") + tmpl.substr(k, i - k) + expr.substr(j, e - j);
+    j = e;
+  }
+  if (i != tmpl.size() || j != expr.size())
+    return whole;
+  return s.empty() ? "(即模板)" : s;
+}
+
+// 入库门槛一行 (只对有参数组的): 达 / 差在哪
+std::string gate_line(const Result &r, const Gate &g) {
+  if (!r.visible || r.verdict != Verdict::Weights)
+    return "";
+  const std::string miss = GateMiss(g, r);
+  return "- " + (miss.empty() ? std::string("达入库门槛") : miss) + "\n";
+}
+
+// 同组的叶 (LeafKin 同, 落盘变换也同)
+std::string kin_of(const Leaf &l) { return LeafKin(l.code) + "|" + l.tf; }
+std::string col_of(const std::string &code) { return code.substr(code.find('.', code.find('.') + 1) + 1); }
+
+// 一组叶的列名: 各词位的取值按出现序写 {a,b,…}; 组不是各位取值的全组合则逐个列
+std::string kin_name(const std::vector<const Leaf *> &g) {
+  const size_t W = LeafWords(g.front()->code).second.size();
+  std::vector<std::vector<std::string>> at(W);
+  for (const Leaf *l : g) {
+    const std::vector<std::string> ws = LeafWords(l->code).second;
+    assert(ws.size() == W && "同组叶词数相同");
+    for (size_t k = 0; k < W; ++k)
+      if (std::find(at[k].begin(), at[k].end(), ws[k]) == at[k].end())
+        at[k].push_back(ws[k]);
+  }
+  size_t all = 1;
+  for (const std::vector<std::string> &v : at)
+    all *= v.size();
+  std::string s;
+  if (all != g.size()) {
+    for (const Leaf *l : g)
+      s += (s.empty() ? "" : ", ") + col_of(l->code);
+    return s;
+  }
+  for (size_t k = 0; k < W; ++k) {
+    std::string w;
+    for (const std::string &x : at[k])
+      w += (w.empty() ? "" : ",") + x;
+    s += (k ? "_" : "") + (at[k].size() > 1 ? "{" + w + "}" : w);
+  }
+  return s;
+}
+
+// 按同组合并, 组序 = 首个叶的出现序
+std::vector<std::vector<const Leaf *>> kin_groups(const std::vector<const Leaf *> &ls) {
+  std::vector<std::vector<const Leaf *>> gs;
+  std::vector<std::string> keys;
+  for (const Leaf *l : ls) {
+    const std::string k = kin_of(*l);
+    const auto it = std::find(keys.begin(), keys.end(), k);
+    if (it == keys.end())
+      keys.push_back(k), gs.push_back({l});
+    else
+      gs[static_cast<size_t>(it - keys.begin())].push_back(l);
+  }
+  return gs;
 }
 
 std::string lower(std::string s) { // 只动 ASCII
@@ -119,7 +202,7 @@ std::vector<Family> families() {
   return out;
 }
 
-// 特征表: 叶按族分节 (族序 = 首次出现), 节首族卡, 节内按 档.层 分组, 每行 列名 中文名 [落盘变换]
+// 特征表: 叶按族分节 (族序 = 首次出现), 节首族卡, 节内按 档.层 分组, 每行 列名 中文名 [落盘变换]; 同组的叶合一行 (花括号式 + 个数 + 首个的中文名)
 std::string leaves_text(const std::vector<Leaf> &leaves) {
   const std::vector<Family> fams = families();
   std::vector<std::string> order;
@@ -132,23 +215,28 @@ std::string leaves_text(const std::vector<Leaf> &leaves) {
     if (f == fams.end())
       std::fprintf(stderr, "[agent] %s: 族 %s 没有卡\n", kFamilyFile, k.c_str());
     assert(f != fams.end() && "特征族缺卡");
-    std::vector<std::pair<std::string, std::string>> groups;
+    std::vector<std::pair<std::string, std::vector<const Leaf *>>> groups;
     int n = 0;
     for (const Leaf &l : leaves) {
       if (l.family != k)
         continue;
       ++n;
-      const size_t dot = l.code.find('.', l.code.find('.') + 1);
-      assert(dot != std::string::npos && "叶名 = 档.层.列");
-      const std::string g = l.code.substr(0, dot);
+      const std::string g = LeafWords(l.code).first;
       auto it = std::find_if(groups.begin(), groups.end(), [&](const auto &x) { return x.first == g; });
       if (it == groups.end())
-        groups.push_back({g, ""}), it = groups.end() - 1;
-      it->second += "- " + l.code.substr(dot + 1) + " " + cell(l.name_cn) + (l.tf.empty() ? "" : " [" + l.tf + "]") + "\n";
+        groups.push_back({g, {}}), it = groups.end() - 1;
+      it->second.push_back(&l);
     }
     s += (s.empty() ? "## " : "\n## ") + f->title + " (" + std::to_string(n) + " 个)\n\n" + f->card;
-    for (const auto &[g, rows] : groups)
-      s += "\n### " + g + ".*\n" + rows;
+    for (const auto &[g, ls] : groups) {
+      s += "\n### " + g + ".*\n";
+      for (const std::vector<const Leaf *> &kin : kin_groups(ls)) {
+        const Leaf &l = *kin.front();
+        s += "- " + (kin.size() == 1 ? col_of(l.code) + " " + cell(l.name_cn)
+                                     : kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 首个 " + col_of(l.code) + " " + cell(l.name_cn) + ")") +
+             (l.tf.empty() ? "" : " [" + l.tf + "]") + "\n";
+      }
+    }
   }
   return s;
 }
@@ -281,11 +369,11 @@ std::string Detail(const Result &r) {
   case Verdict::Weights: {
     std::string s;
     for (const Weight &w : r.ws)
-      s += "- `" + w.expr + "`: " + Text(w) + "\n";
+      s += "- 权重 " + fills(r.tmpl, w.expr) + ": " + Text(w) + "\n";
     return s;
   }
   case Verdict::Null:
-    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + kRepCn[static_cast<size_t>(r.top->rep)] + ") `" + r.top->expr + "`: " + Text(*r.top) + "\n"
+    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + kRepCn[static_cast<size_t>(r.top->rep)] + ") " + fills(r.tmpl, r.top->expr) + ": " + Text(*r.top) + "\n"
                  : std::string("- Search 无显著权重 (没有一个点算得出该持有期统计)\n");
   case Verdict::Pending:
     return "- " + std::string(def(r.verdict).cn) + "\n";
@@ -294,24 +382,27 @@ std::string Detail(const Result &r) {
 }
 
 // ---- 工具结果 ----
-std::string TriedText(const std::vector<Result> &tried, int top) {
-  return or_none(list_of(tried, top, [](const Result &r) { return "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r); }), "(无)\n");
+std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g) {
+  return or_none(list_of(tried, skip, top, [](const Result &) { return true; },
+                         [&](const Result &r) { return "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r) + gate_line(r, g); }),
+                 "(无)\n");
 }
 
-std::string LibraryText(const std::vector<Result> &lib, int top) {
-  return or_none(list_of(lib, top,
-                         [](const Result &r) {
-                           const Weight *w = r.best();
-                           return "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n" +
-                                  (w ? "  - 最佳权重 `" + w->expr + "`: " + Text(*w) + "\n" : std::string("  - 本持有期无统计\n"));
-                         }),
-                 "(空)\n");
+std::string LibraryText(const std::vector<Result> &lib, int skip, int top) {
+  const auto has = [](const Result &r) { return r.best() != nullptr; };
+  std::string s = list_of(lib, skip, top, has, [](const Result &r) {
+    const Weight &w = *r.best();
+    return "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n  - 最佳权重 " + fills(r.tmpl, w.expr) + ": " + Text(w) + "\n";
+  });
+  if (const int none = static_cast<int>(std::count_if(lib.begin(), lib.end(), [&](const Result &r) { return r.visible && !has(r); })))
+    s += "(另有 " + std::to_string(none) + " 个在本持有期无统计, 不列)\n";
+  return or_none(s, "(空)\n");
 }
 
-std::string TrialText(const Trial &k, const std::string &rep) {
+std::string TrialText(const Trial &k, const Gate &g, const std::string &rep) {
   const Staged &st = k.st;
   const Result &r = st.res;
-  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + (k.change.empty() ? "" : "- 改动: " + k.change + "\n") + Detail(r) + rep;
+  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + (k.change.empty() ? "" : "- 改动: " + k.change + "\n") + Detail(r) + gate_line(r, g) + rep;
   if (!r.visible)
     return s;
   if (const Weight *w = r.best(); w && !w->grp.empty())
@@ -326,25 +417,36 @@ std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query
     if (b > a)
       ws.push_back(lower(query.substr(a, b - a)));
   }
-  std::string rows;
-  int hit = 0;
+  std::vector<const Leaf *> hits;
   for (const Leaf &l : leaves) {
     const std::string hay = hay_of(l);
-    if (!std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; }))
-      continue;
-    if (++hit > n)
-      continue;
-    shown.push_back(l.code);
-    rows += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " | " + (l.tf.empty() ? "x" : l.tf_def) + " |\n";
+    if (std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; }))
+      hits.push_back(&l);
   }
+  const size_t hit = hits.size();
   if (!hit) {
     std::string each;
     for (const std::string &w : ws)
       each += (each.empty() ? "" : " · ") + w + " " + std::to_string(std::count_if(leaves.begin(), leaves.end(), [&](const Leaf &l) { return hay_of(l).find(w) != std::string::npos; }));
     return "(无命中; 各词单独命中: " + each + "; 换个写法或少给几个词)\n";
   }
-  return "命中 " + std::to_string(hit) + " 个" + (hit > n ? ", 列前 " + std::to_string(n) + " 个" : std::string()) +
-         "\n\n| 叶 | 中文名 | 公式 (原量 x) | 说明 | 落盘值 |\n|---|---|---|---|---|\n" + rows;
+  // 命中的叶所在的组 (按首个命中的序), 每组列全组; 公式与说明按组内首个命中的叶
+  const std::vector<std::vector<const Leaf *>> gs = kin_groups(hits);
+  std::string rows;
+  for (size_t i = 0; i < gs.size() && i < static_cast<size_t>(n); ++i) {
+    const Leaf &l = *gs[i].front();
+    const std::string key = kin_of(l);
+    std::vector<const Leaf *> kin;
+    for (const Leaf &x : leaves)
+      if (kin_of(x) == key)
+        kin.push_back(&x), shown.push_back(x.code);
+    const std::string name = kin.size() == 1 ? l.code : LeafWords(l.code).first + "." + kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 下列按 " + col_of(l.code) + ")";
+    rows += "| " + name + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " | " + (l.tf.empty() ? "x" : l.tf_def) + " |\n";
+  }
+  return "命中 " + std::to_string(hit) + " 个叶, 在 " + std::to_string(gs.size()) + " 组里" + (gs.size() > static_cast<size_t>(n) ? ", 列前 " + std::to_string(n) + " 组" : std::string()) +
+         ". 同组的叶只差计量 (amt 额 / vol 量 / n 笔) 或阈值 / 窗口 (带数字的词), 列出整组; 公式与说明按组内首个命中的写, 其余照族卡换词; 列出的组整组算查过\n\n"
+         "| 叶 | 中文名 | 公式 (原量 x) | 说明 | 落盘值 |\n|---|---|---|---|---|\n" +
+         rows;
 }
 
 std::string AnswerText(const Asked &a) {
@@ -429,13 +531,9 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
   if (test) {
     next = "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch + " 个); 对照工具说明查上面每个结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish.";
   } else {
-    next = "先想清楚再发调用, 逐条回答:\n"
-           "- 上面的结果对照假设板上各假设的 expect / refute: 哪个被支持、哪个落空、哪个还不清? 证据够的用 judge 判 (证据写调用编号), 不够的想清还差哪个观察.\n"
-           "- 测出来的为什么是这样? 落空的错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)? 被支持的, 还有哪部分收益或分层没解释?\n"
-           "- 这个现象有没有更直接捕捉它的特征 (search_leaves 查, 族卡对照)? 现有叶做不出来就 request_feature.\n"
-           "- 下一步该用哪个工具查什么: 条件分层 (view_layers cond) 看在哪类盘面成立, 成分剥离 (view_explain) 看剥掉已知量还剩多少, 交割单 / 截面 / 个股 / 逐笔重放看行为是否真的发生, 研报库看同行怎么解释.\n"
-           "- 得到的认识值得跨会话留下的, note_insight 记.\n";
-    next += evaled ? "\n这一条不能回测 (上一条有回测): 用观察诊断本批变体为什么好 / 差, 对挂了变体的假设 judge."
+    next = "先想清楚再发调用: 结果对照各假设的 expect / refute, 哪个被支持、哪个落空、哪个还不清 (证据够的 judge, 不够的想清还差哪个观察); 为什么是这样, 错在假设的哪一环; "
+           "有没有更直接捕捉它的特征; 下一步用哪个工具查什么; 值得跨会话留下的认识 note_insight 记.\n";
+    next += evaled ? "\n这一条不能回测 (上一条有落了文件的回测): 用观察诊断本批变体为什么好 / 差, 再对挂了变体的假设 judge —— 判支持要引用观察, 把观察排在 judge 前面."
                    : "\n只有判为支持的假设能挂 eval_factor (至多 " + batch + " 个, 每个写清 base / 改动 / 预期 / 功能块). 按系统提示 \"做法\" 的判据比当前最好版本; 改不动了就 submit_factor 交最好的版本, 再 finish.";
   }
   return fill(Msg::Round, {{"results", s}, {"board", board.text()}, {"next", next}});

@@ -4,7 +4,7 @@
 // Acts — 一个调用的执行 (按 Run 分派; 状态机见 agent/Mine)
 // =============================================================================
 //   一生: begin → (等 Lab: take 每步 / 等人: answer) → Mine::ended
-//   Now    当场: search_leaves (列出的叶记进 Desk::seen) / list_tried / list_library / list_notes / submit_factor /
+//   Now    当场: search_leaves (列出的叶组整组记进 Desk::seen) / list_tried / list_library / list_notes / submit_factor /
 //                request_feature · request_tool · note_insight · report_issue (记进 Desk::notes; ref 对不上同类已有的一条则不记) /
 //                hypothesize (记上 Desk::board) / judge (证据的调用编号须成立才改判定) / finish
 //   Human  ask_human: 起问题 → 等人按 Start
@@ -32,7 +32,7 @@ enum class Wait : uint8_t { None,    // 当场做完
 Wait begin(Act &a, Desk &d);
 void take(Act &a, Lab::Tick &&t, Desk &d); // 实验台交回的一步 (End 除外)
 void answer(Act &a, Desk &d);              // 人按 Start
-// 一条合协议的回复是否守住会话约束: 上一条执行了的回复有回测 → 这条不能回测; 假设板上待判的 → 这条须各有一个 judge. 守住 = 空, 否则 = 原因 (经 retry 反馈)
+// 一条合协议的回复是否守住会话约束: 上一条执行了的回复有落了文件的回测 → 这条不能回测; 假设板上待判的 → 这条须各有一个 judge. 守住 = 空, 否则 = 原因 (经 retry 反馈)
 std::string Owed(const std::vector<Call> &cs, const Desk &d);
 
 } // namespace agent

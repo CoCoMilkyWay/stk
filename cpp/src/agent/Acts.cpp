@@ -47,7 +47,7 @@ std::string evidence_miss(const Call &c, const Hyp &h, Ref me, const Desk &d) {
     fresh = fresh || h.judged < r;
   }
   if (StanceOf(c.str("verdict")) == Stance::Supported && !look)
-    return "判支持须有观察调用 (view_*) 作证据: 回测只说好不好, 观察才说机制是否成立";
+    return "判支持须有观察调用 (view_*) 作证据: 回测只说好不好, 观察才说机制是否成立. 同一条回复里把观察排在 judge 前面, 就能引用它们";
   if (h.judged.round && !fresh)
     return "再判 " + h.id + " 须至少一个证据在上次判定 (" + RefText(h.judged) + ") 之后";
   return {};
@@ -63,10 +63,10 @@ Wait now(Act &a, Desk &d) {
     break;
   }
   case Tool::ListTried:
-    a.out = TriedText(d.lab.results(), c.num("top"));
+    a.out = TriedText(d.lab.results(), c.num("skip"), c.num("top"), d.setup.gate);
     break;
   case Tool::ListLibrary:
-    a.out = LibraryText(d.lab.ctx().library, c.num("top"));
+    a.out = LibraryText(d.lab.ctx().library, c.num("skip"), c.num("top"));
     break;
   case Tool::SubmitFactor: {
     const Adopted x = d.lab.adopt(c.str("name"), d.setup.gate);
@@ -196,7 +196,7 @@ std::string eval_miss(const Call &c, Desk &d, Delta &dl, std::string &base) {
     break;
   }
   assert(!cd.bad);
-  if (cd.knob && !d.lab.passes(*b, d.setup.gate))
+  if (cd.knob && !GateMiss(d.setup.gate, *b).empty())
     return at + ", 而 base 未达入库门槛: 门槛前换平滑 / 压缩 / 口径多半只是在噪声里挑点, 回到观察找还没解释的现象";
   if (cd.knob && h->knobs >= kHypKnobs)
     return at + ": " + h->id + " 的旋钮类配额 (" + std::to_string(kHypKnobs) + " 个) 已用完";
@@ -242,7 +242,7 @@ Wait eval(Act &a, Desk &d) {
                              {"note", k.st.cand.note},
                              {"result", k.st.ok() ? "落文件 " + k.st.file : Brief(k.st.res)}});
   if (!k.st.ok()) {
-    a.out = TrialText(k), a.ok = false;
+    a.out = TrialText(k, d.setup.gate), a.ok = false;
     d.add({.unstaged = 1});
     return Wait::None;
   }
@@ -298,7 +298,7 @@ void take(Act &a, Lab::Tick &&t, Desk &d) {
     k.search.end(now_s), k.run.end(now_s);
     k.st.res = std::get<Result>(std::move(t.got));
     assert(k.st.res.file == k.st.file);
-    a.out = TrialText(k);
+    a.out = TrialText(k, d.setup.gate);
     a.ok = k.st.res.verdict != Verdict::Broken;
     d.log.event(Event::Eval, {{"name", k.st.cand.name}, {"result", Brief(k.st.res)}});
     d.add({.hits = k.st.res.verdict == Verdict::Weights});
@@ -306,7 +306,7 @@ void take(Act &a, Lab::Tick &&t, Desk &d) {
   }
   case Lab::Step::Look:
     if (a.call.tool == Tool::EvalFactor)
-      a.out = TrialText(std::get<Trial>(a.got), RepText(std::get<Look>(t.got)));
+      a.out = TrialText(std::get<Trial>(a.got), d.setup.gate, RepText(std::get<Look>(t.got)));
     else
       a.ok = Render(a.call, std::get<Look>(t.got), d.lab.ctx(), a.out);
     break;
@@ -330,7 +330,7 @@ void answer(Act &a, Desk &d) {
 
 std::string Owed(const std::vector<Call> &cs, const Desk &d) {
   if (d.evaled && std::any_of(cs.begin(), cs.end(), [](const Call &c) { return c.tool == Tool::EvalFactor; }))
-    return "上一条回复有回测, 这一条不能再回测: 先读本批结果 —— 用观察诊断变体为什么好 / 为什么差, 对挂了变体的假设 judge; 回测留到下一条";
+    return "上一条回复有落了文件的回测, 这一条不能再回测: 先读本批结果 —— 用观察诊断变体为什么好 / 为什么差, 对挂了变体的假设 judge; 回测留到下一条";
   std::string owe;
   for (const Hyp &h : d.board.all())
     if (h.pending && std::none_of(cs.begin(), cs.end(), [&](const Call &c) { return c.tool == Tool::Judge && c.str("hyp") == h.id; }))

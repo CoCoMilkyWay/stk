@@ -612,13 +612,22 @@ bool layers_view(const Call &c, const Look &L, std::string &out) {
   s += "\n| 每期超额 bp |";
   for (int k = 0; k < kGroups; ++k)
     s += " " + bp(all.grp(k)) + " |";
-  s += "\n| 行均真持有只数 |";
+  // 各组只数差不出一成时只给范围, 否则逐组一行
+  double lo = INFINITY, hi = -INFINITY;
   for (int k = 0; k < kGroups; ++k)
-    s += " " + fmt("%.1f", all.held(k)) + " |";
+    lo = std::min(lo, all.held(k)), hi = std::max(hi, all.held(k));
+  if (hi - lo > 0.1 * hi) {
+    s += "\n| 行均真持有只数 |";
+    for (int k = 0; k < kGroups; ++k)
+      s += " " + fmt("%.1f", all.held(k)) + " |";
+    s += "\n";
+  } else {
+    s += "\n\n各组行均真持有 " + fmt("%.1f", lo) + "–" + fmt("%.1f", hi) + " 只\n";
+  }
   double mid = 0.0;
   for (int k = 5; k < 15; ++k)
     mid += all.grp(k) / 10.0;
-  s += "\n\n做多端 G20 " + bp(all.grp(kG20)) + "bp · 最低组 G1 " + bp(all.grp(kG1)) + "bp · 中段 G6–G15 均值 " + bp(mid) + "bp\n";
+  s += "\n做多端 G20 " + bp(all.grp(kG20)) + "bp · 最低组 G1 " + bp(all.grp(kG1)) + "bp · 中段 G6–G15 均值 " + bp(mid) + "bp\n";
   s += "\n两端组内按池内秩再截更极端的一截 (同一份真持有判据, 满仓按宽度折算, 每期超额口径同上):\n| 截取 | 占截面 | G20 端 bp | G20 行均只数 | G1 端 bp | G1 行均只数 | 多空 bp |\n|---|---|---|---|---|---|---|\n";
   s += "| 整组 | " + fmt("%g%%", 100.0 / kGroups) + " | " + bp(all.grp(kG20)) + " | " + fmt("%.1f", all.held(kG20)) + " | " + bp(all.grp(kG1)) + " | " + fmt("%.1f", all.held(kG1)) +
        " | " + bp(all.ls()) + " |\n";

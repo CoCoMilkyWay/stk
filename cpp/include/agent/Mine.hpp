@@ -82,9 +82,9 @@ struct Desk {
   std::vector<Round> timeline;
   Total total;
   std::set<std::string> adopted; // 本会话入库的英文名
-  std::set<std::string> seen;    // 本会话 search_leaves 列出过的叶 (eval_factor 的式子只能用它们)
+  std::set<std::string> seen;    // 本会话 search_leaves 列出过的叶组里的叶 (eval_factor 的式子只能用它们)
   Board board;                   // 本会话的假设板
-  bool evaled = false;           // 上一条执行了的回复里有 eval_factor (这一条不能再回测)
+  bool evaled = false;           // 上一条执行了的回复里有落了文件的 eval_factor (这一条不能再回测)
   bool done = false;             // agent 调了 finish
   bool asked = false;            // 已用过 ask_human
   std::string reason, report;    // 结束原因 / 结束报告

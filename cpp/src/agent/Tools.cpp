@@ -72,7 +72,7 @@ constexpr ArgDef kBookArgs[] = {
     {"big", Arg::Int, "0", 0, 100000, nullptr, "大单门槛 (万元, 按委托额); 0 = 当日全部新挂单额的 99 分位"},
     {"n", Arg::Int, "20", 1, 40, nullptr, "大单事件列几条 (按额取最大的, 再按时序列)"}};
 constexpr ArgDef kLeavesArgs[] = {{"query", Arg::Str, nullptr, 0, 0, nullptr, "关键词, 查叶名 / 中文名 / 公式 / 说明; 空格隔开的几个须同时出现 (英文不分大小写)"},
-                                  {"n", Arg::Int, "30", 1, 60, nullptr, "列几个"}};
+                                  {"n", Arg::Int, "30", 1, 60, nullptr, "列几组 (同组 = 只差计量 / 阈值的叶)"}};
 // 研报库的词表 (标注体系的 code)
 constexpr const char *kStages = "L0_data|L1_factor|L2_process|L3_alpha|L4_risk|L5_portfolio|L6_evaluation|L7_execution|L8_timing";
 constexpr const char *kAssets = "stock_cn|stock_hk|stock_us|future_index|future_commodity|future_bond|bond|option|convertible|fund|multi";
@@ -132,9 +132,10 @@ constexpr ArgDef kEvalArgs[] = {
     {"change", Arg::Str, nullptr, 0, 0, nullptr, "这一处改动想修哪个现象 (哪个调用看到了什么), 改的是哪一处"},
     {"expect", Arg::Str, nullptr, 0, 0, nullptr, "预期: 相对 base 会看到什么变化 (mono / 多空 / rIC 哪个往哪个方向, 或哪个观察里的现象消失); 一个方向"},
     {"parts", Arg::Parts, nullptr, 1, kParts, nullptr,
-     "功能块 [{\"expr\": 模板里逐字抄的一段子式, \"means\": 它衡量什么 (≤ {part_chars} 字的短句)}, …]; 须覆盖根的输入 (整个因子衡量什么) 与每个多元算子 "
-     "(TsAdd / TsSub / TsMul / TsImb / TsMask …) 的非叶元 (各成分各衡量什么)"}};
-constexpr ArgDef kTopArgs[] = {{"top", Arg::Int, "20", 1, kListTop, nullptr, "列前几个"}};
+     "功能块 [{\"expr\": 模板里逐字抄的一段子式, \"means\": 它衡量什么 (≤ {part_chars} 字的短句, 不计空格标点)}, …]; 须覆盖根的输入 (整个因子衡量什么) 与每个多元算子 "
+     "(TsAdd / TsSub / TsMul / TsImb / TsMask …) 的每个非叶元 (各成分各衡量什么; 叶的组合如 TsAdd(叶, 叶) 作了别的多元算子的一元, 也要一块)"}};
+constexpr ArgDef kTopArgs[] = {{"top", Arg::Int, "20", 1, kListTop, nullptr, "列几个"},
+                               {"skip", Arg::Int, "0", 0, 9999, nullptr, "跳过排在前面的几个 (接着看上次没列到的; 结果末尾会给)"}};
 constexpr ArgDef kNameArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "已评候选的英文名 (本作用域历次会话的都可以)"}};
 // 全局记录 (agent/Notes)
 constexpr const char *kRefDesc = "可选: 同类已有一条的编号 (list_notes 里的, 如 F3): 附议或补充它, 只写新的部分; 空 = 新提";
@@ -178,7 +179,8 @@ constexpr ToolDef kTools[] = {
     {Tool::ViewLayers, "view_layers", "看分层", Run::Look, kLayersArgs,
      "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 两端组内再截最极端的 50% / 20% / 5% 看尾部 (越极端越强 = 信号集中在极值, "
      "可加强截面根的区分度; 尾部反而回落 = 极值多是事件 / 数据噪声); 切开看分层在哪些时段 / 月份成立、哪些失效; 给 cond 再按条件三等分看各段的分层",
-     "全期 20 组 + 尾部表 (各截取宽度两端的每期超额 / 只数 / 多空) + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组) + 给 cond 时条件三段各一行"},
+     "全期 20 组 + 尾部表 (各截取宽度两端的每期超额 / 只数 / 多空) + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组) + 给 cond 时条件三段各一行; "
+     "切分或给 cond 时全期部分照给, 不必另调一次不切的"},
     {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
      "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列若干段的明细 (代码与日期可接 view_stock_day). 汇总与两张表看收益从哪类情形来、亏在哪类情形; "
@@ -215,8 +217,8 @@ constexpr ToolDef kTools[] = {
      "当日与窗口概况 + 逐时表 + 大单事件 (计数 + 明细) + 全簿剖面"},
     {Tool::SearchLeaves, "search_leaves", "查特征叶", Run::Now, kLeavesArgs,
      "查特征叶的公式与说明 (系统提示的特征表只列族卡、叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见、落盘值是不是原量. "
-     "这里列出过的叶才能写进 eval_factor 的式子 (本会话内有效; 观察工具不限)",
-     "命中数 + 叶行 (叶 / 中文名 / 公式 / 说明 / 落盘值); 零命中时给各词单独的命中数"},
+     "只差计量 (额 / 量 / 笔) 或阈值 / 窗口的同组叶合成一行, 公式与说明按组内首个写. 这里列出过的组, 组内的叶才能写进 eval_factor 的式子 (本会话内有效; 观察工具不限)",
+     "命中的叶数与组数 + 组行 (叶 (同组写成花括号式) / 中文名 / 公式 / 说明 / 落盘值); 零命中时给各词单独的命中数"},
     {Tool::SearchDocs, "search_docs", "查研报", Run::Docs, kDocsArgs,
      "查研报库 (券商金工研报的标注与全文): 先给命中研报的分面 —— 阶段 → 流派树 (篇数) / 机构 / 年份 / 价值 (我们对研报的判断: high 可直接复用 / medium 有参考 / low 有水分), "
      "再列研报. 不带条件 = 全库版图; 从上往下逐层加条件 (阶段 → 流派 → 关键词) 收窄到感兴趣的几篇, 再用 read_doc 读",
@@ -235,18 +237,20 @@ constexpr ToolDef kTools[] = {
      "编号"},
     {Tool::Judge, "judge", "判假设", Run::Now, kJudgeArgs,
      "对照假设的 expect / refute 给它下判定, 证据写调用编号. 两个时点: 检验它的观察做完后 (判为支持才能挂变体); 它的变体回测完的下一条回复 (系统强制: 待判的不判, 整条退回). "
+     "判支持须引用观察: 同一条回复里把观察排在 judge 前面, 就能引用它们. "
      "每次都写清测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么",
      "判定后的假设板一行; 证据不成 (编号不存在 / 在提出之前 / 没做成 / 判支持却没有观察 / 再判没有新证据) 写原因, 不改判定"},
     {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, kEvalArgs,
      "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体; "
-     "须挂在判为支持的假设上 (每个至多 {hyp_evals} 个, 有变体回测过还没判的先 judge), 写明相对哪个 base 改了哪一处、功能块各衡量什么; 上一条回复有回测时本条不能回测. "
-     "与已有候选同式 (含只换截面根) 的不落, 用了本会话没经 search_leaves 查过的叶的不落",
-     "改动归类 (相对 base) + 结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (+ 最佳权重的 20 组); "
-     "有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
+     "须挂在判为支持的假设上 (每个至多 {hyp_evals} 个, 有变体回测过还没判的先 judge), 写明相对哪个 base 改了哪一处、功能块各衡量什么; 上一条回复有落了文件的回测时本条不能回测. "
+     "与已有候选同式 (含只换截面根) 的不落, 用了本会话没经 search_leaves 查过的叶的不落; 同一条回复里先 search_leaves 再回测用它列出的叶也行",
+     "改动归类 (相对 base) + 结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (只写自由参数的取值) + 是否达入库门槛 "
+     "(+ 最佳权重的 20 组); 有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
     {Tool::ListTried, "list_tried", "列已试", Run::Now, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
-     "每个候选: 模板 + 结局"},
+     "每个候选: 模板 + 结局 (权重只写自由参数的取值) + 是否达入库门槛; 没列完时末尾给总数与接着看的 skip"},
     {Tool::ListLibrary, "list_library", "列正式库", Run::Now, kTopArgs,
-     "列正式因子库里同一评估期且算子不超上限的因子在本持有期的成绩, 按 score 降序; 可作起点接着做", "每个因子: 模板 + 思路 + 最佳权重"},
+     "列正式因子库里同一评估期且算子不超上限、在本持有期有统计的因子, 按 score 降序; 可作起点接着做",
+     "每个因子: 模板 + 思路 + 最佳权重; 本持有期无统计的只报个数; 没列完时末尾给总数与接着看的 skip"},
     {Tool::ListNotes, "list_notes", "查全局记录", Run::Now, kNotesArgs,
      "查历次会话 (各作用域) 留下的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提",
      "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 各字段)"},
@@ -383,8 +387,8 @@ bool check(const ArgDef &a, const json &v, const std::string &path, std::string 
         why = " 须是 {\"expr\": 子式, \"means\": 短句}";
       else if (x["expr"].get<std::string>().empty())
         why = ".expr 不能为空";
-      else if (const size_t n = text::chars(x["means"].get<std::string>()); n == 0 || n > static_cast<size_t>(kPartChars))
-        why = ".means 须是 1.." + std::to_string(kPartChars) + " 字的短句 (收到 " + std::to_string(n) + " 字)";
+      else if (const size_t n = text::solid(x["means"].get<std::string>()); n == 0 || n > static_cast<size_t>(kPartChars))
+        why = ".means 须是 1.." + std::to_string(kPartChars) + " 字的短句 (不计空格标点; 收到 " + std::to_string(n) + " 字)";
       if (!why.empty()) {
         err = at(path, i) + why;
         return false;

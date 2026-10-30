@@ -3,11 +3,12 @@
 // =============================================================================
 // Text — agent 成文的公共件: 字 (UTF-8 码点) / 数的写法 / 火花线
 // =============================================================================
-//   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界
+//   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界; 短句上限 (功能块说明) 按 solid
 // =============================================================================
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -18,6 +19,21 @@ namespace agent::text {
 // ---- 字 ----
 inline bool lead(char ch) { return (static_cast<unsigned char>(ch) & 0xC0) != 0x80; } // 码点首字节
 inline size_t chars(std::string_view s) { return static_cast<size_t>(std::count_if(s.begin(), s.end(), lead)); }
+// 实字数: 不计空白与标点 (ASCII 非字母数字、通用标点 U+2000–206F、CJK 标点 U+3000–303F、全角形 U+FF00–FFEF)
+inline size_t solid(std::string_view s) {
+  size_t n = 0;
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    const size_t len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    uint32_t u = len == 1 ? c : c & (0x3Fu >> (len - 1));
+    for (size_t k = 1; k < len && i + k < s.size(); ++k)
+      u = u << 6 | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
+    i += len;
+    const bool alnum = (u >= '0' && u <= '9') || (u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z');
+    n += u < 0x80 ? alnum : !((u >= 0x2000 && u <= 0x206F) || (u >= 0x3000 && u <= 0x303F) || (u >= 0xFF00 && u <= 0xFFEF));
+  }
+  return n;
+}
 // 字节位 i 起前进 / 后退 n 字 (到头为止)
 inline size_t fwd(std::string_view s, size_t i, size_t n) {
   for (; i < s.size() && n > 0; --n)

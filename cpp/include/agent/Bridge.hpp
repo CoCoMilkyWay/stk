@@ -54,6 +54,11 @@ struct Leaf {
   std::string tf, tf_def;                   // 落盘值 = 原量经此元素变换: 简称 / 定义式 (恒等 = 空)
   std::string family;                       // 特征族 = 定义它的节点文件 (features/Node/ 下, 去 .hpp; 如 Lob/TS/OrderFlow/OrderLife); 族卡见 agent/Prompt
 };
+// 叶名 档.层.列 → (档.层, 列按 '_' 切的词)
+std::pair<std::string, std::vector<std::string>> LeafWords(const std::string &code);
+// 同组叶的键: 列里的计量 / 阈值词 (额 amt / 量 vol / 笔 n / all, 带数字的) 换成 *; 同键的叶只差口径
+// (search_leaves 与特征表合成一行, 查过一个即整组查过; 两叶互换归 "换口径")
+std::string LeafKin(const std::string &code);
 struct Op {
   std::string name, name_cn, sig, out, tex, note; // sig = 元与参数的值域 (LaTeX); out = 输出值域名
 };
@@ -282,6 +287,8 @@ int TradeSec(int clock);
 struct Gate {
   double mono = 0, ric = 0;
 };
+// 达门槛 (至少一个权重) = 空; 否则 = 差在哪 (取 score 最高的权重说)
+std::string GateMiss(const Gate &g, const Result &r);
 
 // ---- 候选的一生: 进候选目录 (stage) ↔ 进正式库 (adopt) ----
 struct Cand {
@@ -377,7 +384,6 @@ public:
   Staged stage(Cand c);                                                // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
   Adopted adopt(std::string name, const Gate &g);                      // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err; 否则拷进正式目录 (test 不拷)
   const Result *tried(const std::string &name) const;                  // 可见的已试候选; 没有 = nullptr
-  bool passes(const Result &r, const Gate &g) const;                   // 至少一个权重达门槛
   Delta delta(const std::string &base, const std::string &expr) const; // 模板 expr 相对模板 base 的改动
   // 功能块须是 expr 的子式, 且覆盖根的输入与每个多元算子的非叶元; 不成 → false + err. expr 解析不了 = 放行 (由 stage 报)
   bool parts_ok(const std::string &expr, const std::vector<Part> &parts, std::string &err) const;

@@ -206,7 +206,6 @@ void Mine::replied(llm::Reply r) {
       ask(RetryMessage(err));
     return;
   }
-  evaled = std::any_of(cs.begin(), cs.end(), [](const Call &c) { return c.tool == Tool::EvalFactor; });
   nlohmann::ordered_json tools = nlohmann::ordered_json::array();
   for (Call &c : cs) {
     tools.push_back(def(c.tool).name);
@@ -240,6 +239,7 @@ void Mine::step() {
   }
   if (done)
     return finish("agent 宣布挖完");
+  evaled = std::any_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::EvalFactor && std::get<Trial>(a.got).st.ok(); });
   if (go(Phase::Think))
     ask(RoundMessage(rd.acts, round(), board, evaled, setup.test));
 }
