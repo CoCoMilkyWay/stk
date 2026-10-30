@@ -4,7 +4,7 @@
 
 做法:
 - 分几轮做完, 每条回复至多 {{max_calls}} 个调用; 要用上一步结果的 (候选名、代码、日期、研报 id、节号、续读位置) 放到下一条.
-- 每个工具至少调一次, 参数尽量覆盖各个取值 (view_layers 的 split, view_trades 的 side / sort / merge, search_leaves 的叶名 / 中文 / 多词 query, search_docs 的 tag / text 与各筛选, search_factors 的 sort, read_doc 的 card / outline / text 及按结果末尾的位置续读 ...).
+- 每个工具至少调一次, 参数尽量覆盖各个取值 (view_layers 的 split, view_trades 的 side / sort / merge, view_response 的 side / split, search_leaves 的叶名 / 中文 / 多词 query, search_docs 的 tag / text 与各筛选, search_factors 的 sort, read_doc 的 card / outline / text 及按结果末尾的位置续读 ...).
 - 每类数据参数再故意写错一两个 (不存在的候选 / 特征叶 / 代码 / 评估期外的日期 / 流派 / 研报 id / 超出的节号), 看结果是否说清了原因、其余调用是否照做.
 - eval_factor 交 3 个: 从 list_library 里挑一个有最佳权重的正式因子, 原样抄它的模板 (保证测到有权重的路径; 正式库里没有带本持有期权重的, 改从 list_tried 挑有参数组的, 也没有就换成第二个自己写的简单模板, 并在总评里注明有权重的路径没测到); 一个自己写的简单模板; 一个不合法的 (算子超上限或名字不合法). 有权重的拿去喂观察工具的 factor 再 submit_factor 它; 无显著的也拿去喂一次 factor (应看到它的代表点).
 - {{ask}}.

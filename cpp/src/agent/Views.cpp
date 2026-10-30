@@ -27,6 +27,7 @@ constexpr size_t kCsCells = 2000000; // 逐行截面相关 (rIC) 的用格上限
 constexpr int kCorrRows = 400;       // 特征间相关取的行数上限
 constexpr size_t kBase = 40000;      // 交割单标签的池内基准抽样 (格)
 constexpr int kMinCs = 20;           // 截面相关至少的格数
+constexpr size_t kEvents = 20000;    // 响应曲线的开仓段抽样上限
 
 // ---- 数的写法 ----
 using text::fmt;
@@ -737,6 +738,179 @@ bool holders_view(const Call &c, const Look &L, std::string &out) {
   return true;
 }
 
+// ---- view_response ----
+// 逐格的超额对数步长: 本行收盘对上一行收盘 (日首行对昨收, 已除权) 的对数 − 同行在池均值; 没价的格 (停牌 / 缺数据) 原步长记 0
+Plane<float> excess_steps(const Look &L, const Px &px) {
+  const int T = L.T(), A = L.A(), seg = L.seg;
+  Plane<float> e(static_cast<size_t>(T) * static_cast<size_t>(A));
+  std::vector<double> st(static_cast<size_t>(A));
+  for (int t = 0; t < T; ++t) {
+    Mean m;
+    for (int a = 0; a < A; ++a) {
+      const double c = px(Bar::Close, t, a), b = t % seg == 0 ? px.pre(t, a) : px(Bar::Close, t - 1, a);
+      st[static_cast<size_t>(a)] = c > 0.0 && b > 0.0 ? std::log(c / b) : kNaN;
+      if (L.gate[L.at(t, a)])
+        m.add(st[static_cast<size_t>(a)]);
+    }
+    const double mk = m.n ? m.mean() : 0.0;
+    for (int a = 0; a < A; ++a)
+      e[L.at(t, a)] = static_cast<float>((std::isfinite(st[static_cast<size_t>(a)]) ? st[static_cast<size_t>(a)] : 0.0) - mk);
+  }
+  return e;
+}
+// 开仓行 t0 与时点 to 之间的累计超额: 之前的点 = 该点 → 开仓 (到开仓为止的涨跌), 之后的点 = 开仓 → 该点
+double cum_of(const Plane<float> &e, const Look &L, int a, int t0, int to) {
+  double s = 0.0;
+  for (int u = std::min(t0, to) + 1; u <= std::max(t0, to); ++u)
+    s += e[L.at(u, a)];
+  return s;
+}
+// 均值的标准误, 按开仓日聚类 (同日的段共享截面冲击, 不独立)
+double se_of(const Mean &all, const std::vector<Mean> &by) {
+  if (all.n < 2)
+    return kNaN;
+  const double m = all.mean();
+  double v = 0.0;
+  int nd = 0;
+  for (const Mean &d : by)
+    if (d.n)
+      v += (d.sum - static_cast<double>(d.n) * m) * (d.sum - static_cast<double>(d.n) * m), ++nd;
+  return nd >= 2 ? std::sqrt(v) / static_cast<double>(all.n) : kNaN;
+}
+// 时点: close = 开仓日后第 n 个交易日的收盘行; 否则 = 开仓行偏移 n 行
+struct Pt {
+  std::string name;
+  bool close;
+  int n;
+};
+std::vector<Pt> points_of(int seg) {
+  if (seg == 1)
+    return {{"-5 日", false, -5}, {"-1 日", false, -1}, {"0 (开仓)", false, 0}, {"+1 日", false, 1}, {"+2 日", false, 2}, {"+3 日", false, 3}, {"+5 日", false, 5}};
+  std::vector<Pt> p{{"前 1 日同一行", false, -seg}};
+  for (const int n : {-30, -10, -5, -1})
+    if (-n < seg)
+      p.push_back({std::to_string(n) + " 行", false, n});
+  p.push_back({"0 (开仓)", false, 0});
+  for (const int n : {1, 5, 10, 30})
+    if (n < seg)
+      p.push_back({"+" + std::to_string(n) + " 行", false, n});
+  p.push_back({"当日收盘", true, 0});
+  p.push_back({"T+1 收盘", true, 1});
+  p.push_back({"T+2 收盘", true, 2});
+  return p;
+}
+
+bool response_view(const Call &c, const Look &L, std::string &out) {
+  const LookRoot *r = root_of(L, out);
+  if (!r)
+    return false;
+  const bool top = c.str("side") == "top", tod = c.str("split") == "tod" && L.seg > 1;
+  const int seg = L.seg, T = L.T(), D = static_cast<int>(L.dates.size());
+  const std::string side = top ? "做多端 G20" : "最低组 G1";
+  std::string s = "## 因子 `" + r->label + "` · " + side + " · 开仓前后的累计超额\n";
+  // 事件 = 真持有段 (同资产同日相邻行连成一段, 同 view_trades merge=run) 的开仓行
+  std::vector<LookCell> cs;
+  for (const LookCell &x : r->cells)
+    if (x.top == top)
+      cs.push_back(x);
+  std::sort(cs.begin(), cs.end(), [](const LookCell &x, const LookCell &y) { return x.a != y.a ? x.a < y.a : x.t < y.t; });
+  std::vector<LookCell> ev;
+  for (size_t i = 0; i < cs.size(); ++i)
+    if (i == 0 || cs[i - 1].a != cs[i].a || cs[i - 1].t + 1 != cs[i].t || cs[i - 1].t / seg != cs[i].t / seg)
+      ev.push_back(cs[i]);
+  if (ev.empty()) {
+    out = s + "本端没有真持有过的格\n";
+    return true;
+  }
+  const size_t n_ev = ev.size(), st = std::max<size_t>(1, n_ev / kEvents);
+  if (st > 1) {
+    std::vector<LookCell> sub;
+    for (size_t i = 0; i < n_ev; i += st)
+      sub.push_back(ev[i]);
+    ev.swap(sub);
+  }
+  const Px px(L);
+  const Plane<float> e = excess_steps(L, px);
+  const std::vector<Pt> pts = points_of(seg);
+  const size_t P = pts.size();
+  const std::vector<Part> ps = tod ? parts_of(L) : std::vector<Part>{};
+  const std::vector<int> pr = tod ? part_of_row(ps, seg) : std::vector<int>{};
+  std::vector<Mean> ex(P), rank(P);
+  std::vector<std::vector<Mean>> by_day(P, std::vector<Mean>(static_cast<size_t>(D)));
+  std::vector<std::vector<Mean>> by_part(ps.size(), std::vector<Mean>(P));
+  std::vector<size_t> n_part(ps.size());
+  for (const LookCell &x : ev) {
+    const int d0 = x.t / seg;
+    if (tod)
+      ++n_part[static_cast<size_t>(pr[x.t % seg])];
+    for (size_t j = 0; j < P; ++j) {
+      const int to = pts[j].close ? (d0 + pts[j].n) * seg + seg - 1 : x.t + pts[j].n;
+      if (to < 0 || to >= T)
+        continue;
+      const double v = cum_of(e, L, x.a, x.t, to);
+      ex[j].add(v), by_day[j][static_cast<size_t>(d0)].add(v);
+      if (L.gate[L.at(to, x.a)])
+        rank[j].add(r->rank(L.at(to, x.a)));
+      if (tod)
+        by_part[static_cast<size_t>(pr[x.t % seg])][j].add(v);
+    }
+  }
+  s += "事件 = 真持有段 (同 view_trades merge=run) 的开仓行, 共 " + str(n_ev) + " 段" + (st > 1 ? " (等距抽 " + str(ev.size()) + " 段)" : "") + " · 零点 = 开仓行收盘价\n";
+  s += "累计超额 = 对数收益减同行在池均值逐行累计 (跨日按昨收接, 不含除权缺口; 没价的行记 0); 开仓前的点 = 该点到开仓的涨跌, 开仓后的点 = 开仓到该点; 标准误按开仓日聚类\n";
+  s += "\n| 时点 | 段数 | 累计超额 bp | ± 标准误 | 为正占比 | 因子分位 (高 = 做多端) |\n|---|---|---|---|---|---|\n";
+  for (size_t j = 0; j < P; ++j) {
+    const bool zero = !pts[j].close && pts[j].n == 0;
+    s += "| " + pts[j].name + " | " + str(ex[j].n) + " | " + (zero ? "0" : bp(ex[j].mean())) + " | " + (zero ? "—" : fmt("%.1f", se_of(ex[j], by_day[j]) * 1e4)) + " | " +
+         (zero ? "—" : pct(ex[j].up())) + " | " + rk(rank[j].mean()) + " |\n";
+  }
+
+  // 因子分位与此前收益的截面 rank 相关: 抽 kCorrRows 行, 每行在池且分位有效的资产, 取各行的均值
+  std::vector<std::pair<std::string, int>> ws;
+  if (seg == 1)
+    ws = {{"前 1 日", 1}, {"前 5 日", 5}, {"前 20 日", 20}};
+  else {
+    for (const int w : {5, 30})
+      if (w < seg)
+        ws.push_back({"前 " + std::to_string(w) + " 行", w});
+    ws.push_back({"前 1 日", seg});
+  }
+  s += "\n开仓行的因子分位与此前收益的截面 rank 相关 (抽 " + std::to_string(kCorrRows) + " 行取均值; 接近 −1 = 因子主要是短期反转的代理, 接近 +1 = 动量的代理):";
+  for (size_t i = 0; i < ws.size(); ++i) {
+    const int w = ws[i].second, rstep = std::max(1, (T - w) / kCorrRows);
+    Mean rho;
+    for (int t = w; t < T; t += rstep) {
+      std::vector<double> xs, ys;
+      for (int a = 0; a < L.A(); ++a)
+        if (const size_t k = L.at(t, a); L.gate[k] && std::isfinite(r->rank(k)))
+          xs.push_back(r->rank(k)), ys.push_back(cum_of(e, L, a, t, t - w));
+      if (static_cast<int>(xs.size()) >= kMinCs)
+        rho.add(spearman(xs, ys));
+    }
+    s += (i ? " · " : " ") + ws[i].first + " " + r3(rho.mean());
+  }
+  s += "\n";
+
+  if (tod) {
+    s += "\n按开仓时段 (各时点的累计超额 bp):\n| 开仓时段 | 段数 |";
+    for (const Pt &p : pts)
+      s += " " + p.name + " |";
+    s += "\n|---|---|";
+    for (size_t j = 0; j < P; ++j)
+      s += "---|";
+    s += "\n";
+    for (size_t q = 0; q < ps.size(); ++q) {
+      if (!n_part[q])
+        continue;
+      s += "| " + ps[q].name + " | " + str(n_part[q]) + " |";
+      for (size_t j = 0; j < P; ++j)
+        s += " " + (!pts[j].close && pts[j].n == 0 ? std::string("0") : bp(by_part[q][j].mean())) + " |";
+      s += "\n";
+    }
+  }
+  out = std::move(s);
+  return true;
+}
+
 // ---- 个股 ----
 // 叠加的因子 (可选) 与特征式: 因子在 factors[0]
 struct Over {
@@ -962,6 +1136,7 @@ bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
   case Tool::ViewHolders:
     return factor(c.str("factor"));
   case Tool::ViewTrades:
+  case Tool::ViewResponse:
     out.kline = true;
     return factor(c.str("factor"));
   case Tool::ViewStockDay:
@@ -1033,6 +1208,9 @@ bool Render(const Call &c, const Look &L, const Context &ctx, std::string &out) 
     break;
   case Tool::ViewHolders:
     ok = holders_view(c, L, body);
+    break;
+  case Tool::ViewResponse:
+    ok = response_view(c, L, body);
     break;
   case Tool::ViewStockDay:
     ok = stock_day(c, L, ctx, body);

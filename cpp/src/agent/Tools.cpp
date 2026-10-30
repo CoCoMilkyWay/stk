@@ -35,6 +35,9 @@ constexpr ArgDef kTradesArgs[] = {
 constexpr ArgDef kHoldersArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
                                    {"side", Arg::Str, "\"top\"", 0, 0, "top|bottom", kSideDesc},
                                    {"n", Arg::Int, "15", 1, 30, nullptr, "列几只"}};
+constexpr ArgDef kResponseArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
+                                    {"side", Arg::Str, "\"top\"", 0, 0, "top|bottom", kSideDesc},
+                                    {"split", Arg::Str, "\"none\"", 0, 0, "none|tod", "切开看: none 不切 / tod 按开仓时段 (日层无时段, 同 none)"}};
 constexpr ArgDef kStockDayArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, "6 位代码或 代码.交易所 (如 000001 / 000001.SZ)"},
                                     {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (须在评估期内)"},
                                     {"factor", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 叠加看的因子, 写法同其他观察工具的 factor"},
@@ -105,6 +108,10 @@ constexpr ToolDef kTools[] = {
     {Tool::ViewHolders, "view_holders", "看常客", Run::Look, kHoldersArgs,
      "看哪些资产最常落在因子一端: 本端行数 / 占其在池行的比例 / 涉及天数 / 平均连续行数 / 本端持仓平均超额, 附集中度. 用来看因子是否只在少数票上起作用、在挑哪类票",
      "集中度一行 + 资产表"},
+    {Tool::ViewResponse, "view_response", "看响应", Run::Look, kResponseArgs,
+     "看因子一端开仓前后全池平均的价格路径 (事件研究, 与分层回测同一份持仓): 以真持有段的开仓行为零点, 开仓前若干时点到开仓的累计超额 (因子是不是过去价格的影子: 反转 / 动量) "
+     "与开仓后到若干时点的累计超额 (收益何时到、多快衰减、持有期是否合适), 各时点的因子分位 (信号能持续多久), 附开仓行因子分位与此前收益的截面相关; 可按开仓时段切开",
+     "说明两行 + 时点表 (段数 / 累计超额 ± 按日聚类标准误 / 为正占比 / 因子分位) + 与此前收益的相关一行 + 切分时的时段表"},
     {Tool::ViewStockDay, "view_stock_day", "看个股一天", Run::Look, kStockDayArgs,
      "看一只股票一天的逐行走势: 价 / 量 / 因子分位 / 特征的火花线, 加分段表 (竞价段 + 每段约 30 分钟: 涨跌 / 段内高低 / 量占比 / 因子分位 / 后续持有期超额 / 特征段末值). "
      "用来对照盘面现象与因子何时高、何时低",

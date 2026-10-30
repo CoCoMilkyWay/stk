@@ -285,7 +285,7 @@ stk/
 │   │   │   │                                               #    · 回复 = {"calls": [{"tool", "args"}]}, ParseCalls 按参数表校验并补缺省 (带字段路径报错); 加工具 = 表里一行 + 执行方一个分支
 │   │   │   │                                               #    · 执行记录 Act: 调用 + 时段 Span + 交给 agent 的结果 + 带状态的过程 (eval_factor → Trial ⊃ search / run; ask_human → Asked)
 │   │   │   ├── Views.hpp                                   # 🤖 观察工具的两半: 调用 → LookSpec (经 Lab 校验因子 / 特征 / 代码) ↔ Look → markdown (表 + 火花线; 口径同分层回测)
-│   │   │   │                                               #    · view_feature / view_layers / view_trades (交割单: 段合并 / 盘面标签提升 / 明细) / view_holders / view_stock_day / view_stock_days
+│   │   │   │                                               #    · view_feature / view_layers / view_trades (交割单: 段合并 / 盘面标签提升 / 明细) / view_holders / view_response (开仓前后的累计超额) / view_stock_day / view_stock_days
 │   │   │   ├── Docs.hpp                                    # 🤖 研报库工具 (GUI 线程当场查, 只读 output/doc): 标注作索引 (首次全量读入), tag_stat.md 给阶段 → 流派骨架, 全文按需读
 │   │   │   │                                               #    · search_docs / search_factors: 命中集合的分面 (阶段 → 流派 / 机构 / 年份 / 价值; 类别 / 数据周期 × 预测期) + 条目, agent 从全库版图逐层收窄
 │   │   │   │                                               #    · read_doc: 标注卡 / 目录 (按标题行分节) / 原文 (从某节某字起读满字数上限, 末尾给续读位置)
