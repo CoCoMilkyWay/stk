@@ -1,9 +1,8 @@
 // Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: 因子文件 stats[i].holds[] 每项 = 按 hold_cols() 列序的数组
-// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的 Moments 展平为 <ric|rac|ls_fwd|ls_rev>_<矩>, 标量 beta_fwd / beta_rev / mono / leg_n /
-// leg_<fwd|rev>_<long|short>,
+// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两腿各 imp, buy, sell, fix, w, n + rows);
+// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两端各 imp, buy, sell, fix, w, n + rows);
 // 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
@@ -59,13 +58,13 @@ inline bool json_ll(const nlohmann::json &j, const char *key, long long &out) {
   return true;
 }
 
-// HoldStat 的浮点字段 = 逐行量 (ric / rac / 两向 ls) × 七个矩 + 标量 (两向 beta / mono / leg_n / 两向两腿 leg) (键与字段同序)
-inline constexpr const char *kSeriesKeys[] = {"ric", "rac", "ls_fwd", "ls_rev"};
+// HoldStat 的浮点字段 = 逐行量 (ric / rac / ls) × 七个矩 + 标量 (beta / mono / end_n) (键与字段同序)
+inline constexpr const char *kSeriesKeys[] = {"ric", "rac", "ls"};
 inline constexpr const char *kMomentKeys[] = {"mean", "sd", "ir", "t", "pos", "skew", "kurt"};
-inline constexpr const char *kScalarKeys[] = {"beta_fwd", "beta_rev", "mono", "leg_n", "leg_fwd_long", "leg_fwd_short", "leg_rev_long", "leg_rev_short"};
-// CostAcc 的两腿 (与 factor::stat::Leg 同序) × 每腿字段 (与 CostLeg 同序)
-inline constexpr const char *kLegKeys[factor::stat::kLegs] = {"long", "short"};
-inline constexpr const char *kCostLegKeys[] = {"imp", "buy", "sell", "fix", "w", "n"};
+inline constexpr const char *kScalarKeys[] = {"beta", "mono", "end_n"};
+// CostAcc 的两端 (与 factor::stat::End 同序) × 每本字段 (与 CostBook 同序)
+inline constexpr const char *kEndKeys[factor::stat::kEnds] = {"top", "bot"};
+inline constexpr const char *kCostBookKeys[] = {"imp", "buy", "sell", "fix", "w", "n"};
 
 namespace detail {
 template <class M>
@@ -76,15 +75,13 @@ auto moment_field(M &m, int q) -> decltype(&m.mean) {
 }
 template <class H>
 auto series_of(H &h, int s) -> decltype(&h.ric) {
-  decltype(&h.ric) f[] = {&h.ric, &h.rac, &h.ls[factor::stat::kFwd], &h.ls[factor::stat::kRev]};
+  decltype(&h.ric) f[] = {&h.ric, &h.rac, &h.ls};
   static_assert(sizeof(f) / sizeof(f[0]) == sizeof(kSeriesKeys) / sizeof(kSeriesKeys[0]));
   return f[s];
 }
 template <class H>
 auto scalar_field(H &h, int q) -> decltype(&h.mono) {
-  using factor::stat::kFwd, factor::stat::kRev, factor::stat::kLong, factor::stat::kShort;
-  decltype(&h.mono) f[] = {&h.beta[kFwd], &h.beta[kRev], &h.mono, &h.leg_n,
-                           &h.leg[kFwd][kLong], &h.leg[kFwd][kShort], &h.leg[kRev][kLong], &h.leg[kRev][kShort]};
+  decltype(&h.mono) f[] = {&h.beta, &h.mono, &h.end_n};
   static_assert(sizeof(f) / sizeof(f[0]) == sizeof(kScalarKeys) / sizeof(kScalarKeys[0]));
   return f[q];
 }
@@ -109,9 +106,9 @@ inline std::vector<std::string> hold_cols() {
 }
 inline std::vector<std::string> acc_cols() {
   std::vector<std::string> c;
-  for (const char *l : kLegKeys)
-    for (const char *k : kCostLegKeys)
-      c.push_back(std::string(l) + "." + k);
+  for (const char *e : kEndKeys)
+    for (const char *k : kCostBookKeys)
+      c.push_back(std::string(e) + "." + k);
   c.push_back("rows");
   return c;
 }
@@ -182,7 +179,7 @@ inline bool load_hold(const nlohmann::json &o, int seg, factor::stat::HoldStat &
 // 换手成本累加器 (契约 CostAcc; 因子文件 stat.costs[].acc[]): 计数整数精确, 量 / 冲击和 4 位有效
 inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
-  for (const factor::stat::CostLeg &g : c.leg) {
+  for (const factor::stat::CostBook &g : c.book) {
     o.push_back(sig4(g.imp));
     o.push_back(sig4(g.buy));
     o.push_back(sig4(g.sell));
@@ -209,7 +206,7 @@ inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
     v = e.is_number_integer() ? e.get<long long>() : 0;
     return e.is_number_integer();
   };
-  for (factor::stat::CostLeg &g : c.leg)
+  for (factor::stat::CostBook &g : c.book)
     if (!num(g.imp) || !num(g.buy) || !num(g.sell) || !num(g.fix) || !num(g.w) || !ll(g.n))
       return false;
   if (!ll(c.rows))

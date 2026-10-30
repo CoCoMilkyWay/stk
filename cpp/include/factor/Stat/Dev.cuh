@@ -48,7 +48,6 @@ namespace factor::gpu::stat {
 
 using factor::stat::Batch;
 using factor::stat::Frame;
-using factor::stat::kDirs;
 using factor::stat::kGroups;
 using factor::stat::kLegs;
 using factor::stat::kLong;
@@ -126,7 +125,7 @@ __device__ __forceinline__ void lag_row(const uint16_t *rx, const uint16_t *rlag
 }
 
 // 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
-// → r 的 ric / mkt / grp / cnt / leg / leg_cnt / ok (全 lane 同值; 组 / 两腿按契约【仓位感知】, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
+// → r 的 ric / mkt / grp / cnt / ok (全 lane 同值; 组按契约【仓位感知】, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
 // 连续调用间的槽复用由函数内首个 __syncwarp 保护. 调用方已排除段末尾部
 __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, Row &r, float (*gs)[32],
                                           uint16_t (*gc)[32], int lane) {
@@ -136,44 +135,26 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     gs[q][lane] = 0.f;
     gc[q][lane] = 0;
   }
-  unsigned long long s[kSums] = {};     // rIC
-  float fs[kLegs + kDirs * kLegs] = {}; // [kLegs] J 上 Σlv / Σsv (两腿基准) + [kLegs + d·kLegs + l] 方向 d 腿 l 本侧真持有的 Σ 收益
-  int ns[kDirs * kLegs] = {};           // [d·kLegs + l] 同上只数
+  unsigned long long s[kSums] = {}; // rIC
+  float fs[1] = {};                 // J 上 Σlv (基准)
   for (int a = lane; a < c.A; a += 32) {
     const unsigned x = rx[a], y = lb.ry[a];
     const bool ok = x != kRankNone && y != kRankNone;
     factor::stat::pair_add(s, x, y, ok);
     const float yv[kLegs] = {h2f(lb.v[kLong][a]), h2f(lb.v[kShort][a])};
-#pragma unroll
-    for (int l = 0; l < kLegs; ++l)
-      fs[l] += ok ? yv[l] : 0.f;
+    fs[0] += ok ? yv[kLong] : 0.f;
     if (!ok)
       continue;
-    const int g = factor::stat::grp_of(x); // 20 组走分组槽, 两端组另记两腿
+    const int g = factor::stat::grp_of(x);
     const auto in = [g](uint16_t v) { return v != kRankNone && factor::stat::grp_of(v) == g; };
     const factor::stat::Cell<uint16_t> cl{c, rx + a, lb.m + a, lb.eo + a, yv};
-    const bool cont = cl.continues(in);
-    const bool bl = cl.held(kLong, in);
-    const float vl = bl ? cl.ret(kLong, cont) : 0.f;
-    if (bl) { // 组按做多侧; 自己的槽, 无竞争
-      gs[g][lane] += vl;
+    if (cl.held(in)) { // 自己的槽, 无竞争
+      gs[g][lane] += cl.ret(cl.continues(in));
       gc[g][lane] += 1;
-    }
-    if (const int d = factor::stat::long_dir(g); d >= 0) { // 端组: 做多侧 → 方向 d 多腿, 做空侧 → 方向 d ^ 1 空腿
-      const bool bs = cl.held(kShort, in);
-      const float vs = bs ? cl.ret(kShort, cont) : 0.f;
-#pragma unroll
-      for (int e = 0; e < kDirs; ++e) { // 编译期展开的 select: 累加器留在寄存器 (动态下标会落 local memory)
-        fs[kLegs + e * kLegs + kLong] += e == d ? vl : 0.f;
-        ns[e * kLegs + kLong] += e == d && bl;
-        fs[kLegs + e * kLegs + kShort] += e != d ? vs : 0.f;
-        ns[e * kLegs + kShort] += e != d && bs;
-      }
     }
   }
   warp_sum(s);
   warp_sum(fs);
-  warp_sum(ns);
   __syncwarp();         // 各 lane 的槽写完, 下面跨 lane 读
   if (lane < kGroups) { // lane q 收组 q: 沿 32 lane 串行加, 起点旋转 → 32 个 lane 落 32 个 bank
     float sg = 0.f;
@@ -195,14 +176,7 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     gsd[q] = static_cast<double>(gs[q][0]);
     gci[q] = gc[q][0];
   }
-  const double sm[kLegs] = {static_cast<double>(fs[kLong]), static_cast<double>(fs[kShort])};
-  factor::stat::LegSum lg[kDirs][kLegs];
-#pragma unroll
-  for (int e = 0; e < kDirs; ++e)
-#pragma unroll
-    for (int l = 0; l < kLegs; ++l)
-      lg[e][l] = {static_cast<double>(ns[e * kLegs + l]), static_cast<double>(fs[kLegs + e * kLegs + l])};
-  factor::stat::finish_row(s, sm, gsd, gci, lg, cap, r);
+  factor::stat::finish_row(s, static_cast<double>(fs[0]), gsd, gci, cap, r);
 }
 
 // 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; cap = 满仓;
@@ -346,7 +320,7 @@ inline void rank_x(const Batch &B, const uint8_t *g, Frame f, const Span &s, uin
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 标签预处理: 一组标签的做多腿 (lb.v[kLong] / lb.m) 逐行 r16 → ry. 常驻期 (块内) 算一次, 因子 / 候选共用
+// 标签预处理: 一组标签的做多侧 (lb.v[kLong] / lb.m) 逐行 r16 → ry. 常驻期 (块内) 算一次, 因子 / 候选共用
 inline void prep_label(const Label &lb, const Span &s, uint16_t *ry, cudaStream_t stream) {
   factor::stat::assert_span(s);
   assert(lb.v[kLong] && lb.m && ry);

@@ -13,9 +13,9 @@
 //        (InspectResult::nav 日收益; 全部线同一系数 → 线间差 / 斜率比不变, 匀速 = 直线, 末点 = 全段对数年化;
 //        净值引擎 fold_book: 每行开 1/h̄ 一批, 收益在平仓行实现; 可成交 / 顺延在标签里; 控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
 //        组号 / 秩按权重的方向读 (反向 = 组倒序, 秩 kRankMax − r16): G20 恒是做多端).
-//        分层 / LS 同一口径同一 y 轴 (不平移; LS = 两腿平均, 与单组同一资金尺度), y 范围按显示的线定 (
+//        分层 / LS 同一口径同一 y 轴 (不平移; LS = ½ (G20 − G1), 与单组同一资金尺度), y 范围按显示的线定 (
 //        图例 (对仗 Portfolio, 逐列定宽): "LS 100%" (顶底 = 整组) / "LS 50%" … + 对数年化 (线末点) + 夏普 + 年换手;
-//        夏普 = 日收益年化 Sharpe; 年换手 = 该级两腿 Δw 换手 (InspectResult::ls_turn → turn_annual); LS 随模式: 超额 = 两腿各减基准, 绝对 = 两腿本侧原值 (½ (lv + sv)); 两模式换手同一份). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
+//        夏普 = 日收益年化 Sharpe; 年换手 = 该级两端 Δw 换手 (InspectResult::ls_turn → turn_annual); LS 随模式: 超额 = 两端超额之差的一半, 绝对 = 两端原值之差的一半; 两模式换手同一份). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
 //        尾部 (InspectService TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
 //        (白, 越极端越细); 相邻尾部分层线之间填淡色带 (G20↔50% / 50%↔20% / 20%↔5%, 越极端越重), 底侧同;
 //        一级一个图例项 ("LS 50%" …, 列与 LS 100% 对齐) 管该级分层 + 色带 + LS, 默认隐藏; y 范围只按显示的簇合成, 开关图例即重贴
@@ -39,11 +39,11 @@
 //        线色按回撤渐变: 新高 = 蓝, 回撤越深越红 (√(回撤 / 全段最大回撤))
 //   左下 两半对仗 (同一张 plot_dist): 左 rIC 分布 = 逐行 rank IC (ok 行) → KLL → PDF (与顶部 stat 同一组样本); 右 因子分布 = 池内有效格的 alpha
 //        → KLL → 截尾 PDF. 各带 PDF 光滑拟合 (λ 自适应 sd) / mean / 时序背景 (rIC(t) | 截面均值 alpha(t)); 右半另按组边界竖切分组 (G1~G20 组色)
-//   右下 期限结构: 全部持有期 (1m … T+3C) 的 L (G20 做多超额) / S (G1 做空超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
-//        三组 × (毛 + 全部金额段) 一次画全, 图例 = 左上矩阵 (行 = L / S / LS / 池均, 列 = 金额段; 点格 / 行头 / 列头切), 默认只显 LS (固定冲击除外); 另画池均线 ("池均 无冲击"
+//   右下 期限结构: 全部持有期 (1m … T+3C) 的 G20 / G1 (两端做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
+//        三组 × (毛 + 全部金额段) 一次画全, 图例 = 左上矩阵 (行 = G20 / G1 / LS / 池均, 列 = 金额段; 点格 / 行头 / 列头切), 默认只显 LS (固定冲击除外); 另画池均线 ("池均 无冲击"
 //        = InspectResult::pool_ann: 池等权做多的绝对算术年化, 随池一代只算一次, 换因子共享). 口径 = 全库全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
-//        净线 <amt>w = 毛 − 该腿该持有期的均摊换手成本 (两腿都按本侧超额画, 成本都使线下移; LS = net_ls_period.
-//        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_rows: 两腿按 Δw, 增仓 Δw⁺ 付 lb_cost_{buy,sell}_<amt>w, 平仓量付
+//        净线 <amt>w = 毛 − 该端该持有期的均摊换手成本 (两端都是做多账本, 成本都使线下移; LS = net_ls_period.
+//        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_rows: 两端按 Δw, 增仓 Δw⁺ 付 lb_cost_buy_<amt>w, 平仓量付
 //        Config::fixed_impact, 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
 //        Inspect 算过用算的, 没算过用 Factors 表里 (stat: 毛 + 各金额段成本, 同一份 CostTier) 的, 所以进页即有
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行
@@ -63,7 +63,7 @@
 
 namespace GUI::Factors {
 
-// 左上的线表 (= InspectResult::nav 的线序, layer_tail 见 InspectService.hpp). 簇 i 与 LS 线 i 同号: 簇 0 = 20 组, 簇 1 + j = 第 j 级尾部 (两腿)
+// 左上的线表 (= InspectResult::nav 的线序, layer_tail 见 InspectService.hpp). 簇 i 与 LS 线 i 同号: 簇 0 = 20 组, 簇 1 + j = 第 j 级尾部 (两端)
 inline constexpr int kLayerLines = kNavLayers;
 inline constexpr int kLsLines = kNavLs;
 
@@ -76,7 +76,7 @@ struct InspectDerived {
   std::vector<float> lay_ann[kLayerLines]; // [days + 1], 到第 c 日的 Σ ln(1 + 日收益) × kDaysPerYear / days × 100 (全部线同一系数; c = 0 → 0)
   std::vector<float> ls_ann[kLsLines];     // [days + 1], 同上; [days] = 全段对数年化 (图例)
   float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe: 日收益 mean / sd × √kDaysPerYear
-  float ls_turn[kLsLines] = {};            // LS 线的年换手 (倍): turn_annual(hs, InspectResult::ls_turn) (两腿均, 每腿资金 1, 单边)
+  float ls_turn[kLsLines] = {};            // LS 线的年换手 (倍): turn_annual(hs, InspectResult::ls_turn) (两端均, 每本资金 1, 单边)
   // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
   float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};

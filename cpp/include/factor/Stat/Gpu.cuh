@@ -5,14 +5,14 @@
 // =============================================================================
 //   语义契约见 factor/Stat/Contract.hpp, 行核见 Stat/Dev.cuh (rank_rows / quant_rows / row_stat). 本文件与 Stat/Cpu.hpp 完全独立,
 //   流程同名同参序 (契约【视图】; 出口 Accum[H], 二级 finish_all 在宿主):
-//     prep_label / rank_x (Dev.cuh) · accum_rows (label_rows → fold_rows → reduce_parts) · run = rank_x + accum_rows · leg_codes
+//     prep_label / rank_x (Dev.cuh) · accum_rows (label_rows → fold_rows → reduce_parts) · run = rank_x + accum_rows · end_codes
 //   【label_rows】grid ⌈(t_hi − t_lo)/kWarps⌉ × kWB, **一 warp 一行 t**, 持有期在 warp 内串行 (rx 行一次进寄存器 / L1, H 组标签各读一遍),
 //     每 (t, h) 一次 dev::row_stat → lane 0 落 rows[h][t] (设备). 核内没有块级同步, t ≥ t_hi 的 warp 直接退出.
 //     行先落设备再折, 不在 warp 内攒: 攒要么每 h 一块重读 rx 行 (H 倍 rx 流量), 要么 H 份累加器压寄存器; 落行的读写远小于前者.
 //   【fold_rows】一 warp 一 (h, 行块 tb) (kRows 行): 契约 Accum 的两半, lane 0 攒 Accum::Head, lane q < kGroups 攒 Accum::Grp[q]
 //     (调的就是契约的 add) → 分片 part[h][tb]. 【reduce_parts】每 h 一线程沿 tb 升序 merge (固定序 → 逐次确定) → acc[h].
-//     宿主只拷回 acc[H] (+ 要时 rows / lc), 不拷一级回来做二级.
-//   【leg_codes】rx → 腿码 lc (契约 leg_code 逐格): 换手成本在宿主算 (成本平面上显存装不下), 只回传 u8 腿码, 不回 u16 rx.
+//     宿主只拷回 acc[H] (+ 要时 rows / ec), 不拷一级回来做二级.
+//   【end_codes】rx → 端码 ec (契约 end_code 逐格): 换手成本在宿主算 (成本平面上显存装不下), 只回传 u8 端码, 不回 u16 rx.
 //   【禁用】--use_fast_math.
 // =============================================================================
 
@@ -92,9 +92,9 @@ __global__ void __launch_bounds__(kWB) reduce_parts(const Accum *part, int H, in
   acc[hi] = a;
 }
 
-__global__ void __launch_bounds__(kRB) leg_codes(const uint16_t *rx, uint8_t *lc, size_t n, int d) {
+__global__ void __launch_bounds__(kRB) end_codes(const uint16_t *rx, uint8_t *ec, size_t n, int d) {
   for (size_t i = static_cast<size_t>(blockIdx.x) * kRB + threadIdx.x; i < n; i += static_cast<size_t>(gridDim.x) * kRB)
-    lc[i] = factor::stat::leg_code(rx[i], d);
+    ec[i] = factor::stat::end_code(rx[i], d);
 }
 
 } // namespace k
@@ -121,12 +121,12 @@ inline void run(Plane x, const uint8_t *g, Frame f, const Span &s, const Labels 
   accum_rows(s, rx, L, w, stream);
 }
 
-// 腿码: rx → lc [T][A] (设备; d = 所评方向)
-inline void leg_codes(const uint16_t *rx, const Span &s, int d, uint8_t *lc, cudaStream_t stream) {
+// 端码: rx → ec [T][A] (设备; d = 所评方向)
+inline void end_codes(const uint16_t *rx, const Span &s, int d, uint8_t *ec, cudaStream_t stream) {
   factor::stat::assert_span(s);
-  assert(rx && lc);
+  assert(rx && ec);
   const size_t n = s.n(), nb = (n + kRB - 1) / kRB;
-  k::leg_codes<<<static_cast<unsigned>(nb < 4096 ? nb : 4096), kRB, 0, stream>>>(rx, lc, n, d);
+  k::end_codes<<<static_cast<unsigned>(nb < 4096 ? nb : 4096), kRB, 0, stream>>>(rx, ec, n, d);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 

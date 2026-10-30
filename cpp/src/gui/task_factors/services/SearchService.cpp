@@ -342,7 +342,7 @@ struct SearchService::Searcher {
       }
     }
     res.n_full = job.blocks.of(0).y.n_full;
-    lg("满仓一腿 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
+    lg("满仓一组 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
     const double a_eff = res.n_full * fs::kGroups;
     slots = space::slots_of(e0, seg, a_eff);
     assert(slots.empty() == !e0.is_template());

@@ -3,7 +3,7 @@
 //   通用探针 Hold / Cost / Valid / Rank / Alpha / IcPdf 四服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
 //   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
 //   根上的统计核: valid_count / rank_sum 有效率 / 可秩率 (块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / CurveP 平级); alpha_dist alpha 分布
-//   (Inspect 大图与因子表小图同一份); group_abs / leg_abs 组 / 腿的绝对持仓收益 (Inspect 分层 / Portfolio 曲线).
+//   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / LS 绝对 / Portfolio 曲线).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
 #pragma once
 
@@ -38,13 +38,9 @@ void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, co
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o);
 // 因子表迷你 PDF: AggPdf → MiniPdf (n_pts < 2 → 空)
 MiniPdf mini_pdf_of(const analysis::AggPdf &p);
-// 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 做多侧基准; 不 ok → 0)
+// 组 k 的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母; Stat 契约【持仓口径】; 不 ok → 0)
 inline double group_abs(const factor::stat::Row &r, int k, double cap) {
-  return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt[factor::stat::kLong], cap) : 0.0;
-}
-// 方向 d 腿 l 的本侧绝对持仓收益 (同上)
-inline double leg_abs(const factor::stat::Row &r, int d, int l, double cap) {
-  return r.ok ? factor::stat::book_abs(r.leg[d][l], r.leg_cnt[d][l], r.mkt[l], cap) : 0.0;
+  return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt, cap) : 0.0;
 }
 
 // ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
@@ -52,14 +48,14 @@ inline double leg_abs(const factor::stat::Row &r, int d, int l, double cap) {
 //   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
 //   open(c)           本块评前 (单线程; 落地平面在评估域首块定形)
 //   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内统计行 ∈ [t_lo, t_hi), hi = Probes::hd 下标); r 已按根的方向定向 (oriented)
-//   root(c, v)        本块原料就绪 (全核); v.acc / v.lc 已按根的方向, v.rx 是原值的秩 (按 c.d 自取)
+//   root(c, v)        本块原料就绪 (全核); v.acc / v.ec 已按根的方向, v.rx 是原值的秩 (按 c.d 自取)
 //   finish(c)         末块 root 之后 (c 同 root)
 //   bytes(sh, H)      宿主另占 (字节; 预算)
 // 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按绝对行 t0_abs + t)
 enum Need : uint8_t {
   kNeedRows = 1,   // 一级 Row 进 row 钩子
   kNeedRx = 2,     // r16(x) [T][A]
-  kNeedLc = 4,     // 腿码 [T][A]
+  kNeedEc = 4,     // 端码 [T][A]
   kNeedMask = 8,   // 根掩码 [T][A]
   kNeedAlpha = 16, // 根的输入平面
   kNeedX = 32,     // 根值 [T][A]
@@ -81,7 +77,7 @@ struct RootView {
   factor::stat::Plane alpha; // 根的输入 (kNeedAlpha)
   factor::stat::Frame f = factor::stat::Frame::CS;
   const uint16_t *rx = nullptr;             // r16(x) (kNeedRx)
-  const uint8_t *lc = nullptr;              // 腿码 (kNeedLc)
+  const uint8_t *ec = nullptr;              // 端码 (kNeedEc)
   const factor::stat::Accum *acc = nullptr; // [L.hd.n] 本块累加
   Ranks ranks;                              // (kNeedRanks)
 };
@@ -170,10 +166,10 @@ struct HoldP : ProbeBase {
     factor::stat::finish_all(acc, c.L.hd, c.c.y.sh.seg, hold);
   }
 };
-// 换手成本 CostTier[C] (契约【换手成本】; C ≥ 1, 换手量各段同一份): Stat cost_rows (腿码 lc × 全部金额段 costs_of(y)) 块间续攒.
-// 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部腿码 (一个固定段) / Portfolio CurveP 另落逐行 (land)
+// 换手成本 CostTier[C] (契约【换手成本】; C ≥ 1, 换手量各段同一份): Stat cost_rows (端码 ec × 全部金额段 costs_of(y)) 块间续攒.
+// 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部端码 (一个固定段) / Portfolio CurveP 另落逐行 (land)
 struct CostP : ProbeBase {
-  static constexpr uint8_t need = kNeedLc;
+  static constexpr uint8_t need = kNeedEc;
   std::vector<CostTier> costs; // [amt] = y.ad 序 (首块按 y.ad 建)
   void root(const Ctx &c, const RootView &v);
 };

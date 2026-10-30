@@ -52,7 +52,7 @@ double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
   int books = 0;
   for (int c = 0; c < s.y.ad.n; ++c)
     books += !leg_of(ft.y.costs, s.y.ad.k[c]).flat();
-  return kPlaneBytes * static_cast<double>(nx) + 2.0 + kPlaneBytes * s.y.hd.n + 4.0 * books;
+  return kPlaneBytes * static_cast<double>(nx) + 2.0 + kPlaneBytes * s.y.hd.n + 2.0 * books;
 }
 
 size_t XPlanes::count() const {
@@ -76,8 +76,8 @@ double Block::bytes() const {
     s += pb(p);
   for (const LegPlane &p : y.labels)
     s += lb(p);
-  for (const LegPlane &p : y.costs)
-    s += lb(p);
+  for (const std::vector<uint16_t> &p : y.costs)
+    s += vb(p);
   return s;
 }
 
@@ -90,7 +90,7 @@ long long gate_on(const uint8_t *g, size_t n) {
     k += g[i] != 0;
   return k;
 }
-// 满仓一腿只数 (Stat 契约【持仓口径】的 cap) = 截面门控在池格数 Σon / 行数 T / kGroups (load_y / n_full_of 同一份)
+// 满仓一组只数 (Stat 契约【持仓口径】的 cap) = 截面门控在池格数 Σon / 行数 T / kGroups (load_y / n_full_of 同一份)
 double n_full_from(const std::vector<long long> &on, int T) {
   long long k = 0;
   for (const long long x : on)
@@ -280,8 +280,8 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] | 盘口段成本 [·][K], 全是标签库网格层本层列 (同行). 顺延已在标签里 (features LabelHold) ----
-  // 两腿列组 j 的列段起点 at[j] (固定段 = kFlat)
+  // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] | 盘口段买入冲击 [·], 全是标签库网格层本层列 (同行). 顺延已在标签里 (features LabelHold) ----
+  // 标签组 i / 金额段 c 的列段起点 (固定段 = kFlat)
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
   assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签 / 成本在标签库");
@@ -295,28 +295,23 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
     if (const LegCol &lc = leg_of(ft.y.costs, Y.ad.k[c]); !lc.flat()) {
       assert(s.max_impact > 0.f && "装盘口成本要封顶 (Config::max_impact)");
       cost_at[c] = cols.refs.size();
-      for (const Col &l : lc.leg)
-        cols.add(l);
+      cols.add(lc.leg[factor::stat::kLong]);
     }
 
   Y.gate.assign(n, 0);
   Y.eo.assign(n, 0);
-  const auto alloc = [&](std::vector<LegPlane> &ps, const std::vector<size_t> &at, bool m) {
-    ps.resize(at.size());
-    for (size_t j = 0; j < at.size(); ++j) {
-      if (at[j] == kFlat)
-        continue;
-      for (std::vector<uint16_t> &v : ps[j].v)
-        v.assign(n, 0);
-      if (m)
-        ps[j].m.assign(n, 0);
-    }
-  };
-  alloc(Y.labels, lab_at, true);
-  alloc(Y.costs, cost_at, false);
-  // 两腿封顶 (fp16 位直接替换, 与原值同格式): 标签不截; 成本买入按 max_impact 截, 卖出原值
-  constexpr float kNoCap = std::numeric_limits<float>::infinity();
-  const float lab_cap[K] = {kNoCap, kNoCap}, cost_cap[K] = {s.max_impact, kNoCap};
+  Y.labels.resize(H);
+  for (LegPlane &p : Y.labels) {
+    for (std::vector<uint16_t> &v : p.v)
+      v.assign(n, 0);
+    p.m.assign(n, 0);
+  }
+  Y.costs.resize(C);
+  for (size_t c = 0; c < C; ++c)
+    if (cost_at[c] != kFlat)
+      Y.costs[c].assign(n, 0);
+  // 买入冲击按 max_impact 封顶 (fp16 位直接替换, 与原值同格式); 标签不截
+  const feature_storage_t imp_top = static_cast<feature_storage_t>(s.max_impact);
   std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(io.ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
   std::vector<long long> on(static_cast<size_t>(io.ex.threads()), 0);                                        // 每线程: 门控在池格数 (n_full)
 
@@ -332,35 +327,38 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
         Y.eo[row + a] = static_cast<uint8_t>(c);
       }
     };
-    // 两腿列组 (标签 / 成本同一份折叠): 组 j 的腿 l = 列 at[j] + l (固定段跳过).
-    // 标签: 池内 (gate) ∧ 两腿皆有限 → fp16 位 + 有效位 (须有可成交码), 其余 0.
-    // 成本 (cost): 逐腿 池内 ∧ 有限 → fp16 位, 其余 0; 该腿可建仓 (eo & eo_open(l)) 的格须有限 (cost_rows 只在可建仓时取), 无有效位
-    const auto fold_legs = [&](const std::vector<size_t> &at, const float (&cap)[K], std::vector<LegPlane> &out, size_t t, size_t row, bool cost) {
-      for (size_t j = 0; j < out.size(); ++j) {
-        if (at[j] == kFlat)
-          continue;
+    // 标签组 i 的侧 l = 列 lab_at[i] + l: 池内 (gate) ∧ 两侧皆有限 → fp16 位 + 有效位 (须有可成交码), 其余 0
+    const auto fold_labels = [&](size_t t, size_t row) {
+      for (size_t i = 0; i < H; ++i) {
         View w[K];
-        feature_storage_t top[K];
-        for (size_t l = 0; l < K; ++l) {
-          w[l] = view(at[j] + l, t);
-          top[l] = static_cast<feature_storage_t>(cap[l]);
-        }
-        LegPlane &p = out[j];
+        for (size_t l = 0; l < K; ++l)
+          w[l] = view(lab_at[i] + l, t);
+        LegPlane &p = Y.labels[i];
         for (size_t a = 0; a < A; ++a) {
           feature_storage_t x[K] = {};
-          bool fin[K];
+          bool ok = Y.gate[row + a];
           for (size_t l = 0; l < K; ++l)
-            fin[l] = Y.gate[row + a] && cell(w[l], a, x[l]) && fmeta::finite(x[l]);
-          const bool ok = fin[factor::stat::kLong] && fin[factor::stat::kShort];
+            ok = ok && cell(w[l], a, x[l]) && fmeta::finite(x[l]);
           for (size_t l = 0; l < K; ++l)
-            p.v[l][row + a] = (cost ? fin[l] : ok) ? std::bit_cast<uint16_t>(static_cast<float>(x[l]) > cap[l] ? top[l] : x[l]) : 0;
-          if (cost) {
-            for (size_t l = 0; l < K; ++l)
-              assert((fin[l] || !(Y.eo[row + a] & factor::stat::eo_open(static_cast<int>(l)))) && "可建仓侧的冲击成本须有且有限 (旧 Lob 标签库: 重算)");
-          } else {
-            assert((!ok || Y.eo[row + a]) && "标签有效格须有建仓可成交码 (旧标签库: 重算)");
-            p.m[row + a] = ok;
-          }
+            p.v[l][row + a] = ok ? std::bit_cast<uint16_t>(x[l]) : 0;
+          assert((!ok || Y.eo[row + a]) && "标签有效格须有建仓可成交码 (旧标签库: 重算)");
+          p.m[row + a] = ok;
+        }
+      }
+    };
+    // 金额段 c 的买入冲击 = 列 cost_at[c] (固定段跳过): 池内 ∧ 有限 → fp16 位 (封顶), 其余 0; 可买 (eo & kEoBuy) 的格须有限
+    // (cost_rows 只在可买时取), 无有效位
+    const auto fold_costs = [&](size_t t, size_t row) {
+      for (size_t c = 0; c < C; ++c) {
+        if (cost_at[c] == kFlat)
+          continue;
+        const View w = view(cost_at[c], t);
+        std::vector<uint16_t> &p = Y.costs[c];
+        for (size_t a = 0; a < A; ++a) {
+          feature_storage_t x = {};
+          const bool fin = Y.gate[row + a] && cell(w, a, x) && fmeta::finite(x);
+          p[row + a] = fin ? std::bit_cast<uint16_t>(static_cast<float>(x) > s.max_impact ? imp_top : x) : 0;
+          assert((fin || !(Y.eo[row + a] & factor::stat::kEoBuy)) && "可买格的买入冲击须有且有限 (旧 Lob 标签库: 重算)");
         }
       }
     };
@@ -370,8 +368,8 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       fold_eo(t, row);
-      fold_legs(lab_at, lab_cap, Y.labels, t, row, false);
-      fold_legs(cost_at, cost_cap, Y.costs, t, row, true);
+      fold_labels(t, row);
+      fold_costs(t, row);
     }
   });
   if (!read)
@@ -438,7 +436,7 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
             in[a] |= bit;
         }
       }
-      // 建仓可成交码 / T+1C 两腿 (同 load_y 的折叠, 池内 = 在任一池)
+      // 建仓可成交码 / T+1C 两侧 (同 load_y 的折叠, 池内 = 在任一池)
       const View we = view(eo_i, t), wl[K] = {view(lab_i, t), view(lab_i + 1, t)};
       for (size_t a = 0; a < A; ++a) {
         feature_storage_t e = {}, x[K] = {};

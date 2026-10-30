@@ -95,7 +95,7 @@ struct SearchResult {
   std::vector<SearchChunk> chunk_plan; // 分块计划 (装载前发布)
   std::string backend;
   double seconds = 0.0;
-  double n_full = 0.0; // 满仓一腿只数 (Labels::cap, 各块共用; 全期池内平均有效资产数 / kGroups)
+  double n_full = 0.0; // 满仓一组只数 (Labels::cap, 各块共用; 全期池内平均有效资产数 / kGroups)
   int n_weights = 0;   // 写入的权重数 (0 = 该 h 已清空)
   bool wrote = false;  // 已落盘 (搜索走完; UI 据此重扫 + Run)
 };

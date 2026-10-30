@@ -346,9 +346,8 @@ void check_stat(int A, unsigned seed, Report &rep) {
           for (const factor::stat::HoldStat &s : cpu.stat)
             std::printf("       Stat.%s cpu    S=%-3d h=%-3d %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
                         "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
-                        fname, S, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls[factor::stat::kFwd].mean,
-                        s.ls[factor::stat::kFwd].t, s.ls[factor::stat::kFwd].pos, factor::stat::sharpe_of(s, factor::stat::kFwd), s.beta[factor::stat::kFwd],
-                        s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
+                        fname, S, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t,
+                        s.ls.pos, factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
         if (!factor::gpu::available())
           continue;
         sc::Result gpu;

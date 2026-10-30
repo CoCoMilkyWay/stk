@@ -15,11 +15,11 @@
 //                   sink 每行一次 (线程内, 行不相交): ext() 给本行 label_row 的逐格扩展, row(i, t, r, ext) 收行;
 //                   DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (Inspect 尾部分层)
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
-//     leg_codes     rx → 腿码 lc[T][A] (契约【换手成本】)
-//     cost_rows     lc × 标签有效位 × C ≥ 1 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
-//     StatSession   stat_open (标签 prep_label + 工作区, 一次; 与 gpu::stat_open 同序); 逐因子由调用方走 run (+ leg_codes)
+//     end_codes     rx → 端码 ec[T][A] (契约【换手成本】)
+//     cost_rows     ec × 标签有效位 × C ≥ 1 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
+//     StatSession   stat_open (标签 prep_label + 工作区, 一次; 与 gpu::stat_open 同序); 逐因子由调用方走 run (+ end_codes)
 //     Search/Cpu.hpp 对每个候选走 rank_x + accum_rows, 不另写流程.
-//   r16(x) 平面 rx / 腿码 lc 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H])
+//   r16(x) 平面 rx / 端码 ec 由调用方持有 (与 GPU 同); Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H])
 //   由调用方持有, ensure 幂等 → 稳态零分配; 搜索每 worker 一份, 交互一份常驻.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
@@ -100,7 +100,7 @@ struct LandRows {
   void row(int i, int t, const Row &r, const Ext &) const { rows[static_cast<size_t>(i) * T + t] = r; }
 };
 
-// 标签预处理: 一组标签的做多腿 (lb.v[kLong] / lb.m) → ry [T][A]. 常驻期算一次 (用 w.sc)
+// 标签预处理: 一组标签的做多侧 (lb.v[kLong] / lb.m) → ry [T][A]. 常驻期算一次 (用 w.sc)
 template <class Exec>
 inline void prep_label(Exec &ex, const Label &lb, const Span &s, uint16_t *ry, Workspace &w) {
   assert(lb.v[kLong] && lb.m && ry && w.A == s.A && w.threads >= ex.threads() && "Workspace 未 ensure 到位");
@@ -152,28 +152,28 @@ inline void run(Exec &ex, Plane x, const uint8_t *g, Frame f, const Span &s, con
   accum_rows(ex, s, rx, L, w, acc, sink);
 }
 
-// 腿码: rx → lc [T][A] (契约 leg_code 逐格; d = 所评方向)
+// 端码: rx → ec [T][A] (契约 end_code 逐格; d = 所评方向)
 template <class Exec>
-inline void leg_codes(Exec &ex, const uint16_t *rx, const Span &s, int d, uint8_t *lc) {
+inline void end_codes(Exec &ex, const uint16_t *rx, const Span &s, int d, uint8_t *ec) {
   factor::stat::assert_span(s);
-  assert(rx && lc);
+  assert(rx && ec);
   ex.rows(s.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; i < e; ++i)
-      lc[i] = factor::stat::leg_code(rx[i], d);
+      ec[i] = factor::stat::end_code(rx[i], d);
   });
 }
 
-// 换手成本 (契约【换手成本】): lc × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo, t_hi) (同 accum_rows), 每 t 一次
+// 换手成本 (契约【换手成本】): ec × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo, t_hi) (同 accum_rows), 每 t 一次
 // cost_row; 本行尾部 → 不攒; 交接链 chain_of (块内 t ≥ h 且 hold_nets → 前一批 = 行 t−h); 本批平仓不交接 (hold_nets(t + h) 假) → settle;
-// cap = 一腿满仓 (腿码 = 两端组 → L.cap; Inspect 尾部另给). C ≥ 1 (固定段 = 空 Cost). land 非空 → 另落逐行 land[(k·H + i)·T + t]
+// cap = 一端满仓 (端码 = 两端组 → L.cap; Inspect 尾部另给). C ≥ 1 (固定段 = 空 Cost). land 非空 → 另落逐行 land[(k·H + i)·T + t]
 // (只本行, 尾部行全 0; Portfolio 逐行成本)
 template <class Exec>
-inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &L, double cap, const Cost *c, int C, Workspace &w, CostAcc *out,
+inline void cost_rows(Exec &ex, const uint8_t *ec, const Span &s, const Labels &L, double cap, const Cost *c, int C, Workspace &w, CostAcc *out,
                       CostAcc *land = nullptr) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, false);
   const int H = L.hd.n, A = s.A, nt = ex.threads();
-  assert(lc && c && out && cap > 0.0 && C >= 1 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
+  assert(ec && c && out && cap > 0.0 && C >= 1 && C <= kMaxCost && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
   const size_t per = static_cast<size_t>(C) * H;
   std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
   ex.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int tid) {
@@ -196,11 +196,11 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
       for (int k = 0; k < C; ++k)
         cr[k] = c[k].at(base);
       if (!land) {
-        cost_row(lc + base, ch, H, cr, C, A, cap, acc);
+        cost_row(ec + base, ch, H, cr, C, A, cap, acc);
         continue;
       }
       CostAcc row[kMaxCost * kMaxHold] = {};
-      cost_row(lc + base, ch, H, cr, C, A, cap, row);
+      cost_row(ec + base, ch, H, cr, C, A, cap, row);
       for (size_t j = 0; j < per; ++j) {
         acc[j].merge(row[j]);
         land[j * static_cast<size_t>(s.T) + static_cast<size_t>(t)] = row[j];
@@ -220,7 +220,7 @@ inline void cost_rows(Exec &ex, const uint8_t *lc, const Span &s, const Labels &
 
 struct StatSession {
   Span s;                                // 整张量 (t0_abs = t_lo = 0)
-  Labels L;                              // 两腿 / 掩码指调用方的宿主标签 (须活过会话), ry 指下面
+  Labels L;                              // 两侧标签 / 掩码指调用方的宿主标签 (须活过会话), ry 指下面
   std::vector<std::vector<uint16_t>> ry; // [hd.n][T·A]
   Workspace w;                           // ensure 到 (A, hd.n, C, 线程数); 宿主收尾 (cost_rows) 共用
 };

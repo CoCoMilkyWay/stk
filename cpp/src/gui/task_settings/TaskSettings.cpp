@@ -313,7 +313,7 @@ private:
         ImGui::Text("固定冲击 (模拟)");
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("比率, 20bp = 0.0020; 不按金额变. 标签 exit 是盘口中间价不含冲击, Lob 建仓冲击按深度精确算 (lb_cost_*);\n"
-                            "扣冲击时平仓侧统一扣这一常数 (做多卖出 / 做空买回同用); Bar 档无盘口, Portfolio 建仓也按它");
+                            "扣冲击时平仓侧统一扣这一常数 (做多卖出); Bar 档无盘口, Portfolio 建仓也按它");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
         ImGui::InputDouble("##fixed_impact", &cfg.fixed_impact, 0.0, 0.0, "%.5f");

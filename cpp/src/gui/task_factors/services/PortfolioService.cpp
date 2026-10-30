@@ -190,9 +190,9 @@ std::string PortfolioRequest::sig() const {
 namespace {
 
 // G20 多头出参线 [kCurveLines][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
-//   pnl = 行的 G20 (所评方向的多腿; 行已定向) 绝对收益, 平仓行实现; imp = 建仓冲击, fix = 固定量 (CostLeg::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
+//   pnl = 行的 G20 (所评方向的高端组; 行已定向) 绝对收益, 平仓行实现; imp = 买入冲击, fix = 固定量 (CostBook::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
 struct CurveP : LinesP<kCurveLines> {
-  static constexpr uint8_t need = kNeedRows | kNeedLc;
+  static constexpr uint8_t need = kNeedRows | kNeedEc;
   double cap = 0.0;
   std::vector<factor::stat::CostAcc> land; // 本块逐行换手 [hi][T] (cost_rows 的 land, 一个金额段)
   static double bytes(const Shape &sh, int H) { return LinesP::bytes(sh, H) + sizeof(factor::stat::CostAcc) * static_cast<double>(H) * sh.T; }
@@ -205,7 +205,7 @@ struct CurveP : LinesP<kCurveLines> {
     cap = c.L.cap;
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
-    at(hi, kCurvePnl, t) = static_cast<float>(leg_abs(r, factor::stat::kFwd, factor::stat::kLong, cap));
+    at(hi, kCurvePnl, t) = static_cast<float>(group_abs(r, factor::stat::end_group(factor::stat::kTop), cap));
   }
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
@@ -213,10 +213,10 @@ struct CurveP : LinesP<kCurveLines> {
     land.assign(static_cast<size_t>(H) * s.T, factor::stat::CostAcc{});
     const std::vector<factor::stat::Cost> cs = costs_of(c.c.y);
     factor::stat::CostAcc acc[factor::stat::kMaxHold];
-    factor::cpu::stat::cost_rows(c.ex, v.lc, s, c.L, cap, cs.data(), 1, *c.w, acc, land.data());
+    factor::cpu::stat::cost_rows(c.ex, v.ec, s, c.L, cap, cs.data(), 1, *c.w, acc, land.data());
     for (int hi = 0; hi < H; ++hi)
       for (int t = s.t_lo; t < s.t_hi(); ++t) {
-        const factor::stat::CostLeg &cl = land[static_cast<size_t>(hi) * s.T + t].leg[factor::stat::kLong];
+        const factor::stat::CostBook &cl = land[static_cast<size_t>(hi) * s.T + t].book[factor::stat::kTop];
         at(hi, kCurveImp, t) = static_cast<float>(cl.imp);
         at(hi, kCurveFix, t) = static_cast<float>(cl.fix);
         at(hi, kCurveBuy, t) = static_cast<float>(cl.buy);

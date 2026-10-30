@@ -472,8 +472,6 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 // ============================================================================
 using HS = factor::stat::HoldStat;
 using FR = EvalStat;
-using factor::stat::kFwd;
-using factor::stat::kRev;
 enum class Group : uint8_t { Cover,
                              Shape,
                              LS,
@@ -489,7 +487,7 @@ struct GroupInfo {
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
     {"覆盖", "有效 / 可秩 / 触发 / 利用", ImVec4(), false},
     {"形态", "分层单调 / 换手", ImVec4(0.70f, 0.45f, 0.95f, 0.10f), true},
-    {"LS", "顶底多空超额 (G20 做多 + G1 做空)", ImVec4(0.35f, 0.85f, 0.45f, 0.10f), true},
+    {"LS", "顶底多空超额 ½ (做多 G20 − 做多 G1)", ImVec4(0.35f, 0.85f, 0.45f, 0.10f), true},
     {"rIC", "因子秩 × 标签秩 截面相关 (rank IC)", ImVec4(0.35f, 0.65f, 1.00f, 0.10f), true},
     {"rAC", "因子秩 lag=h 截面自相关 (rank AC)", ImVec4(1.00f, 0.65f, 0.25f, 0.10f), true},
     {"样本", "有效 t 行数", ImVec4(0.60f, 0.60f, 0.60f, 0.08f), true},
@@ -515,9 +513,9 @@ struct Metric {
   bool lag = false;
 };
 // 各指标的精确定义 (UI 只写一句话):
-//   val%  池内格中根平面有效的占比;  rank%  并列块 ≤ ⌈有效数/20⌉ 只的格 / 有效格;  trig%  至少一腿非空的行 / ok 行;  util%  触发行平均每腿只数 / 满仓 cap
-//   mono  组均值对组号 Spearman;  turn  两腿均 Σ Δw⁺ / 行数 × 每年满仓轮数 (单边)
-//   LS% / SR  满仓年化真实收益 / Sharpe: 不触发记 0, 每批 1/h̄, 全日平均满仓;  LS 组 mean .. β 都只统计 ok 行
+//   val%  池内格中根平面有效的占比;  rank%  并列块 ≤ ⌈有效数/20⌉ 只的格 / 有效格;  trig%  至少一端非空的行 / ok 行;  util%  触发行平均每端只数 / 满仓 cap
+//   mono  组均值对组号 Spearman;  turn  两端均 Σ Δw⁺ / 行数 × 每年满仓轮数 (单边)
+//   LS% / SR  满仓年化真实收益 / Sharpe: LS = ½ (做多 G20 − 做多 G1), 不触发记 0, 每批 1/h̄, 全日平均满仓;  LS 组 mean .. β 都只统计 ok 行
 constexpr Metric kMetrics[] = {
     {Group::Cover, "val%", "val%", "有效率: 池内格中因子有值的占比", "[0, 100]", "越大", "%.1f",
      [](const HS &, const FR &r) { return static_cast<double>(r.valid_pct); }, line(90, 100)},
@@ -525,26 +523,28 @@ constexpr Metric kMetrics[] = {
      [](const HS &, const FR &r) { return static_cast<double>(r.rank_pct); }, line(60, 90)},
     {Group::Cover, "trig%", "trig%", "触发率: 有持仓的行占比", "[0, 100]", "越大", "%.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::trigger_of(h); }, line(80, 90)},
-    {Group::Cover, "util%", "util%", "利用率: 每腿平均只数 / 满仓只数", "[0, ∞)", "≈ 100", "%.1f",
+    {Group::Cover, "util%", "util%", "利用率: 每端平均只数 / 满仓只数", "[0, ∞)", "≈ 100", "%.1f",
      [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "分层单调性", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
     {Group::Shape, "turn", "turn", "年化单边换手 (倍/年)", "[0, ∞)", "越小", "%.1f",
      [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h)); }, line(1000, 100)},
     {Group::LS, "LS%", "LS%", "满仓年化多空收益 %", "(-∞, ∞)", "越大", "%+.1f",
-     [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h, kFwd); }, line(10, 50)},
+     [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
     {Group::LS, "SR", "SR", "年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f",
-     [](const HS &h, const FR &) { return factor::stat::sharpe_of(h, kFwd); }, line(5, 10)},
-    {Group::LS, "mean", nullptr, "每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].mean); }},
-    {Group::LS, "sd", nullptr, "每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].sd); }},
-    {Group::LS, "IR", nullptr, "每期多空 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].ir); }},
+     [](const HS &h, const FR &) { return factor::stat::sharpe_of(h); }, line(5, 10)},
+    {Group::LS, "mean", nullptr, "每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.mean); }},
+    {Group::LS, "sd", nullptr, "每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.sd); }},
+    {Group::LS, "IR", nullptr, "每期多空 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.ir); }},
     {Group::LS, "t", nullptr, "每期多空 t 值", "(-∞, ∞)", "越大, |t|>2 显著", "%+.2f",
-     [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].t); }},
+     [](const HS &h, const FR &) { return static_cast<double>(h.ls.t); }},
     {Group::LS, "pos", nullptr, "每期多空 > 0 占比", "[0, 1]", "越大, 0.5 无信号", "%.2f",
-     [](const HS &h, const FR &) { return static_cast<double>(h.ls[kFwd].pos); }},
-    {Group::LS, "β", nullptr, "每期多空 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.beta[kFwd]); }},
-    {Group::LS, "rev%", nullptr, "取反后的满仓年化多空 % (G1 做多 + G20 做空)", "(-∞, ∞)", "越小", "%+.1f",
-     [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h, kRev); }},
+     [](const HS &h, const FR &) { return static_cast<double>(h.ls.pos); }},
+    {Group::LS, "β", nullptr, "每期多空 对市场 β", "(-∞, ∞)", "越近 0", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.beta); }},
+    {Group::LS, "G20%", nullptr, "做多 G20 的满仓年化超额 %", "(-∞, ∞)", "越大", "%+.1f",
+     [](const HS &h, const FR &) { return 100.0 * factor::stat::end_period(h, factor::stat::kTop) * factor::stat::span_per_year(h); }},
+    {Group::LS, "G1%", nullptr, "做多 G1 的满仓年化超额 %", "(-∞, ∞)", "越小", "%+.1f",
+     [](const HS &h, const FR &) { return 100.0 * factor::stat::end_period(h, factor::stat::kBot) * factor::stat::span_per_year(h); }},
     {Group::RIC, "mean", "rIC", "rIC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h, const FR &) { return static_cast<double>(h.ric.mean); },
      line(0.03, 0.05)},
     {Group::RIC, "sd", nullptr, "rIC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h, const FR &) { return static_cast<double>(h.ric.sd); }},
@@ -631,7 +631,7 @@ struct FixedCol {
 // 列提示只写用户要知道的; 细节:
 //   name_en = 文件名主干 <factor_dir>/<pool>/<name_en>.json; name_cn 缺 / 不合 → BROKEN
 //   *h: 父行 = 其代表权重的; 手填权重 = -
-//   frame: 标签取超额 (减截面均值); 一腿满仓 cap 只, 不足按只数/cap 建仓, 超出均分, 空组 / 空腿记 0; CS 根 = CsRank / CsNormRank / CsZ, TS 根 = TsRankRoll 5 日 (组可空 → long / flat)
+//   frame: 标签取超额 (减截面均值); 只做多, 一组满仓 cap 只, 不足按只数/cap 建仓, 超出均分, 空组记 0; CS 根 = CsRank / CsNormRank / CsZ, TS 根 = TsRankRoll 5 日 (组可空 → long / flat)
 //   period: 结束 = 所用库最近落盘日; 用了 lob.* 的只有 Lob 池建库以来的几个月
 //   status BROKEN 原因: 文件 / type / name_cn / 表达式不合, 根非归一, 权重不是模板的实例, 组 id 不合; 文件不动, 手动处理
 //   time = 子树全部算子节点之和 (共享节点算给每个用它的因子); CPU 全核 wall / GPU 纯 kernel
@@ -1253,7 +1253,7 @@ int RenderTabFactors(FactorsService &svc, SearchService &ss, FactorsUIState &ui,
         tip("%s 的模板没有自由参数: 勾选编辑, 把要搜的参数勾成自由, 再 Save", view_row->file.c_str());
       else
         tip("搜 %s 的自由参数 (只搜当前 Hold %s)\n"
-            "• 目标 = 每期毛 LS × rIC, 不看成本; 方向随 rIC 的号 (取反的 LS 两腿另算); 硬门槛 mono ≥ %.2f\n"
+            "• 目标 = 每期毛 LS × rIC, 不看成本; 方向随 rIC 的号; 硬门槛 mono ≥ %.2f\n"
             "• 结果替换该 Hold 的权重 (搜不出则清空该 Hold), 然后自动 Run",
             view_row->file.c_str(), factor::stat::hold_name(cur_hold).c_str(), factor::search::kMinMono);
     }

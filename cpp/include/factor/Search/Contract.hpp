@@ -32,14 +32,14 @@
 //         同一份 score_of 两个入口: Search 吃 Accum (score_signed: 定向后 finish), 因子表吃 stat 里该 h 的 HoldStat —— Search 只在内部用分数挑候选,
 //         不往文件写结论.
 //   【方向】Search 自动定向 (score_signed): 方向 d = rIC 的号 (≥ 0 正向 kFwd, 否则反向 kRev; Stat 契约【方向 Dir】), sign = ±1.
-//         Accum 按 d 定向 (oriented: rIC / 组序翻转, LS 取该方向的精确值 —— 反向两腿是另外两批格子, 不是 −正向) 后 finish, 再按所评方向打分.
+//         Accum 按 d 定向 (oriented: rIC / LS 变号, 组序翻转) 后 finish, 再按所评方向打分.
 //         定向后 ls > 0 且 mono 过门槛即可用, 否则 −∞. sign 落进 weights, Run / Inspect / Portfolio 按 sign 的方向评同一个表达式
 //         (同一份 oriented), 因子表的 score_of 与这里逐位同值. 两个入口同一份 score_of.
 //         定向目标 g = ls_period · rIC · max(mono, 0)² (定向后): 可用时 = score; rIC 过 0 两侧都 → 0 —— 处处有限, Search 的曲面拟合吃它.
 //
 //   【噪声】每个候选自带标准误, 不分折、不加参数: 由 HoldStat 的矩按持有期重叠折算有效样本 (n / h, h = hold_rows):
 //         SE(rIC) = ric.sd / √(n/h);  SE(ls_period) = 补 0 序列 (n_all 行, 同 ann_sharpe 还原) 的 sd / √(n_all/h);
-//         SE(g) = mono₊² · √((rIC·SE_ls)² + (ls·SE_rIC)²) (delta 法; ls / SE_ls 取定向后那一向; mono 当常数). 忽略 ls / rIC 正相关与 h 之外的
+//         SE(g) = mono₊² · √((rIC·SE_ls)² + (ls·SE_rIC)²) (delta 法; mono 当常数). 忽略 ls / rIC 正相关与 h 之外的
 //         自相关 ⇒ 偏小, 后果只是多算 / 高原窄 (保守).
 //
 //   【多权重】一个模板在一个 h 下不止一个好参数 (曲面的多个峰). 终选 pick_diverse, 只认统计量, 无比例 / 个数 / 相关上限常数:
@@ -128,17 +128,16 @@ struct Score {
 
 // 已按所评方向 finish 的二级的打分 (见【目标】【噪声】; 因子表入口: stat 里该 h 的 HoldStat). sign = 所评方向 (只记录)
 inline Score score_of(const HoldStat &hs, int sign = 1) {
-  using factor::stat::kFwd;
   Score s;
   if (hs.n < 3)
     return s;
   s.ok = true;
   s.sign = sign;
-  s.ls = factor::stat::ls_period(hs, kFwd);
+  s.ls = factor::stat::ls_period(hs);
   s.ric = hs.ric.mean;
   s.mono = hs.mono;
   const double h = factor::stat::hold_rows(hs.hold, geo_of(hs.seg));
-  const double nn = hs.n, N = hs.n_all, mu = hs.ls[kFwd].mean, sd = hs.ls[kFwd].sd;
+  const double nn = hs.n, N = hs.n_all, mu = hs.ls.mean, sd = hs.ls.sd;
   const double s1 = nn * mu, s2 = (nn - 1.0) * sd * sd + nn * mu * mu, M = s1 / N;
   const double se_ls = std::sqrt(std::fmax(s2 - N * M * M, 0.0) / (N - 1.0) / (N / h));
   const double se_ric = hs.ric.sd / std::sqrt(nn / h);

@@ -355,7 +355,7 @@ struct Timer {
   }
 };
 
-// 一组设备常驻标签 (两腿 v / m / 可成交码 eo 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图 (契约 Labels)
+// 一组设备常驻标签 (两侧 v / m / 可成交码 eo 拷入, ry 预处理), Stat / Search 会话共用; L = 给算子的设备指针视图 (契约 Labels)
 struct DevLabels {
   static constexpr int kLegs = factor::stat::kLegs, kLong = factor::stat::kLong, kShort = factor::stat::kShort;
   int H = 0;
@@ -405,12 +405,12 @@ struct DevLabels {
 
 } // namespace
 
-// Stat 常驻会话: 标签 + rx / lc 工作区 + 一级 / 分片 / 出口, open 时全部就位
+// Stat 常驻会话: 标签 + rx / ec 工作区 + 一级 / 分片 / 出口, open 时全部就位
 struct StatSession {
   factor::stat::Span s;
   DevLabels lab;
   DevBuf<uint16_t> rx;
-  DevBuf<uint8_t> lc;
+  DevBuf<uint8_t> ec;
   DevBuf<factor::stat::Row> rows;
   DevBuf<factor::stat::Accum> part, acc;
   stat::Workspace w;
@@ -424,7 +424,7 @@ StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, dou
   const size_t n = s->s.n();
   const int H = L.hd.n, NB = stat::n_parts(s->s);
   s->lab.alloc(L.hd, seg, n);
-  s->rx.alloc(n), s->lc.alloc(n);
+  s->rx.alloc(n), s->ec.alloc(n);
   s->rows.alloc(static_cast<size_t>(H) * T);
   s->part.alloc(static_cast<size_t>(H) * NB), s->acc.alloc(static_cast<size_t>(H));
   s->w = {s->rows.p, s->part.p, s->acc.p, H, NB};
@@ -435,7 +435,7 @@ StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, dou
 }
 
 void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
-               factor::stat::Accum *acc, factor::stat::Row *rows, uint8_t *lc, uint16_t *rx, double *eval_ms) {
+               factor::stat::Accum *acc, factor::stat::Row *rows, uint8_t *ec, uint16_t *rx, double *eval_ms) {
   assert(s && x && x->v && x->m && g && g->m && acc);
   factor::stat::Span sp = s->s; // 分片数 n_parts 随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
   sp.t0_abs = t0_abs, sp.t_lo = t_lo, sp.t_back = t_back;
@@ -449,9 +449,9 @@ void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::sta
   s->acc.down(acc, static_cast<size_t>(H)); // D2H 自带同步
   if (rows)
     s->rows.down(rows, static_cast<size_t>(H) * s->s.T);
-  if (lc) {
-    stat::leg_codes(s->rx.p, s->s, d, s->lc.p, nullptr);
-    s->lc.down(lc, s->s.n());
+  if (ec) {
+    stat::end_codes(s->rx.p, s->s, d, s->ec.p, nullptr);
+    s->ec.down(ec, s->s.n());
   }
   if (rx)
     s->rx.down(rx, s->s.n());
@@ -459,7 +459,7 @@ void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::sta
 
 void stat_close(StatSession *s) {
   assert(s);
-  s->acc.free_(), s->part.free_(), s->rows.free_(), s->lc.free_(), s->rx.free_(), s->lab.free_();
+  s->acc.free_(), s->part.free_(), s->rows.free_(), s->ec.free_(), s->rx.free_(), s->lab.free_();
   delete s;
 }
 

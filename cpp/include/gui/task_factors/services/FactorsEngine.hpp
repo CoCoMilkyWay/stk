@@ -8,7 +8,7 @@
 //     walk(d, need, visit(i, ms))            顺序走 Dag (叶 = 块里的 X 平面, 截面池 g = 块的 Y 门控); ms = 算子耗时 (叶 0), visit 返回 false → 停
 //     plant<Ps>(roots, batch, C)             一批根 (Root = 式 + 口径 + 方向) 的共享森林 Forest (C 出 = 实际收的前 C 个, ≤ batch): GPU 批核再按显存减半
 //     eval(F, need, ps, last, node, done)    走森林, 每个根 k 评一次: 选取 Pick → 探针 open → 原料 (按根的方向定向) → root (→ last: finish) → done(k). 原料 (后端 view<Ps>):
-//                                            CPU 恒逐根 Stat (run → accum_rows 进探针行钩子 → 腿码; 抽样行拷 rx), 走到根即评;
+//                                            CPU 恒逐根 Stat (run → accum_rows 进探针行钩子 → 端码; 抽样行拷 rx), 走到根即评;
 //                                            GPU 逐根 = stat_eval 只拷回 Ps::need 要的; 批核 (kBatched<Ps>: 只累加 + 抽样行) = kDefer 走完森林一批根同在显存一次 search_eval
 //   管线 (四服务同一份): Job (规格 → 评估域 / 计划 / 块) — open_job (评估域 → 开库) → plan_job (budget_of → 分块 + 多块满仓只数) → pass (一趟: 逐块
 //   load_block (ensure_block) → hk.block → 逐批 plant → plan_forest (值域逐根归因, 坏根跨块粘住) → hk.plan → eval (hk.node / hk.done); 末块根即 finish).
@@ -43,7 +43,7 @@
 namespace GUI::Factors {
 
 // 森林的根 = (具体式, 口径, 方向): 同式异口径 / 异方向 = 同一节点上的几个根 (子树共享, 各评一次). 同式同口径同方向的去重在上游 RootSet.
-// 方向 d (Stat 契约【方向 Dir】): 引擎给探针的行 / 累加器 / 腿码都已按 d 定向, rx 是原值的秩
+// 方向 d (Stat 契约【方向 Dir】): 引擎给探针的行 / 累加器 / 端码都已按 d 定向, rx 是原值的秩
 struct Root {
   const factor::expr::Expr *e = nullptr;
   factor::stat::Frame f = factor::stat::Frame::CS;
@@ -194,7 +194,7 @@ public:
   static constexpr int kBatch = 64;     // 批核一张森林的候选数 (只为公共前缀, 根即算即放)
   Engine(misc::exec::ForkJoin &ex, const std::atomic<bool> &cancel) : EngineBase(ex, cancel) {}
 
-  // 预算 (字节 / 格): 宿主 = 活槽 + 标签秩 2H + rx 2 + lc 1, 无显存. 批核的 d = 一个候选, kBatch 个同结构候选的森林按它另 2 槽余量
+  // 预算 (字节 / 格): 宿主 = 活槽 + 标签秩 2H + rx 2 + ec 1, 无显存. 批核的 d = 一个候选, kBatch 个同结构候选的森林按它另 2 槽余量
   template <class Ps>
   static Budget budget(const factor::Dag &d, int H) {
     return {0.0, kPlaneBytes * (d.n_slots + (kBatched<Ps> ? 2 : 0)) + 2.0 * H + 3.0, 0.0, 0.0};
@@ -226,7 +226,7 @@ private:
   factor::cpu::stat::Workspace *ready(const Forest &, const std::vector<int> &) {
     return &stat_session().w;
   }
-  // 根 k 的原料 (walk 的 visit 内): run (标签 cx.L = 会话预处理的那几组) → accum_rows 进探针行钩子 → 腿码; 原料按 Ps::need 给, 抽样行恒可取 (拷 rx)
+  // 根 k 的原料 (walk 的 visit 内): run (标签 cx.L = 会话预处理的那几组) → accum_rows 进探针行钩子 → 端码; 原料按 Ps::need 给, 抽样行恒可取 (拷 rx)
   template <class Ps>
   RootView view(const Forest &F, int k, int, const Ctx &cx, const Pick &, Ps &p, factor::stat::Accum *acc) {
     constexpr uint8_t need_p = Ps::need;
@@ -242,10 +242,10 @@ private:
     v.x = {(need_p & kNeedX) != 0 ? rp->v.data() : nullptr, (need_p & kNeedMask) != 0 ? rp->m.data() : nullptr};
     v.rx = (need_p & kNeedRx) != 0 ? rx_.data() : nullptr;
     v.ranks = Ranks{this, 0, &ranks_of};
-    if constexpr ((need_p & kNeedLc) != 0) {
-      lc_.resize(s.n());
-      factor::cpu::stat::leg_codes(ex_, rx_.data(), s, cx.d, lc_.data());
-      v.lc = lc_.data();
+    if constexpr ((need_p & kNeedEc) != 0) {
+      ec_.resize(s.n());
+      factor::cpu::stat::end_codes(ex_, rx_.data(), s, cx.d, ec_.data());
+      v.ec = ec_.data();
     }
     if constexpr ((need_p & kNeedAlpha) != 0) {
       const factor::check::Plane *ap = plane(F.d.nodes[static_cast<size_t>(i)].in[0]); // alpha = 根的输入: 根的 visit 内仍在槽里
@@ -275,7 +275,7 @@ private:
   factor::cpu::stat::StatSession ss_;
   bool stat_on_ = false;
   std::vector<uint16_t> rx_; // 根的 r16 (逐根)
-  std::vector<uint8_t> lc_;  // 根的腿码 (kNeedLc)
+  std::vector<uint8_t> ec_;  // 根的端码 (kNeedEc)
 };
 
 template <>
@@ -293,7 +293,7 @@ public:
   Engine &operator=(const Engine &) = delete;
 
   // 预算 (字节 / 格): 显存 = 会话输出平面 5 + 特征 5·nf + 门控 1 + 会话标签 (lv, sv, m, ry) 7·H + 可成交码 eo 1 + 活槽 5·n_slots.
-  // 逐根: 显存另 Stat 会话 rx 2 + lc 1; 宿主 = 拷回的 根掩码 1 + rx 2 + lc 1 + alpha 5. 批核 (d = 一个候选): 宿主不拷回; 活槽 ×2 (keep_roots) + kBatch 根各 kDevRootBytes
+  // 逐根: 显存另 Stat 会话 rx 2 + ec 1; 宿主 = 拷回的 根掩码 1 + rx 2 + ec 1 + alpha 5. 批核 (d = 一个候选): 宿主不拷回; 活槽 ×2 (keep_roots) + kBatch 根各 kDevRootBytes
   template <class Ps>
   static Budget budget(const factor::Dag &d, int H) {
     constexpr bool batch = kBatched<Ps>;
@@ -377,7 +377,7 @@ private:
       return stat_root(F, k, cx.d, pk, p, acc);
     }
   }
-  // 逐根: stat_eval 只拷回 Ps::need 要的原料 (腿码按方向 d 出, 行按 d 定向后进探针)
+  // 逐根: stat_eval 只拷回 Ps::need 要的原料 (端码按方向 d 出, 行按 d 定向后进探针)
   template <class Ps>
   RootView stat_root(const Forest &F, int k, factor::stat::Dir d, const Pick &pk, Ps &p, factor::stat::Accum *acc) {
     constexpr uint8_t need_p = Ps::need;
@@ -393,8 +393,8 @@ private:
       rows_.resize(static_cast<size_t>(y.hd.n) * s.T);
     if constexpr ((need_p & kNeedRx) != 0)
       rx_.resize(n);
-    if constexpr ((need_p & kNeedLc) != 0)
-      lc_.resize(n);
+    if constexpr ((need_p & kNeedEc) != 0)
+      ec_.resize(n);
     if constexpr ((need_p & kNeedX) != 0)
       xv_.resize(n);
     if constexpr ((need_p & kNeedMask) != 0)
@@ -410,11 +410,11 @@ private:
     }
     factor::stat::Accum all[factor::stat::kMaxHold];
     factor::gpu::stat_eval(stat_, rp, gate_, v.f, d, s.t0_abs, s.t_lo, s.t_back, all, (need_p & kNeedRows) ? rows_.data() : nullptr,
-                           (need_p & kNeedLc) ? lc_.data() : nullptr, (need_p & kNeedRx) ? rx_.data() : nullptr);
+                           (need_p & kNeedEc) ? ec_.data() : nullptr, (need_p & kNeedRx) ? rx_.data() : nullptr);
     for (int hi = 0; hi < pk.n; ++hi)
       acc[hi] = all[pk.at[hi]];
     v.rx = (need_p & kNeedRx) ? rx_.data() : nullptr;
-    v.lc = (need_p & kNeedLc) ? lc_.data() : nullptr;
+    v.ec = (need_p & kNeedEc) ? ec_.data() : nullptr;
     if constexpr ((need_p & kNeedRows) != 0) {
       const auto e = p.ext();
       ex_.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int) {
@@ -503,7 +503,7 @@ private:
   factor::cpu::stat::Workspace w_;          // 宿主探针 (cost_rows)
   std::vector<factor::stat::Row> rows_;     // 一级 Row 拷回 [hd.n][T] (kNeedRows)
   std::vector<uint16_t> rx_;                // 根的 r16 拷回 (kNeedRx)
-  std::vector<uint8_t> lc_;                 // 根的腿码拷回 (kNeedLc)
+  std::vector<uint8_t> ec_;                 // 根的端码拷回 (kNeedEc)
   std::vector<float> xv_;                   // 根值拷回 (kNeedX)
   std::vector<uint8_t> mask_;               // 根掩码拷回 (kNeedMask)
   std::vector<float> av_;                   // alpha 拷回 (kNeedAlpha; 叶直接用宿主平面)

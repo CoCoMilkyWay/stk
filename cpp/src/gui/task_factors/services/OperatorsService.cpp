@@ -205,8 +205,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
                   "  h=%-5s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
                   "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f",
                   factor::stat::hold_name(h.hold).c_str(), h.n, h.n_rac, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew, h.ric.kurt,
-                  h.ls[factor::stat::kFwd].mean, h.ls[factor::stat::kFwd].t, h.ls[factor::stat::kFwd].pos, factor::stat::sharpe_of(h, factor::stat::kFwd),
-                  h.beta[factor::stat::kFwd], h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos,
+                  h.ls.mean, h.ls.t, h.ls.pos, factor::stat::sharpe_of(h), h.beta, h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos,
                   h.rac.skew, h.rac.kurt);
     }
     if (!has_gpu)
@@ -325,7 +324,7 @@ OperatorsService::OperatorsService() {
     s.note = "因子评估: 每 (h, t) 的 rIC / 20 组均值 / 多空 / rAC, 再沿 t 汇总; 挖掘的第一道闸, 每轮先跑";
     s.doc = "因子评估算子 (factor/Stat)\n"
             "• 流程: 因子 x + 每持有期 h 一组 fp16 标签 y_h\n"
-            "    ◦ → 每 (h, t) 的 rIC / 20 组和 / 两向两腿 / rAC\n"
+            "    ◦ → 每 (h, t) 的 rIC / 20 组和 / LS / rAC\n"
             "    ◦ → 沿 t 汇总 (组沿 t 池化)\n"
             "• 持有期集合 = Stat/Check.hpp kHolds (分钟型 / close / T+N)\n"
             "• 标签统一超额 (减截面均值)\n"

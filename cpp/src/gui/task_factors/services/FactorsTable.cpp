@@ -45,7 +45,7 @@ const LegCol *find_leg(const std::vector<LegCol> &cols, int key) {
 
 const LegCol &leg_of(const std::vector<LegCol> &cols, int key) {
   const LegCol *c = find_leg(cols, key);
-  assert(c && "key 不在字段表两腿列里");
+  assert(c && "key 不在字段表两侧列里");
   return *c;
 }
 

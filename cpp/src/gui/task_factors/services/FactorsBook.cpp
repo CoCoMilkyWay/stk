@@ -118,9 +118,9 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
           const float y[factor::stat::kLegs] = {factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]), factor::cpu::stat::h2f(lab.v[factor::stat::kShort][i])};
           each(hi, i, [&]<class Code, class In>(size_t b, const Code *code, const In &in) {
             const factor::stat::Cell<Code> cl{c, code, lab.m.data() + i, eo + i, y};
-            if (!cl.held(factor::stat::kLong, in))
+            if (!cl.held(in))
               return;
-            const double r = cl.ret(factor::stat::kLong, cl.continues(in));
+            const double r = cl.ret(cl.continues(in));
             for (int w = 0; w < nw; ++w) {
               double *q = s.data() + 2 * (hi * nl + b * static_cast<size_t>(nw) + static_cast<size_t>(w));
               q[0] += om[w] * r, q[1] += om[w];

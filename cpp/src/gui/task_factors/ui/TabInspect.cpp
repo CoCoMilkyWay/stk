@@ -26,15 +26,13 @@ namespace GUI::Factors {
 namespace {
 
 constexpr int K = factor::stat::kGroups;
-using factor::stat::kFwd;
-using factor::stat::kLegs;
-using factor::stat::kLong;
-using factor::stat::kShort;
-using factor::stat::leg_period;
-// 所评方向腿 l 的组号 (G20 / G1; 结果已按权重方向定向)
-constexpr int leg_group(int l) { return factor::stat::leg_group(kFwd, l); }
-// 组 k 是所评方向两腿之一 (LS 图例项 hover 时高亮)
-constexpr bool is_leg(int k) { return k == leg_group(kLong) || k == leg_group(kShort); }
+using factor::stat::end_group;
+using factor::stat::end_period;
+using factor::stat::kBot;
+using factor::stat::kEnds;
+using factor::stat::kTop;
+// 组 k 是多空两端之一 (G20 / G1; 结果已按权重方向定向; LS 图例项 hover 时高亮)
+constexpr bool is_end(int k) { return k == end_group(kTop) || k == end_group(kBot); }
 
 // 竖轴刻度统一定宽 (字体是等宽的 Maple Mono, 7 字符 = 定像素): 切因子 / 持有期 / 光标时数字位数变也不改绘图区左边界, 图不震
 constexpr const char *kYTickFmt = "%7.2f";
@@ -250,8 +248,8 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   for (int k = 0; k < K; ++k)
     span(d.lay_ann[k], d.lay_lo[0], d.lay_hi[0]);
   for (int j = 0; j < kTails; ++j)
-    for (int l = 0; l < kLegs; ++l)
-      span(d.lay_ann[layer_tail(l, j)], d.lay_lo[1 + j], d.lay_hi[1 + j]);
+    for (int e = 0; e < kEnds; ++e)
+      span(d.lay_ann[layer_tail(e, j)], d.lay_lo[1 + j], d.lay_hi[1 + j]);
   for (int i = 0; i < kLsLines; ++i)
     span(d.ls_ann[i], d.ls_lo[i], d.ls_hi[i]);
   d.ic_pdf = res.ic_agg[sel];
@@ -287,9 +285,9 @@ LayerRange layer_range(const InspectDerived &d, const bool *show) {
 
 // 左上右 1/4: 光标日截面 = 各分层线在光标日的值 (对数累计 × kDaysPerYear / days, 与左图同一量) 的横柱, 在共享 y 范围里均匀排 (G1 下 … G20 上); x 范围 = 显示中的柱 (随图例 / 光标) 与 0 的
 // min / max 加边, 目标变才强设 (follow_limits, 之间可手动缩放);
-// 柱色按组号 (与左图同一 group_color, 两边对得上; 柱长非单调即分层破绽), 不标组号. 开着的尾部级 (show[1 + j], 同 layer_range) 两腿各加一柱:
-// 底腿排 G1 之下, 顶腿排 G20 之上, 越极端越靠外; 色 / 细度同左图尾部分层线 (饱和顶 / 底色, kTailLayerWeight). 须在 plot_layers 的子图内调 (y 由 LinkRows 跟左图)
-// hov[i] = 左图图例项 i hover: 该项的柱 (i = 0 → G1 / G20; i ≥ 1 → 尾部级 i − 1 两腿) 描白边高亮
+// 柱色按组号 (与左图同一 group_color, 两边对得上; 柱长非单调即分层破绽), 不标组号. 开着的尾部级 (show[1 + j], 同 layer_range) 两端各加一柱:
+// 底端排 G1 之下, 顶端排 G20 之上, 越极端越靠外; 色 / 细度同左图尾部分层线 (饱和顶 / 底色, kTailLayerWeight). 须在 plot_layers 的子图内调 (y 由 LinkRows 跟左图)
+// hov[i] = 左图图例项 i hover: 该项的柱 (i = 0 → G1 / G20; i ≥ 1 → 尾部级 i − 1 两端) 描白边高亮
 void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *show, const bool *hov, int cursor_day) {
   if (!ImPlot::BeginPlot("##section", ImVec2(), ImPlotFlags_NoMenus | ImPlotFlags_NoLegend))
     return;
@@ -304,22 +302,22 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *sho
   };
   Slot s[kLayerLines];
   int ns = 0;
-  const auto tail = [&](int l, int j) {
+  const auto tail = [&](int e, int j) {
     Slot &t = s[ns++];
-    t = Slot{layer_tail(l, j), l == kLong ? kColTop : kColBottom, kTailLayerWeight[j], hov[1 + j], {}};
-    std::snprintf(t.tag, sizeof(t.tag), "G%d 尾 %g%%", leg_group(l) + 1, static_cast<double>(kTailOfGroup[j]) * 100.0);
+    t = Slot{layer_tail(e, j), e == kTop ? kColTop : kColBottom, kTailLayerWeight[j], hov[1 + j], {}};
+    std::snprintf(t.tag, sizeof(t.tag), "G%d 尾 %g%%", end_group(e) + 1, static_cast<double>(kTailOfGroup[j]) * 100.0);
   };
   for (int j = kTails - 1; j >= 0; --j)
     if (show[1 + j])
-      tail(kShort, j);
+      tail(kBot, j);
   for (int k = 0; k < K; ++k) {
     Slot &t = s[ns++];
-    t = Slot{k, group_color(k), 1.f, hov[0] && is_leg(k), {}};
+    t = Slot{k, group_color(k), 1.f, hov[0] && is_end(k), {}};
     std::snprintf(t.tag, sizeof(t.tag), "G%d", k + 1);
   }
   for (int j = 0; j < kTails; ++j)
     if (show[1 + j])
-      tail(kLong, j);
+      tail(kTop, j);
   float v[kLayerLines], v_lo = 0.f, v_hi = 0.f; // 含 0 (柱从 0 起)
   for (int i = 0; i < ns; ++i) {
     v[i] = d.lay_ann[s[i].line][static_cast<size_t>(cursor_day)];
@@ -394,7 +392,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       ImPlot::SetupLegend(ImPlotLocation_SouthWest, ImPlotLegendFlags_None);
       ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.2f);
       for (int k = 0; k < K; ++k) { // 顶底组线 = 顶底 LS 的分层: 随 LS 图例项高亮
-        const bool hl = hov[0] && is_leg(k);
+        const bool hl = hov[0] && is_end(k);
         ImPlot::SetNextLineStyle(group_color(k), hl ? 1.2f * kHiScale : IMPLOT_AUTO);
         char id[16];
         std::snprintf(id, sizeof(id), "##g%d", k);
@@ -408,21 +406,21 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       std::snprintf(ll, sizeof(ll), kLsFmt, "100%", d.ls_ann[0].back(), d.ls_sharpe[0], d.ls_turn[0], "ls");
       ImPlot::SetNextLineStyle(kColLS, 2.5f);
       ImPlot::PlotLine(ll, d.x_day.data(), d.ls_ann[0].data(), n);
-      const ImVec4 leg_col[kLegs] = {kColTop, kColBottom};
-      for (int j = 0; j < kTails; ++j) { // 尾部: 一级一个图例项 (默认隐藏) 同时管该级的色带 + 两腿分层线 + LS (同名 = 同一 item, 一起显隐; 图例色 = 最后画的 LS 白)
+      const ImVec4 end_col[kEnds] = {kColTop, kColBottom};
+      for (int j = 0; j < kTails; ++j) { // 尾部: 一级一个图例项 (默认隐藏) 同时管该级的色带 + 两端分层线 + LS (同名 = 同一 item, 一起显隐; 图例色 = 最后画的 LS 白)
         char tag[8], id[8];
         std::snprintf(tag, sizeof(tag), "%g%%", static_cast<double>(kTailOfGroup[j]) * 100.0);
         std::snprintf(id, sizeof(id), "tls%d", j);
         std::snprintf(ll, sizeof(ll), kLsFmt, tag, d.ls_ann[1 + j].back(), d.ls_sharpe[1 + j], d.ls_turn[1 + j], id);
         ImPlot::HideNextItem(true, ImPlotCond_Once);
-        for (int l = 0; l < kLegs; ++l) { // 色带: 本级线与上一级线 (j = 0 时是该腿的组线) 之间, 越极端越重
-          const float *inner = (j ? d.lay_ann[layer_tail(l, j - 1)] : d.lay_ann[leg_group(l)]).data();
-          ImPlot::SetNextFillStyle(leg_col[l], kTailFillAlpha[j] * (hov[1 + j] ? kHiScale : 1.f));
-          ImPlot::PlotShaded(ll, d.x_day.data(), inner, d.lay_ann[layer_tail(l, j)].data(), n);
+        for (int e = 0; e < kEnds; ++e) { // 色带: 本级线与上一级线 (j = 0 时是该端的组线) 之间, 越极端越重
+          const float *inner = (j ? d.lay_ann[layer_tail(e, j - 1)] : d.lay_ann[end_group(e)]).data();
+          ImPlot::SetNextFillStyle(end_col[e], kTailFillAlpha[j] * (hov[1 + j] ? kHiScale : 1.f));
+          ImPlot::PlotShaded(ll, d.x_day.data(), inner, d.lay_ann[layer_tail(e, j)].data(), n);
         }
-        for (int l = 0; l < kLegs; ++l) { // 分层: 饱和顶 / 底色, 越极端越细
-          ImPlot::SetNextLineStyle(leg_col[l], kTailLayerWeight[j]);
-          ImPlot::PlotLine(ll, d.x_day.data(), d.lay_ann[layer_tail(l, j)].data(), n);
+        for (int e = 0; e < kEnds; ++e) { // 分层: 饱和顶 / 底色, 越极端越细
+          ImPlot::SetNextLineStyle(end_col[e], kTailLayerWeight[j]);
+          ImPlot::PlotLine(ll, d.x_day.data(), d.lay_ann[layer_tail(e, j)].data(), n);
         }
         ImPlot::SetNextLineStyle(kColLS, kTailLsWeight[j]); // LS: 同色, 越极端越细
         ImPlot::PlotLine(ll, d.x_day.data(), d.ls_ann[1 + j].data(), n);
@@ -1057,15 +1055,15 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
   plot_dist({"因子分布###alpha", "alpha", "alpha(t)", a.pdf, a.series, a.mean, 0.0, &a}, size);
 }
 
-// 右下: 期限结构 = 全部持有期的 L (G20 做多超额) / S (G1 做空超额) / LS (= ½ (L + S)) 均值, PCHIP 圆滑折线 + 节点圆点.
-// 三组 × (毛 + 全部金额段) 一次画全 (金额段越大线越细越淡), 成本只在这张图出现; L / S 默认隐藏.
+// 右下: 期限结构 = 全部持有期的 G20 / G1 (两端做多超额) / LS (= ½ (G20 − G1)) 均值, PCHIP 圆滑折线 + 节点圆点.
+// 三组 × (毛 + 全部金额段) 一次画全 (金额段越大线越细越淡), 成本只在这张图出现; G20 / G1 默认隐藏.
 // 另一条池均线 (池等权做多的绝对年化, 与因子无关; 不扣成本 = "池均 无冲击"): 看池本身在各持有期的漂移, 与超额线同轴对照.
-// 图例 = 自绘矩阵 (ImPlot 图例只能单列 / 单行), 左上: 行 = 组 (L / S / LS / 池均), 列 = 金额段 (无冲击 / 固定冲击 / 各金额), 格 = 该线色块;
+// 图例 = 自绘矩阵 (ImPlot 图例只能单列 / 单行), 左上: 行 = 组 (G20 / G1 / LS / 池均), 列 = 金额段 (无冲击 / 固定冲击 / 各金额), 格 = 该线色块;
 //   点格切该线, 点行头 / 列头切整行 / 整列 (有显示的 → 全隐, 否则全显); 悬停格 / 头 → 对应线加粗 (下帧)
-// 口径 = Stat 契约【持仓口径】的每期真实收益 (所评方向; 腿 = leg_period = HoldStat::leg; ls_period = Σ ls / 全部行, 不触发行记 0).
-// 净线 = 毛二级 − 该腿该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(腿), 含 fixed_impact; 两腿都按本侧超额画, 成本都使线下移;
+// 口径 = Stat 契约【持仓口径】的每期真实收益 (所评方向; 端 = end_period = HoldStat::grp 两端; ls_period = Σ ls / 全部行, 不触发行记 0).
+// 净线 = 毛二级 − 该端该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(端), 含 fixed_impact; 两端都是做多账本, 成本都使线下移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
-//   毛 L / S / LS 的样本是 J ∧ ok 行, 成本的样本是腿成员 ∧ 标签有效格 (与组计数同口径)
+//   毛 G20 / G1 / LS 的样本是 J ∧ ok 行, 成本的样本是端成员 ∧ 标签有效格 (与组计数同口径)
 // hs[n_hold] 毛二级; costs[n_cost] 该层金额段 (至少一段; Bar 层 = 固定段). n < 3 的持有期不作节点.
 // pool_ann[n_hold] = 池等权指数各持有期的算术年化 (InspectResult::pool_ann, 绝对口径; 与因子无关, 随池一代); nullptr = 不画 (Factors 表 stat 无此项)
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 = 画的年化
@@ -1096,12 +1094,12 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   tier_names[0] = "无冲击";
   for (int q = 1; q < n_tier; ++q)
     tier_names[static_cast<size_t>(q)] = costs[q - 1].amt == kAmtFixed ? std::string("固定冲击") : amt_name(costs[q - 1].amt);
-  // 线 c (c < kLegs = 腿 c, c = kLegs = LS) 在金额段 q 下每期均值 (未年化): 毛原值; 净 = 毛 − 该腿该持有期均摊换手成本 (LS 走契约 net_ls_period)
+  // 线 c (c < kEnds = 端 c, c = kEnds = LS) 在金额段 q 下每期均值 (未年化): 毛原值; 净 = 毛 − 该端该持有期均摊换手成本 (LS 走契约 net_ls_period)
   const auto value = [&](int c, int q, int i) {
     const factor::stat::HoldStat &h = hs[i];
-    if (c == kLegs)
-      return q == 0 ? factor::stat::ls_period(h, kFwd) : factor::stat::net_ls_period(h, costs[q - 1].acc[i], fixed_impact);
-    const double gross = leg_period(h, kFwd, c);
+    if (c == kEnds)
+      return q == 0 ? factor::stat::ls_period(h) : factor::stat::net_ls_period(h, costs[q - 1].acc[i], fixed_impact);
+    const double gross = end_period(h, c);
     return q == 0 ? gross : gross - costs[q - 1].acc[i].cost(c, fixed_impact, h.n_all);
   };
   ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
@@ -1109,9 +1107,9 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -100.0, 200.0); // 年化 < −100% (高金额段净线会砸穿) / > 200% 无意义: 轴夹在 [−100, 200], 线出界即裁
   ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), n_hold, labels.data());
   follow_limits(ImAxis_X1, -0.6, n_hold - 0.4);
-  constexpr int kIdx = kLegs + 1; // 组码 / 命中码: 池均线 (只有 无冲击 一列)
-  const char *rows[kIdx + 1] = {"L", "S", "LS", "池均"};
-  const ImVec4 cols[kLegs + 1] = {kColTop, kColBottom, kColLS};
+  constexpr int kIdx = kEnds + 1; // 组码 / 命中码: 池均线 (只有 无冲击 一列)
+  const char *rows[kIdx + 1] = {"G20", "G1", "LS", "池均"};
+  const ImVec4 cols[kEnds + 1] = {kColTop, kColBottom, kColLS};
   const int n_row = pool_ann ? kIdx + 1 : kIdx;
   // 上帧悬停的图例格 (hl_c / hl_q: −1 = 整列 / 整行); 本图唯一实例
   static bool s_hl = false;
@@ -1135,7 +1133,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   ImVec2 ppx;
   ImVec4 pcol;
   std::vector<double> xk, yk, xs, ys;
-  for (int c = 0; c <= kLegs; ++c)
+  for (int c = 0; c <= kEnds; ++c)
     for (int q = 0; q < n_tier; ++q) {
       xk.clear();
       yk.clear();
@@ -1149,10 +1147,10 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       pchip_dense(xk, yk, xs, ys);
       const ImVec4 col = line_col(c, q);
       const float hl = highlit(c, q) ? kHiScale : 1.f;
-      const float wt = (c == kLegs ? 2.5f : 1.5f) * (0.5f + 0.5f * col.w) * hl;
+      const float wt = (c == kEnds ? 2.5f : 1.5f) * (0.5f + 0.5f * col.w) * hl;
       char name[64];
       line_name(c, q, name);
-      if (c < kLegs || (q > 0 && costs[q - 1].amt == kAmtFixed))
+      if (c < kEnds || (q > 0 && costs[q - 1].amt == kAmtFixed))
         ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认只显 LS (除固定冲击外的金额段), 图例可点开
       ImPlot::SetNextLineStyle(col, wt);
       ImPlot::PlotLine(name, xs.data(), ys.data(), static_cast<int>(xs.size()));
@@ -1321,11 +1319,11 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     ImGui::TextDisabled("池内全部成分等权做多 (可买才建仓), 每批 1/h̄, 不扣成本; 全期逐行收益和 / 天数 × %d", factor::stat::kDaysPerYear);
     ImGui::EndTooltip();
   } else if (pc >= 0) {
-    // 账 (bp/期): L = G20 做多 / S = G1 做空 (都按本侧超额, 净 = 毛 − 成本) / LS = 两腿平均 (契约 ls_period, 成本 Σ cost(腿)/2); 净 × 期数 = 画的 y
+    // 账 (bp/期): G20 / G1 = 两端做多 (超额, 净 = 毛 − 成本) / LS = ½ (G20 − G1) (契约 ls_period, 成本 Σ cost(端)/2); 净 × 期数 = 画的 y
     constexpr double bp = 1e4;
     const factor::stat::HoldStat &h = hs[pi];
-    const bool ls = pc == kLegs;
-    const double gross = ls ? factor::stat::ls_period(h, kFwd) : leg_period(h, kFwd, pc);
+    const bool ls = pc == kEnds;
+    const double gross = ls ? factor::stat::ls_period(h) : end_period(h, pc);
     const double ppy = factor::stat::span_per_year(h);
     const char *tier = tier_names[static_cast<size_t>(pq)].c_str();
     // 一行一项, 三列定位 (SameLine 绝对 x, 不靠 printf 补空格 —— 中文字节宽 ≠ 字形宽): 名目 | 数值 | 注
@@ -1343,38 +1341,38 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     ImGui::Separator();
     std::snprintf(v, sizeof(v), "%+.2f bp/期", gross * bp);
     if (ls)
-      std::snprintf(note, sizeof(note), "G20 多 %+.2f / G1 空 %+.2f 的平均", leg_period(h, kFwd, kLong) * bp, leg_period(h, kFwd, kShort) * bp);
+      std::snprintf(note, sizeof(note), "½ (G20 %+.2f − G1 %+.2f)", end_period(h, kTop) * bp, end_period(h, kBot) * bp);
     else
-      std::snprintf(note, sizeof(note), "%s", pc == kLong ? "G20 做多超额" : "G1 做空超额");
+      std::snprintf(note, sizeof(note), "%s", pc == kTop ? "G20 做多超额" : "G1 做多超额");
     row("毛", v, note);
     double amort = 0.0;
     if (pq > 0) {
       const factor::stat::CostAcc &ca = costs[pq - 1].acc[pi];
-      const auto avg = [&](auto f) { return ls ? 0.5 * (f(kLong) + f(kShort)) : f(pc); }; // LS = 两腿平均, 否则该腿
-      const auto entry = [&](int l) { return ca.entry(l, fixed_impact); };
-      const auto turn = [&](int l) { return factor::stat::turn_annual(h, ca, l); };
-      const auto cost = [&](int l) { return ca.cost(l, fixed_impact, h.n_all); };
+      const auto avg = [&](auto f) { return ls ? 0.5 * (f(kTop) + f(kBot)) : f(pc); }; // LS = 两本各半, 否则该端
+      const auto entry = [&](int e) { return ca.entry(e, fixed_impact); };
+      const auto turn = [&](int e) { return factor::stat::turn_annual(h, ca, e); };
+      const auto cost = [&](int e) { return ca.cost(e, fixed_impact, h.n_all); };
       amort = avg(cost);
       ImGui::Spacing();
-      // 开仓冲击 = 增仓量加权建仓冲击; 年换手 = 单边 Σ Δw⁺ / 全部行 × 每年满仓轮数 (同一时刻交接的只算差额);
-      // 均摊成本 = (Σ 增仓 × 建仓冲击 + Σ 平仓量 × 固定冲击) / 全部行; LS 两腿各算再平均
+      // 开仓冲击 = 增仓量加权买入冲击; 年换手 = 单边 Σ Δw⁺ / 全部行 × 每年满仓轮数 (同一时刻交接的只算差额);
+      // 均摊成本 = (Σ 增仓 × 买入冲击 + Σ 平仓量 × 固定冲击) / 全部行; LS 两端各算再平均
       std::snprintf(v, sizeof(v), "%.2f bp", avg(entry) * bp);
       if (ls)
-        std::snprintf(note, sizeof(note), "buy %.2f / sell %.2f", entry(kLong) * bp, entry(kShort) * bp);
+        std::snprintf(note, sizeof(note), "G20 %.2f / G1 %.2f", entry(kTop) * bp, entry(kBot) * bp);
       else
-        std::snprintf(note, sizeof(note), "%s", pc == kLong ? "buy" : "sell");
+        std::snprintf(note, sizeof(note), "buy");
       row("开仓冲击", v, note);
       std::snprintf(v, sizeof(v), "%.2f bp", fixed_impact * bp);
       row("平仓冲击", v, "config fixed_impact");
       std::snprintf(v, sizeof(v), "%.1f 倍/年", avg(turn));
       if (ls)
-        std::snprintf(note, sizeof(note), "L %.1f / S %.1f", turn(kLong), turn(kShort));
+        std::snprintf(note, sizeof(note), "G20 %.1f / G1 %.1f", turn(kTop), turn(kBot));
       else
         note[0] = '\0';
       row("年换手", v, note);
       std::snprintf(v, sizeof(v), "%.2f bp/期", amort * bp);
       if (ls)
-        std::snprintf(note, sizeof(note), "L %.2f / S %.2f", cost(kLong) * bp, cost(kShort) * bp);
+        std::snprintf(note, sizeof(note), "G20 %.2f / G1 %.2f", cost(kTop) * bp, cost(kBot) * bp);
       else
         note[0] = '\0';
       row("均摊成本", v, note);

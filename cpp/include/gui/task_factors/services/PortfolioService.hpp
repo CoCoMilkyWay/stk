@@ -65,7 +65,7 @@ struct PortfolioItem {
 };
 void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
 
-// ---- 线的轴: 组合线 (G20 多头, 扣多腿成本) = 冲击 Impact; 池线 = 权重 Weight (FactorsService.hpp; Service 出毛序列, UI 组线) ----
+// ---- 线的轴: 组合线 (G20 多头, 扣其换手成本) = 冲击 Impact; 池线 = 权重 Weight (FactorsService.hpp; Service 出毛序列, UI 组线) ----
 enum Impact : int { kImpactNet,     // 有冲击
                     kImpactGross }; // 无冲击
 inline constexpr int kImpacts = 2;

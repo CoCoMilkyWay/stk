@@ -9,9 +9,9 @@
 //                 任何正确的稳定排序给出同一 r16) → 等值段均秩 → out. n < 2 或全并列 → 整行 kRankNone. 标签行 = rank_row(KeyY)
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里
 //     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t, 给了 lag 行才算) + 标签侧 label_row (t → t+h, 非段末尾部才算; 满仓 cap 进持仓口径);
-//                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 两腿标签浮点和 / 分组和 (组 / 两向两腿按契约【仓位感知】);
+//                 整数五和走契约 pair_add, 收尾 finish_row. label_row 一遍 A 轴: 整数五和 / 基准标签浮点和 / 分组和 (按契约【仓位感知】);
 //                 逐格扩展 Ext (调用方专属的附加统计, 同一遍同一个 J; NoExt 编译期消掉, Inspect 尾部分层用)
-//     cost_row    一行 t 的换手成本 (Δw), 每持有期两遍 A 轴 (腿只数 → 权; 逐格差额) × C ≥ 1 个金额段 (契约腿码 lc ∧ 标签有效位 ∧ 真持有) → CostAcc[C][H].
+//     cost_row    一行 t 的换手成本 (Δw), 每持有期两遍 A 轴 (端只数 → 权; 逐格差额) × C ≥ 1 个金额段 (契约端码 ec ∧ 标签有效位 ∧ 真持有) → CostAcc[C][H].
 //                 Run (stat.costs) / Inspect 期限结构净线 / Portfolio 逐行成本共用, 不进 Row
 //   【标签】fp16 位 → float 用 _Float16 (clang, -march=native 有 F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
@@ -29,12 +29,11 @@ namespace factor::cpu::stat {
 
 using factor::stat::Cost;
 using factor::stat::CostAcc;
-using factor::stat::CostLeg;
+using factor::stat::CostBook;
 using factor::stat::Frame;
-using factor::stat::kDirs;
+using factor::stat::kEcMid;
+using factor::stat::kEnds;
 using factor::stat::kGroups;
-using factor::stat::kLcMid;
-using factor::stat::kLcVoid;
 using factor::stat::kLegs;
 using factor::stat::kLong;
 using factor::stat::kMaxA;
@@ -43,7 +42,6 @@ using factor::stat::kRankNone;
 using factor::stat::kShort;
 using factor::stat::kSums;
 using factor::stat::Label;
-using factor::stat::LegSum;
 using factor::stat::Row;
 
 inline float h2f(uint16_t b) {
@@ -150,11 +148,11 @@ struct CostHold {
   bool settle = false;
 };
 
-// 换手成本: lc = 本行腿码 (块形平面偏到行首, 交接链回看前行); ch[i] = 持有期 i 的输入; c[k] 已偏到行首; cap = 一腿满仓 → acc[k·H + i].
-//   腿成员 = 腿码 ∧ m ∧ 本侧真持有 (契约 held, 与 Row 的腿同一集合); 两批各腿只数 → 每只权 1 / max(只数, cap);
-//   逐格 Δ = 本批权 − 前一批权: Δ⁺ 增仓 (付建仓冲击; 本格本侧不可建仓 (续持者封板) → 加不了仓, 记 0), Δ⁻ 减仓.
-//   固定段 (c[k].flat()) 无建仓冲击, 增仓量记进固定量 (契约【换手成本】)
-inline void cost_row(const uint8_t *lc, const CostHold *ch, int H, const Cost *c, int C, int A, double cap, CostAcc *acc) {
+// 换手成本: ec = 本行端码 (块形平面偏到行首, 交接链回看前行); ch[i] = 持有期 i 的输入; c[k] 已偏到行首; cap = 一端满仓 → acc[k·H + i].
+//   端成员 = 端码 ∧ m ∧ 真持有 (契约 held, 与 Row 的端组同一集合); 两批各端只数 → 每只权 1 / max(只数, cap);
+//   逐格 Δ = 本批权 − 前一批权: Δ⁺ 增仓 (付买入冲击; 本格不可买 (续持者封板) → 加不了仓, 记 0), Δ⁻ 减仓.
+//   固定段 (c[k].flat()) 无买入冲击, 增仓量记进固定量 (契约【换手成本】)
+inline void cost_row(const uint8_t *ec, const CostHold *ch, int H, const Cost *c, int C, int A, double cap, CostAcc *acc) {
   assert(C >= 1 && C <= factor::stat::kMaxCost);
   for (int i = 0; i < H; ++i) {
     const CostHold &q = ch[i];
@@ -164,62 +162,62 @@ inline void cost_row(const uint8_t *lc, const CostHold *ch, int H, const Cost *c
     factor::stat::Chain pc = q.c; // 前一批 (行 t − h) 的链
     pc.t -= q.c.h;
     const ptrdiff_t back = -static_cast<ptrdiff_t>(q.c.h) * A;
-    // 偏 o 行的格 a 在链 ch 上的腿 (−1 = 不是真持有的腿成员)
-    const auto leg_at = [&](const factor::stat::Chain &cn, ptrdiff_t o, int a) -> int8_t {
+    // 偏 o 行的格 a 在链 ch 上的端 (−1 = 不是真持有的端成员)
+    const auto end_at = [&](const factor::stat::Chain &cn, ptrdiff_t o, int a) -> int8_t {
       const ptrdiff_t j = o + a;
-      const uint8_t x = lc[j];
-      if (x >= kLcMid || !q.m[j])
+      const uint8_t x = ec[j];
+      if (x >= kEcMid || !q.m[j])
         return -1;
-      return factor::stat::held(cn, lc + j, q.m + j, q.eo + j, x, [x](uint8_t v) { return v == x; }) ? static_cast<int8_t>(x) : -1;
+      return factor::stat::held(cn, ec + j, q.m + j, q.eo + j, [x](uint8_t v) { return v == x; }) ? static_cast<int8_t>(x) : -1;
     };
-    int8_t lg[kMaxA], plg[kMaxA];
-    int n[kLegs] = {}, pn[kLegs] = {};
+    int8_t en[kMaxA], pen[kMaxA];
+    int n[kEnds] = {}, pn[kEnds] = {};
     for (int a = 0; a < A; ++a) {
-      lg[a] = leg_at(q.c, 0, a);
-      plg[a] = net ? leg_at(pc, back, a) : -1;
-      if (lg[a] >= 0)
-        ++n[lg[a]];
-      if (plg[a] >= 0)
-        ++pn[plg[a]];
+      en[a] = end_at(q.c, 0, a);
+      pen[a] = net ? end_at(pc, back, a) : -1;
+      if (en[a] >= 0)
+        ++n[en[a]];
+      if (pen[a] >= 0)
+        ++pn[pen[a]];
     }
-    double w[kLegs], pw[kLegs];
-    for (int l = 0; l < kLegs; ++l) {
-      w[l] = 1.0 / factor::stat::book_den(n[l], cap);
-      pw[l] = 1.0 / factor::stat::book_den(pn[l], cap);
+    double w[kEnds], pw[kEnds];
+    for (int e = 0; e < kEnds; ++e) {
+      w[e] = 1.0 / factor::stat::book_den(n[e], cap);
+      pw[e] = 1.0 / factor::stat::book_den(pn[e], cap);
     }
-    double imp[factor::stat::kMaxCost][kLegs] = {}, buy[kLegs] = {}, sell[kLegs] = {};
+    double imp[factor::stat::kMaxCost][kEnds] = {}, buy[kEnds] = {}, sell[kEnds] = {};
     for (int a = 0; a < A; ++a) {
-      const int l = lg[a], pl = plg[a];
-      if (l < 0 && pl < 0)
+      const int x = en[a], px = pen[a];
+      if (x < 0 && px < 0)
         continue;
-      for (int g = 0; g < kLegs; ++g) {
-        double d = (l == g ? w[g] : 0.0) - (pl == g ? pw[g] : 0.0);
-        if (d > 0.0 && !(q.eo[a] & factor::stat::eo_open(g)))
+      for (int e = 0; e < kEnds; ++e) {
+        double d = (x == e ? w[e] : 0.0) - (px == e ? pw[e] : 0.0);
+        if (d > 0.0 && !(q.eo[a] & factor::stat::kEoBuy))
           d = 0.0;
         if (d > 0.0) {
-          buy[g] += d;
+          buy[e] += d;
           for (int k = 0; k < C; ++k)
             if (!c[k].flat())
-              imp[k][g] += d * static_cast<double>(h2f(c[k].imp[g][a]));
+              imp[k][e] += d * static_cast<double>(h2f(c[k].imp[a]));
         } else {
-          sell[g] -= d;
+          sell[e] -= d;
         }
       }
     }
     for (int k = 0; k < C; ++k) {
       CostAcc &o = acc[k * H + i];
       ++o.rows;
-      for (int g = 0; g < kLegs; ++g) {
-        CostLeg &e = o.leg[g];
-        const double wg = n[g] * w[g], out = sell[g] + (q.settle ? wg : 0.0);
-        e.imp += imp[k][g], e.buy += buy[g], e.sell += out, e.fix += out + (c[k].flat() ? buy[g] : 0.0);
-        e.w += wg, e.n += n[g];
+      for (int e = 0; e < kEnds; ++e) {
+        CostBook &b = o.book[e];
+        const double we = n[e] * w[e], out = sell[e] + (q.settle ? we : 0.0);
+        b.imp += imp[k][e], b.buy += buy[e], b.sell += out, b.fix += out + (c[k].flat() ? buy[e] : 0.0);
+        b.w += we, b.n += n[e];
       }
     }
   }
 }
 
-// label_row 的逐格扩展 (见文件头 row_stat): cell(cl) 每个 J 内的格一次; cl = 本格的交接链视图 (code = rx, *cl.code = 本格 r16, cl.y = 两腿标签),
+// label_row 的逐格扩展 (见文件头 row_stat): cell(cl) 每个 J 内的格一次; cl = 本格的交接链视图 (code = rx, *cl.code = 本格 r16, cl.y = 两侧标签),
 // 扩展按自己的成员判据问 cl.held / cl.continues / cl.ret (契约【仓位感知】)
 using RxCell = factor::stat::Cell<uint16_t>;
 struct NoExt {
@@ -227,42 +225,30 @@ struct NoExt {
 };
 
 // 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (两者交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
-//   → r 的 ric / mkt / grp / cnt / leg / leg_cnt / ok. ric / mkt 在 J 上 (与可成交无关); 组 (做多侧) / 两腿只收本侧真持有的格,
-//   收益按续持取名义值 (契约【仓位感知】).
+//   → r 的 ric / mkt / grp / cnt / ok. ric / mkt 在 J 上 (与可成交无关); 组只收真持有的格, 收益按续持取名义值 (契约【仓位感知】).
 //   调用方已排除段末尾部
 template <class Ext>
 inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, Row &r, Ext &ext) {
   unsigned long long s[kSums] = {};
-  double sm[kLegs] = {}, gs[kGroups] = {};
+  double sm = 0.0, gs[kGroups] = {};
   int gc[kGroups] = {};
-  LegSum lg[kDirs][kLegs] = {}; // 两向两腿本侧真持有的 (只数, Σ 收益)
   for (int a = 0; a < c.A; ++a) {
     const bool ok = rx[a] != kRankNone && lb.ry[a] != kRankNone;
     factor::stat::pair_add(s, rx[a], lb.ry[a], ok);
     const float y[kLegs] = {h2f(lb.v[kLong][a]), h2f(lb.v[kShort][a])};
-    for (int l = 0; l < kLegs; ++l)
-      sm[l] += ok ? y[l] : 0.f;
+    sm += ok ? y[kLong] : 0.f;
     if (!ok)
       continue;
     const int g = factor::stat::grp_of(rx[a]);
     const auto in = [g](uint16_t x) { return x != kRankNone && factor::stat::grp_of(x) == g; };
     const RxCell cl{c, rx + a, lb.m + a, lb.eo + a, y};
-    const bool cont = cl.continues(in);
-    const bool bl = cl.held(kLong, in);
-    const float vl = bl ? cl.ret(kLong, cont) : 0.f;
-    if (bl) {
-      gs[g] += vl;
+    if (cl.held(in)) {
+      gs[g] += cl.ret(cl.continues(in));
       ++gc[g];
-    }
-    if (const int d = factor::stat::long_dir(g); d >= 0) { // 端组: 做多侧 → 方向 d 多腿, 做空侧 → 方向 d ^ 1 空腿
-      if (bl)
-        lg[d][kLong].n += 1, lg[d][kLong].s += vl;
-      if (cl.held(kShort, in))
-        lg[d ^ 1][kShort].n += 1, lg[d ^ 1][kShort].s += cl.ret(kShort, cont);
     }
     ext.cell(cl);
   }
-  factor::stat::finish_row(s, sm, gs, gc, lg, cap, r);
+  factor::stat::finish_row(s, sm, gs, gc, cap, r);
 }
 
 // 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; tail = 段末尾部 (tail_masked, 为真则 ext 不动)

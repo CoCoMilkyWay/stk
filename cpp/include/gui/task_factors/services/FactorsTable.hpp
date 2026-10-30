@@ -96,7 +96,7 @@ std::vector<std::filesystem::path> list_factor_files(const std::string &dir);
 
 // ---- 字段表视图 (GUI 线程从 Feature 建一次, 每层一份全部页共享, worker 只读; 与池无关) ----
 // 一列 = (档, 层, 列下标), 库随因子池定 (lib_of): 叶 / 门控 / 标签 / 成本 / K 线 / 日频原料同一个类型, 进读计划同一个 ref
-inline constexpr uint32_t kNoCol = UINT32_MAX; // 无此列 (固定段的成本腿)
+inline constexpr uint32_t kNoCol = UINT32_MAX; // 无此列 (固定段的成本列)
 struct Col {
   TierId tier = TierId::Bar;
   size_t level = 0;
@@ -112,9 +112,9 @@ struct FeatCol : Col {
   L2::ValidType vt = L2::ValidType::ALL;
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
 };
-// 两腿列 (标签 / 成本同形): 标签 key = 持有期键 (Stat/Contract.hpp), 腿 = lb_long_<name> / lb_short_<name>;
-// 成本 key = 金额段 (万), 腿 = lb_cost_buy_<amt>w / lb_cost_sell_<amt>w (盘口段); 无冲击列的层只一个固定段 (key kAmtFixed, 腿无列;
-// Stat 契约【换手成本】)
+// 两侧列 (标签 / 成本同形): 标签 key = 持有期键 (Stat/Contract.hpp), 侧 = lb_long_<name> / lb_short_<name>;
+// 成本 key = 金额段 (万), 侧 = lb_cost_buy_<amt>w / lb_cost_sell_<amt>w (盘口段; 组合只做多, 装载只取买入侧); 无冲击列的层只一个固定段
+// (key kAmtFixed, 侧无列; Stat 契约【换手成本】)
 struct LegCol {
   int key = 0;
   Col leg[factor::stat::kLegs];
@@ -220,11 +220,11 @@ struct StatScope {
   misc::Ymd start_date = 0, end_date = 0; // 评估期首末 (所用库落盘日交集)
   int days = 0, T = 0, A = 0;
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
-  double n_full = 0.0;     // 满仓一腿只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
+  double n_full = 0.0;     // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
 // 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
-// 两腿按 Δw 扣: 盘口段 = 增仓 Δw⁺ 付建仓冲击, 平仓量付 fixed_impact; 固定段 = 两者都付 fixed_impact (同一价点交接只算差额); 均摊成本 cost(腿) 随 h 变.
-// 买入冲击按 Config::max_impact 封顶后进 (装载时; 本侧可建仓的格恒有限, 不可成交那侧特征层 NaN).
+// 两端按 Δw 扣: 盘口段 = 增仓 Δw⁺ 付买入冲击, 平仓量付 fixed_impact; 固定段 = 两者都付 fixed_impact (同一价点交接只算差额); 均摊成本 cost(端) 随 h 变.
+// 买入冲击按 Config::max_impact 封顶后进 (装载时; 可买的格恒有限, 不可买的格特征层 NaN).
 // Run 每因子每金额段都攒 (落 stat.costs), 年换手取段 0 (各段同一份 Δw), Inspect 期限结构净线从它算
 struct CostTier {
   int amt = 0;                                            // 万 (= FeatureTable::y.costs[c].key; kAmtFixed = 固定段)
