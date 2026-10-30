@@ -11,7 +11,7 @@
 //   S  块       FactorsLoad Block, key = block_key (层 | Domain::key | 日段 | YSpec: 持有期 / 金额段 / 封顶 | B)
 //               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 特征平面 (Life::Worker: 评估域内读过的全留, 只增). 池等权线 (pool_line, 每持有期一条) 随 Y 一代算一次
 //               (块钩子, whole: 整期一块; 装不下内存预算 → 评估期只留最近的日, fit_recent)
-//   Y  标签     随 S                                       → 毛标签秩: Engine<Cpu> 的 Stat 会话 (Stat/Cpu.hpp StatSession, 一次常驻); 没有净标签集
+//   Y  标签     随 S                                       → 毛标签秩: 块上的 Block::ry (Engine<Cpu> 会话首次 prep_label, 随块常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 (ensure_block) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool 常驻)
 //   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
 //                                                            RxAllP 另跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显

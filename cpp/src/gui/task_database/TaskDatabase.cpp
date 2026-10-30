@@ -27,9 +27,7 @@ using namespace GUI::Database;
 
 // ---- 同步确认弹窗的排版件 ----
 constexpr float kConfirmWidth = 440.0f;
-const ImVec4 kOk(0.3f, 0.95f, 0.4f, 1.0f);
 const ImVec4 kWarn(1.0f, 0.6f, 0.2f, 1.0f);
-const ImVec4 kBad(1.0f, 0.3f, 0.2f, 1.0f);
 
 // 168812345 → "168.81M"
 std::string human(std::int64_t v) {
@@ -80,18 +78,14 @@ void kv_row(const char *label, const std::string &value, const std::string &note
   right_text(note, color ? *color : dim);
 }
 
-// 周配额条: 已用 (灰) | 本次 (绿; 超出余额红, 截到周额) | 剩余 (暗)
-void quota_bar(std::int64_t weekly, std::int64_t used, std::int64_t spend, bool fits) {
+// 周配额条: 已用 (灰) | 剩余 (暗)
+void quota_bar(std::int64_t weekly, std::int64_t used) {
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const float h = ImGui::GetTextLineHeight() * 0.5f;
-  const auto x = [&](std::int64_t c) {
-    return p.x + kConfirmWidth * std::clamp(static_cast<float>(c) / static_cast<float>(weekly), 0.0f, 1.0f);
-  };
+  const float x = p.x + kConfirmWidth * std::clamp(static_cast<float>(used) / static_cast<float>(weekly), 0.0f, 1.0f);
   dl->AddRectFilled(p, ImVec2(p.x + kConfirmWidth, p.y + h), IM_COL32(55, 55, 60, 255), 2.0f);
-  dl->AddRectFilled(p, ImVec2(x(used), p.y + h), IM_COL32(140, 140, 145, 255), 2.0f);
-  if (spend > 0)
-    dl->AddRectFilled(ImVec2(x(used), p.y), ImVec2(x(used + spend), p.y + h), ImGui::GetColorU32(fits ? kOk : kBad), 2.0f);
+  dl->AddRectFilled(p, ImVec2(x, p.y + h), IM_COL32(140, 140, 145, 255), 2.0f);
   ImGui::Dummy(ImVec2(kConfirmWidth, h));
 }
 
@@ -153,18 +147,16 @@ public:
     DrawConfirm();
   }
 
-  // worker 挂起等弹窗 (FundamentalService::asking) ⇒ 按事由画模态, 答案回给 FundamentalService::confirm
-  //   Quota: 基本面 BigQuant 表待拉且周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, 二选一
-  //   Bar1m: 分钟线缺日的精确预算; 超本周余额则 "开始同步" 不可点, 只许跳过
+  // worker 挂起等弹窗 (FundamentalService::asking == Ask::Quota) ⇒ 画模态, 答案回给 FundamentalService::confirm
+  //   BigQuant 表 (基本面 / 分钟线) 待拉且周配额剩余 < BIGQUANT_QUOTA_CONFIRM_RATIO, 二选一
   void DrawConfirm() {
     if (!fundamental_svc_)
       return;
-    const Ask ask = fundamental_svc_->asking.load(std::memory_order_acquire);
-    if (ask == Ask::None)
+    if (fundamental_svc_->asking.load(std::memory_order_acquire) == Ask::None)
       return;
     std::lock_guard lk(fundamental_svc_->mutex);
     const auto &fs = fundamental_svc_->state;
-    const char *id = ask == Ask::Quota ? "BigQuant 周配额不足##QuotaConfirm" : "分钟线同步确认##Bar1mConfirm";
+    const char *id = "BigQuant 周配额不足##QuotaConfirm";
     if (!ImGui::IsPopupOpen(id)) {
       ImGui::OpenPopup(id);
       ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
@@ -174,65 +166,30 @@ public:
       return;
     const std::int64_t weekly = fs.quota_weekly, used = fs.quota_used, remain = weekly - used;
     const auto pct = [weekly](std::int64_t c) { return percent(static_cast<double>(c) / static_cast<double>(weekly)); };
-    bool can_go = true;
-    std::int64_t spend = 0;
-    const char *go_label = "继续同步";
-    const char *skip_label = "跳过 BigQuant";
-    const char *hint = "有待拉的 BigQuant 基本面分片, 继续会消耗配额. 跳过则本轮不拉 BigQuant 基本面表 "
-                       "(Tushare / 分钟线 / 本地构建照常), 下次 Update 再问. 配额每周重置, 服务端不给重置时刻.";
-    if (ask == Ask::Quota) {
-      ImGui::SeparatorText("BigQuant 周配额");
-      if (begin_kv("##quota")) {
-        kv_row("本周剩余", human(remain) + " cells", pct(remain), &kWarn);
-        kv_row("确认阈值", "", percent(config::BIGQUANT_QUOTA_CONFIRM_RATIO));
-        kv_row("已用 / 周额", human(used) + " / " + human(weekly), pct(used));
-        ImGui::EndTable();
-      }
-    } else {
-      const auto &b = fs.bar1m;
-      spend = b.cells;
-      can_go = b.cells <= remain;
-      go_label = "开始同步";
-      skip_label = "跳过分钟线";
-      hint = "跳过则本轮不拉分钟线, 下次 Update 再问; 不想再问可在 Settings 关掉 \"同步分钟线\".";
-      ImGui::SeparatorText("本次拉取");
-      if (begin_kv("##pull")) {
-        kv_row("缺失交易日", std::to_string(b.days) + " 天", misc::dash(b.lo) + " ~ " + misc::dash(b.hi));
-        kv_row("分钟行", human(b.rows), "拆回落盘");
-        kv_row("打包查询", std::to_string(b.tasks) + " 条", "每条 ≤ " + std::to_string(config::BIGQUANT_PACK_DAYS) + " 日");
-        kv_row("返回行", human(b.packs), "一资产一行, 分钟线收进一格");
-        ImGui::EndTable();
-      }
-      ImGui::Spacing();
-      ImGui::SeparatorText("BigQuant 周配额");
-      if (begin_kv("##budget")) {
-        kv_row("本次预算", human(b.cells) + " cells", pct(b.cells));
-        kv_row("本周剩余", human(remain) + " cells", pct(remain));
-        if (can_go)
-          kv_row("同步后剩余", human(remain - b.cells) + " cells", pct(remain - b.cells), &kOk);
-        else
-          kv_row("超出余额", human(b.cells - remain) + " cells", "不可同步", &kBad);
-        ImGui::EndTable();
-      }
+    ImGui::SeparatorText("BigQuant 周配额");
+    if (begin_kv("##quota")) {
+      kv_row("本周剩余", human(remain) + " cells", pct(remain), &kWarn);
+      kv_row("确认阈值", "", percent(config::BIGQUANT_QUOTA_CONFIRM_RATIO));
+      kv_row("已用 / 周额", human(used) + " / " + human(weekly), pct(used));
+      ImGui::EndTable();
     }
     ImGui::Spacing();
-    quota_bar(weekly, used, spend, can_go);
+    quota_bar(weekly, used);
     ImGui::Spacing();
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kConfirmWidth);
-    ImGui::TextDisabled("%s", hint);
+    ImGui::TextDisabled("%s", "有待拉的 BigQuant 分片, 继续会消耗配额 (1 cell / 条查询). 跳过则本轮不拉 BigQuant 表 "
+                              "(基本面 / 分钟线; Tushare / 本地构建照常), 下次 Update 再问. 配额每周重置, 服务端不给重置时刻.");
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
     const ImVec2 button((kConfirmWidth - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 0.0f);
-    ImGui::BeginDisabled(!can_go);
-    if (ImGui::Button(go_label, button)) {
+    if (ImGui::Button("继续同步", button)) {
       fundamental_svc_->confirm(true);
       ImGui::CloseCurrentPopup();
     }
-    ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button(skip_label, button)) {
+    if (ImGui::Button("跳过 BigQuant", button)) {
       fundamental_svc_->confirm(false);
       ImGui::CloseCurrentPopup();
     }
@@ -307,14 +264,8 @@ private:
 
   // 基本面状态标签: 待确认 > 在跑 (进度面) > 在飞未起跑 / 件待收 > 最近一件结论
   TaskStatus FundamentalStatus() const {
-    switch (fundamental_svc_->asking.load(std::memory_order_acquire)) {
-    case Ask::Quota:
+    if (fundamental_svc_->asking.load(std::memory_order_acquire) == Ask::Quota)
       return {TaskStatus::Kind::Warn, "confirm quota"};
-    case Ask::Bar1m:
-      return {TaskStatus::Kind::Warn, "confirm bar1m"};
-    case Ask::None:
-      break;
-    }
     if (fundamental_svc_->busy())
       return ProgressStatus(*fundamental_svc_);
     if (state_mgr_->syncing())

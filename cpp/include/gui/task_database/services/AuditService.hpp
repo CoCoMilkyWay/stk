@@ -26,9 +26,9 @@ namespace GUI::Database {
 // SPECS 里每张参与核对的表恒有一条 (从未核对 = 已核月数 0).
 //   问题天数占比 = bad_days / (local_days + remote_only_days)
 //   行差占比     = (added + removed) / local_rows
-//   流量 (与 fetch 同口径; cell = 行 × 列, Daily = 打包条数 × 资产数 × kPackCols):
-//     repair_cells = repair 同口径: 每个定位组 Σ 远端行 × 列 (Month 组 = 整月); Daily 逐月按定位到的日数打包
-//     full_cells   = 重拉全部已核月 (远端行 = 本地行 + 行差; Daily 日数 = 本地日 + 远端独有日)
+//   流量 (与 fetch 同口径; 1 cell / 任务, Month 形一月一条, Daily 一日一条):
+//     repair_cells = repair 同口径: Month 形 = 差异月数; Daily = 定位到的日数 (Month 组 = 该月本地全部日)
+//     full_cells   = 重拉全部已核月: Month 形 = 已核月数; Daily = 本地日 + 远端独有日
 struct AuditTableStat {
   std::string table;
   std::int64_t local_days = 0; // 本地冻结月出现过的 visible_date 天数

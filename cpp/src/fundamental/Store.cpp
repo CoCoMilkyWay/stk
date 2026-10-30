@@ -338,25 +338,7 @@ std::optional<Task> todo(const Spec &s, const Slot &sl) {
   return t;
 }
 
-Task whole(const Spec &s, const Slot &sl) {
-  Task t{&s, sl.ym, sl.w};
-  if (s.shape == Shape::Daily)
-    t.keys = {slot_key(s, sl)};
-  return t;
-}
-
-void add(std::vector<Task> &plan, Task t) {
-  if (t.spec->shape == Shape::Daily && !plan.empty()) {
-    Task &b = plan.back();
-    if (b.spec == t.spec && b.ym == t.ym && static_cast<int>(b.keys.size()) < ::config::BIGQUANT_PACK_DAYS) {
-      assert(t.keys.size() == 1 && t.w.lo > b.w.hi && "add: Daily 逐日升序并入");
-      b.w.hi = t.w.hi;
-      b.keys.push_back(std::move(t.keys.front()));
-      return;
-    }
-  }
-  plan.push_back(std::move(t));
-}
+Task whole(const Spec &s, const Slot &sl) { return {&s, sl.ym, sl.w}; }
 
 Ymd mark(const Spec &s, const Shard &sh) {
   assert(!s.vd.empty() && "mark: vd 空的表无水位");
@@ -390,19 +372,16 @@ void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
   const Spec &s = *t.spec;
   assert((t.ym == 0) == (s.shape == Shape::Meta) && "put: 分片与表形态不符");
   if (s.shape == Shape::Daily) {
-    assert(t.how == Write::Replace && !t.keys.empty() && "put: Daily 只整日 Replace, keys = 待拉日");
+    const Ymd day = t.w.lo;
+    assert(t.how == Write::Replace && t.w.hi == day && misc::ym_of(day) == t.ym && "put: Daily 一日一任务, 整日 Replace");
     const auto vd = tbl->GetColumnByName(s.vd);
-    assert(vd && vd->num_chunks() == static_cast<int>(t.keys.size()) && "put: Daily 须一日一块, 与待拉日一一对应 (交易日远端未入库?)");
+    assert(vd && tbl->num_rows() > 0 && "put: Daily 该日 0 行 (交易日远端未入库?)");
     std::vector<Ymd> d;
-    std::int64_t at = 0;
-    for (int c = 0; c < vd->num_chunks(); ++c) {
-      const Ymd day = key_day(t.keys[static_cast<std::size_t>(c)]);
-      pq::Col(vd->chunk(c)).yyyymmdd_all(d);
-      assert(grain_of(t.keys[static_cast<std::size_t>(c)]) == Grain::Day && misc::ym_of(day) == t.ym && "put: Daily 待拉日须为 ym 内的 Day 键");
-      assert(!d.empty() && std::all_of(d.begin(), d.end(), [day](Ymd x) { return x == day; }) && "put: Daily 块内日与待拉日不符");
-      pq::write_table_atomic(day_path(s.name, day), tbl->Slice(at, static_cast<std::int64_t>(d.size())));
-      at += static_cast<std::int64_t>(d.size());
+    for (const auto &chunk : vd->chunks()) {
+      pq::Col(chunk).yyyymmdd_all(d);
+      assert(std::all_of(d.begin(), d.end(), [day](Ymd x) { return x == day; }) && "put: Daily 行的日与任务日不符");
     }
+    pq::write_table_atomic(day_path(s.name, day), tbl);
     return;
   }
   const fs::path p = path(s.name, t.ym);

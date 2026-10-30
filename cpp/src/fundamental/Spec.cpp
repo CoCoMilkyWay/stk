@@ -109,8 +109,7 @@ const std::vector<Spec> SPECS = checked({
     {"cn_stock_financial_notes_shift",          "date",         Month, All, 20, Bq{Partition},
      "财报附注 76 列 × shift: 非经常性损益明细 (政府补助/公允价值变动/债务重组)"},
     // bar1m: 远端截面表 cn_stock_bar1m_c (按日截面存储; cn_stock_bar1m 按资产存储, 全市场单日要扫遍所有资产).
-    //   按资产打包拉 (Remote.hpp): 单日 ~130 万行收成 ~5500 资产行 × 2 列 ≈ 1.1 万 cell / 条, 一条至多一周;
-    //   基本面之后单独一道, 精确预算经弹窗确认才拉 (见 FundamentalService).
+    //   一日一条查询 (~130 万行 / ~100MB 收成一格); 基本面之后单独一道 (见 FundamentalService).
     {"bar1m",                                   "date",         Daily, All, 24, Bq{Partition, "cn_stock_bar1m_c"},
      "全市场不复权 1 分钟线 OHLC/量/额 + adjust_factor (一交易日一文件)"},
 

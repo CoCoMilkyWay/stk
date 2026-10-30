@@ -7,51 +7,40 @@
 
 namespace GUI::Factors {
 
-void valid_count(const uint8_t *m, const uint8_t *gate, size_t i0, size_t i1, uint64_t &on, uint64_t &all) {
-  for (size_t i = i0; i < i1; ++i) {
-    on += m[i] & gate[i];
-    all += gate[i];
-  }
-}
-
-void rank_sum(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, double &sum_out,
-              long long &rows_out) {
+void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, Cover &o) {
   const int nt = ex.threads();
-  std::vector<double> sum(static_cast<size_t>(nt), 0.0);
-  std::vector<long long> rows(static_cast<size_t>(nt), 0);
+  std::vector<Cover> part(static_cast<size_t>(nt));
   ex.rows(t1 - t0, [&](int r0, int r1, int tid) {
-    std::vector<uint16_t> buf(static_cast<size_t>(A));
-    double s = 0.0;
-    long long nr = 0;
+    std::vector<uint32_t> cnt(size_t{1} << 16, 0); // r16 → 本行同秩格数 (每行用完清回 0)
+    Cover &c = part[static_cast<size_t>(tid)];
     for (int t = t0 + r0; t < t0 + r1; ++t) {
-      const size_t base = static_cast<size_t>(t) * A;
+      const uint16_t *r = rx + static_cast<size_t>(t) * A;
+      const uint8_t *mr = m + static_cast<size_t>(t) * A, *gr = gate + static_cast<size_t>(t) * A;
       int nv = 0, nb = 0;
       for (int a = 0; a < A; ++a) {
-        nv += m[base + a] & gate[base + a];
-        if (rx[base + a] != factor::stat::kRankNone)
-          buf[static_cast<size_t>(nb++)] = rx[base + a];
+        nv += mr[a] & gr[a];
+        c.all += gr[a];
+        if (r[a] != factor::stat::kRankNone)
+          ++cnt[r[a]], ++nb;
       }
+      c.on += static_cast<uint64_t>(nv);
+      assert(nb <= nv && "有秩格须在池内有效格里");
+      const uint32_t wmax = static_cast<uint32_t>((nv + factor::stat::kGroups - 1) / factor::stat::kGroups);
+      int good = 0;
+      for (int a = 0; a < A; ++a)
+        if (r[a] != factor::stat::kRankNone)
+          good += cnt[r[a]] <= wmax;
+      for (int a = 0; a < A; ++a)
+        if (r[a] != factor::stat::kRankNone)
+          cnt[r[a]] = 0;
       if (nv == 0)
         continue;
-      assert(nb <= nv && "有秩格须在池内有效格里");
-      ++nr;
-      std::sort(buf.begin(), buf.begin() + nb);
-      const int wmax = (nv + factor::stat::kGroups - 1) / factor::stat::kGroups;
-      int good = 0;
-      for (int i = 0; i < nb;) {
-        int j = i + 1;
-        while (j < nb && buf[static_cast<size_t>(j)] == buf[static_cast<size_t>(i)])
-          ++j;
-        good += j - i <= wmax ? j - i : 0;
-        i = j;
-      }
-      s += static_cast<double>(good) / nv;
+      c.sum += static_cast<double>(good) / nv;
+      ++c.rows;
     }
-    sum[static_cast<size_t>(tid)] += s;
-    rows[static_cast<size_t>(tid)] += nr;
   });
-  for (int k = 0; k < nt; ++k)
-    sum_out += sum[static_cast<size_t>(k)], rows_out += rows[static_cast<size_t>(k)];
+  for (const Cover &c : part)
+    o.merge(c);
 }
 
 void CostP::root(const Ctx &c, const RootView &v) {

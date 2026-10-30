@@ -20,14 +20,17 @@ using Filters = std::map<std::string, std::vector<std::string>>;
 // 一次查询 (值类型) — 与 tushare::Query 对仗
 //   sql:     标准 DuckDB-flavored SQL (DAI 底层用 DuckDB)
 //   filters: 服务端列过滤 / 分区下推
+//   order:   结果行序 (ORDER BY 子句体, 列 = sql 的输出列); 空 = 不定
 struct Query {
   std::string sql;
   Filters filters;
+  std::string order = {};
 };
 
 // 账户周配额 (Flight DoAction("quota") 响应的 weekly_quota / used_quota).
-//   计量单位 = 查询返回结果的 cell 数 (rows × cols), 与服务端扫描窗口无关
-//   (实测: 同一条 MAX(date) 子查询, 窗口取 3 个月与取 11 年 delta 完全相同).
+//   计量单位 = 查询返回结果的顶层 cell 数 (rows × cols), 与服务端扫描窗口无关
+//   (实测: 同一条 MAX(date) 子查询, 窗口取 3 个月与取 11 年 delta 完全相同);
+//   LIST / STRUCT 内的元素不计 ⇒ query 每条恒 1 cell (见 Client::query).
 //   used 每周重置一次, 服务端不返回重置时刻.
 struct Quota {
   std::int64_t weekly = 0;
@@ -52,7 +55,9 @@ public:
   // 显式指定 (测试 / 多账号切换)
   Client(std::string ak, std::string sk);
 
-  // 执行一次查询, 走 Arrow Flight DoGet.
+  // 执行一次查询, 走 Arrow Flight DoGet; 结果收成一格 (1 cell) 传回再拆开:
+  //   SELECT LIST(q ORDER BY order) AS p FROM (sql) q  →  1 行 × 1 列  →  sql 的结果表
+  //   拆回与直取逐列同形 (列序 / 列名 / 列型 / 可空); 0 行 = NULL 列表, 列型照带; 行序只由 order 保证
   // 返回 arrow::Table (整张读完一次性返); server-side 配额耗尽 / 权限缺失 / SQL 错误均 assert.
   std::shared_ptr<arrow::Table> query(const Query &q);
 

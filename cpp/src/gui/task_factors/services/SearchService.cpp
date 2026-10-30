@@ -114,14 +114,12 @@ Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
     ++t;
   return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
-// 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数). 常驻: 预留趟 0 的 kInit 个候选, 细化的随评随增
+// 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数). 常驻 (每候选一份; 预算按趟 0 的 kInit 个候选, 细化的随评随增)
 struct SampleP : ProbeBase {
   static constexpr uint8_t need = kNeedRanks;
   std::vector<uint16_t> *dst = nullptr;
   int stride = 1, off = 0;
-  static double bytes(const Shape &sh, int) {
-    return factor::search::kInit * (static_cast<double>(sh.T) / stride_of(sh.T) + 1.0) * sh.A * sizeof(uint16_t);
-  }
+  static double bytes(const Shape &sh, int) { return (static_cast<double>(sh.T) / stride_of(sh.T) + 1.0) * sh.A * sizeof(uint16_t); }
   void root(const Ctx &c, const RootView &v) {
     const fs::Span s = c.s();
     const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
@@ -265,7 +263,7 @@ struct SearchService::Searcher {
   // ---- 模板 → 作用域 (评估期 = 模板叶所用库落盘日交集) → 预算 → 分块 (FactorsEngine prepare; 见头文件【分块流式】) ----
   //   load   宿主作用域块: 叶 + Y (截面门控 + 所搜持有期的标签, 不装成本)
   //   work   宿主引擎 (随绑定的块重开) / dev 显存: 引擎 E::budget 的批核口径 (d0 = 一个候选)
-  //   fixed  探针: r16 常驻 (SampleP::bytes)
+  //   fixed  探针: r16 常驻 (SampleP::bytes × 趟 0 的 kInit 个候选)
   // 多块 → prepare 先预扫全期门控定满仓只数 job.spec.y.cap (与 Run 同一个 cap; 各块装载即用它, 引擎的 Search 会话取 y.n_full)
   template <class E>
   bool plan(E &eng) {
@@ -276,7 +274,7 @@ struct SearchService::Searcher {
     job.life = sp.keep ? Life::Worker : Life::Job;
     job.who = "Search";
     const Clock::time_point t_plan = Clock::now();
-    if (!go(Factors::prepare<E, SearchProbes>(eng, F, scope, d0, look, hd, job)))
+    if (!go(Factors::prepare<E, SearchProbes>(eng, F, scope, d0, look, hd, factor::search::kInit, job)))
       return false;
     // 前后带 (bands_of): 统计首行的 lag 行 / 交接链所及的行也须整窗, 末统计行的续持要看后一批
     lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
@@ -489,11 +487,10 @@ struct SearchService::Searcher {
       Entry &en = ents[static_cast<size_t>(id)];
       assert(en.pass < 0 && "每个候选只评一次");
       en.ps = SearchProbes{};
-      en.ps.hd = hd;
       en.r16.assign(static_cast<size_t>(R) * A, fs::kRankNone);
       en.ps.at<SampleP>().dst = &en.r16; // ents 本趟不再增 → 地址稳
       en.ps.at<SampleP>().stride = stride;
-      roots.push_back({&en.e, sp.frame});
+      roots.push_back({&en.e, sp.frame, fs::kFwd, hd});
     }
     const Clock::time_point t_pass = Clock::now();
     // 进度: Running 期 = 候选 × 块 (每块重开, 前面的块已评完)
@@ -510,7 +507,7 @@ struct SearchService::Searcher {
       }
       void done(int) { S.W.publish(1); }
     } hooks{{}, *this, ids.size()};
-    const Rc rc = GUI::Factors::pass(eng, F, job, roots, batch, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, hooks);
+    const Rc rc = GUI::Factors::pass(eng, F, job, roots.size(), PlantBatch<SearchProbes, E>{eng, roots, batch, {}}, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, hooks);
     const double load_s = hooks.load_s;
     if (rc != Rc::Ok)
       return rc;

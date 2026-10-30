@@ -254,7 +254,7 @@ struct AlphaDist {
 struct EvalStat {
   StatScope scope;                       // stat 的作用域 (FactorsLoad stat_scope)
   double eval_ms = 0;                    // 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
-  float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsProbe ValidP / RankP)
+  float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (FactorsProbe CoverP)
   int n_hold = 0;
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序 (非空), 每金额段 [n_hold] CostAcc (年换手 / Inspect 净线从它算)

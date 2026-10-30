@@ -25,21 +25,19 @@
 //                   整数 / bool:  Σ c
 //                   timestamp:    Σ epoch_ms(c)
 //                   string:       Σ strlen(c)  (等长改写测不出)
-//     折叠格        多列的 nn / s 按 (列号 + 1) 加权求和成一格 (只定位不诊断)
-//   列清单 / 类型取服务端 LIMIT 0 schema (0 cell); 本地分片缺列 = 全 null.
-//   配额按返回 cell 计 (组数 × (1 + 格数)), 与服务端扫描量无关.
+//   列清单 / 类型取服务端 LIMIT 0 schema; 本地分片缺列 = 全 null.
+//   配额 1 cell / 查询 (见 Remote.hpp), 与组数 / 格数无关.
 //
 // 定位 = 同一指纹逐级收窄 (Grain: Month → Day → Asset, 组键见 Spec.hpp):
 //   月级: 全部格, 远端一单元一次查询 (第一遍扫描); 本地逐月读盘一次
-//   不一致的组 → 下一级只查它的子组 (key_filter 父键) 与它不一致的列:
-//     子级格 = 逐列 nn / s (可诊断) 或折叠格 (3 格), 取代价更低且低于 "直接按父组修复" 的那种; 都不值 → 停在父组
+//   不一致的组 → 下一级只查它的子组 (key_filter 父键) 与它不一致的列 (逐列 nn / s, 可诊断), 能下钻就下钻:
 //     一侧 0 行 / 下钻到 finest(s) 之下 / 远端无资产键列 (Asset) → 停在父组
 //   子组全部不一致 / 一个都对不上 → 父组即最精确
 //   定位结果 (组键彼此不相交) = 修复键: 定位到哪些行, repair 就只拉哪些行
 //
 // 两侧同形 (.cpp 里 Remote ↔ Local 相邻成对, 同一接口 fps(cells, g, parents)):
 //   远端: 每级一条 SQL GROUP BY
-//   本地: 月读盘一次 → 逐日基格 (n + 逐列 nn / s); Month / Day 级与折叠格都由它线性导出, 零再读;
+//   本地: 月读盘一次 → 逐日基格 (n + 逐列 nn / s); Month / Day 级都由它线性导出, 零再读;
 //         只有 Asset 级再读一次, 且只解所查列. 清点 (Inv) 是逐日基格的副产品
 //
 // 只核 frozen 的槽 (State::Frozen): 开放月 / 待重拉月本地本就落后.
@@ -67,13 +65,13 @@ struct Inv {
   std::int64_t rows = 0;
   std::int64_t days = 0;   // 出现过的 vd 天数
   std::int64_t cols = 0;   // 分片列数 (Daily: 各日最大)
-  std::int64_t assets = 0; // Daily: 各日资产数最大 (打包流量的单位, 见 Remote.hpp); 其余 0
+  std::int64_t assets = 0; // Daily: 各日资产数最大; 其余 0
 };
 
 struct Diff {
   // 一个不一致的指纹格 (十进制原值, 看差的量级: 舍入级 vs 真改)
   struct Cell {
-    std::string column; // 列名; 折叠格 = "Σ<列数>列"
+    std::string column; // 列名
     bool sum = false;   // false = nn, true = s
     std::string local, remote;
   };
@@ -109,7 +107,7 @@ std::string label(const Unit &u);
 // 差异组键 (Diff::group) → 修复任务, 槽序 ((ym, 日) 升序) —— 槽即组, Month / Daily 同一条规则:
 //   差异键归入与之相交的冻结槽 (槽键是其前缀 = 在槽内; 其是槽键前缀 = 盖住槽);
 //   槽内有不细于槽级的键 → Replace 整槽; 否则 Splice 这些键 (槽窗口). 差异键须全落在冻结槽里 (assert)
-//   任务经 Store::add 入列 (Daily 同月日槽并成打包任务, 与 sync::plan 同形)
+//   一槽至多一条任务 (与 sync::plan 同形)
 std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::string> &groups);
 
 // ============================================================================

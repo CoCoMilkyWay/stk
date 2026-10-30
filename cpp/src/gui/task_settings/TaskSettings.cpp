@@ -259,8 +259,7 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("同步分钟线");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("基本面之后是否联网补齐 BigQuant 分钟线 bar1m (单日 ~1200 万 cell).\n"
-                            "有缺日即弹窗报精确预算, 确认才拉; 预算超本周余额不可确认.\n"
+          ImGui::SetTooltip("基本面之后是否联网补齐 BigQuant 分钟线 bar1m (一日一条查询, 1 cell / ~100MB).\n"
                             "两项全关 = 只本地构建 AssetInfo (零网络), Audit 不可用.");
         }
         ImGui::TableNextColumn();

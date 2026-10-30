@@ -139,14 +139,13 @@ enum class Write { Replace,
 // 一次抓取 = 表 × 分片 × 窗口 × 写法; sync::run = put(t, fetch(client, t))
 //   Append: w.lo 已抬到水位 + 1; Snap::Day 表无 Append (快照须看整窗)
 //   Splice: keys 升序去重非空, Day / Asset 级, 同属 ym 分片; w = 槽整窗 (Snap::Day 的 MIN 子查询照看整窗); 仅 exact 源
-//   Shape::Daily: keys = 待拉日的 Day 键 (升序, 同属 ym, 至多 BIGQUANT_PACK_DAYS 个), w = [首日, 末日];
-//                 只 Replace (逐日整文件) —— 一条打包查询拉齐 (见 Remote.hpp)
+//   Shape::Daily: 一日一任务, w = [该日, 该日], 只 Replace (整日文件)
 struct Task {
   const Spec *spec = nullptr; // 指向 SPECS 的一行
   Ym ym = 0;                  // 0 = _meta
   Window w;
   Write how = Write::Replace;
-  std::vector<std::string> keys = {}; // Splice: 替换键; Daily: 待拉日
+  std::vector<std::string> keys = {}; // Splice: 替换键
 };
 
 extern const std::vector<Spec> SPECS;

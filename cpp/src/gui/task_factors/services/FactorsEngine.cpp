@@ -1,5 +1,7 @@
-// FactorsEngine — 见头文件 (plan_forest). include 因子 CPU 后端头, 依赖受控浮点: CMake PRECISE_MATH 源.
+// FactorsEngine — 见头文件 (plan_forest / eval_baskets). include 因子 CPU 后端头, 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/FactorsEngine.hpp"
+
+#include "shared/FeatureLib.hpp" // pool_id
 
 #include <algorithm>
 #include <cassert>
@@ -77,6 +79,20 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
       need[static_cast<size_t>(i)] = 1;
   }
   return good;
+}
+
+Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
+  assert(sc.ft && pool_id(sc.pool) == kAllPool && "池篮子在 all 池评估域");
+  assert(find_leg(sc.ft->y.labels, factor::stat::hold_close(1)) && "篮子须有 T+1C 标签 (池指数 C(行) → C(D+1))");
+  j.life = Life::Job;
+  if (!open_job(F, sc, {}, j))
+    return Rc::Empty;
+  fit_recent(F, sc, j, [] { return Budget{.load = kBasketCellBytes}; });
+  BPlanes B;
+  if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.lr); rc != Rc::Ok)
+    return rc;
+  out = baskets(F.ex, B);
+  return Rc::Ok;
 }
 
 } // namespace GUI::Factors

@@ -75,7 +75,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
 // Stat 常驻会话 (因子表: 一个作用域多因子): 标签上传 + rank 预处理只做一次, 逐因子只跑 run,
 // x 是设备常驻平面 (DAG 根槽), g 是设备常驻池掩码平面 (只用 g->m), 口径 f 逐因子给 (会话与口径无关), acc[L.hd.n] 拷回;
 // rows 非空再拷回一级; ec 非空再拷回方向 d 的端码 [T][A] (宿主侧换手成本 cost_rows 要, 与 CPU 后端 end_codes 同一份; 整数, 两后端逐位同);
-// rx 非空再拷回 r16 [T][A] (宿主侧可秩率 rank_sum 要). t0_abs / t_lo / t_back 同 search_eval (契约【分块流式】: 一级只出行 [t_lo, T − t_back)).
+// rx 非空再拷回 r16 [T][A] (宿主侧探针要: 可秩率 cover_rows / alpha 分布). t0_abs / t_lo / t_back 同 search_eval (契约【分块流式】: 一级只出行 [t_lo, T − t_back)).
 // run_stat 一次性版 = open + 上传 x / g + eval (整块) + close.
 struct StatSession;
 StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, double *prep_ms = nullptr);

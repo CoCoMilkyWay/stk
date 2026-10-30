@@ -2,13 +2,11 @@
 
 #include "api/bigquant/client.hpp"
 #include "fundamental/Audit.hpp"
-#include "fundamental/Remote.hpp"
 #include "fundamental/Store.hpp"
 #include "fundamental/Sync.hpp"
 #include "gui/task_database/services/Drive.hpp"
 #include "misc/cross_platform.hpp"
 #include "misc/date.hpp"
-#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -57,11 +55,6 @@ std::size_t frozen_months(const Spec &s, const Round &r) {
   return months.size();
 }
 
-// Daily 一月拉 k 日的打包流量: ⌈k / BIGQUANT_PACK_DAYS⌉ 条 × 资产数 × kPackCols (与 Store::add / Remote::fetch 同口径)
-std::int64_t packed_cells(std::int64_t k, const fundamental::audit::Inv &inv) {
-  return (k + config::BIGQUANT_PACK_DAYS - 1) / config::BIGQUANT_PACK_DAYS * inv.assets * fundamental::kPackCols;
-}
-
 // 一表的有效结论 → 统计
 AuditTableStat stat_of(const Spec &s, const Book::Sheet &t, std::size_t frozen) {
   const bool daily = s.shape == fundamental::Shape::Daily;
@@ -69,7 +62,6 @@ AuditTableStat stat_of(const Spec &s, const Book::Sheet &t, std::size_t frozen) 
     AuditTableStat st;
     std::set<std::string> bad, row_bad, content_bad, months;
     std::map<std::string, std::set<std::string>> col_days; // 改值列 → 涉及的日
-    std::map<std::string, std::int64_t> delta;             // ym → 远端 − 本地行数
     std::map<std::string, std::int64_t> remote_only;       // ym → 远端独有日数
     std::map<std::string, std::set<std::string>> fix_days; // Daily: ym → 定位到的日
   };
@@ -84,8 +76,8 @@ AuditTableStat stat_of(const Spec &s, const Book::Sheet &t, std::size_t frozen) 
   for (const Book::Row &r : t.rows)
     if (r.column != "-")
       a.col_days[r.column].insert(r.group.substr(0, 10));
-  // 修复粒度 = 定位组 (与 audit::repair 同一来源): Month 键整月 Replace, Day / Asset 键只拉该组;
-  //   流量 = 组远端行 × 列; Daily 按月打包 (整月 = 本地全部日)
+  // 修复粒度 = 定位组 (与 audit::repair 同一来源), 一槽一条任务 = 1 cell:
+  //   Month 形一个差异月一条 (整月 Replace / Splice 日·资产); Daily 一个差异日一条 (Month 键 = 该月本地全部日)
   std::set<std::string> whole;
   for (const auto &[g, n] : group_n(t.rows)) {
     const auto [local_n, remote_n] = n;
@@ -102,17 +94,14 @@ AuditTableStat stat_of(const Spec &s, const Book::Sheet &t, std::size_t frozen) 
     }
     a.st.added += std::max<std::int64_t>(0, remote_n - local_n);
     a.st.removed += std::max<std::int64_t>(0, local_n - remote_n);
-    a.delta[ym] += remote_n - local_n;
     assert(t.months.contains(ym) && "audit: 差异月无清点");
     if (daily)
       a.fix_days[ym].insert(day);
-    else
-      a.st.repair_cells += remote_n * t.months.at(ym).inv.cols;
   }
-  for (const auto &[ym, days] : a.fix_days) {
-    const fundamental::audit::Inv &inv = t.months.at(ym).inv;
-    a.st.repair_cells += packed_cells(whole.contains(ym) ? inv.days : static_cast<std::int64_t>(days.size()), inv);
-  }
+  for (const std::string &ym : a.months)
+    a.st.repair_cells += !daily               ? 1
+                         : whole.contains(ym) ? t.months.at(ym).inv.days
+                                              : static_cast<std::int64_t>(a.fix_days.at(ym).size());
 
   AuditTableStat &st = a.st;
   st.table = s.name;
@@ -124,13 +113,8 @@ AuditTableStat stat_of(const Spec &s, const Book::Sheet &t, std::size_t frozen) 
 
   // 差异行的月必有清点 (Book::put 同步写入, Book::sheet 同月同滤)
   for (const auto &[ym, m] : t.months) {
-    if (daily) {
-      const auto r = a.remote_only.find(ym);
-      st.full_cells += packed_cells(m.inv.days + (r == a.remote_only.end() ? 0 : r->second), m.inv);
-      continue;
-    }
-    const auto d = a.delta.find(ym);
-    st.full_cells += (m.inv.rows + (d == a.delta.end() ? 0 : d->second)) * m.inv.cols;
+    const auto r = a.remote_only.find(ym);
+    st.full_cells += !daily ? 1 : m.inv.days + (r == a.remote_only.end() ? 0 : r->second);
   }
 
   constexpr std::size_t kTop = 3;

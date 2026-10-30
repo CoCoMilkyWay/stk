@@ -69,8 +69,9 @@ double whole_dev_bytes(const Domain &dm, int seg, const Budget &b);
 struct Bands {
   int front = -1, back = 0;
 };
-// 整期一块 或 块 = 尽量多的统计日 (≥ 1) + 前带 front 日 + 后带 back 日, 块数最少
-Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd);
+// 整期一块 或 块 = 尽量多的统计日 (≥ 1) + 前带 front 日 + 后带 back 日, 块数最少 (最小的块都装不下 → assert).
+// held = 已占着但本作业里可让出的宿主字节 (worker 的共享块: 命中 / 换掉 / 多块时弃), 算回预算
+Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double held);
 
 // ---- 评估结局 (装载 / 评估 / 四服务同一个) ----
 enum class Rc : uint8_t { Ok,

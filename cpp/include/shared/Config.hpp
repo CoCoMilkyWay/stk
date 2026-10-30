@@ -29,7 +29,7 @@ struct Config {
 
   // 联网同步开关 (两项独立; 全关 = 只本地构建 AssetInfo, 零网络): 本地 parquet 照常消费.
   //   sync_fundamental: 基本面 (BigQuant 日频表 + Tushare)
-  //   sync_bar1m      : 分钟线 bar1m (基本面之后; 有缺日即弹窗报预算, 确认才拉)
+  //   sync_bar1m      : 分钟线 bar1m (基本面之后)
   bool sync_fundamental = true;
   bool sync_bar1m = true;
 
@@ -153,12 +153,8 @@ inline constexpr const char *TUSHARE_TOKEN = "6b5ea435a4626b1eeedefb2115bcf9e84f
 //   超时 = 单次连接+读写整体时长; 重试 = RETRY_MAX 次额外重试, 线性间隔
 inline constexpr const char *BIGQUANT_FLIGHT_URI = "grpc+tcp://bigquant.com:17010";
 inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
-// 周配额 preflight: 剩余比例 < 该值时基本面 BigQuant 表同步前弹窗确认 (BigQuant sync 不自己判, 由 GUI 决定);
-//   分钟线不看该值: 有缺日必弹窗报精确预算
+// 周配额 preflight: 剩余比例 < 该值时 BigQuant 表 (基本面 / 分钟线) 同步前弹窗确认 (BigQuant sync 不自己判, 由 GUI 决定)
 inline constexpr double BIGQUANT_QUOTA_CONFIRM_RATIO = 0.3;
-// Daily (分钟线) 一条打包查询最多拉几个交易日 (同月内): 配额只按资产数计, 与日数无关;
-//   日数只撑大单次响应 (~70MB / 日) 与服务端聚合内存, 取一周
-inline constexpr int BIGQUANT_PACK_DAYS = 5;
 
 inline constexpr const char *TUSHARE_HTTP_HOST = "api.tushare.pro";
 inline constexpr const char *TUSHARE_HTTP_PORT = "80";  // 走 80, 省掉 SSL 依赖

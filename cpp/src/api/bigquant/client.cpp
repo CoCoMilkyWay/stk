@@ -3,6 +3,7 @@
 #include "shared/Config.hpp"
 #include "yyjson/yyjson.h"
 
+#include <arrow/array.h>
 #include <arrow/buffer.h>
 #include <arrow/flight/api.h>
 #include <arrow/flight/client.h>
@@ -66,6 +67,30 @@ T unwrap(arrow::Result<T> &&r, const char *what) {
   return std::move(r).ValueUnsafe();
 }
 
+// sql 的结果行收成一格: 一行一个 STRUCT, 全部行进一个 LIST
+std::string pack(const Query &q) {
+  return "SELECT LIST(q" + (q.order.empty() ? std::string() : " ORDER BY " + q.order) + ") AS p FROM (" + q.sql + ") q";
+}
+
+// 一格的响应 → sql 的结果表 (STRUCT 字段即列, 零拷贝)
+std::shared_ptr<arrow::Table> unpack(const arrow::Table &packed) {
+  assert(packed.num_rows() == 1 && packed.num_columns() == 1 &&
+         packed.schema()->field(0)->type()->id() == arrow::Type::LIST && "DAI: 响应须为一格 LIST");
+  const auto &item = static_cast<const arrow::ListType &>(*packed.schema()->field(0)->type()).value_type();
+  assert(item->id() == arrow::Type::STRUCT && "DAI: LIST 元素须为 STRUCT");
+  const auto schema = arrow::schema(item->fields());
+  const arrow::ListArray *list = nullptr;
+  for (const auto &chunk : packed.column(0)->chunks())
+    if (chunk->length() == 1)
+      list = static_cast<const arrow::ListArray *>(chunk.get());
+  assert(list);
+  if (list->IsNull(0))
+    return unwrap(arrow::Table::MakeEmpty(schema), "Table::MakeEmpty");
+  const auto rows = std::static_pointer_cast<arrow::StructArray>(list->value_slice(0));
+  assert(rows->null_count() == 0 && "DAI: LIST 元素为 null");
+  return arrow::Table::Make(schema, unwrap(rows->Flatten(), "StructArray::Flatten"), rows->length());
+}
+
 } // namespace
 
 Client::Client(std::string ak, std::string sk)
@@ -103,7 +128,7 @@ void Client::ensure_flight() {
 std::shared_ptr<arrow::Table> Client::query(const Query &q) {
   ensure_flight();
 
-  std::string ticket_json = build_ticket_json(q.sql, q.filters);
+  std::string ticket_json = build_ticket_json(pack(q), q.filters);
 
   flight::FlightCallOptions opts;
   opts.headers.emplace_back(flight_auth_.first, flight_auth_.second);
@@ -116,7 +141,7 @@ std::shared_ptr<arrow::Table> Client::query(const Query &q) {
   auto table_r = reader->ToTable();
   std::shared_ptr<arrow::Table> table = unwrap(std::move(table_r), "FlightStreamReader::ToTable");
   assert(table);
-  return table;
+  return unpack(*table);
 }
 
 Quota Client::quota() {

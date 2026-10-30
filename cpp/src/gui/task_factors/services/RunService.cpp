@@ -15,7 +15,7 @@ namespace GUI::Factors {
 
 namespace {
 
-// Run 的探针: EvalStat 通用六探针 (一个根一份, 同根的只评首个)
+// Run 的探针: EvalStat 通用五探针 (一个根一份, 同根的只评首个)
 using RunProbes = EvalProbes<>;
 
 } // namespace
@@ -120,17 +120,16 @@ bool RunService::eval(const RunRequest &req, FactorFlow &F) {
 template <class E>
 bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx) {
   TraceN("FactorsEvaluateFile");
-  // 该文件的权重 (条目 e ↔ 行 idx[e]) → 根集 (同式同口径共根, 只评一次) → 一张共享森林. rows 只本 worker 写, 读不用锁
+  // 该文件的权重 (条目 e ↔ 行 idx[e]) → 根集 (同式同口径共根, 只评一次; 全部持有期) → 一张共享森林. rows 只本 worker 写, 读不用锁
+  const Holds hd = keys_of<Holds>(req.scope.ft->y.labels);
   RootSet rs;
   for (const size_t i : idx)
-    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
+    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign), hd);
   // Y = 全部持有期 + 全部金额段, 整期一块时同作用域跨文件复用 (分块 = 作业自有, 逐文件重读); X = 本文件的叶 (keep → 读过的全留)
   JobOut o;
   o.job.life = req.spec.keep ? Life::Worker : Life::Request;
   o.job.who = "Run";
   std::vector<RunProbes> ps(rs.size());
-  for (RunProbes &p : ps)
-    p.hd = keys_of<Holds>(req.scope.ft->y.labels);
   std::vector<size_t> fin; // 本轮评完的条目 (森林走完 Ok 才一次回写)
   struct Hooks : HookBase {
     RunService &W;

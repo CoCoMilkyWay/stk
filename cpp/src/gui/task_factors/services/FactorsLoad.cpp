@@ -85,6 +85,8 @@ double Block::bytes() const {
     s += lb(p);
   for (const std::vector<uint16_t> &p : y.costs)
     s += vb(p);
+  for (const std::vector<uint16_t> &p : ry)
+    s += vb(p);
   return s;
 }
 

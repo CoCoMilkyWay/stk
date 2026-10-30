@@ -1,6 +1,6 @@
 // Fundamental Service - 基本面数据 sync + AssetInfo 构建
 // 抓取: fundamental::sync::plan<Src>(Round) → 同步道逐任务 sync::run<Src> (月度 parquet / 分钟线日文件, 水位增量, 槽位状态见 fundamental/Store.hpp)
-//   基本面 (bigquant → tushare) 在前, 分钟线 (bigquant.bar1m, 预算弹窗确认) 在后
+//   基本面 (bigquant → tushare) 在前, 分钟线 (bigquant.bar1m) 在后
 //   与 AuditService 的 audit::plan<Src> → 逐单元 audit::run<Src> 同形: 循环 / 进度 / 取消同走 drive (Drive.hpp)
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days, bar1m_end}
 //   stock_days   ← all_trading_days (fundamental::calendar)
@@ -1038,27 +1038,16 @@ bool FundamentalService::run(FundamentalRequest &req) {
     };
     std::cout << "[sync] from " << config::PIPELINE_START_DATE << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
               << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
-    // 基本面: BigQuant 剩余 < 阈值 ⇒ 先弹窗, 拒绝只跳过 BigQuant 日频表
-    if (!bq_tasks.empty() && go() &&
-        (left() >= config::BIGQUANT_QUOTA_CONFIRM_RATIO || ask(Ask::Quota, "等待确认: BigQuant 周配额不足")))
+    // BigQuant 两道 (基本面 / 分钟线) 有待拉且剩余 < 阈值 ⇒ 先弹窗一次, 拒绝只跳过这两道
+    const bool bq_go = (!bq_tasks.empty() || !bar1m_tasks.empty()) && go() &&
+                       (left() >= config::BIGQUANT_QUOTA_CONFIRM_RATIO || ask(Ask::Quota, "等待确认: BigQuant 周配额不足"));
+    if (bq_go && !bq_tasks.empty())
       lane("bigquant", bq_tasks, run_bq);
     if (!ts_tasks.empty() && go())
       lane("tushare", ts_tasks, run_tu);
-    // 分钟线: 基本面之后; 有缺日必弹窗报精确预算, 确认才拉 (预算超本周余额只许跳过)
-    if (!bar1m_tasks.empty() && go()) {
-      job.set_message("分钟线预算: 逐日远端行数");
-      const fundamental::sync::Budget b = fundamental::sync::budget(bq, bar1m_tasks);
-      job.quota = bq.quota();
-      {
-        std::lock_guard lk(mutex);
-        state.bar1m = b;
-      }
-      show_quota();
-      if (ask(Ask::Bar1m, "等待确认: 分钟线预算")) {
-        assert(b.cells <= job.quota.weekly - job.quota.used && "分钟线: 预算超本周余额却被确认");
-        lane("bigquant.bar1m", bar1m_tasks, run_bq);
-      }
-    }
+    // 分钟线: 基本面之后 (一日一条, 量大耗时长)
+    if (bq_go && !bar1m_tasks.empty() && go())
+      lane("bigquant.bar1m", bar1m_tasks, run_bq);
   }
   // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)
   const Catalog cat;

@@ -12,7 +12,6 @@
 #include "fundamental/Spec.hpp"
 #include "imgui.h"
 #include "misc/date.hpp"
-#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -202,9 +201,9 @@ void audit_cells(const std::string &name, const AuditTableStat *a, const AuditVi
   }
   text_cells(a->repair_cells, weekly);
   if (a->repair_cells > 0 && ImGui::IsItemHovered())
-    ImGui::SetTooltip("每个定位组 (日 / 资产): 远端行 × 列; 整月 %zu 月: 整月远端行 × 列\n"
-                      "分钟线按资产打包: 每月 ⌈日数 / %d⌉ 条 × 资产数 × 2",
-                      a->whole_months, config::BIGQUANT_PACK_DAYS);
+    ImGui::SetTooltip("1 cell / 条查询: 每个差异月一条 (整月 %zu 月, 其余 Splice 日 / 资产)\n"
+                      "分钟线每个定位到的日一条",
+                      a->whole_months);
 
   ImGui::TableNextColumn();
   text_cells(a->full_cells, weekly);
@@ -402,7 +401,7 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
   text_wrapped_disabled(
       "问题天数 = 任一不一致的日 / (本地天数 + 远端独有天数)  |  "
       "行差 = 远端比本地多 (+, 晚到回填) / 少 (−, 删除), 占比按本地总行数  |  "
-      "修复 / 全表流量 = 重拉定位到的组 / 全部已核月 的 cells (行 × 列), 括号内占周配额  |  "
+      "修复 / 全表流量 = 重拉定位到的组 / 全部已核月 的 cells (1 cell / 条查询), 括号内占周配额  |  "
       "核对 = audit 只核该表全部冻结月, 右侧 已核 / 冻结 月  |  "
       "sync = 只重拉该表定位到的 日 / 资产 (只定位到月的整月), 复核这些月, 完成后重建 AssetInfo");
 }

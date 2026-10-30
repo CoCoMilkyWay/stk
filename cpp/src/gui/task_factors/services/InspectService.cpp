@@ -143,11 +143,10 @@ struct RicP : LandRowsP<float> {
 struct TurnP : ProbeBase {
   static constexpr uint8_t need = kNeedRx;
   factor::stat::CostAcc acc[kTails][factor::stat::kMaxHold] = {};
-  std::vector<uint8_t> ec; // 尾部端码 [T][A], 逐级复用
-  static double bytes(const Shape &sh, int) { return static_cast<double>(sh.n()); }
+  static double scratch(const Shape &sh, int) { return static_cast<double>(sh.n()); }
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    ec.resize(s.n());
+    std::vector<uint8_t> ec(s.n()); // 尾部端码 [T][A], 逐级复用
     for (int j = 0; j < kTails; ++j) {
       c.ex.rows(s.T, [&](int t0, int t1, int) {
         for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
@@ -227,12 +226,11 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一个根, 探针 InspectProbes; 块钩子 = 池等权线 (随 Y 一代) ----
   //   Y = 全部持有期 + 全部金额段; X = 评估域内读过的全留 (Life::Worker), 缺的补读
   RootSet rs;
-  rs.add(*sc.ft, f.expr, f.frame, f.dir);
+  rs.add(*sc.ft, f.expr, f.frame, f.dir, keys_of<Holds>(sc.ft->y.labels));
   JobOut o;
   o.job.life = Life::Worker;
   o.job.who = "Inspect";
   InspectProbes ps;
-  ps.hd = keys_of<Holds>(sc.ft->y.labels);
   ps.at<RxP>().dst = &pl_.rx;
   ps.at<RxAllP>().dst = &pl_.rx_all;
   ps.at<RicP>().dst = &pl_.ric;

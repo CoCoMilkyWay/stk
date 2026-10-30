@@ -1,7 +1,7 @@
 // FactorsLoad — 因子评估的特征库装载层 (四服务共用; 只装数据, 根上的统计归 FactorsProbe, 净值 / 篮子归 FactorsBook): 作用域层 (FactorsScope) 之上.
 //   X ↔ Y ↔ B 三侧同一份逐天并行骨架 (read_days, 环境 Io): 叶 LeafId → XPlanes (因子输入叶) / YSpec → YPlanes (截面门控 + 标签两侧平面 [hold] /
 //   买入冲击 [amt] + 满仓只数) / 池篮子 → BPlanes (全部池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业, 一趟装齐, 不进块); n_full_of 只扫门控出满仓只数;
-//   Block + ensure_block = 块 (BlockSpec 两侧: Y 常驻, X 按驻留留 / 补); y_spec = Y 规格 (持有期 + 探针要的成本段 Segs); labels_of / labels_pick 标签的契约视图 (未预处理, 会话 open 时做; cap = n_full);
+//   Block + ensure_block = 块 (BlockSpec 两侧: Y 常驻, X 按驻留留 / 补); y_spec = Y 规格 (持有期 + 探针要的成本段 Segs); labels_of / labels_pick 标签的契约视图 (未预处理: CPU 会话接块上的 Block::ry, GPU 会话自做; cap = n_full);
 //   stat_scope = 结果的作用域头.
 #pragma once
 
@@ -53,6 +53,15 @@ K keys_of(const std::vector<LegCol> &cols) {
   std::vector<int> keys;
   for (const LegCol &c : cols)
     keys.push_back(c.key);
+  return keys_of<K>(keys);
+}
+// 键集之并 (升序去重; 字段表列组本是升序, 与之同序)
+template <class K>
+K keys_union(const K &a, const K &b) {
+  std::vector<int> keys(a.k, a.k + a.n);
+  keys.insert(keys.end(), b.k, b.k + b.n);
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
   return keys_of<K>(keys);
 }
 
@@ -130,7 +139,7 @@ struct BPlanes {
   std::vector<float> val[kPoolVals]; // [PoolVal] 估值输入 (BCols::val 原值; 缺 → NaN)
   std::vector<uint8_t> ind;          // 行业 ID (SW2021 一级; 0 = 未知 / 缺 / 越界)
 };
-// 标签的契约视图 (未预处理, ry 空; cap = n_full). 会话 open (cpu / gpu stat_open) 自己预处理
+// 标签的契约视图 (未预处理, ry 空; cap = n_full). CPU 会话接块上的标签秩 Block::ry, GPU stat_open 在显存里自己预处理
 factor::stat::Labels labels_of(const YPlanes &y);
 // 所评持有期在 Y 全部持有期里的下标: at[i] = want.k[i] 在 all 里的位置 (探针 hi → 会话 / 标签组下标; want 的键须都在 all 里).
 // 根打开时定一次 (EngineBase::roots), 两后端同一份
@@ -179,7 +188,9 @@ struct Block {
   const FeatureTable *ft = nullptr; // 叶名 → LeafId (ensure_block 每次置; 同层字段表进程内不变)
   XPlanes x;
   YPlanes y;
+  // Y 的派生 (与因子无关, 随块一代): 首次用到时填
   mutable std::map<std::pair<LeafId, factor::Dom>, std::string> dom; // 叶值域缓存 (叶, 严格域) → 越界值 (空 = 合); FactorsEngine plan_forest 填
+  mutable std::vector<std::vector<uint16_t>> ry;                     // [hold] 做多标签逐行 r16 (prep_label; 空 = 未算); Engine<Cpu> 会话填
   void reset() {
     static std::atomic<uint64_t> next{0};
     *this = Block{};
@@ -187,7 +198,7 @@ struct Block {
   }
   factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(d0) * y.sh.seg, t_lo, t_back}; }
   int rows_all() const { return static_cast<int>(nd) * y.sh.seg; }
-  double bytes() const; // X / Y 平面占的宿主字节
+  double bytes() const; // X / Y 平面 + 标签秩占的宿主字节
 };
 // 块键 = 层 | 评估域 | 日段 | Y 规格 (X 不进键: 叶挂在块上按 ids 补)
 std::string block_key(const FeatureTable &ft, const Domain &dm, const Chunk &k, const BlockSpec &s);

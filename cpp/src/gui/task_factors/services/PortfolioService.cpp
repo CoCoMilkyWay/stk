@@ -1,7 +1,7 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/PortfolioService.hpp"
 
-#include "gui/task_factors/services/FactorsEngine.hpp" // with_engine / eval_job / open_job / fit_recent / Probes / LinesP / group_abs
+#include "gui/task_factors/services/FactorsEngine.hpp" // with_engine / eval_job / eval_baskets / Probes / LinesP / group_abs
 #include "gui/task_factors/services/FactorsFile.hpp"   // ValidFactorName / FactorRow / ScanFactorFile
 #include "misc/profiler.hpp"
 #include "shared/FeatureLib.hpp" // feature_pools
@@ -187,8 +187,7 @@ struct CurveP : LinesP<kCurveLines> {
   static constexpr uint8_t need = kNeedRows | kNeedEc;
   static constexpr Segs segs = Segs::First;
   double cap = 0.0;
-  std::vector<factor::stat::CostAcc> land; // 本块逐行换手 [hi][T] (cost_rows 的 land, 一个金额段)
-  static double bytes(const Shape &sh, int H) { return LinesP::bytes(sh, H) + sizeof(factor::stat::CostAcc) * static_cast<double>(H) * sh.T; }
+  static double scratch(const Shape &sh, int H) { return sizeof(factor::stat::CostAcc) * static_cast<double>(H) * sh.T; }
   void open(const Ctx &c) {
     assert(c.c.y.ad.n == 1 && "出参线: 一个金额段");
     LinesP::open(c);
@@ -203,7 +202,7 @@ struct CurveP : LinesP<kCurveLines> {
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
     const int H = c.L.hd.n;
-    land.assign(static_cast<size_t>(H) * s.T, factor::stat::CostAcc{});
+    std::vector<factor::stat::CostAcc> land(static_cast<size_t>(H) * s.T); // 本块逐行换手 [hi][T] (cost_rows 的 land, 一个金额段)
     const std::vector<factor::stat::Cost> cs = costs_of(c.c.y);
     factor::stat::CostAcc acc[factor::stat::kMaxHold];
     factor::cpu::stat::cost_rows(c.ex, v.ec, s, c.L, cap, cs.data(), 1, *c.w, acc, land.data());
@@ -284,23 +283,14 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return ok;
 }
 
-// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 探针 hd = 该根的全部 hold; 落线 CurveP (G20 多头), 根评完即逐条发布
+// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 根的 hd = 其条目的 hold 之并; 落线 CurveP (G20 多头), 根评完即逐条发布
 bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlow &F) {
   TraceN("PortfolioForest");
   const FactorScope &sc = ts.front()->scope;
-  RootSet rs;                       // 条目 i ↔ ts[i]
-  std::vector<std::vector<int>> hk; // 根 → 持有期
-  for (const FactorTask *t : ts) {
-    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir);
-    hk.resize(rs.size());
-    hk[static_cast<size_t>(rs.of.back())].push_back(t->hold);
-  }
+  RootSet rs; // 条目 i ↔ ts[i]
+  for (const FactorTask *t : ts)
+    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir, keys_of<Holds>(std::vector<int>{t->hold}));
   std::vector<PortfolioProbes> ps(rs.size());
-  for (size_t k = 0; k < rs.size(); ++k) {
-    std::sort(hk[k].begin(), hk[k].end());
-    hk[k].erase(std::unique(hk[k].begin(), hk[k].end()), hk[k].end());
-    ps[k].hd = keys_of<Holds>(hk[k]);
-  }
 
   // ---- 管线 eval_job: Y = 各根 hold 之并 + 首个金额段 (CurveP); 块跨请求留 (Life::Worker) ----
   JobOut o;
@@ -325,7 +315,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     void post(int e, int k) {
       const PortfolioProbes &p = ps[static_cast<size_t>(k)];
       auto c = curve(e, "");
-      const int hi = factor::stat::hold_index(p.hd, c->hold);
+      const int hi = factor::stat::hold_index(o.fr.hd[static_cast<size_t>(k)], c->hold);
       assert(hi >= 0);
       c->dates = o.job.dm.dates;
       c->amt = o.job.spec.y.ad.k[0];
@@ -339,23 +329,15 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return settle(rc);
 }
 
-// 池篮子 (不走森林; 归作业不占 F.c): all 池评估域 (整期装不下截最近的日) → load_b 一趟读齐 → baskets 一趟扫完 → 按池切进 PoolCurve, 全部池一次发布
+// 池篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 按池切进 PoolCurve, 全部池一次发布
 bool PortfolioService::eval(const PoolTask &t, FactorFlow &F) {
   TraceN("PortfolioPool");
   const FeatureTable &ft = *t.scope.ft;
   assert(ft.lv == kBasketLevel && "PoolCurve 按日");
-  assert(pool_id(t.scope.pool) == kAllPool && "池篮子在 all 池评估域");
-  assert(find_leg(ft.y.labels, factor::stat::hold_close(1)) && "篮子须有 T+1C 标签 (池指数 C(行) → C(D+1))");
   Job j;
-  j.life = Life::Job;
   j.who = "Portfolio";
-  BPlanes B;
-  const Rc rc = [&] {
-    if (!open_job(F, t.scope, {}, j))
-      return Rc::Empty;
-    fit_recent(F, t.scope, j, [] { return Budget{.load = kBasketCellBytes}; });
-    return rc_of(load_b(j.io(F), j.whole(), B), F.lr);
-  }();
+  Baskets bs;
+  const Rc rc = eval_baskets(F, t.scope, j, bs);
   if (!settle(rc))
     return false;
   std::map<std::string, std::shared_ptr<const PoolCurve>> out;
@@ -366,8 +348,6 @@ bool PortfolioService::eval(const PoolTask &t, FactorFlow &F) {
       out[d.name] = std::move(c);
     }
   } else {
-    const Baskets bs = baskets(F.ex, B);
-    B = BPlanes{};
     const std::vector<misc::Ymd> &dates = j.dm.dates;
     const size_t nd = dates.size();
     assert(bs.index.n == static_cast<int>(Baskets::count()) * kWeights && static_cast<size_t>(bs.index.P) == nd && bs.index_px.n == bs.index.n);

@@ -127,12 +127,12 @@ int Plan::max_days() const {
   return m;
 }
 
-Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd) {
+Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double held) {
   const int days = static_cast<int>(dm.days.size()), A = static_cast<int>(dm.rs.axis.size());
-  assert(days > 0 && A > 0 && bd.back >= 0);
+  assert(days > 0 && A > 0 && bd.back >= 0 && held >= 0.0);
   const double per_day = static_cast<double>(seg) * A;
   Plan P;
-  P.host = host_budget() - b.fixed;
+  P.host = host_budget() + held - b.fixed;
   if (b.dev > 0.0)
     P.vram = vram_budget();
   if (bd.front < 0) {
@@ -141,8 +141,9 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd) {
     P.cache = days * per_day * b.load;
     return P;
   }
-  assert(P.host > 0.0 && "内存预算装不下与格无关的常驻量");
-  const int band = bd.front + bd.back;
+  const int band = bd.front + bd.back, least = std::min(days, 1 + band); // 最小的块: 1 统计日 + 前后带
+  assert(P.host >= least * per_day * (b.load + b.work) && "内存预算装不下最小的块 (1 统计日 + 前后带)");
+  assert((b.dev <= 0.0 || P.vram >= least * per_day * b.dev) && "显存预算装不下最小的块 (1 统计日 + 前后带)");
   int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - band, 1, days);
   if (b.dev > 0.0)
     D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - band, 1, days));

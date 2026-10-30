@@ -166,15 +166,12 @@ decltype(auto) dispatch(const arrow::DataType &t, F &&f) {
   return f.template operator()<arrow::NullArray, Null>();
 }
 
-// 指纹格: cols 空 = n; 否则 cols 上的 nn (sum=false) / s (sum=true), 多列按 weight 加权折叠
+// 指纹格: col < 0 = n; 否则列 col 的 nn (sum=false) / s (sum=true)
 struct Cell {
+  int col = -1;
   bool sum = false;
-  std::vector<int> cols;
 };
 using Cells = std::vector<Cell>; // [0] = n
-
-// 折叠格里列 c 的权 (单列格权 1, 原值可读)
-std::int64_t weight(const Cell &c, int col) { return c.cols.size() > 1 ? col + 1 : 1; }
 
 struct Layout {
   std::vector<std::string> names; // 远端 schema 列序
@@ -220,7 +217,7 @@ std::string i128_str(i128 v) {
 Layout layout_of(bigquant::Client &client, const Unit &u) {
   Layout L;
   L.all.push_back({});
-  // LIMIT 0: 只要 schema, 0 cell
+  // LIMIT 0: 只要 schema
   auto t = client.query(select(*u.spec, "*", u.w, " LIMIT 0"));
   const std::vector<std::string> &drop = u.spec->drop;
   for (const auto &f : t->schema()->fields()) {
@@ -237,37 +234,22 @@ Layout layout_of(bigquant::Client &client, const Unit &u) {
     });
     L.asset = L.asset || f->name() == key_col(*u.spec);
     L.nn.push_back(static_cast<int>(L.all.size()));
-    L.all.push_back({false, {c}});
+    L.all.push_back({c, false});
     L.s.push_back(L.kinds.back() == Kind::Null ? -1 : static_cast<int>(L.all.size()));
     if (L.kinds.back() != Kind::Null)
-      L.all.push_back({true, {c}});
+      L.all.push_back({c, true});
   }
   return L;
 }
 
-// 父组下钻用的子级格: n + 父组不一致格涉及的列 D
-//   逐列 = D 每列 nn / s;  折叠 = D 的 nn 一格 + s 一格 (Null 列只进 nn)
+// 父组下钻用的子级格: n + 父组不一致格涉及的列 D 每列 nn / s (Null 列只有 nn)
 Cells per_column(const Layout &L, const std::set<int> &D) {
   Cells out{{}};
   for (int c : D) {
-    out.push_back({false, {c}});
+    out.push_back({c, false});
     if (L.kinds[c] != Kind::Null)
-      out.push_back({true, {c}});
+      out.push_back({c, true});
   }
-  return out;
-}
-
-Cells folded(const Layout &L, const std::set<int> &D) {
-  Cells out{{}};
-  if (D.empty())
-    return out;
-  Cell nn{false, {D.begin(), D.end()}}, s{true, {}};
-  for (int c : D)
-    if (L.kinds[c] != Kind::Null)
-      s.cols.push_back(c);
-  out.push_back(std::move(nn));
-  if (!s.cols.empty())
-    out.push_back(std::move(s));
   return out;
 }
 
@@ -286,14 +268,8 @@ struct Remote {
     std::string cols = group_expr(s, g) + " AS g";
     for (std::size_t k = 0; k < cells.size(); ++k) {
       const Cell &c = cells[k];
-      std::string e;
-      if (c.cols.empty())
-        e = "COUNT(*)";
-      for (int col : c.cols) {
-        const std::string one = c.sum ? L.sums[col] : "COUNT(" + ident(L.names[col]) + ")";
-        const std::int64_t wt = weight(c, col);
-        e += (e.empty() ? "" : " + ") + ("COALESCE(" + one + ", 0)") + (wt == 1 ? "" : " * " + std::to_string(wt));
-      }
+      const std::string e = c.col < 0 ? "COUNT(*)" : c.sum ? L.sums[c.col]
+                                                           : "COUNT(" + ident(L.names[c.col]) + ")";
       cols += ", CAST(COALESCE(" + e + ", 0) AS VARCHAR) AS f" + std::to_string(k);
     }
 
@@ -316,11 +292,10 @@ struct Remote {
   }
 };
 
-// 列 c 进入的指纹格: 第 pos 格 += w × (sum ? s : 1)
+// 列 c 进入的指纹格: 第 pos 格 += (sum ? s : 1)
 struct Use {
   std::size_t pos;
   bool sum;
-  std::int64_t w;
 };
 
 // 一列累加进各行所属组 (acc[行] 空 = 该行不计): nn += 非 null, s += 列型整数
@@ -336,7 +311,7 @@ void accumulate(const arrow::ChunkedArray &col, [[maybe_unused]] Kind k, const s
           if (!v)
             return;
           for (const Use &u : uses)
-            (*v)[u.pos] += u.w * (u.sum ? x : 1);
+            (*v)[u.pos] += u.sum ? x : 1;
         });
       }
     });
@@ -383,12 +358,12 @@ class Local {
 public:
   Local(const Spec &s, const Layout &L, std::vector<Slot> month)
       : s_(s), L_(L), month_(std::move(month)), has_(L.names.size(), 0) {
-    // 逐日基格: 列 c 进 nn / s 两格, 权 1
+    // 逐日基格: 列 c 进 nn / s 两格
     std::vector<std::vector<Use>> uses(L.names.size());
     for (std::size_t c = 0; c < L.names.size(); ++c) {
-      uses[c].push_back({static_cast<std::size_t>(L.nn[c]), false, 1});
+      uses[c].push_back({static_cast<std::size_t>(L.nn[c]), false});
       if (L.s[c] >= 0)
-        uses[c].push_back({static_cast<std::size_t>(L.s[c]), true, 1});
+        uses[c].push_back({static_cast<std::size_t>(L.s[c]), true});
     }
     // 各槽各读各算 (分片互不依赖; Daily 一月二十余个日文件并行), 再按槽序合并: 基格是整数和, 与合并次序无关
     struct Part {
@@ -462,12 +437,11 @@ public:
       if (o.empty())
         o.assign(cells.size(), 0);
       o[0] += b[0];
-      for (std::size_t k = 1; k < cells.size(); ++k)
-        for (int c : cells[k].cols) {
-          const int pos = cells[k].sum ? L_.s[c] : L_.nn[c];
-          assert(pos > 0);
-          o[k] += weight(cells[k], c) * b[static_cast<std::size_t>(pos)];
-        }
+      for (std::size_t k = 1; k < cells.size(); ++k) {
+        const int pos = cells[k].sum ? L_.s[cells[k].col] : L_.nn[cells[k].col];
+        assert(pos > 0);
+        o[k] += b[static_cast<std::size_t>(pos)];
+      }
     }
     return out;
   }
@@ -477,8 +451,7 @@ private:
     assert(month_.size() == 1 && "audit: Asset 级只下钻单分片的月 (Daily 最细到 Day)");
     std::vector<std::vector<Use>> uses(L_.names.size());
     for (std::size_t k = 1; k < cells.size(); ++k)
-      for (int c : cells[k].cols)
-        uses[c].push_back({k, cells[k].sum, weight(cells[k], c)});
+      uses[static_cast<std::size_t>(cells[k].col)].push_back({k, cells[k].sum});
     const std::string kcol(key_col(s_));
     std::vector<std::string> need{s_.vd, kcol};
     for (std::size_t c = 0; c < L_.names.size(); ++c)
@@ -530,10 +503,6 @@ const std::vector<i128> &find_or_zero(const Fps &fps, const std::string &key, co
   return it == fps.end() ? zeros : it->second;
 }
 
-std::string cell_name(const Layout &L, const Cell &c) {
-  return c.cols.size() == 1 ? L.names[c.cols[0]] : "Σ" + std::to_string(c.cols.size()) + "列";
-}
-
 // 一个不一致的组: 组键 + 所查格 + 两侧指纹 (与 cells 同序)
 struct Probe {
   std::string key;
@@ -556,7 +525,7 @@ std::string diff_detail(const Layout &L, const Probe &p) {
     }
     if (!out.empty())
       out += ", ";
-    out += cell_name(L, (*p.cells)[k]) + ((*p.cells)[k].sum ? "(s)" : "(nn)");
+    out += L.names[(*p.cells)[k].col] + ((*p.cells)[k].sum ? "(s)" : "(nn)");
     ++shown;
   }
   if (more > 0)
@@ -573,7 +542,7 @@ Diff make_diff(const Spec &s, const Layout &L, const Probe &p) {
   d.detail = diff_detail(L, p);
   for (std::size_t k = 1; k < p.cells->size(); ++k)
     if (p.l[k] != p.r[k])
-      d.cells.push_back({cell_name(L, (*p.cells)[k]), (*p.cells)[k].sum, i128_str(p.l[k]), i128_str(p.r[k])});
+      d.cells.push_back({L.names[(*p.cells)[k].col], (*p.cells)[k].sum, i128_str(p.l[k]), i128_str(p.r[k])});
   return d;
 }
 
@@ -582,10 +551,6 @@ Diff make_diff(const Spec &s, const Layout &L, const Probe &p) {
 Probes locate(const Remote &remote, const Local &local, Probe top) {
   const Spec &s = remote.s;
   const Layout &L = remote.L;
-  const std::int64_t C = static_cast<std::int64_t>(L.names.size()); // 直接修复一行的 cell (SELECT *)
-  std::int64_t span = 0;                                            // 月窗口天数 = Day 级子组数上界
-  for (Ymd d = remote.w.lo; d <= remote.w.hi; d = misc::add_days(d, 1))
-    ++span;
   Probes done, frontier{std::move(top)};
   for (const Grain g : {Grain::Day, Grain::Asset}) {
     // 可下钻的父组: 子级可单独重写 (g ≤ finest) 且可分组 (Asset 级远端须有资产键列)
@@ -593,32 +558,20 @@ Probes locate(const Remote &remote, const Local &local, Probe top) {
     const bool deeper = g <= finest(s) && (g != Grain::Asset || L.asset);
     Probes drill;
     std::set<int> D;
-    std::int64_t bound = 0, fix = 0; // 子组数上界 / 直接按父组修复的 cell
     for (Probe &p : frontier) {
-      const std::int64_t ln = static_cast<std::int64_t>(p.l[0]), rn = static_cast<std::int64_t>(p.r[0]);
-      if (!deeper || ln == 0 || rn == 0) {
+      if (!deeper || p.l[0] == 0 || p.r[0] == 0) {
         done.push_back(std::move(p));
         continue;
       }
       for (std::size_t k = 1; k < p.cells->size(); ++k)
         if (p.l[k] != p.r[k])
-          D.insert((*p.cells)[k].cols.begin(), (*p.cells)[k].cols.end());
-      bound += g == Grain::Day ? std::min(ln + rn, span) : ln + rn;
-      fix += rn * C;
+          D.insert((*p.cells)[k].col);
       drill.push_back(std::move(p));
     }
     frontier.clear();
     if (drill.empty())
       break;
-    // 子级格取逐列 (可诊断) / 折叠中更省的; 下钻上界不低于直接修复 → 停在父组
-    Cells pc = per_column(L, D), fc = folded(L, D);
-    const std::int64_t cost_pc = bound * static_cast<std::int64_t>(1 + pc.size());
-    const std::int64_t cost_fc = bound * static_cast<std::int64_t>(1 + fc.size());
-    if (std::min(cost_pc, cost_fc) >= fix) {
-      done.insert(done.end(), std::make_move_iterator(drill.begin()), std::make_move_iterator(drill.end()));
-      break;
-    }
-    const auto cells = std::make_shared<const Cells>(cost_pc <= cost_fc ? std::move(pc) : std::move(fc));
+    const auto cells = std::make_shared<const Cells>(per_column(L, D));
     std::vector<std::string> parents;
     for (const Probe &p : drill)
       parents.push_back(p.key);
@@ -902,11 +855,11 @@ std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::s
       continue;
     hit.insert(in.begin(), in.end());
     if (cover) {
-      add(out, whole(s, sl));
+      out.push_back(whole(s, sl));
       continue;
     }
     assert(finest(s) > sg && "repair: 槽级以下不可 Splice");
-    add(out, {&s, sl.ym, sl.w, Write::Splice, std::move(in)});
+    out.push_back({&s, sl.ym, sl.w, Write::Splice, std::move(in)});
   }
   assert(hit.size() == keys.size() && "repair: 差异键不全落在冻结槽里");
   return out;
