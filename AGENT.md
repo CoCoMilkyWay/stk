@@ -1,6 +1,6 @@
 # Agent 挖因子
 
-人在 GUI 的 Agent → Mine 页操作. 系统 (本程序) 把项目规则打包发给 agent (大模型); agent 消化后提一次问题 (每题带推荐) 由人选答, 或 (Config 页关了澄清) 不问, 按自己的理解定因子与方向; 此后全自动: agent 定下一个因子, 每轮交它的一批实验变体, 系统回测并反馈, agent 据此一处一处改, 做到改不动时把最好的版本提交入库并宣布挖完. 一段会话只做一个因子, 好坏先看分层清晰 (mono), 再看多空收益: 分层做不出来 (mono 不到 Search 门槛) 的因子没有分析价值, 先想尽办法把分层做出来; 过入库门槛的版本优先, 都过门槛时 mono 不明显下降 (≤ 0.01) 而每期毛多空更大 (超出噪声) 者更好; rIC 只作入库底线, 不管风格与相关性. 途中 agent 的疑问攒到最后一起交给人.
+人在 GUI 的 Agent → Mine 页操作. 系统 (本程序) 把项目规则与一张工具表打包发给 agent (大模型); 此后 agent 每条回复发一串工具调用, 系统按序执行, 下条消息按序交回结果. 工具分几类: 看数据 (特征长什么样 / 分层 / 交割单 / 一端的常客 / 个股一天或多日), 回测候选, 列已试候选与正式库, 提交入库, 记疑问, 问人 (Config 页允许时, 整段会话一次), 宣布挖完. agent 像研究员一样先看后改: 从观察里找具体现象, 设计针对它的改动, 回测后再看现象是否消失, 做到改不动时把最好的版本提交入库并宣布挖完. 一段会话只做一个因子, 好坏先看分层清晰 (mono), 再看多空收益: 分层做不出来 (mono 不到 Search 门槛) 的因子没有分析价值, 先想尽办法把分层做出来; 过入库门槛的版本优先, 都过门槛时 mono 不明显下降 (≤ 0.01) 而每期毛多空更大 (超出噪声) 者更好; rIC 只作入库底线, 不管风格与相关性. 途中 agent 的疑问攒到最后一起交给人.
 
 ## 名词
 
@@ -10,17 +10,20 @@
 | 层         | 因子在哪个频率上算: `min` / `5min` / `15min` / `30min` / `60min` / `day`                                                                                      |
 | 持有期     | 因子预测多远的收益: `30m` / `60m` / `close` / `T+1O` / `T+1C` (该层能用的才列出)                                                                              |
 | 模板       | 因子表达式, 窗长等参数可以不写数字 (裸写 `d` / `k`), 交给 Search 定值. 例: `CsRank(TsMeanRoll(TsLog(bar.5m.amt), d))`                                         |
-| 候选       | agent 交的一个因子变体: 英文名 + 中文名 + 模板 + 一句话 (相对哪个版本改了什么、想验证什么)                                                                    |
-| 批         | agent 一次回复里的全部新候选 (1..8 个, 都是会话所做那个因子的变体)                                                                                            |
+| 具体式     | 不含裸参数的表达式; 观察工具只接具体式                                                                                                                        |
+| 工具       | agent 能调的一项能力: 名 + 参数表 (类型 / 缺省 / 取值范围) + 做什么 + 返回什么; 全部列在系统提示的 "工具" 节                                                  |
+| 调用       | `{"tool": 工具名, "args": {...}}`; 一条回复 1..12 个, 系统按序执行; 每个调用的结果至多 6000 字                                                                |
+| 候选       | agent 用 eval_factor 交的一个因子变体: 英文名 + 中文名 + 模板 + 一句话 (相对哪个版本改了什么、由哪个观察促成)                                                 |
 | Search     | 定方向并给模板里没写数字的参数找最好的取值 (没有空参数的只评本身); 只认 mono 过门槛的, 目标 = 多空 × rIC × mono²; 可能一组都找不到 (= 无显著), 也可能找到几组 |
 | 评估期     | 统计所在的交易日段 (所用特征库落盘日的交集); 只有与作用域此刻评估期相同的统计才给 agent 看, 不同窗口的数不可比                                                |
 | Run        | 对一组定好值的参数做全区间分层回测, 出 score / 多空收益 / rIC / 单调性等统计                                                                                  |
+| 观察       | 在评估期上整期算一次因子 / 特征 (CPU, 不写文件), 汇总成表与火花线交给 agent; 与分层回测同一份分组与持仓判据                                                   |
 | 入库门槛   | Config 页设的统计下限 (mono / rIC 均值; 多空不设门槛); agent 提交的候选至少有一组参数全部达到才入库                                                           |
-| 会话       | 按 New 开始的一段连续对话. 池 / 层 / 持有期 / 后端 / 模型 / 入库门槛 / 澄清开关在会话内不变                                                                   |
+| 会话       | 按 New 开始的一段连续对话. 池 / 层 / 持有期 / 后端 / 模型 / 入库门槛 / 可否提问在会话内不变                                                                   |
 | 选项记忆   | Mine 页作用域与 Config 页全部选项改了即存 `config/agent/ui.json` (本机, 不进仓库), 下次启动沿用; 失效的项回落默认                                             |
 | 会话目录   | `output/agent/<池>/<层>/<持有期>/`: `factors/` 放候选因子文件 (历次会话累积), `chat/<时间>/` 放会话日志                                                       |
 | 会话日志   | 这段对话发收的每条消息 + 带毫秒时间的交互流水 `events.jsonl` (每一步一行) + 结束报告                                                                          |
-| 提问面板   | Mine 页左栏 "问题" 页: agent 的问题逐题列出选项, 推荐项标出并预选, 每题末项 "其他" 可自己写意见; 底下一个附言框                                               |
+| 提问面板   | ask_human 调用在过程页展开: 问题逐题列出选项, 推荐项标出并预选, 每题末项 "其他" 可自己写意见; 底下一个附言框                                                  |
 | 参考表     | Mine 页 "特征" / "算子" 页: 发给 agent 的同一份特征表与算子表 (可过滤), 人读题、看模板用; 随作用域, 不必开会话                                                |
 | 结果表     | Mine 页 "候选" 页: 会话目录里全部候选及其回测统计, 按 score 降序; 入库的标出; 随作用域, 不必开会话                                                            |
 | 正式因子库 | `output/factors/<池>/<层>/`: Factors 页用的因子                                                                                                               |
@@ -44,85 +47,59 @@ stateDiagram-v2
         None : 人 - Mine 页选 池 · 层 · 持有期
         None : 人 - Config 页选 后端 · 直连 / 代理 · 模型 · CPU / GPU
         None : 人 - Config 页设入库门槛
-        None : 人 - Config 页开 / 关澄清 (首轮让不让 agent 提问)
+        None : 人 - Config 页开 / 关提问 (工具表里有没有 ask_human)
         None : key 已填 · 模型嗅探成功 · 资产轴与标签就绪才可 New
         state "打包规则" as Pack
-        Pack : 定系统提示, 整段对话不变
-        Pack : 发出首条消息 (开澄清: 首轮, 让 agent 提问; 关: 开挖, 让它直接交第一批)
+        Pack : 定系统提示 (含工具表), 整段对话不变
+        Pack : 发出首条消息
 
         [*] --> None
         None --> Pack : 按 New
         Pack --> [*]
     }
 
-    state "澄清" as GAsk {
-        state "agent 消化" as Digest
-        Digest : 读规则, 提出要人定的问题
-        state QFormat <<choice>>
-        state "要求重发" as QRetry
-        QRetry : 发出重发要求 (不限次)
+    state "agent 思考" as Think
+    Think : 读上条消息 (首条 / 结果 / 重发要求)
+    Think : 发一串工具调用
+    state Format <<choice>>
+    state "要求重发" as Retry
+    Retry : 发出重发要求 (不限次)
+
+    state "逐个执行" as GAct {
+        state "取下一个调用" as Next
+        state Kind <<choice>>
+        state "当场做" as Now
+        Now : list_tried / list_library 列表
+        Now : submit_factor 达门槛的拷进正式因子库
+        Now : note_issue 记下疑问
+        Now : finish 记下宣布挖完
+        state "观察" as Look
+        Look : 查因子 / 特征 / 代码 / 日期
+        Look : 整期算一块 (CPU), 成表 + 火花线
+        state "回测" as Eval
+        Eval : 写候选文件 (名字 / 模板不合格则记原因)
+        Eval : Search 定方向、搜参数, 结局写回文件
+        Eval : Run 每组参数回测, 统计写回文件
         state "人选答案" as Choose
         Choose : 人 - 逐题改选 (已按推荐预选), 或选 "其他" 自己写意见
         Choose : 人 - 可查特征 / 算子表
         Choose : 人 - 可加附言
-        Choose : 没有问题就直接按 Start
 
-        [*] --> Digest
-        Digest --> QFormat
-        QFormat --> QRetry : JSON 不合格
-        QFormat --> Choose : JSON 合格
-        QRetry --> Digest
-        Choose --> [*] : 按 Start
+        [*] --> Next
+        Next --> Kind
+        Kind --> Now : 当场的工具
+        Kind --> Look : 观察工具
+        Kind --> Eval : eval_factor
+        Kind --> Choose : ask_human
+        Now --> Next
+        Look --> Next
+        Eval --> Next
+        Choose --> Next : 按 Start
+        Next --> [*] : 都做完
     }
-
-    state "自动挖掘" as GMine {
-        state "agent 作答" as Propose
-        Propose : 交一批变体 (同一个因子)
-        Propose : 改不动时提交最好的版本
-        Propose : 疑问写进 issues, 不再提问
-        state Format <<choice>>
-        state "要求重发" as Retry
-        Retry : 发出重发要求 (不限次)
-        state "处理提交" as Submit
-        Submit : 记下 issues
-        Submit : 达门槛的拷进正式因子库 (正式库已有同名则不入)
-        Submit : 未入库的连同原因记进会话日志, 下条反馈告诉 agent
-        state Fin <<choice>>
-
-        state "逐个回测" as GEval {
-            state "写候选文件" as Stage
-            Stage : 查名字和模板
-            Stage : 合格的写进 factors/
-            Stage : 不合格的记下原因
-            state "取下一个" as Next
-            Next : 按写入顺序, BROKEN 跳过
-            Search : 在会话持有期上定方向、搜参数
-            Search : 参数组与结局 (评估期 / 无显著时的代表点) 写回因子文件
-            Run : 每组参数回测一次
-            Run : 统计写回因子文件
-            state "写反馈" as Round
-            Round : 发出反馈消息
-
-            [*] --> Stage
-            Stage --> Next
-            Next --> Search : 模板合法
-            Search --> Run : 搜完 (找不到参数则 Run 无事可做)
-            Search --> Next : 中途放弃 (记 BROKEN)
-            Run --> Next : 回测完
-            Next --> Round : 都评完
-            Round --> [*]
-        }
-
-        [*] --> Propose
-        Propose --> Format
-        Format --> Retry : JSON 不合格
-        Format --> Submit : JSON 合格
-        Retry --> Propose
-        Submit --> Fin
-        Fin --> GEval : 未宣布挖完
-        Fin --> [*] : 宣布挖完
-        GEval --> Propose
-    }
+    state Fin <<choice>>
+    state "交回结果" as Round
+    Round : 发出各调用的结果 (按序)
 
     state "结束报告" as Report
     Report : 记结束原因
@@ -131,23 +108,28 @@ stateDiagram-v2
     Report : 人 - 可再按 New 开下一段
 
     [*] --> GOpen
-    GOpen --> GAsk : 开澄清
-    GOpen --> GMine : 关澄清
-    GAsk --> GMine
-    GMine --> Report
-    GAsk --> Report : 按 Stop / 按 Cancel / 回复失败
-    GMine --> Report : 按 Stop / 按 Cancel / 回复失败
+    GOpen --> Think
+    Think --> Format
+    Format --> Retry : JSON 不合协议
+    Format --> GAct : 合协议
+    Retry --> Think
+    GAct --> Fin
+    Fin --> Round : 没调 finish
+    Fin --> Report : 调了 finish
+    Round --> Think
+    Think --> Report : 按 Stop / 按 Cancel / 回复失败
+    GAct --> Report : 按 Stop (在做的调用做完) / 按 Cancel
 
     classDef human fill:#fff3b0,stroke:#b8860b,color:#000
     classDef agent fill:#e4d4f4,stroke:#7b4fa0,color:#000
     classDef sys fill:#d4e8f8,stroke:#3a6ea5,color:#000
     class None, Choose human
-    class Digest, Propose agent
-    class Pack, QRetry, Retry, Submit, Stage, Next, Search, Run, Round, Report sys
+    class Think agent
+    class Pack, Retry, Next, Now, Look, Eval, Round, Report sys
 ```
 
-- 按 Stop: 选答案时立即结束; agent 作答中 → 收到回复后结束 (挖掘阶段先处理完本条的 issues 与 submit, 不再落新候选); 回测中 → 本批评完后结束 (不再发反馈)
-- 按 Cancel: 立即结束, 在跑的回复 / 回测作废
+- 按 Stop: 选答案时立即结束; agent 思考中 → 收到回复后结束 (不执行其中的调用); 执行中 → 在做的调用做完后结束 (不再交回结果)
+- 按 Cancel: 立即结束, 在跑的回复 / 回测 / 观察作废
 - 网络抖动一直重试 (每 30 秒一次, 不限次数), 不算失败; 按 Cancel / 退出程序随即收手
 - 回复失败: 请求发出后断网 (Cursor 建 agent / 续对话的 POST 不重发) / 接口报错 (如模型在出口地区不可用) / 代理拒绝 / 回复被截断 / 平台拒答; 原因进结束报告
 
@@ -155,46 +137,46 @@ stateDiagram-v2
 
 模板都在 `config/agent/prompt/` 下, Config 页可直接改.
 
-| 消息     | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 系统提示 | 池 / 层 / 持有期 / 评估期; 行与时刻 (每行何时算因子、何时开 / 清仓, 15min 例; 粗层叶的可见时点); 表达式写法; 回测口径 (每行开仓 / 分组 / 每期毛多空 / 超额 / 系统已处理的竞价段·停牌·涨跌停·缺失值 / 复权); 做法 (一个因子、每变体改一处、截面时序同等、先分层后收益、根只看排序、噪声内算持平、入库门槛、何为更好、连续 3 轮无进展收手); 两阶段回复格式 (澄清只问人才能定的事); 该层能用的全部特征; 全部算子; 正式因子库里同评估期且算子不超上限的因子在该持有期的成绩 |
-| 首条     | 开澄清时: 会话目录里以前试过、同评估期的候选 (历次会话累积, 可作起点接着做) + "只问人才能定的事, 一次问完"                                                                                                                                                                                                                                                                                                                                                              |
-| 开挖     | 关澄清时代替首条: 同样的已试候选 + "自定因子与方向, 直接交第一批; 不得提问, 疑问写进 issues"                                                                                                                                                                                                                                                                                                                                                                            |
-| 答复     | 每题人选的答案 (含 "其他" 自写的意见; 没照推荐的附上推荐) + 附言 + "开始挖掘; 此后不得提问, 疑问写进 issues"                                                                                                                                                                                                                                                                                                                                                            |
-| 反馈     | 上次提交的每个候选入库与否 (未达的列出差在哪项) + 本批每个候选的结局 (下表) + "对照最好版本判断每处改动"                                                                                                                                                                                                                                                                                                                                                                |
-| 重发要求 | 哪里不合格式 + "按格式重发"                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 消息     | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 系统提示 | 池 / 层 / 持有期 / 评估期; 行与时刻 (每行何时算因子、何时开 / 清仓, 15min 例; 粗层叶的可见时点); 表达式写法; 回测口径 (每行开仓 / 分组 / 每期毛多空 / 超额 / 系统已处理的竞价段·停牌·涨跌停·缺失值 / 复权); 做法 (一个因子、先看后改、改动须有观察撑着、新特征先看再用、每变体改一处、截面时序同等、先分层后收益、根只看排序、噪声内算持平、入库门槛、何为更好、连续 3 批无进展收手); 调用协议; 工具表; 该层能用的全部特征; 全部算子 |
+| 首条     | 已试候选与正式库 (同评估期) 的个数 + 怎么起步 (可提问时: 可先看几眼再一次问完; 否则自定因子与方向) + "起步先看数据"                                                                                                                                                                                                                                                                                                                  |
+| 结果     | 上条回复每个调用一节 (标题 = 调用本身, 没做成的标出) + "对照最好版本判断, 从观察里找下一个要修的现象"                                                                                                                                                                                                                                                                                                                                |
+| 重发要求 | 哪里不合协议 + "整串重发"                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ## agent 的回复
 
-每次只回一个 JSON.
-
-澄清 (开澄清才有, 只一次):
+每次只回一个 JSON:
 
 ```json
-{"questions": [{"prompt": "问题", "options": ["选项", ...], "multiple": false, "recommended": [0]}, ...]}
+{"calls": [{"tool": "view_trades", "args": {"factor": "VolSkewTail", "side": "top", "sort": "worst"}},
+           {"tool": "eval_factor", "args": {"name": "VolSkewTail_noLim", "name_cn": "量偏尾去涨停", "expr": "...", "note": "..."}}]}
 ```
 
-- 只问人才能定的事 (从哪个因子起步、往哪个方向挖); 系统提示已定的 (评估口径、数据处理、何为更好、何时收手、怎么提交) 不问也不确认, 没写到的细节按最合理的理解办, 必要时挖掘中写进 issues
-- `recommended`: 推荐的选项下标; 单选恰 1 个, 多选至少 1 个
-- 每题人还能选 "其他" 自己写 (单选取代选项, 多选并列), 故选项不必穷举, agent 不列兜底项
+- 1..12 个调用; eval_factor 至多 8 个; finish 只能在最后; ask_human 只在允许提问且还没问过时可用, 一条回复至多一个
+- 参数不合工具表 (未知工具 / 未知参数 / 缺必填 / 类型 / 范围 / 可选值) → 整条退回重发; 依赖数据的 (因子 / 特征 / 代码 / 日期) 不成只在该调用的结果里写原因, 其余照做
 
-自动挖掘 (每轮):
+工具 (工具表在 `cpp/src/agent/Tools.cpp`, 系统提示的 "工具" 节由它生成):
 
-```json
-{
-  "factors": [{"name": "英文名", "name_cn": "中文名", "expr": "模板", "note": "相对哪个版本改了什么、想验证什么"}, ...],
-  "submit": ["已评候选的英文名", ...],
-  "issues": ["疑问 / 建议", ...],
-  "done": false
-}
-```
+| 工具            | 执行 | 做什么                                                                                                                                                                                        |
+| --------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| view_feature    | 观察 | 1..4 个特征式: 池内分布 / 日内轮廓 / 方差来自资产间 · 日间 · 日内 / 同资产自相关 / 与收益的截面 rIC (分时段); 多个时附两两截面相关                                                            |
+| view_layers     | 观察 | 因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC / 每组真持有只数; 可按日内时段或按月切开                                                                                                   |
+| view_trades     | 观察 | 交割单: 因子一端真持有过的格, 按 none / run / day 合并成段; 段收益分布与集中度、开仓时段表、盘面标签 (涨跌停附近 / 大涨大跌 / 日内高低位 / 放量 / 首行 / 尾盘) 的提升、最差 / 最好 / 随机明细 |
+| view_holders    | 观察 | 一端的常客: 每只本端行数 / 占其在池 / 天数 / 平均连续行数 / 持仓格均超额, 附集中度                                                                                                            |
+| view_stock_day  | 观察 | 一只票一天: 当日概况 + 价 / 量 / 因子分位 / 特征的火花线 + 分段表 (首行 + 约 30 分钟一段)                                                                                                     |
+| view_stock_days | 观察 | 一只票连续至多 60 日: 逐日涨跌 / 振幅 / 成交额 / 在池 / 因子分位 / 两端行数 / 收盘开仓超额 / 特征收盘值                                                                                       |
+| eval_factor     | 回测 | 落候选文件 → Search → Run, 返回结局 (下表)                                                                                                                                                    |
+| list_tried      | 当场 | 会话目录里同评估期的已试候选, 按 score 降序                                                                                                                                                   |
+| list_library    | 当场 | 正式因子库里同评估期且算子不超上限的因子, 按 score 降序                                                                                                                                       |
+| submit_factor   | 当场 | 提交一个已评候选入库                                                                                                                                                                          |
+| note_issue      | 当场 | 记疑问 / 建议, 结束报告里交给人                                                                                                                                                               |
+| finish          | 当场 | 宣布挖完: 本条的调用做完即结束                                                                                                                                                                |
+| ask_human       | 等人 | 问人 (每题 2..5 个选项带推荐; 人还能选 "其他" 自己写并附言), 整段会话一次                                                                                                                     |
 
-- `factors`: 每批 1..8 个, 都是同一个因子的变体; `done` 为 true 时为空
-- `submit`: 会话目录里已评过的候选 (含以前会话的), 一般只在最后交最好的版本; 可空
-- `issues`: 想问人的、对规则或系统的疑惑, 不阻塞挖掘; 可空
-- `done`: true = 挖完, 本次 `submit` 处理完即结束
+观察工具的 `factor` = 候选英文名 (取它本持有期的最佳权重与方向) 或具体根式; 分位 / 组号都已定向 (高 = 做多端); 收益一律是超额 (毛 − 本行在池均值), 单位 bp.
 
-候选的结局 (反馈消息逐个写, 结果表 "结局" 列同样显示):
+候选的结局 (eval_factor 的结果, 结果表 "结局" 列同样显示):
 
 | 结局     | 含义                                                                                                                |
 | -------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -206,24 +188,24 @@ stateDiagram-v2
 
 ## 交互流水
 
-会话日志里的 `events.jsonl`, 一行一个事件: `time` (毫秒) + `event` + 下表字段 (值为原生类型: 轮次 / 计数 / 耗时是数, done / ask 是布尔, gate 是对象, 其余是字符串).
+会话日志里的 `events.jsonl`, 一行一个事件: `time` (毫秒) + `event` + 下表字段 (值为原生类型: 轮次 / 序号 / 计数 / 耗时是数, ask / ok 是布尔, gate / args 是对象, tools 是数组, 其余是字符串).
 
 | event        | 何时               | 字段                                                                                                                                                                                                                             |
 | ------------ | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `open`       | 按 New             | pool / level / hold / backend / model / net (`direct` / `proxy 主机:端口`) / eval / gate (`{mono, ric}`) / ask (澄清开关) / tried (已试候选数)                                                                                   |
-| `ask`        | 发出一条消息       | round / kind (first / go / answer / round / retry) / chars                                                                                                                                                                       |
+| `open`       | 按 New             | pool / level / hold / backend / model / net (`direct` / `proxy 主机:端口`) / eval / gate (`{mono, ric}`) / ask (可否提问) / tried (同评估期的已试候选数)                                                                         |
+| `ask`        | 发出一条消息       | round / kind (first / round / retry) / chars                                                                                                                                                                                     |
 | `reply`      | 收齐一条回复       | round / end (ok / cut / error / cancelled) / why (非 ok 的原因) / id (Zhipu 响应 id / Cursor run id) / seconds / think_seconds (发出到首个正文增量) / prompt_tokens / cached_tokens / completion_tokens / chars / thinking_chars |
-| `parse_fail` | 回复不合格式       | round / phase (digest / propose) / error                                                                                                                                                                                         |
-| `questions`  | 澄清回复合格       | round / n                                                                                                                                                                                                                        |
+| `parse_fail` | 回复不合协议       | round / error                                                                                                                                                                                                                    |
+| `calls`      | 回复合协议         | round / tools (按序的工具名)                                                                                                                                                                                                     |
+| `call`       | 开始一个调用       | round / i (从 1 起) / tool / args (补齐缺省后的参数)                                                                                                                                                                             |
+| `result`     | 一个调用做完       | round / i / tool / ok / chars (交给 agent 的结果字节数) / seconds                                                                                                                                                                |
+| `stage`      | eval_factor 落文件 | round / name / expr / note / result (落文件 / 未落原因)                                                                                                                                                                          |
+| `eval`       | 候选评完           | name / result (权重数与最佳统计 / 无显著 / BROKEN)                                                                                                                                                                               |
+| `submit`     | submit_factor      | round / name / result (入库 / 未入库原因)                                                                                                                                                                                        |
+| `issue`      | note_issue         | round / text                                                                                                                                                                                                                     |
+| `questions`  | ask_human 开始     | round / n                                                                                                                                                                                                                        |
 | `pick`       | 按 Start, 每题一行 | question / picked (含 "其他: 意见") / recommended                                                                                                                                                                                |
 | `start`      | 按 Start           | note                                                                                                                                                                                                                             |
-| `mine_reply` | 挖掘回复合格       | round / factors / submit / issues / done                                                                                                                                                                                         |
-| `issue`      | 每条 issue         | round / text                                                                                                                                                                                                                     |
-| `submit`     | 每个提交           | round / name / result (入库 / 未入库原因)                                                                                                                                                                                        |
-| `stage`      | 每个新候选         | round / name / expr / note / result (落文件 / 未落原因)                                                                                                                                                                          |
-| `eval_begin` | 开始回测本批       | round / files                                                                                                                                                                                                                    |
-| `eval`       | 每个文件评完       | name / result (权重数与最佳统计 / 无显著 / BROKEN)                                                                                                                                                                               |
-| `eval_end`   | 本批评完           | —                                                                                                                                                                                                                                |
 | `stop`       | 按 Stop            | —                                                                                                                                                                                                                                |
 | `cancel`     | 按 Cancel          | —                                                                                                                                                                                                                                |
 | `finish`     | 进结束报告         | reason / rounds / adopted / issues                                                                                                                                                                                               |

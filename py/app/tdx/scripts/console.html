@@ -370,6 +370,42 @@
         gap: 3px;
         align-items: center;
       }
+      tbody tr[data-code] {
+        cursor: pointer;
+      }
+      tr.cur td {
+        background: #2a2d2e;
+      }
+      #kBox {
+        position: relative;
+      }
+      #kCv {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #book .lv {
+        display: grid;
+        grid-template-columns: 3em 1fr 1fr;
+        padding: 0 4px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      #book .lv > :first-child {
+        text-align: left;
+      }
+      #book .sum {
+        display: grid;
+        grid-template-columns: auto 1fr auto 1fr;
+        gap: 0 6px;
+        margin-top: 6px;
+        padding: 0 4px;
+        font-variant-numeric: tabular-nums;
+      }
+      #book .sum > :nth-child(even) {
+        text-align: right;
+      }
     </style>
   </head>
   <body>
@@ -508,9 +544,12 @@
 
       <div id="gutter"></div>
 
-      <!-- 右：工具 / 列表 -->
+      <!-- 右：行情 / 工具 / 列表 / 录制 -->
       <div class="pane grow-pane" id="rightPane">
         <div class="tabbar">
+          <button data-tab="quote" onclick="setTab('rightPane', 'quote')">
+            行情
+          </button>
           <button data-tab="tools" onclick="setTab('rightPane', 'tools')">
             工具
           </button>
@@ -520,6 +559,31 @@
           <button data-tab="rec" onclick="setTab('rightPane', 'rec')">
             录制 <span id="recDot"></span>
           </button>
+        </div>
+
+        <div class="tabpane" data-view="quote">
+          <div class="panel" style="flex: 1">
+            <h2>
+              K 线 · 盘口
+              <span
+                id="kRanges"
+                class="tabbar"
+                style="display: inline-flex; margin-left: 8px"
+              ></span>
+              <span class="kv">(点持仓 / 滑点表的行选股)</span>
+            </h2>
+            <div class="row">
+              <span id="kInfo" class="kv">（等持仓帧）</span>
+              <span id="kErr"></span>
+            </div>
+            <div
+              class="row"
+              style="flex-wrap: nowrap; align-items: stretch; margin-top: 6px"
+            >
+              <div class="grow" id="kBox"><canvas id="kCv"></canvas></div>
+              <div id="book" style="flex: 0 0 260px"></div>
+            </div>
+          </div>
         </div>
 
         <div class="tabpane" data-view="rec">
@@ -714,12 +778,14 @@
       }
       // shim 命令统一入口：回 JSON 记录数组，失败回 {err}
       const shim = (cmd, ...args) => api("/api/shim", { cmd, args });
-      // shim 长连接（treewatch / gdiwatch）：一行一条记录，{} 为心跳
-      function subscribe(path, onRec) {
-        const es = new EventSource(path);
+      // 合路长连接 /api/watch：on = {路名: 处理函数}，每条 {s, r} 按路分发，r 为 {} 是心跳；
+      // opened 在每次（重）连上时调，服务端此时会先推各路全量
+      function subscribe(on, opened = () => {}) {
+        const es = new EventSource("/api/watch?s=" + Object.keys(on).join(","));
+        es.onopen = opened;
         es.onmessage = (e) => {
-          const r = JSON.parse(e.data);
-          if (Object.keys(r).length) onRec(r);
+          const { s, r } = JSON.parse(e.data);
+          if (Object.keys(r).length) on[s](r);
         };
         return es;
       }
@@ -856,6 +922,10 @@
         tools: () => {},
         list: () => renderTree(),
         rec: () => recSoon(),
+        quote: () => {
+          drawK();
+          pullKline();
+        },
       };
       function setTab(pane, v) {
         for (const b of document.querySelectorAll(`#${pane} > .tabbar button`))
@@ -1552,7 +1622,7 @@
         }
       }
 
-      // 录制器：订阅 /api/recwatch，每推 {st 状态, recs 新记录}；页面只留尾巴，全量在 st.file
+      // 录制器：订阅 rec 路，每推 {st 状态, recs 新记录}；页面只留尾巴，全量在 st.file
       const REC_CAP = 2000;
       let REC_RECS = [];
       let REC_ST = null;
@@ -1701,7 +1771,7 @@
         v == null ? "" : paint(v >= 0 ? "#f14c4c" : "#6a9955", fmt(v, d));
       // 数字列：右对齐，按原值排序
       const numCol = (h, k, f = fmt) => [h, (p) => f(p[k]), (p) => p[k], "num"];
-      // 下单：行内按钮 → POST /api/order（后台跑闪电窗），各单逐步状态经 /api/ordwatch 推送
+      // 下单：行内按钮 → POST /api/order（后台跑闪电窗），各单逐步状态经 ord 路推送
       const ORD_SIZES = [
         [0, "最小"],
         [10000, "1W"],
@@ -1712,15 +1782,17 @@
         ["sell", "#6a9955"],
       ];
       const ordBtns = (p) =>
-        ORD_SIDES.map(([side, c]) =>
-          ORD_SIZES.map(
-            ([n, t]) =>
-              `<button class="ord" style="color:${c}" data-code="${p.code}" data-side="${side}" data-size="${n}">${t}</button>`,
-          ).join(""),
-        ).join(" ");
+        p.closed
+          ? '<span class="kv">今日清仓</span>'
+          : ORD_SIDES.map(([side, c]) =>
+              ORD_SIZES.map(
+                ([n, t]) =>
+                  `<button class="ord" style="color:${c}" data-code="${p.code}" data-side="${side}" data-size="${n}">${t}</button>`,
+              ).join(""),
+            ).join(" ");
       document.getElementById("posTbl").onclick = async (e) => {
         const b = e.target.closest("button.ord");
-        if (!b) return;
+        if (!b) return pickClick(e);
         const r = await api("/api/order", {
           code: b.dataset.code,
           side: b.dataset.side,
@@ -1779,28 +1851,27 @@
         numCol("担保折算率", "collateral"),
       ];
 
-      // 持仓页：订阅 /api/poswatch，服务端在内存（客户端重查过）或行情变了才推一帧。
-      // 只在持仓页可见且浏览器标签在前台时连着；断开后服务端即停取行情。出错只改提示行，表留上一帧。
+      // 持仓页：订阅 pos、ord 两路（一条连接），服务端在内存（客户端重查过）或行情变了才推一帧。
+      // 只在持仓页或行情页可见且浏览器标签在前台时连着；断开后服务端即停取行情。出错只改提示行，表留上一帧。
       // 自动刷新只作兜底（客户端自己重查已即时跟上）：到点 POST /api/refresh，新帧仍经推送到达。
       let posES = null;
-      let ordES = null;
       let autoRefreshTried = false;
       let nextRefresh = 0; // 下次自动刷新时刻（performance.now）
       const posShown = () =>
         document.querySelector('#leftPane > [data-view="pos"]').style
           .display !== "none";
+      const quoteShown = () =>
+        document.querySelector('#rightPane > [data-view="quote"]').style
+          .display !== "none";
       function syncPosStream() {
-        const on = posShown() && !document.hidden;
-        if (on && !posES) posES = subscribe("/api/poswatch", showFrame);
+        const on = (posShown() || quoteShown()) && !document.hidden;
+        if (on && !posES)
+          posES = subscribe({ pos: showFrame, ord: showOrders });
         if (!on && posES) {
           posES.close();
           posES = null;
         }
-        if (on && !ordES) ordES = subscribe("/api/ordwatch", showOrders);
-        if (!on && ordES) {
-          ordES.close();
-          ordES = null;
-        }
+        syncWatch();
       }
       const posErr = (r) =>
         (document.getElementById("posInfo").innerHTML =
@@ -1816,18 +1887,24 @@
         });
         showPositions(r, document.getElementById("posInfo"));
         showSlippage(r.slippage);
+        quoteFrame(r.positions);
       }
       function showPositions(r, info) {
-        table("#posTbl", POS_COLS, r.positions);
+        table("#posTbl", POS_COLS, r.positions, pickWire);
         if (!r.positions.length) {
           // 按需：内存里没持仓表时，自动点一次交易栏「刷新」让客户端查一遍
           if (!autoRefreshTried) return refreshPos();
           return void (info.textContent = "无持仓");
         }
         const t = r.totals;
+        // 当日盈亏按成交自算；成交没读过 / 与持仓的今买今卖对不上时，相关行当日两列留空、总数不全
+        const sync = r.synced
+          ? ` · 今日成交 ${r.fills} 笔`
+          : ` · <span class="off">${r.fills == null ? "当日成交未读" : "成交与持仓今买 / 今卖对不上"}，当日盈亏不全（点刷新）</span>`;
         info.innerHTML =
           `${r.positions.length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
           ` · 盈亏 ${fmtPnl(t.pnl)} · 当日盈亏 ${fmtPnl(t.day_pnl)}` +
+          sync +
           ` · 行情 ${r.time} · pid=${r.pid}`;
       }
       async function refreshPos(quiet) {
@@ -1836,7 +1913,7 @@
           performance.now() + +document.getElementById("posAuto").value * 1000;
         if (!quiet)
           document.getElementById("posInfo").textContent =
-            "刷新中…（触发客户端刷新持仓）";
+            "刷新中…（触发客户端重查当日成交与持仓）";
         const r = await api("/api/refresh", {});
         if (r.err) posErr(r);
       }
@@ -1906,9 +1983,398 @@
       ];
       // 滑点随持仓帧推送（同一份行情的 5 档），不另取
       function showSlippage(r) {
-        table("#slipTbl", slipCols(r), r.rows);
+        table("#slipTbl", slipCols(r), r.rows, pickWire);
         document.getElementById("slipInfo").textContent =
           "滑点（p=万分之一，正=成本；> 表示 5 档吃不满、实际更差；价位相对参考价）";
+      }
+
+      // 行情页：持仓 / 滑点表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口，图与盘口等高。
+      // 分钟线看近 1~4 个交易日：按图宽每 g 分钟并一根（g 取整除 240、每根不窄于 K_MIN_W px 的最小值），
+      // 横轴按交易时段等分、没成交的分钟留空；日线每根不窄于 K_DAY_W px，放不下只画最近的。
+      // K 线每 KLINE_GAP 重取；其间每个持仓帧用现价改写最后一根，盘口随帧刷新。
+      const KRANGES = [
+        ["1", "日内"],
+        ["2", "2日"],
+        ["3", "3日"],
+        ["4", "4日"],
+        ["day", "日线"],
+      ];
+      const K_GROUPS = [
+        1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 120,
+        240,
+      ];
+      const K_MIN_W = 3,
+        K_DAY_W = 6;
+      const KLINE_GAP = 15000;
+      const K_UP = "#f14c4c",
+        K_DN = "#6a9955",
+        K_COST = "#569cd6";
+      const K_MA = [
+        [5, "#d7ba7d"],
+        [10, "#4ec9b0"],
+        [20, "#c586c0"],
+      ];
+      let POS_ROWS = []; // 最近一帧持仓行
+      let QCODE = null; // 选中代码
+      let QROW = null; // 其持仓行（含 cost / quote）
+      let KBARS = []; // [[时刻, 开, 高, 低, 收, 量]]
+      const KMEM = new Map(); // "代码|档" → 最近取到的 K 线；切股 / 切档先画它，再后台重取
+      let kRange = "1"; // 分钟线天数，或 "day" 日线
+      const kKey = () => `${QCODE}|${kRange}`;
+      let kHover = -1; // 悬停那根在 kView.vis 里的下标
+      let kView = null; // 最近一次绘制的 kLayout，鼠标横坐标 → 第几根
+      const pickWire = (tr, p) => {
+        tr.dataset.code = p.code;
+        tr.classList.toggle("cur", p.code === QCODE);
+      };
+      function pickClick(e) {
+        const tr = e.target.closest("tbody tr");
+        if (!tr) return;
+        pickQuote(tr.dataset.code);
+        setTab("rightPane", "quote");
+      }
+      function quoteFrame(rows) {
+        POS_ROWS = rows;
+        const keep = rows.some((p) => p.code === QCODE);
+        pickQuote(keep ? QCODE : (rows[0]?.code ?? null));
+        if (!keep && QCODE && quoteShown()) pullKline();
+      }
+      function pickQuote(code) {
+        if (code !== QCODE) {
+          QCODE = code;
+          KBARS = KMEM.get(kKey()) ?? [];
+          kHover = -1;
+        }
+        QROW = POS_ROWS.find((p) => p.code === code) ?? null;
+        for (const tr of document.querySelectorAll(
+          "#posTbl tbody tr, #slipTbl tbody tr",
+        ))
+          tr.classList.toggle("cur", tr.dataset.code === code);
+        document.getElementById("kInfo").innerHTML = QROW
+          ? `<b>${QROW.code} ${esc(QROW.name)}</b> · 行情 ${QROW.quote.date} ${QROW.quote.time}`
+          : "（无持仓）";
+        patchBar();
+        drawK();
+        drawBook();
+      }
+      const pullKline = coalesce(async () => {
+        if (!QCODE) return;
+        const code = QCODE,
+          range = kRange;
+        const r = await api(
+          "/api/kline",
+          range === "day"
+            ? { code, kind: "day" }
+            : { code, kind: "min", days: +range },
+        );
+        if (code !== QCODE || range !== kRange) return;
+        document.getElementById("kErr").innerHTML = r.err
+          ? `<span class="off">✗ ${esc(r.err)}</span>`
+          : "";
+        if (r.err) return;
+        KMEM.set(kKey(), (KBARS = r));
+        patchBar();
+        drawK();
+      });
+      async function klineLoop() {
+        if (quoteShown() && !document.hidden) await pullKline();
+        setTimeout(klineLoop, KLINE_GAP);
+      }
+      // 今日那根：日线整根换成行情的今开 / 最高 / 最低 / 现价 / 量，分钟线只改收、高、低
+      function patchBar() {
+        const b = KBARS.at(-1),
+          q = QROW?.quote;
+        if (!b || !q?.price || b[0].slice(0, 10) !== q.date) return;
+        if (kRange === "day")
+          return void b.splice(1, 5, q.open, q.high, q.low, q.price, q.volume);
+        b[4] = q.price;
+        b[2] = Math.max(b[2], q.price);
+        b[3] = Math.min(b[3], q.price);
+      }
+      // HH:MM → 当日到此为止的分钟线根数（09:31 = 1 … 11:30 = 120、13:01 = 121 … 15:00 = 240）
+      function kSlot(t) {
+        const m = +t.slice(11, 13) * 60 + +t.slice(14, 16);
+        return (
+          Math.min(Math.max(m - 570, 0), 120) +
+          Math.min(Math.max(m - 780, 0), 120)
+        );
+      }
+      // 图宽 PW 下画哪些根、各在第几格：{vis 各根, pos 各根格号, bw 格宽, days 分钟线的日期, g 每根分钟数}
+      function kLayout(bars, PW) {
+        if (kRange === "day") {
+          const bw = Math.max(K_DAY_W, PW / bars.length);
+          const vis = bars.slice(-Math.floor(PW / bw));
+          return { vis, pos: vis.map((_, i) => i), bw, days: null, g: 0 };
+        }
+        const days = [...new Set(bars.map((b) => b[0].slice(0, 10)))];
+        const W = (g) => PW / ((days.length * 240) / g);
+        const g = K_GROUPS.find((g) => W(g) >= K_MIN_W) ?? 240;
+        const vis = [],
+          pos = [];
+        for (const b of bars) {
+          const k =
+            (days.indexOf(b[0].slice(0, 10)) * 240) / g +
+            Math.ceil(kSlot(b[0]) / g) -
+            1;
+          const a = vis.at(-1);
+          if (pos.at(-1) !== k) {
+            vis.push([...b]);
+            pos.push(k);
+            continue;
+          }
+          a[0] = b[0];
+          a[2] = Math.max(a[2], b[2]);
+          a[3] = Math.min(a[3], b[3]);
+          a[4] = b[4];
+          a[5] += b[5];
+        }
+        return { vis, pos, bw: W(g), days, g };
+      }
+      function maOf(bars, k) {
+        let s = 0;
+        return bars.map((b, i) => {
+          s += b[4] - (i >= k ? bars[i - k][4] : 0);
+          return i >= k - 1 ? s / k : null;
+        });
+      }
+      // 上：信息行 + 蜡烛（红涨绿跌）+ 均线 + 成本 / 现价虚线；下：成交量；右：价轴；底：时间轴
+      function drawK() {
+        const cv = document.getElementById("kCv");
+        const W = cv.clientWidth,
+          H = cv.clientHeight;
+        if (!W || !H) return; // 行情页隐藏中，切回时再画
+        const dpr = devicePixelRatio;
+        cv.width = W * dpr;
+        cv.height = H * dpr;
+        const c = cv.getContext("2d");
+        c.scale(dpr, dpr);
+        c.font = "11px ui-monospace, Consolas, monospace";
+        c.textBaseline = "middle";
+        const bars = KBARS;
+        if (!bars.length) return void (kView = null);
+        const AX = 58, // 右侧价轴宽
+          TX = 16, // 底部时间轴高
+          TOP = 30; // 顶部信息行高
+        const PW = W - AX;
+        const VH = Math.round((H - TOP - TX) * 0.2);
+        const PH = H - TOP - TX - VH - 6;
+        const L = (kView = kLayout(bars, PW));
+        const { vis, pos, bw: BW } = L;
+        const src = kRange === "day" ? bars : vis; // 日线均线用全部历史算
+        const mas = K_MA.map(([k, col]) => [
+          k,
+          col,
+          maOf(src, k).slice(src.length - vis.length),
+        ]);
+        let lo = Math.min(...vis.map((b) => b[3])),
+          hi = Math.max(...vis.map((b) => b[2]));
+        const pad = (hi - lo) * 0.05 || hi * 0.01;
+        lo -= pad;
+        hi += pad;
+        const y = (v) => TOP + ((hi - v) / (hi - lo)) * PH;
+        const vTop = TOP + PH + 6;
+        const vmax = Math.max(1, ...vis.map((b) => b[5]));
+        const vy = (v) => vTop + VH - (v / vmax) * VH;
+        const x = (i) => (pos[i] + 0.5) * BW;
+        const bw = Math.max(1, BW * 0.7);
+        const hl = (yy, x0, x1) => {
+          c.beginPath();
+          c.moveTo(x0, yy);
+          c.lineTo(x1, yy);
+          c.stroke();
+        };
+
+        c.strokeStyle = "#333";
+        c.fillStyle = "#888";
+        c.lineWidth = 1;
+        for (let k = 0; k <= 4; k++) {
+          const v = lo + ((hi - lo) * k) / 4,
+            yy = Math.round(y(v)) + 0.5;
+          hl(yy, 0, PW);
+          c.fillText(v.toFixed(3), PW + 4, yy);
+        }
+        hl(vTop - 2.5, 0, PW);
+        // 时间轴：日线隔几根标 MM-DD；单日标整点与午休；多日画日界、各日居中标 MM-DD
+        c.textAlign = "center";
+        const tick = (s, xx) =>
+          c.fillText(s, Math.min(Math.max(xx, 20), PW - 20), H - TX / 2);
+        if (!L.days) {
+          const every = Math.ceil(60 / BW);
+          for (let i = vis.length - 1; i >= 0; i -= every)
+            tick(vis[i][0].slice(5), x(i));
+        } else if (L.days.length === 1) {
+          const T = ["09:30", "10:30", "11:30/13:00", "14:00", "15:00"];
+          T.forEach((s, i) => tick(s, ((i * 60) / L.g) * BW));
+        } else {
+          const DW = (240 / L.g) * BW;
+          L.days.forEach((d, i) => {
+            if (i) {
+              c.setLineDash([2, 3]);
+              const xx = Math.round(i * DW) + 0.5;
+              c.beginPath();
+              c.moveTo(xx, TOP);
+              c.lineTo(xx, vTop + VH);
+              c.stroke();
+              c.setLineDash([]);
+            }
+            tick(d.slice(5), (i + 0.5) * DW);
+          });
+        }
+        c.textAlign = "left";
+
+        vis.forEach(([, o, h, l, cl, v], i) => {
+          const xx = Math.round(x(i)) + 0.5;
+          c.strokeStyle = c.fillStyle = cl >= o ? K_UP : K_DN;
+          c.beginPath();
+          c.moveTo(xx, y(h));
+          c.lineTo(xx, y(l));
+          c.stroke();
+          const y0 = y(Math.max(o, cl));
+          c.fillRect(xx - bw / 2, y0, bw, Math.max(1, y(Math.min(o, cl)) - y0));
+          c.fillRect(xx - bw / 2, vy(v), bw, vTop + VH - vy(v));
+        });
+
+        for (const [, col, m] of mas) {
+          c.strokeStyle = col;
+          c.beginPath();
+          let on = false;
+          m.forEach((v, i) => {
+            if (v == null) return;
+            on ? c.lineTo(x(i), y(v)) : c.moveTo(x(i), y(v));
+            on = true;
+          });
+          c.stroke();
+        }
+
+        // 水平虚线 + 价轴上的价签；出了价格区间不画
+        const mark = (v, col) => {
+          if (!(v >= lo && v <= hi)) return;
+          const yy = Math.round(y(v)) + 0.5;
+          c.strokeStyle = col;
+          c.setLineDash([4, 3]);
+          hl(yy, 0, PW);
+          c.setLineDash([]);
+          c.fillStyle = col;
+          c.fillRect(PW, yy - 8, AX, 16);
+          c.fillStyle = "#111";
+          c.fillText(v.toFixed(3), PW + 4, yy);
+        };
+        const last = vis.at(-1)[4];
+        mark(QROW?.cost, K_COST);
+        mark(last, last >= (QROW?.quote.last_close ?? last) ? K_UP : K_DN);
+
+        const hov = kHover >= 0 && kHover < vis.length;
+        const at = hov ? kHover : vis.length - 1;
+        if (hov) {
+          c.strokeStyle = "#888";
+          const xx = Math.round(x(at)) + 0.5;
+          c.beginPath();
+          c.moveTo(xx, TOP);
+          c.lineTo(xx, vTop + VH);
+          c.stroke();
+        }
+        const [t, o, h, l, cl, v] = vis[at];
+        const pc = at
+          ? vis[at - 1][4]
+          : !L.days && bars[bars.length - vis.length - 1]?.[4];
+        const chg = pc ? ` ${(((cl - pc) / pc) * 100).toFixed(2)}%` : "";
+        const f3 = (p) => p.toFixed(3);
+        c.fillStyle = "#ddd";
+        c.fillText(
+          `${L.days ? t.slice(5, 16) : t}${L.g > 1 ? ` (${L.g}分)` : ""}  开 ${f3(o)} 高 ${f3(h)} 低 ${f3(l)} 收 ${f3(cl)}${chg}  量 ${Math.round(v / 100)}手`,
+          4,
+          8,
+        );
+        let mx = 4;
+        for (const [k, col, m] of mas) {
+          const s = `MA${k} ${m[at]?.toFixed(3) ?? "-"}`;
+          c.fillStyle = col;
+          c.fillText(s, mx, 22);
+          mx += c.measureText(s).width + 12;
+        }
+        if (QROW?.cost) {
+          c.fillStyle = K_COST;
+          c.fillText(`成本 ${QROW.cost.toFixed(3)}`, mx, 22);
+        }
+      }
+      // 卖五..卖一 / 买一..买五（价按昨收着色，量单位手，底色条按量占比）+ 当日行情与持仓概要
+      function drawBook() {
+        const box = document.getElementById("book");
+        if (!QROW) return void (box.innerHTML = "");
+        const p = QROW,
+          q = p.quote,
+          lc = q.last_close;
+        const pc = (v) =>
+          v ? paint(v > lc ? K_UP : v < lc ? K_DN : "", v.toFixed(3)) : "-";
+        const vmax = Math.max(1, ...[...q.ask, ...q.bid].map((x) => x[1]));
+        const lv = (name, x, tint) => {
+          const w = x ? ((x[1] / vmax) * 100).toFixed(1) : 0;
+          return (
+            `<div class="lv" style="background:linear-gradient(to left,${tint} ${w}%,transparent ${w}%)">` +
+            `<span class="kv">${name}</span><span>${x ? pc(x[0]) : ""}</span>` +
+            `<span>${x ? Math.round(x[1] / 100) : ""}</span></div>`
+          );
+        };
+        const CN = "一二三四五";
+        const chg = q.price - lc;
+        const kv = [
+          ["现价", pc(q.price)],
+          ["涨跌", fmtPnl(chg, 3)],
+          ["今开", pc(q.open)],
+          ["涨幅%", fmtPnl(lc ? (chg / lc) * 100 : null)],
+          ["最高", pc(q.high)],
+          ["昨收", lc.toFixed(3)],
+          ["最低", pc(q.low)],
+          ["成交量", fmt(q.volume / 100, 0) + "手"],
+          ["成本", fmt(p.cost, 3)],
+          ["盈亏%", fmtPnl(p.pnl_pct)],
+          ["当日盈亏", fmtPnl(p.day_pnl)],
+          ["仓位%", fmt(p.position_pct)],
+        ];
+        box.innerHTML =
+          [4, 3, 2, 1, 0]
+            .map((i) => lv("卖" + CN[i], q.ask[i], "rgba(106,153,85,.25)"))
+            .join("") +
+          '<div style="border-top: 1px solid var(--line); margin: 2px 0"></div>' +
+          [0, 1, 2, 3, 4]
+            .map((i) => lv("买" + CN[i], q.bid[i], "rgba(241,76,76,.25)"))
+            .join("") +
+          '<div class="sum">' +
+          kv
+            .map(([k, v]) => `<span class="kv">${k}</span><span>${v}</span>`)
+            .join("") +
+          "</div>";
+      }
+      function initK() {
+        const sc = document.getElementById("kRanges");
+        sc.innerHTML = KRANGES.map(
+          ([s, t]) =>
+            `<button data-s="${s}" class="${s === kRange ? "on" : ""}">${t}</button>`,
+        ).join("");
+        sc.onclick = (e) => {
+          const b = e.target.closest("button");
+          if (!b) return;
+          kRange = b.dataset.s;
+          for (const x of sc.children) x.classList.toggle("on", x === b);
+          KBARS = KMEM.get(kKey()) ?? [];
+          kHover = -1;
+          patchBar();
+          drawK();
+          pullKline();
+        };
+        document.getElementById("slipTbl").onclick = pickClick;
+        const cv = document.getElementById("kCv");
+        // 鼠标所在格及以前最近的一根（没成交的格算前一根）
+        cv.addEventListener("mousemove", (e) => {
+          const k = Math.floor(e.offsetX / (kView?.bw ?? 1));
+          kHover = kView ? kView.pos.findLastIndex((p) => p <= k) : -1;
+          drawK();
+        });
+        cv.addEventListener("mouseleave", () => {
+          kHover = -1;
+          drawK();
+        });
+        new ResizeObserver(() => drawK()).observe(cv);
       }
 
       // 交互：鼠标/键盘只给屏幕坐标，目标窗口由 shim 定（坐标下最深子窗口 / 捕获 / 菜单）。
@@ -2089,16 +2555,26 @@
         });
       }
 
-      // 两条推送同构：treewatch 来 {gen} 即重拉树；gdiwatch 来一层即记下并合帧重画
-      function startWatch() {
-        subscribe("/api/treewatch", () => autoUpd() && pullTree());
-        subscribe("/api/gdiwatch", (r) => {
-          r.at = performance.now();
-          GDI.set(r.hwnd, r);
-          if (!gdiShown()) return;
-          gdiDirty.add(r.hwnd);
-          gdiSoon();
-        });
+      // 常驻一条连接：tree 来 {gen} 即重拉树；gdi 来一层即记下并合帧重画；rec 录制器。
+      // 标签转后台即断开（不占浏览器对本地址的连接数），回前台重连，重连时服务端先推全量。
+      let watchES = null;
+      function syncWatch() {
+        if (!document.hidden && !watchES)
+          watchES = subscribe({
+            tree: () => autoUpd() && pullTree(),
+            gdi: (r) => {
+              r.at = performance.now();
+              GDI.set(r.hwnd, r);
+              if (!gdiShown()) return;
+              gdiDirty.add(r.hwnd);
+              gdiSoon();
+            },
+            rec: recOn,
+          }, () => (REC_RECS = []));
+        if (document.hidden && watchES) {
+          watchES.close();
+          watchES = null;
+        }
       }
 
       // 中间 gutter 左右拖拽，改左 pane 宽度
@@ -2130,14 +2606,15 @@
         initMapZoom();
         initMapPan();
         initMapInput();
+        initK();
         setTab("leftPane", "layout");
-        setTab("rightPane", "tools");
+        setTab("rightPane", "quote");
         renderSpy([]);
         if (await ping()) await refreshTree();
-        startWatch();
-        subscribe("/api/recwatch", recOn);
+        syncWatch();
         document.addEventListener("visibilitychange", syncPosStream);
         posAutoLoop();
+        klineLoop();
         pollLoop();
       })();
     </script>

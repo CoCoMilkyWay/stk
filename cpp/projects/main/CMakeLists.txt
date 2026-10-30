@@ -342,6 +342,7 @@ set(MATH_PRECISE
     gui/task_factors/services/FactorsTable.cpp
     gui/task_factors/services/InspectService.cpp
     gui/task_factors/services/KlineService.cpp
+    gui/task_factors/services/LensService.cpp
     gui/task_factors/services/OperatorsService.cpp
     gui/task_factors/services/PortfolioService.cpp
     gui/task_factors/services/RunService.cpp
@@ -354,13 +355,16 @@ set(MATH_PRECISE
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
-    # agent: Bridge = agent 里唯一的因子契约头消费者; 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
+    # agent: Bridge = agent 里唯一的因子契约头消费者; Views = 观察的统计 (NaN 即无效); Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     agent/Bridge.cpp
     agent/Chat.cpp
+    agent/Docs.cpp
     agent/Journal.cpp
     agent/Llm.cpp
     agent/Mine.cpp
     agent/Prompt.cpp
+    agent/Tools.cpp
+    agent/Views.cpp
     agent/ui/TaskAgent.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
     factor/op_check.cpp

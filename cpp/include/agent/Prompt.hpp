@@ -1,43 +1,36 @@
 #pragma once
 
 // =============================================================================
-// 提示词: 发 (系统 → agent, 模板填充) ↔ 收 (agent → 系统, 回复解析)
+// 提示词: 系统 → agent 的消息 (模板填充) + 工具结果的文本
 // =============================================================================
-//   发: 模板 = kPromptDir/<名>.md (agent/Config.hpp), {{键}} 占位; 模板里出现未给的键 → assert (模板与代码脱节立刻暴露)
-//     system  静态前缀 (一段对话内逐字节不变): 作用域 / 语法与口径 / 入库门槛 / 做法 (一段会话精修一个因子) / 两阶段回复协议 / 特征叶 / 算子表 / 正式因子库
-//     first   首条 user (要澄清): 本作用域已试过的候选 (可作起点) + 消化规则、提出拿不准的问题
-//     go      首条 user (不澄清): 同上的已试候选 + 自定因子与方向, 直接交第一批 (不得提问)
-//     answer  人对各题的选择 (含 "其他" 自写意见; 没照推荐的附上推荐) + 附言 + 开挖 (此后不得提问)
-//     round   每轮反馈: 上次提交的入库结果 + 本批各变体的结局 (落文件失败原因 / Search 结论 / 各权重统计) + 对照最好版本续改
-//     retry   回复解析失败: 原因 + 按协议重发
-//   收: 回复 = JSON 对象 (外层可包 ```json 代码块); 不合协议 → false + err (首个不合处, 带字段路径; 原样经 retry 反馈给模型)
-//     澄清 (至多一次)  {"questions": [{"prompt", "options": [..], "multiple", "recommended": [下标]}]} (单选推荐恰 1 项, 多选 ≥ 1 项) → Questions
-//     挖掘 (每轮)      {"factors": [{"name", "name_cn", "expr", "note"}], "submit": [英文名], "issues": [文本], "done"}               → Proposal
-//   两阶段对仗: 澄清 Questions ─人选→ Asked ─→ answer;  挖掘 Proposal ─系统评→ Mined ─→ round
-//   结局文本两档: Brief 一行 (流水 / 界面标题) ↔ Detail 多行 (反馈消息 / 界面展开); 五种结局 (Verdict) 一处写全
+//   模板 = kPromptDir/<名>.md (agent/Config.hpp), {{键}} 占位; 模板里出现未给的键 → assert (模板与代码脱节立刻暴露)
+//     system  静态前缀 (一段对话内逐字节不变): 作用域 / 语法与口径 / 入库门槛 / 做法 (先看后改, 一段会话精修一个因子) / 调用协议 / 工具表 / 特征叶 / 算子表
+//     first   首条 user: 已试候选与正式库的规模 (用 list_tried / list_library 看) + 能否提问 + 开工
+//     round   每条回复的调用结果, 按调用序 (调用一行 + 结果)
+//     retry   回复不合协议: 原因 + 按协议重发
+//   回复的解析 / 工具表见 agent/Tools.hpp; 观察工具的成文见 agent/Views.hpp
+//   结局文本两档: Brief 一行 (流水 / 界面标题) ↔ Detail 多行 (工具结果 / 界面展开); 五种结局 (Verdict) 一处写全
 // =============================================================================
 
 #include "agent/Bridge.hpp"
+#include "agent/Tools.hpp"
 
 #include <cstdint>
 #include <iterator>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace agent {
 
 enum class Msg : uint8_t { System,
                            First,
-                           Go,
-                           Answer,
                            Round,
                            Retry };
 // 消息表 (下标 = Msg): id = 模板名 = 流水里的 kind; cn = 界面名
 struct MsgDef {
   const char *id, *cn;
 };
-inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"go", "开挖"}, {"answer", "答案"}, {"round", "反馈"}, {"retry", "重发"}};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"retry", "重发"}};
 inline constexpr int kMsgCount = static_cast<int>(std::size(kMsgs));
 inline const MsgDef &def(Msg m) { return kMsgs[static_cast<int>(m)]; }
 struct Message {
@@ -49,85 +42,23 @@ struct Message {
 std::string LoadPrompt(Msg m);
 void SavePrompt(Msg m, const std::string &text);
 
-// ---- 澄清: agent 的问题 → 人的选择 ----
-struct Question {
-  std::string prompt;
-  std::vector<std::string> options;
-  std::vector<bool> recommended; // 与 options 同长
-  bool multiple = false;
-};
-using Questions = std::vector<Question>;
-// 人对一题的答复: on[j] = 选了第 j 项; other = 选了 "其他" 自己写意见 text (单选: 与选项互斥; 多选: 与选项并列)
-struct Pick {
-  std::vector<bool> on;
-  bool other = false;
-  std::string text;
-};
-struct Asked {
-  Questions qs;
-  std::vector<Pick> picks; // 与 qs 对齐, 初值 = 推荐
-  std::string note;        // 附言
-  Asked() = default;
-  explicit Asked(Questions q);
-};
-// mask 选中的选项, "; " 连接
-std::string Picked(const Question &q, const std::vector<bool> &mask);
-// 选中的选项 + "其他: 意见" (other 且 text 非空), "; " 连接
-std::string Answered(const Question &q, const Pick &p);
-
-// ---- 挖掘: agent 的一批 → 系统的处理 ----
-struct Proposal {
-  std::vector<Cand> factors;
-  std::vector<std::string> submit, issues;
-  bool done = false;
-};
-// 时段: 会话起算秒; t0 < 0 = 未开, t1 < 0 = 在走
-struct Span {
-  double t0 = -1, t1 = -1;
-  bool began() const { return t0 >= 0; }
-  bool ended() const { return t1 >= 0; }
-  bool running() const { return began() && !ended(); }
-  double len(double now) const { return began() ? (ended() ? t1 : now) - t0 : 0.0; }
-  void begin(double t) {
-    if (!began())
-      t0 = t;
-  }
-  void end(double t) {
-    if (running())
-      t1 = t;
-  }
-};
-// 一个候选: 落文件 → 回测. span = 开评 → 评完 (队列里直接跳过的开评即评完), 其内 search / run 两段
-struct Trial {
-  Staged st;
-  Span span, search, run;
-};
-// factors → batch, submit → submitted. span = 本批开评 → 评完
-struct Mined {
-  std::vector<Trial> batch;
-  std::vector<Submitted> submitted;
-  std::vector<std::string> issues;
-  bool done = false;
-  Span span;
-};
-
-// ---- 结局文本 (反馈 / 流水 / 界面同一份) ----
+// ---- 结局文本 ----
 std::string Text(const Stat &s);     // mono · 每期毛多空 · rIC
 std::string Text(const Weight &w);   // + score ± 标准误 (t) · 有效率; 无本持有期统计另说
 std::string Text(const Top &t);      // + 目标 ± 标准误 (t) (+ 曲面估计) (+ 取反)
 std::string Brief(const Result &r);  // 一行: 结局 + 原因 / 最佳权重 / 代表点
 std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每个权重 / 落选原因与代表点; 不可见的只说不可比
 
-// ---- 发 ----
-Message SystemMessage(const Context &c, const Gate &g);
-Message FirstMessage(const Context &c, const std::vector<Result> &tried);
-Message GoMessage(const Context &c, const std::vector<Result> &tried);
-Message AnswerMessage(const Context &c, const Asked &a); // 与推荐不同的题附上推荐
-Message RoundMessage(const Context &c, const Mined &m);
-Message RetryMessage(const std::string &err);
+// ---- 工具结果 (当场 / 回测 / 问答; 观察的在 agent/Views) ----
+std::string TriedText(const std::vector<Result> &tried, int top);  // list_tried
+std::string LibraryText(const std::vector<Result> &lib, int top);  // list_library
+std::string TrialText(const Staged &st);                           // eval_factor: 名 + 模板 + 结局
+std::string AnswerText(const Asked &a);                            // ask_human: 每题的选择 (没照推荐的附上推荐) + 附言
 
-// ---- 收 ----
-bool Parse(std::string_view text, Questions &out, std::string &err);
-bool Parse(std::string_view text, Proposal &out, std::string &err);
+// ---- 发 ----
+Message SystemMessage(const Context &c, const Gate &g, bool ask);
+Message FirstMessage(const Context &c, int tried, bool ask); // tried = 可见的已试候选数
+Message RoundMessage(const std::vector<Act> &acts);          // 一条回复的全部调用, 按序
+Message RetryMessage(const std::string &err);
 
 } // namespace agent

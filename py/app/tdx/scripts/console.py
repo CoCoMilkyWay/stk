@@ -9,25 +9,32 @@
 # 提供的 API：
 #   GET  /                                   控制台页面
 #   GET  /api/ping                           {pid}（离线为 null）
-#   GET  /api/treewatch                      SSE：shim treewatch 原样转发（窗口树版本号）
-#   GET  /api/gdiwatch                       SSE：shim gdiwatch 原样转发（窗口绘制层）
-#   GET  /api/poswatch                       SSE：持仓页帧（内存持仓 × 新浪实时价 + 5 档滑点表），变了才推，{} 为心跳
+#   GET  /api/watch?s=路,路                  SSE：所列各路合成一条连接，每条 {s 路名, r 记录}，r 为 {} 是该路心跳。路：
+#          tree  shim treewatch 原样转发（窗口树版本号）
+#          gdi   shim gdiwatch 原样转发（窗口绘制层）
+#          pos   持仓页帧（内存持仓 × 内存当日成交 × 新浪实时行情含 5 档 + 滑点表），变了才推
+#          ord   最近各单状态（逐步）
+#          rec   录制器 {st 状态, recs 新记录}
+#   POST /api/kline      {code,kind,days}    持仓页行情里该只的 K 线（新浪，本地落盘）：kind = min 近 days 日分钟 / day 日线
 #   POST /api/shim            {cmd,args}     透传 shim 命令，回 JSON 记录列表（命令表见 shim.c）
 #   POST /api/clicktext {text,class?,title?} 点可见窗口上画着 text 的按钮（须唯一）
-#   POST /api/refresh                        点交易栏「刷新」，等内存换代后重读，新帧经 poswatch 推送
-#   GET  /api/recwatch                       SSE：录制器 {st 状态, recs 新记录}，{} 为心跳
+#   POST /api/refresh                        让客户端重查当日成交与持仓，等内存换代后重读，新帧经 pos 推送
 #   POST /api/rec             {on}           开 / 停录制
 #   POST /api/recmark         {text}         录制中打点
 #   POST /api/order {code,side,size,px,credit} 持仓行闪电下单（后台跑），回该单状态
-#   GET  /api/ordwatch                       SSE：最近各单状态（逐步），{} 为心跳
+# 浏览器对同一地址至多 6 条 HTTP/1.1 连接，长连接一律走 /api/watch 合路，留出连接给请求。
 # 任何失败（assert 等）统一回 {err}。
 
 import os
 import re
 import sys
+import gzip
 import json
+import queue
+import datetime
 import time
 import types
+import urllib.parse
 import itertools
 import threading
 import collections
@@ -40,10 +47,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from bridge.shimctl import Shim, ensure  # noqa: E402  消息桥（编译/注入/控制通道）
 from mem import positions as mempos  # noqa: E402  内存持仓方案（含完整性校验）
+from mem import fills as memfills  # noqa: E402  内存当日成交方案
 
 HTML_FILE = os.path.join(HERE, "console.html")
 REFRESH_BTN = {"class": "MHPToolBar", "title": "MainViewBar", "text": "刷新"}
 POS_BTN = {**REFRESH_BTN, "text": "持仓"}  # 刷新只刷当前页，下单后客户端会切去委托 / 成交页
+FILLS_BTN = {**REFRESH_BTN, "text": "成交"}
+UI = threading.Lock()  # 客户端界面自动化（刷新点按钮 / 下单走闪电窗）一次只许一路
 SHIM = Shim()
 
 
@@ -77,17 +87,18 @@ def click_text(b):
 # 一行一只：var hq_str_<sym>="名称,今开,昨收,现价,最高,最低,买一,卖一,量,额,
 #   买1量,买1价,…,买5量,买5价,卖1量,卖1价,…,卖5量,卖5价,日期,时间,…"；量单位股。
 
-SINA_HOST = "hq.sinajs.cn"
-SINA_HDR = {"Referer": "https://finance.sina.com.cn"}
+SINA_HDR = {"Referer": "https://finance.sina.com.cn", "Accept-Encoding": "gzip"}
 
 
 class Sina:
     """keep-alive 长连接（复用省掉每次建连，约 58→31ms）：多线程共用一条，加锁串行。
-    闲置超 IDLE 秒先重建，免得撞上对端已关的连接；请求失败照常抛出，连接最迟 IDLE 秒后重建。"""
+    闲置超 IDLE 秒先重建，免得撞上对端已关的连接；请求失败照常抛出，连接最迟 IDLE 秒后重建。
+    要 gzip（实测行情 786→374 字节、1500 根分钟线 200K→25K）。"""
 
     IDLE = 10
 
-    def __init__(self):
+    def __init__(self, host):
+        self.host = host
         self.lock = threading.Lock()
         self.conn, self.used = None, 0.0
 
@@ -96,14 +107,17 @@ class Sina:
             if self.conn is None or time.monotonic() - self.used > self.IDLE:
                 if self.conn:
                     self.conn.close()
-                self.conn = http.client.HTTPConnection(SINA_HOST, timeout=3)
+                self.conn = http.client.HTTPConnection(self.host, timeout=3)
             self.conn.request("GET", path, headers=SINA_HDR)
-            body = self.conn.getresponse().read()
+            r = self.conn.getresponse()
+            body = r.read()
             self.used = time.monotonic()
-            return body
+        enc = r.getheader("Content-Encoding")
+        assert enc in (None, "gzip"), f"{self.host} 回了 {enc} 编码"
+        return gzip.decompress(body) if enc else body
 
 
-SINA = Sina()
+SINA = Sina("hq.sinajs.cn")
 
 
 def _sym(p):
@@ -117,8 +131,8 @@ def _levels(f, at):
 
 
 def quotes(positions):
-    """持仓批量取行情 → {sym: {price, last_close, ask, bid, time}}，须每只都有。
-    现价为 0（开盘前/停牌）时取昨收，当日盈亏即 0。"""
+    """持仓批量取行情 → {sym: {price, last_close, open, high, low, volume, ask, bid, date, time}}，
+    须每只都有。现价为 0（开盘前/停牌）时取昨收，当日盈亏即 0；今开 / 最高 / 最低此时为 0。"""
     if not positions:
         return {}
     syms = [_sym(p) for p in positions]
@@ -135,23 +149,72 @@ def quotes(positions):
         out[sym] = {
             "price": float(f[3]) or last,
             "last_close": last,
+            "open": float(f[1]),
+            "high": float(f[4]),
+            "low": float(f[5]),
+            "volume": float(f[8]),
             "bid": _levels(f, 10),
             "ask": _levels(f, 20),
+            "date": f[30],
             "time": f[31],
         }
     assert set(out) == set(syms), f"缺行情：{set(syms) - set(out)}"
     return out
 
 
-# ---------- 持仓页（内存快照 × 实时价）----------
+# ---------- 持仓页（内存快照 × 当日成交 × 实时价）----------
 # 量、成本、券商盈亏取自内存快照，随价变的列按 Δ价 × 量 平移（保留券商口径）。
+# 当日盈亏按成交价自算（毛，不扣费）：现市值 − 昨收 × 昨仓 − 今买额 + 今卖额，昨仓 = 现量 − 今买量 + 今卖量；
+# 今日清仓、持仓表已无此行的也算在内。
+
+NO_FLOW = {"bq": 0.0, "ba": 0.0, "sq": 0.0, "sa": 0.0}
 
 
-def _live(p, q):
-    """一只持仓按实时价平移。今日有买卖的拆不出昨仓与成交价，当日两列给 None；精简视图缺列同理。"""
+def flows(fills):
+    """当日成交按代码合计 → {code: {code, name, market_flag, bq, ba, sq, sa}}：买 / 卖的量（股）与额（元）。
+    fills 为 None（还没读过）回 None。"""
+    if fills is None:
+        return None
+    out = {}
+    for f in fills.rows:
+        a = out.setdefault(
+            f["code"],
+            {k: f[k] for k in ("code", "name", "market_flag")} | NO_FLOW,
+        )
+        s = "b" if f["side"] > 0 else "s"
+        a[s + "q"] += f["qty"]
+        a[s + "a"] += f["amount"]
+    return out
+
+
+def _synced(p, f):
+    """完整视图的今买 / 今卖数量须与成交合计相符，不符即两表之间又有成交（其一旧了）；精简视图无此两列，不核。"""
+    return p["bought"] is None or (p["bought"], p["sold"]) == (f["bq"], f["sq"])
+
+
+def synced(m, fl):
+    """快照 m 与成交合计 fl 对得上（fl 为 None 即还没读过成交，算对不上）。"""
+    return fl is not None and all(_synced(p, fl.get(p["code"], NO_FLOW)) for p in m.rows)
+
+
+def _day(bal, q, f):
+    """现量 bal、行情 q、该只成交合计 f → (当日盈亏, 当日盈亏%)；% 的分母为昨收市值 + 今买额。"""
+    base = (bal - f["bq"] + f["sq"]) * q["last_close"]
+    day = bal * q["price"] - base - f["ba"] + f["sa"]
+    den = base + f["ba"]
+    return day, day / den * 100 if den else None
+
+
+def _live(p, q, fl):
+    """一只持仓按实时价平移，附成本价与该只行情 q（盘口 / K 线页用）。
+    成交没读过或与快照对不上时，当日两列给 None。"""
     px, bal = q["price"], p["balance"]
     d = (px - p["price"]) * bal
-    flat = p["bought"] == 0 and p["sold"] == 0
+    f = None if fl is None else fl.get(p["code"], NO_FLOW)
+    assert f is None or f.get("market_flag", p["market_flag"]) == p["market_flag"], (
+        f"{p['code']} 成交与持仓的沪深标志不一致"
+    )
+    day, day_pct = _day(bal, q, f) if f is not None and _synced(p, f) else (None, None)
     return {
         "code": p["code"],
         "name": p["name"],
@@ -159,20 +222,53 @@ def _live(p, q):
         "market_value": p["market_value"] + d,
         "pnl": p["pnl"] + d,
         "pnl_pct": (px / p["cost"] - 1) * 100 if p["cost"] > 0 else None,
-        "day_pnl": (px - q["last_close"]) * bal if flat else None,
-        "day_pnl_pct": (px / q["last_close"] - 1) * 100 if flat else None,
+        "day_pnl": day,
+        "day_pnl_pct": day_pct,
         "margin_value": None if p["financed"] is None else p["financed"] * px,
         "sellable_value": p["available"] * px,
         "collateral": p["collateral"],
+        "cost": p["cost"],
+        "quote": q,
+        "closed": False,
         "d": d,
     }
 
 
-def view(m, q):
-    """内存快照 m × 行情 q → 持仓页一帧（只出数字，格式化归前端）。仓位(%) 的分母（券商口径的资产）
-    由快照反推：市值/仓位，取仓位最大那只（舍入误差最小），再随总市值变动平移。"""
+def _closed(f, q):
+    """今日清仓、持仓表已无此行的一只：只有当日盈亏，其余列空。"""
+    day, day_pct = _day(0.0, q, f)
+    return {
+        "code": f["code"],
+        "name": f["name"],
+        "price": q["price"],
+        "market_value": 0.0,
+        "pnl": None,
+        "pnl_pct": None,
+        "day_pnl": day,
+        "day_pnl_pct": day_pct,
+        "margin_value": None,
+        "sellable_value": None,
+        "collateral": None,
+        "cost": None,
+        "quote": q,
+        "closed": True,
+        "d": 0.0,
+    }
+
+
+def _gone(m, fl):
+    """今日有成交、持仓表已无此行的各只成交合计。"""
+    held = {p["code"] for p in m.rows}
+    return [f for c, f in (fl or {}).items() if c not in held]
+
+
+def view(m, fills, q):
+    """内存快照 m × 当日成交 fills × 行情 q → 持仓页一帧（只出数字，格式化归前端）。今日清仓的排在持仓之后。
+    仓位(%) 的分母（券商口径的资产）由快照反推：市值/仓位，取仓位最大那只（舍入误差最小），再随总市值变动平移。"""
     ps = m.rows
-    rows = [_live(p, q[_sym(p)]) for p in ps]
+    fl = flows(fills)
+    rows = [_live(p, q[_sym(p)], fl) for p in ps]
+    rows += [_closed(f, q[_sym(f)]) for f in _gone(m, fl)]
     top = max(ps, key=lambda p: p["position_pct"] or 0, default=None)
     base = None
     if top and top["position_pct"]:
@@ -187,6 +283,8 @@ def view(m, q):
         "pid": m.pid,
         "positions": rows,
         "totals": {k: tot(k) for k in ("market_value", "pnl", "day_pnl")},
+        "fills": None if fills is None else len(fills.rows),
+        "synced": synced(m, fl),
         "slippage": slippage(ps, q),
         "time": max((x["time"] for x in q.values()), default=""),
     }
@@ -194,28 +292,36 @@ def view(m, q):
 
 # ---------- 持仓推送（单一后台循环）----------
 # 一个线程管全部订阅者：每 TICK 复读活动块（约 0.03ms），换代（客户端自己重查过，如成交后）即重读内存；
-# 有订阅者时每 QUOTE_GAP 取一次行情；内存或行情变了才重算一帧、唤醒所有 /api/poswatch。
+# 有订阅者时每 QUOTE_GAP 取一次行情；内存、成交或行情变了才重算一帧、唤醒所有 pos 订阅。
 # 行情只此一路（滑点同帧复用其 5 档），开几个页面都不加量，免被限频封禁。
+# 当日成交只在客户端重查时更新，由 refresh 让客户端连查成交与持仓；触发它的事件（_due）：
+# 有订阅者而还没读过成交、console 下单成功后的 KICKS 定点、客户端自己重查了持仓却与成交对不上
+# （交易端成交了）。定时刷新与手动刷新走前端 /api/refresh，同一个 refresh。
 
 TICK = 0.1
 QUOTE_GAP = 1.5  # 新浪每 3s 一帧，1.5s 取一次：延迟 ≤1.5s、约 40 次/分
 FULL_EVERY = 60  # 全量扫描最长间隔：补全进程「活动块唯一」校验、跟上客户端换进程
 HEARTBEAT = 15  # 无新帧时的心跳间隔，顺带让断开的订阅者及时退出
+KICKS = (1, 6)  # console 下单成功后隔几秒各刷新一次（限价单可能稍后才成交）
+SYNC_TRIES = 2  # 一次 refresh 里成交与持仓对不上（两次查询之间又成交）时最多连查几轮
 
 
 class Hub:
     def __init__(self):
-        self.lock = threading.RLock()  # 管 mem/q：后台循环与 /api/refresh 互斥
+        self.lock = threading.RLock()  # 管 mem/fills/q：后台循环与 /api/refresh 互斥
         self.cond = threading.Condition()  # 管 frame/seq：唤醒订阅者
         self.mem = None  # mempos.Snap
+        self.fills = None  # memfills.Fills；None = 还没读过
         self.q = {}
         self.frame, self.seq = {}, 0
         self.subs = 0
-        self.stale = True  # mem/q 变了、帧未重算
+        self.stale = True  # mem/fills/q 变了、帧未重算
         self.scan_at = self.quote_at = 0.0
+        self.checked = None  # 最近一次 refresh 读到的快照：客户端自己换了代才再核对
+        self.kicks = []  # 待到点刷新的时刻（monotonic）
 
     def _put(self, k, v):
-        """mem / q 同一写法：总换成新值，变了才标 stale。"""
+        """mem / fills / q 同一写法：总换成新值，变了才标 stale。"""
         self.stale |= v != getattr(self, k)
         setattr(self, k, v)
 
@@ -225,8 +331,24 @@ class Hub:
         return mempos.read()
 
     def _quote(self):
+        """持仓与今日清仓的各只一并取行情。"""
         self.quote_at = time.monotonic()
-        return quotes(self.mem.rows)
+        return quotes(self.mem.rows + _gone(self.mem, flows(self.fills)))
+
+    def _due(self, now):
+        """该让客户端重查成交与持仓了（事件见本节开头）。须持 lock。"""
+        if self.fills is None:
+            return True
+        if self.kicks and now >= self.kicks[0]:
+            self.kicks.pop(0)
+            return True
+        return self.mem != self.checked and not synced(self.mem, flows(self.fills))
+
+    def kick(self):
+        """console 下单成功后：隔 KICKS 秒各刷新一次。"""
+        with self.lock:
+            now = time.monotonic()
+            self.kicks = sorted(self.kicks + [now + k for k in KICKS])
 
     def _snap(self):
         """当前快照，还没有即全量扫一次。须持 lock。"""
@@ -246,11 +368,15 @@ class Hub:
             self._put("mem", self._scan() if full else mempos.follow(self.mem))
             if not self.subs:
                 return
+            due = self._due(now)
+        if due and not UI.locked():  # 下单占着界面就等下一轮
+            self.refresh()
+        with self.lock:
             if self.stale or now - self.quote_at >= QUOTE_GAP:
                 self._put("q", self._quote())  # 内存变了即补取，保证行情覆盖新持仓
             if self.stale:
                 self.stale = False
-                self._push(view(self.mem, self.q))
+                self._push(view(self.mem, self.fills, self.q))
 
     def run(self):
         while True:
@@ -265,12 +391,21 @@ class Hub:
             time.sleep(TICK)
 
     def refresh(self):
-        """点交易栏「持仓」再「刷新」让客户端重查，等活动块换代即重读并推帧（实测约 0.25s）。"""
-        with self.lock:
-            snap = self._snap()
-            click_text(POS_BTN)
-            click_text(REFRESH_BTN)
-            self._put("mem", mempos.wait(snap))
+        """点交易栏「成交」「刷新」等成交副本换代，再「持仓」「刷新」等活动块换代（各实测约 0.25s），推帧。
+        两次查询之间又有成交即对不上，连查至多 SYNC_TRIES 轮；仍不对留给前端标出，不再自动重刷。
+        最后停在持仓页。"""
+        with UI, self.lock:
+            for _ in range(SYNC_TRIES):
+                snap = self._snap()
+                click_text(FILLS_BTN)
+                click_text(REFRESH_BTN)
+                self._put("fills", memfills.wait(snap.pid, self.fills))
+                click_text(POS_BTN)
+                click_text(REFRESH_BTN)
+                self._put("mem", mempos.wait(snap))
+                if synced(self.mem, flows(self.fills)):
+                    break
+            self.checked = self.mem
             self.stale = True  # 没换代也推一帧，前端借此结束「刷新中」
         return {}
 
@@ -292,6 +427,256 @@ class Hub:
 
 
 HUB = Hub()
+
+
+def _held(code):
+    """持仓里 code 那只（须唯一）。"""
+    with HUB.lock:
+        ps = [p for p in HUB._snap().rows if p["code"] == code]
+    assert len(ps) == 1, f"持仓里 {code} 命中 {len(ps)} 只"
+    return ps[0]
+
+
+# ---------- K 线（新浪，本地落盘）----------
+# 一根一项 [时刻, 开, 高, 低, 收, 量]（价 3 位小数、量单位股），旧在前。两种：
+#   日线：近 DAY_KEEP 个交易日 + 当日；分钟：1 分钟线，近 MIN_KEEP 个交易日 + 当日。
+# 新浪（实测）：1 分钟线按 09:31 … 11:30、13:01 … 15:00 标号，无成交的分钟没有这根（一天约 237~238 根），
+# 刚过去的那根还会被修正；单次至多 MIN_FETCH 根；日线盘中不含当日。
+# 落盘 DATA_DIR，CSV（time,open,high,low,close,volume）：
+#   day/<sym>.csv          今日以前的日线；
+#   min/<sym>/<日期>.csv    收完的一天（定稿已过当日 15:00）的分钟线，写后不改。
+# 今日盘中的分钟线只在内存；超出保留期的行 / 文件随写入删掉。盘口不留历史。
+# 取数只追不改：
+#   定稿：标号不晚于「取的时刻 − SETTLE」的不再变。
+#   增量：取「已有最后一根之后至今的根数上界（_gap / 工作日数，节假日只会多估）+ OVERLAP」根，
+#         重叠部分须与已有数据逐根一致才接上（无缝、未改）；没有已有数据或上界超出单次上限即取满上限，
+#         分钟掐掉最早那个被截断的日子，接不上已有数据就以新取的为准。
+#   分钟仅当又有一根该定稿时才取（每分钟至多一次，午休、盘后、周末不取）；日线每个自然日至多取一次。
+# 完整性：标号严格递增（分钟落在交易时段）、OHLC 自洽（取到的、读盘的都核）；分钟线每天落盘前与当日日线核对
+#   开 / 高 / 低 / 收 恰等、量在 [VOL_FLOOR, 1] × 日线量（实测深市恰等，沪市分钟合计少 0.05%~0.3%）。
+# 当日日线由实时行情合成（今开 / 最高 / 最低 / 现价 / 量，同日线口径）；进行中的分钟线前端随持仓帧用现价改写。
+
+DATA_DIR = os.path.join(os.path.dirname(HERE), "data", "kline")
+CSV_HEAD = "time,open,high,low,close,volume\n"
+DAY_KEEP = 180
+DAY_FETCH = DAY_KEEP + 10  # 盘后新浪日线含当日，多取几根
+MIN_KEEP = 7
+MIN_FETCH = 1970  # 新浪单次上限（实测 1970 可、1980 回 null），约 8 个交易日
+SETTLE = 90  # 秒
+OVERLAP = 3
+VOL_FLOOR = 0.95
+SINA_K = Sina("quotes.sina.cn")
+
+
+def _slot(hm):
+    """HH:MM → 当日到此为止的分钟线根数（09:31 = 1 … 11:30 = 120、13:01 = 121 … 15:00 = 240）。"""
+    m = int(hm[:2]) * 60 + int(hm[3:5])
+    return min(max(m - 570, 0), 120) + min(max(m - 780, 0), 120)
+
+
+def _stamp(t):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+
+
+def _wd(d):
+    return datetime.date.fromisoformat(d).weekday() < 5
+
+
+def _weekdays(d0, d1):
+    """日期 d0、d1 之间（不含两端）的工作日数。"""
+    a, b = (datetime.date.fromisoformat(d) for d in (d0, d1))
+    return sum((a + datetime.timedelta(i)).weekday() < 5 for i in range(1, (b - a).days))
+
+
+def _gap(a, b):
+    """时刻 a 之后、b 及以前至多有几根分钟线：工作日按交易时段计。"""
+    (da, ta), (db, tb) = a.split(), b.split()
+    if da == db:
+        return (_slot(tb) - _slot(ta)) * _wd(da)
+    return (240 - _slot(ta)) * _wd(da) + 240 * _weekdays(da, db) + _slot(tb) * _wd(db)
+
+
+def _bar(t, o, h, l, c, v):
+    return [t, *(round(float(x), 3) for x in (o, h, l, c)), int(float(v))]
+
+
+def _check(what, bars, minute):
+    """标号严格递增、OHLC 自洽、分钟标号落在交易时段；原样返回。"""
+    for a, b in zip(bars, bars[1:]):
+        assert a[0] < b[0], f"{what} K 线标号不递增：{a[0]} → {b[0]}"
+    for t, o, h, l, c, v in bars:
+        assert l <= min(o, c) and max(o, c) <= h and v >= 0, f"{what} {t} OHLC 不自洽"
+        hm = t[11:16]
+        assert (
+            not minute or "09:31" <= hm <= "11:30" or "13:01" <= hm <= "15:00"
+        ), f"{what} 分钟线标号 {t} 不在交易时段"
+    return bars
+
+
+def _load(path, minute):
+    """读一个 CSV 并校验；没有文件回 []。"""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        assert f.readline() == CSV_HEAD, f"{path} 表头不对"
+        return _check(path, [_bar(*ln.rstrip("\n").split(",")) for ln in f], minute)
+
+
+def _save(path, bars):
+    """整写：先写临时文件再改名，中途断掉不留半个文件。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        f.write(CSV_HEAD)
+        f.writelines(
+            f"{t},{o:.3f},{h:.3f},{l:.3f},{c:.3f},{v}\n" for t, o, h, l, c, v in bars
+        )
+    os.replace(path + ".tmp", path)
+
+
+def _fetch(sym, scale, n):
+    """取 n 根（scale 分钟，240 = 日）并校验。"""
+    body = SINA_K.get(
+        "/cn/api/json_v2.php/CN_MarketDataService.getKLineData"
+        f"?symbol={sym}&scale={scale}&ma=no&datalen={n}"
+    )
+    rows = json.loads(body)
+    assert isinstance(rows, list) and rows, f"{sym} K 线：{body[:80]!r}"
+    keys = ("day", "open", "high", "low", "close", "volume")
+    return _check(sym, [_bar(*(k[x] for x in keys)) for k in rows], scale != 240)
+
+
+def _join(sym, old, new, full):
+    """已定稿的 old 接上新取的 new：重叠部分须逐根一致；new 是取满上限的（full）且够不着 old 即以 new 为准。"""
+    if not old:
+        return new
+    last = old[-1][0]
+    lap = [b for b in new if b[0] <= last]
+    if not lap:
+        assert full, f"{sym} 新取 {len(new)} 根与已有无重叠（最早 {new[0][0]}，已有到 {last}）"
+        return new
+    tail = [b for b in old if b[0] >= lap[0][0]]
+    assert lap == tail, f"{sym} 已定稿的 K 线被改过：{tail} → {lap}"
+    return old + [b for b in new if b[0] > last]
+
+
+def _verify(sym, day, g, k):
+    """收完的一天分钟线 g 与当日日线 k 核对：开 / 高 / 低 / 收 恰等，量在 [VOL_FLOOR, 1] × 日线量。"""
+    assert k, f"{sym} 日线缺 {day}，分钟线无从核对"
+    ohlc = [g[0][1], max(b[2] for b in g), min(b[3] for b in g), g[-1][4]]
+    assert ohlc == k[1:5], f"{sym} {day} 分钟线合成 {ohlc} ≠ 日线 {k[1:5]}"
+    v = sum(b[5] for b in g)
+    assert VOL_FLOOR * k[5] <= v <= k[5], f"{sym} {day} 分钟线量 {v} 与日线 {k[5]} 不符"
+
+
+class KCache:
+    """以盘上为准，内存只多今日盘中的分钟线；取数与读写盘串行（一把锁）。"""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.days = {}  # sym → (取的日期, 今日以前的日线)
+        self.mins = {}  # sym → {bars, final：此刻及以前的标号已定稿；None = 只读了盘、还没取过}
+
+    def _days(self, sym):
+        """今日以前的日线：读盘，每个自然日至多增量取一次，接上后落盘。须持 lock。"""
+        today = time.strftime("%Y-%m-%d")
+        c = self.days.get(sym)
+        if c and c[0] == today:
+            return c[1]
+        path = os.path.join(DATA_DIR, "day", sym + ".csv")
+        old = _load(path, False)
+        n = _weekdays(old[-1][0], today) + 1 + OVERLAP if old else DAY_FETCH
+        new = [b for b in _fetch(sym, 240, min(n, DAY_FETCH)) if b[0] < today]
+        bars = _join(sym, old, new, n >= DAY_FETCH)[-DAY_KEEP:]
+        if bars != old:
+            _save(path, bars)
+        self.days[sym] = (today, bars)
+        return bars
+
+    def _daily(self, sym, q):
+        """今日以前的日线；行情 q 的交易日更新且已开盘即合成一根接上。须持 lock。"""
+        bars = self._days(sym)
+        if q["open"] > 0 and q["date"] > bars[-1][0]:
+            day = (q["date"], q["open"], q["high"], q["low"], q["price"], q["volume"])
+            bars = bars + [_bar(*day)]
+        return bars
+
+    def _mins(self, sym):
+        """盘上的分钟线：各天文件按日期接起来，每个文件只含该日。"""
+        d = os.path.join(DATA_DIR, "min", sym)
+        names = sorted(os.listdir(d)) if os.path.isdir(d) else []
+        bars = []
+        for name in names:
+            assert re.fullmatch(r"\d{4}-\d\d-\d\d\.csv", name), f"{d} 里有别的文件 {name}"
+            g = _load(os.path.join(d, name), True)
+            assert g and all(b[0][:10] == name[:10] for b in g), f"{d}/{name} 混了别的日子"
+            bars += g
+        return _check(d, bars, True)
+
+    def _grow(self, sym, c, now, q):
+        """增量取分钟线接上已定稿部分，收完的日子落盘，按保留期裁剪。须持 lock。"""
+        fin = c["bars"] if c["final"] is None else [b for b in c["bars"] if b[0] <= c["final"]]
+        n = _gap(fin[-1][0], _stamp(now)) + OVERLAP if fin else MIN_FETCH
+        full = n >= MIN_FETCH
+        new = _fetch(sym, 1, min(n, MIN_FETCH))
+        if full:
+            new = [b for b in new if b[0][:10] > new[0][0][:10]]
+            assert new, f"{sym} 取满 {MIN_FETCH} 根仍不够一天"
+        bars = _join(sym, fin, new, full)
+        today = _stamp(now)[:10]
+        past = sorted({b[0][:10] for b in bars if b[0][:10] < today})[-MIN_KEEP:]
+        c["bars"] = [b for b in bars if b[0][:10] >= (past[0] if past else today)]
+        c["final"] = _stamp(now - SETTLE)
+        self._persist(sym, c, q)
+
+    def _persist(self, sym, c, q):
+        """收完的日子（定稿已过当日 15:00）与日线核对后各写一个文件，写过的不重写；保留期外的文件删掉。"""
+        d = os.path.join(DATA_DIR, "min", sym)
+        have = set(os.listdir(d)) if os.path.isdir(d) else set()
+        days = {b[0]: b for b in self._daily(sym, q)}
+        keep = set()
+        for day, g in itertools.groupby(c["bars"], key=lambda b: b[0][:10]):
+            name = day + ".csv"
+            keep.add(name)
+            if name in have or c["final"] < day + " 15:00:00":
+                continue
+            g = list(g)
+            _verify(sym, day, g, days.get(day))
+            _save(os.path.join(d, name), g)
+        for name in have - keep:
+            os.remove(os.path.join(d, name))
+
+    def minutes(self, sym, q, n):
+        """近 n 个交易日的分钟线（开盘后含今日）：先读盘，又有一根该定稿了才取。"""
+        assert 1 <= n <= MIN_KEEP, f"分钟线天数 {n}，可选 1~{MIN_KEEP}"
+        with self.lock:
+            now = time.time()
+            c = self.mins.get(sym)
+            if c is None:
+                c = self.mins[sym] = {"bars": self._mins(sym), "final": None}
+            if c["final"] is None or _gap(c["final"], _stamp(now - SETTLE)) > 0:
+                self._grow(sym, c, now, q)
+            bars = c["bars"]
+        keep = sorted({b[0][:10] for b in bars})[-n:]
+        return [b for b in bars if b[0][:10] >= keep[0]]
+
+    def daily(self, sym, q):
+        with self.lock:
+            return self._daily(sym, q)
+
+
+KCACHE = KCache()
+
+
+def kline(b):
+    """b = {code, kind: min|day, days: 分钟线天数} → 持仓页行情里（持仓与今日清仓）该只的 K 线。"""
+    assert b["kind"] in ("min", "day"), f"K 线种类 {b['kind']!r}"
+    with HUB.lock:
+        hits = [(s, q) for s, q in HUB.q.items() if s[2:] == b["code"]]
+    assert len(hits) == 1, f"持仓页行情里 {b['code']} 命中 {len(hits)} 只"
+    sym, q = hits[0]
+    if b["kind"] == "min":
+        return KCACHE.minutes(sym, q, int(b["days"]))
+    return KCACHE.daily(sym, q)
 
 
 # ---------- 滑点（持仓 × 5 档盘口，相对参考价）----------
@@ -624,16 +1009,14 @@ class Orders:
         side, size = b["side"], int(b["size"])
         assert side in ("buy", "sell") and size >= 0, f"参数不对：{b}"
         assert b["px"] in PX_MODES and b["credit"] in ("plain", "margin"), f"参数不对：{b}"
-        with HUB.lock:
-            ps = [p for p in HUB._snap().rows if p["code"] == b["code"]]
-        assert len(ps) == 1, f"持仓里 {b['code']} 命中 {len(ps)} 只"
+        p = _held(b["code"])
         with self.cond:
             assert not any(j["state"] == "run" for j in self.jobs), "上一单还没结束"
             job = {
                 "id": next(self.ids),
                 "t": time.strftime("%H:%M:%S"),
                 "code": b["code"],
-                "name": ps[0]["name"],
+                "name": p["name"],
                 "side": side,
                 "label": f"{size // 10000}W" if size else "最小",
                 "steps": ORDER_STEPS,
@@ -647,13 +1030,15 @@ class Orders:
             self.cond.notify_all()
         kind = "sell" if side == "sell" else "margin" if b["credit"] == "margin" else "buy"
         threading.Thread(
-            target=self._run, args=(job, ps[0], kind, size, b["px"]), daemon=True
+            target=self._run, args=(job, p, kind, size, b["px"]), daemon=True
         ).start()
         return job
 
     def _run(self, job, p, kind, size, mode):
         try:
-            self._place(job, p, kind, size, mode)
+            with UI:
+                self._place(job, p, kind, size, mode)
+            HUB.kick()
         except Exception as e:  # 错误边界（同 Hub.run）：停在当前步，报原因
             self._put(job, state="err", msg=f"{type(e).__name__}: {e}")
 
@@ -877,17 +1262,54 @@ class Recorder:
 REC = Recorder()
 
 
+# ---------- 合路推送 ----------
+# 各路是独立的生成器（各自阻塞、各自心跳），每路一个线程抽取进同一队列。
+# 连接断开时置 done，各路在下一条（至迟一个心跳）时自行收尾。
+
+WATCH = {
+    "tree": lambda: SHIM.lines("treewatch"),
+    "gdi": lambda: SHIM.lines("gdiwatch"),
+    "pos": HUB.frames,
+    "ord": ORDERS.watch,
+    "rec": REC.watch,
+}
+
+
+def watch(b):
+    names = b["s"].split(",")
+    assert all(n in WATCH for n in names), f"订阅 {names}，可选 {list(WATCH)}"
+    q = queue.Queue()
+    done = threading.Event()
+
+    def pump(name):
+        try:
+            with closing(WATCH[name]()) as g:
+                for x in g:
+                    if done.is_set():
+                        return
+                    q.put((name, f'{{"s": "{name}", "r": {x}}}'))
+        finally:
+            q.put((name, None))  # 该路断了（出错或结束）：整条连接跟着断，前端自动重连
+
+    for n in names:
+        threading.Thread(target=pump, args=(n,), daemon=True).start()
+    try:
+        while True:
+            name, x = q.get()
+            assert x is not None, f"推送 {name} 断了"
+            yield x
+    finally:
+        done.set()
+
+
 # ---------- 路由 ----------
 # 处理函数一律 fn(body) → 应答；应答类型决定载体：str=页面、生成器=SSE、其余=JSON。
+# GET 的 body 是查询串。
 
 GET = {
     "/": lambda b: open(HTML_FILE, encoding="utf-8").read(),
     "/api/ping": lambda b: {"pid": SHIM("ping")[0]["pid"] if SHIM.online() else None},
-    "/api/treewatch": lambda b: SHIM.lines("treewatch"),
-    "/api/gdiwatch": lambda b: SHIM.lines("gdiwatch"),
-    "/api/poswatch": lambda b: HUB.frames(),
-    "/api/recwatch": lambda b: REC.watch(),
-    "/api/ordwatch": lambda b: ORDERS.watch(),
+    "/api/watch": watch,
 }
 
 POST = {
@@ -897,6 +1319,7 @@ POST = {
     "/api/rec": lambda b: REC.start() if b["on"] else REC.stop(),
     "/api/recmark": lambda b: REC.mark(b["text"]),
     "/api/order": ORDERS.submit,
+    "/api/kline": kline,
 }
 
 
@@ -912,15 +1335,16 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def do_GET(self):
-        self._route(GET, {})
+        path, _, qs = self.path.partition("?")
+        self._route(GET, path, dict(urllib.parse.parse_qsl(qs)))
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        self._route(POST, json.loads(self.rfile.read(n)) if n else {})
+        self._route(POST, self.path, json.loads(self.rfile.read(n)) if n else {})
 
-    def _route(self, table, b):
+    def _route(self, table, path, b):
         try:
-            body = table[self.path](b)
+            body = table[path](b)
         except Exception as e:  # 唯一错误边界：任何失败都回 {err} 给前端显示
             body = {"err": f"{type(e).__name__}: {e}"}
         if isinstance(body, str):

@@ -46,7 +46,7 @@ constexpr ImVec4 kColHead(0.4f, 0.8f, 1.0f, 1.0f);
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
-// Mine / Config 页的选项 (kUiFile 读写同一份字段清单): 作用域 / 连接 / 模型 / 评估后端 / 入库门槛 / 澄清 (下次 New 生效) + Config 页在看的模板
+// Mine / Config 页的选项 (kUiFile 读写同一份字段清单): 作用域 / 连接 / 模型 / 评估后端 / 入库门槛 / 可否提问 (下次 New 生效) + Config 页在看的模板
 struct Options {
   Scope sc;
   int backend = 0;
@@ -61,7 +61,7 @@ struct Options {
   int proxy_port = kProxyPort;
   int gpu = -1; // -1 = 未定 (有 GPU 默认 GPU)
   Gate gate{kGateMono, kGateRic};
-  bool ask = true; // 首轮让 agent 提问
+  bool ask = true; // agent 可用 ask_human 向人提一次问
   int prompt = 0;  // Msg 下标
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, ask, prompt)
@@ -279,19 +279,19 @@ void session_row(const SharedData &data, State &s) {
   ImGui::EndDisabled();
   tip(!keyed         ? "所选后端的 key 未填 (config/agent/keys.json)"
       : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                     : "按当前作用域与 Config 开新会话: 打包规则发给 agent, 它先提问 (Config 页开了澄清) 或直接开挖\n资产轴与标签就绪才开得成");
+                     : "按当前作用域与 Config 开新会话: 打包规则与工具表发给 agent, 它调工具看数据、回测、提交\n资产轴与标签就绪才开得成");
   ImGui::SameLine();
   ImGui::BeginDisabled(m.phase() != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0)))
     m.start();
   ImGui::EndDisabled();
-  tip("把选好的答案与附言发给 agent, 开始全自动挖掘");
+  tip("把选好的答案与附言作为 ask_human 的结果交给 agent, 接着执行余下的调用");
   ImGui::SameLine();
   ImGui::BeginDisabled(!m.live() || m.stopping());
   if (ImGui::Button("Stop", ImVec2(60, 0)))
     m.stop();
   ImGui::EndDisabled();
-  tip("当前这步做完再结束");
+  tip("在做的调用做完再结束");
   ImGui::SameLine();
   ImGui::BeginDisabled(!m.live());
   if (ImGui::Button("Cancel", ImVec2(60, 0)))
@@ -303,7 +303,7 @@ void session_row(const SharedData &data, State &s) {
     const Mine::Setup &st = m.setup;
     ImGui::SameLine();
     ImGui::TextDisabled("%s · %s %s · %s · %s", catalog::label(st.sc).c_str(), llm::def(st.llm.backend).name, st.llm.model.c_str(), st.gpu ? "GPU" : "CPU",
-                        st.ask ? "澄清" : "直挖");
+                        st.ask ? "可提问" : "不提问");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", m.log_dir().c_str());
   }
@@ -465,10 +465,12 @@ bool fold(const char *id, ImGuiTreeNodeFlags flags, const std::string &label, co
   return toggled;
 }
 
-// 回测中的候选 (一批至多一个)
-const Trial *evaluating(const Mined &b) {
-  const auto it = std::find_if(b.batch.begin(), b.batch.end(), [](const Trial &k) { return k.span.running(); });
-  return it == b.batch.end() ? nullptr : &*it;
+// 在做的调用 (Act / Choose 中; 否则空)
+const Act *acting(const Mine &m) {
+  if (m.phase() != Phase::Act && m.phase() != Phase::Choose)
+    return nullptr;
+  const std::vector<Act> &as = m.timeline.back().acts;
+  return m.acting() < as.size() ? &as[m.acting()] : nullptr;
 }
 const char *step_name(const Trial &k) { return k.run.began() ? "Run" : "Search"; }
 
@@ -483,14 +485,15 @@ void now_row(State &s, const Mine &m, const Flow &f) {
   const Mine::Total &all = m.total;
   const llm::Reply &live = s.chat_live.reply;
   const Lab::Live &ll = s.lab_live;
-  double llm_s = all.llm_s, eval_s = all.eval_s;
+  const Act *a = acting(m);
+  double llm_s = all.llm_s, act_s = all.act_s;
   if (const Mine::Round &rd = m.timeline.back(); rd.span.running())
     llm_s += rd.span.len(t);
-  else if (const Mined *b = std::get_if<Mined>(&rd.got); b && b->span.running())
-    eval_s += b->span.len(t);
+  if (a && a->span.running())
+    act_s += a->span.len(t);
   std::string what;
   TaskStatus::Kind kind = TaskStatus::Kind::Busy;
-  float frac = -1.0f; // 回测总进度 (−1 = 不画)
+  float frac = -1.0f; // 在做那步的进度 (−1 = 不画)
   if (f.stage != Flow::Idle) {
     what = "第 " + std::to_string(m.timeline.size()) + " 轮 · agent " + doing(f);
     if (!f.topic.empty())
@@ -506,19 +509,22 @@ void now_row(State &s, const Mine &m, const Flow &f) {
     case Phase::Choose:
       what = "等你选答案: 已按推荐预选, 改完按 Start", kind = TaskStatus::Kind::Warn;
       break;
-    case Phase::Eval: {
-      const Mine::Round &rd = m.timeline.back();
-      const Mined &b = std::get<Mined>(rd.got);
-      const Mine::Tally &c = rd.tally;
-      if (const Trial *k = evaluating(b); !k) {
-        what = "回测收尾…";
-      } else {
-        char pct[64];
-        std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
-        what = "回测中… " + std::to_string(c.settled + 1) + "/" + std::to_string(c.staged) + " · " + step_name(*k) + " " + k->st.file + pct + " · 本轮 " +
-               dur(b.span.len(t));
-        frac = c.staged > 0 ? static_cast<float>((c.settled + ll.frac) / c.staged) : 0.0f;
+    case Phase::Act: {
+      if (!a) {
+        what = "处理回复";
+        break;
       }
+      what = "第 " + std::to_string(m.timeline.size()) + " 轮 · 调用 " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size()) + " " +
+             clip(a->call.text(), kTopicChars);
+      if (const Trial *k = std::get_if<Trial>(&a->got)) {
+        char pct[32];
+        std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
+        what += std::string(" · ") + step_name(*k) + pct;
+        frac = static_cast<float>(ll.frac);
+      } else {
+        what += " · 执行中…";
+      }
+      what += " " + dur(a->span.len(t));
       break;
     }
     case Phase::Report:
@@ -530,7 +536,7 @@ void now_row(State &s, const Mine &m, const Flow &f) {
     }
   }
   if (m.stopping())
-    what += " · 本步做完即停", kind = TaskStatus::Kind::Warn;
+    what += " · 在做的调用做完即停", kind = TaskStatus::Kind::Warn;
   if (frac >= 0.0f) {
     ImGui::ProgressBar(frac, ImVec2(120, 0), "");
     ImGui::SameLine();
@@ -544,14 +550,14 @@ void now_row(State &s, const Mine &m, const Flow &f) {
       ImGui::SetTooltip("点击跳到当前轮");
     }
   }
-  ImGui::TextDisabled("用时 %s · LLM %s · 回测 %s · token 输入 %s (缓存 %s) / 输出 %s · %zu 轮 · 候选 %d · 入库 %d", dur(t).c_str(), dur(llm_s).c_str(), dur(eval_s).c_str(),
-                      kilo(all.usage.prompt).c_str(), kilo(all.usage.cached).c_str(), kilo(all.usage.completion).c_str(), m.timeline.size(), all.tally.staged,
-                      all.tally.adopted);
+  ImGui::TextDisabled("用时 %s · LLM %s · 执行 %s · token 输入 %s (缓存 %s) / 输出 %s · %zu 轮 · 调用 %d (观察 %d) · 候选 %d · 入库 %d", dur(t).c_str(), dur(llm_s).c_str(),
+                      dur(act_s).c_str(), kilo(all.usage.prompt).c_str(), kilo(all.usage.cached).c_str(), kilo(all.usage.completion).c_str(), m.timeline.size(),
+                      all.tally.calls, all.tally.looks, all.tally.staged, all.tally.adopted);
   if (!ll.message.empty())
     wrapped(color(TaskStatus::Kind::Warn), ll.message);
 }
 
-// 澄清: 逐题点选 (已按推荐预选; 末项 "其他" 自己写意见) + 附言; edit = 在 Choose 的末轮. 返回 = 按了 Start
+// ask_human: 逐题点选 (已按推荐预选; 末项 "其他" 自己写意见) + 附言; edit = Choose 中在问的那个调用. 返回 = 按了 Start
 bool asked_block(Asked &a, bool edit) {
   if (edit)
     ImGui::TextColored(color(TaskStatus::Kind::Warn), "已按推荐预选, 只改不同意的 (可选 \"其他\" 自己写), 改完按 Start");
@@ -655,20 +661,19 @@ void result_line(const Names &in, const Result &r) {
   tip_long(detail(r));
 }
 
-// 时间线的树: 组 (每 kGroupRounds 轮, 超过一组才分) → 轮 → 候选 / 文本块; 每层标题即摘要.
+// 时间线的树: 组 (每 kGroupRounds 轮, 超过一组才分) → 轮 → 调用 / 文本块; 每层标题即摘要.
 // 新一轮来时只留最近 kOpenRounds 轮 (及其所在组) 展开, 更早的自动折叠; 人手动开合的保持到下一轮来
 constexpr size_t kGroupRounds = 10, kOpenRounds = 2;
 constexpr ImGuiTreeNodeFlags kNode = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DrawLinesFull;
+constexpr size_t kCallChars = 96; // 调用一行在标题里的字数
 
-bool settled(const Trial &k) { return k.span.ended() || k.st.res.verdict == Verdict::Unstaged; } // 已有定论
-
-// 一轮里的一个候选: 标题 = 名 + 回测状态 / 用时 + 结局一行 (悬浮看表达式); 展开 = 表达式, 思路, 结局全文.
+// eval_factor 调用: 标题 = 名 + 回测状态 / 用时 + 结局一行 (悬浮看表达式); 展开 = 表达式, 思路, 结局全文.
 // 默认收起; 定论那刻 (换节点 id, 开合重定) 未落 / BROKEN / 有参数组的自动展开
-void cand_block(const Mine &m, const Trial &k, size_t i, const Lab::Live &ll) {
+void cand_block(const Mine &m, const Act &a, const Lab::Live &ll) {
+  const Trial &k = std::get<Trial>(a.got);
   const Staged &st = k.st;
   const Result &res = st.res;
-  const bool done = settled(k);
-  ImGui::PushID(static_cast<int>(i));
+  const bool done = a.span.ended();
   if (done)
     ImGui::SetNextItemOpen(res.verdict == Verdict::Unstaged || res.verdict == Verdict::Broken || res.verdict == Verdict::Weights, ImGuiCond_Once);
   ImGui::PushStyleColor(ImGuiCol_Text, kColHead);
@@ -696,8 +701,8 @@ void cand_block(const Mine &m, const Trial &k, size_t i, const Lab::Live &ll) {
       ImGui::SameLine();
     }
     ImGui::TextColored(color(kind_of(m.adopted, res)), "%s", brief(m.adopted, res).c_str());
-  } else if (k.span.running() && m.live()) {
-    ImGui::TextColored(color(TaskStatus::Kind::Busy), "%s… %.0f%% · %s", step_name(k), ll.frac * 100.0, dur(k.span.len(t)).c_str());
+  } else if (a.span.running() && m.live()) {
+    ImGui::TextColored(color(TaskStatus::Kind::Busy), "%s… %.0f%% · %s", step_name(k), ll.frac * 100.0, dur(a.span.len(t)).c_str());
   } else {
     ImGui::TextDisabled("%s", m.live() ? "排队" : "未评");
   }
@@ -709,44 +714,39 @@ void cand_block(const Mine &m, const Trial &k, size_t i, const Lab::Live &ll) {
       wrapped(color(kind_of(m.adopted, res)), detail(res));
     ImGui::TreePop();
   }
-  ImGui::PopID();
 }
 
-// 挖掘: 候选 (回测状态 / 结局) + 提交 + issues
-void mined_block(const Mine &m, const Mined &b, const Lab::Live &ll) {
-  const size_t n = b.batch.size();
-  if (n > 0) {
-    std::string label = "候选 " + std::to_string(n);
-    TaskStatus::Kind kind = TaskStatus::Kind::None;
-    if (b.span.ended())
-      label += " · 回测 " + dur(b.span.len(m.now()));
-    else if (b.span.running() && m.live())
-      label += " · 回测中… " + std::to_string(std::count_if(b.batch.begin(), b.batch.end(), settled)) + "/" + std::to_string(n) + " · " + dur(b.span.len(m.now())),
-          kind = TaskStatus::Kind::Busy;
-    else
-      label += " · 回测中断", kind = TaskStatus::Kind::Warn;
-    ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
-    const bool open = ImGui::TreeNodeEx("cands", kNode | ImGuiTreeNodeFlags_DefaultOpen, "%s", label.c_str());
+// 一个调用: eval_factor 同候选; ask_human = 问答 (edit = 在问它); 其余 = 调用一行 + 状态 / 用时, 展开 = 交给 agent 的结果. 返回 = 按了 Start
+bool act_block(const Mine &m, Act &a, size_t i, bool edit, const Lab::Live &ll) {
+  ImGui::PushID(static_cast<int>(i));
+  bool start = false;
+  const double t = m.now();
+  if (std::holds_alternative<Trial>(a.got)) {
+    cand_block(m, a, ll);
+  } else if (Asked *q = std::get_if<Asked>(&a.got)) {
+    ImGui::PushStyleColor(ImGuiCol_Text, color(edit ? TaskStatus::Kind::Warn : TaskStatus::Kind::None));
+    const bool open = ImGui::TreeNodeEx("ask", kNode | ImGuiTreeNodeFlags_DefaultOpen, "问研究员 · %zu 个问题%s", q->qs.size(), edit ? " · 等你答" : "");
     ImGui::PopStyleColor();
     if (open) {
-      for (size_t i = 0; i < n; ++i)
-        cand_block(m, b.batch[i], i, ll);
+      start = asked_block(*q, edit);
       ImGui::TreePop();
     }
-  }
-  for (const Submitted &x : b.submitted) {
-    ImGui::Bullet();
-    if (x.err.empty())
-      ImGui::TextColored(color(TaskStatus::Kind::Ready), "提交 %s → 入库", x.name.c_str());
+  } else {
+    const ToolDef &d = def(a.call.tool);
+    std::string label = std::string(d.cn) + " · " + clip(a.call.text(), kCallChars);
+    TaskStatus::Kind kind = TaskStatus::Kind::None;
+    if (a.span.ended())
+      label += " · " + dur(a.span.len(t)) + (a.ok ? "" : " · 没做成"), kind = a.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn;
+    else if (a.span.running() && m.live())
+      label += " · 执行中… " + dur(a.span.len(t)), kind = TaskStatus::Kind::Busy;
     else
-      wrapped(color(TaskStatus::Kind::Warn), "提交 " + x.name + " → 未入库: " + x.err);
+      label += m.live() ? " · 排队" : " · 未做", kind = TaskStatus::Kind::Muted;
+    ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
+    fold("act", ImGuiTreeNodeFlags_None, label, a.out, false, kBoxLines, false);
+    ImGui::PopStyleColor();
   }
-  for (const std::string &x : b.issues) {
-    ImGui::Bullet();
-    wrapped(color(TaskStatus::Kind::Warn), "issue: " + x);
-  }
-  if (b.done)
-    ImGui::TextColored(color(TaskStatus::Kind::Ready), "agent 宣布挖完");
+  ImGui::PopID();
+  return start;
 }
 
 // 一轮的标题 (折起来也看得出这轮干了什么)
@@ -765,29 +765,30 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
     kind = TaskStatus::Kind::Error;
     return h + (replied && !rd.reply.ok() ? " · 回复失败" : " · 不合协议");
   }
-  if (const Asked *a = std::get_if<Asked>(&rd.got))
-    return h + " · " + std::to_string(a->qs.size()) + " 个问题";
-  const Mined *b = std::get_if<Mined>(&rd.got);
-  if (!b)
+  if (rd.acts.empty())
     return h;
   const Mine::Tally &c = rd.tally;
-  h += " · 候选 " + std::to_string(c.staged) + (c.unstaged ? " (未落 " + std::to_string(c.unstaged) + ")" : "");
-  if (b->span.running() && m.live())
-    h += " · 回测中…", kind = TaskStatus::Kind::Busy;
-  else if (c.staged > 0)
-    h += " · 有权重 " + std::to_string(c.hits);
+  h += " · 调用 " + std::to_string(c.calls);
+  if (c.looks > 0)
+    h += " · 观察 " + std::to_string(c.looks);
+  if (c.staged + c.unstaged > 0)
+    h += " · 候选 " + std::to_string(c.staged) + (c.unstaged ? " (未落 " + std::to_string(c.unstaged) + ")" : "") + " · 有权重 " + std::to_string(c.hits);
   if (c.submits > 0)
     h += " · 提交 " + std::to_string(c.submits) + " (入库 " + std::to_string(c.adopted) + ")";
-  if (c.adopted > 0 && kind == TaskStatus::Kind::None)
-    kind = TaskStatus::Kind::Ready;
   if (c.issues > 0)
     h += " · issue " + std::to_string(c.issues);
-  if (b->done)
+  if (std::any_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::Finish; }))
     h += " · 宣布挖完";
+  if (i + 1 == m.timeline.size() && m.phase() == Phase::Choose)
+    h += " · 等你答", kind = TaskStatus::Kind::Warn;
+  else if (i + 1 == m.timeline.size() && m.phase() == Phase::Act)
+    h += " · 执行中… " + std::to_string(m.acting()) + "/" + std::to_string(rd.acts.size()), kind = TaskStatus::Kind::Busy;
+  else if (c.adopted > 0)
+    kind = TaskStatus::Kind::Ready;
   return h;
 }
 
-// 一轮: 发出 → 思考 → 回复 (结构化 + 原文) → 回测; 在收的一轮画 live. fresh = 新一轮刚来 (重定开合); s.jump = 末轮展开并滚到它. 返回 = 按了 Start
+// 一轮: 发出 → 思考 → 回复 (逐个调用 + 原文); 在收的一轮画 live. fresh = 新一轮刚来 (重定开合); s.jump = 末轮展开并滚到它. 返回 = 按了 Start
 bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   Mine::Round &rd = m.timeline[i];
   const bool replied = rd.span.ended(), last = i + 1 == m.timeline.size();
@@ -839,10 +840,8 @@ bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
     ImGui::TextColored(color(r.ok() ? TaskStatus::Kind::None : TaskStatus::Kind::Error), "%s", line.c_str());
     if (!rd.err.empty())
       wrapped(color(TaskStatus::Kind::Error), rd.err);
-    if (Asked *a = std::get_if<Asked>(&rd.got))
-      start = asked_block(*a, m.phase() == Phase::Choose && i + 1 == m.timeline.size());
-    else if (const Mined *b = std::get_if<Mined>(&rd.got))
-      mined_block(m, *b, s.lab_live);
+    for (size_t j = 0; j < rd.acts.size(); ++j)
+      start |= act_block(m, rd.acts[j], j, last && m.phase() == Phase::Choose && j == m.acting(), s.lab_live);
     fold("text", ImGuiTreeNodeFlags_None, "原文 " + chars(r.text), r.text, false, kBoxLines, false);
   }
   ImGui::TreePop();
@@ -850,13 +849,13 @@ bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   return start;
 }
 
-// 一组轮的标题: 轮次 / 起始时刻 / 候选 / 有权重 / 入库
+// 一组轮的标题: 轮次 / 起始时刻 / 调用 / 观察 / 候选 / 有权重 / 入库
 std::string group_head(const Mine &m, size_t g0, size_t g1) {
   Mine::Tally c;
   for (size_t i = g0; i < g1; ++i)
     c += m.timeline[i].tally;
-  return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 候选 " + std::to_string(c.staged) + " · 有权重 " +
-         std::to_string(c.hits) + " · 入库 " + std::to_string(c.adopted);
+  return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.calls) + " · 观察 " +
+         std::to_string(c.looks) + " · 候选 " + std::to_string(c.staged) + " · 有权重 " + std::to_string(c.hits) + " · 入库 " + std::to_string(c.adopted);
 }
 
 // 结束汇总: 计数 + 本会话有参数组的候选 (入库的在前, 再按 score 降序; 先列 kSummaryRows 个, 其余折起) + 结束报告
@@ -864,19 +863,17 @@ constexpr size_t kSummaryRows = 5;
 void summary_block(const Mine &m) {
   const Mine::Tally &c = m.total.tally;
   std::vector<const Result *> hits;
-  for (const Mine::Round &rd : m.timeline) {
-    if (const Mined *b = std::get_if<Mined>(&rd.got))
-      for (const Trial &k : b->batch)
-        if (k.st.res.verdict == Verdict::Weights)
-          hits.push_back(&k.st.res);
-  }
+  for (const Mine::Round &rd : m.timeline)
+    for (const Act &a : rd.acts)
+      if (const Trial *k = std::get_if<Trial>(&a.got); k && k->st.res.verdict == Verdict::Weights)
+        hits.push_back(&k->st.res);
   std::stable_sort(hits.begin(), hits.end(), [&](const Result *a, const Result *b) {
     const bool ia = m.adopted.count(a->name) > 0, ib = m.adopted.count(b->name) > 0;
     return ia != ib ? ia : a->best()->score > b->best()->score;
   });
   ImGui::SeparatorText(("结束 · +" + dur(m.now())).c_str());
   wrapped(color(TaskStatus::Kind::Ready), m.reason);
-  ImGui::TextDisabled("%zu 轮 · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.staged, c.hits, c.submits, c.adopted);
+  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.calls, c.looks, c.staged, c.hits, c.submits, c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];
     ImGui::Bullet();
@@ -907,7 +904,7 @@ void timeline_panel(State &s, Mine &m, const Flow &f, bool to_end) {
     s.pinned = false; // 点开合 = 在读: 不把读的地方拖走
   bool start = false;
   if (m.phase() == Phase::None) {
-    ImGui::TextDisabled("选好作用域按 New: 系统把规则打包发给 agent, 它先提问 (Config 页开了澄清) 或直接开挖");
+    ImGui::TextDisabled("选好作用域按 New: 系统把规则与工具表打包发给 agent, 它每条回复发一串工具调用 (看数据 / 回测 / 提交), 系统执行后把结果交回");
   } else {
     const size_t n = m.timeline.size();
     const bool fresh = n != s.flow_rounds, grouped = n > kGroupRounds;
@@ -1210,9 +1207,9 @@ void render_config(State &s) {
   field("rIC >=", o.gate.ric, "%.3f");
 
   ImGui::Spacing();
-  ImGui::TextColored(kColHead, "澄清");
-  ImGui::Checkbox("首轮让 agent 提问", &o.ask);
-  tip("开: agent 先提一次问题 (每题带推荐) 由你选答, 再全自动挖掘\n关: 不提问, agent 按自己的理解定因子与方向, 直接全自动挖掘");
+  ImGui::TextColored(kColHead, "提问");
+  ImGui::Checkbox("允许 agent 向你提问 (ask_human)", &o.ask);
+  tip("开: agent 可在任一轮提一次问题 (每题带推荐), 等你选答后接着做\n关: 工具表里没有 ask_human, agent 自定因子与方向, 全自动挖掘");
   ImGui::SameLine();
   ImGui::TextDisabled("下次 New 生效");
 
@@ -1277,10 +1274,8 @@ GUI::TaskHandle CreateAgentTask() {
       return {TaskStatus::Kind::Warn, "selecting"};
     if (m.chat.busy())
       return {TaskStatus::Kind::Busy, "asking"};
-    if (m.lab.busy() && m.live()) {
-      const Mine::Tally &c = m.timeline.back().tally;
-      return {TaskStatus::Kind::Busy, "eval " + std::to_string(c.settled) + "/" + std::to_string(c.staged)};
-    }
+    if (m.phase() == Phase::Act)
+      return {TaskStatus::Kind::Busy, "call " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size())};
     if (m.phase() == Phase::Report)
       return {TaskStatus::Kind::Ready, "done"};
     return {};

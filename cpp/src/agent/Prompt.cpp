@@ -1,6 +1,5 @@
 #include "agent/Prompt.hpp"
 #include "agent/Config.hpp"
-#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -9,14 +8,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <type_traits>
 #include <utility>
 
 namespace agent {
 
 namespace {
 
-using json = nlohmann::json;
 using KV = std::vector<std::pair<std::string_view, std::string>>;
 
 std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(def(m).id) + ".md"); }
@@ -64,109 +61,23 @@ std::string num(double v) {
 
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
 
-// 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块)
-bool object_of(std::string_view text, json &j, std::string &err) {
-  const size_t a = text.find('{'), b = text.rfind('}');
-  if (a == std::string_view::npos || b == std::string_view::npos || b < a) {
-    err = "回复里没有 JSON 对象";
-    return false;
-  }
-  j = json::parse(text.substr(a, b - a + 1), nullptr, false);
-  if (j.is_discarded() || !j.is_object()) {
-    err = "回复不是合法的 JSON 对象";
-    return false;
-  }
-  return true;
+int visible(const std::vector<Result> &rs) {
+  return static_cast<int>(std::count_if(rs.begin(), rs.end(), [](const Result &r) { return r.visible; }));
 }
 
-// 字段值类型: std::string / bool / int64_t
-template <class T>
-bool is(const json &x) {
-  if constexpr (std::is_same_v<T, std::string>)
-    return x.is_string();
-  else if constexpr (std::is_same_v<T, bool>)
-    return x.is_boolean();
-  else
-    return x.is_number_integer();
-}
-template <class T>
-constexpr const char *kKind = std::is_same_v<T, std::string> ? "字符串" : std::is_same_v<T, bool> ? "布尔"
-                                                                                                  : "整数";
-
-// 回复里一个 JSON 对象的逐字段读取: 首个不合协议处记进共用的 err (带字段路径), 之后全部短路
-class In {
-public:
-  In(const json &j, std::string at, std::string &err) : j_(j), at_(std::move(at)), err_(err) {
-    if (!j_.is_object())
-      fail(at_ + " 须是 JSON 对象");
-  }
-  bool ok() const { return err_.empty(); }
-  void fail(std::string why) {
-    if (ok())
-      err_ = std::move(why);
-  }
-  std::string path(const char *k) const { return at_.empty() ? std::string(k) : at_ + "." + k; }
-  bool has(const char *k) const { return ok() && j_.contains(k); }
-
-  // 标量; opt = 可缺省 (缺省则 out 不动)
-  template <class T>
-  In &get(const char *k, T &out, bool opt = false) {
-    if (const json *v = field(k, opt, kKind<T>); v && expect(k, is<T>(*v), kKind<T>))
-      out = v->get<T>();
-    return *this;
-  }
-  // 标量数组; opt = 可缺省 (缺省 = 空)
-  template <class T>
-  In &list(const char *k, std::vector<T> &out, bool opt = false) {
-    out.clear();
-    const std::string kind = std::string(kKind<T>) + "数组";
-    const auto elem = [](const json &x) { return is<T>(x); };
-    if (const json *v = field(k, opt, kind.c_str()); v && expect(k, v->is_array() && std::all_of(v->begin(), v->end(), elem), kind.c_str()))
-      for (const json &x : *v)
-        out.push_back(x.get<T>());
-    return *this;
-  }
-  // 对象数组 (必填): 元素交给调用方逐个 In
-  const json *objects(const char *k) {
-    const json *v = field(k, false, "数组");
-    return v && expect(k, v->is_array(), "数组") ? v : nullptr;
-  }
-
-private:
-  const json *field(const char *k, bool opt, const char *kind) {
-    if (!ok())
-      return nullptr;
-    const auto it = j_.find(k);
-    if (it == j_.end()) {
-      if (!opt)
-        fail("缺" + std::string(kind) + "字段 " + path(k));
-      return nullptr;
-    }
-    return &*it;
-  }
-  bool expect(const char *k, bool cond, const char *kind) {
-    if (!cond)
-      fail(path(k) + " 须是" + kind);
-    return cond;
-  }
-
-  const json &j_;
-  std::string at_;
-  std::string &err_;
-};
-
-std::string at(const char *k, size_t i) { return std::string(k) + "[" + std::to_string(i) + "]"; }
-
-// 首条消息里的已试候选 (只列可见的, 至多 kTriedTop 个)
-std::string tried_of(const std::vector<Result> &tried) {
+// 可见的前 top 个, 每个一节; 余下的只报个数
+template <class Fn>
+std::string list_of(const std::vector<Result> &rs, int top, Fn &&one) {
   std::string s;
   int n = 0;
-  for (const Result &r : tried)
-    if (r.visible && n < kTriedTop) {
+  for (const Result &r : rs)
+    if (r.visible && n < top) {
       ++n;
-      s += "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r);
+      s += one(r);
     }
-  return or_none(std::move(s), "(无)\n");
+  if (const int all = visible(rs); all > n)
+    s += "(另有 " + std::to_string(all - n) + " 个未列)\n";
+  return s;
 }
 
 } // namespace
@@ -181,27 +92,6 @@ void SavePrompt(Msg m, const std::string &text) {
   std::ofstream f(path_of(m), std::ios::binary | std::ios::trunc);
   assert(f.is_open());
   f << text;
-}
-
-Asked::Asked(Questions q) : qs(std::move(q)) {
-  for (const Question &x : qs)
-    picks.push_back({x.recommended, false, {}});
-}
-
-std::string Picked(const Question &q, const std::vector<bool> &mask) {
-  assert(mask.size() == q.options.size());
-  std::string s;
-  for (size_t j = 0; j < q.options.size(); ++j)
-    if (mask[j])
-      s += (s.empty() ? "" : "; ") + q.options[j];
-  return s;
-}
-
-std::string Answered(const Question &q, const Pick &p) {
-  std::string s = Picked(q, p.on);
-  if (p.other && !p.text.empty())
-    s += (s.empty() ? "" : "; ") + ("其他: " + p.text);
-  return s;
 }
 
 // ---- 结局文本 ----
@@ -274,24 +164,44 @@ std::string Detail(const Result &r) {
   return {};
 }
 
+// ---- 工具结果 ----
+std::string TriedText(const std::vector<Result> &tried, int top) {
+  return or_none(list_of(tried, top, [](const Result &r) { return "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r); }), "(无)\n");
+}
+
+std::string LibraryText(const std::vector<Result> &lib, int top) {
+  return or_none(list_of(lib, top,
+                         [](const Result &r) {
+                           const Weight *w = r.best();
+                           return "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n" +
+                                  (w ? "  - 最佳权重 `" + w->expr + "`: " + Text(*w) + "\n" : std::string("  - 本持有期无统计\n"));
+                         }),
+                 "(空)\n");
+}
+
+std::string TrialText(const Staged &st) { return "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + Detail(st.res); }
+
+std::string AnswerText(const Asked &a) {
+  assert(a.picks.size() == a.qs.size());
+  std::string s;
+  for (size_t i = 0; i < a.qs.size(); ++i) {
+    const Question &q = a.qs[i];
+    const Pick &p = a.picks[i];
+    s += std::to_string(i + 1) + ". " + q.prompt + "\n- " + or_none(Answered(q, p), "(未选, 你自定)") + "\n";
+    if (p.on != q.recommended || (p.other && !p.text.empty()))
+      s += "- (未照你的推荐: " + Picked(q, q.recommended) + ")\n";
+  }
+  return s + "附言: " + or_none(a.note, "(无)") + "\n";
+}
+
 // ---- 发 ----
-Message SystemMessage(const Context &c, const Gate &g) {
+Message SystemMessage(const Context &c, const Gate &g, bool ask) {
   std::string leaves = "| 叶 | 中文名 | 公式 | 说明 |\n|---|---|---|---|\n";
   for (const Leaf &l : c.leaves)
     leaves += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " |\n";
   std::string ops = "| 算子 | 中文名 | 签名 (元与参数的值域) | 输出域 | 定义 | 说明 |\n|---|---|---|---|---|---|\n";
   for (const Op &o : c.ops)
     ops += "| " + o.name + " | " + cell(o.name_cn) + " | $" + cell(o.sig) + "$ | " + o.out + " | $" + cell(o.tex) + "$ | " + cell(o.note) + " |\n";
-  std::string lib;
-  int n_lib = 0;
-  for (const Result &r : c.library) {
-    if (!r.visible || n_lib == kLibTop)
-      continue;
-    ++n_lib;
-    const Weight *w = r.best();
-    lib += "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n";
-    lib += w ? "  - 最佳权重 `" + w->expr + "`: " + Text(*w) + "\n" : std::string("  - 本持有期无统计\n");
-  }
   return fill(Msg::System, {{"pool", c.pool},
                             {"pool_cn", c.pool_cn},
                             {"level", c.level},
@@ -303,98 +213,38 @@ Message SystemMessage(const Context &c, const Gate &g) {
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
                             {"batch", std::to_string(kBatch)},
+                            {"max_calls", std::to_string(kMaxCalls)},
+                            {"out_chars", std::to_string(kOutChars)},
                             {"max_ops", std::to_string(kMaxOps)},
                             {"good_ops", std::to_string(kGoodOps)},
                             {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
+                            {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 note_issue"},
+                            {"tools", ToolsDoc(ask)},
                             {"leaves", leaves},
-                            {"ops", ops},
-                            {"library", or_none(std::move(lib), "(空)\n")}});
+                            {"ops", ops}});
 }
 
-Message FirstMessage(const Context &c, const std::vector<Result> &tried) { return fill(Msg::First, {{"hold", c.hold}, {"tried", tried_of(tried)}}); }
-
-Message GoMessage(const Context &c, const std::vector<Result> &tried) {
-  return fill(Msg::Go, {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"tried", tried_of(tried)}});
+Message FirstMessage(const Context &c, int tried, bool ask) {
+  return fill(Msg::First, {{"hold", c.hold},
+                           {"tried", std::to_string(tried)},
+                           {"library", std::to_string(visible(c.library))},
+                           {"start", ask ? "要研究员定的事 (从哪个因子起步、往哪个方向挖) 可以先看几眼数据再用 ask_human 一次问完, 也可以不问"
+                                         : "自己定下要做的那一个因子 (新起, 或从已试候选 / 正式库里挑) 和方向"}});
 }
 
-Message AnswerMessage(const Context &c, const Asked &a) {
-  assert(a.picks.size() == a.qs.size());
+Message RoundMessage(const std::vector<Act> &acts) {
   std::string s;
-  for (size_t i = 0; i < a.qs.size(); ++i) {
-    const Question &q = a.qs[i];
-    const Pick &p = a.picks[i];
-    s += "### " + std::to_string(i + 1) + ". " + q.prompt + "\n- " + or_none(Answered(q, p), "(未选, 你自定)") + "\n";
-    if (p.on != q.recommended || (p.other && !p.text.empty()))
-      s += "- (未照你的推荐: " + Picked(q, q.recommended) + ")\n";
+  for (size_t i = 0; i < acts.size(); ++i) {
+    const Act &a = acts[i];
+    s += "## [" + std::to_string(i + 1) + "] " + a.call.text() + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
+    if (!s.ends_with('\n'))
+      s += '\n';
+    s += '\n';
   }
-  return fill(Msg::Answer, {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"answers", or_none(std::move(s), "(无问题)\n")}, {"note", or_none(a.note, "(无)")}});
-}
-
-Message RoundMessage(const Context &c, const Mined &m) {
-  std::string ss;
-  for (const Submitted &x : m.submitted)
-    ss += "- " + x.name + ": " + (x.err.empty() ? std::string("已入库") : "未入库, " + x.err) + "\n";
-  std::string s;
-  for (const Trial &k : m.batch)
-    s += "### " + k.st.cand.name + " (" + k.st.cand.name_cn + ")\n`" + k.st.cand.expr + "`\n" + Detail(k.st.res);
-  return fill(Msg::Round, {{"hold", c.hold}, {"batch", std::to_string(kBatch)}, {"submits", or_none(std::move(ss), "(上次未提交)\n")}, {"results", s}});
+  return fill(Msg::Round, {{"results", s}, {"batch", std::to_string(kBatch)}});
 }
 
 Message RetryMessage(const std::string &err) { return fill(Msg::Retry, {{"error", err}}); }
-
-// ---- 收 ----
-bool Parse(std::string_view text, Questions &out, std::string &err) {
-  out.clear(), err.clear();
-  json j;
-  if (!object_of(text, j, err))
-    return false;
-  In in(j, "", err);
-  if (!in.has("questions"))
-    in.fail("缺数组 questions (没有问题就给空数组)");
-  const json *qs = in.objects("questions");
-  for (size_t i = 0; in.ok() && i < qs->size(); ++i) {
-    In q((*qs)[i], at("questions", i), err);
-    Question x;
-    std::vector<int64_t> rec;
-    q.get("prompt", x.prompt).list("options", x.options).get("multiple", x.multiple, true).list("recommended", rec);
-    if (q.ok() && x.options.size() < 2)
-      q.fail(q.path("options") + " 须至少 2 项");
-    x.recommended.assign(x.options.size(), false);
-    bool rec_ok = x.multiple ? !rec.empty() : rec.size() == 1;
-    for (const int64_t k : rec) {
-      rec_ok = rec_ok && k >= 0 && k < static_cast<int64_t>(x.options.size()) && !x.recommended[static_cast<size_t>(k)];
-      if (rec_ok)
-        x.recommended[static_cast<size_t>(k)] = true;
-    }
-    if (!rec_ok)
-      q.fail(q.path("recommended") + " 须是选项下标数组 (从 0 起, 不重复; 单选恰 1 个, 多选至少 1 个)");
-    out.push_back(std::move(x));
-  }
-  return in.ok();
-}
-
-bool Parse(std::string_view text, Proposal &out, std::string &err) {
-  out = {}, err.clear();
-  json j;
-  if (!object_of(text, j, err))
-    return false;
-  In in(j, "", err);
-  if (in.has("questions"))
-    in.fail("挖掘阶段不得提问; 疑问写进 issues");
-  in.get("done", out.done, true).list("submit", out.submit, true).list("issues", out.issues, true);
-  const json *fs = in.objects("factors");
-  if (in.ok() && out.done != fs->empty())
-    in.fail(out.done ? "done = true 时 factors 须为空" : "factors 为空 (挖完请置 done = true)");
-  if (in.ok() && fs->size() > static_cast<size_t>(kBatch))
-    in.fail("factors 至多 " + std::to_string(kBatch) + " 个");
-  for (size_t i = 0; in.ok() && i < fs->size(); ++i) {
-    In f((*fs)[i], at("factors", i), err);
-    Cand c;
-    f.get("name", c.name).get("name_cn", c.name_cn).get("expr", c.expr).get("note", c.note, true);
-    out.factors.push_back(std::move(c));
-  }
-  return in.ok();
-}
 
 } // namespace agent
