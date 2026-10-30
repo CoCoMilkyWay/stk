@@ -50,15 +50,13 @@ def _sync_remote(fetch):
     if behind == "0":
         return
     print(f"Pulling {behind} new commit(s)...")
-    subprocess.run(["git", "merge", "--ff-only",
-                   "--autostash", "@{u}"], check=True)
+    subprocess.run(["git", "merge", "--ff-only", "--autostash", "@{u}"], check=True)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def _cleanup_processes():
     """Kill old processes."""
-    subprocess.run(
-        ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
+    subprocess.run(["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
     time.sleep(0.3)
 
 

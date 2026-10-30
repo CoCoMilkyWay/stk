@@ -55,11 +55,11 @@ void Journal::turn(int n, const std::string &user, const llm::Reply &r) const {
     write_file(base.string() + ".thinking.md", r.thinking);
 }
 
-void Journal::event(std::string_view name, const nlohmann::ordered_json &fields) const {
+void Journal::event(Event e, const nlohmann::ordered_json &fields) const {
   assert(!dir_.empty() && fields.is_object());
   nlohmann::ordered_json j;
   j["time"] = now();
-  j["event"] = name;
+  j["event"] = def(e).id;
   for (auto it = fields.begin(); it != fields.end(); ++it)
     j[it.key()] = it.value();
   append_line(fs::path(dir_) / "events.jsonl", j);

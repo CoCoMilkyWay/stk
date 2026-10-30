@@ -73,8 +73,13 @@ enum class End : uint8_t { Ok,
                            Cut,
                            Error,
                            Cancelled };
-inline constexpr const char *kEndNames[] = {"ok", "cut", "error", "cancelled"};
-inline const char *name(End e) { return kEndNames[static_cast<int>(e)]; }
+// 结局表 (下标 = End): id = 流水里的 end
+struct EndDef {
+  const char *id;
+};
+inline constexpr EndDef kEnds[] = {{"ok"}, {"cut"}, {"error"}, {"cancelled"}};
+static_assert(std::size(kEnds) == static_cast<size_t>(End::Cancelled) + 1);
+inline const EndDef &def(End e) { return kEnds[static_cast<int>(e)]; }
 
 // 一轮回复: 在收 (增量累积) 与收齐同形
 struct Reply {

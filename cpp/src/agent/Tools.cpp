@@ -135,7 +135,7 @@ constexpr ToolDef kTools[] = {
      "研究员每题都能选 \"其他\" 自己写, 还能附言, 所以选项不必穷举, 不要列 \"其他\" / \"由你决定\" 之类的兜底项",
      "每题的选择 (没照推荐的附上推荐) + 附言"},
 };
-static_assert(std::size(kTools) == static_cast<size_t>(Tool::AskHuman) + 1);
+static_assert(std::size(kTools) == kToolCount);
 constexpr bool tools_in_order() {
   for (size_t i = 0; i < std::size(kTools); ++i)
     if (static_cast<size_t>(kTools[i].id) != i)

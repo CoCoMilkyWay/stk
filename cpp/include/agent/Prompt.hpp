@@ -34,6 +34,7 @@ struct MsgDef {
 };
 inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"retry", "重发"}, {"test", "自检"}};
 inline constexpr int kMsgCount = static_cast<int>(std::size(kMsgs));
+static_assert(kMsgCount == static_cast<int>(Msg::Test) + 1);
 inline const MsgDef &def(Msg m) { return kMsgs[static_cast<int>(m)]; }
 struct Message {
   Msg kind;
@@ -52,16 +53,16 @@ std::string Brief(const Result &r);  // 一行: 结局 + 原因 / 最佳权重 /
 std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每个权重 / 落选原因与代表点; 不可见的只说不可比
 
 // ---- 工具结果 (当场 / 回测 / 问答; 观察的在 agent/Views) ----
-std::string TriedText(const std::vector<Result> &tried, int top);  // list_tried
-std::string LibraryText(const std::vector<Result> &lib, int top);  // list_library
-std::string TrialText(const Staged &st);                           // eval_factor: 名 + 模板 + 结局
-std::string AnswerText(const Asked &a);                            // ask_human: 每题的选择 (没照推荐的附上推荐) + 附言
+std::string TriedText(const std::vector<Result> &tried, int top); // list_tried
+std::string LibraryText(const std::vector<Result> &lib, int top); // list_library
+std::string TrialText(const Staged &st);                          // eval_factor: 名 + 模板 + 结局
+std::string AnswerText(const Asked &a);                           // ask_human: 每题的选择 (没照推荐的附上推荐) + 附言
 
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask);
 Message FirstMessage(const Context &c, int tried, bool ask); // tried = 可见的已试候选数
 Message TestMessage(bool ask);
-Message RoundMessage(const std::vector<Act> &acts);          // 一条回复的全部调用, 按序
+Message RoundMessage(const std::vector<Act> &acts); // 一条回复的全部调用, 按序
 Message RetryMessage(const std::string &err);
 
 } // namespace agent

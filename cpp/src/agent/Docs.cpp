@@ -1,6 +1,7 @@
 // Docs — 见头文件
 #include "agent/Docs.hpp"
 #include "agent/Config.hpp"
+#include "agent/Text.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +24,11 @@ namespace {
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+using text::bwd;
+using text::chars;
+using text::fmt;
+using text::fwd;
+using text::head;
 
 constexpr size_t kBrief = 90;     // 研报行的结论 / 因子行的公式 截到几字
 constexpr size_t kEvidence = 120; // 标注卡里因子摘录截到几字
@@ -34,25 +40,7 @@ constexpr size_t kReadTail = 300; // read_doc 原文: 给标题与续读说明�
 constexpr std::array<std::string_view, 8> kPeriods = {"second", "intraday", "daily", "weekly", "monthly", "quarterly", "event", "na"};
 constexpr std::array<const char *, 4> kStats = {"IC", "RankIC", "ICIR", "多空年化"};
 
-// ---- 字 (UTF-8 码点) ----
-bool lead(char ch) { return (static_cast<unsigned char>(ch) & 0xC0) != 0x80; }
-size_t cps(std::string_view s) { return static_cast<size_t>(std::count_if(s.begin(), s.end(), lead)); }
-size_t fwd(std::string_view s, size_t i, size_t n) { // i 起前进 n 字 (到头为止)
-  for (; i < s.size() && n > 0; --n)
-    for (++i; i < s.size() && !lead(s[i]);)
-      ++i;
-  return i;
-}
-size_t bwd(std::string_view s, size_t i, size_t n) { // i 起后退 n 字
-  for (; i > 0 && n > 0; --n)
-    for (--i; i > 0 && !lead(s[i]);)
-      --i;
-  return i;
-}
-std::string head(std::string_view s, size_t n) {
-  const size_t e = fwd(s, 0, n);
-  return std::string(s.substr(0, e)) + (e < s.size() ? "…" : "");
-}
+// ---- 串 ----
 std::string flat(std::string_view s) { // 空白压成单个空格
   std::string o;
   for (const char ch : s) {
@@ -77,11 +65,6 @@ std::string join(const std::vector<std::string> &v, std::string_view sep) {
 }
 std::vector<std::string> strs(const json &j) { return j.get<std::vector<std::string>>(); }
 bool has(const std::vector<std::string> &v, const std::string &x) { return std::find(v.begin(), v.end(), x) != v.end(); }
-std::string fmt(const char *f, double v) {
-  char b[64];
-  std::snprintf(b, sizeof(b), f, v);
-  return b;
-}
 
 std::string slurp(const fs::path &p) {
   std::ifstream f(p, std::ios::binary);
@@ -372,7 +355,8 @@ std::string stats_of(const std::array<double, 4> &s) {
 std::string factor_head(const Factor &f) {
   return "**" + f.name + "** · " + f.family + " · " + f.direction + " · " + join(f.period, "+") + " → " + f.horizon + " · " + stats_of(f.stats);
 }
-int value_rank(const std::string &v) { return v == "high" ? 0 : v == "medium" ? 1 : 2; }
+int value_rank(const std::string &v) { return v == "high" ? 0 : v == "medium" ? 1
+                                                                              : 2; }
 
 std::string doc_row(const Doc &d, const std::string &extra) {
   std::string s = "- `" + d.id + "` · 价值 " + d.value + " · 主阶段 " + d.primary + " · 流派 " + join(d.approaches, ", ");
@@ -500,7 +484,9 @@ bool search_factors(const Call &c, std::string &out) {
   // 排序键: 无该统计 = NaN 排后; 同键新研报在前
   const auto key = [&](const Factor &f) {
     const auto &s = f.stats;
-    return sort == "ic" ? std::fabs(std::isfinite(s[1]) ? s[1] : s[0]) : sort == "icir" ? std::fabs(s[2]) : sort == "ls" ? s[3] : NAN;
+    return sort == "ic" ? std::fabs(std::isfinite(s[1]) ? s[1] : s[0]) : sort == "icir" ? std::fabs(s[2])
+                                                                     : sort == "ls"     ? s[3]
+                                                                                        : NAN;
   };
   std::stable_sort(hit.begin(), hit.end(), [&](size_t a, size_t b) {
     const double ka = key(L.factors[a]), kb = key(L.factors[b]);
@@ -600,9 +586,9 @@ std::string card(const Lib &L, const Doc &d) {
 }
 
 std::string outline(const Doc &d, const Text &t) {
-  std::string o = "# " + d.id + " · 全文 " + std::to_string(cps(t.body)) + " 字 · " + std::to_string(t.at.size()) + " 节 (节号 · 标题 · 字数; 读原文用 part=text from=节号)\n";
+  std::string o = "# " + d.id + " · 全文 " + std::to_string(chars(t.body)) + " 字 · " + std::to_string(t.at.size()) + " 节 (节号 · 标题 · 字数; 读原文用 part=text from=节号)\n";
   for (size_t k = 0; k < t.at.size(); ++k) {
-    const size_t n = cps(std::string_view(t.body).substr(t.at[k], t.end(k) - t.at[k]));
+    const size_t n = chars(std::string_view(t.body).substr(t.at[k], t.end(k) - t.at[k]));
     if (k > 0 || n > 0)
       o += std::to_string(k) + " " + t.title(k) + " · " + std::to_string(n) + "\n";
   }
@@ -617,7 +603,7 @@ bool passage(const Doc &d, const Text &t, size_t from, size_t skip, std::string 
   const size_t p = fwd(t.body, t.at[from], skip);
   if (skip > 0 && p >= t.end(from)) {
     out = "skip=" + std::to_string(skip) + " 超出: 第 " + std::to_string(from) + " 节共 " +
-          std::to_string(cps(std::string_view(t.body).substr(t.at[from], t.end(from) - t.at[from]))) + " 字";
+          std::to_string(chars(std::string_view(t.body).substr(t.at[from], t.end(from) - t.at[from]))) + " 字";
     return false;
   }
   size_t q = fwd(t.body, p, static_cast<size_t>(kOutChars) - kReadTail);
@@ -628,7 +614,7 @@ bool passage(const Doc &d, const Text &t, size_t from, size_t skip, std::string 
   if (q >= t.body.size()) {
     out += "\n(全文完)\n";
   } else {
-    const size_t k = t.section(q), s = cps(std::string_view(t.body).substr(t.at[k], q - t.at[k]));
+    const size_t k = t.section(q), s = chars(std::string_view(t.body).substr(t.at[k], q - t.at[k]));
     out += "\n…(未完: 接着读 from=" + std::to_string(k) + (s ? " skip=" + std::to_string(s) : "") + ")\n";
   }
   return true;

@@ -1,6 +1,7 @@
 // Bridge — 见头文件. agent/ 里唯一 include 项目因子 / 特征 / 服务头的 TU (CMake PRECISE: 因子契约头的消费者)
 #include "agent/Bridge.hpp"
 #include "agent/Config.hpp" // kMaxOps / kGoodOps / kWorkDir
+#include "agent/Text.hpp"
 
 #include "factor/Dag.hpp"             // build (叶 → 评估期)
 #include "factor/Expr.hpp"            // kOps / operand_tex
@@ -20,12 +21,10 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
-#include <iterator>
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -35,11 +34,13 @@ namespace agent {
 namespace F = GUI::Factors;
 namespace fs = std::filesystem;
 
-static_assert(kGroups == factor::stat::kGroups);
+static_assert(kGroups == factor::stat::kGroups && kRankNone == factor::stat::kRankNone && kRankMax == factor::stat::kRankMax);
 
 double Mono(const double *g, int n) { return factor::stat::mono_of(g, n); }
 
 namespace {
+
+using text::num;
 
 F::LevelId level_id(int level) {
   assert(level >= 0 && static_cast<size_t>(level) < F::kLevelCount);
@@ -50,12 +51,6 @@ F::LevelId level_id(int level) {
 std::shared_ptr<const F::FeatureTable> table(const SharedData &data, int level) {
   static F::FeatureTables tables;
   return F::table_of(tables, data.feature, level_id(level));
-}
-
-std::string num(double v) {
-  char b[32];
-  std::snprintf(b, sizeof(b), "%.3g", v);
-  return b;
 }
 
 // 表达式的算子节点数 (解析不了 = 0, 由落文件报原因)
@@ -76,6 +71,17 @@ bool concrete(const F::FeatureTable &ft, const std::string &src, factor::expr::E
   return true;
 }
 
+// 具体特征式 (任意子式) → CsRank 包装的规范串; 不成 → false + err
+bool feature_root(const F::FeatureTable &ft, const std::string &src, std::string &root, std::string &err) {
+  factor::expr::Expr e;
+  if (!concrete(ft, src, e, err))
+    return false;
+  [[maybe_unused]] const bool ok = concrete(ft, "CsRank(" + e.canon + ")", e, err);
+  assert(ok && "具体式包一层 CsRank 必可解析");
+  root = e.canon;
+  return true;
+}
+
 // 层 lvl 的叶 档.层.col (字段表里有且可作输入; 没有 → 空)
 std::string leaf(const F::FeatureTable &ft, size_t lvl, const std::string &col) {
   for (const F::FeatCol &c : ft.x.leaves)
@@ -83,14 +89,17 @@ std::string leaf(const F::FeatureTable &ft, size_t lvl, const std::string &col) 
       return c.code;
   return {};
 }
-Kline kline_of(const F::FeatureTable &ft) {
+PerBar<std::string> kline_of(const F::FeatureTable &ft) {
   const F::FactorLevel &l = F::factor_level(ft.lv);
   const auto bar = [&](const char *f) {
     char b[64];
     std::snprintf(b, sizeof(b), l.kline, f);
     return leaf(ft, l.lvl, b);
   };
-  return {bar("close"), bar("high"), bar("low"), bar("volume"), bar("amount"), leaf(ft, L_1day, "pre_close"), leaf(ft, L_1day, "lim_up"), leaf(ft, L_1day, "lim_dn")};
+  PerBar<std::string> k;
+  k[Bar::Close] = bar("close"), k[Bar::High] = bar("high"), k[Bar::Low] = bar("low"), k[Bar::Volume] = bar("volume"), k[Bar::Amount] = bar("amount");
+  k[Bar::PreClose] = leaf(ft, L_1day, "pre_close"), k[Bar::LimUp] = leaf(ft, L_1day, "lim_up"), k[Bar::LimDn] = leaf(ft, L_1day, "lim_dn");
+  return k;
 }
 
 // 层的每行收盘时刻 HH:MM: 日层 = 收盘; 分钟层 = 该分钟末; 分钟箱层 = 箱收盘
@@ -112,8 +121,8 @@ std::vector<std::string> clocks_of(const F::FactorLevel &l) {
   return out;
 }
 
-// Lens 的落地 → Look (秩换成定向分位 / 组号, 行 / 格换成 agent 的形)
-Look look_of(F::LensResult &&r, const F::FeatureTable &ft) {
+// Lens 的落地 → Look (r16 原样, 行 / 格换成 agent 的形); 特征根前 n_feats 个 = LookSpec::feats, 其后按 kBars 序 = bars 里取了的 K 线叶
+Look look_of(F::LensResult &&r, const F::FeatureTable &ft, size_t n_feats, const PerBar<bool> &bars) {
   Look o;
   o.error = std::move(r.error);
   if (!o.error.empty())
@@ -126,13 +135,7 @@ Look look_of(F::LensResult &&r, const F::FeatureTable &ft) {
   o.gate = std::move(r.gate), o.label = std::move(r.label), o.mkt = std::move(r.mkt);
   for (F::LensRoot &x : r.roots) {
     LookRoot y;
-    y.error = std::move(x.error);
-    y.rank.reserve(x.rx.size()), y.grp.reserve(x.rx.size());
-    for (const uint16_t v : x.rx) {
-      const bool ok = v != factor::stat::kRankNone;
-      y.rank.push_back(ok ? static_cast<float>(v) / factor::stat::kRankMax : NAN);
-      y.grp.push_back(ok ? static_cast<int8_t>(factor::stat::grp_of(v)) : int8_t{-1});
-    }
+    y.error = std::move(x.error), y.rx = std::move(x.rx);
     for (const factor::stat::Row &w : x.rows) {
       LookRow z;
       z.ok = w.ok, z.ric = w.ric, z.mkt = w.mkt;
@@ -144,8 +147,15 @@ Look look_of(F::LensResult &&r, const F::FeatureTable &ft) {
       y.cells.push_back({c.t, c.a, c.e == factor::stat::kTop, c.ret});
     o.factors.push_back(std::move(y));
   }
-  for (F::LensFeat &x : r.feats)
-    o.feats.push_back({std::move(x.error), std::move(x.v)});
+  size_t i = 0;
+  for (; i < n_feats; ++i)
+    o.feats.push_back({std::move(r.feats[i].error), std::move(r.feats[i].v)});
+  for (const Bar b : kBars)
+    if (bars[b]) {
+      o.kline[b] = {std::move(r.feats[i].error), std::move(r.feats[i].v)};
+      ++i;
+    }
+  assert(i == r.feats.size());
   return o;
 }
 
@@ -401,13 +411,14 @@ struct Lab::Impl {
   static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1 && static_cast<size_t>(Step::Look) == 2);
   bool gpu = false;
   std::tuple<Lane<F::SearchService>, Lane<F::RunService>, Lane<F::LensService>> lanes;
-  // 队列
-  bool running = false; // eval / look 起, 到 End 入队
-  bool halt = false;    // 已 cancel: 在跑那步收尾即 End
-  Step at = Step::End;  // 在跑那步的道; End = 无
-  std::deque<std::string> queue;
-  std::string file;       // 在评的文件
-  F::FactorRow row;       // 其首行 (Search 的模板)
+  // 在做的那件事
+  bool running = false;   // eval / look 起, 到 End 入队
+  bool halt = false;      // 已 cancel: 在跑那步收尾即 End
+  Step at = Step::End;    // 在跑那步的道; End = 无
+  std::string file;       // eval: 在评的文件
+  F::FactorRow row;       // eval: 其首行 (Search 的模板)
+  size_t n_feats = 0;     // look: 特征根数 (其后是 K 线叶)
+  PerBar<bool> bars;      // look: 取了的 K 线叶
   std::deque<Tick> ticks; // 未取走的步
 
   std::shared_ptr<const F::FeatureTable> ft() const { return table(*data, sc.level); }
@@ -455,7 +466,7 @@ struct Lab::Impl {
     auto &l = std::get<static_cast<size_t>(S)>(lanes);
     l.send(request(l));
     at = S;
-    ticks.push_back({S, file, {}});
+    ticks.push_back({S, {}});
   }
   // Search 跑完: 落了盘 → true (随后 Run); 中途放弃 → 记下原因 (该文件 BROKEN)
   bool searched() {
@@ -479,27 +490,23 @@ struct Lab::Impl {
     sort_results(results);
     return *find();
   }
-  // 出队下一个: 模板合法 → Search (定方向 + 搜参, 落了盘随后 Run); BROKEN → 直接评完; 队空 → End
-  void next() {
-    while (!queue.empty()) {
-      file = std::move(queue.front());
-      queue.pop_front();
-      std::vector<F::FactorRow> rows;
-      F::ScanFactorFile(fs::path(dir) / file, *ft(), rows);
-      assert(!rows.empty());
-      row = std::move(rows.front());
-      if (searchable(row))
-        return send<Step::Search>();
-      settle();
-    }
+  // 开评 file: 模板合法 → Search (定方向 + 搜参, 落了盘随后 Run); BROKEN → 直接评完
+  void start() {
+    std::vector<F::FactorRow> rows;
+    F::ScanFactorFile(fs::path(dir) / file, *ft(), rows);
+    assert(!rows.empty());
+    row = std::move(rows.front());
+    if (searchable(row))
+      return send<Step::Search>();
+    settle();
     close();
   }
-  void settle() { ticks.push_back({Step::Settle, file, refresh(file)}); }
+  void settle() { ticks.push_back({Step::Settle, refresh(file)}); }
   void close() {
-    queue.clear(), file.clear();
+    file.clear();
     at = Step::End;
     running = false;
-    ticks.push_back({Step::End, {}, {}});
+    ticks.push_back({Step::End, {}});
   }
   // 观察跑完: 取走结果
   void looked() {
@@ -509,7 +516,7 @@ struct Lab::Impl {
       std::lock_guard<std::mutex> lock(svc.mutex);
       r = std::move(svc.result);
     }
-    ticks.push_back({Step::Look, {}, {}, look_of(std::move(r), *ft())});
+    ticks.push_back({Step::Look, look_of(std::move(r), *ft(), n_feats, bars)});
   }
   // 在跑那步的道跑完一轮 → 下一步
   void pump() {
@@ -524,7 +531,7 @@ struct Lab::Impl {
     if (at == Step::Search && searched())
       return send<Step::Run>();
     settle();
-    next();
+    close();
   }
 };
 
@@ -552,43 +559,47 @@ bool Lab::test() const { return p_->test; }
 const Context &Lab::ctx() const { return p_->ctx; }
 const std::vector<Result> &Lab::results() const { return p_->results; }
 
-void Lab::stage(Staged &s) {
+Staged Lab::stage(Cand c) {
   Impl &I = *p_;
-  const Cand &c = s.cand;
+  Staged s{.cand = std::move(c)};
+  const Cand &x = s.cand;
   std::string err;
-  if (!F::ValidFactorName(c.name))
+  if (!F::ValidFactorName(x.name))
     err = "英文名须非空, ≤ 64, 仅 [A-Za-z0-9_]";
-  else if (!F::ValidFactorNameCn(c.name_cn))
+  else if (!F::ValidFactorNameCn(x.name_cn))
     err = "中文名须 1..10 个汉字";
-  else if (const int n = ops_of(*I.ft(), c.expr); n > kMaxOps)
+  else if (const int n = ops_of(*I.ft(), x.expr); n > kMaxOps)
     err = "算子 " + std::to_string(n) + " 个, 超过上限 " + std::to_string(kMaxOps) + " (建议 " + std::to_string(kGoodOps) + " 个左右)";
   else
-    s.file = F::AddFactorFile(I.dir, *I.ft(), c.name, c.name_cn, c.expr, c.note, err);
-  if (s.file.empty())
-    s.res.error = std::move(err), s.res.verdict = Verdict::Unstaged;
-  else
+    s.file = F::AddFactorFile(I.dir, *I.ft(), x.name, x.name_cn, x.expr, x.note, err);
+  if (s.ok())
     s.res = I.refresh(s.file);
+  else
+    s.res.error = std::move(err), s.res.verdict = Verdict::Unstaged;
+  return s;
 }
 
-void Lab::adopt(Submitted &s, const Gate &g) {
+Adopted Lab::adopt(std::string name, const Gate &g) {
   const Impl &I = *p_;
+  Adopted s{.name = std::move(name)};
   const auto it = std::find_if(I.results.begin(), I.results.end(), [&](const Result &r) { return r.name == s.name; });
   if (it == I.results.end() || !it->visible) {
     s.err = "会话目录里没有这个候选";
-    return;
+    return s;
   }
   s.err = gate_miss(g, *it);
-  if (!s.err.empty())
-    return;
+  if (!s.ok())
+    return s;
   const fs::path to = fs::path(F::factor_dir_of(*I.data, I.sc.pool, level_id(I.sc.level))) / it->file;
   if (fs::exists(to)) {
     s.err = "正式目录已有 " + it->file;
-    return;
+    return s;
   }
-  if (I.test)
-    return;
-  fs::create_directories(to.parent_path());
-  fs::copy_file(fs::path(I.dir) / it->file, to);
+  if (!I.test) {
+    fs::create_directories(to.parent_path());
+    fs::copy_file(fs::path(I.dir) / it->file, to);
+  }
+  return s;
 }
 
 bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &err) const {
@@ -598,7 +609,7 @@ bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &err) c
   int sign = 1;
   if (it != I.results.end()) {
     if (!it->visible || !it->best()) {
-      err = "候选 " + arg + " 没有本持有期的可见权重 (" + (it->visible ? name(it->verdict) : "统计不在当前评估期上") + "); 可直接给具体根式";
+      err = "候选 " + arg + " 没有本持有期的可见权重 (" + (it->visible ? def(it->verdict).cn : "统计不在当前评估期上") + "); 可直接给具体根式";
       return false;
     }
     src = it->best()->expr, sign = it->best()->sign;
@@ -614,16 +625,7 @@ bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &err) c
   return true;
 }
 
-bool Lab::feature_of(const std::string &src, std::string &root, std::string &err) const {
-  const std::shared_ptr<const F::FeatureTable> ft = p_->ft();
-  factor::expr::Expr e;
-  if (!concrete(*ft, src, e, err))
-    return false;
-  [[maybe_unused]] const bool ok = concrete(*ft, "CsRank(" + e.canon + ")", e, err);
-  assert(ok && "具体式包一层 CsRank 必可解析");
-  root = e.canon;
-  return true;
-}
+bool Lab::feature_of(const std::string &src, std::string &root, std::string &err) const { return feature_root(*p_->ft(), src, root, err); }
 
 bool Lab::code_of(const std::string &arg, std::string &code, std::string &err) const {
   const AssetAxis &ax = asset_axis();
@@ -636,22 +638,22 @@ bool Lab::code_of(const std::string &arg, std::string &code, std::string &err) c
   return false;
 }
 
-void Lab::eval(std::vector<std::string> files, bool gpu) {
+void Lab::eval(std::string file, bool gpu) {
   Impl &I = *p_;
-  assert(!I.running && I.data && "评估队列忙或未 bind");
+  assert(!I.running && I.data && "评估忙或未 bind");
   if (!std::get<0>(I.lanes).svc || gpu != I.gpu) {
     std::get<0>(I.lanes).reset(), std::get<1>(I.lanes).reset();
     I.gpu = gpu;
   }
-  I.queue.assign(std::make_move_iterator(files.begin()), std::make_move_iterator(files.end()));
+  I.file = std::move(file);
   I.running = true, I.halt = false;
-  I.next();
+  I.start();
 }
 
 void Lab::look(LookSpec s) {
   Impl &I = *p_;
-  assert(!I.running && I.data && "评估队列忙或未 bind");
-  assert(!s.factors.empty() || !s.feats.empty());
+  assert(!I.running && I.data && "评估忙或未 bind");
+  assert(!s.factors.empty() || !s.feats.empty() || s.kline);
   Lane<F::LensService> &l = std::get<2>(I.lanes);
   if (!l.svc)
     l.reset();
@@ -663,6 +665,16 @@ void Lab::look(LookSpec s) {
     req.spec.roots.push_back({f.expr, f.ts ? factor::stat::Frame::TS : factor::stat::Frame::CS, factor::stat::dir_of(f.sign)});
   for (const std::string &x : s.feats)
     req.spec.feats.push_back({x, factor::stat::Frame::CS, factor::stat::kFwd});
+  I.n_feats = s.feats.size(), I.bars = {};
+  if (s.kline)
+    for (const Bar b : kBars)
+      if (const std::string &src = I.ctx.kline[b]; !src.empty()) {
+        std::string root, err;
+        [[maybe_unused]] const bool ok_leaf = feature_root(*I.ft(), src, root, err);
+        assert(ok_leaf && "K 线叶必可作特征");
+        req.spec.feats.push_back({std::move(root), factor::stat::Frame::CS, factor::stat::kFwd});
+        I.bars[b] = true;
+      }
   if (!s.code.empty()) {
     const size_t id = asset_axis().find(s.code);
     assert(id < asset_axis().size() && "码须经 code_of");
@@ -678,7 +690,6 @@ void Lab::cancel() {
   if (!I.running)
     return;
   I.halt = true;
-  I.queue.clear();
   I.on_lane([](const auto &l) { l.cancel(); });
 }
 

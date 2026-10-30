@@ -278,7 +278,8 @@ stk/
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
 │   │   │   │                                               #    · Cursor: Cloud Agents API, 无仓库 agent; 首轮建 agent (system 拼进首条), 后续 runs 续对话; run SSE 流断线按 Last-Event-ID 续
 │   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: ask → poll 逐个取走 Tick (Think / Write / Restart / End = 收齐) / live (在收那轮增量同步进调用方镜像); 不留历史, 不落盘
-│   │   │   ├── Journal.hpp                                 # 🤖 一段会话的日志目录 (只 GUI 线程写): system.md / 逐轮 NN.{user,reply,thinking}.md / 交互流水 events.jsonl / report.md
+│   │   │   ├── Text.hpp                                    # 🤖 成文公共件: 字 (UTF-8 码点计数 / 前进后退 / 截断补 …) / 数的写法
+│   │   │   ├── Journal.hpp                                 # 🤖 一段会话的日志目录 (只 GUI 线程写): system.md / 逐轮 NN.{user,reply,thinking}.md / 交互流水 events.jsonl (事件表 kEvents) / report.md
 │   │   │   ├── Tools.hpp                                   # 🤖 工具箱 (类 MCP): 一张工具表 (名 / 执行方 Now · Human · Eval · Look · Docs / 参数表 / 做什么 / 返回什么) → 系统提示的工具节 / 回复解析 / 参数校验 / 界面名
 │   │   │   │                                               #    · 回复 = {"calls": [{"tool", "args"}]}, ParseCalls 按参数表校验并补缺省 (带字段路径报错); 加工具 = 表里一行 + 执行方一个分支
 │   │   │   │                                               #    · 执行记录 Act: 调用 + 时段 Span + 交给 agent 的结果 + 带状态的过程 (eval_factor → Trial ⊃ search / run; ask_human → Asked)
@@ -293,13 +294,14 @@ stk/
 │   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
 │   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 / 算子表 / K 线叶 / 正式因子库统计) + 候选目录 results
 │   │   │   │                                               #      候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict) ─adopt (过门槛 Gate)→ 正式因子目录
-│   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 逐文件 Search (具体式也走, 定方向) → Run, 评完一个只重扫它; 首次用到才建, 常驻块 (SearchSpec / RunSpec keep)
-│   │   │   │                                               #      look: 第三道 LensService, 因子 (候选名 / 具体根式) + 特征式 → Look (定向分位 / 组号 / 行统计 / 两端格 / 特征原值 / 门控 / 标签)
+│   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 一次一个文件: Search (具体式也走, 定方向) → Run, 评完只重扫它; 首次用到才建, 常驻块 (SearchSpec / RunSpec keep)
+│   │   │   │                                               #      look: 第三道 LensService, 因子 (候选名 / 具体根式) + 特征式 (+ 本层 K 线叶) → Look ([T][A] 平面: r16 定向秩 / 特征原值 / K 线 / 门控 / 标签; 行统计 / 两端格)
 │   │   │   │                                               #      可见 Result::visible: 统计与 Search 结局都在作用域此刻评估期 (span_of) 上且算子不超上限, 才给 agent 看 / 可入库
 │   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ eval / look) → poll 逐个取走 Tick, 末个 End → live → busy / cancel
 │   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Think (agent 发调用) ↔ Act (系统逐个执行; ask_human 进 Choose 等人), Report); 转移唯一入口 go 兑现 Stop; 无 ImGui
 │   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ 该调用做完
-│   │   │   │                                               #    · 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (随事件增量加, 不回扫)
+│   │   │   │                                               #    · Desk = 会话状态 (worker / 设定 / 日志 / 时间线 / 计数), Mine = Desk + 转移; 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (按工具计数, 随事件增量加, 不回扫)
+│   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (take 每步) / 等人 (answer) → 做完; 只经 Desk 读写会话
 │   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选进 test 目录, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选表 · 特征 / 算子表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存

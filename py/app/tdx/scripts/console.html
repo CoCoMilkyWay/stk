@@ -1777,28 +1777,31 @@
         [10000, "1W"],
         [50000, "5W"],
       ];
-      const ORD_SIDES = [
-        ["buy", "#f14c4c"],
-        ["sell", "#6a9955"],
-      ];
+      // 方向 s：买 +1 / 卖 -1，与后端同号
+      const SIDE = { 1: "买", "-1": "卖" };
+      const SIDE_COLOR = { 1: "#f14c4c", "-1": "#6a9955" };
       const ordBtns = (p) =>
         p.closed
           ? '<span class="kv">今日清仓</span>'
-          : ORD_SIDES.map(([side, c]) =>
-              ORD_SIZES.map(
-                ([n, t]) =>
-                  `<button class="ord" style="color:${c}" data-code="${p.code}" data-side="${side}" data-size="${n}">${t}</button>`,
-              ).join(""),
-            ).join(" ");
+          : [1, -1]
+              .map((s) =>
+                ORD_SIZES.map(
+                  ([n, t]) =>
+                    `<button class="ord" style="color:${SIDE_COLOR[s]}" data-code="${p.code}" data-s="${s}" data-size="${n}">${t}</button>`,
+                ).join(""),
+              )
+              .join(" ");
+      // 买入方式只管买入，卖出一律担保品卖出
       document.getElementById("posTbl").onclick = async (e) => {
         const b = e.target.closest("button.ord");
         if (!b) return pickClick(e);
+        const s = +b.dataset.s;
         const r = await api("/api/order", {
           code: b.dataset.code,
-          side: b.dataset.side,
+          s,
           size: +b.dataset.size,
           px: document.getElementById("ordPx").value,
-          credit: document.getElementById("ordCredit").value,
+          credit: s > 0 ? document.getElementById("ordCredit").value : "plain",
         });
         if (r.err)
           document.getElementById("ordInfo").innerHTML =
@@ -1824,10 +1827,7 @@
                 ),
               )
               .join(" › ");
-            const side = paint(
-              j.side === "buy" ? "#f14c4c" : "#6a9955",
-              j.side === "buy" ? "买" : "卖",
-            );
+            const side = paint(SIDE_COLOR[j.s], SIDE[j.s]);
             return (
               `<div>${j.t} ${side}${j.label} ${j.code} ${esc(j.name)} ${esc(j.detail)}` +
               ` · ${steps} · ${ORD_ST[j.state]} ${esc(j.msg)}</div>`
@@ -1876,22 +1876,17 @@
       const posErr = (r) =>
         (document.getElementById("posInfo").innerHTML =
           `<span class="off">✗ ${esc(r.err)}</span>`);
+      // 一帧一份 rows（每只一行，含盘口列）：持仓表、滑点表是它的两组列，行情页取其行
       function showFrame(r) {
         if (r.err) return void posErr(r);
-        r.slippage.rows.forEach((s, i) => {
-          if (s.code !== r.positions[i].code)
-            throw new Error(
-              `滑点行与持仓行错位: ${s.code} ≠ ${r.positions[i].code}`,
-            );
-          r.positions[i].slips = s.slips;
-        });
+        SLIP_N = r.slip_cols.length;
         showPositions(r, document.getElementById("posInfo"));
-        showSlippage(r.slippage);
-        quoteFrame(r.positions);
+        showSlippage(r);
+        quoteFrame(r.rows);
       }
       function showPositions(r, info) {
-        table("#posTbl", POS_COLS, r.positions, pickWire);
-        if (!r.positions.length) {
+        table("#posTbl", POS_COLS, r.rows, pickWire);
+        if (!r.rows.length) {
           // 按需：内存里没持仓表时，自动点一次交易栏「刷新」让客户端查一遍
           if (!autoRefreshTried) return refreshPos();
           return void (info.textContent = "无持仓");
@@ -1902,7 +1897,7 @@
           ? ` · 今日成交 ${r.fills} 笔`
           : ` · <span class="off">${r.fills == null ? "当日成交未读" : "成交与持仓今买 / 今卖对不上"}，当日盈亏不全（点刷新）</span>`;
         info.innerHTML =
-          `${r.positions.length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
+          `${r.rows.length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
           ` · 盈亏 ${fmtPnl(t.pnl)} · 当日盈亏 ${fmtPnl(t.day_pnl)}` +
           sync +
           ` · 行情 ${r.time} · pid=${r.pid}`;
@@ -1929,16 +1924,16 @@
         if (v == null) return "";
         return v < 10 ? "#6a9955" : v < 20 ? "#d7ba7d" : "#f14c4c";
       }
-      // 按 slip_cols 顺序自上而下画；无行情 / 无数据画灰
+      // 按 slip_cols 顺序自上而下画（SLIP_N 根，随帧取）；无行情 / 无数据画灰
+      let SLIP_N = 0;
       const slipBars = (slips) =>
-        `<span class="bars">${(slips ?? Array(6).fill(null))
+        `<span class="bars">${(slips ?? Array(SLIP_N).fill(null))
           .map(
             (x) =>
               `<i style="background:${slipColor(x?.pct) || "var(--line)"}"></i>`,
           )
           .join("")}</span>`;
-      // 方向 s：买 +1 / 卖 -1；滑点列 (n, s)、价位列 (p, s) 同构
-      const SIDE = { 1: "买", "-1": "卖" };
+      // 滑点列 (n, s)、价位列 (p, s) 同构
       const slipHead = ([n, s]) => `${n / 10000}W${SIDE[s]}`;
       const levelHead = ([p, s]) => `${s > 0 ? "+" : "-"}${p}%`;
       const slipCell = (x) =>
@@ -1949,7 +1944,8 @@
         red: "#f14c4c",
         "": "var(--hot)",
       };
-      // 列随后端列定义生成；无行情的行 slips / levels 皆 null，两组都出 N/A；竞价时 slips null 出「竞价」
+      // 列随后端列定义生成，表头按 totals.slips（占比加权）着色；无行情的行 slips / levels 皆 null，两组都出 N/A；
+      // 竞价时 slips null 出「竞价」
       const slipCols = (r) => [
         ["代码", (row) => row.code, (row) => row.code],
         [
@@ -1958,7 +1954,7 @@
           (row) => row.name,
         ],
         ...r.slip_cols.map((c, i) => [
-          paint(slipColor(r.agg[i]) || "var(--mut)", slipHead(c)),
+          paint(slipColor(r.totals.slips[i]) || "var(--mut)", slipHead(c)),
           (row) =>
             row.slips
               ? paint(slipColor(row.slips[i].pct), slipCell(row.slips[i]))
@@ -1976,14 +1972,19 @@
         ]),
         [
           "占比",
-          (row) => (row.weight * 100).toFixed(1) + "%",
+          (row) => (row.weight == null ? "" : row.weight.toFixed(1) + "%"),
           (row) => row.weight,
           "num",
         ],
       ];
-      // 滑点随持仓帧推送（同一份行情的 5 档），不另取
+      // 滑点随持仓帧推送（同一份行情的 5 档），不另取；今日清仓的不列
       function showSlippage(r) {
-        table("#slipTbl", slipCols(r), r.rows, pickWire);
+        table(
+          "#slipTbl",
+          slipCols(r),
+          r.rows.filter((row) => !row.closed),
+          pickWire,
+        );
         document.getElementById("slipInfo").textContent =
           "滑点（p=万分之一，正=成本；> 表示 5 档吃不满、实际更差；价位相对参考价）";
       }
@@ -1992,12 +1993,13 @@
       // 分钟线看近 1~4 个交易日：按图宽每 g 分钟并一根（g 取整除 240、每根不窄于 K_MIN_W px 的最小值），
       // 横轴按交易时段等分、没成交的分钟留空；日线每根不窄于 K_DAY_W px，放不下只画最近的。
       // K 线每 KLINE_GAP 重取；其间每个持仓帧用现价改写最后一根，盘口随帧刷新。
+      // 档 [种类, 近几个交易日, 名]：前两项即 /api/kline 的 kind / days
       const KRANGES = [
-        ["1", "日内"],
-        ["2", "2日"],
-        ["3", "3日"],
-        ["4", "4日"],
-        ["day", "日线"],
+        ["min", 1, "日内"],
+        ["min", 2, "2日"],
+        ["min", 3, "3日"],
+        ["min", 4, "4日"],
+        ["day", 180, "日线"],
       ];
       const K_GROUPS = [
         1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 120,
@@ -2019,8 +2021,9 @@
       let QROW = null; // 其持仓行（含 cost / quote）
       let KBARS = []; // [[时刻, 开, 高, 低, 收, 量]]
       const KMEM = new Map(); // "代码|档" → 最近取到的 K 线；切股 / 切档先画它，再后台重取
-      let kRange = "1"; // 分钟线天数，或 "day" 日线
-      const kKey = () => `${QCODE}|${kRange}`;
+      let kRange = KRANGES[0]; // 当前档
+      const kKey = () => `${QCODE}|${kRange[0]}${kRange[1]}`;
+      const kDaily = () => kRange[0] === "day";
       let kHover = -1; // 悬停那根在 kView.vis 里的下标
       let kView = null; // 最近一次绘制的 kLayout，鼠标横坐标 → 第几根
       const pickWire = (tr, p) => {
@@ -2061,12 +2064,8 @@
         if (!QCODE) return;
         const code = QCODE,
           range = kRange;
-        const r = await api(
-          "/api/kline",
-          range === "day"
-            ? { code, kind: "day" }
-            : { code, kind: "min", days: +range },
-        );
+        const [kind, days] = range;
+        const r = await api("/api/kline", { code, kind, days });
         if (code !== QCODE || range !== kRange) return;
         document.getElementById("kErr").innerHTML = r.err
           ? `<span class="off">✗ ${esc(r.err)}</span>`
@@ -2085,7 +2084,7 @@
         const b = KBARS.at(-1),
           q = QROW?.quote;
         if (!b || !q?.price || b[0].slice(0, 10) !== q.date) return;
-        if (kRange === "day")
+        if (kDaily())
           return void b.splice(1, 5, q.open, q.high, q.low, q.price, q.volume);
         b[4] = q.price;
         b[2] = Math.max(b[2], q.price);
@@ -2101,7 +2100,7 @@
       }
       // 图宽 PW 下画哪些根、各在第几格：{vis 各根, pos 各根格号, bw 格宽, days 分钟线的日期, g 每根分钟数}
       function kLayout(bars, PW) {
-        if (kRange === "day") {
+        if (kDaily()) {
           const bw = Math.max(K_DAY_W, PW / bars.length);
           const vis = bars.slice(-Math.floor(PW / bw));
           return { vis, pos: vis.map((_, i) => i), bw, days: null, g: 0 };
@@ -2160,7 +2159,7 @@
         const PH = H - TOP - TX - VH - 6;
         const L = (kView = kLayout(bars, PW));
         const { vis, pos, bw: BW } = L;
-        const src = kRange === "day" ? bars : vis; // 日线均线用全部历史算
+        const src = kDaily() ? bars : vis; // 日线均线用全部历史算
         const mas = K_MA.map(([k, col]) => [
           k,
           col,
@@ -2348,13 +2347,13 @@
       function initK() {
         const sc = document.getElementById("kRanges");
         sc.innerHTML = KRANGES.map(
-          ([s, t]) =>
-            `<button data-s="${s}" class="${s === kRange ? "on" : ""}">${t}</button>`,
+          (r, i) =>
+            `<button data-i="${i}" class="${r === kRange ? "on" : ""}">${r[2]}</button>`,
         ).join("");
         sc.onclick = (e) => {
           const b = e.target.closest("button");
           if (!b) return;
-          kRange = b.dataset.s;
+          kRange = KRANGES[+b.dataset.i];
           for (const x of sc.children) x.classList.toggle("on", x === b);
           KBARS = KMEM.get(kKey()) ?? [];
           kHover = -1;
@@ -2560,17 +2559,20 @@
       let watchES = null;
       function syncWatch() {
         if (!document.hidden && !watchES)
-          watchES = subscribe({
-            tree: () => autoUpd() && pullTree(),
-            gdi: (r) => {
-              r.at = performance.now();
-              GDI.set(r.hwnd, r);
-              if (!gdiShown()) return;
-              gdiDirty.add(r.hwnd);
-              gdiSoon();
+          watchES = subscribe(
+            {
+              tree: () => autoUpd() && pullTree(),
+              gdi: (r) => {
+                r.at = performance.now();
+                GDI.set(r.hwnd, r);
+                if (!gdiShown()) return;
+                gdiDirty.add(r.hwnd);
+                gdiSoon();
+              },
+              rec: recOn,
             },
-            rec: recOn,
-          }, () => (REC_RECS = []));
+            () => (REC_RECS = []),
+          );
         if (document.hidden && watchES) {
           watchES.close();
           watchES = null;

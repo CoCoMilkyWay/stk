@@ -80,7 +80,7 @@ def read_maps(pid):
 
 
 def iter_regions(pid, near=None):
-    """逐段读 pid 堆段，yield (段起址, bytes)；near 给定时只读含该地址的那一段。调用前应先 ensure_access()。
+    """逐段读 pid 堆段，yield (段起址, bytes)；near 给定时只读含该地址的那一段。调用前应先 attach()。
     个别段运行时不可读（守护页等）属正常，跳过即可。"""
     with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
         for lo, hi, _ in read_maps(pid):
@@ -94,7 +94,7 @@ def iter_regions(pid, near=None):
 
 
 def read_at(pid, addr, n):
-    """读 pid 内存 [addr, addr+n)，须整段可读。调用前应先 ensure_access()。"""
+    """读 pid 内存 [addr, addr+n)，须整段可读。调用前应先 attach()。"""
     with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
         mem.seek(addr)
         data = mem.read(n)

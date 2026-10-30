@@ -2,6 +2,7 @@
 #include "agent/ui/TaskAgent.hpp"
 #include "agent/Config.hpp"
 #include "agent/Mine.hpp"
+#include "agent/Text.hpp"
 
 #include "imgui.h"
 #include "misc/fs.hpp"
@@ -267,7 +268,8 @@ void session_row(const SharedData &data, State &s) {
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
   const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold;
-  const char *why_not = !keyed ? "所选后端的 key 未填 (config/agent/keys.json)" : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)" : nullptr;
+  const char *why_not = !keyed ? "所选后端的 key 未填 (config/agent/keys.json)" : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
+                                                                                               : nullptr;
   const auto begin_session = [&](bool test) {
     if (!catalog::ready(data, o.sc, o.gpu == 1)) {
       s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
@@ -316,7 +318,7 @@ void session_row(const SharedData &data, State &s) {
     ImGui::TextDisabled("%s%s · %s %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), llm::def(st.llm.backend).name, st.llm.model.c_str(),
                         st.gpu ? "GPU" : "CPU", st.ask ? "可提问" : "不提问");
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s", m.log_dir().c_str());
+      ImGui::SetTooltip("%s", m.log.dir().c_str());
   }
   if (!s.message.empty()) {
     ImGui::SameLine();
@@ -346,10 +348,8 @@ std::string kilo(double n) {
     std::snprintf(b, sizeof(b), "%.2fM", n / 1e6);
   return b;
 }
-// UTF-8 字数
-std::string chars(const std::string &s) {
-  return kilo(static_cast<double>(std::count_if(s.begin(), s.end(), [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; }))) + " 字";
-}
+// 字数
+std::string chars(const std::string &s) { return kilo(static_cast<double>(text::chars(s))) + " 字"; }
 // 状态色; 进行中的随时间明暗呼吸 (一眼看出哪在动)
 ImVec4 color(TaskStatus::Kind k) {
   if (k == TaskStatus::Kind::None)
@@ -360,14 +360,6 @@ ImVec4 color(TaskStatus::Kind k) {
   return c;
 }
 
-// 截到 n 字 (UTF-8), 截了补 …
-std::string clip(std::string_view s, size_t n) {
-  size_t i = 0;
-  for (size_t k = 0; i < s.size(); ++i)
-    if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80 && k++ == n)
-      break;
-  return i < s.size() ? std::string(s.substr(0, i)) + "…" : std::string(s);
-}
 std::string_view trim(std::string_view s) {
   const size_t b = s.find_first_not_of(" \t\r");
   return b == std::string_view::npos ? std::string_view() : s.substr(b, s.find_last_not_of(" \t\r") - b + 1);
@@ -384,13 +376,13 @@ std::string topic(std::string_view s, bool live) {
     if (line.empty())
       continue;
     if (line.size() > 4 && line.starts_with("**") && line.ends_with("**"))
-      return clip(trim(line.substr(2, line.size() - 4)), kTopicChars);
+      return text::head(trim(line.substr(2, line.size() - 4)), kTopicChars);
     if (const size_t h = line.find_first_not_of('#'); h > 0 && h <= 6 && h < line.size() && line[h] == ' ')
-      return clip(trim(line.substr(h)), kTopicChars);
+      return text::head(trim(line.substr(h)), kTopicChars);
     if (tail.empty())
       tail = line;
   }
-  return live ? clip(tail, kTopicChars) : std::string();
+  return live ? text::head(tail, kTopicChars) : std::string();
 }
 
 // 在收那轮此刻的样子 (每帧量): 等首包 → 思考 → 正文; quiet = 多久没来新增量
@@ -526,7 +518,7 @@ void now_row(State &s, const Mine &m, const Flow &f) {
         break;
       }
       what = "第 " + std::to_string(m.timeline.size()) + " 轮 · 调用 " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size()) + " " +
-             clip(a->call.text(), kTopicChars);
+             text::head(a->call.text(), kTopicChars);
       if (const Trial *k = std::get_if<Trial>(&a->got)) {
         char pct[32];
         std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
@@ -563,7 +555,7 @@ void now_row(State &s, const Mine &m, const Flow &f) {
   }
   ImGui::TextDisabled("用时 %s · LLM %s · 执行 %s · token 输入 %s (缓存 %s) / 输出 %s · %zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 入库 %d", dur(t).c_str(),
                       dur(llm_s).c_str(), dur(act_s).c_str(), kilo(all.usage.prompt).c_str(), kilo(all.usage.cached).c_str(), kilo(all.usage.completion).c_str(),
-                      m.timeline.size(), all.tally.calls, all.tally.looks, all.tally.reads, all.tally.staged, all.tally.adopted);
+                      m.timeline.size(), all.tally.all(), all.tally.n(Run::Look), all.tally.n(Run::Docs), all.tally.staged(), all.tally.adopted);
   if (!ll.message.empty())
     wrapped(color(TaskStatus::Kind::Warn), ll.message);
 }
@@ -744,7 +736,7 @@ bool act_block(const Mine &m, Act &a, size_t i, bool edit, const Lab::Live &ll) 
     }
   } else {
     const ToolDef &d = def(a.call.tool);
-    std::string label = std::string(d.cn) + " · " + clip(a.call.text(), kCallChars);
+    std::string label = std::string(d.cn) + " · " + text::head(a.call.text(), kCallChars);
     TaskStatus::Kind kind = TaskStatus::Kind::None;
     if (a.span.ended())
       label += " · " + dur(a.span.len(t)) + (a.ok ? "" : " · 没做成"), kind = a.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn;
@@ -779,17 +771,17 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
   if (rd.acts.empty())
     return h;
   const Mine::Tally &c = rd.tally;
-  h += " · 调用 " + std::to_string(c.calls);
-  if (c.looks > 0)
-    h += " · 观察 " + std::to_string(c.looks);
-  if (c.reads > 0)
-    h += " · 查研报 " + std::to_string(c.reads);
-  if (c.staged + c.unstaged > 0)
-    h += " · 候选 " + std::to_string(c.staged) + (c.unstaged ? " (未落 " + std::to_string(c.unstaged) + ")" : "") + " · 有权重 " + std::to_string(c.hits);
-  if (c.submits > 0)
-    h += " · 提交 " + std::to_string(c.submits) + " (入库 " + std::to_string(c.adopted) + ")";
-  if (c.issues > 0)
-    h += " · issue " + std::to_string(c.issues);
+  h += " · 调用 " + std::to_string(c.all());
+  if (const int n = c.n(Run::Look); n > 0)
+    h += " · 观察 " + std::to_string(n);
+  if (const int n = c.n(Run::Docs); n > 0)
+    h += " · 查研报 " + std::to_string(n);
+  if (c.n(Tool::EvalFactor) > 0)
+    h += " · 候选 " + std::to_string(c.staged()) + (c.unstaged ? " (未落 " + std::to_string(c.unstaged) + ")" : "") + " · 有权重 " + std::to_string(c.hits);
+  if (const int n = c.n(Tool::SubmitFactor); n > 0)
+    h += " · 提交 " + std::to_string(n) + " (入库 " + std::to_string(c.adopted) + ")";
+  if (const int n = c.n(Tool::NoteIssue); n > 0)
+    h += " · issue " + std::to_string(n);
   if (std::any_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::Finish; }))
     h += " · 宣布挖完";
   if (i + 1 == m.timeline.size() && m.phase() == Phase::Choose)
@@ -867,8 +859,8 @@ std::string group_head(const Mine &m, size_t g0, size_t g1) {
   Mine::Tally c;
   for (size_t i = g0; i < g1; ++i)
     c += m.timeline[i].tally;
-  return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.calls) + " · 观察 " +
-         std::to_string(c.looks) + " · 查研报 " + std::to_string(c.reads) + " · 候选 " + std::to_string(c.staged) + " · 有权重 " + std::to_string(c.hits) + " · 入库 " + std::to_string(c.adopted);
+  return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.all()) + " · 观察 " +
+         std::to_string(c.n(Run::Look)) + " · 查研报 " + std::to_string(c.n(Run::Docs)) + " · 候选 " + std::to_string(c.staged()) + " · 有权重 " + std::to_string(c.hits) + " · 入库 " + std::to_string(c.adopted);
 }
 
 // 结束汇总: 计数 + 本会话有参数组的候选 (入库的在前, 再按 score 降序; 先列 kSummaryRows 个, 其余折起) + 结束报告
@@ -886,8 +878,8 @@ void summary_block(const Mine &m) {
   });
   ImGui::SeparatorText(("结束 · +" + dur(m.now())).c_str());
   wrapped(color(TaskStatus::Kind::Ready), m.reason);
-  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.calls, c.looks, c.reads, c.staged, c.hits,
-                      c.submits, c.adopted);
+  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Run::Look), c.n(Run::Docs), c.staged(), c.hits,
+                      c.n(Tool::SubmitFactor), c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];
     ImGui::Bullet();
@@ -1021,7 +1013,7 @@ void results_table(const View &v) {
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(r.name_cn.c_str());
     ImGui::TableNextColumn();
-    ImGui::TextColored(color(kind_of(v.adopted, r)), "%s", v.adopted.count(r.name) ? "入库" : name(r.verdict));
+    ImGui::TextColored(color(kind_of(v.adopted, r)), "%s", v.adopted.count(r.name) ? "入库" : def(r.verdict).cn);
     tip_long(detail(r));
     // 统计列: 最佳权重; 无显著则代表点 (灰)
     const Weight *w = r.best();

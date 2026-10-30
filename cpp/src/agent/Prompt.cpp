@@ -1,5 +1,6 @@
 #include "agent/Prompt.hpp"
 #include "agent/Config.hpp"
+#include "agent/Text.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -14,6 +15,7 @@ namespace agent {
 
 namespace {
 
+using text::num;
 using KV = std::vector<std::pair<std::string_view, std::string>>;
 
 std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(def(m).id) + ".md"); }
@@ -51,12 +53,6 @@ std::string cell(std::string_view s) { // 表格单元: 竖线转义, 换行压�
       o += ch == '\n' ? ' ' : ch;
   }
   return o;
-}
-
-std::string num(double v) {
-  char b[32];
-  std::snprintf(b, sizeof(b), "%.3g", v);
-  return b;
 }
 
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
@@ -130,13 +126,13 @@ std::string Brief(const Result &r) {
   switch (r.verdict) {
   case Verdict::Unstaged:
   case Verdict::Broken:
-    return std::string(name(r.verdict)) + ": " + r.error;
+    return std::string(def(r.verdict).cn) + ": " + r.error;
   case Verdict::Weights:
     return std::to_string(r.ws.size()) + " 个权重, 最佳 " + Text(*r.best());
   case Verdict::Null:
-    return r.top ? std::string(name(r.verdict)) + " (" + r.top->miss + "), 代表点 " + Text(*r.top) : std::string(name(r.verdict));
+    return r.top ? std::string(def(r.verdict).cn) + " (" + r.top->miss + "), 代表点 " + Text(*r.top) : std::string(def(r.verdict).cn);
   case Verdict::Pending:
-    return name(r.verdict);
+    return def(r.verdict).cn;
   }
   return {};
 }
@@ -147,7 +143,7 @@ std::string Detail(const Result &r) {
   switch (r.verdict) {
   case Verdict::Unstaged:
   case Verdict::Broken:
-    return "- " + std::string(name(r.verdict)) + ": " + r.error + "\n";
+    return "- " + std::string(def(r.verdict).cn) + ": " + r.error + "\n";
   case Verdict::Weights: {
     std::string s;
     for (const Weight &w : r.ws)
@@ -159,7 +155,7 @@ std::string Detail(const Result &r) {
                        "`: " + Text(*r.top) + "\n"
                  : std::string("- Search 无显著权重 (没有一个点算得出该持有期统计)\n");
   case Verdict::Pending:
-    return "- " + std::string(name(r.verdict)) + "\n";
+    return "- " + std::string(def(r.verdict).cn) + "\n";
   }
   return {};
 }
