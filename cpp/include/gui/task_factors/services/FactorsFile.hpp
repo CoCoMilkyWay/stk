@@ -53,8 +53,8 @@ struct SearchTop {
   int sign = 1;
   double mono = 0.0, ls = 0.0, ric = 0.0;
   double g = 0.0, se = 0.0; // 定向目标 / 其标准误 (Contract【目标】【噪声】)
-  double mu = 0.0;          // 曲面在它处的后验均值 (peak 才有)
-  bool peak = false;        // 真 = mono 过门槛的峰, 差在显著 (μ ≤ SE); 假 = 没有点 mono 过门槛, 取 mono 最高的点
+  double mu = 0.0;          // 曲面在它处的后验均值 (过门槛的点才有, 否则 0)
+  bool peak = false;        // 真 = 过门槛的峰, 差在显著 (μ ≤ SE); 假 = 没有峰: 有过门槛的点则取其中 μ 最高的, 否则取 mono 最高的点
 };
 struct SearchMark {
   int hold = 0;

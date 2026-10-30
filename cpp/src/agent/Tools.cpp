@@ -76,7 +76,7 @@ constexpr ArgDef kFactorsArgs[] = {
 constexpr ArgDef kReadArgs[] = {
     {"id", Arg::Str, nullptr, 0, 0, nullptr, "研报 id (检索结果里反引号中的那串; 能唯一对上的一段也行)"},
     {"part", Arg::Str, "\"card\"", 0, 0, "card|outline|text", "读哪部分: card 标注卡 / outline 目录 / text 原文"},
-    {"from", Arg::Int, "0", 0, 999, nullptr, "text: 从第几节读起 (outline 的节号)"},
+    {"from", Arg::Int, "0", 0, 999, nullptr, "text: 从第几节读起 (outline 的节号); card: 从第几个因子列起 (0 = 整卡; 因子多时卡末尾会给)"},
     {"skip", Arg::Int, "0", 0, 1000000, nullptr, "text: 跳过该节开头多少字 (接着读上次没读完的; 上次结果末尾会给)"}};
 constexpr ArgDef kEvalArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
                                 {"name_cn", Arg::Str, nullptr, 0, 0, nullptr, "中文名: 1..10 个汉字, 不含字母数字标点"},
@@ -93,13 +93,13 @@ constexpr ToolDef kTools[] = {
     {Tool::ViewFeature, "view_feature", "看特征", Run::Look, kFeatureArgs,
      "看特征长什么样: 池内分布 (分位) / 日内轮廓 (各行截面中位数) / 方差来自哪 (资产间 · 日间 · 日内) / 持续性 (同一资产的自相关) / 与本持有期收益的截面 rIC; "
      "给多个时附两两截面相关. 造新特征前先看原料, 造完看它是否如你所想",
-     "每个式子一节统计 (带火花线) + 多个时的相关矩阵"},
+     "每个式子一节统计 (带火花线; 写错的式子在它那节给原因, 其余照算) + 多个时的相关矩阵"},
     {Tool::ViewLayers, "view_layers", "看分层", Run::Look, kLayersArgs,
      "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 切开看分层在哪些时段 / 月份成立、哪些失效",
      "全期 20 组 + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组)"},
     {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
-     "竞价段 · 尾盘) 的占比提升与段收益, 再列最差 / 最好 / 随机若干段的明细 (代码与日期可接 view_stock_day). 用来找收益从哪来、亏在哪类情形",
+     "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列最差 / 最好 / 随机若干段的明细 (代码与日期可接 view_stock_day). 用来找收益从哪来、亏在哪类情形",
      "汇总 + 时段表 + 标签表 + 明细表"},
     {Tool::ViewHolders, "view_holders", "看常客", Run::Look, kHoldersArgs,
      "看哪些资产最常落在因子一端: 本端行数 / 占其在池行的比例 / 涉及天数 / 平均连续行数 / 本端持仓平均超额, 附集中度. 用来看因子是否只在少数票上起作用、在挑哪类票",
@@ -112,7 +112,8 @@ constexpr ToolDef kTools[] = {
      "看一只股票连续多日 (至多 {stock_days} 日) 的日级概况: 每日一行 (涨跌 / 振幅 / 成交额 / 在池 / 因子日均与收盘分位 / 两端行数 / 收盘开仓的后续超额 / 特征收盘值), 附日级火花线",
      "火花线 + 逐日表"},
     {Tool::SearchLeaves, "search_leaves", "查特征叶", Run::Now, kLeavesArgs,
-     "查特征叶的公式与说明 (系统提示的特征表只列叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见", "命中数 + 叶行 (叶 / 中文名 / 公式 / 说明)"},
+     "查特征叶的公式与说明 (系统提示的特征表只列叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见、落盘值是不是原量",
+     "命中数 + 叶行 (叶 / 中文名 / 公式 / 说明 / 落盘值); 零命中时给各词单独的命中数"},
     {Tool::SearchDocs, "search_docs", "查研报", Run::Docs, kDocsArgs,
      "查研报库 (券商金工研报的标注与全文): 先给命中研报的分面 —— 阶段 → 流派树 (篇数) / 机构 / 年份 / 价值 (我们对研报的判断: high 可直接复用 / medium 有参考 / low 有水分), "
      "再列研报. 不带条件 = 全库版图; 从上往下逐层加条件 (阶段 → 流派 → 关键词) 收窄到感兴趣的几篇, 再用 read_doc 读",
@@ -122,7 +123,7 @@ constexpr ToolDef kTools[] = {
      "造新特征或换思路前先查别人怎么定义同类东西、背后讲的什么机制. 统计是原文在其自己股票池与预测期 (多为月度) 上的数, 只用来理解机制, 与本会话的回测不可比",
      "分面 + 因子行 (出处研报 id 可接 read_doc)"},
     {Tool::ReadDoc, "read_doc", "读研报", Run::Docs, kReadArgs,
-     "读一篇研报: card 是标注卡 (各阶段的流派与设定 / 结论 / 库内前作与被引 / 因子与公式), 先看它判断值不值得细读; 要细节看 outline (节号 · 标题 · 字数) 挑节, "
+     "读一篇研报: card 是标注卡 (各阶段的流派与设定 / 结论 / 库内前作与被引 / 因子与公式; 因子多读不完时末尾给接着读的 from), 先看它判断值不值得细读; 要细节看 outline (节号 · 标题 · 字数) 挑节, "
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
     {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, kEvalArgs,
@@ -172,18 +173,35 @@ bool object_of(std::string_view text, json &j, std::string &err) {
     err = "回复里没有 JSON 对象";
     return false;
   }
-  std::vector<std::vector<std::string>> keys; // 在开的各层对象已见的键
-  std::string dup;
+  // 在开的各层容器: 数组记在第几项, 对象记在哪个键与已见的键; 键重复时按它们拼出所在对象的路径
+  struct Open {
+    bool arr = false;
+    int n = -1;
+    std::string key;
+    std::vector<std::string> keys;
+  };
+  std::vector<Open> st;
+  std::string dup, where;
   const json::parser_callback_t seen = [&](int, json::parse_event_t ev, json &v) {
-    if (ev == json::parse_event_t::object_start) {
-      keys.emplace_back();
-    } else if (ev == json::parse_event_t::object_end) {
-      keys.pop_back();
-    } else if (ev == json::parse_event_t::key) {
-      const std::string k = v.get<std::string>();
-      if (dup.empty() && std::find(keys.back().begin(), keys.back().end(), k) != keys.back().end())
-        dup = k;
-      keys.back().push_back(k);
+    using E = json::parse_event_t;
+    if (ev == E::object_start || ev == E::array_start) {
+      if (!st.empty() && st.back().arr)
+        ++st.back().n;
+      st.push_back({.arr = ev == E::array_start});
+    } else if (ev == E::object_end || ev == E::array_end) {
+      st.pop_back();
+    } else if (ev == E::value) {
+      if (!st.empty() && st.back().arr)
+        ++st.back().n;
+    } else if (ev == E::key) {
+      Open &o = st.back();
+      o.key = v.get<std::string>();
+      if (dup.empty() && std::find(o.keys.begin(), o.keys.end(), o.key) != o.keys.end()) {
+        dup = o.key;
+        for (size_t i = 0; i + 1 < st.size(); ++i)
+          where += st[i].arr ? "[" + std::to_string(st[i].n) + "]" : (i ? "." : "") + st[i].key;
+      }
+      o.keys.push_back(o.key);
     }
     return true;
   };
@@ -193,7 +211,7 @@ bool object_of(std::string_view text, json &j, std::string &err) {
     return false;
   }
   if (!dup.empty()) {
-    err = "同一个 JSON 对象里键 \"" + dup + "\" 出现了两次 (常见于把两个调用写进一个 {...}: 每个调用单独一个 {\"tool\": ..., \"args\": {...}}, 之间用逗号隔开)";
+    err = (where.empty() ? "顶层对象" : where) + " 里键 \"" + dup + "\" 出现了两次 (常见于把两个调用写进一个 {...}: 每个调用单独一个 {\"tool\": ..., \"args\": {...}}, 之间用逗号隔开)";
     return false;
   }
   return true;

@@ -124,6 +124,7 @@ private:
   Phase phase_ = Phase::None;
   bool stop_ = false;
   size_t cur_ = 0;
+  size_t folded_ = 0; // timeline 前 folded_ 条已过折叠 (结果消息换成了折叠版)
 };
 
 } // namespace agent

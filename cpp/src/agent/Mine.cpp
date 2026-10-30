@@ -49,7 +49,7 @@ void Mine::open(const SharedData &data, Setup s) {
   log.open((fs::path(catalog::dir(setup.sc, setup.test)) / "chat" / stamp()).string(), setup.llm.system);
   phase_ = Phase::Think;
   stop_ = done = asked = false;
-  cur_ = 0;
+  cur_ = folded_ = 0;
   t0 = std::chrono::steady_clock::now(), t_end = -1;
   timeline.clear();
   total = {};
@@ -226,7 +226,7 @@ void Mine::step() {
   if (done)
     return finish("agent 宣布挖完");
   if (go(Phase::Think))
-    ask(RoundMessage(rd.acts));
+    ask(RoundMessage(rd.acts, setup.test));
 }
 
 void Mine::ended(Act &a) {
@@ -253,11 +253,15 @@ bool Mine::go(Phase next) {
   return true;
 }
 
-// 发第 n 条前, 第 n − kKeepRounds 条若是结果消息就在会话历史里换成折叠版 (它的调用在前一轮); 此前各轮的回复都收齐了, 条序 = 会话的轮序
+// 发第 n 条前, 未折叠的条数 (连同这条) 将超 2·kKeepRounds 时成批折叠到只剩最近 kKeepRounds 条: 其间的结果消息在会话历史里换成折叠版 (它的调用在前一轮);
+// 成批折叠让历史前缀多数轮不变 (远端的前缀缓存接得上). 此前各轮的回复都收齐了, 条序 = 会话的轮序
 void Mine::ask(Message m) {
-  if (const size_t n = timeline.size(), keep = static_cast<size_t>(kKeepRounds); llm::def(setup.llm.backend).local && n >= keep)
-    if (const size_t j = n - keep; timeline[j].kind == Msg::Round)
-      chat.fold(j, FoldedText(timeline[j - 1].acts));
+  if (const size_t n = timeline.size(), keep = static_cast<size_t>(kKeepRounds); llm::def(setup.llm.backend).local && n - folded_ >= 2 * keep) {
+    for (size_t j = folded_; j + keep <= n; ++j)
+      if (timeline[j].kind == Msg::Round)
+        chat.fold(j, FoldedText(timeline[j - 1].acts));
+    folded_ = n - keep + 1;
+  }
   log.event(Event::Ask, {{"round", round() + 1}, {"kind", def(m.kind).id}, {"chars", m.text.size()}});
   timeline.push_back({.kind = m.kind, .user = m.text, .span = {.t0 = now()}});
   chat.ask(std::move(m.text));

@@ -22,6 +22,10 @@ using KV = std::vector<std::pair<std::string_view, std::string>>;
 constexpr size_t kTitleChars = 40; // 结果标题里每个参数值至多几字 (全文在 agent 自己的回复里)
 constexpr size_t kSurfBins = 6;    // 参数曲面: 每个参数至多分几段
 
+// 代表点怎么取的 (下标 = Rep)
+constexpr const char *kRepCn[] = {"过门槛的峰", "过门槛的点里曲面估计最高的", "mono 最高的点"};
+static_assert(std::size(kRepCn) == static_cast<size_t>(Rep::Mono) + 1);
+
 std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(def(m).id) + ".md"); }
 
 // {{键}} → 值; 模板里的键都须在 kv 里
@@ -87,6 +91,8 @@ std::string lower(std::string s) { // 只动 ASCII
   return s;
 }
 
+std::string hay_of(const Leaf &l) { return lower(l.code + "\n" + l.name_cn + "\n" + l.formula + "\n" + l.desc + "\n" + l.tf); } // search_leaves 查的字
+
 std::string bp_of(double r) { return fmt("%+.1f", r * 1e4); }
 std::string bp_spark(const std::vector<double> &v) {
   const auto [lo, hi] = std::minmax_element(v.begin(), v.end());
@@ -96,30 +102,35 @@ std::string bp_spark(const std::vector<double> &v) {
 // 参数值: 整数不带小数
 std::string param(double v) { return v == std::round(v) ? fmt("%.0f", v) : fmt("%.4g", v); }
 
-// 参数曲面: 每个参数按取值分至多 kSurfBins 段 (等点数, 同值不拆), 段内取 mono 最高的点 (其余参数随该点)
+// 参数曲面: 每个参数按取值分至多 kSurfBins 段 (等点数, 同值不拆), 段内取最好的点 (mono 最高, 同 mono 取目标高的), 列出它的全部参数
 std::string surface_text(const Surface &sf) {
   if (sf.slots.empty() || sf.pts.size() < 2)
     return "";
   const size_t n = sf.pts.size(), per = (n + kSurfBins - 1) / kSurfBins;
-  std::string s = "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 每个参数按取值分段, 段内取 mono 最高的点, 其余参数随该点):\n";
+  const auto g = [](const Stat &st) { return std::max(st.mono, 0.0) * std::max(st.mono, 0.0) * st.ls * st.ric; };
+  const auto better = [&](const Stat &x, const Stat &y) { return x.mono != y.mono ? x.mono > y.mono : g(x) > g(y); };
+  std::string s = "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 每个参数按取值分段, 段内取最好的点: mono 最高, 同 mono 取目标高的):\n";
   for (size_t j = 0; j < sf.slots.size(); ++j) {
     std::vector<size_t> ix(n);
     for (size_t i = 0; i < n; ++i)
       ix[i] = i;
     const auto v = [&](size_t i) { return sf.pts[ix[i]].v[j]; };
     std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return sf.pts[a].v[j] < sf.pts[b].v[j]; });
-    s += "\n| " + sf.slots[j] + " | 点 | mono | 每期毛多空 bp | rIC |\n|---|---|---|---|---|\n";
+    s += "\n| " + sf.slots[j] + " 段 | 最好的点 | mono | 每期毛多空 bp | rIC |\n|---|---|---|---|---|\n";
     for (size_t a = 0; a < n;) {
       size_t b = std::min(n, a + per);
       while (b < n && v(b) == v(b - 1))
         ++b;
       size_t best = a;
       for (size_t i = a; i < b; ++i)
-        if (sf.pts[ix[i]].st.mono > sf.pts[ix[best]].st.mono)
+        if (better(sf.pts[ix[i]].st, sf.pts[ix[best]].st))
           best = i;
-      const Stat &st = sf.pts[ix[best]].st;
-      s += "| " + (v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1))) + " | " + std::to_string(b - a) + " | " + fmt("%.3f", st.mono) + " | " +
-           fmt("%+.2f", st.ls * 1e4) + " | " + fmt("%.4f", st.ric) + " |\n";
+      const Probe &p = sf.pts[ix[best]];
+      std::string at;
+      for (size_t q = 0; q < sf.slots.size(); ++q)
+        at += (q ? ", " : "") + (sf.slots.size() > 1 ? sf.slots[q] + "=" : std::string()) + param(p.v[q]);
+      s += "| " + (v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1))) + " | " + at + " | " + fmt("%.3f", p.st.mono) + " | " +
+           fmt("%+.2f", p.st.ls * 1e4) + " | " + fmt("%.4f", p.st.ric) + " |\n";
       a = b;
     }
   }
@@ -173,10 +184,12 @@ std::string Text(const Weight &w) {
   return Text(w.st) + " · score " + (std::isfinite(w.score) ? Text(w.score, w.se) : std::string("不过门槛")) + b + (w.sign < 0 ? " · 取反" : "");
 }
 
+// 显著看曲面估计对标准误, 不看观测目标的 t
 std::string Text(const Top &t) {
-  std::string s = Text(t.st) + " · 目标 " + Text(t.g, t.se);
-  if (t.peak) {
-    char b[48];
+  char b[96];
+  std::snprintf(b, sizeof(b), " · 目标 %.3g ± %.2g", t.g, t.se);
+  std::string s = Text(t.st) + b;
+  if (t.rep != Rep::Mono) {
     std::snprintf(b, sizeof(b), " · 曲面估计 %.3g", t.mu);
     s += b;
   }
@@ -212,8 +225,7 @@ std::string Detail(const Result &r) {
     return s;
   }
   case Verdict::Null:
-    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + (r.top->peak ? "过门槛的峰" : "mono 最高的点") + ") `" + r.top->expr +
-                       "`: " + Text(*r.top) + "\n"
+    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + kRepCn[static_cast<size_t>(r.top->rep)] + ") `" + r.top->expr + "`: " + Text(*r.top) + "\n"
                  : std::string("- Search 无显著权重 (没有一个点算得出该持有期统计)\n");
   case Verdict::Pending:
     return "- " + std::string(def(r.verdict).cn) + "\n";
@@ -256,15 +268,20 @@ std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query
   std::string rows;
   int hit = 0;
   for (const Leaf &l : leaves) {
-    const std::string hay = lower(l.code + "\n" + l.name_cn + "\n" + l.formula + "\n" + l.desc);
+    const std::string hay = hay_of(l);
     if (!std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; }))
       continue;
     if (++hit <= n)
-      rows += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " |\n";
+      rows += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " | " + (l.tf.empty() ? "x" : l.tf_def) + " |\n";
   }
-  if (!hit)
-    return "(无命中; 换个写法或少给几个词)\n";
-  return "命中 " + std::to_string(hit) + " 个" + (hit > n ? ", 列前 " + std::to_string(n) + " 个" : std::string()) + "\n\n| 叶 | 中文名 | 公式 | 说明 |\n|---|---|---|---|\n" + rows;
+  if (!hit) {
+    std::string each;
+    for (const std::string &w : ws)
+      each += (each.empty() ? "" : " · ") + w + " " + std::to_string(std::count_if(leaves.begin(), leaves.end(), [&](const Leaf &l) { return hay_of(l).find(w) != std::string::npos; }));
+    return "(无命中; 各词单独命中: " + each + "; 换个写法或少给几个词)\n";
+  }
+  return "命中 " + std::to_string(hit) + " 个" + (hit > n ? ", 列前 " + std::to_string(n) + " 个" : std::string()) +
+         "\n\n| 叶 | 中文名 | 公式 (原量 x) | 说明 | 落盘值 |\n|---|---|---|---|---|\n" + rows;
 }
 
 std::string AnswerText(const Asked &a) {
@@ -282,9 +299,22 @@ std::string AnswerText(const Asked &a) {
 
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
-  std::string leaves = "| 叶 | 中文名 |\n|---|---|\n";
-  for (const Leaf &l : c.leaves)
-    leaves += "| " + l.code + " | " + cell(l.name_cn) + " |\n";
+  // 叶按 档.层 分组 (组序 = 首次出现), 每行 列名 中文名 [落盘变换]
+  std::vector<std::pair<std::string, std::string>> groups;
+  std::vector<int> counts;
+  for (const Leaf &l : c.leaves) {
+    const size_t dot = l.code.find('.', l.code.find('.') + 1);
+    assert(dot != std::string::npos && "叶名 = 档.层.列");
+    const std::string g = l.code.substr(0, dot);
+    auto it = std::find_if(groups.begin(), groups.end(), [&](const auto &x) { return x.first == g; });
+    if (it == groups.end())
+      groups.push_back({g, ""}), counts.push_back(0), it = groups.end() - 1;
+    ++counts[static_cast<size_t>(it - groups.begin())];
+    it->second += "- " + l.code.substr(dot + 1) + " " + cell(l.name_cn) + (l.tf.empty() ? "" : " [" + l.tf + "]") + "\n";
+  }
+  std::string leaves;
+  for (size_t i = 0; i < groups.size(); ++i)
+    leaves += (i ? "\n## " : "## ") + groups[i].first + ".* (" + std::to_string(counts[i]) + " 个)\n" + groups[i].second;
   std::string ops = "| 算子 | 中文名 | 签名 (元与参数的值域) | 输出域 | 定义 | 说明 |\n|---|---|---|---|---|---|\n";
   for (const Op &o : c.ops)
     ops += "| " + o.name + " | " + cell(o.name_cn) + " | $" + cell(o.sig) + "$ | " + o.out + " | $" + cell(o.tex) + "$ | " + cell(o.note) + " |\n";
@@ -307,8 +337,8 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
                             {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 note_issue"},
-                            {"history", fold ? "最近 " + std::to_string(kKeepRounds) +
-                                                   " 条结果消息原样留在对话里, 更早的会折叠 (观察与查询只留标题, 回测只留一行结局); 还要用的数在 eval_factor 的 note 里记下, 或重调"
+                            {"history", fold ? "最近 " + std::to_string(kKeepRounds) + "~" + std::to_string(2 * kKeepRounds) +
+                                                   " 条消息原样留在对话里, 更早的结果消息会成批折叠 (观察与查询只留标题, 回测只留一行结局); 还要用的数在 eval_factor 的 note 里记下, 或重调"
                                              : "对话里的结果消息原样保留"},
                             {"tools", ToolsDoc(ask)},
                             {"leaves", leaves},
@@ -334,7 +364,7 @@ Message TestMessage(bool ask) {
                                       : "本会话没有 ask_human, 不测它"}});
 }
 
-Message RoundMessage(const std::vector<Act> &acts) {
+Message RoundMessage(const std::vector<Act> &acts, bool test) {
   std::string s;
   for (size_t i = 0; i < acts.size(); ++i) {
     const Act &a = acts[i];
@@ -343,7 +373,12 @@ Message RoundMessage(const std::vector<Act> &acts) {
       s += '\n';
     s += '\n';
   }
-  return fill(Msg::Round, {{"results", s}, {"batch", std::to_string(kBatch)}});
+  const std::string batch = std::to_string(kBatch);
+  const std::string next = test ? "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch +
+                                      " 个); 对照工具说明查上面每个结果, 有问题即 note_issue. 全部调过后 note_issue 写总评, 再 finish."
+                                : "对照当前最好版本, 按系统提示 \"做法\" 里的判据判断每个回测的改动是好是坏; 从观察里找下一个要修的现象, 再发下一串调用 (eval_factor 至多 " +
+                                      batch + " 个). 改不动了就 submit_factor 交最好的版本, 再 finish.";
+  return fill(Msg::Round, {{"results", s}, {"next", next}});
 }
 
 std::string FoldedText(const std::vector<Act> &acts) {

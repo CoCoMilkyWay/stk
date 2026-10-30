@@ -647,19 +647,24 @@ struct SearchService::Searcher {
     }
   }
 
-  // 无显著时的代表点: 过门槛的峰里 μ 最高的 (差在显著); 没有峰 → 可用点里 mono 最高的 (差在分层); 一个可用点都没有 → 无
+  // 无显著时的代表点: 过门槛的峰里 μ 最高的 (差在显著); 没有峰 → 过门槛的点里 μ 最高的 (曲面往不过门槛处升, 或 μ ≤ 0);
+  // 一个过门槛的点都没有 → 可用点里 mono 最高的 (差在分层, μ 记 0); 一个可用点都没有 → 无
   std::optional<SearchTop> top_of() const {
     int id = -1;
     double mu = 0.0;
     if (!S.peaks.empty()) {
       id = S.ids[static_cast<size_t>(S.peaks[0])], mu = S.mu[static_cast<size_t>(S.peaks[0])];
     } else {
-      for (int i = 0; i < static_cast<int>(ents.size()); ++i) {
-        const Score &sc = ents[static_cast<size_t>(i)].sc;
-        if (ents[static_cast<size_t>(i)].pass >= 0 && sc.ok &&
-            (id < 0 || sc.mono > ents[static_cast<size_t>(id)].sc.mono || (sc.mono == ents[static_cast<size_t>(id)].sc.mono && sc.g > ents[static_cast<size_t>(id)].sc.g)))
-          id = i;
-      }
+      for (size_t i = 0; i < S.ids.size(); ++i)
+        if (std::isfinite(ents[static_cast<size_t>(S.ids[i])].sc.score) && (id < 0 || S.mu[i] > mu))
+          id = S.ids[i], mu = S.mu[i];
+      if (id < 0)
+        for (int i = 0; i < static_cast<int>(ents.size()); ++i) {
+          const Score &sc = ents[static_cast<size_t>(i)].sc;
+          if (ents[static_cast<size_t>(i)].pass >= 0 && sc.ok &&
+              (id < 0 || sc.mono > ents[static_cast<size_t>(id)].sc.mono || (sc.mono == ents[static_cast<size_t>(id)].sc.mono && sc.g > ents[static_cast<size_t>(id)].sc.g)))
+            id = i;
+        }
     }
     if (id < 0)
       return std::nullopt;
@@ -688,8 +693,11 @@ struct SearchService::Searcher {
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
     if (mk.top)
-      lg("无显著, 代表点 (%s): g %.3g ± %.3g μ %.3g mono %+.3f @ %s", mk.top->peak ? "峰" : "mono 最高", mk.top->g, mk.top->se, mk.top->mu, mk.top->mono,
-         mk.top->expr.c_str());
+      lg("无显著, 代表点 (%s): g %.3g ± %.3g μ %.3g mono %+.3f @ %s",
+         mk.top->peak                                                    ? "峰"
+         : factor::search::passes(mk.top->ls, mk.top->ric, mk.top->mono) ? "过门槛 μ 最高"
+                                                                         : "mono 最高",
+         mk.top->g, mk.top->se, mk.top->mu, mk.top->mono, mk.top->expr.c_str());
     {
       std::lock_guard<std::mutex> lock(W.mutex);
       W.message = ws.empty() ? strf("没有显著 (μ > SE) 且 mono ≥ %.2f 的候选, 已清掉该 Hold 的权重", factor::search::kMinMono)

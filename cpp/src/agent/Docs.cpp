@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <sstream>
@@ -391,6 +392,23 @@ std::string conditions(const Call &c) {
   return t.size() - a > 2 ? t.substr(a) : "(全库)";
 }
 
+// 逐条的检索条件: 写法 + 第 i 项是否满足 (query 每个词一条)
+using Conds = std::vector<std::pair<std::string, std::function<bool(size_t)>>>;
+bool pass_all(const Conds &cs, size_t i) {
+  return std::all_of(cs.begin(), cs.end(), [&](const auto &x) { return x.second(i); });
+}
+// 零命中时各条件单独的命中数 (共 n 项)
+std::string alone(const Conds &cs, size_t n) {
+  std::string o;
+  for (const auto &[name, pass] : cs) {
+    size_t k = 0;
+    for (size_t i = 0; i < n; ++i)
+      k += pass(i);
+    o += (o.empty() ? "" : " · ") + name + " " + std::to_string(k);
+  }
+  return "各条件单独命中: " + o + "\n去掉命中少的条件或换个词再查\n";
+}
+
 // ---- 三个工具 ----
 bool search_docs(const Call &c, std::string &out) {
   const Lib &L = lib();
@@ -405,20 +423,28 @@ bool search_docs(const Call &c, std::string &out) {
     out = "scope=text 须给 query";
     return false;
   }
+  const auto hay = [&](size_t i) -> const std::string & { return text ? texts()[i].low : L.docs[i].hay; };
+  Conds cs;
+  if (!stage.empty())
+    cs.push_back({"stage=" + stage, [&](size_t i) { return has(L.docs[i].stages, stage); }});
+  if (!ap.empty())
+    cs.push_back({"approach=" + ap, [&](size_t i) { return has(L.docs[i].approaches, ap); }});
+  if (!asset.empty())
+    cs.push_back({"asset=" + asset, [&](size_t i) { return has(L.docs[i].asset, asset); }});
+  if (!freq.empty())
+    cs.push_back({"freq=" + freq, [&](size_t i) { return has(L.docs[i].freqs, freq); }});
+  if (!genre.empty())
+    cs.push_back({"genre=" + genre, [&](size_t i) { return L.docs[i].genre == genre; }});
+  for (const std::string &w : ws)
+    cs.push_back({"query 词 " + w, [&, w](size_t i) { return hay(i).find(w) != std::string::npos; }});
   std::vector<size_t> hit;
   std::vector<int> hits(L.docs.size(), 0);
-  for (size_t i = 0; i < L.docs.size(); ++i) {
-    const Doc &d = L.docs[i];
-    if ((!stage.empty() && !has(d.stages, stage)) || (!ap.empty() && !has(d.approaches, ap)) || (!asset.empty() && !has(d.asset, asset)) ||
-        (!freq.empty() && !has(d.freqs, freq)) || (!genre.empty() && d.genre != genre))
-      continue;
-    hits[i] = ws.empty() ? 1 : count_in(text ? texts()[i].low : d.hay, ws);
-    if (hits[i] > 0)
-      hit.push_back(i);
-  }
+  for (size_t i = 0; i < L.docs.size(); ++i)
+    if (pass_all(cs, i))
+      hits[i] = ws.empty() ? 1 : count_in(hay(i), ws), hit.push_back(i);
   out = "命中 " + std::to_string(hit.size()) + " 篇 " + conditions(c) + "\n";
   if (hit.empty()) {
-    out += "去掉一个条件或换个词再查\n";
+    out += alone(cs, L.docs.size());
     return true;
   }
   Count broker, year, value;
@@ -458,15 +484,24 @@ bool search_factors(const Call &c, std::string &out) {
     out = "没有因子构造流派 " + ap + " (因子只出自 L1_factor 的流派, code 见 search_docs 分面里 L1_factor 那行)";
     return false;
   }
+  const auto doc = [&](size_t i) -> const Doc & { return L.docs[L.factors[i].doc]; };
+  Conds cs;
+  if (!family.empty())
+    cs.push_back({"family=" + family, [&](size_t i) { return L.factors[i].family == family; }});
+  if (!period.empty())
+    cs.push_back({"period=" + period, [&](size_t i) { return has(L.factors[i].period, period); }});
+  if (!horizon.empty())
+    cs.push_back({"horizon=" + horizon, [&](size_t i) { return L.factors[i].horizon == horizon; }});
+  if (!ap.empty())
+    cs.push_back({"approach=" + ap, [&](size_t i) { return has(doc(i).l1, ap); }});
+  if (!asset.empty())
+    cs.push_back({"asset=" + asset, [&](size_t i) { return has(doc(i).asset, asset); }});
+  for (const std::string &w : ws)
+    cs.push_back({"query 词 " + w, [&, w](size_t i) { return L.factors[i].hay.find(w) != std::string::npos; }});
   std::vector<size_t> hit;
-  for (size_t i = 0; i < L.factors.size(); ++i) {
-    const Factor &f = L.factors[i];
-    const Doc &d = L.docs[f.doc];
-    if ((!family.empty() && f.family != family) || (!period.empty() && !has(f.period, period)) || (!horizon.empty() && f.horizon != horizon) ||
-        (!ap.empty() && !has(d.l1, ap)) || (!asset.empty() && !has(d.asset, asset)) || (!ws.empty() && count_in(f.hay, ws) == 0))
-      continue;
-    hit.push_back(i);
-  }
+  for (size_t i = 0; i < L.factors.size(); ++i)
+    if (pass_all(cs, i))
+      hit.push_back(i);
   Count docs, family_n, ap_n;
   for (const size_t i : hit) {
     const Factor &f = L.factors[i];
@@ -476,7 +511,7 @@ bool search_factors(const Call &c, std::string &out) {
   }
   out = "命中 " + std::to_string(hit.size()) + " 个因子 (出自 " + std::to_string(docs.size()) + " 篇) " + conditions(c) + "\n";
   if (hit.empty()) {
-    out += "去掉一个条件或换个词再查\n";
+    out += alone(cs, L.factors.size());
     return true;
   }
   out += "\n### 类别\n" + ranked(family_n, SIZE_MAX) + "\n\n### 出处流派\n" + ranked(ap_n, kTop) + "\n\n### 数据周期 × 预测期 (因子数)\n" + matrix(L, hit);
@@ -542,7 +577,29 @@ std::string setup_of(const json &s) {
   return join(p, " · ");
 }
 
-std::string card(const Lib &L, const Doc &d) {
+// 标注卡: from = 0 整卡; from = k ≥ 1 只列第 k 个起的因子. 字数到 kOutChars − kReadTail 即停, 末尾给接着读的 from
+bool card(const Lib &L, const Doc &d, size_t from, std::string &out) {
+  const size_t nf = d.factors.size();
+  if (from > nf) {
+    out = "from=" + std::to_string(from) + " 超出: 本篇标注卡共 " + std::to_string(nf) + " 个因子 (card 的 from = 从第几个因子列起, 0 = 整卡)";
+    return false;
+  }
+  const auto factors = [&](std::string &o, size_t i0) {
+    for (size_t i = i0; i < nf; ++i) {
+      const Factor &f = L.factors[d.factors[i]];
+      const std::string row = std::to_string(i + 1) + ". " + factor_head(f) + "\n   公式: " + flat(f.formula) + "\n   摘录: " + head(flat(f.evidence), kEvidence) + "\n";
+      if (i > i0 && chars(o) + chars(row) > static_cast<size_t>(kOutChars) - kReadTail) {
+        o += "…(未完: 第 " + std::to_string(i + 1) + ".." + std::to_string(nf) + " 个因子接着读 part=card from=" + std::to_string(i + 1) + ")\n";
+        return;
+      }
+      o += row;
+    }
+  };
+  if (from > 0) {
+    out = "# " + d.id + " · 标注卡的因子, 第 " + std::to_string(from) + " 个起 (共 " + std::to_string(nf) + "; 统计是原文在其股票池与预测期上的数)\n";
+    factors(out, from - 1);
+    return true;
+  }
   std::string o = "# " + d.id + "\n体裁 " + d.genre + " · 资产 " + join(d.asset, "+") + " · 主阶段 " + named(L, d.primary) + " · 价值 " + d.value + " · 所在 " +
                   d.dir + "\n\n## 涉及阶段\n";
   for (const auto &[k, v] : d.tag.at("pipe").items()) {
@@ -575,14 +632,12 @@ std::string card(const Lib &L, const Doc &d) {
     if (!cited.empty())
       o += "- 被引 (库内): " + join(cited, ", ") + "\n";
   }
-  if (!d.factors.empty()) {
-    o += "\n## 因子 (" + std::to_string(d.factors.size()) + "; 统计是原文在其股票池与预测期上的数)\n";
-    for (size_t i = 0; i < d.factors.size(); ++i) {
-      const Factor &f = L.factors[d.factors[i]];
-      o += std::to_string(i + 1) + ". " + factor_head(f) + "\n   公式: " + flat(f.formula) + "\n   摘录: " + head(flat(f.evidence), kEvidence) + "\n";
-    }
+  if (nf) {
+    o += "\n## 因子 (" + std::to_string(nf) + "; 统计是原文在其股票池与预测期上的数)\n";
+    factors(o, 0);
   }
-  return o;
+  out = std::move(o);
+  return true;
 }
 
 std::string outline(const Doc &d, const Text &t) {
@@ -626,10 +681,8 @@ bool read_doc(const Call &c, std::string &out) {
   if (!d)
     return false;
   const std::string part = c.str("part");
-  if (part == "card") {
-    out = card(L, *d);
-    return true;
-  }
+  if (part == "card")
+    return card(L, *d, static_cast<size_t>(c.num("from")), out);
   const Text t = text_of(*d);
   if (part == "outline") {
     out = outline(*d, t);

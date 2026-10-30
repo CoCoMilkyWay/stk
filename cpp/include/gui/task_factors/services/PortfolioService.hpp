@@ -6,6 +6,7 @@
 //   因子文件里找不到该规范串 + 方向 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
 // 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Run / Inspect 同一条管线 (FactorsEngine eval_job: 装载 → 森林 → 探针).
+//   评估期随标签库 (FactorScope::pool_span = false): Lob 池的 Bar 层因子只读分钟线, 与 all 池同期 (Bar 库首日起), 不限于池库落盘日.
 //   同 (层, 池) 的待算条目一组一张森林 (同 Y = 各根 hd 之并, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径, 方向), 根的 hd = 其在组内的全部 hold;
 //   落线探针 CurveP (accum_rows 一级 Row 的 G20 绝对收益 + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_book (FactorsBook; Stat 契约【净值】:
 //   G20 多头, 每批 1/h̄, 平仓行实现; 可成交 / 顺延在标签里) → FactorCurve 逐行出参线.

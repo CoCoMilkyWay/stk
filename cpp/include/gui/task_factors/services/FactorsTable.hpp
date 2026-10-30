@@ -198,6 +198,7 @@ struct FactorScope {
   PerPool<FeatureLib> libs;               // factor_libs
   double max_impact = 0.0;                // Config::max_impact (买入冲击封顶, 成本装载时生效)
   bool gpu = false;
+  bool pool_span = true; // Lob 池 × Bar 层: 评估期限在因子池库落盘日 (与 Lob 层同期); false = 随标签库 (Portfolio: 只用分钟线)
 };
 // 层 / 池 / 目录 / 字段表 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
 bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool gpu, FactorScope &sc);

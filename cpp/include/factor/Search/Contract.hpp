@@ -126,6 +126,9 @@ struct Score {
   double g = 0.0, se = 0.0; // 定向目标 ls·ric·mono₊² / 其标准误
 };
 
+// 定向统计过门槛 (score 有限): 多空 / rIC 为正且 mono ≥ kMinMono
+inline bool passes(double ls, double ric, double mono) { return ls > 0.0 && ric > 0.0 && mono >= kMinMono; }
+
 // 已按所评方向 finish 的二级的打分 (见【目标】【噪声】; 因子表入口: stat 里该 h 的 HoldStat). sign = 所评方向 (只记录)
 inline Score score_of(const HoldStat &hs, int sign = 1) {
   Score s;
@@ -144,7 +147,7 @@ inline Score score_of(const HoldStat &hs, int sign = 1) {
   const double m2 = std::fmax(s.mono, 0.0) * std::fmax(s.mono, 0.0);
   s.g = m2 * s.ls * s.ric;
   s.se = m2 * std::hypot(s.ric * se_ls, s.ls * se_ric);
-  if (s.ls > 0.0 && s.ric > 0.0 && s.mono >= kMinMono)
+  if (passes(s.ls, s.ric, s.mono))
     s.score = s.g;
   return s;
 }

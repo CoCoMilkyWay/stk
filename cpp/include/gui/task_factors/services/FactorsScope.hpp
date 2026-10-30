@@ -20,7 +20,7 @@ namespace GUI::Factors {
 // 设计决定: 每因子 (Run: 每文件) 现解析, 不做跨因子优化 (不跨因子缓存 / 合并评估域或森林), 勿改
 struct Domain {
   PoolId pool = kAllPool;            // 因子池 (目录)
-  PoolMask used = 0;                 // 所用库: 标签库 + 因子池库 + 叶所在库 (+ all: 池成员)
+  PoolMask used = 0;                 // 所用库: 标签库 + 因子池库 (FactorScope::pool_span) + 叶所在库 (+ all: 池成员)
   analysis::ReadScope rs;            // main = 标签库, libs = used 各库清单, axis = A 轴 (标签库轴 / 子池并集), to = A → 各库轴
   std::vector<misc::Ymd> dates;      // 评估期 = used 各库落盘日交集的最近 keep 日 (升序, 非空)
   std::vector<Day> days;             // [dates] 当日 + 承接日 (标签库日期轴上的前一日, 0 = 轴首) 及其落盘位 (承接日按库判)
@@ -30,7 +30,7 @@ struct Domain {
 // worker: 作用域 sc 里已建的库全开 (清单没变的复用; 各因子只读自己用到的). abort = 库判废时拉起的取消旗
 void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
 // 作用域 sc + 叶 leaves → 评估域, 评估期只留最近 keep 日 (≥ 1; 子池成员 / A 轴按留下的日建).
-// 所用库 = 因子池库 ∪ 读计划各列的库 (Col::ref) (+ all: 池成员); 所用库未建 / 无共同落盘日 → false + why (正常输入)
+// 所用库 = 标签库 ∪ 因子池库 (FactorScope::pool_span) ∪ 读计划各列的库 (Col::ref) (+ all: 池成员); 所用库未建 / 无共同落盘日 → false + why (正常输入)
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
 // domain_of 的前半 (pool / used / rs.libs / dates / days; 不建子池成员与 A 轴, 不读库): 只问评估期时用
 bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);

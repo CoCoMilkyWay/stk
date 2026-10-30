@@ -139,6 +139,7 @@ struct Mean {
 std::string wan(const Mean &m) { return m.n ? fmt("%.0f", m.sum / 1e4) : "—"; } // 成交额之和 (万); 无有效行 —
 
 // 日内时段: 竞价段 (每日开头 L.open 行) 单列, 其余每段约 30 分钟 (8 段); 日层只一段
+// 段名 = 起止时刻: 起 = 上一行收盘时刻, 午休不占行, 午后首段起于 13:00
 struct Part {
   int k0, k1; // 日内行 [k0, k1)
   std::string name;
@@ -151,7 +152,8 @@ std::vector<Part> parts_of(const Look &L) {
   std::vector<Part> p{{0, L.open, "09:15–09:30 竞价"}};
   for (int k = L.open; k < L.seg; k += w) {
     const int k1 = L.seg - (k + w) < w ? L.seg : k + w;
-    p.push_back({k, k1, L.clock[static_cast<size_t>(k - 1)] + "–" + L.clock[static_cast<size_t>(k1 - 1)]});
+    const std::string &from = L.clock[static_cast<size_t>(k - 1)];
+    p.push_back({k, k1, (from == "11:30" ? std::string("13:00") : from) + "–" + L.clock[static_cast<size_t>(k1 - 1)]});
     if (k1 == L.seg)
       break;
   }
@@ -182,6 +184,8 @@ struct Px {
         v[b] = f.v.data();
   }
   double operator()(Bar b, int t, int a) const { return v[b] ? v[b][L.at(t, a)] : kNaN; }
+  // 该行有成交 (无量叶则都算有): 无成交行 (如竞价段未撮合的分钟) 的高低是占位价, 不进当日高低
+  bool traded(int t, int a) const { return !v[Bar::Volume] || (*this)(Bar::Volume, t, a) > 0.0; }
   // 当日涨跌的基准: 分钟层 = 当日昨收 (除权); 日层 = 上一行收盘
   double pre(int t, int a) const {
     const double p = L.seg > 1 ? (*this)(Bar::PreClose, t, a) : t > 0 ? (*this)(Bar::Close, t - 1, a)
@@ -211,7 +215,7 @@ constexpr const char *kTagNames[tag::N] = {"竞价段 (09:15–09:30 的行)",
                                            "当日跌 > 5%",
                                            "日内高位 (当日高低区间 ≥ 0.8)",
                                            "日内低位 (≤ 0.2)",
-                                           "放量 (≥ 当日此前均量 3 倍)"};
+                                           "放量 (≥ 当日此前有成交行均量 3 倍)"};
 struct Mark {
   uint32_t m = 0;
   double chg = kNaN, pos = kNaN; // 开仓那行收盘时: 当日涨跌 / 收在当日至此高低区间的位置
@@ -238,8 +242,9 @@ Mark mark_of(const Px &px, int t, int a) {
   double hi = -INFINITY, lo = INFINITY, vs = 0.0;
   int vn = 0;
   for (int u = t0; u <= t; ++u) {
-    hi = std::fmax(hi, px(Bar::High, u, a)), lo = std::fmin(lo, px(Bar::Low, u, a));
-    if (const double v = px(Bar::Volume, u, a); u < t && std::isfinite(v))
+    if (px.traded(u, a))
+      hi = std::fmax(hi, px(Bar::High, u, a)), lo = std::fmin(lo, px(Bar::Low, u, a));
+    if (const double v = px(Bar::Volume, u, a); u < t && v > 0.0)
       vs += v, ++vn;
   }
   if (hi > lo && std::isfinite(c)) {
@@ -619,9 +624,14 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
         s += "| " + ps[j].name + " | " + str(by[j].n) + " | " + pct(static_cast<double>(by[j].n) / M) + " | " + bp(by[j].mean()) + " | " + pct(by[j].up()) + " |\n";
   }
 
-  // 标签: 本端段 vs 池内格 (随机抽样, 固定种子)
-  std::array<size_t, tag::N> base{};
-  size_t nb = 0;
+  // 标签: 本端真持有格 (等距抽样) vs 池内格 (随机抽样, 固定种子), 同在格上数, 提升与合并方式无关; 段超额按段开仓那行分
+  std::array<size_t, tag::N> held{}, base{};
+  size_t nh = 0, nb = 0;
+  for (size_t i = 0, st = std::max<size_t>(1, cs.size() / kBase); i < cs.size(); i += st, ++nh) {
+    const Mark m = mark_of(px, cs[i].t, cs[i].a);
+    for (int j = 0; j < tag::N; ++j)
+      held[static_cast<size_t>(j)] += m.m >> j & 1u;
+  }
   {
     std::mt19937_64 rng(7);
     std::uniform_int_distribution<size_t> pick(0, static_cast<size_t>(T) * A - 1);
@@ -635,12 +645,12 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
         base[static_cast<size_t>(j)] += m.m >> j & 1u;
     }
   }
-  s += "\n| 开仓那行的盘面 | 本端段占比 | 池内格占比 | 提升 | 带此标签的段超额 bp | 不带的 bp |\n|---|---|---|---|---|---|\n";
+  s += "\n| 开仓那行的盘面 | 本端格占比 | 池内格占比 | 提升 | 开仓带此标签的段超额 bp | 不带的 bp |\n|---|---|---|---|---|---|\n";
   for (int j = 0; j < tag::N; ++j) {
     Mean with, without;
     for (size_t i = 0; i < M; ++i)
       (mk[i].m >> j & 1u ? with : without).add(ex[i]);
-    const double fs = static_cast<double>(with.n) / M, fb = nb ? static_cast<double>(base[static_cast<size_t>(j)]) / nb : kNaN;
+    const double fs = static_cast<double>(held[static_cast<size_t>(j)]) / nh, fb = nb ? static_cast<double>(base[static_cast<size_t>(j)]) / nb : kNaN;
     if (fs < 0.01 && !(fb >= 0.01))
       continue;
     s += "| " + std::string(kTagNames[j]) + " | " + pct(fs) + " | " + pct(fb) + " | " + (fb > 0.0 ? fmt("%.2f", fs / fb) : "—") + " | " + bp(with.mean()) + " | " +
@@ -782,18 +792,22 @@ bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &ou
                             amt = col([&](int t) { return px(Bar::Amount, t, 0); });
   const double pre = px.pre(t0, 0);
   double hi = -INFINITY, lo = INFINITY, vsum = 0.0, last = kNaN;
-  int in = 0;
+  int in = 0, first = -1;
   Mean amean;
   for (int k = 0; k < seg; ++k) {
-    hi = std::fmax(hi, high[k]), lo = std::fmin(lo, low[k]);
+    if (px.traded(t0 + k, 0)) {
+      hi = std::fmax(hi, high[k]), lo = std::fmin(lo, low[k]);
+      first = first < 0 ? k : first;
+    }
     vsum += std::isfinite(vol[k]) ? vol[k] : 0.0, amean.add(amt[k]);
     last = std::isfinite(close[k]) ? close[k] : last;
     in += L.gate[static_cast<size_t>(t0 + k)];
   }
   std::string s = "## " + L.codes[0] + " · " + date_of(L.dates[static_cast<size_t>(d)]) + " · " + ctx.level + " (每天 " + std::to_string(seg) + " 行)\n";
-  s += "昨收 " + num(pre) + " · 首行收 " + num(close[0]) + " (" + chg(close[0] / pre - 1.0) + ") · 高 " + num(hi) + " (" + chg(hi / pre - 1.0) + ") · 低 " + num(lo) + " (" +
-       chg(lo / pre - 1.0) + ") · 收 " + num(last) + " (" + chg(last / pre - 1.0) + ") · 涨停 " + num(px(Bar::LimUp, t0, 0)) + " / 跌停 " + num(px(Bar::LimDn, t0, 0)) +
-       " · 成交额 " + wan(amean) + " 万 · 在池 " + std::to_string(in) + " / " + std::to_string(seg) + " 行\n";
+  const std::string open = first < 0 ? "当日无成交" : "首个有成交行 (" + L.clock[static_cast<size_t>(first)] + ") 收 " + num(close[first]) + " (" + chg(close[first] / pre - 1.0) + ")";
+  s += "昨收 " + num(pre) + " · " + open + " · 高 " + num(hi) + " (" + chg(hi / pre - 1.0) + ") · 低 " + num(lo) + " (" + chg(lo / pre - 1.0) + ") · 收 " + num(last) + " (" +
+       chg(last / pre - 1.0) + ") · 涨停 " + num(px(Bar::LimUp, t0, 0)) + " / 跌停 " + num(px(Bar::LimDn, t0, 0)) + " · 成交额 " + wan(amean) + " 万 · 在池 " +
+       std::to_string(in) + " / " + std::to_string(seg) + " 行\n";
   s += over_head(o) + "\n";
   s += "- 收盘价 " + spark(close) + "\n- 成交量 " + spark(vol) + "\n";
   if (o.f)
@@ -814,7 +828,9 @@ bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &ou
     int up = 0, dn = 0;
     for (int k = p.k0; k < p.k1; ++k) {
       const size_t t = static_cast<size_t>(t0 + k);
-      h = std::fmax(h, high[k]), l = std::fmin(l, low[k]), v += std::isfinite(vol[k]) ? vol[k] : 0.0;
+      if (px.traded(t0 + k, 0))
+        h = std::fmax(h, high[k]), l = std::fmin(l, low[k]);
+      v += std::isfinite(vol[k]) ? vol[k] : 0.0;
       exs.push_back(static_cast<double>(L.label[t]) - L.mkt[t]);
       if (o.f) {
         rks.push_back(o.f->rank(t));
@@ -861,7 +877,8 @@ bool stock_days(const Call &c, const Look &L, const Context &ctx, std::string &o
     Mean amean;
     std::vector<double> rks;
     for (int t = t0; t <= tl; ++t) {
-      hi = std::fmax(hi, px(Bar::High, t, 0)), lo = std::fmin(lo, px(Bar::Low, t, 0));
+      if (px.traded(t, 0))
+        hi = std::fmax(hi, px(Bar::High, t, 0)), lo = std::fmin(lo, px(Bar::Low, t, 0));
       amean.add(px(Bar::Amount, t, 0));
       if (const double x = px(Bar::Close, t, 0); std::isfinite(x))
         last = x;
@@ -918,16 +935,18 @@ bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
     out.factors.push_back(std::move(f));
     return true;
   };
+  // 各式各自校验: 不成的带着原因不算, 其余照算; 一个也不成 → false (只有 view_feature 当它没做成)
   const auto feats = [&](const std::vector<std::string> &xs) {
+    bool any = false;
     for (size_t i = 0; i < xs.size(); ++i) {
-      std::string r;
-      if (!lab.feature_of(xs[i], r, err)) {
-        err = "exprs[" + str(i) + "]: " + err;
-        return false;
-      }
-      out.feats.push_back(std::move(r));
+      LookExpr x;
+      if (lab.feature_of(xs[i], x.root, x.error))
+        any = true;
+      else
+        err += (err.empty() ? "" : "; ") + ("exprs[" + str(i) + "]: " + x.error);
+      out.feats.push_back(std::move(x));
     }
-    return true;
+    return any;
   };
   const auto date = [&](const char *k) {
     if (const std::string v = c.str(k); !v.empty() && !ymd_of(v)) {
@@ -960,7 +979,9 @@ bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
     if (const std::string f = c.str("factor"); !f.empty() && !factor(f))
       return false;
     out.kline = true;
-    return feats(c.strs("exprs"));
+    feats(c.strs("exprs"));
+    err.clear();
+    return true;
   default:
     assert(false && "不是观察工具");
     return false;

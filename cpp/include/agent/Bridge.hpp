@@ -47,7 +47,8 @@ struct Choice {
 
 // ---- 上下文 ----
 struct Leaf {
-  std::string code, name_cn, formula, desc; // code = 档.层.列 (模板里的写法)
+  std::string code, name_cn, formula, desc; // code = 档.层.列 (模板里的写法); formula / desc 说的是原量 x
+  std::string tf, tf_def;                   // 落盘值 = 原量经此元素变换: 简称 / 定义式 (恒等 = 空)
 };
 struct Op {
   std::string name, name_cn, sig, out, tex, note; // sig = 元与参数的值域 (LaTeX); out = 输出值域名
@@ -66,13 +67,19 @@ struct Weight {
   double score = 0, se = 0, valid = 0; // Search 目标 (不过门槛 = −∞) / 目标的标准误 / 池内有效率 (0..1)
   std::vector<double> grp;             // [kGroups] 组每期毛收益减组间均值 (已定向; has 才有)
 };
-// Search 无显著时的代表点 (因子文件 search[]): 过 mono 门槛的峰里曲面估计最高的 (peak), 没有峰则 mono 最高的点 —— 告诉 agent 差在哪
+// Search 无显著时的代表点 (因子文件 search[]) —— 告诉 agent 差在哪. 怎么取的:
+//   Peak   过门槛的峰里曲面估计最高的 (差在显著)
+//   Gated  没有峰: 过门槛的点里曲面估计最高的 (估计更高处不过门槛, 或估计都 ≤ 0)
+//   Mono   没有点过门槛: mono 最高的点
+enum class Rep : uint8_t { Peak,
+                           Gated,
+                           Mono };
 struct Top {
   std::string expr;
   int sign = 1;                 // 方向 (−1 = 取反后才是这组统计)
   Stat st;                      // 定向后
-  double g = 0, se = 0, mu = 0; // 定向目标 ls·rIC·mono² / 其标准误 / 曲面在此的估计 (peak 才有)
-  bool peak = false;
+  double g = 0, se = 0, mu = 0; // 定向目标 ls·rIC·mono² / 其标准误 / 曲面在此的估计 (Mono 无)
+  Rep rep = Rep::Mono;
   std::string miss; // 落选原因
 };
 // 一个候选的结局 (AGENT.md 结局表): 反馈 / 流水 / 界面同一份分类
@@ -161,11 +168,15 @@ struct LookFactor {
   bool ts = false;
   int sign = 1;
 };
+// 一个要看的特征式: root = Lab::feature_of 出的 CsRank 包装规范串; error 非空 = 该式不成, 不算 (原因进 LookFeat::error)
+struct LookExpr {
+  std::string root, error;
+};
 struct LookSpec {
   std::vector<LookFactor> factors;
-  std::vector<std::string> feats; // 特征根 (Lab::feature_of 出的 CsRank 包装规范串)
-  bool kline = false;             // 另取本层 K 线叶 (Context::kline 里有的)
-  std::string code;               // 非空 = 只取该资产一列 (个股视图, 不在池的行也落)
+  std::vector<LookExpr> feats;
+  bool kline = false; // 另取本层 K 线叶 (Context::kline 里有的)
+  std::string code;   // 非空 = 只取该资产一列 (个股视图, 不在池的行也落)
 };
 // 一级行 (已定向): 组的超额持仓收益 / 真持有只数; ok = 本行有统计
 struct LookRow {
@@ -191,8 +202,8 @@ struct LookRoot {
   int grp(size_t k) const { return rx[k] == kRankNone ? -1 : std::min(rx[k] * kGroups / (kRankMax + 1), kGroups - 1); }
 };
 struct LookFeat {
-  std::string error;
-  Plane<float> v; // 原值 (无效 NaN; 没取 = 空)
+  std::string error; // 非空 = 没算成
+  Plane<float> v;    // 特征式的值 (无效 NaN; 没取 = 空)
 };
 struct Look {
   std::string error;              // 非空 = 没算成 (评估域不成 / 资产不在池轴 / 全部根坏), 其余字段空
@@ -206,7 +217,7 @@ struct Look {
   std::vector<float> mkt;         // [T] 在池且标签有效格的均值 (整截面; 无 → NaN)
   std::vector<LookRoot> factors;  // 与 LookSpec::factors 对齐
   std::vector<LookFeat> feats;    // 与 LookSpec::feats 对齐
-  PerBar<LookFeat> kline;         // LookSpec::kline 时取的 K 线叶 (Context::kline 里没有的 v 空)
+  PerBar<LookFeat> kline;         // LookSpec::kline 时取的 K 线叶, 已逆落盘变换 = 原量 (Context::kline 里没有的 v 空)
   int A() const { return static_cast<int>(codes.size()); }
   int T() const { return static_cast<int>(dates.size()) * seg; }
   size_t at(int t, int a) const { return static_cast<size_t>(t) * static_cast<size_t>(A()) + static_cast<size_t>(a); }

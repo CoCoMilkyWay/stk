@@ -237,6 +237,7 @@ stk/
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
 │   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池) 一张森林 (根 = 去重规范串, CurveP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
+│   │   │       │   │                                 #    · 评估期随标签库 (pool_span = false): Lob 池的 Bar 层因子只读分钟线, 不限于池库落盘日
 │   │   │       │   │                                 #    · PoolTask 全部池日层篮子一个作业 (eval_baskets: open_job → load_b → baskets → 按池切 PoolCurve); 因子按条目缓存, 只算新增, 根评完即逐条发布
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
@@ -249,7 +250,7 @@ stk/
 │   │   │       │                                     #    · 回写: Search 只替换该 h 的权重 (搜不出 = 清空该 h); Search all 整份覆盖各文件 weights
 │   │   │       │                                     #    · 目标: 每期毛 LS (持仓口径, 已含资金利用率, 按 rIC 定向) · rIC · mono² (不看成本, 不跨 h 比); 硬门槛 mono ≥ kMinMono (分层先于收益)
 │   │   │       │                                     #    · 无自由参数的具体式也走它: 只评本身, 定方向 + 判显著
-│   │   │       │                                     #    · 结局: 评估期 + 无显著时的代表点 (过门槛的曲面峰, 否则 mono 最高的点) 落进因子文件 search[]
+│   │   │       │                                     #    · 结局: 评估期 + 无显著时的代表点 (过门槛的曲面峰, 否则过门槛的点里曲面估计最高的, 再否则 mono 最高的点) 落进因子文件 search[]
 │   │   │       └── ui/
 │   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)

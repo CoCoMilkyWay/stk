@@ -83,12 +83,44 @@ bool feature_root(const F::FeatureTable &ft, const std::string &src, std::string
   return true;
 }
 
+const FeatureMetadata &meta_of(const F::FeatureTable &ft, const F::FeatCol &c) { return ft.feature->meta(c.tier).features[c.level][c.col]; }
+
+// TS 叶落盘前套的元素变换 (ts::Tf) 的定义式, 下标 = ts::TfId; CS 叶的变换写在其公式里
+constexpr const char *kTfDef[] = {"", "sign(x)·ln(1+|x|)", "asinh(x)", "tanh(x)", "sign(x)·√|x|"};
+static_assert(std::size(kTfDef) == static_cast<size_t>(ts::TfId::kCount));
+
+// 落盘值 → 原量 (ts::Tf 的逆)
+float raw_of(ts::TfId tf, float y) {
+  switch (tf) {
+  case ts::TfId::None:
+    return y;
+  case ts::TfId::Log:
+    return std::copysign(std::expm1(std::fabs(y)), y);
+  case ts::TfId::Asinh:
+    return std::sinh(y);
+  case ts::TfId::Tanh:
+    return std::atanh(y);
+  case ts::TfId::Sqrt:
+    return std::copysign(y * y, y);
+  case ts::TfId::kCount:
+    break;
+  }
+  assert(false && "未知 ts::TfId");
+  __builtin_unreachable();
+}
+
 // 层 lvl 的叶 档.层.col (字段表里有且可作输入; 没有 → 空)
 std::string leaf(const F::FeatureTable &ft, size_t lvl, const std::string &col) {
   for (const F::FeatCol &c : ft.x.leaves)
     if (c.allowed && c.level == lvl && c.code.size() > col.size() && c.code.ends_with("." + col))
       return c.code;
   return {};
+}
+// 叶 code 的落盘变换 (须在字段表里)
+ts::TfId tf_of(const F::FeatureTable &ft, const std::string &code) {
+  const auto it = std::find_if(ft.x.leaves.begin(), ft.x.leaves.end(), [&](const F::FeatCol &c) { return c.code == code; });
+  assert(it != ft.x.leaves.end());
+  return meta_of(ft, *it).ts_tf;
 }
 PerBar<std::string> kline_of(const F::FeatureTable &ft) {
   const F::FactorLevel &l = F::factor_level(ft.lv);
@@ -135,8 +167,10 @@ int open_of(const std::vector<std::string> &clock) {
   return n;
 }
 
-// Lens 的落地 → Look (r16 原样, 行 / 格换成 agent 的形); 因子根与 labels 对齐; 特征根前 n_feats 个 = LookSpec::feats, 其后按 kBars 序 = bars 里取了的 K 线叶
-Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std::string> &labels, size_t n_feats, const PerBar<bool> &bars) {
+// Lens 的落地 → Look (r16 原样, 行 / 格换成 agent 的形); 因子根与 labels 对齐;
+// 特征根先是 LookSpec::feats 里成的式 (feat_err 与 LookSpec::feats 对齐, 非空 = 不成, 没算), 其后按 kBars 序 = bars 里取了的 K 线叶 (kline = 其全名, 逆落盘变换成原量)
+Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std::string> &labels, std::vector<std::string> &&feat_err, const PerBar<bool> &bars,
+             const PerBar<std::string> &kline) {
   Look o;
   o.error = std::move(r.error);
   if (!o.error.empty())
@@ -166,11 +200,19 @@ Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std
     o.factors.push_back(std::move(y));
   }
   size_t i = 0;
-  for (; i < n_feats; ++i)
-    o.feats.push_back({std::move(r.feats[i].error), std::move(r.feats[i].v)});
+  for (std::string &e : feat_err)
+    if (!e.empty()) {
+      o.feats.push_back({std::move(e), {}});
+    } else {
+      o.feats.push_back({std::move(r.feats[i].error), std::move(r.feats[i].v)});
+      ++i;
+    }
   for (const Bar b : kBars)
     if (bars[b]) {
-      o.kline[b] = {std::move(r.feats[i].error), std::move(r.feats[i].v)};
+      LookFeat &k = o.kline[b] = {std::move(r.feats[i].error), std::move(r.feats[i].v)};
+      if (const ts::TfId tf = tf_of(ft, kline[b]); tf != ts::TfId::None)
+        for (float &x : k.v)
+          x = raw_of(tf, x);
       ++i;
     }
   assert(i == r.feats.size());
@@ -245,13 +287,17 @@ Top top_of(const F::SearchTop &t) {
   Top x;
   x.expr = t.expr, x.sign = t.sign;
   x.st = {t.mono, t.ls, t.ric};
-  x.g = t.g, x.se = t.se, x.mu = t.mu, x.peak = t.peak;
-  if (t.peak)
-    x.miss = "mono 过门槛, 但曲面估计 " + num(t.mu) + " ≤ 标准误 " + num(t.se) + " (不显著)";
+  x.g = t.g, x.se = t.se, x.mu = t.mu;
+  x.rep = t.peak ? Rep::Peak : factor::search::passes(t.ls, t.ric, t.mono) ? Rep::Gated
+                                                                           : Rep::Mono;
+  if (x.rep == Rep::Peak)
+    x.miss = "过门槛的峰, 但曲面估计 " + num(t.mu) + " ≤ 标准误 " + num(t.se) + " (不显著)";
+  else if (x.rep == Rep::Gated)
+    x.miss = t.mu > 0.0 ? "过门槛的点都不成峰: 曲面估计更高处不过门槛 (多是 mono 不够)" : "过门槛的点曲面估计都 ≤ 0 (最高 " + num(t.mu) + ")";
   else if (t.mono < factor::search::kMinMono)
     x.miss = "没有点 mono ≥ " + num(factor::search::kMinMono) + " (最高 " + num(t.mono) + ")";
   else
-    x.miss = "mono 过门槛的点每期毛多空都 ≤ 0 (或 rIC = 0)";
+    x.miss = "mono 过门槛的点每期毛多空或 rIC 都 ≤ 0";
   return x;
 }
 
@@ -397,8 +443,9 @@ Context context_of(const SharedData &data, const Scope &sc) {
   for (const F::FeatCol &l : ft->x.leaves) {
     if (!l.allowed)
       continue;
-    const FeatureMetadata &m = ft->feature->meta(l.tier).features[l.level][l.col];
-    c.leaves.push_back({l.code, m.name_cn, m.formula, m.description});
+    const FeatureMetadata &m = meta_of(*ft, l);
+    const size_t tf = static_cast<size_t>(m.ts_tf);
+    c.leaves.push_back({l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf]});
   }
   for (const factor::expr::OpInfo &o : factor::expr::kOps)
     c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
@@ -467,16 +514,16 @@ struct Lab::Impl {
   bool gpu = false;
   std::tuple<Lane<F::SearchService>, Lane<F::RunService>, Lane<F::LensService>> lanes;
   // 在做的那件事
-  bool running = false;            // eval / look 起, 到 End 入队
-  bool halt = false;               // 已 cancel: 在跑那步收尾即 End
-  Step at = Step::End;             // 在跑那步的道; End = 无
-  std::string file;                // eval: 在评的文件
-  F::FactorRow row;                // eval: 其首行 (Search 的模板)
-  Surface surf;                    // eval: Search 落了盘时的曲面 (随定论交出)
-  std::vector<std::string> labels; // look: 因子的名字
-  size_t n_feats = 0;              // look: 特征根数 (其后是 K 线叶)
-  PerBar<bool> bars;               // look: 取了的 K 线叶
-  std::deque<Tick> ticks;          // 未取走的步
+  bool running = false;              // eval / look 起, 到 End 入队
+  bool halt = false;                 // 已 cancel: 在跑那步收尾即 End
+  Step at = Step::End;               // 在跑那步的道; End = 无
+  std::string file;                  // eval: 在评的文件
+  F::FactorRow row;                  // eval: 其首行 (Search 的模板)
+  Surface surf;                      // eval: Search 落了盘时的曲面 (随定论交出)
+  std::vector<std::string> labels;   // look: 因子的名字
+  std::vector<std::string> feat_err; // look: 与 LookSpec::feats 对齐, 非空 = 该式不成 (没发)
+  PerBar<bool> bars;                 // look: 取了的 K 线叶
+  std::deque<Tick> ticks;            // 未取走的步
 
   std::shared_ptr<const F::FeatureTable> ft() const { return table(*data, sc.level); }
   std::optional<F::FactorScope> fsc() const { return fscope_of(*data, ft(), sc.pool); }
@@ -589,7 +636,7 @@ struct Lab::Impl {
       std::lock_guard<std::mutex> lock(svc.mutex);
       r = std::move(svc.result);
     }
-    ticks.push_back({Step::Look, look_of(std::move(r), *ft(), labels, n_feats, bars)});
+    ticks.push_back({Step::Look, look_of(std::move(r), *ft(), labels, std::move(feat_err), bars, ctx.kline)});
   }
   // 在跑那步的道跑完一轮 → 下一步
   void pump() {
@@ -638,7 +685,7 @@ struct Lab::Impl {
 
   // 发一次观察 (参数已校验)
   void look(LookSpec s) {
-    assert(!s.factors.empty() || !s.feats.empty() || s.kline);
+    assert(!s.factors.empty() || std::any_of(s.feats.begin(), s.feats.end(), [](const LookExpr &x) { return x.error.empty(); }) || s.kline);
     Lane<F::LensService> &l = std::get<2>(lanes);
     if (!l.svc)
       l.reset();
@@ -651,9 +698,13 @@ struct Lab::Impl {
       req.spec.roots.push_back({f.expr, f.ts ? factor::stat::Frame::TS : factor::stat::Frame::CS, factor::stat::dir_of(f.sign)});
       labels.push_back(f.label);
     }
-    for (const std::string &x : s.feats)
-      req.spec.feats.push_back({x, factor::stat::Frame::CS, factor::stat::kFwd});
-    n_feats = s.feats.size(), bars = {};
+    feat_err.clear();
+    for (LookExpr &x : s.feats) {
+      if (x.error.empty())
+        req.spec.feats.push_back({std::move(x.root), factor::stat::Frame::CS, factor::stat::kFwd});
+      feat_err.push_back(std::move(x.error));
+    }
+    bars = {};
     if (s.kline)
       for (const Bar b : kBars)
         if (const std::string &src = ctx.kline[b]; !src.empty()) {

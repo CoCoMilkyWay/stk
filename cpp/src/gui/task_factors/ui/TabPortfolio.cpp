@@ -1410,13 +1410,13 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   ui.refit = false;
 
   // ---- 三级缓存: 派生 → 滚动分位 → 视图 (键带上级 gen: 上级重算 → 下级自动重算) ----
+  // 派生重算 → 重新 fit: 因子线 / 池线先后到, 后到的线也要进 y 范围与线尾小字留白
   ui.der.update(PortfolioDerKey{gen, ui.items_gen, fixed_impact}, [&](PortfolioDerived &dv) {
     const std::vector<misc::Ymd> old = dv.dates;
     derive(ui.items, ui.name, res, fixed_impact, dv);
-    if (dv.dates != old) { // 日轴变 → 区间回全段
+    if (dv.dates != old) // 日轴变 → 区间回全段
       ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
-      refit = true;
-    }
+    refit = true;
   });
   // VAL 选中篮子: 换组合 → 回默认 (组合首个因子所在池; 它还没算出 → 暂用首个池, 不记)
   if (ui.val_for != ui.name)
