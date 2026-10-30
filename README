@@ -10,6 +10,7 @@ stk/
 │   ├── config.json        # ⚙️ 路径 / 回测日历起点 (末日随数据) / 交易成本 (池不在此, 见 Bar 池 pool_<pool> 列)
 │   ├── sample/            # ⚙️ 样例数据 (Level-1 / Level-2 行情 / 财务报表)
 │   └── agent/             # ⚙️ Agent: prompt/ 提示词模板 system / first / round / retry / test (.md, {{键}} 占位; Agent → Config 页可编辑)
+│                          #    families.md 特征族卡 (每族 "# <族> <族名>" + 机制 / 读法要点; 族 = 节点文件; 系统提示的特征表按族排, 每族必须有卡)
 │                          #    keys.json 智谱 / Cursor 的 key {"zhipu", "cursor"} (本地, gitignore; 无则按后端表填全 0 假 key 生成, 格式同真 key)
 ├── py/                    # 🐍 Python 工具链
 │   ├── main.py            # 🐍 构建脚本 (调 CMake)
@@ -273,7 +274,7 @@ stk/
 │   │   │   │  |Network|FPS│                       │                                    │
 │   │   │   └───────────────────────────────────────────────────────────────────────────┘
 │   │   ├── agent/                                          # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge)
-│   │   │   ├── Config.hpp                                  # 🤖 配置: 后端表 kBackends (名 / key 字段 / 假 key / 主机 / 模型表端点 / 默认连接; 模型不写死, 运行时嗅探), 超时 / 重试, 每条回复的调用数 / 回测数 / 结果字数上限, 入库门槛默认值, 会话目录 / 提示词目录 / 研报库目录 / 密钥文件
+│   │   │   ├── Config.hpp                                  # 🤖 配置: 后端表 kBackends (名 / key 字段 / 假 key / 主机 / 模型表端点 / 默认连接; 模型不写死, 运行时嗅探), 超时 / 重试, 每条回复的调用数 / 回测数 / 结果字数上限, 入库门槛默认值, 会话目录 / 工具样本目录 / 提示词目录 / 族卡文件 / 研报库目录 / 密钥文件
 │   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL, 直连 / HTTP 代理 CONNECT): send 阻塞收齐一轮, 增量回调; models 嗅探账号可用模型 (GET models, Config 页下拉选)
 │   │   │   │                                               #    · 两后端同一个 send, 各持各的对话态; 结局在边界归一 End (Ok / Cut / Error / Cancelled); 重试一处 (幂等请求任何网络错重发, 非幂等 POST 只重发未发出的)
 │   │   │   │                                               #    · Zhipu: chat/completions 流式 + JSON 模式 + 思考; 本地留 messages, system 不变吃隐式缓存; 限流 429 (1302 / 1305) 等待重发
@@ -281,19 +282,22 @@ stk/
 │   │   │   ├── Chat.hpp                                    # 🤖 一段对话的后台单线程: ask → poll 逐个取走 Tick (Think / Write / Restart / End = 收齐) / live (在收那轮增量同步进调用方镜像); 不留历史, 不落盘
 │   │   │   ├── Text.hpp                                    # 🤖 成文公共件: 字 (UTF-8 码点计数 / 前进后退 / 截断补 …) / 数的写法
 │   │   │   ├── Journal.hpp                                 # 🤖 一段会话的日志目录 (只 GUI 线程写): system.md / 逐轮 NN.{user,reply,thinking}.md / 交互流水 events.jsonl (事件表 kEvents) / report.md
+│   │   │   │                                               #    · 工具样本 (不随会话): 每个工具留最近一次交给 agent 的结果 <工具名>.md (互相覆盖); 开会话时删掉工具表里已没有的
 │   │   │   ├── Tools.hpp                                   # 🤖 工具箱 (类 MCP): 一张工具表 (名 / 执行方 Now · Human · Eval · Look · Docs / 参数表 / 做什么 / 返回什么) → 系统提示的工具节 / 回复解析 / 参数校验 / 界面名
 │   │   │   │                                               #    · 回复 = {"calls": [{"tool", "args"}]}, ParseCalls 按参数表校验并补缺省 (带字段路径报错); 加工具 = 表里一行 + 执行方一个分支
 │   │   │   │                                               #    · 执行记录 Act: 调用 + 时段 Span + 交给 agent 的结果 + 带状态的过程 (eval_factor → Trial ⊃ search / run; ask_human → Asked)
 │   │   │   ├── Views.hpp                                   # 🤖 观察工具的两半: 调用 → LookSpec (经 Lab 校验因子 / 特征 / 代码) ↔ Look → markdown (表 + 火花线; 口径同分层回测)
-│   │   │   │                                               #    · view_feature / view_layers / view_trades (交割单: 段合并 / 盘面标签提升 / 明细) / view_holders / view_response (开仓前后的累计超额) / view_stock_day / view_stock_days
+│   │   │   │                                               #    · view_feature / view_layers (cond: 按特征分位切开各看分层) / view_trades (交割单: 段合并 / 盘面标签提升 / 明细) / view_holders
+│   │   │   │                                               #      / view_response (开仓前后的累计超额) / view_explain (成分剥离: 因子秩对特征秩逐行回归, 残差的分层) / view_stock_day (rows: 分钟窗逐行表) / view_stock_days
+│   │   │   │                                               #    · cond / explain 按别的分数重新分组, 用标签口径近似 (逐行在池 ∧ 标签有效等分 20 组), 只作同一视图内对照
 │   │   │   ├── Docs.hpp                                    # 🤖 研报库工具 (GUI 线程当场查, 只读 output/doc): 标注作索引 (首次全量读入), tag_stat.md 给阶段 → 流派骨架, 全文按需读
 │   │   │   │                                               #    · search_docs / search_factors: 命中集合的分面 (阶段 → 流派 / 机构 / 年份 / 价值; 类别 / 数据周期 × 预测期) + 条目, agent 从全库版图逐层收窄
 │   │   │   │                                               #    · read_doc: 标注卡 / 目录 (按标题行分节) / 原文 (从某节某字起读满字数上限, 末尾给续读位置)
-│   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 模板填充 (Msg = system / first / round / retry / test (自检会话的首条); system 含 ToolsDoc) + 工具结果文本 (列表 / 回测结局 / 问答)
+│   │   │   ├── Prompt.hpp                                  # 🤖 提示词: 模板填充 (Msg = system / first / round / retry / test (自检会话的首条); system 含 ToolsDoc 与按族分节的特征表 (族卡 + 叶)) + 工具结果文本 (列表 / 回测结局 / 问答)
 │   │   │   │                                               #    · 结局文本两档 (结果 / 流水 / 界面同一份): Brief 一行 ↔ Detail 多行
 │   │   │   ├── Bridge.hpp                                  # 🤖 与项目的唯一接口面 (实现是 agent 里唯一 include 因子 / 特征 / 服务头的 TU):
 │   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
-│   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 / 算子表 / K 线叶 / 正式因子库统计) + 候选目录 results
+│   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 (带族 = 节点文件) / 算子表 / K 线叶 / 正式因子库统计) + 候选目录 results
 │   │   │   │                                               #      候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict) ─adopt (过门槛 Gate)→ 正式因子目录
 │   │   │   │                                               #      eval: Search / Run 两道同构 (Lane 元组, 下标 = Step), 一次一个文件: Search (具体式也走, 定方向) → Run, 评完只重扫它; 首次用到才建, 常驻块 (SearchSpec / RunSpec keep)
 │   │   │   │                                               #      look: 第三道 LensService, 因子 (候选名 / 具体根式) + 特征式 (+ 本层 K 线叶) → Look ([T][A] 平面: r16 定向秩 / 特征原值 / K 线 / 门控 / 标签; 行统计 / 两端格)
@@ -303,6 +307,7 @@ stk/
 │   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied ↔ 该调用做完
 │   │   │   │                                               #    · Desk = 会话状态 (worker / 设定 / 日志 / 时间线 / 计数), Mine = Desk + 转移; 时间线 = 全会话唯一真相 (轮 ⊃ 调用); total = 其累计 (按工具计数, 随事件增量加, 不回扫)
 │   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (take 每步) / 等人 (answer) → 做完; 只经 Desk 读写会话
+│   │   │   │                                               #    · eval_factor 只收本会话 search_leaves 查过定义的叶 (Desk::seen); 带回测的回复须同带至少一个观察调用 (ParseCalls 查)
 │   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选进 test 目录, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选表 · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
@@ -426,8 +431,8 @@ stk/
     ├── orders/                                             # Level-2 逐笔编码 (逐笔委托 + 成交合并)
     │   └── YYYY/MM/YYYYMMDD.bin                            # 一天全市场一个文件: 每资产一个 zstd 帧 + 账目 + 尾部目录
     ├── features/                                           # 特征张量库 (Float16); 一库一目录, 池名 = 目录名
-    │   ├── <pool>/lib.json                                # 库清单 (档 / A 轴 / 日期轴 / 轴外资产): 写端规划后落, 读端只读; 无清单 = 未建库
-    │   ├── <pool>/snapshot.bin                            # 续算快照 (末日各资产时序状态); 库跑完才落
+    │   ├── <pool>/lib.json                                 # 库清单 (档 / A 轴 / 日期轴 / 轴外资产): 写端规划后落, 读端只读; 无清单 = 未建库
+    │   ├── <pool>/snapshot.bin                             # 续算快照 (末日各资产时序状态); 库跑完才落
     │   ├── <pool>/features.json                            # 特征表预览成品 (每轮落地)
     │   ├── <pool>/YYYY/MM/DD/                              # Lob 池 (池轴; <pool> = all 池的 pool_<pool> 列)
     │   │   ├── features_L_sec.bin                          # L_sec (秒频) 一天一个: 头 + 列目录 + 逐列载荷 [T×A]
@@ -457,6 +462,7 @@ stk/
     │   ├── factors/*.json                                  # 候选因子文件 (与正式因子同格式; Search 日志在 factors/log/); 提交且达门槛的拷进 factors/<pool>/<层>/
     │   ├── chat/<YYYYMMDD-HHMMSS>/                         # 一段会话: system.md + NN.{user,reply,thinking}.md + events.jsonl (毫秒时间的交互流水) + report.md (结束报告)
     │   └── test/{factors,chat}/                            # 自检会话 (Test): 结构同上两项; 提交只查门槛, 不拷进正式库
+    ├── agent/tools/<工具名>.md                             # 各工具最近一次交给 agent 的结果 (调用 + 出处 + 截断后的原文; 跨会话互相覆盖)
     ├── profile/<pool>/<YYYYMMDD_HHMMSS>/                   # 特征计算 perf 采样 (PROFILE 模式, 每轮一目录; 需 kernel.perf_event_paranoid ≤ 1)
     │   ├── meta.json                                       # 本轮配置 (池 / 档 / A 轴 / 日期轴 / 核布局) + 采样窗逐核速率 / 忙碌占比
     │   ├── threads.txt                                     # 线程间样本分布 (线程名 = <段 tag>_<段内序号>: pf / ts / cs / io)
