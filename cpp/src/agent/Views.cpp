@@ -28,6 +28,7 @@ constexpr int kCorrRows = 400;       // 特征间相关取的行数上限
 constexpr size_t kBase = 40000;      // 交割单标签的池内基准抽样 (格)
 constexpr int kMinCs = 20;           // 截面相关至少的格数
 constexpr size_t kEvents = 20000;    // 响应曲线的开仓段抽样上限
+constexpr int kExplainRows = 3000;   // 成分剥离取的行数上限
 
 // ---- 数的写法 ----
 using text::fmt;
@@ -295,6 +296,25 @@ struct Layer {
 };
 std::string gname(int k) { return "G" + std::to_string(k + 1); }
 
+// 标签口径的近似一行: 按分数 x 把格等分 20 组, 组超额 = 组内超额 y 的等权均值, rIC = x 与 y 的 Spearman; 格不足 → false
+bool approx_row(const std::vector<double> &x, const std::vector<double> &y, LookRow &w) {
+  const size_t n = x.size();
+  if (n < static_cast<size_t>(kMinCs))
+    return false;
+  const std::vector<double> rx = ranks_of(x);
+  w = {};
+  double s[kGroups] = {};
+  for (size_t i = 0; i < n; ++i) {
+    const int k = std::min(static_cast<int>(rx[i] * kGroups / static_cast<double>(n)), kG20);
+    s[k] += y[i], ++w.cnt[k];
+  }
+  for (int k = 0; k < kGroups; ++k)
+    w.grp[k] = static_cast<float>(w.cnt[k] ? s[k] / w.cnt[k] : 0.0);
+  w.ric = static_cast<float>(pearson(rx, ranks_of(y)));
+  w.ok = true;
+  return true;
+}
+
 const LookRoot *root_of(const Look &L, std::string &out) {
   const LookRoot &r = L.factors.front();
   if (!r.error.empty()) {
@@ -487,6 +507,54 @@ std::string layers_row(const std::string &name, const Layer &b) {
          bp(b.grp(kG1)) + " | " + bp(b.grp(kGroups / 2 - 1)) + " | " + bp(b.grp(kG20)) + " | `" + bars(b.grps()) + "` |\n";
 }
 
+// 条件三等分: 每行把 在池 ∧ 因子 / 标签 / 条件有效 的格按条件值截面三等分, 段内按因子分位近似分层 (抽行)
+std::string cond_view(const std::string &cond, const LookRoot &r, const Look &L) {
+  std::string s = "\n## 按条件三等分: `" + cond + "`\n";
+  assert(L.feats.size() == 1 && "LookOf 只为 cond 取一个特征式");
+  const LookFeat &f = L.feats.front();
+  if (!f.error.empty())
+    return s + "条件没算成: " + f.error + "\n";
+  const int T = L.T(), A = L.A();
+  const int rstep = std::max(1, static_cast<int>(static_cast<size_t>(T) * static_cast<size_t>(A) / kCsCells));
+  std::array<Layer, 4> b; // 全体 / 低 / 中 / 高
+  Mean rho, cric;
+  std::vector<double> cv, fx, ey;
+  std::array<std::vector<double>, 3> px, py;
+  LookRow w;
+  for (int t = 0; t < T; t += rstep) {
+    if (!std::isfinite(L.mkt[static_cast<size_t>(t)]))
+      continue;
+    cv.clear(), fx.clear(), ey.clear();
+    for (int a = 0; a < A; ++a)
+      if (const size_t k = L.at(t, a); L.gate[k] && std::isfinite(r.rank(k)) && std::isfinite(L.label[k]) && std::isfinite(f.v[k]))
+        cv.push_back(f.v[k]), fx.push_back(r.rank(k)), ey.push_back(static_cast<double>(L.label[k]) - L.mkt[static_cast<size_t>(t)]);
+    const size_t n = cv.size();
+    if (n < 3 * static_cast<size_t>(kMinCs))
+      continue;
+    const std::vector<double> rc = ranks_of(cv);
+    rho.add(pearson(rc, ranks_of(fx))), cric.add(pearson(rc, ranks_of(ey)));
+    for (size_t j = 0; j < 3; ++j)
+      px[j].clear(), py[j].clear();
+    for (size_t i = 0; i < n; ++i) {
+      const size_t j = std::min<size_t>(2, static_cast<size_t>(rc[i] * 3.0 / static_cast<double>(n)));
+      px[j].push_back(fx[i]), py[j].push_back(ey[i]);
+    }
+    if (approx_row(fx, ey, w))
+      b[0].add(w);
+    for (size_t j = 0; j < 3; ++j)
+      if (approx_row(px[j], py[j], w))
+        b[j + 1].add(w);
+  }
+  if (!b[0].ok)
+    return s + "没有可用的行 (每行至少要 " + std::to_string(3 * kMinCs) + " 个在池且因子 / 标签 / 条件都有效的格)\n";
+  s += "条件与因子的截面秩相关 " + r3(rho.mean()) + " · 条件自身 rIC " + r3(cric.mean()) + "\n";
+  s += "每行按条件值把池子截面三等分 (条件离散时并列落同一段, 三段不均), 段内按因子分位重新分 20 组; 组超额 = 组内 (标签 − 本行在池均值) 等权均值, 建不了仓的格不剔, "
+       "与上面的真持有口径略有出入, 只作这四行之间对照\n\n";
+  s += "| 条件段 | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+  s += layers_row("全体 (同口径)", b[0]) + layers_row("低 1/3", b[1]) + layers_row("中 1/3", b[2]) + layers_row("高 1/3", b[3]);
+  return s;
+}
+
 bool layers_view(const Call &c, const Look &L, std::string &out) {
   const LookRoot *r = root_of(L, out);
   if (!r)
@@ -515,33 +583,31 @@ bool layers_view(const Call &c, const Look &L, std::string &out) {
     mid += all.grp(k) / 10.0;
   s += "\n\n做多端 G20 " + bp(all.grp(kG20)) + "bp · 最低组 G1 " + bp(all.grp(kG1)) + "bp · 中段 G6–G15 均值 " + bp(mid) + "bp\n";
 
-  const std::string split = c.str("split");
-  if (split == "none") {
-    out = std::move(s);
-    return true;
-  }
+  const std::string split = c.str("split"), cond = c.str("cond");
   if (split == "tod" && seg == 1) {
-    out = s + "\n(日层每天一行, 没有日内时段可切)\n";
-    return true;
+    s += "\n(日层每天一行, 没有日内时段可切)\n";
+  } else if (split != "none") {
+    std::vector<std::pair<std::string, Layer>> bs;
+    if (split == "tod") {
+      const std::vector<Part> ps = parts_of(L);
+      const std::vector<int> pr = part_of_row(ps, seg);
+      for (const Part &p : ps)
+        bs.push_back({p.name, {}});
+      for (int t = 0; t < T; ++t)
+        bs[static_cast<size_t>(pr[t % seg])].second.add(r->rows[t]);
+    } else {
+      std::map<int, Layer> by;
+      for (int t = 0; t < T; ++t)
+        by[L.dates[static_cast<size_t>(t / seg)] / 100].add(r->rows[t]);
+      for (auto &[m, b] : by)
+        bs.push_back({date_of(m * 100 + 1).substr(0, 7), b});
+    }
+    s += "\n| " + std::string(split == "tod" ? "时段" : "月份") + " | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+    for (const auto &[name, b] : bs)
+      s += layers_row(name, b);
   }
-  std::vector<std::pair<std::string, Layer>> bs;
-  if (split == "tod") {
-    const std::vector<Part> ps = parts_of(L);
-    const std::vector<int> pr = part_of_row(ps, seg);
-    for (const Part &p : ps)
-      bs.push_back({p.name, {}});
-    for (int t = 0; t < T; ++t)
-      bs[static_cast<size_t>(pr[t % seg])].second.add(r->rows[t]);
-  } else {
-    std::map<int, Layer> by;
-    for (int t = 0; t < T; ++t)
-      by[L.dates[static_cast<size_t>(t / seg)] / 100].add(r->rows[t]);
-    for (auto &[m, b] : by)
-      bs.push_back({date_of(m * 100 + 1).substr(0, 7), b});
-  }
-  s += "\n| " + std::string(split == "tod" ? "时段" : "月份") + " | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
-  for (const auto &[name, b] : bs)
-    s += layers_row(name, b);
+  if (!cond.empty())
+    s += cond_view(cond, *r, L);
   out = std::move(s);
   return true;
 }
@@ -911,6 +977,171 @@ bool response_view(const Call &c, const Look &L, std::string &out) {
   return true;
 }
 
+// ---- view_explain ----
+std::vector<double> centered_ranks(const std::vector<double> &x) {
+  std::vector<double> r = ranks_of(x);
+  const double m = 0.5 * static_cast<double>(x.size() - 1);
+  for (double &v : r)
+    v -= m;
+  return r;
+}
+double dot(const std::vector<double> &a, const std::vector<double> &b) { return std::inner_product(a.begin(), a.end(), b.begin(), 0.0); }
+// y 对各列 X (都已去均值) 的截面回归残差; 共线 / 常数列靠微小岭项定成 0 方向
+std::vector<double> resid_of(const std::vector<std::vector<double>> &X, const std::vector<double> &y) {
+  const size_t m = X.size();
+  std::vector<double> g(m * m), h(m), beta(m);
+  double tr = 0.0;
+  for (size_t i = 0; i < m; ++i) {
+    for (size_t j = 0; j <= i; ++j)
+      g[i * m + j] = g[j * m + i] = dot(X[i], X[j]);
+    h[i] = dot(X[i], y), tr += g[i * m + i];
+  }
+  for (size_t i = 0; i < m; ++i)
+    g[i * m + i] += 1e-9 * tr / static_cast<double>(m) + 1e-12;
+  for (size_t p = 0; p < m; ++p) // 对称正定: 不选主元
+    for (size_t i = p + 1; i < m; ++i) {
+      const double f = g[i * m + p] / g[p * m + p];
+      for (size_t j = p; j < m; ++j)
+        g[i * m + j] -= f * g[p * m + j];
+      h[i] -= f * h[p];
+    }
+  for (size_t p = m; p-- > 0;) {
+    double s = h[p];
+    for (size_t j = p + 1; j < m; ++j)
+      s -= g[p * m + j] * beta[j];
+    beta[p] = s / g[p * m + p];
+  }
+  std::vector<double> res = y;
+  for (size_t j = 0; j < m; ++j)
+    for (size_t i = 0; i < res.size(); ++i)
+      res[i] -= beta[j] * X[j][i];
+  return res;
+}
+
+bool explain_view(const Call &c, const Look &L, std::string &out) {
+  const LookRoot *r = root_of(L, out);
+  if (!r)
+    return false;
+  const std::vector<std::string> xs = c.strs("exprs");
+  assert(xs.size() == L.feats.size());
+  const int A = L.A(), T = L.T(), seg = L.seg;
+  const Px px(L);
+  // 逐资产累计超额对数收益: 区间收益 = 两端之差
+  const Plane<float> e = excess_steps(L, px);
+  std::vector<double> cum(e.size());
+  for (int a = 0; a < A; ++a) {
+    double acc = 0.0;
+    for (int t = 0; t < T; ++t)
+      cum[L.at(t, a)] = acc += e[L.at(t, a)];
+  }
+  const auto ret = [&](int a, int t1, int t0) { return cum[L.at(t1, a)] - cum[L.at(t0, a)]; };
+  std::vector<double> amt(static_cast<size_t>(A)), hi(static_cast<size_t>(A)), lo(static_cast<size_t>(A)); // 当日至今 (含本行)
+  std::vector<std::pair<std::string, std::function<double(int, int)>>> bs;
+  int lag = 0; // 基准要回看的行数
+  if (seg > 1) {
+    for (const int w : {5, 30})
+      if (w < seg)
+        bs.push_back({"近 " + std::to_string(w) + " 行收益", [&, w](int t, int a) { return ret(a, t, t - w); }});
+    bs.push_back({"当日至今收益", [&](int t, int a) { return ret(a, t, t - t % seg - 1); }});
+    bs.push_back({"前 1 日收益", [&](int t, int a) { return ret(a, t - t % seg - 1, t - t % seg - 1 - seg); }});
+    bs.push_back({"前 5 日收益", [&](int t, int a) { return ret(a, t - t % seg - 1, t - t % seg - 1 - 5 * seg); }});
+    bs.push_back({"当日至今成交额", [&](int, int a) { return amt[a]; }});
+    bs.push_back({"当日至今振幅", [&](int t, int a) { return hi[a] > lo[a] ? (hi[a] - lo[a]) / px.pre(t, a) : 0.0; }});
+    bs.push_back({"日内位置", [&](int t, int a) { return hi[a] > lo[a] ? (px(Bar::Close, t, a) - lo[a]) / (hi[a] - lo[a]) : 0.5; }});
+    lag = 6 * seg;
+  } else {
+    for (const int w : {1, 5, 20})
+      bs.push_back({w == 1 ? std::string("当日收益") : "近 " + std::to_string(w) + " 日收益", [&, w](int t, int a) { return ret(a, t, t - w); }});
+    bs.push_back({"成交额", [&](int t, int a) { return px(Bar::Amount, t, a); }});
+    bs.push_back({"振幅", [&](int t, int a) { return (px(Bar::High, t, a) - px(Bar::Low, t, a)) / px.pre(t, a); }});
+    lag = 21;
+  }
+  bs.push_back({"价格", [&](int t, int a) { return px(Bar::Close, t, a); }});
+  std::string s = "## 因子 `" + r->label + "` 的成分\n";
+  for (size_t i = 0; i < xs.size(); ++i) {
+    s += "E" + str(i + 1) + " = `" + xs[i] + "`" + (L.feats[i].error.empty() ? "" : " (没算成, 不进基准: " + L.feats[i].error + ")") + "\n";
+    if (L.feats[i].error.empty())
+      bs.push_back({"E" + str(i + 1), [&, i](int t, int a) { return static_cast<double>(L.feats[i].v[L.at(t, a)]); }});
+  }
+  const size_t m = bs.size();
+  if (T <= lag) {
+    out = s + "评估期太短: 基准要回看 " + std::to_string(lag) + " 行\n";
+    return false;
+  }
+  const int rstep = std::max(1, (T - lag) / kExplainRows);
+
+  Mean fric, r2, rric;
+  std::vector<Mean> corr(m), bric(m), sric(m);
+  Layer orig, rest;
+  LookRow w;
+  std::vector<double> fx, ey, one(m);
+  std::vector<std::vector<double>> bv(m), X(m);
+  for (int t = 0; t < T; ++t) {
+    for (int a = 0; a < A && seg > 1; ++a) {
+      if (t % seg == 0)
+        amt[a] = 0.0, hi[a] = -INFINITY, lo[a] = INFINITY;
+      if (const double v = px(Bar::Amount, t, a); std::isfinite(v))
+        amt[a] += v;
+      if (px.traded(t, a))
+        hi[a] = std::fmax(hi[a], px(Bar::High, t, a)), lo[a] = std::fmin(lo[a], px(Bar::Low, t, a));
+    }
+    if (t < lag || (t - lag) % rstep || !std::isfinite(L.mkt[static_cast<size_t>(t)]))
+      continue;
+    fx.clear(), ey.clear();
+    for (std::vector<double> &v : bv)
+      v.clear();
+    for (int a = 0; a < A; ++a) {
+      const size_t k = L.at(t, a);
+      if (!L.gate[k] || !std::isfinite(r->rank(k)) || !std::isfinite(L.label[k]))
+        continue;
+      bool ok = true;
+      for (size_t j = 0; j < m && ok; ++j)
+        ok = std::isfinite(one[j] = bs[j].second(t, a));
+      if (!ok)
+        continue;
+      fx.push_back(r->rank(k)), ey.push_back(static_cast<double>(L.label[k]) - L.mkt[static_cast<size_t>(t)]);
+      for (size_t j = 0; j < m; ++j)
+        bv[j].push_back(one[j]);
+    }
+    if (fx.size() < static_cast<size_t>(kMinCs))
+      continue;
+    const std::vector<double> rf = centered_ranks(fx), ry = ranks_of(ey);
+    fric.add(pearson(rf, ry));
+    for (size_t j = 0; j < m; ++j) {
+      X[j] = centered_ranks(bv[j]);
+      corr[j].add(pearson(rf, X[j])), bric[j].add(pearson(X[j], ry));
+      const double xx = dot(X[j], X[j]), b = xx > 0.0 ? dot(X[j], rf) / xx : 0.0;
+      std::vector<double> res = rf;
+      for (size_t i = 0; i < res.size(); ++i)
+        res[i] -= b * X[j][i];
+      sric[j].add(pearson(ranks_of(res), ry));
+    }
+    const std::vector<double> res = resid_of(X, rf);
+    const double tot = dot(rf, rf);
+    if (tot > 0.0)
+      r2.add(1.0 - dot(res, res) / tot);
+    rric.add(pearson(ranks_of(res), ry));
+    if (approx_row(fx, ey, w))
+      orig.add(w);
+    if (approx_row(res, ey, w))
+      rest.add(w);
+  }
+  if (!fric.n) {
+    out = s + "没有可用的行 (每行至少要 " + std::to_string(kMinCs) + " 个在池、标签有效且全部基准有值的格)\n";
+    return false;
+  }
+  s += "抽 " + str(fric.n) + " 行, 每行取在池、标签有效且全部基准有值的格; 收益类基准是对数收益减同行在池均值 (跨日按昨收接); 相关与 rIC 都是逐行截面 Spearman 的均值\n";
+  s += "因子 rIC (同口径) " + r3(fric.mean()) + "\n\n| 基准 | 与因子的截面秩相关 | 基准自身 rIC | 只剥它后的因子 rIC |\n|---|---|---|---|\n";
+  for (size_t j = 0; j < m; ++j)
+    s += "| " + bs[j].first + " | " + r3(corr[j].mean()) + " | " + r3(bric[j].mean()) + " | " + r3(sric[j].mean()) + " |\n";
+  s += "\n全部基准一起剥 (每行把因子秩对全部基准秩做截面回归, 取残差): 平均 R² " + r3(r2.mean()) + " · 因子 rIC " + r3(fric.mean()) + " → 剩余部分 " + r3(rric.mean()) + "\n";
+  s += "20 组按标签逐行近似分 (组超额 = 组内 (标签 − 本行在池均值) 等权均值, 建不了仓的格不剔), 与回测 / view_layers 的真持有口径略有出入, 只作两行之间对照\n\n";
+  s += "|  | 行 | 有统计 | mono | 多空 bp | rIC | G1 bp | G10 bp | G20 bp | 20 组 |\n|---|---|---|---|---|---|---|---|---|---|\n";
+  s += layers_row("原因子", orig) + layers_row("剩余部分", rest);
+  out = std::move(s);
+  return true;
+}
+
 // ---- 个股 ----
 // 叠加的因子 (可选) 与特征式: 因子在 factors[0]
 struct Over {
@@ -943,6 +1174,34 @@ int day_of(const Look &L, const std::string &arg, std::string &out) {
     return -1;
   }
   return static_cast<int>(it - L.dates.begin());
+}
+
+// "HH:MM-HH:MM" → 行末时刻落在其中 (含两端) 的日内行 [k0, k1); 写法不对 / 没有行 / 超过 kStockRows → false + err
+bool rows_in(const std::string &s, const std::vector<std::string> &clock, int &k0, int &k1, std::string &err) {
+  constexpr size_t kDigits[] = {0, 1, 3, 4, 6, 7, 9, 10};
+  const bool shape = s.size() == 11 && s[2] == ':' && s[5] == '-' && s[8] == ':' &&
+                     std::all_of(std::begin(kDigits), std::end(kDigits), [&](size_t i) { return s[i] >= '0' && s[i] <= '9'; });
+  if (!shape) {
+    err = "rows: 写成 HH:MM-HH:MM (如 10:00-10:30)";
+    return false;
+  }
+  const std::string a = s.substr(0, 5), b = s.substr(6, 5);
+  const int seg = static_cast<int>(clock.size());
+  k0 = 0;
+  while (k0 < seg && clock[static_cast<size_t>(k0)] < a)
+    ++k0;
+  k1 = k0;
+  while (k1 < seg && clock[static_cast<size_t>(k1)] <= b)
+    ++k1;
+  if (k1 == k0) {
+    err = "rows: " + s + " 里没有行 (本层行末时刻 " + clock.front() + ", " + clock[1] + " … " + clock.back() + ")";
+    return false;
+  }
+  if (k1 - k0 > kStockRows) {
+    err = "rows: " + s + " 有 " + std::to_string(k1 - k0) + " 行, 至多 " + std::to_string(kStockRows) + " 行; 收窄时段";
+    return false;
+  }
+  return true;
 }
 
 bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &out) {
@@ -1018,6 +1277,33 @@ bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &ou
     for (const LookFeat *f : o.fs)
       s += " " + num(feat_at(f, static_cast<size_t>(t0 + p.k1 - 1))) + " |";
     s += "\n";
+  }
+
+  if (const std::string w = c.str("rows"); !w.empty()) {
+    int k0 = 0, k1 = 0;
+    std::string err;
+    [[maybe_unused]] const bool ok = rows_in(w, L.clock, k0, k1, err);
+    assert(ok && "LookOf 已查过");
+    const auto whole = [](double x) { return std::isfinite(x) ? fmt("%.0f", x) : std::string("—"); };
+    s += "\n逐行 " + w + " (涨跌 = 对上一行收盘; 当日 = 对昨收; 额 万元):\n| 时刻 | 收 | 涨跌 | 当日 | 量 | 额 |" + std::string(o.f ? " 因子分位 | 组 |" : "") + " 后续超额 bp |";
+    for (size_t i = 0; i < o.xs.size(); ++i)
+      s += " E" + str(i + 1) + " |";
+    s += "\n|---|---|---|---|---|---|" + std::string(o.f ? "---|---|" : "") + "---|";
+    for (size_t i = 0; i < o.xs.size(); ++i)
+      s += "---|";
+    s += "\n";
+    for (int k = k0; k < k1; ++k) {
+      const size_t t = static_cast<size_t>(t0 + k), q = static_cast<size_t>(k);
+      const double prev = k == 0 ? pre : close[q - 1];
+      s += "| " + L.clock[q] + " | " + num(close[q]) + " | " + chg(close[q] / prev - 1.0) + " | " + chg(close[q] / pre - 1.0) + " | " + whole(vol[q]) + " | " +
+           (std::isfinite(amt[q]) ? fmt("%.1f", amt[q] / 1e4) : std::string("—")) + " |";
+      if (o.f)
+        s += " " + rk(o.f->rank(t)) + " | " + (o.f->grp(t) < 0 ? std::string("—") : gname(o.f->grp(t))) + " |";
+      s += " " + bp(static_cast<double>(L.label[t]) - L.mkt[t]) + " |";
+      for (const LookFeat *f : o.fs)
+        s += " " + num(feat_at(f, t)) + " |";
+      s += "\n";
+    }
   }
   out = std::move(s);
   return true;
@@ -1133,12 +1419,28 @@ bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
   case Tool::ViewFeature:
     return feats(c.strs("exprs"));
   case Tool::ViewLayers:
+    if (const std::string k = c.str("cond"); !k.empty()) {
+      LookExpr x;
+      if (!lab.feature_of(k, x.root, x.error)) {
+        err = "cond: " + x.error;
+        return false;
+      }
+      out.feats.push_back(std::move(x));
+    }
+    return factor(c.str("factor"));
   case Tool::ViewHolders:
     return factor(c.str("factor"));
   case Tool::ViewTrades:
   case Tool::ViewResponse:
     out.kline = true;
     return factor(c.str("factor"));
+  case Tool::ViewExplain:
+    out.kline = true;
+    if (!factor(c.str("factor")))
+      return false;
+    feats(c.strs("exprs"));
+    err.clear();
+    return true;
   case Tool::ViewStockDay:
   case Tool::ViewStockDays:
     if (c.tool == Tool::ViewStockDay && ctx.seg == 1) {
@@ -1150,6 +1452,8 @@ bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
       return false;
     }
     if (c.tool == Tool::ViewStockDay ? !date("date") : !date("from") || !date("to"))
+      return false;
+    if (int k0 = 0, k1 = 0; c.tool == Tool::ViewStockDay && !c.str("rows").empty() && !rows_in(c.str("rows"), ctx.clock, k0, k1, err))
       return false;
     if (const std::string f = c.str("factor"); !f.empty() && !factor(f))
       return false;
@@ -1211,6 +1515,9 @@ bool Render(const Call &c, const Look &L, const Context &ctx, std::string &out) 
     break;
   case Tool::ViewResponse:
     ok = response_view(c, L, body);
+    break;
+  case Tool::ViewExplain:
+    ok = explain_view(c, L, body);
     break;
   case Tool::ViewStockDay:
     ok = stock_day(c, L, ctx, body);

@@ -1048,7 +1048,7 @@ void leaves_panel(State &s, const Context &c) {
   if (!begin_table("##leaves", {"叶", "中文名", "说明"}))
     return;
   for (const Leaf &l : leaves) {
-    if (!s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc).c_str()))
+    if (!s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str()))
       continue;
     ImGui::TableNextRow();
     ImGui::TableNextColumn();

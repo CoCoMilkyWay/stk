@@ -1,5 +1,7 @@
 #include "agent/Journal.hpp"
+#include "agent/Config.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -68,6 +70,21 @@ void Journal::event(Event e, const nlohmann::ordered_json &fields) const {
 void Journal::report(const std::string &text) const {
   assert(!dir_.empty());
   write_file(fs::path(dir_) / "report.md", text);
+}
+
+void KeepToolOut(const std::string &tool, const std::string &call, const std::string &from, const std::string &out) {
+  fs::create_directories(kToolOutDir);
+  write_file(fs::path(kToolOutDir) / (tool + ".md"), "# " + call + "\n\n" + from + "\n\n" + out);
+}
+
+void PruneToolOut(const std::vector<std::string> &known) {
+  if (!fs::is_directory(kToolOutDir))
+    return;
+  for (const fs::directory_entry &e : fs::directory_iterator(kToolOutDir)) {
+    const fs::path &p = e.path();
+    if (!e.is_regular_file() || p.extension() != ".md" || std::find(known.begin(), known.end(), p.stem().string()) == known.end())
+      fs::remove_all(p);
+  }
 }
 
 } // namespace agent

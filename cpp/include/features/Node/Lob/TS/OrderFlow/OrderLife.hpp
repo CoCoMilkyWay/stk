@@ -123,10 +123,10 @@ private:
   X(n_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Count (age < " TE ")", SCN "挂单快速" CN "笔数(<" TE ")", "分钟内" SCN "方挂单 " DESC " 用时<" TE " 的" CN "笔数", R"(\#O_{\Delta t}^{)" E "," S R"(} \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, n_##e##_##side##_lt_##t, Log, None))
 
 // 一 τ 的 被吃 (买 3 + 卖 3) + 撤单 (买 3 + 卖 3) = 12 行. 侧 = 挂单自身方向 (买挂单被吃 = 主动卖成交), 被吃额 = 成交价 × 量; 撤单额 = 委托挂单价 × 量
-#define ORDERLIFE_TAU_ROWS(X, CAT1, t, TE, TF)                                                          \
+#define ORDERLIFE_TAU_ROWS(X, CAT1, t, TE, TF)                                                                            \
   ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "被吃", "挂出后被反向主动单吃掉 (被动方)", bid, "B", "Bid", "买", t, TE, TF) \
   ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "被吃", "挂出后被反向主动单吃掉 (被动方)", ask, "A", "Ask", "卖", t, TE, TF) \
-  ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂出后自己撤掉", bid, "B", "Bid", "买", t, TE, TF) \
+  ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂出后自己撤掉", bid, "B", "Bid", "买", t, TE, TF)              \
   ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂出后自己撤掉", ask, "A", "Ask", "卖", t, TE, TF)
 
 #define FIELDS_L_1min_OrderLife(X, CAT1)                                                                                                                                                                                                                                              \

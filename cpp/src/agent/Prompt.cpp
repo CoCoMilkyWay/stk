@@ -421,9 +421,10 @@ Message RoundMessage(const std::vector<Act> &acts, bool test) {
   }
   const std::string batch = std::to_string(kBatch);
   const std::string next = test ? "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch +
-                                      " 个); 对照工具说明查上面每个结果, 有问题即 note_issue. 全部调过后 note_issue 写总评, 再 finish."
-                                : "对照当前最好版本, 按系统提示 \"做法\" 里的判据判断每个回测的改动是好是坏; 从观察里找下一个要修的现象, 再发下一串调用 (eval_factor 至多 " +
-                                      batch + " 个). 改不动了就 submit_factor 交最好的版本, 再 finish.";
+                                      " 个, 同条回复带一个观察); 对照工具说明查上面每个结果, 有问题即 note_issue. 全部调过后 note_issue 写总评, 再 finish."
+                                : "对照当前最好版本, 按系统提示 \"做法\" 里的判据判断每个回测的改动是好是坏, 再对照 note 里写下的预测: 机制假设是被支持还是落空; "
+                                  "从观察里找下一个要修的现象, 再发下一串调用 (eval_factor 至多 " +
+                                      batch + " 个, 同条回复带至少一个观察). 改不动了就 submit_factor 交最好的版本, 再 finish.";
   return fill(Msg::Round, {{"results", s}, {"next", next}});
 }
 

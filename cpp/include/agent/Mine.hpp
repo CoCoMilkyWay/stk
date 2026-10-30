@@ -78,6 +78,7 @@ struct Desk {
   std::vector<Round> timeline;
   Total total;
   std::set<std::string> adopted; // 本会话入库的英文名
+  std::set<std::string> seen;    // 本会话 search_leaves 列出过的叶 (eval_factor 的式子只能用它们)
   bool done = false;             // agent 调了 finish
   bool asked = false;            // 已用过 ask_human
   std::string reason, report;    // 结束原因 / 结束报告

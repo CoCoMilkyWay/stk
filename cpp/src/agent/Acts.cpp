@@ -5,9 +5,14 @@
 #include "agent/Prompt.hpp"
 #include "agent/Views.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <iterator>
+#include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace agent {
 
@@ -16,9 +21,12 @@ namespace {
 Wait now(Act &a, Desk &d) {
   const Call &c = a.call;
   switch (c.tool) {
-  case Tool::SearchLeaves:
-    a.out = LeavesText(d.lab.ctx().leaves, c.str("query"), c.num("n"));
+  case Tool::SearchLeaves: {
+    std::vector<std::string> shown;
+    a.out = LeavesText(d.lab.ctx().leaves, c.str("query"), c.num("n"), shown);
+    d.seen.insert(shown.begin(), shown.end());
     break;
+  }
   case Tool::ListTried:
     a.out = TriedText(d.lab.results(), c.num("top"));
     break;
@@ -57,10 +65,36 @@ Wait human(Act &a, Desk &d) {
   return Wait::Human;
 }
 
+// 式子里本会话没经 search_leaves 查过的叶 (逗号隔开; 全查过 = 空)
+std::string unseen(const std::string &expr, const Desk &d) {
+  const std::vector<Leaf> &leaves = d.lab.ctx().leaves;
+  const auto word = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '.'; };
+  std::set<std::string> miss;
+  std::string out;
+  for (size_t a = 0, b = 0; a < expr.size(); a = b + 1) {
+    b = a;
+    while (b < expr.size() && word(expr[b]))
+      ++b;
+    const std::string w = expr.substr(a, b - a);
+    if (w.empty() || d.seen.contains(w) || miss.contains(w) || std::none_of(leaves.begin(), leaves.end(), [&](const Leaf &l) { return l.code == w; }))
+      continue;
+    miss.insert(w);
+    out += (out.empty() ? "" : ", ") + w;
+  }
+  return out;
+}
+
 Wait eval(Act &a, Desk &d) {
   const Call &c = a.call;
   Trial &k = a.got.emplace<Trial>();
-  k.st = d.lab.stage({c.str("name"), c.str("name_cn"), c.str("expr"), c.str("note")});
+  const Cand x{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("note")};
+  if (const std::string un = unseen(x.expr, d); !un.empty()) {
+    k.st.cand = x;
+    k.st.res.error = "用了本会话没查过定义的叶 " + un + ": 先 search_leaves 查清它记的是谁的什么行为 (主动方还是被动方、侧是谁的方向、大小按什么分), 再写进式子";
+    k.st.res.verdict = Verdict::Unstaged;
+  } else {
+    k.st = d.lab.stage(x);
+  }
   d.log.event(Event::Stage, {{"round", d.round()},
                              {"name", k.st.cand.name},
                              {"expr", k.st.cand.expr},

@@ -24,8 +24,11 @@ constexpr const char *kSideDesc = "看哪端: top = 做多端 (最高组 G20) / 
 constexpr const char *kExprsDesc = "特征式: 任意不含自由参数的子式, 不必套根, 单个叶也行";
 
 constexpr ArgDef kFeatureArgs[] = {{"exprs", Arg::Strs, nullptr, 1, 4, nullptr, kExprsDesc}};
-constexpr ArgDef kLayersArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
-                                  {"split", Arg::Str, "\"none\"", 0, 0, "none|tod|month", "切开看: none 不切 / tod 按日内时段 / month 按月"}};
+constexpr ArgDef kLayersArgs[] = {
+    {"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
+    {"split", Arg::Str, "\"none\"", 0, 0, "none|tod|month", "切开看: none 不切 / tod 按日内时段 / month 按月"},
+    {"cond", Arg::Str, "\"\"", 0, 0, nullptr,
+     "可选: 条件特征式 (写法同 view_feature 的一个式子); 给了就每行按它把池子截面三等分 (低 / 中 / 高), 各段内把因子重新分 20 组看分层 —— 验证 \"在某类盘面 / 某类票上更强\" 的机制"}};
 constexpr ArgDef kTradesArgs[] = {
     {"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
     {"side", Arg::Str, "\"top\"", 0, 0, "top|bottom", kSideDesc},
@@ -41,7 +44,10 @@ constexpr ArgDef kResponseArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr,
 constexpr ArgDef kStockDayArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, "6 位代码或 代码.交易所 (如 000001 / 000001.SZ)"},
                                     {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (须在评估期内)"},
                                     {"factor", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 叠加看的因子, 写法同其他观察工具的 factor"},
-                                    {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 叠加看的特征式 (写法同 view_feature)"}};
+                                    {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 叠加看的特征式 (写法同 view_feature)"},
+                                    {"rows", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 逐行细看的时段 HH:MM-HH:MM (按行末时刻, 含两端, 至多 {stock_rows} 行); 给了另附逐行表"}};
+constexpr ArgDef kExplainArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
+                                   {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 另加的基准特征式 (写法同 view_feature; 例: 主动买卖失衡、价差、市值), 与内置基准一起剥离"}};
 constexpr ArgDef kStockDaysArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, "6 位代码或 代码.交易所"},
                                      {"from", Arg::Str, "\"\"", 0, 0, nullptr, "首日 YYYY-MM-DD; 空 = 末日往前共 20 个交易日"},
                                      {"to", Arg::Str, "\"\"", 0, 0, nullptr, "末日 YYYY-MM-DD; 空 = 评估期末日"},
@@ -84,8 +90,9 @@ constexpr ArgDef kReadArgs[] = {
 constexpr ArgDef kEvalArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
                                 {"name_cn", Arg::Str, nullptr, 0, 0, nullptr, "中文名: 1..10 个汉字, 不含字母数字标点"},
                                 {"expr", Arg::Str, nullptr, 0, 0, nullptr, "模板 (可含自由参数)"},
-                                {"note", Arg::Str, "\"\"", 0, 0, nullptr,
-                                 "相对哪个版本改了什么、想验证什么; 由观察促成的写明是哪个调用看到了什么, 借鉴研报的写明研报 id 与借的是什么"}};
+                                {"note", Arg::Str, nullptr, 0, 0, nullptr,
+                                 "机制假设 (因子高 = 谁在做什么, 为什么预示后续收益) + 相对哪个版本改了哪一处、预测会看到什么; 由观察促成的写明是哪个调用看到了什么, "
+                                 "借鉴研报的写明研报 id 与借的是什么"}};
 constexpr ArgDef kTopArgs[] = {{"top", Arg::Int, "20", 1, kListTop, nullptr, "列前几个"}};
 constexpr ArgDef kNameArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "已评候选的英文名 (本作用域历次会话的都可以)"}};
 constexpr ArgDef kIssueArgs[] = {{"text", Arg::Str, nullptr, 0, 0, nullptr, "疑问 / 建议"}};
@@ -98,8 +105,8 @@ constexpr ToolDef kTools[] = {
      "给多个时附两两截面相关. 造新特征前先看原料, 造完看它是否如你所想",
      "每个式子一节统计 (带火花线; 写错的式子在它那节给原因, 其余照算) + 多个时的相关矩阵"},
     {Tool::ViewLayers, "view_layers", "看分层", Run::Look, kLayersArgs,
-     "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 切开看分层在哪些时段 / 月份成立、哪些失效",
-     "全期 20 组 + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组)"},
+     "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 切开看分层在哪些时段 / 月份成立、哪些失效; 给 cond 再按条件三等分看各段的分层",
+     "全期 20 组 + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组) + 给 cond 时条件三段各一行"},
     {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
      "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列若干段的明细 (代码与日期可接 view_stock_day). 汇总与两张表看收益从哪类情形来、亏在哪类情形; "
@@ -112,15 +119,21 @@ constexpr ToolDef kTools[] = {
      "看因子一端开仓前后全池平均的价格路径 (事件研究, 与分层回测同一份持仓): 以真持有段的开仓行为零点, 开仓前若干时点到开仓的累计超额 (因子是不是过去价格的影子: 反转 / 动量) "
      "与开仓后到若干时点的累计超额 (收益何时到、多快衰减、持有期是否合适), 各时点的因子分位 (信号能持续多久), 附开仓行因子分位与此前收益的截面相关; 可按开仓时段切开",
      "说明两行 + 时点表 (段数 / 累计超额 ± 按日聚类标准误 / 为正占比 / 因子分位) + 与此前收益的相关一行 + 切分时的时段表"},
+    {Tool::ViewExplain, "view_explain", "看成分", Run::Look, kExplainArgs,
+     "看因子是不是已知量的影子: 内置基准 (日内层: 近 5 / 30 行收益、当日至今收益、前 1 / 5 日收益、当日至今成交额、当日至今振幅、日内位置、价格; 日层: 当日 / 5 日 / 20 日收益、成交额、振幅、价格) "
+     "加你给的特征式, 每个给与因子的截面秩相关、它自身的 rIC、只剥掉它之后因子剩下的 rIC; 再把全部基准一起剥掉 (每行截面回归取残差), 给剩余部分与原因子的 rIC / mono / 多空 对照. "
+     "新方向起步、每次显著改进后都看一次: 剥掉之后还剩下的才是新信息, 被哪个基准吃掉就说明它是谁的影子",
+     "基准表 (与因子的相关 / 基准自身 rIC / 只剥它后的因子 rIC) + 全剥离对照 (原因子与剩余部分的 rIC · mono · 多空 · 20 组火花线)"},
     {Tool::ViewStockDay, "view_stock_day", "看个股一天", Run::Look, kStockDayArgs,
      "看一只股票一天的逐行走势: 价 / 量 / 因子分位 / 特征的火花线, 加分段表 (竞价段 + 每段约 30 分钟: 涨跌 / 段内高低 / 量占比 / 因子分位 / 后续持有期超额 / 特征段末值). "
-     "用来对照盘面现象与因子何时高、何时低",
-     "当日概况 + 火花线 + 分段表"},
+     "给 rows 另附该时段逐行表 (价 / 涨跌 / 高低 / 量额 / 因子分位与组 / 后续超额 / 特征值), 对着分钟看机制里说的那个行为是否真的发生. 用来对照盘面现象与因子何时高、何时低",
+     "当日概况 + 火花线 + 分段表 (+ 逐行表)"},
     {Tool::ViewStockDays, "view_stock_days", "看个股多日", Run::Look, kStockDaysArgs,
      "看一只股票连续多日 (至多 {stock_days} 日) 的日级概况: 每日一行 (涨跌 / 振幅 / 成交额 / 在池 / 因子日均与收盘分位 / 两端行数 / 收盘开仓的后续超额 / 特征收盘值), 附日级火花线",
      "火花线 + 逐日表"},
     {Tool::SearchLeaves, "search_leaves", "查特征叶", Run::Now, kLeavesArgs,
-     "查特征叶的公式与说明 (系统提示的特征表只列叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见、落盘值是不是原量",
+     "查特征叶的公式与说明 (系统提示的特征表只列族卡、叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见、落盘值是不是原量. "
+     "这里列出过的叶才能写进 eval_factor 的式子 (本会话内有效; 观察工具不限)",
      "命中数 + 叶行 (叶 / 中文名 / 公式 / 说明 / 落盘值); 零命中时给各词单独的命中数"},
     {Tool::SearchDocs, "search_docs", "查研报", Run::Docs, kDocsArgs,
      "查研报库 (券商金工研报的标注与全文): 先给命中研报的分面 —— 阶段 → 流派树 (篇数) / 机构 / 年份 / 价值 (我们对研报的判断: high 可直接复用 / medium 有参考 / low 有水分), "
@@ -135,7 +148,8 @@ constexpr ToolDef kTools[] = {
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
     {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, kEvalArgs,
-     "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体; 与已有候选同式 (含只换截面根) 的不落",
+     "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体, 且同一条回复里至少带一个观察调用; "
+     "与已有候选同式 (含只换截面根) 的不落, 用了本会话没经 search_leaves 查过的叶的不落",
      "结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (+ 最佳权重的 20 组); 有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
     {Tool::ListTried, "list_tried", "列已试", Run::Now, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
      "每个候选: 模板 + 结局"},
@@ -330,7 +344,7 @@ const ToolDef &def(Tool t) { return kTools[static_cast<size_t>(t)]; }
 
 std::string ToolText(const char *s) {
   std::string t = s;
-  for (const auto &[key, v] : {std::pair<std::string_view, int>{"{batch}", kBatch}, {"{stock_days}", kStockDays}})
+  for (const auto &[key, v] : {std::pair<std::string_view, int>{"{batch}", kBatch}, {"{stock_days}", kStockDays}, {"{stock_rows}", kStockRows}})
     if (const size_t p = t.find(key); p != std::string::npos)
       t.replace(p, key.size(), std::to_string(v));
   return t;
@@ -351,7 +365,9 @@ std::string ArgType(const ArgDef &a) {
   return {};
 }
 
-std::string ArgText(const ArgDef &a) { return "`" + std::string(a.key) + "` (" + ArgType(a) + (a.def ? ", 缺省 " + std::string(a.def) : std::string(", 必填")) + "): " + a.desc; }
+std::string ArgText(const ArgDef &a) {
+  return "`" + std::string(a.key) + "` (" + ArgType(a) + (a.def ? ", 缺省 " + std::string(a.def) : std::string(", 必填")) + "): " + ToolText(a.desc);
+}
 
 std::string Call::str(const char *k) const { return args.at(k).get<std::string>(); }
 int Call::num(const char *k) const { return args.at(k).get<int>(); }
@@ -389,6 +405,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
     return false;
   }
   int evals = 0;
+  bool looked = false;
   for (size_t i = 0; i < cs.size(); ++i) {
     const std::string p = at("calls", i);
     const json &c = cs[i];
@@ -412,6 +429,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
       err = p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)";
       return false;
     }
+    looked = looked || d->run == Run::Look;
     const json args = c.contains("args") ? c["args"] : json::object();
     if (!args.is_object()) {
       err = p + ".args 须是 JSON 对象";
@@ -444,6 +462,10 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
       call.args[a.key] = args[a.key];
     }
     out.push_back(std::move(call));
+  }
+  if (evals && !looked) {
+    err = "有 eval_factor 的回复须至少带一个观察调用 (view_*): 回测只告诉你好不好, 观察才告诉你为什么; 观察可以排在回测之后, 看本批的某个变体";
+    return false;
   }
   return true;
 }

@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <numeric>
 #include <utility>
+#include <vector>
 
 namespace agent {
 
@@ -47,13 +48,17 @@ void Mine::open(const SharedData &data, Setup s) {
   setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask, llm::def(setup.llm.backend).local).text;
   chat.open(setup.llm);
   log.open((fs::path(catalog::dir(setup.sc, setup.test)) / "chat" / stamp()).string(), setup.llm.system);
+  std::vector<std::string> names;
+  for (const ToolDef &d : Tools())
+    names.push_back(d.name);
+  PruneToolOut(names);
   phase_ = Phase::Think;
   stop_ = done = asked = false;
   cur_ = folded_ = 0;
   t0 = std::chrono::steady_clock::now(), t_end = -1;
   timeline.clear();
   total = {};
-  adopted.clear();
+  adopted.clear(), seen.clear();
   reason.clear(), report.clear();
   const int tried = static_cast<int>(std::count_if(lab.results().begin(), lab.results().end(), [](const Result &r) { return r.visible; }));
   log.event(Event::Open, {{"pool", setup.sc.pool},
@@ -234,6 +239,8 @@ void Mine::ended(Act &a) {
   a.span.end(now_s);
   total.act_s += a.span.len(now_s);
   clip(a.out);
+  KeepToolOut(def(a.call.tool).name, a.call.text() + (a.ok ? "" : " — 没做成"),
+              "出处: " + log.dir() + " · 第 " + std::to_string(round()) + " 轮第 " + std::to_string(cur_ + 1) + " 个调用", a.out);
   log.event(Event::Result, {{"round", round()},
                             {"i", cur_ + 1},
                             {"tool", def(a.call.tool).name},

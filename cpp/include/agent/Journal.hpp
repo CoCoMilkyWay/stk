@@ -7,6 +7,7 @@
 //   turn    NN.{user,reply,thinking}.md   逐轮原文
 //   event   events.jsonl                  交互流水一行: 毫秒时间 + 事件名 (事件表 kEvents) + 字段 (原生类型; 字段表见 AGENT.md)
 //   report  report.md                     结束报告
+// 工具结果样本 (不随会话, kToolOutDir): KeepToolOut 每个工具留最近一份 <工具名>.md; PruneToolOut 删掉 known 以外的
 // =============================================================================
 
 #include "agent/Llm.hpp"
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace agent {
 
@@ -55,5 +57,9 @@ public:
 private:
   std::string dir_;
 };
+
+// 文件 = "# 调用本身" + 出处一行 (会话目录 · 轮 · 序) + 交给 agent 的结果 (截断后)
+void KeepToolOut(const std::string &tool, const std::string &call, const std::string &from, const std::string &out);
+void PruneToolOut(const std::vector<std::string> &known); // known = 工具表里的工具名
 
 } // namespace agent

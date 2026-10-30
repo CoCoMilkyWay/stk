@@ -7,7 +7,7 @@
 //   工具 = 名 + 执行方 + 参数表 (键 / 类型 / 缺省 / 取值范围 / 说明) + 做什么 / 返回什么; 加工具 = 表里加一行 + 执行方里接一个分支
 //   执行方 Run: Now 当场 (GUI 线程, 读写会话状态) / Human 等人 / Eval 回测 (Lab eval) / Look 观察 (Lab look → agent/Views 成文) / Docs 研报库 (GUI 线程当场查, agent/Docs 成文)
 //   校验两层: 解析时按参数表 (类型 / 必填 / 范围 / 可选值; 不合 → 整条回复重发); 执行时按数据 (因子 / 特征 / 资产 / 日期 / 流派 / 研报不成 → 该调用的结果写原因, 其余照做)
-//   回复级约束: 1..kMaxCalls 个调用; eval_factor 至多 kBatch 个; finish 只能在末尾; ask_human 只在会话允许提问且还没问过时可用
+//   回复级约束: 1..kMaxCalls 个调用; eval_factor 至多 kBatch 个, 有 eval_factor 就至少带一个观察; finish 只能在末尾; ask_human 只在会话允许提问且还没问过时可用
 //   执行记录 Act: 一个调用的时段 / 交给 agent 的结果 / 带状态调用的过程 (eval_factor 的回测 Trial, ask_human 的问答 Asked); 执行见 agent/Acts.hpp
 // =============================================================================
 
@@ -28,6 +28,7 @@ enum class Tool : uint8_t { ViewFeature,
                             ViewTrades,
                             ViewHolders,
                             ViewResponse,
+                            ViewExplain,
                             ViewStockDay,
                             ViewStockDays,
                             SearchLeaves,
