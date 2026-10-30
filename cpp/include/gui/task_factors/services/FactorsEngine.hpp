@@ -760,7 +760,7 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
 //   block(c, ci, load_s)     块 ci 就位 (load_s = 装载秒): 块钩子 = 只随评估域变的产出 (池等权线)
 //   plan(b0, Fr, why, need)  一批森林 (首根 b0) 值域已查: why[k] 非空 = 根 b0 + k BROKEN, 不评 (每块一次, 坏根只增); need = 要走的节点
 //   node(b0, Fr, i, ms)      走完节点 i (ms = 算子耗时, 叶 0)
-//   done(k)                  根 k 的探针钩子全部走完 (末块 finish 后); k = roots 下标
+//   done(k)                  根 k 本块的探针钩子走完 (每块一次, 末块含 finish); k = roots 下标
 //   fail(e, why) / post(e, k) (eval_job) 条目 e 的终局, 每条目恰一个 (中断不发): 没算成 (根坏 / 评估域不成 / 全部根坏) / 根 k 评完
 //   whole()                  eval_job 只整期一块 (块钩子 / alpha 分布要整期; 装不下截最近的日)
 struct HookBase {
@@ -833,7 +833,7 @@ Rc pass(E &eng, FactorFlow &F, Job &j, size_t R, Plant &&plant, Slot &&ps, H &&h
   return Rc::Ok;
 }
 // eval_job 包在调用方钩子 h 外的一层: 进度 (Running 期 = 好根的算子节点 + 好根数, 每块重开) + 节点耗时 o.ms
-// + 条目终局 (根坏 → h.fail, 根评完 → h.post; 每条目恰一次), 再转给 h
+// + 条目终局 (根坏 → h.fail, 根末块评完 → h.post; 每条目恰一次), 再转给 h
 template <class H>
 struct JobHooks : HookBase {
   H &h;
@@ -841,7 +841,11 @@ struct JobHooks : HookBase {
   Progress &prog;
   const RootSet &rs;
   std::vector<uint8_t> fin; // [条目] 已有终局
-  void block(const Block &c, size_t ci, double s) { h.block(c, ci, s); }
+  bool last = false;        // 当前块是末块
+  void block(const Block &c, size_t ci, double s) {
+    last = ci + 1 == o.job.P.chunks.size();
+    h.block(c, ci, s);
+  }
   void plan(size_t b0, const Forest &Fr, const std::vector<std::string> &why, const std::vector<uint8_t> &need) {
     assert(b0 == 0 && "eval_job 根全进一张森林");
     size_t n_run = 0;
@@ -865,6 +869,8 @@ struct JobHooks : HookBase {
   void done(int k) {
     prog.publish(1);
     h.done(k);
+    if (!last)
+      return;
     for (size_t e = 0; e < rs.of.size(); ++e)
       if (rs.of[e] == k) {
         assert(!fin[e] && "评完的根不坏");
