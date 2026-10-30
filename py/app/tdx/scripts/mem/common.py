@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # mem/common — 各内存方案的共享底座（非通用基建，仅服务 mem/ 下的方案）。
 # 职责：定位 TdxW 进程、枚举堆段、确保有跨进程读权限（本地存密码自动 sudo）、
-#       以及"连读两次一致才采信"的完整性原语。
+#       "连读两次一致才采信"的完整性原语，以及各方案共用的换代等待。
 # 具体某块数据怎么找、怎么解、怎么校验，由各方案文件（如 mem/positions.py）自管。
+#
+# 方案协议：每个方案模块出一对同形接口，快照为不可变值，== 即「同一代」，均带 pid。
+#   read(pid=None) → 快照    全量读（pid 缺省即找进程）
+#   follow(snap)   → 快照    以最省的办法看是否换代，没换代回 snap 本身
+# wait(方案, snap) 轮询 follow 等客户端重查后的换代，两方案共用。
 
 import os
 import subprocess
@@ -12,6 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PASS_FILE = os.path.join(HERE, os.pardir, ".sudo_pass")  # 本地 sudo 密码，已 gitignore
 PTRACE_SCOPE = "/proc/sys/kernel/yama/ptrace_scope"
 MAX_REGION = 400 * 1024 * 1024  # 跳过超大段（映射文件等），只扫堆
+BUY, SELL = +1, -1  # 方向即符号，各方案与上层同用
+SIDES = (BUY, SELL)
 
 
 def find_tdxw_pid():
@@ -45,6 +52,14 @@ def ensure_access():
         stderr=subprocess.DEVNULL,
     )
     assert _ptrace_scope() == 0, "sudo 设置 ptrace_scope=0 失败（密码错？）"
+
+
+def attach(pid=None):
+    """定位进程（给了 pid 即用）并确保有读权限 → pid。"""
+    pid = pid or find_tdxw_pid()
+    assert pid, "找不到 tdxw.exe 进程"
+    ensure_access()
+    return pid
 
 
 def read_maps(pid):
@@ -99,3 +114,15 @@ def stable(fn, tries=5, gap=0.01):
             return cur
         prev = cur
     assert False, f"连读 {tries} 次仍不一致，内存正被改写"
+
+
+def wait(scheme, snap, timeout=3.0, gap=0.01):
+    """客户端重查后，轮询 scheme.follow 等 snap 换代即回新快照，不等固定时长。
+    timeout 内没换代（应答与旧的逐字节相同，如收盘后；或 follow 盯不到新块）即全量 scheme.read。"""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        new = scheme.follow(snap)
+        if new != snap:
+            return new
+        time.sleep(gap)
+    return scheme.read(snap.pid)

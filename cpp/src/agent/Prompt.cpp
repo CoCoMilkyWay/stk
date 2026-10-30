@@ -233,6 +233,17 @@ Message FirstMessage(const Context &c, int tried, bool ask) {
                                          : "自己定下要做的那一个因子 (新起, 或从已试候选 / 正式库里挑) 和方向"}});
 }
 
+Message TestMessage(bool ask) {
+  std::string tools;
+  for (const ToolDef &d : Tools())
+    if (d.id != Tool::AskHuman || ask)
+      tools += (tools.empty() ? "" : ", ") + std::string(d.name);
+  return fill(Msg::Test, {{"tools", tools},
+                          {"max_calls", std::to_string(kMaxCalls)},
+                          {"ask", ask ? "ask_human 也要测: 问 1 道题 (例: 先测哪类工具), 研究员答完再接着测"
+                                      : "本会话没有 ask_human, 不测它"}});
+}
+
 Message RoundMessage(const std::vector<Act> &acts) {
   std::string s;
   for (size_t i = 0; i < acts.size(); ++i) {

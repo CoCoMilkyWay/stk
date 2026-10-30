@@ -4,9 +4,9 @@
 // Mine — 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态; 无 ImGui, 界面见 agent/ui/TaskAgent)
 // =============================================================================
 //   Phase    等谁    完成信号          转移
-//   None     人      open              发 first → Think
+//   None     人      open              发 first (自检会话发 test) → Think
 //   Think    agent   chat End          合格 (一串调用) → Act; 不合格 → 发 retry, 留 Think
-//   Act      系统    调用做完          按序执行: 当场的立即做完; eval_factor 等 lab End; 观察等 lab Look + End; ask_human → Choose;
+//   Act      系统    调用做完          按序执行: 当场的 (含查研报库) 立即做完; eval_factor 等 lab End; 观察等 lab Look + End; ask_human → Choose;
 //                                      全部做完: 有 finish → Report, 否则发 round (各调用的结果) → Think
 //   Choose   人      start             答复作 ask_human 的结果 → Act (接着执行余下的调用)
 //   Report   人      open              开下一段
@@ -47,6 +47,7 @@ public:
     Gate gate;
     bool gpu = false;
     bool ask = true;  // agent 可用 ask_human 向人提一次问
+    bool test = false; // 自检: 首条换成 test (每个工具调一遍); 候选与日志进 test 目录, submit_factor 只查门槛不拷
     llm::Options llm; // system 由 open 填
   };
 
@@ -58,7 +59,7 @@ public:
 
   // 计数 (+= 累加)
   struct Tally {
-    int calls = 0, looks = 0, staged = 0, unstaged = 0, settled = 0, hits = 0, submits = 0, adopted = 0, issues = 0;
+    int calls = 0, looks = 0, reads = 0, staged = 0, unstaged = 0, settled = 0, hits = 0, submits = 0, adopted = 0, issues = 0;
     Tally &operator+=(const Tally &o);
   };
   // 一轮 = 一条发出的消息. span = 发出 → 收齐, 其内 think / write = 首个思考增量 / 首个正文增量起 (无思考则 think 未开); acts = 回复里的调用, 按序执行

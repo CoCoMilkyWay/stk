@@ -1,6 +1,7 @@
 // Mine — 见头文件
 #include "agent/Mine.hpp"
 #include "agent/Config.hpp"
+#include "agent/Docs.hpp"
 #include "agent/Views.hpp"
 
 #include <algorithm>
@@ -43,11 +44,11 @@ void Mine::open(const SharedData &data, Setup s) {
   assert(!live() && !chat.busy() && !lab.busy());
   assert(catalog::ready(data, s.sc, s.gpu));
   setup = std::move(s);
-  lab.bind(data, setup.sc);
+  lab.bind(data, setup.sc, setup.test);
   const Context &ctx = lab.ctx();
   setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask).text;
   chat.open(setup.llm);
-  log_.open((fs::path(catalog::dir(setup.sc)) / "chat" / stamp()).string(), setup.llm.system);
+  log_.open((fs::path(catalog::dir(setup.sc, setup.test)) / "chat" / stamp()).string(), setup.llm.system);
   phase_ = Phase::Think;
   stop_ = done_ = asked_ = false;
   cur_ = 0;
@@ -66,8 +67,9 @@ void Mine::open(const SharedData &data, Setup s) {
                       {"eval", setup.gpu ? "GPU" : "CPU"},
                       {"gate", {{"mono", setup.gate.mono}, {"ric", setup.gate.ric}}},
                       {"ask", setup.ask},
+                      {"test", setup.test},
                       {"tried", tried}});
-  ask(FirstMessage(ctx, tried, setup.ask));
+  ask(setup.test ? TestMessage(setup.ask) : FirstMessage(ctx, tried, setup.ask));
 }
 
 void Mine::start() {
@@ -101,7 +103,7 @@ void Mine::cancel() {
 double Mine::now() const { return t_end_ >= 0 ? t_end_ : std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count(); }
 
 Mine::Tally &Mine::Tally::operator+=(const Tally &o) {
-  calls += o.calls, looks += o.looks, staged += o.staged, unstaged += o.unstaged, settled += o.settled, hits += o.hits;
+  calls += o.calls, looks += o.looks, reads += o.reads, staged += o.staged, unstaged += o.unstaged, settled += o.settled, hits += o.hits;
   submits += o.submits, adopted += o.adopted, issues += o.issues;
   return *this;
 }
@@ -212,6 +214,7 @@ void Mine::replied(llm::Reply r) {
   for (Call &c : cs) {
     tools.push_back(def(c.tool).name);
     d.looks += def(c.tool).run == Run::Look;
+    d.reads += def(c.tool).run == Run::Docs;
     rd.acts.push_back({.call = std::move(c)});
   }
   log_.event("calls", {{"round", round}, {"tools", tools}});
@@ -279,6 +282,9 @@ bool Mine::begin(Act &a) {
     lab.look(std::move(sp));
     return false;
   }
+  case Run::Docs:
+    a.ok = Browse(c, a.out);
+    return true;
   }
   return true;
 }
@@ -297,9 +303,9 @@ void Mine::here(Act &a) {
     Submitted x{c.str("name"), {}};
     lab.adopt(x, setup.gate);
     a.ok = x.err.empty();
-    if (a.ok)
+    if (a.ok && !setup.test)
       adopted.insert(x.name);
-    a.out = a.ok ? "已入库" : "未入库: " + x.err;
+    a.out = !a.ok ? "未入库: " + x.err : setup.test ? "达门槛 (自检会话, 不拷进正式库)" : "已入库";
     log_.event("submit", {{"round", round}, {"name", x.name}, {"result", a.ok ? std::string("入库") : x.err}});
     add({.submits = 1, .adopted = a.ok});
     break;
@@ -362,8 +368,8 @@ void Mine::finish(std::string why) {
 
 std::string Mine::report_of(const std::string &why) const {
   const Tally &c = total.tally;
-  std::string r = "# 结束报告\n\n- 结束原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n- 调用: " + std::to_string(c.calls) + " (观察 " +
-                  std::to_string(c.looks) + ", 回测 " + std::to_string(c.staged + c.unstaged) + ")\n\n";
+  std::string r = std::string(setup.test ? "# 自检报告\n\n- 自检会话: 候选与日志在 test 目录, 提交只查门槛不拷进正式库" : "# 结束报告\n") + "\n- 结束原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n- 调用: " + std::to_string(c.calls) + " (观察 " +
+                  std::to_string(c.looks) + ", 查研报 " + std::to_string(c.reads) + ", 回测 " + std::to_string(c.staged + c.unstaged) + ")\n\n";
   std::string in, out, issues;
   for (size_t i = 0; i < timeline.size(); ++i) {
     const std::string at = "- 第 " + std::to_string(i + 1) + " 轮";
@@ -376,7 +382,7 @@ std::string Mine::report_of(const std::string &why) const {
         issues += at + ": " + a.call.str("text") + "\n";
     }
   }
-  r += "## 入库 (" + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
+  r += std::string(setup.test ? "## 达门槛 (" : "## 入库 (") + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
   r += "## 未入库的提交 (" + std::to_string(c.submits - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out) + "\n";
   r += "## issues (" + std::to_string(c.issues) + ")\n\n" + (issues.empty() ? "(无)\n" : issues);
   return r;

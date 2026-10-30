@@ -380,8 +380,9 @@ bool ready(const SharedData &data, const Scope &sc, bool gpu) {
 std::string label(const Scope &sc) {
   return sc.pool + " / " + F::factor_level(level_id(sc.level)).name + " / " + factor::stat::hold_name(sc.hold);
 }
-std::string dir(const Scope &sc) {
-  return (fs::path(kWorkDir) / sc.pool / F::factor_level(level_id(sc.level)).name / factor::stat::hold_name(sc.hold)).string();
+std::string dir(const Scope &sc, bool test) {
+  const fs::path d = fs::path(kWorkDir) / sc.pool / F::factor_level(level_id(sc.level)).name / factor::stat::hold_name(sc.hold);
+  return (test ? d / "test" : d).string();
 }
 
 } // namespace catalog
@@ -391,6 +392,7 @@ struct Lab::Impl {
   // 作用域
   const SharedData *data = nullptr;
   Scope sc;
+  bool test = false;
   std::string dir; // 候选目录
   Context ctx;
   std::vector<Result> results;
@@ -529,22 +531,24 @@ struct Lab::Impl {
 Lab::Lab() : p_(std::make_unique<Impl>()) {}
 Lab::~Lab() = default;
 
-void Lab::bind(const SharedData &data, const Scope &sc) {
+void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   Impl &I = *p_;
   assert(!I.running && "评估队列忙");
-  if (sc != I.sc) {
+  if (sc != I.sc)
     I.each_lane([](auto &l) { l.drop(); });
+  if (sc != I.sc || test != I.test)
     I.fails.clear();
-  }
   I.data = &data;
   I.sc = sc;
-  I.dir = (fs::path(catalog::dir(sc)) / "factors").string();
+  I.test = test;
+  I.dir = (fs::path(catalog::dir(sc, test)) / "factors").string();
   I.ctx = context_of(data, sc);
   I.results = scan(*I.ft(), I.fsc(), I.dir, sc.hold, I.fails);
   I.ticks.clear();
 }
 
 const Scope &Lab::scope() const { return p_->sc; }
+bool Lab::test() const { return p_->test; }
 const Context &Lab::ctx() const { return p_->ctx; }
 const std::vector<Result> &Lab::results() const { return p_->results; }
 
@@ -581,6 +585,8 @@ void Lab::adopt(Submitted &s, const Gate &g) {
     s.err = "正式目录已有 " + it->file;
     return;
   }
+  if (I.test)
+    return;
   fs::create_directories(to.parent_path());
   fs::copy_file(fs::path(I.dir) / it->file, to);
 }

@@ -68,7 +68,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
 Mine::Setup setup_of(const Options &o) {
-  return {o.sc, o.gate, o.gpu == 1, o.ask, {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model, {}}};
+  return {o.sc, o.gate, o.gpu == 1, o.ask, false, {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model, {}}};
 }
 
 // 模型嗅探: 每后端一个后台 GET models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
@@ -267,19 +267,30 @@ void session_row(const SharedData &data, State &s) {
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
   const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold;
-  ImGui::BeginDisabled(!can_new);
-  if (ImGui::Button("New", ImVec2(60, 0))) {
-    if (catalog::ready(data, o.sc, o.gpu == 1)) {
-      s.message.clear();
-      m.open(data, setup_of(o));
-    } else {
+  const char *why_not = !keyed ? "所选后端的 key 未填 (config/agent/keys.json)" : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)" : nullptr;
+  const auto begin_session = [&](bool test) {
+    if (!catalog::ready(data, o.sc, o.gpu == 1)) {
       s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
+      return;
     }
-  }
+    s.message.clear();
+    Mine::Setup st = setup_of(o);
+    st.test = test;
+    m.open(data, std::move(st));
+  };
+  ImGui::BeginDisabled(!can_new);
+  if (ImGui::Button("New", ImVec2(60, 0)))
+    begin_session(false);
   ImGui::EndDisabled();
-  tip(!keyed         ? "所选后端的 key 未填 (config/agent/keys.json)"
-      : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                     : "按当前作用域与 Config 开新会话: 打包规则与工具表发给 agent, 它调工具看数据、回测、提交\n资产轴与标签就绪才开得成");
+  tip(why_not ? why_not : "按当前作用域与 Config 开新会话: 打包规则与工具表发给 agent, 它调工具看数据、回测、提交\n资产轴与标签就绪才开得成");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!can_new);
+  if (ImGui::Button("Test", ImVec2(60, 0)))
+    begin_session(true);
+  ImGui::EndDisabled();
+  tip(why_not ? why_not
+              : "开一段自检会话: 同样的系统提示, 首条换成 test 模板, 让 agent 把每个工具都调一遍, 问题记 issue, 末了总评\n"
+                "候选与日志进作用域的 test 目录, submit_factor 只查门槛不拷进正式库");
   ImGui::SameLine();
   ImGui::BeginDisabled(m.phase() != Phase::Choose);
   if (ImGui::Button("Start", ImVec2(60, 0)))
@@ -302,8 +313,8 @@ void session_row(const SharedData &data, State &s) {
   if (m.phase() != Phase::None) {
     const Mine::Setup &st = m.setup;
     ImGui::SameLine();
-    ImGui::TextDisabled("%s · %s %s · %s · %s", catalog::label(st.sc).c_str(), llm::def(st.llm.backend).name, st.llm.model.c_str(), st.gpu ? "GPU" : "CPU",
-                        st.ask ? "可提问" : "不提问");
+    ImGui::TextDisabled("%s%s · %s %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), llm::def(st.llm.backend).name, st.llm.model.c_str(),
+                        st.gpu ? "GPU" : "CPU", st.ask ? "可提问" : "不提问");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", m.log_dir().c_str());
   }
@@ -550,9 +561,9 @@ void now_row(State &s, const Mine &m, const Flow &f) {
       ImGui::SetTooltip("点击跳到当前轮");
     }
   }
-  ImGui::TextDisabled("用时 %s · LLM %s · 执行 %s · token 输入 %s (缓存 %s) / 输出 %s · %zu 轮 · 调用 %d (观察 %d) · 候选 %d · 入库 %d", dur(t).c_str(), dur(llm_s).c_str(),
-                      dur(act_s).c_str(), kilo(all.usage.prompt).c_str(), kilo(all.usage.cached).c_str(), kilo(all.usage.completion).c_str(), m.timeline.size(),
-                      all.tally.calls, all.tally.looks, all.tally.staged, all.tally.adopted);
+  ImGui::TextDisabled("用时 %s · LLM %s · 执行 %s · token 输入 %s (缓存 %s) / 输出 %s · %zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 入库 %d", dur(t).c_str(),
+                      dur(llm_s).c_str(), dur(act_s).c_str(), kilo(all.usage.prompt).c_str(), kilo(all.usage.cached).c_str(), kilo(all.usage.completion).c_str(),
+                      m.timeline.size(), all.tally.calls, all.tally.looks, all.tally.reads, all.tally.staged, all.tally.adopted);
   if (!ll.message.empty())
     wrapped(color(TaskStatus::Kind::Warn), ll.message);
 }
@@ -771,6 +782,8 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
   h += " · 调用 " + std::to_string(c.calls);
   if (c.looks > 0)
     h += " · 观察 " + std::to_string(c.looks);
+  if (c.reads > 0)
+    h += " · 查研报 " + std::to_string(c.reads);
   if (c.staged + c.unstaged > 0)
     h += " · 候选 " + std::to_string(c.staged) + (c.unstaged ? " (未落 " + std::to_string(c.unstaged) + ")" : "") + " · 有权重 " + std::to_string(c.hits);
   if (c.submits > 0)
@@ -849,13 +862,13 @@ bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   return start;
 }
 
-// 一组轮的标题: 轮次 / 起始时刻 / 调用 / 观察 / 候选 / 有权重 / 入库
+// 一组轮的标题: 轮次 / 起始时刻 / 调用 / 观察 / 查研报 / 候选 / 有权重 / 入库
 std::string group_head(const Mine &m, size_t g0, size_t g1) {
   Mine::Tally c;
   for (size_t i = g0; i < g1; ++i)
     c += m.timeline[i].tally;
   return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.calls) + " · 观察 " +
-         std::to_string(c.looks) + " · 候选 " + std::to_string(c.staged) + " · 有权重 " + std::to_string(c.hits) + " · 入库 " + std::to_string(c.adopted);
+         std::to_string(c.looks) + " · 查研报 " + std::to_string(c.reads) + " · 候选 " + std::to_string(c.staged) + " · 有权重 " + std::to_string(c.hits) + " · 入库 " + std::to_string(c.adopted);
 }
 
 // 结束汇总: 计数 + 本会话有参数组的候选 (入库的在前, 再按 score 降序; 先列 kSummaryRows 个, 其余折起) + 结束报告
@@ -873,7 +886,8 @@ void summary_block(const Mine &m) {
   });
   ImGui::SeparatorText(("结束 · +" + dur(m.now())).c_str());
   wrapped(color(TaskStatus::Kind::Ready), m.reason);
-  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.calls, c.looks, c.staged, c.hits, c.submits, c.adopted);
+  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.calls, c.looks, c.reads, c.staged, c.hits,
+                      c.submits, c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];
     ImGui::Bullet();
@@ -977,24 +991,25 @@ struct View {
   const Context &ctx;
   const std::vector<Result> &results;
   const Names &adopted;
+  bool test; // 候选是自检会话的 (test 目录)
 };
 
 View view_of(const SharedData &data, State &s) {
   Mine &m = *s.mine;
   const Scope &sc = s.opt.sc;
   if (!m.live() && !m.lab.busy() && m.lab.scope() != sc && !catalog::holds(data, sc.level).empty())
-    m.lab.bind(data, sc);
+    m.lab.bind(data, sc, false);
   static const Context kNoCtx;
   static const std::vector<Result> kNoResults;
   static const Names kNone;
   if (m.lab.scope() != sc)
-    return {kNoCtx, kNoResults, kNone};
-  return {m.lab.ctx(), m.lab.results(), m.phase() != Phase::None && m.setup.sc == sc ? m.adopted : kNone};
+    return {kNoCtx, kNoResults, kNone, false};
+  return {m.lab.ctx(), m.lab.results(), m.phase() != Phase::None && m.setup.sc == sc ? m.adopted : kNone, m.lab.test()};
 }
 
 void results_table(const View &v) {
   const std::vector<Result> &results = v.results;
-  ImGui::TextDisabled("候选 %zu (会话目录, 本持有期 score 降序)", results.size());
+  ImGui::TextDisabled("候选 %zu (%s, 本持有期 score 降序)", results.size(), v.test ? "自检的 test 目录" : "会话目录");
   if (!begin_table("##results", {"名", "中文", "结局", "mono", "多空bp", "rIC", "score", "模板"}))
     return;
   for (const Result &r : results) {

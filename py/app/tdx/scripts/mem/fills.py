@@ -5,7 +5,7 @@
 #
 # 选块（实测）：每次查询在网络缓冲与客户端各留几份副本，旧查询的副本不即时释放，且没有活动块标记。
 # 成交只增不改，故不选块：当日全部完整副本按成交编号取并集即全量（旧副本是其子集），同号须逐字段一致。
-# 换代检测：副本地址集变了即客户端重查过（内容可能不变）。
+# 换代检测：副本地址集变了即客户端重查过（内容可能不变）；没有活动块可盯，follow 即全量 read（协议见 common）。
 #
 # 完整性：只认表头日期为本机今日、且后随至少 n 行的副本（被新内容覆盖了一半的旧缓冲不算），只取前 n 行；
 # 行级校验列数、时间、代码、沪深标志、方向、状态、价 × 量 ≈ 金额，任一不过即 assert。
@@ -15,9 +15,11 @@ import time
 from collections import namedtuple
 
 from . import common
+from .common import BUY, SELL, SIDES
 
-# 快照：addrs = 当日完整副本地址集（今日没查过即空），rows = 并集，按成交时间、成交编号排序。
-Fills = namedtuple("Fills", "addrs rows")
+# 快照：addrs = 当日完整副本地址集（今日没查过即空），rows = 并集，按成交时间、成交编号排序；
+# flow = rows 按代码合计 {代码: {code, name, market_flag, qty: {方向: 股}, amount: {方向: 元}}}。
+Fills = namedtuple("Fills", "pid addrs rows flow")
 
 ANCHOR = b"||P|\r\n"
 HEAD_RE = re.compile(rb"0\|(\d{8})\d{10}\|(\d+)\|\|P\|\r\n")
@@ -43,7 +45,7 @@ COLS = {
     "order_id":    (str,   11),  # 委托编号
 }
 # fmt: on
-SIDES = {"买入": +1, "卖出": -1}
+SIDE_TEXT = {"买入": BUY, "卖出": SELL}
 
 
 def _blocks(lo, data, day):
@@ -61,7 +63,7 @@ def _blocks(lo, data, day):
 
 
 def _fill(line):
-    """一行 → 成交；按 COLS 取列转型、逐项校验，不过即 assert。side 换成 +1 买 / -1 卖。"""
+    """一行 → 成交；按 COLS 取列转型、逐项校验，不过即 assert。side 换成方向 BUY / SELL。"""
     text = line.decode("gbk", errors="replace")
     assert "\ufffd" not in text, f"成交行含 GBK 替换字符，疑似读到写入中途：{text!r}"
     f = text.split("|")
@@ -70,37 +72,45 @@ def _fill(line):
     assert TIME_RE.fullmatch(r["time"]), f"成交时间 {r['time']!r}"
     assert re.fullmatch(r"\d{6}", r["code"]), f"成交代码 {r['code']!r}"
     assert r["market_flag"] in (0, 1), f"{r['code']} 沪深标志 {r['market_flag']}"
-    assert r["side"] in SIDES, f"{r['code']} 买卖方向「{r['side']}」不认识：{text!r}"
+    assert r["side"] in SIDE_TEXT, f"{r['code']} 买卖方向「{r['side']}」不认识：{text!r}"
     assert r["status"] == "成交", f"{r['code']} 成交状态「{r['status']}」不认识：{text!r}"
     assert r["qty"] > 0 and r["price"] > 0 and r["fill_id"], f"成交行数值异常：{text!r}"
     exp = r["price"] * r["qty"]
     assert abs(exp - r["amount"]) <= max(0.02, exp * 1e-4), f"{r['code']} 金额≠价×量：{text!r}"
-    r["side"] = SIDES[r["side"]]
+    r["side"] = SIDE_TEXT[r["side"]]
     return r
 
 
-def read(pid):
+def _flow(rows):
+    """成交按代码合计 → {代码: {code, name, market_flag, qty: {方向: 股}, amount: {方向: 元}}}；同代码沪深标志须一致。"""
+    out = {}
+    for r in rows:
+        a = out.setdefault(
+            r["code"],
+            {k: r[k] for k in ("code", "name", "market_flag")}
+            | {"qty": dict.fromkeys(SIDES, 0.0), "amount": dict.fromkeys(SIDES, 0.0)},
+        )
+        assert a["market_flag"] == r["market_flag"], f"成交 {r['code']} 沪深标志不一致"
+        a["qty"][r["side"]] += r["qty"]
+        a["amount"][r["side"]] += r["amount"]
+    return out
+
+
+def read(pid=None):
     """全量扫一遍 → Fills。同一笔（成交编号 + 委托编号 + 代码）在各副本里须逐字段一致。"""
+    pid = common.attach(pid)
     day = time.strftime("%Y%m%d").encode()
-    addrs, rows = set(), {}
+    addrs, uniq = set(), {}
     for lo, data in common.iter_regions(pid):
         for addr, lines in _blocks(lo, data, day):
             addrs.add(addr)
             for f in map(_fill, lines):
                 k = (f["fill_id"], f["order_id"], f["code"])
-                assert rows.setdefault(k, f) == f, f"成交 {k} 两份副本不一致：{rows[k]} ≠ {f}"
-    return Fills(
-        frozenset(addrs),
-        sorted(rows.values(), key=lambda f: (f["time"], f["fill_id"])),
-    )
+                assert uniq.setdefault(k, f) == f, f"成交 {k} 两份副本不一致：{uniq[k]} ≠ {f}"
+    rows = sorted(uniq.values(), key=lambda f: (f["time"], f["fill_id"]))
+    return Fills(pid, frozenset(addrs), rows, _flow(rows))
 
 
-def wait(pid, prev, timeout=3.0):
-    """客户端重查当日成交后，等副本地址集换代即回新快照；prev 为 None（还没读过）时任何结果都算。
-    timeout 内没换代照常重读。"""
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        new = read(pid)
-        if prev is None or new.addrs != prev.addrs:
-            return new
-    return read(pid)
+def follow(snap):
+    """没有活动块可盯：全量重读，副本地址集变了即换代。"""
+    return read(snap.pid)

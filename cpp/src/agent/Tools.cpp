@@ -42,10 +42,43 @@ constexpr ArgDef kStockDaysArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, 
                                      {"to", Arg::Str, "\"\"", 0, 0, nullptr, "末日 YYYY-MM-DD; 空 = 评估期末日"},
                                      {"factor", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 叠加看的因子"},
                                      {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 叠加看的特征式 (各日取收盘行的值)"}};
+// 研报库的词表 (标注体系的 code)
+constexpr const char *kStages = "L0_data|L1_factor|L2_process|L3_alpha|L4_risk|L5_portfolio|L6_evaluation|L7_execution|L8_timing";
+constexpr const char *kAssets = "stock_cn|stock_hk|stock_us|future_index|future_commodity|future_bond|bond|option|convertible|fund|multi";
+constexpr const char *kFamilies =
+    "size|value|growth|quality|dividend|carry|analyst|momentum|reversal|volatility|liquidity|microstructure|sentiment|relation|institution|event|composite|other";
+constexpr const char *kPeriods = "second|intraday|daily|weekly|monthly|quarterly|event|na";
+constexpr const char *kQueryDesc = "关键词, 空格隔开的几个须同时出现 (英文不分大小写); 空 = 不限";
+
+constexpr ArgDef kDocsArgs[] = {
+    {"query", Arg::Str, "\"\"", 0, 0, nullptr, kQueryDesc},
+    {"scope", Arg::Str, "\"tag\"", 0, 0, "tag|text", "query 查哪: tag 标注 (id 里的日期·机构·系列·标题 / 结论 / 因子名) / text 全文 (须给 query; 另给命中处的小节与片段)"},
+    {"stage", Arg::Str, "\"\"", 0, 0, kStages, "涉及的流水线阶段; 空 = 不限"},
+    {"approach", Arg::Str, "\"\"", 0, 0, nullptr, "流派 code (见分面的 阶段 → 流派); 空 = 不限"},
+    {"asset", Arg::Str, "\"\"", 0, 0, kAssets, "资产; 空 = 不限"},
+    {"freq", Arg::Str, "\"\"", 0, 0, "l1|l2|minute|daily|weekly|monthly|quarterly|mixed", "所用数据的频率 (l1 快照 / l2 逐笔 / minute 分钟 / mixed 混频); 空 = 不限"},
+    {"genre", Arg::Str, "\"\"", 0, 0, "framework|research|handbook|review",
+     "体裁: framework 体系搭建 / research 原创研究 / handbook 因子全集测试 / review 综述与文献解读; 空 = 不限"},
+    {"n", Arg::Int, "10", 1, 40, nullptr, "列几篇"}};
+constexpr ArgDef kFactorsArgs[] = {
+    {"query", Arg::Str, "\"\"", 0, 0, nullptr, "关键词, 查因子名 / 公式 / 定义摘录; 空格隔开的几个须同时出现 (英文不分大小写); 空 = 不限"},
+    {"family", Arg::Str, "\"\"", 0, 0, kFamilies, "风格桶 (microstructure = 订单流 / 订单簿 / 日内结构); 空 = 不限"},
+    {"period", Arg::Str, "\"\"", 0, 0, kPeriods, "构造所用原始数据的周期含它 (second 逐笔 / 快照, intraday 分钟); 空 = 不限"},
+    {"horizon", Arg::Str, "\"\"", 0, 0, kPeriods, "预测期; 空 = 不限"},
+    {"approach", Arg::Str, "\"\"", 0, 0, nullptr, "出处研报的因子构造流派 (L1_factor 下的流派 code); 空 = 不限"},
+    {"asset", Arg::Str, "\"\"", 0, 0, kAssets, "出处研报的资产; 空 = 不限"},
+    {"sort", Arg::Str, "\"ic\"", 0, 0, "ic|icir|ls|new", "排序: ic = |RankIC| (没有则 |IC|) / icir = |ICIR| / ls = 多空年化 / new = 研报新到旧; 没有该统计的排后"},
+    {"n", Arg::Int, "12", 1, 40, nullptr, "列几个"}};
+constexpr ArgDef kReadArgs[] = {
+    {"id", Arg::Str, nullptr, 0, 0, nullptr, "研报 id (检索结果里反引号中的那串; 能唯一对上的一段也行)"},
+    {"part", Arg::Str, "\"card\"", 0, 0, "card|outline|text", "读哪部分: card 标注卡 / outline 目录 / text 原文"},
+    {"from", Arg::Int, "0", 0, 999, nullptr, "text: 从第几节读起 (outline 的节号)"},
+    {"skip", Arg::Int, "0", 0, 1000000, nullptr, "text: 跳过该节开头多少字 (接着读上次没读完的; 上次结果末尾会给)"}};
 constexpr ArgDef kEvalArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
                                 {"name_cn", Arg::Str, nullptr, 0, 0, nullptr, "中文名: 1..10 个汉字, 不含字母数字标点"},
                                 {"expr", Arg::Str, nullptr, 0, 0, nullptr, "模板 (可含自由参数)"},
-                                {"note", Arg::Str, "\"\"", 0, 0, nullptr, "相对哪个版本改了什么、想验证什么; 由观察促成的写明是哪个调用看到了什么"}};
+                                {"note", Arg::Str, "\"\"", 0, 0, nullptr,
+                                 "相对哪个版本改了什么、想验证什么; 由观察促成的写明是哪个调用看到了什么, 借鉴研报的写明研报 id 与借的是什么"}};
 constexpr ArgDef kTopArgs[] = {{"top", Arg::Int, "20", 1, kListTop, nullptr, "列前几个"}};
 constexpr ArgDef kNameArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "已评候选的英文名 (本作用域历次会话的都可以)"}};
 constexpr ArgDef kIssueArgs[] = {{"text", Arg::Str, nullptr, 0, 0, nullptr, "疑问 / 建议"}};
@@ -74,6 +107,18 @@ constexpr ToolDef kTools[] = {
     {Tool::ViewStockDays, "view_stock_days", "看个股多日", Run::Look, kStockDaysArgs,
      "看一只股票连续多日 (至多 {stock_days} 日) 的日级概况: 每日一行 (涨跌 / 振幅 / 成交额 / 在池 / 因子日均与收盘分位 / 两端行数 / 收盘开仓的后续超额 / 特征收盘值), 附日级火花线",
      "火花线 + 逐日表"},
+    {Tool::SearchDocs, "search_docs", "查研报", Run::Docs, kDocsArgs,
+     "查研报库 (券商金工研报的标注与全文): 先给命中研报的分面 —— 阶段 → 流派树 (篇数) / 机构 / 年份 / 价值 (我们对研报的判断: high 可直接复用 / medium 有参考 / low 有水分), "
+     "再列研报. 不带条件 = 全库版图; 从上往下逐层加条件 (阶段 → 流派 → 关键词) 收窄到感兴趣的几篇, 再用 read_doc 读",
+     "分面 + 研报行 (id / 价值 / 主阶段 / 流派 / 因子数 / 首条结论; 全文检索另给命中数与片段)"},
+    {Tool::SearchFactors, "search_factors", "查研报因子", Run::Docs, kFactorsArgs,
+     "查研报里提出过的因子: 先给命中因子的分面 (类别 / 出处流派 / 数据周期 × 预测期), 再列因子 (名 / 类别 / 方向 / 数据周期 → 预测期 / 原文统计 / LaTeX 公式). "
+     "造新特征或换思路前先查别人怎么定义同类东西、背后讲的什么机制. 统计是原文在其自己股票池与预测期 (多为月度) 上的数, 只用来理解机制, 与本会话的回测不可比",
+     "分面 + 因子行 (出处研报 id 可接 read_doc)"},
+    {Tool::ReadDoc, "read_doc", "读研报", Run::Docs, kReadArgs,
+     "读一篇研报: card 是标注卡 (各阶段的流派与设定 / 结论 / 库内前作与被引 / 因子与公式), 先看它判断值不值得细读; 要细节看 outline (节号 · 标题 · 字数) 挑节, "
+     "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
+     "标注卡 / 目录 / 原文一段"},
     {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, kEvalArgs,
      "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体",
      "结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点) / 各权重的统计"},
@@ -142,11 +187,13 @@ bool check(const ArgDef &a, const json &v, const std::string &path, std::string 
     if (!v.is_string())
       return fail("须是字符串");
     const std::string s = v.get<std::string>();
+    if (s.empty() && a.def && std::string_view(a.def) == "\"\"")
+      return true;
     if (a.choices) {
       const std::string all = std::string("|") + a.choices + "|";
       if (s.empty() || all.find("|" + s + "|") == std::string::npos)
         return fail(std::string("须是 ") + a.choices + " 之一");
-    } else if (s.empty() && !a.def) {
+    } else if (s.empty()) {
       return fail("不能为空");
     }
     return true;

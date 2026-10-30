@@ -11,7 +11,7 @@
 #
 # 三级范围，同一动作（找活动块），代价递增：
 #   窗 = 块址 + SLACK（_reread）  段 = 上次所在段（_locate near）  全 = 全部堆段（_locate）
-# 对外一对：read 全 / 段，follow 窗（换代才落到段）；wait 轮询 follow 等客户端重查。
+# 对外一对（协议见 common）：read 全，follow 窗（换代才落到段）；没有活动块时 follow 盯不到新块，只能靠 read。
 #
 # 完整性（读内存最大的坑是读到写入中途的坏块）：
 #   1) read 定位一次活动块（全量须唯一），再按址只复读该块，连读两次字节一致才采信（common.stable）；
@@ -20,14 +20,14 @@
 # 任一校验不过直接 assert（早失败，宁可不给数也不给错数）。
 
 import re
-import time
 from collections import namedtuple
 
 from . import common
+from .common import BUY, SELL
 
-# 快照：不可变值，== 即「同一代」（rows 由 raw 派生）。win = 活动块复读窗口 (表头地址, 窗口尾)；
-# 没有活动块（没查询过）时 win / raw 为 None、rows 为 []。
-Snap = namedtuple("Snap", "pid win raw rows")
+# 快照：不可变值，== 即「同一代」（held 由 raw 派生）。win = 活动块复读窗口 (表头地址, 窗口尾)；
+# held = {代码: 持仓}，按表内顺序。没有活动块（没查询过）时 win / raw 为 None、held 为 {}。
+Snap = namedtuple("Snap", "pid win raw held")
 
 ANCHOR = b"||P00"  # find 用的定长锚点，表头起点在其前 0||<n>
 ROW = rb"\d{6}\|(?:[^|\r\n]*\|){4}[^\r\n]*\r\n"  # 6 位代码 + 至少 5 个 |
@@ -49,8 +49,6 @@ COLS = {
     "name":         (str,  2,  2),  # 列 1 对 ETF 是短码名（如 5GETF），列 2 是全称（通信ETF华夏）
     "balance":      (_num, 3,  3),     # 证券数量
     "available":    (_num, 4,  4),     # 可卖数量
-    "bought":       (_num, 5,  None),  # 今买数量
-    "sold":         (_num, 6,  None),  # 今卖数量
     "financed":     (_num, 7,  None),  # 融资数量
     "cost":         (_num, 8,  7),     # 参考成本价
     "price":        (_num, 9,  8),
@@ -63,6 +61,7 @@ COLS = {
     "shareholder":  (str,  19, 15),
 }
 # fmt: on
+TRADED = {BUY: 5, SELL: 6}  # 今买 / 今卖数量的完整视图列号，取成 traded = {方向: 股}；精简视图无，traded 为 None
 
 
 def _blocks(lo, data):
@@ -100,8 +99,10 @@ def _reread(pid, addr, end):
 
 
 def _position(f, at):
-    """一行字段 → 持仓；按 COLS 取 at 视图的列转型。"""
-    return {k: None if c[at] is None else c[0](f[c[at]]) for k, c in COLS.items()}
+    """一行字段 → 持仓；按 COLS 取 at 视图的列转型，按 TRADED 取今买 / 今卖。"""
+    p = {k: None if c[at] is None else c[0](f[c[at]]) for k, c in COLS.items()}
+    p["traded"] = {s: _num(f[i]) for s, i in TRADED.items()} if at == FULL else None
+    return p
 
 
 def _check(p):
@@ -119,8 +120,8 @@ def _check(p):
 
 
 def parse(raw):
-    """解析活动块 → 持仓列表，边解析边校验。块由 BLOCK_RE 保证：首行表头，其后全是持仓行（至少一行）。
-    块级：解码一次、无替换字符、列数全表一致并据此定布局；行级：_position 取列、_check 校验。"""
+    """解析活动块 → {代码: 持仓}，边解析边校验。块由 BLOCK_RE 保证：首行表头，其后全是持仓行（至少一行）。
+    块级：解码一次、无替换字符、列数全表一致并据此定布局、代码不重；行级：_position 取列、_check 校验。"""
     text = raw.decode("gbk", errors="replace")
     assert "\ufffd" not in text, "明文含 GBK 替换字符，疑似读到写入中途的坏块"
     lines = [ln.split("|") for ln in text.split("\r\n")[1:-1]]
@@ -131,39 +132,29 @@ def parse(raw):
     assert nf > max(
         c[at] for c in COLS.values() if c[at] is not None
     ), f"仅 {nf} 列，不认识的布局"
-    return [_check(_position(f, at)) for f in lines]
+    held = {p["code"]: p for p in (_check(_position(f, at)) for f in lines)}
+    assert len(held) == len(lines), f"持仓代码有重复（{len(lines)} 行 {len(held)} 只）"
+    return held
 
 
-def read(pid=None, near=None):
-    """方案入口（全 / 段）：定位进程 → 定位活动块 → 按址连读一致 → 解析校验 → Snap。near 见 _locate。
-    块不存在（没点过查询）时 win / raw 为 None、rows 为 []，不算错误。"""
-    pid = pid or common.find_tdxw_pid()
-    assert pid, "找不到 tdxw.exe 进程"
-    common.ensure_access()
+def _read(pid, near):
+    """定位活动块 → 按址连读一致 → 解析校验 → Snap。near 见 _locate。
+    块不存在（没点过查询）时 win / raw 为 None、held 为 {}，不算错误。"""
     win = _locate(pid, near)
     if win is None:
-        return Snap(pid, None, None, [])
+        return Snap(pid, None, None, {})
     raw = common.stable(lambda: _reread(pid, *win))
     return Snap(pid, win, raw, parse(raw))
 
 
+def read(pid=None):
+    """全：定位进程，扫全部堆段。"""
+    return _read(common.attach(pid), None)
+
+
 def follow(snap):
-    """窗：按址复读活动块，未换代回 snap 本身；换代（被释放/改写）即在原段重读。
-    没有活动块时无从盯，原样返回（新块只能靠全量 read 发现）。"""
+    """窗：按址复读活动块，未换代回 snap 本身；换代（被释放/改写，实测重查后约 100ms）即在原段重读。
+    没有活动块时无从盯，原样返回。"""
     if snap.win is None or _reread(snap.pid, *snap.win) == snap.raw:
         return snap
-    return read(snap.pid, snap.win[0])
-
-
-def wait(snap, timeout=3.0, gap=0.01):
-    """客户端重查持仓后，等 snap 换代（实测约 100ms）即回新快照，不等固定时长。
-    snap 没有活动块（从没查过）时没有旧块可盯，改为每轮全量找新块。
-    timeout 内没换代 = 应答与旧块逐字节相同（如收盘后），照常重读。"""
-    step = follow if snap.win else lambda s: read(s.pid)
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        new = step(snap)
-        if new != snap:
-            return new
-        time.sleep(gap)
-    return read(snap.pid, snap.win and snap.win[0])
+    return _read(snap.pid, snap.win[0])

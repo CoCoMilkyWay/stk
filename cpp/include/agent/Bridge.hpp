@@ -185,7 +185,7 @@ std::string hold_desc(int hold, int level); // 开 / 清仓规则
 bool gpu();
 bool ready(const SharedData &data, const Scope &sc, bool gpu); // 资产轴就绪且标签库已建
 std::string label(const Scope &sc);                            // 池 / 层 / 持有期
-std::string dir(const Scope &sc);                              // 会话目录 kWorkDir/<池>/<层>/<持有期>
+std::string dir(const Scope &sc, bool test);                   // 会话目录 kWorkDir/<池>/<层>/<持有期>; test = 其下 test/ (自检会话的候选与日志)
 } // namespace catalog
 
 class Lab {
@@ -212,13 +212,16 @@ public:
   Lab();
   ~Lab();
 
-  void bind(const SharedData &data, const Scope &sc); // 须不忙, 作用域须有该持有期; 重扫上下文与候选目录, 未取走的 Tick 作废; data 须比 Lab 活得久
+  // 须不忙, 作用域须有该持有期; 重扫上下文与候选目录, 未取走的 Tick 作废; data 须比 Lab 活得久
+  // test = 自检: 候选目录换成 test 目录的, adopt 只查不拷
+  void bind(const SharedData &data, const Scope &sc, bool test);
   const Scope &scope() const;
+  bool test() const;
   const Context &ctx() const;
   const std::vector<Result> &results() const; // 候选目录全部文件, 本持有期 score 降序
 
   void stage(Staged &s);                   // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
-  void adopt(Submitted &s, const Gate &g); // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err
+  void adopt(Submitted &s, const Gate &g); // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err; 否则拷进正式目录 (test 不拷)
 
   // 观察的参数 (只查字段表 / 候选目录 / 码表, 不碰数据): 不成 → false + err (原样给 agent)
   bool factor_of(const std::string &arg, LookFactor &out, std::string &err) const;  // 候选英文名 (取最佳权重) 或具体根式

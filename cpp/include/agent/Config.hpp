@@ -56,7 +56,8 @@ inline constexpr double kGateRic = 0.03;  // rIC 均值
 // ---- 目录 ----
 //   kWorkDir/<池>/<层>/<持有期>/factors/   候选因子文件 (与正式因子同格式; Search 日志在其 log/)
 //   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话的日志 (agent/Journal.hpp)
-//   kPromptDir/{system,first,round,retry}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
+//   kWorkDir/<池>/<层>/<持有期>/test/        自检会话的 factors/ 与 chat/ (同上两项的结构)
+//   kPromptDir/{system,first,round,retry,test}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
 //   kDocDir/resources-{tag,proc}/           研报库: 标注 + tag_stat.md / 全文 (agent/Docs.hpp, 只读)
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kDocDir = "../../../../output/doc";

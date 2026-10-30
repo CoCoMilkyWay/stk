@@ -6,6 +6,7 @@
 //   模板 = kPromptDir/<名>.md (agent/Config.hpp), {{键}} 占位; 模板里出现未给的键 → assert (模板与代码脱节立刻暴露)
 //     system  静态前缀 (一段对话内逐字节不变): 作用域 / 语法与口径 / 入库门槛 / 做法 (先看后改, 一段会话精修一个因子) / 调用协议 / 工具表 / 特征叶 / 算子表
 //     first   首条 user: 已试候选与正式库的规模 (用 list_tried / list_library 看) + 能否提问 + 开工
+//     test    自检会话的首条 (代替 first): 把每个工具都调一遍, 对照说明查结果, 问题记 note_issue, 末了总评再 finish
 //     round   每条回复的调用结果, 按调用序 (调用一行 + 结果)
 //     retry   回复不合协议: 原因 + 按协议重发
 //   回复的解析 / 工具表见 agent/Tools.hpp; 观察工具的成文见 agent/Views.hpp
@@ -25,12 +26,13 @@ namespace agent {
 enum class Msg : uint8_t { System,
                            First,
                            Round,
-                           Retry };
+                           Retry,
+                           Test };
 // 消息表 (下标 = Msg): id = 模板名 = 流水里的 kind; cn = 界面名
 struct MsgDef {
   const char *id, *cn;
 };
-inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"retry", "重发"}};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"retry", "重发"}, {"test", "自检"}};
 inline constexpr int kMsgCount = static_cast<int>(std::size(kMsgs));
 inline const MsgDef &def(Msg m) { return kMsgs[static_cast<int>(m)]; }
 struct Message {
@@ -58,6 +60,7 @@ std::string AnswerText(const Asked &a);                            // ask_human:
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask);
 Message FirstMessage(const Context &c, int tried, bool ask); // tried = 可见的已试候选数
+Message TestMessage(bool ask);
 Message RoundMessage(const std::vector<Act> &acts);          // 一条回复的全部调用, 按序
 Message RetryMessage(const std::string &err);
 
