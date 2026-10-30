@@ -42,23 +42,23 @@ inline constexpr int kRetryIntervalSeconds = 30; // 不限次数, 直到成功�
 inline constexpr int kCancelTimeoutSeconds = 5;  // 取消后通知远端停 run (Cursor) 的每步限时: 取消 / 退出时唯一不看取消旗的请求
 
 // ---- 挖掘 ----
-inline constexpr int kMaxCalls = 12;   // 一条回复的工具调用数上限 (agent/Tools.hpp)
-inline constexpr int kBatch = 3;       // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
-inline constexpr int kHypEvals = 3;    // 一个假设至多挂几个落了文件的变体 (提示词 {{hyp_evals}})
-inline constexpr int kHypKnobs = 1;    // 其中至多几个是旋钮类改动 (换平滑 / 换压缩 / 换口径; 只在 base 达门槛时可用; 提示词 {{hyp_knobs}})
-inline constexpr int kMaxOps = 10;     // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
+inline constexpr int kMaxCalls = 12;       // 一条回复的工具调用数上限 (agent/Tools.hpp)
+inline constexpr int kBatch = 3;           // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
+inline constexpr int kHypEvals = 3;        // 一个假设至多挂几个落了文件的变体 (提示词 {{hyp_evals}})
+inline constexpr int kHypKnobs = 1;        // 其中至多几个是旋钮类改动 (换平滑 / 换压缩 / 换口径; 只在 base 达门槛时可用; 提示词 {{hyp_knobs}})
+inline constexpr int kMaxOps = 10;         // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
 inline constexpr int kParts = kMaxOps - 1; // eval_factor 的功能块至多几个: 要说明的块各是根之外的一个算子节点, 装得下算子数上限的式子
-inline constexpr int kPartChars = 30;  // 一个功能块的说明至多几字, 不计空格标点 (提示词 {{part_chars}})
-inline constexpr int kEvidence = 6;    // judge 的证据至多引用几个调用
-inline constexpr int kGoodOps = 5;     // 建议的算子数 (提示词 {{good_ops}})
-inline constexpr int kListTop = 80;    // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
-inline constexpr int kNotesTop = 40;   // list_notes 一次至多列几条 (新到旧)
-inline constexpr int kOutChars = 6000; // 一个调用的结果交给 agent 的字数上限 (超了截断并说明; 提示词 {{out_chars}})
-inline constexpr int kStockDays = 60;  // view_stock_days 一次至多看几日
-inline constexpr int kStockRows = 40;  // view_stock_day 逐行时段一次至多几行 (逐行表要装进 kOutChars)
-inline constexpr int kBookMins = 30;   // view_book 一次重放的窗口至多几分钟 (交易时段内)
-inline constexpr int kBookRows = 30;   // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
-inline constexpr int kKeepRounds = 3;  // 会话历史里原样留着的最近 user 消息 kKeepRounds..2·kKeepRounds 条; 攒满即把更早的结果消息成批换成折叠版 (只智谱: 本地留历史; 提示词 {{history}})
+inline constexpr int kPartChars = 30;      // 一个功能块的说明至多几字, 不计空格标点 (提示词 {{part_chars}})
+inline constexpr int kEvidence = 6;        // judge 的证据至多引用几个调用
+inline constexpr int kGoodOps = 5;         // 建议的算子数 (提示词 {{good_ops}})
+inline constexpr int kListTop = 80;        // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
+inline constexpr int kNotesTop = 40;       // list_notes 一次至多列几条 (新到旧)
+inline constexpr int kOutChars = 6000;     // 一个调用的结果交给 agent 的字数上限 (超了截断并说明; 提示词 {{out_chars}})
+inline constexpr int kStockDays = 60;      // view_stock_days 一次至多看几日
+inline constexpr int kStockRows = 40;      // view_stock_day 逐行时段一次至多几行 (逐行表要装进 kOutChars)
+inline constexpr int kBookMins = 30;       // view_book 一次重放的窗口至多几分钟 (交易时段内)
+inline constexpr int kBookRows = 30;       // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
+inline constexpr int kKeepRounds = 3;      // 会话历史里原样留着的最近 user 消息 kKeepRounds..2·kKeepRounds 条; 攒满即把更早的结果消息成批换成折叠版 (只智谱: 本地留历史; 提示词 {{history}})
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
 inline constexpr double kGateMono = 0.95; // 分层单调性

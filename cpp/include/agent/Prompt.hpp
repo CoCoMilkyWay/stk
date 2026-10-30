@@ -57,7 +57,7 @@ std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每
 // ---- 工具结果 (当场 / 回测 / 问答; 观察的在 agent/Views) ----
 // 列表跳过可见的前 skip 个, 列 top 个; 没列完的末尾给总数与接着看的 skip
 std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g); // list_tried: 每个另标是否达入库门槛
-std::string LibraryText(const std::vector<Result> &lib, int skip, int top);              // list_library: 只列本持有期有统计的, 其余报个数
+std::string LibraryText(const std::vector<Result> &lib, int skip, int top);                // list_library: 只列本持有期有统计的, 其余报个数
 // eval_factor: 名 + 模板 + 改动 + 结局 + 是否达入库门槛 (+ rep = 代表点的观察摘要, agent/Views RepText) (+ 最佳权重的 20 组 / 参数曲面)
 std::string TrialText(const Trial &k, const Gate &g, const std::string &rep = "");
 std::string AnswerText(const Asked &a); // ask_human: 每题的选择 (没照推荐的附上推荐) + 附言
@@ -70,7 +70,7 @@ Message FirstMessage(const Context &c, int tried, const std::string &notes, bool
 Message TestMessage(bool ask);
 // 一条回复的全部调用, 按序 (标题带调用编号 R<round>#<序>) + 假设板 + 下一步; evaled = 这条回复有落了文件的回测 (下一条不能回测); test = 自检会话
 Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test);
-Message RetryMessage(const std::string &err);
+Message RetryMessage(const std::string &error);
 // round 的折叠版 (会话历史里换掉原文): 观察 / 查询只留标题, 回测留一行结局, 其余 (提交 / 问答 / 判定 / 没做成的原因) 原样
 std::string FoldedText(const std::vector<Act> &acts, int round);
 

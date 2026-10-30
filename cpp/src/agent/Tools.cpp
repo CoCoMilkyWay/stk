@@ -172,102 +172,102 @@ constexpr ArgDef kAskArgs[] = {{"questions", Arg::Questions, nullptr, 1, 8, null
                                 "问题数组, 每题 {\"prompt\": 题干, \"options\": [2..5 个字符串], \"multiple\": 可多选 (缺省 false), \"recommended\": [推荐的选项下标]}"}};
 
 constexpr ToolDef kTools[] = {
-    {Tool::ViewFeature, "view_feature", "看特征", Run::Look, kFeatureArgs,
+    {Tool::ViewFeature, "view_feature", "看特征", Run::Look, Cat::Look, Fold::Title, kFeatureArgs,
      "看特征长什么样: 池内分布 (分位) / 日内轮廓 (各行截面中位数) / 方差来自哪 (资产间 · 日间 · 日内) / 持续性 (同一资产的自相关) / 与本持有期收益的截面 rIC; "
      "给多个时附两两截面相关. 造新特征前先看原料, 造完看它是否如你所想",
      "每个式子一节统计 (带火花线; 写错的式子在它那节给原因, 其余照算) + 多个时的相关矩阵"},
-    {Tool::ViewLayers, "view_layers", "看分层", Run::Look, kLayersArgs,
+    {Tool::ViewLayers, "view_layers", "看分层", Run::Look, Cat::Look, Fold::Title, kLayersArgs,
      "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 两端组内再截最极端的 50% / 20% / 5% 看尾部 (越极端越强 = 信号集中在极值, "
      "可加强截面根的区分度; 尾部反而回落 = 极值多是事件 / 数据噪声); 切开看分层在哪些时段 / 月份成立、哪些失效; 给 cond 再按条件三等分看各段的分层",
      "全期 20 组 + 尾部表 (各截取宽度两端的每期超额 / 只数 / 多空) + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组) + 给 cond 时条件三段各一行; "
      "切分或给 cond 时全期部分照给, 不必另调一次不切的"},
-    {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, kTradesArgs,
+    {Tool::ViewTrades, "view_trades", "看交割单", Run::Look, Cat::Look, Fold::Title, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
      "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列若干段的明细 (代码与日期可接 view_stock_day). 汇总与两张表看收益从哪类情形来、亏在哪类情形; "
      "明细只用来挑票对着盘面看机制, 尾部个例 (worst / best) 多是个股事件或数据缺失, 不代表信号",
      "汇总 + 时段表 + 标签表 + 明细表; 给 from / to / tod 只看该日段 / 时段 (看收益集中在哪段行情、开盘还是尾盘)"},
-    {Tool::ViewHolders, "view_holders", "看常客", Run::Look, kHoldersArgs,
+    {Tool::ViewHolders, "view_holders", "看常客", Run::Look, Cat::Look, Fold::Title, kHoldersArgs,
      "看哪些资产最常落在因子一端: 本端行数 / 占其在池行的比例 / 涉及天数 / 平均连续行数 / 本端持仓平均超额, 附集中度. 用来看因子是否只在少数票上起作用、在挑哪类票",
      "集中度一行 + 资产表"},
-    {Tool::ViewResponse, "view_response", "看响应", Run::Look, kResponseArgs,
+    {Tool::ViewResponse, "view_response", "看响应", Run::Look, Cat::Look, Fold::Title, kResponseArgs,
      "看因子一端开仓前后全池平均的价格路径 (事件研究, 与分层回测同一份持仓): 以真持有段的开仓行为零点, 开仓前若干时点到开仓的累计超额 (因子是不是过去价格的影子: 反转 / 动量) "
      "与开仓后到若干时点的累计超额 (收益何时到、多快衰减、持有期是否合适), 各时点的因子分位 (信号能持续多久), 附开仓行因子分位与此前收益的截面相关; 可按开仓时段切开",
      "说明两行 + 时点表 (段数 / 累计超额 ± 按日聚类标准误 / 为正占比 / 因子分位) + 与此前收益的相关一行 + 切分时的时段表"},
-    {Tool::ViewExplain, "view_explain", "看成分", Run::Look, kExplainArgs,
+    {Tool::ViewExplain, "view_explain", "看成分", Run::Look, Cat::Look, Fold::Title, kExplainArgs,
      "看因子是不是已知量的影子: 内置基准 (日内层: 近 5 / 30 行收益、当日至今收益、前 1 / 5 日收益、当日至今成交额、当日至今振幅、日内位置、价格; 日层: 当日 / 5 日 / 20 日收益、成交额、振幅、价格) "
      "加你给的特征式, 每个给与因子的截面秩相关、它自身的 rIC、只剥掉它之后因子剩下的 rIC; 再把全部基准一起剥掉 (每行截面回归取残差), 给剩余部分与原因子的 rIC / mono / 多空 对照. "
      "新方向起步、每次显著改进后都看一次: 剥掉之后还剩下的才是新信息, 被哪个基准吃掉就说明它是谁的影子",
      "基准表 (与因子的相关 / 基准自身 rIC / 只剥它后的因子 rIC) + 全剥离对照 (原因子与剩余部分的 rIC · mono · 多空 · 20 组火花线)"},
-    {Tool::ViewSnapshot, "view_snapshot", "看截面快照", Run::Look, kSnapshotArgs,
+    {Tool::ViewSnapshot, "view_snapshot", "看截面快照", Run::Look, Cat::Look, Fold::Title, kSnapshotArgs,
      "看某一天某一行的截面: 因子分位最高 / 最低的各 n 只 (分位 · 组 · 是否真持有 · 当日涨跌 · 本行涨跌 · 日内位置 · 当日至此成交额 · 后续超额 · 盘面标签 · 特征值), 中间夹一行池中位作对照, "
      "附各列与因子分位的截面秩相关. 用来看同一时刻两端各是什么样的票 (同涨同跌的一批? 刚异动的? 小票?), 与 view_trades 的明细互补: 那里是一只票的一段, 这里是一个时刻的全池",
      "本行概况 + 截面秩相关一行 + 两端表 (中夹池中位)"},
-    {Tool::ViewStockDay, "view_stock_day", "看个股一天", Run::Look, kStockDayArgs,
+    {Tool::ViewStockDay, "view_stock_day", "看个股一天", Run::Look, Cat::Look, Fold::Title, kStockDayArgs,
      "看一只股票一天的逐行走势: 价 / 量 / 因子分位 / 特征的火花线, 加分段表 (竞价段 + 每段约 30 分钟: 涨跌 / 段内高低 / 量占比 / 因子分位 / 后续持有期超额 / 特征段末值). "
      "给 rows 另附该时段逐行表 (价 / 涨跌 / 高低 / 量额 / 因子分位与组 / 后续超额 / 特征值), 对着分钟看机制里说的那个行为是否真的发生. 用来对照盘面现象与因子何时高、何时低",
      "当日概况 + 火花线 + 分段表 (+ 逐行表)"},
-    {Tool::ViewStockDays, "view_stock_days", "看个股多日", Run::Look, kStockDaysArgs,
+    {Tool::ViewStockDays, "view_stock_days", "看个股多日", Run::Look, Cat::Look, Fold::Title, kStockDaysArgs,
      "看一只股票连续多日 (至多 {stock_days} 日) 的日级概况: 每日一行 (涨跌 / 振幅 / 成交额 / 在池 / 因子日均与收盘分位 / 两端行数 / 收盘开仓的后续超额 / 特征收盘值), 附日级火花线",
      "火花线 + 逐日表"},
-    {Tool::ViewBook, "view_book", "看盘口重放", Run::Look, kBookArgs,
+    {Tool::ViewBook, "view_book", "看盘口重放", Run::Book, Cat::Look, Fold::Title, kBookArgs,
      "逐笔重放一只股票一天里的一段 (至多 {book_mins} 分钟; 不经特征库, 任何有逐笔数据的日子都能看): 逐时表 (每行 step 秒: 末买一卖一 / 价差 / 末价 / 主动买卖额 / 新挂与撤单额 (分买卖侧) / 前五档挂单额, "
      "竞价段另有预撮合参考价与未匹配额), 大单事件 (≥ 门槛的新挂 / 撤单 / 被吃完, 带距盘口几档与挂了多久; 一个主动单连吃多个价位的扫单), 某一秒的全簿剖面 (盘口两侧各若干价位的挂单额). "
      "用来亲眼看特征叶背后的行为: 大单是挂在盘口还是远处、挂多久撤、被谁吃; 撤单是不是集中在价格变动之前; 主动扫单之后盘口怎么补; 竞价里谁在挂撤. "
      "挑 view_trades / view_snapshot 里的票与时刻来看",
      "当日与窗口概况 + 逐时表 + 大单事件 (计数 + 明细) + 全簿剖面"},
-    {Tool::SearchLeaves, "search_leaves", "查特征叶", Run::Now, kLeavesArgs,
+    {Tool::SearchLeaves, "search_leaves", "查特征叶", Run::Now, Cat::Query, Fold::Title, kLeavesArgs,
      "查特征叶的公式与说明 (系统提示的特征表只列族卡、叶名与中文名): 用一个叶之前先查清它怎么算、什么单位、在哪个时点可见、落盘值是不是原量. "
      "只差计量 (额 / 量 / 笔) 或阈值 / 窗口的同组叶合成一行, 公式与说明按组内首个写. 这里列出过的组, 组内的叶才能写进 eval_factor 的式子 (本会话内有效; 观察工具不限)",
      "命中的叶数与组数 + 组行 (叶 (同组写成花括号式) / 中文名 / 公式 / 说明 / 落盘值); 零命中时给各词单独的命中数"},
-    {Tool::SearchDocs, "search_docs", "查研报", Run::Docs, kDocsArgs,
+    {Tool::SearchDocs, "search_docs", "查研报", Run::Docs, Cat::Query, Fold::Title, kDocsArgs,
      "查研报库 (券商金工研报的标注与全文): 先给命中研报的分面 —— 阶段 → 流派树 (篇数) / 机构 / 年份 / 价值 (我们对研报的判断: high 可直接复用 / medium 有参考 / low 有水分), "
      "再列研报. 不带条件 = 全库版图; 从上往下逐层加条件 (阶段 → 流派 → 关键词) 收窄到感兴趣的几篇, 再用 read_doc 读",
      "分面 + 研报行 (id / 价值 / 主阶段 / 流派 / 因子数 / 首条结论; 全文检索另给命中数与片段)"},
-    {Tool::SearchFactors, "search_factors", "查研报因子", Run::Docs, kFactorsArgs,
+    {Tool::SearchFactors, "search_factors", "查研报因子", Run::Docs, Cat::Query, Fold::Title, kFactorsArgs,
      "查研报里提出过的因子: 先给命中因子的分面 (类别 / 出处流派 / 数据周期 × 预测期), 再列因子 (名 / 类别 / 方向 / 数据周期 → 预测期 / 原文统计 / LaTeX 公式). "
      "造新特征或换思路前先查别人怎么定义同类东西、背后讲的什么机制. 统计是原文在其自己股票池与预测期 (多为月度) 上的数, 只用来理解机制, 与本会话的回测不可比",
      "分面 + 因子行 (出处研报 id 可接 read_doc)"},
-    {Tool::ReadDoc, "read_doc", "读研报", Run::Docs, kReadArgs,
+    {Tool::ReadDoc, "read_doc", "读研报", Run::Docs, Cat::Query, Fold::Title, kReadArgs,
      "读一篇研报: card 是标注卡 (各阶段的流派与设定 / 结论 / 库内前作与被引 / 因子与公式; 因子多读不完时末尾给接着读的 from), 先看它判断值不值得细读; 要细节看 outline (节号 · 标题 · 字数) 挑节, "
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
-    {Tool::Hypothesize, "hypothesize", "提假设", Run::Now, kHypArgs,
+    {Tool::Hypothesize, "hypothesize", "提假设", Run::Now, Cat::Hyp, Fold::Keep, kHypArgs,
      "写下一个机制假设与它可证伪的预测, 记上假设板 (编号 H1, H2 …, 待检验). 之后用观察检验它, 再 judge; 只有判为支持的假设才能挂 eval_factor 的变体 (每个至多 {hyp_evals} 个). "
      "观察到新现象、上一个假设落空或变体用完、想换方向时提新的",
      "编号"},
-    {Tool::Judge, "judge", "判假设", Run::Now, kJudgeArgs,
+    {Tool::Judge, "judge", "判假设", Run::Now, Cat::Hyp, Fold::Keep, kJudgeArgs,
      "对照假设的 expect / refute 给它下判定, 证据写调用编号. 两个时点: 检验它的观察做完后 (判为支持才能挂变体); 它的变体回测完的下一条回复 (系统强制: 待判的不判, 整条退回). "
      "判支持须引用观察: 同一条回复里把观察排在 judge 前面, 就能引用它们. "
      "每次都写清测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么",
      "判定后的假设板一行; 证据不成 (编号不存在 / 在提出之前 / 没做成 / 判支持却没有观察 / 再判没有新证据) 写原因, 不改判定"},
-    {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, kEvalArgs,
+    {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, Cat::Trial, Fold::Brief, kEvalArgs,
      "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体; "
      "须挂在判为支持的假设上 (每个至多 {hyp_evals} 个, 有变体回测过还没判的先 judge), 写明相对哪个 base 改了哪一处、功能块各衡量什么; 上一条回复有落了文件的回测时本条不能回测. "
      "与已有候选同式 (含只换截面根) 的不落, 用了本会话没经 search_leaves 查过的叶的不落; 同一条回复里先 search_leaves 再回测用它列出的叶也行",
      "改动归类 (相对 base) + 结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (只写自由参数的取值) + 是否达入库门槛 "
      "(+ 最佳权重的 20 组); 有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
-    {Tool::ListTried, "list_tried", "列已试", Run::Now, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
+    {Tool::ListTried, "list_tried", "列已试", Run::Now, Cat::Query, Fold::Title, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
      "每个候选: 模板 + 结局 (权重只写自由参数的取值) + 是否达入库门槛; 没列完时末尾给总数与接着看的 skip"},
-    {Tool::ListLibrary, "list_library", "列正式库", Run::Now, kTopArgs,
+    {Tool::ListLibrary, "list_library", "列正式库", Run::Now, Cat::Query, Fold::Title, kTopArgs,
      "列正式因子库里同一评估期且算子不超上限、在本持有期有统计的因子, 按 score 降序; 可作起点接着做",
      "每个因子: 模板 + 思路 + 最佳权重; 本持有期无统计的只报个数; 没列完时末尾给总数与接着看的 skip"},
-    {Tool::ListNotes, "list_notes", "查全局记录", Run::Now, kNotesArgs,
+    {Tool::ListNotes, "list_notes", "查全局记录", Run::Now, Cat::Query, Fold::Title, kNotesArgs,
      "查历次会话 (各作用域) 留下的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提",
      "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 各字段)"},
-    {Tool::SubmitFactor, "submit_factor", "提交入库", Run::Now, kNameArgs, "把一个已评候选提交入库 (至少一个权重过入库门槛才入); 一般只在最后交最好的版本",
+    {Tool::SubmitFactor, "submit_factor", "提交入库", Run::Now, Cat::Trial, Fold::Keep, kNameArgs, "把一个已评候选提交入库 (至少一个权重过入库门槛才入); 一般只在最后交最好的版本",
      "入库 / 未入库的原因"},
-    {Tool::RequestFeature, "request_feature", "申请特征", Run::Now, kFeatureReqArgs,
+    {Tool::RequestFeature, "request_feature", "申请特征", Run::Now, Cat::Note, Fold::Keep, kFeatureReqArgs,
      "申请一个新特征叶: 要表达的行为在现有叶里做不出来 (读过族卡、search_leaves 查清之后). 全局记录, 研究员会看, 不阻塞; 本会话照常用现有的叶接着做",
      "编号"},
-    {Tool::RequestTool, "request_tool", "申请工具", Run::Now, kToolReqArgs,
+    {Tool::RequestTool, "request_tool", "申请工具", Run::Now, Cat::Note, Fold::Keep, kToolReqArgs,
      "申请一个新工具或给现有工具加功能: 验证假设要看的东西现有工具看不到. 全局记录, 研究员会看, 不阻塞", "编号"},
-    {Tool::NoteInsight, "note_insight", "记发现", Run::Now, kInsightArgs,
+    {Tool::NoteInsight, "note_insight", "记发现", Run::Now, Cat::Note, Fold::Keep, kInsightArgs,
      "记下一条被观察 / 回测证实或证伪的规律 (市场微观结构、某类叶或算子的脾性、哪条路走不通), 对别的因子与后续会话也有用的才记. 全局记录, 后续会话的 agent 经 list_notes 看得到",
      "编号"},
-    {Tool::ReportIssue, "report_issue", "报问题", Run::Now, kIssueArgs,
+    {Tool::ReportIssue, "report_issue", "报问题", Run::Now, Cat::Note, Fold::Keep, kIssueArgs,
      "报工具的 bug、对规则或系统的建议、想问研究员的疑问. 全局记录, 研究员会看, 不阻塞", "编号"},
-    {Tool::Finish, "finish", "结束", Run::Now, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行后会话结束", "—"},
-    {Tool::AskHuman, "ask_human", "问研究员", Run::Human, kAskArgs,
+    {Tool::Finish, "finish", "结束", Run::Now, Cat::Misc, Fold::Keep, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行后会话结束", "—"},
+    {Tool::AskHuman, "ask_human", "问研究员", Run::Human, Cat::Misc, Fold::Keep, kAskArgs,
      "向研究员提问 (每题带推荐), 等他选答; 整个会话只有一次机会. 只问研究员才能定的事 (从哪个因子起步、往哪个方向挖); 系统提示已定的不问也不确认. "
      "研究员每题都能选 \"其他\" 自己写, 还能附言, 所以选项不必穷举, 不要列 \"其他\" / \"由你决定\" 之类的兜底项",
      "每题的选择 (没照推荐的附上推荐) + 附言"},
@@ -288,10 +288,10 @@ const ToolDef *find(std::string_view name) {
 
 // ---- 回复解析 ----
 // 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块); 同一对象里键重复也不收 (解析器会静默丢掉一个)
-bool object_of(std::string_view text, json &j, std::string &err) {
+bool object_of(std::string_view text, json &j, std::string &error) {
   const size_t a = text.find('{'), b = text.rfind('}');
   if (a == std::string_view::npos || b == std::string_view::npos || b < a) {
-    err = "回复里没有 JSON 对象";
+    error = "回复里没有 JSON 对象";
     return false;
   }
   // 在开的各层容器: 数组记在第几项, 对象记在哪个键与已见的键; 键重复时按它们拼出所在对象的路径
@@ -328,11 +328,11 @@ bool object_of(std::string_view text, json &j, std::string &err) {
   };
   j = json::parse(text.substr(a, b - a + 1), seen, false);
   if (j.is_discarded() || !j.is_object()) {
-    err = "回复不是合法的 JSON 对象";
+    error = "回复不是合法的 JSON 对象";
     return false;
   }
   if (!dup.empty()) {
-    err = (where.empty() ? "顶层对象" : where) + " 里键 \"" + dup + "\" 出现了两次 (常见于把两个调用写进一个 {...}: 每个调用单独一个 {\"tool\": ..., \"args\": {...}}, 之间用逗号隔开)";
+    error = (where.empty() ? "顶层对象" : where) + " 里键 \"" + dup + "\" 出现了两次 (常见于把两个调用写进一个 {...}: 每个调用单独一个 {\"tool\": ..., \"args\": {...}}, 之间用逗号隔开)";
     return false;
   }
   return true;
@@ -340,10 +340,10 @@ bool object_of(std::string_view text, json &j, std::string &err) {
 
 std::string at(const std::string &k, size_t i) { return k + "[" + std::to_string(i) + "]"; }
 
-// 一个参数值按参数表查; 不合 → false + err
-bool check(const ArgDef &a, const json &v, const std::string &path, std::string &err) {
+// 一个参数值按参数表查; 不合 → false + error
+bool check(const ArgDef &a, const json &v, const std::string &path, std::string &error) {
   const auto fail = [&](std::string why) {
-    err = path + " " + std::move(why);
+    error = path + " " + std::move(why);
     return false;
   };
   switch (a.type) {
@@ -390,7 +390,7 @@ bool check(const ArgDef &a, const json &v, const std::string &path, std::string 
       else if (const size_t n = text::solid(x["means"].get<std::string>()); n == 0 || n > static_cast<size_t>(kPartChars))
         why = ".means 须是 1.." + std::to_string(kPartChars) + " 字的短句 (不计空格标点; 收到 " + std::to_string(n) + " 字)";
       if (!why.empty()) {
-        err = at(path, i) + why;
+        error = at(path, i) + why;
         return false;
       }
     }
@@ -399,32 +399,32 @@ bool check(const ArgDef &a, const json &v, const std::string &path, std::string 
   return true;
 }
 
-// ask_human 的问题数组 (形已由 check 查过) → Questions; 不合 → false + err
-bool questions_of(const json &v, const std::string &path, Questions &out, std::string &err) {
+// ask_human 的问题数组 (形已由 check 查过) → Questions; 不合 → false + error
+bool questions_of(const json &v, const std::string &path, Questions &out, std::string &error) {
   out.clear();
   for (size_t i = 0; i < v.size(); ++i) {
     const std::string p = at(path, i);
     const json &q = v[i];
     if (!q.is_object()) {
-      err = p + " 须是 JSON 对象";
+      error = p + " 须是 JSON 对象";
       return false;
     }
     Question x;
     if (!q.contains("prompt") || !q["prompt"].is_string() || q["prompt"].get<std::string>().empty()) {
-      err = p + ".prompt 须是非空字符串";
+      error = p + ".prompt 须是非空字符串";
       return false;
     }
     x.prompt = q["prompt"].get<std::string>();
     if (!q.contains("options") || !q["options"].is_array() || q["options"].size() < 2 || q["options"].size() > 5 ||
         !std::all_of(q["options"].begin(), q["options"].end(), [](const json &o) { return o.is_string() && !o.get<std::string>().empty(); })) {
-      err = p + ".options 须是 2..5 个非空字符串的数组 (每项一句话写完这个决定, 不是对象)";
+      error = p + ".options 须是 2..5 个非空字符串的数组 (每项一句话写完这个决定, 不是对象)";
       return false;
     }
     for (const json &o : q["options"])
       x.options.push_back(o.get<std::string>());
     if (q.contains("multiple")) {
       if (!q["multiple"].is_boolean()) {
-        err = p + ".multiple 须是布尔";
+        error = p + ".multiple 须是布尔";
         return false;
       }
       x.multiple = q["multiple"].get<bool>();
@@ -442,7 +442,7 @@ bool questions_of(const json &v, const std::string &path, Questions &out, std::s
       }
     }
     if (!ok) {
-      err = p + ".recommended 须是选项下标数组 (从 0 起, 不重复; 单选恰 1 个, 多选至少 1 个)";
+      error = p + ".recommended 须是选项下标数组 (从 0 起, 不重复; 单选恰 1 个, 多选至少 1 个)";
       return false;
     }
     out.push_back(std::move(x));
@@ -525,18 +525,18 @@ std::string Call::text(size_t cap) const {
   return s + ")";
 }
 
-bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &err) {
-  out.clear(), err.clear();
+bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error) {
+  out.clear(), error.clear();
   json j;
-  if (!object_of(reply, j, err))
+  if (!object_of(reply, j, error))
     return false;
   if (!j.contains("calls") || !j["calls"].is_array()) {
-    err = "缺数组 calls (每次回复 = 一串工具调用)";
+    error = "缺数组 calls (每次回复 = 一串工具调用)";
     return false;
   }
   const json &cs = j["calls"];
   if (cs.empty() || cs.size() > static_cast<size_t>(kMaxCalls)) {
-    err = "calls 须有 1.." + std::to_string(kMaxCalls) + " 个调用 (收到 " + std::to_string(cs.size()) + " 个; 多的留到下一条)";
+    error = "calls 须有 1.." + std::to_string(kMaxCalls) + " 个调用 (收到 " + std::to_string(cs.size()) + " 个; 多的留到下一条)";
     return false;
   }
   int evals = 0;
@@ -544,28 +544,28 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
     const std::string p = at("calls", i);
     const json &c = cs[i];
     if (!c.is_object() || !c.contains("tool") || !c["tool"].is_string()) {
-      err = p + " 须是 {\"tool\": 工具名, \"args\": {...}}";
+      error = p + " 须是 {\"tool\": 工具名, \"args\": {...}}";
       return false;
     }
     const std::string name = c["tool"].get<std::string>();
     const ToolDef *d = find(name);
     if (!d || (d->id == Tool::AskHuman && !ask)) {
-      err = p + ".tool: " + (d ? "ask_human 本会话不可用 (研究员没开提问, 或已问过一次; 一条回复也只能有一个)" : "没有工具 " + name);
+      error = p + ".tool: " + (d ? "ask_human 本会话不可用 (研究员没开提问, 或已问过一次; 一条回复也只能有一个)" : "没有工具 " + name);
       return false;
     }
     if (d->id == Tool::AskHuman)
       ask = false;
     if (d->id == Tool::Finish && i + 1 != cs.size()) {
-      err = p + ": finish 须是最后一个调用";
+      error = p + ": finish 须是最后一个调用";
       return false;
     }
     if (d->id == Tool::EvalFactor && ++evals > kBatch) {
-      err = p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)";
+      error = p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)";
       return false;
     }
     const json args = c.contains("args") ? c["args"] : json::object();
     if (!args.is_object()) {
-      err = p + ".args 须是 JSON 对象";
+      error = p + ".args 须是 JSON 对象";
       return false;
     }
     for (const auto &[k, v] : args.items())
@@ -573,7 +573,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
         std::string keys;
         for (const ArgDef &a : d->args)
           keys += (keys.empty() ? "" : " / ") + std::string(a.key);
-        err = p + ".args." + k + ": " + name + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")";
+        error = p + ".args." + k + ": " + name + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")";
         return false;
       }
     Call call{d->id, json::object()};
@@ -581,16 +581,16 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
       const std::string ap = p + ".args." + a.key;
       if (!args.contains(a.key)) {
         if (!a.def) {
-          err = "缺参数 " + ap;
+          error = "缺参数 " + ap;
           return false;
         }
         call.args[a.key] = json::parse(a.def);
         continue;
       }
-      if (!check(a, args[a.key], ap, err))
+      if (!check(a, args[a.key], ap, error))
         return false;
       Questions qs;
-      if (a.type == Arg::Questions && !questions_of(args[a.key], ap, qs, err))
+      if (a.type == Arg::Questions && !questions_of(args[a.key], ap, qs, error))
         return false;
       call.args[a.key] = args[a.key];
     }
@@ -625,8 +625,8 @@ Asked::Asked(Questions q) : qs(std::move(q)) {
 Questions QuestionsOf(const Call &c) {
   assert(c.tool == Tool::AskHuman);
   Questions qs;
-  std::string err;
-  [[maybe_unused]] const bool ok = questions_of(c.args.at("questions"), "questions", qs, err);
+  std::string error;
+  [[maybe_unused]] const bool ok = questions_of(c.args.at("questions"), "questions", qs, error);
   assert(ok && "解析时已校验");
   return qs;
 }

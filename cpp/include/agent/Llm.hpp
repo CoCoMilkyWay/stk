@@ -85,7 +85,7 @@ inline const EndDef &def(End e) { return kEnds[static_cast<int>(e)]; }
 struct Reply {
   std::string text, thinking;
   End end = End::Error;
-  std::string why; // 非 Ok 的原因: Cut = 平台原话 (Zhipu finish_reason / Cursor 终态); Error = HTTP 非 2xx / 代理拒绝 / 流异常收尾 / 流里的错误 / POST 发出后断网
+  std::string error; // 非 Ok 的原因: Cut = 平台原话 (Zhipu finish_reason / Cursor 终态); Error = HTTP 非 2xx / 代理拒绝 / 流异常收尾 / 流里的错误 / POST 发出后断网
   Usage usage;
   std::string id; // 对账: Zhipu 响应 id / Cursor run id
   double seconds = 0.0;
@@ -103,7 +103,7 @@ public:
   explicit Session(Options o); // 该后端的 key 为空 → assert
 
   // 发一条 user 消息, 阻塞到整轮收齐. cancel 置位 → 1 秒内断流, End::Cancelled (Zhipu: 本轮不进上下文;
-  // Cursor: 已拿到 run id 则远端 run 一并取消, 建 run 的 POST 途中取消则远端那轮不管). 失败不抛, End::Error + why (stderr 另打响应体)
+  // Cursor: 已拿到 run id 则远端 run 一并取消, 建 run 的 POST 途中取消则远端那轮不管). 失败不抛, End::Error + error (stderr 另打响应体)
   Reply send(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel);
   // 第 turn 轮 (从 0 起, 只数收齐的) 的 user 换成 text, 下一轮起照它重发; 只 BackendDef::local 的后端
   void fold(size_t turn, std::string text);

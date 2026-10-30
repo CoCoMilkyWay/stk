@@ -11,7 +11,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iterator>
 #include <map>
 #include <sstream>
@@ -30,6 +29,7 @@ using text::chars;
 using text::fmt;
 using text::fwd;
 using text::head;
+using text::lower;
 
 constexpr size_t kBrief = 90;     // 研报行的结论 / 因子行的公式 截到几字
 constexpr size_t kEvidence = 120; // 标注卡里因子摘录截到几字
@@ -52,12 +52,6 @@ std::string flat(std::string_view s) { // 空白压成单个空格
   }
   return o;
 }
-std::string lower(std::string s) { // 只动 ASCII, 字节长不变
-  for (char &ch : s)
-    if (ch >= 'A' && ch <= 'Z')
-      ch = static_cast<char>(ch - 'A' + 'a');
-  return s;
-}
 std::string join(const std::vector<std::string> &v, std::string_view sep) {
   std::string s;
   for (size_t i = 0; i < v.size(); ++i)
@@ -73,14 +67,6 @@ std::string slurp(const fs::path &p) {
   return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
-// 检索词: 空白隔开, 小写; 每个都出现才算命中
-std::vector<std::string> words_of(const std::string &q) {
-  std::istringstream in(lower(q));
-  std::vector<std::string> ws;
-  for (std::string w; in >> w;)
-    ws.push_back(w);
-  return ws;
-}
 // 各词都出现 → 出现次数之和; 否则 0
 int count_in(const std::string &hay, const std::vector<std::string> &ws) {
   int total = 0;
@@ -392,28 +378,14 @@ std::string conditions(const Call &c) {
   return t.size() - a > 2 ? t.substr(a) : "(全库)";
 }
 
-// 逐条的检索条件: 写法 + 第 i 项是否满足 (query 每个词一条)
-using Conds = std::vector<std::pair<std::string, std::function<bool(size_t)>>>;
-bool pass_all(const Conds &cs, size_t i) {
-  return std::all_of(cs.begin(), cs.end(), [&](const auto &x) { return x.second(i); });
-}
-// 零命中时各条件单独的命中数 (共 n 项)
-std::string alone(const Conds &cs, size_t n) {
-  std::string o;
-  for (const auto &[name, pass] : cs) {
-    size_t k = 0;
-    for (size_t i = 0; i < n; ++i)
-      k += pass(i);
-    o += (o.empty() ? "" : " · ") + name + " " + std::to_string(k);
-  }
-  return "各条件单独命中: " + o + "\n去掉命中少的条件或换个词再查\n";
-}
+// 零命中: 各条件单独的命中数 (共 n 项)
+std::string alone(const text::Filter &f, size_t n) { return "各条件单独命中: " + f.alone(n) + "\n去掉命中少的条件或换个词再查\n"; }
 
 // ---- 三个工具 ----
 bool search_docs(const Call &c, std::string &out) {
   const Lib &L = lib();
   const std::string scope = c.str("scope"), stage = c.str("stage"), ap = c.str("approach"), asset = c.str("asset"), freq = c.str("freq"), genre = c.str("genre");
-  const std::vector<std::string> ws = words_of(c.str("query"));
+  const std::vector<std::string> ws = text::words(c.str("query"));
   const bool text = scope == "text";
   if (!ap.empty() && !L.stage_of.count(ap)) {
     out = "没有流派 " + ap + " (写流派 code, 见不带 approach 时分面里的 阶段 → 流派)";
@@ -424,27 +396,26 @@ bool search_docs(const Call &c, std::string &out) {
     return false;
   }
   const auto hay = [&](size_t i) -> const std::string & { return text ? texts()[i].low : L.docs[i].hay; };
-  Conds cs;
+  text::Filter f;
   if (!stage.empty())
-    cs.push_back({"stage=" + stage, [&](size_t i) { return has(L.docs[i].stages, stage); }});
+    f.add("stage=" + stage, [&](size_t i) { return has(L.docs[i].stages, stage); });
   if (!ap.empty())
-    cs.push_back({"approach=" + ap, [&](size_t i) { return has(L.docs[i].approaches, ap); }});
+    f.add("approach=" + ap, [&](size_t i) { return has(L.docs[i].approaches, ap); });
   if (!asset.empty())
-    cs.push_back({"asset=" + asset, [&](size_t i) { return has(L.docs[i].asset, asset); }});
+    f.add("asset=" + asset, [&](size_t i) { return has(L.docs[i].asset, asset); });
   if (!freq.empty())
-    cs.push_back({"freq=" + freq, [&](size_t i) { return has(L.docs[i].freqs, freq); }});
+    f.add("freq=" + freq, [&](size_t i) { return has(L.docs[i].freqs, freq); });
   if (!genre.empty())
-    cs.push_back({"genre=" + genre, [&](size_t i) { return L.docs[i].genre == genre; }});
-  for (const std::string &w : ws)
-    cs.push_back({"query 词 " + w, [&, w](size_t i) { return hay(i).find(w) != std::string::npos; }});
+    f.add("genre=" + genre, [&](size_t i) { return L.docs[i].genre == genre; });
+  f.add(ws, "query 词 ", hay);
   std::vector<size_t> hit;
   std::vector<int> hits(L.docs.size(), 0);
   for (size_t i = 0; i < L.docs.size(); ++i)
-    if (pass_all(cs, i))
+    if (f(i))
       hits[i] = ws.empty() ? 1 : count_in(hay(i), ws), hit.push_back(i);
   out = "命中 " + std::to_string(hit.size()) + " 篇 " + conditions(c) + "\n";
   if (hit.empty()) {
-    out += alone(cs, L.docs.size());
+    out += alone(f, L.docs.size());
     return true;
   }
   Count broker, year, value;
@@ -479,28 +450,27 @@ bool search_docs(const Call &c, std::string &out) {
 bool search_factors(const Call &c, std::string &out) {
   const Lib &L = lib();
   const std::string family = c.str("family"), period = c.str("period"), horizon = c.str("horizon"), ap = c.str("approach"), asset = c.str("asset"), sort = c.str("sort");
-  const std::vector<std::string> ws = words_of(c.str("query"));
+  const std::vector<std::string> ws = text::words(c.str("query"));
   if (!ap.empty() && (!L.stage_of.count(ap) || L.stage_of.at(ap) != "L1_factor")) {
     out = "没有因子构造流派 " + ap + " (因子只出自 L1_factor 的流派, code 见 search_docs 分面里 L1_factor 那行)";
     return false;
   }
   const auto doc = [&](size_t i) -> const Doc & { return L.docs[L.factors[i].doc]; };
-  Conds cs;
+  text::Filter f;
   if (!family.empty())
-    cs.push_back({"family=" + family, [&](size_t i) { return L.factors[i].family == family; }});
+    f.add("family=" + family, [&](size_t i) { return L.factors[i].family == family; });
   if (!period.empty())
-    cs.push_back({"period=" + period, [&](size_t i) { return has(L.factors[i].period, period); }});
+    f.add("period=" + period, [&](size_t i) { return has(L.factors[i].period, period); });
   if (!horizon.empty())
-    cs.push_back({"horizon=" + horizon, [&](size_t i) { return L.factors[i].horizon == horizon; }});
+    f.add("horizon=" + horizon, [&](size_t i) { return L.factors[i].horizon == horizon; });
   if (!ap.empty())
-    cs.push_back({"approach=" + ap, [&](size_t i) { return has(doc(i).l1, ap); }});
+    f.add("approach=" + ap, [&](size_t i) { return has(doc(i).l1, ap); });
   if (!asset.empty())
-    cs.push_back({"asset=" + asset, [&](size_t i) { return has(doc(i).asset, asset); }});
-  for (const std::string &w : ws)
-    cs.push_back({"query 词 " + w, [&, w](size_t i) { return L.factors[i].hay.find(w) != std::string::npos; }});
+    f.add("asset=" + asset, [&](size_t i) { return has(doc(i).asset, asset); });
+  f.add(ws, "query 词 ", [&](size_t i) -> const std::string & { return L.factors[i].hay; });
   std::vector<size_t> hit;
   for (size_t i = 0; i < L.factors.size(); ++i)
-    if (pass_all(cs, i))
+    if (f(i))
       hit.push_back(i);
   Count docs, family_n, ap_n;
   for (const size_t i : hit) {
@@ -511,7 +481,7 @@ bool search_factors(const Call &c, std::string &out) {
   }
   out = "命中 " + std::to_string(hit.size()) + " 个因子 (出自 " + std::to_string(docs.size()) + " 篇) " + conditions(c) + "\n";
   if (hit.empty()) {
-    out += alone(cs, L.factors.size());
+    out += alone(f, L.factors.size());
     return true;
   }
   out += "\n### 类别\n" + ranked(family_n, SIZE_MAX) + "\n\n### 出处流派\n" + ranked(ap_n, kTop) + "\n\n### 数据周期 × 预测期 (因子数)\n" + matrix(L, hit);
@@ -541,7 +511,7 @@ bool search_factors(const Call &c, std::string &out) {
 }
 
 // 研报 id 或能唯一对上的一段
-const Doc *doc_of(const Lib &L, const std::string &id, std::string &err) {
+const Doc *doc_of(const Lib &L, const std::string &id, std::string &error) {
   if (const auto it = L.by_id.find(id); it != L.by_id.end())
     return &L.docs[it->second];
   std::vector<size_t> m;
@@ -551,11 +521,11 @@ const Doc *doc_of(const Lib &L, const std::string &id, std::string &err) {
   if (m.size() == 1)
     return &L.docs[m[0]];
   if (m.empty()) {
-    err = "没有研报 " + id + " (id 照检索结果写)";
+    error = "没有研报 " + id + " (id 照检索结果写)";
   } else {
-    err = id + " 对上 " + std::to_string(m.size()) + " 篇, 写全 id:\n";
+    error = id + " 对上 " + std::to_string(m.size()) + " 篇, 写全 id:\n";
     for (size_t k = 0; k < m.size() && k < 8; ++k)
-      err += "- `" + L.docs[m[k]].id + "`\n";
+      error += "- `" + L.docs[m[k]].id + "`\n";
   }
   return nullptr;
 }

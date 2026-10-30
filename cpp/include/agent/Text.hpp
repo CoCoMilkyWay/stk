@@ -1,15 +1,19 @@
 #pragma once
 
 // =============================================================================
-// Text — agent 成文的公共件: 字 (UTF-8 码点) / 数的写法 / 火花线
+// Text — agent 成文的公共件: 字 (UTF-8 码点) / 检索词 / 时刻 / 数的写法 / 火花线
 // =============================================================================
 //   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界; 短句上限 (功能块说明) 按 solid
+//   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 条件全中才命中, 零命中报各条件单独的命中数
 // =============================================================================
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,7 +28,9 @@ inline size_t solid(std::string_view s) {
   size_t n = 0;
   for (size_t i = 0; i < s.size();) {
     const unsigned char c = static_cast<unsigned char>(s[i]);
-    const size_t len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    const size_t len = c < 0x80 ? 1 : c < 0xE0 ? 2
+                                  : c < 0xF0   ? 3
+                                               : 4;
     uint32_t u = len == 1 ? c : c & (0x3Fu >> (len - 1));
     for (size_t k = 1; k < len && i + k < s.size(); ++k)
       u = u << 6 | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
@@ -53,13 +59,74 @@ inline std::string head(std::string_view s, size_t n) {
   return std::string(s.substr(0, e)) + (e < s.size() ? "…" : "");
 }
 
+// ---- 检索 ----
+inline std::string lower(std::string s) { // 只动 ASCII, 字节长不变
+  for (char &ch : s)
+    if (ch >= 'A' && ch <= 'Z')
+      ch = static_cast<char>(ch - 'A' + 'a');
+  return s;
+}
+// 检索词: 空白隔开, 小写
+inline std::vector<std::string> words(std::string_view q) {
+  std::vector<std::string> ws;
+  for (size_t a = q.find_first_not_of(" \t\r\n"); a != std::string_view::npos;) {
+    const size_t b = std::min(q.find_first_of(" \t\r\n", a), q.size());
+    ws.push_back(lower(std::string(q.substr(a, b - a))));
+    a = q.find_first_not_of(" \t\r\n", b);
+  }
+  return ws;
+}
+// 具名条件的合取: 第 i 项满足全部条件才命中
+struct Filter {
+  struct Cond {
+    std::string name; // 写法 (零命中时报)
+    std::function<bool(size_t)> pass;
+  };
+  std::vector<Cond> conds;
+  void add(std::string name, std::function<bool(size_t)> pass) { conds.push_back({std::move(name), std::move(pass)}); }
+  // hay(i) (已小写) 含词 w, 一词一条
+  template <class Hay>
+  void add(const std::vector<std::string> &ws, const std::string &prefix, Hay hay) {
+    for (const std::string &w : ws)
+      add(prefix + w, [hay, w](size_t i) { return std::string_view(hay(i)).find(w) != std::string_view::npos; });
+  }
+  bool operator()(size_t i) const {
+    return std::all_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.pass(i); });
+  }
+  // 共 n 项时各条件单独的命中数 "名 k · 名 k"
+  std::string alone(size_t n) const {
+    std::string o;
+    for (const Cond &c : conds) {
+      size_t k = 0;
+      for (size_t i = 0; i < n; ++i)
+        k += c.pass(i);
+      o += (o.empty() ? "" : " · ") + c.name + " " + std::to_string(k);
+    }
+    return o;
+  }
+};
+
+// ---- 时刻 ----
+// 本地时刻按 strftime 格式 f; ms 另补 ".毫秒"
+inline std::string local(const char *f, bool ms = false) {
+  const auto t = std::chrono::system_clock::now();
+  const std::time_t s = std::chrono::system_clock::to_time_t(t);
+  std::tm tm{};
+  localtime_r(&s, &tm);
+  char b[64];
+  const size_t n = std::strftime(b, sizeof(b), f, &tm);
+  if (ms)
+    std::snprintf(b + n, sizeof(b) - n, ".%03d", static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch()).count() % 1000));
+  return b;
+}
+
 // ---- 数 ----
 inline std::string fmt(const char *f, double v) {
   char b[64];
   std::snprintf(b, sizeof(b), f, v);
   return b;
 }
-inline std::string num(double v) { return fmt("%.3g", v); } // 门槛 / 统计量
+inline std::string num(double v) { return std::isfinite(v) ? fmt("%.4g", v) : "—"; } // 统计量 / 门槛 / 表格数; 非有限值 —
 
 // ---- 火花线 ----
 inline constexpr size_t kSparkChars = 60; // 一条至多几字 (长序列等宽分箱取均值)

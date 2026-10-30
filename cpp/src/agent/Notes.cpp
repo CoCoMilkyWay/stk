@@ -1,11 +1,10 @@
 // Notes — 见头文件
 #include "agent/Notes.hpp"
 #include "agent/Config.hpp"
+#include "agent/Text.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <cctype>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
@@ -31,34 +30,11 @@ const char *label(std::string_view key) {
 fs::path dir_of(bool test) { return test ? fs::path(kGlobalDir) / "test" : fs::path(kGlobalDir); }
 fs::path file_of(bool test, NoteKind k) { return dir_of(test) / (std::string(def(k).id) + ".jsonl"); }
 
-// 本地时间 "YYYY-MM-DD HH:MM"
-std::string now() {
-  const std::time_t t = std::time(nullptr);
-  char b[32];
-  std::strftime(b, sizeof(b), "%Y-%m-%d %H:%M", std::localtime(&t));
-  return b;
-}
-
-std::string lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-  return s;
-}
-
-std::vector<std::string> words(const std::string &query) {
-  std::vector<std::string> ws;
-  for (size_t a = 0, b; a < query.size(); a = b + 1) {
-    b = std::min(query.find(' ', a), query.size());
-    if (b > a)
-      ws.push_back(lower(query.substr(a, b - a)));
-  }
-  return ws;
-}
-
 bool matches(const Note &x, const std::vector<std::string> &ws) {
   std::string hay;
   for (const auto &[k, v] : x.fields.items())
     hay += v.get<std::string>() + '\n';
-  hay = lower(hay);
+  hay = text::lower(hay);
   return std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; });
 }
 
@@ -143,7 +119,7 @@ const Note &Notes::add(const Call &c, std::string scope, std::string session, in
   std::vector<Note> &v = notes_[static_cast<size_t>(k)];
   Note x{.kind = k,
          .id = def(k).prefix + std::to_string(v.size() + 1),
-         .time = now(),
+         .time = text::local("%Y-%m-%d %H:%M"),
          .scope = std::move(scope),
          .session = std::move(session),
          .ref = c.str("ref"),
@@ -161,7 +137,7 @@ const Note &Notes::add(const Call &c, std::string scope, std::string session, in
 }
 
 std::string NotesText(const Notes &notes, const std::string &kind, const std::string &scope, const std::string &query, int n) {
-  const std::vector<std::string> ws = words(query);
+  const std::vector<std::string> ws = text::words(query);
   // 命中的, 新到旧
   const auto hits = [&](NoteKind k) {
     std::vector<const Note *> h;

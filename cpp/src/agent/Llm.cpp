@@ -37,7 +37,7 @@ using Chunk = std::function<bool(std::string_view)>; // body 增量; false = 停
 
 // 接口失败 (非 2xx / 代理拒绝 / 流异常收尾): 抛到 send / models 顶层, 变成给 UI 的原因
 struct Fail {
-  std::string why;
+  std::string error;
 };
 
 // 请求发出前 (连接 / 代理隧道 / TLS 握手) 的网络错: 服务端没收到请求, 非幂等的 POST 也能重发
@@ -387,7 +387,7 @@ Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
     expect_2xx(target, *r);
     out.list = kModelsOf[static_cast<int>(b)](parse_json(r->body));
   } catch (const Fail &f) {
-    out.error = f.why;
+    out.error = f.error;
   }
   return out;
 }
@@ -404,9 +404,9 @@ Reply Session::send(const std::string &user, const Delta &on_delta, const std::a
   try {
     r = std::visit([&](auto &c) { return send(c, user, on_delta, cancel); }, conv_);
   } catch (const Fail &f) {
-    r = Reply{.end = End::Error, .why = f.why};
+    r = Reply{.end = End::Error, .error = f.error};
   } catch (const boost::system::system_error &e) { // 非幂等 POST 发出后遇网络错 (不重发)
-    r = Reply{.end = End::Error, .why = std::string("网络: ") + e.what()};
+    r = Reply{.end = End::Error, .error = std::string("网络: ") + e.what()};
   }
   r.seconds = std::chrono::duration<double>(Clock::now() - t0).count();
   return r;
@@ -480,7 +480,7 @@ Reply Session::send(Zhipu &c, const std::string &user, const Delta &on_delta, co
     throw Fail{"智谱流结束却没有 finish_reason"};
   r.end = finish == "stop" ? End::Ok : End::Cut;
   if (!r.ok()) {
-    r.why = finish;
+    r.error = finish;
     return r;
   }
   c.msgs.emplace_back("user", user);
@@ -551,14 +551,14 @@ Reply Session::send(Cursor &c, const std::string &user, const Delta &on_delta, c
   }
   expect_2xx("cursor stream", *streamed);
   if (!error.empty()) {
-    r.end = End::Error, r.why = error;
+    r.end = End::Error, r.error = error;
     return r;
   }
   if (status.empty())
     throw Fail{"Cursor 流结束却没有 result"};
   r.end = status == "FINISHED" ? End::Ok : End::Cut;
   if (!r.ok())
-    r.why = status;
+    r.error = status;
   return r;
 }
 

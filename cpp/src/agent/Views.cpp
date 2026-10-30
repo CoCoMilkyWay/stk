@@ -33,7 +33,7 @@ constexpr int kExplainRows = 3000;   // 成分剥离取的行数上限
 
 // ---- 数的写法 ----
 using text::fmt;
-std::string num(double v) { return std::isfinite(v) ? fmt("%.4g", v) : "—"; }
+using text::num;
 std::string bp(double r) { return std::isfinite(r) ? fmt("%+.1f", r * 1e4) : "—"; }
 std::string pct(double x) { return std::isfinite(x) ? fmt("%.0f%%", x * 100.0) : "—"; }
 std::string chg(double x) { return std::isfinite(x) ? fmt("%+.2f%%", x * 100.0) : "—"; }
@@ -175,10 +175,10 @@ bool hm_shape(const std::string &s, size_t at = 0) {
   return s.size() >= at + 5 && s[at + 2] == ':' && std::isdigit(static_cast<unsigned char>(s[at])) && std::isdigit(static_cast<unsigned char>(s[at + 1])) &&
          std::isdigit(static_cast<unsigned char>(s[at + 3])) && std::isdigit(static_cast<unsigned char>(s[at + 4]));
 }
-// 参数 key 的 "HH:MM-HH:MM" → 行末时刻落在其中 (含两端) 的日内行 [k0, k1); 写法不对 / 没有行 / 超过 cap 行 (cap > 0) → false + err
-bool rows_in(const char *key, const std::string &s, const std::vector<std::string> &clock, int cap, int &k0, int &k1, std::string &err) {
+// 参数 key 的 "HH:MM-HH:MM" → 行末时刻落在其中 (含两端) 的日内行 [k0, k1); 写法不对 / 没有行 / 超过 cap 行 (cap > 0) → false + error
+bool rows_in(const char *key, const std::string &s, const std::vector<std::string> &clock, int cap, int &k0, int &k1, std::string &error) {
   if (s.size() != 11 || !hm_shape(s) || s[5] != '-' || !hm_shape(s, 6)) {
-    err = std::string(key) + ": 写成 HH:MM-HH:MM (如 10:00-10:30)";
+    error = std::string(key) + ": 写成 HH:MM-HH:MM (如 10:00-10:30)";
     return false;
   }
   const std::string a = s.substr(0, 5), b = s.substr(6, 5);
@@ -190,11 +190,11 @@ bool rows_in(const char *key, const std::string &s, const std::vector<std::strin
   while (k1 < seg && clock[static_cast<size_t>(k1)] <= b)
     ++k1;
   if (k1 == k0) {
-    err = std::string(key) + ": " + s + " 里没有行 (本层行末时刻 " + clock.front() + ", " + clock[1] + " … " + clock.back() + ")";
+    error = std::string(key) + ": " + s + " 里没有行 (本层行末时刻 " + clock.front() + ", " + clock[1] + " … " + clock.back() + ")";
     return false;
   }
   if (cap > 0 && k1 - k0 > cap) {
-    err = std::string(key) + ": " + s + " 有 " + std::to_string(k1 - k0) + " 行, 至多 " + std::to_string(cap) + " 行; 收窄时段";
+    error = std::string(key) + ": " + s + " 有 " + std::to_string(k1 - k0) + " 行, 至多 " + std::to_string(cap) + " 行; 收窄时段";
     return false;
   }
   return true;
@@ -228,30 +228,34 @@ struct Px {
 };
 
 // ---- 交割单的标签 (开仓那行的盘面) ----
-namespace tag {
-enum : uint8_t { Open,
-                 Last,
-                 NearUp,
-                 NearDn,
-                 Up,
-                 Down,
-                 High,
-                 Low,
-                 Surge,
-                 N };
-}
-constexpr const char *kTagNames[tag::N] = {"竞价段 (09:15–09:30 的行)",
-                                           "尾盘最后一段",
-                                           "近涨停 (收 ≥ 涨停价 × 0.995)",
-                                           "近跌停 (收 ≤ 跌停价 × 1.005)",
-                                           "当日涨 > 5%",
-                                           "当日跌 > 5%",
-                                           "日内高位 (当日高低区间 ≥ 0.8)",
-                                           "日内低位 (≤ 0.2)",
-                                           "放量 (≥ 当日此前有成交行均量 3 倍)"};
+enum class Tag : uint8_t { Open,
+                           Last,
+                           NearUp,
+                           NearDn,
+                           Up,
+                           Down,
+                           High,
+                           Low,
+                           Surge };
+// 标签表 (下标 = Tag): cn = 标签表的行名 / brief = 明细里的简称
+struct TagDef {
+  const char *cn, *brief;
+};
+constexpr TagDef kTags[] = {{"竞价段 (09:15–09:30 的行)", "竞价"},
+                            {"尾盘最后一段", "尾盘"},
+                            {"近涨停 (收 ≥ 涨停价 × 0.995)", "近涨停"},
+                            {"近跌停 (收 ≤ 跌停价 × 1.005)", "近跌停"},
+                            {"当日涨 > 5%", "大涨"},
+                            {"当日跌 > 5%", "大跌"},
+                            {"日内高位 (当日高低区间 ≥ 0.8)", "高位"},
+                            {"日内低位 (≤ 0.2)", "低位"},
+                            {"放量 (≥ 当日此前有成交行均量 3 倍)", "放量"}};
+constexpr int kTagCount = static_cast<int>(std::size(kTags));
+static_assert(kTagCount == static_cast<int>(Tag::Surge) + 1);
 struct Mark {
   uint32_t m = 0;
   double chg = kNaN, pos = kNaN; // 开仓那行收盘时: 当日涨跌 / 收在当日至此高低区间的位置
+  void set(Tag t) { m |= 1u << static_cast<int>(t); }
 };
 Mark mark_of(const Px &px, int t, int a) {
   const int seg = px.L.seg, k = t % seg, t0 = t - k;
@@ -259,19 +263,19 @@ Mark mark_of(const Px &px, int t, int a) {
   const double c = px(Bar::Close, t, a);
   r.chg = c / px.pre(t, a) - 1.0;
   if (r.chg > 0.05)
-    r.m |= 1u << tag::Up;
+    r.set(Tag::Up);
   if (r.chg < -0.05)
-    r.m |= 1u << tag::Down;
+    r.set(Tag::Down);
   if (seg == 1)
     return r;
   if (k < px.L.open)
-    r.m |= 1u << tag::Open;
+    r.set(Tag::Open);
   if (k >= seg - part_rows(px.L))
-    r.m |= 1u << tag::Last;
+    r.set(Tag::Last);
   if (c >= px(Bar::LimUp, t, a) * 0.995)
-    r.m |= 1u << tag::NearUp;
+    r.set(Tag::NearUp);
   if (c <= px(Bar::LimDn, t, a) * 1.005)
-    r.m |= 1u << tag::NearDn;
+    r.set(Tag::NearDn);
   double hi = -INFINITY, lo = INFINITY, vs = 0.0;
   int vn = 0;
   for (int u = t0; u <= t; ++u) {
@@ -283,20 +287,19 @@ Mark mark_of(const Px &px, int t, int a) {
   if (hi > lo && std::isfinite(c)) {
     r.pos = (c - lo) / (hi - lo);
     if (r.pos >= 0.8)
-      r.m |= 1u << tag::High;
+      r.set(Tag::High);
     if (r.pos <= 0.2)
-      r.m |= 1u << tag::Low;
+      r.set(Tag::Low);
   }
   if (vn >= 3 && vs > 0.0 && px(Bar::Volume, t, a) >= 3.0 * vs / vn)
-    r.m |= 1u << tag::Surge;
+    r.set(Tag::Surge);
   return r;
 }
 std::string tags_of(uint32_t m) {
-  static constexpr const char *kShort[tag::N] = {"竞价", "尾盘", "近涨停", "近跌停", "大涨", "大跌", "高位", "低位", "放量"};
   std::string s;
-  for (int j = 0; j < tag::N; ++j)
+  for (int j = 0; j < kTagCount; ++j)
     if (m >> j & 1u)
-      s += (s.empty() ? "" : " ") + std::string(kShort[j]);
+      s += (s.empty() ? "" : " ") + std::string(kTags[j].brief);
   return s;
 }
 
@@ -362,7 +365,7 @@ const LookRoot *root_of(const Look &L, std::string &out) {
 }
 
 // ---- view_feature ----
-std::string feature_view(const Call &c, const Look &L) {
+bool feature_view(const Call &c, const Look &L, const Context &, std::string &out) {
   const std::vector<std::string> xs = c.strs("exprs");
   assert(xs.size() == L.feats.size());
   const int A = L.A(), T = L.T(), seg = L.seg, D = static_cast<int>(L.dates.size());
@@ -535,7 +538,8 @@ std::string feature_view(const Call &c, const Look &L) {
       s += "\n";
     }
   }
-  return s;
+  out = std::move(s);
+  return true;
 }
 
 // ---- view_layers ----
@@ -547,7 +551,7 @@ std::string layers_row(const std::string &name, const Layer &b) {
 // 条件三等分: 每行把 在池 ∧ 因子 / 标签 / 条件有效 的格按条件值截面三等分, 段内按因子分位近似分层 (抽行)
 std::string cond_view(const std::string &cond, const LookRoot &r, const Look &L) {
   std::string s = "\n## 按条件三等分: `" + cond + "`\n";
-  assert(L.feats.size() == 1 && "LookOf 只为 cond 取一个特征式");
+  assert(L.feats.size() == 1 && "Spec 只为 cond 取一个特征式");
   const LookFeat &f = L.feats.front();
   if (!f.error.empty())
     return s + "条件没算成: " + f.error + "\n";
@@ -592,7 +596,7 @@ std::string cond_view(const std::string &cond, const LookRoot &r, const Look &L)
   return s;
 }
 
-bool layers_view(const Call &c, const Look &L, std::string &out) {
+bool layers_view(const Call &c, const Look &L, const Context &, std::string &out) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -670,7 +674,7 @@ struct Trade {
   double ex;        // 各行超额的均值
 };
 
-bool trades_view(const Call &c, const Look &L, std::string &out) {
+bool trades_view(const Call &c, const Look &L, const Context &, std::string &out) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -682,9 +686,9 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
   const int ymd0 = from.empty() ? 0 : ymd_of(from), ymd1 = to.empty() ? 99999999 : ymd_of(to);
   int k0 = 0, k1 = seg;
   if (!tod.empty()) {
-    std::string err;
-    [[maybe_unused]] const bool ok = rows_in("tod", tod, L.clock, 0, k0, k1, err);
-    assert(ok && "LookOf 已查过");
+    std::string error;
+    [[maybe_unused]] const bool ok = rows_in("tod", tod, L.clock, 0, k0, k1, error);
+    assert(ok && "Spec 已查过");
   }
   const auto in_win = [&](int t) {
     const int ymd = L.dates[static_cast<size_t>(t / seg)], k = t % seg;
@@ -771,11 +775,11 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
   }
 
   // 标签: 本端真持有格 (等距抽样) vs 池内格 (随机抽样, 固定种子), 同在格上数, 提升与合并方式无关; 段超额按段开仓那行分
-  std::array<size_t, tag::N> held{}, base{};
+  std::array<size_t, kTagCount> held{}, base{};
   size_t nh = 0, nb = 0;
   for (size_t i = 0, st = std::max<size_t>(1, cs.size() / kBase); i < cs.size(); i += st, ++nh) {
     const Mark m = mark_of(px, cs[i].t, cs[i].a);
-    for (int j = 0; j < tag::N; ++j)
+    for (int j = 0; j < kTagCount; ++j)
       held[static_cast<size_t>(j)] += m.m >> j & 1u;
   }
   {
@@ -787,19 +791,19 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
         continue;
       const Mark m = mark_of(px, static_cast<int>(k / A), static_cast<int>(k % A));
       ++nb;
-      for (int j = 0; j < tag::N; ++j)
+      for (int j = 0; j < kTagCount; ++j)
         base[static_cast<size_t>(j)] += m.m >> j & 1u;
     }
   }
   s += "\n| 开仓那行的盘面 | 本端格占比 | 池内格占比 | 提升 | 开仓带此标签的段超额 bp | 不带的 bp |\n|---|---|---|---|---|---|\n";
-  for (int j = 0; j < tag::N; ++j) {
+  for (int j = 0; j < kTagCount; ++j) {
     Mean with, without;
     for (size_t i = 0; i < M; ++i)
       (mk[i].m >> j & 1u ? with : without).add(ex[i]);
     const double fs = static_cast<double>(held[static_cast<size_t>(j)]) / nh, fb = nb ? static_cast<double>(base[static_cast<size_t>(j)]) / nb : kNaN;
     if (fs < 0.01 && !(fb >= 0.01))
       continue;
-    s += "| " + std::string(kTagNames[j]) + " | " + pct(fs) + " | " + pct(fb) + " | " + (fb > 0.0 ? fmt("%.2f", fs / fb) : "—") + " | " + bp(with.mean()) + " | " +
+    s += "| " + std::string(kTags[j].cn) + " | " + pct(fs) + " | " + pct(fb) + " | " + (fb > 0.0 ? fmt("%.2f", fs / fb) : "—") + " | " + bp(with.mean()) + " | " +
          bp(without.mean()) + " |\n";
   }
 
@@ -823,7 +827,7 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
 }
 
 // ---- view_holders ----
-bool holders_view(const Call &c, const Look &L, std::string &out) {
+bool holders_view(const Call &c, const Look &L, const Context &, std::string &out) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -945,7 +949,7 @@ std::vector<Pt> points_of(int seg) {
   return p;
 }
 
-bool response_view(const Call &c, const Look &L, std::string &out) {
+bool response_view(const Call &c, const Look &L, const Context &, std::string &out) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -1097,7 +1101,7 @@ std::vector<double> resid_of(const std::vector<std::vector<double>> &X, const st
   return res;
 }
 
-bool explain_view(const Call &c, const Look &L, std::string &out) {
+bool explain_view(const Call &c, const Look &L, const Context &, std::string &out) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -1255,7 +1259,7 @@ int day_of(const Look &L, const std::string &arg, std::string &out) {
   return static_cast<int>(it - L.dates.begin());
 }
 
-bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &out) {
+bool stock_day_view(const Call &c, const Look &L, const Context &ctx, std::string &out) {
   assert(L.A() == 1 && L.seg > 1);
   const int d = day_of(L, c.str("date"), out);
   if (d < 0)
@@ -1332,9 +1336,9 @@ bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &ou
 
   if (const std::string w = c.str("rows"); !w.empty()) {
     int k0 = 0, k1 = 0;
-    std::string err;
-    [[maybe_unused]] const bool ok = rows_in("rows", w, L.clock, kStockRows, k0, k1, err);
-    assert(ok && "LookOf 已查过");
+    std::string error;
+    [[maybe_unused]] const bool ok = rows_in("rows", w, L.clock, kStockRows, k0, k1, error);
+    assert(ok && "Spec 已查过");
     const auto whole = [](double x) { return std::isfinite(x) ? fmt("%.0f", x) : std::string("—"); };
     s += "\n逐行 " + w + " (涨跌 = 对上一行收盘; 当日 = 对昨收; 额 万元):\n| 时刻 | 收 | 涨跌 | 当日 | 量 | 额 |" + std::string(o.f ? " 因子分位 | 组 |" : "") + " 后续超额 bp |";
     for (size_t i = 0; i < o.xs.size(); ++i)
@@ -1360,7 +1364,7 @@ bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &ou
   return true;
 }
 
-bool stock_days(const Call &c, const Look &L, const Context &ctx, std::string &out) {
+bool stock_days_view(const Call &c, const Look &L, const Context &ctx, std::string &out) {
   assert(L.A() == 1);
   const int D = static_cast<int>(L.dates.size());
   const int d1 = c.str("to").empty() ? D - 1 : day_of(L, c.str("to"), out);
@@ -1449,7 +1453,7 @@ bool snapshot_view(const Call &c, const Look &L, const Context &ctx, std::string
   if (d < 0)
     return false;
   const int seg = L.seg, A = L.A(), k = row_at(L.clock, c.str("time")), t = d * seg + k, t0 = d * seg;
-  assert(k >= 0 && "LookOf 已查过");
+  assert(k >= 0 && "Spec 已查过");
   const Px px(L);
   const std::vector<std::string> xs = c.strs("exprs");
   assert(xs.size() == L.feats.size());
@@ -1553,7 +1557,6 @@ constexpr int kOpenCall = 9 * 3600 + 25 * 60, kCloseCall = 14 * 3600 + 57 * 60; 
 constexpr size_t kProfile = 8;                                                                           // 剖面每侧几个价位
 constexpr int kBarCells = 12;                                                                            // 剖面条形图的满格
 constexpr int kSteps[] = {1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600};                                // 自动 step 的候选
-constexpr const char *kKindCn[] = {"新挂", "撤单", "被吃完", "扫单"};                                    // 下标 = BookKind
 
 bool in_session(int c) { return (c >= kAm0 && c < kAm1) || (c >= kPm0 && c < kPm1); }
 // "HH:MM" / "HH:MM:SS" → 钟面秒; 不成 → −1
@@ -1584,124 +1587,169 @@ std::string w4(double yuan) { // 元 → 万元
 }
 std::string px2(double p) { return p > 0.0 ? fmt("%.2f", p) : "—"; } // 无 (0 / NaN) → —
 
-} // namespace
-
-bool LookOf(const Call &c, const Lab &lab, LookSpec &out, std::string &err) {
-  const Context &ctx = lab.ctx();
-  out = {};
-  const auto factor = [&](const std::string &arg) {
-    LookFactor f;
-    if (!lab.factor_of(arg, f, err)) {
-      err = "factor: " + err;
-      return false;
-    }
-    out.factors.push_back(std::move(f));
-    return true;
-  };
-  // 各式各自校验: 不成的带着原因不算, 其余照算; 一个也不成 → false (只有 view_feature 当它没做成)
-  const auto feats = [&](const std::vector<std::string> &xs) {
-    bool any = false;
-    for (size_t i = 0; i < xs.size(); ++i) {
-      LookExpr x;
-      if (lab.feature_of(xs[i], x.root, x.error))
-        any = true;
-      else
-        err += (err.empty() ? "" : "; ") + ("exprs[" + str(i) + "]: " + x.error);
-      out.feats.push_back(std::move(x));
-    }
-    return any;
-  };
-  const auto date = [&](const char *k) {
-    if (const std::string v = c.str(k); !v.empty() && !ymd_of(v)) {
-      err = std::string(k) + ": 日期写成 YYYY-MM-DD";
-      return false;
-    }
-    return true;
-  };
-  switch (c.tool) {
-  case Tool::ViewFeature:
-    return feats(c.strs("exprs"));
-  case Tool::ViewLayers:
-    if (const std::string k = c.str("cond"); !k.empty()) {
-      LookExpr x;
-      if (!lab.feature_of(k, x.root, x.error)) {
-        err = "cond: " + x.error;
-        return false;
-      }
-      out.feats.push_back(std::move(x));
-    }
-    return factor(c.str("factor"));
-  case Tool::ViewHolders:
-    return factor(c.str("factor"));
-  case Tool::ViewTrades:
-    if (!date("from") || !date("to"))
-      return false;
-    if (const std::string w = c.str("tod"); !w.empty()) {
-      if (ctx.seg == 1) {
-        err = "tod: 日层每天只有一行, 没有日内时段可选";
-        return false;
-      }
-      if (int k0 = 0, k1 = 0; !rows_in("tod", w, ctx.clock, 0, k0, k1, err))
-        return false;
-    }
-    out.kline = true;
-    return factor(c.str("factor"));
-  case Tool::ViewResponse:
-    out.kline = true;
-    return factor(c.str("factor"));
-  case Tool::ViewSnapshot:
-    if (!date("date"))
-      return false;
-    if (ctx.seg > 1 && (c.str("time").empty() || row_at(ctx.clock, c.str("time")) < 0)) {
-      err = "time: 写成本层某一行的行末时刻 HH:MM (本层 " + ctx.clock.front() + ", " + ctx.clock[1] + " … " + ctx.clock.back() + ")";
-      return false;
-    }
-    out.kline = true;
-    if (!factor(c.str("factor")))
-      return false;
-    feats(c.strs("exprs"));
-    err.clear();
-    return true;
-  case Tool::ViewExplain:
-    out.kline = true;
-    if (!factor(c.str("factor")))
-      return false;
-    feats(c.strs("exprs"));
-    err.clear();
-    return true;
-  case Tool::ViewStockDay:
-  case Tool::ViewStockDays:
-    if (c.tool == Tool::ViewStockDay && ctx.seg == 1) {
-      err = "日层每天只有一行, 看个股用 view_stock_days";
-      return false;
-    }
-    if (!lab.code_of(c.str("code"), out.code, err)) {
-      err = "code: " + err;
-      return false;
-    }
-    if (c.tool == Tool::ViewStockDay ? !date("date") : !date("from") || !date("to"))
-      return false;
-    if (int k0 = 0, k1 = 0; c.tool == Tool::ViewStockDay && !c.str("rows").empty() && !rows_in("rows", c.str("rows"), ctx.clock, kStockRows, k0, k1, err))
-      return false;
-    if (const std::string f = c.str("factor"); !f.empty() && !factor(f))
-      return false;
-    out.kline = true;
-    feats(c.strs("exprs"));
-    err.clear();
-    return true;
-  default:
-    assert(false && "不是观察工具");
+// ---- 取参 (只查写法与 Lab 的三个校验, 不碰数据) ----
+bool factor_ok(const Lab &lab, const std::string &arg, LookSpec &out, std::string &error) {
+  LookFactor f;
+  if (!lab.factor_of(arg, f, error)) {
+    error = "factor: " + error;
     return false;
   }
+  out.factors.push_back(std::move(f));
+  return true;
+}
+// 各式各自校验: 不成的带着原因 (LookExpr::error) 不算, 其余照算; 有一个成 = true
+bool feats_ok(const Lab &lab, const std::vector<std::string> &xs, LookSpec &out) {
+  bool any = false;
+  for (const std::string &x : xs) {
+    LookExpr e;
+    any |= lab.feature_of(x, e.root, e.error);
+    out.feats.push_back(std::move(e));
+  }
+  return any;
+}
+bool date_ok(const Call &c, const char *k, std::string &error) {
+  if (const std::string v = c.str(k); !v.empty() && !ymd_of(v)) {
+    error = std::string(k) + ": 日期写成 YYYY-MM-DD";
+    return false;
+  }
+  return true;
+}
+bool code_ok(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  if (!lab.code_of(c.str("code"), out.code, error)) {
+    error = "code: " + error;
+    return false;
+  }
+  return true;
+}
+
+bool feature_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  if (feats_ok(lab, c.strs("exprs"), out))
+    return true;
+  for (size_t i = 0; i < out.feats.size(); ++i)
+    error += (i ? "; " : "") + ("exprs[" + str(i) + "]: " + out.feats[i].error);
+  return false;
+}
+bool layers_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  if (const std::string k = c.str("cond"); !k.empty()) {
+    LookExpr x;
+    if (!lab.feature_of(k, x.root, x.error)) {
+      error = "cond: " + x.error;
+      return false;
+    }
+    out.feats.push_back(std::move(x));
+  }
+  return factor_ok(lab, c.str("factor"), out, error);
+}
+bool trades_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  const Context &ctx = lab.ctx();
+  if (!date_ok(c, "from", error) || !date_ok(c, "to", error))
+    return false;
+  if (const std::string w = c.str("tod"); !w.empty()) {
+    if (ctx.seg == 1) {
+      error = "tod: 日层每天只有一行, 没有日内时段可选";
+      return false;
+    }
+    if (int k0 = 0, k1 = 0; !rows_in("tod", w, ctx.clock, 0, k0, k1, error))
+      return false;
+  }
+  out.kline = true;
+  return factor_ok(lab, c.str("factor"), out, error);
+}
+bool holders_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) { return factor_ok(lab, c.str("factor"), out, error); }
+bool response_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  out.kline = true;
+  return factor_ok(lab, c.str("factor"), out, error);
+}
+bool explain_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  out.kline = true;
+  if (!factor_ok(lab, c.str("factor"), out, error))
+    return false;
+  feats_ok(lab, c.strs("exprs"), out);
+  return true;
+}
+bool snapshot_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  const Context &ctx = lab.ctx();
+  if (!date_ok(c, "date", error))
+    return false;
+  if (ctx.seg > 1 && (c.str("time").empty() || row_at(ctx.clock, c.str("time")) < 0)) {
+    error = "time: 写成本层某一行的行末时刻 HH:MM (本层 " + ctx.clock.front() + ", " + ctx.clock[1] + " … " + ctx.clock.back() + ")";
+    return false;
+  }
+  out.kline = true;
+  if (!factor_ok(lab, c.str("factor"), out, error))
+    return false;
+  feats_ok(lab, c.strs("exprs"), out);
+  return true;
+}
+// 个股两视图: 码 → 日段 → 因子 (可空) → 特征
+bool stock_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  if (const std::string f = c.str("factor"); !f.empty() && !factor_ok(lab, f, out, error))
+    return false;
+  out.kline = true;
+  feats_ok(lab, c.strs("exprs"), out);
+  return true;
+}
+bool stock_day_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  const Context &ctx = lab.ctx();
+  if (ctx.seg == 1) {
+    error = "日层每天只有一行, 看个股用 view_stock_days";
+    return false;
+  }
+  if (!code_ok(c, lab, out, error) || !date_ok(c, "date", error))
+    return false;
+  if (int k0 = 0, k1 = 0; !c.str("rows").empty() && !rows_in("rows", c.str("rows"), ctx.clock, kStockRows, k0, k1, error))
+    return false;
+  return stock_spec(c, lab, out, error);
+}
+bool stock_days_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  if (!code_ok(c, lab, out, error) || !date_ok(c, "from", error) || !date_ok(c, "to", error))
+    return false;
+  return stock_spec(c, lab, out, error);
+}
+
+// 观察工具表 (下标 = Tool, view_feature .. view_stock_days): 取参 / 成文
+struct ViewDef {
+  Tool id;
+  bool (*spec)(const Call &, const Lab &, LookSpec &, std::string &);
+  bool (*view)(const Call &, const Look &, const Context &, std::string &);
+};
+constexpr ViewDef kViews[] = {
+    {Tool::ViewFeature, feature_spec, feature_view},
+    {Tool::ViewLayers, layers_spec, layers_view},
+    {Tool::ViewTrades, trades_spec, trades_view},
+    {Tool::ViewHolders, holders_spec, holders_view},
+    {Tool::ViewResponse, response_spec, response_view},
+    {Tool::ViewExplain, explain_spec, explain_view},
+    {Tool::ViewSnapshot, snapshot_spec, snapshot_view},
+    {Tool::ViewStockDay, stock_day_spec, stock_day_view},
+    {Tool::ViewStockDays, stock_days_spec, stock_days_view},
+};
+constexpr bool views_in_order() {
+  for (size_t i = 0; i < std::size(kViews); ++i)
+    if (static_cast<size_t>(kViews[i].id) != i)
+      return false;
+  return true;
+}
+static_assert(views_in_order(), "kViews 下标 = Tool");
+const ViewDef &view_of(Tool t) {
+  assert(static_cast<size_t>(t) < std::size(kViews) && def(t).run == Run::Look && "不是观察工具");
+  return kViews[static_cast<size_t>(t)];
+}
+
+} // namespace
+
+bool Spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
+  out = {};
+  return view_of(c.tool).spec(c, lab, out, error);
 }
 
 std::string RepText(const Look &L) {
   if (!L.error.empty())
     return "- 代表点没观察成: " + L.error + "\n";
-  std::string why;
-  const LookRoot *r = root_of(L, why);
+  std::string miss;
+  const LookRoot *r = root_of(L, miss);
   if (!r)
-    return "- 代表点" + why + "\n";
+    return "- 代表点" + miss + "\n";
   Layer all;
   for (const LookRow &w : r->rows)
     all.add(w);
@@ -1727,70 +1775,40 @@ bool Render(const Call &c, const Look &L, const Context &ctx, std::string &out) 
   }
   assert(!L.dates.empty() && L.seg == ctx.seg);
   std::string body;
-  bool ok = true;
-  switch (c.tool) {
-  case Tool::ViewFeature:
-    body = feature_view(c, L);
-    break;
-  case Tool::ViewLayers:
-    ok = layers_view(c, L, body);
-    break;
-  case Tool::ViewTrades:
-    ok = trades_view(c, L, body);
-    break;
-  case Tool::ViewHolders:
-    ok = holders_view(c, L, body);
-    break;
-  case Tool::ViewResponse:
-    ok = response_view(c, L, body);
-    break;
-  case Tool::ViewExplain:
-    ok = explain_view(c, L, body);
-    break;
-  case Tool::ViewStockDay:
-    ok = stock_day(c, L, ctx, body);
-    break;
-  case Tool::ViewStockDays:
-    ok = stock_days(c, L, ctx, body);
-    break;
-  case Tool::ViewSnapshot:
-    ok = snapshot_view(c, L, ctx, body);
-    break;
-  default:
-    assert(false && "不是观察工具");
-  }
+  const bool ok = view_of(c.tool).view(c, L, ctx, body);
   out = ok ? head(L, ctx) + body : body;
   return ok;
 }
 
-bool BookOf(const Call &c, const Lab &lab, BookSpec &out, std::string &err) {
+bool Spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error) {
+  assert(c.tool == Tool::ViewBook);
   out = {};
-  if (!lab.code_of(c.str("code"), out.code, err)) {
-    err = "code: " + err;
+  if (!lab.code_of(c.str("code"), out.code, error)) {
+    error = "code: " + error;
     return false;
   }
   if (out.date = ymd_of(c.str("date")); out.date == 0) {
-    err = "date: 日期写成 YYYY-MM-DD";
+    error = "date: 日期写成 YYYY-MM-DD";
     return false;
   }
   const std::string w = c.str("time");
   const size_t dash = w.find('-');
   const int from = dash == std::string::npos ? -1 : clock_of(w.substr(0, dash)), to = dash == std::string::npos ? -1 : clock_of(w.substr(dash + 1));
   if (from < 0 || to < 0) {
-    err = "time: 写成 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS (如 10:00-10:30)";
+    error = "time: 写成 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS (如 10:00-10:30)";
     return false;
   }
   if (from >= to || !in_session(from) || !in_session(to - 1)) {
-    err = "time: " + w + " 须起 < 止, 两端在 09:15–11:30 / 13:00–15:00 内 (止是开区间, 可写 11:30 / 15:00)";
+    error = "time: " + w + " 须起 < 止, 两端在 09:15–11:30 / 13:00–15:00 内 (止是开区间, 可写 11:30 / 15:00)";
     return false;
   }
   const int n = TradeSec(to - 1) + 1 - TradeSec(from);
   if (n > kBookMins * 60) {
-    err = "time: " + w + " 有 " + std::to_string((n + 59) / 60) + " 分钟交易时间, 至多 " + std::to_string(kBookMins) + " 分钟; 收窄窗口";
+    error = "time: " + w + " 有 " + std::to_string((n + 59) / 60) + " 分钟交易时间, 至多 " + std::to_string(kBookMins) + " 分钟; 收窄窗口";
     return false;
   }
   if (const int st = c.num("step"); st > 0 && (n + st - 1) / st > kBookRows) {
-    err = "step: 窗口 " + std::to_string(n) + " 秒按每行 " + std::to_string(st) + " 秒有 " + std::to_string((n + st - 1) / st) + " 行, 至多 " + std::to_string(kBookRows) +
+    error = "step: 窗口 " + std::to_string(n) + " 秒按每行 " + std::to_string(st) + " 秒有 " + std::to_string((n + st - 1) / st) + " 行, 至多 " + std::to_string(kBookRows) +
           " 行; 加大 step 或给 0 自动";
     return false;
   }
@@ -1798,7 +1816,7 @@ bool BookOf(const Call &c, const Lab &lab, BookSpec &out, std::string &err) {
   if (const std::string a = c.str("at"); !a.empty()) {
     out.at = clock_of(a);
     if (out.at < from || out.at >= to || !in_session(out.at)) {
-      err = "at: 写成窗口内交易时段里的 HH:MM:SS";
+      error = "at: 写成窗口内交易时段里的 HH:MM:SS";
       return false;
     }
   }
@@ -1806,7 +1824,8 @@ bool BookOf(const Call &c, const Lab &lab, BookSpec &out, std::string &err) {
   return true;
 }
 
-bool RenderBook(const Call &c, const Book &b, std::string &out) {
+bool Render(const Call &c, const Book &b, const Context &, std::string &out) {
+  assert(c.tool == Tool::ViewBook);
   const BookSpec &sp = b.spec;
   std::string s = "## " + sp.code + " · " + date_of(sp.date) + " · " + hms(sp.from) + "–" + hms(sp.to) + " 逐笔重放";
   if (!b.error.empty()) {
@@ -1861,8 +1880,8 @@ bool RenderBook(const Call &c, const Book &b, std::string &out) {
   }
 
   // 大单事件: 计数 (分侧) + 额最大的 n 起按时序
-  int cnt[4][2] = {};
-  double amt[4][2] = {}, lv[2] = {};
+  int cnt[kBookKindCount][2] = {};
+  double amt[kBookKindCount][2] = {}, lv[2] = {};
   std::vector<double> life[2];
   for (const BookEvent &e : b.events) {
     const size_t k = static_cast<size_t>(e.kind);
@@ -1873,8 +1892,8 @@ bool RenderBook(const Call &c, const Book &b, std::string &out) {
       life[e.side].push_back(e.life);
   }
   s += "\n大单事件 (窗口内共 " + str(b.events.size()) + " 起; 侧 = 委托所在侧, 扫单 = 主动方; 寿命 = 挂出到撤 / 吃完的交易秒):\n";
-  for (size_t k = 0; k < std::size(kKindCn); ++k) {
-    s += "- " + std::string(kKindCn[k]) + ": 买 " + std::to_string(cnt[k][0]) + " 起 " + w4(amt[k][0]) + " / 卖 " + std::to_string(cnt[k][1]) + " 起 " + w4(amt[k][1]);
+  for (size_t k = 0; k < kBookKindCount; ++k) {
+    s += "- " + std::string(kBookKinds[k].cn) + ": 买 " + std::to_string(cnt[k][0]) + " 起 " + w4(amt[k][0]) + " / 卖 " + std::to_string(cnt[k][1]) + " 起 " + w4(amt[k][1]);
     if (static_cast<BookKind>(k) == BookKind::Sweep && cnt[k][0] + cnt[k][1] > 0)
       s += " · 平均吃 买 " + (cnt[k][0] ? fmt("%.1f", lv[0] / cnt[k][0]) : std::string("—")) + " / 卖 " + (cnt[k][1] ? fmt("%.1f", lv[1] / cnt[k][1]) : std::string("—")) + " 价位";
     if (static_cast<BookKind>(k) == BookKind::Cancel && (!life[0].empty() || !life[1].empty()))
@@ -1898,7 +1917,7 @@ bool RenderBook(const Call &c, const Book &b, std::string &out) {
       const std::string dist = sweep        ? "吃 " + std::to_string(e.levels) + " 价位"
                                : best > 0.f ? fmt("%+.0f", std::round((e.side == 0 ? best - e.price : e.price - best) * 100.0))
                                             : std::string("—");
-      s += "| " + hms(e.clock) + fmt(".%02.0f", e.cs) + " | " + kKindCn[static_cast<size_t>(e.kind)] + " | " + (e.side == 0 ? "买" : "卖") + " | " +
+      s += "| " + hms(e.clock) + fmt(".%02.0f", e.cs) + " | " + def(e.kind).cn + " | " + (e.side == 0 ? "买" : "卖") + " | " +
            (sweep ? px2(e.first) + "→" + px2(e.price) : px2(e.price)) + " | " + dist + " | " + w4(e.amount) + " | " + (e.life >= 0.f ? fmt("%.1f", e.life) : std::string("—")) + " |\n";
     }
   }

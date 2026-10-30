@@ -478,55 +478,11 @@ const Act *acting(const Mine &m) {
 const char *step_name(const Trial &k) { return k.run.began() ? "Run" : "Search"; }
 
 // ---- 工具用量条: 按类拼接, 类内一工具一段 (同色相深浅相间), 段宽 = 次数占比; 类段够宽写类名与占比, 悬浮看各类各工具的次数 ----
-struct ToolCat {
-  const char *cn;
-  ImVec4 col;
-};
-constexpr ToolCat kToolCats[] = {{"启发", {0.35f, 0.78f, 0.45f, 1.0f}},
-                                 {"回测", {0.95f, 0.62f, 0.25f, 1.0f}},
-                                 {"检索", {0.38f, 0.62f, 0.95f, 1.0f}},
-                                 {"记录", {0.72f, 0.52f, 0.92f, 1.0f}},
-                                 {"其他", {0.58f, 0.58f, 0.58f, 1.0f}}};
-constexpr size_t kToolCatCount = std::size(kToolCats);
-
-size_t cat_of(Tool t) {
-  switch (t) {
-  case Tool::ViewFeature:
-  case Tool::ViewLayers:
-  case Tool::ViewTrades:
-  case Tool::ViewHolders:
-  case Tool::ViewResponse:
-  case Tool::ViewExplain:
-  case Tool::ViewSnapshot:
-  case Tool::ViewStockDay:
-  case Tool::ViewStockDays:
-  case Tool::ViewBook:
-  case Tool::Hypothesize:
-  case Tool::Judge:
-    return 0;
-  case Tool::EvalFactor:
-  case Tool::SubmitFactor:
-    return 1;
-  case Tool::SearchLeaves:
-  case Tool::SearchDocs:
-  case Tool::SearchFactors:
-  case Tool::ReadDoc:
-  case Tool::ListTried:
-  case Tool::ListLibrary:
-  case Tool::ListNotes:
-    return 2;
-  case Tool::RequestFeature:
-  case Tool::RequestTool:
-  case Tool::NoteInsight:
-  case Tool::ReportIssue:
-    return 3;
-  case Tool::Finish:
-  case Tool::AskHuman:
-    return 4;
-  }
-  assert(false && "工具没分类");
-  return 4;
-}
+// 类色 (下标 = Cat)
+constexpr ImVec4 kCatCols[] = {{0.35f, 0.78f, 0.45f, 1.0f}, {0.85f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}};
+static_assert(std::size(kCatCols) == kCatCount);
+size_t cat_of(Tool t) { return static_cast<size_t>(def(t).cat); }
+const char *cat_cn(size_t k) { return def(static_cast<Cat>(k)).cn; }
 
 ImU32 shade(ImVec4 c, int i) {
   const float f = 1.0f - 0.2f * static_cast<float>(i % 3);
@@ -546,14 +502,14 @@ void tools_bar(const Mine::Tally &c) {
       ImGui::SetTooltip("还没有调用");
     return;
   }
-  std::array<int, kToolCatCount> per{};
-  for (size_t t = 0; t < kToolCount; ++t)
-    per[cat_of(static_cast<Tool>(t))] += c.calls[t];
+  std::array<int, kCatCount> per{};
+  for (size_t k = 0; k < kCatCount; ++k)
+    per[k] = c.n(static_cast<Cat>(k));
   const float mx = ImGui::GetIO().MousePos.x;
   const auto pct = [&](int n) { return 100.0 * n / all; };
   int hit = -1;
   float x = p0.x;
-  for (size_t k = 0; k < kToolCatCount; ++k) {
+  for (size_t k = 0; k < kCatCount; ++k) {
     if (per[k] == 0)
       continue;
     const float k0 = x;
@@ -562,13 +518,13 @@ void tools_bar(const Mine::Tally &c) {
       if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
         continue;
       const float x1 = x + w * static_cast<float>(c.calls[t]) / static_cast<float>(all);
-      dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x1, p0.y + h), shade(kToolCats[k].col, i++));
+      dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x1, p0.y + h), shade(kCatCols[k], i++));
       if (hovered && mx >= x && mx < x1)
         hit = static_cast<int>(t);
       x = x1;
     }
     char label[32];
-    std::snprintf(label, sizeof(label), "%s %.0f%%", kToolCats[k].cn, pct(per[k]));
+    std::snprintf(label, sizeof(label), "%s %.0f%%", cat_cn(k), pct(per[k]));
     if (const float tw = ImGui::CalcTextSize(label).x; tw + 4.0f <= x - k0)
       dl->AddText(ImVec2((k0 + x - tw) * 0.5f, p0.y), IM_COL32(20, 20, 20, 255), label);
     if (k0 > p0.x)
@@ -578,10 +534,10 @@ void tools_bar(const Mine::Tally &c) {
     return;
   ImGui::BeginTooltip();
   ImGui::Text("本会话调用 %d 次", all);
-  for (size_t k = 0; k < kToolCatCount; ++k) {
+  for (size_t k = 0; k < kCatCount; ++k) {
     if (per[k] == 0)
       continue;
-    ImGui::TextColored(kToolCats[k].col, "%s  %d 次 · %.0f%%", kToolCats[k].cn, per[k], pct(per[k]));
+    ImGui::TextColored(kCatCols[k], "%s  %d 次 · %.0f%%", cat_cn(k), per[k], pct(per[k]));
     ImGui::Indent();
     for (size_t t = 0; t < kToolCount; ++t) {
       if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
@@ -673,7 +629,7 @@ void now_row(State &s, const Mine &m, const Flow &f) {
   }
   ImGui::TextDisabled("用时 %s · LLM %s · 执行 %s · token 输入 %s (缓存 %s) / 输出 %s · %zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 入库 %d", dur(t).c_str(),
                       dur(llm_s).c_str(), dur(act_s).c_str(), kilo(all.usage.prompt).c_str(), kilo(all.usage.cached).c_str(), kilo(all.usage.completion).c_str(),
-                      m.timeline.size(), all.tally.all(), all.tally.n(Run::Look), all.tally.n(Run::Docs), all.tally.staged(), all.tally.adopted);
+                      m.timeline.size(), all.tally.all(), all.tally.n(Cat::Look), all.tally.n(Run::Docs), all.tally.staged(), all.tally.adopted);
   tools_bar(all.tally);
   if (!ll.message.empty())
     wrapped(color(TaskStatus::Kind::Warn), ll.message);
@@ -883,7 +839,7 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
   const bool replied = rd.span.ended();
   if (replied)
     h += " · 回复 " + dur(rd.span.len(m.now()));
-  if (!rd.err.empty()) {
+  if (!rd.error.empty()) {
     kind = TaskStatus::Kind::Error;
     return h + (replied && !rd.reply.ok() ? " · 回复失败" : " · 不合协议");
   }
@@ -891,15 +847,17 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
     return h;
   const Mine::Tally &c = rd.tally;
   h += " · 调用 " + std::to_string(c.all());
-  if (const int n = c.n(Run::Look); n > 0)
+  if (const int n = c.n(Cat::Look); n > 0)
     h += " · 观察 " + std::to_string(n);
   if (const int n = c.n(Run::Docs); n > 0)
     h += " · 查研报 " + std::to_string(n);
-  if (c.n(Tool::EvalFactor) > 0)
-    h += " · 候选 " + std::to_string(c.staged()) + (c.unstaged ? " (未落 " + std::to_string(c.unstaged) + ")" : "") + " · 有权重 " + std::to_string(c.hits);
+  if (c.n(Tool::EvalFactor) > 0) {
+    const int u = c.n(Verdict::Unstaged);
+    h += " · 候选 " + std::to_string(c.staged()) + (u ? " (未落 " + std::to_string(u) + ")" : "") + " · 有权重 " + std::to_string(c.n(Verdict::Weights));
+  }
   if (const int n = c.n(Tool::SubmitFactor); n > 0)
     h += " · 提交 " + std::to_string(n) + " (入库 " + std::to_string(c.adopted) + ")";
-  if (const int n = c.noted(); n > 0)
+  if (const int n = c.n(Cat::Note); n > 0)
     h += " · 记录 " + std::to_string(n);
   if (std::any_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::Finish; }))
     h += " · 宣布挖完";
@@ -962,8 +920,8 @@ bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
     if (r.usage.prompt > 0)
       line += " · token 输入 " + kilo(r.usage.prompt) + " (缓存 " + kilo(r.usage.cached) + ") / 输出 " + kilo(r.usage.completion);
     ImGui::TextColored(color(r.ok() ? TaskStatus::Kind::None : TaskStatus::Kind::Error), "%s", line.c_str());
-    if (!rd.err.empty())
-      wrapped(color(TaskStatus::Kind::Error), rd.err);
+    if (!rd.error.empty())
+      wrapped(color(TaskStatus::Kind::Error), rd.error);
     for (size_t j = 0; j < rd.acts.size(); ++j)
       start |= act_block(m, rd.acts[j], j, last && m.phase() == Phase::Choose && j == m.acting(), s.lab_live);
     fold("text", ImGuiTreeNodeFlags_None, "原文 " + chars(r.text), r.text, false, kBoxLines, false);
@@ -979,7 +937,8 @@ std::string group_head(const Mine &m, size_t g0, size_t g1) {
   for (size_t i = g0; i < g1; ++i)
     c += m.timeline[i].tally;
   return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.all()) + " · 观察 " +
-         std::to_string(c.n(Run::Look)) + " · 查研报 " + std::to_string(c.n(Run::Docs)) + " · 候选 " + std::to_string(c.staged()) + " · 有权重 " + std::to_string(c.hits) + " · 入库 " + std::to_string(c.adopted);
+         std::to_string(c.n(Cat::Look)) + " · 查研报 " + std::to_string(c.n(Run::Docs)) + " · 候选 " + std::to_string(c.staged()) + " · 有权重 " + std::to_string(c.n(Verdict::Weights)) +
+         " · 入库 " + std::to_string(c.adopted);
 }
 
 // 结束汇总: 计数 + 本会话有参数组的候选 (入库的在前, 再按 score 降序; 先列 kSummaryRows 个, 其余折起) + 结束报告
@@ -997,7 +956,7 @@ void summary_block(const Mine &m) {
   });
   ImGui::SeparatorText(("结束 · +" + dur(m.now())).c_str());
   wrapped(color(TaskStatus::Kind::Ready), m.reason);
-  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Run::Look), c.n(Run::Docs), c.staged(), c.hits,
+  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.n(Run::Docs), c.staged(), c.n(Verdict::Weights),
                       c.n(Tool::SubmitFactor), c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];
@@ -1247,7 +1206,6 @@ void ops_panel(State &s, const Context &c) {
 
 // 工具表 = 系统提示 "工具" 节的同一份 (kTools); ask_human 只在可提问的会话里发给 agent
 void tools_panel(State &s) {
-  static constexpr const char *kRunCn[kRunCount] = {"当场", "等人", "回测", "观察", "研报库"};
   s.tool_filter.Draw("过滤##tool", 240);
   ImGui::SameLine();
   ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", Tools().size());
@@ -1263,7 +1221,7 @@ void tools_panel(State &s) {
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(d.cn);
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(kRunCn[static_cast<size_t>(d.run)]);
+    ImGui::TextUnformatted(def(d.run).cn);
     ImGui::TableNextColumn();
     std::string keys, args;
     for (const ArgDef &a : d.args)

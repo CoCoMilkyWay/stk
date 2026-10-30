@@ -6,17 +6,18 @@
 //   agent/ 其余代码不碰项目的因子 / 特征 / 服务头, 只经这里 (实现 Bridge.cpp 是唯一 include 它们的 TU). 两半:
 //     catalog  作用域目录 (无状态): 可挖的 (池, 因子层, 持有期; 持有期限 Search 档) / 就绪判据 / 会话目录
 //     Lab      作用域工作区 (bind 一个作用域): 上下文 ctx (该层可作输入的特征叶 / 算子表 / K 线叶 / 正式因子库在该持有期的统计) + 候选目录 results.
-//              三件事:
-//              eval  候选的一生: Cand ─stage→ 候选目录里的因子文件 (与正式因子同格式) ─eval→ Result ─adopt (过门槛)→ 正式因子目录;
-//                    一次评一个文件: Search (定方向 + 搜自由参数; 具体式只评本身) → Run, 结果写回文件; 评完只重扫它 (results 增量维护);
-//                    无显著而有代表点 → 再观察代表点一次 (给 agent 看它的分层差在哪)
-//              look  观察: 一组因子 (候选英文名 / 具体根式) + 一组特征式 (+ 本层 K 线叶) → 评估期上整期一块的原料 Look (r16 秩 / 行统计 /
-//                    两端持仓 / 特征原值 / K 线 / 门控 / 标签), 不写文件; 汇总成文在 agent/Views
-//              book  盘口重放: 一只股票一天里的一段逐笔重放进订单簿 → 逐秒盘口与流量 + 大单事件 + 某一秒的全簿 (Book); 不经特征库, 不限评估期
-//              改动  候选相对 base 的改动归类 (delta) / 功能块是否覆盖模板 (parts_ok): 只查字段表与模板, 不碰数据
+//              三件事 (send 一个 Job, End 交回同序的 Got):
+//              EvalSpec → Eval  候选的一生: Cand ─stage→ 候选目录里的因子文件 (与正式因子同格式) ─eval→ Result ─adopt (过门槛)→ 正式因子目录;
+//                               一次评一个文件: Search (定方向 + 搜自由参数; 具体式只评本身) → Run, 结果写回文件; 评完只重扫它 (results 增量维护);
+//                               无显著而有代表点 → 再观察代表点一次 (给 agent 看它的分层差在哪)
+//              LookSpec → Look  观察: 一组因子 (候选英文名 / 具体根式) + 一组特征式 (+ 本层 K 线叶) → 评估期上整期一块的原料 (r16 秩 / 行统计 /
+//                               两端持仓 / 特征原值 / K 线 / 门控 / 标签), 不写文件; 汇总成文在 agent/Views
+//              BookSpec → Book  盘口重放: 一只股票一天里的一段逐笔重放进订单簿 → 逐秒盘口与流量 + 大单事件 + 某一秒的全簿; 不经特征库, 不限评估期
+//              模板  相对 base 的改动归类 (delta) / 用到的叶 (leaves_of) / 功能块是否覆盖 (parts_miss): 只查字段表与模板, 不碰数据
 //              可见: 只有统计与 Search 结局都在作用域此刻评估期上的因子才给 agent 看 (Result::visible), 不同窗口的数不可比
 //              四道 (Search / Run / Look / Book) 同构, 首次用到才建; 作用域与评估后端不变的连续会话共用其常驻块 (keep / Life::Worker), 变了即弃
-//   worker 协议 (与 agent/Chat.hpp 对仗): 交一件事 (eval / look / book ↔ ask) → poll 逐个取走 Tick, 末个 = End → live 看在跑那步 → busy / cancel
+//   worker 协议 (与 agent/Chat.hpp 对仗): send 一件事 (↔ ask) → poll 逐个取走 Tick: 进某道 (↔ Think / Write), 末个 = End 带结果 (↔ End 带 Reply)
+//              → live 看在跑那步 → busy / cancel
 //   全部 GUI 线程调用; 正式因子目录 / 字段表 / 资产轴由项目定, agent 只给候选目录
 // =============================================================================
 
@@ -53,6 +54,7 @@ struct Leaf {
   std::string code, name_cn, formula, desc; // code = 档.层.列 (模板里的写法); formula / desc 说的是原量 x
   std::string tf, tf_def;                   // 落盘值 = 原量经此元素变换: 简称 / 定义式 (恒等 = 空)
   std::string family;                       // 特征族 = 定义它的节点文件 (features/Node/ 下, 去 .hpp; 如 Lob/TS/OrderFlow/OrderLife); 族卡见 agent/Prompt
+  std::string kin, hay;                     // 同组键 (LeafKin + 落盘变换) / search_leaves 查的字 (上面各字段, ASCII 小写)
 };
 // 叶名 档.层.列 → (档.层, 列按 '_' 切的词)
 std::pair<std::string, std::vector<std::string>> LeafWords(const std::string &code);
@@ -83,6 +85,13 @@ struct Weight {
 enum class Rep : uint8_t { Peak,
                            Gated,
                            Mono };
+// 取法表 (下标 = Rep): cn = 反馈里的说法
+struct RepDef {
+  const char *cn;
+};
+inline constexpr RepDef kReps[] = {{"过门槛的峰"}, {"过门槛的点里曲面估计最高的"}, {"mono 最高的点"}};
+static_assert(std::size(kReps) == static_cast<size_t>(Rep::Mono) + 1);
+inline const RepDef &def(Rep r) { return kReps[static_cast<int>(r)]; }
 struct Top {
   std::string expr;
   int sign = 1;                 // 方向 (−1 = 取反后才是这组统计)
@@ -102,14 +111,15 @@ struct VerdictDef {
   const char *cn;
 };
 inline constexpr VerdictDef kVerdicts[] = {{"未落文件"}, {"BROKEN"}, {"有参数组"}, {"无显著"}, {"未评估"}};
-static_assert(std::size(kVerdicts) == static_cast<size_t>(Verdict::Pending) + 1);
+inline constexpr size_t kVerdictCount = std::size(kVerdicts);
+static_assert(kVerdictCount == static_cast<size_t>(Verdict::Pending) + 1);
 inline const VerdictDef &def(Verdict v) { return kVerdicts[static_cast<int>(v)]; }
 // Search 评过的一个点: 各自由参数的取值 + 定向统计
 struct Probe {
   std::vector<double> v; // 与 Surface::slots 对齐
   Stat st;
 };
-// Search 的参数曲面 (只有刚评完的 Settle 带; 扫描文件得不到)
+// Search 的参数曲面 (只有刚评完的 Eval 带; 扫描文件得不到)
 struct Surface {
   std::vector<std::string> slots; // 自由参数 "<算子>.<键>", 模板前序; 空 = 具体式
   std::vector<Probe> pts;         // 算得出统计的点
@@ -121,7 +131,7 @@ struct Result {
   Verdict verdict = Verdict::Pending; // 扫描时定 (Unstaged 由 stage 定)
   std::optional<Top> top;             // 本持有期 Search 无显著时的代表点
   std::vector<Weight> ws;             // 按 score 降序
-  Surface surf;                       // 本次 Search 的曲面 (Settle 才有)
+  Surface surf;                       // 本次 Search 的曲面 (Eval 才有)
   int ops = 0;                        // 模板算子节点数
   bool visible = true;                // 统计 / Search 结局全在作用域此刻的评估期上 (同池同评估期) 且 ops ≤ kMaxOps; 否则 agent 看不见
   const Weight *best() const { return ws.empty() || !ws.front().has ? nullptr : &ws.front(); }
@@ -165,7 +175,7 @@ struct Context {
   std::vector<Result> library; // 正式因子库, 按 score 降序 (含不可见的, 由用方滤)
 };
 
-// ---- 观察 (Lab::look): 评估期上整期一块的原料; 平面 = [T = 天 · seg][A] 行主序, 格 k = Look::at(t, a) ----
+// ---- 观察 (LookSpec → Look): 评估期上整期一块的原料; 平面 = [T = 天 · seg][A] 行主序, 格 k = Look::at(t, a) ----
 template <class X>
 using Plane = std::vector<X>;
 inline constexpr int kGroups = 20;            // 截面分组数 (= Stat 契约, Bridge.cpp 核对)
@@ -239,7 +249,7 @@ struct Look {
 // 分层单调性: 组号 0..n−1 与 g 的 Spearman (Stat 契约 mono 同一份)
 double Mono(const double *g, int n);
 
-// ---- 盘口重放 (Lab::book): 一只股票一天的逐笔重放进订单簿, 不经特征库; 时刻一律钟面秒 (h·3600 + m·60 + s) ----
+// ---- 盘口重放 (BookSpec → Book): 一只股票一天的逐笔重放进订单簿, 不经特征库; 时刻一律钟面秒 (h·3600 + m·60 + s) ----
 struct BookSpec {
   std::string code;             // 经 Lab::code_of
   int date = 0;                 // YYYYMMDD
@@ -259,6 +269,14 @@ enum class BookKind : uint8_t { New,     // 新挂
                                 Cancel,  // 撤单
                                 Filled,  // 挂单被吃完
                                 Sweep }; // 扫单: 连续竞价里一个主动单连吃 ≥ 2 个价位, 或成交额 ≥ 门槛
+// 事件表 (下标 = BookKind): cn = 成文里的名字
+struct BookKindDef {
+  const char *cn;
+};
+inline constexpr BookKindDef kBookKinds[] = {{"新挂"}, {"撤单"}, {"被吃完"}, {"扫单"}};
+inline constexpr size_t kBookKindCount = std::size(kBookKinds);
+static_assert(kBookKindCount == static_cast<size_t>(BookKind::Sweep) + 1);
+inline const BookKindDef &def(BookKind k) { return kBookKinds[static_cast<int>(k)]; }
 struct BookEvent {
   int clock = 0, cs = 0; // 钟面秒 + 10ms
   BookKind kind = BookKind::New;
@@ -297,13 +315,13 @@ struct Cand {
 struct Staged {
   Cand cand;
   std::string file; // 已落的文件名; 空 = 没落
-  Result res;       // 没落 = Unstaged (error = 原因); 落了 = 落时的扫描 (Pending), 评完由 Settle 换成定论
+  Result res;       // 没落 = Unstaged (error = 原因); 落了 = 落时的扫描 (Pending), 评完换成 Eval 的定论
   bool ok() const { return !file.empty(); }
 };
 struct Adopted {
-  std::string name; // 提交的英文名
-  std::string err;  // 未入库的原因; 空 = 入库 (自检会话 = 达门槛, 不拷)
-  bool ok() const { return err.empty(); }
+  std::string name;  // 提交的英文名
+  std::string error; // 未入库的原因; 空 = 入库 (自检会话 = 达门槛, 不拷)
+  bool ok() const { return error.empty(); }
 };
 // 候选的功能块: 模板里的一个子式 + 它在衡量什么 (短句)
 struct Part {
@@ -336,6 +354,17 @@ inline const ChangeDef &def(Change c) { return kChanges[static_cast<int>(c)]; }
 struct Delta {
   Change kind = Change::New;
   std::string what; // 差异处: `旧子式` → `新子式` (多处时逐处列)
+  std::string base; // 比的已试候选; 空 = 新起
+};
+
+// ---- 实验台的三件事 (Lab::send): 要做的 EvalSpec / LookSpec / BookSpec ↔ 随 End 交回的 Eval / Look / Book ----
+struct EvalSpec {
+  std::string file; // 已落的候选文件 (Staged::file)
+  bool gpu = false; // 评估后端
+};
+struct Eval {
+  Result res;              // 定论 (带本次 Search 的曲面)
+  std::optional<Look> rep; // 无显著而有代表点: 代表点的观察
 };
 
 namespace catalog {
@@ -352,17 +381,17 @@ std::string dir(const Scope &sc, bool test);                   // 会话目录 k
 
 class Lab {
 public:
-  // 一步 (poll 逐个取走): eval = 进 Search / 进 Run / 评完 (got = 定论 Result; 模板坏的直接评完) / 无显著时再观察代表点 (got = Look);
-  // look = 观察完 (got = Look); book = 重放完 (got = Book); 这件事做完 End
+  using Job = std::variant<EvalSpec, LookSpec, BookSpec>;
+  using Got = std::variant<std::monostate, Eval, Look, Book>; // 与 Job 同序; 取消 = monostate
+  // 一步 (poll 逐个取走): 进某道 (eval = Search → Run (模板坏的不进) → 无显著而有代表点再进 Look; look = Look; book = Book) / 这件事做完 End (got = 交回的)
   enum class Step : uint8_t { Search,
                               Run,
                               Look,
                               Book,
-                              Settle,
                               End };
   struct Tick {
     Step step;
-    std::variant<std::monostate, Result, agent::Look, agent::Book> got;
+    Got got; // 只 End 有
   };
   // 在评那步此刻的样子 (调用方持有, live 整份刷新)
   struct Live {
@@ -381,23 +410,26 @@ public:
   const Context &ctx() const;
   const std::vector<Result> &results() const; // 候选目录全部文件, 本持有期 score 降序
 
-  Staged stage(Cand c);                                                // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
-  Adopted adopt(std::string name, const Gate &g);                      // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err; 否则拷进正式目录 (test 不拷)
-  const Result *tried(const std::string &name) const;                  // 可见的已试候选; 没有 = nullptr
-  Delta delta(const std::string &base, const std::string &expr) const; // 模板 expr 相对模板 base 的改动
-  // 功能块须是 expr 的子式, 且覆盖根的输入与每个多元算子的非叶元; 不成 → false + err. expr 解析不了 = 放行 (由 stage 报)
-  bool parts_ok(const std::string &expr, const std::vector<Part> &parts, std::string &err) const;
+  Staged stage(Cand c);                               // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
+  Adopted adopt(std::string name, const Gate &g);     // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → error; 否则拷进正式目录 (test 不拷)
+  const Result *tried(const std::string &name) const; // 可见的已试候选; 没有 = nullptr
 
-  // 观察的参数 (只查字段表 / 候选目录 / 码表与池轴, 不碰数据): 不成 → false + err (原样给 agent)
-  bool factor_of(const std::string &arg, LookFactor &out, std::string &err) const;    // 候选英文名 (取最佳权重; 无显著取代表点) 或具体根式
-  bool feature_of(const std::string &src, std::string &root, std::string &err) const; // 具体特征式 (任意子式) → CsRank 包装的规范串
-  bool code_of(const std::string &arg, std::string &code, std::string &err) const;    // "000001" / "000001.SZ" → 码表里且在本池资产轴上的码
+  // 候选的模板 (只查字段表与候选目录, 不碰数据); expr 解析不了的由 stage 报, 这里放行
+  // 相对已试候选 base (英文名, 须可见) 的改动; base 空 = 新起: 依次比可见的已试候选, 与某个同式 / 只差参数 / 只差一处旋钮的按它当 base (Delta::base 回填其名)
+  Delta delta(const std::string &base, const std::string &expr) const;
+  std::vector<std::string> leaves_of(const std::string &expr) const; // 用到的叶, 出现序去重
+  // 功能块须是 expr 的子式, 且覆盖根的输入与每个多元算子的非叶元; 覆盖 = 空, 否则 = 缺在哪
+  std::string parts_miss(const std::string &expr, const std::vector<Part> &parts) const;
 
-  void eval(std::string file, bool gpu); // 一个已落的候选文件; 须已 bind 且作用域 ready, 不忙
-  void look(LookSpec s);                 // 同上; 参数须经上面三个校验
-  void book(BookSpec s);                 // 须已 bind, 不忙; code 须经 code_of, 时刻须在交易时段内
-  void cancel();                         // 取消在跑那步; 它收尾即 End
-  bool busy() const;                     // eval / look / book 起, 到 End 入队
+  // 观察的参数 (只查字段表 / 候选目录 / 码表与池轴, 不碰数据): 不成 → false + error (原样给 agent)
+  bool factor_of(const std::string &arg, LookFactor &out, std::string &error) const;    // 候选英文名 (取最佳权重; 无显著取代表点) 或具体根式
+  bool feature_of(const std::string &src, std::string &root, std::string &error) const; // 具体特征式 (任意子式) → CsRank 包装的规范串
+  bool code_of(const std::string &arg, std::string &code, std::string &error) const;    // "000001" / "000001.SZ" → 码表里且在本池资产轴上的码
+
+  // 交一件事: 须已 bind, 不忙. eval 的文件须已落且作用域 ready; look 的参数须经上面三个校验; book 的 code 须经 code_of, 时刻须在交易时段内
+  void send(Job job);
+  void cancel();     // 取消在跑那步; 它收尾即 End (got 空)
+  bool busy() const; // send 起, 到 End 入队
   std::optional<Tick> poll();
   void live(Live &l) const;
 

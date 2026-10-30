@@ -4,12 +4,12 @@
 // Tools — agent 的工具箱 (类 MCP): 一张工具表, 系统提示的 "工具" 节 / 回复解析 / 参数校验 / 界面名都从它出
 // =============================================================================
 //   回复 = 一串调用 {"calls": [{"tool": 名, "args": {...}}, ...]}; 系统按序执行, 下条消息按序给回各自的结果 (Prompt round)
-//   工具 = 名 + 执行方 + 参数表 (键 / 类型 / 缺省 / 取值范围 / 说明) + 做什么 / 返回什么; 加工具 = 表里加一行 + 执行方里接一个分支
-//   执行方 Run: Now 当场 (GUI 线程, 读写会话状态) / Human 等人 / Eval 回测 (Lab eval) / Look 观察 (Lab look, view_book 走 Lab book → agent/Views 成文) /
-//              Docs 研报库 (GUI 线程当场查, agent/Docs 成文)
+//   工具 = 名 + 执行方 + 用途类 + 折叠法 + 参数表 (键 / 类型 / 缺省 / 取值范围 / 说明) + 做什么 / 返回什么; 加工具 = 表里加一行 + 执行方里接一个分支
+//   执行方 Run: Now 当场 (GUI 线程, 读写会话状态) / Human 等人 / Eval 回测 (Lab 跑 EvalSpec) / Look 观察 (Lab 跑 LookSpec) / Book 重放 (Lab 跑 BookSpec) /
+//              Docs 研报库 (GUI 线程当场查, agent/Docs 成文); Look / Book 的取参与成文在 agent/Views
 //   校验两层: 解析时按参数表 (类型 / 必填 / 范围 / 可选值; 不合 → 整条回复重发); 执行时按数据 (因子 / 特征 / 资产 / 日期 / 流派 / 研报不成 → 该调用的结果写原因, 其余照做)
 //   回复级约束: 1..kMaxCalls 个调用; eval_factor 至多 kBatch 个; finish 只能在末尾; ask_human 只在会话允许提问且还没问过时可用;
-//              随会话状态的 (上条有回测则本条不能回测 / 待判的假设须 judge) 见 agent/Acts Owed
+//              随会话状态的 (上条有回测则本条不能回测 / 待判的假设须 judge) 见 agent/Acts RuleMiss
 //   执行记录 Act: 一个调用的时段 / 交给 agent 的结果 / 带状态调用的过程 (eval_factor 的回测 Trial, ask_human 的问答 Asked); 执行见 agent/Acts.hpp
 // =============================================================================
 
@@ -17,6 +17,7 @@
 #include "nlohmann/json.hpp"
 
 #include <cstdint>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
@@ -53,12 +54,38 @@ enum class Tool : uint8_t { ViewFeature,
                             Finish,
                             AskHuman };
 inline constexpr size_t kToolCount = static_cast<size_t>(Tool::AskHuman) + 1;
+// 执行方 (下标 = Run): cn = 界面名
 enum class Run : uint8_t { Now,
                            Human,
                            Eval,
                            Look,
+                           Book,
                            Docs };
-inline constexpr size_t kRunCount = static_cast<size_t>(Run::Docs) + 1;
+struct RunDef {
+  const char *cn;
+};
+inline constexpr RunDef kRuns[] = {{"当场"}, {"等人"}, {"回测"}, {"观察"}, {"重放"}, {"研报库"}};
+inline constexpr size_t kRunCount = std::size(kRuns);
+static_assert(kRunCount == static_cast<size_t>(Run::Docs) + 1);
+inline const RunDef &def(Run r) { return kRuns[static_cast<int>(r)]; }
+// 用途类 (下标 = Cat): 界面分组 / 计数; judge 判支持须引用的观察 = Cat::Look
+enum class Cat : uint8_t { Look,  // view_*
+                           Hyp,   // 提 / 判假设
+                           Trial, // 回测 / 提交
+                           Query, // 查特征叶 / 研报库 / 已试 / 正式库 / 全局记录
+                           Note,  // 跨会话记录
+                           Misc };
+struct CatDef {
+  const char *cn;
+};
+inline constexpr CatDef kCats[] = {{"观察"}, {"假设"}, {"回测"}, {"检索"}, {"记录"}, {"其他"}};
+inline constexpr size_t kCatCount = std::size(kCats);
+static_assert(kCatCount == static_cast<size_t>(Cat::Misc) + 1);
+inline const CatDef &def(Cat c) { return kCats[static_cast<int>(c)]; }
+// 折叠版 (Prompt FoldedText) 留什么; 没做成的一律 Keep (结果即原因)
+enum class Fold : uint8_t { Keep,    // 原样
+                            Brief,   // 一行结局
+                            Title }; // 只留标题
 enum class Arg : uint8_t { Str,
                            Int,
                            Strs,
@@ -76,6 +103,8 @@ struct ToolDef {
   Tool id;
   const char *name, *cn; // 调用名 / 界面名
   Run run;
+  Cat cat;
+  Fold fold;
   std::span<const ArgDef> args;
   const char *desc, *out; // 做什么 (何时用) / 返回什么
 };
@@ -94,8 +123,8 @@ struct Call {
   std::vector<std::string> strs(const char *k) const;
   std::string text(size_t cap = 0) const; // 一行: 名(键=值, …) (流水 / 界面); cap > 0 = 每个值至多 cap 字 (结果标题)
 };
-// ask = 本条回复可用 ask_human; 不合协议 → false + err (首个不合处, 带字段路径; 原样经 retry 反馈给模型)
-bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &err);
+// ask = 本条回复可用 ask_human; 不合协议 → false + error (首个不合处, 带字段路径; 原样经 retry 反馈给模型)
+bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error);
 // 系统提示的工具节: 每个工具一节 (做什么 / 参数 / 返回); ask = 列不列 ask_human
 std::string ToolsDoc(bool ask);
 

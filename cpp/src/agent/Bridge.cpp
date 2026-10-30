@@ -65,15 +65,15 @@ std::shared_ptr<const F::FeatureTable> table(const SharedData &data, int level) 
 // 表达式的算子节点数 (解析不了 = 0, 由落文件报原因)
 int ops_of(const F::FeatureTable &ft, const std::string &src) {
   factor::expr::Expr e;
-  std::string err;
-  return factor::expr::parse(src, ft.lookup(), ft.seg, e, err) ? e.n_ops : 0;
+  std::string error;
+  return factor::expr::parse(src, ft.lookup(), ft.seg, e, error) ? e.n_ops : 0;
 }
 
 // 同式键: 规范串, 截面根 (CsRank / CsNormRank / CsZ 只看截面排序, 互换不改分组与 rIC) 去掉根名; 解析不了 = 空
 std::string twin_key(const F::FeatureTable &ft, const std::string &src) {
   factor::expr::Expr e;
-  std::string err;
-  if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, err))
+  std::string error;
+  if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, error))
     return {};
   const factor::expr::Node &r = e.root();
   const std::string_view nm = r.op >= 0 ? std::string_view(factor::expr::kOps[r.op].name) : std::string_view();
@@ -206,23 +206,23 @@ Delta classify(const std::vector<Leaf> &leaves, const fx::Expr &b, const fx::Exp
   return {k, what};
 }
 
-// 具体式 (无自由参数) 的解析; 不成 → false + err
-bool concrete(const F::FeatureTable &ft, const std::string &src, factor::expr::Expr &e, std::string &err) {
-  if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, err))
+// 具体式 (无自由参数) 的解析; 不成 → false + error
+bool concrete(const F::FeatureTable &ft, const std::string &src, factor::expr::Expr &e, std::string &error) {
+  if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, error))
     return false;
   if (e.is_template()) {
-    err = "含自由参数 (裸 d / k / k2): 观察只接具体式, 参数写成数字";
+    error = "含自由参数 (裸 d / k / k2): 观察只接具体式, 参数写成数字";
     return false;
   }
   return true;
 }
 
-// 具体特征式 (任意子式) → CsRank 包装的规范串; 不成 → false + err
-bool feature_root(const F::FeatureTable &ft, const std::string &src, std::string &root, std::string &err) {
+// 具体特征式 (任意子式) → CsRank 包装的规范串; 不成 → false + error
+bool feature_root(const F::FeatureTable &ft, const std::string &src, std::string &root, std::string &error) {
   factor::expr::Expr e;
-  if (!concrete(ft, src, e, err))
+  if (!concrete(ft, src, e, error))
     return false;
-  [[maybe_unused]] const bool ok = concrete(ft, "CsRank(" + e.canon + ")", e, err);
+  [[maybe_unused]] const bool ok = concrete(ft, "CsRank(" + e.canon + ")", e, error);
   assert(ok && "具体式包一层 CsRank 必可解析");
   root = e.canon;
   return true;
@@ -532,18 +532,28 @@ std::vector<Result> scan(const F::FeatureTable &ft, const std::optional<F::Facto
   return out;
 }
 
-// 一道评估 (Search / Run 同构): 服务 + 发请求时的 epoch
+// 一道 (Search / Run / Look / Book 同构): 服务 + 发请求时的 epoch
 template <class Svc>
 struct Lane {
   std::unique_ptr<Svc> svc;
   uint64_t e0 = 0;
 
-  void reset() { svc.reset(), svc = std::make_unique<Svc>(); } // 先析构旧的: Stop() join worker, 常驻块随之释放
-  void drop() { svc.reset(); }
+  void drop() { svc.reset(); } // Stop() join worker, 常驻块随之释放
   template <class Req>
   void send(Req req) {
+    if (!svc)
+      svc = std::make_unique<Svc>();
     e0 = svc->epoch.load(std::memory_order_acquire);
     svc->Request(std::move(req));
+  }
+  // 取走跑完那轮的结果
+  auto take() {
+    std::lock_guard<std::mutex> lock(svc->mutex);
+    return std::move(svc->result);
+  }
+  std::string note() const {
+    std::lock_guard<std::mutex> lock(svc->mutex);
+    return svc->message;
   }
   // 请求发出后服务跑完一轮: epoch 越过发请求时的值 (已 begin) 且阶段落到终态 (已 end); 先读 epoch 再读阶段
   bool finished() const {
@@ -557,8 +567,7 @@ struct Lane {
   void read(Lab::Live &l) const {
     const size_t n = svc->total.load(std::memory_order_relaxed);
     l.frac = n > 0 ? static_cast<double>(svc->done.load(std::memory_order_relaxed)) / static_cast<double>(n) : 0.0;
-    std::lock_guard<std::mutex> lock(svc->mutex);
-    l.message = svc->message;
+    l.message = note();
   }
 };
 
@@ -585,7 +594,10 @@ Context context_of(const SharedData &data, const Scope &sc) {
       continue;
     const FeatureMetadata &m = meta_of(*ft, l);
     const size_t tf = static_cast<size_t>(m.ts_tf);
-    c.leaves.push_back({l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m)});
+    Leaf x{l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m)};
+    x.kin = LeafKin(x.code) + "|" + x.tf;
+    x.hay = text::lower(x.code + "\n" + x.name_cn + "\n" + x.formula + "\n" + x.desc + "\n" + x.tf + "\n" + x.family);
+    c.leaves.push_back(std::move(x));
   }
   for (const factor::expr::OpInfo &o : factor::expr::kOps)
     c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
@@ -691,12 +703,13 @@ struct Lab::Impl {
   bool gpu = false;
   std::tuple<Lane<F::SearchService>, Lane<F::RunService>, Lane<F::LensService>, Lane<GUI::Features::ReplayService>> lanes;
   // 在做的那件事
-  bool running = false;              // eval / look / book 起, 到 End 入队
+  bool running = false;              // send 起, 到 End 入队
   bool halt = false;                 // 已 cancel: 在跑那步收尾即 End
   Step at = Step::End;               // 在跑那步的道; End = 无
   std::string file;                  // eval: 在评的文件
   F::FactorRow row;                  // eval: 其首行 (Search 的模板)
   Surface surf;                      // eval: Search 落了盘时的曲面 (随定论交出)
+  std::optional<Eval> graded;        // eval: 定论 (代表点观察完才交出)
   std::vector<std::string> labels;   // look: 因子的名字
   std::vector<std::string> feat_err; // look: 与 LookSpec::feats 对齐, 非空 = 该式不成 (没发)
   PerBar<bool> bars;                 // look: 取了的 K 线叶
@@ -705,6 +718,8 @@ struct Lab::Impl {
 
   std::shared_ptr<const F::FeatureTable> ft() const { return table(*data, sc.level); }
   std::optional<F::FactorScope> fsc() const { return fscope_of(*data, ft(), sc.pool); }
+  template <Step S>
+  auto &lane() { return std::get<static_cast<size_t>(S)>(lanes); }
   template <class Fn>
   void each_lane(Fn &&fn) {
     std::apply([&](auto &...l) { (fn(l), ...); }, lanes);
@@ -721,14 +736,47 @@ struct Lab::Impl {
       return fn(std::get<2>(lanes));
     case Step::Book:
       return fn(std::get<3>(lanes));
-    default:
-      assert(false && "无在跑的道");
-      __builtin_unreachable();
+    case Step::End:
+      break;
     }
+    assert(false && "无在跑的道");
+    __builtin_unreachable();
   }
 
-  // 一道的请求 (按道的服务分派)
-  F::SearchRequest request(const Lane<F::SearchService> &) const {
+  // ---- 进道 / 收尾 ----
+  template <Step S, class Req>
+  void enter(Req req) {
+    lane<S>().send(std::move(req));
+    at = S;
+    ticks.push_back({S, {}});
+  }
+  void close(Got got = {}) {
+    file.clear(), graded.reset();
+    at = Step::End;
+    running = false;
+    ticks.push_back({Step::End, std::move(got)});
+  }
+
+  // ---- 三件事的起点 ----
+  // 模板合法 → Search (定方向 + 搜参, 落了盘随后 Run); BROKEN → 直接评完
+  void start(EvalSpec s) {
+    if (s.gpu != gpu)
+      lane<Step::Search>().drop(), lane<Step::Run>().drop(), gpu = s.gpu;
+    file = std::move(s.file);
+    std::vector<F::FactorRow> rows;
+    F::ScanFactorFile(fs::path(dir) / file, *ft(), rows);
+    assert(!rows.empty());
+    row = std::move(rows.front());
+    surf = {};
+    if (searchable(row))
+      return enter<Step::Search>(search_req());
+    settle();
+  }
+  void start(LookSpec s) { enter<Step::Look>(lens_req(std::move(s))); }
+  void start(BookSpec s) { enter<Step::Book>(replay_req(std::move(s))); }
+
+  // ---- 各道的请求 ----
+  F::SearchRequest search_req() const {
     F::SearchRequest req;
     [[maybe_unused]] const bool ok = F::MakeSearchRequest(*data, ft(), sc.pool, row, sc.hold, /*fresh=*/true, gpu, req);
     assert(ok && "作用域须 ready");
@@ -736,7 +784,7 @@ struct Lab::Impl {
     req.spec.keep = true;
     return req;
   }
-  F::RunRequest request(const Lane<F::RunService> &) const {
+  F::RunRequest run_req() const {
     F::RunRequest req;
     [[maybe_unused]] const bool ok = F::MakeRunRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
     assert(ok && "作用域须 ready");
@@ -745,22 +793,72 @@ struct Lab::Impl {
     req.spec.keep = true;
     return req;
   }
-  template <Step S>
-  void send() {
-    auto &l = std::get<static_cast<size_t>(S)>(lanes);
-    l.send(request(l));
-    at = S;
-    ticks.push_back({S, {}});
+  // 记下成文要的 labels / feat_err / bars
+  F::LensRequest lens_req(LookSpec s) {
+    assert(!s.factors.empty() || std::any_of(s.feats.begin(), s.feats.end(), [](const LookExpr &x) { return x.error.empty(); }) || s.kline);
+    F::LensRequest req;
+    [[maybe_unused]] const bool ok = F::MakeFactorScope(*data, ft(), sc.pool, /*gpu=*/false, req.scope);
+    assert(ok && "作用域须 ready");
+    req.spec.hold = sc.hold;
+    labels.clear();
+    for (const LookFactor &f : s.factors) {
+      req.spec.roots.push_back({f.expr, f.ts ? factor::stat::Frame::TS : factor::stat::Frame::CS, factor::stat::dir_of(f.sign)});
+      labels.push_back(f.label);
+    }
+    feat_err.clear();
+    for (LookExpr &x : s.feats) {
+      if (x.error.empty())
+        req.spec.feats.push_back({std::move(x.root), factor::stat::Frame::CS, factor::stat::kFwd});
+      feat_err.push_back(std::move(x.error));
+    }
+    bars = {};
+    if (s.kline)
+      for (const Bar b : kBars)
+        if (const std::string &src = ctx.kline[b]; !src.empty()) {
+          std::string root, error;
+          [[maybe_unused]] const bool ok_leaf = feature_root(*ft(), src, root, error);
+          assert(ok_leaf && "K 线叶必可作特征");
+          req.spec.feats.push_back({std::move(root), factor::stat::Frame::CS, factor::stat::kFwd});
+          bars[b] = true;
+        }
+    if (!s.code.empty()) {
+      const size_t id = asset_axis().find(s.code);
+      assert(id < asset_axis().size() && "码须经 code_of");
+      req.spec.asset = static_cast<uint32_t>(id);
+    }
+    return req;
   }
-  // Search 跑完: 落了盘 → 取曲面, true (随后 Run); 中途放弃 → 记下原因 (该文件 BROKEN)
-  bool searched() {
-    F::SearchService &svc = *std::get<0>(lanes).svc;
-    std::lock_guard<std::mutex> lock(svc.mutex);
-    if (svc.result.wrote)
-      fails.erase(file), surf = surface_of(*ft(), svc.result);
-    else
-      fails[file] = svc.message;
-    return svc.result.wrote;
+  // 记下在放的那段
+  GUI::Features::ReplayRequest replay_req(BookSpec s) {
+    namespace X = GUI::Features;
+    assert(s.from < s.to && s.at >= s.from && s.at < s.to);
+    const size_t id = asset_axis().find(s.code);
+    assert(id < asset_axis().size() && id < data->asset.items.size() && "码须经 code_of");
+    X::ReplayRequest req;
+    req.orders = data->asset.orders();
+    assert(req.orders && "逐笔帧目录未扫描");
+    req.dir = data->config.orders_dir;
+    req.asset = static_cast<uint32_t>(id);
+    req.exchange = data->asset.items[id].exchange_type;
+    req.date = s.date;
+    req.s0 = X::trade_sec(static_cast<uint32_t>(s.from));
+    req.s1 = X::trade_sec(static_cast<uint32_t>(s.to - 1)) + 1;
+    req.at = X::trade_sec(static_cast<uint32_t>(s.at));
+    req.big = static_cast<float>(s.big);
+    spec = std::move(s);
+    return req;
+  }
+
+  // ---- 各道跑完 ----
+  // Search: 落了盘 → 取曲面, 进 Run; 中途放弃 → 记下原因 (该文件 BROKEN), 评完
+  void searched() {
+    Lane<F::SearchService> &l = lane<Step::Search>();
+    if (const F::SearchResult r = l.take(); r.wrote) {
+      fails.erase(file), surf = surface_of(*ft(), r);
+      return enter<Step::Run>(run_req());
+    }
+    fails[file] = l.note();
+    settle();
   }
 
   // 重扫一个文件, 结果表保序
@@ -774,58 +872,31 @@ struct Lab::Impl {
     sort_results(results);
     return *find();
   }
-  // 开评 file: 模板合法 → Search (定方向 + 搜参, 落了盘随后 Run); BROKEN → 直接评完
-  void start() {
-    std::vector<F::FactorRow> rows;
-    F::ScanFactorFile(fs::path(dir) / file, *ft(), rows);
-    assert(!rows.empty());
-    row = std::move(rows.front());
-    surf = {};
-    if (searchable(row))
-      return send<Step::Search>();
-    if (!settle())
-      close();
-  }
-  // 评完: 定论 (带曲面) 入队; 无显著而有代表点 → 接着观察它, true
-  bool settle() {
+  // Run (或模板坏的不进道): 定论带上曲面; 无显著而有代表点 → 接着观察它, 观察完一并交出
+  void settle() {
     Result r = refresh(file);
     r.surf = std::move(surf), surf = {};
     const bool rep = r.verdict == Verdict::Null && r.top && r.visible;
-    const std::string name = r.name;
-    ticks.push_back({Step::Settle, std::move(r)});
+    graded = Eval{std::move(r), {}};
     if (!rep)
-      return false;
+      return close(std::move(*graded));
     LookFactor f;
-    std::string err;
-    [[maybe_unused]] const bool ok = factor_of(name, f, err);
+    std::string error;
+    [[maybe_unused]] const bool ok = factor_of(graded->res.name, f, error);
     assert(ok && "代表点是 Search 评过的具体式");
-    look({.factors = {std::move(f)}});
-    return true;
+    enter<Step::Look>(lens_req({.factors = {std::move(f)}}));
   }
-  void close() {
-    file.clear();
-    at = Step::End;
-    running = false;
-    ticks.push_back({Step::End, {}});
-  }
-  // 观察跑完: 取走结果
+  // Look: 观察本身, 或在评那个的代表点
   void looked() {
-    F::LensService &svc = *std::get<2>(lanes).svc;
-    F::LensResult r;
-    {
-      std::lock_guard<std::mutex> lock(svc.mutex);
-      r = std::move(svc.result);
-    }
-    ticks.push_back({Step::Look, look_of(std::move(r), *ft(), labels, std::move(feat_err), bars, ctx.kline)});
+    Look l = look_of(lane<Step::Look>().take(), *ft(), labels, std::move(feat_err), bars, ctx.kline);
+    if (!graded)
+      return close(std::move(l));
+    graded->rep = std::move(l);
+    close(std::move(*graded));
   }
-  // 重放跑完: 取走结果, 交易秒 → 钟面秒
+  // Book: 交易秒 → 钟面秒
   void booked() {
-    GUI::Features::ReplayService &svc = *std::get<3>(lanes).svc;
-    GUI::Features::ReplayResult r;
-    {
-      std::lock_guard<std::mutex> lock(svc.mutex);
-      r = std::move(svc.result);
-    }
+    GUI::Features::ReplayResult r = lane<Step::Book>().take();
     Book b{.spec = spec,
            .error = std::move(r.error),
            .orders = static_cast<int>(r.orders),
@@ -848,7 +919,7 @@ struct Lab::Impl {
       b.events.push_back({L2::tick_hour(e.tick) * 3600 + L2::tick_minute(e.tick) * 60 + L2::tick_second(e.tick), L2::tick_millisecond(e.tick), static_cast<BookKind>(e.kind), e.side,
                           e.levels, e.price, e.first, e.amount, e.life});
     b.book = std::move(r.book);
-    ticks.push_back({Step::Book, std::move(b)});
+    close(std::move(b));
   }
   // 在跑那步的道跑完一轮 → 下一步
   void pump() {
@@ -856,27 +927,27 @@ struct Lab::Impl {
       return;
     if (halt || on_lane([](const auto &l) { return l.cancelled(); }))
       return close();
-    if (at == Step::Look) {
-      looked();
-      return close();
+    switch (at) {
+    case Step::Search:
+      return searched();
+    case Step::Run:
+      return settle();
+    case Step::Look:
+      return looked();
+    case Step::Book:
+      return booked();
+    case Step::End:
+      break;
     }
-    if (at == Step::Book) {
-      booked();
-      return close();
-    }
-    if (at == Step::Search && searched())
-      return send<Step::Run>();
-    if (!settle())
-      close();
   }
 
-  bool factor_of(const std::string &arg, LookFactor &out, std::string &err) const {
+  bool factor_of(const std::string &arg, LookFactor &out, std::string &error) const {
     const auto it = std::find_if(results.begin(), results.end(), [&](const Result &r) { return r.name == arg; });
     std::string src = arg, label = arg;
     int sign = 1;
     if (it != results.end()) {
       if (!it->visible) {
-        err = "候选 " + arg + " 的统计不在当前评估期上; 可直接给具体根式";
+        error = "候选 " + arg + " 的统计不在当前评估期上; 可直接给具体根式";
         return false;
       }
       if (const Weight *w = it->best()) {
@@ -884,85 +955,25 @@ struct Lab::Impl {
       } else if (it->top) {
         src = it->top->expr, sign = it->top->sign, label = arg + " (无显著, 用代表点)";
       } else {
-        err = "候选 " + arg + " 没有本持有期的权重或代表点 (" + def(it->verdict).cn + "); 可直接给具体根式";
+        error = "候选 " + arg + " 没有本持有期的权重或代表点 (" + def(it->verdict).cn + "); 可直接给具体根式";
         return false;
       }
     }
     const std::shared_ptr<const F::FeatureTable> t = ft();
     factor::expr::Expr e;
     factor::stat::Frame f;
-    if (!concrete(*t, src, e, err) || !factor::expr::root_frame(e, t->seg, f, err) || !t->check_grid(e, err)) {
-      err = (it != results.end() ? "" : "不是候选英文名, 按根式解析: ") + err;
+    if (!concrete(*t, src, e, error) || !factor::expr::root_frame(e, t->seg, f, error) || !t->check_grid(e, error)) {
+      error = (it != results.end() ? "" : "不是候选英文名, 按根式解析: ") + error;
       return false;
     }
     out = {e.canon, it != results.end() ? label : e.canon, f == factor::stat::Frame::TS, sign};
     return true;
   }
 
-  // 发一次观察 (参数已校验)
-  void look(LookSpec s) {
-    assert(!s.factors.empty() || std::any_of(s.feats.begin(), s.feats.end(), [](const LookExpr &x) { return x.error.empty(); }) || s.kline);
-    Lane<F::LensService> &l = std::get<2>(lanes);
-    if (!l.svc)
-      l.reset();
-    F::LensRequest req;
-    [[maybe_unused]] const bool ok = F::MakeFactorScope(*data, ft(), sc.pool, /*gpu=*/false, req.scope);
-    assert(ok && "作用域须 ready");
-    req.spec.hold = sc.hold;
-    labels.clear();
-    for (const LookFactor &f : s.factors) {
-      req.spec.roots.push_back({f.expr, f.ts ? factor::stat::Frame::TS : factor::stat::Frame::CS, factor::stat::dir_of(f.sign)});
-      labels.push_back(f.label);
-    }
-    feat_err.clear();
-    for (LookExpr &x : s.feats) {
-      if (x.error.empty())
-        req.spec.feats.push_back({std::move(x.root), factor::stat::Frame::CS, factor::stat::kFwd});
-      feat_err.push_back(std::move(x.error));
-    }
-    bars = {};
-    if (s.kline)
-      for (const Bar b : kBars)
-        if (const std::string &src = ctx.kline[b]; !src.empty()) {
-          std::string root, err;
-          [[maybe_unused]] const bool ok_leaf = feature_root(*ft(), src, root, err);
-          assert(ok_leaf && "K 线叶必可作特征");
-          req.spec.feats.push_back({std::move(root), factor::stat::Frame::CS, factor::stat::kFwd});
-          bars[b] = true;
-        }
-    if (!s.code.empty()) {
-      const size_t id = asset_axis().find(s.code);
-      assert(id < asset_axis().size() && "码须经 code_of");
-      req.spec.asset = static_cast<uint32_t>(id);
-    }
-    l.send(std::move(req));
-    at = Step::Look;
-    running = true, halt = false;
-  }
-  // 发一次重放 (参数已校验)
-  void book(const BookSpec &s) {
-    namespace X = GUI::Features;
-    assert(s.from < s.to && s.at >= s.from && s.at < s.to);
-    Lane<X::ReplayService> &l = std::get<3>(lanes);
-    if (!l.svc)
-      l.reset();
-    const size_t id = asset_axis().find(s.code);
-    assert(id < asset_axis().size() && id < data->asset.items.size() && "码须经 code_of");
-    X::ReplayRequest req;
-    req.orders = data->asset.orders();
-    assert(req.orders && "逐笔帧目录未扫描");
-    req.dir = data->config.orders_dir;
-    req.asset = static_cast<uint32_t>(id);
-    req.exchange = data->asset.items[id].exchange_type;
-    req.date = s.date;
-    req.s0 = X::trade_sec(static_cast<uint32_t>(s.from));
-    req.s1 = X::trade_sec(static_cast<uint32_t>(s.to - 1)) + 1;
-    req.at = X::trade_sec(static_cast<uint32_t>(s.at));
-    req.big = static_cast<float>(s.big);
-    l.send(std::move(req));
-    spec = s;
-    at = Step::Book;
-    running = true, halt = false;
+  bool parse(const std::string &src, fx::Expr &e) const {
+    const std::shared_ptr<const F::FeatureTable> t = ft();
+    std::string error;
+    return fx::parse(src, t->lookup(), t->seg, e, error);
   }
 };
 
@@ -994,21 +1005,21 @@ Staged Lab::stage(Cand c) {
   Impl &I = *p_;
   Staged s{.cand = std::move(c)};
   const Cand &x = s.cand;
-  std::string err;
+  std::string error;
   if (!F::ValidFactorName(x.name))
-    err = "英文名须非空, ≤ 64, 仅 [A-Za-z0-9_]";
+    error = "英文名须非空, ≤ 64, 仅 [A-Za-z0-9_]";
   else if (!F::ValidFactorNameCn(x.name_cn))
-    err = "中文名须 1..10 个汉字";
+    error = "中文名须 1..10 个汉字";
   else if (const int n = ops_of(*I.ft(), x.expr); n > kMaxOps)
-    err = "算子 " + std::to_string(n) + " 个, 超过上限 " + std::to_string(kMaxOps) + " (建议 " + std::to_string(kGoodOps) + " 个左右)";
+    error = "算子 " + std::to_string(n) + " 个, 超过上限 " + std::to_string(kMaxOps) + " (建议 " + std::to_string(kGoodOps) + " 个左右)";
   else if (const std::string tw = twin_of(*I.ft(), I.results, x.expr); !tw.empty())
-    err = "与候选 " + tw + " 同式 (截面根 CsRank / CsNormRank / CsZ 互换也算同式), 回测结果必同";
+    error = "与候选 " + tw + " 同式 (截面根 CsRank / CsNormRank / CsZ 互换也算同式), 回测结果必同";
   else
-    s.file = F::AddFactorFile(I.dir, *I.ft(), x.name, x.name_cn, x.expr, x.note, err);
+    s.file = F::AddFactorFile(I.dir, *I.ft(), x.name, x.name_cn, x.expr, x.note, error);
   if (s.ok())
     s.res = I.refresh(s.file);
   else
-    s.res.error = std::move(err), s.res.verdict = Verdict::Unstaged;
+    s.res.error = std::move(error), s.res.verdict = Verdict::Unstaged;
   return s;
 }
 
@@ -1017,15 +1028,15 @@ Adopted Lab::adopt(std::string name, const Gate &g) {
   Adopted s{.name = std::move(name)};
   const auto it = std::find_if(I.results.begin(), I.results.end(), [&](const Result &r) { return r.name == s.name; });
   if (it == I.results.end() || !it->visible) {
-    s.err = "会话目录里没有这个候选";
+    s.error = "会话目录里没有这个候选";
     return s;
   }
-  s.err = GateMiss(g, *it);
+  s.error = GateMiss(g, *it);
   if (!s.ok())
     return s;
   const fs::path to = fs::path(F::factor_dir_of(*I.data, I.sc.pool, level_id(I.sc.level))) / it->file;
   if (fs::exists(to)) {
-    s.err = "正式目录已有 " + it->file;
+    s.error = "正式目录已有 " + it->file;
     return s;
   }
   if (!I.test) {
@@ -1043,21 +1054,42 @@ const Result *Lab::tried(const std::string &name) const {
 
 Delta Lab::delta(const std::string &base, const std::string &expr) const {
   const Impl &I = *p_;
-  const F::FeatureTable &ft = *I.ft();
-  fx::Expr b, n;
-  std::string err;
-  if (!fx::parse(base, ft.lookup(), ft.seg, b, err) || !fx::parse(expr, ft.lookup(), ft.seg, n, err))
-    return {Change::Unparsed, ""};
-  return classify(I.ctx.leaves, b, n);
+  fx::Expr n;
+  if (!I.parse(expr, n))
+    return {Change::Unparsed, "", base};
+  const auto against = [&](const Result &r) {
+    fx::Expr b;
+    Delta d = I.parse(r.tmpl, b) ? classify(I.ctx.leaves, b, n) : Delta{Change::Unparsed, ""};
+    d.base = r.name;
+    return d;
+  };
+  if (!base.empty()) {
+    const Result *r = tried(base);
+    assert(r && "base 须是可见的已试候选");
+    return against(*r);
+  }
+  for (const Result &r : I.results)
+    if (r.visible && !r.tmpl.empty())
+      if (Delta d = against(r); d.kind == Change::Same || d.kind == Change::Params || def(d.kind).knob)
+        return d;
+  return {};
 }
 
-bool Lab::parts_ok(const std::string &expr, const std::vector<Part> &parts, std::string &err) const {
+std::vector<std::string> Lab::leaves_of(const std::string &expr) const {
+  fx::Expr e;
+  std::vector<std::string> out;
+  if (p_->parse(expr, e))
+    for (const fx::Node &x : e.nodes)
+      if (x.op < 0 && std::find(out.begin(), out.end(), x.feat) == out.end())
+        out.push_back(x.feat);
+  return out;
+}
+
+std::string Lab::parts_miss(const std::string &expr, const std::vector<Part> &parts) const {
   const F::FeatureTable &ft = *p_->ft();
   fx::Expr e;
-  if (!fx::parse(expr, ft.lookup(), ft.seg, e, err)) {
-    err.clear();
-    return true;
-  }
+  if (!p_->parse(expr, e))
+    return {};
   std::vector<std::string> subs;
   for (size_t i = 0; i < e.nodes.size(); ++i)
     subs.push_back(sub_of(e, static_cast<int>(i)));
@@ -1065,14 +1097,10 @@ bool Lab::parts_ok(const std::string &expr, const std::vector<Part> &parts, std:
   for (const Part &p : parts) {
     fx::Expr q;
     std::string why;
-    if (!fx::parse(p.expr, ft.lookup(), ft.seg, q, why)) {
-      err = "功能块 `" + p.expr + "` 解析不了: " + why;
-      return false;
-    }
-    if (std::find(subs.begin(), subs.end(), q.canon) == subs.end()) {
-      err = "功能块 `" + p.expr + "` 不是模板里的子式 (从模板里逐字抄一段完整的子式, 自由参数照模板写裸键)";
-      return false;
-    }
+    if (!fx::parse(p.expr, ft.lookup(), ft.seg, q, why))
+      return "功能块 `" + p.expr + "` 解析不了: " + why;
+    if (std::find(subs.begin(), subs.end(), q.canon) == subs.end())
+      return "功能块 `" + p.expr + "` 不是模板里的子式 (从模板里逐字抄一段完整的子式, 自由参数照模板写裸键)";
     have.push_back(q.canon);
   }
   // 要说明的: 根的输入 (整个因子在衡量什么) + 每个多元算子的非叶元 (各成分各衡量什么)
@@ -1092,20 +1120,18 @@ bool Lab::parts_ok(const std::string &expr, const std::vector<Part> &parts, std:
     miss += !ok;
     all += std::string("\n- ") + (ok ? "有" : "缺") + " `" + w + "`";
   }
-  if (miss) {
-    err = "功能块缺 " + std::to_string(miss) + " 块. 这个模板要说明的子式共 " + std::to_string(want.size()) +
-          " 个 (根的输入 + 每个多元算子的每个非叶元, 叶相加的组合也算; 每个一块, 一句话说清它衡量什么; 另加的块不限):" + all;
-    return false;
-  }
-  return true;
+  if (!miss)
+    return {};
+  return "功能块缺 " + std::to_string(miss) + " 块. 这个模板要说明的子式共 " + std::to_string(want.size()) +
+         " 个 (根的输入 + 每个多元算子的每个非叶元, 叶相加的组合也算; 每个一块, 一句话说清它衡量什么; 另加的块不限):" + all;
 }
 
-bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &err) const { return p_->factor_of(arg, out, err); }
+bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &error) const { return p_->factor_of(arg, out, error); }
 
-bool Lab::feature_of(const std::string &src, std::string &root, std::string &err) const { return feature_root(*p_->ft(), src, root, err); }
+bool Lab::feature_of(const std::string &src, std::string &root, std::string &error) const { return feature_root(*p_->ft(), src, root, error); }
 
 // 池轴 = 标签库的资产轴 (子池的成员都在其内): 不在轴上的必观察不成, 先拦; 在轴上而评估期内没进过子池的由观察结果的在池行数说
-bool Lab::code_of(const std::string &arg, std::string &code, std::string &err) const {
+bool Lab::code_of(const std::string &arg, std::string &code, std::string &error) const {
   const Impl &I = *p_;
   const AssetAxis &ax = asset_axis();
   for (const char *ex : {"", ".SZ", ".SH", ".BJ"})
@@ -1114,38 +1140,21 @@ bool Lab::code_of(const std::string &arg, std::string &code, std::string &err) c
       assert(fsc && "作用域须 ready");
       const PoolAxis &pa = fsc->libs[F::factor_level(level_id(I.sc.level)).lab(pool_id(I.sc.pool))].axis;
       if (pa.sub_of(static_cast<uint32_t>(ax.find(c))) == pa.size()) {
-        err = c + " 不在本池 (" + I.sc.pool + ") 特征库的资产轴上, 从没进过池; 挑池内的票 (如 view_trades / view_holders 结果里的代码)";
+        error = c + " 不在本池 (" + I.sc.pool + ") 特征库的资产轴上, 从没进过池; 挑池内的票 (如 view_trades / view_holders 结果里的代码)";
         return false;
       }
       code = c;
       return true;
     }
-  err = "码表里没有 " + arg + " (写 6 位代码或 代码.交易所, 如 000001.SZ)";
+  error = "码表里没有 " + arg + " (写 6 位代码或 代码.交易所, 如 000001.SZ)";
   return false;
 }
 
-void Lab::eval(std::string file, bool gpu) {
+void Lab::send(Job job) {
   Impl &I = *p_;
   assert(!I.running && I.data && "评估忙或未 bind");
-  if (!std::get<0>(I.lanes).svc || gpu != I.gpu) {
-    std::get<0>(I.lanes).reset(), std::get<1>(I.lanes).reset();
-    I.gpu = gpu;
-  }
-  I.file = std::move(file);
   I.running = true, I.halt = false;
-  I.start();
-}
-
-void Lab::look(LookSpec s) {
-  Impl &I = *p_;
-  assert(!I.running && I.data && "评估忙或未 bind");
-  I.look(std::move(s));
-}
-
-void Lab::book(BookSpec s) {
-  Impl &I = *p_;
-  assert(!I.running && I.data && "评估忙或未 bind");
-  I.book(s);
+  std::visit([&](auto &&s) { I.start(std::move(s)); }, std::move(job));
 }
 
 void Lab::cancel() {

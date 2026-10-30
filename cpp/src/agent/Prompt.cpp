@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <unordered_map>
 #include <utility>
 
 namespace agent {
@@ -22,10 +23,6 @@ using KV = std::vector<std::pair<std::string_view, std::string>>;
 
 constexpr size_t kTitleChars = 40; // 结果标题里每个参数值至多几字 (全文在 agent 自己的回复里)
 constexpr size_t kSurfBins = 6;    // 参数曲面: 每个参数至多分几段
-
-// 代表点怎么取的 (下标 = Rep)
-constexpr const char *kRepCn[] = {"过门槛的峰", "过门槛的点里曲面估计最高的", "mono 最高的点"};
-static_assert(std::size(kRepCn) == static_cast<size_t>(Rep::Mono) + 1);
 
 std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(def(m).id) + ".md"); }
 
@@ -119,8 +116,6 @@ std::string gate_line(const Result &r, const Gate &g) {
   return "- " + (miss.empty() ? std::string("达入库门槛") : miss) + "\n";
 }
 
-// 同组的叶 (LeafKin 同, 落盘变换也同)
-std::string kin_of(const Leaf &l) { return LeafKin(l.code) + "|" + l.tf; }
 std::string col_of(const std::string &code) { return code.substr(code.find('.', code.find('.') + 1) + 1); }
 
 // 一组叶的列名: 各词位的取值按出现序写 {a,b,…}; 组不是各位取值的全组合则逐个列
@@ -152,29 +147,17 @@ std::string kin_name(const std::vector<const Leaf *> &g) {
   return s;
 }
 
-// 按同组合并, 组序 = 首个叶的出现序
+// 按同组 (Leaf::kin) 合并, 组序 = 首个叶的出现序
 std::vector<std::vector<const Leaf *>> kin_groups(const std::vector<const Leaf *> &ls) {
   std::vector<std::vector<const Leaf *>> gs;
-  std::vector<std::string> keys;
-  for (const Leaf *l : ls) {
-    const std::string k = kin_of(*l);
-    const auto it = std::find(keys.begin(), keys.end(), k);
-    if (it == keys.end())
-      keys.push_back(k), gs.push_back({l});
+  std::unordered_map<std::string_view, size_t> at;
+  for (const Leaf *l : ls)
+    if (const auto [it, fresh] = at.try_emplace(l->kin, gs.size()); fresh)
+      gs.push_back({l});
     else
-      gs[static_cast<size_t>(it - keys.begin())].push_back(l);
-  }
+      gs[it->second].push_back(l);
   return gs;
 }
-
-std::string lower(std::string s) { // 只动 ASCII
-  for (char &ch : s)
-    if (ch >= 'A' && ch <= 'Z')
-      ch = static_cast<char>(ch - 'A' + 'a');
-  return s;
-}
-
-std::string hay_of(const Leaf &l) { return lower(l.code + "\n" + l.name_cn + "\n" + l.formula + "\n" + l.desc + "\n" + l.tf + "\n" + l.family); } // search_leaves 查的字
 
 struct Family {
   std::string key, title, card; // 族 (Leaf::family) / 族名 / 卡文
@@ -232,8 +215,7 @@ std::string leaves_text(const std::vector<Leaf> &leaves) {
       s += "\n### " + g + ".*\n";
       for (const std::vector<const Leaf *> &kin : kin_groups(ls)) {
         const Leaf &l = *kin.front();
-        s += "- " + (kin.size() == 1 ? col_of(l.code) + " " + cell(l.name_cn)
-                                     : kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 首个 " + col_of(l.code) + " " + cell(l.name_cn) + ")") +
+        s += "- " + (kin.size() == 1 ? col_of(l.code) + " " + cell(l.name_cn) : kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 首个 " + col_of(l.code) + " " + cell(l.name_cn) + ")") +
              (l.tf.empty() ? "" : " [" + l.tf + "]") + "\n";
       }
     }
@@ -373,7 +355,7 @@ std::string Detail(const Result &r) {
     return s;
   }
   case Verdict::Null:
-    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + kRepCn[static_cast<size_t>(r.top->rep)] + ") " + fills(r.tmpl, r.top->expr) + ": " + Text(*r.top) + "\n"
+    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + def(r.top->rep).cn + ") " + fills(r.tmpl, r.top->expr) + ": " + Text(*r.top) + "\n"
                  : std::string("- Search 无显著权重 (没有一个点算得出该持有期统计)\n");
   case Verdict::Pending:
     return "- " + std::string(def(r.verdict).cn) + "\n";
@@ -383,9 +365,7 @@ std::string Detail(const Result &r) {
 
 // ---- 工具结果 ----
 std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g) {
-  return or_none(list_of(tried, skip, top, [](const Result &) { return true; },
-                         [&](const Result &r) { return "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r) + gate_line(r, g); }),
-                 "(无)\n");
+  return or_none(list_of(tried, skip, top, [](const Result &) { return true; }, [&](const Result &r) { return "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r) + gate_line(r, g); }), "(无)\n");
 }
 
 std::string LibraryText(const std::vector<Result> &lib, int skip, int top) {
@@ -411,35 +391,28 @@ std::string TrialText(const Trial &k, const Gate &g, const std::string &rep) {
 }
 
 std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n, std::vector<std::string> &shown) {
-  std::vector<std::string> ws;
-  for (size_t a = 0, b; a < query.size(); a = b + 1) {
-    b = std::min(query.find(' ', a), query.size());
-    if (b > a)
-      ws.push_back(lower(query.substr(a, b - a)));
-  }
-  std::vector<const Leaf *> hits;
-  for (const Leaf &l : leaves) {
-    const std::string hay = hay_of(l);
-    if (std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; }))
-      hits.push_back(&l);
+  text::Filter f;
+  f.add(text::words(query), "", [&](size_t i) -> const std::string & { return leaves[i].hay; });
+  std::vector<const Leaf *> hits, all;
+  for (size_t i = 0; i < leaves.size(); ++i) {
+    all.push_back(&leaves[i]);
+    if (f(i))
+      hits.push_back(&leaves[i]);
   }
   const size_t hit = hits.size();
-  if (!hit) {
-    std::string each;
-    for (const std::string &w : ws)
-      each += (each.empty() ? "" : " · ") + w + " " + std::to_string(std::count_if(leaves.begin(), leaves.end(), [&](const Leaf &l) { return hay_of(l).find(w) != std::string::npos; }));
-    return "(无命中; 各词单独命中: " + each + "; 换个写法或少给几个词)\n";
-  }
+  if (!hit)
+    return "(无命中; 各词单独命中: " + f.alone(leaves.size()) + "; 换个写法或少给几个词)\n";
   // 命中的叶所在的组 (按首个命中的序), 每组列全组; 公式与说明按组内首个命中的叶
   const std::vector<std::vector<const Leaf *>> gs = kin_groups(hits);
+  std::unordered_map<std::string_view, std::vector<const Leaf *>> kins;
+  for (const std::vector<const Leaf *> &g : kin_groups(all))
+    kins.emplace(g.front()->kin, g);
   std::string rows;
   for (size_t i = 0; i < gs.size() && i < static_cast<size_t>(n); ++i) {
     const Leaf &l = *gs[i].front();
-    const std::string key = kin_of(l);
-    std::vector<const Leaf *> kin;
-    for (const Leaf &x : leaves)
-      if (kin_of(x) == key)
-        kin.push_back(&x), shown.push_back(x.code);
+    const std::vector<const Leaf *> &kin = kins.at(l.kin);
+    for (const Leaf *x : kin)
+      shown.push_back(x->code);
     const std::string name = kin.size() == 1 ? l.code : LeafWords(l.code).first + "." + kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 下列按 " + col_of(l.code) + ")";
     rows += "| " + name + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " | " + (l.tf.empty() ? "x" : l.tf_def) + " |\n";
   }
@@ -543,19 +516,23 @@ std::string FoldedText(const std::vector<Act> &acts, int round) {
   std::string s = "# 一条较早回复的调用结果 (已折叠: 观察与查询只留标题, 回测只留结局; 要细节就重调)\n\n";
   for (size_t i = 0; i < acts.size(); ++i) {
     const Act &a = acts[i];
-    const Tool t = a.call.tool;
     s += "## [" + RefText({round, static_cast<int>(i) + 1}) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n";
-    const Run run = def(t).run;
-    if (run == Run::Eval && a.ok) {
+    switch (a.ok ? def(a.call.tool).fold : Fold::Keep) {
+    case Fold::Keep:
+      s += a.out + (a.out.ends_with('\n') ? "" : "\n");
+      break;
+    case Fold::Brief: {
       const Trial &k = std::get<Trial>(a.got);
       s += "- " + k.st.cand.name + " `" + k.st.cand.expr + "`" + (k.change.empty() ? "" : " (" + text::head(k.change, kTitleChars) + ")") + ": " + Brief(k.st.res) + "\n";
-    } else if (!a.ok || run == Run::Human || (run == Run::Now && t != Tool::SearchLeaves && t != Tool::ListTried && t != Tool::ListLibrary && t != Tool::ListNotes)) {
-      s += a.out + (a.out.ends_with('\n') ? "" : "\n");
+      break;
+    }
+    case Fold::Title:
+      break;
     }
   }
   return s;
 }
 
-Message RetryMessage(const std::string &err) { return fill(Msg::Retry, {{"error", err}}); }
+Message RetryMessage(const std::string &error) { return fill(Msg::Retry, {{"error", error}}); }
 
 } // namespace agent
