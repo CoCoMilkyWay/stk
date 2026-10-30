@@ -91,7 +91,67 @@ std::string lower(std::string s) { // 只动 ASCII
   return s;
 }
 
-std::string hay_of(const Leaf &l) { return lower(l.code + "\n" + l.name_cn + "\n" + l.formula + "\n" + l.desc + "\n" + l.tf); } // search_leaves 查的字
+std::string hay_of(const Leaf &l) { return lower(l.code + "\n" + l.name_cn + "\n" + l.formula + "\n" + l.desc + "\n" + l.tf + "\n" + l.family); } // search_leaves 查的字
+
+struct Family {
+  std::string key, title, card; // 族 (Leaf::family) / 族名 / 卡文
+};
+
+// 族卡文件: "# <族> <族名>" 起一节, 卡文到下一节
+std::vector<Family> families() {
+  std::ifstream f(kFamilyFile, std::ios::binary);
+  assert(f.is_open() && "族卡文件不在 kFamilyFile");
+  std::vector<Family> out;
+  for (std::string line; std::getline(f, line);) {
+    if (line.starts_with("# ")) {
+      const size_t sp = line.find(' ', 2);
+      assert(sp != std::string::npos && "族卡标题 = # <族> <族名>");
+      out.push_back({line.substr(2, sp - 2), line.substr(sp + 1), ""});
+      continue;
+    }
+    assert((!out.empty() || line.empty()) && "族卡文件以 # <族> <族名> 起头");
+    if (!out.empty())
+      out.back().card += line + "\n";
+  }
+  for (Family &x : out)
+    while (x.card.ends_with("\n\n"))
+      x.card.pop_back();
+  return out;
+}
+
+// 特征表: 叶按族分节 (族序 = 首次出现), 节首族卡, 节内按 档.层 分组, 每行 列名 中文名 [落盘变换]
+std::string leaves_text(const std::vector<Leaf> &leaves) {
+  const std::vector<Family> fams = families();
+  std::vector<std::string> order;
+  for (const Leaf &l : leaves)
+    if (std::find(order.begin(), order.end(), l.family) == order.end())
+      order.push_back(l.family);
+  std::string s;
+  for (const std::string &k : order) {
+    const auto f = std::find_if(fams.begin(), fams.end(), [&](const Family &x) { return x.key == k; });
+    if (f == fams.end())
+      std::fprintf(stderr, "[agent] %s: 族 %s 没有卡\n", kFamilyFile, k.c_str());
+    assert(f != fams.end() && "特征族缺卡");
+    std::vector<std::pair<std::string, std::string>> groups;
+    int n = 0;
+    for (const Leaf &l : leaves) {
+      if (l.family != k)
+        continue;
+      ++n;
+      const size_t dot = l.code.find('.', l.code.find('.') + 1);
+      assert(dot != std::string::npos && "叶名 = 档.层.列");
+      const std::string g = l.code.substr(0, dot);
+      auto it = std::find_if(groups.begin(), groups.end(), [&](const auto &x) { return x.first == g; });
+      if (it == groups.end())
+        groups.push_back({g, ""}), it = groups.end() - 1;
+      it->second += "- " + l.code.substr(dot + 1) + " " + cell(l.name_cn) + (l.tf.empty() ? "" : " [" + l.tf + "]") + "\n";
+    }
+    s += (s.empty() ? "## " : "\n## ") + f->title + " (" + std::to_string(n) + " 个)\n\n" + f->card;
+    for (const auto &[g, rows] : groups)
+      s += "\n### " + g + ".*\n" + rows;
+  }
+  return s;
+}
 
 std::string bp_of(double r) { return fmt("%+.1f", r * 1e4); }
 std::string bp_spark(const std::vector<double> &v) {
@@ -258,7 +318,7 @@ std::string TrialText(const Staged &st, const std::string &rep) {
   return s + surface_text(r.surf);
 }
 
-std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n) {
+std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n, std::vector<std::string> &shown) {
   std::vector<std::string> ws;
   for (size_t a = 0, b; a < query.size(); a = b + 1) {
     b = std::min(query.find(' ', a), query.size());
@@ -271,8 +331,10 @@ std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query
     const std::string hay = hay_of(l);
     if (!std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; }))
       continue;
-    if (++hit <= n)
-      rows += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " | " + (l.tf.empty() ? "x" : l.tf_def) + " |\n";
+    if (++hit > n)
+      continue;
+    shown.push_back(l.code);
+    rows += "| " + l.code + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " | " + (l.tf.empty() ? "x" : l.tf_def) + " |\n";
   }
   if (!hit) {
     std::string each;
@@ -299,22 +361,6 @@ std::string AnswerText(const Asked &a) {
 
 // ---- 发 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
-  // 叶按 档.层 分组 (组序 = 首次出现), 每行 列名 中文名 [落盘变换]
-  std::vector<std::pair<std::string, std::string>> groups;
-  std::vector<int> counts;
-  for (const Leaf &l : c.leaves) {
-    const size_t dot = l.code.find('.', l.code.find('.') + 1);
-    assert(dot != std::string::npos && "叶名 = 档.层.列");
-    const std::string g = l.code.substr(0, dot);
-    auto it = std::find_if(groups.begin(), groups.end(), [&](const auto &x) { return x.first == g; });
-    if (it == groups.end())
-      groups.push_back({g, ""}), counts.push_back(0), it = groups.end() - 1;
-    ++counts[static_cast<size_t>(it - groups.begin())];
-    it->second += "- " + l.code.substr(dot + 1) + " " + cell(l.name_cn) + (l.tf.empty() ? "" : " [" + l.tf + "]") + "\n";
-  }
-  std::string leaves;
-  for (size_t i = 0; i < groups.size(); ++i)
-    leaves += (i ? "\n## " : "## ") + groups[i].first + ".* (" + std::to_string(counts[i]) + " 个)\n" + groups[i].second;
   std::string ops = "| 算子 | 中文名 | 签名 (元与参数的值域) | 输出域 | 定义 | 说明 |\n|---|---|---|---|---|---|\n";
   for (const Op &o : c.ops)
     ops += "| " + o.name + " | " + cell(o.name_cn) + " | $" + cell(o.sig) + "$ | " + o.out + " | $" + cell(o.tex) + "$ | " + cell(o.note) + " |\n";
@@ -341,7 +387,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                                                    " 条消息原样留在对话里, 更早的结果消息会成批折叠 (观察与查询只留标题, 回测只留一行结局); 还要用的数在 eval_factor 的 note 里记下, 或重调"
                                              : "对话里的结果消息原样保留"},
                             {"tools", ToolsDoc(ask)},
-                            {"leaves", leaves},
+                            {"leaves", leaves_text(c.leaves)},
                             {"ops", ops}});
 }
 
