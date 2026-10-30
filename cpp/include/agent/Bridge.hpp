@@ -13,6 +13,7 @@
 //              look  观察: 一组因子 (候选英文名 / 具体根式) + 一组特征式 (+ 本层 K 线叶) → 评估期上整期一块的原料 Look (r16 秩 / 行统计 /
 //                    两端持仓 / 特征原值 / K 线 / 门控 / 标签), 不写文件; 汇总成文在 agent/Views
 //              book  盘口重放: 一只股票一天里的一段逐笔重放进订单簿 → 逐秒盘口与流量 + 大单事件 + 某一秒的全簿 (Book); 不经特征库, 不限评估期
+//              改动  候选相对 base 的改动归类 (delta) / 功能块是否覆盖模板 (parts_ok): 只查字段表与模板, 不碰数据
 //              可见: 只有统计与 Search 结局都在作用域此刻评估期上的因子才给 agent 看 (Result::visible), 不同窗口的数不可比
 //              四道 (Search / Run / Look / Book) 同构, 首次用到才建; 作用域与评估后端不变的连续会话共用其常驻块 (keep / Life::Worker), 变了即弃
 //   worker 协议 (与 agent/Chat.hpp 对仗): 交一件事 (eval / look / book ↔ ask) → poll 逐个取走 Tick, 末个 = End → live 看在跑那步 → busy / cancel
@@ -297,6 +298,38 @@ struct Adopted {
   std::string err;  // 未入库的原因; 空 = 入库 (自检会话 = 达门槛, 不拷)
   bool ok() const { return err.empty(); }
 };
+// 候选的功能块: 模板里的一个子式 + 它在衡量什么 (短句)
+struct Part {
+  std::string expr, means;
+};
+// 候选相对 base 的改动 (Lab::delta): 两棵树逐节点比, 差异处归类
+//   Params 只改数字 / Multi 改了多处 / Same 与 base 同式 → 退回; knob = 旋钮类 (换平滑 / 换压缩 / 换口径), 只在 base 达门槛时可用且有配额
+enum class Change : uint8_t { New,        // 没有 base: 新起
+                              Same,       // 与 base 同式
+                              Params,     // 只改了参数
+                              Multi,      // 差异不止一处
+                              Smooth,     // 换平滑: 均值类窗口互换 / 加减一层
+                              Squash,     // 换压缩: Log / Sqrt / Clip / Z / Winsor 互换 / 加减一层
+                              Caliber,    // 换口径: 同族同档层的叶只换计量或阈值 (额 / 量 / 笔, 1s / 10s, p80 / p93, 4w / 20w …)
+                              Leaf,       // 换原料: 换成别的行为的叶
+                              Wrap,       // 加一层变换 (非平滑 / 压缩)
+                              Unwrap,     // 去一层变换
+                              Add,        // 加项: 原式成了一个二元 / 三元组合的一元
+                              Cond,       // 条件化: 原式套进 TsMask / TsWhere
+                              Drop,       // 减项: 剥掉一层组合, 留下其中一元
+                              Struct,     // 改结构: 以上都不是
+                              Unparsed }; // 模板解析不了 (由 stage 报原因)
+struct ChangeDef {
+  const char *cn;
+  bool knob, bad; // 旋钮类 / 直接退回
+};
+inline constexpr ChangeDef kChanges[] = {{"新起", false, false}, {"同式", false, true}, {"只改参数", false, true}, {"改了多处", false, true}, {"换平滑", true, false}, {"换压缩", true, false}, {"换口径", true, false}, {"换原料", false, false}, {"加变换", false, false}, {"去变换", false, false}, {"加项", false, false}, {"条件化", false, false}, {"减项", false, false}, {"改结构", false, false}, {"解析不了", false, false}};
+static_assert(std::size(kChanges) == static_cast<size_t>(Change::Unparsed) + 1);
+inline const ChangeDef &def(Change c) { return kChanges[static_cast<int>(c)]; }
+struct Delta {
+  Change kind = Change::New;
+  std::string what; // 差异处: `旧子式` → `新子式` (多处时逐处列)
+};
 
 namespace catalog {
 std::vector<Choice> pools(); // key = 池下标
@@ -341,8 +374,13 @@ public:
   const Context &ctx() const;
   const std::vector<Result> &results() const; // 候选目录全部文件, 本持有期 score 降序
 
-  Staged stage(Cand c);                           // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
-  Adopted adopt(std::string name, const Gate &g); // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err; 否则拷进正式目录 (test 不拷)
+  Staged stage(Cand c);                                                // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
+  Adopted adopt(std::string name, const Gate &g);                      // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err; 否则拷进正式目录 (test 不拷)
+  const Result *tried(const std::string &name) const;                  // 可见的已试候选; 没有 = nullptr
+  bool passes(const Result &r, const Gate &g) const;                   // 至少一个权重达门槛
+  Delta delta(const std::string &base, const std::string &expr) const; // 模板 expr 相对模板 base 的改动
+  // 功能块须是 expr 的子式, 且覆盖根的输入与每个多元算子的非叶元; 不成 → false + err. expr 解析不了 = 放行 (由 stage 报)
+  bool parts_ok(const std::string &expr, const std::vector<Part> &parts, std::string &err) const;
 
   // 观察的参数 (只查字段表 / 候选目录 / 码表与池轴, 不碰数据): 不成 → false + err (原样给 agent)
   bool factor_of(const std::string &arg, LookFactor &out, std::string &err) const;    // 候选英文名 (取最佳权重; 无显著取代表点) 或具体根式

@@ -308,9 +308,10 @@ std::string LibraryText(const std::vector<Result> &lib, int top) {
                  "(空)\n");
 }
 
-std::string TrialText(const Staged &st, const std::string &rep) {
+std::string TrialText(const Trial &k, const std::string &rep) {
+  const Staged &st = k.st;
   const Result &r = st.res;
-  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + Detail(r) + rep;
+  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + (k.change.empty() ? "" : "- 改动: " + k.change + "\n") + Detail(r) + rep;
   if (!r.visible)
     return s;
   if (const Weight *w = r.best(); w && !w->grp.empty())
@@ -376,6 +377,9 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
                             {"batch", std::to_string(kBatch)},
+                            {"hyp_evals", std::to_string(kHypEvals)},
+                            {"hyp_knobs", std::to_string(kHypKnobs)},
+                            {"part_chars", std::to_string(kPartChars)},
                             {"max_calls", std::to_string(kMaxCalls)},
                             {"out_chars", std::to_string(kOutChars)},
                             {"max_ops", std::to_string(kMaxOps)},
@@ -411,34 +415,42 @@ Message TestMessage(bool ask) {
                                       : "本会话没有 ask_human, 不测它"}});
 }
 
-Message RoundMessage(const std::vector<Act> &acts, bool test) {
+Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test) {
   std::string s;
   for (size_t i = 0; i < acts.size(); ++i) {
     const Act &a = acts[i];
-    s += "## [" + std::to_string(i + 1) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
+    s += "## [" + RefText({round, static_cast<int>(i) + 1}) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
     if (!s.ends_with('\n'))
       s += '\n';
     s += '\n';
   }
   const std::string batch = std::to_string(kBatch);
-  const std::string next = test ? "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch +
-                                      " 个, 同条回复带一个观察); 对照工具说明查上面每个结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish."
-                                : "对照当前最好版本, 按系统提示 \"做法\" 里的判据判断每个回测的改动是好是坏, 再对照 note 里写下的预测: 机制假设是被支持还是落空; "
-                                  "从观察里找下一个要修的现象, 再发下一串调用 (eval_factor 至多 " +
-                                      batch + " 个, 同条回复带至少一个观察). 改不动了就 submit_factor 交最好的版本, 再 finish.";
-  return fill(Msg::Round, {{"results", s}, {"next", next}});
+  std::string next;
+  if (test) {
+    next = "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch + " 个); 对照工具说明查上面每个结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish.";
+  } else {
+    next = "先想清楚再发调用, 逐条回答:\n"
+           "- 上面的结果对照假设板上各假设的 expect / refute: 哪个被支持、哪个落空、哪个还不清? 证据够的用 judge 判 (证据写调用编号), 不够的想清还差哪个观察.\n"
+           "- 测出来的为什么是这样? 落空的错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)? 被支持的, 还有哪部分收益或分层没解释?\n"
+           "- 这个现象有没有更直接捕捉它的特征 (search_leaves 查, 族卡对照)? 现有叶做不出来就 request_feature.\n"
+           "- 下一步该用哪个工具查什么: 条件分层 (view_layers cond) 看在哪类盘面成立, 成分剥离 (view_explain) 看剥掉已知量还剩多少, 交割单 / 截面 / 个股 / 逐笔重放看行为是否真的发生, 研报库看同行怎么解释.\n"
+           "- 得到的认识值得跨会话留下的, note_insight 记.\n";
+    next += evaled ? "\n这一条不能回测 (上一条有回测): 用观察诊断本批变体为什么好 / 差, 对挂了变体的假设 judge."
+                   : "\n只有判为支持的假设能挂 eval_factor (至多 " + batch + " 个, 每个写清 base / 改动 / 预期 / 功能块). 按系统提示 \"做法\" 的判据比当前最好版本; 改不动了就 submit_factor 交最好的版本, 再 finish.";
+  }
+  return fill(Msg::Round, {{"results", s}, {"board", board.text()}, {"next", next}});
 }
 
-std::string FoldedText(const std::vector<Act> &acts) {
+std::string FoldedText(const std::vector<Act> &acts, int round) {
   std::string s = "# 一条较早回复的调用结果 (已折叠: 观察与查询只留标题, 回测只留结局; 要细节就重调)\n\n";
   for (size_t i = 0; i < acts.size(); ++i) {
     const Act &a = acts[i];
     const Tool t = a.call.tool;
-    s += "## [" + std::to_string(i + 1) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n";
+    s += "## [" + RefText({round, static_cast<int>(i) + 1}) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n";
     const Run run = def(t).run;
     if (run == Run::Eval && a.ok) {
-      const Staged &st = std::get<Trial>(a.got).st;
-      s += "- " + st.cand.name + " `" + st.cand.expr + "`: " + Brief(st.res) + "\n";
+      const Trial &k = std::get<Trial>(a.got);
+      s += "- " + k.st.cand.name + " `" + k.st.cand.expr + "`" + (k.change.empty() ? "" : " (" + text::head(k.change, kTitleChars) + ")") + ": " + Brief(k.st.res) + "\n";
     } else if (!a.ok || run == Run::Human || (run == Run::Now && t != Tool::SearchLeaves && t != Tool::ListTried && t != Tool::ListLibrary && t != Tool::ListNotes)) {
       s += a.out + (a.out.ends_with('\n') ? "" : "\n");
     }

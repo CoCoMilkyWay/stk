@@ -477,6 +477,124 @@ const Act *acting(const Mine &m) {
 }
 const char *step_name(const Trial &k) { return k.run.began() ? "Run" : "Search"; }
 
+// ---- 工具用量条: 按类拼接, 类内一工具一段 (同色相深浅相间), 段宽 = 次数占比; 类段够宽写类名与占比, 悬浮看各类各工具的次数 ----
+struct ToolCat {
+  const char *cn;
+  ImVec4 col;
+};
+constexpr ToolCat kToolCats[] = {{"启发", {0.35f, 0.78f, 0.45f, 1.0f}},
+                                 {"回测", {0.95f, 0.62f, 0.25f, 1.0f}},
+                                 {"检索", {0.38f, 0.62f, 0.95f, 1.0f}},
+                                 {"记录", {0.72f, 0.52f, 0.92f, 1.0f}},
+                                 {"其他", {0.58f, 0.58f, 0.58f, 1.0f}}};
+constexpr size_t kToolCatCount = std::size(kToolCats);
+
+size_t cat_of(Tool t) {
+  switch (t) {
+  case Tool::ViewFeature:
+  case Tool::ViewLayers:
+  case Tool::ViewTrades:
+  case Tool::ViewHolders:
+  case Tool::ViewResponse:
+  case Tool::ViewExplain:
+  case Tool::ViewSnapshot:
+  case Tool::ViewStockDay:
+  case Tool::ViewStockDays:
+  case Tool::ViewBook:
+  case Tool::Hypothesize:
+  case Tool::Judge:
+    return 0;
+  case Tool::EvalFactor:
+  case Tool::SubmitFactor:
+    return 1;
+  case Tool::SearchLeaves:
+  case Tool::SearchDocs:
+  case Tool::SearchFactors:
+  case Tool::ReadDoc:
+  case Tool::ListTried:
+  case Tool::ListLibrary:
+  case Tool::ListNotes:
+    return 2;
+  case Tool::RequestFeature:
+  case Tool::RequestTool:
+  case Tool::NoteInsight:
+  case Tool::ReportIssue:
+    return 3;
+  case Tool::Finish:
+  case Tool::AskHuman:
+    return 4;
+  }
+  assert(false && "工具没分类");
+  return 4;
+}
+
+ImU32 shade(ImVec4 c, int i) {
+  const float f = 1.0f - 0.2f * static_cast<float>(i % 3);
+  return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x * f, c.y * f, c.z * f, c.w));
+}
+
+void tools_bar(const Mine::Tally &c) {
+  const int all = c.all();
+  const float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetTextLineHeight();
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##tools_bar", ImVec2(w, h));
+  const bool hovered = ImGui::IsItemHovered();
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), ImGui::GetColorU32(ImGuiCol_FrameBg));
+  if (all == 0) {
+    if (hovered)
+      ImGui::SetTooltip("还没有调用");
+    return;
+  }
+  std::array<int, kToolCatCount> per{};
+  for (size_t t = 0; t < kToolCount; ++t)
+    per[cat_of(static_cast<Tool>(t))] += c.calls[t];
+  const float mx = ImGui::GetIO().MousePos.x;
+  const auto pct = [&](int n) { return 100.0 * n / all; };
+  int hit = -1;
+  float x = p0.x;
+  for (size_t k = 0; k < kToolCatCount; ++k) {
+    if (per[k] == 0)
+      continue;
+    const float k0 = x;
+    int i = 0;
+    for (size_t t = 0; t < kToolCount; ++t) {
+      if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
+        continue;
+      const float x1 = x + w * static_cast<float>(c.calls[t]) / static_cast<float>(all);
+      dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x1, p0.y + h), shade(kToolCats[k].col, i++));
+      if (hovered && mx >= x && mx < x1)
+        hit = static_cast<int>(t);
+      x = x1;
+    }
+    char label[32];
+    std::snprintf(label, sizeof(label), "%s %.0f%%", kToolCats[k].cn, pct(per[k]));
+    if (const float tw = ImGui::CalcTextSize(label).x; tw + 4.0f <= x - k0)
+      dl->AddText(ImVec2((k0 + x - tw) * 0.5f, p0.y), IM_COL32(20, 20, 20, 255), label);
+    if (k0 > p0.x)
+      dl->AddLine(ImVec2(k0, p0.y), ImVec2(k0, p0.y + h), ImGui::GetColorU32(ImGuiCol_WindowBg), 2.0f);
+  }
+  if (!hovered)
+    return;
+  ImGui::BeginTooltip();
+  ImGui::Text("本会话调用 %d 次", all);
+  for (size_t k = 0; k < kToolCatCount; ++k) {
+    if (per[k] == 0)
+      continue;
+    ImGui::TextColored(kToolCats[k].col, "%s  %d 次 · %.0f%%", kToolCats[k].cn, per[k], pct(per[k]));
+    ImGui::Indent();
+    for (size_t t = 0; t < kToolCount; ++t) {
+      if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
+        continue;
+      const ToolDef &d = def(static_cast<Tool>(t));
+      const ImVec4 col = static_cast<int>(t) == hit ? kColHead : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+      ImGui::TextColored(col, "%s %s  %d 次 · %.0f%%", d.name, d.cn, c.calls[t], pct(c.calls[t]));
+    }
+    ImGui::Unindent();
+  }
+  ImGui::EndTooltip();
+}
+
 // ---- 现在在干什么 (点了跳到当前轮) + 会话累计 ----
 void now_row(State &s, const Mine &m, const Flow &f) {
   const Phase ph = m.phase();
@@ -556,6 +674,7 @@ void now_row(State &s, const Mine &m, const Flow &f) {
   ImGui::TextDisabled("用时 %s · LLM %s · 执行 %s · token 输入 %s (缓存 %s) / 输出 %s · %zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 入库 %d", dur(t).c_str(),
                       dur(llm_s).c_str(), dur(act_s).c_str(), kilo(all.usage.prompt).c_str(), kilo(all.usage.cached).c_str(), kilo(all.usage.completion).c_str(),
                       m.timeline.size(), all.tally.all(), all.tally.n(Run::Look), all.tally.n(Run::Docs), all.tally.staged(), all.tally.adopted);
+  tools_bar(all.tally);
   if (!ll.message.empty())
     wrapped(color(TaskStatus::Kind::Warn), ll.message);
 }

@@ -32,6 +32,8 @@ enum class Event : uint8_t { Open,      // 按 New
                              Eval,      // 候选评完
                              Submit,    // submit_factor
                              Note,      // 记一条全局记录 (request_feature / request_tool / note_insight / report_issue)
+                             Hyp,       // hypothesize 记上假设板
+                             Judge,     // judge 判定 (证据成立的)
                              Questions, // ask_human 开始
                              Pick,      // 按 Start, 每题一行
                              Start,     // 按 Start
@@ -41,7 +43,7 @@ enum class Event : uint8_t { Open,      // 按 New
 struct EventDef {
   const char *id;
 };
-inline constexpr EventDef kEvents[] = {{"open"}, {"ask"}, {"reply"}, {"parse_fail"}, {"calls"}, {"call"}, {"result"}, {"stage"}, {"eval"}, {"submit"}, {"note"}, {"questions"}, {"pick"}, {"start"}, {"stop"}, {"cancel"}, {"finish"}};
+inline constexpr EventDef kEvents[] = {{"open"}, {"ask"}, {"reply"}, {"parse_fail"}, {"calls"}, {"call"}, {"result"}, {"stage"}, {"eval"}, {"submit"}, {"note"}, {"hyp"}, {"judge"}, {"questions"}, {"pick"}, {"start"}, {"stop"}, {"cancel"}, {"finish"}};
 static_assert(std::size(kEvents) == static_cast<size_t>(Event::Finish) + 1);
 inline const EventDef &def(Event e) { return kEvents[static_cast<int>(e)]; }
 

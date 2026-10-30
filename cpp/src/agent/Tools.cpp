@@ -105,12 +105,35 @@ constexpr ArgDef kReadArgs[] = {
     {"part", Arg::Str, "\"card\"", 0, 0, "card|outline|text", "读哪部分: card 标注卡 / outline 目录 / text 原文"},
     {"from", Arg::Int, "0", 0, 999, nullptr, "text: 从第几节读起 (outline 的节号); card: 从第几个因子列起 (0 = 整卡; 因子多时卡末尾会给)"},
     {"skip", Arg::Int, "0", 0, 1000000, nullptr, "text: 跳过该节开头多少字 (接着读上次没读完的; 上次结果末尾会给)"}};
-constexpr ArgDef kEvalArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
-                                {"name_cn", Arg::Str, nullptr, 0, 0, nullptr, "中文名: 1..10 个汉字, 不含字母数字标点"},
-                                {"expr", Arg::Str, nullptr, 0, 0, nullptr, "模板 (可含自由参数)"},
-                                {"note", Arg::Str, nullptr, 0, 0, nullptr,
-                                 "机制假设 (因子高 = 谁在做什么, 为什么预示后续收益) + 相对哪个版本改了哪一处、预测会看到什么; 由观察促成的写明是哪个调用看到了什么, "
-                                 "借鉴研报的写明研报 id 与借的是什么"}};
+constexpr ArgDef kHypArgs[] = {
+    {"title", Arg::Str, nullptr, 0, 0, nullptr, "一句话: 什么机制 (例: 秒级吃光新挂卖单的买方在不推价地吸筹)"},
+    {"actor", Arg::Str, nullptr, 0, 0, nullptr, "因子高 = 谁在做什么: 主动吃单方还是被动挂单方、哪一侧、大单还是小单、成交还是挂撤, 在什么盘面下"},
+    {"why", Arg::Str, nullptr, 0, 0, nullptr, "为什么这预示本持有期的收益 (信息 / 流动性冲击 / 行为偏差 …), 收益何时兑现; 借鉴研报的写研报 id 与借的是什么"},
+    {"expect", Arg::Str, nullptr, 0, 0, nullptr, "若假设成立, 哪个观察 (工具 + 参数) 会看到什么: 一个方向, 写出量级 (例: view_layers cond=价差 的高段 mono 比低段高 0.1 以上)"},
+    {"refute", Arg::Str, nullptr, 0, 0, nullptr, "看到什么就算落空 (同一观察的反面, 或另一个观察); 不能写成 \"若…则升, 若…则降\" 两头都说"}};
+constexpr ArgDef kJudgeArgs[] = {
+    {"hyp", Arg::Str, nullptr, 0, 0, nullptr, "假设编号 (假设板上的, 如 H3)"},
+    {"verdict", Arg::Str, nullptr, 0, 0, "supported|refuted|unclear", "supported 支持 (证据里须有观察调用) / refuted 落空 / unclear 不清 (证据不够; next 写还差什么)"},
+    {"evidence", Arg::Strs, nullptr, 1, kEvidence, nullptr, "证据: 调用编号 (结果标题里的 R<轮>#<序>), 须是该假设提出之后做成的调用; 再判时至少一个在上次判定之后"},
+    {"result", Arg::Str, nullptr, 0, 0, nullptr, "测出来是什么: 对照 expect / refute 写看到的数 (哪个调用、哪一行); 判变体时写各变体相对 base 的变化"},
+    {"why", Arg::Str, nullptr, 0, 0, nullptr, "为什么是这个结果: 机制上怎么解释; 落空的说清错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)"},
+    {"insight", Arg::Str, nullptr, 0, 0, nullptr, "得到了什么认识 (对这个因子、这类叶、这个市场); 值得跨会话留下的另用 note_insight 记"},
+    {"better_feature", Arg::Str, nullptr, 0, 0, nullptr,
+     "这个现象有没有更直接捕捉它的特征: 现有叶里哪个更贴切 (查过的叶名, 为什么), 或缺什么样的量 (缺的用 request_feature 申请)"},
+    {"next", Arg::Str, nullptr, 0, 0, nullptr, "下一步: 用哪个工具 (参数) 查什么, 想确认或排除什么; 或据此挂什么变体、提什么新假设"}};
+constexpr ArgDef kEvalArgs[] = {
+    {"name", Arg::Str, nullptr, 0, 0, nullptr, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
+    {"name_cn", Arg::Str, nullptr, 0, 0, nullptr, "中文名: 1..10 个汉字, 不含字母数字标点"},
+    {"expr", Arg::Str, nullptr, 0, 0, nullptr, "模板 (可含自由参数)"},
+    {"hyp", Arg::Str, nullptr, 0, 0, nullptr, "挂在哪个假设上 (假设板上判为支持的, 如 H3)"},
+    {"base", Arg::Str, "\"\"", 0, 0, nullptr,
+     "相对哪个已试候选改 (英文名, 本作用域历次会话的都可以); 空 = 新起. 系统比对两式归类改动: 只改参数 / 改了多处 / 同式直接退回; "
+     "换平滑 / 换压缩 / 换口径 只在 base 达入库门槛时可用, 每个假设至多 {hyp_knobs} 个"},
+    {"change", Arg::Str, nullptr, 0, 0, nullptr, "这一处改动想修哪个现象 (哪个调用看到了什么), 改的是哪一处"},
+    {"expect", Arg::Str, nullptr, 0, 0, nullptr, "预期: 相对 base 会看到什么变化 (mono / 多空 / rIC 哪个往哪个方向, 或哪个观察里的现象消失); 一个方向"},
+    {"parts", Arg::Parts, nullptr, 1, kParts, nullptr,
+     "功能块 [{\"expr\": 模板里逐字抄的一段子式, \"means\": 它衡量什么 (≤ {part_chars} 字的短句)}, …]; 须覆盖根的输入 (整个因子衡量什么) 与每个多元算子 "
+     "(TsAdd / TsSub / TsMul / TsImb / TsMask …) 的非叶元 (各成分各衡量什么)"}};
 constexpr ArgDef kTopArgs[] = {{"top", Arg::Int, "20", 1, kListTop, nullptr, "列前几个"}};
 constexpr ArgDef kNameArgs[] = {{"name", Arg::Str, nullptr, 0, 0, nullptr, "已评候选的英文名 (本作用域历次会话的都可以)"}};
 // 全局记录 (agent/Notes)
@@ -206,10 +229,20 @@ constexpr ToolDef kTools[] = {
      "读一篇研报: card 是标注卡 (各阶段的流派与设定 / 结论 / 库内前作与被引 / 因子与公式; 因子多读不完时末尾给接着读的 from), 先看它判断值不值得细读; 要细节看 outline (节号 · 标题 · 字数) 挑节, "
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
+    {Tool::Hypothesize, "hypothesize", "提假设", Run::Now, kHypArgs,
+     "写下一个机制假设与它可证伪的预测, 记上假设板 (编号 H1, H2 …, 待检验). 之后用观察检验它, 再 judge; 只有判为支持的假设才能挂 eval_factor 的变体 (每个至多 {hyp_evals} 个). "
+     "观察到新现象、上一个假设落空或变体用完、想换方向时提新的",
+     "编号"},
+    {Tool::Judge, "judge", "判假设", Run::Now, kJudgeArgs,
+     "对照假设的 expect / refute 给它下判定, 证据写调用编号. 两个时点: 检验它的观察做完后 (判为支持才能挂变体); 它的变体回测完的下一条回复 (系统强制: 待判的不判, 整条退回). "
+     "每次都写清测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么",
+     "判定后的假设板一行; 证据不成 (编号不存在 / 在提出之前 / 没做成 / 判支持却没有观察 / 再判没有新证据) 写原因, 不改判定"},
     {Tool::EvalFactor, "eval_factor", "回测", Run::Eval, kEvalArgs,
-     "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体, 且同一条回复里至少带一个观察调用; "
+     "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {batch} 个, 都应是当前在做那个因子的变体; "
+     "须挂在判为支持的假设上 (每个至多 {hyp_evals} 个, 有变体回测过还没判的先 judge), 写明相对哪个 base 改了哪一处、功能块各衡量什么; 上一条回复有回测时本条不能回测. "
      "与已有候选同式 (含只换截面根) 的不落, 用了本会话没经 search_leaves 查过的叶的不落",
-     "结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (+ 最佳权重的 20 组); 有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
+     "改动归类 (相对 base) + 结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (+ 最佳权重的 20 组); "
+     "有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
     {Tool::ListTried, "list_tried", "列已试", Run::Now, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
      "每个候选: 模板 + 结局"},
     {Tool::ListLibrary, "list_library", "列正式库", Run::Now, kTopArgs,
@@ -340,6 +373,24 @@ bool check(const ArgDef &a, const json &v, const std::string &path, std::string 
     if (!v.is_array() || v.size() < static_cast<size_t>(a.lo) || v.size() > static_cast<size_t>(a.hi))
       return fail("须是 " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 个问题的数组");
     return true;
+  case Arg::Parts:
+    if (!v.is_array() || v.size() < static_cast<size_t>(a.lo) || v.size() > static_cast<size_t>(a.hi))
+      return fail("须是 " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 个功能块的数组");
+    for (size_t i = 0; i < v.size(); ++i) {
+      const json &x = v[i];
+      std::string why;
+      if (!x.is_object() || x.size() != 2 || !x.contains("expr") || !x.contains("means") || !x["expr"].is_string() || !x["means"].is_string())
+        why = " 须是 {\"expr\": 子式, \"means\": 短句}";
+      else if (x["expr"].get<std::string>().empty())
+        why = ".expr 不能为空";
+      else if (const size_t n = text::chars(x["means"].get<std::string>()); n == 0 || n > static_cast<size_t>(kPartChars))
+        why = ".means 须是 1.." + std::to_string(kPartChars) + " 字的短句 (收到 " + std::to_string(n) + " 字)";
+      if (!why.empty()) {
+        err = at(path, i) + why;
+        return false;
+      }
+    }
+    return true;
   }
   return true;
 }
@@ -416,6 +467,9 @@ const ToolDef &def(Tool t) { return kTools[static_cast<size_t>(t)]; }
 std::string ToolText(const char *s) {
   std::string t = s;
   for (const auto &[key, v] : {std::pair<std::string_view, int>{"{batch}", kBatch},
+                               {"{hyp_evals}", kHypEvals},
+                               {"{hyp_knobs}", kHypKnobs},
+                               {"{part_chars}", kPartChars},
                                {"{stock_days}", kStockDays},
                                {"{stock_rows}", kStockRows},
                                {"{book_rows}", kBookRows},
@@ -435,6 +489,8 @@ std::string ArgType(const ArgDef &a) {
     return "字符串数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 个";
   case Arg::Questions:
     return "数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 题";
+  case Arg::Parts:
+    return "数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 块";
   }
   assert(false && "未知参数类型");
   return {};
@@ -453,8 +509,8 @@ std::string Call::text(size_t cap) const {
   bool first = true;
   for (const ArgDef &a : def(tool).args) {
     const json &v = args.at(a.key);
-    if (a.type == Arg::Questions) {
-      s += (first ? "" : ", ") + std::to_string(v.size()) + " 个问题";
+    if (a.type == Arg::Questions || a.type == Arg::Parts) {
+      s += (first ? "" : ", ") + std::to_string(v.size()) + (a.type == Arg::Questions ? " 个问题" : " 个功能块");
     } else {
       if (a.def && v == json::parse(a.def)) // 缺省值不写
         continue;
@@ -480,7 +536,6 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
     return false;
   }
   int evals = 0;
-  bool looked = false;
   for (size_t i = 0; i < cs.size(); ++i) {
     const std::string p = at("calls", i);
     const json &c = cs[i];
@@ -504,7 +559,6 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
       err = p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)";
       return false;
     }
-    looked = looked || d->run == Run::Look;
     const json args = c.contains("args") ? c["args"] : json::object();
     if (!args.is_object()) {
       err = p + ".args 须是 JSON 对象";
@@ -537,10 +591,6 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
       call.args[a.key] = args[a.key];
     }
     out.push_back(std::move(call));
-  }
-  if (evals && !looked) {
-    err = "有 eval_factor 的回复须至少带一个观察调用 (view_*): 回测只告诉你好不好, 观察才告诉你为什么; 观察可以排在回测之后, 看本批的某个变体";
-    return false;
   }
   return true;
 }
@@ -575,6 +625,14 @@ Questions QuestionsOf(const Call &c) {
   [[maybe_unused]] const bool ok = questions_of(c.args.at("questions"), "questions", qs, err);
   assert(ok && "解析时已校验");
   return qs;
+}
+
+std::vector<Part> PartsOf(const Call &c) {
+  assert(c.tool == Tool::EvalFactor);
+  std::vector<Part> out;
+  for (const json &x : c.args.at("parts"))
+    out.push_back({x.at("expr").get<std::string>(), x.at("means").get<std::string>()});
+  return out;
 }
 
 std::string Picked(const Question &q, const std::vector<bool> &mask) {

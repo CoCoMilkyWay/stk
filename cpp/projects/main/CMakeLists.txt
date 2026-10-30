@@ -358,6 +358,7 @@ set(MATH_PRECISE
     gui/util/Latex.cpp
     # agent: Bridge = agent 里唯一的因子契约头消费者; Views = 观察的统计 (NaN 即无效); Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     agent/Acts.cpp
+    agent/Board.cpp
     agent/Bridge.cpp
     agent/Chat.cpp
     agent/Docs.cpp

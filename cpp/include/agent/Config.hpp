@@ -43,7 +43,12 @@ inline constexpr int kCancelTimeoutSeconds = 5;  // 取消后通知远端停 run
 
 // ---- 挖掘 ----
 inline constexpr int kMaxCalls = 12;   // 一条回复的工具调用数上限 (agent/Tools.hpp)
-inline constexpr int kBatch = 8;       // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
+inline constexpr int kBatch = 3;       // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
+inline constexpr int kHypEvals = 3;    // 一个假设至多挂几个落了文件的变体 (提示词 {{hyp_evals}})
+inline constexpr int kHypKnobs = 1;    // 其中至多几个是旋钮类改动 (换平滑 / 换压缩 / 换口径; 只在 base 达门槛时可用; 提示词 {{hyp_knobs}})
+inline constexpr int kParts = 8;       // eval_factor 的功能块至多几个
+inline constexpr int kPartChars = 30;  // 一个功能块的说明至多几字 (提示词 {{part_chars}})
+inline constexpr int kEvidence = 6;    // judge 的证据至多引用几个调用
 inline constexpr int kMaxOps = 10;     // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
 inline constexpr int kGoodOps = 5;     // 建议的算子数 (提示词 {{good_ops}})
 inline constexpr int kListTop = 80;    // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)

@@ -8,12 +8,13 @@
 //             工具表 / 特征叶 (按族分节: 族卡 (kFamilyFile) + 按 档.层 分组的 列名 + 中文名 + 落盘变换; 公式与说明经 search_leaves) / 算子表
 //     first   首条 user: 已试候选 / 正式库 / 全局记录的规模 (用 list_tried / list_library / list_notes 看) + 能否提问 + 开工
 //     test    自检会话的首条 (代替 first): 把每个工具都调一遍, 对照说明查结果, 问题记 report_issue, 末了总评再 finish
-//     round   每条回复的调用结果, 按调用序 (调用一行 + 结果) + 下一步 (挖掘 / 自检各一种); 较早的在会话历史里成批换成折叠版 (FoldedText)
+//     round   每条回复的调用结果, 按调用序 (调用编号 + 调用一行 + 结果) + 假设板 (不折叠) + 下一步 (挖掘 / 自检各一种); 较早的在会话历史里成批换成折叠版 (FoldedText)
 //     retry   回复不合协议: 原因 + 按协议重发
 //   回复的解析 / 工具表见 agent/Tools.hpp; 观察工具的成文见 agent/Views.hpp
 //   结局文本两档: Brief 一行 (流水 / 界面标题) ↔ Detail 多行 (工具结果 / 界面展开); 五种结局 (Verdict) 一处写全
 // =============================================================================
 
+#include "agent/Board.hpp"
 #include "agent/Bridge.hpp"
 #include "agent/Tools.hpp"
 
@@ -56,8 +57,8 @@ std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每
 // ---- 工具结果 (当场 / 回测 / 问答; 观察的在 agent/Views) ----
 std::string TriedText(const std::vector<Result> &tried, int top); // list_tried
 std::string LibraryText(const std::vector<Result> &lib, int top); // list_library
-// eval_factor: 名 + 模板 + 结局 (+ rep = 代表点的观察摘要, agent/Views RepText) (+ 最佳权重的 20 组 / 参数曲面)
-std::string TrialText(const Staged &st, const std::string &rep = "");
+// eval_factor: 名 + 模板 + 改动 + 结局 (+ rep = 代表点的观察摘要, agent/Views RepText) (+ 最佳权重的 20 组 / 参数曲面)
+std::string TrialText(const Trial &k, const std::string &rep = "");
 std::string AnswerText(const Asked &a); // ask_human: 每题的选择 (没照推荐的附上推荐) + 附言
 // search_leaves: 命中的前 n 个 (叶 / 中文名 / 公式 / 说明 / 落盘值); shown 追加列出的叶名
 std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n, std::vector<std::string> &shown);
@@ -66,9 +67,10 @@ std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query
 Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold);           // fold = 会话历史折叠旧结果 (agent/Mine)
 Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask); // tried = 可见的已试候选数; notes = 全局记录的条数 (NotesBrief)
 Message TestMessage(bool ask);
-Message RoundMessage(const std::vector<Act> &acts, bool test); // 一条回复的全部调用, 按序; test = 自检会话
+// 一条回复的全部调用, 按序 (标题带调用编号 R<round>#<序>) + 假设板 + 下一步; evaled = 这条回复有回测 (下一条不能回测); test = 自检会话
+Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test);
 Message RetryMessage(const std::string &err);
-// round 的折叠版 (会话历史里换掉原文): 观察 / 查询只留标题, 回测留一行结局, 其余 (提交 / 问答 / 没做成的原因) 原样
-std::string FoldedText(const std::vector<Act> &acts);
+// round 的折叠版 (会话历史里换掉原文): 观察 / 查询只留标题, 回测留一行结局, 其余 (提交 / 问答 / 判定 / 没做成的原因) 原样
+std::string FoldedText(const std::vector<Act> &acts, int round);
 
 } // namespace agent

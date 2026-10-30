@@ -143,16 +143,16 @@ std::string wan(const Mean &m) { return m.n ? fmt("%.0f", m.sum / 1e4) : "—"; 
 
 // 日内时段: 竞价段 (每日开头 L.open 行) 单列, 其余每段约 30 分钟 (8 段); 日层只一段
 // 段名 = 起止时刻: 起 = 上一行收盘时刻, 午休不占行, 午后首段起于 13:00
-struct Part {
+struct Slot {
   int k0, k1; // 日内行 [k0, k1)
   std::string name;
 };
 int part_rows(const Look &L) { return std::max(1, (L.seg - L.open) / 8); }
-std::vector<Part> parts_of(const Look &L) {
+std::vector<Slot> parts_of(const Look &L) {
   if (L.seg == 1)
     return {{0, 1, "收盘"}};
   const int w = part_rows(L);
-  std::vector<Part> p{{0, L.open, "09:15–09:30 竞价"}};
+  std::vector<Slot> p{{0, L.open, "09:15–09:30 竞价"}};
   for (int k = L.open; k < L.seg; k += w) {
     const int k1 = L.seg - (k + w) < w ? L.seg : k + w;
     const std::string &from = L.clock[static_cast<size_t>(k - 1)];
@@ -162,7 +162,7 @@ std::vector<Part> parts_of(const Look &L) {
   }
   return p;
 }
-std::vector<int> part_of_row(const std::vector<Part> &ps, int seg) {
+std::vector<int> part_of_row(const std::vector<Slot> &ps, int seg) {
   std::vector<int> o(static_cast<size_t>(seg));
   for (size_t i = 0; i < ps.size(); ++i)
     for (int k = ps[i].k0; k < ps[i].k1; ++k)
@@ -368,7 +368,7 @@ std::string feature_view(const Call &c, const Look &L) {
   const int A = L.A(), T = L.T(), seg = L.seg, D = static_cast<int>(L.dates.size());
   const size_t N = static_cast<size_t>(T) * static_cast<size_t>(A);
   const int rstep = std::max(1, static_cast<int>(N / kCsCells));
-  const std::vector<Part> ps = parts_of(L);
+  const std::vector<Slot> ps = parts_of(L);
   const std::vector<int> pr = part_of_row(ps, seg);
   std::string s;
   std::vector<size_t> good;
@@ -489,7 +489,7 @@ std::string feature_view(const Call &c, const Look &L) {
         prof[k] = median_of(col);
       }
       s += "日内轮廓 (各行截面中位数, 取日间中位数): " + spark(prof) + "\n  ";
-      for (const Part &p : ps)
+      for (const Slot &p : ps)
         s += " " + L.clock[static_cast<size_t>(p.k1 - 1)] + " " + num(prof[static_cast<size_t>(p.k1 - 1)]);
       s += "\n";
     } else {
@@ -632,9 +632,9 @@ bool layers_view(const Call &c, const Look &L, std::string &out) {
   } else if (split != "none") {
     std::vector<std::pair<std::string, Layer>> bs;
     if (split == "tod") {
-      const std::vector<Part> ps = parts_of(L);
+      const std::vector<Slot> ps = parts_of(L);
       const std::vector<int> pr = part_of_row(ps, seg);
-      for (const Part &p : ps)
+      for (const Slot &p : ps)
         bs.push_back({p.name, {}});
       for (int t = 0; t < T; ++t)
         bs[static_cast<size_t>(pr[t % seg])].second.add(r->rows[t]);
@@ -750,7 +750,7 @@ bool trades_view(const Call &c, const Look &L, std::string &out) {
     mk[i] = mark_of(px, ts[i].t0, ts[i].a);
 
   if (seg > 1) {
-    const std::vector<Part> ps = parts_of(L);
+    const std::vector<Slot> ps = parts_of(L);
     const std::vector<int> pr = part_of_row(ps, seg);
     std::vector<Mean> by(ps.size());
     for (size_t i = 0; i < M; ++i)
@@ -969,7 +969,7 @@ bool response_view(const Call &c, const Look &L, std::string &out) {
   const Plane<float> e = excess_steps(L, px);
   const std::vector<Pt> pts = points_of(seg);
   const size_t P = pts.size();
-  const std::vector<Part> ps = tod ? parts_of(L) : std::vector<Part>{};
+  const std::vector<Slot> ps = tod ? parts_of(L) : std::vector<Slot>{};
   const std::vector<int> pr = tod ? part_of_row(ps, seg) : std::vector<int>{};
   std::vector<Mean> ex(P), rank(P);
   std::vector<std::vector<Mean>> by_day(P, std::vector<Mean>(static_cast<size_t>(D)));
@@ -1297,7 +1297,7 @@ bool stock_day(const Call &c, const Look &L, const Context &ctx, std::string &ou
   for (size_t i = 0; i < o.xs.size(); ++i)
     s += "---|";
   s += "\n";
-  for (const Part &p : parts_of(L)) {
+  for (const Slot &p : parts_of(L)) {
     double h = -INFINITY, l = INFINITY, v = 0.0;
     std::vector<double> rks, exs;
     int up = 0, dn = 0;
@@ -1698,7 +1698,7 @@ std::string RepText(const Look &L) {
     all.add(w);
   std::string s = "- 代表点的 20 组每期超额 G1 → G20: " + spark(all.grps(), bp) + " bp · mono " + r3(all.mono()) + " · 多空 " + bp(all.ls()) + "bp\n";
   if (L.seg > 1) {
-    const std::vector<Part> ps = parts_of(L);
+    const std::vector<Slot> ps = parts_of(L);
     const std::vector<int> pr = part_of_row(ps, L.seg);
     std::vector<Layer> bs(ps.size());
     for (int t = 0; t < L.T(); ++t)

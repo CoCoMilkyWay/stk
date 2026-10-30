@@ -8,7 +8,8 @@
 //   执行方 Run: Now 当场 (GUI 线程, 读写会话状态) / Human 等人 / Eval 回测 (Lab eval) / Look 观察 (Lab look, view_book 走 Lab book → agent/Views 成文) /
 //              Docs 研报库 (GUI 线程当场查, agent/Docs 成文)
 //   校验两层: 解析时按参数表 (类型 / 必填 / 范围 / 可选值; 不合 → 整条回复重发); 执行时按数据 (因子 / 特征 / 资产 / 日期 / 流派 / 研报不成 → 该调用的结果写原因, 其余照做)
-//   回复级约束: 1..kMaxCalls 个调用; eval_factor 至多 kBatch 个, 有 eval_factor 就至少带一个观察; finish 只能在末尾; ask_human 只在会话允许提问且还没问过时可用
+//   回复级约束: 1..kMaxCalls 个调用; eval_factor 至多 kBatch 个; finish 只能在末尾; ask_human 只在会话允许提问且还没问过时可用;
+//              随会话状态的 (上条有回测则本条不能回测 / 待判的假设须 judge) 见 agent/Acts Owed
 //   执行记录 Act: 一个调用的时段 / 交给 agent 的结果 / 带状态调用的过程 (eval_factor 的回测 Trial, ask_human 的问答 Asked); 执行见 agent/Acts.hpp
 // =============================================================================
 
@@ -38,6 +39,8 @@ enum class Tool : uint8_t { ViewFeature,
                             SearchDocs,
                             SearchFactors,
                             ReadDoc,
+                            Hypothesize,
+                            Judge,
                             EvalFactor,
                             ListTried,
                             ListLibrary,
@@ -59,7 +62,8 @@ inline constexpr size_t kRunCount = static_cast<size_t>(Run::Docs) + 1;
 enum class Arg : uint8_t { Str,
                            Int,
                            Strs,
-                           Questions };
+                           Questions,
+                           Parts };
 struct ArgDef {
   const char *key;
   Arg type;
@@ -116,7 +120,8 @@ struct Asked {
   Asked() = default;
   explicit Asked(Questions q);
 };
-Questions QuestionsOf(const Call &c); // ask_human 的问题 (解析时已校验)
+Questions QuestionsOf(const Call &c);     // ask_human 的问题 (解析时已校验)
+std::vector<Part> PartsOf(const Call &c); // eval_factor 的功能块 (解析时已校验形)
 // mask 选中的选项, "; " 连接
 std::string Picked(const Question &q, const std::vector<bool> &mask);
 // 选中的选项 + "其他: 意见" (other 且 text 非空), "; " 连接
@@ -139,9 +144,10 @@ struct Span {
       t1 = t;
   }
 };
-// eval_factor 的候选: 落文件 → 回测, 其内 search / run 两段
+// eval_factor 的候选: 落文件 → 回测, 其内 search / run 两段; change = 相对 base 的改动一行 (没落 = 空)
 struct Trial {
   Staged st;
+  std::string change;
   Span search, run;
 };
 // 一个调用的执行: span = 开始 → 做完; out = 交给 agent 的结果; ok = 做成了 (否则 out 是原因)

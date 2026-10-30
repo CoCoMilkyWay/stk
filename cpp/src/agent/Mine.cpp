@@ -54,12 +54,13 @@ void Mine::open(const SharedData &data, Setup s) {
     names.push_back(d.name);
   PruneToolOut(names);
   phase_ = Phase::Think;
-  stop_ = done = asked = false;
+  stop_ = done = asked = evaled = false;
   cur_ = folded_ = 0;
   t0 = std::chrono::steady_clock::now(), t_end = -1;
   timeline.clear();
   total = {};
   adopted.clear(), seen.clear();
+  board.clear();
   reason.clear(), report.clear();
   const int tried = static_cast<int>(std::count_if(lab.results().begin(), lab.results().end(), [](const Result &r) { return r.visible; }));
   log.event(Event::Open, {{"pool", setup.sc.pool},
@@ -198,13 +199,14 @@ void Mine::replied(llm::Reply r) {
     return finish(rd.err);
   std::vector<Call> cs;
   std::string err;
-  if (!ParseCalls(x.text, setup.ask && !asked, cs, err)) {
+  if (!ParseCalls(x.text, setup.ask && !asked, cs, err) || !(err = Owed(cs, *this)).empty()) {
     log.event(Event::ParseFail, {{"round", round()}, {"error", err}});
     rd.err = "不合协议: " + err;
     if (go(Phase::Think))
       ask(RetryMessage(err));
     return;
   }
+  evaled = std::any_of(cs.begin(), cs.end(), [](const Call &c) { return c.tool == Tool::EvalFactor; });
   nlohmann::ordered_json tools = nlohmann::ordered_json::array();
   for (Call &c : cs) {
     tools.push_back(def(c.tool).name);
@@ -239,7 +241,7 @@ void Mine::step() {
   if (done)
     return finish("agent 宣布挖完");
   if (go(Phase::Think))
-    ask(RoundMessage(rd.acts, setup.test));
+    ask(RoundMessage(rd.acts, round(), board, evaled, setup.test));
 }
 
 void Mine::ended(Act &a) {
@@ -274,7 +276,7 @@ void Mine::ask(Message m) {
   if (const size_t n = timeline.size(), keep = static_cast<size_t>(kKeepRounds); llm::def(setup.llm.backend).local && n - folded_ >= 2 * keep) {
     for (size_t j = folded_; j + keep <= n; ++j)
       if (timeline[j].kind == Msg::Round)
-        chat.fold(j, FoldedText(timeline[j - 1].acts));
+        chat.fold(j, FoldedText(timeline[j - 1].acts, static_cast<int>(j)));
     folded_ = n - keep + 1;
   }
   log.event(Event::Ask, {{"round", round() + 1}, {"kind", def(m.kind).id}, {"chars", m.text.size()}});
@@ -297,7 +299,8 @@ void Mine::finish(std::string why) {
 std::string Mine::report_of(const std::string &why) const {
   const Tally &c = total.tally;
   std::string r = std::string(setup.test ? "# 自检报告\n\n- 自检会话: 候选 / 日志 / 全局记录在 global/test 目录, 提交只查门槛不拷进正式库" : "# 结束报告\n") + "\n- 结束原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
-                  std::to_string(c.n(Run::Look)) + ", 查研报 " + std::to_string(c.n(Run::Docs)) + ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n\n";
+                  std::to_string(c.n(Run::Look)) + ", 查研报 " + std::to_string(c.n(Run::Docs)) + ", 假设 " + std::to_string(c.n(Tool::Hypothesize)) + ", 判定 " + std::to_string(c.n(Tool::Judge)) +
+                  ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n\n";
   std::string in, out;
   for (size_t i = 0; i < timeline.size(); ++i)
     for (const Act &a : timeline[i].acts)
@@ -305,6 +308,7 @@ std::string Mine::report_of(const std::string &why) const {
         (a.ok ? in : out) += "- 第 " + std::to_string(i + 1) + " 轮 " + a.call.str("name") + (a.ok ? "" : " — " + a.out) + "\n";
   r += std::string(setup.test ? "## 达门槛 (" : "## 入库 (") + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
   r += "## 未入库的提交 (" + std::to_string(c.n(Tool::SubmitFactor) - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out);
+  r += "\n## 假设 (" + std::to_string(board.all().size()) + ")\n" + board.report();
   for (size_t i = 0; i < kNoteKindCount; ++i) {
     const NoteKind k = static_cast<NoteKind>(i);
     std::string s;

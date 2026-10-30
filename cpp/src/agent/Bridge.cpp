@@ -91,6 +91,128 @@ std::string twin_of(const F::FeatureTable &ft, const std::vector<Result> &result
   return {};
 }
 
+// ---- 改动归类 (Lab::delta) ----
+namespace fx = factor::expr;
+
+std::string sub_of(const fx::Expr &e, int i) { return fx::to_string(e, i); }
+int arity_of(const fx::Node &n) { return n.op < 0 ? 0 : fx::kOps[n.op].arity; }
+bool op_in(const fx::Node &n, std::initializer_list<std::string_view> names) {
+  return n.op >= 0 && std::find(names.begin(), names.end(), std::string_view(fx::kOps[n.op].name)) != names.end();
+}
+bool smooth_op(const fx::Node &n) { return op_in(n, {"TsMeanRoll", "TsWmaRoll", "TsMeanEma", "TsMeanCum", "TsSumRoll", "TsSumCum"}); }
+bool squash_op(const fx::Node &n) { return op_in(n, {"TsLog", "TsSqrt", "TsClip", "TsZRoll", "CsWinsor"}); }
+
+// 同算子两节点的参数相同 (自由位相同, 固定值相同)
+bool same_params(const fx::Node &a, const fx::Node &b) {
+  const fx::OpInfo &o = fx::kOps[a.op];
+  return a.free == b.free && (!fx::declares(o.params, "d") || (a.free & fx::kFreeD) || a.p.d == b.p.d) &&
+         (!fx::declares(o.params, "k") || (a.free & fx::kFreeK) || a.p.k == b.p.k) && (!fx::declares(o.params, "k2") || (a.free & fx::kFreeK2) || a.p.k2 == b.p.k2);
+}
+
+// 一处差异: base 的节点 i ↔ expr 的节点 j; param = 同算子同子树, 只差参数
+struct Region {
+  int i, j;
+  bool param;
+};
+void regions_of(const fx::Expr &b, int i, const fx::Expr &n, int j, std::vector<Region> &out) {
+  if (sub_of(b, i) == sub_of(n, j))
+    return;
+  const fx::Node &x = b.nodes[static_cast<size_t>(i)], &y = n.nodes[static_cast<size_t>(j)];
+  if (x.op < 0 || x.op != y.op) {
+    out.push_back({i, j, false});
+    return;
+  }
+  if (!same_params(x, y))
+    out.push_back({i, j, true});
+  for (int a = 0; a < arity_of(x); ++a)
+    regions_of(b, x.args[a], n, y.args[a], out);
+}
+
+// 叶名 档.层.列 → (档.层, 列按 '_' 切的词)
+std::pair<std::string, std::vector<std::string>> words_of(const std::string &code) {
+  const size_t dot = code.find('.', code.find('.') + 1);
+  assert(dot != std::string::npos && "叶名 = 档.层.列");
+  std::vector<std::string> ws;
+  for (size_t a = dot + 1, b; a <= code.size(); a = b + 1) {
+    b = std::min(code.find('_', a), code.size());
+    ws.push_back(code.substr(a, b - a));
+  }
+  return {code.substr(0, dot), ws};
+}
+// 计量 / 阈值词: 额 / 量 / 笔, 带数字的 (1s / p93 / 20w / 5), all
+bool measure_word(const std::string &w) {
+  return w == "amt" || w == "vol" || w == "n" || w == "all" || std::any_of(w.begin(), w.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+}
+// 两叶之换: 同档层同词数只差一个词 → "旧词→新词" 作签名 (口径 = 两词都是计量 / 阈值词且同族); 否则签名 = 两个全名
+struct Swap {
+  std::string sig;
+  bool caliber = false;
+};
+Swap swap_of(const std::vector<Leaf> &leaves, const std::string &a, const std::string &b) {
+  const auto fam = [&](const std::string &c) {
+    const auto it = std::find_if(leaves.begin(), leaves.end(), [&](const Leaf &l) { return l.code == c; });
+    return it == leaves.end() ? std::string() : it->family;
+  };
+  const auto [ga, wa] = words_of(a);
+  const auto [gb, wb] = words_of(b);
+  if (ga == gb && wa.size() == wb.size()) {
+    size_t diff = 0, at = 0;
+    for (size_t k = 0; k < wa.size(); ++k)
+      if (wa[k] != wb[k])
+        ++diff, at = k;
+    if (diff == 1)
+      return {wa[at] + "→" + wb[at], measure_word(wa[at]) && measure_word(wb[at]) && fam(a) == fam(b)};
+  }
+  return {a + "→" + b, false};
+}
+
+Delta classify(const std::vector<Leaf> &leaves, const fx::Expr &b, const fx::Expr &n) {
+  std::vector<Region> rs;
+  regions_of(b, 0, n, 0, rs);
+  const auto shown = [&](const Region &r) { return "`" + text::head(sub_of(b, r.i), 80) + "` → `" + text::head(sub_of(n, r.j), 80) + "`"; };
+  std::string what;
+  for (const Region &r : rs)
+    what += (what.empty() ? "" : "; ") + shown(r);
+  if (rs.empty())
+    return {Change::Same, ""};
+  if (std::all_of(rs.begin(), rs.end(), [](const Region &r) { return r.param; }))
+    return {Change::Params, what};
+  const auto leafy = [&](const Region &r) { return !r.param && b.nodes[static_cast<size_t>(r.i)].op < 0 && n.nodes[static_cast<size_t>(r.j)].op < 0; };
+  if (std::all_of(rs.begin(), rs.end(), leafy)) {
+    const Swap s0 = swap_of(leaves, b.nodes[static_cast<size_t>(rs[0].i)].feat, n.nodes[static_cast<size_t>(rs[0].j)].feat);
+    const bool one = std::all_of(rs.begin(), rs.end(), [&](const Region &r) {
+      return swap_of(leaves, b.nodes[static_cast<size_t>(r.i)].feat, n.nodes[static_cast<size_t>(r.j)].feat).sig == s0.sig;
+    });
+    if (one)
+      return {s0.caliber ? Change::Caliber : Change::Leaf, what};
+  }
+  if (rs.size() > 1)
+    return {Change::Multi, what};
+  const fx::Node &x = b.nodes[static_cast<size_t>(rs[0].i)], &y = n.nodes[static_cast<size_t>(rs[0].j)];
+  const std::string sb = sub_of(b, rs[0].i), sn = sub_of(n, rs[0].j);
+  const auto has_kid = [](const fx::Expr &e, const fx::Node &p, const std::string &s) {
+    for (int a = 0; a < arity_of(p); ++a)
+      if (sub_of(e, p.args[a]) == s)
+        return true;
+    return false;
+  };
+  Change k = Change::Struct;
+  if (arity_of(y) == 1 && sub_of(n, y.args[0]) == sb)
+    k = smooth_op(y) ? Change::Smooth : squash_op(y) ? Change::Squash
+                                                     : Change::Wrap;
+  else if (arity_of(x) == 1 && sub_of(b, x.args[0]) == sn)
+    k = smooth_op(x) ? Change::Smooth : squash_op(x) ? Change::Squash
+                                                     : Change::Unwrap;
+  else if (arity_of(x) == 1 && arity_of(y) == 1 && sub_of(b, x.args[0]) == sub_of(n, y.args[0]))
+    k = smooth_op(x) && smooth_op(y) ? Change::Smooth : squash_op(x) && squash_op(y) ? Change::Squash
+                                                                                     : Change::Struct;
+  else if (arity_of(y) >= 2 && has_kid(n, y, sb))
+    k = op_in(y, {"TsMask", "TsWhere"}) ? Change::Cond : Change::Add;
+  else if (arity_of(x) >= 2 && has_kid(b, x, sn))
+    k = Change::Drop;
+  return {k, what};
+}
+
 // 具体式 (无自由参数) 的解析; 不成 → false + err
 bool concrete(const F::FeatureTable &ft, const std::string &src, factor::expr::Expr &e, std::string &err) {
   if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, err))
@@ -900,6 +1022,65 @@ Adopted Lab::adopt(std::string name, const Gate &g) {
     fs::copy_file(fs::path(I.dir) / it->file, to);
   }
   return s;
+}
+
+const Result *Lab::tried(const std::string &name) const {
+  const std::vector<Result> &rs = p_->results;
+  const auto it = std::find_if(rs.begin(), rs.end(), [&](const Result &r) { return r.visible && r.name == name; });
+  return it == rs.end() ? nullptr : &*it;
+}
+
+bool Lab::passes(const Result &r, const Gate &g) const { return gate_miss(g, r).empty(); }
+
+Delta Lab::delta(const std::string &base, const std::string &expr) const {
+  const Impl &I = *p_;
+  const F::FeatureTable &ft = *I.ft();
+  fx::Expr b, n;
+  std::string err;
+  if (!fx::parse(base, ft.lookup(), ft.seg, b, err) || !fx::parse(expr, ft.lookup(), ft.seg, n, err))
+    return {Change::Unparsed, ""};
+  return classify(I.ctx.leaves, b, n);
+}
+
+bool Lab::parts_ok(const std::string &expr, const std::vector<Part> &parts, std::string &err) const {
+  const F::FeatureTable &ft = *p_->ft();
+  fx::Expr e;
+  if (!fx::parse(expr, ft.lookup(), ft.seg, e, err)) {
+    err.clear();
+    return true;
+  }
+  std::vector<std::string> subs;
+  for (size_t i = 0; i < e.nodes.size(); ++i)
+    subs.push_back(sub_of(e, static_cast<int>(i)));
+  std::vector<std::string> have;
+  for (const Part &p : parts) {
+    fx::Expr q;
+    std::string why;
+    if (!fx::parse(p.expr, ft.lookup(), ft.seg, q, why)) {
+      err = "功能块 `" + p.expr + "` 解析不了: " + why;
+      return false;
+    }
+    if (std::find(subs.begin(), subs.end(), q.canon) == subs.end()) {
+      err = "功能块 `" + p.expr + "` 不是模板里的子式 (从模板里逐字抄一段完整的子式, 自由参数照模板写裸键)";
+      return false;
+    }
+    have.push_back(q.canon);
+  }
+  // 要说明的: 根的输入 (整个因子在衡量什么) + 每个多元算子的非叶元 (各成分各衡量什么)
+  std::vector<int> need = {arity_of(e.root()) >= 1 ? e.root().args[0] : 0};
+  for (const fx::Node &x : e.nodes)
+    for (int a = 0; arity_of(x) >= 2 && a < arity_of(x); ++a)
+      if (e.nodes[static_cast<size_t>(x.args[a])].op >= 0)
+        need.push_back(x.args[a]);
+  std::string miss;
+  for (const int i : need)
+    if (std::find(have.begin(), have.end(), subs[static_cast<size_t>(i)]) == have.end() && miss.find(subs[static_cast<size_t>(i)]) == std::string::npos)
+      miss += "\n- `" + subs[static_cast<size_t>(i)] + "`";
+  if (!miss.empty()) {
+    err = "功能块没覆盖这些子式 (根的输入 + 每个多元算子的非叶元都要一句话说清它衡量什么):" + miss;
+    return false;
+  }
+  return true;
 }
 
 bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &err) const { return p_->factor_of(arg, out, err); }

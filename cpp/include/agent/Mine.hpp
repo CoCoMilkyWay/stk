@@ -5,7 +5,7 @@
 // =============================================================================
 //   Phase    等谁    完成信号          转移
 //   None     人      open              发 first (自检会话发 test) → Think
-//   Think    agent   chat End          合格 (一串调用) → Act; 不合格 → 发 retry, 留 Think
+//   Think    agent   chat End          合格 (一串调用, 且守住会话约束 Owed) → Act; 不合格 → 发 retry, 留 Think
 //   Act      系统    调用做完          按序执行 (agent/Acts): 当场的立即做完; 回测 / 观察等 lab End; ask_human → Choose;
 //                                      全部做完: 有 finish → Report, 否则发 round (各调用的结果) → Think
 //   Choose   人      start             答复作 ask_human 的结果 → Act (接着执行余下的调用)
@@ -19,6 +19,7 @@
 //   total = timeline 的累计: 计数随事件即加 (调用开始即计其工具); 用时 / token 一段收尾才加 (在走那段由其 Span 现算)
 // =============================================================================
 
+#include "agent/Board.hpp"
 #include "agent/Bridge.hpp"
 #include "agent/Chat.hpp"
 #include "agent/Journal.hpp"
@@ -82,6 +83,8 @@ struct Desk {
   Total total;
   std::set<std::string> adopted; // 本会话入库的英文名
   std::set<std::string> seen;    // 本会话 search_leaves 列出过的叶 (eval_factor 的式子只能用它们)
+  Board board;                   // 本会话的假设板
+  bool evaled = false;           // 上一条执行了的回复里有 eval_factor (这一条不能再回测)
   bool done = false;             // agent 调了 finish
   bool asked = false;            // 已用过 ask_human
   std::string reason, report;    // 结束原因 / 结束报告
