@@ -61,6 +61,28 @@ int ops_of(const F::FeatureTable &ft, const std::string &src) {
   return factor::expr::parse(src, ft.lookup(), ft.seg, e, err) ? e.n_ops : 0;
 }
 
+// 同式键: 规范串, 截面根 (CsRank / CsNormRank / CsZ 只看截面排序, 互换不改分组与 rIC) 去掉根名; 解析不了 = 空
+std::string twin_key(const F::FeatureTable &ft, const std::string &src) {
+  factor::expr::Expr e;
+  std::string err;
+  if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, err))
+    return {};
+  const factor::expr::Node &r = e.root();
+  const std::string_view nm = r.op >= 0 ? std::string_view(factor::expr::kOps[r.op].name) : std::string_view();
+  return nm == "CsRank" || nm == "CsNormRank" || nm == "CsZ" ? "Cs:" + factor::expr::to_string(e, r.args[0]) : e.canon;
+}
+
+// 与 src 同式的可见候选名; 无 = 空
+std::string twin_of(const F::FeatureTable &ft, const std::vector<Result> &results, const std::string &src) {
+  const std::string key = twin_key(ft, src);
+  if (key.empty())
+    return {};
+  for (const Result &r : results)
+    if (r.visible && !r.tmpl.empty() && twin_key(ft, r.tmpl) == key)
+      return r.name;
+  return {};
+}
+
 // 具体式 (无自由参数) 的解析; 不成 → false + err
 bool concrete(const F::FeatureTable &ft, const std::string &src, factor::expr::Expr &e, std::string &err) {
   if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, err))
@@ -760,6 +782,8 @@ Staged Lab::stage(Cand c) {
     err = "中文名须 1..10 个汉字";
   else if (const int n = ops_of(*I.ft(), x.expr); n > kMaxOps)
     err = "算子 " + std::to_string(n) + " 个, 超过上限 " + std::to_string(kMaxOps) + " (建议 " + std::to_string(kGoodOps) + " 个左右)";
+  else if (const std::string tw = twin_of(*I.ft(), I.results, x.expr); !tw.empty())
+    err = "与候选 " + tw + " 同式 (截面根 CsRank / CsNormRank / CsZ 互换也算同式), 回测结果必同";
   else
     s.file = F::AddFactorFile(I.dir, *I.ft(), x.name, x.name_cn, x.expr, x.note, err);
   if (s.ok())

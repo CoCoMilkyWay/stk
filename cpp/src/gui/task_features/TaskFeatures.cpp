@@ -157,7 +157,25 @@ TaskHandle CreateFeaturesTask() {
     const bool has_selection = data.feature.selection.primary() != nullptr;
     fs.has_selection = has_selection;
 
-    // Services 懒创建 (首次 Draw), 未创建 = 必然没在算
+    // 计算服务输入就绪即建 (自动续算不等进 Features 页), 其余 Services 懒创建 (首次 Draw)
+    if (state->inputs_ready && !state->compute_service)
+      state->compute_service = std::make_unique<Features::ComputeService>(data);
+    if (state->compute_service) {
+      Features::TickCompute(*state->compute_service, state->compute_state, data, state->inputs_ready);
+      // 一轮收尾 (池表重扫在 TickCompute): 新库落盘 → OrderFlow 按新清单重建 + 重扫, 预览重抽, 相关矩阵作废 (没建 / 没起的首次 Draw 自然按新库)
+      const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
+      if (state->prev_compute_phase == Phase::Running && (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
+        if (state->orderflow_service) {
+          state->orderflow_service = std::make_unique<Features::OrderFlowService>();
+          data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
+        }
+        if (state->streams_started) {
+          state->preview_service->RequestCompute(data);
+          Features::InvalidateCorrRequests(state->corr_ui_state);
+        }
+      }
+      state->prev_compute_phase = current_phase;
+    }
     const bool compute_busy = state->compute_service && state->compute_service->busy();
     // 点下 Compute 起到一轮收尾 (弹窗状态机非 Idle): 共享数据冻结
     fs.computing = state->compute_state.ui_state != Features::ComputeUIState::Idle;
@@ -285,12 +303,6 @@ TaskHandle CreateFeaturesTask() {
       state->corr_lag_service = std::make_unique<Features::CorrLagService>();
     }
 
-    // OrderFlow 主池随请求 (TabOrderFlow 按选中列定); 库重算后整体重建 + 重扫
-    const auto renew_orderflow = [&] {
-      state->orderflow_service = std::make_unique<Features::OrderFlowService>();
-      data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
-    };
-
     // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (池 A 轴要它).
     // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
     // Preview 起手即自动构建 (全 L_1min 特征轮训抽样, 不依赖选中); Dist / Transform 等选中特征
@@ -329,28 +341,6 @@ TaskHandle CreateFeaturesTask() {
                                                  state->transform_ui_state.focus);
       }
       state->prev_primary = feat ? std::optional<ColRef>(*feat) : std::nullopt;
-    }
-
-    // Handle trigger from UI (核布局由 ComputeService::run 按机器核数推导)
-    if (state->compute_state.trigger_start) {
-      state->compute_state.trigger_start = false;
-      state->compute_service->Request(state->compute_state.config);
-    }
-
-    // Detect compute completion and mark L_1min for reload
-    {
-      const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
-      if ((state->prev_compute_phase == Phase::Running) &&
-          (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
-        // Compute just finished - OrderFlow 按新清单重建 + 重扫; 池表重扫; 预览重抽 (新库落盘)
-        renew_orderflow();
-        state->compute_state.libs_dirty = true;
-        if (state->streams_started) {
-          state->preview_service->RequestCompute(data);
-          Features::InvalidateCorrRequests(state->corr_ui_state); // 新库落盘: 相关矩阵同样作废
-        }
-      }
-      state->prev_compute_phase = current_phase;
     }
 
     // Tab 锁定/使能在 Update (帧首, 无论选中都跑), 这里只管渲染与生命周期

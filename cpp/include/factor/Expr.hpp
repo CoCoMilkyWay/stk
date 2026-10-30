@@ -500,13 +500,31 @@ private:
     return r;
   }
   static bool is_param_key(std::string_view id) { return id == "d" || id == "k" || id == "k2"; }
+  static bool is_num0(char c) { return (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'; }
+  static constexpr const char *kKeysHint = "参数键只有 d / k / k2, 不同节点的同名裸键各自独立, 不必编号";
+  // pos 处多出的序列项像什么写错了 (数字 = 参数没写键; 无点的名字 = 编了号的参数键); 都不像 → 空
+  std::string stray(size_t pos) {
+    const size_t save = i_;
+    i_ = pos;
+    std::string_view id;
+    std::string why;
+    if (pos < s_.size() && is_num0(s_[pos]))
+      why = "; 参数写成 键=数字 (如 d=30), 序列位置只接表达式";
+    else if (ident(id) && id.find('.') == std::string_view::npos && !peek('(') && !peek('.'))
+      why = "; " + std::string(id) + " 不是参数键 (" + kKeysHint + ")";
+    i_ = save;
+    return why;
+  }
 
   // 解析一个表达式项, out = 新节点下标
   bool parse_expr(int &out) {
     const size_t pos0 = (skip_ws(), i_);
     std::string_view id;
-    if (!ident(id))
+    if (!ident(id)) {
+      if (i_ < s_.size() && is_num0(s_[i_]))
+        return fail(pos0, "没有标量常量: 阈值写成算子的参数 k / k2, 窗长写成 d=数字");
       return fail(pos0, i_ < s_.size() ? std::string("期望算子名或特征 code, 遇到 '") + s_[i_] + "'" : "表达式不完整");
+    }
     if (i_ < s_.size() && s_[i_] == '.') { // 限定名: 紧跟的 '.' 段并入 (段可数字开头, 如 5m)
       const size_t b = i_ - id.size();
       while (i_ < s_.size() && (is_ident(s_[i_]) || s_[i_] == '.'))
@@ -519,7 +537,7 @@ private:
         return fail(pos0, "算子 " + std::string(id) + " 后须跟 '('");
       switch (fl_(id)) {
       case FeatState::MISSING:
-        return fail(pos0, "字段表里没有特征 " + std::string(id));
+        return fail(pos0, "字段表里没有特征 " + std::string(id) + (id.find('.') == std::string_view::npos ? std::string(" (特征写全名 档.层.列; ") + kKeysHint + ")" : ""));
       case FeatState::FORBIDDEN:
         return fail(pos0, "特征 " + std::string(id) + " 不许作因子输入 (标签 / 元数据列)");
       case FeatState::FINER:
@@ -558,7 +576,7 @@ private:
           std::string_view key;
           ident(key);
           if (!declares(o.params, key))
-            return fail(pos, std::string(o.name) + " 不声明参数 " + std::string(key) + (o.params[0] ? " (声明: " + std::string(o.params) + ")" : " (无参数)"));
+            return fail(pos, std::string(o.name) + " 不声明参数 " + std::string(key) + (o.params[0] ? " (声明: " + std::string(o.params) + "; " + kKeysHint + ")" : " (无参数)"));
           bool &got = key == "d" ? got_d : (key == "k" ? got_k : got_k2);
           if (got)
             return fail(pos, "参数 " + std::string(key) + " 重复");
@@ -581,7 +599,7 @@ private:
           if (seen_param)
             return fail(pos, "序列参数须在命名参数之前");
           if (n_args >= 3 || n_args >= o.arity)
-            return fail(pos, std::string(o.name) + " 是 " + std::to_string(o.arity) + " 元算子, 序列参数过多");
+            return fail(pos, std::string(o.name) + " 是 " + std::to_string(o.arity) + " 元算子, 序列参数过多" + stray(pos));
           int child = -1;
           if (!parse_expr(child))
             return false;

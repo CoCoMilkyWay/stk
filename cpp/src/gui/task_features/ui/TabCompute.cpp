@@ -67,46 +67,99 @@ static void action_tooltip(const LibStatus &s, const char *busy, bool resume) {
                       s.plan.size() - s.dates.size(), s.assets, s.outside);
 }
 
+// 起一轮 (弹窗状态机从 ShowingPopup 走)
+static void begin_compute(ComputeState &state, const LibStatus &s, bool resume) {
+  state.config.pool = s.name;
+  state.config.dates = s.plan;
+  state.config.resume = resume;
+  state.ui_state = ComputeUIState::ShowingPopup;
+  state.popup_frame_count = 0;
+}
+
+void TickCompute(ComputeService &service, ComputeState &state, SharedData &data, bool inputs_ready) {
+  const Config &config = data.config;
+  const bool is_running = service.busy();
+
+  // ---- 弹窗状态机 ----
+  switch (state.ui_state) {
+  case ComputeUIState::Idle:
+    break;
+  case ComputeUIState::ShowingPopup:
+    // 弹窗至少画过一帧再开跑 (开跑即低刷新)
+    if (++state.popup_frame_count >= 2) {
+      service.Request(state.config);
+      state.ui_state = ComputeUIState::WaitingStart;
+    }
+    break;
+  case ComputeUIState::WaitingStart:
+    if (is_running)
+      state.ui_state = ComputeUIState::Computing;
+    break;
+  case ComputeUIState::Computing:
+    if (!is_running) {
+      state.ui_state = ComputeUIState::Idle;
+      state.popup_frame_count = 0;
+      state.libs_dirty = true;
+      if (service.phase.load(std::memory_order_acquire) == Phase::Cancelled)
+        state.auto_append = false;
+    }
+    break;
+  }
+  if (!inputs_ready)
+    return;
+
+  // ---- 池表: 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫, 数据末日 / 未计算随之前移; 并起一轮自动续算 ----
+  if (state.generation != data.asset.generation) {
+    state.generation = data.asset.generation;
+    state.libs_dirty = true;
+    state.auto_append = true;
+    state.auto_done.clear();
+  }
+  if (state.libs_dirty && !is_running) {
+    state.libs_dirty = false;
+    state.libs.clear();
+    for (const PoolDef &d : feature_pools())
+      state.libs.push_back(lib_status(config, data.assetinfo.get_stock_days(), d.name));
+    // 规划: 本档源日历截到各旁读档当前池的库末日; 旁读库未落盘齐 → 不可算
+    PerTier<std::vector<misc::Ymd>> source;
+    for (const TierId t : TIER_IDS)
+      source[t] = source_dates(data, t);
+    for (LibStatus &s : state.libs) {
+      s.plan = source[s.tier];
+      for (const TierId t : TIER_IDS) {
+        if (!tier_side(s.tier, t))
+          continue;
+        const LibStatus &side = *std::ranges::find(state.libs, data.feature.selection.pool_of(t), &LibStatus::name);
+        if (side.complete()) {
+          std::erase_if(s.plan, [&](misc::Ymd d) { return d > side.last; });
+        } else {
+          s.plan.clear();
+          s.side_partial = side.name;
+        }
+      }
+    }
+  }
+
+  // ---- 自动续算: 空闲 (无在算 / 无全量确认 / 无编码在飞) 时依次 Append 可续算且未判废的池, 每池一轮至多一次;
+  //      池表序 all 在前, 它算完重扫, 旁读它的池规划随之前移再轮到; 无可续算 / 取消即止 ----
+  if (!state.auto_append || state.ui_state != ComputeUIState::Idle || is_running || state.libs_dirty || !state.confirm_pool.empty() ||
+      data.taskstate.database.encode_inflight)
+    return;
+  const auto it = std::ranges::find_if(state.libs, [&](const LibStatus &s) {
+    return s.appendable() && !FeatureRead::dir_stale(config.FeatureLibDir(s.name)) && std::ranges::find(state.auto_done, s.name) == state.auto_done.end();
+  });
+  if (it == state.libs.end()) {
+    state.auto_append = false;
+    return;
+  }
+  state.auto_done.push_back(it->name);
+  begin_compute(state, *it, true);
+}
+
 void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &data) {
   const Config &config = data.config;
   const bool is_running = service->busy();
   const bool is_cancelling = service->cancelling();
-
-  // ========================================================================
-  // State Machine Logic
-  // ========================================================================
-  switch (state.ui_state) {
-  case ComputeUIState::Idle:
-    // Do nothing, waiting for user action
-    break;
-
-  case ComputeUIState::ShowingPopup:
-    // Wait for popup to render (at least 1 frame)
-    state.popup_frame_count++;
-    if (state.popup_frame_count >= 2) {
-      // Popup has been rendered, trigger start immediately
-      state.trigger_start = true;
-      state.ui_state = ComputeUIState::WaitingStart;
-    }
-    break;
-
-  case ComputeUIState::WaitingStart:
-    // Wait for computation to actually start
-    if (is_running) {
-      state.ui_state = ComputeUIState::Computing;
-    }
-    break;
-
-  case ComputeUIState::Computing:
-    // Wait for computation to finish
-    if (!is_running) {
-      // Reset to idle
-      state.ui_state = ComputeUIState::Idle;
-      state.popup_frame_count = 0;
-      state.trigger_start = false;
-    }
-    break;
-  }
 
   ImGui::TextWrapped("Feature Computation - Multi-threaded feature extraction from binary database");
   ImGui::Spacing();
@@ -418,51 +471,14 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
   ImGui::SameLine();
   ImGui::TextDisabled("(all: bar1m + 基本面, 全市场, %s 起至末个 bar1m 日; 池: 订单簿还原, %s 起至末个已编码日 (不晚于 all 末日), "
                       "成员 = Bar 池 D−1 收盘 pool_* 列 → 先把 all 算齐; 未计算 = 库末日之后的交易日数; 数据末日 = 现在重算能到的末日; "
-                      "Append = 从库末日续算新日 (沿用库的资产轴, 与同轴全量逐位一致); 轴外 = 沿用的轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量)",
+                      "Append = 从库末日续算新日 (沿用库的资产轴, 与同轴全量逐位一致; 同步 / 编码换进数据后, 可续算且未判废的池自动依次 Append); 轴外 = 沿用的轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量)",
                       misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
   ImGui::Spacing();
 
-  // 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫: 数据末日 / 未计算随之前移
-  if (state.generation != data.asset.generation) {
-    state.generation = data.asset.generation;
-    state.libs_dirty = true;
-  }
-  if (state.libs_dirty && !is_running) {
-    state.libs_dirty = false;
-    state.libs.clear();
-    for (const PoolDef &d : feature_pools())
-      state.libs.push_back(lib_status(config, data.assetinfo.get_stock_days(), d.name));
-    // 规划: 本档源日历截到各旁读档当前池的库末日; 旁读库未落盘齐 → 不可算
-    PerTier<std::vector<misc::Ymd>> source;
-    for (const TierId t : TIER_IDS)
-      source[t] = source_dates(data, t);
-    for (LibStatus &s : state.libs) {
-      s.plan = source[s.tier];
-      for (const TierId t : TIER_IDS) {
-        if (!tier_side(s.tier, t))
-          continue;
-        const LibStatus &side = *std::ranges::find(state.libs, data.feature.selection.pool_of(t), &LibStatus::name);
-        if (side.complete()) {
-          std::erase_if(s.plan, [&](misc::Ymd d) { return d > side.last; });
-        } else {
-          s.plan.clear();
-          s.side_partial = side.name;
-        }
-      }
-    }
-  }
   // 编码在飞不开算: Lob 按帧目录快照读日文件, 编码会 rename 换掉它们
   const char *const busy = state.ui_state != ComputeUIState::Idle    ? "特征计算进行中"
                            : data.taskstate.database.encode_inflight ? "编码进行中: 编码会 rename 换掉日文件, 收尾后再算"
                                                                      : nullptr;
-
-  const auto start = [&](const LibStatus &s, bool resume) {
-    state.config.pool = s.name;
-    state.config.dates = s.plan;
-    state.config.resume = resume;
-    state.ui_state = ComputeUIState::ShowingPopup;
-    state.popup_frame_count = 0;
-  };
 
   if (ImGui::BeginTable("Pools", 12,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
@@ -540,7 +556,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
       ImGui::SameLine();
       ImGui::BeginDisabled(blocked || !s.appendable());
       if (ImGui::SmallButton(("Append##" + s.name).c_str()))
-        start(s, true);
+        begin_compute(state, s, true);
       ImGui::EndDisabled();
       action_tooltip(s, busy, true);
     }
@@ -570,7 +586,7 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
     ImGui::Spacing();
     ImGui::BeginDisabled(!ok);
     if (ImGui::Button("Compute", ImVec2(120, 0))) {
-      start(*it, false);
+      begin_compute(state, *it, false);
       state.confirm_pool.clear();
       ImGui::CloseCurrentPopup();
     }

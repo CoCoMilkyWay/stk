@@ -54,19 +54,24 @@ struct ComputeState {
   ComputeUIState ui_state = ComputeUIState::Idle;
   int popup_frame_count = 0; // Frame counter to ensure popup is rendered
 
-  // Trigger for starting compute (set by UI, consumed by TaskFeatures)
-  bool trigger_start = false;
   std::string confirm_pool; // 待确认全量计算的池 (空 = 无确认弹窗)
 
   // 池表: all + 各池 (行序 = all 在前, 池按字段表序)
   std::vector<LibStatus> libs;
   bool libs_dirty = true;  // 下一帧重扫
   uint64_t generation = 0; // 对应的 Asset::generation (数据换进即重扫)
+
+  // 自动续算: 数据换进即起一轮, 依次 Append 可续算且未判废的池; 无可续算 / 取消即止
+  bool auto_append = false;
+  std::vector<std::string> auto_done; // 本轮已自动 Append 过的池 (每池至多一次)
 };
 
 // ============================================================================
 // Render Function
 // ============================================================================
+
+// 每帧 (TaskFeatures Update, 不论 Compute 页画没画): 弹窗状态机 + 池表重扫 + 自动续算. inputs_ready 假 → 只走状态机
+void TickCompute(ComputeService &service, ComputeState &state, SharedData &data, bool inputs_ready);
 
 void RenderTabCompute(
     ComputeService *service,
