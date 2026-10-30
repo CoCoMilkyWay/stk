@@ -118,16 +118,16 @@ private:
 
 // 一事件 (e token; E 公式事件上标; EN / CN 事件英 / 中文; DESC 用时描述) × 一侧 (side token; S 公式侧上标; SEN / SCN 侧英 / 中文) × 一 τ (t token; TE / TF 英文 / 公式字面) 的 额/量/笔 3 行
 #define ORDERLIFE_ROWS(X, CAT1, e, E, EN, CN, DESC, side, S, SEN, SCN, t, TE, TF)                                                                                                                                                                                                                                                                \
-  X(amt_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Amount (age < " TE ")", SCN "委托快速" CN "额(<" TE ")", "分钟内" SCN "方委托 " DESC " 用时<" TE " 的" CN "额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{)" E "," S R"(}| \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, amt_##e##_##side##_lt_##t, Log, None)) \
-  X(vol_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Volume (age < " TE ")", SCN "委托快速" CN "量(<" TE ")", "分钟内" SCN "方委托 " DESC " 用时<" TE " 的" CN "量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E "," S R"(}| \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, vol_##e##_##side##_lt_##t, Log, None))        \
-  X(n_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Count (age < " TE ")", SCN "委托快速" CN "笔数(<" TE ")", "分钟内" SCN "方委托 " DESC " 用时<" TE " 的" CN "笔数", R"(\#O_{\Delta t}^{)" E "," S R"(} \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, n_##e##_##side##_lt_##t, Log, None))
+  X(amt_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Amount (age < " TE ")", SCN "挂单快速" CN "额(<" TE ")", "分钟内" SCN "方挂单 " DESC " 用时<" TE " 的" CN "额(元)", R"(\sum_{\tau \in \Delta t} P_\tau |O_\tau^{)" E "," S R"(}| \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, amt_##e##_##side##_lt_##t, Log, None)) \
+  X(vol_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Volume (age < " TE ")", SCN "挂单快速" CN "量(<" TE ")", "分钟内" SCN "方挂单 " DESC " 用时<" TE " 的" CN "量(股)", R"(\sum_{\tau \in \Delta t} |O_\tau^{)" E "," S R"(}| \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, vol_##e##_##side##_lt_##t, Log, None))        \
+  X(n_##e##_##side##_lt_##t, CAT1, AUTO, SEN " Order " EN " Count (age < " TE ")", SCN "挂单快速" CN "笔数(<" TE ")", "分钟内" SCN "方挂单 " DESC " 用时<" TE " 的" CN "笔数", R"(\#O_{\Delta t}^{)" E "," S R"(} \mathbf{1}[\mathrm{age}_\tau < )" TF R"(])", TS(OrderLife, n_##e##_##side##_lt_##t, Log, None))
 
-// 一 τ 的 成交 (买 3 + 卖 3) + 撤单 (买 3 + 卖 3) = 12 行. 成交侧 = 被吃的被动委托方向, 额 = 成交价 × 量; 撤单额 = 委托挂单价 × 量
+// 一 τ 的 被吃 (买 3 + 卖 3) + 撤单 (买 3 + 卖 3) = 12 行. 侧 = 挂单自身方向 (买挂单被吃 = 主动卖成交), 被吃额 = 成交价 × 量; 撤单额 = 委托挂单价 × 量
 #define ORDERLIFE_TAU_ROWS(X, CAT1, t, TE, TF)                                                          \
-  ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "成交", "挂单→被吃成交", bid, "B", "Bid", "买", t, TE, TF) \
-  ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "成交", "挂单→被吃成交", ask, "A", "Ask", "卖", t, TE, TF) \
-  ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂单→撤单", bid, "B", "Bid", "买", t, TE, TF) \
-  ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂单→撤单", ask, "A", "Ask", "卖", t, TE, TF)
+  ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "被吃", "挂出后被反向主动单吃掉 (被动方)", bid, "B", "Bid", "买", t, TE, TF) \
+  ORDERLIFE_ROWS(X, CAT1, fill, "T", "Fill", "被吃", "挂出后被反向主动单吃掉 (被动方)", ask, "A", "Ask", "卖", t, TE, TF) \
+  ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂出后自己撤掉", bid, "B", "Bid", "买", t, TE, TF) \
+  ORDERLIFE_ROWS(X, CAT1, cancel, "C", "Cancel", "撤单", "挂出后自己撤掉", ask, "A", "Ask", "卖", t, TE, TF)
 
 #define FIELDS_L_1min_OrderLife(X, CAT1)                                                                                                                                                                                                                                              \
   ORDERLIFE_TAU_ROWS(X, CAT1, 1s, "1s", R"(1\mathrm{s})")                                                                                                                                                                                                                             \

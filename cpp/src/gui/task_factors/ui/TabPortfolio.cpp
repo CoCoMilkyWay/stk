@@ -17,6 +17,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <limits>
@@ -81,12 +82,12 @@ constexpr const char *kImpactTag[kImpacts] = {"", " 无冲击"};
 // 池指数线表 [kWeights] (all 池两条; 其余池只画 kWeightEq, 名用池中文名)
 constexpr const char *kWeightName[kWeights] = {"全A等权", "全A加权"};
 constexpr const char *kWeightId[kWeights] = {"", "_cap"};
-// VAL 估值口表 [PoolVal]: 名 / 百分比小数位 (五口同为收益率, 显示 %)
+// VAL 估值口表 [PoolVal]: 名 / 倍数名 (1 / 收益率, 等值线) / 百分比小数位 (五口同为收益率, 显示 %)
 struct ValMeta {
-  const char *name;
+  const char *name, *inv;
   int prec;
 };
-constexpr ValMeta kVal[kPoolVals] = {{"EP", 2}, {"BP", 1}, {"SP", 1}, {"CP", 2}, {"DY", 2}};
+constexpr ValMeta kVal[kPoolVals] = {{"EP", "PE", 2}, {"BP", "PB", 1}, {"SP", "PS", 1}, {"CP", "PCF", 2}, {"DY", "P/D", 2}};
 // VAL 线表: 价格线色; band 填色 / 线 / 线尾刻度 / 右表格底色的 alpha
 const ImVec4 kValPxCol(0.95f, 0.95f, 0.95f, 1.0f);
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f, kValCellA = 0.45f;
@@ -109,12 +110,48 @@ void fmt_val(int b, double x, char *buf, size_t n) {
     std::snprintf(buf, n, "-");
 }
 
+// VAL 绝对估值等值线: 篮子全史倍数 m (= 1 / 收益率) 区间 kContours 等分, y = unit · m (unit = P · v, 见 PortfolioBand); 很淡的灰, 悬停 kContourHit px 内最近一条高亮
+constexpr int kContours = 20;         // 一口的档数
+constexpr double kContourTrim = 0.02; // 全史区间两头各剔的分位 (近 0 收益率的日子倍数极大, 不让它撑开区间)
+constexpr float kContourHit = 6.0f;   // 悬停命中半宽 (px)
+const ImVec4 kContourCol(0.6f, 0.6f, 0.6f, 0.22f), kContourHotCol(1.0f, 1.0f, 1.0f, 0.9f);
+// 收益率序列 v[0, n) 中 v > 0 的点的倍数 1 / v, 取 [kContourTrim, 1 − kContourTrim] 分位为区间, 首尾含在内 kContours 等分 (升序); 不足两个不同倍数 → 空
+std::vector<double> levels_of(const float *v, size_t n) {
+  std::vector<double> m;
+  for (size_t i = 0; i < n; ++i)
+    if (v[i] > 0.f)
+      m.push_back(1.0 / v[i]);
+  if (m.empty())
+    return {};
+  const auto at = [&](double q) {
+    const auto it = m.begin() + static_cast<std::ptrdiff_t>(q * static_cast<double>(m.size() - 1));
+    std::nth_element(m.begin(), it, m.end());
+    return *it;
+  };
+  const double lo = at(kContourTrim), hi = at(1.0 - kContourTrim);
+  if (!(hi > lo))
+    return {};
+  std::vector<double> lv(kContours);
+  for (int k = 0; k < kContours; ++k)
+    lv[static_cast<size_t>(k)] = lo + (hi - lo) * k / (kContours - 1);
+  return lv;
+}
+// 一条等值线 (零拷贝: 按下标回调取点; u 的 NaN 处断开)
+struct ContourLine {
+  const double *x, *u;
+  double m;
+};
+ImPlotPoint contour_pt(int i, void *p) {
+  const ContourLine &l = *static_cast<const ContourLine *>(p);
+  return {l.x[i], l.u[i] * l.m};
+}
+
 // 右补空格到 px 宽 (等宽字体, 中文占两格: 按实测像素补, 列对齐)
 std::string pad_to(const char *s, float px) {
   const float w = ImGui::CalcTextSize(s).x, sp = ImGui::CalcTextSize(" ").x;
   return s + std::string(static_cast<size_t>(std::lround(std::max(0.f, px - w) / sp)), ' ');
 }
-// 主图例多列排版 (NAV / VAL 同一份): 第 c 列起点 = 前 c 列各自全行最宽之和 + 列间隔; 按已拼前缀的实测宽补空格 (取整误差不跨列累积); 空格子不补
+// NAV 主图例多列排版: 第 c 列起点 = 前 c 列各自全行最宽之和 + 列间隔; 按已拼前缀的实测宽补空格 (取整误差不跨列累积); 空格子不补
 template <size_t N>
 std::vector<std::string> align_cols(const std::vector<std::array<std::string, N>> &rows) {
   float w[N] = {};
@@ -590,7 +627,8 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
     for (const auto &[g0, g1] : {std::pair{size_t{0}, d.n_val_pools}, std::pair{d.n_val_pools, d.vals.size()}})
       ranks(g1 - g0, [&](size_t i) { return v.cell[g0 + i][b].pct; }, [&](size_t i, double r) { v.cell[g0 + i][b].rank = r; });
 
-  // ---- VAL 选中篮子各口 band: 与价格线同一切片, y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画) ----
+  // ---- VAL 选中篮子各口 band: 与价格线同一切片, y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
+  //      等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 篮子全史倍数区间等分 (levels_of) ----
   v.band_x.clear();
   for (PortfolioBand &bd : v.band)
     bd = {};
@@ -607,14 +645,18 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
     PortfolioBand &bd = v.band[b];
     const float *hv = s.pc->val_of(s.k, s.w, b);
     for (std::vector<double> &y : bd.y)
-      y.assign(n, std::numeric_limits<double>::quiet_NaN());
+      y.assign(n, kNaN);
+    bd.unit.assign(n, kNaN);
+    bd.levels = levels_of(hv, s.pc->dates.size());
     size_t last = SIZE_MAX; // 末个有分位的点 (源下标)
     for (size_t i = 0; i < n; ++i) {
       const size_t j = sl.j0 + i;
+      const double x = hv[s.at[j]];
+      if (x > 0.0)
+        bd.unit[i] = sl.y(i) * x;
       if (!std::isfinite(r.pct[j]))
         continue;
       last = j;
-      const double x = hv[s.at[j]];
       if (!(x > 0.0) || !r.band[j])
         continue;
       for (int q = 0; q < kBandQ; ++q)
@@ -839,8 +881,11 @@ bool pages() {
       tip("VAL = 估值 (Valuation)\n"
           "• 右侧单选一个池或申万一级行业: 主图 = 它的指数 + 估值 Band (全A加权 / 行业 = 总市值加权, 全A等权 / 其余池 = 等权)\n"
           "• EP 盈利收益率 (1/PE) / BP 账面市值比 (1/PB) / SP 营收市值比 (1/PS) / CP 现金流收益率 (1/PCF) / DY 股息率\n"
-          "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值; 高 = 便宜, 亏损照计为负, 过 0 连续), 主图例逐个开关\n"
+          "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值; 高 = 便宜, 亏损照计为负, 过 0 连续)\n"
+          "• 主图左上图例矩阵: 行 = 口, 列 = 当前收益率 / 倍数 / N 年分位 / Band / 等值线; 点色块开关, 点行头 / 列头开关整行 / 整列\n"
           "• Band = 把过去 N 年的估值分位换算成价格线: 指数落在哪档 = 当前估值在历史里的位置 (绿 = 便宜, 红 = 贵)\n"
+          "• 等值线 = 绝对估值: 倍数 (PE / PB / PS / PCF / P/D = 1 / 收益率) 的价格线, 档 = 该篮子全史倍数区间 (两头各剔 2%% 极端) 20 档等分;\n"
+          "  默认关, 悬停一条 = 高亮 + 看该档倍数 / 当日倍数 / 指数到该线还差多少\n"
           "• 线尾刻度 = 指数末点 +10%% / -5%% / -10%% / -20%% / -30%% 的点位: 对照 Band 线看还要涨跌多少到哪档\n"
           "• 区间 / log 与 NAV 页共用");
     if (val_open) {
@@ -889,35 +934,227 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
   }
 }
 
-// ---- VAL 主图: 选中篮子各口滚动 band (填色 + kBandQ 条线共一个图例项, 一键开关; EP 以外首次默认关) + 价格线 (最上层) ----
+// ---- VAL 主图例 = 自绘矩阵 (对仗 Inspect 期限结构图例), 绘图区左上: 行 = 口 (EP / BP / SP / CP / DY), 列 = 当前收益率 | 当前倍数 | N 年估值分位 | Band | 等值线;
+//      开关列的格 = 色块 (实心 = 显示, 空框 = 隐), 点格切该项, 点行头 / 列头切整行 / 整列 (有显示的 → 全隐, 否则全显); 悬停格 / 头 → 对应线高亮 (下帧) ----
+enum ValLgCol : int { kLgBand,
+                      kLgContour };
+constexpr int kLgToggles = 2;
+constexpr float kHiScale = 2.0f; // 图例悬停高亮: 线宽倍数 (等值线改用 kContourHotA)
+constexpr float kContourHotA = 0.6f;
+// 上帧图例矩阵的悬停 (b = −1 整列, c = −1 整行) + 框 (悬停等值线避开); 本图唯一实例
+struct ValLegendHl {
+  bool on = false;
+  int b = -1, c = -1;
+  ImRect box;
+  bool at(int b0, int c0) const { return on && (b < 0 || b == b0) && (c < 0 || c == c0); }
+};
+// 开关列 c 口 b 的 item label (Band / 等值线). 须有可显示的名: ImPlot 对无名 item 每帧强制 Show = true, 开关不住; 图本身 NoLegend, 名不显示
+std::string val_item(int c, int b) {
+  return std::string(kVal[b].name) + (c == kLgBand ? " Band###pf_band" : " 等值线###pf_contour") + std::to_string(b);
+}
+
+void val_legend(const PortfolioView &v, int years, ValLegendHl &hl) {
+  constexpr int kTexts = 3, kCols = kTexts + kLgToggles;
+  const ImPlotStyle &ps = ImPlot::GetStyle();
+  const ImVec2 inner = ps.LegendInnerPadding;
+  const float th = ImGui::GetTextLineHeight(), sw = th * 0.7f, gx = 2.f * ImGui::GetStyle().ItemSpacing.x;
+  char yrs[24];
+  std::snprintf(yrs, sizeof(yrs), "%d年分位", years);
+  const char *head[kCols] = {"当前", "倍数", yrs, "Band", "等值线"};
+  std::array<std::array<std::string, kTexts>, kPoolVals> txt;
+  for (int b = 0; b < kPoolVals; ++b) {
+    const PortfolioBand &bd = v.band[b];
+    char a[24] = "-", m[24] = "-", p[16] = "-";
+    if (bd.ok) {
+      fmt_val(b, bd.now, a, sizeof(a));
+      if (bd.now > 0.0)
+        std::snprintf(m, sizeof(m), "%s %.2f", kVal[b].inv, 1.0 / bd.now);
+      std::snprintf(p, sizeof(p), "%3.0f%%", bd.pct);
+    }
+    txt[static_cast<size_t>(b)] = {a, m, p};
+  }
+  float w_head = 0.f, w[kCols], xc[kCols];
+  for (const ValMeta &vm : kVal)
+    w_head = std::max(w_head, ImGui::CalcTextSize(vm.name).x);
+  const ImVec2 p0 = ImPlot::GetPlotPos(), o(p0.x + ps.LegendPadding.x, p0.y + ps.LegendPadding.y);
+  float x = o.x + inner.x + w_head;
+  for (int c = 0; c < kCols; ++c) {
+    w[c] = std::max(ImGui::CalcTextSize(head[c]).x, c < kTexts ? 0.f : sw);
+    if (c < kTexts)
+      for (const auto &r : txt)
+        w[c] = std::max(w[c], ImGui::CalcTextSize(r[static_cast<size_t>(c)].c_str()).x);
+    xc[c] = x + gx;
+    x = xc[c] + w[c];
+  }
+  const ImRect box(o, ImVec2(x + inner.x, o.y + 2.f * inner.y + static_cast<float>(kPoolVals + 1) * th));
+  const auto y_row = [&](int b) { return box.Min.y + inner.y + static_cast<float>(b + 1) * th; }; // b = −1 → 列头行
+  const auto button = [&](const ImRect &r, const char *id, bool &hov) {
+    bool held = false;
+    const ImGuiID gid = ImGui::GetID(id);
+    ImGui::KeepAliveID(gid);
+    return ImGui::ButtonBehavior(r, gid, &hov, &held, ImGuiButtonFlags_AllowOverlap | ImGuiButtonFlags_PressedOnClick);
+  };
+  const auto item_of = [&](int c, int b) {
+    ImPlotItem *it = ImPlot::GetItem(val_item(c, b).c_str()); // 本帧刚 Plot 过, 必在池里
+    assert(it);
+    return it;
+  };
+  // 整行 / 整列: 集合里有显示的 → 全隐, 否则全显 (b0 / c0 = −1 = 不限)
+  const auto any_shown = [&](int b0, int c0) {
+    for (int b = 0; b < kPoolVals; ++b)
+      for (int c = 0; c < kLgToggles; ++c)
+        if ((b0 < 0 || b == b0) && (c0 < 0 || c == c0) && item_of(c, b)->Show)
+          return true;
+    return false;
+  };
+  const auto toggle_set = [&](int b0, int c0) {
+    const bool any = any_shown(b0, c0);
+    for (int b = 0; b < kPoolVals; ++b)
+      for (int c = 0; c < kLgToggles; ++c)
+        if ((b0 < 0 || b == b0) && (c0 < 0 || c == c0))
+          item_of(c, b)->Show = !any;
+  };
+  bool bg_hov = false;
+  button(box, "##pf_val_legend", bg_hov);
+  ImDrawList &dl = *ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  dl.AddRectFilled(box.Min, box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBg));
+  dl.AddRect(box.Min, box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBorder));
+  const ImU32 c_txt = ImGui::GetColorU32(ImGuiCol_Text), c_dis = ImGui::GetColorU32(ImGuiCol_TextDisabled),
+              c_hov = ImGui::GetColorU32(ImGuiCol_PlotLinesHovered);
+  ValLegendHl nx;
+  nx.box = box;
+  char id[32];
+  for (int c = 0; c < kCols; ++c) { // 列头 (开关列可点)
+    const ImRect r(ImVec2(xc[c], y_row(-1)), ImVec2(xc[c] + w[c], y_row(-1) + th));
+    const float tw = ImGui::CalcTextSize(head[c]).x;
+    const ImVec2 at(c < kTexts ? r.Max.x - tw : r.Min.x + (w[c] - tw) * 0.5f, r.Min.y);
+    if (c < kTexts) {
+      dl.AddText(at, c_dis, head[c]);
+      continue;
+    }
+    std::snprintf(id, sizeof(id), "##pf_lg_c%d", c);
+    bool hov = false;
+    if (button(r, id, hov))
+      toggle_set(-1, c - kTexts);
+    if (hov)
+      nx.on = true, nx.b = -1, nx.c = c - kTexts;
+    dl.AddText(at, hov ? c_hov : any_shown(-1, c - kTexts) ? c_txt
+                                                           : c_dis,
+               head[c]);
+  }
+  for (int b = 0; b < kPoolVals; ++b) {
+    const float yb = y_row(b);
+    { // 行头
+      const ImRect r(ImVec2(box.Min.x + inner.x, yb), ImVec2(box.Min.x + inner.x + w_head, yb + th));
+      std::snprintf(id, sizeof(id), "##pf_lg_r%d", b);
+      bool hov = false;
+      if (button(r, id, hov))
+        toggle_set(b, -1);
+      if (hov)
+        nx.on = true, nx.b = b, nx.c = -1;
+      dl.AddText(r.Min, hov ? c_hov : any_shown(b, -1) ? c_txt
+                                                       : c_dis,
+                 kVal[b].name);
+    }
+    const PortfolioBand &bd = v.band[b];
+    for (int c = 0; c < kTexts; ++c) { // 数值列右对齐; 分位按便宜绿 → 贵红着色
+      const std::string &t = txt[static_cast<size_t>(b)][static_cast<size_t>(c)];
+      const ImU32 col = !bd.ok ? c_dis : c == 2 ? ImGui::ColorConvertFloat4ToU32(band_col(bd.pct / 100.0, 1.0f))
+                                                : c_txt;
+      dl.AddText(ImVec2(xc[c] + w[c] - ImGui::CalcTextSize(t.c_str()).x, yb), col, t.c_str());
+    }
+    for (int c = 0; c < kLgToggles; ++c) {
+      const float xq = xc[kTexts + c], wq = w[kTexts + c];
+      const ImRect r(ImVec2(xq, yb), ImVec2(xq + wq, yb + th));
+      const ImVec2 s0(xq + (wq - sw) * 0.5f, yb + (th - sw) * 0.5f), s1(s0.x + sw, s0.y + sw);
+      std::snprintf(id, sizeof(id), "##pf_lg_%d_%d", b, c);
+      bool hov = false;
+      ImPlotItem *it = item_of(c, b);
+      if (button(r, id, hov))
+        it->Show = !it->Show;
+      if (hov) {
+        nx.on = true, nx.b = b, nx.c = c;
+        const std::vector<double> &lv = bd.levels;
+        if (c == kLgBand)
+          tip("%s Band: 过去 %d 年估值分位换算的价格线 (点 = 开关)", kVal[b].name, years);
+        else if (!lv.empty())
+          tip("%s 等值线: %s %.2f ~ %.2f 倍 %d 等分 (该篮子全史倍数区间, 两头各剔 %.0f%%)\n点 = 开关; 悬停主图里的线看该档", kVal[b].name, kVal[b].inv, lv.front(),
+              lv.back(), kContours - 1, 100.0 * kContourTrim);
+        else
+          tip("%s 等值线: 全史不可算 (无收益率 > 0 的日子)", kVal[b].name);
+      }
+      const float a = hov ? 0.75f : 1.f;
+      if (!it->Show)
+        dl.AddRect(s0, s1, hov ? c_txt : c_dis);
+      else if (c == kLgBand) // 色块 = band 渐变 (便宜绿 → 贵红)
+        dl.AddRectFilledMultiColor(s0, s1, ImGui::ColorConvertFloat4ToU32(band_col(0.0, a)), ImGui::ColorConvertFloat4ToU32(band_col(1.0, a)),
+                                   ImGui::ColorConvertFloat4ToU32(band_col(1.0, a)), ImGui::ColorConvertFloat4ToU32(band_col(0.0, a)));
+      else
+        dl.AddRectFilled(s0, s1, ImGui::ColorConvertFloat4ToU32(ImVec4(kContourCol.x, kContourCol.y, kContourCol.z, 0.8f * a)));
+    }
+  }
+  ImPlot::PopPlotClipRect();
+  hl = nx;
+}
+
+// VAL 悬停等值线: 鼠标 x 处 (相邻两点插值) 各开着的口里离鼠标最近的一档, kContourHit px 内 → 高亮 (最上层) + 提示数据; 鼠标在图例矩阵上不算
+void hover_contour(const PortfolioDerived &d, const PortfolioView &v, const PortfolioSlice &sl, const bool *on, const ImRect &legend) {
+  const double *bx = v.band_x.data();
+  const size_t n = v.band_x.size();
+  if (!ImPlot::IsPlotHovered() || legend.Contains(ImGui::GetMousePos()))
+    return;
+  const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+  const size_t j = static_cast<size_t>(std::upper_bound(bx, bx + n, mp.x) - bx);
+  if (j == 0 || j >= n)
+    return;
+  const double t = (mp.x - bx[j - 1]) / (bx[j] - bx[j - 1]);
+  const auto lerp = [&](double a, double c) { return a + (c - a) * t; };
+  const float my = ImGui::GetMousePos().y;
+  int hb = -1;
+  double m = 0.0, hu = 0.0;
+  float best = kContourHit;
+  for (int b = 0; b < kPoolVals; ++b) {
+    const std::vector<double> &u = v.band[b].unit;
+    if (!on[b] || !std::isfinite(u[j - 1]) || !std::isfinite(u[j]))
+      continue;
+    const double uu = lerp(u[j - 1], u[j]);
+    for (const double lv : v.band[b].levels)
+      if (const float dy = std::abs(ImPlot::PlotToPixels(mp.x, uu * lv).y - my); dy < best)
+        best = dy, hb = b, m = lv, hu = uu;
+  }
+  if (hb < 0)
+    return;
+  const double px = lerp(sl.y(j - 1), sl.y(j)), now = px / hu;
+  ContourLine l{bx, v.band[hb].unit.data(), m};
+  ImPlot::SetNextLineStyle(kContourHotCol, 1.5f);
+  ImPlot::PlotLineG("##pf_contour_hot", contour_pt, &l, static_cast<int>(n), ImPlotItemFlags_NoFit | ImPlotItemFlags_NoLegend);
+  const misc::Ymd day = d.dates[std::min(static_cast<size_t>(bx[t < 0.5 ? j - 1 : j]) / kDayW, d.dates.size() - 1)];
+  const ValMeta &vm = kVal[hb];
+  char y_line[24], y_now[24];
+  fmt_val(hb, 1.0 / m, y_line, sizeof(y_line));
+  fmt_val(hb, 1.0 / now, y_now, sizeof(y_now));
+  tip("%s 等值线: %s = %.2f 倍 (%s %s)\n"
+      "• %d/%02d/%02d: 线上点位 %.3f, 指数 %.3f (%s %.2f 倍, %s %s)\n"
+      "• 指数到该线 %+.1f%%",
+      vm.name, vm.inv, m, vm.name, y_line, day / 10000, day / 100 % 100, day % 100, hu * m, px, vm.inv, now, vm.name, y_now, 100.0 * (m / now - 1.0));
+}
+
+// ---- VAL 主图: 选中篮子各口滚动 band (填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
+//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关; 不进 fit) + 价格线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) ----
 void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, int vs, PlotFrame &pf) {
+  static ValLegendHl s_hl;
   const PortfolioBasket &s = d.vals[static_cast<size_t>(vs)];
   const PortfolioSlice &sl = v.vals[static_cast<size_t>(vs)];
   const double *bx = v.band_x.data();
   const int bn = static_cast<int>(v.band_x.size());
   pf.shown += s.id;
-  // 主图例 (Band 各口 / 价格同一张列表) = 名 | 当前值 | 估值分位 (align_cols), ###id 定 ID
-  std::vector<std::array<std::string, 3>> rows; // [0, kPoolVals) = Band, kPoolVals = 价格
   for (int b = 0; b < kPoolVals; ++b) {
     const PortfolioBand &bd = v.band[b];
-    const std::string nm = std::string(kVal[b].name) + " Band";
-    if (!bd.ok) {
-      rows.push_back({nm, "(区间内不可算)", ""});
-      continue;
-    }
-    char now[24], cur[40], pct[48];
-    fmt_val(b, bd.now, now, sizeof(now));
-    std::snprintf(cur, sizeof(cur), "当前 %s", now);
-    std::snprintf(pct, sizeof(pct), "(%d年估值分位 %3.0f%%)", ui.roll.key.years, bd.pct);
-    rows.push_back({nm, cur, pct});
-  }
-  rows.push_back({s.tag, s.w == kWeightCap ? "总市值加权指数" : "等权指数", ""});
-  const std::vector<std::string> texts = align_cols(rows);
-  for (int b = 0; b < kPoolVals; ++b) {
-    const PortfolioBand &bd = v.band[b];
-    const std::string lbs = texts[static_cast<size_t>(b)] + "###pf_band" + std::to_string(b);
+    const std::string lbs = val_item(kLgBand, b);
     const char *lb = lbs.c_str();
-    if (b != kValEp)
+    const float hw = s_hl.at(b, kLgBand) ? kHiScale : 1.0f;
+    if (b != kValBp)
       ImPlot::HideNextItem(true, ImPlotCond_Once);
     // 色块 c ∈ [0, kBandQ]: 0 = 最便宜档以下 (到图底), kBandQ = 最贵档以上 (到图顶; 两头不进 fit), 其余 = 相邻两档之间
     for (const auto &[i0, i1] : bd.segs) {
@@ -934,15 +1171,33 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
       }
     }
     for (int j = 0; j < kBandQ; ++j) {
-      ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), j == kBandQ / 2 ? 1.5f : 1.0f);
+      ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), (j == kBandQ / 2 ? 1.5f : 1.0f) * hw);
       ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags_SkipNaN);
     }
     pf.item(lb);
   }
-  const std::string plb = texts[kPoolVals] + "###pf_val_px";
+  // 等值线: 每档一条 (同一 item; 无档也登记). 开关不记进 pf.shown (不进 fit, 不必重新 fit)
+  bool on[kPoolVals];
+  for (int b = 0; b < kPoolVals; ++b) {
+    const std::vector<double> &lv = v.band[b].levels;
+    const std::string lbs = val_item(kLgContour, b);
+    const char *lb = lbs.c_str();
+    const ImVec4 col(kContourCol.x, kContourCol.y, kContourCol.z, s_hl.at(b, kLgContour) ? kContourHotA : kContourCol.w);
+    ImPlot::HideNextItem(true, ImPlotCond_Once);
+    if (lv.empty())
+      ImPlot::PlotLineG(lb, contour_pt, nullptr, 0, ImPlotItemFlags_NoFit);
+    for (const double m : lv) {
+      ContourLine l{bx, v.band[b].unit.data(), m};
+      ImPlot::SetNextLineStyle(col, 1.0f);
+      ImPlot::PlotLineG(lb, contour_pt, &l, bn, ImPlotItemFlags_NoFit);
+    }
+    const ImPlotItem *it = ImPlot::GetItem(lb);
+    assert(it);
+    on[b] = it->Show;
+  }
   ImPlot::SetNextLineStyle(kValPxCol, 2.0f);
-  plot_slice(plb.c_str(), sl);
-  if (const ImPlotItem *it = pf.item(plb.c_str())) {
+  plot_slice("##pf_val_px", sl);
+  if (const ImPlotItem *it = pf.item("##pf_val_px")) {
     push_tag(pf.tags, pf.lim, sl, it->Color, s.tag);
     ImPlotPoint p;
     if (end_point(pf.lim, sl.size(), [&](size_t i) { return slice_pt(sl, i); }, p))
@@ -952,6 +1207,8 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
         pf.marks.push_back({ImPlot::PlotToPixels(p.x, p.y * (1.0 + m.r)), ImGui::ColorConvertFloat4ToU32(band_col(m.u, kBandTagA)), t});
       }
   }
+  hover_contour(d, v, sl, on, s_hl.box);
+  val_legend(v, ui.roll.key.years, s_hl);
 }
 
 // ---- 区间条: 全段组合 (有冲击) / VAL 选中篮子价格; 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
@@ -1208,7 +1465,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 估值分位 = 当日收益率在过去 N 年 (含当日; 上方滑条) 窗内的加权分位 (窗尾降权, 见滑条提示), 收益率越低越贵 (高 = 贵; ≤ 0 排在最贵端), 逐日滚动; 估值史不满 1 年不画\n"
         "• Band = 价格 × 当日收益率 / q, q = 窗内 5/10/25/50/75/90/95%% 贵度分位的收益率 (与倍数口径的 Band 同一条线);\n"
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
-        "• 表格 = 区间末各口的估值分位 (高 = 贵); 绝对值看主图 Band 图例 / 线尾\n"
+        "• 表格 = 区间末各口的估值分位 (高 = 贵); 绝对值看主图 Band 图例 / 等值线\n"
         "• 底色 = 该分位在同组 (池之间 / 行业之间) 同一口内的截面名次: 组内最便宜绿 → 最贵红\n"
         "• 点表头排序 (组内): 升序 → 降序 → 原序");
   if (!ImGui::BeginTable("##pf_val_tbl", kTextCols + kPoolVals,
@@ -1474,7 +1731,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const float lw = std::min(ui.legend_w[nav ? 0 : 1] + 2.0f * (st.WindowPadding.x + st.ChildBorderSize), av.x * kLegendMaxFrac);
   const float pw = av.x - lw - st.ItemSpacing.x;
   ImGui::BeginGroup();
-  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", ImVec2(pw, av.y - kBarH - st.ItemSpacing.y))) {
+  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", ImVec2(pw, av.y - kBarH - st.ItemSpacing.y), nav ? ImPlotFlags_None : ImPlotFlags_NoLegend)) {
     // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
     ImPlot::SetupAxes(nullptr, nav ? "净值 (复利, 区间起点 = 1)" : "点位 (区间起点 = 1)", ImPlotAxisFlags_None,
                       ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin);

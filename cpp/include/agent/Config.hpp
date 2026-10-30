@@ -49,6 +49,7 @@ inline constexpr int kGoodOps = 5;     // 建议的算子数 (提示词 {{good_o
 inline constexpr int kListTop = 80;    // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
 inline constexpr int kOutChars = 6000; // 一个调用的结果交给 agent 的字数上限 (超了截断并说明; 提示词 {{out_chars}})
 inline constexpr int kStockDays = 60;  // view_stock_days 一次至多看几日
+inline constexpr int kStockRows = 60;  // view_stock_day 逐行时段一次至多几行
 inline constexpr int kKeepRounds = 3;  // 会话历史里原样留着的最近 user 消息 kKeepRounds..2·kKeepRounds 条; 攒满即把更早的结果消息成批换成折叠版 (只智谱: 本地留历史; 提示词 {{history}})
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
@@ -60,10 +61,12 @@ inline constexpr double kGateRic = 0.03;  // rIC 均值
 //   kWorkDir/<池>/<层>/<持有期>/chat/<时间>/ 一段会话的日志 (agent/Journal.hpp)
 //   kWorkDir/<池>/<层>/<持有期>/test/        自检会话的 factors/ 与 chat/ (同上两项的结构)
 //   kPromptDir/{system,first,round,retry,test}.md 提示词模板 ({{键}} 占位, agent/Prompt.hpp)
+//   kFamilyFile                             特征族卡: 每族一节 "# <族> <族名>" + 卡文 (族 = 节点文件, 见 Leaf::family; 系统提示的特征表按族排)
 //   kDocDir/resources-{tag,proc}/           研报库: 标注 + tag_stat.md / 全文 (agent/Docs.hpp, 只读)
 inline constexpr const char *kWorkDir = "../../../../output/agent";
 inline constexpr const char *kDocDir = "../../../../output/doc";
 inline constexpr const char *kPromptDir = "../../../../config/agent/prompt";
+inline constexpr const char *kFamilyFile = "../../../../config/agent/families.md";
 inline constexpr const char *kKeyFile = "../../../../config/agent/keys.json"; // {<BackendDef::field>: key}; 无文件则按后端表填假 key 生成
 inline constexpr const char *kUiFile = "../../../../config/agent/ui.json";    // Mine / Config 页的选项 (gitignore): 改了即写, 首次 Draw 读回; 无文件 = 用上面的默认值
 

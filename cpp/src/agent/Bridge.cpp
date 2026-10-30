@@ -107,6 +107,13 @@ bool feature_root(const F::FeatureTable &ft, const std::string &src, std::string
 
 const FeatureMetadata &meta_of(const F::FeatureTable &ft, const F::FeatCol &c) { return ft.feature->meta(c.tier).features[c.level][c.col]; }
 
+// 叶的特征族: 节点文件 features/Node/<族>.hpp → <族>
+std::string family_of(const FeatureMetadata &m) {
+  const std::string_view f = m.file, pre = "features/Node/", ext = ".hpp";
+  assert(f.starts_with(pre) && f.ends_with(ext) && "节点文件在 features/Node/ 下");
+  return std::string(f.substr(pre.size(), f.size() - pre.size() - ext.size()));
+}
+
 // TS 叶落盘前套的元素变换 (ts::Tf) 的定义式, 下标 = ts::TfId; CS 叶的变换写在其公式里
 constexpr const char *kTfDef[] = {"", "sign(x)·ln(1+|x|)", "asinh(x)", "tanh(x)", "sign(x)·√|x|"};
 static_assert(std::size(kTfDef) == static_cast<size_t>(ts::TfId::kCount));
@@ -467,7 +474,7 @@ Context context_of(const SharedData &data, const Scope &sc) {
       continue;
     const FeatureMetadata &m = meta_of(*ft, l);
     const size_t tf = static_cast<size_t>(m.ts_tf);
-    c.leaves.push_back({l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf]});
+    c.leaves.push_back({l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m)});
   }
   for (const factor::expr::OpInfo &o : factor::expr::kOps)
     c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
