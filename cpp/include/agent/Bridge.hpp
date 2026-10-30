@@ -280,10 +280,10 @@ public:
   Staged stage(Cand c);                           // 名字 / 模板不合法, 算子超 kMaxOps 或同名已在 → Unstaged
   Adopted adopt(std::string name, const Gate &g); // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → err; 否则拷进正式目录 (test 不拷)
 
-  // 观察的参数 (只查字段表 / 候选目录 / 码表, 不碰数据): 不成 → false + err (原样给 agent)
+  // 观察的参数 (只查字段表 / 候选目录 / 码表与池轴, 不碰数据): 不成 → false + err (原样给 agent)
   bool factor_of(const std::string &arg, LookFactor &out, std::string &err) const;    // 候选英文名 (取最佳权重; 无显著取代表点) 或具体根式
   bool feature_of(const std::string &src, std::string &root, std::string &err) const; // 具体特征式 (任意子式) → CsRank 包装的规范串
-  bool code_of(const std::string &arg, std::string &code, std::string &err) const;    // "000001" / "000001.SZ" → 码表里的码
+  bool code_of(const std::string &arg, std::string &code, std::string &err) const;    // "000001" / "000001.SZ" → 码表里且在本池资产轴上的码
 
   void eval(std::string file, bool gpu); // 一个已落的候选文件; 须已 bind 且作用域 ready, 不忙
   void look(LookSpec s);                 // 同上; 参数须经上面三个校验

@@ -88,12 +88,11 @@ void Chat::loop() {
       to.append(chunk);
     };
     llm::Reply r = sess_->send(user, on_delta, cancel_);
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      live_ = {}, ++gen_;
-      ticks_.push_back({Step::End, std::move(r)});
-    }
+    // 先落 busy 再交 End (同一把锁内): 取走 End 的线程随即 ask / fold 不撞忙
+    std::lock_guard<std::mutex> lock(mutex_);
     busy_.store(false, std::memory_order_release);
+    live_ = {}, ++gen_;
+    ticks_.push_back({Step::End, std::move(r)});
   }
 }
 

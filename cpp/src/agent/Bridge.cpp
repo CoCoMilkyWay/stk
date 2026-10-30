@@ -745,10 +745,19 @@ bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &err) c
 
 bool Lab::feature_of(const std::string &src, std::string &root, std::string &err) const { return feature_root(*p_->ft(), src, root, err); }
 
+// 池轴 = 标签库的资产轴 (子池的成员都在其内): 不在轴上的必观察不成, 先拦; 在轴上而评估期内没进过子池的由观察结果的在池行数说
 bool Lab::code_of(const std::string &arg, std::string &code, std::string &err) const {
+  const Impl &I = *p_;
   const AssetAxis &ax = asset_axis();
   for (const char *ex : {"", ".SZ", ".SH", ".BJ"})
     if (const std::string c = arg + ex; ax.find(c) < ax.size()) {
+      const std::optional<F::FactorScope> fsc = I.fsc();
+      assert(fsc && "作用域须 ready");
+      const PoolAxis &pa = fsc->libs[F::factor_level(level_id(I.sc.level)).lab(pool_id(I.sc.pool))].axis;
+      if (pa.sub_of(static_cast<uint32_t>(ax.find(c))) == pa.size()) {
+        err = c + " 不在本池 (" + I.sc.pool + ") 特征库的资产轴上, 从没进过池; 挑池内的票 (如 view_trades / view_holders 结果里的代码)";
+        return false;
+      }
       code = c;
       return true;
     }
