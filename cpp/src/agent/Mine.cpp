@@ -46,7 +46,7 @@ void Mine::open(const SharedData &data, Setup s) {
     names.push_back(d.name);
   PruneToolOut(names);
   phase_ = Phase::Think;
-  stop_ = done = asked = evaled = false;
+  stop_ = done = reviewed = asked = evaled = false;
   cur_ = folded_ = 0;
   t0 = std::chrono::steady_clock::now(), t_end = -1;
   timeline.clear();
@@ -98,7 +98,7 @@ void Desk::add(const Tally &d) { timeline.back().tally += d, total.tally += d; }
 
 Desk::Tally &Desk::Tally::operator+=(const Tally &o) {
   for (size_t i = 0; i < kToolCount; ++i)
-    calls[i] += o.calls[i];
+    calls[i] += o.calls[i], fails[i] += o.fails[i];
   for (size_t i = 0; i < kVerdictCount; ++i)
     verdicts[i] += o.verdicts[i];
   adopted += o.adopted;
@@ -108,6 +108,12 @@ Desk::Tally &Desk::Tally::operator+=(const Tally &o) {
 Desk::Tally Desk::Tally::of(Tool t) {
   Tally d;
   ++d.calls[static_cast<size_t>(t)];
+  return d;
+}
+
+Desk::Tally Desk::Tally::fail(Tool t) {
+  Tally d;
+  ++d.fails[static_cast<size_t>(t)];
   return d;
 }
 
@@ -131,7 +137,15 @@ int Desk::Tally::n(Cat c) const {
   return s;
 }
 
+int Desk::Tally::failed(Cat c) const {
+  int s = 0;
+  for (const ToolDef &d : Tools())
+    s += d.cat == c ? failed(d.id) : 0;
+  return s;
+}
+
 int Desk::Tally::all() const { return std::accumulate(calls.begin(), calls.end(), 0); }
+int Desk::Tally::failed() const { return std::accumulate(fails.begin(), fails.end(), 0); }
 
 // ---- 每帧: 两个 worker 同样 poll ----
 void Mine::update() {
@@ -246,14 +260,29 @@ void Mine::step() {
   if (done)
     return finish("agent 宣布挖完");
   evaled = std::any_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::EvalFactor && std::get<Trial>(a.got).st.ok(); });
-  if (go(Phase::Think))
-    ask(RoundMessage(rd.acts, round(), board, evaled, setup.test));
+  if (!go(Phase::Think))
+    return;
+  if (std::none_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::Finish; }))
+    return ask(RoundMessage(rd.acts, round(), board, evaled, setup.test));
+  std::vector<std::pair<Ref, const Call *>> judges;
+  for (size_t i = 0; i < timeline.size(); ++i)
+    for (size_t j = 0; j < timeline[i].acts.size(); ++j)
+      if (const Act &a = timeline[i].acts[j]; a.call.tool == Tool::Judge && a.ok)
+        judges.push_back({{static_cast<int>(i) + 1, static_cast<int>(j) + 1}, &a.call});
+  std::vector<const Note *> filed;
+  for (size_t k = 0; k < kNoteKindCount; ++k)
+    for (const Note &n : notes.of(static_cast<NoteKind>(k)))
+      if (n.session == log.dir())
+        filed.push_back(&n);
+  ask(ReviewMessage(rd.acts, round(), board, judges, filed));
 }
 
 void Mine::ended(Act &a) {
   const double now_s = now();
   a.span.end(now_s);
   total.act_s += a.span.len(now_s);
+  if (!a.ok)
+    add(Tally::fail(a.call.tool));
   clip(a.out);
   KeepToolOut(def(a.call.tool).name, a.call.text() + (a.ok ? "" : " — 没做成"),
               "出处: " + log.dir() + " · 第 " + std::to_string(round()) + " 轮第 " + std::to_string(cur_ + 1) + " 个调用", a.out);
@@ -281,7 +310,7 @@ bool Mine::go(Phase next) {
 void Mine::ask(Message m) {
   if (const size_t n = timeline.size(), keep = static_cast<size_t>(kKeepRounds); llm::def(setup.llm.backend).local && n - folded_ >= 2 * keep) {
     for (size_t j = folded_; j + keep <= n; ++j)
-      if (timeline[j].kind == Msg::Round)
+      if (timeline[j].kind == Msg::Round || timeline[j].kind == Msg::Review)
         chat.fold(j, FoldedText(timeline[j - 1].acts, static_cast<int>(j)));
     folded_ = n - keep + 1;
   }

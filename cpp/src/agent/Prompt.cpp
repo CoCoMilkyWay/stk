@@ -278,6 +278,19 @@ std::string rows_of(const Context &c) {
          " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价).";
 }
 
+// 一条回复各调用的结果, 按序 (标题 = 调用编号 + 调用一行)
+std::string results_of(const std::vector<Act> &acts, int round) {
+  std::string s;
+  for (size_t i = 0; i < acts.size(); ++i) {
+    const Act &a = acts[i];
+    s += "## [" + RefText({round, static_cast<int>(i) + 1}) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
+    if (!s.ends_with('\n'))
+      s += '\n';
+    s += '\n';
+  }
+  return s;
+}
+
 } // namespace
 
 std::string LoadPrompt(Msg m) {
@@ -492,14 +505,7 @@ Message TestMessage(bool ask) {
 }
 
 Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test) {
-  std::string s;
-  for (size_t i = 0; i < acts.size(); ++i) {
-    const Act &a = acts[i];
-    s += "## [" + RefText({round, static_cast<int>(i) + 1}) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
-    if (!s.ends_with('\n'))
-      s += '\n';
-    s += '\n';
-  }
+  const std::string s = results_of(acts, round);
   const std::string batch = std::to_string(kBatch);
   std::string next;
   if (test) {
@@ -509,11 +515,26 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
            "- **判**: 结果对照各假设的 expect / refute, 哪个被支持、哪个落空、哪个还不清; 证据够的 judge, 不够的补哪个观察\n"
            "- **因**: 为什么是这样, 错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)\n"
            "- **料**: 有没有更直接捕捉这一现象的特征\n"
+           "- **缺**: 想刻画的维度现有叶没有或只能近似 → request_feature; 想看的现有工具看不到 → request_tool; 规则或工具可以更好 → report_issue (idea); 都在本条提\n"
            "- **记**: 值得跨会话留下的认识用 note_insight 记\n\n";
-    next += evaled ? "本条只诊断 (上一条有落了文件的回测, 本条不能回测): 用观察查本批最好与最差的变体为什么好 / 差, 再对挂了变体的假设 judge; 观察排在 judge 前面, 判支持才引用得到."
-                   : "本条可回测: 只挂判为支持的假设 (至多 " + batch + " 个 eval_factor, 各写清 base / change / expect / parts); 按系统提示 \"判优\" 比当前最好版本; 改不动了就 submit_factor 交最好的版本, 再 finish.";
+    next += evaled ? "本条只诊断 (上一条有落了文件的回测, 本条不能回测): 用观察查本批变体的结果说明了什么 (与 expect 哪里不符、为什么), 再对挂了变体的假设 judge; 观察排在 judge 前面, 判支持才引用得到."
+                   : "本条可回测: 只挂判为支持的假设 (至多 " + batch + " 个 eval_factor, 各写清 base / change / expect / parts), 每个变体检验一个问题; 研究透了就按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish (系统先发复盘清单).";
   }
   return fill(Msg::Round, {{"results", s}, {"board", board.text()}, {"next", next}});
+}
+
+Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &board, const std::vector<std::pair<Ref, const Call *>> &judges,
+                      const std::vector<const Note *> &filed) {
+  std::string gaps;
+  for (const auto &[at, c] : judges)
+    gaps += "- [" + RefText(at) + "] " + c->str("hyp") + " 判 " + c->str("verdict") + "\n  - better_feature: " + c->str("better_feature") + "\n  - next: " + c->str("next") + "\n";
+  std::string notes;
+  for (const Note *n : filed)
+    notes += "- " + std::string(def(n->kind).cn) + " " + n->id + (n->ref.empty() ? "" : " (附议 " + n->ref + ")") + ": " + n->title() + "\n";
+  return fill(Msg::Review, {{"results", results_of(acts, round)},
+                            {"board", board.text()},
+                            {"gaps", or_none(gaps, "(本会话没有成立的 judge)\n")},
+                            {"filed", or_none(notes, "(无)\n")}});
 }
 
 std::string FoldedText(const std::vector<Act> &acts, int round) {

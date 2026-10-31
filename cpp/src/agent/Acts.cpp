@@ -117,8 +117,10 @@ Wait now(Act &a, Desk &d) {
     break;
   }
   case Tool::Finish:
-    d.done = true;
-    a.out = "本条回复的调用做完后会话结束";
+    if (d.setup.test || d.reviewed)
+      d.done = true, a.out = "本条回复的调用做完后会话结束";
+    else
+      d.reviewed = true, a.out = "先复盘: 本条回复的调用做完后系统发复盘清单; 处理完再 finish 即结束";
     break;
   default:
     assert(false && "不是当场做的工具");

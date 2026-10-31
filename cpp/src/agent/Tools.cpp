@@ -107,7 +107,8 @@ constexpr ArgDef kReadArgs[] = {
     {"skip", Arg::Int, "0", 0, 1000000, nullptr, "text: 跳过该节开头多少字 (接着读上次没读完的; 上次结果末尾会给)"}};
 constexpr ArgDef kHypArgs[] = {
     {"title", Arg::Str, nullptr, 0, 0, nullptr, "一句话: 什么机制 (例: 秒级吃光新挂卖单的买方在不推价地吸筹)"},
-    {"actor", Arg::Str, nullptr, 0, 0, nullptr, "因子高 = 谁在做什么: 主动吃单方还是被动挂单方、哪一侧、大单还是小单、成交还是挂撤, 在什么盘面下"},
+    {"actor", Arg::Str, nullptr, 0, 0, nullptr,
+     "因子高 = 什么状态: 谁在做什么 (lob: 主动方还是被动方、哪一侧、大单还是小单、成交还是挂撤) / 价量处在什么位置 (bar) / 什么样的票 (fund), 在什么条件下"},
     {"why", Arg::Str, nullptr, 0, 0, nullptr, "为什么这预示本持有期的收益 (信息 / 流动性冲击 / 行为偏差 …), 收益何时兑现; 借鉴研报的写研报 id 与借的是什么"},
     {"expect", Arg::Str, nullptr, 0, 0, nullptr, "若假设成立, 哪个观察 (工具 + 参数) 会看到什么: 一个方向, 写出量级 (例: view_layers cond=价差 的高段 mono 比低段高 0.1 以上)"},
     {"refute", Arg::Str, nullptr, 0, 0, nullptr, "看到什么就算落空 (同一观察的反面, 或另一个观察); 不能写成 \"若…则升, 若…则降\" 两头都说"}};
@@ -119,7 +120,7 @@ constexpr ArgDef kJudgeArgs[] = {
     {"why", Arg::Str, nullptr, 0, 0, nullptr, "为什么是这个结果: 机制上怎么解释; 落空的说清错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)"},
     {"insight", Arg::Str, nullptr, 0, 0, nullptr, "得到了什么认识 (对这个因子、这类叶、这个市场); 值得跨会话留下的另用 note_insight 记"},
     {"better_feature", Arg::Str, nullptr, 0, 0, nullptr,
-     "这个现象有没有更直接捕捉它的特征: 现有叶里哪个更贴切 (查过的叶名, 为什么), 或缺什么样的量 (缺的用 request_feature 申请)"},
+     "这个现象有没有更直接捕捉它的特征: 现有叶里哪个更贴切 (查过的叶名, 为什么), 或缺什么样的量 (缺的或只能近似的, 同一条回复里 request_feature 申请)"},
     {"next", Arg::Str, nullptr, 0, 0, nullptr, "下一步: 用哪个工具 (参数) 查什么, 想确认或排除什么; 或据此挂什么变体、提什么新假设"}};
 constexpr ArgDef kEvalArgs[] = {
     {"name", Arg::Str, nullptr, 0, 0, nullptr, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
@@ -129,8 +130,9 @@ constexpr ArgDef kEvalArgs[] = {
     {"base", Arg::Str, "\"\"", 0, 0, nullptr,
      "相对哪个已试候选改 (英文名, 本作用域历次会话的都可以); 空 = 新起. 系统比对两式归类改动: 只改参数 / 改了多处 / 同式直接退回; "
      "换平滑 / 换压缩 / 换口径 只在 base 达入库门槛时可用, 每个假设至多 {hyp_knobs} 个"},
-    {"change", Arg::Str, nullptr, 0, 0, nullptr, "这一处改动想修哪个现象 (哪个调用看到了什么), 改的是哪一处"},
-    {"expect", Arg::Str, nullptr, 0, 0, nullptr, "预期: 相对 base 会看到什么变化 (mono / 多空 / rIC 哪个往哪个方向, 或哪个观察里的现象消失); 一个方向"},
+    {"change", Arg::Str, nullptr, 0, 0, nullptr, "这一处改动要检验什么 (哪个调用看到了什么问题), 改的是哪一处"},
+    {"expect", Arg::Str, nullptr, 0, 0, nullptr,
+     "预期: 假设成立时相对 base 会看到什么变化 (mono / 多空 / rIC 哪个往哪个方向, 或哪个观察里的现象消失); 一个方向. 是可证伪的预测, 不必是改善"},
     {"parts", Arg::Parts, nullptr, 1, kParts, nullptr,
      "功能块 [{\"expr\": 模板里逐字抄的一段子式, \"means\": 它衡量什么 (≤ {part_chars} 字的短句, 不计空格标点)}, …]; 须覆盖根的输入 (整个因子衡量什么) 与每个多元算子 "
      "(TsAdd / TsSub / TsMul / TsImb / TsMask …) 的每个非叶元 (各成分各衡量什么; 叶的组合如 TsAdd(叶, 叶) 作了别的多元算子的一元, 也要一块)"}};
@@ -147,8 +149,8 @@ constexpr ArgDef kNotesArgs[] = {
     {"n", Arg::Int, "15", 1, kNotesTop, nullptr, "列几条 (新到旧)"}};
 constexpr ArgDef kFeatureReqArgs[] = {
     {"title", Arg::Str, nullptr, 0, 0, nullptr, "一句话: 要的是什么量 (例: 撤单前挂单存续时长的分布)"},
-    {"define", Arg::Str, nullptr, 0, 0, nullptr, "怎么算: 原料 (逐笔成交 / 委托 / 撤单 / 快照)、谁的哪一侧、窗口与归一、在哪个时点可见"},
-    {"mechanism", Arg::Str, nullptr, 0, 0, nullptr, "它记的是谁的什么行为, 为什么可能预示后续收益; 你打算拿它验证哪个假设"},
+    {"define", Arg::Str, nullptr, 0, 0, nullptr, "怎么算: 哪类原料 (lob 逐笔 / 委托 / 撤单 / 快照; bar K 线 / 量额; fund 财务 / 估值 / 风格)、口径 (哪一侧 / 哪个周期)、窗口与归一、在哪个时点可见"},
+    {"mechanism", Arg::Str, nullptr, 0, 0, nullptr, "它刻画的是什么 (谁的什么行为 / 什么价量状态 / 什么样的票), 为什么可能预示后续收益; 你打算拿它验证哪个假设"},
     {"gap", Arg::Str, nullptr, 0, 0, nullptr, "现有的叶为什么不够: 读过哪些族卡、search_leaves 查过哪些叶, 差在哪 (口径 / 维度 / 时点 / 根本没有)"},
     {"ref", Arg::Str, "\"\"", 0, 0, nullptr, kRefDesc}};
 constexpr ArgDef kToolReqArgs[] = {
@@ -257,16 +259,16 @@ constexpr ToolDef kTools[] = {
     {Tool::SubmitFactor, "submit_factor", "提交入库", Run::Now, Cat::Trial, Fold::Keep, kNameArgs, "把一个已评候选提交入库 (至少一个权重过入库门槛才入); 一般只在最后交最好的版本",
      "入库 / 未入库的原因"},
     {Tool::RequestFeature, "request_feature", "申请特征", Run::Now, Cat::Note, Fold::Keep, kFeatureReqArgs,
-     "申请一个新特征叶: 要表达的行为在现有叶里做不出来 (读过族卡、search_leaves 查清之后). 全局记录, 研究员会看, 不阻塞; 本会话照常用现有的叶接着做",
+     "申请一个新特征叶: 想刻画的量 (lob / bar / fund 任一类) 现有叶没有、只能近似, 或信号卡在天花板要新信息源. 全局记录, 研究员据此加叶; 提完本会话照常用现有的叶接着做",
      "编号"},
     {Tool::RequestTool, "request_tool", "申请工具", Run::Now, Cat::Note, Fold::Keep, kToolReqArgs,
-     "申请一个新工具或给现有工具加功能: 验证假设要看的东西现有工具看不到. 全局记录, 研究员会看, 不阻塞", "编号"},
+     "申请一个新工具或给现有工具加功能: 验证假设要看的东西现有工具看不到, 或要拼几个调用、绕弯才看到. 全局记录, 研究员据此加工具; 提完照常接着做", "编号"},
     {Tool::NoteInsight, "note_insight", "记发现", Run::Now, Cat::Note, Fold::Keep, kInsightArgs,
      "记下一条被观察 / 回测证实或证伪的规律 (市场微观结构、某类叶或算子的脾性、哪条路走不通), 对别的因子与后续会话也有用的才记. 全局记录, 后续会话的 agent 经 list_notes 看得到",
      "编号"},
     {Tool::ReportIssue, "report_issue", "报问题", Run::Now, Cat::Note, Fold::Keep, kIssueArgs,
-     "报工具的 bug、对规则或系统的建议、想问研究员的疑问. 全局记录, 研究员会看, 不阻塞", "编号"},
-    {Tool::Finish, "finish", "结束", Run::Now, Cat::Misc, Fold::Keep, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行后会话结束", "—"},
+     "报工具结果不对 (bug)、对规则 / 系统 / 工具的改进建议 (idea: 哪条规则卡住了你、哪个结果不好读、哪里浪费了轮次)、想问研究员的疑问 (question). 全局记录, 研究员会看; 提完照常接着做", "编号"},
+    {Tool::Finish, "finish", "结束", Run::Now, Cat::Misc, Fold::Keep, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行. 首次调用系统先发复盘清单, 把缺口提成申请后再 finish 才结束 (自检会话直接结束)", "首次: 复盘清单随结果消息发来; 复盘后: 会话结束"},
     {Tool::AskHuman, "ask_human", "问研究员", Run::Human, Cat::Misc, Fold::Keep, kAskArgs,
      "向研究员提问 (每题带推荐), 等他选答; 整个会话只有一次机会. 只问研究员才能定的事 (从哪个因子起步、往哪个方向挖); 系统提示已定的不问也不确认. "
      "研究员每题都能选 \"其他\" 自己写, 还能附言, 所以选项不必穷举, 不要列 \"其他\" / \"由你决定\" 之类的兜底项",

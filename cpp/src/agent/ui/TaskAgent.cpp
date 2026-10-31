@@ -477,7 +477,7 @@ const Act *acting(const Mine &m) {
 }
 const char *step_name(const Trial &k) { return k.run.began() ? "Run" : "Search"; }
 
-// ---- 工具用量条: 按类拼接, 类内一工具一段 (同色相深浅相间), 段宽 = 次数占比; 类段够宽写类名与占比, 悬浮看各类各工具的次数 ----
+// ---- 工具用量条: 按类拼接, 类内一工具一段 (同色相深浅相间), 段宽 = 次数占比; 类段够宽写类名与占比, 悬浮看各类各工具的次数 / 占比 / 失败数 (表格) ----
 // 类色 (下标 = Cat)
 constexpr ImVec4 kCatCols[] = {{0.35f, 0.78f, 0.45f, 1.0f}, {0.85f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}};
 static_assert(std::size(kCatCols) == kCatCount);
@@ -533,20 +533,39 @@ void tools_bar(const Mine::Tally &c) {
   if (!hovered)
     return;
   ImGui::BeginTooltip();
-  ImGui::Text("本会话调用 %d 次", all);
-  for (size_t k = 0; k < kCatCount; ++k) {
-    if (per[k] == 0)
-      continue;
-    ImGui::TextColored(kCatCols[k], "%s  %d 次 · %.0f%%", cat_cn(k), per[k], pct(per[k]));
-    ImGui::Indent();
-    for (size_t t = 0; t < kToolCount; ++t) {
-      if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
+  constexpr ImGuiTableFlags kTipTable = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_PadOuterX;
+  if (ImGui::BeginTable("##tools_tip", 5, kTipTable)) {
+    for (const char *head : {"工具", "中文名", "次数", "占比", "失败"})
+      ImGui::TableSetupColumn(head);
+    ImGui::TableHeadersRow();
+    const ImVec4 bad = color(TaskStatus::Kind::Error), dim = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+    const auto right = [](const ImVec4 &col, const char *s) { // 数字列右对齐
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetColumnWidth() - ImGui::CalcTextSize(s).x);
+      ImGui::TextColored(col, "%s", s);
+    };
+    const auto row = [&](const ImVec4 &col, const char *name, const char *cn, int n, int fail) {
+      char b[32];
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn(), ImGui::TextColored(col, "%s", name);
+      ImGui::TableNextColumn(), ImGui::TextColored(col, "%s", cn);
+      ImGui::TableNextColumn(), std::snprintf(b, sizeof(b), "%d", n), right(col, b);
+      ImGui::TableNextColumn(), std::snprintf(b, sizeof(b), "%.0f%%", pct(n)), right(col, b);
+      ImGui::TableNextColumn(), std::snprintf(b, sizeof(b), "%d", fail), right(fail ? bad : dim, b);
+    };
+    row(kColHead, "全部", "", all, c.failed());
+    for (size_t k = 0; k < kCatCount; ++k) {
+      if (per[k] == 0)
         continue;
-      const ToolDef &d = def(static_cast<Tool>(t));
-      const ImVec4 col = static_cast<int>(t) == hit ? kColHead : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-      ImGui::TextColored(col, "%s %s  %d 次 · %.0f%%", d.name, d.cn, c.calls[t], pct(c.calls[t]));
+      row(kCatCols[k], cat_cn(k), "", per[k], c.failed(static_cast<Cat>(k)));
+      for (size_t t = 0; t < kToolCount; ++t) {
+        if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
+          continue;
+        const ToolDef &d = def(static_cast<Tool>(t));
+        const std::string name = std::string("  ") + d.name;
+        row(static_cast<int>(t) == hit ? kColHead : ImGui::GetStyleColorVec4(ImGuiCol_Text), name.c_str(), d.cn, c.calls[t], c.fails[t]);
+      }
     }
-    ImGui::Unindent();
+    ImGui::EndTable();
   }
   ImGui::EndTooltip();
 }

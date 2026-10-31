@@ -1688,63 +1688,6 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     tip("各图看哪个持有期 (只影响显示)\n"
         "%s",
         kHoldRulesTip);
-  ImGui::SameLine(0.f, kCtlGap);
-  {
-    static const char *const kModes[2] = {"超额", "绝对"};
-    int abs_idx = ui.absolute ? 1 : 0;
-    if (cycler("分层", abs_idx, kModes, 2))
-      ui.absolute = abs_idx == 1;
-  }
-  // 标签一律毛价格收益, 成本只进期限结构; 超额 = 组均 (lv − mkt), 绝对 = 组均 lv; LS = top(lv) + bottom(sv) 市场中性, 两口径同一条.
-  // 尾部 = G20 / G1 内更极端的 50% / 20% / 5% (= 整截面 2.5% / 1% / 0.25%): 每级一条分层线 + 一条 LS, 右侧截面同步加柱, 越极端越细
-  if (ImGui::IsItemHovered())
-    tip("分层图的口径: 日收益对数累计 × 一年 / 全段天数 (全部线同一系数, 末点 = 对数年化)\n"
-        "• 超额: 减去市场, 看形状\n"
-        "• 绝对: 含市场\n"
-        "• 点图例 \"LS 50%%\" 等可看更极端的尾部");
-  ImGui::SameLine(0.f, kCtlGap);
-  const bool can_run = !busy && ctx.axis_ready && n_hold > 0 && sel.error.empty();
-  if (!can_run)
-    ImGui::BeginDisabled();
-  if (ImGui::Button("Compute", ImVec2(80, 0))) { // 算的是选中行
-    action = 1;
-    ui.req_row = sel;
-    ui.req_reload = true;
-  }
-  if (!can_run)
-    ImGui::EndDisabled();
-  // 重读特征库 → eval (CPU) → Stat; 留毛口径一级 Row[H][T] + 二级 + 各金额段组均冲击 (期限结构净线). 换因子自动起算只补缺的特征
-  if (ImGui::IsItemHovered())
-    tip(ctx.axis_ready ? "弃缓存重算 (换因子会自动算, 一般不用点)" : "资产轴未就绪: 先在 Database 页扫描");
-  ImGui::SameLine();
-  if (!busy)
-    ImGui::BeginDisabled();
-  if (ImGui::Button("Cancel", ImVec2(60, 0)))
-    action = -1;
-  if (!busy)
-    ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::Text("Status:");
-  ImGui::SameLine();
-  const int done = static_cast<int>(isvc.done.load(std::memory_order_relaxed)), total = static_cast<int>(isvc.total.load(std::memory_order_relaxed));
-  switch (st) {
-  case Phase::Idle:
-  case Phase::Scanning:
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
-    break;
-  case Phase::Loading:
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "loading %d/%d days", done, total);
-    break;
-  case Phase::Running:
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running %d/%d nodes", done, total);
-    break;
-  case Phase::Done:
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
-    break;
-  case Phase::Cancelled:
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled %d/%d", done, total);
-    break;
-  }
 
   // ---- 结果快照 (持锁派生切片 (hold), 不拷平面) ----
   const std::string key = probe_key(sel, ctx);
@@ -1818,19 +1761,14 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   }
   if (kreq)
     ksvc.Request(std::move(*kreq));
-  if (!message.empty()) {
-    ImGui::SameLine();
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
-  }
-  if (action == 1) // 手动 Compute (自动起算在 InspectAutoRequest, 两页都每帧调)
-    ui.last_req_key = key;
 
-  // ---- 作用域行 (左栏末) + 选定持有期的 stat 面板 (右栏) ----
+  // ---- 作用域行 (左栏末: 作用域 + 分层 / Compute / Cancel / 状态) + 选定持有期的 stat 面板 (右栏) ----
   // match = 结果就是当前请求 (选中行 + 作用域); 否则仍整页画旧结果 (服务不清旧 result), 新结果发布一次性换; 头部显示行 row 已随结果
   const bool match = res_has && res_key == key;
   const bool shown = res_has;
   assert(!shown || res_row == row.key || row.key == sel.key); // 显示行 = 结果权重 (结果权重已不在表里时退回选中行)
   const StatScope &sc = res_ev.scope;
+  ImGui::AlignTextToFramePadding();
   if (!res_error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {
@@ -1840,6 +1778,68 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
       tip("有效率 %.1f%%  可秩率 %.1f%%\n耗时 %.0f ms (%s, %s)", res_ev.valid_pct, res_ev.rank_pct, res_ev.eval_ms, sc.backend.c_str(), sc.time.c_str());
   } else {
     ImGui::TextDisabled("%s", busy ? "计算中…" : (ctx.axis_ready ? "尚未计算 (自动起算 / Compute)" : "资产轴未就绪, 先在 Database 页扫描"));
+  }
+  ImGui::SameLine(0.f, kCtlGap);
+  {
+    static const char *const kModes[2] = {"超额", "绝对"};
+    int abs_idx = ui.absolute ? 1 : 0;
+    if (cycler("分层", abs_idx, kModes, 2))
+      ui.absolute = abs_idx == 1;
+  }
+  // 标签一律毛价格收益, 成本只进期限结构; 超额 = 组均 (lv − mkt), 绝对 = 组均 lv; LS = top(lv) + bottom(sv) 市场中性, 两口径同一条.
+  // 尾部 = G20 / G1 内更极端的 50% / 20% / 5% (= 整截面 2.5% / 1% / 0.25%): 每级一条分层线 + 一条 LS, 右侧截面同步加柱, 越极端越细
+  if (ImGui::IsItemHovered())
+    tip("分层图的口径: 日收益对数累计 × 一年 / 全段天数 (全部线同一系数, 末点 = 对数年化)\n"
+        "• 超额: 减去市场, 看形状\n"
+        "• 绝对: 含市场\n"
+        "• 点图例 \"LS 50%%\" 等可看更极端的尾部");
+  ImGui::SameLine(0.f, kCtlGap);
+  const bool can_run = !busy && ctx.axis_ready && n_hold > 0 && sel.error.empty();
+  if (!can_run)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("Compute", ImVec2(80, 0))) { // 算的是选中行
+    action = 1;
+    ui.req_row = sel;
+    ui.req_reload = true;
+    ui.last_req_key = key; // 自动起算在 InspectAutoRequest (两页都每帧调)
+  }
+  if (!can_run)
+    ImGui::EndDisabled();
+  // 重读特征库 → eval (CPU) → Stat; 留毛口径一级 Row[H][T] + 二级 + 各金额段组均冲击 (期限结构净线). 换因子自动起算只补缺的特征
+  if (ImGui::IsItemHovered())
+    tip(ctx.axis_ready ? "弃缓存重算 (换因子会自动算, 一般不用点)" : "资产轴未就绪: 先在 Database 页扫描");
+  ImGui::SameLine();
+  if (!busy)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("Cancel", ImVec2(60, 0)))
+    action = -1;
+  if (!busy)
+    ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::Text("Status:");
+  ImGui::SameLine();
+  const int done = static_cast<int>(isvc.done.load(std::memory_order_relaxed)), total = static_cast<int>(isvc.total.load(std::memory_order_relaxed));
+  switch (st) {
+  case Phase::Idle:
+  case Phase::Scanning:
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
+    break;
+  case Phase::Loading:
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "loading %d/%d days", done, total);
+    break;
+  case Phase::Running:
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running %d/%d nodes", done, total);
+    break;
+  case Phase::Done:
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
+    break;
+  case Phase::Cancelled:
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled %d/%d", done, total);
+    break;
+  }
+  if (!message.empty()) {
+    ImGui::SameLine();
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
   ImGui::TableNextColumn();
   if (shown) {
@@ -1856,7 +1856,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   const char *wait_hint = busy ? "计算中…" : "Compute 后可见";
 
   if (shown && ui.der.valid)
-    plot_layers(ui.der, ui.absolute, ui.cursor_day, cell);
+    plot_layers(ui.der, ui.derived_abs, ui.cursor_day, cell);
   else
     empty_plot("分层对数累计###layers", cell, wait_hint);
   ImGui::SameLine();

@@ -9,7 +9,7 @@
 {{start}}. 第一条回复把互不依赖的调用一次发齐 (至多 {{max_calls}} 个), 覆盖四样:
 - **前人**: list_notes 看发现, list_tried / list_library 看已有的起点
 - **研报**: search_docs 查同方向的研究
-- **原料**: 读要用的族卡, search_leaves 查清叶, view_feature 看它们
+- **原料**: lob / bar / fund 三类各读要用的族卡, search_leaves 查清叶, view_feature 看它们
 - **起点**: 起点因子的分层 / 交割单 / 成分 (view_layers / view_trades / view_explain)
 
-之后看到值得解释的现象 → hypothesize 写下机制与预测 (expect / refute) → 观察检验 → judge 为支持 → 才开始回测.
+之后看到值得解释的现象 → hypothesize 写下机制与预测 (expect / refute) → 观察检验 → judge 为支持 → 才开始回测. 回测是检验假设的实验, 看它说明了什么, 不追指标.

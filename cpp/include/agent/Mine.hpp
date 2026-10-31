@@ -7,7 +7,8 @@
 //   None     人      open              发 first (自检会话发 test) → Think
 //   Think    agent   chat End          合格 (一串调用, 且守住会话约束 RuleMiss) → Act; 不合格 → 发 retry, 留 Think
 //   Act      系统    调用做完          按序执行 (agent/Acts): 当场的立即做完; 回测 / 观察等 lab End; ask_human → Choose;
-//                                      全部做完: 有 finish → Report, 否则发 round (各调用的结果) → Think
+//                                      全部做完: 首次 finish → 发 review (结果 + 复盘清单) → Think; 复盘后再 finish (自检会话首次即是) → Report;
+//                                      没有 finish → 发 round (各调用的结果) → Think
 //   Choose   人      start             答复作 ask_human 的结果 → Act (接着执行余下的调用)
 //   Report   人      open              开下一段
 //   一问一答对仗: Think (agent 发调用) ↔ Act (系统给结果); 工具表见 agent/Tools.hpp, 执行见 agent/Acts.hpp
@@ -47,19 +48,24 @@ struct Desk {
     bool test = false; // 自检: 首条换成 test (每个工具调一遍); 候选 / 日志 / 全局记录进 global/test 目录, submit_factor 只查门槛不拷
     llm::Options llm;  // system 由 open 填
   };
-  // 计数 (+= 累加): calls = 各工具开始执行的次数; verdicts = eval_factor 的结局 (没落文件 = Unstaged); adopted = submit_factor 入库
+  // 计数 (+= 累加): calls = 各工具开始执行的次数; fails = 其中没做成的 (结果标 "没做成"); verdicts = eval_factor 的结局 (没落文件 = Unstaged); adopted = submit_factor 入库
   struct Tally {
     std::array<int, kToolCount> calls{};
+    std::array<int, kToolCount> fails{};
     std::array<int, kVerdictCount> verdicts{};
     int adopted = 0;
     Tally &operator+=(const Tally &o);
     static Tally of(Tool t);    // 开始一个 t
+    static Tally fail(Tool t);  // 一个 t 没做成
     static Tally of(Verdict v); // 一个 eval_factor 有了结局 v
     int n(Tool t) const { return calls[static_cast<size_t>(t)]; }
     int n(Verdict v) const { return verdicts[static_cast<size_t>(v)]; }
     int n(Run r) const; // 该执行方的工具之和
     int n(Cat c) const; // 该用途类的工具之和
     int all() const;
+    int failed(Tool t) const { return fails[static_cast<size_t>(t)]; }
+    int failed(Cat c) const;
+    int failed() const;
     int staged() const { return n(Tool::EvalFactor) - n(Verdict::Unstaged); }
   };
   // 一轮 = 一条发出的消息. span = 发出 → 收齐, 其内 think / write = 首个思考增量 / 首个正文增量起 (无思考则 think 未开); acts = 回复里的调用, 按序执行
@@ -89,7 +95,8 @@ struct Desk {
   std::set<std::string> seen;    // 本会话 search_leaves 列出过的叶组里的叶 (eval_factor 的式子只能用它们)
   Board board;                   // 本会话的假设板
   bool evaled = false;           // 上一条执行了的回复里有落了文件的 eval_factor (这一条不能再回测)
-  bool done = false;             // agent 调了 finish
+  bool done = false;             // agent 调了 finish 且复盘过 (自检会话不复盘): 本条做完即结束
+  bool reviewed = false;         // 已发过复盘 (首次 finish 换成复盘)
   bool asked = false;            // 已用过 ask_human
   std::string reason, report;    // 结束原因 / 结束报告
 
