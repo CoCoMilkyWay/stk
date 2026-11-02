@@ -81,7 +81,7 @@ struct TaskFeaturesState {
   bool streams_started = false;
   // Auto-compute tracking (Dist / Transform 共用): 主特征 (库/层/列) 变了即重算 (无论当前在哪个 tab)
   std::optional<ColRef> prev_primary;
-  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库变了自动重算 (快照做变更检测), 库重算收尾另起
+  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库变了自动请求 (快照做变更检测; 跑完过的库换回成品), 库重算收尾另起
   LibId preview_lib = kAllBar;
   // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
   Phase prev_preview_phase = Phase::Idle;
@@ -118,7 +118,7 @@ TaskHandle CreateFeaturesTask() {
   // OnExpand 不需要: 切到 Features 时 TaskTree::Select 默认 selected_tab=0,
   // Services 延迟到首次 Draw 时创建.
 
-  // OnCollapse: 切出 Features 任务才回收三个流式分析的构建内存 (任务内切 tab 不回收)
+  // OnCollapse: 切出 Features 任务才回收三个流式分析的构建内存 (任务内切 tab 不回收; 预览成品保留, 重进直接换回)
   handle.OnCollapse = [state]() {
     if (state->dist_service)
       state->dist_service->Shutdown();
@@ -161,9 +161,10 @@ TaskHandle CreateFeaturesTask() {
       state->compute_service = std::make_unique<Features::ComputeService>(data);
     if (state->compute_service) {
       Features::TickCompute(*state->compute_service, state->compute_state, data, state->inputs_ready);
-      // 一轮收尾 (池表重扫在 TickCompute): 新库落盘 → OrderFlow 按新清单重建 + 重扫, 预览重抽, 相关矩阵作废 (没建 / 没起的首次 Draw 自然按新库)
+      // 一轮收尾 (池表重扫在 TickCompute): 新库落盘 → OrderFlow 按新清单重建 + 重扫, 预览成品作废并重抽, 相关矩阵作废 (没建 / 没起的首次 Draw 自然按新库)
       const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
       if (state->prev_compute_phase == Phase::Running && (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
+        data.preview.forget();
         if (state->orderflow_service) {
           state->orderflow_service = std::make_unique<Features::OrderFlowService>();
           data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);

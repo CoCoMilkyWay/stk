@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -34,9 +35,11 @@ class FeatureRead;
 //
 // A 轴 = 池轴; 抽样资产 = 池轴下标 (UI 不需要资产身份).
 // 重算: reset 清空 cells (预览是全表底图, 输入变了旧格子无参照意义), 逐块填回.
+// 成品: 每库完整跑完的 Snap 留到进程结束 (kept_); reset 命中即换回, build 不跑 (切档 / 切池 / 切出任务再回来都不重算).
+//   Compute 落盘 → forget() 全部作废 (lob 随 bar 变, 不细分库); 取消 / 中途换库的不留.
 // 生命周期: 进 Features 任务且输入就绪 → 起 worker + 自动构建 (不依赖选中特征);
-//   池 / 日期区间变了 或 Compute 落了新库 → 新请求即取消在跑重算;
-//   切出 Features 任务 → clear() 整体释放.
+//   池 / 档变了 或 Compute 落了新库 → 新请求即取消在跑重算 (有成品则直接换回);
+//   切出 Features 任务 → clear() 释放构建内存与当前快照 (成品保留).
 // ============================================================================
 
 static constexpr size_t kPvRounds = 64;          // 抽样段上限 (每层轮数): 精度逐轮收敛
@@ -96,17 +99,29 @@ struct Preview : Published {
   Preview();
   ~Preview();
 
-  // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回)
+  // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回); 主库有成品则换回成品
   void reset(analysis::ReadScope scope, Spec spec);
-  // 轮训构建 (笼相 + 块相各一次 dispatch; 块任务 = IO + 扫描 + 块末 fold 发布); 被取消返回 false
+  // 轮训构建 (笼相 + 块相各一次 dispatch; 块任务 = IO + 扫描 + 块末 fold 发布); 被取消返回 false; 跑完存成品
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
+  // GUI 线程: 库内容变了 (Compute 落盘), 成品全部作废; 在跑那轮跑完也不存
+  void forget();
 
 private:
   struct Runtime; // worker 私有 (每线程 shard + 各层状态), 定义在 Preview.cpp
   struct Level;   // 一层的网格无关状态 (每特征 sketch/账目, 段序, 块读计划, 笼快照) + 虚轮
   template <class G>
   struct LevelOf; // 按网格实例化 (谱累加 + FFT 工作区)
+  struct Kept {
+    Snap snap;
+    size_t rounds = 0; // done / total
+  };
+  void keep(size_t rounds); // 存本轮成品 (forget 过则不存)
   std::unique_ptr<Runtime> rt_;
   analysis::ReadScope scope_; // reset 时定好, build 全程只读
+  // 以下持锁
+  std::map<LibId, Kept> kept_; // 主库 → 完整跑完的成品
+  uint64_t gen_ = 0;           // forget 计数
+  uint64_t reset_gen_ = 0;     // 本轮 reset 时的 gen_ (不等 = 跑的途中库变了)
+  bool from_kept_ = false;     // 本轮 reset 换回了成品, build 直接收工
 };

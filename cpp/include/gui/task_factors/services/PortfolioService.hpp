@@ -14,7 +14,8 @@
 // 池篮子: 全部池一个作业 (FactorsEngine eval_baskets, 与 eval_job 平级), 在 kBasketLevel 的 all 池评估域 (全轴; 不走森林): load_b 一趟读齐各池成员位 (池列) + T+1C 标签 + 原料 → baskets 一趟扫完
 //   (FactorsBook) → 按池切进 PoolCurve: 各池整体 + 申万一级行业 (all 内切) 两权重指数日收益 (净值引擎 fold_book) + 两权重估值 EP / BP / SP / CP / DY
 //   (等权 = 个股收益率均值, 加权 = 整体法收益率; 滚动分位 band 在 UI 按可调窗长现算) + 池整体年化单边换手.
-// 缓存: 因子按 FactorTask::key 存, 曲线记算时的 sig (变了重算), 请求里没有的丢掉 (加一个因子只算它); 池篮子整份存, reload 才重算.
+// 缓存: 因子按 FactorTask::key 存, 曲线记算时的 sig (变了重算), 只算缺的 (加一个因子只算它); 请求外的 (换组合 / 删条目) 按上次被请求的先后留到总量上限
+//   (切回不重算); 池篮子整份存, reload 才重算.
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑 (缓存已算的不丢); UI 持 mutex 读 result
 // (shared_ptr 拷出即放锁). 进度: Loading 期 done/total = 天; Running 期 = 算子节点 + 收尾; 第几个因子走 jobs_done / jobs_total.
@@ -152,6 +153,10 @@ private:
   bool eval(const std::vector<const FactorTask *> &ts, FactorFlow &F);
   bool eval(const PoolTask &t, FactorFlow &F);
   void put(const std::string &key, std::shared_ptr<FactorCurve> c);
+
+  // worker 私有: 因子缓存的新旧 (key → 上次被请求的 tick_)
+  std::map<std::string, uint64_t> used_;
+  uint64_t tick_ = 0;
 };
 
 } // namespace GUI::Factors

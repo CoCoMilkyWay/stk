@@ -308,11 +308,12 @@ std::string turn_note(double per_year) {
   return b;
 }
 
-// 组合 + 单因子 (见头文件): 每因子两条增量流 — 自身 (权 1) → 单因子线; 份额 (权 1 / 当日因子数) → Σ → 组合线. 单因子线 ≡ 只含它的组合
+// 组合 + 单因子 (见头文件): 每因子两条增量流 — 自身 (权 1) → 单因子线; 份额 (权 1 / 当日因子数) → Σ → 组合线. 单因子线 ≡ 只含它的组合.
+// o = 上一份派生: 同一条 FactorCurve 且日轴 / fixed_impact 不变 → 单因子线沿用
 void derive_factors(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res, double fixed_impact,
-                    PortfolioDerived &d) {
+                    PortfolioDerived &o, PortfolioDerived &d) {
   std::vector<const PortfolioItem *> its;
-  std::vector<const FactorCurve *> fc;
+  std::vector<std::shared_ptr<const FactorCurve>> &fc = d.src;
   for (const PortfolioItem &it : items) {
     if (!it.missing.empty())
       continue;
@@ -325,12 +326,17 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     }
     ++d.n_ready;
     its.push_back(&it);
-    fc.push_back(f->second.get());
+    fc.push_back(f->second);
   }
-  for (const FactorCurve *f : fc)
+  for (const std::shared_ptr<const FactorCurve> &f : fc)
     d.dates.insert(d.dates.end(), f->dates.begin(), f->dates.end());
   std::sort(d.dates.begin(), d.dates.end());
   d.dates.erase(std::unique(d.dates.begin(), d.dates.end()), d.dates.end());
+  d.impact = fixed_impact;
+  std::map<const FactorCurve *, size_t> keep; // 可沿用的: 源 → o 的因子行
+  if (d.dates == o.dates && fixed_impact == o.impact)
+    for (size_t q = 0; q < o.src.size(); ++q)
+      keep[o.src[q].get()] = q;
   std::vector<std::vector<size_t>> dix(fc.size()); // [因子][该因子日] → 并集轴下标
   for (size_t q = 0; q < fc.size(); ++q)
     dix[q] = days_on(d.dates, fc[q]->dates);
@@ -353,7 +359,8 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
         strat_buy += buy[dl * S + ts] / n_act[di[dl]];
       }
     const PortfolioItem &it = *its[q];
-    const Inc own = inc_of(f, di, fixed_impact, [](size_t) { return 1.0; });
+    const auto kp = keep.find(&f);
+    const Inc own = kp != keep.end() ? Inc{} : inc_of(f, di, fixed_impact, [](size_t) { return 1.0; });
     for (int i = 0; i < kImpacts; ++i) {
       PortfolioLine l;
       l.id = it.e.key() + kImpactId[i];
@@ -364,7 +371,7 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
       l.tag = it.name_en + " " + factor::stat::hold_name(f.hold) + kImpactTag[i];
       l.hover = l.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + hold_desc(it.e.hold, it.e.lv) +
                 "\n• 冲击 " + amt_name(f.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
-      l.c = curve_of(own, i, x_of(di.front(), kOpen) - kStartDx);
+      l.c = kp != keep.end() ? std::move(o.nav[kNavFactor][2 * kp->second + static_cast<size_t>(i)].c) : curve_of(own, i, x_of(di.front(), kOpen) - kStartDx);
       d.nav[kNavFactor].push_back(std::move(l));
     }
     shares.push_back(inc_of(f, di, fixed_impact, [&](size_t i) { return 1.0 / n_act[i]; }));
@@ -383,8 +390,18 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
   }
 }
 
-// 池线 + VAL 篮子 (见头文件): 同一 PortfolioBasket + project
-void derive_baskets(const PortfolioResult &res, PortfolioDerived &d) {
+// 池线 + VAL 篮子 (见头文件): 同一 PortfolioBasket + project. o = 上一份派生: 各池同一条 PoolCurve 且日轴不变 → 整份沿用
+void derive_baskets(const PortfolioResult &res, PortfolioDerived &o, PortfolioDerived &d) {
+  for (const PoolDef &pd : feature_pools())
+    d.pools.push_back(pool_of(res, pd.name));
+  if (o.basket_gen > 0 && d.pools == o.pools && d.dates == o.dates) {
+    d.nav[kNavPool] = std::move(o.nav[kNavPool]);
+    d.vals = std::move(o.vals);
+    d.n_val_pools = o.n_val_pools;
+    d.basket_gen = o.basket_gen;
+    return;
+  }
+  d.basket_gen = o.basket_gen + 1;
   const auto basket = [&](std::string id, std::string en, std::string cn, std::string tag, std::shared_ptr<const PoolCurve> pc, size_t k, Weight w,
                           bool px = false) {
     PortfolioBasket b;
@@ -442,9 +459,10 @@ void derive_baskets(const PortfolioResult &res, PortfolioDerived &d) {
 }
 
 void derive(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res, double fixed_impact, PortfolioDerived &d) {
+  PortfolioDerived o = std::move(d);
   d = PortfolioDerived{};
-  derive_factors(items, name, res, fixed_impact, d);
-  derive_baskets(res, d);
+  derive_factors(items, name, res, fixed_impact, o, d);
+  derive_baskets(res, o, d);
 }
 
 // 曲线 c 在 [x0, x1) 的切片 (见 PortfolioSlice); 整条在区间外 → 空. 年化 = 末点净值按首末点所跨交易日数复利折年 (%)
@@ -1666,7 +1684,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   bool refit = ui.refit;
   ui.refit = false;
 
-  // ---- 三级缓存: 派生 → 滚动分位 → 视图 (键带上级 gen: 上级重算 → 下级自动重算) ----
+  // ---- 三级缓存: 派生 → 滚动分位 (键 = 篮子代) → 视图 (键 = 派生 gen + 滚动分位 gen): 上级重算 → 下级自动重算 ----
   // 派生重算 → 重新 fit: 因子线 / 池线先后到, 后到的线也要进 y 范围与线尾小字留白
   ui.der.update(PortfolioDerKey{gen, ui.items_gen, fixed_impact}, [&](PortfolioDerived &dv) {
     const std::vector<misc::Ymd> old = dv.dates;
@@ -1693,14 +1711,14 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     else if (!d.vals.empty())
       vs = 0;
   }
-  ui.roll.update(PortfolioRollKey{ui.der.gen, ui.band_years, vs}, [&](std::array<PortfolioRoll, kPoolVals> &r) {
+  ui.roll.update(PortfolioRollKey{d.basket_gen, ui.band_years, vs}, [&](std::array<PortfolioRoll, kPoolVals> &r) {
     for (int b = 0; b < kPoolVals; ++b)
       if (vs >= 0)
         roll_of(d.vals[static_cast<size_t>(vs)], b, ui.band_years, r[b]);
       else
         r[b] = {};
   });
-  ui.view.update(PortfolioViewKey{ui.roll.gen, ui.range.d0, ui.range.d1},
+  ui.view.update(PortfolioViewKey{ui.der.gen, ui.roll.gen, ui.range.d0, ui.range.d1},
                  [&](PortfolioView &vw) { make_view(d, ui.range.d0, ui.range.d1, vs, ui.roll.key.years, ui.roll.val, vw); });
   const PortfolioView &v = ui.view.val;
 

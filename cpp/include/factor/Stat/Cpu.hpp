@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 namespace factor::cpu::stat {
@@ -164,11 +165,14 @@ inline void end_codes(Exec &ex, const uint16_t *rx, const Span &s, int d, uint8_
 
 // 换手成本 (契约【换手成本】): ec × L 的标签有效位 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo, t_hi) (同 accum_rows), 每 t 一次
 // cost_row; 本行尾部 → 不攒; 交接链 chain_of (块内 t ≥ h 且 hold_nets → 前一批 = 行 t−h); 本批平仓不交接 (hold_nets(t + h) 假) → settle;
-// cap = 一端满仓 (端码 = 两端组 → L.cap; Inspect 尾部另给). C ≥ 1 (固定段 = 空 Cost). land 非空 → 另落逐行 land[(k·H + i)·T + t]
-// (只本行, 尾部行全 0; Portfolio 逐行成本)
-template <class Exec>
+// cap = 一端满仓 (端码 = 两端组 → L.cap; Inspect 尾部另给). C ≥ 1 (固定段 = 空 Cost). land 非 NoLand → 另逐行 land(k·H + i, t, 本行)
+// (线程内, 行不相交; 只本行, 尾部行全 0; Portfolio 逐行成本)
+struct NoLand {
+  void operator()(size_t, int, const CostAcc &) const {}
+};
+template <class Exec, class Land = NoLand>
 inline void cost_rows(Exec &ex, const uint8_t *ec, const Span &s, const Labels &L, double cap, const Cost *c, int C, Workspace &w, CostAcc *out,
-                      CostAcc *land = nullptr) {
+                      const Land &land = {}) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, false);
   const int H = L.hd.n, A = s.A, nt = ex.threads();
@@ -194,15 +198,15 @@ inline void cost_rows(Exec &ex, const uint8_t *ec, const Span &s, const Labels &
       Cost cr[kMaxCost];
       for (int k = 0; k < C; ++k)
         cr[k] = c[k].at(base);
-      if (!land) {
+      if constexpr (std::is_same_v<Land, NoLand>) {
         cost_row(ec + base, ch, H, cr, C, A, cap, acc);
-        continue;
-      }
-      CostAcc row[kMaxCost * kMaxHold] = {};
-      cost_row(ec + base, ch, H, cr, C, A, cap, row);
-      for (size_t j = 0; j < per; ++j) {
-        acc[j].merge(row[j]);
-        land[j * static_cast<size_t>(s.T) + static_cast<size_t>(t)] = row[j];
+      } else {
+        CostAcc row[kMaxCost * kMaxHold] = {};
+        cost_row(ec + base, ch, H, cr, C, A, cap, row);
+        for (size_t j = 0; j < per; ++j) {
+          acc[j].merge(row[j]);
+          land(j, t, row[j]);
+        }
       }
     }
   });

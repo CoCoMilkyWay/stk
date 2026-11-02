@@ -15,6 +15,8 @@
 #include <fstream>
 #include <map>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 namespace GUI::Factors {
 
@@ -190,7 +192,6 @@ struct CurveP : LinesP<kCurveLines> {
   static constexpr uint8_t need = kNeedRows | kNeedEc;
   static constexpr Segs segs = Segs::First;
   double cap = 0.0;
-  static double scratch(const Shape &sh, int H) { return sizeof(factor::stat::CostAcc) * static_cast<double>(H) * sh.T; }
   void open(const Ctx &c) {
     assert(c.c.y.ad.n == 1 && "出参线: 一个金额段");
     LinesP::open(c);
@@ -203,28 +204,42 @@ struct CurveP : LinesP<kCurveLines> {
     at(hi, kCurvePnl, t) = static_cast<float>(group_abs(r, factor::stat::end_group(factor::stat::kTop), cap));
   }
   void root(const Ctx &c, const RootView &v) {
-    const factor::stat::Span s = c.s();
-    const int H = c.L.hd.n;
-    std::vector<factor::stat::CostAcc> land(static_cast<size_t>(H) * s.T); // 本块逐行换手 [hi][T] (cost_rows 的 land, 一个金额段)
     const std::vector<factor::stat::Cost> cs = costs_of(c.c.y);
     factor::stat::CostAcc acc[factor::stat::kMaxHold];
-    factor::cpu::stat::cost_rows(c.ex, v.ec, s, c.L, cap, cs.data(), 1, *c.w, acc, land.data());
-    for (int hi = 0; hi < H; ++hi)
-      for (int t = s.t_lo; t < s.t_hi(); ++t) {
-        const factor::stat::CostBook &cl = land[static_cast<size_t>(hi) * s.T + t].book[factor::stat::kTop];
-        at(hi, kCurveImp, t) = static_cast<float>(cl.imp);
-        at(hi, kCurveFix, t) = static_cast<float>(cl.fix);
-        at(hi, kCurveBuy, t) = static_cast<float>(cl.buy);
-      }
+    // 一个金额段: cost_rows 的逐行下标 = hi
+    factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, cap, cs.data(), 1, *c.w, acc, [&](size_t hi, int t, const factor::stat::CostAcc &r) {
+      const factor::stat::CostBook &cl = r.book[factor::stat::kTop];
+      at(static_cast<int>(hi), kCurveImp, t) = static_cast<float>(cl.imp);
+      at(static_cast<int>(hi), kCurveFix, t) = static_cast<float>(cl.fix);
+      at(static_cast<int>(hi), kCurveBuy, t) = static_cast<float>(cl.buy);
+    });
   }
 };
 using PortfolioProbes = Probes<CurveP>;
 
-// 因子缓存跟请求走: reload → 全丢; 请求里没有的 key 丢掉
-void prune(std::map<std::string, std::shared_ptr<const FactorCurve>> &m, const std::vector<FactorTask> &ts, bool reload) {
+// 因子缓存: reload → 全丢; 本请求的 (used = now) 都留, 其余按上次被请求的先后 (旧的先丢) 丢到总字节 ≤ kKeepBytes
+constexpr size_t kKeepBytes = size_t{1} << 30;
+size_t bytes_of(const FactorCurve &c) { return c.nav.v.size() * sizeof(float) + c.dates.size() * sizeof(misc::Ymd); }
+void prune(std::map<std::string, std::shared_ptr<const FactorCurve>> &m, std::map<std::string, uint64_t> &used, uint64_t now, bool reload) {
   if (reload)
     m.clear();
-  std::erase_if(m, [&](const auto &kv) { return std::none_of(ts.begin(), ts.end(), [&](const FactorTask &t) { return t.key == kv.first; }); });
+  std::erase_if(used, [&](const auto &kv) { return kv.second != now && !m.contains(kv.first); });
+  size_t bytes = 0;
+  std::vector<std::pair<uint64_t, std::string>> old;
+  for (const auto &[k, c] : m) {
+    bytes += bytes_of(*c);
+    const auto u = used.find(k);
+    assert(u != used.end() && "缓存的因子必被请求过");
+    if (u->second != now)
+      old.emplace_back(u->second, k);
+  }
+  std::sort(old.begin(), old.end());
+  for (const auto &[u, k] : old) {
+    if (bytes <= kKeepBytes)
+      break;
+    bytes -= bytes_of(*m.at(k));
+    m.erase(k), used.erase(k);
+  }
 }
 // 要算的: 缺 / 签名变了
 std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_ptr<const FactorCurve>> &m, const std::vector<FactorTask> &ts) {
@@ -252,10 +267,13 @@ void PortfolioService::put(const std::string &key, std::shared_ptr<FactorCurve> 
 
 bool PortfolioService::run(PortfolioRequest &req) {
   FactorFlow &F = flow();
+  ++tick_;
+  for (const FactorTask &t : req.factors)
+    used_[t.key] = tick_;
   {
     std::lock_guard<std::mutex> lock(mutex);
     message.clear();
-    prune(result.factors, req.factors, req.reload);
+    prune(result.factors, used_, tick_, req.reload);
     if (req.reload || !req.pools)
       result.pools.clear();
     ++result_gen;

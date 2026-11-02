@@ -398,7 +398,7 @@ private:
       return stat_root(F, k, cx.d, pk, need, p, acc);
     }
   }
-  // 逐根: stat_eval 只拷回 need 要的原料 (端码按方向 d 出, 行按 d 定向后进探针)
+  // 逐根: stat_eval 只拷回 need 要的原料 (行只拷根的 pk 那几组; 端码按方向 d 出, 行按 d 定向后进探针)
   template <class Ps>
   RootView stat_root(const Forest &F, int k, factor::stat::Dir d, const Pick &pk, uint8_t need, Ps &p, factor::stat::Accum *acc) {
     static_assert(!Ps::cells && (Ps::need & kNeedRanks) == 0, "逐格扩展只 CPU; 抽样行只批核");
@@ -411,7 +411,7 @@ private:
     const int i = F.d.roots[static_cast<size_t>(k)];
     const bool rows = (need & kNeedRows) != 0, rx = (need & kNeedRx) != 0, ec = (need & kNeedEc) != 0;
     if (rows)
-      rows_.resize(static_cast<size_t>(y.hd.n) * s.T);
+      rows_.resize(static_cast<size_t>(pk.n) * s.T);
     if (rx)
       rx_.resize(n);
     if (ec)
@@ -430,8 +430,8 @@ private:
       v.x = {xv, xm};
     }
     factor::stat::Accum all[factor::stat::kMaxHold];
-    factor::gpu::stat_eval(stat_, rp, gate_, v.f, d, s.t0_abs, s.t_lo, s.t_back, all, rows ? rows_.data() : nullptr, ec ? ec_.data() : nullptr,
-                           rx ? rx_.data() : nullptr);
+    factor::gpu::stat_eval(stat_, rp, gate_, v.f, d, s.t0_abs, s.t_lo, s.t_back, all, rows ? rows_.data() : nullptr, pk.at, pk.n,
+                           ec ? ec_.data() : nullptr, rx ? rx_.data() : nullptr);
     for (int hi = 0; hi < pk.n; ++hi)
       acc[hi] = all[pk.at[hi]];
     v.rx = rx ? rx_.data() : nullptr;
@@ -441,7 +441,7 @@ private:
       ex_.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int) {
         for (int hi = 0; hi < pk.n; ++hi)
           for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t)
-            p.row(hi, t, factor::stat::oriented(rows_[static_cast<size_t>(pk.at[hi]) * s.T + t], d), e);
+            p.row(hi, t, factor::stat::oriented(rows_[static_cast<size_t>(hi) * s.T + t], d), e);
       });
     }
     if ((need & kNeedAlpha) != 0) { // alpha = 根的输入: 叶 = 宿主平面, 否则拷回
@@ -522,7 +522,7 @@ private:
   factor::gpu::SearchSession *search_ = nullptr;
   std::vector<factor::search::Result> out_; // 批核一批的结果 (ready 出, view 取)
   factor::cpu::stat::Workspace w_;          // 宿主探针 (cost_rows)
-  std::vector<factor::stat::Row> rows_;     // 一级 Row 拷回 [hd.n][T] (kNeedRows)
+  std::vector<factor::stat::Row> rows_;     // 一级 Row 拷回 [pk.n][T] (根的那几组; kNeedRows)
   std::vector<uint16_t> rx_;                // 根的 r16 拷回 (kNeedRx)
   std::vector<uint8_t> ec_;                 // 根的端码拷回 (kNeedEc)
   std::vector<float> xv_;                   // 根值拷回 (kNeedX)

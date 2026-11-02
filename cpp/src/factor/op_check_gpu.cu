@@ -435,8 +435,9 @@ StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, dou
 }
 
 void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
-               factor::stat::Accum *acc, factor::stat::Row *rows, uint8_t *ec, uint16_t *rx, double *eval_ms) {
+               factor::stat::Accum *acc, factor::stat::Row *rows, const int *rows_at, int n_at, uint8_t *ec, uint16_t *rx, double *eval_ms) {
   assert(s && x && x->v && x->m && g && g->m && acc);
+  assert((!rows_at || n_at >= 1) && "rows_at 给了就至少一组");
   factor::stat::Span sp = s->s; // 分片数 n_parts 随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
   sp.t0_abs = t0_abs, sp.t_lo = t_lo, sp.t_back = t_back;
   factor::stat::assert_span(sp);
@@ -447,8 +448,14 @@ void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::sta
     *eval_ms = s->tm.end();
   const int H = s->lab.L.hd.n;
   s->acc.down(acc, static_cast<size_t>(H)); // D2H 自带同步
-  if (rows)
-    s->rows.down(rows, static_cast<size_t>(H) * s->s.T);
+  const size_t T = static_cast<size_t>(s->s.T);
+  if (rows && !rows_at)
+    s->rows.down(rows, static_cast<size_t>(H) * T);
+  for (int j = 0; rows && rows_at && j < n_at; ++j) {
+    assert(rows_at[j] >= 0 && rows_at[j] < H);
+    CU(cudaMemcpy(rows + static_cast<size_t>(j) * T, s->rows.p + static_cast<size_t>(rows_at[j]) * T, T * sizeof(factor::stat::Row),
+                  cudaMemcpyDeviceToHost));
+  }
   if (ec) {
     stat::end_codes(s->rx.p, s->s, d, s->ec.p, nullptr);
     s->ec.down(ec, s->s.n());
@@ -473,7 +480,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
   xv.up(x.v, n), xm.up(x.m, n), g.up(gm, n);
   const DevPlane xp{xv.p, xm.p}, gp{nullptr, g.p};
   StatSession *s = stat_open(T, A, seg, L, prep_ms);
-  stat_eval(s, &xp, &gp, f, factor::stat::kFwd, 0, 0, 0, acc, rows, nullptr, nullptr, eval_ms);
+  stat_eval(s, &xp, &gp, f, factor::stat::kFwd, 0, 0, 0, acc, rows, nullptr, 0, nullptr, nullptr, eval_ms);
   stat_close(s);
   xv.free_(), xm.free_(), g.free_();
 }

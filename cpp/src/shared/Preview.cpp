@@ -194,6 +194,17 @@ void Preview::reset(ReadScope scope, Spec sp) {
 
   scope_ = std::move(scope);
   spec = std::move(sp);
+  reset_gen_ = gen_;
+
+  const auto kept = kept_.find(scope_.main);
+  from_kept_ = kept != kept_.end();
+  if (from_kept_) {
+    snap = kept->second.snap;
+    total.store(kept->second.rounds, std::memory_order_relaxed);
+    done.store(kept->second.rounds, std::memory_order_relaxed);
+    publish();
+    return;
+  }
 
   // 预览是全表底图: 输入变了旧格子无参照意义, 清零 (尺寸对得上就地 fill, 零分配)
   for (size_t l = 0; l < LEVEL_COUNT; ++l) {
@@ -216,6 +227,8 @@ void Preview::reset(ReadScope scope, Spec sp) {
 
 bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("PreviewBuild");
+  if (from_kept_)
+    return true;
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
   const size_t A = scope_.axis.size();
@@ -272,8 +285,10 @@ bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<boo
     n_rounds = std::max(n_rounds, nr);
     n_total += nr;
   }
-  if (n_total == 0)
-    return true; // 池为空: 直接 Done, 表格全 "—"
+  if (n_total == 0) { // 池为空: 直接 Done, 表格全 "—"
+    keep(0);
+    return true;
+  }
   total.store(n_total, std::memory_order_release);
 
   // 任务表: 轮序优先 (抢单按下标序 → 收敛序仍逐轮), 轮内各层交错 (层序 = L_1min 先: 特征最多, 再粗层, L_sec 最重最后)
@@ -305,7 +320,16 @@ bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<boo
     const Job &j = jobs[i];
     rt.lv[j.l]->block(*this, rt, rd, j.r, j.i, tid);
   });
-  return !cancel.load(std::memory_order_relaxed);
+  if (cancel.load(std::memory_order_relaxed))
+    return false;
+  keep(n_total);
+  return true;
+}
+
+void Preview::keep(size_t rounds) {
+  std::lock_guard<std::mutex> lock(mutex);
+  if (reset_gen_ == gen_)
+    kept_[scope_.main] = Kept{snap, rounds};
 }
 
 // ============================================================================
@@ -500,4 +524,10 @@ void Preview::clear() {
   rt_.reset(); // worker 已 join, 整体释放
   scope_ = ReadScope{};
   idle();
+}
+
+void Preview::forget() {
+  std::lock_guard<std::mutex> lock(mutex);
+  kept_.clear();
+  ++gen_;
 }

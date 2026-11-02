@@ -931,7 +931,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
   }
   ImGui::SameLine();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Tier:");
-  for (const TierId t : TIER_IDS) {
+  for (const TierId t : TIER_ORDER) {
     ImGui::SameLine();
     if (ImGui::RadioButton(tier_name(t), sel.tier == t) && sel.tier != t) {
       sel.clear_filters(); // 换档 = 换字段表: 过滤作废

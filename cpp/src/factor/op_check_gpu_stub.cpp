@@ -62,7 +62,7 @@ StatSession *stat_open(int, int, int, const factor::stat::Labels &, double *) {
   return nullptr;
 }
 void stat_eval(StatSession *, const DevPlane *, const DevPlane *, factor::stat::Frame, factor::stat::Dir, int, int, int, factor::stat::Accum *,
-               factor::stat::Row *, uint8_t *, uint16_t *, double *) {
+               factor::stat::Row *, const int *, int, uint8_t *, uint16_t *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 void stat_close(StatSession *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }

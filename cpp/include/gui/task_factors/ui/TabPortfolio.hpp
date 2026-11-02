@@ -78,19 +78,24 @@ enum NavGroup : int { kNavFactor,
                       kNavStrat };
 inline constexpr int kNavGroups = 3;
 
-// Portfolio 页派生 (UI 线程, 结果 / 内容 / fixed_impact 变才重算): 全段
+// Portfolio 页派生 (UI 线程, 结果 / 内容 / fixed_impact 变才重算): 全段. 重算时沿用上一份里没变的:
+//   单因子线 = 同一条 FactorCurve 且日轴 / fixed_impact 不变; 篮子 (池线 + vals) = 各池同一条 PoolCurve 且日轴不变 (basket_gen 不变). 组合线恒重算 (份额随当日因子数)
 struct PortfolioDerived {
-  std::vector<misc::Ymd> dates;               // 日并集轴 (横轴 day 下标)
-  std::vector<PortfolioLine> nav[kNavGroups]; // [NavGroup][2 · 行] 成对线, note = 年换手; on = 只全A等权:
-                                              //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key + kImpactId,
-                                              //     en | cn = 因子文件主干 | 中文名, hover = 池 层 持有期 冲击段 规范串
-                                              //   指数 = [池线序] 篮子 0 (all 池两条 = 全A加权 / 全A等权, 其余池等权); en | cn = 池名 | 中文名 (all 池 = kWeightName)
-                                              //   策略 = 一行, 组合 G20 多头: 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | G20 多头
-  std::vector<PortfolioBasket> vals;          // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 总市值加权);
-                                              //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | 中文名 (all 池 = kWeightName) / sw<ID> | 行业名,
-                                              //   tag = 池名 (all 池 = kWeightName) / 行业名
-  size_t n_val_pools = 0;                     // vals 前 n 个是池
-  int n_ready = 0, n_error = 0;               // 已算成 / 算失败的因子数
+  std::vector<misc::Ymd> dates;                        // 日并集轴 (横轴 day 下标)
+  std::vector<PortfolioLine> nav[kNavGroups];          // [NavGroup][2 · 行] 成对线, note = 年换手; on = 只全A等权:
+                                                       //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key + kImpactId,
+                                                       //     en | cn = 因子文件主干 | 中文名, hover = 池 层 持有期 冲击段 规范串
+                                                       //   指数 = [池线序] 篮子 0 (all 池两条 = 全A加权 / 全A等权, 其余池等权); en | cn = 池名 | 中文名 (all 池 = kWeightName)
+                                                       //   策略 = 一行, 组合 G20 多头: 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | G20 多头
+  std::vector<PortfolioBasket> vals;                   // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 总市值加权);
+                                                       //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | 中文名 (all 池 = kWeightName) / sw<ID> | 行业名,
+                                                       //   tag = 池名 (all 池 = kWeightName) / 行业名
+  size_t n_val_pools = 0;                              // vals 前 n 个是池
+  int n_ready = 0, n_error = 0;                        // 已算成 / 算失败的因子数
+  std::vector<std::shared_ptr<const FactorCurve>> src; // [因子行] 单因子线的源 (nav[kNavFactor] 的 [2 · 行])
+  double impact = 0.0;                                 // 单因子线按的 fixed_impact
+  std::vector<std::shared_ptr<const PoolCurve>> pools; // [feature_pools 序] 篮子的源 (没算成 = 空)
+  uint64_t basket_gen = 0;                             // 篮子重建次数 (滚动分位键)
 };
 
 // VAL 滚动 band: 每口收益率 v (EP / BP / SP / CP / DY) 按贵度 −v (升 = 贵) 逐日在过去 N 自然年 (含当日; N = band_years) 窗内取 kBandQs 分位;
@@ -155,20 +160,20 @@ struct PortfolioStage {
     ++gen;
   }
 };
-// 三级: 派生 → 滚动分位 → 视图
+// 三级: 派生 → 滚动分位 (只随篮子) → 视图 (随派生 + 滚动分位)
 struct PortfolioDerKey {
   uint64_t gen = 0, items = 0; // PortfolioService::result_gen / PortfolioUIState::items_gen
   double impact = 0.0;         // fixed_impact
   bool operator==(const PortfolioDerKey &) const = default;
 };
 struct PortfolioRollKey {
-  uint64_t der = 0;      // 派生 gen
+  uint64_t baskets = 0;  // PortfolioDerived::basket_gen
   int years = 0, vs = 0; // 窗长 / VAL 选中篮子 (der.vals 下标, −1 = 无)
   bool operator==(const PortfolioRollKey &) const = default;
 };
 struct PortfolioViewKey {
-  uint64_t roll = 0;  // 滚动分位 gen
-  int d0 = 0, d1 = 0; // 区间
+  uint64_t der = 0, roll = 0; // 派生 gen / 滚动分位 gen
+  int d0 = 0, d1 = 0;         // 区间
   bool operator==(const PortfolioViewKey &) const = default;
 };
 
