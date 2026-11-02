@@ -38,7 +38,7 @@ struct SharedData;
 
 namespace agent {
 
-// 特征来源 (系统提示的三类特征): lob = Lob 档 (因子池库); fund = Bar 档的 Fund 族 (基本面 / 估值); bar = Bar 档其余 (all 库)
+// 特征来源 (系统提示的三类特征): lob = Lob 档 (因子池 Lob 库); fund = Bar 档的 Fund 族 (基本面 / 估值); bar = Bar 档其余 (因子池 Bar 库)
 enum class Src : uint8_t { Lob,
                            Bar,
                            Fund };

@@ -1,4 +1,4 @@
-// Bar 档管线 (bar1m + 基本面, 全轴): 档的源 TierFeed<bar::Tier> + pipeline<bar::Tier> 实例化.
+// Bar 档管线 (bar1m + 基本面): 档的源 TierFeed<bar::Tier> + pipeline<bar::Tier> 实例化.
 // 本 TU precise-math (CMakeLists PRECISE 表): Fund 缺失值 / PoolKey 母集判定 / cs_valid 依赖 NaN 比较语义.
 #include "worker/feature_pipeline.hpp"
 
@@ -25,6 +25,7 @@ struct TierFeed<bar::Tier> {
 
   const fund::Panel &fund_panel;
   const PoolAxis &axis;
+  const pool::Panel *pool; // 子池逐日成员 (all: nullptr)
   std::span<const misc::Ymd> dates;
   const fundamental::Catalog catalog;
   fundamental::Ids ids;                      // A 轴码表 (id = sub); 构造后只读, 多预取核并发 find
@@ -32,9 +33,8 @@ struct TierFeed<bar::Tier> {
   std::vector<fundamental::Scratch> scratch; // 与 ring 逐格对应 (一格同一时刻只有一个预取核在写)
 
   TierFeed(const PipelineArgs &args, const StoreRing &store)
-      : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), dates(args.dates),
+      : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), pool(args.pool), dates(args.dates),
         ring(store.feed_ring_size()), scratch(ring.size()) {
-    assert(axis.size() <= asset_axis().size() && "Bar 档 A 轴 = 全轴前缀 (建库时的全轴; 之后新上市的在轴外)");
     for (size_t sub = 0; sub < axis.size(); ++sub)
       ids.add(asset_axis().code(axis.global(sub)));
     assert(std::ranges::all_of(dates, [this](misc::Ymd d) { return catalog.find_day("bar1m", d) != nullptr; }) &&
@@ -44,7 +44,7 @@ struct TierFeed<bar::Tier> {
   size_t weight(size_t) const { return 1; } // 每资产每日恰 255 根, 负载均匀
 
   std::unique_ptr<CoreBar> make_core(size_t sub, int) const {
-    return std::make_unique<CoreBar>(fund_panel, asset_axis().code(axis.global(sub)), sub);
+    return std::make_unique<CoreBar>(fund_panel, pool, asset_axis().code(axis.global(sub)), sub);
   }
 
   size_t prefetch(size_t d) {

@@ -32,13 +32,13 @@ struct Feature;
 //   struct X : Published {
 //     struct Spec;  Spec spec;   本次构建的输入 (reset 持锁写; UI 持锁读 = 快照身份)
 //     struct Snap;  Snap snap;   发布成品 (批末持锁 swap; UI 渲染帧内持锁只画)
-//     void reset(ReadScope, Spec);  bool build(const PerPool<const FeatureRead *> &, cancel);  void clear();
+//     void reset(ReadScope, Spec);  bool build(const PerLib<const FeatureRead *> &, cancel);  void clear();
 //   };
 // 同一条流水线, 只是配置不同:  段序 (SegPlan) + 读计划 (ReadPlan) → IO + 门控 + as-of 投影 (平面, features/Storage/DayBatchPlane.hpp)
 //   → 相 (phase: 一次 dispatch, 返回即栅栏) → 可合并累加器 (按写者分区: 资产独占 / 行独占 / shard + reduce_tree)
 //   → 导出 staging Snap → 短锁 swap 发布
-//   - A 轴 = ReadScope::axis (主池轴; 槽位 = 主池轴下标, 查 items 经 global_ids)
-//   - 网格 = 分析的行轴层 (Spec 里的 level, 盘中): 列是任意 (池, 层) 的 ColRef, 一律按 level_asof 投影到网格
+//   - A 轴 = ReadScope::axis (主库轴; 槽位 = 主库轴下标, 查 items 经 global_ids)
+//   - 网格 = 分析的行轴层 (Spec 里的 level, 盘中): 列是任意 (库, 层) 的 ColRef, 一律按 level_asof 投影到网格
 //     (盘后列 L_1day 对任何网格都读前一交易日行 = 当日适用值);
 //     要编译期段长 (FFT / LUT) 的目标经 with_grid 分派到 Grid<L>
 //   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
@@ -206,28 +206,28 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
 }
 
 // ---- 读取范围 (Request 公共头): GUI 线程从库清单解析, worker 只消费 ----
-// 池集 = 主池 + 各列所在池 (同档多池 / 跨档一视同仁; 资产不在列所在池 / 该池这天没落盘 = 无源), 余池空
-inline constexpr PoolId kAutoMain = UINT8_MAX; // 主池 = 列所在池里池轴最短者 (Lob 池优先: Bar 列旁读 all, 池外格不算)
-// 日轴: 段序 / 承接日取哪些池的落盘日
-enum class DayAxis : uint8_t { Main,    // 主池日期轴首尾 × 主池 (流式分析: 主池日 = 样本日, 余池只旁读)
-                               Union }; // 各池日期轴首尾 × 池集并集 (OrderFlow: 各池自画自的, 叠加)
+// 库集 = 主库 + 各列所在库 (多池 / 跨档一视同仁; 资产不在列所在库 / 该库这天没落盘 = 无源), 余库空
+inline constexpr LibId kAutoMain = UINT8_MAX; // 主库 = 列所在库里池轴最短者 (子池优先: all 的列旁读, 池外格不算)
+// 日轴: 段序 / 承接日取哪些库的落盘日
+enum class DayAxis : uint8_t { Main,    // 主库日期轴首尾 × 主库 (流式分析: 主库日 = 样本日, 余库只旁读)
+                               Union }; // 各库日期轴首尾 × 库集并集 (OrderFlow: 各库自画自的, 叠加)
 struct ReadScope {
-  std::vector<misc::Ym> months;      // 升序 (日轴区间覆盖的月); 池集任一未建 → 空
-  PoolId main = kAllPool;            // 主池: A 轴 (池轴) / K 线等主池列
-  PoolMask days = 0;                 // 日轴池集 (DayAxis 定): 这些库落盘日的并集
-  PoolAxis axis;                     // A 轴 (平面资产维, 槽位 → 全局 id): 主池轴, 或指定资产 (OrderFlow 单资产)
-  PerPool<FeatureLib> libs;          // 档 / 池轴 / 目录, 与写端同一清单
-  PerPool<std::vector<uint32_t>> to; // A 轴 a → 该池轴下标 (kAbsent = 不在该池); 与 A 轴同轴的池空
+  std::vector<misc::Ym> months;     // 升序 (日轴区间覆盖的月); 库集任一未建 → 空
+  LibId main = kAllBar;             // 主库: A 轴 (池轴) / K 线等主库列
+  LibMask days = 0;                 // 日轴库集 (DayAxis 定): 这些库落盘日的并集
+  PoolAxis axis;                    // A 轴 (平面资产维, 槽位 → 全局 id): 主库轴, 或指定资产 (OrderFlow 单资产)
+  PerLib<FeatureLib> libs;          // 档 / 池轴 / 目录, 与写端同一清单
+  PerLib<std::vector<uint32_t>> to; // A 轴 a → 该库轴下标 (kAbsent = 不在该库轴); 与 A 轴同轴的库空
 
-  bool has(PoolId l) const { return !libs[l].name.empty(); } // 在池集内
+  bool has(LibId l) const { return !libs[l].dir.empty(); } // 在库集内
   const FeatureLib &lib() const { return libs[main]; }
-  PerPool<size_t> sizes() const;                                 // 各池的池轴长 (源暂存按源池开)
-  Readers readers(const PerPool<const FeatureRead *> &fr) const; // fr: 池集各池 reader (LibReaders::ptr)
+  PerLib<size_t> sizes() const;                                 // 各库的池轴长 (源暂存按源库开)
+  Readers readers(const PerLib<const FeatureRead *> &fr) const; // fr: 库集各库 reader (LibReaders::ptr)
 };
-// 池集 = main + cols 所在池 (main = kAutoMain → 见上); assets 空 = A 轴取主池轴, 否则 = 这些全局 id (升序去重)
-ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {},
+// 库集 = main + cols 所在库 (main = kAutoMain → 见上); assets 空 = A 轴取主库轴, 否则 = 这些全局 id (升序去重)
+ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {},
                      DayAxis days = DayAxis::Main);
-// A 轴 + 各池映射 (s.libs / s.main 已定; assets 空 = 主池轴, 主池同轴不映射)
+// A 轴 + 各库映射 (s.libs / s.main 已定; assets 空 = 主库轴, 主库同轴不映射)
 void map_axis(ReadScope &s, std::vector<uint32_t> assets);
 // 库 lib 落了第 d 天 (按库清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
 bool landed(const FeatureLib &lib, misc::Ymd d);
@@ -242,32 +242,32 @@ struct Request {
 // GUI 线程: 该档该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid)
 fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, std::vector<size_t> cols);
 
-// 日轴 (升序): scope.days 各库落盘日 (按库清单日期轴) 的并集 ∩ months + 每日所属月下标 + 每日落了盘的日轴池
-// (余池的位由 plan_segs 只对入选的日补判)
+// 日轴 (升序): scope.days 各库落盘日 (按库清单日期轴) 的并集 ∩ months + 每日所属月下标 + 每日落了盘的日轴库
+// (余库的位由 plan_segs 只对入选的日补判)
 struct DateList {
   std::vector<misc::Ymd> dates;
   std::vector<uint16_t> month;
-  std::vector<PoolMask> has;
+  std::vector<LibMask> has;
 };
 DateList enumerate_dates(const ReadScope &scope);
 
 // 行映射: 平面行怎么由源行得到 (gather / scatter 对仗)
 enum class Rows : uint8_t { AsOf,   // gather: 网格行 t ← 源行 level_asof(源列, 网格层, t)   (TsPlane / CsPlane)
                             Tail }; // scatter: 源行 r → 网格行 (行末秒 − 1 所在; 盘后 = 收盘之后), 原生行  (RowPlane)
-// GUI 线程: 一组 ColRef → 读计划. 同 (池, 层, 盘后) 的列并成一个源 (column_set 定门控). carry = 开盘承接前日末行 (AsOf 必须)
+// GUI 线程: 一组 ColRef → 读计划. 同 (库, 层, 盘后) 的列并成一个源 (column_set 定门控). carry = 开盘承接前日末行 (AsOf 必须)
 ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, std::vector<ColRef> cols);
 
-// 读请求 = 主池 × 日轴 × A 轴 × 行映射 × 列
+// 读请求 = 主库 × 日轴 × A 轴 × 行映射 × 列
 struct ReadSpec {
-  PoolId main = kAutoMain;
+  LibId main = kAutoMain;
   DayAxis days = DayAxis::Main;
   size_t level = L_1min;
   Rows rows = Rows::AsOf;
   bool carry = true; // Tail 可关 (前一日的点已在图上)
   std::vector<ColRef> cols;
-  std::vector<uint32_t> assets; // 空 = 主池轴
+  std::vector<uint32_t> assets; // 空 = 主库轴
 };
-// 统一请求构建 (= read_scope + read_plan): 池集未建 → false (请求方放弃)
+// 统一请求构建 (= read_scope + read_plan): 库集未建 → false (请求方放弃)
 bool read_request(const Config &cfg, const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan);
 
 // ---- 段序 (全部读端唯一一份): 日轴 (enumerate_dates) 按 seg_days(level) 连续成段, 再排段 ----

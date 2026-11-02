@@ -4,7 +4,7 @@
 #include "misc/profiler.hpp"
 #include "shared/Asset.hpp"
 #include "shared/Feature.hpp"
-#include "shared/FeatureLib.hpp" // pool_def
+#include "shared/FeatureLib.hpp" // lib_name
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -66,7 +66,7 @@ static void RenderControl(TransformService *service, SharedData &data, Transform
 
   ImGui::SameLine(0, 20);
   if (const ColRef *feat = sel.primary())
-    ImGui::Text("%s %s %s", pool_def(feat->pool).name, level_name(feat->level), data.feature.meta(*feat).code);
+    ImGui::Text("%s %s %s", lib_name(feat->lib).c_str(), level_name(feat->level), data.feature.meta(*feat).code);
   else
     ImGui::TextDisabled("无特征");
 }

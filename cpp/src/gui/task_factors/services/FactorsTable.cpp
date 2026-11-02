@@ -100,11 +100,12 @@ std::string factor_dir_of(const SharedData &data, const std::string &pool, Level
   return data.config.factor_dir + "/" + pool + "/" + factor_level(lv).name;
 }
 
-PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool) {
-  PerPool<FeatureLib> libs;
-  libs[kAllPool] = load_lib(data.config, pool_def(kAllPool).name);
-  if (const PoolId p = pool_id(pool); p != kAllPool)
-    libs[p] = load_lib(data.config, pool);
+PerLib<FeatureLib> factor_libs(const SharedData &data, const std::string &pool) {
+  PerLib<FeatureLib> libs;
+  for (const TierId t : TIER_IDS) {
+    const LibId l = lib_id(pool_id(pool), t);
+    libs[l] = load_lib(data.config, l);
+  }
   return libs;
 }
 

@@ -163,7 +163,7 @@ Shape shape_of(const Io &io, const Chunk &k) {
   return s;
 }
 
-// 逐天并行读骨架 (load_x / load_y / load_b / n_full_of 同一份): cols → 一张读计划 (同 (池, 层, 盘后) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
+// 逐天并行读骨架 (load_x / load_y / load_b / n_full_of 同一份): cols → 一张读计划 (同 (库, 层, 盘后) 一源, 网格行 level_asof 投影); 每天各源读进本线程暂存后
 // on_day(view, day, d, tid) 散进平面 (view(c, t) = 平面列 c 在网格行 t 的源行视图). prog.begin Loading (日数), 每天 publish(1). false = 取消 / 库判废
 template <class OnDay>
 bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&on_day) {
@@ -194,7 +194,7 @@ bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&o
       const auto [si, j] = at[c];
       const Source &s = plan.srcs[si];
       View w;
-      w.ids = rd.ids[s.pool];
+      w.ids = rd.ids[s.lib];
       w.vt = s.cs.vts[j];
       size_t r = 0;
       if (const FeatureRead::DayColumns *dc = source_row(s, slot.src[si], t, r)) {
@@ -209,28 +209,18 @@ bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&o
   return !io.cancel.load(std::memory_order_relaxed) && !io.lr.stale();
 }
 
-// 一天的截面门控 (load_y / load_b / n_full_of 同一份): gate[t·A + a], t < VR = 截面池 ∧ 当日有数据; has = 本线程 [A] 暂存, 出 = 当日有数据 (∧ 子池成员).
+// 一天的截面门控 (load_y / load_b / n_full_of 同一份): gate[t·A + a], t < VR = 截面池 ∧ 当日有数据; has = 本线程 [A] 暂存, 出 = 当日有数据.
 // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
 // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
-// 截面池: all = 标签库 cs_valid (母集); 子池 = 当日成员, 不看 cs_valid
-// (ST 池在母集外; 其余子池 ⊂ 母集, 同一份盘前态)
+// 截面池 = 标签库 cs_valid (all: 当日活跃; 子池: 当日成员)
 template <class ViewFn>
-void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const Domain &dm, const Day &day, size_t VR, size_t A, std::vector<uint8_t> &has,
-              uint8_t *gate) {
+void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, size_t VR, size_t A, std::vector<uint8_t> &has, uint8_t *gate) {
   feature_storage_t x;
   std::fill(has.begin(), has.end(), static_cast<uint8_t>(0));
   for (size_t t = 0; t < VR; ++t) {
     const View wt = view(ts_i, t);
     for (size_t a = 0; a < A; ++a)
       has[a] |= cell(wt, a, x) && fmeta::data_valid(static_cast<float>(x));
-  }
-  if (dm.member) {
-    const uint8_t *mem = dm.member->row(day.date);
-    for (size_t a = 0; a < A; ++a)
-      has[a] &= mem[a];
-    for (size_t t = 0; t < VR; ++t)
-      std::copy(has.begin(), has.end(), gate + t * A);
-    return;
   }
   for (size_t t = 0; t < VR; ++t) {
     const View wc = view(cs_i, t);
@@ -249,7 +239,7 @@ bool load_x(const Io &io, const Chunk &k, const std::vector<LeafId> &ids, XPlane
   X.sh = sh;
   X.v.resize(ft.x.leaves.size());
   const size_t A = static_cast<size_t>(sh.A), n = sh.n(), VR = static_cast<size_t>(ft.seg), nf = ids.size();
-  // ---- 列段 叶 [nf], 各按所在 (池, 层) 投影到网格行 ----
+  // ---- 列段 叶 [nf], 各按所在 (库, 层) 投影到网格行 ----
   ColList cols{io.dm.pool, {}};
   std::vector<factor::check::Plane *> out(nf);
   for (size_t i = 0; i < nf; ++i) {
@@ -299,7 +289,7 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
   // 标签组 i / 金额段 c 的列段起点 (固定段 = kFlat)
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
-  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签在标签库");
+  assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控 / 标签在标签库");
   std::vector<size_t> lab_at(H), cost_at(C, kFlat);
   for (size_t i = 0; i < H; ++i) {
     lab_at[i] = cols.refs.size();
@@ -328,10 +318,10 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
       Y.costs[c].assign(n, 0);
   // 买入冲击按 max_impact 封顶 (fp16 位直接替换, 与原值同格式); 标签不截
   const feature_storage_t imp_top = static_cast<feature_storage_t>(s.max_impact);
-  std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(io.ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交 (∧ 在子池)
+  std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(io.ex.threads()), std::vector<uint8_t>(A)); // 每线程: 当日各资产是否有成交
   std::vector<long long> on(static_cast<size_t>(io.ex.threads()), 0);                                        // 每线程: 门控在池格数 (n_full)
 
-  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
+  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t tid) {
     // 建仓可成交码: 池内 (gate) ∧ 有限 → 码 (1..3), 其余 0
     const auto fold_eo = [&](size_t t, size_t row) {
       const View w = view(eo_i, t);
@@ -378,7 +368,7 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
       }
     };
     uint8_t *gate = Y.gate.data() + d * VR * A;
-    gate_day(view, ts_i, cs_i, io.dm, day, VR, A, has_data[tid], gate);
+    gate_day(view, ts_i, cs_i, VR, A, has_data[tid], gate);
     on[tid] += gate_on(gate, VR * A);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
@@ -397,11 +387,11 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   TraceN("FactorsLoadB");
   constexpr size_t K = factor::stat::kLegs;
   const FeatureTable &ft = io.ft;
-  assert(io.dm.pool == kAllPool && !io.dm.member && "池篮子在 all 池评估域 (全轴; 各池成员读池列)");
+  assert(io.dm.pool == kAllPool && "池篮子在 all 池评估域 (全轴; 各池成员读池列)");
   B = BPlanes{};
   B.sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg), NP = ft.b.pools.size();
-  assert(NP == pool_count());
+  assert(NP == pool_count() && NP <= 64);
   // ---- 列段 ts_valid cs_valid lb_entry_ok T+1C 标签 [K] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 池列 [1, NP)
   //      (日频原料 bar.1d, as-of 到网格行) ----
   ColList cols{io.dm.pool, {}};
@@ -417,7 +407,7 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   const size_t pool_i = cols.refs.size(); // 池 p 的列 = pool_i + p − 1
   for (size_t p = 1; p < NP; ++p)
     cols.add(ft.b.pools[p]);
-  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签 / K 线在标签库");
+  assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控 / 标签 / K 线在标签库");
   std::vector<float> vadj(n, 0.f); // 本行 adj_factor (盘后列, as-of = 当日因子; 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
   B.in.assign(n, 0);
   for (std::vector<uint16_t> &v : B.lab.v)
@@ -433,12 +423,12 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   B.ind.assign(n, 0);
   const size_t nt = static_cast<size_t>(io.ex.threads());
   std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A)); // 每线程: 当日有成交 / all 截面门控
-  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
-    gate_day(view, ts_i, cs_i, io.dm, day, VR, A, has[tid], gate[tid].data());
+  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t tid) {
+    gate_day(view, ts_i, cs_i, VR, A, has[tid], gate[tid].data());
     const std::vector<uint8_t> &on = has[tid];
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      // 池成员位: 位 kAllPool = all 截面门控; 位 p = 池列 > 0.5 (NaN = 母集外 → 不在池) ∧ 当日有成交
+      // 池成员位: 位 kAllPool = all 截面门控; 位 p = 池列 > 0.5 (NaN = 键外 → 不在池) ∧ 当日有成交
       PoolMask *in = B.in.data() + row;
       for (size_t a = 0; a < A; ++a)
         in[a] = gate[tid][t * A + a] ? pool_bit(kAllPool) : PoolMask{0};
@@ -527,11 +517,11 @@ bool n_full_of(const Io &io, const Chunk &k, double &out) {
   const size_t A = static_cast<size_t>(sh.A), VR = static_cast<size_t>(ft.seg), nt = static_cast<size_t>(io.ex.threads());
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs);
-  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控在标签库");
+  assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控在标签库");
   std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
   std::vector<long long> on(nt, 0);
-  if (!read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t, size_t tid) {
-        gate_day(view, ts_i, cs_i, io.dm, day, VR, A, has[tid], gate[tid].data());
+  if (!read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t, size_t tid) {
+        gate_day(view, ts_i, cs_i, VR, A, has[tid], gate[tid].data());
         on[tid] += gate_on(gate[tid].data(), VR * A);
       }))
     return false;

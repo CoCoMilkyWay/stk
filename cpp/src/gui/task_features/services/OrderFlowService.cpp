@@ -35,8 +35,8 @@ namespace GUI::Features {
 struct OrderFlowService::LaneDef {
   size_t grid; // 网格层 (行末对齐到此层的行)
   bool carry;  // 粗层开盘承接前日末行
-  std::vector<ColRef> (*fixed)(const Feature &, PoolId main);
-  std::vector<ColRef> (*extra)(const Feature &, PoolId main);
+  std::vector<ColRef> (*fixed)(const Feature &, LibId main);
+  std::vector<ColRef> (*extra)(const Feature &, LibId main);
 };
 
 namespace {
@@ -54,26 +54,26 @@ enum PickCol : size_t { PICK_RISK_WARN = 0,
                         PICK_INDUSTRY,
                         PICK_COUNT };
 
-std::vector<ColRef> refs(const Feature &f, PoolId pool, size_t level, std::initializer_list<const char *> codes) {
+std::vector<ColRef> refs(const Feature &f, LibId lib, size_t level, std::initializer_list<const char *> codes) {
   std::vector<ColRef> out;
   for (const char *code : codes)
-    out.push_back(f.ref(pool, level, code));
+    out.push_back(f.ref(lib, level, code));
   return out;
 }
-std::vector<ColRef> min_cols(const Feature &f, PoolId) {
-  return refs(f, kAllPool, L_1day, {"open_day", "high_day", "low_day", "close_day", "ts_valid"});
+std::vector<ColRef> min_cols(const Feature &f, LibId) {
+  return refs(f, kAllBar, L_1day, {"open_day", "high_day", "low_day", "close_day", "ts_valid"});
 }
-std::vector<ColRef> sec_cols(const Feature &f, PoolId main) {
+std::vector<ColRef> sec_cols(const Feature &f, LibId main) {
   return refs(f, main, L_1min, {"ts_valid"});
 }
-std::vector<ColRef> pick_cols(const Feature &f, PoolId) {
-  return refs(f, kAllPool, L_1day, {"st_level", "list_age", "delist_age", "ind_l1"});
+std::vector<ColRef> pick_cols(const Feature &f, LibId) {
+  return refs(f, kAllBar, L_1day, {"st_level", "list_age", "delist_age", "ind_l1"});
 }
-std::vector<ColRef> no_cols(const Feature &, PoolId) {
+std::vector<ColRef> no_cols(const Feature &, LibId) {
   return {};
 }
-std::vector<ColRef> sec_extra(const Feature &f, PoolId main) {
-  return pool_tier(main) == TierId::Lob ? refs(f, main, L_1min, {"vwap"}) : std::vector<ColRef>{};
+std::vector<ColRef> sec_extra(const Feature &f, LibId main) {
+  return lib_tier(main) == TierId::Lob ? refs(f, main, L_1min, {"vwap"}) : std::vector<ColRef>{};
 }
 
 // 第 i 位 = overlay 线 i 是其层 ts_valid (展示幅值 = micro price)
@@ -91,7 +91,7 @@ inline bool has_data(feature_storage_t g) { return fmeta::finite(g) && fmeta::da
 inline bool present(feature_storage_t g) { return std::bit_cast<uint16_t>(g) != fmeta::kInvalidBits; }
 
 // ============================================================================
-// worker 私有常驻读端: 池集 reader (清单没变复用) + 双缓冲尾部行平面预读 (稳态零分配)
+// worker 私有常驻读端: 库集 reader (清单没变复用) + 双缓冲尾部行平面预读 (稳态零分配)
 //   Min = stream (分批流式, 与 Dist / Transform / Corr 同一骨架), Sec / Pick = now (单日)
 // ============================================================================
 struct RowRead {
@@ -123,9 +123,9 @@ struct RowRead {
   }
 };
 
-// 单资产范围: 资产在池集任一池内
-bool any_pool(const analysis::ReadScope &scope) {
-  return std::ranges::any_of(pool_ids(), [&](PoolId l) { return scope.has(l) && (scope.to[l].empty() || scope.to[l][0] != kAbsent); });
+// 单资产范围: 资产在库集任一库轴内
+bool any_lib(const analysis::ReadScope &scope) {
+  return std::ranges::any_of(lib_ids(), [&](LibId l) { return scope.has(l) && (scope.to[l].empty() || scope.to[l][0] != kAbsent); });
 }
 
 // overlay 各线值域 (worker 私有累加; 发布时整组写进 Overlay)
@@ -214,8 +214,8 @@ private:
   SharedData &data_;
   RowRead read_;
   RowReq cur_{};
-  SegPlan days_;              // 日轴 (随 rescan 重扫; 池集变了 GUI 必带 rescan)
-  PoolMask pools_ = 0;        // days_ 的池集
+  SegPlan days_;              // 日轴 (随 rescan 重扫; 库集变了 GUI 必带 rescan)
+  LibMask libs_ = 0;          // days_ 的库集
   std::vector<double> bar_x_; // [OHLC 层每日有效行] 一根 K 线的日内 X (所跨分钟的中点)
   LineRange range_;           // 本代 overlay 值域 (跨批累加)
 };
@@ -260,7 +260,7 @@ private:
   bool run(RowReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   SharedData &data_;
-  RowRead read_; // A 轴 = 主池轴 (候选范围); 状态列在 all 池 (Fund 只在 all 库落盘)
+  RowRead read_; // A 轴 = 主库轴 (候选范围); 状态列读 all Bar 库 (全轴)
   RowReq cur_{};
 };
 
@@ -292,12 +292,12 @@ void OrderFlowService::Stop() { // worker 析构即 Stop (join)
 // Requests (GUI 线程; 最新覆盖旧的)
 // ============================================================================
 
-// 固定列在前, overlay (选中 + 尾挂) 在后; 尾部行 (各列按自己的层, 网格定行末对齐与开盘承接); 日轴 = 池集并集.
-// 主池未建 → 退回 all 并丢 overlay (主池本就是 all 则不退)
-bool OrderFlowService::make(const SharedData &data, RowReq &req, const LaneDef &def, PoolId main, const std::vector<ColRef> &feats,
+// 固定列在前, overlay (选中 + 尾挂) 在后; 尾部行 (各列按自己的层, 网格定行末对齐与开盘承接); 日轴 = 库集并集.
+// 主库未建 → 退回 all 并丢 overlay (主库本就是 all 则不退)
+bool OrderFlowService::make(const SharedData &data, RowReq &req, const LaneDef &def, LibId main, const std::vector<ColRef> &feats,
                             std::vector<uint32_t> assets) const {
   assert(feats.size() <= OrderFlowConst::MAX_FEATURES);
-  const auto attempt = [&](PoolId m, std::vector<ColRef> lines) {
+  const auto attempt = [&](LibId m, std::vector<ColRef> lines) {
     for (const ColRef &c : def.extra(data.feature, m))
       if (std::ranges::find(lines, c) == lines.end())
         lines.push_back(c);
@@ -316,15 +316,15 @@ bool OrderFlowService::make(const SharedData &data, RowReq &req, const LaneDef &
                                    .assets = assets},
                                   req.scope, req.spec.plan);
   };
-  return attempt(main, feats) || (main != kAllPool && attempt(kAllPool, {}));
+  return attempt(main, feats) || (main != kAllBar && attempt(kAllBar, {}));
 }
 
-// A 轴: Min / Sec = 选中资产, Pick = 主池轴
+// A 轴: Min / Sec = 选中资产, Pick = 主库轴
 void OrderFlowService::Request(const SharedData &data, uint32_t gen, const OrderFlow::MinKey &key, bool rescan) {
   assert(min_ && "Request 先于 Start");
   assert(std::ranges::all_of(key.feats, [](const ColRef &c) { return c.level >= L_1min; }) && "Min 网格 = L_1min, 细层列不进");
   RowReq req{.spec = {.gen = gen, .rescan = rescan}};
-  if (make(data, req, kMinDef, kAllPool, key.feats, {static_cast<uint32_t>(key.asset)}))
+  if (make(data, req, kMinDef, kAllBar, key.feats, {static_cast<uint32_t>(key.asset)}))
     min_->Request(std::move(req));
 }
 
@@ -357,10 +357,10 @@ bool OrderFlowService::MinLane::run(RowReq &req) {
   if (sp.rescan || days_.dates.empty()) {
     out.begin(Phase::Scanning);
     days_ = analysis::plan_segs(cur_.scope, L_1min, analysis::DayOrder::Sequential, 0);
-    pools_ = cur_.scope.days;
+    libs_ = cur_.scope.days;
     out.dates = days_.dates;
   }
-  assert(pools_ == cur_.scope.days && "池集变了须带 rescan (日轴随池集)");
+  assert(libs_ == cur_.scope.days && "库集变了须带 rescan (日轴随库集)");
   read_.reset(cur_.scope, sp.plan, kDaysPerBatch, &cancel_);
   range_.reset();
 
@@ -377,9 +377,9 @@ bool OrderFlowService::MinLane::run(RowReq &req) {
   out.begin_generation(sp.gen, std::vector<ColRef>(sp.plan.cols.begin() + sp.k0, sp.plan.cols.end()), half_width);
   out.reserve_capacity(R); // 首点发布前完成: 之后 data() 恒稳定
 
-  // 请求侧 asset 是全局轴下标. 不在池集任一池内 (初始默认选中 / 换池后的残留选中,
+  // 请求侧 asset 是全局轴下标. 不在库集任一库轴内 (初始默认选中 / 换库后的残留选中,
   // 候选就绪后 GUI 会自动换代) → 无列可读, 直接发布"完整但空"的一代
-  if (!any_pool(cur_.scope)) {
+  if (!any_lib(cur_.scope)) {
     out.pub.store(OrderFlow::Min::pack(sp.gen, out.dates.size(), 0), std::memory_order_release);
     return true;
   }
@@ -400,7 +400,7 @@ void OrderFlowService::MinLane::emit(const RowPlane &p, size_t b0, size_t bd) {
   for (size_t j = 0; j < bd; ++j) {
     const double x0 = static_cast<double>((b0 + j) * OrderFlowConst::MIN_CAPACITY);
 
-    // OHLC: all 池日 K (all 池缺这天 = 门控哨兵, 无 K 线); 列 [MIN_OPEN, MIN_CLOSE] 与 out.ohlc 同序
+    // OHLC: all Bar 库日 K (缺这天 = 门控哨兵, 无 K 线); 列 [MIN_OPEN, MIN_CLOSE] 与 out.ohlc 同序
     const feature_storage_t *ts = p.series(MIN_TS, 0, j);
     for (size_t m = 0; m < bar_x_.size(); ++m) {
       if (!has_data(ts[m]))
@@ -426,7 +426,7 @@ void OrderFlowService::MinLane::publish(size_t b0, size_t bd) {
 // ============================================================================
 // Pick: 承接日 L_1day filter 列 → 全资产 PIT 状态 → 背槽发布
 //   Fund L_1day 列是盘后列 (行 D = 次日盘前态): 锚点日状态 = 开盘 as-of = 承接日 (日轴前一日) 的 L_1day 行 (RowPlane::carry; 轴首无承接 = 哨兵);
-//   承接格无源 (轴首 / 资产不在 all 池 / all 缺承接日) = 状态不可判读 → has_data=false; 当日有无分钟不论
+//   承接格无源 (轴首 / 资产不在 all Bar 库轴 / all 缺承接日) = 状态不可判读 → has_data=false; 当日有无分钟不论
 // ============================================================================
 
 bool OrderFlowService::PickLane::run(RowReq &req) {
@@ -446,7 +446,7 @@ bool OrderFlowService::PickLane::run(RowReq &req) {
   out.gen = sp.gen;
   out.date = sp.date;
 
-  // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 只填主池轴内的资产, 轴外恒 has_data = false (自然被候选过滤掉)
+  // meta 槽位 = 全局轴下标 (TabOrderFlow 按 items 下标消费); 只填主库轴内的资产, 轴外恒 has_data = false (自然被候选过滤掉)
   out.meta.assign(data_.asset.items.size(), OrderFlow::Pick::Meta{});
 
   // 状态取承接日 L_1day 行; 承接格无源 = 状态不可判读
@@ -571,8 +571,8 @@ bool OrderFlowService::SecLane::run(RowReq &in) {
     out.end();
   }
 
-  // ---- 特征列 (overlay 含尾挂 VWAP, 与盘口独立: 一次读计划, 与图2 同源; 盘口重放走日文件, 不受池轴约束, 上面照常构建) ----
-  // 承接日 = 日轴上的前一日 (plan_day; 各源池当日已落盘才承接): 粗层开盘时的已知值 = 前日末行
+  // ---- 特征列 (overlay 含尾挂 VWAP, 与盘口独立: 一次读计划, 与图2 同源; 盘口重放走日文件, 不受库轴约束, 上面照常构建) ----
+  // 承接日 = 日轴上的前一日 (plan_day; 各源库当日已落盘才承接): 粗层开盘时的已知值 = 前日末行
   {
     TraceN("OF_SecFeats");
     if (!read_.now(req.plan, analysis::plan_day(scope, req.date), cancel_))

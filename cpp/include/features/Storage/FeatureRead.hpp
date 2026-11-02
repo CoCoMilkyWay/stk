@@ -52,7 +52,7 @@ public:
   // lib = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一清单; 须已建库)
   // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
   explicit FeatureRead(const FeatureLib &lib, std::atomic<bool> *abort = nullptr)
-      : tier_(lib.tier), base_dir_(lib.dir), axis_A_(lib.axis.size()), axis_hash_(lib.axis.hash), abort_(abort) {
+      : tier_(lib.tier()), base_dir_(lib.dir), axis_A_(lib.axis.size()), axis_hash_(lib.axis.hash), abort_(abort) {
     assert(axis_A_ > 0 && "期望池轴为空 (库未建: 先 lib.ready())");
   }
 

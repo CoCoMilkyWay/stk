@@ -2,7 +2,6 @@
 #include "gui/Tasks.hpp"
 #include "imgui.h"
 #include "misc/cross_platform.hpp"
-#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 #include <algorithm>
 #include <cassert>
@@ -193,8 +192,6 @@ private:
       std::cout << msg << std::endl;
     };
     data.config.Initialize();
-    for (const TierId t : TIER_IDS)
-      data.feature.selection.pools[t] = default_pool(data.config, t);
     ts.initialized = true;
     last_commission = data.config.commission;
     last_stamp = data.config.stamp;

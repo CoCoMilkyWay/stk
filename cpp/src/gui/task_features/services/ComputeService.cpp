@@ -51,7 +51,7 @@ bool resumable(const FeatureLib &lib) {
     return false;
   SnapHeader want;
 #define TIER_SNAP_HEADER(T, ns) \
-  if (lib.tier == TierId::T)    \
+  if (lib.tier() == TierId::T)  \
     want = snap_header<ns::Tier>(lib, lib.dates.back());
   ALL_TIERS(TIER_SNAP_HEADER)
 #undef TIER_SNAP_HEADER
@@ -66,30 +66,31 @@ void ComputeService::Request(ComputeConfig config) {
   Service::Request(config);
 }
 
-// 两档同一流程: 规划本池 → fund_panel → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
+// 两档同一流程: 规划本库 → fund_panel → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
 // 续算同一流程, 只差: 轴沿用旧清单, 管线日期轴 = 尾窗 + 新日, 不清库, 跑完才落新清单
 bool ComputeService::run(ComputeConfig &config) {
   // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
-  //   日期轴 = 请求带来的规划 (见 source_dates), 末日不晚于各旁读库末日
-  //   Bar (all)  × 全轴: 整段算, 不随回测日历收窄; 无旁读档
-  //   Lob (池) × 池并集 (Bar 池 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid); 截面旁读 Bar 池
-  // 张量/调度/落盘全按本池 A 轴, 需要 items/码表时经 axis.global() 映射.
-  // 一次只算一个池 (TS + CS 同池一趟, 不拆不跨池去重: 将来 TS 可吃池内 CS 输出, 见 FeatureLib.hpp); Lob 只在本池轴内算
-  //  —— 一般只算一个池, 不为多池合算做并集轴.
-  // 池集 = 本池 + 旁读档的当前池 (Selection::pools), 余档空
-  const PoolDef &def = pool_def(config.pool);
+  //   日期轴 = 请求带来的规划 (源日历截到依赖库末日, 见 source_dates)
+  //   all  × 全轴, 成员 = 当日活跃 (Fund live, CoreTs)
+  //   子池 × 成员并集 (all Bar 库 D−1 收盘行的 pool 列 → pool::Panel, 逐日成员 = Meta cs_valid)
+  //   Lob 截面旁读同池 Bar 库
+  // 张量/调度/落盘全按本库 A 轴, 需要 items/码表时经 axis.global() 映射.
+  // 一次只算一个库 (TS + CS 同库一趟, 不拆不跨库去重, 见 FeatureLib.hpp) —— 不为多库合算做并集轴.
+  // 库集 = 本库 + 同池旁读档的库, 余档空
+  const PoolId pool = lib_pool(config.lib);
+  const TierId tier = lib_tier(config.lib);
   PerTier<FeatureLib> libs;
   for (const TierId s : TIER_IDS)
-    if (tier_side(def.tier, s))
-      libs[s] = load_lib(data_.config, data_.feature.selection.pool_of(s));
-  FeatureLib &lib = libs[def.tier];
-  lib = FeatureLib{.tier = def.tier, .name = config.pool, .dir = data_.config.FeatureLibDir(config.pool), .dates = std::move(config.dates)};
+    if (tier_side(tier, s))
+      libs[s] = load_lib(data_.config, lib_id(pool, s));
+  FeatureLib &lib = libs[tier];
+  lib = FeatureLib{.id = config.lib, .dir = lib_dir(data_.config, config.lib), .dates = std::move(config.dates)};
   for (const TierId s : TIER_IDS)
-    assert((!tier_side(def.tier, s) || (libs[s].ready() && lib.dates.back() <= libs[s].dates.back())) && "日期轴越过旁读库末日 (先把旁读档算到这天)");
+    assert((!tier_side(tier, s) || (libs[s].ready() && lib.dates.back() <= libs[s].dates.back())) && "日期轴越过旁读库末日 (先把旁读库算到这天)");
   // 续算: 旧日期轴须是规划的真前缀; 尾窗 = 旧末 min(PEND_DAYS, 旧日数) 日 (标签可能仍悬挂, 此轮结清), 管线日期轴从尾窗起
   size_t tail = 0, first = 0; // first = 管线日期轴在库日期轴里的起点
   if (config.resume) {
-    const FeatureLib old = load_lib(data_.config, config.pool);
+    const FeatureLib old = load_lib(data_.config, config.lib);
     assert(resumable(old) && "续算: 库没有对得上的续算点 (先全量)");
     assert(lib.dates.size() > old.dates.size() && std::equal(old.dates.begin(), old.dates.end(), lib.dates.begin()) &&
            "续算: 库日期轴须是规划的真前缀");
@@ -99,8 +100,10 @@ bool ComputeService::run(ComputeConfig &config) {
     first = old.dates.size() - tail;
   }
   const std::vector<misc::Ymd> dates(lib.dates.begin() + static_cast<std::ptrdiff_t>(first), lib.dates.end());
-  if (lib.tier == TierId::Lob) {
-    data_.pool_panel = pool::Panel::build(libs[TierId::Bar], def.pool_col, dates, config.resume ? &lib.axis : nullptr);
+  const pool::Panel *member = nullptr;
+  if (pool != kAllPool) {
+    data_.pool_panel = pool::Panel::build(load_lib(data_.config, kAllBar), pool_def(pool).pool_col, dates, config.resume ? &lib.axis : nullptr);
+    member = &data_.pool_panel;
     if (config.resume) {
       std::vector<uint32_t> outside;
       std::ranges::set_union(lib.outside, data_.pool_panel.outside(), std::back_inserter(outside));
@@ -116,7 +119,7 @@ bool ComputeService::run(ComputeConfig &config) {
     lib.axis = full_axis(data_.asset.items.size());
   }
   const size_t num_assets = lib.axis.size();
-  std::cout << "Lib " << lib.name << " (" << tier_name(lib.tier) << "): " << lib.dir << " → " << num_assets << " / "
+  std::cout << "Lib " << lib_name(lib.id) << ": " << lib.dir << " → " << num_assets << " / "
             << data_.asset.items.size() << " assets (轴外 " << lib.outside.size() << ")"
             << (config.resume ? " | 续算 " + std::to_string(dates.size() - tail) + " 日 + 尾窗 " + std::to_string(tail) + " 日" : "") << "\n"
             << std::endl;
@@ -128,16 +131,16 @@ bool ComputeService::run(ComputeConfig &config) {
   begin(Phase::Running, dates.size());
 
   // 日频 PIT 基本面数据源 (网格切片 + 事件链), Fund 节点在 worker 内逐日推进; worker 只读.
-  // 只 build 本档 A 轴码表 × 库日期轴 (不是管线日期轴: 切片起点 / 复权锚随库首日, 续算与全量同一面板) —— 池大小随轴缩.
+  // 只 build 本库 A 轴码表 × 库日期轴 (不是管线日期轴: 切片起点 / 复权锚随库首日, 续算与全量同一面板) —— 面板大小随轴缩.
   {
     std::vector<std::string> axis_codes(num_assets);
     for (size_t sub = 0; sub < num_assets; ++sub)
       axis_codes[sub] = asset_axis().code(lib.axis.global(sub));
-    data_.fund_panel.build(axis_codes, lib.dates, lib.tier != TierId::Lob);
+    data_.fund_panel.build(axis_codes, lib.dates, pool == kAllPool);
   }
 
   // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;
-  // 别的池不碰 —— 按目录分片, 见 Config), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集).
+  // 别的库不碰 —— 按目录分片, 见 lib_dir), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集).
   // 续算: 不清库, 跑完才落新清单 (中途取消 = 旧清单 + 旧续算点仍对得上, 再续即可; 已重落盘的尾窗日标签按新日结清, 再续同值重写)
   if (!config.resume) {
     FeatureRead::wipe_dir(lib.dir); // 可能与 reader 判废删库并发
@@ -155,13 +158,12 @@ bool ComputeService::run(ComputeConfig &config) {
   Logger::init(data_.config.log_dir);
 
   // 已落盘天数镜像进进度面
-  const TierId tier = lib.tier;
-  const PipelineArgs args{data_, libs, dates, tail, static_cast<size_t>(config.ring_slots(tier)), static_cast<uint64_t>(config.adopt_pct),
+  const PipelineArgs args{data_, libs, member, dates, tail, static_cast<size_t>(config.ring_slots(tier)), static_cast<uint64_t>(config.adopt_pct),
                           config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   bool completed = false;
 #define TIER_PIPELINE(T, ns) \
-  if (lib.tier == TierId::T) \
+  if (tier == TierId::T)     \
     completed = pipeline<ns::Tier>(args);
   ALL_TIERS(TIER_PIPELINE)
 #undef TIER_PIPELINE

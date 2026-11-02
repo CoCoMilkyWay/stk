@@ -114,7 +114,7 @@ struct Dist::Runtime {
   std::unique_ptr<misc::exec::ForkJoin> ex;
 
   // 容量准备 (幂等, 尺寸对得上零分配), 返回计算执行器
-  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, const PerPool<size_t> &As, size_t n_months, size_t agg_stride) {
+  misc::exec::ForkJoin &prepare(const ReadPlan &plan, size_t A, const PerLib<size_t> &As, size_t n_months, size_t agg_stride) {
     TraceN("DistPrepare"); // 首帧账目: 批平面 + 全资产 sketch + n_threads × 聚合 sketch
     const size_t n_threads = threads_for(n_asset_blocks(A));
     const size_t bs = batch_segs(plan.level), days = bs * seg_days(plan.level);
@@ -179,7 +179,7 @@ void Dist::reset(ReadScope scope, Spec sp) {
 // Build (分批流式: 每批 IO → 扫描 → 归约 → 发布, 首帧与总区间长度无关)
 // ============================================================================
 
-bool Dist::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Dist::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("DistBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;

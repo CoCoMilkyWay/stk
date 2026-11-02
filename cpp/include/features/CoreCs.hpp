@@ -31,8 +31,8 @@
 //   源列 (层, code) 由 Method/CS.hpp 声明, as-of 投影到本层) 每拍按需准备一次, 全部 NeutralRank 行复用; L_sec 用 NeutralRank = 编译错误.
 //
 //   旁读 (TIER_SIDES, 两档共有的任意层): 源档 ns ≠ 本档的行 + 本档没有的 NeutralRank 上下文列 = 按源层的旁读列集 (CsSide<T, 源层>, 编译期去重).
-//   begin_day 从旁读档的池读入各源层这些列的当日 (+ 源列晚于读它的本档行时承接日) 整日张量 (上游读 = 读端同一个 Source;
-//   取用时按 level_asof 投影, gather 时经 ids 取本档 A 轴); 当日缺池 / 头不符 → 断言 (旁读档池须先算完覆盖本池日期轴, 不等它, 不替它算).
+//   begin_day 从同池旁读档的库读入各源层这些列的当日 (+ 源列晚于读它的本档行时承接日) 整日张量 (上游读 = 读端同一个 Source;
+//   取用时按 level_asof 投影, gather 时经 ids 取本档 A 轴); 当日缺库 / 头不符 → 断言 (旁读库须先算完覆盖本库日期轴, 不等它, 不替它算).
 //   旁读列是上游档落盘的张量行, 与本档张量行同属"CS 只看张量行"的输入契约.
 //
 //   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + cs_valid) 看世界,
@@ -178,7 +178,7 @@ public:
   // 任一层有旁读列
   static constexpr bool kSides = []<size_t... L>(std::index_sequence<L...>) { return ((Side<L>::N > 0) || ...); }(std::make_index_sequence<LEVEL_COUNT>{});
 
-  // libs[T::kId] = 本档池 (轴 sub → global); libs[旁读档] = 旁读档的池 (无旁读列时不读)
+  // libs[T::kId] = 本库 (轴 sub → global); libs[旁读档] = 同池旁读档的库 (无旁读列时不读)
   CoreCs(FeatureStore<T> &store, [[maybe_unused]] const PerTier<FeatureLib> &libs)
       : A_(store.query_A()), axis_indices_(A_), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
@@ -187,11 +187,10 @@ public:
       using S = typename TierSide<T>::type;
       const PoolAxis &axis = libs[T::kId].axis;
       const FeatureLib &side = libs[S::kId];
-      assert(side.tier == S::kId && axis.size() == A_);
-      const PoolId side_pool = pool_id(side.name);
+      assert(side.tier() == S::kId && axis.size() == A_);
       side_rd_.emplace(side);
-      side_readers_.rd[side_pool] = &*side_rd_;
-      [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side_pool, side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
+      side_readers_.rd[side.id] = &*side_rd_;
+      [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side.id, side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
       side_ids_.resize(A_);
       for (size_t a = 0; a < A_; ++a) {
         const size_t x = side.axis.sub_of(axis.global(a));
@@ -337,10 +336,10 @@ private:
 
   // 旁读档源层 SL 的源 (读端同一个 Source): 值列 = CsSide 列集, 不门控; 读当日 (+ kPrev 承接日) 整日张量, 行在取用时按 level_asof 投影
   template <size_t SL>
-  void init_side_([[maybe_unused]] PoolId pool, [[maybe_unused]] size_t As) {
+  void init_side_([[maybe_unused]] LibId lib, [[maybe_unused]] size_t As) {
     if constexpr (Side<SL>::N > 0) {
       Source &s = side_src_[SL];
-      s.pool = pool;
+      s.lib = lib;
       s.level = SL;
       s.cs.io.assign(Side<SL>::kFields.begin(), Side<SL>::kFields.end());
       s.cs.vts.assign(Side<SL>::N, L2::ValidType::ALL);
@@ -351,18 +350,18 @@ private:
         side_buf_[SL].prev.preallocate(As, SL, Side<SL>::N);
     }
   }
-  // 本日 (+ 承接日) 源层 SL 旁读列 (旁读档 A 轴整日张量). 无旁读列 → 不读; 当日缺池 / 头不符 → reader 判废 → 断言; 承接日缺 (区间首日) → 落到前日的行 NaN
+  // 本日 (+ 承接日) 源层 SL 旁读列 (旁读档 A 轴整日张量). 无旁读列 → 不读; 当日缺库 / 头不符 → reader 判废 → 断言; 承接日缺 (区间首日) → 落到前日的行 NaN
   template <size_t SL>
   void load_side_([[maybe_unused]] misc::Ymd date, [[maybe_unused]] misc::Ymd prev_date) {
     if constexpr (Side<SL>::N > 0) {
       const Source &s = side_src_[SL];
-      const PoolMask bit = pool_bit(s.pool);
+      const LibMask bit = lib_bit(s.lib);
       const ::Day d{.date = date,
                     .prev = prev_date,
-                    .has = side_rd_->has_date(date) ? bit : PoolMask{0},
-                    .has_prev = prev_date != 0 && side_rd_->has_date(prev_date) ? bit : PoolMask{0}};
+                    .has = side_rd_->has_date(date) ? bit : LibMask{0},
+                    .has_prev = prev_date != 0 && side_rd_->has_date(prev_date) ? bit : LibMask{0}};
       load_source(side_readers_, s, d, s.cs.io, side_buf_[SL]);
-      assert(side_buf_[SL].has_cur && !side_rd_->stale() && "旁读档池缺这天 / 头不符 (轴 / 字段表变了): 先算 / 重算旁读档");
+      assert(side_buf_[SL].has_cur && !side_rd_->stale() && "旁读库缺这天 / 头不符 (轴 / 字段表变了): 先算 / 重算旁读库");
     }
   }
 
@@ -392,7 +391,7 @@ private:
   Day prev_{}; // 日期轴前一日句柄 (只读 TS 列; 区间首日空)
   size_t A_;
 
-  std::optional<FeatureRead> side_rd_;              // 旁读档池 reader (无旁读列不建)
+  std::optional<FeatureRead> side_rd_;              // 旁读库 reader (无旁读列不建)
   Readers side_readers_;                            // rd[旁读档] = side_rd_
   std::vector<uint32_t> side_ids_;                  // 本档 a → 旁读档 A 轴下标
   std::array<Source, LEVEL_COUNT> side_src_{};      // [源层] 旁读源 (无旁读列的层空)

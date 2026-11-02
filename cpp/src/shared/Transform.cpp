@@ -91,7 +91,7 @@ struct Transform::RuntimeOf final : Transform::Runtime {
 
   // A = 池轴大小 (平面/out/sketch/统计/序列快照 尺寸; 线程数按扫描块数封顶), As = 各档轴长 (源暂存),
   // 返回计算执行器
-  misc::exec::ForkJoin &prepare(size_t A, const PerPool<size_t> &As, const Spec &sp) {
+  misc::exec::ForkJoin &prepare(size_t A, const PerLib<size_t> &As, const Spec &sp) {
     TraceN("TransformPrepare");
     const Params &p = sp.params;
     const size_t BS = batch_segs(G::kLevel);
@@ -177,12 +177,12 @@ void Transform::reset(ReadScope scope, Spec sp) {
 // Build
 // ============================================================================
 
-bool Transform::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Transform::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   return with_grid(spec.plan.level, [&](auto g) { return build_grid<decltype(g)>(fr, cancel); });
 }
 
 template <class G>
-bool Transform::build_grid(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("TransformBuild");
   using Rt = RuntimeOf<G>;
   using PSD = typename G::PSD;

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,8 +22,7 @@ namespace GUI::Features {
 
 // 库状态行 (库清单 + 已落盘日数 + 规划; 扫盘有成本, 只在进页 / 一轮算完 / 数据换进 / Refresh 时重扫)
 struct LibStatus {
-  std::string name;
-  TierId tier = TierId::Lob;
+  LibId id = kAllBar;
   bool ready = false; // 有清单 (已建库)
   misc::Ymd first = 0, last = 0;
   size_t lag = 0;                        // 未计算: 交易日历里 last 之后的交易日数
@@ -31,7 +31,7 @@ struct LibStatus {
   bool resumable = false;                // 续算点对得上清单 (见 ComputeService resumable)
   std::vector<misc::Ymd> dates;          // 库日期轴
   std::vector<misc::Ymd> plan;           // 现在重算的日期轴 (见 source_dates; 空 = 不可算), 末日 > last 即落后
-  std::string side_partial;              // 未落盘齐的旁读池 (非空 ⇒ plan 因它清空)
+  std::string blocked;                   // 未落盘齐的依赖库 (非空 ⇒ plan 因它清空)
   bool complete() const { return ready && done == days; }
   // 可续算: 落盘齐 + 续算点在 + 库日期轴是规划的真前缀 (有新日)
   bool appendable() const {
@@ -54,23 +54,23 @@ struct ComputeState {
   ComputeUIState ui_state = ComputeUIState::Idle;
   int popup_frame_count = 0; // Frame counter to ensure popup is rendered
 
-  std::string confirm_pool; // 待确认全量计算的池 (空 = 无确认弹窗)
+  std::optional<LibId> confirm; // 待确认全量计算的库 (空 = 无确认弹窗)
 
-  // 池表: all + 各池 (行序 = all 在前, 池按字段表序)
+  // 库表: 每池两档 (行序 = 依赖在前: all.bar, all.lob, 再各子池 bar / lob, 池按字段表序)
   std::vector<LibStatus> libs;
   bool libs_dirty = true;  // 下一帧重扫
   uint64_t generation = 0; // 对应的 Asset::generation (数据换进即重扫)
 
-  // 自动续算: 数据换进即起一轮, 依次 Append 可续算且未判废的池; 无可续算 / 取消即止
+  // 自动续算: 数据换进即起一轮, 依次 Append 可续算且未判废的库; 无可续算 / 取消即止
   bool auto_append = false;
-  std::vector<std::string> auto_done; // 本轮已自动 Append 过的池 (每池至多一次)
+  std::vector<LibId> auto_done; // 本轮已自动 Append 过的库 (每库至多一次)
 };
 
 // ============================================================================
 // Render Function
 // ============================================================================
 
-// 每帧 (TaskFeatures Update, 不论 Compute 页画没画): 弹窗状态机 + 池表重扫 + 自动续算. inputs_ready 假 → 只走状态机
+// 每帧 (TaskFeatures Update, 不论 Compute 页画没画): 弹窗状态机 + 库表重扫 + 自动续算. inputs_ready 假 → 只走状态机
 void TickCompute(ComputeService &service, ComputeState &state, SharedData &data, bool inputs_ready);
 
 void RenderTabCompute(

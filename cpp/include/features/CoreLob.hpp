@@ -4,7 +4,6 @@
 #include "features/LobGraph.hpp"
 #include "math/sample/ResamplerTick2Min.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Pool.hpp"
 
 // ============================================================================
 // CoreLob: Lob 档单资产时序计算. 订单簿 → L_sec (tick, 秒索引) → resample → L_1min (minute). 日 / 分钟 / 标签骨架见 CoreTs.hpp
@@ -30,15 +29,13 @@ class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   friend Base;
 
 public:
-  // asset_id = 本池 A 轴下标 (= pool::Panel 的池轴下标, 查当日成员位)
   CoreLob(const fund::Panel &fund_panel,
-          const pool::Panel &pool_panel,
+          const pool::Panel *pool_panel,
           const std::string &code_ex,
           size_t asset_id = 0,
           size_t core_id = 0)
-      : Base(asset_id, fund_panel, code_ex, asset_id),
+      : Base(asset_id, pool_panel, fund_panel, code_ex, asset_id),
         core_id_(core_id),
-        pool_panel_(pool_panel),
         tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
     dag_.tick_data.core_id = static_cast<uint32_t>(core_id);
@@ -62,9 +59,6 @@ public:
 
 private:
   // ---------------------------------------------------------------- 档钩子 (CoreTs) ----
-  // 当日在池: 池 (pool::Panel, 第 D 日由 Bar 池 D−1 收盘行定), 与 Fund 吃 fund_panel 同形.
-  // Lob 只在池内算 (本池轴 = 本池并集, 不是全市场); 多池各成一池, 不合算 (见 FeatureLib.hpp)
-  bool member(misc::Ymd date) const { return pool_panel_.in_pool(asset_id_, date); }
   ResamplerTick2Min &resampler() { return tick2min_; }
 
   // ---------------------------------------------------------------- L_sec 每笔 ----
@@ -112,7 +106,6 @@ private:
   }
 
   size_t core_id_;
-  const pool::Panel &pool_panel_; // 池逐日成员 (只读共享; member 查 (asset_id_, date) → cs_valid)
 
   ResamplerTick2Min tick2min_;
 };

@@ -6,7 +6,7 @@
 //   范围 (全部只看本资产 Fund 次日盘前态 (onSettle 之后的输出口) + 收盘市值 / 收盘价 → 资产局部纯函数):
 //     活跃 = Fund live 口 (在市: 非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌; 非次新: 上市满 365 日历日; 申万一级行业已知) ∧ 收盘市值 > 0
 //     母集 = Fund base 口 (活跃 ∧ st_level == 0 (含退市整理期) ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0) ∧ 收盘市值 > 0
-//     两口都由 fund::Panel 全史判定一次, 与 Bar 档 cs_valid / 行情派生截面同一份 (那边按当日盘前态)
+//     两口都由 fund::Panel 全史判定一次, 与 all 库 cs_valid (活跃口) / 行情派生截面同一份 (那边按当日盘前态)
 //   键 (升序 = 指标由低到高, 池取低端 / 高端; 行情派生项全市场预计算, 截至本日收盘, 见 Method/Fundamental.hpp):
 //     size   mcap (亿元, 收盘)
 //     ep     NP_ttm / mcap          (亏损为负, 低端 = 亏损最深)
@@ -25,7 +25,7 @@
 //   ST 键 (不走母集; 活跃 ∧ 次日 st_level 恰为该级 → mcap, 否则 NaN; 池列全选):
 //     st     st_level == 1 (ST, 不含 *ST)
 //     sst    st_level == 2 (*ST)
-//   池日频: 键落 L_1day (收盘后, 母集按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_1day 行池列 (shared/Pool.hpp 读 Bar 池).
+//   池日频: 键落 L_1day (收盘后, 母集按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_1day 行池列 (shared/Pool.hpp 读 all Bar 库).
 //   delist 只看已发生 (不含未来信息).
 //   边界: 行情项窗按可得史扩张, 数据起点次日起即有值; 财务项随首批公告渐次到齐. 母集内键缺记 +inf (与母集外 NaN 分开),
 //         池列据此算覆盖率, 不足则全选母集 (CS::Select*), 指数在暖机段等于母集等权而不停摆.

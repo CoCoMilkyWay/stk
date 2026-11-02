@@ -54,7 +54,7 @@ inline std::uint8_t sw2021_l1_name_to_id(std::string_view name) {
   return 0;
 }
 
-// 次新股: 上市龄 < kNewListDays 日历日 (落盘列 is_new; 活跃的门槛 ⇒ 母集 / Bar 档 cs_valid 不含次新).
+// 次新股: 上市龄 < kNewListDays 日历日 (落盘列 is_new; 活跃的门槛 ⇒ 母集 / all 库 cs_valid 不含次新).
 // 覆盖上市初期连板炒作与 6 / 12 个月限售解禁窗口
 inline constexpr float kNewListDays = 365.0f;
 

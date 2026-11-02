@@ -75,7 +75,7 @@ struct Preview : Published {
   };
 
   struct Spec {
-    TierId tier = TierId::Lob;                    // 预览的档 (= 主池档; UI 按 (档, 层) 取 cells)
+    TierId tier = TierId::Lob;                    // 预览的档 (= 主库档; UI 按 (档, 层) 取 cells)
     std::array<ReadPlan, LEVEL_COUNT> plans;      // 每层预览列 (主档该层, metadata 下标升序, 不含 META 类); 空 = 该层不跑
     std::array<size_t, LEVEL_COUNT> n_features{}; // 每层特征总数 (cells 尺寸)
     std::vector<size_t> cage;                     // price 笼两列 {lim_dn, lim_up} (Bar 档旁读, All 的 L_1day 字段表下标; 逐日笼内判定, 融合进主扫描)
@@ -99,7 +99,7 @@ struct Preview : Published {
   // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回)
   void reset(analysis::ReadScope scope, Spec spec);
   // 轮训构建 (笼相 + 块相各一次 dispatch; 块任务 = IO + 扫描 + 块末 fold 发布); 被取消返回 false
-  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
 
 private:

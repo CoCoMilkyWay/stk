@@ -97,9 +97,9 @@ struct Corr : Published {
   // 重置全部状态并进入 Building (列集/层变了旧矩阵下标全错位, 快照整体清)
   void reset(analysis::ReadScope scope, Spec spec);
   // 逐抽样日构建 (日内切片累加, 每步发布); 被取消返回 false
-  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
-  PoolId main() const { return scope_.main; } // 主池 (与 spec 同锁读)
+  LibId main() const { return scope_.main; } // 主库 (与 spec 同锁读)
 
 private:
   struct Runtime; // worker 私有 (引擎 + 发布 staging), 定义在 Corr.cpp
@@ -132,9 +132,9 @@ struct CorrPair : Published {
   ~CorrPair();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
-  PoolId main() const { return scope_.main; }
+  LibId main() const { return scope_.main; }
 
 private:
   struct Runtime;
@@ -168,9 +168,9 @@ struct CorrLag : Published {
   ~CorrLag();
 
   void reset(analysis::ReadScope scope, Spec spec);
-  bool build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
+  bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
-  PoolId main() const { return scope_.main; }
+  LibId main() const { return scope_.main; }
 
 private:
   struct Runtime;

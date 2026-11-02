@@ -1,4 +1,4 @@
-// Lob 档管线 (逐笔 → 订单簿源, 池轴): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
+// Lob 档管线 (逐笔 → 订单簿源): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
 #include "worker/feature_pipeline.hpp"
 
 #include "codec/L2_DataType.hpp"
@@ -24,6 +24,7 @@ struct TierFeed<lob::Tier> {
 
   SharedData &data;
   const PoolAxis &axis;
+  const pool::Panel *pool; // 子池逐日成员 (all: nullptr)
   std::span<const misc::Ymd> dates;
   // 帧目录切成 日期 × 池轴 (行 = dates 下标, 列 = 池轴下标), 持有到全部 worker 退出,
   // 不碰 Asset 上随重扫描换代的那一份; orders.at(date_idx, sub) 直接定址.
@@ -31,10 +32,8 @@ struct TierFeed<lob::Tier> {
   std::vector<size_t> weights; // 区间内逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)
 
   TierFeed(const PipelineArgs &args, const StoreRing &)
-      : data(args.data), axis(args.libs[TierId::Lob].axis), dates(args.dates),
+      : data(args.data), axis(args.libs[TierId::Lob].axis), pool(args.pool), dates(args.dates),
         orders(args.data.asset.orders()->slice(args.dates, axis.ids)), weights(axis.size(), 0) {
-    // 池逐日成员 (ComputeService 规划本池时 build: 并集 = 本池 A 轴, 逐日成员位 → Meta cs_valid)
-    assert(data.pool_panel.axis().hash == axis.hash && std::ranges::equal(data.pool_panel.dates(), dates) && "池与本池 A 轴 / 日期轴不符");
     for (size_t d = 0; d < dates.size(); ++d) {
       const std::span<const FrameRef> row = orders.row(d);
       for (size_t sub = 0; sub < weights.size(); ++sub)
@@ -46,7 +45,7 @@ struct TierFeed<lob::Tier> {
 
   std::unique_ptr<CoreLob> make_core(size_t sub, int worker_id) const {
     const auto &asset = data.asset.items[axis.global(sub)];
-    return std::make_unique<CoreLob>(data.fund_panel, data.pool_panel, asset.code_ex(), sub, static_cast<size_t>(worker_id));
+    return std::make_unique<CoreLob>(data.fund_panel, pool, asset.code_ex(), sub, static_cast<size_t>(worker_id));
   }
 
   // reader 按偏移升序交给内核预读 (空格子跳过), 字节不进用户态 (decode 在 TS worker 内联)

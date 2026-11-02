@@ -1,13 +1,13 @@
 // OrderFlow — GUI OrderFlow tab 数据面 (两图对仗; 每块单写 worker 线程 / 单读 GUI 线程, 免锁)
 //
-// OrderFlow (主池 = 图1 VWAP / 候选轴所在池, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各库落盘日的并集, 各池画各自有的日)
+// OrderFlow (主库 = 图1 VWAP / 候选轴所在库, Lob 或 Bar 档皆可; 图2 日轴 = all + overlay 各库落盘日的并集, 各库画各自有的日)
 // ├── Sec   (图1, 网格 L_sec)  单 (day, asset) 秒级盘口: 当天日文件里的逐笔帧重放订单簿
-// │            + 多特征 overlay (任意 ColRef; 尾挂主池 vwap); 双槽 ping-pong 整体发布
-// ├── Min   (图2, 网格 L_1min) 单资产全日轴: all 池日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef; 分钟 K 也是 overlay)
+// │            + 多特征 overlay (任意 ColRef; 尾挂主库 vwap); 双槽 ping-pong 整体发布
+// ├── Min   (图2, 网格 L_1min) 单资产全日轴: all Bar 库日 K 底图 + 多特征 overlay (≥ L_1min 的任意 ColRef; 分钟 K 也是 overlay)
 // │            worker 分批流式 (从前往后, 每日每源一次选列读, 下一批后台预读), GUI 画已发布前缀
 // ├── Pick  资产筛选: 锚点日逐日 PIT 状态 (双槽 ping-pong) + 筛选 / 候选 (GUI)
 // overlay 两图同构 (Overlay): 点 = 尾部对齐 (行 emit 时刻), x = 日起点 + 网格行 (行末秒 − 1)
-//   (细于网格的源每格留最后一个有效行). 各源按自己的 (池, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
+//   (细于网格的源每格留最后一个有效行). 各源按自己的 (库, 层) 读、按 column_set 门控 (与分析页同一 IO 契约)
 // ├── HeatColor / Profile / EventMarks / MissingDays  GUI 线程私有渲染缓存, 键 = Memo (键变才重建)
 // └── UI    用户态: 选择 / 锚点 / 三路期望态 Want (键变 → gen++ → Request) / 坐标轴缓存
 //
@@ -181,9 +181,9 @@ struct OrderFlow {
                          kClose }; // 与读计划固定列 [0, 4) 同序
 
     // ---- worker 写 / GUI 前缀读 ----
-    std::vector<misc::Ymd> dates; // 日轴: 池集各库落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
+    std::vector<misc::Ymd> dates; // 日轴: 库集各库落盘日的并集 (换代时随 rescan 重扫; gen 匹配期间稳定)
 
-    // K线点集 (all 池日 K): data_valid 行, x = day_idx * MIN_CAPACITY + 该行所跨分钟的中点 (日 K = 日中)
+    // K线点集 (all Bar 库日 K): data_valid 行, x = day_idx * MIN_CAPACITY + 该行所跨分钟的中点 (日 K = 日中)
     std::vector<double> x;
     std::array<std::vector<double>, 4> ohlc;                    // [Ohlc] 与 x 1:1
     double half_width = OrderFlowConst::CANDLESTICK_HALF_WIDTH; // 一根 K 线半宽 (X 单位; 换代时随 OHLC 层定)
@@ -299,9 +299,9 @@ struct OrderFlow {
 
   // ==========================================================================
   // Pick (资产筛选) — 锚点日的逐日 PIT 状态 (worker) + 筛选/候选 (GUI)
-  //   状态源 = all 池承接日 (日轴前一日) L_1day 行 (Fund 节点): risk_warn / list_age / delist_age
-  //   / industry_l1 —— 承接格无源 (轴首 / 不在 all 池) 读不到状态, 不进候选; 当日有无分钟不论 (停牌照列).
-  //   候选轴 = 主池轴 (GUI 按选中列定: 无选中 = all, 单池 = 该池)
+  //   状态源 = all Bar 库承接日 (日轴前一日) L_1day 行 (Fund 节点): risk_warn / list_age / delist_age
+  //   / industry_l1 —— 承接格无源 (轴首 / 不在 all Bar 库轴) 读不到状态, 不进候选; 当日有无分钟不论 (停牌照列).
+  //   候选轴 = 主库轴 (GUI 按选中列定: 无选中 = all Bar, 单库 = 该库)
   // ==========================================================================
   struct Pick {
     // 单资产当日状态 (worker 写背槽, 发布后只读)
@@ -387,7 +387,7 @@ struct OrderFlow {
     void clear();
   } event_marks;
 
-  // MissingDays — 已发布前缀中该资产无 K 线的 day_idx → 图2 淡黄竖条 (只在单池日轴画: 多池叠加 = 并集日轴, 不画)
+  // MissingDays — 已发布前缀中该资产无 K 线的 day_idx → 图2 淡黄竖条 (只在单库日轴画: 多库叠加 = 并集日轴, 不画)
   struct MissingDays {
     std::vector<size_t> days;
     Memo<uint32_t, size_t> key; // (Min 请求代, 已发布日数): 流式追加 / 换资产 / 重扫日期 都失效
@@ -398,23 +398,23 @@ struct OrderFlow {
   // ==========================================================================
   // 三路期望态键 (GUI 快照, 服务按键发请求; 键变 → 换代)
   //   feats = 同一组选中列各截到图的网格 (图2 ≥ L_1min / 图1 ≥ L_sec; 截断 MAX_FEATURES)
-  //   main  = 主池 (选中列所在的唯一池, 无选中 = all): 图1 VWAP / 候选轴
+  //   main  = 主库 (选中列所在的唯一库, 无选中 = all Bar): 图1 VWAP / 候选轴
   // ==========================================================================
   struct MinKey {
     size_t asset = SIZE_MAX;
     std::vector<ColRef> feats;
-    PoolMask pools = 0; // 日轴池集 (all + overlay 各池); 变了 → 重扫日轴
+    LibMask libs = 0; // 日轴库集 (all Bar + overlay 各库); 变了 → 重扫日轴
     bool operator==(const MinKey &) const = default;
   };
   struct SecKey {
-    PoolId main = kAllPool;
+    LibId main = kAllBar;
     misc::Ymd date = 0;
     size_t asset = SIZE_MAX;
     std::vector<ColRef> feats;
     bool operator==(const SecKey &) const = default;
   };
   struct PickKey {
-    PoolId main = kAllPool;
+    LibId main = kAllBar;
     misc::Ymd date = 0;
     bool operator==(const PickKey &) const = default;
   };

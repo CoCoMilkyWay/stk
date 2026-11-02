@@ -1079,7 +1079,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Por
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
   ImGui::Text("%s  级别 %s", ctx.pool.c_str(), factor_level(ctx.lv).name);
-  // 作用域 = 池 × 因子层 (所用特征的最细层; 叶写全名 档.层.列); 评估期按因子定 = 所用特征库落盘日交集; 标签恒在 all 池 (Bar), 子池 = 当日池成员截面
+  // 作用域 = 池 × 因子层 (所用特征的最细层; 叶写全名 档.层.列); 评估期按因子定 = 所用特征库落盘日交集; 门控 / 标签在因子池的 Bar 库 (截面 = 该库 cs_valid)
   if (ImGui::IsItemHovered())
     tip("因子目录 %s", ctx.factor_dir.c_str());
   ImGui::SameLine();

@@ -83,7 +83,7 @@ void FeatureProfile::tick() {
   if (!capture_) {
     if (store_.query_io_done() == 0)
       return;
-    dir_ = std::string(config::PROFILE_DIR) + "/" + spec_.pool + "/" + stamp_now();
+    dir_ = std::string(config::PROFILE_DIR) + "/" + spec_.pool + "/" + tier_name(spec_.tier) + "/" + stamp_now();
     capture_ = std::make_unique<misc::perf::Capture>(dir_);
     start_ = snap();
     return;

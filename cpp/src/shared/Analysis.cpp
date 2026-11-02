@@ -17,7 +17,7 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
   const bool own = assets.empty();
   s.axis = own ? s.lib().axis : PoolAxis{.ids = std::move(assets)};
   check_axis(s.axis.ids);
-  for (const PoolId l : pool_ids()) {
+  for (const LibId l : lib_ids()) {
     s.to[l].clear();
     if (!s.has(l) || (own && l == s.main))
       continue;
@@ -31,57 +31,56 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
 }
 
 bool landed(const FeatureLib &lib, misc::Ymd d) {
-  return std::binary_search(lib.dates.begin(), lib.dates.end(), d) && FeatureRead::has_date(lib.tier, lib.dir, d);
+  return std::binary_search(lib.dates.begin(), lib.dates.end(), d) && FeatureRead::has_date(lib.tier(), lib.dir, d);
 }
 
 namespace {
-// 第 d 天池集里落了盘的池
-PoolMask landed_mask(const ReadScope &s, misc::Ymd d) {
-  PoolMask m = 0;
-  for (const PoolId l : pool_ids())
+// 第 d 天库集里落了盘的库
+LibMask landed_mask(const ReadScope &s, misc::Ymd d) {
+  LibMask m = 0;
+  for (const LibId l : lib_ids())
     if (s.has(l) && landed(s.libs[l], d))
-      m |= pool_bit(l);
+      m |= lib_bit(l);
   return m;
 }
 } // namespace
 
-ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets,
+ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets,
                      DayAxis days) {
   ReadScope s;
   bool ready = true;
-  const auto add = [&](PoolId l) {
+  const auto add = [&](LibId l) {
     if (s.has(l))
       return;
-    s.libs[l] = load_lib(cfg, pool_def(l).name);
-    assert(s.libs[l].tier == pool_tier(l));
+    s.libs[l] = load_lib(cfg, l);
     ready &= s.libs[l].ready();
   };
   if (main != kAutoMain)
     add(main);
   for (const ColRef &c : cols)
-    add(c.pool);
+    add(c.lib);
   if (!ready) // 未建库 = 空范围 (请求方见 months 为空即放弃)
     return s;
   if (main == kAutoMain) {
-    assert(!cols.empty() && "自动主池要列");
-    main = cols.front().pool;
-    for (const PoolId l : pool_ids())
+    assert(!cols.empty() && "自动主库要列");
+    main = cols.front().lib;
+    for (const LibId l : lib_ids())
       if (s.has(l) && s.libs[l].axis.size() < s.libs[main].axis.size())
         main = l;
   }
   s.main = main;
   if (days == DayAxis::Main) {
-    s.days = pool_bit(main);
+    s.days = lib_bit(main);
     const std::vector<misc::Ymd> &d = s.libs[main].dates;
     assert(!d.empty() && "已建库日期轴为空");
     s.months = misc::months_between(d.front(), d.back());
   } else {
     misc::Ymd lo = 0, hi = 0;
-    for (const PoolId l : pool_ids())
+    for (const LibId l : lib_ids())
       if (s.has(l)) {
         const std::vector<misc::Ymd> &d = s.libs[l].dates;
         assert(!d.empty() && "已建库日期轴为空");
-        s.days |= pool_bit(l);
+        s.days |= lib_bit(l);
         lo = lo == 0 ? d.front() : std::min(lo, d.front());
         hi = std::max(hi, d.back());
       }
@@ -91,18 +90,18 @@ ReadScope read_scope(const Config &cfg, PoolId main, const std::vector<ColRef> &
   return s;
 }
 
-PerPool<size_t> ReadScope::sizes() const {
-  PerPool<size_t> out;
-  for (const PoolId l : pool_ids())
+PerLib<size_t> ReadScope::sizes() const {
+  PerLib<size_t> out;
+  for (const LibId l : lib_ids())
     out[l] = libs[l].axis.size();
   return out;
 }
 
-Readers ReadScope::readers(const PerPool<const FeatureRead *> &fr) const {
+Readers ReadScope::readers(const PerLib<const FeatureRead *> &fr) const {
   Readers rd;
-  for (const PoolId l : pool_ids())
+  for (const LibId l : lib_ids())
     if (has(l)) {
-      assert(fr[l] && "池集池缺 reader");
+      assert(fr[l] && "库集里的库缺 reader");
       rd.rd[l] = fr[l];
       rd.ids[l] = to[l].empty() ? nullptr : to[l].data();
     }
@@ -136,17 +135,17 @@ fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, s
 }
 
 DateList enumerate_dates(const ReadScope &s) {
-  TraceN("EnumDates"); // 首帧账目: 日轴池每 (池, 日) 一次 stat
+  TraceN("EnumDates"); // 首帧账目: 日轴库每 (库, 日) 一次 stat
   assert(!s.months.empty());
   const misc::Ymd lo = misc::first_day(s.months.front()), hi = misc::last_day(s.months.back());
-  std::vector<std::pair<misc::Ymd, PoolMask>> axis; // (日, 落了盘的日轴池)
-  for (const PoolId l : pool_ids()) {
-    if (!(s.days & pool_bit(l)))
+  std::vector<std::pair<misc::Ymd, LibMask>> axis; // (日, 落了盘的日轴库)
+  for (const LibId l : lib_ids()) {
+    if (!(s.days & lib_bit(l)))
       continue;
     const FeatureLib &lib = s.libs[l];
     for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), lo); it != lib.dates.end() && *it <= hi; ++it)
-      if (FeatureRead::has_date(lib.tier, lib.dir, *it))
-        axis.emplace_back(*it, pool_bit(l));
+      if (FeatureRead::has_date(lib.tier(), lib.dir, *it))
+        axis.emplace_back(*it, lib_bit(l));
   }
   std::sort(axis.begin(), axis.end());
   DateList out;
@@ -164,7 +163,7 @@ DateList enumerate_dates(const ReadScope &s) {
   return out;
 }
 
-// 同 (池, 层, 盘后) 的列并成一个源 (槽 = 请求序), 源行由 rows 定
+// 同 (库, 层, 盘后) 的列并成一个源 (槽 = 请求序), 源行由 rows 定
 ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, std::vector<ColRef> cols) {
   assert(!cols.empty() && level < LEVEL_COUNT);
   assert((rows == Rows::Tail || carry) && "网格行恒承接 (as-of 投影到 -1 即前日末行)");
@@ -172,23 +171,23 @@ ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, 
   ReadPlan p;
   p.level = level;
   p.cols = std::move(cols);
-  std::map<std::tuple<PoolId, size_t, bool>, std::vector<uint32_t>> groups; // (池, 层, 盘后) → 平面列 (请求序)
+  std::map<std::tuple<LibId, size_t, bool>, std::vector<uint32_t>> groups; // (库, 层, 盘后) → 平面列 (请求序)
   for (size_t c = 0; c < p.cols.size(); ++c) {
     const ColRef &r = p.cols[c];
     const LevelInfo &li = level_info(r.tier(), r.level);
     assert(r.col < li.field_count);
-    groups[{r.pool, r.level, li.fields[r.col].settle}].push_back(static_cast<uint32_t>(c));
+    groups[{r.lib, r.level, li.fields[r.col].settle}].push_back(static_cast<uint32_t>(c));
   }
   for (auto &[key, slot] : groups) {
     Source s;
-    s.pool = std::get<0>(key);
+    s.lib = std::get<0>(key);
     s.level = std::get<1>(key);
     s.settle = std::get<2>(key);
     std::vector<size_t> io;
     io.reserve(slot.size());
     for (const uint32_t c : slot)
       io.push_back(p.cols[c].col);
-    s.cs = column_set(feature, pool_tier(s.pool), s.level, std::move(io));
+    s.cs = column_set(feature, lib_tier(s.lib), s.level, std::move(io));
     s.slot = std::move(slot);
     if (rows == Rows::AsOf)
       project_rows(s, level, rpd);
@@ -208,16 +207,16 @@ SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t l
     std::shuffle(idx.begin(), idx.end(), std::mt19937{0x5eed}); // 与 shuffled_order 同种子: 跨构建稳定
   if (limit > 0 && idx.size() > limit)
     idx.resize(limit);
-  // 第 i 天池集里落了盘的池 = 日轴池位 + 余池 (只判入选的日; 记住上一次: 相邻日的承接日 = 上一日, 不重判)
+  // 第 i 天库集里落了盘的库 = 日轴库位 + 余库 (只判入选的日; 记住上一次: 相邻日的承接日 = 上一日, 不重判)
   size_t memo_i = SIZE_MAX;
-  PoolMask memo = 0;
+  LibMask memo = 0;
   const auto has = [&](size_t i) {
     if (i == memo_i)
       return memo;
-    PoolMask m = all.has[i];
-    for (const PoolId l : pool_ids())
-      if (scope.has(l) && !(scope.days & pool_bit(l)) && landed(scope.libs[l], all.dates[i]))
-        m |= pool_bit(l);
+    LibMask m = all.has[i];
+    for (const LibId l : lib_ids())
+      if (scope.has(l) && !(scope.days & lib_bit(l)) && landed(scope.libs[l], all.dates[i]))
+        m |= lib_bit(l);
     memo_i = i;
     memo = m;
     return m;
@@ -234,8 +233,8 @@ SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t l
     for (size_t d = 0; d < days; ++d) {
       const size_t i = seg * days + d;
       const bool in = i < n;
-      const PoolMask hp = in && i > 0 ? has(i - 1) : 0; // 先承接日后当日: 顺序相邻时承接日命中上一次
-      const PoolMask hc = in ? has(i) : 0;
+      const LibMask hp = in && i > 0 ? has(i - 1) : 0; // 先承接日后当日: 顺序相邻时承接日命中上一次
+      const LibMask hc = in ? has(i) : 0;
       p.dates.push_back(in ? all.dates[i] : 0);
       p.prev.push_back(in && i > 0 ? all.dates[i - 1] : 0);
       p.has.push_back(hc);
@@ -249,15 +248,15 @@ SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t l
 
 SegPlan plan_day(const ReadScope &scope, misc::Ymd date) {
   assert(date != 0 && !scope.months.empty());
-  // 日轴上前一日 = 各日轴池 < date 的末个落盘日之最大者 (不早于区间首日; 0 = 轴首)
+  // 日轴上前一日 = 各日轴库 < date 的末个落盘日之最大者 (不早于区间首日; 0 = 轴首)
   const misc::Ymd lo = misc::first_day(scope.months.front());
   misc::Ymd prev = 0;
-  for (const PoolId l : pool_ids()) {
-    if (!(scope.days & pool_bit(l)))
+  for (const LibId l : lib_ids()) {
+    if (!(scope.days & lib_bit(l)))
       continue;
     const FeatureLib &lib = scope.libs[l];
     for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), date); it != lib.dates.begin() && *(it - 1) > prev && *(it - 1) >= lo; --it)
-      if (FeatureRead::has_date(lib.tier, lib.dir, *(it - 1))) {
+      if (FeatureRead::has_date(lib.tier(), lib.dir, *(it - 1))) {
         prev = *(it - 1);
         break;
       }
@@ -267,7 +266,7 @@ SegPlan plan_day(const ReadScope &scope, misc::Ymd date) {
   p.dates = {date};
   p.prev = {prev};
   p.has = {landed_mask(scope, date)};
-  p.has_prev = {prev != 0 ? landed_mask(scope, prev) : PoolMask{0}};
+  p.has_prev = {prev != 0 ? landed_mask(scope, prev) : LibMask{0}};
   p.month = {0};
   p.weekday = {static_cast<uint8_t>(misc::weekday_of(date))};
   return p;

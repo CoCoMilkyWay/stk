@@ -25,7 +25,7 @@ namespace GUI::Factors {
 
 // ---- 装载: X ↔ Y ↔ B 三侧同形 (XCols / YCols / BCols → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b 同一份逐天骨架) ----
 //   X = 因子输入叶 (随因子变): 叶按各自 ts_valid 门控
-//   Y = 门控 + 标签 / 成本平面 (只随评估域变): 截面门控 = (子池 = 当日成员, all = cs_valid) ∧ 当日有成交; 标签 = 池内 ∧ 两侧有限,
+//   Y = 门控 + 标签 / 成本平面 (只随评估域变): 截面门控 = 标签库 cs_valid (all: 当日活跃; 子池: 当日成员) ∧ 当日有成交; 标签 = 池内 ∧ 两侧有限,
 //   买入冲击 = 池内 ∧ 有限 (按 max_impact 封顶; 盘口缺 → 封顶); 可成交 / 顺延已在标签里, 不另读)
 //   B = 池篮子输入 (Portfolio 池线, all 池评估域): 全部池的成员位 + T+1C 标签 + 本层 close + 日频复权 / 股本 / 估值 / 行业 (as-of), 一趟读齐交 FactorsBook baskets
 // 张量形 (三侧同一份; T = days · seg)
@@ -113,7 +113,7 @@ struct XPlanes {
 };
 struct YPlanes {
   Shape sh;
-  std::vector<uint8_t> gate;                // 截面池掩码 g = 当日在池 (子池 = 当日成员, 其余 = cs_valid) ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
+  std::vector<uint8_t> gate;                // 截面池掩码 g = 当日在池 (标签库 cs_valid) ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
   std::vector<uint8_t> eo;                  // 建仓可成交码 kEoBuy | kEoSell (lb_entry_ok; 池外 / 缺 → 0); 各持有期共用 (Stat 契约【仓位感知】)
   Holds hd;                                 // [hold] = YSpec::hd
   std::vector<LegPlane> labels;             // [hold] 两侧毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t (封板照写, 能否建仓看 eo; 平仓顺延已在值里)
@@ -163,8 +163,8 @@ struct Io {
 };
 // 逐天并行读 (ex 抢单) 评估域日 [k.d0, k.d1) 装进 X (叶 ids, 须未装; 其余叶不动, 失败 → ids 的平面清空) / Y / B (覆盖)
 // (形 days × A → T, 容量断言在此). 三侧同一份骨架:
-// 一张读计划 (analysis::read_plan, 同 (池, 层, 盘后) 一源, 网格行 level_asof 投影), 列全部 Col::ref(dm.pool);
-// X 列段 = 叶 (按所在 (池, 层) 投影); Y 列段 = ts_valid | cs_valid | 标签 [hd][kLegs] | 成本 [ad][kLegs];
+// 一张读计划 (analysis::read_plan, 同 (库, 层, 盘后) 一源, 网格行 level_asof 投影), 列全部 Col::ref(dm.pool);
+// X 列段 = 叶 (按所在 (库, 层) 投影); Y 列段 = ts_valid | cs_valid | 标签 [hd][kLegs] | 成本 [ad][kLegs];
 // B 列段 = ts_valid cs_valid lb_entry_ok T+1C 标签 [kLegs] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 池列 (日频原料 bar.1d);
 // B 只在 all 池评估域 (assert).
 // 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 四个装载同一份进度: prog.begin Loading (日数), 每天 publish(1)

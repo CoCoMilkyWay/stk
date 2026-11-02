@@ -13,8 +13,8 @@
 namespace GUI::Factors {
 
 void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort) {
-  PerPool<FeatureLib> ready;
-  for (const PoolId l : pool_ids())
+  PerLib<FeatureLib> ready;
+  for (const LibId l : lib_ids())
     if (sc.libs[l].ready())
       ready[l] = sc.libs[l];
   lr.open(ready, abort);
@@ -22,8 +22,8 @@ void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort) 
 
 std::string Domain::key() const {
   std::string k = std::to_string(pool);
-  for (const PoolId l : pool_ids())
-    if (used & pool_bit(l))
+  for (const LibId l : lib_ids())
+    if (used & lib_bit(l))
       k += "|" + rs.libs[l].dir + "#" + std::to_string(rs.libs[l].axis.hash);
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
@@ -32,43 +32,36 @@ bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<Le
   assert(sc.lv == ft.lv && "作用域层与字段表层不符");
   assert(keep >= 1);
   const PoolId pool = pool_id(sc.pool);
-  const PoolId lab = label_lib(pool);
-  assert(ft.y.ts.ref(pool).pool == lab && ft.y.cs.ref(pool).pool == lab && "门控 / 标签 / K 线在标签库");
-  const bool sub = pool != lab; // 子池: 截面再与上池成员
-  const PerPool<FeatureLib> &libs = sc.libs;
+  const LibId lab = label_lib(pool);
+  assert(ft.y.ts.ref(pool).lib == lab && ft.y.cs.ref(pool).lib == lab && "门控 / 标签 / K 线在标签库");
+  const PerLib<FeatureLib> &libs = sc.libs;
   dm = Domain{};
   dm.pool = pool;
-  dm.used = pool_bit(lab);
+  dm.used = lib_bit(lab);
   for (const LeafId id : leaves) {
     const FeatCol &c = ft.x.leaves[id];
     assert(c.allowed);
-    const PoolId l = lib_of(c.tier, pool);
-    if (l == kNoPool) {
-      why = c.code + " 是 " + tier_name(c.tier) + " 叶, " + pool_def(pool).name + " 池没有 " + tier_name(c.tier) + " 库 (换子池)";
-      return false;
-    }
-    dm.used |= pool_bit(l);
+    dm.used |= lib_bit(c.ref(pool).lib);
   }
-  for (const PoolId l : pool_ids())
-    if (dm.used & pool_bit(l)) {
-      assert(!libs[l].name.empty() && "请求没带该库清单 (factor_libs)");
+  for (const LibId l : lib_ids())
+    if (dm.used & lib_bit(l)) {
+      assert(!libs[l].dir.empty() && "请求没带该库清单 (factor_libs)");
       if (!libs[l].ready()) {
-        why = std::string(pool_def(l).name) + " 池特征库未建 (先算特征)";
+        why = lib_name(l) + " 特征库未建 (先算特征)";
         return false;
       }
       dm.rs.libs[l] = libs[l];
     }
-  // 评估期: 标签库日期轴上 used 各库都落了盘的日; 子池的成员读 D−1 收盘行, 还要 all 池前一日落盘
+  // 评估期: 标签库日期轴上 used 各库都落了盘的日
   const FeatureLib &L0 = libs[lab];
-  const bool need_prev = sub;
-  PoolMask m_prev = 0; // 标签库日期轴前一日的落盘位
+  LibMask m_prev = 0; // 标签库日期轴前一日的落盘位
   for (size_t i = 0; i < L0.dates.size(); ++i) {
     const misc::Ymd d = L0.dates[i];
-    PoolMask m = 0;
-    for (const PoolId l : pool_ids())
-      if ((dm.used & pool_bit(l)) && analysis::landed(libs[l], d))
-        m |= pool_bit(l);
-    if (m == dm.used && (!need_prev || (i > 0 && (m_prev & pool_bit(kAllPool))))) {
+    LibMask m = 0;
+    for (const LibId l : lib_ids())
+      if ((dm.used & lib_bit(l)) && analysis::landed(libs[l], d))
+        m |= lib_bit(l);
+    if (m == dm.used) {
       dm.dates.push_back(d);
       dm.days.push_back(Day{d, i > 0 ? L0.dates[i - 1] : 0, m, i > 0 ? m_prev : 0});
     }
@@ -76,9 +69,9 @@ bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<Le
   }
   if (dm.dates.empty()) {
     why = "所用特征库无共同落盘日";
-    for (const PoolId l : pool_ids())
-      if (dm.used & pool_bit(l))
-        why += std::string(" ") + pool_def(l).name;
+    for (const LibId l : lib_ids())
+      if (dm.used & lib_bit(l))
+        why += " " + lib_name(l);
     return false;
   }
   if (dm.days.size() > keep) {
@@ -93,14 +86,10 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
   TraceN("Domain");
   if (!span_of(ft, sc, leaves, keep, dm, why))
     return false;
-  const PoolId lab = label_lib(dm.pool);
-  const bool sub = dm.pool != lab;
-  if (sub)
-    dm.member = pool::Panel::build(sc.libs[kAllPool], pool_def(dm.pool).pool_col, dm.dates);
-  dm.rs.main = lab;
+  dm.rs.main = label_lib(dm.pool);
   dm.rs.days = dm.used;
   dm.rs.months = misc::months_between(dm.dates.front(), dm.dates.back());
-  analysis::map_axis(dm.rs, sub ? dm.member->axis().ids : std::vector<uint32_t>{});
+  analysis::map_axis(dm.rs, {});
   return true;
 }
 

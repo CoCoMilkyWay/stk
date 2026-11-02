@@ -299,9 +299,8 @@ TaskHandle CreateFactorsTask() {
         ImGui::BeginGroup();
         ImGui::TextUnformatted("Pool:");
         ImGui::SameLine();
-        const std::string cur_pool = sel.pool();
         ImGui::SetNextItemWidth(140);
-        if (ImGui::BeginCombo("##factor_pool", cur_pool.c_str())) {
+        if (ImGui::BeginCombo("##factor_pool", pool_def(sel.pool).name)) {
           if (ImGui::IsWindowAppearing()) {
             state->pool_files.clear();
             for (const PoolDef &d : feature_pools()) {
@@ -316,21 +315,13 @@ TaskHandle CreateFactorsTask() {
           for (const PoolDef &d : feature_pools())
             cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
           cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
-          for (size_t pi = 0; pi < feature_pools().size(); ++pi) {
-            const PoolDef &d = feature_pools()[pi];
-            const bool selected = cur_pool == d.name;
-            const bool clicked = ImGui::Selectable(d.name, selected);
+          for (const PoolId p : pool_ids()) {
+            const PoolDef &d = pool_def(p);
+            const bool selected = sel.pool == p;
+            if (ImGui::Selectable(d.name, selected))
+              sel.pool = p;
             ImGui::SameLine(cn_x);
-            ImGui::TextDisabled("%s (%zu)", d.name_cn, state->pool_files[pi]);
-            if (clicked && !selected) {
-              if (d.tier != sel.tier) {
-                sel.clear_filters(); // 同特征面板: 换档 = 换字段表, 过滤作废
-                sel.tier = d.tier;
-                if (!selected_factor_level(sel)) // 原层不是因子层 → 首个因子层
-                  sel.selected_level = static_cast<int>(Factors::kFactorLevels.front().lvl);
-              }
-              sel.pools[d.tier] = d.name;
-            }
+            ImGui::TextDisabled("%s (%zu)", d.name_cn, state->pool_files[p]);
             if (selected)
               ImGui::SetItemDefaultFocus();
           }
@@ -339,13 +330,13 @@ TaskHandle CreateFactorsTask() {
         ImGui::SameLine();
         ImGui::TextUnformatted("Level:");
         {
-          const std::string key = data.config.factor_dir + "|" + sel.pool();
+          const std::string key = data.config.factor_dir + "|" + pool_def(sel.pool).name;
           const Phase fst = state->run_service ? state->run_service->phase.load(std::memory_order_acquire) : Phase::Idle;
           const bool repool = key != state->counted_key;
           if (repool || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
             state->counted_key = key;
             for (const Factors::FactorLevel &l : Factors::kFactorLevels)
-              state->level_files[l.id] = Factors::list_factor_files(Factors::factor_dir_of(data, sel.pool(), l.id)).size();
+              state->level_files[l.id] = Factors::list_factor_files(Factors::factor_dir_of(data, pool_def(sel.pool).name, l.id)).size();
           }
           state->prev_factors_phase = fst;
           if (repool) // 进页 / 换池: 切到该池最低频的有因子文件的层 (都没有 → 不动)
@@ -363,8 +354,8 @@ TaskHandle CreateFactorsTask() {
             sel.selected_level = static_cast<int>(l.lvl);
         }
         ImGui::EndGroup();
-        // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); 各层标签都在 all 池 (Bar), 子池 = 当日池成员截面;
-        // 用了 lob.* 叶 (只 min 层有, 只子池有 Lob 库) 评估期缩到 Lob 库落盘日, 另有真实冲击段; 因子目录 <factor_dir>/<池>/<层>/
+        // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); 门控 / 标签在因子池的 Bar 库 (截面 = 该库 cs_valid);
+        // 用了 lob.* 叶 (只 min 层有) 评估期缩到同池 Lob 库落盘日, 另有真实冲击段; 因子目录 <factor_dir>/<池>/<层>/
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
           Factors::tip("池 + 因子层 (与特征面板同步; 括号里是因子数)\n"
                        "• 窗长 d 等参数按本层行数计\n"
@@ -374,7 +365,7 @@ TaskHandle CreateFactorsTask() {
         const bool busy = (state->run_service && state->run_service->busy()) || (state->search_service && state->search_service->busy()) ||
                           (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
         const std::optional<Factors::LevelId> want_lv = selected_factor_level(sel);
-        const std::string want_pool = want_lv ? sel.pool() : std::string{};
+        const std::string want_pool = want_lv ? std::string(pool_def(sel.pool).name) : std::string{};
         if (!busy) {
           if (want_lv != state->lv || want_pool != state->pool) { // 换作用域: 高光作废, 新表扫出后重新默认高光 (rIC 最高)
             state->factors_ui.view_file.clear();
@@ -398,11 +389,11 @@ TaskHandle CreateFactorsTask() {
           state->factors_ui.search_queue.clear();
           state->factors_ui.search_all_n = 0;
           ImGui::SameLine();
-          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", pool_def(sel.pool).name, level_name(static_cast<size_t>(sel.selected_level)));
         }
       }
       if (!state->lv) {
-        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: min .. day)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
+        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: min .. day)", pool_def(sel.pool).name, level_name(static_cast<size_t>(sel.selected_level)));
         break;
       }
       // 首次进页 / 换层: 只扫描不算 (字段表视图按层建一次, 编译期字段表, 不随运行变); 池切换 → 目录变 → 自动重扫

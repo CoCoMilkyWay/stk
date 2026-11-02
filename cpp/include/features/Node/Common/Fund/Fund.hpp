@@ -80,7 +80,7 @@ public:
     // ---- 资产态位 (fund::Panel 全史资产态掩码; 不落盘) ----
     live, // 0/1 活跃
     base, // 0/1 母集 (⊂ 活跃)
-    // ---- 行情派生 (全市场预计算, 窗按可得史扩张; 池轴 Panel 无全市场 → NaN) ----
+    // ---- 行情派生 (全市场预计算, 窗按可得史扩张; 子池库 Panel 无全市场 → NaN) ----
     ret_12_1, // [ratio] 12−1 月动量 P^adj_{D−20} / P^adj_{D−250} − 1
     ret_1m,   // [ratio] 1 月收益 P^adj_D / P^adj_{D−20} − 1
     turn,     // [ratio] 20 日均换手 / 250 日均换手 (换手 = 成交量 / A 股流通股本)
@@ -164,10 +164,10 @@ public:
   Fund(const fund::Panel &panel, size_t asset_id, const misc::Ymd &date)
       : panel_(panel), date_(date), stream_(panel, asset_id) {}
 
-  // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / Bar 档 cs_valid / PoolKey 全读这一份)
+  // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / all 库 cs_valid / PoolKey 全读这一份)
   //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
   //   母集 = 活跃 ∧ 非 ST / *ST / 退市整理期 ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0
-  // 节点侧读输出口 (Bar 档 cs_valid 盘中 = 当日, PoolKey onSettle = 次日)
+  // 节点侧读输出口 (all 库 cs_valid 盘中 = 当日, PoolKey onSettle = 次日)
   static bool is_live(const Ports<kCount> &f) { return f[live] != 0.0f; }
   static bool is_base(const Ports<kCount> &f) { return f[base] != 0.0f; }
 

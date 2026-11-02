@@ -8,11 +8,10 @@
 namespace pool {
 
 Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates, const PoolAxis *frozen) {
-  assert(bar.tier == TierId::Bar && bar.ready() && "池源 = Bar 池 (先算 Bar 池)");
+  assert(bar.id == kAllBar && bar.ready() && "池源 = all Bar 库 (先算 all Bar 库)");
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
   // 第 D 日成员 = 盘中 as-of 的池列 (与读端同一投影): 盘后列对任何网格都是 -1 = D−1 收盘行, 故各层同一份
-  const PoolId pool = pool_id(bar.name);
-  Source s{.pool = pool, .level = L_1day, .settle = level_info(TierId::Bar, L_1day).fields[col].settle};
+  Source s{.lib = kAllBar, .level = L_1day, .settle = level_info(TierId::Bar, L_1day).fields[col].settle};
   assert(s.settle && "池列须是盘后列 (池键 onSettle 的同层截面)");
   s.cs.io = {col};
   s.cs.vts = {L2::ValidType::ALL};
@@ -22,7 +21,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
 
   FeatureRead reader(bar);
   Readers rd;
-  rd.rd[pool] = &reader;
+  rd.rd[kAllBar] = &reader;
   IoSlot::Buf b;
   const size_t As = bar.axis.size();
   b.prev.preallocate(As, s.level, 1);
@@ -32,12 +31,12 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   std::vector<uint8_t> seen(As, 0);
   for (size_t i = 0; i < dates.size(); ++i) {
     const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
-    assert(it != bar.dates.end() && *it == dates[i] && "回测日不在 Bar 池日期轴 (Lob 日期轴须截到 Bar 池末日)");
-    assert(it != bar.dates.begin() && "回测日是 Bar 池首日, 无 D−1 池源");
+    assert(it != bar.dates.end() && *it == dates[i] && "库日不在 all Bar 库日期轴 (子池日期轴须截到 all Bar 库末日)");
+    assert(it != bar.dates.begin() && "库日是 all Bar 库首日, 无 D−1 池源");
     const misc::Ymd prev = *(it - 1);
-    assert(reader.has_date(prev) && "Bar 池缺池源日: 先把 Bar 池算完");
-    load_source(rd, s, Day{dates[i], prev, PoolMask{0}, pool_bit(pool)}, s.cs.io, b);
-    assert(!reader.stale() && "Bar 库判废 (头不符): 重算 Bar 池");
+    assert(reader.has_date(prev) && "all Bar 库缺池源日: 先把 all Bar 库算完");
+    load_source(rd, s, Day{dates[i], prev, LibMask{0}, lib_bit(kAllBar)}, s.cs.io, b);
+    assert(!reader.stale() && "all Bar 库判废 (头不符): 重算 all Bar 库");
     size_t r = 0;
     const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);
     assert(dc && "盘中 as-of 无源");
@@ -52,12 +51,12 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   // 池轴: 并集 / 冻结轴 (区间内进过池而不在轴上的记入 outside_)
   Panel p;
   std::vector<uint32_t> ids;
-  std::vector<size_t> pick; // 池轴 sub → Bar 池下标
+  std::vector<size_t> pick; // 池轴 sub → all Bar 库轴下标
   if (frozen) {
     ids = frozen->ids;
     for (const uint32_t g : ids) {
       pick.push_back(bar.axis.sub_of(g));
-      assert(pick.back() < As && "冻结池轴有资产不在 Bar 池轴上");
+      assert(pick.back() < As && "冻结池轴有资产不在 all Bar 库轴上");
     }
     for (size_t a = 0; a < As; ++a)
       if (seen[a] && frozen->sub_of(bar.axis.global(a)) == frozen->size())

@@ -163,17 +163,18 @@ namespace {
 std::string lib_manifest(const std::string &dir) { return dir + "/lib.json"; }
 } // namespace
 
-FeatureLib load_lib(const Config &cfg, std::string_view name) {
+std::string lib_dir(const Config &cfg, LibId id) { return cfg.feature_dir + "/" + pool_def(lib_pool(id)).name + "/" + tier_name(lib_tier(id)); }
+
+FeatureLib load_lib(const Config &cfg, LibId id) {
   FeatureLib lib;
-  lib.tier = pool_def(name).tier;
-  lib.name = name;
-  lib.dir = cfg.FeatureLibDir(name);
+  lib.id = id;
+  lib.dir = lib_dir(cfg, id);
   std::ifstream file(lib_manifest(lib.dir));
   if (!file.is_open())
     return lib; // 未建库
 
   const nlohmann::json j = nlohmann::json::parse(file);
-  assert(j.at("tier").get<std::string>() == tier_name(lib.tier) && "库清单的档与池名不符");
+  assert(j.at("tier").get<std::string>() == tier_name(lib.tier()) && "库清单的档与目录不符");
   lib.dates = j.at("dates").get<std::vector<misc::Ymd>>();
   assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "库清单日期轴为空 / 非升序");
 
@@ -207,7 +208,7 @@ void save_lib(const FeatureLib &lib) {
     codes.push_back(table.code(a));
 
   nlohmann::json j;
-  j["tier"] = tier_name(lib.tier);
+  j["tier"] = tier_name(lib.tier());
   j["dates"] = lib.dates;
   j["codes"] = codes;
   if (!lib.outside.empty()) {
@@ -228,18 +229,4 @@ void save_lib(const FeatureLib &lib) {
     assert(file.good() && "save_lib: 写入失败");
   }
   std::filesystem::rename(tmp, path); // 原子替换: 读端要么见旧清单要么见新清单
-}
-
-std::string default_pool(const Config &cfg, TierId tier) {
-  const char *first = nullptr;
-  for (const PoolDef &d : feature_pools()) {
-    if (d.tier != tier)
-      continue;
-    if (std::filesystem::exists(lib_manifest(cfg.FeatureLibDir(d.name))))
-      return d.name;
-    if (!first)
-      first = d.name;
-  }
-  assert(first && "该档没有池 (池表)");
-  return first;
 }

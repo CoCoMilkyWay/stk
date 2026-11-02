@@ -6,8 +6,9 @@
 //   pool_<pool><N> = Select{Low,High}<N>(key_*), N ∈ {400, 200}: 键有限值 (母集内) 中取低端 / 高端前 N, 并列按资产轴序先到先得 (方法见 Method/CS.hpp);
 //     同键同序 ⇒ <pool>200 ⊂ <pool>400. 键在母集内覆盖不足 (数据起点后财务项未到齐) 时全选母集, 指数不留空段.
 //   pool_st / pool_sst = SelectAll(key_st / key_sst): ST / *ST 全选 (不截断, 互斥).
-//   列名 pool_<pool> 的 <pool> = Lob 档池名 (本类每列即一个池, 由 feature_pools 展开, 见 shared/FeatureLib.hpp),
-//   L_1day (收盘行): Lob 档交易日 D 的池 = 本池 D−1 的 L_1day 行的该列 (shared/Pool.hpp). 全部日频调仓. 加一列即多一个池.
+//   列名 pool_<pool> 的 <pool> = 子池名 (本类每列即一个池, 由 feature_pools 展开, 见 shared/FeatureLib.hpp),
+//   L_1day (收盘行): 子池库交易日 D 的成员 = all Bar 库 D−1 的 L_1day 行的该列 (shared/Pool.hpp). 全部日频调仓. 加一列即多一个池.
+//   只有 all Bar 库的池列有意义 (子池库里同列照算, 截面是池内, 不读).
 // =============================================================================
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

@@ -460,7 +460,7 @@ bool pipeline(const PipelineArgs &args) {
   // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 采样窗 (PROFILE 模式) 同样拉取式, 见 FeatureProfile.
   ComputeStats stats(num_pf, num_ts, num_cs, num_io);
   FeatureProgress progress(store, sched, stats, dates, TierFeed<T>::kUnit);
-  FeatureProfile profile({lib.name, T::kId, TierFeed<T>::kUnit, num_assets, dates, args.ring_slots, args.adopt_pct}, L, store, stats);
+  FeatureProfile profile({pool_def(lib.pool()).name, T::kId, TierFeed<T>::kUnit, num_assets, dates, args.ring_slots, args.adopt_pct}, L, store, stats);
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
     return StageCtx<T>{worker_id, store, args.libs, dates, tail, args.cancel, stat};
   };

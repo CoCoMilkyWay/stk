@@ -1,5 +1,4 @@
 #include "shared/Feature.hpp"
-#include "shared/FeatureLib.hpp" // pool_id
 
 #include <cassert>
 #include <cstring>
@@ -33,13 +32,6 @@ size_t Feature::Metadata::col_of(size_t level, const char *code) const {
 // ============================================================================
 // Feature::Selection Implementation
 // ============================================================================
-
-const std::string &Feature::Selection::pool_of(TierId t) const {
-  assert(!pools[t].empty() && "档的当前池未定 (TaskSettings 启动时按 default_pool 填)");
-  return pools[t];
-}
-
-PoolId Feature::Selection::cur_pool(TierId t) const { return pool_id(pool_of(t)); }
 
 void Feature::Selection::clear_filters() {
   filter_data_type.clear();

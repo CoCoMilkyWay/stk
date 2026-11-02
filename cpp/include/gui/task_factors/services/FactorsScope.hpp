@@ -1,16 +1,14 @@
-// FactorsScope — 因子评估的作用域层 (四服务共用, 管线最底层): 一个因子的评估域 Domain (domain_of: 所用库 + 评估期 = 落盘日交集 + A 轴 +
-//   子池成员, worker 按因子解析) / open_libs; 预算 Budget → 分块 Plan (plan_chunks: 整期一块 或 尽量多统计日 + 前后带); Rc = 装载 / 评估的唯一结局.
+// FactorsScope — 因子评估的作用域层 (四服务共用, 管线最底层): 一个因子的评估域 Domain (domain_of: 所用库 + 评估期 = 落盘日交集 + A 轴,
+//   worker 按因子解析) / open_libs; 预算 Budget → 分块 Plan (plan_chunks: 整期一块 或 尽量多统计日 + 前后带); Rc = 装载 / 评估的唯一结局.
 //   之上: FactorsLoad (装载) → FactorsProbe (探针) → FactorsEngine (引擎 + 管线); 净值引擎 FactorsBook 吃装载层的 Y / B.
 #pragma once
 
 #include "features/Storage/DayBatchPlane.hpp"         // Day / LibReaders
 #include "gui/task_factors/services/FactorsTable.hpp" // FeatureTable / FactorScope
 #include "shared/Analysis.hpp"                        // ReadScope
-#include "shared/Pool.hpp"                            // pool::Panel
 
 #include <atomic>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,26 +17,22 @@ namespace GUI::Factors {
 // ---- 评估域 (一个因子; 同文件各权重同叶 → 同一份) ----
 // 设计决定: 每因子 (Run: 每文件) 现解析, 不做跨因子优化 (不跨因子缓存 / 合并评估域或森林), 勿改
 struct Domain {
-  PoolId pool = kAllPool;            // 因子池 (目录)
-  PoolMask used = 0;                 // 所用库: 标签库 + 叶所在库 (+ all: 池成员)
-  analysis::ReadScope rs;            // main = 标签库, libs = used 各库清单, axis = A 轴 (标签库轴 / 子池并集), to = A → 各库轴
-  std::vector<misc::Ymd> dates;      // 评估期 = used 各库落盘日交集的最近 keep 日 (升序, 非空)
-  std::vector<Day> days;             // [dates] 当日 + 承接日 (标签库日期轴上的前一日, 0 = 轴首) 及其落盘位 (承接日按库判)
-  std::optional<pool::Panel> member; // 子池成员 (第 D 日 = D−1 收盘行, 各层同一份, 池轴 = A 轴)
-  std::string key() const;           // 缓存键: 池 | 所用库目录 + 池轴 | 评估期首末 + 天数
+  PoolId pool = kAllPool;       // 因子池 (目录)
+  LibMask used = 0;             // 所用库: 标签库 + 叶所在库
+  analysis::ReadScope rs;       // main = 标签库, libs = used 各库清单, axis = A 轴 (标签库轴), to = A → 各库轴
+  std::vector<misc::Ymd> dates; // 评估期 = used 各库落盘日交集的最近 keep 日 (升序, 非空)
+  std::vector<Day> days;        // [dates] 当日 + 承接日 (标签库日期轴上的前一日, 0 = 轴首) 及其落盘位 (承接日按库判)
+  std::string key() const;      // 缓存键: 池 | 所用库目录 + 池轴 | 评估期首末 + 天数
   // 列 c 所在库在评估域里 (盘口段成本只在评估域含 Lob 库时可用, 见 y_spec)
-  bool uses(const Col &c) const {
-    const PoolId l = lib_of(c.tier, pool);
-    return l != kNoPool && (used & pool_bit(l));
-  }
+  bool uses(const Col &c) const { return used & lib_bit(lib_id(pool, c.tier)); }
 };
 // worker: 作用域 sc 里已建的库全开 (清单没变的复用; 各因子只读自己用到的). abort = 库判废时拉起的取消旗
 void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
-// 作用域 sc + 叶 leaves → 评估域, 评估期只留最近 keep 日 (≥ 1; 子池成员 / A 轴按留下的日建).
-// 所用库 = 标签库 ∪ 读计划各列的库 (Col::ref) (+ all: 池成员): 子池只用 bar.* 叶的因子不碰 Lob 库, 与 all 池同期;
-// 叶的档在因子池没有库 (all 池 × lob.*) / 所用库未建 / 无共同落盘日 → false + why (正常输入)
+// 作用域 sc + 叶 leaves → 评估域, 评估期只留最近 keep 日 (≥ 1).
+// 所用库 = 标签库 ∪ 读计划各列的库 (Col::ref): 只用 bar.* 叶的因子不碰 Lob 库, 评估期 = Bar 库全期;
+// 所用库未建 / 无共同落盘日 → false + why (正常输入)
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
-// domain_of 的前半 (pool / used / rs.libs / dates / days; 不建子池成员与 A 轴, 不读库): 只问评估期时用
+// domain_of 的前半 (pool / used / rs.libs / dates / days; 不建 A 轴, 不读库): 只问评估期时用
 bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
 
 // 宿主内存预算: 总内存 × kHostFrac − 已用 (整机占用封顶 kHostFrac); 显存预算: 空闲显存 × kVramFrac

@@ -73,11 +73,11 @@ struct Preview::Runtime {
   struct Shard {
     std::array<Cell, kPvBlockCols> cells; // 块成品 staging (fold 锁内填, 短锁拷贝)
     std::vector<float> samples;           // 单 (特征, 轮) 有效样本缓冲
-    std::vector<uint32_t> draw;           // [n_draw] 本轮抽样资产 → 主池源轴下标 (平面 k ← draw[k])
-    IoSlot::Buf cage;                     // 笼源暂存: L_1day [T][A_bar] × {lim_dn, lim_up} (Bar 档, Bar 池轴)
+    std::vector<uint32_t> draw;           // [n_draw] 本轮抽样资产 → 主库源轴下标 (平面 k ← draw[k])
+    IoSlot::Buf cage;                     // 笼源暂存: L_1day [T][A_bar] × {lim_dn, lim_up} (all Bar 库轴)
   };
   std::vector<Shard> shards; // [n_threads]
-  Source cage;               // 笼源 (all 池 L_1day {lim_dn, lim_up}; 当日适用值 = 盘中 as-of, 与读端同一投影)
+  Source cage;               // 笼源 (all Bar 库 L_1day {lim_dn, lim_up}; 当日适用值 = 盘中 as-of, 与读端同一投影)
   std::unique_ptr<misc::exec::ForkJoin> ex;
 };
 
@@ -94,7 +94,7 @@ struct Preview::LevelOf final : Preview::Level {
   std::vector<std::vector<float>> bufs;          // [n_threads][R] 单 (资产, 段) 序列 (缺/门控 NaN → 谱前 ffill)
 
   // 容量准备: 每特征累积 + 块读计划 + 线程私有
-  void prepare(const ReadPlan &pv_plan, const PerPool<size_t> &As, size_t n_threads) {
+  void prepare(const ReadPlan &pv_plan, const PerLib<size_t> &As, size_t n_threads) {
     level = G::kLevel;
     rpd = G::kRowsPerDay;
     days = G::kDays;
@@ -105,7 +105,7 @@ struct Preview::LevelOf final : Preview::Level {
     cage_n.assign(n_pv, 0);
     cage_miss.assign(n_pv, 0);
     int_only.assign(n_pv, 1);
-    // 预览列 = 主池该层 (Preview::reset 核对主池), 按盘后分源; 各源按列切块
+    // 预览列 = 主库该层 (Preview::reset 核对主库), 按盘后分源; 各源按列切块
     blocks.clear();
     fcol.clear();
     bsrc.clear();
@@ -186,9 +186,9 @@ void Preview::reset(ReadScope scope, Spec sp) {
       continue;
     assert(p.level == l && std::is_sorted(p.cols.begin(), p.cols.end()));
     assert(p.cols.back().level == l && p.cols.back().col < sp.n_features[l]);
-    assert(pool_tier(scope.main) == sp.tier && std::ranges::all_of(p.srcs, [&](const Source &s) { return s.pool == scope.main; }));
+    assert(lib_tier(scope.main) == sp.tier && std::ranges::all_of(p.srcs, [&](const Source &s) { return s.lib == scope.main; }));
   }
-  assert(sp.cage.size() == 2 && scope.has(kAllPool) && "price 笼读 all 池");
+  assert(sp.cage.size() == 2 && scope.has(kAllBar) && "price 笼读 all Bar 库");
   assert(scope.axis.size() > 0 && !scope.months.empty());
   std::lock_guard<std::mutex> lock(mutex);
 
@@ -214,12 +214,12 @@ void Preview::reset(ReadScope scope, Spec sp) {
 // Build (轮训: 轮 = 抽样段, 轮内按特征分块; 全部 (层, 轮, 块) 一次 dispatch, 块末发布; 首帧 = 一块的 IO + 扫描)
 // ============================================================================
 
-bool Preview::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
+bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel) {
   TraceN("PreviewBuild");
   assert(rt_ && "reset 先于 build");
   Runtime &rt = *rt_;
   const size_t A = scope_.axis.size();
-  const PerPool<size_t> As = scope_.sizes();
+  const PerLib<size_t> As = scope_.sizes();
   assert(A > 0 && "reset 先于 build");
   const Readers rd = scope_.readers(fr);
 
@@ -231,7 +231,7 @@ bool Preview::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bo
   misc::exec::ensure(rt.ex, static_cast<int>(n_threads));
   Source &cg = rt.cage;
   const FieldInfo *bar_day = level_info(TierId::Bar, L_1day).fields;
-  cg = Source{.pool = kAllPool, .level = L_1day, .settle = bar_day[spec.cage[0]].settle};
+  cg = Source{.lib = kAllBar, .level = L_1day, .settle = bar_day[spec.cage[0]].settle};
   assert(bar_day[spec.cage[1]].settle == cg.settle && "笼两列同盘后性 (同一源)");
   cg.cs.io = spec.cage;
   cg.cs.vts.assign(2, L2::ValidType::ALL);
@@ -243,9 +243,9 @@ bool Preview::build(const PerPool<const FeatureRead *> &fr, const std::atomic<bo
     sh.samples.reserve(kPvAssetsPerRound * TRADE_MINUTES_PER_DAY);
     sh.draw.resize(n_draw);
     if (cg.cur)
-      sh.cage.cur.preallocate(As[kAllPool], L_1day, 2);
+      sh.cage.cur.preallocate(As[kAllBar], L_1day, 2);
     if (cg.carry)
-      sh.cage.prev.preallocate(As[kAllPool], L_1day, 2);
+      sh.cage.prev.preallocate(As[kAllBar], L_1day, 2);
   }
   rt.asset_order = shuffled_order(A); // 无偏, 轮间旋转取片覆盖不同资产
 
@@ -320,12 +320,12 @@ void Preview::Level::cage(const Preview &pv, Runtime &rt, const Readers &rd, siz
   constexpr float kF16Rel = 1.0f / 1024.0f; // f16 尾数 10 bit → 1 ulp ≤ |值|/1024
   const size_t A = rt.asset_order.size();
   const size_t n_draw = std::min(kPvAssetsPerRound, A);
-  const size_t a_off = (r * n_draw) % A;       // 洗牌序旋转取片
-  const uint32_t *cage_ids = rd.ids[kAllPool]; // nullptr = 主池即 all (同轴); all = 全轴, 不会 kAbsent
+  const size_t a_off = (r * n_draw) % A;      // 洗牌序旋转取片
+  const uint32_t *cage_ids = rd.ids[kAllBar]; // nullptr = 主库即 all (同轴); all = 全轴, 不会 kAbsent
   IoSlot::Buf &cb = rt.shards[tid].cage;
   load_source(rd, rt.cage, plan.day(r * days + d), rt.cage.cs.io, cb);
   size_t row = 0;
-  const FeatureRead::DayColumns *cd = source_row(rt.cage, cb, 0, row); // 日常量 (L_1day 网格行 0); 无源 (all 池那天没落盘 / 轴首) = 笼缺 (NaN)
+  const FeatureRead::DayColumns *cd = source_row(rt.cage, cb, 0, row); // 日常量 (L_1day 网格行 0); 无源 (all Bar 库那天没落盘 / 轴首) = 笼缺 (NaN)
   const feature_storage_t *lim_dn = col_row(cd, 0, row), *lim_up = col_row(cd, 1, row);
   float *c_dn = cage_dn.data() + r * n_draw * days, *c_up = cage_up.data() + r * n_draw * days;
   for (size_t k = 0; k < n_draw; ++k) {
@@ -369,10 +369,10 @@ void Preview::LevelOf<G>::block(Preview &pv, Runtime &rt, const Readers &rd, siz
     const std::vector<uint32_t> &fc = fcol[blk];
 
     // 块 IO: nb 值列 + 该层 ts_valid (各列按自己的 vt 折哨兵); 只转置本轮抽样资产:
-    // 平面 A = n_draw, 主池映射换成 抽样下标 k → 主池源轴下标 (fold_span 经 ids 取格)
+    // 平面 A = n_draw, 主库映射换成 抽样下标 k → 主库源轴下标 (fold_span 经 ids 取格)
     {
       TraceN("PreviewIO");
-      const PoolId p = bp.srcs[0].pool;
+      const LibId p = bp.srcs[0].lib;
       const uint32_t *ids = rd.ids[p];
       for (size_t k = 0; k < n_draw; ++k) {
         const uint32_t a = rt.asset_order[(a_off + k) % A];

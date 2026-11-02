@@ -21,7 +21,8 @@ namespace GUI::Features {
 // 档的源日历: 本档原始数据现在能服务的交易日, 只读数据层已换进的产物 (GUI 线程), 随同步 / 编码前移.
 //   Bar  交易日 [PIPELINE_START_DATE, assetinfo.bar1m_end]; Fund 收盘推进到次日盘前 ⇒ 还须早于日历末个交易日 (日历截到 today)
 //   Lob  回测日历 ≤ 末个已编码日 (中间缺编码的日也在轴内, 落默认张量)
-// 本池日期轴 = 源日历截到各旁读档 (tier_side) 当前池的库末日, 旁读库须落盘齐 (池表规划, 随请求快照给 worker) ⇒ Bar 末日 ≥ Lob 末日
+// 本库日期轴 = 源日历截到依赖库末日 (同池旁读档的库; 子池另有成员源 all Bar 库, 且不含其首日: 无 D−1 成员),
+// 依赖库须落盘齐 (库表规划, 随请求快照给 worker) ⇒ 同池 Bar 末日 ≥ Lob 末日, all Bar 末日 ≥ 子池末日
 std::vector<misc::Ymd> source_dates(const SharedData &data, TierId tier);
 
 // ============================================================================
@@ -41,8 +42,8 @@ struct ComputeConfig {
   PerTier<int> cs_cores{{1, 1}};
   PerTier<int> io_cores{{1, 1}};
   int adopt_pct = 50;           // TS 负载再平衡阈值 N (%), 0 = 关闭领养
-  std::string pool;             // 算哪个池 (池名, 档由名定, 见 FeatureLib.hpp; Compute 页每池一个按钮)
-  std::vector<misc::Ymd> dates; // 本池日期轴 (池表规划, 见 source_dates)
+  LibId lib = kAllBar;          // 算哪个库 (Compute 页每库一行)
+  std::vector<misc::Ymd> dates; // 本库日期轴 (库表规划, 见 source_dates)
   bool resume = false;          // 续算 (库末日之后接着算, 须 resumable); 否则全量 (清库重算)
 };
 

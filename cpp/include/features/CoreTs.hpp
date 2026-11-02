@@ -2,11 +2,13 @@
 
 #include "features/DataDefine.hpp"
 #include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_1day 输入)
+#include "features/Node/Common/Fund/Fund.hpp" // Fund::is_live (all 的成员位)
 #include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
 #include "features/Storage/FeatureStore.hpp"
 #include "math/sample/ResamplerMin2Bin.hpp"
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
+#include "shared/Pool.hpp"
 
 #include <array>
 #include <cassert>
@@ -17,6 +19,7 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
+//         成员位: 子池 = pool::Panel (第 D 日由 all Bar 库 D−1 收盘行定); all = 当日活跃 (Fund live 口, 盘前承接之后 = 当日盘前态); 两档同一口径
 //         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 各层末 bar 归零
 //         empty_day  无数据日 = 零事件日, 同一路径
 //   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_1min 以上各层当前行
@@ -30,7 +33,6 @@
 //   日句柄环与标签悬挂日环同步前进 (Label::PEND_DAYS): Bar 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close; Lob 冲击成本只写当日.
 //   续算: snap = 区间末日的跨天态 (节点 + 标签), resume = 下一轮把尾窗日 (≤ PEND_DAYS, 张量已从盘读回) 的句柄接回环, 之后同一路径.
 //   档钩子 (Derived 实现):
-//     bool  member(misc::Ymd)  日开 (onDay 之后): 当日成员位 → cs_valid (Lob 池 / Bar 母集)
 //     auto &resampler()        源 → MinuteData 的重采样器 (ResamplerTick2Min / ResamplerBar2Min: reset / roll)
 // ============================================================================
 template <class Derived, class T, class Dag>
@@ -46,7 +48,7 @@ public:
     push_day(day);
     dag_.at_day_start(date);
     meta_.reset();
-    meta_.begin_day(self().member(date));
+    meta_.begin_day(member(date));
     self().resampler().reset();
     for (ResamplerMin2Bin &r : min2bin_)
       r.reset();
@@ -114,9 +116,10 @@ public:
   }
 
 protected:
+  // asset_id = 本库 A 轴下标 (子池 = pool::Panel 的池轴下标); pool = 子池成员面板 (all: nullptr)
   template <class... Args>
-  explicit CoreTs(size_t asset_id, Args &&...dag_args)
-      : asset_id_(asset_id), dag_(std::forward<Args>(dag_args)...), min2bin_(make_min2bin(dag_, std::make_index_sequence<std::size(graph::BIN_DATA)>{})) {
+  explicit CoreTs(size_t asset_id, const pool::Panel *pool, Args &&...dag_args)
+      : asset_id_(asset_id), pool_(pool), dag_(std::forward<Args>(dag_args)...), min2bin_(make_min2bin(dag_, std::make_index_sequence<std::size(graph::BIN_DATA)>{})) {
     dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id);
     for (BinData graph::Root::*b : graph::BIN_DATA)
       (dag_.*b).asset_id = static_cast<uint32_t>(asset_id);
@@ -141,6 +144,7 @@ protected:
 
   Day day_{}; // 本日写句柄 (= days_[cur_]), 热路径直接用
   size_t asset_id_;
+  const pool::Panel *pool_; // 子池逐日成员 (只读共享); all: nullptr
   Dag dag_;
   MetaTracker meta_; // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
   // minute_data → 层 L_5min + i 的 bar (graph::BIN_DATA[i], 分钟箱层 + L_1day; 两档共用, 档钩子 resampler() 只管源 → 分钟)
@@ -150,6 +154,8 @@ private:
   static constexpr size_t kPendDays = Label::PEND_DAYS;
 
   Derived &self() { return static_cast<Derived &>(*this); }
+
+  bool member(misc::Ymd date) const { return pool_ ? pool_->in_pool(asset_id_, date) : Fund::is_live(dag_.Fund.outs()); }
 
   template <size_t... I>
   static std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> make_min2bin(Dag &d, std::index_sequence<I...>) {
