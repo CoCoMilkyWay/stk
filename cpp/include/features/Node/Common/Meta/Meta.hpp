@@ -14,7 +14,7 @@
 //     cs_valid  本资产今天在不在截面里 (CS 语义). 截面 (CoreCs gather / 因子层 CS 节点 / Stat) 只看它, 不看 ts_valid:
 //               CS 本就该在平稳可比的信息上算, 池内资产在有效行上理应全部有值 (Fund 族 PIT 列除外) —— 因子层对喂 CS 的叶
 //               assert 掩码 ⊇ cs_valid, 不满足就是数据脏或用法错 (拿 CS 套 PIT 事件), 让人 think again
-//   成员位是日频 PIT 输入, 按库定 (CoreTs::member ← pool::Panel, 同池两档同一份): all = 当日活跃 (Fund live 同一份),
+//   成员位是日频 PIT 输入, 按库定 (CoreTs::member ← pool::Panel, 同池两档同口径): all = 当日活跃 (Fund live 同一份),
 //   子池 = 第 D 日由 all Bar 库 D−1 收盘行定; Lob 库读同池 Bar 库当日 cs_valid. 对本类只是一个 (资产, 日) 的 bool —— TS 行仍只看本资产 + 日频 PIT, 不破一致性红线.
 
 #include "features/MetaFlag.hpp"              // fmeta:: 编码/解码 (稳定头, 消费端直接用它, 不依赖本节点文件)

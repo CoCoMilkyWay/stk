@@ -39,7 +39,6 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
   assert(!d.roots.empty() && "森林 (build_forest) 才有根表");
   assert((why.empty() || why.size() == d.roots.size()) && "why 入参 = 空 或 各根的已知坏因");
   const std::vector<LeafId> ids = c.ft->x.ids(d.feats);
-  const std::vector<const factor::check::Plane *> in = leaves(c, d.feats);
   const size_t N = d.nodes.size();
   std::vector<std::string> err(N);
   for (size_t i = 0; i < N; ++i) {
@@ -53,9 +52,11 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
       if (g.op >= 0 || !factor::dom_strict(o.in[s]))
         continue;
       const size_t f = static_cast<size_t>(g.feat);
-      const auto [it, fresh] = c.dom.try_emplace({ids[f], o.in[s]});
+      const Leaf *lf = c.x.find(ids[f]);
+      assert(lf && "叶不在块上 (BlockSpec::x)");
+      const auto [it, fresh] = lf->dom.try_emplace(o.in[s]);
       if (fresh)
-        it->second = out_of_dom(ex, *in[f], o.in[s]);
+        it->second = out_of_dom(ex, *lf, o.in[s]);
       if (!it->second.empty())
         err[i] = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " + d.feats[f] + " 含越界值 " + it->second;
     }
@@ -84,14 +85,15 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   assert(sc.ft && pool_id(sc.pool) == kAllPool && "池篮子在 all 池评估域");
   assert(find_leg(sc.ft->y.labels, factor::stat::hold_close(1)) && "篮子须有 T+1C 标签 (池指数 C(行) → C(D+1))");
-  j.life = Life::Job;
   if (!open_job(F, sc, {}, j))
     return Rc::Empty;
-  fit_recent(F, sc, j, [] { return Budget{.load = kBasketCellBytes}; });
+  const auto bud = [] { return Budget{.load = kBasketCellBytes}; };
+  fit_recent(F, sc, j, bud);
+  F.S.room(whole_bytes(j.dm, j.ft->seg, bud()));
   BPlanes B;
-  if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.lr); rc != Rc::Ok)
+  if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.S.lr); rc != Rc::Ok)
     return rc;
-  out = baskets(F.ex, B);
+  out = baskets(F.S.ex, B);
   return Rc::Ok;
 }
 

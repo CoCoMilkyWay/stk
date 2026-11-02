@@ -98,6 +98,8 @@ struct PoolAxis {
     return (it != ids.end() && *it == global_id) ? static_cast<std::size_t>(it - ids.begin()) : ids.size();
   }
 };
+// sub 的资产全在 sup 上 (两轴升序)
+inline bool axis_within(const PoolAxis &sub, const PoolAxis &sup) { return std::ranges::includes(sup.ids, sub.ids); }
 
 // 池轴: ids 须升序去重且在全局轴内 (assert), hash 按池轴序走 FNV 链
 PoolAxis pool_axis(std::vector<uint32_t> ids);

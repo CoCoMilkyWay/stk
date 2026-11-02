@@ -26,7 +26,7 @@ bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> 
   return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope) || !evaluate;
 }
 
-RunService::RunService() { Start(); }
+RunService::RunService() : FactorWorker(Prio::Batch) { Start(); }
 RunService::~RunService() { Stop(); }
 
 bool RunService::run(RunRequest &req) {
@@ -47,7 +47,7 @@ bool RunService::run(RunRequest &req) {
   if (!req.spec.evaluate)
     return true;
   const bool ok = eval(req, flow());
-  flow().end(req.spec.keep ? Life::Worker : Life::Request);
+  flow().end();
   if (!ok) { // 中断: 没评到的行也收尾 (判废后不再有新请求刷新)
     std::lock_guard<std::mutex> lock(mutex);
     for (FactorRow &r : rows)
@@ -85,7 +85,7 @@ void RunService::scan(const RunRequest &req, std::vector<FactorRow> &out) {
       r.status = RowStatus::Done;
 }
 
-// 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 eval_file
+// 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 eval_file, 每文件一次租约 (文件之间让位给交互服务)
 bool RunService::eval(const RunRequest &req, FactorFlow &F) {
   TraceN("FactorsEvaluate");
   // 待评行 (有效权重; scan 已校验过), 按文件分组 (scan 出的行同文件相邻)
@@ -110,9 +110,11 @@ bool RunService::eval(const RunRequest &req, FactorFlow &F) {
     return true;
   }
   return F.with_engine<RunProbes>(req.scope.gpu, [&](auto &eng) {
-    for (const std::vector<size_t> &f : idx)
-      if (!eval_file(req, F, eng, f))
+    for (const std::vector<size_t> &f : idx) {
+      Lease l(F);
+      if (!l || !eval_file(req, F, eng, f))
         return false;
+    }
     return true;
   });
 }
@@ -125,9 +127,8 @@ bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const s
   RootSet rs;
   for (const size_t i : idx)
     rs.add(*req.scope.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign), hd);
-  // Y = 全部持有期 + 全部金额段, 整期一块时同作用域跨文件复用 (分块 = 作业自有, 逐文件重读); X = 本文件的叶 (keep → 读过的全留)
+  // Y = 全部持有期 + 全部金额段; X = 本文件的叶 (平面经 Store 缓存跨文件 / 跨服务复用)
   JobOut o;
-  o.job.life = req.spec.keep ? Life::Worker : Life::Request;
   o.job.who = "Run";
   std::vector<RunProbes> ps(rs.size());
   std::vector<size_t> fin; // 本轮评完的条目 (森林走完 Ok 才一次回写)

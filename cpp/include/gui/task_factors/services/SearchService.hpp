@@ -8,8 +8,8 @@
 // 配置全在 factor/Search/Config.hpp. 唯一的预算量 = 第 0 趟点数 kInit; 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
 //
 // 搜索流程 (一趟 = 一批无依赖候选沿全部数据块流过一遍, 只装 h 一组标签 (hd.n = 1); 趟与趟之间才有依赖):
-//   准备          先装块 0: 满仓只数 n_full = 全期池内平均有效资产数 / kGroups (Labels::cap, 各块共用, 与 Run 同一个; 一块 = 块 0 的 YPlanes::n_full,
-//                 多块 = FactorsEngine plan_job 预扫全期门控); 槽区间按 A = n_full · kGroups 定 (Space slots_of).
+//   准备          先装块 0: 满仓只数 n_full = 全期池内平均有效资产数 / kGroups (Labels::cap, 各块共用, 与 Run 同一个; Store 按评估域算一次,
+//                 一块 = 整期门控, 多块 = 预扫全期门控); 槽区间按 A = n_full · kGroups 定 (Space slots_of).
 //                 阈值槽 (ANY / GE0) 由深到浅: 中性具体式 (Space neutral) 在 CPU 上走到它的输入节点, 取块 0 抽样行的池内有效值作分位表
 //                 (Space set_qtab); 输入是常量 → 整个搜索放弃
 //   趟 0 采样     R_d 低差异点 (Space design), 评一次得分 (自动定向: Contract【方向】)
@@ -25,13 +25,14 @@
 //   分块流式  按天切块, 块 i 统计交易日 [i·D, (i+1)·D), 装载时前后多带 FactorsEngine bands_of 日: 前带 = ⌈(模板回看 + 持有期行) / seg⌉
 //             + kChainDays (Space lookback: 各路径 ROLL 窗长之和, 自由 d 取 kMaxD), 后带 = ⌈持有期行 / seg⌉ (首块无前带 / 末块无后带);
 //             块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量一致 (EXPAND 段界 reset; 各窗回看与交接链都有限,
-//             前后带盖住); 跨块 Result::merge. 块数据内存装得下就整轮缓存, 否则每趟重读.
+//             前后带盖住); 跨块 Result::merge. 块平面经 Store 缓存: 内存装得下就各趟全命中, 否则每趟重读.
 //   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次); 批 = 引擎 batch_of (FactorsEngine).
 //             CPU: 每节点全核 (run_node), 根算完立刻全核 Stat (rank_x + accum_rows, 与 Run 同一条; 抽样行拷 rx), 不留根平面; 批 = kBatch;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 result (每趟结束发布一次, 最终再发布);
 // 进度走原子: Loading 期 done/total = 块内天; Running 期 = 候选 × 块. 服务间互斥由 UI 保证 (Factors Run 与 Search 不同时跑: 都写因子文件).
+// 批服务: 计算权租约以趟为单位 (准备 + 趟 0 一次, 其后每趟一次), 趟之间让位给交互服务.
 // 出错策略: 因子行 / 作用域不合是正常输入 → message; 契约不一致 → assert.
 #pragma once
 
@@ -55,7 +56,6 @@ struct SearchSpec {
   factor::stat::Frame frame = factor::stat::Frame::CS; // 口径
   int hold = 0;                                        // 搜的持有期键 (字段表标签组之一, search_hold)
   bool fresh = false;                                  // 落盘前先清空文件全部 weights (否则只换 hold 的)
-  bool keep = false;                                   // 块跨请求常驻 (agent 会话: Life::Worker); 否则 Life::Job
 };
 using SearchRequest = Request<SearchSpec>; // scope.factor_dir 落盘 (log / weights / search); scope.max_impact 不看 (不评成本)
 // 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键; ft = 该层字段表

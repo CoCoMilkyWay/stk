@@ -5,14 +5,15 @@
 //
 // 与 RunService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
-// 计算 flow (worker 私有 FactorFlow + 本服务的平面缓冲, 常驻). 只有 S / Y 跨请求缓存 (作用域不变就复用), 其后每次请求整条重算;
+// 计算 flow (worker 的 FactorFlow + 本服务的平面缓冲; 交互服务, 一请求一次计算权租约). 平面在进程唯一的 Store 里缓存 (与 Run / Search / Portfolio /
+// agent 共用, 作用域不变就命中), 其后每次请求整条重算;
 // 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / T / N 是探针 (InspectProbes); N 落线进净值引擎 fold_book
 // (FactorsBook.hpp, 与 Portfolio / 池线同一份):
-//   S  块       FactorsLoad Block, key = block_key (层 | Domain::key | 日段 | YSpec: 持有期 / 金额段 / 封顶 | B)
-//               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 特征平面 (Life::Worker: 评估域内读过的全留, 只增). 池等权线 (pool_line, 每持有期一条) 随 Y 一代算一次
+//   S  块       FactorsLoad Block = Store::pin 钉住的平面 (键 = 层 | Domain::key | 日段 | 角色)
+//               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 本因子的特征平面. 池等权线 (pool_line, 每持有期一条) 随 Y 的代算一次
 //               (块钩子, whole: 整期一块; 装不下内存预算 → 评估期只留最近的日, fit_recent)
-//   Y  标签     随 S                                       → 毛标签秩: 块上的 Block::ry (Engine<Cpu> 会话首次 prep_label, 随块常驻); 没有净标签集
-//   X  因子                                                → 缺的特征补读 (ensure_block) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool 常驻)
+//   Y  标签     随 S                                       → 毛标签秩: 块上钉的标签秩 (Store 首次 prep_label, 随缓存常驻); 没有净标签集
+//   X  因子                                                → 缺的特征补读 (Store::pin) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool, 租约内)
 //   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
 //                                                            RxAllP 另跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
 //   C  成本                                                → end_codes(rx) → CostTier[C ≥ 1] (FactorsTable.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsProbe
@@ -50,8 +51,8 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-// 请求 = 一个因子 (FactorRef, 与 Portfolio 条目同一份) + 权重行 key; reload = 弃缓存整体重读 (特征库重算过 / 手动 Compute).
-// scope.max_impact 装载时生效 → 进作用域缓存键; scope.gpu 不看 (只 CPU)
+// 请求 = 一个因子 (FactorRef, 与 Portfolio 条目同一份) + 权重行 key; reload = 弃 Store 平面缓存整体重读 (特征库重算过 / 手动 Compute).
+// scope.max_impact 取用时封顶 (不进缓存键); scope.gpu 不看 (只 CPU)
 struct InspectSpec {
   FactorRef f;
   std::string row; // 权重行 key (FactorRow::key = 文件#权重号)
@@ -126,9 +127,9 @@ private:
   bool run(InspectRequest &req);
   bool eval(const InspectRequest &req, FactorFlow &F); // false = 取消 / 判废
 
-  // worker 私有 (跨请求存活): 块在 FactorFlow (Y 常驻, X = 评估域内读过的特征, 只增)
+  // worker 私有 (跨请求存活)
   InspectPlanes pl_;                            // 一级平面, 发布时与 result.pl 交换
-  BookLines pool_;                              // 池等权线 (pool_line), 随 Y 一代
+  BookLines pool_;                              // 池等权线 (pool_line), 随 Y 的代
   float pool_ann_[factor::stat::kMaxHold] = {}; // pool_ 各持有期的算术年化, 同代
   uint64_t pool_gen_ = 0;                       // pool_ 算时的 c.gen
 };

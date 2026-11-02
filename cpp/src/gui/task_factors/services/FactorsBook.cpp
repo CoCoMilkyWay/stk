@@ -8,7 +8,6 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
-#include <span>
 
 namespace GUI::Factors {
 
@@ -93,10 +92,10 @@ std::vector<int32_t> prev_rows(misc::exec::ForkJoin &ex, const factor::check::Pl
 //   → 线 nl · hi + nw · b + w 逐行收益 (stride 1; nl = nb · nw). nw = 权重数 (1 = 只等权; mcap 可空).
 //   each(hi, i, put): 标签有效格 i 所属的篮子逐个 put(b, code, in): code = 成员码平面 (已偏到本格), in(code) = 是否同一篮子
 template <class Each>
-BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd, std::span<const LegPlane> labels, const uint8_t *eo, size_t nb, int nw,
+BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd, const LegPlane *const *labels, const uint8_t *eo, size_t nb, int nw,
                      const float *mcap, Each &&each) {
   static_assert(kWeightEq == 0, "只等权 (nw = 1) 的篮子线 = b");
-  assert(hd.n >= 1 && labels.size() == static_cast<size_t>(hd.n) && (nw == 1 || mcap));
+  assert(hd.n >= 1 && (nw == 1 || mcap));
   const factor::stat::Span sp{sh.T, sh.A, factor::geo_of(sh.seg)};
   const size_t nT = static_cast<size_t>(sh.T), nA = static_cast<size_t>(sh.A), nl = nb * static_cast<size_t>(nw), H = static_cast<size_t>(hd.n);
   RowLines x; // [hold][篮子线][T] 行 t 这一批的篮子收益
@@ -111,7 +110,7 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
         const size_t i = t * nA + a;
         const double om[kWeights] = {1.0, nw > 1 ? mcap[i] : 0.0};
         for (size_t hi = 0; hi < H; ++hi) {
-          const LegPlane &lab = labels[hi];
+          const LegPlane &lab = *labels[hi];
           if (!lab.m[i])
             continue;
           const factor::stat::Chain c = factor::stat::chain_of(static_cast<int>(t), sp, hd.k[hi]);
@@ -309,7 +308,8 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
   });
   const PoolMask *in = B.in.data();
   const Holds hd = keys_of<Holds>(std::vector<int>{factor::stat::hold_close(1)});
-  o.index = index_rows(ex, B.sh, hd, std::span<const LegPlane>(&B.lab, 1), B.eo.data(), Baskets::count(), kWeights, B.mcap.data(),
+  const LegPlane *const lab = &B.lab;
+  o.index = index_rows(ex, B.sh, hd, &lab, B.eo.data(), Baskets::count(), kWeights, B.mcap.data(),
                        [&](size_t, size_t i, auto &&put) {
                          each_basket(in[i], ind0[i], [&](size_t b, PoolMask bit, uint8_t k) {
                            if (k > 0)
@@ -326,9 +326,9 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
 }
 
 BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y) {
-  assert(y.eo.size() == y.sh.n());
-  return index_rows(ex, y.sh, y.hd, y.labels, y.eo.data(), 1, 1, nullptr,
-                    [&](size_t hi, size_t i, auto &&put) { put(size_t{0}, y.labels[hi].m.data() + i, [](uint8_t v) { return v != 0; }); });
+  assert(y.eo && "Y 未钉");
+  return index_rows(ex, y.sh, y.hd, y.labels, y.eo, 1, 1, nullptr,
+                    [&](size_t hi, size_t i, auto &&put) { put(size_t{0}, y.labels[hi]->m.data() + i, [](uint8_t v) { return v != 0; }); });
 }
 
 } // namespace GUI::Factors

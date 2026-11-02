@@ -19,6 +19,13 @@ constexpr double kBusyFloor = 0.05; // 配额分母 β 的下限 (几乎全在�
 
 std::string ms_text(size_t us) { return std::to_string(us / 1000) + "ms"; }
 
+size_t idle_sum(const std::vector<ComputeStats::Core> &cores) {
+  size_t s = 0;
+  for (const ComputeStats::Core &c : cores)
+    s += c.idle_us.load(std::memory_order_relaxed);
+  return s;
+}
+
 } // namespace
 
 size_t RingBudget::affordable() const {
@@ -76,6 +83,7 @@ TsTuner::TsTuner(const StoreRing &store, TsSchedule &sched, const ComputeStats &
     : store_(store), sched_(sched), stats_(stats), total_(total), budget_(budget), grow_(std::move(grow)),
       t0_(std::chrono::steady_clock::now()), edge_(stats.ts.size(), 0), pending_(stats.ts.size(), 0), idle0_(stats.ts.size(), 0) {
   assert(sched.frontier.size() == stats.ts.size() && "stats 槽位数与 TS worker 数不符");
+  assert(!stats.cs.empty() && !stats.io.empty());
 }
 
 // 前沿到底的核 (含无资产的核, 开工即报到底) 不参与: 它们不再是任何人的关键路径
@@ -92,26 +100,20 @@ void TsTuner::tick() {
   if (f_min >= total_)
     return;
 
-  bool downstream = false; // 最慢核自己撞池边 = 池深被下游卡住, 本 tick 的池边干等与时序偏差无关
   for (size_t w = 0; w < N; ++w) {
     const size_t e = stats_.ts[w].edge_us.load(std::memory_order_relaxed);
     de[w] = e - edge_[w];
     edge_[w] = e;
-    if (f[w] == f_min && de[w] > 0)
-      downstream = true;
-  }
-  if (!downstream)
-    for (size_t w = 0; w < N; ++w) {
-      if (f[w] >= total_)
-        continue;
-      if (f[w] == f_min) {
-        loss_us_ += pending_[w];
-        pending_[w] = 0;
-      } else {
-        pending_[w] += de[w];
-        edge_win_us_ += de[w];
-      }
+    if (f[w] >= total_)
+      continue;
+    if (f[w] == f_min) {
+      loss_us_ += pending_[w];
+      pending_[w] = 0;
+    } else {
+      pending_[w] += de[w];
+      edge_win_us_ += de[w];
     }
+  }
 
   if (f_min >= win_f_ + kWindowDays && now - win_us_ >= kWindowMinMs * 1000)
     close_window(now, f_min, f);
@@ -121,16 +123,24 @@ void TsTuner::close_window(long long now_us, size_t f_min, const std::vector<siz
   const size_t N = stats_.ts.size();
   const double wall = static_cast<double>(now_us - win_us_);
 
-  // 扩格: 损失够大才扩, 每窗至多一格 (新格要下一窗才见效)
-  if (static_cast<double>(loss_us_) >= kLossFrac * wall) {
+  // 下游饥饿: 截面 / 落盘各段平均干等取小; 下游忙满 ⇒ ≈ 0, 时序再快也不多出活
+  const size_t cs_idle = idle_sum(stats_.cs), io_idle = idle_sum(stats_.io);
+  const size_t starve = std::min((cs_idle - cs_idle0_) / stats_.cs.size(), (io_idle - io_idle0_) / stats_.io.size());
+  cs_idle0_ = cs_idle;
+  io_idle0_ = io_idle;
+  const bool ts_bound = static_cast<double>(starve) >= kLossFrac * wall;
+
+  // 扩格: 收益 (已确认损失, 不超过下游饥饿) 够大才扩, 每窗至多一格 (新格要下一窗才见效)
+  const size_t gain = std::min(loss_us_, starve);
+  if (static_cast<double>(gain) >= kLossFrac * wall) {
     const bool room = store_.query_slots() < store_.query_cap() && budget_.affordable() >= 1;
     if (room)
       grow_();
-    Logger::log("tuner", std::string(room ? "ring +1 → " : "ring 满 (内存 / 上限) ") + std::to_string(store_.query_slots()) +
-                             " | 已确认损失 " + ms_text(loss_us_) + " / 窗 " + ms_text(static_cast<size_t>(wall)));
+    Logger::log("tuner", std::string(room ? "ring +1 → " : "ring 满 (内存 / 上限) ") + std::to_string(store_.query_slots()) + " | 已确认损失 " +
+                             ms_text(loss_us_) + ", 下游饥饿 " + ms_text(starve) + " / 窗 " + ms_text(static_cast<size_t>(wall)));
   }
 
-  // 配额: 持仓权重 × 忙碌占比偏离的半量; 窗内无池边干等 = 偏差还没卡住谁, 不动
+  // 配额: 持仓权重 × 忙碌占比偏离的半量; 下游不缺活 / 窗内无池边干等 = 偏差没卡住产出, 不动
   std::vector<int64_t> hold(N, 0);
   for (size_t i = 0; i < sched_.owner.size(); ++i)
     hold[static_cast<size_t>(sched_.owner[i].load(std::memory_order_relaxed))] += sched_.weight[i];
@@ -148,7 +158,7 @@ void TsTuner::close_window(long long now_us, size_t f_min, const std::vector<siz
   }
   const double mean = active > 0 ? sum / static_cast<double>(active) : 0.0;
   for (size_t w = 0; w < N; ++w) {
-    const bool on = edge_win_us_ > 0 && beta[w] > 0.0;
+    const bool on = ts_bound && edge_win_us_ > 0 && beta[w] > 0.0;
     sched_.quota[w].store(on ? std::llround(0.5 * static_cast<double>(hold[w]) * (beta[w] - mean) / beta[w]) : 0, std::memory_order_relaxed);
   }
 

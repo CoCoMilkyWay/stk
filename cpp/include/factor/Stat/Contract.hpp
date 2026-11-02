@@ -137,7 +137,7 @@
 //       不交接 → 本批整建 (w_t 全付建仓冲击), 前一批的平仓由它自己记 (见下).
 //     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付固定冲击).
 //     金额段 (Cost) 两种, 至少一段, 换手量 (Δw) 各段同一份:
-//       盘口段 = 买入冲击 imp[a] (已按 Config::max_impact 封顶; 池内格恒有值, 盘口缺按封顶), 平仓量付固定冲击;
+//       盘口段 = 买入冲击 min(imp[a], top) (top = Config::max_impact; 池内盘口缺 = +inf → 封顶), 平仓量付固定冲击;
 //       固定段 = 无冲击列 (imp 空), 增仓量与平仓量都付固定冲击 fixed_impact.
 //     每 h 一份 CostAcc 沿 t 求和; 每期成本 cost(端) = (Σ Δ⁺·imp + Σ 固定量 · fixed_impact) / n_all (与 ls_period 同分母). 尾部行不攒.
 //     净多空 net_ls_period = ls_period − ½ (cost(kTop) + cost(kBot)) (两本各半资金, 同 ls); 年化 net_ls = × span_per_year (满仓一年).
@@ -527,11 +527,12 @@ inline double hold_span(int hold, const Geo &g) {
 
 // ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线 / Portfolio 逐行成本共用) ----
 
-// 一个金额段: 盘口段 = 买入冲击 [T][A] 平面的指针 (宿主或设备, 由后端定; 池内格恒有值, 盘口缺按封顶); 固定段 = 空
+// 一个金额段: 盘口段 = 买入冲击 [T][A] 平面的指针 (宿主或设备, 由后端定; 原值, 池内盘口缺 = +inf) + 封顶 top (取用时 min); 固定段 = 空
 struct Cost {
   const uint16_t *imp = nullptr; // 买入冲击 fp16 位
+  float top = 0.f;               // 封顶 (Config::max_impact; 盘口段 > 0)
   FACTOR_HD bool flat() const { return !imp; }
-  FACTOR_HD Cost at(size_t i) const { return flat() ? Cost{} : Cost{imp + i}; } // 偏到第 i 格 (行首 = t·A)
+  FACTOR_HD Cost at(size_t i) const { return flat() ? Cost{} : Cost{imp + i, top}; } // 偏到第 i 格 (行首 = t·A)
 };
 
 // 端码 (两后端 / Inspect 同一份): r16 → 方向 d 的高端组 kEcTop / 低端组 kEcBot / 其他组 kEcMid / rank 无效 kEcVoid. 前两个与 End 同值:

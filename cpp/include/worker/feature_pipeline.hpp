@@ -278,7 +278,6 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
         continue;
       }
       my_quota.fetch_add(pick_weight, std::memory_order_relaxed);
-
       // victim 可能正在算 pick 的在飞一天: 等它交割 (窗口 = 单个 asset-day)
       auto settled = [&] { return sched.claimed[pick].load(std::memory_order_acquire) == sched.done[pick].load(std::memory_order_acquire); };
       if (!wait_open(cancel_requested, stat, settled))
@@ -450,7 +449,7 @@ bool pipeline(const PipelineArgs &args) {
   std::cout << "\n=== Phase 2: Feature Computation (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
             << "Assets: " << num_assets
-            << " | Ring: " << slots << " (下游 " << floor_slots << " + 时序余量 " << lead << ", 上限 " << cap << ")"
+            << " | Ring 初值: " << slots << " (下游 " << floor_slots << " + 时序余量 " << lead << ", 上限 " << cap << ")"
             << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")"
             << " | Tail: " << tail << "\n"
             << std::endl;

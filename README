@@ -29,15 +29,14 @@ stk/
 │   │   │   ├── FeatureLib.hpp                        # 📦 FeatureLib = 库 (池 × 档, LibId) + A 轴 + 目录 + 日期轴; 每池两档对称各一库
 │   │   │   │                                         #    · 池表 feature_pools (PoolDef = 池名 + 中文名 + 池列): [0] = all (全市场); 其余 = 子池 (来自 all Bar 库 pool_<pool> 列)
 │   │   │   │                                         #    · 清单 lib.json: 写端 (ComputeService) 规划后落, 读端只读 ⇒ 两端口径一致; 无清单 = 未建库
-│   │   │   │                                         #    · 定轴库 axis_lib = 同池 Bar 库 (同池两档同一 A 轴); 随轴库 = 同池 Lob 库
+│   │   │   │                                         #    · 定轴库 axis_lib = 同池 Bar 库 (定池的 A 轴); 随轴库 = 同池 Lob 库 (轴 ⊆ 定轴库轴)
 │   │   │   │                                         #    · 库树 lib_parent (规划 / 断言唯一一份): 随轴库 → 同池定轴库 (同日); 子池定轴库 → all 同档库 (读 D−1); all Bar 为根
 │   │   │   │                                         #      本库日须落在上游库日期轴上 (parent_covers); 规划序 lib_order = 池序 × 档的依赖序 TIER_ORDER (上游先)
 │   │   │   ├── Pool.hpp                              # 📦 pool::Panel 池日频面板 (每池同一形状, 与 fund::Panel 对仗): 本库 A 轴 + 逐日成员 (→ cs_valid) + 轴外
 │   │   │   │                                         #    · 成员: all Bar = 当日活跃 (fund::Panel::live, 与 Fund live 口同一份); 子池 Bar = all Bar 库 D−1 收盘行池列;
 │   │   │   │                                         #      随轴库 = 同池定轴库当日 cs_valid (上游读一律经读端同一 Source 投影)
-│   │   │   │                                         #    · 自然轴: all = 全部标的; 子池 = 日期轴内进过池的资产; 轴上资产全程算 TS, 日后进池不补历史
-│   │   │   │                                         #    · 冻结轴: 定轴库续算沿用库清单轴, 自然轴里不在轴上的记轴外 (lib.json outside), 要收进轴就全量重算定轴库;
-│   │   │   │                                         #      随轴库沿用同池定轴库清单的轴与轴外
+│   │   │   │                                         #    · 自然轴: all Bar = 全部标的; 其余 = 本库日期轴内进过池的资产 (Lob 只看回测段); 轴上资产全程算 TS, 日后进池不补历史
+│   │   │   │                                         #    · 冻结轴: 建库即冻结, 续算沿用库清单轴, 自然轴里不在轴上的记轴外 (lib.json outside); 何时改轴由用户定 (全量重算该库)
 │   │   │   ├── Feature.hpp                           # 📦 特征元数据 + 多选 picked = set<ColRef> (跨库跨层; 选中绑定当时的当前库, 切池 / 切档 / 切层保留; 首个 = primary)
 │   │   │   │                                         #    · 当前库 = (pool, tier) (lib()); 因子页与特征面板共用当前池; ref(库, 层, code) → ColRef
 │   │   │   ├── OrderFlow.hpp                         # 📦 订单流数据: 主库 = 选中列所在的唯一库 (无选中 = all Bar; 图1 VWAP / 候选轴)
@@ -73,15 +72,15 @@ stk/
 │   │   │   │                                         #    两档 (TierId):
 │   │   │   │                                         #    · Lob: Level-2 逐笔 → 订单簿还原; L_sec 秒 + L_1min 分钟; 回测日历 (features/<pool>/lob/)
 │   │   │   │                                         #    · Bar: bar1m 分钟 K + 日频基本面; L_1min 分钟 + L_5min / L_15min / L_30min / L_60min 分钟箱 + L_1day 日 (基本面 / 池); 2015-01-01 起 (features/<pool>/bar/)
-│   │   │   │                                         #    库 = 池 × 档, 每池两档对称同一 A 轴 (pool::Panel): all = 全部标的, cs_valid = 当日活跃 (在市 ∧ 上市满 365 日 ∧ 行业已知, 含 ST);
+│   │   │   │                                         #    库 = 池 × 档, 每库一份 A 轴 + 成员 (pool::Panel): all = 全部标的, cs_valid = 当日活跃 (在市 ∧ 上市满 365 日 ∧ 行业已知, 含 ST);
 │   │   │   │                                         #    子池 = 进过池的标的, cs_valid = 当日在池 (all Bar 库 D−1 收盘行池列); 母集 (再去 ST / 风险警示) 只作池键的中间过滤
-│   │   │   │                                         #    Lob cs_valid = 同池 Bar 库当日 cs_valid; TS 与池无关 (基本面面板全市场, 节点按全局 id 取), 各池只差 A 轴与 cs_valid
+│   │   │   │                                         #    Lob 轴 = 回测段内进过池的 (⊆ 同池 Bar 轴), cs_valid = 同池 Bar 库当日 cs_valid; TS 与池无关 (基本面面板全市场, 节点按全局 id 取), 各池只差 A 轴与 cs_valid
 │   │   │   │                                         #    · 标签: Bar 各层 (含 L_1min, 价点 = 次分钟 VWAP; 每层只留本层及以上的持有期组); Lob 只落建仓冲击 lb_cost_* (L_1min)
 │   │   │   │                                         #    L_1day 行 D = 次日盘前态 (D 收盘后至 D+1 开盘前可知, D+1 盘中全程可 act on; 高频读它即读前一交易日行)
 │   │   │   │                                         #    档间规矩:
 │   │   │   │                                         #    · 同一列只在一档算; 时序不跨档; 截面只许 Lob → Bar 旁读 (TIER_SIDES, 任意层, level_asof 投影)
 │   │   │   │                                         #    · TS / CS 列名跨档唯一: Lob K 线加 lob_* 前缀; META 元列 / LB 标签列各档同名, 豁免
-│   │   │   │                                         #    · 计算序 = 库树上游先: all Bar 库 → 子池 Bar 库 (成员读 all Bar 池列, 首日 = all Bar 首日之后); 各池 Lob 库在同池 Bar 库之后 (沿用其 A 轴 + 成员, 截面旁读它)
+│   │   │   │                                         #    · 计算序 = 库树上游先: all Bar 库 → 子池 Bar 库 (成员读 all Bar 池列, 首日 = all Bar 首日之后); 各池 Lob 库在同池 Bar 库之后 (成员取其 cs_valid, 截面旁读它)
 │   │   │   ├── FeaturesDefine.hpp                    # 🧮 字段表格式 (NODE_ / FIELDS_ 行) + 元数据枚举
 │   │   │   ├── TimeIndex.hpp                         # 🧮 时间索引: Clock ↔ L_sec ↔ L_1min → n 分钟箱 (首箱 = 09:15-09:30 竞价; L_1day 一日一行) + 交易时段常数
 │   │   │   ├── DataDefine.hpp                        # 🧮 TickData / MinuteData / BinData + Trigger 触发域 + 节点契约 / 截面列契约
@@ -99,7 +98,7 @@ stk/
 │   │   │   ├── Bar1mDay.hpp                          # 🧮 bar1m 日分片 (fundamental::daily) → 稠密 [A][255] 分钟 K (Bar 档 TS 输入)
 │   │   │   ├── CoreCs.hpp                            # 🧮 截面 (按档模板): 节拍 Lob = L_sec / Bar = L_1min, 每拍按 for_each_close 级联本拍收行的各层
 │   │   │   │                                         #    · 源层任意: 源行 = level_asof(源列, 本列, t); 落到前一交易日 → 读日环 d−1 槽位 (cs_prev, 只许 TS / 元列); 区间首日 NaN
-│   │   │   │                                         #    · 旁读档上游读 = 读端同一个 Source (同池同一 A 轴, 列下标即本档资产); 旁读库 (同池 Bar) 缺日 → 断言
+│   │   │   │                                         #    · 旁读档上游读 = 读端同一个 Source (本库轴 ⊆ 旁读库轴, 格经 Readers::ids 映射); 旁读库 (同池 Bar) 缺日 → 断言
 │   │   │   ├── MetaFlag.hpp                          # 🧮 元列 (_meta) 编解码 (消费端不依赖 Meta 节点)
 │   │   │   ├── Node/Lob/TS/<分类>/                   # 🧮 Lob 档节点: 节点类 + NODE_ / FIELDS_ 宏 (暂无 CS)
 │   │   │   ├── Node/Bar/{TS,CS}/<分类>/              # 🧮 Bar 档节点: TS 同上; CS = 截面列 (只有 FIELDS_ 行)
@@ -151,6 +150,8 @@ stk/
 │   │   │                                             #    · 分核: 时序是瓶颈, 其余核全给它; 回测与实盘同一套分核
 │   │   │                                             #    · 领养: 各核专注自己的资产, 持续落后才被领跑核永久领养 (不自由领, 不按日窃取); 额度 = 按实测忙碌占比的半量配额
 │   │   │                                             #    · 时序调参 (TsTuner, 无 UI 参数): 轮换 (领跑核干等后自己又成最慢者) → 扩日环 (≤ 90% 内存); 漂移 (同一核持续最慢) → 领养
+│   │   │                                             #      收益上限 = 下游饥饿 (截面 / 落盘平均干等取小): 下游忙满时时序再快也不多出活, 扩格 / 领养都不动
+│   │   │                                             #    · 仪表盘: 固定 5 行原地刷新, 动态量 (环 在用/现有/上限, 待领养) 只在这里; 开跑横幅的日环格数标为初值
 │   │   │                                             #    · 两档只差源: Lob 软源 (预取只暖 page cache) / Bar 硬源 (预取解码 bar1m 进源格, 时序等它)
 │   │   │                                             #    · 续算: 日期轴 = 尾窗日 + 新日; 尾窗日预取 / 截面只交还, 时序从快照接着新日算, 落盘重写尾窗日 (标签补结清)
 │   │   ├── gui/                                      # 🖥️ GUI (ImGui + Service 后台线程); 每任务分两层:
@@ -186,7 +187,7 @@ stk/
 │   │   │   │   ├── services/                         # 🖥️ 服务层
 │   │   │   │   │   ├── ComputeService.hpp            # 🖥️ 特征计算: 请求 = 库 (池 × 档), 每库同一流程: fund::Panel (全市场) → pool::Panel (A 轴 + 成员) → pipeline<T> (tier_ops 分发)
 │   │   │   │   │   │                                 #    · 规划 plan_libs → 每库一份 LibPlan (库清单 + 已落盘 + 规划日期轴; 上游未落盘齐 = blocked); 起算 lib_run → LibRun (本轮日期轴 = 续算尾窗 + 新日)
-│   │   │   │   │   │                                 #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与库清单、字段表、定轴库清单轴对得上才可续)
+│   │   │   │   │   │                                 #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与库清单、字段表对得上, Lob 轴在同池 Bar 轴内才可续)
 │   │   │   │   │   ├── StreamService.hpp             # 🖥️ 流式分析服务骨架 (CRTP, 派生自 Service)
 │   │   │   │   │   ├── DistService.hpp               # 🖥️ 分布分析 (StreamService)
 │   │   │   │   │   ├── TransformService.hpp          # 🖥️ 特征变换 (StreamService)
@@ -212,7 +213,7 @@ stk/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
 │   │   │       │   ├── RunService.hpp                # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc; 每层至少一段: Lob 盘口段 / Bar 固定段) → 逐条目发布行, 文件走完 (未取消) 一次回写
 │   │   │       │   │                                 #    · 表中 score / util 由 stat 现算
-│   │   │       │   ├── FactorsWorker.hpp             # 🖥️ FactorWorker<D, Req>: 四服务同一份骨架 (进度面 + message + 常驻 FactorFlow + 中断收尾 settle)
+│   │   │       │   ├── FactorsWorker.hpp             # 🖥️ FactorWorker<D, Req>: 全部因子服务同一份骨架 (进度面 + message + 优先级 Prio + FactorFlow + 中断收尾 settle)
 │   │   │       │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorSearch (Search) / WriteFactorStats (Run)
 │   │   │       │   │                                 #    · Run 只回写 run + stats[i] (与 weights 同序), expr / weights 不动; 破碎因子标 BROKEN, 不删
 │   │   │       │   ├── FactorsTable.hpp              # 🖥️ 因子层公共类型: FactorLevel / FeatureTable / FactorScope / Request<Spec> / FactorRef / EvalStat (StatScope / HoldStat / CostTier / MiniPdf) / TailRow (两端组内最极端 50 / 20 / 5%) / AlphaDist
@@ -222,8 +223,11 @@ stk/
 │   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
 │   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
 │   │   │       │   │                                 #      + 满仓只数) / load_b (池篮子输入 BPlanes: all Bar 库全轴, 全部池成员位 PoolMask + T+1C 标签 + 原料一趟读齐, 不进块; 日频原料 / 池列 as-of 取 bar.1d)
-│   │   │       │   │                                 #    · 门控 / 标签取因子池 Bar 库本层列, 盘口成本取同池 Lob 库本层列 (同行); YSpec::cap > 0 = 外给满仓只数 (n_full_of 预扫), 不自数
-│   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec) + ensure_block = 块 Block (Y 常驻, X 按服务留 / 补; Y 的派生随块一代: 叶值域缓存 / CPU 标签秩 ry); stat_scope = 结果作用域头
+│   │   │       │   │                                 #    · 门控 / 标签取因子池 Bar 库本层列, 盘口成本取同池 Lob 库本层列 (同行, 原值入缓存; 买入冲击取用时按 max_impact 封顶)
+│   │   │       │   │                                 #    · Store = 进程唯一的计算面: 线程池 + 已开的库 + 平面缓存 + 计算权 (单 worker 优先级队列: 交互 > 批, 批在文件 / 趟边界让位)
+│   │   │       │   │                                 #      平面逐张缓存, 键 = 层 | 评估域 | 日段 | 角色 (门控 / 标签组 / 金额段 / 标签秩 / 叶), 与服务无关 → 跨服务命中; 未钉的按 LRU 淘汰
+│   │   │       │   │                                 #      满仓只数按评估域记 (整期 = 门控在池格数, 多块 = n_full_of 预扫); 库判废 / reload → clear
+│   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec / ry) → Store::pin = 块 Block (钉住一组平面的视图, 只活在一块的迭代内; gen = Y 的代); stat_scope = 结果作用域头
 │   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集 (keys_union 并); Pick = 子集下标, labels_pick 取会话持有期子集
 │   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
 │   │   │       │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
@@ -235,24 +239,24 @@ stk/
 │   │   │       │   │                                 #    · 落地基类 LandRowsP (逐持有期逐行) / LandCellsP (逐行逐资产) / LinesP (净值线 → fold_book); EvalProbes<X...> + fill_eval → EvalStat (Run 行 / Inspect 结果同一份)
 │   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / eval (森林单入口, 原料后端 ready / view)
 │   │   │       │   │                                 #      CPU 恒逐根 Stat (Search 也是, 抽样行拷 rx); GPU 逐根 stat_eval / 批核 (kBatched: 只累加 + 抽样行) 走完森林一次 search_eval
-│   │   │       │   │                                 #      FactorFlow 持引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU) + 驻留块 + 多块满仓只数缓存 (按评估域); 请求末 end(Life)
-│   │   │       │   │                                 #    · 块驻留 Life: Job (块归作业) / Request (块在 worker, 请求末弃) / Worker (块在 worker, X 只增, 跨请求留); 块位 / X 留法 / 收尾全由它推
-│   │   │       │   │                                 #    · 管线 (四服务同一份): Job → prepare (open_job 评估域 + 开库 → y_spec (持有期 + 探针 Ps::segs 成本段) → 前后带 → budget_of → plan_job
-│   │   │       │   │                                 #      分块 + 多块满仓只数) → pass (一趟: 逐块 load_block → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node),
+│   │   │       │   │                                 #      FactorFlow = 服务 worker 的计算句柄: Store 引用 + 取消 / 进度 / 优先级 + 引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU); 请求末 end
+│   │   │       │   │                                 #    · 计算权租约 Lease (RAII): 计算全在租约内; 粒度 = Run 每文件 / Search 每趟 / 交互服务每请求; 租约末引擎 release (会话 / 工作区还回) + 块解钉
+│   │   │       │   │                                 #    · 管线 (全部服务同一份): Job → prepare (open_job 评估域 + 开库 → y_spec (持有期 + 探针 Ps::segs 成本段) → 前后带 → budget_of
+│   │   │       │   │                                 #      → plan_chunks 分块) → pass (一趟: 逐块 load_block (Store::pin) → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node),
 │   │   │       │   │                                 #      末块 finish → hk.done); Run / Inspect / Portfolio 走 eval_job (根集 RootSet 去重 → 一张森林种一次各块共用; 根 = 式 + 口径 + 方向 + 持有期,
 │   │   │       │   │                                 #      Y 持有期 = 各根 hd 之并; 钩子 whole (Inspect) → 整期一块, 否则前后带 bands_of 按预算分块; 条目终局下沉: 每条目恰一个 hk.fail / hk.post);
 │   │   │       │   │                                 #      Search 一次 prepare, 每趟一次 pass (逐块逐批现种); 池篮子走 eval_baskets (与 eval_job 平级, 不走森林)
-│   │   │       │   │                                 #    · 预算: 非 Life::Job 的 worker 块 F.c 算回可用 (命中 / 换掉 / 多块时让给自有块); 最小的块都装不下 → assert
+│   │   │       │   │                                 #    · 预算: 宿主 = Store::budget (平面缓存全可让, 规划与他服务的缓存无关); 最小的块都装不下 → assert
 │   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done / fail / post, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
 │   │   │       │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
 │   │   │       │   │                                 #    · 评估期 = 标签库 ∪ 叶所在库的落盘日交集 (四服务同一份 span_of): 只用 bar.* 叶的因子不碰 Lob 库, 评估期 = Bar 库全期
 │   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
-│   │   │       │   │                                 #    · Job = 驻留 + 规格 + 作用域 + 预算 + 计划 + 块 (Blocks: 共享 F.c / 作业自有); JobOut = Job + 森林 + 节点耗时 + 后端
-│   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: settle (中断 → false, Stale 弃块; 否则 true, Empty / Broken 的条目已由 fail 收尾)
+│   │   │       │   │                                 #    · Job = 规格 + 作用域 + 预算 + 计划 + 满仓只数; JobOut = Job + 森林 + 节点耗时 + 后端
+│   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: settle (中断 → false, Stale 弃平面缓存; 否则 true, Empty / Broken 的条目已由 fail 收尾)
 │   │   │       │   │                                 #    · 四服务的差别只在探针元组; 引擎按根的 hd 取会话持有期子集
-│   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
+│   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 平面经 Store 缓存, 每请求整条重算 (池等权线随 Y 的代复用); 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
-│   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池) 一张森林 (根 = 去重规范串, CurveP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
+│   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池, 所用库) 一张森林 (根 = 去重规范串, CurveP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
 │   │   │       │   │                                 #    · PoolTask 全部池日层篮子一个作业 (eval_baskets: open_job → load_b → baskets → 按池切 PoolCurve); 因子按条目缓存, 只算新增, 根评完即逐条发布
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
@@ -317,7 +321,7 @@ stk/
 │   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
 │   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 (带族 = 节点文件) / 算子表 / K 线叶 / 正式因子库统计) + 候选目录 results
 │   │   │   │                                               #      候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict) ─adopt (过门槛 Gate)→ 正式因子目录
-│   │   │   │                                               #      四道 Search / Run / Look / Book 同构 (Lane 元组, 下标 = Step), 首次用到才建, 常驻块 keep; Job = EvalSpec | LookSpec | BookSpec, 结果 Got 同序
+│   │   │   │                                               #      四道 Search / Run / Look / Book 同构 (Lane 元组, 下标 = Step), 首次用到才建 (平面经 Store 与 GUI 服务共用); Job = EvalSpec | LookSpec | BookSpec, 结果 Got 同序
 │   │   │   │                                               #      EvalSpec → Eval: 一次一个文件, Search (具体式也走, 定方向) → Run, 评完只重扫它; 无显著而有代表点 → 再 Look 它一次
 │   │   │   │                                               #      LookSpec → Look: LensService, 因子 (候选名 / 具体根式) + 特征式 (+ 本层 K 线叶) → [T][A] 平面 (r16 定向秩 / 特征原值 / K 线 / 门控 / 标签; 行统计 / 尾部 / 两端格)
 │   │   │   │                                               #      BookSpec → Book: ReplayService, 一只票一天里的一段逐笔 → 逐秒盘口与流量 / 大单事件 / 某秒全簿; 不经特征库, 不限评估期
@@ -432,7 +436,7 @@ stk/
 │   │   │                                                   #    · features/FeatureMeta.cpp: 字段表元数据唯一 TU (增删特征 GUI 不重编)
 │   │   ├── worker/{lob,bar}_pipeline.cpp                   # 💾 两档的源 TierFeed + 档入口表 <ns>_ops (Lob fast-math / Bar precise-math)
 │   │   ├── worker/{crosssectional_worker,io_worker}.cpp    # 💾 截面 cs_loop / 落盘 io_loop (档无关)
-│   │   ├── worker/{feature_progress,encoding_worker}.cpp   # 💾 特征计算终端仪表盘 / 逐笔编码 worker
+│   │   ├── worker/{feature_progress,encoding_worker}.cpp   # 💾 特征计算终端仪表盘 (各段忙碌 / 前沿 / 环 / 领养) / 逐笔编码 worker
 │   │   ├── worker/feature_profile.cpp                      # 💾 特征计算 perf 采样窗 (PROFILE 模式, 落 output/profile)
 │   │   ├── worker/feature_tuner.cpp                        # 💾 时序调参: 初始日环模拟 / 日环内存预算 / 运行中扩格 + 领养配额
 │   │   ├── gui/Gui.cpp / Tasks.cpp                         # 💾 GUI 主循环 / 任务注册

@@ -13,6 +13,7 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <tuple>
 
 namespace GUI::Factors {
@@ -27,8 +28,15 @@ std::filesystem::path portfolio_path(const std::string &dir, const std::string &
   return std::filesystem::path(dir) / (name + ".json");
 }
 
-// Y 共用组: 同 (层, 池) 的因子装同一份 Y, 一张森林 (PortfolioService::eval 按组)
-std::string group_of(const FactorTask &t) { return std::string(factor_level(t.scope.lv).name) + "|" + t.scope.pool; }
+// 一张森林的组 = 同评估域: (层, 池, 所用库). 评估期 = 所用库落盘日交集, 所用库不同的因子不同组 (只用 bar 叶的不被 Lob 库截短)
+std::tuple<LevelId, std::string, LibMask> group_of(const FactorTask &t) {
+  const FeatureTable &ft = *t.scope.ft;
+  std::vector<std::string> feats;
+  for (const factor::expr::Node &n : ft.reparse(t.f.expr).nodes)
+    if (n.op < 0)
+      feats.push_back(n.feat);
+  return {t.scope.lv, t.scope.pool, used_libs(ft, pool_id(t.scope.pool), ft.x.ids(feats))};
+}
 
 } // namespace
 
@@ -229,7 +237,7 @@ std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_
 
 } // namespace
 
-PortfolioService::PortfolioService() { Start(); }
+PortfolioService::PortfolioService() : FactorWorker(Prio::Interactive) { Start(); }
 PortfolioService::~PortfolioService() { Stop(); }
 
 void PortfolioService::put(const std::string &key, std::shared_ptr<FactorCurve> c) {
@@ -243,7 +251,7 @@ void PortfolioService::put(const std::string &key, std::shared_ptr<FactorCurve> 
 }
 
 bool PortfolioService::run(PortfolioRequest &req) {
-  FactorFlow &F = flow(); // 作用域块: 同作用域的因子共用 Y, X 读过的全留
+  FactorFlow &F = flow();
   {
     std::lock_guard<std::mutex> lock(mutex);
     message.clear();
@@ -252,29 +260,30 @@ bool PortfolioService::run(PortfolioRequest &req) {
       result.pools.clear();
     ++result_gen;
   }
-  if (req.reload)
-    F.reset();
   publish();
 
-  // 只有 worker 写 result: 这里读不加锁. 因子按 (层, 池, 串, 口径, 方向) 排: 一张森林 = 同 (层, 池) 的一段
-  std::vector<const FactorTask *> todo_f = todo_of(result.factors, req.factors);
-  std::sort(todo_f.begin(), todo_f.end(), [](const FactorTask *a, const FactorTask *b) {
-    return std::tie(a->scope.lv, a->scope.pool, a->f.expr, a->f.frame, a->f.dir) < std::tie(b->scope.lv, b->scope.pool, b->f.expr, b->f.frame, b->f.dir);
-  });
+  // 只有 worker 写 result: 这里读不加锁. 一张森林 = 一组 (group_of), 组内按 (串, 口径, 方向) 排
+  const std::vector<const FactorTask *> todo_f = todo_of(result.factors, req.factors);
+  std::map<std::tuple<LevelId, std::string, LibMask>, std::vector<const FactorTask *>> groups;
+  for (const FactorTask *t : todo_f)
+    groups[group_of(*t)].push_back(t);
+  for (auto &[g, ts] : groups)
+    std::sort(ts.begin(), ts.end(), [](const FactorTask *a, const FactorTask *b) { return std::tie(a->f.expr, a->f.frame, a->f.dir) < std::tie(b->f.expr, b->f.frame, b->f.dir); });
   const bool todo_p = req.pools && result.pools.empty();
   jobs_done.store(0, std::memory_order_relaxed);
   jobs_total.store(static_cast<int>(todo_f.size()) + todo_p, std::memory_order_relaxed);
   const bool ok = [&] {
-    for (size_t i0 = 0, i1 = 0; i0 < todo_f.size(); i0 = i1) {
-      i1 = i0 + 1;
-      while (i1 < todo_f.size() && group_of(*todo_f[i1]) == group_of(*todo_f[i0]))
-        ++i1;
-      if (!eval(std::vector<const FactorTask *>(todo_f.begin() + static_cast<ptrdiff_t>(i0), todo_f.begin() + static_cast<ptrdiff_t>(i1)), F))
+    Lease l(F);
+    if (!l)
+      return false;
+    if (req.reload)
+      F.S.clear();
+    for (const auto &[g, ts] : groups)
+      if (!eval(ts, F))
         return false;
-    }
     return !todo_p || eval(*req.pools, F);
   }();
-  F.end(Life::Worker);
+  F.end();
   return ok;
 }
 
@@ -287,9 +296,8 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir, keys_of<Holds>(std::vector<int>{t->hold}));
   std::vector<PortfolioProbes> ps(rs.size());
 
-  // ---- 管线 eval_job: Y = 各根 hold 之并 + 首个金额段 (CurveP); 块跨请求留 (Life::Worker) ----
+  // ---- 管线 eval_job: Y = 各根 hold 之并 + 首个金额段 (CurveP) ----
   JobOut o;
-  o.job.life = Life::Worker;
   o.job.who = "Portfolio";
   struct Hooks : HookBase {
     PortfolioService &W;

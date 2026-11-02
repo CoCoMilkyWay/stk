@@ -46,7 +46,7 @@ void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, 
 void CostP::root(const Ctx &c, const RootView &v) {
   const YPlanes &y = c.c.y;
   const int C = y.ad.n, H = c.L.hd.n;
-  assert(v.ec && C >= 1 && y.costs.size() == static_cast<size_t>(C));
+  assert(v.ec && C >= 1);
   if (costs.empty()) {
     costs.assign(static_cast<size_t>(C), CostTier{});
     for (int k = 0; k < C; ++k)

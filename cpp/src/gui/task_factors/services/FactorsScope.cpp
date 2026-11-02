@@ -12,12 +12,12 @@
 
 namespace GUI::Factors {
 
-void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort) {
+void open_libs(const FactorScope &sc, LibReaders &lr) {
   PerLib<FeatureLib> ready;
   for (const LibId l : lib_ids())
     if (sc.libs[l].ready())
       ready[l] = sc.libs[l];
-  lr.open(ready, abort);
+  lr.open(ready, nullptr);
 }
 
 std::string Domain::key() const {
@@ -28,21 +28,27 @@ std::string Domain::key() const {
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
 
+LibMask used_libs(const FeatureTable &ft, PoolId pool, const std::vector<LeafId> &leaves) {
+  const LibId lab = label_lib(pool);
+  assert(ft.y.ts.ref(pool).lib == lab && ft.y.cs.ref(pool).lib == lab && "门控 / 标签 / K 线在标签库");
+  LibMask m = lib_bit(lab);
+  for (const LeafId id : leaves) {
+    const FeatCol &c = ft.x.leaves[id];
+    assert(c.allowed);
+    m |= lib_bit(c.ref(pool).lib);
+  }
+  return m;
+}
+
 bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why) {
   assert(sc.lv == ft.lv && "作用域层与字段表层不符");
   assert(keep >= 1);
   const PoolId pool = pool_id(sc.pool);
   const LibId lab = label_lib(pool);
-  assert(ft.y.ts.ref(pool).lib == lab && ft.y.cs.ref(pool).lib == lab && "门控 / 标签 / K 线在标签库");
   const PerLib<FeatureLib> &libs = sc.libs;
   dm = Domain{};
   dm.pool = pool;
-  dm.used = lib_bit(lab);
-  for (const LeafId id : leaves) {
-    const FeatCol &c = ft.x.leaves[id];
-    assert(c.allowed);
-    dm.used |= lib_bit(c.ref(pool).lib);
-  }
+  dm.used = used_libs(ft, pool, leaves);
   for (const LibId l : lib_ids())
     if (dm.used & lib_bit(l)) {
       assert(!libs[l].dir.empty() && "请求没带该库清单 (factor_libs)");
@@ -119,12 +125,12 @@ int Plan::max_days() const {
   return m;
 }
 
-Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double held) {
+Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double host) {
   const int days = static_cast<int>(dm.days.size()), A = static_cast<int>(dm.rs.axis.size());
-  assert(days > 0 && A > 0 && bd.back >= 0 && held >= 0.0);
+  assert(days > 0 && A > 0 && bd.back >= 0);
   const double per_day = static_cast<double>(seg) * A;
   Plan P;
-  P.host = host_budget() + held - b.fixed;
+  P.host = host - b.fixed;
   if (b.dev > 0.0)
     P.vram = vram_budget();
   if (bd.front < 0) {
@@ -147,7 +153,6 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double he
     P.chunks.push_back(k);
     P.cache += k.days() * per_day * b.load;
   }
-  P.cache_all = P.cache + P.max_days() * per_day * b.work <= P.host;
   return P;
 }
 

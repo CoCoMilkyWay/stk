@@ -549,7 +549,6 @@ struct Lane {
   std::unique_ptr<Svc> svc;
   uint64_t e0 = 0;
 
-  void drop() { svc.reset(); } // Stop() join worker, 常驻块随之释放
   template <class Req>
   void send(Req req) {
     if (!svc)
@@ -726,7 +725,7 @@ struct Lab::Impl {
   Context ctx;
   std::vector<Result> results;
   Fails fails; // 同作用域跨会话留着
-  // 四道 (下标 = Step), 首次用到才建; Search / Run 随评估后端重建
+  // 四道 (下标 = Step), 首次用到才建
   static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1 && static_cast<size_t>(Step::Look) == 2 &&
                 static_cast<size_t>(Step::Book) == 3);
   bool gpu = false;
@@ -749,10 +748,6 @@ struct Lab::Impl {
   std::optional<F::FactorScope> fsc() const { return fscope_of(*data, ft(), sc.pool); }
   template <Step S>
   auto &lane() { return std::get<static_cast<size_t>(S)>(lanes); }
-  template <class Fn>
-  void each_lane(Fn &&fn) {
-    std::apply([&](auto &...l) { (fn(l), ...); }, lanes);
-  }
   // 在跑那步的道
   template <class Fn>
   decltype(auto) on_lane(Fn &&fn) const {
@@ -789,8 +784,7 @@ struct Lab::Impl {
   // ---- 三件事的起点 ----
   // 模板合法 → Search (定方向 + 搜参, 落了盘随后 Run); BROKEN → 直接评完
   void start(EvalSpec s) {
-    if (s.gpu != gpu)
-      lane<Step::Search>().drop(), lane<Step::Run>().drop(), gpu = s.gpu;
+    gpu = s.gpu;
     file = std::move(s.file);
     std::vector<F::FactorRow> rows;
     F::ScanFactorFile(fs::path(dir) / file, *ft(), rows);
@@ -810,7 +804,6 @@ struct Lab::Impl {
     [[maybe_unused]] const bool ok = F::MakeSearchRequest(*data, ft(), sc.pool, row, sc.hold, /*fresh=*/true, gpu, req);
     assert(ok && "作用域须 ready");
     req.scope.factor_dir = dir;
-    req.spec.keep = true;
     return req;
   }
   F::RunRequest run_req() const {
@@ -819,7 +812,6 @@ struct Lab::Impl {
     assert(ok && "作用域须 ready");
     req.scope.factor_dir = dir;
     req.spec.only_file = file;
-    req.spec.keep = true;
     return req;
   }
   // 记下成文要的 labels / feat_err / bars
@@ -1028,9 +1020,7 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   Impl &I = *p_;
   assert(!I.running && "评估队列忙");
   assert(sc.srcs && !(sc.srcs & ~kAllSrcs));
-  const bool same = sc.pool == I.sc.pool && sc.level == I.sc.level && sc.hold == I.sc.hold; // 来源只定叶与可见性, 不碰数据: 换来源留着常驻块
-  if (!same)
-    I.each_lane([](auto &l) { l.drop(); });
+  const bool same = sc.pool == I.sc.pool && sc.level == I.sc.level && sc.hold == I.sc.hold; // 来源只定叶与可见性, 不碰数据
   if (!same || test != I.test)
     I.fails.clear();
   I.data = &data;

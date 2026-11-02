@@ -152,7 +152,7 @@ struct LensHooks : HookBase {
     const size_t n = land.cols.size();
     for (size_t j = 0; j < n; ++j)
       land.col_of[static_cast<size_t>(land.cols[j])] = static_cast<int>(j);
-    const LegPlane &lb = c.y.labels[0];
+    const LegPlane &lb = *c.y.labels[0];
     const uint16_t *lv = lb.v[st::kLong].data();
     res.gate.assign(T * n, 0);
     res.label.assign(T * n, kNaN);
@@ -178,7 +178,7 @@ struct LensHooks : HookBase {
 
 } // namespace
 
-LensService::LensService() { Start(); }
+LensService::LensService() : FactorWorker(Prio::Interactive) { Start(); }
 LensService::~LensService() { Stop(); }
 
 bool LensService::run(LensRequest &req) {
@@ -188,8 +188,12 @@ bool LensService::run(LensRequest &req) {
   }
   publish();
   LensResult res;
-  const bool ok = eval(req, flow(), res);
-  flow().end(Life::Worker);
+  const bool ok = [&] {
+    FactorFlow &F = flow();
+    Lease l(F);
+    return l && eval(req, F, res);
+  }();
+  flow().end();
   if (ok) {
     std::lock_guard<std::mutex> lock(mutex);
     result = std::move(res);
@@ -218,7 +222,6 @@ bool LensService::eval(const LensRequest &req, FactorFlow &F, LensResult &res) {
     p.land = &land;
   }
   JobOut o;
-  o.job.life = Life::Worker;
   o.job.who = "Lens";
   std::vector<std::string> why(rs.of.size());
   const Rc rc = F.with_engine<LensProbes>(false, [&](auto &eng) {

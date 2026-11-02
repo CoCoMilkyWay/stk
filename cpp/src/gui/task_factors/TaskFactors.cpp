@@ -479,11 +479,11 @@ TaskHandle CreateFactorsTask() {
     state->run_service.reset();
     state->factors_scanned_dir.clear();
     state->kline_service.reset();   // 析构 Stop() join worker
-    state->inspect_service.reset(); // 析构 Stop() join worker, 缓存随之释放
+    state->inspect_service.reset(); // 析构 Stop() join worker
     state->inspect_ui = Factors::InspectUIState{};
     state->tables = {};
     state->counted_key.clear();
-    state->portfolio_service.reset(); // 析构 Stop() join worker, 缓存随之释放
+    state->portfolio_service.reset(); // 析构 Stop() join worker
     state->portfolio_ui = Factors::PortfolioUIState{};
     state->portfolio_gen = ~0ull;
     state->portfolio_dirty = false;

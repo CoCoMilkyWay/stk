@@ -308,9 +308,8 @@ public:
       printf("  %-*s [T=%4zu][F=%4zu][A=%5zu] = %7.2f MB\n", name_w, L.level_name, L.rows, L.field_count, num_assets, level_bytes(lvl, num_assets) / (1024.0 * 1024.0));
     }
 
-    printf("\nPer-day tensor: %.2f MB | Ring: %zu slots (上限 %zu) | Total: %.2f GB\n",
-           bytes_per_day / (1024.0 * 1024.0), slots, cap,
-           (bytes_per_day * slots) / (1024.0 * 1024.0 * 1024.0));
+    printf("\nPer-day tensor: %.2f MB | 初始 %zu slots = %.2f GB (上限 %zu slots, 运行中格数见仪表盘)\n",
+           bytes_per_day / (1024.0 * 1024.0), slots, (bytes_per_day * slots) / (1024.0 * 1024.0 * 1024.0), cap);
 
     std::cout << "Allocating physical pages...\n";
     auto start = std::chrono::steady_clock::now();

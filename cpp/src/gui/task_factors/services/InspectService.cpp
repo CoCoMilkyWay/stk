@@ -133,7 +133,7 @@ bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTab
   return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope);
 }
 
-InspectService::InspectService() { Start(); }
+InspectService::InspectService() : FactorWorker(Prio::Interactive) { Start(); }
 InspectService::~InspectService() { Stop(); }
 
 bool InspectService::run(InspectRequest &req) {
@@ -142,8 +142,12 @@ bool InspectService::run(InspectRequest &req) {
     message.clear();
   }
   publish();
-  const bool ok = eval(req, flow());
-  flow().end(Life::Worker);
+  const bool ok = [&] {
+    FactorFlow &F = flow();
+    Lease l(F);
+    return l && eval(req, F);
+  }();
+  flow().end();
   return ok;
 }
 
@@ -152,14 +156,13 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   const FactorScope &sc = req.scope;
   const FactorRef &f = req.spec.f;
   if (req.reload)
-    F.reset();
+    F.S.clear();
 
-  // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一个根, 探针 InspectProbes; 块钩子 = 池等权线 (随 Y 一代) ----
-  //   Y = 全部持有期 + 全部金额段; X = 评估域内读过的全留 (Life::Worker), 缺的补读
+  // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一个根, 探针 InspectProbes; 块钩子 = 池等权线 (随 Y 的代) ----
+  //   Y = 全部持有期 + 全部金额段; X = 本因子的叶 (平面经 Store 缓存, 缺的补读)
   RootSet rs;
   rs.add(*sc.ft, f.expr, f.frame, f.dir, keys_of<Holds>(sc.ft->y.labels));
   JobOut o;
-  o.job.life = Life::Worker;
   o.job.who = "Inspect";
   InspectProbes ps;
   ps.at<RxP>().dst = &pl_.rx;
@@ -172,7 +175,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     void block(const Block &c, size_t, double) {
       if (W.pool_gen_ == c.gen)
         return;
-      W.pool_ = pool_line(F.ex, c.y), W.pool_gen_ = c.gen;
+      W.pool_ = pool_line(F.S.ex, c.y), W.pool_gen_ = c.gen;
       const int seg = c.y.sh.seg, days = W.pool_.P / seg; // 逐行收益 (每批 1/h̄, 平仓行实现) 全期之和 = 算术总收益, 按日折年 (与期限结构 × span_per_year 同口径)
       assert(days >= 1 && W.pool_.P == days * seg && W.pool_.n == c.y.hd.n);
       for (int hi = 0; hi < W.pool_.n; ++hi) {

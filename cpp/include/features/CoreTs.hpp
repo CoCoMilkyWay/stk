@@ -19,7 +19,7 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         成员位 = 本库 pool::Panel (all = 当日活跃, 子池 = all Bar 库 D−1 收盘行池列, Lob = 同池 Bar 库当日 cs_valid; 见 shared/Pool.hpp), 同池两档同一份
+//         成员位 = 本库 pool::Panel (all = 当日活跃, 子池 = all Bar 库 D−1 收盘行池列, Lob = 同池 Bar 库当日 cs_valid; 见 shared/Pool.hpp), 同池两档同口径
 //         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 各层末 bar 归零
 //         无数据日 (缺源) = begin_day → end_day 之间不喂源单位 = 零事件日, 同一路径
 //   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_1min 以上各层当前行

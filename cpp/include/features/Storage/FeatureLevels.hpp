@@ -123,7 +123,7 @@ inline constexpr bool tier_side(TierId main, TierId side) {
 #undef TIER_SIDE_RT
   return false;
 }
-// 定轴档: 同池各档同一 A 轴, 由不旁读别档的那档定 (旁读档 = 它旁读的那档; 不旁读 = 自身)
+// 定轴档: 池的 A 轴由不旁读别档的那档定, 同池别档的轴是它的子集 (旁读档 = 它旁读的那档; 不旁读 = 自身)
 inline constexpr TierId tier_base(TierId t) {
   for (const TierId s : TIER_IDS)
     if (tier_side(t, s))
@@ -137,7 +137,7 @@ static_assert([] {
   return true;
 }(),
               "旁读档不再旁读: 定轴档自己不旁读");
-// 档的依赖序: 定轴档在前 (随轴档沿用它的轴与成员); 规划 / 库表两组列 / 核布局两栏同序
+// 档的依赖序: 定轴档在前 (随轴档的轴与成员取自它); 规划 / 库表两组列 / 核布局两栏同序
 inline constexpr std::array<TierId, TIER_COUNT> TIER_ORDER = [] {
   std::array<TierId, TIER_COUNT> o{};
   size_t n = 0;

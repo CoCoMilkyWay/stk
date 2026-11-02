@@ -40,7 +40,7 @@ struct LibPlan {
 };
 PerLib<LibPlan> plan_libs(const SharedData &data); // 按规划序 (lib_order, 上游先) 逐库规划
 
-// 可续算: 库清单末日的续算点在, 且对得上清单轴 + 当前状态指纹 (见 FeatureSnap.hpp), 清单轴 = 定轴库清单轴; 否则只能全量.
+// 可续算: 库清单末日的续算点在, 且对得上清单轴 + 当前状态指纹 (见 FeatureSnap.hpp); 随轴库另须清单轴 ⊆ 同池定轴库清单轴; 否则只能全量.
 // 续算 ≡ 同清单全量 (逐位一致): 轴随清单冻结 (轴外见 FeatureLib::outside), 日频面板按库首日起建, 尾窗日标签此轮结清后重落盘
 bool resumable(const Config &cfg, const FeatureLib &lib);
 

@@ -57,7 +57,7 @@ PerLib<LibPlan> plan_libs(const SharedData &data) {
 bool resumable(const Config &cfg, const FeatureLib &lib) {
   if (!lib.ready())
     return false;
-  if (axis_lib(lib.id) != lib.id && load_lib(cfg, axis_lib(lib.id)).axis.hash != lib.axis.hash)
+  if (axis_lib(lib.id) != lib.id && !axis_within(lib.axis, load_lib(cfg, axis_lib(lib.id)).axis))
     return false;
   return FeatureSnap::head(lib.dir) == tier_ops(lib.tier()).snap_header(lib, lib.dates.back());
 }

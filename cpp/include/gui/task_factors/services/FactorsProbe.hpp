@@ -261,7 +261,7 @@ struct CoverP : ProbeBase {
   float valid_pct = 0.f, rank_pct = 0.f;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    cover_rows(c.ex, v.rx, v.x.m, c.c.y.gate.data(), s.t_lo, s.t_hi(), s.A, cv);
+    cover_rows(c.ex, v.rx, v.x.m, c.c.y.gate, s.t_lo, s.t_hi(), s.A, cv);
   }
   void finish(const Ctx &, const RootView &) {
     assert(cv.all > 0 && "截面池全空: 区间内无在池格");

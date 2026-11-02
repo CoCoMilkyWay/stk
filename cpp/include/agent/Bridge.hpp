@@ -16,7 +16,7 @@
 //              模板  相对 base 的改动归类 (delta) / 用到的叶 (leaves_of) / 功能块是否覆盖 (parts_miss): 只查字段表与模板, 不碰数据
 //              可见: 只有统计与 Search 结局都在作用域此刻评估期上、叶都在开放来源里的因子才给 agent 看 (Result::visible), 不同窗口的数不可比;
 //                    观察的因子根式 / 特征式也只收开放来源的叶
-//              四道 (Search / Run / Look / Book) 同构, 首次用到才建; 作用域与评估后端不变的连续会话共用其常驻块 (keep / Life::Worker), 变了即弃
+//              四道 (Search / Run / Look / Book) 同构, 首次用到才建; 读过的平面在进程唯一的 Store 里缓存 (与 GUI 各服务共用, 按评估域命中)
 //   worker 协议 (与 agent/Chat.hpp 对仗): send 一件事 (↔ ask) → poll 逐个取走 Tick: 进某道 (↔ Think / Write), 末个 = End 带结果 (↔ End 带 Reply)
 //              → live 看在跑那步 → busy / cancel
 //   全部 GUI 线程调用; 正式因子目录 / 字段表 / 资产轴由项目定, agent 只给候选目录

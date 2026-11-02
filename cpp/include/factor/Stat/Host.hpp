@@ -198,7 +198,7 @@ inline void cost_row(const uint8_t *ec, const CostHold *ch, int H, const Cost *c
           buy[e] += d;
           for (int k = 0; k < C; ++k)
             if (!c[k].flat())
-              imp[k][e] += d * static_cast<double>(h2f(c[k].imp[a]));
+              imp[k][e] += d * static_cast<double>(std::min(h2f(c[k].imp[a]), c[k].top));
         } else {
           sell[e] -= d;
         }

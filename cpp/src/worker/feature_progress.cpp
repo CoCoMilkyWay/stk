@@ -120,14 +120,16 @@ void FeatureProgress::render() {
   for (size_t k = 0; k < num_io; ++k)
     snap(io_core + k, stats_.io[k]);
 
-  std::vector<size_t> frontier(num_ts), holding(num_ts, 0);
-  for (size_t w = 0; w < num_ts; ++w)
+  std::vector<size_t> frontier(num_ts);
+  int64_t owing = 0; // 本窗待让出的权重 (正配额之和)
+  for (size_t w = 0; w < num_ts; ++w) {
     frontier[w] = sched_.frontier[w].load(std::memory_order_acquire);
-  for (const std::atomic<int32_t> &o : sched_.owner) {
-    const int32_t w = o.load(std::memory_order_relaxed);
-    if (w >= 0 && static_cast<size_t>(w) < num_ts)
-      ++holding[static_cast<size_t>(w)];
+    owing += std::max<int64_t>(0, sched_.quota[w].load(std::memory_order_relaxed));
   }
+  int64_t total_weight = 0;
+  for (const int64_t w : sched_.weight)
+    total_weight += w;
+  const double owing_pct = total_weight > 0 ? 100.0 * static_cast<double>(owing) / static_cast<double>(total_weight) : 0.0;
   const size_t lead = *std::max_element(frontier.begin(), frontier.end());
   const size_t lag = *std::min_element(frontier.begin(), frontier.end());
 
@@ -273,10 +275,10 @@ void FeatureProgress::render() {
   {
     out << "时序 [";
     cells(ts_core, num_ts);
-    const auto [hmin, hmax] = std::minmax_element(holding.begin(), holding.end());
-    snprintf(buf, sizeof(buf), "%s 前沿 %zu..%zu/%zu (%s) %.2fG%s 持仓 %zu..%zu 环 %zu", load_text(ts_load, num_ts).c_str(),
+    const size_t in_use = lead > io_days ? lead - io_days : 0; // 领跑前沿 − 落盘前沿 (io_days 先于 frontier 采样)
+    snprintf(buf, sizeof(buf), "%s 前沿 %zu..%zu/%zu (%s) %.2fG%s 环 %zu/%zu/%zu 待领养 %.1f%%", load_text(ts_load, num_ts).c_str(),
              lag, lead, total, misc::dense(dates_[std::min(lead, total - 1)]).c_str(),
-             static_cast<double>(sum_orders) / 1e9, unit_, *hmin, *hmax, store_.query_slots());
+             static_cast<double>(sum_orders) / 1e9, unit_, in_use, store_.query_slots(), store_.query_cap(), owing_pct);
     out << buf << "\033[K\n";
   }
 

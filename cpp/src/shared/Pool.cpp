@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <optional>
 #include <string_view>
 
 namespace pool {
@@ -74,25 +75,17 @@ Panel Panel::build(LibId lib, const Config &cfg, const fund::Panel &fund, std::s
   Panel p;
   p.dates_.assign(dates.begin(), dates.end());
 
-  // 随轴库: 上游 (同池定轴库) 清单轴 / 轴外 + 同日 cs_valid
-  if (axis_lib(lib) != lib) {
-    const FeatureLib up = load_lib(cfg, lib_parent(lib)->lib);
-    assert((!old.ready() || old.axis.hash == up.axis.hash) && "续算: 旧清单轴须 = 上游清单轴");
-    p.axis_ = up.axis;
-    p.outside_ = up.outside;
-    p.member_ = parent_bits(up, col_of(up.tier(), L_1day, "cs_valid"), dates);
-    return p;
-  }
-
-  // 定轴库: 全轴逐日成员 [date_i][global] (all = 当日活跃; 子池 = 上游 all 库池列, 上游轴外 = 不在池)
-  const PoolId pool = lib_pool(lib);
+  // 全轴逐日成员 [date_i][global]: 根 (all 定轴库) = 当日活跃; 其余 = 上游列 (子池定轴库: all 库池列; 随轴库: 同池定轴库 cs_valid), 上游轴外 = 不在池
+  const std::optional<LibParent> parent = lib_parent(lib);
   const size_t n = asset_axis().size();
   std::vector<uint8_t> full;
-  if (pool == kAllPool)
+  FeatureLib up;
+  if (!parent)
     full = live_members(fund, dates, n);
   else {
-    const FeatureLib up = load_lib(cfg, lib_parent(lib)->lib);
-    const std::vector<uint8_t> bits = parent_bits(up, pool_def(pool).pool_col, dates);
+    up = load_lib(cfg, parent->lib);
+    const size_t col = axis_lib(lib) != lib ? col_of(up.tier(), L_1day, "cs_valid") : pool_def(lib_pool(lib)).pool_col;
+    const std::vector<uint8_t> bits = parent_bits(up, col, dates);
     const size_t As = up.axis.size();
     full.assign(dates.size() * n, 0);
     for (size_t i = 0; i < dates.size(); ++i)
@@ -100,10 +93,10 @@ Panel Panel::build(LibId lib, const Config &cfg, const fund::Panel &fund, std::s
         full[i * n + up.axis.global(a)] = bits[i * As + a];
   }
 
-  // 自然轴: all = 全部标的; 子池 = dates 内进过池的
+  // 自然轴: 根 = 全部标的; 其余 = dates 内进过池的
   std::vector<uint32_t> natural;
   for (size_t g = 0; g < n; ++g) {
-    bool in = pool == kAllPool;
+    bool in = !parent;
     for (size_t i = 0; i < dates.size() && !in; ++i)
       in = full[i * n + g] != 0;
     if (in)
@@ -112,6 +105,7 @@ Panel Panel::build(LibId lib, const Config &cfg, const fund::Panel &fund, std::s
   assert(!natural.empty() && "池在区间内为空");
 
   p.axis_ = old.ready() ? old.axis : pool_axis(natural);
+  assert((axis_lib(lib) == lib || axis_within(p.axis_, up.axis)) && "随轴库轴须 ⊆ 同池定轴库清单轴 (续算: 定轴库换过轴就全量重算本库)");
   std::vector<uint32_t> out;
   for (const uint32_t g : natural)
     if (p.axis_.sub_of(g) == p.axis_.size())
