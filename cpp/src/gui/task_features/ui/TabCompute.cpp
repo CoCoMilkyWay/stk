@@ -495,10 +495,11 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
   render_status(*service, state, is_running, is_cancelling);
   ImGui::Spacing();
 
-  if (ImGui::CollapsingHeader("Libraries", ImGuiTreeNodeFlags_DefaultOpen))
-    render_libraries(state, data, is_running);
+  // 先配核布局 (按机器定) 再算库
   if (ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
     render_stages(state);
+  if (ImGui::CollapsingHeader("Libraries", ImGuiTreeNodeFlags_DefaultOpen))
+    render_libraries(state, data, is_running);
 
   // ========================================================================
   // Architecture (说明, 默认折叠)
