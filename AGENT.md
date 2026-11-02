@@ -53,14 +53,22 @@ stateDiagram-v2
 
     state "开会话" as GOpen {
         state "未开会话" as None
-        None : 人 - Mine 页选 池 · 层 · 持有期
-        None : 人 - Config 页选 后端 · 直连 / 代理 · 模型 · CPU / GPU
-        None : 人 - Config 页设入库门槛
-        None : 人 - Config 页开 / 关提问 (工具表里有没有 ask_human)
-        None : key 已填 · 模型嗅探成功 · 资产轴与标签就绪才可 New / Test
+        None : 人 - Mine 页选
+        None : 池 · 层 · 持有期
+        None : 人 - Config 页
+        None : 选后端 · 直连 / 代理
+        None : 选模型 · CPU / GPU
+        None : 设入库门槛
+        None : 开 / 关提问
+        None : (工具表里有没有 ask_human)
+        None : key 已填 · 模型嗅探成功
+        None : 资产轴与标签就绪
+        None : 才可 New / Test
         state "打包规则" as Pack
-        Pack : 定系统提示 (含工具表), 整段对话不变
-        Pack : 发出首条消息 (Test = 自检的首条)
+        Pack : 定系统提示 (含工具表)
+        Pack : 整段对话不变
+        Pack : 发出首条消息
+        Pack : (Test = 自检的首条)
 
         [*] --> None
         None --> Pack : 按 New / Test
@@ -68,38 +76,61 @@ stateDiagram-v2
     }
 
     state "agent 思考" as Think
-    Think : 读上条消息 (首条 / 结果 / 重发要求)
+    Think : 读上条消息
+    Think : (首条 / 结果 / 重发要求)
     Think : 发一串工具调用
     state Format <<choice>>
     state "要求重发" as Retry
     Retry : 发出重发要求 (不限次)
-    Retry : 会话约束 = 上条有落了文件的回测则本条不能回测 · 待判的假设须各有 judge
+    Retry : 会话约束 -
+    Retry : 上条有落了文件的回测
+    Retry : 则本条不能回测
+    Retry : 待判的假设须各有 judge
 
     state "逐个执行" as GAct {
+        direction LR
         state "取下一个调用" as Next
         state Kind <<choice>>
         state "当场做" as Now
         Now : search_leaves 查特征叶
-        Now : list_tried / list_library / list_notes 列表
-        Now : hypothesize 记上假设板 / judge 查证据后改判定
-        Now : submit_factor 达门槛的拷进正式因子库
-        Now : request_feature / request_tool / note_insight / report_issue 记进全局记录
-        Now : finish 首次记下要复盘, 复盘后 (自检: 首次) 记下宣布挖完
+        Now : list_tried · list_library
+        Now : list_notes 列表
+        Now : hypothesize 记上假设板
+        Now : judge 查证据后改判定
+        Now : submit_factor 达门槛
+        Now : 的拷进正式因子库
+        Now : request_feature
+        Now : request_tool · note_insight
+        Now : report_issue 记进全局记录
+        Now : finish 首次记下要复盘
+        Now : 复盘后记下宣布挖完
+        Now : (自检会话首次即宣布)
         state "观察" as Look
         Look : 查因子 / 特征 / 代码 / 日期
-        Look : 整期算一块 (CPU), 成表 + 火花线
+        Look : 整期算一块 (CPU)
+        Look : 成表 + 火花线
         Look : view_book 逐笔重放一段盘口
         state "查研报库" as Docs
-        Docs : 标注 / 全文检索, 分面 + 条目
+        Docs : 标注 / 全文检索
+        Docs : 分面 + 条目
         Docs : 读标注卡 / 目录 / 原文一段
         state "回测" as Eval
-        Eval : 查假设 (判为支持且有配额) · base 与改动归类 · 功能块
-        Eval : 写候选文件 (以上或名字 / 模板不合格则记原因)
-        Eval : Search 定方向、搜参数, 结局写回文件
-        Eval : Run 每组参数回测, 统计写回文件
-        Eval : 无显著而有代表点 → 观察代表点的分层
+        Eval : 查假设 (判为支持且有配额)
+        Eval : 查 base 与改动归类
+        Eval : 查功能块
+        Eval : 写候选文件 (以上或名字
+        Eval : / 模板不合格则记原因)
+        Eval : Search 定方向、搜参数
+        Eval : 结局写回文件
+        Eval : Run 每组参数回测
+        Eval : 统计写回文件
+        Eval : 无显著而有代表点
+        Eval : → 观察代表点的分层
         state "人选答案" as Choose
-        Choose : 人 - 逐题改选 (已按推荐预选), 或选 "其他" 自己写意见
+        Choose : 人 - 逐题改选
+        Choose : (已按推荐预选)
+        Choose : 人 - 或选 "其他"
+        Choose : 自己写意见
         Choose : 人 - 可查特征 / 算子表
         Choose : 人 - 可加附言
 
@@ -119,15 +150,24 @@ stateDiagram-v2
     }
     state Fin <<choice>>
     state "交回结果" as Round
-    Round : 发出各调用的结果 (按序, 带调用编号) + 假设板
+    Round : 发出各调用的结果
+    Round : (按序, 带调用编号)
+    Round : + 假设板
     state "复盘" as Review
-    Review : 发出各调用的结果 + 假设板 + 复盘清单
-    Review : 清单 = 本会话各 judge 的 better_feature / next + 本会话已提的全局记录
+    Review : 发出各调用的结果
+    Review : + 假设板 + 复盘清单
+    Review : 清单 = 本会话各 judge
+    Review : 的 better_feature / next
+    Review : + 本会话已提的全局记录
 
     state "结束报告" as Report
     Report : 记结束原因
-    Report : 汇总入库清单、假设板 (各假设的预测与最终判定) 与本会话的全局记录
-    Report : 写进会话日志, Mine 页显示
+    Report : 汇总入库清单
+    Report : 汇总假设板
+    Report : (各假设的预测与最终判定)
+    Report : 汇总本会话的全局记录
+    Report : 写进会话日志
+    Report : Mine 页显示
     Report : 人 - 可再按 New 开下一段
 
     [*] --> GOpen
@@ -139,7 +179,7 @@ stateDiagram-v2
     GAct --> Fin
     Fin --> Round : 没调 finish
     Fin --> Review : 首次调 finish
-    Fin --> Report : 复盘后再调 finish (自检: 首次)
+    Fin --> Report : 复盘后再调 finish (自检会话首次即是)
     Round --> Think
     Review --> Think
     Think --> Report : 按 Stop / 按 Cancel / 回复失败
