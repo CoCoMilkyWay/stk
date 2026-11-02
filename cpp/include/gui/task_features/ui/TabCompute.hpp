@@ -58,8 +58,9 @@ struct ComputeState {
 
   // 库表: 每池两档 (行序 = 依赖在前: all.bar, all.lob, 再各子池 bar / lob, 池按字段表序)
   std::vector<LibStatus> libs;
-  bool libs_dirty = true;  // 下一帧重扫
-  uint64_t generation = 0; // 对应的 Asset::generation (数据换进即重扫)
+  bool libs_dirty = true;    // 下一帧重扫
+  uint64_t generation = 0;   // 对应的 Asset::generation (数据换进即重扫)
+  char pool_filter[32] = {}; // 库表行过滤 (池名 / 中文名子串; 空 = 全部)
 
   // 自动续算: 数据换进即起一轮, 依次 Append 可续算且未判废的库; 无可续算 / 取消即止
   bool auto_append = false;
