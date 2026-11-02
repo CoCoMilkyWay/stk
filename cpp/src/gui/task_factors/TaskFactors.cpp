@@ -447,7 +447,7 @@ TaskHandle CreateFactorsTask() {
       if (iaction == 1) {
         Factors::InspectRequest req;
         if (Factors::MakeInspectRequest(data, ft, state->pool, state->inspect_ui.req_row, state->inspect_ui.req_reload,
-                                        state->factors_ui.backend == 1, req))
+                                        state->factors_ui.backend == 1, state->inspect_ui.req_top_n, req))
           is.Request(req);
       } else if (iaction == -1) {
         is.RequestCancel();

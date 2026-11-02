@@ -2,13 +2,20 @@
 #include "gui/task_factors/services/InspectService.hpp"
 
 #include "factor/Stat/Cpu.hpp"
+#include "features/Storage/FeatureRead.hpp"
+#include "features/TimeIndex.hpp"
 #include "gui/task_factors/services/FactorsEngine.hpp" // eval_job (只 CPU) / Probes / LinesP / pool_line
+#include "misc/date.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace GUI::Factors {
@@ -122,15 +129,140 @@ struct RxAllP : LandCellsP<uint16_t> {
 };
 using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP, TurnP>;
 
+// ---- 导出 (flow E) ----
+// 做多端前 n 的一段在持: 行 [t_in, t_out) 在前 n 内, t_out = −1 = 期末未平 (按末行估值). 名次 1 起; rank_out 0 = 出行无秩 (出池 / 无值)
+struct Leg {
+  uint32_t a = 0; // A 轴下标
+  int t_in = 0, t_out = -1;
+  int rank_in = 0, rank_out = 0;
+  float px_in = 0.f, px_out = 0.f, adj_in = 0.f, adj_out = 0.f;
+};
+// rx [T][A] (已定向: 高 = 做多端) 逐行取前 n, 相邻行之差即进出
+std::vector<Leg> top_legs(const std::vector<uint16_t> &rx, int T, int A, int n) {
+  using factor::stat::kRankNone;
+  assert(n > 0 && rx.size() == static_cast<size_t>(T) * static_cast<size_t>(A));
+  std::vector<Leg> legs;
+  std::vector<int> open(static_cast<size_t>(A), -1); // 资产 → 在持段 (legs 下标)
+  std::vector<uint8_t> in(static_cast<size_t>(A), 0);
+  std::vector<uint32_t> cand;
+  for (int t = 0; t < T; ++t) {
+    const uint16_t *r = rx.data() + static_cast<size_t>(t) * static_cast<size_t>(A);
+    const auto before = [r](uint32_t x, uint32_t y) { return r[x] > r[y] || (r[x] == r[y] && x < y); };
+    cand.clear();
+    for (uint32_t a = 0; a < static_cast<uint32_t>(A); ++a)
+      if (r[a] != kRankNone)
+        cand.push_back(a);
+    if (cand.empty())
+      continue;
+    const size_t k = std::min(cand.size(), static_cast<size_t>(n));
+    std::nth_element(cand.begin(), cand.begin() + static_cast<long>(k - 1), cand.end(), before);
+    std::sort(cand.begin(), cand.begin() + static_cast<long>(k), before);
+    for (size_t i = 0; i < k; ++i)
+      in[cand[i]] = 1;
+    for (uint32_t a = 0; a < static_cast<uint32_t>(A); ++a) {
+      int &o = open[a];
+      if (o < 0 || in[a])
+        continue;
+      Leg &l = legs[static_cast<size_t>(o)];
+      l.t_out = t;
+      l.rank_out = r[a] == kRankNone ? 0 : 1 + static_cast<int>(std::count_if(cand.begin(), cand.end(), [&](uint32_t b) { return before(b, a); }));
+      o = -1;
+    }
+    for (size_t i = 0; i < k; ++i) {
+      const uint32_t a = cand[i];
+      in[a] = 0;
+      if (open[a] >= 0)
+        continue;
+      open[a] = static_cast<int>(legs.size());
+      legs.push_back({a, t, -1, static_cast<int>(i + 1), 0});
+    }
+  }
+  return legs;
+}
+// 进出行所在日读标签库 (A 轴 = 其池轴): 因子层 close 本行 + 日频 adj_factor 当日适用值 (= 承接日 L_1day 行; 承接日未落盘 / 轴首 → 当日行). false = 库判废
+bool fill_px(const Domain &dm, const FeatureTable &ft, std::vector<Leg> &legs) {
+  const FeatureLib &lib = dm.rs.lib();
+  const size_t lvl = factor_level(ft.lv).lvl, A = dm.rs.axis.size();
+  const Col &px_col = ft.b.ohlc[3], &adj_col = ft.b.adj_factor;
+  assert(px_col.level == lvl && adj_col.level == L_1day && lib.axis.size() == A);
+  const std::vector<size_t> c_px{px_col.col}, c_adj{adj_col.col};
+  FeatureRead reader(lib);
+  FeatureRead::DayColumns px, adj;
+  px.preallocate(A, lvl, 1);
+  adj.preallocate(A, L_1day, 1);
+  const LibMask main = lib_bit(dm.rs.main);
+  const int seg = ft.seg, t_last = static_cast<int>(dm.dates.size()) * seg - 1;
+  struct Ev {
+    int t;
+    size_t i;
+    bool out;
+  };
+  std::vector<Ev> ev;
+  for (size_t i = 0; i < legs.size(); ++i)
+    ev.push_back({legs[i].t_in, i, false}), ev.push_back({legs[i].t_out < 0 ? t_last : legs[i].t_out, i, true});
+  std::sort(ev.begin(), ev.end(), [](const Ev &x, const Ev &y) { return x.t < y.t; });
+  for (size_t j = 0; j < ev.size();) {
+    const size_t d = static_cast<size_t>(ev[j].t / seg);
+    const Day &dy = dm.days[d];
+    assert(dy.date == dm.dates[d] && (dy.has & main));
+    reader.load_day_columns(dy.date, c_px, px);
+    reader.load_day_columns(dy.prev != 0 && (dy.has_prev & main) ? dy.prev : dy.date, c_adj, adj);
+    if (reader.stale())
+      return false;
+    for (; j < ev.size() && static_cast<size_t>(ev[j].t / seg) == d; ++j) {
+      Leg &l = legs[ev[j].i];
+      const float p = static_cast<float>(px.get(static_cast<size_t>(ev[j].t % seg), 0, l.a)), f = static_cast<float>(adj.get(0, 0, l.a));
+      (ev[j].out ? l.px_out : l.px_in) = p;
+      (ev[j].out ? l.adj_out : l.adj_in) = f;
+    }
+  }
+  return true;
+}
+// CSV: 一段一行 (进行序). 时刻 = 行末 (YYYY-MM-DD HH:MM); 期末未平 → out_rank 空, out = 末行; ret = 复权收益
+void write_legs(const InspectSpec &sp, const std::vector<Leg> &legs, const std::vector<misc::Ymd> &dates, const PoolAxis &axis, const factor::Geo &g) {
+  std::ofstream f(sp.csv);
+  assert(f && "导出文件写不开");
+  const auto when = [&](int t) {
+    const ClockTime c = L_1min_to_Clock(static_cast<size_t>(g.minute(t % g.S)));
+    const int m = c.hour * 60 + c.minute + 1;
+    char b[32];
+    std::snprintf(b, sizeof(b), "%s %02d:%02d", misc::dash(dates[static_cast<size_t>(t / g.S)]).c_str(), m / 60, m % 60);
+    return std::string(b);
+  };
+  const int t_last = static_cast<int>(dates.size()) * g.S - 1;
+  f << "code,name,in_time,in_rank,in_px,out_time,out_rank,out_px,ret,w\n";
+  for (const Leg &l : legs) {
+    const uint32_t gid = axis.global(l.a);
+    assert(gid < sp.codes.size() && "资产不在全局资产轴上");
+    const double ret = static_cast<double>(l.px_out) * l.adj_out / (static_cast<double>(l.px_in) * l.adj_in) - 1.0;
+    char b[160];
+    std::snprintf(b, sizeof(b), ",%d,%.3f,%s,%s,%.3f,%.6f,%.6g\n", l.rank_in, static_cast<double>(l.px_in), when(l.t_out < 0 ? t_last : l.t_out).c_str(),
+                  l.t_out < 0 ? "" : std::to_string(l.rank_out).c_str(), static_cast<double>(l.px_out), ret, 1.0 / sp.top_n);
+    f << sp.codes[gid] << ',' << sp.names[gid] << ',' << when(l.t_in) << b;
+  }
+  assert(f && "导出文件写入失败");
+}
+
 } // namespace
 
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload,
-                        bool gpu, InspectRequest &req) {
+                        bool gpu, int top_n, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
-  req.spec = InspectSpec{FactorRef{row.expr, row.frame, factor::stat::dir_of(row.sign)}, row.key};
+  req.spec.f = FactorRef{row.expr, row.frame, factor::stat::dir_of(row.sign)};
+  req.spec.row = row.key;
   req.reload = reload;
-  return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope);
+  if (!MakeFactorScope(data, std::move(ft), pool, gpu, req.scope))
+    return false;
+  if (top_n > 0) {
+    req.spec.top_n = top_n;
+    req.spec.csv = (std::filesystem::path(req.scope.factor_dir) /
+                    (row.name_en + "_w" + std::to_string(row.widx) + "_top" + std::to_string(top_n) + ".csv"))
+                       .string();
+    for (const AssetItem &it : data.asset.items)
+      req.spec.codes.push_back(it.code_ex()), req.spec.names.push_back(it.asset_name);
+  }
+  return true;
 }
 
 InspectService::InspectService() : FactorWorker(Prio::Interactive) { Start(); }
@@ -229,7 +361,24 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   res.nav = std::move(ps.at<NavP>().out);
   for (int j = 0; j < kTails; ++j)
     std::copy_n(ps.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
+  const Domain &dm = o.job.dm;
+  const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size());
+  std::vector<Leg> legs;
+  if (req.spec.top_n > 0)
+    legs = top_legs(pl_.rx, static_cast<int>(dm.dates.size()) * seg, A, req.spec.top_n);
   publish_result();
+
+  // ---- 导出 (flow E): 结果已发布, 读价不挡页面 ----
+  if (req.spec.top_n > 0) {
+    if (!fill_px(dm, *sc.ft, legs))
+      return settle(Rc::Stale);
+    write_legs(req.spec, legs, dm.dates, dm.rs.axis, factor_level(sc.lv).geo());
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      message = "导出 " + std::to_string(legs.size()) + " 段 → " + req.spec.csv;
+    }
+    publish();
+  }
   return true;
 }
 

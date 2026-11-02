@@ -96,9 +96,11 @@ struct InspectUIState {
   bool absolute = false;    // 左上: 超额 (false) | 绝对 (true)
   int cursor_day = -1;      // 左上时序的光标日 (0 = 起点 … days = 末日); -1 / 越界 → 末日. 右侧截面柱按它取值
   std::string last_req_key; // 上次自动起算的 InspectRequest::key (取消后不反复重起)
-  // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效
+  int top_n = 20;           // 导出做多端前 N 只 (InspectService flow E)
+  // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效; req_top_n > 0 = 带导出
   FactorRow req_row;
   bool req_reload = false;
+  int req_top_n = 0;
   // 派生缓存 (切片 (epoch, hold) + 口径)
   uint64_t derived_epoch = ~0ull;
   int derived_sel = -1;
@@ -144,7 +146,7 @@ struct InspectUIState {
 // 进 Inspect 即有东西看; 换池 / 换层后重新默认一次
 bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
-// 返回值: 1 = 手动 Compute (ui.req_row / ui.req_reload 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
+// 返回值: 1 = 手动 Compute / 导出 (ui.req_row / ui.req_reload / ui.req_top_n 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
 // ksvc: 右上 K 线流 (页内按期望态直接 Request, 不经返回值)
 int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 

@@ -1561,6 +1561,7 @@ bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &
   ui.last_req_key = key;
   ui.req_row = row;
   ui.req_reload = false;
+  ui.req_top_n = 0;
   return true;
 }
 
@@ -1801,6 +1802,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     action = 1;
     ui.req_row = sel;
     ui.req_reload = true;
+    ui.req_top_n = 0;
     ui.last_req_key = key; // 自动起算在 InspectAutoRequest (两页都每帧调)
   }
   if (!can_run)
@@ -1815,6 +1817,28 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     action = -1;
   if (!busy)
     ImGui::EndDisabled();
+  ImGui::SameLine(0.f, kCtlGap);
+  ImGui::SetNextItemWidth(80.f);
+  ImGui::InputInt("##top_n", &ui.top_n, 0, 0);
+  ui.top_n = std::max(ui.top_n, 1);
+  ImGui::SameLine();
+  const bool can_export = can_run && match;
+  if (!can_export)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("导出前 N", ImVec2(80, 0))) {
+    action = 1;
+    ui.req_row = sel;
+    ui.req_reload = false;
+    ui.req_top_n = ui.top_n;
+    ui.last_req_key = key;
+  }
+  if (!can_export)
+    ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("逐行 (因子层) 按池内秩取做多端前 N 只, 只记进 / 出: 一段一行\n"
+        "• 价 = 本行 close (不复权), ret = 按复权因子折算的收益\n"
+        "• out_rank = 掉出时的名次 (0 = 出池 / 无值), 空 = 期末未平 (按末行估值)\n"
+        "• 写到因子目录 <因子>_w<权重号>_top<N>.csv (缓存命中只重评一遍)");
   ImGui::SameLine();
   ImGui::Text("Status:");
   ImGui::SameLine();

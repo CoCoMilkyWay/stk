@@ -13,13 +13,12 @@
 import collections
 
 from mem.common import BUY, SIDES
+from mem.fills import NO_FLOW
 
 from . import book
 
 # 持仓快照 × 成交快照 × {代码: 行情}
 State = collections.namedtuple("State", "pos fills quotes")
-NO_FLOW = {"traded": dict.fromkeys(
-    SIDES, 0.0), "amount": dict.fromkeys(SIDES, 0.0)}
 TOTALS = ("market_value", "pnl", "day_pnl")
 # fmt: off
 GROUPS = {
@@ -143,7 +142,8 @@ def _agg(rows, i):
 
 def view(st):
     """State → 持仓页一帧。"""
-    rows = [_row(h, f, st.quotes[(h or f)["code"]]) for h, f in join(st)]
+    pairs = join(st)
+    rows = [_row(h, f, st.quotes[(h or f)["code"]]) for h, f in pairs]
     mv = sum(r["market_value"] or 0 for r in rows)
     shares = {"position_pct": _asset(st.pos.by_code, mv), "weight": mv}
     for r in rows:
@@ -156,6 +156,6 @@ def view(st):
         "totals": {k: round(sum(r[k] or 0 for r in rows), 2) for k in TOTALS}
         | {"slips": [_agg(rows, i) for i in range(len(book.SLIP_COLS))]},
         "fills": len(st.fills.rows),
-        "synced": synced(st),
+        "synced": all(_synced(h, f) for h, f in pairs),
         "time": max((q["time"] for q in st.quotes.values()), default=""),
     }

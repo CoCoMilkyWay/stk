@@ -28,6 +28,9 @@
 //   N  净值                                                → 落线探针 NavP: 每行由 Row + 尾部算各线这一批的收益 (FactorsBook RowLines), 全部持有期一次 fold_book
 //                                                            (Stat 契约【净值】: 平仓行实现 1/h̄), stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛;
 //                                                            可成交 / 顺延在标签里)
+//   E  导出 (请求带 top_n)                                  → 逐行按定向后的池内秩 rx 取做多端前 N (秩降序, 并列按 A 轴序; 本行无一有秩 → 不换仓), 只记进出:
+//                                                            进 = 本行入前 N, 出 = 本行掉出; 价 = 因子层本行 close (不复权, 无成交携带), 收益按日频 adj_factor
+//                                                            (当日适用 = 库内前一交易日行) 复权. 与持有期 / 分层 / 标签无关. 结果发布后读价, 写 CSV (InspectSpec::csv)
 // 结果一次发布: 页面的 Hold / 超额|绝对 / 冲击 全是纯显示切片, 不进请求; 只有换因子 / Compute (弃缓存) / 作用域变才进 worker.
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; 新请求开跑不清旧 result: 页面继续整页画旧结果
@@ -53,18 +56,22 @@ namespace GUI::Factors {
 
 // 请求 = 一个因子 (FactorRef, 与 Portfolio 条目同一份) + 权重行 key; reload = 弃 Store 平面缓存整体重读 (特征库重算过 / 手动 Compute).
 // scope.max_impact 取用时封顶 (不进缓存键); scope.gpu 不看 (只 CPU)
+// top_n > 0 = 另导出做多端前 top_n 只的进出记录 (flow E) 到 csv; codes / names = [全局 id] 资产代码 / 名称 (只导出用)
 struct InspectSpec {
   FactorRef f;
   std::string row; // 权重行 key (FactorRow::key = 文件#权重号)
+  int top_n = 0;
+  std::string csv;
+  std::vector<std::string> codes, names;
 };
 using InspectRequest = Request<InspectSpec>;
 // 请求 / 结果 key: 层 | 权重行 | 具体规范串 | 方向 | 池
 inline std::string inspect_key(LevelId lv, const std::string &pool, const std::string &row, const std::string &expr, factor::stat::Dir dir) {
   return std::string(factor_level(lv).name) + "|" + row + "|" + expr + (dir == factor::stat::kRev ? "|-" : "|+") + "|" + pool;
 }
-// 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表
+// 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表; top_n > 0 = 带导出 (csv = 因子目录下 <因子>_w<权重号>_top<N>.csv)
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload, bool gpu,
-                        InspectRequest &req);
+                        int top_n, InspectRequest &req);
 
 // 分层累计净值 (净值引擎 fold_book, 全部持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(端, j) = 该端组内第 j 级尾部 (口径同 Row::grp);
 // LS 线 0 = 顶底 (ls_row), 1 + j = 第 j 级尾部多空; LS = ½ (顶端 − 底端), 绝对 / 超额只差两端只数不同时的基准项.

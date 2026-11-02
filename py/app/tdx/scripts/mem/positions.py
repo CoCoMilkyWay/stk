@@ -8,29 +8,28 @@
 # 客户端在用的活动块 n=0、全进程唯一，新查询到来即释放旧块、另建新块。只认活动块。
 # 新旧活动块总在同一个堆段里来回换址：换代后先只扫上次所在段，没有再全量。
 #
-# 三级范围，同一动作（找活动块），代价递增：
-#   窗 = 块址 + SLACK（_reread）  段 = 上次所在段  全 = 全部堆段
-# follow 盯窗（约 0.03ms，可高频），换代才落到段；没有活动块时无从盯，只能靠全量（协议见 common）。
+# 三级范围，代价递增：窗 = 块址 + SLACK  段 = 上次所在段  全 = 全部堆段
+# same 盯窗（约 0.03ms，可高频）；rescan 先扫段，段内活动块不恰为一个再全量；没有活动块时无从盯（流程见 common）。
 #
 # 完整性（读内存最大的坑是读到写入中途的坏块）：
-#   1) 全量定位活动块须唯一，再按址只复读该块，连读两次字节一致才采信（common.stable）；
-#   2) 边解析边校验：块级无 GBK 替换字符、列数全表一致且认识（common.rows）；行级代码 6 位、
-#      沪深标志合法、且「市值 ≈ 现价 × 余额」交叉验证列没错位（_check）；代码不重（_by_code）。
+#   1) 全量定位活动块须唯一（choose），再按址只复读该块，连读两次字节一致才采信（common.pick）；
+#   2) 边解析边校验：块级无 GBK 替换字符、列数全表一致且认识（common.parse）；行级代码 6 位、
+#      沪深标志合法、且「市值 ≈ 现价 × 余额」交叉验证列没错位（check）；代码不重（by_code）。
 # 任一校验不过直接 assert（早失败，宁可不给数也不给错数）。
 
 import math
 import re
 
 from . import common
-from .common import BUY, SELL, Snap
+from .common import BUY, SELL
 
-ANCHOR = b"||P00"  # 定长锚点，表头起点在其前 0||<n>
-BACK = 12  # 锚点往前找表头起点的字节数
-HEAD = rb"0\|\|(\d+)\|\|P00[^\r\n]*\r\n"
+ANCHOR = b"||P00"
+BACK = 12
+HEAD = rb"0\|\|(\d+)\|\|P00[^\r\n]*\r\n"  # 标签 = n
 ROW = rb"\d{6}\|(?:[^|\r\n]*\|){4}[^\r\n]*\r\n"  # 6 位代码 + 至少 5 个 |
 BLOCK_RE = re.compile(HEAD + rb"(?:" + ROW + rb")+")
+SLACK = 64 * 1024  # 容块在两次读之间长大
 LIVE = b"0"  # 活动块表头的 n
-SLACK = 64 * 1024  # 复读窗口在块尾外多留的字节，容块在两次读之间长大
 
 
 def _num(x):
@@ -61,27 +60,12 @@ COLS = {
 # fmt: on
 
 
-def find(lo, data):
-    """段内每份块 → [(表头地址, n, 复读窗口尾)]；窗口尾不越段尾。"""
-    end = lo + len(data)
-    return [
-        (a, m.group(1), min(end, lo + m.end() + SLACK))
-        for a, m in common.blocks(lo, data, ANCHOR, BACK, BLOCK_RE)
-    ]
+def body(m):
+    """整块即块字节。"""
+    return m.group()
 
 
-def _live(hits):
-    """命中里的活动块复读窗口 [(表头地址, 窗口尾)]。"""
-    return [(a, e) for a, n, e in hits if n == LIVE]
-
-
-def _reread(pid, addr, end):
-    """按址复读窗口，在表头处重新匹配活动块；块已不在（被释放/改作他用）回 None。"""
-    m = BLOCK_RE.match(common.read_at(pid, addr, end - addr))
-    return m.group() if m and m.group(1) == LIVE else None
-
-
-def _check(r):
+def check(r):
     """一只持仓的结构校验，不过即 assert；原样返回。停牌价为 0 时不核市值。"""
     common.check_id(r)
     assert r["name"], f"{r['code']} 名称为空"
@@ -92,36 +76,37 @@ def _check(r):
     return r
 
 
-def _by_code(rows):
+def _live(hits):
+    return [h for h in hits if h.tag == LIVE]
+
+
+def choose(hits):
+    """活动块须唯一；一份块都没有（没点过查询）时不选，空表不算错误。"""
+    live = _live(hits)
+    assert (
+        len(live) == 1 or not hits
+    ), f"活动块（0||0||P00）应唯一，实得 {len(live)}（共 {len(hits)} 份），客户端行为已变或正在刷新"
+    return live
+
+
+def merge(tables):
+    """至多一块，原样。"""
+    return [r for t in tables for r in t]
+
+
+def by_code(rows):
     """持仓 → {代码: 持仓}，按表内顺序；代码不重。"""
     out = {r["code"]: r for r in rows}
     assert len(out) == len(rows), f"持仓代码有重复（{len(rows)} 行 {len(out)} 只）"
     return out
 
 
-def pick(pid, hits):
-    """活动块须唯一 → 按址连读一致 → 解析校验 → 快照，mark = (复读窗口, 块)。
-    一份块都没有（没点过查询）时 mark 为 None、空表，不算错误。"""
-    live = _live(hits)
-    assert (
-        len(live) == 1 or not hits
-    ), f"活动块（0||0||P00）应唯一，实得 {len(live)}（共 {len(hits)} 份），客户端行为已变或正在刷新"
-    if not live:
-        return Snap(pid, None, [], {})
-    win = live[0]
-    raw = common.stable(lambda: _reread(pid, *win))
-    rows = common.rows(raw, VIEWS, COLS, _check)
-    return Snap(pid, (win, raw), rows, _by_code(rows))
+def same(snap):
+    """窗：按址复读活动块，字节未变（被释放 / 改写，实测重查后约 100ms 即变）。没有活动块恒为真。"""
+    return all(common.reread(snap.scheme, snap.pid, h) == h.body for h in snap.mark)
 
 
-def follow(snap):
-    """窗：按址复读活动块，未换代回 snap 本身；换代（被释放/改写，实测重查后约 100ms）即扫原段，
-    段内活动块不恰为一个即全量（唯一性校验随之回到全进程）。没有活动块时无从盯，原样返回。"""
-    if snap.mark is None:
-        return snap
-    win, raw = snap.mark
-    if _reread(snap.pid, *win) == raw:
-        return snap
-    near = common.scan(snap.pid, (find,), (win[0],))[0]
-    hits = near if len(_live(near)) == 1 else common.scan(snap.pid, (find,))[0]
-    return pick(snap.pid, hits)
+def rescan(snap):
+    """段内活动块恰为一个即用，否则全量（唯一性校验随之回到全进程）。"""
+    near = common.segs(snap)
+    return near if len(_live(near)) == 1 else common.full(snap)

@@ -92,7 +92,7 @@ class Hub:
             if self.st.pos is None or now - self.scan_at >= FULL_EVERY:
                 self._scan()
             else:
-                self._set(pos=mempos.follow(self.st.pos))
+                self._set(pos=memcommon.follow(self.st.pos))
             due = self._due(now)
         # 下单占着界面就等下一轮
         if due and not ui.UI.locked():
@@ -121,11 +121,11 @@ class Hub:
         with ui.UI, self.lock:
             self._load()
             for _ in range(SYNC_TRIES):
-                for key, tab, scheme in SOURCES:
+                for key, tab, _ in SOURCES:
                     old = getattr(self.st, key)
                     ui.click_tool(tab)
                     ui.click_tool("刷新")
-                    self._set(**{key: memcommon.wait(scheme, old)})
+                    self._set(**{key: memcommon.wait(old)})
                 if board.synced(self.st):
                     break
             self.checked = self.st.pos

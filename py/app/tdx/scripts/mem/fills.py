@@ -7,23 +7,25 @@
 # 成交只增不改，故不选块：当日全部完整副本按成交编号取并集即全量（旧副本是其子集），同号须逐字段一致。
 #
 # 两级范围，代价递增：段 = 上次各副本所在段  全 = 全部堆段
-# follow 扫段，冒出新副本（客户端重查过）才全量；今日还没有副本时无段可盯，即全量（协议见 common）。
+# same 扫段，段内今日副本都在上次的里面（旧副本被释放不算换代）；rescan 即全量。今日还没有副本时无段可盯，恒为假（流程见 common）。
 #
-# 完整性：只认表头日期为本机今日、且后随至少 n 行的副本（被新内容覆盖了一半的旧缓冲不算），只取前 n 行；
-# 块级同持仓（common.rows）；行级校验代码、沪深标志、时间、方向、状态、价 × 量 ≈ 金额（_check），任一不过即 assert。
+# 完整性：只认表头日期为本机今日（choose）、且后随至少 n 行的副本（被新内容覆盖了一半的旧缓冲不算），只取前 n 行（body）；
+# 各副本按址连读一致（common.pick）；块级同持仓（common.parse）；行级校验代码、沪深标志、时间、方向、状态、
+# 价 × 量 ≈ 金额（check）；同一笔在各副本里逐字段一致（merge），任一不过即 assert。
 
 import math
 import re
 import time
 
 from . import common
-from .common import BUY, SELL, SIDES, Snap
+from .common import BUY, SELL, SIDES
 
-ANCHOR = b"||P|\r\n"  # 定长锚点，表头起点在其前 0|<日期><10 位>|<n>
-BACK = 40  # 锚点往前找表头起点的字节数
-HEAD = rb"0\|(\d{8})\d{10}\|(\d+)\|\|P\|\r\n"
-ROW = rb"\d\d:\d\d:\d\d\|\d{6}\|[^\x00\r\n]*\|\|\r\n"  # 时间 + 6 位代码 + 行尾空列，细校验在 _check
+ANCHOR = b"||P|\r\n"
+BACK = 40
+HEAD = rb"0\|(\d{8})\d{10}\|(\d+)\|\|P\|\r\n"  # 标签 = 日期
+ROW = rb"\d\d:\d\d:\d\d\|\d{6}\|[^\x00\r\n]*\|\|\r\n"  # 时间 + 6 位代码 + 行尾空列，细校验在 check
 BLOCK_RE = re.compile(HEAD + rb"(?:" + ROW + rb")+")
+SLACK = 0  # 副本只取前 n 行，复读即这么长
 TIME_RE = re.compile(r"\d\d:\d\d:\d\d")
 SIDE_TEXT = {"买入": BUY, "卖出": SELL}
 
@@ -52,23 +54,21 @@ COLS = {
 # fmt: on
 
 
-def find(lo, data):
-    """段内每份完整副本 → [(表头地址, 表头日期, 表头 + 前 n 行)]。"""
-    out = []
-    for a, m in common.blocks(lo, data, ANCHOR, BACK, BLOCK_RE):
-        n, lines = int(m.group(2)), m.group().split(b"\r\n")
-        if 0 < n < len(lines) - 1:
-            out.append((a, m.group(1), b"\r\n".join(lines[: n + 1]) + b"\r\n"))
-    return out
+def _flow():
+    return {"traded": dict.fromkeys(SIDES, 0.0), "amount": dict.fromkeys(SIDES, 0.0)}
 
 
-def _today(hits):
-    """命中里表头日期为本机今日的 [(表头地址, 块)]。"""
-    day = time.strftime("%Y%m%d").encode()
-    return [(a, raw) for a, d, raw in hits if d == day]
+# 该只今日没有成交的合计（只读）
+NO_FLOW = _flow()
 
 
-def _check(r):
+def body(m):
+    """表头 + 前 n 行；后随不足 n 行（旧缓冲被覆盖了一半）回 None。"""
+    n, lines = int(m.group(2)), m.group().split(b"\r\n")
+    return b"\r\n".join(lines[: n + 1]) + b"\r\n" if 0 < n < len(lines) - 1 else None
+
+
+def check(r):
     """一笔成交的结构校验，不过即 assert；原样返回。"""
     common.check_id(r)
     assert TIME_RE.fullmatch(r["time"]), f"成交时间 {r['time']!r}"
@@ -80,40 +80,38 @@ def _check(r):
     return r
 
 
-def _by_code(rows):
+def choose(hits):
+    """表头日期为本机今日的各副本。"""
+    day = time.strftime("%Y%m%d").encode()
+    return [h for h in hits if h.tag == day]
+
+
+def merge(tables):
+    """各副本取并集，按成交时间、成交编号排序；同一笔（成交编号 + 委托编号 + 代码）须逐字段一致。"""
+    uniq = {}
+    for r in (r for t in tables for r in t):
+        k = (r["fill_id"], r["order_id"], r["code"])
+        assert uniq.setdefault(k, r) == r, f"成交 {k} 两份副本不一致：{uniq[k]} ≠ {r}"
+    return sorted(uniq.values(), key=lambda r: (r["time"], r["fill_id"]))
+
+
+def by_code(rows):
     """成交按代码合计 → {代码: {code, name, market_flag, traded: {方向: 股}, amount: {方向: 元}}}，
     traded 与持仓同形可直接比对；同代码沪深标志须一致。"""
     out = {}
     for r in rows:
-        a = out.setdefault(
-            r["code"],
-            {k: r[k] for k in ("code", "name", "market_flag")}
-            | {"traded": dict.fromkeys(SIDES, 0.0), "amount": dict.fromkeys(SIDES, 0.0)},
-        )
+        a = out.setdefault(r["code"], {k: r[k] for k in ("code", "name", "market_flag")} | _flow())
         assert a["market_flag"] == r["market_flag"], f"成交 {r['code']} 沪深标志不一致"
         a["traded"][r["side"]] += r["qty"]
         a["amount"][r["side"]] += r["amount"]
     return out
 
 
-def pick(pid, hits):
-    """今日各副本取并集 → 快照，mark = 副本地址集，rows 按成交时间、成交编号排序。
-    同一笔（成交编号 + 委托编号 + 代码）在各副本里须逐字段一致。"""
-    today = _today(hits)
-    uniq = {}
-    for _, raw in today:
-        for r in common.rows(raw, VIEWS, COLS, _check):
-            k = (r["fill_id"], r["order_id"], r["code"])
-            assert uniq.setdefault(k, r) == r, f"成交 {k} 两份副本不一致：{uniq[k]} ≠ {r}"
-    rows = sorted(uniq.values(), key=lambda r: (r["time"], r["fill_id"]))
-    return Snap(pid, frozenset(a for a, _ in today), rows, _by_code(rows))
+def same(snap):
+    """段：上次各副本所在段里的今日副本（同址同内容）都在上次的里面。今日还没有副本恒为假。"""
+    return bool(snap.mark) and set(choose(common.segs(snap))) <= set(snap.mark)
 
 
-def follow(snap):
-    """段：只扫上次各副本所在的段，没冒出新副本回 snap 本身（旧副本被释放不算换代）；
-    冒出新副本，或今日还没有副本无段可盯，即全量。"""
-    if snap.mark:
-        near = common.scan(snap.pid, (find,), snap.mark)[0]
-        if {a for a, _ in _today(near)} <= snap.mark:
-            return snap
-    return pick(snap.pid, common.scan(snap.pid, (find,))[0])
+def rescan(snap):
+    """全量。"""
+    return common.full(snap)
