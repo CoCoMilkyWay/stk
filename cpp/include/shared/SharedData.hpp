@@ -7,11 +7,9 @@
 #include "./Dist.hpp"
 #include "./Feature.hpp"
 #include "./OrderFlow.hpp"
-#include "./Pool.hpp"
 #include "./Preview.hpp"
 #include "./TaskState.hpp"
 #include "./Transform.hpp"
-#include "features/Method/Fundamental.hpp"
 
 #include <atomic>
 
@@ -20,8 +18,6 @@ struct SharedData {
   TaskState taskstate;
   Asset asset;
   AssetInfo assetinfo;
-  fund::Panel fund_panel; // 日频 PIT 基本面数据源 (Phase 2 前 build, TS worker 只读共享)
-  pool::Panel pool_panel; // 子池逐日成员 (子池库规划时由 all Bar 库 build, TS worker 只读共享 → Meta 的 cs_valid)
   Feature feature;
   Preview preview;
   OrderFlow orderflow;

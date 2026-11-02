@@ -16,24 +16,34 @@
 
 // 硬源: 预取线程把日 d 的 bar1m 分片解码进源环格 ring[d % R], TS 等 pf_ready(d) 后读.
 //   R = StoreRing::feed_ring_size(): 预取窗口跨度全部在格, 日 d 的格被 d + R 复用时 d 已全员计满 (再无读者).
-//   日期轴止于末个 bar1m 日 (ComputeService), 轴内每日都须有分片, 构造时断言.
+//   日期轴止于末个 bar1m 日 (source_dates), 轴内每日都须有分片, 构造时断言.
 template <>
 struct TierFeed<bar::Tier> {
   using Core = CoreBar;
   static constexpr bool kHardFeed = true;
   static constexpr const char *kUnit = "bar";
 
-  const fund::Panel &fund_panel;
+  // 源日历: 交易日 [PIPELINE_START_DATE, assetinfo.bar1m_end]; Fund 收盘推进到次日盘前 ⇒ 还须早于日历末个交易日 (日历截到 today)
+  static std::vector<misc::Ymd> source_dates(const SharedData &data) {
+    const StockDaysVec &days = data.assetinfo.get_stock_days();
+    assert(!days.empty() && days.back().trading && "交易日历未就绪 / 末行不是交易日");
+    std::vector<misc::Ymd> dates;
+    for (const CalendarDay &day : days)
+      if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data.assetinfo.bar1m_end && day.date < days.back().date)
+        dates.push_back(day.date);
+    return dates;
+  }
+
   const PoolAxis &axis;
-  const pool::Panel *pool; // 子池逐日成员 (all: nullptr)
   std::span<const misc::Ymd> dates;
   const fundamental::Catalog catalog;
-  fundamental::Ids ids;                      // A 轴码表 (id = sub); 构造后只读, 多预取核并发 find
+  fundamental::Ids ids;                      // A 轴码表 (id = sub; 子池 = 子集, 不查漏收); 构造后只读, 多预取核并发 find
   std::vector<Bar1mDay> ring;                // 源环 (预取线程写, TS 经 pf_close / pf_ready 的 release/acquire 读)
   std::vector<fundamental::Scratch> scratch; // 与 ring 逐格对应 (一格同一时刻只有一个预取核在写)
 
   TierFeed(const PipelineArgs &args, const StoreRing &store)
-      : fund_panel(args.data.fund_panel), axis(args.libs[TierId::Bar].axis), pool(args.pool), dates(args.dates),
+      : axis(args.libs[TierId::Bar].axis), dates(args.dates),
+        ids(args.libs[TierId::Bar].pool() == kAllPool ? fundamental::Ids::Cover::Full : fundamental::Ids::Cover::Part),
         ring(store.feed_ring_size()), scratch(ring.size()) {
     for (size_t sub = 0; sub < axis.size(); ++sub)
       ids.add(asset_axis().code(axis.global(sub)));
@@ -42,10 +52,6 @@ struct TierFeed<bar::Tier> {
   }
 
   size_t weight(size_t) const { return 1; } // 每资产每日恰 255 根, 负载均匀
-
-  std::unique_ptr<CoreBar> make_core(size_t sub, int) const {
-    return std::make_unique<CoreBar>(fund_panel, pool, asset_axis().code(axis.global(sub)), sub);
-  }
 
   size_t prefetch(size_t d) {
     Bar1mDay &b = ring[d % ring.size()];
@@ -59,26 +65,27 @@ struct TierFeed<bar::Tier> {
     return b;
   }
 
-  // 无工作区: 一个 asset-day = 本资产当日 255 行 (无 bar → 零事件日), 返回 bar 数
-  struct Runner {
-    const TierFeed &feed;
-    Runner(TierFeed &f, int) : feed(f) {}
-    size_t run(CoreBar &core, size_t sub, size_t d, const BarFeatureStore::Day &day, BarFeatureStore &store) {
-      const misc::Ymd date = feed.dates[d];
-      const Bar1m *bars = feed.bars(d).asset(sub);
-      if (!bars) {
-        core.empty_day(date, day, store); // 无 bar1m = 零事件日: 与正常日同路径
-        return 0;
-      }
+  // 无工作区: 日 d 本资产的 255 行 bar1m 逐分钟进 core, 返回 bar 数; 无 bar = 不喂 (零事件日)
+  class Runner {
+  public:
+    Runner(TierFeed &f, int) : feed_(f) {}
 
-      core.begin_day(date, day);
+    size_t feed(CoreBar &core, size_t sub, size_t d) {
+      const Bar1m *bars = feed_.bars(d).asset(sub);
+      if (!bars)
+        return 0;
       for (size_t m = 0; m < TRADE_MINUTES_PER_DAY; ++m)
         core.compute_and_store(m, bars[m]);
-      core.end_day(store);
       return TRADE_MINUTES_PER_DAY;
     }
+
+    void release() {}
+
+  private:
+    const TierFeed &feed_;
   };
 };
 
 template bool pipeline<bar::Tier>(const PipelineArgs &);
 template SnapHeader snap_header<bar::Tier>(const FeatureLib &, misc::Ymd);
+template std::vector<misc::Ymd> source_dates<bar::Tier>(const SharedData &);

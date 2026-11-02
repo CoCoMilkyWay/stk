@@ -1,11 +1,13 @@
 // fund — 日频 PIT 基本面 (qmt 估值/因子/filter 链路移植): Fund 节点的数据源 + 逐日推进方法
 //
-//   Panel    数据源. Phase 2 前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × AssetAxis A 轴的
+//   Panel    数据源. Phase 2 前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × 全局 A 轴 (asset_axis, 全市场) 的
 //           原始网格 (close/股本/涨跌停/状态/两融, cutoff 已套, ffill 已做) + per-A 事件链 (ttm/资产负债/年报/分红/预告/行业).
 //           网格只保留 [首回测日 − 15, 末] (trading_st 连续 15 日计数所需), 历史依赖全在事件链上; 只读, 全部 TS worker 共享.
-//           行情派生 (Market, 只全市场码表 full 时算): 切片前在全史网格上一次扫出, 只留切片窗口 —— 长窗时序 (12−1 月动量 / 换手比)
+//           与库无关: 任一池任一档的库都 build 同一份全市场面板, 节点按全局 id 取行 (TS 不随池变).
+//           行情派生 (Market): 切片前在全史网格上一次扫出, 只留切片窗口 —— 长窗时序 (12−1 月动量 / 换手比)
 //           与全市场截面 (母集等权市场收益 → 特质波动 / β; 均线截面回归 → 趋势预期收益; 三项波动合成正交 → 残差波动).
-//           截面一律取母集: 切片前让状态机沿全 D 轴只推事件 + 状态口, 出全史资产态掩码 (活跃 / 母集; 两档 Panel 皆存, 经 Fund live / base 口供节点读).
+//           截面一律取母集: 切片前让状态机沿全 D 轴只推事件 + 状态口, 出全史资产态掩码 (活跃 / 母集; 经 Fund live / base 口供节点读,
+//           活跃位另经 live() 给 all 池逐日成员).
 //           每格只用 ≤ T 收盘的数据 (行 T+1 起可见), 对 TS 是与基本面同级的日频 PIT 输入; 截面归约按固定资产块定序,
 //           结果与线程数无关. 各窗按可得史扩张 (数据起点 / 新股同规则), 有价次日起即有值.
 //   Stream  per-资产日频状态机 (Fund 节点各持一个). advance_to(d) 沿 D 轴逐日推进到 d (回测日之间的非回测日也走,
@@ -29,7 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -68,13 +70,13 @@ public:
   Panel(const Panel &) = delete;
   Panel &operator=(const Panel &) = delete;
 
-  // codes: AssetAxis 顺序的 "000001.SZ"; dates: 回测日升序 (决定网格切片起点, 必须全部命中交易日历).
-  // full: codes 是全市场码表 (Bar 全轴) → 查码表漏收; 池轴子集 (Lob) → 不查.
+  // A 轴 = asset_axis 全轴 (查码表漏收); dates: 库日期轴升序 (决定网格切片起点, 必须全部命中交易日历).
   // 本地 parquet 缺失 → assert (Phase 2 前置条件: 基本面 sync 已完成).
-  void build(const std::vector<std::string> &codes, const std::vector<misc::Ymd> &dates, bool full);
+  void build(const std::vector<misc::Ymd> &dates);
 
-  bool built() const { return d_ != nullptr; }
   int date_index(misc::Ymd d) const; // D 轴下标; 不是交易日 → -1
+  // 第 d 日活跃位 (d 日盘前态, 与 Fund live 口同一份) → out[全局 id]; out.size() = A 轴长, d 不在网格切片 → assert
+  void live(misc::Ymd d, std::span<std::uint8_t> out) const;
 
   const Data &data() const {
     assert(d_ != nullptr && "fund::Panel 未 build");

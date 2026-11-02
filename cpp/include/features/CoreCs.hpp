@@ -32,7 +32,7 @@
 //
 //   旁读 (TIER_SIDES, 两档共有的任意层): 源档 ns ≠ 本档的行 + 本档没有的 NeutralRank 上下文列 = 按源层的旁读列集 (CsSide<T, 源层>, 编译期去重).
 //   begin_day 从同池旁读档的库读入各源层这些列的当日 (+ 源列晚于读它的本档行时承接日) 整日张量 (上游读 = 读端同一个 Source;
-//   取用时按 level_asof 投影, gather 时经 ids 取本档 A 轴); 当日缺库 / 头不符 → 断言 (旁读库须先算完覆盖本库日期轴, 不等它, 不替它算).
+//   取用时按 level_asof 投影; 同池各档同一 A 轴, 列下标即本档资产); 当日缺库 / 头不符 → 断言 (旁读库须先算完覆盖本库日期轴, 不等它, 不替它算).
 //   旁读列是上游档落盘的张量行, 与本档张量行同属"CS 只看张量行"的输入契约.
 //
 //   一致性锚 (回测 = 实盘): CS 只通过秒网格张量行 (cs_col + cs_valid) 看世界,
@@ -185,18 +185,12 @@ public:
     std::iota(axis_indices_.begin(), axis_indices_.end(), size_t{0});
     if constexpr (kSides) {
       using S = typename TierSide<T>::type;
-      const PoolAxis &axis = libs[T::kId].axis;
       const FeatureLib &side = libs[S::kId];
-      assert(side.tier() == S::kId && axis.size() == A_);
+      assert(side.tier() == S::kId && libs[T::kId].axis.size() == A_);
+      assert(side.axis.hash == libs[T::kId].axis.hash && "同池各档同一 A 轴 (见 shared/Pool.hpp)");
       side_rd_.emplace(side);
       side_readers_.rd[side.id] = &*side_rd_;
-      [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side.id, side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
-      side_ids_.resize(A_);
-      for (size_t a = 0; a < A_; ++a) {
-        const size_t x = side.axis.sub_of(axis.global(a));
-        assert(x < side.axis.size() && "本档资产不在旁读档 A 轴内");
-        side_ids_[a] = static_cast<uint32_t>(x);
-      }
+      [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side.id, A_), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
     }
   }
 
@@ -237,7 +231,7 @@ public:
     const std::vector<size_t> &idx = cs::FullAxis<Method> ? axis_indices_ : valid_indices_;
     const size_t n = idx.size();
     float *y = input_fp32_.data();
-    gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), ids_<S>(), idx, y);
+    gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), idx, y);
     Tf::apply(y, n);
     if constexpr (Method::kNeutral) {
       if (const cs::NeutralRank::Ctx *c = neutral_<LVL, kSettle>(t))
@@ -276,7 +270,7 @@ private:
     }
   }
 
-  // 源档 S 源层 SRC_LVL 的列 SRC 在本层 LVL 行 t (目标列盘后 SETTLE) 的 as-of 段 (全部资产连续, 源档 A 轴, 经 ids_<S> 取本档资产):
+  // 源档 S 源层 SRC_LVL 的列 SRC 在本层 LVL 行 t (目标列盘后 SETTLE) 的 as-of 段 (全部资产连续, 本库 A 轴):
   //   本档 → 当日张量 / 日环 d−1 槽位; 旁读档 → 本日 / 承接日旁读张量. nullptr = 落到前一交易日而无前日 (区间首日)
   template <class S, size_t SRC_LVL, size_t SRC, size_t LVL, bool SETTLE>
   const feature_storage_t *src_col_(size_t t) {
@@ -301,15 +295,6 @@ private:
       return dc.col(i) + r * dc.A;
     }
   }
-  // 源档 A 轴 ← 本档 a: 本档 = 同轴 (nullptr); 旁读档 = Readers::ids 同义
-  template <class S>
-  const uint32_t *ids_() const {
-    if constexpr (std::is_same_v<S, T>)
-      return nullptr;
-    else
-      return side_ids_.data();
-  }
-
   // NeutralRank 上下文 (Method/CS.hpp 声明的 (层, code), as-of 投影到本层行 t, 目标列盘后 SETTLE): 首个同盘后性的 NeutralRank 行触发, 本拍内复用.
   // 源列按名定址: 本档有就用本档, 否则旁读档. nullptr = 某上下文列落到前一交易日而无前日 (区间首日)
   template <size_t LVL, bool SETTLE>
@@ -325,9 +310,9 @@ private:
       const feature_storage_t *mc = src_col_<NS, ML, MCAP, LVL, SETTLE>(t), *ind = src_col_<NS, IL, INDUSTRY, LVL, SETTLE>(t);
       neutral_ok_ = mc && ind;
       if (neutral_ok_) {
-        gather_(mc, ids_<NS>(), valid_indices_, logmc_dense_.data());
+        gather_(mc, valid_indices_, logmc_dense_.data());
         cs::NeutralRank::prepare_logmc(logmc_dense_.data(), valid_indices_.size());
-        gather_(ind, ids_<NS>(), valid_indices_, industry_dense_.data());
+        gather_(ind, valid_indices_, industry_dense_.data());
       }
       neutral_at_ = int{SETTLE};
     }
@@ -350,7 +335,7 @@ private:
         side_buf_[SL].prev.preallocate(As, SL, Side<SL>::N);
     }
   }
-  // 本日 (+ 承接日) 源层 SL 旁读列 (旁读档 A 轴整日张量). 无旁读列 → 不读; 当日缺库 / 头不符 → reader 判废 → 断言; 承接日缺 (区间首日) → 落到前日的行 NaN
+  // 本日 (+ 承接日) 源层 SL 旁读列 (整日张量). 无旁读列 → 不读; 当日缺库 / 头不符 → reader 判废 → 断言; 承接日缺 (区间首日) → 落到前日的行 NaN
   template <size_t SL>
   void load_side_([[maybe_unused]] misc::Ymd date, [[maybe_unused]] misc::Ymd prev_date) {
     if constexpr (Side<SL>::N > 0) {
@@ -365,14 +350,11 @@ private:
     }
   }
 
-  // 源列截面子集 idx → dense fp32 (ids = 源档 A 轴 ← 本档 a, nullptr = 同轴); src nullptr (无前日) → NaN
-  void gather_(const _Float16 *src, const uint32_t *ids, const std::vector<size_t> &idx, float *dst) const {
+  // 源列截面子集 idx → dense fp32; src nullptr (无前日) → NaN
+  void gather_(const _Float16 *src, const std::vector<size_t> &idx, float *dst) const {
     const size_t n = idx.size();
     if (!src)
       std::fill_n(dst, n, std::numeric_limits<float>::quiet_NaN());
-    else if (ids)
-      for (size_t i = 0; i < n; ++i)
-        dst[i] = static_cast<float>(src[ids[idx[i]]]);
     else
       for (size_t i = 0; i < n; ++i)
         dst[i] = static_cast<float>(src[idx[i]]);
@@ -393,9 +375,8 @@ private:
 
   std::optional<FeatureRead> side_rd_;              // 旁读库 reader (无旁读列不建)
   Readers side_readers_;                            // rd[旁读档] = side_rd_
-  std::vector<uint32_t> side_ids_;                  // 本档 a → 旁读档 A 轴下标
   std::array<Source, LEVEL_COUNT> side_src_{};      // [源层] 旁读源 (无旁读列的层空)
-  std::array<IoSlot::Buf, LEVEL_COUNT> side_buf_{}; // [源层] 本日 (+ 承接日) 旁读张量 (旁读档 A 轴)
+  std::array<IoSlot::Buf, LEVEL_COUNT> side_buf_{}; // [源层] 本日 (+ 承接日) 旁读张量 (本库 A 轴)
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
   std::vector<size_t> axis_indices_;  // 全轴 0..A−1 (池方法 cs::FullAxis 的截面)

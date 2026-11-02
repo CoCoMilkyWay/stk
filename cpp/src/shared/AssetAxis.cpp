@@ -10,7 +10,6 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
-#include <string_view>
 
 namespace {
 
@@ -130,16 +129,6 @@ AssetAxis &asset_axis() {
     return a;
   }();
   return instance;
-}
-
-PoolAxis full_axis(std::size_t num_assets) {
-  assert(num_assets > 0 && "资产轴为空");
-  PoolAxis out;
-  out.ids.resize(num_assets);
-  for (std::size_t i = 0; i < num_assets; ++i)
-    out.ids[i] = static_cast<uint32_t>(i);
-  out.hash = asset_axis().hash_at(num_assets); // 同一条链的前缀值, 免重算
-  return out;
 }
 
 PoolAxis pool_axis(std::vector<uint32_t> ids) {

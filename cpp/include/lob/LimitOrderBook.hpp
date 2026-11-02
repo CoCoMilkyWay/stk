@@ -62,7 +62,8 @@ public:
     init_sentinel_levels();
   }
 
-  // 生命周期 (成对): bind → begin_day → run_frame → end_day → unbind
+  // 生命周期 (成对): core.begin_day → bind → run_frame → core.end_day → unbind
+  //   core 收盘之后才 unbind: 写出口的盘口 (depth_buffer) 指向本簿价位, 收盘末分钟的结算还要读
   //   GUI 重放无特征侧: bind(sink) → begin_frame → process… → unbind
   // 换绑资产. 前置条件: 未绑定 (刚构造或已 unbind(), 簿因此是干净的).
   // 每单内部的时序编排 (update_depth → 特征 → update_lob) 是本类的不变量,
@@ -75,6 +76,9 @@ public:
     exchange_type_ = exchange_type;
     tick_data_ = &core->tick_data();
     assert(tick_data_->asset_id == static_cast<uint32_t>(asset_id) && "bind: core/asset 不匹配");
+#if DEBUG_BOOK_PRINT
+    debug_select_day(core->date());
+#endif
   }
 
   // 无特征侧绑定 (GUI OrderFlow 重放): 盘口写出口指向调用方的 TickData, 不跑 DAG.
@@ -98,11 +102,9 @@ public:
     return *tick_data_;
   }
 
-  void begin_day(misc::Ymd date, const LobFeatureStore::Day &day) {
-    assert(core_ && "begin_day: LOB not bound");
-    core_->begin_day(date, day);
-
 #if DEBUG_BOOK_PRINT
+  // 本资产当日是否打印簿 (bind 时按 core 当日判)
+  void debug_select_day(misc::Ymd date) {
     should_log_this_day_ = false;
 
     // Check if asset_id is in debug list
@@ -126,13 +128,8 @@ public:
         break;
       }
     }
+  }
 #endif
-  }
-
-  void end_day(LobFeatureStore &store) {
-    assert(core_ && "end_day: LOB not bound");
-    core_->end_day(store);
-  }
 
   // Get TOB invalid count
   size_t get_tob_invalid_count() const {

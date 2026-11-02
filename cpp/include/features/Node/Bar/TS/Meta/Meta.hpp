@@ -2,9 +2,9 @@
 // 元数据列: 基建标志 ts_valid / cs_valid (FLAG), 由 CoreTs 手工写 (Bar 档 L_1min / 分钟箱层 / L_1day, 各层对仗). 编码/解码 → features/MetaFlag.hpp
 //   ts_valid = 行内有成交 (bar1m volume > 0) ? fmeta::pack(false, 1) : 0. 无盘口, 符号位 (depth) 恒不置.
 //            L_1min 行稠密 (每分钟都写, 特征列 ALL 不受本列门控), 本列只是"有成交"信息位 + 标签 entry / exit 的推进条件.
-//   cs_valid = 当日成员 ? 1 : 0 —— 日频常量 (盘前一次写满全部行, 逐行存, CS 行自足), 成员口径见 CoreTs:
-//              all = Fund live 口: 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 当日非停牌) ∧ 非次新 (上市满 365 日历日) ∧ 申万一级行业已知 (全部盘前可知);
-//              子池 = 当日池成员 (pool::Panel). 只看本资产 + 日频 PIT 输入 → TS 资产局部纯函数, 不破一致性红线.
+//   cs_valid = 当日成员 ? 1 : 0 —— 日频常量 (盘前一次写满全部行, 逐行存, CS 行自足), 成员 = pool::Panel (见 shared/Pool.hpp):
+//              all = 当日活跃 (与 Fund live 口同一份): 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 当日非停牌) ∧ 非次新 (上市满 365 日历日) ∧ 申万一级行业已知 (全部盘前可知);
+//              子池 = 当日在池. 只看本资产 + 日频 PIT 输入 → TS 资产局部纯函数, 不破一致性红线.
 //              截面 (CS 列) 只在它上面算; 池列 (Select*) 例外走全轴, 成员范围由 PoolKey 键掩码 (母集) 定.
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----

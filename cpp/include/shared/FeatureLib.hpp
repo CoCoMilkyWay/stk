@@ -3,8 +3,9 @@
 // 特征库 = 池 × 档 + A 轴 + 目录 + 日期轴. 目录 <feature_dir>/<池>/<档> (lib_dir); 每池两档对称, 各自一库:
 //   Bar (bar1m + 基本面)  交易日 [PIPELINE_START_DATE, 末个 bar1m 日]
 //   Lob (逐笔 → 订单簿)   回测日历, 截到 min(末个已编码日, 同池 Bar 库末日)
-//   池轴 / 逐日成员: all = 全轴, 成员 = 当日活跃 (Fund live); 子池 = all Bar 库池列 pool_<池> 逐日成员之并 (shared/Pool.hpp),
-//   子池库都依赖 all Bar 库先算到其末日. 末日随数据走, 各库首末日只在清单里 (重算即前移).
+//   A 轴归池 (shared/Pool.hpp): 同池各库同一 A 轴, 由定轴库 (同池定轴档 tier_base 的库 = Bar) 定, 其余档的库沿用它的清单轴.
+//   逐日成员: all = 当日活跃 (Fund live); 子池 = all Bar 库池列 pool_<池> (D−1 收盘行).
+//   库依赖 (lib_deps) 须先算到本库末日. 末日随数据走, 各库首末日只在清单里 (重算即前移).
 // 写端 (ComputeService) 规划后落清单 <dir>/lib.json (save_lib); 读端 (FeatureRead / ReadScope / 截面旁读) 只读清单 (load_lib),
 // 两端永远同一 (档, 轴, 日期轴). 无清单 = 未建库 (空轴, ready() == false).
 //
@@ -40,13 +41,29 @@ struct FeatureLib {
   std::string dir;              // 库目录 (日文件落在其下)
   PoolAxis axis;                // A 轴: 张量列 / 文件列序 / 头指纹 (空 = 未建库)
   std::vector<misc::Ymd> dates; // 日期轴 (升序; 已落盘的是其子集, 见 FeatureRead::has_date)
-  // 轴外 (全局 id 升序): 续算沿用清单轴, 之后本该在轴上的资产 (新上市 / 新进池) 不进库, 记在这里供 UI 提示;
-  // 全量重算即并入轴 (清空). 只在非空时落清单
+  // 轴外 (全局 id 升序): 池的自然轴里不在本库轴上的资产 (定轴库续算冻结轴之后的新上市 / 新进池) 不进库, 记在这里供 UI 提示;
+  // 全量重算定轴库即并入轴. 只在非空时落清单
   std::vector<uint32_t> outside;
   TierId tier() const { return lib_tier(id); }
   PoolId pool() const { return lib_pool(id); }
   bool ready() const { return axis.size() > 0; }
 };
+// 定轴库: 同池定轴档的库 (自身 = 本库定轴)
+inline LibId axis_lib(LibId l) { return lib_id(lib_pool(l), tier_base(lib_tier(l))); }
+// 库依赖 (写端规划 / 断言唯一一份): 本库日期轴截到 lib 末日; prev = 还读 lib 的前一交易日 (本库首日须晚于 lib 首日)
+//   定轴库 (A 轴 + 截面旁读) + 子池的 all Bar 库 (成员 = D−1 收盘行池列)
+struct LibDep {
+  LibId lib;
+  bool prev;
+};
+inline std::vector<LibDep> lib_deps(LibId l) {
+  std::vector<LibDep> deps;
+  if (axis_lib(l) != l)
+    deps.push_back({axis_lib(l), false});
+  if (lib_pool(l) != kAllPool)
+    deps.push_back({kAllBar, true});
+  return deps;
+}
 // 库目录 <feature_dir>/<池>/<档>: 各库并存, 重算一个不清别的库; 写读两端唯一的路径入口
 std::string lib_dir(const Config &cfg, LibId id);
 FeatureLib load_lib(const Config &cfg, LibId id); // 读清单; 无清单 → 未建库 (id / dir 仍有效)

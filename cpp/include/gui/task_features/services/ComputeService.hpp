@@ -9,19 +9,17 @@
 #include "misc/date.hpp"
 #include "worker/feature_workers.hpp" // StageLayout (UI 核布局表)
 
-#include <string>
 #include <vector>
 
 // Forward declarations
+struct Config;
 struct SharedData;
 struct FeatureLib;
 
 namespace GUI::Features {
 
-// 档的源日历: 本档原始数据现在能服务的交易日, 只读数据层已换进的产物 (GUI 线程), 随同步 / 编码前移.
-//   Bar  交易日 [PIPELINE_START_DATE, assetinfo.bar1m_end]; Fund 收盘推进到次日盘前 ⇒ 还须早于日历末个交易日 (日历截到 today)
-//   Lob  回测日历 ≤ 末个已编码日 (中间缺编码的日也在轴内, 落默认张量)
-// 本库日期轴 = 源日历截到依赖库末日 (同池旁读档的库; 子池另有成员源 all Bar 库, 且不含其首日: 无 D−1 成员),
+// 档的源日历: 本档原始数据现在能服务的交易日, 只读数据层已换进的产物 (GUI 线程), 随同步 / 编码前移 (各档的定义在档的 TierFeed).
+// 本库日期轴 = 源日历截到依赖库末日 (lib_deps; 读前一交易日的依赖另不含其首日: 无 D−1 成员),
 // 依赖库须落盘齐 (库表规划, 随请求快照给 worker) ⇒ 同池 Bar 末日 ≥ Lob 末日, all Bar 末日 ≥ 子池末日
 std::vector<misc::Ymd> source_dates(const SharedData &data, TierId tier);
 
@@ -47,9 +45,9 @@ struct ComputeConfig {
   bool resume = false;          // 续算 (库末日之后接着算, 须 resumable); 否则全量 (清库重算)
 };
 
-// 可续算: 库清单末日的续算点在, 且对得上清单轴 + 当前状态指纹 (见 FeatureSnap.hpp); 否则只能全量.
+// 可续算: 库清单末日的续算点在, 且对得上清单轴 + 当前状态指纹 (见 FeatureSnap.hpp), 清单轴 = 定轴库清单轴; 否则只能全量.
 // 续算 ≡ 同清单全量 (逐位一致): 轴随清单冻结 (轴外见 FeatureLib::outside), 日频面板按库首日起建, 尾窗日标签此轮结清后重落盘
-bool resumable(const FeatureLib &lib);
+bool resumable(const Config &cfg, const FeatureLib &lib);
 
 // ============================================================================
 // Compute Service

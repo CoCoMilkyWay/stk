@@ -2,7 +2,7 @@
 
 #include "features/DataDefine.hpp"
 #include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_1day 输入)
-#include "features/Node/Common/Fund/Fund.hpp" // Fund::is_live (all 的成员位)
+#include "features/Method/Fundamental.hpp"    // fund::Panel
 #include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
 #include "features/Storage/FeatureStore.hpp"
 #include "math/sample/ResamplerMin2Bin.hpp"
@@ -19,9 +19,9 @@
 // ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
 //   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         成员位: 子池 = pool::Panel (第 D 日由 all Bar 库 D−1 收盘行定); all = 当日活跃 (Fund live 口, 盘前承接之后 = 当日盘前态); 两档同一口径
+//         成员位 = 本库 pool::Panel (all = 当日活跃, 子池 = all Bar 库 D−1 收盘行池列; 见 shared/Pool.hpp), 两档同一口径
 //         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 各层末 bar 归零
-//         empty_day  无数据日 = 零事件日, 同一路径
+//         无数据日 (缺源) = begin_day → end_day 之间不喂源单位 = 零事件日, 同一路径
 //   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_1min 以上各层当前行
 //                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_1min 已出) → 该层节拍域 (beat_of; L_1day 另跟 onSettle) → 写该层行 + ts_valid
 //                     → 有成交则标签 minute_closed. L_1min / 分钟箱层 / L_1day 同一路径, 两档同一路径
@@ -58,7 +58,8 @@ public:
   }
 
   // 收盘: 末分钟 (收盘集合竞价 → L_1min 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含),
-  // 末分钟级联写 L_1day 收盘行; 须在标签收盘结算之前 (day_end 可能 ts_close 本日)
+  // 末分钟级联写 L_1day 收盘行; 须在标签收盘结算之前 (day_end 可能 ts_close 本日).
+  // 无数据日照走 (onDay / 255 根空 bar 逐分钟级联收行 / 标签日历), 各节点按自身的无成交约定给值 —— 本类不认识"缺数据", 不特判任何特征
   void end_day(Store &store) {
     advance(TRADE_MINUTES_PER_DAY);
     dag_.label.day_end(writer(), releaser(store));
@@ -68,12 +69,7 @@ public:
       (dag_.*b).clear();
   }
 
-  // 无数据日 (缺 binary / 无 bar1m) = 零事件日: 走与正常日完全相同的路径 (onDay / 255 根空 bar 逐分钟级联收行 / 标签日历),
-  // 各节点按自身的无成交约定给值 —— 本类不认识"缺数据"这个概念, 不特判任何特征.
-  void empty_day(misc::Ymd date, const Day &day, Store &store) {
-    begin_day(date, day);
-    end_day(store);
-  }
+  misc::Ymd date() const { return dag_.date_; } // 当日 (begin_day 之后)
 
   // 时钟推进到 L_1min 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
   //   回测: 由本资产下一个源单位 (compute_and_store) / 收盘 (end_day) 调.
@@ -116,13 +112,12 @@ public:
   }
 
 protected:
-  // asset_id = 本库 A 轴下标 (子池 = pool::Panel 的池轴下标); pool = 子池成员面板 (all: nullptr)
-  template <class... Args>
-  explicit CoreTs(size_t asset_id, const pool::Panel *pool, Args &&...dag_args)
-      : asset_id_(asset_id), pool_(pool), dag_(std::forward<Args>(dag_args)...), min2bin_(make_min2bin(dag_, std::make_index_sequence<std::size(graph::BIN_DATA)>{})) {
-    dag_.minute_data.asset_id = static_cast<uint32_t>(asset_id);
+  // sub = 本库 A 轴下标 (张量列); members = 本库逐日成员 (其轴 = 本库 A 轴); fund 按全局 id 取行
+  CoreTs(const fund::Panel &fund, const pool::Panel &members, size_t sub)
+      : asset_id_(sub), members_(members), dag_(fund, members.axis().global(sub)), min2bin_(make_min2bin(dag_, std::make_index_sequence<std::size(graph::BIN_DATA)>{})) {
+    dag_.minute_data.asset_id = static_cast<uint32_t>(sub);
     for (BinData graph::Root::*b : graph::BIN_DATA)
-      (dag_.*b).asset_id = static_cast<uint32_t>(asset_id);
+      (dag_.*b).asset_id = static_cast<uint32_t>(sub);
   }
 
   // 标签落盘口 (标签类的 writer): 调用 = write_label; rows(col) = LB 块偏移 col 的落盘行 (kLabRows)
@@ -144,7 +139,7 @@ protected:
 
   Day day_{}; // 本日写句柄 (= days_[cur_]), 热路径直接用
   size_t asset_id_;
-  const pool::Panel *pool_; // 子池逐日成员 (只读共享); all: nullptr
+  const pool::Panel &members_; // 本库逐日成员 (只读共享)
   Dag dag_;
   MetaTracker meta_; // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
   // minute_data → 层 L_5min + i 的 bar (graph::BIN_DATA[i], 分钟箱层 + L_1day; 两档共用, 档钩子 resampler() 只管源 → 分钟)
@@ -155,7 +150,7 @@ private:
 
   Derived &self() { return static_cast<Derived &>(*this); }
 
-  bool member(misc::Ymd date) const { return pool_ ? pool_->in_pool(asset_id_, date) : Fund::is_live(dag_.Fund.outs()); }
+  bool member(misc::Ymd date) const { return members_.in_pool(asset_id_, date); }
 
   template <size_t... I>
   static std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> make_min2bin(Dag &d, std::index_sequence<I...>) {

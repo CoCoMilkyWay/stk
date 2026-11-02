@@ -19,6 +19,9 @@
 // Forward declarations
 struct SharedData;
 struct FeatureLib;
+namespace fund {
+class Panel;
+}
 namespace pool {
 class Panel;
 }
@@ -414,13 +417,14 @@ void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
 
 // ============================================================================
 // 特征管线入口 (两档同一骨架, 定义见 feature_pipeline.hpp, 档 TU 显式实例化): ComputeService 备好共享前置
-// (日期轴 / 写读库 / fund_panel / 清库 / 日志) 后调用, 返回 = 未取消. on_io(n) = 已落盘天数 (协调线程每 100ms 调, 进度面镜像)
+// (日期轴 / 写读库 / 基本面面板 / 池面板 / 清库 / 日志) 后调用, 返回 = 未取消. on_io(n) = 已落盘天数 (协调线程每 100ms 调, 进度面镜像)
 // 跑完 (未取消) 即落本库续算点 (末日 = dates.back(), 见 FeatureSnap.hpp); tail > 0 = 续算, 从 dates[tail − 1] 的续算点接着算
 // ============================================================================
 struct PipelineArgs {
   SharedData &data;
   const PerTier<FeatureLib> &libs; // 本库 + 同池 CS 旁读档的库 (余档空), 见 StageCtx
-  const pool::Panel *pool;         // 子池逐日成员 (并集 = 本库 A 轴, 日期轴同 dates; all: nullptr, 成员 = Fund live)
+  const fund::Panel &fund;         // 日频 PIT 基本面 (全市场, 库日期轴), TS worker 只读共享
+  const pool::Panel &members;      // 本库逐日成员 (轴 = 本库 A 轴, 日期轴同 dates), TS worker 只读共享 → Meta 的 cs_valid
   const std::vector<misc::Ymd> &dates;
   size_t tail; // 尾窗日数, 见 StageCtx
   size_t ring_slots;
@@ -437,3 +441,6 @@ bool pipeline(const PipelineArgs &args);
 // 续算点头 (FeatureSnap.hpp): 库 lib 截到 date 可续算的全部前提 (状态指纹要档的 Core 完整类型, 档 TU 显式实例化)
 template <class T>
 SnapHeader snap_header(const FeatureLib &lib, misc::Ymd date);
+// 档的源日历: 本档原始数据现在能服务的交易日 (= TierFeed<T>::source_dates, 档 TU 显式实例化)
+template <class T>
+std::vector<misc::Ymd> source_dates(const SharedData &data);

@@ -14,7 +14,7 @@
 //   所以 L_1min 行 m 的一切 (bar / 累计型 / 盘口采样型) 都只含分钟 m 内的事件 = "分钟 m 末的状态";
 //   onMinute 域只读 MinuteData / 分钟边界 (md.index), 不读本笔 —— 结算时刻 (下一笔 / 收盘 / 墙钟) 不影响值.
 //   L_1min 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
-//   缺数据日 = 零事件日, 同一路径 (empty_day). 本类不读任何特征值, 不特判任何节点.
+//   缺数据日 = 零事件日 (begin_day → end_day 之间无逐笔), 同一路径. 本类不读任何特征值, 不特判任何节点.
 //   ts_valid 只标"本分钟有成交".
 //   Lob 档 (逐笔 → 订单簿源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
 //
@@ -29,17 +29,9 @@ class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   friend Base;
 
 public:
-  CoreLob(const fund::Panel &fund_panel,
-          const pool::Panel *pool_panel,
-          const std::string &code_ex,
-          size_t asset_id = 0,
-          size_t core_id = 0)
-      : Base(asset_id, pool_panel, fund_panel, code_ex, asset_id),
-        core_id_(core_id),
-        tick2min_(dag_.tick_data, dag_.minute_data) {
-    dag_.tick_data.asset_id = static_cast<uint32_t>(asset_id_);
-    dag_.tick_data.core_id = static_cast<uint32_t>(core_id);
-    dag_.minute_data.core_id = static_cast<uint32_t>(core_id);
+  CoreLob(const fund::Panel &fund, const pool::Panel &members, size_t sub)
+      : Base(fund, members, sub), tick2min_(dag_.tick_data, dag_.minute_data) {
+    dag_.tick_data.asset_id = static_cast<uint32_t>(sub);
   }
 
   // 本资产的 L_sec 工作区 (DAG_Root 自持, 见 LobGraph.hpp): 订单簿经 bind() 把写出口换到这里
@@ -104,8 +96,6 @@ private:
                   depth_updated ? dag_.Depth.ask_price[0] : 0.0f, lob.price);
     fstore::ts_write<L_sec>(day_, t, lob::L_sec_Field::ts_valid, asset_id_, meta_.flag<L_sec>());
   }
-
-  size_t core_id_;
 
   ResamplerTick2Min tick2min_;
 };

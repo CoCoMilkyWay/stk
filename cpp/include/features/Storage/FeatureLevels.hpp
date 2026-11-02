@@ -123,6 +123,20 @@ inline constexpr bool tier_side(TierId main, TierId side) {
 #undef TIER_SIDE_RT
   return false;
 }
+// 定轴档: 同池各档同一 A 轴, 由不旁读别档的那档定 (旁读档 = 它旁读的那档; 不旁读 = 自身)
+inline constexpr TierId tier_base(TierId t) {
+  for (const TierId s : TIER_IDS)
+    if (tier_side(t, s))
+      return s;
+  return t;
+}
+static_assert([] {
+  for (const TierId t : TIER_IDS)
+    if (tier_base(tier_base(t)) != tier_base(t))
+      return false;
+  return true;
+}(),
+              "旁读档不再旁读: 定轴档自己不旁读");
 
 // 层表项: 运行时按 (档, 层) 取 rows / field_count / fingerprint; 档缺的层 fields == nullptr (见 has_level)
 struct LevelInfo {

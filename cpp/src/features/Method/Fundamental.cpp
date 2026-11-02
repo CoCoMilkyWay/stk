@@ -2,7 +2,7 @@
 //
 // 结构: Panel::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
 //                     全部 15 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
-//                     全市场码表另在切片前从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面)
+//                     切片前另从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面)
 //       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与 qmt 批量扫描逐日等价:
 //                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红 365 日滑窗 + 3 年双阈值,
 //                       预亏/营收区间 = "d < max{off : on ≤ d}" (区间并集的流式形式), 行业 replay, trading_st 连续计数
@@ -16,6 +16,7 @@
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/parquet.hpp"
+#include "shared/AssetAxis.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -308,8 +309,7 @@ enum MarketItem : std::size_t {
 };
 struct Market {
   int g0 = 0, n_g = 0;
-  std::vector<float> v[MK_COUNT]; // [a·n_g + (d − g0)]; 空 = 未算 (池轴 Panel)
-  bool built() const { return !v[0].empty(); }
+  std::vector<float> v[MK_COUNT]; // [a·n_g + (d − g0)]
   float at(MarketItem c, int a, int d) const {
     assert(d >= g0 && d < g0 + n_g && "行情派生窗口不覆盖该日");
     return v[c][static_cast<std::size_t>(a) * static_cast<std::size_t>(n_g) + static_cast<std::size_t>(d - g0)];
@@ -1551,9 +1551,18 @@ Panel::~Panel() = default;
 
 int Panel::date_index(Ymd d) const { return data().axes.exact(d); }
 
-void Panel::build(const std::vector<std::string> &codes,
-                  const std::vector<Ymd> &dates, bool full) {
-  assert(!codes.empty() && "AssetAxis 为空");
+void Panel::live(Ymd d, std::span<std::uint8_t> out) const {
+  const Data &D = data();
+  assert(out.size() == static_cast<std::size_t>(D.axes.n_a()) && "活跃位: 输出须覆盖全局 A 轴");
+  const int di = D.axes.exact(d);
+  assert(di >= 0 && "活跃位: 不是交易日");
+  for (int a = 0; a < D.axes.n_a(); ++a)
+    out[static_cast<std::size_t>(a)] = (D.pit.at(D.pit.univ, a, di) & kLive) != 0;
+}
+
+void Panel::build(const std::vector<Ymd> &dates) {
+  const AssetAxis &table = asset_axis();
+  assert(!table.empty() && "AssetAxis 为空");
   assert(!dates.empty() && "回测日为空");
 
   auto t0 = std::chrono::steady_clock::now();
@@ -1570,10 +1579,10 @@ void Panel::build(const std::vector<std::string> &codes,
   for (const Ymd d : axes.dates)
     axes.date_days.push_back(misc::to_days(d));
 
-  // ---- A 轴: AssetAxis codes ("000001.SZ"); 月度表里轴外的代码 → kNone 跳过 ----
-  fundamental::Ids ids(full ? fundamental::Ids::Cover::Full : fundamental::Ids::Cover::Part);
-  for (const auto &c : codes)
-    ids.add(c);
+  // ---- A 轴: asset_axis 全轴 ("000001.SZ", 下标 = 全局 id); 月度表里轴外的代码 → kNone 跳过 ----
+  fundamental::Ids ids(fundamental::Ids::Cover::Full);
+  for (std::size_t g = 0; g < table.size(); ++g)
+    ids.add(table.code(g));
   axes.n_a_ = static_cast<int>(ids.size());
   const int n_a = axes.n_a();
   const int n_d = axes.n_d();
@@ -1594,10 +1603,10 @@ void Panel::build(const std::vector<std::string> &codes,
   meta.list_day.assign(static_cast<std::size_t>(n_a), {});
   meta.delist_day.assign(static_cast<std::size_t>(n_a), {});
   meta.main_board.assign(static_cast<std::size_t>(n_a), 0);
-  assert(static_cast<int>(codes.size()) == n_a && "AssetAxis 有重复代码");
+  assert(table.size() == static_cast<std::size_t>(n_a) && "AssetAxis 有重复代码");
   meta.bj.resize(static_cast<std::size_t>(n_a));
   for (int a = 0; a < n_a; ++a)
-    meta.bj[static_cast<std::size_t>(a)] = codes[static_cast<std::size_t>(a)].ends_with(".BJ");
+    meta.bj[static_cast<std::size_t>(a)] = table.code(static_cast<std::size_t>(a)).ends_with(".BJ");
   fundamental::meta(cat, ids, fundamental::spec("cn_stock_basic_info"), {"list_date", "delist_date", "list_sector"},
                     [&](const Rows &r) {
                       const pq::Col ld = r.col("list_date"), dd = r.col("delist_date"), ls = r.col("list_sector");
@@ -1659,9 +1668,8 @@ void Panel::build(const std::vector<std::string> &codes,
   // ---- 全史资产态掩码 (状态机全史推进, 须在切片前) → 行情派生截面 + Fund live / base 口 ----
   pit.univ = univ_mask(*data);
 
-  // ---- 行情派生: 全市场码表才有截面 (池轴 Panel 留空 → Fund 口 NaN) ----
-  if (full)
-    data->market = build_market(axes, pit, volume, g0);
+  // ---- 行情派生 (全市场截面) ----
+  data->market = build_market(axes, pit, volume, g0);
   std::vector<float>().swap(volume);
 
   // ---- 网格切片: 其余历史只在事件链上 ----
@@ -2089,10 +2097,10 @@ struct State {
       out[Fund::ta_yoy] = sat(ta_yoy);
     }
 
-    // ---- 行情派生 (全市场预计算; 池轴 Panel 未算 → NaN) ----
+    // ---- 行情派生 (全市场预计算) ----
     {
       const Market &mk = D.market;
-      auto mkt = [&](MarketItem c) { return mk.built() ? sat(mk.at(c, a, d)) : NaNF; };
+      auto mkt = [&](MarketItem c) { return sat(mk.at(c, a, d)); };
       out[Fund::ret_12_1] = mkt(mk_ret_12_1);
       out[Fund::ret_1m] = mkt(mk_ret_1m);
       out[Fund::turn] = mkt(mk_turn);

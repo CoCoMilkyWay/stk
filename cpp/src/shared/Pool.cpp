@@ -1,4 +1,5 @@
 #include "shared/Pool.hpp"
+#include "features/Method/Fundamental.hpp"
 #include "features/Storage/DayBatchPlane.hpp" // 上游读: Source / load_source / source_row (与读端同一份)
 #include "shared/FeatureLib.hpp"
 
@@ -7,9 +8,19 @@
 
 namespace pool {
 
-Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates, const PoolAxis *frozen) {
+namespace {
+
+// all: 全轴逐日成员位 [date_i][global] = 当日活跃
+std::vector<uint8_t> live_members(const fund::Panel &fund, std::span<const misc::Ymd> dates, size_t n) {
+  std::vector<uint8_t> full(dates.size() * n);
+  for (size_t i = 0; i < dates.size(); ++i)
+    fund.live(dates[i], std::span(full).subspan(i * n, n));
+  return full;
+}
+
+// 子池: 全轴逐日成员位 [date_i][global] = all Bar 库 D−1 收盘行的池列 col (all Bar 库轴外 = 不在池)
+std::vector<uint8_t> pool_members(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates, size_t n) {
   assert(bar.id == kAllBar && bar.ready() && "池源 = all Bar 库 (先算 all Bar 库)");
-  assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
   // 第 D 日成员 = 盘中 as-of 的池列 (与读端同一投影): 盘后列对任何网格都是 -1 = D−1 收盘行, 故各层同一份
   Source s{.lib = kAllBar, .level = L_1day, .settle = level_info(TierId::Bar, L_1day).fields[col].settle};
   assert(s.settle && "池列须是盘后列 (池键 onSettle 的同层截面)");
@@ -26,9 +37,7 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
   const size_t As = bar.axis.size();
   b.prev.preallocate(As, s.level, 1);
 
-  // 全轴逐日成员位 [date_i][a_bar], 顺带记并集
-  std::vector<uint8_t> full(dates.size() * As, 0);
-  std::vector<uint8_t> seen(As, 0);
+  std::vector<uint8_t> full(dates.size() * n, 0);
   for (size_t i = 0; i < dates.size(); ++i) {
     const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
     assert(it != bar.dates.end() && *it == dates[i] && "库日不在 all Bar 库日期轴 (子池日期轴须截到 all Bar 库末日)");
@@ -41,43 +50,42 @@ Panel Panel::build(const FeatureLib &bar, size_t col, std::span<const misc::Ymd>
     const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);
     assert(dc && "盘中 as-of 无源");
     const feature_storage_t *row = dc->col(0) + r * As;
-    uint8_t *dst = full.data() + i * As;
-    for (size_t a = 0; a < As; ++a) {
-      dst[a] = static_cast<float>(row[a]) > 0.5f; // NaN (母集外) → 不在池 (本 TU precise-math)
-      seen[a] |= dst[a];
-    }
+    uint8_t *dst = full.data() + i * n;
+    for (size_t a = 0; a < As; ++a)
+      dst[bar.axis.global(a)] = static_cast<float>(row[a]) > 0.5f; // NaN (母集外) → 不在池 (本 TU precise-math)
   }
+  return full;
+}
 
-  // 池轴: 并集 / 冻结轴 (区间内进过池而不在轴上的记入 outside_)
+} // namespace
+
+Panel Panel::build(PoolId pool, const Config &cfg, const fund::Panel &fund, std::span<const misc::Ymd> dates, const PoolAxis *frozen) {
+  assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
+  const size_t n = asset_axis().size();
+  const std::vector<uint8_t> full = pool == kAllPool ? live_members(fund, dates, n) : pool_members(load_lib(cfg, kAllBar), pool_def(pool).pool_col, dates, n);
+
+  // 自然轴: all = 全部标的; 子池 = dates 内进过池的
+  std::vector<uint32_t> natural;
+  for (size_t g = 0; g < n; ++g) {
+    bool in = pool == kAllPool;
+    for (size_t i = 0; i < dates.size() && !in; ++i)
+      in = full[i * n + g] != 0;
+    if (in)
+      natural.push_back(static_cast<uint32_t>(g));
+  }
+  assert(!natural.empty() && "池在区间内为空");
+
   Panel p;
-  std::vector<uint32_t> ids;
-  std::vector<size_t> pick; // 池轴 sub → all Bar 库轴下标
-  if (frozen) {
-    ids = frozen->ids;
-    for (const uint32_t g : ids) {
-      pick.push_back(bar.axis.sub_of(g));
-      assert(pick.back() < As && "冻结池轴有资产不在 all Bar 库轴上");
-    }
-    for (size_t a = 0; a < As; ++a)
-      if (seen[a] && frozen->sub_of(bar.axis.global(a)) == frozen->size())
-        p.outside_.push_back(bar.axis.global(a));
-  } else {
-    for (size_t a = 0; a < As; ++a)
-      if (seen[a]) {
-        ids.push_back(bar.axis.global(a));
-        pick.push_back(a);
-      }
-  }
-  assert(!ids.empty() && "池在回测区间内并集为空");
-
   p.dates_.assign(dates.begin(), dates.end());
-  p.axis_ = pool_axis(std::move(ids));
-  assert((!frozen || p.axis_.hash == frozen->hash) && "冻结池轴重建出的指纹不符 (asset_axis 被改过?)");
-  const size_t A = pick.size();
+  p.axis_ = frozen ? *frozen : pool_axis(natural);
+  for (const uint32_t g : natural)
+    if (p.axis_.sub_of(g) == p.axis_.size())
+      p.outside_.push_back(g);
+  const size_t A = p.axis_.size();
   p.member_.resize(dates.size() * A);
   for (size_t i = 0; i < dates.size(); ++i)
     for (size_t s = 0; s < A; ++s)
-      p.member_[i * A + s] = full[i * As + pick[s]];
+      p.member_[i * A + s] = full[i * n + p.axis_.global(s)];
   return p;
 }
 

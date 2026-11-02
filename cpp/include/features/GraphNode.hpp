@@ -142,12 +142,10 @@ inline void snap(Ar &ar, N &node) {
 struct Root {
   MinuteData minute_data;                                          // L_1min 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
   BinData min5_data, min15_data, min30_data, min60_data, day_data; // 分钟箱层 + L_1day 输入 (CoreTs 由 minute_data 重采样, 两档同一路径)
-  const fund::Panel &fund_panel;                                   // 日频输入 (外部传入, 只读共享; Fund 节点按 asset_id_/date_ 取用)
-  std::string asset_code_;                                         // "CODE.EX"
-  size_t asset_id_;                                                // 档 A 轴下标
+  const fund::Panel &fund_panel;                                   // 日频输入 (外部传入, 只读共享; Fund 节点按 global_id_/date_ 取用)
+  size_t global_id_;                                               // 全局 A 轴下标 (fund_panel 的行; 与池无关)
   misc::Ymd date_ = 0;                                             // 当日 (at_day_start 设置)
-  Root(const fund::Panel &panel, const std::string &code, size_t asset_id)
-      : fund_panel(panel), asset_code_(code), asset_id_(asset_id) {}
+  Root(const fund::Panel &panel, size_t global_id) : fund_panel(panel), global_id_(global_id) {}
 };
 // 层 L_5min + i 的输入 (分钟箱层 + L_1day 整日箱)
 inline constexpr BinData Root::*BIN_DATA[] = {&Root::min5_data, &Root::min15_data, &Root::min30_data, &Root::min60_data, &Root::day_data};

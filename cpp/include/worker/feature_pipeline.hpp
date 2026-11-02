@@ -7,6 +7,7 @@
 #include "misc/profiler.hpp"
 #include "misc/snap.hpp"
 #include "shared/FeatureLib.hpp"
+#include "shared/Pool.hpp"
 #include "worker/feature_workers.hpp"
 
 #include <algorithm>
@@ -24,15 +25,17 @@
 // ============================================================================
 // 特征管线骨架 pipeline<T> (两档同一份, 只许档 TU include: 实例化要档的 Core 完整类型 + 档的数学模式).
 // 档只写它的源 TierFeed<T> (档 TU 特化, 先于 pipeline<T> 显式实例化):
-//   using Core                          per-asset 跨日状态 (CoreLob / CoreBar)
+//   using Core                          per-asset 跨日状态 (CoreLob / CoreBar), 构造 Core(fund, members, sub)
 //   kHardFeed                           TS 是否等预取 (硬源: 预取解码进源环, TS 读环; 软源: 预取只暖 page cache)
 //   kUnit                               时序工作量单位 (仪表盘)
+//   static source_dates(const SharedData &)                 源日历 (库表规划, 见 ComputeService.hpp)
 //   TierFeed(const PipelineArgs &, const StoreRing &)       全管线一份 (帧目录 / 源环 / 名单 ...)
 //   size_t weight(sub) const            初始分配 / 领养挑最轻的权重
-//   std::unique_ptr<Core> make_core(sub, worker_id) const   初始 owner 在自己核上构造 (first-touch)
 //   size_t prefetch(d)                  预取线程备日 d 的源, 返回字节 (多预取核对不同 d 并发调用)
 //   Runner(TierFeed &, worker_id)       每 TS worker 一份的工作区 (Lob: 订单簿 + decoder + reader)
-//     size_t run(core, sub, d, day, store)   一个 asset-day (缺源 = 零事件日同路径), 返回源条数
+//     size_t feed(core, sub, d)         日 d 的源单位逐个进 core (begin_day 与 end_day 之间), 返回源条数; 缺源 = 不喂 (零事件日)
+//     void release()                    core 收盘之后归还工作区
+// 一个 asset-day (骨架唯一一份): core.begin_day → runner.feed → core.end_day → runner.release.
 // 截面 / 落盘档无关 (cs_loop / io_loop, 各自 TU).
 // ============================================================================
 template <class T>
@@ -46,6 +49,8 @@ using CoreOf = typename TierFeed<T>::Core;
 template <class T>
 struct TsRole {
   TierFeed<T> &feed;
+  const fund::Panel &fund;    // Core 构造 (日频 PIT)
+  const pool::Panel &members; // Core 构造 (逐日成员)
   TsSchedule &sched;
   std::vector<std::unique_ptr<CoreOf<T>>> &cores;
   const FeatureSnap *snap_in;                          // 全量 = nullptr
@@ -61,6 +66,11 @@ SnapHeader snap_header(const FeatureLib &lib, misc::Ymd date) {
     state = fnv1a_u64(state, L.fingerprint);
   state = fnv1a_u64(state, sizeof(CoreOf<T>));
   return {SnapHeader::kMagic, static_cast<uint64_t>(T::kId), static_cast<uint64_t>(date), lib.axis.size(), lib.axis.hash, state};
+}
+
+template <class T>
+std::vector<misc::Ymd> source_dates(const SharedData &data) {
+  return TierFeed<T>::source_dates(data);
 }
 
 // 预取: 第 lane 核 (共 lanes 核) 备日 lane, lane + lanes, ... 的源 (各日写各自的源环格, 互不握手).
@@ -170,9 +180,9 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   // 续算: 构造后读回续算点 (尾窗末日收盘态), 再把尾窗日句柄接回 (已结清的尾窗日即刻 ts_close)
   {
     TraceN("InitCores");
-    // asset_id = A 轴下标: 既是张量列 (fstore::ts_write), 也是 fund_panel 的 A 轴下标 (Panel::build 用同一码表)
+    // asset_id = 本库 A 轴下标 (张量列); fund_panel 的行 = 其全局 id (Core 内经 members.axis() 映射)
     for (const size_t asset_id : my_asset_ids) {
-      cores[asset_id] = feed.make_core(asset_id, worker_id);
+      cores[asset_id] = std::make_unique<CoreOf<T>>(role.fund, role.members, asset_id);
       if (role.snap_in) {
         misc::snap::Load in(role.snap_in->record(asset_id));
         cores[asset_id]->snap(in);
@@ -205,7 +215,12 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   // (见 CoreTs / LabelHold 文件头); 最后一日之后由 finish_all 全部结清.
   auto process_asset_day = [&](size_t asset_id, size_t date_idx, const Day &day) -> size_t {
     ++date_assets_processed;
-    return runner.run(*cores[asset_id], asset_id, date_idx, day, store);
+    CoreOf<T> &core = *cores[asset_id];
+    core.begin_day(ctx.dates[date_idx], day);
+    const size_t work = runner.feed(core, asset_id, date_idx);
+    core.end_day(store);
+    runner.release();
+    return work;
   };
 
   // Leader 侧记账: 本 worker 今天已领养数 (每日在日循环头重置).
@@ -409,6 +424,7 @@ bool pipeline(const PipelineArgs &args) {
   const size_t tail = args.tail;
   assert(!dates.empty() && num_assets >= 1);
   assert(tail < dates.size() && tail <= CoreOf<T>::Label::PEND_DAYS && "续算: 尾窗之后须有新日, 且不超过悬挂日环");
+  assert(args.members.axis().hash == lib.axis.hash && std::ranges::equal(args.members.dates(), dates) && "池面板须是本库 A 轴 × 管线日期轴");
 
   std::cout << "\n=== Phase 2: Feature Computation (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
@@ -454,7 +470,7 @@ bool pipeline(const PipelineArgs &args) {
     }
   }
   std::vector<std::unique_ptr<CoreOf<T>>> cores(num_assets);
-  TsRole<T> role{feed, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out};
+  TsRole<T> role{feed, args.fund, args.members, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out};
 
   // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
   // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 采样窗 (PROFILE 模式) 同样拉取式, 见 FeatureProfile.

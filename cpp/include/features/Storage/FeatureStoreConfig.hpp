@@ -293,6 +293,18 @@ struct TierSide {
 TIER_SIDES(TIER_SIDE_ONE)
 #undef TIER_SIDE_ONE
 
+// 运行时档号 → 档类型: f.template operator()<ns::Tier>() (写端按库分发的唯一入口; 各档返回同一类型)
+template <class F>
+decltype(auto) with_tier(TierId t, F &&f) {
+#define WITH_TIER_ONE(T, ns) \
+  if (t == TierId::T)        \
+    return f.template operator()<ns::Tier>();
+  ALL_TIERS(WITH_TIER_ONE)
+#undef WITH_TIER_ONE
+  assert(false && "with_tier: 未知档");
+  __builtin_unreachable();
+}
+
 // 档 T 的 lvl 层里 code 列的下标 (编译期按名定址, 供档模板化的基建取元列 / 方法源列); 找不到 = field_count
 template <class T>
 constexpr size_t field_of(size_t lvl, std::string_view code) {

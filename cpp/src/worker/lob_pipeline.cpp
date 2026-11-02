@@ -22,9 +22,18 @@ struct TierFeed<lob::Tier> {
   static constexpr bool kHardFeed = false;
   static constexpr const char *kUnit = "单";
 
+  // 源日历: 回测日历 ≤ 末个已编码日 (中间缺编码的日也在轴内, 落默认张量)
+  static std::vector<misc::Ymd> source_dates(const SharedData &data) {
+    assert(data.asset.backtest.start == data.config.start_date && "回测日历与配置起点不符 (改配置后没重算覆盖?)");
+    std::vector<misc::Ymd> dates;
+    for (const Asset::BacktestDay &day : data.asset.backtest.days)
+      if (day.date <= data.asset.binary.max_date)
+        dates.push_back(day.date);
+    return dates;
+  }
+
   SharedData &data;
   const PoolAxis &axis;
-  const pool::Panel *pool; // 子池逐日成员 (all: nullptr)
   std::span<const misc::Ymd> dates;
   // 帧目录切成 日期 × 池轴 (行 = dates 下标, 列 = 池轴下标), 持有到全部 worker 退出,
   // 不碰 Asset 上随重扫描换代的那一份; orders.at(date_idx, sub) 直接定址.
@@ -32,7 +41,7 @@ struct TierFeed<lob::Tier> {
   std::vector<size_t> weights; // 区间内逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)
 
   TierFeed(const PipelineArgs &args, const StoreRing &)
-      : data(args.data), axis(args.libs[TierId::Lob].axis), pool(args.pool), dates(args.dates),
+      : data(args.data), axis(args.libs[TierId::Lob].axis), dates(args.dates),
         orders(args.data.asset.orders()->slice(args.dates, axis.ids)), weights(axis.size(), 0) {
     for (size_t d = 0; d < dates.size(); ++d) {
       const std::span<const FrameRef> row = orders.row(d);
@@ -42,11 +51,6 @@ struct TierFeed<lob::Tier> {
   }
 
   size_t weight(size_t sub) const { return weights[sub]; }
-
-  std::unique_ptr<CoreLob> make_core(size_t sub, int worker_id) const {
-    const auto &asset = data.asset.items[axis.global(sub)];
-    return std::make_unique<CoreLob>(data.fund_panel, pool, asset.code_ex(), sub, static_cast<size_t>(worker_id));
-  }
 
   // reader 按偏移升序交给内核预读 (空格子跳过), 字节不进用户态 (decode 在 TS worker 内联)
   size_t prefetch(size_t d) const {
@@ -59,21 +63,18 @@ struct TierFeed<lob::Tier> {
   // 每 TS worker 一份工作区
   class Runner {
   public:
-    Runner(TierFeed &feed, int worker_id) : feed_(feed), worker_id_(worker_id), lob_(L2::LOB_ORDER_CAPACITY) {}
+    Runner(TierFeed &f, int worker_id) : feed_(f), worker_id_(worker_id), lob_(L2::LOB_ORDER_CAPACITY) {}
 
-    // 一个 asset-day (缺 binary 则按零事件日走同一路径), 返回订单数
-    size_t run(CoreLob &core, size_t asset_id, size_t date_idx, const LobFeatureStore::Day &day, LobFeatureStore &store) {
+    // 日 d 的逐笔经订单簿进 core, 返回订单数; 缺二进制 = 不绑订单簿 (零事件日)
+    size_t feed(CoreLob &core, size_t asset_id, size_t date_idx) {
+      const FrameRef &ref = feed_.orders.at(date_idx, asset_id);
+      if (ref.empty())
+        return 0;
       const misc::Ymd date = feed_.dates[date_idx];
       const auto &asset = feed_.data.asset.items[feed_.axis.global(asset_id)];
-      const FrameRef &ref = feed_.orders.at(date_idx, asset_id);
-      if (ref.empty()) {
-        core.empty_day(date, day, store); // 缺二进制 = 零事件日: 与正常日同路径, 不绑订单簿
-        return 0;
-      }
 
       lob_.bind(&core, asset_id, asset.exchange_type);              // 工作区换绑本资产 (簿此刻是干净的)
       lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_); // 追踪: 当前驱动核
-      lob_.begin_day(date, day);                                    // 盘前: DAG reset / 日频节点承接 + onDay
 
       // 帧的位置/条数/价位基准都在扫描灌好的帧目录里, 不读任何头; 同一天的
       // 资产共用 reader 里那一个 fd.
@@ -104,10 +105,13 @@ struct TierFeed<lob::Tier> {
                       " tob_invalid=" + std::to_string(lob_.get_tob_invalid_count()) +
                       " tob_refresh=" + std::to_string(lob_.get_tob_refresh_count()) +
                       " depth_crossed=" + std::to_string(lob_.get_depth_crossed_count()) + "/" + std::to_string(lob_.get_depth_seen_count()));
-
-      lob_.end_day(store); // begin_day 已推日环, 收盘结算 / 归还句柄不能少
-      lob_.unbind();       // 归还干净工作区 (下一个资产的 bind 断言未绑定)
       return order_num;
+    }
+
+    // core 收盘之后归还干净工作区 (下一个资产的 bind 断言未绑定; 收盘结算还读簿, 见 LimitOrderBook::bind)
+    void release() {
+      if (lob_.bound())
+        lob_.unbind();
     }
 
   private:
@@ -130,3 +134,4 @@ struct TierFeed<lob::Tier> {
 
 template bool pipeline<lob::Tier>(const PipelineArgs &);
 template SnapHeader snap_header<lob::Tier>(const FeatureLib &, misc::Ymd);
+template std::vector<misc::Ymd> source_dates<lob::Tier>(const SharedData &);

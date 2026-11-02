@@ -6,7 +6,7 @@
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 // 日频节点: L_1day 行 D = 次日盘前态 (逐表对齐见 Node/Common/Fund/Fund.hpp 文件头); onSettle → 落盘列全是盘后列,
 // 读端日层网格行 D 读到行 D−1 = D 当日适用值 (列描述的 "次日" 指落盘行)
-#define NODE_Fund(N) N(Fund, (Fund), (fund_panel, asset_id_, date_), onSettle)
+#define NODE_Fund(N) N(Fund, (Fund), (fund_panel, global_id_, date_), onSettle)
 
 // 三表流量项三口径行: item → item_q / item_ttm / item_lyr (Q 单季 / 滚动四季 / 上年年报)
 #define FUND_ROWS3(X, CAT1, item, EN, CN, DESC, UNIT, SYM)                                                                           \

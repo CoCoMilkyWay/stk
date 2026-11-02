@@ -56,7 +56,7 @@ static LibStatus lib_status(const Config &config, const StockDaysVec &stock_days
   s.done = static_cast<size_t>(std::count_if(lib.dates.begin(), lib.dates.end(),
                                              [&](misc::Ymd d) { return FeatureRead::has_date(lib.tier(), lib.dir, d); }));
   s.outside = lib.outside.size();
-  s.resumable = resumable(lib);
+  s.resumable = resumable(config, lib);
   s.dates = lib.dates;
   return s;
 }
@@ -80,7 +80,7 @@ static void action_tooltip(const LibStatus &s, const char *busy, bool resume) {
   else if (!s.complete())
     ImGui::SetTooltip("库未落盘齐 (%zu / %zu): 只能 Compute 全量", s.done, s.days);
   else if (!s.resumable)
-    ImGui::SetTooltip("末日续算点与库清单对不上: 只能 Compute 全量");
+    ImGui::SetTooltip("末日续算点 / 资产轴与库清单 (定轴库清单) 对不上: 只能 Compute 全量");
   else if (!prefix)
     ImGui::SetTooltip("库日期轴不是当前规划的前缀 (源日历 / 依赖库末日变了): 只能 Compute 全量");
   else if (s.plan.size() == s.dates.size())
@@ -145,28 +145,20 @@ void TickCompute(ComputeService &service, ComputeState &state, SharedData &data,
     for (const PoolId p : pool_ids())
       for (const TierId t : kTierCols)
         state.libs.push_back(lib_status(config, data.assetinfo.get_stock_days(), lib_id(p, t)));
-    // 规划: 本档源日历截到依赖库末日 (同池旁读档的库; 子池另依赖成员源 all.bar, 且晚于其首日); 依赖库未落盘齐 → 不可算
+    // 规划: 本档源日历截到依赖库末日 (lib_deps; 读前一交易日的依赖另晚于其首日); 依赖库未落盘齐 → 不可算
     PerTier<std::vector<misc::Ymd>> source;
     for (const TierId t : TIER_IDS)
       source[t] = source_dates(data, t);
     for (LibStatus &s : state.libs) {
-      const PoolId p = lib_pool(s.id);
-      const TierId tier = lib_tier(s.id);
-      s.plan = source[tier];
-      std::vector<LibId> deps;
-      for (const TierId t : TIER_IDS)
-        if (tier_side(tier, t))
-          deps.push_back(lib_id(p, t));
-      if (p != kAllPool)
-        deps.push_back(kAllBar);
-      for (const LibId d : deps) {
-        const LibStatus &dep = *std::ranges::find(state.libs, d, &LibStatus::id);
+      s.plan = source[lib_tier(s.id)];
+      for (const LibDep &d : lib_deps(s.id)) {
+        const LibStatus &dep = *std::ranges::find(state.libs, d.lib, &LibStatus::id);
         if (!dep.complete()) {
           s.plan.clear();
-          s.blocked = lib_name(d);
+          s.blocked = lib_name(d.lib);
           break;
         }
-        std::erase_if(s.plan, [&](misc::Ymd x) { return x > dep.last || (d == kAllBar && p != kAllPool && x <= dep.first); });
+        std::erase_if(s.plan, [&](misc::Ymd x) { return x > dep.last || (d.prev && x <= dep.first); });
       }
     }
   }
@@ -333,14 +325,15 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
   hover_tip("库 = 池 × 档, 每池两档各一库:\n"
             "• bar = bar1m + 基本面, %s 起至末个 bar1m 日\n"
             "• lob = 订单簿还原, %s 起至末个已编码日 (不晚于同池 bar 末日)\n"
+            "• 资产轴归池: all = 全部标的; 子池 = 进过池的标的; lob 沿用同池 bar 的资产轴\n"
             "• 成员: all = 当日活跃 (全市场); 子池 = all.bar D−1 收盘 pool_* 列 → 先把 all.bar 算齐\n"
-            "• 依赖: lob 旁读同池 bar; 子池两档另读 all.bar. 依赖库未落盘齐则本库不可算\n"
+            "• 依赖: lob 随同池 bar (资产轴 + 截面旁读); 子池两档另读 all.bar. 依赖库未落盘齐则本库不可算\n"
             "\n"
             "• 区间 / 天数 = 库日期轴; 已落盘 = 已落盘日数\n"
             "• 数据末日 = 现在重算能到的末日; 未计算 = 库末日之后的交易日数\n"
-            "• 资产 = 库资产轴; 轴外 = 沿用的轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量\n"
+            "• 资产 = 库资产轴; 轴外 = 沿用的轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量 (bar 重建轴后 lob 也须全量)\n"
             "\n"
-            "• Compute = 全量 (清库, 按规划重建资产轴从头算; 先弹窗确认)\n"
+            "• Compute = 全量 (清库, 按规划重建资产轴从头算 (lob 取同池 bar 的轴); 先弹窗确认)\n"
             "• Append = 从库末日续算新日 (沿用库资产轴, 与同轴全量逐位一致)",
             misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
 

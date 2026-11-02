@@ -161,13 +161,14 @@ public:
   };
   float y[kCount] = {};
 
-  Fund(const fund::Panel &panel, size_t asset_id, const misc::Ymd &date)
-      : panel_(panel), date_(date), stream_(panel, asset_id) {}
+  // global_id = 全局 A 轴下标 (fund::Panel 的行)
+  Fund(const fund::Panel &panel, size_t global_id, const misc::Ymd &date)
+      : panel_(panel), date_(date), stream_(panel, global_id) {}
 
-  // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / all 库 cs_valid / PoolKey 全读这一份)
+  // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / all 池成员 (Panel::live) / PoolKey 全读这一份)
   //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
   //   母集 = 活跃 ∧ 非 ST / *ST / 退市整理期 ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0
-  // 节点侧读输出口 (all 库 cs_valid 盘中 = 当日, PoolKey onSettle = 次日)
+  // 节点侧读输出口 (PoolKey onSettle = 次日)
   static bool is_live(const Ports<kCount> &f) { return f[live] != 0.0f; }
   static bool is_base(const Ports<kCount> &f) { return f[base] != 0.0f; }
 

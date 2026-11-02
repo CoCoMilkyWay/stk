@@ -76,7 +76,7 @@ AssetAxis &asset_axis();
 // PoolAxis — 特征库的 A 轴 (池轴)
 //
 // ids = 池内资产在全局轴上的下标 (升序去重), hash = 按池轴顺序对码表做同一条 FNV 累积链 (fnv_append).
-// 写端规划 (子池: 成员并集 pool_axis; all: 全轴 full_axis, hash == asset_axis().hash_at(num_assets), 同一条链的前缀值)
+// 写端规划 (池的自然轴 / 冻结轴, 见 shared/Pool.hpp; all 全轴的 hash == asset_axis().hash_at(size), 同一条链的前缀值)
 // 后码表落库清单 (见 FeatureLib.hpp), 读端从清单重建同一池轴. 特征文件头存 (A_sub, hash), 不符 = 库内文件与清单
 // 不一致 → 读端删库判废, 等重算 (见 FeatureRead).
 //
@@ -101,5 +101,3 @@ struct PoolAxis {
 
 // 池轴: ids 须升序去重且在全局轴内 (assert), hash 按池轴序走 FNV 链
 PoolAxis pool_axis(std::vector<uint32_t> ids);
-// all 池 A 轴 = 全轴前缀 [0, num_assets)
-PoolAxis full_axis(std::size_t num_assets);
