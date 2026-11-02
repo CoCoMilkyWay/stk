@@ -38,6 +38,7 @@ void Mine::open(const SharedData &data, Setup s) {
   lab.bind(data, setup.sc, setup.test);
   notes.load(setup.test);
   const Context &ctx = lab.ctx();
+  assert(!ctx.leaves.empty() && "开放的来源在本层须有叶");
   setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask, llm::def(setup.llm.backend).local).text;
   chat.open(setup.llm);
   log.open((fs::path(catalog::dir(setup.sc, setup.test)) / "chat" / text::local("%Y%m%d-%H%M%S")).string(), setup.llm.system);
@@ -58,6 +59,7 @@ void Mine::open(const SharedData &data, Setup s) {
   log.event(Event::Open, {{"pool", setup.sc.pool},
                           {"level", ctx.level},
                           {"hold", ctx.hold},
+                          {"srcs", ctx.srcs},
                           {"backend", llm::def(setup.llm.backend).name},
                           {"model", setup.llm.model},
                           {"net", net_name(setup.llm.net)},

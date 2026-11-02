@@ -168,7 +168,7 @@ stk/
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
 │   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager; Drive = 同步 / 核对共用的逐项驱动骨架
 │   │   │   │   │                                     #    · Audit: 远端 ↔ 本地冻结月核对 + 修复
-│   │   │   │   └── ui/                               # 🖥️ UI: TabOverview (基本面同步) / TabBrowser / TabTable / TabEncode / CrossSectionAnalysis
+│   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (基本面同步) / TabEncode / TabAssets (资产表) / TabDates (日历) / CrossSectionAnalysis
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
 │   │   │   │   ├── services/                         # 🖥️ 服务层
@@ -232,6 +232,7 @@ stk/
 │   │   │       │   │                                 #    · 预算: 非 Life::Job 的 worker 块 F.c 算回可用 (命中 / 换掉 / 多块时让给自有块); 最小的块都装不下 → assert
 │   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done / fail / post, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
 │   │   │       │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
+│   │   │       │   │                                 #    · 评估期 = 标签库 ∪ 叶所在库的落盘日交集 (四服务同一份 span_of): Lob 池的 Bar 层因子不碰池库, 与 all 池同期
 │   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
 │   │   │       │   │                                 #    · Job = 驻留 + 规格 + 作用域 + 预算 + 计划 + 块 (Blocks: 共享 F.c / 作业自有); JobOut = Job + 森林 + 节点耗时 + 后端
 │   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: settle (中断 → false, Stale 弃块; 否则 true, Empty / Broken 的条目已由 fail 收尾)
@@ -239,7 +240,6 @@ stk/
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 多级缓存, 从失效级起算; 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
 │   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池) 一张森林 (根 = 去重规范串, CurveP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
-│   │   │       │   │                                 #    · 评估期随标签库 (pool_span = false): Lob 池的 Bar 层因子只读分钟线, 不限于池库落盘日
 │   │   │       │   │                                 #    · PoolTask 全部池日层篮子一个作业 (eval_baskets: open_job → load_b → baskets → 按池切 PoolCurve); 因子按条目缓存, 只算新增, 根评完即逐条发布
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
@@ -265,7 +265,8 @@ stk/
 │   │   │   │ Tasks                                │ Panel:                             │
 │   │   │   │  > Settings[done/syncing]            │                                    │
 │   │   │   │  > SystemInfo[""/live]               │                                    │
-│   │   │   │  > DataBase                          │ Overview / Encode / Table / Browser│
+│   │   │   │  > DataBase                          │ Fundamental / Encode / Assets /    │
+│   │   │   │                                      │ Dates                              │
 │   │   │   │  > Features                          │ Compute / Feature / Corr / Dist /  │
 │   │   │   │                                      │ Transform / OrderFlow              │
 │   │   │   │  > Factors                           │ Operators / Factors / Inspect /    │
@@ -316,7 +317,7 @@ stk/
 │   │   │   ├── Notes.hpp                                   # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话跨作用域累积; 编号 = 类前缀 + 序号, ref 附议同类已有的; list_notes 成文
 │   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (enter 每段, settle 收结果) / 等人 (answer) → 做完; 回复级约束 RuleMiss; 只经 Desk 读写会话
 │   │   │   │                                               #    · eval_factor 只收本会话 search_leaves 查过定义的叶 (Desk::seen); 带回测的回复须同带至少一个观察调用 (ParseCalls 查)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域 · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域: 池 / 层 / 持有期 / 特征来源 lob · bar · fund (各来源单用与合起来的评估期) · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -446,7 +447,7 @@ stk/
     │   │   ├── features_L_sec.bin                          # L_sec (秒频) 一天一个: 头 + 列目录 + 逐列载荷 [T×A]
     │   │   └── features_L_1min.bin                         # L_1min (分钟频) 一天一个: 同上; 两层都逐列自选是否做 T 轴 XOR 差分
     │   └── all/YYYY/MM/DD/features_L_*.bin                 # Bar 池 (全轴, L_1min + 分钟箱层 + L_1day; 目录名 all 保留给它)
-    ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Overview)
+    ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Fundamental)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
     │   ├── YYYY-MM/bar1m/YYYY-MM-DD.parquet                # 分钟 K 日分片 (Bar 档 TS 输入, 不复权)
     │   ├── _meta/<表>.parquet                              # Static / Snapshot 单文件整刷

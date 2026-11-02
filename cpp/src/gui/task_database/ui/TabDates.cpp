@@ -1,7 +1,7 @@
-// Tab Browser - Calendar Grid View Implementation
+// Tab Dates - Calendar Grid View Implementation
 // Dense calendar display for trading day visualization
 
-#include "gui/task_database/ui/TabBrowser.hpp"
+#include "gui/task_database/ui/TabDates.hpp"
 #include "imgui.h"
 #include <algorithm>
 #include <cassert>
@@ -163,7 +163,7 @@ void RenderMonthGrid(
     int year,
     int month,
     const std::map<misc::Ymd, DailyStats> &daily_stats,
-    BrowserState &state) {
+    DatesState &state) {
   const char *month_names[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
@@ -367,7 +367,7 @@ void RenderMonthGrid(
 void RenderYearRow(
     int year,
     const std::map<misc::Ymd, DailyStats> &daily_stats,
-    BrowserState &state) {
+    DatesState &state) {
   ImGui::Text("%d", year);
   ImGui::SameLine(0, 20);
 
@@ -382,17 +382,17 @@ void RenderYearRow(
 }
 
 // ============================================================================
-// Main TabBrowser Render Function
+// Main TabDates Render Function
 // ============================================================================
 
-void RenderTabBrowser(
+void RenderTabDates(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
     const StockInfoMap &stock_info,
     const Asset &asset_data,
     misc::Ymd backtest_start,
     misc::Ymd backtest_end,
-    BrowserState &browser_state) {
+    DatesState &dates_state) {
 
   // Build calendar from stock_days data
   CalendarData calendar;
@@ -405,15 +405,15 @@ void RenderTabBrowser(
   }
 
   // Build or reuse daily statistics cache
-  if (browser_state.generation != asset_data.generation) {
-    browser_state.generation = asset_data.generation;
-    browser_state.daily_stats_cache = BuildDailyStats(
+  if (dates_state.generation != asset_data.generation) {
+    dates_state.generation = asset_data.generation;
+    dates_state.daily_stats_cache = BuildDailyStats(
         stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
   }
 
   if (ImGui::Button("Refresh Data")) {
-    browser_state.daily_stats_cache.clear();
-    browser_state.daily_stats_cache = BuildDailyStats(
+    dates_state.daily_stats_cache.clear();
+    dates_state.daily_stats_cache = BuildDailyStats(
         stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
   }
 
@@ -422,44 +422,44 @@ void RenderTabBrowser(
   ImGui::SameLine();
 
   // Dividend/Split layer (Yellow)
-  ImVec4 yellow_btn = browser_state.layers.show_dividend_split ? COLOR_YELLOW : ImVec4(0.3f, 0.3f, 0.1f, 1.0f);
+  ImVec4 yellow_btn = dates_state.layers.show_dividend_split ? COLOR_YELLOW : ImVec4(0.3f, 0.3f, 0.1f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, yellow_btn);
   if (ImGui::SmallButton("除权除息")) {
-    browser_state.layers.show_dividend_split = !browser_state.layers.show_dividend_split;
+    dates_state.layers.show_dividend_split = !dates_state.layers.show_dividend_split;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // Holiday layer (Purple)
-  ImVec4 purple_btn = browser_state.layers.show_holiday ? COLOR_PURPLE : ImVec4(0.2f, 0.1f, 0.3f, 1.0f);
+  ImVec4 purple_btn = dates_state.layers.show_holiday ? COLOR_PURPLE : ImVec4(0.2f, 0.1f, 0.3f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, purple_btn);
   if (ImGui::SmallButton("节假日")) {
-    browser_state.layers.show_holiday = !browser_state.layers.show_holiday;
+    dates_state.layers.show_holiday = !dates_state.layers.show_holiday;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // Backtest range layer (Green)
-  ImVec4 green_btn = browser_state.layers.show_backtest_range ? COLOR_GREEN : ImVec4(0.1f, 0.3f, 0.1f, 1.0f);
+  ImVec4 green_btn = dates_state.layers.show_backtest_range ? COLOR_GREEN : ImVec4(0.1f, 0.3f, 0.1f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, green_btn);
   if (ImGui::SmallButton("回测区间")) {
-    browser_state.layers.show_backtest_range = !browser_state.layers.show_backtest_range;
+    dates_state.layers.show_backtest_range = !dates_state.layers.show_backtest_range;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // L2 data layer (Blue)
-  ImVec4 blue_btn = browser_state.layers.show_l2_data ? COLOR_BLUE : ImVec4(0.1f, 0.1f, 0.3f, 1.0f);
+  ImVec4 blue_btn = dates_state.layers.show_l2_data ? COLOR_BLUE : ImVec4(0.1f, 0.1f, 0.3f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, blue_btn);
   if (ImGui::SmallButton("L2数据")) {
-    browser_state.layers.show_l2_data = !browser_state.layers.show_l2_data;
+    dates_state.layers.show_l2_data = !dates_state.layers.show_l2_data;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // Completeness border toggle
-  if (ImGui::SmallButton(browser_state.layers.show_completeness ? "完整性边框✓" : "完整性边框✗")) {
-    browser_state.layers.show_completeness = !browser_state.layers.show_completeness;
+  if (ImGui::SmallButton(dates_state.layers.show_completeness ? "完整性边框✓" : "完整性边框✗")) {
+    dates_state.layers.show_completeness = !dates_state.layers.show_completeness;
   }
 
   ImGui::Spacing();
@@ -472,7 +472,7 @@ void RenderTabBrowser(
   float avg_completeness = 0.0f;
   int backtest_days = 0;
 
-  for (const auto &[date, stats] : browser_state.daily_stats_cache) {
+  for (const auto &[date, stats] : dates_state.daily_stats_cache) {
     if (stats.is_trading_day) {
       total_trading_days++;
     }
@@ -542,7 +542,7 @@ void RenderTabBrowser(
 
   // Render each year as a row
   for (int year = calendar.start_year; year <= calendar.end_year; ++year) {
-    RenderYearRow(year, browser_state.daily_stats_cache, browser_state);
+    RenderYearRow(year, dates_state.daily_stats_cache, dates_state);
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();

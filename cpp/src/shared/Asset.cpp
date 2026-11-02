@@ -228,7 +228,7 @@ std::vector<misc::Ymd> Asset::backtest_dates() const {
 }
 
 // ============================================================================
-// Coverage Statistics (Browser / Table / Encode 共用的一份统计)
+// Coverage Statistics (Dates / Assets / Encode 共用的一份统计)
 // ============================================================================
 
 void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetinfo, misc::exec::ForkJoin &ex,

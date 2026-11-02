@@ -16,7 +16,7 @@
 namespace GUI::Database {
 
 // 单表本地落盘状态 — 工作线程由 fundamental::Catalog 得到, 渲染帧只读不做 IO.
-// 静态元描述 (增量键 / 抓法 / 就绪时点 / 中文说明) 不在这里重复: Overview 直接
+// 静态元描述 (增量键 / 抓法 / 就绪时点 / 中文说明) 不在这里重复: Fundamental 页直接
 // 遍历 fundamental::SPECS, 按 name 关联本结构.
 struct TableFileStat {
   std::string name;        // = parquet 文件名 = spec.name
@@ -32,7 +32,7 @@ struct FundamentalState {
   std::string message;     // 当前阶段说明 (工作线程实时更新)
   std::string last_update; // 最近一次构建成功时刻
 
-  // BigQuant 周配额 (preflight 结果, 单位 cell; Overview 常显)
+  // BigQuant 周配额 (preflight 结果, 单位 cell; Fundamental 页常显)
   //   每轮联网同步开头 preflight 一次, 每个 BigQuant 任务后再取; 未联网的轮次沿用上次
   std::int64_t quota_weekly = 0;
   std::int64_t quota_used = 0;

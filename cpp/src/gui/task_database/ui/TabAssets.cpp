@@ -1,7 +1,7 @@
-// Tab Table - L2 Database Asset Table View Implementation
+// Tab Assets - L2 Database Asset Table View Implementation
 // 18-column table with enhanced filtering and cross-section analysis panel
 
-#include "gui/task_database/ui/TabTable.hpp"
+#include "gui/task_database/ui/TabAssets.hpp"
 #include "gui/task_database/models/SharedTypes.hpp"
 #include "gui/task_database/ui/CrossSectionAnalysis.hpp"
 #include "gui/util/AssetFilter.hpp" // 筛选控件 (与 ORDERFLOW 共用)
@@ -132,7 +132,7 @@ const StockInfo *FindStockInfo(const AssetItem &asset, const StockInfoMap &stock
 bool ShouldShowAsset(
     const AssetItem &asset,
     const StockInfo *info,
-    const TableState &state) {
+    const AssetsState &state) {
 
   // Filter: ST level (0=正常 1=ST 2=*ST), 多选, 空集合 = 不过滤
   if (!state.st_filter.empty()) {
@@ -270,7 +270,7 @@ ImU32 RampColor(float p) { return ImGui::GetColorU32(RampColorVec4(p)); }
 
 // 用名次分位而不是数值归一化: 估值和市值都是重尾分布, 按 (v-min)/(max-min)
 // 染色的话几个极端值就把其余几千个资产全压成同一个颜色.
-void RebuildCrossSectionColors(TableView &view,
+void RebuildCrossSectionColors(AssetsView &view,
                                const std::vector<const StockInfo *> &infos) {
   const size_t n = view.rows.size();
 
@@ -318,8 +318,8 @@ void RebuildCrossSectionColors(TableView &view,
   }
 }
 
-bool ViewIsStale(const TableView &view, const Asset &asset,
-                 const StockInfoMap &stock_info, const TableState &state) {
+bool ViewIsStale(const AssetsView &view, const Asset &asset,
+                 const StockInfoMap &stock_info, const AssetsState &state) {
   return !view.built ||
          view.generation != asset.generation ||
          view.asset_count != asset.items.size() ||
@@ -333,8 +333,8 @@ bool ViewIsStale(const TableView &view, const Asset &asset,
          view.industry_filter != state.industry_filter;
 }
 
-void RebuildView(TableView &view, const Asset &asset,
-                 const StockInfoMap &stock_info, const TableState &state) {
+void RebuildView(AssetsView &view, const Asset &asset,
+                 const StockInfoMap &stock_info, const AssetsState &state) {
   const size_t count = asset.items.size();
   assert(asset.asset_stats.size() == count);
 
@@ -453,7 +453,7 @@ void RebuildView(TableView &view, const Asset &asset,
 }
 
 // 视图过期就重建. 表格与横截面面板都先调它, 之后共用 state.view.rows.
-void SyncView(TableState &state, const Asset &asset, const StockInfoMap &stock_info) {
+void SyncView(AssetsState &state, const Asset &asset, const StockInfoMap &stock_info) {
   if (ViewIsStale(state.view, asset, stock_info, state))
     RebuildView(state.view, asset, stock_info, state);
 }
@@ -463,7 +463,7 @@ void SyncView(TableState &state, const Asset &asset, const StockInfoMap &stock_i
 // ============================================================================
 
 void RenderFilterBar(
-    TableState &state,
+    AssetsState &state,
     size_t visible_count,
     size_t total_count,
     const std::vector<AssetItem> &assets,
@@ -480,7 +480,7 @@ void RenderFilterBar(
   // ST/Listed/Board: 与 FEATURES/ORDERFLOW 共用控件 (gui/util/AssetFilter.hpp).
   // ST 只有 0..2 (GetStLevel 口径, 无退市整理期一级); Listed 看 out_date 是否为 0
   ImGui::SameLine();
-  GUI::Filter::CommonFilters<BoardType>("Table", false, state.st_filter,
+  GUI::Filter::CommonFilters<BoardType>("Assets", false, state.st_filter,
                                         state.listed_filter, state.board_filter);
 
   // Industry filter - collect all unique industries (多选下拉)
@@ -546,7 +546,7 @@ void RenderFilterBar(
 void RenderDataTable(
     const Asset &asset_data,
     const StockInfoMap &stock_info,
-    TableState &table_state) {
+    AssetsState &assets_state) {
 
   ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
@@ -622,7 +622,7 @@ void RenderDataTable(
 
       "日均逐笔数 (Average Orders per Trading Day)\n所有已有逐笔数据交易日的平均记录数量 (委托+成交合并后)\n= Σ order_count / 有逐笔数据的交易日数\n\n说明:\n- 单位:条记录/日\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数取自日文件目录, 扫描时一并读到",
 
-      "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该资产\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Browser 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数"};
+      "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该资产\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Dates 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数"};
 
   for (int col = 0; col < 19; col++) {
     ImGui::TableSetColumnIndex(col);
@@ -637,26 +637,26 @@ void RenderDataTable(
   }
 
   // 排序规则的变化由 ImGui 的 SpecsDirty 告知; 真正的重排在 RebuildView 里,
-  // 只在规则/过滤/数据代数变化时做一次 (见 TableView).
+  // 只在规则/过滤/数据代数变化时做一次 (见 AssetsView).
   if (ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs()) {
     if (sort_specs->SpecsDirty && sort_specs->SpecsCount > 0) {
       const auto &spec = sort_specs->Specs[0];
-      table_state.sort_column = spec.ColumnIndex;
-      table_state.sort_ascending = spec.SortDirection == ImGuiSortDirection_Ascending;
+      assets_state.sort_column = spec.ColumnIndex;
+      assets_state.sort_ascending = spec.SortDirection == ImGuiSortDirection_Ascending;
     }
     sort_specs->SpecsDirty = false;
   }
 
-  SyncView(table_state, asset_data, stock_info);
+  SyncView(assets_state, asset_data, stock_info);
 
   // Helper lambda to handle column highlight and click (left-click to trigger analysis)
-  auto handle_column_click = [&table_state](int col_idx) {
+  auto handle_column_click = [&assets_state](int col_idx) {
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-      if (table_state.selected_column_idx == col_idx) {
-        table_state.selected_column_idx = -1;
+      if (assets_state.selected_column_idx == col_idx) {
+        assets_state.selected_column_idx = -1;
       } else {
-        table_state.selected_column_idx = col_idx;
-        table_state.show_cross_section_panel = true;
+        assets_state.selected_column_idx = col_idx;
+        assets_state.show_cross_section_panel = true;
       }
     }
   };
@@ -664,13 +664,13 @@ void RenderDataTable(
   // Get hovered column for highlight
   int hovered_col = ImGui::TableGetHoveredColumn();
 
-  // 截面色: cs_colors 与 view.rows 同序, 直接按行位置取 (见 TableView).
+  // 截面色: cs_colors 与 view.rows 同序, 直接按行位置取 (见 AssetsView).
   // 返回 true = 已 PushStyleColor, 调用方渲完要 Pop.
-  auto push_cs_color = [&table_state](int col, int row) {
+  auto push_cs_color = [&assets_state](int col, int row) {
     const int slot = ColoredColumnSlot(col);
     assert(slot >= 0);
-    const std::vector<uint32_t> &colors = table_state.view.cs_colors[slot];
-    assert(colors.size() == table_state.view.rows.size());
+    const std::vector<uint32_t> &colors = assets_state.view.cs_colors[slot];
+    assert(colors.size() == assets_state.view.rows.size());
     if (colors[row] == 0)
       return false;
     ImGui::PushStyleColor(ImGuiCol_Text, colors[row]);
@@ -679,7 +679,7 @@ void RenderDataTable(
 
   // Render rows
   int row_idx = 0;
-  for (const size_t id : table_state.view.rows) {
+  for (const size_t id : assets_state.view.rows) {
     const AssetItem &asset = asset_data.items[id];
     const Asset::AssetStats &stats = asset_data.asset_stats[id];
     // StockInfo 每帧现查 (基本面可能整体重载, 缓存指针会失效)
@@ -687,7 +687,7 @@ void RenderDataTable(
 
     ImGui::TableNextRow();
     ImGui::PushID(row_idx);
-    bool is_row_selected = (table_state.selected_asset_idx == row_idx);
+    bool is_row_selected = (assets_state.selected_asset_idx == row_idx);
 
     // Col 0: Code
     ImGui::TableSetColumnIndex(0);
@@ -847,7 +847,7 @@ void RenderDataTable(
 
     // Col 16: Trading Days
     // 以下三列的统计都取自 Asset::asset_stats — 逐帧遍历帧目录会把
-    // 帧时间拖到几百毫秒 (见 TableView 处的说明)
+    // 帧时间拖到几百毫秒 (见 AssetsView 处的说明)
     ImGui::TableSetColumnIndex(16);
     if (hovered_col == 16) {
       ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.4f, 0.3f)));
@@ -908,14 +908,14 @@ void RenderDataTable(
 static void RenderNumericAnalysis(
     const Asset &asset_data,
     const StockInfoMap &stock_info,
-    const TableState &table_state,
+    const AssetsState &assets_state,
     int col_idx,
     const char *col_name);
 
 static void RenderCategoricalAnalysis(
     const Asset &asset_data,
     const StockInfoMap &stock_info,
-    const TableState &table_state,
+    const AssetsState &assets_state,
     int col_idx,
     const char *col_name);
 
@@ -944,9 +944,9 @@ static ColumnDataType GetColumnDataType(int col_idx) {
 void RenderCrossSectionPanel(
     const Asset &asset_data,
     const StockInfoMap &stock_info,
-    const TableState &table_state) {
+    const AssetsState &assets_state) {
 
-  if (table_state.selected_column_idx < 0) {
+  if (assets_state.selected_column_idx < 0) {
     ImGui::TextWrapped("Click on any cell to view cross-section analysis.");
     return;
   }
@@ -958,7 +958,7 @@ void RenderCrossSectionPanel(
       "DY 近5年 (年化 %)", "Market Cap (亿元)", "Trading Days",
       "Avg Orders / Day", "Orders % (回测区间完整性)"};
 
-  int col_idx = table_state.selected_column_idx;
+  int col_idx = assets_state.selected_column_idx;
   if (col_idx >= 19) {
     ImGui::Text("Invalid column index");
     return;
@@ -970,9 +970,9 @@ void RenderCrossSectionPanel(
   ColumnDataType data_type = GetColumnDataType(col_idx);
 
   if (data_type == ColumnDataType::Categorical) {
-    RenderCategoricalAnalysis(asset_data, stock_info, table_state, col_idx, col_names[col_idx]);
+    RenderCategoricalAnalysis(asset_data, stock_info, assets_state, col_idx, col_names[col_idx]);
   } else {
-    RenderNumericAnalysis(asset_data, stock_info, table_state, col_idx, col_names[col_idx]);
+    RenderNumericAnalysis(asset_data, stock_info, assets_state, col_idx, col_names[col_idx]);
   }
 }
 
@@ -983,7 +983,7 @@ void RenderCrossSectionPanel(
 static void RenderNumericAnalysis(
     const Asset &asset_data,
     const StockInfoMap &stock_info,
-    const TableState &table_state,
+    const AssetsState &assets_state,
     int col_idx,
     const char *col_name) {
   (void)col_name; // Unused
@@ -993,8 +993,8 @@ static void RenderNumericAnalysis(
   std::vector<float> values;
   std::vector<std::string> codes;
 
-  // 过滤结果直接用表格的缓存视图 (见 TableView)
-  for (const size_t id : table_state.view.rows) {
+  // 过滤结果直接用表格的缓存视图 (见 AssetsView)
+  for (const size_t id : assets_state.view.rows) {
     const AssetItem &asset = asset_data.items[id];
     const Asset::AssetStats &stats = asset_data.asset_stats[id];
     const StockInfo *info = FindStockInfo(asset, stock_info);
@@ -1210,7 +1210,7 @@ static void RenderNumericAnalysis(
 static void RenderCategoricalAnalysis(
     const Asset &asset_data,
     const StockInfoMap &stock_info,
-    const TableState &table_state,
+    const AssetsState &assets_state,
     int col_idx,
     const char *col_name) {
   (void)col_name; // Unused
@@ -1219,8 +1219,8 @@ static void RenderCategoricalAnalysis(
   std::vector<std::string> categories;
   std::vector<std::string> codes;
 
-  // 过滤结果直接用表格的缓存视图 (见 TableView)
-  for (const size_t id : table_state.view.rows) {
+  // 过滤结果直接用表格的缓存视图 (见 AssetsView)
+  for (const size_t id : assets_state.view.rows) {
     const AssetItem &asset = asset_data.items[id];
     const StockInfo *info = FindStockInfo(asset, stock_info);
 
@@ -1307,13 +1307,13 @@ static void RenderCategoricalAnalysis(
 }
 
 // ============================================================================
-// Main TabTable Render Function
+// Main TabAssets Render Function
 // ============================================================================
 
-void RenderTabTable(
+void RenderTabAssets(
     Asset &asset,
     const StockInfoMap &stock_info,
-    TableState &table_state) {
+    AssetsState &assets_state) {
 
   const std::vector<AssetItem> &assets = asset.items;
 
@@ -1324,10 +1324,10 @@ void RenderTabTable(
   }
 
   // 过滤 + 排序结果的缓存, 顺便给下面的 Showing:x/y 供数
-  SyncView(table_state, asset, stock_info);
+  SyncView(assets_state, asset, stock_info);
 
   // Render filter bar
-  RenderFilterBar(table_state, table_state.view.rows.size(), assets.size(), assets, stock_info);
+  RenderFilterBar(assets_state, assets_state.view.rows.size(), assets.size(), assets, stock_info);
   ImGui::Spacing();
 
   // Get window dimensions
@@ -1335,19 +1335,19 @@ void RenderTabTable(
   float window_height = ImGui::GetContentRegionAvail().y;
 
   // Calculate left table width
-  float left_width = table_state.show_cross_section_panel ? window_width * table_state.table_split_ratio : window_width;
+  float left_width = assets_state.show_cross_section_panel ? window_width * assets_state.table_split_ratio : window_width;
 
   // Left: Data Table
   ImGui::BeginChild("LeftTable", ImVec2(left_width, window_height), true,
                     ImGuiWindowFlags_HorizontalScrollbar);
-  RenderDataTable(asset, stock_info, table_state);
+  RenderDataTable(asset, stock_info, assets_state);
   ImGui::EndChild();
 
   // Right: Cross-section Analysis Panel
-  if (table_state.show_cross_section_panel) {
+  if (assets_state.show_cross_section_panel) {
     ImGui::SameLine();
     ImGui::BeginChild("RightPanel", ImVec2(0, window_height), true);
-    RenderCrossSectionPanel(asset, stock_info, table_state);
+    RenderCrossSectionPanel(asset, stock_info, assets_state);
     ImGui::EndChild();
   }
 }

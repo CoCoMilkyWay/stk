@@ -5,10 +5,10 @@
 #include "gui/task_database/services/FundamentalService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
-#include "gui/task_database/ui/TabBrowser.hpp"
+#include "gui/task_database/ui/TabAssets.hpp"
+#include "gui/task_database/ui/TabDates.hpp"
 #include "gui/task_database/ui/TabEncode.hpp"
-#include "gui/task_database/ui/TabOverview.hpp"
-#include "gui/task_database/ui/TabTable.hpp"
+#include "gui/task_database/ui/TabFundamental.hpp"
 #include "imgui.h"
 #include "misc/exec.hpp"
 #include "shared/Config.hpp"
@@ -33,9 +33,10 @@ private:
   std::unique_ptr<StateManager> state_mgr_;
 
   // UI state
+  FundamentalTabState fundamental_state_;
   EncodeState encode_state_;
-  TableState table_state_;
-  BrowserState browser_state_;
+  AssetsState assets_state_;
+  DatesState dates_state_;
 
   // Lifecycle
   bool is_expanded_ = false;
@@ -78,10 +79,10 @@ public:
   }
 
   // Enabled: 左栏叶子是否可点, 直读 StateManager 的解锁进度 (Update 同帧已刷新)
-  // idx: -1=任务行(不可点选, 恒真) 0=Overview 1=Encode 2=Table 3=Browser
+  // idx: -1=任务行(不可点选, 恒真) 0=Fundamental 1=Encode 2=Assets 3=Dates
   bool Enabled(const SharedData & /*data*/, int idx) const {
     if (idx <= 0)
-      return true; // 任务行 / Overview 永远可用
+      return true; // 任务行 / Fundamental 永远可用
     if (!state_mgr_)
       return false;
     const auto &tabs = state_mgr_->get_state().tabs;
@@ -89,28 +90,28 @@ public:
     case 1:
       return tabs.can_access_encode;
     case 2:
-      return tabs.can_access_table;
+      return tabs.can_access_assets;
     case 3:
-      return tabs.can_access_browser;
+      return tabs.can_access_dates;
     }
     return false;
   }
 
-  // Status: 子行状态标签 (任务行由子行聚合). 0 Overview (基本面), 1 Encode
-  // (编码进度/覆盖检查结果), 2 Table / 3 Browser (纯浏览: 前置计算中显示进行中,
+  // Status: 子行状态标签 (任务行由子行聚合). 0 Fundamental (基本面), 1 Encode
+  // (编码进度/覆盖检查结果), 2 Assets / 3 Dates (纯浏览: 前置计算中显示进行中,
   // 解锁后 done, 锁定且无在跑 none)
   TaskStatus Status(const SharedData &data, int idx) const {
     switch (idx) {
     case 0:
-      return OverviewStatus();
+      return FundamentalTabStatus();
     case 1:
       if (!state_mgr_)
         return {TaskStatus::Kind::Muted, "initializing"};
       return GUI::Database::EncodeStatus(*state_mgr_, *encoding_svc_, *scan_svc_);
     case 2:
-      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_table);
+      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_assets);
     case 3:
-      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_browser);
+      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_dates);
     }
     assert(false && "Database 子行越界");
     return {};
@@ -156,8 +157,8 @@ private:
     return {TaskStatus::Kind::Muted, "waiting"};
   }
 
-  // Overview 子行标签: 基本面流水线状态 (BigQuant + Tushare → AssetInfo)
-  TaskStatus OverviewStatus() const {
+  // Fundamental 子行标签: 核对 / 修复在跑 > 基本面流水线状态 (BigQuant + Tushare → AssetInfo)
+  TaskStatus FundamentalTabStatus() const {
     if (!state_mgr_)
       return {TaskStatus::Kind::Muted, "initializing"};
     if (audit_svc_->busy()) {
@@ -170,7 +171,7 @@ private:
     return FundamentalStatus();
   }
 
-  // Table / Browser 子行标签: 纯浏览页, 状态跟随前置计算.
+  // Assets / Dates 子行标签: 纯浏览页, 状态跟随前置计算.
   // 前置 (基本面同步 / L2 扫描) 在跑 → 显示进行中; 解锁后 → done; 锁定且无在跑 → none
   TaskStatus BrowseStatus(const SharedData &data, bool can_access) const {
     if (data.taskstate.database.json_update_inflight)
@@ -226,23 +227,23 @@ private:
     // 渲染当前选中 tab (左栏已按 can_access_* 屏蔽未解锁项, 这里直接分发)
     switch (idx) {
     case 0:
-      DrawTabOverview();
+      DrawTabFundamental();
       break;
     case 1:
       if (tabs.can_access_encode)
         DrawTabEncode();
       else
-        ImGui::TextDisabled("Sync fundamental data in Overview tab first");
+        ImGui::TextDisabled("Sync fundamental data in Fundamental tab first");
       break;
     case 2:
-      if (tabs.can_access_table)
-        DrawTabTable();
+      if (tabs.can_access_assets)
+        DrawTabAssets();
       else
         ImGui::TextDisabled("Requires fundamental data ready and at least one coverage scan (Encode tab)");
       break;
     case 3:
-      if (tabs.can_access_browser)
-        DrawTabBrowser();
+      if (tabs.can_access_dates)
+        DrawTabDates();
       else
         ImGui::TextDisabled("Requires fundamental data ready and at least one coverage scan (Encode tab)");
       break;
@@ -251,7 +252,7 @@ private:
     }
   }
 
-  void DrawTabOverview() {
+  void DrawTabFundamental() {
     // Safety: check if services are initialized
     if (!fundamental_svc_) {
       ImGui::TextDisabled("Services initializing...");
@@ -276,7 +277,7 @@ private:
     {
       // 展示字段持锁读 (worker 只短锁写)
       std::scoped_lock lk(fundamental_svc_->mutex, audit_svc_->mutex);
-      RenderTabOverview(
+      RenderTabFundamental(
           fundamental_svc_->state,
           *fundamental_svc_,
           fstatus,
@@ -290,7 +291,8 @@ private:
           &audit_cancel_clicked,
           disable_audit,
           &audit_table,
-          &repair_table);
+          &repair_table,
+          fundamental_state_);
     }
 
     // Handle button events (一帧至多一个请求)
@@ -310,25 +312,25 @@ private:
       state_mgr_->audit(AuditOp::Repair, repair_table, false);
   }
 
-  void DrawTabTable() {
-    RenderTabTable(
+  void DrawTabAssets() {
+    RenderTabAssets(
         data_->asset,
         data_->assetinfo.get_stock_info(),
-        table_state_);
+        assets_state_);
   }
 
-  void DrawTabBrowser() {
+  void DrawTabDates() {
     // date_stats 由扫描的 Phase 5 统一产出 (ScanService::run → Asset::adopt), 这里不
     // 惰性补算: 渲染帧里现算是双重遍历, 而且会跟扫描抢着写同一份统计.
     // 扫描没跑完时 date_stats 是空的, 表格照常渲染, 数字等扫描落地.
-    RenderTabBrowser(
+    RenderTabDates(
         data_->assetinfo.get_stock_days(),
         data_->assetinfo.get_stock_factor(),
         data_->assetinfo.get_stock_info(),
         data_->asset,
         data_->asset.backtest.start,
         data_->asset.backtest.end,
-        browser_state_);
+        dates_state_);
   }
 
   void DrawTabEncode() {
@@ -344,8 +346,8 @@ TaskHandle CreateDatabaseTask() {
   TaskHandle handle;
   handle.name = instance->GetName();
   handle.storage = instance;
-  // 子项 (叶子) 顺序: Overview / Encode / Table / Browser
-  handle.tabs = {"Overview", "Encode", "Table", "Browser"};
+  // 子项 (叶子) 顺序: Fundamental / Encode / Assets / Dates
+  handle.tabs = {"Fundamental", "Encode", "Assets", "Dates"};
   handle.Init = [instance](SharedData &data) { instance->Init(data); };
   handle.Update = [instance](SharedData &data) { instance->Update(data); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };

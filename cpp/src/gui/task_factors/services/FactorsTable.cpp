@@ -255,8 +255,7 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   sc.libs = factor_libs(data, pool, lv);
-  const PoolId p = pool_id(pool);
-  return sc.libs[p].ready() && sc.libs[factor_level(lv).lab(p)].ready(); // 因子池库 / 标签库未建 → false
+  return sc.libs[factor_level(lv).lab(pool_id(pool))].ready(); // 标签库未建 → false; 叶所在库未建由评估域报 (span_of)
 }
 
 } // namespace GUI::Factors

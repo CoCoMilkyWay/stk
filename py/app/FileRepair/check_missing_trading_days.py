@@ -43,7 +43,7 @@ def main():
         )
         print(
             f"[!] Dates after {calendar_last_date} are NOT checked below - update "
-            f"stock_days.json first (Task Database -> Data Overview -> update).\n"
+            f"stock_days.json first (Task Database -> Fundamental -> Update).\n"
         )
 
     trading_dates = [

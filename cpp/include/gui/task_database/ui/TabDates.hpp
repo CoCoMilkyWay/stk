@@ -1,4 +1,4 @@
-// Tab Browser - Calendar Grid View for Trading Days
+// Tab Dates - Calendar Grid View for Trading Days
 // Displays dense calendar grid based on stock_days.json
 
 #pragma once
@@ -56,8 +56,8 @@ inline constexpr float kDividendSaturationCount = 50.0f;
 // 只有 1~2 个资产时 alpha 趋 0 会彻底看不见, 给条下限
 inline constexpr float kDividendAlphaFloor = 0.15f;
 
-// Browser state
-struct BrowserState {
+// Dates state
+struct DatesState {
   int selected_year = -1;
   int selected_month = -1;
   int selected_day = -1;
@@ -67,14 +67,14 @@ struct BrowserState {
   LayerVisibility layers;
 };
 
-// Render the browser tab showing calendar grid
-void RenderTabBrowser(
+// Render the dates tab showing calendar grid
+void RenderTabDates(
     const StockDaysVec &stock_days,
     const StockFactorMap &stock_factors,
     const StockInfoMap &stock_info,
     const Asset &asset_data,
     misc::Ymd backtest_start,
     misc::Ymd backtest_end,
-    BrowserState &browser_state);
+    DatesState &dates_state);
 
 } // namespace GUI::Database

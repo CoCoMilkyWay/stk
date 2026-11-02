@@ -89,7 +89,7 @@ inline constexpr bool level_for_pool(const FactorLevel &l, TierId pool_tier) { r
 inline constexpr const char *kLevelToken[LEVEL_COUNT] = {"1s", "1m", "5m", "15m", "30m", "60m", "1d"};
 // 该层因子目录 = <config.factor_dir>/<pool>/<name> (level_for_pool)
 std::string factor_dir_of(const SharedData &data, const std::string &pool, LevelId lv);
-// 请求的库清单 (GUI 线程读): 因子池库 (定评估期; Lob 标签层兼标签库) + all 池 (bar.* 叶 / 日频原料 / 池成员); 余池空. 未建库的清单 ready() == false
+// 请求的库清单 (GUI 线程读): 因子池库 (lob.* 叶; Lob 标签层兼标签库) + all 池 (bar.* 叶 / 日频原料 / 池成员); 余池空. 未建库的清单 ready() == false
 PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool, LevelId lv);
 // 因子目录下的因子文件 (*.json 普通文件, 不进子目录), 路径序; 目录不存在 = 空
 std::vector<std::filesystem::path> list_factor_files(const std::string &dir);
@@ -198,7 +198,6 @@ struct FactorScope {
   PerPool<FeatureLib> libs;               // factor_libs
   double max_impact = 0.0;                // Config::max_impact (买入冲击封顶, 成本装载时生效)
   bool gpu = false;
-  bool pool_span = true; // Lob 池 × Bar 层: 评估期限在因子池库落盘日 (与 Lob 层同期); false = 随标签库 (Portfolio: 只用分钟线)
 };
 // 层 / 池 / 目录 / 字段表 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
 bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool gpu, FactorScope &sc);

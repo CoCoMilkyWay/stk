@@ -1,4 +1,4 @@
-// Tab Table - L2 Database Asset Table View with Enhanced Filtering
+// Tab Assets - L2 Database Asset Table View with Enhanced Filtering
 // Shows asset table with board classification and ST filtering
 
 #pragma once
@@ -38,7 +38,7 @@ inline int ColoredColumnSlot(int col) {
 //
 // 注意: 这里只缓存顺序, 不缓存 StockInfo 的值和指针 —— 基本面可能整体重载
 // (指针会失效), 所以显示时每帧按 asset_id 重新查活数据.
-struct TableView {
+struct AssetsView {
   std::vector<size_t> rows; // asset_id, 已过滤已排序
 
   // 截面渐进色 (红→黄→绿), 每个着色列一份, 与 rows 同序同长.
@@ -57,7 +57,7 @@ struct TableView {
   int sort_column = -1;        // 对应的排序列
   bool sort_ascending = true;  // 对应的排序方向
 
-  // 多选过滤集合, 空集合 = 不过滤 (全选). 取值口径见 TableState 同名字段.
+  // 多选过滤集合, 空集合 = 不过滤 (全选). 取值口径见 AssetsState 同名字段.
   std::set<int> st_filter;
   std::set<int> listed_filter;
   std::set<BoardType> board_filter;
@@ -65,8 +65,8 @@ struct TableView {
   std::set<std::string> industry_filter;
 };
 
-// Table state
-struct TableState {
+// Assets state
+struct AssetsState {
   // Filters
   //
   // 这里曾有 filter_missing_only / filter_no_missing 两个"缺口"过滤器, 但
@@ -96,13 +96,13 @@ struct TableState {
   float table_split_ratio = 0.65f;      // Left/right split ratio (0-1)
 
   // 过滤 + 排序结果的缓存 (表格与横截面面板共用)
-  TableView view;
+  AssetsView view;
 };
 
-// Render the table tab
-void RenderTabTable(
+// Render the assets tab
+void RenderTabAssets(
     Asset &asset,
     const StockInfoMap &stock_info,
-    TableState &table_state);
+    AssetsState &assets_state);
 
 } // namespace GUI::Database

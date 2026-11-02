@@ -154,7 +154,6 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
       it.missing = "标签库未建";
       continue;
     }
-    t.scope.pool_span = false;
     t.key = it.e.key();
     t.f = FactorRef{it.e.expr, it.frame, factor::stat::dir_of(it.e.sign)};
     t.hold = it.e.hold;

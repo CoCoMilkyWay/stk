@@ -236,6 +236,18 @@ std::string family_of(const FeatureMetadata &m) {
   assert(f.starts_with(pre) && f.ends_with(ext) && "节点文件在 features/Node/ 下");
   return std::string(f.substr(pre.size(), f.size() - pre.size() - ext.size()));
 }
+// 叶的来源: Lob 档 = lob; Bar 档的 Fund 族 (Bar/{TS,CS}/Fund/…) = fund; 其余 = bar
+Src src_of(const F::FeatureTable &ft, const F::FeatCol &c) {
+  if (c.tier == TierId::Lob)
+    return Src::Lob;
+  return family_of(meta_of(ft, c)).find("/Fund/") != std::string::npos ? Src::Fund : Src::Bar;
+}
+uint8_t srcs_of(const F::FeatureTable &ft, const std::vector<F::LeafId> &leaves) {
+  uint8_t m = 0;
+  for (const F::LeafId id : leaves)
+    m |= src_bit(src_of(ft, ft.x.leaves[id]));
+  return m;
+}
 
 // TS 叶落盘前套的元素变换 (ts::Tf) 的定义式, 下标 = ts::TfId; CS 叶的变换写在其公式里
 constexpr const char *kTfDef[] = {"", "sign(x)·ln(1+|x|)", "asinh(x)", "tanh(x)", "sign(x)·√|x|"};
@@ -424,14 +436,12 @@ struct Period {
   bool same(const std::string &p, misc::Ymd s, misc::Ymd e, int n) const { return days > 0 && p == pool && s == start && e == end && n == days; }
   std::string text() const { return misc::dash(start) + " ~ " + misc::dash(end) + ", " + std::to_string(days) + " 天"; }
 };
-// 叶为模板 tmpl 的叶 (空 = 只有标签库与因子池库) 时此刻的评估期
-Period period_of(const std::optional<F::FactorScope> &fsc, const F::FeatureTable &ft, const std::string &tmpl) {
+std::vector<F::LeafId> leaves_in(const F::FeatureTable &ft, const std::string &tmpl) { return ft.x.ids(factor::build(ft.reparse(tmpl).placeholder()).feats); }
+// 叶为 leaves (空 = 只有标签库) 时此刻的评估期
+Period period_of(const std::optional<F::FactorScope> &fsc, const F::FeatureTable &ft, const std::vector<F::LeafId> &leaves) {
   Period s;
   if (!fsc)
     return s;
-  std::vector<F::LeafId> leaves;
-  if (!tmpl.empty())
-    leaves = ft.x.ids(factor::build(ft.reparse(tmpl).placeholder()).feats);
   F::Domain dm;
   std::string why;
   if (!F::span_of(ft, *fsc, leaves, SIZE_MAX, dm, why))
@@ -459,8 +469,8 @@ Top top_of(const F::SearchTop &t) {
   return x;
 }
 
-// 一个因子文件 → 本持有期下的结果 (权重按 score 降序, 结局随之定; 可见性按此刻评估期)
-Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, const fs::path &p, int hold, const Fails &fails) {
+// 一个因子文件 → 本持有期下的结果 (权重按 score 降序, 结局随之定; 可见性按此刻评估期与开放来源 srcs)
+Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, uint8_t srcs, const fs::path &p, int hold, const Fails &fails) {
   std::vector<F::FactorRow> rows;
   F::ScanFactorFile(p, ft, rows);
   assert(!rows.empty());
@@ -468,7 +478,8 @@ Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> 
   Result r;
   r.file = r0.file, r.name = r0.name_en, r.name_cn = r0.name_cn, r.tmpl = r0.tmpl, r.note = r0.note;
   r.ops = ops_of(ft, r0.tmpl);
-  const Period now = r0.tmpl.empty() ? Period{} : period_of(fsc, ft, r0.tmpl);
+  const std::vector<F::LeafId> leaves = r0.tmpl.empty() ? std::vector<F::LeafId>{} : leaves_in(ft, r0.tmpl);
+  const Period now = r0.tmpl.empty() ? Period{} : period_of(fsc, ft, leaves);
   bool fresh = true; // 证据都在此刻评估期上
   const auto mk = std::find_if(r0.searched.begin(), r0.searched.end(), [&](const F::SearchMark &m) { return m.hold == hold; });
   if (mk != r0.searched.end()) {
@@ -508,7 +519,7 @@ Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> 
     r.ws.push_back(std::move(x));
   }
   std::stable_sort(r.ws.begin(), r.ws.end(), [](const Weight &a, const Weight &b) { return a.has != b.has ? a.has : a.score > b.score; });
-  r.visible = fresh && r.ops <= kMaxOps;
+  r.visible = fresh && r.ops <= kMaxOps && !(srcs_of(ft, leaves) & ~srcs);
   const bool null = r.ws.empty() ? mk != r0.searched.end() : run; // 搜过无显著 / 权重都 Run 过却无本持有期统计
   r.verdict = !r.error.empty() ? Verdict::Broken : r.best() ? Verdict::Weights
                                                : null       ? Verdict::Null
@@ -524,10 +535,10 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-std::vector<Result> scan(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, const std::string &dir, int hold, const Fails &fails) {
+std::vector<Result> scan(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, uint8_t srcs, const std::string &dir, int hold, const Fails &fails) {
   std::vector<Result> out;
   for (const fs::path &p : F::list_factor_files(dir))
-    out.push_back(result_of(ft, fsc, p, hold, fails));
+    out.push_back(result_of(ft, fsc, srcs, p, hold, fails));
   sort_results(out);
   return out;
 }
@@ -580,7 +591,37 @@ Context context_of(const SharedData &data, const Scope &sc) {
   c.hold = factor::stat::hold_name(sc.hold);
   c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
   const std::optional<F::FactorScope> fsc = fscope_of(data, ft, sc.pool);
-  const Period base = period_of(fsc, *ft, "");
+  std::array<std::vector<F::LeafId>, kSrcCount> by; // [Src] 该来源的可作输入的叶
+  for (size_t i = 0; i < ft->x.leaves.size(); ++i) {
+    const F::FeatCol &l = ft->x.leaves[i];
+    if (!l.allowed)
+      continue;
+    const Src src = src_of(*ft, l);
+    by[static_cast<size_t>(src)].push_back(static_cast<F::LeafId>(i));
+    if (!(sc.srcs & src_bit(src)))
+      continue;
+    const FeatureMetadata &m = meta_of(*ft, l);
+    const size_t tf = static_cast<size_t>(m.ts_tf);
+    Leaf x{l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m), src};
+    x.kin = LeafKin(x.code) + "|" + x.tf;
+    x.hay = text::lower(x.code + "\n" + x.name_cn + "\n" + x.formula + "\n" + x.desc + "\n" + x.tf + "\n" + x.family);
+    c.leaves.push_back(std::move(x));
+  }
+  std::vector<F::LeafId> opened; // 开放来源的叶
+  for (size_t s = 0; s < kSrcCount; ++s) {
+    const std::vector<F::LeafId> &v = by[s];
+    SrcSpan &o = c.spans[s];
+    o.leaves = static_cast<int>(v.size());
+    if (v.empty())
+      continue;
+    const Period p = period_of(fsc, *ft, v);
+    o.window = p.days > 0 ? p.text() : "未就绪";
+    if (sc.srcs & src_bit(static_cast<Src>(s))) {
+      opened.insert(opened.end(), v.begin(), v.end());
+      c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(kSrcs[s].name);
+    }
+  }
+  const Period base = period_of(fsc, *ft, opened);
   c.window = base.days > 0 ? base.text() : "未就绪";
   c.first = static_cast<int>(base.start), c.last = static_cast<int>(base.end);
   c.seg = ft->seg;
@@ -589,20 +630,10 @@ Context context_of(const SharedData &data, const Scope &sc) {
   c.ts_root_d = factor::stat::ts_norm_d(ft->seg);
   c.max_d = factor::kMaxD;
   c.min_mono = factor::search::kMinMono;
-  for (const F::FeatCol &l : ft->x.leaves) {
-    if (!l.allowed)
-      continue;
-    const FeatureMetadata &m = meta_of(*ft, l);
-    const size_t tf = static_cast<size_t>(m.ts_tf);
-    Leaf x{l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m)};
-    x.kin = LeafKin(x.code) + "|" + x.tf;
-    x.hay = text::lower(x.code + "\n" + x.name_cn + "\n" + x.formula + "\n" + x.desc + "\n" + x.tf + "\n" + x.family);
-    c.leaves.push_back(std::move(x));
-  }
   for (const factor::expr::OpInfo &o : factor::expr::kOps)
     c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
   c.kline = kline_of(*ft);
-  c.library = scan(*ft, fsc, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
+  c.library = scan(*ft, fsc, sc.srcs, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
   return c;
 }
 
@@ -864,7 +895,7 @@ struct Lab::Impl {
   // 重扫一个文件, 结果表保序
   const Result &refresh(const std::string &f) {
     const auto find = [&] { return std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == f; }); };
-    Result r = result_of(*ft(), fsc(), fs::path(dir) / f, sc.hold, fails);
+    Result r = result_of(*ft(), fsc(), sc.srcs, fs::path(dir) / f, sc.hold, fails);
     if (const auto it = find(); it == results.end())
       results.push_back(std::move(r));
     else
@@ -947,7 +978,7 @@ struct Lab::Impl {
     int sign = 1;
     if (it != results.end()) {
       if (!it->visible) {
-        error = "候选 " + arg + " 的统计不在当前评估期上; 可直接给具体根式";
+        error = "候选 " + arg + " 对本会话不可见 (统计不在当前评估期上, 或用了未开放来源的叶)";
         return false;
       }
       if (const Weight *w = it->best()) {
@@ -962,7 +993,7 @@ struct Lab::Impl {
     const std::shared_ptr<const F::FeatureTable> t = ft();
     factor::expr::Expr e;
     factor::stat::Frame f;
-    if (!concrete(*t, src, e, error) || !factor::expr::root_frame(e, t->seg, f, error) || !t->check_grid(e, error)) {
+    if (!concrete(*t, src, e, error) || !factor::expr::root_frame(e, t->seg, f, error) || !t->check_grid(e, error) || !(error = closed(e)).empty()) {
       error = (it != results.end() ? "" : "不是候选英文名, 按根式解析: ") + error;
       return false;
     }
@@ -975,6 +1006,21 @@ struct Lab::Impl {
     std::string error;
     return fx::parse(src, t->lookup(), t->seg, e, error);
   }
+
+  // 式里未开放来源的叶 → 原因; 都开放 = 空
+  std::string closed(const fx::Expr &e) const {
+    const std::shared_ptr<const F::FeatureTable> t = ft();
+    std::vector<std::string> seen;
+    std::string out;
+    for (const fx::Node &x : e.nodes) {
+      if (x.op >= 0 || std::find(seen.begin(), seen.end(), x.feat) != seen.end())
+        continue;
+      seen.push_back(x.feat);
+      if (const Src s = src_of(*t, *t->x.find(x.feat)); !(sc.srcs & src_bit(s)))
+        out += (out.empty() ? "" : ", ") + x.feat + " (" + def(s).name + ")";
+    }
+    return out.empty() ? out : "用了本会话未开放来源的叶: " + out + "; 开放的来源只有 " + ctx.srcs;
+  }
 };
 
 Lab::Lab() : p_(std::make_unique<Impl>()) {}
@@ -983,16 +1029,18 @@ Lab::~Lab() = default;
 void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   Impl &I = *p_;
   assert(!I.running && "评估队列忙");
-  if (sc != I.sc)
+  assert(sc.srcs && !(sc.srcs & ~kAllSrcs));
+  const bool same = sc.pool == I.sc.pool && sc.level == I.sc.level && sc.hold == I.sc.hold; // 来源只定叶与可见性, 不碰数据: 换来源留着常驻块
+  if (!same)
     I.each_lane([](auto &l) { l.drop(); });
-  if (sc != I.sc || test != I.test)
+  if (!same || test != I.test)
     I.fails.clear();
   I.data = &data;
   I.sc = sc;
   I.test = test;
   I.dir = (fs::path(catalog::dir(sc, test)) / "factors").string();
   I.ctx = context_of(data, sc);
-  I.results = scan(*I.ft(), I.fsc(), I.dir, sc.hold, I.fails);
+  I.results = scan(*I.ft(), I.fsc(), sc.srcs, I.dir, sc.hold, I.fails);
   I.ticks.clear();
 }
 
@@ -1128,7 +1176,12 @@ std::string Lab::parts_miss(const std::string &expr, const std::vector<Part> &pa
 
 bool Lab::factor_of(const std::string &arg, LookFactor &out, std::string &error) const { return p_->factor_of(arg, out, error); }
 
-bool Lab::feature_of(const std::string &src, std::string &root, std::string &error) const { return feature_root(*p_->ft(), src, root, error); }
+bool Lab::feature_of(const std::string &src, std::string &root, std::string &error) const {
+  fx::Expr e;
+  if (!concrete(*p_->ft(), src, e, error) || !(error = p_->closed(e)).empty())
+    return false;
+  return feature_root(*p_->ft(), src, root, error);
+}
 
 // 池轴 = 标签库的资产轴 (子池的成员都在其内): 不在轴上的必观察不成, 先拦; 在轴上而评估期内没进过子池的由观察结果的在池行数说
 bool Lab::code_of(const std::string &arg, std::string &code, std::string &error) const {

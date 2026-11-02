@@ -103,19 +103,19 @@ void StateManager::tick() {
   // Tab Access Control (基本面 → L2 → 消费端)
   // ============================================================================
 
-  // Overview (基本面面板): 流水线第一步, 永远可进
-  state_.tabs.can_access_overview = true;
+  // Fundamental (基本面面板): 流水线第一步, 永远可进
+  state_.tabs.can_access_fundamental = true;
 
   // Encode: 基本面 Ready 后解锁 (L2 覆盖检查以交易日历为 ground truth)
   const bool ready = state_.all_json_ready();
   state_.tabs.can_access_encode = ready;
 
-  // Table/Browser: 基本面 Ready 且 L2 覆盖检查至少跑过一遍 (Encode 页扫描
-  // 完成) —— 不要求编码全部 done, Table 看的是基本面, Browser 本身就是
+  // Assets/Dates: 基本面 Ready 且 L2 覆盖检查至少跑过一遍 (Encode 页扫描
+  // 完成) —— 不要求编码全部 done, Assets 看的是基本面, Dates 本身就是
   // 来看覆盖缺口的. 扫描前 Asset::items 等数据还没建好, 依然要灰着.
   const bool scanned = state_.check.status != DatabaseStatus::Unchecked;
-  state_.tabs.can_access_table = ready && scanned;
-  state_.tabs.can_access_browser = ready && scanned;
+  state_.tabs.can_access_assets = ready && scanned;
+  state_.tabs.can_access_dates = ready && scanned;
 
   publish_task_state();
 }

@@ -1,4 +1,4 @@
-// Tab Overview - 基本面数据源 (BigQuant + Tushare) 状态与同步入口
+// Tab Fundamental - 基本面数据源 (BigQuant + Tushare) 状态与同步入口
 // 数据落地 = output/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/<表>/YYYY-MM-DD.parquet (Daily)
 //   (水位增量, 常量见 shared/Config.hpp);
 // AssetInfo 由 FundamentalService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
@@ -8,12 +8,14 @@
 //     (按 src 分两张清单), spec 加一张表这里自动多一行, 不存在漏配.
 //   本地落盘状态 (分片数 / 最新分片 / 体积 / 落盘时刻) — FundamentalState::tables,
 //     工作线程扫好的快照, 按表名关联; 渲染帧内零 IO.
-#include "gui/task_database/ui/TabOverview.hpp"
+#include "gui/task_database/ui/TabFundamental.hpp"
 #include "fundamental/Spec.hpp"
 #include "imgui.h"
+#include "imgui_internal.h" // TableSetColumnWidthAutoAll
 #include "misc/date.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <string>
 
@@ -69,8 +71,9 @@ void text_bytes(std::uint64_t b) {
 }
 
 // 两张清单共用的列定义 —— DAI 与 Tushare 逐列对仗 (Audit 列 Tushare 恒 "-")
+// fit: 本帧请求列宽贴合内容 (须在表头行锁定布局之前)
 constexpr int kTableColumns = 14;
-void setup_columns() {
+void setup_columns(bool fit) {
   ImGui::TableSetupColumn("Table");
   ImGui::TableSetupColumn("增量键");
   ImGui::TableSetupColumn("抓法");
@@ -85,6 +88,11 @@ void setup_columns() {
   ImGui::TableSetupColumn("修复流量");
   ImGui::TableSetupColumn("全表流量");
   ImGui::TableSetupColumn("内容", ImGuiTableColumnFlags_WidthStretch);
+  if (fit) {
+    ImGuiTable *table = ImGui::GetCurrentTable();
+    assert(table);
+    ImGui::TableSetColumnWidthAutoAll(table);
+  }
   ImGui::TableHeadersRow();
 }
 
@@ -408,7 +416,7 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
 
 } // namespace
 
-void RenderTabOverview(
+void RenderTabFundamental(
     const FundamentalState &state,
     const Progress &progress,
     const TaskStatus &status,
@@ -422,7 +430,8 @@ void RenderTabOverview(
     bool *audit_cancel_clicked,
     bool disable_audit,
     std::string *audit_table,
-    std::string *repair_table) {
+    std::string *repair_table,
+    FundamentalTabState &ui) {
   const bool running = progress.busy();
   const Phase phase = progress.phase.load(std::memory_order_acquire);
   const AuditView av{audit, audit_progress.busy() && audit.op != AuditOp::Load,
@@ -509,6 +518,22 @@ void RenderTabOverview(
   // ==========================================================================
   // 逐表清单 — 数据集里到底有什么, 各自落到哪一步
   // ==========================================================================
+  // 列宽贴合: 逐表落盘状态 / 核对统计 / 进度字样都随两服务发布而变, 列宽须跟着重贴,
+  // 否则可拖宽的定宽列锁在首帧宽度, 变长的格互相遮挡. 发布代变了 (限速 0.5s, 都停下立即) → 连发 2 帧
+  {
+    const uint64_t ep = progress.epoch.load(std::memory_order_acquire) +
+                        audit_progress.epoch.load(std::memory_order_acquire);
+    const double now = ImGui::GetTime();
+    if (ui.fit_epoch != ep && (now - ui.fit_last_time >= 0.5 || !(running || av.active))) {
+      ui.fit_epoch = ep;
+      ui.fit_last_time = now;
+      ui.fit_frames = 2;
+    }
+  }
+  const bool fit = ui.fit_frames > 0;
+  if (fit)
+    ui.fit_frames--;
+
   ImGui::Spacing();
   const bool scanned = !state.tables.empty();
   const Totals totals = count_totals(state);
@@ -538,7 +563,7 @@ void RenderTabOverview(
   ImGui::Spacing();
 
   if (ImGui::BeginTable("FundBigQuantTables", kTableColumns, kTableFlags)) {
-    setup_columns();
+    setup_columns(fit);
     for (const fundamental::Spec &spec : fundamental::SPECS)
       if (fundamental::from<fundamental::Bq>(spec))
         table_row(spec, scanned, state.find_table(spec.name), audit.find_table(spec.name), av,
@@ -550,7 +575,7 @@ void RenderTabOverview(
   ImGui::TextDisabled("Tushare — BigQuant 无等价表的事件型 fallback (不参与 Audit)");
 
   if (ImGui::BeginTable("FundTushareTables", kTableColumns, kTableFlags)) {
-    setup_columns();
+    setup_columns(fit);
     for (const fundamental::Spec &spec : fundamental::SPECS)
       if (fundamental::from<fundamental::Tu>(spec))
         table_row(spec, scanned, state.find_table(spec.name), nullptr, av, disable_audit,

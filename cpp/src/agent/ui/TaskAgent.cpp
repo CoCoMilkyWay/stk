@@ -29,7 +29,7 @@
 
 namespace agent {
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, srcs)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
 
 namespace {
@@ -170,7 +170,7 @@ void load_ui(State &s) {
   }
   const Options &o = s.opt;
   ok = ok && o.backend >= 0 && o.backend < llm::kBackendCount && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < kMsgCount;
+       o.prompt >= 0 && o.prompt < kMsgCount && o.sc.srcs && !(o.sc.srcs & ~kAllSrcs);
   if (!ok)
     s.opt = Options{};
   if (!catalog::gpu())
@@ -255,8 +255,34 @@ void scope_row(const SharedData &data, State &s, bool locked) {
     if (ImGui::RadioButton((h.name + "##hd").c_str(), o.hold == h.key))
       o.hold = h.key;
   }
-  ImGui::EndDisabled();
   ImGui::TextDisabled("   %s", catalog::hold_desc(o.hold, o.level).c_str());
+  // 特征来源: 各自单用时的评估期 + 开放的合起来的评估期 (Lab 绑到此作用域后才有; 本层无叶的来源不可改); 至少留一类
+  const Lab &lab = s.mine->lab;
+  const Context *c = lab.scope() == o ? &lab.ctx() : nullptr;
+  ImGui::TextDisabled("   Src");
+  for (size_t i = 0; i < kSrcCount; ++i) {
+    const uint8_t bit = src_bit(static_cast<Src>(i));
+    const SrcSpan *sp = c ? &c->spans[i] : nullptr;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(sp && sp->leaves == 0);
+    bool on = (o.srcs & bit) != 0;
+    if (ImGui::Checkbox((std::string(kSrcs[i].name) + "##src").c_str(), &on))
+      if (const auto n = static_cast<uint8_t>(on ? o.srcs | bit : o.srcs & ~bit); n)
+        o.srcs = n;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!sp)
+      ImGui::TextDisabled("…");
+    else if (sp->leaves == 0)
+      ImGui::TextDisabled("本层无");
+    else
+      ImGui::TextDisabled("%d 叶 · %s", sp->leaves, sp->window.c_str());
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
+  ImGui::Text("评估期 %s", c ? c->window.c_str() : "…");
+  ImGui::EndDisabled();
 }
 
 void session_row(const SharedData &data, State &s) {
@@ -264,12 +290,15 @@ void session_row(const SharedData &data, State &s) {
   const Options &o = s.opt;
   const bool has_hold = !catalog::holds(data, o.sc.level).empty();
   const bool keyed = has_key(o.backend);
+  const bool has_leaves = m.lab.scope() == o.sc && !m.lab.ctx().leaves.empty();
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
-  const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold;
-  const char *why_not = !keyed ? "所选后端的 key 未填 (config/agent/keys.json)" : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                                                                                               : nullptr;
+  const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold && has_leaves;
+  const char *why_not = !keyed                    ? "所选后端的 key 未填 (config/agent/keys.json)"
+                        : !model_ok(s)            ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
+                        : has_hold && !has_leaves ? "开放的特征来源在本层没有叶 (改选来源)"
+                                                  : nullptr;
   const auto begin_session = [&](bool test) {
     if (!catalog::ready(data, o.sc, o.gpu == 1)) {
       s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";

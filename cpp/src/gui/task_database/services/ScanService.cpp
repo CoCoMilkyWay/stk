@@ -70,7 +70,7 @@ bool ScanService::run(ScanRequest &req) {
   assert(!data_.assetinfo.get_stock_days().empty() && "基本面日历未就绪, 不应触发扫描");
   Asset::compute_backtest_coverage(s, backtest_start, data_.assetinfo);
 
-  // Encode 的缺失表、Table 的 Orders%、Browser 的完整性是同一份统计, 在这里
+  // Encode 的缺失表、Assets 的 Orders%、Dates 的完整性是同一份统计, 在这里
   // 一次算完. 放在扫描里而不是各页首帧惰性算: 那是 885 天 × 5800 资产的双重
   // 遍历, 摊在渲染帧上会直接卡住一次交互. 纯 CPU, 线程数取核数.
   asset.compute_coverage_statistics(s, data_.assetinfo, misc::exec::ensure(cpu_ex_, misc::exec::hw()), *this);

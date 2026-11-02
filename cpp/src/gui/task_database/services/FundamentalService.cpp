@@ -115,7 +115,7 @@ std::string now_str() {
   return std::string(buf);
 }
 
-// Catalog → 逐表落盘状态 (Overview 逐表列出用). _meta 单文件表: months 恒 0, last_month 恒 0.
+// Catalog → 逐表落盘状态 (Fundamental 页逐表列出用). _meta 单文件表: months 恒 0, last_month 恒 0.
 std::vector<TableFileStat> collect_table_stats(const Catalog &cat) {
   std::vector<TableFileStat> out;
   out.reserve(cat.all().size());
@@ -409,7 +409,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   });
 
   // ---- 交易日历 ← all_trading_days → 全日历展开 (含周末/节假日 trading=false 行) ----
-  // Browser 日历的节假日标注依赖非交易日行; trading 另作区间事件的交易日相连判据
+  // Dates 日历的节假日标注依赖非交易日行; trading 另作区间事件的交易日相连判据
   const std::vector<Ymd> trading = fundamental::calendar(cat, today);
   {
     auto &stock_days = job.assetinfo.mutable_stock_days();
@@ -461,7 +461,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
 
   // ---- 日频行情 + 复权因子 ← cn_stock_real_bar1d ----
   //   最新行 → update_date; 最新有效报价行 → volume/amount/turn/close;
-  //   adjust_factor → 文件内变点压缩 (分红/拆分事件日, TabBrowser 用)
+  //   adjust_factor → 文件内变点压缩 (分红/拆分事件日, TabDates 用)
   Part<BarAcc> bar_p;
   scan.add(bar_p, spec("cn_stock_real_bar1d"), {"adjust_factor", "volume", "amount", "turn", "close"}, BarAcc(nid),
            [nid](const Rows &r, BarAcc &a) {
@@ -542,7 +542,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   // ---- 状态 ← cn_stock_status ----
   //   每股最新行 → st / suspended;
   //   suspended≠0 的 (date, id) 全量 → suspended_ (逐日停牌名单) + 停牌区间事件.
-  //   Browser 完整性把停牌股从当日分母里剔掉 — 全天停牌本就无逐笔可编码.
+  //   Dates 完整性把停牌股从当日分母里剔掉 — 全天停牌本就无逐笔可编码.
   //   风险警示 4 态 (口径同 Fund st_level): st 1/2 优先; 否则 risk_warning → 3 (退市整理期)
   //   price_limit_status: 1 = 收盘跌停 / 2 = 正常 / 3 = 收盘涨停 (实测对照 cn_stock_limit_price)
   Part<StatusAcc> status_p;
@@ -985,7 +985,7 @@ bool FundamentalService::run(FundamentalRequest &req) {
     using Tasks = std::vector<fundamental::Task>;
     const fundamental::Round round; // 本轮开头的本地视图 (plan 只算这一次, sync 照单执行)
     bigquant::Client bq;
-    // 配额读数 → state (探针不耗配额; Overview 常显本周余额, 未联网的轮次沿用上次读数)
+    // 配额读数 → state (探针不耗配额; Fundamental 页常显本周余额, 未联网的轮次沿用上次读数)
     auto show_quota = [this, &job]() {
       std::lock_guard lk(mutex);
       state.quota_weekly = job.quota.weekly;

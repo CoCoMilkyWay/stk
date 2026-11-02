@@ -87,7 +87,7 @@ struct Spec {
   int avail_hour; // day X 数据于 X 日该小时后完整:
                   //   0 = 排程提前入库; 9/10 = 真盘前; 20 = 盘后批; 24 = 全天涓流, 次日才完整
   std::variant<Bq, Tu> src;
-  std::string desc;                   // 表内容一句话 (GUI Database → Overview)
+  std::string desc;                   // 表内容一句话 (GUI Database → Fundamental)
   std::vector<std::string> drop = {}; // 不落盘的列: vd 之后才回填的未来信息 (两源同一步剥离)
 };
 

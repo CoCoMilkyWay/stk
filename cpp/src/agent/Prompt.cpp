@@ -461,6 +461,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"hold", c.hold},
                             {"hold_desc", c.hold_desc},
                             {"window", c.window},
+                            {"srcs", c.srcs},
                             {"search_mono", num(c.min_mono)},
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},

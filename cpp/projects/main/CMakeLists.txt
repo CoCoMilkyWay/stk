@@ -262,9 +262,9 @@ set(MATH_FAST
     gui/Tasks.cpp
     gui/task_database/services/AuditService.cpp
     gui/task_database/services/EncodingService.cpp
-    gui/task_database/ui/TabBrowser.cpp
+    gui/task_database/ui/TabDates.cpp
     gui/task_database/ui/TabEncode.cpp
-    gui/task_database/ui/TabOverview.cpp
+    gui/task_database/ui/TabFundamental.cpp
     gui/task_features/TaskFeatures.cpp
     gui/task_features/services/ComputeService.cpp
     gui/task_features/services/CorrService.cpp
@@ -323,7 +323,7 @@ set(MATH_PRECISE
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp
     gui/task_database/ui/CrossSectionAnalysis.cpp
-    gui/task_database/ui/TabTable.cpp
+    gui/task_database/ui/TabAssets.cpp
     gui/task_features/services/OrderFlowService.cpp
     gui/task_features/services/ReplayService.cpp
     gui/task_features/ui/Common.cpp
