@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "通达信小市值",
+ "expr": "CsRank(TsNeg(TsAdd(TsAdd(TsAdd(TsAdd(TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap)), TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap))), TsAdd(TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap)), TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap)))), TsAdd(TsAdd(TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap)), TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap))), TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap)))), TsAdd(CsRank(bar.5m.close_5min), CsRank(bar.1d.cfo_yoy_ttm)))))",
+ "note": "通达信排名: 总市值↑ 7 + 流通市值↑ 7 + 收盘价↑ 1 + 经营现金流 TTM 同比↑ 1, 各项池内升序秩加权求和, 和越小越靠做多端 (7 倍 = 4A + 2A + A); 小盘池即其母集筛选"
+}

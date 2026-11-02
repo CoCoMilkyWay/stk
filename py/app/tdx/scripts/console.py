@@ -9,13 +9,14 @@
 # 提供的 API：
 #   GET  /                                   控制台页面
 #   GET  /api/ping                           {pid}（离线为 null）
-#   GET  /api/watch?s=路,路                  SSE：所列各路合成一条连接，每条 {s 路名, r 记录}，r 为 {} 是该路心跳。路：
+#   GET  /api/watch?s=路,路                  SSE：所列各路合成一条连接，每条 {s 路名, r 记录}，r 为 null 是该路心跳。路：
 #          tree  shim treewatch 原样转发（窗口树版本号）
 #          gdi   shim gdiwatch 原样转发（窗口绘制层）
 #          pos   持仓页帧（内存持仓 × 内存当日成交 × 新浪实时行情含 5 档，每只一行含盘口列），变了才推
 #          ord   最近各单状态（逐步）
 #          rec   录制器 {st 状态, recs 新记录}
-#   POST /api/kline      {code,kind,days}    持仓页行情里该只近 days 个交易日的 K 线（新浪，本地落盘）：kind = min 分钟 / day 日线
+#   POST /api/kline      {code,kind,days}    持仓页行情里该只近 days 个交易日的 K 线（新浪，本地落盘）：kind = min 分钟 / day 日线，
+#                                            回 {per 每日根数, bars 各根带当日第几根}
 #   POST /api/shim            {cmd,args}     透传 shim 命令，回 JSON 记录列表（命令表见 shim.c）
 #   POST /api/clicktext {text,class?,title?} 点可见窗口上画着 text 的按钮（须唯一）
 #   POST /api/refresh                        让客户端重查当日成交与持仓，等内存换代后重读，新帧经 pos 推送
@@ -50,10 +51,12 @@ HTML_FILE = os.path.join(HERE, "console.html")
 
 
 def kline(b):
-    """b = {code, kind: day|min, days} → 持仓页行情里（持仓与今日清仓）该只近 days 个交易日的 K 线。"""
+    """b = {code, kind: day|min, days} → 持仓页行情里（持仓与今日清仓）该只近 days 个交易日的 K 线
+    {per 每个交易日根数, bars [(标号, 开, 高, 低, 收, 量, 当日第几根)]}。"""
     assert b["kind"] in KINDS, f"K 线种类 {b['kind']!r}，可选 {list(KINDS)}"
-    q = HUB.quote(b["code"])
-    return KCACHE.bars(KINDS[b["kind"]], q["sym"], q, int(b["days"]))
+    kind, q = KINDS[b["kind"]], HUB.quote(b["code"])
+    bars = KCACHE.bars(kind, q["sym"], q, int(b["days"]))
+    return {"per": kind.per, "bars": [(*k, kind.slot(k[0])) for k in bars]}
 
 
 # ---------- 合路推送 ----------

@@ -39,7 +39,7 @@
 // 节点记录：{depth,hwnd,id,class,title,rect:[l,t,r,b],style,exstyle,vis,en}
 // 图层记录：{hwnd,off:[客户区相对窗口左上],items:[[l,t,r,b,v]|[l,t,r,b,v,"文字"]]}
 //   客户区坐标，后出的在上；v 在 gdi 为色 0x00BBGGRR，在 detail 为 st 位。
-// 长连接（treewatch / gdiwatch）：无变更 1s 推一次心跳 {}。
+// 长连接（treewatch / gdiwatch）：无变更 1s 推一次心跳 null。
 // 编译：见 shimctl.py（i686-w64-mingw32-gcc 或 clang
 // --target=i686-w64-windows-gnu）。
 
@@ -444,9 +444,18 @@ static DWORD TCALL my_req_send(void *self, DWORD a, DWORD b, DWORD c, DWORD d) {
 }
 
 // ---------- 窗口解析 ----------
+// 按类名 / 标题（UTF-8，NULL = 不比）找顶层窗口。
+static HWND find_window(const char *cls, const char *ttl) {
+  wchar_t wc[256], wt[512];
+  u2w(cls, wc, 256);
+  if (ttl)
+    u2w(ttl, wt, 512);
+  return FindWindowExW(NULL, NULL, wc, ttl ? wt : NULL);
+}
+
 static HWND resolve_target(const char *s) {
   if (!strncmp(s, "class=", 6))
-    return FindWindowA(s + 6, NULL);
+    return find_window(s + 6, NULL);
   return (HWND)(DWORD_PTR)strtoul(s, NULL, 0);
 }
 
@@ -563,7 +572,9 @@ static const char *cmd_find(struct out *o, HWND h, char *a) {
     *ttl = 0;
     ttl += 7;
   }
-  HWND f = FindWindowExA(NULL, NULL, cls, ttl);
+  if (strlen(cls) >= 256 || (ttl && strlen(ttl) >= 512))
+    return "class/title too long";
+  HWND f = find_window(cls, ttl);
   if (f)
     emit_node(o, f, 0);
   return NULL;
@@ -1145,7 +1156,7 @@ static const char *cmd_spy_dump(struct out *o, HWND h, char *a) {
 
 // ---------- 推送通道（treewatch / gdiwatch 同构）----------
 // 通道 = 变更信号 + pump。长连接线程：连上先 pump 全量，之后每次被唤醒（合并
-// coalesce_ms 内连发）pump 增量；无变更 1s 心跳 {}（beat=1，pump 可顺带清理）；
+// coalesce_ms 内连发）pump 增量；无变更 1s 心跳 null（beat=1，pump 可顺带清理）；
 // send 失败即对端已断，退出线程。
 #define WATCH_CAP 8
 
@@ -1217,7 +1228,7 @@ static DWORD WINAPI feed_thread(LPVOID arg) {
       InterlockedExchange(&s.f->pending, 0);
       last = s.f->pump(&o, last, beat);
       if (beat && !o.len)
-        put(&o, "{}\n", 3);
+        put(&o, "null\n", 5);
       if (o.len && !send_all(s.c, o.buf, o.len))
         break;
       beat = WaitForSingleObject(ev, 1000) != WAIT_OBJECT_0;
@@ -2297,7 +2308,8 @@ typedef void *(TCALL *host_session_fn)(void *);
 typedef void *(TCALL *session_req_fn)(void *, DWORD, DWORD);
 typedef DWORD(TCALL *release_fn)(void *);
 
-static void req_install(void *req) {
+// 六个方法入口须都认得出才钩（不留半钩）；已钩过则须是同一组实现。
+static const char *req_install(void *req) {
   void **vt = *(void ***)req;
   const int slot[] = {0x14 / 4, 0x18 / 4, 0x1c / 4,
                       0x24 / 4, 0x2c / 4, 0x64 / 4};
@@ -2309,19 +2321,26 @@ static void req_install(void *req) {
                    (void **)&o_req_float, (void **)&o_req_send};
   if (g_req_hooked) {
     for (int i = 0; i < 6; i++)
-      assert(g_req_target[i] == (DWORD)vt[slot[i]]);
-    return;
+      if (g_req_target[i] != (DWORD)vt[slot[i]])
+        return "request vtable differs from the hooked one";
+    return NULL;
   }
   if (!g_htab)
     htab_open();
   for (int i = 0; i < 6; i++) {
-    assert(mem_ok(vt[slot[i]], 1, 1));
+    int len;
+    if (!mem_ok(vt[slot[i]], 1, 1) || !hk_clean((BYTE *)vt[slot[i]], &len))
+      return "request method entry not recognized";
+  }
+  for (int i = 0; i < 6; i++) {
     g_req_target[i] = (DWORD)vt[slot[i]];
     assert(inline_hook((BYTE *)vt[slot[i]], hook[i], orig[i]));
   }
   g_req_hooked = 1;
+  return NULL;
 }
 
+// 从所给窗口的 MFC 对象一路摸到请求对象，任一步不对回 err（不碍客户端）。
 static const char *req_attach(struct out *o, char *a) {
   char *rest;
   HWND h = split_target(a, &rest);
@@ -2329,18 +2348,23 @@ static const char *req_attach(struct out *o, char *a) {
     return "usage: req attach <hwnd> [object-offset]";
   h = GetAncestor(h, GA_ROOT);
   HMODULE mfc = GetModuleHandleA("MFC42.DLL");
-  assert(mfc);
+  if (!mfc)
+    return "MFC42.DLL not loaded";
   mfc_from_hwnd_fn from = (mfc_from_hwnd_fn)GetProcAddress(
       mfc, "?FromHandlePermanent@CWnd@@SGPAV1@PAUHWND__@@@Z");
-  assert(from);
+  if (!from)
+    return "CWnd::FromHandlePermanent not exported";
   BYTE *wnd = (BYTE *)from(h);
-  assert(wnd && mem_ok(wnd, 0x204, 0));
+  if (!wnd || !mem_ok(wnd, 0x204, 0))
+    return "not an MFC permanent window";
 
   int chosen = -1, found = 0;
   if (*rest) {
     chosen = (int)strtoul(rest, NULL, 0);
-    assert(chosen >= 0x20 && chosen <= 0x200 && !(chosen & 3));
-    assert(req_host_candidate(*(void **)(wnd + chosen)));
+    if (chosen < 0x20 || chosen > 0x200 || (chosen & 3))
+      return "offset must be 4-aligned in [0x20, 0x200]";
+    if (!req_host_candidate(*(void **)(wnd + chosen)))
+      return "no host object at offset";
     found = 1;
   } else {
     for (int off = 0x20; off <= 0x200; off += 4) {
@@ -2363,17 +2387,23 @@ static const char *req_attach(struct out *o, char *a) {
   void **hvt = *(void ***)host;
   host_session_fn get_session = (host_session_fn)hvt[0x26c / 4];
   void *session = get_session(host);
-  assert(session && mem_ok(session, sizeof(void *), 0));
+  if (!session || !mem_ok(session, sizeof(void *), 0))
+    return "session not found";
   void **svt = *(void ***)session;
-  assert(mem_ok(svt, 0x20, 0) && mem_ok(svt[0x1c / 4], 1, 1));
+  if (!mem_ok(svt, 0x20, 0) || !mem_ok(svt[0x1c / 4], 1, 1))
+    return "session vtable not recognized";
   session_req_fn make_req = (session_req_fn)svt[0x1c / 4];
   void *req = make_req(session, 0, 0);
-  assert(req && mem_ok(req, sizeof(void *), 0));
-  req_install(req);
-
+  if (!req || !mem_ok(req, sizeof(void *), 0)) {
+    ((release_fn)svt[0x8 / 4])(session);
+    return "request object not created";
+  }
   void **rvt = *(void ***)req;
+  const char *err = req_install(req);
   ((release_fn)rvt[0x4 / 4])(req);
   ((release_fn)svt[0x8 / 4])(session);
+  if (err)
+    return err;
   g_req_on = 1;
   emit(o,
        "{\"attached\":\"0x%08x\",\"wnd\":\"0x%08x\",\"host\":\"0x%08x\","
@@ -2506,20 +2536,36 @@ static int in_paint(const struct layer *L, DWORD tick) {
   return L->painting && tick - L->painting < PAINT_MS;
 }
 
-// seq > last 且不在重绘中的窗口图层整层写入 o，回本轮快照点；beat（心跳）
-// 时顺带丢掉已销毁窗口的图层。窗口几何在锁外取。
+// 该推的图层（seq > last）：不在重绘中即推；在重绘中即压下，快照点退到它之前，
+// 等 EndPaint 或 PAINT_MS 超时后的下一轮（至迟一个心跳）再推。
+static void gdi_due(const struct layer *L, LONG last, DWORD tick, LONG *keep,
+                    int *push) {
+  *push = 0;
+  if (L->seq <= last)
+    return;
+  if (!in_paint(L, tick))
+    *push = 1;
+  else if (L->seq <= *keep)
+    *keep = L->seq - 1;
+}
+
+// 该推的窗口图层整层写入 o，回本轮快照点；beat（心跳）时顺带丢掉已销毁窗口的
+// 图层。窗口几何在锁外取。
 static LONG gdi_pump(struct out *o, LONG last, int beat) {
   HWND hs[LAYER_CAP];
   POINT off[LAYER_CAP];
   char alive[LAYER_CAP];
-  LONG now = g_gdi_seq;
+  LONG keep = g_gdi_seq;
   DWORD tick = GetTickCount();
-  int n = 0;
+  int n = 0, push;
   EnterCriticalSection(&g_gdi_cs);
-  for (int i = 0; i < g_nlay; i++)
-    if (g_lay[i].win &&
-        (beat || (g_lay[i].seq > last && !in_paint(&g_lay[i], tick))))
+  for (int i = 0; i < g_nlay; i++) {
+    if (!g_lay[i].win)
+      continue;
+    gdi_due(&g_lay[i], last, tick, &keep, &push);
+    if (beat || push)
       hs[n++] = (HWND)g_lay[i].key;
+  }
   LeaveCriticalSection(&g_gdi_cs);
   for (int i = 0; i < n; i++)
     alive[i] = client_off(hs[i], &off[i]);
@@ -2528,13 +2574,16 @@ static LONG gdi_pump(struct out *o, LONG last, int beat) {
     struct layer *L = lay_get(hs[i], 1, 0);
     if (!L)
       continue;
-    if (!alive[i])
+    if (!alive[i]) {
       lay_free(L);
-    else if (L->seq > last && !in_paint(L, tick))
+      continue;
+    }
+    gdi_due(L, last, tick, &keep, &push);
+    if (push)
       emit_layer(o, L, off[i]);
   }
   LeaveCriticalSection(&g_gdi_cs);
-  return now;
+  return keep;
 }
 
 static const char *cmd_gdidump(struct out *o, HWND h, char *a) {

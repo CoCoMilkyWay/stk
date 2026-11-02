@@ -148,7 +148,7 @@ gpsz302132.dat,142f0ad6289b09cc20d5af17483b7518,278226
 | 其它   | `noraise` `spy` `ping` `help`                   |
 
 - 窗口树：节点 `{depth,hwnd,id,class,title,rect,style,exstyle,vis,en}`；WinEvent 钩子维护变更版本号。
-- 快照 / 推送成对：`treegen` / `treewatch`（版本号）、`gdidump` / `gdiwatch`（绘制层）；长连接无变更 1s 推心跳 `{}`。
+- 快照 / 推送成对：`treegen` / `treewatch`（版本号）、`gdidump` / `gdiwatch`（绘制层）；长连接无变更 1s 推心跳 `null`。
 - 图层记录：`{hwnd,off,items:[[l,t,r,b,v,文字?]]}`，客户区坐标；`detail` 与绘制层同形，`v` 分别为状态位与颜色。
 - 子项：`detail` 在目标线程内一次读完 Button / ListBox / Header / ListView / TreeView / 弹出菜单的可见项。
 - 输入：一律进程内 `PostMessage`，不动真实光标、不抢前台；鼠标投给捕获窗口或坐标下最深子窗口，键盘投给焦点窗口。
@@ -159,7 +159,7 @@ gpsz302132.dat,142f0ad6289b09cc20d5af17483b7518,278226
 ### 控制台（`scripts/console.py` + `console.html`）
 - 启动：`python3 scripts/console.py [port]`（默认 8765）是唯一入口，依次 `ensure`、`noraise on`、`gdi on`，再起 HTTP 服务并 `xdg-open` 用系统浏览器打开。
 - 接口：`GET /api/ping`；`GET /api/watch?s=路,路` 把所列各路推送（`tree` 窗口树版本、`gdi` 绘制层、`pos` 持仓帧、`ord` 各单状态、`rec` 录制器）合成一条 SSE，每条 `{s, r}`；`POST /api/shim {cmd,args}` 透传 shim 命令，`/api/clicktext {text,class?,title?}` 点画着该文字的按钮，`/api/refresh` 让客户端重查当日成交与持仓并等内存换代，`/api/kline {code,kind,days}` 取近 days 个交易日的 K 线（kind = `min` / `day`），`/api/order {code,s,size,px,credit}` 下单（s = 1 买 / −1 卖）。任何失败统一回 `{err}`。
-- 推送源：`pos` `ord` `rec` 三路同一个 `Feed`（源每变一次升一个版本，订阅者每见新版推一次，15s 无新版推心跳 `{}`）；`tree` `gdi` 原样转发 shim 长连接。
+- 推送源：`pos` `ord` `rec` 三路同一个 `Feed`（源每变一次升一个版本，订阅者每见新版推一次，15s 无新版推心跳 `null`）；`tree` `gdi` 原样转发 shim 长连接。
 - 行情页：点持仓 / 滑点表的行选股，左 K 线、右 5 档盘口与当日概要，两者等高；K 线可看分钟（日内 / 2 日 / 3 日 / 4 日，按图宽每 g 分钟并一根，g 整除 240）与日线，价格 3 位小数。
 - 布局图：按屏幕坐标与 z 序还原窗口，标准控件按类画、自绘窗口用绘制层；勾「交互」后鼠标、滚轮、键盘原样投给客户端。
 - 列表：可折叠窗口树，自绘窗口下挂其绘制元素（每段文字一项）；与布局图双向 hover、选中。

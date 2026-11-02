@@ -1,2626 +1,2542 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>shim 接口控制台</title>
-    <style>
-      :root {
-        --bg: #1e1e1e;
-        --panel: #252526;
-        --line: #333;
-        --fg: #ddd;
-        --mut: #888;
-        --acc: #4ec9b0;
-        --hot: #d7ba7d;
-        --sel: #094771;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        font:
-          13px/1.5 ui-monospace,
-          Consolas,
-          monospace;
-        background: var(--bg);
-        color: var(--fg);
-      }
-      header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px 12px;
-        background: var(--panel);
-        border-bottom: 1px solid var(--line);
-      }
-      header h1 {
-        font-size: 14px;
-        margin: 0;
-        color: var(--acc);
-      }
-      #status {
-        font-size: 12px;
-      }
-      .on {
-        color: #6a9955;
-      }
-      .off {
-        color: #f14c4c;
-      }
-      button {
-        background: #333;
-        color: var(--fg);
-        border: 1px solid #444;
-        border-radius: 4px;
-        padding: 3px 8px;
-        cursor: pointer;
-        font: inherit;
-      }
-      button:hover {
-        background: #3a3a3a;
-      }
-      button:active {
-        background: var(--sel);
-      }
-      input,
-      select {
-        background: #1b1b1b;
-        color: var(--fg);
-        border: 1px solid #444;
-        border-radius: 4px;
-        padding: 3px 6px;
-        font: inherit;
-      }
-      .wrap {
-        display: flex;
-        gap: 6px;
-        padding: 8px;
-        height: calc(100vh - 45px);
-      }
-      .col {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        min-height: 0;
-      }
-      .pane {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        min-width: 0;
-        min-height: 0;
-      }
-      #leftPane {
-        flex: 0 0 55%;
-      }
-      .grow-pane {
-        flex: 1 1 0;
-      }
-      #gutter {
-        flex: 0 0 6px;
-        cursor: col-resize;
-        background: var(--line);
-        border-radius: 3px;
-      }
-      #gutter:hover {
-        background: #555;
-      }
-      .tabbar {
-        display: flex;
-        gap: 4px;
-      }
-      .tabbar button.on {
-        background: var(--sel);
-        color: #fff;
-      }
-      .tabpane {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        flex: 1;
-        min-height: 0;
-        overflow: auto;
-      }
-      .tnode.hl {
-        outline: 1px solid var(--hot);
-        background: #3a3320;
-      }
-      .panel {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        padding: 8px;
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-      }
-      .panel h2 {
-        font-size: 12px;
-        margin: 0 0 6px;
-        color: var(--hot);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-      .row {
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-      .grow {
-        flex: 1;
-        min-width: 0;
-      }
-      #tree {
-        overflow: auto;
-        flex: 1;
-        white-space: nowrap;
-      }
-      .tnode {
-        padding: 1px 4px;
-        cursor: pointer;
-        border-radius: 3px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .tnode:hover {
-        background: #2d2d2d;
-      }
-      .tnode.active {
-        background: var(--sel);
-      }
-      .tnode .cls {
-        color: var(--acc);
-      }
-      .tnode .ttl {
-        color: var(--hot);
-      }
-      .tnode .meta {
-        color: var(--mut);
-      }
-      .tnode.invis {
-        opacity: 0.45;
-      }
-      .fold {
-        display: inline-block;
-        width: 12px;
-        text-align: center;
-        color: var(--mut);
-        cursor: pointer;
-      }
-      .tabs button.on {
-        background: var(--sel);
-        color: #fff;
-      }
-      #mapWrap {
-        flex: 1;
-        overflow: auto;
-        background: #141414;
-        border: 1px solid var(--line);
-        border-radius: 4px;
-      }
-      #mapWrap:focus {
-        outline: 1px solid var(--acc);
-      }
-      /* 块级：免得 inline 基线留白让刚好放下时也冒出竖滚动条 */
-      #map {
-        display: block;
-      }
-      /* 只有窗口底板 rect.win 接鼠标（data-hwnd），装饰/文字一律穿透 */
-      #map * {
-        pointer-events: none;
-      }
-      #map rect,
-      #map line {
-        vector-effect: non-scaling-stroke;
-        stroke-width: 1;
-      }
-      #map .win {
-        pointer-events: all;
-      }
-      /* 绘制层元素：透明命中框（data-hwnd = 窗口#客户区左,上），盖在画面上 */
-      #map .elem {
-        pointer-events: all;
-        fill: transparent;
-        stroke: none;
-      }
-      #map .win.frame {
-        fill: #1e1e1e;
-        stroke: #333;
-      }
-      #map .win.btn,
-      #map .btnface {
-        fill: #3a3a3a;
-        stroke: #5a5a5a;
-      }
-      #map .win.bare {
-        fill: transparent;
-        stroke: none;
-      }
-      #map .win.group {
-        fill: transparent;
-        stroke: #555;
-      }
-      #map .win.field {
-        fill: #111;
-        stroke: #444;
-      }
-      #map .win.hdr,
-      #map .hdritem {
-        fill: #2d2d2d;
-        stroke: #4a4a4a;
-      }
-      #map .win.menu {
-        fill: #2b2b2b;
-        stroke: #777;
-      }
-      #map .win.self {
-        fill: url(#hatch);
-        stroke: #3a3a3a;
-      }
-      #map .win.web {
-        fill: #18222c;
-        stroke: #2d4256;
-      }
-      #map .pressed {
-        fill: #1f1f1f;
-        stroke: #222;
-      }
-      #map .selbar {
-        fill: var(--sel);
-      }
-      #map .sep {
-        stroke: #555;
-      }
-      #map text {
-        fill: #ddd;
-        font-size: 12px;
-        font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-      }
-      #map text.gray {
-        fill: #777;
-      }
-      #map text.self-lbl {
-        fill: #666;
-        font-size: 9px;
-      }
-      #mapHl {
-        fill: rgba(215, 186, 125, 0.15);
-        stroke: var(--hot);
-        stroke-width: 2 !important;
-      }
-      #mapSel {
-        fill: none;
-        stroke: #fff;
-        stroke-width: 2 !important;
-      }
-      pre.out {
-        background: #161616;
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        padding: 6px;
-        margin: 6px 0 0;
-        max-height: 160px;
-        overflow: auto;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 12px;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: 2px 5px;
-        border-bottom: 1px solid var(--line);
-        white-space: nowrap;
-      }
-      th {
-        color: var(--mut);
-        position: sticky;
-        top: 0;
-        background: var(--panel);
-      }
-      th.sortable {
-        cursor: pointer;
-        user-select: none;
-      }
-      th.sortable:hover {
-        color: var(--fg);
-      }
-      /* 数字列：右对齐 + 等宽数位，小数点上下对齐 */
-      .num {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-      }
-      /* 滑点小盘口：6 条横杠叠成一个字高，自上而下 10W/5W/1W 买、1W/5W/10W 卖 */
-      .bars {
-        display: inline-flex;
-        flex-direction: column;
-        gap: 1px;
-        height: 1em;
-        width: 16px;
-        vertical-align: middle;
-      }
-      .bars i {
-        flex: 1;
-      }
-      button.ord {
-        padding: 0 4px;
-        font-size: 11px;
-      }
-      .kv {
-        color: var(--mut);
-      }
-      .kv b {
-        color: var(--fg);
-        font-weight: 600;
-      }
-      .spy-list {
-        overflow: auto;
-        max-height: 260px;
-      }
-      label.ck {
-        color: var(--mut);
-        display: inline-flex;
-        gap: 3px;
-        align-items: center;
-      }
-      tbody tr[data-code] {
-        cursor: pointer;
-      }
-      tr.cur td {
-        background: #2a2d2e;
-      }
-      #kBox {
-        position: relative;
-      }
-      #kCv {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-      }
-      #book .lv {
-        display: grid;
-        grid-template-columns: 3em 1fr 1fr;
-        padding: 0 4px;
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-      }
-      #book .lv > :first-child {
-        text-align: left;
-      }
-      #book .sum {
-        display: grid;
-        grid-template-columns: auto 1fr auto 1fr;
-        gap: 0 6px;
-        margin-top: 6px;
-        padding: 0 4px;
-        font-variant-numeric: tabular-nums;
-      }
-      #book .sum > :nth-child(even) {
-        text-align: right;
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <h1>shim 接口控制台</h1>
-      <span id="status">…</span>
-      <span class="grow"></span>
-      <label class="ck"
-        ><input
-          type="checkbox"
-          id="noraise"
-          checked
-          onchange="setNoraise(this.checked ? 'on' : 'off')"
-        />不抬窗</label
-      >
-      <span class="kv" id="noraiseLbl"></span>
-      <button onclick="refreshTree()">刷新窗口树</button>
-      <button onclick="ping()">ping</button>
-    </header>
 
-    <div class="wrap">
-      <!-- 左：布局图 / 持仓 可切换 -->
-      <div class="pane" id="leftPane">
-        <div class="tabbar">
-          <button data-tab="layout" onclick="setTab('leftPane', 'layout')">
-            布局图
-          </button>
-          <button data-tab="pos" onclick="setTab('leftPane', 'pos')">
-            持仓
-          </button>
-        </div>
-        <div class="panel" data-view="layout" style="flex: 1">
-          <h2>
-            布局图
-            <button onclick="zoomReset()">复位</button>
-            <span class="kv" id="zoomLbl" style="margin-left: 4px"></span>
-            <label class="ck" style="margin-left: 8px"
-              ><input type="checkbox" id="autoUpd" checked />自动更新</label
-            >
-            <label class="ck"
-              ><input type="checkbox" id="interact" checked />交互</label
-            >
-            <label class="ck" title="按客户端真实绘制的文字/色块画（shim gdi）"
-              ><input
-                type="checkbox"
-                id="gdiOn"
-                checked
-                onchange="renderMap()"
-              />绘制层</label
-            >
-            <span class="kv">(点图后可键盘输入 · Ctrl+滚轮缩放)</span>
-            <label class="ck"
-              >轮询<input
-                type="number"
-                id="pollFps"
-                value="2"
-                min="0"
-                max="10"
-                style="width: 46px"
-              />fps</label
-            >
-          </h2>
-          <div class="row" style="margin-bottom: 6px">
-            <input
-              class="grow"
-              id="filter"
-              placeholder="过滤 class/title/hwnd/id…"
-              oninput="render()"
-            />
-            <label class="ck"
-              ><input
-                type="checkbox"
-                id="onlyVis"
-                onchange="render()"
-              />只看可见</label
-            >
-            <label class="ck"
-              ><input
-                type="checkbox"
-                id="hideZero"
-                checked
-                onchange="render()"
-              />隐藏零矩形</label
-            >
-          </div>
-          <div id="mapWrap" tabindex="0">
-            <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
-          </div>
-        </div>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>shim 接口控制台</title>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --panel: #252526;
+      --line: #333;
+      --fg: #ddd;
+      --mut: #888;
+      --acc: #4ec9b0;
+      --hot: #d7ba7d;
+      --sel: #094771;
+      --red: #f14c4c;
+      --green: #6a9955;
+      --up: var(--red);
+      --dn: var(--green);
+      --up-tint: color-mix(in srgb, var(--up) 25%, transparent);
+      --dn-tint: color-mix(in srgb, var(--dn) 25%, transparent);
+    }
 
-        <div class="panel" data-view="pos" style="flex: 1">
-          <h2>
-            账户持仓
-            <button onclick="refreshPos()">刷新</button>
-            <label class="kv"
-              >自动刷新
-              <select id="posAuto">
-                <option value="0">关</option>
-                <option value="15">15s</option>
-                <option value="60" selected>60s</option>
-                <option value="300">5min</option>
-              </select></label
-            >
-            <label class="kv"
-              >委托价
-              <select id="ordPx">
-                <option value="opp" selected>对手价</option>
-                <option value="opp1">对手价偏1%</option>
-                <option value="own">本方价</option>
-              </select></label
-            >
-            <label class="kv"
-              >买入方式
-              <select id="ordCredit">
-                <option value="plain" selected>担保品买入</option>
-                <option value="margin">融资买入</option>
-              </select></label
-            >
-          </h2>
-          <div id="posInfo" class="kv">（切到此页自动读取内存持仓表）</div>
-          <div id="ordInfo" class="kv"></div>
-          <!-- 两表同在一个滚动区：放得下就全展开，超出整页才滚 -->
-          <div style="overflow: auto; flex: 1; min-height: 0">
-            <table id="posTbl">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-            <div id="slipInfo" class="kv" style="margin-top: 8px"></div>
-            <table id="slipTbl">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-          </div>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font:
+        13px/1.5 ui-monospace,
+        Consolas,
+        monospace;
+      background: var(--bg);
+      color: var(--fg);
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+
+    header h1 {
+      font-size: 14px;
+      margin: 0;
+      color: var(--acc);
+    }
+
+    #status {
+      font-size: 12px;
+    }
+
+    .on {
+      color: var(--green);
+    }
+
+    .off {
+      color: var(--red);
+    }
+
+    button {
+      background: #333;
+      color: var(--fg);
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 3px 8px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    button:hover {
+      background: #3a3a3a;
+    }
+
+    button:active {
+      background: var(--sel);
+    }
+
+    input,
+    select {
+      background: #1b1b1b;
+      color: var(--fg);
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 3px 6px;
+      font: inherit;
+    }
+
+    .wrap {
+      display: flex;
+      gap: 6px;
+      padding: 8px;
+      height: calc(100vh - 45px);
+    }
+
+    .col {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+    }
+
+    .pane {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    #leftPane {
+      flex: 0 0 55%;
+    }
+
+    .grow-pane {
+      flex: 1 1 0;
+    }
+
+    #gutter {
+      flex: 0 0 6px;
+      cursor: col-resize;
+      background: var(--line);
+      border-radius: 3px;
+    }
+
+    #gutter:hover {
+      background: #555;
+    }
+
+    .tabbar {
+      display: flex;
+      gap: 4px;
+    }
+
+    .tabbar button.on {
+      background: var(--sel);
+      color: #fff;
+    }
+
+    .tabpane {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .tnode.hl {
+      outline: 1px solid var(--hot);
+      background: #3a3320;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .panel h2 {
+      font-size: 12px;
+      margin: 0 0 6px;
+      color: var(--hot);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .grow {
+      flex: 1;
+      min-width: 0;
+    }
+
+    #tree {
+      overflow: auto;
+      flex: 1;
+      white-space: nowrap;
+    }
+
+    .tnode {
+      padding: 1px 4px;
+      cursor: pointer;
+      border-radius: 3px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tnode:hover {
+      background: #2d2d2d;
+    }
+
+    .tnode.active {
+      background: var(--sel);
+    }
+
+    .tnode .cls {
+      color: var(--acc);
+    }
+
+    .tnode .ttl {
+      color: var(--hot);
+    }
+
+    .tnode .meta {
+      color: var(--mut);
+    }
+
+    .tnode.invis {
+      opacity: 0.45;
+    }
+
+    .fold {
+      display: inline-block;
+      width: 12px;
+      text-align: center;
+      color: var(--mut);
+      cursor: pointer;
+    }
+
+    .tabs button.on {
+      background: var(--sel);
+      color: #fff;
+    }
+
+    #mapWrap {
+      flex: 1;
+      overflow: auto;
+      background: #141414;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+    }
+
+    #mapWrap:focus {
+      outline: 1px solid var(--acc);
+    }
+
+    /* 块级：免得 inline 基线留白让刚好放下时也冒出竖滚动条 */
+    #map {
+      display: block;
+    }
+
+    /* 只有窗口底板 rect.win 接鼠标（data-hwnd），装饰/文字一律穿透 */
+    #map * {
+      pointer-events: none;
+    }
+
+    #map rect,
+    #map line {
+      vector-effect: non-scaling-stroke;
+      stroke-width: 1;
+    }
+
+    #map .win {
+      pointer-events: all;
+    }
+
+    /* 绘制层元素：透明命中框（data-hwnd = 窗口#客户区左,上），盖在画面上 */
+    #map .elem {
+      pointer-events: all;
+      fill: transparent;
+      stroke: none;
+    }
+
+    #map .win.frame {
+      fill: #1e1e1e;
+      stroke: #333;
+    }
+
+    #map .win.btn,
+    #map .btnface {
+      fill: #3a3a3a;
+      stroke: #5a5a5a;
+    }
+
+    #map .win.bare {
+      fill: transparent;
+      stroke: none;
+    }
+
+    #map .win.group {
+      fill: transparent;
+      stroke: #555;
+    }
+
+    #map .win.field {
+      fill: #111;
+      stroke: #444;
+    }
+
+    #map .win.hdr,
+    #map .hdritem {
+      fill: #2d2d2d;
+      stroke: #4a4a4a;
+    }
+
+    #map .win.menu {
+      fill: #2b2b2b;
+      stroke: #777;
+    }
+
+    #map .win.self {
+      fill: url(#hatch);
+      stroke: #3a3a3a;
+    }
+
+    #map .win.web {
+      fill: #18222c;
+      stroke: #2d4256;
+    }
+
+    #map .pressed {
+      fill: #1f1f1f;
+      stroke: #222;
+    }
+
+    #map .selbar {
+      fill: var(--sel);
+    }
+
+    #map .sep {
+      stroke: #555;
+    }
+
+    #map text {
+      fill: #ddd;
+      font-size: 12px;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+
+    #map text.gray {
+      fill: #777;
+    }
+
+    #map text.self-lbl {
+      fill: #666;
+      font-size: 9px;
+    }
+
+    #mapHl {
+      fill: rgba(215, 186, 125, 0.15);
+      stroke: var(--hot);
+      stroke-width: 2 !important;
+    }
+
+    #mapSel {
+      fill: none;
+      stroke: #fff;
+      stroke-width: 2 !important;
+    }
+
+    pre.out {
+      background: #161616;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 6px;
+      margin: 6px 0 0;
+      max-height: 160px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 2px 5px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+
+    th {
+      color: var(--mut);
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+    }
+
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    th.sortable:hover {
+      color: var(--fg);
+    }
+
+    /* 数字列：右对齐 + 等宽数位，小数点上下对齐 */
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 滑点小盘口：6 条横杠叠成一个字高，自上而下 10W/5W/1W 买、1W/5W/10W 卖 */
+    .bars {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 1px;
+      height: 1em;
+      width: 16px;
+      vertical-align: middle;
+    }
+
+    .bars i {
+      flex: 1;
+    }
+
+    button.ord {
+      padding: 0 4px;
+      font-size: 11px;
+    }
+
+    .kv {
+      color: var(--mut);
+    }
+
+    .kv b {
+      color: var(--fg);
+      font-weight: 600;
+    }
+
+    .spy-list {
+      overflow: auto;
+      max-height: 260px;
+    }
+
+    label.ck {
+      color: var(--mut);
+      display: inline-flex;
+      gap: 3px;
+      align-items: center;
+    }
+
+    tbody tr[data-code] {
+      cursor: pointer;
+    }
+
+    tr.cur td {
+      background: #2a2d2e;
+    }
+
+    #kBox {
+      position: relative;
+    }
+
+    #kCv {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    #book .lv {
+      display: grid;
+      grid-template-columns: 3em 1fr 1fr;
+      padding: 0 4px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #book .lv> :first-child {
+      text-align: left;
+    }
+
+    #book .sum {
+      display: grid;
+      grid-template-columns: auto 1fr auto 1fr;
+      gap: 0 6px;
+      margin-top: 6px;
+      padding: 0 4px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #book .sum> :nth-child(even) {
+      text-align: right;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>shim 接口控制台</h1>
+    <span id="status">…</span>
+    <span class="grow"></span>
+    <label class="ck"><input type="checkbox" id="noraise" checked
+        onchange="setNoraise(this.checked ? 'on' : 'off')" />不抬窗</label>
+    <span class="kv" id="noraiseLbl"></span>
+    <button onclick="refreshTree()">刷新窗口树</button>
+    <button onclick="ping()">ping</button>
+  </header>
+
+  <div class="wrap">
+    <!-- 左：布局图 / 持仓 可切换 -->
+    <div class="pane" id="leftPane">
+      <div class="tabbar">
+        <button data-tab="layout" onclick="setTab('leftPane', 'layout')">
+          布局图
+        </button>
+        <button data-tab="pos" onclick="setTab('leftPane', 'pos')">
+          持仓
+        </button>
+      </div>
+      <div class="panel" data-view="layout" style="flex: 1">
+        <h2>
+          布局图
+          <button onclick="zoomReset()">复位</button>
+          <span class="kv" id="zoomLbl" style="margin-left: 4px"></span>
+          <label class="ck" style="margin-left: 8px"><input type="checkbox" id="autoUpd" checked />自动更新</label>
+          <label class="ck"><input type="checkbox" id="interact" checked />交互</label>
+          <label class="ck" title="按客户端真实绘制的文字/色块画（shim gdi）"><input type="checkbox" id="gdiOn" checked
+              onchange="dirty('map', 'tree')" />绘制层</label>
+          <span class="kv">(点图后可键盘输入 · Ctrl+滚轮缩放)</span>
+          <label class="ck">轮询<input type="number" id="pollFps" value="2" min="0" max="10"
+              style="width: 46px" />fps</label>
+        </h2>
+        <div class="row" style="margin-bottom: 6px">
+          <input class="grow" id="filter" placeholder="过滤 class/title/hwnd/id…" oninput="dirty('map', 'tree')" />
+          <label class="ck"><input type="checkbox" id="onlyVis" onchange="dirty('map', 'tree')" />只看可见</label>
+          <label class="ck"><input type="checkbox" id="hideZero" checked onchange="dirty('map', 'tree')" />隐藏零矩形</label>
+        </div>
+        <div id="mapWrap" tabindex="0">
+          <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
       </div>
 
-      <div id="gutter"></div>
-
-      <!-- 右：行情 / 工具 / 列表 / 录制 -->
-      <div class="pane grow-pane" id="rightPane">
-        <div class="tabbar">
-          <button data-tab="quote" onclick="setTab('rightPane', 'quote')">
-            行情
-          </button>
-          <button data-tab="tools" onclick="setTab('rightPane', 'tools')">
-            工具
-          </button>
-          <button data-tab="list" onclick="setTab('rightPane', 'list')">
-            列表
-          </button>
-          <button data-tab="rec" onclick="setTab('rightPane', 'rec')">
-            录制 <span id="recDot"></span>
-          </button>
-        </div>
-
-        <div class="tabpane" data-view="quote">
-          <div class="panel" style="flex: 1">
-            <h2>
-              K 线 · 盘口
-              <span
-                id="kRanges"
-                class="tabbar"
-                style="display: inline-flex; margin-left: 8px"
-              ></span>
-              <span class="kv">(点持仓 / 滑点表的行选股)</span>
-            </h2>
-            <div class="row">
-              <span id="kInfo" class="kv">（等持仓帧）</span>
-              <span id="kErr"></span>
-            </div>
-            <div
-              class="row"
-              style="flex-wrap: nowrap; align-items: stretch; margin-top: 6px"
-            >
-              <div class="grow" id="kBox"><canvas id="kCv"></canvas></div>
-              <div id="book" style="flex: 0 0 260px"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="tabpane" data-view="rec">
-          <div class="panel" style="flex: 1">
-            <h2>录制器（消息 / 内部请求 / 窗口树 / 绘制层 → jsonl）</h2>
-            <div class="row">
-              <button id="recBtn" onclick="recToggle()">…</button>
-              <span class="kv grow" id="recSt"></span>
-            </div>
-            <div class="row" style="margin-top: 6px">
-              <button onclick="reqAttach()">接入所选窗口</button>
-              <input
-                id="reqOff"
-                placeholder="对象偏移（自动识别失败时填写）"
-                style="width: 210px"
-              />
-              <span class="kv grow" id="reqSt"
-                >先开始录制，再打开闪电下单窗口并选中其顶层窗口</span
-              >
-            </div>
-            <div class="row" style="margin-top: 6px">
-              <input
-                class="grow"
-                id="recMarkTxt"
-                placeholder="打点说明（回车），如：买入挂单开始"
-                onkeydown="event.key === 'Enter' && recMark()"
-              />
-              <button onclick="recMark()">打点</button>
-            </div>
-            <div class="row" style="margin-top: 6px">
-              <label class="ck"
-                ><input
-                  type="checkbox"
-                  id="recMsg"
-                  checked
-                  onchange="recSoon()"
-                />消息</label
-              >
-              <label class="ck"
-                ><input
-                  type="checkbox"
-                  id="recReq"
-                  checked
-                  onchange="recSoon()"
-                />请求</label
-              >
-              <label class="ck"
-                ><input
-                  type="checkbox"
-                  id="recWin"
-                  checked
-                  onchange="recSoon()"
-                />窗口</label
-              >
-              <label class="ck"
-                ><input
-                  type="checkbox"
-                  id="recGdi"
-                  onchange="recSoon()"
-                />绘制层</label
-              >
-              <input
-                class="grow"
-                id="recExcl"
-                placeholder="排除含这些子串的行（逗号分隔），如 0x000007ea"
-                oninput="recSoon()"
-              />
-            </div>
-            <pre
-              class="out"
-              id="recLog"
-              style="flex: 1; max-height: none"
-            ></pre>
-          </div>
-        </div>
-
-        <div class="tabpane" data-view="list">
-          <div class="panel" style="flex: 1">
-            <h2>窗口树列表（点 ▸/▾ 折叠）</h2>
-            <div id="tree" style="overflow: auto; flex: 1"></div>
-          </div>
-        </div>
-
-        <div class="tabpane" data-view="tools">
-          <div class="panel">
-            <h2>选中控件</h2>
-            <div id="sel" class="kv">（点左侧树节点选中）</div>
-            <div class="row" style="margin-top: 6px">
-              <button onclick="act('gettext')">读文本</button>
-              <button onclick="act('click')">点击(BM_CLICK)</button>
-              <button onclick="act('highlight')">闪烁</button>
-              <button onclick="act('rect')">取矩形</button>
-            </div>
-            <div class="row" style="margin-top: 6px">
-              <input
-                class="grow"
-                id="setval"
-                placeholder="要写入的文本（UTF-8）"
-              />
-              <button onclick="doSettext()">设文本</button>
-            </div>
-            <pre class="out" id="selOut"></pre>
-          </div>
-
-          <div class="panel">
-            <h2>原始消息 (post / send)</h2>
-            <div class="row">
-              <span class="kv">target</span
-              ><input
-                id="mTarget"
-                placeholder="0x…. 或 class=…"
-                style="width: 180px"
-              />
-              <span class="kv">msg</span
-              ><input id="mMsg" value="0x0111" style="width: 90px" />
-              <span class="kv">wparam</span
-              ><input id="mWp" value="0" style="width: 110px" />
-              <span class="kv">lparam</span
-              ><input id="mLp" value="0" style="width: 110px" />
-              <button onclick="rawMsg('post')">post</button>
-              <button onclick="rawMsg('send')">send</button>
-            </div>
-            <pre class="out" id="msgOut"></pre>
-          </div>
-
-          <div class="panel">
-            <h2>Spy 录制（抓手点产生的消息）</h2>
-            <div class="row">
-              <span class="kv">filter</span>
-              <input
-                id="spyFilter"
-                value="msg=0x0111"
-                style="width: 150px"
-                placeholder="msg=0x0111 或 all"
-              />
-              <button onclick="spy('on')">开</button>
-              <button onclick="spy('off')">关</button>
-              <button onclick="spy('clear')">清</button>
-              <button onclick="spy('dump')">抓一次</button>
-              <label class="ck"
-                ><input
-                  type="checkbox"
-                  id="spyAuto"
-                  onchange="toggleAuto()"
-                />自动(1s)</label
-              >
-            </div>
-            <div class="spy-list">
-              <table id="spyTbl">
-                <thead></thead>
-                <tbody></tbody>
-              </table>
-            </div>
-          </div>
+      <div class="panel" data-view="pos" style="flex: 1">
+        <h2>
+          账户持仓
+          <button onclick="refreshPos()">刷新</button>
+          <label class="kv">自动刷新
+            <select id="posAuto">
+              <option value="0">关</option>
+              <option value="15">15s</option>
+              <option value="60" selected>60s</option>
+              <option value="300">5min</option>
+            </select></label>
+          <label class="kv">委托价
+            <select id="ordPx">
+              <option value="opp" selected>对手价</option>
+              <option value="opp1">对手价偏1%</option>
+              <option value="own">本方价</option>
+            </select></label>
+          <label class="kv">买入方式
+            <select id="ordCredit">
+              <option value="plain" selected>担保品买入</option>
+              <option value="margin">融资买入</option>
+            </select></label>
+        </h2>
+        <div id="posInfo" class="kv">（等持仓帧）</div>
+        <div id="ordInfo" class="kv"></div>
+        <!-- 两表同在一个滚动区：放得下就全展开，超出整页才滚 -->
+        <div style="overflow: auto; flex: 1; min-height: 0">
+          <table id="posTbl">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+          <div class="kv" style="margin-top: 8px">滑点（p=万分之一，正=成本；> 表示 5 档吃不满、实际更差；价位相对参考价）</div>
+          <table id="slipTbl">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
         </div>
       </div>
     </div>
 
-    <script>
-      let TREE = []; // 最近一次窗口树
-      let NODE = new Map(); // hwnd → 节点（随 TREE 重建）
-      let SELECTED = null; // 选中节点
-      const COLLAPSED = new Set(); // 折叠的节点 hwnd
-      let mapScale = null; // 布局图缩放；null = 待适配（有尺寸时取刚好放下）
-      let MAP = null; // 布局图世界坐标 {x0,y0,W,H}
-      let HOVER = null; // 悬停节点 hwnd（重画后恢复浮框）
-      // 两种图层记录同形 {hwnd, off:[客户区相对窗口左上], items:[[l,t,r,b,v,text?]]}
-      const DETAIL = new Map(); // hwnd → shim detail（v = st 位）
-      const GDI = new Map(); // hwnd → shim gdiwatch（v = 色）
-      // detail 子项 st 位，与 shim.c ST_* 一致
-      const ST = {
-        SEL: 1,
-        CHECK: 2,
-        KIDS: 4,
-        OPEN: 8,
-        GRAY: 16,
-        SEP: 32,
-        SUB: 64,
-        ROW: 128,
-      };
+    <div id="gutter"></div>
 
-      async function api(path, body) {
-        const opt = body
-          ? {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            }
-          : {};
-        const r = await fetch(path, opt);
-        return r.json();
-      }
-      // shim 命令统一入口：回 JSON 记录数组，失败回 {err}
-      const shim = (cmd, ...args) => api("/api/shim", { cmd, args });
-      // 合路长连接 /api/watch：on = {路名: 处理函数}，每条 {s, r} 按路分发，r 为 {} 是心跳；
-      // opened 在每次（重）连上时调，服务端此时会先推各路全量
-      function subscribe(on, opened = () => {}) {
-        const es = new EventSource("/api/watch?s=" + Object.keys(on).join(","));
-        es.onopen = opened;
-        es.onmessage = (e) => {
-          const { s, r } = JSON.parse(e.data);
-          if (Object.keys(r).length) on[s](r);
-        };
-        return es;
-      }
+    <!-- 右：行情 / 工具 / 列表 / 录制 -->
+    <div class="pane grow-pane" id="rightPane">
+      <div class="tabbar">
+        <button data-tab="quote" onclick="setTab('rightPane', 'quote')">
+          行情
+        </button>
+        <button data-tab="tools" onclick="setTab('rightPane', 'tools')">
+          工具
+        </button>
+        <button data-tab="list" onclick="setTab('rightPane', 'list')">
+          列表
+        </button>
+        <button data-tab="rec" onclick="setTab('rightPane', 'rec')">
+          录制 <span id="recDot"></span>
+        </button>
+      </div>
 
-      // 调度：drop = 上次没完就丢；coalesce = 上次没完就等它完再补跑一次；
-      // batch = 首次调用排一次 schedule，触发前的调用并入这一次
-      function drop(fn) {
-        let busy = false;
-        return async (...a) => {
-          if (busy) return;
-          busy = true;
-          try {
-            return await fn(...a);
-          } finally {
-            busy = false;
-          }
-        };
-      }
-      function coalesce(fn) {
-        let busy = false,
-          again = false;
-        return async () => {
-          if (busy) return void (again = true);
-          busy = true;
-          try {
-            do {
-              again = false;
-              await fn();
-            } while (again);
-          } finally {
-            busy = false;
-          }
-        };
-      }
-      function batch(fn, schedule) {
-        let armed = false;
-        return () => {
-          if (armed) return;
-          armed = true;
-          schedule(() => {
-            armed = false;
-            fn();
-          });
-        };
-      }
-      function esc(s) {
-        return (s == null ? "" : String(s)).replace(
-          /[&<>]/g,
-          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c],
-        );
-      }
-      function oneLine(s) {
-        return (s || "").replace(/\s+/g, " ").trim();
-      }
+      <div class="tabpane" data-view="quote">
+        <div class="panel" style="flex: 1">
+          <h2>
+            K 线 · 盘口
+            <span id="kRanges" class="tabbar" style="display: inline-flex; margin-left: 8px"></span>
+            <span class="kv">(点持仓 / 滑点表的行选股)</span>
+          </h2>
+          <div class="row">
+            <span id="kInfo" class="kv">（等持仓帧）</span>
+            <span id="kErr"></span>
+          </div>
+          <div class="row" style="flex-wrap: nowrap; align-items: stretch; margin-top: 6px">
+            <div class="grow" id="kBox"><canvas id="kCv"></canvas></div>
+            <div id="book" style="flex: 0 0 260px"></div>
+          </div>
+        </div>
+      </div>
 
-      async function ping() {
-        const r = await api("/api/ping");
-        const el = document.getElementById("status");
-        el.className = r.pid ? "on" : "off";
-        el.textContent = r.pid
-          ? "shim 在线 · pid=" + r.pid
-          : "shim 离线 — 重启 console.py 自动注入";
-        if (r.pid) await setNoraise();
-        return !!r.pid;
-      }
-      // 不抬窗开关（shim noraise）：无参只读状态
-      async function setNoraise(arg) {
-        const r = await shim("noraise", ...(arg ? [arg] : []));
-        if (r.err) return out("selOut", r);
-        document.getElementById("noraise").checked = !!r[0].on;
-        document.getElementById("noraiseLbl").textContent =
-          `已拦 ${r[0].blocked} 次`;
-      }
+      <div class="tabpane" data-view="rec">
+        <div class="panel" style="flex: 1">
+          <h2>录制器（消息 / 内部请求 / 窗口树 / 绘制层 → jsonl）</h2>
+          <div class="row">
+            <button id="recBtn" onclick="recToggle()">…</button>
+            <span class="kv grow" id="recSt"></span>
+          </div>
+          <div class="row" style="margin-top: 6px">
+            <button onclick="reqAttach()">接入所选窗口</button>
+            <input id="reqOff" placeholder="对象偏移（自动识别失败时填写）" style="width: 210px" />
+            <span class="kv grow" id="reqSt">先开始录制，再打开闪电下单窗口并选中其顶层窗口</span>
+          </div>
+          <div class="row" style="margin-top: 6px">
+            <input class="grow" id="recMarkTxt" placeholder="打点说明（回车），如：买入挂单开始"
+              onkeydown="event.key === 'Enter' && recMark()" />
+            <button onclick="recMark()">打点</button>
+          </div>
+          <div class="row" style="margin-top: 6px">
+            <label class="ck"><input type="checkbox" id="recMsg" checked onchange="dirty('rec')" />消息</label>
+            <label class="ck"><input type="checkbox" id="recReq" checked onchange="dirty('rec')" />请求</label>
+            <label class="ck"><input type="checkbox" id="recWin" checked onchange="dirty('rec')" />窗口</label>
+            <label class="ck"><input type="checkbox" id="recGdi" onchange="dirty('rec')" />绘制层</label>
+            <input class="grow" id="recExcl" placeholder="排除含这些子串的行（逗号分隔），如 0x000007ea" oninput="dirty('rec')" />
+          </div>
+          <pre class="out" id="recLog" style="flex: 1; max-height: none"></pre>
+        </div>
+      </div>
 
-      // force=false（轮询）：树和子项都没变就不重画
-      let treeKey = "";
-      async function refreshTree(force = true) {
-        const t0 = performance.now();
-        const r = await shim("tree");
-        const key = JSON.stringify(r);
-        const changed = key !== treeKey;
-        treeKey = key;
-        TREE = r.err ? [] : r;
-        NODE = new Map(TREE.map((n) => [n.hwnd, n]));
-        if (changed && !r.err) {
-          // 已销毁窗口：只删拉树前就到的（树发出后才建的窗口不在这棵树里，其图层
-          // 可能先到，删了就再也不会重推）
-          const live = new Set(TREE.map((n) => n.hwnd));
-          for (const [h, g] of GDI)
-            if (!live.has(h) && g.at < t0) GDI.delete(h);
-        }
-        const dchanged = await pullDetails();
-        if (force || changed || dchanged) render();
-      }
+      <div class="tabpane" data-view="list">
+        <div class="panel" style="flex: 1">
+          <h2>窗口树列表（点 ▸/▾ 折叠）</h2>
+          <div id="tree" style="overflow: auto; flex: 1"></div>
+        </div>
+      </div>
 
-      function needsDetail(n) {
-        const [l, t, r, b] = n.rect;
-        return n.vis && r > l && b > t && !!CLASS[n.class]?.[2](n);
-      }
-      // 列表/勾选等内容变化不发 WinEvent，靠轮询；回 true = 内容有变（丢弃时回 undefined）
-      let detailKey = "";
-      const pullDetails = drop(async () => {
-        const ns = TREE.filter(needsDetail);
-        const rs = await Promise.all(ns.map((n) => shim("detail", n.hwnd)));
-        DETAIL.clear();
-        ns.forEach((n, i) => rs[i].err || DETAIL.set(n.hwnd, rs[i][0]));
-        const key = JSON.stringify(rs);
-        const changed = key !== detailKey;
-        detailKey = key;
-        return changed;
+      <div class="tabpane" data-view="tools">
+        <div class="panel">
+          <h2>选中控件</h2>
+          <div id="sel" class="kv">（点左侧树节点选中）</div>
+          <div class="row" style="margin-top: 6px">
+            <button onclick="act('gettext')">读文本</button>
+            <button onclick="act('click')">点击(BM_CLICK)</button>
+            <button onclick="act('highlight')">闪烁</button>
+            <button onclick="act('rect')">取矩形</button>
+          </div>
+          <div class="row" style="margin-top: 6px">
+            <input class="grow" id="setval" placeholder="要写入的文本（UTF-8）" />
+            <button onclick="doSettext()">设文本</button>
+          </div>
+          <pre class="out" id="selOut"></pre>
+        </div>
+
+        <div class="panel">
+          <h2>原始消息 (post / send)</h2>
+          <div class="row">
+            <span class="kv">target</span><input id="mTarget" placeholder="0x…. 或 class=…" style="width: 180px" />
+            <span class="kv">msg</span><input id="mMsg" value="0x0111" style="width: 90px" />
+            <span class="kv">wparam</span><input id="mWp" value="0" style="width: 110px" />
+            <span class="kv">lparam</span><input id="mLp" value="0" style="width: 110px" />
+            <button onclick="rawMsg('post')">post</button>
+            <button onclick="rawMsg('send')">send</button>
+          </div>
+          <pre class="out" id="msgOut"></pre>
+        </div>
+
+        <div class="panel">
+          <h2>Spy 录制（抓手点产生的消息）</h2>
+          <div class="row">
+            <span class="kv">filter</span>
+            <input id="spyFilter" value="msg=0x0111" style="width: 150px" placeholder="msg=0x0111 或 all" />
+            <button onclick="spy('on')">开</button>
+            <button onclick="spy('off')">关</button>
+            <button onclick="spy('clear')">清</button>
+            <button onclick="spy('dump')">抓一次</button>
+            <label class="ck"><input type="checkbox" id="spyAuto" />自动(1s)</label>
+          </div>
+          <div class="spy-list">
+            <table id="spyTbl">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let TREE = []; // 最近一次窗口树
+    let NODE = new Map(); // hwnd → 节点（随 TREE 重建）
+    let SELECTED = null; // 选中节点
+    const COLLAPSED = new Set(); // 折叠的节点 hwnd
+    let mapScale = null; // 布局图缩放；null = 待适配（有尺寸时取刚好放下）
+    let MAP = null; // 布局图世界坐标 {x0,y0,W,H}
+    let HOVER = null; // 悬停节点 hwnd（重画后恢复浮框）
+    // 两种图层记录同形 {hwnd, off:[客户区相对窗口左上], items:[[l,t,r,b,v,text?]]}
+    const DETAIL = new Map(); // hwnd → shim detail（v = st 位）
+    const GDI = new Map(); // hwnd → shim gdiwatch（v = 色）
+    // detail 子项 st 位，与 shim.c ST_* 一致
+    const ST = {
+      SEL: 1,
+      CHECK: 2,
+      KIDS: 4,
+      OPEN: 8,
+      GRAY: 16,
+      SEP: 32,
+      SUB: 64,
+      ROW: 128,
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const ck = (id) => $(id).checked;
+    // 涨 / 跌、买 / 卖两色以 CSS 为源（canvas 不认 var()）
+    const CSSV = getComputedStyle(document.documentElement);
+    const UP = CSSV.getPropertyValue("--up").trim(),
+      DN = CSSV.getPropertyValue("--dn").trim();
+    // 方向 s：买 +1 / 卖 -1，与后端同号；tint 为盘口量条底色
+    const SIDE = {
+      1: { name: "买", sign: "+", color: UP, tint: "var(--up-tint)" },
+      "-1": { name: "卖", sign: "-", color: DN, tint: "var(--dn-tint)" },
+    };
+
+    // 后端 GET / POST 两张路由表，前端同形两个入口；失败一律回 {err}
+    const http = async (path, opt) => (await fetch(path, opt)).json();
+    const get = (path) => http(path);
+    const post = (path, body = {}) =>
+      http(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
-      // 树的三个触发源（treewatch 推送 / 轮询 / 交互后）都走这里，拉取中再触发只补拉一次
-      const pullTree = coalesce(() => refreshTree(false));
-      const autoUpd = () => document.getElementById("autoUpd").checked;
-      // 轮询连树一起拉：Wine 9 改标题（WM_SETTEXT）不发 WinEvent，推送收不到
-      async function pollLoop() {
-        const fps = +document.getElementById("pollFps").value;
-        const on = fps > 0 && autoUpd();
-        if (on) await pullTree();
-        setTimeout(pollLoop, on ? 1000 / fps : 500);
-      }
-      // 交互后稍等客户端处理完再补拉一次，不等下个轮询周期
-      function pollSoon() {
-        setTimeout(async () => {
-          await pullTree();
-          await setNoraise();
-        }, 120);
-      }
-
-      // 左右两侧同构：pane 下 .tabbar 按钮 data-tab ↔ 视图 data-view，切入即跑 ON_TAB[v]
-      const ON_TAB = {
-        layout: () => render(),
-        pos: () => {},
-        tools: () => {},
-        list: () => renderTree(),
-        rec: () => recSoon(),
-        quote: () => {
-          drawK();
-          pullKline();
-        },
+    // shim 命令统一入口：回 JSON 记录数组，失败回 {err}
+    const shim = (cmd, ...args) => post("/api/shim", { cmd, args });
+    // 出错写进提示行 id，回是否出错
+    function fail(id, r) {
+      if (r.err) $(id).innerHTML = `<span class="off">✗ ${esc(r.err)}</span>`;
+      return !!r.err;
+    }
+    // 合路长连接 /api/watch：on = {路名: 处理函数}，每条 {s, r} 按路分发，r 为 null 是心跳；
+    // opened 在每次（重）连上时调，服务端此时会先推各路全量
+    function subscribe(on, opened = () => { }) {
+      const es = new EventSource("/api/watch?s=" + Object.keys(on).join(","));
+      es.onopen = opened;
+      es.onmessage = (e) => {
+        const { s, r } = JSON.parse(e.data);
+        if (r !== null) on[s](r);
       };
-      function setTab(pane, v) {
-        for (const b of document.querySelectorAll(`#${pane} > .tabbar button`))
-          b.classList.toggle("on", b.dataset.tab === v);
-        for (const el of document.querySelectorAll(`#${pane} > [data-view]`))
-          el.style.display = el.dataset.view === v ? "flex" : "none";
-        ON_TAB[v]();
-        syncPosStream();
-      }
-
-      // 布局图恒显、列表在 tab 里，两边都渲染（互相 hover 同步）。
-      function render() {
-        renderMap();
-        renderTree();
-      }
-
-      function applyMapSize() {
-        if (!MAP) return;
-        if (mapScale === null) {
-          const wrap = document.getElementById("mapWrap");
-          if (!wrap.clientWidth) return; // 布局 tab 隐藏中，切回时再适配
-          mapScale = Math.min(
-            wrap.clientWidth / MAP.W,
-            wrap.clientHeight / MAP.H,
-          );
-        }
-        const svg = document.getElementById("map");
-        svg.setAttribute("width", MAP.W * mapScale);
-        svg.setAttribute("height", MAP.H * mapScale);
-        document.getElementById("zoomLbl").textContent =
-          "×" + mapScale.toFixed(2);
-      }
-      function zoomReset() {
-        mapScale = null;
-        applyMapSize();
-        const wrap = document.getElementById("mapWrap");
-        wrap.scrollLeft = wrap.scrollTop = 0;
-      }
-      // 鼠标事件 → 布局图世界坐标（即屏幕坐标，GetWindowRect 本就是屏幕系）
-      function svgPoint(ev) {
-        const svg = document.getElementById("map");
-        const p = svg.createSVGPoint();
-        p.x = ev.clientX;
-        p.y = ev.clientY;
-        return p.matrixTransform(svg.getScreenCTM().inverse());
-      }
-
-      // 布局图矩形 ↔ 列表行 同一 hover：两边都先清再点亮；hwnd=null 即全清
-      function hover(hwnd) {
-        HOVER = hwnd;
-        for (const el of document.querySelectorAll(".tnode.hl"))
-          el.classList.remove("hl");
-        mark("mapHl", hwnd);
-        if (!hwnd) return;
-        const row = document.querySelector(`#tree .tnode[data-hwnd="${hwnd}"]`);
-        if (row) {
-          row.classList.add("hl");
-          row.scrollIntoView({ block: "nearest" });
-        }
-      }
-      // 布局图最上层浮框（hover / 选中）：按节点矩形摆放，不被子窗口遮住
-      function mark(id, hwnd) {
-        const box = document.getElementById(id);
-        if (!box) return;
-        const n = nodeOf(hwnd);
-        if (!n) return box.setAttribute("display", "none");
-        box.removeAttribute("display");
-        attrs(box, rectAttrs(n.rect));
-      }
-
-      // 某节点是否有子节点（下一个节点 depth 更深）
-      function hasChildren(i) {
-        return i + 1 < TREE.length && TREE[i + 1].depth > TREE[i].depth;
-      }
-
-      function nodeVisibleByFilter(n) {
-        if (document.getElementById("onlyVis").checked && !n.vis) return false;
-        if (document.getElementById("hideZero").checked) {
-          const [l, t, rr, b] = n.rect;
-          if (l === rr || t === b) return false;
-        }
-        return matchFilter(n);
-      }
-      function matchFilter(n) {
-        const f = document.getElementById("filter").value.trim().toLowerCase();
-        if (!f) return true;
-        return (n.class + " " + n.title + " " + n.hwnd + " " + n.id)
-          .toLowerCase()
-          .includes(f);
-      }
-
-      function renderTree() {
-        const box = document.getElementById("tree");
-        box.innerHTML = "";
-        const hasFilter = document.getElementById("filter").value.trim().length;
-        let hideDepth = null; // 折叠时跳过比它更深的节点
-        for (let i = 0; i < TREE.length; i++) {
-          const n = TREE[i];
-          // 折叠：有过滤时不折叠（要能搜到深处）
-          if (!hasFilter) {
-            if (hideDepth !== null) {
-              if (n.depth > hideDepth) continue;
-              hideDepth = null;
-            }
-            if (COLLAPSED.has(n.hwnd) && hasChildren(i)) hideDepth = n.depth;
-          }
-          const els = elemsOf(n); // 绘制元素排在子窗口前，随本窗口折叠
-          if (nodeVisibleByFilter(n))
-            box.appendChild(treeRow(n, hasChildren(i) || els.length > 0));
-          if (hasFilter || !COLLAPSED.has(n.hwnd))
-            for (const e of els)
-              if (matchFilter(e)) box.appendChild(treeRow(e));
-        }
-      }
-      function treeRow(n, kids = false) {
-        const foldChar = !kids ? "" : COLLAPSED.has(n.hwnd) ? "▸" : "▾";
-        const div = document.createElement("div");
-        div.className =
-          "tnode" +
-          (n.vis ? "" : " invis") +
-          (SELECTED && SELECTED.hwnd === n.hwnd ? " active" : "");
-        div.style.paddingLeft = 4 + n.depth * 14 + "px";
-        const ttl = n.title
-          ? ` <span class="ttl">"${esc(oneLine(n.title)).slice(0, 60)}"</span>`
-          : "";
-        div.innerHTML = n.host
-          ? `<span class="fold"></span><span class="cls">${n.class}</span>${ttl}` +
-            ` <span class="meta">[${n.rect.join(",")}]</span>`
-          : `<span class="fold">${foldChar}</span>` +
-            `<span class="meta">${n.hwnd} id=${n.id}</span> <span class="cls">${esc(n.class)}</span>${ttl}` +
-            ` <span class="meta">[${n.rect.join(",")}] v${n.vis}e${n.en}</span>`;
-        div.title = `${n.class} | ${n.title}`;
-        div.dataset.hwnd = n.hwnd;
-        div.querySelector(".fold").onclick = (ev) => {
-          ev.stopPropagation();
-          if (!kids) return;
-          if (COLLAPSED.has(n.hwnd)) COLLAPSED.delete(n.hwnd);
-          else COLLAPSED.add(n.hwnd);
-          renderTree();
-        };
-        div.onmouseenter = () => hover(n.hwnd);
-        div.onmouseleave = () => hover(null);
-        div.onclick = () => select(n);
-        div.ondblclick = () => {
-          select(n);
-          act("highlight");
-        };
-        return div;
-      }
-
-      // 布局图：按屏幕坐标、按 Win32 z 序还原控件外观（标准控件按类画，自绘区打斜纹）。
-      const NS = "http://www.w3.org/2000/svg";
-      function attrs(e, a) {
-        for (const k in a) e.setAttribute(k, a[k]);
-        return e;
-      }
-      function el(parent, tag, a = {}, text) {
-        const e = attrs(document.createElementNS(NS, tag), a);
-        if (text != null) e.textContent = text;
-        parent.appendChild(e);
-        return e;
-      }
-      const rectAttrs = ([l, t, r, b], cls) => ({
-        x: l,
-        y: t,
-        width: Math.max(0, r - l),
-        height: Math.max(0, b - t),
-        ...(cls ? { class: cls } : {}),
+      return es;
+    }
+    // 定时循环：跑完 fn 再隔 gap() 毫秒跑下一轮
+    function loop(fn, gap) {
+      (async function tick() {
+        await fn();
+        setTimeout(tick, gap());
+      })();
+    }
+    // 拖拽：down(e) → 上下文（假即不拖；带 button 即只认该键抬起），其后 move(ctx, e, dx, dy)，
+    // 抬起 up(ctx, e, moved)
+    function drag(el, down, move, up = () => { }) {
+      let ctx = null,
+        x = 0,
+        y = 0,
+        moved = false;
+      el.addEventListener("mousedown", (e) => {
+        ctx = down(e);
+        [x, y, moved] = [e.clientX, e.clientY, false];
       });
-      // 嵌套 svg 作裁剪框：viewBox 与位置一致，内部仍用屏幕坐标
-      function clipBox(parent, [l, t, r, b]) {
-        return el(parent, "svg", {
-          ...rectAttrs([l, t, r, b]),
-          viewBox: `${l} ${t} ${Math.max(0, r - l)} ${Math.max(0, b - t)}`,
+      window.addEventListener("mousemove", (e) => {
+        if (!ctx) return;
+        const dx = e.clientX - x,
+          dy = e.clientY - y;
+        moved ||= Math.abs(dx) + Math.abs(dy) > 3;
+        move(ctx, e, dx, dy);
+      });
+      window.addEventListener("mouseup", (e) => {
+        if (!ctx || (ctx.button != null && e.button !== ctx.button)) return;
+        const c = ctx;
+        ctx = null;
+        up(c, e, moved);
+      });
+    }
+
+    // 调度：drop = 上次没完就丢；coalesce = 上次没完就等它完再补跑一次；
+    // batch = 首次调用排一次 schedule，触发前的调用并入这一次
+    function drop(fn) {
+      let busy = false;
+      return async (...a) => {
+        if (busy) return;
+        busy = true;
+        try {
+          return await fn(...a);
+        } finally {
+          busy = false;
+        }
+      };
+    }
+    function coalesce(fn) {
+      let busy = false,
+        again = false;
+      return async () => {
+        if (busy) return void (again = true);
+        busy = true;
+        try {
+          do {
+            again = false;
+            await fn();
+          } while (again);
+        } finally {
+          busy = false;
+        }
+      };
+    }
+    function batch(fn, schedule) {
+      let armed = false;
+      return () => {
+        if (armed) return;
+        armed = true;
+        schedule(() => {
+          armed = false;
+          fn();
         });
-      }
-      // 矩形内单行文字，超出裁掉；align = start/middle/end
-      function textIn(parent, R, s, align = "start", cls = "") {
-        const [l, t, r, b] = R;
-        if (!s || r <= l || b <= t) return;
-        const x =
-          align === "middle" ? (l + r) / 2 : align === "end" ? r - 3 : l + 3;
-        el(
-          clipBox(parent, R),
-          "text",
-          {
-            x,
-            y: (t + b) / 2,
-            "text-anchor": align,
-            "dominant-baseline": "central",
-            class: cls,
-          },
-          s,
-        );
-      }
-      const mnem = (s) => (s || "").replace(/&(.)/g, "$1"); // 去助记符 &X / &&
-
-      const btnType = (n) => n.style & 0xf; // BS_TYPEMASK
-      const isCheckLike = (n) =>
-        [2, 3, 4, 5, 6, 9].includes(btnType(n)) && !(n.style & 0x1000); // 非 BS_PUSHLIKE
-      const btnSkin = (n) =>
-        btnType(n) === 7 ? "group" : isCheckLike(n) ? "bare" : "btn";
-      const is = (v) => () => v;
-      const isWeb = (n) => /^(Chrome_|Cef)/.test(n.class);
-
-      // 子项 [l,t,r,b,st,text]（已换到屏幕坐标）
-      function drawButton(g, n, items) {
-        const st = items[0]?.[4] || 0;
-        const text = mnem(oneLine(n.title));
-        const cls = n.en ? "" : "gray";
-        const [l, t, r] = n.rect;
-        if (btnType(n) === 7)
-          return textIn(g, [l + 6, t, r, t + 14], text, "start", cls); // 分组框
-        if (isCheckLike(n)) {
-          const radio = [4, 9].includes(btnType(n));
-          const on = st & ST.CHECK;
-          return textIn(
-            g,
-            n.rect,
-            (radio ? (on ? "◉" : "○") : on ? "☑" : "☐") + " " + text,
-            "start",
-            cls,
-          );
-        }
-        if (st & (ST.SEL | ST.CHECK))
-          el(g, "rect", rectAttrs(n.rect, "pressed"));
-        textIn(g, n.rect, text, "middle", cls);
-      }
-      function drawCombo(g, n) {
-        const [l, t, r, b] = n.rect;
-        const a = Math.min(b - t, 18);
-        el(g, "rect", rectAttrs([r - a, t, r, b], "btnface"));
-        textIn(g, [r - a, t, r, b], "▾", "middle");
-        textIn(
-          g,
-          [l, t, r - a, b],
-          oneLine(n.title),
-          "start",
-          n.en ? "" : "gray",
-        );
-      }
-      // ListBox / ComboLBox / SysListView32：ST_ROW 行先铺选中底色，其后各格文字
-      function drawList(g, n, items) {
-        for (const it of items) {
-          const [, , , , st, text] = it;
-          if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
-          if (!(st & ST.ROW))
-            textIn(g, it, text, "start", st & ST.GRAY ? "gray" : "");
-        }
-      }
-      function drawHeader(g, n, items) {
-        for (const it of items) {
-          el(g, "rect", rectAttrs(it, "hdritem"));
-          textIn(g, it, it[5]);
-        }
-      }
-      function drawTreeItems(g, n, items) {
-        for (const it of items) {
-          const [l, t, , b, st, text] = it;
-          if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
-          if (st & ST.KIDS)
-            textIn(
-              g,
-              [l - 14, t, l, b],
-              st & ST.OPEN ? "▾" : "▸",
-              "middle",
-              "gray",
-            );
-          textIn(g, [l, t, n.rect[2], b], text); // 文字矩形按原字体量的，放宽到右边界免得被裁
-        }
-      }
-      function drawMenu(g, n, items) {
-        for (const it of items) {
-          const [l, t, r, b, st, text] = it;
-          if (st & ST.SEP) {
-            el(g, "line", {
-              x1: l + 2,
-              x2: r - 2,
-              y1: (t + b) / 2,
-              y2: (t + b) / 2,
-              class: "sep",
-            });
-            continue;
-          }
-          if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
-          const cls = st & ST.GRAY ? "gray" : "";
-          const [txt, acc] = mnem(text).split("\t");
-          if (st & ST.CHECK) textIn(g, [l, t, l + 18, b], "✓", "middle", cls);
-          textIn(g, [l + 18, t, r - 14, b], txt, "start", cls);
-          if (acc) textIn(g, [l, t, r - 14, b], acc, "end", cls);
-          if (st & ST.SUB) textIn(g, [r - 14, t, r, b], "▸", "middle", cls);
-        }
-      }
-      function drawOther(g, n, items, leaf) {
-        const [l, t, r, b] = n.rect;
-        if (!leaf || r - l < 30 || b - t < 10) return;
-        if (isWeb(n)) return textIn(g, n.rect, "网页 (CEF)", "middle", "gray");
-        textIn(
-          g,
-          [l, t, r, Math.min(b, t + 12)],
-          oneLine(n.title) || n.class,
-          "start",
-          "self-lbl",
-        );
-      }
-      function drawStatic(g, n) {
-        textIn(
-          g,
-          n.rect,
-          mnem(oneLine(n.title)),
-          ["start", "middle", "end"][n.style & 0x1f] || "start",
-          n.en ? "" : "gray",
-        );
-      }
-      function drawEdit(g, n) {
-        textIn(
-          g,
-          n.rect,
-          n.style & 0x20 ? "●".repeat(n.title.length) : oneLine(n.title), // ES_PASSWORD
-        );
-      }
-
-      // 标准控件按类：底板皮肤、画法、要不要拉 detail 子项（各为 n 的函数）。
-      // 表外的类即自绘窗口：皮肤 web / self / frame，内容靠绘制层，其文字段为绘制元素。
-      // prettier-ignore
-      const CLASS = {
-        //               皮肤             画法            detail
-        Button:          [btnSkin,       drawButton,     isCheckLike],
-        Static:          [is("bare"),    drawStatic,     is(false)],
-        Edit:            [is("field"),   drawEdit,       is(false)],
-        ComboBox:        [is("field"),   drawCombo,      is(false)],
-        ListBox:         [is("field"),   drawList,       is(true)],
-        ComboLBox:       [is("field"),   drawList,       is(true)],
-        SysListView32:   [is("field"),   drawList,       is(true)],
-        SysTreeView32:   [is("field"),   drawTreeItems,  is(true)],
-        SysHeader32:     [is("hdr"),     drawHeader,     is(true)],
-        "#32768":        [is("menu"),    drawMenu,       is(true)],
       };
-      const skinOf = (n, leaf) =>
-        CLASS[n.class]?.[0](n) || (isWeb(n) ? "web" : leaf ? "self" : "frame");
-
-      // 图层记录的客户区原点（屏幕坐标），及子项平移到屏幕
-      const originOf = (n, rec) => [
-        n.rect[0] + rec.off[0],
-        n.rect[1] + rec.off[1],
-      ];
-      const shift = ([l, t, r, b, ...rest], [x, y]) => [
-        l + x,
-        t + y,
-        r + x,
-        b + y,
-        ...rest,
-      ];
-
-      // 一个窗口：底板 rect.win（接鼠标、带 data-hwnd）+ 按类装饰（有绘制层则由它代替）
-      function drawNode(g, n, leaf) {
-        const base = el(g, "rect", rectAttrs(n.rect, "win " + skinOf(n, leaf)));
-        base.dataset.hwnd = n.hwnd;
-        el(
-          base,
-          "title",
-          {},
-          `${n.hwnd} id=${n.id} ${n.class} "${oneLine(n.title)}" [${n.rect}]`,
-        );
-        base.onmouseenter = () => hover(n.hwnd);
-        base.onmouseleave = () => hover(null);
-        if (!gdiOf(n)) {
-          const rec = DETAIL.get(n.hwnd);
-          const o = rec && originOf(n, rec);
-          const items = rec ? rec.items.map((it) => shift(it, o)) : [];
-          return (CLASS[n.class]?.[1] || drawOther)(g, n, items, leaf);
-        }
-        const lg = el(clipBox(g, n.rect), "g");
-        GDI_G.set(n.hwnd, { g: lg, n });
-        drawGdi(lg, n);
-      }
-
-      // 绘制层（shim gdiwatch）：每窗口一份客户区坐标的色块/文字，后画的在上。
-      // 推送来一层只重写该窗口的 <g>（rAF 合帧）；窗口第一次有内容才整图重画。
-      const GDI_G = new Map(); // hwnd → {g, n}：当前图里该窗口的绘制层容器
-      const SHOWN = new Set(); // 当前图里画了的 hwnd
-      const gdiDirty = new Set();
-      const gdiShown = () => document.getElementById("gdiOn").checked;
-      const gdiOf = (n) =>
-        gdiShown() && GDI.get(n.hwnd)?.items.length ? GDI.get(n.hwnd) : null;
-      // 绘制元素：自绘窗口（CLASS 表外）绘制层里的每段文字（按钮/页签/格子），当作该
-      // 窗口的子节点；hwnd = 窗口#客户区左,上（重画不变），host = 所画窗口，rect 为屏幕坐标
-      const elemHost = (n) => n.vis && !CLASS[n.class];
-      function elemsOf(n) {
-        const rec = elemHost(n) && gdiOf(n);
-        if (!rec) return [];
-        const o = originOf(n, rec);
-        const out = [];
-        for (const it of rec.items)
-          if (it[5]?.trim())
-            out.push({
-              depth: n.depth + 1,
-              hwnd: `${n.hwnd}#${it[0]},${it[1]}`,
-              host: n.hwnd,
-              class: "绘",
-              title: it[5].trim(),
-              rect: shift(it, o).slice(0, 4),
-              vis: 1,
-              en: 1,
-            });
-        return out;
-      }
-      // hwnd 或元素 id → 节点
-      function nodeOf(id) {
-        if (!id) return null;
-        const host = id.split("#")[0];
-        const n = NODE.get(host);
-        return n && id !== host ? elemsOf(n).find((e) => e.hwnd === id) : n;
-      }
-      // COLORREF 是 0x00BBGGRR
-      const bgr = (c) =>
-        "#" +
-        [c & 255, (c >> 8) & 255, (c >> 16) & 255]
-          .map((v) => v.toString(16).padStart(2, "0"))
-          .join("");
-      function drawGdi(g, n) {
-        const rec = GDI.get(n.hwnd);
-        const [x, y] = originOf(n, rec);
-        g.setAttribute("transform", `translate(${x},${y})`);
-        let s = "";
-        for (const [l, t, r, b, c, txt] of rec.items) {
-          if (txt == null) {
-            s += `<rect x="${l}" y="${t}" width="${r - l}" height="${b - t}" style="fill:${bgr(c)}"/>`;
-            continue;
-          }
-          // 字框宽是客户端按原字体量的：textLength 压到同宽，位置才对得上
-          s +=
-            `<text x="${l}" y="${(t + b) / 2}" dominant-baseline="central" textLength="${Math.max(1, r - l)}"` +
-            ` lengthAdjust="spacingAndGlyphs" style="fill:${bgr(c)};font-size:${Math.max(6, (b - t) * 0.8)}px">${esc(txt)}</text>`;
-        }
-        for (const [l, t, r, b, , txt] of elemHost(n) ? rec.items : [])
-          if (txt?.trim())
-            s += `<rect class="elem" data-hwnd="${n.hwnd}#${l},${t}" x="${l}" y="${t}" width="${r - l}" height="${b - t}"/>`;
-        g.innerHTML = s;
-      }
-      // 列表跟绘制元素走：开着「列表」页时最多 500ms 重建一次（行情文字刷得勤）
-      const listShown = () =>
-        document.querySelector('#rightPane > [data-view="list"]').style
-          .display !== "none";
-      const listSoon = batch(
-        () => listShown() && renderTree(),
-        (f) => setTimeout(f, 500),
+    }
+    function esc(s) {
+      return (s == null ? "" : String(s)).replace(
+        /[&<>"]/g,
+        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
       );
-      const gdiSoon = batch(() => {
-        let full = false;
+    }
+    function oneLine(s) {
+      return (s || "").replace(/\s+/g, " ").trim();
+    }
+
+    async function ping() {
+      const r = await get("/api/ping");
+      const st = $("status");
+      st.className = r.pid ? "on" : "off";
+      st.textContent = r.pid
+        ? "shim 在线 · pid=" + r.pid
+        : "shim 离线 — 重启 console.py 自动注入";
+      if (r.pid) await setNoraise();
+      return !!r.pid;
+    }
+    // 不抬窗开关（shim noraise）：无参只读状态
+    async function setNoraise(arg) {
+      const r = await shim("noraise", ...(arg ? [arg] : []));
+      if (r.err) return out("selOut", r);
+      $("noraise").checked = !!r[0].on;
+      $("noraiseLbl").textContent =
+        `已拦 ${r[0].blocked} 次`;
+    }
+
+    // force=false（轮询）：树和子项都没变就不重画
+    let treeKey = "";
+    async function refreshTree(force = true) {
+      const t0 = performance.now();
+      const r = await shim("tree");
+      const key = JSON.stringify(r);
+      const changed = key !== treeKey;
+      treeKey = key;
+      TREE = r.err ? [] : r;
+      NODE = new Map(TREE.map((n) => [n.hwnd, n]));
+      if (changed && !r.err) {
+        // 已销毁窗口：只删拉树前就到的（树发出后才建的窗口不在这棵树里，其图层
+        // 可能先到，删了就再也不会重推）
+        const live = new Set(TREE.map((n) => n.hwnd));
+        for (const [h, g] of GDI)
+          if (!live.has(h) && g.at < t0) GDI.delete(h);
+      }
+      const dchanged = await pullDetails();
+      if (force || changed || dchanged) dirty("map", "tree");
+    }
+
+    function needsDetail(n) {
+      const [l, t, r, b] = n.rect;
+      return n.vis && r > l && b > t && !!CLASS[n.class]?.[2](n);
+    }
+    // 列表/勾选等内容变化不发 WinEvent，靠轮询；回 true = 内容有变（丢弃时回 undefined）
+    let detailKey = "";
+    const pullDetails = drop(async () => {
+      const ns = TREE.filter(needsDetail);
+      const rs = await Promise.all(ns.map((n) => shim("detail", n.hwnd)));
+      DETAIL.clear();
+      ns.forEach((n, i) => rs[i].err || DETAIL.set(n.hwnd, rs[i][0]));
+      const key = JSON.stringify(rs);
+      const changed = key !== detailKey;
+      detailKey = key;
+      return changed;
+    });
+    // 树的三个触发源（treewatch 推送 / 轮询 / 交互后）都走这里，拉取中再触发只补拉一次
+    const pullTree = coalesce(() => refreshTree(false));
+    const autoUpd = () => ck("autoUpd");
+    const pollFps = () => (autoUpd() ? +$("pollFps").value : 0);
+    // 轮询连树一起拉：Wine 9 改标题（WM_SETTEXT）不发 WinEvent，推送收不到
+    const pollTree = () => pollFps() > 0 && pullTree();
+    // 交互后稍等客户端处理完再补拉一次，不等下个轮询周期；其间再交互并入这一次
+    const pollSoon = batch(
+      async () => {
+        await pullTree();
+        await setNoraise();
+      },
+      (f) => setTimeout(f, 120),
+    );
+
+    // 左右两侧同构：pane 下 .tabbar 按钮 data-tab ↔ 视图 data-view。
+    // 画法 → [所在视图, 画]：别处标脏（dirty），rAF 合帧只画所在视图可见的；切入视图即画其全部画法。
+    const CUR = {}; // pane → 当前视图
+    const shown = (v) => Object.values(CUR).includes(v);
+    const PARTS = {
+      map: ["layout", () => renderMap()],
+      tree: ["list", () => renderTree()],
+      rec: ["rec", () => recRender()],
+      kline: ["quote", () => drawK()],
+      book: ["quote", () => drawBook()],
+    };
+    const DIRTY = new Set();
+    const flush = batch(() => {
+      for (const p of DIRTY) if (shown(PARTS[p][0])) PARTS[p][1]();
+      DIRTY.clear();
+    }, requestAnimationFrame);
+    function dirty(...ps) {
+      for (const p of ps) DIRTY.add(p);
+      flush();
+    }
+    function tabbar(box, cur) {
+      for (const b of box.children) b.classList.toggle("on", b.dataset.tab === cur);
+    }
+    function setTab(pane, v) {
+      CUR[pane] = v;
+      tabbar(document.querySelector(`#${pane} > .tabbar`), v);
+      for (const view of document.querySelectorAll(`#${pane} > [data-view]`))
+        view.style.display = view.dataset.view === v ? "flex" : "none";
+      dirty(...Object.keys(PARTS).filter((p) => PARTS[p][0] === v));
+      if (v === "quote") pullKline();
+      syncStreams();
+    }
+
+    function applyMapSize() {
+      if (!MAP) return;
+      if (mapScale === null) {
+        const wrap = $("mapWrap");
+        if (!wrap.clientWidth) return; // 布局 tab 隐藏中，切回时再适配
+        mapScale = Math.min(
+          wrap.clientWidth / MAP.W,
+          wrap.clientHeight / MAP.H,
+        );
+      }
+      const svg = $("map");
+      svg.setAttribute("width", MAP.W * mapScale);
+      svg.setAttribute("height", MAP.H * mapScale);
+      $("zoomLbl").textContent =
+        "×" + mapScale.toFixed(2);
+    }
+    function zoomReset() {
+      mapScale = null;
+      applyMapSize();
+      const wrap = $("mapWrap");
+      wrap.scrollLeft = wrap.scrollTop = 0;
+    }
+    // 鼠标事件 → 布局图世界坐标（即屏幕坐标，GetWindowRect 本就是屏幕系）
+    function svgPoint(ev) {
+      const svg = $("map");
+      const p = svg.createSVGPoint();
+      p.x = ev.clientX;
+      p.y = ev.clientY;
+      return p.matrixTransform(svg.getScreenCTM().inverse());
+    }
+
+    // 列表行 ↔ 布局图浮框 同一点亮：行加类 cls、浮框 box 罩上，先清再点亮；hwnd=null 即全清 → 点亮的行
+    function lit(cls, box, hwnd) {
+      for (const row of document.querySelectorAll(`.tnode.${cls}`))
+        row.classList.remove(cls);
+      mark(box, hwnd);
+      const row =
+        hwnd && document.querySelector(`#tree .tnode[data-hwnd="${hwnd}"]`);
+      row?.classList.add(cls);
+      return row;
+    }
+    // hover 与选中同一写法：悬停 hl / mapHl，选中 active / mapSel
+    function hover(hwnd) {
+      HOVER = hwnd;
+      lit("hl", "mapHl", hwnd)?.scrollIntoView({ block: "nearest" });
+    }
+    // 布局图最上层浮框（hover / 选中）：按节点矩形摆放，不被子窗口遮住
+    function mark(id, hwnd) {
+      const box = $(id);
+      if (!box) return;
+      const n = nodeOf(hwnd);
+      if (!n) return box.setAttribute("display", "none");
+      box.removeAttribute("display");
+      attrs(box, rectAttrs(n.rect));
+    }
+
+    // 某节点是否有子节点（下一个节点 depth 更深）
+    function hasChildren(i) {
+      return i + 1 < TREE.length && TREE[i + 1].depth > TREE[i].depth;
+    }
+
+    // 过滤条件每次渲染读一次 → {text 过滤词, match(n) 词中, keep(n) 列表里留不留}
+    function filterNow() {
+      const text = $("filter").value.trim().toLowerCase(),
+        onlyVis = ck("onlyVis"),
+        hideZero = ck("hideZero");
+      const match = (n) =>
+        !text ||
+        `${n.class} ${n.title} ${n.hwnd} ${n.id}`.toLowerCase().includes(text);
+      const keep = (n) => {
+        const [l, t, r, b] = n.rect;
+        return (
+          !(onlyVis && !n.vis) && !(hideZero && (l === r || t === b)) && match(n)
+        );
+      };
+      return { text, match, keep };
+    }
+
+    function renderTree() {
+      const F = filterNow();
+      const html = [];
+      let hideDepth = null; // 折叠时跳过比它更深的节点
+      for (let i = 0; i < TREE.length; i++) {
+        const n = TREE[i];
+        const kids = hasChildren(i);
+        // 折叠：有过滤时不折叠（要能搜到深处）
+        if (!F.text) {
+          if (hideDepth !== null) {
+            if (n.depth > hideDepth) continue;
+            hideDepth = null;
+          }
+          if (COLLAPSED.has(n.hwnd) && kids) hideDepth = n.depth;
+        }
+        const els = elemsOf(n); // 绘制元素排在子窗口前，随本窗口折叠
+        if (F.keep(n)) html.push(treeRow(n, kids || els.length > 0));
+        if (F.text || !COLLAPSED.has(n.hwnd))
+          for (const e of els) if (F.match(e)) html.push(treeRow(e));
+      }
+      $("tree").innerHTML = html.join("");
+    }
+    function treeRow(n, kids = false) {
+      const fold = !kids ? "" : COLLAPSED.has(n.hwnd) ? "▸" : "▾";
+      const cls =
+        "tnode" +
+        (n.vis ? "" : " invis") +
+        (SELECTED?.hwnd === n.hwnd ? " active" : "");
+      const ttl = n.title
+        ? ` <span class="ttl">"${esc(oneLine(n.title).slice(0, 60))}"</span>`
+        : "";
+      const body = n.host
+        ? `<span class="fold"></span><span class="cls">${n.class}</span>${ttl}` +
+        ` <span class="meta">[${n.rect.join(",")}]</span>`
+        : `<span class="fold">${fold}</span>` +
+        `<span class="meta">${n.hwnd} id=${n.id}</span> <span class="cls">${esc(n.class)}</span>${ttl}` +
+        ` <span class="meta">[${n.rect.join(",")}] v${n.vis}e${n.en}</span>`;
+      return (
+        `<div class="${cls}" style="padding-left:${4 + n.depth * 14}px" data-hwnd="${n.hwnd}"` +
+        `${kids ? " data-kids" : ""} title="${esc(`${n.class} | ${n.title}`)}">${body}</div>`
+      );
+    }
+    // 列表行事件一律委托：点 ▸/▾ 折叠、点选、双击选中并闪烁、悬停
+    function initTree() {
+      const box = $("tree");
+      const rowOf = (e) => e.target.closest(".tnode");
+      // 行可能比树旧一拍（绘制元素随绘制层变），取不到节点即不理
+      const nodeAt = (row) => row && nodeOf(row.dataset.hwnd);
+      box.onclick = (e) => {
+        const row = rowOf(e);
+        if (!row) return;
+        if (!e.target.classList.contains("fold")) {
+          const n = nodeAt(row);
+          return n && select(n);
+        }
+        if (!("kids" in row.dataset)) return;
+        const h = row.dataset.hwnd;
+        COLLAPSED.has(h) ? COLLAPSED.delete(h) : COLLAPSED.add(h);
+        dirty("tree");
+      };
+      box.ondblclick = (e) => {
+        const n = !e.target.classList.contains("fold") && nodeAt(rowOf(e));
+        if (!n) return;
+        select(n);
+        act("highlight");
+      };
+      box.onmouseover = (e) => {
+        const row = rowOf(e);
+        if (row && row.dataset.hwnd !== HOVER) hover(row.dataset.hwnd);
+      };
+      box.onmouseleave = () => hover(null);
+    }
+
+    // 布局图：按屏幕坐标、按 Win32 z 序还原控件外观（标准控件按类画，自绘区打斜纹）。
+    const NS = "http://www.w3.org/2000/svg";
+    function attrs(e, a) {
+      for (const k in a) e.setAttribute(k, a[k]);
+      return e;
+    }
+    function el(parent, tag, a = {}, text) {
+      const e = attrs(document.createElementNS(NS, tag), a);
+      if (text != null) e.textContent = text;
+      parent.appendChild(e);
+      return e;
+    }
+    const rectAttrs = ([l, t, r, b], cls) => ({
+      x: l,
+      y: t,
+      width: Math.max(0, r - l),
+      height: Math.max(0, b - t),
+      ...(cls ? { class: cls } : {}),
+    });
+    // 嵌套 svg 作裁剪框：viewBox 与位置一致，内部仍用屏幕坐标
+    function clipBox(parent, [l, t, r, b]) {
+      return el(parent, "svg", {
+        ...rectAttrs([l, t, r, b]),
+        viewBox: `${l} ${t} ${Math.max(0, r - l)} ${Math.max(0, b - t)}`,
+      });
+    }
+    // 矩形内单行文字，超出裁掉；align = start/middle/end
+    function textIn(parent, R, s, align = "start", cls = "") {
+      const [l, t, r, b] = R;
+      if (!s || r <= l || b <= t) return;
+      const x =
+        align === "middle" ? (l + r) / 2 : align === "end" ? r - 3 : l + 3;
+      el(
+        clipBox(parent, R),
+        "text",
+        {
+          x,
+          y: (t + b) / 2,
+          "text-anchor": align,
+          "dominant-baseline": "central",
+          class: cls,
+        },
+        s,
+      );
+    }
+    const mnem = (s) => (s || "").replace(/&(.)/g, "$1"); // 去助记符 &X / &&
+
+    const btnType = (n) => n.style & 0xf; // BS_TYPEMASK
+    const isCheckLike = (n) =>
+      [2, 3, 4, 5, 6, 9].includes(btnType(n)) && !(n.style & 0x1000); // 非 BS_PUSHLIKE
+    const btnSkin = (n) =>
+      btnType(n) === 7 ? "group" : isCheckLike(n) ? "bare" : "btn";
+    const is = (v) => () => v;
+    const isWeb = (n) => /^(Chrome_|Cef)/.test(n.class);
+
+    // 子项 [l,t,r,b,st,text]（已换到屏幕坐标）
+    function drawButton(g, n, items) {
+      const st = items[0]?.[4] || 0;
+      const text = mnem(oneLine(n.title));
+      const cls = n.en ? "" : "gray";
+      const [l, t, r] = n.rect;
+      if (btnType(n) === 7)
+        return textIn(g, [l + 6, t, r, t + 14], text, "start", cls); // 分组框
+      if (isCheckLike(n)) {
+        const radio = [4, 9].includes(btnType(n));
+        const on = st & ST.CHECK;
+        return textIn(
+          g,
+          n.rect,
+          (radio ? (on ? "◉" : "○") : on ? "☑" : "☐") + " " + text,
+          "start",
+          cls,
+        );
+      }
+      if (st & (ST.SEL | ST.CHECK))
+        el(g, "rect", rectAttrs(n.rect, "pressed"));
+      textIn(g, n.rect, text, "middle", cls);
+    }
+    function drawCombo(g, n) {
+      const [l, t, r, b] = n.rect;
+      const a = Math.min(b - t, 18);
+      el(g, "rect", rectAttrs([r - a, t, r, b], "btnface"));
+      textIn(g, [r - a, t, r, b], "▾", "middle");
+      textIn(
+        g,
+        [l, t, r - a, b],
+        oneLine(n.title),
+        "start",
+        n.en ? "" : "gray",
+      );
+    }
+    // ListBox / ComboLBox / SysListView32：ST_ROW 行先铺选中底色，其后各格文字
+    function drawList(g, n, items) {
+      for (const it of items) {
+        const [, , , , st, text] = it;
+        if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
+        if (!(st & ST.ROW))
+          textIn(g, it, text, "start", st & ST.GRAY ? "gray" : "");
+      }
+    }
+    function drawHeader(g, n, items) {
+      for (const it of items) {
+        el(g, "rect", rectAttrs(it, "hdritem"));
+        textIn(g, it, it[5]);
+      }
+    }
+    function drawTreeItems(g, n, items) {
+      for (const it of items) {
+        const [l, t, , b, st, text] = it;
+        if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
+        if (st & ST.KIDS)
+          textIn(
+            g,
+            [l - 14, t, l, b],
+            st & ST.OPEN ? "▾" : "▸",
+            "middle",
+            "gray",
+          );
+        textIn(g, [l, t, n.rect[2], b], text); // 文字矩形按原字体量的，放宽到右边界免得被裁
+      }
+    }
+    function drawMenu(g, n, items) {
+      for (const it of items) {
+        const [l, t, r, b, st, text] = it;
+        if (st & ST.SEP) {
+          el(g, "line", {
+            x1: l + 2,
+            x2: r - 2,
+            y1: (t + b) / 2,
+            y2: (t + b) / 2,
+            class: "sep",
+          });
+          continue;
+        }
+        if (st & ST.SEL) el(g, "rect", rectAttrs(it, "selbar"));
+        const cls = st & ST.GRAY ? "gray" : "";
+        const [txt, acc] = mnem(text).split("\t");
+        if (st & ST.CHECK) textIn(g, [l, t, l + 18, b], "✓", "middle", cls);
+        textIn(g, [l + 18, t, r - 14, b], txt, "start", cls);
+        if (acc) textIn(g, [l, t, r - 14, b], acc, "end", cls);
+        if (st & ST.SUB) textIn(g, [r - 14, t, r, b], "▸", "middle", cls);
+      }
+    }
+    function drawOther(g, n, items, leaf) {
+      const [l, t, r, b] = n.rect;
+      if (!leaf || r - l < 30 || b - t < 10) return;
+      if (isWeb(n)) return textIn(g, n.rect, "网页 (CEF)", "middle", "gray");
+      textIn(
+        g,
+        [l, t, r, Math.min(b, t + 12)],
+        oneLine(n.title) || n.class,
+        "start",
+        "self-lbl",
+      );
+    }
+    function drawStatic(g, n) {
+      textIn(
+        g,
+        n.rect,
+        mnem(oneLine(n.title)),
+        ["start", "middle", "end"][n.style & 0x1f] || "start",
+        n.en ? "" : "gray",
+      );
+    }
+    function drawEdit(g, n) {
+      textIn(
+        g,
+        n.rect,
+        n.style & 0x20 ? "●".repeat(n.title.length) : oneLine(n.title), // ES_PASSWORD
+      );
+    }
+
+    // 标准控件按类：底板皮肤、画法、要不要拉 detail 子项（各为 n 的函数）。
+    // 表外的类即自绘窗口：皮肤 web / self / frame，内容靠绘制层，其文字段为绘制元素。
+    // prettier-ignore
+    const CLASS = {
+      //               皮肤             画法            detail
+      Button: [btnSkin, drawButton, isCheckLike],
+      Static: [is("bare"), drawStatic, is(false)],
+      Edit: [is("field"), drawEdit, is(false)],
+      ComboBox: [is("field"), drawCombo, is(false)],
+      ListBox: [is("field"), drawList, is(true)],
+      ComboLBox: [is("field"), drawList, is(true)],
+      SysListView32: [is("field"), drawList, is(true)],
+      SysTreeView32: [is("field"), drawTreeItems, is(true)],
+      SysHeader32: [is("hdr"), drawHeader, is(true)],
+      "#32768": [is("menu"), drawMenu, is(true)],
+    };
+    const skinOf = (n, leaf) =>
+      CLASS[n.class]?.[0](n) || (isWeb(n) ? "web" : leaf ? "self" : "frame");
+
+    // 图层记录的客户区原点（屏幕坐标），及子项平移到屏幕
+    const originOf = (n, rec) => [
+      n.rect[0] + rec.off[0],
+      n.rect[1] + rec.off[1],
+    ];
+    const shift = ([l, t, r, b, ...rest], [x, y]) => [
+      l + x,
+      t + y,
+      r + x,
+      b + y,
+      ...rest,
+    ];
+
+    // 一个窗口：底板 rect.win（接鼠标、带 data-hwnd，事件委托在 #map）+ 按类装饰（有绘制层则由它代替）
+    function drawNode(g, n, leaf) {
+      const base = el(g, "rect", rectAttrs(n.rect, "win " + skinOf(n, leaf)));
+      base.dataset.hwnd = n.hwnd;
+      el(
+        base,
+        "title",
+        {},
+        `${n.hwnd} id=${n.id} ${n.class} "${oneLine(n.title)}" [${n.rect}]`,
+      );
+      if (!gdiOf(n)) {
+        const rec = DETAIL.get(n.hwnd);
+        const o = rec && originOf(n, rec);
+        const items = rec ? rec.items.map((it) => shift(it, o)) : [];
+        return (CLASS[n.class]?.[1] || drawOther)(g, n, items, leaf);
+      }
+      const lg = el(clipBox(g, n.rect), "g");
+      GDI_G.set(n.hwnd, { g: lg, n });
+      drawGdi(lg, n);
+    }
+
+    // 绘制层（shim gdiwatch）：每窗口一份客户区坐标的色块/文字，后画的在上。
+    // 推送来一层只重写该窗口的 <g>（rAF 合帧）；窗口第一次有内容才整图重画。
+    const GDI_G = new Map(); // hwnd → {g, n}：当前图里该窗口的绘制层容器
+    const SHOWN = new Set(); // 当前图里画了的 hwnd
+    const gdiDirty = new Set();
+    const gdiShown = () => $("gdiOn").checked;
+    const gdiOf = (n) =>
+      gdiShown() && GDI.get(n.hwnd)?.items.length ? GDI.get(n.hwnd) : null;
+    // 绘制元素：自绘窗口（CLASS 表外）绘制层里的每段文字（按钮/页签/格子），当作该
+    // 窗口的子节点；hwnd = 窗口#客户区左,上（重画不变），host = 所画窗口，rect 为屏幕坐标
+    const elemHost = (n) => n.vis && !CLASS[n.class];
+    function elemsOf(n) {
+      const rec = elemHost(n) && gdiOf(n);
+      if (!rec) return [];
+      const o = originOf(n, rec);
+      const out = [];
+      for (const it of rec.items)
+        if (it[5]?.trim())
+          out.push({
+            depth: n.depth + 1,
+            hwnd: `${n.hwnd}#${it[0]},${it[1]}`,
+            host: n.hwnd,
+            class: "绘",
+            title: it[5].trim(),
+            rect: shift(it, o).slice(0, 4),
+            vis: 1,
+            en: 1,
+          });
+      return out;
+    }
+    // hwnd 或元素 id → 节点
+    function nodeOf(id) {
+      if (!id) return null;
+      const host = id.split("#")[0];
+      const n = NODE.get(host);
+      return n && id !== host ? elemsOf(n).find((e) => e.hwnd === id) : n;
+    }
+    // COLORREF 是 0x00BBGGRR
+    const bgr = (c) =>
+      "#" +
+      [c & 255, (c >> 8) & 255, (c >> 16) & 255]
+        .map((v) => v.toString(16).padStart(2, "0"))
+        .join("");
+    function drawGdi(g, n) {
+      const rec = GDI.get(n.hwnd);
+      const [x, y] = originOf(n, rec);
+      g.setAttribute("transform", `translate(${x},${y})`);
+      let s = "";
+      for (const [l, t, r, b, c, txt] of rec.items) {
+        if (txt == null) {
+          s += `<rect x="${l}" y="${t}" width="${r - l}" height="${b - t}" style="fill:${bgr(c)}"/>`;
+          continue;
+        }
+        // 字框宽是客户端按原字体量的：textLength 压到同宽，位置才对得上
+        s +=
+          `<text x="${l}" y="${(t + b) / 2}" dominant-baseline="central" textLength="${Math.max(1, r - l)}"` +
+          ` lengthAdjust="spacingAndGlyphs" style="fill:${bgr(c)};font-size:${Math.max(6, (b - t) * 0.8)}px">${esc(txt)}</text>`;
+      }
+      for (const [l, t, r, b, , txt] of elemHost(n) ? rec.items : [])
+        if (txt?.trim())
+          s += `<rect class="elem" data-hwnd="${n.hwnd}#${l},${t}" x="${l}" y="${t}" width="${r - l}" height="${b - t}"/>`;
+      g.innerHTML = s;
+    }
+    // 列表跟绘制元素走：最多 500ms 标脏一次（行情文字刷得勤）
+    const listSoon = batch(
+      () => dirty("tree"),
+      (f) => setTimeout(f, 500),
+    );
+    // 布局图可见时只重写来了新层的窗口；窗口第一次有内容才整图标脏（不可见时切入即整图重画）
+    const gdiSoon = batch(() => {
+      let full = false;
+      if (shown("layout"))
         for (const h of gdiDirty) {
           const at = GDI_G.get(h);
           if (at) drawGdi(at.g, at.n);
           else if (SHOWN.has(h) && GDI.get(h).items.length) full = true;
         }
-        gdiDirty.clear();
-        if (full) renderMap();
-        listSoon();
-      }, requestAnimationFrame);
+      gdiDirty.clear();
+      if (full) dirty("map");
+      listSoon();
+    }, requestAnimationFrame);
 
-      function renderMap() {
-        const svg = document.getElementById("map");
-        svg.innerHTML = "";
-        GDI_G.clear();
-        SHOWN.clear();
-        // 先序 + depth → 父子表；兄弟顺序即 z 序（先 = 上层）
-        const kids = TREE.map(() => []);
-        const roots = [];
-        const stack = [];
-        TREE.forEach((n, i) => {
-          while (stack.length && TREE[stack.at(-1)].depth >= n.depth)
-            stack.pop();
-          (stack.length ? kids[stack.at(-1)] : roots).push(i);
-          stack.push(i);
-        });
-        const shown = (i) => {
-          const {
-            vis,
-            rect: [l, t, r, b],
-          } = TREE[i];
-          return vis && r > l && b > t;
-        };
-        const vis = roots.filter(shown);
-        // 排除跑到屏外的窗口：最小化时 Win32 把窗口挪到 -32000 一带（right/bottom 为负）
-        const tops = vis.filter(
-          (i) => TREE[i].rect[2] > 0 && TREE[i].rect[3] > 0,
-        );
-        const ns = tops.map((i) => TREE[i]);
-        if (!ns.length) {
-          const msg = vis.length
-            ? "主窗口已最小化 / 不在前台（切回客户端即恢复）"
-            : "无可见控件（切到列表或刷新窗口树）";
-          svg.setAttribute("viewBox", "0 0 340 40");
-          svg.setAttribute("width", 340);
-          svg.setAttribute("height", 40);
-          svg.innerHTML = `<text x="6" y="22">${msg}</text>`;
-          return;
-        }
-        const x0 = Math.min(...ns.map((n) => n.rect[0]));
-        const y0 = Math.min(...ns.map((n) => n.rect[1]));
-        const x1 = Math.max(...ns.map((n) => n.rect[2]));
-        const y1 = Math.max(...ns.map((n) => n.rect[3]));
-        const W = x1 - x0,
-          H = y1 - y0;
-        MAP = { x0, y0, W, H };
-        svg.setAttribute("viewBox", `${x0} ${y0} ${W} ${H}`);
-        applyMapSize();
-        const defs = el(svg, "defs");
-        const hatch = el(defs, "pattern", {
-          id: "hatch",
-          width: 6,
-          height: 6,
-          patternUnits: "userSpaceOnUse",
-          patternTransform: "rotate(45)",
-        });
-        el(hatch, "rect", {
-          width: 6,
-          height: 6,
-          fill: "#1c1c1c",
-          stroke: "none",
-        });
-        el(hatch, "line", {
-          x1: 0,
-          y1: 0,
-          x2: 0,
-          y2: 6,
-          stroke: "#2a2a2a",
-          "stroke-width": 2,
-        });
-        // 画家算法：先画父，子窗口裁在父矩形内；兄弟从下层往上层画。过滤不中的只调暗自身。
-        const dim = document.getElementById("filter").value.trim();
-        const paint = (i, parent) => {
-          if (!shown(i)) return; // IsWindowVisible 已含祖先，隐藏即整棵子树不可见
-          const n = TREE[i];
-          const sub = kids[i].filter(shown);
-          const g = el(
-            parent,
-            "g",
-            dim && !matchFilter(n) ? { opacity: 0.3 } : {},
-          );
-          drawNode(g, n, !sub.length);
-          SHOWN.add(n.hwnd);
-          if (!sub.length) return;
-          const clip = clipBox(parent, n.rect);
-          for (const k of sub.slice().reverse()) paint(k, clip);
-        };
-        for (const i of tops.slice().reverse()) paint(i, svg);
-        el(svg, "rect", { id: "mapSel", display: "none" });
-        el(svg, "rect", { id: "mapHl", display: "none" });
-        mark("mapSel", SELECTED && SELECTED.hwnd);
-        mark("mapHl", HOVER);
+    function renderMap() {
+      const svg = $("map");
+      svg.innerHTML = "";
+      GDI_G.clear();
+      SHOWN.clear();
+      // 先序 + depth → 父子表；兄弟顺序即 z 序（先 = 上层）
+      const kids = TREE.map(() => []);
+      const roots = [];
+      const stack = [];
+      TREE.forEach((n, i) => {
+        while (stack.length && TREE[stack.at(-1)].depth >= n.depth)
+          stack.pop();
+        (stack.length ? kids[stack.at(-1)] : roots).push(i);
+        stack.push(i);
+      });
+      const onMap = (i) => {
+        const {
+          vis,
+          rect: [l, t, r, b],
+        } = TREE[i];
+        return vis && r > l && b > t;
+      };
+      const vis = roots.filter(onMap);
+      // 排除跑到屏外的窗口：最小化时 Win32 把窗口挪到 -32000 一带（right/bottom 为负）
+      const tops = vis.filter(
+        (i) => TREE[i].rect[2] > 0 && TREE[i].rect[3] > 0,
+      );
+      const ns = tops.map((i) => TREE[i]);
+      if (!ns.length) {
+        const msg = vis.length
+          ? "主窗口已最小化 / 不在前台（切回客户端即恢复）"
+          : "无可见控件（切到列表或刷新窗口树）";
+        svg.setAttribute("viewBox", "0 0 340 40");
+        svg.setAttribute("width", 340);
+        svg.setAttribute("height", 40);
+        svg.innerHTML = `<text x="6" y="22">${msg}</text>`;
+        return;
       }
+      const x0 = Math.min(...ns.map((n) => n.rect[0]));
+      const y0 = Math.min(...ns.map((n) => n.rect[1]));
+      const x1 = Math.max(...ns.map((n) => n.rect[2]));
+      const y1 = Math.max(...ns.map((n) => n.rect[3]));
+      const W = x1 - x0,
+        H = y1 - y0;
+      MAP = { x0, y0, W, H };
+      svg.setAttribute("viewBox", `${x0} ${y0} ${W} ${H}`);
+      applyMapSize();
+      const defs = el(svg, "defs");
+      const hatch = el(defs, "pattern", {
+        id: "hatch",
+        width: 6,
+        height: 6,
+        patternUnits: "userSpaceOnUse",
+        patternTransform: "rotate(45)",
+      });
+      el(hatch, "rect", {
+        width: 6,
+        height: 6,
+        fill: "#1c1c1c",
+        stroke: "none",
+      });
+      el(hatch, "line", {
+        x1: 0,
+        y1: 0,
+        x2: 0,
+        y2: 6,
+        stroke: "#2a2a2a",
+        "stroke-width": 2,
+      });
+      // 画家算法：先画父，子窗口裁在父矩形内；兄弟从下层往上层画。过滤不中的只调暗自身。
+      const F = filterNow();
+      const draw = (i, parent) => {
+        if (!onMap(i)) return; // IsWindowVisible 已含祖先，隐藏即整棵子树不可见
+        const n = TREE[i];
+        const sub = kids[i].filter(onMap);
+        const g = el(parent, "g", F.match(n) ? {} : { opacity: 0.3 });
+        drawNode(g, n, !sub.length);
+        SHOWN.add(n.hwnd);
+        if (!sub.length) return;
+        const clip = clipBox(parent, n.rect);
+        for (const k of sub.slice().reverse()) draw(k, clip);
+      };
+      for (const i of tops.slice().reverse()) draw(i, svg);
+      el(svg, "rect", { id: "mapSel", display: "none" });
+      el(svg, "rect", { id: "mapHl", display: "none" });
+      mark("mapSel", SELECTED && SELECTED.hwnd);
+      mark("mapHl", HOVER);
+    }
 
-      function select(n) {
-        SELECTED = n;
-        document.getElementById("sel").innerHTML = n.host
-          ? `绘制元素 <b>"${esc(n.title)}"</b> · 画在 <b>${n.host}</b> · rect=[${n.rect.join(",")}]`
-          : `<b>${n.hwnd}</b> · id=<b>${n.id}</b> · class=<b>${esc(n.class)}</b>` +
-            `<br>title=<b>${esc(oneLine(n.title)) || "(空)"}</b> · rect=[${n.rect.join(",")}] · vis=${n.vis} en=${n.en}`;
-        document.getElementById("mTarget").value = n.host || n.hwnd;
-        render();
-      }
+    function select(n) {
+      SELECTED = n;
+      $("sel").innerHTML = n.host
+        ? `绘制元素 <b>"${esc(n.title)}"</b> · 画在 <b>${n.host}</b> · rect=[${n.rect.join(",")}]`
+        : `<b>${n.hwnd}</b> · id=<b>${n.id}</b> · class=<b>${esc(n.class)}</b>` +
+        `<br>title=<b>${esc(oneLine(n.title)) || "(空)"}</b> · rect=[${n.rect.join(",")}] · vis=${n.vis} en=${n.en}`;
+      $("mTarget").value = n.host || n.hwnd;
+      lit("active", "mapSel", n.hwnd);
+    }
 
-      async function act(kind, ...args) {
-        if (!SELECTED) return out("selOut", "先选一个控件");
-        if (SELECTED.host) return out("selOut", elemAct(kind));
-        out("selOut", await shim(kind, SELECTED.hwnd, ...args));
+    async function act(kind, ...args) {
+      if (!SELECTED) return out("selOut", "先选一个控件");
+      if (SELECTED.host) return out("selOut", elemAct(kind));
+      out("selOut", await shim(kind, SELECTED.hwnd, ...args));
+    }
+    // 绘制元素没有自己的窗口：点击 = 往所画窗口投其中心点，文本/矩形取自绘制层，
+    // 闪烁即布局图上的选中框
+    function elemAct(kind) {
+      const { host, title, rect } = SELECTED;
+      const [l, t, r, b] = rect;
+      if (kind === "click") {
+        sendInput("clickat", host, (l + r) >> 1, (t + b) >> 1);
+        return `已向 ${host} 投中心点击`;
       }
-      // 绘制元素没有自己的窗口：点击 = 往所画窗口投其中心点，文本/矩形取自绘制层，
-      // 闪烁即布局图上的选中框
-      function elemAct(kind) {
-        const { host, title, rect } = SELECTED;
-        const [l, t, r, b] = rect;
-        if (kind === "click") {
-          sendInput("clickat", host, (l + r) >> 1, (t + b) >> 1);
-          return `已向 ${host} 投中心点击`;
-        }
-        if (kind === "gettext") return { text: title };
-        if (kind === "rect") return { rect };
-        if (kind === "highlight") return "";
-        return `${kind} 对绘制元素无效（它没有自己的窗口）`;
-      }
-      function doSettext() {
-        return act("settext", document.getElementById("setval").value);
-      }
-      function out(id, t) {
-        document.getElementById(id).textContent =
-          typeof t === "string" ? t : JSON.stringify(t, null, 1);
-      }
-      // 整表重填：cols 每列 [表头 html, 行 → 单元格 html, 行 → 排序键?, 单元格 class?]；
-      // wire(tr, row) 可选接按钮。有排序键的列点表头排序：首点降序、再点反向，空值恒在末尾；
-      // 排序状态按表记住，重填（如行情刷新）沿用。
-      const SORT = {}; // sel → {i 列号, dir ±1}
-      const cmpKey = (x, y, dir) =>
-        x == null
-          ? +(y != null)
-          : y == null
-            ? -1
-            : dir *
-              (typeof x === "number"
-                ? x - y
-                : String(x).localeCompare(String(y), "zh"));
-      function table(sel, cols, rows, wire) {
-        const st = (SORT[sel] ??= { i: -1, dir: -1 });
-        const thead = document.querySelector(sel + " thead");
-        thead.innerHTML =
-          "<tr>" +
-          cols
-            .map(([h, , key, cls], i) => {
-              const c = [key && "sortable", cls].filter(Boolean).join(" ");
-              const arrow = i === st.i ? (st.dir > 0 ? " ▲" : " ▼") : "";
-              return `<th class="${c}" data-i="${i}">${h}${arrow}</th>`;
-            })
-            .join("") +
-          "</tr>";
-        thead.onclick = (e) => {
+      if (kind === "gettext") return { text: title };
+      if (kind === "rect") return { rect };
+      if (kind === "highlight") return "";
+      return `${kind} 对绘制元素无效（它没有自己的窗口）`;
+    }
+    function doSettext() {
+      return act("settext", $("setval").value);
+    }
+    function out(id, t) {
+      $(id).textContent =
+        typeof t === "string" ? t : JSON.stringify(t, null, 1);
+    }
+    const ZH = new Intl.Collator("zh").compare;
+    const cmpKey = (x, y, dir) =>
+      x == null
+        ? +(y != null)
+        : y == null
+          ? -1
+          : dir * (typeof x === "number" ? x - y : ZH(String(x), String(y)));
+    // 整表重填：cols 每列 [表头 html, 行 → 单元格 html, 行 → 排序键?, 单元格 class?]；
+    // attrs(row) 为 <tr> 的属性串。有排序键的列点表头排序：首点降序、再点反向，空值恒在末尾；
+    // 排序状态按表记住，重填（如行情刷新）沿用；表头变了才重写。行内事件由调用方委托在表上。
+    const SORT = {}; // sel → {i 列号, dir ±1, head 当前表头, redraw 按当前数据重填}
+    function table(sel, cols, rows, attrs = () => "") {
+      const st = (SORT[sel] ??= { i: -1, dir: -1, head: null });
+      const T = document.querySelector(sel);
+      st.redraw = () => table(sel, cols, rows, attrs);
+      const head =
+        "<tr>" +
+        cols
+          .map(([h, , key, cls], i) => {
+            const c = [key && "sortable", cls].filter(Boolean).join(" ");
+            const arrow = i === st.i ? (st.dir > 0 ? " ▲" : " ▼") : "";
+            return `<th class="${c}" data-i="${i}">${h}${arrow}</th>`;
+          })
+          .join("") +
+        "</tr>";
+      if (head !== st.head) {
+        T.tHead.innerHTML = st.head = head;
+        T.tHead.onclick = (e) => {
           const th = e.target.closest("th.sortable");
           if (!th) return;
           st.dir = st.i === +th.dataset.i ? -st.dir : -1;
           st.i = +th.dataset.i;
-          table(sel, cols, rows, wire);
+          st.redraw();
         };
-        const key = cols[st.i]?.[2];
-        const list = key
-          ? [...rows].sort((a, b) => cmpKey(key(a), key(b), st.dir))
-          : rows;
-        const tb = document.querySelector(sel + " tbody");
-        tb.innerHTML = "";
-        for (const row of list) {
-          const tr = tb.insertRow();
-          tr.innerHTML = cols
-            .map(([, f, , cls]) => `<td class="${cls ?? ""}">${f(row)}</td>`)
-            .join("");
-          if (wire) wire(tr, row);
-        }
       }
-      const paint = (c, s) => (c ? `<span style="color:${c}">${s}</span>` : s);
-
-      // 原始消息栏 ↔ spy 记录 {hwnd,msg,wparam,lparam}
-      const MSG_FIELDS = ["mTarget", "mMsg", "mWp", "mLp"];
-      function fillMsg(e) {
-        [e.hwnd, e.msg, e.wparam, e.lparam].forEach(
-          (v, i) => (document.getElementById(MSG_FIELDS[i]).value = v),
-        );
-      }
-      async function rawMsg(kind) {
-        const args = MSG_FIELDS.map((id) => document.getElementById(id).value);
-        out("msgOut", await shim(kind, ...args));
-      }
-
-      async function spy(action) {
-        const filter = document.getElementById("spyFilter").value;
-        const r = await shim(
-          "spy",
-          action,
-          ...(action === "on" ? [filter] : []),
-        );
-        if (action === "dump" && !r.err) renderSpy(r);
-      }
-      const SPY_COLS = [
-        ["msg", (e) => e.msg],
-        ["hwnd", (e) => e.hwnd],
-        ["class", (e) => esc(e.class)],
-        ["wparam", (e) => e.wparam],
-        ["lparam", (e) => e.lparam],
-        ["", () => "<button>回放</button> <button>定位</button>"],
-      ];
-      function renderSpy(events) {
-        table("#spyTbl", SPY_COLS, events, (tr, e) => {
-          const [bReplay, bLoc] = tr.querySelectorAll("button");
-          // 回放：把这条消息 post 回其 hwnd
-          bReplay.onclick = () => {
-            fillMsg(e);
-            rawMsg("post");
-          };
-          // 定位：在当前树里选中该 hwnd，消息填进原始消息栏
-          bLoc.onclick = () => {
-            const n = NODE.get(e.hwnd);
-            if (!n)
-              return out("selOut", "当前树里没有 " + e.hwnd + "，先刷新窗口树");
-            select(n);
-            fillMsg(e);
-          };
-        });
-      }
-
-      let autoTimer = null;
-      function toggleAuto() {
-        if (document.getElementById("spyAuto").checked)
-          autoTimer = setInterval(() => spy("dump"), 1000);
-        else {
-          clearInterval(autoTimer);
-          autoTimer = null;
-        }
-      }
-
-      // 录制器：订阅 rec 路，每推 {st 状态, recs 新记录}；页面只留尾巴，全量在 st.file
-      const REC_CAP = 2000;
-      let REC_RECS = [];
-      let REC_ST = null;
-      // kind → 显示开关 id；未列的（start/mark/err/stop）恒显
-      const REC_SHOW = {
-        msg: "recMsg",
-        req: "recReq",
-        new: "recWin",
-        del: "recWin",
-        chg: "recWin",
-        gdi: "recGdi",
-      };
-      const recWin = (n) =>
-        `${n.hwnd} ${n.class}#${n.id}「${oneLine(n.title)}」`;
-      function recLine(r) {
-        const t = r.t.toFixed(2).padStart(8);
-        switch (r.kind) {
-          case "msg":
-            return (
-              `${t} msg ${r.msg} → ${recWin(r)}` +
-              ` wp=${r.wparam} lp=${r.lparam}` +
-              (r.n > 1 ? ` ×${r.n}` : "") +
-              (r.vis ? "" : " (隐藏)")
-            );
-          case "req": {
-            const at = `req=${r.obj}`;
-            if (r.op === "str")
-              return `${t} req ${at} str[${r.id},${r.aux}]=${JSON.stringify(r.value)}`;
-            if (r.op === "int" || r.op === "float")
-              return `${t} req ${at} ${r.op}[${r.id}]=${r.value}`;
-            if (r.op === "func")
-              return `${t} req ${at} func=${r.value} (0x${r.value.toString(16)})`;
-            if (r.op === "init") return `${t} req ${at} init=${r.value}`;
-            if (r.op === "send")
-              return `${t} req ${at} SEND args=${JSON.stringify(r.args)}`;
-            return `${t} req ${JSON.stringify(r)}`;
-          }
-          case "new":
-          case "del":
-            return `${t} ${r.kind} ${recWin(r.node)}${r.node.vis ? "" : " (隐藏)"}`;
-          case "chg":
-            return (
-              `${t} chg ${recWin(r.node)} ` +
-              Object.entries(r.diff)
-                .map(
-                  ([k, [a, b]]) =>
-                    `${k}: ${JSON.stringify(a)} → ${JSON.stringify(b)}`,
-                )
-                .join("; ")
-            );
-          case "gdi":
-            return `${t} gdi ${r.hwnd} ${r.cls}#${r.id} | ${oneLine(r.texts.join(" | ")).slice(0, 300)}`;
-          case "mark":
-            return `${t} ===== ${r.text} =====`;
-          default: {
-            const { t: _t, kind, ...rest } = r;
-            return `${t} ${kind} ${JSON.stringify(rest)}`;
-          }
-        }
-      }
-      function recRender() {
-        const st = REC_ST;
-        if (st) {
-          document.getElementById("recDot").innerHTML = st.on
-            ? '<span class="off">●</span>'
-            : "";
-          document.getElementById("recBtn").textContent = st.on
-            ? "停止"
-            : "开始";
-          document.getElementById("recSt").textContent = st.file
-            ? `${st.on ? "录制中" : "已停"} · ${st.n} 条 · ${st.file}`
-            : "未录制";
-        }
-        if (
-          document.querySelector('#rightPane > [data-view="rec"]').style
-            .display === "none"
+      const key = cols[st.i]?.[2];
+      const list = key
+        ? [...rows].sort((a, b) => cmpKey(key(a), key(b), st.dir))
+        : rows;
+      T.tBodies[0].innerHTML = list
+        .map(
+          (row) =>
+            `<tr ${attrs(row)}>` +
+            cols.map(([, f, , cls]) => `<td class="${cls ?? ""}">${f(row)}</td>`).join("") +
+            "</tr>",
         )
-          return;
-        const excl = document
-          .getElementById("recExcl")
-          .value.split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const lines = REC_RECS.filter((r) => {
-          const id = REC_SHOW[r.kind];
-          return !id || document.getElementById(id).checked;
-        })
-          .map(recLine)
-          .filter((s) => !excl.some((x) => s.includes(x)));
-        const pre = document.getElementById("recLog");
-        const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
-        pre.textContent = lines.join("\n");
-        if (atEnd) pre.scrollTop = pre.scrollHeight;
-      }
-      const recSoon = batch(recRender, requestAnimationFrame);
-      function recOn(r) {
-        REC_ST = r.st;
-        REC_RECS = REC_RECS.concat(r.recs).slice(-REC_CAP);
-        recSoon();
-      }
-      async function recToggle() {
-        const r = await api("/api/rec", { on: !REC_ST?.on });
-        if (r.err) document.getElementById("recSt").textContent = "✗ " + r.err;
-      }
-      async function reqAttach() {
-        const st = document.getElementById("reqSt");
-        if (!REC_ST?.on) return (st.textContent = "✗ 请先开始录制");
-        if (!SELECTED || SELECTED.host)
-          return (st.textContent = "✗ 请在窗口树中选择闪电下单顶层窗口");
-        const off = document.getElementById("reqOff").value.trim();
-        const r = await shim(
-          "req",
-          "attach",
-          SELECTED.hwnd,
-          ...(off ? [off] : []),
-        );
-        if (r.err) return (st.textContent = "✗ " + r.err);
-        if (!r.some((x) => x.attached))
-          return (st.textContent =
-            "发现多个候选，请把对象偏移填为：" +
-            r
-              .filter((x) => x.candidate)
-              .map((x) => x.offset)
-              .join(" / "));
-        st.textContent = `✓ 已接入 ${SELECTED.hwnd}，请手动买入、卖出或撤单`;
-      }
-      async function recMark() {
-        const el = document.getElementById("recMarkTxt");
-        const r = await api("/api/recmark", {
-          text: el.value.trim() || "mark",
-        });
-        if (r.err)
-          return (document.getElementById("recSt").textContent = "✗ " + r.err);
-        el.value = "";
-      }
+        .join("");
+    }
+    const paint = (c, s) => (c ? `<span style="color:${c}">${s}</span>` : s);
 
-      // 一次性加载：id → #{id}Info 提示行、#{id}Tbl 表；出错只显示 err（滑点用）
-      const fmt = (v, d = 2) =>
-        v == null
-          ? ""
-          : v.toLocaleString("zh-CN", {
-              minimumFractionDigits: d,
-              maximumFractionDigits: d,
-            });
-      const fmtPnl = (v, d) =>
-        v == null ? "" : paint(v >= 0 ? "#f14c4c" : "#6a9955", fmt(v, d));
-      // 数字列：右对齐，按原值排序
-      const numCol = (h, k, f = fmt) => [h, (p) => f(p[k]), (p) => p[k], "num"];
-      // 下单：行内按钮 → POST /api/order（后台跑闪电窗），各单逐步状态经 ord 路推送
-      const ORD_SIZES = [
-        [0, "最小"],
-        [10000, "1W"],
-        [50000, "5W"],
-      ];
-      // 方向 s：买 +1 / 卖 -1，与后端同号
-      const SIDE = { 1: "买", "-1": "卖" };
-      const SIDE_COLOR = { 1: "#f14c4c", "-1": "#6a9955" };
-      const ordBtns = (p) =>
-        p.closed
-          ? '<span class="kv">今日清仓</span>'
-          : [1, -1]
-              .map((s) =>
-                ORD_SIZES.map(
-                  ([n, t]) =>
-                    `<button class="ord" style="color:${SIDE_COLOR[s]}" data-code="${p.code}" data-s="${s}" data-size="${n}">${t}</button>`,
-                ).join(""),
-              )
-              .join(" ");
-      // 买入方式只管买入，卖出一律担保品卖出
-      document.getElementById("posTbl").onclick = async (e) => {
-        const b = e.target.closest("button.ord");
-        if (!b) return pickClick(e);
-        const s = +b.dataset.s;
-        const r = await api("/api/order", {
-          code: b.dataset.code,
+    // 原始消息栏 ↔ spy 记录 {hwnd,msg,wparam,lparam}
+    const MSG_FIELDS = ["mTarget", "mMsg", "mWp", "mLp"];
+    function fillMsg(e) {
+      [e.hwnd, e.msg, e.wparam, e.lparam].forEach(
+        (v, i) => ($(MSG_FIELDS[i]).value = v),
+      );
+    }
+    async function rawMsg(kind) {
+      const args = MSG_FIELDS.map((id) => $(id).value);
+      out("msgOut", await shim(kind, ...args));
+    }
+
+    async function spy(action) {
+      const filter = $("spyFilter").value;
+      const r = await shim(
+        "spy",
+        action,
+        ...(action === "on" ? [filter] : []),
+      );
+      if (action === "dump" && !r.err) renderSpy(r);
+    }
+    const SPY_COLS = [
+      ["msg", (e) => e.msg],
+      ["hwnd", (e) => e.hwnd],
+      ["class", (e) => esc(e.class)],
+      ["wparam", (e) => e.wparam],
+      ["lparam", (e) => e.lparam],
+      [
+        "",
+        () =>
+          '<button data-act="replay">回放</button> <button data-act="locate">定位</button>',
+      ],
+    ];
+    // 行内按钮 data-act → 动作(该行记录)
+    const SPY_ACT = {
+      // 回放：把这条消息 post 回其 hwnd
+      replay: (e) => {
+        fillMsg(e);
+        rawMsg("post");
+      },
+      // 定位：在当前树里选中该 hwnd，消息填进原始消息栏
+      locate: (e) => {
+        const n = NODE.get(e.hwnd);
+        if (!n)
+          return out("selOut", "当前树里没有 " + e.hwnd + "，先刷新窗口树");
+        select(n);
+        fillMsg(e);
+      },
+    };
+    let SPY_EVENTS = [];
+    function renderSpy(events) {
+      SPY_EVENTS = events;
+      table("#spyTbl", SPY_COLS, events, (e) => `data-i="${events.indexOf(e)}"`);
+    }
+    $("spyTbl").onclick = (e) => {
+      const b = e.target.closest("button[data-act]");
+      if (b) SPY_ACT[b.dataset.act](SPY_EVENTS[+b.closest("tr").dataset.i]);
+    };
+
+    // 录制器：订阅 rec 路，每推 {st 状态, recs 新记录}；页面只留尾巴，全量在 st.file
+    const REC_CAP = 2000;
+    let REC_RECS = [];
+    let REC_ST = null;
+    // kind → 显示开关 id；未列的（start/mark/err/stop）恒显
+    const REC_SHOW = {
+      msg: "recMsg",
+      req: "recReq",
+      new: "recWin",
+      del: "recWin",
+      chg: "recWin",
+      gdi: "recGdi",
+    };
+    const recWin = (n) =>
+      `${n.hwnd} ${n.class}#${n.id}「${oneLine(n.title)}」`;
+    const hidden = (vis) => (vis ? "" : " (隐藏)");
+    const recNode = (r) => `${r.kind} ${recWin(r.node)}${hidden(r.node.vis)}`;
+    const reqNum = (r) => `${r.op}[${r.id}]=${r.value}`;
+    // 请求记录按 op、录制记录按 kind 各一行的格式；表外的原样出 JSON
+    const REQ_FMT = {
+      init: (r) => `init=${r.value}`,
+      func: (r) => `func=${r.value} (0x${r.value.toString(16)})`,
+      str: (r) => `str[${r.id},${r.aux}]=${JSON.stringify(r.value)}`,
+      int: reqNum,
+      float: reqNum,
+      send: (r) => `SEND args=${JSON.stringify(r.args)}`,
+    };
+    const REC_FMT = {
+      msg: (r) =>
+        `msg ${r.msg} → ${recWin(r)} wp=${r.wparam} lp=${r.lparam}` +
+        `${r.n > 1 ? ` ×${r.n}` : ""}${hidden(r.vis)}`,
+      req: (r) => `req req=${r.obj} ${REQ_FMT[r.op](r)}`,
+      new: recNode,
+      del: recNode,
+      chg: (r) =>
+        `chg ${recWin(r.node)} ` +
+        Object.entries(r.diff)
+          .map(([k, [a, b]]) => `${k}: ${JSON.stringify(a)} → ${JSON.stringify(b)}`)
+          .join("; "),
+      gdi: (r) =>
+        `gdi ${r.hwnd} ${r.cls}#${r.id} | ${oneLine(r.texts.join(" | ")).slice(0, 300)}`,
+      mark: (r) => `===== ${r.text} =====`,
+    };
+    // 一条记录格式化一次，记在其上
+    function recLine(r) {
+      const { t, kind, ...rest } = r;
+      const fmt = REC_FMT[kind];
+      return (r.line ??=
+        `${t.toFixed(2).padStart(8)} ` +
+        (fmt && (kind !== "req" || REQ_FMT[r.op])
+          ? fmt(r)
+          : `${kind} ${JSON.stringify(rest)}`));
+    }
+    // 状态（页签上的红点、按钮、状态行）随推送即改；日志只在录制页可见时画
+    function recStatus() {
+      const st = REC_ST;
+      $("recDot").innerHTML = st.on ? '<span class="off">●</span>' : "";
+      $("recBtn").textContent = st.on ? "停止" : "开始";
+      $("recSt").textContent = st.file
+        ? `${st.on ? "录制中" : "已停"} · ${st.n} 条 · ${st.file}`
+        : "未录制";
+    }
+    function recRender() {
+      const show = Object.fromEntries(
+        Object.entries(REC_SHOW).map(([k, id]) => [k, ck(id)]),
+      );
+      const excl = $("recExcl")
+        .value.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const lines = REC_RECS.filter((r) => show[r.kind] ?? true)
+        .map(recLine)
+        .filter((s) => !excl.some((x) => s.includes(x)));
+      const pre = $("recLog");
+      const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+      pre.textContent = lines.join("\n");
+      if (atEnd) pre.scrollTop = pre.scrollHeight;
+    }
+    function onRec(r) {
+      REC_ST = r.st;
+      REC_RECS = REC_RECS.concat(r.recs).slice(-REC_CAP);
+      recStatus();
+      dirty("rec");
+    }
+    async function recToggle() {
+      fail("recSt", await post("/api/rec", { on: !REC_ST?.on }));
+    }
+    async function reqAttach() {
+      const st = $("reqSt");
+      if (!REC_ST?.on) return fail("reqSt", { err: "请先开始录制" });
+      if (!SELECTED || SELECTED.host)
+        return fail("reqSt", { err: "请在窗口树中选择闪电下单顶层窗口" });
+      const off = $("reqOff").value.trim();
+      const r = await shim(
+        "req",
+        "attach",
+        SELECTED.hwnd,
+        ...(off ? [off] : []),
+      );
+      if (fail("reqSt", r)) return;
+      if (!r.some((x) => x.attached))
+        return (st.textContent =
+          "发现多个候选，请把对象偏移填为：" +
+          r
+            .filter((x) => x.candidate)
+            .map((x) => x.offset)
+            .join(" / "));
+      st.textContent = `✓ 已接入 ${SELECTED.hwnd}，请手动买入、卖出或撤单`;
+    }
+    async function recMark() {
+      const input = $("recMarkTxt");
+      const r = await post("/api/recmark", {
+        text: input.value.trim() || "mark",
+      });
+      if (!fail("recSt", r)) input.value = "";
+    }
+
+    // 数字格式化：每种小数位一个缓存的格式器；缺值一律空
+    const NF = {};
+    const fmt = (v, d = 2) =>
+      v == null
+        ? ""
+        : (NF[d] ??= new Intl.NumberFormat("zh-CN", {
+          minimumFractionDigits: d,
+          maximumFractionDigits: d,
+        })).format(v);
+    const fmtPnl = (v, d) => (v == null ? "" : paint(v >= 0 ? UP : DN, fmt(v, d)));
+    const px3 = (v) => fmt(v, 3);
+    const lots = (shares) => fmt(shares / 100, 0) + "手";
+    const wan = (n) => (n ? `${n / 10000}W` : "最小");
+    // 下单：行内按钮 → POST /api/order（后台跑闪电窗），各单逐步状态经 ord 路推送
+    const ORD_SIZES = [0, 10000, 50000];
+    const ordBtns = (p) =>
+      p.closed
+        ? '<span class="kv">今日清仓</span>'
+        : [1, -1]
+          .map((s) =>
+            ORD_SIZES.map(
+              (n) =>
+                `<button class="ord" style="color:${SIDE[s].color}" data-s="${s}" data-size="${n}">${wan(n)}</button>`,
+            ).join(""),
+          )
+          .join(" ");
+    // 买入方式只管买入，卖出一律担保品卖出
+    $("posTbl").onclick = async (e) => {
+      const b = e.target.closest("button.ord");
+      if (!b) return pickClick(e);
+      const s = +b.dataset.s;
+      fail(
+        "ordInfo",
+        await post("/api/order", {
+          code: b.closest("tr").dataset.code,
           s,
           size: +b.dataset.size,
-          px: document.getElementById("ordPx").value,
-          credit: s > 0 ? document.getElementById("ordCredit").value : "plain",
-        });
-        if (r.err)
-          document.getElementById("ordInfo").innerHTML =
-            `<span class="off">✗ 下单 ${esc(r.err)}</span>`;
-      };
-      // 每单一行：步骤条（已过绿 / 当前黄，失败红 / 未到灰）+ 结果
-      const ORD_ST = { run: "进行中", ok: "✓", err: "✗" };
-      function showOrders(jobs) {
-        document.getElementById("ordInfo").innerHTML = jobs
-          .slice(0, 5)
-          .map((j) => {
-            const steps = j.steps
-              .map((s, i) =>
-                paint(
-                  i < j.at || j.state === "ok"
-                    ? "#6a9955"
-                    : i > j.at
-                      ? "var(--mut)"
-                      : j.state === "err"
-                        ? "#f14c4c"
-                        : "var(--hot)",
-                  s,
-                ),
-              )
-              .join(" › ");
-            const side = paint(SIDE_COLOR[j.s], SIDE[j.s]);
-            return (
-              `<div>${j.t} ${side}${j.label} ${j.code} ${esc(j.name)} ${esc(j.detail)}` +
-              ` · ${steps} · ${ORD_ST[j.state]} ${esc(j.msg)}</div>`
-            );
-          })
-          .join("");
-      }
-      const POS_COLS = [
-        ["代码", (p) => p.code, (p) => p.code],
-        numCol("仓位%", "position_pct"),
-        ["名称", (p) => esc(p.name), (p) => p.name],
-        ["买 / 卖", ordBtns],
-        ["滑点", (p) => slipBars(p.slips)],
-        numCol("当日盈亏%", "day_pnl_pct", fmtPnl),
-        numCol("当日盈亏", "day_pnl", fmtPnl),
-        numCol("盈亏%", "pnl_pct", fmtPnl),
-        numCol("盈亏", "pnl", fmtPnl),
-        numCol("总市值", "market_value"),
-        numCol("融资市值", "margin_value"),
-        numCol("可卖市值", "sellable_value"),
-        numCol("担保折算率", "collateral"),
-      ];
-
-      // 持仓页：订阅 pos、ord 两路（一条连接），服务端在内存（客户端重查过）或行情变了才推一帧。
-      // 只在持仓页或行情页可见且浏览器标签在前台时连着；断开后服务端即停取行情。出错只改提示行，表留上一帧。
-      // 自动刷新只作兜底（客户端自己重查已即时跟上）：到点 POST /api/refresh，新帧仍经推送到达。
-      let posES = null;
-      let autoRefreshTried = false;
-      let nextRefresh = 0; // 下次自动刷新时刻（performance.now）
-      const posShown = () =>
-        document.querySelector('#leftPane > [data-view="pos"]').style
-          .display !== "none";
-      const quoteShown = () =>
-        document.querySelector('#rightPane > [data-view="quote"]').style
-          .display !== "none";
-      function syncPosStream() {
-        const on = (posShown() || quoteShown()) && !document.hidden;
-        if (on && !posES)
-          posES = subscribe({ pos: showFrame, ord: showOrders });
-        if (!on && posES) {
-          posES.close();
-          posES = null;
-        }
-        syncWatch();
-      }
-      const posErr = (r) =>
-        (document.getElementById("posInfo").innerHTML =
-          `<span class="off">✗ ${esc(r.err)}</span>`);
-      // 一帧一份 rows（每只一行，含盘口列）：持仓表、滑点表是它的两组列，行情页取其行
-      function showFrame(r) {
-        if (r.err) return void posErr(r);
-        SLIP_N = r.slip_cols.length;
-        showPositions(r, document.getElementById("posInfo"));
-        showSlippage(r);
-        quoteFrame(r.rows);
-      }
-      function showPositions(r, info) {
-        table("#posTbl", POS_COLS, r.rows, pickWire);
-        if (!r.rows.length) {
-          // 按需：内存里没持仓表时，自动点一次交易栏「刷新」让客户端查一遍
-          if (!autoRefreshTried) return refreshPos();
-          return void (info.textContent = "无持仓");
-        }
-        const t = r.totals;
-        // 当日盈亏按成交自算；与持仓的今买今卖对不上时，相关行当日两列留空、总数不全
-        const sync = r.synced
-          ? ` · 今日成交 ${r.fills} 笔`
-          : ` · <span class="off">成交与持仓今买 / 今卖对不上，当日盈亏不全（点刷新）</span>`;
-        info.innerHTML =
-          `${r.rows.length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
-          ` · 盈亏 ${fmtPnl(t.pnl)} · 当日盈亏 ${fmtPnl(t.day_pnl)}` +
-          sync +
-          ` · 行情 ${r.time} · pid=${r.pid}`;
-      }
-      async function refreshPos(quiet) {
-        autoRefreshTried = true; // 手动刷新也算一次尝试，避免空内存再自动重触发
-        nextRefresh =
-          performance.now() + +document.getElementById("posAuto").value * 1000;
-        if (!quiet)
-          document.getElementById("posInfo").textContent =
-            "刷新中…（触发客户端重查当日成交与持仓）";
-        const r = await api("/api/refresh", {});
-        if (r.err) posErr(r);
-      }
-      async function posAutoLoop() {
-        const auto = +document.getElementById("posAuto").value;
-        if (auto && posES && performance.now() >= nextRefresh)
-          await refreshPos(true);
-        setTimeout(posAutoLoop, 1000);
-      }
-
-      // 滑点正=成本
-      function slipColor(v) {
-        if (v == null) return "";
-        return v < 10 ? "#6a9955" : v < 20 ? "#d7ba7d" : "#f14c4c";
-      }
-      // 按 slip_cols 顺序自上而下画（SLIP_N 根，随帧取）；无行情 / 无数据画灰
-      let SLIP_N = 0;
-      const slipBars = (slips) =>
-        `<span class="bars">${(slips ?? Array(SLIP_N).fill(null))
-          .map(
-            (x) =>
-              `<i style="background:${slipColor(x?.pct) || "var(--line)"}"></i>`,
-          )
-          .join("")}</span>`;
-      // 滑点列 (n, s)、价位列 (p, s) 同构
-      const slipHead = ([n, s]) => `${n / 10000}W${SIDE[s]}`;
-      const levelHead = ([p, s]) => `${s > 0 ? "+" : "-"}${p}%`;
-      const slipCell = (x) =>
-        x.pct == null ? "N/A" : `${x.full ? "" : ">"}${x.pct.toFixed(1)}p`;
-      const levelCell = (v) => `<span class="kv">${v.toFixed(2)}</span>`;
-      const GROUP_COLOR = {
-        green: "#6a9955",
-        red: "#f14c4c",
-        "": "var(--hot)",
-      };
-      // 列随后端列定义生成，表头按 totals.slips（占比加权）着色；无行情的行 slips / levels 皆 null，两组都出 N/A；
-      // 竞价时 slips null 出「竞价」
-      const slipCols = (r) => [
-        ["代码", (row) => row.code, (row) => row.code],
-        [
-          "名称",
-          (row) => paint(GROUP_COLOR[row.group], esc(row.name)),
-          (row) => row.name,
-        ],
-        ...r.slip_cols.map((c, i) => [
-          paint(slipColor(r.totals.slips[i]) || "var(--mut)", slipHead(c)),
-          (row) =>
-            row.slips
-              ? paint(slipColor(row.slips[i].pct), slipCell(row.slips[i]))
-              : row.auction
-                ? '<span class="kv">竞价</span>'
-                : "N/A",
-          (row) => row.slips?.[i].pct,
-          "num",
-        ]),
-        ...r.level_cols.map((c, i) => [
-          levelHead(c),
-          (row) => (row.levels ? levelCell(row.levels[i]) : "N/A"),
-          (row) => row.levels?.[i],
-          "num",
-        ]),
-        [
-          "占比",
-          (row) => (row.weight == null ? "" : row.weight.toFixed(1) + "%"),
-          (row) => row.weight,
-          "num",
-        ],
-      ];
-      // 滑点随持仓帧推送（同一份行情的 5 档），不另取；今日清仓的不列
-      function showSlippage(r) {
-        table(
-          "#slipTbl",
-          slipCols(r),
-          r.rows.filter((row) => !row.closed),
-          pickWire,
-        );
-        document.getElementById("slipInfo").textContent =
-          "滑点（p=万分之一，正=成本；> 表示 5 档吃不满、实际更差；价位相对参考价）";
-      }
-
-      // 行情页：持仓 / 滑点表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口，图与盘口等高。
-      // 分钟线看近 1~4 个交易日：按图宽每 g 分钟并一根（g 取整除 240、每根不窄于 K_MIN_W px 的最小值），
-      // 横轴按交易时段等分、没成交的分钟留空；日线每根不窄于 K_DAY_W px，放不下只画最近的。
-      // K 线每 KLINE_GAP 重取；其间每个持仓帧用现价改写最后一根，盘口随帧刷新。
-      // 档 [种类, 近几个交易日, 名]：前两项即 /api/kline 的 kind / days
-      const KRANGES = [
-        ["min", 1, "日内"],
-        ["min", 2, "2日"],
-        ["min", 3, "3日"],
-        ["min", 4, "4日"],
-        ["day", 180, "日线"],
-      ];
-      const K_GROUPS = [
-        1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 120,
-        240,
-      ];
-      const K_MIN_W = 3,
-        K_DAY_W = 6;
-      const KLINE_GAP = 15000;
-      const K_UP = "#f14c4c",
-        K_DN = "#6a9955",
-        K_COST = "#569cd6";
-      const K_MA = [
-        [5, "#d7ba7d"],
-        [10, "#4ec9b0"],
-        [20, "#c586c0"],
-      ];
-      let POS_ROWS = []; // 最近一帧持仓行
-      let QCODE = null; // 选中代码
-      let QROW = null; // 其持仓行（含 cost / quote）
-      let KBARS = []; // [[时刻, 开, 高, 低, 收, 量]]
-      const KMEM = new Map(); // "代码|档" → 最近取到的 K 线；切股 / 切档先画它，再后台重取
-      let kRange = KRANGES[0]; // 当前档
-      const kKey = () => `${QCODE}|${kRange[0]}${kRange[1]}`;
-      const kDaily = () => kRange[0] === "day";
-      let kHover = -1; // 悬停那根在 kView.vis 里的下标
-      let kView = null; // 最近一次绘制的 kLayout，鼠标横坐标 → 第几根
-      const pickWire = (tr, p) => {
-        tr.dataset.code = p.code;
-        tr.classList.toggle("cur", p.code === QCODE);
-      };
-      function pickClick(e) {
-        const tr = e.target.closest("tbody tr");
-        if (!tr) return;
-        pickQuote(tr.dataset.code);
-        setTab("rightPane", "quote");
-      }
-      function quoteFrame(rows) {
-        POS_ROWS = rows;
-        const keep = rows.some((p) => p.code === QCODE);
-        pickQuote(keep ? QCODE : (rows[0]?.code ?? null));
-        if (!keep && QCODE && quoteShown()) pullKline();
-      }
-      function pickQuote(code) {
-        if (code !== QCODE) {
-          QCODE = code;
-          KBARS = KMEM.get(kKey()) ?? [];
-          kHover = -1;
-        }
-        QROW = POS_ROWS.find((p) => p.code === code) ?? null;
-        for (const tr of document.querySelectorAll(
-          "#posTbl tbody tr, #slipTbl tbody tr",
-        ))
-          tr.classList.toggle("cur", tr.dataset.code === code);
-        document.getElementById("kInfo").innerHTML = QROW
-          ? `<b>${QROW.code} ${esc(QROW.name)}</b> · 行情 ${QROW.quote.date} ${QROW.quote.time}`
-          : "（无持仓）";
-        patchBar();
-        drawK();
-        drawBook();
-      }
-      const pullKline = coalesce(async () => {
-        if (!QCODE) return;
-        const code = QCODE,
-          range = kRange;
-        const [kind, days] = range;
-        const r = await api("/api/kline", { code, kind, days });
-        if (code !== QCODE || range !== kRange) return;
-        document.getElementById("kErr").innerHTML = r.err
-          ? `<span class="off">✗ ${esc(r.err)}</span>`
-          : "";
-        if (r.err) return;
-        KMEM.set(kKey(), (KBARS = r));
-        patchBar();
-        drawK();
-      });
-      async function klineLoop() {
-        if (quoteShown() && !document.hidden) await pullKline();
-        setTimeout(klineLoop, KLINE_GAP);
-      }
-      // 今日那根：日线整根换成行情的今开 / 最高 / 最低 / 现价 / 量，分钟线只改收、高、低
-      function patchBar() {
-        const b = KBARS.at(-1),
-          q = QROW?.quote;
-        if (!b || !q?.price || b[0].slice(0, 10) !== q.date) return;
-        if (kDaily())
-          return void b.splice(1, 5, q.open, q.high, q.low, q.price, q.volume);
-        b[4] = q.price;
-        b[2] = Math.max(b[2], q.price);
-        b[3] = Math.min(b[3], q.price);
-      }
-      // HH:MM → 当日到此为止的分钟线根数（09:31 = 1 … 11:30 = 120、13:01 = 121 … 15:00 = 240）
-      function kSlot(t) {
-        const m = +t.slice(11, 13) * 60 + +t.slice(14, 16);
-        return (
-          Math.min(Math.max(m - 570, 0), 120) +
-          Math.min(Math.max(m - 780, 0), 120)
-        );
-      }
-      // 图宽 PW 下画哪些根、各在第几格：{vis 各根, pos 各根格号, bw 格宽, days 分钟线的日期, g 每根分钟数}
-      function kLayout(bars, PW) {
-        if (kDaily()) {
-          const bw = Math.max(K_DAY_W, PW / bars.length);
-          const vis = bars.slice(-Math.floor(PW / bw));
-          return { vis, pos: vis.map((_, i) => i), bw, days: null, g: 0 };
-        }
-        const days = [...new Set(bars.map((b) => b[0].slice(0, 10)))];
-        const W = (g) => PW / ((days.length * 240) / g);
-        const g = K_GROUPS.find((g) => W(g) >= K_MIN_W) ?? 240;
-        const vis = [],
-          pos = [];
-        for (const b of bars) {
-          const k =
-            (days.indexOf(b[0].slice(0, 10)) * 240) / g +
-            Math.ceil(kSlot(b[0]) / g) -
-            1;
-          const a = vis.at(-1);
-          if (pos.at(-1) !== k) {
-            vis.push([...b]);
-            pos.push(k);
-            continue;
-          }
-          a[0] = b[0];
-          a[2] = Math.max(a[2], b[2]);
-          a[3] = Math.min(a[3], b[3]);
-          a[4] = b[4];
-          a[5] += b[5];
-        }
-        return { vis, pos, bw: W(g), days, g };
-      }
-      function maOf(bars, k) {
-        let s = 0;
-        return bars.map((b, i) => {
-          s += b[4] - (i >= k ? bars[i - k][4] : 0);
-          return i >= k - 1 ? s / k : null;
-        });
-      }
-      // 上：信息行 + 蜡烛（红涨绿跌）+ 均线 + 成本 / 现价虚线；下：成交量；右：价轴；底：时间轴
-      function drawK() {
-        const cv = document.getElementById("kCv");
-        const W = cv.clientWidth,
-          H = cv.clientHeight;
-        if (!W || !H) return; // 行情页隐藏中，切回时再画
-        const dpr = devicePixelRatio;
-        cv.width = W * dpr;
-        cv.height = H * dpr;
-        const c = cv.getContext("2d");
-        c.scale(dpr, dpr);
-        c.font = "11px ui-monospace, Consolas, monospace";
-        c.textBaseline = "middle";
-        const bars = KBARS;
-        if (!bars.length) return void (kView = null);
-        const AX = 58, // 右侧价轴宽
-          TX = 16, // 底部时间轴高
-          TOP = 30; // 顶部信息行高
-        const PW = W - AX;
-        const VH = Math.round((H - TOP - TX) * 0.2);
-        const PH = H - TOP - TX - VH - 6;
-        const L = (kView = kLayout(bars, PW));
-        const { vis, pos, bw: BW } = L;
-        const src = kDaily() ? bars : vis; // 日线均线用全部历史算
-        const mas = K_MA.map(([k, col]) => [
-          k,
-          col,
-          maOf(src, k).slice(src.length - vis.length),
-        ]);
-        let lo = Math.min(...vis.map((b) => b[3])),
-          hi = Math.max(...vis.map((b) => b[2]));
-        const pad = (hi - lo) * 0.05 || hi * 0.01;
-        lo -= pad;
-        hi += pad;
-        const y = (v) => TOP + ((hi - v) / (hi - lo)) * PH;
-        const vTop = TOP + PH + 6;
-        const vmax = Math.max(1, ...vis.map((b) => b[5]));
-        const vy = (v) => vTop + VH - (v / vmax) * VH;
-        const x = (i) => (pos[i] + 0.5) * BW;
-        const bw = Math.max(1, BW * 0.7);
-        const hl = (yy, x0, x1) => {
-          c.beginPath();
-          c.moveTo(x0, yy);
-          c.lineTo(x1, yy);
-          c.stroke();
-        };
-
-        c.strokeStyle = "#333";
-        c.fillStyle = "#888";
-        c.lineWidth = 1;
-        for (let k = 0; k <= 4; k++) {
-          const v = lo + ((hi - lo) * k) / 4,
-            yy = Math.round(y(v)) + 0.5;
-          hl(yy, 0, PW);
-          c.fillText(v.toFixed(3), PW + 4, yy);
-        }
-        hl(vTop - 2.5, 0, PW);
-        // 时间轴：日线隔几根标 MM-DD；单日标整点与午休；多日画日界、各日居中标 MM-DD
-        c.textAlign = "center";
-        const tick = (s, xx) =>
-          c.fillText(s, Math.min(Math.max(xx, 20), PW - 20), H - TX / 2);
-        if (!L.days) {
-          const every = Math.ceil(60 / BW);
-          for (let i = vis.length - 1; i >= 0; i -= every)
-            tick(vis[i][0].slice(5), x(i));
-        } else if (L.days.length === 1) {
-          const T = ["09:30", "10:30", "11:30/13:00", "14:00", "15:00"];
-          T.forEach((s, i) => tick(s, ((i * 60) / L.g) * BW));
-        } else {
-          const DW = (240 / L.g) * BW;
-          L.days.forEach((d, i) => {
-            if (i) {
-              c.setLineDash([2, 3]);
-              const xx = Math.round(i * DW) + 0.5;
-              c.beginPath();
-              c.moveTo(xx, TOP);
-              c.lineTo(xx, vTop + VH);
-              c.stroke();
-              c.setLineDash([]);
-            }
-            tick(d.slice(5), (i + 0.5) * DW);
-          });
-        }
-        c.textAlign = "left";
-
-        vis.forEach(([, o, h, l, cl, v], i) => {
-          const xx = Math.round(x(i)) + 0.5;
-          c.strokeStyle = c.fillStyle = cl >= o ? K_UP : K_DN;
-          c.beginPath();
-          c.moveTo(xx, y(h));
-          c.lineTo(xx, y(l));
-          c.stroke();
-          const y0 = y(Math.max(o, cl));
-          c.fillRect(xx - bw / 2, y0, bw, Math.max(1, y(Math.min(o, cl)) - y0));
-          c.fillRect(xx - bw / 2, vy(v), bw, vTop + VH - vy(v));
-        });
-
-        for (const [, col, m] of mas) {
-          c.strokeStyle = col;
-          c.beginPath();
-          let on = false;
-          m.forEach((v, i) => {
-            if (v == null) return;
-            on ? c.lineTo(x(i), y(v)) : c.moveTo(x(i), y(v));
-            on = true;
-          });
-          c.stroke();
-        }
-
-        // 水平虚线 + 价轴上的价签；出了价格区间不画
-        const mark = (v, col) => {
-          if (!(v >= lo && v <= hi)) return;
-          const yy = Math.round(y(v)) + 0.5;
-          c.strokeStyle = col;
-          c.setLineDash([4, 3]);
-          hl(yy, 0, PW);
-          c.setLineDash([]);
-          c.fillStyle = col;
-          c.fillRect(PW, yy - 8, AX, 16);
-          c.fillStyle = "#111";
-          c.fillText(v.toFixed(3), PW + 4, yy);
-        };
-        const last = vis.at(-1)[4];
-        mark(QROW?.cost, K_COST);
-        mark(last, last >= (QROW?.quote.last_close ?? last) ? K_UP : K_DN);
-
-        const hov = kHover >= 0 && kHover < vis.length;
-        const at = hov ? kHover : vis.length - 1;
-        if (hov) {
-          c.strokeStyle = "#888";
-          const xx = Math.round(x(at)) + 0.5;
-          c.beginPath();
-          c.moveTo(xx, TOP);
-          c.lineTo(xx, vTop + VH);
-          c.stroke();
-        }
-        const [t, o, h, l, cl, v] = vis[at];
-        const pc = at
-          ? vis[at - 1][4]
-          : !L.days && bars[bars.length - vis.length - 1]?.[4];
-        const chg = pc ? ` ${(((cl - pc) / pc) * 100).toFixed(2)}%` : "";
-        const f3 = (p) => p.toFixed(3);
-        c.fillStyle = "#ddd";
-        c.fillText(
-          `${L.days ? t.slice(5, 16) : t}${L.g > 1 ? ` (${L.g}分)` : ""}  开 ${f3(o)} 高 ${f3(h)} 低 ${f3(l)} 收 ${f3(cl)}${chg}  量 ${Math.round(v / 100)}手`,
-          4,
-          8,
-        );
-        let mx = 4;
-        for (const [k, col, m] of mas) {
-          const s = `MA${k} ${m[at]?.toFixed(3) ?? "-"}`;
-          c.fillStyle = col;
-          c.fillText(s, mx, 22);
-          mx += c.measureText(s).width + 12;
-        }
-        if (QROW?.cost) {
-          c.fillStyle = K_COST;
-          c.fillText(`成本 ${QROW.cost.toFixed(3)}`, mx, 22);
-        }
-      }
-      // 卖五..卖一 / 买一..买五（价按昨收着色，量单位手，底色条按量占比）+ 当日行情与持仓概要
-      function drawBook() {
-        const box = document.getElementById("book");
-        if (!QROW) return void (box.innerHTML = "");
-        const p = QROW,
-          q = p.quote,
-          lc = q.last_close,
-          ask = q.book[1],
-          bid = q.book[-1];
-        const pc = (v) =>
-          v ? paint(v > lc ? K_UP : v < lc ? K_DN : "", v.toFixed(3)) : "-";
-        const vmax = Math.max(1, ...[...ask, ...bid].map((x) => x[1]));
-        const lv = (name, x, tint) => {
-          const w = x ? ((x[1] / vmax) * 100).toFixed(1) : 0;
+          px: $("ordPx").value,
+          credit: s > 0 ? $("ordCredit").value : "plain",
+        }),
+      );
+    };
+    // 每单一行：步骤条（已过 / 当前 / 失败 / 未到）+ 结果
+    const ORD_ST = { run: "进行中", ok: "✓", err: "✗" };
+    const STEP_COLOR = { done: "var(--green)", run: "var(--hot)", err: "var(--red)", todo: "var(--mut)" };
+    const stepOf = (j, i) =>
+      i < j.at || j.state === "ok" ? "done" : i > j.at ? "todo" : j.state === "err" ? "err" : "run";
+    function onOrd(jobs) {
+      $("ordInfo").innerHTML = jobs
+        .map((j) => {
+          const steps = j.steps
+            .map((s, i) => paint(STEP_COLOR[stepOf(j, i)], s))
+            .join(" › ");
+          const side = paint(SIDE[j.s].color, SIDE[j.s].name);
           return (
-            `<div class="lv" style="background:linear-gradient(to left,${tint} ${w}%,transparent ${w}%)">` +
-            `<span class="kv">${name}</span><span>${x ? pc(x[0]) : ""}</span>` +
-            `<span>${x ? Math.round(x[1] / 100) : ""}</span></div>`
+            `<div>${j.t} ${side}${j.label} ${j.code} ${esc(j.name)} ${esc(j.detail)}` +
+            ` · ${steps} · ${ORD_ST[j.state]} ${esc(j.msg)}</div>`
           );
-        };
-        const CN = "一二三四五";
-        const chg = q.price - lc;
-        const kv = [
-          ["现价", pc(q.price)],
-          ["涨跌", fmtPnl(chg, 3)],
-          ["今开", pc(q.open)],
-          ["涨幅%", fmtPnl(lc ? (chg / lc) * 100 : null)],
-          ["最高", pc(q.high)],
-          ["昨收", lc.toFixed(3)],
-          ["最低", pc(q.low)],
-          ["成交量", fmt(q.volume / 100, 0) + "手"],
-          ["成本", fmt(p.cost, 3)],
-          ["盈亏%", fmtPnl(p.pnl_pct)],
-          ["当日盈亏", fmtPnl(p.day_pnl)],
-          ["仓位%", fmt(p.position_pct)],
-        ];
-        box.innerHTML =
-          [4, 3, 2, 1, 0]
-            .map((i) => lv("卖" + CN[i], ask[i], "rgba(106,153,85,.25)"))
-            .join("") +
-          '<div style="border-top: 1px solid var(--line); margin: 2px 0"></div>' +
-          [0, 1, 2, 3, 4]
-            .map((i) => lv("买" + CN[i], bid[i], "rgba(241,76,76,.25)"))
-            .join("") +
-          '<div class="sum">' +
-          kv
-            .map(([k, v]) => `<span class="kv">${k}</span><span>${v}</span>`)
-            .join("") +
-          "</div>";
-      }
-      function initK() {
-        const sc = document.getElementById("kRanges");
-        sc.innerHTML = KRANGES.map(
-          (r, i) =>
-            `<button data-i="${i}" class="${r === kRange ? "on" : ""}">${r[2]}</button>`,
-        ).join("");
-        sc.onclick = (e) => {
-          const b = e.target.closest("button");
-          if (!b) return;
-          kRange = KRANGES[+b.dataset.i];
-          for (const x of sc.children) x.classList.toggle("on", x === b);
-          KBARS = KMEM.get(kKey()) ?? [];
-          kHover = -1;
-          patchBar();
-          drawK();
-          pullKline();
-        };
-        document.getElementById("slipTbl").onclick = pickClick;
-        const cv = document.getElementById("kCv");
-        // 鼠标所在格及以前最近的一根（没成交的格算前一根）
-        cv.addEventListener("mousemove", (e) => {
-          const k = Math.floor(e.offsetX / (kView?.bw ?? 1));
-          kHover = kView ? kView.pos.findLastIndex((p) => p <= k) : -1;
-          drawK();
-        });
-        cv.addEventListener("mouseleave", () => {
-          kHover = -1;
-          drawK();
-        });
-        new ResizeObserver(() => drawK()).observe(cv);
-      }
+        })
+        .join("");
+    }
 
-      // 交互：鼠标/键盘只给屏幕坐标，目标窗口由 shim 定（坐标下最深子窗口 / 捕获 / 菜单）。
-      // 所有输入串成一条队列，保证到达客户端的顺序与操作顺序一致。
-      let inputQ = Promise.resolve();
-      const interacting = () => document.getElementById("interact").checked;
-      function sendInput(cmd, ...args) {
-        inputQ = inputQ.then(async () => {
-          const r = await shim(cmd, ...args);
-          if (r.err) out("selOut", r);
-          pollSoon();
-        });
-        return inputQ;
+    // 列注册表：key → [表头, 行 → 单元格 html, 行 → 排序键?, 单元格 class?]；持仓表、滑点表都从这里按 key 取列
+    const numCol = (h, k, f = fmt) => [h, (p) => f(p[k]), (p) => p[k], "num"];
+    const GROUP_COLOR = { green: "var(--green)", red: "var(--red)", "": "var(--hot)" };
+    const COL = {
+      code: ["代码", (p) => p.code, (p) => p.code],
+      name: ["名称", (p) => paint(GROUP_COLOR[p.group], esc(p.name)), (p) => p.name],
+      position_pct: numCol("仓位%", "position_pct"),
+      weight: numCol("占比%", "weight"),
+      order: ["买 / 卖", ordBtns],
+      day_pnl_pct: numCol("当日盈亏%", "day_pnl_pct", fmtPnl),
+      day_pnl: numCol("当日盈亏", "day_pnl", fmtPnl),
+      pnl_pct: numCol("盈亏%", "pnl_pct", fmtPnl),
+      pnl: numCol("盈亏", "pnl", fmtPnl),
+      market_value: numCol("总市值", "market_value"),
+      margin_value: numCol("融资市值", "margin_value"),
+      sellable_value: numCol("可卖市值", "sellable_value"),
+      collateral: numCol("担保折算率", "collateral"),
+    };
+
+    // 持仓页：pos、ord 两路，服务端在内存或行情变了才推一帧；出错只改提示行，表留上一帧。
+    // 客户端重查即推帧，定时刷新为兜底：到点 POST /api/refresh，新帧仍经推送到达。
+    let autoRefreshTried = false;
+    let nextRefresh = 0; // 下次自动刷新时刻（performance.now）
+    // 一帧一份 rows（每只一行，含盘口列）：持仓表、滑点表是它的两组列（同形的帧函数），行情页取其行
+    function onPos(r) {
+      if (fail("posInfo", r)) return;
+      const held = r.rows.filter((p) => !p.closed);
+      table("#posTbl", posCols(r), r.rows, pickAttrs);
+      table("#slipTbl", slipCols(r), held, pickAttrs);
+      posInfo(r, held);
+      quoteFrame(r.rows);
+    }
+    function posInfo(r, held) {
+      const info = $("posInfo");
+      if (!r.rows.length) {
+        // 按需：内存里没持仓表时，自动点一次交易栏「刷新」让客户端查一遍
+        if (!autoRefreshTried) return refreshPos();
+        return void (info.textContent = "无持仓");
       }
-      // Win32 MK_*：LBUTTON 1 / RBUTTON 2 / SHIFT 4 / CONTROL 8 / MBUTTON 0x10
-      const mk = (e) =>
-        (e.buttons & 1 ? 1 : 0) |
-        (e.buttons & 2 ? 2 : 0) |
-        (e.shiftKey ? 4 : 0) |
-        (e.ctrlKey ? 8 : 0) |
-        (e.buttons & 4 ? 0x10 : 0);
-      function mouseAt(e, kind, ...extra) {
-        const w = svgPoint(e);
-        return sendInput(
-          "mouse",
-          kind,
-          Math.round(w.x),
-          Math.round(w.y),
-          mk(e),
-          ...extra,
-        );
+      const t = r.totals;
+      // 当日盈亏按成交自算；与持仓的今买今卖对不上时，相关行当日两列留空、总数不全
+      const sync = r.synced
+        ? ` · 今日成交 ${r.fills} 笔`
+        : ` · <span class="off">成交与持仓今买 / 今卖对不上，当日盈亏不全（点刷新）</span>`;
+      info.innerHTML =
+        `${held.length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
+        ` · 盈亏 ${fmtPnl(t.pnl)} · 当日盈亏 ${fmtPnl(t.day_pnl)}` +
+        sync +
+        ` · 行情 ${r.time} · pid=${r.pid}`;
+    }
+    async function refreshPos(quiet) {
+      autoRefreshTried = true; // 手动刷新也算一次尝试，避免空内存再自动重触发
+      nextRefresh = performance.now() + +$("posAuto").value * 1000;
+      if (!quiet) $("posInfo").textContent = "刷新中…（触发客户端重查当日成交与持仓）";
+      fail("posInfo", await post("/api/refresh"));
+    }
+    const autoRefresh = () =>
+      +$("posAuto").value && STREAMS.pos.es && performance.now() >= nextRefresh && refreshPos(true);
+
+    // 滑点正=成本
+    const slipColor = (v) => (v == null ? "" : v < 10 ? "var(--green)" : v < 20 ? "var(--hot)" : "var(--red)");
+    // 按 slip_cols 顺序自上而下 n 根；无行情画灰
+    const slipBars = (slips, n) =>
+      `<span class="bars">${(slips ?? Array(n).fill(null))
+        .map((x) => `<i style="background:${slipColor(x?.pct) || "var(--line)"}"></i>`)
+        .join("")}</span>`;
+    // 盘口两组列同构：后端列定义 r[cols]、行里的值 row[vals]，表头 head(列, 第几列, 帧)、格子 cell(值)、
+    // 排序键 key(值)、没值时 none(行)（无行情皆空，竞价时滑点出「竞价」）
+    const DEPTH = [
+      {
+        cols: "slip_cols",
+        vals: "slips",
+        head: ([n, s], i, r) => paint(slipColor(r.totals.slips[i]) || "var(--mut)", wan(n) + SIDE[s].name),
+        cell: (x) => paint(slipColor(x.pct), x.pct == null ? "" : `${x.full ? "" : ">"}${x.pct.toFixed(1)}p`),
+        key: (x) => x.pct,
+        none: (row) => (row.auction ? '<span class="kv">竞价</span>' : ""),
+      },
+      {
+        cols: "level_cols",
+        vals: "levels",
+        head: ([p, s]) => `${SIDE[s].sign}${p}%`,
+        cell: (v) => `<span class="kv">${v.toFixed(2)}</span>`,
+        key: (v) => v,
+        none: () => "",
+      },
+    ];
+    const depthCols = (r) =>
+      DEPTH.flatMap((d) =>
+        r[d.cols].map((c, i) => [
+          d.head(c, i, r),
+          (row) => (row[d.vals] ? d.cell(row[d.vals][i]) : d.none(row)),
+          (row) => row[d.vals] && d.key(row[d.vals][i]),
+          "num",
+        ]),
+      );
+    const cols = (...keys) => keys.map((k) => COL[k]);
+    const posCols = (r) => [
+      ...cols("code", "position_pct", "name", "order"),
+      ["滑点", (p) => slipBars(p.slips, r.slip_cols.length)],
+      ...cols(
+        "day_pnl_pct",
+        "day_pnl",
+        "pnl_pct",
+        "pnl",
+        "market_value",
+        "margin_value",
+        "sellable_value",
+        "collateral",
+      ),
+    ];
+    const slipCols = (r) => [...cols("code", "name"), ...depthCols(r), ...cols("weight")];
+
+    // 行情页：持仓 / 滑点表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口，图与盘口等高。
+    // 日线、分钟线一套画法，只差 KIND 的同名成员（与后端 Day / Min 对仗）。后端给每日根数 per、各根当日第几根 slot：
+    // 按图宽每 g 根并一格（g 取整除 per、每格不窄于 minW px 的最小值），横轴按交易日 × per 等分、没成交的格留空，
+    // g 取到 per 仍放不下只画最近的。K 线每 KLINE_GAP 重取；其间每个持仓帧用现价改写进行中那根，盘口随帧刷新。
+    // 档 [种类, 近几个交易日, 名]：前两项即 /api/kline 的 kind / days
+    const KRANGES = [
+      ["min", 1, "日内"],
+      ["min", 2, "2日"],
+      ["min", 3, "3日"],
+      ["min", 4, "4日"],
+      ["day", 180, "日线"],
+    ];
+    const KLINE_GAP = 15000;
+    const K_COST = "#569cd6";
+    const K_MA = [
+      [5, "#d7ba7d"],
+      [10, "#4ec9b0"],
+      [20, "#c586c0"],
+    ];
+    const HOURS = ["09:30", "10:30", "11:30/13:00", "14:00", "15:00"];
+    // minW 每格最窄 px；ticks(L) → [时间轴 [[标签, x]], 日界 [x]]；label(t) 信息行的时刻；patch(b, q) 用行情改写进行中那根
+    const KIND = {
+      min: {
+        minW: 3,
+        // 单日标整点与午休；多日画日界、各日居中标 MM-DD
+        ticks: (L) => {
+          const DW = (L.per / L.g) * L.bw;
+          return L.days.length === 1
+            ? [HOURS.map((s, i) => [s, ((i * 60) / L.g) * L.bw]), []]
+            : [L.days.map((d, i) => [d.slice(5), (i + 0.5) * DW]), L.days.slice(1).map((_, i) => (i + 1) * DW)];
+        },
+        label: (t) => t.slice(5, 16),
+        patch: (b, q) => {
+          b[4] = q.price;
+          b[2] = Math.max(b[2], q.price);
+          b[3] = Math.min(b[3], q.price);
+        },
+      },
+      day: {
+        minW: 6,
+        // 隔几根标 MM-DD
+        ticks: (L) => {
+          const every = Math.ceil(60 / L.bw),
+            out = [];
+          for (let i = L.vis.length - 1; i >= 0; i -= every) out.push([L.vis[i][0].slice(5), (L.pos[i] + 0.5) * L.bw]);
+          return [out, []];
+        },
+        label: (t) => t,
+        patch: (b, q) => b.splice(1, 5, q.open, q.high, q.low, q.price, q.volume),
+      },
+    };
+    let POS_ROWS = []; // 最近一帧持仓行
+    let QCODE = null; // 选中代码
+    let QROW = null; // 其持仓行（含 cost / quote）
+    const K_NONE = { per: 1, bars: [] };
+    let KB = K_NONE; // 当前 K 线 {per 每日根数, bars [[时刻, 开, 高, 低, 收, 量, slot]]}
+    let kVer = 0; // KB 换了或改写过即加一，kLayout 按它缓存
+    const KMEM = new Map(); // "代码|档" → 最近取到的 K 线；切股 / 切档先画它，再后台重取
+    let kRange = KRANGES[0]; // 当前档
+    const kKind = () => KIND[kRange[0]];
+    const kKey = () => `${QCODE}|${kRange[0]}${kRange[1]}`;
+    let kHover = -1; // 悬停那格在 kView.vis 里的下标
+    let kView = null; // 最近一次的 kLayout，鼠标横坐标 → 第几格
+    const pickAttrs = (p) => `data-code="${p.code}"${p.code === QCODE ? ' class="cur"' : ""}`;
+    function pickClick(e) {
+      const tr = e.target.closest("tbody tr");
+      if (!tr) return;
+      kSelect(tr.dataset.code, kRange);
+      setTab("rightPane", "quote");
+    }
+    function quoteFrame(rows) {
+      POS_ROWS = rows;
+      kSelect(rows.some((p) => p.code === QCODE) ? QCODE : (rows[0]?.code ?? null), kRange);
+    }
+    // 选股、切档同一入口：换了先画缓存，可见即后台重取
+    function kSelect(code, range) {
+      const moved = code !== QCODE || range !== kRange;
+      if (moved) {
+        [QCODE, kRange] = [code, range];
+        KB = KMEM.get(kKey()) ?? K_NONE;
+        kHover = -1;
+        kVer++;
       }
-      // 非可打印键 → 虚拟键码；可打印字符走 char（shim 内按 VkKeyScan 决定投键还是 WM_CHAR）
-      const VK = {
-        Backspace: 8,
-        Tab: 9,
-        Enter: 13,
-        Escape: 27,
-        PageUp: 33,
-        PageDown: 34,
-        End: 35,
-        Home: 36,
-        ArrowLeft: 37,
-        ArrowUp: 38,
-        ArrowRight: 39,
-        ArrowDown: 40,
-        Insert: 45,
-        Delete: 46,
+      QROW = POS_ROWS.find((p) => p.code === code) ?? null;
+      for (const tr of document.querySelectorAll("#posTbl tbody tr, #slipTbl tbody tr"))
+        tr.classList.toggle("cur", tr.dataset.code === code);
+      tabbar($("kRanges"), String(KRANGES.indexOf(kRange)));
+      $("kInfo").innerHTML = QROW
+        ? `<b>${QROW.code} ${esc(QROW.name)}</b> · 行情 ${QROW.quote.date} ${QROW.quote.time}`
+        : "（无持仓）";
+      patchBar();
+      dirty("kline", "book");
+      if (moved && shown("quote")) pullKline();
+    }
+    const pullKline = coalesce(async () => {
+      if (!QCODE) return;
+      const code = QCODE,
+        range = kRange;
+      const [kind, days] = range;
+      const r = await post("/api/kline", { code, kind, days });
+      if (code !== QCODE || range !== kRange) return;
+      $("kErr").innerHTML = "";
+      if (fail("kErr", r)) return;
+      KMEM.set(kKey(), (KB = r));
+      kVer++;
+      patchBar();
+      dirty("kline");
+    });
+    const pullSoon = () => shown("quote") && !document.hidden && pullKline();
+    // 进行中那根（今日最后一根）随行情改写
+    function patchBar() {
+      const b = KB.bars.at(-1),
+        q = QROW?.quote;
+      if (!b || !q?.price || b[0].slice(0, 10) !== q.date) return;
+      kKind().patch(b, q);
+      kVer++;
+    }
+    const divisors = (n) => Array.from({ length: n }, (_, i) => i + 1).filter((g) => n % g === 0);
+    // 图宽 PW 下的格：全部根每 g 根并一格（agg 各格、at 各格格号、first 各格首根在 bars 里的下标），
+    // 屏上只放最后 PW / bw 格（vis、pos、first 取可见的那段，pos 为屏上格号）；均线按 agg 全量算
+    function kLayout({ per, bars }, kind, PW) {
+      const days = [...new Set(bars.map((b) => b[0].slice(0, 10)))];
+      const dayAt = new Map(days.map((d, i) => [d, i]));
+      const cells = (g) => (days.length * per) / g;
+      const g = divisors(per).find((g) => PW / cells(g) >= kind.minW) ?? per;
+      const bw = Math.max(kind.minW, PW / cells(g));
+      const off = Math.max(0, cells(g) - Math.floor(PW / bw + 1e-9));
+      const agg = [],
+        at = [],
+        first = [];
+      bars.forEach((b, i) => {
+        const k = (dayAt.get(b[0].slice(0, 10)) * per) / g + Math.ceil(b[6] / g) - 1;
+        const a = agg.at(-1);
+        if (at.at(-1) !== k) {
+          agg.push(b.slice(0, 6));
+          at.push(k);
+          first.push(i);
+          return;
+        }
+        a[0] = b[0];
+        a[2] = Math.max(a[2], b[2]);
+        a[3] = Math.min(a[3], b[3]);
+        a[4] = b[4];
+        a[5] += b[5];
+      });
+      const s = at.findIndex((k) => k >= off);
+      return {
+        per,
+        g,
+        bw,
+        days,
+        vis: agg.slice(s),
+        pos: at.slice(s).map((k) => k - off),
+        first: first.slice(s),
+        mas: K_MA.map(([k, col]) => [k, col, maOf(agg, k).slice(s)]),
       };
-      for (let i = 1; i <= 12; i++) VK["F" + i] = 111 + i;
+    }
+    function maOf(bars, k) {
+      let s = 0;
+      return bars.map((b, i) => {
+        s += b[4] - (i >= k ? bars[i - k][4] : 0);
+        return i >= k - 1 ? s / k : null;
+      });
+    }
+    // 上：信息行 + 蜡烛（红涨绿跌）+ 均线 + 成本 / 现价虚线；下：成交量；右：价轴；底：时间轴
+    function drawK() {
+      const cv = $("kCv");
+      const W = cv.clientWidth,
+        H = cv.clientHeight;
+      if (!W || !H) return; // 行情页隐藏中，切回时再画
+      const dpr = devicePixelRatio,
+        cw = Math.round(W * dpr),
+        ch = Math.round(H * dpr);
+      if (cv.width !== cw || cv.height !== ch) [cv.width, cv.height] = [cw, ch];
+      const c = cv.getContext("2d");
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      c.clearRect(0, 0, W, H);
+      c.font = "11px ui-monospace, Consolas, monospace";
+      c.textBaseline = "middle";
+      const { bars } = KB;
+      if (!bars.length) return void (kView = null);
+      const AX = 58, // 右侧价轴宽
+        TX = 16, // 底部时间轴高
+        TOP = 30; // 顶部信息行高
+      const PW = W - AX;
+      const VH = Math.round((H - TOP - TX) * 0.2);
+      const PH = H - TOP - TX - VH - 6;
+      const kind = kKind();
+      const key = `${kVer}|${PW}`;
+      if (kView?.key !== key) kView = { ...kLayout(KB, kind, PW), key };
+      const L = kView;
+      const { vis, pos, bw: BW, mas } = L;
+      let lo = Math.min(...vis.map((b) => b[3])),
+        hi = Math.max(...vis.map((b) => b[2]));
+      const pad = (hi - lo) * 0.05 || hi * 0.01;
+      lo -= pad;
+      hi += pad;
+      const y = (v) => TOP + ((hi - v) / (hi - lo)) * PH;
+      const vTop = TOP + PH + 6;
+      const vmax = Math.max(1, ...vis.map((b) => b[5]));
+      const vy = (v) => vTop + VH - (v / vmax) * VH;
+      const x = (i) => (pos[i] + 0.5) * BW;
+      const bw = Math.max(1, BW * 0.7);
+      const hl = (yy, x0, x1) => {
+        c.beginPath();
+        c.moveTo(x0, yy);
+        c.lineTo(x1, yy);
+        c.stroke();
+      };
+      const vl = (xx) => {
+        c.beginPath();
+        c.moveTo(xx, TOP);
+        c.lineTo(xx, vTop + VH);
+        c.stroke();
+      };
 
-      // 左/右键按下抬起分开投（可拖拽），第二下按下投双击；中键归平移。交互关时左键=选中+闪烁。
-      function initMapInput() {
-        const wrap = document.getElementById("mapWrap");
-        const svg = document.getElementById("map");
-        const BIT = { 0: 1, 2: 2 }; // 浏览器 button → 按住位
-        const SIDE = { 1: "l", 2: "r" };
-        let held = 0;
-        const moveTo = drop((e) => mouseAt(e, "move")); // 拖拽移动：上一条没回来就丢
-        // 绘制元素命中框随绘制层整段重写，hover 走委托
-        svg.addEventListener("mouseover", (e) => {
-          if (e.target.classList.contains("elem")) hover(e.target.dataset.hwnd);
+      c.strokeStyle = "#333";
+      c.fillStyle = "#888";
+      c.lineWidth = 1;
+      for (let k = 0; k <= 4; k++) {
+        const v = lo + ((hi - lo) * k) / 4,
+          yy = Math.round(y(v)) + 0.5;
+        hl(yy, 0, PW);
+        c.fillText(px3(v), PW + 4, yy);
+      }
+      hl(vTop - 2.5, 0, PW);
+      const [ticks, seps] = kind.ticks(L);
+      c.setLineDash([2, 3]);
+      for (const xx of seps) vl(Math.round(xx) + 0.5);
+      c.setLineDash([]);
+      c.textAlign = "center";
+      for (const [s, xx] of ticks) c.fillText(s, Math.min(Math.max(xx, 20), PW - 20), H - TX / 2);
+      c.textAlign = "left";
+
+      vis.forEach(([, o, h, l, cl, v], i) => {
+        const xx = Math.round(x(i)) + 0.5;
+        c.strokeStyle = c.fillStyle = cl >= o ? UP : DN;
+        c.beginPath();
+        c.moveTo(xx, y(h));
+        c.lineTo(xx, y(l));
+        c.stroke();
+        const y0 = y(Math.max(o, cl));
+        c.fillRect(xx - bw / 2, y0, bw, Math.max(1, y(Math.min(o, cl)) - y0));
+        c.fillRect(xx - bw / 2, vy(v), bw, vTop + VH - vy(v));
+      });
+
+      for (const [, col, m] of mas) {
+        c.strokeStyle = col;
+        c.beginPath();
+        let on = false;
+        m.forEach((v, i) => {
+          if (v == null) return;
+          on ? c.lineTo(x(i), y(v)) : c.moveTo(x(i), y(v));
+          on = true;
         });
-        svg.addEventListener("mouseout", (e) => {
-          if (e.target.classList.contains("elem")) hover(null);
-        });
-        svg.addEventListener("mousedown", (e) => {
-          const bit = BIT[e.button];
-          if (!bit) return;
-          wrap.focus();
-          const n = e.target.dataset && nodeOf(e.target.dataset.hwnd);
-          if (!interacting()) {
-            if (n && bit === 1) {
-              select(n);
-              act("highlight");
-            }
-            return;
-          }
-          held |= bit;
-          mouseAt(e, SIDE[bit] + (e.detail === 2 ? "dbl" : "down"));
-          if (n && bit === 1) select(n);
-        });
-        window.addEventListener("mousemove", (e) => held && moveTo(e));
-        window.addEventListener("mouseup", (e) => {
-          const bit = BIT[e.button];
-          if (!(held & bit)) return;
-          held &= ~bit;
-          mouseAt(e, SIDE[bit] + "up");
-        });
-        svg.addEventListener("contextmenu", (e) => e.preventDefault());
-        wrap.addEventListener("keydown", (e) => {
-          if (
-            !interacting() ||
-            e.isComposing ||
-            e.ctrlKey ||
-            e.altKey ||
-            e.metaKey
-          )
-            return;
-          if (e.key.length === 1) sendInput("char", e.key.codePointAt(0));
-          else if (VK[e.key]) sendInput("key", VK[e.key]);
-          else return;
-          e.preventDefault();
-        });
+        c.stroke();
       }
 
-      // 滚轮：交互开时投给客户端（WM_MOUSEWHEEL，±120/格），Ctrl+滚轮或交互关时缩放，围绕光标
-      function initMapZoom() {
-        const wrap = document.getElementById("mapWrap");
-        // 上一格没回来就丢，免得触控板刷屏
-        const wheelAt = drop((ev) =>
-          mouseAt(ev, "wheel", ev.deltaY < 0 ? 120 : -120),
+      // 水平虚线 + 价轴上的价签；出了价格区间不画
+      const priceLine = (v, col) => {
+        if (!(v >= lo && v <= hi)) return;
+        const yy = Math.round(y(v)) + 0.5;
+        c.strokeStyle = col;
+        c.setLineDash([4, 3]);
+        hl(yy, 0, PW);
+        c.setLineDash([]);
+        c.fillStyle = col;
+        c.fillRect(PW, yy - 8, AX, 16);
+        c.fillStyle = "#111";
+        c.fillText(px3(v), PW + 4, yy);
+      };
+      const last = vis.at(-1)[4];
+      priceLine(QROW?.cost, K_COST);
+      priceLine(last, last >= (QROW?.quote.last_close ?? last) ? UP : DN);
+
+      const hov = kHover >= 0 && kHover < vis.length;
+      const at = hov ? kHover : vis.length - 1;
+      if (hov) {
+        c.strokeStyle = "#888";
+        vl(Math.round(x(at)) + 0.5);
+      }
+      const [t, o, h, l, cl, v] = vis[at];
+      const pc = bars[L.first[at] - 1]?.[4]; // 前一格的收 = 本格首根之前那根的收
+      const chg = pc ? ` ${(((cl - pc) / pc) * 100).toFixed(2)}%` : "";
+      c.fillStyle = "#ddd";
+      c.fillText(
+        `${kind.label(t)}${L.g > 1 ? ` (${L.g}分)` : ""}  开 ${px3(o)} 高 ${px3(h)} 低 ${px3(l)} 收 ${px3(cl)}${chg}  量 ${lots(v)}`,
+        4,
+        8,
+      );
+      let mx = 4;
+      for (const [k, col, m] of mas) {
+        const s = `MA${k} ${px3(m[at]) || "-"}`;
+        c.fillStyle = col;
+        c.fillText(s, mx, 22);
+        mx += c.measureText(s).width + 12;
+      }
+      if (QROW?.cost) {
+        c.fillStyle = K_COST;
+        c.fillText(`成本 ${px3(QROW.cost)}`, mx, 22);
+      }
+    }
+    // 卖五..卖一 / 买一..买五（价按昨收着色，量单位手，底色条按量占比）+ 当日行情与持仓概要
+    function drawBook() {
+      const box = $("book");
+      if (!QROW) return void (box.innerHTML = "");
+      const p = QROW,
+        q = p.quote,
+        lc = q.last_close;
+      const pc = (v) => (v ? paint(v > lc ? UP : v < lc ? DN : "", px3(v)) : "-");
+      const vmax = Math.max(1, ...[1, -1].flatMap((s) => q.book[s].map((x) => x[1])));
+      // book[s] 是方向 s 吃的那侧：买吃卖盘、卖吃买盘，档名与底色取对侧；卖盘倒着列在上，买盘顺着列在下
+      const CN = "一二三四五";
+      const lv = (s, i) => {
+        const x = q.book[s][i],
+          o = SIDE[-s];
+        const w = x ? ((x[1] / vmax) * 100).toFixed(1) : 0;
+        return (
+          `<div class="lv" style="background:linear-gradient(to left,${o.tint} ${w}%,transparent ${w}%)">` +
+          `<span class="kv">${o.name}${CN[i]}</span><span>${x ? pc(x[0]) : ""}</span>` +
+          `<span>${x ? fmt(x[1] / 100, 0) : ""}</span></div>`
         );
-        wrap.addEventListener(
-          "wheel",
-          (ev) => {
-            ev.preventDefault();
-            if (interacting() && !ev.ctrlKey) return void wheelAt(ev);
-            if (mapScale === null) return; // 还没有布局图可缩放
-            const r = wrap.getBoundingClientRect();
-            const cx = ev.clientX - r.left,
-              cy = ev.clientY - r.top;
-            const contentX = wrap.scrollLeft + cx,
-              contentY = wrap.scrollTop + cy;
-            const old = mapScale;
-            mapScale *= ev.deltaY < 0 ? 1.15 : 1 / 1.15;
-            mapScale = Math.min(20, Math.max(0.15, mapScale));
-            applyMapSize();
-            const ratio = mapScale / old;
-            wrap.scrollLeft = contentX * ratio - cx;
-            wrap.scrollTop = contentY * ratio - cy;
-          },
-          { passive: false },
-        );
-      }
+      };
+      const chg = q.price - lc;
+      const kv = [
+        ["现价", pc(q.price)],
+        ["涨跌", fmtPnl(chg, 3)],
+        ["今开", pc(q.open)],
+        ["涨幅%", fmtPnl(lc ? (chg / lc) * 100 : null)],
+        ["最高", pc(q.high)],
+        ["昨收", px3(lc)],
+        ["最低", pc(q.low)],
+        ["成交量", lots(q.volume)],
+        ["成本", px3(p.cost)],
+        ["盈亏%", fmtPnl(p.pnl_pct)],
+        ["当日盈亏", fmtPnl(p.day_pnl)],
+        ["仓位%", fmt(p.position_pct)],
+      ];
+      box.innerHTML =
+        [4, 3, 2, 1, 0].map((i) => lv(1, i)).join("") +
+        '<div style="border-top: 1px solid var(--line); margin: 2px 0"></div>' +
+        [0, 1, 2, 3, 4].map((i) => lv(-1, i)).join("") +
+        '<div class="sum">' +
+        kv
+          .map(([k, v]) => `<span class="kv">${k}</span><span>${v}</span>`)
+          .join("") +
+        "</div>";
+    }
+    function initK() {
+      const sc = $("kRanges");
+      sc.innerHTML = KRANGES.map((r, i) => `<button data-tab="${i}">${r[2]}</button>`).join("");
+      tabbar(sc, "0");
+      sc.onclick = (e) => {
+        const b = e.target.closest("button");
+        if (b) kSelect(QCODE, KRANGES[+b.dataset.tab]);
+      };
+      $("slipTbl").onclick = pickClick;
+      const cv = $("kCv");
+      // 鼠标所在格及以前最近的一格（没成交的格算前一格）
+      cv.addEventListener("mousemove", (e) => {
+        const k = Math.floor(e.offsetX / (kView?.bw ?? 1));
+        kHover = kView ? kView.pos.findLastIndex((p) => p <= k) : -1;
+        dirty("kline");
+      });
+      cv.addEventListener("mouseleave", () => {
+        kHover = -1;
+        dirty("kline");
+      });
+      new ResizeObserver(() => dirty("kline")).observe(cv);
+    }
 
-      // 布局图：中键拖拽平移；中键单击（未拖动）= 选中光标下的元素
-      function initMapPan() {
-        const wrap = document.getElementById("mapWrap");
-        let panning = false,
-          moved = false,
-          sx = 0,
-          sy = 0,
-          sl = 0,
-          st = 0;
-        wrap.addEventListener("mousedown", (e) => {
-          if (e.button !== 1) return;
-          e.preventDefault();
-          panning = true;
-          moved = false;
-          sx = e.clientX;
-          sy = e.clientY;
-          sl = wrap.scrollLeft;
-          st = wrap.scrollTop;
-        });
-        window.addEventListener("mousemove", (e) => {
-          if (!panning) return;
-          const dx = e.clientX - sx,
-            dy = e.clientY - sy;
-          if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
-          wrap.scrollLeft = sl - dx;
-          wrap.scrollTop = st - dy;
-        });
-        window.addEventListener("mouseup", (e) => {
-          if (e.button !== 1 || !panning) return;
-          panning = false;
-          if (!moved) {
-            const el = document.elementFromPoint(e.clientX, e.clientY);
-            if (el && el.tagName === "rect" && el.dataset.hwnd) {
-              const n = nodeOf(el.dataset.hwnd);
-              if (n) select(n);
-            }
+    // 交互：鼠标/键盘只给屏幕坐标，目标窗口由 shim 定（坐标下最深子窗口 / 捕获 / 菜单）。
+    // 所有输入串成一条队列，保证到达客户端的顺序与操作顺序一致。
+    let inputQ = Promise.resolve();
+    const interacting = () => $("interact").checked;
+    function sendInput(cmd, ...args) {
+      inputQ = inputQ.then(async () => {
+        const r = await shim(cmd, ...args);
+        if (r.err) out("selOut", r);
+        pollSoon();
+      });
+      return inputQ;
+    }
+    // Win32 MK_*：LBUTTON 1 / RBUTTON 2 / SHIFT 4 / CONTROL 8 / MBUTTON 0x10
+    const mk = (e) =>
+      (e.buttons & 1 ? 1 : 0) |
+      (e.buttons & 2 ? 2 : 0) |
+      (e.shiftKey ? 4 : 0) |
+      (e.ctrlKey ? 8 : 0) |
+      (e.buttons & 4 ? 0x10 : 0);
+    function mouseAt(e, kind, ...extra) {
+      const w = svgPoint(e);
+      return sendInput(
+        "mouse",
+        kind,
+        Math.round(w.x),
+        Math.round(w.y),
+        mk(e),
+        ...extra,
+      );
+    }
+    // 非可打印键 → 虚拟键码；可打印字符走 char（shim 内按 VkKeyScan 决定投键还是 WM_CHAR）
+    const VK = {
+      Backspace: 8,
+      Tab: 9,
+      Enter: 13,
+      Escape: 27,
+      PageUp: 33,
+      PageDown: 34,
+      End: 35,
+      Home: 36,
+      ArrowLeft: 37,
+      ArrowUp: 38,
+      ArrowRight: 39,
+      ArrowDown: 40,
+      Insert: 45,
+      Delete: 46,
+    };
+    for (let i = 1; i <= 12; i++) VK["F" + i] = 111 + i;
+
+    // 左/右键按下抬起分开投（可拖拽），第二下按下投双击；中键归平移。交互关时左键=选中+闪烁。
+    function initMapInput() {
+      const wrap = $("mapWrap");
+      const svg = $("map");
+      const BIT = { 0: 1, 2: 2 }; // 浏览器 button → 按住位
+      const LR = { 1: "l", 2: "r" };
+      let held = 0;
+      const moveTo = drop((e) => mouseAt(e, "move")); // 拖拽移动：上一条没回来就丢
+      // 窗口底板、绘制元素命中框都带 data-hwnd，随整图 / 绘制层重写，hover 走委托
+      svg.addEventListener("mouseover", (e) => {
+        if (e.target.dataset?.hwnd) hover(e.target.dataset.hwnd);
+      });
+      svg.addEventListener("mouseout", (e) => {
+        if (e.target.dataset?.hwnd) hover(null);
+      });
+      svg.addEventListener("mousedown", (e) => {
+        const bit = BIT[e.button];
+        if (!bit) return;
+        wrap.focus();
+        const n = e.target.dataset && nodeOf(e.target.dataset.hwnd);
+        if (!interacting()) {
+          if (n && bit === 1) {
+            select(n);
+            act("highlight");
           }
-        });
-        // 屏蔽中键默认的自动滚动
-        wrap.addEventListener("auxclick", (e) => {
-          if (e.button === 1) e.preventDefault();
-        });
-      }
+          return;
+        }
+        held |= bit;
+        mouseAt(e, LR[bit] + (e.detail === 2 ? "dbl" : "down"));
+        if (n && bit === 1) select(n);
+      });
+      window.addEventListener("mousemove", (e) => held && moveTo(e));
+      window.addEventListener("mouseup", (e) => {
+        const bit = BIT[e.button];
+        if (!(held & bit)) return;
+        held &= ~bit;
+        mouseAt(e, LR[bit] + "up");
+      });
+      svg.addEventListener("contextmenu", (e) => e.preventDefault());
+      wrap.addEventListener("keydown", (e) => {
+        if (
+          !interacting() ||
+          e.isComposing ||
+          e.ctrlKey ||
+          e.altKey ||
+          e.metaKey
+        )
+          return;
+        if (e.key.length === 1) sendInput("char", e.key.codePointAt(0));
+        else if (VK[e.key]) sendInput("key", VK[e.key]);
+        else return;
+        e.preventDefault();
+      });
+    }
 
-      // 常驻一条连接：tree 来 {gen} 即重拉树；gdi 来一层即记下并合帧重画；rec 录制器。
-      // 标签转后台即断开（不占浏览器对本地址的连接数），回前台重连，重连时服务端先推全量。
-      let watchES = null;
-      function syncWatch() {
-        if (!document.hidden && !watchES)
-          watchES = subscribe(
-            {
-              tree: () => autoUpd() && pullTree(),
-              gdi: (r) => {
-                r.at = performance.now();
-                GDI.set(r.hwnd, r);
-                if (!gdiShown()) return;
-                gdiDirty.add(r.hwnd);
-                gdiSoon();
-              },
-              rec: recOn,
-            },
-            () => (REC_RECS = []),
-          );
-        if (document.hidden && watchES) {
-          watchES.close();
-          watchES = null;
+    // 滚轮：交互开时投给客户端（WM_MOUSEWHEEL，±120/格），Ctrl+滚轮或交互关时缩放，围绕光标
+    function initMapZoom() {
+      const wrap = $("mapWrap");
+      // 上一格没回来就丢，免得触控板刷屏
+      const wheelAt = drop((ev) =>
+        mouseAt(ev, "wheel", ev.deltaY < 0 ? 120 : -120),
+      );
+      wrap.addEventListener(
+        "wheel",
+        (ev) => {
+          ev.preventDefault();
+          if (interacting() && !ev.ctrlKey) return void wheelAt(ev);
+          if (mapScale === null) return; // 还没有布局图可缩放
+          const r = wrap.getBoundingClientRect();
+          const cx = ev.clientX - r.left,
+            cy = ev.clientY - r.top;
+          const contentX = wrap.scrollLeft + cx,
+            contentY = wrap.scrollTop + cy;
+          const old = mapScale;
+          mapScale *= ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+          mapScale = Math.min(20, Math.max(0.15, mapScale));
+          applyMapSize();
+          const ratio = mapScale / old;
+          wrap.scrollLeft = contentX * ratio - cx;
+          wrap.scrollTop = contentY * ratio - cy;
+        },
+        { passive: false },
+      );
+    }
+
+    // 布局图：中键拖拽平移；中键单击（未拖动）= 选中光标下的元素
+    function initMapPan() {
+      const wrap = $("mapWrap");
+      drag(
+        wrap,
+        (e) => {
+          if (e.button !== 1) return null;
+          e.preventDefault();
+          return { button: 1, sl: wrap.scrollLeft, st: wrap.scrollTop };
+        },
+        (p, e, dx, dy) => {
+          wrap.scrollLeft = p.sl - dx;
+          wrap.scrollTop = p.st - dy;
+        },
+        (p, e, moved) => {
+          const n = !moved && nodeOf(document.elementFromPoint(e.clientX, e.clientY)?.dataset?.hwnd);
+          if (n) select(n);
+        },
+      );
+      // 屏蔽中键默认的自动滚动
+      wrap.addEventListener("auxclick", (e) => {
+        if (e.button === 1) e.preventDefault();
+      });
+    }
+
+    // 推送连接：每条 {on 该连着, routes 路名 → 处理, opened 每次（重）连上}，es 为当前连接。
+    // base 常驻：tree 来 {gen} 即重拉树，gdi 来一层即记下并合帧重画，rec 录制器；
+    // pos 只在持仓页或行情页可见时连，断开后服务端即停取行情。
+    // 标签转后台一律断开（不占浏览器对本地址的连接数），回前台重连，重连时服务端先推各路全量。
+    function onTree() {
+      if (autoUpd()) pullTree();
+    }
+    function onGdi(r) {
+      r.at = performance.now();
+      GDI.set(r.hwnd, r);
+      if (!gdiShown()) return;
+      gdiDirty.add(r.hwnd);
+      gdiSoon();
+    }
+    const STREAMS = {
+      base: { on: () => true, routes: { tree: onTree, gdi: onGdi, rec: onRec }, opened: () => (REC_RECS = []) },
+      pos: { on: () => shown("pos") || shown("quote"), routes: { pos: onPos, ord: onOrd } },
+    };
+    function syncStreams() {
+      for (const st of Object.values(STREAMS)) {
+        const on = st.on() && !document.hidden;
+        if (on && !st.es) st.es = subscribe(st.routes, st.opened);
+        if (!on && st.es) {
+          st.es.close();
+          st.es = null;
         }
       }
+    }
 
-      // 中间 gutter 左右拖拽，改左 pane 宽度
-      function initGutter() {
-        const g = document.getElementById("gutter");
-        const left = document.getElementById("leftPane");
-        const wrap = document.querySelector(".wrap");
-        let dragging = false;
-        g.addEventListener("mousedown", (e) => {
-          dragging = true;
-          document.body.style.cursor = "col-resize";
+    // 中间 gutter 左右拖拽，改左 pane 宽度
+    function initGutter() {
+      const wrap = document.querySelector(".wrap");
+      drag(
+        $("gutter"),
+        (e) => {
           e.preventDefault();
-        });
-        window.addEventListener("mousemove", (e) => {
-          if (!dragging) return;
-          const r = wrap.getBoundingClientRect();
-          let px = e.clientX - r.left;
-          px = Math.max(220, Math.min(r.width - 220, px));
-          left.style.flex = "0 0 " + px + "px";
-        });
-        window.addEventListener("mouseup", () => {
-          dragging = false;
-          document.body.style.cursor = "";
-        });
-      }
+          document.body.style.cursor = "col-resize";
+          return { r: wrap.getBoundingClientRect() };
+        },
+        ({ r }, e) => {
+          const px = Math.max(220, Math.min(r.width - 220, e.clientX - r.left));
+          $("leftPane").style.flex = `0 0 ${px}px`;
+        },
+        () => (document.body.style.cursor = ""),
+      );
+    }
 
-      (async function init() {
-        initGutter();
-        initMapZoom();
-        initMapPan();
-        initMapInput();
-        initK();
-        setTab("leftPane", "layout");
-        setTab("rightPane", "quote");
-        renderSpy([]);
-        if (await ping()) await refreshTree();
-        syncWatch();
-        document.addEventListener("visibilitychange", syncPosStream);
-        posAutoLoop();
-        klineLoop();
-        pollLoop();
-      })();
-    </script>
-  </body>
+    (async function init() {
+      initGutter();
+      initMapZoom();
+      initMapPan();
+      initMapInput();
+      initTree();
+      initK();
+      setTab("leftPane", "layout");
+      setTab("rightPane", "quote");
+      renderSpy([]);
+      if (await ping()) await refreshTree();
+      syncStreams();
+      document.addEventListener("visibilitychange", syncStreams);
+      loop(pollTree, () => (pollFps() ? 1000 / pollFps() : 500));
+      loop(() => ck("spyAuto") && spy("dump"), () => 1000);
+      loop(autoRefresh, () => 1000);
+      loop(pullSoon, () => KLINE_GAP);
+    })();
+  </script>
+</body>
+
 </html>

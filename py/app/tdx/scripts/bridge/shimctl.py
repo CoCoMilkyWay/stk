@@ -192,7 +192,7 @@ class Shim:
         return [json.loads(r) for r in recs]
 
     def lines(self, cmd, *args):
-        """长连接命令（treewatch / gdiwatch）：逐行 yield 原始 JSON 文本，{} 为心跳。"""
+        """长连接命令（treewatch / gdiwatch）：逐行 yield 原始 JSON 文本，null 为心跳。"""
         with self._open(cmd, args) as s:
             for line in s.makefile("rb"):
                 assert not line.startswith(

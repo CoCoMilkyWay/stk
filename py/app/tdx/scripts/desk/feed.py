@@ -1,6 +1,6 @@
 # desk/feed — 推送源与错误边界。
 # pos / ord / rec 三路同一写法：源在 with feed: 里改状态即升一个版本，订阅者每见新版推 view(上次所见版本)，
-# HEARTBEAT 秒无新版推 {}（顺带让断开的订阅者及时退出）。只读不改的地方用 with feed.cond:。
+# HEARTBEAT 秒无新版推 null（顺带让断开的订阅者及时退出）。只读不改的地方用 with feed.cond:。
 
 import json
 import threading
@@ -33,6 +33,6 @@ class Feed:
         while True:
             with self.cond:
                 fresh = self.cond.wait_for(lambda: self.seq != seen, HEARTBEAT)
-                r = self.view(seen) if fresh else {}
+                r = self.view(seen) if fresh else None
                 seen = self.seq
             yield json.dumps(r, ensure_ascii=False)

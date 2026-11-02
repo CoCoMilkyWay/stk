@@ -44,7 +44,7 @@ RESULT_TITLE = "提示"
 MSG_TEXT, MSG_YES = 7013, 7015  # 确认框 / 回报框：正文 Static、确认按钮
 # 委托价：(吃对手盘, 再偏 %)
 PX_MODES = {"opp": (True, 0), "opp1": (True, 1), "own": (False, 0)}
-ORDER_CAP = 20
+ORDER_CAP = 5  # 留、推的最近单数
 
 
 def _order_qty(code, px, size, s, cap):
