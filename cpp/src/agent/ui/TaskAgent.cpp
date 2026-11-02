@@ -231,9 +231,7 @@ void scope_row(const SharedData &data, State &s, bool locked) {
     }
     ImGui::EndCombo();
   }
-  const std::vector<Choice> lvs = catalog::levels(o.pool);
-  if (std::none_of(lvs.begin(), lvs.end(), [&](const Choice &c) { return c.key == o.level; }))
-    o.level = lvs.front().key;
+  const std::vector<Choice> lvs = catalog::levels();
   for (const Choice &l : lvs) {
     ImGui::SameLine();
     if (ImGui::RadioButton((l.name + "##lv").c_str(), o.level == l.key))

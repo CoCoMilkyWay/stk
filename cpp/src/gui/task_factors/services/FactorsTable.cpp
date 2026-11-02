@@ -97,14 +97,10 @@ LevelId level_of(std::string_view name) {
 }
 
 std::string factor_dir_of(const SharedData &data, const std::string &pool, LevelId lv) {
-  const FactorLevel &l = factor_level(lv);
-  assert(level_for_pool(l, pool_def(pool).tier) && "该池不能用这个因子层");
-  return data.config.factor_dir + "/" + pool + "/" + l.name;
+  return data.config.factor_dir + "/" + pool + "/" + factor_level(lv).name;
 }
 
-PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool, LevelId lv) {
-  const FactorLevel &l = factor_level(lv);
-  assert(level_for_pool(l, pool_def(pool).tier) && "该池不能用这个因子层");
+PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool) {
   PerPool<FeatureLib> libs;
   libs[kAllPool] = load_lib(data.config, pool_def(kAllPool).name);
   if (const PoolId p = pool_id(pool); p != kAllPool)
@@ -129,8 +125,6 @@ FeatureTable BuildFeatureTable(const Feature &feature, LevelId id) {
   t.seg = lv.seg;
   t.feature = &feature;
   for (const TierId tier : {TierId::Lob, TierId::Bar}) {
-    if (tier == TierId::Lob && lv.tier != TierId::Lob) // lob.* = 因子池的库, 只有 Lob 标签层的池是 Lob 池
-      continue;
     for (size_t l = lv.lvl; l < LEVEL_COUNT; ++l) {
       if (!has_level(tier, l))
         continue;
@@ -145,9 +139,8 @@ FeatureTable BuildFeatureTable(const Feature &feature, LevelId id) {
       }
     }
   }
-  const Feature::Metadata &meta = feature.meta(lv.tier);
-  const auto &level = meta.features[lv.lvl];
-  const auto own = [&](uint32_t c) { return Col{lv.tier, lv.lvl, c}; }; // 标签档网格层本层列
+  const Feature::Metadata &meta = feature.meta(TierId::Bar);
+  const auto own = [&](uint32_t c) { return Col{TierId::Bar, lv.lvl, c}; }; // Bar 档网格层本层列
   const auto named = [&](const char *code) { return own(static_cast<uint32_t>(meta.col_of(lv.lvl, code))); };
   t.y.ts = named("ts_valid");
   t.y.cs = named("cs_valid");
@@ -157,8 +150,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, LevelId id) {
     std::snprintf(code, sizeof(code), lv.kline, ohlc[i]);
     t.b.ohlc[i] = named(code);
   }
-  const Feature::Metadata &bar = feature.meta(TierId::Bar);
-  const auto daily = [&](const char *code) { return Col{TierId::Bar, L_1day, static_cast<uint32_t>(bar.col_of(L_1day, code))}; }; // 日频原料 bar.1d
+  const auto daily = [&](const char *code) { return Col{TierId::Bar, L_1day, static_cast<uint32_t>(meta.col_of(L_1day, code))}; }; // 日频原料 bar.1d
   t.b.adj_factor = daily("adj_factor");
   t.b.total_shares = daily("total_shares");
   for (int m = 0; m < kPoolVals; ++m)
@@ -180,6 +172,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, LevelId id) {
   std::vector<Cost> costs;
   std::set<int> holds, amts;
   t.y.entry = own(kNoCol);
+  const auto &level = meta.features[lv.lvl];
   for (size_t i = 0; i < level.size(); ++i) {
     const FeatureMetadata &f = level[i];
     if (f.data_type != FeatureDataType::LB)
@@ -189,13 +182,6 @@ FeatureTable BuildFeatureTable(const Feature &feature, LevelId id) {
       continue;
     }
     char side[8] = {}, name[16] = {};
-    int amt = 0;
-    if (std::sscanf(f.code, "lb_cost_%7[a-z]_%dw", side, &amt) == 2) {
-      assert((std::string_view(side) == "buy" || std::string_view(side) == "sell") && amt > 0 && "冲击成本列命名不合 lb_cost_<buy|sell>_<amt>w");
-      costs.push_back({std::string_view(side) == "buy", amt, static_cast<uint32_t>(i)});
-      amts.insert(amt);
-      continue;
-    }
     const int got = std::sscanf(f.code, "lb_%7[a-z]_%15[a-z0-9]", side, name);
     assert(got == 2 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<long|short>_<name>");
     const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N>o / t<N>c → 持有期键 (Stat/Contract.hpp 【持有期键】)
@@ -222,16 +208,28 @@ FeatureTable BuildFeatureTable(const Feature &feature, LevelId id) {
     t.y.labels.push_back(lc);
   }
   assert(!t.y.labels.empty() && "本层无合法持有期");
+  t.y.costs.push_back(legs(kAmtFixed));
+  if (has_level(TierId::Lob, lv.lvl)) {
+    const auto &lob = feature.meta(TierId::Lob).features[lv.lvl];
+    for (size_t i = 0; i < lob.size(); ++i) {
+      if (lob[i].data_type != FeatureDataType::LB)
+        continue;
+      char side[8] = {};
+      int amt = 0;
+      const int got = std::sscanf(lob[i].code, "lb_cost_%7[a-z]_%dw", side, &amt);
+      assert(got == 2 && (std::string_view(side) == "buy" || std::string_view(side) == "sell") && amt > 0 && "冲击成本列命名不合 lb_cost_<buy|sell>_<amt>w");
+      costs.push_back({std::string_view(side) == "buy", amt, static_cast<uint32_t>(i)});
+      amts.insert(amt);
+    }
+  }
   for (int a : amts) {
     LegCol lc = legs(a);
     for (const Cost &c : costs)
       if (c.amt == a)
-        lc.leg[c.is_buy ? factor::stat::kLong : factor::stat::kShort].col = c.col;
+        lc.leg[c.is_buy ? factor::stat::kLong : factor::stat::kShort] = Col{TierId::Lob, lv.lvl, c.col};
     assert(full(lc) && "冲击成本列不齐: 某金额段缺 buy 或 sell");
     t.y.costs.push_back(lc);
   }
-  if (t.y.costs.empty())
-    t.y.costs.push_back(legs(kAmtFixed));
   return t;
 }
 
@@ -254,8 +252,8 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
   sc.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  sc.libs = factor_libs(data, pool, lv);
-  return sc.libs[factor_level(lv).lab(pool_id(pool))].ready(); // 标签库未建 → false; 叶所在库未建由评估域报 (span_of)
+  sc.libs = factor_libs(data, pool);
+  return sc.libs[label_lib(pool_id(pool))].ready(); // 标签库未建 → false; 叶所在库未建由评估域报 (span_of)
 }
 
 } // namespace GUI::Factors

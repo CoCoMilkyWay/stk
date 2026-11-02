@@ -1,9 +1,9 @@
 // FactorsLoad — 见头文件. include 因子契约头 (Stat/Contract.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_factors/services/FactorsLoad.hpp"
 
-#include "features/MetaFlag.hpp"                   // fmeta::valid / keep / finite
-#include "features/Method/Fundamental.hpp"         // fund::SW2021_L1_COUNT (行业 ID 上界)
-#include "features/Node/Lob/TS/Label/LabelLob.hpp" // 只取 kContCloseMin 对账尾部界 (不含字段表)
+#include "features/MetaFlag.hpp"                    // fmeta::valid / keep / finite
+#include "features/Method/Fundamental.hpp"          // fund::SW2021_L1_COUNT (行业 ID 上界)
+#include "features/Node/Common/Label/LabelHold.hpp" // 只取 kContCloseMin 对账尾部界 (不含字段表)
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
@@ -30,17 +30,22 @@ static_assert([] {
 }(),
               "kFactorLevels 与 factor::kGeos / 特征库层 (行末分钟) 不符");
 // 尾部界对账: 标签层最后一个可成交 entry 锚点 = 连续竞价末分钟 (kContCloseMin − 1) 的起始 = 行 kContCloseMin − 2; Stat tail_masked 用同一条界
-static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelLob::kContCloseMin, "Stat 尾部界与 LabelLob 的收盘竞价起点不一致");
+static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelHold::kContCloseMin, "Stat 尾部界与 LabelHold 的收盘竞价起点不一致");
 
 namespace GUI::Factors {
 
-YSpec y_spec(const FeatureTable &ft, const Holds &hd, Segs sg, double max_impact) {
+YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, double max_impact) {
   YSpec s{hd, {}, 0.f};
   if (sg == Segs::None)
     return s;
-  s.ad = keys_of<Amts>(ft.y.costs);
+  assert(ft.y.costs.front().flat() && "字段表成本段首个是固定段");
+  std::vector<int> amts;
+  for (const LegCol &c : ft.y.costs)
+    if (c.flat() || dm.uses(c.leg[factor::stat::kLong]))
+      amts.push_back(c.key);
   if (sg == Segs::First)
-    s.ad.n = 1;
+    amts = {amts.back() == kAmtFixed ? kAmtFixed : amts[1]};
+  s.ad = keys_of<Amts>(amts);
   s.max_impact = static_cast<float>(max_impact);
   return s;
 }
@@ -207,7 +212,7 @@ bool read_days(const Io &io, const Chunk &k, std::vector<ColRef> cols, OnDay &&o
 // 一天的截面门控 (load_y / load_b / n_full_of 同一份): gate[t·A + a], t < VR = 截面池 ∧ 当日有数据; has = 本线程 [A] 暂存, 出 = 当日有数据 (∧ 子池成员).
 // 当日有数据 = 该资产当日至少一行有成交 (ts_valid ≠ 0). 缺 binary / 整日停牌 → 全日 0: 这种 asset-day 不进截面池门控
 // (值是 carry / 0, 标签 0), valid% / Stat / CS 算子的截面域因此只看"真有行情"的格, 不与数据完整性耦合.
-// 截面池 = 标签库 cs_valid (all = 母集; Lob 池 = 当日在池); 子池 (Bar 标签层) = 当日成员, 不看 cs_valid
+// 截面池: all = 标签库 cs_valid (母集); 子池 = 当日成员, 不看 cs_valid
 // (ST 池在母集外; 其余子池 ⊂ 母集, 同一份盘前态)
 template <class ViewFn>
 void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, const Domain &dm, const Day &day, size_t VR, size_t A, std::vector<uint8_t> &has,
@@ -289,11 +294,12 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
   factor::stat::assert_holds(Y.hd, Y.sh.seg);
   const size_t A = static_cast<size_t>(Y.sh.A), n = Y.sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(Y.hd.n), C = static_cast<size_t>(Y.ad.n);
-  // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] | 盘口段买入冲击 [·], 全是标签库网格层本层列 (同行). 顺延已在标签里 (features LabelHold) ----
+  // ---- 列段 ts_valid | cs_valid | lb_entry_ok | 标签 [H][K] (标签库网格层本层列) | 盘口段买入冲击 [·] (Lob 库网格层本层列), 同行.
+  //      顺延已在标签里 (features LabelHold) ----
   // 标签组 i / 金额段 c 的列段起点 (固定段 = kFlat)
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
-  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签 / 成本在标签库");
+  assert(cols.refs[ts_i].pool == io.dm.rs.main && "门控 / 标签在标签库");
   std::vector<size_t> lab_at(H), cost_at(C, kFlat);
   for (size_t i = 0; i < H; ++i) {
     lab_at[i] = cols.refs.size();
@@ -303,6 +309,7 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
   for (size_t c = 0; c < C; ++c)
     if (const LegCol &lc = leg_of(ft.y.costs, Y.ad.k[c]); !lc.flat()) {
       assert(s.max_impact > 0.f && "装盘口成本要封顶 (Config::max_impact)");
+      assert(io.dm.uses(lc.leg[factor::stat::kLong]) && "盘口段要评估域含 Lob 库 (y_spec)");
       cost_at[c] = cols.refs.size();
       cols.add(lc.leg[factor::stat::kLong]);
     }
@@ -355,8 +362,8 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
         }
       }
     };
-    // 金额段 c 的买入冲击 = 列 cost_at[c] (固定段跳过): 池内 ∧ 有限 → fp16 位 (封顶), 其余 0; 可买 (eo & kEoBuy) 的格须有限
-    // (cost_rows 只在可买时取), 无有效位
+    // 金额段 c 的买入冲击 = 列 cost_at[c] (固定段跳过): 池内 ∧ 有限 → fp16 位 (封顶); 池内而盘口缺 (建仓盘口封涨停 / 该资产当日无盘口,
+    // 而标签的 VWAP 价点可买) → 封顶; 池外 0 (cost_rows 只在可买时取), 无有效位
     const auto fold_costs = [&](size_t t, size_t row) {
       for (size_t c = 0; c < C; ++c) {
         if (cost_at[c] == kFlat)
@@ -365,9 +372,8 @@ bool load_y(const Io &io, const Chunk &k, const YSpec &s, YPlanes &Y) {
         std::vector<uint16_t> &p = Y.costs[c];
         for (size_t a = 0; a < A; ++a) {
           feature_storage_t x = {};
-          const bool fin = Y.gate[row + a] && cell(w, a, x) && fmeta::finite(x);
-          p[row + a] = fin ? std::bit_cast<uint16_t>(static_cast<float>(x) > s.max_impact ? imp_top : x) : 0;
-          assert((fin || !(Y.eo[row + a] & factor::stat::kEoBuy)) && "可买格的买入冲击须有且有限 (旧 Lob 标签库: 重算)");
+          const bool fin = cell(w, a, x) && fmeta::finite(x);
+          p[row + a] = !Y.gate[row + a] ? 0 : std::bit_cast<uint16_t>(!fin || static_cast<float>(x) > s.max_impact ? imp_top : x);
         }
       }
     };

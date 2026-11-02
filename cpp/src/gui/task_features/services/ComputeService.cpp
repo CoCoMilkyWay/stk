@@ -1,8 +1,7 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
 #include "features/Method/Fundamental.hpp"
-#include "features/Node/Bar/TS/Label/LabelBar.hpp"
-#include "features/Node/Lob/TS/Label/LabelLob.hpp"
+#include "features/Node/Common/Label/LabelHold.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/Storage/FeatureSnap.hpp"
 #include "features/Storage/FeatureStoreConfig.hpp" // lob::Tier / bar::Tier
@@ -22,8 +21,7 @@
 
 namespace GUI::Features {
 
-static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelLob::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
-static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelBar::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
+static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelHold::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
 static_assert(TIER_COUNT == 2 && static_cast<size_t>(TierId::Lob) == 0 && static_cast<size_t>(TierId::Bar) == 1, "ComputeConfig 按档默认值按 Lob / Bar 序写死");
 
 ComputeService::ComputeService(SharedData &data)

@@ -1,5 +1,5 @@
 // FactorsTable — 因子层公共类型 (GUI 线程建, worker 只读; 四服务与装载层共用):
-//   因子层 FactorLevel (LevelId / PerLevel) ↔ 网格层 / 标签档 / 因子子目录 / K 线列;
+//   因子层 FactorLevel (LevelId / PerLevel) ↔ 网格层 / 因子子目录 / K 线列;
 //   字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 ↔ B K 线 / 复权 / 股本 / 估值 / 行业) + 按层缓存 FeatureTables;
 //   作用域 FactorScope + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat (StatScope / HoldStat / CostTier / MiniPdf) + AlphaDist.
 #pragma once
@@ -25,36 +25,41 @@ struct SharedData;
 
 namespace GUI::Factors {
 
-// ---- 因子层 (唯一真相 FACTOR_LEVELS: 加层只加一行) ↔ 网格层 / 标签档 / 因子子目录 / K 线列 ----
-//   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层, 因子文件在 <config.factor_dir>/<池>/<name>/.
-//   标签库 (门控 ts / cs_valid + 标签 + 成本 + K 线, 恒取网格层本层列, 同行): tier = Lob → 该 Lob 池 (盘口特征 + 冲击成本);
-//   tier = Bar → all 池, 因子池是 Lob 池时截面再与上池成员 (pool::Panel: 第 D 日 = D−1 收盘行, 各层同一份).
-//   特征叶写全名 档.层.列 (kLevelToken): lob.* = 因子池的库, bar.* = all 池; 叶可来自任意不细于网格的层 (level_asof 投影).
+// ---- 因子层 (唯一真相 FACTOR_LEVELS: 加层只加一行) ↔ 网格层 / 因子子目录 / K 线列 ----
+//   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层 (任何池都能用任何层), 因子文件在 <config.factor_dir>/<池>/<name>/.
+//   标签库 (门控 ts / cs_valid + 标签 + K 线, 恒取网格层本层列, 同行) = 因子池的 Bar 库 (label_lib): all 池;
+//   因子池是子池时截面再与上池成员 (pool::Panel: 第 D 日 = D−1 收盘行, 各层同一份).
+//   特征叶写全名 档.层.列 (kLevelToken): lob.* = 因子池的 Lob 库 (all 池无), bar.* = all 池; 叶可来自任意不细于网格的层 (level_asof 投影).
+//   成本: 固定段恒有; 评估域含 Lob 库 (用了 lob.* 叶) 时另有盘口段 (Lob 库网格层的建仓冲击列, 只 min 层有)
 //   评估期 = 标签库 + 所用库 落盘日的交集 (不看 config 区间)
-//   层间的差别全在表里 (网格层 / 标签档 / 名 / K 线列名式); 层几何 Geo 由网格层定 (行数 = level_valid_rows, 行末分钟与 level_end_sec 对账),
+//   层间的差别全在表里 (网格层 / 名 / K 线列名式); 层几何 Geo 由网格层定 (行数 = level_valid_rows, 行末分钟与 level_end_sec 对账),
 //   服务 / 装载 / UI 不按层分支
-// 档 → 库 (因子池 pool 下): Lob 档列在 pool 库, Bar 档列在 all 库. 叶 / 门控 / 标签 / 成本 / K 线 / 日频原料同一条
-inline constexpr PoolId lib_of(TierId tier, PoolId pool) { return tier == TierId::Lob ? pool : kAllPool; }
+// 档 → 库 (因子池 pool 下): Lob 档列在 pool 的 Lob 库 (all 池无 Lob 库 → kNoPool), Bar 档列在 all 库. 叶 / 门控 / 标签 / 成本 / K 线 / 日频原料同一条
+inline constexpr PoolId kNoPool = UINT8_MAX;
+inline PoolId lib_of(TierId tier, PoolId pool) {
+  if (tier == TierId::Bar)
+    return kAllPool;
+  return pool_tier(pool) == TierId::Lob ? pool : kNoPool;
+}
+inline PoolId label_lib(PoolId pool) { return lib_of(TierId::Bar, pool); } // 标签库 = 因子池的 Bar 库
 // 因子层下标 (kFactorLevels, 细 → 粗; 与 PoolId / TierId 对仗)
 using LevelId = uint8_t;
 struct FactorLevel {
   LevelId id = 0;
-  size_t lvl = 0;                                                        // 网格层 (FeatureLevel)
-  TierId tier = TierId::Lob;                                             // 标签档
-  const char *name = "";                                                 // 子目录名 / UI 名
-  const char *kline = "";                                                // 本层 K 线列名式 (printf, %s = open / high / low / close)
-  int seg = 0;                                                           // 每日行数 (= level_valid_rows(lvl) = Geo::S)
-  constexpr factor::Geo geo() const { return factor::geo_of(seg); }      // 层几何 (factor/Contract.hpp【层几何】)
-  constexpr PoolId lab(PoolId pool) const { return lib_of(tier, pool); } // 标签库
+  size_t lvl = 0;                                                   // 网格层 (FeatureLevel)
+  const char *name = "";                                            // 子目录名 / UI 名
+  const char *kline = "";                                           // 本层 K 线列名式 (printf, %s = open / high / low / close)
+  int seg = 0;                                                      // 每日行数 (= level_valid_rows(lvl) = Geo::S)
+  constexpr factor::Geo geo() const { return factor::geo_of(seg); } // 层几何 (factor/Contract.hpp【层几何】)
 };
-#define FACTOR_LEVELS(X)               \
-  X(L_1min, Lob, "min", "lob_%s")      \
-  X(L_5min, Bar, "5min", "%s_5min")    \
-  X(L_15min, Bar, "15min", "%s_15min") \
-  X(L_30min, Bar, "30min", "%s_30min") \
-  X(L_60min, Bar, "60min", "%s_60min") \
-  X(L_1day, Bar, "day", "%s_day")
-#define FACTOR_LEVEL_ROW(lvl, tier, name, kline) FactorLevel{0, lvl, TierId::tier, name, kline, static_cast<int>(level_valid_rows(lvl))},
+#define FACTOR_LEVELS(X)          \
+  X(L_1min, "min", "%s")          \
+  X(L_5min, "5min", "%s_5min")    \
+  X(L_15min, "15min", "%s_15min") \
+  X(L_30min, "30min", "%s_30min") \
+  X(L_60min, "60min", "%s_60min") \
+  X(L_1day, "day", "%s_day")
+#define FACTOR_LEVEL_ROW(lvl, name, kline) FactorLevel{0, lvl, name, kline, static_cast<int>(level_valid_rows(lvl))},
 inline constexpr auto kFactorLevels = [] {
   std::array a{FACTOR_LEVELS(FACTOR_LEVEL_ROW)};
   for (size_t i = 0; i < a.size(); ++i)
@@ -83,14 +88,12 @@ struct PerLevel {
   constexpr X &operator[](LevelId l) { return v[l]; }
   constexpr const X &operator[](LevelId l) const { return v[l]; }
 };
-// 池 (档 pool_tier) 能用的因子层: Bar 标签层任何池都能用 (Lob 池 = all 标签 + 池成员门控); Lob 标签层只给 Lob 池
-inline constexpr bool level_for_pool(const FactorLevel &l, TierId pool_tier) { return l.tier == TierId::Bar || l.tier == pool_tier; }
 // 叶名里的层段 (档.层.列 的中段), 下标 = FeatureLevel
 inline constexpr const char *kLevelToken[LEVEL_COUNT] = {"1s", "1m", "5m", "15m", "30m", "60m", "1d"};
-// 该层因子目录 = <config.factor_dir>/<pool>/<name> (level_for_pool)
+// 该层因子目录 = <config.factor_dir>/<pool>/<name>
 std::string factor_dir_of(const SharedData &data, const std::string &pool, LevelId lv);
-// 请求的库清单 (GUI 线程读): 因子池库 (lob.* 叶; Lob 标签层兼标签库) + all 池 (bar.* 叶 / 日频原料 / 池成员); 余池空. 未建库的清单 ready() == false
-PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool, LevelId lv);
+// 请求的库清单 (GUI 线程读): all 池 (标签库 / bar.* 叶 / 日频原料 / 池成员) + 子池的 Lob 库 (lob.* 叶 / 盘口段成本); 余池空. 未建库的清单 ready() == false
+PerPool<FeatureLib> factor_libs(const SharedData &data, const std::string &pool);
 // 因子目录下的因子文件 (*.json 普通文件, 不进子目录), 路径序; 目录不存在 = 空
 std::vector<std::filesystem::path> list_factor_files(const std::string &dir);
 
@@ -104,7 +107,9 @@ struct Col {
   bool has() const { return col != kNoCol; }
   ColRef ref(PoolId pool) const {
     assert(has());
-    return {lib_of(tier, pool), static_cast<uint8_t>(level), static_cast<uint16_t>(col)};
+    const PoolId lib = lib_of(tier, pool);
+    assert(lib != kNoPool && "因子池没有该档的库 (评估域先拦: span_of)");
+    return {lib, static_cast<uint8_t>(level), static_cast<uint16_t>(col)};
   }
 };
 struct FeatCol : Col {
@@ -113,8 +118,8 @@ struct FeatCol : Col {
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
 };
 // 两侧列 (标签 / 成本同形): 标签 key = 持有期键 (Stat/Contract.hpp), 侧 = lb_long_<name> / lb_short_<name>;
-// 成本 key = 金额段 (万), 侧 = lb_cost_buy_<amt>w / lb_cost_sell_<amt>w (盘口段; 组合只做多, 装载只取买入侧); 无冲击列的层只一个固定段
-// (key kAmtFixed, 侧无列; Stat 契约【换手成本】)
+// 成本 key = 金额段 (万), 侧 = Lob 库网格层 lb_cost_buy_<amt>w / lb_cost_sell_<amt>w (盘口段; 组合只做多, 装载只取买入侧);
+// 固定段 key kAmtFixed, 侧无列 (Stat 契约【换手成本】)
 struct LegCol {
   int key = 0;
   Col leg[factor::stat::kLegs];
@@ -125,9 +130,9 @@ inline std::string amt_name(int amt) { return amt == kAmtFixed ? std::string("�
 const LegCol *find_leg(const std::vector<LegCol> &cols, int key);                                                   // key 不在 → nullptr
 const LegCol &leg_of(const std::vector<LegCol> &cols, int key);                                                     // key 不在 → assert
 // X ↔ Y ↔ B 三侧 (XCols / YCols / BCols ↔ FactorsLoad 叶 LeafId / YSpec / 篮子 → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
-//   X = 因子输入叶 = 标签档及 Bar 档 (Lob 标签层才有 lob.*) 不细于网格的各层全部列, 随因子变
-//   Y = 门控 / 标签 / 成本 = 标签档网格层本层列, 只随评估域变
-//   B = 价格 / 篮子原料: K 线 = 标签档网格层本层列; 复权 / 股本 / 估值 / 行业 / 池成员 = 日频原料, 恒取 bar.1d 列 (as-of 投影到网格行, 各层同一份)
+//   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列, 随因子变
+//   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档网格层本层列; 只随评估域变
+//   B = 价格 / 篮子原料: K 线 = Bar 档网格层本层列; 复权 / 股本 / 估值 / 行业 / 池成员 = 日频原料, 恒取 bar.1d 列 (as-of 投影到网格行, 各层同一份)
 // 叶的身份 = leaves 下标 (字段表编译期定 → 同层进程内不变; 叶名只在 Dag / 解析边界, 装载 / 缓存 / 引擎全按 LeafId)
 using LeafId = uint32_t;
 struct XCols {
@@ -155,7 +160,7 @@ struct YCols {
   Col cs;                     // cs_valid (标签 + 截面门控平面)
   Col entry;                  // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 契约【仓位感知】)
   std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
-  std::vector<LegCol> costs;  // 按 key 升序, 非空 (盘口段; 无冲击列的层 = 一个固定段). Run / Inspect / Portfolio 每段攒 CostAcc; Search 不看成本
+  std::vector<LegCol> costs;  // 按 key 升序: 固定段 (恒在, 首个) + 盘口段 (Lob 档本层冲击列; 评估域含 Lob 库才可用, 见 y_spec). Run / Inspect / Portfolio 每段攒 CostAcc; Search 不看成本
 };
 struct BCols {
   Col ohlc[4];            // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
@@ -178,8 +183,8 @@ struct FeatureTable {
   // 已校验过的规范串 (scan / 构建器出的模板 / 权重) 再解析; 不成 → assert
   factor::expr::Expr reparse(std::string_view canon) const;
 };
-// LB 列按 code 识别 (LabelLob 生成的字段行): lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp);
-// lb_cost_<buy|sell>_<amt>w 建仓冲击成本 (无 → 一个固定段)
+// LB 列按 code 识别: Bar 档 lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp) + lb_entry_ok;
+// Lob 档 lb_cost_<buy|sell>_<amt>w 建仓冲击 (盘口段)
 FeatureTable BuildFeatureTable(const Feature &feature, LevelId lv);
 // 按层缓存的字段表 (GUI 线程, 全部页共享): 首次用到该层时建
 using FeatureTables = PerLevel<std::shared_ptr<const FeatureTable>>;
@@ -224,7 +229,7 @@ struct StatScope {
 };
 // 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
 // 两端按 Δw 扣: 盘口段 = 增仓 Δw⁺ 付买入冲击, 平仓量付 fixed_impact; 固定段 = 两者都付 fixed_impact (同一价点交接只算差额); 均摊成本 cost(端) 随 h 变.
-// 买入冲击按 Config::max_impact 封顶后进 (装载时; 可买的格恒有限, 不可买的格特征层 NaN).
+// 买入冲击按 Config::max_impact 封顶后进 (装载时; 盘口缺 = 封顶).
 // Run 每因子每金额段都攒 (落 stat.costs), 年换手取段 0 (各段同一份 Δw), Inspect 期限结构净线从它算
 struct CostTier {
   int amt = 0;                                            // 万 (= FeatureTable::y.costs[c].key; kAmtFixed = 固定段)

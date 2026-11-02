@@ -82,7 +82,7 @@ struct InspectPlanes {
   void clear() { ric.clear(), rx.clear(), rx_all.clear(); }
 };
 
-// EvalStat (与 Run 行同一份): scope / eval_ms / valid% / rank% / 二级 hold[n_hold] (只毛口径) / costs [C] = FeatureTable::y.costs 序
+// EvalStat (与 Run 行同一份): scope / eval_ms / valid% / rank% / 二级 hold[n_hold] (只毛口径) / costs [C] = 评估域可用的金额段 (y_spec: 固定段 + 用了 lob 叶时的盘口段)
 // (期限结构净线: 毛二级 − 两端均摊换手成本, UI 现算)
 struct InspectResult : EvalStat {
   std::string key; // = inspect_key; 空 = 无结果

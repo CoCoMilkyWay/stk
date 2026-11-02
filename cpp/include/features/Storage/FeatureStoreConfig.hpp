@@ -181,7 +181,7 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 // ============================================================================
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
 //   FNV-1a 64 over (code, kind, ts_tf) 逐字段拼接 (顺序敏感)
-//   LB 列另折入 kLabelSemver: 标签列名不变但口径变 (LabelLob / LabelBar 的 entry / exit 定义) 时 +1, 库读取即判废而非静默错义
+//   LB 列另折入 kLabelSemver: 标签列名不变但口径变 (LabelBar 的 entry / exit, LabelLob 的建仓盘口定义) 时 +1, 库读取即判废而非静默错义
 //   L_1day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
 constexpr uint64_t kLabelSemver = 1;

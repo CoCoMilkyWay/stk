@@ -1,12 +1,11 @@
 // Tab Factors — 见头文件
 #include "gui/task_factors/ui/TabFactors.hpp"
-#include "factor/Check.hpp"                        // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
-#include "factor/GpuRun.hpp"                       // available / device_name
-#include "factor/Search/Contract.hpp"              // Score: 父行代表权重
-#include "features/Node/Lob/TS/Label/LabelLob.hpp" // LABEL_DELAY_SECONDS: 持有期写法
-#include "gui/Tasks.hpp"                           // StatusColor
-#include "gui/task_factors/ui/TabPortfolio.hpp"    // RenderPortfolioBoxes
-#include "gui/util/Sparkline.hpp"                  // ic~ / alpha~ 列迷你图
+#include "factor/Check.hpp"                     // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
+#include "factor/GpuRun.hpp"                    // available / device_name
+#include "factor/Search/Contract.hpp"           // Score: 父行代表权重
+#include "gui/Tasks.hpp"                        // StatusColor
+#include "gui/task_factors/ui/TabPortfolio.hpp" // RenderPortfolioBoxes
+#include "gui/util/Sparkline.hpp"               // ic~ / alpha~ 列迷你图
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
@@ -45,7 +44,7 @@ HoldPoints hold_points(int hold, LevelId lv) {
   namespace st = factor::stat;
   const FactorLevel &L = factor_level(lv);
   const bool at_close = st::close_entry(0, L.geo()); // 首行就按收盘价建仓 = 每行都是 (行即整日)
-  const std::string px = L.tier == TierId::Lob ? "+" + std::to_string(LABEL_DELAY_SECONDS) + "s盘口中间价" : "次分钟VWAP";
+  const std::string px = "次分钟VWAP";
   const std::string close_px = "收盘撮合价", open_px = "开盘撮合价";
   const std::string at = at_close ? "C(T)" : "C(" + std::string(L.name) + ")";
   const HoldPoint open{at, at_close ? close_px : px};
@@ -632,7 +631,7 @@ struct FixedCol {
 //   name_en = 文件名主干 <factor_dir>/<pool>/<name_en>.json; name_cn 缺 / 不合 → BROKEN
 //   *h: 父行 = 其代表权重的; 手填权重 = -
 //   frame: 标签取超额 (减截面均值); 只做多, 一组满仓 cap 只, 不足按只数/cap 建仓, 超出均分, 空组记 0; CS 根 = CsRank / CsNormRank / CsZ, TS 根 = TsRankRoll 5 日 (组可空 → long / flat)
-//   period: 结束 = 所用库最近落盘日; 用了 lob.* 的只有 Lob 池建库以来的几个月
+//   period: 结束 = 所用库最近落盘日; 用了 lob.* 的只有 Lob 库建库以来的几个月
 //   status BROKEN 原因: 文件 / type / name_cn / 表达式不合, 根非归一, 权重不是模板的实例, 组 id 不合; 文件不动, 手动处理
 //   time = 子树全部算子节点之和 (共享节点算给每个用它的因子); CPU 全核 wall / GPU 纯 kernel
 //   ic~ / alpha~: KLL PDF 峰值归一; ic~ x 域 ±max|rIC| 0 居中; alpha~ 池内有效格截尾 ≈ [P0.4, P99.6], 与持有期无关; Run 时算, 落文件 stat
@@ -1080,7 +1079,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Por
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
   ImGui::Text("%s  级别 %s", ctx.pool.c_str(), factor_level(ctx.lv).name);
-  // 作用域 = 池 × 因子层 (所用特征的最细层; 叶写全名 档.层.列); 评估期按因子定 = 所用特征库落盘日交集; Lob 池的 Bar 层因子 = all 池标签 + 当日池成员截面
+  // 作用域 = 池 × 因子层 (所用特征的最细层; 叶写全名 档.层.列); 评估期按因子定 = 所用特征库落盘日交集; 标签恒在 all 池 (Bar), 子池 = 当日池成员截面
   if (ImGui::IsItemHovered())
     tip("因子目录 %s", ctx.factor_dir.c_str());
   ImGui::SameLine();

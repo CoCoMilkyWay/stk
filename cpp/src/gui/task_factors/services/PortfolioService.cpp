@@ -115,11 +115,6 @@ void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::
     PortfolioItem it;
     it.e = e;
     it.name_en = std::filesystem::path(e.file).stem().string();
-    if (!level_for_pool(factor_level(e.lv), pool_def(e.pool).tier)) {
-      it.missing = "该池没有这个因子层";
-      out.push_back(std::move(it));
-      continue;
-    }
     const std::shared_ptr<const FeatureTable> ft = table_of(tables, data.feature, e.lv);
     const std::filesystem::path p = std::filesystem::path(factor_dir_of(data, e.pool, e.lv)) / e.file;
     const bool exists = std::filesystem::is_regular_file(p);

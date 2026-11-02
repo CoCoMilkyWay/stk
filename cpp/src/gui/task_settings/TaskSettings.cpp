@@ -273,7 +273,7 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("佣金 (双边)");
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("比率, 万 1 = 0.0001; 买卖各扣一次. 标签 (LabelLob) 不含税佣, Inspect 图 1 事后扣");
+          ImGui::SetTooltip("比率, 万 1 = 0.0001; 买卖各扣一次. 标签 (LabelBar) 不含税佣, Inspect 图 1 事后扣");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
         ImGui::InputDouble("##commission", &cfg.commission, 0.0, 0.0, "%.5f");
@@ -311,8 +311,8 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("固定冲击 (模拟)");
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("比率, 20bp = 0.0020; 不按金额变. 标签 exit 是盘口中间价不含冲击, Lob 建仓冲击按深度精确算 (lb_cost_*);\n"
-                            "扣冲击时平仓侧统一扣这一常数 (做多卖出); Bar 档无盘口, Portfolio 建仓也按它");
+          ImGui::SetTooltip("比率, 20bp = 0.0020; 不按金额变. 标签 exit 是分钟 VWAP 不含冲击, Lob 库建仓冲击按深度精确算 (lb_cost_*);\n"
+                            "扣冲击时平仓侧统一扣这一常数 (做多卖出); 固定段 (因子没用 lob 叶时唯一的段) 建仓也按它");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
         ImGui::InputDouble("##fixed_impact", &cfg.fixed_impact, 0.0, 0.0, "%.5f");

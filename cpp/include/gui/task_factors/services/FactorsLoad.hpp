@@ -25,8 +25,8 @@ namespace GUI::Factors {
 
 // ---- 装载: X ↔ Y ↔ B 三侧同形 (XCols / YCols / BCols → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b 同一份逐天骨架) ----
 //   X = 因子输入叶 (随因子变): 叶按各自 ts_valid 门控
-//   Y = 门控 + 标签 / 成本平面 (只随评估域变): 截面门控 = (子池 = 当日成员, 其余 = cs_valid) ∧ 当日有成交; 标签 = 池内 ∧ 两侧有限,
-//   买入冲击 = 池内 ∧ 有限 (按 max_impact 封顶); 可成交 / 顺延已在标签里, 不另读)
+//   Y = 门控 + 标签 / 成本平面 (只随评估域变): 截面门控 = (子池 = 当日成员, all = cs_valid) ∧ 当日有成交; 标签 = 池内 ∧ 两侧有限,
+//   买入冲击 = 池内 ∧ 有限 (按 max_impact 封顶; 盘口缺 → 封顶); 可成交 / 顺延已在标签里, 不另读)
 //   B = 池篮子输入 (Portfolio 池线, all 池评估域): 全部池的成员位 + T+1C 标签 + 本层 close + 日频复权 / 股本 / 估值 / 行业 (as-of), 一趟读齐交 FactorsBook baskets
 // 张量形 (三侧同一份; T = days · seg)
 struct Shape {
@@ -67,17 +67,18 @@ K keys_union(const K &a, const K &b) {
 
 struct YSpec {
   Holds hd;               // 标签组 (LegCol::key, 字段表里有)
-  Amts ad;                // 成本段 (LegCol::key, 字段表里有; 空 = 不装; 固定段无平面)
+  Amts ad;                // 成本段 (LegCol::key, 字段表里有且评估域可用; 空 = 不装; 固定段无平面)
   float max_impact = 0.f; // 买入冲击封顶 (Config::max_impact; 有盘口段时 > 0): buy = min(原值, 封顶)
   double cap = 0.0;       // 满仓只数 n_full: 0 = 本块门控自算; > 0 = 用它 (多块作业 = 全期池宽 n_full_of, 各块同一个; FactorsEngine plan_job 置)
   std::string key() const;
 };
-// 成本段取法 (探针声明 FactorsProbe Ps::segs, 管线据此定 YSpec::ad): 不装 (Search) / 首段 (Portfolio 出参线) / 全部 (Run / Inspect 各段 CostAcc)
+// 成本段取法 (探针声明 FactorsProbe Ps::segs, 管线据此定 YSpec::ad): 不装 (Search) / 主段 (Portfolio 出参线: 首个盘口段, 无则固定段) /
+// 全部 (Run / Inspect 各段 CostAcc)
 enum class Segs : uint8_t { None,
                             First,
                             All };
-// 块的 Y 规格: 持有期 hd (字段表里有) + 成本段 sg; 有段才带封顶 max_impact
-YSpec y_spec(const FeatureTable &ft, const Holds &hd, Segs sg, double max_impact);
+// 块的 Y 规格: 持有期 hd (字段表里有) + 成本段 sg (评估域 dm 可用的段: 固定段恒在, 盘口段要 dm 含其所在 Lob 库); 有段才带封顶 max_impact
+YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, double max_impact);
 // 块规格 (X ↔ Y 两侧各一项): X = 叶 / Y = YSpec
 struct BlockSpec {
   std::vector<LeafId> x;
@@ -117,7 +118,7 @@ struct YPlanes {
   Holds hd;                                 // [hold] = YSpec::hd
   std::vector<LegPlane> labels;             // [hold] 两侧毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t (封板照写, 能否建仓看 eo; 平仓顺延已在值里)
   Amts ad;                                  // [amt] = YSpec::ad
-  std::vector<std::vector<uint16_t>> costs; // [amt] 买入冲击 (比例, 封顶) fp16 位; 采样同标签, 可买 (eo) 的格恒有限 (装载断言), 无有效位; 固定段空
+  std::vector<std::vector<uint16_t>> costs; // [amt] 买入冲击 (比例, 封顶) fp16 位; 采样同标签 (行末分钟), 池内格恒有值 (盘口缺 = 封顶), 无有效位; 固定段空
   double n_full = 0.0;                      // 满仓一组只数 (Stat 契约【持仓口径】的 cap) = 池内平均每行有效资产数 / kGroups: 池宽决定, 与因子无关 (YSpec::cap > 0 → 它)
 };
 // 全部金额段的成本视图 [amt] (= y.ad 序; cost_rows 的 c, C = y.ad.n)

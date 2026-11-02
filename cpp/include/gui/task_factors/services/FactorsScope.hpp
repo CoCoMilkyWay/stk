@@ -24,13 +24,19 @@ struct Domain {
   analysis::ReadScope rs;            // main = 标签库, libs = used 各库清单, axis = A 轴 (标签库轴 / 子池并集), to = A → 各库轴
   std::vector<misc::Ymd> dates;      // 评估期 = used 各库落盘日交集的最近 keep 日 (升序, 非空)
   std::vector<Day> days;             // [dates] 当日 + 承接日 (标签库日期轴上的前一日, 0 = 轴首) 及其落盘位 (承接日按库判)
-  std::optional<pool::Panel> member; // 子池成员 (Lob 池 × Bar 标签层; 第 D 日 = D−1 收盘行, 各层同一份, 池轴 = A 轴)
+  std::optional<pool::Panel> member; // 子池成员 (第 D 日 = D−1 收盘行, 各层同一份, 池轴 = A 轴)
   std::string key() const;           // 缓存键: 池 | 所用库目录 + 池轴 | 评估期首末 + 天数
+  // 列 c 所在库在评估域里 (盘口段成本只在评估域含 Lob 库时可用, 见 y_spec)
+  bool uses(const Col &c) const {
+    const PoolId l = lib_of(c.tier, pool);
+    return l != kNoPool && (used & pool_bit(l));
+  }
 };
 // worker: 作用域 sc 里已建的库全开 (清单没变的复用; 各因子只读自己用到的). abort = 库判废时拉起的取消旗
 void open_libs(const FactorScope &sc, LibReaders &lr, std::atomic<bool> *abort);
 // 作用域 sc + 叶 leaves → 评估域, 评估期只留最近 keep 日 (≥ 1; 子池成员 / A 轴按留下的日建).
-// 所用库 = 标签库 ∪ 读计划各列的库 (Col::ref) (+ all: 池成员): Lob 池的 Bar 层因子不碰池库, 与 all 池同期; 所用库未建 / 无共同落盘日 → false + why (正常输入)
+// 所用库 = 标签库 ∪ 读计划各列的库 (Col::ref) (+ all: 池成员): 子池只用 bar.* 叶的因子不碰 Lob 库, 与 all 池同期;
+// 叶的档在因子池没有库 (all 池 × lob.*) / 所用库未建 / 无共同落盘日 → false + why (正常输入)
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
 // domain_of 的前半 (pool / used / rs.libs / dates / days; 不建子池成员与 A 轴, 不读库): 只问评估期时用
 bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);

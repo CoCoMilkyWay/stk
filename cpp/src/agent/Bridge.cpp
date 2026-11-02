@@ -685,12 +685,10 @@ std::vector<Choice> pools() {
   return out;
 }
 std::string pool_cn(const std::string &pool) { return pool_def(pool).name_cn; }
-std::vector<Choice> levels(const std::string &pool) {
+std::vector<Choice> levels() {
   std::vector<Choice> out;
-  const TierId tier = pool_def(pool).tier;
   for (const F::FactorLevel &l : F::kFactorLevels)
-    if (F::level_for_pool(l, tier))
-      out.push_back({l.id, l.name});
+    out.push_back({l.id, l.name});
   return out;
 }
 std::vector<Choice> holds(const SharedData &data, int level) {
@@ -1191,7 +1189,7 @@ bool Lab::code_of(const std::string &arg, std::string &code, std::string &error)
     if (const std::string c = arg + ex; ax.find(c) < ax.size()) {
       const std::optional<F::FactorScope> fsc = I.fsc();
       assert(fsc && "作用域须 ready");
-      const PoolAxis &pa = fsc->libs[F::factor_level(level_id(I.sc.level)).lab(pool_id(I.sc.pool))].axis;
+      const PoolAxis &pa = fsc->libs[F::label_lib(pool_id(I.sc.pool))].axis;
       if (pa.sub_of(static_cast<uint32_t>(ax.find(c))) == pa.size()) {
         error = c + " 不在本池 (" + I.sc.pool + ") 特征库的资产轴上, 从没进过池; 挑池内的票 (如 view_trades / view_holders 结果里的代码)";
         return false;

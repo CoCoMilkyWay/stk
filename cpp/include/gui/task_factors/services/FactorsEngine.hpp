@@ -738,7 +738,7 @@ template <class E, class Ps>
 Rc prepare(E &eng, FactorFlow &F, const FactorScope &sc, const factor::Dag &d, int look, const Holds &hd, int R, Job &j) {
   if (!open_job(F, sc, d.feats, j))
     return Rc::Empty;
-  j.spec.y = y_spec(*j.ft, hd, Ps::segs, sc.max_impact);
+  j.spec.y = y_spec(*j.ft, j.dm, hd, Ps::segs, sc.max_impact);
   if (look >= 0)
     j.bands = bands_of(look, hd, j.ft->seg);
   const auto bud = [&] {

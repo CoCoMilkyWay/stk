@@ -1064,7 +1064,7 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
 // 净线 = 毛二级 − 该端该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(端), 含 fixed_impact; 两端都是做多账本, 成本都使线下移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
 //   毛 G20 / G1 / LS 的样本是 J ∧ ok 行, 成本的样本是端成员 ∧ 标签有效格 (与组计数同口径)
-// hs[n_hold] 毛二级; costs[n_cost] 该层金额段 (至少一段; Bar 层 = 固定段). n < 3 的持有期不作节点.
+// hs[n_hold] 毛二级; costs[n_cost] 评估域的金额段 (固定段 + 有 Lob 库时的盘口段). n < 3 的持有期不作节点.
 // pool_ann[n_hold] = 池等权指数各持有期的算术年化 (InspectResult::pool_ann, 绝对口径; 与因子无关, 随池一代); nullptr = 不画 (Factors 表 stat 无此项)
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 = 画的年化
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, const float *pool_ann, double fixed_impact, int sel_hold,

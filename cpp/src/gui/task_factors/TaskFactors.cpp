@@ -81,10 +81,10 @@ struct TaskFactorsState {
   Phase portfolio_prev_fs = Phase::Idle; // 因子服务进 Done (因子文件可能改了) → 重解析
 };
 
-// 特征面板选择 (池档, 层) 对应的因子层; 不是该池的因子层 (L_sec / Bar 池 L_1min) = 空
+// 特征面板选择的层对应的因子层; 不是因子层 (L_sec) = 空
 static std::optional<Factors::LevelId> selected_factor_level(const Feature::Selection &sel) {
   for (const Factors::FactorLevel &l : Factors::kFactorLevels)
-    if (Factors::level_for_pool(l, sel.tier) && static_cast<int>(l.lvl) == sel.selected_level)
+    if (static_cast<int>(l.lvl) == sel.selected_level)
       return l.id;
   return std::nullopt;
 }
@@ -307,8 +307,7 @@ TaskHandle CreateFactorsTask() {
             for (const PoolDef &d : feature_pools()) {
               size_t n = 0;
               for (const Factors::FactorLevel &l : Factors::kFactorLevels)
-                if (Factors::level_for_pool(l, d.tier))
-                  n += Factors::list_factor_files(Factors::factor_dir_of(data, d.name, l.id)).size();
+                n += Factors::list_factor_files(Factors::factor_dir_of(data, d.name, l.id)).size();
               state->pool_files.push_back(n);
             }
           }
@@ -327,12 +326,8 @@ TaskHandle CreateFactorsTask() {
               if (d.tier != sel.tier) {
                 sel.clear_filters(); // 同特征面板: 换档 = 换字段表, 过滤作废
                 sel.tier = d.tier;
-                if (!selected_factor_level(sel)) { // 原层在新池不是因子层 → 该池首个因子层
-                  const auto first =
-                      std::ranges::find_if(Factors::kFactorLevels, [&](const Factors::FactorLevel &l) { return Factors::level_for_pool(l, d.tier); });
-                  assert(first != std::end(Factors::kFactorLevels) && "该池没有因子层");
-                  sel.selected_level = static_cast<int>(first->lvl);
-                }
+                if (!selected_factor_level(sel)) // 原层不是因子层 → 首个因子层
+                  sel.selected_level = static_cast<int>(Factors::kFactorLevels.front().lvl);
               }
               sel.pools[d.tier] = d.name;
             }
@@ -350,8 +345,7 @@ TaskHandle CreateFactorsTask() {
           if (repool || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
             state->counted_key = key;
             for (const Factors::FactorLevel &l : Factors::kFactorLevels)
-              state->level_files[l.id] =
-                  Factors::level_for_pool(l, sel.tier) ? Factors::list_factor_files(Factors::factor_dir_of(data, sel.pool(), l.id)).size() : 0;
+              state->level_files[l.id] = Factors::list_factor_files(Factors::factor_dir_of(data, sel.pool(), l.id)).size();
           }
           state->prev_factors_phase = fst;
           if (repool) // 进页 / 换池: 切到该池最低频的有因子文件的层 (都没有 → 不动)
@@ -362,24 +356,17 @@ TaskHandle CreateFactorsTask() {
               }
         }
         for (const Factors::FactorLevel &l : Factors::kFactorLevels) {
-          const bool usable = Factors::level_for_pool(l, sel.tier);
           char label[48];
-          if (usable)
-            std::snprintf(label, sizeof(label), "%s (%zu)###flvl%d", l.name, state->level_files[l.id], l.id);
-          else
-            std::snprintf(label, sizeof(label), "%s###flvl%d", l.name, l.id);
+          std::snprintf(label, sizeof(label), "%s (%zu)###flvl%d", l.name, state->level_files[l.id], l.id);
           ImGui::SameLine();
-          ImGui::BeginDisabled(!usable);
-          if (ImGui::RadioButton(label, usable && static_cast<int>(l.lvl) == sel.selected_level))
+          if (ImGui::RadioButton(label, static_cast<int>(l.lvl) == sel.selected_level))
             sel.selected_level = static_cast<int>(l.lvl);
-          ImGui::EndDisabled();
         }
         ImGui::EndGroup();
-        // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); min 层盘口标签 + 冲击成本, 5min .. day 用 all 池标签, Lob 池 = 当日池成员截面;
-        // 因子目录 <factor_dir>/<池>/<层>/
+        // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); 各层标签都在 all 池 (Bar), 子池 = 当日池成员截面;
+        // 用了 lob.* 叶 (只 min 层有, 只子池有 Lob 库) 评估期缩到 Lob 库落盘日, 另有真实冲击段; 因子目录 <factor_dir>/<池>/<层>/
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
           Factors::tip("池 + 因子层 (与特征面板同步; 括号里是因子数)\n"
-                       "• min 层只有 Lob 池能用\n"
                        "• 窗长 d 等参数按本层行数计\n"
                        "• 有计算在跑时, 先取消, 停下后切过去");
       }
@@ -415,7 +402,7 @@ TaskHandle CreateFactorsTask() {
         }
       }
       if (!state->lv) {
-        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: Lob 池 min; 任何池 5min .. day)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
+        ImGui::TextDisabled("%s / %s 不是因子层 (因子层: min .. day)", sel.pool().c_str(), level_name(static_cast<size_t>(sel.selected_level)));
         break;
       }
       // 首次进页 / 换层: 只扫描不算 (字段表视图按层建一次, 编译期字段表, 不随运行变); 池切换 → 目录变 → 自动重扫

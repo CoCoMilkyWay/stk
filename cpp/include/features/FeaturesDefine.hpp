@@ -93,7 +93,7 @@
 //       CS(ns, lvl, src, Tf, Method)  截面: 源档 ns 源层 lvl (FeatureLevel 名, 任意层) 的字段 src → cs::Tf::apply → cs::Method::apply.
 //                                  源行 = level_asof(源列, 本列, t) (粗层 / 盘后列读已收的上一行, 日内读 L_1day = 前一交易日行; 跨日只许 TS / 元列,
 //                                  区间首日无前日 → NaN). CS; 有效性随源层 (L_sec DATA / 其余 ALL); ns = 本档, 或 TIER_SIDES 登记的旁读档
-//       LABEL                      标签回填 (CoreLob 手工写). LB; ALL (全行写; 收益无 NaN, 建仓可成交码 lb_entry_ok, 见 LabelHold; Lob 冲击成本不可成交侧 NaN)
+//       LABEL                      标签回填 (CoreTs 手工写). LB; ALL (全行写; Bar 收益无 NaN, 建仓可成交码 lb_entry_ok, 见 LabelHold; Lob 冲击成本不可成交侧 NaN)
 //       FLAG                       基建标志列 ts_valid / cs_valid (CoreLob 手工写; 编码/状态机见 Meta.hpp fmeta/MetaTracker). META; ALL
 //     一行 = 一个标量列 (列下标 = 落盘存储列).
 //     非节点列的 <Name> 是任意名字, 放在写它的地方旁边: FLAG → Node/<Tier>/TS/Meta/Meta.hpp,
@@ -110,7 +110,7 @@
 // 各触发域执行顺序: 盘前 (日内节点 reset / 日频节点 carry 后) → onDay; 一个 tick 内 onTaker|onMaker|onCancel → onTick → onDepth; 分钟边界 → onMinute;
 // 分钟箱末分钟 (onMinute 之后) → on5Min → on15Min → on30Min → on60Min → (末分钟) onClose → onSettle (细层先结算, 粗层节点可读细层节点当行值).
 // 字段表改动会改变落盘布局: 文件头带表指纹, 读旧文件即断言失败, 需重算.
-// 标签 (LabelLob) 回填别的时间行, 不走节点表, 在 LobGraph.hpp 手工声明.
+// 标签 (Bar LabelBar 收益 / Lob LabelLob 冲击成本) 回填别的时间行, 不走节点表, 在 BarGraph.hpp / LobGraph.hpp 手工声明 (TIER_DAG).
 
 // ============================================================================
 // 字段元数据枚举 (X-macro: 一处定义 → enum + to_string(en/cn) + 全值表)
@@ -250,7 +250,7 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 
 #define SRC_VALID_TS(node, ...) valid_of(kLevel, node_flush::node)
 #define SRC_VALID_CS(ns, l, ...) (l == L_sec ? L2::ValidType::DATA : L2::ValidType::ALL) // 截面随源层: L_1min / 分钟箱层 / L_1day 稠密 (门控本就只看 cs_valid)
-#define SRC_VALID_LABEL L2::ValidType::ALL                                               // 标签全行写 (缺口用可成交时刻顶上; 唯一 NaN = 建仓作废, 见 LabelHold), 与 L_1min 特征同稠密
+#define SRC_VALID_LABEL L2::ValidType::ALL                                               // 标签全行写 (缺口用可成交时刻顶上, 见 LabelHold; 冲击成本不可成交侧 NaN), 与 L_1min 特征同稠密
 #define SRC_VALID_FLAG L2::ValidType::ALL
 
 // TS(node, Tf, Method) / TS(node, port, Tf, Method): 按参数个数取 Tf / Method (RowWriter 同法取 node/port)

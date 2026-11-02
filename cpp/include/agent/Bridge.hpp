@@ -394,7 +394,7 @@ struct Eval {
 namespace catalog {
 std::vector<Choice> pools(); // key = 池下标
 std::string pool_cn(const std::string &pool);
-std::vector<Choice> levels(const std::string &pool); // 该池能用的因子层
+std::vector<Choice> levels();
 std::vector<Choice> holds(const SharedData &data, int level);
 std::string hold_desc(int hold, int level); // 开 / 清仓规则
 bool gpu();

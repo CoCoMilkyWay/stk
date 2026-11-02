@@ -31,12 +31,10 @@ std::string Domain::key() const {
 bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why) {
   assert(sc.lv == ft.lv && "作用域层与字段表层不符");
   assert(keep >= 1);
-  const FactorLevel &lv = factor_level(ft.lv);
   const PoolId pool = pool_id(sc.pool);
-  assert(level_for_pool(lv, pool_tier(pool)) && "该池不能用这个因子层");
-  const PoolId lab = lv.lab(pool);
-  assert(ft.y.ts.ref(pool).pool == lab && ft.y.cs.ref(pool).pool == lab && "门控 / 标签 / 成本 / K 线在标签库");
-  const bool sub = pool != lab; // Lob 池 × Bar 标签: 截面再与上池成员
+  const PoolId lab = label_lib(pool);
+  assert(ft.y.ts.ref(pool).pool == lab && ft.y.cs.ref(pool).pool == lab && "门控 / 标签 / K 线在标签库");
+  const bool sub = pool != lab; // 子池: 截面再与上池成员
   const PerPool<FeatureLib> &libs = sc.libs;
   dm = Domain{};
   dm.pool = pool;
@@ -44,7 +42,12 @@ bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<Le
   for (const LeafId id : leaves) {
     const FeatCol &c = ft.x.leaves[id];
     assert(c.allowed);
-    dm.used |= pool_bit(c.ref(pool).pool);
+    const PoolId l = lib_of(c.tier, pool);
+    if (l == kNoPool) {
+      why = c.code + " 是 " + tier_name(c.tier) + " 叶, " + pool_def(pool).name + " 池没有 " + tier_name(c.tier) + " 库 (换子池)";
+      return false;
+    }
+    dm.used |= pool_bit(l);
   }
   for (const PoolId l : pool_ids())
     if (dm.used & pool_bit(l)) {
@@ -90,7 +93,7 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<
   TraceN("Domain");
   if (!span_of(ft, sc, leaves, keep, dm, why))
     return false;
-  const PoolId lab = factor_level(ft.lv).lab(dm.pool);
+  const PoolId lab = label_lib(dm.pool);
   const bool sub = dm.pool != lab;
   if (sub)
     dm.member = pool::Panel::build(sc.libs[kAllPool], pool_def(dm.pool).pool_col, dm.dates);

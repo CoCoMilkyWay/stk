@@ -1,9 +1,8 @@
 #pragma once
 
 #include "features/DataDefine.hpp"
-#include "features/GraphNode.hpp"                     // graph::BIN_DATA (分钟箱层 + L_1day 输入)
-#include "features/Node/Common/Label/LabelGroups.hpp" // LABEL_NAME (标签列按名定址)
-#include "features/Node/Common/Meta/Meta.hpp"         // MetaTracker (ts_valid / cs_valid)
+#include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_1day 输入)
+#include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
 #include "features/Storage/FeatureStore.hpp"
 #include "math/sample/ResamplerMin2Bin.hpp"
 #include "misc/date.hpp"
@@ -13,7 +12,6 @@
 #include <cassert>
 #include <cstdint>
 #include <span>
-#include <string_view>
 #include <utility>
 
 // ============================================================================
@@ -26,10 +24,10 @@
 //                     → 有成交则标签 minute_closed. L_1min / 分钟箱层 / L_1day 同一路径, 两档同一路径
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列, 落到以 t_min 为行末分钟的各层行
-//         (哪层有哪些标签列由字段表定: Lob 只 L_1min; Bar 只 L_5min 及以上, 每层只留本层及以上的持有期组);
+//         (哪层有哪些标签列由字段表定, 层内按名 Label::col_of 定址: Lob 冲击成本只 L_1min; Bar 收益标签 L_1min 及以上, 每层只留本层及以上的持有期组);
 //         writer.rows(col) = 该列落盘的行 (编译期 kLabRows), LabelHold 只结算这些行;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
-//   日句柄环与 LabelHold 悬挂日环同步前进 (PEND_DAYS): 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close.
+//   日句柄环与标签悬挂日环同步前进 (Label::PEND_DAYS): Bar 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close; Lob 冲击成本只写当日.
 //   续算: snap = 区间末日的跨天态 (节点 + 标签), resume = 下一轮把尾窗日 (≤ PEND_DAYS, 张量已从盘读回) 的句柄接回环, 之后同一路径.
 //   档钩子 (Derived 实现):
 //     bool  member(misc::Ymd)  日开 (onDay 之后): 当日成员位 → cs_valid (Lob 池 / Bar 母集)
@@ -124,7 +122,7 @@ protected:
       (dag_.*b).asset_id = static_cast<uint32_t>(asset_id);
   }
 
-  // 标签落盘口 (LabelHold 的 writer): 调用 = write_label; rows(col) = LB 块偏移 col 的落盘行 (kLabRows)
+  // 标签落盘口 (标签类的 writer): 调用 = write_label; rows(col) = LB 块偏移 col 的落盘行 (kLabRows)
   struct LabelWriter {
     CoreTs *core;
     void operator()(size_t col, size_t n, size_t label_min, const float *values, size_t days_ago) const {
@@ -202,7 +200,7 @@ private:
   }
 
   // ---------------------------------------------------------------- 日句柄环 ----
-  // days_[cur_] = 当日 (= day_), days_ago 天前的句柄 = days_[(cur_ − days_ago) mod PEND]; 与 LabelHold::pend_ 下标同步
+  // days_[cur_] = 当日 (= day_), days_ago 天前的句柄 = days_[(cur_ − days_ago) mod PEND]; 与标签悬挂日环下标同步
   void push_day(const Day &day) {
     cur_ = (cur_ + 1) % kPendDays;
     days_[cur_] = day;
@@ -229,23 +227,14 @@ private:
     });
   }
 
-  // 标签列定址: LB 块偏移 → 层 LVL 的列下标 (本层没有 = kNoCol). 持有期列 hold_col(h) + side 按名 lb_<side>_<name> 找;
-  // 建仓可成交码 ENTRY_COL 按名 lb_entry_ok 找 (落标签的层必有); 块尾的档附带列 (Lob 冲击成本, 偏移 > ENTRY_COL) = 本层按名对不上的 LB 列,
-  // 按序对应, 要么全在要么全无. 对不齐 → 编译期失败
+  // 标签列定址: LB 块偏移 → 层 LVL 的列下标 (本层没有 = kNoCol). 层内每个 LB 列按名 (Label::col_of) 定址回 LB 块; 对不上 / 重复 → 编译期失败
   static constexpr size_t kNoCol = SIZE_MAX;
-  static constexpr size_t kFixedCols = Label::ENTRY_COL + 1; // 按名定址的列 (持有期组 + 可成交码)
-  static_assert(Label::ENTRY_COL == Label::HOLD_COUNT * Label::GROUP_SIZE);
   struct LabLayout { // 无默认成员初始化器: 外层类未完整时 (下方静态成员初始化) 不许用
     std::array<std::array<size_t, Label::MIN_LABEL_COUNT>, LEVEL_COUNT> col;
     std::array<size_t, LEVEL_COUNT> count;
     bool ok;
   };
   static constexpr LabLayout kLab = [] {
-    constexpr auto is_label_code = [](std::string_view code, size_t h, size_t s) {
-      const std::string_view side = Label::SIDE_NAME[s], name = LABEL_NAME[h];
-      return code.size() == 3 + side.size() + 1 + name.size() && code.starts_with("lb_") && code.substr(3, side.size()) == side &&
-             code[3 + side.size()] == '_' && code.ends_with(name);
-    };
     LabLayout L{};
     L.ok = true;
     for (size_t l = 0; l < LEVEL_COUNT; ++l) {
@@ -255,34 +244,13 @@ private:
       const std::span<const FieldInfo> fs{T::LEVELS[l].fields, T::LEVELS[l].field_count};
       const size_t base = first_of_kind(fs, FeatureDataType::LB), cnt = count_of_kind(fs, FeatureDataType::LB);
       L.count[l] = cnt;
-      if (cnt > Label::MIN_LABEL_COUNT || !kind_contiguous(fs, FeatureDataType::LB)) {
-        L.ok = false;
-        continue;
-      }
-      std::array<bool, Label::MIN_LABEL_COUNT> named{}; // 层内第 f − base 个 LB 列已按名对上
+      L.ok = L.ok && kind_contiguous(fs, FeatureDataType::LB);
       for (size_t f = base; f < base + cnt; ++f) {
-        for (size_t h = 0; h < Label::HOLD_COUNT; ++h)
-          for (size_t s = 0; s < Label::GROUP_SIZE; ++s)
-            if (is_label_code(fs[f].code, h, s)) {
-              L.ok = L.ok && L.col[l][Label::hold_col(h) + s] == kNoCol;
-              L.col[l][Label::hold_col(h) + s] = f;
-              named[f - base] = true;
-            }
-        if (std::string_view(fs[f].code) == "lb_entry_ok") {
-          L.ok = L.ok && L.col[l][Label::ENTRY_COL] == kNoCol;
-          L.col[l][Label::ENTRY_COL] = f;
-          named[f - base] = true;
-        }
+        const size_t c = Label::col_of(fs[f].code);
+        L.ok = L.ok && c < Label::MIN_LABEL_COUNT && L.col[l][c] == kNoCol;
+        if (c < Label::MIN_LABEL_COUNT)
+          L.col[l][c] = f;
       }
-      L.ok = L.ok && (cnt == 0 || L.col[l][Label::ENTRY_COL] != kNoCol);
-      size_t extra = kFixedCols;
-      for (size_t f = base; f < base + cnt; ++f)
-        if (!named[f - base]) {
-          L.ok = L.ok && extra < Label::MIN_LABEL_COUNT;
-          if (extra < Label::MIN_LABEL_COUNT)
-            L.col[l][extra++] = f;
-        }
-      L.ok = L.ok && (extra == kFixedCols || extra == Label::MIN_LABEL_COUNT);
     }
     size_t total = 0;
     for (const size_t c : L.count)
@@ -290,7 +258,7 @@ private:
     L.ok = L.ok && total > 0; // 至少一层落标签
     return L;
   }();
-  static_assert(kLab.ok, "各层 LB 列须连续, 且每列都能按名 (lb_<side>_<name> / lb_entry_ok) 或块尾附带列 (全在 / 全无) 定址回标签 LB 块");
+  static_assert(kLab.ok, "各层 LB 列须连续, 且每列都能按名 (Label::col_of) 定址回标签 LB 块, 不重复");
   static constexpr const auto &kLabCount = kLab.count;
   static constexpr const auto &kLabCol = kLab.col;
 
@@ -305,14 +273,7 @@ private:
               rows[c].set(m);
     return rows;
   }();
-  static_assert([] {
-    for (size_t h = 0; h < Label::HOLD_COUNT; ++h)
-      for (size_t s = 1; s < Label::GROUP_SIZE; ++s)
-        if (!(kLabRows[Label::hold_col(h) + s] == kLabRows[Label::hold_col(h)]))
-          return false;
-    return true;
-  }(),
-                "一组两腿的落盘行须相同 (LabelHold 按组结算)");
+  static_assert(Label::rows_ok(kLabRows), "标签列落盘行不合标签类的约束 (Label::rows_ok)");
 
   std::array<Day, kPendDays> days_{}; // 日句柄环 (开盘型跨日回填 / 延迟 ts_close)
   size_t cur_ = kPendDays - 1;        // 首个 push_day 推到 0

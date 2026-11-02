@@ -1,8 +1,8 @@
 #pragma once
 
 // =============================================================================
-// 标签持有期组 (两档共用): Pool LabelLob (盘口中间价) / All LabelBar (分钟 VWAP) 同组同列名 lb_<side>_<name>,
-// 因子层 / Stat 的持有期键只认 name, 与档无关. 平仓口径各档文件头自述.
+// 标签持有期组 (LabelHold 骨架 / LabelBar 字段行): 列名 lb_<side>_<name>, 因子层 / Stat 的持有期键只认 name, 与因子层无关.
+// 平仓口径见 LabelBar 文件头.
 // =============================================================================
 
 #include <cstddef>
@@ -37,10 +37,10 @@ inline constexpr const char *LABEL_NAME[] = {LABEL_GROUPS(LABEL_NAME_ONE)}; // �
 #undef LABEL_N_ONE
 #undef LABEL_NAME_ONE
 
-// lb_entry_ok (建仓可成交码, LabelHold::ENTRY_COL) 的公式 (两档同)
+// lb_entry_ok (建仓可成交码, LabelHold::ENTRY_COL) 的公式
 #define LABEL_ENTRY_TEX R"(\mathbf{1}[\mathrm{buy}_{entry}] + 2\cdot\mathbf{1}[\mathrm{sell}_{entry}])"
 
-// 列名片段 (英 / 中), 两档描述按 kind token 拼接
+// 列名片段 (英 / 中), 字段描述按 kind token 拼接
 #define LABEL_EN_MIN(n) #n "min"
 #define LABEL_EN_CLOSE(n) "to-Close"
 #define LABEL_EN_OPEN(n) "T+" #n " Open"

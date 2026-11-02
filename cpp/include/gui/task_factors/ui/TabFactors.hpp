@@ -105,7 +105,7 @@ bool cycler(const char *label, int &idx, const char *const *values, int n);
 // 持有期切换 "Hold ◂ 周期名 ▸" (cycler, idx = ft.y.labels 下标); 不足两项只显示名字. 返回是否切了
 bool hold_cycler(int &hold_idx, const FeatureTable &ft);
 // Hold 提示的公共尾段 = Stat/Contract.hpp【协议表 1 / 2】的 UI 摘要. 细节: 开仓 = 本层行收盘 C(层) 出信号, 日层 = 当日收盘建仓;
-// 盘口中间价 = 锚点 + 下单延迟的可成交盘口 (min 层, Lob); 次分钟VWAP = 之后首个有成交连续竞价分钟 (Bar 层); 收盘 / 开盘撮合价 = 集合竞价单一价;
+// 次分钟VWAP = 之后首个有成交连续竞价分钟 (各分钟层); 收盘 / 开盘撮合价 = 集合竞价单一价;
 // 仓位感知 (契约【仓位感知】): 新进须本侧可成交, 交接的续持者封板照持 (名义价估值); 平仓不可成交 / 停牌 → 顺延到首个可成交价点
 inline constexpr const char *kHoldRulesTip = "• 新进成交不了 → 不建仓; 已持有的续持不需成交 (封板照持); 平仓成交不了 → 顺延到可成交时";
 // 单个持有期的 stat 面板 (Inspect 顶部右栏): 关键指标按组分列 (rIC | LS | 覆盖 | 形态), 每格 指标名 + 值; 定义 / 格式 / 着色区间与因子表同一份,
