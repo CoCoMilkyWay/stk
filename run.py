@@ -35,7 +35,10 @@ def _start_fetch():
     """Fetch upstream in background; overlaps network latency with cleanup/format."""
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
-    return subprocess.Popen(["git", "fetch", "--quiet"], env=env)
+    # 直连 github: 空值禁用代理, 覆盖 ~/.gitconfig 与 *_proxy 环境变量
+    return subprocess.Popen(
+        ["git", "-c", "http.https://github.com/.proxy=", "fetch", "--quiet"], env=env
+    )
 
 
 def _git(*args):
