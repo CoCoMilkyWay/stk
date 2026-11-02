@@ -106,7 +106,7 @@
 
 # Bar/TS/Fund/Fund 日频基本面与风格
 - 盘中各行读到的是前一交易日收盘后的值 (日内不变). 价格限制 `lim_up` / `lim_dn` / `pre_close` / `adj_factor` 读到的就是当日适用值.
-- 品类: 状态 (`ind_l1` 一级行业 id、`list_age`、`is_margin`、`is_susp`、`is_new`、`st_*`), 股本, 两融 (`rz_*` / `rq_*`), 财务三表 (`bs_*` MRQ; `pl_*` / `cf_*` 分单季 `_q` / 滚动 `_ttm` / 上年 `_lyr`; `roe_ttm` / `roa_ttm` / `dy_ttm` / `cfo_chg_ttm` / `*_yoy` / `days_since_report`), 行情风格 (`ret_12_1`, `ret_1m`, `turn` = 20 日均换手 / 250 日均换手, `ivol`, `resvol`, `beta`, `trend`).
+- 品类: 状态 (`ind_l1` 一级行业 id、`list_age`、`is_margin`、`is_susp`、`is_new`、`st_*`), 股本, 两融 (`rz_*` / `rq_*`), 财务三表 (`bs_*` MRQ; `pl_*` / `cf_*` 分单季 `_q` / 滚动 `_ttm` / 上年 `_lyr`; `roe_ttm` / `roa_ttm` / `dy_ttm` / `cfo_chg_ttm` / `cfo_yoy_ttm` / `*_yoy` / `days_since_report`), 行情风格 (`ret_12_1`, `ret_1m`, `turn` = 20 日均换手 / 250 日均换手, `ivol`, `resvol`, `beta`, `trend`).
 - 用途: 微观结构信号的条件 (在哪类票上强) 或风格对照.
 - 坑: 日内不变, 单独作根输入只给日间排序; 规模类量 (总资产、净利润) 与市值强相关.
 

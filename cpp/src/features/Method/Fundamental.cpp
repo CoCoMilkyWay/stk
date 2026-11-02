@@ -2012,7 +2012,7 @@ struct State {
 
     // -- 财务分母 / cffoa 改善 --
     const float rev = rev_ttm();
-    float np = NaNF, cf = NaNF, cf_chg = NaNF;
+    float np = NaNF, cf = NaNF, cf_chg = NaNF, cf_yoy = NaNF;
     if (t) {
       const float n = t->net_profit_to_parent_shareholders_ttm;
       np = (std::isfinite(n) && n != 0.0f) ? n : NaNF;
@@ -2022,6 +2022,7 @@ struct State {
       cf_chg = (std::isfinite(m) && m > 0.0f && std::isfinite(c0) && std::isfinite(c4))
                    ? std::tanh((c0 - c4) / m)
                    : NaNF;
+      cf_yoy = (std::isfinite(c0) && std::isfinite(c4) && c4 != 0.0f) ? (c0 - c4) / std::fabs(c4) : NaNF;
     }
     // -- 权益 MRQ / roe / roa (avg5 分母) --
     float eq = NaNF, roe = NaNF, roa = NaNF;
@@ -2057,6 +2058,7 @@ struct State {
     out[Fund::roa_ttm] = sat(roa);
     out[Fund::dy_ttm] = sat(dy);
     out[Fund::cfo_chg_ttm] = sat(cf_chg);
+    out[Fund::cfo_yoy_ttm] = sat(cf_yoy);
     out[Fund::rz_bal] = sat(p.at(p.fin_balance, a, d) * 1e-8f);
     out[Fund::rq_bal] = sat(p.at(p.sec_balance, a, d) * 1e-8f);
     out[Fund::is_margin] = static_cast<float>(p.at(p.is_margin, a, d));

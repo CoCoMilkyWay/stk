@@ -25,6 +25,7 @@ import subprocess
 import socket
 import hashlib
 import shutil
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHIM_DIR = os.path.join(HERE, "shim")
@@ -200,12 +201,15 @@ class Shim:
                 yield line.decode().rstrip("\n")
 
 
-def ensure():
-    """编译+注入直到 shim 在线。已在线则跳过。"""
+def ensure(timeout=5.0):
+    """编译+注入直到 shim 在线（注入后监听线程起来要一会儿，至多等 timeout 秒）。已在线则跳过。"""
     build()
     s = Shim()
     if not s.online():
         inject()
-        assert s.online(), f"shim 注入后无应答（端口 {s.port}）"
+        end = time.monotonic() + timeout
+        while not s.online():
+            assert time.monotonic() < end, f"shim 注入后 {timeout}s 无应答（端口 {s.port}）"
+            time.sleep(0.1)
     print(f"[+] shim 在线: pid={s('ping')[0]['pid']}")
     return s

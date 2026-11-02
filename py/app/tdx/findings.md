@@ -105,7 +105,7 @@
 修改文件：
 
 - `scripts/bridge/shim/shim.c`
-- `scripts/console.py`
+- `scripts/desk/rec.py`
 - `scripts/console.html`
 
 ### shim

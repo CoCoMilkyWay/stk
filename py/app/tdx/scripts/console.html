@@ -1892,10 +1892,10 @@
           return void (info.textContent = "无持仓");
         }
         const t = r.totals;
-        // 当日盈亏按成交自算；成交没读过 / 与持仓的今买今卖对不上时，相关行当日两列留空、总数不全
+        // 当日盈亏按成交自算；与持仓的今买今卖对不上时，相关行当日两列留空、总数不全
         const sync = r.synced
           ? ` · 今日成交 ${r.fills} 笔`
-          : ` · <span class="off">${r.fills == null ? "当日成交未读" : "成交与持仓今买 / 今卖对不上"}，当日盈亏不全（点刷新）</span>`;
+          : ` · <span class="off">成交与持仓今买 / 今卖对不上，当日盈亏不全（点刷新）</span>`;
         info.innerHTML =
           `${r.rows.length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
           ` · 盈亏 ${fmtPnl(t.pnl)} · 当日盈亏 ${fmtPnl(t.day_pnl)}` +
@@ -2302,10 +2302,12 @@
         if (!QROW) return void (box.innerHTML = "");
         const p = QROW,
           q = p.quote,
-          lc = q.last_close;
+          lc = q.last_close,
+          ask = q.book[1],
+          bid = q.book[-1];
         const pc = (v) =>
           v ? paint(v > lc ? K_UP : v < lc ? K_DN : "", v.toFixed(3)) : "-";
-        const vmax = Math.max(1, ...[...q.ask, ...q.bid].map((x) => x[1]));
+        const vmax = Math.max(1, ...[...ask, ...bid].map((x) => x[1]));
         const lv = (name, x, tint) => {
           const w = x ? ((x[1] / vmax) * 100).toFixed(1) : 0;
           return (
@@ -2332,11 +2334,11 @@
         ];
         box.innerHTML =
           [4, 3, 2, 1, 0]
-            .map((i) => lv("卖" + CN[i], q.ask[i], "rgba(106,153,85,.25)"))
+            .map((i) => lv("卖" + CN[i], ask[i], "rgba(106,153,85,.25)"))
             .join("") +
           '<div style="border-top: 1px solid var(--line); margin: 2px 0"></div>' +
           [0, 1, 2, 3, 4]
-            .map((i) => lv("买" + CN[i], q.bid[i], "rgba(241,76,76,.25)"))
+            .map((i) => lv("买" + CN[i], bid[i], "rgba(241,76,76,.25)"))
             .join("") +
           '<div class="sum">' +
           kv

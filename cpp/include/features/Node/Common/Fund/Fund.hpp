@@ -59,6 +59,7 @@ public:
     roa_ttm,     // [%]
     dy_ttm,      // [ratio] 近 4 季报告期税前分红 / 本日收盘总市值
     cfo_chg_ttm, // [-1,1]
+    cfo_yoy_ttm, // [ratio] 经营现金流 TTM / 4 季前 TTM − 1 (分母取绝对值)
     rz_bal,      // [亿元] 融资余额 (非资产 → NaN)
     rq_bal,      // [亿元] 融券余额
     st_profit,   // 0/1
