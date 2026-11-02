@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,6 @@ ComputeService::ComputeService(SharedData &data)
 
 PerLib<LibPlan> plan_libs(const SharedData &data) {
   const Config &cfg = data.config;
-  const StockDaysVec &days = data.assetinfo.get_stock_days();
   PerTier<std::vector<misc::Ymd>> source;
   for (const TierId t : TIER_IDS)
     source[t] = tier_ops(t).source_dates(data);
@@ -35,10 +35,10 @@ PerLib<LibPlan> plan_libs(const SharedData &data) {
   for (const LibId l : lib_order()) {
     LibPlan &p = out[l];
     p.lib = load_lib(cfg, l);
+    std::vector<misc::Ymd> landed; // 已落盘日 (升序)
     if (p.lib.ready()) {
-      const misc::Ymd last = p.lib.dates.back();
-      p.done = static_cast<size_t>(std::ranges::count_if(p.lib.dates, [&](misc::Ymd d) { return FeatureRead::has_date(p.lib.tier(), p.lib.dir, d); }));
-      p.lag = static_cast<size_t>(std::ranges::count_if(days, [&](const CalendarDay &d) { return d.trading && d.date > last; }));
+      std::ranges::copy_if(p.lib.dates, std::back_inserter(landed), [&](misc::Ymd d) { return FeatureRead::has_date(p.lib.tier(), p.lib.dir, d); });
+      p.done = landed.size();
       p.resumable = resumable(cfg, p.lib);
     }
     p.plan = source[p.lib.tier()];
@@ -50,6 +50,7 @@ PerLib<LibPlan> plan_libs(const SharedData &data) {
       } else
         std::erase_if(p.plan, [&](misc::Ymd d) { return !parent_covers(u.lib.dates, up->prev, d); });
     }
+    p.pending = static_cast<size_t>(std::ranges::count_if(p.plan, [&](misc::Ymd d) { return !std::ranges::binary_search(landed, d); }));
   }
   return out;
 }

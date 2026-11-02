@@ -28,7 +28,7 @@ namespace GUI::Features {
 struct LibPlan {
   FeatureLib lib;               // 现清单 (load_lib; 未建库 = 空轴)
   size_t done = 0;              // 已落盘日数 (以档内末层日文件为 commit 标记, 见 FeatureRead::has_date)
-  size_t lag = 0;               // 未计算: 交易日历里库末日之后的交易日数
+  size_t pending = 0;           // 未落盘: 规划日期轴上尚未落盘的日数 (未建库 = 整轴)
   bool resumable = false;       // 续算点对得上 (见 resumable)
   std::vector<misc::Ymd> plan;  // 规划日期轴 (空 = 不可算), 末日 > 库末日即落后
   std::optional<LibId> blocked; // 未落盘齐的上游库 (非空 ⇒ plan 空)

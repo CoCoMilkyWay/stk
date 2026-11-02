@@ -27,8 +27,8 @@ constexpr ImVec4 kTierText[] = {{1.0f, 0.75f, 0.3f, 1.0f}, {0.35f, 0.7f, 1.0f, 1
 constexpr ImVec4 kTierTint[] = {{1.0f, 0.75f, 0.3f, 0.06f}, {0.35f, 0.7f, 1.0f, 0.06f}};
 static_assert(std::size(kTierText) == TIER_COUNT && std::size(kTierTint) == TIER_COUNT, "档组配色每档一色");
 constexpr ImVec4 kBusyTint{0.7f, 0.4f, 1.0f, 0.18f};
-// 每档同构子列: 状态 | 日期轴 (区间 / 天数 / 已落盘) | 前沿 (数据末日 / 未计算) | 资产轴 (资产 / 轴外) | 操作
-constexpr const char *kLibCols[] = {"状态", "区间", "天数", "已落盘", "数据末日", "未计算", "资产", "轴外", "操作"};
+// 每档同构子列: 状态 | 规划日期轴 (数据初始 / 数据末日 / 天数) | 落盘 (已落盘 / 未落盘) | 资产轴 (资产 / 轴外) | 操作
+constexpr const char *kLibCols[] = {"状态", "数据初始", "数据末日", "天数", "已落盘", "未落盘", "资产", "轴外", "操作"};
 constexpr int kLibColN = static_cast<int>(std::size(kLibCols));
 
 // 上一个控件的悬浮说明 (禁用的也给)
@@ -41,7 +41,7 @@ __attribute__((format(printf, 1, 2))) static void hover_tip(const char *fmt, ...
   va_end(ap);
 }
 
-// 规划日期轴为空的原因 (库表按钮 / 数据末日格同一份)
+// 规划日期轴为空的原因 (库表按钮 / 规划日期轴格同一份)
 static std::string empty_plan_reason(const LibPlan &s) {
   return s.blocked ? "上游库 " + lib_name(*s.blocked) + " 未落盘齐: 先把它算完" : "源日历在上游库日期轴上无可算日 (子池另须晚于 all.bar 首日)";
 }
@@ -116,7 +116,7 @@ void TickCompute(ComputeService &service, ComputeState &state, SharedData &data,
   if (!inputs_ready)
     return;
 
-  // ---- 库表: 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫, 数据末日 / 未计算随之前移; 并起一轮自动续算 ----
+  // ---- 库表: 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫, 数据末日 / 未落盘随之前移; 并起一轮自动续算 ----
   if (state.generation != data.asset.generation) {
     state.generation = data.asset.generation;
     state.libs_dirty = true;
@@ -185,32 +185,36 @@ static void lib_cells(ComputeState &state, const LibPlan &s, bool computing, boo
 
   cell();
   state_cell(s, computing, stale, state.config.resume);
-  // ---- 日期轴 ----
+  const auto plan_date = [&](misc::Ymd d) {
+    if (!s.plan.empty())
+      ImGui::Text("%s", misc::dash(d).c_str());
+    else {
+      none();
+      hover_tip("%s", empty_plan_reason(s).c_str());
+    }
+  };
+  // ---- 规划日期轴 ----
   cell();
-  if (ready)
-    ImGui::Text("%s ~ %s", misc::dash(lib.dates.front()).c_str(), misc::dash(lib.dates.back()).c_str());
-  else
-    none();
+  plan_date(s.plan.empty() ? 0 : s.plan.front());
   cell();
-  ready ? ImGui::Text("%zu", lib.dates.size()) : none();
+  plan_date(s.plan.empty() ? 0 : s.plan.back());
   cell();
-  if (!ready)
-    none();
-  else if (s.done < lib.dates.size()) {
+  !s.plan.empty() ? ImGui::Text("%zu", s.plan.size()) : none();
+  // ---- 落盘 ----
+  cell();
+  if (ready && s.done < lib.dates.size()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%zu", s.done);
     hover_tip("已落盘 %zu / %zu 日 (上一轮中断): 只能 Compute 全量", s.done, lib.dates.size());
   } else
-    ImGui::Text("%zu", s.done);
-  // ---- 前沿 ----
+    count(s.done);
   cell();
-  if (!s.plan.empty())
-    ImGui::Text("%s", misc::dash(s.plan.back()).c_str());
-  else {
+  if (s.plan.empty())
     none();
-    hover_tip("%s", empty_plan_reason(s).c_str());
+  else {
+    count(s.pending);
+    if (ready)
+      hover_tip("库 %s ~ %s", misc::dash(lib.dates.front()).c_str(), misc::dash(lib.dates.back()).c_str());
   }
-  cell();
-  ready ? count(s.lag) : none();
   // ---- 资产轴 ----
   cell();
   ready ? ImGui::Text("%zu", lib.axis.size()) : none();
@@ -296,8 +300,8 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
             "• 成员: all = 当日活跃 (全市场); 子池 bar = all.bar D−1 收盘 pool_* 列; lob = 同池 bar 当日 cs_valid\n"
             "• 上游: lob ← 同池 bar (成员 + 截面旁读); 子池 bar ← all.bar. 上游库未落盘齐则本库不可算\n"
             "\n"
-            "• 区间 / 天数 = 库日期轴; 已落盘 = 已落盘日数\n"
-            "• 数据末日 = 现在重算能到的末日; 未计算 = 库末日之后的交易日数\n"
+            "• 数据初始 / 数据末日 / 天数 = 规划日期轴 (现有数据能算到的全段, 不必先算)\n"
+            "• 已落盘 = 库已落盘日数; 未落盘 = 规划日期轴上尚未落盘的日数\n"
             "• 资产 = 库资产轴 (建库即冻结); 轴外 = 冻结轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量\n"
             "\n"
             "• Compute = 全量 (清库, 按规划重建资产轴从头算; 先弹窗确认)\n"
