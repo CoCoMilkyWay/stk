@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <memory>
 #include <optional>
 #include <span>
 #include <string>

@@ -36,6 +36,7 @@
 //     size_t feed(core, sub, d)         日 d 的源单位逐个进 core (begin_day 与 end_day 之间), 返回源条数; 缺源 = 不喂 (零事件日)
 //     void release()                    core 收盘之后归还工作区
 // 一个 asset-day (骨架唯一一份): core.begin_day → runner.feed → core.end_day → runner.release.
+//   与实盘同一路径 (TS → CS 同趟), 回测才能与实盘逐位一致 (见 FeatureLib.hpp 文件头).
 // 截面 / 落盘档无关 (cs_loop / io_loop, 各自 TU).
 // ============================================================================
 template <class T>

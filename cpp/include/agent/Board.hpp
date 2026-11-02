@@ -13,7 +13,6 @@
 #include "agent/Tools.hpp"
 #include "nlohmann/json.hpp"
 
-#include <compare>
 #include <cstdint>
 #include <iterator>
 #include <string>

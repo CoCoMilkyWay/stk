@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>

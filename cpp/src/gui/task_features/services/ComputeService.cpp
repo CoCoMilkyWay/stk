@@ -54,6 +54,7 @@ void ComputeService::Request(ComputeConfig config) {
 }
 
 // 每库同一流程: 规划本库 → 基本面面板 → 池面板 (A 轴 + 逐日成员) → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
+// 一库一趟 TS + CS, 不拆不跨池共享 (约束与理由见 FeatureLib.hpp 文件头)
 // 续算同一流程, 只差: 轴冻结为旧清单轴, 管线日期轴 = 尾窗 + 新日, 不清库, 跑完才落新清单
 bool ComputeService::run(ComputeConfig &config) {
   // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
