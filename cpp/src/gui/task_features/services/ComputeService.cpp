@@ -1,10 +1,8 @@
 // Compute Service Implementation
 #include "gui/task_features/services/ComputeService.hpp"
 #include "features/Method/Fundamental.hpp"
-#include "features/Node/Common/Label/LabelHold.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/Storage/FeatureSnap.hpp"
-#include "features/Storage/FeatureStoreConfig.hpp" // with_tier
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/FeatureLib.hpp"
@@ -17,23 +15,43 @@
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
-#include <iterator>
-#include <optional>
 #include <string>
 #include <vector>
 
 namespace GUI::Features {
-
-static_assert(ComputeConfig::kMinRingSlots == static_cast<int>(LabelHold::MIN_RING_SLOTS), "ComputeConfig::kMinRingSlots 与 LabelHold::MIN_RING_SLOTS 不符");
-static_assert(TIER_COUNT == 2 && static_cast<size_t>(TierId::Lob) == 0 && static_cast<size_t>(TierId::Bar) == 1, "ComputeConfig 按档默认值按 Lob / Bar 序写死");
 
 ComputeService::ComputeService(SharedData &data)
     : data_(data) {
   Start();
 }
 
-std::vector<misc::Ymd> source_dates(const SharedData &data, TierId tier) {
-  return with_tier(tier, [&]<class T>() { return ::source_dates<T>(data); });
+PerLib<LibPlan> plan_libs(const SharedData &data) {
+  const Config &cfg = data.config;
+  const StockDaysVec &days = data.assetinfo.get_stock_days();
+  PerTier<std::vector<misc::Ymd>> source;
+  for (const TierId t : TIER_IDS)
+    source[t] = tier_ops(t).source_dates(data);
+  PerLib<LibPlan> out;
+  for (const LibId l : lib_order()) {
+    LibPlan &p = out[l];
+    p.lib = load_lib(cfg, l);
+    if (p.lib.ready()) {
+      const misc::Ymd last = p.lib.dates.back();
+      p.done = static_cast<size_t>(std::ranges::count_if(p.lib.dates, [&](misc::Ymd d) { return FeatureRead::has_date(p.lib.tier(), p.lib.dir, d); }));
+      p.lag = static_cast<size_t>(std::ranges::count_if(days, [&](const CalendarDay &d) { return d.trading && d.date > last; }));
+      p.resumable = resumable(cfg, p.lib);
+    }
+    p.plan = source[p.lib.tier()];
+    if (const auto up = lib_parent(l)) {
+      const LibPlan &u = out[up->lib];
+      if (!u.complete()) {
+        p.plan.clear();
+        p.blocked = up->lib;
+      } else
+        std::erase_if(p.plan, [&](misc::Ymd d) { return !parent_covers(u.lib.dates, up->prev, d); });
+    }
+  }
+  return out;
 }
 
 bool resumable(const Config &cfg, const FeatureLib &lib) {
@@ -41,8 +59,27 @@ bool resumable(const Config &cfg, const FeatureLib &lib) {
     return false;
   if (axis_lib(lib.id) != lib.id && load_lib(cfg, axis_lib(lib.id)).axis.hash != lib.axis.hash)
     return false;
-  const SnapHeader want = with_tier(lib.tier(), [&]<class T>() { return snap_header<T>(lib, lib.dates.back()); });
-  return FeatureSnap::head(lib.dir) == want;
+  return FeatureSnap::head(lib.dir) == tier_ops(lib.tier()).snap_header(lib, lib.dates.back());
+}
+
+LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool resume) {
+  assert(!plan.empty() && std::is_sorted(plan.begin(), plan.end()) && "规划日期轴为空 / 非升序");
+  LibRun r;
+  r.lib = FeatureLib{.id = id, .dir = lib_dir(cfg, id), .dates = std::move(plan)};
+  if (const auto up = lib_parent(id)) {
+    const FeatureLib u = load_lib(cfg, up->lib);
+    assert(u.ready() && std::ranges::all_of(r.lib.dates, [&](misc::Ymd d) { return parent_covers(u.dates, up->prev, d); }) &&
+           "日期轴越出上游库 (先把上游库算到这天)");
+  }
+  if (resume) {
+    r.old = load_lib(cfg, id);
+    assert(resumable(cfg, r.old) && "续算: 库没有对得上的续算点 (先全量)");
+    assert(r.lib.dates.size() > r.old.dates.size() && std::equal(r.old.dates.begin(), r.old.dates.end(), r.lib.dates.begin()) &&
+           "续算: 库日期轴须是规划的真前缀");
+    r.tail = std::min(r.old.dates.size(), tier_ops(r.lib.tier()).pend_days);
+  }
+  r.dates.assign(r.lib.dates.begin() + static_cast<std::ptrdiff_t>(r.old.dates.size() - r.tail), r.lib.dates.end());
+  return r;
 }
 
 void ComputeService::Request(ComputeConfig config) {
@@ -53,66 +90,38 @@ void ComputeService::Request(ComputeConfig config) {
   Service::Request(config);
 }
 
-// 每库同一流程: 规划本库 → 基本面面板 → 池面板 (A 轴 + 逐日成员) → 清库 + 落清单 → 日志 → pipeline<T> (见 worker/feature_pipeline.hpp)
+// 每库同一流程: 本轮规划 (lib_run) → 基本面面板 → 池面板 (A 轴 + 逐日成员 + 轴外) → 清库 + 落清单 → 日志 → 档的管线 (tier_ops)
 // 一库一趟 TS + CS, 不拆不跨池共享 (约束与理由见 FeatureLib.hpp 文件头)
 // 续算同一流程, 只差: 轴冻结为旧清单轴, 管线日期轴 = 尾窗 + 新日, 不清库, 跑完才落新清单
 bool ComputeService::run(ComputeConfig &config) {
-  // 规划 (日期轴 × A 轴; 写库清单 = 读端唯一来源, 见 FeatureLib.hpp):
-  //   日期轴 = 请求带来的规划 (源日历截到依赖库末日, 见 source_dates)
-  //   A 轴归池 (pool::Panel): 定轴库全量 = 池的自然轴, 续算 = 旧清单轴; 其余档的库 = 定轴库清单轴 (同池各档同一 A 轴)
-  //   逐日成员 = Meta cs_valid (all = 当日活跃; 子池 = all Bar 库 D−1 收盘行的池列)
-  //   Lob 截面旁读同池 Bar 库
-  // 张量/调度/落盘全按本库 A 轴, 需要 items/码表/基本面时经 axis.global() 映射.
-  // 一次只算一个库 (TS + CS 同库一趟, 不拆不跨库去重, 见 FeatureLib.hpp).
+  // 写库清单 = 读端唯一来源 (见 FeatureLib.hpp); 张量/调度/落盘全按本库 A 轴, 需要 items/码表/基本面时经 axis.global() 映射.
   // 库集 = 本库 + 同池旁读档的库, 余档空
   const Config &cfg = data_.config;
   const PoolId pool = lib_pool(config.lib);
   const TierId tier = lib_tier(config.lib);
-  PerTier<FeatureLib> libs;
-  for (const TierId s : TIER_IDS)
-    if (tier_side(tier, s))
-      libs[s] = load_lib(cfg, lib_id(pool, s));
-  FeatureLib &lib = libs[tier];
-  lib = FeatureLib{.id = config.lib, .dir = lib_dir(cfg, config.lib), .dates = std::move(config.dates)};
-  for (const LibDep &dep : lib_deps(lib.id)) {
-    const FeatureLib d = load_lib(cfg, dep.lib);
-    assert(d.ready() && lib.dates.back() <= d.dates.back() && (!dep.prev || lib.dates.front() > d.dates.front()) &&
-           "日期轴越过依赖库 (先把依赖库算到这天)");
-  }
-  // 续算: 旧日期轴须是规划的真前缀; 尾窗 = 旧末 min(PEND_DAYS, 旧日数) 日 (标签可能仍悬挂, 此轮结清), 管线日期轴从尾窗起
-  const FeatureLib old = config.resume ? load_lib(cfg, lib.id) : FeatureLib{};
-  size_t tail = 0, first = 0; // first = 管线日期轴在库日期轴里的起点
-  if (config.resume) {
-    assert(resumable(cfg, old) && "续算: 库没有对得上的续算点 (先全量)");
-    assert(lib.dates.size() > old.dates.size() && std::equal(old.dates.begin(), old.dates.end(), lib.dates.begin()) &&
-           "续算: 库日期轴须是规划的真前缀");
-    tail = std::min(old.dates.size(), LabelHold::PEND_DAYS);
-    first = old.dates.size() - tail;
-  }
-  const std::vector<misc::Ymd> dates(lib.dates.begin() + static_cast<std::ptrdiff_t>(first), lib.dates.end());
-  // 冻结轴: 定轴库清单轴 (随轴库; 续算时 resumable 已保证 = 旧清单轴) / 旧清单轴 (定轴库续算); 定轴库全量 = 无 (池的自然轴)
-  std::optional<PoolAxis> frozen;
-  if (axis_lib(lib.id) != lib.id)
-    frozen = load_lib(cfg, axis_lib(lib.id)).axis;
-  else if (config.resume)
-    frozen = old.axis;
+  LibRun r = lib_run(cfg, config.lib, std::move(config.dates), config.resume);
 
   // Enable High Performance Mode: GUI low-refresh, compute owns cores
   data_.EnableHighPerformanceMode();
   std::cout << "[High Performance Mode] Enabled - GUI low-refresh\n"
             << std::endl;
-  begin(Phase::Running, dates.size());
+  begin(Phase::Running, r.dates.size());
 
   // 日频 PIT 基本面数据源 (全市场 × 库日期轴: 切片起点 / 复权锚随库首日, 续算与全量同一面板), Fund 节点在 worker 内逐日推进; worker 只读
   fund::Panel fund;
-  fund.build(lib.dates);
-  // 池面板 (本库 A 轴 × 管线日期轴逐日成员); 轴外 = 旧清单轴外 ∪ 本轮自然轴 \ 本库轴
-  const pool::Panel members = pool::Panel::build(pool, cfg, fund, dates, frozen ? &*frozen : nullptr);
-  lib.axis = members.axis();
-  std::ranges::set_union(old.outside, members.outside(), std::back_inserter(lib.outside));
+  fund.build(r.lib.dates);
+  // 池面板 (本库 A 轴 × 管线日期轴逐日成员 + 轴外, 见 shared/Pool.hpp)
+  const pool::Panel members = pool::Panel::build(r.lib.id, cfg, fund, r.dates, r.old);
+  r.lib.axis = members.axis();
+  r.lib.outside = members.outside();
+  PerTier<FeatureLib> libs;
+  for (const TierId s : TIER_IDS)
+    if (tier_side(tier, s))
+      libs[s] = load_lib(cfg, lib_id(pool, s));
+  FeatureLib &lib = libs[tier] = std::move(r.lib);
   std::cout << "Lib " << lib_name(lib.id) << ": " << lib.dir << " → " << lib.axis.size() << " / "
             << asset_axis().size() << " assets (轴外 " << lib.outside.size() << ")"
-            << (config.resume ? " | 续算 " + std::to_string(dates.size() - tail) + " 日 + 尾窗 " + std::to_string(tail) + " 日" : "") << "\n"
+            << (config.resume ? " | 续算 " + std::to_string(r.dates.size() - r.tail) + " 日 + 尾窗 " + std::to_string(r.tail) + " 日" : "") << "\n"
             << std::endl;
 
   // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;
@@ -134,10 +143,10 @@ bool ComputeService::run(ComputeConfig &config) {
   Logger::init(cfg.log_dir);
 
   // 已落盘天数镜像进进度面
-  const PipelineArgs args{data_, libs, fund, members, dates, tail, static_cast<size_t>(config.ring_slots(tier)), static_cast<uint64_t>(config.adopt_pct),
+  const PipelineArgs args{data_, libs, fund, members, r.dates, r.tail, static_cast<size_t>(config.ring_slots(tier)), static_cast<uint64_t>(config.adopt_pct),
                           config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
-  const bool completed = with_tier(tier, [&]<class T>() { return pipeline<T>(args); });
+  const bool completed = tier_ops(tier).pipeline(args);
   if (completed && config.resume)
     save_lib(lib);
 

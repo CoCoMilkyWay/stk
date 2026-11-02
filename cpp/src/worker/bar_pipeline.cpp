@@ -1,4 +1,4 @@
-// Bar 档管线 (bar1m + 基本面): 档的源 TierFeed<bar::Tier> + pipeline<bar::Tier> 实例化.
+// Bar 档管线 (bar1m + 基本面): 档的源 TierFeed<bar::Tier> + 档入口表 bar_ops.
 // 本 TU precise-math (CMakeLists PRECISE 表): Fund 缺失值 / PoolKey 母集判定 / cs_valid 依赖 NaN 比较语义.
 #include "worker/feature_pipeline.hpp"
 
@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cassert>
 #include <span>
+#include <string>
 #include <vector>
 
 // 硬源: 预取线程把日 d 的 bar1m 分片解码进源环格 ring[d % R], TS 等 pf_ready(d) 后读.
@@ -58,19 +59,21 @@ struct TierFeed<bar::Tier> {
     return b.rows.size() * sizeof(Bar1m);
   }
 
-  const Bar1mDay &bars(size_t d) const {
+  // 源格 = 源环里本资产当日 255 根 bar1m 的首根 (nullptr = 无 bar)
+  const Bar1m *cell(size_t sub, size_t d) const {
     const Bar1mDay &b = ring[d % ring.size()];
     assert(b.date == dates[d] && "源环格不是日 d (pf_ready 流控 / 环长不符)");
-    return b;
+    return b.asset(sub);
   }
 
-  // 无工作区: 日 d 本资产的 255 行 bar1m 逐分钟进 core, 返回 bar 数; 无 bar = 不喂 (零事件日)
+  // 无工作区
   class Runner {
   public:
     Runner(TierFeed &f, int) : feed_(f) {}
 
+    // 源格的 255 根 bar1m 逐分钟进 core, 返回 bar 数; 缺源 = 不喂 (零事件日)
     size_t feed(CoreBar &core, size_t sub, size_t d) {
-      const Bar1m *bars = feed_.bars(d).asset(sub);
+      const Bar1m *bars = feed_.cell(sub, d);
       if (!bars)
         return 0;
       for (size_t m = 0; m < TRADE_MINUTES_PER_DAY; ++m)
@@ -80,11 +83,11 @@ struct TierFeed<bar::Tier> {
 
     void release() {}
 
+    std::string day_log() { return {}; }
+
   private:
     const TierFeed &feed_;
   };
 };
 
-template bool pipeline<bar::Tier>(const PipelineArgs &);
-template SnapHeader snap_header<bar::Tier>(const FeatureLib &, misc::Ymd);
-template std::vector<misc::Ymd> source_dates<bar::Tier>(const SharedData &);
+const TierOps bar_ops = tier_ops_of<bar::Tier>();

@@ -1,4 +1,4 @@
-// Lob 档管线 (逐笔 → 订单簿源): 档的源 TierFeed<lob::Tier> + pipeline<lob::Tier> 实例化. 本 TU fast-math.
+// Lob 档管线 (逐笔 → 订单簿源): 档的源 TierFeed<lob::Tier> + 档入口表 lob_ops. 本 TU fast-math.
 #include "worker/feature_pipeline.hpp"
 
 #include "codec/L2_DataType.hpp"
@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 // 软源: 预取只把当天日文件里本档资产的帧读进 page cache, TS 的 decode 只吃缓存不等磁盘 (TS 不等预取)
@@ -59,21 +60,23 @@ struct TierFeed<lob::Tier> {
     return DayReader(data.config.orders_dir, dates[d]).prefetch(refs);
   }
 
+  // 源格 = 日文件里本资产当日的帧引用 (空 = 缺二进制)
+  const FrameRef &cell(size_t sub, size_t d) const { return orders.at(d, sub); }
+
   // 每 TS worker 一份工作区
   class Runner {
   public:
     Runner(TierFeed &f, int worker_id) : feed_(f), worker_id_(worker_id), lob_(L2::LOB_ORDER_CAPACITY) {}
 
-    // 日 d 的逐笔经订单簿进 core, 返回订单数; 缺二进制 = 不绑订单簿 (零事件日)
-    size_t feed(CoreLob &core, size_t asset_id, size_t date_idx) {
-      const FrameRef &ref = feed_.orders.at(date_idx, asset_id);
+    // 源格的逐笔经订单簿进 core, 返回订单数; 缺源 = 不绑订单簿 (零事件日)
+    size_t feed(CoreLob &core, size_t sub, size_t d) {
+      const FrameRef &ref = feed_.cell(sub, d);
       if (ref.empty())
         return 0;
-      const misc::Ymd date = feed_.dates[date_idx];
-      const auto &asset = feed_.data.asset.items[feed_.axis.global(asset_id)];
+      const misc::Ymd date = feed_.dates[d];
 
-      lob_.bind(&core, asset_id, asset.exchange_type);              // 工作区换绑本资产 (簿此刻是干净的)
-      lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_); // 追踪: 当前驱动核
+      lob_.bind(&core, sub, feed_.data.asset.items[feed_.axis.global(sub)].exchange_type); // 工作区换绑本资产 (簿此刻是干净的)
+      lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_);                       // 追踪: 当前驱动核
 
       // 帧的位置/条数/价位基准都在扫描灌好的帧目录里, 不读任何头; 同一天的
       // 资产共用 reader 里那一个 fd.
@@ -97,13 +100,11 @@ struct TierFeed<lob::Tier> {
       // 编码期准入校验 (L2::LobUnusable) 已拦下订单簿抵扣不动的记录, 走到这里即校验漏判
       assert(order_invalid_cnt <= 100 && "Lob TS: 订单簿无效条数超阈值 (准入校验漏判?)");
 
-      Logger::log("worker_" + std::to_string(worker_id_),
-                  std::to_string(date) + " asset:" + std::to_string(asset_id) + " " + asset.code_ex() + " " + asset.asset_name +
-                      " decoded=" + std::to_string(order_num) +
-                      " order_invalid=" + std::to_string(order_invalid_cnt) +
-                      " tob_invalid=" + std::to_string(lob_.get_tob_invalid_count()) +
-                      " tob_refresh=" + std::to_string(lob_.get_tob_refresh_count()) +
-                      " depth_crossed=" + std::to_string(lob_.get_depth_crossed_count()) + "/" + std::to_string(lob_.get_depth_seen_count()));
+      diag_.order_invalid += order_invalid_cnt;
+      diag_.tob_invalid += lob_.get_tob_invalid_count();
+      diag_.tob_refresh += lob_.get_tob_refresh_count();
+      diag_.depth_crossed += lob_.get_depth_crossed_count();
+      diag_.depth_seen += lob_.get_depth_seen_count();
       return order_num;
     }
 
@@ -113,9 +114,21 @@ struct TierFeed<lob::Tier> {
         lob_.unbind();
     }
 
+    // 订单簿诊断累计 (交叉簿率 = crossed / seen: 定位报单乱序 / TOB 失效的量级)
+    std::string day_log() {
+      const Diag g = std::exchange(diag_, {});
+      return " | order_invalid=" + std::to_string(g.order_invalid) + " tob_invalid=" + std::to_string(g.tob_invalid) +
+             " tob_refresh=" + std::to_string(g.tob_refresh) + " depth_crossed=" + std::to_string(g.depth_crossed) + "/" + std::to_string(g.depth_seen);
+    }
+
   private:
+    struct Diag {
+      size_t order_invalid = 0, tob_invalid = 0, tob_refresh = 0, depth_crossed = 0, depth_seen = 0;
+    };
+
     TierFeed &feed_;
     int worker_id_;
+    Diag diag_; // 自上次 day_log 以来
     // 订单簿工作区: 每 worker 一个 (非每资产). 簿状态全部日内瞬态 (每个 asset-day bind…unbind),
     // worker 内资产串行, 复用同一套页面 —— 跨资产 cache/TLB 常驻, 稳态零扩容;
     // per-asset 常驻簿的 ~3MB/资产地板 (价位数组 + 池块粒度 + 桶表) 由此消失.
@@ -131,6 +144,4 @@ struct TierFeed<lob::Tier> {
   };
 };
 
-template bool pipeline<lob::Tier>(const PipelineArgs &);
-template SnapHeader snap_header<lob::Tier>(const FeatureLib &, misc::Ymd);
-template std::vector<misc::Ymd> source_dates<lob::Tier>(const SharedData &);
+const TierOps lob_ops = tier_ops_of<lob::Tier>();

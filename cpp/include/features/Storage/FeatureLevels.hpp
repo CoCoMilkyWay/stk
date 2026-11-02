@@ -137,6 +137,16 @@ static_assert([] {
   return true;
 }(),
               "旁读档不再旁读: 定轴档自己不旁读");
+// 档的依赖序: 定轴档在前 (随轴档沿用它的轴与成员); 规划 / 库表两组列 / 核布局两栏同序
+inline constexpr std::array<TierId, TIER_COUNT> TIER_ORDER = [] {
+  std::array<TierId, TIER_COUNT> o{};
+  size_t n = 0;
+  for (const bool base : {true, false})
+    for (const TierId t : TIER_IDS)
+      if ((tier_base(t) == t) == base)
+        o[n++] = t;
+  return o;
+}();
 
 // 层表项: 运行时按 (档, 层) 取 rows / field_count / fingerprint; 档缺的层 fields == nullptr (见 has_level)
 struct LevelInfo {

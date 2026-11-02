@@ -24,7 +24,7 @@
 
 // ============================================================================
 // 特征管线骨架 pipeline<T> (两档同一份, 只许档 TU include: 实例化要档的 Core 完整类型 + 档的数学模式).
-// 档只写它的源 TierFeed<T> (档 TU 特化, 先于 pipeline<T> 显式实例化):
+// 档只写它的源 TierFeed<T> (档 TU 特化), 再定义档入口表 const TierOps <ns>_ops = tier_ops_of<ns::Tier>() (取址即实例化):
 //   using Core                          per-asset 跨日状态 (CoreLob / CoreBar), 构造 Core(fund, members, sub)
 //   kHardFeed                           TS 是否等预取 (硬源: 预取解码进源环, TS 读环; 软源: 预取只暖 page cache)
 //   kUnit                               时序工作量单位 (仪表盘)
@@ -32,9 +32,11 @@
 //   TierFeed(const PipelineArgs &, const StoreRing &)       全管线一份 (帧目录 / 源环 / 名单 ...)
 //   size_t weight(sub) const            初始分配 / 领养挑最轻的权重
 //   size_t prefetch(d)                  预取线程备日 d 的源, 返回字节 (多预取核对不同 d 并发调用)
+//   cell(sub, d) const                  (资产, 日) 的源格 (Lob: 帧引用; Bar: 255 根 bar1m), 空 = 缺源
 //   Runner(TierFeed &, worker_id)       每 TS worker 一份的工作区 (Lob: 订单簿 + decoder + reader)
-//     size_t feed(core, sub, d)         日 d 的源单位逐个进 core (begin_day 与 end_day 之间), 返回源条数; 缺源 = 不喂 (零事件日)
+//     size_t feed(core, sub, d)         源格的源单位逐个进 core (begin_day 与 end_day 之间), 返回源条数; 缺源 = 不喂 (零事件日)
 //     void release()                    core 收盘之后归还工作区
+//     std::string day_log()             自上次取走以来 (含领养回填) 的源诊断, 接在本日日志行尾 (无 = 空); 取走即清
 // 一个 asset-day (骨架唯一一份): core.begin_day → runner.feed → core.end_day → runner.release.
 //   与实盘同一路径 (TS → CS 同趟), 回测才能与实盘逐位一致 (见 FeatureLib.hpp 文件头).
 // 截面 / 落盘档无关 (cs_loop / io_loop, 各自 TU).
@@ -67,11 +69,6 @@ SnapHeader snap_header(const FeatureLib &lib, misc::Ymd date) {
     state = fnv1a_u64(state, L.fingerprint);
   state = fnv1a_u64(state, sizeof(CoreOf<T>));
   return {SnapHeader::kMagic, static_cast<uint64_t>(T::kId), static_cast<uint64_t>(date), lib.axis.size(), lib.axis.hash, state};
-}
-
-template <class T>
-std::vector<misc::Ymd> source_dates(const SharedData &data) {
-  return TierFeed<T>::source_dates(data);
 }
 
 // 预取: 第 lane 核 (共 lanes 核) 备日 lane, lane + lanes, ... 的源 (各日写各自的源环格, 互不握手).
@@ -392,7 +389,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     }
 
     if (date_assets_processed > 0) {
-      Logger::log("worker_" + std::to_string(worker_id), std::to_string(date) + " completed: " + std::to_string(date_assets_processed) + " assets, " + std::to_string(date_work) + " " + TierFeed<T>::kUnit);
+      Logger::log("worker_" + std::to_string(worker_id), std::to_string(date) + " completed: " + std::to_string(date_assets_processed) + " assets, " + std::to_string(date_work) + " " + TierFeed<T>::kUnit + runner.day_log());
     }
 
     // 本 worker 本日计完; 自报前沿 (release 发布本日全部 core 状态)
@@ -538,4 +535,9 @@ bool pipeline(const PipelineArgs &args) {
             << "Processed: " << store.query_io_done() << "/" << dates.size() << " dates\n"
             << std::endl;
   return completed;
+}
+
+template <class T>
+constexpr TierOps tier_ops_of() {
+  return {TierFeed<T>::kUnit, CoreOf<T>::Label::PEND_DAYS, CoreOf<T>::kMinRingSlots, &TierFeed<T>::source_dates, &snap_header<T>, &pipeline<T>};
 }

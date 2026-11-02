@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
+#include <string_view>
 
 namespace pool {
 
@@ -18,51 +20,85 @@ std::vector<uint8_t> live_members(const fund::Panel &fund, std::span<const misc:
   return full;
 }
 
-// 子池: 全轴逐日成员位 [date_i][global] = all Bar 库 D−1 收盘行的池列 col (all Bar 库轴外 = 不在池)
-std::vector<uint8_t> pool_members(const FeatureLib &bar, size_t col, std::span<const misc::Ymd> dates, size_t n) {
-  assert(bar.id == kAllBar && bar.ready() && "池源 = all Bar 库 (先算 all Bar 库)");
-  // 第 D 日成员 = 盘中 as-of 的池列 (与读端同一投影): 盘后列对任何网格都是 -1 = D−1 收盘行, 故各层同一份
-  Source s{.lib = kAllBar, .level = L_1day, .settle = level_info(TierId::Bar, L_1day).fields[col].settle};
-  assert(s.settle && "池列须是盘后列 (池键 onSettle 的同层截面)");
+// 档 tier 的 lvl 层里 code 列的下标 (运行时层表)
+size_t col_of(TierId tier, size_t lvl, std::string_view code) {
+  const LevelInfo &L = level_info(tier, lvl);
+  size_t i = 0;
+  while (i < L.field_count && code != L.fields[i].code)
+    ++i;
+  assert(i < L.field_count && "列不在层表");
+  return i;
+}
+
+// 上游库 up 的 L_1day 列 col 在本库日 D 的盘中 as-of (盘后列 → D−1 收盘行, 盘中列 → D 行) > 0.5 → [date_i][上游轴下标]
+// NaN (母集外) → 0 (本 TU precise-math)
+std::vector<uint8_t> parent_bits(const FeatureLib &up, size_t col, std::span<const misc::Ymd> dates) {
+  assert(up.ready() && "上游库未建: 先算上游库");
+  Source s{.lib = up.id, .level = L_1day, .settle = level_info(up.tier(), L_1day).fields[col].settle};
   s.cs.io = {col};
   s.cs.vts = {L2::ValidType::ALL};
   s.slot = {0};
   project_rows(s, L_1day, level_valid_rows(L_1day));
-  assert(!s.cur && s.carry && "盘后列的盘中 as-of 须是 D−1 收盘行");
+  assert(s.cur != s.carry && "L_1day 单行: as-of 落当日或前一交易日其一");
 
-  FeatureRead reader(bar);
+  FeatureRead reader(up);
   Readers rd;
-  rd.rd[kAllBar] = &reader;
+  rd.rd[up.id] = &reader;
   IoSlot::Buf b;
-  const size_t As = bar.axis.size();
-  b.prev.preallocate(As, s.level, 1);
+  const size_t As = up.axis.size();
+  (s.carry ? b.prev : b.cur).preallocate(As, s.level, 1);
+  const LibMask bit = lib_bit(up.id);
 
-  std::vector<uint8_t> full(dates.size() * n, 0);
+  std::vector<uint8_t> bits(dates.size() * As);
   for (size_t i = 0; i < dates.size(); ++i) {
-    const auto it = std::lower_bound(bar.dates.begin(), bar.dates.end(), dates[i]);
-    assert(it != bar.dates.end() && *it == dates[i] && "库日不在 all Bar 库日期轴 (子池日期轴须截到 all Bar 库末日)");
-    assert(it != bar.dates.begin() && "库日是 all Bar 库首日, 无 D−1 池源");
-    const misc::Ymd prev = *(it - 1);
-    assert(reader.has_date(prev) && "all Bar 库缺池源日: 先把 all Bar 库算完");
-    load_source(rd, s, Day{dates[i], prev, LibMask{0}, lib_bit(kAllBar)}, s.cs.io, b);
-    assert(!reader.stale() && "all Bar 库判废 (头不符): 重算 all Bar 库");
+    assert(parent_covers(up.dates, s.carry, dates[i]) && "库日不在上游库日期轴 (或是其首日, 无 D−1)");
+    const misc::Ymd src = s.carry ? *(std::lower_bound(up.dates.begin(), up.dates.end(), dates[i]) - 1) : dates[i];
+    assert(reader.has_date(src) && "上游库缺这天: 先把上游库算完");
+    load_source(rd, s, Day{dates[i], s.carry ? src : 0, s.cur ? bit : 0, s.carry ? bit : 0}, s.cs.io, b);
+    assert(!reader.stale() && "上游库判废 (头不符): 重算上游库");
     size_t r = 0;
     const FeatureRead::DayColumns *dc = source_row(s, b, 0, r);
-    assert(dc && "盘中 as-of 无源");
+    assert(dc && "上游库无源");
     const feature_storage_t *row = dc->col(0) + r * As;
-    uint8_t *dst = full.data() + i * n;
     for (size_t a = 0; a < As; ++a)
-      dst[bar.axis.global(a)] = static_cast<float>(row[a]) > 0.5f; // NaN (母集外) → 不在池 (本 TU precise-math)
+      bits[i * As + a] = static_cast<float>(row[a]) > 0.5f;
   }
-  return full;
+  return bits;
 }
 
 } // namespace
 
-Panel Panel::build(PoolId pool, const Config &cfg, const fund::Panel &fund, std::span<const misc::Ymd> dates, const PoolAxis *frozen) {
+Panel Panel::build(LibId lib, const Config &cfg, const fund::Panel &fund, std::span<const misc::Ymd> dates, const FeatureLib &old) {
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
+  assert((!old.ready() || old.id == lib) && "旧清单不是本库");
+  Panel p;
+  p.dates_.assign(dates.begin(), dates.end());
+
+  // 随轴库: 上游 (同池定轴库) 清单轴 / 轴外 + 同日 cs_valid
+  if (axis_lib(lib) != lib) {
+    const FeatureLib up = load_lib(cfg, lib_parent(lib)->lib);
+    assert((!old.ready() || old.axis.hash == up.axis.hash) && "续算: 旧清单轴须 = 上游清单轴");
+    p.axis_ = up.axis;
+    p.outside_ = up.outside;
+    p.member_ = parent_bits(up, col_of(up.tier(), L_1day, "cs_valid"), dates);
+    return p;
+  }
+
+  // 定轴库: 全轴逐日成员 [date_i][global] (all = 当日活跃; 子池 = 上游 all 库池列, 上游轴外 = 不在池)
+  const PoolId pool = lib_pool(lib);
   const size_t n = asset_axis().size();
-  const std::vector<uint8_t> full = pool == kAllPool ? live_members(fund, dates, n) : pool_members(load_lib(cfg, kAllBar), pool_def(pool).pool_col, dates, n);
+  std::vector<uint8_t> full;
+  if (pool == kAllPool)
+    full = live_members(fund, dates, n);
+  else {
+    const FeatureLib up = load_lib(cfg, lib_parent(lib)->lib);
+    const std::vector<uint8_t> bits = parent_bits(up, pool_def(pool).pool_col, dates);
+    const size_t As = up.axis.size();
+    full.assign(dates.size() * n, 0);
+    for (size_t i = 0; i < dates.size(); ++i)
+      for (size_t a = 0; a < As; ++a)
+        full[i * n + up.axis.global(a)] = bits[i * As + a];
+  }
 
   // 自然轴: all = 全部标的; 子池 = dates 内进过池的
   std::vector<uint32_t> natural;
@@ -75,12 +111,12 @@ Panel Panel::build(PoolId pool, const Config &cfg, const fund::Panel &fund, std:
   }
   assert(!natural.empty() && "池在区间内为空");
 
-  Panel p;
-  p.dates_.assign(dates.begin(), dates.end());
-  p.axis_ = frozen ? *frozen : pool_axis(natural);
+  p.axis_ = old.ready() ? old.axis : pool_axis(natural);
+  std::vector<uint32_t> out;
   for (const uint32_t g : natural)
     if (p.axis_.sub_of(g) == p.axis_.size())
-      p.outside_.push_back(g);
+      out.push_back(g);
+  std::ranges::set_union(old.outside, out, std::back_inserter(p.outside_));
   const size_t A = p.axis_.size();
   p.member_.resize(dates.size() * A);
   for (size_t i = 0; i < dates.size(); ++i)

@@ -416,7 +416,7 @@ template <class T>
 void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
 
 // ============================================================================
-// 特征管线入口 (两档同一骨架, 定义见 feature_pipeline.hpp, 档 TU 显式实例化): ComputeService 备好共享前置
+// 特征管线入口 (两档同一骨架 pipeline<T>, 定义见 feature_pipeline.hpp, 经档入口表 TierOps 调): ComputeService 备好共享前置
 // (日期轴 / 写读库 / 基本面面板 / 池面板 / 清库 / 日志) 后调用, 返回 = 未取消. on_io(n) = 已落盘天数 (协调线程每 100ms 调, 进度面镜像)
 // 跑完 (未取消) 即落本库续算点 (末日 = dates.back(), 见 FeatureSnap.hpp); tail > 0 = 续算, 从 dates[tail − 1] 的续算点接着算
 // ============================================================================
@@ -435,12 +435,28 @@ struct PipelineArgs {
   const std::atomic<bool> &cancel;
   std::function<void(size_t)> on_io;
 };
-template <class T>
-bool pipeline(const PipelineArgs &args);
 
-// 续算点头 (FeatureSnap.hpp): 库 lib 截到 date 可续算的全部前提 (状态指纹要档的 Core 完整类型, 档 TU 显式实例化)
-template <class T>
-SnapHeader snap_header(const FeatureLib &lib, misc::Ymd date);
-// 档的源日历: 本档原始数据现在能服务的交易日 (= TierFeed<T>::source_dates, 档 TU 显式实例化)
-template <class T>
-std::vector<misc::Ymd> source_dates(const SharedData &data);
+// ============================================================================
+// 档入口表: 档 TU 各定义一份 <ns>_ops (= tier_ops_of<ns::Tier>(), 见 feature_pipeline.hpp), 按运行时档号取 (tier_ops);
+// 调用方 (ComputeService / 库表) 不碰档类型与字段表
+// ============================================================================
+struct TierOps {
+  const char *unit;                                           // 时序工作量单位 (TierFeed::kUnit)
+  size_t pend_days;                                           // 悬挂日环 = 续算尾窗上限 (LabelHold::PEND_DAYS)
+  size_t min_ring_slots;                                      // 日环下限, 少于此死锁 (LabelHold::MIN_RING_SLOTS)
+  std::vector<misc::Ymd> (*source_dates)(const SharedData &); // 源日历: 本档原始数据现在能服务的交易日 (TierFeed::source_dates)
+  SnapHeader (*snap_header)(const FeatureLib &, misc::Ymd);   // 续算点头: 库截到某日可续算的全部前提 (见 FeatureSnap.hpp)
+  bool (*pipeline)(const PipelineArgs &);                     // 管线, 返回 = 未取消
+};
+#define TIER_OPS_DECL(T, ns) extern const TierOps ns##_ops;
+ALL_TIERS(TIER_OPS_DECL)
+#undef TIER_OPS_DECL
+inline const TierOps &tier_ops(TierId t) {
+#define TIER_OPS_ONE(T, ns) \
+  if (t == TierId::T)       \
+    return ns##_ops;
+  ALL_TIERS(TIER_OPS_ONE)
+#undef TIER_OPS_ONE
+  assert(false && "tier_ops: 未知档");
+  __builtin_unreachable();
+}
