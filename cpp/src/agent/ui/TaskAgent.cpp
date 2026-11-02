@@ -1511,6 +1511,9 @@ GUI::TaskHandle CreateAgentTask() {
     const std::vector<Choice> pools = catalog::pools();
     if (std::none_of(pools.begin(), pools.end(), [&](const Choice &p) { return p.name == s.opt.sc.pool; }))
       s.opt.sc.pool = pools.front().name;
+    const std::vector<Choice> lvs = catalog::levels();
+    if (std::none_of(lvs.begin(), lvs.end(), [&](const Choice &l) { return l.key == s.opt.sc.level; }))
+      s.opt.sc.level = lvs.front().key;
     ImGui::BeginChild("AgentTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     switch (idx) {
