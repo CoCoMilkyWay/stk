@@ -429,6 +429,8 @@ struct OrderFlow {
     double min_anchor_x = 0;
     misc::Ymd min_anchor_date = 0;     // GUI 自持副本 (dates 重建期间仍可用; 0 = 未设)
     size_t sec_anchor_tick = SIZE_MAX; // 图1 锚点 = 秒下标 (跨日/换资产稳定; SIZE_MAX = 未设)
+    // 图2 待定单击: 释放处 X + 释放时刻 (< 0 = 无); 过了双击判定窗才落为锚点
+    double min_click_x = 0.0, min_click_time = -1.0;
 
     // Rendering parameters
     bool show_heatmap = true;

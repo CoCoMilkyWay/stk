@@ -998,8 +998,20 @@ static void RenderMinPlot(SharedData &data, float height) {
           ui.min_anchor_date = mn.date_from_x(ui.min_anchor_x);
         }
       }
-      if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
-        ui.min_anchor_x = mn.snap_to_day_start(ImPlot::GetPlotMousePos().x);
+      // 单击 (左键未拖动即释放) 切锚点; 双击 = 复位视野 (ImPlot Fit), 不动锚点 →
+      // 单击过了双击判定窗才落, 双击的两下都不算单击
+      if (ImPlot::IsPlotHovered()) {
+        if (ImGui::IsMouseDoubleClicked(0)) {
+          ui.min_click_time = -1.0;
+        } else if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragPastThreshold(0) &&
+                   ImGui::GetIO().MouseClickedLastCount[0] == 1) {
+          ui.min_click_x = ImPlot::GetPlotMousePos().x;
+          ui.min_click_time = ImGui::GetTime();
+        }
+      }
+      if (ui.min_click_time >= 0.0 && ImGui::GetTime() - ui.min_click_time > ImGui::GetIO().MouseDoubleClickTime) {
+        ui.min_click_time = -1.0;
+        ui.min_anchor_x = mn.snap_to_day_start(ui.min_click_x);
         ui.min_anchor_date = mn.date_from_x(ui.min_anchor_x);
       }
 
