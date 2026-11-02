@@ -15,7 +15,7 @@
 //           fp16 存不下的极值也归 NaN). 总算力 = per-A 沿 D 轴一遍, 与预计算相同.
 //
 // PIT 口径 (row D = D 日盘前可知; 逐表见 .cpp GridScan / EventScan, Fund 节点前另列 L_1day 对齐):
-//   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast / 行情派生
+//   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / shares.total 收盘口 (收盘市值) / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast / 行情派生
 //   cutoff=0  (T 盘前可知): status(st/susp), shares, limit_price, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
 //   涨跌停价: row T 即 "T 当日适用涨跌停" (由 pre_close(T) 推出), 直接配盘中实时价判触板.
 //   D 轴 = 交易日历截到 today (Fund 收盘推进到 d+1 ⇒ 库末日须早于日历末个交易日, 其次日在轴内).

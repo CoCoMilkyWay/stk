@@ -140,7 +140,7 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
 //   2) 行并行, 每行一遍 A 轴:
 //      收益成分 = 上一有效 close 行 p (prev) 的成员位 (行业按行 p), 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 行 p 总市值 mcap;
 //      估值成分 = 上一行的成员位 (行业按本行), 市值 = px × 本行总股本, 估值输入 val [PoolVal] 取本行 (盘后列 as-of = 当日适用; DY 为股息率, 分子在此还原:
-//      Fund 分母 = 算它那日 (前一交易日末行) 收盘 × 本行股本)
+//      Fund 分母 = 算它那日 (前一交易日末行) 的收盘市值 = 该行收盘 × 该行股本)
 void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int32_t> &prev, Baskets &o, BasketRows &rows) {
   const factor::check::Plane &close = B.close;
   const PoolMask *in = B.in.data();
@@ -199,7 +199,7 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
         for (int m = 0; m < kPoolVals; ++m)
           num[m] = B.val[m][i];
         const size_t d0 = t - t % S; // 当日首行
-        num[kValDy] *= d0 > 0 ? static_cast<double>(px[(d0 - 1) * nA + a]) * sh[i] : static_cast<double>(kNaN);
+        num[kValDy] *= d0 > 0 ? static_cast<double>(px[(d0 - 1) * nA + a]) * sh[(d0 - 1) * nA + a] : static_cast<double>(kNaN);
         const double om[kWeights] = {1.0, mc};
         each_basket(in[i - nA], ind[i], [&](size_t b, PoolMask, uint8_t) {
           for (int m = 0; m < kPoolVals; ++m)

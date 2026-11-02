@@ -16,6 +16,7 @@
 //     real_bar1d.close                                       T 盘后                 −1       T ≤ D
 //     real_bar1d.pre_close / adjust_factor                   T 盘前 (交易所公布)     0       T ≤ D+1 (次日前收 / 除权)
 //     shares (total / a_float)                               T 盘前 (生效日记账)     0       T ≤ D+1
+//     shares.total 收盘口 (收盘市值分母: dy / 低市值 / cfo_chg)  T 收盘                 −1       T ≤ D
 //     limit_price (upper / lower)                            T 盘前 (由前收推出)     0       T ≤ D+1 (次日适用涨跌停)
 //     status (st / risk_warning / suspended)                 T 盘前                  0       T ≤ D+1 (次日 ST / 停牌)
 //     margin_trading_detail (余额 / 流量 / 两融标的)         T 盘后, T+1 盘前公布   −1       T ≤ D
@@ -56,7 +57,7 @@ public:
     is_susp,     // 0/1
     roe_ttm,     // [%]
     roa_ttm,     // [%]
-    dy_ttm,      // [ratio]
+    dy_ttm,      // [ratio] 近 4 季报告期税前分红 / 本日收盘总市值
     cfo_chg_ttm, // [-1,1]
     rz_bal,      // [亿元] 融资余额 (非资产 → NaN)
     rq_bal,      // [亿元] 融券余额

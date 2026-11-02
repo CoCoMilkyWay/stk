@@ -11,7 +11,7 @@
 //     size   mcap (亿元, 收盘)
 //     ep     NP_ttm / mcap          (亏损为负, 低端 = 亏损最深)
 //     bp     EQ_mrq / mcap          (负净资产为负)
-//     dy     dy_ttm                 (近 365 日税前分红 / 总市值; 分母 = 当日收盘 × 次日股本, 见 Fundamental.cpp)
+//     dy     dy_ttm                 (近 4 季报告期税前分红 / 本日收盘总市值, 见 Fundamental.cpp)
 //     roe    NP^p_Q / EQ_mrq        (单季归母净利 / 归母权益 MRQ; 权益 ≤ 0 记缺)
 //     inv    ta_yoy                 (总资产 MRQ 同比)
 //     mom    ret_12_1               (后复权 P_{D−20} / P_{D−250} − 1)

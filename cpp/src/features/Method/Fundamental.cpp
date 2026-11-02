@@ -4,7 +4,7 @@
 //                     全部 15 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
 //                     切片前另从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面)
 //       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与 qmt 批量扫描逐日等价:
-//                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红 365 日滑窗 + 3 年双阈值,
+//                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红按报告期取窗 (近 4 季 / 近 3 会计年度双阈值),
 //                       预亏/营收区间 = "d < max{off : on ≤ d}" (区间并集的流式形式), 行业 replay, trading_st 连续计数
 //                     每日产出 Fund::kCount 列 (缺失 = NaN, fp16 存不下的极值也归 NaN).
 //
@@ -205,7 +205,7 @@ struct DividendEv {
   float cash_before_tax;
   float cash_after_tax;
   // 公告日股本快照 × 每股现金 (build 末尾按全史网格标注, 之后网格切片不再覆盖历史事件)
-  float amt_pre;   // dy 365 日滑窗: cash_before_tax × shares[v]; 非 finite / ≤0 → 0
+  float amt_pre;   // dy 近 4 季报告期: cash_before_tax × shares[v]; 非 finite / ≤0 → 0
   float amt_after; // dividend_st 3 年累计: cash_after_tax × shares[v]; 任一非 finite → NaN (跳过)
 };
 enum class ForecastType : std::uint8_t { Other = 0,
@@ -235,6 +235,7 @@ struct PitPool {
   std::vector<float> pre_close;      // bar1d.pre_close (除权后前收, cutoff=0: 交易所盘前公布, ffill)
   std::vector<float> adj_factor;     // bar1d.adjust_factor (cutoff=0: 除权除息事先公告, ffill)
   std::vector<float> total_shares;   // cutoff=0 (按生效日记账, 与 adj_factor 同日), ffill
+  std::vector<float> close_shares;   // total_shares 收盘口: cutoff=-1 (与 close 同行, 收盘市值的股本), ffill
   std::vector<float> a_float_shares; // cutoff=0, ffill
   std::vector<float> lim_up;         // cutoff=0: row T = T 当日适用 (源表按适用日记账, 由 pre_close 推出, 盘前可知), ffill
   std::vector<float> lim_dn;
@@ -278,6 +279,7 @@ struct PitPool {
     cut(pre_close);
     cut(adj_factor);
     cut(total_shares);
+    cut(close_shares);
     cut(a_float_shares);
     cut(lim_up);
     cut(lim_dn);
@@ -430,6 +432,7 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
   alloc_f(p.pre_close);
   alloc_f(p.adj_factor);
   alloc_f(p.total_shares);
+  alloc_f(p.close_shares);
   alloc_f(p.a_float_shares);
   alloc_f(p.lim_up);
   alloc_f(p.lim_dn);
@@ -466,16 +469,21 @@ void GridScan::add(fundamental::Scan &scan, const Axes &axes, PitPool &p) {
            });
 
   // ---- cn_stock_shares (CUTOFF=0: 按生效日记账, 除权日与 adj_factor 同日变动, 盘前公告可知;
-  //      按 -1 则送转/除权日股本滞后一天而价格已调整, mcap/换手率当日错位) ----
+  //      按 -1 则送转/除权日股本滞后一天而价格已调整, mcap/换手率当日错位)
+  //      total_shares 另落收盘口 close_shares (CUTOFF=-1, 与 close 同行): 收盘市值 = close × close_shares, 送转除权日不错配 ----
   scan.add(shares, spec("cn_stock_shares"), {"total_shares", "a_float_shares"}, Sink{},
            [&axes, &p, n_d](const Rows &r, Sink &) {
              const pq::Col ts = r.col("total_shares"), fs = r.col("a_float_shares");
-             RowOf row_of(axes, Align::Exact, 0);
+             RowOf row_of(axes, Align::Exact, 0), rowc_of(axes, Align::Exact, -1);
              r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const std::size_t base = static_cast<std::size_t>(a) * n_d;
+               const int rowc = rowc_of(d);
+               if (rowc >= 0)
+                 p.close_shares[base + static_cast<std::size_t>(rowc)] = positive_or_inf(ts.f32(i));
                const int row = row_of(d);
                if (row < 0)
                  return;
-               const std::size_t off = static_cast<std::size_t>(a) * n_d + static_cast<std::size_t>(row);
+               const std::size_t off = base + static_cast<std::size_t>(row);
                p.total_shares[off] = positive_or_inf(ts.f32(i));
                p.a_float_shares[off] = positive_or_inf(fs.f32(i));
              });
@@ -552,6 +560,7 @@ void GridScan::finish(const Axes &axes, PitPool &p) const {
   grid_ffill(p.pre_close, axes.n_a(), axes.n_d());
   grid_ffill(p.adj_factor, axes.n_a(), axes.n_d());
   grid_ffill(p.total_shares, axes.n_a(), axes.n_d());
+  grid_ffill(p.close_shares, axes.n_a(), axes.n_d());
   grid_ffill(p.a_float_shares, axes.n_a(), axes.n_d());
   grid_ffill(p.lim_up, axes.n_a(), axes.n_d());
   grid_ffill(p.lim_dn, axes.n_a(), axes.n_d());
@@ -1410,63 +1419,85 @@ inline int quarter_of(std::int32_t rd) {
   }
 }
 
+// 季序号 (年 × 4 + 季 − 1; 相邻季末差 1) ↔ 报告期
+inline int quarter_seq(std::int32_t rd) { return year_of(rd) * 4 + quarter_of(rd) - 1; }
+inline std::int32_t quarter_end(int s) {
+  constexpr std::int32_t kMd[4] = {331, 630, 930, 1231};
+  return s / 4 * 10000 + kMd[s % 4];
+}
+
 // YTD 链 → 三口径 (qmt 无此链路; 差分口径为标准定义):
 //   Q   = YTD(R) − YTD(上季末 R)            (Q1 即 YTD)
 //   TTM = YTD(R) + YTD(上年年报) − YTD(去年同期 R)  (年报即 YTD)
 //   LYR = YTD(≤ R 的最近年报)
-// 任一所需报告期缺失 → NaN; 各表 R 取各自 latest 的最大 report_date.
-// 源有空值行 (重述同期行整列 null / 新期个别项 null): 同 report_date 逐项合并, NaN 不盖有效值;
+// R = 各表各自的最新报告期; 任一所需报告期缺失 → NaN.
+// 每资产只记 R 起往前 kSlots 个季末的 YTD (槽 k = R 前 k 季), 槽首次有值即定格:
+//   最新期的后到行 (源空值行 / 更正) 逐项合并, NaN 不盖有效值; 旧期的后到行 (下期报告附带的上年同期重述) 只补空槽
+//   ⇒ TTM 的上年部分 (上年年报 − 去年同期) 同属首次披露口径, 不与下期附带的重述错配.
 //   各项各口径在 R 上算不出 (该项缺于 R 或所需同期) → 退回 R 的上一季末 (只退一季, 再旧即陈旧 → NaN).
 //   rd[i] = 该项 TTM 所用 R (0 = 无)
 template <std::size_t N>
 struct YtdState {
-  std::map<std::int32_t, YtdEv<N>> by_rd; // report_date → latest (追溯重述逐项覆盖)
+  static constexpr int kSlots = 6; // 退一季后的去年同期 = R 前 5 季
+  struct Slot {
+    bool has = false;
+    float x[N];
+  };
+  Slot slot[kSlots];
+  int top = -1; // R 的季序号 (−1 = 无)
   std::size_t p = 0;
   int last_v = -1; // 最近一次公告 row (上市前事件丢弃)
 
   void absorb(const std::vector<YtdEv<N>> &ev, int d, int list_d) {
     while (p < ev.size() && ev[p].v <= d) {
-      if (ev[p].v >= list_d) {
-        const auto [it, fresh] = by_rd.try_emplace(ev[p].report_date, ev[p]);
-        if (!fresh)
-          for (std::size_t i = 0; i < N; ++i)
-            if (std::isfinite(ev[p].x[i]))
-              it->second.x[i] = ev[p].x[i];
-        last_v = ev[p].v;
+      const YtdEv<N> &e = ev[p++];
+      if (e.v < list_d)
+        continue;
+      last_v = e.v;
+      assert(quarter_of(e.report_date) && "利润表 / 现金流量表报告期须为季末");
+      const int s = quarter_seq(e.report_date);
+      if (s > top) {
+        const int n = top < 0 ? kSlots : s - top;
+        for (int k = kSlots - 1; k >= 0; --k)
+          slot[k] = k >= n ? slot[k - n] : Slot{};
+        top = s;
       }
-      ++p;
+      const int k = top - s;
+      if (k >= kSlots)
+        continue;
+      Slot &o = slot[k];
+      if (!o.has) {
+        o.has = true;
+        std::copy(std::begin(e.x), std::end(e.x), o.x);
+      } else if (k == 0)
+        for (std::size_t i = 0; i < N; ++i)
+          if (std::isfinite(e.x[i]))
+            o.x[i] = e.x[i];
     }
   }
 
-  const float *find(std::int32_t rd) const {
-    auto it = by_rd.find(rd);
-    return it == by_rd.end() ? nullptr : it->second.x;
-  }
+  const float *at(int k) const { return k < kSlots && slot[k].has ? slot[k].x : nullptr; }
 
-  // 以 R 为报告期的差分所需行 (缺 → nullptr)
+  // 以槽 k 为报告期的差分所需行 (缺 → nullptr)
   struct At {
     std::int32_t R;
     int qi;
     const float *cur, *prev_q, *ly_annual, *ly_same, *lyr_row;
   };
-  At at(std::int32_t R, const float *cur) const {
-    const int qi = quarter_of(R), y = year_of(R);
-    const float *ly_annual = find((y - 1) * 10000 + 1231);
+  At base(int k) const {
+    const int s = top - k, qi = s % 4 + 1;
+    const float *cur = at(k), *ly_annual = at(k + qi);
     // LYR: ≤ R 的最近年报 (R 本身为年报时即 R)
-    return {R, qi, cur, (qi == 1) ? nullptr : find(prev_quarter_end(R)), ly_annual, find(R - 10000), (qi == 4) ? cur : ly_annual};
+    return {quarter_end(s), qi, cur, (qi == 1) ? nullptr : at(k + 1), ly_annual, at(k + 4), (qi == 4) ? cur : ly_annual};
   }
 
   void emit(float *q, float *ttm, float *lyr, std::int32_t *rd) const {
     for (std::size_t i = 0; i < N; ++i)
       q[i] = ttm[i] = lyr[i] = NaNF, rd[i] = 0;
-    if (by_rd.empty())
+    if (top < 0)
       return;
-    const std::int32_t R0 = by_rd.rbegin()->first;
-    if (quarter_of(R0) == 0)
-      return;
-    const At a0 = at(R0, by_rd.rbegin()->second.x);
-    const float *x1 = find(prev_quarter_end(R0));
-    const At a1 = x1 ? at(prev_quarter_end(R0), x1) : a0;
+    const At a0 = base(0);
+    const At a1 = slot[1].has ? base(1) : a0;
     for (std::size_t i = 0; i < N; ++i)
       for (const At *a : {&a0, &a1}) {
         if (!std::isfinite(q[i])) {
@@ -1718,8 +1749,9 @@ struct State {
   YtdState<CF_COUNT> cashflow;
   std::size_t nrp = 0;
   int last_nonrecur = -1;
-  // 分红: 365 日滑窗 (dy) + 3 年累计 (dividend_st, 公告日锚)
-  std::size_t div_lo = 0, div_hi = 0;
+  // 分红: 近 4 季报告期累计 (dy) + 近 3 个会计年度累计 (dividend_st), 均按报告期取窗
+  std::size_t div_hi = 0;
+  int annual_y = 0; // 最新已披露年报的会计年度 (0 = 无)
   float cash_sum = 0.0f, sum_3y = 0.0f;
   // 预亏 / 营收预警: 区间并集 ⇔ d < max{off : on ≤ d}
   std::vector<Trig> profit_trig, revenue_trig;
@@ -1777,17 +1809,17 @@ struct State {
   float close_raw(int d) const {
     return d < list_d ? 0.0f : D.pit.at(D.pit.close, a, d);
   }
+  // 收盘市值: close / close_shares 同为 cutoff −1 (行 d = 前一交易日收盘时点)
   float mcap_raw(int d) const {
     if (d < list_d)
       return 0.0f;
     const float c = D.pit.at(D.pit.close, a, d);
-    const float s = D.pit.at(D.pit.total_shares, a, d);
+    const float s = D.pit.at(D.pit.close_shares, a, d);
     return (std::isfinite(c) && std::isfinite(s)) ? c * s : NaNF;
   }
 
   // 推进一日: 吸收 v ≤ d 的事件, 更新连续计数
   void step(int d) {
-    const Axes &axes = D.axes;
     const PitPool &p = D.pit;
     const std::size_t ai = static_cast<std::size_t>(a);
 
@@ -1807,10 +1839,12 @@ struct State {
         ++bp;
       }
     }
+    const int annual_y0 = annual_y;
     {
       const auto &ev = p.income_annual[ai];
       while (ip < ev.size() && ev[ip].v <= d) {
         const auto &e = ev[ip++];
+        annual_y = std::max(annual_y, year_of(e.report_date));
         if (!std::isfinite(e.net_profit_to_parent_shareholders))
           continue;
         auto it = std::find_if(annuals.begin(), annuals.end(),
@@ -1834,36 +1868,27 @@ struct State {
       }
     }
     {
+      // 公告入列 / 年报换年 → 两窗重算 (只看报告期, 与公告日先后无关, 每期恰计一次):
+      //   dy:          报告期 ∈ (锚 − 1 年, 锚], 锚 = max(已公告分红的最新报告期, 最新年报期)
+      //   dividend_st: 报告年 ∈ [annual_y − 2, annual_y]
       const auto &divs = p.dividend[ai];
-      // 入窗; 每到一笔公告重算 3 年累计 (公告年 ann_y 的前 3 个报告年)
-      while (div_hi < divs.size() && divs[div_hi].v <= d) {
-        const auto &e = divs[div_hi];
-        cash_sum += e.amt_pre;
-        if (mb && e.v >= 1) {
-          const int ann_y = year_of_d(axes, e.v - 1);
-          const int lo_y = ann_y - 3, hi_y = ann_y - 1;
-          float sum = 0.0f;
-          for (std::size_t j = 0; j <= div_hi; ++j) {
-            const auto &pd = divs[j];
-            const int py = year_of(pd.report_date);
-            if (py < lo_y || py > hi_y)
-              continue;
-            if (!std::isfinite(pd.amt_after))
-              continue;
-            sum += pd.amt_after;
-          }
-          sum_3y = sum;
+      bool moved = annual_y != annual_y0;
+      for (; div_hi < divs.size() && divs[div_hi].v <= d; ++div_hi)
+        moved = true;
+      if (moved) {
+        std::int32_t anchor = annual_y ? annual_y * 10000 + 1231 : 0;
+        for (std::size_t j = 0; j < div_hi; ++j)
+          anchor = std::max(anchor, divs[j].report_date);
+        cash_sum = sum_3y = 0.0f;
+        for (std::size_t j = 0; j < div_hi; ++j) {
+          const auto &e = divs[j];
+          if (e.report_date > anchor - 10000)
+            cash_sum += e.amt_pre;
+          const int py = year_of(e.report_date);
+          if (py >= annual_y - 2 && py <= annual_y && std::isfinite(e.amt_after))
+            sum_3y += e.amt_after;
         }
-        ++div_hi;
       }
-      // 出窗: 公告日 ≤ T − 365
-      const auto Tlo = axes.date_days[static_cast<std::size_t>(d)] - std::chrono::days{365};
-      while (div_lo < div_hi && axes.date_days[static_cast<std::size_t>(divs[div_lo].v)] <= Tlo) {
-        cash_sum -= divs[div_lo].amt_pre;
-        ++div_lo;
-      }
-      if (div_lo >= div_hi)
-        cash_sum = 0.0f;
     }
     while (pp < profit_trig.size() && profit_trig[pp].on <= d) {
       profit_until = std::max(profit_until, profit_trig[pp].off);
@@ -2013,7 +2038,7 @@ struct State {
         roa = (std::isfinite(na) && std::isfinite(a5) && a5 > 0.0f) ? (na / a5) * 100.0f : NaNF;
       }
     }
-    // -- dy: 365 日税前分红总额 / mcap --
+    // -- dy: 近 4 季报告期税前分红总额 / 收盘市值 --
     const float dy = (std::isfinite(m) && m > 0.0f) ? std::max(cash_sum / m, 0.0f) : NaNF;
 
     // 股本 / 估值分母 (亿单位)
