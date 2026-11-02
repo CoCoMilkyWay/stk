@@ -334,7 +334,7 @@ stk/
 │   │   │   ├── Notes.hpp                                   # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话跨作用域累积; 编号 = 类前缀 + 序号, ref 附议同类已有的; list_notes 成文
 │   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (enter 每段, settle 收结果) / 等人 (answer) → 做完; 回复级约束 RuleMiss; 只经 Desk 读写会话
 │   │   │   │                                               #    · eval_factor 只收本会话 search_leaves 查过定义的叶 (Desk::seen); 带回测的回复须同带至少一个观察调用 (ParseCalls 查)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域: 池 / 层 / 持有期 / 特征来源 lob · bar · fund (各来源单用与合起来的评估期) · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域: 池 / 层 / 持有期 / 特征来源 bar 恒开 + lob 可选 · 评估期 · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 (随过滤分来源计数) / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

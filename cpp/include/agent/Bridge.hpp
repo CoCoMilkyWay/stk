@@ -5,7 +5,7 @@
 // =============================================================================
 //   agent/ 其余代码不碰项目的因子 / 特征 / 服务头, 只经这里 (实现 Bridge.cpp 是唯一 include 它们的 TU). 两半:
 //     catalog  作用域目录 (无状态): 可挖的 (池, 因子层, 持有期; 持有期限 Search 档) / 就绪判据 / 会话目录
-//     Lab      作用域工作区 (bind 一个作用域): 上下文 ctx (该层开放来源里可作输入的特征叶 + 各来源的评估期 / 算子表 / K 线叶 / 正式因子库在该持有期的统计) + 候选目录 results.
+//     Lab      作用域工作区 (bind 一个作用域): 上下文 ctx (该层开放来源里可作输入的特征叶 + 评估期 / 算子表 / K 线叶 / 正式因子库在该持有期的统计) + 候选目录 results.
 //              三件事 (send 一个 Job, End 交回同序的 Got):
 //              EvalSpec → Eval  候选的一生: Cand ─stage→ 候选目录里的因子文件 (与正式因子同格式) ─eval→ Result ─adopt (过门槛)→ 正式因子目录;
 //                               一次评一个文件: Search (定方向 + 搜自由参数; 具体式只评本身) → Run, 结果写回文件; 评完只重扫它 (results 增量维护);
@@ -38,25 +38,25 @@ struct SharedData;
 
 namespace agent {
 
-// 特征来源 (系统提示的三类特征): lob = Lob 档 (因子池 Lob 库); fund = Bar 档的 Fund 族 (基本面 / 估值); bar = Bar 档其余 (因子池 Bar 库)
-enum class Src : uint8_t { Lob,
-                           Bar,
-                           Fund };
+// 特征来源: bar = Bar 档 (因子池 Bar 库, 含基本面 / 估值的 Fund 族), 恒开放; lob = Lob 档 (因子池 Lob 库), 可选
+enum class Src : uint8_t { Bar,
+                           Lob };
 struct SrcDef {
   const char *name;
 };
-inline constexpr SrcDef kSrcs[] = {{"lob"}, {"bar"}, {"fund"}};
+inline constexpr SrcDef kSrcs[] = {{"bar"}, {"lob"}};
 inline constexpr size_t kSrcCount = std::size(kSrcs);
-static_assert(kSrcCount == static_cast<size_t>(Src::Fund) + 1);
+static_assert(kSrcCount == static_cast<size_t>(Src::Lob) + 1);
 inline const SrcDef &def(Src s) { return kSrcs[static_cast<int>(s)]; }
 inline constexpr uint8_t src_bit(Src s) { return static_cast<uint8_t>(1u << static_cast<int>(s)); }
-inline constexpr uint8_t kAllSrcs = (1u << kSrcCount) - 1;
 
 struct Scope {
   std::string pool;
-  int level = -1;          // 因子层下标
-  int hold = 0;            // 持有期键
-  uint8_t srcs = kAllSrcs; // 开放的特征来源 (src_bit 之或, 非空): 只有这几类的叶给 agent 用
+  int level = -1;  // 因子层下标
+  int hold = 0;    // 持有期键
+  bool lob = true; // 开放 lob 叶
+  // 开放的特征来源 (src_bit 之或): 只有这几类的叶给 agent 用
+  uint8_t srcs() const { return static_cast<uint8_t>(src_bit(Src::Bar) | (lob ? src_bit(Src::Lob) : 0)); }
   bool operator==(const Scope &) const = default;
 };
 
@@ -176,21 +176,16 @@ struct PerBar {
   constexpr X &operator[](Bar b) { return v[static_cast<size_t>(b)]; }
   constexpr const X &operator[](Bar b) const { return v[static_cast<size_t>(b)]; }
 };
-// 一类来源在本层: 叶数 (0 = 本层没有) / 只用它时的评估期 (标签库与它所在库落盘日交集)
-struct SrcSpan {
-  int leaves = 0;
-  std::string window;
-};
 struct Context {
   std::string pool, pool_cn, level, hold, hold_desc;
-  std::string srcs;                     // 开放且本层有叶的来源 ("bar / fund")
-  std::array<SrcSpan, kSrcCount> spans; // [Src] 各来源 (不论开放与否)
-  std::string window;                   // 评估期 = 标签库与开放来源所在库落盘日交集 ("未就绪" = 作用域未就绪或无共同落盘日)
-  int first = 0, last = 0;              // 评估期首末日 YYYYMMDD (未就绪 0)
-  int seg = 0;                          // 本层每日行数 (d 的单位)
-  int open = 0;                         // 每日开头属集合竞价段 [09:15, 09:30) 的行数 (日层 0)
-  std::vector<std::string> clock;       // [seg] 行的收盘时刻 HH:MM
-  int ts_root_d = 0;                    // 时序口径根 TsRankRoll 须写死的 d
+  std::string srcs;               // 开放且本层有叶的来源 ("bar / lob")
+  bool has_lob = false;           // 本层有 lob 叶 (不论开放与否)
+  std::string window;             // 评估期 = 标签库与开放来源所在库落盘日交集 ("未就绪" = 作用域未就绪或无共同落盘日)
+  int first = 0, last = 0;        // 评估期首末日 YYYYMMDD (未就绪 0)
+  int seg = 0;                    // 本层每日行数 (d 的单位)
+  int open = 0;                   // 每日开头属集合竞价段 [09:15, 09:30) 的行数 (日层 0)
+  std::vector<std::string> clock; // [seg] 行的收盘时刻 HH:MM
+  int ts_root_d = 0;              // 时序口径根 TsRankRoll 须写死的 d
   int max_d = 0;
   double min_mono = 0;      // Search 的 mono 硬门槛
   std::vector<Leaf> leaves; // 开放来源的叶

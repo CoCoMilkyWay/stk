@@ -29,7 +29,7 @@
 
 namespace agent {
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, srcs)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
 
 namespace {
@@ -170,7 +170,7 @@ void load_ui(State &s) {
   }
   const Options &o = s.opt;
   ok = ok && o.backend >= 0 && o.backend < llm::kBackendCount && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < kMsgCount && o.sc.srcs && !(o.sc.srcs & ~kAllSrcs);
+       o.prompt >= 0 && o.prompt < kMsgCount;
   if (!ok)
     s.opt = Options{};
   if (!catalog::gpu())
@@ -254,28 +254,15 @@ void scope_row(const SharedData &data, State &s, bool locked) {
       o.hold = h.key;
   }
   ImGui::TextDisabled("   %s", catalog::hold_desc(o.hold, o.level).c_str());
-  // 特征来源: 各自单用时的评估期 + 开放的合起来的评估期 (Lab 绑到此作用域后才有; 本层无叶的来源不可改); 至少留一类
+  // 特征来源: bar 恒开放, lob 可选 (本层无 lob 叶则不可改) + 开放的合起来的评估期 (Lab 绑到此作用域后才有)
   const Lab &lab = s.mine->lab;
   const Context *c = lab.scope() == o ? &lab.ctx() : nullptr;
-  ImGui::TextDisabled("   Src");
-  for (size_t i = 0; i < kSrcCount; ++i) {
-    const uint8_t bit = src_bit(static_cast<Src>(i));
-    const SrcSpan *sp = c ? &c->spans[i] : nullptr;
-    ImGui::SameLine();
-    ImGui::BeginDisabled(sp && sp->leaves == 0);
-    bool on = (o.srcs & bit) != 0;
-    if (ImGui::Checkbox((std::string(kSrcs[i].name) + "##src").c_str(), &on))
-      if (const auto n = static_cast<uint8_t>(on ? o.srcs | bit : o.srcs & ~bit); n)
-        o.srcs = n;
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (!sp)
-      ImGui::TextDisabled("…");
-    else if (sp->leaves == 0)
-      ImGui::TextDisabled("本层无");
-    else
-      ImGui::TextDisabled("%d 叶 · %s", sp->leaves, sp->window.c_str());
-  }
+  ImGui::TextDisabled("   Src  bar +");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(c && !c->has_lob);
+  ImGui::Checkbox("lob##src", &o.lob);
+  ImGui::EndDisabled();
+  tip(c && !c->has_lob ? "本层无 lob 叶" : "开放 lob (逐笔与盘口) 叶; bar (价量与基本面) 恒开放");
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -295,7 +282,7 @@ void session_row(const SharedData &data, State &s) {
   const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold && has_leaves;
   const char *why_not = !keyed                    ? "所选后端的 key 未填 (config/agent/keys.json)"
                         : !model_ok(s)            ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                        : has_hold && !has_leaves ? "开放的特征来源在本层没有叶 (改选来源)"
+                        : has_hold && !has_leaves ? "本层没有可作输入的特征叶"
                                                   : nullptr;
   const auto begin_session = [&](bool test) {
     if (!catalog::ready(data, o.sc, o.gpu == 1)) {
@@ -1205,12 +1192,23 @@ void notes_table(State &s, const View &v, NoteKind k) {
 void leaves_panel(State &s, const Context &c) {
   const std::vector<Leaf> &leaves = c.leaves;
   s.leaf_filter.Draw("过滤##leaf", 240);
+  const auto pass = [&](const Leaf &l) { return s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str()); };
+  std::array<int, kSrcCount> all{}, n{}; // [Src] 开放的叶数 / 其中过滤后的
+  for (const Leaf &l : leaves) {
+    ++all[static_cast<size_t>(l.src)];
+    if (pass(l))
+      ++n[static_cast<size_t>(l.src)];
+  }
+  std::string counts;
+  for (size_t i = 0; i < kSrcCount; ++i)
+    if (all[i] > 0)
+      counts += (counts.empty() ? "" : " · ") + std::string(kSrcs[i].name) + " " + std::to_string(n[i]);
   ImGui::SameLine();
-  ImGui::TextDisabled("%zu 个叶, 模板里写全名; 悬浮看公式", leaves.size());
+  ImGui::TextDisabled("%s 个叶, 模板里写全名; 悬浮看公式", counts.c_str());
   if (!begin_table("##leaves", {"叶", "中文名", "说明"}))
     return;
   for (const Leaf &l : leaves) {
-    if (!s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str()))
+    if (!pass(l))
       continue;
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
