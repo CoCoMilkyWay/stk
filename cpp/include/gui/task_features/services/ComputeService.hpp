@@ -60,16 +60,12 @@ LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool re
 // Compute Config (= 请求)
 // ============================================================================
 
+// 日环深度 / 领养额度不在这里: 管线按负载模拟定初值、运行中按实测调 (见 worker/feature_workers.hpp 时序调参)
 struct ComputeConfig {
-  // 日环 = 最慢时序核永不被池卡住的上界: 日环下限 (tier_ops: 悬挂 PEND_DAYS + 时序下一日 + 截面跨日, 少于此死锁) + 截面在飞 ≤ K_cs + 落盘在飞 ≤ K_io,
-  // + kRingJitter 吸收截面 / 落盘单日耗时波动与落盘前缀乱序. 不给时序核间前沿差留: 领跑核撞池边正是领养的触发条件
-  static constexpr int kRingJitter = 1;
-  int ring_slots(TierId t) const { return static_cast<int>(tier_ops(t).min_ring_slots) + cs_cores[t] + io_cores[t] + kRingJitter; }
   // 按档. 预取 / 截面 / 落盘核数: 各自按日轮转, 从时序让核 (Lob 时序是瓶颈, 不让).
   PerTier<int> pf_cores{{1, 1}};
   PerTier<int> cs_cores{{1, 1}};
   PerTier<int> io_cores{{1, 1}};
-  int adopt_pct = 50;           // TS 负载再平衡阈值 N (%), 0 = 关闭领养
   LibId lib = kAllBar;          // 算哪个库 (Compute 页每库一行)
   std::vector<misc::Ymd> dates; // 规划日期轴 (LibPlan::plan 的快照)
   bool resume = false;          // 续算 (库末日之后接着算, 须 resumable); 否则全量 (清库重算)

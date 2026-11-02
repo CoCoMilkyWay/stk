@@ -38,19 +38,17 @@ struct TierFeed<lob::Tier> {
   // 帧目录切成 日期 × 池轴 (行 = dates 下标, 列 = 池轴下标), 持有到全部 worker 退出,
   // 不碰 Asset 上随重扫描换代的那一份; orders.at(date_idx, sub) 直接定址.
   const OrdersCatalog orders;
-  std::vector<size_t> weights; // 区间内逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)
 
-  TierFeed(const PipelineArgs &args, const StoreRing &)
+  static size_t cell_bytes(size_t) { return 0; } // 软源无源格
+
+  explicit TierFeed(const PipelineArgs &args)
       : data(args.data), axis(args.libs[TierId::Lob].axis), dates(args.dates),
-        orders(args.data.asset.orders()->slice(args.dates, axis.ids)), weights(axis.size(), 0) {
-    for (size_t d = 0; d < dates.size(); ++d) {
-      const std::span<const FrameRef> row = orders.row(d);
-      for (size_t sub = 0; sub < weights.size(); ++sub)
-        weights[sub] += row[sub].head.count;
-    }
-  }
+        orders(args.data.asset.orders()->slice(args.dates, axis.ids)) {}
 
-  size_t weight(size_t sub) const { return weights[sub]; }
+  void bind(const StoreRing &) {}
+
+  // 逐笔条数 (扫描时随日文件目录读好, 不碰文件系统)
+  size_t weight(size_t sub, size_t d) const { return orders.at(d, sub).head.count; }
 
   // reader 按偏移升序交给内核预读 (空格子跳过), 字节不进用户态 (decode 在 TS worker 内联)
   size_t prefetch(size_t d) const {
@@ -76,7 +74,7 @@ struct TierFeed<lob::Tier> {
       const misc::Ymd date = feed_.dates[d];
 
       lob_.bind(&core, sub, feed_.data.asset.items[feed_.axis.global(sub)].exchange_type); // 工作区换绑本资产 (簿此刻是干净的)
-      lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_);                       // 追踪: 当前驱动核
+      lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_);                        // 追踪: 当前驱动核
 
       // 帧的位置/条数/价位基准都在扫描灌好的帧目录里, 不读任何头; 同一天的
       // 资产共用 reader 里那一个 fd.

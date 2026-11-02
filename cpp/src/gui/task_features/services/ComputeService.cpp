@@ -85,7 +85,6 @@ LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool re
 void ComputeService::Request(ComputeConfig config) {
   for (const TierId t : TIER_IDS)
     assert(config.pf_cores[t] >= 1 && config.cs_cores[t] >= 1 && config.io_cores[t] >= 1 && "预取 / 截面 / 落盘各至少 1 核");
-  assert(config.adopt_pct >= 0 && config.adopt_pct <= 100 && "adopt pct must be in [0, 100]");
   assert(!config.dates.empty() && std::is_sorted(config.dates.begin(), config.dates.end()) && "日期轴为空 / 非升序");
   Service::Request(config);
 }
@@ -143,7 +142,7 @@ bool ComputeService::run(ComputeConfig &config) {
   Logger::init(cfg.log_dir);
 
   // 已落盘天数镜像进进度面
-  const PipelineArgs args{data_, libs, fund, members, r.dates, r.tail, static_cast<size_t>(config.ring_slots(tier)), static_cast<uint64_t>(config.adopt_pct),
+  const PipelineArgs args{data_, libs, fund, members, r.dates, r.tail,
                           config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
                           [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
   const bool completed = tier_ops(tier).pipeline(args);

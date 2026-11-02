@@ -253,6 +253,7 @@ set(MATH_FAST
     worker/crosssectional_worker.cpp
     worker/encoding_worker.cpp
     worker/feature_progress.cpp
+    worker/feature_tuner.cpp
     worker/io_worker.cpp
     worker/lob_pipeline.cpp
     # gui

@@ -65,7 +65,7 @@ FeatureProfile::FeatureProfile(ProfileSpec spec, const StageLayout &layout, cons
 FeatureProfile::~FeatureProfile() { assert((done_ || !capture_) && !report_.joinable() && "FeatureProfile: 开采后析构前须 finish"); }
 
 FeatureProfile::Snap FeatureProfile::snap() const {
-  Snap s{std::chrono::steady_clock::now(), store_.query_io_done(), {}, {}};
+  Snap s{std::chrono::steady_clock::now(), store_.query_io_done(), store_.query_slots(), {}, {}};
   for (const StageLayout::Stage &st : layout_.stages())
     for (int i = 0; i < st.threads; ++i) {
       const ComputeStats::Core &c = core_of(stats_, st.kind, i);
@@ -155,8 +155,7 @@ void FeatureProfile::write_meta(const Snap &end) const {
       {"tier", tier_name(spec_.tier)},
       {"assets", spec_.assets},
       {"dates", {{"count", spec_.dates.size()}, {"first", spec_.dates.front()}, {"last", spec_.dates.back()}}},
-      {"ring_slots", spec_.ring_slots},
-      {"adopt_pct", spec_.adopt_pct},
+      {"ring_slots", {start_.slots, end.slots}},
       {"perf", {{"freq_hz", misc::perf::kFreq}, {"seconds", capture_->seconds()}}},
       {"window", {{"seconds", sec}, {"io_done", {start_.io_done, end.io_done}}, {"io_days_per_s", static_cast<double>(end.io_done - start_.io_done) / sec}}},
       {"stages", stages},

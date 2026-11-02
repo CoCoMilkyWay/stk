@@ -2,7 +2,7 @@
 // 元数据列: 基建标志 ts_valid / cs_valid (FLAG), 由 CoreTs 手工写, 两层都落. 无节点 (不进 DAG):
 //   fmeta        编码/解码唯一事实源 → features/MetaFlag.hpp (稳定头, 消费端不依赖本节点文件)
 //   MetaTracker  状态机 + 编码语义 → Node/Common/Meta/Meta.hpp (两档共用; Lob 档每笔另喂 on_tick)
-//   cs_valid = 当日成员 (pool::Panel, 见 shared/Pool.hpp): all = 当日活跃 (Fund live 同一份); 子池 = all Bar 库 D−1 的 L_1day 行 (收盘) 的 pool_<池名> 列
+//   cs_valid = 当日成员 (pool::Panel, 见 shared/Pool.hpp) = 同池 Bar 库第 D 日 L_1day 行的 cs_valid (all: 当日活跃; 子池: 当日在池)
 
 #include "features/Node/Common/Meta/Meta.hpp" // IWYU pragma: keep
 

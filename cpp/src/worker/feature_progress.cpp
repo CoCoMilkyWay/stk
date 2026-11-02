@@ -274,9 +274,9 @@ void FeatureProgress::render() {
     out << "时序 [";
     cells(ts_core, num_ts);
     const auto [hmin, hmax] = std::minmax_element(holding.begin(), holding.end());
-    snprintf(buf, sizeof(buf), "%s 前沿 %zu..%zu/%zu (%s) %.2fG%s 持仓 %zu..%zu", load_text(ts_load, num_ts).c_str(),
+    snprintf(buf, sizeof(buf), "%s 前沿 %zu..%zu/%zu (%s) %.2fG%s 持仓 %zu..%zu 环 %zu", load_text(ts_load, num_ts).c_str(),
              lag, lead, total, misc::dense(dates_[std::min(lead, total - 1)]).c_str(),
-             static_cast<double>(sum_orders) / 1e9, unit_, *hmin, *hmax);
+             static_cast<double>(sum_orders) / 1e9, unit_, *hmin, *hmax, store_.query_slots());
     out << buf << "\033[K\n";
   }
 
