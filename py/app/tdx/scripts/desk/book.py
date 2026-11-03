@@ -4,10 +4,17 @@
 
 from mem.common import BUY, SELL, SIDES
 
-NOTIONALS = (10000, 50000, 100000)  # 吃 n 元
+NOTIONALS = (10000, 50000, 150000)  # 吃 n 元
 PCTS = (1, 2)  # 偏 p%
-# 委托价：(吃对手盘, 再偏 %)
-PX_MODES = {"opp": (True, 0), "opp1": (True, 1), "own": (False, 0)}
+# 委托价：(吃对手盘, 扫到吃满该额那档, 再偏 %)
+# fmt: off
+PX_MODES = {
+    "sweep": (True,  True,  0),
+    "opp":   (True,  False, 0),
+    "opp1":  (True,  False, 1),
+    "own":   (False, False, 0),
+}
+# fmt: on
 SLIP_COLS = [(n, BUY) for n in reversed(NOTIONALS)] + [(n, SELL) for n in NOTIONALS]
 LEVEL_COLS = [(p, s) for p in PCTS for s in SIDES]
 
@@ -32,13 +39,24 @@ def ref(q):
     return _micro(q) or next((x for x in (q["price"], q["last_close"]) if x > 0), None)
 
 
-def order_px(q, s, mode):
-    """方向 s 按 mode 定委托价（未舍入）：对手价 / 对手价再朝成交方向偏 1% / 本方价；竞价中或该侧空盘回 None。"""
-    opp, pct = PX_MODES[mode]
+def order_px(q, s, mode, notional):
+    """方向 s 做 notional 元按 mode 定委托价（未舍入）：扫档价（对手盘累计恰好吃满 notional 的那档，5 档吃不满取第 5 档）
+    / 对手价 / 对手价再朝成交方向偏 1% / 本方价；竞价中或该侧空盘回 None。"""
+    opp, sweep, pct = PX_MODES[mode]
     side = q["book"][s if opp else -s]
     if auction(q) or not side:
         return None
-    return side[0][0] * (1 + s * pct / 100)
+    return (_reach(side, notional) if sweep else side[0][0]) * (1 + s * pct / 100)
+
+
+def _reach(side, notional):
+    """按档累计吃 notional 元，恰好吃满的那档价；吃不满取最后一档。"""
+    spent = 0.0
+    for price, vol in side:
+        spent += price * vol
+        if spent >= notional - 1e-6:
+            return price
+    return side[-1][0]
 
 
 def lot(code):
@@ -78,12 +96,6 @@ def _slip(q, r, n, s):
 def slips(q, r):
     """SLIP_COLS 各列滑点。"""
     return [_slip(q, r, n, s) for n, s in SLIP_COLS]
-
-
-def lot_slips(q, r, code):
-    """吃起买股数那么多元的滑点，按 SIDES 顺序（买、卖）。"""
-    n = lot(code)[0] * r
-    return [_slip(q, r, n, s) for s in SIDES]
 
 
 def levels(r):

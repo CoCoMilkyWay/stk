@@ -138,7 +138,7 @@ def _sells(st, terms, cfg):
                 SELL,
                 n,
                 1 if n == avail else lot,
-                book.order_px(q, SELL, cfg["px"]) or px,
+                book.order_px(q, SELL, cfg["px"], n * px) or px,
                 cfg["unit"],
                 "plain",
                 sec(h),
@@ -148,13 +148,14 @@ def _sells(st, terms, cfg):
 
 
 def _targets(codes, terms, quotes, bal, cfg):
-    """可买的各只 → {代码: {held 卖后市值, ratio 融资保证金比例（非融资标的为 None）, px 委托价, min 最小单元}}。"""
+    """可买的各只 → {代码: {held 卖后市值, ratio 融资保证金比例（非融资标的为 None）, px 做一个最小调仓单元的委托价,
+    min 最小单元}}。"""
     tgt = {}
     for c in codes:
         t, q = terms[c], quotes[c]
         r = book.ref(q)
         assert r, f"{c} {t.name} 没有参考价"
-        px = book.order_px(q, BUY, cfg["px"]) or r
+        px = book.order_px(q, BUY, cfg["px"], cfg["unit"]) or r
         lot, step = book.lot(c)
         tgt[c] = {
             "held": bal.get(c, 0.0) * q["price"],
@@ -201,8 +202,8 @@ def _pick(tries, tgt, C, X, L):
     return {k: tgt[k] for k in by_ratio if k in picked}, V if picked else 0.0
 
 
-def _buys(codes, terms, quotes, tgt, picked, need, fin, unit):
-    """名单各行（带融资 / 现金两腿 {credit, want, order, skip}）→ (行, 买单)，买单融资在前。"""
+def _buys(codes, terms, quotes, tgt, picked, need, fin, cfg):
+    """名单各行（带融资 / 现金两腿 {credit, want, order, skip}）→ (行, 买单)，买单融资在前；各腿按其额定委托价。"""
     rows, buys = [], []
     for i, c in enumerate(codes, 1):
         t = terms.get(c)
@@ -225,15 +226,16 @@ def _buys(codes, terms, quotes, tgt, picked, need, fin, unit):
         if c not in picked:
             row["skip"] = "购买力不够开仓"
             continue
-        q, px = quotes[c], tgt[c]["px"]
+        q = quotes[c]
         lot, step = book.lot(c)
         row["need"] = need[c]
         f = fin.get(c, 0.0)
         for cr, part in (("margin", f), ("plain", need[c] - f)):
             if part <= 0:
                 continue
+            px = book.order_px(q, BUY, cfg["px"], part) or tgt[c]["px"]
             n = int(part / px) // step * step
-            o, skip = _leg(q, BUY, n, lot, px, unit, cr, sec(t._asdict()))
+            o, skip = _leg(q, BUY, n, lot, px, cfg["unit"], cr, sec(t._asdict()))
             row["legs"].append({"credit": cr, "want": part, "order": o, "skip": skip})
             if o:
                 buys.append(o)
@@ -276,7 +278,7 @@ def plan(st, terms, codes, cfg):
     tries = sorted(ok, key=lambda c: tgt[c]["ratio"] is None)
     picked, V = _pick(tries, tgt, C * pct, X * pct, L * pct)
     need, fin, _ = _fill(V, picked, X * pct, L * pct)
-    targets, buys = _buys(codes, terms, quotes, tgt, picked, need, fin, cfg["unit"])
+    targets, buys = _buys(codes, terms, quotes, tgt, picked, need, fin, cfg)
 
     orders = [*sells, *buys]
     F = sum(o["amount"] for o in buys if o["credit"] == "margin")
@@ -321,7 +323,7 @@ class Rebal:
             "list": names[0] if names else None,
             "unit": 10000,
             "pct": 100,
-            "px": "opp",
+            "px": "sweep",
             "sells": {},
         }
         self.codes = read_list(names[0]) if names else []

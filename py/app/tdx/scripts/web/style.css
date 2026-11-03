@@ -369,8 +369,10 @@ pre.out {
   word-break: break-all;
 }
 
+/* 表一律按内容收紧：列宽随内容自动定，不铺满，放在 flex 容器里也不被横向拉伸 */
 table {
-  width: 100%;
+  width: auto;
+  align-self: flex-start;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -378,7 +380,7 @@ table {
 th,
 td {
   text-align: left;
-  padding: 2px 5px;
+  padding: 1px 4px;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
@@ -399,7 +401,7 @@ th.sortable:hover {
   color: var(--fg);
 }
 
-/* 持仓页：工具栏按 数据 / 下单 / 调仓 分组，表按内容收紧不铺满，提示行空着即不占地 */
+/* 持仓页：工具栏按 数据 / 下单 / 调仓 分组，各组上一排控件（ctl）、下几行状态（st），提示行空着即不占地 */
 .bar {
   display: flex;
   flex-wrap: wrap;
@@ -409,12 +411,23 @@ th.sortable:hover {
 
 .grp {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   margin: 0;
   padding: 2px 8px 5px;
   border: 1px solid var(--line);
   border-radius: 4px;
+}
+
+.grp .ctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.grp .st {
+  font-variant-numeric: tabular-nums;
 }
 
 .grp legend {
@@ -434,12 +447,6 @@ button:disabled {
   cursor: default;
 }
 
-#posTbl,
-#rebTgt,
-#acctTbl {
-  width: auto;
-}
-
 #acctTbl {
   margin-bottom: 4px;
 }
@@ -454,8 +461,8 @@ button:disabled {
 }
 
 #acctTbl:empty,
-#rebTask:empty,
-#ordInfo:empty {
+#posInfo:empty,
+.grp .st:empty {
   display: none;
 }
 
@@ -482,20 +489,32 @@ summary {
   font-variant-numeric: tabular-nums;
 }
 
-/* 卖出滑杆：轨道与两格读数定宽，各行滑块左右端对齐、读数变长不挤动列；
+/* 占比条：底槽定宽，填充宽即占比 */
+.pbar {
+  display: inline-block;
+  width: 40px;
+  height: 6px;
+  border-radius: 2px;
+  background: #3a3a3a;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.pbar b {
+  display: block;
+  height: 100%;
+}
+
+/* 卖出滑杆：轨道定宽、各行滑块左右端对齐，两格读数各占一列随内容定宽；
    滑块 left = (轨道宽 − 滑块宽) × 比例，两端恰好贴边 */
 .sell {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
   vertical-align: middle;
 }
 
 .sell .trk {
   position: relative;
-  width: 120px;
+  width: 80px;
   height: 12px;
   flex: none;
   cursor: pointer;
@@ -533,15 +552,6 @@ summary {
 .sell.dis .trk {
   opacity: 0.3;
   cursor: default;
-}
-
-.sell span {
-  width: 56px;
-  text-align: right;
-}
-
-.sell span + span {
-  width: 72px;
 }
 
 button.ord {

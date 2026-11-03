@@ -1,34 +1,38 @@
 // 持仓页：持仓表（行内闪电下单，按钮即滑点色块；调仓卖出滑杆见 reb.js）与各单状态
 
 // 下单：行内按钮 → POST /api/order（后台跑闪电窗），各单逐步状态经 ord 路推送。
-// 默认锁住，解锁才下得了单；锁住时点按钮同点行（选股）。
-// 按钮自左而右 大买 … 小买、小卖 … 大卖，越往两边额越大；0 = 最小单位，按 起买股数 × 现价 标 1 位数的 K 或 W，
-// 与 1W / 5W 同宽、各行对齐
-const ORD_SIZES = [0, 10000, 50000];
-function ordLabel(n, p) {
-  if (n) return wan(n);
-  const k = Math.max(1, Math.round((p.lot * p.price) / 1000));
-  return k < 10 ? `${k}K` : `${Math.round(k / 10)}W`;
-}
-const ordSizes = (s) => (s > 0 ? ORD_SIZES.toReversed() : ORD_SIZES);
+// 默认锁住，买 / 卖表头的按钮解锁才下得了单；锁住时点按钮同点行（选股）。
+// 按钮自左而右 大买 … 小买、小卖 … 大卖，越往两边额越大（即后端 slip_cols 的先后）
 let ordLocked = true;
 function ordLock() {
   ordLocked = !ordLocked;
   $("posTbl").classList.toggle("locked", ordLocked);
-  $("ordLock").textContent = ordLocked ? "解锁买卖" : "锁定买卖";
+  drawPos();
 }
-// 买入方式只管买入，卖出一律担保品卖出
+// 买入方式只管买入，卖出一律担保品卖出；只有绿色（5 档吃满且低滑点）的直接下，其余先弹窗确认
 $("posTbl").onclick = async (e) => {
   if (e.target.closest(".sell")) return;
   const b = e.target.closest("button.ord");
   if (!b || ordLocked) return pickClick(e);
-  const s = +b.dataset.s;
+  const code = b.closest("tr").dataset.code,
+    s = +b.dataset.s,
+    size = +b.dataset.size;
+  const p = POS.rows.find((x) => x.code === code),
+    x = p.slips?.[+b.dataset.i];
+  const slip = x ? slipTxt(x.pct, x.full) : p.auction ? "竞价中" : "无行情";
+  if (
+    !slipQuick(x) &&
+    !confirm(
+      `${SIDE[s].name} ${wan(size)} ${code} ${p.name}，滑点 ${slip}，确认下单？`,
+    )
+  )
+    return;
   fail(
     "ordInfo",
     await post("/api/order", {
-      code: b.closest("tr").dataset.code,
+      code,
       s,
-      size: +b.dataset.size,
+      size,
       px: $("ordPx").value,
       credit: s > 0 ? $("ordCredit").value : "plain",
     }),
@@ -77,6 +81,19 @@ const numCol = (h, k, f = fmt, sum = false) => [
   "num",
   sum ? (r) => f(sumOf(r, k)) : null,
 ];
+// 占比条列：k 占总市值的比例画成条（表尾按合计），悬停看金额与占比；按占比排序
+const barOf = (v, mv, col) => {
+  if (v == null || !mv) return "";
+  const f = Math.min(1, Math.max(0, v / mv));
+  return `<span class="pbar" data-tip="${w2(v)} · ${fmt(f * 100, 0)}%"><b style="width:${f * 100}%;background:${col}"></b></span>`;
+};
+const barCol = (h, tip, k, col) => [
+  `<span data-tip="${tip}，占总市值；悬停看金额">${h}</span>`,
+  (p) => barOf(p[k], p.market_value, col),
+  (p) => (p.market_value ? p[k] / p.market_value : null),
+  "",
+  (r) => barOf(sumOf(r, k), sumOf(r, "market_value"), col),
+];
 // 名称着色：今日清仓灰，在当前调仓名单里青，其余不着色
 const NAME_TIP = "名称：灰 = 今日清仓，青 = 在当前调仓名单里";
 const nameColor = (p) =>
@@ -99,57 +116,60 @@ const COL = {
   position_pct: numCol("仓位%", "position_pct", fmt, true),
   day_pnl_pct: numCol("当日盈亏%", "day_pnl_pct", fmtPnl),
   day_pnl: [
-    ...numCol("当日盈亏", "day_pnl", kwPnl).slice(0, 4),
+    ...numCol("当日盈亏", "day_pnl", w2Pnl).slice(0, 4),
     (r) =>
       r.synced
-        ? kwPnl(sumOf(r, "day_pnl"))
+        ? w2Pnl(sumOf(r, "day_pnl"))
         : `<span class="off" data-tip="${DAY_GAP}">不全</span>`,
   ],
   pnl_pct: numCol("盈亏%", "pnl_pct", fmtPnl),
-  pnl: numCol("盈亏", "pnl", kwPnl, true),
-  market_value: numCol("总市值", "market_value", kw, true),
-  margin_value: numCol("融资市值", "margin_value", kw, true),
-  sellable_value: numCol("可卖市值", "sellable_value", kw, true),
+  pnl: numCol("盈亏", "pnl", w2Pnl, true),
+  market_value: numCol("总市值", "market_value", w2, true),
+  margin_value: barCol("融资", "融资部分市值", "margin_value", "var(--hot)"),
+  sellable_value: barCol(
+    "可卖",
+    "可卖部分市值",
+    "sellable_value",
+    "var(--acc)",
+  ),
   collateral: numCol("担保折算率", "collateral"),
 };
 
 // 持仓页：pos、ord 两路，服务端在内存或行情变了才推一帧；出错只改提示行，表留上一帧。
 // 刷新与定时都在服务端：POST /api/refresh 只是要一轮，不等；各样查完即推帧，进度随帧（prog）。
 // 一帧一份 rows（每只一行，含盘口）：持仓表即其列，行情页取其行。
-// 持仓表的可融列与卖出两列取自调仓帧，pos、reb 哪路来帧都重画（拖卖出滑杆时除外）
+// 持仓表的可融列与卖出各列取自调仓帧，pos、reb 哪路来帧都重画（拖卖出滑杆时除外）
 let POS = null;
 const drawPos = () =>
-  POS && !REB_DRAG && table("#posTbl", posCols(POS), POS.rows, pickAttrs, POS);
+  POS &&
+  !REB_DRAG &&
+  table("#posTbl", posCols(POS), POS.rows, pickAttrs, POS, (p) => p.closed);
 function onPos(r) {
-  $("posProg").innerHTML = progTxt(r.prog);
   if (document.activeElement !== $("posAuto"))
     $("posAuto").value = r.prog.every;
-  if (fail("posInfo", r) || !r.rows) return;
-  POS = r;
+  const ok = !fail("posInfo", r) && r.rows;
+  if (ok) POS = r;
+  $("posProg").innerHTML = progTxt(r.prog, POS);
+  if (!ok) return;
   drawPos();
   posInfo(r);
   quoteFrame(r.rows);
 }
-// 持仓表上方一行：持仓表里没有的代码的挂单、行情时刻、pid（合计在表尾，成交与挂单在状态列）
+// 持仓表上方的提示行：无持仓、持仓表里没有的代码的挂单（合计在表尾，成交与挂单在状态列），没有即不占地
 function posInfo(r) {
-  const info = $("posInfo");
-  if (!r.rows.length) return void (info.textContent = "无持仓");
   const held = new Set(r.rows.map((p) => p.code));
   const stray = (r.orders ?? []).filter((o) => !held.has(o.code));
-  info.innerHTML = [
-    stray.length &&
-      `挂单 ${stray.length} 笔：` +
+  $("posInfo").innerHTML = !r.rows.length
+    ? "无持仓"
+    : stray.length
+      ? `挂单 ${stray.length} 笔：` +
         stray
           .map(
             (o) =>
               `${paint(SIDE[o.side].color, SIDE[o.side].name)} ${o.code} ${esc(o.name)} ${esc(FLOW.orders.line(o))}`,
           )
-          .join("、"),
-    `行情 ${r.time}`,
-    `pid ${r.pid}`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+          .join("、")
+      : "";
 }
 // 状态列：今日成交（fills）、挂单（orders，撤单页的未成交委托，还没查过为 null）按代码逐笔，同形两类：
 // mark 符号（按方向着色：买绿卖红）、name 名、line(x) 悬停里的一笔
@@ -194,13 +214,16 @@ const flowCol = (r) => [
       .map(([k, f]) => `${f.mark}${r[k]?.length ?? "-"}`)
       .join(" "),
 ];
-// 刷新进度：正做哪样（或等界面）、各样（后端 steps [字段, 名称]）读于几时、上轮失败、账户是否读于持仓变动前
-function progTxt(g) {
+// 数据栏的状态行：先是常在的各样（后端 steps [字段, 名称]）读于几时、最近一帧 f 的行情时刻与 pid，
+// 再是时有时无的：正做哪样（或等界面）、上轮失败、账户是否读于持仓变动前
+function progTxt(g, f) {
   const at = g.steps.map(([k, n]) => `${n} ${g.at[k] ?? "—"}`).join(" · ");
   return [
+    `读于 ${at}`,
+    `行情 ${f?.time || "—"}`,
+    `pid ${f?.pid ?? "—"}`,
     g.step && paint("var(--hot)", `刷新中：${esc(g.step)}…`),
     g.err && `<span class="off" data-tip="${esc(g.err)}">✗ 上轮刷新失败</span>`,
-    `读于 ${at}`,
     g.acct_stale &&
       '<span class="off" data-tip="新一轮还没查到信用账户，调仓试算的现金与负债是旧的">账户读于持仓变动前</span>',
   ]
@@ -211,40 +234,36 @@ const refreshPos = async () => fail("posProg", await post("/api/refresh"));
 const refreshEvery = async (s) =>
   fail("posProg", await post("/api/refresh/every", { s }));
 
-// 滑点 p = 万分之一，正=成本；> 表示 5 档吃不满、实际更差
+// 滑点 p = 万分之一，正=成本；> 表示 5 档吃不满、实际更差；绿 < SLIP_OK ≤ 黄 < SLIP_HI ≤ 红
+const SLIP_OK = 10,
+  SLIP_HI = 20;
 const slipColor = (v) =>
   v == null
     ? ""
-    : v < 10
+    : v < SLIP_OK
       ? "var(--green)"
-      : v < 20
+      : v < SLIP_HI
         ? "var(--hot)"
         : "var(--red)";
+const slipQuick = (x) => !!x?.full && x.pct != null && x.pct < SLIP_OK;
 const slipTxt = (v, full = true) =>
   v == null ? "-" : `${full ? "" : ">"}${v.toFixed(1)}p`;
-// 下单按钮即盘口色块：边框买卖色、填充同向同额的滑点色（无同额滑点列、竞价、无行情不填）；
-// hover 出该向各额滑点、价位（后端 slip_cols / level_cols 列定义 × 行里 slips / levels，
-// 最小单位另取 lot_slips 按买、卖）与占比
+// 下单按钮即盘口色块：一列滑点一个按钮（后端 slip_cols [额, 方向] 即按钮的额与先后），
+// 边框买卖色、填充该列的滑点色（竞价、无行情不填）；hover 出该向各额滑点、价位（level_cols × levels）与占比
 function ordBtns(p, r) {
   if (p.closed) return '<span class="kv">今日清仓</span>';
-  const slip = (n, s) =>
-    n
-      ? p.slips?.[r.slip_cols.findIndex(([m, t]) => m === n && t === s)]
-      : p.lot_slips?.[s > 0 ? 0 : 1];
-  const slipAt = (n, s) => {
-    const x = slip(n, s);
-    return `${ordLabel(n, p)} ${slipTxt(x.pct, x.full)}`;
-  };
+  const of = (s) =>
+    r.slip_cols.flatMap(([n, t], i) => (t === s ? [[n, i]] : []));
   const tip = (s) =>
     [
       `${SIDE[s].name} 滑点 ` +
         (p.slips
-          ? [
-              slipAt(0, s),
-              ...r.slip_cols.flatMap(([n, t]) =>
-                t === s ? [slipAt(n, s)] : [],
-              ),
-            ].join(" · ")
+          ? of(s)
+              .map(
+                ([n, i]) =>
+                  `${wan(n)} ${slipTxt(p.slips[i].pct, p.slips[i].full)}`,
+              )
+              .join(" · ")
           : p.auction
             ? "竞价中"
             : "无行情"),
@@ -262,12 +281,12 @@ function ordBtns(p, r) {
   return [1, -1]
     .map((s) => {
       const t = esc(tip(s));
-      return ordSizes(s)
-        .map((n) => {
-          const c = slipColor(slip(n, s)?.pct);
+      return of(s)
+        .map(([n, i]) => {
+          const c = slipColor(p.slips?.[i].pct);
           const fill =
             c && `;background:color-mix(in srgb, ${c} 45%, transparent)`;
-          return `<button class="ord" style="border-color:${SIDE[s].color}${fill}" data-tip="${t}" data-s="${s}" data-size="${n}">${ordLabel(n, p)}</button>`;
+          return `<button class="ord" style="border-color:${SIDE[s].color}${fill}" data-tip="${t}" data-s="${s}" data-size="${n}" data-i="${i}">${wan(n)}</button>`;
         })
         .join("");
     })
@@ -275,14 +294,14 @@ function ordBtns(p, r) {
 }
 const ordHead = (r) =>
   `<span data-tip="${esc(
-    "滑点 p = 万分之一，正=成本；按钮填充 绿 < 10p ≤ 黄 < 20p ≤ 红\n持仓按占比加权 " +
+    `滑点 p = 万分之一，正=成本；按钮填充 绿 < ${SLIP_OK}p ≤ 黄 < ${SLIP_HI}p ≤ 红，非绿的点了先确认\n持仓按占比加权 ` +
       r.slip_cols
         .map(
           ([n, s], i) =>
             `${SIDE[s].name}${wan(n)} ${slipTxt(r.totals.slips[i])}`,
         )
         .join(" · "),
-  )}">买 / 卖</span>`;
+  )}">买 / 卖</span> <button onclick="ordLock()">${ordLocked ? "解锁买卖" : "锁定买卖"}</button>`;
 const cols = (...keys) => keys.map((k) => COL[k]);
 const posCols = (r) => [
   ...cols("code", "position_pct", "name"),

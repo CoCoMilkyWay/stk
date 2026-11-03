@@ -135,13 +135,20 @@ const cmpKey = (x, y, dir) =>
       : dir * (typeof x === "number" ? x - y : ZH(String(x), String(y)));
 // 整表重填：cols 每列 [表头 html, 行 → 单元格 html, 行 → 排序键?, 单元格 class?, 合计 → 表尾 html?]；
 // attrs(row) 为 <tr> 的属性串；给了 foot 即按各列的合计函数出表尾一行（表里须有 <tfoot>）。
-// 有排序键的列点表头排序：首点降序、再点反向，空值恒在末尾；
+// 有排序键的列点表头排序：首点降序、再点反向，空值恒在末尾；sink(row) 为真的行不参与，按原序沉在最后；
 // 排序状态按表记住，重填（如行情刷新）沿用；表头变了才重写。行内事件由调用方委托在表上。
 const SORT = {}; // sel → {i 列号, dir ±1, head 当前表头, redraw 按当前数据重填}
-function table(sel, cols, rows, attrs = () => "", foot = null) {
+function table(
+  sel,
+  cols,
+  rows,
+  attrs = () => "",
+  foot = null,
+  sink = () => false,
+) {
   const st = (SORT[sel] ??= { i: -1, dir: -1, head: null });
   const T = document.querySelector(sel);
-  st.redraw = () => table(sel, cols, rows, attrs, foot);
+  st.redraw = () => table(sel, cols, rows, attrs, foot, sink);
   const head =
     "<tr>" +
     cols
@@ -164,7 +171,10 @@ function table(sel, cols, rows, attrs = () => "", foot = null) {
   }
   const key = cols[st.i]?.[2];
   const list = key
-    ? [...rows].sort((a, b) => cmpKey(key(a), key(b), st.dir))
+    ? [...rows].sort(
+        (a, b) =>
+          sink(a) - sink(b) || (sink(a) ? 0 : cmpKey(key(a), key(b), st.dir)),
+      )
     : rows;
   T.tBodies[0].innerHTML = list
     .map(
@@ -225,12 +235,7 @@ const fmt = (v, d = 2) =>
 const fmtPnl = (v, d) => (v == null ? "" : paint(v >= 0 ? UP : DN, fmt(v, d)));
 const px3 = (v) => fmt(v, 3);
 const lots = (shares) => fmt(shares / 100, 0) + "手";
-// 金额按量级标 K / W，两位小数
-const kw = (v) =>
-  v == null
-    ? ""
-    : Math.abs(v) >= 10000
-      ? fmt(v / 10000) + "W"
-      : fmt(v / 1000) + "K";
-const kwPnl = (v) => (v == null ? "" : paint(v >= 0 ? UP : DN, kw(v)));
-const wan = (n) => (n ? `${n / 10000}W` : "最小");
+// 金额一律标 W（万），两位小数
+const w2 = (v) => (v == null ? "" : fmt(v / 10000) + "W");
+const w2Pnl = (v) => (v == null ? "" : paint(v >= 0 ? UP : DN, w2(v)));
+const wan = (n) => `${n / 10000}W`;

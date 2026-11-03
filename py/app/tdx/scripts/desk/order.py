@@ -45,16 +45,16 @@ ORDER_CAP = 5  # 留、推的最近单数
 
 
 def _order_qty(o, px, cap):
-    """股数：给了 qty 即用，否则 size 元（0 = 最小单位）按 book.lot 折股；再以闪电窗给的最大可买 / 可卖 cap 封顶
+    """股数：给了 qty 即用，否则 size 元按 book.lot 折股；再以闪电窗给的最大可买 / 可卖 cap 封顶
     （钱或券不够就按能做的最大量）：买入按步长取整、须够起买量，卖出不足即全卖（零股只能一次卖完）。"""
     lot, step = book.lot(o.code)
-    n = o.qty or (int(o.size / px) // step * step if o.size else lot)
+    n = o.qty or int(o.size / px) // step * step
     assert n >= (
         lot if o.s == BUY or not o.qty else 1
-    ), f"{o.size} 元 / {o.qty} 股按 {px} 不足最小单位 {lot} 股"
+    ), f"{o.size} 元 / {o.qty} 股按 {px} 不足起买量 {lot} 股"
     if o.s == BUY:
         cap = cap // step * step
-        assert cap >= lot, f"最大可买 {cap} 股，不足最小单位 {lot} 股"
+        assert cap >= lot, f"最大可买 {cap} 股，不足起买量 {lot} 股"
     assert cap >= 1, "最大可卖为 0"
     return min(n, cap)
 
@@ -163,7 +163,9 @@ def _field(body, pat, what):
 
 def _price(o):
     q = sina.quotes([o.sec])[o.code]
-    o.px = book.order_px(q, o.s, o.mode)
+    r = book.ref(q)
+    assert r, "无参考价"
+    o.px = book.order_px(q, o.s, o.mode, o.size or o.qty * r)
     assert o.px, "集合竞价中或盘口为空，无连续价"
     return {}
 
@@ -247,16 +249,18 @@ class Orders:
         self.jobs = Jobs(self.feed, ORDER_CAP)
 
     def _new(self, x, s, size, qty, mode, credit):
-        """登记一单 → (job, 本单上下文 o)；x 为证券，量为 size 元（0 = 最小单位）或 qty 股（给了即用），
+        """登记一单 → (job, 本单上下文 o)；x 为证券，量为 size 元或 qty 股（二者恰给其一），
         mode 为 book.PX_MODES 键，credit 为 plain|margin。"""
         assert (
-            (s, credit) in FLASH and size >= 0 and qty >= 0 and mode in book.PX_MODES
+            (s, credit) in FLASH
+            and min(size, qty) == 0 < max(size, qty)
+            and mode in book.PX_MODES
         ), f"参数不对：{(x['code'], s, size, qty, mode, credit)}"
         job = self.jobs.open(
             **sec(x),
             s=s,
             credit=credit,
-            label=f"{qty}股" if qty else f"{size / 10000:.4g}W" if size else "最小",
+            label=f"{qty}股" if qty else f"{size / 10000:.4g}W",
             steps=[name for name, _ in ORDER],
             at=0,
             detail="",

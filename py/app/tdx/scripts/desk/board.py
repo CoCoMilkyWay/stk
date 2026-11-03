@@ -1,12 +1,12 @@
 # desk/board — 持仓页一帧：内存持仓 × 当日成交 × 行情，按代码对齐（纯函数，只出数字，格式化归前端）。
 # 三张表同以代码为键：持仓 pos.by_code、成交合计 fills.by_code、行情 quotes；对齐成 (h, f)：
-#   h 为 None = 今日清仓（持仓表已无此行，只有当日列），f 为 NO_FLOW = 今日该只没有成交。
+#   h 为 None = 今日清仓（持仓表已无此行或余额为 0，只有当日列），f 为 NO_FLOW = 今日该只没有成交。
 # 一行由几组列拼成（PARTS），每组 (h, f, q) → 值元组，缺了它要的输入即整组 None：
-#   标识：代码 / 名称 / 是否今日清仓 / 起买股数 / 现价 / 行情（盘口、K 线页用）；
+#   标识：代码 / 名称 / 是否今日清仓 / 行情（现价、盘口，K 线页也用）；
 #   持仓：量、成本、券商盈亏取自内存快照，随价变的按 Δ价 × 量 平移（保留券商口径）；
 #   当日：按成交价自算（毛，不扣费）= 现市值 − 昨收 × 昨仓 − Σ 方向 × 额，昨仓 = 现量 − Σ 方向 × 量，
 #         % 的分母为昨收 × 昨仓 + 今买额；与持仓的今买 / 今卖对不上即空；
-#   盘口：各列滑点与起买股数的买 / 卖滑点（竞价时空）、价位，无参考价皆空。
+#   盘口：各列滑点（竞价时空）、价位，无参考价皆空。
 # 占比两列同构 = 市值 / 分母：仓位% 的分母是券商口径的资产（快照的 市值 / 仓位 反推，取仓位最大那只、
 # 舍入误差最小，再随总市值平移），占比的分母是总市值。
 
@@ -24,7 +24,8 @@ TOTALS = ("market_value", "pnl", "day_pnl")
 
 def join(st):
     """持仓 × 成交合计按代码对齐 → [(h, f)]，持仓在前、今日清仓在后；两表沪深标志须一致。"""
-    held, flow = st.pos.by_code, st.fills.by_code
+    held = {c: h for c, h in st.pos.by_code.items() if h["balance"] > 0}
+    flow = st.fills.by_code
     codes = [*held, *(c for c in flow if c not in held)]
     pairs = [(held.get(c), flow.get(c, NO_FLOW)) for c in codes]
     bad = [
@@ -52,8 +53,6 @@ def _ident(h, f, q):
         x["code"],
         x["name"],
         h is None,
-        book.lot(x["code"])[0],
-        q["price"],
         q,
     )
 
@@ -93,17 +92,16 @@ def _depth(h, f, q):
     return (
         auction,
         book.slips(q, r) if live else None,
-        book.lot_slips(q, r, h["code"]) if live else None,
         book.levels(r) if r else None,
     )
 
 
 # fmt: off
 PARTS = (
-    (("code", "name", "closed", "lot", "price", "quote"),                                          _ident),
+    (("code", "name", "closed", "quote"),                                                          _ident),
     (("market_value", "pnl", "pnl_pct", "margin_value", "sellable_value", "collateral", "cost"), _hold),
     (("day_pnl", "day_pnl_pct"),                                                                 _today),
-    (("auction", "slips", "lot_slips", "levels"),                                                _depth),
+    (("auction", "slips", "levels"),                                                             _depth),
 )
 # fmt: on
 
