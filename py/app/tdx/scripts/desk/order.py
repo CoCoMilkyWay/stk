@@ -7,21 +7,18 @@
 #   确认  点提交，「…交易确认」框核对正文（代码 / 价格 / 数量）
 #   回报  点 7015，「提示」框读回报（成功含合同号）点 7015 关掉
 # 开窗 / 确认 / 回报同形：做一个动作，等它弹出的那个对话框（_popup）。
-# 一次只跑一单，逐步推状态；任一步不符或超时即停在那一步，已弹出的窗口留给人工处理。
-# 证券 sec = {code, name, market_flag}：持仓行（console 下单）或两融条款里的（调仓买新标的）。
+# 一次只跑一单（feed.Jobs），逐步推状态；任一步不符或超时即停在那一步，已弹出的窗口留给人工处理。
+# 证券 sec = common.sec：持仓行（console 下单）或两融条款里的（调仓买新标的）。
 # submit 后台跑（持仓页按钮），place 当前线程跑完回该单（调仓逐单）。
 
-import collections
-import itertools
 import re
-import threading
 import time
 import types
 
-from mem.common import BUY, SELL
+from mem.common import BUY, SELL, sec
 
 from . import book, sina, ui
-from .feed import Feed, err
+from .feed import Feed, Jobs
 from .hub import HUB
 from .ui import SHIM, UI
 
@@ -53,7 +50,8 @@ def _order_qty(o, px, cap):
     lot, step = book.lot(o.code)
     n = o.qty or (int(o.size / px) // step * step if o.size else lot)
     assert n >= (
-        lot if o.s == BUY or not o.qty else 1), f"{o.size} 元 / {o.qty} 股按 {px} 不足最小单位 {lot} 股"
+        lot if o.s == BUY or not o.qty else 1
+    ), f"{o.size} 元 / {o.qty} 股按 {px} 不足最小单位 {lot} 股"
     if o.s == BUY:
         cap = cap // step * step
         assert cap >= lot, f"最大可买 {cap} 股，不足最小单位 {lot} 股"
@@ -107,8 +105,7 @@ def _popup(titles, timeout, act):
 
     return ui.wait(
         lambda: f"「{want}」，期间新窗口："
-        + ("；".join(f"「{n['title']}」{_body(h)}" for h,
-           n in new().items()) or "无"),
+        + ("；".join(f"「{n['title']}」{_body(h)}" for h, n in new().items()) or "无"),
         got,
         timeout,
     )
@@ -180,8 +177,9 @@ def _switch(o):
 
 
 def _open(o):
-    assert all(n["title"] != o.title for n in _tops().values()
-               ), f"已有未关的「{o.title}」窗"
+    assert all(
+        n["title"] != o.title for n in _tops().values()
+    ), f"已有未关的「{o.title}」窗"
     o.dlg = _popup((o.title,), 3, lambda: ui.post(o.main, WM_COMMAND, o.cmd))
     return {}
 
@@ -202,12 +200,14 @@ def _form(o):
     _settext(c["price"], o.px_s)
     # 最大可买按默认价算；改价后客户端未必即时重算，按价反比折一份，与重读的取小
     cap = _max_qty(c["max"])
-    cap = min(cap, int(cap0 * float(dflt) / float(o.px_s))
-              if o.s == BUY else cap0)
+    cap = min(cap, int(cap0 * float(dflt) / float(o.px_s)) if o.s == BUY else cap0)
     o.n = _order_qty(o, float(o.px_s), cap)
-    _settext(c["qty"], str(o.n) if unit ==
-             "股" else f"{o.n * float(o.px_s):.2f}")
-    return {"detail": f"{o.n}股 @ {o.px_s}（最大 {cap}）", "qty": o.n, "px": float(o.px_s)}
+    _settext(c["qty"], str(o.n) if unit == "股" else f"{o.n * float(o.px_s):.2f}")
+    return {
+        "detail": f"{o.n}股 @ {o.px_s}（最大 {cap}）",
+        "qty": o.n,
+        "px": float(o.px_s),
+    }
 
 
 def _confirm(o):
@@ -243,42 +243,28 @@ ORDER = (
 
 class Orders:
     def __init__(self):
-        # 下单线程改状态，同在 feed 内
-        self.jobs = collections.deque(maxlen=ORDER_CAP)
-        self.ids = itertools.count(1)
-        self.feed = Feed(lambda seen: list(self.jobs)[::-1])
+        self.feed = Feed(lambda seen: list(self.jobs.list)[::-1])
+        self.jobs = Jobs(self.feed, ORDER_CAP)
 
-    def _put(self, job, **kw):
-        with self.feed:
-            job.update(kw)
-
-    def _open(self, sec, s, size, qty, mode, credit):
-        """登记一单 → (job, 本单上下文)；量为 size 元（0 = 最小单位）或 qty 股（给了即用），
+    def _new(self, x, s, size, qty, mode, credit):
+        """登记一单 → (job, 本单上下文 o)；x 为证券，量为 size 元（0 = 最小单位）或 qty 股（给了即用），
         mode 为 book.PX_MODES 键，credit 为 plain|margin。"""
         assert (
             (s, credit) in FLASH and size >= 0 and qty >= 0 and mode in book.PX_MODES
-        ), f"参数不对：{(sec['code'], s, size, qty, mode, credit)}"
-        with self.feed:
-            assert not any(j["state"] == "run" for j in self.jobs), "上一单还没结束"
-            job = {
-                "id": next(self.ids),
-                "t": time.strftime("%H:%M:%S"),
-                "code": sec["code"],
-                "name": sec["name"],
-                "s": s,
-                "credit": credit,
-                "label": f"{qty}股" if qty else f"{size / 10000:.4g}W" if size else "最小",
-                "steps": [name for name, _ in ORDER],
-                "at": 0,
-                "state": "run",
-                "detail": "",
-                "msg": "",
-            }
-            self.jobs.append(job)
+        ), f"参数不对：{(x['code'], s, size, qty, mode, credit)}"
+        job = self.jobs.open(
+            **sec(x),
+            s=s,
+            credit=credit,
+            label=f"{qty}股" if qty else f"{size / 10000:.4g}W" if size else "最小",
+            steps=[name for name, _ in ORDER],
+            at=0,
+            detail="",
+        )
         cmd, title, ids = FLASH[s, credit]
         o = types.SimpleNamespace(
-            sec=sec,
-            code=sec["code"],
+            sec=sec(x),
+            code=x["code"],
             s=s,
             size=size,
             qty=qty,
@@ -289,29 +275,27 @@ class Orders:
         )
         return job, o
 
-    def submit(self, b):
-        """b = {code, s: BUY|SELL, size, px, credit}：持仓里 code 那只，后台跑，回该单。"""
-        job, o = self._open(HUB.held(b["code"]), int(
-            b["s"]), int(b["size"]), 0, b["px"], b["credit"])
-        threading.Thread(target=self._run, args=(job, o), daemon=True).start()
-        return job
-
-    def place(self, sec, s, qty, mode, credit):
-        """当前线程跑完 qty 股一单 → 该单（state ok / err，填单后带 qty / px；成交另看成交表）。"""
-        job, o = self._open(sec, s, 0, qty, mode, credit)
-        self._run(job, o)
-        return job
-
-    def _run(self, job, o):
-        try:
+    def _steps(self, o):
+        def run(job):
             with UI("下单"):
                 for at, (_, step) in enumerate(ORDER):
-                    self._put(job, at=at)
-                    self._put(job, **step(o))
-            self._put(job, state="ok")
+                    self.jobs.put(job, at=at)
+                    self.jobs.put(job, **step(o))
             HUB.kick()
-        except Exception as e:  # 错误边界：停在当前步，报原因
-            self._put(job, state="err", msg=err(e))
+
+        return run
+
+    def submit(self, b):
+        """b = {code, s: BUY|SELL, size, px, credit}：持仓里 code 那只，后台跑，回该单。"""
+        job, o = self._new(
+            HUB.held(b["code"]), int(b["s"]), int(b["size"]), 0, b["px"], b["credit"]
+        )
+        return self.jobs.spawn(job, self._steps(o))
+
+    def place(self, x, s, qty, mode, credit):
+        """当前线程跑完 qty 股一单 → 该单（state ok / err，填单后带 qty / px；成交另看成交表）。"""
+        job, o = self._new(x, s, 0, qty, mode, credit)
+        return self.jobs.run(job, self._steps(o))
 
 
 ORDERS = Orders()

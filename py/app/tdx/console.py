@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # console.py — 统一入口：shim 接口控制台（Web 版，stdlib http.server，无三方依赖）。
 # 启动时自动接入客户端（desk.ui.attach：shim 未在线即编译 + 注入到 Wine 里的 TdxW.exe），再起服务。
-# 本文件只管路由与合路推送；支撑代码都在 scripts/ 下的包里：bridge/（消息桥）、mem/（读内存方案）、
+# 本文件只管路由与合路推送；支撑代码都在 scripts/ 下的包里：bridge/（消息桥）、mem/（读内存明文表）、
 # desk/（控制台后端各块），前端页面在 scripts/web/。
 #
 # 启动：python3 console.py [port]      默认 8765

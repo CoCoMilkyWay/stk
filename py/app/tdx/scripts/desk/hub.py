@@ -2,10 +2,10 @@
 # 状态 State = (持仓快照, 成交快照, 挂单快照, 信用账户, 行情)，帧是它的纯函数（board.view）加刷新进度 prog：
 # 与当前帧所据的不同才重算、推给全部 pos 订阅。
 # 推送线程（run）管全部订阅者，有订阅者才转：每 TICK follow 持仓（约 0.03ms；客户端自己重查过，如成交后，即换代），
-# 每 FULL_EVERY 一遍全量扫出 SOURCES 各方案；每 QUOTE_GAP 取一次行情，State 变了即补取（保证覆盖新的那只）。
+# 每 FULL_EVERY 一遍全量扫出 SCANNED 各表；每 QUOTE_GAP 取一次行情，State 变了即补取（保证覆盖新的那只）。
 # 行情只此一路（盘口列同帧复用其 5 档），开几个页面都不加量，免被限频封禁。
-# 刷新线程（_refresher）一轮让客户端依次重查成交、持仓（SOURCES 同一写法，两表对不上再连查）、挂单、信用资产与融资负债，
-# 每查完一样即并进 State、随下一帧推出，不等整轮；进度（等界面 / 正查哪样 / 各样读于几时 / 上轮失败原因）同帧推。
+# 刷新线程（_refresher）一轮按 REFRESH 让客户端依次重查成交、持仓（两表对不上再连查）、挂单、信用账户，
+# 每查完一样即并进 State、随下一帧推出，不等整轮；进度（各样名称 / 等界面 / 正查哪样 / 各样读于几时 / 上轮失败原因）同帧推。
 # 一轮的起因（_due）：有人要（request / sync）、有订阅者而还没刷过或距上轮满 every 秒（订阅者久别重连即刷）、
 # console 下单成功后的 KICKS 定点、客户端自己重查了持仓却与成交对不上（交易端成交了）。失败不自动重试，等下一个起因。
 # 任一线程出错，推送线程下一轮先接回客户端（shim 不在线即重注入）、全量重扫（重找进程）。
@@ -17,9 +17,7 @@ import threading
 import time
 
 from mem import common as memcommon
-from mem import fills as memfills
-from mem import orders as memorders
-from mem import positions as mempos
+from mem import tables
 
 from . import board, credit, sina, ui
 from .feed import Feed, err
@@ -30,11 +28,33 @@ FULL_EVERY = 60  # 全量扫描最长间隔：补全进程「活动块唯一」�
 EVERY = 60  # 定时刷新周期（秒，0 = 不定时），页上可改
 KICKS = (1, 6)  # console 下单成功后隔几秒各刷新一次（限价单可能稍后才成交）
 SYNC_TRIES = 2  # 一轮里成交与持仓对不上（两次查询之间又成交）时最多连查几遍
-# (State 字段, 交易栏页签, 方案)：先成交后持仓
-SOURCES = (
-    ("fills", "成交", memfills),
-    ("pos", "持仓", mempos),
+# 推送线程全量扫的：State 字段 → 表
+SCANNED = {"fills": tables.FILLS, "pos": tables.POSITIONS}
+
+
+def _tab(tab, old):
+    """点交易栏页签 tab、点「刷新」，等快照 old 换代（实测约 0.25s）。"""
+    ui.click_tool(tab)
+    ui.click_tool("刷新")
+    return memcommon.wait(old)
+
+
+def _orders():
+    """「撤单」页：切页与刷新同在 ask 内（切页自带一次查询，其应答可能早于刷新）。"""
+    ui.click_tool("撤单")
+    ui.click_tool("刷新")
+
+
+# 刷新一轮 (State 字段, 名称, State → 新的那样)，须持 ui.UI；前 PAIRED 样须彼此对得上，对不上即连查
+# fmt: off
+REFRESH = (
+    ("fills",  "成交",     lambda st: _tab("成交", st.fills)),
+    ("pos",    "持仓",     lambda st: _tab("持仓", st.pos)),
+    ("orders", "挂单",     lambda st: memcommon.ask(tables.ORDERS, _orders)),
+    ("acct",   "信用账户", lambda st: credit.account(st.pos)),
 )
+# fmt: on
+PAIRED = 2
 
 
 class Hub:
@@ -60,8 +80,15 @@ class Hub:
         self.extra = {}
         self.hooks = []
         self.frame = {}
-        # 刷新进度：step 正做的（None = 闲），at {State 字段: 读于}，err 上一轮失败原因，every 定时周期
-        self.prog = {"step": None, "at": {}, "err": None, "every": EVERY}
+        # 刷新进度：steps 各样 (State 字段, 名称)，step 正做的（None = 闲），at {State 字段: 读于}，
+        # err 上一轮失败原因，every 定时周期
+        self.prog = {
+            "steps": [(key, name) for key, name, _ in REFRESH],
+            "step": None,
+            "at": {},
+            "err": None,
+            "every": EVERY,
+        }
         self.feed = Feed(lambda seen: self.frame | {"prog": self._prog()})
 
     def _set(self, **kw):
@@ -82,13 +109,14 @@ class Hub:
         with self.lock:
             self._set(**{key: snap})
         with self.feed:
-            self.prog = self.prog | {"at": self.prog["at"] | {key: time.strftime("%H:%M:%S")}}
+            self.prog = self.prog | {
+                "at": self.prog["at"] | {key: time.strftime("%H:%M:%S")}
+            }
 
     def _scan(self):
-        """一遍全量扫出 SOURCES 各方案快照（并重找进程）。须持 lock。"""
+        """一遍全量扫出 SCANNED 各表快照（并重找进程）。须持 lock。"""
         self.scan_at = time.monotonic()
-        snaps = memcommon.read([scheme for _, _, scheme in SOURCES])
-        self._set(**{key: snap for (key, _, _), snap in zip(SOURCES, snaps)})
+        self._set(**dict(zip(SCANNED, memcommon.read(list(SCANNED.values())))))
 
     def _load(self):
         """还没扫过即全量扫一次。须持 lock。"""
@@ -97,7 +125,10 @@ class Hub:
 
     def _secs(self):
         """要取行情的：持仓、今日清仓与 extra → {代码: 证券}。须持 lock。"""
-        return {x["code"]: x for x in [*self.extra.values(), *(h or f for h, f in board.join(self.st))]}
+        return {
+            x["code"]: x
+            for x in [*self.extra.values(), *(h or f for h, f in board.join(self.st))]
+        }
 
     def _quote(self):
         self.quote_at = time.monotonic()
@@ -172,33 +203,30 @@ class Hub:
         every = self.prog["every"]
         if not self.last or (every and now - self.last >= every):
             return True
-        return self.checked is not None and self.st.pos != self.checked and not board.synced(self.st)
+        return (
+            self.checked is not None
+            and self.st.pos != self.checked
+            and not board.synced(self.st)
+        )
+
+    def _steps(self, steps):
+        for key, name, fetch in steps:
+            self._note(step=name)
+            self._fresh(key, fetch(self.st))
 
     def _round(self):
-        """一轮：SOURCES 依次点交易栏页签、点「刷新」，等该方案换代（各实测约 0.25s）；两次查询之间又有成交即对不上，
-        连查至多 SYNC_TRIES 遍，仍不对留给前端标出。再查挂单（「撤单」页，切页与刷新都在 ask 内：切页自带一次查询，
-        其应答可能早于刷新），信用资产与融资负债，回持仓页。撤单页上另画着一个撤单动作键，故切去时须在持仓页（页签唯一）。"""
+        """一轮：REFRESH 依次查；前 PAIRED 样（成交、持仓）两次查询之间又有成交即对不上，连查至多 SYNC_TRIES 遍，
+        仍不对留给前端标出；查完回持仓页。撤单页上另画着一个撤单动作键，故切去时须在持仓页（页签唯一）。"""
         if ui.UI.who:
             self._note(step=f"等界面（{ui.UI.who}）")
         with ui.UI("刷新"):
             with self.lock:
                 self._load()
             for _ in range(SYNC_TRIES):
-                for key, tab, _ in SOURCES:
-                    self._note(step=tab)
-                    old = getattr(self.st, key)
-                    ui.click_tool(tab)
-                    ui.click_tool("刷新")
-                    self._fresh(key, memcommon.wait(old))
+                self._steps(REFRESH[:PAIRED])
                 if board.synced(self.st):
                     break
-            self._note(step="挂单")
-            self._fresh(
-                "orders",
-                memcommon.ask(memorders, lambda: (ui.click_tool("撤单"), ui.click_tool("刷新"))),
-            )
-            self._note(step="信用账户")
-            self._fresh("acct", credit.account(self.st.pos))
+            self._steps(REFRESH[PAIRED:])
             ui.click_tool("持仓")
 
     def _tick(self):
@@ -221,7 +249,9 @@ class Hub:
         while True:
             try:
                 self._tick()
-            except Exception as e:  # 错误边界：起因判不了（State 自相矛盾）也只报在进度里
+            except (
+                Exception
+            ) as e:  # 错误边界：起因判不了（State 自相矛盾）也只报在进度里
                 self._note(step=None, err=err(e))
                 time.sleep(1)
 

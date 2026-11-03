@@ -231,11 +231,6 @@
           <div class="panel" style="flex: 1">
             <h2>
               K 线 · 盘口
-              <span
-                id="kRanges"
-                class="tabbar"
-                style="display: inline-flex; margin-left: 8px"
-              ></span>
               <span class="kv">(点持仓表的行选股)</span>
             </h2>
             <div class="row">
@@ -243,9 +238,12 @@
               <span id="kErr"></span>
             </div>
             <div class="kgrid">
-              <div class="kbox"><canvas id="kDay"></canvas></div>
+              <span id="kMinRanges" class="tabbar"></span>
+              <span class="kv">盘口</span>
+              <span id="kDayRanges" class="tabbar"></span>
               <div class="kbox"><canvas id="kMin"></canvas></div>
               <div id="book"></div>
+              <div class="kbox"><canvas id="kDay"></canvas></div>
             </div>
           </div>
         </div>

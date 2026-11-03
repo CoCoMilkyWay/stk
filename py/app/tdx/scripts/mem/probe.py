@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# mem/probe — 探内存布局（只读）：给新方案（资金 / 标的 / …）找块、定列。
+# mem/probe — 探内存布局（只读）：给新表找块、定列。
 #   无参数  列出堆里全部明文表（首行 0|…|，\r\n 分行、| 分列、GBK）：址 / 表头 / 行数 / 列数 / 前几行，
 #           同表头同首行的副本只列一次并计数；
 #   带参数  逐个在堆里找该文本（GBK、UTF-16LE 两种编码），列出各处址与前后字节（GBK 解码，控制字符转义）。
@@ -23,7 +23,9 @@ CONTEXT = 300  # 文本命中前后各取的字节数
 
 def _esc(raw, enc="gbk"):
     s = raw.decode(enc, errors="replace")
-    return "".join(c if c.isprintable() else f"\\x{ord(c):02x}" if ord(c) < 256 else c for c in s)
+    return "".join(
+        c if c.isprintable() else f"\\x{ord(c):02x}" if ord(c) < 256 else c for c in s
+    )
 
 
 def tables(pid):
@@ -38,9 +40,14 @@ def tables(pid):
             seen[key] = [lo + m.start(), 1, lines]
     for addr, n, lines in seen.values():
         cols = sorted({ln.count(b"|") + 1 for ln in lines[1:]})
-        print(f"== {addr:#x}  副本 {n}  行 {len(lines) - 1}  列 {cols}  表头 {_esc(lines[0])}")
+        print(
+            f"== {addr:#x}  副本 {n}  行 {len(lines) - 1}  列 {cols}  表头 {_esc(lines[0])}"
+        )
         for ln in lines[1 : 1 + SHOW_ROWS]:
-            print("   " + " | ".join(f"{i}:{c}" for i, c in enumerate(_esc(ln).split("|"))))
+            print(
+                "   "
+                + " | ".join(f"{i}:{c}" for i, c in enumerate(_esc(ln).split("|")))
+            )
 
 
 def texts(pid, words):

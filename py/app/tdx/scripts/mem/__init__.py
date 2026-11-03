@@ -1,3 +1,3 @@
-# mem — 读 TdxW.exe 内存里解密后数据的"方案"集合。
-# 这些方案都是 customize 的（依赖具体内存布局），不属于通用 UI 基建；
-# 每种数据（持仓 / 资金 / …）各用一个文件单独维护，共享底座在 common.py。
+# mem — 读 TdxW.exe 内存里解密后的明文表。
+# 各表依赖具体内存布局（customize），不属于通用 UI 基建；
+# 声明并排在 tables.py，底座与流程在 common.py，探布局在 probe.py。

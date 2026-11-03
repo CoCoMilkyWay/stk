@@ -28,11 +28,13 @@ import shutil
 import threading
 import time
 
-from . import ROOT, sina
+from mem.common import MARKETS
+
+from . import ROOT, load_csv, save_csv, sina
 
 DATA_DIR = os.path.join(ROOT, "data", "kline")
-CSV_HEAD = "time,open,high,low,close,volume\n"
-CSV_NAME = re.compile(r"(sh|sz)\d{6}\.csv")
+CSV_HEAD = ("time", "open", "high", "low", "close", "volume")
+CSV_NAME = re.compile(rf"({'|'.join(MARKETS.values())})\d{{6}}\.csv")
 OVERLAP = 3
 VOL_FLOOR = 0.95
 
@@ -61,26 +63,6 @@ def _check(what, bars, kind):
         assert kind.valid(t), f"{what} {kind.name} 标号 {t} 不合法"
         assert l <= min(o, c) and max(o, c) <= h and v >= 0, f"{what} {t} OHLC 不自洽"
     return bars
-
-
-def _load(path, kind):
-    """读一个 CSV 并校验；没有文件回 []。"""
-    if not os.path.exists(path):
-        return []
-    with open(path, encoding="utf-8") as f:
-        assert f.readline() == CSV_HEAD, f"{path} 表头不对"
-        return _check(path, [_bar(*ln.rstrip("\n").split(",")) for ln in f], kind)
-
-
-def _save(path, bars):
-    """整写：先写临时文件再改名，中途断掉不留半个文件。"""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".tmp", "w", encoding="utf-8") as f:
-        f.write(CSV_HEAD)
-        f.writelines(
-            f"{t},{o:.3f},{h:.3f},{l:.3f},{c:.3f},{v}\n" for t, o, h, l, c, v in bars
-        )
-    os.replace(path + ".tmp", path)
 
 
 def _splice(sym, old, new, full):
@@ -116,10 +98,16 @@ class Kind:
         return os.path.join(DATA_DIR, self.name, sym + ".csv")
 
     def load(self, sym):
-        return _load(self.path(sym), self)
+        """读盘并校验；没有文件回 []。"""
+        p = self.path(sym)
+        return _check(p, [_bar(*r) for r in load_csv(p, CSV_HEAD) or []], self)
 
     def save(self, sym, bars):
-        _save(self.path(sym), bars)
+        rows = (
+            (t, f"{o:.3f}", f"{h:.3f}", f"{l:.3f}", f"{c:.3f}", v)
+            for t, o, h, l, c, v in bars
+        )
+        save_csv(self.path(sym), CSV_HEAD, rows)
 
     def label(self, t):
         return time.strftime(self.fmt, time.localtime(t))

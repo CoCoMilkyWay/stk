@@ -11,42 +11,39 @@
 #   买入：名单里可作担保品买入的（否则不可买：不在担保品表 / 担保状态非正常 / 北交所）等权补到共同目标市值 V，
 #     缺口 need = max(0, V − 卖后市值)，多了不卖。融资标的先融资：按保证金比例从低到高分，
 #     Σ 比例 × 融资额 ≤ X'、Σ 融资额 ≤ L；其余（含融不到的部分）用现金，现金买入 + 全部买入费用 ≤ C'。
-#     V 二分到可行的最大。
+#     现金需求随 V 不减、随并入的只数不减，故 V 二分到可行的最大（精度 TOL），并入下一只时以上一个 V 为上界。
 #   入选：先融资标的、后其余，各按排名逐只试并入，并入后的 V 下未开仓的（卖后市值不足一个最小单元）缺口都够一个最小单元才收，否则跳过；
 #     最小单元 = max(起买股数, unit / 参考价) 取整步长的股数 × 委托价。购买力少时只开融资标的里排名靠前的，多了即铺开、近于等权。
 #   下单：缺口按委托价折股、取整手，不足起买量或不足 unit 的单不做；预期行使购买力 = Σ 买单额（参考价计）。
+#     卖单与买单同形：各行 {order 单, skip 不做的原因}，持仓行一单、名单行融资 / 现金两腿。
 #   成本 = 各单按 5 档吃出的滑点（相对参考价，竞价中计 0）+ 费用（佣金万 1 双向、印花税 0.05% 卖、过户费 0.001% 双向）。
-#   预期总资产 = 现总资产 + 融资额 − 成本，预期净资产 = 现净资产 − 成本，杠杆 = 总资产 / 净资产，
-#   维持担保比例 = 总资产 / 负债。现总资产 = 读时现金 + 现持仓市值。
+#   账户现 / 调仓后两栏同形（_sheet）：预期总资产 = 现总资产 + 融资额 − 成本，预期净资产 = 现净资产 − 成本，
+#     杠杆 = 总资产 / 净资产，维持担保比例 = 总资产 / 负债。现总资产 = 读时现金 + 现持仓市值。
 # 账户取自持仓推送的 State（刷新一轮里接在持仓之后查），试算有什么用什么，账户新旧由持仓页进度标出。
-# 后台事务一次一件（拉条款 / 执行），状态与日志推给页面：
+# 后台事务一次一件（拉条款 / 执行，feed.Jobs），状态与日志（feed.Journal，logs/reb-<时刻>.jsonl）推给页面：
 #   执行 = 刷新 → 还有挂单即停（免得重复下单、冻结的钱券没算进试算）→ 试算 → 卖单逐只闪电卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 →
 #   融资单逐只闪电融资买入 → 现金单逐只闪电买入 → 刷新。
-#   每单 order.ORDERS.place，任一步失败即停（已下的单不撤）；全程逐条写 logs/reb-<时刻>.jsonl。
+#   每单 order.ORDERS.place，任一步失败即停（已下的单不撤）。
 
 import collections
-import json
 import math
 import os
 import re
-import threading
 import time
 
-from mem.common import BUY, SELL
-from mem.fills import NO_FLOW
+from mem.common import BJ, BUY, SELL, sec
+from mem.tables import NO_FLOW
 
 from . import ROOT, book, credit
-from .feed import Feed, err
+from .feed import Feed, Jobs, Journal, err
 from .hub import HUB
 from .order import ORDERS
 
 LIST_DIR = os.path.join(ROOT, "lists")
-LOG_DIR = os.path.join(ROOT, "logs")
 COMMISSION, STAMP, TRANSFER = 1e-4, 5e-4, 1e-5
-BJ = 60
 FILL_WAIT, FILL_GAP = 120, 2  # 等卖单成交：最长秒数、每轮间隔
 LOG_TAIL = 200  # 推给页面的最近日志条数
-SEARCH = 40  # V 二分次数
+TOL = 1.0  # V 二分精度（元）
 
 
 def fee(amt, s):
@@ -85,17 +82,17 @@ def _why(t):
     return None
 
 
-def _leg(q, s, n, lot, px, unit, credit_, sec):
-    """一单 n 股：参考价计额、5 档吃出滑点；不足 lot 股或不足 unit 元回原因串。"""
+def _leg(q, s, n, lot, px, unit, credit_, x):
+    """证券 x 一单 n 股 → (单, None)：参考价计额、5 档吃出滑点；不足 lot 股或不足 unit 元 → (None, 原因)。"""
     r = book.ref(q)
     amt = n * r
     if n < lot:
-        return f"不足一手（{lot} 股）"
+        return None, f"不足一手（{lot} 股）"
     if amt < unit:
-        return "不足最小单元"
+        return None, "不足最小单元"
     slip, full = book.cost(q, s, amt)
     return {
-        **sec,
+        **x,
         "s": s,
         "credit": credit_,
         "qty": n,
@@ -104,14 +101,14 @@ def _leg(q, s, n, lot, px, unit, credit_, sec):
         "slip": slip or 0.0,
         "fee": fee(amt, s),
         "full": full,
-    }
+    }, None
 
 
-def _sells(st, cfg):
-    """卖单与各持仓行（带卖出设置）→ (行, 卖单)。"""
-    rows, orders = [], []
+def _sells(st, terms, cfg):
+    """各持仓行（带可融、卖出设置与卖单）→ (行, 卖单)。"""
+    rows = []
     for code, h in st.pos.by_code.items():
-        q = st.quotes[code]
+        q, t = st.quotes[code], terms.get(code)
         px = book.ref(q)
         v = cfg["sells"].get(code, 0)
         lot, step = book.lot(code)
@@ -119,6 +116,7 @@ def _sells(st, cfg):
         row = {
             "code": code,
             "name": h["name"],
+            "financeable": bool(t and t.financeable),
             "value": h["balance"] * q["price"],
             "sellable": avail * px,
             "avail": avail,
@@ -131,10 +129,11 @@ def _sells(st, cfg):
         }
         if v > 0:
             n = min(v, avail)
-            assert n == avail or n % step == 0, f"{code} 卖 {n} 股不是 {step} 股的整数倍"
-            sec = {k: h[k] for k in ("code", "name", "market_flag")}
+            assert (
+                n == avail or n % step == 0
+            ), f"{code} 卖 {n} 股不是 {step} 股的整数倍"
             # 全部可卖可含零股
-            o = _leg(
+            row["order"], row["skip"] = _leg(
                 q,
                 SELL,
                 n,
@@ -142,15 +141,28 @@ def _sells(st, cfg):
                 book.order_px(q, SELL, cfg["px"]) or px,
                 cfg["unit"],
                 "plain",
-                sec,
+                sec(h),
             )
-            if isinstance(o, str):
-                row["skip"] = o
-            else:
-                row["order"] = o
-                orders.append(o)
         rows.append(row)
-    return rows, orders
+    return rows, [r["order"] for r in rows if r["order"]]
+
+
+def _targets(codes, terms, quotes, bal, cfg):
+    """可买的各只 → {代码: {held 卖后市值, ratio 融资保证金比例（非融资标的为 None）, px 委托价, min 最小单元}}。"""
+    tgt = {}
+    for c in codes:
+        t, q = terms[c], quotes[c]
+        r = book.ref(q)
+        assert r, f"{c} {t.name} 没有参考价"
+        px = book.order_px(q, BUY, cfg["px"]) or r
+        lot, step = book.lot(c)
+        tgt[c] = {
+            "held": bal.get(c, 0.0) * q["price"],
+            "ratio": t.ratio if t.financeable else None,
+            "px": px,
+            "min": math.ceil(max(lot, cfg["unit"] / r) / step) * step * px,
+        }
+    return tgt
 
 
 def _fill(V, tgt, X, L):
@@ -166,12 +178,10 @@ def _fill(V, tgt, X, L):
     return need, fin, total - sum(fin.values()) + fee(total, BUY)
 
 
-def _level(tgt, C, X, L):
-    """tgt 等权补齐可行的最大目标市值 V（二分）。"""
-    if not tgt:
-        return 0.0
-    lo, hi = 0.0, max(x["held"] for x in tgt.values()) + C + L
-    for _ in range(SEARCH):
+def _level(tgt, C, X, L, hi):
+    """tgt 等权补齐可行的最大目标市值 V：在 [0, hi] 里二分到 TOL。"""
+    lo = 0.0
+    while hi - lo > TOL:
         mid = (lo + hi) / 2
         lo, hi = (mid, hi) if _fill(mid, tgt, X, L)[2] <= C else (lo, mid)
     return lo
@@ -180,55 +190,23 @@ def _level(tgt, C, X, L):
 def _pick(tries, tgt, C, X, L):
     """按 tries 的先后逐只试并入（见文件头）→ (入选的 {代码: …}，按保证金比例排, V)。"""
     by_ratio = sorted(tgt, key=lambda c: tgt[c]["ratio"] or 0)
-    picked, V = set(), 0.0
+    picked = set()
+    V = max((x["held"] for x in tgt.values()), default=0.0) + C + L
     for c in tries:
         s = {k: tgt[k] for k in by_ratio if k in picked or k == c}
-        v = _level(s, C, X, L)
+        v = _level(s, C, X, L, V)
         if all(v - x["held"] >= x["min"] for x in s.values() if x["held"] < x["min"]):
             picked.add(c)
             V = v
-    return {k: tgt[k] for k in by_ratio if k in picked}, V
+    return {k: tgt[k] for k in by_ratio if k in picked}, V if picked else 0.0
 
 
-def plan(st, terms, codes, cfg):
-    """试算一帧（见文件头）；行情还没覆盖到的回 {wait}。"""
-    held, quotes, acct = st.pos.by_code, st.quotes, st.acct
-    ok = [c for c in codes if not _why(terms.get(c))]
-    lack = [c for c in [*held, *ok] if c not in quotes]
-    if lack:
-        return {"wait": f"等行情（{len(lack)} 只，如 {lack[0]}）"}
-    unit, pct = cfg["unit"], cfg["pct"] / 100
-
-    hold_rows, sells = _sells(st, cfg)
-    proceeds = sum(o["amount"] - o["slip"] - o["fee"] for o in sells)
-    bal = credit.balances(st.pos)
-    for o in sells:
-        bal[o["code"]] -= o["qty"]
-    C = acct.cash + proceeds
-    X = credit.avail(acct, bal, quotes, terms) + proceeds
-    L = max(0.0, acct.line)
-    power = C + min(L, max(0.0, X))
-
-    tgt = {}
-    for c in ok:
-        t, q = terms[c], quotes[c]
-        r = book.ref(q)
-        assert r, f"{c} {t.name} 没有参考价"
-        px = book.order_px(q, BUY, cfg["px"]) or r
-        lot, step = book.lot(c)
-        tgt[c] = {
-            "held": bal.get(c, 0.0) * q["price"],
-            "ratio": t.ratio if t.financeable else None,
-            "px": px,
-            "min": math.ceil(max(lot, unit / r) / step) * step * px,
-        }
-    tries = sorted(ok, key=lambda c: tgt[c]["ratio"] is None)
-    picked, V = _pick(tries, tgt, C * pct, X * pct, L * pct)
-    need, fin, _ = _fill(V, picked, X * pct, L * pct)
-
-    rows, buys = [], {"margin": [], "plain": []}
+def _buys(codes, terms, quotes, tgt, picked, need, fin, unit):
+    """名单各行（带融资 / 现金两腿 {credit, want, order, skip}）→ (行, 买单)，买单融资在前。"""
+    rows, buys = [], []
     for i, c in enumerate(codes, 1):
-        t, why = terms.get(c), _why(terms.get(c))
+        t = terms.get(c)
+        why = _why(t)
         row = {
             "rank": i,
             "code": c,
@@ -249,57 +227,77 @@ def plan(st, terms, codes, cfg):
             continue
         q, px = quotes[c], tgt[c]["px"]
         lot, step = book.lot(c)
-        a, f = need[c], fin.get(c, 0.0)
-        row["need"] = a
-        sec = {"code": c, "name": t.name, "market_flag": t.market_flag}
-        for cr, part in (("margin", f), ("plain", a - f)):
+        row["need"] = need[c]
+        f = fin.get(c, 0.0)
+        for cr, part in (("margin", f), ("plain", need[c] - f)):
             if part <= 0:
                 continue
             n = int(part / px) // step * step
-            o = _leg(q, BUY, n, lot, px, unit, cr, sec)
-            row["legs"].append(
-                {"credit": cr, "want": part}
-                | (
-                    {"skip": o}
-                    if isinstance(o, str)
-                    else {"qty": o["qty"], "amount": o["amount"]}
-                )
-            )
-            if not isinstance(o, str):
-                buys[cr].append(o)
+            o, skip = _leg(q, BUY, n, lot, px, unit, cr, sec(t._asdict()))
+            row["legs"].append({"credit": cr, "want": part, "order": o, "skip": skip})
+            if o:
+                buys.append(o)
+    return rows, sorted(buys, key=lambda o: o["credit"] != "margin")
 
-    orders = [*sells, *buys["margin"], *buys["plain"]]
-    F = sum(o["amount"] for o in buys["margin"])
-    use = F + sum(o["amount"] for o in buys["plain"])
-    cost = sum(o["slip"] + o["fee"] for o in orders)
-    mv = sum(h["balance"] * quotes[c]["price"] for c, h in held.items())
-    assets = acct.cash + mv
-    net = assets - acct.debt
-    exp_assets, exp_net, exp_debt = assets + F - cost, net - cost, acct.debt + F
-    buy_cost = sum(o["slip"] + o["fee"] for o in [*buys["margin"], *buys["plain"]])
+
+def _sheet(assets, net, debt, cash, X, L):
+    """账户一栏：总资产 / 净资产 / 负债 / 现金 / 可用保证金 / 可融余量，及杠杆、维持担保比例。"""
     return {
-        "now": {
-            "assets": assets,
-            "net": net,
-            "debt": acct.debt,
-            "cash": acct.cash,
-            "X": credit.avail(acct, credit.balances(st.pos), quotes, terms),
-            "L": L,
-            "lev": assets / net,
-            "maint": assets / acct.debt if acct.debt else None,
-        },
+        "assets": assets,
+        "net": net,
+        "debt": debt,
+        "cash": cash,
+        "X": X,
+        "L": L,
+        "lev": assets / net,
+        "maint": assets / debt if debt else None,
+    }
+
+
+def plan(st, terms, codes, cfg):
+    """试算一帧（见文件头）；行情还没覆盖到的回 {wait}。"""
+    held, quotes, acct = st.pos.by_code, st.quotes, st.acct
+    ok = [c for c in codes if not _why(terms.get(c))]
+    lack = [c for c in [*held, *ok] if c not in quotes]
+    if lack:
+        return {"wait": f"等行情（{len(lack)} 只，如 {lack[0]}）"}
+    pct = cfg["pct"] / 100
+
+    holds, sells = _sells(st, terms, cfg)
+    proceeds = sum(o["amount"] - o["slip"] - o["fee"] for o in sells)
+    bal = credit.balances(st.pos)
+    for o in sells:
+        bal[o["code"]] -= o["qty"]
+    C = acct.cash + proceeds
+    X = credit.avail(acct, bal, quotes, terms) + proceeds
+    L = max(0.0, acct.line)
+
+    tgt = _targets(ok, terms, quotes, bal, cfg)
+    tries = sorted(ok, key=lambda c: tgt[c]["ratio"] is None)
+    picked, V = _pick(tries, tgt, C * pct, X * pct, L * pct)
+    need, fin, _ = _fill(V, picked, X * pct, L * pct)
+    targets, buys = _buys(codes, terms, quotes, tgt, picked, need, fin, cfg["unit"])
+
+    orders = [*sells, *buys]
+    F = sum(o["amount"] for o in buys if o["credit"] == "margin")
+    use = sum(o["amount"] for o in buys)
+    cost = sum(o["slip"] + o["fee"] for o in orders)
+    buy_cost = sum(o["slip"] + o["fee"] for o in buys)
+    assets = acct.cash + sum(h["balance"] * quotes[c]["price"] for c, h in held.items())
+    net = assets - acct.debt
+    X_now = credit.avail(acct, credit.balances(st.pos), quotes, terms)
+    return {
+        "now": _sheet(assets, net, acct.debt, acct.cash, X_now, L),
         # 调仓后：可用保证金要按买后持仓与负债重算，不出
-        "exp": {
-            "assets": exp_assets,
-            "net": exp_net,
-            "debt": exp_debt,
-            "cash": C - (use - F) - buy_cost,
-            "X": None,
-            "L": L - F,
-            "lev": exp_assets / exp_net,
-            "maint": exp_assets / exp_debt if exp_debt else None,
-        },
-        "power": power,
+        "exp": _sheet(
+            assets + F - cost,
+            net - cost,
+            acct.debt + F,
+            C - (use - F) - buy_cost,
+            None,
+            L - F,
+        ),
+        "power": C + min(L, max(0.0, X)),
         "use": use,
         "financed": F,
         "cost": cost,
@@ -307,27 +305,11 @@ def plan(st, terms, codes, cfg):
         "V": V,
         "picked": len(picked),
         "buyable": len(ok),
-        "holds": hold_rows,
-        "targets": rows,
+        "holds": holds,
+        "targets": targets,
         "orders": orders,
         "time": max((q["time"] for q in quotes.values()), default=""),
     }
-
-
-class Log:
-    """一次事务一份 logs/reb-<时刻>.jsonl，每条 {t, ev, …}，同时留给页面；
-    live(**kw) 只给页面的实时进度（覆盖上一份，不落盘）。"""
-
-    def __init__(self, tail, live):
-        os.makedirs(LOG_DIR, exist_ok=True)
-        self.path = os.path.join(LOG_DIR, time.strftime("reb-%Y%m%d-%H%M%S.jsonl"))
-        self.f = open(self.path, "w", encoding="utf-8", buffering=1)
-        self.tail, self.live = tail, live
-
-    def __call__(self, ev, **kw):
-        rec = {"t": time.strftime("%H:%M:%S"), "ev": ev, **kw}
-        self.f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-        self.tail(rec)
 
 
 class Rebal:
@@ -344,19 +326,21 @@ class Rebal:
         }
         self.codes = read_list(names[0]) if names else []
         self.plan = None
-        # 后台事务 {name, state: run|ok|err, msg, file, log, live 实时进度}
-        self.task = None
         self.feed = Feed(lambda seen: self._frame())
+        # 后台事务（留最近一件）{name, file, live 实时进度, …} 与其日志
+        self.jobs, self.log = Jobs(self.feed, 1), None
         self._watch()
         HUB.hooks.append(self._calc)
 
     def _frame(self):
+        task = self.jobs.last()
         return {
             "lists": lists(),
             "cfg": self.cfg,
+            "codes": self.codes,
             "terms": len(self.terms) if self.terms else None,
             "plan": self.plan,
-            "task": self.task,
+            "task": task and task | {"log": self.log.since(-1)},
         }
 
     def frames(self):
@@ -365,13 +349,13 @@ class Rebal:
             yield from self.feed.watch()
 
     def _watch(self):
-        """名单里能取行情的并进持仓页那一路行情。"""
+        """名单里可买的（试算要其行情）并进持仓页那一路行情。"""
         t = self.terms or {}
         HUB.watch(
             [
                 {"code": c, "market_flag": t[c].market_flag}
                 for c in self.codes
-                if c in t and t[c].market_flag != BJ
+                if not _why(t.get(c))
             ]
         )
 
@@ -422,44 +406,28 @@ class Rebal:
 
     def _start(self, name, fn):
         with self.feed:
-            assert not (
-                self.task and self.task["state"] == "run"
-            ), f"「{self.task['name']}」还在跑"
-            self.task = {
-                "name": name,
-                "state": "run",
-                "msg": "",
-                "file": None,
-                "log": [],
-                "live": None,
-            }
-        threading.Thread(target=self._task, args=(fn,), daemon=True).start()
+            job = self.jobs.open(name=name, live=None)
+            self.log = Journal("reb", self.feed, LOG_TAIL)
+            job["file"] = self.log.path
+        self.jobs.spawn(job, lambda job: self._task(job, fn))
         return {}
 
-    def _tail(self, rec):
-        with self.feed:
-            self.task["log"] = [*self.task["log"], rec][-LOG_TAIL:]
-
     def _live(self, **kw):
-        with self.feed:
-            self.task["live"] = kw
+        self.jobs.put(self.jobs.last(), live=kw)
 
-    def _task(self, fn):
-        log = Log(self._tail, self._live)
-        with self.feed:
-            self.task["file"] = log.path
+    def _task(self, job, fn):
+        log = self.log
         try:
             with HUB.sub():
                 fn(log)
             log("ok")
-            state, msg = "ok", ""
-        except Exception as e:  # 错误边界：停在这一步，报原因（已下的单不撤）
+        except Exception as e:  # 记下原因，再交给 Jobs 停在这一步（已下的单不撤）
             log("err", err=err(e))
-            state, msg = "err", err(e)
-        log.f.close()
-        with self.feed:
-            self.task |= {"state": state, "msg": msg, "live": None}
-        self._calc(HUB.state())
+            raise
+        finally:
+            log.close()
+            self.jobs.put(job, live=None)
+            self._calc(HUB.state())
 
     def pull(self, b):
         return self._start("更新两融名单", self._pull)
@@ -469,7 +437,7 @@ class Rebal:
 
     def _pull(self, log):
         log("pull")
-        terms = credit.pull(log)
+        terms = credit.pull(log, self._live)
         log(
             "terms",
             n=len(terms),
@@ -484,7 +452,10 @@ class Rebal:
         """刷新一轮（成交、持仓、挂单、信用账户），记下账户。"""
         HUB.sync()
         a = HUB.state().acct
-        log("acct", acct={k: v for k, v in a._asdict().items() if k not in ("bal", "px")})
+        log(
+            "acct",
+            acct={k: v for k, v in a._asdict().items() if k not in ("bal", "px")},
+        )
 
     def _plan(self, log):
         assert self.terms, "当日两融条款还没拉"
@@ -495,8 +466,7 @@ class Rebal:
 
     def _place(self, log, o):
         log("order", order=o)
-        sec = {k: o[k] for k in ("code", "name", "market_flag")}
-        job = ORDERS.place(sec, o["s"], o["qty"], self.cfg["px"], o["credit"])
+        job = ORDERS.place(sec(o), o["s"], o["qty"], self.cfg["px"], o["credit"])
         log("job", job=job)
         assert job["state"] == "ok", f"{o['code']} {o['name']} 下单失败：{job['msg']}"
         return job
@@ -521,7 +491,9 @@ class Rebal:
         hang = HUB.state().orders.rows
         assert not hang, (
             f"还有 {len(hang)} 笔未成交委托（"
-            + "、".join(f"{r['code']} {r['name']} {r['qty'] - r['filled']:.0f}股" for r in hang)
+            + "、".join(
+                f"{r['code']} {r['name']} {r['qty'] - r['filled']:.0f}股" for r in hang
+            )
             + "），撤掉或等成交后再调仓"
         )
         p = self._plan(log)

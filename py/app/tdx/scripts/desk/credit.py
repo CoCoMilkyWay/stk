@@ -14,38 +14,38 @@
 #   公式与券商口径差几千元，现值按读时校准：X = 读时客户端 X + S(现在) − S(读时)。
 
 import collections
-import csv
 import glob
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from mem import collat, common, credit, debts, margin
+from mem import common, tables
 
-from . import ROOT, sina, ui
+from . import ROOT, load_csv, sina, save_csv, ui
 
 DIR = os.path.join(ROOT, "data", "credit")
-# (功能树项, 认页的表头列, 方案)
+# (功能树项, 认页的表头列, 表)
 PAGES = (
-    ("标的证券查询", "融资保证金比例", margin),
-    ("担保品查询", "担保折算率", collat),
+    ("标的证券查询", "融资保证金比例", tables.MARGIN),
+    ("担保品查询", "担保折算率", tables.COLLAT),
 )
 FULL_WAIT = 300  # 查询全部最长等多久（秒）
 LIVE_GAP = 1  # 拼表期间读内存、报实时进度的间隔（秒）
 NORMAL = "正常"
-Term = collections.namedtuple(
-    "Term", "code name market_flag ratio financeable rate pledgeable"
-)
-TERM_TYPES = (
-    str,
-    str,
-    int,
-    lambda s: float(s) if s else None,
-    lambda s: s == "1",
-    float,
-    lambda s: s == "1",
-)
+# 条款各字段 → (落盘, 读盘)
+# fmt: off
+TERM = {
+    "code":        (str,                                       str),
+    "name":        (str,                                       str),
+    "market_flag": (str,                                       int),
+    "ratio":       (lambda v: "" if v is None else v,          lambda s: float(s) if s else None),
+    "financeable": (int,                                       lambda s: s == "1"),
+    "rate":        (str,                                       float),
+    "pledgeable":  (int,                                       lambda s: s == "1"),
+}
+# fmt: on
+Term = collections.namedtuple("Term", TERM)
 # 读时：时刻、担保资产、可融额度余量（最高融资额度 − 融资负债含费用）、负债总额、净资产、
 # 可用保证金、现金、{代码: (负债数量, 负债金额)}、同一轮持仓 {代码: 股}、读完即取的现价 {代码: 价}
 Acct = collections.namedtuple("Acct", "at assets line debt net avail cash debts bal px")
@@ -55,13 +55,13 @@ def _path(day):
     return os.path.join(DIR, f"terms-{day}.csv")
 
 
-def _full(log, func, col, scheme):
+def _full(log, live, func, col, t):
     """开 func 页、点查询全部，等内存整表行数到页上条数 → {(沪深标志, 代码): 行}。
-    进度：开页、点查询全部、（页上条数, 内存行数）每变一次记 log；开页时报 log.live {func}，
+    进度：开页、点查询全部、（页上条数, 内存行数）每变一次记 log；开页时报 live {func}，
     拼表期间每 LIVE_GAP 秒报 {func, s 已等秒数, got 内存行数, n 页上条数, hung 条数标签多久没读到}。
     条数标签经客户端界面线程读，客户端卡着时读不动，故另起线程读；内存直接读，不受卡顿影响。"""
     log("page", func=func)
-    log.live(func=func)
+    live(func=func)
     dlg = ui.open_page(func, col)
     lbl = ui.count_label(dlg)
     ui.command(dlg, ui.PAGE_ALL)
@@ -82,9 +82,9 @@ def _full(log, func, col, scheme):
                 if fut.done():
                     fut.result()  # poll 不到 stop 不会结束，结束即出错，在此抛出
                 n, at = label
-                rows = common.read([scheme])[0].by_code
+                rows = common.read([t])[0].by_code
                 now = time.monotonic()
-                log.live(
+                live(
                     func=func,
                     s=round(now - t0),
                     got=len(rows),
@@ -104,11 +104,6 @@ def _full(log, func, col, scheme):
             stop.set()
 
 
-def _market(code):
-    """股票 / 基金代码的沪深标志：北 4 / 8 / 92 开头，沪 5 / 6 / 9，其余深。"""
-    return 60 if code.startswith(("4", "8", "92")) else 1 if code[0] in "569" else 0
-
-
 def _term(key, mg, co):
     m, c = mg.get(key), co.get(key)
     x = c or m
@@ -124,23 +119,23 @@ def _term(key, mg, co):
 
 
 def _merge(mg, co):
-    """两表 {(沪深标志, 代码): 行} → {代码: Term}；跨市场同号的（沪市债券与深市基金）只留 _market 那只。"""
+    """两表 {(沪深标志, 代码): 行} → {代码: Term}；跨市场同号的（沪市债券与深市基金）只留 common.market 那只。"""
     keys = collections.defaultdict(list)
     for k in sorted(mg.keys() | co.keys()):
         keys[k[1]].append(k)
     out = {}
     for code, ks in keys.items():
         if len(ks) > 1:
-            ks = [k for k in ks if k[0] == _market(code)]
+            ks = [k for k in ks if k[0] == common.market(code)]
             assert len(ks) == 1, f"{code} 跨市场同号，按代码定不出市场"
         out[code] = _term(ks[0], mg, co)
     return out
 
 
-def pull(log):
-    """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}；log(ev, **kw) 记进度、log.live(**kw) 报实时进度。"""
+def pull(log, live):
+    """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}；log(kind, **kw) 记进度、live(**kw) 报实时进度。"""
     with ui.UI("两融条款"):
-        mg, co = (_full(log, *p) for p in PAGES)
+        mg, co = (_full(log, live, *p) for p in PAGES)
         ui.click_tool("持仓")
     terms = _merge(mg, co)
     _save(terms)
@@ -148,36 +143,25 @@ def pull(log):
 
 
 def _save(terms):
-    os.makedirs(DIR, exist_ok=True)
-    day = time.strftime("%Y%m%d")
-    with open(_path(day) + ".tmp", "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(Term._fields)
-        for t in terms.values():
-            w.writerow(
-                ["" if v is None else int(v) if isinstance(v, bool) else v for v in t]
-            )
-    os.replace(_path(day) + ".tmp", _path(day))
-    for p in glob.glob(_path("*")):
-        if p != _path(day):
-            os.remove(p)
+    p = _path(time.strftime("%Y%m%d"))
+    save_csv(
+        p, TERM, ([w(v) for (w, _), v in zip(TERM.values(), t)] for t in terms.values())
+    )
+    for old in glob.glob(_path("*")):
+        if old != p:
+            os.remove(old)
 
 
 def load():
     """当日落盘的条款 → {代码: Term}；当日还没拉过回 None。"""
-    p = _path(time.strftime("%Y%m%d"))
-    if not os.path.exists(p):
+    rows = load_csv(_path(time.strftime("%Y%m%d")), TERM)
+    if rows is None:
         return None
-    with open(p, encoding="utf-8") as f:
-        r = csv.reader(f)
-        assert next(r) == list(Term._fields), f"{p} 表头不对"
-        return {
-            t.code: t
-            for t in (
-                Term(*(conv(v) for conv, v in zip(TERM_TYPES, row, strict=True)))
-                for row in r
-            )
-        }
+    terms = (
+        Term(*(r(s) for (_, r), s in zip(TERM.values(), row, strict=True)))
+        for row in rows
+    )
+    return {t.code: t for t in terms}
 
 
 def surplus(bal, debts_, px, terms):
@@ -202,8 +186,8 @@ def balances(pos):
 
 def account(pos):
     """客户端重查信用资产与融资负债 → Acct（须持 ui.UI，停在融资负债汇总页）；pos 为同一轮刚读的持仓。"""
-    c = common.ask(credit, lambda: ui.click_func("信用资产")).by_code
-    d = common.ask(debts, lambda: ui.click_func("融资负债汇总")).by_code
+    c = common.ask(tables.CREDIT, lambda: ui.click_func("信用资产")).by_code
+    d = common.ask(tables.DEBTS, lambda: ui.click_func("融资负债汇总")).by_code
     secs = {r["code"]: r for r in [*pos.by_code.values(), *d.values()]}
     return Acct(
         time.strftime("%H:%M:%S"),

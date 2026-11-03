@@ -77,11 +77,10 @@ const numCol = (h, k, f = fmt, sum = false) => [
   "num",
   sum ? (r) => f(sumOf(r, k)) : null,
 ];
-const GROUP_COLOR = {
-  green: "var(--green)",
-  red: "var(--red)",
-  "": "var(--hot)",
-};
+// 名称着色：今日清仓灰，在当前调仓名单里青，其余不着色
+const NAME_TIP = "名称：灰 = 今日清仓，青 = 在当前调仓名单里";
+const nameColor = (p) =>
+  p.closed ? "var(--mut)" : REB?.codes.includes(p.code) ? "var(--acc)" : "";
 // 当日盈亏按成交自算；与持仓的今买今卖对不上时，相关行当日两列留空，合计标「不全」
 const DAY_GAP = "成交与持仓今买 / 今卖对不上，当日盈亏不全（点刷新）";
 const COL = {
@@ -93,31 +92,31 @@ const COL = {
     (r) => `合计 ${r.rows.filter((p) => !p.closed).length} 只`,
   ],
   name: [
-    "名称",
-    (p) => paint(GROUP_COLOR[p.group], esc(p.name)),
+    `<span data-tip="${NAME_TIP}">名称</span>`,
+    (p) => paint(nameColor(p), esc(p.name)),
     (p) => p.name,
   ],
   position_pct: numCol("仓位%", "position_pct", fmt, true),
   day_pnl_pct: numCol("当日盈亏%", "day_pnl_pct", fmtPnl),
   day_pnl: [
-    ...numCol("当日盈亏", "day_pnl", fmtPnl).slice(0, 4),
+    ...numCol("当日盈亏", "day_pnl", kwPnl).slice(0, 4),
     (r) =>
       r.synced
-        ? fmtPnl(sumOf(r, "day_pnl"))
+        ? kwPnl(sumOf(r, "day_pnl"))
         : `<span class="off" data-tip="${DAY_GAP}">不全</span>`,
   ],
   pnl_pct: numCol("盈亏%", "pnl_pct", fmtPnl),
-  pnl: numCol("盈亏", "pnl", fmtPnl, true),
-  market_value: numCol("总市值", "market_value", fmt, true),
-  margin_value: numCol("融资市值", "margin_value", fmt, true),
-  sellable_value: numCol("可卖市值", "sellable_value", fmt, true),
+  pnl: numCol("盈亏", "pnl", kwPnl, true),
+  market_value: numCol("总市值", "market_value", kw, true),
+  margin_value: numCol("融资市值", "margin_value", kw, true),
+  sellable_value: numCol("可卖市值", "sellable_value", kw, true),
   collateral: numCol("担保折算率", "collateral"),
 };
 
 // 持仓页：pos、ord 两路，服务端在内存或行情变了才推一帧；出错只改提示行，表留上一帧。
 // 刷新与定时都在服务端：POST /api/refresh 只是要一轮，不等；各样查完即推帧，进度随帧（prog）。
 // 一帧一份 rows（每只一行，含盘口）：持仓表即其列，行情页取其行。
-// 持仓表的卖出两列取自调仓帧，pos、reb 哪路来帧都重画（拖卖出滑杆时除外）
+// 持仓表的可融列与卖出两列取自调仓帧，pos、reb 哪路来帧都重画（拖卖出滑杆时除外）
 let POS = null;
 const drawPos = () =>
   POS && !REB_DRAG && table("#posTbl", posCols(POS), POS.rows, pickAttrs, POS);
@@ -131,44 +130,73 @@ function onPos(r) {
   posInfo(r);
   quoteFrame(r.rows);
 }
-// 持仓表上方一行：只数、总市值、盈亏、当日盈亏与成交核对、挂单、行情时刻、pid
+// 持仓表上方一行：持仓表里没有的代码的挂单、行情时刻、pid（合计在表尾，成交与挂单在状态列）
 function posInfo(r) {
   const info = $("posInfo");
   if (!r.rows.length) return void (info.textContent = "无持仓");
-  const t = r.totals;
-  const sync = r.synced
-    ? ` · 今日成交 ${r.fills} 笔`
-    : ` · <span class="off">${DAY_GAP}</span>`;
-  info.innerHTML =
-    `${r.rows.filter((p) => !p.closed).length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
-    ` · 盈亏 <b>${fmtPnl(t.pnl)}</b> · 当日盈亏 <b>${fmtPnl(t.day_pnl)}</b>` +
-    sync +
-    hangTxt(r.orders) +
-    ` · 行情 ${r.time} · pid ${r.pid}`;
-}
-// 挂单（撤单页的未成交委托）逐笔列出；还没查过为 null
-const hangTxt = (os) =>
-  os == null
-    ? ""
-    : !os.length
-      ? " · 无挂单"
-      : ` · 挂单 ${os.length} 笔：` +
-        os
+  const held = new Set(r.rows.map((p) => p.code));
+  const stray = (r.orders ?? []).filter((o) => !held.has(o.code));
+  info.innerHTML = [
+    stray.length &&
+      `挂单 ${stray.length} 笔：` +
+        stray
           .map(
             (o) =>
-              `${paint(SIDE[o.side].color, SIDE[o.side].name)} ${o.code} ${esc(o.name)} ` +
-              `${o.qty - o.filled}${o.filled ? `/${o.qty}` : ""}股 @${o.price} ${esc(o.status)}`,
+              `${paint(SIDE[o.side].color, SIDE[o.side].name)} ${o.code} ${esc(o.name)} ${esc(FLOW.orders.line(o))}`,
           )
-          .join("、");
-// 刷新进度：正做哪样（或等界面）、各样读于几时、上轮失败、账户是否读于持仓变动前
-const PROG_SRC = [
-  ["fills", "成交"],
-  ["pos", "持仓"],
-  ["orders", "挂单"],
-  ["acct", "账户"],
+          .join("、"),
+    `行情 ${r.time}`,
+    `pid ${r.pid}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+// 状态列：今日成交（fills）、挂单（orders，撤单页的未成交委托，还没查过为 null）按代码逐笔，同形两类：
+// mark 符号（按方向着色：买绿卖红）、name 名、line(x) 悬停里的一笔
+const FLOW = {
+  fills: {
+    mark: "●",
+    name: "成交",
+    line: (x) => `${x.time} ${x.qty}股 @${px3(x.price)} ${x.status}`,
+  },
+  orders: {
+    mark: "○",
+    name: "挂单",
+    line: (x) =>
+      `${x.time} ${x.qty - x.filled}${x.filled ? `/${x.qty}` : ""}股 @${px3(x.price)} ${x.status}`,
+  },
+};
+const flowOf = (r, k, code) => (r[k] ?? []).filter((x) => x.code === code);
+const flowCol = (r) => [
+  `<span data-tip="${FLOW.fills.mark} 今日成交 · ${FLOW.orders.mark} 挂单，买绿卖红；悬停看逐笔">状态</span>`,
+  (p) => {
+    const marks = [],
+      tips = [];
+    for (const [k, f] of Object.entries(FLOW)) {
+      const xs = flowOf(r, k, p.code);
+      for (const s of [1, -1])
+        if (xs.some((x) => x.side === s))
+          marks.push(paint(SIDE[s].color, f.mark));
+      if (xs.length)
+        tips.push(
+          `${f.name} ${xs.length} 笔`,
+          ...xs.map((x) => `  ${SIDE[x.side].name} ${f.line(x)}`),
+        );
+    }
+    return marks.length
+      ? `<span data-tip="${esc(tips.join("\n"))}">${marks.join("")}</span>`
+      : "";
+  },
+  (p) => Object.keys(FLOW).reduce((a, k) => a + flowOf(r, k, p.code).length, 0),
+  "",
+  () =>
+    Object.entries(FLOW)
+      .map(([k, f]) => `${f.mark}${r[k]?.length ?? "-"}`)
+      .join(" "),
 ];
+// 刷新进度：正做哪样（或等界面）、各样（后端 steps [字段, 名称]）读于几时、上轮失败、账户是否读于持仓变动前
 function progTxt(g) {
-  const at = PROG_SRC.map(([k, n]) => `${n} ${g.at[k] ?? "—"}`).join(" · ");
+  const at = g.steps.map(([k, n]) => `${n} ${g.at[k] ?? "—"}`).join(" · ");
   return [
     g.step && paint("var(--hot)", `刷新中：${esc(g.step)}…`),
     g.err && `<span class="off" data-tip="${esc(g.err)}">✗ 上轮刷新失败</span>`,
@@ -258,6 +286,8 @@ const ordHead = (r) =>
 const cols = (...keys) => keys.map((k) => COL[k]);
 const posCols = (r) => [
   ...cols("code", "position_pct", "name"),
+  flowCol(r),
+  FIN_COL,
   [ordHead(r), (p) => ordBtns(p, r)],
   ...cols(
     "day_pnl_pct",

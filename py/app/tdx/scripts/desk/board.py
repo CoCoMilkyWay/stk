@@ -2,7 +2,7 @@
 # 三张表同以代码为键：持仓 pos.by_code、成交合计 fills.by_code、行情 quotes；对齐成 (h, f)：
 #   h 为 None = 今日清仓（持仓表已无此行，只有当日列），f 为 NO_FLOW = 今日该只没有成交。
 # 一行由几组列拼成（PARTS），每组 (h, f, q) → 值元组，缺了它要的输入即整组 None：
-#   标识：代码 / 名称 / 分组 / 是否今日清仓 / 起买股数 / 现价 / 行情（盘口、K 线页用）；
+#   标识：代码 / 名称 / 是否今日清仓 / 起买股数 / 现价 / 行情（盘口、K 线页用）；
 #   持仓：量、成本、券商盈亏取自内存快照，随价变的按 Δ价 × 量 平移（保留券商口径）；
 #   当日：按成交价自算（毛，不扣费）= 现市值 − 昨收 × 昨仓 − Σ 方向 × 额，昨仓 = 现量 − Σ 方向 × 量，
 #         % 的分母为昨收 × 昨仓 + 今买额；与持仓的今买 / 今卖对不上即空；
@@ -13,23 +13,13 @@
 import collections
 
 from mem.common import BUY, SIDES
-from mem.fills import NO_FLOW
+from mem.tables import NO_FLOW
 
 from . import book
 
 # 持仓快照 × 成交快照 × 挂单快照（还没查过为 None）× 信用账户（credit.Acct，帧里不用，调仓用）× {代码: 行情}
 State = collections.namedtuple("State", "pos fills orders acct quotes")
 TOTALS = ("market_value", "pnl", "day_pnl")
-# fmt: off
-GROUPS = {
-    "green": {"600697", "301006", "300535", "605567", "603214", "600561", "300645", "301037"},
-    "red":   set(),
-}
-# fmt: on
-
-
-def _grp(code):
-    return next((g for g, codes in GROUPS.items() if code in codes), "")
 
 
 def join(st):
@@ -61,7 +51,6 @@ def _ident(h, f, q):
     return (
         x["code"],
         x["name"],
-        _grp(x["code"]),
         h is None,
         book.lot(x["code"])[0],
         q["price"],
@@ -111,7 +100,7 @@ def _depth(h, f, q):
 
 # fmt: off
 PARTS = (
-    (("code", "name", "group", "closed", "lot", "price", "quote"),                                 _ident),
+    (("code", "name", "closed", "lot", "price", "quote"),                                          _ident),
     (("market_value", "pnl", "pnl_pct", "margin_value", "sellable_value", "collateral", "cost"), _hold),
     (("day_pnl", "day_pnl_pct"),                                                                 _today),
     (("auction", "slips", "lot_slips", "levels"),                                                _depth),
@@ -166,7 +155,7 @@ def view(st):
         "level_cols": book.LEVEL_COLS,
         "totals": {k: round(sum(r[k] or 0 for r in rows), 2) for k in TOTALS}
         | {"slips": [_agg(rows, i) for i in range(len(book.SLIP_COLS))]},
-        "fills": len(st.fills.rows),
+        "fills": st.fills.rows,
         "orders": st.orders and st.orders.rows,
         "synced": all(_synced(h, f) for h, f in pairs),
         "time": max((q["time"] for q in st.quotes.values()), default=""),

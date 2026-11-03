@@ -180,7 +180,10 @@ function table(sel, cols, rows, attrs = () => "", foot = null) {
     T.tFoot.innerHTML =
       "<tr>" +
       cols
-        .map(([, , , cls, ft]) => `<td class="${cls ?? ""}">${ft?.(foot) ?? ""}</td>`)
+        .map(
+          ([, , , cls, ft]) =>
+            `<td class="${cls ?? ""}">${ft?.(foot) ?? ""}</td>`,
+        )
         .join("") +
       "</tr>";
   tipAt();
@@ -222,4 +225,12 @@ const fmt = (v, d = 2) =>
 const fmtPnl = (v, d) => (v == null ? "" : paint(v >= 0 ? UP : DN, fmt(v, d)));
 const px3 = (v) => fmt(v, 3);
 const lots = (shares) => fmt(shares / 100, 0) + "手";
+// 金额按量级标 K / W，两位小数
+const kw = (v) =>
+  v == null
+    ? ""
+    : Math.abs(v) >= 10000
+      ? fmt(v / 10000) + "W"
+      : fmt(v / 1000) + "K";
+const kwPnl = (v) => (v == null ? "" : paint(v >= 0 ? UP : DN, kw(v)));
 const wan = (n) => (n ? `${n / 10000}W` : "最小");

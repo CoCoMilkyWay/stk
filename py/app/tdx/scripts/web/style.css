@@ -598,13 +598,15 @@ tr.cur td {
 /* 日线 / 分钟线 / 盘口同排；图里的画布绝对定位不占高，排高即盘口高 */
 .kgrid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 260px;
+  grid-template-columns: minmax(0, 1fr) 260px minmax(0, 1fr);
+  align-items: center;
   gap: 6px;
   margin-top: 6px;
 }
 
 .kbox {
   position: relative;
+  align-self: stretch;
 }
 
 .kbox canvas {

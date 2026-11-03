@@ -1,19 +1,27 @@
 // 行情页：K 线与盘口
 
 // 行情页：持仓表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口：
-// 日线、分钟线（日内 / 近几日，可切档）、盘口同排，图高随盘口。两图各一份状态（KCH），一套画法，
-// 只差 KIND 的同名成员（与后端 Day / Min 对仗）。后端给每日根数 per、各根当日第几根 slot：
-// 按图宽每 g 根并一格（g 取整除 per、每格不窄于 minW px 的最小值），横轴按交易日 × per 等分、没成交的格留空，
-// g 取到 per 仍放不下只画最近的。K 线每 KLINE_GAP 重取；其间每个持仓帧用现价改写进行中那根，盘口随帧刷新。
-// 档 [种类, 近几个交易日, 名]：前两项即 /api/kline 的 kind / days
-const KRANGES = [
-  ["min", 1, "日内"],
-  ["min", 2, "2日"],
-  ["min", 3, "3日"],
-  ["min", 4, "4日"],
-];
-const KDAY = ["day", 360, "日线"];
+// 分钟线、盘口、日线同排，图高随盘口，两图各一排档。两图各一份状态（KCH），一套画法，
+// 只差 KIND 的同名成员（与后端 Min / Day 对仗）。后端给每日根数 per、各根当日第几根 slot：
+// 横轴按所选交易日 × per 等分、没成交的格留空；视窗默认放下全部，滚轮缩放（钉住 anchor 那端）、双击复原，
+// 视窗内每 g 根并一格（g 取整除 per、每格不窄于 minW px 的最小值），g 取到 per 仍放不下只画钉住那端的。
+// K 线每 KLINE_GAP 重取；其间每个持仓帧用现价改写进行中那根，盘口随帧刷新。
+// 档 [种类, 近几个交易日, 名]（日线的周 / 月 / 年按交易日计）；向 /api/kline 多取 lead 个交易日只为均线起头
+const KRANGES = {
+  min: [
+    ["min", 1, "日内"],
+    ["min", 2, "2日"],
+    ["min", 3, "3日"],
+    ["min", 4, "4日"],
+  ],
+  day: [
+    ["day", 5, "周"],
+    ["day", 22, "月"],
+    ["day", 250, "年"],
+  ],
+};
 const KLINE_GAP = 15000;
+const K_ZOOM = 1.25; // 滚轮一格视窗缩放倍数
 const K_COST = "#569cd6";
 const K_MA = [
   [5, "#d7ba7d"],
@@ -21,19 +29,30 @@ const K_MA = [
   [20, "#c586c0"],
 ];
 const HOURS = ["09:30", "10:30", "11:30/13:00", "14:00", "15:00"];
-// minW 每格最窄 px；ticks(L) → [时间轴 [[标签, x]], 日界 [x]]；label(t) 信息行的时刻；patch(b, q) 用行情改写进行中那根
+// minW 每格最窄 px；least 视窗至少几根；lead 多取几个交易日；anchor 缩放钉住的一端（0 开盘 / 1 现在）；
+// ref(bars, q) 涨跌幅轴的基准价；tint(last, cost, ref) → [成本线色, 现价线色]；arrow 画成本 → 现价箭头；
+// ticks(L) → [时间轴 [[标签, x]], 分隔 [[x, 日界?]]]；label(t) 信息行的时刻；patch(b, q) 用行情改写进行中那根
 const KIND = {
   min: {
     minW: 3,
-    // 单日标整点与午休；多日画日界、各日居中标 MM-DD
+    least: 30,
+    lead: 1,
+    anchor: 0,
+    ref: (bars, q) => q?.last_close || bars[0][1],
+    tint: (last, cost, ref) => [K_COST, last >= ref ? UP : DN],
+    arrow: false,
+    // 单日标整点与午休，多日各日居中标 MM-DD；各日画午休、日间画日界
     ticks: (L) => {
       const DW = (L.per / L.g) * L.bw;
-      return L.days.length === 1
-        ? [HOURS.map((s, i) => [s, ((i * 60) / L.g) * L.bw]), []]
-        : [
-            L.days.map((d, i) => [d.slice(5), (i + 0.5) * DW]),
-            L.days.slice(1).map((_, i) => (i + 1) * DW),
-          ];
+      return [
+        L.days.length === 1
+          ? HOURS.map((s, i) => [s, ((i * 60) / L.g) * L.bw])
+          : L.days.map((d, i) => [d.slice(5), (i + 0.5) * DW]),
+        L.days.flatMap((_, i) => [
+          [(i + 0.5) * DW, false],
+          ...(i ? [[i * DW, true]] : []),
+        ]),
+      ];
     },
     label: (t) => t.slice(5, 16),
     patch: (b, q) => {
@@ -43,7 +62,13 @@ const KIND = {
     },
   },
   day: {
-    minW: 6,
+    minW: 1,
+    least: 5,
+    lead: 19,
+    anchor: 1,
+    ref: (bars) => bars.at(-1)[4],
+    tint: (last, cost) => Array(2).fill(last >= cost ? UP : DN),
+    arrow: true,
     // 隔几根标 MM-DD
     ticks: (L) => {
       const every = Math.ceil(60 / L.bw),
@@ -61,50 +86,53 @@ let QCODE = null; // 选中代码
 let QROW = null; // 其持仓行（含 cost / quote）
 const K_NONE = { per: 1, bars: [] };
 const KMEM = new Map(); // "代码|档" → 最近取到的 K 线；切股 / 切档先画它，再后台重取
-// 每图：cv 画布、range 档、kb K 线 {per 每日根数, bars [[时刻, 开, 高, 低, 收, 量, slot]]}、
-// ver kb 换了或改写过即加一（view 按它缓存）、view 最近一次的 kLayout（鼠标横坐标 → 第几格）、hover 悬停格在 view.vis 里的下标
-const kChart = (cv, range) => ({
+// 每图：cv 画布、bar 档排、ranges 可选档、range 当前档、kb K 线 {per 每日根数, bars [[时刻, 开, 高, 低, 收, 量, slot]]}、
+// ver kb 换了或改写过即加一（view 按它缓存）、span 视窗根数（null 即全部，切档复原）、
+// view 最近一次的 kLayout（鼠标横坐标 → 第几格）、hover 悬停格在 view.vis 里的下标
+const kChart = (cv, bar, ranges, at) => ({
   cv,
-  range,
+  bar,
+  ranges,
+  range: ranges[at],
   kb: K_NONE,
   ver: 0,
+  span: null,
   view: null,
   hover: -1,
 });
-const KCH = [kChart("kMin", KRANGES[0]), kChart("kDay", KDAY)];
-const KMIN = KCH[0];
+const KCH = [
+  kChart("kMin", "kMinRanges", KRANGES.min, 0),
+  kChart("kDay", "kDayRanges", KRANGES.day, 1),
+];
 const kKey = (ch) => `${QCODE}|${ch.range[0]}${ch.range[1]}`;
 const pickAttrs = (p) =>
   `data-code="${p.code}"${p.code === QCODE ? ' class="cur"' : ""}`;
 function pickClick(e) {
   const tr = e.target.closest("tbody tr");
   if (!tr) return;
-  kSelect(tr.dataset.code, KMIN.range);
+  kSelect(tr.dataset.code);
   setTab("botPane", "quote");
 }
 function quoteFrame(rows) {
   POS_ROWS = rows;
-  kSelect(
-    rows.some((p) => p.code === QCODE) ? QCODE : (rows[0]?.code ?? null),
-    KMIN.range,
-  );
+  kSelect(rows.some((p) => p.code === QCODE) ? QCODE : (rows[0]?.code ?? null));
 }
-// 选股、切分钟档同一入口：换了的图先画缓存，可见即后台重取
-function kSelect(code, range) {
+// 选股、切档同一入口（切档即图 ch 换到 range）：换了的图先画缓存，可见即后台重取
+function kSelect(code, ch = null, range = ch?.range) {
   const moved = KCH.filter(
-    (ch) => code !== QCODE || (ch === KMIN && range !== ch.range),
+    (c) => code !== QCODE || (c === ch && range !== c.range),
   );
   QCODE = code;
-  KMIN.range = range;
-  for (const ch of moved) {
-    ch.kb = KMEM.get(kKey(ch)) ?? K_NONE;
-    ch.hover = -1;
-    ch.ver++;
+  if (ch && range !== ch.range) [ch.range, ch.span] = [range, null];
+  for (const c of moved) {
+    c.kb = KMEM.get(kKey(c)) ?? K_NONE;
+    c.hover = -1;
+    c.ver++;
   }
   QROW = POS_ROWS.find((p) => p.code === code) ?? null;
   for (const tr of document.querySelectorAll("#posTbl tbody tr"))
     tr.classList.toggle("cur", tr.dataset.code === code);
-  tabbar($("kRanges"), String(KRANGES.indexOf(KMIN.range)));
+  for (const c of KCH) tabbar($(c.bar), String(c.ranges.indexOf(c.range)));
   $("kInfo").innerHTML = QROW
     ? `<b>${QROW.code} ${esc(QROW.name)}</b> · 行情 ${QROW.quote.date} ${QROW.quote.time}`
     : "（无持仓）";
@@ -118,7 +146,11 @@ for (const ch of KCH)
     const code = QCODE,
       range = ch.range;
     const [kind, days] = range;
-    const r = await post("/api/kline", { code, kind, days });
+    const r = await post("/api/kline", {
+      code,
+      kind,
+      days: days + KIND[kind].lead,
+    });
     if (code !== QCODE || range !== ch.range) return;
     $("kErr").innerHTML = "";
     if (fail("kErr", r)) return;
@@ -139,15 +171,21 @@ function patchBar(ch) {
 }
 const divisors = (n) =>
   Array.from({ length: n }, (_, i) => i + 1).filter((g) => n % g === 0);
-// 图宽 PW 下的格：全部根每 g 根并一格（agg 各格、at 各格格号、first 各格首根在 bars 里的下标），
-// 屏上只放最后 PW / bw 格（vis、pos、first 取可见的那段，pos 为屏上格号）；均线按 agg 全量算
-function kLayout({ per, bars }, kind, PW) {
-  const days = [...new Set(bars.map((b) => b[0].slice(0, 10)))];
-  const dayAt = new Map(days.map((d, i) => [d, i]));
-  const cells = (g) => (days.length * per) / g;
-  const g = divisors(per).find((g) => PW / cells(g) >= kind.minW) ?? per;
-  const bw = Math.max(kind.minW, PW / cells(g));
-  const off = Math.max(0, cells(g) - Math.floor(PW / bw + 1e-9));
+// 图宽 PW、所选近 nd 个交易日、视窗 span 根下的格：全部根每 g 根并一格（agg 各格、at 各格格号、
+// first 各格首根在 bars 里的下标），格号自所选首日起（多取的 lead 那几日为负）；
+// 屏上放 PW / bw 格、钉住 anchor 那端（vis、pos、first 取可见的那段，pos 为屏上格号）；均线按 agg 全量算
+function kLayout({ per, bars }, kind, PW, nd, span) {
+  const every = [...new Set(bars.map((b) => b[0].slice(0, 10)))];
+  const days = every.slice(-nd);
+  const dayAt = new Map(
+    every.map((d, i) => [d, i - every.length + days.length]),
+  );
+  const all = days.length * per;
+  const w = Math.min(span ?? all, all);
+  const g = divisors(per).find((g) => (PW * g) / w >= kind.minW) ?? per;
+  const bw = Math.max(kind.minW, (PW * g) / w);
+  const n = Math.floor(PW / bw + 1e-9);
+  const off = kind.anchor * Math.max(0, all / g - n);
   const agg = [],
     at = [],
     first = [];
@@ -167,16 +205,19 @@ function kLayout({ per, bars }, kind, PW) {
     a[4] = b[4];
     a[5] += b[5];
   });
-  const s = at.findIndex((k) => k >= off);
+  const s = at.findIndex((k) => k >= off),
+    e = at.findIndex((k) => k >= off + n);
+  const cut = (a) => a.slice(s, e < 0 ? a.length : e);
   return {
     per,
+    all,
     g,
     bw,
     days,
-    vis: agg.slice(s),
-    pos: at.slice(s).map((k) => k - off),
-    first: first.slice(s),
-    mas: K_MA.map(([k, col]) => [k, col, maOf(agg, k).slice(s)]),
+    vis: cut(agg),
+    pos: cut(at).map((k) => k - off),
+    first: cut(first),
+    mas: K_MA.map(([k, col]) => [k, col, cut(maOf(agg, k))]),
   };
 }
 function maOf(bars, k) {
@@ -186,7 +227,7 @@ function maOf(bars, k) {
     return i >= k - 1 ? s / k : null;
   });
 }
-// 上：信息行 + 蜡烛（红涨绿跌）+ 均线 + 成本 / 现价虚线；下：成交量；左：价轴；右：涨跌幅轴（相对昨收）；底：时间轴
+// 上：信息行 + 蜡烛（红涨绿跌）+ 均线 + 成本 / 现价虚线；下：成交量；左：价轴；右：涨跌幅轴（相对 ref）；底：时间轴
 const K_AL = 52, // 左侧价轴宽
   K_AR = 56; // 右侧涨跌幅轴宽
 function drawK(ch) {
@@ -213,11 +254,15 @@ function drawK(ch) {
   const VH = Math.round((H - TOP - TX) * 0.2);
   const PH = H - TOP - TX - VH - 6;
   const kind = KIND[ch.range[0]];
-  const key = `${ch.ver}|${PW}`;
-  if (ch.view?.key !== key) ch.view = { ...kLayout(ch.kb, kind, PW), key };
+  const key = `${ch.ver}|${PW}|${ch.span}`;
+  if (ch.view?.key !== key)
+    ch.view = { ...kLayout(ch.kb, kind, PW, ch.range[1], ch.span), key };
   const L = ch.view;
   const { vis, pos, bw: BW, mas } = L;
-  const ref = QROW?.quote.last_close || vis[0][1];
+  const last = bars.at(-1)[4],
+    cost = QROW?.cost;
+  const ref = kind.ref(bars, QROW?.quote);
+  const [costCol, lastCol] = kind.tint(last, cost, ref);
   const pct = (v) =>
     `${v >= ref ? "+" : ""}${((v / ref - 1) * 100).toFixed(2)}%`;
   let lo = Math.min(...vis.map((b) => b[3])),
@@ -262,13 +307,18 @@ function drawK(ch) {
   }
   hl(vTop - 2.5, AL, PR);
   const [ticks, seps] = kind.ticks(L);
-  c.setLineDash([2, 3]);
-  for (const xx of seps) vl(Math.round(AL + xx) + 0.5);
+  const inside = (xx) => xx <= PW + 0.5;
+  // 日界实线、午休虚线
+  for (const [xx, major] of seps.filter(([xx]) => inside(xx))) {
+    c.strokeStyle = major ? "#888" : "#555";
+    c.setLineDash(major ? [] : [2, 3]);
+    vl(Math.round(AL + xx) + 0.5);
+  }
   c.setLineDash([]);
-  // 时间轴标签居中于刻度，按给出的先后画，与已画的相叠的跳过
+  // 时间轴标签居中于刻度，按给出的先后画，出了图宽或与已画的相叠的跳过
   c.textAlign = "center";
   const drawn = [];
-  for (const [s, xx] of ticks) {
+  for (const [s, xx] of ticks.filter(([, xx]) => inside(xx))) {
     const w = c.measureText(s).width,
       tx = Math.min(Math.max(AL + xx, AL + w / 2), PR - w / 2);
     const l = tx - w / 2 - 3,
@@ -317,12 +367,10 @@ function drawK(ch) {
     c.fillStyle = "#111";
     axes(v, yy);
   };
-  const last = vis.at(-1)[4];
-  priceLine(QROW?.cost, K_COST);
-  priceLine(last, last >= ref ? UP : DN);
+  priceLine(cost, costCol);
+  priceLine(last, lastCol);
   // 成本 → 现价的竖箭头（赚红亏绿），紧跟最后一根右侧、贴不下即贴图右缘；成本出了价格区间从图边指起
-  const cost = QROW?.cost;
-  if (cost && cost !== last) {
+  if (kind.arrow && cost && cost !== last) {
     const y0 = Math.min(Math.max(y(cost), TOP), TOP + PH),
       y1 = y(last),
       ax = Math.round(Math.min(PR - 8, x(vis.length - 1) + BW / 2 + 8)),
@@ -363,9 +411,9 @@ function drawK(ch) {
     c.fillText(s, mx, 22);
     mx += c.measureText(s).width + 12;
   }
-  if (QROW?.cost) {
-    c.fillStyle = K_COST;
-    c.fillText(`成本 ${px3(QROW.cost)}`, mx, 22);
+  if (cost) {
+    c.fillStyle = costCol;
+    c.fillText(`成本 ${px3(cost)}`, mx, 22);
   }
 }
 // 卖五..卖一 / 买一..买五（价按昨收着色，量单位手，底色条按量占比）+ 当日行情与持仓概要
@@ -418,16 +466,16 @@ function drawBook() {
     "</div>";
 }
 function initK() {
-  const sc = $("kRanges");
-  sc.innerHTML = KRANGES.map(
-    (r, i) => `<button data-tab="${i}">${r[2]}</button>`,
-  ).join("");
-  tabbar(sc, "0");
-  sc.onclick = (e) => {
-    const b = e.target.closest("button");
-    if (b) kSelect(QCODE, KRANGES[+b.dataset.tab]);
-  };
   for (const ch of KCH) {
+    const sc = $(ch.bar);
+    sc.innerHTML = ch.ranges
+      .map((r, i) => `<button data-tab="${i}">${r[2]}</button>`)
+      .join("");
+    tabbar(sc, String(ch.ranges.indexOf(ch.range)));
+    sc.onclick = (e) => {
+      const b = e.target.closest("button");
+      if (b) kSelect(QCODE, ch, ch.ranges[+b.dataset.tab]);
+    };
     const cv = $(ch.cv);
     // 鼠标所在格及以前最近的一格（没成交的格算前一格）
     cv.addEventListener("mousemove", (e) => {
@@ -436,6 +484,27 @@ function initK() {
       dirty("kline");
     });
     cv.addEventListener("mouseleave", () => {
+      ch.hover = -1;
+      dirty("kline");
+    });
+    // 滚轮缩放视窗（下滚放宽、上滚收窄，至多全部、至少 least 根），双击复原
+    cv.addEventListener(
+      "wheel",
+      (e) => {
+        if (!ch.view) return;
+        e.preventDefault();
+        const { all } = ch.view,
+          s = Math.round(
+            (ch.span ?? all) * (e.deltaY > 0 ? K_ZOOM : 1 / K_ZOOM),
+          );
+        ch.span = s >= all ? null : Math.max(KIND[ch.range[0]].least, s);
+        ch.hover = -1;
+        dirty("kline");
+      },
+      { passive: false },
+    );
+    cv.addEventListener("dblclick", () => {
+      ch.span = null;
       ch.hover = -1;
       dirty("kline");
     });

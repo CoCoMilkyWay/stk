@@ -61,15 +61,14 @@ def _sync_remote(fetch):
         if os.path.lexists(path):
             print(f"  overwrite local: {path}")
             os.remove(path)
-    subprocess.run(["git", "merge", "--ff-only",
-                   "--autostash", "@{u}"], check=True)
+
+    subprocess.run(["git", "merge", "--ff-only", "--autostash", "@{u}"], check=True)
     # autostash 回放冲突时 merge 仍返回 0: 冲突文件留着冲突标记, 整份本地改动另存进 stash
     unmerged = _git_paths("diff", "--name-only", "--diff-filter=U")
     if unmerged:
         for path in unmerged:
             print(f"  overwrite local: {path}")
-        subprocess.run(["git", "checkout", "HEAD",
-                       "--", *unmerged], check=True)
+        subprocess.run(["git", "checkout", "HEAD", "--", *unmerged], check=True)
         subprocess.run(["git", "reset", "--quiet"], check=True)
         subprocess.run(["git", "stash", "drop", "--quiet"], check=True)
     assert not _git_paths("diff", "--name-only", "--diff-filter=U")
@@ -78,8 +77,7 @@ def _sync_remote(fetch):
 
 def _cleanup_processes():
     """Kill old processes."""
-    subprocess.run(
-        ["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
+    subprocess.run(["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
     time.sleep(0.3)
 
 

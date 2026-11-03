@@ -9,7 +9,7 @@ import json
 import threading
 import time
 
-from mem.common import BUY, SELL
+from mem.common import BUY, MARKETS, SELL
 
 HDR = {"Referer": "https://finance.sina.com.cn", "Accept-Encoding": "gzip"}
 KLINE_KEYS = ("day", "open", "high", "low", "close", "volume")
@@ -47,7 +47,7 @@ KQ = Sina("quotes.sina.cn")
 
 
 def sym(x):
-    return ("sz", "sh")[x["market_flag"]] + x["code"]
+    return MARKETS[x["market_flag"]] + x["code"]
 
 
 def _levels(f, at):
@@ -85,8 +85,7 @@ def quotes(secs):
             "date": f[30],
             "time": f[31],
         }
-    assert set(out) == set(codes.values()
-                           ), f"缺行情：{set(codes.values()) - set(out)}"
+    assert set(out) == set(codes.values()), f"缺行情：{set(codes.values()) - set(out)}"
     return out
 
 
