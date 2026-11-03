@@ -16,7 +16,9 @@ import collections
 import csv
 import glob
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from mem import collat, common, credit, debts, margin
 
@@ -29,6 +31,7 @@ PAGES = (
     ("担保品查询", "担保折算率", collat),
 )
 FULL_WAIT = 300  # 查询全部最长等多久（秒）
+LIVE_GAP = 1  # 拼表期间读内存、报实时进度的间隔（秒）
 NORMAL = "正常"
 Term = collections.namedtuple(
     "Term", "code name market_flag ratio financeable rate pledgeable"
@@ -52,26 +55,52 @@ def _path(day):
 
 
 def _full(log, func, col, scheme):
-    """开 func 页、点查询全部，等内存整表行数到页上条数 → {(沪深标志, 代码): 行}；
-    进度记 log：开页、点查询全部、（页上条数, 内存行数）每变一次。"""
+    """开 func 页、点查询全部，等内存整表行数到页上条数 → {(沪深标志, 代码): 行}。
+    进度：开页、点查询全部、（页上条数, 内存行数）每变一次记 log；开页时报 log.live {func}，
+    拼表期间每 LIVE_GAP 秒报 {func, s 已等秒数, got 内存行数, n 页上条数, hung 条数标签多久没读到}。
+    条数标签经客户端界面线程读，客户端卡着时读不动，故另起线程读；内存直接读，不受卡顿影响。"""
     log("page", func=func)
+    log.live(func=func)
     dlg = ui.open_page(func, col)
     lbl = ui.count_label(dlg)
     ui.command(dlg, ui.PAGE_ALL)
     log("all", func=func)
-    end, seen = time.monotonic() + FULL_WAIT, None
-    while True:
-        n = ui.page_count(lbl, timeout=FULL_WAIT)
-        rows = common.read([scheme])[0].by_code
-        if (n, len(rows)) != seen:
-            seen = n, len(rows)
-            log("rows", func=func, n=n, got=len(rows))
-        if len(rows) == n:
-            return rows
-        assert (
-            time.monotonic() < end
-        ), f"{FULL_WAIT}s 内「{func}」没拼齐（页上 {n} 条，内存 {len(rows)} 行）"
-        time.sleep(1)
+    t0 = time.monotonic()
+    end, seen, label, stop = t0 + FULL_WAIT, None, (None, t0), threading.Event()
+
+    def poll():
+        nonlocal label
+        while not stop.is_set():
+            label = ui.page_count(lbl, timeout=FULL_WAIT), time.monotonic()
+            stop.wait(LIVE_GAP)
+
+    with ThreadPoolExecutor(1) as ex:
+        fut = ex.submit(poll)
+        try:
+            while True:
+                if fut.done():
+                    fut.result()  # poll 不到 stop 不会结束，结束即出错，在此抛出
+                n, at = label
+                rows = common.read([scheme])[0].by_code
+                now = time.monotonic()
+                log.live(
+                    func=func,
+                    s=round(now - t0),
+                    got=len(rows),
+                    n=n,
+                    hung=round(now - at),
+                )
+                if (n, len(rows)) != seen:
+                    seen = n, len(rows)
+                    log("rows", func=func, n=n, got=len(rows))
+                if len(rows) == n:
+                    return rows
+                assert (
+                    now < end
+                ), f"{FULL_WAIT}s 内「{func}」没拼齐（页上 {n} 条，内存 {len(rows)} 行）"
+                time.sleep(LIVE_GAP)
+        finally:
+            stop.set()
 
 
 def _market(code):
@@ -108,7 +137,7 @@ def _merge(mg, co):
 
 
 def pull(log):
-    """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}；log(ev, **kw) 收进度。"""
+    """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}；log(ev, **kw) 记进度、log.live(**kw) 报实时进度。"""
     with ui.UI:
         mg, co = (_full(log, *p) for p in PAGES)
         ui.click_tool("持仓")

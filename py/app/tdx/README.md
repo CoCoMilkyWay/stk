@@ -165,7 +165,7 @@ gpsz302132.dat,142f0ad6289b09cc20d5af17483b7518,278226
 - 绘制层：自绘控件（`CFQS_*` / `MHPToolBar` / `Afx*`）上的按钮只是画出来的字。改写 gdi32/user32 的 18 个绘制函数入口（`TdxW.exe` 有 VMProtect 壳、不走 IAT；Wine 的 win32u 层已是字形索引，故钩 API 入口），按"后画盖先画"维护每个窗口可见的文字与色块。
 - 管不到：内嵌 CEF 网页（消息中心等）。
 
-### 控制台（`scripts/console.py` + `console.html`）
+### 控制台（`scripts/console.py` + `web/`）
 - 启动：`python3 scripts/console.py [port]`（默认 8765）是唯一入口，依次 `ensure`、`noraise on`、`gdi on`，再起 HTTP 服务并 `xdg-open` 用系统浏览器打开。
 - 接口：`GET /api/ping`；`GET /api/watch?s=路,路` 把所列各路推送（`tree` 窗口树版本、`gdi` 绘制层、`pos` 持仓帧、`ord` 各单状态、`rec` 录制器）合成一条 SSE，每条 `{s, r}`；`POST /api/shim {cmd,args}` 透传 shim 命令，`/api/clicktext {text,class?,title?}` 点画着该文字的按钮，`/api/refresh` 让客户端重查当日成交与持仓并等内存换代，`/api/kline {code,kind,days}` 取近 days 个交易日的 K 线（kind = `min` / `day`），`/api/order {code,s,size,px,credit}` 下单（s = 1 买 / −1 卖），`/api/reb/cfg {list?,unit?,pct?,px?,sells?}` 改调仓配置，`/api/reb/terms` `/api/reb/acct` `/api/reb/run` 后台拉两融条款 / 查信用账户 / 执行调仓（`reb` 路推调仓帧）。任何失败统一回 `{err}`。
 - 推送源：`pos` `ord` `rec` 三路同一个 `Feed`（源每变一次升一个版本，订阅者每见新版推一次，15s 无新版推心跳 `null`）；`tree` `gdi` 原样转发 shim 长连接。
@@ -220,7 +220,19 @@ gpsz302132.dat,142f0ad6289b09cc20d5af17483b7518,278226
 ```
 scripts/
 ├── console.py       唯一入口：路由与合路推送
-├── console.html     控制台前端（布局图 / 持仓 / 调仓 / 行情 / 列表 / 工具）
+├── web/             控制台前端（普通脚本共用全局作用域，index.html 按依赖先后载入）
+│   ├── index.html   页面结构
+│   ├── style.css    样式
+│   ├── core.js      公用：请求与推送订阅、调度、拖拽、可排序表格、数字格式化
+│   ├── win.js       窗口树：拉取 / 过滤 / 列表 / 选中与操作
+│   ├── map.js       布局图：按类还原控件外观、绘制层与绘制元素
+│   ├── input.js     布局图交互：鼠标 / 键盘 / 滚轮投给客户端，缩放与平移
+│   ├── tools.js     工具页：原始消息、Spy
+│   ├── rec.js       录制页
+│   ├── pos.js       持仓页：持仓表、滑点表、闪电下单
+│   ├── reb.js       调仓页
+│   ├── quote.js     行情页：K 线与盘口
+│   └── app.js       页面骨架：视图切换与合帧重画、推送连接、启动
 ├── bridge/          消息桥（通用基建）
 │   ├── shimctl.py   编译 / 注入 / 控制通道
 │   └── shim/

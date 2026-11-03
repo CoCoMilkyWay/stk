@@ -9,7 +9,7 @@ from bridge.shimctl import Shim
 SHIM = Shim()
 # 客户端界面自动化（刷新点按钮 / 下单走闪电窗 / 查信用账户）一次只许一路
 UI = threading.Lock()
-WM_VSCROLL, WM_COMMAND, SB_TOP, SB_BOTTOM = 0x115, 0x111, 6, 7
+WM_VSCROLL, WM_COMMAND, SB_PAGEDOWN, SB_TOP = 0x115, 0x111, 3, 6
 # 主窗交易栏：页签「成交」「持仓」与「刷新」都是画在其上的字；刷新只刷当前页
 TOOLBAR = {"class": "MHPToolBar", "title": "MainViewBar"}
 # 交易栏左侧功能树（查询 / 资产分析 / …），右侧为所选功能的页；树项只认真实光标处的点击，clickat 会钉光标
@@ -87,20 +87,24 @@ def click_tool(text):
 
 
 def click_func(name):
-    """点交易功能树上的 name：树只给可见项，先滚到顶找、再滚到底找。"""
+    """点交易功能树上的 name：树只给可见项，滚到顶后逐页往下找，翻不动即到底。"""
     cls, cid = FUNC_TREE
     trees = [n for n in SHIM("tree") if n["vis"]
              and n["class"] == cls and n["id"] == cid]
     assert len(trees) == 1, f"交易功能树命中 {len(trees)} 个（交易栏未展开？）"
     t = trees[0]
-    for sb in (SB_TOP, SB_BOTTOM):
-        SHIM("send", t["hwnd"], WM_VSCROLL, sb, 0)
-        hits = [it for it in SHIM("detail", t["hwnd"])[
-            0]["items"] if it[5] == name]
+    SHIM("send", t["hwnd"], WM_VSCROLL, SB_TOP, 0)
+    seen = None
+    while True:
+        items = SHIM("detail", t["hwnd"])[0]["items"]
+        hits = [it for it in items if it[5] == name]
         if hits:
             l, tp, r, b = hits[0][:4]
             return SHIM("clickat", t["hwnd"], t["rect"][0] + (l + r) // 2, t["rect"][1] + (tp + b) // 2)
-    assert False, f"交易功能树里没有「{name}」"
+        names = [it[5] for it in items]
+        assert names != seen, f"交易功能树里没有「{name}」"
+        seen = names
+        SHIM("send", t["hwnd"], WM_VSCROLL, SB_PAGEDOWN, 0)
 
 
 def _pages(timeout):

@@ -1,0 +1,551 @@
+:root {
+  --bg: #1e1e1e;
+  --panel: #252526;
+  --line: #333;
+  --fg: #ddd;
+  --mut: #888;
+  --acc: #4ec9b0;
+  --hot: #d7ba7d;
+  --sel: #094771;
+  --red: #f14c4c;
+  --green: #6a9955;
+  --up: var(--red);
+  --dn: var(--green);
+  --up-tint: color-mix(in srgb, var(--up) 25%, transparent);
+  --dn-tint: color-mix(in srgb, var(--dn) 25%, transparent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font:
+    13px/1.5 ui-monospace,
+    Consolas,
+    monospace;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+header h1 {
+  font-size: 14px;
+  margin: 0;
+  color: var(--acc);
+}
+
+#status {
+  font-size: 12px;
+}
+
+.on {
+  color: var(--green);
+}
+
+.off {
+  color: var(--red);
+}
+
+button {
+  background: #333;
+  color: var(--fg);
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover {
+  background: #3a3a3a;
+}
+
+button:active {
+  background: var(--sel);
+}
+
+input,
+select {
+  background: #1b1b1b;
+  color: var(--fg);
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+}
+
+.wrap {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  height: calc(100vh - 45px);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+#leftPane {
+  flex: 0 0 55%;
+}
+
+.grow-pane {
+  flex: 1 1 0;
+}
+
+#gutter {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: var(--line);
+  border-radius: 3px;
+}
+
+#gutter:hover {
+  background: #555;
+}
+
+.tabbar {
+  display: flex;
+  gap: 4px;
+}
+
+.tabbar button.on {
+  background: var(--sel);
+  color: #fff;
+}
+
+.tabpane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.tnode.hl {
+  outline: 1px solid var(--hot);
+  background: #3a3320;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel h2 {
+  font-size: 12px;
+  margin: 0 0 6px;
+  color: var(--hot);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+#tree {
+  overflow: auto;
+  flex: 1;
+  white-space: nowrap;
+}
+
+.tnode {
+  padding: 1px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tnode:hover {
+  background: #2d2d2d;
+}
+
+.tnode.active {
+  background: var(--sel);
+}
+
+.tnode .cls {
+  color: var(--acc);
+}
+
+.tnode .ttl {
+  color: var(--hot);
+}
+
+.tnode .meta {
+  color: var(--mut);
+}
+
+.tnode.invis {
+  opacity: 0.45;
+}
+
+.fold {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  color: var(--mut);
+  cursor: pointer;
+}
+
+.tabs button.on {
+  background: var(--sel);
+  color: #fff;
+}
+
+#mapWrap {
+  flex: 1;
+  overflow: auto;
+  background: #141414;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+#mapWrap:focus {
+  outline: 1px solid var(--acc);
+}
+
+/* 块级：免得 inline 基线留白让刚好放下时也冒出竖滚动条 */
+#map {
+  display: block;
+}
+
+/* 只有窗口底板 rect.win 接鼠标（data-hwnd），装饰/文字一律穿透 */
+#map * {
+  pointer-events: none;
+}
+
+#map rect,
+#map line {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1;
+}
+
+#map .win {
+  pointer-events: all;
+}
+
+/* 绘制层元素：透明命中框（data-hwnd = 窗口#客户区左,上），盖在画面上 */
+#map .elem {
+  pointer-events: all;
+  fill: transparent;
+  stroke: none;
+}
+
+#map .win.frame {
+  fill: #1e1e1e;
+  stroke: #333;
+}
+
+#map .win.btn,
+#map .btnface {
+  fill: #3a3a3a;
+  stroke: #5a5a5a;
+}
+
+#map .win.bare {
+  fill: transparent;
+  stroke: none;
+}
+
+#map .win.group {
+  fill: transparent;
+  stroke: #555;
+}
+
+#map .win.field {
+  fill: #111;
+  stroke: #444;
+}
+
+#map .win.hdr,
+#map .hdritem {
+  fill: #2d2d2d;
+  stroke: #4a4a4a;
+}
+
+#map .win.menu {
+  fill: #2b2b2b;
+  stroke: #777;
+}
+
+#map .win.self {
+  fill: url(#hatch);
+  stroke: #3a3a3a;
+}
+
+#map .win.web {
+  fill: #18222c;
+  stroke: #2d4256;
+}
+
+#map .pressed {
+  fill: #1f1f1f;
+  stroke: #222;
+}
+
+#map .selbar {
+  fill: var(--sel);
+}
+
+#map .sep {
+  stroke: #555;
+}
+
+#map text {
+  fill: #ddd;
+  font-size: 12px;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+#map text.gray {
+  fill: #777;
+}
+
+#map text.self-lbl {
+  fill: #666;
+  font-size: 9px;
+}
+
+#mapHl {
+  fill: rgba(215, 186, 125, 0.15);
+  stroke: var(--hot);
+  stroke-width: 2 !important;
+}
+
+#mapSel {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2 !important;
+}
+
+pre.out {
+  background: #161616;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px;
+  margin: 6px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 2px 5px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--mut);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sortable:hover {
+  color: var(--fg);
+}
+
+/* 数字列：右对齐 + 等宽数位，小数点上下对齐 */
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 滑点小盘口：6 条横杠叠成一个字高，自上而下 10W/5W/1W 买、1W/5W/10W 卖 */
+.bars {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  height: 1em;
+  width: 16px;
+  vertical-align: middle;
+}
+
+.bars i {
+  flex: 1;
+}
+
+/* 卖出滑杆：轨道与两格读数定宽，各行滑块左右端对齐、读数变长不挤动列；
+   滑块 left = (轨道宽 − 滑块宽) × 比例，两端恰好贴边 */
+.sell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+
+.sell .trk {
+  position: relative;
+  width: 120px;
+  height: 12px;
+  flex: none;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.sell .trk::before,
+.sell .trk b {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.sell .trk::before {
+  right: 5px;
+  background: #555;
+}
+
+.sell .trk b {
+  background: var(--acc);
+}
+
+.sell .trk i {
+  position: absolute;
+  top: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fg);
+}
+
+.sell.dis .trk {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.sell span {
+  width: 56px;
+  text-align: right;
+}
+
+.sell span + span {
+  width: 72px;
+}
+
+button.ord {
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.kv {
+  color: var(--mut);
+}
+
+.kv b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.spy-list {
+  overflow: auto;
+  max-height: 260px;
+}
+
+label.ck {
+  color: var(--mut);
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+tbody tr[data-code] {
+  cursor: pointer;
+}
+
+tr.cur td {
+  background: #2a2d2e;
+}
+
+.kbox {
+  position: relative;
+}
+
+.kbox canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#book .lv {
+  display: grid;
+  grid-template-columns: 3em 1fr 1fr;
+  padding: 0 4px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#book .lv > :first-child {
+  text-align: left;
+}
+
+#book .sum {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 0 6px;
+  margin-top: 6px;
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+#book .sum > :nth-child(even) {
+  text-align: right;
+}

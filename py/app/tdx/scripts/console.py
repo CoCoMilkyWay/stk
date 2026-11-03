@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # console.py — 统一入口：shim 接口控制台（Web 版，stdlib http.server，无三方依赖）。
 # 启动时自动 ensure（bridge.shimctl 编译 + 注入 shim 到 Wine 里的 TdxW.exe，若未在线），再起服务。
-# 本文件只管路由与合路推送；支撑代码都在包里：bridge/（消息桥）、mem/（读内存方案）、desk/（控制台后端各块）。
+# 本文件只管路由与合路推送；支撑代码都在包里：bridge/（消息桥）、mem/（读内存方案）、desk/（控制台后端各块），
+# 前端页面在 web/。
 #
 # 启动：python3 scripts/console.py [port]      默认 8765
 # 浏览器：http://127.0.0.1:8765
 #
 # 提供的 API：
-#   GET  /                                   控制台页面
+#   GET  /…                                  控制台页面：web/ 下的文件（/ 即 index.html）
 #   GET  /api/ping                           {pid}（离线为 null）
 #   GET  /api/watch?s=路,路                  SSE：所列各路合成一条连接，每条 {s 路名, r 记录}，r 为 null 是该路心跳。路：
 #          tree  shim treewatch 原样转发（窗口树版本号）
@@ -53,7 +54,8 @@ from desk.rebal import REB  # noqa: E402  调仓
 from desk.rec import REC  # noqa: E402  录制器
 from desk.ui import SHIM, click_text  # noqa: E402
 
-HTML_FILE = os.path.join(HERE, "console.html")
+WEB = os.path.join(HERE, "web")
+MIME = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
 
 
 def kline(b):
@@ -108,11 +110,10 @@ def watch(b):
 
 
 # ---------- 路由 ----------
-# 处理函数一律 fn(body) → 应答；应答类型决定载体：str=页面、生成器=SSE、其余=JSON。
-# GET 的 body 是查询串。
+# /api/ 下按表分派，处理函数一律 fn(body) → 应答；应答类型决定载体：生成器=SSE、其余=JSON。
+# GET 的 body 是查询串。其余 GET 都是 web/ 下的页面文件。
 
 GET = {
-    "/": lambda b: open(HTML_FILE, encoding="utf-8").read(),
     "/api/ping": lambda b: {"pid": SHIM("ping")[0]["pid"] if SHIM.online() else None},
     "/api/watch": watch,
 }
@@ -145,7 +146,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path, _, qs = self.path.partition("?")
-        self._route(GET, path, dict(urllib.parse.parse_qsl(qs)))
+        if path.startswith("/api/"):
+            self._route(GET, path, dict(urllib.parse.parse_qsl(qs)))
+        else:
+            self._file(path)
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
@@ -156,15 +160,19 @@ class Handler(BaseHTTPRequestHandler):
             body = table[path](b)
         except Exception as e:  # 错误边界：任何失败都回 {err} 给前端显示
             body = {"err": err(e)}
-        if isinstance(body, str):
-            self._send("text/html; charset=utf-8", body.encode())
-        elif isinstance(body, types.GeneratorType):
+        if isinstance(body, types.GeneratorType):
             self._stream(body)
         else:
             self._send(
                 "application/json; charset=utf-8",
                 json.dumps(body, ensure_ascii=False).encode(),
             )
+
+    def _file(self, path):
+        f = os.path.normpath(os.path.join(WEB, path.lstrip("/") or "index.html"))
+        assert f.startswith(WEB + os.sep) and os.path.isfile(f), f"无此页面文件 {path}"
+        with open(f, "rb") as fp:
+            self._send(MIME[os.path.splitext(f)[1]] + "; charset=utf-8", fp.read())
 
     def _send(self, ctype, data):
         self.send_response(200)

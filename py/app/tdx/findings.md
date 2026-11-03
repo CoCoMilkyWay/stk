@@ -106,7 +106,7 @@
 
 - `scripts/bridge/shim/shim.c`
 - `scripts/desk/rec.py`
-- `scripts/console.html`
+- `scripts/web/rec.js`
 
 ### shim
 

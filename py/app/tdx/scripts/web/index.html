@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>shim 接口控制台</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+
+  <body>
+    <header>
+      <h1>shim 接口控制台</h1>
+      <span id="status">…</span>
+      <span class="grow"></span>
+      <label class="ck"
+        ><input
+          type="checkbox"
+          id="noraise"
+          checked
+          onchange="setNoraise(this.checked ? 'on' : 'off')"
+        />不抬窗</label
+      >
+      <span class="kv" id="noraiseLbl"></span>
+      <button onclick="refreshTree()">刷新窗口树</button>
+      <button onclick="ping()">ping</button>
+    </header>
+
+    <div class="wrap">
+      <!-- 左：布局图 / 持仓 可切换 -->
+      <div class="pane" id="leftPane">
+        <div class="tabbar">
+          <button data-tab="layout" onclick="setTab('leftPane', 'layout')">
+            布局图
+          </button>
+          <button data-tab="pos" onclick="setTab('leftPane', 'pos')">
+            持仓
+          </button>
+          <button data-tab="reb" onclick="setTab('leftPane', 'reb')">
+            调仓
+          </button>
+        </div>
+        <div class="panel" data-view="layout" style="flex: 1">
+          <h2>
+            布局图
+            <button onclick="zoomReset()">复位</button>
+            <span class="kv" id="zoomLbl" style="margin-left: 4px"></span>
+            <label class="ck" style="margin-left: 8px"
+              ><input type="checkbox" id="autoUpd" checked />自动更新</label
+            >
+            <label class="ck"
+              ><input type="checkbox" id="interact" checked />交互</label
+            >
+            <label class="ck" title="按客户端真实绘制的文字/色块画（shim gdi）"
+              ><input
+                type="checkbox"
+                id="gdiOn"
+                checked
+                onchange="dirty('map', 'tree')"
+              />绘制层</label
+            >
+            <span class="kv">(点图后可键盘输入 · Ctrl+滚轮缩放)</span>
+            <label class="ck"
+              >轮询<input
+                type="number"
+                id="pollFps"
+                value="2"
+                min="0"
+                max="10"
+                style="width: 46px"
+              />fps</label
+            >
+          </h2>
+          <div class="row" style="margin-bottom: 6px">
+            <input
+              class="grow"
+              id="filter"
+              placeholder="过滤 class/title/hwnd/id…"
+              oninput="dirty('map', 'tree')"
+            />
+            <label class="ck"
+              ><input
+                type="checkbox"
+                id="onlyVis"
+                onchange="dirty('map', 'tree')"
+              />只看可见</label
+            >
+            <label class="ck"
+              ><input
+                type="checkbox"
+                id="hideZero"
+                checked
+                onchange="dirty('map', 'tree')"
+              />隐藏零矩形</label
+            >
+          </div>
+          <div id="mapWrap" tabindex="0">
+            <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+        </div>
+
+        <div class="panel" data-view="pos" style="flex: 1">
+          <h2>
+            账户持仓
+            <button onclick="refreshPos()">刷新</button>
+            <label class="kv"
+              >自动刷新
+              <select id="posAuto">
+                <option value="0">关</option>
+                <option value="15">15s</option>
+                <option value="60" selected>60s</option>
+                <option value="300">5min</option>
+              </select></label
+            >
+            <label class="kv"
+              >委托价
+              <select id="ordPx">
+                <option value="opp" selected>对手价</option>
+                <option value="opp1">对手价偏1%</option>
+                <option value="own">本方价</option>
+              </select></label
+            >
+            <label class="kv"
+              >买入方式
+              <select id="ordCredit">
+                <option value="plain" selected>担保品买入</option>
+                <option value="margin">融资买入</option>
+              </select></label
+            >
+          </h2>
+          <div id="posInfo" class="kv">（等持仓帧）</div>
+          <div id="ordInfo" class="kv"></div>
+          <!-- 两表同在一个滚动区：放得下就全展开，超出整页才滚 -->
+          <div style="overflow: auto; flex: 1; min-height: 0">
+            <table id="posTbl">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+            <div class="kv" style="margin-top: 8px">
+              滑点（p=万分之一，正=成本；> 表示 5
+              档吃不满、实际更差；价位相对参考价）
+            </div>
+            <table id="slipTbl">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" data-view="reb" style="flex: 1">
+          <h2>
+            一键调仓
+            <label class="kv"
+              >名单
+              <select
+                id="rebList"
+                onchange="rebSet({ list: this.value })"
+              ></select
+            ></label>
+            <label class="kv"
+              >最小调仓单元
+              <input
+                type="number"
+                id="rebUnit"
+                min="0"
+                step="1000"
+                style="width: 70px"
+                onchange="rebSet({ unit: +this.value })"
+              />元</label
+            >
+            <label class="kv"
+              >委托价
+              <select id="rebPx" onchange="rebSet({ px: this.value })">
+                <option value="opp">对手价</option>
+                <option value="opp1">对手价偏1%</option>
+                <option value="own">本方价</option>
+              </select></label
+            >
+            <button
+              onclick="rebAct('terms')"
+              title="客户端查询全部标的证券与担保品，要卡一两分钟"
+            >
+              更新两融名单
+            </button>
+            <button onclick="rebAct('acct')">刷新信用资产</button>
+            <button onclick="rebRun()">执行</button>
+          </h2>
+          <div class="row">
+            <span class="kv">行使比例</span>
+            <input
+              type="range"
+              id="rebPct"
+              class="grow"
+              min="0"
+              max="100"
+              step="1"
+              oninput="rebPct()"
+            />
+            <span id="rebPctLbl" class="kv" style="width: 40px"></span>
+          </div>
+          <div id="rebInfo">（等调仓帧）</div>
+          <div id="rebNow" class="kv"></div>
+          <div id="rebTask" class="kv"></div>
+          <div id="rebOrd" class="kv"></div>
+          <div style="overflow: auto; flex: 1; min-height: 0">
+            <div class="kv" style="margin-top: 8px">
+              调仓名单（等权补齐；融资标的先融资，融不到的与其余用现金）
+            </div>
+            <table id="rebTgt">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+            <div class="kv" style="margin-top: 8px">
+              持仓：先卖的拖卖出面值（只停在能成单的档：够一手、够最小调仓单元，末档全卖）
+            </div>
+            <table id="rebHold">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+            <div class="kv" style="margin-top: 8px">日志</div>
+            <pre id="rebLog" style="max-height: 240px; overflow: auto"></pre>
+          </div>
+        </div>
+      </div>
+
+      <div id="gutter"></div>
+
+      <!-- 右：行情 / 工具 / 列表 / 录制 -->
+      <div class="pane grow-pane" id="rightPane">
+        <div class="tabbar">
+          <button data-tab="quote" onclick="setTab('rightPane', 'quote')">
+            行情
+          </button>
+          <button data-tab="tools" onclick="setTab('rightPane', 'tools')">
+            工具
+          </button>
+          <button data-tab="list" onclick="setTab('rightPane', 'list')">
+            列表
+          </button>
+          <button data-tab="rec" onclick="setTab('rightPane', 'rec')">
+            录制 <span id="recDot"></span>
+          </button>
+        </div>
+
+        <div class="tabpane" data-view="quote">
+          <div class="panel" style="flex: 1">
+            <h2>
+              K 线 · 盘口
+              <span
+                id="kRanges"
+                class="tabbar"
+                style="display: inline-flex; margin-left: 8px"
+              ></span>
+              <span class="kv">(点持仓 / 滑点表的行选股)</span>
+            </h2>
+            <div class="row">
+              <span id="kInfo" class="kv">（等持仓帧）</span>
+              <span id="kErr"></span>
+            </div>
+            <div
+              class="row"
+              style="flex-wrap: nowrap; align-items: stretch; margin-top: 6px"
+            >
+              <div class="grow kbox"><canvas id="kMin"></canvas></div>
+              <div id="book" style="flex: 0 0 260px"></div>
+            </div>
+            <div
+              class="kbox"
+              style="flex: 1; min-height: 160px; margin-top: 6px"
+            >
+              <canvas id="kDay"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabpane" data-view="rec">
+          <div class="panel" style="flex: 1">
+            <h2>录制器（消息 / 内部请求 / 窗口树 / 绘制层 → jsonl）</h2>
+            <div class="row">
+              <button id="recBtn" onclick="recToggle()">…</button>
+              <span class="kv grow" id="recSt"></span>
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <button onclick="reqAttach()">接入所选窗口</button>
+              <input
+                id="reqOff"
+                placeholder="对象偏移（自动识别失败时填写）"
+                style="width: 210px"
+              />
+              <span class="kv grow" id="reqSt"
+                >先开始录制，再打开闪电下单窗口并选中其顶层窗口</span
+              >
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <input
+                class="grow"
+                id="recMarkTxt"
+                placeholder="打点说明（回车），如：买入挂单开始"
+                onkeydown="event.key === 'Enter' && recMark()"
+              />
+              <button onclick="recMark()">打点</button>
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recMsg"
+                  checked
+                  onchange="dirty('rec')"
+                />消息</label
+              >
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recReq"
+                  checked
+                  onchange="dirty('rec')"
+                />请求</label
+              >
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recWin"
+                  checked
+                  onchange="dirty('rec')"
+                />窗口</label
+              >
+              <label class="ck"
+                ><input
+                  type="checkbox"
+                  id="recGdi"
+                  onchange="dirty('rec')"
+                />绘制层</label
+              >
+              <input
+                class="grow"
+                id="recExcl"
+                placeholder="排除含这些子串的行（逗号分隔），如 0x000007ea"
+                oninput="dirty('rec')"
+              />
+            </div>
+            <pre
+              class="out"
+              id="recLog"
+              style="flex: 1; max-height: none"
+            ></pre>
+          </div>
+        </div>
+
+        <div class="tabpane" data-view="list">
+          <div class="panel" style="flex: 1">
+            <h2>窗口树列表（点 ▸/▾ 折叠）</h2>
+            <div id="tree" style="overflow: auto; flex: 1"></div>
+          </div>
+        </div>
+
+        <div class="tabpane" data-view="tools">
+          <div class="panel">
+            <h2>选中控件</h2>
+            <div id="sel" class="kv">（点左侧树节点选中）</div>
+            <div class="row" style="margin-top: 6px">
+              <button onclick="act('gettext')">读文本</button>
+              <button onclick="act('click')">点击(BM_CLICK)</button>
+              <button onclick="act('highlight')">闪烁</button>
+              <button onclick="act('rect')">取矩形</button>
+            </div>
+            <div class="row" style="margin-top: 6px">
+              <input
+                class="grow"
+                id="setval"
+                placeholder="要写入的文本（UTF-8）"
+              />
+              <button onclick="doSettext()">设文本</button>
+            </div>
+            <pre class="out" id="selOut"></pre>
+          </div>
+
+          <div class="panel">
+            <h2>原始消息 (post / send)</h2>
+            <div class="row">
+              <span class="kv">target</span
+              ><input
+                id="mTarget"
+                placeholder="0x…. 或 class=…"
+                style="width: 180px"
+              />
+              <span class="kv">msg</span
+              ><input id="mMsg" value="0x0111" style="width: 90px" />
+              <span class="kv">wparam</span
+              ><input id="mWp" value="0" style="width: 110px" />
+              <span class="kv">lparam</span
+              ><input id="mLp" value="0" style="width: 110px" />
+              <button onclick="rawMsg('post')">post</button>
+              <button onclick="rawMsg('send')">send</button>
+            </div>
+            <pre class="out" id="msgOut"></pre>
+          </div>
+
+          <div class="panel">
+            <h2>Spy 录制（抓手点产生的消息）</h2>
+            <div class="row">
+              <span class="kv">filter</span>
+              <input
+                id="spyFilter"
+                value="msg=0x0111"
+                style="width: 150px"
+                placeholder="msg=0x0111 或 all"
+              />
+              <button onclick="spy('on')">开</button>
+              <button onclick="spy('off')">关</button>
+              <button onclick="spy('clear')">清</button>
+              <button onclick="spy('dump')">抓一次</button>
+              <label class="ck"
+                ><input type="checkbox" id="spyAuto" />自动(1s)</label
+              >
+            </div>
+            <div class="spy-list">
+              <table id="spyTbl">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 普通脚本共用全局作用域，按此顺序载入：顶层语句用到的定义须在前 -->
+    <script src="core.js"></script>
+    <script src="win.js"></script>
+    <script src="map.js"></script>
+    <script src="input.js"></script>
+    <script src="tools.js"></script>
+    <script src="rec.js"></script>
+    <script src="pos.js"></script>
+    <script src="reb.js"></script>
+    <script src="quote.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

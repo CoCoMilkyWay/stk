@@ -2,9 +2,9 @@
 #
 # 名单：lists/*.csv，每行首列一个 6 位代码（可有 code 表头），按修改时间新在前，默认最新的。
 # 配置 cfg：list 名单文件、unit 最小调仓单元（元，不足即不做）、pct 行使比例（0–100）、px 委托价（book.PX_MODES）、
-#   sells {代码: 卖出面值（元）}。
+#   sells {代码: 卖出股数}（整步长，或全部可卖）。
 # 试算 plan（纯函数；持仓页循环每推一帧、配置每改一次即重算推送）：
-#   卖出：面值按参考价、整手折股（够全部可卖即全卖），回款 = 额 − 滑点 − 费用；
+#   卖出：股数（超过可卖按全部可卖）× 参考价计额，回款 = 额 − 滑点 − 费用；
 #     现金 C' = 现金 + 回款，可用保证金 X' = 按卖后持仓重算（credit.avail）+ 回款，L = 可融额度余量。
 #   购买力 = C' + min(L, max(0, X'))（融资保证金比例按 100% 计）。
 #   买入：名单里可作担保品买入的（否则不可买：不在担保品表 / 担保状态非正常 / 北交所）等权补到共同目标市值 V，
@@ -109,19 +109,24 @@ def _sells(st, cfg):
         q = st.quotes[code]
         px = book.ref(q)
         v = cfg["sells"].get(code, 0)
+        lot, step = book.lot(code)
+        avail = int(h["available"])
         row = {
             "code": code,
             "name": h["name"],
             "value": h["balance"] * q["price"],
-            "sellable": h["available"] * px,
+            "sellable": avail * px,
+            "avail": avail,
+            "px": px,
+            "lot": lot,
+            "step": step,
             "sell": v,
             "order": None,
             "skip": None,
         }
         if v > 0:
-            lot, step = book.lot(code)
-            avail = int(h["available"])
-            n = avail if v >= avail * px else int(v / px) // step * step
+            n = min(v, avail)
+            assert n == avail or n % step == 0, f"{code} 卖 {n} 股不是 {step} 股的整数倍"
             sec = {k: h[k] for k in ("code", "name", "market_flag")}
             # 全部可卖可含零股
             o = _leg(
@@ -264,13 +269,14 @@ def plan(st, acct, terms, codes, cfg):
 
 
 class Log:
-    """一次事务一份 logs/reb-<时刻>.jsonl，每条 {t, ev, …}，同时留给页面。"""
+    """一次事务一份 logs/reb-<时刻>.jsonl，每条 {t, ev, …}，同时留给页面；
+    live(**kw) 只给页面的实时进度（覆盖上一份，不落盘）。"""
 
-    def __init__(self, tail):
+    def __init__(self, tail, live):
         os.makedirs(LOG_DIR, exist_ok=True)
         self.path = os.path.join(LOG_DIR, time.strftime("reb-%Y%m%d-%H%M%S.jsonl"))
         self.f = open(self.path, "w", encoding="utf-8", buffering=1)
-        self.tail = tail
+        self.tail, self.live = tail, live
 
     def __call__(self, ev, **kw):
         rec = {"t": time.strftime("%H:%M:%S"), "ev": ev, **kw}
@@ -293,7 +299,7 @@ class Rebal:
         }
         self.codes = read_list(names[0]) if names else []
         self.plan = None
-        # 后台事务 {name, state: run|ok|err, msg, file, log}
+        # 后台事务 {name, state: run|ok|err, msg, file, log, live 实时进度}
         self.task = None
         self.feed = Feed(lambda seen: self._frame())
         self._watch()
@@ -357,7 +363,10 @@ class Rebal:
             assert b["px"] in book.PX_MODES, f"委托价 {b['px']}"
             cfg["px"] = b["px"]
         if "sells" in b:
-            cfg["sells"] = {c: float(v) for c, v in b["sells"].items() if float(v) > 0}
+            assert all(
+                isinstance(v, int) and v >= 0 for v in b["sells"].values()
+            ), f"卖出股数 {b['sells']}"
+            cfg["sells"] = {c: v for c, v in b["sells"].items() if v > 0}
         codes = (
             read_list(cfg["list"]) if cfg["list"] != self.cfg["list"] else self.codes
         )
@@ -380,6 +389,7 @@ class Rebal:
                 "msg": "",
                 "file": None,
                 "log": [],
+                "live": None,
             }
         threading.Thread(target=self._task, args=(fn,), daemon=True).start()
         return {}
@@ -388,8 +398,12 @@ class Rebal:
         with self.feed:
             self.task["log"] = [*self.task["log"], rec][-LOG_TAIL:]
 
+    def _live(self, **kw):
+        with self.feed:
+            self.task["live"] = kw
+
     def _task(self, fn):
-        log = Log(self._tail)
+        log = Log(self._tail, self._live)
         with self.feed:
             self.task["file"] = log.path
         try:
@@ -402,7 +416,7 @@ class Rebal:
             state, msg = "err", err(e)
         log.f.close()
         with self.feed:
-            self.task |= {"state": state, "msg": msg}
+            self.task |= {"state": state, "msg": msg, "live": None}
         self._calc(HUB.state())
 
     def pull(self, b):
