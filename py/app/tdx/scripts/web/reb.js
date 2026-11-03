@@ -1,7 +1,8 @@
-// 调仓页
+// 持仓页的调仓部分：配置、试算、持仓表的卖出两列、调仓名单与日志
 
-// 调仓页：reb 路每帧 {lists, cfg, terms, acct, plan, task}，试算随持仓帧与配置在服务端重算；
+// reb 路每帧 {lists, cfg, terms, acct, plan, task}，试算随持仓帧与配置在服务端重算；
 // 配置一改即 POST /api/reb/cfg，新帧经推送到达。持仓表里正在拖的卖出滑杆不被重画冲掉。
+// 委托价与持仓行下单共用页头那一个下拉。
 let REB = null;
 const w2 = (v) => (v == null ? "" : fmt(v / 10000) + "万");
 const yuan = (v) => (v == null ? "" : fmt(v, 0));
@@ -44,6 +45,7 @@ const legCell = (l) =>
       ? `<span class="kv">${esc(l.skip)}（${w2(l.want)}）</span>`
       : `${l.qty}股 · ${w2(l.amount)}`;
 const REB_TGT = [
+  ["排名", (t) => t.rank, (t) => -t.rank, "num"],
   ["代码", (t) => t.code, (t) => t.code],
   ["名称", (t) => esc(t.name), (t) => t.name],
   [
@@ -59,7 +61,12 @@ const REB_TGT = [
   ["保证金比例", (t) => ratio(t.ratio), (t) => t.ratio, "num"],
   ["折算率", (t) => ratio(t.rate), (t) => t.rate, "num"],
   ["现市值", (t) => w2(t.held), (t) => t.held, "num"],
-  ["补", (t) => w2(t.need), (t) => t.need, "num"],
+  [
+    "补",
+    (t) => (t.skip ? `<span class="kv">${esc(t.skip)}</span>` : w2(t.need)),
+    (t) => t.need,
+    "num",
+  ],
   [
     "融资买入",
     (t) => legCell(legOf(t, "margin")),
@@ -73,14 +80,16 @@ const REB_TGT = [
     "num",
   ],
 ];
-const REB_HOLD = [
-  ["代码", (h) => h.code, (h) => h.code],
-  ["名称", (h) => esc(h.name), (h) => h.name],
-  ["市值", (h) => w2(h.value), (h) => h.value, "num"],
-  ["可卖市值", (h) => w2(h.sellable), (h) => h.sellable, "num"],
+// 持仓表的卖出两列：持仓行 p 按代码取试算里的持仓行 h，今日清仓或试算未出即空
+const rebHoldOf = (code) => REB?.plan?.holds?.find((h) => h.code === code);
+const viaHold = (f, none) => (p) => {
+  const h = rebHoldOf(p.code);
+  return h ? f(h) : none;
+};
+const SELL_COLS = [
   [
-    "卖出面值",
-    (h) => {
+    `<span data-tip="调仓先卖的拖卖出面值\n只停在能成单的档：够一手、够最小调仓单元，末档全卖">卖出面值</span>`,
+    viaHold((h) => {
       const n = rebSell(h),
         w = sellPos(h, n),
         [a, b] = sellLbl(h, n);
@@ -89,18 +98,27 @@ const REB_HOLD = [
         `<div class="trk"><b style="width:${w}"></b><i style="left:${w}"></i></div>` +
         `<span>${a}</span><span>${b}</span></div>`
       );
-    },
+    }, ""),
+    viaHold((h) => rebSell(h) * h.px),
   ],
   [
     "卖出",
-    (h) =>
-      h.order
-        ? `${h.order.qty}股 · ${w2(h.order.amount)}`
-        : h.skip
-          ? `<span class="kv">${esc(h.skip)}</span>`
-          : "",
-    (h) => h.order?.amount,
+    viaHold(
+      (h) =>
+        h.order
+          ? `${h.order.qty}股 · ${w2(h.order.amount)}`
+          : h.skip
+            ? `<span class="kv">${esc(h.skip)}</span>`
+            : "",
+      "",
+    ),
+    viaHold((h) => h.order?.amount),
     "num",
+    () =>
+      w2(
+        REB?.plan?.holds?.reduce((a, h) => a + (h.order?.amount ?? 0), 0) ||
+          null,
+      ),
   ],
 ];
 // 卖出滑杆按股数线性走（0 … 全部可卖），拖动时就地 snap 到能成单的股数：0 不卖、
@@ -127,7 +145,6 @@ function sellSame(a, b) {
 // 本地拖过、服务端还没回显的卖出股数：回显前来的旧帧照本地画，免得滑块被拽回去
 let REB_SELLS = null;
 const rebSell = (h) => (REB_SELLS ? (REB_SELLS[h.code] ?? 0) : (h.sell ?? 0));
-const rebHoldOf = (code) => REB.plan.holds.find((h) => h.code === code);
 // 滑块 left 与填充宽：n / 全部可卖 × (轨道宽 − 滑块宽)
 const sellPos = (h, n) =>
   `calc((100% - 10px) * ${h.avail ? Math.min(1, n / h.avail) : 0})`;
@@ -150,12 +167,12 @@ function sellDrag(e) {
   if (n === +REB_DRAG.dataset.n) return;
   sellShow(REB_DRAG, h, n);
   const sells = {};
-  for (const el of $("rebHold").querySelectorAll(".sell"))
+  for (const el of $("posTbl").querySelectorAll(".sell"))
     if (+el.dataset.n) sells[el.dataset.code] = +el.dataset.n;
   REB_SELLS = sells;
   rebSet({ sells });
 }
-$("rebHold").onpointerdown = (e) => {
+$("posTbl").onpointerdown = (e) => {
   const el = e.target.closest(".sell");
   if (!el || el.classList.contains("dis") || !e.target.closest(".trk")) return;
   e.preventDefault();
@@ -163,9 +180,8 @@ $("rebHold").onpointerdown = (e) => {
   el.setPointerCapture(e.pointerId);
   sellDrag(e);
 };
-$("rebHold").onpointermove = (e) => REB_DRAG && sellDrag(e);
-$("rebHold").onpointerup = $("rebHold").onpointercancel = () =>
-  (REB_DRAG = null);
+$("posTbl").onpointermove = (e) => REB_DRAG && sellDrag(e);
+$("posTbl").onpointerup = $("posTbl").onpointercancel = () => (REB_DRAG = null);
 const REB_EV = {
   order: (r) =>
     `${SIDE[r.order.s].name} ${r.order.credit} ${r.order.code} ${esc(r.order.name)} ${r.order.qty}股 @≈${r.order.px.toFixed(3)}`,
@@ -199,9 +215,11 @@ function onReb(r) {
     .map((n) => `<option${n === c.list ? " selected" : ""}>${esc(n)}</option>`)
     .join("");
   if (document.activeElement !== $("rebUnit")) $("rebUnit").value = c.unit;
-  $("rebPx").value = c.px;
+  $("ordPx").value = c.px;
   if (document.activeElement !== $("rebPct")) $("rebPct").value = c.pct;
   $("rebPctLbl").textContent = $("rebPct").value + "%";
+  if (REB_SELLS && sellSame(REB_SELLS, c.sells)) REB_SELLS = null;
+  drawPos();
   const t = r.task;
   $("rebTask").innerHTML = t
     ? `${esc(t.name)} · ${t.state === "run" ? "进行中…" : ORD_ST[t.state]}${t.live ? " · " + rebLive(t.live) : ""} ${esc(t.msg)} · ${esc(t.file)}`
@@ -212,29 +230,52 @@ function onReb(r) {
         `${t} ${ev} ${REB_EV[ev]?.(rest) ?? JSON.stringify(rest).slice(0, 300)}`,
     )
     .join("\n");
+  // 调仓的两样前提就绪与否贴在各自按钮旁
+  $("acctSt").innerHTML = r.acct
+    ? `${r.acct.at} 读`
+    : '<span class="off">未查</span>';
+  $("termsSt").innerHTML = r.terms
+    ? `✓ 今日 ${r.terms} 只`
+    : '<span class="off">今日未拉</span>';
   const p = r.plan;
-  const a = r.acct;
-  const terms = r.terms
-    ? `两融条款 ${r.terms} 只`
-    : '<span class="off">当日两融条款未拉</span>';
+  $("rebRunBtn").disabled = !p?.orders?.length || t?.state === "run";
   if (!p || p.wait || p.err) {
     $("rebInfo").innerHTML = p?.err
       ? `<span class="off">✗ ${esc(p.err)}</span>`
-      : esc(p?.wait ?? "（等试算）");
-    $("rebNow").innerHTML = terms;
+      : `<span class="kv">${esc(p?.wait ?? "（等试算）")}</span>`;
+    $("acctTbl").innerHTML = "";
+    $("rebTgt").tBodies[0].innerHTML = "";
     return;
   }
-  const lev = (x, y) => `${fmt(x)}（现 ${fmt(y)}）`;
+  acctTbl(p);
   $("rebInfo").innerHTML =
-    `购买力 <b>${w2(p.power)}</b> · 预期行使购买力 <b>${w2(p.use)}</b>（融资 ${w2(p.financed)}）` +
-    ` · 预期总资产 <b>${w2(p.assets)}</b> · 预期调仓成本 <b>${yuan(p.cost)}</b> 元` +
-    ` · 预期杠杆 <b>${lev(p.lev, p.now.lev)}</b> · 维持担保比例 ${pct0(p.maint)}（现 ${pct0(p.now.maint)}）` +
-    ` · 每只目标 ${w2((p.V * c.pct) / 100)}`;
-  $("rebNow").innerHTML =
-    `现：总资产 ${w2(p.now.assets)} · 净资产 ${w2(p.now.net)} · 负债 ${w2(p.now.debt)} · 现金 ${w2(p.now.cash)}` +
-    ` · 可用保证金 ${w2(p.now.X)} · 可融余量 ${w2(p.now.L)} · 卖后现金 ${w2(p.after_sell.C)} / 可用保证金 ${w2(p.after_sell.X)}` +
-    ` · 账户读于 ${a.at} · ${terms} · 行情 ${p.time}`;
+    `购买力 <b>${w2(p.power)}</b> · 本次行使 <b>${w2(p.use)}</b>（融资 ${w2(p.financed)}）` +
+    ` · 成本 <b>${yuan(p.cost)}</b> 元 · 入选 <b>${p.picked}</b> / ${p.buyable} 只，每只目标 <b>${w2(p.V)}</b>` +
+    `<span class="kv"> · 卖后现金 ${w2(p.after_sell.C)} / 可用保证金 ${w2(p.after_sell.X)}</span>`;
   table("#rebTgt", REB_TGT, p.targets);
-  if (REB_SELLS && sellSame(REB_SELLS, c.sells)) REB_SELLS = null;
-  if (!REB_DRAG) table("#rebHold", REB_HOLD, p.holds);
+}
+// 账户对照：现 / 调仓后 两行，调仓后与现不同的格标色
+const ACCT = [
+  ["总资产", "assets", w2],
+  ["净资产", "net", w2],
+  ["负债", "debt", w2],
+  ["现金", "cash", w2],
+  ["可用保证金", "X", w2],
+  ["可融余量", "L", w2],
+  ["杠杆", "lev", ratio],
+  ["维持担保", "maint", pct0],
+];
+function acctTbl(p) {
+  const row = (name, x, chg) =>
+    `<tr><td>${name}</td>` +
+    ACCT.map(([, k, f]) => {
+      const v = f(x[k]);
+      const c = chg && x[k] != null && v !== f(p.now[k]) ? " chg" : "";
+      return `<td class="num${c}">${v || "—"}</td>`;
+    }).join("") +
+    "</tr>";
+  $("acctTbl").innerHTML =
+    `<tr><th></th>${ACCT.map(([h]) => `<th class="num">${h}</th>`).join("")}</tr>` +
+    row("现", p.now, false) +
+    row("调仓后", p.exp, true);
 }

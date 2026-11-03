@@ -27,17 +27,14 @@
     </header>
 
     <div class="wrap">
-      <!-- 左：布局图 / 持仓 可切换 -->
-      <div class="pane" id="leftPane">
+      <!-- 上：布局图 / 持仓 可切换 -->
+      <div class="pane" id="topPane">
         <div class="tabbar">
-          <button data-tab="layout" onclick="setTab('leftPane', 'layout')">
+          <button data-tab="layout" onclick="setTab('topPane', 'layout')">
             布局图
           </button>
-          <button data-tab="pos" onclick="setTab('leftPane', 'pos')">
+          <button data-tab="pos" onclick="setTab('topPane', 'pos')">
             持仓
-          </button>
-          <button data-tab="reb" onclick="setTab('leftPane', 'reb')">
-            调仓
           </button>
         </div>
         <div class="panel" data-view="layout" style="flex: 1">
@@ -100,144 +97,131 @@
         </div>
 
         <div class="panel" data-view="pos" style="flex: 1">
-          <h2>
-            账户持仓
-            <button onclick="refreshPos()">刷新</button>
-            <label class="kv"
-              >自动刷新
-              <select id="posAuto">
-                <option value="0">关</option>
-                <option value="15">15s</option>
-                <option value="60" selected>60s</option>
-                <option value="300">5min</option>
-              </select></label
-            >
-            <label class="kv"
-              >委托价
-              <select id="ordPx">
-                <option value="opp" selected>对手价</option>
-                <option value="opp1">对手价偏1%</option>
-                <option value="own">本方价</option>
-              </select></label
-            >
-            <label class="kv"
-              >买入方式
-              <select id="ordCredit">
-                <option value="plain" selected>担保品买入</option>
-                <option value="margin">融资买入</option>
-              </select></label
-            >
+          <h2 class="row">
+            持仓 · 调仓
+            <span class="grow"></span>
+            <span id="posInfo" class="kv">（等持仓帧）</span>
           </h2>
-          <div id="posInfo" class="kv">（等持仓帧）</div>
-          <div id="ordInfo" class="kv"></div>
-          <!-- 两表同在一个滚动区：放得下就全展开，超出整页才滚 -->
-          <div style="overflow: auto; flex: 1; min-height: 0">
-            <table id="posTbl">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-            <div class="kv" style="margin-top: 8px">
-              滑点（p=万分之一，正=成本；> 表示 5
-              档吃不满、实际更差；价位相对参考价）
-            </div>
-            <table id="slipTbl">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
+          <div class="bar">
+            <fieldset class="grp">
+              <legend>数据</legend>
+              <button onclick="refreshPos()">刷新持仓</button>
+              <label class="kv"
+                >自动
+                <select id="posAuto">
+                  <option value="0">关</option>
+                  <option value="15">15s</option>
+                  <option value="60" selected>60s</option>
+                  <option value="300">5min</option>
+                </select></label
+              >
+              <button onclick="rebAct('acct')">刷新信用资产</button>
+              <span id="acctSt" class="kv"></span>
+              <button
+                onclick="rebAct('terms')"
+                title="客户端查询全部标的证券与担保品，要卡一两分钟；一天拉一次"
+              >
+                更新两融名单
+              </button>
+              <span id="termsSt" class="kv"></span>
+            </fieldset>
+            <fieldset class="grp">
+              <legend>下单</legend>
+              <label class="kv" title="行内下单与调仓同用"
+                >委托价
+                <select id="ordPx" onchange="rebSet({ px: this.value })">
+                  <option value="opp" selected>对手价</option>
+                  <option value="opp1">对手价偏1%</option>
+                  <option value="own">本方价</option>
+                </select></label
+              >
+              <label class="kv" title="只管行内买入；卖出一律担保品卖出"
+                >买入
+                <select id="ordCredit">
+                  <option value="plain" selected>担保品</option>
+                  <option value="margin">融资</option>
+                </select></label
+              >
+              <button id="ordLock" onclick="ordLock()">解锁买卖</button>
+            </fieldset>
+            <fieldset class="grp">
+              <legend>调仓</legend>
+              <label class="kv"
+                >名单
+                <select
+                  id="rebList"
+                  onchange="rebSet({ list: this.value })"
+                ></select
+              ></label>
+              <label class="kv" title="不足此额的单不做；新开仓至少买这么多"
+                >最小单元
+                <input
+                  type="number"
+                  id="rebUnit"
+                  min="0"
+                  step="1000"
+                  style="width: 70px"
+                  onchange="rebSet({ unit: +this.value })"
+              /></label>
+              <label class="kv" title="本次用掉现金、可用保证金、可融余量的比例"
+                >行使
+                <input
+                  type="range"
+                  id="rebPct"
+                  min="0"
+                  max="100"
+                  step="1"
+                  style="width: 120px"
+                  oninput="rebPct()" />
+                <span id="rebPctLbl" style="width: 36px"></span
+              ></label>
+              <button id="rebRunBtn" onclick="rebRun()" disabled>
+                执行调仓
+              </button>
+            </fieldset>
           </div>
-        </div>
-
-        <div class="panel" data-view="reb" style="flex: 1">
-          <h2>
-            一键调仓
-            <label class="kv"
-              >名单
-              <select
-                id="rebList"
-                onchange="rebSet({ list: this.value })"
-              ></select
-            ></label>
-            <label class="kv"
-              >最小调仓单元
-              <input
-                type="number"
-                id="rebUnit"
-                min="0"
-                step="1000"
-                style="width: 70px"
-                onchange="rebSet({ unit: +this.value })"
-              />元</label
-            >
-            <label class="kv"
-              >委托价
-              <select id="rebPx" onchange="rebSet({ px: this.value })">
-                <option value="opp">对手价</option>
-                <option value="opp1">对手价偏1%</option>
-                <option value="own">本方价</option>
-              </select></label
-            >
-            <button
-              onclick="rebAct('terms')"
-              title="客户端查询全部标的证券与担保品，要卡一两分钟"
-            >
-              更新两融名单
-            </button>
-            <button onclick="rebAct('acct')">刷新信用资产</button>
-            <button onclick="rebRun()">执行</button>
-          </h2>
-          <div class="row">
-            <span class="kv">行使比例</span>
-            <input
-              type="range"
-              id="rebPct"
-              class="grow"
-              min="0"
-              max="100"
-              step="1"
-              oninput="rebPct()"
-            />
-            <span id="rebPctLbl" class="kv" style="width: 40px"></span>
-          </div>
+          <table id="acctTbl"></table>
           <div id="rebInfo">（等调仓帧）</div>
-          <div id="rebNow" class="kv"></div>
           <div id="rebTask" class="kv"></div>
-          <div id="rebOrd" class="kv"></div>
+          <div id="ordInfo" class="kv"></div>
           <div style="overflow: auto; flex: 1; min-height: 0">
-            <div class="kv" style="margin-top: 8px">
-              调仓名单（等权补齐；融资标的先融资，融不到的与其余用现金）
-            </div>
-            <table id="rebTgt">
+            <table id="posTbl" class="locked">
               <thead></thead>
               <tbody></tbody>
+              <tfoot></tfoot>
             </table>
-            <div class="kv" style="margin-top: 8px">
-              持仓：先卖的拖卖出面值（只停在能成单的档：够一手、够最小调仓单元，末档全卖）
-            </div>
-            <table id="rebHold">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-            <div class="kv" style="margin-top: 8px">日志</div>
-            <pre id="rebLog" style="max-height: 240px; overflow: auto"></pre>
+            <details open>
+              <summary class="kv">
+                调仓名单（先融资标的、后其余，各按排名入选，等权补齐）
+              </summary>
+              <table id="rebTgt">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </details>
+            <details>
+              <summary class="kv">调仓日志</summary>
+              <pre id="rebLog" style="max-height: 240px; overflow: auto"></pre>
+            </details>
           </div>
         </div>
       </div>
 
       <div id="gutter"></div>
 
-      <!-- 右：行情 / 工具 / 列表 / 录制 -->
-      <div class="pane grow-pane" id="rightPane">
+      <!-- 下：行情 / 工具 / 列表 / 录制 -->
+      <div class="pane grow-pane" id="botPane">
         <div class="tabbar">
-          <button data-tab="quote" onclick="setTab('rightPane', 'quote')">
+          <button data-tab="quote" onclick="setTab('botPane', 'quote')">
             行情
           </button>
-          <button data-tab="tools" onclick="setTab('rightPane', 'tools')">
+          <button data-tab="tools" onclick="setTab('botPane', 'tools')">
             工具
           </button>
-          <button data-tab="list" onclick="setTab('rightPane', 'list')">
+          <button data-tab="list" onclick="setTab('botPane', 'list')">
             列表
           </button>
-          <button data-tab="rec" onclick="setTab('rightPane', 'rec')">
+          <button data-tab="rec" onclick="setTab('botPane', 'rec')">
             录制 <span id="recDot"></span>
           </button>
         </div>
@@ -251,24 +235,16 @@
                 class="tabbar"
                 style="display: inline-flex; margin-left: 8px"
               ></span>
-              <span class="kv">(点持仓 / 滑点表的行选股)</span>
+              <span class="kv">(点持仓表的行选股)</span>
             </h2>
             <div class="row">
               <span id="kInfo" class="kv">（等持仓帧）</span>
               <span id="kErr"></span>
             </div>
-            <div
-              class="row"
-              style="flex-wrap: nowrap; align-items: stretch; margin-top: 6px"
-            >
-              <div class="grow kbox"><canvas id="kMin"></canvas></div>
-              <div id="book" style="flex: 0 0 260px"></div>
-            </div>
-            <div
-              class="kbox"
-              style="flex: 1; min-height: 160px; margin-top: 6px"
-            >
-              <canvas id="kDay"></canvas>
+            <div class="kgrid">
+              <div class="kbox"><canvas id="kDay"></canvas></div>
+              <div class="kbox"><canvas id="kMin"></canvas></div>
+              <div id="book"></div>
             </div>
           </div>
         </div>
@@ -357,7 +333,7 @@
         <div class="tabpane" data-view="tools">
           <div class="panel">
             <h2>选中控件</h2>
-            <div id="sel" class="kv">（点左侧树节点选中）</div>
+            <div id="sel" class="kv">（点树节点选中）</div>
             <div class="row" style="margin-top: 6px">
               <button onclick="act('gettext')">读文本</button>
               <button onclick="act('click')">点击(BM_CLICK)</button>
@@ -424,6 +400,8 @@
         </div>
       </div>
     </div>
+
+    <div id="tip" hidden></div>
 
     <!-- 普通脚本共用全局作用域，按此顺序载入：顶层语句用到的定义须在前 -->
     <script src="core.js"></script>

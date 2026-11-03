@@ -1,17 +1,20 @@
-# desk/rebal — 一键调仓：名单等权补齐；可选先卖，再融资买入融资标的，再现金买其余。
+# desk/rebal — 一键调仓：名单按排名入选、等权补齐；可选先卖，再融资买入融资标的，再现金买其余。
 #
-# 名单：lists/*.csv，每行首列一个 6 位代码（可有 code 表头），按修改时间新在前，默认最新的。
+# 名单：lists/*.csv，每行首列一个 6 位代码（可有 code 表头），行序即排名（首行最高）；按修改时间新在前，默认最新的。
 # 配置 cfg：list 名单文件、unit 最小调仓单元（元，不足即不做）、pct 行使比例（0–100）、px 委托价（book.PX_MODES）、
 #   sells {代码: 卖出股数}（整步长，或全部可卖）。
 # 试算 plan（纯函数；持仓页循环每推一帧、配置每改一次即重算推送）：
 #   卖出：股数（超过可卖按全部可卖）× 参考价计额，回款 = 额 − 滑点 − 费用；
 #     现金 C' = 现金 + 回款，可用保证金 X' = 按卖后持仓重算（credit.avail）+ 回款，L = 可融额度余量。
 #   购买力 = C' + min(L, max(0, X'))（融资保证金比例按 100% 计）。
+#   行使：C'、X'、L 各 × pct 为本次可用额度，以下都在其内。
 #   买入：名单里可作担保品买入的（否则不可买：不在担保品表 / 担保状态非正常 / 北交所）等权补到共同目标市值 V，
 #     缺口 need = max(0, V − 卖后市值)，多了不卖。融资标的先融资：按保证金比例从低到高分，
 #     Σ 比例 × 融资额 ≤ X'、Σ 融资额 ≤ L；其余（含融不到的部分）用现金，现金买入 + 全部买入费用 ≤ C'。
 #     V 二分到可行的最大。
-#   行使：各单 × pct，按委托价折股、取整手，不足起买量或不足 unit 的单不做；预期行使购买力 = Σ 买单额（参考价计）。
+#   入选：先融资标的、后其余，各按排名逐只试并入，并入后的 V 下未开仓的（卖后市值不足一个最小单元）缺口都够一个最小单元才收，否则跳过；
+#     最小单元 = max(起买股数, unit / 参考价) 取整步长的股数 × 委托价。购买力少时只开融资标的里排名靠前的，多了即铺开、近于等权。
+#   下单：缺口按委托价折股、取整手，不足起买量或不足 unit 的单不做；预期行使购买力 = Σ 买单额（参考价计）。
 #   成本 = 各单按 5 档吃出的滑点（相对参考价，竞价中计 0）+ 费用（佣金万 1 双向、印花税 0.05% 卖、过户费 0.001% 双向）。
 #   预期总资产 = 现总资产 + 融资额 − 成本，预期净资产 = 现净资产 − 成本，杠杆 = 总资产 / 净资产，
 #   维持担保比例 = 总资产 / 负债。现总资产 = 读时现金 + 现持仓市值。
@@ -22,6 +25,7 @@
 
 import collections
 import json
+import math
 import os
 import re
 import threading
@@ -41,7 +45,7 @@ COMMISSION, STAMP, TRANSFER = 1e-4, 5e-4, 1e-5
 BJ = 60
 FILL_WAIT, FILL_GAP = 120, 2  # 等卖单成交：最长秒数、每轮间隔
 LOG_TAIL = 200  # 推给页面的最近日志条数
-SEARCH = 60  # V 二分次数
+SEARCH = 40  # V 二分次数
 
 
 def fee(amt, s):
@@ -149,16 +153,40 @@ def _sells(st, cfg):
 
 
 def _fill(V, tgt, X, L):
-    """目标市值 V 下各只缺口与融资额，及现金需求 → (need, fin, cash)。"""
+    """目标市值 V 下各只缺口与融资额，及现金需求 → (need, fin, cash)；tgt 已按保证金比例从低到高排。"""
     need = {c: max(0.0, V - x["held"]) for c, x in tgt.items()}
     fin, xb, lb = {}, max(0.0, X), L
-    for c, x in sorted(tgt.items(), key=lambda kv: kv[1]["ratio"] or 0):
+    for c, x in tgt.items():
         if x["ratio"] is None:
             continue
         f = min(need[c], lb, xb / x["ratio"])
         fin[c], xb, lb = f, xb - x["ratio"] * f, lb - f
     total = sum(need.values())
     return need, fin, total - sum(fin.values()) + fee(total, BUY)
+
+
+def _level(tgt, C, X, L):
+    """tgt 等权补齐可行的最大目标市值 V（二分）。"""
+    if not tgt:
+        return 0.0
+    lo, hi = 0.0, max(x["held"] for x in tgt.values()) + C + L
+    for _ in range(SEARCH):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if _fill(mid, tgt, X, L)[2] <= C else (lo, mid)
+    return lo
+
+
+def _pick(tries, tgt, C, X, L):
+    """按 tries 的先后逐只试并入（见文件头）→ (入选的 {代码: …}，按保证金比例排, V)。"""
+    by_ratio = sorted(tgt, key=lambda c: tgt[c]["ratio"] or 0)
+    picked, V = set(), 0.0
+    for c in tries:
+        s = {k: tgt[k] for k in by_ratio if k in picked or k == c}
+        v = _level(s, C, X, L)
+        if all(v - x["held"] >= x["min"] for x in s.values() if x["held"] < x["min"]):
+            picked.add(c)
+            V = v
+    return {k: tgt[k] for k in by_ratio if k in picked}, V
 
 
 def plan(st, acct, terms, codes, cfg):
@@ -182,27 +210,30 @@ def plan(st, acct, terms, codes, cfg):
 
     tgt = {}
     for c in ok:
-        t = terms[c]
+        t, q = terms[c], quotes[c]
+        r = book.ref(q)
+        assert r, f"{c} {t.name} 没有参考价"
+        px = book.order_px(q, BUY, cfg["px"]) or r
+        lot, step = book.lot(c)
         tgt[c] = {
-            "held": bal.get(c, 0.0) * quotes[c]["price"],
+            "held": bal.get(c, 0.0) * q["price"],
             "ratio": t.ratio if t.financeable else None,
+            "px": px,
+            "min": math.ceil(max(lot, unit / r) / step) * step * px,
         }
-    V = 0.0
-    if tgt:
-        lo, hi = 0.0, max(x["held"] for x in tgt.values()) + C + L
-        for _ in range(SEARCH):
-            mid = (lo + hi) / 2
-            lo, hi = (mid, hi) if _fill(mid, tgt, X, L)[2] <= C else (lo, mid)
-        V = lo
-    need, fin, _ = _fill(V, tgt, X, L)
+    tries = sorted(ok, key=lambda c: tgt[c]["ratio"] is None)
+    picked, V = _pick(tries, tgt, C * pct, X * pct, L * pct)
+    need, fin, _ = _fill(V, picked, X * pct, L * pct)
 
     rows, buys = [], {"margin": [], "plain": []}
-    for c in codes:
+    for i, c in enumerate(codes, 1):
         t, why = terms.get(c), _why(terms.get(c))
         row = {
+            "rank": i,
             "code": c,
             "name": t.name if t else "",
             "why": why,
+            "skip": None,
             "financeable": bool(t and t.financeable),
             "ratio": t.ratio if t else None,
             "rate": t.rate if t else None,
@@ -211,11 +242,14 @@ def plan(st, acct, terms, codes, cfg):
         rows.append(row)
         if why:
             continue
-        q = quotes[c]
-        px = book.order_px(q, BUY, cfg["px"]) or book.ref(q)
+        row["held"] = tgt[c]["held"]
+        if c not in picked:
+            row["skip"] = "购买力不够开仓"
+            continue
+        q, px = quotes[c], tgt[c]["px"]
         lot, step = book.lot(c)
-        a, f = need[c] * pct, fin.get(c, 0.0) * pct
-        row |= {"held": tgt[c]["held"], "need": a}
+        a, f = need[c], fin.get(c, 0.0)
+        row["need"] = a
         sec = {"code": c, "name": t.name, "market_flag": t.market_flag}
         for cr, part in (("margin", f), ("plain", a - f)):
             if part <= 0:
@@ -241,6 +275,7 @@ def plan(st, acct, terms, codes, cfg):
     assets = acct.cash + mv
     net = assets - acct.debt
     exp_assets, exp_net, exp_debt = assets + F - cost, net - cost, acct.debt + F
+    buy_cost = sum(o["slip"] + o["fee"] for o in [*buys["margin"], *buys["plain"]])
     return {
         "now": {
             "assets": assets,
@@ -252,15 +287,25 @@ def plan(st, acct, terms, codes, cfg):
             "lev": assets / net,
             "maint": assets / acct.debt if acct.debt else None,
         },
+        # 调仓后：可用保证金要按买后持仓与负债重算，不出
+        "exp": {
+            "assets": exp_assets,
+            "net": exp_net,
+            "debt": exp_debt,
+            "cash": C - (use - F) - buy_cost,
+            "X": None,
+            "L": L - F,
+            "lev": exp_assets / exp_net,
+            "maint": exp_assets / exp_debt if exp_debt else None,
+        },
         "power": power,
         "use": use,
         "financed": F,
-        "assets": exp_assets,
         "cost": cost,
-        "lev": exp_assets / exp_net,
-        "maint": exp_assets / exp_debt if exp_debt else None,
         "after_sell": {"C": C, "X": X},
         "V": V,
+        "picked": len(picked),
+        "buyable": len(ok),
         "holds": hold_rows,
         "targets": rows,
         "orders": orders,
@@ -342,7 +387,7 @@ class Rebal:
         else:
             try:
                 p = plan(st, self.acct, self.terms, self.codes, self.cfg)
-            except Exception as e:  # 错误边界：试算出错只报在调仓页，不打断持仓循环
+            except Exception as e:  # 错误边界：试算出错只报在调仓提示行，不打断持仓循环
                 p = {"err": err(e)}
         with self.feed:
             self.plan = p

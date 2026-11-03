@@ -1,4 +1,4 @@
-// 公用：取元素、后端请求与推送订阅、调度、拖拽、转义、可排序表格、数字格式化
+// 公用：取元素、后端请求与推送订阅、调度、拖拽、转义、可排序表格、悬停提示、数字格式化
 
 const $ = (id) => document.getElementById(id);
 const ck = (id) => $(id).checked;
@@ -6,10 +6,10 @@ const ck = (id) => $(id).checked;
 const CSSV = getComputedStyle(document.documentElement);
 const UP = CSSV.getPropertyValue("--up").trim(),
   DN = CSSV.getPropertyValue("--dn").trim();
-// 方向 s：买 +1 / 卖 -1，与后端同号；tint 为盘口量条底色
+// 方向 s：买 +1 / 卖 -1，与后端同号；买绿卖红（与涨红跌绿相反）；tint 为盘口量条底色
 const SIDE = {
-  1: { name: "买", sign: "+", color: UP, tint: "var(--up-tint)" },
-  "-1": { name: "卖", sign: "-", color: DN, tint: "var(--dn-tint)" },
+  1: { name: "买", sign: "+", color: DN, tint: "var(--dn-tint)" },
+  "-1": { name: "卖", sign: "-", color: UP, tint: "var(--up-tint)" },
 };
 
 // 后端 GET / POST 两张路由表，前端同形两个入口；失败一律回 {err}
@@ -133,14 +133,15 @@ const cmpKey = (x, y, dir) =>
     : y == null
       ? -1
       : dir * (typeof x === "number" ? x - y : ZH(String(x), String(y)));
-// 整表重填：cols 每列 [表头 html, 行 → 单元格 html, 行 → 排序键?, 单元格 class?]；
-// attrs(row) 为 <tr> 的属性串。有排序键的列点表头排序：首点降序、再点反向，空值恒在末尾；
+// 整表重填：cols 每列 [表头 html, 行 → 单元格 html, 行 → 排序键?, 单元格 class?, 合计 → 表尾 html?]；
+// attrs(row) 为 <tr> 的属性串；给了 foot 即按各列的合计函数出表尾一行（表里须有 <tfoot>）。
+// 有排序键的列点表头排序：首点降序、再点反向，空值恒在末尾；
 // 排序状态按表记住，重填（如行情刷新）沿用；表头变了才重写。行内事件由调用方委托在表上。
 const SORT = {}; // sel → {i 列号, dir ±1, head 当前表头, redraw 按当前数据重填}
-function table(sel, cols, rows, attrs = () => "") {
+function table(sel, cols, rows, attrs = () => "", foot = null) {
   const st = (SORT[sel] ??= { i: -1, dir: -1, head: null });
   const T = document.querySelector(sel);
-  st.redraw = () => table(sel, cols, rows, attrs);
+  st.redraw = () => table(sel, cols, rows, attrs, foot);
   const head =
     "<tr>" +
     cols
@@ -175,7 +176,38 @@ function table(sel, cols, rows, attrs = () => "") {
         "</tr>",
     )
     .join("");
+  if (foot)
+    T.tFoot.innerHTML =
+      "<tr>" +
+      cols
+        .map(([, , , cls, ft]) => `<td class="${cls ?? ""}">${ft?.(foot) ?? ""}</td>`)
+        .join("") +
+      "</tr>";
+  tipAt();
 }
+// 悬停提示：鼠标下最近的 [data-tip] 的文字浮在鼠标旁；元素整个重绘了也按鼠标位置重取，不随重绘消失
+const TIP = { x: -1, y: -1 };
+function tipAt() {
+  const el = document.elementFromPoint(TIP.x, TIP.y)?.closest("[data-tip]");
+  const t = $("tip");
+  t.hidden = !el;
+  if (!el) return;
+  t.textContent = el.dataset.tip;
+  t.style.left = Math.min(TIP.x + 12, innerWidth - t.offsetWidth - 4) + "px";
+  t.style.top =
+    (TIP.y + 16 + t.offsetHeight > innerHeight
+      ? TIP.y - t.offsetHeight - 8
+      : TIP.y + 16) + "px";
+}
+document.addEventListener("mousemove", (e) => {
+  [TIP.x, TIP.y] = [e.clientX, e.clientY];
+  tipAt();
+});
+document.documentElement.addEventListener("mouseleave", () => {
+  TIP.x = TIP.y = -1;
+  tipAt();
+});
+document.addEventListener("scroll", tipAt, true);
 const paint = (c, s) => (c ? `<span style="color:${c}">${s}</span>` : s);
 
 // 数字格式化：每种小数位一个缓存的格式器；缺值一律空

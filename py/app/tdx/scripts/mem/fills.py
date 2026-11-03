@@ -42,14 +42,14 @@ COLS = {
     "time":        (str,   0),
     "code":        (str,   1),
     "name":        (str,   3),   # 列 2 对 ETF 是短码名（如 5GETF），列 3 是全称（同持仓表）
-    "market_flag": (int,   4),
-    "side":        (_side, 5),   # 方向 BUY / SELL
+    "side":        (_side, 5),   # 方向 BUY / SELL（列 4 是买卖标志，非沪深）
     "status":      (str,   6),
     "price":       (float, 7),
     "qty":         (float, 8),   # 股
     "amount":      (float, 9),   # 元
     "fill_id":     (str,   10),  # 成交编号
     "order_id":    (str,   11),  # 委托编号
+    "market_flag": (int,   13),  # 与列 12 股东号同市场
 }
 # fmt: on
 
@@ -100,7 +100,9 @@ def by_code(rows):
     traded 与持仓同形可直接比对；同代码沪深标志须一致。"""
     out = {}
     for r in rows:
-        a = out.setdefault(r["code"], {k: r[k] for k in ("code", "name", "market_flag")} | _flow())
+        a = out.setdefault(
+            r["code"], {k: r[k] for k in ("code", "name", "market_flag")} | _flow()
+        )
         assert a["market_flag"] == r["market_flag"], f"成交 {r['code']} 沪深标志不一致"
         a["traded"][r["side"]] += r["qty"]
         a["amount"][r["side"]] += r["amount"]

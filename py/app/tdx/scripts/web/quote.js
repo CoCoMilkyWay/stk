@@ -1,7 +1,7 @@
 // 行情页：K 线与盘口
 
-// 行情页：持仓 / 滑点表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口：
-// 上排分钟线（日内 / 近几日，可切档）与盘口等高，下面日线。两图各一份状态（KCH），一套画法，
+// 行情页：持仓表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口：
+// 日线、分钟线（日内 / 近几日，可切档）、盘口同排，图高随盘口。两图各一份状态（KCH），一套画法，
 // 只差 KIND 的同名成员（与后端 Day / Min 对仗）。后端给每日根数 per、各根当日第几根 slot：
 // 按图宽每 g 根并一格（g 取整除 per、每格不窄于 minW px 的最小值），横轴按交易日 × per 等分、没成交的格留空，
 // g 取到 per 仍放不下只画最近的。K 线每 KLINE_GAP 重取；其间每个持仓帧用现价改写进行中那根，盘口随帧刷新。
@@ -12,7 +12,7 @@ const KRANGES = [
   ["min", 3, "3日"],
   ["min", 4, "4日"],
 ];
-const KDAY = ["day", 180, "日线"];
+const KDAY = ["day", 360, "日线"];
 const KLINE_GAP = 15000;
 const K_COST = "#569cd6";
 const K_MA = [
@@ -80,7 +80,7 @@ function pickClick(e) {
   const tr = e.target.closest("tbody tr");
   if (!tr) return;
   kSelect(tr.dataset.code, KMIN.range);
-  setTab("rightPane", "quote");
+  setTab("botPane", "quote");
 }
 function quoteFrame(rows) {
   POS_ROWS = rows;
@@ -102,9 +102,7 @@ function kSelect(code, range) {
     ch.ver++;
   }
   QROW = POS_ROWS.find((p) => p.code === code) ?? null;
-  for (const tr of document.querySelectorAll(
-    "#posTbl tbody tr, #slipTbl tbody tr",
-  ))
+  for (const tr of document.querySelectorAll("#posTbl tbody tr"))
     tr.classList.toggle("cur", tr.dataset.code === code);
   tabbar($("kRanges"), String(KRANGES.indexOf(KMIN.range)));
   $("kInfo").innerHTML = QROW
@@ -322,6 +320,26 @@ function drawK(ch) {
   const last = vis.at(-1)[4];
   priceLine(QROW?.cost, K_COST);
   priceLine(last, last >= ref ? UP : DN);
+  // 成本 → 现价的竖箭头（赚红亏绿），紧跟最后一根右侧、贴不下即贴图右缘；成本出了价格区间从图边指起
+  const cost = QROW?.cost;
+  if (cost && cost !== last) {
+    const y0 = Math.min(Math.max(y(cost), TOP), TOP + PH),
+      y1 = y(last),
+      ax = Math.round(Math.min(PR - 8, x(vis.length - 1) + BW / 2 + 8)),
+      d = Math.sign(y1 - y0) * Math.min(7, Math.abs(y1 - y0));
+    c.strokeStyle = c.fillStyle = last > cost ? UP : DN;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(ax, y0);
+    c.lineTo(ax, y1 - d);
+    c.stroke();
+    c.beginPath();
+    c.moveTo(ax, y1);
+    c.lineTo(ax - 4, y1 - d);
+    c.lineTo(ax + 4, y1 - d);
+    c.fill();
+    c.lineWidth = 1;
+  }
 
   const hov = ch.hover >= 0 && ch.hover < vis.length;
   const at = hov ? ch.hover : vis.length - 1;
@@ -409,7 +427,6 @@ function initK() {
     const b = e.target.closest("button");
     if (b) kSelect(QCODE, KRANGES[+b.dataset.tab]);
   };
-  $("slipTbl").onclick = pickClick;
   for (const ch of KCH) {
     const cv = $(ch.cv);
     // 鼠标所在格及以前最近的一格（没成交的格算前一格）

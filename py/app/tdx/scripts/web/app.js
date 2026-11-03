@@ -1,6 +1,6 @@
 // 页面骨架：视图切换与合帧重画、shim 状态、推送连接、分栏拖拽、启动
 
-// 左右两侧同构：pane 下 .tabbar 按钮 data-tab ↔ 视图 data-view。
+// 上下两栏同构：pane 下 .tabbar 按钮 data-tab ↔ 视图 data-view。
 // 画法 → [所在视图, 画]：别处标脏（dirty），rAF 合帧只画所在视图可见的；切入视图即画其全部画法。
 const CUR = {}; // pane → 当前视图
 const shown = (v) => Object.values(CUR).includes(v);
@@ -53,7 +53,7 @@ async function setNoraise(arg) {
 
 // 推送连接：每条 {on 该连着, routes 路名 → 处理, opened 每次（重）连上}，es 为当前连接。
 // base 常驻：tree 来 {gen} 即重拉树，gdi 来一层即记下并合帧重画，rec 录制器；
-// pos 只在持仓页或行情页可见时连、reb 只在调仓页可见时连，都断开后服务端即停取行情。
+// pos（连带 ord、reb）只在持仓页或行情页可见时连，断开后服务端即停取行情。
 // 标签转后台一律断开（不占浏览器对本地址的连接数），回前台重连，重连时服务端先推各路全量。
 function onTree() {
   if (autoUpd()) pullTree();
@@ -73,9 +73,8 @@ const STREAMS = {
   },
   pos: {
     on: () => shown("pos") || shown("quote"),
-    routes: { pos: onPos, ord: onOrd },
+    routes: { pos: onPos, ord: onOrd, reb: onReb },
   },
-  reb: { on: () => shown("reb"), routes: { reb: onReb, ord: onOrd } },
 };
 function syncStreams() {
   for (const st of Object.values(STREAMS)) {
@@ -88,19 +87,19 @@ function syncStreams() {
   }
 }
 
-// 中间 gutter 左右拖拽，改左 pane 宽度
+// 中间 gutter 上下拖拽，改上 pane 高度
 function initGutter() {
   const wrap = document.querySelector(".wrap");
   drag(
     $("gutter"),
     (e) => {
       e.preventDefault();
-      document.body.style.cursor = "col-resize";
+      document.body.style.cursor = "row-resize";
       return { r: wrap.getBoundingClientRect() };
     },
     ({ r }, e) => {
-      const px = Math.max(220, Math.min(r.width - 220, e.clientX - r.left));
-      $("leftPane").style.flex = `0 0 ${px}px`;
+      const px = Math.max(160, Math.min(r.height - 160, e.clientY - r.top));
+      $("topPane").style.flex = `0 0 ${px}px`;
     },
     () => (document.body.style.cursor = ""),
   );
@@ -113,8 +112,8 @@ function initGutter() {
   initMapInput();
   initTree();
   initK();
-  setTab("leftPane", "layout");
-  setTab("rightPane", "quote");
+  setTab("topPane", "layout");
+  setTab("botPane", "quote");
   renderSpy([]);
   if (await ping()) await refreshTree();
   syncStreams();

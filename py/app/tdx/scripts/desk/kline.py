@@ -13,8 +13,9 @@
 #   该取：定稿线又越过了一根（gap(上次定稿线, 此刻定稿线) > 0）：日线每个交易日后至多一次，
 #         分钟线每分钟至多一次，午休、盘后、周末不取。
 #   增量：取「已定稿最后一根之后至今的根数上界（gap，节假日只会多估）+ OVERLAP」根，
-#         重叠部分须与已定稿逐根一致才接上（无缝、未改）；没有已定稿或上界超出单次上限即取满上限，
-#         掐掉最早那个可能被截断的日子，接不上已定稿就以新取的为准。
+#         重叠部分须与已定稿逐根一致才接上（无缝、未改）；没有已定稿、盘上不足保留期（本进程首取时）
+#         或上界超出单次上限即取满上限，掐掉最早那个可能被截断的日子，早于已定稿的补在前，
+#         接不上已定稿就以新取的为准。
 # 完整性：标号严格递增且合法、OHLC 自洽（取到的、读盘的都核）；分钟线落盘前逐日与当日日线核对
 #   开 / 高 / 低 / 收 恰等、量在 [VOL_FLOOR, 1] × 日线量（实测深市恰等，沪市分钟合计少 0.05%~0.3%）。
 # 今日日线由行情合成（今开 / 最高 / 最低 / 现价 / 量，同日线口径）；进行中的分钟线前端随持仓帧用现价改写。
@@ -58,8 +59,7 @@ def _check(what, bars, kind):
         assert a[0] < b[0], f"{what} K 线标号不递增：{a[0]} → {b[0]}"
     for t, o, h, l, c, v in bars:
         assert kind.valid(t), f"{what} {kind.name} 标号 {t} 不合法"
-        assert l <= min(o, c) and max(
-            o, c) <= h and v >= 0, f"{what} {t} OHLC 不自洽"
+        assert l <= min(o, c) and max(o, c) <= h and v >= 0, f"{what} {t} OHLC 不自洽"
     return bars
 
 
@@ -84,17 +84,20 @@ def _save(path, bars):
 
 
 def _splice(sym, old, new, full):
-    """已定稿的 old 接上新取的 new：重叠部分须逐根一致；new 是取满上限的（full）且够不着 old 即以 new 为准。"""
+    """已定稿的 old 接上新取的 new：重叠部分须逐根一致，new 早于 old 的补在前、晚于 old 的接在后；
+    new 是取满上限的（full）且够不着 old 即以 new 为准。"""
     if not old:
         return new
-    last = old[-1][0]
-    lap = [b for b in new if b[0] <= last]
+    first, last = old[0][0], old[-1][0]
+    lap = [b for b in new if first <= b[0] <= last]
     if not lap:
-        assert full, f"{sym} 新取 {len(new)} 根与已有无重叠（最早 {new[0][0]}，已有到 {last}）"
+        assert (
+            full
+        ), f"{sym} 新取 {len(new)} 根与已有无重叠（最早 {new[0][0]}，已有到 {last}）"
         return new
     tail = [b for b in old if b[0] >= lap[0][0]]
     assert lap == tail, f"{sym} 已定稿的 K 线被改过：{tail} → {lap}"
-    return old + [b for b in new if b[0] > last]
+    return [b for b in new if b[0] < first] + old + [b for b in new if b[0] > last]
 
 
 def _verify(sym, day, g, k):
@@ -143,7 +146,7 @@ class Kind:
 class Day(Kind):
     name, scale, fmt = "day", 240, "%Y-%m-%d"
     # cap：盘后新浪日线含当日，比 keep 多取几根
-    per, keep, cap, settle = 1, 180, 190, 86400
+    per, keep, cap, settle = 1, 360, 370, 86400
 
     def slot(self, t):
         return 1
@@ -153,8 +156,7 @@ class Day(Kind):
 
     def tail(self, q):
         """今日那根由行情合成；未开盘没有。"""
-        bar = (q["date"], q["open"], q["high"],
-               q["low"], q["price"], q["volume"])
+        bar = (q["date"], q["open"], q["high"], q["low"], q["price"], q["volume"])
         return _bar(*bar) if q["open"] > 0 else None
 
     def close(self, d):
@@ -225,8 +227,12 @@ class KCache:
             if s["final"] is None
             else [b for b in s["bars"] if b[0] <= s["final"]]
         )
-        n = kind.gap(fin[-1][0], kind.label(now)) + \
-            OVERLAP if fin else kind.cap
+        short = s["final"] is None and len({b[0][:10] for b in fin}) < kind.keep
+        n = (
+            kind.gap(fin[-1][0], kind.label(now)) + OVERLAP
+            if fin and not short
+            else kind.cap
+        )
         full = n >= kind.cap
         new = kind.fetch(sym, min(n, kind.cap))
         if full:
@@ -234,10 +240,8 @@ class KCache:
             assert new, f"{sym} 取满 {kind.cap} 根仍不够一天"
         bars = _splice(sym, fin, new, full)
         today = kind.label(now)[:10]
-        past = sorted({b[0][:10]
-                      for b in bars if b[0][:10] < today})[-kind.keep:]
-        s["bars"] = [b for b in bars if b[0][:10]
-                     >= (past[0] if past else today)]
+        past = sorted({b[0][:10] for b in bars if b[0][:10] < today})[-kind.keep :]
+        s["bars"] = [b for b in bars if b[0][:10] >= (past[0] if past else today)]
         s["final"] = kind.final(now)
         done = [b for b in s["bars"] if kind.close(b[0][:10]) <= s["final"]]
         if done != s["saved"]:
@@ -250,7 +254,11 @@ class KCache:
         s = self.series.get((kind.name, sym))
         if s is None:
             bars = kind.load(sym)
-            s = self.series[kind.name, sym] = {"bars": bars, "final": None, "saved": bars}
+            s = self.series[kind.name, sym] = {
+                "bars": bars,
+                "final": None,
+                "saved": bars,
+            }
         now = time.time()
         if s["final"] is None or kind.gap(s["final"], kind.final(now)) > 0:
             self._grow(kind, sym, s, now, q)

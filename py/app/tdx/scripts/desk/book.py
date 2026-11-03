@@ -8,8 +8,7 @@ NOTIONALS = (10000, 50000, 100000)  # 吃 n 元
 PCTS = (1, 2)  # 偏 p%
 # 委托价：(吃对手盘, 再偏 %)
 PX_MODES = {"opp": (True, 0), "opp1": (True, 1), "own": (False, 0)}
-SLIP_COLS = [(n, BUY) for n in reversed(NOTIONALS)] + [(n, SELL)
-                                                       for n in NOTIONALS]
+SLIP_COLS = [(n, BUY) for n in reversed(NOTIONALS)] + [(n, SELL) for n in NOTIONALS]
 LEVEL_COLS = [(p, s) for p in PCTS for s in SIDES]
 
 
@@ -79,6 +78,12 @@ def _slip(q, r, n, s):
 def slips(q, r):
     """SLIP_COLS 各列滑点。"""
     return [_slip(q, r, n, s) for n, s in SLIP_COLS]
+
+
+def lot_slips(q, r, code):
+    """吃起买股数那么多元的滑点，按 SIDES 顺序（买、卖）。"""
+    n = lot(code)[0] * r
+    return [_slip(q, r, n, s) for s in SIDES]
 
 
 def levels(r):
