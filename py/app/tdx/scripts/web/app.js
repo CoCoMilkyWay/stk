@@ -53,7 +53,7 @@ async function setNoraise(arg) {
 
 // 推送连接：每条 {on 该连着, routes 路名 → 处理, opened 每次（重）连上}，es 为当前连接。
 // base 常驻：tree 来 {gen} 即重拉树，gdi 来一层即记下并合帧重画，rec 录制器；
-// pos（连带 ord、reb）只在持仓页或行情页可见时连，断开后服务端即停取行情。
+// pos（连带 ord、reb）只在持仓页、指数页或行情页可见时连，断开后服务端即停取行情。
 // 标签转后台一律断开（不占浏览器对本地址的连接数），回前台重连，重连时服务端先推各路全量。
 function onTree() {
   if (autoUpd()) pullTree();
@@ -72,7 +72,7 @@ const STREAMS = {
     opened: () => (REC_RECS = []),
   },
   pos: {
-    on: () => shown("pos") || shown("quote"),
+    on: () => shown("pos") || shown("idx") || shown("quote"),
     routes: { pos: onPos, ord: onOrd, reb: onReb },
   },
 };

@@ -1,9 +1,10 @@
 # desk/hub — 持仓推送与刷新（两个后台线程共用一份 State）。
-# 状态 State = (持仓快照, 成交快照, 挂单快照, 信用账户, 行情)，帧是它的纯函数（board.view）加刷新进度 prog：
+# 状态 State = (持仓快照, 成交快照, 挂单快照, 信用账户, 行情, 指数名单)，帧是它的纯函数（board.view）加刷新进度 prog：
 # 与当前帧所据的不同才重算、推给全部 pos 订阅。
 # 推送线程（run）管全部订阅者，有订阅者才转：每 TICK follow 持仓（约 0.03ms；客户端自己重查过，如成交后，即换代），
 # 每 FULL_EVERY 一遍全量扫出 SCANNED 各表；每 QUOTE_GAP 取一次行情，State 变了即补取（保证覆盖新的那只）。
-# 行情只此一路（盘口列同帧复用其 5 档），开几个页面都不加量，免被限频封禁。
+# 行情两源各只此一路：持仓与调仓名单走新浪（盘口列同帧复用其 5 档），指数名单（INDEX_FILE，每轮重读）走通达信；
+# 开几个页面都不加量，免被限频封禁。
 # 刷新线程（_refresher）一轮按 REFRESH 让客户端依次重查成交、持仓（两表对不上再连查）、挂单、信用账户，
 # 每查完一样即并进 State、随下一帧推出，不等整轮；进度（各样名称 / 等界面 / 正查哪样 / 各样读于几时 / 上轮失败原因）同帧推。
 # 一轮的起因（_due）：有人要（request / sync）、有订阅者而还没刷过或距上轮满 every 秒（订阅者久别重连即刷）、
@@ -13,13 +14,15 @@
 # 每推一帧把 State 交给 hooks（调仓据此重算）。
 
 import contextlib
+import os
+import re
 import threading
 import time
 
 from mem import common as memcommon
 from mem import tables
 
-from . import board, credit, sina, ui
+from . import ROOT, board, credit, load_csv, sina, tdxhq, ui
 from .feed import Feed, err
 
 TICK = 0.1
@@ -30,6 +33,20 @@ KICKS = (1, 6)  # console 下单成功后隔几秒各刷新一次（限价单可
 SYNC_TRIES = 2  # 一轮里成交与持仓对不上（两次查询之间又成交）时最多连查几遍
 # 推送线程全量扫的：State 字段 → 表
 SCANNED = {"fills": tables.FILLS, "pos": tables.POSITIONS}
+# 指数名单：每行 sym（市场前缀 + 6 位代码）, name，行序即显示序；没有文件即无
+INDEX_FILE = os.path.join(ROOT, "index.csv")
+MARKET_OF = {v: k for k, v in memcommon.MARKETS.items()}
+
+
+def _indices():
+    """INDEX_FILE → 证券 [{code, name, market_flag}]。"""
+    out = []
+    for s, name in load_csv(INDEX_FILE, ("sym", "name")) or []:
+        assert re.fullmatch(
+            rf"({'|'.join(MARKET_OF)})\d{{6}}", s
+        ), f"{INDEX_FILE} 代码 {s!r}"
+        out.append({"code": s[2:], "name": name, "market_flag": MARKET_OF[s[:2]]})
+    return out
 
 
 def _tab(tab, old):
@@ -63,7 +80,7 @@ class Hub:
         self.lock = threading.RLock()
         self.cv = threading.Condition(self.lock)
         # 快照 None = 还没扫过 / 还没读过
-        self.st = board.State(None, None, None, None, {})
+        self.st = board.State(None, None, None, None, {}, [])
         # 当前帧所据的 st；置 None 即下一轮必重算、推帧
         self.shown = None
         self.subs = 0
@@ -131,8 +148,14 @@ class Hub:
         }
 
     def _quote(self):
+        """两源各取一遍并进 State：_secs 走新浪、指数名单走通达信，两源代码不重。须持 lock。"""
         self.quote_at = time.monotonic()
-        return sina.quotes(list(self._secs().values()))
+        idx = _indices()
+        a, b = sina.quotes(list(self._secs().values())), tdxhq.quotes(idx)
+        assert (
+            not a.keys() & b.keys()
+        ), f"指数与持仓 / 调仓名单代码重了：{sorted(a.keys() & b.keys())}"
+        self._set(quotes=a | b, indices=idx)
 
     def watch(self, secs):
         """持仓之外一并取行情的证券换成 secs，下一轮即重取。"""
@@ -170,7 +193,7 @@ class Hub:
                 if pos != self.st.pos:
                     self._fresh("pos", pos)
             if self.st != self.shown or now - self.quote_at >= QUOTE_GAP:
-                self._set(quotes=self._quote())
+                self._quote()
             if self.st != self.shown:
                 self.shown = self.st
                 self._push(board.view(self.st))
@@ -301,7 +324,7 @@ class Hub:
         with self.lock:
             self._load()
             if not self._secs().keys() <= self.st.quotes.keys():
-                self._set(quotes=self._quote())
+                self._quote()
             return self.st
 
     def held(self, code):
@@ -313,7 +336,7 @@ class Hub:
         return h
 
     def quote(self, code):
-        """持仓页行情里 code 那只（持仓与今日清仓）。"""
+        """持仓页行情里 code 那只（持仓、今日清仓与指数）。"""
         with self.lock:
             q = self.st.quotes.get(code)
         assert q, f"持仓页行情里没有 {code}"

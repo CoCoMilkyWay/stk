@@ -1,7 +1,9 @@
 # desk/sina — 新浪行情与 K 线：两个接口各一条 keep-alive 连接（Sina），全进程各只此一路请求。
+# 取持仓与调仓名单的证券，与 tdxhq 同形：SRC、quotes(secs)、kline(s, kind, n)、VOL_BAND。
 # 行情（hq.sinajs.cn）一行一只：var hq_str_<sym>="名称,今开,昨收,现价,最高,最低,买一,卖一,量,额,
 #   买1量,买1价,…,买5量,买5价,卖1量,卖1价,…,卖5量,卖5价,日期,时间,…"；量单位股。
-# K 线（quotes.sina.cn）CN_MarketDataService.getKLineData：scale 周期（分钟）、datalen 根数，JSON 列表、旧在前。
+# K 线（quotes.sina.cn）CN_MarketDataService.getKLineData：scale 周期（分钟，SCALE）、datalen 根数，JSON 列表、旧在前。
+# VOL_BAND：收完的一天分钟量合计 / 日线量的容许区间（实测深市恰等，沪市分钟合计少 0.05%~0.3%）。
 
 import gzip
 import http.client
@@ -11,8 +13,11 @@ import time
 
 from mem.common import BUY, MARKETS, SELL
 
+SRC = "sina"
 HDR = {"Referer": "https://finance.sina.com.cn", "Accept-Encoding": "gzip"}
 KLINE_KEYS = ("day", "open", "high", "low", "close", "volume")
+SCALE = {"day": 240, "min": 1}
+VOL_BAND = (0.95, 1)
 
 
 class Sina:
@@ -57,7 +62,7 @@ def _levels(f, at):
 
 
 def quotes(secs):
-    """各只（带 code / market_flag）批量取行情 → {代码: {sym, price, last_close, open, high, low, volume,
+    """各只（带 code / market_flag）批量取行情 → {代码: {src, sym, price, last_close, open, high, low, volume,
     book, date, time}}，须每只都有。book = {方向: 该方向吃的那侧 5 档 [(价, 股)]}（买吃卖盘、卖吃买盘）。
     现价为 0（开盘前/停牌）时取昨收，当日盈亏即 0；今开 / 最高 / 最低此时为 0。"""
     if not secs:
@@ -74,6 +79,7 @@ def quotes(secs):
         assert s in codes and len(f) >= 32, f"{s} 行情不认识或字段不足：{v[:60]}"
         last = float(f[2])
         out[codes[s]] = {
+            "src": SRC,
             "sym": s,
             "price": float(f[3]) or last,
             "last_close": last,
@@ -89,11 +95,11 @@ def quotes(secs):
     return out
 
 
-def kline(s, scale, n):
-    """s 周期 scale 最近 n 根 → [(标号, 开, 高, 低, 收, 量)]（原样字符串，旧在前）。"""
+def kline(s, kind, n):
+    """s 周期 kind 最近 n 根 → [(标号, 开, 高, 低, 收, 量)]（原样字符串，旧在前）。"""
     body = KQ.get(
         "/cn/api/json_v2.php/CN_MarketDataService.getKLineData"
-        f"?symbol={s}&scale={scale}&ma=no&datalen={n}"
+        f"?symbol={s}&scale={SCALE[kind]}&ma=no&datalen={n}"
     )
     rows = json.loads(body)
     assert isinstance(rows, list) and rows, f"{s} K 线：{body[:80]!r}"

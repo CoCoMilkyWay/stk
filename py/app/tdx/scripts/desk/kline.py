@@ -1,12 +1,14 @@
-# desk/kline — K 线（新浪，本地落盘）。
-# 一根一项 (标号, 开, 高, 低, 收, 量)（价 3 位小数、量单位股），旧在前。日线 Day / 分钟线 Min 走同一套流程（KCache），
-# 差异全在两个类的同名成员：
-#   scale 新浪周期（分钟）  fmt 标号格式  per 每个交易日根数  keep 保留交易日数  cap 单次取数上限
+# desk/kline — K 线（新浪 / 通达信，本地落盘）。
+# 一根一项 (标号, 开, 高, 低, 收, 量)（价 3 位小数，量为源给的口径：新浪股数、通达信成交额），旧在前。
+# 源随行情的 src（SOURCES：sina / tdxhq 同形，kline(sym, 种类, 根数)、VOL_BAND）；两源不重代码，盘上同目录。
+# 日线 Day / 分钟线 Min 走同一套流程（KCache），差异全在两个类的同名成员：
+#   name 种类（源按它选周期）  fmt 标号格式  per 每个交易日根数  keep 保留交易日数  cap 单次取数上限
 #   settle 定稿延迟（秒）：标号不晚于「此刻 − settle」的不再变（日线即今日以前，分钟线即 90 秒以前）
 #   slot(t) 标号 t 是当日第几根  valid(t) 标号合法  tail(q) 由行情合成的进行中那根
 #   close(d) 日期 d 的最后一根标号（定稿线到了即收完）  verify 落盘前核对
-# 新浪（实测）：1 分钟线按 09:31 … 11:30、13:01 … 15:00 标号，无成交的分钟没有这根（一天约 237~238 根），
-# 刚过去的那根还会被修正；单次至多 1970 根；日线盘中不含当日。
+# 两源（实测）：1 分钟线按 09:31 … 11:30、13:01 … 15:00 标号，刚过去的那根还会被修正。新浪无成交的分钟没有这根
+# （一天约 237~238 根），单次至多 1970 根，日线盘中不含当日；通达信一天恰 240 根，一页 800 根（tdxhq 翻页凑满），
+# 日线盘中含当日。
 # 落盘 DATA_DIR/<kind>/<sym>.csv（time,open,high,low,close,volume）：只含收完的日子，变了才整写；
 # 各 kind 目录下只留 <sym>.csv，其余随启动删掉。未定稿的只在内存；超出保留期的随写入删掉。盘口不留历史。
 # 取数只追不改：
@@ -17,8 +19,9 @@
 #         或上界超出单次上限即取满上限，掐掉最早那个可能被截断的日子，早于已定稿的补在前，
 #         接不上已定稿就以新取的为准。
 # 完整性：标号严格递增且合法、OHLC 自洽（取到的、读盘的都核）；分钟线落盘前逐日与当日日线核对
-#   开 / 高 / 低 / 收 恰等、量在 [VOL_FLOOR, 1] × 日线量（实测深市恰等，沪市分钟合计少 0.05%~0.3%）。
-# 今日日线由行情合成（今开 / 最高 / 最低 / 现价 / 量，同日线口径）；进行中的分钟线前端随持仓帧用现价改写。
+#   开 / 高 / 低 / 收 恰等、量在该源的 VOL_BAND × 日线量。
+# 今日日线由行情合成（今开 / 最高 / 最低 / 现价 / 量，同日线口径），盖掉取到的同日那根；
+# 进行中的分钟线前端随持仓帧用现价改写。
 
 import datetime
 import itertools
@@ -30,13 +33,13 @@ import time
 
 from mem.common import MARKETS
 
-from . import ROOT, load_csv, save_csv, sina
+from . import ROOT, load_csv, save_csv, sina, tdxhq
 
 DATA_DIR = os.path.join(ROOT, "data", "kline")
 CSV_HEAD = ("time", "open", "high", "low", "close", "volume")
 CSV_NAME = re.compile(rf"({'|'.join(MARKETS.values())})\d{{6}}\.csv")
 OVERLAP = 3
-VOL_FLOOR = 0.95
+SOURCES = {m.SRC: m for m in (sina, tdxhq)}
 
 
 def _wd(d):
@@ -82,13 +85,14 @@ def _splice(sym, old, new, full):
     return [b for b in new if b[0] < first] + old + [b for b in new if b[0] > last]
 
 
-def _verify(sym, day, g, k):
-    """收完的一天分钟线 g 与当日日线 k 核对：开 / 高 / 低 / 收 恰等，量在 [VOL_FLOOR, 1] × 日线量。"""
+def _verify(sym, day, g, k, band):
+    """收完的一天分钟线 g 与当日日线 k 核对：开 / 高 / 低 / 收 恰等，量在 band × 日线量。"""
     assert k, f"{sym} 日线缺 {day}，分钟线无从核对"
     ohlc = (g[0][1], max(b[2] for b in g), min(b[3] for b in g), g[-1][4])
     assert ohlc == k[1:5], f"{sym} {day} 分钟线合成 {ohlc} ≠ 日线 {k[1:5]}"
     v = sum(b[5] for b in g)
-    assert VOL_FLOOR * k[5] <= v <= k[5], f"{sym} {day} 分钟线量 {v} 与日线 {k[5]} 不符"
+    lo, hi = band
+    assert lo * k[5] <= v <= hi * k[5], f"{sym} {day} 分钟线量 {v} 与日线 {k[5]} 不符"
 
 
 class Kind:
@@ -126,13 +130,13 @@ class Kind:
             + self.slot(b) * _wd(db)
         )
 
-    def fetch(self, sym, n):
-        """取 n 根并校验。"""
-        return _check(sym, [_bar(*r) for r in sina.kline(sym, self.scale, n)], self)
+    def fetch(self, src, sym, n):
+        """从源 src 取 n 根并校验。"""
+        return _check(sym, [_bar(*r) for r in src.kline(sym, self.name, n)], self)
 
 
 class Day(Kind):
-    name, scale, fmt = "day", 240, "%Y-%m-%d"
+    name, fmt = "day", "%Y-%m-%d"
     # cap：盘后新浪日线含当日，比 keep 多取几根
     per, keep, cap, settle = 1, 360, 370, 86400
 
@@ -150,12 +154,12 @@ class Day(Kind):
     def close(self, d):
         return d
 
-    def verify(self, sym, bars, daily):
+    def verify(self, src, sym, bars, daily):
         pass
 
 
 class Min(Kind):
-    name, scale, fmt = "min", 1, "%Y-%m-%d %H:%M:%S"
+    name, fmt = "min", "%Y-%m-%d %H:%M:%S"
     # cap：新浪单次上限（实测 1970 可、1980 回 null），约 8 个交易日
     per, keep, cap, settle = 240, 7, 1970, 90
 
@@ -176,11 +180,11 @@ class Min(Kind):
     def close(self, d):
         return d + " 15:00:00"
 
-    def verify(self, sym, bars, daily):
+    def verify(self, src, sym, bars, daily):
         """逐日与日线 daily() 核对。"""
         k = daily()
         for day, g in itertools.groupby(bars, key=lambda b: b[0][:10]):
-            _verify(sym, day, list(g), k.get(day))
+            _verify(sym, day, list(g), k.get(day), src.VOL_BAND)
 
 
 DAY, MIN = Day(), Min()
@@ -222,7 +226,8 @@ class KCache:
             else kind.cap
         )
         full = n >= kind.cap
-        new = kind.fetch(sym, min(n, kind.cap))
+        src = SOURCES[q["src"]]
+        new = kind.fetch(src, sym, min(n, kind.cap))
         if full:
             new = [b for b in new if b[0][:10] > new[0][0][:10]]
             assert new, f"{sym} 取满 {kind.cap} 根仍不够一天"
@@ -233,12 +238,14 @@ class KCache:
         s["final"] = kind.final(now)
         done = [b for b in s["bars"] if kind.close(b[0][:10]) <= s["final"]]
         if done != s["saved"]:
-            kind.verify(sym, done, lambda: {b[0]: b for b in self._live(DAY, sym, q)})
+            kind.verify(
+                src, sym, done, lambda: {b[0]: b for b in self._live(DAY, sym, q)}
+            )
             kind.save(sym, done)
             s["saved"] = done
 
     def _live(self, kind, sym, q):
-        """盘上的 + 增量取到的（定稿线又越过一根才取）+ 行情合成的进行中那根。须持 lock。"""
+        """盘上的 + 增量取到的（定稿线又越过一根才取）+ 行情合成的进行中那根（与最后一根同标号即盖掉它）。须持 lock。"""
         s = self.series.get((kind.name, sym))
         if s is None:
             bars = kind.load(sym)
@@ -250,8 +257,10 @@ class KCache:
         now = time.time()
         if s["final"] is None or kind.gap(s["final"], kind.final(now)) > 0:
             self._grow(kind, sym, s, now, q)
-        t = kind.tail(q)
-        return s["bars"] + [t] if t and t[0] > s["bars"][-1][0] else s["bars"]
+        bars, t = s["bars"], kind.tail(q)
+        if not t or t[0] < bars[-1][0]:
+            return bars
+        return [b for b in bars if b[0] < t[0]] + [t]
 
     def bars(self, kind, sym, q, n):
         """近 n 个交易日（有今日即含今日）。"""

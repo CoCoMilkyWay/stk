@@ -9,6 +9,7 @@
 #   盘口：各列滑点（竞价时空）、价位，无参考价皆空。
 # 占比两列同构 = 市值 / 分母：仓位% 的分母是券商口径的资产（快照的 市值 / 仓位 反推，取仓位最大那只、
 # 舍入误差最小，再随总市值平移），占比的分母是总市值。
+# 指数名单另成 indices（每只 代码 / 名称 / 行情，按名单序），行情同在 quotes。
 
 import collections
 
@@ -18,7 +19,8 @@ from mem.tables import NO_FLOW
 from . import book
 
 # 持仓快照 × 成交快照 × 挂单快照（还没查过为 None）× 信用账户（credit.Acct，帧里不用，调仓用）× {代码: 行情}
-State = collections.namedtuple("State", "pos fills orders acct quotes")
+# × 指数名单 [证券]
+State = collections.namedtuple("State", "pos fills orders acct quotes indices")
 TOTALS = ("market_value", "pnl", "day_pnl")
 
 
@@ -153,6 +155,10 @@ def view(st):
         "level_cols": book.LEVEL_COLS,
         "totals": {k: round(sum(r[k] or 0 for r in rows), 2) for k in TOTALS}
         | {"slips": [_agg(rows, i) for i in range(len(book.SLIP_COLS))]},
+        "indices": [
+            {"code": x["code"], "name": x["name"], "quote": st.quotes[x["code"]]}
+            for x in st.indices
+        ],
         "fills": st.fills.rows,
         "orders": st.orders and st.orders.rows,
         "synced": all(_synced(h, f) for h, f in pairs),

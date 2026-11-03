@@ -1,6 +1,7 @@
 // 行情页：K 线与盘口
 
-// 行情页：持仓表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口：
+// 行情页：持仓表或指数表点行选股（默认持仓第一只），画 K 线（随该只行情的源：持仓新浪、指数通达信；
+// 旧在前、含进行中那根）+ 5 档盘口（指数没有）：
 // 分钟线、盘口、日线同排，图高随盘口，两图各一排档。两图各一份状态（KCH），一套画法，
 // 只差 KIND 的同名成员（与后端 Min / Day 对仗）。后端给每日根数 per、各根当日第几根 slot：
 // 横轴按所选交易日 × per 等分、没成交的格留空；视窗默认放下全部，滚轮缩放（钉住 anchor 那端）、双击复原，
@@ -29,6 +30,8 @@ const K_MA = [
   [20, "#c586c0"],
 ];
 const HOURS = ["09:30", "10:30", "11:30/13:00", "14:00", "15:00"];
+// 量的口径随行情源 [名, 格式]：新浪股数（标手）、通达信成交额（标 W）
+const VOLS = { sina: ["量", lots], tdx: ["额", w2] };
 // minW 每格最窄 px；least 视窗至少几根；lead 多取几个交易日；anchor 缩放钉住的一端（0 开盘 / 1 现在）；
 // ref(bars, q) 涨跌幅轴的基准价；tint(last, cost, ref) → [成本线色, 现价线色]；arrow 画成本 → 现价箭头；
 // ticks(L) → [时间轴 [[标签, x]], 分隔 [[x, 日界?]]]；label(t) 信息行的时刻；patch(b, q) 用行情改写进行中那根
@@ -81,9 +84,9 @@ const KIND = {
     patch: (b, q) => b.splice(1, 5, q.open, q.high, q.low, q.price, q.volume),
   },
 };
-let POS_ROWS = []; // 最近一帧持仓行
+let PICKS = []; // 最近一帧可选的行：持仓行在前、指数行在后
 let QCODE = null; // 选中代码
-let QROW = null; // 其持仓行（含 cost / quote）
+let QROW = null; // 其行（持仓行含 cost 等；指数行只有 code / name / quote）
 const K_NONE = { per: 1, bars: [] };
 const KMEM = new Map(); // "代码|档" → 最近取到的 K 线；切股 / 切档先画它，再后台重取
 // 每图：cv 画布、bar 档排、ranges 可选档、range 当前档、kb K 线 {per 每日根数, bars [[时刻, 开, 高, 低, 收, 量, slot]]}、
@@ -113,9 +116,11 @@ function pickClick(e) {
   kSelect(tr.dataset.code);
   setTab("botPane", "quote");
 }
-function quoteFrame(rows) {
-  POS_ROWS = rows;
-  kSelect(rows.some((p) => p.code === QCODE) ? QCODE : (rows[0]?.code ?? null));
+function quoteFrame(r) {
+  PICKS = [...r.rows, ...r.indices];
+  kSelect(
+    PICKS.some((p) => p.code === QCODE) ? QCODE : (PICKS[0]?.code ?? null),
+  );
 }
 // 选股、切档同一入口（切档即图 ch 换到 range）：换了的图先画缓存，可见即后台重取
 function kSelect(code, ch = null, range = ch?.range) {
@@ -129,13 +134,15 @@ function kSelect(code, ch = null, range = ch?.range) {
     c.hover = -1;
     c.ver++;
   }
-  QROW = POS_ROWS.find((p) => p.code === code) ?? null;
-  for (const tr of document.querySelectorAll("#posTbl tbody tr"))
+  QROW = PICKS.find((p) => p.code === code) ?? null;
+  for (const tr of document.querySelectorAll(
+    "#posTbl tbody tr, #idxTbl tbody tr",
+  ))
     tr.classList.toggle("cur", tr.dataset.code === code);
   for (const c of KCH) tabbar($(c.bar), String(c.ranges.indexOf(c.range)));
   $("kInfo").innerHTML = QROW
     ? `<b>${QROW.code} ${esc(QROW.name)}</b> · 行情 ${QROW.quote.date} ${QROW.quote.time}`
-    : "（无持仓）";
+    : "（无持仓与指数）";
   KCH.forEach(patchBar);
   dirty("kline", "book");
   if (shown("quote")) for (const ch of moved) ch.pull();
@@ -398,9 +405,10 @@ function drawK(ch) {
   const [t, o, h, l, cl, v] = vis[at];
   const pc = bars[L.first[at] - 1]?.[4]; // 前一格的收 = 本格首根之前那根的收
   const chg = pc ? ` ${(((cl - pc) / pc) * 100).toFixed(2)}%` : "";
+  const [vk, vf] = VOLS[QROW.quote.src];
   c.fillStyle = "#ddd";
   c.fillText(
-    `${kind.label(t)}${L.g > 1 ? ` (${L.g}分)` : ""}  开 ${px3(o)} 高 ${px3(h)} 低 ${px3(l)} 收 ${px3(cl)}${chg}  量 ${lots(v)}`,
+    `${kind.label(t)}${L.g > 1 ? ` (${L.g}分)` : ""}  开 ${px3(o)} 高 ${px3(h)} 低 ${px3(l)} 收 ${px3(cl)}${chg}  ${vk} ${vf(v)}`,
     4,
     8,
   );
@@ -441,6 +449,7 @@ function drawBook() {
     );
   };
   const chg = q.price - lc;
+  const [vk, vf] = VOLS[q.src];
   const kv = [
     ["现价", pc(q.price)],
     ["涨跌", fmtPnl(chg, 3)],
@@ -449,7 +458,7 @@ function drawBook() {
     ["最高", pc(q.high)],
     ["昨收", px3(lc)],
     ["最低", pc(q.low)],
-    ["成交量", lots(q.volume)],
+    ["成交" + vk, vf(q.volume)],
     ["成本", px3(p.cost)],
     ["盈亏%", fmtPnl(p.pnl_pct)],
     ["当日盈亏", fmtPnl(p.day_pnl)],

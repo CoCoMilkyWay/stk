@@ -13,11 +13,13 @@
 #   GET  /api/watch?s=路,路                  SSE：所列各路合成一条连接，每条 {s 路名, r 记录}，r 为 null 是该路心跳。路：
 #          tree  shim treewatch 原样转发（窗口树版本号）
 #          gdi   shim gdiwatch 原样转发（窗口绘制层）
-#          pos   持仓页帧（内存持仓 × 内存当日成交 × 新浪实时行情含 5 档，每只一行含盘口列）与刷新进度 prog，变了才推
+#          pos   持仓页帧（内存持仓 × 内存当日成交 × 新浪实时行情含 5 档，每只一行含盘口列；
+#                另带指数名单 × 通达信行情）与刷新进度 prog，变了才推
 #          ord   最近各单状态（逐步）
 #          rec   录制器 {st 状态, recs 新记录}
 #          reb   调仓帧（名单 / 配置 / 账户 / 试算 / 后台事务及其日志），随持仓页帧与配置重算
-#   POST /api/kline      {code,kind,days}    持仓页行情里该只近 days 个交易日的 K 线（新浪，本地落盘）：kind = min 分钟 / day 日线，
+#   POST /api/kline      {code,kind,days}    持仓页行情里该只近 days 个交易日的 K 线（随行情的源：新浪 / 通达信，本地落盘）：
+#                                            kind = min 分钟 / day 日线，
 #                                            回 {per 每日根数, bars 各根带当日第几根}
 #   POST /api/shim            {cmd,args}     透传 shim 命令，回 JSON 记录列表（命令表见 shim.c）
 #   POST /api/clicktext {text,class?,title?} 点可见窗口上画着 text 的按钮（须唯一）
@@ -63,7 +65,7 @@ MIME = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
 
 
 def kline(b):
-    """b = {code, kind: day|min, days} → 持仓页行情里（持仓与今日清仓）该只近 days 个交易日的 K 线
+    """b = {code, kind: day|min, days} → 持仓页行情里（持仓、今日清仓与指数）该只近 days 个交易日的 K 线
     {per 每个交易日根数, bars [(标号, 开, 高, 低, 收, 量, 当日第几根)]}。"""
     assert b["kind"] in KINDS, f"K 线种类 {b['kind']!r}，可选 {list(KINDS)}"
     kind, q = KINDS[b["kind"]], HUB.quote(b["code"])

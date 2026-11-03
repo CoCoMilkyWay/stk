@@ -27,7 +27,7 @@
     </header>
 
     <div class="wrap">
-      <!-- 上：布局图 / 持仓 可切换 -->
+      <!-- 上：布局图 / 持仓 / 指数 可切换 -->
       <div class="pane" id="topPane">
         <div class="tabbar">
           <button data-tab="layout" onclick="setTab('topPane', 'layout')">
@@ -35,6 +35,9 @@
           </button>
           <button data-tab="pos" onclick="setTab('topPane', 'pos')">
             持仓
+          </button>
+          <button data-tab="idx" onclick="setTab('topPane', 'idx')">
+            指数
           </button>
         </div>
         <div class="panel" data-view="layout" style="flex: 1">
@@ -216,6 +219,19 @@
             </details>
           </div>
         </div>
+
+        <div class="panel" data-view="idx" style="flex: 1">
+          <h2>
+            指数
+            <span class="kv">(名单 index.csv · 通达信行情 · 点行看 K 线)</span>
+          </h2>
+          <div style="overflow: auto; flex: 1; min-height: 0">
+            <table id="idxTbl" onclick="pickClick(event)">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <div id="gutter"></div>
@@ -241,7 +257,7 @@
           <div class="panel" style="flex: 1">
             <h2>
               K 线 · 盘口
-              <span class="kv">(点持仓表的行选股)</span>
+              <span class="kv">(点持仓表或指数表的行选股)</span>
             </h2>
             <div class="row">
               <span id="kInfo" class="kv">（等持仓帧）</span>

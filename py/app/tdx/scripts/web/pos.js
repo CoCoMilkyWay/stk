@@ -137,7 +137,7 @@ const COL = {
 
 // 持仓页：pos、ord 两路，服务端在内存或行情变了才推一帧；出错只改提示行，表留上一帧。
 // 刷新与定时都在服务端：POST /api/refresh 只是要一轮，不等；各样查完即推帧，进度随帧（prog）。
-// 一帧一份 rows（每只一行，含盘口）：持仓表即其列，行情页取其行。
+// 一帧一份 rows（每只一行，含盘口）与 indices（指数名单每只一行）：持仓表即 rows 的列，行情页取两者的行。
 // 持仓表的可融列与卖出各列取自调仓帧，pos、reb 哪路来帧都重画（拖卖出滑杆时除外）
 let POS = null;
 const drawPos = () =>
@@ -152,9 +152,18 @@ function onPos(r) {
   $("posProg").innerHTML = progTxt(r.prog, POS);
   if (!ok) return;
   drawPos();
+  table("#idxTbl", IDX_COLS, r.indices, pickAttrs);
   posInfo(r);
-  quoteFrame(r.rows);
+  quoteFrame(r);
 }
+// 指数页的表：指数名单每只一行（名单序，可点表头排序），点行选股同持仓表
+const idxChg = (r) => (r.quote.price / r.quote.last_close - 1) * 100;
+const IDX_COLS = [
+  ["代码", (r) => r.code, (r) => r.code],
+  ["指数", (r) => esc(r.name), (r) => r.name],
+  ["现价", (r) => fmt(r.quote.price), (r) => r.quote.price, "num"],
+  ["涨幅%", (r) => fmtPnl(idxChg(r)), idxChg, "num"],
+];
 // 持仓表上方的提示行：无持仓、持仓表里没有的代码的挂单（合计在表尾，成交与挂单在状态列），没有即不占地
 function posInfo(r) {
   const held = new Set(r.rows.map((p) => p.code));

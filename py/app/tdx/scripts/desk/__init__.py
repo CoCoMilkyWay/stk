@@ -1,6 +1,6 @@
-# desk — 控制台后端各块：推送源与后台事务（feed）、界面锁与点按钮（ui）、新浪行情与 K 线（sina）、盘口（book）、
-# 持仓页帧（board）、持仓推送（hub）、K 线缓存（kline）、下单（order）、信用账户（credit）、一键调仓（rebal）、
-# 录制器（rec）。
+# desk — 控制台后端各块：推送源与后台事务（feed）、界面锁与点按钮（ui）、行情与 K 线两源（sina 新浪 / tdxhq 通达信）、
+# 盘口（book）、持仓页帧（board）、持仓推送（hub）、K 线缓存（kline）、下单（order）、信用账户（credit）、
+# 一键调仓（rebal）、录制器（rec）。
 # 统一入口 console.py 只管路由与合路推送。
 
 import csv

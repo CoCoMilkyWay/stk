@@ -83,6 +83,11 @@ select {
   padding: 3px 6px;
   font: inherit;
 }
+input[type="range"] {
+  padding: 0;
+  border: 0;
+  background: none;
+}
 
 .wrap {
   display: flex;
