@@ -16,6 +16,8 @@
 //   send <target> <msg> <wp> <lp> {ret}  SendMessageW
 //   click <target>                {ret}  BM_CLICK
 //   clickat <target> <x> <y>      {client:[x,y]}  屏幕坐标投递左键按下+抬起
+//                                 （clickat / mouse 投递前把进程内光标钉在该处，
+//                                 真实光标不动）
 //   highlight <target>            控件上画闪烁框
 //   detail <target>               一条图层记录，items 为 [l,t,r,b,st,"文字"]：
 //                                 列表行/格、表头、树项、菜单项、勾选态
@@ -647,11 +649,16 @@ static const char *cmd_click(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
-// "<screenX> <screenY>" → 控件客户区坐标，投递左键按下+抬起。
+static const char *pin_cursor(POINT p);
+
+// "<screenX> <screenY>" → 控件客户区坐标，钉光标后投递左键按下+抬起。
 static const char *cmd_clickat(struct out *o, HWND h, char *a) {
   POINT p;
   p.x = strtol(a, &a, 0);
   p.y = strtol(a, &a, 0);
+  const char *e = pin_cursor(p);
+  if (e)
+    return e;
   ScreenToClient(h, &p);
   LPARAM lp = MAKELPARAM(p.x, p.y);
   PostMessageW(h, WM_MOUSEMOVE, 0, lp);
@@ -942,6 +949,9 @@ static const char *cmd_mouse(struct out *o, HWND h, char *a) {
   HWND t = WindowFromPoint(p);
   if (!t)
     return "no window at point";
+  const char *e = pin_cursor(p);
+  if (e)
+    return e;
   GUITHREADINFO gi = gui_info(t);
   if (gi.hwndCapture)
     t = gi.hwndCapture;
@@ -2104,6 +2114,8 @@ static int insn_len(const BYTE *p) {
     return 2;
   if (op == 0x68 || (op >= 0xb8 && op <= 0xbf)) // push imm32 / mov r32,imm32
     return 5;
+  if (op == 0x64 && p[1] == 0xa1) // mov eax,fs:[abs32]（取 TEB）
+    return 6;
   int imm = 0;
   switch (op) {
   case 0x01:
@@ -2288,6 +2300,60 @@ static int mem_ok(const void *p, size_t n, int exec) {
   DWORD x = q.Protect & 0xff;
   return x == PAGE_EXECUTE || x == PAGE_EXECUTE_READ ||
          x == PAGE_EXECUTE_READWRITE || x == PAGE_EXECUTE_WRITECOPY;
+}
+
+// ----- 钉光标 -----
+// 有的控件（如交易功能树）在 NM_CLICK 里现取 GetCursorPos / GetMessagePos
+// 再命中测试，只认真实光标、不认投递消息里的坐标。投递鼠标前把进程内看到的
+// 光标钉在该处 PIN_MS 毫秒，真实光标不动；两个入口首次用时才钩。
+#define PIN_MS 500
+static BOOL(WINAPI *o_GetCursorPos)(POINT *);
+static DWORD(WINAPI *o_GetMessagePos)(void);
+static POINT g_pin;
+static volatile LONG g_pin_until;
+static int g_pin_tried;
+static const char *g_pin_err; // 钩不上的原因（仅 listener 线程写）
+
+static int pinned(void) {
+  return (LONG)(g_pin_until - (LONG)GetTickCount()) > 0;
+}
+
+static BOOL WINAPI my_GetCursorPos(POINT *p) {
+  if (!p || !pinned())
+    return o_GetCursorPos(p);
+  *p = g_pin;
+  return TRUE;
+}
+
+static DWORD WINAPI my_GetMessagePos(void) {
+  return pinned() ? (DWORD)MAKELONG(g_pin.x, g_pin.y) : o_GetMessagePos();
+}
+
+static const char *pin_hook(void) {
+  if (!g_htab)
+    htab_open();
+  HMODULE u = GetModuleHandleA("user32.dll");
+  assert(u);
+  if (!inline_hook((BYTE *)GetProcAddress(u, "GetCursorPos"),
+                   (void *)my_GetCursorPos, (void **)&o_GetCursorPos))
+    return "pin: GetCursorPos 入口认不出";
+  if (!inline_hook((BYTE *)GetProcAddress(u, "GetMessagePos"),
+                   (void *)my_GetMessagePos, (void **)&o_GetMessagePos))
+    return "pin: GetMessagePos 入口认不出";
+  return NULL;
+}
+
+// p 为屏幕坐标；回错误串或 NULL。
+static const char *pin_cursor(POINT p) {
+  if (!g_pin_tried) {
+    g_pin_tried = 1;
+    g_pin_err = pin_hook();
+  }
+  if (g_pin_err)
+    return g_pin_err;
+  g_pin = p;
+  InterlockedExchange(&g_pin_until, (LONG)GetTickCount() + PIN_MS);
+  return NULL;
 }
 
 static int req_host_candidate(void *p) {

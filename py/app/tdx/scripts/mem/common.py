@@ -13,6 +13,8 @@
 #   pick(方案, pid, 命中)   选取 → 按址连读一致 → 解析校验 → 合并 → 汇总 → Snap
 #   follow(snap)            没换代回 snap 本身，换代即 rescan 再 pick
 # read(方案们, pid) 一遍扫全部堆段出各方案快照；wait(snap) 轮询 follow 等客户端重查后的换代。
+# 表内没有新旧标记的方案（只出形状、列、选取钩子，没有 same / rescan）经 ask(方案, act) 读：
+# act（点查询）前后各扫一遍，之后新冒出的命中即这次的应答。
 
 import os
 import re
@@ -169,6 +171,8 @@ def parse(scheme, raw):
     text = raw.decode("gbk", errors="replace")
     assert "\ufffd" not in text, "明文含 GBK 替换字符，疑似读到写入中途的坏块"
     lines = [ln.split("|") for ln in text.split("\r\n")[1:-1]]
+    if not lines:
+        return []
     nfs = {len(f) for f in lines}
     assert len(nfs) == 1, f"行列数不一致 {nfs}，块可能被截断/串行"
     nf = nfs.pop()
@@ -240,3 +244,16 @@ def wait(snap, timeout=3.0, gap=0.01):
             return new
         time.sleep(gap)
     return read((snap.scheme,), snap.pid)[0]
+
+
+def ask(scheme, act, pid=None, timeout=5.0):
+    """act 让客户端重查一次：其前后各扫一遍全部堆段，之后新冒出的命中（新址或新内容）即这次的应答，
+    各份须逐字节一致 → 快照（mark 为新命中）。timeout 内没冒出即 assert。"""
+    pid = attach(pid)
+    old = set(scan(pid, (scheme,))[0])
+    act()
+    end = time.monotonic() + timeout
+    while not (new := [h for h in scan(pid, (scheme,))[0] if h not in old]):
+        assert time.monotonic() < end, f"{timeout}s 内没等到 {scheme.__name__} 的新应答"
+    assert len({h.body for h in new}) == 1, f"{scheme.__name__} 新应答 {len(new)} 份内容不一"
+    return pick(scheme, pid, new)

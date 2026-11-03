@@ -520,6 +520,9 @@
         <button data-tab="pos" onclick="setTab('leftPane', 'pos')">
           持仓
         </button>
+        <button data-tab="reb" onclick="setTab('leftPane', 'reb')">
+          调仓
+        </button>
       </div>
       <div class="panel" data-view="layout" style="flex: 1">
         <h2>
@@ -580,6 +583,48 @@
             <thead></thead>
             <tbody></tbody>
           </table>
+        </div>
+      </div>
+
+      <div class="panel" data-view="reb" style="flex: 1">
+        <h2>
+          一键调仓
+          <label class="kv">名单 <select id="rebList" onchange="rebSet({ list: this.value })"></select></label>
+          <label class="kv">最小调仓单元
+            <input type="number" id="rebUnit" min="0" step="1000" style="width: 70px"
+              onchange="rebSet({ unit: +this.value })" />元</label>
+          <label class="kv">委托价
+            <select id="rebPx" onchange="rebSet({ px: this.value })">
+              <option value="opp">对手价</option>
+              <option value="opp1">对手价偏1%</option>
+              <option value="own">本方价</option>
+            </select></label>
+          <button onclick="rebAct('terms')" title="客户端查询全部标的证券与担保品，要卡一两分钟">更新两融名单</button>
+          <button onclick="rebAct('acct')">刷新信用资产</button>
+          <button onclick="rebRun()">执行</button>
+        </h2>
+        <div class="row">
+          <span class="kv">行使比例</span>
+          <input type="range" id="rebPct" class="grow" min="0" max="100" step="1" oninput="rebPct()" />
+          <span id="rebPctLbl" class="kv" style="width: 40px"></span>
+        </div>
+        <div id="rebInfo">（等调仓帧）</div>
+        <div id="rebNow" class="kv"></div>
+        <div id="rebTask" class="kv"></div>
+        <div id="rebOrd" class="kv"></div>
+        <div style="overflow: auto; flex: 1; min-height: 0">
+          <div class="kv" style="margin-top: 8px">调仓名单（等权补齐；融资标的先融资，融不到的与其余用现金）</div>
+          <table id="rebTgt">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+          <div class="kv" style="margin-top: 8px">持仓：先卖的填卖出面值（元，≥ 可卖市值即全卖）</div>
+          <table id="rebHold">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+          <div class="kv" style="margin-top: 8px">日志</div>
+          <pre id="rebLog" style="max-height: 240px; overflow: auto"></pre>
         </div>
       </div>
     </div>
@@ -1815,7 +1860,7 @@
     const stepOf = (j, i) =>
       i < j.at || j.state === "ok" ? "done" : i > j.at ? "todo" : j.state === "err" ? "err" : "run";
     function onOrd(jobs) {
-      $("ordInfo").innerHTML = jobs
+      $("ordInfo").innerHTML = $("rebOrd").innerHTML = jobs
         .map((j) => {
           const steps = j.steps
             .map((s, i) => paint(STEP_COLOR[stepOf(j, i)], s))
@@ -1940,6 +1985,113 @@
       ),
     ];
     const slipCols = (r) => [...cols("code", "name"), ...depthCols(r), ...cols("weight")];
+
+    // 调仓页：reb 路每帧 {lists, cfg, terms, acct, plan, task}，试算随持仓帧与配置在服务端重算；
+    // 配置一改即 POST /api/reb/cfg，新帧经推送到达。持仓表里正在填的卖出面值不被重画冲掉。
+    let REB = null;
+    const w2 = (v) => (v == null ? "" : fmt(v / 10000) + "万");
+    const yuan = (v) => (v == null ? "" : fmt(v, 0));
+    const ratio = (v) => (v == null ? "" : fmt(v, 2));
+    const pct0 = (v) => (v == null ? "" : fmt(v * 100, 0) + "%");
+    // 拖动中连发的改动并成一次
+    let rebPending = {};
+    const rebFlush = coalesce(async () => {
+      const b = rebPending;
+      rebPending = {};
+      fail("rebTask", await post("/api/reb/cfg", b));
+    });
+    function rebSet(b) {
+      Object.assign(rebPending, b);
+      rebFlush();
+    }
+    function rebPct() {
+      $("rebPctLbl").textContent = $("rebPct").value + "%";
+      rebSet({ pct: +$("rebPct").value });
+    }
+    async function rebAct(what) {
+      fail("rebTask", await post("/api/reb/" + what));
+    }
+    async function rebRun() {
+      const p = REB?.plan;
+      if (!p?.orders) return fail("rebTask", { err: p?.wait || p?.err || "还没有试算" });
+      const n = (s, c) => p.orders.filter((o) => o.s === s && (!c || o.credit === c)).length;
+      const msg =
+        `按当前试算执行调仓：卖 ${n(-1)} 单、融资买 ${n(1, "margin")} 单、现金买 ${n(1, "plain")} 单，` +
+        `行使 ${w2(p.use)}，成本约 ${yuan(p.cost)} 元？`;
+      if (confirm(msg)) rebAct("run");
+    }
+    const legOf = (t, c) => t.legs.find((l) => l.credit === c);
+    const legCell = (l) =>
+      !l ? "" : l.skip ? `<span class="kv">${esc(l.skip)}（${w2(l.want)}）</span>` : `${l.qty}股 · ${w2(l.amount)}`;
+    const REB_TGT = [
+      ["代码", (t) => t.code, (t) => t.code],
+      ["名称", (t) => esc(t.name), (t) => t.name],
+      ["", (t) => (t.why ? paint("var(--red)", esc(t.why)) : t.financeable ? paint("var(--hot)", "融资标的") : "担保品"),
+        (t) => t.why ?? (t.financeable ? "0" : "1")],
+      ["保证金比例", (t) => ratio(t.ratio), (t) => t.ratio, "num"],
+      ["折算率", (t) => ratio(t.rate), (t) => t.rate, "num"],
+      ["现市值", (t) => w2(t.held), (t) => t.held, "num"],
+      ["补", (t) => w2(t.need), (t) => t.need, "num"],
+      ["融资买入", (t) => legCell(legOf(t, "margin")), (t) => legOf(t, "margin")?.amount, "num"],
+      ["现金买入", (t) => legCell(legOf(t, "plain")), (t) => legOf(t, "plain")?.amount, "num"],
+    ];
+    const REB_HOLD = [
+      ["代码", (h) => h.code, (h) => h.code],
+      ["名称", (h) => esc(h.name), (h) => h.name],
+      ["市值", (h) => w2(h.value), (h) => h.value, "num"],
+      ["可卖市值", (h) => w2(h.sellable), (h) => h.sellable, "num"],
+      ["卖出面值", (h) => `<input type="number" min="0" step="10000" style="width: 90px" data-code="${h.code}" value="${h.sell || ""}" />`],
+      ["卖出", (h) => (h.order ? `${h.order.qty}股 · ${w2(h.order.amount)}` : h.skip ? `<span class="kv">${esc(h.skip)}</span>` : ""),
+        (h) => h.order?.amount, "num"],
+    ];
+    $("rebHold").onchange = (e) => {
+      if (!e.target.dataset.code) return;
+      const sells = {};
+      for (const i of $("rebHold").querySelectorAll("input[data-code]")) if (+i.value > 0) sells[i.dataset.code] = +i.value;
+      rebSet({ sells });
+    };
+    const REB_EV = {
+      order: (r) => `${SIDE[r.order.s].name} ${r.order.credit} ${r.order.code} ${esc(r.order.name)} ${r.order.qty}股 @≈${r.order.px.toFixed(3)}`,
+      job: (r) => `${ORD_ST[r.job.state]} ${esc(r.job.detail)} ${esc(r.job.msg)}`,
+      plan: (r) => `试算：行使 ${w2(r.plan.use)}（融资 ${w2(r.plan.financed)}）· ${r.plan.orders.length} 单 · 成本 ${yuan(r.plan.cost)}`,
+      acct: (r) => `账户：现金 ${w2(r.acct.cash)} · 可用保证金 ${w2(r.acct.avail)} · 负债 ${w2(r.acct.debt)}`,
+    };
+    function onReb(r) {
+      REB = r;
+      const c = r.cfg;
+      $("rebList").innerHTML = r.lists.map((n) => `<option${n === c.list ? " selected" : ""}>${esc(n)}</option>`).join("");
+      if (document.activeElement !== $("rebUnit")) $("rebUnit").value = c.unit;
+      $("rebPx").value = c.px;
+      if (document.activeElement !== $("rebPct")) $("rebPct").value = c.pct;
+      $("rebPctLbl").textContent = $("rebPct").value + "%";
+      const t = r.task;
+      $("rebTask").innerHTML = t
+        ? `${esc(t.name)} · ${t.state === "run" ? "进行中…" : ORD_ST[t.state]} ${esc(t.msg)} · ${esc(t.file)}`
+        : "";
+      $("rebLog").textContent = (t?.log ?? [])
+        .map(({ t, ev, ...rest }) => `${t} ${ev} ${REB_EV[ev]?.(rest) ?? JSON.stringify(rest).slice(0, 300)}`)
+        .join("\n");
+      const p = r.plan;
+      const a = r.acct;
+      const terms = r.terms ? `两融条款 ${r.terms} 只` : '<span class="off">当日两融条款未拉</span>';
+      if (!p || p.wait || p.err) {
+        $("rebInfo").innerHTML = p?.err ? `<span class="off">✗ ${esc(p.err)}</span>` : esc(p?.wait ?? "（等试算）");
+        $("rebNow").innerHTML = terms;
+        return;
+      }
+      const lev = (x, y) => `${fmt(x)}（现 ${fmt(y)}）`;
+      $("rebInfo").innerHTML =
+        `购买力 <b>${w2(p.power)}</b> · 预期行使购买力 <b>${w2(p.use)}</b>（融资 ${w2(p.financed)}）` +
+        ` · 预期总资产 <b>${w2(p.assets)}</b> · 预期调仓成本 <b>${yuan(p.cost)}</b> 元` +
+        ` · 预期杠杆 <b>${lev(p.lev, p.now.lev)}</b> · 维持担保比例 ${pct0(p.maint)}（现 ${pct0(p.now.maint)}）` +
+        ` · 每只目标 ${w2(p.V * c.pct / 100)}`;
+      $("rebNow").innerHTML =
+        `现：总资产 ${w2(p.now.assets)} · 净资产 ${w2(p.now.net)} · 负债 ${w2(p.now.debt)} · 现金 ${w2(p.now.cash)}` +
+        ` · 可用保证金 ${w2(p.now.X)} · 可融余量 ${w2(p.now.L)} · 卖后现金 ${w2(p.after_sell.C)} / 可用保证金 ${w2(p.after_sell.X)}` +
+        ` · 账户读于 ${a.at} · ${terms} · 行情 ${p.time}`;
+      table("#rebTgt", REB_TGT, p.targets);
+      if (!$("rebHold").contains(document.activeElement)) table("#rebHold", REB_HOLD, p.holds);
+    }
 
     // 行情页：持仓 / 滑点表点行选股（默认第一只），画 K 线（新浪，旧在前、含进行中那根）+ 5 档盘口，图与盘口等高。
     // 日线、分钟线一套画法，只差 KIND 的同名成员（与后端 Day / Min 对仗）。后端给每日根数 per、各根当日第几根 slot：
@@ -2473,7 +2625,7 @@
 
     // 推送连接：每条 {on 该连着, routes 路名 → 处理, opened 每次（重）连上}，es 为当前连接。
     // base 常驻：tree 来 {gen} 即重拉树，gdi 来一层即记下并合帧重画，rec 录制器；
-    // pos 只在持仓页或行情页可见时连，断开后服务端即停取行情。
+    // pos 只在持仓页或行情页可见时连、reb 只在调仓页可见时连，都断开后服务端即停取行情。
     // 标签转后台一律断开（不占浏览器对本地址的连接数），回前台重连，重连时服务端先推各路全量。
     function onTree() {
       if (autoUpd()) pullTree();
@@ -2488,6 +2640,7 @@
     const STREAMS = {
       base: { on: () => true, routes: { tree: onTree, gdi: onGdi, rec: onRec }, opened: () => (REC_RECS = []) },
       pos: { on: () => shown("pos") || shown("quote"), routes: { pos: onPos, ord: onOrd } },
+      reb: { on: () => shown("reb"), routes: { reb: onReb, ord: onOrd } },
     };
     function syncStreams() {
       for (const st of Object.values(STREAMS)) {

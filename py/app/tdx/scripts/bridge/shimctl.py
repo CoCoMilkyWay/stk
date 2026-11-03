@@ -169,7 +169,8 @@ def inject():
 
 
 class Shim:
-    """s(cmd, *args) → JSON 记录列表；应答末行非 ok 即 assert。"""
+    """s(cmd, *args) → JSON 记录列表；应答末行非 ok 即 assert。
+    timeout 为等应答的秒数：要经目标 UI 线程的命令（gettext 等）在客户端卡着时会一直等到它缓过来。"""
 
     def __init__(self, port=PORT):
         self.port = port
@@ -178,15 +179,15 @@ class Shim:
         with socket.socket() as s:
             return s.connect_ex(("127.0.0.1", self.port)) == 0
 
-    def _open(self, cmd, args):
+    def _open(self, cmd, args, timeout=5):
         line = " ".join(map(str, (cmd, *args)))
         assert "\n" not in line, f"命令不能含换行: {line!r}"
-        s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
         s.sendall(line.encode() + b"\n")
         return s
 
-    def __call__(self, cmd, *args):
-        with self._open(cmd, args) as s:
+    def __call__(self, cmd, *args, timeout=5):
+        with self._open(cmd, args, timeout) as s:
             *recs, tail = s.makefile("rb").read().splitlines()
         assert tail == b"ok", f"{cmd}: {tail.decode(errors='replace')}"
         return [json.loads(r) for r in recs]

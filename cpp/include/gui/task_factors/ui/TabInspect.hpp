@@ -73,8 +73,8 @@ struct InspectDerived {
   std::vector<misc::Ymd> dates;            // [days] 轴刻度用
   std::vector<float> pool_index;           // [T] InspectResult::pool_index 选定 hold 那条复利成的点位 (起点 1, 右上 K 线叠加)
   std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
-  std::vector<float> lay_ann[kLayerLines]; // [days + 1], 到第 c 日的 Σ ln(1 + 日收益) × kDaysPerYear / days × 100 (全部线同一系数; c = 0 → 0)
-  std::vector<float> ls_ann[kLsLines];     // [days + 1], 同上; [days] = 全段对数年化 (图例)
+  std::vector<float> lay_ann[kLayerLines]; // [days + 1], 到第 c 日的 Σ ln(1 + 日收益) × kDaysPerYear / days × 100 (全部线同一系数; c = 0 → 0; 爆仓日起 NaN)
+  std::vector<float> ls_ann[kLsLines];     // [days + 1], 同上; [days] = 全段对数年化 (图例; NaN = 爆仓)
   float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe: 日收益 mean / sd × √kDaysPerYear
   float ls_turn[kLsLines] = {};            // LS 线的年换手 (倍): turn_annual(hs, InspectResult::ls_turn) (两端均, 每本资金 1, 单边)
   // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
@@ -96,11 +96,11 @@ struct InspectUIState {
   bool absolute = false;    // 左上: 超额 (false) | 绝对 (true)
   int cursor_day = -1;      // 左上时序的光标日 (0 = 起点 … days = 末日); -1 / 越界 → 末日. 右侧截面柱按它取值
   std::string last_req_key; // 上次自动起算的 InspectRequest::key (取消后不反复重起)
-  int top_n = 20;           // 导出做多端前 N 只 (InspectService flow E)
-  // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效; req_top_n > 0 = 带导出
+  int top_n = 20;           // 导出做多端前 N 只 (InspectService flow E; 进出 / 名单共用)
+  // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效; req_export ≠ None = 带导出 (N = top_n)
   FactorRow req_row;
   bool req_reload = false;
-  int req_top_n = 0;
+  InspectExport req_export = InspectExport::None;
   // 派生缓存 (切片 (epoch, hold) + 口径)
   uint64_t derived_epoch = ~0ull;
   int derived_sel = -1;
@@ -146,7 +146,7 @@ struct InspectUIState {
 // 进 Inspect 即有东西看; 换池 / 换层后重新默认一次
 bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
-// 返回值: 1 = 手动 Compute / 导出 (ui.req_row / ui.req_reload / ui.req_top_n 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
+// 返回值: 1 = 手动 Compute / 导出 (ui.req_row / ui.req_reload / ui.req_export 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
 // ksvc: 右上 K 线流 (页内按期望态直接 Request, 不经返回值)
 int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 

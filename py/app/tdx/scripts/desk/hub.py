@@ -6,7 +6,10 @@
 # refresh 让客户端依 SOURCES 连查成交与持仓（两方案同一写法）；触发它的事件（_due）：还没 refresh 过、
 # console 下单成功后的 KICKS 定点、客户端自己重查了持仓却与成交对不上（交易端成交了）。
 # 定时刷新与手动刷新走前端 /api/refresh，同一个 refresh。
+# 持仓之外要盯行情的证券（调仓名单）经 watch 并进同一路行情；订阅者（pos 帧与调仓帧）经 sub 计数，
+# 每推一帧把 State 交给 hooks（调仓据此重算）。
 
+import contextlib
 import threading
 import time
 
@@ -43,6 +46,9 @@ class Hub:
         self.checked = None
         # 待到点刷新的时刻（monotonic）
         self.kicks = []
+        # 持仓之外一并取行情的证券 {代码: {code, market_flag}}
+        self.extra = {}
+        self.hooks = []
         self.frame = {}
         self.feed = Feed(lambda seen: self.frame)
 
@@ -60,10 +66,19 @@ class Hub:
         if self.st.pos is None:
             self._scan()
 
+    def _secs(self):
+        """要取行情的：持仓、今日清仓与 extra → {代码: 证券}。须持 lock。"""
+        return {x["code"]: x for x in [*self.extra.values(), *(h or f for h, f in board.join(self.st))]}
+
     def _quote(self):
-        """持仓与今日清仓的各只一并取行情。"""
         self.quote_at = time.monotonic()
-        return sina.quotes([h or f for h, f in board.join(self.st)])
+        return sina.quotes(list(self._secs().values()))
+
+    def watch(self, secs):
+        """持仓之外一并取行情的证券换成 secs，下一轮即重取。"""
+        with self.lock:
+            self.extra = {x["code"]: x for x in secs}
+            self.shown = None
 
     def _due(self, now):
         """该让客户端重查成交与持仓了（事件见本节开头）。须持 lock。"""
@@ -103,6 +118,8 @@ class Hub:
             if self.st != self.shown:
                 self.shown = self.st
                 self._push(board.view(self.st))
+                for fn in self.hooks:
+                    fn(self.st)
 
     def run(self):
         while True:
@@ -133,16 +150,30 @@ class Hub:
             self.shown = None
         return {}
 
-    def frames(self):
-        """SSE：订阅者到来即重取行情、重算推帧，其余同 Feed。"""
+    @contextlib.contextmanager
+    def sub(self):
+        """订阅期间循环转着；到来即重取行情、重算推帧。"""
         with self.lock:
             self.subs += 1
             self.shown = None
         try:
-            yield from self.feed.watch()
+            yield
         finally:
             with self.lock:
                 self.subs -= 1
+
+    def frames(self):
+        """SSE：同 Feed，订阅期间循环转着。"""
+        with self.sub():
+            yield from self.feed.watch()
+
+    def state(self):
+        """当前 State：还没扫过即全量扫一次，行情没覆盖到 _secs 即当场补取。"""
+        with self.lock:
+            self._load()
+            if not self._secs().keys() <= self.st.quotes.keys():
+                self._set(quotes=self._quote())
+            return self.st
 
     def held(self, code):
         """持仓里 code 那只。"""

@@ -15,6 +15,7 @@
 #          pos   持仓页帧（内存持仓 × 内存当日成交 × 新浪实时行情含 5 档，每只一行含盘口列），变了才推
 #          ord   最近各单状态（逐步）
 #          rec   录制器 {st 状态, recs 新记录}
+#          reb   调仓页帧（名单 / 配置 / 账户 / 试算 / 后台事务及其日志），随持仓页帧与配置重算
 #   POST /api/kline      {code,kind,days}    持仓页行情里该只近 days 个交易日的 K 线（新浪，本地落盘）：kind = min 分钟 / day 日线，
 #                                            回 {per 每日根数, bars 各根带当日第几根}
 #   POST /api/shim            {cmd,args}     透传 shim 命令，回 JSON 记录列表（命令表见 shim.c）
@@ -23,6 +24,10 @@
 #   POST /api/rec             {on}           开 / 停录制
 #   POST /api/recmark         {text}         录制中打点
 #   POST /api/order {code,s,size,px,credit}  持仓行闪电下单（后台跑），回该单状态；s = 1 买 / -1 卖
+#   POST /api/reb/cfg {list?,unit?,pct?,px?,sells?}  改调仓配置（给了的键），回新配置；新帧经 reb 推送
+#   POST /api/reb/terms                      后台拉当日两融条款（标的证券 × 担保品，客户端要卡一两分钟）
+#   POST /api/reb/acct                       后台查信用资产与融资负债
+#   POST /api/reb/run                        后台按当前配置执行调仓
 # 浏览器对同一地址至多 6 条 HTTP/1.1 连接，长连接一律走 /api/watch 合路，留出连接给请求。
 # 任何失败（assert 等）统一回 {err}。
 
@@ -44,6 +49,7 @@ from desk.feed import err  # noqa: E402
 from desk.hub import HUB  # noqa: E402  持仓推送
 from desk.kline import KCACHE, KINDS  # noqa: E402  K 线
 from desk.order import ORDERS  # noqa: E402  下单
+from desk.rebal import REB  # noqa: E402  调仓
 from desk.rec import REC  # noqa: E402  录制器
 from desk.ui import SHIM, click_text  # noqa: E402
 
@@ -69,6 +75,7 @@ WATCH = {
     "pos": HUB.frames,
     "ord": ORDERS.feed.watch,
     "rec": REC.feed.watch,
+    "reb": REB.frames,
 }
 
 
@@ -118,6 +125,10 @@ POST = {
     "/api/recmark": lambda b: REC.mark(b["text"]),
     "/api/order": ORDERS.submit,
     "/api/kline": kline,
+    "/api/reb/cfg": REB.set,
+    "/api/reb/terms": REB.pull,
+    "/api/reb/acct": REB.query,
+    "/api/reb/run": REB.run,
 }
 
 
@@ -138,7 +149,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        self._route(POST, self.path, json.loads(self.rfile.read(n)) if n else {})
+        self._route(POST, self.path, json.loads(
+            self.rfile.read(n)) if n else {})
 
     def _route(self, table, path, b):
         try:
@@ -180,7 +192,8 @@ def main():
     # gdi 绘制层：自绘按钮的文字/色块（首次装入口钩子并重绘全部窗口）
     for cmd in ("noraise", "gdi"):
         r = SHIM(cmd, "on")
-        assert r[-1]["on"] and not any("skip" in x for x in r), f"{cmd} on: {r}"
+        assert r[-1]["on"] and not any(
+            "skip" in x for x in r), f"{cmd} on: {r}"
     threading.Thread(target=HUB.run, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"

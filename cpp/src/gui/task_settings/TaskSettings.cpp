@@ -421,6 +421,12 @@ private:
                       cfg.portfolio_dir_buf,
                       sizeof(cfg.portfolio_dir_buf),
                       cfg.portfolio_dir);
+        draw_path_row("Export Dir",
+                      "导出目录: <池>/<层>/<因子>_w<权重号>_top<N>_{log,snap}.csv",
+                      "##export_dir",
+                      cfg.export_dir_buf,
+                      sizeof(cfg.export_dir_buf),
+                      cfg.export_dir);
         draw_path_row("Log Dir",
                       "日志目录",
                       "##log_dir",

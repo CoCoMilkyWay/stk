@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -181,6 +182,7 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
 
 // 选定 hold → 日级序列 + IC 分布 / 时序. 分层 / LS 线 = InspectResult::nav (净值引擎 fold_book) 选定口径的日收益 r_d,
 // 第 c 日画 Σ_{d<c} ln(1 + r_d) × kDaysPerYear / days × 100 % (对数累计, 全部线同一系数: 线间差 / 斜率比不变, 匀速 = 直线; 末点 = 全段对数年化, 图例);
+// 某日 r_d ≤ −100% (单只级尾部 / LS 空头暴涨) = 爆仓, 该线此后 NaN 不画;
 // LS Sharpe = 日收益 mean / sd × √kDaysPerYear; rIC 分布 = InspectResult::ic_agg (IcPdfP 成品, Run 行小图是它的迷你版).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
@@ -224,7 +226,11 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   const auto ann_of = [&](const float *v, std::vector<float> &ann) {
     double s = 0.0;
     for (int day = 0; day < days; ++day) {
-      assert(v[day] > -1.f && "日收益 ≤ −100%: 对数累计无定义");
+      assert(!std::isnan(v[day]) && "日收益 NaN");
+      if (v[day] <= -1.f) { // 爆仓: 对数累计到 −∞, 该日起不画
+        std::fill(ann.begin() + day + 1, ann.end(), std::numeric_limits<float>::quiet_NaN());
+        return;
+      }
       s += std::log1p(static_cast<double>(v[day]));
       ann[static_cast<size_t>(day) + 1] = static_cast<float>(s * k_ann);
     }
@@ -329,7 +335,9 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *sho
   ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
   ImPlot::PlotInfLines("##zero", &zero, 1);
   const double slot = (yr.y_hi - yr.y_lo) / ns; // y 范围均分 ns 槽
-  for (int i = 0; i < ns; ++i) {                // 逐线一柱: PlotBars 一次只能一色
+  for (int i = 0; i < ns; ++i) {                // 逐线一柱: PlotBars 一次只能一色; 已爆仓的线无柱
+    if (std::isnan(v[i]))
+      continue;
     const double x = v[i], y = yr.y_lo + (i + 0.5) * slot;
     ImPlot::SetNextFillStyle(s[i].col);
     if (s[i].hl)
@@ -340,7 +348,10 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *sho
   }
   if (ImPlot::IsPlotHovered()) {
     const int i = std::clamp(static_cast<int>(std::floor((ImPlot::GetPlotMousePos().y - yr.y_lo) / slot)), 0, ns - 1);
-    ImGui::SetTooltip("%s  %+.3f  (对数累计 %%, 按全段折年, 到光标日)", s[i].tag, v[i]);
+    if (std::isnan(v[i]))
+      ImGui::SetTooltip("%s  爆仓 (光标日前某日收益 ≤ −100%%)", s[i].tag);
+    else
+      ImGui::SetTooltip("%s  %+.3f  (对数累计 %%, 按全段折年, 到光标日)", s[i].tag, v[i]);
   }
   ImPlot::EndPlot();
 }
@@ -400,10 +411,16 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       }
       ImPlot::PopStyleVar();
       // 图例 (对仗 Portfolio, 等宽字体逐列定宽): "LS <tag:4>  对数年化=<+8.2f>%  夏普=<+6.2f>  年换手=<7.1f>倍", 值 = InspectDerived::ls_ann 末点 / ls_sharpe / ls_turn;
-      // tag = 占组比例 (顶底 = 100%, 整组)
-      constexpr const char *kLsFmt = "LS %4s  对数年化=%+8.2f%%  夏普=%+6.2f  年换手=%7.1f倍###%s";
+      // tag = 占组比例 (顶底 = 100%, 整组); 末点 NaN = 爆仓 (某日收益 ≤ −100%)
       char ll[128];
-      std::snprintf(ll, sizeof(ll), kLsFmt, "100%", d.ls_ann[0].back(), d.ls_sharpe[0], d.ls_turn[0], "ls");
+      const auto ls_label = [&](const char *tag, int i, const char *id) {
+        const float a = d.ls_ann[i].back();
+        if (std::isnan(a))
+          std::snprintf(ll, sizeof(ll), "LS %4s  对数年化=  爆仓    夏普=%+6.2f  年换手=%7.1f倍###%s", tag, d.ls_sharpe[i], d.ls_turn[i], id);
+        else
+          std::snprintf(ll, sizeof(ll), "LS %4s  对数年化=%+8.2f%%  夏普=%+6.2f  年换手=%7.1f倍###%s", tag, a, d.ls_sharpe[i], d.ls_turn[i], id);
+      };
+      ls_label("100%", 0, "ls");
       ImPlot::SetNextLineStyle(kColLS, 2.5f);
       ImPlot::PlotLine(ll, d.x_day.data(), d.ls_ann[0].data(), n);
       const ImVec4 end_col[kEnds] = {kColTop, kColBottom};
@@ -411,7 +428,7 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         char tag[8], id[8];
         std::snprintf(tag, sizeof(tag), "%g%%", static_cast<double>(kTailOfGroup[j]) * 100.0);
         std::snprintf(id, sizeof(id), "tls%d", j);
-        std::snprintf(ll, sizeof(ll), kLsFmt, tag, d.ls_ann[1 + j].back(), d.ls_sharpe[1 + j], d.ls_turn[1 + j], id);
+        ls_label(tag, 1 + j, id);
         ImPlot::HideNextItem(true, ImPlotCond_Once);
         for (int e = 0; e < kEnds; ++e) { // 色带: 本级线与上一级线 (j = 0 时是该端的组线) 之间, 越极端越重
           const float *inner = (j ? d.lay_ann[layer_tail(e, j - 1)] : d.lay_ann[end_group(e)]).data();
@@ -432,8 +449,11 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0))
           cursor_day = std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x)), 0, d.days);
         const float ls_c = d.ls_ann[0][static_cast<size_t>(cursor_day)];
-        ImPlot::Annotation(static_cast<double>(cursor_day), ls_c, kColCursor, ImVec2(5, -15), true, "%s  LS %+.2f",
-                           cursor_day ? misc::dense(d.dates[static_cast<size_t>(cursor_day) - 1]).c_str() : "起点", ls_c);
+        const std::string when = cursor_day ? misc::dense(d.dates[static_cast<size_t>(cursor_day) - 1]) : "起点";
+        if (std::isnan(ls_c))
+          ImPlot::Annotation(static_cast<double>(cursor_day), yr.y_lo, kColCursor, ImVec2(5, -15), true, "%s  LS 爆仓", when.c_str());
+        else
+          ImPlot::Annotation(static_cast<double>(cursor_day), ls_c, kColCursor, ImVec2(5, -15), true, "%s  LS %+.2f", when.c_str(), ls_c);
       }
       ImPlot::EndPlot();
     }
@@ -1561,7 +1581,7 @@ bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &
   ui.last_req_key = key;
   ui.req_row = row;
   ui.req_reload = false;
-  ui.req_top_n = 0;
+  ui.req_export = InspectExport::None;
   return true;
 }
 
@@ -1802,7 +1822,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     action = 1;
     ui.req_row = sel;
     ui.req_reload = true;
-    ui.req_top_n = 0;
+    ui.req_export = InspectExport::None;
     ui.last_req_key = key; // 自动起算在 InspectAutoRequest (两页都每帧调)
   }
   if (!can_run)
@@ -1821,24 +1841,34 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   ImGui::SetNextItemWidth(80.f);
   ImGui::InputInt("##top_n", &ui.top_n, 0, 0);
   ui.top_n = std::max(ui.top_n, 1);
-  ImGui::SameLine();
+  if (ImGui::IsItemHovered())
+    tip("导出的 N: 做多端前 N 只 (两个导出共用)");
   const bool can_export = can_run && match;
-  if (!can_export)
-    ImGui::BeginDisabled();
-  if (ImGui::Button("导出前 N", ImVec2(80, 0))) {
-    action = 1;
-    ui.req_row = sel;
-    ui.req_reload = false;
-    ui.req_top_n = ui.top_n;
-    ui.last_req_key = key;
-  }
-  if (!can_export)
-    ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("逐行 (因子层) 按池内秩取做多端前 N 只, 只记进 / 出: 一段一行\n"
-        "• 价 = 本行 close (不复权), ret = 按复权因子折算的收益\n"
-        "• out_rank = 掉出时的名次 (0 = 出池 / 无值), 空 = 期末未平 (按末行估值)\n"
-        "• 写到因子目录 <因子>_w<权重号>_top<N>.csv (缓存命中只重评一遍)");
+  const auto export_button = [&](const char *label, InspectExport ex, const char *help) {
+    ImGui::SameLine();
+    if (!can_export)
+      ImGui::BeginDisabled();
+    if (ImGui::Button(label, ImVec2(80, 0))) {
+      action = 1;
+      ui.req_row = sel;
+      ui.req_reload = false;
+      ui.req_export = ex;
+      ui.last_req_key = key;
+    }
+    if (!can_export)
+      ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      tip("%s", help);
+  };
+  export_button("导出进出", InspectExport::Log,
+                "逐行 (因子层) 按池内秩取做多端前 N 只, 只记进 / 出: 一段一行\n"
+                "• 价 = 本行 close (不复权), ret = 按复权因子折算的收益\n"
+                "• out_rank = 掉出时的名次 (0 = 出池 / 无值), 空 = 期末未平 (按末行估值)\n"
+                "• 写到 <导出目录>/<池>/<层>/<因子>_w<权重号>_top<N>_log.csv (缓存命中只重评一遍)");
+  export_button("导出名单", InspectExport::Snap,
+                "期末 (末行) 做多端前 N 只的名单, 按名次一行\n"
+                "• px = 末行 close (不复权); in_* = 本段入选时刻 / 名次 / 价, ret = 入选至今的复权收益\n"
+                "• 写到 <导出目录>/<池>/<层>/<因子>_w<权重号>_top<N>_snap.csv (缓存命中只重评一遍)");
   ImGui::SameLine();
   ImGui::Text("Status:");
   ImGui::SameLine();

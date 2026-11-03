@@ -130,7 +130,8 @@ struct RxAllP : LandCellsP<uint16_t> {
 using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP, TurnP>;
 
 // ---- 导出 (flow E) ----
-// 做多端前 n 的一段在持: 行 [t_in, t_out) 在前 n 内, t_out = −1 = 期末未平 (按末行估值). 名次 1 起; rank_out 0 = 出行无秩 (出池 / 无值)
+// 做多端前 n 的一段在持: 行 [t_in, t_out) 在前 n 内, t_out = −1 = 期末未平 (按末行估值). 名次 1 起;
+// rank_out = 出行名次 (0 = 出行无秩: 出池 / 无值); 未平 = 最近一个有秩行的名次
 struct Leg {
   uint32_t a = 0; // A 轴下标
   int t_in = 0, t_out = -1;
@@ -170,11 +171,14 @@ std::vector<Leg> top_legs(const std::vector<uint16_t> &rx, int T, int A, int n) 
     }
     for (size_t i = 0; i < k; ++i) {
       const uint32_t a = cand[i];
+      const int rank = static_cast<int>(i + 1);
       in[a] = 0;
-      if (open[a] >= 0)
+      if (open[a] >= 0) {
+        legs[static_cast<size_t>(open[a])].rank_out = rank;
         continue;
+      }
       open[a] = static_cast<int>(legs.size());
-      legs.push_back({a, t, -1, static_cast<int>(i + 1), 0});
+      legs.push_back({a, t, -1, rank, rank});
     }
   }
   return legs;
@@ -218,8 +222,11 @@ bool fill_px(const Domain &dm, const FeatureTable &ft, std::vector<Leg> &legs) {
   }
   return true;
 }
-// CSV: 一段一行 (进行序). 时刻 = 行末 (YYYY-MM-DD HH:MM); 期末未平 → out_rank 空, out = 末行; ret = 复权收益
-void write_legs(const InspectSpec &sp, const std::vector<Leg> &legs, const std::vector<misc::Ymd> &dates, const PoolAxis &axis, const factor::Geo &g) {
+// CSV (时刻 = 行末 YYYY-MM-DD HH:MM; ret = 复权收益; 未平按末行估值):
+//   Log  一段一行 (进行序), 未平 → out_rank 空, out = 末行
+//   Snap 未平段一行 (名次序) = 期末名单, time / px = 末行
+void write_legs(const InspectSpec &sp, std::vector<Leg> &legs, const std::vector<misc::Ymd> &dates, const PoolAxis &axis, const factor::Geo &g) {
+  std::filesystem::create_directories(std::filesystem::path(sp.csv).parent_path());
   std::ofstream f(sp.csv);
   assert(f && "导出文件写不开");
   const auto when = [&](int t) {
@@ -229,16 +236,33 @@ void write_legs(const InspectSpec &sp, const std::vector<Leg> &legs, const std::
     std::snprintf(b, sizeof(b), "%s %02d:%02d", misc::dash(dates[static_cast<size_t>(t / g.S)]).c_str(), m / 60, m % 60);
     return std::string(b);
   };
-  const int t_last = static_cast<int>(dates.size()) * g.S - 1;
-  f << "code,name,in_time,in_rank,in_px,out_time,out_rank,out_px,ret,w\n";
-  for (const Leg &l : legs) {
+  const auto ret_of = [](const Leg &l) { return static_cast<double>(l.px_out) * l.adj_out / (static_cast<double>(l.px_in) * l.adj_in) - 1.0; };
+  const auto who = [&](const Leg &l) {
     const uint32_t gid = axis.global(l.a);
     assert(gid < sp.codes.size() && "资产不在全局资产轴上");
-    const double ret = static_cast<double>(l.px_out) * l.adj_out / (static_cast<double>(l.px_in) * l.adj_in) - 1.0;
-    char b[160];
-    std::snprintf(b, sizeof(b), ",%d,%.3f,%s,%s,%.3f,%.6f,%.6g\n", l.rank_in, static_cast<double>(l.px_in), when(l.t_out < 0 ? t_last : l.t_out).c_str(),
-                  l.t_out < 0 ? "" : std::to_string(l.rank_out).c_str(), static_cast<double>(l.px_out), ret, 1.0 / sp.top_n);
-    f << sp.codes[gid] << ',' << sp.names[gid] << ',' << when(l.t_in) << b;
+    return sp.codes[gid] + ',' + sp.names[gid];
+  };
+  const int t_last = static_cast<int>(dates.size()) * g.S - 1;
+  const double w = 1.0 / sp.top_n;
+  char b[192];
+  if (sp.ex == InspectExport::Log) {
+    f << "code,name,in_time,in_rank,in_px,out_time,out_rank,out_px,ret,w\n";
+    for (const Leg &l : legs) {
+      std::snprintf(b, sizeof(b), ",%s,%d,%.3f,%s,%s,%.3f,%.6f,%.6g\n", when(l.t_in).c_str(), l.rank_in, static_cast<double>(l.px_in),
+                    when(l.t_out < 0 ? t_last : l.t_out).c_str(), l.t_out < 0 ? "" : std::to_string(l.rank_out).c_str(), static_cast<double>(l.px_out),
+                    ret_of(l), w);
+      f << who(l) << b;
+    }
+  } else {
+    assert(std::all_of(legs.begin(), legs.end(), [](const Leg &l) { return l.t_out < 0; }));
+    std::sort(legs.begin(), legs.end(), [](const Leg &x, const Leg &y) { return x.rank_out < y.rank_out; });
+    const std::string now = when(t_last);
+    f << "time,rank,code,name,px,in_time,in_rank,in_px,ret,w\n";
+    for (const Leg &l : legs) {
+      std::snprintf(b, sizeof(b), ",%.3f,%s,%d,%.3f,%.6f,%.6g\n", static_cast<double>(l.px_out), when(l.t_in).c_str(), l.rank_in,
+                    static_cast<double>(l.px_in), ret_of(l), w);
+      f << now << ',' << l.rank_out << ',' << who(l) << b;
+    }
   }
   assert(f && "导出文件写入失败");
 }
@@ -246,7 +270,7 @@ void write_legs(const InspectSpec &sp, const std::vector<Leg> &legs, const std::
 } // namespace
 
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload,
-                        bool gpu, int top_n, InspectRequest &req) {
+                        bool gpu, InspectExport ex, int top_n, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
   req.spec.f = FactorRef{row.expr, row.frame, factor::stat::dir_of(row.sign)};
@@ -254,10 +278,12 @@ bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTab
   req.reload = reload;
   if (!MakeFactorScope(data, std::move(ft), pool, gpu, req.scope))
     return false;
-  if (top_n > 0) {
+  if (ex != InspectExport::None) {
+    assert(top_n >= 1);
+    req.spec.ex = ex;
     req.spec.top_n = top_n;
-    req.spec.csv = (std::filesystem::path(req.scope.factor_dir) /
-                    (row.name_en + "_w" + std::to_string(row.widx) + "_top" + std::to_string(top_n) + ".csv"))
+    req.spec.csv = (std::filesystem::path(data.config.export_dir) / pool / factor_level(req.scope.lv).name /
+                    (row.name_en + "_w" + std::to_string(row.widx) + "_top" + std::to_string(top_n) + (ex == InspectExport::Log ? "_log" : "_snap") + ".csv"))
                        .string();
     for (const AssetItem &it : data.asset.items)
       req.spec.codes.push_back(it.code_ex()), req.spec.names.push_back(it.asset_name);
@@ -364,18 +390,21 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   const Domain &dm = o.job.dm;
   const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size());
   std::vector<Leg> legs;
-  if (req.spec.top_n > 0)
+  if (req.spec.ex != InspectExport::None) {
     legs = top_legs(pl_.rx, static_cast<int>(dm.dates.size()) * seg, A, req.spec.top_n);
+    if (req.spec.ex == InspectExport::Snap)
+      std::erase_if(legs, [](const Leg &l) { return l.t_out >= 0; });
+  }
   publish_result();
 
   // ---- 导出 (flow E): 结果已发布, 读价不挡页面 ----
-  if (req.spec.top_n > 0) {
+  if (req.spec.ex != InspectExport::None) {
     if (!fill_px(dm, *sc.ft, legs))
       return settle(Rc::Stale);
     write_legs(req.spec, legs, dm.dates, dm.rs.axis, factor_level(sc.lv).geo());
     {
       std::lock_guard<std::mutex> lock(mutex);
-      message = "导出 " + std::to_string(legs.size()) + " 段 → " + req.spec.csv;
+      message = std::string(req.spec.ex == InspectExport::Log ? "导出进出 " : "导出名单 ") + std::to_string(legs.size()) + " 行 → " + req.spec.csv;
     }
     publish();
   }

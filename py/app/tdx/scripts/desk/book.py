@@ -1,4 +1,4 @@
-# desk/book — 5 档盘口，相对参考价算滑点与价位。
+# desk/book — 5 档盘口，相对参考价算滑点与价位；委托价与整手规则（下单与调仓试算同用）。
 # 行情的 book = {方向: 该方向吃的那侧}：买 +1 吃卖盘、价位往上；卖 -1 吃买盘、价位往下。
 # 滑点与价位两组列同构：(量, s)，滑点乘 s → 正=成本。只出数字，格式化归前端。
 
@@ -6,6 +6,8 @@ from mem.common import BUY, SELL, SIDES
 
 NOTIONALS = (10000, 50000, 100000)  # 吃 n 元
 PCTS = (1, 2)  # 偏 p%
+# 委托价：(吃对手盘, 再偏 %)
+PX_MODES = {"opp": (True, 0), "opp1": (True, 1), "own": (False, 0)}
 SLIP_COLS = [(n, BUY) for n in reversed(NOTIONALS)] + [(n, SELL)
                                                        for n in NOTIONALS]
 LEVEL_COLS = [(p, s) for p in PCTS for s in SIDES]
@@ -29,6 +31,31 @@ def auction(q):
 def ref(q):
     """参考价：micro price → 现价 → 昨收，取首个可用；都没有回 None。"""
     return _micro(q) or next((x for x in (q["price"], q["last_close"]) if x > 0), None)
+
+
+def order_px(q, s, mode):
+    """方向 s 按 mode 定委托价（未舍入）：对手价 / 对手价再朝成交方向偏 1% / 本方价；竞价中或该侧空盘回 None。"""
+    opp, pct = PX_MODES[mode]
+    side = q["book"][s if opp else -s]
+    if auction(q) or not side:
+        return None
+    return side[0][0] * (1 + s * pct / 100)
+
+
+def lot(code):
+    """(起买股数, 递增步长)：科创板起 200 股、零股递增，北交所起 100 股、零股递增，其余整手。"""
+    first = 200 if code.startswith("688") else 100
+    step = 1 if code.startswith(("688", "4", "8", "92")) else 100
+    return first, step
+
+
+def cost(q, s, notional):
+    """吃 notional 元相对参考价的滑点（元，正=成本）与 5 档是否吃满；无参考价或竞价中回 (None, False)。"""
+    r = ref(q)
+    if not r or auction(q):
+        return None, False
+    avg, full = _eat(q["book"][s], notional)
+    return (s * (avg - r) / r * notional if avg else None), full
 
 
 def _eat(side, notional):
