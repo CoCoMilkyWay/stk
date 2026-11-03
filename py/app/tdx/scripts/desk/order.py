@@ -304,7 +304,7 @@ class Orders:
 
     def _run(self, job, o):
         try:
-            with UI:
+            with UI("下单"):
                 for at, (_, step) in enumerate(ORDER):
                     self._put(job, at=at)
                     self._put(job, **step(o))

@@ -230,10 +230,7 @@ function onReb(r) {
         `${t} ${ev} ${REB_EV[ev]?.(rest) ?? JSON.stringify(rest).slice(0, 300)}`,
     )
     .join("\n");
-  // 调仓的两样前提就绪与否贴在各自按钮旁
-  $("acctSt").innerHTML = r.acct
-    ? `${r.acct.at} 读`
-    : '<span class="off">未查</span>';
+  // 调仓的前提：两融条款就绪与否贴在按钮旁（账户随刷新，见刷新进度）
   $("termsSt").innerHTML = r.terms
     ? `✓ 今日 ${r.terms} 只`
     : '<span class="off">今日未拉</span>';

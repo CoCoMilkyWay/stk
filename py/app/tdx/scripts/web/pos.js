@@ -83,7 +83,7 @@ const GROUP_COLOR = {
   "": "var(--hot)",
 };
 // 当日盈亏按成交自算；与持仓的今买今卖对不上时，相关行当日两列留空，合计标「不全」
-const DAY_GAP = "成交与持仓今买 / 今卖对不上，当日盈亏不全（点刷新持仓）";
+const DAY_GAP = "成交与持仓今买 / 今卖对不上，当日盈亏不全（点刷新）";
 const COL = {
   code: [
     "代码",
@@ -115,45 +115,73 @@ const COL = {
 };
 
 // 持仓页：pos、ord 两路，服务端在内存或行情变了才推一帧；出错只改提示行，表留上一帧。
-// 客户端重查即推帧，定时刷新为兜底：到点 POST /api/refresh，新帧仍经推送到达。
-let autoRefreshTried = false;
-let nextRefresh = 0; // 下次自动刷新时刻（performance.now）
+// 刷新与定时都在服务端：POST /api/refresh 只是要一轮，不等；各样查完即推帧，进度随帧（prog）。
 // 一帧一份 rows（每只一行，含盘口）：持仓表即其列，行情页取其行。
 // 持仓表的卖出两列取自调仓帧，pos、reb 哪路来帧都重画（拖卖出滑杆时除外）
 let POS = null;
 const drawPos = () =>
   POS && !REB_DRAG && table("#posTbl", posCols(POS), POS.rows, pickAttrs, POS);
 function onPos(r) {
-  if (fail("posInfo", r)) return;
+  $("posProg").innerHTML = progTxt(r.prog);
+  if (document.activeElement !== $("posAuto"))
+    $("posAuto").value = r.prog.every;
+  if (fail("posInfo", r) || !r.rows) return;
   POS = r;
   drawPos();
   posInfo(r);
   quoteFrame(r.rows);
 }
-// 标题右侧一行：持仓数字在表尾合计，这里只有成交笔数、行情时刻、pid
+// 持仓表上方一行：只数、总市值、盈亏、当日盈亏与成交核对、挂单、行情时刻、pid
 function posInfo(r) {
   const info = $("posInfo");
-  if (!r.rows.length) {
-    // 按需：内存里没持仓表时，自动点一次交易栏「刷新」让客户端查一遍
-    if (!autoRefreshTried) return refreshPos();
-    return void (info.textContent = "无持仓");
-  }
+  if (!r.rows.length) return void (info.textContent = "无持仓");
+  const t = r.totals;
   const sync = r.synced
-    ? `今日成交 ${r.fills} 笔`
-    : `<span class="off" data-tip="${DAY_GAP}">成交对不上</span>`;
-  info.innerHTML = `${sync} · 行情 ${r.time} · pid ${r.pid}`;
+    ? ` · 今日成交 ${r.fills} 笔`
+    : ` · <span class="off">${DAY_GAP}</span>`;
+  info.innerHTML =
+    `${r.rows.filter((p) => !p.closed).length} 只 · 总市值 <b>${fmt(t.market_value)}</b>` +
+    ` · 盈亏 <b>${fmtPnl(t.pnl)}</b> · 当日盈亏 <b>${fmtPnl(t.day_pnl)}</b>` +
+    sync +
+    hangTxt(r.orders) +
+    ` · 行情 ${r.time} · pid ${r.pid}`;
 }
-async function refreshPos(quiet) {
-  autoRefreshTried = true; // 手动刷新也算一次尝试，避免空内存再自动重触发
-  nextRefresh = performance.now() + +$("posAuto").value * 1000;
-  if (!quiet) $("posInfo").textContent = "刷新中…（客户端重查当日成交与持仓）";
-  fail("posInfo", await post("/api/refresh"));
+// 挂单（撤单页的未成交委托）逐笔列出；还没查过为 null
+const hangTxt = (os) =>
+  os == null
+    ? ""
+    : !os.length
+      ? " · 无挂单"
+      : ` · 挂单 ${os.length} 笔：` +
+        os
+          .map(
+            (o) =>
+              `${paint(SIDE[o.side].color, SIDE[o.side].name)} ${o.code} ${esc(o.name)} ` +
+              `${o.qty - o.filled}${o.filled ? `/${o.qty}` : ""}股 @${o.price} ${esc(o.status)}`,
+          )
+          .join("、");
+// 刷新进度：正做哪样（或等界面）、各样读于几时、上轮失败、账户是否读于持仓变动前
+const PROG_SRC = [
+  ["fills", "成交"],
+  ["pos", "持仓"],
+  ["orders", "挂单"],
+  ["acct", "账户"],
+];
+function progTxt(g) {
+  const at = PROG_SRC.map(([k, n]) => `${n} ${g.at[k] ?? "—"}`).join(" · ");
+  return [
+    g.step && paint("var(--hot)", `刷新中：${esc(g.step)}…`),
+    g.err && `<span class="off" data-tip="${esc(g.err)}">✗ 上轮刷新失败</span>`,
+    `读于 ${at}`,
+    g.acct_stale &&
+      '<span class="off" data-tip="新一轮还没查到信用账户，调仓试算的现金与负债是旧的">账户读于持仓变动前</span>',
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
-const autoRefresh = () =>
-  +$("posAuto").value &&
-  STREAMS.pos.es &&
-  performance.now() >= nextRefresh &&
-  refreshPos(true);
+const refreshPos = async () => fail("posProg", await post("/api/refresh"));
+const refreshEvery = async (s) =>
+  fail("posProg", await post("/api/refresh/every", { s }));
 
 // 滑点 p = 万分之一，正=成本；> 表示 5 档吃不满、实际更差
 const slipColor = (v) =>

@@ -97,26 +97,25 @@
         </div>
 
         <div class="panel" data-view="pos" style="flex: 1">
-          <h2 class="row">
-            持仓 · 调仓
-            <span class="grow"></span>
-            <span id="posInfo" class="kv">（等持仓帧）</span>
-          </h2>
+          <h2>持仓 · 调仓</h2>
           <div class="bar">
             <fieldset class="grp">
               <legend>数据</legend>
-              <button onclick="refreshPos()">刷新持仓</button>
+              <button
+                onclick="refreshPos()"
+                title="客户端依次重查当日成交、持仓、挂单、信用资产与融资负债，各样查完即更新"
+              >
+                刷新
+              </button>
               <label class="kv"
                 >自动
-                <select id="posAuto">
+                <select id="posAuto" onchange="refreshEvery(+this.value)">
                   <option value="0">关</option>
                   <option value="15">15s</option>
                   <option value="60" selected>60s</option>
                   <option value="300">5min</option>
                 </select></label
               >
-              <button onclick="rebAct('acct')">刷新信用资产</button>
-              <span id="acctSt" class="kv"></span>
               <button
                 onclick="rebAct('terms')"
                 title="客户端查询全部标的证券与担保品，要卡一两分钟；一天拉一次"
@@ -180,10 +179,12 @@
               </button>
             </fieldset>
           </div>
+          <div id="posProg" class="kv"></div>
           <table id="acctTbl"></table>
           <div id="rebInfo">（等调仓帧）</div>
           <div id="rebTask" class="kv"></div>
           <div id="ordInfo" class="kv"></div>
+          <div id="posInfo" class="kv">（等持仓帧）</div>
           <div style="overflow: auto; flex: 1; min-height: 0">
             <table id="posTbl" class="locked">
               <thead></thead>

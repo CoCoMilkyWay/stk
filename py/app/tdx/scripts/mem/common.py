@@ -12,7 +12,7 @@
 #   find(方案, 段)          段内命中 Hit（纯形状，不读别处）
 #   pick(方案, pid, 命中)   选取 → 按址连读一致 → 解析校验 → 合并 → 汇总 → Snap
 #   follow(snap)            没换代回 snap 本身，换代即 rescan 再 pick
-# read(方案们, pid) 一遍扫全部堆段出各方案快照；wait(snap) 轮询 follow 等客户端重查后的换代。
+# read(方案们, pid) 一遍扫全部堆段出各方案快照；wait(snap) 轮询 follow 等客户端重查后的换代（没有块可盯即等一会儿全量读）。
 # 表内没有新旧标记的方案（只出形状、列、选取钩子，没有 same / rescan）经 ask(方案, act) 读：
 # act（点查询）前后各扫一遍，之后新冒出的命中即这次的应答。
 
@@ -234,10 +234,11 @@ def read(schemes, pid=None):
     return tuple(pick(s, pid, h) for s, h in zip(schemes, scan(pid, schemes)))
 
 
-def wait(snap, timeout=3.0, gap=0.01):
+def wait(snap, timeout=3.0, blind=1.0, gap=0.01):
     """客户端重查后，轮询 follow 等 snap 换代即回新快照，不等固定时长。
-    timeout 内没换代（应答与旧的逐字节相同，如收盘后；或 same 盯不到新块）即全量读。"""
-    end = time.monotonic() + timeout
+    timeout 内没换代（应答与旧的逐字节相同，如收盘后；或 same 盯不到新块）即全量读。
+    snap 没有块（还没查过 / 今日无成交）即无从盯，等 blind 秒全量读。"""
+    end = time.monotonic() + (timeout if snap.mark else blind)
     while time.monotonic() < end:
         new = follow(snap)
         if new != snap:

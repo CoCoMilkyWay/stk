@@ -123,6 +123,5 @@ function initGutter() {
     () => ck("spyAuto") && spy("dump"),
     () => 1000,
   );
-  loop(autoRefresh, () => 1000);
   loop(pullSoon, () => KLINE_GAP);
 })();

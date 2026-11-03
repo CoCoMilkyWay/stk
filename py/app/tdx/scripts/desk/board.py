@@ -17,8 +17,8 @@ from mem.fills import NO_FLOW
 
 from . import book
 
-# 持仓快照 × 成交快照 × {代码: 行情}
-State = collections.namedtuple("State", "pos fills quotes")
+# 持仓快照 × 成交快照 × 挂单快照（还没查过为 None）× 信用账户（credit.Acct，帧里不用，调仓用）× {代码: 行情}
+State = collections.namedtuple("State", "pos fills orders acct quotes")
 TOTALS = ("market_value", "pnl", "day_pnl")
 # fmt: off
 GROUPS = {
@@ -167,6 +167,7 @@ def view(st):
         "totals": {k: round(sum(r[k] or 0 for r in rows), 2) for k in TOTALS}
         | {"slips": [_agg(rows, i) for i in range(len(book.SLIP_COLS))]},
         "fills": len(st.fills.rows),
+        "orders": st.orders and st.orders.rows,
         "synced": all(_synced(h, f) for h, f in pairs),
         "time": max((q["time"] for q in st.quotes.values()), default=""),
     }

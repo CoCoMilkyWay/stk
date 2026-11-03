@@ -1,14 +1,33 @@
-# desk/ui — 客户端界面自动化的公共件：shim 控制通道、界面锁、按绘制文字点按钮、对话框控件、交易功能树与查询页。
+# desk/ui — 客户端界面自动化的公共件：shim 控制通道与接入、界面锁、按绘制文字点按钮、对话框控件、交易功能树与查询页。
 
+import contextlib
 import re
 import threading
 import time
 
-from bridge.shimctl import Shim
+from bridge.shimctl import Shim, ensure
 
 SHIM = Shim()
-# 客户端界面自动化（刷新点按钮 / 下单走闪电窗 / 查信用账户）一次只许一路
-UI = threading.Lock()
+
+
+class Gate:
+    """客户端界面自动化（刷新 / 下单 / 两融条款）一次只许一路：with UI(名): …；who 为占着的那路（None = 空闲）。"""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.who = None
+
+    @contextlib.contextmanager
+    def __call__(self, who):
+        with self.lock:
+            self.who = who
+            try:
+                yield
+            finally:
+                self.who = None
+
+
+UI = Gate()
 WM_VSCROLL, WM_COMMAND, SB_PAGEDOWN, SB_TOP = 0x115, 0x111, 3, 6
 # 主窗交易栏：页签「成交」「持仓」与「刷新」都是画在其上的字；刷新只刷当前页
 TOOLBAR = {"class": "MHPToolBar", "title": "MainViewBar"}
@@ -17,6 +36,15 @@ FUNC_TREE = ("SysTreeView32", 59653)
 # 查询页：列表上方「第1--N条」/「共N条」、「查询全部」按钮
 PAGE_COUNT, PAGE_ALL = 166, 454
 COUNT_RE = re.compile(r"(?:第1--|共)(\d+)条")
+
+
+def attach():
+    """接入客户端：shim 不在线即编译 + 注入；再开 noraise 不抬窗（重扫模块，补钩 shim 注入后才加载的 DLL）、
+    gdi 绘制层（首次装入口钩子并重绘全部窗口）。启动时与客户端重启后各一次。"""
+    ensure()
+    for cmd in ("noraise", "gdi"):
+        r = SHIM(cmd, "on")
+        assert r[-1]["on"] and not any("skip" in x for x in r), f"{cmd} on: {r}"
 
 
 def post(h, msg, wp, lp=0):

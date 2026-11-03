@@ -18,9 +18,10 @@
 #   成本 = 各单按 5 档吃出的滑点（相对参考价，竞价中计 0）+ 费用（佣金万 1 双向、印花税 0.05% 卖、过户费 0.001% 双向）。
 #   预期总资产 = 现总资产 + 融资额 − 成本，预期净资产 = 现净资产 − 成本，杠杆 = 总资产 / 净资产，
 #   维持担保比例 = 总资产 / 负债。现总资产 = 读时现金 + 现持仓市值。
-# 后台事务一次一件（拉条款 / 查账户 / 执行），状态与日志推给页面：
-#   执行 = 查账户 → 试算 → 卖单逐只闪电卖出 → 等成交表里各只卖量到齐 → 重查账户、去掉卖出重算 →
-#   融资单逐只闪电融资买入 → 现金单逐只闪电买入 → 刷新持仓、再查账户。
+# 账户取自持仓推送的 State（刷新一轮里接在持仓之后查），试算有什么用什么，账户新旧由持仓页进度标出。
+# 后台事务一次一件（拉条款 / 执行），状态与日志推给页面：
+#   执行 = 刷新 → 还有挂单即停（免得重复下单、冻结的钱券没算进试算）→ 试算 → 卖单逐只闪电卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 →
+#   融资单逐只闪电融资买入 → 现金单逐只闪电买入 → 刷新。
 #   每单 order.ORDERS.place，任一步失败即停（已下的单不撤）；全程逐条写 logs/reb-<时刻>.jsonl。
 
 import collections
@@ -189,9 +190,9 @@ def _pick(tries, tgt, C, X, L):
     return {k: tgt[k] for k in by_ratio if k in picked}, V
 
 
-def plan(st, acct, terms, codes, cfg):
+def plan(st, terms, codes, cfg):
     """试算一帧（见文件头）；行情还没覆盖到的回 {wait}。"""
-    held, quotes = st.pos.by_code, st.quotes
+    held, quotes, acct = st.pos.by_code, st.quotes, st.acct
     ok = [c for c in codes if not _why(terms.get(c))]
     lack = [c for c in [*held, *ok] if c not in quotes]
     if lack:
@@ -333,7 +334,6 @@ class Rebal:
     def __init__(self):
         # 以下各项由后台事务与配置修改改写，同在 feed 内
         self.terms = credit.load()
-        self.acct = None
         names = lists()
         self.cfg = {
             "list": names[0] if names else None,
@@ -351,13 +351,10 @@ class Rebal:
         HUB.hooks.append(self._calc)
 
     def _frame(self):
-        a = self.acct
         return {
             "lists": lists(),
             "cfg": self.cfg,
             "terms": len(self.terms) if self.terms else None,
-            "acct": a
-            and {k: v for k, v in a._asdict().items() if k not in ("debts", "base")},
             "plan": self.plan,
             "task": self.task,
         }
@@ -382,11 +379,11 @@ class Rebal:
         """重算试算、推帧（持仓循环的 hook，也在配置 / 账户 / 条款变后调）。"""
         if self.terms is None:
             p = {"wait": "当日两融条款还没拉（更新两融名单）"}
-        elif self.acct is None:
-            p = {"wait": "还没查信用资产（刷新信用资产）"}
+        elif st.acct is None:
+            p = {"wait": "还没读到信用账户（等刷新）"}
         else:
             try:
-                p = plan(st, self.acct, self.terms, self.codes, self.cfg)
+                p = plan(st, self.terms, self.codes, self.cfg)
             except Exception as e:  # 错误边界：试算出错只报在调仓提示行，不打断持仓循环
                 p = {"err": err(e)}
         with self.feed:
@@ -467,9 +464,6 @@ class Rebal:
     def pull(self, b):
         return self._start("更新两融名单", self._pull)
 
-    def query(self, b):
-        return self._start("刷新信用资产", self._query)
-
     def run(self, b):
         return self._start("执行调仓", self._run)
 
@@ -486,15 +480,15 @@ class Rebal:
             self.terms = terms
         self._watch()
 
-    def _query(self, log):
-        assert self.terms, "当日两融条款还没拉"
-        acct = credit.account(HUB.state(), self.terms)
-        log("acct", acct=acct._asdict())
-        with self.feed:
-            self.acct = acct
+    def _sync(self, log):
+        """刷新一轮（成交、持仓、挂单、信用账户），记下账户。"""
+        HUB.sync()
+        a = HUB.state().acct
+        log("acct", acct={k: v for k, v in a._asdict().items() if k not in ("bal", "px")})
 
     def _plan(self, log):
-        p = plan(HUB.state(), self.acct, self.terms, self.codes, self.cfg)
+        assert self.terms, "当日两融条款还没拉"
+        p = plan(HUB.state(), self.terms, self.codes, self.cfg)
         assert "wait" not in p, p.get("wait")
         log("plan", cfg=self.cfg, codes=self.codes, plan=p)
         return p
@@ -508,10 +502,10 @@ class Rebal:
         return job
 
     def _fills(self, log, want):
-        """等成交表里各只卖量到 want（股）。"""
+        """刷新到成交表里各只卖量到 want（股）。"""
         end = time.monotonic() + FILL_WAIT
         while True:
-            HUB.refresh()
+            self._sync(log)
             by = HUB.state().fills.by_code
             got = {c: by.get(c, NO_FLOW)["traded"][SELL] for c in want}
             log("fills", want=want, got=got)
@@ -523,7 +517,13 @@ class Rebal:
             time.sleep(FILL_GAP)
 
     def _run(self, log):
-        self._query(log)
+        self._sync(log)
+        hang = HUB.state().orders.rows
+        assert not hang, (
+            f"还有 {len(hang)} 笔未成交委托（"
+            + "、".join(f"{r['code']} {r['name']} {r['qty'] - r['filled']:.0f}股" for r in hang)
+            + "），撤掉或等成交后再调仓"
+        )
         p = self._plan(log)
         sells = [o for o in p["orders"] if o["s"] == SELL]
         if sells:
@@ -536,13 +536,11 @@ class Rebal:
             self._fills(log, dict(want))
             with self.feed:
                 self.cfg = {**self.cfg, "sells": {}}
-            self._query(log)
             p = self._plan(log)
         for o in p["orders"]:
             assert o["s"] == BUY, f"去掉卖出后试算仍有卖单：{o}"
             self._place(log, o)
-        HUB.refresh()
-        self._query(log)
+        self._sync(log)
 
 
 REB = Rebal()

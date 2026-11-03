@@ -6,7 +6,8 @@
 #   两表以 (沪深标志, 代码) 为键，合成时按代码归一（跨市场同号的只留股票 / 基金那只）。
 #   ratio 融资保证金比例（不在标的表为 None）、financeable 可融资买入（融资标的且融资状态正常）、
 #   rate 担保折算率（不在担保品表为 0）、pledgeable 可作担保品买入（担保状态正常）。
-# 账户：开「信用资产」「融资负债汇总」页，common.ask 读本次应答，读完回持仓页；连同读时的持仓与行情算下 base。
+# 账户：持仓推送的刷新一轮里接在持仓之后，开「信用资产」「融资负债汇总」页，common.ask 读本次应答，
+#   记下同一轮的持仓股数与读完即取的现价（校准用）。
 # 可用保证金（券商口径）X = 现金 + S − 负债利息，持仓部分
 #   S = Σ 折算率 × 非融资部分市值 + Σ g(融资部分市值 − 负债金额) − Σ 负债金额 × 融资保证金比例，
 #   融资部分股数 = min(负债数量, 持仓)，g(x) = 折算率 × x（浮盈） / x（浮亏）。
@@ -22,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from mem import collat, common, credit, debts, margin
 
-from . import ROOT, ui
+from . import ROOT, sina, ui
 
 DIR = os.path.join(ROOT, "data", "credit")
 # (功能树项, 认页的表头列, 方案)
@@ -46,8 +47,8 @@ TERM_TYPES = (
     lambda s: s == "1",
 )
 # 读时：时刻、担保资产、可融额度余量（最高融资额度 − 融资负债含费用）、负债总额、净资产、
-# 可用保证金、现金、{代码: (负债数量, 负债金额)}、读时的 S
-Acct = collections.namedtuple("Acct", "at assets line debt net avail cash debts base")
+# 可用保证金、现金、{代码: (负债数量, 负债金额)}、同一轮持仓 {代码: 股}、读完即取的现价 {代码: 价}
+Acct = collections.namedtuple("Acct", "at assets line debt net avail cash debts bal px")
 
 
 def _path(day):
@@ -138,7 +139,7 @@ def _merge(mg, co):
 
 def pull(log):
     """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}；log(ev, **kw) 记进度、log.live(**kw) 报实时进度。"""
-    with ui.UI:
+    with ui.UI("两融条款"):
         mg, co = (_full(log, *p) for p in PAGES)
         ui.click_tool("持仓")
     terms = _merge(mg, co)
@@ -179,16 +180,16 @@ def load():
         }
 
 
-def surplus(bal, debts_, quotes, terms):
-    """持仓部分 S：bal {代码: 股}、debts_ {代码: (负债数量, 负债金额)}、quotes 须含两者各只。"""
+def surplus(bal, debts_, px, terms):
+    """持仓部分 S：bal {代码: 股}、debts_ {代码: (负债数量, 负债金额)}、px {代码: 价} 须含两者各只。"""
     s = 0.0
     for code in bal.keys() | debts_.keys():
         n, (dq, amt) = bal.get(code, 0.0), debts_.get(code, (0.0, 0.0))
         t = terms.get(code)
         assert t, f"两融条款里没有 {code}"
-        px, fin = quotes[code]["price"], min(dq, n)
-        x = fin * px - amt
-        s += t.rate * (n - fin) * px + (t.rate * x if x > 0 else x)
+        p, fin = px[code], min(dq, n)
+        x = fin * p - amt
+        s += t.rate * (n - fin) * p + (t.rate * x if x > 0 else x)
         if amt:
             assert t.ratio is not None, f"{code} 有融资负债却不在标的表"
             s -= amt * t.ratio
@@ -199,13 +200,11 @@ def balances(pos):
     return {k: h["balance"] for k, h in pos.by_code.items()}
 
 
-def account(st, terms):
-    """客户端重查信用资产与融资负债 → Acct；st 为读时的持仓与行情（算 base）。"""
-    with ui.UI:
-        c = common.ask(credit, lambda: ui.click_func("信用资产")).by_code
-        d = common.ask(debts, lambda: ui.click_func("融资负债汇总")).by_code
-        ui.click_tool("持仓")
-    dbt = {k: (r["qty"], r["amount"]) for k, r in d.items()}
+def account(pos):
+    """客户端重查信用资产与融资负债 → Acct（须持 ui.UI，停在融资负债汇总页）；pos 为同一轮刚读的持仓。"""
+    c = common.ask(credit, lambda: ui.click_func("信用资产")).by_code
+    d = common.ask(debts, lambda: ui.click_func("融资负债汇总")).by_code
+    secs = {r["code"]: r for r in [*pos.by_code.values(), *d.values()]}
     return Acct(
         time.strftime("%H:%M:%S"),
         c["担保资产"],
@@ -214,11 +213,17 @@ def account(st, terms):
         c["净资产"],
         c["可用保证金"],
         c["现金资产"],
-        dbt,
-        surplus(balances(st.pos), dbt, st.quotes, terms),
+        {k: (r["qty"], r["amount"]) for k, r in d.items()},
+        balances(pos),
+        {k: q["price"] for k, q in sina.quotes(list(secs.values())).items()},
     )
 
 
 def avail(acct, bal, quotes, terms):
-    """持仓为 bal、行情为 quotes 时的可用保证金（不含现金变动）。"""
-    return acct.avail + surplus(bal, acct.debts, quotes, terms) - acct.base
+    """持仓为 bal、行情为 quotes 时的可用保证金（不含现金变动）= 读时客户端 X + S(现在) − S(读时)。"""
+    now = {k: quotes[k]["price"] for k in bal.keys() | acct.debts.keys()}
+    return (
+        acct.avail
+        + surplus(bal, acct.debts, now, terms)
+        - surplus(acct.bal, acct.debts, acct.px, terms)
+    )
