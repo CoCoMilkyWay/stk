@@ -2055,6 +2055,11 @@
       job: (r) => `${ORD_ST[r.job.state]} ${esc(r.job.detail)} ${esc(r.job.msg)}`,
       plan: (r) => `试算：行使 ${w2(r.plan.use)}（融资 ${w2(r.plan.financed)}）· ${r.plan.orders.length} 单 · 成本 ${yuan(r.plan.cost)}`,
       acct: (r) => `账户：现金 ${w2(r.acct.cash)} · 可用保证金 ${w2(r.acct.avail)} · 负债 ${w2(r.acct.debt)}`,
+      pull: () => "拉两融条款",
+      page: (r) => `开「${esc(r.func)}」页，等客户端重查…`,
+      all: (r) => `「${esc(r.func)}」点查询全部，等拼表…`,
+      rows: (r) => `「${esc(r.func)}」内存 ${r.got} / 页上 ${r.n} 行`,
+      terms: (r) => `条款 ${r.n} 只（融资标的 ${r.financeable} · 担保品 ${r.pledgeable}）`,
     };
     function onReb(r) {
       REB = r;

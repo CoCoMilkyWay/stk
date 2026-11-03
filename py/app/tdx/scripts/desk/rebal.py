@@ -53,7 +53,9 @@ def lists():
     if not os.path.isdir(LIST_DIR):
         return []
     names = [n for n in os.listdir(LIST_DIR) if n.endswith(".csv")]
-    return sorted(names, key=lambda n: os.path.getmtime(os.path.join(LIST_DIR, n)), reverse=True)
+    return sorted(
+        names, key=lambda n: os.path.getmtime(os.path.join(LIST_DIR, n)), reverse=True
+    )
 
 
 def read_list(name):
@@ -107,16 +109,31 @@ def _sells(st, cfg):
         q = st.quotes[code]
         px = book.ref(q)
         v = cfg["sells"].get(code, 0)
-        row = {"code": code, "name": h["name"], "value": h["balance"] * q["price"],
-               "sellable": h["available"] * px, "sell": v, "order": None, "skip": None}
+        row = {
+            "code": code,
+            "name": h["name"],
+            "value": h["balance"] * q["price"],
+            "sellable": h["available"] * px,
+            "sell": v,
+            "order": None,
+            "skip": None,
+        }
         if v > 0:
             lot, step = book.lot(code)
             avail = int(h["available"])
             n = avail if v >= avail * px else int(v / px) // step * step
             sec = {k: h[k] for k in ("code", "name", "market_flag")}
             # 全部可卖可含零股
-            o = _leg(q, SELL, n, 1 if n == avail else lot,
-                     book.order_px(q, SELL, cfg["px"]) or px, cfg["unit"], "plain", sec)
+            o = _leg(
+                q,
+                SELL,
+                n,
+                1 if n == avail else lot,
+                book.order_px(q, SELL, cfg["px"]) or px,
+                cfg["unit"],
+                "plain",
+                sec,
+            )
             if isinstance(o, str):
                 row["skip"] = o
             else:
@@ -161,8 +178,10 @@ def plan(st, acct, terms, codes, cfg):
     tgt = {}
     for c in ok:
         t = terms[c]
-        tgt[c] = {"held": bal.get(c, 0.0) * quotes[c]["price"],
-                  "ratio": t.ratio if t.financeable else None}
+        tgt[c] = {
+            "held": bal.get(c, 0.0) * quotes[c]["price"],
+            "ratio": t.ratio if t.financeable else None,
+        }
     V = 0.0
     if tgt:
         lo, hi = 0.0, max(x["held"] for x in tgt.values()) + C + L
@@ -175,8 +194,15 @@ def plan(st, acct, terms, codes, cfg):
     rows, buys = [], {"margin": [], "plain": []}
     for c in codes:
         t, why = terms.get(c), _why(terms.get(c))
-        row = {"code": c, "name": t.name if t else "", "why": why, "financeable": bool(t and t.financeable),
-               "ratio": t.ratio if t else None, "rate": t.rate if t else None, "legs": []}
+        row = {
+            "code": c,
+            "name": t.name if t else "",
+            "why": why,
+            "financeable": bool(t and t.financeable),
+            "ratio": t.ratio if t else None,
+            "rate": t.rate if t else None,
+            "legs": [],
+        }
         rows.append(row)
         if why:
             continue
@@ -191,8 +217,14 @@ def plan(st, acct, terms, codes, cfg):
                 continue
             n = int(part / px) // step * step
             o = _leg(q, BUY, n, lot, px, unit, cr, sec)
-            row["legs"].append({"credit": cr, "want": part} | (
-                {"skip": o} if isinstance(o, str) else {"qty": o["qty"], "amount": o["amount"]}))
+            row["legs"].append(
+                {"credit": cr, "want": part}
+                | (
+                    {"skip": o}
+                    if isinstance(o, str)
+                    else {"qty": o["qty"], "amount": o["amount"]}
+                )
+            )
             if not isinstance(o, str):
                 buys[cr].append(o)
 
@@ -205,9 +237,16 @@ def plan(st, acct, terms, codes, cfg):
     net = assets - acct.debt
     exp_assets, exp_net, exp_debt = assets + F - cost, net - cost, acct.debt + F
     return {
-        "now": {"assets": assets, "net": net, "debt": acct.debt, "cash": acct.cash,
-                "X": credit.avail(acct, credit.balances(st.pos), quotes, terms), "L": L,
-                "lev": assets / net, "maint": assets / acct.debt if acct.debt else None},
+        "now": {
+            "assets": assets,
+            "net": net,
+            "debt": acct.debt,
+            "cash": acct.cash,
+            "X": credit.avail(acct, credit.balances(st.pos), quotes, terms),
+            "L": L,
+            "lev": assets / net,
+            "maint": assets / acct.debt if acct.debt else None,
+        },
         "power": power,
         "use": use,
         "financed": F,
@@ -229,8 +268,7 @@ class Log:
 
     def __init__(self, tail):
         os.makedirs(LOG_DIR, exist_ok=True)
-        self.path = os.path.join(
-            LOG_DIR, time.strftime("reb-%Y%m%d-%H%M%S.jsonl"))
+        self.path = os.path.join(LOG_DIR, time.strftime("reb-%Y%m%d-%H%M%S.jsonl"))
         self.f = open(self.path, "w", encoding="utf-8", buffering=1)
         self.tail = tail
 
@@ -246,8 +284,13 @@ class Rebal:
         self.terms = credit.load()
         self.acct = None
         names = lists()
-        self.cfg = {"list": names[0] if names else None,
-                    "unit": 10000, "pct": 100, "px": "opp", "sells": {}}
+        self.cfg = {
+            "list": names[0] if names else None,
+            "unit": 10000,
+            "pct": 100,
+            "px": "opp",
+            "sells": {},
+        }
         self.codes = read_list(names[0]) if names else []
         self.plan = None
         # 后台事务 {name, state: run|ok|err, msg, file, log}
@@ -262,7 +305,8 @@ class Rebal:
             "lists": lists(),
             "cfg": self.cfg,
             "terms": len(self.terms) if self.terms else None,
-            "acct": a and {k: v for k, v in a._asdict().items() if k not in ("debts", "base")},
+            "acct": a
+            and {k: v for k, v in a._asdict().items() if k not in ("debts", "base")},
             "plan": self.plan,
             "task": self.task,
         }
@@ -275,8 +319,13 @@ class Rebal:
     def _watch(self):
         """名单里能取行情的并进持仓页那一路行情。"""
         t = self.terms or {}
-        HUB.watch([{"code": c, "market_flag": t[c].market_flag}
-                  for c in self.codes if c in t and t[c].market_flag != BJ])
+        HUB.watch(
+            [
+                {"code": c, "market_flag": t[c].market_flag}
+                for c in self.codes
+                if c in t and t[c].market_flag != BJ
+            ]
+        )
 
     def _calc(self, st):
         """重算试算、推帧（持仓循环的 hook，也在配置 / 账户 / 条款变后调）。"""
@@ -308,10 +357,10 @@ class Rebal:
             assert b["px"] in book.PX_MODES, f"委托价 {b['px']}"
             cfg["px"] = b["px"]
         if "sells" in b:
-            cfg["sells"] = {c: float(v)
-                            for c, v in b["sells"].items() if float(v) > 0}
-        codes = read_list(
-            cfg["list"]) if cfg["list"] != self.cfg["list"] else self.codes
+            cfg["sells"] = {c: float(v) for c, v in b["sells"].items() if float(v) > 0}
+        codes = (
+            read_list(cfg["list"]) if cfg["list"] != self.cfg["list"] else self.codes
+        )
         with self.feed:
             self.cfg, self.codes = cfg, codes
         self._watch()
@@ -323,9 +372,15 @@ class Rebal:
     def _start(self, name, fn):
         with self.feed:
             assert not (
-                self.task and self.task["state"] == "run"), f"「{self.task['name']}」还在跑"
-            self.task = {"name": name, "state": "run",
-                         "msg": "", "file": None, "log": []}
+                self.task and self.task["state"] == "run"
+            ), f"「{self.task['name']}」还在跑"
+            self.task = {
+                "name": name,
+                "state": "run",
+                "msg": "",
+                "file": None,
+                "log": [],
+            }
         threading.Thread(target=self._task, args=(fn,), daemon=True).start()
         return {}
 
@@ -361,9 +416,13 @@ class Rebal:
 
     def _pull(self, log):
         log("pull")
-        terms = credit.pull()
-        log("terms", n=len(terms), financeable=sum(t.financeable for t in terms.values()),
-            pledgeable=sum(t.pledgeable for t in terms.values()))
+        terms = credit.pull(log)
+        log(
+            "terms",
+            n=len(terms),
+            financeable=sum(t.financeable for t in terms.values()),
+            pledgeable=sum(t.pledgeable for t in terms.values()),
+        )
         with self.feed:
             self.terms = terms
         self._watch()
@@ -399,8 +458,9 @@ class Rebal:
             log("fills", want=want, got=got)
             if all(got[c] >= want[c] for c in want):
                 return
-            assert time.monotonic(
-            ) < end, f"{FILL_WAIT}s 内卖单没成交完：要 {want}，到 {got}"
+            assert (
+                time.monotonic() < end
+            ), f"{FILL_WAIT}s 内卖单没成交完：要 {want}，到 {got}"
             time.sleep(FILL_GAP)
 
     def _run(self, log):
@@ -409,8 +469,9 @@ class Rebal:
         sells = [o for o in p["orders"] if o["s"] == SELL]
         if sells:
             by = HUB.state().fills.by_code
-            want = collections.Counter({o["code"]: by.get(o["code"], NO_FLOW)[
-                                       "traded"][SELL] for o in sells})
+            want = collections.Counter(
+                {o["code"]: by.get(o["code"], NO_FLOW)["traded"][SELL] for o in sells}
+            )
             for o in sells:
                 want[o["code"]] += self._place(log, o)["qty"]
             self._fills(log, dict(want))

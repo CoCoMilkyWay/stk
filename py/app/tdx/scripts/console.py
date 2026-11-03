@@ -149,8 +149,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        self._route(POST, self.path, json.loads(
-            self.rfile.read(n)) if n else {})
+        self._route(POST, self.path, json.loads(self.rfile.read(n)) if n else {})
 
     def _route(self, table, path, b):
         try:
@@ -192,8 +191,7 @@ def main():
     # gdi 绘制层：自绘按钮的文字/色块（首次装入口钩子并重绘全部窗口）
     for cmd in ("noraise", "gdi"):
         r = SHIM(cmd, "on")
-        assert r[-1]["on"] and not any(
-            "skip" in x for x in r), f"{cmd} on: {r}"
+        assert r[-1]["on"] and not any("skip" in x for x in r), f"{cmd} on: {r}"
     threading.Thread(target=HUB.run, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"

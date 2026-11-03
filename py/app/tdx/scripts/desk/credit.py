@@ -31,32 +31,46 @@ PAGES = (
 FULL_WAIT = 300  # 查询全部最长等多久（秒）
 NORMAL = "正常"
 Term = collections.namedtuple(
-    "Term", "code name market_flag ratio financeable rate pledgeable")
-TERM_TYPES = (str, str, int, lambda s: float(s) if s else None,
-              lambda s: s == "1", float, lambda s: s == "1")
+    "Term", "code name market_flag ratio financeable rate pledgeable"
+)
+TERM_TYPES = (
+    str,
+    str,
+    int,
+    lambda s: float(s) if s else None,
+    lambda s: s == "1",
+    float,
+    lambda s: s == "1",
+)
 # 读时：时刻、担保资产、可融额度余量（最高融资额度 − 融资负债含费用）、负债总额、净资产、
 # 可用保证金、现金、{代码: (负债数量, 负债金额)}、读时的 S
-Acct = collections.namedtuple(
-    "Acct", "at assets line debt net avail cash debts base")
+Acct = collections.namedtuple("Acct", "at assets line debt net avail cash debts base")
 
 
 def _path(day):
     return os.path.join(DIR, f"terms-{day}.csv")
 
 
-def _full(func, col, scheme):
-    """开 func 页、点查询全部，等内存整表行数到页上条数 → {(沪深标志, 代码): 行}。"""
+def _full(log, func, col, scheme):
+    """开 func 页、点查询全部，等内存整表行数到页上条数 → {(沪深标志, 代码): 行}；
+    进度记 log：开页、点查询全部、（页上条数, 内存行数）每变一次。"""
+    log("page", func=func)
     dlg = ui.open_page(func, col)
     lbl = ui.count_label(dlg)
     ui.command(dlg, ui.PAGE_ALL)
-    end = time.monotonic() + FULL_WAIT
+    log("all", func=func)
+    end, seen = time.monotonic() + FULL_WAIT, None
     while True:
         n = ui.page_count(lbl, timeout=FULL_WAIT)
         rows = common.read([scheme])[0].by_code
+        if (n, len(rows)) != seen:
+            seen = n, len(rows)
+            log("rows", func=func, n=n, got=len(rows))
         if len(rows) == n:
             return rows
-        assert time.monotonic(
-        ) < end, f"{FULL_WAIT}s 内「{func}」没拼齐（页上 {n} 条，内存 {len(rows)} 行）"
+        assert (
+            time.monotonic() < end
+        ), f"{FULL_WAIT}s 内「{func}」没拼齐（页上 {n} 条，内存 {len(rows)} 行）"
         time.sleep(1)
 
 
@@ -93,10 +107,10 @@ def _merge(mg, co):
     return out
 
 
-def pull():
-    """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}。"""
+def pull(log):
+    """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}；log(ev, **kw) 收进度。"""
     with ui.UI:
-        mg, co = (_full(*p) for p in PAGES)
+        mg, co = (_full(log, *p) for p in PAGES)
         ui.click_tool("持仓")
     terms = _merge(mg, co)
     _save(terms)
@@ -110,8 +124,9 @@ def _save(terms):
         w = csv.writer(f)
         w.writerow(Term._fields)
         for t in terms.values():
-            w.writerow(["" if v is None else int(
-                v) if isinstance(v, bool) else v for v in t])
+            w.writerow(
+                ["" if v is None else int(v) if isinstance(v, bool) else v for v in t]
+            )
     os.replace(_path(day) + ".tmp", _path(day))
     for p in glob.glob(_path("*")):
         if p != _path(day):
@@ -128,7 +143,10 @@ def load():
         assert next(r) == list(Term._fields), f"{p} 表头不对"
         return {
             t.code: t
-            for t in (Term(*(conv(v) for conv, v in zip(TERM_TYPES, row, strict=True))) for row in r)
+            for t in (
+                Term(*(conv(v) for conv, v in zip(TERM_TYPES, row, strict=True)))
+                for row in r
+            )
         }
 
 
