@@ -3,6 +3,7 @@
 #include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
+#include "gui/task_database/services/QuoteService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/task_database/ui/TabAssets.hpp"
@@ -13,9 +14,11 @@
 #include "misc/exec.hpp"
 #include "shared/Config.hpp"
 #include "shared/SharedData.hpp"
+#include <cassert>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace GUI::Tasks {
 namespace {
@@ -31,6 +34,9 @@ private:
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<StateManager> state_mgr_;
+  // Assets → Quotes 行情: 首次画 Assets 页才起 (之前不碰网络)
+  std::unique_ptr<QuoteService> quote_svc_;
+  std::unique_ptr<HistoryService> history_svc_;
 
   // UI state
   FundamentalTabState fundamental_state_;
@@ -313,10 +319,24 @@ private:
   }
 
   void DrawTabAssets() {
+    const StockInfoMap &stock_info = data_->assetinfo.get_stock_info();
+    if (!quote_svc_) { // 全市场 = 在市股, 键 "sh.600000" → 新浪 "sh600000"
+      std::vector<std::string> syms;
+      for (const auto &[key, info] : stock_info)
+        if (!info.out_date) {
+          const size_t dot = key.find('.');
+          assert(dot != std::string::npos);
+          syms.push_back(key.substr(0, dot) + key.substr(dot + 1));
+        }
+      quote_svc_ = std::make_unique<QuoteService>(std::move(syms), data_->assetinfo.bar1m_end);
+      history_svc_ = std::make_unique<HistoryService>();
+    }
     RenderTabAssets(
         data_->asset,
-        data_->assetinfo.get_stock_info(),
-        assets_state_);
+        stock_info,
+        assets_state_,
+        *quote_svc_,
+        *history_svc_);
   }
 
   void DrawTabDates() {

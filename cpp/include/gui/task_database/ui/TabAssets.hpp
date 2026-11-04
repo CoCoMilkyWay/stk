@@ -4,6 +4,7 @@
 #pragma once
 
 #include "gui/task_database/models/SharedTypes.hpp"
+#include "gui/task_database/ui/QuotesPanel.hpp"
 #include "shared/Asset.hpp"
 #include "shared/AssetInfo.hpp"
 #include <cstdint>
@@ -85,15 +86,17 @@ struct AssetsState {
   std::set<std::string> industry_filter;
 
   // Selection and sorting
-  int selected_asset_idx = -1;
+  int selected_asset = -1;                    // 点中的行 (asset_id), Quotes 页看它
   int selected_column_idx_for_highlight = -1; // Column to highlight (from body click)
   int sort_column = -1;
   bool sort_ascending = true;
 
-  // Cross-section analysis panel
-  int selected_column_idx = -1;         // Selected column for analysis (-1 = none)
-  bool show_cross_section_panel = true; // Show right panel
-  float table_split_ratio = 0.65f;      // Left/right split ratio (0-1)
+  // 右栏: Quotes (选中标的行情) / Statistics (选中列的截面分析); 点格子在 Statistics 页才切列
+  bool quotes_page = true;
+  int selected_column_idx = -1; // Selected column for analysis (-1 = none)
+  bool show_right_panel = true;
+  float table_split_ratio = 0.65f; // Left/right split ratio (0-1)
+  QuotesState quotes;
 
   // 过滤 + 排序结果的缓存 (表格与横截面面板共用)
   AssetsView view;
@@ -103,6 +106,8 @@ struct AssetsState {
 void RenderTabAssets(
     Asset &asset,
     const StockInfoMap &stock_info,
-    AssetsState &assets_state);
+    AssetsState &assets_state,
+    QuoteService &live,
+    HistoryService &hist);
 
 } // namespace GUI::Database

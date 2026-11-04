@@ -1,5 +1,5 @@
 // Tab Assets - L2 Database Asset Table View Implementation
-// 18-column table with enhanced filtering and cross-section analysis panel
+// 19-column table with enhanced filtering; right panel = Quotes (selected asset) / Statistics (cross-section)
 
 #include "gui/task_database/ui/TabAssets.hpp"
 #include "gui/task_database/models/SharedTypes.hpp"
@@ -534,8 +534,8 @@ void RenderFilterBar(
   }
 
   ImGui::SameLine();
-  if (ImGui::SmallButton(state.show_cross_section_panel ? "Hide" : "Show")) {
-    state.show_cross_section_panel = !state.show_cross_section_panel;
+  if (ImGui::SmallButton(state.show_right_panel ? "Hide" : "Show")) {
+    state.show_right_panel = !state.show_right_panel;
   }
 }
 
@@ -649,15 +649,14 @@ void RenderDataTable(
 
   SyncView(assets_state, asset_data, stock_info);
 
-  // Helper lambda to handle column highlight and click (left-click to trigger analysis)
-  auto handle_column_click = [&assets_state](int col_idx) {
+  // 左键点格子: 选中该行 (Quotes 看它); Statistics 页再切截面分析的列
+  size_t row_id = 0;
+  auto handle_column_click = [&assets_state, &row_id](int col_idx) {
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-      if (assets_state.selected_column_idx == col_idx) {
-        assets_state.selected_column_idx = -1;
-      } else {
-        assets_state.selected_column_idx = col_idx;
-        assets_state.show_cross_section_panel = true;
-      }
+      assets_state.selected_asset = static_cast<int>(row_id);
+      assets_state.show_right_panel = true;
+      if (!assets_state.quotes_page)
+        assets_state.selected_column_idx = assets_state.selected_column_idx == col_idx ? -1 : col_idx;
     }
   };
 
@@ -687,7 +686,8 @@ void RenderDataTable(
 
     ImGui::TableNextRow();
     ImGui::PushID(row_idx);
-    bool is_row_selected = (assets_state.selected_asset_idx == row_idx);
+    row_id = id;
+    bool is_row_selected = (assets_state.selected_asset == static_cast<int>(id));
 
     // Col 0: Code
     ImGui::TableSetColumnIndex(0);
@@ -1313,7 +1313,9 @@ static void RenderCategoricalAnalysis(
 void RenderTabAssets(
     Asset &asset,
     const StockInfoMap &stock_info,
-    AssetsState &assets_state) {
+    AssetsState &assets_state,
+    QuoteService &live,
+    HistoryService &hist) {
 
   const std::vector<AssetItem> &assets = asset.items;
 
@@ -1335,7 +1337,7 @@ void RenderTabAssets(
   float window_height = ImGui::GetContentRegionAvail().y;
 
   // Calculate left table width
-  float left_width = assets_state.show_cross_section_panel ? window_width * assets_state.table_split_ratio : window_width;
+  float left_width = assets_state.show_right_panel ? window_width * assets_state.table_split_ratio : window_width;
 
   // Left: Data Table
   ImGui::BeginChild("LeftTable", ImVec2(left_width, window_height), true,
@@ -1343,11 +1345,27 @@ void RenderTabAssets(
   RenderDataTable(asset, stock_info, assets_state);
   ImGui::EndChild();
 
-  // Right: Cross-section Analysis Panel
-  if (assets_state.show_cross_section_panel) {
+  // Right: Quotes / Statistics
+  if (assets_state.show_right_panel) {
     ImGui::SameLine();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
     ImGui::BeginChild("RightPanel", ImVec2(0, window_height), true);
-    RenderCrossSectionPanel(asset, stock_info, assets_state);
+    ImGui::PopStyleVar();
+    if (ImGui::BeginTabBar("##RightPanel")) {
+      if (ImGui::BeginTabItem("Quotes")) {
+        assets_state.quotes_page = true;
+        const int sel = assets_state.selected_asset;
+        const AssetItem *item = sel >= 0 && static_cast<size_t>(sel) < assets.size() ? &assets[static_cast<size_t>(sel)] : nullptr;
+        RenderQuotesPanel(live, hist, item, item ? FindStockInfo(*item, stock_info) : nullptr, assets_state.quotes);
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Statistics")) {
+        assets_state.quotes_page = false;
+        RenderCrossSectionPanel(asset, stock_info, assets_state);
+        ImGui::EndTabItem();
+      }
+      ImGui::EndTabBar();
+    }
     ImGui::EndChild();
   }
 }
