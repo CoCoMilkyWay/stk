@@ -198,13 +198,14 @@ function table(
       "</tr>";
   tipAt();
 }
-// 悬停提示：鼠标下最近的 [data-tip] 的文字浮在鼠标旁；元素整个重绘了也按鼠标位置重取，不随重绘消失
+// 悬停提示：鼠标下最近的 [data-tip] 的文字浮在鼠标旁；元素整个重绘了也按鼠标位置重取，不随重绘消失；
+// 隐私下 .pv 里（表头除外）不出
 const TIP = { x: -1, y: -1 };
 function tipAt() {
   const el = document.elementFromPoint(TIP.x, TIP.y)?.closest("[data-tip]");
   const t = $("tip");
-  t.hidden = !el;
-  if (!el) return;
+  t.hidden = !el || (!!el.closest(".priv .pv") && !el.closest("thead"));
+  if (t.hidden) return;
   t.textContent = el.dataset.tip;
   t.style.left = Math.min(TIP.x + 12, innerWidth - t.offsetWidth - 4) + "px";
   t.style.top =
@@ -222,6 +223,8 @@ document.documentElement.addEventListener("mouseleave", () => {
 });
 document.addEventListener("scroll", tipAt, true);
 const paint = (c, s) => (c ? `<span style="color:${c}">${s}</span>` : s);
+// 隐私下遮住的一段（代码、名称、账户金额）
+const pv = (s) => `<span class="pv">${s}</span>`;
 
 // 数字格式化：每种小数位一个缓存的格式器；缺值一律空
 const NF = {};

@@ -465,6 +465,15 @@ button:disabled {
   color: var(--hot);
 }
 
+/* 隐私：.pv 模糊（列上的 pv 表头不遮）；持仓表尾首格（合计只数）照显 */
+.priv .pv:not(th) {
+  filter: blur(5px);
+}
+
+.priv #posTbl tfoot td:first-child {
+  filter: none;
+}
+
 #acctTbl:empty,
 #posInfo:empty,
 .grp .st:empty {

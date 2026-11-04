@@ -100,7 +100,18 @@
         </div>
 
         <div class="panel" data-view="pos" style="flex: 1">
-          <h2>持仓 · 调仓</h2>
+          <h2>
+            持仓 · 调仓
+            <label
+              class="ck"
+              title="遮住代码、名称与账户金额（连同其悬停提示），只数照显"
+              ><input
+                type="checkbox"
+                id="priv"
+                onchange="privSet(this.checked)"
+              />隐私</label
+            >
+          </h2>
           <div class="bar">
             <fieldset class="grp">
               <legend>数据</legend>
@@ -215,7 +226,11 @@
             </details>
             <details>
               <summary class="kv">调仓日志</summary>
-              <pre id="rebLog" style="max-height: 240px; overflow: auto"></pre>
+              <pre
+                id="rebLog"
+                class="pv"
+                style="max-height: 240px; overflow: auto"
+              ></pre>
             </details>
           </div>
         </div>

@@ -46,8 +46,8 @@ const legCell = (l) =>
       : "";
 const REB_TGT = [
   ["排名", (t) => t.rank, (t) => -t.rank, "num"],
-  ["代码", (t) => t.code, (t) => t.code],
-  ["名称", (t) => esc(t.name), (t) => t.name],
+  ["代码", (t) => t.code, (t) => t.code, "pv"],
+  ["名称", (t) => esc(t.name), (t) => t.name, "pv"],
   [
     "",
     (t) =>
@@ -60,24 +60,24 @@ const REB_TGT = [
   ],
   ["保证金比例", (t) => ratio(t.ratio), (t) => t.ratio, "num"],
   ["折算率", (t) => ratio(t.rate), (t) => t.rate, "num"],
-  ["现市值", (t) => w2(t.held), (t) => t.held, "num"],
+  ["现市值", (t) => w2(t.held), (t) => t.held, "num pv"],
   [
     "补",
     (t) => (t.skip ? `<span class="kv">${esc(t.skip)}</span>` : w2(t.need)),
     (t) => t.need,
-    "num",
+    "num pv",
   ],
   [
     "融资买入",
     (t) => legCell(legOf(t, "margin")),
     (t) => legOf(t, "margin")?.order?.amount,
-    "num",
+    "num pv",
   ],
   [
     "现金买入",
     (t) => legCell(legOf(t, "plain")),
     (t) => legOf(t, "plain")?.order?.amount,
-    "num",
+    "num pv",
   ],
 ];
 // 持仓表的可融列与卖出各列：持仓行 p 按代码取试算里的持仓行 h，今日清仓或试算未出即空
@@ -273,12 +273,12 @@ function onReb(r) {
   }
   acctTbl(p);
   $("rebInfo").innerHTML =
-    `购买力 <b>${w2(p.power)}</b> · 本次行使 <b>${w2(p.use)}</b>（融资 ${w2(p.financed)}）` +
-    ` · 成本 <b>${yuan(p.cost)}</b> 元 · 入选 <b>${p.picked}</b> / ${p.buyable} 只，每只目标 <b>${w2(p.V)}</b>` +
-    ` · 卖后现金 ${w2(p.after_sell.C)} / 可用保证金 ${w2(p.after_sell.X)}`;
+    `购买力 <b>${pv(w2(p.power))}</b> · 本次行使 <b>${pv(w2(p.use))}</b>（融资 ${pv(w2(p.financed))}）` +
+    ` · 成本 <b>${yuan(p.cost)}</b> 元 · 入选 <b>${p.picked}</b> / ${p.buyable} 只，每只目标 <b>${pv(w2(p.V))}</b>` +
+    ` · 卖后现金 ${pv(w2(p.after_sell.C))} / 可用保证金 ${pv(w2(p.after_sell.X))}`;
   table("#rebTgt", REB_TGT, p.targets);
 }
-// 账户对照：现 / 调仓后 两行，调仓后与现不同的格标色
+// 账户对照：现 / 调仓后 两行，调仓后与现不同的格标色；数值格隐私下遮
 const ACCT = [
   ["总资产", "assets", w2],
   ["净资产", "net", w2],
@@ -295,7 +295,7 @@ function acctTbl(p) {
     ACCT.map(([, k, f]) => {
       const v = f(x[k]);
       const c = chg && x[k] != null && v !== f(p.now[k]) ? " chg" : "";
-      return `<td class="num${c}">${v || "—"}</td>`;
+      return `<td class="num pv${c}">${v || "—"}</td>`;
     }).join("") +
     "</tr>";
   $("acctTbl").innerHTML =

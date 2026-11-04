@@ -1,5 +1,14 @@
 // 持仓页：持仓表（行内闪电下单，按钮即滑点色块；调仓卖出滑杆见 reb.js）与各单状态
 
+// 隐私：body.priv 下 .pv（代码、名称、账户金额）模糊、其悬停提示不出，开关记在本地
+function privSet(on) {
+  $("priv").checked = on;
+  document.body.classList.toggle("priv", on);
+  localStorage.priv = on ? "1" : "";
+  tipAt();
+}
+privSet(!!localStorage.priv);
+
 // 下单：行内按钮 → POST /api/order（后台跑闪电窗），各单逐步状态经 ord 路推送。
 // 默认锁住，买 / 卖表头的按钮解锁才下得了单；锁住时点按钮同点行（选股）。
 // 按钮自左而右 大买 … 小买、小卖 … 大卖，越往两边额越大（即后端 slip_cols 的先后）
@@ -65,7 +74,7 @@ function onOrd(jobs) {
         .join(" › ");
       const side = paint(SIDE[j.s].color, SIDE[j.s].name);
       return (
-        `<div>${j.t} ${side}${j.label} ${j.code} ${esc(j.name)} ${esc(j.detail)}` +
+        `<div>${j.t} ${side}${j.label} ${pv(`${j.code} ${esc(j.name)}`)} ${esc(j.detail)}` +
         ` · ${steps} · ${ORD_ST[j.state]} ${esc(j.msg)}</div>`
       );
     })
@@ -74,6 +83,14 @@ function onOrd(jobs) {
 
 // 列注册表：key → [表头, 行 → 单元格 html, 行 → 排序键?, 单元格 class?, 帧 → 合计?]；sum 即表尾合计各行
 const sumOf = (r, k) => r.rows.reduce((a, p) => a + (p[k] ?? 0), 0);
+// 隐私下遮的列：单元格 class 加 pv（表头同 class，不遮）
+const pvCol = ([h, f, key, cls, ft]) => [
+  h,
+  f,
+  key,
+  cls ? cls + " pv" : "pv",
+  ft,
+];
 const numCol = (h, k, f = fmt, sum = false) => [
   h,
   (p) => f(p[k]),
@@ -101,30 +118,30 @@ const nameColor = (p) =>
 // 当日盈亏按成交自算；与持仓的今买今卖对不上时，相关行当日两列留空，合计标「不全」
 const DAY_GAP = "成交与持仓今买 / 今卖对不上，当日盈亏不全（点刷新）";
 const COL = {
-  code: [
+  code: pvCol([
     "代码",
     (p) => p.code,
     (p) => p.code,
     "",
     (r) => `合计 ${r.rows.filter((p) => !p.closed).length} 只`,
-  ],
-  name: [
+  ]),
+  name: pvCol([
     `<span data-tip="${NAME_TIP}">名称</span>`,
     (p) => paint(nameColor(p), esc(p.name)),
     (p) => p.name,
-  ],
+  ]),
   position_pct: numCol("仓位%", "position_pct", fmt, true),
-  day_pnl_pct: numCol("当日盈亏%", "day_pnl_pct", fmtPnl),
-  day_pnl: [
+  day_pnl_pct: pvCol(numCol("当日盈亏%", "day_pnl_pct", fmtPnl)),
+  day_pnl: pvCol([
     ...numCol("当日盈亏", "day_pnl", w2Pnl).slice(0, 4),
     (r) =>
       r.synced
         ? w2Pnl(sumOf(r, "day_pnl"))
         : `<span class="off" data-tip="${DAY_GAP}">不全</span>`,
-  ],
-  pnl_pct: numCol("盈亏%", "pnl_pct", fmtPnl),
-  pnl: numCol("盈亏", "pnl", w2Pnl, true),
-  market_value: numCol("总市值", "market_value", w2, true),
+  ]),
+  pnl_pct: pvCol(numCol("盈亏%", "pnl_pct", fmtPnl)),
+  pnl: pvCol(numCol("盈亏", "pnl", w2Pnl, true)),
+  market_value: pvCol(numCol("总市值", "market_value", w2, true)),
   margin_value: barCol("融资", "融资部分市值", "margin_value", "var(--hot)"),
   sellable_value: barCol(
     "可卖",
@@ -175,7 +192,7 @@ function posInfo(r) {
         stray
           .map(
             (o) =>
-              `${paint(SIDE[o.side].color, SIDE[o.side].name)} ${o.code} ${esc(o.name)} ${esc(FLOW.orders.line(o))}`,
+              `${paint(SIDE[o.side].color, SIDE[o.side].name)} ${pv(`${o.code} ${esc(o.name)}`)} ${esc(FLOW.orders.line(o))}`,
           )
           .join("、")
       : "";
@@ -196,33 +213,35 @@ const FLOW = {
   },
 };
 const flowOf = (r, k, code) => (r[k] ?? []).filter((x) => x.code === code);
-const flowCol = (r) => [
-  `<span data-tip="${FLOW.fills.mark} 今日成交 · ${FLOW.orders.mark} 挂单，买绿卖红；悬停看逐笔">状态</span>`,
-  (p) => {
-    const marks = [],
-      tips = [];
-    for (const [k, f] of Object.entries(FLOW)) {
-      const xs = flowOf(r, k, p.code);
-      for (const s of [1, -1])
-        if (xs.some((x) => x.side === s))
-          marks.push(paint(SIDE[s].color, f.mark));
-      if (xs.length)
-        tips.push(
-          `${f.name} ${xs.length} 笔`,
-          ...xs.map((x) => `  ${SIDE[x.side].name} ${f.line(x)}`),
-        );
-    }
-    return marks.length
-      ? `<span data-tip="${esc(tips.join("\n"))}">${marks.join("")}</span>`
-      : "";
-  },
-  (p) => Object.keys(FLOW).reduce((a, k) => a + flowOf(r, k, p.code).length, 0),
-  "",
-  () =>
-    Object.entries(FLOW)
-      .map(([k, f]) => `${f.mark}${r[k]?.length ?? "-"}`)
-      .join(" "),
-];
+const flowCol = (r) =>
+  pvCol([
+    `<span data-tip="${FLOW.fills.mark} 今日成交 · ${FLOW.orders.mark} 挂单，买绿卖红；悬停看逐笔">状态</span>`,
+    (p) => {
+      const marks = [],
+        tips = [];
+      for (const [k, f] of Object.entries(FLOW)) {
+        const xs = flowOf(r, k, p.code);
+        for (const s of [1, -1])
+          if (xs.some((x) => x.side === s))
+            marks.push(paint(SIDE[s].color, f.mark));
+        if (xs.length)
+          tips.push(
+            `${f.name} ${xs.length} 笔`,
+            ...xs.map((x) => `  ${SIDE[x.side].name} ${f.line(x)}`),
+          );
+      }
+      return marks.length
+        ? `<span data-tip="${esc(tips.join("\n"))}">${marks.join("")}</span>`
+        : "";
+    },
+    (p) =>
+      Object.keys(FLOW).reduce((a, k) => a + flowOf(r, k, p.code).length, 0),
+    "",
+    () =>
+      Object.entries(FLOW)
+        .map(([k, f]) => `${f.mark}${r[k]?.length ?? "-"}`)
+        .join(" "),
+  ]);
 // 数据栏的状态行：先是常在的各样（后端 steps [字段, 名称]）读于几时、最近一帧 f 的行情时刻与 pid，
 // 再是时有时无的：正做哪样（或等界面）、上轮失败、账户是否读于持仓变动前
 function progTxt(g, f) {

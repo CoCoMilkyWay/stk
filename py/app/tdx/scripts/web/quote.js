@@ -141,7 +141,7 @@ function kSelect(code, ch = null, range = ch?.range) {
     tr.classList.toggle("cur", tr.dataset.code === code);
   for (const c of KCH) tabbar($(c.bar), String(c.ranges.indexOf(c.range)));
   $("kInfo").innerHTML = QROW
-    ? `<b>${QROW.code} ${esc(QROW.name)}</b> · 行情 ${QROW.quote.date} ${QROW.quote.time}`
+    ? `<b>${pv(`${QROW.code} ${esc(QROW.name)}`)}</b> · 行情 ${QROW.quote.date} ${QROW.quote.time}`
     : "（无持仓与指数）";
   KCH.forEach(patchBar);
   dirty("kline", "book");
@@ -460,8 +460,8 @@ function drawBook() {
     ["最低", pc(q.low)],
     ["成交" + vk, vf(q.volume)],
     ["成本", px3(p.cost)],
-    ["盈亏%", fmtPnl(p.pnl_pct)],
-    ["当日盈亏", fmtPnl(p.day_pnl)],
+    ["盈亏%", pv(fmtPnl(p.pnl_pct))],
+    ["当日盈亏", pv(fmtPnl(p.day_pnl))],
     ["仓位%", fmt(p.position_pct)],
   ];
   box.innerHTML =
