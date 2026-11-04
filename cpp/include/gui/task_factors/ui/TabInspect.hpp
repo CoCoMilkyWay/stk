@@ -9,12 +9,14 @@
 //   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各金额段 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改 fixed_impact 都只是切片
 //   (UI 持锁派生 / 现算), 不发请求, 零延时
 // 下面 2×2 四图:
-//   左上 分层对数累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的 Σ ln(1 + 日收益) × kDaysPerYear / days
-//        (InspectResult::nav 日收益; 全部线同一系数 → 线间差 / 斜率比不变, 匀速 = 直线, 末点 = 全段对数年化;
+//   左上 分层滚动对数累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的 前 W 日 Σ ln(1 + 日收益) × kDaysPerYear / W
+//        (InspectResult::nav 日收益; W = 控件行窗口滑条 (交易日, 对数刻度), 起点前不足 W 日按 0 补; W 拉满 = days → 从起点的对数累计:
+//        全部线同一系数 → 线间差 / 斜率比不变, 匀速 = 直线, 末点 = 全段对数年化; W < days 时图上淡色带标出光标日的窗口 [光标 − W, 光标];
+//        拖滑条只做前缀差 (InspectDerived::lay_cum), 不发请求;
 //        净值引擎 fold_book: 每行开 1/h̄ 一批, 收益在平仓行实现; 可成交 / 顺延在标签里; 控件行 分层 选 超额 e = lv − mkt | 绝对 lv;
 //        组号 / 秩按权重的方向读 (反向 = 组倒序, 秩 kRankMax − r16): G20 恒是做多端).
 //        分层 / LS 同一口径同一 y 轴 (不平移; LS = ½ (G20 − G1), 与单组同一资金尺度), y 范围按显示的线定 (
-//        图例 (对仗 Portfolio, 逐列定宽): "LS 100%" (顶底 = 整组) / "LS 50%" … + 对数年化 (线末点) + 夏普 + 年换手;
+//        图例 (对仗 Portfolio, 逐列定宽): "LS 100%" (顶底 = 整组) / "LS 50%" … + 全段对数年化 + 夏普 + 年换手 (三项恒为全段, 不随窗口);
 //        夏普 = 日收益年化 Sharpe; 年换手 = 该级两端 Δw 换手 (InspectResult::ls_turn → turn_annual); LS 随模式: 超额 = 两端超额之差的一半, 绝对 = 两端原值之差的一半; 两模式换手同一份). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
 //        尾部 (FactorsTable TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
 //        (白, 越极端越细); 相邻尾部分层线之间填淡色带 (G20↔50% / 50%↔20% / 20%↔5%, 越极端越重), 底侧同;
@@ -70,14 +72,17 @@ inline constexpr int kLsLines = kNavLs;
 // 从 result 派生的日级序列 (UI 线程持锁算一次, 选项变才重算)
 struct InspectDerived {
   int days = 0;
-  std::vector<misc::Ymd> dates;            // [days] 轴刻度用
-  std::vector<float> pool_index;           // [T] InspectResult::pool_index 选定 hold 那条复利成的点位 (起点 1, 右上 K 线叠加)
-  std::vector<float> x_day;                // [days + 1] 0..days (累计线横轴, 日末)
-  std::vector<float> lay_ann[kLayerLines]; // [days + 1], 到第 c 日的 Σ ln(1 + 日收益) × kDaysPerYear / days × 100 (全部线同一系数; c = 0 → 0; 爆仓日起 NaN)
-  std::vector<float> ls_ann[kLsLines];     // [days + 1], 同上; [days] = 全段对数年化 (图例; NaN = 爆仓)
-  float ls_sharpe[kLsLines] = {};          // LS 线的年化 Sharpe: 日收益 mean / sd × √kDaysPerYear
-  float ls_turn[kLsLines] = {};            // LS 线的年换手 (倍): turn_annual(hs, InspectResult::ls_turn) (两端均, 每本资金 1, 单边)
-  // 各簇 / 各 LS 线的 min / max (含起点 0); 左上 y 范围按图例当前显示的簇每帧合成 (layer_range), 开关图例即重贴
+  std::vector<misc::Ymd> dates;             // [days] 轴刻度用
+  std::vector<float> pool_index;            // [T] InspectResult::pool_index 选定 hold 那条复利成的点位 (起点 1, 右上 K 线叠加)
+  std::vector<float> x_day;                 // [days + 1] 0..days (累计线横轴, 日末)
+  std::vector<double> lay_cum[kLayerLines]; // [days + 1], 前 c 日 Σ ln(1 + 日收益) (c = 0 → 0; 爆仓日起 NaN)
+  std::vector<double> ls_cum[kLsLines];     // [days + 1], 同上; [days] × kDaysPerYear / days = 全段对数年化 (图例)
+  int win = 0;                              // lay_ann / ls_ann 现按的窗口 (交易日, 1..days); 0 = 未铺
+  std::vector<float> lay_ann[kLayerLines];  // [days + 1], (cum[c] − cum[max(0, c − win)]) × kDaysPerYear / win × 100 (全部线同一系数; 爆仓日起 NaN)
+  std::vector<float> ls_ann[kLsLines];      // [days + 1], 同上
+  float ls_sharpe[kLsLines] = {};           // LS 线的年化 Sharpe: 日收益 mean / sd × √kDaysPerYear
+  float ls_turn[kLsLines] = {};             // LS 线的年换手 (倍): turn_annual(hs, InspectResult::ls_turn) (两端均, 每本资金 1, 单边)
+  // 各簇 / 各 LS 线 (按 win) 的 min / max (含 0); 左上 y 范围按图例当前显示的簇每帧合成 (layer_range), 开关图例 / 拖窗口即重贴
   float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};
   analysis::AggPdf ic_pdf;      // = InspectResult::ic_agg 选定 hold (n_pts = 0 → 样本不足不画)
@@ -95,6 +100,7 @@ struct InspectUIState {
   std::string hold_for;     // hold_idx 已按其搜索持有期切过的权重行 key (换权重才切, 之后手动改 Hold 不被覆盖)
   bool absolute = false;    // 左上: 超额 (false) | 绝对 (true)
   int cursor_day = -1;      // 左上时序的光标日 (0 = 起点 … days = 末日); -1 / 越界 → 末日. 右侧截面柱按它取值
+  int window = 0;           // 左上滚动窗口 (交易日); 0 / ≥ days = 全段
   std::string last_req_key; // 上次自动起算的 InspectRequest::key (取消后不反复重起)
   int top_n = 20;           // 导出做多端前 N 只 (InspectService flow E; 进出 / 名单共用)
   // 本帧请求交接 (TabInspect → TaskFactors): action ≠ 0 时 req_row 有效; req_export ≠ None = 带导出 (N = top_n)

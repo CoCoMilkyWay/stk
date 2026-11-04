@@ -22,12 +22,15 @@
 //     beta   beta                   (近 156 周周收益对等权市场的 β)
 //     trend  trend                  (均线截面回归的预期 20 日收益)
 //     price  收盘价 (元, 不复权)
-//     size_main  mcap, 范围再收窄到主板 (board = 沪市主板 / 深市主板; 母集内非主板 = 范围外 NaN, 覆盖率按主板母集计)
+//     size_main    mcap, 范围再收窄到主板 (board = 沪市主板 / 深市主板)
+//     size_margin  mcap, 范围再收窄到融资融券标的 (is_margin = 1)
+//     (收窄键: 母集内范围外 = NaN, 不记缺, 覆盖率按收窄后的母集计)
 //   ST 键 (不走母集; 活跃 ∧ 次日 st_level 恰为该级 → mcap, 否则 NaN; 池列全选):
 //     st     st_level == 1 (ST, 不含 *ST)
 //     sst    st_level == 2 (*ST)
-//   板块键 (不走母集, 含 ST; 活跃 ∧ board 恰为该板块 → mcap, 否则 NaN; 池列全选, 市值加权):
+//   分组键 (不走母集, 含 ST; 活跃 ∧ 落在该组 → mcap, 否则 NaN; 池列全选):
 //     sh_main 沪市主板 / sz_main 深市主板 / star 科创板 / chinext 创业板 (fund::Board)
+//     margin 融资融券标的 / nonmargin 非标的 (is_margin)
 //   池日频: 键落 L_1day (收盘后, 母集按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_1day 行池列 (shared/Pool.hpp 读 all Bar 库).
 //   delist 只看已发生 (不含未来信息).
 //   边界: 行情项窗按可得史扩张, 数据起点次日起即有值; 财务项随首批公告渐次到齐. 母集内键缺记 +inf (与母集外 NaN 分开),
@@ -58,12 +61,15 @@ public:
                       trend,
                       price,
                       size_main,
+                      size_margin,
                       st,
                       sst,
                       sh_main,
                       sz_main,
                       star,
                       chinext,
+                      margin,
+                      nonmargin,
                       kCount };
   float y[kCount] = {};
 
@@ -81,6 +87,9 @@ public:
     y[sz_main] = (live && bd == fund::kBoardSzMain) ? mc : kNaN;
     y[star] = (live && bd == fund::kBoardStar) ? mc : kNaN;
     y[chinext] = (live && bd == fund::kBoardChiNext) ? mc : kNaN;
+    const bool mg = f(Fund::is_margin) != 0.0f;
+    y[margin] = (live && mg) ? mc : kNaN;
+    y[nonmargin] = (live && !mg) ? mc : kNaN;
     if (!(mc > 0.0f && Fund::is_base(fund_))) {
       for (size_t k = 0; k < st; ++k)
         y[k] = kNaN;
@@ -102,11 +111,15 @@ public:
     y[trend] = f(Fund::trend);
     y[price] = close_;
     y[size_main] = mc;
+    y[size_margin] = mc;
     for (size_t k = 0; k < st; ++k)
       if (!std::isfinite(y[k]))
         y[k] = std::numeric_limits<float>::infinity();
-    if (bd != fund::kBoardShMain && bd != fund::kBoardSzMain) // 须在 +inf 之后: 非主板是范围外, 不是键缺
+    // 收窄键须在 +inf 之后置 NaN: 范围外不是键缺
+    if (bd != fund::kBoardShMain && bd != fund::kBoardSzMain)
       y[size_main] = kNaN;
+    if (!mg)
+      y[size_margin] = kNaN;
   }
 
 private:
@@ -120,25 +133,28 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_PoolKey(N) N(PoolKey, (PoolKey), (Fund.outs(), Valuation.out(Valuation.mcap), KlineDay.out(KlineDay.close)), onSettle)
 
-#define FIELDS_L_1day_PoolKey(X, CAT1)                                                                                                                                                                \
-  X(key_size, CAT1, AUTO, "Pool Key Size", "池键市值", "母集内收盘总市值(亿元), 缺+inf, 外NaN", R"(\mathrm{mcap}_D)", TS(PoolKey, size, None, None))                                                  \
-  X(key_ep, CAT1, AUTO, "Pool Key EP", "池键EP", "母集内归母净利TTM/收盘市值, 缺+inf, 外NaN", R"(\frac{NP^{TTM}}{\mathrm{mcap}_D})", TS(PoolKey, ep, None, None))                                     \
-  X(key_bp, CAT1, AUTO, "Pool Key BP", "池键BP", "母集内归母权益MRQ/收盘市值, 缺+inf, 外NaN", R"(\frac{EQ^{MRQ}}{\mathrm{mcap}_D})", TS(PoolKey, bp, None, None))                                     \
-  X(key_dy, CAT1, AUTO, "Pool Key DY", "池键股息率", "母集内股息率TTM, 缺+inf, 外NaN", R"(\mathrm{dy}^{TTM})", TS(PoolKey, dy, None, None))                                                           \
-  X(key_roe, CAT1, AUTO, "Pool Key ROE", "池键ROE", "母集内单季归母净利/归母权益MRQ(权益≤0记缺), 缺+inf, 外NaN", R"(\frac{NP^{p,Q}}{EQ^{MRQ}})", TS(PoolKey, roe, None, None))                        \
-  X(key_inv, CAT1, AUTO, "Pool Key Investment", "池键投资", "母集内总资产MRQ同比, 缺+inf, 外NaN", R"(\frac{TA_{R}}{TA_{R-1y}} - 1)", TS(PoolKey, inv, None, None))                                    \
-  X(key_mom, CAT1, AUTO, "Pool Key Momentum", "池键动量", "母集内12-1月动量(后复权), 缺+inf, 外NaN", R"(\frac{P^{adj}_{D-20}}{P^{adj}_{D-250}} - 1)", TS(PoolKey, mom, None, None))                   \
-  X(key_rev, CAT1, AUTO, "Pool Key Reversal", "池键反转", "母集内20日收益率(后复权), 缺+inf, 外NaN", R"(\frac{P^{adj}_D}{P^{adj}_{D-20}} - 1)", TS(PoolKey, rev, None, None))                         \
-  X(key_turn, CAT1, AUTO, "Pool Key Turnover Ratio", "池键换手比", "母集内20日均换手/250日均换手, 缺+inf, 外NaN", R"(\frac{\overline{TO}_{20}}{\overline{TO}_{250}})", TS(PoolKey, turn, None, None)) \
-  X(key_ivol, CAT1, AUTO, "Pool Key IVOL", "池键特质波动", "母集内近250日特质波动率, 缺+inf, 外NaN", R"(\sigma(\varepsilon))", TS(PoolKey, ivol, None, None))                                         \
-  X(key_resvol, CAT1, AUTO, "Pool Key ResVol", "池键残差波动", "母集内残差波动率(对β与市值正交), 缺+inf, 外NaN", R"(\mathrm{resvol})", TS(PoolKey, resvol, None, None))                               \
-  X(key_beta, CAT1, AUTO, "Pool Key Beta", "池键贝塔", "母集内近156周市场β, 缺+inf, 外NaN", R"(\beta^{w}_{156})", TS(PoolKey, beta, None, None))                                                      \
-  X(key_trend, CAT1, AUTO, "Pool Key Trend", "池键趋势", "母集内均线趋势预期收益, 缺+inf, 外NaN", R"(\sum_L \bar{b}_L \frac{MA_{L,D}}{P_D})", TS(PoolKey, trend, None, None))                         \
-  X(key_price, CAT1, AUTO, "Pool Key Price", "池键股价", "母集内收盘价(元,不复权), 缺+inf, 外NaN", R"(P^{\mathrm{close}}_D)", TS(PoolKey, price, None, None))                                         \
-  X(key_size_main, CAT1, AUTO, "Pool Key Size Main", "池键主板市值", "母集∧主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{main})", TS(PoolKey, size_main, None, None))          \
-  X(key_st, CAT1, AUTO, "Pool Key ST", "池键ST", "活跃∧次日ST(不含*ST)的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,st=1})", TS(PoolKey, st, None, None))                     \
-  X(key_sst, CAT1, AUTO, "Pool Key *ST", "池键*ST", "活跃∧次日*ST的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,st=2})", TS(PoolKey, sst, None, None))                         \
-  X(key_sh_main, CAT1, AUTO, "Pool Key SH Main", "池键沪主板", "活跃∧沪市主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,sh})", TS(PoolKey, sh_main, None, None))           \
-  X(key_sz_main, CAT1, AUTO, "Pool Key SZ Main", "池键深主板", "活跃∧深市主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,sz})", TS(PoolKey, sz_main, None, None))           \
-  X(key_star, CAT1, AUTO, "Pool Key STAR", "池键科创板", "活跃∧科创板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,star})", TS(PoolKey, star, None, None))                    \
-  X(key_chinext, CAT1, AUTO, "Pool Key ChiNext", "池键创业板", "活跃∧创业板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,gem})", TS(PoolKey, chinext, None, None))
+#define FIELDS_L_1day_PoolKey(X, CAT1)                                                                                                                                                                       \
+  X(key_size, CAT1, AUTO, "Pool Key Size", "池键市值", "母集内收盘总市值(亿元), 缺+inf, 外NaN", R"(\mathrm{mcap}_D)", TS(PoolKey, size, None, None))                                                         \
+  X(key_ep, CAT1, AUTO, "Pool Key EP", "池键EP", "母集内归母净利TTM/收盘市值, 缺+inf, 外NaN", R"(\frac{NP^{TTM}}{\mathrm{mcap}_D})", TS(PoolKey, ep, None, None))                                            \
+  X(key_bp, CAT1, AUTO, "Pool Key BP", "池键BP", "母集内归母权益MRQ/收盘市值, 缺+inf, 外NaN", R"(\frac{EQ^{MRQ}}{\mathrm{mcap}_D})", TS(PoolKey, bp, None, None))                                            \
+  X(key_dy, CAT1, AUTO, "Pool Key DY", "池键股息率", "母集内股息率TTM, 缺+inf, 外NaN", R"(\mathrm{dy}^{TTM})", TS(PoolKey, dy, None, None))                                                                  \
+  X(key_roe, CAT1, AUTO, "Pool Key ROE", "池键ROE", "母集内单季归母净利/归母权益MRQ(权益≤0记缺), 缺+inf, 外NaN", R"(\frac{NP^{p,Q}}{EQ^{MRQ}})", TS(PoolKey, roe, None, None))                               \
+  X(key_inv, CAT1, AUTO, "Pool Key Investment", "池键投资", "母集内总资产MRQ同比, 缺+inf, 外NaN", R"(\frac{TA_{R}}{TA_{R-1y}} - 1)", TS(PoolKey, inv, None, None))                                           \
+  X(key_mom, CAT1, AUTO, "Pool Key Momentum", "池键动量", "母集内12-1月动量(后复权), 缺+inf, 外NaN", R"(\frac{P^{adj}_{D-20}}{P^{adj}_{D-250}} - 1)", TS(PoolKey, mom, None, None))                          \
+  X(key_rev, CAT1, AUTO, "Pool Key Reversal", "池键反转", "母集内20日收益率(后复权), 缺+inf, 外NaN", R"(\frac{P^{adj}_D}{P^{adj}_{D-20}} - 1)", TS(PoolKey, rev, None, None))                                \
+  X(key_turn, CAT1, AUTO, "Pool Key Turnover Ratio", "池键换手比", "母集内20日均换手/250日均换手, 缺+inf, 外NaN", R"(\frac{\overline{TO}_{20}}{\overline{TO}_{250}})", TS(PoolKey, turn, None, None))        \
+  X(key_ivol, CAT1, AUTO, "Pool Key IVOL", "池键特质波动", "母集内近250日特质波动率, 缺+inf, 外NaN", R"(\sigma(\varepsilon))", TS(PoolKey, ivol, None, None))                                                \
+  X(key_resvol, CAT1, AUTO, "Pool Key ResVol", "池键残差波动", "母集内残差波动率(对β与市值正交), 缺+inf, 外NaN", R"(\mathrm{resvol})", TS(PoolKey, resvol, None, None))                                      \
+  X(key_beta, CAT1, AUTO, "Pool Key Beta", "池键贝塔", "母集内近156周市场β, 缺+inf, 外NaN", R"(\beta^{w}_{156})", TS(PoolKey, beta, None, None))                                                             \
+  X(key_trend, CAT1, AUTO, "Pool Key Trend", "池键趋势", "母集内均线趋势预期收益, 缺+inf, 外NaN", R"(\sum_L \bar{b}_L \frac{MA_{L,D}}{P_D})", TS(PoolKey, trend, None, None))                                \
+  X(key_price, CAT1, AUTO, "Pool Key Price", "池键股价", "母集内收盘价(元,不复权), 缺+inf, 外NaN", R"(P^{\mathrm{close}}_D)", TS(PoolKey, price, None, None))                                                \
+  X(key_size_main, CAT1, AUTO, "Pool Key Size Main", "池键主板市值", "母集∧主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{main})", TS(PoolKey, size_main, None, None))                 \
+  X(key_size_margin, CAT1, AUTO, "Pool Key Size Margin", "池键融资市值", "母集∧融资融券标的的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{margin})", TS(PoolKey, size_margin, None, None)) \
+  X(key_st, CAT1, AUTO, "Pool Key ST", "池键ST", "活跃∧次日ST(不含*ST)的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,st=1})", TS(PoolKey, st, None, None))                            \
+  X(key_sst, CAT1, AUTO, "Pool Key *ST", "池键*ST", "活跃∧次日*ST的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,st=2})", TS(PoolKey, sst, None, None))                                \
+  X(key_sh_main, CAT1, AUTO, "Pool Key SH Main", "池键沪主板", "活跃∧沪市主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,sh})", TS(PoolKey, sh_main, None, None))                  \
+  X(key_sz_main, CAT1, AUTO, "Pool Key SZ Main", "池键深主板", "活跃∧深市主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,sz})", TS(PoolKey, sz_main, None, None))                  \
+  X(key_star, CAT1, AUTO, "Pool Key STAR", "池键科创板", "活跃∧科创板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,star})", TS(PoolKey, star, None, None))                           \
+  X(key_chinext, CAT1, AUTO, "Pool Key ChiNext", "池键创业板", "活跃∧创业板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,gem})", TS(PoolKey, chinext, None, None))                   \
+  X(key_margin, CAT1, AUTO, "Pool Key Margin", "池键融资", "活跃∧融资融券标的的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,margin})", TS(PoolKey, margin, None, None))               \
+  X(key_nonmargin, CAT1, AUTO, "Pool Key Non-Margin", "池键非融资", "活跃∧非融资融券标的的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,\neg margin})", TS(PoolKey, nonmargin, None, None))

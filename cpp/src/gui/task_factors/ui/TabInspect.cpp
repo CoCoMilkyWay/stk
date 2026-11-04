@@ -181,8 +181,7 @@ void pchip_dense(const std::vector<double> &x, const std::vector<double> &y, std
 }
 
 // 选定 hold → 日级序列 + IC 分布 / 时序. 分层 / LS 线 = InspectResult::nav (净值引擎 fold_book) 选定口径的日收益 r_d,
-// 第 c 日画 Σ_{d<c} ln(1 + r_d) × kDaysPerYear / days × 100 % (对数累计, 全部线同一系数: 线间差 / 斜率比不变, 匀速 = 直线; 末点 = 全段对数年化, 图例);
-// 某日 r_d ≤ −100% (单只级尾部 / LS 空头暴涨) = 爆仓, 该线此后 NaN 不画;
+// 存前缀对数和 cum[c] = Σ_{d<c} ln(1 + r_d) (窗口值由 roll_window 按前缀差铺); 某日 r_d ≤ −100% (单只级尾部 / LS 空头暴涨) = 爆仓, 该线此后 NaN 不画;
 // LS Sharpe = 日收益 mean / sd × √kDaysPerYear; rIC 分布 = InspectResult::ic_agg (IcPdfP 成品, Run 行小图是它的迷你版).
 void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d) {
   d = InspectDerived{};
@@ -203,10 +202,6 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   d.x_day.resize(static_cast<size_t>(days) + 1);
   for (int i = 0; i <= days; ++i)
     d.x_day[static_cast<size_t>(i)] = static_cast<float>(i);
-  for (std::vector<float> &c : d.lay_ann)
-    c.assign(static_cast<size_t>(days) + 1, 0.f);
-  for (std::vector<float> &c : d.ls_ann)
-    c.assign(static_cast<size_t>(days) + 1, 0.f);
   std::vector<float> &ics = d.ic_series;
   ics.reserve(static_cast<size_t>(T));
   d.ic_cum.resize(static_cast<size_t>(T));
@@ -222,44 +217,61 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
     d.ic_dd[static_cast<size_t>(t)] = static_cast<float>(ic_peak - ic_sum);
     d.ic_dd_max = std::max(d.ic_dd_max, d.ic_dd[static_cast<size_t>(t)]);
   }
-  const double k_ann = 100.0 * factor::stat::kDaysPerYear / days;
-  const auto ann_of = [&](const float *v, std::vector<float> &ann) {
-    double s = 0.0;
+  const auto cum_of = [&](const float *v, std::vector<double> &cum) {
+    cum.assign(static_cast<size_t>(days) + 1, 0.0);
     for (int day = 0; day < days; ++day) {
       assert(!std::isnan(v[day]) && "日收益 NaN");
       if (v[day] <= -1.f) { // 爆仓: 对数累计到 −∞, 该日起不画
-        std::fill(ann.begin() + day + 1, ann.end(), std::numeric_limits<float>::quiet_NaN());
+        std::fill(cum.begin() + day + 1, cum.end(), std::numeric_limits<double>::quiet_NaN());
         return;
       }
-      s += std::log1p(static_cast<double>(v[day]));
-      ann[static_cast<size_t>(day) + 1] = static_cast<float>(s * k_ann);
+      cum[static_cast<size_t>(day) + 1] = cum[static_cast<size_t>(day)] + std::log1p(static_cast<double>(v[day]));
     }
   };
   for (int i = 0; i < kLayerLines; ++i)
-    ann_of(res.nav_at(sel, (absolute ? 0 : kNavLayers) + i), d.lay_ann[i]);
+    cum_of(res.nav_at(sel, (absolute ? 0 : kNavLayers) + i), d.lay_cum[i]);
   for (int i = 0; i < kLsLines; ++i) {
     const float *v = res.nav_at(sel, 2 * kNavLayers + (absolute ? 0 : kNavLs) + i);
-    ann_of(v, d.ls_ann[i]);
+    cum_of(v, d.ls_cum[i]);
     d.ls_turn[i] = static_cast<float>(factor::stat::turn_annual(d.hs, res.ls_turn_of(i, sel)));
     factor::stat::MomAcc m;
     for (int day = 0; day < days; ++day)
       m.add(v[day]);
     d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(m.finish(1), m.n, days, factor::stat::kDaysPerYear));
   }
-  // 各簇 / 各 LS 线的 min / max (含起点 0): y 范围按显示的簇每帧合成 (layer_range)
-  const auto span = [](const std::vector<float> &v, float &a, float &b) {
-    for (const float x : v)
-      a = std::min(a, x), b = std::max(b, x);
-  };
-  for (int k = 0; k < K; ++k)
-    span(d.lay_ann[k], d.lay_lo[0], d.lay_hi[0]);
-  for (int j = 0; j < kTails; ++j)
-    for (int e = 0; e < kEnds; ++e)
-      span(d.lay_ann[layer_tail(e, j)], d.lay_lo[1 + j], d.lay_hi[1 + j]);
-  for (int i = 0; i < kLsLines; ++i)
-    span(d.ls_ann[i], d.ls_lo[i], d.ls_hi[i]);
   d.ic_pdf = res.ic_agg[sel];
   d.valid = true;
+}
+
+// 窗口 win (交易日, 1..days) → 分层 / LS 线第 c 日 = (cum[c] − cum[max(0, c − win)]) × kDaysPerYear / win × 100 % (前 win 日对数累计折年;
+// 起点前不足 win 日按 0 补, 全部线同一系数) + 各簇 / 各 LS 线的 min / max (含 0; y 范围按显示的簇每帧合成, layer_range).
+// win = days 即从起点的对数累计 (末点 = 全段对数年化). 前缀差 O(线数 × days), win 或派生变才重铺
+void roll_window(InspectDerived &d, int win) {
+  assert(d.valid && win >= 1 && win <= d.days);
+  if (d.win == win)
+    return;
+  d.win = win;
+  const double ka = 100.0 * factor::stat::kDaysPerYear / win;
+  const size_t n = static_cast<size_t>(d.days) + 1, w = static_cast<size_t>(win);
+  const auto roll = [&](const std::vector<double> &cum, std::vector<float> &ann, float &lo, float &hi) {
+    ann.resize(n);
+    for (size_t c = 0; c < n; ++c) {
+      const float v = static_cast<float>((cum[c] - cum[c < w ? 0 : c - w]) * ka);
+      ann[c] = v;
+      lo = std::min(lo, v), hi = std::max(hi, v); // NaN (爆仓) 不进极值
+    }
+  };
+  std::fill(std::begin(d.lay_lo), std::end(d.lay_lo), 0.f);
+  std::fill(std::begin(d.lay_hi), std::end(d.lay_hi), 0.f);
+  std::fill(std::begin(d.ls_lo), std::end(d.ls_lo), 0.f);
+  std::fill(std::begin(d.ls_hi), std::end(d.ls_hi), 0.f);
+  for (int k = 0; k < K; ++k)
+    roll(d.lay_cum[k], d.lay_ann[k], d.lay_lo[0], d.lay_hi[0]);
+  for (int j = 0; j < kTails; ++j)
+    for (int e = 0; e < kEnds; ++e)
+      roll(d.lay_cum[layer_tail(e, j)], d.lay_ann[layer_tail(e, j)], d.lay_lo[1 + j], d.lay_hi[1 + j]);
+  for (int i = 0; i < kLsLines; ++i)
+    roll(d.ls_cum[i], d.ls_ann[i], d.ls_lo[i], d.ls_hi[i]);
 }
 
 // 空图占位 (统一样式)
@@ -289,7 +301,7 @@ LayerRange layer_range(const InspectDerived &d, const bool *show) {
   return {lo - margin, hi + margin};
 }
 
-// 左上右 1/4: 光标日截面 = 各分层线在光标日的值 (对数累计 × kDaysPerYear / days, 与左图同一量) 的横柱, 在共享 y 范围里均匀排 (G1 下 … G20 上); x 范围 = 显示中的柱 (随图例 / 光标) 与 0 的
+// 左上右 1/4: 光标日截面 = 各分层线在光标日的值 (前 win 日对数累计 × kDaysPerYear / win, 与左图同一量) 的横柱, 在共享 y 范围里均匀排 (G1 下 … G20 上); x 范围 = 显示中的柱 (随图例 / 光标 / 窗口) 与 0 的
 // min / max 加边, 目标变才强设 (follow_limits, 之间可手动缩放);
 // 柱色按组号 (与左图同一 group_color, 两边对得上; 柱长非单调即分层破绽), 不标组号. 开着的尾部级 (show[1 + j], 同 layer_range) 两端各加一柱:
 // 底端排 G1 之下, 顶端排 G20 之上, 越极端越靠外; 色 / 细度同左图尾部分层线 (饱和顶 / 底色, kTailLayerWeight). 须在 plot_layers 的子图内调 (y 由 LinkRows 跟左图)
@@ -351,13 +363,14 @@ void plot_section(const InspectDerived &d, const LayerRange &yr, const bool *sho
     if (std::isnan(v[i]))
       ImGui::SetTooltip("%s  爆仓 (光标日前某日收益 ≤ −100%%)", s[i].tag);
     else
-      ImGui::SetTooltip("%s  %+.3f  (对数累计 %%, 按全段折年, 到光标日)", s[i].tag, v[i]);
+      ImGui::SetTooltip("%s  %+.3f  (光标日前 %d 日对数累计, 按 %d 日折年, %%)", s[i].tag, v[i], d.win, d.win);
   }
   ImPlot::EndPlot();
 }
 
 // 左上: 1×2 子图 (LinkRows 共 y 轴, 横向 PlotPadding 置 0 → 两图无缝相接), 刻度单位 % (derive 已 ×100, 标在 y 轴 label)
-//   左 3/4 时序: 对数累计 × kDaysPerYear / days (20 组 + 尾部 2 × kTails 条 + 相邻尾部线间色带) + LS 系 (顶底 + kTails 条尾部), 同一 y 轴. y 范围 = layer_range(图例状态):
+//   左 3/4 时序: 前 win 日对数累计 × kDaysPerYear / win (roll_window; 20 组 + 尾部 2 × kTails 条 + 相邻尾部线间色带) + LS 系 (顶底 + kTails 条尾部), 同一 y 轴;
+//   win < days 时先画光标日窗口 [光标 − win, 光标] 的淡色竖带 (= 右侧截面柱的取值区间). y 范围 = layer_range(图例状态):
 //   进 BeginPlot 先按 ID 查上帧 item 的 Show (Setup 阶段种子未推, 按 Items.ID 自己哈希; 首帧还没 item → 尾部默认隐藏, LS 显), 再 SetupAxisLimits, 开关图例下一帧即重贴;
 //   尾部线越极端越细 (kTailLayerWeight / kTailLsWeight), 色带越极端越重 (kTailFillAlpha), 一级一个图例项管该级分层 + 色带 + LS + 右图截面柱, 默认隐藏
 //   光标: DragLineX 锚在交易日 (cursor_day ∈ [0, days], 整数吸附; 双击落点; 默认末日), 不做 hover 列表; 右 1/4 = plot_section(光标日)
@@ -365,7 +378,11 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
   if (cursor_day < 0 || cursor_day > d.days)
     cursor_day = d.days;
   char title[128];
-  std::snprintf(title, sizeof(title), "分层对数累计 %s###ts", absolute ? "(绝对: lv)" : "(超额: lv − mkt)");
+  const char *mode = absolute ? "(绝对: lv)" : "(超额: lv − mkt)";
+  if (d.win < d.days)
+    std::snprintf(title, sizeof(title), "分层滚动 %d 日对数累计 %s###ts", d.win, mode);
+  else
+    std::snprintf(title, sizeof(title), "分层对数累计 %s###ts", mode);
   const int n = d.days + 1;
   float col_ratios[2] = {3.f, 1.f};
   LayerRange yr{};
@@ -401,6 +418,15 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       follow_limits(ImAxis_X1, 0, std::max(1, d.days) * (1.0 + kCursorPad));
       follow_limits(ImAxis_Y1, yr.y_lo, yr.y_hi);
       ImPlot::SetupLegend(ImPlotLocation_SouthWest, ImPlotLegendFlags_None);
+      ImPlot::SetupFinish();
+      if (d.win < d.days) { // 光标日窗口带 (先画, 不遮线)
+        const ImPlotRect lim = ImPlot::GetPlotLimits();
+        ImPlot::PushPlotClipRect();
+        const ImVec2 p0 = ImPlot::PlotToPixels(static_cast<double>(std::max(0, cursor_day - d.win)), lim.Y.Max),
+                     p1 = ImPlot::PlotToPixels(static_cast<double>(cursor_day), lim.Y.Min);
+        ImPlot::GetPlotDrawList()->AddRectFilled(p0, p1, IM_COL32(255, 128, 0, 28));
+        ImPlot::PopPlotClipRect();
+      }
       ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.2f);
       for (int k = 0; k < K; ++k) { // 顶底组线 = 顶底 LS 的分层: 随 LS 图例项高亮
         const bool hl = hov[0] && is_end(k);
@@ -410,11 +436,11 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
         ImPlot::PlotLine(id, d.x_day.data(), d.lay_ann[k].data(), n);
       }
       ImPlot::PopStyleVar();
-      // 图例 (对仗 Portfolio, 等宽字体逐列定宽): "LS <tag:4>  对数年化=<+8.2f>%  夏普=<+6.2f>  年换手=<7.1f>倍", 值 = InspectDerived::ls_ann 末点 / ls_sharpe / ls_turn;
-      // tag = 占组比例 (顶底 = 100%, 整组); 末点 NaN = 爆仓 (某日收益 ≤ −100%)
+      // 图例 (对仗 Portfolio, 等宽字体逐列定宽): "LS <tag:4>  对数年化=<+8.2f>%  夏普=<+6.2f>  年换手=<7.1f>倍", 值恒为全段 (不随窗口):
+      // ls_cum 末点 × kDaysPerYear / days / ls_sharpe / ls_turn; tag = 占组比例 (顶底 = 100%, 整组); 末点 NaN = 爆仓 (某日收益 ≤ −100%)
       char ll[128];
       const auto ls_label = [&](const char *tag, int i, const char *id) {
-        const float a = d.ls_ann[i].back();
+        const double a = d.ls_cum[i].back() * 100.0 * factor::stat::kDaysPerYear / d.days;
         if (std::isnan(a))
           std::snprintf(ll, sizeof(ll), "LS %4s  对数年化=  爆仓    夏普=%+6.2f  年换手=%7.1f倍###%s", tag, d.ls_sharpe[i], d.ls_turn[i], id);
         else
@@ -1810,10 +1836,29 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   // 标签一律毛价格收益, 成本只进期限结构; 超额 = 组均 (lv − mkt), 绝对 = 组均 lv; LS = top(lv) + bottom(sv) 市场中性, 两口径同一条.
   // 尾部 = G20 / G1 内更极端的 50% / 20% / 5% (= 整截面 2.5% / 1% / 0.25%): 每级一条分层线 + 一条 LS, 右侧截面同步加柱, 越极端越细
   if (ImGui::IsItemHovered())
-    tip("分层图的口径: 日收益对数累计 × 一年 / 全段天数 (全部线同一系数, 末点 = 对数年化)\n"
+    tip("分层图的口径: 窗口内日收益对数累计 × 一年 / 窗口天数 (全部线同一系数)\n"
         "• 超额: 减去市场, 看形状\n"
         "• 绝对: 含市场\n"
         "• 点图例 \"LS 50%%\" 等可看更极端的尾部");
+  ImGui::SameLine(0.f, kCtlGap);
+  {
+    const bool can_win = shown && ui.der.valid;
+    const int days = can_win ? ui.der.days : 1;
+    int w = ui.window > 0 ? std::min(ui.window, days) : days;
+    ImGui::SetNextItemWidth(160.f);
+    if (!can_win)
+      ImGui::BeginDisabled();
+    if (ImGui::SliderInt("##window", &w, 1, days, w >= days ? "窗口 全段" : "窗口 %d 天", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp))
+      ui.window = w >= days ? 0 : w;
+    if (!can_win)
+      ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      tip("分层图的滚动窗口 (交易日, 对数刻度): 每点 = 该日前 W 日的对数累计 × 一年 / W\n"
+          "• 拉满 = 全段: 从起点的对数累计, 末点 = 全段对数年化\n"
+          "• 起点前不足 W 日按 0 补\n"
+          "• 右侧截面柱 = 光标日的窗口值, 图上淡色带 = 该窗口\n"
+          "• 图例的对数年化 / 夏普 / 年换手恒为全段");
+  }
   ImGui::SameLine(0.f, kCtlGap);
   const bool can_run = !busy && ctx.axis_ready && n_hold > 0 && sel.error.empty();
   if (!can_run)
@@ -1909,9 +1954,10 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   const ImVec2 cell(std::max(100.f, (avail.x - sp) * 0.5f), std::max(100.f, (avail.y - ImGui::GetStyle().ItemSpacing.y) * 0.5f));
   const char *wait_hint = busy ? "计算中…" : "Compute 后可见";
 
-  if (shown && ui.der.valid)
+  if (shown && ui.der.valid) {
+    roll_window(ui.der, ui.window > 0 ? std::min(ui.window, ui.der.days) : ui.der.days);
     plot_layers(ui.der, ui.derived_abs, ui.cursor_day, cell);
-  else
+  } else
     empty_plot("分层对数累计###layers", cell, wait_hint);
   ImGui::SameLine();
   // 右上: 头行 (◂ ▸ 步进 + 资产轴条) + K 线

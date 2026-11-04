@@ -642,7 +642,7 @@ tr.cur td {
 
 #book .lv {
   display: grid;
-  grid-template-columns: 3em 1fr 1fr;
+  grid-template-columns: 3em 1fr 1fr 1fr;
   padding: 0 4px;
   text-align: right;
   font-variant-numeric: tabular-nums;

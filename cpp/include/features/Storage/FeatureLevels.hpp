@@ -97,16 +97,22 @@ struct PerLib {
   bool operator==(const PerLib &) const = default;
 };
 // 库集位 (位 = LibId; PerLib<bool> 的紧凑形): 日轴每天哪些库落了盘 / 日轴取哪些库
-using LibMask = unsigned __int128;
-inline constexpr LibMask lib_bit(LibId l) {
-  assert(l < 128 && "库表超出 LibMask 位宽");
-  return LibMask{1} << l;
+//   位宽 = LibId 值域 (clang _BitInt: 整数运算 / 比较照常, std::popcount 等不收 → 按 64 位分段)
+inline constexpr int kLibBits = 256;
+using LibMask = unsigned _BitInt(kLibBits);
+inline constexpr LibMask lib_bit(LibId l) { return LibMask{1} << l; }
+inline constexpr int lib_popcount(LibMask m) {
+  int n = 0;
+  for (int w = 0; w < kLibBits; w += 64)
+    n += std::popcount(static_cast<uint64_t>(m >> w));
+  return n;
 }
-inline constexpr int lib_popcount(LibMask m) { return std::popcount(static_cast<uint64_t>(m)) + std::popcount(static_cast<uint64_t>(m >> 64)); }
 inline constexpr LibId lib_first(LibMask m) { // 最低位的库
   assert(m != 0);
-  const uint64_t lo = static_cast<uint64_t>(m);
-  return static_cast<LibId>(lo ? std::countr_zero(lo) : 64 + std::countr_zero(static_cast<uint64_t>(m >> 64)));
+  int w = 0;
+  while (static_cast<uint64_t>(m >> w) == 0)
+    w += 64;
+  return static_cast<LibId>(w + std::countr_zero(static_cast<uint64_t>(m >> w)));
 }
 
 // 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读同池 side 档 (写端截面; 读端不受它约束, 列读自己的库)

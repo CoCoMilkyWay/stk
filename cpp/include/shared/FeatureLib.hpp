@@ -36,7 +36,6 @@ struct PoolDef {
   const char *name;    // 池名 = 目录名 (子池 = 列名去 pool_ 前缀)
   const char *name_cn; // 中文名 (子池 = pool_<name> 列的 name_cn; all = 全市场), UI 下拉跟在池名后
   size_t pool_col;     // 子池: all Bar 库 L_1day 的 pool_<name> 列下标; all: SIZE_MAX
-  bool cap;            // 市值加权池 (池名 _cap 结尾): 组合页池线 / 估值只按总市值加权; 否则子池只等权 (all 两种都画)
 };
 std::span<const PoolDef> feature_pools(); // 下标 = PoolId
 const PoolDef &pool_def(PoolId pool);

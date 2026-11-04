@@ -424,7 +424,7 @@ function drawK(ch) {
     c.fillText(`成本 ${px3(cost)}`, mx, 22);
   }
 }
-// 卖五..卖一 / 买一..买五（价按昨收着色，量单位手，底色条按量占比）+ 当日行情与持仓概要
+// 卖五..卖一 / 买一..买五（价按昨收着色、带相对昨收涨幅%，挂单金额标 W，底色条按金额占比）+ 当日行情与持仓概要
 function drawBook() {
   const box = $("book");
   if (!QROW) return void (box.innerHTML = "");
@@ -432,20 +432,19 @@ function drawBook() {
     q = p.quote,
     lc = q.last_close;
   const pc = (v) => (v ? paint(v > lc ? UP : v < lc ? DN : "", px3(v)) : "-");
-  const vmax = Math.max(
-    1,
-    ...[1, -1].flatMap((s) => q.book[s].map((x) => x[1])),
-  );
+  const amt = (x) => x[0] * x[1];
+  const amax = Math.max(1, ...[1, -1].flatMap((s) => q.book[s].map(amt)));
   // book[s] 是方向 s 吃的那侧：买吃卖盘、卖吃买盘，档名与底色取对侧；卖盘倒着列在上，买盘顺着列在下
   const CN = "一二三四五";
   const lv = (s, i) => {
     const x = q.book[s][i],
       o = SIDE[-s];
-    const w = x ? ((x[1] / vmax) * 100).toFixed(1) : 0;
+    const w = x ? ((amt(x) / amax) * 100).toFixed(1) : 0;
     return (
       `<div class="lv" style="background:linear-gradient(to left,${o.tint} ${w}%,transparent ${w}%)">` +
       `<span class="kv">${o.name}${CN[i]}</span><span>${x ? pc(x[0]) : ""}</span>` +
-      `<span>${x ? fmt(x[1] / 100, 0) : ""}</span></div>`
+      `<span>${x && lc ? fmtPnl(((x[0] - lc) / lc) * 100) + "%" : ""}</span>` +
+      `<span>${x ? w2(amt(x)) : ""}</span></div>`
     );
   };
   const chg = q.price - lc;

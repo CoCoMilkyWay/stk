@@ -79,10 +79,9 @@ const ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f);
 constexpr const char *kImpactName[kImpacts] = {"有冲击", "无冲击"};
 constexpr const char *kImpactId[kImpacts] = {"", "0"};
 constexpr const char *kImpactTag[kImpacts] = {"", " 无冲击"};
-// 池指数线表 [kWeights] (all 池两条; 其余池只画池权重 pool_weight 一条, 名 / id 用池中文名 / 池名)
+// 池指数线表 [kWeights] (all 池两条; 其余池只画 kWeightEq, 名用池中文名)
 constexpr const char *kWeightName[kWeights] = {"全A等权", "全A加权"};
 constexpr const char *kWeightId[kWeights] = {"", "_cap"};
-Weight pool_weight(const PoolDef &pd) { return pd.cap ? kWeightCap : kWeightEq; }
 // VAL 估值口表 [PoolVal]: 名 / 倍数名 (1 / 收益率, 等值线) / 百分比小数位 (五口同为收益率, 显示 %)
 struct ValMeta {
   const char *name, *inv;
@@ -406,16 +405,16 @@ void derive_baskets(const PortfolioResult &res, PortfolioDerived &o, PortfolioDe
     return b;
   };
 
-  // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条 (pool_weight); turn = 年换手;
+  // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; turn = 年换手;
   //      每条可成交线 (行首) 后接同池同权的理想 (收盘价) 线, 右表同一行; 默认只选全A等权 ----
   for (const PoolDef &pd : feature_pools()) {
     const bool all = pd.pool_col == SIZE_MAX;
     const std::shared_ptr<const PoolCurve> pc = pool_of(res, pd.name);
     for (const Weight w : {kWeightCap, kWeightEq}) {
-      if (!all && w != pool_weight(pd))
+      if (!all && w != kWeightEq)
         continue;
       const std::string cn = all ? kWeightName[w] : pd.name_cn, tag = all ? kWeightName[w] : pd.name;
-      PortfolioBasket p = basket(std::string("pf_pool_") + pd.name + (all ? kWeightId[w] : ""), pd.name, cn, tag + " 可成交", pc, 0, w);
+      PortfolioBasket p = basket(std::string("pf_pool_") + pd.name + kWeightId[w], pd.name, cn, tag + " 可成交", pc, 0, w);
       PortfolioBasket q = basket(p.id + "_px", pd.name, cn, tag + " 理想", pc, 0, w, true);
       p.kind = "可成交", q.kind = "理想";
       p.on = all && w == kWeightEq;
@@ -426,7 +425,7 @@ void derive_baskets(const PortfolioResult &res, PortfolioDerived &o, PortfolioDe
     }
   }
 
-  // ---- VAL 篮子: 各池整体 (篮子 0; all 池两条 = 全A加权 / 全A等权, 其余池 pool_weight 一条, 同池线) / 申万一级行业 (all 池篮子 k ≥ 1, 总市值加权); 全史估值留在 PoolCurve ----
+  // ---- VAL 篮子: 各池整体 (篮子 0; all 池两条 = 全A加权 / 全A等权, 其余池等权, 同池线) / 申万一级行业 (all 池篮子 k ≥ 1, 总市值加权); 全史估值留在 PoolCurve ----
   if (d.dates.empty())
     return;
   std::shared_ptr<const PoolCurve> all;
@@ -439,8 +438,8 @@ void derive_baskets(const PortfolioResult &res, PortfolioDerived &o, PortfolioDe
     if (is_all)
       all = pc;
     for (const Weight w : {kWeightCap, kWeightEq})
-      if (is_all || w == pool_weight(pd))
-        d.vals.push_back(basket(std::string(pd.name) + (is_all ? kWeightId[w] : ""), pd.name, is_all ? kWeightName[w] : pd.name_cn, is_all ? kWeightName[w] : pd.name, pc, 0, w));
+      if (is_all || w == kWeightEq)
+        d.vals.push_back(basket(std::string(pd.name) + kWeightId[w], pd.name, is_all ? kWeightName[w] : pd.name_cn, is_all ? kWeightName[w] : pd.name, pc, 0, w));
   }
   d.n_val_pools = d.vals.size();
   if (all)
