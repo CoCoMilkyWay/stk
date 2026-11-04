@@ -124,6 +124,7 @@ struct FeatCol : Col {
   std::string code; // 叶名 档.层.列
   L2::ValidType vt = L2::ValidType::ALL;
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
+  bool target = false;  // N 元回归的目标叶 (网格层本层的做多标签列, y.labels 收的持有期; 不可写进表达式, 由 h 推出)
 };
 // 两侧列 (标签 / 成本同形): 标签 key = 持有期键 (Stat/Contract.hpp), 侧 = lb_long_<name> / lb_short_<name>;
 // 成本 key = 金额段 (万), 侧 = Lob 库网格层 lb_cost_buy_<amt>w / lb_cost_sell_<amt>w (盘口段; 组合只做多, 装载只取买入侧);
@@ -185,11 +186,15 @@ struct FeatureTable {
   XCols x;
   YCols y;
   BCols b;
-  factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER)
-  // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调
+  factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER; 回归目标 = label_leaf)
+  // 持有期 hold 的回归目标叶名 (y.labels 的做多列); 本层无该持有期 → 空串
+  std::string label_leaf(int hold) const;
+  // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调 (目标叶不计)
   bool check_grid(const factor::expr::Expr &e, std::string &err) const;
   // 已校验过的规范串 (scan / 构建器出的模板 / 权重) 再解析; 不成 → assert
   factor::expr::Expr reparse(std::string_view canon) const;
+  // 模板的自由 h 落为 hold 再解析 (Search / 权重比对按所评持有期; 无自由 h 即 reparse)
+  factor::expr::Expr reparse_at(std::string_view canon, int hold) const;
 };
 // LB 列按 code 识别: Bar 档 lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp) + lb_entry_ok;
 // Lob 档 lb_cost_<buy|sell>_<amt>w 建仓冲击 (盘口段)

@@ -31,12 +31,11 @@ DevPlane *upload_mask(Session *, const uint8_t *) {
 void pin(void *, size_t) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 void unpin(void *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 
-void run(Session *, int, const DevPlane *, const DevPlane *, const DevPlane *, const DevPlane *, float *, uint8_t *, int, int, int,
-         const Param &, double *) {
+void run(Session *, int, const DevPlane *const *, int, const DevPlane *, float *, uint8_t *, int, int, int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
-void run(int, const float *, const uint8_t *, const float *, const uint8_t *, const float *, const uint8_t *, const uint8_t *, float *,
-         uint8_t *, int, int, int, const Param &, double *) {
+void run(int, int, const float *const *, const uint8_t *const *, const uint8_t *, float *, uint8_t *, int, int, int, const Param &,
+         double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 void run_stat(factor::stat::Plane, const uint8_t *, factor::stat::Frame, int, int, int, const factor::stat::Labels &, factor::stat::Accum *,
@@ -50,8 +49,7 @@ DevPlane *plane_new(Session *) {
 }
 void plane_del(Session *, DevPlane *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 void download(Session *, const DevPlane *, float *, uint8_t *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
-void run_dev(Session *, int, const DevPlane *, const DevPlane *, const DevPlane *, const DevPlane *, DevPlane *, int, int, int,
-             const Param &, double *) {
+void run_dev(Session *, int, const DevPlane *const *, int, const DevPlane *, DevPlane *, int, int, int, const Param &, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 void run_fused(Session *, const Fuse &, const DevPlane *const *, int, DevPlane *, int, int, int, double *) {

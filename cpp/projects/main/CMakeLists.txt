@@ -321,11 +321,13 @@ set(MATH_PRECISE
     # gui
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/AssetLoader.cpp
+    gui/task_database/services/BasketHistory.cpp
     gui/task_database/services/FundamentalService.cpp
-    gui/task_database/services/IndexService.cpp
+    gui/task_database/services/Kline.cpp
     gui/task_database/services/QuoteService.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp
+    gui/task_database/services/StockHistory.cpp
     gui/task_database/ui/CrossSectionAnalysis.cpp
     gui/task_database/ui/QuotesPanel.cpp
     gui/task_database/ui/TabAssets.cpp

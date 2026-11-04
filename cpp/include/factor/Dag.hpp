@@ -33,13 +33,13 @@ namespace factor {
 struct DagNode {
   int op = -1;          // expr::kOps 下标; -1 = 特征叶; 融合节点 = 组末步的算子 (显示 / 归类用, 执行看 fu)
   int feat = -1;        // 叶: Dag::feats 下标 (输入平面)
-  int n_in = 0;         // 输入数: 算子 = 元数, 融合 = 外部输入数
+  int n_in = 0;         // 输入数: 算子 = 元数 (N 元含目标叶), 融合 = 外部输入数
   int in[kFuseIn] = {}; // 输入节点下标 (前 n_in 个有效)
   Param p;              // 本节点参数 (融合节点不用, 各步参数在 fu 里)
   Fuse fu;              // 逐点链融合程序; fu.n = 0 = 普通算子节点
   int slot = -1;        // 算子节点的输出槽; 叶 = -1 (直接用输入平面)
 };
-static_assert(kFuseIn >= 3, "融合节点的输入槽要盖住普通算子的元数");
+static_assert(kFuseIn >= kMaxIn, "输入槽要盖住算子的元数上限");
 
 struct Dag {
   std::vector<DagNode> nodes;     // 后序拓扑, 根 = 末节点
@@ -100,9 +100,9 @@ struct DagBuilder {
     } else {
       dn.op = n.op;
       dn.p = n.p;
-      dn.n_in = expr::kOps[n.op].arity;
+      dn.n_in = n.n_args;
       for (int a = 0; a < dn.n_in; ++a)
-        dn.in[a] = visit(n.args[a]); // 先子后父 = 后序
+        dn.in[a] = visit(n.args[a]); // 先子后父 = 后序 (N 元回归的目标叶 = 末元, 普通输入平面)
       d.n_ops++;
     }
     const int id = static_cast<int>(d.nodes.size());

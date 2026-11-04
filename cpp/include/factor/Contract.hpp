@@ -10,8 +10,10 @@
 //                   EXTREME 极值及 arg 族 (半群不可逆) / ORDER 序统计 / RECUR 递推
 //   类型约束 (非归约核不消费集合, 部分格子空): MAP ⇒ POINT×SELF; SHIFT ⇒ SELF 纯滞后 (不看整窗);
 //   RECUR ⇔ EXPO 一一绑定; 归约核 (MOMENT / EXTREME / ORDER) 与窗/域自由组合. 复合算子标主导 (最重) 一级.
-//   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀);
+//   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀), 外加 N 元回归 ROLL×ALL (CsLinRankRoll);
 //   十字外 (如 EXPAND×GROUP 段内组均值) 是合法格子, 留待将来, 命名按计算顺序 TsCs<核> / CsTs<核>.
+//   【N 元回归】元数 N (kNary) 的算子: 2..kMaxIn−1 个特征元 + 末元回归目标 (h 持有期的做多标签, 表达式不写, 解析时补);
+//     窗 = 行 t 收盘时**已实现**的最近 d 个标签行 (stat::label_known), 截面秩化后池化岭回归, 输出拟合值 (见 OpTable 该行).
 //   CPU / GPU 具体怎么算 (逐格融合 / scan / van Herk / 直方图 …) 是后端私事, 不进表不进分类.
 //
 //   【三后端】同名 struct, 三处**完全独立**实现, 不共享一行算法代码 (否则对拍空转):
@@ -22,8 +24,9 @@
 //   OpTable 的"T 窗"列是**载荷**: 流式 TS struct 带 kT, op_check static_assert 对表;
 //   A 域 / 核类是纯语义列, 实现侧不带载荷 (后端怎么算不受表约束).
 //
-//   【调用形状】三后端同一个 Call (下文): 输入 x/y/z + 输出 o 的 SoA 指针, 池掩码 g, 形状 T×A (行距恒 A), 层几何 geo, 参数 p.
-//     元数不到的输入槽为空; g 只 CS 读 (TS 不读, 调用方有就给). 架构层只认这一个形状, 算子的特殊性全在算子内部.
+//   【调用形状】三后端同一个 Call (下文): 输入表 xs[0..n) (前三元别名 x/y/z) + 输出 o 的 SoA 指针, 池掩码 g, 形状 T×A (行距恒 A),
+//     层几何 geo, 参数 p. 定元算子读 x/y/z (元数不到的槽为空), N 元算子读 xs; g 只 CS 读 (TS 不读, 调用方有就给).
+//     架构层只认这一个形状, 算子的特殊性全在算子内部.
 //     流式  TS 一资产一个对象: Op(p), Val step(x, y, z, t_seg) 逐点推 (资产可晚到, 互不等待; 元数不到的元传 Val{});
 //           CS 一个对象推全部截面: Op op; void step(Call, t) 推第 t 行 (暂存是成员, 跨行复用)
 //     CPU   scratch(Call) = 每线程暂存字节; run(Call, Range, ws): TS 的 Range = 资产列 [lo, hi) (全 T 行), CS 的 Range = 行 [lo, hi)
@@ -113,8 +116,9 @@ namespace factor {
 // ---- 运行期参数 (每个算子只读 OpTable 里声明的字段) ----
 struct Param {
   int d = 0;      // 窗长 / 滞后 (期 = 本层的行)
-  float k = 0.f;  // 阈值 / 桶数 / EMA 系数 / 分位
+  float k = 0.f;  // 阈值 / 桶数 / EMA 系数 / 分位 / 岭强度
   float k2 = 0.f; // 第二阈值 (TodMask 上界)
+  int h = 0;      // 回归目标的持有期键 (stat 持有期键; 只 N 元回归)
 };
 
 // ---- 常量 ----
@@ -170,8 +174,12 @@ struct Out {
   float *v = nullptr;
   uint8_t *m = nullptr;
 };
+inline constexpr int kMaxIn = 8; // 算子输入上限 (N 元: 至多 kMaxIn − 1 个特征元 + 末元回归目标)
+inline constexpr int kNary = -1; // OpTable 元数列的 N 元 (元数由表达式定)
 struct Call {
-  In x, y, z;                 // 元数不到的槽为空
+  In x, y, z;                 // = xs 前三元 (定元算子读这三个名字; 元数不到的槽为空)
+  In xs[kMaxIn];              // 输入表 (前 n 个有效; N 元算子读它)
+  int n = 0;                  // 输入数
   const uint8_t *g = nullptr; // 截面池掩码 [T][A] (CS 必填, TS 不读)
   Out o;                      // 输出 [T][A], 不与输入重叠
   int T = 0, A = 0;           // 行数 / 列数 (= 行距)
@@ -179,6 +187,16 @@ struct Call {
   Geo geo;
   Param p;
 };
+// 输入表 in[0..n) 装进 Call (xs 全收, x / y / z 取前三元)
+inline void bind_in(Call &c, const In *in, int n) {
+  assert(n >= 0 && n <= kMaxIn);
+  c.n = n;
+  for (int i = 0; i < n; ++i)
+    c.xs[i] = in[i];
+  c.x = n > 0 ? in[0] : In{};
+  c.y = n > 1 ? in[1] : In{};
+  c.z = n > 2 ? in[2] : In{};
+}
 // CPU 一次 run 负责的区间: TS = 资产列 [lo, hi), CS = 行 [lo, hi)
 struct Range {
   int lo = 0, hi = 0;
@@ -331,19 +349,22 @@ inline constexpr const char *dom_tex(Dom d) {
   }
   return "?";
 }
-// OpTable in 列的写法: 按元数选 OP_IN0..3, 逐元给 Dom (展开成 Dom[3] 的聚合初始化, 未写的元 = REAL)
+// OpTable in 列的写法: 按元数选 OP_IN0..3, 逐元给 Dom (展开成 Dom[3] 的聚合初始化, 未写的元 = REAL);
+// N 元写 OP_INN, 全部特征元同一 Dom (存在 in[0])
 #define OP_IN0() \
   {              \
   }
 #define OP_IN1(a) {factor::Dom::a}
 #define OP_IN2(a, b) {factor::Dom::a, factor::Dom::b}
 #define OP_IN3(a, b, c) {factor::Dom::a, factor::Dom::b, factor::Dom::c}
+#define OP_INN(a) {factor::Dom::a}
 
-// ---- 参数域 (OpTable k 列): k 的值域按算子声明; d 由 T 窗决定 (ROLL 必有且仅 ROLL 有), k2 只随 TOD ----
-//   参数集合因此完全由 (T, KDom) 推出 (params_str), 表里不单列参数名
+// ---- 参数域 (OpTable k 列): k 的值域按算子声明; d 由 T 窗决定 (ROLL 必有且仅 ROLL 有), k2 只随 TOD, h 只随 N 元 ----
+//   参数集合因此完全由 (T, KDom, 元数) 推出 (params_str), 表里不单列参数名
 enum class KDom { NONE,          // 无 k
                   ANY,           // k ∈ ℝ
                   GE0,           // k ≥ 0
+                  GT0,           // k > 0
                   OPEN01,        // 0 < k < 1
                   OPEN0_CLOSED1, // 0 < k ≤ 1
                   OPEN0_HALF,    // 0 < k < 1/2
@@ -352,7 +373,10 @@ enum class KDom { NONE,          // 无 k
 inline constexpr bool has_d(T t) { return t == T::ROLL; }
 inline constexpr bool has_k(KDom k) { return k != KDom::NONE; }
 inline constexpr bool has_k2(KDom k) { return k == KDom::TOD; }
-inline constexpr const char *params_str(T t, KDom k) {
+inline constexpr bool has_h(int arity) { return arity == kNary; }
+inline constexpr const char *params_str(T t, KDom k, int arity) {
+  if (has_h(arity))
+    return "d,k,h"; // N 元回归恒 ROLL × 有 k (Expr table_consistent)
   if (has_d(t))
     return has_k(k) ? "d,k" : "d";
   return has_k2(k) ? "k,k2" : (has_k(k) ? "k" : "");
@@ -366,6 +390,8 @@ inline constexpr const char *kdom_tex(KDom k) {
     return R"tex(\mathbb{R})tex";
   case KDom::GE0:
     return R"tex(\mathbb{R}_{\ge 0})tex";
+  case KDom::GT0:
+    return R"tex(\mathbb{R}_{>0})tex";
   case KDom::OPEN01:
     return R"tex((0,1))tex";
   case KDom::OPEN0_CLOSED1:
@@ -518,6 +544,46 @@ inline int bin_of(float x, float lo, float hi) {
 }
 inline float bin_center(int b, float lo, float hi) {
   return static_cast<float>(lo + (static_cast<double>(hi) - lo) * (b + 0.5) / kBuckets);
+}
+
+// ---- N 元回归 (CsLinRankRoll; 三后端共用) ----
+//   一行的矩 = 样本格上 x̃ x̃ᵀ 的上三角 (按行展开, n(n+1)/2 个) 接 Σ x̃ r̃ (n 个), 共 lr_moms(n) 个 double; 窗内各行矩相加即池化.
+//   岭解 (G + k·(tr G / n)·I) w = b (Cholesky); tr G = 0 (窗内无样本) → w = 0
+inline constexpr int kLrN = kMaxIn - 1; // 特征元上限
+FACTOR_HD constexpr int lr_moms(int n) { return n * (n + 3) / 2; }
+FACTOR_HD constexpr int lr_ix(int i, int j, int n) { return i * n - i * (i - 1) / 2 + j - i; } // G[i][j] (i ≤ j) 的下标
+inline constexpr int kLrMoms = lr_moms(kLrN);
+FACTOR_HD inline void lr_solve(const double *s, int n, double k, double *w) {
+  double tr = 0.0;
+  for (int i = 0; i < n; ++i)
+    tr += s[lr_ix(i, i, n)];
+  if (!(tr > 0.0)) {
+    for (int i = 0; i < n; ++i)
+      w[i] = 0.0;
+    return;
+  }
+  const double lam = k * tr / n;
+  const double *b = s + n * (n + 1) / 2;
+  double L[kLrN][kLrN], z[kLrN];
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j <= i; ++j) {
+      double v = s[lr_ix(j, i, n)] + (i == j ? lam : 0.0);
+      for (int q = 0; q < j; ++q)
+        v -= L[i][q] * L[j][q];
+      L[i][j] = i == j ? sqrt(v) : v / L[j][j];
+    }
+  for (int i = 0; i < n; ++i) {
+    double v = b[i];
+    for (int q = 0; q < i; ++q)
+      v -= L[i][q] * z[q];
+    z[i] = v / L[i][i];
+  }
+  for (int i = n - 1; i >= 0; --i) {
+    double v = z[i];
+    for (int q = i + 1; q < n; ++q)
+      v -= L[q][i] * w[q];
+    w[i] = v / L[i][i];
+  }
 }
 
 } // namespace factor

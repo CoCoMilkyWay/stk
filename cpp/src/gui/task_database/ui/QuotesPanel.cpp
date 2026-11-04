@@ -5,12 +5,13 @@
 #include "implot_internal.h"
 
 #include <algorithm>
-#include <cctype>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace GUI::Database {
@@ -308,11 +309,10 @@ int fmt_wan(char *buf, int size, double a) {
                                                                            : std::snprintf(buf, size, "%.1f万", w);
 }
 
-// 五档 (卖5 → 卖1 / 买1 → 买5): 价 / 涨幅按昨收着色, 额 = 价 × 量, 底条 = 该档额 / 十档最大; 下接摘要
-void render_book(const LiveDay &d) {
-  const sina::Quote &q = d.quote;
+// 五档 (卖5 → 卖1 / 买1 → 买5): 价 / 涨幅按昨收着色, 额 = 价 × 量, 底条 = 该档额 / 十档最大; 下接摘要. date = 行情日
+void render_book(const sina::Quote &q, misc::Ymd date) {
   const double ref = q.last_close;
-  if (!d.quoted) {
+  if (q.sym.empty()) {
     ImGui::TextDisabled("等待快照…");
     return;
   }
@@ -400,175 +400,238 @@ void render_book(const LiveDay &d) {
     txt("振幅", amp);
     char when[16];
     std::snprintf(when, sizeof(when), "%02d:%02d:%02d", q.sec / 3600, q.sec / 60 % 60, q.sec % 60);
-    txt(q.date == d.date ? "时刻" : misc::dash(q.date).c_str(), when);
+    txt(q.date == date ? "时刻" : misc::dash(q.date).c_str(), when);
     ImGui::EndTable();
   }
   ImGui::PopStyleVar();
 }
 
-// 篮子 b 的最新一根与其前收: 有当日合成取它, 否则日线末根. 日线空 → false
-bool basket_last(const BasketsState &st, size_t b, Candle &k, double &prev) {
-  const std::vector<Candle> &dl = st.data->baskets[b].daily;
-  if (dl.empty())
-    return false;
-  if (b < st.today.size() && st.today[b].date) {
-    k = st.today[b].day;
-    prev = dl.back().close;
-  } else {
-    k = dl.back();
-    prev = dl.size() > 1 ? dl[dl.size() - 2].close : IndexService::kBase;
+// 最新一根与其前收: 当日接上取当日, 否则日线末根 (前收 = 其前一根); 日线空 → false
+bool last(const Kline &kl, const Day &today, Candle &k, double &prev) {
+  if (joins(kl, today)) {
+    k = today.candle, prev = today.ref;
+    return true;
   }
+  if (kl.daily.empty())
+    return false;
+  k = kl.daily.back();
+  prev = kl.daily.size() > 1 ? kl.daily[kl.daily.size() - 2].close : 0;
   return true;
 }
 
-} // namespace
-
-void RenderQuotesPanel(QuoteService &live, HistoryService &hist, const AssetItem *asset, const StockInfo *info,
-                       QuotesState &st) {
-  char status[128];
-  {
-    const QuoteStatus qs = live.status();
-    if (qs.date == 0)
-      std::snprintf(status, sizeof(status), "新浪: 等待首轮快照…");
-    else if (qs.fill)
-      std::snprintf(status, sizeof(status), "新浪 %02d:%02d:%02d · 分钟 K 已补 %zu / 待补 %zu", qs.sec / 3600, qs.sec / 60 % 60,
-                    qs.sec % 60, qs.fetched, qs.pending);
-    else
-      std::snprintf(status, sizeof(status), "新浪 %02d:%02d:%02d · 当日分钟由 bar1m 给", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60);
-  }
-  if (!asset) {
-    ImGui::TextDisabled("%s", status);
-    ImGui::TextWrapped("点表格中的一行查看行情.");
-    return;
-  }
-  std::string sym = asset->exchange + asset->asset_code;
-  std::transform(sym.begin(), sym.end(), sym.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  const std::string code = asset->asset_code + "." + asset->exchange;
-  if (code != st.code) {
-    st.code = code;
-    hist.Request({++st.gen, code});
-    live.select(sym);
-  }
-  const bool listed = live.day(sym, st.live);
-  const LiveDay &d = st.live;
-
-  Series intra, daily;
+// 两张图的根 = 历史 + 当日 (joins 才接); 日内取末 days 日, 涨跌基准 = 末日的前收
+void build(const Kline &kl, const Day &today, int days, bool money, Series &intra, Series &daily) {
+  const bool on = joins(kl, today);
   intra.intraday = true;
-  bool loading = true;
-  {
-    const History &h = hist.history();
-    std::lock_guard<std::mutex> lock(h.mutex);
-    const bool ok = h.gen == st.gen;
-    loading = !ok;
-    std::vector<const std::vector<Candle> *> src;
-    std::vector<misc::Ymd> dates;
-    if (ok)
-      for (const std::vector<Candle> &m : h.minutes)
-        src.push_back(&m), dates.push_back(m.front().date);
-    if (listed && d.date > 0 && (dates.empty() || d.date > dates.back()))
-      src.push_back(&d.bars), dates.push_back(d.date);
-    const size_t nd = std::min<size_t>(static_cast<size_t>(kIntraDays[st.intraday]), src.size());
-    for (size_t k = 0; k < nd; ++k) {
-      const size_t j = src.size() - nd + k;
-      intra.days.push_back(dates[j]);
-      for (const Candle &b : *src[j])
-        intra.push(b, static_cast<double>(k) * kSlots + b.slot);
-    }
-    if (ok)
-      for (const Candle &b : h.daily)
-        daily.push(b, static_cast<double>(daily.bars.size()));
-    const sina::Quote &q = d.quote;
-    if (listed && d.quoted && q.date == d.date && q.open > 0 && (daily.bars.empty() || q.date > daily.bars.back().date))
-      daily.push({q.date, 0, q.open, q.high, q.low, q.price, q.volume, q.amount}, static_cast<double>(daily.bars.size()));
-    if (!intra.days.empty()) {
-      const misc::Ymd last = intra.days.back();
-      if (last == d.date && d.quoted && q.last_close > 0)
-        intra.ref = q.last_close;
-      else
-        for (auto it = daily.bars.rbegin(); it != daily.bars.rend(); ++it)
-          if (it->date < last) {
-            intra.ref = it->close;
-            break;
-          }
-    }
-    if (!daily.bars.empty())
-      daily.ref = daily.bars.back().close;
+  intra.money = daily.money = money;
+  std::vector<const Bars *> src;
+  for (const Bars &b : kl.minutes)
+    src.push_back(&b);
+  if (on && today.bars.has.any())
+    src.push_back(&today.bars);
+  const size_t nd = std::min(static_cast<size_t>(days), src.size());
+  for (size_t k = 0; k < nd; ++k) {
+    const Bars &b = *src[src.size() - nd + k];
+    intra.days.push_back(b.date);
+    for (int s = 0; s < kSlots; ++s)
+      if (b.has[static_cast<size_t>(s)])
+        intra.push({b.cell[static_cast<size_t>(s)], b.date, s}, static_cast<double>(k) * kSlots + s);
   }
-
-  { // 名称 / 现价 / 涨跌 · 状态 (放不下另起一行)
-    const sina::Quote &q = d.quote;
-    ImGui::Text("%s  %s", info && !info->name.empty() ? info->name.c_str() : "-", code.c_str());
-    if (d.quoted && q.price > 0 && q.last_close > 0) {
-      ImGui::SameLine();
-      ImGui::TextColored(tint(q.price, q.last_close), "%.2f  %+.2f  %+.2f%%", q.price, q.price - q.last_close,
-                         (q.price / q.last_close - 1.0) * 100.0);
-    }
-    const char *note = !listed ? "不在新浪全市场" : loading ? "读取历史…"
-                                                            : status;
-    flow(ImGui::CalcTextSize(note).x);
-    ImGui::TextDisabled("%s", note);
+  for (const Candle &c : kl.daily)
+    daily.push(c, static_cast<double>(daily.bars.size()));
+  if (on)
+    daily.push(today.candle, static_cast<double>(daily.bars.size()));
+  if (!intra.days.empty()) {
+    const misc::Ymd d = intra.days.back();
+    if (on && d == today.date)
+      intra.ref = today.ref;
+    else
+      for (auto it = daily.bars.rbegin(); it != daily.bars.rend(); ++it)
+        if (it->date < d) {
+          intra.ref = it->close;
+          break;
+        }
   }
-
-  // 上: 日内 : 盘口 = 2 : 1; 下: 日线. 显式定位 (档位按钮叠在图上, 画完光标不在流式位置)
-  const float gap = 4.f;
-  const ImVec2 p0 = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
-  const float bw = std::floor((avail.x - gap) / 3.f), iw = avail.x - bw - gap;
-  const float top_h = std::floor((avail.y - gap) * 0.6f);
-  {
-    const int nd = static_cast<int>(intra.days.size());
-    const uint64_t key = static_cast<uint64_t>(st.gen) << 32 | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
-    plot_chart("##ichart", intra, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, ImVec2(iw, top_h), kIntraName, 4, st.intraday);
-  }
-  ImGui::SetCursorScreenPos(ImVec2(p0.x + iw + gap, p0.y));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-  ImGui::BeginChild("##book", ImVec2(bw, top_h), false);
-  render_book(d);
-  ImGui::EndChild();
-  ImGui::PopStyleVar();
-  ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + top_h + gap));
-  {
-    const int n = static_cast<int>(daily.bars.size()), span = kDailySpan[st.daily];
-    const uint64_t key = static_cast<uint64_t>(st.gen) << 32 | static_cast<uint64_t>(st.daily) << 24 | static_cast<uint64_t>(n);
-    plot_chart("##dchart", daily, std::max(n, span) - span - 0.5, std::max(n, span) - 0.5, key, st.dv,
-               ImVec2(avail.x, avail.y - top_h - gap), kDailyName, 3, st.daily);
-  }
+  if (!daily.bars.empty())
+    daily.ref = daily.bars.back().close;
 }
 
-void SyncBaskets(QuoteService &live, IndexService &idx, const Config &cfg, BasketsState &st, int page) {
+// 当日没接上 (历史落后) → 提示写进 buf, true
+bool gap_note(const Kline &kl, const Day &today, char *buf, size_t size) {
+  if (!today.date || joins(kl, today) || today.date <= kl.last)
+    return false;
+  std::snprintf(buf, size, "历史止于 %02d-%02d, 未接当日 %02d-%02d", kl.last / 100 % 100, kl.last % 100, today.date / 100 % 100,
+                today.date % 100);
+  return true;
+}
+
+// 标题 · 最新价 / 涨跌 · 注 (放不下另起一行)
+void header(const char *title, const Kline &kl, const Day &today, const char *note) {
+  ImGui::TextUnformatted(title);
+  Candle k;
+  double prev = 0;
+  if (last(kl, today, k, prev) && prev > 0) {
+    ImGui::SameLine();
+    ImGui::TextColored(tint(k.close, prev), "%.2f  %+.2f  %+.2f%%", k.close, k.close - prev, (k.close / prev - 1.0) * 100.0);
+  }
+  flow(ImGui::CalcTextSize(note).x);
+  ImGui::TextDisabled("%s", note);
+}
+
+// 两图: id = 标的的复位键高位, 档 / 根数拼进低位
+void plot_intraday(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
+  const int nd = static_cast<int>(s.days.size());
+  const uint64_t key = id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
+  plot_chart(name, s, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, size, kIntraName, 4, st.intraday);
+}
+void plot_daily(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
+  const int n = static_cast<int>(s.bars.size()), span = kDailySpan[st.daily];
+  const uint64_t key = id | static_cast<uint64_t>(st.daily) << 24 | static_cast<uint64_t>(n);
+  plot_chart(name, s, std::max(n, span) - span - 0.5, std::max(n, span) - 0.5, key, st.dv, size, kDailyName, 3, st.daily);
+}
+
+const Kline kNoKline;
+
+} // namespace
+
+void SyncStock(QuoteService &live, StockHistory &hist, const AssetItem *asset, StockState &st) {
+  const std::string code = asset ? asset->asset_code + "." + asset->exchange : std::string();
+  if (code != st.code) {
+    st.code = code;
+    st.i = asset ? live.find(code) : ~0u;
+    st.data.reset();
+    ++st.gen;
+    if (asset)
+      hist.Request({st.gen, code});
+    live.select(st.i);
+  }
+  {
+    const StockKline &x = hist.published();
+    std::lock_guard<std::mutex> lock(x.mutex);
+    if (x.gen == st.gen && x.data != st.data)
+      st.data = x.data;
+  }
+  if (st.i != ~0u)
+    live.today(st.i, st.today, st.quote);
+  else
+    st.today.date = 0, st.quote = {};
+}
+
+void SyncBaskets(QuoteService &live, BasketHistory &hist, const Config &cfg, BasketState &st) {
   if (st.want) {
     st.want = false;
     FeatureLib lib = load_lib(cfg, kAllBar);
     st.missing = !lib.ready();
     if (!st.missing)
-      idx.Request({++st.gen, std::move(lib)});
+      hist.Request({++st.gen, std::move(lib)});
   }
   {
-    const Indexes &x = idx.indexes();
+    const BasketKline &x = hist.published();
     std::lock_guard<std::mutex> lock(x.mutex);
     if (x.gen == st.gen && x.data != st.data)
       st.data = x.data;
   }
   if (!st.data)
     return;
-  const IndexData &d = *st.data;
+  const Baskets &d = *st.data;
   const QuoteStatus qs = live.status();
-  const int sel = st.sel[page];
-  const auto key = std::make_tuple(qs.date, qs.sec, sel, st.data.get());
+  const auto key = std::make_tuple(qs.date, qs.sec, st.data.get());
   if (key == st.today_key)
     return;
   st.today_key = key;
-  st.today.resize(d.baskets.size());
-  for (size_t b = 0; b < d.baskets.size(); ++b) {
-    const Basket &bk = d.baskets[b];
-    IndexDay &t = st.today[b];
-    t.date = 0;
-    if (qs.date > d.last && !bk.daily.empty())
-      live.compose(bk.live, bk.daily.back().close, static_cast<int>(b) == sel, t);
-  }
+  std::vector<double> level(d.list.size());
+  for (size_t b = 0; b < d.list.size(); ++b)
+    level[b] = d.list[b].kline.daily.empty() ? 0 : d.list[b].kline.daily.back().close;
+  st.today.resize(d.list.size());
+  if (!d.list.empty())
+    live.today(d.live, level, st.today);
 }
 
-bool RenderBasketList(const IndexService &idx, BasketsState &st, int page) {
-  if (st.missing || (st.data && st.data->baskets.empty())) {
+void RenderStockPanel(const QuoteService &live, const StockInfo *info, StockState &st) {
+  const QuoteStatus qs = live.status();
+  char note[160];
+  if (qs.date == 0)
+    std::snprintf(note, sizeof(note), "新浪: 等待首轮快照…");
+  else if (qs.fill)
+    std::snprintf(note, sizeof(note), "新浪 %02d:%02d:%02d · 分钟 K 已补 %zu / 待补 %zu", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60,
+                  qs.fetched, qs.pending);
+  else
+    std::snprintf(note, sizeof(note), "新浪 %02d:%02d:%02d · 当日分钟由 bar1m 给", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60);
+  if (st.code.empty()) {
+    ImGui::TextDisabled("%s", note);
+    ImGui::TextWrapped("点表格中的一行查看行情.");
+    return;
+  }
+  const Kline &kl = st.data ? *st.data : kNoKline;
+  Series intra, daily;
+  build(kl, st.today, kIntraDays[st.chart.intraday], false, intra, daily);
+
+  if (st.i == ~0u)
+    std::snprintf(note, sizeof(note), "不在新浪全市场");
+  else if (!st.data)
+    std::snprintf(note, sizeof(note), "读取历史…");
+  else
+    gap_note(kl, st.today, note, sizeof(note));
+  char title[96];
+  std::snprintf(title, sizeof(title), "%s  %s", info && !info->name.empty() ? info->name.c_str() : "-", st.code.c_str());
+  header(title, kl, st.today, note);
+
+  // 上: 日内 : 盘口 = 2 : 1; 下: 日线. 显式定位 (档位按钮叠在图上, 画完光标不在流式位置)
+  const float gap = 4.f;
+  const ImVec2 p0 = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
+  const float bw = std::floor((avail.x - gap) / 3.f), iw = avail.x - bw - gap;
+  const float top_h = std::floor((avail.y - gap) * 0.6f);
+  const uint64_t id = static_cast<uint64_t>(st.gen) << 32;
+  plot_intraday("##ichart", intra, id, st.chart, ImVec2(iw, top_h));
+  ImGui::SetCursorScreenPos(ImVec2(p0.x + iw + gap, p0.y));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::BeginChild("##book", ImVec2(bw, top_h), false);
+  render_book(st.quote, qs.date);
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+  ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + top_h + gap));
+  plot_daily("##dchart", daily, id, st.chart, ImVec2(avail.x, avail.y - top_h - gap));
+}
+
+void RenderBasketPanel(BasketState &st, int page) {
+  const int sel = st.sel[page];
+  if (!st.data || st.data->list.empty() || sel < 0) {
+    ImGui::TextDisabled("点左栏一行查看走势.");
+    return;
+  }
+  const size_t b = static_cast<size_t>(sel);
+  const Baskets &d = *st.data;
+  const Basket &bk = d.list[b];
+  assert(st.today.size() == d.list.size());
+  const Day &today = st.today[b];
+  Series intra, daily;
+  build(bk.kline, today, kIntraDays[st.chart.intraday], true, intra, daily);
+
+  char note[160];
+  if (joins(bk.kline, today)) {
+    const int sec = std::get<1>(st.today_key);
+    std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员 / 权重取 %02d-%02d 收盘 (%zu 只)", sec / 3600, sec / 60 % 60,
+                  sec % 60, bk.kline.last / 100 % 100, bk.kline.last % 100, bk.size);
+  } else if (!gap_note(bk.kline, today, note, sizeof(note))) {
+    std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", bk.kline.last / 100 % 100, bk.kline.last % 100);
+  }
+  header(bk.name.c_str(), bk.kline, today, note);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("重载"))
+    st.want = true;
+
+  // 上: 日内; 下: 日线 (同个股页, 无盘口)
+  const float gap = 4.f;
+  const ImVec2 p0 = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
+  const float top_h = std::floor((avail.y - gap) * 0.5f);
+  const uint64_t id = static_cast<uint64_t>(st.gen) << 48 | static_cast<uint64_t>(b) << 32;
+  plot_intraday("##bichart", intra, id, st.chart, ImVec2(avail.x, top_h));
+  ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + top_h + gap));
+  plot_daily("##bdchart", daily, id, st.chart, ImVec2(avail.x, avail.y - top_h - gap));
+}
+
+bool RenderBasketList(const BasketHistory &hist, BasketState &st, int page) {
+  if (st.missing || (st.data && st.data->list.empty())) {
     ImGui::TextWrapped(st.missing ? "指数 / 行业由 all.bar 特征库合成: 先在 Features → Compute 算好 all 池的 Bar 库."
                                   : "all.bar 特征库落盘不足 3 日.");
     if (ImGui::SmallButton("重载"))
@@ -576,21 +639,21 @@ bool RenderBasketList(const IndexService &idx, BasketsState &st, int page) {
     return false;
   }
   if (!st.data) {
-    const Indexes &x = idx.indexes();
+    const BasketKline &x = hist.published();
     ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
     return false;
   }
-  const IndexData &d = *st.data;
+  const Baskets &d = *st.data;
   struct Row {
     size_t b;
     Candle k;
     double prev = 0;
   };
   std::vector<Row> rows;
-  for (size_t b = 0; b < d.baskets.size(); ++b)
-    if (d.baskets[b].industry == (page == 1)) {
+  for (size_t b = 0; b < d.list.size(); ++b)
+    if (d.list[b].industry == (page == 1)) {
       Row &r = rows.emplace_back(Row{b, {}});
-      basket_last(st, b, r.k, r.prev); // 日线空 → prev 留 0, 行只显示名称
+      last(d.list[b].kline, st.today[b], r.k, r.prev); // 日线空 → prev 留 0, 行只显示名称
     }
 
   if (!ImGui::BeginTable("##baskets", 5,
@@ -616,7 +679,7 @@ bool RenderBasketList(const IndexService &idx, BasketsState &st, int page) {
       case 3:
         return r.k.amount;
       case 4:
-        return static_cast<double>(d.baskets[r.b].live.size());
+        return static_cast<double>(d.list[r.b].size);
       default:
         return static_cast<double>(r.b);
       }
@@ -626,7 +689,7 @@ bool RenderBasketList(const IndexService &idx, BasketsState &st, int page) {
 
   bool picked = false;
   for (const Row &r : rows) {
-    const Basket &bk = d.baskets[r.b];
+    const Basket &bk = d.list[r.b];
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::PushID(static_cast<int>(r.b));
@@ -647,92 +710,10 @@ bool RenderBasketList(const IndexService &idx, BasketsState &st, int page) {
     fmt_amount(amt, sizeof(amt), r.k.amount);
     ImGui::TextUnformatted(amt);
     ImGui::TableSetColumnIndex(4);
-    ImGui::Text("%zu", bk.live.size());
+    ImGui::Text("%zu", bk.size);
   }
   ImGui::EndTable();
   return picked;
-}
-
-void RenderBasketPanel(BasketsState &st, int page) {
-  const int sel = st.sel[page];
-  if (!st.data || st.data->baskets.empty() || sel < 0) {
-    ImGui::TextDisabled("点左栏一行查看走势.");
-    return;
-  }
-  const IndexData &d = *st.data;
-  const size_t b = static_cast<size_t>(sel);
-  const Basket &bk = d.baskets[b];
-  const IndexDay *t = b < st.today.size() && st.today[b].date ? &st.today[b] : nullptr;
-
-  Series intra, daily;
-  intra.intraday = true;
-  intra.money = daily.money = true;
-  {
-    std::vector<const std::vector<Candle> *> src;
-    std::vector<misc::Ymd> dates;
-    for (const std::vector<Candle> &m : bk.minutes)
-      src.push_back(&m), dates.push_back(m.front().date);
-    if (t && !t->bars.empty())
-      src.push_back(&t->bars), dates.push_back(t->date);
-    const size_t nd = std::min<size_t>(static_cast<size_t>(kIntraDays[st.intraday]), src.size());
-    for (size_t k = 0; k < nd; ++k) {
-      const size_t j = src.size() - nd + k;
-      intra.days.push_back(dates[j]);
-      for (const Candle &c : *src[j])
-        intra.push(c, static_cast<double>(k) * kSlots + c.slot);
-    }
-    for (const Candle &c : bk.daily)
-      daily.push(c, static_cast<double>(daily.bars.size()));
-    if (t)
-      daily.push(t->day, static_cast<double>(daily.bars.size()));
-    if (!intra.days.empty())
-      for (auto it = daily.bars.rbegin(); it != daily.bars.rend(); ++it)
-        if (it->date < intra.days.back()) {
-          intra.ref = it->close;
-          break;
-        }
-    if (!daily.bars.empty())
-      daily.ref = daily.bars.back().close;
-  }
-
-  { // 名称 / 点位 / 涨跌 · 口径 (放不下另起一行) · 重载
-    Candle k;
-    double prev = 0;
-    ImGui::TextUnformatted(bk.name.c_str());
-    if (basket_last(st, b, k, prev) && prev > 0) {
-      ImGui::SameLine();
-      ImGui::TextColored(tint(k.close, prev), "%.2f  %+.2f  %+.2f%%", k.close, k.close - prev, (k.close / prev - 1.0) * 100.0);
-    }
-    char note[160];
-    if (t)
-      std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员 / 权重取 %02d-%02d 收盘 (%zu 只)", t->sec / 3600,
-                    t->sec / 60 % 60, t->sec % 60, d.last / 100 % 100, d.last % 100, bk.live.size());
-    else
-      std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", d.last / 100 % 100, d.last % 100);
-    flow(ImGui::CalcTextSize(note).x);
-    ImGui::TextDisabled("%s", note);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("重载"))
-      st.want = true;
-  }
-
-  // 上: 日内; 下: 日线 (同个股页, 无盘口)
-  const float gap = 4.f;
-  const ImVec2 p0 = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
-  const float top_h = std::floor((avail.y - gap) * 0.5f);
-  const uint64_t id = static_cast<uint64_t>(st.gen) << 48 | static_cast<uint64_t>(b) << 32;
-  {
-    const int nd = static_cast<int>(intra.days.size());
-    const uint64_t key = id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
-    plot_chart("##bichart", intra, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, ImVec2(avail.x, top_h), kIntraName, 4, st.intraday);
-  }
-  ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + top_h + gap));
-  {
-    const int n = static_cast<int>(daily.bars.size()), span = kDailySpan[st.daily];
-    const uint64_t key = id | static_cast<uint64_t>(st.daily) << 24 | static_cast<uint64_t>(n);
-    plot_chart("##bdchart", daily, std::max(n, span) - span - 0.5, std::max(n, span) - 0.5, key, st.dv,
-               ImVec2(avail.x, avail.y - top_h - gap), kDailyName, 3, st.daily);
-  }
 }
 
 } // namespace GUI::Database

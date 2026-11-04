@@ -1315,8 +1315,8 @@ void RenderTabAssets(
     const StockInfoMap &stock_info,
     AssetsState &assets_state,
     QuoteService &live,
-    HistoryService &hist,
-    IndexService &idx,
+    StockHistory &stock,
+    BasketHistory &basket,
     const Config &cfg) {
 
   const std::vector<AssetItem> &assets = asset.items;
@@ -1351,8 +1351,8 @@ void RenderTabAssets(
     for (int page = 0; page < 2; ++page)
       if (ImGui::BeginTabItem(page ? "行业" : "指数")) {
         assets_state.list = 1 + page;
-        SyncBaskets(live, idx, cfg, assets_state.baskets, page);
-        if (RenderBasketList(idx, assets_state.baskets, page))
+        SyncBaskets(live, basket, cfg, assets_state.basket);
+        if (RenderBasketList(basket, assets_state.basket, page))
           assets_state.show_right_panel = true;
         ImGui::EndTabItem();
       }
@@ -1367,13 +1367,14 @@ void RenderTabAssets(
     ImGui::BeginChild("RightPanel", ImVec2(0, window_height), true);
     ImGui::PopStyleVar();
     if (assets_state.list > 0)
-      RenderBasketPanel(assets_state.baskets, assets_state.list - 1);
+      RenderBasketPanel(assets_state.basket, assets_state.list - 1);
     else if (ImGui::BeginTabBar("##RightPanel")) {
       if (ImGui::BeginTabItem("Quotes")) {
         assets_state.quotes_page = true;
         const int sel = assets_state.selected_asset;
         const AssetItem *item = sel >= 0 && static_cast<size_t>(sel) < assets.size() ? &assets[static_cast<size_t>(sel)] : nullptr;
-        RenderQuotesPanel(live, hist, item, item ? FindStockInfo(*item, stock_info) : nullptr, assets_state.quotes);
+        SyncStock(live, stock, item, assets_state.stock);
+        RenderStockPanel(live, item ? FindStockInfo(*item, stock_info) : nullptr, assets_state.stock);
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Statistics")) {

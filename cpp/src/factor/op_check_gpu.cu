@@ -159,18 +159,21 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
 } // namespace
 
 // 会话内跑一个算子, 输出留在设备平面 out: 工作区不够才重分配 (只增不缩); cudaEvent 夹 run 计纯 kernel
-void run_dev(Session *s, int op, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, DevPlane *out, int T, int A,
-             int seg, const Param &p, double *kernel_ms) {
+void run_dev(Session *s, int op, const DevPlane *const *in, int n_in, const DevPlane *g, DevPlane *out, int T, int A, int seg,
+             const Param &p, double *kernel_ms) {
   assert(s && s->n == static_cast<size_t>(T) * A && "会话形状与本次调用不符");
   assert(out && out->v && out->m);
-  assert(out != x && out != y && out != z && "算子不支持原地");
+  assert(n_in >= 0 && n_in <= kMaxIn);
   assert(is_seg(seg) && T % seg == 0 && "须给合法段长, T 为整段数");
   const Kernel &k = kernel(op);
   assert(k.cs == (g != nullptr) && (!k.cs || g->m) && "CS 算子必须给池掩码 g, TS 不收");
+  In xs[kMaxIn];
+  for (int i = 0; i < n_in; ++i) {
+    assert(in[i] && in[i]->v && in[i]->m && in[i] != out && "算子不支持原地");
+    xs[i] = {in[i]->v, in[i]->m};
+  }
   Call c;
-  c.x = x ? In{x->v, x->m} : In{};
-  c.y = y ? In{y->v, y->m} : In{};
-  c.z = z ? In{z->v, z->m} : In{};
+  bind_in(c, xs, n_in);
   c.g = g ? g->m : nullptr;
   c.o = {out->v, out->m};
   c.T = T, c.A = A, c.geo = geo_of(seg), c.p = p;
@@ -279,22 +282,23 @@ void mem_info(size_t *free_bytes, size_t *total_bytes) {
 int search_max_batch() { return stat::kMaxBatch; }
 
 // 会话版: 写会话输出平面后拷回宿主 (宿主 pin 过则走 DMA)
-void run(Session *s, int op, const DevPlane *x, const DevPlane *y, const DevPlane *z, const DevPlane *g, float *ov, uint8_t *om, int T,
-         int A, int seg, const Param &p, double *kernel_ms) {
-  run_dev(s, op, x, y, z, g, &s->o, T, A, seg, p, kernel_ms);
+void run(Session *s, int op, const DevPlane *const *in, int n_in, const DevPlane *g, float *ov, uint8_t *om, int T, int A, int seg,
+         const Param &p, double *kernel_ms) {
+  run_dev(s, op, in, n_in, g, &s->o, T, A, seg, p, kernel_ms);
   CU(cudaMemcpy(ov, s->o.v, s->n * sizeof(float), cudaMemcpyDeviceToHost));
   CU(cudaMemcpy(om, s->o.m, s->n, cudaMemcpyDeviceToHost));
 }
 
 // 一次性版: 临时会话, 上传 → 跑 → 关
-void run(int op, const float *xv, const uint8_t *xm, const float *yv, const uint8_t *ym, const float *zv, const uint8_t *zm,
-         const uint8_t *gm, float *ov, uint8_t *om, int T, int A, int seg, const Param &p, double *kernel_ms) {
+void run(int op, int n_in, const float *const *v, const uint8_t *const *m, const uint8_t *gm, float *ov, uint8_t *om, int T, int A,
+         int seg, const Param &p, double *kernel_ms) {
+  assert(n_in >= 0 && n_in <= kMaxIn);
   Session *s = session_open(static_cast<size_t>(T) * A);
-  const DevPlane *x = xv ? upload(s, xv, xm) : nullptr;
-  const DevPlane *y = yv ? upload(s, yv, ym) : nullptr;
-  const DevPlane *z = zv ? upload(s, zv, zm) : nullptr;
+  const DevPlane *in[kMaxIn] = {};
+  for (int i = 0; i < n_in; ++i)
+    in[i] = upload(s, v[i], m[i]);
   const DevPlane *g = gm ? upload_mask(s, gm) : nullptr;
-  run(s, op, x, y, z, g, ov, om, T, A, seg, p, kernel_ms);
+  run(s, op, in, n_in, g, ov, om, T, A, seg, p, kernel_ms);
   session_close(s);
 }
 

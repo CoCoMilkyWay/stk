@@ -46,19 +46,20 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
     if (nd.op < 0 || nd.fu.n > 0)
       continue;
     const factor::expr::OpInfo &o = factor::expr::kOps[nd.op];
-    assert(nd.n_in == o.arity);
-    for (int s = 0; s < o.arity && err[i].empty(); ++s) {
+    assert(nd.n_in == o.arity || factor::expr::nary(o));
+    for (int s = 0; s < nd.n_in && err[i].empty(); ++s) {
       const factor::DagNode &g = d.nodes[static_cast<size_t>(nd.in[s])];
-      if (g.op >= 0 || !factor::dom_strict(o.in[s]))
+      const factor::Dom in = factor::expr::in_of(o, s);
+      if (g.op >= 0 || !factor::dom_strict(in))
         continue;
       const size_t f = static_cast<size_t>(g.feat);
       const Leaf *lf = c.x.find(ids[f]);
       assert(lf && "叶不在块上 (BlockSpec::x)");
-      const auto [it, fresh] = lf->dom.try_emplace(o.in[s]);
+      const auto [it, fresh] = lf->dom.try_emplace(in);
       if (fresh)
-        it->second = out_of_dom(ex, *lf, o.in[s]);
+        it->second = out_of_dom(ex, *lf, in);
       if (!it->second.empty())
-        err[i] = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(o.in[s]) + ", 特征 " + d.feats[f] + " 含越界值 " + it->second;
+        err[i] = std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + factor::dom_name(in) + ", 特征 " + d.feats[f] + " 含越界值 " + it->second;
     }
   }
   why.resize(d.roots.size());

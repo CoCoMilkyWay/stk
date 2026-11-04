@@ -17,6 +17,7 @@
 // =============================================================================
 
 #include "factor/Contract.hpp"
+#include "factor/Stat/Contract.hpp" // 持有期几何 (CsLinRankRoll)
 #include "factor/StreamHist.hpp"
 
 #include <algorithm>
@@ -429,6 +430,76 @@ private:
   std::vector<double> sx_, sy_;
   std::vector<float> lo_, hi_;
   std::vector<int> n_, q_;
+};
+
+// =========================== N 元回归 ===========================
+
+// xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】). 自 t = 0 逐行顺序推: 行 t 新实现的标签行 s
+// 读 Call 第 s 行算一次矩入环 (环 = 最近 d 个标签行), 窗和每步按 s 升序从环现加 (不做增减, 无漂移)
+struct CsLinRankRoll {
+  CS_SIG {
+    assert(c.g && c.o.v && c.o.m && c.n >= 3 && c.n <= kMaxIn && 0 <= t && t < c.T && "CS 必带池掩码 g; 至少 2 个特征元 + 目标");
+    const int n = c.n - 1, M = lr_moms(n), d = c.p.d, A = c.A;
+    if (t == 0) {
+      ring_.assign(static_cast<size_t>(d) * M, 0.0);
+      next_ = 0, done_ = -1;
+    }
+    assert(t == next_ && "逐行顺序推");
+    ++next_;
+    const int u = factor::stat::label_last(t, c.p.h, c.geo);
+    for (int s = std::max(done_ + 1, u - d + 1); s <= u; ++s)
+      moments(c, s, n, &ring_[static_cast<size_t>(s % d) * M]);
+    done_ = std::max(done_, u);
+    double acc[kLrMoms] = {};
+    for (int s = std::max(0, u - d + 1); s <= u; ++s)
+      for (int m = 0; m < M; ++m)
+        acc[m] += ring_[static_cast<size_t>(s % d) * M + m];
+    double w[kLrN];
+    lr_solve(acc, n, c.p.k, w);
+    const size_t r = static_cast<size_t>(t) * A;
+    for (int i = 0; i < n; ++i)
+      detail::hist_of(h_[i], buf_, c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
+    for (int a = 0; a < A; ++a) {
+      bool ok = true;
+      double v = 0.0;
+      for (int i = 0; i < n; ++i) {
+        ok = ok && c.xs[i].m[r + a];
+        v += w[i] * (static_cast<double>(h_[i].rank(c.xs[i].v[r + a])) - 0.5);
+      }
+      detail::put(c.o.v + r, c.o.m + r, a, mk(v, ok));
+    }
+  }
+
+private:
+  // 标签行 s 的矩 (样本 = 池内 ∧ 全部元与标签有效; 段末尾部行恒 0)
+  void moments(const Call &c, int s, int n, double *out) {
+    const int M = lr_moms(n), A = c.A;
+    std::fill(out, out + M, 0.0);
+    if (factor::stat::tail_masked(s, c.p.h, c.geo))
+      return;
+    const size_t r = static_cast<size_t>(s) * A;
+    for (int i = 0; i <= n; ++i)
+      detail::hist_of(h_[i], buf_, c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
+    double x[kMaxIn];
+    for (int a = 0; a < A; ++a) {
+      bool ok = c.g[r + a];
+      for (int i = 0; i <= n; ++i)
+        ok = ok && c.xs[i].m[r + a];
+      if (!ok)
+        continue;
+      for (int i = 0; i <= n; ++i)
+        x[i] = static_cast<double>(h_[i].rank(c.xs[i].v[r + a])) - 0.5;
+      for (int i = 0; i < n; ++i) {
+        for (int j = i; j < n; ++j)
+          out[lr_ix(i, j, n)] += x[i] * x[j];
+        out[n * (n + 1) / 2 + i] += x[i] * x[n];
+      }
+    }
+  }
+  stream::Hist h_[kMaxIn];
+  std::vector<float> buf_;
+  std::vector<double> ring_; // [d][M]: 标签行 s 在槽 s % d
+  int next_ = 0, done_ = -1; // 下一行 / 已入环的最末标签行
 };
 
 #undef CS_ROW

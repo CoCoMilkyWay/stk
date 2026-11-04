@@ -230,23 +230,47 @@ FACTOR_HD inline constexpr int hold_rows(int hold, const Geo &g) {
   const int n = hold_days(hold);
   return g.S * (n < 1 ? 1 : n);
 }
-// 列名 token → 键: "<n>m" / "close" / "t<N>o" / "t<N>c" (LabelGroups LABEL_GROUPS 的 name); 不识别 → 断言
-inline int hold_from_name(std::string_view name) {
-  assert(!name.empty());
-  if (name == "close")
-    return kHoldClose;
+// 列名 token → 键: "<n>m" / "close" / "t<N>o" / "t<N>c" (LabelGroups LABEL_GROUPS 的 name; 表达式 h= 同写法); 不合 / 键越界 → false
+inline bool hold_parse(std::string_view name, int &hold) {
+  if (name == "close") {
+    hold = kHoldClose;
+    return true;
+  }
+  if (name.size() < 2)
+    return false;
   const bool day = name.front() == 't';
   const char tail = name.back();
-  assert((day ? tail == 'o' || tail == 'c' : tail == 'm') && "持有期 token 不合 <n>m / close / t<N>o / t<N>c");
+  if (!(day ? tail == 'o' || tail == 'c' : tail == 'm'))
+    return false;
   const std::string_view digits = day ? name.substr(1, name.size() - 2) : name.substr(0, name.size() - 1);
-  assert(!digits.empty());
+  if (digits.empty() || digits.size() > 4)
+    return false;
   int n = 0;
   for (const char c : digits) {
-    assert(c >= '0' && c <= '9' && "持有期 token 数字部分非数字");
+    if (c < '0' || c > '9')
+      return false;
     n = n * 10 + (c - '0');
   }
-  return !day ? n : tail == 'o' ? hold_open(n)
+  hold = !day ? n : tail == 'o' ? hold_open(n)
                                 : hold_close(n);
+  return hold_key_ok(hold);
+}
+// 列名 token → 键; 不识别 → 断言
+inline int hold_from_name(std::string_view name) {
+  int h = 0;
+  const bool ok = hold_parse(name, h);
+  assert(ok && "持有期 token 不合 <n>m / close / t<N>o / t<N>c");
+  (void)ok;
+  return h;
+}
+// 键 → 列名 token (hold_parse 的逆)
+inline std::string hold_token(int hold) {
+  assert(hold_key_ok(hold));
+  if (hold_intraday(hold))
+    return std::to_string(hold) + "m";
+  if (hold == kHoldClose)
+    return "close";
+  return "t" + std::to_string(hold_days(hold)) + (hold_is_open(hold) ? "o" : "c");
 }
 // 键 → 显示名: "5m" / "close" / "T+1O" / "T+2C"
 inline std::string hold_name(int hold) {
@@ -510,11 +534,30 @@ struct Cell {
 };
 // 平仓行 (见文件头【净值】): 行 t 这一批的收益在哪一行实现. t = 绝对行号; 分钟型 = t + h; 收盘型 = 当日末行;
 // T+N 开盘型 = D+N 日首行; T+N 收盘型 = D+N 日末行 (日层 S = 1: 两者都是 t + N). 顺延不改实现行 (按名义平仓日记)
-inline int hold_exit_row(int t, int hold, const Geo &g) {
+FACTOR_HD inline int hold_exit_row(int t, int hold, const Geo &g) {
   if (hold_intraday(hold))
     return t + hold_rows(hold, g);
   const int d = t / g.S + hold_days(hold);
   return hold_is_open(hold) ? d * g.S : d * g.S + g.S - 1;
+}
+// 行 s 的标签在哪一行收盘时已实现 (N 元回归的样本行, Contract【N 元回归】): 平仓行的价点成交即知;
+// 分钟型价点 E 是平仓行之后首个连续竞价分钟的 VWAP, 至迟下一行收盘可知 (+1); 收盘 / 开盘撮合价在平仓行内. 顺延不计 (按名义平仓行).
+// 单调不减 ⇒ 行 t 可用的标签行是前缀 {s : label_known(s) ≤ t}. s = 块内行号 (块首对齐段首)
+FACTOR_HD inline int label_known(int s, int hold, const Geo &g) { return hold_exit_row(s, hold, g) + (hold_intraday(hold) ? 1 : 0); }
+// 行 t 可用的最末标签行 u(t) (无 → −1): 从 t 往回走 (步数 ≤ label_reach)
+FACTOR_HD inline int label_last(int t, int hold, const Geo &g) {
+  int u = t;
+  while (u >= 0 && label_known(u, hold, g) > t)
+    --u;
+  return u;
+}
+// t − u(t) 的上界 (行): N 元回归的回看 = d + 它. 逐段周期, 取一个周期上的最大
+inline int label_reach(int hold, const Geo &g) {
+  const int t0 = (hold_days(hold) + 2) * g.S + hold_rows(hold, g) + 1; // 之后 u(t) 不再受块首截断
+  int r = 0;
+  for (int t = t0; t < t0 + g.S; ++t)
+    r = std::max(r, t - label_last(t, hold, g));
+  return r;
 }
 // 资金口径行数 h̄ (见文件头【持有期键】): 一日各开仓行的在持行数 (建仓行起, hold_exit_row 止; 尾部行不开仓不计) 之和 / S
 inline double hold_span(int hold, const Geo &g) {

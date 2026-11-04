@@ -84,46 +84,46 @@ void emit(Report &rep, const char *name, int S, const Param &p, const char *prof
               p.k, prof, d.mask_bad, d.val_bad, d.compared, d.worst, d.worst_at);
 }
 
-// 一个算子在一层 (段长 S) 上的全部用例: profile × d 扫描
+// 一个算子在一层 (段长 S) 上的全部用例: profile × d (× h) 扫描
 //   d 扫 {1, 5, 20, S, S + 60}: S = 恰一段 (ROLL 窗界与段界重合), S + 60 > 段 (窗跨段, GPU 块界不对齐段界)
+//   h (N 元回归) 扫 {T+1 收盘, 日内 2 行 (有段末尾部) / 日层 T+1 开盘}
 template <class Str, class C, bool IS_CS>
 void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
   const factor::expr::OpInfo &o = factor::expr::kOps[op];
   const char *name = o.name;
-  const int T = rows_of(rep, S), AR = o.arity;
+  const int T = rows_of(rep, S), NI = n_in_of(o.arity);
   const std::string nm = name;
-  const Recipe rc = recipe_of(o.in);
   const bool sweep_d = std::strchr(o.params, 'd') != nullptr;
   const int ds[] = {1, 5, 20, S, S + 60};
   constexpr int kNd = static_cast<int>(sizeof(ds) / sizeof(ds[0]));
+  const bool sweep_h = factor::has_h(o.arity);
+  const int hs[] = {factor::stat::hold_close(1), S > 1 ? 2 * factor::geo_of(S).N : factor::stat::hold_open(1)};
+  constexpr int kNh = static_cast<int>(sizeof(hs) / sizeof(hs[0]));
 
   for (int pi = 0; pi < kProfiles; ++pi) {
     const Profile pr = static_cast<Profile>(pi);
     std::mt19937 rng(seed + 1000u * pi);
-    Plane x, y, z, gate; // 元数够到的槽位才造; CS 多一张池掩码
+    Plane in[factor::kMaxIn], gate; // 输入数够到的槽位才造; CS 多一张池掩码
     Data d;
-    d.T = T, d.A = A;
-    if (AR >= 1)
-      fill(x, rc.x, pr, T, A, S, rng), d.x = &x;
-    if (AR >= 2)
-      fill(y, rc.y, pr, T, A, S, rng), d.y = &y;
-    if (AR >= 3)
-      fill(z, rc.z, pr, T, A, S, rng), d.z = &z;
+    d.T = T, d.A = A, d.n = NI;
+    for (int s = 0; s < NI; ++s)
+      fill(in[s], gen_at(o.in, o.arity, s), pr, T, A, S, rng), d.in[s] = &in[s];
     if (IS_CS)
       fill_gate(gate, pr, T, A, S, rng), d.g = &gate;
 
-    for (int di = 0; di < (sweep_d ? kNd : 1); ++di) {
+    for (int ci = 0; ci < (sweep_d ? kNd : 1) * (sweep_h ? kNh : 1); ++ci) {
       Param p;
-      p.d = sweep_d ? ds[di] : 1;
+      p.d = sweep_d ? ds[ci % kNd] : 1;
+      p.h = sweep_h ? hs[ci / kNd] : 0;
       set_k(nm, p, S);
 
       Plane ref, got;
       if constexpr (IS_CS) {
-        run_cpu_cs<C>(d, p, AR, S, ref);
-        run_stream_cs<Str>(d, p, AR, S, got);
+        run_cpu_cs<C>(d, p, S, ref);
+        run_stream_cs<Str>(d, p, S, got);
       } else {
-        run_cpu_ts<C>(d, p, AR, S, ref);
-        run_stream_ts<Str>(d, p, AR, S, got);
+        run_cpu_ts<C>(d, p, S, ref);
+        run_stream_ts<Str>(d, p, S, got);
       }
       ++rep.cases;
       Diff ds_ = compare(ref, got, tol_of(nm, false, pr));
@@ -134,10 +134,12 @@ void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
       if (factor::gpu::available()) {
         Plane g;
         g.resize(static_cast<size_t>(T) * A);
-        const auto V = [](const Plane *q) -> const float * { return q ? q->v.data() : nullptr; };
-        const auto M = [](const Plane *q) -> const uint8_t * { return q ? q->m.data() : nullptr; };
+        const float *iv[factor::kMaxIn] = {};
+        const uint8_t *im[factor::kMaxIn] = {};
+        for (int s = 0; s < NI; ++s)
+          iv[s] = in[s].v.data(), im[s] = in[s].m.data();
         // 一次性宿主指针版本 (内部临时会话)
-        factor::gpu::run(op, V(d.x), M(d.x), V(d.y), M(d.y), V(d.z), M(d.z), M(d.g), g.v.data(), g.m.data(), T, A, S, p);
+        factor::gpu::run(op, NI, iv, im, d.g ? d.g->m.data() : nullptr, g.v.data(), g.m.data(), T, A, S, p);
         Diff dg = compare(ref, g, tol_of(nm, true, pr));
         if (!dg.ok())
           ++rep.gpu_bad;
@@ -177,7 +179,9 @@ int gen_tree(std::vector<GenNode> &pool, std::mt19937 &rng, int depth, int S) {
     std::vector<int> r;
     for (int i = 0; i < factor::expr::kOpCount; ++i) {
       const factor::expr::OpInfo &o = factor::expr::kOps[i];
-      const int k = factor::detail::pointwise(i) ? 0 : (o.a == factor::A::SELF ? 1 : (o.a == factor::A::ALL ? 2 : -1));
+      const int k = o.arity == factor::kNary  ? -1 // N 元回归要标签叶, 不进随机树
+                    : factor::detail::pointwise(i) ? 0
+                                                   : (o.a == factor::A::SELF ? 1 : (o.a == factor::A::ALL ? 2 : -1));
       if (k == kind)
         r.push_back(i);
     }
@@ -216,7 +220,9 @@ int emit_expr(factor::expr::Expr &e, const std::vector<GenNode> &pool, int g) {
   e.nodes.push_back(n);
   if (q.op >= 0) {
     ++e.n_ops;
-    for (int a = 0; a < factor::expr::kOps[q.op].arity; ++a) {
+    const int ar = factor::expr::kOps[q.op].arity;
+    e.nodes[static_cast<size_t>(i)].n_args = ar;
+    for (int a = 0; a < ar; ++a) {
       const int c = emit_expr(e, pool, q.kids[a]);
       e.nodes[static_cast<size_t>(i)].args[a] = c;
     }

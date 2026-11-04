@@ -10,8 +10,8 @@
 //
 //   【行序 = 全局 idx】全库唯一算子序, code 与 UI 统一按它 (operators.json 的 idx /
 //   op_check 输出序 / GUI Operators 表默认序), 序键 (枚举序见 Contract.hpp):
-//     元数 → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL → GROUP → 核类 → 名字字母序
-//   表按 (元数 × 域) 切成 OP_TS0..3 / OP_CS1..3 七块, 块内按上述序键排;
+//     元数 (N 元在末) → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL → GROUP → 核类 → 名字字母序
+//   表按 (元数 × 域) 切成 OP_TS0..3 / OP_CS1..3 / OP_CSN 八块, 块内按上述序键排;
 //   OP_ALL 交错拼出 idx 序 (各后端的下标分派表都由它展开).
 //   加算子按序键插行, idx 顺延, 不另设编号.
 //
@@ -21,7 +21,8 @@
 //   (列名 = OperatorRow 字段名 = operators.json 键名 = GUI 表头, 全库统一叫法)
 //     c_name 与 e_name 逐段对应的固定规则 (无冗余字): 域 时(Ts) / 截(Cs·ALL) / 组(Cs·GROUP)
 //            + 窗 累(Cum) / 滚(Roll) / 指(Ema) (逐点无窗字) + 核 (标准术语: 均值 / 方差 / 秩 / 贝塔 …)
-//     元数   输入序列数 0..3 (窗长 d / 阈值 k 不算元)
+//     元数   输入序列数 0..3 (窗长 d / 阈值 k 不算元); factor::kNary = N 元 (特征元数由表达式定, 末元回归目标解析时补,
+//            Contract【N 元回归】)
 //     T窗    POINT  当前点 (无时间状态)
 //            EXPAND 段内 expanding (段 = 交易日 = 本层 S 行, 段界 reset; Contract【层几何】)
 //            ROLL   最近 d 期滚动 (期 = 本层的行, 跨段不 reset)
@@ -30,15 +31,16 @@
 //     核类   MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /
 //            ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级
 //
-//   参数 (Contract.hpp struct Param) 不单列, 由 (T, k域) 推出 (params_str): d ⇔ T = ROLL (窗长 / 滞后, 期 = 本层的行);
-//     k ⇔ k域 ≠ NONE (阈值 / 桶数 / EMA 系数 / 分位, 含义见各行 operator); k2 ⇔ k域 = TOD (TodMask 上界)
-//   k域 列 = k 的值域 (enum KDom): NONE / ANY ℝ / GE0 ≥0 / OPEN01 (0,1) / OPEN0_CLOSED1 (0,1] / OPEN0_HALF (0,1/2) /
+//   参数 (Contract.hpp struct Param) 不单列, 由 (T, k域, 元数) 推出 (params_str): d ⇔ T = ROLL (窗长 / 滞后, 期 = 本层的行);
+//     k ⇔ k域 ≠ NONE (阈值 / 桶数 / EMA 系数 / 分位 / 岭强度, 含义见各行 operator); k2 ⇔ k域 = TOD (TodMask 上界);
+//     h ⇔ 元数 N (回归目标的持有期, 写标签列名 token: 5m / close / t1o / t1c …)
+//   k域 列 = k 的值域 (enum KDom): NONE / ANY ℝ / GE0 ≥0 / GT0 >0 / OPEN01 (0,1) / OPEN0_CLOSED1 (0,1] / OPEN0_HALF (0,1/2) /
 //     POSINT_GROUP 正整数 ≤ kMaxGroup / TOD 0 ≤ k < k2 ≤ S 整数 (S = 本层段长);  parse 按它校验参数值
 //
 //   in / out 列 = 自变量 / 因变量值域 (同一 enum Dom, Contract.hpp; 全机器可读, 表里不手写值域 LaTeX):
 //     REAL ℝ / NONNEG ℝ≥0 / POS ℝ>0 / UNIT [0,1] / SIGNED [−1,1] / BIN {0,1} / SIGN3 {−1,0,1} / INT [0,kMaxGroup) / BCAST 截面广播 /
 //     RET ℝ>−1 收益率
-//     in  按元数写 OP_IN0..3(逐元 Dom), GROUP 域的组 id 元写 INT; 只写能写成集合的约束 (y ≠ 0 写不成 → REAL)
+//     in  按元数写 OP_IN0..3(逐元 Dom) / OP_INN (N 元: 各特征元同一 Dom), GROUP 域的组 id 元写 INT; 只写能写成集合的约束 (y ≠ 0 写不成 → REAL)
 //     out 只按算子自身声明: 透传 (Mask / Where / Delay) 与取大取小写 REAL, 不随输入推导; 计数 (ArgMax 期数) 写 NONNEG
 //     parser 逐元查: in 为严格域 (INT) 时 子.out ⊆ in (dom_sub), 特征叶到 eval 前按数据查; 其余 in 是语义声明 (越界格算子自按退化规则处理)
 //     因子根 (归一算子) 的输入不许离散 (BIN / SIGN3 / INT) / 不许被 BCAST 抹平 (Expr.hpp root_frame)
@@ -54,7 +56,8 @@
 //
 //   【operator 符号】继承 features/FeaturesDefine.hpp 的规范 (t = 分钟, D = 交易日, 1[·] 指示),
 //   算子库专用补充 (GUI Factors→Operators 页按 LaTeX 渲染):
-//     x, y, z     输入序列, 按元数取前 1..3 个; 每格 Val{v, m}, 所有 ∑ / 计数 / 极值只计有效 (m = 1) 样本
+//     x, y, z     输入序列, 按元数取前 1..3 个; 每格 Val{v, m}, 所有 ∑ / 计数 / 极值只计有效 (m = 1) 样本; N 元写 x_1..x_N
+//     r^h         h 持有期的做多标签 (N 元回归的目标); L_t = 行 t 收盘时已实现标签的最近 d 行 (Contract【N 元回归】)
 //     a, b        资产 (截面轴). TS 只看本资产, 省略 a; CS 只看同一 t 的截面, 写 x_a 省略 t
 //     t_D         段内位置 = t − 当日首行 (0..S−1; L_1min 上即分钟)
 //     W_t         TS 窗 (由 T 列决定, operator 里统一写 W_t):
@@ -189,6 +192,11 @@
 #define OP_CS3(X) \
   X(CsGroupResid, "组残差", 3, POINT, GROUP, MOMENT, NONE, OP_IN3(REAL, REAL, INT), REAL, R"tex(\tilde x_a - \hat\beta\,\tilde y_a,\; \tilde x_a = x_a - \bar x_{G(a)},\; G(a) = \{b : z_b = z_a\})tex", "组内 demean 后 x 对 y 的回归残差; 组与 y 双重中性化, z = 组 id (负 = 未知 → 全池)")
 
+// ---- N 元 × 截面 (1) ----
+//   x̃ / r̃ = 本行池内截面 pct − 1/2 (r^h 同); G 与 Σ x̃ r̃ 沿 L_t 各行的样本 (池内 ∧ 全部元与标签有效) 池化; 无样本 → w = 0
+#define OP_CSN(X) \
+  X(CsLinRankRoll, "截滚线性序回归", factor::kNary, ROLL, ALL, MOMENT, GT0, OP_INN(REAL), REAL, R"tex(\Sigma_i\,w_i\,\tilde x_{i,a},\; w = (G + k\,(\mathrm{tr}\,G / N)\,I)^{-1}\,\Sigma_{L_t}\tilde X^{\top}\tilde r,\; G = \Sigma_{L_t}\tilde X^{\top}\tilde X,\; \tilde x = \mathrm{pct}(x) - 1/2)tex", "N 个特征的截面秩对 h 持有期收益截面秩的滚动岭回归拟合值; 多特征线性合成因子, 外套 CsRank 作根")
+
 // ---- 拼装: OP_ALL 展开序 = 全局 idx 序;
 //      需要按 A 域分派时用 X_##域 token 粘贴 (见 op_check / OperatorsService) ----
-#define OP_ALL(X) OP_TS0(X) OP_TS1(X) OP_CS1(X) OP_TS2(X) OP_CS2(X) OP_TS3(X) OP_CS3(X)
+#define OP_ALL(X) OP_TS0(X) OP_TS1(X) OP_CS1(X) OP_TS2(X) OP_CS2(X) OP_TS3(X) OP_CS3(X) OP_CSN(X)

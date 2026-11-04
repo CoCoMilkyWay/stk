@@ -26,12 +26,12 @@
 namespace GUI::Factors {
 
 // 一轮的常驻件 (worker 栈上, 轮末析构释放):
-//   输入  按 (槽位 x/y/z, Gen) 懒造一次 (并行 fill, 主 rng 派生) + 上传显存一次, 全表复用; 最多 8 张 ≈ 960MB 宿主
+//   输入  按 (输入槽位, Gen) 懒造一次 (并行 fill, 主 rng 派生) + 上传显存一次, 全表复用; 最多 9 张 ≈ 1.1GB 宿主
 //   输出  cpu 参考 / stream / gpu 三块, 开轮 resize 预触页, 跨算子只 ensure 不清 (契约: 后端写满每格)
 //   GPU   常驻 Session (输出平面 / 工作区在里面), gpu 输出宿主缓冲 pin 住走 DMA
 // 算子之间除一张输出的 D2H 与 compare 外不留 overhead, cpu_ms / stream_ms 里也不混首次触页
 struct RoundCtx {
-  static constexpr int kSlots = 3, kGens = 4; // Gen: NORM / POS / SMALL / GROUP
+  static constexpr int kSlots = factor::check::kNaryIn + 1, kGens = 4; // 槽位盖住 N 元的输入数; Gen: NORM / POS / SMALL / GROUP
   const OperatorsRequest &rq;
   std::mt19937 rng;
   size_t n;
@@ -92,33 +92,34 @@ double ms_since(Clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
-// 本轮实际参数: 参数列含 d 才吃默认窗长表 (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams
+// 本轮实际参数: 参数列含 d 才吃默认窗长表 (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams; h (N 元) = T+1 收盘
 factor::Param param_of(const OperatorRow &row) {
   factor::Param p;
   p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.e_name) : 1;
   factor::check::set_k(row.e_name, p, factor::kSegMax);
+  if (factor::expr::declares(row.params, "h"))
+    p.h = factor::stat::hold_close(1);
   return p;
 }
 
-// 一个算子: 从 RoundCtx 取输入 (配方按 in 域, 元数不到的槽位空) → cpu / stream / gpu 各计时 → 对拍
+// 一个算子: 从 RoundCtx 取输入 (配方按 in 域, 输入数不到的槽位空) → cpu / stream / gpu 各计时 → 对拍
 template <class S, class C, bool IS_CS>
 void run_op(RoundCtx &R, OperatorRow &row) {
   using namespace factor::check;
   const std::string nm = row.e_name;
   const int op = factor::expr::op_index(nm);
   assert(op >= 0);
-  const int AR = factor::expr::kOps[op].arity;
-  const Recipe rc = recipe_of(factor::expr::kOps[op].in);
-  const Gen gens[3] = {rc.x, rc.y, rc.z};
-  const Plane *pl[3] = {};
-  const factor::gpu::DevPlane *dp[3] = {};
-  for (int s = 0; s < AR; ++s) {
-    pl[s] = &R.plane(s, gens[s]);
-    dp[s] = R.gpu ? R.dplane(s, gens[s]) : nullptr;
-  }
+  const factor::expr::OpInfo &o = factor::expr::kOps[op];
+  const int NI = n_in_of(o.arity);
+  assert(NI <= RoundCtx::kSlots);
   Data d;
-  d.T = R.rq.times, d.A = R.rq.A;
-  d.x = pl[0], d.y = pl[1], d.z = pl[2];
+  d.T = R.rq.times, d.A = R.rq.A, d.n = NI;
+  const factor::gpu::DevPlane *dp[factor::kMaxIn] = {};
+  for (int s = 0; s < NI; ++s) {
+    const Gen gen = gen_at(o.in, o.arity, s);
+    d.in[s] = &R.plane(s, gen);
+    dp[s] = R.gpu ? R.dplane(s, gen) : nullptr;
+  }
   if (IS_CS)
     d.g = &R.gate_plane();
 
@@ -127,22 +128,22 @@ void run_op(RoundCtx &R, OperatorRow &row) {
 
   Clock::time_point t0 = Clock::now();
   if constexpr (IS_CS)
-    run_cpu_cs<C>(d, p, AR, seg, R.ref);
+    run_cpu_cs<C>(d, p, seg, R.ref);
   else
-    run_cpu_ts<C>(d, p, AR, seg, R.ref);
+    run_cpu_ts<C>(d, p, seg, R.ref);
   row.cpu_ms = ms_since(t0);
 
   t0 = Clock::now();
   if constexpr (IS_CS)
-    run_stream_cs<S>(d, p, AR, seg, R.got);
+    run_stream_cs<S>(d, p, seg, R.got);
   else
-    run_stream_ts<S>(d, p, AR, seg, R.got);
+    run_stream_ts<S>(d, p, seg, R.got);
   row.stream_ms = ms_since(t0);
   row.cpu_chk = compare(R.ref, R.got, tol_of(nm, false, Profile::PLAIN));
 
   if (R.gpu) {
     double kms = -1; // 纯 kernel (cudaEvent); 输入已常驻, 这里只剩 kernel + 一张输出 D2H
-    factor::gpu::run(R.gpu, op, dp[0], dp[1], dp[2], IS_CS ? R.dgate : nullptr, R.g.v.data(), R.g.m.data(), d.T, d.A, seg, p, &kms);
+    factor::gpu::run(R.gpu, op, dp, NI, IS_CS ? R.dgate : nullptr, R.g.v.data(), R.g.m.data(), d.T, d.A, seg, p, &kms);
     row.gpu_ms = kms;
     row.gpu_chk = compare(R.ref, R.g, tol_of(nm, true, Profile::PLAIN));
   }
@@ -382,9 +383,9 @@ OperatorsService::OperatorsService() {
 #define RUN_SELF(Name) (&run_op<factor::ts::Name, factor::cpu::ts::Name, false>)
 #define RUN_ALL(Name) (&run_op<factor::cs::Name, factor::cpu::cs::Name, true>)
 #define RUN_GROUP RUN_ALL
-#define ROW(Name, c_name, ar, t, a, kern, kdom, in, out, op, note)                                                       \
-  rows.push_back({#Name, c_name, ar, factor::T::t, factor::A::a, factor::Kern::kern, factor::KDom::kdom,                 \
-                  factor::params_str(factor::T::t, factor::KDom::kdom), std::string{}, in, factor::Dom::out, op, note}); \
+#define ROW(Name, c_name, ar, t, a, kern, kdom, in, out, op, note)                                                           \
+  rows.push_back({#Name, c_name, ar, factor::T::t, factor::A::a, factor::Kern::kern, factor::KDom::kdom,                     \
+                  factor::params_str(factor::T::t, factor::KDom::kdom, ar), std::string{}, in, factor::Dom::out, op, note}); \
   runners_.push_back(RUN_##a(Name));
   OP_ALL(ROW)
 #undef ROW
@@ -434,8 +435,9 @@ bool OperatorsService::run(OperatorsRequest &req) {
     factor::check::Plane x, o;
     x.resize(factor::kSegMax), o.resize(factor::kSegMax);
     factor::Param p;
-    factor::gpu::run(factor::expr::op_index("TsAbs"), x.v.data(), x.m.data(), nullptr, nullptr, nullptr, nullptr, nullptr, o.v.data(),
-                     o.m.data(), factor::kSegMax, 1, factor::kSegMax, p);
+    const float *xv = x.v.data();
+    const uint8_t *xm = x.m.data();
+    factor::gpu::run(factor::expr::op_index("TsAbs"), 1, &xv, &xm, nullptr, o.v.data(), o.m.data(), factor::kSegMax, 1, factor::kSegMax, p);
     gpu_warmed_ = true;
   }
 

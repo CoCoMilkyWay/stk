@@ -47,7 +47,7 @@ inline void run_node(Session *s, const DagNode &nd, const DevPlane *const in[kFu
     return run_fused(s, nd.fu, in, nd.n_in, out, T, A, seg, kernel_ms);
   const expr::OpInfo &o = expr::kOps[nd.op];
   assert((o.a == A::SELF || cs_gate) && "CS 节点必须给截面池掩码 cs_gate");
-  run_dev(s, nd.op, in[0], in[1], in[2], o.a == A::SELF ? nullptr : cs_gate, out, T, A, seg, nd.p, kernel_ms);
+  run_dev(s, nd.op, in, nd.n_in, o.a == A::SELF ? nullptr : cs_gate, out, T, A, seg, nd.p, kernel_ms);
 }
 
 // 节点 i 的平面: 叶 = inputs[feat], 算子 = 池槽 (复用口径同 EvalCpu plane_at)

@@ -130,9 +130,10 @@ inline void run_node(Exec &ex, const DagNode &nd, const check::Plane *const in[k
   const expr::OpInfo &o = expr::kOps[nd.op];
   assert((o.a == A::SELF || cs_gate) && "CS 节点必须给截面池掩码 cs_gate");
   Call c;
-  In *const slot[3] = {&c.x, &c.y, &c.z};
-  for (int a = 0; a < o.arity; ++a)
-    *slot[a] = {in[a]->v.data(), in[a]->m.data()};
+  In xs[kMaxIn];
+  for (int a = 0; a < nd.n_in; ++a)
+    xs[a] = {in[a]->v.data(), in[a]->m.data()};
+  bind_in(c, xs, nd.n_in);
   c.g = cs_gate;
   c.o = {out.v.data(), out.m.data()};
   c.T = T, c.A = A, c.geo = geo_of(seg), c.p = nd.p;

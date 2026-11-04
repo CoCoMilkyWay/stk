@@ -93,14 +93,14 @@ struct AssetsState {
 
   // 左栏: 0 个股 (下表) / 1 指数 / 2 行业 (篮子列表, 右栏只有走势)
   int list = 0;
-  BasketsState baskets;
+  BasketState basket;
 
   // 右栏 (个股): Quotes (选中标的行情) / Statistics (选中列的截面分析); 点格子在 Statistics 页才切列
   bool quotes_page = true;
   int selected_column_idx = -1; // Selected column for analysis (-1 = none)
   bool show_right_panel = true;
   float table_split_ratio = 0.65f; // Left/right split ratio (0-1)
-  QuotesState quotes;
+  StockState stock;
 
   // 过滤 + 排序结果的缓存 (表格与横截面面板共用)
   AssetsView view;
@@ -112,8 +112,8 @@ void RenderTabAssets(
     const StockInfoMap &stock_info,
     AssetsState &assets_state,
     QuoteService &live,
-    HistoryService &hist,
-    IndexService &idx,
+    StockHistory &stock,
+    BasketHistory &basket,
     const Config &cfg);
 
 } // namespace GUI::Database

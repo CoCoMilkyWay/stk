@@ -34,7 +34,7 @@ LibMask used_libs(const FeatureTable &ft, PoolId pool, const std::vector<LeafId>
   LibMask m = lib_bit(lab);
   for (const LeafId id : leaves) {
     const FeatCol &c = ft.x.leaves[id];
-    assert(c.allowed);
+    assert(c.allowed || c.target);
     m |= lib_bit(c.ref(pool).lib);
   }
   return m;

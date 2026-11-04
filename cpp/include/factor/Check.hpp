@@ -70,10 +70,12 @@ struct Arena {
   }
 };
 
-// 输入张量: 非拥有 (三张平面由调用方持有 —— op_check 每 profile 造一次扫 d, GUI 一轮造一次全表复用);
-// 元数不到的槽位为空. g = 截面池掩码 (只用 m; CS 算子与 Stat 必填, TS 不看; 契约【截面池 g】)
+// 输入张量: 非拥有 (平面由调用方持有 —— op_check 每 profile 造一次扫 d, GUI 一轮造一次全表复用);
+// in[0..n) = 输入表 (Contract Call::xs). g = 截面池掩码 (只用 m; CS 算子与 Stat 必填, TS 不看; 契约【截面池 g】)
 struct Data {
-  const Plane *x = nullptr, *y = nullptr, *z = nullptr, *g = nullptr;
+  const Plane *in[kMaxIn] = {};
+  int n = 0;
+  const Plane *g = nullptr;
   int T = 0, A = 0;
 };
 
@@ -192,10 +194,15 @@ inline Gen gen_of(Dom d) {
   assert(false && "该 Dom 作输入尚无造数: 在 gen_of 补一支");
   return Gen::NORM;
 }
-struct Recipe {
-  Gen x, y, z;
-};
-inline Recipe recipe_of(const Dom (&in)[3]) { return {gen_of(in[0]), gen_of(in[1]), gen_of(in[2])}; }
+// 对拍里的输入数: 定元 = 元数; N 元 = kNaryIn 个特征元 + 回归目标
+inline constexpr int kNaryIn = 3;
+inline int n_in_of(int arity) { return arity == kNary ? kNaryIn + 1 : arity; }
+// 第 s 个输入的配方: 定元按 in[s]; N 元特征元按 in[0], 末元 (回归目标 = 收益标签) 按 RET
+inline Gen gen_at(const Dom (&in)[3], int arity, int s) {
+  if (arity != kNary)
+    return gen_of(in[s]);
+  return s < kNaryIn ? gen_of(in[0]) : gen_of(Dom::RET);
+}
 
 // 窗长参数: 每算子一个"典型用法"的默认 d (期 = 行; Operators 表在 L_1min 上即分钟), 给 GUI Operators 表用;
 // op_check 不吃这份 (它全扫 d = {1, 5, 20, S, S + 60} 打边界)
@@ -240,6 +247,7 @@ inline constexpr KParam kKParams[] = {
     {"CsQuantile", 0.25f, 0.f},
     {"CsWinsor", 0.05f, 0.f},
     {"CsBucket", 5.f, 0.f},
+    {"CsLinRankRoll", 0.1f, 0.f}, // 岭强度 0.1 × 平均特征方差
 };
 inline void set_k(const std::string &name, Param &p, int S) {
   assert(is_seg(S));
@@ -302,18 +310,18 @@ inline Diff compare(const Plane &ref, const Plane &got, Tol tol) {
 }
 
 // ---- 驱动: cpu (整张量一次) / stream (逐行推进) / gpu 由消费者经 GpuRun.hpp 调 ----
-//   ar = 元数 (够到的槽位必填); S = 段长 (Contract【层几何】; CS 不看)
+//   输入 = d.in[0..d.n) (必填); S = 段长 (Contract【层几何】)
 
 // 整平面的调用形状 (Contract【调用形状】); o 先 ensure
-inline Call call_of(const Data &d, int ar, const Param &p, int S, Plane &o) {
+inline Call call_of(const Data &d, const Param &p, int S, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
   Call c;
-  const Plane *const pl[3] = {d.x, d.y, d.z};
-  In *const slot[3] = {&c.x, &c.y, &c.z};
-  for (int a = 0; a < ar; ++a) {
-    assert(pl[a]);
-    *slot[a] = {pl[a]->v.data(), pl[a]->m.data()};
+  In xs[kMaxIn];
+  for (int a = 0; a < d.n; ++a) {
+    assert(d.in[a]);
+    xs[a] = {d.in[a]->v.data(), d.in[a]->m.data()};
   }
+  bind_in(c, xs, d.n);
   c.g = d.g ? d.g->m.data() : nullptr;
   c.o = {o.v.data(), o.m.data()};
   c.T = d.T, c.A = d.A, c.geo = geo_of(S), c.p = p;
@@ -322,27 +330,27 @@ inline Call call_of(const Data &d, int ar, const Param &p, int S, Plane &o) {
 
 // CPU: 单线程一次调满 (TS 全部列 / CS 全部行)
 template <class C>
-void run_cpu_ts(const Data &d, const Param &p, int ar, int S, Plane &o) {
+void run_cpu_ts(const Data &d, const Param &p, int S, Plane &o) {
   thread_local Arena ws;
-  const Call c = call_of(d, ar, p, S, o);
+  const Call c = call_of(d, p, S, o);
   C::run(c, Range{0, d.A}, ws.get(C::scratch(c)));
 }
 template <class C>
-void run_cpu_cs(const Data &d, const Param &p, int ar, int S, Plane &o) {
+void run_cpu_cs(const Data &d, const Param &p, int S, Plane &o) {
   thread_local Arena ws;
-  const Call c = call_of(d, ar, p, S, o);
+  const Call c = call_of(d, p, S, o);
   assert(c.g);
   C::run(c, Range{0, d.T}, ws.get(C::scratch(c)));
 }
 
 // TS 流式: 每资产一个算子对象, 逐行把全部资产推一步 (与实盘同路: 段内位置 t % S, EXPAND 在 t_seg = 0 自动归零)
 template <class Op>
-void run_stream_ts(const Data &d, const Param &p, int ar, int S, Plane &o) {
+void run_stream_ts(const Data &d, const Param &p, int S, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
-  const Plane *const pl[3] = {d.x, d.y, d.z};
-  for (int a = 0; a < ar; ++a)
-    assert(pl[a]);
-  const auto val = [&](int s, size_t i) { return s < ar ? Val{pl[s]->v[i], pl[s]->m[i] != 0} : Val{}; };
+  assert(d.n <= 3);
+  for (int a = 0; a < d.n; ++a)
+    assert(d.in[a]);
+  const auto val = [&](int s, size_t i) { return s < d.n ? Val{d.in[s]->v[i], d.in[s]->m[i] != 0} : Val{}; };
   std::vector<Op> ops(static_cast<size_t>(d.A), Op(p));
   for (int t = 0; t < d.T; ++t)
     for (int a = 0; a < d.A; ++a) {
@@ -354,8 +362,8 @@ void run_stream_ts(const Data &d, const Param &p, int ar, int S, Plane &o) {
 
 // CS 流式: 一个算子对象逐行推全部截面
 template <class Op>
-void run_stream_cs(const Data &d, const Param &p, int ar, int S, Plane &o) {
-  const Call c = call_of(d, ar, p, S, o);
+void run_stream_cs(const Data &d, const Param &p, int S, Plane &o) {
+  const Call c = call_of(d, p, S, o);
   assert(c.g);
   Op op;
   for (int t = 0; t < d.T; ++t)

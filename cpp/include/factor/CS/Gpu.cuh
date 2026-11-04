@@ -4,7 +4,7 @@
 // CS 轴挖掘后端 (CUDA, sm_75 / RTX 2060 6GB / 336 GB·s⁻¹; clang -x cuda)
 // =============================================================================
 //   语义契约见 factor/Contract.hpp, 算子真相表见 factor/OpTable.hpp.
-//   本文件与 CS/Cpu.hpp / CS/Stream.hpp **完全独立**, 只依赖 Contract + CUDA/CUB.
+//   本文件与 CS/Cpu.hpp / CS/Stream.hpp **完全独立**, 只依赖 Contract (含 Stat 的持有期几何) + CUDA/CUB.
 //
 //   【布局】SoA 行主序 [T][A]: 同一时刻的 A 个资产在内存里连续 → 截面归约天然合并访存.
 //   【核配置总则】**一行一 block**, grid = T (19200 个 block), blockDim = 512:
@@ -26,6 +26,7 @@
 // =============================================================================
 
 #include "factor/Contract.hpp"
+#include "factor/Stat/Contract.hpp"
 
 #include <cassert>
 #include <cfloat>
@@ -163,7 +164,9 @@ __device__ __forceinline__ int ord(float f) {
 __device__ __forceinline__ float unord(int i) { return __int_as_float(i >= 0 ? i : i ^ 0x7fffffff); }
 
 // ---- 块级归约 + 广播 (归约后必须两次 sync: 一次等广播写入, 一次防下轮复用暂存) ----
-__device__ inline float bsum(Sh &sh, float v) {
+//   SH = 块的 shared 家当 (Sh 或算子自带的, 须有 red / scan / bc)
+template <class SH>
+__device__ inline float bsum(SH &sh, float v) {
   const float r = BR(sh.red).Sum(v);
   if (threadIdx.x == 0)
     sh.bc = r;
@@ -172,7 +175,8 @@ __device__ inline float bsum(Sh &sh, float v) {
   __syncthreads();
   return o;
 }
-__device__ inline float bmin(Sh &sh, float v) {
+template <class SH>
+__device__ inline float bmin(SH &sh, float v) {
   const float r = BR(sh.red).Reduce(v, MinOp());
   if (threadIdx.x == 0)
     sh.bc = r;
@@ -181,7 +185,8 @@ __device__ inline float bmin(Sh &sh, float v) {
   __syncthreads();
   return o;
 }
-__device__ inline float bmax(Sh &sh, float v) {
+template <class SH>
+__device__ inline float bmax(SH &sh, float v) {
   const float r = BR(sh.red).Reduce(v, MaxOp());
   if (threadIdx.x == 0)
     sh.bc = r;
@@ -203,8 +208,8 @@ struct GetX { // 原值, 样本 = 有效 ∧ 池内
   }
 };
 // ---- 样本集的 cnt / lo / hi ----
-template <class G>
-__device__ inline void span_row(Sh &sh, const G &g, int A, int &cnt, float &lo, float &hi) {
+template <class SH, class G>
+__device__ inline void span_row(SH &sh, const G &g, int A, int &cnt, float &lo, float &hi) {
   int c = 0;
   float l = FLT_MAX, h = -FLT_MAX;
   for (int a = threadIdx.x; a < A; a += kCB) {
@@ -221,8 +226,8 @@ __device__ inline void span_row(Sh &sh, const G &g, int A, int &cnt, float &lo, 
 }
 
 // ---- 片上直方图: cb[b] 计数, pre[b] 为 exclusive 前缀 (桶计数是整数 → 三后端可严格逐位一致) ----
-template <class G>
-__device__ inline void hist_row(Sh &sh, const G &g, int A, float lo, float hi, int *cb, int *pre) {
+template <class SH, class G>
+__device__ inline void hist_row(SH &sh, const G &g, int A, float lo, float hi, int *cb, int *pre) {
   for (int b = threadIdx.x; b < kBuckets; b += kCB)
     cb[b] = 0;
   __syncthreads();
@@ -773,6 +778,140 @@ struct CsGroupResid {
     }
   }
   FACTOR_CS_RUN()
+};
+
+// ---- N 元回归 (1) ----
+//   xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】). 两核, 工作区 = 每标签行一个矩向量 [T][M] double:
+//     核 1 一行一 block: 行 s 的 n+1 张直方图 → 逐资产 x̃ 累矩 (线程内 double) → 逐矩块归约 (cub 固定序, 确定);
+//     核 2 一行一 block: 线程 0 求 u(t) → 窗和 (G = kCB / M 组, 组 g 按 s ≡ g 跨步累, 再按组序合并, 确定) → 线程 0 岭解 →
+//     行 t 各特征直方图 → 输出拟合值
+namespace k {
+
+using BRD = cub::BlockReduce<double, kCB>;
+
+struct LrArgs { // kernel 参数区
+  In x[kMaxIn];
+  int n;
+};
+struct LrSh {
+  typename BR::TempStorage red;
+  typename BS::TempStorage scan;
+  typename BRD::TempStorage redd;
+  int cb[kMaxIn][kBuckets], pre[kMaxIn][kBuckets]; // 各元直方图
+  double part[kCB];                                // 窗和的组部分和 [g][m]
+  double acc[kLrMoms], w[kLrN];
+  float bc;
+  int u;
+};
+// 行 base 上前 ne 元的直方图 (样本 = 该元有效 ∧ 池内); 各元的 cnt / lo / hi / 非退化 回填
+__device__ inline void lr_hists(LrSh &sh, const LrArgs &a, int ne, const uint8_t *gm, int base, int A, int *cnt, float *lo, float *hi, bool *rok) {
+  for (int i = 0; i < ne; ++i) {
+    const GetX g{a.x[i].v, a.x[i].m, gm, base};
+    span_row(sh, g, A, cnt[i], lo[i], hi[i]);
+    rok[i] = cnt[i] >= 1 && dev::spread(lo[i], hi[i]);
+    if (rok[i])
+      hist_row(sh, g, A, lo[i], hi[i], sh.cb[i], sh.pre[i]);
+  }
+}
+
+__global__ void lr_mom(const LrArgs a, const uint8_t *gm, int A, Geo geo, int hold, double *mom) {
+  __shared__ LrSh sh;
+  const int s = blockIdx.x, n = a.n, M = lr_moms(n), base = s * A;
+  double *out = mom + static_cast<size_t>(s) * M;
+  if (factor::stat::tail_masked(s, hold, geo)) { // 段末尾部行恒 0 (块内一致)
+    for (int m = threadIdx.x; m < M; m += kCB)
+      out[m] = 0.0;
+    return;
+  }
+  int cnt[kMaxIn];
+  float lo[kMaxIn], hi[kMaxIn];
+  bool rok[kMaxIn];
+  lr_hists(sh, a, n + 1, gm, base, A, cnt, lo, hi, rok);
+  double acc[kLrMoms];
+  for (int m = 0; m < M; ++m)
+    acc[m] = 0.0;
+  for (int c = threadIdx.x; c < A; c += kCB) {
+    const int i = base + c;
+    bool ok = gm[i] != 0;
+    for (int j = 0; j <= n; ++j)
+      ok = ok && a.x[j].m[i];
+    if (!ok)
+      continue;
+    double x[kMaxIn];
+    for (int j = 0; j <= n; ++j)
+      x[j] = static_cast<double>(row_pct(sh.cb[j], sh.pre[j], cnt[j], lo[j], hi[j], rok[j], a.x[j].v[i])) - 0.5;
+    for (int p = 0; p < n; ++p) {
+      for (int q = p; q < n; ++q)
+        acc[lr_ix(p, q, n)] += x[p] * x[q];
+      acc[n * (n + 1) / 2 + p] += x[p] * x[n];
+    }
+  }
+  for (int m = 0; m < M; ++m) {
+    const double r = BRD(sh.redd).Sum(acc[m]);
+    if (threadIdx.x == 0)
+      out[m] = r;
+    __syncthreads();
+  }
+}
+
+__global__ void lr_fit(const LrArgs a, const uint8_t *gm, float *ov, uint8_t *om, int A, Geo geo, Param p, const double *mom) {
+  __shared__ LrSh sh;
+  const int t = blockIdx.x, n = a.n, M = lr_moms(n), base = t * A, d = p.d;
+  if (threadIdx.x == 0)
+    sh.u = factor::stat::label_last(t, p.h, geo);
+  __syncthreads();
+  const int u = sh.u, s0 = max(0, u - d + 1), G = kCB / M;
+  if (threadIdx.x < G * M) {
+    const int g = threadIdx.x / M, m = threadIdx.x % M;
+    double v = 0.0;
+    for (int s = s0 + g; s <= u; s += G)
+      v += mom[static_cast<size_t>(s) * M + m];
+    sh.part[g * M + m] = v;
+  }
+  __syncthreads();
+  if (threadIdx.x < M) {
+    double v = 0.0;
+    for (int g = 0; g < G; ++g)
+      v += sh.part[g * M + threadIdx.x];
+    sh.acc[threadIdx.x] = v;
+  }
+  __syncthreads();
+  if (threadIdx.x == 0)
+    lr_solve(sh.acc, n, p.k, sh.w);
+  __syncthreads();
+  int cnt[kMaxIn];
+  float lo[kMaxIn], hi[kMaxIn];
+  bool rok[kMaxIn];
+  lr_hists(sh, a, n, gm, base, A, cnt, lo, hi, rok);
+  for (int c = threadIdx.x; c < A; c += kCB) {
+    const int i = base + c;
+    bool ok = true;
+    double v = 0.0;
+    for (int j = 0; j < n; ++j) {
+      ok = ok && a.x[j].m[i];
+      v += sh.w[j] * (static_cast<double>(row_pct(sh.cb[j], sh.pre[j], cnt[j], lo[j], hi[j], rok[j], a.x[j].v[i])) - 0.5);
+    }
+    dev::store(ov, om, i, static_cast<float>(v), ok);
+  }
+}
+
+} // namespace k
+
+struct CsLinRankRoll {
+  static size_t scratch(const Call &c) { return static_cast<size_t>(c.T) * lr_moms(c.n - 1) * sizeof(double); }
+  static void run(const Call &c, void *ws, cudaStream_t stream) {
+    assert(c.g != nullptr && c.o.v && c.o.m && c.A >= 1 && static_cast<long long>(c.T) * c.A < (1LL << 31));
+    assert(c.n >= 3 && c.n <= kMaxIn && ws && "至少 2 个特征元 + 目标");
+    k::LrArgs a;
+    for (int i = 0; i < c.n; ++i)
+      a.x[i] = c.xs[i];
+    a.n = c.n - 1;
+    double *mom = static_cast<double *>(ws);
+    k::lr_mom<<<c.T, kCB, 0, stream>>>(a, c.g, c.A, c.geo, c.p.h, mom);
+    FACTOR_CUDA_OK(cudaGetLastError());
+    k::lr_fit<<<c.T, kCB, 0, stream>>>(a, c.g, c.o.v, c.o.m, c.A, c.geo, c.p, mom);
+    FACTOR_CUDA_OK(cudaGetLastError());
+  }
 };
 
 } // namespace factor::gpu::cs

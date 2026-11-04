@@ -213,7 +213,7 @@ bool load_x(const Io &io, const Chunk &k, const std::vector<LeafId> &ids, std::v
   out.assign(nf, Leaf{});
   for (size_t i = 0; i < nf; ++i) {
     const FeatCol &c = ft.x.leaves[ids[i]];
-    assert(c.allowed);
+    assert(c.allowed || c.target);
     cols.add(c);
     out[i].resize(n);
   }

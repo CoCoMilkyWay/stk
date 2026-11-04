@@ -50,7 +50,8 @@ const LegCol &leg_of(const std::vector<LegCol> &cols, int key) {
 }
 
 factor::expr::FeatureLookup FeatureTable::lookup() const {
-  return [this](std::string_view code) {
+  factor::expr::FeatureLookup fl;
+  fl.feat = [this](std::string_view code) {
     if (const FeatCol *c = x.find(code))
       return c->allowed ? factor::expr::FeatState::OK : factor::expr::FeatState::FORBIDDEN;
     // 档.层.列 的层比网格细 (字段表只收不细于网格的层)
@@ -61,13 +62,23 @@ factor::expr::FeatureLookup FeatureTable::lookup() const {
           return factor::expr::FeatState::FINER;
     return factor::expr::FeatState::MISSING;
   };
+  fl.label = [this](int hold) { return label_leaf(hold); };
+  return fl;
+}
+
+std::string FeatureTable::label_leaf(int hold) const {
+  const LegCol *lc = find_leg(y.labels, hold);
+  if (!lc)
+    return {};
+  const Col &c = lc->leg[factor::stat::kLong];
+  return std::string(tier_name(c.tier)) + "." + kLevelToken[c.level] + "." + feature->meta(c.tier).features[c.level][c.col].code;
 }
 
 bool FeatureTable::check_grid(const factor::expr::Expr &e, std::string &err) const {
   const FactorLevel &l = factor_level(lv);
   size_t finest = LEVEL_COUNT;
   for (const factor::expr::Node &n : e.nodes)
-    if (n.op < 0) {
+    if (n.op < 0 && !n.target) {
       const FeatCol *c = x.find(n.feat);
       assert(c && "parse 过的叶须在字段表里");
       finest = std::min(finest, c->level);
@@ -86,6 +97,11 @@ factor::expr::Expr FeatureTable::reparse(std::string_view canon) const {
   assert(ok && "已校验的规范串必可再解析");
   (void)ok;
   return e;
+}
+
+factor::expr::Expr FeatureTable::reparse_at(std::string_view canon, int hold) const {
+  const factor::expr::Expr t = reparse(canon);
+  return factor::expr::free_hold(t) ? reparse(factor::expr::bind_hold(t, hold)) : t;
 }
 
 LevelId level_of(std::string_view name) {
@@ -209,6 +225,11 @@ FeatureTable BuildFeatureTable(const Feature &feature, LevelId id) {
     t.y.labels.push_back(lc);
   }
   assert(!t.y.labels.empty() && "本层无合法持有期");
+  for (const LegCol &lc : t.y.labels) {
+    const auto it = t.x.index.find(t.label_leaf(lc.key));
+    assert(it != t.x.index.end() && "做多标签列须是本层叶");
+    t.x.leaves[it->second].target = true;
+  }
   t.y.costs.push_back(legs(kAmtFixed));
   if (has_level(TierId::Lob, lv.lvl)) {
     const auto &lob = feature.meta(TierId::Lob).features[lv.lvl];

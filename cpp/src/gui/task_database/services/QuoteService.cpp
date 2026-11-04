@@ -1,13 +1,12 @@
 #include "gui/task_database/services/QuoteService.hpp"
 
-#include "fundamental/Scan.hpp"
 #include "misc/fs.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Config.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -82,11 +81,25 @@ void unpack(const uint64_t (&w)[4], std::bitset<kSlots> &b) {
     b[s] = w[s / 64] >> (s % 64) & 1;
 }
 
+// 全局轴码 "600000.SH" → 新浪 "sh600000"
+std::string sina_sym(const std::string &code) {
+  const size_t dot = code.find('.');
+  assert(dot != std::string::npos);
+  std::string s = code.substr(dot + 1) + code.substr(0, dot);
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return s;
+}
+
+// 快照的日根: 开 / 高 / 低缺 (0) → 现价
+Cell candle_of(const sina::Quote &q) {
+  return {q.open > 0 ? q.open : q.price, q.high > 0 ? q.high : q.price, q.low > 0 ? q.low : q.price, q.price, q.volume, q.amount};
+}
+
 } // namespace
 
-QuoteService::QuoteService(std::vector<std::string> syms, misc::Ymd fund_end)
-    : syms_(std::move(syms)), fund_end_(fund_end), tracks_(syms_.size()), last_(syms_.size()), quoted_(syms_.size(), 0) {
-  assert(!syms_.empty());
+QuoteService::QuoteService(std::vector<std::string> syms, misc::Ymd fund_end, std::vector<misc::Ymd> trading)
+    : syms_(std::move(syms)), fund_end_(fund_end), trading_(std::move(trading)), tracks_(syms_.size()), last_(syms_.size()) {
+  assert(!syms_.empty() && !trading_.empty());
   index_.reserve(syms_.size());
   for (uint32_t i = 0; i < syms_.size(); ++i) {
     [[maybe_unused]] const bool fresh = index_.emplace(syms_[i], i).second;
@@ -113,34 +126,19 @@ QuoteService::~QuoteService() {
   }
 }
 
-void QuoteService::select(const std::string &sym) {
+uint32_t QuoteService::find(const std::string &code) const {
+  const auto it = index_.find(sina_sym(code));
+  return it == index_.end() ? ~0u : it->second;
+}
+
+void QuoteService::select(uint32_t i) {
   {
     std::lock_guard<std::mutex> lock(mu_);
-    const auto it = index_.find(sym);
-    sel_ = it == index_.end() ? ~0u : it->second;
+    assert(i == ~0u || i < syms_.size());
+    sel_ = i;
     schedule();
   }
   cv_.notify_all();
-}
-
-bool QuoteService::day(const std::string &sym, LiveDay &out) const {
-  std::lock_guard<std::mutex> lock(mu_);
-  const auto it = index_.find(sym);
-  if (it == index_.end())
-    return false;
-  const uint32_t i = it->second;
-  const Track &t = tracks_[i];
-  out.date = date_;
-  out.quoted = quoted_[i] != 0;
-  out.quote = last_[i];
-  out.bars.clear();
-  if (!t.bars.empty())
-    for (int s = 0; s < kSlots; ++s)
-      if (t.has[s]) {
-        const Cell &c = t.bars[s];
-        out.bars.push_back({date_, s, c.open, c.high, c.low, c.close, c.volume, c.amount});
-      }
-  return true;
 }
 
 QuoteStatus QuoteService::status() const {
@@ -148,74 +146,29 @@ QuoteStatus QuoteService::status() const {
   return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_};
 }
 
-uint32_t QuoteService::find(const std::string &sym) const {
-  const auto it = index_.find(sym);
-  return it == index_.end() ? ~0u : it->second;
+void QuoteService::today(uint32_t i, Day &out, sina::Quote &q) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  q = last_[i];
+  out.date = 0;
+  if (!traded(q))
+    return;
+  out.date = date_, out.prev = prev_, out.ref = q.last_close;
+  out.candle = {candle_of(q), date_, 0};
+  out.bars = tracks_[i].bars;
+  out.bars.date = date_;
 }
 
-void QuoteService::compose(const std::vector<Weight> &ws, double base, bool bars, IndexDay &out) const {
+void QuoteService::today(const Members &m, std::span<const double> level, std::span<Day> out) const {
+  assert(m.assets() == syms_.size());
+  Fold fold(out.size());
+  fold.open(true);
   std::lock_guard<std::mutex> lock(mu_);
-  out.date = 0;
-  out.sec = sec_;
-  out.bars.clear();
-  double sw = 0, k[4] = {}, amt = 0;
-  int end = -1;
-  for (const Weight &m : ws) {
-    const sina::Quote &q = last_[m.i];
-    if (!quoted_[m.i] || !(q.last_close > 0))
-      continue;
-    const bool on = q.date == date_ && q.volume > 0 && q.price > 0;
-    const float px[4] = {q.open, q.high, q.low, q.price};
-    sw += m.w;
-    for (int j = 0; j < 4; ++j)
-      k[j] += m.w * (on && px[j] > 0 ? px[j] / q.last_close : 1.0);
-    if (on)
-      amt += q.amount;
-    const Track &t = tracks_[m.i];
-    for (int s = kSlots - 1; bars && s > end; --s)
-      if (t.has[s]) {
-        end = s;
-        break;
-      }
+  for (uint32_t i = 0; i < syms_.size(); ++i) {
+    const sina::Quote &q = last_[i];
+    const Cell k = candle_of(q);
+    fold.add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, m.of(i));
   }
-  if (!(sw > 0))
-    return;
-  out.date = date_;
-  const double f = base / sw;
-  out.day = {date_, 0, static_cast<float>(k[0] * f), static_cast<float>(k[1] * f), static_cast<float>(k[2] * f),
-             static_cast<float>(k[3] * f), 0, amt};
-  if (end < 0)
-    return;
-  std::vector<std::array<double, 5>> acc(static_cast<size_t>(end) + 1, std::array<double, 5>{}); // 开 高 低 收 (比 × 权) / 额
-  double flat = 0;                                                                               // 全日无根的成员权 (比恒 1)
-  for (const Weight &m : ws) {
-    const sina::Quote &q = last_[m.i];
-    if (!quoted_[m.i] || !(q.last_close > 0))
-      continue;
-    const Track &t = tracks_[m.i];
-    if (t.bars.empty()) {
-      flat += m.w;
-      continue;
-    }
-    const double w = m.w / q.last_close;
-    double c = q.last_close;
-    for (int s = 0; s <= end; ++s) {
-      std::array<double, 5> &a = acc[static_cast<size_t>(s)];
-      if (t.has[s]) {
-        const Cell &b = t.bars[s];
-        a[0] += w * b.open, a[1] += w * b.high, a[2] += w * b.low, a[3] += w * b.close, a[4] += b.amount;
-        c = b.close;
-      } else {
-        a[0] += w * c, a[1] += w * c, a[2] += w * c, a[3] += w * c;
-      }
-    }
-  }
-  out.bars.reserve(acc.size());
-  for (int s = 0; s <= end; ++s) {
-    const std::array<double, 5> &a = acc[static_cast<size_t>(s)];
-    out.bars.push_back({date_, s, static_cast<float>((a[0] + flat) * f), static_cast<float>((a[1] + flat) * f),
-                        static_cast<float>((a[2] + flat) * f), static_cast<float>((a[3] + flat) * f), 0, a[4]});
-  }
+  fold.finish(date_, prev_, level, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +197,10 @@ void QuoteService::poll() {
       if (stop_)
         return;
       if (d > date_) { // 换日 (含启动首轮): 从零, 盘上有同日缓存则续上
+        const auto p = std::lower_bound(trading_.begin(), trading_.end(), d);
+        assert(p != trading_.begin() && "交易日历不早于行情日");
         date_ = d;
+        prev_ = *std::prev(p);
         ++gen_;
         for (Track &t : tracks_)
           t = Track{};
@@ -278,15 +234,8 @@ void QuoteService::poll() {
   }
 }
 
-QuoteService::Cell &QuoteService::cell(Track &t, int s) {
-  if (t.bars.empty())
-    t.bars.resize(kSlots);
-  return t.bars[s];
-}
-
 void QuoteService::absorb(uint32_t i, const sina::Quote &q, int gap) {
   last_[i] = q;
-  quoted_[i] = 1;
   if (q.date != date_) // 停牌等: 只留快照
     return;
   sec_ = std::max(sec_, q.sec);
@@ -308,21 +257,12 @@ void QuoteService::absorb(uint32_t i, const sina::Quote &q, int gap) {
   if (dv > 0 && q.price > 0 && q.sec <= kCloseSec) {
     const int s = slot_at(q.sec);
     if (!t.exact[s]) {
-      Cell &b = cell(t, s);
-      if (!t.has[s]) {
-        b = {q.price, q.price, q.price, q.price, 0, 0};
-        t.has.set(s);
-      }
       float hi = q.price, lo = q.price;
       if (q.high > t.high)
         hi = std::max(hi, q.high);
       if (q.low > 0 && (t.low <= 0 || q.low < t.low))
         lo = std::min(lo, q.low);
-      b.high = std::max(b.high, hi);
-      b.low = std::min(b.low, lo);
-      b.close = q.price;
-      b.volume += dv;
-      b.amount += da;
+      t.bars.add(s, {q.price, hi, lo, q.price, dv, da});
     }
   }
   t.vol = q.volume;
@@ -410,7 +350,7 @@ void QuoteService::merge(uint32_t i, int lo, const std::vector<sina::Bar> &bars,
   Track &t = tracks_[i];
   assert(lo <= settled);
   for (int s = lo; s <= settled; ++s) {
-    t.has.reset(s);
+    t.bars.has.reset(s);
     t.exact.set(s);
   }
   for (const sina::Bar &b : bars) {
@@ -418,10 +358,8 @@ void QuoteService::merge(uint32_t i, int lo, const std::vector<sina::Bar> &bars,
       continue;
     const int s = label_slot(b.minute);
     assert(s >= 0 && "sina: 分钟 K 标号不在交易时段");
-    if (s >= lo && s <= settled) {
-      cell(t, s) = {b.open, b.high, b.low, b.close, b.volume, b.amount};
-      t.has.set(s);
-    }
+    if (s >= lo && s <= settled)
+      t.bars.add(s, {b.open, b.high, b.low, b.close, b.volume, b.amount});
   }
   if (t.lo >= lo)
     t.lo = settled + 1;
@@ -447,13 +385,13 @@ std::string QuoteService::serialize() const {
     std::memcpy(r.sym, syms_[i].data(), syms_[i].size());
     r.vol = t.vol, r.amt = t.amt, r.high = t.high, r.low = t.low;
     r.lo = static_cast<int16_t>(t.lo), r.hi = static_cast<int16_t>(t.hi);
-    r.nbars = static_cast<uint16_t>(t.has.count());
-    pack(t.has, r.has);
+    r.nbars = static_cast<uint16_t>(t.bars.has.count());
+    pack(t.bars.has, r.has);
     pack(t.exact, r.exact);
     out.append(reinterpret_cast<const char *>(&r), sizeof(r));
     for (int s = 0; s < kSlots; ++s)
-      if (t.has[s])
-        out.append(reinterpret_cast<const char *>(&t.bars[s]), sizeof(Cell));
+      if (t.bars.has[s])
+        out.append(reinterpret_cast<const char *>(&t.bars.cell[s]), sizeof(Cell));
     ++h.n;
   }
   std::memcpy(out.data(), &h, sizeof(h));
@@ -483,13 +421,13 @@ void QuoteService::load() {
       Track &t = tracks_[it->second];
       t.vol = r.vol, t.amt = r.amt, t.high = r.high, t.low = r.low;
       t.lo = r.lo, t.hi = r.hi;
-      unpack(r.has, t.has);
+      unpack(r.has, t.bars.has);
       unpack(r.exact, t.exact);
-      assert(t.has.count() == r.nbars);
+      assert(t.bars.has.count() == r.nbars);
       size_t c = at;
       for (int s = 0; s < kSlots; ++s)
-        if (t.has[s]) {
-          std::memcpy(&cell(t, s), blob.data() + c, sizeof(Cell));
+        if (t.bars.has[s]) {
+          std::memcpy(&t.bars.cell[s], blob.data() + c, sizeof(Cell));
           c += sizeof(Cell);
         }
     }
@@ -497,101 +435,6 @@ void QuoteService::load() {
   }
   assert(at == blob.size() && "sina 缓存: 文件尾有多余字节");
   sec_ = h.sec;
-}
-
-// ---------------------------------------------------------------------------
-// HistoryService
-// ---------------------------------------------------------------------------
-bool HistoryService::run(HistoryRequest &req) {
-  static const fundamental::Spec &kDaily = fundamental::spec("cn_stock_real_bar1d");
-  static const fundamental::Spec &kMinute = fundamental::spec("bar1m");
-  static const std::vector<std::string> kCols = {"open", "high", "low", "close", "volume", "amount"};
-  constexpr int kAuction = 9 * 60 + 25; // bar1m 单列的 09:25 撮合 bar → 并入首根
-
-  const fundamental::Catalog cat;
-  fundamental::Ids ids(fundamental::Ids::Cover::Part);
-  ids.add(req.code);
-  fundamental::Scratch x;
-
-  const auto candle = [](const misc::pq::Col *c, std::int64_t i, misc::Ymd d, int slot) {
-    return Candle{d, slot, c[0].f32(i), c[1].f32(i), c[2].f32(i), c[3].f32(i), c[4].f32(i), c[5].f32(i)};
-  };
-  const auto cols = [](const fundamental::Rows &r, misc::pq::Col *c) {
-    for (size_t k = 0; k < kCols.size(); ++k)
-      c[k] = r.col(kCols[k]);
-  };
-
-  std::vector<Candle> daily;
-  const std::vector<fundamental::Shard> &months = cat.shards(kDaily.name);
-  for (size_t k = months.size() - std::min<size_t>(months.size(), kDailyMonths); k < months.size(); ++k) {
-    if (cancel_.load(std::memory_order_relaxed))
-      return false;
-    const fundamental::Rows r = x.open(months[k], kDaily, kCols, ids);
-    misc::pq::Col c[6];
-    cols(r, c);
-    r.each([&](std::int64_t i, std::uint32_t, misc::Ymd d) {
-      const Candle b = candle(c, i, d, 0);
-      if (b.volume > 0 && b.close > 0)
-        daily.push_back(b);
-    });
-  }
-  std::sort(daily.begin(), daily.end(), [](const Candle &a, const Candle &b) { return a.date < b.date; });
-
-  std::vector<std::vector<Candle>> minutes;
-  const std::vector<fundamental::Shard> &days = cat.shards(kMinute.name);
-  for (size_t k = days.size() - std::min<size_t>(days.size(), kMinuteDays); k < days.size(); ++k) {
-    if (cancel_.load(std::memory_order_relaxed))
-      return false;
-    const misc::Ymd d = days[k].day;
-    Candle slot[kSlots], auction{};
-    std::bitset<kSlots> has;
-    fundamental::daily(cat, ids, kMinute, d, kCols, x, [&](const fundamental::Rows &r) {
-      misc::pq::Col c[6];
-      cols(r, c);
-      const misc::pq::Col c_date = r.col("date");
-      r.each([&](std::int64_t i, std::uint32_t, misc::Ymd) {
-        const int m = c_date.minute_of_day(i);
-        const Candle b = candle(c, i, d, 0);
-        if (!(b.volume > 0 && b.close > 0))
-          return;
-        if (m == kAuction) {
-          auction = b;
-          return;
-        }
-        const int s = label_slot(m);
-        fundamental::expect(s >= 0, kMinute, {.d = d, .code = req.code}, "时间戳不在交易时段");
-        slot[s] = b;
-        slot[s].slot = s;
-        has.set(s);
-      });
-    });
-    if (auction.volume > 0) {
-      Candle &f = slot[0];
-      if (has[0]) {
-        f.open = auction.open;
-        f.high = std::max(f.high, auction.high);
-        f.low = std::min(f.low, auction.low);
-        f.volume += auction.volume;
-        f.amount += auction.amount;
-      } else {
-        f = auction;
-        has.set(0);
-      }
-    }
-    if (has.none())
-      continue;
-    std::vector<Candle> &out = minutes.emplace_back();
-    for (int s = 0; s < kSlots; ++s)
-      if (has[s])
-        out.push_back(slot[s]);
-  }
-
-  std::lock_guard<std::mutex> lock(h_.mutex);
-  h_.gen = req.gen;
-  h_.daily = std::move(daily);
-  h_.minutes = std::move(minutes);
-  h_.publish();
-  return true;
 }
 
 } // namespace GUI::Database

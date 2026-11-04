@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS 全 15 个; 语义契约见 factor/Contract.hpp)
+// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS* 全 16 个; 语义契约见 factor/Contract.hpp)
 // =============================================================================
 //   定位: 因子挖掘无 GPU 时的 fallback —— 整张量批量直算, 吞吐必须 ≥ stream.
 //   独立第二实现: 除 Contract.hpp (共享数学件: mk/spread/den_ok/pct_of/probit/分桶规则) 外
@@ -35,6 +35,7 @@
 #include <tuple>
 
 #include "factor/Contract.hpp"
+#include "factor/Stat/Contract.hpp" // 持有期几何 (CsLinRankRoll)
 
 namespace factor::cpu::cs {
 
@@ -653,6 +654,90 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
       FACTOR_COLS for (int a = 0; a < A; ++a) { // 回写: 行缓冲顺序读, 无 gather
         const bool in = gq[a] >= 0;
         detail::put(ov, om, r + a, in ? xt[a] - b * yt[a] : 0.0, in);
+      }
+    }
+  }
+};
+
+// ===== N 元回归 =====
+
+struct CsLinRankRoll { // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】)
+  // 行 [lo, hi) 先补满首行窗 (u(lo) 往前 d 个标签行), 之后每行只算新实现的标签行; 窗和每行按 s 升序从环现加 (无漂移).
+  // 行缓冲 x̃[i][A]: 非样本格置 0, 矩 = 逐对点积
+  static double dot(const double *x, const double *y, int A) {
+#pragma clang fp reassociate(on)
+    double s = 0.0;
+    for (int a = 0; a < A; ++a)
+      s += x[a] * y[a];
+    return s;
+  }
+  static auto carve(Bump &b, const Call &c) {
+    const size_t A = static_cast<size_t>(c.A), d = static_cast<size_t>(c.p.d);
+    return std::tuple{b.take<double>(kMaxIn * A), b.take<double>(d * lr_moms(c.n - 1))};
+  }
+  CP_SCRATCH
+  CP_SIG {
+    CP_UNPACK;
+    assert(c.n >= 3 && c.n <= kMaxIn && "至少 2 个特征元 + 目标");
+    Bump bp{static_cast<char *>(ws)};
+    const auto cv = carve(bp, c);
+    double *const xt = std::get<0>(cv), *const ring = std::get<1>(cv);
+    const int n = c.n - 1, M = lr_moms(n), d = p.d;
+    detail::Hist h;
+    const auto moments = [&](int s, double *out) { // 标签行 s 的矩 (样本 = 池内 ∧ 全部元与标签有效; 段末尾部行恒 0)
+      std::fill_n(out, M, 0.0);
+      if (factor::stat::tail_masked(s, p.h, c.geo))
+        return;
+      const size_t r = static_cast<size_t>(s) * A;
+      for (int i = 0; i <= n; ++i) {
+        const In &x = c.xs[i];
+        double *xi = xt + static_cast<size_t>(i) * A;
+        h.build(x.v + r, x.m + r, g + r, A);
+        for (int a = 0; a < A; ++a)
+          xi[a] = static_cast<double>(h.rank(x.v[r + a])) - 0.5;
+      }
+      for (int a = 0; a < A; ++a) {
+        bool ok = g[r + a];
+        for (int i = 0; i <= n; ++i)
+          ok = ok && c.xs[i].m[r + a];
+        for (int i = 0; !ok && i <= n; ++i)
+          xt[static_cast<size_t>(i) * A + a] = 0.0;
+      }
+      for (int i = 0; i < n; ++i) {
+        const double *xi = xt + static_cast<size_t>(i) * A;
+        for (int j = i; j < n; ++j)
+          out[lr_ix(i, j, n)] = dot(xi, xt + static_cast<size_t>(j) * A, A);
+        out[n * (n + 1) / 2 + i] = dot(xi, xt + static_cast<size_t>(n) * A, A);
+      }
+    };
+    int done = -1; // 已入环的最末标签行
+    for (int t = rg.lo; t < rg.hi; ++t) {
+      const int u = factor::stat::label_last(t, p.h, c.geo);
+      for (int s = std::max(done + 1, u - d + 1); s <= u; ++s)
+        moments(s, ring + static_cast<size_t>(s % d) * M);
+      done = std::max(done, u);
+      double acc[kLrMoms] = {};
+      for (int s = std::max(0, u - d + 1); s <= u; ++s)
+        for (int m = 0; m < M; ++m)
+          acc[m] += ring[static_cast<size_t>(s % d) * M + m];
+      double w[kLrN];
+      lr_solve(acc, n, p.k, w);
+      const size_t r = static_cast<size_t>(t) * A;
+      for (int i = 0; i < n; ++i) {
+        const In &x = c.xs[i];
+        double *xi = xt + static_cast<size_t>(i) * A;
+        h.build(x.v + r, x.m + r, g + r, A);
+        for (int a = 0; a < A; ++a)
+          xi[a] = static_cast<double>(h.rank(x.v[r + a])) - 0.5;
+      }
+      for (int a = 0; a < A; ++a) {
+        bool ok = true;
+        double v = 0.0;
+        for (int i = 0; i < n; ++i) {
+          ok = ok && c.xs[i].m[r + a];
+          v += w[i] * xt[static_cast<size_t>(i) * A + a];
+        }
+        detail::put(ov, om, r + a, v, ok);
       }
     }
   }
