@@ -179,9 +179,16 @@ stk/
 │   │   │   ├── task_database/                        # 🖥️ 数据库管理
 │   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
-│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager; Drive = 同步 / 核对共用的逐项驱动骨架
+│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager / Quote / History / Index; Drive = 同步 / 核对共用的逐项驱动骨架
 │   │   │   │   │                                     #    · Audit: 远端 ↔ 本地冻结月核对 + 修复
-│   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (基本面同步) / TabEncode / TabAssets (资产表) / TabDates (日历) / CrossSectionAnalysis
+│   │   │   │   │                                     #    · Quote: 新浪全市场当日行情 (首次进 Assets 才起); 快照每 3s 一轮合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
+│   │   │   │   │                                     #      当日落 output/sina/live.bin (每 5 分钟 + 退出), 重启 = 一次断档, 只补停机期间有成交的只; compose 按成员 / 权重现合成篮子当日
+│   │   │   │   │                                     #    · History: 选中个股的基本面日线 (cn_stock_real_bar1d 近 13 月) + 分钟 (bar1m 近 4 日, 09:25 撮合并入首根)
+│   │   │   │   │                                     #    · Index: 指数 (全A 等权 / 市值加权 + 各子池等权) / 申万一级行业 (市值加权) 篮子, 须 all Bar 库已算; D 日成员 / 权重 / 基准取 D−1 收盘行
+│   │   │   │   │                                     #      日线读 L_1day (近 270 日), 日内读 L_1min (近 4 日); 库末日之后的行情日由 Quote 按库末日成员现合成
+│   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (基本面同步) / TabEncode / TabAssets / TabDates (日历) / CrossSectionAnalysis / QuotesPanel
+│   │   │   │                                         #    · TabAssets: 左栏 个股 (过滤条 + 资产表) / 指数 / 行业 (篮子表: 点位 / 涨幅 / 成交额 / 成分);
+│   │   │   │                                         #      右栏 个股 = Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析); 篮子 = 日内 + 日线 (量柱 = 成交额), 档位按钮叠在各图左上角
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
 │   │   │   │   ├── services/                         # 🖥️ 服务层
@@ -402,9 +409,10 @@ stk/
 │   │   │   ├── spectral/                                   # 📐 谱: DayPSD (按日 Hann + 去均值偏差修正) · MultiResPSD · IIRBandpass (因果 IIR 带通, RBJ biquad 级联; 类型只调 Q)
 │   │   │   ├── timeseries/AutoCorrelation.hpp              # 📐 ACF / PACF + Bartlett 置信带
 │   │   │   └── autoencoder/ · model/                       # 📐 仅设计笔记 (README / 图), 无代码
-│   │   ├── api/                                            # 🌐 数据源 API: 纯传输, 不知 Spec; 两客户端对仗 (query → arrow::Table)
+│   │   ├── api/                                            # 🌐 数据源 API: 纯传输, 不知 Spec / 资产轴; BigQuant / Tushare 两客户端对仗 (query → arrow::Table)
 │   │   │   ├── bigquant/client.hpp                         # 🌐 BigQuant DAI: query(Query{sql, filters, order}) 结果收成一格传回再拆开 (1 cell / 条) / quota
-│   │   │   └── tushare/client.hpp                          # 🌐 Tushare HTTP: query(Query{api, params, num})
+│   │   │   ├── tushare/client.hpp                          # 🌐 Tushare HTTP: query(Query{api, params, num})
+│   │   │   └── sina/client.hpp                             # 🌐 新浪行情 HTTP (带 Referer, keep-alive + gzip): quotes 批量快照 (≤ 800 只, 含五档) / kline 1 分钟 K (最近 n 根)
 │   │   ├── fundamental/                                    # 📊 日频基本面数据集: 两数据源同一套; 只单向依赖 api
 │   │   │   ├── Spec.hpp                                    # 📊   表定义 SPECS: Shape × snap × src (Bq / Tu); 静态初始化期全表断言
 │   │   │   ├── Store.hpp                                   # 📊   本地: Catalog (一次目录遍历) + 分片状态 + 拉取计划 + put (时间只经 Now)
@@ -470,6 +478,7 @@ stk/
     │   ├── YYYY-MM/bar1m/YYYY-MM-DD.parquet                # 分钟 K 日分片 (Bar 档 TS 输入, 不复权)
     │   ├── _meta/<表>.parquet                              # Static / Snapshot 单文件整刷
     │   └── asset_axis.json                                 # A 轴 (资产轴) 码表, 只增不删
+    ├── sina/live.bin                                       # 新浪当日分钟 K 缓存 (单文件, 只存行情日一天: 各只的根 / 精确位 / 待补区间 / 累计基线)
     ├── doc/                                                # 文档 / 资料 (resources-* 符号链接指向仓库外 ../doc)
     │   ├── resources-raw -> ../../../doc/resources-raw     # 原始资料 (公众号 / paper / report / web)
     │   ├── resources-proc -> ../../../doc/resources-proc   # 加工后 (.stat 重算 + markdown 转换)
