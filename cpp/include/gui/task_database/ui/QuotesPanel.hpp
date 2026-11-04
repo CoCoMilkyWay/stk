@@ -1,7 +1,8 @@
 // Assets 右栏行情: 个股 / 篮子同一套两图 (日内 / 日线, 布局与配色同 py/app/tdx 行情页), 数据 = 历史 Kline + 当日 Day (见 Kline.hpp)
 //   个股 = StockHistory + QuoteService::today(i), 日内右挂盘口 (当日最新快照五档);
 //   篮子 = BasketHistory + QuoteService::today(篮子), 左栏另有篮子列表, 量柱 = 成交额.
-//   两图各一份视野: 换标的 / 换档 / 根数变 → 复位到该档窗口, 其间可缩放平移; y 随视野内的根贴合
+//   两图各一份视野: 换标的 / 换档 / 根数变 / 双击 → 复位到该档窗口; 左键拖动 = 框选 x 段放大; y 恒随视野内的根贴合
+//     日线滚轮 = 只缩放 x, 右端恒锚在最新一根; 日内不滚. 现价线左标价 / 右标当日涨跌幅, 日内另有前收线 (左价 / 右 0%)
 //   版面恒定: 标题 / 注恒两行, y 轴刻度区定宽 (右轴无基准也留), 图框只随窗口变; 换标的 = 新历史到齐才整体换上, 其间照画旧的
 // 每帧先 Sync (发请求 / 收发布 / 当日版本变了才拷), 再画; 个股 / 篮子同一个 Feed + pull
 #pragma once
@@ -13,6 +14,7 @@
 #include "shared/AssetInfo.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,16 +23,19 @@ struct Config;
 
 namespace GUI::Database {
 
+// 一张图的 x 视野 (唯一真相: 每帧以 Always 设给 ImPlot, 其自带的拖动 / 滚轮 / 双击全失效, 交互只改这里)
 struct QuotesView {
-  double lo = 0, hi = 0;      // 上帧 x 视野
-  uint64_t key = 0;           // 复位键 (代 / 档 / 根数)
-  float rows[2] = {3.f, 1.f}; // 价 / 量 两格的高比
+  double lo = 0, hi = 0;                                  // x 视野
+  uint64_t key = 0;                                       // 复位键 (代 / 档 / 根数)
+  float rows[2] = {3.f, 1.f};                             // 价 / 量 两格的高比
+  double drag = std::numeric_limits<double>::quiet_NaN(); // 框选起点 x; NaN = 未在框选
+  float drag_px = 0;                                      // 框选起点屏幕 x
 };
 
 // 一个标的的两张图: 档位 + 视野
 struct ChartState {
   int intraday = 0;  // 日内档 (日内 / 2日 / 3日 / 4日)
-  int daily = 1;     // 日线档 (周 / 月 / 年)
+  int daily = 1;     // 日线档 (周 / 月 / 年 / 10年)
   QuotesView iv, dv; // 日内 / 日线 视野
 };
 

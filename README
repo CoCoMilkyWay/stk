@@ -187,9 +187,9 @@ stk/
 │   │   │   │   │                                     #    · Quote: 新浪全市场当日行情 (首次进 Assets 才起); 快照每 3s 一轮合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
 │   │   │   │   │                                     #      当日落 output/sina/live.bin (每 5 分钟 + 退出), 重启 = 一次断档, 只补停机期间有成交的只
 │   │   │   │   │                                     #      today(i) 个股当日 ↔ today(篮子) 篮子当日 (bind 的成员表每轮快照后在快照线程合成); 两表各一个版本号, GUI 版本变了才拷
-│   │   │   │   │                                     #    · StockHistory: 选中个股的基本面日线 (cn_stock_real_bar1d 近 270 日, ref = pre_close) + 分钟 (bar1m 近 4 日, 经 Bar1mDay 按行 row_slot 并根)
+│   │   │   │   │                                     #    · StockHistory: 选中个股的基本面日线 (cn_stock_real_bar1d 近 2500 日, ref = pre_close) + 分钟 (bar1m 近 4 日, 经 Bar1mDay 按行 row_slot 并根)
 │   │   │   │   │                                     #    · BasketHistory: 指数 (全A 等权 / 市值加权 + 各子池等权) / 申万一级行业 (市值加权) 篮子, 须 all Bar 库已算; D 日成员 / 权重 / 基准 (pre_close) 取 D−1 收盘行
-│   │   │   │   │                                     #      日线读 L_1day (近 270 日), 日内读 L_1min (近 4 日); 跑完把库末日成员表 bind 给 Quote, 库末日之后的行情日由它合成
+│   │   │   │   │                                     #      日线读 L_1day (近 2500 日), 日内读 L_1min (近 4 日); 跑完把库末日成员表 bind 给 Quote, 库末日之后的行情日由它合成
 │   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (基本面同步) / TabEncode / TabAssets / TabDates (日历) / CrossSectionAnalysis / QuotesPanel
 │   │   │   │                                         #    · TabAssets: 左栏 个股 (过滤条 + 资产表) / 指数 / 行业 (篮子表: 点位 / 涨幅 / 成交额 / 成分);
 │   │   │   │                                         #      右栏 个股 = Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析); 篮子 = 日内 + 日线 (量柱 = 成交额), 档位按钮叠在各图左上角

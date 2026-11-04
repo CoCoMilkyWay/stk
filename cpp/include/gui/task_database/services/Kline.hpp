@@ -34,7 +34,7 @@
 namespace GUI::Database {
 
 inline constexpr int kSlots = 240;
-inline constexpr size_t kDailyDays = 270, kMinuteDays = 4;
+inline constexpr size_t kDailyDays = 2500, kMinuteDays = 4; // 日线 10 年
 
 // ---- 槽代数: 三种时间坐标 → 槽 ----
 // 槽 → 标号 (hh · 60 + mm)

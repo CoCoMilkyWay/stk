@@ -26,10 +26,16 @@ constexpr ImVec4 kMaCol[] = {ImVec4(0.843f, 0.729f, 0.490f, 1.f), ImVec4(0.306f,
                              ImVec4(0.773f, 0.525f, 0.753f, 1.f)};
 constexpr int kIntraDays[] = {1, 2, 3, 4};
 constexpr const char *kIntraName[] = {"日内", "2日", "3日", "4日"};
-constexpr int kDailySpan[] = {5, 22, 250}; // 交易日
-constexpr const char *kDailyName[] = {"周", "月", "年"};
+constexpr int kDailySpan[] = {5, 22, 250, 2500}; // 交易日
+constexpr const char *kDailyName[] = {"周", "月", "年", "10年"};
+static_assert(kDailySpan[3] <= static_cast<int>(kDailyDays));
 constexpr const char *kHours[] = {"09:30", "10:30", "11:30/13:00", "14:00", "15:00"};
 constexpr double kBody = 0.35; // 蜡烛 / 量柱半宽 [根]
+constexpr double kMinSpan = 5; // 视野至少几根 (框选 / 滚轮)
+constexpr double kWheel = 0.8; // 滚轮一格视野宽 × kWheel (向前 = 放大)
+constexpr float kDragPx = 4.f; // 框选生效的最小拖动 [px]
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr ImVec4 kRefTag(0.55f, 0.55f, 0.55f, 1.f);
 
 ImVec4 tint(double v, double ref) { return v > ref ? kUp : v < ref ? kDn
                                                                    : kFlat; }
@@ -65,7 +71,7 @@ void locate_left(ImPlotTicker &t, const ImPlotRange &r, float px, bool vertical,
 }
 void locate_right(ImPlotTicker &t, const ImPlotRange &r, float px, bool vertical, ImPlotFormatter f, void *fd) {
   ImPlot::Locator_Default(t, r, px, vertical, f, fd);
-  pin_width(t, {"-000.0%"});
+  pin_width(t, {"-000.0%", "+00.00%"});
 }
 // 当前图的 y 轴换上定宽 locator (Setup 阶段调: BeginPlot 每帧复位 locator)
 void pin_axes() {
@@ -81,7 +87,7 @@ struct Series {
   std::vector<Candle> bars;
   std::vector<double> x;
   std::vector<misc::Ymd> days; // 日内各日
-  double ref = 0;              // 涨跌幅轴基准; 0 = 无
+  double ref = 0;              // 涨跌幅轴基准 (末日前收); 0 = 无
   void push(const Candle &b, double at) {
     bars.push_back(b);
     x.push_back(at);
@@ -144,15 +150,17 @@ bool range_bar(const char *const names[], int n, int &cur) {
   return changed;
 }
 
-// 价 (蜡烛 + 基准 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 量, x 联动. key 变 → 视野复位到 [win_lo, win_hi]; y 随上帧视野内的根贴合.
+// 价 (蜡烛 + 前收 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 量, x 联动. key 变 / 双击 → 视野复位到档窗口 [win_lo, win_hi];
+//   左键拖动 = 框选 x 段放大; wheel → 滚轮只缩放 x, 右端锚在 win_hi (最新一根); y 恒随视野内的根贴合.
+//   视野的改动在下一帧生效 (本帧已设给 ImPlot).
 // 档位按钮叠在价图左上角 (在图之后提交, 抢得到悬停). 画完光标停在按钮处, 调用方显式定位下一块
 void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_t key, QuotesView &v, const ImVec2 &size,
-                const char *const ranges[], int nr, int &cur) {
+                const char *const ranges[], int nr, int &cur, bool wheel) {
   const int n = static_cast<int>(s.bars.size());
   const bool reset = v.key != key;
   if (reset) {
     v.key = key;
-    v.lo = win_lo, v.hi = win_hi;
+    v.lo = win_lo, v.hi = win_hi, v.drag = kNaN;
   }
   const int w0 = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), v.lo) - s.x.begin());
   const int w1 = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), v.hi) - s.x.begin());
@@ -189,7 +197,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
   }
   const auto setup_x = [&](bool labels) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, labels ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoTickLabels);
-    ImPlot::SetupAxisLimits(ImAxis_X1, v.lo, v.hi, reset ? ImPlotCond_Always : ImPlotCond_Once);
+    ImPlot::SetupAxisLimits(ImAxis_X1, v.lo, v.hi, ImPlotCond_Always);
     if (s.intraday)
       ImPlot::SetupAxisTicks(ImAxis_X1, tick_x.data(), static_cast<int>(tick_x.size()), tick_p.data());
     else
@@ -198,6 +206,25 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
   const auto visible = [&](const ImPlotRect &lim, int &a, int &b) {
     a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - 1.0) - s.x.begin());
     b = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), lim.X.Max + 1.0) - s.x.begin());
+  };
+  // 每格: 收悬停 / 鼠标 x (价图坐标), 占住滚轮 (不滚外层窗口); 框选中两格同画选区
+  bool hov = false;
+  double mx = 0;
+  const auto input = [&](bool price) {
+    if (price)
+      mx = ImPlot::GetPlotMousePos().x;
+    if (ImPlot::IsPlotHovered()) {
+      hov = true;
+      ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, ImPlot::GetCurrentPlot()->ID);
+    }
+    if (std::isnan(v.drag))
+      return;
+    const ImVec2 pos = ImPlot::GetPlotPos(), sz = ImPlot::GetPlotSize();
+    const float a = ImPlot::PlotToPixels(v.drag, 0.0).x, b = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos().x, 0.0).x;
+    const ImVec2 p0(std::min(a, b), pos.y), p1(std::max(a, b), pos.y + sz.y);
+    ImDrawList *dl = ImPlot::GetPlotDrawList();
+    dl->AddRectFilled(p0, p1, IM_COL32(86, 156, 214, 40));
+    dl->AddRect(p0, p1, IM_COL32(86, 156, 214, 160));
   };
 
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给蜡烛
@@ -221,7 +248,15 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     ImPlot::SetupFinish();
     corner = ImPlot::GetPlotPos();
     const ImPlotRect lim = ImPlot::GetPlotLimits();
-    v.lo = lim.X.Min, v.hi = lim.X.Max;
+    // 水平线的两端标签: 左 = 价, 右 = 对前收的涨跌幅 (右轴同一基准)
+    const auto tags = [&](double y, const ImVec4 &c) {
+      ImPlot::TagY(y, c, "%.2f", y);
+      if (!(s.ref > 0))
+        return;
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+      ImPlot::TagY(pct(y), c, "%+.2f%%", pct(y));
+      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    };
 
     if (!seps.empty()) {
       ImPlot::SetNextLineStyle(kRule, 1.f);
@@ -230,6 +265,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     if (s.intraday && s.ref > 0) {
       ImPlot::SetNextLineStyle(kRule, 1.f);
       ImPlot::PlotInfLines("##ref", &s.ref, 1, ImPlotInfLinesFlags_Horizontal);
+      tags(s.ref, kRefTag);
     }
     std::vector<double> ma(static_cast<size_t>(n));
     for (int k = 0; k < 3 && !s.intraday; ++k) {
@@ -275,10 +311,11 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       const ImVec4 c = tint(last, s.ref > 0 ? s.ref : last);
       ImPlot::SetNextLineStyle(ImVec4(c.x, c.y, c.z, 0.55f), 1.f);
       ImPlot::PlotInfLines("##last", &last, 1, ImPlotInfLinesFlags_Horizontal);
-      ImPlot::TagY(last, c, "%.2f", last);
+      tags(last, c);
     }
     if (n > 0 && ImPlot::IsPlotHovered())
       tooltip(s, nearest(s, ImPlot::GetPlotMousePos().x));
+    input(true);
     ImPlot::EndPlot();
   }
 
@@ -307,10 +344,29 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     }
     if (n > 0 && ImPlot::IsPlotHovered())
       tooltip(s, nearest(s, ImPlot::GetPlotMousePos().x));
+    input(false);
     ImPlot::EndPlot();
   }
   ImPlot::EndSubplots();
   ImPlot::PopStyleVar(3);
+
+  const ImGuiIO &io = ImGui::GetIO();
+  if (hov && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+    v.lo = win_lo, v.hi = win_hi, v.drag = kNaN;
+  else if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    v.drag = mx, v.drag_px = io.MousePos.x;
+  if (!std::isnan(v.drag)) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); // 盖掉 ImPlot 的 "不可拖动" 光标
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+      if (std::abs(io.MousePos.x - v.drag_px) > kDragPx && std::abs(mx - v.drag) >= kMinSpan)
+        v.lo = std::min(v.drag, mx), v.hi = std::max(v.drag, mx);
+      v.drag = kNaN;
+    }
+  }
+  if (wheel && hov && io.MouseWheel != 0) {
+    const double w = std::clamp((v.hi - v.lo) * std::pow(kWheel, io.MouseWheel), kMinSpan, std::max(win_hi - win_lo, n + 1.0));
+    v.lo = win_hi - w, v.hi = win_hi;
+  }
   if (corner.x >= 0) {
     ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
     range_bar(ranges, nr, cur);
@@ -427,7 +483,7 @@ const Candle *last(const Kline &kl, const Day &today) {
                                                              : &kl.daily.back();
 }
 
-// 两张图的根 = 历史 + 当日 (joins 才接); 日内取末 days 日, 分钟根的前收 = 同日日根的; 日内涨跌基准 = 末日前收
+// 两张图的根 = 历史 + 当日 (joins 才接); 日内取末 days 日, 分钟根的前收 = 同日日根的; 两图涨跌基准同为末日前收
 void build(const Kline &kl, const Day &today, int days, bool money, Series &intra, Series &daily) {
   const bool on = joins(kl, today);
   intra.intraday = true;
@@ -454,7 +510,7 @@ void build(const Kline &kl, const Day &today, int days, bool money, Series &intr
         intra.push({b.cell[static_cast<size_t>(s)], b.date, s, ref}, static_cast<double>(k) * kSlots + s);
   }
   if (!daily.bars.empty())
-    daily.ref = daily.bars.back().close;
+    daily.ref = daily.bars.back().ref;
 }
 
 // 当日没接上 (历史落后) → 提示写进 buf, true
@@ -480,12 +536,13 @@ void header(const char *title, const Kline &kl, const Day &today, const char *no
 void plot_intraday(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
   const int nd = static_cast<int>(s.days.size());
   const uint64_t key = id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
-  plot_chart(name, s, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, size, kIntraName, 4, st.intraday);
+  plot_chart(name, s, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, size, kIntraName, 4, st.intraday, false);
 }
+// 日线档窗口右端 = 最新一根; 不足一档的历史靠右, 左侧留空
 void plot_daily(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
   const int n = static_cast<int>(s.bars.size()), span = kDailySpan[st.daily];
   const uint64_t key = id | static_cast<uint64_t>(st.daily) << 24 | static_cast<uint64_t>(n);
-  plot_chart(name, s, std::max(n, span) - span - 0.5, std::max(n, span) - 0.5, key, st.dv, size, kDailyName, 3, st.daily);
+  plot_chart(name, s, n - span - 0.5, n - 0.5, key, st.dv, size, kDailyName, 4, st.daily, true);
 }
 
 // 行情页的图区: 上 日内 (book 非空 → 右挂 1/3 宽五档, 上下 6 : 4; 否则通栏, 上下对半) / 下 日线.

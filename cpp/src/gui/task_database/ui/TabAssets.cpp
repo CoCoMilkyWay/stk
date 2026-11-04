@@ -6,6 +6,7 @@
 #include "gui/task_database/ui/CrossSectionAnalysis.hpp"
 #include "gui/util/AssetFilter.hpp" // 筛选控件 (与 ORDERFLOW 共用)
 #include "imgui.h"
+#include "imgui_internal.h" // TableGetHoveredRow
 #include "implot.h"
 #include <algorithm>
 #include <cassert>
@@ -649,17 +650,6 @@ void RenderDataTable(
 
   SyncView(assets_state, asset_data, stock_info);
 
-  // 左键点格子: 选中该行 (Quotes 看它); Statistics 页再切截面分析的列
-  size_t row_id = 0;
-  auto handle_column_click = [&assets_state, &row_id](int col_idx) {
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-      assets_state.selected_asset = static_cast<int>(row_id);
-      assets_state.show_right_panel = true;
-      if (!assets_state.quotes_page)
-        assets_state.selected_column_idx = assets_state.selected_column_idx == col_idx ? -1 : col_idx;
-    }
-  };
-
   // Get hovered column for highlight
   int hovered_col = ImGui::TableGetHoveredColumn();
 
@@ -686,7 +676,6 @@ void RenderDataTable(
 
     ImGui::TableNextRow();
     ImGui::PushID(row_idx);
-    row_id = id;
     bool is_row_selected = (assets_state.selected_asset == static_cast<int>(id));
 
     // Col 0: Code
@@ -700,7 +689,6 @@ void RenderDataTable(
     } else {
       ImGui::Text("%s", asset.asset_code.c_str());
     }
-    handle_column_click(0);
 
     // Col 1: Name
     ImGui::TableSetColumnIndex(1);
@@ -712,7 +700,6 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(1);
 
     // Col 2: Exchange
     ImGui::TableSetColumnIndex(2);
@@ -723,7 +710,6 @@ void RenderDataTable(
                        : asset.exchange == "SZ" ? COLOR_SZ
                                                 : COLOR_BJ,
                        "%s", asset.exchange.c_str());
-    handle_column_click(2);
 
     // Col 3: Board
     ImGui::TableSetColumnIndex(3);
@@ -732,7 +718,6 @@ void RenderDataTable(
     }
     BoardType board = GetBoardType(asset.asset_code);
     ImGui::Text("%s", GetBoardName(board));
-    handle_column_click(3);
 
     // Col 4: ST
     ImGui::TableSetColumnIndex(4);
@@ -745,7 +730,6 @@ void RenderDataTable(
     } else {
       ImGui::Text("-");
     }
-    handle_column_click(4);
 
     // Col 5: DL (Delisted - 退市)
     ImGui::TableSetColumnIndex(5);
@@ -760,7 +744,6 @@ void RenderDataTable(
     } else {
       ImGui::Text("-");
     }
-    handle_column_click(5);
 
     // Col 6: Listed (days)
     ImGui::TableSetColumnIndex(6);
@@ -782,7 +765,6 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(6);
 
     // Col 7: Industry
     ImGui::TableSetColumnIndex(7);
@@ -797,7 +779,6 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(7);
 
     // Col 8..14: PE(TTM) / PB(MRQ) / PS(TTM) / PCF / DY 1y/3y/5y (%), 七列同构 —
     // 颜色走截面分位; NaN (无效 / 无基本面) → "-"
@@ -814,7 +795,6 @@ void RenderDataTable(
       } else {
         ImGui::TextColored(COLOR_GRAY, "-");
       }
-      handle_column_click(col);
     };
     constexpr float kNaN = StockInfo::kNaN;
     render_num(8, "%.1f", info ? info->pe_ttm : kNaN);
@@ -843,7 +823,6 @@ void RenderDataTable(
     } else {
       ImGui::TextColored(COLOR_GRAY, "-");
     }
-    handle_column_click(15);
 
     // Col 16: Trading Days
     // 以下三列的统计都取自 Asset::asset_stats — 逐帧遍历帧目录会把
@@ -854,7 +833,6 @@ void RenderDataTable(
     }
     size_t total_days = stats.total_days;
     ImGui::Text("%zu", total_days);
-    handle_column_click(16);
 
     // Col 17: Average Orders per Trading Day
     ImGui::TableSetColumnIndex(17);
@@ -871,7 +849,6 @@ void RenderDataTable(
     } else {
       ImGui::Text("%.0f", avg_orders);
     }
-    handle_column_click(17);
 
     // Col 18: Orders Coverage
     // expected_days == 0 = 该资产在回测区间内本就不该有数据 (北交所 / 尚未
@@ -892,10 +869,21 @@ void RenderDataTable(
         ImGui::SetTooltip("Missing %zu of %zu trading days", stats.orders_missing, stats.expected_days);
       }
     }
-    handle_column_click(18);
 
     ImGui::PopID();
     row_idx++;
+  }
+
+  // 左键点行内任意处 (格子的文字 / 内边距 / 边框都算): 选中该行 (Quotes 看它); Statistics 页再切截面分析的列.
+  // 行 = 表的行背景带 (上下相接无缝, 行 0 = 表头); 列 = 列区 (左右相接无缝); 滚动条不算
+  const int hit = ImGui::TableGetHoveredRow() - 1;
+  const ImRect inner = ImGui::GetCurrentWindow()->InnerClipRect;
+  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() && inner.Contains(ImGui::GetMousePos()) &&
+      hit >= 0 && hit < row_idx && hovered_col >= 0 && hovered_col < 19) {
+    assets_state.selected_asset = static_cast<int>(assets_state.view.rows[static_cast<size_t>(hit)]);
+    assets_state.show_right_panel = true;
+    if (!assets_state.quotes_page)
+      assets_state.selected_column_idx = assets_state.selected_column_idx == hovered_col ? -1 : hovered_col;
   }
 
   ImGui::EndTable();
