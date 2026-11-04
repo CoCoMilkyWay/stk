@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -46,10 +47,12 @@ int fmt_amount(char *buf, int size, double a) {
                     : std::snprintf(buf, size, "%.0f", a);
 }
 int lots_tick(double v, char *buf, int size, void *) { return v <= 0 ? std::snprintf(buf, size, "0") : fmt_lots(buf, size, v); }
+int amount_tick(double v, char *buf, int size, void *) { return v <= 0 ? std::snprintf(buf, size, "0") : fmt_amount(buf, size, v); }
 
 // 一张图的根: 日内 x = 第 k 日 · kSlots + 槽 (无成交的槽留空); 日线 x = 下标
 struct Series {
   bool intraday = false;
+  bool money = false; // 量柱 = 成交额 (篮子: 量不合成)
   std::vector<Candle> bars;
   std::vector<double> x;
   std::vector<misc::Ymd> days; // 日内各日
@@ -58,6 +61,7 @@ struct Series {
     bars.push_back(b);
     x.push_back(at);
   }
+  double vol(const Candle &b) const { return money ? b.amount : b.volume; }
 };
 
 int day_tick(double v, char *buf, int size, void *ud) {
@@ -90,8 +94,12 @@ void tooltip(const Series &s, int i) {
                                                                                  : 0;
   if (prev > 0)
     std::snprintf(chg, sizeof(chg), "\n涨跌 %+.2f  %+.2f%%", b.close - prev, (b.close / prev - 1.0) * 100.0);
-  fmt_lots(vol, sizeof(vol), b.volume);
   fmt_amount(amt, sizeof(amt), b.amount);
+  if (s.money) {
+    ImGui::SetTooltip("%s\n开 %.2f  高 %.2f\n低 %.2f  收 %.2f%s\n额 %s", when, b.open, b.high, b.low, b.close, chg, amt);
+    return;
+  }
+  fmt_lots(vol, sizeof(vol), b.volume);
   ImGui::SetTooltip("%s\n开 %.2f  高 %.2f\n低 %.2f  收 %.2f%s\n量 %s  额 %s", when, b.open, b.high, b.low, b.close, chg, vol, amt);
 }
 
@@ -135,7 +143,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
   double lo = std::numeric_limits<double>::max(), hi = -lo, vmax = 0;
   for (int i = w0; i < w1; ++i) {
     const Candle &b = s.bars[static_cast<size_t>(i)];
-    lo = std::min<double>(lo, b.low), hi = std::max<double>(hi, b.high), vmax = std::max(vmax, b.volume);
+    lo = std::min<double>(lo, b.low), hi = std::max<double>(hi, b.high), vmax = std::max(vmax, s.vol(b));
   }
   if (w0 >= w1)
     lo = hi = s.ref > 0 ? s.ref : 1.0;
@@ -262,7 +270,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
   if (ImPlot::BeginPlot("##vol", ImVec2(), ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend)) {
     setup_x(true);
     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, vmax > 0 ? vmax * 1.1 : 1.0, ImPlotCond_Always);
-    ImPlot::SetupAxisFormat(ImAxis_Y1, lots_tick, nullptr);
+    ImPlot::SetupAxisFormat(ImAxis_Y1, s.money ? amount_tick : lots_tick, nullptr);
     ImPlot::SetupFinish();
     if (!seps.empty()) {
       ImPlot::SetNextLineStyle(kRule, 1.f);
@@ -275,7 +283,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       for (int i = a; i < b; ++i) {
         const Candle &k = s.bars[static_cast<size_t>(i)];
         const ImVec4 c = k.close >= k.open ? kUp : kDn;
-        const ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody, k.volume), p1 = ImPlot::PlotToPixels(s.x[i] + kBody, 0.0);
+        const ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody, s.vol(k)), p1 = ImPlot::PlotToPixels(s.x[i] + kBody, 0.0);
         dl->AddRectFilled(ImVec2(std::min(p0.x, p1.x), p0.y), ImVec2(std::max(p0.x, p1.x) + 1.f, p1.y),
                           ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.75f)));
       }
@@ -398,6 +406,21 @@ void render_book(const LiveDay &d) {
   ImGui::PopStyleVar();
 }
 
+// 篮子 b 的最新一根与其前收: 有当日合成取它, 否则日线末根. 日线空 → false
+bool basket_last(const BasketsState &st, size_t b, Candle &k, double &prev) {
+  const std::vector<Candle> &dl = st.data->baskets[b].daily;
+  if (dl.empty())
+    return false;
+  if (b < st.today.size() && st.today[b].date) {
+    k = st.today[b].day;
+    prev = dl.back().close;
+  } else {
+    k = dl.back();
+    prev = dl.size() > 1 ? dl[dl.size() - 2].close : IndexService::kBase;
+  }
+  return true;
+}
+
 } // namespace
 
 void RenderQuotesPanel(QuoteService &live, HistoryService &hist, const AssetItem *asset, const StockInfo *info,
@@ -507,6 +530,207 @@ void RenderQuotesPanel(QuoteService &live, HistoryService &hist, const AssetItem
     const int n = static_cast<int>(daily.bars.size()), span = kDailySpan[st.daily];
     const uint64_t key = static_cast<uint64_t>(st.gen) << 32 | static_cast<uint64_t>(st.daily) << 24 | static_cast<uint64_t>(n);
     plot_chart("##dchart", daily, std::max(n, span) - span - 0.5, std::max(n, span) - 0.5, key, st.dv,
+               ImVec2(avail.x, avail.y - top_h - gap), kDailyName, 3, st.daily);
+  }
+}
+
+void SyncBaskets(QuoteService &live, IndexService &idx, const Config &cfg, BasketsState &st, int page) {
+  if (st.want) {
+    st.want = false;
+    FeatureLib lib = load_lib(cfg, kAllBar);
+    st.missing = !lib.ready();
+    if (!st.missing)
+      idx.Request({++st.gen, std::move(lib)});
+  }
+  {
+    const Indexes &x = idx.indexes();
+    std::lock_guard<std::mutex> lock(x.mutex);
+    if (x.gen == st.gen && x.data != st.data)
+      st.data = x.data;
+  }
+  if (!st.data)
+    return;
+  const IndexData &d = *st.data;
+  const QuoteStatus qs = live.status();
+  const int sel = st.sel[page];
+  const auto key = std::make_tuple(qs.date, qs.sec, sel, st.data.get());
+  if (key == st.today_key)
+    return;
+  st.today_key = key;
+  st.today.resize(d.baskets.size());
+  for (size_t b = 0; b < d.baskets.size(); ++b) {
+    const Basket &bk = d.baskets[b];
+    IndexDay &t = st.today[b];
+    t.date = 0;
+    if (qs.date > d.last && !bk.daily.empty())
+      live.compose(bk.live, bk.daily.back().close, static_cast<int>(b) == sel, t);
+  }
+}
+
+bool RenderBasketList(const IndexService &idx, BasketsState &st, int page) {
+  if (st.missing || (st.data && st.data->baskets.empty())) {
+    ImGui::TextWrapped(st.missing ? "指数 / 行业由 all.bar 特征库合成: 先在 Features → Compute 算好 all 池的 Bar 库."
+                                  : "all.bar 特征库落盘不足 3 日.");
+    if (ImGui::SmallButton("重载"))
+      st.want = true;
+    return false;
+  }
+  if (!st.data) {
+    const Indexes &x = idx.indexes();
+    ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
+    return false;
+  }
+  const IndexData &d = *st.data;
+  struct Row {
+    size_t b;
+    Candle k;
+    double prev = 0;
+  };
+  std::vector<Row> rows;
+  for (size_t b = 0; b < d.baskets.size(); ++b)
+    if (d.baskets[b].industry == (page == 1)) {
+      Row &r = rows.emplace_back(Row{b, {}});
+      basket_last(st, b, r.k, r.prev); // 日线空 → prev 留 0, 行只显示名称
+    }
+
+  if (!ImGui::BeginTable("##baskets", 5,
+                         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable |
+                             ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings))
+    return false;
+  ImGui::TableSetupScrollFreeze(0, 1);
+  ImGui::TableSetupColumn("名称", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortAscending);
+  ImGui::TableSetupColumn("点位", ImGuiTableColumnFlags_PreferSortDescending);
+  ImGui::TableSetupColumn("涨幅", ImGuiTableColumnFlags_PreferSortDescending);
+  ImGui::TableSetupColumn("成交额", ImGuiTableColumnFlags_PreferSortDescending);
+  ImGui::TableSetupColumn("成分", ImGuiTableColumnFlags_PreferSortDescending);
+  ImGui::TableHeadersRow();
+  if (const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs(); ss && ss->SpecsCount > 0) { // 名称 = 定义序
+    const int c = ss->Specs[0].ColumnIndex;
+    const bool asc = ss->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
+    const auto key = [&](const Row &r) -> double {
+      switch (c) {
+      case 1:
+        return r.k.close;
+      case 2:
+        return r.prev > 0 ? r.k.close / r.prev : 0;
+      case 3:
+        return r.k.amount;
+      case 4:
+        return static_cast<double>(d.baskets[r.b].live.size());
+      default:
+        return static_cast<double>(r.b);
+      }
+    };
+    std::stable_sort(rows.begin(), rows.end(), [&](const Row &a, const Row &b) { return asc ? key(a) < key(b) : key(a) > key(b); });
+  }
+
+  bool picked = false;
+  for (const Row &r : rows) {
+    const Basket &bk = d.baskets[r.b];
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::PushID(static_cast<int>(r.b));
+    if (ImGui::Selectable(bk.name.c_str(), st.sel[page] == static_cast<int>(r.b), ImGuiSelectableFlags_SpanAllColumns)) {
+      st.sel[page] = static_cast<int>(r.b);
+      picked = true;
+    }
+    ImGui::PopID();
+    if (!(r.prev > 0))
+      continue;
+    const ImVec4 c = tint(r.k.close, r.prev);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(c, "%.2f", r.k.close);
+    ImGui::TableSetColumnIndex(2);
+    ImGui::TextColored(c, "%+.2f%%", (r.k.close / r.prev - 1.0) * 100.0);
+    ImGui::TableSetColumnIndex(3);
+    char amt[32];
+    fmt_amount(amt, sizeof(amt), r.k.amount);
+    ImGui::TextUnformatted(amt);
+    ImGui::TableSetColumnIndex(4);
+    ImGui::Text("%zu", bk.live.size());
+  }
+  ImGui::EndTable();
+  return picked;
+}
+
+void RenderBasketPanel(BasketsState &st, int page) {
+  const int sel = st.sel[page];
+  if (!st.data || st.data->baskets.empty() || sel < 0) {
+    ImGui::TextDisabled("点左栏一行查看走势.");
+    return;
+  }
+  const IndexData &d = *st.data;
+  const size_t b = static_cast<size_t>(sel);
+  const Basket &bk = d.baskets[b];
+  const IndexDay *t = b < st.today.size() && st.today[b].date ? &st.today[b] : nullptr;
+
+  Series intra, daily;
+  intra.intraday = true;
+  intra.money = daily.money = true;
+  {
+    std::vector<const std::vector<Candle> *> src;
+    std::vector<misc::Ymd> dates;
+    for (const std::vector<Candle> &m : bk.minutes)
+      src.push_back(&m), dates.push_back(m.front().date);
+    if (t && !t->bars.empty())
+      src.push_back(&t->bars), dates.push_back(t->date);
+    const size_t nd = std::min<size_t>(static_cast<size_t>(kIntraDays[st.intraday]), src.size());
+    for (size_t k = 0; k < nd; ++k) {
+      const size_t j = src.size() - nd + k;
+      intra.days.push_back(dates[j]);
+      for (const Candle &c : *src[j])
+        intra.push(c, static_cast<double>(k) * kSlots + c.slot);
+    }
+    for (const Candle &c : bk.daily)
+      daily.push(c, static_cast<double>(daily.bars.size()));
+    if (t)
+      daily.push(t->day, static_cast<double>(daily.bars.size()));
+    if (!intra.days.empty())
+      for (auto it = daily.bars.rbegin(); it != daily.bars.rend(); ++it)
+        if (it->date < intra.days.back()) {
+          intra.ref = it->close;
+          break;
+        }
+    if (!daily.bars.empty())
+      daily.ref = daily.bars.back().close;
+  }
+
+  { // 名称 / 点位 / 涨跌 · 口径 (放不下另起一行) · 重载
+    Candle k;
+    double prev = 0;
+    ImGui::TextUnformatted(bk.name.c_str());
+    if (basket_last(st, b, k, prev) && prev > 0) {
+      ImGui::SameLine();
+      ImGui::TextColored(tint(k.close, prev), "%.2f  %+.2f  %+.2f%%", k.close, k.close - prev, (k.close / prev - 1.0) * 100.0);
+    }
+    char note[160];
+    if (t)
+      std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员 / 权重取 %02d-%02d 收盘 (%zu 只)", t->sec / 3600,
+                    t->sec / 60 % 60, t->sec % 60, d.last / 100 % 100, d.last % 100, bk.live.size());
+    else
+      std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", d.last / 100 % 100, d.last % 100);
+    flow(ImGui::CalcTextSize(note).x);
+    ImGui::TextDisabled("%s", note);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("重载"))
+      st.want = true;
+  }
+
+  // 上: 日内; 下: 日线 (同个股页, 无盘口)
+  const float gap = 4.f;
+  const ImVec2 p0 = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
+  const float top_h = std::floor((avail.y - gap) * 0.5f);
+  const uint64_t id = static_cast<uint64_t>(st.gen) << 48 | static_cast<uint64_t>(b) << 32;
+  {
+    const int nd = static_cast<int>(intra.days.size());
+    const uint64_t key = id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
+    plot_chart("##bichart", intra, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, ImVec2(avail.x, top_h), kIntraName, 4, st.intraday);
+  }
+  ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + top_h + gap));
+  {
+    const int n = static_cast<int>(daily.bars.size()), span = kDailySpan[st.daily];
+    const uint64_t key = id | static_cast<uint64_t>(st.daily) << 24 | static_cast<uint64_t>(n);
+    plot_chart("##bdchart", daily, std::max(n, span) - span - 0.5, std::max(n, span) - 0.5, key, st.dv,
                ImVec2(avail.x, avail.y - top_h - gap), kDailyName, 3, st.daily);
   }
 }

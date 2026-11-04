@@ -91,7 +91,11 @@ struct AssetsState {
   int sort_column = -1;
   bool sort_ascending = true;
 
-  // 右栏: Quotes (选中标的行情) / Statistics (选中列的截面分析); 点格子在 Statistics 页才切列
+  // 左栏: 0 个股 (下表) / 1 指数 / 2 行业 (篮子列表, 右栏只有走势)
+  int list = 0;
+  BasketsState baskets;
+
+  // 右栏 (个股): Quotes (选中标的行情) / Statistics (选中列的截面分析); 点格子在 Statistics 页才切列
   bool quotes_page = true;
   int selected_column_idx = -1; // Selected column for analysis (-1 = none)
   bool show_right_panel = true;
@@ -108,6 +112,8 @@ void RenderTabAssets(
     const StockInfoMap &stock_info,
     AssetsState &assets_state,
     QuoteService &live,
-    HistoryService &hist);
+    HistoryService &hist,
+    IndexService &idx,
+    const Config &cfg);
 
 } // namespace GUI::Database

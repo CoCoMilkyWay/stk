@@ -322,6 +322,7 @@ set(MATH_PRECISE
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/AssetLoader.cpp
     gui/task_database/services/FundamentalService.cpp
+    gui/task_database/services/IndexService.cpp
     gui/task_database/services/QuoteService.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp

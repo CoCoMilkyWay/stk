@@ -3,6 +3,7 @@
 #include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
+#include "gui/task_database/services/IndexService.hpp"
 #include "gui/task_database/services/QuoteService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
@@ -34,9 +35,10 @@ private:
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<StateManager> state_mgr_;
-  // Assets → Quotes 行情: 首次画 Assets 页才起 (之前不碰网络)
+  // Assets → Quotes 行情: 首次画 Assets 页才起 (之前不碰网络); 指数 / 行业篮子读着 quote_svc_ 的码表, 后建先拆
   std::unique_ptr<QuoteService> quote_svc_;
   std::unique_ptr<HistoryService> history_svc_;
+  std::unique_ptr<IndexService> index_svc_;
 
   // UI state
   FundamentalTabState fundamental_state_;
@@ -330,13 +332,16 @@ private:
         }
       quote_svc_ = std::make_unique<QuoteService>(std::move(syms), data_->assetinfo.bar1m_end);
       history_svc_ = std::make_unique<HistoryService>();
+      index_svc_ = std::make_unique<IndexService>(*quote_svc_);
     }
     RenderTabAssets(
         data_->asset,
         stock_info,
         assets_state_,
         *quote_svc_,
-        *history_svc_);
+        *history_svc_,
+        *index_svc_,
+        *config_);
   }
 
   void DrawTabDates() {

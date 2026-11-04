@@ -1315,7 +1315,9 @@ void RenderTabAssets(
     const StockInfoMap &stock_info,
     AssetsState &assets_state,
     QuoteService &live,
-    HistoryService &hist) {
+    HistoryService &hist,
+    IndexService &idx,
+    const Config &cfg) {
 
   const std::vector<AssetItem> &assets = asset.items;
 
@@ -1328,10 +1330,6 @@ void RenderTabAssets(
   // 过滤 + 排序结果的缓存, 顺便给下面的 Showing:x/y 供数
   SyncView(assets_state, asset, stock_info);
 
-  // Render filter bar
-  RenderFilterBar(assets_state, assets_state.view.rows.size(), assets.size(), assets, stock_info);
-  ImGui::Spacing();
-
   // Get window dimensions
   float window_width = ImGui::GetContentRegionAvail().x;
   float window_height = ImGui::GetContentRegionAvail().y;
@@ -1339,19 +1337,38 @@ void RenderTabAssets(
   // Calculate left table width
   float left_width = assets_state.show_right_panel ? window_width * assets_state.table_split_ratio : window_width;
 
-  // Left: Data Table
+  // Left: 个股 (过滤条 + 数据表) / 指数 / 行业
   ImGui::BeginChild("LeftTable", ImVec2(left_width, window_height), true,
                     ImGuiWindowFlags_HorizontalScrollbar);
-  RenderDataTable(asset, stock_info, assets_state);
+  if (ImGui::BeginTabBar("##LeftList")) {
+    if (ImGui::BeginTabItem("个股")) {
+      assets_state.list = 0;
+      RenderFilterBar(assets_state, assets_state.view.rows.size(), assets.size(), assets, stock_info);
+      ImGui::Spacing();
+      RenderDataTable(asset, stock_info, assets_state);
+      ImGui::EndTabItem();
+    }
+    for (int page = 0; page < 2; ++page)
+      if (ImGui::BeginTabItem(page ? "行业" : "指数")) {
+        assets_state.list = 1 + page;
+        SyncBaskets(live, idx, cfg, assets_state.baskets, page);
+        if (RenderBasketList(idx, assets_state.baskets, page))
+          assets_state.show_right_panel = true;
+        ImGui::EndTabItem();
+      }
+    ImGui::EndTabBar();
+  }
   ImGui::EndChild();
 
-  // Right: Quotes / Statistics
+  // Right: 篮子走势 / 个股 Quotes / Statistics
   if (assets_state.show_right_panel) {
     ImGui::SameLine();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
     ImGui::BeginChild("RightPanel", ImVec2(0, window_height), true);
     ImGui::PopStyleVar();
-    if (ImGui::BeginTabBar("##RightPanel")) {
+    if (assets_state.list > 0)
+      RenderBasketPanel(assets_state.baskets, assets_state.list - 1);
+    else if (ImGui::BeginTabBar("##RightPanel")) {
       if (ImGui::BeginTabItem("Quotes")) {
         assets_state.quotes_page = true;
         const int sel = assets_state.selected_asset;

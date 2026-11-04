@@ -6,6 +6,7 @@
 #include "shared/Config.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -145,6 +146,76 @@ bool QuoteService::day(const std::string &sym, LiveDay &out) const {
 QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
   return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_};
+}
+
+uint32_t QuoteService::find(const std::string &sym) const {
+  const auto it = index_.find(sym);
+  return it == index_.end() ? ~0u : it->second;
+}
+
+void QuoteService::compose(const std::vector<Weight> &ws, double base, bool bars, IndexDay &out) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  out.date = 0;
+  out.sec = sec_;
+  out.bars.clear();
+  double sw = 0, k[4] = {}, amt = 0;
+  int end = -1;
+  for (const Weight &m : ws) {
+    const sina::Quote &q = last_[m.i];
+    if (!quoted_[m.i] || !(q.last_close > 0))
+      continue;
+    const bool on = q.date == date_ && q.volume > 0 && q.price > 0;
+    const float px[4] = {q.open, q.high, q.low, q.price};
+    sw += m.w;
+    for (int j = 0; j < 4; ++j)
+      k[j] += m.w * (on && px[j] > 0 ? px[j] / q.last_close : 1.0);
+    if (on)
+      amt += q.amount;
+    const Track &t = tracks_[m.i];
+    for (int s = kSlots - 1; bars && s > end; --s)
+      if (t.has[s]) {
+        end = s;
+        break;
+      }
+  }
+  if (!(sw > 0))
+    return;
+  out.date = date_;
+  const double f = base / sw;
+  out.day = {date_, 0, static_cast<float>(k[0] * f), static_cast<float>(k[1] * f), static_cast<float>(k[2] * f),
+             static_cast<float>(k[3] * f), 0, amt};
+  if (end < 0)
+    return;
+  std::vector<std::array<double, 5>> acc(static_cast<size_t>(end) + 1, std::array<double, 5>{}); // 开 高 低 收 (比 × 权) / 额
+  double flat = 0;                                                                               // 全日无根的成员权 (比恒 1)
+  for (const Weight &m : ws) {
+    const sina::Quote &q = last_[m.i];
+    if (!quoted_[m.i] || !(q.last_close > 0))
+      continue;
+    const Track &t = tracks_[m.i];
+    if (t.bars.empty()) {
+      flat += m.w;
+      continue;
+    }
+    const double w = m.w / q.last_close;
+    double c = q.last_close;
+    for (int s = 0; s <= end; ++s) {
+      std::array<double, 5> &a = acc[static_cast<size_t>(s)];
+      if (t.has[s]) {
+        const Cell &b = t.bars[s];
+        a[0] += w * b.open, a[1] += w * b.high, a[2] += w * b.low, a[3] += w * b.close, a[4] += b.amount;
+        c = b.close;
+      } else {
+        a[0] += w * c, a[1] += w * c, a[2] += w * c, a[3] += w * c;
+      }
+    }
+  }
+  out.bars.reserve(acc.size());
+  for (int s = 0; s <= end; ++s) {
+    const std::array<double, 5> &a = acc[static_cast<size_t>(s)];
+    out.bars.push_back({date_, s, static_cast<float>((a[0] + flat) * f), static_cast<float>((a[1] + flat) * f),
+                        static_cast<float>((a[2] + flat) * f), static_cast<float>((a[3] + flat) * f), 0, a[4]});
+  }
 }
 
 // ---------------------------------------------------------------------------

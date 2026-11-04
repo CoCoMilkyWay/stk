@@ -19,6 +19,7 @@
 //   落盘 config::SINA_CACHE: 单文件存行情日全部 Track (根 / 精确位 / 待补区间 / 累计基线) + 末轮快照时刻, 有变化时每 kSave 与析构各写一次.
 //     换日 (含启动首轮) 先读同日缓存 —— 停机那段即一次断档, 照断档规则只补其间有成交的只; 收盘后重启零请求.
 //   全市场 = 构造时给定的代码表 (新浪形); 线程: 快照 1 + 分钟 K kFillers, 随对象.
+//   篮子 (指数 / 行业, 见 IndexService.hpp) 的当日由 compose 按成员 / 权重从快照与分钟根现合成.
 //
 // HistoryService — 选中标的的基本面历史 (gui/util/Service.hpp, 最新请求覆盖旧的):
 //   日线 = cn_stock_real_bar1d 最近 kDailyMonths 个月分片; 分钟 = bar1m 最近 kMinuteDays 个交易日文件. 不复权, 无成交的行 / 根不收.
@@ -68,6 +69,14 @@ struct LiveDay {
   std::vector<Candle> bars; // 当日已有的根, 槽升序
 };
 
+// 一个篮子的当日 (QuoteService::compose): 点位 = 基点 × 成员 价 / 昨收 的加权均值, 额 = 成员之和 (量不合成)
+struct IndexDay {
+  misc::Ymd date = 0;       // 行情日; 0 = 尚无快照
+  int sec = 0;              // 全市场最新快照时刻
+  Candle day;               // 当日一根 (成员快照的 开 / 高 / 低 / 现价 各自合成)
+  std::vector<Candle> bars; // 当日分钟根, 槽升序至成员最晚有成交的根 (成员缺根沿用其上根收盘)
+};
+
 struct QuoteStatus {
   misc::Ymd date = 0; // 行情日
   int sec = 0;        // 全市场最新快照时刻
@@ -89,9 +98,17 @@ public:
   QuoteService(const QuoteService &) = delete;
   QuoteService &operator=(const QuoteService &) = delete;
 
+  struct Weight { // 篮子成员: 全市场下标 / 权重
+    uint32_t i;
+    float w;
+  };
+
   void select(const std::string &sym);                  // GUI: 选中标的 (空 = 无)
   bool day(const std::string &sym, LiveDay &out) const; // GUI: 拷出 sym 当日; 不在全市场 → false
   QuoteStatus status() const;
+  uint32_t find(const std::string &sym) const; // 全市场下标; 不在 → ~0u (只读构造时的码表, 任意线程)
+  // 篮子当日合成, base = 前日点位. 无昨收的成员不计, 当日无成交的按昨收 (比 1) 计; bars = 连分钟根一起合成
+  void compose(const std::vector<Weight> &ws, double base, bool bars, IndexDay &out) const;
 
 private:
   struct Cell {
