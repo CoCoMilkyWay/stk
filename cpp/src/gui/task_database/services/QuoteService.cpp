@@ -34,15 +34,6 @@ Clock clock_now() {
           (tm.tm_wday + 6) % 7};
 }
 
-// 快照时刻 → 所在根: 竞价并入首根, 午休并入 11:30, 收盘后并入 15:00
-int slot_at(int sec) {
-  const int m = sec / 60;
-  return m < 9 * 60 + 30 ? 0 : m < 11 * 60 + 30 ? m - (9 * 60 + 30)
-                           : m < 13 * 60        ? 119
-                           : m < 15 * 60        ? 120 + m - 13 * 60
-                                                : kSlots - 1;
-}
-
 // 截至 sec 已过的连续竞价时长 [s] (断档判据: 午休 / 盘前盘后的停顿不算)
 int trading_sec(int sec) {
   return std::clamp(sec, 9 * 3600 + 30 * 60, 11 * 3600 + 30 * 60) - (9 * 3600 + 30 * 60) +
@@ -90,10 +81,8 @@ std::string sina_sym(const std::string &code) {
   return s;
 }
 
-// 快照的日根: 开 / 高 / 低缺 (0) → 现价
-Cell candle_of(const sina::Quote &q) {
-  return {q.open > 0 ? q.open : q.price, q.high > 0 ? q.high : q.price, q.low > 0 ? q.low : q.price, q.price, q.volume, q.amount};
-}
+// 快照的日根
+Cell candle_of(const sina::Quote &q) { return cell(q.open, q.high, q.low, q.price, q.volume, q.amount); }
 
 } // namespace
 
@@ -143,7 +132,17 @@ void QuoteService::select(uint32_t i) {
 
 QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
-  return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_};
+  return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_, stock_ver_, basket_ver_};
+}
+
+void QuoteService::bind(Members m, std::vector<double> level) {
+  std::lock_guard<std::mutex> lock(mu_);
+  assert(m.assets() == syms_.size() && !level.empty());
+  members_ = std::move(m);
+  level_ = std::move(level);
+  fold_ = Fold(level_.size());
+  baskets_.assign(level_.size(), Day{});
+  fold();
 }
 
 void QuoteService::today(uint32_t i, Day &out, sina::Quote &q) const {
@@ -152,23 +151,29 @@ void QuoteService::today(uint32_t i, Day &out, sina::Quote &q) const {
   out.date = 0;
   if (!traded(q))
     return;
-  out.date = date_, out.prev = prev_, out.ref = q.last_close;
-  out.candle = {candle_of(q), date_, 0};
+  out.date = date_, out.prev = prev_;
+  out.candle = {candle_of(q), date_, 0, q.last_close};
   out.bars = tracks_[i].bars;
   out.bars.date = date_;
 }
 
-void QuoteService::today(const Members &m, std::span<const double> level, std::span<Day> out) const {
-  assert(m.assets() == syms_.size());
-  Fold fold(out.size());
-  fold.open(true);
+void QuoteService::today(std::span<Day> out) const {
   std::lock_guard<std::mutex> lock(mu_);
+  assert(out.size() == baskets_.size());
+  std::copy(baskets_.begin(), baskets_.end(), out.begin());
+}
+
+void QuoteService::fold() {
+  ++basket_ver_;
+  if (level_.empty() || date_ == 0)
+    return;
+  fold_.open(std::max(live_slot(), sec_slot(sec_)) + 1);
   for (uint32_t i = 0; i < syms_.size(); ++i) {
     const sina::Quote &q = last_[i];
     const Cell k = candle_of(q);
-    fold.add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, m.of(i));
+    fold_.add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, members_.of(i));
   }
-  fold.finish(date_, prev_, level, out);
+  fold_.finish(date_, prev_, level_, baskets_);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,9 +217,11 @@ void QuoteService::poll() {
       for (const sina::Quote &q : qs)
         if (q.date == date_)
           cur = std::max(cur, q.sec);
-      const int gap = sec_ > 0 && trading_sec(cur) - trading_sec(sec_) > kGap ? slot_at(sec_) : -1;
+      const int gap = sec_ > 0 && trading_sec(cur) - trading_sec(sec_) > kGap ? sec_slot(sec_) : -1;
       for (const sina::Quote &q : qs)
         absorb(index_.at(q.sym), q, gap);
+      ++stock_ver_;
+      fold();
       schedule();
       if (changed_ && t0 - saved >= std::chrono::seconds(kSave)) {
         blob = serialize();
@@ -246,16 +253,16 @@ void QuoteService::absorb(uint32_t i, const sina::Quote &q, int gap) {
     t.high = q.high;
     t.low = q.low;
     if (q.volume > 0)
-      mark(t, 0, slot_at(q.sec));
+      mark(t, 0, sec_slot(q.sec));
     changed_ = true;
     return;
   }
   const double dv = q.volume - t.vol, da = q.amount - t.amt;
   changed_ = changed_ || dv != 0;
   if (dv > 0 && gap >= 0)
-    mark(t, gap, slot_at(q.sec));
+    mark(t, gap, sec_slot(q.sec));
   if (dv > 0 && q.price > 0 && q.sec <= kCloseSec) {
-    const int s = slot_at(q.sec);
+    const int s = sec_slot(q.sec);
     if (!t.exact[s]) {
       float hi = q.price, lo = q.price;
       if (q.high > t.high)
@@ -286,7 +293,7 @@ int QuoteService::settled() const {
 
 int QuoteService::live_slot() const {
   const Clock c = clock_now();
-  return c.today != date_ ? kSlots - 1 : slot_at(c.sec);
+  return c.today != date_ ? kSlots - 1 : sec_slot(c.sec);
 }
 
 void QuoteService::schedule() {
@@ -366,6 +373,7 @@ void QuoteService::merge(uint32_t i, int lo, const std::vector<sina::Bar> &bars,
   if (t.lo > t.hi)
     t.lo = kSlots, t.hi = -1;
   ++fetched_;
+  ++stock_ver_;
   changed_ = true;
 }
 

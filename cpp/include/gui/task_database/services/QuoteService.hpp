@@ -1,4 +1,6 @@
 // Assets 行情的当日一路 (见 Kline.hpp): 新浪全市场内存缓存当天, 个股 / 篮子的当日同出于此 (today 两个重载).
+//   个股当日 = 本只的根 + 最新快照; 篮子当日 = bind 的成员表每轮快照后在快照线程合成一次 (Fold, 只合到此刻所在根).
+//   两张当日表各一个版本号 (QuoteStatus), GUI 见版本变了才拷.
 //
 // 当日 1 分钟 K, 两路取数 (见 api/sina/client.hpp):
 //   快照 (hq.sinajs.cn 一次 800 只, 全市场 ~8 次串行 ~1.6s): 盘中每 kTick 一轮 (交易所快照 3s 一档), 盘外每 kIdleTick.
@@ -37,11 +39,12 @@
 namespace GUI::Database {
 
 struct QuoteStatus {
-  misc::Ymd date = 0; // 行情日
-  int sec = 0;        // 全市场最新快照时刻
-  size_t pending = 0; // 待取 / 在取的分钟 K
-  size_t fetched = 0; // 已取的分钟 K
-  bool fill = false;  // 行情日 > fund_end (取分钟 K)
+  misc::Ymd date = 0;                     // 行情日
+  int sec = 0;                            // 全市场最新快照时刻
+  size_t pending = 0;                     // 待取 / 在取的分钟 K
+  size_t fetched = 0;                     // 已取的分钟 K
+  bool fill = false;                      // 行情日 > fund_end (取分钟 K)
+  uint64_t stock_ver = 0, basket_ver = 0; // 当日表版本: 个股 (每轮快照 / 每次补根 +1) / 篮子 (每次合成 +1)
 };
 
 class QuoteService {
@@ -61,10 +64,12 @@ public:
   uint32_t find(const std::string &code) const; // 全局轴码 "600000.SH" → 全市场下标; 不在 → ~0u (只读构造时的码表, 任意线程)
   void select(uint32_t i);                      // GUI: 选中标的 (~0u = 无)
   QuoteStatus status() const;
+  // 篮子成员表 (下标 = 全市场) + 各篮子前日点位; 当场合成一次, 此后每轮快照一次 (BasketHistory 跑完调)
+  void bind(Members m, std::vector<double> level);
   // GUI: 第 i 只的当日 + 最新快照 (未收到 → q.sym 空)
   void today(uint32_t i, Day &out, sina::Quote &q) const;
-  // GUI: 篮子当日合成 (Fold, 连分钟根); m 的下标 = 全市场, level[b] = 前日点位
-  void today(const Members &m, std::span<const double> level, std::span<Day> out) const;
+  // GUI: 各篮子当日 (末次合成); out.size() = bind 的篮子数
+  void today(std::span<Day> out) const;
 
 private:
   enum class Fill : uint8_t { Idle,
@@ -85,6 +90,7 @@ private:
   void absorb(uint32_t i, const sina::Quote &q, int gap); // gap = 断档起始根 (-1 = 无)
   void schedule();
   void merge(uint32_t i, int lo, const std::vector<sina::Bar> &bars, int settled);
+  void fold(); // 篮子当日合成 → baskets_
   int settled() const;
   int live_slot() const;
   bool traded(const sina::Quote &q) const { return q.date == date_ && q.volume > 0 && q.price > 0; }
@@ -107,8 +113,13 @@ private:
   std::deque<uint32_t> todo_;
   uint32_t sel_ = ~0u;
   size_t inflight_ = 0, fetched_ = 0;
-  bool changed_ = false; // 上次落盘后 tracks_ 变过
-  int sec_ = 0;          // 行情日最新快照时刻 (断档判据的上轮时刻)
+  bool changed_ = false;      // 上次落盘后 tracks_ 变过
+  int sec_ = 0;               // 行情日最新快照时刻 (断档判据的上轮时刻)
+  Members members_;           // bind 的成员表
+  std::vector<double> level_; // [篮子] 前日点位; 空 = 未 bind
+  Fold fold_{0};
+  std::vector<Day> baskets_; // [篮子] 当日
+  uint64_t stock_ver_ = 0, basket_ver_ = 0;
 
   std::thread poll_;
   std::vector<std::thread> fillers_;

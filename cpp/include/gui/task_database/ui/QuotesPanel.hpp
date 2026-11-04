@@ -1,8 +1,9 @@
 // Assets 右栏行情: 个股 / 篮子同一套两图 (日内 / 日线, 布局与配色同 py/app/tdx 行情页), 数据 = 历史 Kline + 当日 Day (见 Kline.hpp)
-//   个股 = StockHistory + QuoteService::today(i), 另有盘口 (当日最新快照五档);
-//   篮子 = BasketHistory + QuoteService::today(Members), 左栏另有篮子列表, 量柱 = 成交额.
+//   个股 = StockHistory + QuoteService::today(i), 日内右挂盘口 (当日最新快照五档);
+//   篮子 = BasketHistory + QuoteService::today(篮子), 左栏另有篮子列表, 量柱 = 成交额.
 //   两图各一份视野: 换标的 / 换档 / 根数变 → 复位到该档窗口, 其间可缩放平移; y 随视野内的根贴合
-// 每帧先 Sync (发请求 / 收发布 / 拷出或合成当日), 再画
+//   版面恒定: 标题 / 注恒两行, y 轴刻度区定宽 (右轴无基准也留), 图框只随窗口变; 换标的 = 新历史到齐才整体换上, 其间照画旧的
+// 每帧先 Sync (发请求 / 收发布 / 当日版本变了才拷), 再画; 个股 / 篮子同一个 Feed + pull
 #pragma once
 
 #include "gui/task_database/services/BasketHistory.hpp"
@@ -14,7 +15,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <tuple>
 #include <vector>
 
 struct Config;
@@ -34,32 +34,44 @@ struct ChartState {
   QuotesView iv, dv; // 日内 / 日线 视野
 };
 
+// 历史发布 + 当日版本 (个股 / 篮子同形)
+template <class T>
+struct Feed {
+  uint32_t gen = 0;              // 末次历史请求代
+  uint32_t shown = 0;            // 在画的发布的请求代 (视野复位键)
+  std::shared_ptr<const T> data; // 在画的历史发布 (末次请求的到齐才换)
+  uint64_t ver = ~0ull;          // 已拷的当日版本 (QuoteStatus); ~0 = 待拷
+};
+
+struct StockPick {
+  std::string code;  // "600000.SH"; 空 = 未选
+  std::string title; // 简称 + 代码
+  uint32_t i = ~0u;  // 全市场下标; ~0u = 不在新浪全市场
+};
+
 struct StockState {
-  std::string code;                  // 已请求的标的 ("600000.SH"); 空 = 未选
-  uint32_t i = ~0u;                  // 全市场下标; ~0u = 不在新浪全市场
-  uint32_t gen = 0;                  // StockHistory 请求代
-  std::shared_ptr<const Kline> data; // 已收的发布
-  Day today;                         // 逐帧拷出的当日
-  sina::Quote quote;                 // 逐帧拷出的最新快照
+  StockPick want;    // 末次请求的标的
+  StockPick shown;   // 在画的标的 (= feed.data 的标的)
+  Feed<Kline> feed;  // StockHistory
+  Day today;         // shown 的当日
+  sina::Quote quote; // shown 的最新快照
   ChartState chart;
 };
 
 struct BasketState {
-  bool want = true;                                        // 待发请求 (首次进页 / 重载)
-  bool missing = false;                                    // all Bar 库未建
-  uint32_t gen = 0;                                        // BasketHistory 请求代
-  std::shared_ptr<const Baskets> data;                     // 已收的发布
-  std::vector<Day> today;                                  // [篮子] 当日合成
-  std::tuple<misc::Ymd, int, const Baskets *> today_key{}; // 合成键 (行情日 / 快照时刻 / 发布)
-  int sel[2] = {-1, -1};                                   // 指数 / 行业 页选中的篮子 (Baskets::list 下标)
+  bool want = true;       // 待发请求 (首次进页 / 重载)
+  bool missing = false;   // all Bar 库未建
+  Feed<Baskets> feed;     // BasketHistory
+  std::vector<Day> today; // [篮子] 当日
+  int sel[2] = {-1, -1};  // 指数 / 行业 页选中的篮子 (Baskets::list 下标)
   ChartState chart;
 };
 
-void SyncStock(QuoteService &live, StockHistory &hist, const AssetItem *asset, StockState &st);
-void SyncBaskets(QuoteService &live, BasketHistory &hist, const Config &cfg, BasketState &st);
+void SyncStock(QuoteService &live, StockHistory &hist, const AssetItem *asset, const StockInfo *info, StockState &st);
+void SyncBaskets(const QuoteService &live, BasketHistory &hist, const Config &cfg, BasketState &st);
 
-void RenderStockPanel(const QuoteService &live, const StockInfo *info, StockState &st);
-void RenderBasketPanel(BasketState &st, int page);                           // page 0 = 指数, 1 = 行业
+void RenderStockPanel(const QuoteService &live, StockState &st);
+void RenderBasketPanel(const QuoteService &live, BasketState &st, int page); // page 0 = 指数, 1 = 行业
 bool RenderBasketList(const BasketHistory &hist, BasketState &st, int page); // 点中一行 → true
 
 } // namespace GUI::Database

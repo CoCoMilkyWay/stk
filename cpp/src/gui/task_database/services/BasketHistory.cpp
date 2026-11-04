@@ -13,8 +13,6 @@ namespace GUI::Database {
 
 namespace {
 
-constexpr size_t kAuctionRows = 15; // L_1min 行 [0, 15) = 09:15–09:29 竞价段, 与行 15 (09:30 那分钟) 同归首根; 其后行 t → 槽 t − 15
-
 // all Bar 字段表里 code 的列下标 (落盘变换须是 tf)
 size_t col_of(size_t lvl, std::string_view code, ts::TfId tf) {
   const LevelInfo &li = level_info(TierId::Bar, lvl);
@@ -40,12 +38,12 @@ enum DayCol : size_t { kCs,
                        kLow,
                        kClose,
                        kAmount,
-                       kAdj,
+                       kPre,
                        kShares,
                        kInd,
                        kPools }; // 子池 p ∈ [1, NP) 的池列 = kPools + p − 1
 struct Row {
-  std::vector<float> px[4], amount, adj, shares; // 开 高 低 收
+  std::vector<float> px[4], amount, pre, shares; // 开 高 低 收
   std::vector<uint8_t> live, trade, ind;
   std::vector<uint8_t> pool; // [(p − 1) · A + a]
 };
@@ -53,7 +51,7 @@ struct Row {
 void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
   for (std::vector<float> &v : r.px)
     v.resize(A);
-  r.amount.resize(A), r.adj.resize(A), r.shares.resize(A);
+  r.amount.resize(A), r.pre.resize(A), r.shares.resize(A);
   r.live.resize(A), r.trade.resize(A), r.ind.resize(A);
   r.pool.resize((NP - 1) * A);
   for (size_t a = 0; a < A; ++a) {
@@ -62,7 +60,7 @@ void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
     for (size_t j = 0; j < 4; ++j)
       r.px[j][a] = val(dc, 0, kOpen + j, a);
     r.amount[a] = std::expm1(val(dc, 0, kAmount, a));
-    r.adj[a] = val(dc, 0, kAdj, a);
+    r.pre[a] = val(dc, 0, kPre, a);
     r.shares[a] = val(dc, 0, kShares, a);
     const float k = val(dc, 0, kInd, a);
     r.ind[a] = k >= 1.f && k < static_cast<float>(fund::SW2021_L1_COUNT) ? static_cast<uint8_t>(k + 0.5f) : 0;
@@ -91,17 +89,14 @@ void members(const Row &r, size_t A, size_t NP, Members &m) {
   }
 }
 
-// 一只一日的 L_1min → 分钟根 (列序同 mcols); 无成交的行不收, 开 / 高 / 低缺 → 收
+// 一只一日的 L_1min → 分钟根 (列序同 mcols); 无成交的行不收
 void read_bars(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) {
   b.date = d;
   b.has.reset();
   for (size_t t = 0; t < level_valid_rows(L_1min); ++t) {
     const float x = val(mc, t, 4, a);
-    if (!(val(mc, t, 0, a) > 0.5f && x > 0))
-      continue;
-    const float o = val(mc, t, 1, a), h = val(mc, t, 2, a), l = val(mc, t, 3, a);
-    b.add(t <= kAuctionRows ? 0 : static_cast<int>(t - kAuctionRows),
-          {o > 0 ? o : x, h > 0 ? h : x, l > 0 ? l : x, x, 0, std::expm1(val(mc, t, 5, a))});
+    if (val(mc, t, 0, a) > 0.5f && x > 0)
+      b.add(row_slot(t), cell(val(mc, t, 1, a), val(mc, t, 2, a), val(mc, t, 3, a), x, 0, std::expm1(val(mc, t, 5, a))));
   }
 }
 
@@ -112,7 +107,7 @@ bool BasketHistory::run(BasketRequest &req) {
   assert(lib.ready() && lib.id == kAllBar);
   FeatureRead rd(lib, &cancel_);
   std::vector<misc::Ymd> dates;
-  for (auto it = lib.dates.rbegin(); it != lib.dates.rend() && dates.size() < kDailyDays + 2; ++it)
+  for (auto it = lib.dates.rbegin(); it != lib.dates.rend() && dates.size() < kDailyDays + 1; ++it)
     if (rd.has_date(*it))
       dates.push_back(*it);
   std::reverse(dates.begin(), dates.end());
@@ -124,14 +119,14 @@ bool BasketHistory::run(BasketRequest &req) {
     x_.publish();
     return true;
   };
-  if (dates.size() < 3) // 首日只给基准, 次日起才有成员行: 落盘 (清单日期轴可能还在算) 不足 3 日 → 空发布
+  if (dates.size() < 2) // 首日只给成员 / 基准, 次日起才有根: 落盘 (清单日期轴可能还在算) 不足 2 日 → 空发布
     return publish();
 
   const size_t A = lib.axis.size(), NP = pool_count(), N = dates.size(), NB = NP + fund::SW2021_L1_COUNT;
   std::vector<size_t> dcols = {col_of(L_1day, "cs_valid", ts::TfId::None), col_of(L_1day, "ts_valid", ts::TfId::None),
                                col_of(L_1day, "open_day", ts::TfId::None), col_of(L_1day, "high_day", ts::TfId::None),
                                col_of(L_1day, "low_day", ts::TfId::None), col_of(L_1day, "close_day", ts::TfId::None),
-                               col_of(L_1day, "amount_day", ts::TfId::Log), col_of(L_1day, "adj_factor", ts::TfId::None),
+                               col_of(L_1day, "amount_day", ts::TfId::Log), col_of(L_1day, "pre_close", ts::TfId::None),
                                col_of(L_1day, "total_shares", ts::TfId::None), col_of(L_1day, "ind_l1", ts::TfId::None)};
   assert(dcols.size() == kPools);
   for (PoolId p = 1; p < NP; ++p)
@@ -156,7 +151,7 @@ bool BasketHistory::run(BasketRequest &req) {
   for (Basket &b : out->list)
     b.kline.last = dates.back();
 
-  Row rows[3]; // 第 i 日 = rows[i % 3]
+  Row rows[2]; // 第 i 日 = rows[i % 2]
   Members mem;
   std::vector<double> level(NB, kBase);
   std::vector<Day> day(NB);
@@ -170,12 +165,12 @@ bool BasketHistory::run(BasketRequest &req) {
     rd.load_day_columns(d, dcols, dc);
     if (rd.stale())
       return false;
-    Row &cur = rows[i % 3];
+    Row &cur = rows[i % 2];
     read_row(dc, A, NP, cur);
     x_.publish(1);
-    if (i < 2)
+    if (i < 1)
       continue;
-    const Row &prev = rows[(i - 1) % 3], &pp = rows[(i - 2) % 3];
+    const Row &prev = rows[(i - 1) % 2];
     members(prev, A, NP, mem);
     const bool minutes = i + kMinuteDays >= N;
     if (minutes) {
@@ -183,19 +178,16 @@ bool BasketHistory::run(BasketRequest &req) {
       if (rd.stale())
         return false;
     }
-    fold.open(minutes);
+    fold.open(minutes ? kSlots : 0);
     for (size_t a = 0; a < A; ++a) {
       const std::span<const Members::Weight> ws = mem.of(a);
       if (ws.empty())
         continue;
-      const float c = prev.px[3][a], x = cur.px[3][a];
-      const Cell k{cur.px[0][a] > 0 ? cur.px[0][a] : x, cur.px[1][a] > 0 ? cur.px[1][a] : x, cur.px[2][a] > 0 ? cur.px[2][a] : x,
-                   x, 0, cur.amount[a]};
+      const float x = cur.px[3][a];
+      const Cell k = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
       if (minutes)
         read_bars(mc, a, d, bars);
-      fold.add({c > 0 && pp.adj[a] > 0 && prev.adj[a] > 0 ? c * pp.adj[a] / prev.adj[a] : c, cur.trade[a] && x > 0 ? &k : nullptr,
-                minutes ? &bars : nullptr},
-               ws);
+      fold.add({prev.pre[a], cur.trade[a] && x > 0 ? &k : nullptr, minutes ? &bars : nullptr}, ws);
     }
     fold.finish(d, dates[i - 1], level, day);
     for (size_t b = 0; b < NB; ++b) {
@@ -215,15 +207,17 @@ bool BasketHistory::run(BasketRequest &req) {
       assert(at[q] == ~0u && "池轴两只对到新浪同一只");
       at[q] = static_cast<uint32_t>(a);
     }
-  members(rows[(N - 1) % 3], A, NP, mem);
+  members(rows[(N - 1) % 2], A, NP, mem);
+  Members live;
   for (const uint32_t a : at) {
     if (a != ~0u)
       for (const Members::Weight &w : mem.of(a)) {
-        out->live.add(w.basket, w.w);
+        live.add(w.basket, w.w);
         ++out->list[w.basket].size;
       }
-    out->live.next();
+    live.next();
   }
+  live_.bind(std::move(live), std::move(level));
   return publish();
 }
 

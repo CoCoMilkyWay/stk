@@ -36,7 +36,7 @@ private:
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<StateManager> state_mgr_;
-  // Assets 行情: 首次画 Assets 页才起 (之前不碰网络); 篮子历史读着 quote_svc_ 的码表, 后建先拆
+  // Assets 行情: 首次画 Assets 页才起 (之前不碰网络); 篮子历史读 quote_svc_ 的码表并向它 bind 成员表, 后建先拆
   std::unique_ptr<QuoteService> quote_svc_;
   std::unique_ptr<StockHistory> stock_svc_;
   std::unique_ptr<BasketHistory> basket_svc_;

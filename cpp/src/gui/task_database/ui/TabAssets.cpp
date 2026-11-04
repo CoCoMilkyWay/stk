@@ -1367,14 +1367,14 @@ void RenderTabAssets(
     ImGui::BeginChild("RightPanel", ImVec2(0, window_height), true);
     ImGui::PopStyleVar();
     if (assets_state.list > 0)
-      RenderBasketPanel(assets_state.basket, assets_state.list - 1);
+      RenderBasketPanel(live, assets_state.basket, assets_state.list - 1);
     else if (ImGui::BeginTabBar("##RightPanel")) {
       if (ImGui::BeginTabItem("Quotes")) {
         assets_state.quotes_page = true;
         const int sel = assets_state.selected_asset;
         const AssetItem *item = sel >= 0 && static_cast<size_t>(sel) < assets.size() ? &assets[static_cast<size_t>(sel)] : nullptr;
-        SyncStock(live, stock, item, assets_state.stock);
-        RenderStockPanel(live, item ? FindStockInfo(*item, stock_info) : nullptr, assets_state.stock);
+        SyncStock(live, stock, item, item ? FindStockInfo(*item, stock_info) : nullptr, assets_state.stock);
+        RenderStockPanel(live, assets_state.stock);
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Statistics")) {
