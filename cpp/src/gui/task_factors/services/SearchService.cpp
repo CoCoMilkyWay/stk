@@ -165,7 +165,7 @@ struct SearchService::Searcher {
   const Clock::time_point t_start = Clock::now();
   SearchResult res;
   RunLog lg;
-  factor::expr::Expr e0;          // 模板
+  factor::expr::Expr e0;          // 模板 (自由 h 已落为所搜持有期)
   factor::Dag d0;                 // 占位具体化的森林: 结构 / 特征叶序 / 槽数与任一候选同 (值域检查 plan_forest 按根归因, 不融合)
   std::vector<space::Slot> slots; // 可搜槽 (区间要 A, 装完块 0 才建)
   Job job;                        // 作业 (评估域 / 分块 / 块规格); 块 = 每块位一次 Store::pin (缓存命中不重读)
@@ -273,8 +273,8 @@ struct SearchService::Searcher {
   // 满仓只数 n_full = 评估域全期池内平均有效资产数 / kGroups (Store 按域算一次, 各块共用; 引擎的 Search 会话取 y.n_full)
   template <class E>
   bool plan(E &eng) {
-    e0 = ft.reparse(sp.tmpl);
-    const int look = space::lookback(e0);
+    e0 = ft.reparse_at(sp.tmpl, sp.hold); // N 元回归的自由 h = 所搜持有期
+    const int look = space::lookback(e0, seg);
     const factor::expr::Expr ep = e0.placeholder();
     d0 = factor::build_forest({&ep}, /*keep_roots=*/false, /*fuse=*/false);
     job.who = "Search";

@@ -322,8 +322,13 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
       emit(w);
       continue;
     }
-    if (!factor::expr::instance_of(t, e)) {
-      w.error = "weights[" + std::to_string(i) + "] 不是模板的实例 (结构 / 固定参数须同模板, 自由参数须落值)";
+    if (factor::expr::free_hold(t) && ws[i].hold == 0) {
+      w.error = "weights[" + std::to_string(i) + "]: 模板的 h 自由, 权重须带搜过的 hold";
+      emit(w);
+      continue;
+    }
+    if (!factor::expr::instance_of(factor::expr::free_hold(t) ? ft.reparse_at(t.canon, ws[i].hold) : t, e)) {
+      w.error = "weights[" + std::to_string(i) + "] 不是模板的实例 (结构 / 固定参数须同模板, 自由参数须落值; 自由 h 落为 hold)";
       emit(w);
       continue;
     }

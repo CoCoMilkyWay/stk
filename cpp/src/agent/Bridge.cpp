@@ -3,7 +3,6 @@
 #include "agent/Config.hpp" // kMaxOps / kGoodOps / kWorkDir / kGlobalDir
 #include "agent/Text.hpp"
 
-#include "factor/Dag.hpp"             // build (叶 → 评估期)
 #include "factor/Expr.hpp"            // kOps / operand_tex
 #include "factor/GpuRun.hpp"          // available
 #include "factor/Search/Contract.hpp" // search_hold / Score / kMinMono
@@ -95,7 +94,7 @@ std::string twin_of(const F::FeatureTable &ft, const std::vector<Result> &result
 namespace fx = factor::expr;
 
 std::string sub_of(const fx::Expr &e, int i) { return fx::to_string(e, i); }
-int arity_of(const fx::Node &n) { return n.op < 0 ? 0 : fx::kOps[n.op].arity; }
+int arity_of(const fx::Node &n) { return n.n_args; }
 bool op_in(const fx::Node &n, std::initializer_list<std::string_view> names) {
   return n.op >= 0 && std::find(names.begin(), names.end(), std::string_view(fx::kOps[n.op].name)) != names.end();
 }
@@ -106,7 +105,8 @@ bool squash_op(const fx::Node &n) { return op_in(n, {"TsLog", "TsSqrt", "TsClip"
 bool same_params(const fx::Node &a, const fx::Node &b) {
   const fx::OpInfo &o = fx::kOps[a.op];
   return a.free == b.free && (!fx::declares(o.params, "d") || (a.free & fx::kFreeD) || a.p.d == b.p.d) &&
-         (!fx::declares(o.params, "k") || (a.free & fx::kFreeK) || a.p.k == b.p.k) && (!fx::declares(o.params, "k2") || (a.free & fx::kFreeK2) || a.p.k2 == b.p.k2);
+         (!fx::declares(o.params, "k") || (a.free & fx::kFreeK) || a.p.k == b.p.k) && (!fx::declares(o.params, "k2") || (a.free & fx::kFreeK2) || a.p.k2 == b.p.k2) &&
+         (!fx::declares(o.params, "h") || (a.free & fx::kFreeH) || a.p.h == b.p.h);
 }
 
 // p 有一元的子式 = s
@@ -128,7 +128,7 @@ void regions_of(const fx::Expr &b, int i, const fx::Expr &n, int j, std::vector<
   if (sb == sn)
     return;
   const fx::Node &x = b.nodes[static_cast<size_t>(i)], &y = n.nodes[static_cast<size_t>(j)];
-  if (x.op < 0 || x.op != y.op || has_kid(n, y, sb) || has_kid(b, x, sn)) {
+  if (x.op < 0 || x.op != y.op || x.n_args != y.n_args || has_kid(n, y, sb) || has_kid(b, x, sn)) {
     out.push_back({i, j, false});
     return;
   }
@@ -211,7 +211,7 @@ bool concrete(const F::FeatureTable &ft, const std::string &src, factor::expr::E
   if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, error))
     return false;
   if (e.is_template()) {
-    error = "含自由参数 (裸 d / k / k2): 观察只接具体式, 参数写成数字";
+    error = "含自由参数 (裸 d / k / k2 / h): 观察只接具体式, 参数写成数字 (h 写持有期 token)";
     return false;
   }
   return true;
@@ -393,7 +393,7 @@ Surface surface_of(const F::FeatureTable &ft, const F::SearchResult &r) {
   Surface s;
   if (r.slots.empty())
     return s;
-  const factor::expr::Expr t = ft.reparse(r.tmpl);
+  const factor::expr::Expr t = ft.reparse_at(r.tmpl, r.hold); // 与 Search 同: 自由 h = 所搜持有期
   const std::vector<sp::Slot> slots = sp::slots_of(t, ft.seg, r.n_full * kGroups);
   assert(slots.size() == r.slots.size());
   s.slots = r.slots;
@@ -432,7 +432,14 @@ struct Period {
   bool same(const std::string &p, misc::Ymd s, misc::Ymd e, int n) const { return days > 0 && p == pool && s == start && e == end && n == days; }
   std::string text() const { return misc::dash(start) + " ~ " + misc::dash(end) + ", " + std::to_string(days) + " 天"; }
 };
-std::vector<F::LeafId> leaves_in(const F::FeatureTable &ft, const std::string &tmpl) { return ft.x.ids(factor::build(ft.reparse(tmpl).placeholder()).feats); }
+// 模板的特征叶 (首见序, 去重; 回归目标叶在标签库, 不计)
+std::vector<F::LeafId> leaves_in(const F::FeatureTable &ft, const std::string &tmpl) {
+  std::vector<std::string> codes;
+  for (const factor::expr::Node &n : ft.reparse(tmpl).nodes)
+    if (n.op < 0 && !n.target && std::find(codes.begin(), codes.end(), n.feat) == codes.end())
+      codes.push_back(n.feat);
+  return ft.x.ids(codes);
+}
 // 叶为 leaves (空 = 只有标签库) 时此刻的评估期
 Period period_of(const std::optional<F::FactorScope> &fsc, const F::FeatureTable &ft, const std::vector<F::LeafId> &leaves) {
   Period s;

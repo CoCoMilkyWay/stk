@@ -1,6 +1,7 @@
 // Tab Operators — 见头文件
 #include "gui/task_factors/ui/TabOperators.hpp"
 #include "factor/GpuRun.hpp"                      // device_name: GPU 型号显示
+#include "factor/Stat/Contract.hpp"               // hold_token: operand 的 ⟨h⟩
 #include "gui/Tasks.hpp"                          // StatusColor: 全局色表, 行状态着色不自配颜色
 #include "gui/task_factors/services/StatJson.hpp" // sig4 / json_* (与因子文件同一格式)
 #include "gui/util/Latex.hpp"                     // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
@@ -28,7 +29,7 @@ namespace {
 // 表内公式字号 (特征表悬停用 32, 表格行内要小一号)
 constexpr float kFormulaTextSize = 18.0f;
 
-// 逐个走 OpTable 参数列 ("d,k" 等) 的字段, 取本轮实际值: fn(name, value). 只允许 d / k / k2
+// 逐个走 OpTable 参数列 ("d,k" 等) 的字段, 取本轮实际值: fn(name, value). 只允许 d / k / k2 / h (h = 持有期键)
 template <class Fn>
 void for_each_param(const OperatorRow &r, Fn &&fn) {
   const char *p = r.params;
@@ -41,20 +42,25 @@ void for_each_param(const OperatorRow &r, Fn &&fn) {
       fn("k", static_cast<double>(r.param.k));
     else if (tok_len == 2 && p[0] == 'k' && p[1] == '2')
       fn("k2", static_cast<double>(r.param.k2));
+    else if (tok_len == 1 && p[0] == 'h')
+      fn("h", static_cast<double>(r.param.h));
     else
-      assert(false && "OpTable 参数列只允许 d / k / k2");
+      assert(false && "OpTable 参数列只允许 d / k / k2 / h");
     p = q ? q + 1 : p + tok_len;
   }
 }
 
-// operand 列: OpTable 模板 (LaTeX) 里的占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ → 本轮实际参数值.
+// operand 列: OpTable 模板 (LaTeX) 里的占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ → 本轮实际参数值 (h 写持有期 token).
 // 参数列声明的字段必须都有占位符, 且替换后不得残留 (表与模板不齐 = OpTable 的 bug)
 std::string subst_operand(const OperatorRow &r) {
   std::string s = r.operand;
   for_each_param(r, [&](const char *name, double v) {
     char tok[16], val[32];
     std::snprintf(tok, sizeof(tok), "⟨%s⟩", name);
-    std::snprintf(val, sizeof(val), "%g", v);
+    if (std::strcmp(name, "h") == 0)
+      std::snprintf(val, sizeof(val), "\\mathrm{%s}", factor::stat::hold_token(r.param.h).c_str());
+    else
+      std::snprintf(val, sizeof(val), "%g", v);
     size_t pos = s.find(tok);
     assert(pos != std::string::npos && "OpTable operand 列缺该参数的占位符");
     for (; pos != std::string::npos; pos = s.find(tok, pos))
@@ -462,7 +468,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
           cmp = std::strcmp(ra.e_name, rb.e_name);
           break;
         case 3:
-          cmp = ra.arity - rb.arity;
+          cmp = (ra.arity == factor::kNary ? factor::kMaxIn : ra.arity) - (rb.arity == factor::kNary ? factor::kMaxIn : rb.arity); // N 元排最后
           break;
         case 4:
           cmp = (int)ra.T - (int)rb.T;
@@ -517,7 +523,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       ImGui::TableSetColumnIndex(2);
       ImGui::TextUnformatted(r.c_name);
       ImGui::TableSetColumnIndex(3);
-      ImGui::Text("%d", r.arity);
+      if (r.arity == factor::kNary)
+        ImGui::TextUnformatted("N");
+      else
+        ImGui::Text("%d", r.arity);
       ImGui::TableSetColumnIndex(4);
       ImGui::TextUnformatted(cls_T(r));
       ImGui::TableSetColumnIndex(5);

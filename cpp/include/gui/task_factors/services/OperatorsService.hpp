@@ -63,7 +63,7 @@ struct OperatorRow {
   factor::A A = factor::A::SELF;          // A 域
   factor::Kern kern = factor::Kern::MAP;  // 核类
   factor::KDom kdom = factor::KDom::NONE; // k 域 (OpTable k域 列)
-  const char *params = "";                // 本算子读取的 Param 字段名, 如 "d,k" (= params_str(T, kdom), 由表推出)
+  const char *params = "";                // 本算子读取的 Param 字段名, 如 "d,k" (= params_str(T, kdom, arity), 由表推出)
   std::string operand;                    // 签名 LaTeX (Expr.hpp operand_tex 从 in / T / kdom 生成; 占位符 ⟨d⟩⟨k⟩⟨k2⟩ 由 UI 换成本轮实际值)
   factor::Dom in[3] = {};                 // 逐元自变量值域 (OpTable in 列)
   factor::Dom out = factor::Dom::REAL;    // 因变量值域 (OpTable out 列; 评估算子 = REAL, 所有行都显示)

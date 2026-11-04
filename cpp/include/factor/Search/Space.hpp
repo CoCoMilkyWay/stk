@@ -4,13 +4,15 @@
 // Search 的参数空间 (纯逻辑, 无后端, 无 IO; 与 Surface.hpp 对仗: 点从哪来 / 点有多好): 表达式 → 可搜参数槽 → 统一坐标 + 闭区间 → 低差异采样 (第 0 趟)
 // =============================================================================
 //   【槽】模板表达式 (Expr.hpp 自由参数: 裸键名 d / k / k2) 的每个自由参数各一槽; 写了数字的参数固定不搜 (TS 口径根的 d 必是数字).
+//     h (N 元回归的持有期) 不是槽: 调用方先落到所搜持有期 (expr::bind_hold), 这里只收 h 已具体的树.
 //   【坐标与区间】每槽一维坐标 u, 单调; 区间两端全由已有常数推出 (不设跨度常数). 变换按参数含义选 (见 to_v):
 //       d (ROLL 窗长)              log2      [1, kMaxD]
 //       TsMeanEma 系数             log2      [2/(kMaxD+1), 1]          (对标窗长 ≤ kMaxD, 与 d 同口径)
 //       CsWinsor 缩尾              log2      [1/A, 1/2)                (少于一只等于不缩)
 //       CsBucket 桶数              log2      [1, min(kMaxGroup, A)]
+//       岭强度 (N 元回归)          log2      [1/A, A]                  (相对平均特征方差: 近 OLS ↔ 近单特征 IC 加权)
 //       分位 (0,1)                 logit     [1/n, 1 − 1/n]            (n = 分位所取的样本数: 截面 A / 滚窗 d, 自由 d 取 kMaxD)
-//       阈值 TsGt / 截断 TsClip    logit 分位 [1/A, 1 − 1/A]            (k = 输入分布 (TsClip: |x|) 的分位, 分位表 qtab 由调用方装载后
+//       阈值 TsGt / 截断 TsClip    logit分位 [1/A, 1 − 1/A]            (k = 输入分布 (TsClip: |x|) 的分位, 分位表 qtab 由调用方装载后
 //                                                                       set_qtab; 平均每行触发 1 只为界)
 //       日内时段 TsTodMask         行        [0, S]
 //     A = 池内平均有效资产数 (n_full · kGroups). 整数参数 (d / 桶数 / 时段) 取整回去.
@@ -77,6 +79,7 @@ inline double to_v(const Slot &s, double u) {
     case KDom::OPEN0_CLOSED1:
     case KDom::OPEN0_HALF:
     case KDom::POSINT_GROUP:
+    case KDom::GT0:
       v = std::exp2(u);
       break;
     case KDom::GE0:
@@ -101,6 +104,7 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
   std::vector<Slot> out;
   for (size_t i = 0; i < e.nodes.size(); ++i) {
     const expr::Node &n = e.nodes[i];
+    assert(!(n.free & expr::kFreeH) && "h 须先落值 (bind_hold)");
     if (n.op < 0 || !n.free)
       continue;
     const expr::OpInfo &o = expr::kOps[n.op];
@@ -136,6 +140,10 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
           s.integer = true;
           s.u_lo = 0.0, s.u_hi = std::log2(std::min(static_cast<double>(kMaxGroup), a));
           break;
+        case KDom::GT0:
+          s.u_hi = std::log2(a);
+          s.u_lo = -s.u_hi;
+          break;
         case KDom::TOD:
           s.integer = true;
           s.u_lo = 0.0, s.u_hi = static_cast<double>(g.S);
@@ -158,17 +166,18 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
 }
 
 // 模板子树 i 的最长回看行数 = 沿各条到叶的路径累加窗长: ROLL 取 d (自由 d 取上界 kMaxD; 用 d 而非 d−1 以盖住 Delay / Delta 的 x_{t−d}),
-// EXPO 取 kMaxD. EXPAND 段内 reset (块首对齐段首) 不计
-inline int lookback(const expr::Expr &e, int i = 0) {
+// EXPO 取 kMaxD; N 元回归再加标签实现的滞后 (stat::label_reach). EXPAND 段内 reset (块首对齐段首) 不计. seg = 因子所在层
+inline int lookback(const expr::Expr &e, int seg, int i = 0) {
   const expr::Node &n = e.nodes[static_cast<size_t>(i)];
   if (n.op < 0)
     return 0;
   const expr::OpInfo &o = expr::kOps[n.op];
   int m = 0;
-  for (int a = 0; a < o.arity; ++a)
-    m = std::max(m, lookback(e, n.args[a]));
-  return m + (o.t == T::ROLL ? ((n.free & expr::kFreeD) ? kMaxD : n.p.d) : o.t == T::EXPO ? kMaxD
-                                                                                          : 0);
+  for (int a = 0; a < n.n_args; ++a)
+    m = std::max(m, lookback(e, seg, n.args[a]));
+  const int own = o.t == T::ROLL ? ((n.free & expr::kFreeD) ? kMaxD : n.p.d) : o.t == T::EXPO ? kMaxD
+                                                                                              : 0;
+  return m + own + (expr::nary(o) ? factor::stat::label_reach(n.p.h, geo_of(seg)) : 0);
 }
 
 // 阈值槽装上分位表 (升序, ≥ 2 个且不全等: 常量输入调用方先拦)

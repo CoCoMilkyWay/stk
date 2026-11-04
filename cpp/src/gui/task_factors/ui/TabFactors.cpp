@@ -142,6 +142,13 @@ namespace {
 // ============================================================================
 
 const char *kSlotNames[3] = {"x", "y", "z"};
+const char *kNaryNames[factor::kLrN] = {"x1", "x2", "x3", "x4", "x5", "x6", "x7"};
+// 第 a 元的槽名: 组 id / N 元 x1.. / 定元 x y z
+const char *slot_name(const factor::expr::OpInfo &o, size_t a) {
+  const int s = static_cast<int>(a);
+  return factor::expr::in_of(o, s) == factor::Dom::INT ? "组 id" : factor::expr::nary(o) ? kNaryNames[a]
+                                                                                         : kSlotNames[a];
+}
 
 bool contains_ci(std::string_view hay, std::string_view needle) {
   if (needle.empty())
@@ -157,8 +164,8 @@ bool contains_ci(std::string_view hay, std::string_view needle) {
   return false;
 }
 
-// 换本层算子, 槽内原有内容保留: 原是算子 → 子槽逐位对应 (多出的截掉, 不够的补空); 原是叶 → 进第一元. 参数取默认表.
-// 子槽值域不在这里查 (下拉只按本槽 need 过滤), 交给每帧 parse 即时校验标红
+// 换本层算子, 槽内原有内容保留: 原是算子 → 子槽逐位对应 (多出的截掉, 不够的补空; N 元留 2..kLrN 元); 原是叶 → 进第一元.
+// 参数取默认表; N 元的 h 默认自由 (随所搜持有期). 子槽值域不在这里查 (下拉只按本槽 need 过滤), 交给每帧 parse 即时校验标红
 void set_op(BuildNode &n, int op, int seg) {
   std::vector<BuildNode> args;
   if (n.op >= 0) {
@@ -168,20 +175,26 @@ void set_op(BuildNode &n, int op, int seg) {
     leaf.feat = std::move(n.feat);
     args.push_back(std::move(leaf));
   }
-  args.resize(static_cast<size_t>(factor::expr::kOps[op].arity));
+  const factor::expr::OpInfo &o = factor::expr::kOps[op];
+  const bool nary = factor::expr::nary(o);
+  args.resize(nary ? std::clamp(args.size(), size_t{2}, size_t{factor::kLrN}) : static_cast<size_t>(o.arity));
   n.op = op;
   n.feat.clear();
   n.args = std::move(args);
-  const std::string name = factor::expr::kOps[op].name;
+  const std::string name = o.name;
   n.p = factor::Param{};
   n.free = 0;
   n.p.d = factor::check::default_d(name);
   factor::check::set_k(name, n.p, seg);
+  if (factor::expr::declares(o.params, "h")) {
+    n.p.h = factor::stat::hold_close(1);
+    n.free = factor::expr::kFreeH;
+  }
 }
 
-// 外面套一层: 本节点整体成为新算子的第一元 (新算子 arity ≥ 1, 列表已过滤)
+// 外面套一层: 本节点整体成为新算子的第一元 (新算子有元, 列表已过滤)
 void wrap_op(BuildNode &n, int op, int seg) {
-  assert(factor::expr::kOps[op].arity >= 1);
+  assert(factor::expr::kOps[op].arity != 0);
   BuildNode inner = std::move(n);
   n = BuildNode{};
   set_op(n, op, seg);
@@ -241,6 +254,10 @@ void to_source(const BuildNode &n, std::string &s, bool &complete) {
     std::snprintf(buf, sizeof(buf), "k2=%g", static_cast<double>(n.p.k2));
     s += (n.free & factor::expr::kFreeK2) ? "k2" : buf;
   }
+  if (factor::expr::declares(o.params, "h")) {
+    sep();
+    s += (n.free & factor::expr::kFreeH) ? std::string("h") : "h=" + factor::stat::hold_token(n.p.h);
+  }
   s += ')';
 }
 
@@ -258,7 +275,13 @@ void from_expr(const factor::expr::Expr &e, int i, int seg, BuildNode &n) {
     n.p.k = x.p.k;
   if (!(x.free & factor::expr::kFreeK2))
     n.p.k2 = x.p.k2;
+  if (!(x.free & factor::expr::kFreeH))
+    n.p.h = x.p.h;
   n.free = x.free;
+  int na = 0; // 特征元数 (目标叶不进构建器, 由 h 推出)
+  while (na < x.n_args && !e.nodes[static_cast<size_t>(x.args[na])].target)
+    ++na;
+  n.args.resize(static_cast<size_t>(na));
   for (size_t a = 0; a < n.args.size(); ++a)
     from_expr(e, x.args[a], seg, n.args[a]);
 }
@@ -376,7 +399,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
         bool complete = true;
         to_source(n.args[a], src, complete);
         char label[320];
-        std::snprintf(label, sizeof(label), "%s: %s", o.in[a] == factor::Dom::INT ? "组 id" : kSlotNames[a], src.c_str());
+        std::snprintf(label, sizeof(label), "%s: %s", slot_name(o, a), src.c_str());
         if (ImGui::Selectable(label)) {
           unwrap_op(n, a);
           break; // n 已变, 不再迭代旧 args
@@ -388,7 +411,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
   if (n.op >= 0) {
     const factor::expr::OpInfo &o = factor::expr::kOps[n.op];
     // 每个参数: [☐ 搜] [输入]; 勾上 = 自由参数 (源串打裸键名, 输入禁用, 由 Search 搜)
-    const auto free_box = [&](const char *id, uint8_t bit) {
+    const auto free_box = [&](const char *id, uint8_t bit, const char *hint = "勾上 = 自由参数, 由 Search 搜") {
       ImGui::SameLine();
       bool f = (n.free & bit) != 0;
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, ImGui::GetStyle().FramePadding.y));
@@ -396,7 +419,7 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
         n.free = static_cast<uint8_t>(f ? (n.free | bit) : (n.free & ~bit));
       ImGui::PopStyleVar();
       if (ImGui::IsItemHovered())
-        tip("勾上 = 自由参数, 由 Search 搜");
+        tip("%s", hint);
       return f;
     };
     if (factor::expr::declares(o.params, "d")) {
@@ -425,15 +448,42 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
       ImGui::InputFloat("k2", &n.p.k2, 0.f, 0.f, "%g");
       ImGui::EndDisabled();
     }
+    if (factor::expr::declares(o.params, "h")) {
+      const bool f = free_box("##fh", factor::expr::kFreeH, "勾上 = h 随所搜持有期");
+      ImGui::SameLine(0, 2);
+      ImGui::SetNextItemWidth(90);
+      ImGui::BeginDisabled(f);
+      if (ImGui::BeginCombo("h", factor::stat::hold_name(n.p.h).c_str())) {
+        for (const auto &l : ft.y.labels)
+          if (ImGui::Selectable(factor::stat::hold_name(l.key).c_str(), l.key == n.p.h))
+            n.p.h = l.key;
+        ImGui::EndCombo();
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered())
+        tip("回归目标: 该持有期做多收益的截面秩");
+    }
+    if (factor::expr::nary(o)) {
+      ImGui::SameLine();
+      ImGui::BeginDisabled(n.args.size() >= static_cast<size_t>(factor::kLrN));
+      if (ImGui::SmallButton("+"))
+        n.args.emplace_back();
+      ImGui::EndDisabled();
+      ImGui::SameLine(0, 2);
+      ImGui::BeginDisabled(n.args.size() <= 2);
+      if (ImGui::SmallButton("-"))
+        n.args.pop_back();
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        tip("增减特征元 (2..%d, 减去末元)", factor::kLrN);
+    }
     ImGui::SameLine();
     ImGui::TextDisabled("%s", o.c_name);
     if (ImGui::IsItemHovered())
       tip("%s", o.note);
     ImGui::Indent(24.0f);
-    for (size_t a = 0; a < n.args.size(); ++a) {
-      const factor::Dom need = o.in[a];
-      render_node(n.args[a], ft, filter, filter_cap, need == factor::Dom::INT ? "组 id" : kSlotNames[a], need);
-    }
+    for (size_t a = 0; a < n.args.size(); ++a)
+      render_node(n.args[a], ft, filter, filter_cap, slot_name(o, a), factor::expr::in_of(o, static_cast<int>(a)));
     ImGui::Unindent(24.0f);
   }
   ImGui::PopID();

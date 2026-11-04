@@ -864,7 +864,7 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, Slo
   for (const Root &r : roots) {
     hd = keys_union(hd, r.hd);
     if (!Hk::whole())
-      look = std::max(look, factor::search::space::lookback(*r.e));
+      look = std::max(look, factor::search::space::lookback(*r.e, sc.ft->seg));
   }
   JobHooks<Hk> jh{{}, hk, o, F.prog, rs, std::vector<uint8_t>(rs.of.size(), 0)};
   Rc rc = prepare<E, Ps>(eng, F, sc, o.fr.d, look, hd, static_cast<int>(roots.size()), o.job);

@@ -179,7 +179,7 @@ int gen_tree(std::vector<GenNode> &pool, std::mt19937 &rng, int depth, int S) {
     std::vector<int> r;
     for (int i = 0; i < factor::expr::kOpCount; ++i) {
       const factor::expr::OpInfo &o = factor::expr::kOps[i];
-      const int k = o.arity == factor::kNary  ? -1 // N 元回归要标签叶, 不进随机树
+      const int k = o.arity == factor::kNary       ? -1 // N 元回归要标签叶, 不进随机树
                     : factor::detail::pointwise(i) ? 0
                                                    : (o.a == factor::A::SELF ? 1 : (o.a == factor::A::ALL ? 2 : -1));
       if (k == kind)
