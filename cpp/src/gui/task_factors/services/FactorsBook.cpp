@@ -4,7 +4,6 @@
 #include "factor/Stat/Host.hpp" // h2f
 
 #include <algorithm>
-#include <bit>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -66,8 +65,8 @@ void each_basket(PoolMask m, uint8_t ind, Fn &&fn) {
       fn(static_cast<size_t>(ind), kAllBit, ind);
   }
   for (PoolMask r = m & ~kAllBit; r; r &= r - 1) {
-    const int p = std::countr_zero(r);
-    fn(Baskets::of_pool(static_cast<PoolId>(p)), PoolMask{1} << p, uint8_t{0});
+    const PoolId p = pool_first(r);
+    fn(Baskets::of_pool(p), pool_bit(p), uint8_t{0});
   }
 }
 
@@ -263,7 +262,7 @@ void pool_turn(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int
           continue;
         const double r = close.v[i] / close.v[ip] - 1.0, om[kWeights] = {1.0, mcap[ip]};
         for (PoolMask rest = in[ip]; rest; rest &= rest - 1) {
-          const size_t p = static_cast<size_t>(std::countr_zero(rest)), j = p * na + static_cast<size_t>(a - a0), at = p * nT + t;
+          const size_t p = pool_first(rest), j = p * na + static_cast<size_t>(a - a0), at = p * nT + t;
           for (int w = 0; w < kWeights; ++w) {
             const double W = rows.w[w][at];
             if (!(W > 0.0))

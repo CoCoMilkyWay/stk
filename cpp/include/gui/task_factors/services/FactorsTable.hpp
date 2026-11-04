@@ -12,6 +12,7 @@
 #include "shared/FeatureLib.hpp" // FeatureLib (请求的库清单)
 
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cstdint>
 #include <filesystem>
@@ -36,11 +37,20 @@ namespace GUI::Factors {
 //   服务 / 装载 / UI 不按层分支
 // 档 → 库 (因子池 pool 下): 各档列在 pool 的该档库 (lib_id). 叶 / 门控 / 标签 / 成本 / K 线 / 日频原料同一条
 inline LibId label_lib(PoolId pool) { return lib_id(pool, TierId::Bar); } // 标签库 = 因子池的 Bar 库
-// 池篮子成员位 (位 = PoolId; BPlanes::in): 池表 ≤ 64
-using PoolMask = uint64_t;
+// 池篮子成员位 (位 = PoolId; BPlanes::in): 位宽 = 库集位宽 / 档数 (池表 × 档 ≤ kLibBits 已在池表断言)
+//   clang _BitInt 同 LibMask: std::countr_zero 不收 → pool_first 按 64 位分段
+inline constexpr int kPoolBits = kLibBits / static_cast<int>(TIER_COUNT);
+using PoolMask = unsigned _BitInt(kPoolBits);
 inline constexpr PoolMask pool_bit(PoolId p) {
-  assert(p < 64 && "池表超出 PoolMask 位宽");
+  assert(p < kPoolBits && "池表超出 PoolMask 位宽");
   return PoolMask{1} << p;
+}
+inline constexpr PoolId pool_first(PoolMask m) { // 最低位的池
+  assert(m != 0);
+  int w = 0;
+  while (static_cast<uint64_t>(m >> w) == 0)
+    w += 64;
+  return static_cast<PoolId>(w + std::countr_zero(static_cast<uint64_t>(m >> w)));
 }
 // 因子层下标 (kFactorLevels, 细 → 粗; 与 PoolId / TierId 对仗)
 using LevelId = uint8_t;

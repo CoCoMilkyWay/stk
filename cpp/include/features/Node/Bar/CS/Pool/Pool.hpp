@@ -30,6 +30,7 @@
 //     pool_<板块> = SelectAll(key_<板块>): 活跃内该板块全选 (含 ST / *ST, 互斥).
 //     pool_margin / pool_nonmargin = SelectAll(key_margin / key_nonmargin): 活跃内融资融券标的 / 非标的全选 (含 ST / *ST, 互补).
 //   权重: 子池一律等权 (组合页池线 / 估值); all 加权 / 等权两条.
+//     中文名: 风格池 (pool_<pool><N>) 不标权重, 其余池标明 (如 科创板等权 / 融资等权).
 //
 //   时点: L_1day (收盘行), 全部日频调仓. 子池库交易日 D 的成员 = all Bar 库 D−1 的 L_1day 行的该列 (shared/Pool.hpp), 无前视.
 //   只有 all Bar 库的池列有意义 (子池库里同列照算, 截面是池内, 不读).
@@ -95,11 +96,11 @@
   X(pool_price_high200, CAT1, AUTO, "Pool Price High 200", "高价股池200", "母集内收盘价最高200只", R"(\mathbf{1}[\mathrm{rank}\downarrow(P) \le 200])", CS(bar, L_1day, key_price, None, SelectHigh200))                                                          \
   X(pool_price_low400, CAT1, AUTO, "Pool Price Low 400", "低价股池400", "母集内收盘价最低400只", R"(\mathbf{1}[\mathrm{rank}\uparrow(P) \le 400])", CS(bar, L_1day, key_price, None, SelectLow400))                                                               \
   X(pool_price_low200, CAT1, AUTO, "Pool Price Low 200", "低价股池200", "母集内收盘价最低200只", R"(\mathbf{1}[\mathrm{rank}\uparrow(P) \le 200])", CS(bar, L_1day, key_price, None, SelectLow200))                                                               \
-  X(pool_st, CAT1, AUTO, "Pool ST", "ST池", "活跃∧次日ST(不含*ST)全部", R"(\mathbf{1}[\mathrm{st}_{D} = 1])", CS(bar, L_1day, key_st, None, SelectAll))                                                                                                           \
-  X(pool_sst, CAT1, AUTO, "Pool *ST", "*ST池", "活跃∧次日*ST全部", R"(\mathbf{1}[\mathrm{st}_{D} = 2])", CS(bar, L_1day, key_sst, None, SelectAll))                                                                                                               \
-  X(pool_sh_main, CAT1, AUTO, "Pool SH Main", "沪市主板池", "活跃∧沪市主板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{sh}])", CS(bar, L_1day, key_sh_main, None, SelectAll))                                                                          \
-  X(pool_sz_main, CAT1, AUTO, "Pool SZ Main", "深市主板池", "活跃∧深市主板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{sz}])", CS(bar, L_1day, key_sz_main, None, SelectAll))                                                                          \
-  X(pool_star, CAT1, AUTO, "Pool STAR", "科创板池", "活跃∧科创板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{star}])", CS(bar, L_1day, key_star, None, SelectAll))                                                                                     \
-  X(pool_chinext, CAT1, AUTO, "Pool ChiNext", "创业板池", "活跃∧创业板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{gem}])", CS(bar, L_1day, key_chinext, None, SelectAll))                                                                             \
-  X(pool_margin, CAT1, AUTO, "Pool Margin", "融资池", "活跃∧融资融券标的全部(含ST)", R"(\mathbf{1}[\mathrm{margin}_{D}])", CS(bar, L_1day, key_margin, None, SelectAll))                                                                                          \
-  X(pool_nonmargin, CAT1, AUTO, "Pool Non-Margin", "非融资池", "活跃∧非融资融券标的全部(含ST)", R"(\mathbf{1}[\neg\mathrm{margin}_{D}])", CS(bar, L_1day, key_nonmargin, None, SelectAll))
+  X(pool_st, CAT1, AUTO, "Pool ST", "ST等权", "活跃∧次日ST(不含*ST)全部", R"(\mathbf{1}[\mathrm{st}_{D} = 1])", CS(bar, L_1day, key_st, None, SelectAll))                                                                                                         \
+  X(pool_sst, CAT1, AUTO, "Pool *ST", "*ST等权", "活跃∧次日*ST全部", R"(\mathbf{1}[\mathrm{st}_{D} = 2])", CS(bar, L_1day, key_sst, None, SelectAll))                                                                                                             \
+  X(pool_sh_main, CAT1, AUTO, "Pool SH Main", "沪市主板等权", "活跃∧沪市主板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{sh}])", CS(bar, L_1day, key_sh_main, None, SelectAll))                                                                        \
+  X(pool_sz_main, CAT1, AUTO, "Pool SZ Main", "深市主板等权", "活跃∧深市主板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{sz}])", CS(bar, L_1day, key_sz_main, None, SelectAll))                                                                        \
+  X(pool_star, CAT1, AUTO, "Pool STAR", "科创板等权", "活跃∧科创板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{star}])", CS(bar, L_1day, key_star, None, SelectAll))                                                                                   \
+  X(pool_chinext, CAT1, AUTO, "Pool ChiNext", "创业板等权", "活跃∧创业板全部(含ST)", R"(\mathbf{1}[\mathrm{board}_{D} = \mathrm{gem}])", CS(bar, L_1day, key_chinext, None, SelectAll))                                                                           \
+  X(pool_margin, CAT1, AUTO, "Pool Margin", "融资等权", "活跃∧融资融券标的全部(含ST)", R"(\mathbf{1}[\mathrm{margin}_{D}])", CS(bar, L_1day, key_margin, None, SelectAll))                                                                                        \
+  X(pool_nonmargin, CAT1, AUTO, "Pool Non-Margin", "非融资等权", "活跃∧非融资融券标的全部(含ST)", R"(\mathbf{1}[\neg\mathrm{margin}_{D}])", CS(bar, L_1day, key_nonmargin, None, SelectAll))

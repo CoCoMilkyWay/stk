@@ -358,7 +358,7 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   B = BPlanes{};
   B.sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg), NP = ft.b.pools.size();
-  assert(NP == pool_count() && NP <= 64);
+  assert(NP == pool_count() && NP <= static_cast<size_t>(kPoolBits));
   // ---- 列段 ts_valid cs_valid lb_entry_ok T+1C 标签 [K] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 池列 [1, NP)
   //      (日频原料 bar.1d, as-of 到网格行) ----
   ColList cols{io.dm.pool, {}};
