@@ -114,7 +114,7 @@ struct Meta {
   std::vector<Ymd> list, delist;
   std::vector<std::chrono::sys_days> list_day, delist_day; // 同上, 仅 != 0 时有效
   std::vector<std::uint8_t> main_board;                    // list_sector == 1
-  std::vector<std::uint8_t> bj;                            // 北交所 (代码 .BJ)
+  std::vector<std::uint8_t> board;                         // fund::Board (board_of 代码判定)
 };
 
 // 上市日在 D 轴的 lower_bound; 无 list_date → n_d (永未上市)
@@ -1635,9 +1635,9 @@ void Panel::build(const std::vector<Ymd> &dates) {
   meta.delist_day.assign(static_cast<std::size_t>(n_a), {});
   meta.main_board.assign(static_cast<std::size_t>(n_a), 0);
   assert(table.size() == static_cast<std::size_t>(n_a) && "AssetAxis 有重复代码");
-  meta.bj.resize(static_cast<std::size_t>(n_a));
+  meta.board.resize(static_cast<std::size_t>(n_a));
   for (int a = 0; a < n_a; ++a)
-    meta.bj[static_cast<std::size_t>(a)] = table.code(static_cast<std::size_t>(a)).ends_with(".BJ");
+    meta.board[static_cast<std::size_t>(a)] = board_of(table.code(static_cast<std::size_t>(a)));
   fundamental::meta(cat, ids, fundamental::spec("cn_stock_basic_info"), {"list_date", "delist_date", "list_sector"},
                     [&](const Rows &r) {
                       const pq::Col ld = r.col("list_date"), dd = r.col("delist_date"), ls = r.col("list_sector");
@@ -1951,7 +1951,7 @@ struct State {
     return i0 >= 0 ? annuals[static_cast<std::size_t>(i0)].val : NaNF;
   }
 
-  // 母集判定所用的状态口 (上市龄 / 退市龄 / 行业 / 停牌 / ST 与四项 filter / 次新); emit 与全史母集掩码共用
+  // 母集判定所用的状态口 (上市龄 / 退市龄 / 行业 / 板块 / 停牌 / ST 与四项 filter / 次新); emit 与全史母集掩码共用
   void emit_status(int d, float *out) const {
     const Axes &axes = D.axes;
     const Meta &meta = D.meta;
@@ -1984,6 +1984,7 @@ struct State {
 
     // 状态 / filter (0/1 常量)
     out[Fund::ind_l1] = static_cast<float>(industry);
+    out[Fund::board] = static_cast<float>(meta.board[ai]);
     out[Fund::is_susp] = static_cast<float>(p.at(p.suspended, a, d));
     out[Fund::st_level] = static_cast<float>(p.at(p.st_status, a, d));
     out[Fund::st_profit] = profit_st ? 1.0f : 0.0f;
@@ -2199,7 +2200,7 @@ std::vector<std::uint8_t> univ_mask(const Data &data) {
     float y[Fund::kCount];
     for (int a = a0; a < a1; ++a) {
       State s(data, a);
-      const bool bj = data.meta.bj[static_cast<std::size_t>(a)] != 0;
+      const bool bj = data.meta.board[static_cast<std::size_t>(a)] == kBoardBj;
       std::uint8_t *row = m.data() + static_cast<std::size_t>(a) * static_cast<std::size_t>(n_d);
       for (int d = 0; d < n_d; ++d) {
         s.step(d);

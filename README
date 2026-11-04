@@ -27,7 +27,7 @@ stk/
 │   │   │   ├── AssetEvent.hpp                        # 📦 个股历史事件 (AssetInfo 内): 种类表 = 单点 / 区间 × 4 组; OrderFlow 图2 时间轴标注
 │   │   │   ├── AssetAxis.hpp                         # 📦 资产轴 (A 轴) 码表 + 池轴 PoolAxis (库的 A 轴: 全局 id 子集 + 码表 hash)
 │   │   │   ├── FeatureLib.hpp                        # 📦 FeatureLib = 库 (池 × 档, LibId) + A 轴 + 目录 + 日期轴; 每池两档对称各一库
-│   │   │   │                                         #    · 池表 feature_pools (PoolDef = 池名 + 中文名 + 池列): [0] = all (全市场); 其余 = 子池 (来自 all Bar 库 pool_<pool> 列)
+│   │   │   │                                         #    · 池表 feature_pools (PoolDef = 池名 + 中文名 + 池列 + 市值加权位 (池名 _cap 结尾)): [0] = all (全市场); 其余 = 子池 (来自 all Bar 库 pool_<pool> 列)
 │   │   │   │                                         #    · 清单 lib.json: 写端 (ComputeService) 规划后落, 读端只读 ⇒ 两端口径一致; 无清单 = 未建库
 │   │   │   │                                         #    · 定轴库 axis_lib = 同池 Bar 库 (定池的 A 轴); 随轴库 = 同池 Lob 库 (轴 ⊆ 定轴库轴)
 │   │   │   │                                         #    · 库树 lib_parent (规划 / 断言唯一一份): 随轴库 → 同池定轴库 (同日); 子池定轴库 → all 同档库 (读 D−1); all Bar 为根
@@ -102,7 +102,7 @@ stk/
 │   │   │   ├── MetaFlag.hpp                          # 🧮 元列 (_meta) 编解码 (消费端不依赖 Meta 节点)
 │   │   │   ├── Node/Lob/TS/<分类>/                   # 🧮 Lob 档节点: 节点类 + NODE_ / FIELDS_ 宏 (暂无 CS)
 │   │   │   ├── Node/Bar/{TS,CS}/<分类>/              # 🧮 Bar 档节点: TS 同上; CS = 截面列 (只有 FIELDS_ 行)
-│   │   │   │                                         #    · Pool/: 池键 PoolKey + 池列 pool_<pool> (加一列 = 多一个子池)
+│   │   │   │                                         #    · Pool/: 池键 PoolKey + 池列 pool_<pool> (加一列 = 多一个子池); 范围口径 / 板块 / 权重见 Pool.hpp 文件头
 │   │   │   ├── Node/Common/<分类>/                   # 🧮 两档共用节点类: 只许 class + helper 宏, 不许 NODE_ / FIELDS_
 │   │   │   │                                         #    · Basic (Kline / Noise) · Fund · Label (LabelGroups / LabelHold) · Meta (MetaTracker)
 │   │   │   ├── Node/unused/                          # 🧮 未启用半成品

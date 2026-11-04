@@ -60,6 +60,36 @@ inline std::uint8_t sw2021_l1_name_to_id(std::string_view name) {
 // 覆盖上市初期连板炒作与 6 / 12 个月限售解禁窗口
 inline constexpr float kNewListDays = 365.0f;
 
+// 板块 (代码判定, 静态): 落盘列 board 的取值域; 北交所不活跃 (不进任何池), 其余 (B 股等) 记未知
+enum Board : std::uint8_t { kBoardUnknown,
+                            kBoardShMain,  // 沪市主板 600 / 601 / 603 / 605
+                            kBoardSzMain,  // 深市主板 000 / 001 / 002 / 003 / 004
+                            kBoardStar,    // 科创板 688 / 689
+                            kBoardChiNext, // 创业板 300 / 301 / 302 / 309
+                            kBoardBj,      // 北交所 (代码 .BJ)
+                            kBoardCount };
+inline constexpr std::string_view BOARD_NAMES[kBoardCount] = {"未知", "沪市主板", "深市主板", "科创板", "创业板", "北交所"};
+
+// code = 带交易所后缀的代码 (如 600000.SH)
+inline Board board_of(std::string_view code) {
+  if (code.ends_with(".BJ"))
+    return kBoardBj;
+  const std::string_view p = code.substr(0, 3);
+  for (const std::string_view s : {"600", "601", "603", "605"})
+    if (p == s)
+      return kBoardShMain;
+  for (const std::string_view s : {"000", "001", "002", "003", "004"})
+    if (p == s)
+      return kBoardSzMain;
+  for (const std::string_view s : {"688", "689"})
+    if (p == s)
+      return kBoardStar;
+  for (const std::string_view s : {"300", "301", "302", "309"})
+    if (p == s)
+      return kBoardChiNext;
+  return kBoardUnknown;
+}
+
 struct Data;  // 轴 / meta / 网格切片 / 事件链 (定义在 .cpp)
 struct State; // Stream 内部状态 (定义在 .cpp)
 

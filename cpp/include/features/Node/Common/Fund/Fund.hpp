@@ -51,6 +51,7 @@ public:
     low_mc_thr,     // [亿元] 低市值阈值 (主板 5 / 其他 3)
     // ---- 日频常量列 (Bar 档直接落盘, 与 FIELDS_L_1day_Fund 一一对应) ----
     ind_l1,      // SW2021 一级行业 ID (0=未知, 1..31)
+    board,       // 板块 fund::Board (0=未知/1=沪主板/2=深主板/3=科创板/4=创业板/5=北交所)
     list_age,    // [日历日] 未上市 → NaN
     delist_age,  // [日历日] 未退市 → NaN
     is_margin,   // 0/1

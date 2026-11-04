@@ -193,11 +193,11 @@ constexpr size_t kPoolCount = std::count_if(kBarDay.begin(), kBarDay.end(), is_p
 static_assert(kPoolCount > 0, "Bar 字段表没有池列 (Node/Bar/CS/Pool 的 pool_*)");
 constexpr std::array<PoolDef, 1 + kPoolCount> kPools = [] {
   std::array<PoolDef, 1 + kPoolCount> out{};
-  out[0] = {Config::kAllPoolDir, "全市场", SIZE_MAX};
+  out[0] = {Config::kAllPoolDir, "全市场", SIZE_MAX, false};
   size_t n = 1;
   for (size_t i = 0; i < kBarDay.size(); ++i)
     if (is_pool(kBarDay[i]))
-      out[n++] = {kBarDay[i].code + kPoolPrefix.size(), kBarDay[i].name_cn, i};
+      out[n++] = {kBarDay[i].code + kPoolPrefix.size(), kBarDay[i].name_cn, i, std::string_view(kBarDay[i].code).ends_with("_cap")};
   return out;
 }();
 static_assert(kPools[kAllPool].pool_col == SIZE_MAX, "[kAllPool] = all");

@@ -22,9 +22,12 @@
 //     beta   beta                   (近 156 周周收益对等权市场的 β)
 //     trend  trend                  (均线截面回归的预期 20 日收益)
 //     price  收盘价 (元, 不复权)
+//     size_main  mcap, 范围再收窄到主板 (board = 沪市主板 / 深市主板; 母集内非主板 = 范围外 NaN, 覆盖率按主板母集计)
 //   ST 键 (不走母集; 活跃 ∧ 次日 st_level 恰为该级 → mcap, 否则 NaN; 池列全选):
 //     st     st_level == 1 (ST, 不含 *ST)
 //     sst    st_level == 2 (*ST)
+//   板块键 (不走母集, 含 ST; 活跃 ∧ board 恰为该板块 → mcap, 否则 NaN; 池列全选, 市值加权):
+//     sh_main 沪市主板 / sz_main 深市主板 / star 科创板 / chinext 创业板 (fund::Board)
 //   池日频: 键落 L_1day (收盘后, 母集按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_1day 行池列 (shared/Pool.hpp 读 all Bar 库).
 //   delist 只看已发生 (不含未来信息).
 //   边界: 行情项窗按可得史扩张, 数据起点次日起即有值; 财务项随首批公告渐次到齐. 母集内键缺记 +inf (与母集外 NaN 分开),
@@ -54,8 +57,13 @@ public:
                       beta,
                       trend,
                       price,
+                      size_main,
                       st,
                       sst,
+                      sh_main,
+                      sz_main,
+                      star,
+                      chinext,
                       kCount };
   float y[kCount] = {};
 
@@ -68,6 +76,11 @@ public:
     const bool live = Fund::is_live(fund_) && mc > 0.0f;
     y[st] = (live && lvl == 1.0f) ? mc : kNaN;
     y[sst] = (live && lvl == 2.0f) ? mc : kNaN;
+    const int bd = static_cast<int>(f(Fund::board));
+    y[sh_main] = (live && bd == fund::kBoardShMain) ? mc : kNaN;
+    y[sz_main] = (live && bd == fund::kBoardSzMain) ? mc : kNaN;
+    y[star] = (live && bd == fund::kBoardStar) ? mc : kNaN;
+    y[chinext] = (live && bd == fund::kBoardChiNext) ? mc : kNaN;
     if (!(mc > 0.0f && Fund::is_base(fund_))) {
       for (size_t k = 0; k < st; ++k)
         y[k] = kNaN;
@@ -88,9 +101,12 @@ public:
     y[beta] = f(Fund::beta);
     y[trend] = f(Fund::trend);
     y[price] = close_;
+    y[size_main] = mc;
     for (size_t k = 0; k < st; ++k)
       if (!std::isfinite(y[k]))
         y[k] = std::numeric_limits<float>::infinity();
+    if (bd != fund::kBoardShMain && bd != fund::kBoardSzMain) // 须在 +inf 之后: 非主板是范围外, 不是键缺
+      y[size_main] = kNaN;
   }
 
 private:
@@ -119,5 +135,10 @@ private:
   X(key_beta, CAT1, AUTO, "Pool Key Beta", "池键贝塔", "母集内近156周市场β, 缺+inf, 外NaN", R"(\beta^{w}_{156})", TS(PoolKey, beta, None, None))                                                      \
   X(key_trend, CAT1, AUTO, "Pool Key Trend", "池键趋势", "母集内均线趋势预期收益, 缺+inf, 外NaN", R"(\sum_L \bar{b}_L \frac{MA_{L,D}}{P_D})", TS(PoolKey, trend, None, None))                         \
   X(key_price, CAT1, AUTO, "Pool Key Price", "池键股价", "母集内收盘价(元,不复权), 缺+inf, 外NaN", R"(P^{\mathrm{close}}_D)", TS(PoolKey, price, None, None))                                         \
+  X(key_size_main, CAT1, AUTO, "Pool Key Size Main", "池键主板市值", "母集∧主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{main})", TS(PoolKey, size_main, None, None))          \
   X(key_st, CAT1, AUTO, "Pool Key ST", "池键ST", "活跃∧次日ST(不含*ST)的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,st=1})", TS(PoolKey, st, None, None))                     \
-  X(key_sst, CAT1, AUTO, "Pool Key *ST", "池键*ST", "活跃∧次日*ST的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,st=2})", TS(PoolKey, sst, None, None))
+  X(key_sst, CAT1, AUTO, "Pool Key *ST", "池键*ST", "活跃∧次日*ST的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,st=2})", TS(PoolKey, sst, None, None))                         \
+  X(key_sh_main, CAT1, AUTO, "Pool Key SH Main", "池键沪主板", "活跃∧沪市主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,sh})", TS(PoolKey, sh_main, None, None))           \
+  X(key_sz_main, CAT1, AUTO, "Pool Key SZ Main", "池键深主板", "活跃∧深市主板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,sz})", TS(PoolKey, sz_main, None, None))           \
+  X(key_star, CAT1, AUTO, "Pool Key STAR", "池键科创板", "活跃∧科创板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,star})", TS(PoolKey, star, None, None))                    \
+  X(key_chinext, CAT1, AUTO, "Pool Key ChiNext", "池键创业板", "活跃∧创业板的收盘总市值(亿元), 外NaN", R"(\mathrm{mcap}_D \cdot \mathbf{1}_{live,gem})", TS(PoolKey, chinext, None, None))
