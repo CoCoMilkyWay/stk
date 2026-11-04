@@ -68,19 +68,13 @@ struct AssetsView {
 
 // Assets state
 struct AssetsState {
-  // Filters
-  //
-  // 这里曾有 filter_missing_only / filter_no_missing 两个"缺口"过滤器, 但
-  // 缺口是按天而不是按资产的概念 (见 AssetItem 的说明), 它们筛的那个量恒为
-  // 0 —— 一个永远筛空, 一个永远等于不筛.
-  //
-  // 下面四个都是多选下拉, 空集合 = 不过滤 (全选):
+  // Filters: 四个多选下拉, 空集合 = 不过滤 (全选):
   //   st_filter:      0=正常 1=ST 2=*ST (GetStLevel 口径)
-  //   listed_filter:  0=在市 1=退市 (out_date 是否为 0)
+  //   listed_filter:  0=在市 1=退市 (out_date 是否为 0); 默认在市
   //   board_filter:   BoardType (Unknown ~ BSE, 不含 All 哨兵)
   //   industry_filter: 申万一级行业代码 (ind_code)
   std::set<int> st_filter;
-  std::set<int> listed_filter;
+  std::set<int> listed_filter{0};
   std::set<BoardType> board_filter;
   std::string search_query;
   std::set<std::string> industry_filter;

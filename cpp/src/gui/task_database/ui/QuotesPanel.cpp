@@ -62,24 +62,23 @@ int pct_tick(double v, char *buf, int size, void *ud) {
   return *static_cast<const double *>(ud) > 0 ? std::snprintf(buf, size, "%.1f%%", v) : std::snprintf(buf, size, " ");
 }
 
-// y 轴刻度区定宽: 宽 = 样板刻度之宽 (左 = 价 / 量 / 额, 右 = 涨跌幅), 换标的 / 缩放时图框不动; 超宽的刻度照实撑开
-void pin_width(ImPlotTicker &t, std::initializer_list<const char *> samples) {
-  for (const char *s : samples)
-    t.MaxSize.x = std::max(t.MaxSize.x, ImGui::CalcTextSize(s).x);
+// 刻度区定尺: 尺寸 = 样板文字的标签框 (同 Tag: 文字 + 两侧 AnnotationPadding), 左 = 价 / 量 / 额, 右 = 涨跌幅, 底 = 时刻.
+//   ImPlot 的刻度区每帧以上帧 LateSize 为底再随刻度 / 标签撑大 (Tag 经 OverrideSizeLate 计入);
+//   底先垫到最大标签框 ⇒ 现价 / 十字标签随出随没、换标的、缩放都不改图框. 超尺的刻度照实撑开
+void pin(ImAxis ax, std::initializer_list<const char *> samples) {
+  const ImVec2 pad = ImPlot::GetStyle().AnnotationPadding;
+  ImPlotTicker &t = ImPlot::GetCurrentPlot()->Axes[ax].Ticker;
+  for (const char *s : samples) {
+    const ImVec2 text = ImGui::CalcTextSize(s);
+    t.OverrideSizeLate(ImVec2(text.x + 2 * pad.x, text.y + 2 * pad.y));
+  }
 }
-void locate_left(ImPlotTicker &t, const ImPlotRange &r, float px, bool vertical, ImPlotFormatter f, void *fd) {
-  ImPlot::Locator_Default(t, r, px, vertical, f, fd);
-  pin_width(t, {"0000.00", "0000.0万手", "00.00亿手", "0000万"});
-}
-void locate_right(ImPlotTicker &t, const ImPlotRange &r, float px, bool vertical, ImPlotFormatter f, void *fd) {
-  ImPlot::Locator_Default(t, r, px, vertical, f, fd);
-  pin_width(t, {"-000.0%", "+00.00%"});
-}
-// 当前图的 y 轴换上定宽 locator (Setup 阶段调: BeginPlot 每帧复位 locator)
-void pin_axes() {
-  ImPlotPlot &p = *ImPlot::GetCurrentPlot();
-  p.Axes[ImAxis_Y1].Locator = locate_left;
-  p.Axes[ImAxis_Y2].Locator = locate_right;
+// 当前图各轴定尺 (BeginPlot 之后任意处调; 落到下一帧); x = 底轴有刻度
+void pin_axes(bool x) {
+  pin(ImAxis_Y1, {"0000.00", "0000.0万手", "00.00亿手", "0000万", "00.00亿"});
+  pin(ImAxis_Y2, {"-000.0%", "+00.00%"});
+  if (x)
+    pin(ImAxis_X1, {"00-00 00:00", "0000-00-00"});
 }
 
 // 一张图的根: 日内 x = 第 k 日 · kSlots + 槽 (无成交的槽留空); 日线 x = 下标
@@ -182,7 +181,7 @@ void pchip(const std::vector<double> &x, const std::vector<double> &y, std::vect
   out.push_back(y[n - 1]);
 }
 
-// 日内 [a, b) 根: 高 / 低两条插值线围出的带, 按 带中线 vs 前收 染涨跌色 (无前收 → 平色); 逐日成段, 跨日不连
+// 日内 [a, b) 根: 高 / 低两条插值线围出的带 (上下沿同色描边), 按 带中线 vs 前收 染涨跌色 (无前收 → 平色); 逐日成段, 跨日不连
 void band(const Series &s, int a, int b) {
   ImDrawList *dl = ImPlot::GetPlotDrawList();
   const auto color = [&](double mid) {
@@ -213,6 +212,11 @@ void band(const Series &s, int a, int b) {
     for (size_t j = 0; j + 1 < xs.size(); ++j)
       dl->AddQuadFilled(ph[j], ph[j + 1], pl[j + 1], pl[j], color((hs[j] + hs[j + 1] + ls[j] + ls[j + 1]) * 0.25));
     dl->Flags = flags;
+    for (size_t j = 0; j + 1 < xs.size(); ++j) { // 上下沿描同色边: 带窄于一像素处不断
+      const ImU32 c = color((hs[j] + hs[j + 1] + ls[j] + ls[j + 1]) * 0.25);
+      dl->AddLine(ph[j], ph[j + 1], c);
+      dl->AddLine(pl[j], pl[j + 1], c);
+    }
   }
 }
 
@@ -278,8 +282,9 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
   bool hov = false;
   double mx = 0;
   const auto input = [&](bool price) {
+    const double clamped = std::clamp(ImPlot::GetPlotMousePos().x, v.lo, v.hi); // 框选端点不出图区
     if (price)
-      mx = ImPlot::GetPlotMousePos().x;
+      mx = clamped;
     const bool here = ImPlot::IsPlotHovered();
     if (here) {
       hov = true;
@@ -294,7 +299,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       return here;
     }
     const ImVec2 pos = ImPlot::GetPlotPos(), sz = ImPlot::GetPlotSize();
-    const float a = ImPlot::PlotToPixels(v.drag, 0.0).x, b = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos().x, 0.0).x;
+    const float a = ImPlot::PlotToPixels(v.drag, 0.0).x, b = ImPlot::PlotToPixels(clamped, 0.0).x;
     const ImVec2 p0(std::min(a, b), pos.y), p1(std::max(a, b), pos.y + sz.y);
     ImDrawList *dl = ImPlot::GetPlotDrawList();
     dl->AddRectFilled(p0, p1, IM_COL32(86, 156, 214, 40));
@@ -323,7 +328,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault);
     ImPlot::SetupAxisLimits(ImAxis_Y2, s.ref > 0 ? pct(ylo) : 0.0, s.ref > 0 ? pct(yhi) : 1.0, ImPlotCond_Always);
     ImPlot::SetupAxisFormat(ImAxis_Y2, pct_tick, &s.ref);
-    pin_axes();
+    pin_axes(false);
     ImPlot::SetupFinish();
     corner = ImPlot::GetPlotPos();
     const ImPlotRect lim = ImPlot::GetPlotLimits();
@@ -407,7 +412,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     setup_x(true);
     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, vmax > 0 ? vmax * 1.1 : 1.0, ImPlotCond_Always);
     ImPlot::SetupAxisFormat(ImAxis_Y1, s.money ? amount_tick : lots_tick, nullptr);
-    pin_axes();
+    pin_axes(true);
     ImPlot::SetupFinish();
     if (!seps.empty()) {
       ImPlot::SetNextLineStyle(kRule, 1.f);
