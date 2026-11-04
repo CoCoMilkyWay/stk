@@ -46,15 +46,16 @@ ORDER_CAP = 5  # 留、推的最近单数
 
 def _order_qty(o, px, cap):
     """股数：给了 qty 即用，否则 size 元按 book.lot 折股；再以闪电窗给的最大可买 / 可卖 cap 封顶
-    （钱或券不够就按能做的最大量）：买入按步长取整、须够起买量，卖出不足即全卖（零股只能一次卖完）。"""
+    （钱或券不够就按能做的最大量）：买入按步长取整、须够起买量；按额卖出不足起卖量即抬到起卖量，
+    可卖不足即全卖（零股只能一次卖完）。"""
     lot, step = book.lot(o.code)
     n = o.qty or int(o.size / px) // step * step
-    assert n >= (
-        lot if o.s == BUY or not o.qty else 1
-    ), f"{o.size} 元 / {o.qty} 股按 {px} 不足起买量 {lot} 股"
     if o.s == BUY:
+        assert n >= lot, f"{o.size} 元 / {o.qty} 股按 {px} 不足起买量 {lot} 股"
         cap = cap // step * step
         assert cap >= lot, f"最大可买 {cap} 股，不足起买量 {lot} 股"
+    elif not o.qty:
+        n = max(n, lot)
     assert cap >= 1, "最大可卖为 0"
     return min(n, cap)
 
