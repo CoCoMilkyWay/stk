@@ -32,7 +32,8 @@ struct ComputeState {
   ComputeUIState ui_state = ComputeUIState::Idle;
   int popup_frame_count = 0; // Frame counter to ensure popup is rendered
 
-  std::optional<LibId> confirm; // 待确认全量计算的库 (空 = 无确认弹窗)
+  std::optional<LibId> confirm;        // 待确认全量计算的库 (空 = 无确认弹窗)
+  std::optional<LibId> confirm_remove; // 待确认删除的库 (空 = 无确认弹窗)
 
   // 库表 (plan_libs; 未扫 = 空): 一行一池, 每池各档一库
   std::optional<PerLib<LibPlan>> libs;

@@ -130,7 +130,7 @@ void TickCompute(ComputeService &service, ComputeState &state, SharedData &data,
 
   // ---- 自动续算: 空闲 (无在算 / 无全量确认 / 无编码在飞) 时依次 Append 可续算且未判废的库, 每库一轮至多一次;
   //      规划序上游在前, 它算完重扫, 下游的规划随之前移再轮到; 无可续算 / 取消即止 ----
-  if (!state.auto_append || state.ui_state != ComputeUIState::Idle || is_running || state.libs_dirty || state.confirm ||
+  if (!state.auto_append || state.ui_state != ComputeUIState::Idle || is_running || state.libs_dirty || state.confirm || state.confirm_remove ||
       data.taskstate.database.encode_inflight)
     return;
   assert(state.libs && "库表未扫");
@@ -231,16 +231,28 @@ static void lib_cells(ComputeState &state, const LibPlan &s, bool computing, boo
   const std::string id = lib_name(lib.id);
   const bool blocked = busy || s.plan.empty();
   ImGui::BeginDisabled(blocked);
-  if (ImGui::SmallButton(("Compute##" + id).c_str()))
+  if (ImGui::SmallButton(("Comp##" + id).c_str()))
     state.confirm = lib.id;
   ImGui::EndDisabled();
   action_tooltip(s, busy, false);
   ImGui::SameLine();
   ImGui::BeginDisabled(blocked || !s.appendable());
-  if (ImGui::SmallButton(("Append##" + id).c_str()))
+  if (ImGui::SmallButton(("Appd##" + id).c_str()))
     begin_compute(state, s, true);
   ImGui::EndDisabled();
   action_tooltip(s, busy, true);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(busy || !lib.ready());
+  if (ImGui::SmallButton(("Remv##" + id).c_str()))
+    state.confirm_remove = lib.id;
+  ImGui::EndDisabled();
+  if (busy)
+    hover_tip("%s", busy);
+  else if (!lib.ready())
+    hover_tip("库未建: 无可删");
+  else
+    hover_tip("删库: %s ~ %s (%zu 天, %zu 资产) 的全部特征结果连同续算点; 先弹窗确认", misc::dash(lib.dates.front()).c_str(),
+              misc::dash(lib.dates.back()).c_str(), lib.dates.size(), lib.axis.size());
 }
 
 // 不可开算的原因 (库表按钮 / 全量确认同一份; nullptr = 可算). 编码在飞不开算: Lob 按帧目录快照读日文件, 编码会 rename 换掉它们
@@ -304,8 +316,9 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
             "• 已落盘 = 库已落盘日数; 未落盘 = 规划日期轴上尚未落盘的日数\n"
             "• 资产 = 库资产轴 (建库即冻结); 轴外 = 冻结轴之外新上市 / 新进池的资产, 要纳入就 Compute 全量\n"
             "\n"
-            "• Compute = 全量 (清库, 按规划重建资产轴从头算; 先弹窗确认)\n"
-            "• Append = 从库末日续算新日 (沿用库资产轴, 与同轴全量逐位一致)",
+            "• Comp = Compute 全量 (清库, 按规划重建资产轴从头算; 先弹窗确认)\n"
+            "• Appd = Append 从库末日续算新日 (沿用库资产轴, 与同轴全量逐位一致)\n"
+            "• Remv = Remove 删库 (清单 / 日文件 / 续算点; 先弹窗确认); 下游库保留, 本库重新落盘齐前不可算",
             misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
 
   const auto shown = [&](const PoolDef &d) { return !state.pool_filter[0] || std::strstr(d.name, state.pool_filter) || std::strstr(d.name_cn, state.pool_filter); };
@@ -668,6 +681,48 @@ void RenderTabCompute(ComputeService *service, ComputeState &state, SharedData &
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 0))) {
       state.confirm.reset();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  // 删库确认: 同上, 确认时按当前行重判
+  if (state.confirm_remove)
+    ImGui::OpenPopup("确认删库##Compute");
+  if (ImGui::BeginPopupModal("确认删库##Compute", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const LibPlan *const s = state.confirm_remove && state.libs ? &(*state.libs)[*state.confirm_remove] : nullptr;
+    const bool ok = s && !busy && s->lib.ready();
+    if (s) {
+      const FeatureLib &lib = s->lib;
+      ImGui::Text("库 %s (%s): 删除全部特征结果", lib_name(lib.id).c_str(), pool_def(lib_pool(lib.id)).name_cn);
+      ImGui::BulletText("目录 %s", lib.dir.c_str());
+      if (lib.ready())
+        ImGui::BulletText("%s ~ %s (%zu 天, %zu 资产, 已落盘 %zu) 连同续算点, 删后只能 Compute 全量重建", misc::dash(lib.dates.front()).c_str(),
+                          misc::dash(lib.dates.back()).c_str(), lib.dates.size(), lib.axis.size(), s->done);
+      const auto below = [&](LibId l) { // l 在本库之下 (沿 lib_parent 上溯经过本库)
+        for (auto up = lib_parent(l); up; up = lib_parent(up->lib))
+          if (up->lib == lib.id)
+            return true;
+        return false;
+      };
+      const auto n_below = std::ranges::count_if(lib_ids(), [&](LibId l) { return below(l) && (*state.libs)[l].lib.ready(); });
+      if (n_below > 0)
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "下游已建库 %d 个保留, 本库重新落盘齐前它们不可算 / 续算", static_cast<int>(n_below));
+    }
+    if (!ok)
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%s", busy ? busy : "库未建: 无可删");
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!ok);
+    if (ImGui::Button("Remove", ImVec2(120, 0))) {
+      remove_lib(data.config, *state.confirm_remove);
+      state.confirm_remove.reset();
+      state.libs_dirty = true;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+      state.confirm_remove.reset();
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

@@ -56,6 +56,9 @@ struct LibRun {
 };
 LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool resume);
 
+// 删库 (GUI 线程, 不在算时): 库目录整个删 (清单 / 日文件 / 续算点), 撤销判废登记 → 未建. 下游库不动 (本库重新落盘齐前它们不可算)
+void remove_lib(const Config &cfg, LibId id);
+
 // ============================================================================
 // Compute Config (= 请求)
 // ============================================================================

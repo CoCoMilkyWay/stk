@@ -83,6 +83,13 @@ LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool re
   return r;
 }
 
+void remove_lib(const Config &cfg, LibId id) {
+  const std::string dir = lib_dir(cfg, id);
+  FeatureRead::wipe_dir(dir); // 可能与 reader 判废删库并发
+  FeatureRead::set_dir_stale(dir, false);
+  std::cout << "[features] 删库 " << lib_name(id) << ": " << dir << std::endl;
+}
+
 void ComputeService::Request(ComputeConfig config) {
   for (const TierId t : TIER_IDS)
     assert(config.pf_cores[t] >= 1 && config.cs_cores[t] >= 1 && config.io_cores[t] >= 1 && "预取 / 截面 / 落盘各至少 1 核");
