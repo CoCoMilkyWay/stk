@@ -42,6 +42,7 @@ constexpr float kDragPx = 4.f; // 框选生效的最小拖动 [px]
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr ImVec4 kRefTag(0.55f, 0.55f, 0.55f, 1.f);
 constexpr ImVec4 kGridTag(0.62f, 0.62f, 0.62f, 0.8f);                                     // 叠加图横网格的内标小字
+constexpr float kTagScale = 0.8f, kGridPx = 28.f;                                         // 叠加图内标小字字号 (× 字体) / 横网格约每格像素
 constexpr ImVec4 kCross(0.85f, 0.85f, 0.85f, 1.f), kCrossLine(0.85f, 0.85f, 0.85f, 0.5f); // 十字光标: 标签底 / 线
 
 ImVec4 tint(double v, double ref) { return v > ref ? kUp : v < ref ? kDn
@@ -688,7 +689,9 @@ struct Overlay {
   std::vector<double> x, y;
 };
 
-// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 (含零线); 刻度区全空 (x 只留网格, y 网格的涨跌幅以小字内标在右壁), 不画图例.
+// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 (含零线); 刻度区全空 (图框不变), 不画图例:
+//   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格涨跌幅以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
+//   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
 //   十字光标: 竖线吸附到分钟, 横线随鼠标; 提示 = 时刻 + 光标处涨跌幅 + 该分钟各条读数 (高 → 低). 画完返回图区左上角
 ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size) {
   const int nd = std::max(1, static_cast<int>(days.size()));
@@ -696,7 +699,17 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   for (const Overlay &l : ls)
     for (const double y : l.y)
       lo = std::min(lo, y), hi = std::max(hi, y);
-  const double pad = std::max(hi - lo, 0.2) * 0.04;
+  const double pad = std::max(hi - lo, 0.2) * 0.04, ylo = lo - pad, yhi = hi + pad;
+  const double raw = (yhi - ylo) / std::max(2.0, std::floor(static_cast<double>(size.y / kGridPx))), e = std::floor(std::log10(raw)), m = raw / std::pow(10.0, e);
+  const double nice = m <= 1 ? 1 : m <= 2 ? 2
+                               : m <= 2.5 ? 2.5
+                               : m <= 5   ? 5
+                                          : 10,
+               step = nice * std::pow(10.0, e);
+  const int prec = std::max(0, static_cast<int>(-std::floor(std::log10(step) + 1e-9)) + (nice == 2.5 ? 1 : 0));
+  std::vector<double> yt;
+  for (double k = std::ceil(ylo / step); k * step <= yhi; ++k)
+    yt.push_back(k * step);
   std::vector<double> grid, seps;
   for (int k = 0; k < nd; ++k) {
     for (int h = 0; h < 5; ++h)
@@ -713,7 +726,8 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, nd * kSlots - 0.5, ImPlotCond_Always);
     ImPlot::SetupAxisTicks(ImAxis_X1, grid.data(), static_cast<int>(grid.size()));
     ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, lo - pad, hi + pad, ImPlotCond_Always);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, ylo, yhi, ImPlotCond_Always);
+    ImPlot::SetupAxisTicks(ImAxis_Y1, yt.data(), static_cast<int>(yt.size()));
     ImPlot::SetupFinish();
     corner = ImPlot::GetPlotPos();
     if (!seps.empty()) {
@@ -729,21 +743,42 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
       ImGui::PopID();
     }
-    { // 横网格的涨跌幅: 小字贴图区右内壁, 压在线上方 (不进刻度区, 图框不变)
+    { // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 线名贴线尾, 右缘不过刻度字列
       ImDrawList *dl = ImPlot::GetPlotDrawList();
-      const float fs = ImGui::GetFontSize() * 0.8f, right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x - 2.f,
-                  top = ImPlot::GetPlotPos().y;
+      ImFont *font = ImGui::GetFont();
+      const float fs = ImGui::GetFontSize() * kTagScale, top = ImPlot::GetPlotPos().y, bottom = top + ImPlot::GetPlotSize().y,
+                  right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x - 2.f;
       const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
-      for (const ImPlotTick &t : ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].Ticker.Ticks) {
-        if (!t.Major)
-          continue;
+      float tw = 0;
+      for (const double v : yt) {
         char buf[16];
-        std::snprintf(buf, sizeof(buf), "%+.1f%%", t.PlotPos);
-        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.f, buf);
-        const float y = ImPlot::PlotToPixels(0.0, t.PlotPos).y - sz.y;
-        if (y >= top)
-          dl->AddText(ImGui::GetFont(), fs, ImVec2(right - sz.x, y), col, buf);
+        if (v == 0)
+          std::snprintf(buf, sizeof(buf), "0%%");
+        else
+          std::snprintf(buf, sizeof(buf), "%+.*f%%", prec, v);
+        const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf);
+        const float y = ImPlot::PlotToPixels(0.0, v).y;
+        dl->AddText(font, fs, ImVec2(right - sz.x, y - sz.y >= top ? y - sz.y : y), col, buf);
+        tw = std::max(tw, sz.x);
       }
+      struct Tag {
+        ImVec2 at;
+        const Overlay *l;
+      };
+      std::vector<Tag> tags;
+      for (const Overlay &l : ls)
+        if (!l.x.empty()) {
+          const ImVec2 at = ImPlot::PlotToPixels(l.x.back(), l.y.back());
+          const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.f, l.name.c_str()).x;
+          tags.push_back({ImVec2(std::min(at.x + 4.f, right - tw - 6.f - w), at.y), &l});
+        }
+      std::sort(tags.begin(), tags.end(), [](const Tag &a, const Tag &b) { return a.at.y < b.at.y; });
+      for (size_t i = 1; i < tags.size(); ++i)
+        tags[i].at.y = std::max(tags[i].at.y, tags[i - 1].at.y + fs);
+      for (size_t i = tags.size(); i-- > 0;)
+        tags[i].at.y = std::min(tags[i].at.y, i + 1 < tags.size() ? tags[i + 1].at.y - fs : bottom - 0.5f * fs);
+      for (const Tag &t : tags)
+        dl->AddText(font, fs, ImVec2(t.at.x, t.at.y - 0.5f * fs), ImGui::ColorConvertFloat4ToU32(t.l->col), t.l->name.c_str());
     }
     if (ImPlot::IsPlotHovered()) {
       const ImPlotPoint m = ImPlot::GetPlotMousePos();
