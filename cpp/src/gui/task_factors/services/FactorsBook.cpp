@@ -45,15 +45,15 @@ BookLines fold_book(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int st
 
 namespace {
 
-// 篮子 (Baskets::index / val / turn; pool_line = 单池篮子 0 等权): 成员位行 = 当日池 (D−1 收盘定, 盘中 as-of, 整日常量), 行 t 的收益按上一有效 close 行的成员.
+// 篮子 (Baskets::index / buy / val; pool_line = 单池篮子 0 等权): 成员位行 = 当日池 (D−1 收盘定, 盘中 as-of, 整日常量), 行 t 的收益按上一有效 close 行的成员.
 //   B 的日频盘后列 (复权因子 / 股本 / 财务 / 行业) 经 as-of 已是当日适用值, 与本行 close 配对.
-//   index_rows 出指数 (fold_book, 标签; 顺延在标签里, 建仓 / 续持按 Stat 契约【仓位感知】); pool_baskets 出估值 + 各池整体两权重的逐行收益 / 权和 (BasketRows,
-//   只给换手漂移; 停牌行不更新 ⇒ 权带到复牌); pool_turn 用它算换手. 收益成分两者同一份 prev_rows (成分格 = 上一有效 close 行合判据).
+//   index_rows 出指数 (fold_book, 标签; 顺延在标签里, 建仓 / 续持按 Stat 契约【仓位感知】); basket_rows 出估值 + 各篮子两权重的逐行收益 / 权和 (BasketRows,
+//   只给增仓漂移; 停牌行不更新 ⇒ 权带到复牌); basket_buy 用它算增仓. 收益成分两者同一份 prev_rows + each_basket (成分格 = 上一有效 close 行合判据).
 //   全部篮子同一遍 A 轴: 每格按成员位逐个进它所属的篮子 (each_basket)
 
-// 各池整体逐行 [Weight][PoolId · T]: 成分收益 r = Σ权·r / Σ权 (无成分 0) / 权和 Σ权 (等权 = 成分数)
+// 各篮子逐行 [篮子线 · T]: 成分收益 R = Σ权·r / Σ权 (无成分 0) / 权和 Σ权 (等权 = 成分数; 0 = 非成分行)
 struct BasketRows {
-  std::vector<double> r[kWeights], w[kWeights];
+  std::vector<double> r, w;
 };
 
 constexpr PoolMask kAllBit = PoolMask{1} << kAllPool;
@@ -139,20 +139,20 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
   return fold_book(ex, sh.seg, x, 1);
 }
 
-// 篮子估值 (Baskets::val, 两权重) + 各池整体逐行收益 / 权和 (rows, 换手用), 两遍:
+// 篮子估值 (Baskets::val, 两权重) + 各篮子逐行收益 / 权和 (rows, 增仓用), 两遍:
 //   1) 资产条带并行, 沿 t 把 B.px 的副本补成上一有效收盘价 (停牌带着);
 //   2) 行并行, 每行一遍 A 轴:
-//      收益成分 = 上一有效 close 行 p (prev) 的成员位, 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 行 p 总市值 mcap;
+//      收益成分 = 上一有效 close 行 p (prev) 的成员位 (行业按行 p), 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 行 p 总市值 mcap;
 //      估值成分 = 上一行的成员位 (行业按本行), 市值 = px × 本行总股本, 估值输入 val [PoolVal] 取本行 (盘后列 as-of = 当日适用; DY 为股息率, 分子在此还原:
 //      Fund 分母 = 算它那日 (前一交易日末行) 的收盘市值 = 该行收盘 × 该行股本)
-void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int32_t> &prev, Baskets &o, BasketRows &rows) {
+void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int32_t> &prev, Baskets &o, BasketRows &rows) {
   const factor::check::Plane &close = B.close;
   const PoolMask *in = B.in.data();
   const float *mcap = B.mcap.data(), *sh = B.shares.data();
   const uint8_t *ind = B.ind.data();
   std::vector<float> pxv = B.px;
   float *px = pxv.data();
-  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), S = static_cast<size_t>(B.sh.seg), nb = cut_count(), NP = pool_count();
+  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), S = static_cast<size_t>(B.sh.seg), nb = cut_count();
   ex.rows(B.sh.A, [&](int a0, int a1, int) {
     std::vector<float> lp(static_cast<size_t>(a1 - a0), 0.f);
     for (size_t t = 0; t < nT; ++t)
@@ -167,12 +167,11 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
   for (int m = 0; m < kPoolVals; ++m)
     o.val[m].assign(basket_count() * nT, kNaN);
-  for (int w = 0; w < kWeights; ++w)
-    rows.r[w].assign(NP * nT, 0.0), rows.w[w].assign(NP * nT, 0.0);
+  rows.r.assign(basket_count() * nT, 0.0), rows.w.assign(basket_count() * nT, 0.0);
   ex.rows(B.sh.T, [&](int t0, int t1, int) {
-    // 收益 [PoolId][Weight][Σ权·r, Σ权]; 估值 [篮子][Weight][PoolVal][Σ权·收益率, Σ权] (收益率 = 分子 / 市值; 权 = 等权 1 / 加权 市值 ⇒ 整体法 Σ分子 / Σ市值)
-    std::vector<double> x(NP * kWeights * 2), v(nb * kWeights * kPoolVals * 2);
-    const auto xq = [&](size_t p, int w) { return x.data() + 2 * (p * kWeights + static_cast<size_t>(w)); };
+    // 收益 [篮子][Weight][Σ权·r, Σ权]; 估值 [篮子][Weight][PoolVal][Σ权·收益率, Σ权] (收益率 = 分子 / 市值; 权 = 等权 1 / 加权 市值 ⇒ 整体法 Σ分子 / Σ市值)
+    std::vector<double> x(nb * kWeights * 2), v(nb * kWeights * kPoolVals * 2);
+    const auto xq = [&](size_t b, int w) { return x.data() + 2 * (b * kWeights + static_cast<size_t>(w)); };
     const auto vq = [&](size_t b, int w, int m) { return v.data() + 2 * ((b * kWeights + static_cast<size_t>(w)) * kPoolVals + static_cast<size_t>(m)); };
     for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
       std::fill(x.begin(), x.end(), 0.0);
@@ -183,11 +182,12 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
           const size_t p = static_cast<size_t>(q) * nA + a;
           if (in[p]) {
             const double r = close.v[i] / close.v[p] - 1.0, om[kWeights] = {1.0, mcap[p]};
-            for (PoolMask rest = in[p]; rest; rest &= rest - 1)
+            each_basket(in[p], ind[p], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
               for (int w = 0; w < kWeights; ++w) {
-                double *e = xq(pool_first(rest), w);
+                double *e = xq(b, w);
                 e[0] += om[w] * r, e[1] += om[w];
               }
+            });
           }
         }
         if (t == 0 || !in[i - nA])
@@ -210,84 +210,85 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
               }
         });
       }
-      for (size_t p = 0; p < NP; ++p)
-        for (int w = 0; w < kWeights; ++w)
-          if (const double *e = xq(p, w); e[1] > 0.0)
-            rows.r[w][p * nT + t] = e[0] / e[1], rows.w[w][p * nT + t] = e[1];
       for (size_t b = 0; b < nb; ++b)
-        for (int w = 0; w < kWeights; ++w)
+        for (int w = 0; w < kWeights; ++w) {
+          const size_t l = basket_line(b, static_cast<Weight>(w));
+          if (const double *e = xq(b, w); e[1] > 0.0)
+            rows.r[l * nT + t] = e[0] / e[1], rows.w[l * nT + t] = e[1];
           for (int m = 0; m < kPoolVals; ++m)
             if (const double *e = vq(b, w, m); e[1] > 0.0)
-              o.val[m][basket_line(b, static_cast<Weight>(w)) * nT + t] = static_cast<float>(e[0] / e[1]);
+              o.val[m][l * nT + t] = static_cast<float>(e[0] / e[1]);
+        }
     }
   });
 }
 
-// 各池整体的换手 (Baskets::turn): 成分行 t 的权 w_t = ω / Σω (等权 ω = 1, 加权 ω = mcap) 对上一成分行漂移后的权 w̃ = w (1 + r) / (1 + R) 的
-//   单边 ½ Σ|w_t − w̃|, 停牌 = 移出 / 复牌 = 移回 (与 pool_baskets 同成分: prev 行成员位含该池位); 首个成分行 (建仓) 不计; 沿成分行均值.
-//   Σ w̃ = 1 ⇒ ½ Σ|·| = ½ (1 + Σ_成分 (|w_t − w̃| − w̃)): 资产条带并行只走成分格, 每线程逐池逐行攒, 按 tid 序归并. rows = pool_baskets 出的
-void pool_turn(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int32_t> &prev, const BasketRows &rows, std::vector<double> &turn) {
+// 各篮子的逐行增仓 (Baskets::buy): 行并行, 每行一遍 A 轴, 成分 / 权与 basket_rows 同一份. 线 l 的上一成分行 pm 几乎恒 = t − 1:
+//   先按本资产在 t − 1 行的成员位记下它在各线的漂移权 (按资产戳), pm 更早的线 (篮子空过) 现查
+void basket_buy(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int32_t> &prev, const BasketRows &rows, BookLines &buy) {
   const factor::check::Plane &close = B.close;
   const PoolMask *in = B.in.data();
   const float *mcap = B.mcap.data();
-  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), nt = static_cast<size_t>(ex.threads()), NP = pool_count();
-  std::vector<int> pm[kWeights];     // [Weight][PoolId · T] 上一成分行 (−1 = 无)
-  std::vector<double> dev[kWeights]; // [Weight][tid · PoolId · T]
-  for (int w = 0; w < kWeights; ++w) {
-    pm[w].assign(NP * nT, -1);
-    for (size_t p = 0; p < NP; ++p)
-      for (size_t t = 1; t < nT; ++t) {
-        const size_t at = p * nT + t;
-        pm[w][at] = rows.w[w][at - 1] > 0.0 ? static_cast<int>(t - 1) : pm[w][at - 1];
-      }
-    dev[w].assign(nt * NP * nT, 0.0);
-  }
-  ex.rows(B.sh.A, [&](int a0, int a1, int tid) {
-    const size_t na = static_cast<size_t>(a1 - a0), off = static_cast<size_t>(tid) * NP * nT;
-    std::vector<double> dw[kWeights]; // [PoolId · na] 本资产在 tw 行之后漂移的权
-    std::vector<int> tw[kWeights];    // [PoolId · na] 本资产上次是成分的行
-    for (int w = 0; w < kWeights; ++w)
-      dw[w].assign(NP * na, 0.0), tw[w].assign(NP * na, -1);
-    for (size_t t = 0; t < nT; ++t)
-      for (int a = a0; a < a1; ++a) {
-        const size_t i = t * nA + static_cast<size_t>(a);
-        const int32_t q = prev[i];
-        if (q < 0)
+  const uint8_t *ind = B.ind.data();
+  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), nl = basket_count();
+  std::vector<int32_t> pm(nl * nT, -1); // [篮子线 · T] 上一成分行 (−1 = 无)
+  for (size_t l = 0; l < nl; ++l)
+    for (size_t t = 1; t < nT; ++t) {
+      const size_t at = l * nT + t;
+      pm[at] = rows.w[at - 1] > 0.0 ? static_cast<int32_t>(t - 1) : pm[at - 1];
+    }
+  buy.n = static_cast<int>(nl), buy.P = B.sh.T;
+  buy.v.assign(nl * nT, 0.f);
+  // 资产 a 在行 t 的成分格 (上一有效 close 格, 成员位非空); 不是成分 → SIZE_MAX
+  const auto cell = [&](size_t t, size_t a) {
+    const int32_t q = prev[t * nA + a];
+    const size_t c = q < 0 ? SIZE_MAX : static_cast<size_t>(q) * nA + a;
+    return c != SIZE_MAX && in[c] ? c : SIZE_MAX;
+  };
+  // 资产 a 在线 l 的成分行 t (成分格 c, 权 ω) 之后漂移的权 ω / Σω · (1 + r) / (1 + R)
+  const auto drift = [&](size_t t, size_t a, size_t c, size_t l, double om) {
+    const size_t at = l * nT + t;
+    return om / rows.w[at] * (close.v[t * nA + a] / close.v[c]) / (1.0 + rows.r[at]);
+  };
+  const auto omega = [&](size_t c, int w) { return w == kWeightEq ? 1.0 : static_cast<double>(mcap[c]); };
+  ex.rows(B.sh.T, [&](int t0, int t1, int) {
+    std::vector<uint32_t> mark(nl, 0); // [篮子线] 记下 dw 的资产戳
+    std::vector<double> dw(nl);        // [篮子线] 本资产在 t − 1 行之后漂移的权
+    uint32_t stamp = 0;
+    for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t)
+      for (size_t a = 0; a < nA; ++a) {
+        const size_t c = cell(t, a);
+        if (c == SIZE_MAX)
           continue;
-        const size_t ip = static_cast<size_t>(q) * nA + static_cast<size_t>(a);
-        if (!in[ip])
-          continue;
-        const double r = close.v[i] / close.v[ip] - 1.0, om[kWeights] = {1.0, mcap[ip]};
-        for (PoolMask rest = in[ip]; rest; rest &= rest - 1) {
-          const size_t p = pool_first(rest), j = p * na + static_cast<size_t>(a - a0), at = p * nT + t;
+        ++stamp;
+        if (const size_t c1 = t > 0 ? cell(t - 1, a) : SIZE_MAX; c1 != SIZE_MAX)
+          each_basket(in[c1], ind[c1], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
+            for (int w = 0; w < kWeights; ++w)
+              if (const size_t l = basket_line(b, static_cast<Weight>(w)); rows.w[l * nT + t - 1] > 0.0)
+                mark[l] = stamp, dw[l] = drift(t - 1, a, c1, l, omega(c1, w));
+          });
+        // 更早的成分行 p: 本资产在 p 是线 l (切片 b) 的成分 → 漂移权, 否则 0
+        const auto held = [&](size_t p, size_t b, size_t l, int w) {
+          const size_t cp = cell(p, a);
+          bool hit = false;
+          if (cp != SIZE_MAX)
+            each_basket(in[cp], ind[cp], B.concepts_of(a), [&](size_t x, PoolMask, uint8_t) { hit |= x == b; });
+          return hit ? drift(p, a, cp, l, omega(cp, w)) : 0.0;
+        };
+        each_basket(in[c], ind[c], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
           for (int w = 0; w < kWeights; ++w) {
-            const double W = rows.w[w][at];
-            if (!(W > 0.0))
+            const size_t l = basket_line(b, static_cast<Weight>(w)), at = l * nT + t;
+            if (!(rows.w[at] > 0.0))
               continue;
-            const double wt = om[w] / W, d = tw[w][j] == pm[w][at] ? dw[w][j] : 0.0;
-            dev[w][off + at] += std::abs(wt - d) - d;
-            dw[w][j] = wt * (1.0 + r) / (1.0 + rows.r[w][at]), tw[w][j] = static_cast<int>(t);
+            const int32_t p = pm[at];
+            const double d = p < 0                             ? 0.0
+                             : static_cast<size_t>(p) == t - 1 ? (mark[l] == stamp ? dw[l] : 0.0)
+                                                               : held(static_cast<size_t>(p), b, l, w);
+            buy.v[at] += static_cast<float>(std::max(0.0, omega(c, w) / rows.w[at] - d));
           }
-        }
+        });
       }
   });
-  turn.assign(basket_count(), std::numeric_limits<double>::quiet_NaN());
-  for (int w = 0; w < kWeights; ++w) {
-    for (size_t p = 0; p < NP; ++p) {
-      double s = 0.0;
-      int n = 0;
-      for (size_t t = 0; t < nT; ++t) {
-        const size_t at = p * nT + t;
-        if (!(rows.w[w][at] > 0.0) || pm[w][at] < 0)
-          continue;
-        double x = 0.0;
-        for (size_t j = 0; j < nt; ++j)
-          x += dev[w][j * NP * nT + at];
-        s += 0.5 * (1.0 + x), ++n;
-      }
-      turn[basket_line(cut_of(static_cast<PoolId>(p)), static_cast<Weight>(w))] = n > 0 ? s / n : 0.0;
-    }
-  }
 }
 
 } // namespace
@@ -316,8 +317,8 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
                        });
   const std::vector<int32_t> prev = prev_rows(ex, B.close, B.sh.T, B.sh.A);
   BasketRows rows;
-  pool_baskets(ex, B, prev, o, rows);
-  pool_turn(ex, B, prev, rows, o.turn);
+  basket_rows(ex, B, prev, o, rows);
+  basket_buy(ex, B, prev, rows, o.buy);
   return o;
 }
 

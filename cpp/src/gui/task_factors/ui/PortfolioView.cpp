@@ -50,23 +50,14 @@ constexpr size_t kSimDays = 60; // 残差相关取日并集轴末几日的日收
 constexpr size_t kSimMin = 20;  // 两行共同有收益的日数下限 (不足 → 相关记 0)
 constexpr float kArc = 0.85f;   // 色相铺开的弧长 (整环 = 1)
 
-// 线 c 在日并集轴 [lo, lo + n) 各日的日收益 (日末值逐日比 − 1): 无点的日沿用前一日末值 (lo 前的末点起), 不可算 = NaN
-std::vector<double> rets_of(const PortfolioCurve &c, size_t lo, size_t n) {
-  const auto it = std::lower_bound(c.x.begin(), c.x.end(), x_of(lo, kOpen));
-  std::vector<double> e(n + 1, kNaN); // [0] = lo 前末点, [1 + k] = lo + k 日末
-  if (it != c.x.begin())
-    e[0] = c.y[static_cast<size_t>(it - c.x.begin()) - 1];
-  for (auto i = it; i != c.x.end(); ++i) {
-    const size_t k = static_cast<size_t>(*i) / kDayW - lo;
-    assert(k < n);
-    e[1 + k] = c.y[static_cast<size_t>(i - c.x.begin())];
-  }
-  for (size_t k = 1; k <= n; ++k)
-    if (std::isnan(e[k]))
-      e[k] = e[k - 1];
+// 线 c 在日并集轴 [lo, lo + n) 各日的日收益 (日末视图逐日比 − 1; 不可算 = NaN)
+std::vector<double> rets_of(const PortfolioLine &c, size_t lo, size_t n) {
   std::vector<double> r(n);
-  for (size_t k = 0; k < n; ++k)
-    r[k] = e[k] > 0 && e[k + 1] > 0 ? e[k + 1] / e[k] - 1.0 : kNaN;
+  for (size_t k = 0; k < n; ++k) {
+    const int d = static_cast<int>(lo + k);
+    const double a = c.end(d), b = c.end(d + 1);
+    r[k] = a > 0 && b > 0 ? b / a - 1.0 : kNaN;
+  }
   return r;
 }
 // r 对 m 在共同日上回归 (带截距) 的残差 (共同日外 NaN); 共同日不足 kSimMin → 全 NaN
@@ -220,219 +211,260 @@ std::vector<size_t> days_on(const std::vector<misc::Ymd> &axis, const std::vecto
   return di;
 }
 
-// ---- 增量流 (组合 / 单因子同一份) ----
-// x 严格升序; d[PairLine] = 该时刻实现的净值增量 (占本金; 有冲击 / 无冲击)
-struct Inc {
-  std::vector<double> x, d[kPairLines];
-  // 追加 at 处的增量 r[kPairLines] (at 不降; 同 x 并入末点)
-  void add(double at, const double *r) {
-    assert(x.empty() || at >= x.back());
-    if (x.empty() || at != x.back()) {
-      x.push_back(at);
-      for (std::vector<double> &v : d)
-        v.push_back(0.0);
-    }
-    for (int l = 0; l < kPairLines; ++l)
-      d[l].back() += r[l];
-  }
+// ---- 线的来路 (账的一线 / 策略 / 价格指数同一条): 源 → 点位 Levels → project (日并集轴) → PortfolioLine ----
+// 源点位: 点 i 在日 date[i] 的日内分钟 min[i], 点位 lv[i]; 首点 = 首日开盘前 kStartDx 格的起点 (前收), 其后点 i ↔ 源下标 i − 1
+struct Levels {
+  std::vector<misc::Ymd> date;
+  std::vector<double> min, lv;
+  void push(misc::Ymd d, double m, double v) { date.push_back(d), min.push_back(m), lv.push_back(v); }
 };
-// 两条增量流按 x 归并, 同 x 相加
-Inc merge(const Inc &a, const Inc &b) {
-  Inc o;
-  size_t i = 0, j = 0;
-  while (i < a.x.size() || j < b.x.size()) {
-    const bool ta = j == b.x.size() || (i < a.x.size() && a.x[i] <= b.x[j]);
-    const Inc &s = ta ? a : b;
-    const size_t k = ta ? i++ : j++;
-    double r[kPairLines];
-    for (int l = 0; l < kPairLines; ++l)
-      r[l] = s.d[l][k];
-    o.add(s.x[k], r);
+
+// 账的一线 (fold_book 已实现口径, 与池指数对齐): 行 t 的成对线增量 (可成交 = 毛 − 冲击 − 固定份数 · fixed_impact, 理想 = 毛) / 增仓量
+struct BookLine {
+  const float *c[kBookCols];
+  BookLine(const PortfolioBook &b, size_t line) {
+    for (int k = 0; k < kBookCols; ++k)
+      c[k] = b.at(k, line);
+  }
+  double inc(size_t t, int pair, double fixed_impact) const {
+    const double r = c[kBookRet][t];
+    return pair == kTrade ? r - c[kBookImp][t] - c[kBookFix][t] * fixed_impact : r;
+  }
+  double buy(size_t t) const { return c[kBookBuy][t]; }
+};
+
+// 账 b 的线 line 的成对线 pair: 起点 1 + 逐行复利, 点在行末分钟 (日层行末 = 收盘)
+Levels levels(const PortfolioBook &b, size_t line, int pair, double fixed_impact) {
+  const factor::Geo g = factor_level(b.lv).geo();
+  const size_t S = static_cast<size_t>(g.S), T = b.dates.size() * S;
+  assert(!b.dates.empty() && static_cast<size_t>(b.col[kBookRet].P) == T);
+  const BookLine bl(b, line);
+  std::vector<double> r(T);
+  for (size_t t = 0; t < T; ++t)
+    r[t] = bl.inc(t, pair, fixed_impact);
+  Levels s;
+  s.push(b.dates.front(), -kStartDx, 1.0);
+  compound(r.data(), T, [&](size_t t, double v) { s.push(b.dates[t / S], g.minute(static_cast<int>(t % S)), v); });
+  return s;
+}
+// 价格指数: 起点 = 首根前收 (无 → 首根收盘) + 每根收盘
+Levels levels(const Database::Kline &k) {
+  Levels s;
+  if (k.daily.empty())
+    return s;
+  const Database::Candle &c0 = k.daily.front();
+  s.push(c0.date, -kStartDx, c0.ref > 0 ? c0.ref : c0.close);
+  for (const Database::Candle &c : k.daily)
+    s.push(c.date, kClose, c.close);
+  return s;
+}
+
+// 策略 (组合 G20 多头): 各因子账线 0 的逐行增量 × 份额 (1 / 当日有数据的因子数) 在稠密格 [日并集轴 · kDayW] 上累加 → 起点 1 + 有增量的格逐格复利;
+// 增仓量同份额累加到日 → buy [日并集轴]. 单因子线 ≡ 只含它的策略
+struct Strat {
+  Levels lv[kPairLines];
+  std::vector<double> buy;
+};
+Strat strat_of(const std::vector<misc::Ymd> &axis, const std::vector<std::shared_ptr<const PortfolioBook>> &bs, double fixed_impact) {
+  const size_t D = axis.size(), X = D * kDayW;
+  assert(D > 0);
+  std::vector<std::vector<size_t>> dix(bs.size()); // [因子][该因子日] → 并集轴下标
+  std::vector<int> n_act(D, 0);                    // [并集轴] 当日有数据的因子数
+  for (size_t q = 0; q < bs.size(); ++q) {
+    dix[q] = days_on(axis, bs[q]->dates);
+    for (const size_t i : dix[q])
+      ++n_act[i];
+  }
+  std::vector<double> acc[kPairLines];
+  for (std::vector<double> &a : acc)
+    a.assign(X, 0.0);
+  std::vector<uint8_t> hit(X, 0);
+  Strat o;
+  o.buy.assign(D, 0.0);
+  for (size_t q = 0; q < bs.size(); ++q) {
+    const factor::Geo g = factor_level(bs[q]->lv).geo();
+    const size_t S = static_cast<size_t>(g.S);
+    const BookLine bl(*bs[q], 0);
+    for (size_t dl = 0; dl < dix[q].size(); ++dl) {
+      const size_t d = dix[q][dl];
+      const double k = 1.0 / n_act[d];
+      for (size_t ts = 0; ts < S; ++ts) {
+        const size_t t = dl * S + ts, x = x_at(d, static_cast<size_t>(g.minute(static_cast<int>(ts))));
+        for (int p = 0; p < kPairLines; ++p)
+          acc[p][x] += bl.inc(t, p, fixed_impact) * k;
+        hit[x] = 1;
+        o.buy[d] += bl.buy(t) * k;
+      }
+    }
+  }
+  std::vector<size_t> xs; // 有增量的格
+  for (size_t x = 0; x < X; ++x)
+    if (hit[x])
+      xs.push_back(x);
+  std::vector<double> r(xs.size());
+  for (int p = 0; p < kPairLines; ++p) {
+    for (size_t i = 0; i < xs.size(); ++i)
+      r[i] = acc[p][xs[i]];
+    o.lv[p].push(axis.front(), -kStartDx, 1.0);
+    compound(r.data(), xs.size(), [&](size_t i, double v) { o.lv[p].push(axis[xs[i] / kDayW], static_cast<double>(xs[i] % kDayW), v); });
   }
   return o;
 }
-// 多条增量流之和: 两两归并 (O(P log n), P = 总点数)
-Inc sum_of(std::vector<Inc> v) {
-  assert(!v.empty());
-  while (v.size() > 1) {
-    std::vector<Inc> h;
-    for (size_t i = 0; i + 1 < v.size(); i += 2)
-      h.push_back(merge(v[i], v[i + 1]));
-    if (v.size() % 2)
-      h.push_back(std::move(v.back()));
-    v = std::move(h);
-  }
-  return std::move(v.front());
+
+// 年换手 (倍/年): 增仓量 buy [T] (每日 S 行) 自首个有增仓的行所在日起的日均 × 每年交易日; 无增仓 → NaN
+template <class R>
+double turn_of(const R *buy, size_t T, size_t S) {
+  size_t t0 = 0;
+  while (t0 < T && !(buy[t0] > 0))
+    ++t0;
+  if (t0 == T)
+    return kNaN;
+  double s = 0.0;
+  for (size_t t = t0; t < T; ++t)
+    s += buy[t];
+  const size_t days = T / S - t0 / S;
+  return s / static_cast<double>(days) * factor::stat::kDaysPerYear;
 }
-// 增量流的线 l → 净值线: 起点 (x0, 1) + 每个 x 一点, 逐点复利. 起点取首日开盘前 kStartDx 格: 首行可在开盘点就有增量 (L_1min 行 0 末分钟 = 开盘)
-constexpr double kStartDx = 0.5;
-PortfolioCurve curve_of(const Inc &s, int l, double x0) {
-  assert(s.x.empty() || s.x.front() > x0);
-  PortfolioCurve c;
-  c.x.reserve(s.x.size() + 1), c.y.reserve(s.x.size() + 1);
-  c.x.push_back(x0), c.y.push_back(1.0);
-  compound(s.d[l].data(), s.x.size(), [&](size_t k, double y) { c.x.push_back(s.x[k]), c.y.push_back(y); });
+double turn_of(const PortfolioBook &b, size_t line) {
+  const size_t S = static_cast<size_t>(factor_level(b.lv).geo().S);
+  return turn_of(b.at(kBookBuy, line), b.dates.size() * S, S);
+}
+
+// 点位 s → 日并集轴 axis 上的线 (见 PortfolioLine): 只取 axis 范围内的点; 首个取到的点不是起点 → 补其前一点为起点 (所在日开盘前);
+// 不在轴上的日只差点位, 收益自然并进下一个轴上的日. 同时建日末视图
+PortfolioLine project(const std::vector<misc::Ymd> &axis, const Levels &s) {
+  PortfolioLine c;
+  if (axis.empty())
+    return c;
+  const std::vector<size_t> di = days_on(axis, s.date);
+  std::vector<int> day; // [点] 所在日
+  const auto push = [&](size_t d, double m, size_t i) {
+    c.x.push_back(x_of(d, m)), c.y.push_back(s.lv[i]), c.at.push_back(static_cast<int32_t>(i) - 1), day.push_back(static_cast<int>(d));
+  };
+  for (size_t i = 0; i < s.date.size(); ++i) {
+    if (s.date[i] < axis.front() || s.date[i] > axis.back())
+      continue;
+    if (c.x.empty() && s.min[i] >= 0) {
+      assert(i > 0);
+      push(di[i], -kStartDx, i - 1);
+    }
+    if (axis[di[i]] == s.date[i])
+      push(di[i], s.min[i], i);
+  }
+  if (c.x.empty())
+    return c;
+  c.f = day.front();
+  c.l = c.x.size() > 1 ? day.back() : c.f - 1;
+  const size_t n = static_cast<size_t>(c.l - c.f + 2);
+  c.e.assign(n, kNaN);
+  for (size_t j = 0; j < c.x.size(); ++j)
+    c.e[j == 0 ? 0 : static_cast<size_t>(day[j] - c.f + 1)] = c.y[j];
+  c.s1.assign(n, 0.0), c.s2.assign(n, 0.0);
+  for (size_t k = 1; k < n; ++k) {
+    if (std::isnan(c.e[k]))
+      c.e[k] = c.e[k - 1];
+    const double r = c.e[k - 1] > 0 ? c.e[k] / c.e[k - 1] - 1.0 : 0.0;
+    c.s1[k] = c.s1[k - 1] + r, c.s2[k] = c.s2[k - 1] + r * r;
+  }
   return c;
 }
 
-// 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorCurve 逐行增量 (fold_book 已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在行末分钟
-// (日层行末 = 收盘)
-template <class Wt>
-Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_impact, const Wt &wt) {
-  const factor::Geo g = factor_level(f.lv).geo();
-  const int S = g.S;
-  assert(!f.dates.empty() && f.nav.n == kCurveLines && static_cast<size_t>(f.nav.P) == f.dates.size() * static_cast<size_t>(S));
-  const float *pnl = f.nav_at(kCurvePnl), *imp = f.nav_at(kCurveImp), *fix = f.nav_at(kCurveFix);
-  const auto row_x = [&](size_t dl, int ts) -> size_t { return x_at(di[dl], static_cast<size_t>(g.minute(ts))); };
-  Inc o;
-  for (size_t dl = 0; dl < di.size(); ++dl) {
-    const double k = wt(di[dl]);
-    for (int ts = 0; ts < S; ++ts) {
-      const size_t t = dl * S + static_cast<size_t>(ts);
-      double r[kPairLines];
-      r[kTrade] = (pnl[t] - imp[t] - fix[t] * fixed_impact) * k;
-      r[kIdeal] = pnl[t] * k;
-      o.add(static_cast<double>(row_x(dl, ts)), r);
-    }
+// ---- 行 (因子 / 策略 / 篮子同一套): 行名等每次现拼; 线 / 年换手按源身份沿用上一份, 否则现算 ----
+// 上一份派生的行 (按 id) + 日轴是否不变
+struct Reuse {
+  bool axis;
+  std::map<std::string, PortfolioRow *> rows;
+  Reuse(PortfolioDerived &o, const std::vector<misc::Ymd> &dates) : axis(dates == o.dates) {
+    for (std::vector<PortfolioRow> &g : o.nav)
+      for (PortfolioRow &r : g)
+        rows[r.id] = &r;
   }
-  return o;
-}
-
-// ---- 篮子投影 (可成交线 = BasketCurve, 理想线 = 价格指数; 同一投影): 源 = 日点位线, 只取日并集轴范围内 = 范围首日开盘一点 (其前一日点位; 源首日无)
-//      + 轴上每日收盘一点; 不在轴上的日只差点位, 收益自然并进下一个轴上的日 ----
-// 日点位线: dates[i] 收盘点位 lv[i]
-struct Levels {
-  std::vector<misc::Ymd> dates;
-  std::vector<double> lv;
+  // 日轴不变且 r 的源身份同上一份 → 线 / 年换手搬来, 返回 true
+  bool take(PortfolioRow &r) const {
+    const auto it = rows.find(r.id);
+    if (!axis || it == rows.end() || !(it->second->src == r.src))
+      return false;
+    for (int l = 0; l < kPairLines; ++l)
+      r.line[l] = std::move(it->second->line[l]);
+    r.turn = it->second->turn;
+    return true;
+  }
 };
-// 可成交指数篮子线: 日收益复利 (起点 1)
-Levels levels(const BasketCurve &bc, size_t line) {
-  Levels s{bc.dates, std::vector<double>(bc.dates.size())};
-  compound(bc.index_of(line), s.dates.size(), [&](size_t i, double l) { s.lv[i] = l; });
-  return s;
-}
-// 价格指数篮子线: 日线收盘
-Levels levels(const Database::Kline &kl) {
-  Levels s;
-  for (const Database::Candle &e : kl.daily)
-    s.dates.push_back(e.date), s.lv.push_back(e.close);
-  return s;
-}
-// → c (须空); 返回 [c.x] → s.dates 下标 (严格升序)
-std::vector<uint32_t> project(const std::vector<misc::Ymd> &axis, const Levels &s, PortfolioCurve &c) {
-  assert(c.x.empty() && !axis.empty());
-  std::vector<uint32_t> at;
-  const std::vector<size_t> di = days_on(axis, s.dates);
-  const auto push = [&](double x, size_t i) { c.x.push_back(x), c.y.push_back(s.lv[i]), at.push_back(static_cast<uint32_t>(i)); };
-  for (size_t i = 0; i < s.dates.size(); ++i) {
-    if (s.dates[i] < axis.front() || s.dates[i] > axis.back())
-      continue;
-    if (at.empty() && i > 0)
-      push(x_of(di[i], kOpen), i - 1);
-    if (axis[di[i]] == s.dates[i])
-      push(x_of(di[i], kClose), i);
-  }
-  return at;
-}
 
-// 组合 + 单因子 (见头文件): 每因子两条增量流 — 自身 (权 1) → 单因子线; 份额 (权 1 / 当日因子数) → Σ → 组合线. 单因子线 ≡ 只含它的组合.
-// o = 上一份派生: 同一条 FactorCurve 且日轴 / fixed_impact 不变 → 单因子线沿用
-void derive_factors(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res, double fixed_impact,
-                    PortfolioDerived &o, PortfolioDerived &d) {
+// 算成的因子 [items 序]: 条目 + 账; 计数与日并集轴 (各账日的并) 写进 d
+struct Ready {
   std::vector<const PortfolioItem *> its;
-  std::vector<std::shared_ptr<const FactorCurve>> &fc = d.src;
+  std::vector<std::shared_ptr<const PortfolioBook>> books;
+};
+Ready ready_of(const std::vector<PortfolioItem> &items, const PortfolioResult &res, PortfolioDerived &d) {
+  Ready f;
   for (const PortfolioItem &it : items) {
     if (!it.missing.empty())
       continue;
-    const auto f = res.factors.find(it.e.key());
-    if (f == res.factors.end()) {
+    const auto b = res.factors.find(it.e.key());
+    if (b == res.factors.end()) {
       ++d.n_wait;
       continue;
     }
-    if (!f->second->error.empty()) {
+    if (!b->second->error.empty()) {
       ++d.n_error;
       continue;
     }
     ++d.n_ready;
-    its.push_back(&it);
-    fc.push_back(f->second);
+    f.its.push_back(&it);
+    f.books.push_back(b->second);
+    d.dates.insert(d.dates.end(), b->second->dates.begin(), b->second->dates.end());
   }
-  for (const std::shared_ptr<const FactorCurve> &f : fc)
-    d.dates.insert(d.dates.end(), f->dates.begin(), f->dates.end());
   std::sort(d.dates.begin(), d.dates.end());
   d.dates.erase(std::unique(d.dates.begin(), d.dates.end()), d.dates.end());
-  d.impact = fixed_impact;
-  std::map<const FactorCurve *, size_t> keep; // 可沿用的: 源 → o 的因子行
-  if (d.dates == o.dates && fixed_impact == o.impact)
-    for (size_t q = 0; q < o.src.size(); ++q)
-      keep[o.src[q].get()] = q;
-  std::vector<std::vector<size_t>> dix(fc.size()); // [因子][该因子日] → 并集轴下标
-  for (size_t q = 0; q < fc.size(); ++q)
-    dix[q] = days_on(d.dates, fc[q]->dates);
-  std::vector<int> n_act(d.dates.size(), 0); // [并集轴] 当日有数据的因子数
-  for (const std::vector<size_t> &di : dix)
-    for (const size_t i : di)
-      ++n_act[i];
+  return f;
+}
 
-  std::vector<Inc> shares; // [因子] 份额流
-  double strat_buy = 0.0;  // Σ 份额 · 增仓量 (组合年换手)
-  for (size_t q = 0; q < fc.size(); ++q) {
-    const FactorCurve &f = *fc[q];
-    const std::vector<size_t> &di = dix[q];
-    const size_t S = static_cast<size_t>(factor_level(f.lv).geo().S);
-    const float *buy = f.nav_at(kCurveBuy);
-    double own_buy = 0.0;
-    for (size_t dl = 0; dl < di.size(); ++dl)
-      for (size_t ts = 0; ts < S; ++ts) {
-        own_buy += buy[dl * S + ts];
-        strat_buy += buy[dl * S + ts] / n_act[di[dl]];
-      }
-    const PortfolioItem &it = *its[q];
-    const auto kp = keep.find(&f);
+// 因子行 (见头文件): 该因子单独的 G20 多头 = 自己账的线 0
+void derive_factors(const Ready &f, double fixed_impact, const Reuse &ru, PortfolioDerived &d) {
+  for (size_t q = 0; q < f.books.size(); ++q) {
+    const PortfolioItem &it = *f.its[q];
+    const PortfolioBook &b = *f.books[q];
     PortfolioRow r;
     r.id = it.e.key();
     r.en = std::filesystem::path(it.e.file).stem().string();
     r.cn = clip_name(it.name_cn);
-    r.tag = it.name_en + " " + factor::stat::hold_name(f.hold);
+    r.tag = it.name_en + " " + factor::stat::hold_name(it.e.hold);
     r.hover = r.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + hold_desc(it.e.hold, it.e.lv) +
-              "\n• 冲击 " + amt_name(f.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
-    r.turn = own_buy / static_cast<double>(f.dates.size()) * factor::stat::kDaysPerYear;
-    if (kp != keep.end()) {
-      for (int l = 0; l < kPairLines; ++l)
-        r.line[l] = std::move(o.nav[kNavFactor][kp->second].line[l]);
-    } else {
-      const Inc own = inc_of(f, di, fixed_impact, [](size_t) { return 1.0; });
-      for (int l = 0; l < kPairLines; ++l)
-        r.line[l] = curve_of(own, l, x_of(di.front(), kOpen) - kStartDx);
+              "\n• 冲击 " + amt_name(b.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
+    r.src = {{&b}, 0, fixed_impact};
+    if (!ru.take(r)) {
+      for (int p = 0; p < kPairLines; ++p)
+        r.line[p] = project(d.dates, levels(b, 0, p, fixed_impact));
+      r.turn = turn_of(b, 0);
     }
     d.nav[kNavFactor].push_back(std::move(r));
-    shares.push_back(inc_of(f, di, fixed_impact, [&](size_t i) { return 1.0 / n_act[i]; }));
   }
-  const Inc sum = shares.empty() ? Inc{} : sum_of(std::move(shares));
+}
+
+// 策略行 (见头文件): 各因子账按当日份额累加 (strat_of)
+void derive_strat(const Ready &f, const std::string &name, double fixed_impact, const Reuse &ru, PortfolioDerived &d) {
   PortfolioRow s;
   s.id = "pf_strat";
   s.en = name, s.cn = "G20 多头";
   s.tag = s.hover = name;
-  if (!d.dates.empty()) {
-    s.turn = strat_buy / static_cast<double>(d.dates.size()) * factor::stat::kDaysPerYear;
-    for (int l = 0; l < kPairLines; ++l)
-      s.line[l] = curve_of(sum, l, x_of(0, kOpen) - kStartDx);
+  for (const std::shared_ptr<const PortfolioBook> &b : f.books)
+    s.src.of.push_back(b.get());
+  s.src.impact = fixed_impact;
+  if (!d.dates.empty() && !ru.take(s)) {
+    const Strat st = strat_of(d.dates, f.books, fixed_impact);
+    for (int p = 0; p < kPairLines; ++p)
+      s.line[p] = project(d.dates, st.lv[p]);
+    s.turn = turn_of(st.buy.data(), st.buy.size(), 1);
   }
   d.nav[kNavStrat].push_back(std::move(s));
 }
 
-// 篮子行 (见头文件): 指数 / 行业 / 概念三组 = basket_group 三组, 一行两条 = BasketCurve 可成交指数 / 价格指数 (prices) 的同一篮子线, 同一 project.
-// o = 上一份派生: 同一份 BasketCurve、同一份价格指数且日轴不变 → 整份沿用
-void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Database::Tape> &prices, PortfolioDerived &o, PortfolioDerived &d) {
+// 篮子行 (见头文件): 指数 / 行业 / 概念三组 = basket_group 三组; 可成交线 = 篮子账的该线, 理想线 = 价格指数 (prices) 的该线. 返回: 有行现算
+bool derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Database::Tape> &prices, const Reuse &ru, PortfolioDerived &d) {
   d.baskets = res.baskets && res.baskets->error.empty() ? res.baskets : nullptr;
   d.prices = prices && !prices->list.empty() ? prices : nullptr;
-  if (o.basket_gen > 0 && d.baskets == o.baskets && d.prices == o.prices && d.dates == o.dates) {
-    for (int g = 0; g < kBasketGroups; ++g)
-      d.nav[g] = std::move(o.nav[g]);
-    d.basket_gen = o.basket_gen;
-    return;
-  }
-  d.basket_gen = o.basket_gen + 1;
+  bool built = false;
   for (int g = 0; g < kBasketGroups; ++g)
     for (const size_t line : basket_group(static_cast<BasketGroup>(g))) {
       PortfolioRow r;
@@ -441,49 +473,45 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
       r.hover = r.en + "  " + basket_name(line);
       r.cn = r.tag = clip_name(cut_name(cut_of_line(line))) + weight_suffix(weight_of(line));
       r.basket = static_cast<int>(line);
-      if (d.baskets && !d.dates.empty()) {
-        r.turn = d.baskets->turn[line];
-        r.at = project(d.dates, levels(*d.baskets, line), r.line[kTrade]);
-      }
-      if (d.prices && !d.dates.empty()) {
-        assert(d.prices->keys[line] == line);
-        project(d.dates, levels(*d.prices->list[line]), r.line[kIdeal]);
+      r.src = {{d.baskets.get(), d.prices.get()}, line, 0.0};
+      if (!ru.take(r)) {
+        built = true;
+        if (d.baskets) {
+          r.line[kTrade] = project(d.dates, levels(*d.baskets, line, kTrade, 0.0));
+          r.turn = turn_of(*d.baskets, line);
+        }
+        if (d.prices) {
+          assert(d.prices->keys[line] == line);
+          r.line[kIdeal] = project(d.dates, levels(*d.prices->list[line]));
+        }
       }
       d.nav[g].push_back(std::move(r));
     }
+  return built;
 }
 
-// 曲线 c 在 [x0, x1) 的切片 (见 PortfolioSlice); 整条在区间外 → 空. 年化 = 末点净值按首末点所跨交易日数复利折年 (%);
-// 夏普 = 同一段交易日逐日收益 (日末点净值 / 上日末点 − 1, 首日对首点) 的 mean / sd (ddof = 1) × √每年交易日
-PortfolioSlice slice_of(const PortfolioCurve &c, double x0, double x1) {
+// 线 c 在日段 [d0, d1) 的切片 (见 PortfolioSlice); 整条在区间外 → 空. 年化 / 夏普只读日末视图: 有效日段 [a, b) = [d0, d1) ∩ [f, l + 1),
+// 年化 = end(b) / end(a) 按 b − a 个交易日复利折年 (%); 夏普 = 同段日收益的 mean / sd (ddof = 1) × √每年交易日
+PortfolioSlice slice_of(const PortfolioLine &c, int d0, int d1) {
   PortfolioSlice s;
+  const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
   s.c = &c, s.x0 = x0;
   const size_t i0 = static_cast<size_t>(std::lower_bound(c.x.begin(), c.x.end(), x0) - c.x.begin());
   const size_t i1 = static_cast<size_t>(std::lower_bound(c.x.begin(), c.x.end(), x1) - c.x.begin());
   if (i0 == c.x.size() || i1 == 0)
     return s;
   s.j0 = i0 > 0 ? i0 - 1 : 0, s.j1 = i1;
-  s.base = c.y[s.j0];
-  if (s.size() < 2)
+  const int a = std::max(d0, c.f), b = std::min(d1, c.l + 1);
+  s.base = c.end(a);
+  assert(s.base == c.y[s.j0]);
+  if (b <= a)
     return s;
-  const size_t e = s.size() - 1;
-  const double days = std::floor(s.x(e) / kDayW) - std::floor(s.x(0) / kDayW) + 1.0;
-  s.ann = static_cast<float>(100.0 * factor::stat::ann_geo(s.y(e), days));
-  double n = 0.0, s1 = 0.0, s2 = 0.0, prev = s.y(0), last = s.y(0);
-  const auto close_day = [&] {
-    const double r = last / prev - 1.0;
-    n += 1.0, s1 += r, s2 += r * r, prev = last;
-  };
-  double day = std::floor(s.x(0) / kDayW);
-  for (size_t i = 1; i <= e; ++i) {
-    for (const double di = std::floor(s.x(i) / kDayW); day < di; ++day)
-      close_day();
-    last = s.y(i);
-  }
-  close_day();
-  assert(n == days);
-  const double var = (s2 - s1 * s1 / n) / (n - 1.0);
-  if (n >= 2.0 && var > 0.0)
+  const double n = b - a;
+  s.ann = static_cast<float>(100.0 * factor::stat::ann_geo(c.end(b) / s.base, n));
+  const size_t ia = static_cast<size_t>(a - c.f), ib = static_cast<size_t>(b - c.f);
+  const double s1 = c.s1[ib] - c.s1[ia], s2 = c.s2[ib] - c.s2[ia];
+  const double var = n >= 2.0 ? (s2 - s1 * s1 / n) / (n - 1.0) : 0.0;
+  if (var > 0.0)
     s.sharpe = static_cast<float>(s1 / n / std::sqrt(var) * std::sqrt(static_cast<double>(factor::stat::kDaysPerYear)));
   return s;
 }
@@ -505,8 +533,39 @@ float pct_of(double le, double w) { return static_cast<float>(100.0 * le / w); }
 constexpr double kRollK = 10.0;
 double roll_w(int a, int T) { return 1.0 - std::exp(-kRollK * (1.0 - static_cast<double>(a) / T)); }
 int days_of(misc::Ymd d) { return static_cast<int>(misc::to_days(d).time_since_epoch().count()); }
-// 当日 day 的窗跨度 T (日历天; first = 首个可算日)
-int span_of(misc::Ymd day, misc::Ymd first, int years) { return days_of(day) - days_of(std::max(years_before(day, years), first)); }
+
+// 篮子账的日轴 (窗按日历天定界 / 加权): 一本账算一次, 各篮子各口共用
+struct ValAxis {
+  const std::vector<misc::Ymd> &hd;
+  std::vector<int> dd; // [D] 日历天
+  explicit ValAxis(const PortfolioBook &b) : hd(b.dates), dd(b.dates.size()) {
+    for (size_t i = 0; i < hd.size(); ++i)
+      dd[i] = days_of(hd[i]);
+  }
+};
+// 一篮子一口的估值 v [D] + 窗: 日 t 的窗 = [lo(t), t] = (t 的 N 年前, t] 内的可算点, 点 u 的权 = roll_w(age(u, t), span(t));
+// 首个可算日起史满 1 年 (ready) 才出
+struct ValSeries {
+  const ValAxis &ax;
+  const float *v;
+  int years;
+  size_t first = 0; // 首个可算点 (无 = D)
+  ValSeries(const ValAxis &a, const PortfolioBook &b, int line, int m, int years_) : ax(a), v(b.val_of(static_cast<size_t>(line), m)), years(years_) {
+    assert(line >= 0);
+    while (first < size() && !ok(first))
+      ++first;
+  }
+  size_t size() const { return ax.hd.size(); }
+  bool ok(size_t t) const { return val_ok(v[t]); }
+  bool ready(size_t t) const { return first < size() && ax.hd[first] <= years_before(ax.hd[t], 1); }
+  bool gone(size_t u, size_t t) const { return ax.hd[u] <= years_before(ax.hd[t], years); } // u 已出 t 的窗
+  size_t lo(size_t t) const {
+    return static_cast<size_t>(std::upper_bound(ax.hd.begin(), ax.hd.begin() + static_cast<std::ptrdiff_t>(t), years_before(ax.hd[t], years)) -
+                               ax.hd.begin());
+  }
+  int span(size_t t) const { return ax.dd[t] - days_of(std::max(years_before(ax.hd[t], years), ax.hd[first])); } // 窗跨度 T (史不足 N 年 → 实际史长)
+  int age(size_t u, size_t t) const { return ax.dd[t] - ax.dd[u]; }
+};
 
 // 收益率序列 v[0, n) 中 v > 0 的点的倍数 1 / v, 取 [kContourTrim, 1 − kContourTrim] 分位为区间, 首尾含在内 kContours 等分 (升序); 不足两个不同倍数 → 空
 std::vector<double> levels_of(const float *v, size_t n) {
@@ -530,47 +589,41 @@ std::vector<double> levels_of(const float *v, size_t n) {
   return lv;
 }
 
-// 篮子行 s 的口 b 的滚动分位 → o [s.at]: 窗内可算点按贵度保持有序 (逐日二分插入 / 出窗删除);
+// 估值 s 在线点 at (源下标升序, 起点 −1 无估值) 上的滚动分位 → o [点]: 窗内可算点按贵度保持有序 (逐日二分插入 / 出窗删除);
 // 出点日扫两遍窗: 权重和 → 加权分位 = 累计权重首个 ≥ q · 总权重的点 + 当日加权估值分位. 权重按距今天数查表 (T 变才重建); 等值线档按全史
-void roll_of(const BasketCurve &bc, const PortfolioRow &s, int b, int years, PortfolioRoll &o) {
+void roll_of(const ValSeries &s, const std::vector<int32_t> &at, PortfolioRoll &o) {
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-  const std::vector<misc::Ymd> &hd = bc.dates;
-  const size_t n = hd.size(), np = s.at.size();
-  const float *v = bc.val_of(static_cast<size_t>(s.basket), b);
+  const size_t n = s.size(), np = at.size();
+  const float *v = s.v;
   o.levels = levels_of(v, n);
-  std::vector<int> dd(n); // 日历天
-  for (size_t i = 0; i < n; ++i)
-    dd[i] = days_of(hd[i]);
   const auto by_dear = [&](size_t x, size_t y) { return dear_of(v[x]) < dear_of(v[y]); };
-  std::vector<size_t> win; // 窗内可算点 (hd 下标), 贵度升序
+  std::vector<size_t> win; // 窗内可算点 (源下标), 贵度升序
   std::vector<double> wt;  // wt[a] = roll_w(a, T)
   int wt_T = -1;
   for (std::vector<float> &q : o.q)
     q.assign(np, kNaN);
   o.pct.assign(np, kNaN);
   o.band.assign(np, 0);
-  misc::Ymd first = 0; // 首个可算日
   size_t lo = 0, k = 0;
+  while (k < np && at[k] < 0)
+    ++k;
   int wp = 0; // 窗内收益率 > 0 的个数
   for (size_t t = 0; t < n && k < np; ++t) {
-    if (val_ok(v[t])) {
+    if (s.ok(t))
       win.insert(std::upper_bound(win.begin(), win.end(), t, by_dear), t), wp += v[t] > 0.f;
-      if (first == 0)
-        first = hd[t];
-    }
-    for (; hd[lo] <= years_before(hd[t], years); ++lo)
-      if (val_ok(v[lo])) {
+    for (; s.gone(lo, t); ++lo)
+      if (s.ok(lo)) {
         const auto [e0, e1] = std::equal_range(win.begin(), win.end(), lo, by_dear);
         const auto e = std::find(e0, e1, lo);
         assert(e != e1);
         win.erase(e), wp -= v[lo] > 0.f;
       }
-    if (s.at[k] != t)
+    if (static_cast<size_t>(at[k]) != t)
       continue;
     const size_t i = k++;
-    if (win.empty() || first == 0 || first > years_before(hd[t], 1))
+    if (win.empty() || !s.ready(t))
       continue;
-    const int T = span_of(hd[t], first, years);
+    const int T = s.span(t);
     assert(T > 0);
     if (T != wt_T) {
       wt.resize(static_cast<size_t>(T) + 1);
@@ -579,8 +632,8 @@ void roll_of(const BasketCurve &bc, const PortfolioRow &s, int b, int years, Por
       wt_T = T;
     }
     const auto w_of = [&](size_t u) {
-      assert(dd[t] - dd[u] <= T);
-      return wt[static_cast<size_t>(dd[t] - dd[u])];
+      assert(s.age(u, t) <= T);
+      return wt[static_cast<size_t>(s.age(u, t))];
     };
     double W = 0.0;
     for (const size_t u : win)
@@ -600,27 +653,22 @@ void roll_of(const BasketCurve &bc, const PortfolioRow &s, int b, int years, Por
     if (val_ok(v[t]))
       o.pct[i] = pct_of(le, W);
   }
-  assert(k == np && "at 须升序且落在 hd 内");
+  assert(k == np && "at 须升序且落在账日内");
 }
 
-// 篮子行 s 的口 b 在源点 [0, j1) 内末个可算点及其估值分位: 与 roll_of 的 pct 同一定义, 只一点 → 直接数窗, O(窗)
-PortfolioLastPct last_pct(const BasketCurve &bc, const PortfolioRow &s, size_t j1, int b, int years) {
-  const std::vector<misc::Ymd> &hd = bc.dates;
-  const float *v = bc.val_of(static_cast<size_t>(s.basket), b);
-  size_t f = 0; // 首个可算日 (无 → hd.size(), 下面 val_ok 先短路)
-  while (f < hd.size() && !val_ok(v[f]))
-    ++f;
-  for (size_t j = j1; j > 0; --j) {
-    const size_t t = s.at[j - 1];
-    if (!val_ok(v[t]) || hd[f] > years_before(hd[t], 1))
+// 估值 s 在线点 [0, j1) 内末个可算点及其估值分位: 与 roll_of 的 pct 同一定义, 只一点 → 直接数窗, O(窗)
+PortfolioLastPct last_pct(const ValSeries &s, const std::vector<int32_t> &at, size_t j1) {
+  for (size_t j = j1; j > 0 && at[j - 1] >= 0; --j) {
+    const size_t t = static_cast<size_t>(at[j - 1]);
+    if (!s.ok(t) || !s.ready(t))
       continue;
-    const float m = dear_of(v[t]);
-    const int T = span_of(hd[t], hd[f], years), d = days_of(hd[t]);
+    const float m = dear_of(s.v[t]);
+    const int T = s.span(t);
     double w = 0.0, le = 0.0;
-    for (size_t u = static_cast<size_t>(std::upper_bound(hd.begin(), hd.begin() + t, years_before(hd[t], years)) - hd.begin()); u <= t; ++u)
-      if (val_ok(v[u])) {
-        const double x = roll_w(d - days_of(hd[u]), T);
-        w += x, le += dear_of(v[u]) <= m ? x : 0.0;
+    for (size_t u = s.lo(t); u <= t; ++u)
+      if (s.ok(u)) {
+        const double x = roll_w(s.age(u, t), T);
+        w += x, le += dear_of(s.v[u]) <= m ? x : 0.0;
       }
     return {j - 1, pct_of(le, w)};
   }
@@ -645,8 +693,6 @@ void rank_col(size_t n, int good, const At &at) {
       at(v[k].second).rank = r;
   }
 }
-// 切片的区间年化 (%); 不足两点 → NaN
-double ann_of(const PortfolioSlice &s) { return s.size() >= 2 ? static_cast<double>(s.ann) : kNaN; }
 
 } // namespace
 
@@ -654,38 +700,47 @@ void MakePortfolioDerived(const std::vector<PortfolioItem> &items, const std::st
                           const std::shared_ptr<const Database::Tape> &prices, double fixed_impact, PortfolioDerived &d) {
   PortfolioDerived o = std::move(d);
   d = PortfolioDerived{};
-  derive_factors(items, name, res, fixed_impact, o, d);
-  derive_baskets(res, prices, o, d);
+  const Ready f = ready_of(items, res, d);
+  const Reuse ru(o, d.dates);
+  derive_factors(f, fixed_impact, ru, d);
+  derive_strat(f, name, fixed_impact, ru, d);
+  d.basket_gen = o.basket_gen + derive_baskets(res, prices, ru, d);
+  for (int g = 0; g < kNavGroups; ++g)
+    for (size_t r = 0; r < d.nav[g].size(); ++r)
+      d.index[d.nav[g][r].id] = {g, r};
   paint(d);
 }
 
 void MakePortfolioRoll(const PortfolioDerived &d, PortfolioAt vs, int years, std::array<PortfolioRoll, kPoolVals> &r) {
+  for (PortfolioRoll &x : r)
+    x = {};
+  if (vs.g < 0 || !d.baskets)
+    return;
+  const ValAxis ax(*d.baskets);
+  const PortfolioRow &s = d.nav[vs.g][vs.r];
   for (int b = 0; b < kPoolVals; ++b)
-    if (vs.g >= 0 && d.baskets)
-      roll_of(*d.baskets, d.nav[vs.g][vs.r], b, years, r[b]);
-    else
-      r[b] = {};
+    roll_of(ValSeries(ax, *d.baskets, s.basket, b, years), s.line[kTrade].at, r[b]);
 }
 
 void MakePortfolioPct(const PortfolioDerived &d, int d1, int years, PortfolioPct &p) {
+  for (int g = 0; g < kBasketGroups; ++g)
+    p[g].assign(d.nav[g].size(), {});
+  if (!d.baskets)
+    return;
+  const ValAxis ax(*d.baskets);
   const double x1 = x_of(static_cast<size_t>(d1), kOpen);
-  for (int g = 0; g < kBasketGroups; ++g) {
-    const std::vector<PortfolioRow> &rs = d.nav[g];
-    p[g].assign(rs.size(), {});
-    if (!d.baskets)
-      continue;
-    for (size_t i = 0; i < rs.size(); ++i) {
-      const std::vector<double> &x = rs[i].line[kTrade].x;
-      const size_t j1 = static_cast<size_t>(std::lower_bound(x.begin(), x.end(), x1) - x.begin()); // = 切片的 j1
+  for (int g = 0; g < kBasketGroups; ++g)
+    for (size_t i = 0; i < d.nav[g].size(); ++i) {
+      const PortfolioRow &s = d.nav[g][i];
+      const PortfolioLine &c = s.line[kTrade];
+      const size_t j1 = static_cast<size_t>(std::lower_bound(c.x.begin(), c.x.end(), x1) - c.x.begin()); // = 切片的 j1
       for (int b = 0; b < kPoolVals; ++b)
-        p[g][i][b] = last_pct(*d.baskets, rs[i], j1, b, years);
+        p[g][i][b] = last_pct(ValSeries(ax, *d.baskets, s.basket, b, years), c.at, j1);
     }
-  }
 }
 
 void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs, const std::array<PortfolioRoll, kPoolVals> &roll,
                        const PortfolioPct &pct, PortfolioView &v) {
-  const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
   // ---- 各线同一份切片; NAV 右表: 各数值列 + 同组同列名次 ----
   for (int g = 0; g < kNavGroups; ++g) {
     const size_t n = d.nav[g].size();
@@ -693,10 +748,10 @@ void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs
     v.num[g].assign(n, {});
     for (size_t i = 0; i < n; ++i) {
       const PortfolioRow &r = d.nav[g][i];
-      v.nav[g].push_back({slice_of(r.line[kTrade], x0, x1), slice_of(r.line[kIdeal], x0, x1)});
+      v.nav[g].push_back({slice_of(r.line[kTrade], d0, d1), slice_of(r.line[kIdeal], d0, d1)});
       const std::array<PortfolioSlice, kPairLines> &s = v.nav[g].back();
       std::array<Ranked, kNavNums> &c = v.num[g][i];
-      c[kNumTrade].x = ann_of(s[kTrade]), c[kNumIdeal].x = ann_of(s[kIdeal]);
+      c[kNumTrade].x = s[kTrade].ann, c[kNumIdeal].x = s[kIdeal].ann;
       c[kNumSharpe].x = s[kTrade].sharpe, c[kNumTurn].x = r.turn;
     }
     for (int k = 0; k < kNavNums; ++k)
@@ -725,25 +780,25 @@ void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs
     bd = {};
   if (vs.g < 0 || !d.baskets)
     return;
-  const BasketCurve &bc = *d.baskets;
   const PortfolioRow &s = d.nav[vs.g][vs.r];
+  const std::vector<int32_t> &at = s.line[kTrade].at;
   const PortfolioSlice &sl = v.nav[vs.g][vs.r][kTrade];
   const size_t n = sl.size();
   for (size_t i = 0; i < n; ++i)
     v.band_x.push_back(sl.x(i));
   for (int b = 0; b < kPoolVals; ++b) {
     const PortfolioRoll &r = roll[b];
-    assert(r.pct.size() == s.at.size());
+    assert(r.pct.size() == at.size());
     PortfolioBand &bd = v.band[b];
-    const float *hv = bc.val_of(static_cast<size_t>(s.basket), b);
+    const float *hv = d.baskets->val_of(static_cast<size_t>(s.basket), b);
     for (std::vector<double> &y : bd.y)
       y.assign(n, kNaN);
     bd.unit.assign(n, kNaN);
     bd.levels = r.levels;
-    size_t last = SIZE_MAX; // 末个有分位的点 (源下标)
+    size_t last = SIZE_MAX; // 末个有分位的点 (线点下标)
     for (size_t i = 0; i < n; ++i) {
       const size_t j = sl.j0 + i;
-      const double x = hv[s.at[j]];
+      const double x = at[j] >= 0 ? hv[at[j]] : kNaN;
       if (x > 0.0)
         bd.unit[i] = sl.y(i) * x;
       if (!std::isfinite(r.pct[j]))
@@ -765,7 +820,7 @@ void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs
     if (last == SIZE_MAX)
       continue;
     bd.ok = true;
-    bd.now = hv[s.at[last]], bd.pct = r.pct[last];
+    bd.now = hv[at[last]], bd.pct = r.pct[last];
   }
 }
 

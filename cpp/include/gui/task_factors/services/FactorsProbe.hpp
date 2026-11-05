@@ -2,7 +2,7 @@
 //   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
 //   通用探针 Hold / Cost / Cover / Alpha / IcPdf 四服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
 //   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
-//   根上的统计核: cover_rows 有效率 / 可秩率 (一遍, 块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / CurveP 平级); alpha_dist alpha 分布
+//   根上的统计核: cover_rows 有效率 / 可秩率 (一遍, 块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / BookP 平级); alpha_dist alpha 分布
 //   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / LS 绝对 / Portfolio 曲线);
 //   尾部分层的阈值 / 端码 / 逐格扩展 TailExt (Inspect 净值线与尾部换手 / Lens 逐行同一份).
 // include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
@@ -247,7 +247,7 @@ struct HoldP : ProbeBase {
   }
 };
 // 换手成本 CostTier[C] (契约【换手成本】; C ≥ 1, 换手量各段同一份): Stat cost_rows (端码 ec × 全部金额段 costs_of(y)) 块间续攒.
-// 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部端码 (一个固定段) / Portfolio CurveP 另落逐行 (land)
+// 成本三探针同一个核: CostP 分段攒 / Inspect TurnP 尾部端码 (一个固定段) / Portfolio BookP 另落逐行 (land)
 struct CostP : ProbeBase {
   static constexpr uint8_t need = kNeedEc;
   static constexpr Segs segs = Segs::All;
@@ -319,7 +319,7 @@ struct IcPdfP : ProbeBase {
 // 落地探针的三种形 (探针基类; open 在评估域首块定形, 其后各块按绝对行写):
 //   LandRowsP<R>  逐行 [hd.n][rows_all] 进 dst (调用方的缓冲; Inspect RicP): at(hi, t) = 块内行 t 的格
 //   LandCellsP<V> 逐格 [rows_all][A] 进 dst (Inspect RxP / RxAllP): stat_at(s) = 本块统计首行的首格
-//   LinesP<K>     净值线 (FactorsBook RowLines, 线 hi · K + k; Inspect NavP / Portfolio CurveP): at(hi, k, t) = 块内行 t 这一批的收益;
+//   LinesP<K>     净值线 (FactorsBook RowLines, 线 hi · K + k; Inspect NavP / Portfolio BookP): at(hi, k, t) = 块内行 t 这一批的收益;
 //                 finish 折成 out (fold_book; stride / at_exit 由派生 open 定: 缺省逐行 / 全收益)
 template <class R>
 struct LandRowsP : ProbeBase {

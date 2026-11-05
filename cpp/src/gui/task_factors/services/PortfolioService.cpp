@@ -4,6 +4,7 @@
 #include "gui/task_factors/services/FactorsEngine.hpp" // with_engine / eval_job / eval_baskets / Probes / LinesP / group_abs
 #include "gui/task_factors/services/FactorsFile.hpp"   // ValidFactorName / FactorRow / ScanFactorFile
 #include "misc/profiler.hpp"
+#include "shared/Basket.hpp"     // basket_count
 #include "shared/FeatureLib.hpp" // pool_def
 #include "shared/SharedData.hpp"
 
@@ -176,7 +177,7 @@ std::string PortfolioRequest::sig() const {
   for (const FactorTask &t : factors)
     s += t.sig() + "\n";
   if (baskets)
-    s += "baskets\n";
+    s += baskets->sig() + "\n";
   return s;
 }
 
@@ -186,22 +187,22 @@ std::string PortfolioRequest::sig() const {
 
 namespace {
 
-// G20 多头出参线 [kCurveLines][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
-//   pnl = 行的 G20 (所评方向的高端组; 行已定向) 绝对收益, 平仓行实现; imp = 买入冲击, fix = 固定量 (CostBook::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
-struct CurveP : LinesP<kCurveLines> {
+// G20 多头的账 [hold][kBookCols][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
+//   ret = 行的 G20 (所评方向的高端组; 行已定向) 绝对收益, 平仓行实现; imp = 买入冲击, fix = 固定量 (CostBook::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
+struct BookP : LinesP<kBookCols> {
   static constexpr uint8_t need = kNeedRows | kNeedEc;
   static constexpr Segs segs = Segs::First;
   double cap = 0.0;
   void open(const Ctx &c) {
-    assert(c.c.y.ad.n == 1 && "出参线: 一个金额段");
+    assert(c.c.y.ad.n == 1 && "账: 一个金额段");
     LinesP::open(c);
     for (int hi = 0; hi < c.L.hd.n; ++hi)
-      for (const int k : {kCurveImp, kCurveFix, kCurveBuy})
-        x.at_exit[static_cast<size_t>(hi * kCurveLines + k)] = 0;
+      for (const int k : {kBookImp, kBookFix, kBookBuy})
+        x.at_exit[static_cast<size_t>(hi * kBookCols + k)] = 0;
     cap = c.L.cap;
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
-    at(hi, kCurvePnl, t) = static_cast<float>(group_abs(r, factor::stat::end_group(factor::stat::kTop), cap));
+    at(hi, kBookRet, t) = static_cast<float>(group_abs(r, factor::stat::end_group(factor::stat::kTop), cap));
   }
   void root(const Ctx &c, const RootView &v) {
     const std::vector<factor::stat::Cost> cs = costs_of(c.c.y);
@@ -209,18 +210,23 @@ struct CurveP : LinesP<kCurveLines> {
     // 一个金额段: cost_rows 的逐行下标 = hi
     factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, cap, cs.data(), 1, *c.w, acc, [&](size_t hi, int t, const factor::stat::CostAcc &r) {
       const factor::stat::CostBook &cl = r.book[factor::stat::kTop];
-      at(static_cast<int>(hi), kCurveImp, t) = static_cast<float>(cl.imp);
-      at(static_cast<int>(hi), kCurveFix, t) = static_cast<float>(cl.fix);
-      at(static_cast<int>(hi), kCurveBuy, t) = static_cast<float>(cl.buy);
+      at(static_cast<int>(hi), kBookImp, t) = static_cast<float>(cl.imp);
+      at(static_cast<int>(hi), kBookFix, t) = static_cast<float>(cl.fix);
+      at(static_cast<int>(hi), kBookBuy, t) = static_cast<float>(cl.buy);
     });
   }
 };
-using PortfolioProbes = Probes<CurveP>;
+using PortfolioProbes = Probes<BookP>;
 
 // 因子缓存: reload → 全丢; 本请求的 (used = now) 都留, 其余按上次被请求的先后 (旧的先丢) 丢到总字节 ≤ kKeepBytes
 constexpr size_t kKeepBytes = size_t{1} << 30;
-size_t bytes_of(const FactorCurve &c) { return c.nav.v.size() * sizeof(float) + c.dates.size() * sizeof(misc::Ymd); }
-void prune(std::map<std::string, std::shared_ptr<const FactorCurve>> &m, std::map<std::string, uint64_t> &used, uint64_t now, bool reload) {
+size_t bytes_of(const PortfolioBook &b) {
+  size_t n = b.dates.size() * sizeof(misc::Ymd);
+  for (const BookLines &c : b.col)
+    n += c.v.size() * sizeof(float);
+  return n;
+}
+void prune(std::map<std::string, std::shared_ptr<const PortfolioBook>> &m, std::map<std::string, uint64_t> &used, uint64_t now, bool reload) {
   if (reload)
     m.clear();
   std::erase_if(used, [&](const auto &kv) { return kv.second != now && !m.contains(kv.first); });
@@ -242,7 +248,7 @@ void prune(std::map<std::string, std::shared_ptr<const FactorCurve>> &m, std::ma
   }
 }
 // 要算的: 缺 / 签名变了
-std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_ptr<const FactorCurve>> &m, const std::vector<FactorTask> &ts) {
+std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_ptr<const PortfolioBook>> &m, const std::vector<FactorTask> &ts) {
   std::vector<const FactorTask *> todo;
   for (const FactorTask &t : ts)
     if (const auto it = m.find(t.key); it == m.end() || it->second->sig != t.sig())
@@ -255,10 +261,11 @@ std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_
 PortfolioService::PortfolioService() : FactorWorker(Prio::Interactive) { Start(); }
 PortfolioService::~PortfolioService() { Stop(); }
 
-void PortfolioService::put(const std::string &key, std::shared_ptr<FactorCurve> c) {
+template <class Set>
+void PortfolioService::put(Set &&set) {
   {
     std::lock_guard<std::mutex> lock(mutex);
-    result.factors[key] = std::move(c);
+    set(result);
     ++result_gen;
   }
   jobs_done.fetch_add(1, std::memory_order_relaxed);
@@ -305,7 +312,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return ok;
 }
 
-// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 根的 hd = 其条目的 hold 之并; 落线 CurveP (G20 多头), 根评完即逐条发布
+// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 根的 hd = 其条目的 hold 之并; 落账 BookP (G20 多头), 根评完即逐条发布
 bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlow &F) {
   TraceN("PortfolioForest");
   const FactorScope &sc = ts.front()->scope;
@@ -314,7 +321,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir, keys_of<Holds>(std::vector<int>{t->hold}));
   std::vector<PortfolioProbes> ps(rs.size());
 
-  // ---- 管线 eval_job: Y = 各根 hold 之并 + 首个金额段 (CurveP) ----
+  // ---- 管线 eval_job: Y = 各根 hold 之并 + 首个金额段 (BookP) ----
   JobOut o;
   o.job.who = "Portfolio";
   struct Hooks : HookBase {
@@ -322,26 +329,29 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     const std::vector<const FactorTask *> &ts;
     const std::vector<PortfolioProbes> &ps;
     const JobOut &o;
-    std::shared_ptr<FactorCurve> curve(int e, const std::string &why) const {
+    std::shared_ptr<PortfolioBook> book(int e, const std::string &why) const {
       const FactorTask &t = *ts[static_cast<size_t>(e)];
-      auto c = std::make_shared<FactorCurve>();
-      c->sig = t.sig();
-      c->lv = t.scope.lv;
-      c->hold = t.hold;
-      c->error = why;
-      return c;
+      auto b = std::make_shared<PortfolioBook>();
+      b->sig = t.sig();
+      b->lv = t.scope.lv;
+      b->error = why;
+      return b;
     }
-    void fail(int e, const std::string &why) { W.put(ts[static_cast<size_t>(e)]->key, curve(e, why)); }
-    // 条目 e 的根 k 评完: 线 hi · kCurveLines 起的一段
+    void land(int e, std::shared_ptr<const PortfolioBook> b) {
+      W.put([&](PortfolioResult &r) { r.factors[ts[static_cast<size_t>(e)]->key] = std::move(b); });
+    }
+    void fail(int e, const std::string &why) { land(e, book(e, why)); }
+    // 条目 e 的根 k 评完: 列 hi · kBookCols 起的一段, 一列一线
     void post(int e, int k) {
       const PortfolioProbes &p = ps[static_cast<size_t>(k)];
-      auto c = curve(e, "");
-      const int hi = factor::stat::hold_index(o.fr.hd[static_cast<size_t>(k)], c->hold);
+      auto b = book(e, "");
+      const int hi = factor::stat::hold_index(o.fr.hd[static_cast<size_t>(k)], ts[static_cast<size_t>(e)]->hold);
       assert(hi >= 0);
-      c->dates = o.job.dm.dates;
-      c->amt = o.job.spec.y.ad.k[0];
-      c->nav = p.at<CurveP>().out.slice(hi * kCurveLines, kCurveLines);
-      W.put(ts[static_cast<size_t>(e)]->key, std::move(c));
+      b->dates = o.job.dm.dates;
+      b->amt = o.job.spec.y.ad.k[0];
+      for (int c = 0; c < kBookCols; ++c)
+        b->col[c] = p.at<BookP>().out.slice(hi * kBookCols + c, 1);
+      land(e, std::move(b));
     }
   };
   const Rc rc = F.with_engine<PortfolioProbes>(sc.gpu, [&](auto &eng) {
@@ -350,37 +360,36 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return settle(rc);
 }
 
-// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 一份 BasketCurve 发布
+// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 一本 basket_count 线的账发布 (不扣成本: imp / fix 全 0)
 bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   TraceN("PortfolioBaskets");
-  const FeatureTable &ft = *t.scope.ft;
-  assert(ft.lv == kBasketLevel && "BasketCurve 按日");
+  assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
   Job j;
   j.who = "Portfolio";
   Baskets bs;
   const Rc rc = eval_baskets(F, t.scope, j, bs);
   if (!settle(rc))
     return false;
-  auto c = std::make_shared<BasketCurve>();
+  auto b = std::make_shared<PortfolioBook>();
+  b->sig = t.sig();
+  b->lv = kBasketLevel;
   if (rc != Rc::Ok) {
-    c->error = j.why;
+    b->error = j.why;
   } else {
-    c->dates = j.dm.dates;
-    assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == c->dates.size());
-    c->index = std::move(bs.index);
+    b->dates = j.dm.dates;
+    assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == b->dates.size());
+    assert(bs.buy.n == bs.index.n && bs.buy.P == bs.index.P);
+    BookLines zero;
+    zero.n = bs.index.n, zero.P = bs.index.P;
+    zero.v.assign(bs.index.v.size(), 0.f);
+    b->col[kBookRet] = std::move(bs.index);
+    b->col[kBookImp] = zero;
+    b->col[kBookFix] = std::move(zero);
+    b->col[kBookBuy] = std::move(bs.buy);
     for (int m = 0; m < kPoolVals; ++m)
-      c->val[m] = std::move(bs.val[m]);
-    c->turn = std::move(bs.turn);
-    for (double &x : c->turn)
-      x *= factor::stat::kDaysPerYear * ft.seg;
+      b->val[m] = std::move(bs.val[m]);
   }
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    result.baskets = std::move(c);
-    ++result_gen;
-  }
-  jobs_done.fetch_add(1, std::memory_order_relaxed);
-  publish();
+  put([&](PortfolioResult &r) { r.baskets = std::move(b); });
   return true;
 }
 

@@ -289,11 +289,11 @@ stk/
 │   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集 (keys_union 并); Pick = 子集下标, labels_pick 取会话持有期子集
 │   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
 │   │   │       │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
-│   │   │       │   │                                 #    · baskets: 全部池 + all 内行业 / 概念篮子 (shared/Basket.hpp 篮子表) 一趟出可成交指数 / 估值 / 换手 (吃 B); pool_line = 池整体等权 (吃 Y)
+│   │   │       │   │                                 #    · baskets: 全部池 + all 内行业 / 概念篮子 (shared/Basket.hpp 篮子表) 一趟出可成交指数 / 逐行增仓量 / 估值 (吃 B); pool_line = 池整体等权 (吃 Y)
 │   │   │       │   ├── FactorsProbe.hpp              # 🖥️ 探针层 (一个根的一种输出): RootView / Ctx / Ranks 两后端同形, Probes<P...> 逐钩子 need / open / row / root / finish
 │   │   │       │   │                                 #    · 通用探针 Hold / Cost / Cover / Alpha / IcPdf 四服务共用; 服务私有探针在各自 .cpp
 │   │   │       │   │                                 #    · 原料按块要: need 每块 / need_last 只末块 (alpha 分布); 预算: bytes 每根常驻 / scratch 一根评时暂存
-│   │   │       │   │                                 #    · 根上统计核: cover_rows (有效率 + 可秩率一遍) / alpha_dist / mini_pdf_of / group_abs (换手成本三探针 CostP / TurnP / CurveP 平级直调 Stat cost_rows)
+│   │   │       │   │                                 #    · 根上统计核: cover_rows (有效率 + 可秩率一遍) / alpha_dist / mini_pdf_of / group_abs (换手成本三探针 CostP / TurnP / BookP 平级直调 Stat cost_rows)
 │   │   │       │   │                                 #    · 落地基类 LandRowsP (逐持有期逐行) / LandCellsP (逐行逐资产) / LinesP (净值线 → fold_book); EvalProbes<X...> + fill_eval → EvalStat (Run 行 / Inspect 结果同一份)
 │   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / eval (森林单入口, 原料后端 ready / view)
 │   │   │       │   │                                 #      CPU 恒逐根 Stat (Search 也是, 抽样行拷 rx); GPU 逐根 stat_eval / 批核 (kBatched: 只累加 + 抽样行) 走完森林一次 search_eval
@@ -314,8 +314,9 @@ stk/
 │   │   │       │   │                                 #    · 四服务的差别只在探针元组; 引擎按根的 hd 取会话持有期子集
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 平面经 Store 缓存, 每请求整条重算 (池等权线随 Y 的代复用); 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
-│   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池, 所用库) 一张森林 (根 = 去重规范串, CurveP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
-│   │   │       │   │                                 #    · BasketTask 全部篮子日层一个作业 (eval_baskets: open_job → load_b → baskets → 一份 BasketCurve, 键 basket_line); 因子按条目缓存, 只算新增 (换组合留着, 按最近被请求限总量), 根评完即逐条发布
+│   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池, 所用库) 一张森林 (根 = 去重规范串, BookP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
+│   │   │       │   │                                 #    · 结果一律是账 PortfolioBook (四列 = 毛收益 / 冲击 / 固定份数 / 增仓量, 各 [线][行]): 因子 = 一线; 篮子 = basket_line 条线 (不扣成本) + 估值
+│   │   │       │   │                                 #    · BasketTask 全部篮子日层一个作业 (eval_baskets: open_job → load_b → baskets); 因子按条目缓存, 只算新增 (换组合留着, 按最近被请求限总量), 根评完即逐条发布
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
 │   │   │       │   │                                 #    · 落地列 = 指定资产一列, 或评估期内进过池的资产; 另落门控 / 标签 / 逐行池内标签均值; 两端格与 Row::grp 同一份判据 (label_row 逐格扩展)
@@ -335,10 +336,13 @@ stk/
 │   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Compute / 自动 Inspect / Kline 才发
 │   │   │           ├── PortfolioView.hpp             # 🖥️ 组合 tab 的纯计算层 (无 ImGui): 派生 (行 / 线 / 色相) → 滚动分位 (估值分位 + 等值线档) / 末点分位 (VAL 表格, 不随区间起点) → 视图 (区间切片 / 名次), 各级一个 MakePortfolio* 入口
+│   │   │           │                                 #    · 线的来路只一条: 源 (账的一线 / 策略稠密格累加 / 价格指数) → 点位 → project 投到日并集轴 → PortfolioLine (画图点 + 日末视图; 年化 / 夏普 / 近况 / 配色同读日末视图)
+│   │   │           │                                 #    · 行按源身份 PortfolioSrc 沿用上一份 (线 / 年换手); 年换手 = 增仓量自首次建仓起的日均 × 每年交易日 (全部行同式); 估值窗 = ValSeries (滚动 / 末点同一份)
 │   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
 │   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 概念 / 因子 / 策略 (一次一组), 列 = 中文名 (切片名.等 / .加; 线色 = 指数 / 行业 / 概念 / 因子一起按 max(当日成员重合, 剔全A.加的残差相关) 定 OKLCH 色相, 色差 ∝ 不相似, 没算完全灰; 名列排序 = 按色相) | 当日涨幅 / Δ5日线 / 只数 / 总市值 / 换手 (新浪当日成交额占总市值) / 资金流入 (新浪当日分钟涨跌法净流入占成交额; 两列悬停看金额) | 区间年化 / 夏普 / 年换手
-│   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (BasketCurve) + 理想 (Market 篮子价格指数):
-│   │   │                                             #      两源各出日点位线 levels, 同一个 project 投到日并集轴; 近况两列同一核 (QuotesPanel RecentOf); VAL 表行 = 这三组同一份, 列 = 只数 / 总市值 / 换手 / 资金流入 (同 NAV) | 各口估值分位
+│   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (篮子账) + 理想 (Market 篮子价格指数);
+│   │   │                                             #      近况两列同一核 (QuotesPanel RecentOf); VAL 表行 = 这三组同一份, 列 = 只数 / 总市值 / 换手 / 资金流入 (同 NAV) | 各口估值分位
+│   │   │                                             #      三页右表 = 名列 + 段 (近况 / 当日四列 / NAV 数值 / 估值分位 / 资金流; 同一段三页同一份); 页表 kPageDefs 定页名 / 组数 / 选中方式 (NAV / FLOW 多选同一份, VAL 单选)
 │   │   │                                             #      三组各一份过滤条 (NAV / VAL / FLOW 共用): 只数 / 总市值区间 + |资金流入| 下限, 默认 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%; 选中行恒列
 │   │   │                                             #      三组的行名前 ▸ 展开成分股 (三页同一份; 成员表 = Tape::cons, 权降序): 成分行与篮子行同列, 能算的填 (近况 / 总市值 / 换手 / 流入; VAL 各口 = 当前收益率; FLOW 只当日), 其余 -;
 │   │   │                                             #      点成分行 = 叠加该股到日内栏 / FLOW 图 (个股历史 + 新浪当日, 与 Assets 同一路; 至多 64 只)
