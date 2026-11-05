@@ -17,6 +17,7 @@
 #include <iterator>
 #include <memory>
 #include <string_view>
+#include <utility>
 
 namespace GUI::Database {
 
@@ -373,6 +374,27 @@ bool BasketHistory::publish(const HistoryRequest &req, const char *lack) {
     std::vector<double> w(basket_count());
     for (const Members::Weight &x : tail_.mem.ws)
       ++n[x.basket], w[x.basket] += x.w;
+    const size_t K = req.keys.size();
+    std::vector<size_t> at(basket_count(), K); // 篮子线 → keys 下标 (不在 = K)
+    for (size_t k = 0; k < K; ++k)
+      at[req.keys[k]] = k;
+    std::vector<double> dot(K * K);
+    std::vector<std::pair<size_t, double>> on; // 一只所属的在请求里的篮子 (keys 下标, 权)
+    for (size_t a = 0; a < tail_.mem.assets(); ++a) {
+      on.clear();
+      for (const Members::Weight &x : tail_.mem.of(a))
+        if (at[x.basket] < K)
+          on.emplace_back(at[x.basket], x.w);
+      for (const auto &[i, wi] : on)
+        for (const auto &[j, wj] : on)
+          dot[i * K + j] += wi * wj;
+    }
+    out->overlap.resize(K * K);
+    for (size_t i = 0; i < K; ++i)
+      for (size_t j = 0; j < K; ++j) {
+        const double nn = dot[i * K + i] * dot[j * K + j];
+        out->overlap[i * K + j] = nn > 0 ? static_cast<float>(dot[i * K + j] / std::sqrt(nn)) : 0.f;
+      }
     for (const uint32_t b : req.keys) {
       out->members.push_back(n[b]), out->weight.push_back(w[b]);
       assert(b < book_.list.size() && b < tail_.list.size());

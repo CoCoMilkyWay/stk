@@ -17,7 +17,7 @@
 //   日根 / 基准 = bar1d open … close / amount / pre_close, 分钟根 = bar1m; 加权的权重逐日 × 收 / 前收 (市值随价漂移).
 // 历史末日 = 末个补日 (无补日 = 库末个落盘日). 当日 (之后的行情日): 跑完把末日的成员表 (下标 = QuoteService 全市场) 与各篮子末日点位
 //   bind 给 QuoteService, 由它每轮快照合成 (基准 = 新浪昨收); 先 bind 后发布. 发布 = 请求键集 (basket_line) 的子表 (Book + 补日)
-//   + 该成员表各篮子的只数 / Σ 权 (Tape::members / weight).
+//   + 该成员表各篮子的只数 / Σ 权 (Tape::members / weight) + 键集两两的成员重合 (Tape::overlap).
 #pragma once
 
 #include "gui/task_database/services/Kline.hpp"

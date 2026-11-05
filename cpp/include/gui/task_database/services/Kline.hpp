@@ -159,6 +159,8 @@ struct Tape {
   // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 (加权线 = 末日收盘总市值 [亿元]: 股本 total_shares 以亿股计); 个股空
   std::vector<uint32_t> members;
   std::vector<double> weight;
+  // 篮子 [keys × keys]: 同一成员表两篮子权重向量的余弦 (成员重合; 无成员 = 0); 个股空
+  std::vector<float> overlap;
 };
 struct HistoryPub : Published {
   uint32_t gen = 0;

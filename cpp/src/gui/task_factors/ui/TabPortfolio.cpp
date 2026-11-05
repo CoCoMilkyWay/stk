@@ -20,9 +20,11 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <limits>
+#include <numeric>
 #include <ranges>
 #include <set>
 #include <string_view>
@@ -36,6 +38,7 @@ constexpr size_t kDayW = TRADE_MINUTES_PER_DAY;
 constexpr size_t kOpen = 0, kClose = kDayW - 1; // 日内分钟: 开盘 / 收盘
 constexpr size_t x_at(size_t di, size_t minute) { return di * kDayW + minute; }
 double x_of(size_t di, size_t minute) { return static_cast<double>(x_at(di, minute)); }
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 const ImVec4 kHead(0.4f, 0.8f, 1.0f, 1.0f);
 
 void load_current(PortfolioUIState &ui) {
@@ -219,54 +222,171 @@ std::vector<std::string> align_cols(const std::vector<std::array<std::string, N>
   return out;
 }
 
-// NAV 组 g 行 r 线 l 的色 (主图 / 右表 / 日内同一份): 策略 = kStratCol; 色号按组序 (指数 → 行业 → 概念 → 因子) 接着数取色表 (篮子色不随组合变),
-// 再按行的淡化向白混; 理想列 = 同色淡
+// NAV 组 g 行 r 线 l 的色 (主图 / 右表 / 日内同一份): 策略 = kStratCol, 其余按色号取色表 (见 paint), 再按行的淡化向白混; 理想列 = 同色淡
 constexpr float kIdealAlpha = 0.5f;
 ImVec4 nav_color(const PortfolioDerived &d, int g, size_t r, int l) {
   const PortfolioRow &row = d.nav[g][r];
-  int hue = row.hue;
-  for (int h = 0; h < g; ++h)
-    hue += d.hues[h];
-  ImVec4 c = g == kNavStrat ? kStratCol : ImPlot::GetColormapColor(hue);
+  ImVec4 c = g == kNavStrat ? kStratCol : ImPlot::GetColormapColor(row.hue);
   c.x += (1.0f - c.x) * row.light, c.y += (1.0f - c.y) * row.light, c.z += (1.0f - c.z) * row.light;
   c.w = l == kIdeal ? kIdealAlpha : 1.0f;
   return c;
 }
-// 指数组的系列: 切片代码去尾数 (all 两条 / size_small400 · 200 → size_small …) + 尾数 (无 = 0)
-constexpr float kSeriesLight = 0.45f; // 系列内最淡的一条的淡化
-std::pair<std::string, int> series_of(size_t line) {
-  const std::string s = cut_code(cut_of_line(line));
-  size_t e = s.size();
-  while (e > 0 && s[e - 1] >= '0' && s[e - 1] <= '9')
-    --e;
-  return {s.substr(0, e), e < s.size() ? std::stoi(s.substr(e)) : 0};
+
+// ---- 行配色 (策略外四组一起, 见 PortfolioDerived::nav): 相似度 s = max(成员重合, 残差相关), 距离 1 − s 平均连接聚类, 切成色表色数个簇 ----
+constexpr size_t kSimDays = 60;        // 残差相关取日并集轴末几日的日收益
+constexpr size_t kSimMin = 20;         // 两行共同有收益的日数下限 (不足 → 相关记 0)
+constexpr float kClusterLight = 0.45f; // 簇内最淡的一条的淡化
+
+// 线 c 在日并集轴 [lo, lo + n) 各日的日收益 (日末值逐日比 − 1): 无点的日沿用前一日末值 (lo 前的末点起), 不可算 = NaN
+std::vector<double> rets_of(const PortfolioCurve &c, size_t lo, size_t n) {
+  const auto it = std::lower_bound(c.x.begin(), c.x.end(), x_of(lo, kOpen));
+  std::vector<double> e(n + 1, kNaN); // [0] = lo 前末点, [1 + k] = lo + k 日末
+  if (it != c.x.begin())
+    e[0] = c.y[static_cast<size_t>(it - c.x.begin()) - 1];
+  for (auto i = it; i != c.x.end(); ++i) {
+    const size_t k = static_cast<size_t>(*i) / kDayW - lo;
+    assert(k < n);
+    e[1 + k] = c.y[static_cast<size_t>(i - c.x.begin())];
+  }
+  for (size_t k = 1; k <= n; ++k)
+    if (std::isnan(e[k]))
+      e[k] = e[k - 1];
+  std::vector<double> r(n);
+  for (size_t k = 0; k < n; ++k)
+    r[k] = e[k] > 0 && e[k + 1] > 0 ? e[k + 1] / e[k] - 1.0 : kNaN;
+  return r;
 }
-// 篮子组 g 各行定色号 / 淡化 (见 PortfolioDerived::nav), 返回色号数
-int paint(int g, std::vector<PortfolioRow> &rs) {
-  if (g != kNavPool) {
-    for (size_t i = 0; i < rs.size(); ++i)
-      rs[i].hue = static_cast<int>(i);
-    return static_cast<int>(rs.size());
+// r 对 m 在共同日上回归 (带截距) 的残差 (共同日外 NaN); 共同日不足 kSimMin → 全 NaN
+void residual(std::vector<double> &r, const std::vector<double> &m) {
+  double n = 0, sr = 0, sm = 0, srm = 0, smm = 0;
+  for (size_t k = 0; k < r.size(); ++k)
+    if (std::isfinite(r[k]) && std::isfinite(m[k]))
+      ++n, sr += r[k], sm += m[k], srm += r[k] * m[k], smm += m[k] * m[k];
+  const double vm = n >= kSimMin ? smm - sm * sm / n : 0.0;
+  if (!(vm > 0)) {
+    std::fill(r.begin(), r.end(), kNaN);
+    return;
   }
-  std::vector<std::string> keys; // [色号] 系列
-  std::vector<int> num(rs.size());
-  for (size_t i = 0; i < rs.size(); ++i) {
-    const auto [k, n] = series_of(static_cast<size_t>(rs[i].basket));
-    num[i] = n;
-    rs[i].hue = static_cast<int>(std::find(keys.begin(), keys.end(), k) - keys.begin());
-    if (rs[i].hue == static_cast<int>(keys.size()))
-      keys.push_back(k);
+  const double b = (srm - sr * sm / n) / vm, a = (sr - b * sm) / n;
+  for (size_t k = 0; k < r.size(); ++k)
+    r[k] = std::isfinite(r[k]) && std::isfinite(m[k]) ? r[k] - a - b * m[k] : kNaN;
+}
+// 两条残差在共同日上的相关 (残差已零均值); 共同日不足 kSimMin / 无波动 → 0
+double corr(const std::vector<double> &a, const std::vector<double> &b) {
+  size_t n = 0;
+  double ab = 0, aa = 0, bb = 0;
+  for (size_t k = 0; k < a.size(); ++k)
+    if (std::isfinite(a[k]) && std::isfinite(b[k]))
+      ++n, ab += a[k] * b[k], aa += a[k] * a[k], bb += b[k] * b[k];
+  return n >= kSimMin && aa > 0 && bb > 0 ? ab / std::sqrt(aa * bb) : 0.0;
+}
+
+// 平均连接 (最近邻链, O(n²)): dist [n × n] 就地改写 → n − 1 次合并 (两簇各取一成员 a / b, 合并高 h), 按 h 升序
+struct Merge {
+  size_t a, b;
+  double h;
+};
+std::vector<Merge> average_linkage(std::vector<double> &dist, size_t n) {
+  std::vector<size_t> sz(n, 1), chain;
+  std::vector<uint8_t> live(n, 1);
+  std::vector<Merge> ms;
+  while (ms.size() + 1 < n) {
+    if (chain.empty())
+      chain.push_back(static_cast<size_t>(std::find(live.begin(), live.end(), 1) - live.begin()));
+    const size_t a = chain.back(), p = chain.size() > 1 ? chain[chain.size() - 2] : n;
+    size_t b = p; // 同距优先链上前一个 (否则可能来回不收)
+    for (size_t c = 0; c < n; ++c)
+      if (live[c] && c != a && (b == n || dist[a * n + c] < dist[a * n + b]))
+        b = c;
+    if (b != p) {
+      chain.push_back(b);
+      continue;
+    }
+    chain.resize(chain.size() - 2);
+    ms.push_back({a, b, dist[a * n + b]});
+    const double wa = static_cast<double>(sz[a]), wb = static_cast<double>(sz[b]);
+    for (size_t c = 0; c < n; ++c)
+      if (live[c] && c != a && c != b)
+        dist[b * n + c] = dist[c * n + b] = (wa * dist[a * n + c] + wb * dist[b * n + c]) / (wa + wb);
+    sz[b] += sz[a], live[a] = 0;
   }
-  for (int h = 0; h < static_cast<int>(keys.size()); ++h) {
-    std::vector<size_t> m;
-    for (size_t i = 0; i < rs.size(); ++i)
-      if (rs[i].hue == h)
-        m.push_back(i);
-    std::stable_sort(m.begin(), m.end(), [&](size_t a, size_t b) { return num[a] < num[b]; });
-    for (size_t j = 0; j < m.size(); ++j)
-      rs[m[j]].light = m.size() > 1 ? kSeriesLight * static_cast<float>(j) / static_cast<float>(m.size() - 1) : 0.f;
+  std::stable_sort(ms.begin(), ms.end(), [](const Merge &x, const Merge &y) { return x.h < y.h; });
+  return ms;
+}
+
+// 策略外四组各行定色号 / 淡化: 前 n − 色数 次合并成簇 = 一簇一色号 (按全树叶序首现编号, 相邻簇相邻号), 簇内按叶序从重到淡
+void paint(PortfolioDerived &d) {
+  std::vector<PortfolioRow *> rs;
+  size_t mkt = SIZE_MAX; // 全A.加 (残差的基准)
+  for (int g = 0; g < kNavStrat; ++g)
+    for (PortfolioRow &r : d.nav[g]) {
+      if (r.basket == static_cast<int>(basket_line(0, kWeightCap)))
+        mkt = rs.size();
+      rs.push_back(&r);
+    }
+  const size_t n = rs.size(), D = d.dates.size();
+  assert(mkt < n);
+
+  std::vector<std::vector<double>> res(n); // [行] 残差日收益 (日轴不足两日 = 空)
+  if (D > 1) {
+    const size_t T = std::min(kSimDays, D - 1), lo = D - T;
+    const std::vector<double> m = rets_of(rs[mkt]->line[kIdeal], lo, T);
+    for (size_t i = 0; i < n; ++i) {
+      res[i] = rets_of(rs[i]->line[kIdeal], lo, T);
+      residual(res[i], m);
+    }
+    std::fill(res[mkt].begin(), res[mkt].end(), kNaN); // 自身对自身回归无残差
   }
-  return static_cast<int>(keys.size());
+  const size_t K = d.prices ? d.prices->keys.size() : 0;
+  assert(!d.prices || d.prices->overlap.size() == K * K);
+  std::vector<double> dist(n * n, 0.0);
+  for (size_t i = 0; i < n; ++i)
+    for (size_t j = i + 1; j < n; ++j) {
+      double s = corr(res[i], res[j]);
+      if (K > 0 && rs[i]->basket >= 0 && rs[j]->basket >= 0)
+        s = std::max(s, static_cast<double>(d.prices->overlap[static_cast<size_t>(rs[i]->basket) * K + static_cast<size_t>(rs[j]->basket)]));
+      dist[i * n + j] = dist[j * n + i] = 1.0 - s;
+    }
+
+  const std::vector<Merge> ms = average_linkage(dist, n);
+  const size_t cut = n - std::min(n, static_cast<size_t>(ImPlot::GetColormapSize()));
+  std::vector<size_t> up(n), node(n), label(n); // 并查集 / 根所在的树结点 (< n = 叶) / 簇 (= 切时的根)
+  std::iota(up.begin(), up.end(), 0), std::iota(node.begin(), node.end(), 0);
+  const auto find = [&](size_t x) {
+    while (up[x] != x)
+      x = up[x] = up[up[x]];
+    return x;
+  };
+  std::vector<std::array<size_t, 2>> kids; // [树结点 − n] 两子
+  for (size_t k = 0;; ++k) {
+    if (k == cut)
+      for (size_t i = 0; i < n; ++i)
+        label[i] = find(i);
+    if (k == ms.size())
+      break;
+    const size_t a = find(ms[k].a), b = find(ms[k].b);
+    kids.push_back({node[a], node[b]});
+    up[a] = b, node[b] = n + k;
+  }
+  std::vector<size_t> st{node[find(0)]}, cnt(n, 0), pos(n);
+  std::vector<int> hue(n, -1);
+  int hues = 0;
+  while (!st.empty()) {
+    const size_t x = st.back();
+    st.pop_back();
+    if (x >= n) {
+      st.push_back(kids[x - n][1]), st.push_back(kids[x - n][0]);
+      continue;
+    }
+    if (hue[label[x]] < 0)
+      hue[label[x]] = hues++;
+    pos[x] = cnt[label[x]]++;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const size_t m = cnt[label[i]];
+    rs[i]->hue = hue[label[i]];
+    rs[i]->light = m > 1 ? kClusterLight * static_cast<float>(pos[i]) / static_cast<float>(m - 1) : 0.f;
+  }
 }
 // NAV 右表行选中 (缺 = 默认 PortfolioRow::on)
 bool shown(const PortfolioUIState &ui, const PortfolioRow &r) {
@@ -342,7 +462,6 @@ PortfolioCurve curve_of(const Inc &s, int l, double x0) {
 }
 // 净值线的近况 (Database::RecentOf 同一核): 日 = 每日末个点 (起点算首日前一日的日末), 前收 = 前一日的
 Database::Recent recent_of(const PortfolioCurve &c) {
-  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   double e[Database::kMarks]; // 新 → 旧
   size_t n = 0;
   double day = -1.0;
@@ -469,7 +588,6 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     const auto kp = keep.find(&f);
     PortfolioRow r;
     r.id = it.e.key();
-    r.hue = static_cast<int>(q);
     r.en = std::filesystem::path(it.e.file).stem().string();
     r.cn = clip_name(it.name_cn);
     r.tag = it.name_en + " " + factor::stat::hold_name(f.hold);
@@ -487,7 +605,6 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     d.nav[kNavFactor].push_back(std::move(r));
     shares.push_back(inc_of(f, di, fixed_impact, [&](size_t i) { return 1.0 / n_act[i]; }));
   }
-  d.hues[kNavFactor] = static_cast<int>(fc.size());
   const Inc sum = shares.empty() ? Inc{} : sum_of(std::move(shares));
   PortfolioRow s;
   s.id = "pf_strat";
@@ -508,7 +625,7 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
   d.prices = prices && !prices->list.empty() ? prices : nullptr;
   if (o.basket_gen > 0 && d.baskets == o.baskets && d.prices == o.prices && d.dates == o.dates) {
     for (int g = 0; g < kBasketGroups; ++g)
-      d.nav[g] = std::move(o.nav[g]), d.hues[g] = o.hues[g];
+      d.nav[g] = std::move(o.nav[g]);
     d.basket_gen = o.basket_gen;
     return;
   }
@@ -532,8 +649,6 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
       }
       d.nav[g].push_back(std::move(r));
     }
-  for (int g = 0; g < kBasketGroups; ++g)
-    d.hues[g] = paint(g, d.nav[g]);
 }
 
 void derive(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
@@ -542,6 +657,7 @@ void derive(const std::vector<PortfolioItem> &items, const std::string &name, co
   d = PortfolioDerived{};
   derive_factors(items, name, res, fixed_impact, o, d);
   derive_baskets(res, prices, o, d);
+  paint(d);
 }
 
 // 曲线 c 在 [x0, x1) 的切片 (见 PortfolioSlice); 整条在区间外 → 空. 年化 = 末点净值按首末点所跨交易日数复利折年 (%);
@@ -727,7 +843,6 @@ double nav_num(const PortfolioDerived &d, const PortfolioView &v, int g, size_t 
 void make_view(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs, int years, const std::array<PortfolioRoll, kPoolVals> &roll, PortfolioView &v) {
   const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
   // ---- 各线同一份切片; NAV 右表: 各数值列在同组内的截面名次 (年换手取负: 低 = 好) ----
-  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   std::array<double, kNavNums> no_rank;
   no_rank.fill(kNaN);
   for (int g = 0; g < kNavGroups; ++g) {
@@ -1504,7 +1619,7 @@ const std::string kNavTip[1 + kNavCols] = {
     "名 = 行名\n"
     "• 算法: 篮子 = 切片名 + .等 (等权) / .加 (总市值加权); 因子 / 策略 = 中文名\n"
     "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
-    "• 显示: 字色 = 主图线色 (指数组同系列同色系, 尾数小的色重); 超长截断补 …, 悬停看全名\n"
+    "• 显示: 字色 = 主图线色 (四组一起按 max(成员重合, 剔全A.加的残差相关) 聚簇: 同簇同色系, 簇内深浅渐变); 超长截断补 …, 悬停看全名\n"
     "• 适用: 全部组",
     "涨幅 = 当日涨跌幅\n"
     "• 算法: 最新一日收盘 / 前收 − 1\n"
@@ -1561,17 +1676,19 @@ const std::string kNavTip[1 + kNavCols] = {
 std::string yi_text(double y, bool sign = false) {
   const double a = std::abs(y);
   char s[32];
-  const char *pm = !sign ? "" : y < 0 ? "-" : "+";
+  const char *pm = !sign ? "" : y < 0 ? "-"
+                                      : "+";
   if (a >= 1e4)
     std::snprintf(s, sizeof(s), a >= 1e6 ? "%s%.0f万亿" : "%s%.1f万亿", pm, a / 1e4);
   else
-    std::snprintf(s, sizeof(s), a >= 10 ? "%s%.0f亿" : a >= 1 ? "%s%.1f亿" : "%s%.2f亿", pm, a);
+    std::snprintf(s, sizeof(s), a >= 10 ? "%s%.0f亿" : a >= 1 ? "%s%.1f亿"
+                                                              : "%s%.2f亿",
+                  pm, a);
   return s;
 }
 // 篮子行 h 的当日 {只数, 总市值 [亿元], 成交额 [亿元], 资金流入 (净流入 / 成交额)}: 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线
 // (总市值当日接上 × 加权线当日涨跌); 成交额 / 资金流入 = 新浪当日合成的 Day (不看接续); 非篮子 / 未到 → NaN
 std::array<double, 4> basket_today(const Database::Feed &f, const PortfolioRow &h) {
-  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   std::array<double, 4> o = {kNaN, kNaN, kNaN, kNaN};
   if (h.basket < 0 || !f.data || f.data->members.empty())
     return o;
@@ -1743,7 +1860,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
 // [列] 表头悬停说明 (名 + kVal); 各口同一模板, 只换分子 / 负值口径
 const std::array<std::string, 1 + kPoolVals> kValTip = [] {
   constexpr const char *num[kPoolVals] = {"归母净利TTM", "归母权益MRQ", "营业总收入TTM", "经营现金流TTM", "近4季报告期税前分红"}; // [PoolVal]
-  constexpr const char *neg[kPoolVals] = {"亏损计负", "负权益计负", "无收入计 0", "负现金流计负", "不分红计 0"};               // [PoolVal]
+  constexpr const char *neg[kPoolVals] = {"亏损计负", "负权益计负", "无收入计 0", "负现金流计负", "不分红计 0"};                  // [PoolVal]
   std::array<std::string, 1 + kPoolVals> o;
   o[0] = "名 = 篮子名\n"
          "• 算法: 切片名 + .等 (等权) / .加 (总市值加权)\n"

@@ -83,8 +83,8 @@ struct PortfolioRow {
   std::string hover;                                      // 悬停 (en 起头 + 详情)
   double turn = std::numeric_limits<double>::quiet_NaN(); // 年换手 (全评估期单边, 倍/年; NaN = 无)
   bool on = false;                                        // 默认选中
-  int hue = 0;                                            // 组内色号 (同系列同号; 组间按组序接着数, 见 PortfolioDerived::hues)
-  float light = 0.f;                                      // 系列内的淡化 ∈ [0, 1) (0 = 最重: 向白混)
+  int hue = 0;                                            // 色号 = 相似簇 (指数 / 行业 / 概念 / 因子四组一起聚, 见 PortfolioDerived::nav); 策略不取
+  float light = 0.f;                                      // 簇内的淡化 ∈ [0, 1) (0 = 最重: 向白混)
   int basket = -1;                                        // 篮子行: 篮子线 basket_line (BasketCurve / 篮子 Feed 同键; 近况 / 日内 / VAL 取它); 其余 −1
   std::vector<uint32_t> at;                               // 篮子行: [line[kTrade].x] → BasketCurve::dates 下标 (严格升序; 滚动窗看日并集轴以外的全史)
   PortfolioCurve line[kPairLines];
@@ -114,12 +114,11 @@ struct PortfolioDerived {
   std::vector<misc::Ymd> dates;                        // 日并集轴 (横轴 day 下标)
   std::vector<PortfolioRow> nav[kNavGroups];           // [NavGroup][行]; on = 只全A.等:
                                                        //   指数 / 行业 / 概念 = [basket_group 序] (源没算成也列, 线空); en = cut_code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
-                                                       //     色: 指数组同系列 (池名去尾数, 如 size_small400 / 200; 全A 两条) 同色号, 系列内尾数小的重 (同尾数按组序);
-                                                       //     行业 / 概念一行一号
                                                        //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key,
                                                        //     en | cn = 因子文件主干 | 中文名 (超长截断), hover = en + 全名 + 池 层 持有期 冲击段 规范串
                                                        //   策略 = 一行, 组合 G20 多头: 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | G20 多头
-  int hues[kNavGroups] = {};                           // [NavGroup] 色号数 (因子 = 行数; 策略不取色表)
+                                                       //   色: 策略外四组的行一起按相似度 s = max(成员重合, 残差相关) 聚成色表色数个簇, 一簇一色号, 簇内按树叶序淡化;
+                                                       //     成员重合 = Tape::overlap (只篮子之间), 残差相关 = 理想线末段日收益对全A.加回归的残差相关
   int n_ready = 0, n_error = 0;                        // 已算成 / 算失败的因子数
   std::vector<std::shared_ptr<const FactorCurve>> src; // [因子行] 单因子线的源 (nav[kNavFactor] 同下标)
   double impact = 0.0;                                 // 单因子线按的 fixed_impact
