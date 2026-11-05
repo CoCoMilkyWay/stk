@@ -5,15 +5,14 @@
 #include "gui/task_factors/ui/PortfolioCommon.hpp"
 #include "gui/task_factors/ui/TabFactors.hpp" // tip / hold_desc
 #include "imgui.h"
-#include "shared/Basket.hpp" // basket_name
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <mutex>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -316,22 +315,23 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   }
   PortfolioDerived &d = ui.der.val;
 
-  // ---- 三级缓存: 派生 → 滚动分位 / 末点分位 (键 = 篮子代) → 视图 (键 = 派生 gen + 二级两份 gen): 上级重算 → 下级自动重算 ----
-  ui.der.update(PortfolioDerKey{gen, ui.items_gen, ui.basket.feed.shown, fixed_impact}, [&](PortfolioDerived &dv) {
-    const std::vector<misc::Ymd> old = dv.dates;
-    MakePortfolioDerived(ui.items, ui.name, res, ui.basket.feed.data, fixed_impact, dv);
-    if (dv.dates != old) // 日轴变 → 区间回全段
-      ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
-  });
+  // ---- 三级缓存: 派生 (键含成分组: 展开行 / 选中的个股) → 滚动分位 / 末点分位 (键 = 估值代) → 视图 (键 = 派生 gen + 二级两份 gen):
+  //      上级重算 → 下级自动重算 ----
   if (ui.pick.of != ui.name) // 换组合 → 选中清掉
     ui.pick = PortfolioPick{.of = ui.name};
+  ui.der.update(PortfolioDerKey{gen, ui.items_gen, ui.basket.feed.shown, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks)},
+                [&](PortfolioDerived &dv) {
+                  const std::vector<misc::Ymd> old = dv.dates;
+                  MakePortfolioDerived(ui.items, ui.name, res, ui.basket.feed.data, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), infos, dv);
+                  if (dv.dates != old) // 日轴变 → 区间回全段
+                    ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
+                });
   if (mk)
     SyncPortfolioCons(ui, *mk->quote);
-  const std::set<std::string> &one = ui.pick.rows[kPickOne];
-  const PortfolioPin pin = one.empty() ? PortfolioPin{} : d.pin_of(*one.begin()); // VAL 标的 (篮子行 / 成分股)
-  ui.roll.update(PortfolioRollKey{d.basket_gen, ui.band_years, pin}, [&](PortfolioRolls &r) { MakePortfolioRoll(d, pin, ui.band_years, r); });
-  ui.pct.update(PortfolioPctKey{d.basket_gen, ui.band_years, ui.range.d1, ui.cons.ids},
-                [&](PortfolioPct &p) { MakePortfolioPct(d, ui.range.d1, ui.band_years, ui.cons.ids, p); });
+  const std::map<std::string, PortfolioQuote> &one = ui.pick.rows[kPickOne];
+  const PortfolioAt pin = one.empty() ? PortfolioAt{} : d.at(one.begin()->first); // VAL 标的
+  ui.roll.update(PortfolioRollKey{d.val_gen, ui.band_years, pin}, [&](PortfolioRolls &r) { MakePortfolioRoll(d, pin, ui.band_years, r); });
+  ui.pct.update(PortfolioPctKey{d.val_gen, ui.band_years, ui.range.d1}, [&](PortfolioPct &p) { MakePortfolioPct(d, ui.range.d1, ui.band_years, p); });
   ui.view.update(PortfolioViewKey{ui.der.gen, ui.roll.gen, ui.pct.gen, ui.range.d0, ui.range.d1},
                  [&](PortfolioView &vw) { MakePortfolioView(d, ui.range.d0, ui.range.d1, pin, ui.roll.val, ui.pct.val, vw); });
 
@@ -353,20 +353,17 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const float left = av.x - lw - st.ItemSpacing.x;
   const float ph = av.y - kBarH - st.ItemSpacing.y;
   const float ih = nav && ui.intraday ? std::floor((ph - st.ItemSpacing.y) / 3.0f) : 0.0f;
-  // 选中篮子行 + 点中的成分股的行情叠加图 (日内栏 / FLOW 同一份选中, 篮子线色 = 主图的), 贴边占满 size
+  // 选中的有行情键的行 (篮子 / 成分) 的行情叠加图 (日内栏 / FLOW 同一份选中, 线色 = 主图的), 贴边占满 size
   const auto basket_child = [&](const char *id, const ImVec2 &size, bool flow) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::BeginChild(id, size);
     ImGui::PopStyleVar();
     if (mk) {
       std::vector<Database::OverlayPick> picks;
-      for (int g = 0; g < kBasketGroups; ++g)
+      for (int g = 0; g < kRowGroups; ++g)
         for (size_t r = 0; r < d.rows[g].size(); ++r)
-          if (const PortfolioRow &h = d.rows[g][r]; picked(ui, page, h))
-            picks.push_back({Database::kBasket, static_cast<uint32_t>(h.basket), ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)),
-                             basket_name(static_cast<size_t>(h.basket))});
-      for (const uint32_t id : ui.pick.stocks)
-        picks.push_back({Database::kStock, id, ImGui::ColorConvertFloat4ToU32(stock_color(id)), stock_name(infos, id)});
+          if (const PortfolioRow &h = d.rows[g][r]; h.q.ok() && picked(ui, page, h))
+            picks.push_back({h.q.side, h.q.key, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag});
       if (flow)
         Database::RenderBasketFlow(*mk, ui.basket, picks);
       else
@@ -387,7 +384,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   ImGui::BeginGroup();
   if (ih > 0.0f)
     basket_child("##pf_intra", ImVec2(left, ih), false);
-  RenderPortfolioPlot(ui, pin, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), infos); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
+  RenderPortfolioPlot(ui, pin, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
   RenderPortfolioRange(ui, pin, nav, ImVec2(left, kBarH));
   ImGui::EndGroup();
   ImGui::SameLine();

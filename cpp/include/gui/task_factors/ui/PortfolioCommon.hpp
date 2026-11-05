@@ -5,11 +5,9 @@
 
 #include "gui/task_factors/ui/TabPortfolio.hpp"
 #include "imgui.h"
-#include "shared/AssetAxis.hpp" // asset_axis (成分股代码)
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <limits>
 #include <numbers>
 #include <string>
@@ -33,11 +31,12 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 池指数线 = 各池等权指数 (all 池拆 全A.等 / 全A.加); 行业线 = 申万一级 / 概念线 = 东财题材概念 (全A 内切, 总市值加权)\n"
      "• 单因子线 = 各自的 G20 多头净值\n"
      "• 每条成对: 可成交 (篮子 = 标签指数, 收盘封板不建仓 / 平仓顺延; 因子 / 策略 = 扣换手冲击) + 理想 (篮子 = 后复权收盘价指数; 因子 / 策略 = 无冲击; 同色淡线)\n"
+     "• 成分股 (篮子行 ▸ 展开, 权降序): 后复权收盘, 两条同一条; 与篮子行同一套 (点选中 = 画线 + 日内叠加; 收起后选中的照画)\n"
      "• 默认不画 (空图); 右侧类别条选一组 (指数 / 行业 / 概念 / 因子 / 策略), 点行选中 = 画该行两条, 主图例默认只显理想, 可成交点图例显; 显隐变了自动重新 fit\n"
-     "• 日内 (右侧开关, 默认开): 主图上方画选中的指数 / 行业 / 概念的日内行情 (多行 = 同主图线色叠加; 一行 = 蜡烛 + 现价十字)\n"
+     "• 日内 (右侧开关, 默认开): 主图上方画选中的指数 / 行业 / 概念 / 成分股的日内行情 (多行 = 同主图线色叠加; 一行 = 蜡烛 + 现价十字)\n"
      "• 只显示一条线: 视野内末点画现价十字 (同日内栏; 右壁标区间涨跌, 底壁标日期)\n"
      "• 底部区间条选日段: 各线在区间起点归一 = 1, 年化按区间复利",
-     kRowGroups, kPickMany, "##pf_nav_tbl"},
+     kGroupKid, kPickMany, "##pf_nav_tbl"},
     {"VAL",
      "VAL = 估值 (Valuation)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 成分股 (▸ 展开行): 主图 = 它的指数 (成分股 = 后复权收盘) + 估值 Band\n"
@@ -91,7 +90,7 @@ inline ImVec4 oklch(float L, float C, float hue) {
   return {gamma(4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s), gamma(-1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s),
           gamma(-0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s), 1.0f};
 }
-// 组 g 行 r 线 l 的色 (主图 / 右表 / 日内同一份): 策略 = kStratCol, 其余 = 行色相 (PortfolioRow::hue) 的定亮定艳色, 未定色 = 同亮度灰; 理想列 = 同色淡
+// 组 g 行 r 线 l 的色 (主图 / 右表 / 日内栏 / FLOW 图同一份): 策略 = kStratCol, 其余 = 行色相 (PortfolioRow::hue) 的定亮定艳色, 未定色 = 同亮度灰; 理想列 = 同色淡
 inline constexpr ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f);
 inline constexpr float kIdealAlpha = 0.5f;
 inline constexpr float kRowL = 0.75f, kRowC = 0.125f; // 行色的 OKLCH 亮度 / 艳度: 该亮度下整环都在 sRGB 色域内的艳度上限附近 (环不被截变形)
@@ -102,34 +101,21 @@ inline ImVec4 row_color(const PortfolioDerived &d, int g, size_t r, int l) {
   c.w = l == kIdeal ? kIdealAlpha : 1.0f;
   return c;
 }
-// 成分股的色 (叠加线 / 点中的成分行名同一份): 色相按全局 id 黄金角散开, 亮度 / 艳度同行色
-inline ImVec4 stock_color(uint32_t id) {
-  const double h = static_cast<double>(id) * 0.6180339887498949;
-  return oklch(kRowL, kRowC, static_cast<float>(h - std::floor(h)));
-}
-// 成分股的名: 简称 (无档案 / 无简称 → 代码)
-inline std::string stock_name(const StockInfos &infos, uint32_t id) {
-  if (id < infos.size() && infos[id].known && !infos[id].name.empty())
-    return infos[id].name;
-  return asset_axis().code(id);
-}
+inline ImVec4 row_color(const PortfolioDerived &d, const PortfolioAt &a, int l) { return row_color(d, a.g, a.r, l); }
 
-// 页 page 的右表行 / 成分行选中 (按页表的选中方式; NAV / FLOW 同一份): 多选页的成分 = 叠加的个股 (pick.stocks), 单选页的成分 = VAL 标的 (stock_key)
+// 页 page 的行选中 (按页表的选中方式; NAV / FLOW 同一份)
 inline bool picked(const PortfolioUIState &ui, int page, const PortfolioRow &r) { return ui.pick.rows[kPageDefs[page].pick].contains(r.id); }
-inline bool kid_picked(const PortfolioUIState &ui, int page, uint32_t id) {
-  return kPageDefs[page].pick == kPickOne ? ui.pick.rows[kPickOne].contains(stock_key(id)) : ui.pick.stocks.contains(id);
-}
 
 // ---- 图 (PortfolioPlot.cpp) ----
-// 主图 (size 贴边占满): nav → NAV 资金曲线 (右表选中行), 否则 VAL 标的 pin 的价格 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
-void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioPin &pin, bool nav, const ImVec2 &size, const StockInfos &infos);
-// 区间条 (size): 全段策略线 (nav) / VAL 标的价格线上拖选 ui.range
-void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioPin &pin, bool nav, const ImVec2 &size);
+// 主图 (size 贴边占满): nav → NAV 资金曲线 (选中行), 否则 VAL 标的 pin 的可成交线 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
+void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size);
+// 区间条 (size): 全段策略线 (nav) / VAL 标的可成交线上拖选 ui.range
+void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size);
 
 // ---- 右表 (PortfolioSheet.cpp) ----
-// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW; flow_days = FLOW 日轴 (其余页不看); infos = 成分行名 / 近况 / 估值
+// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW; flow_days = FLOW 日轴 (其余页不看); infos = 成分行的近况 / 当日
 void RenderPortfolioSheet(PortfolioUIState &ui, int page, const std::vector<misc::Ymd> &flow_days, const StockInfos &infos);
-// 展开行的成分在新浪当日的根 (ui.cons): 成分集 / 行情日 · 快照时刻变了才重取
+// 成分行在新浪当日的根 (ui.cons): 成分集 / 行情日 · 快照时刻变了才重取
 void SyncPortfolioCons(PortfolioUIState &ui, const Database::QuoteService &q);
 
 } // namespace GUI::Factors

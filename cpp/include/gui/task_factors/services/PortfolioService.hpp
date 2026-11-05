@@ -1,6 +1,6 @@
 // PortfolioService — Factors→Portfolio 页的单 worker: 因子组合 (一组合一文件) 里每个因子**独立**回测 + 全部篮子的可成交指数 / 增仓 / 估值.
-//   两者同一种成品 = 账 PortfolioBook (线 × 行的逐行增量, 列 = 毛收益 / 建仓冲击 / 固定份数 / 增仓量): 因子一本一线, 篮子一本 basket_count 线 (不扣成本 = 无冲击两列),
-//   个股一本每只一线 (只毛收益一列).
+//   两者同一种成品 = 账 PortfolioBook (线 × 行的逐行增量, 线键取线, 列 = 毛收益 / 建仓冲击 / 固定份数 / 增仓量, 另带估值):
+//   因子一本一线, 篮子一本 basket_count 线 (不扣成本 = 无冲击两列), 个股一本每只一线 (只毛收益一列).
 //
 // 组合文件 <config.portfolio_dir>/<name>.json (name = 主干, ValidFactorName):
 //   { "factors": [ { "pool": "all", "level": "5min", "file": "mom30.json", "hold": 30, "sign": -1, "expr": "<具体规范串>" }, … ] }
@@ -99,30 +99,30 @@ enum BookCol : int { kBookRet,   // 毛收益 (因子 = G20 多头; 篮子 = 可
                      kBookFix,   // 固定冲击份数 (UI × Config::fixed_impact; 篮子无此列); 净 = ret − imp − fix · fixed_impact
                      kBookBuy }; // 增仓量 Δw⁺ (UI 折年化单边换手)
 inline constexpr int kBookCols = 4;
-// 一本账 (因子 / 篮子 / 个股同形): 线 × 行 = [线][T = 日 · S]; 因子一线 (该 hold), 篮子 basket_count 线 (线 = basket_line, shared/Basket.hpp),
-// 个股 = all 池轴的每只一线 (ids; 只毛收益一列 + 估值)
+// 一本账 (因子 / 篮子 / 个股同形): 线 × 行 = [线][T = 日 · S], 线键 keys 升序 (line_of 统一取线): 因子一线 (键 0, 该 hold),
+// 篮子 basket_count 线 (键 = basket_line, shared/Basket.hpp), 个股 = all 池轴的每只一线 (键 = 全局 id; 只毛收益一列 + 估值)
 struct PortfolioBook {
-  std::string sig;                   // 算时的任务签名 (FactorTask / BasketTask::sig)
-  std::vector<misc::Ymd> dates;      // [D] 评估期
-  LevelId lv = 0;                    // 层 (每日行数 S)
-  int amt = kAmtFixed;               // 冲击段 (amt_name): 因子 = 主段; 篮子不扣成本, 恒 kAmtFixed
-  BookLines col[kBookCols];          // [BookCol][线][T]; 篮子不扣成本: kBookImp / kBookFix 无列 (n = 0)
-  std::vector<float> val[kPoolVals]; // [PoolVal][线 · D] 估值 EP / BP / SP / CP / DY (篮子: 等权 = 个股收益率均值 / 加权 = 整体法收益率; 个股: 本只收益率;
-                                     //   NaN = 当日不可算); 因子空
-  std::vector<uint32_t> ids;         // [线] 个股账: 线 → 全局 id (升序); 其余空
-  std::string error;                 // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
-  size_t lines() const { return static_cast<size_t>(col[kBookRet].n); }
-  size_t line_of(uint32_t id) const { // 个股账: 全局 id → 线; 不在 → lines()
-    const auto it = std::lower_bound(ids.begin(), ids.end(), id);
-    return it != ids.end() && *it == id ? static_cast<size_t>(it - ids.begin()) : lines();
+  std::string sig;              // 算时的任务签名 (FactorTask / BasketTask::sig)
+  std::vector<misc::Ymd> dates; // [D] 评估期
+  LevelId lv = 0;               // 层 (每日行数 S)
+  int amt = kAmtFixed;          // 冲击段 (amt_name): 因子 = 主段; 篮子不扣成本, 恒 kAmtFixed
+  std::vector<uint32_t> keys;   // [线] 线键 (升序)
+  BookLines col[kBookCols];     // [BookCol][线][T]; 篮子不扣成本: kBookImp / kBookFix 无列 (n = 0)
+  BookLines val[kPoolVals];     // [PoolVal][线][D] 估值 EP / BP / SP / CP / DY (篮子: 等权 = 个股收益率均值 / 加权 = 整体法收益率; 个股: 本只收益率;
+                                //   NaN = 当日不可算); 因子无列 (n = 0)
+  std::string error;            // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
+  size_t lines() const { return keys.size(); }
+  size_t line_of(uint32_t key) const { // 线键 → 线; 不在 → lines()
+    const auto it = std::lower_bound(keys.begin(), keys.end(), key);
+    return it != keys.end() && *it == key ? static_cast<size_t>(it - keys.begin()) : lines();
   }
   const float *at(int k, size_t line) const { // [T]; 无列 → nullptr
     assert(line < lines());
     return col[k].n ? col[k].at(static_cast<int>(line)) : nullptr;
   }
   const float *val_of(size_t line, int m) const { // [D]
-    assert(line < lines() && !val[m].empty());
-    return val[m].data() + line * dates.size();
+    assert(line < lines() && val[m].n);
+    return val[m].at(static_cast<int>(line));
   }
 };
 struct PortfolioResult {

@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <numeric>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -221,8 +222,10 @@ using PortfolioProbes = Probes<BookP>;
 // 因子缓存: reload → 全丢; 本请求的 (used = now) 都留, 其余按上次被请求的先后 (旧的先丢) 丢到总字节 ≤ kKeepBytes
 constexpr size_t kKeepBytes = size_t{1} << 30;
 size_t bytes_of(const PortfolioBook &b) {
-  size_t n = b.dates.size() * sizeof(misc::Ymd);
+  size_t n = b.dates.size() * sizeof(misc::Ymd) + b.keys.size() * sizeof(uint32_t);
   for (const BookLines &c : b.col)
+    n += c.v.size() * sizeof(float);
+  for (const BookLines &c : b.val)
     n += c.v.size() * sizeof(float);
   return n;
 }
@@ -341,7 +344,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
       W.put([&](PortfolioResult &r) { r.factors[ts[static_cast<size_t>(e)]->key] = std::move(b); });
     }
     void fail(int e, const std::string &why) { land(e, book(e, why)); }
-    // 条目 e 的根 k 评完: 列 hi · kBookCols 起的一段, 一列一线
+    // 条目 e 的根 k 评完: 列 hi · kBookCols 起的一段, 一列一线 (键 0)
     void post(int e, int k) {
       const PortfolioProbes &p = ps[static_cast<size_t>(k)];
       auto b = book(e, "");
@@ -349,6 +352,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
       assert(hi >= 0);
       b->dates = o.job.dm.dates;
       b->amt = o.job.spec.y.ad.k[0];
+      b->keys = {0};
       for (int c = 0; c < kBookCols; ++c)
         b->col[c] = p.at<BookP>().out.slice(hi * kBookCols + c, 1);
       land(e, std::move(b));
@@ -360,8 +364,8 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return settle(rc);
 }
 
-// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 两本账同发布: 篮子 basket_count 线 (不扣成本: 无 imp / fix 列)
-// + 个股 all 池轴每只一线 (只毛收益; 线 → 全局 id = 评估域池轴)
+// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 两本账同发布: 篮子 basket_count 线 (键 = basket_line; 不扣成本: 无 imp / fix 列)
+// + 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益)
 bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   TraceN("PortfolioBaskets");
   assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
@@ -378,16 +382,22 @@ bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
     b->error = s->error = j.why;
   } else {
     b->dates = s->dates = j.dm.dates;
-    assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == b->dates.size());
-    assert(bs.buy.n == bs.index.n && bs.buy.P == bs.index.P);
-    assert(bs.stock.n == static_cast<int>(j.dm.rs.axis.size()) && bs.stock.P == bs.index.P);
+    const int D = static_cast<int>(b->dates.size());
+    assert(bs.index.n == static_cast<int>(basket_count()) && bs.index.P == D);
+    assert(bs.buy.n == bs.index.n && bs.buy.P == D);
+    assert(bs.stock.n == static_cast<int>(j.dm.rs.axis.size()) && bs.stock.P == D);
+    b->keys.resize(basket_count());
+    std::iota(b->keys.begin(), b->keys.end(), 0u);
+    s->keys = j.dm.rs.axis.ids;
+    assert(std::ranges::is_sorted(s->keys) && "池轴 sub → 全局 id 升序 (line_of 二分)");
     b->col[kBookRet] = std::move(bs.index);
     b->col[kBookBuy] = std::move(bs.buy);
     s->col[kBookRet] = std::move(bs.stock);
-    s->ids = j.dm.rs.axis.ids;
-    assert(std::ranges::is_sorted(s->ids) && "池轴 sub → 全局 id 升序 (line_of 二分)");
-    for (int m = 0; m < kPoolVals; ++m)
-      b->val[m] = std::move(bs.val[m]), s->val[m] = std::move(bs.stock_val[m]);
+    for (int m = 0; m < kPoolVals; ++m) {
+      assert(bs.val[m].size() == b->keys.size() * b->dates.size() && bs.stock_val[m].size() == s->keys.size() * s->dates.size());
+      b->val[m] = {bs.index.n, D, std::move(bs.val[m])};
+      s->val[m] = {bs.stock.n, D, std::move(bs.stock_val[m])};
+    }
   }
   put([&](PortfolioResult &r) { r.baskets = std::move(b), r.stocks = std::move(s); });
   return true;

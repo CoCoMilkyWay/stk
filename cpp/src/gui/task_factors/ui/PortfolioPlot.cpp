@@ -78,13 +78,13 @@ void setup_day_axis(const std::vector<misc::Ymd> &dates) {
 }
 
 // 组线宽 [RowGroup] (策略加粗)
-constexpr float kRowWidth[kRowGroups] = {1.0f, 1.0f, 1.0f, 1.0f, 2.0f};
-// 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 篮子, 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
+constexpr float kRowWidth[kRowGroups] = {1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 1.0f};
+// 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分), 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
 constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"有冲击", "无冲击"}};
 constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", " 无冲击"}};
-int pair_kind(int g) { return g >= kGroupFactor; }
+int pair_kind(const PortfolioRow &r) { return !r.q.ok(); }
 
-// VAL 线表 (价格线色 = 该篮子行的 row_color): band 填色 / 线 / 线尾刻度的 alpha
+// VAL 线表 (标的线色 = 该行的 row_color): band 填色 / 线 / 线尾刻度的 alpha
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f;
 // VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 band 线看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
 struct ValMark {
@@ -224,7 +224,7 @@ bool now_cross(const PlotFrame &pf, const std::vector<misc::Ymd> &dates, NowCros
   return true;
 }
 
-// ---- NAV 主图: 画右表选中行的两条线, 按组序 (策略在最上层). 主图例 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###线 ID 定 ID (数值变了不换 item);
+// ---- NAV 主图: 画选中行的两条线, 按 kPlotOrder (策略在最上层). 主图例 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###线 ID 定 ID (数值变了不换 item);
 //      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制回默认显隐一次: 理想列显, 可成交列隐) ----
 void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PlotFrame &pf) {
   struct Draw {
@@ -234,7 +234,7 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
     ImVec4 col;
   };
   std::vector<Draw> ds; // 画序, 只含选中行的
-  for (int g = 0; g < kRowGroups; ++g)
+  for (const int g : kPlotOrder)
     for (size_t r = 0; r < d.rows[g].size(); ++r)
       if (picked(ui, kPageNav, d.rows[g][r]))
         for (int l = 0; l < kPairLines; ++l)
@@ -246,9 +246,9 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
       std::snprintf(ann, sizeof(ann), "(年化=%+5.1f%%)", x.s->ann);
     if (std::isfinite(x.s->sharpe))
       std::snprintf(shp, sizeof(shp), "(夏普=%+5.2f)", x.s->sharpe);
-    if (std::isfinite(x.row->turn))
-      std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", x.row->turn);
-    rows.push_back({x.row->cn, kPairName[pair_kind(x.g)][x.l], ann, shp, turn});
+    if (const double t = x.row->line[kTrade]->turn; std::isfinite(t))
+      std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", t);
+    rows.push_back({x.row->cn, kPairName[pair_kind(*x.row)][x.l], ann, shp, turn});
   }
   const std::vector<std::string> texts = align_cols(rows);
   for (size_t i = 0; i < ds.size(); ++i) {
@@ -261,7 +261,7 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
     if (ImPlot::IsLegendEntryHovered(lb.c_str()))
       tip("%s", x.row->hover.c_str());
     if (pf.item(lb.c_str())) {
-      push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.row->tag + kPairTag[pair_kind(x.g)][x.l]);
+      push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.row->tag + kPairTag[pair_kind(*x.row)][x.l]);
       pf.lines.push_back(x.s);
     }
   }
@@ -473,17 +473,11 @@ void hover_contour(const PortfolioDerived &d, const PortfolioView &v, const Port
       vm.name, vm.inv, m, vm.name, y_line, day / 10000, day / 100 % 100, day % 100, hu * m, px, vm.inv, now, vm.name, y_now, 100.0 * (m / now - 1.0));
 }
 
-// VAL 标的的价格线色: 篮子行 = 行色, 成分股 = 叠加色 (同右表成分行名)
-ImVec4 pin_color(const PortfolioDerived &d, const PortfolioPin &pin) {
-  return pin.row.g >= 0 ? row_color(d, pin.row.g, pin.row.r, kTrade) : stock_color(pin.stock);
-}
-
 // ---- VAL 主图: 标的各口滚动 band (填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
-//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关; 不进 fit) + 价格线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) ----
-void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const PortfolioPin &pin, PlotFrame &pf,
-              const StockInfos &infos) {
+//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关; 不进 fit) + 标的可成交线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) ----
+void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const PortfolioAt &pin, PlotFrame &pf) {
   static ValLegendHl s_hl;
-  const PortfolioSlice &sl = v.px;
+  const PortfolioSlice &sl = v.slice[pin.g][pin.r][kTrade];
   const double *bx = v.band_x.data();
   const int bn = static_cast<int>(v.band_x.size());
   for (int b = 0; b < kPoolVals; ++b) {
@@ -532,10 +526,10 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
     assert(it);
     on[b] = it->Show;
   }
-  ImPlot::SetNextLineStyle(pin_color(d, pin), 2.0f);
+  ImPlot::SetNextLineStyle(row_color(d, pin, kTrade), 2.0f);
   plot_slice("##pf_val_px", sl);
   if (const ImPlotItem *it = pf.item("##pf_val_px")) {
-    push_tag(pf.tags, pf.lim, sl, it->Color, pin.row.g >= 0 ? d.rows[pin.row.g][pin.row.r].tag : stock_name(infos, pin.stock));
+    push_tag(pf.tags, pf.lim, sl, it->Color, d.row(pin).tag);
     pf.lines.push_back(&sl);
     ImPlotPoint p;
     if (end_point(pf.lim, sl.size(), [&](size_t i) { return slice_pt(sl, i); }, p))
@@ -552,7 +546,7 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
 } // namespace
 
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); fit 键变 → 本帧 fit, x 右端留出线尾小字 / 刻度 / 十字标签 ----
-void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioPin &pin, bool nav, const ImVec2 &size, const StockInfos &infos) {
+void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size) {
   const PortfolioDerived &d = ui.der.val;
   const PortfolioView &v = ui.view.val;
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
@@ -579,8 +573,8 @@ void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioPin &pin, bool nav
     PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}};
     if (nav)
       plot_nav(ui, d, v, pf);
-    else if (pin.leg.b)
-      plot_val(ui, d, v, pin, pf, infos);
+    else if (pin.g >= 0)
+      plot_val(ui, d, v, pin, pf);
     ui.shown_key = std::move(pf.shown);
     NowCross cross{};
     const bool crossed = now_cross(pf, d.dates, cross);
@@ -601,9 +595,9 @@ void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioPin &pin, bool nav
   ImPlot::PopStyleVar(2);
 }
 
-// ---- 区间条: 全段组合 (有冲击) / VAL 标的价格 (可成交指数 / 后复权收盘); 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
+// ---- 区间条: 全段组合 (有冲击) / VAL 标的可成交线 (可成交指数 / 后复权收盘); 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
 //   左右边 = 竖把手 (拖改起止, 双击拉到头); 段内拖 = 平移 (月数不变); 悬停 / 拖动时把手旁标起止日
-void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioPin &pin, bool nav, const ImVec2 &size) {
+void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size) {
   const PortfolioDerived &d = ui.der.val;
   PortfolioRange &rg = ui.range;
   const int D = static_cast<int>(d.dates.size());
@@ -616,8 +610,10 @@ void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioPin &pin, bool na
   setup_day_axis(d.dates);
   if (ui.log_y)
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-  const PortfolioLine &rc = nav ? d.rows[kGroupStrat][0].line[kTrade] : ui.roll.val.px; // 无标的 → 空
-  ImPlot::SetNextLineStyle(nav || !pin.leg.b ? kStratCol : pin_color(d, pin), 1.0f);
+  const PortfolioLine none;
+  const PortfolioLine &rc = nav ? *d.rows[kGroupStrat][0].line[kTrade] : pin.g >= 0 ? *d.row(pin).line[kTrade]
+                                                                                    : none;
+  ImPlot::SetNextLineStyle(nav || pin.g < 0 ? kStratCol : row_color(d, pin, kTrade), 1.0f);
   ImPlot::PlotLine("##pf_range_line", rc.x.data(), rc.y.data(), static_cast<int>(rc.x.size()));
   if (D > 0) {
     std::vector<int> ms; // 吸附点 = 月初下标, 末尾补 D

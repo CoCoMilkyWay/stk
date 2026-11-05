@@ -37,7 +37,6 @@
 #include <numeric>
 #include <optional>
 #include <ranges>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -473,8 +472,7 @@ TaskHandle CreateFactorsTask(std::shared_ptr<Database::Market> market) {
           return k;
         }();
         Database::Sync(*state->market, Database::kBasket, lines, state->portfolio_ui.basket.feed);
-        const std::set<uint32_t> &stocks = state->portfolio_ui.pick.stocks;
-        Database::Sync(*state->market, Database::kStock, std::vector<uint32_t>(stocks.begin(), stocks.end()), state->portfolio_ui.basket.stocks);
+        Database::Sync(*state->market, Database::kStock, state->portfolio_ui.pick.stocks(Factors::kPickMany), state->portfolio_ui.basket.stocks);
         mk = state->market.get();
       }
       const int action =
