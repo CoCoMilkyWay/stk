@@ -371,13 +371,12 @@ bool PortfolioService::eval(const PoolTask &t, FactorFlow &F) {
   } else {
     const std::vector<misc::Ymd> &dates = j.dm.dates;
     const size_t nd = dates.size();
-    assert(bs.index.n == static_cast<int>(Baskets::count()) * kWeights && static_cast<size_t>(bs.index.P) == nd && bs.index_px.n == bs.index.n);
+    assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == nd);
     for (const PoolId p : pool_ids()) {
-      const size_t b0 = Baskets::of_pool(p), nk = p == kAllPool ? Baskets::kAllBaskets : 1;
+      const size_t b0 = cut_of(p), nk = p == kAllPool ? kAllCuts : 1;
       auto c = std::make_shared<PoolCurve>();
       c->dates = dates;
-      c->index = bs.index.slice(Baskets::index_line(b0, 0), static_cast<int>(nk) * kWeights);
-      c->index_px = bs.index_px.slice(Baskets::index_line(b0, 0), static_cast<int>(nk) * kWeights);
+      c->index = bs.index.slice(static_cast<int>(basket_line(b0, kWeightEq)), static_cast<int>(nk) * kWeights);
       for (int w = 0; w < kWeights; ++w)
         c->turn[w] = bs.turn[w][p] * factor::stat::kDaysPerYear * ft.seg;
       for (int w = 0; w < kWeights; ++w)

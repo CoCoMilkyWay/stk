@@ -1,7 +1,7 @@
 // Assets 行情公共件: 个股 / 篮子 × 历史 (Kline) / 当日 (Day) 四路同一套类型 + 槽代数 + 篮子合成核
 //
 //            历史 (落盘, 后台读一次) → Kline                         当日 (新浪, 快照线程每轮) → Day
-//   个股     StockHistory: bar1d 行 + bar1m 行 (Bar1mDay)            QuoteService::today(i): 本只的根
+//   个股     StockHistory: bar1d 行 + bar1m 行 (Bar1mDay)            QuoteService::today(id): 本只的根
 //   篮子     BasketHistory: all.bar L_1day 行 + L_1min 行 → Fold     QuoteService::today(篮子): bind 的成员表 → Fold
 //   个股 / 篮子只差 Fold 一步, 历史 / 当日只差源.
 //
@@ -67,10 +67,9 @@ constexpr Cell cell(float o, float h, float l, float c, double v, double a) {
   return {o > 0 ? o : c, h > 0 ? h : c, l > 0 ? l : c, c, v, a};
 }
 
-// 一根: 日线 (slot 0) / 分钟 (slot = 槽); ref = 所在日前收 (0 = 无)
+// 一根带日: 日根 / 绘图的分钟根; ref = 所在日前收 (0 = 无)
 struct Candle : Cell {
   misc::Ymd date = 0;
-  int slot = 0;
   float ref = 0;
 };
 
@@ -103,15 +102,14 @@ struct Kline {
   std::vector<Bars> minutes; // 日升序, 无成交的日不收
 };
 
-// 一个标的一个交易日 (当日 / 合成的一日); date 0 = 无
+// 一个标的一个交易日 (当日 / 合成的一日); candle.date 0 = 无
 struct Day {
-  misc::Ymd date = 0;
   misc::Ymd prev = 0; // 前一交易日
   Candle candle;      // 日根 (ref = 前收)
   Bars bars;          // 分钟根
 };
 
-inline bool joins(const Kline &k, const Day &d) { return d.date != 0 && d.prev == k.last; }
+inline bool joins(const Kline &k, const Day &d) { return d.candle.date != 0 && d.prev == k.last; }
 
 // 历史一路的发布 (两个历史服务同形)
 template <class T>
@@ -151,15 +149,17 @@ public:
   // slots = 合成前几槽的分钟 (0 = 只合日根; 当日 = 此刻所在根 + 1)
   void open(int slots);
   void add(const Leg &g, std::span<const Members::Weight> ws);
-  // level[b] = 前日点位; 无成员 / 无成交 / 无点位的篮子 out[b].date = 0
+  // level[b] = 前日点位; 无成员 / 无成交 / 无点位的篮子 out[b].candle.date = 0
   void finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, std::span<Day> out);
 
 private:
+  // 一格 = 开 高 低 收 (比 × 权) / 额; 格 0 = 日根, 格 1 + s = 槽 s
+  static constexpr size_t kQ = 5, kCells = 1 + kSlots;
+  size_t cells() const { return 1 + static_cast<size_t>(slots_); }
   int slots_ = 0;
-  int end_ = -1;                           // 有根的末槽
-  std::vector<double> sw_;                 // [篮子] Σ w
-  std::vector<std::array<double, 5>> day_; // [篮子] 开 高 低 收 (比 × 权) / 额
-  std::vector<double> bars_;               // [篮子][kSlots][5] 同上
+  int end_ = -1;            // 有根的末槽
+  std::vector<double> sw_;  // [篮子] Σ w
+  std::vector<double> acc_; // [篮子][kCells][kQ]
 };
 
 } // namespace GUI::Database

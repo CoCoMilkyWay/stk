@@ -4,16 +4,32 @@
 
 namespace GUI::Database {
 
-Fold::Fold(size_t baskets) : sw_(baskets), day_(baskets), bars_(baskets * kSlots * 5) {}
+namespace {
+
+// 一根 → 一格的比 (价 / 基准) + 额; 无根 → 平于 at, 额 0
+void ratio(const Cell *c, double inv, double at, double *q) {
+  if (c)
+    q[0] = c->open * inv, q[1] = c->high * inv, q[2] = c->low * inv, q[3] = c->close * inv, q[4] = c->amount;
+  else
+    q[0] = q[1] = q[2] = q[3] = at, q[4] = 0;
+}
+
+// 一格 (比 × 权之和) → 一根 (× f = 前日点位 / Σ w)
+Cell scaled(const double *a, double f) {
+  return {static_cast<float>(a[0] * f), static_cast<float>(a[1] * f), static_cast<float>(a[2] * f), static_cast<float>(a[3] * f), 0, a[4]};
+}
+
+} // namespace
+
+Fold::Fold(size_t baskets) : sw_(baskets), acc_(baskets * kCells * kQ) {}
 
 void Fold::open(int slots) {
   assert(slots >= 0 && slots <= kSlots);
-  std::fill(sw_.begin(), sw_.end(), 0.0);
-  std::fill(day_.begin(), day_.end(), std::array<double, 5>{});
-  if (slots > 0)
-    std::fill(bars_.begin(), bars_.end(), 0.0);
   slots_ = slots;
   end_ = -1;
+  std::fill(sw_.begin(), sw_.end(), 0.0);
+  for (size_t b = 0; b < sw_.size(); ++b)
+    std::fill_n(acc_.begin() + static_cast<ptrdiff_t>(b * kCells * kQ), cells() * kQ, 0.0);
 }
 
 void Fold::add(const Leg &g, std::span<const Members::Weight> ws) {
@@ -21,33 +37,24 @@ void Fold::add(const Leg &g, std::span<const Members::Weight> ws) {
   if (ws.empty() || !(g.base > 0))
     return;
   const double inv = 1.0 / g.base;
-  const std::array<double, 5> k = g.day ? std::array<double, 5>{g.day->open * inv, g.day->high * inv, g.day->low * inv,
-                                                                g.day->close * inv, g.day->amount}
-                                        : std::array<double, 5>{1, 1, 1, 1, 0};
-  const size_t n = static_cast<size_t>(slots_) * 5;
-  std::array<double, kSlots * 5> r; // 各根 开 高 低 收 (比) / 额
+  std::array<double, kCells * kQ> r;
+  ratio(g.day, inv, 1, r.data());
   double c = 1;
-  for (size_t s = 0; s < static_cast<size_t>(slots_); ++s) {
-    double *q = r.data() + s * 5;
-    if (g.bars->has[s]) {
-      const Cell &b = g.bars->cell[s];
-      q[0] = b.open * inv, q[1] = b.high * inv, q[2] = b.low * inv, q[3] = c = b.close * inv, q[4] = b.amount;
-      end_ = std::max(end_, static_cast<int>(s));
-    } else {
-      q[0] = q[1] = q[2] = q[3] = c, q[4] = 0;
-    }
+  for (int s = 0; s < slots_; ++s) {
+    const Cell *b = g.bars->has[static_cast<size_t>(s)] ? &g.bars->cell[static_cast<size_t>(s)] : nullptr;
+    double *q = r.data() + (1 + static_cast<size_t>(s)) * kQ;
+    ratio(b, inv, c, q);
+    if (b)
+      c = q[3], end_ = std::max(end_, s);
   }
+  const size_t n = cells() * kQ;
   for (const Members::Weight &w : ws) {
     sw_[w.basket] += w.w;
-    std::array<double, 5> &a = day_[w.basket];
-    for (size_t j = 0; j < 4; ++j)
-      a[j] += w.w * k[j];
-    a[4] += k[4];
-    double *acc = bars_.data() + static_cast<size_t>(w.basket) * kSlots * 5;
-    for (size_t s = 0; s < n; s += 5) {
-      for (size_t j = 0; j < 4; ++j)
-        acc[s + j] += w.w * r[s + j];
-      acc[s + 4] += r[s + 4];
+    double *a = acc_.data() + static_cast<size_t>(w.basket) * kCells * kQ;
+    for (size_t j = 0; j < n; j += kQ) {
+      for (size_t k = 0; k < 4; ++k)
+        a[j + k] += w.w * r[j + k];
+      a[j + 4] += r[j + 4];
     }
   }
 }
@@ -56,26 +63,18 @@ void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, st
   assert(level.size() == sw_.size() && out.size() == sw_.size());
   for (size_t b = 0; b < sw_.size(); ++b) {
     Day &o = out[b];
-    const std::array<double, 5> &k = day_[b];
-    if (!(sw_[b] > 0 && k[4] > 0 && level[b] > 0)) {
-      o.date = 0;
+    const double *a = acc_.data() + b * kCells * kQ;
+    if (!(sw_[b] > 0 && a[4] > 0 && level[b] > 0)) {
+      o.candle.date = 0;
       continue;
     }
     const double f = level[b] / sw_[b];
-    o.date = d, o.prev = prev;
-    o.candle = {{static_cast<float>(k[0] * f), static_cast<float>(k[1] * f), static_cast<float>(k[2] * f),
-                 static_cast<float>(k[3] * f), 0, k[4]},
-                d,
-                0,
-                static_cast<float>(level[b])};
+    o.prev = prev;
+    o.candle = {scaled(a, f), d, static_cast<float>(level[b])};
     o.bars.date = d;
     o.bars.has.reset();
-    const double *acc = bars_.data() + b * kSlots * 5;
-    for (int s = 0; s <= end_; ++s) {
-      const double *a = acc + static_cast<size_t>(s) * 5;
-      o.bars.add(s, {static_cast<float>(a[0] * f), static_cast<float>(a[1] * f), static_cast<float>(a[2] * f),
-                     static_cast<float>(a[3] * f), 0, a[4]});
-    }
+    for (int s = 0; s <= end_; ++s)
+      o.bars.add(s, scaled(a + (1 + static_cast<size_t>(s)) * kQ, f));
   }
 }
 

@@ -101,7 +101,6 @@ void RenderTabAssets(
     Asset &asset,
     const StockInfoMap &stock_info,
     AssetsState &assets_state,
-    QuoteService &live,
-    StockHistory &stock);
+    Market &market);
 
 } // namespace GUI::Database

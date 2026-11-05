@@ -1,12 +1,12 @@
 #include "gui/task_database/services/BasketHistory.hpp"
 
-#include "features/Method/Fundamental.hpp" // fund::SW2021_L1_NAMES
 #include "features/Storage/FeatureRead.hpp"
-#include "shared/AssetAxis.hpp"
+#include "shared/Basket.hpp" // basket_line / basket_name / cut_of
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <initializer_list>
 #include <string_view>
 
 namespace GUI::Database {
@@ -63,28 +63,30 @@ void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
     r.pre[a] = val(dc, 0, kPre, a);
     r.shares[a] = val(dc, 0, kShares, a);
     const float k = val(dc, 0, kInd, a);
-    r.ind[a] = k >= 1.f && k < static_cast<float>(fund::SW2021_L1_COUNT) ? static_cast<uint8_t>(k + 0.5f) : 0;
+    r.ind[a] = k >= 1.f && k < static_cast<float>(kAllCuts) ? static_cast<uint8_t>(k + 0.5f) : 0;
     for (size_t p = 1; p < NP; ++p)
       r.pool[(p - 1) * A + a] = val(dc, 0, kPools + p - 1, a) > 0.5f;
   }
 }
 
-// 收盘行 r 定次日成员表 (下标 = 池轴; 篮子序见 pool_basket / industry_basket)
+// 收盘行 r 定次日成员表 (下标 = 库轴): 所属切片各进等权 (1) / 加权 (收盘市值; 缺股本不进)
 void members(const Row &r, size_t A, size_t NP, Members &m) {
   m.clear();
   for (size_t a = 0; a < A; ++a) {
     const float c = r.px[3][a], cap = c * r.shares[a];
+    const auto put = [&](size_t cut) {
+      m.add(static_cast<uint32_t>(basket_line(cut, kWeightEq)), 1.f);
+      if (cap > 0)
+        m.add(static_cast<uint32_t>(basket_line(cut, kWeightCap)), cap);
+    };
     if (c > 0 && r.live[a]) {
-      m.add(static_cast<uint32_t>(pool_basket(kAllPool, false)), 1.f);
-      if (cap > 0) {
-        m.add(static_cast<uint32_t>(pool_basket(kAllPool, true)), cap);
-        if (r.ind[a])
-          m.add(static_cast<uint32_t>(industry_basket(r.ind[a])), cap);
-      }
+      put(0);
+      if (r.ind[a])
+        put(r.ind[a]);
     }
     for (PoolId p = 1; c > 0 && p < NP; ++p)
       if (r.pool[(p - 1) * A + a])
-        m.add(static_cast<uint32_t>(pool_basket(p, false)), 1.f);
+        put(cut_of(p));
     m.next();
   }
 }
@@ -122,7 +124,7 @@ bool BasketHistory::run(BasketRequest &req) {
   if (dates.size() < 2) // 首日只给成员 / 基准, 次日起才有根: 落盘 (清单日期轴可能还在算) 不足 2 日 → 空发布
     return publish();
 
-  const size_t A = lib.axis.size(), NP = pool_count(), N = dates.size(), NB = NP + fund::SW2021_L1_COUNT;
+  const size_t A = lib.axis.size(), NP = pool_count(), N = dates.size(), NB = basket_count();
   std::vector<size_t> dcols = {col_of(L_1day, "cs_valid", ts::TfId::None), col_of(L_1day, "ts_valid", ts::TfId::None),
                                col_of(L_1day, "open_day", ts::TfId::None), col_of(L_1day, "high_day", ts::TfId::None),
                                col_of(L_1day, "low_day", ts::TfId::None), col_of(L_1day, "close_day", ts::TfId::None),
@@ -134,83 +136,81 @@ bool BasketHistory::run(BasketRequest &req) {
   const std::vector<size_t> mcols = {col_of(L_1min, "ts_valid", ts::TfId::None), col_of(L_1min, "open", ts::TfId::None),
                                      col_of(L_1min, "high", ts::TfId::None), col_of(L_1min, "low", ts::TfId::None),
                                      col_of(L_1min, "close", ts::TfId::None), col_of(L_1min, "amount", ts::TfId::Log)};
-  FeatureRead::DayColumns dc, mc;
-  dc.preallocate(A, L_1day, dcols.size());
+  const size_t T = static_cast<size_t>(pool_.threads()), batch = 2 * T;
+  std::vector<FeatureRead::DayColumns> dc(T); // 按线程
+  for (FeatureRead::DayColumns &c : dc)
+    c.preallocate(A, L_1day, dcols.size());
+  FeatureRead::DayColumns mc;
   mc.preallocate(A, L_1min, mcols.size());
 
   out->list.resize(NB);
-  out->list[pool_basket(kAllPool, false)].name = "全A等权";
-  out->list[pool_basket(kAllPool, true)].name = "全A加权";
-  for (PoolId p = 1; p < NP; ++p)
-    out->list[pool_basket(p, false)].name = pool_def(p).name_cn;
-  for (size_t k = 1; k < fund::SW2021_L1_COUNT; ++k) {
-    Basket &b = out->list[industry_basket(k)];
-    b.name = fund::SW2021_L1_NAMES[k];
-    b.industry = true;
-  }
+  for (size_t c = 0; c < cut_count(); ++c)
+    for (const Weight w : {kWeightEq, kWeightCap})
+      out->list[basket_line(c, w)].name = basket_name(c, w);
   for (Basket &b : out->list)
     b.kline.last = dates.back();
 
-  Row rows[2]; // 第 i 日 = rows[i % 2]
+  std::vector<Row> rows(batch + 1); // [0] = 上一批末日, [1 + k] = 本批第 k 日
+  const auto read = [&](size_t i, Row &r, size_t tid) {
+    rd.load_day_columns(dates[i], dcols, dc[tid]);
+    read_row(dc[tid], A, NP, r);
+    x_.publish(1);
+  };
   Members mem;
   std::vector<double> level(NB, kBase);
   std::vector<Day> day(NB);
   Fold fold(NB);
   Bars bars; // 一只一日的分钟根
   x_.begin(Phase::Loading, N);
-  for (size_t i = 0; i < N; ++i) {
-    if (cancel_.load(std::memory_order_relaxed))
+  read(0, rows[0], 0);
+  for (size_t i0 = 1; i0 < N; i0 += batch) {
+    if (cancel_.load(std::memory_order_relaxed) || rd.stale())
       return false;
-    const misc::Ymd d = dates[i];
-    rd.load_day_columns(d, dcols, dc);
+    const size_t n = std::min(batch, N - i0);
+    pool_.tasks(static_cast<int>(n), [&](int k, int tid) { read(i0 + static_cast<size_t>(k), rows[1 + static_cast<size_t>(k)], static_cast<size_t>(tid)); });
     if (rd.stale())
       return false;
-    Row &cur = rows[i % 2];
-    read_row(dc, A, NP, cur);
-    x_.publish(1);
-    if (i < 1)
-      continue;
-    const Row &prev = rows[(i - 1) % 2];
-    members(prev, A, NP, mem);
-    const bool minutes = i + kMinuteDays >= N;
-    if (minutes) {
-      rd.load_day_columns(d, mcols, mc);
-      if (rd.stale())
-        return false;
+    for (size_t k = 0; k < n; ++k) {
+      const size_t i = i0 + k;
+      const misc::Ymd d = dates[i];
+      const Row &prev = rows[k], &cur = rows[1 + k];
+      members(prev, A, NP, mem);
+      const bool minutes = i + kMinuteDays >= N;
+      if (minutes) {
+        rd.load_day_columns(d, mcols, mc);
+        if (rd.stale())
+          return false;
+      }
+      fold.open(minutes ? kSlots : 0);
+      for (size_t a = 0; a < A; ++a) {
+        const std::span<const Members::Weight> ws = mem.of(a);
+        if (ws.empty())
+          continue;
+        const float x = cur.px[3][a];
+        const Cell c = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
+        if (minutes)
+          read_bars(mc, a, d, bars);
+        fold.add({prev.pre[a], cur.trade[a] && x > 0 ? &c : nullptr, minutes ? &bars : nullptr}, ws);
+      }
+      fold.finish(d, dates[i - 1], level, day);
+      for (size_t b = 0; b < NB; ++b) {
+        if (!day[b].candle.date)
+          continue;
+        Kline &kl = out->list[b].kline;
+        kl.daily.push_back(day[b].candle);
+        if (minutes)
+          kl.minutes.push_back(day[b].bars);
+        level[b] = day[b].candle.close;
+      }
     }
-    fold.open(minutes ? kSlots : 0);
-    for (size_t a = 0; a < A; ++a) {
-      const std::span<const Members::Weight> ws = mem.of(a);
-      if (ws.empty())
-        continue;
-      const float x = cur.px[3][a];
-      const Cell k = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
-      if (minutes)
-        read_bars(mc, a, d, bars);
-      fold.add({prev.pre[a], cur.trade[a] && x > 0 ? &k : nullptr, minutes ? &bars : nullptr}, ws);
-    }
-    fold.finish(d, dates[i - 1], level, day);
-    for (size_t b = 0; b < NB; ++b) {
-      if (!day[b].date)
-        continue;
-      Kline &kl = out->list[b].kline;
-      kl.daily.push_back(day[b].candle);
-      if (minutes)
-        kl.minutes.push_back(day[b].bars);
-      level[b] = day[b].candle.close;
-    }
+    std::swap(rows[0], rows[n]);
   }
 
-  std::vector<uint32_t> at(live_.size(), ~0u); // 全市场 → 池轴
-  for (size_t a = 0; a < A; ++a)
-    if (const uint32_t q = live_.find(asset_axis().code(lib.axis.global(a))); q != ~0u) {
-      assert(at[q] == ~0u && "池轴两只对到新浪同一只");
-      at[q] = static_cast<uint32_t>(a);
-    }
-  members(rows[(N - 1) % 2], A, NP, mem);
-  Members live;
-  for (const uint32_t a : at) {
-    if (a != ~0u)
+  members(rows[0], A, NP, mem);
+  const PoolAxis &market = live_.axis();
+  Members live; // 下标 = 全市场
+  for (size_t q = 0; q < market.size(); ++q) {
+    if (const size_t a = lib.axis.sub_of(market.global(q)); a < A)
       for (const Members::Weight &w : mem.of(a)) {
         live.add(w.basket, w.w);
         ++out->list[w.basket].size;

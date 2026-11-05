@@ -39,7 +39,7 @@ bool StockHistory::run(StockRequest &req) {
     r.each([&](std::int64_t i, std::uint32_t, misc::Ymd d) {
       const float px = c[3].f32(i), vol = c[4].f32(i);
       if (vol > 0 && px > 0)
-        month[k].push_back({cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), px, vol, c[5].f32(i)), d, 0, c[6].f32(i)});
+        month[k].push_back({cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), px, vol, c[5].f32(i)), d, c[6].f32(i)});
     });
   };
   const auto read_minute = [&](size_t j, size_t tid) {

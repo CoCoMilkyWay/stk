@@ -20,7 +20,6 @@ public:
   // 前置: 基本面已就绪 (StateManager 收下 ok 的基本面交接件后调).
   static void load(SharedData &data);
 
-private:
   // "sz.000001" (基本面 key) → "000001", "SZ"
   static void split_stock_key(const std::string &key, std::string &code, std::string &exchange);
 };

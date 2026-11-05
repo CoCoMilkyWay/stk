@@ -18,7 +18,7 @@
 //       用了 lob.* 叶 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; 否则固定段, 增仓量 / 平仓量都按 fixed_impact;
 //       年换手 = 全评估期单边 (倍/年: Σ 增仓量 / 交易日数 × 每年交易日; 组合 = 各因子增仓量按当日份额加权, 不计因子间对冲)
 //     池指数线 (日层篮子 0, 每池一条等权; all 池两条 = 全A加权 (总市值) / 全A等权) / 行业线 (all 池篮子 k ≥ 1 = SW2021 一级, 总市值加权):
-//       只画因子日并集轴范围内, 当日收盘一点; 每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (后复权收盘价收益, 不看可成交), 两者之差 = 可成交拖累;
+//       只画因子日并集轴范围内, 当日收盘一点; 每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (价格指数, 不看可成交: Assets 篮子同一份), 两者之差 = 可成交拖累;
 //       年换手 = 全评估期单边 PoolCurve::turn[该线权重] (倍/年, 只篮子 0 有; 指数线本身不扣成本)
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
@@ -68,22 +68,21 @@ struct PortfolioLine {
   std::string tag;                                        // 线尾小字
   std::string hover;                                      // NAV 悬停 (en 起头 + 详情)
   bool on = false;                                        // 默认选中 (只看行首线)
-  int basket = -1;                                        // NAV 指数 / 行业行: Assets 篮子 (Baskets::list 下标; 近况 / 日内取它); 其余 −1
+  int basket = -1;                                        // NAV 指数 / 行业行: 篮子线 basket_line (Assets 篮子 Baskets::list 下标; 理想线 / 近况 / 日内取它); 其余 −1
   Database::Recent recent;                                // NAV 因子 / 策略行: 净值日末点的近况 (Δ5日量恒 NaN)
   PortfolioCurve c;
 };
-// 篮子线 (NAV 池线 / VAL 篮子同形) = 线 + 它的源: PoolCurve 篮子 k 权重 w 的指数投影到日并集轴
-//   = 前收一点 (范围首日开盘; 源首日无) + 轴上每日收盘一点, 原值
+// 篮子线 (NAV 可成交线 / VAL 篮子同形) = 线 + 它的源: PoolCurve 篮子 k 权重 w 的可成交指数投影到日并集轴
+//   = 前收一点 (范围首日开盘; 源首日无) + 轴上每日收盘一点, 原值 (理想线 = 价格指数同一投影, 源是 Assets 篮子日线)
 struct PortfolioBasket : PortfolioLine {
   std::shared_ptr<const PoolCurve> pc; // 全史 (滚动窗要看日并集轴以外的历史); 空 = 池没算成 (c 空)
   size_t k = 0;                        // 篮子号 (0 = 池整体, ≥ 1 = 行业)
   Weight w = kWeightEq;
-  bool px = false;          // 源 = 收盘价指数 (PoolCurve::index_px, 不看可成交); 否则可成交标签指数 (index)
   std::vector<uint32_t> at; // [c.x] → pc->dates 下标 (严格升序)
 };
 
 // NAV 四组 (右表类别条 / 主图画序同序, 策略在最上层). 每组 = 成对线 [2 · 行]: 偶下标 = 可成交列 (行首, 选中键; 指数 / 行业 = 可成交标签指数, 因子 / 策略 = 有冲击),
-// 奇下标 = 理想列 (指数 / 行业 = 收盘价指数, 因子 / 策略 = 无冲击; 同色淡线). 行选中 → 主图例里理想列显、可成交列隐 (点图例再显)
+// 奇下标 = 理想列 (指数 / 行业 = 价格指数, 因子 / 策略 = 无冲击; 同色淡线). 行选中 → 主图例里理想列显、可成交列隐 (点图例再显)
 enum NavGroup : int { kNavPool,
                       kNavInd,
                       kNavFactor,
@@ -97,23 +96,25 @@ enum NavNum : int { kNumTrade,  // 可成交列区间年化
 inline constexpr int kNavNums = 4;
 
 // Portfolio 页派生 (UI 线程, 结果 / 内容 / fixed_impact 变才重算): 全段. 重算时沿用上一份里没变的:
-//   单因子线 = 同一条 FactorCurve 且日轴 / fixed_impact 不变; 篮子 (池线 + vals) = 各池同一条 PoolCurve 且日轴不变 (basket_gen 不变). 组合线恒重算 (份额随当日因子数)
+//   单因子线 = 同一条 FactorCurve 且日轴 / fixed_impact 不变; 篮子 (池线 + vals) = 各池同一条 PoolCurve、同一份价格指数且日轴不变 (basket_gen 不变).
+//   组合线恒重算 (份额随当日因子数)
 struct PortfolioDerived {
   std::vector<misc::Ymd> dates;                        // 日并集轴 (横轴 day 下标)
   std::vector<PortfolioLine> nav[kNavGroups];          // [NavGroup][2 · 行] 成对线 (同对年换手同值); on = 只全A等权:
-                                                       //   指数 = [池线序] 篮子 0 (all 池两条 = 全A加权 / 全A等权, 其余池等权); en | cn = 池名 | 中文名 (all 池 = kWeightName)
+                                                       //   指数 = [池线序] 篮子 0 (all 池两条 = 全A加权 / 全A等权, 其余池等权); en | cn = 池名 | basket_name
                                                        //   行业 = [SW2021 一级 1..31] all 池篮子 k (总市值加权, 池没算成也列, 线空); en | cn = sw<ID> | 行业名
                                                        //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key + kImpactId,
                                                        //     en | cn = 因子文件主干 | 中文名, hover = en + 池 层 持有期 冲击段 规范串
                                                        //   策略 = 一行, 组合 G20 多头: 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | G20 多头
   std::vector<PortfolioBasket> vals;                   // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 总市值加权);
-                                                       //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | 中文名 (all 池 = kWeightName) / sw<ID> | 行业名,
-                                                       //   tag = 池名 (all 池 = kWeightName) / 行业名
+                                                       //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | basket_name / sw<ID> | 行业名,
+                                                       //   tag = 池名 (all 池 = basket_name) / 行业名
   size_t n_val_pools = 0;                              // vals 前 n 个是池
   int n_ready = 0, n_error = 0;                        // 已算成 / 算失败的因子数
   std::vector<std::shared_ptr<const FactorCurve>> src; // [因子行] 单因子线的源 (nav[kNavFactor] 的 [2 · 行])
   double impact = 0.0;                                 // 单因子线按的 fixed_impact
   std::vector<std::shared_ptr<const PoolCurve>> pools; // [feature_pools 序] 篮子的源 (没算成 = 空)
+  std::shared_ptr<const Database::Baskets> prices;     // 理想线的源 (Assets 篮子历史; 未到 / 落盘不足 = 空, 理想线空)
   uint64_t basket_gen = 0;                             // 篮子重建次数 (滚动分位键)
 };
 
@@ -183,6 +184,7 @@ struct PortfolioStage {
 // 三级: 派生 → 滚动分位 (只随篮子) → 视图 (随派生 + 滚动分位)
 struct PortfolioDerKey {
   uint64_t gen = 0, items = 0; // PortfolioService::result_gen / PortfolioUIState::items_gen
+  uint32_t prices = 0;         // 价格指数在画的发布代 (BasketState feed.shown)
   double impact = 0.0;         // fixed_impact
   bool operator==(const PortfolioDerKey &) const = default;
 };

@@ -464,7 +464,7 @@ TaskHandle CreateFactorsTask(std::shared_ptr<Database::Market> market) {
       const Database::Market *mk = nullptr;
       if (data.taskstate.database.all_json_ready) {
         state->market->start(data);
-        Database::SyncBaskets(*state->market->quote, *state->market->basket, data.config, state->portfolio_ui.basket);
+        Database::SyncBaskets(*state->market, data.config, state->portfolio_ui.basket);
         mk = state->market.get();
       }
       const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.fixed_impact, mk);

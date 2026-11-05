@@ -116,20 +116,21 @@ int nearest(const Series &s, double at) {
   return i;
 }
 
-// 一根的时刻: 日内 "MM-DD HH:MM", 日线 "YYYY-MM-DD"
-void fmt_when(char *buf, int size, const Series &s, const Candle &b) {
+// 第 i 根的时刻: 日内 "MM-DD HH:MM" (槽 = x 除 kSlots 的余), 日线 "YYYY-MM-DD"
+void fmt_when(char *buf, int size, const Series &s, size_t i) {
+  const misc::Ymd d = s.bars[i].date;
   if (s.intraday) {
-    const int m = slot_label(b.slot);
-    std::snprintf(buf, size, "%02d-%02d %02d:%02d", b.date / 100 % 100, b.date % 100, m / 60, m % 60);
+    const int m = slot_label(static_cast<int>(s.x[i]) % kSlots);
+    std::snprintf(buf, size, "%02d-%02d %02d:%02d", d / 100 % 100, d % 100, m / 60, m % 60);
   } else {
-    std::snprintf(buf, size, "%s", misc::dash(b.date).c_str());
+    std::snprintf(buf, size, "%s", misc::dash(d).c_str());
   }
 }
 
 void tooltip(const Series &s, int i) {
   const Candle &b = s.bars[static_cast<size_t>(i)];
   char when[32], vol[32], amt[32], chg[48] = "";
-  fmt_when(when, sizeof(when), s, b);
+  fmt_when(when, sizeof(when), s, static_cast<size_t>(i));
   if (b.ref > 0)
     std::snprintf(chg, sizeof(chg), "\n涨跌 %+.2f  %+.2f%%", b.close - b.ref, (b.close / b.ref - 1.0) * 100.0);
   fmt_amount(amt, sizeof(amt), b.amount);
@@ -444,7 +445,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     if (std::isnan(v.drag) && (hov || v.cross) && n > 0) { // 十字竖线落在底轴的时刻
       const size_t i = static_cast<size_t>(nearest(s, ImPlot::GetPlotMousePos().x));
       char when[32];
-      fmt_when(when, sizeof(when), s, s.bars[i]);
+      fmt_when(when, sizeof(when), s, i);
       ImPlot::TagX(s.x[i], kCross, "%s", when);
     }
     ImPlot::EndPlot();
@@ -586,42 +587,52 @@ const Candle *last(const Kline &kl, const Day &today) {
                                                              : &kl.daily.back();
 }
 
-// 两张图的根 = 历史 + 当日 (joins 才接); 日内取末 days 日, 分钟根的前收 = 同日日根的; 两图涨跌基准同为末日前收
-void build(const Kline &kl, const Day &today, int days, bool money, Series &intra, Series &daily) {
-  const bool on = joins(kl, today);
-  intra.intraday = true;
-  intra.money = daily.money = money;
+// d 日的日根前收: 当日 (joins) / 历史; 无 → 0
+float ref_of(const Kline &kl, const Day &today, misc::Ymd d) {
+  if (joins(kl, today) && today.candle.date == d)
+    return today.candle.ref;
+  const auto it = std::lower_bound(kl.daily.begin(), kl.daily.end(), d, [](const Candle &c, misc::Ymd x) { return c.date < x; });
+  return it != kl.daily.end() && it->date == d ? it->ref : 0;
+}
+
+// 日线的根 = 历史 + 当日 (joins 才接); 涨跌基准 = 末根前收
+void daily(const Kline &kl, const Day &today, bool money, Series &s) {
+  s.money = money;
   for (const Candle &c : kl.daily)
-    daily.push(c, static_cast<double>(daily.bars.size()));
-  if (on)
-    daily.push(today.candle, static_cast<double>(daily.bars.size()));
+    s.push(c, static_cast<double>(s.bars.size()));
+  if (joins(kl, today))
+    s.push(today.candle, static_cast<double>(s.bars.size()));
+  if (!s.bars.empty())
+    s.ref = s.bars.back().ref;
+}
+
+// 日内的根 = 末 days 日的分钟 (历史 + 当日, joins 才接), x = 第 k 日 · kSlots + 槽; 分钟根的前收 = 同日日根的; 涨跌基准 = 末日前收
+void intraday(const Kline &kl, const Day &today, int days, bool money, Series &s) {
+  s.intraday = true;
+  s.money = money;
   std::vector<const Bars *> src;
   for (const Bars &b : kl.minutes)
     src.push_back(&b);
-  if (on && today.bars.has.any())
+  if (joins(kl, today) && today.bars.has.any())
     src.push_back(&today.bars);
   const size_t nd = std::min(static_cast<size_t>(days), src.size());
   for (size_t k = 0; k < nd; ++k) {
     const Bars &b = *src[src.size() - nd + k];
-    const auto it = std::lower_bound(daily.bars.begin(), daily.bars.end(), b.date,
-                                     [](const Candle &c, misc::Ymd d) { return c.date < d; });
-    const float ref = it != daily.bars.end() && it->date == b.date ? it->ref : 0;
-    intra.days.push_back(b.date);
-    intra.ref = ref;
-    for (int s = 0; s < kSlots; ++s)
-      if (b.has[static_cast<size_t>(s)])
-        intra.push({b.cell[static_cast<size_t>(s)], b.date, s, ref}, static_cast<double>(k) * kSlots + s);
+    const float ref = ref_of(kl, today, b.date);
+    s.days.push_back(b.date);
+    s.ref = ref;
+    for (int j = 0; j < kSlots; ++j)
+      if (b.has[static_cast<size_t>(j)])
+        s.push({b.cell[static_cast<size_t>(j)], b.date, ref}, static_cast<double>(k) * kSlots + j);
   }
-  if (!daily.bars.empty())
-    daily.ref = daily.bars.back().ref;
 }
 
 // 当日没接上 (历史落后) → 提示写进 buf, true
 bool gap_note(const Kline &kl, const Day &today, char *buf, size_t size) {
-  if (!today.date || joins(kl, today) || today.date <= kl.last)
+  const misc::Ymd d = today.candle.date;
+  if (!d || joins(kl, today) || d <= kl.last)
     return false;
-  std::snprintf(buf, size, "历史止于 %02d-%02d, 未接当日 %02d-%02d", kl.last / 100 % 100, kl.last % 100, today.date / 100 % 100,
-                today.date % 100);
+  std::snprintf(buf, size, "历史止于 %02d-%02d, 未接当日 %02d-%02d", kl.last / 100 % 100, kl.last % 100, d / 100 % 100, d % 100);
   return true;
 }
 
@@ -776,50 +787,48 @@ bool pull(const HistoryPub<T> &x, Feed<T> &f) {
 
 } // namespace
 
-void SyncStock(QuoteService &live, StockHistory &hist, const AssetItem *asset, const StockInfo *info, StockState &st) {
-  const std::string code = asset ? asset->asset_code + "." + asset->exchange : std::string();
+void SyncStock(Market &mk, const AssetItem *asset, const StockInfo *info, StockState &st) {
+  const std::string code = asset ? asset->code_ex() : std::string();
   if (code != st.want.code) {
-    st.want = {code, (info && !info->name.empty() ? info->name : std::string("-")) + "  " + code, asset ? live.find(code) : ~0u};
+    st.want = {code, (info && !info->name.empty() ? info->name : std::string("-")) + "  " + code,
+               asset ? static_cast<uint32_t>(asset->asset_id) : ~0u};
     ++st.feed.gen;
     if (asset)
-      hist.Request({st.feed.gen, code});
-    live.select(st.want.i);
+      mk.stock->Request({st.feed.gen, code});
+    mk.quote->select(st.want.id);
   }
-  if (pull(hist.published(), st.feed))
+  if (pull(mk.stock->published(), st.feed))
     st.shown = st.want;
   if (st.shown.code.empty())
     return;
-  const uint64_t ver = live.status().stock_ver;
+  const uint64_t ver = mk.quote->status().stock_ver;
   if (ver == st.feed.ver)
     return;
   st.feed.ver = ver;
-  if (st.shown.i != ~0u)
-    live.today(st.shown.i, st.today, st.quote);
-  else
-    st.today.date = 0, st.quote = {};
+  mk.quote->today(st.shown.id, st.today, st.quote);
 }
 
-void SyncBaskets(const QuoteService &live, BasketHistory &hist, const Config &cfg, BasketState &st) {
+void SyncBaskets(Market &mk, const Config &cfg, BasketState &st) {
   if (st.want) {
     st.want = false;
     FeatureLib lib = load_lib(cfg, kAllBar);
     st.missing = !lib.ready();
     if (!st.missing)
-      hist.Request({++st.feed.gen, std::move(lib)});
+      mk.basket->Request({++st.feed.gen, std::move(lib)});
   }
-  pull(hist.published(), st.feed);
+  pull(mk.basket->published(), st.feed);
   if (!st.feed.data || st.feed.data->list.empty())
     return;
-  const uint64_t ver = live.status().basket_ver;
+  const uint64_t ver = mk.quote->status().basket_ver;
   if (ver == st.feed.ver)
     return;
   st.feed.ver = ver;
   st.today.resize(st.feed.data->list.size());
-  live.today(st.today);
+  mk.quote->today(st.today);
 }
 
-void RenderStockPanel(const QuoteService &live, StockState &st) {
-  const QuoteStatus qs = live.status();
+void RenderStockPanel(const Market &mk, StockState &st) {
+  const QuoteStatus qs = mk.quote->status();
   char note[160];
   if (qs.date == 0)
     std::snprintf(note, sizeof(note), "新浪: 等待首轮快照…");
@@ -834,20 +843,21 @@ void RenderStockPanel(const QuoteService &live, StockState &st) {
     return;
   }
   const Kline &kl = *st.feed.data;
-  Series intra, daily;
-  build(kl, st.today, kIntraDays[st.chart.intraday], false, intra, daily);
+  Series is, ds;
+  intraday(kl, st.today, kIntraDays[st.chart.intraday], false, is);
+  daily(kl, st.today, false, ds);
 
   if (st.want.code != st.shown.code)
     std::snprintf(note, sizeof(note), "读取 %s 历史…", st.want.code.c_str());
-  else if (st.shown.i == ~0u)
+  else if (mk.quote->axis().sub_of(st.shown.id) == mk.quote->axis().size())
     std::snprintf(note, sizeof(note), "不在新浪全市场");
   else
     gap_note(kl, st.today, note, sizeof(note));
   header(st.shown.title.c_str(), kl, st.today, note);
-  charts("stock", intra, daily, static_cast<uint64_t>(st.feed.shown) << 32, st.chart, st.quote, qs.date);
+  charts("stock", is, ds, static_cast<uint64_t>(st.feed.shown) << 32, st.chart, st.quote, qs.date);
 }
 
-void RenderBasketIntraday(const QuoteService &live, const BasketHistory &hist, BasketState &st, const std::vector<BasketPick> &picks) {
+void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks) {
   if (st.missing || (st.feed.data && st.feed.data->list.empty())) {
     ImGui::TextWrapped(st.missing ? "指数 / 行业由 all.bar 特征库合成: 先在 Features → Compute 算好 all 池的 Bar 库."
                                   : "all.bar 特征库落盘不足 2 日.");
@@ -856,11 +866,11 @@ void RenderBasketIntraday(const QuoteService &live, const BasketHistory &hist, B
     return;
   }
   if (!st.feed.data) {
-    const BasketKline &x = hist.published();
+    const BasketKline &x = mk.basket->published();
     ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
     return;
   }
-  const QuoteStatus qs = live.status();
+  const QuoteStatus qs = mk.quote->status();
   const Baskets &d = *st.feed.data;
   assert(st.today.size() == d.list.size());
   std::vector<Overlay> ls;
@@ -870,8 +880,8 @@ void RenderBasketIntraday(const QuoteService &live, const BasketHistory &hist, B
     assert(p.b < d.list.size());
     const Basket &bk = d.list[p.b];
     const Day &today = st.today[p.b];
-    Series intra, daily;
-    build(bk.kline, today, kIntraDays[st.intraday], true, intra, daily);
+    Series intra;
+    intraday(bk.kline, today, kIntraDays[st.intraday], true, intra);
     if (!note[0]) {
       if (joins(bk.kline, today))
         std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员 / 权重取 %02d-%02d 收盘", qs.sec / 3600, qs.sec / 60 % 60,
@@ -906,36 +916,41 @@ void RenderBasketIntraday(const QuoteService &live, const BasketHistory &hist, B
   ImGui::PopID();
 }
 
-Recent BasketRecent(const BasketState &st, size_t b) {
+Recent RecentOf(std::span<const Mark> m) {
   Recent r;
-  if (!st.feed.data || b >= st.feed.data->list.size())
-    return r;
-  assert(st.today.size() == st.feed.data->list.size());
-  const Kline &kl = st.feed.data->list[b].kline;
-  const Day &today = st.today[b];
-  constexpr size_t kN = 6;
-  const Candle *k[kN]; // 新 → 旧
-  size_t n = 0;
-  if (joins(kl, today))
-    k[n++] = &today.candle;
-  for (auto it = kl.daily.rbegin(); it != kl.daily.rend() && n < kN; ++it)
-    k[n++] = &*it;
-  if (n >= 1 && k[0]->ref > 0)
-    r.chg = k[0]->close / k[0]->ref - 1.0;
+  const size_t n = m.size();
+  if (n >= 1 && m[0].ref > 0)
+    r.chg = m[0].close / m[0].ref - 1.0;
   if (n >= 5) {
     double c = 0;
     for (size_t i = 0; i < 5; ++i)
-      c += k[i]->close;
-    r.ma5 = k[0]->close / (c / 5) - 1.0;
+      c += m[i].close;
+    r.ma5 = m[0].close / (c / 5) - 1.0;
   }
   if (n >= 6) {
     double a = 0;
     for (size_t i = 1; i < 6; ++i)
-      a += k[i]->amount;
+      a += m[i].amount;
     if (a > 0)
-      r.amt5 = k[0]->amount / (a / 5) - 1.0;
+      r.amt5 = m[0].amount / (a / 5) - 1.0;
   }
   return r;
+}
+
+Recent BasketRecent(const BasketState &st, size_t b) {
+  if (!st.feed.data || b >= st.feed.data->list.size())
+    return {};
+  assert(st.today.size() == st.feed.data->list.size());
+  const Kline &kl = st.feed.data->list[b].kline;
+  const Day &today = st.today[b];
+  Mark m[6];
+  size_t n = 0;
+  const auto put = [&](const Candle &c) { m[n++] = {c.close, c.ref, c.amount}; };
+  if (joins(kl, today))
+    put(today.candle);
+  for (auto it = kl.daily.rbegin(); it != kl.daily.rend() && n < std::size(m); ++it)
+    put(*it);
+  return RecentOf({m, n});
 }
 
 } // namespace GUI::Database

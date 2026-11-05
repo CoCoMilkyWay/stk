@@ -15,18 +15,21 @@
 //   写回 [lo, 定稿线]: 有根写根, 无根清空, 全段标精确 (此后快照不写); lo 推到定稿线后.
 //   定稿线: 标号不晚于 "此刻 − kSettle" 的根不再变 (刚过去那根还会被修正); 行情日不是今天 (盘前看昨日 / 周末) → 整日定稿.
 //   行情日 ≤ fund_end (基本面 bar1m 已入库) 不取分钟 K (那天由 bar1m 给).
-//   落盘 config::SINA_CACHE: 单文件存行情日全部 Track (根 / 精确位 / 待补区间 / 累计基线) + 末轮快照时刻, 有变化时每 kSave 与析构各写一次.
+//   落盘 config::SINA_CACHE: 单文件存行情日全部 Track (Track::snap 一份清单读写) + 末轮快照时刻, 有变化时每 kSave 与析构各写一次.
 //     换日 (含启动首轮) 先读同日缓存 —— 停机那段即一次断档, 照断档规则只补其间有成交的只; 收盘后重启零请求.
-//   全市场 = 构造时给定的代码表 (新浪形); 前一交易日取自构造时给定的交易日历; 线程: 快照 1 + 分钟 K kFillers, 随对象.
+//   全市场 = 构造时给定的全局轴子集 (PoolAxis; 对外一律全局 id, 内部下标 = sub, 新浪码由轴码派生); 前一交易日取自构造时给定的交易日历;
+//   线程: 快照 1 + 分钟 K kFillers, 随对象.
 // 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收.
 #pragma once
 
 #include "api/sina/client.hpp"
 #include "gui/task_database/services/Kline.hpp"
 #include "misc/date.hpp"
+#include "shared/AssetAxis.hpp" // PoolAxis
 
 #include <bitset>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -55,19 +58,18 @@ public:
   static constexpr int kSave = 300;               // 落盘间隔 [s]
   static constexpr int kFillers = 32;             // 分钟 K 并发 (实测 32 路 ~175 次/s, 全市场 ~35s)
 
-  QuoteService(std::vector<std::string> syms, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
+  QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
   ~QuoteService();
   QuoteService(const QuoteService &) = delete;
   QuoteService &operator=(const QuoteService &) = delete;
 
-  size_t size() const { return syms_.size(); }  // 全市场只数
-  uint32_t find(const std::string &code) const; // 全局轴码 "600000.SH" → 全市场下标; 不在 → ~0u (只读构造时的码表, 任意线程)
-  void select(uint32_t i);                      // GUI: 选中标的 (~0u = 无)
+  const PoolAxis &axis() const { return axis_; } // 全市场 (构造后不变, 任意线程)
+  void select(uint32_t id);                      // GUI: 选中标的 (全局 id; ~0u = 无)
   QuoteStatus status() const;
-  // 篮子成员表 (下标 = 全市场) + 各篮子前日点位; 当场合成一次, 此后每轮快照一次 (BasketHistory 跑完调)
+  // 篮子成员表 (下标 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后每轮快照一次 (BasketHistory 跑完调)
   void bind(Members m, std::vector<double> level);
-  // GUI: 第 i 只的当日 + 最新快照 (未收到 → q.sym 空)
-  void today(uint32_t i, Day &out, sina::Quote &q) const;
+  // GUI: 标的 id (全局) 的当日 + 最新快照 (不在全市场 / 未收到 → q.sym 空)
+  void today(uint32_t id, Day &out, sina::Quote &q) const;
   // GUI: 各篮子当日 (末次合成); out.size() = bind 的篮子数
   void today(std::span<Day> out) const;
 
@@ -75,33 +77,44 @@ private:
   enum class Fill : uint8_t { Idle,
                               Queued,
                               Busy };
+  // 一只的当日: 快照合成 + 分钟 K 补的根, 待补区间, 快照累计基线
   struct Track {
     Bars bars;                 // 当日的根
     std::bitset<kSlots> exact; // 来自分钟 K 的根 (含确认无成交的); 快照不写
     int lo = kSlots, hi = -1;  // 待补区间 (lo > hi = 无)
     double vol = -1, amt = 0;  // 上一快照累计 (vol < 0 = 尚无快照)
     float high = 0, low = 0;   // 上一快照日内高 / 低
-    Fill fill = Fill::Idle;
+    Fill fill = Fill::Idle;    // 运行态, 不落盘
+
+    void mark(int l, int h) { lo = std::min(lo, l), hi = std::max(hi, h); }
+    bool absorb(const sina::Quote &q, int gap);                                        // 同日快照; gap = 断档起始根 (-1 = 无); 返回 = 有变化
+    void merge(int l, int settled, misc::Ymd date, const std::vector<sina::Bar> &got); // 分钟 K 写回 [l, settled]
+    // 落盘清单 (misc/snap.hpp): 根只存有成交的
+    template <class Ar>
+    void snap(Ar &ar) {
+      ar(bars.has), ar(exact), ar(lo), ar(hi), ar(vol), ar(amt), ar(high), ar(low);
+      for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
+        if (bars.has[s])
+          ar(bars.cell[s]);
+    }
   };
 
   void poll();
   void fill();
   // 以下须持 mu_
-  void absorb(uint32_t i, const sina::Quote &q, int gap); // gap = 断档起始根 (-1 = 无)
   void schedule();
-  void merge(uint32_t i, int lo, const std::vector<sina::Bar> &bars, int settled);
   void fold(); // 篮子当日合成 → baskets_
   int settled() const;
   int live_slot() const;
   bool traded(const sina::Quote &q) const { return q.date == date_ && q.volume > 0 && q.price > 0; }
-  void load();                   // 行情日的盘上缓存 → tracks_ / sec_ (换日后调)
-  std::string serialize() const; // 当日全部 Track → 缓存文件内容
-  static void mark(Track &t, int lo, int hi) { t.lo = std::min(t.lo, lo), t.hi = std::max(t.hi, hi); }
+  void load();                        // 行情日的盘上缓存 → tracks_ / sec_ (换日后调)
+  std::vector<std::byte> serialize(); // 当日全部 Track → 缓存文件内容
 
-  const std::vector<std::string> syms_;
+  const PoolAxis axis_;
   const misc::Ymd fund_end_;
-  const std::vector<misc::Ymd> trading_; // 交易日升序
-  std::unordered_map<std::string, uint32_t> index_;
+  const std::vector<misc::Ymd> trading_;            // 交易日升序
+  std::vector<std::string> syms_;                   // [sub] 新浪码
+  std::unordered_map<std::string, uint32_t> index_; // 新浪码 → sub
 
   mutable std::mutex mu_;
   std::condition_variable cv_;

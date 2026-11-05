@@ -1,11 +1,11 @@
 // Factors→Portfolio — 见头文件
 #include "gui/task_factors/ui/TabPortfolio.hpp"
 
-#include "features/Method/Fundamental.hpp"    // fund::SW2021_L1_NAMES (行业名)
 #include "features/TimeIndex.hpp"             // TRADE_MINUTES_PER_DAY (横轴每日跨度)
 #include "gui/Tasks.hpp"                      // StatusColor
 #include "gui/task_factors/ui/TabFactors.hpp" // tip / hold_desc
 #include "misc/date.hpp"                      // to_days (滚动窗权重按日历天)
+#include "shared/Basket.hpp"                  // basket_line / basket_name / cut_of
 #include "shared/FeatureLib.hpp"              // feature_pools
 
 #include "imgui.h"
@@ -83,8 +83,7 @@ const ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f);
 constexpr const char *kImpactName[kImpacts] = {"有冲击", "无冲击"};
 constexpr const char *kImpactId[kImpacts] = {"", "0"};
 constexpr const char *kImpactTag[kImpacts] = {"", " 无冲击"};
-// 池指数线表 [kWeights] (all 池两条; 其余池只画 kWeightEq, 名用池中文名)
-constexpr const char *kWeightName[kWeights] = {"全A等权", "全A加权"};
+// 池指数线 ID 后缀 [kWeights] (all 池两条; 其余池只画 kWeightEq; 名 = basket_name)
 constexpr const char *kWeightId[kWeights] = {"", "_cap"};
 // VAL 估值口表 [PoolVal]: 名 / 倍数名 (1 / 收益率, 等值线) / 百分比小数位 (五口同为收益率, 显示 %)
 struct ValMeta {
@@ -261,20 +260,19 @@ PortfolioCurve curve_of(const Inc &s, int i, double x0) {
   compound(s.d[i].data(), s.x.size(), [&](size_t k, double l) { c.x.push_back(s.x[k]), c.y.push_back(l); });
   return c;
 }
-// 净值线的近况 (Database::Recent 同口径, 无量): 日末点 = 每日末个点 (起点算首日前一日的日末), 末日对前一日 / 对末 5 日均
+// 净值线的近况 (Database::RecentOf 同一核, 无量): 日 = 每日末个点 (起点算首日前一日的日末), 前收 = 前一日的
 Database::Recent recent_of(const PortfolioCurve &c) {
-  Database::Recent r;
-  double e[5]; // 新 → 旧
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  double e[6]; // 新 → 旧
   size_t n = 0;
   double day = -1.0;
-  for (size_t i = c.x.size(); i-- > 0 && n < 5;)
+  for (size_t i = c.x.size(); i-- > 0 && n < std::size(e);)
     if (const double di = std::floor(c.x[i] / kDayW); n == 0 || di != day)
       day = di, e[n++] = c.y[i];
-  if (n >= 2)
-    r.chg = e[0] / e[1] - 1.0;
-  if (n == 5)
-    r.ma5 = e[0] / ((e[0] + e[1] + e[2] + e[3] + e[4]) / 5.0) - 1.0;
-  return r;
+  Database::Mark m[std::size(e)];
+  for (size_t k = 0; k < n; ++k)
+    m[k] = {e[k], k + 1 < n ? e[k + 1] : kNaN, kNaN};
+  return Database::RecentOf({m, n});
 }
 
 // 因子 f 的增量流 (di = f 各日在并集轴上的下标): FactorCurve 逐行增量 (fold_book 已实现口径, 与池指数对齐) × wt(实现日并集轴下标), 记在行末分钟
@@ -300,11 +298,12 @@ Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_imp
   return o;
 }
 
-// ---- 篮子投影 (池线 / VAL 同一份, 见 PortfolioBasket): 只取日并集轴范围内; 不在轴上的日只差点位, 收益自然并进下一个轴上的日 ----
+// ---- 篮子投影 (可成交线 / VAL = PoolCurve, 理想线 = 价格指数; 同一投影): 只取日并集轴范围内 = 范围首日开盘一点 (其前一日点位) + 轴上每日收盘一点;
+//      不在轴上的日只差点位, 收益自然并进下一个轴上的日 ----
 void project(const std::vector<misc::Ymd> &axis, PortfolioBasket &b) {
   const std::vector<misc::Ymd> &src = b.pc->dates;
   std::vector<double> v(src.size()); // 篮子点位 (日收益复利, 起点 1)
-  compound(b.pc->index_of(b.k, b.w, b.px), src.size(), [&](size_t i, double l) { v[i] = l; });
+  compound(b.pc->index_of(b.k, b.w), src.size(), [&](size_t i, double l) { v[i] = l; });
   const std::vector<size_t> di = days_on(axis, src);
   const auto push = [&](double x, size_t i) { b.c.x.push_back(x), b.c.y.push_back(v[i]), b.at.push_back(static_cast<uint32_t>(i)); };
   for (size_t i = 0; i < src.size(); ++i) {
@@ -315,6 +314,21 @@ void project(const std::vector<misc::Ymd> &axis, PortfolioBasket &b) {
     if (axis[di[i]] == src[i])
       push(x_of(di[i], kClose), i);
   }
+}
+PortfolioCurve project(const std::vector<misc::Ymd> &axis, const Database::Kline &k) {
+  PortfolioCurve c;
+  size_t j = 0;
+  for (const Database::Candle &e : k.daily) {
+    if (e.date < axis.front() || e.date > axis.back())
+      continue;
+    while (axis[j] < e.date)
+      ++j;
+    if (c.x.empty())
+      c.x.push_back(x_of(j, kOpen)), c.y.push_back(e.ref);
+    if (axis[j] == e.date)
+      c.x.push_back(x_of(j, kClose)), c.y.push_back(e.close);
+  }
+  return c;
 }
 
 // 池 name 算成的篮子 (缺 / 失败 → 空)
@@ -408,11 +422,13 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
   }
 }
 
-// 池线 + VAL 篮子 (见头文件): 同一 PortfolioBasket + project. o = 上一份派生: 各池同一条 PoolCurve 且日轴不变 → 整份沿用
-void derive_baskets(const PortfolioResult &res, PortfolioDerived &o, PortfolioDerived &d) {
+// 池线 + VAL 篮子 (见头文件): 可成交 / VAL = PoolCurve 的 PortfolioBasket, 理想 = 价格指数 (prices) 同名篮子线, 同一 project.
+// o = 上一份派生: 各池同一条 PoolCurve、同一份价格指数且日轴不变 → 整份沿用
+void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Database::Baskets> &prices, PortfolioDerived &o, PortfolioDerived &d) {
   for (const PoolDef &pd : feature_pools())
     d.pools.push_back(pool_of(res, pd.name));
-  if (o.basket_gen > 0 && d.pools == o.pools && d.dates == o.dates) {
+  d.prices = prices && !prices->list.empty() ? prices : nullptr;
+  if (o.basket_gen > 0 && d.pools == o.pools && d.prices == o.prices && d.dates == o.dates) {
     d.nav[kNavPool] = std::move(o.nav[kNavPool]);
     d.nav[kNavInd] = std::move(o.nav[kNavInd]);
     d.vals = std::move(o.vals);
@@ -421,18 +437,27 @@ void derive_baskets(const PortfolioResult &res, PortfolioDerived &o, PortfolioDe
     return;
   }
   d.basket_gen = o.basket_gen + 1;
-  const auto basket = [&](std::string id, std::string en, std::string cn, std::string tag, std::shared_ptr<const PoolCurve> pc, size_t k, Weight w,
-                          bool px = false) {
+  const auto basket = [&](std::string id, std::string en, std::string cn, std::string tag, std::shared_ptr<const PoolCurve> pc, size_t k, Weight w) {
     PortfolioBasket b;
     b.id = std::move(id), b.en = std::move(en), b.cn = std::move(cn), b.tag = std::move(tag);
-    b.pc = std::move(pc), b.k = k, b.w = w, b.px = px;
+    b.pc = std::move(pc), b.k = k, b.w = w;
     if (b.pc && !d.dates.empty())
       project(d.dates, b);
     return b;
   };
+  // 一行 = 可成交 (PoolCurve 篮子 k 权 w) + 理想 (价格指数篮子线 line; 名 / 悬停 / 年换手同可成交), 右表同一行
+  const auto nav_row = [&](NavGroup g, PortfolioBasket p, size_t line, const std::string &tag) {
+    p.kind = "可成交";
+    p.basket = static_cast<int>(line);
+    PortfolioLine q;
+    q.id = p.id + "_px", q.en = p.en, q.cn = p.cn, q.kind = "理想", q.turn = p.turn, q.tag = tag + " 理想", q.hover = p.hover, q.basket = p.basket;
+    if (d.prices && !d.dates.empty())
+      q.c = project(d.dates, d.prices->list[line].kline);
+    d.nav[g].push_back(std::move(p));
+    d.nav[g].push_back(std::move(q));
+  };
 
-  // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; turn = 年换手;
-  //      每条可成交线 (行首) 后接同池同权的理想 (收盘价) 线, 右表同一行; 默认只选全A等权 ----
+  // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; turn = 年换手; 默认只选全A等权 ----
   for (const PoolId pid : pool_ids()) {
     const PoolDef &pd = pool_def(pid);
     const bool all = pid == kAllPool;
@@ -440,62 +465,58 @@ void derive_baskets(const PortfolioResult &res, PortfolioDerived &o, PortfolioDe
     for (const Weight w : {kWeightCap, kWeightEq}) {
       if (!all && w != kWeightEq)
         continue;
-      const std::string cn = all ? kWeightName[w] : pd.name_cn, tag = all ? kWeightName[w] : pd.name;
+      const std::string cn = basket_name(cut_of(pid), w), tag = all ? cn : pd.name;
       PortfolioBasket p = basket(std::string("pf_pool_") + pd.name + kWeightId[w], pd.name, cn, tag + " 可成交", pc, 0, w);
-      PortfolioBasket q = basket(p.id + "_px", pd.name, cn, tag + " 理想", pc, 0, w, true);
-      p.kind = "可成交", q.kind = "理想";
-      p.hover = q.hover = pd.name;
+      p.hover = pd.name;
       p.on = all && w == kWeightEq;
-      p.basket = q.basket = static_cast<int>(Database::pool_basket(pid, w == kWeightCap));
       if (pc)
-        p.turn = q.turn = pc->turn[w];
-      d.nav[kNavPool].push_back(std::move(p));
-      d.nav[kNavPool].push_back(std::move(q));
+        p.turn = pc->turn[w];
+      nav_row(kNavPool, std::move(p), basket_line(cut_of(pid), w), tag);
     }
   }
-  // ---- 行业线: all 池篮子 k ≥ 1 (申万一级, 总市值加权; 同 VAL 行业), 成对同池线 ----
+  // ---- 行业线: all 池篮子 k ≥ 1 (申万一级, 总市值加权; 同 VAL 行业) ----
   const std::shared_ptr<const PoolCurve> all = pool_of(res, pool_def(kAllPool).name);
-  for (size_t k = 1; k < fund::SW2021_L1_COUNT; ++k) {
+  for (size_t k = 1; k < kAllCuts; ++k) {
     char id[8];
     std::snprintf(id, sizeof(id), "sw%02zu", k);
-    const std::string nm(fund::SW2021_L1_NAMES[k]);
+    const std::string nm = basket_name(k, kWeightCap);
     PortfolioBasket p = basket(std::string("pf_ind_") + id, id, nm, nm + " 可成交", all, k, kWeightCap);
-    PortfolioBasket q = basket(p.id + "_px", id, nm, nm + " 理想", all, k, kWeightCap, true);
-    p.kind = "可成交", q.kind = "理想";
-    p.hover = q.hover = id;
-    p.basket = q.basket = static_cast<int>(Database::industry_basket(k));
-    d.nav[kNavInd].push_back(std::move(p));
-    d.nav[kNavInd].push_back(std::move(q));
+    p.hover = id;
+    nav_row(kNavInd, std::move(p), basket_line(k, kWeightCap), nm);
   }
 
   // ---- VAL 篮子: 各池整体 (篮子 0; all 池两条 = 全A加权 / 全A等权, 其余池等权, 同池线) / 申万一级行业 (all 池篮子 k ≥ 1, 总市值加权); 全史估值留在 PoolCurve ----
   if (d.dates.empty())
     return;
-  for (const PoolDef &pd : feature_pools()) {
+  for (const PoolId pid : pool_ids()) {
+    const PoolDef &pd = pool_def(pid);
     const std::shared_ptr<const PoolCurve> pc = pool_of(res, pd.name);
     if (!pc)
       continue;
-    const bool is_all = pd.pool_col == SIZE_MAX;
-    assert(pc->baskets() == (is_all ? fund::SW2021_L1_COUNT : 1) && static_cast<size_t>(pc->index.P) == pc->dates.size());
+    const bool is_all = pid == kAllPool;
+    assert(pc->baskets() == (is_all ? kAllCuts : 1) && static_cast<size_t>(pc->index.P) == pc->dates.size());
     for (const Weight w : {kWeightCap, kWeightEq})
-      if (is_all || w == kWeightEq)
-        d.vals.push_back(basket(std::string(pd.name) + kWeightId[w], pd.name, is_all ? kWeightName[w] : pd.name_cn, is_all ? kWeightName[w] : pd.name, pc, 0, w));
+      if (is_all || w == kWeightEq) {
+        const std::string cn = basket_name(cut_of(pid), w);
+        d.vals.push_back(basket(std::string(pd.name) + kWeightId[w], pd.name, cn, is_all ? cn : pd.name, pc, 0, w));
+      }
   }
   d.n_val_pools = d.vals.size();
   if (all)
-    for (size_t k = 1; k < fund::SW2021_L1_COUNT; ++k) {
+    for (size_t k = 1; k < kAllCuts; ++k) {
       char id[8];
       std::snprintf(id, sizeof(id), "sw%02zu", k);
-      const std::string nm(fund::SW2021_L1_NAMES[k]);
+      const std::string nm = basket_name(k, kWeightCap);
       d.vals.push_back(basket(id, id, nm, nm, all, k, kWeightCap));
     }
 }
 
-void derive(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res, double fixed_impact, PortfolioDerived &d) {
+void derive(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
+            const std::shared_ptr<const Database::Baskets> &prices, double fixed_impact, PortfolioDerived &d) {
   PortfolioDerived o = std::move(d);
   d = PortfolioDerived{};
   derive_factors(items, name, res, fixed_impact, o, d);
-  derive_baskets(res, o, d);
+  derive_baskets(res, prices, o, d);
 }
 
 // 曲线 c 在 [x0, x1) 的切片 (见 PortfolioSlice); 整条在区间外 → 空. 年化 = 末点净值按首末点所跨交易日数复利折年 (%);
@@ -1510,7 +1531,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     tip("点行 = 选中 / 取消, 选中 = 主图画该行两条线, 主图例默认只显理想列, 可成交列点图例显 (显隐变了自动重新 fit); 默认只选全A等权; 选中换组保留\n"
         "• 指数 = 各池等权指数 (all 池拆 全A等权 / 全A加权); 行业 = 申万一级 (全A 内切, 总市值加权):\n"
         "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
-        "    ◦ 理想 = 后复权收盘价指数 (不看可成交, 同中证 / 万得口径); 两者之差 = 可成交拖累\n"
+        "    ◦ 理想 = 价格指数 (Assets 篮子同一份: 成员 / 权重取前一日收盘, 点位按前收合成, 不看可成交, 同中证 / 万得口径); 两者之差 = 可成交拖累\n"
         "• 因子 = 单因子各自的 G20 多头净值: 可成交列 = 有冲击 (它自己的冲击段: Lob 最小金额段 / Bar 固定冲击), 理想列 = 无冲击\n"
         "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
         "• 当日涨幅 / Δ5日线 / Δ5日量 = 最新一日对前收 / 对 MA5 (含当日) / 成交额对前 5 日均额, 不随区间:\n"
@@ -1804,9 +1825,9 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
 
   // ---- 三级缓存: 派生 → 滚动分位 (键 = 篮子代) → 视图 (键 = 派生 gen + 滚动分位 gen): 上级重算 → 下级自动重算 ----
   // 派生重算 → 重新 fit: 因子线 / 池线先后到, 后到的线也要进 y 范围与线尾小字留白
-  ui.der.update(PortfolioDerKey{gen, ui.items_gen, fixed_impact}, [&](PortfolioDerived &dv) {
+  ui.der.update(PortfolioDerKey{gen, ui.items_gen, ui.basket.feed.shown, fixed_impact}, [&](PortfolioDerived &dv) {
     const std::vector<misc::Ymd> old = dv.dates;
-    derive(ui.items, ui.name, res, fixed_impact, dv);
+    derive(ui.items, ui.name, res, ui.basket.feed.data, fixed_impact, dv);
     if (dv.dates != old) // 日轴变 → 区间回全段
       ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
     refit = true;
@@ -1918,7 +1939,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
         for (size_t i = 0; i < d.nav[g].size(); i += 2)
           if (const PortfolioLine &h = d.nav[g][i]; h.basket >= 0 && shown(ui, h))
             picks.push_back({static_cast<size_t>(h.basket), ImGui::ColorConvertFloat4ToU32(nav_color(d, g, i))});
-      Database::RenderBasketIntraday(*mk->quote, *mk->basket, ui.basket, picks);
+      Database::RenderBasketIntraday(*mk, ui.basket, picks);
     } else {
       ImGui::TextDisabled("行情等基本面就绪…");
     }

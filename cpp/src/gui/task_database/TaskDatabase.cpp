@@ -6,7 +6,6 @@
 #include "gui/task_database/services/Market.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
-#include "gui/task_database/services/StockHistory.hpp"
 #include "gui/task_database/ui/TabAssets.hpp"
 #include "gui/task_database/ui/TabDates.hpp"
 #include "gui/task_database/ui/TabEncode.hpp"
@@ -38,7 +37,6 @@ private:
   std::unique_ptr<StateManager> state_mgr_;
   // Assets 行情: 首次画 Assets 页才起 (之前不碰网络); 新浪当日与 Portfolio 共用
   std::shared_ptr<Market> market_;
-  std::unique_ptr<StockHistory> stock_svc_;
 
   // UI state
   FundamentalTabState fundamental_state_;
@@ -320,14 +318,11 @@ private:
 
   void DrawTabAssets() {
     market_->start(*data_);
-    if (!stock_svc_)
-      stock_svc_ = std::make_unique<StockHistory>();
     RenderTabAssets(
         data_->asset,
         data_->assetinfo.get_stock_info(),
         assets_state_,
-        *market_->quote,
-        *stock_svc_);
+        *market_);
   }
 
   void DrawTabDates() {
