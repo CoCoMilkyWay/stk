@@ -34,17 +34,21 @@ const Shard &need(const Catalog &cat, const Spec &s) {
   return *sh;
 }
 
-Ids::Ids(const Catalog &cat, const Spec &s) {
+std::vector<std::string> keys(const Catalog &cat, const Spec &s) {
   const std::string key(key_col(s));
   const pq::TableView v(read(need(cat, s), {key}));
   expect(v.rows() > 0, s, {}, "0 行");
   const pq::Col k = v.col(key);
+  std::vector<std::string> out;
+  out.reserve(static_cast<std::size_t>(v.rows()));
+  std::unordered_set<std::string_view> seen;
   for (std::int64_t i = 0; i < v.rows(); ++i) {
     const std::string_view code = k.str(i);
     expect(code.find('.') != std::string_view::npos, s, {.code = code}, "代码不是 <码>.<交易所> 形");
-    expect(find(code) == kNone, s, {.code = code}, "代码重复");
-    add(code);
+    expect(seen.insert(code).second, s, {.code = code}, "代码重复");
+    out.emplace_back(code);
   }
+  return out;
 }
 
 std::uint32_t Ids::add(std::string_view code) {
@@ -132,27 +136,6 @@ void Scan::run(std::atomic<std::size_t> &done) {
   std::vector<Scratch> xs(static_cast<std::size_t>(ex.threads())); // 按 tid
   ex.tasks(static_cast<int>(jobs_.size()), [&](int i, int tid) { jobs_[static_cast<std::size_t>(i)].body(xs[static_cast<std::size_t>(tid)], done); });
   jobs_.clear();
-}
-
-bool snapshot(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
-              const std::function<void(const Rows &)> &fn) {
-  assert(s.shape == Shape::Month && "snapshot: 只读 Month 表");
-  const std::vector<Shard> &shards = cat.shards(s.name);
-  Scratch x;
-  for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
-    const Rows r = x.open(*it, s, cols, ids, Snap::Day);
-    if (r.size() == 0)
-      continue; // 0 行月 (拉过为空) → 往前找
-    fn(r);
-    return true;
-  }
-  return false;
-}
-
-void meta(const Catalog &cat, const Ids &ids, const Spec &s, const std::vector<std::string> &cols,
-          const std::function<void(const Rows &)> &fn) {
-  Scratch x;
-  fn(x.open(need(cat, s), s, cols, ids));
 }
 
 bool daily(const Catalog &cat, const Ids &ids, const Spec &s, Ymd d, const std::vector<std::string> &cols, Scratch &x,

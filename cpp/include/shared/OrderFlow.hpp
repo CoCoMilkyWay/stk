@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -379,11 +380,11 @@ struct OrderFlow {
       double x0, x1; // [首日起点, 末日终点) (图2 X)
       uint32_t ev;   // events 下标
     };
-    const std::vector<AssetEvent> *events = nullptr;  // 选中资产的事件 (AssetInfo 内; seq 配对期间稳定)
+    std::span<const AssetEvent> events;               // 选中资产的事件 (AssetInfo 内; seq 配对期间稳定)
     std::array<std::vector<Mark>, kEventGroups> lane; // 按组, 各行 x0 升序
     Memo<uint32_t, uint64_t> key;                     // (Min 请求代, AssetEvents::seq): 换资产 / 重扫日轴 / 基本面重建都失效
-    // dates = Min 日轴 (gen 配对期间稳定), evs = 选中资产的事件 (nullptr = 无)
-    void build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs);
+    // dates = Min 日轴 (gen 配对期间稳定), evs = 选中资产的事件
+    void build(const std::vector<misc::Ymd> &dates, std::span<const AssetEvent> evs);
     void clear();
   } event_marks;
 

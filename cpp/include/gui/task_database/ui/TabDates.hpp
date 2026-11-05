@@ -1,5 +1,5 @@
 // Tab Dates - Calendar Grid View for Trading Days
-// Displays dense calendar grid based on stock_days.json
+// Displays dense calendar grid based on AssetInfo::days
 
 #pragma once
 
@@ -13,7 +13,7 @@ namespace GUI::Database {
 
 // 单只资产的一次除权除息 (复权因子变点)
 struct DividendEvent {
-  std::string code;  // "sz.000001"
+  std::string code;  // "000001.SZ"
   std::string name;  // 简称, 基本面查不到时为空
   float ratio = 0.0; // factor_curr / factor_prev
 };
@@ -29,7 +29,7 @@ struct DailyStats {
   size_t total_assets = 0; // Total stocks listed on this date
   size_t assets_with_orders = 0;
 
-  // Dividend/split events (按代码升序; 数量即 .size())
+  // Dividend/split events (按全局 id 升序; 数量即 .size())
   std::vector<DividendEvent> dividend_events;
 
   // Completeness metric (0.0 - 1.0)
@@ -69,9 +69,7 @@ struct DatesState {
 
 // Render the dates tab showing calendar grid
 void RenderTabDates(
-    const StockDaysVec &stock_days,
-    const StockFactorMap &stock_factors,
-    const StockInfoMap &stock_info,
+    const AssetInfo &info,
     const Asset &asset_data,
     misc::Ymd backtest_start,
     misc::Ymd backtest_end,

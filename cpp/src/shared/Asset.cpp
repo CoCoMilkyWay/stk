@@ -206,7 +206,7 @@ void Asset::compute_backtest_coverage(AssetScan &out, misc::Ymd start, const Ass
 
   // 行 = 基本面交易日历 (权威, archive 自身缺日也能发现); 调用方保证基本面 Ready (ScanService assert).
   // 两源未扫描 / 不存在时其日期集为空, 行上自然标"无".
-  const auto &stock_days = assetinfo.get_stock_days();
+  const std::vector<CalendarDay> &stock_days = assetinfo.days;
   assert(!stock_days.empty() && "基本面交易日历未就绪");
   for (const CalendarDay &day : stock_days)
     if (day.trading && day.date >= bt.start && day.date <= bt.end)
@@ -233,10 +233,9 @@ std::vector<misc::Ymd> Asset::backtest_dates() const {
 
 void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetinfo, misc::exec::ForkJoin &ex,
                                         Progress &p) const {
-  const auto &stock_info = assetinfo.get_stock_info();
-  const auto &stock_days = assetinfo.get_stock_days();
-  const auto &suspended = assetinfo.get_suspended();
+  const std::vector<CalendarDay> &stock_days = assetinfo.days;
   const Backtest &bt = out.backtest;
+  assert(assetinfo.stocks.size() == items.size() && "AssetInfo 未与 items 对齐 (AssetLoader::load 没跑?)");
 
   std::unordered_map<misc::Ymd, DateStats> local_date_stats;
   std::vector<AssetStats> local_asset_stats(items.size());
@@ -280,33 +279,16 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
     }
   });
 
-  // 每资产的常量先摊平: 交易所小写全码 / 上市 / 退市. 不在日期×资产的内循环里
-  // 现算 (那是五百万次 string 拼接 + map 查找).
+  // 每资产的常量先摊平: 上市 / 退市 / 是否排除, 日期×资产的内循环只读这一张表.
   struct AssetKey {
-    std::string full_code;     // "sh.600128"
     misc::Ymd list_date = 0;   // 0 = 不限
     misc::Ymd delist_date = 0; // 0 = 不限
     bool excluded = false;     // 北交所: L2 archive 从不覆盖
   };
   std::vector<AssetKey> keys(items.size());
-  std::unordered_map<std::string, size_t> key_to_idx; // 停牌名单 (全码) → 资产下标
-  key_to_idx.reserve(items.size());
   for (size_t i = 0; i < items.size(); ++i) {
-    AssetKey &k = keys[i];
-    if (items[i].exchange == "BJ") {
-      k.excluded = true;
-      continue;
-    }
-    std::string exchange_lower = items[i].exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-    k.full_code = exchange_lower + "." + items[i].asset_code;
-    key_to_idx[k.full_code] = i;
-
-    auto info_it = stock_info.find(k.full_code);
-    if (info_it != stock_info.end()) {
-      k.list_date = info_it->second.ipo_date;
-      k.delist_date = info_it->second.out_date;
-    }
+    const StockInfo &s = assetinfo.stocks[i];
+    keys[i] = {s.ipo_date, s.out_date, items[i].exchange == "BJ"};
   }
 
   const Binary &bin = out.binary;
@@ -319,6 +301,7 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
   // stock_days, 同序), bidx 逐个对上.
   struct DayJob {
     misc::Ymd date;
+    size_t cal;  // 全日历下标 (AssetInfo::days / suspended 的行)
     size_t didx; // 日期轴下标, 内循环 O(1) 定址
     size_t bidx; // 回测日历行 (in_backtest 时有效)
     bool in_db_range;
@@ -328,7 +311,8 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
   std::vector<DayJob> jobs;
   jobs.reserve(stock_days.size());
   size_t next_bidx = 0;
-  for (const CalendarDay &day : stock_days) {
+  for (size_t cal = 0; cal < stock_days.size(); ++cal) {
+    const CalendarDay &day = stock_days[cal];
     const bool in_db_range =
         !has_db_range || (day.date >= bin.min_date && day.date <= bin.max_date);
     const bool in_backtest = has_bt_range && day.trading &&
@@ -338,6 +322,7 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
 
     DayJob job;
     job.date = day.date;
+    job.cal = cal;
     job.didx = cat->day_idx(day.date);
     job.bidx = in_backtest ? next_bidx++ : 0;
     job.in_db_range = in_db_range;
@@ -377,16 +362,10 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
     for (size_t j = begin; j < end; ++j) {
       const DayJob &job = jobs[j];
 
-      // 当日停牌名单 (无条目 = 该日无人停牌) → 位图, 内循环免字符串 hash
+      // 当日停牌名单 → 位图 (资产下标 = 全局 id)
       std::fill(susp.begin(), susp.end(), 0);
-      auto susp_it = suspended.find(job.date);
-      if (susp_it != suspended.end()) {
-        for (const auto &code : susp_it->second) {
-          auto kit = key_to_idx.find(code);
-          if (kit != key_to_idx.end())
-            susp[kit->second] = 1;
-        }
-      }
+      for (const uint32_t id : assetinfo.suspended[job.cal])
+        susp[id] = 1;
 
       DateStats *ds = job.in_db_range ? &ck.date_stats[job.date] : nullptr;
       // 一天一个条目, 哪怕零缺口 —— By Date 表要能说"这天检查过, 没事"

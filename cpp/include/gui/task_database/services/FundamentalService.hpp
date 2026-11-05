@@ -1,7 +1,7 @@
 // Fundamental Service - 基本面 + 分钟线数据 sync (BigQuant DAI + Tushare HTTP) + 概念快照 (东财 HTTP)
 // 数据落地 = output/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet; 概念 = output/concept/YYYYMMDD.tsv (shared/Concept.hpp)
 // (fundamental/ 月度分片 + _meta 单文件 + Daily 日文件, 水位增量, 常量见 shared/Config.hpp)
-// AssetInfo 从 parquet 构建内存结构.
+// AssetInfo 从 parquet 构建 (按全局 id 稠密, 见 shared/AssetInfo.hpp).
 #pragma once
 
 #include "gui/util/Service.hpp"
@@ -66,7 +66,7 @@ struct FundamentalState {
   std::string quota_time; // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
 
   // 构建结果统计 (最近一次构建成功的)
-  std::size_t stock_count = 0;        // stock_info 条数
+  std::size_t stock_count = 0;        // cn_stock_basic_info 收录的股票数 (StockInfo::known)
   std::size_t factor_stock_count = 0; // 有复权因子序列的股票数
   std::size_t trading_days_count = 0; // 交易日历天数
   misc::Ymd date_range_start = 0;     // D 轴范围
@@ -100,8 +100,8 @@ struct FundamentalResult {
 //
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::assetinfo (只在 GUI 线程替换)
-//   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> (Round)
-//               → 基本面 [drive: bq → ts] → 概念快照 (当日缺才拉) → 分钟线 [drive bq.bar1m] → 构建 → post
+//   - worker:   run = 外来写者 parquet 重写 (renative) → 四道计划 (Round, 纯本地) → 四道依次 drive
+//               [bigquant → tushare → eastmoney.concept → bigquant.bar1m] → 构建 (扫描 → 落地) → post
 //               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //               各道进退写 state.lanes (持 mutex)
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;

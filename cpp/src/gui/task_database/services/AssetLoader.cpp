@@ -3,9 +3,8 @@
 #include "shared/AssetAxis.hpp"
 #include "shared/SharedData.hpp"
 
-#include <algorithm>
 #include <cassert>
-#include <vector>
+#include <string>
 
 namespace GUI::Database {
 
@@ -14,61 +13,29 @@ void AssetLoader::load(SharedData &data) {
   // items[i].asset_id == i 不变
   data.asset.items.clear();
 
-  const auto &stock_info_map = data.assetinfo.get_stock_info();
+  const AssetInfo &info = data.assetinfo;
   AssetAxis &axis = asset_axis(); // 首次访问即 load + 自校验
 
-  // 基本面股票全量 → intern. stock_info 是 std::map, 首次建轴时顺序即
-  // (exchange, code) 字典序; 之后新上市按发现顺序追加尾部.
-  for (const auto &[key, info] : stock_info_map) {
-    std::string code, exchange;
-    split_stock_key(key, code, exchange);
-    axis.intern(code + "." + exchange);
+  // 码表 = 构建时的轴 + 档案新见代码 (追加在尾) ⇒ 逐个 intern 恰好落在自己的下标上
+  for (std::size_t i = 0; i < info.codes.size(); ++i) {
+    [[maybe_unused]] const std::size_t id = axis.intern(info.codes[i]);
+    assert(id == i && "AssetInfo 码表须是 A 轴的延伸");
   }
   axis.save();
+  assert(axis.size() == info.stocks.size() && "AssetInfo 未覆盖 A 轴");
 
-  // items 与轴下标密集对齐: items[i].asset_id == i.
-  // 轴里可能有本次基本面查不到的老代码 (注册表 append-only, 从不删) — 那些
+  // 轴里可能有档案不再收录的老代码 (注册表 append-only, 从不删) — 那些
   // 保留占位, 名称留空、区间给全开, encode 时 archive 里没有自然跳过.
   const std::size_t n = axis.size();
   data.asset.items.reserve(n);
-
   for (std::size_t i = 0; i < n; ++i) {
     const std::string &code_ex = axis.code(i);
     const std::size_t dot = code_ex.find('.');
     assert(dot != std::string::npos && "AssetAxis 资产码缺少 .EX 后缀");
-    const std::string code = code_ex.substr(0, dot);
-    const std::string exchange = code_ex.substr(dot + 1);
-
-    std::string exchange_lower = exchange;
-    std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-
-    std::string asset_name;
-    misc::Ymd start_date = 19900101;
-    misc::Ymd end_date = 20991231;
-
-    auto it = stock_info_map.find(exchange_lower + "." + code);
-    if (it != stock_info_map.end()) {
-      const auto &info = it->second;
-      asset_name = info.name;
-      if (info.ipo_date)
-        start_date = info.ipo_date;
-      if (info.out_date)
-        end_date = info.out_date;
-    }
-
-    data.asset.items.emplace_back(i, code, asset_name, exchange, start_date, end_date);
+    const StockInfo &s = info.stocks[i];
+    data.asset.items.emplace_back(i, code_ex.substr(0, dot), s.name, code_ex.substr(dot + 1),
+                                  s.ipo_date ? s.ipo_date : 19900101, s.out_date ? s.out_date : 20991231);
   }
-}
-
-void AssetLoader::split_stock_key(const std::string &key, std::string &code, std::string &exchange) {
-  const std::size_t dot = key.find('.');
-  assert(dot != std::string::npos && "基本面 stock_info key 缺少 . 分隔 (期望 sz.000001)");
-
-  exchange = key.substr(0, dot);
-  std::transform(exchange.begin(), exchange.end(), exchange.begin(), ::toupper);
-  code = key.substr(dot + 1);
-
-  assert(!code.empty() && "基本面 stock_info key 代码段为空");
 }
 
 } // namespace GUI::Database

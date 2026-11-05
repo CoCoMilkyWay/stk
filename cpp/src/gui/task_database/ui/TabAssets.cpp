@@ -97,17 +97,13 @@ const std::string &GetIndustryDisplay(const StockInfo &info) {
   return info.ind_name.empty() ? info.ind_code : info.ind_name;
 }
 
-// "sh.600000" — stock_info 的键
-std::string MakeStockKey(const AssetItem &asset) {
-  std::string exchange_lower = asset.exchange;
-  std::transform(exchange_lower.begin(), exchange_lower.end(),
-                 exchange_lower.begin(), ::tolower);
-  return exchange_lower + "." + asset.asset_code;
-}
-
-const StockInfo *FindStockInfo(const AssetItem &asset, const StockInfoMap &stock_info) {
-  auto it = stock_info.find(MakeStockKey(asset));
-  return it != stock_info.end() ? &it->second : nullptr;
+// 基本面未载入 (stock_info 空) 或档案无此代码 → nullptr
+const StockInfo *FindStockInfo(const AssetItem &asset, const StockInfos &stock_info) {
+  if (stock_info.empty())
+    return nullptr;
+  assert(asset.asset_id < stock_info.size() && "AssetInfo 未与 items 对齐");
+  const StockInfo &s = stock_info[asset.asset_id];
+  return s.known ? &s : nullptr;
 }
 
 bool ShouldShowAsset(const AssetItem &asset, const StockInfo *info, const AssetsFilter &f) {
@@ -429,7 +425,7 @@ void CrossSectionColors(Good g, const std::vector<double> &v, std::vector<uint32
   }
 }
 
-void RebuildView(AssetsView &view, const Asset &asset, const StockInfoMap &stock_info, const AssetsViewKey &key) {
+void RebuildView(AssetsView &view, const Asset &asset, const StockInfos &stock_info, const AssetsViewKey &key) {
   const size_t count = asset.items.size();
   assert(asset.asset_stats.size() == count);
 
@@ -484,7 +480,7 @@ void RebuildView(AssetsView &view, const Asset &asset, const StockInfoMap &stock
 }
 
 // 视图过期就重建. 表格与横截面面板都先调它, 之后共用 state.view.
-void SyncView(AssetsState &state, const Asset &asset, const StockInfoMap &stock_info) {
+void SyncView(AssetsState &state, const Asset &asset, const StockInfos &stock_info) {
   const AssetsViewKey key{asset.generation, asset.items.size(), stock_info.size(), state.sort_column, state.sort_ascending, state.filter};
   if (!state.view.built || !(state.view.key == key))
     RebuildView(state.view, asset, stock_info, key);
@@ -497,7 +493,7 @@ void SyncView(AssetsState &state, const Asset &asset, const StockInfoMap &stock_
 void RenderFilterBar(
     AssetsState &state,
     const std::vector<AssetItem> &assets,
-    const StockInfoMap &stock_info) {
+    const StockInfos &stock_info) {
 
   ImGui::SetNextItemWidth(250.0f);
   if (ImGui::InputTextWithHint("##Search", "Search code/name...", state.search_buf.data(), state.search_buf.size()))
@@ -558,7 +554,7 @@ void RenderFilterBar(
 
 void RenderDataTable(
     const Asset &asset_data,
-    const StockInfoMap &stock_info,
+    const StockInfos &stock_info,
     AssetsState &assets_state) {
 
   ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
@@ -637,7 +633,7 @@ void RenderDataTable(
 
 void RenderNumericAnalysis(
     const Asset &asset_data,
-    const StockInfoMap &stock_info,
+    const StockInfos &stock_info,
     const AssetsState &assets_state,
     const Column &col) {
 
@@ -826,7 +822,7 @@ void RenderNumericAnalysis(
 
 void RenderCategoricalAnalysis(
     const Asset &asset_data,
-    const StockInfoMap &stock_info,
+    const StockInfos &stock_info,
     const AssetsState &assets_state,
     const Column &col) {
 
@@ -899,7 +895,7 @@ void RenderCategoricalAnalysis(
 
 void RenderCrossSectionPanel(
     const Asset &asset_data,
-    const StockInfoMap &stock_info,
+    const StockInfos &stock_info,
     const AssetsState &assets_state) {
 
   const int ci = assets_state.selected_column_idx;
@@ -933,7 +929,7 @@ void RenderCrossSectionPanel(
 
 void RenderTabAssets(
     Asset &asset,
-    const StockInfoMap &stock_info,
+    const StockInfos &stock_info,
     AssetsState &assets_state,
     Market &market) {
 

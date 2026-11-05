@@ -533,15 +533,15 @@ void OrderFlow::Profile::clear() {
 // OrderFlow::EventMarks Implementation (GUI 线程)
 // ============================================================================
 
-void OrderFlow::EventMarks::build(const std::vector<misc::Ymd> &dates, const std::vector<AssetEvent> *evs) {
+void OrderFlow::EventMarks::build(const std::vector<misc::Ymd> &dates, std::span<const AssetEvent> evs) {
   for (auto &l : lane)
     l.clear();
   events = evs;
-  if (!evs || dates.empty())
+  if (dates.empty())
     return;
   constexpr double W = static_cast<double>(OrderFlowConst::MIN_CAPACITY);
-  for (size_t i = 0; i < evs->size(); ++i) {
-    const AssetEvent &e = (*evs)[i];
+  for (size_t i = 0; i < evs.size(); ++i) {
+    const AssetEvent &e = evs[i];
     // 首日 = d0 起首个日轴日 (单点早于轴首丢; 区间早于轴首的部分裁掉), 末日 = d1 及之前末个日轴日
     if (event_def(e.kind).shape == EventShape::Point && e.d0 < dates.front())
       continue;
@@ -556,11 +556,11 @@ void OrderFlow::EventMarks::build(const std::vector<misc::Ymd> &dates, const std
   }
   for (const auto &l : lane)
     assert(std::is_sorted(l.begin(), l.end(), [](const Mark &a, const Mark &b) { return a.x0 < b.x0; }) &&
-           "事件须 d0 升序 (AssetEvents::by_code 契约)");
+           "事件须 d0 升序 (AssetEvents::of 契约)");
 }
 
 void OrderFlow::EventMarks::clear() {
-  events = nullptr;
+  events = {};
   for (auto &l : lane)
     l.clear();
   key.reset();

@@ -67,7 +67,7 @@ bool ScanService::run(ScanRequest &req) {
   // Phase 5: Compute backtest coverage
   // ========================================
   // 回测日历的 ground truth = 基本面交易日历 (StateManager 只在基本面交接 ok 后请求扫描)
-  assert(!data_.assetinfo.get_stock_days().empty() && "基本面日历未就绪, 不应触发扫描");
+  assert(!data_.assetinfo.days.empty() && "基本面日历未就绪, 不应触发扫描");
   Asset::compute_backtest_coverage(s, backtest_start, data_.assetinfo);
 
   // Encode 的缺失表、Assets 的 Orders%、Dates 的完整性是同一份统计, 在这里

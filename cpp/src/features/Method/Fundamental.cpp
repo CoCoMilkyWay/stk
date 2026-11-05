@@ -1674,7 +1674,7 @@ void Panel::build(const std::vector<Ymd> &dates) {
   }
   const int g0 = std::max(0, first_d - 15); // 网格切片起点: 首回测日前留 15 日 (trading_st 连续 15 日计数)
 
-  // ---- 静态 meta: cn_stock_basic_info (_meta) ----
+  // ---- 静态 meta: 板块按代码判定; 上市 / 退市 / 主板 ← cn_stock_basic_info (_meta), 随下面同一次 Scan ----
   meta.list.assign(static_cast<std::size_t>(n_a), 0);
   meta.delist.assign(static_cast<std::size_t>(n_a), 0);
   meta.list_day.assign(static_cast<std::size_t>(n_a), {});
@@ -1684,25 +1684,26 @@ void Panel::build(const std::vector<Ymd> &dates) {
   meta.board.resize(static_cast<std::size_t>(n_a));
   for (int a = 0; a < n_a; ++a)
     meta.board[static_cast<std::size_t>(a)] = board_of(table.code(static_cast<std::size_t>(a)));
-  fundamental::meta(cat, ids, fundamental::spec("cn_stock_basic_info"), {"list_date", "delist_date", "list_sector"},
-                    [&](const Rows &r) {
-                      const pq::Col ld = r.col("list_date"), dd = r.col("delist_date"), ls = r.col("list_sector");
-                      r.each([&](std::int64_t i, std::uint32_t a, Ymd) {
-                        const Ymd l = std::max(ld.yyyymmdd(i), 0), dl = std::max(dd.yyyymmdd(i), 0);
-                        meta.list[a] = l;
-                        meta.delist[a] = dl;
-                        if (l)
-                          meta.list_day[a] = misc::to_days(l);
-                        if (dl)
-                          meta.delist_day[a] = misc::to_days(dl);
-                        meta.main_board[a] = (ls.i32(i, 0) == 1) ? 1 : 0;
-                      });
-                    });
 
-  // ---- PIT 池: 15 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
+  // ---- PIT 池: 静态 meta + 15 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
   std::vector<float> volume;
   {
     fundamental::Scan scan(cat, ids, static_cast<size_t>(misc::exec::hw()));
+    fundamental::Part<fundamental::Sink> meta_p;
+    scan.add(meta_p, fundamental::spec("cn_stock_basic_info"), {"list_date", "delist_date", "list_sector"},
+             fundamental::Sink{}, [&meta](const Rows &r, fundamental::Sink &) {
+               const pq::Col ld = r.col("list_date"), dd = r.col("delist_date"), ls = r.col("list_sector");
+               r.each([&](std::int64_t i, std::uint32_t a, Ymd) {
+                 const Ymd l = std::max(ld.yyyymmdd(i), 0), dl = std::max(dd.yyyymmdd(i), 0);
+                 meta.list[a] = l;
+                 meta.delist[a] = dl;
+                 if (l)
+                   meta.list_day[a] = misc::to_days(l);
+                 if (dl)
+                   meta.delist_day[a] = misc::to_days(dl);
+                 meta.main_board[a] = (ls.i32(i, 0) == 1) ? 1 : 0;
+               });
+             });
     GridScan grids;
     EventScan events;
     grids.add(scan, axes, pit);

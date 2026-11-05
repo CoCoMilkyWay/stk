@@ -7,7 +7,7 @@
 //   Remote 远端: Task → Query → Table, 两源同骨架 (Remote.hpp)
 //   sync   写侧: plan → run = put(t, fetch(client, t)) (Sync.hpp)
 //   audit  核对: plan → run (远端指纹 ↔ 本地指纹, 仅精确源) → repair (差异 → Task); 结论入 Book (Audit.hpp)
-//   Scan   读侧: split → fold → merge; meta / snapshot 同一 Rows 视图 (Scan.hpp)
+//   Scan   读侧: split → fold → merge; Month / Meta / 最新日 / Daily 同一 Rows 视图 (Scan.hpp)
 //
 // 依赖单向: fundamental → api/{bigquant, tushare}::Client (纯传输, 不知 Spec)
 // 分派键唯一 = 数据源 Src (Bq / Tu); 客户端类型由 Src::Client 给出, 能力由 Src::exact 给出

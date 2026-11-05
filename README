@@ -23,7 +23,7 @@ stk/
 │   │   │   ├── SharedData.hpp                        # 📦 顶层数据容器
 │   │   │   ├── Config.hpp                            # 📦 配置数据结构
 │   │   │   ├── TaskState.hpp                         # 📦 任务状态
-│   │   │   ├── Asset.hpp / AssetInfo.hpp             # 📦 资产定义 / 元数据
+│   │   │   ├── Asset.hpp / AssetInfo.hpp             # 📦 资产定义 / 元数据 (按全局 id 稠密: 一对一 vector, 一对多 Csr)
 │   │   │   ├── AssetEvent.hpp                        # 📦 个股历史事件 (AssetInfo 内): 种类表 = 单点 / 区间 × 4 组; OrderFlow 图2 时间轴标注
 │   │   │   ├── AssetAxis.hpp                         # 📦 资产轴 (A 轴) 码表 + 池轴 PoolAxis (库的 A 轴: 全局 id 子集 + 码表 hash)
 │   │   │   ├── FeatureLib.hpp                        # 📦 FeatureLib = 库 (池 × 档, LibId) + A 轴 + 目录 + 日期轴; 每池两档对称各一库
@@ -59,6 +59,7 @@ stk/
 │   │   │   └── OrdersDay.hpp                         # 📦 orders 日文件读写 (DayWriter ↔ DayReader) + 全库帧目录 OrdersCatalog
 │   │   ├── define/                                   # 🔷 底层数据结构
 │   │   │   ├── CBuffer.hpp                           # 🔷 循环缓冲区
+│   │   │   ├── Csr.hpp                               # 🔷 压缩行 (off + v) + bucket 计数排序分桶 (桶内保持输入序)
 │   │   │   ├── FastBitmap.hpp                        # 🔷 位图
 │   │   │   └── MemPool.hpp                           # 🔷 内存池
 │   │   ├── lob/                                      # 📊 限价订单簿引擎
@@ -448,7 +449,7 @@ stk/
 │   │   │   ├── Store.hpp                                   # 📊   本地: Catalog (一次目录遍历) + 分片状态 + 拉取计划 + put (时间只经 Now)
 │   │   │   ├── Remote.hpp                                  # 📊   远端: fetch(client, task), 两源同骨架 (queries → query → concat → drop); DAI SQL 只在 select 构造
 │   │   │   ├── Sync.hpp                                    # 📊   写侧: plan<Src> → sync(client, tasks) = put(t, fetch(client, t))
-│   │   │   ├── Scan.hpp                                    # 📊   读侧: 分段并行 map-reduce + meta / daily / calendar (AssetInfo / fund::Panel / Bar1mDay 共用)
+│   │   │   ├── Scan.hpp                                    # 📊   读侧: add (Pick All / Last; Month / Meta / 最新日) 并行 map-reduce + daily (AssetInfo / fund::Panel / Bar1mDay 共用)
 │   │   │   └── Audit.hpp                                   # 📊   核对: 远端指纹 ↔ 本地指纹 (仅 DAI 冻结月; Daily 按日槽成月)
 │   │   ├── mining/                                         # ⛏️ 数据挖掘设计文档 (特征 → 因子): README.md 方法论 / COPULA.md
 │   │   └── misc/                                           # 🔧 通用工具库

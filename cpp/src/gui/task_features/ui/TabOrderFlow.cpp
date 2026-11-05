@@ -18,7 +18,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -701,7 +700,7 @@ static ImU32 EventBandColor(const AssetEvent &e) {
 
 // hover 明细 (日期之后的载荷; 无载荷 = 空串). 源单位 → 展示单位只在这里换
 // evs = 选中资产全部事件 (d0 升序), i = 本事件下标 (改名回溯曾用名用)
-static void EventDetail(const std::vector<AssetEvent> &evs, size_t i, const AssetEvents &src, char *buf, size_t n) {
+static void EventDetail(std::span<const AssetEvent> evs, size_t i, const AssetEvents &src, char *buf, size_t n) {
   const AssetEvent &e = evs[i];
   const auto &v = e.v;
   const char *t = src.texts[e.text].c_str();
@@ -783,9 +782,9 @@ static void EventDetail(const std::vector<AssetEvent> &evs, size_t i, const Asse
 }
 
 static void PlotEventLanes(const OrderFlow::EventMarks &em, const AssetEvents &src, unsigned groups) {
-  if (!em.events)
+  if (em.events.empty())
     return;
-  const std::vector<AssetEvent> &evs = *em.events;
+  const std::span<const AssetEvent> evs = em.events;
   const float r = ImGui::GetFontSize() * 0.6f; // 衬底圆半径
   const float lane_h = 2.0f * r + 2.0f;
   const double half_day = 0.5 * static_cast<double>(OrderFlowConst::MIN_CAPACITY);
@@ -972,13 +971,9 @@ static void RenderMinPlot(SharedData &data, float height) {
 
     // 事件标注: (Min 请求代, 事件构建代) 变了才重建 (dates 只在 ready 时可读)
     if (pre.ready) {
-      const AssetEvents &events = data.assetinfo.get_events();
-      if (of.event_marks.key.stale(ui.min.gen, events.seq)) {
-        const AssetItem &item = data.asset.items[ui.min.key->asset];
-        std::string key = item.exchange;
-        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
-        of.event_marks.build(mn.dates, events.find(key + "." + item.asset_code));
-      }
+      const AssetEvents &events = data.assetinfo.events;
+      if (of.event_marks.key.stale(ui.min.gen, events.seq))
+        of.event_marks.build(mn.dates, events.of[data.asset.items[ui.min.key->asset].asset_id]);
       PlotEventLanes(of.event_marks, events, ui.event_groups);
     }
 

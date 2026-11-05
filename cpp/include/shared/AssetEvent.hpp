@@ -3,13 +3,13 @@
 // 一律原生类型: 日期 Ymd (0 = 无), 数值 float (NaN = 无, 源单位), 文本 = 字符串池下标 (0 = 无); 格式化只在 UI.
 #pragma once
 
+#include "define/Csr.hpp"
 #include "misc/date.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -103,13 +103,7 @@ struct AssetEvent {
 static_assert(sizeof(AssetEvent) == 32, "AssetEvent: 全市场百万条量级, 保持 32 字节");
 
 struct AssetEvents {
-  std::uint64_t seq = 0;                                  // 构建代 (FundamentalRequest::seq, 0 = 未建): GUI 缓存失效键
-  std::vector<std::string> texts{""};                     // 字符串池 ([0] = 无)
-  std::map<std::string, std::vector<AssetEvent>> by_code; // "sz.000001" → 事件 (d0 升序)
-
-  // 不存在 → nullptr
-  const std::vector<AssetEvent> *find(const std::string &code) const {
-    const auto it = by_code.find(code);
-    return it == by_code.end() ? nullptr : &it->second;
-  }
+  std::uint64_t seq = 0;              // 构建代 (FundamentalRequest::seq, 0 = 未建): GUI 缓存失效键
+  std::vector<std::string> texts{""}; // 字符串池 ([0] = 无)
+  Csr<AssetEvent> of;                 // [全局 id] → 事件 (d0 升序)
 };

@@ -39,8 +39,7 @@ struct AssetsViewKey {
 
 // 表格视图 = 过滤 + 排序后的 asset_id 列表 + 截面色 (表格与横截面面板共用).
 //
-// 逐帧重建的代价: 每资产一次 stock_info 查找 (std::map, 还要先拼 "sh.600000"),
-// 加上几千行的排序; 而 Orders / Order% / Miss_O 三列的行统计要遍历该资产在
+// 逐帧重建的代价: 几千行的排序; 而 Orders / Order% / Miss_O 三列的行统计要遍历该资产在
 // 帧目录里的整列 —— 资产数 × 交易日数是五百万量级, 逐帧重算会把帧时间拖到几百
 // 毫秒 (见 Asset::AssetStats 处的同一个坑). 行统计因此取自 Asset::asset_stats,
 // 顺序取自本视图, 两者都只在 key 变化时重算.
@@ -78,7 +77,7 @@ struct AssetsState {
 
 void RenderTabAssets(
     Asset &asset,
-    const StockInfoMap &stock_info,
+    const StockInfos &stock_info,
     AssetsState &assets_state,
     Market &market);
 

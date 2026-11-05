@@ -1,26 +1,29 @@
-// Asset Information - Stock metadata (基本面数据, BigQuant + Tushare)
-// Shared data structure for stock info, factors, and trading days.
+// Asset Information - 全市场个股基本面快照 (BigQuant + Tushare) + 交易日历
 // 由 FundamentalService 从 output/fundamental/ parquet 构建.
+// 个股一律按全局 id (A 轴下标, shared/AssetAxis.hpp) 稠密存: 一对一 = vector, 一对多 = Csr.
 // 一律原生类型: 日期 Ymd (0 = 无), 数值 float (NaN = 无效); 格式化只在 UI.
 #pragma once
 
+#include "define/Csr.hpp"
 #include "misc/date.hpp"
 #include "shared/AssetEvent.hpp"
 
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
-#include <map>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 // ============================================================================
-// Stock Info - Complete stock information
+// StockInfo — 一只股票的最新快照 (每字段一个出处)
 // ============================================================================
 
 struct StockInfo {
   static constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
   // 静态字段 (cn_stock_basic_info + cn_stock_industry_component)
+  bool known = false;     // cn_stock_basic_info 有此代码 (A 轴 append-only, 可含档案不再收录的代码)
   std::string name;       // 逐日 PIT 简称 (cn_stock_instruments), 退市股回落 basic_info
   misc::Ymd ipo_date = 0; // 0 = 未知
   misc::Ymd out_date = 0; // 0 = 在市
@@ -44,57 +47,37 @@ struct StockInfo {
   float dy3y = kNaN;
   float dy5y = kNaN;
 };
+using StockInfos = std::vector<StockInfo>; // [全局 id]
 
-// ============================================================================
-// Data Containers
-// ============================================================================
-
-// 复权因子变点 (分红/拆分事件日), date 升序
+// 复权因子变点 (分红/拆分事件日)
 struct FactorPoint {
   misc::Ymd date;
   float factor;
 };
-using StockFactorMap = std::map<std::string, std::vector<FactorPoint>>; // code → 变点序列
 
-// StockInfo: code ("sz.000001") -> StockInfo
-using StockInfoMap = std::map<std::string, StockInfo>;
-
-// 全日历 (含周末/节假日, 首末交易日之间逐日), date 升序
 struct CalendarDay {
   misc::Ymd date;
   bool trading;
 };
-using StockDaysVec = std::vector<CalendarDay>;
-
-// Suspended: date -> 该日全天停牌的股票 key ("sz.000001") 集合.
-// 只存停牌的 (date, code) 对 (2015 至今约 28 万条), 未停牌日不建条目.
-using SuspendedMap = std::map<misc::Ymd, std::unordered_set<std::string>>;
 
 // ============================================================================
-// AssetInfo - Stock metadata and trading calendar
+// AssetInfo
 // ============================================================================
 
 struct AssetInfo {
-  StockInfoMap stock_info_;
-  StockFactorMap stock_factor_;
-  StockDaysVec stock_days_;
-  SuspendedMap suspended_;
-  AssetEvents events_;     // 个股历史事件 (shared/AssetEvent.hpp)
-  misc::Ymd bar1m_end = 0; // 末个 bar1m 分片日 (0 = 未同步); 缺日由同步保证不出现
-  misc::Ymd pit_end = 0;   // 基本面齐备的末个库日 (fund::last_day; 0 = 无)
+  std::vector<std::string> codes; // [全局 id] "000001.SZ" = 构建时的 A 轴 + 档案里新见的代码 (追加在尾, 换进时 AssetLoader intern)
+  StockInfos stocks;              // [全局 id]
+  Csr<FactorPoint> factors;       // [全局 id] → 复权因子变点, date 升序
+  AssetEvents events;             // [全局 id] → 个股历史事件 (shared/AssetEvent.hpp)
+  std::vector<CalendarDay> days;  // 全日历 (含周末/节假日, 首末交易日之间逐日), date 升序
+  Csr<std::uint32_t> suspended;   // [days 下标] → 当日全天停牌的全局 id (升序)
+  misc::Ymd bar1m_end = 0;        // 末个 bar1m 分片日 (0 = 未同步); 缺日由同步保证不出现
+  misc::Ymd pit_end = 0;          // 基本面齐备的末个库日 (fund::last_day; 0 = 无)
 
-  const StockInfoMap &get_stock_info() const { return stock_info_; }
-  const StockFactorMap &get_stock_factor() const { return stock_factor_; }
-  const StockDaysVec &get_stock_days() const { return stock_days_; }
-  const SuspendedMap &get_suspended() const { return suspended_; }
-  const AssetEvents &get_events() const { return events_; }
-
-  // code 如 "sh.600000"; 不存在 → nullptr
-  const StockInfo *find_stock_info(const std::string &code) const;
-
-  StockInfoMap &mutable_stock_info() { return stock_info_; }
-  StockFactorMap &mutable_stock_factor() { return stock_factor_; }
-  StockDaysVec &mutable_stock_days() { return stock_days_; }
-  SuspendedMap &mutable_suspended() { return suspended_; }
-  AssetEvents &mutable_events() { return events_; }
+  // 档案里没有 (!known) → nullptr
+  const StockInfo *find(std::size_t id) const {
+    assert(id < stocks.size() && "AssetInfo: id 不在 A 轴");
+    const StockInfo &s = stocks[id];
+    return s.known ? &s : nullptr;
+  }
 };

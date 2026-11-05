@@ -87,10 +87,7 @@ static void EnsureIndustryCache(DistUIState &ui, const Asset &asset, const Asset
   ui.industry_names.clear();
   std::map<std::string, int> name_to_idx;
   for (size_t a = 0; a < asset.items.size(); ++a) {
-    const auto &item = asset.items[a];
-    std::string ex = item.exchange;
-    std::transform(ex.begin(), ex.end(), ex.begin(), ::tolower);
-    const StockInfo *si = assetinfo.find_stock_info(ex + "." + item.asset_code);
+    const StockInfo *si = assetinfo.find(asset.items[a].asset_id);
     if (!si || si->ind_name.empty())
       continue;
     auto [it, inserted] = name_to_idx.try_emplace(si->ind_name, static_cast<int>(ui.industry_names.size()));
@@ -280,10 +277,7 @@ static void EnsureColorCache(DistUIState &ui, const Asset &asset, const AssetInf
   std::vector<float> valid;
   valid.reserve(asset.items.size());
   for (size_t a = 0; a < asset.items.size(); ++a) {
-    const auto &item = asset.items[a];
-    std::string ex = item.exchange;
-    std::transform(ex.begin(), ex.end(), ex.begin(), ::tolower);
-    const StockInfo *si = assetinfo.find_stock_info(ex + "." + item.asset_code);
+    const StockInfo *si = assetinfo.find(asset.items[a].asset_id);
     float v = si ? AssetColorValue(*si, ui.color_mode) : std::nanf("");
     ui.color_values[a] = v;
     if (!std::isnan(v))
@@ -715,10 +709,7 @@ static void RenderAssetInfo(const Dist::Snap &dist, const Asset &asset,
   const auto &asset_item = asset.items[ln.asset];
 
   // Get real-time info from AssetInfo
-  std::string exchange_lower = asset_item.exchange;
-  std::transform(exchange_lower.begin(), exchange_lower.end(), exchange_lower.begin(), ::tolower);
-  std::string stock_key = exchange_lower + "." + asset_item.asset_code;
-  const StockInfo *stock_info = assetinfo.find_stock_info(stock_key);
+  const StockInfo *stock_info = assetinfo.find(asset_item.asset_id);
 
   // Asset name and code
   if (stock_info && !stock_info->name.empty()) {

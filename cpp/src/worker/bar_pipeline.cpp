@@ -27,7 +27,7 @@ struct TierFeed<bar::Tier> {
   // 源日历: 交易日 [PIPELINE_START_DATE, min(assetinfo.bar1m_end, assetinfo.pit_end)] —— 分钟线与基本面 (行 D 所需的
   //   D 盘后 / D+1 盘前表, 见 fund::last_day) 都齐的日才进库
   static std::vector<misc::Ymd> source_dates(const SharedData &data) {
-    const StockDaysVec &days = data.assetinfo.get_stock_days();
+    const std::vector<CalendarDay> &days = data.assetinfo.days;
     assert(!days.empty() && "交易日历未就绪");
     const misc::Ymd end = std::min(data.assetinfo.bar1m_end, data.assetinfo.pit_end);
     std::vector<misc::Ymd> dates;

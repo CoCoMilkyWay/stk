@@ -7,8 +7,6 @@
 // items[i].asset_id == i == AssetAxis 下标, 全流程按此下标寻址.
 #pragma once
 
-#include <string>
-
 // Forward declaration
 struct SharedData;
 
@@ -16,12 +14,9 @@ namespace GUI::Database {
 
 class AssetLoader {
 public:
-  // 基本面股票全量 → AssetAxis (append-only intern) → Asset::items (下标对齐).
+  // AssetInfo::codes → AssetAxis (append-only intern, 下标逐个对上) → Asset::items (下标对齐).
   // 前置: 基本面已就绪 (StateManager 收下 ok 的基本面交接件后调).
   static void load(SharedData &data);
-
-  // "sz.000001" (基本面 key) → "000001", "SZ"
-  static void split_stock_key(const std::string &key, std::string &code, std::string &exchange);
 };
 
 } // namespace GUI::Database

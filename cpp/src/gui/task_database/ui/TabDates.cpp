@@ -59,17 +59,15 @@ int DaysInMonth(int year, int month) {
 // ============================================================================
 
 std::map<misc::Ymd, DailyStats> BuildDailyStats(
-    const StockDaysVec &stock_days,
-    const StockFactorMap &stock_factors,
-    const StockInfoMap &stock_info,
+    const AssetInfo &info,
     const Asset &asset_data,
     misc::Ymd backtest_start,
     misc::Ymd backtest_end) {
 
   std::map<misc::Ymd, DailyStats> stats_map;
 
-  // Step 1: Initialize from stock_days (trading calendar)
-  for (const CalendarDay &day : stock_days) {
+  // Step 1: Initialize from info.days (trading calendar)
+  for (const CalendarDay &day : info.days) {
     const misc::Ymd date = day.date;
 
     DailyStats &stats = stats_map[date];
@@ -97,21 +95,17 @@ std::map<misc::Ymd, DailyStats> BuildDailyStats(
     }
   }
 
-  // Step 3: Detect dividend/split events from stock_factors
+  // Step 3: Detect dividend/split events from info.factors
   // Compare factor[i] / factor[i-1], if ratio != 1.0, event occurred
-  for (const auto &[code, points] : stock_factors) {
+  for (size_t id = 0; id < info.factors.size(); ++id) {
+    const std::span<const FactorPoint> points = info.factors[id];
     for (size_t i = 1; i < points.size(); ++i) {
       // Check if there's a significant factor change (dividend/split)
       const float ratio = points[i].factor / points[i - 1].factor;
       if (std::abs(ratio - 1.0) > 0.0001) { // Threshold for detecting events
         auto it = stats_map.find(points[i].date);
-        if (it != stats_map.end()) {
-          auto info_it = stock_info.find(code);
-          it->second.dividend_events.push_back(
-              {code,
-               info_it != stock_info.end() ? info_it->second.name : std::string(),
-               ratio});
-        }
+        if (it != stats_map.end())
+          it->second.dividend_events.push_back({info.codes[id], info.stocks[id].name, ratio});
       }
     }
   }
@@ -120,7 +114,7 @@ std::map<misc::Ymd, DailyStats> BuildDailyStats(
 }
 
 // ============================================================================
-// Helper: Build calendar structure from stock_days data
+// Helper: Build calendar structure from AssetInfo::days
 // ============================================================================
 
 struct CalendarData {
@@ -128,10 +122,10 @@ struct CalendarData {
   int start_year = 0;
   int end_year = 0;
 
-  void Build(const StockDaysVec &stock_days) {
+  void Build(const std::vector<CalendarDay> &days) {
     trading_days.clear();
 
-    for (const CalendarDay &day : stock_days)
+    for (const CalendarDay &day : days)
       if (day.trading)
         trading_days[day.date / 10000][day.date / 100 % 100].insert(day.date % 100);
 
@@ -386,35 +380,31 @@ void RenderYearRow(
 // ============================================================================
 
 void RenderTabDates(
-    const StockDaysVec &stock_days,
-    const StockFactorMap &stock_factors,
-    const StockInfoMap &stock_info,
+    const AssetInfo &info,
     const Asset &asset_data,
     misc::Ymd backtest_start,
     misc::Ymd backtest_end,
     DatesState &dates_state) {
 
-  // Build calendar from stock_days data
+  // Build calendar from info.days
   CalendarData calendar;
-  calendar.Build(stock_days);
+  calendar.Build(info.days);
 
   if (calendar.start_year == 0) {
     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f),
-                       "No trading calendar data available. Please update stock_days.json first.");
+                       "No trading calendar data available. Please sync fundamental first.");
     return;
   }
 
   // Build or reuse daily statistics cache
   if (dates_state.generation != asset_data.generation) {
     dates_state.generation = asset_data.generation;
-    dates_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
+    dates_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
   }
 
   if (ImGui::Button("Refresh Data")) {
     dates_state.daily_stats_cache.clear();
-    dates_state.daily_stats_cache = BuildDailyStats(
-        stock_days, stock_factors, stock_info, asset_data, backtest_start, backtest_end);
+    dates_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
   }
 
   // Layer Toggle Buttons

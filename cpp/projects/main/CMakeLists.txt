@@ -288,7 +288,6 @@ set(MATH_PRECISE
     # shared
     shared/Analysis.cpp
     shared/AssetAxis.cpp
-    shared/AssetInfo.cpp
     shared/Config.cpp
     shared/Corr.cpp
     shared/Dist.cpp

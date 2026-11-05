@@ -322,7 +322,7 @@ private:
     market_->start(*data_);
     RenderTabAssets(
         data_->asset,
-        data_->assetinfo.get_stock_info(),
+        data_->assetinfo.stocks,
         assets_state_,
         *market_);
   }
@@ -332,9 +332,7 @@ private:
     // 惰性补算: 渲染帧里现算是双重遍历, 而且会跟扫描抢着写同一份统计.
     // 扫描没跑完时 date_stats 是空的, 表格照常渲染, 数字等扫描落地.
     RenderTabDates(
-        data_->assetinfo.get_stock_days(),
-        data_->assetinfo.get_stock_factor(),
-        data_->assetinfo.get_stock_info(),
+        data_->assetinfo,
         data_->asset,
         data_->asset.backtest.start,
         data_->asset.backtest.end,
