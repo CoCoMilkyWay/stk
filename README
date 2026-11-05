@@ -315,7 +315,7 @@ stk/
 │   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 平面经 Store 缓存, 每请求整条重算 (池等权线随 Y 的代复用); 不写文件
 │   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
 │   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池, 所用库) 一张森林 (根 = 去重规范串, BookP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
-│   │   │       │   │                                 #    · 结果一律是账 PortfolioBook (四列 = 毛收益 / 冲击 / 固定份数 / 增仓量, 各 [线][行]): 因子 = 一线; 篮子 = basket_line 条线 (不扣成本) + 估值
+│   │   │       │   │                                 #    · 结果一律是账 PortfolioBook (四列 = 毛收益 / 冲击 / 固定份数 / 增仓量, 各 [线][行]): 因子 = 一线; 篮子 = basket_line 条线 (不扣成本: 只毛收益 / 增仓量两列) + 估值
 │   │   │       │   │                                 #    · BasketTask 全部篮子日层一个作业 (eval_baskets: open_job → load_b → baskets); 因子按条目缓存, 只算新增 (换组合留着, 按最近被请求限总量), 根评完即逐条发布
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
@@ -336,9 +336,12 @@ stk/
 │   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Compute / 自动 Inspect / Kline 才发
 │   │   │           ├── PortfolioView.hpp             # 🖥️ 组合 tab 的纯计算层 (无 ImGui): 派生 (行 / 线 / 色相) → 滚动分位 (估值分位 + 等值线档) / 末点分位 (VAL 表格, 不随区间起点) → 视图 (区间切片 / 名次), 各级一个 MakePortfolio* 入口
-│   │   │           │                                 #    · 线的来路只一条: 源 (账的一线 / 策略稠密格累加 / 价格指数) → 点位 → project 投到日并集轴 → PortfolioLine (画图点 + 日末视图; 年化 / 夏普 / 近况 / 配色同读日末视图)
-│   │   │           │                                 #    · 行按源身份 PortfolioSrc 沿用上一份 (线 / 年换手); 年换手 = 增仓量自首次建仓起的日均 × 每年交易日 (全部行同式); 估值窗 = ValSeries (滚动 / 末点同一份)
-│   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
+│   │   │           │                                 #    · 线的来路只两种: 腿集合成 mix (腿 = 账的一线; 一腿 = 单因子 / 篮子, 全部因子腿 = 策略) / 价格指数 → 点位 → project 投到日并集轴 → PortfolioLine (画图点 + 日末视图; 年化 / 夏普 / 近况 / 配色同读日末视图)
+│   │   │           │                                 #    · mix: 稠密格 [日][各腿行末分钟之并], 同格同腿复利, 跨腿按当日份额加和, 逐格复利; 年换手 = 增仓量同份额累加, 自首次建仓起在有腿的日上的日均 × 每年交易日 (全部行同式)
+│   │   │           │                                 #    · 行按源身份 PortfolioSrc (腿集 + 价格指数 + fixed_impact; 源对象由派生持有) 沿用上一份 (线 / 年换手)
+│   │   │           │                                 #    · 估值按日并集轴日 (val_at → 篮子账行): 滚动 / 末点分位同一个核 pct_at, 窗 = ValSeries, 权重表 RollW
+│   │   │           ├── PortfolioCommon.hpp           # 🖥️ 组合 tab 的内部件: 页表 / 行色 (OKLCH) / 估值口表 / 选中 + 主图 / 区间条 (PortfolioPlot.cpp) 与右表 (PortfolioSheet.cpp) 的入口
+│   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐格复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
 │   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 概念 / 因子 / 策略 (一次一组), 列 = 中文名 (切片名.等 / .加; 线色 = 指数 / 行业 / 概念 / 因子一起按 max(当日成员重合, 剔全A.加的残差相关) 定 OKLCH 色相, 色差 ∝ 不相似, 没算完全灰; 名列排序 = 按色相) | 当日涨幅 / Δ5日线 / 只数 / 总市值 / 换手 (新浪当日成交额占总市值) / 资金流入 (新浪当日分钟涨跌法净流入占成交额; 两列悬停看金额) | 区间年化 / 夏普 / 年换手
 │   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (篮子账) + 理想 (Market 篮子价格指数);
 │   │   │                                             #      近况两列同一核 (QuotesPanel RecentOf); VAL 表行 = 这三组同一份, 列 = 只数 / 总市值 / 换手 / 资金流入 (同 NAV) | 各口估值分位

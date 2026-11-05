@@ -1,0 +1,870 @@
+// Factors→Portfolio 右图例 (NAV / VAL / FLOW 同一骨架的右表) — 见 PortfolioCommon.hpp
+#include "gui/task_factors/ui/PortfolioCommon.hpp"
+
+#include "gui/task_factors/ui/TabFactors.hpp" // tip
+#include "gui/util/Chart.hpp"                 // tint / button_bar
+#include "imgui.h"
+#include "imgui_internal.h"  // TableFindByID (右表内容宽)
+#include "shared/Basket.hpp" // basket_line / cut_of_line
+
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cfloat>
+#include <cmath>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <functional>
+#include <initializer_list>
+#include <set>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+namespace GUI::Factors {
+
+namespace {
+
+// 右表类别条名 [RowGroup] (前 kBasketGroups 个 = VAL / FLOW 类别条)
+constexpr const char *kRowGroupName[kRowGroups] = {"指数", "行业", "概念", "因子", "策略"};
+// 右表格名次底色的 alpha
+constexpr float kValCellA = 0.45f;
+
+// 表格数值格 (NumCell): 填格时量文本宽, 画时右对齐到该列最宽
+NumCell num_cell(const ImVec4 &col, const char *fmt, ...) {
+  NumCell c;
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(c.s, sizeof(c.s), fmt, ap);
+  va_end(ap);
+  c.col = col, c.w = ImGui::CalcTextSize(c.s).x;
+  return c;
+}
+NumCell num_none() { return num_cell(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "-"); }
+void draw_cell(const NumCell &c, float col_w) {
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + col_w - c.w);
+  ImGui::TextColored(c.col, "%s", c.s);
+}
+
+// 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
+void pick(PortfolioUIState &ui, int page, const PortfolioRow &r) {
+  const int m = kPageDefs[page].pick;
+  std::set<std::string> &s = ui.pick.rows[m];
+  if (s.erase(r.id))
+    return;
+  if (m == kPickOne)
+    s.clear();
+  s.insert(r.id);
+  if (m == kPickMany)
+    for (int l = 0; l < kPairLines; ++l)
+      ui.reveal.insert(line_id(r, l));
+}
+// 点成分行: 叠加 ↔ 取消 (满 StockHistory::kKeep 只不再加)
+void toggle_stock(PortfolioUIState &ui, uint32_t id) {
+  if (!ui.pick.stocks.erase(id) && ui.pick.stocks.size() < Database::StockHistory::kKeep)
+    ui.pick.stocks.insert(id);
+}
+
+// 净值线的近况 (Database::RecentOf 同一核): 日末视图自末个活跃日往前 (起点 = 首日前一日的日末), 前收 = 前一日末
+Database::Recent recent_of(const PortfolioLine &c) {
+  Database::Mark m[Database::kMarks]; // 新 → 旧
+  size_t n = 0;
+  for (int k = c.e.empty() ? c.f - 1 : c.l + 1; k >= c.f && n < std::size(m); --k)
+    m[n++] = {c.end(k), k > c.f ? c.end(k - 1) : kNaN};
+  return Database::RecentOf({m, n});
+}
+
+// 右图例表头排序 (三张右表同一份; 三态: 升 → 降 → 原序): order (表行下标) 按当前排序列重排;
+// 首列 (名) 按 name(a, b) 三路比较, 其余按 num(i, 列), 不可算的恒在末
+template <class Name, class Num>
+void sort_rows(std::vector<size_t> &order, const Name &name, const Num &num) {
+  const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
+  if (!ss || ss->SpecsCount == 0)
+    return;
+  const int c = ss->Specs[0].ColumnIndex;
+  const bool desc = ss->Specs[0].SortDirection == ImGuiSortDirection_Descending;
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    if (c == 0) {
+      const int r = name(a, b);
+      return desc ? r > 0 : r < 0;
+    }
+    const double x = num(a, c), y = num(b, c);
+    if (!std::isfinite(x) || !std::isfinite(y))
+      return std::isfinite(x) && !std::isfinite(y);
+    return desc ? x > y : x < y;
+  });
+}
+// 名格悬停 (首列; 行 Selectable 跨全列, 只认本格) → 提示
+void name_tip(const std::string &s) {
+  if (ImGui::IsItemHovered() && ImGui::TableGetHoveredColumn() == 0)
+    tip("%s", s.c_str());
+}
+
+// ---- 右表 (NAV / VAL / FLOW 同一骨架 table): 列 = 名 + 各段 (Seg) 的列 (SheetCol), 格 = 文本 + 排序键 + 底色名次 (SheetCell);
+//      格缓存 (sheet_of: 来源变才整组重填) → 列出 (listing: 篮子组按过滤条, 选中 / 展开行恒列) → 量列出行各列最宽 → 表头排序 (组内) → 画 (sheet) ----
+// 一列: 表头 / 悬停说明 (各列同一格式: "列名 = 全称" + 算法 / 数据 / 显示 / 适用 四行)
+struct SheetCol {
+  std::string name, tip;
+};
+// 值 y 的格: 字色 col, 按 fmt 显示 a; 不可算 → "-"; 排序键 = y
+template <class... A>
+SheetCell sheet_cell(double y, const ImVec4 &col, const char *fmt, A... a) {
+  return {std::isfinite(y) ? num_cell(col, fmt, a...) : num_none(), y};
+}
+// 涨跌 / 流入: 百分比两位, 按正负着色
+SheetCell signed_cell(double y) { return sheet_cell(y, tint(y, 0.0), "%+.2f%%", 100.0 * y); }
+// 带名次的值 (NAV 数值列 / VAL 估值分位): 按 fmt 显示 q.x, 底色 = q.rank
+SheetCell ranked_cell(const Ranked &q, const char *fmt) {
+  SheetCell c = sheet_cell(q.x, ImGui::GetStyleColorVec4(ImGuiCol_Text), fmt, q.x);
+  c.rank = q.rank;
+  return c;
+}
+// 一张右表: 组 g 的行, 列 cols (cols[0] = 名); order = 列出的组内行 (按表头排序重排后画); ps = 该组的格 (sheet_of);
+// on(r) = 选中 (高亮), 点行 → click(r); 悬停表行 r (组内行 / 成分行) 的数值列 k → hover(r, k).
+// 宽由外面定: 名列伸满余宽, 内容更宽 → 横滚 (名列钉住). 篮子组的行名前 ▸ 展开 / 收起 (ui.pick.open, 至多一行): 展开行钉在表头下,
+// 其下先列成分行 (缩进; 同列排序), 再列其余组内行; 点成分行 = 叠加 / 取消该股 (ui.pick.stocks); 只画可见的行
+template <class On, class Click, class Hover>
+void sheet(const char *id, const std::vector<SheetCol> &cols, PortfolioUIState &ui, const PortfolioDerived &d, int g, std::vector<size_t> order,
+           const PortfolioSheet &ps, const On &on, const Click &click, const Hover &hover) {
+  const std::vector<PortfolioRow> &rs = d.rows[g];
+  const size_t nc = cols.size() - 1, R = rs.size(); // 名之后的列 / 组内行
+  assert(ps.nc == nc && ps.rows() == R && ps.cells.size() == (R + ps.kids.size()) * nc);
+  const bool tree = g < kBasketGroups;
+  const auto pin_at = std::ranges::find_if(order, [&](size_t r) { return tree && rs[r].id == ui.pick.open; });
+  const size_t pin = pin_at == order.end() ? SIZE_MAX : *pin_at; // 钉住的展开行
+  if (pin != SIZE_MAX)
+    order.erase(pin_at);
+  // 横滚宽 = 上帧各列内容宽之和 (EndTable 按内容更新; 列不可拖 → 纯内容宽), 不足表宽 → 表宽 (名列伸满); 首帧 0 = 按内容
+  const ImGuiTable *last = ImGui::TableFindByID(ImGui::GetID(id));
+  const float inner = last ? std::max(last->ColumnsAutoFitWidth, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize) : 0.f;
+  if (!ImGui::BeginTable(id, static_cast<int>(cols.size()),
+                         ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV |
+                             ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate,
+                         ImVec2(0, 0), inner))
+    return;
+  ImGui::TableSetupScrollFreeze(1, pin == SIZE_MAX ? 1 : 2);
+  ImGui::TableSetupColumn(cols[0].name.c_str(), ImGuiTableColumnFlags_WidthStretch);
+  std::vector<float> cw(nc); // 列出行的最宽 (表头起)
+  for (size_t k = 0; k < nc; ++k) {
+    ImGui::TableSetupColumn(cols[1 + k].name.c_str());
+    cw[k] = ImGui::CalcTextSize(cols[1 + k].name.c_str()).x;
+  }
+  ImGui::TableNextRow(ImGuiTableRowFlags_Headers); // 同 TableHeadersRow, 另加悬停说明
+  for (int c = 0; c < static_cast<int>(cols.size()); ++c) {
+    if (!ImGui::TableSetColumnIndex(c))
+      continue;
+    ImGui::PushID(c);
+    ImGui::TableHeader(cols[static_cast<size_t>(c)].name.c_str());
+    ImGui::PopID();
+    if (ImGui::IsItemHovered())
+      tip("%s", cols[static_cast<size_t>(c)].tip.c_str());
+  }
+  const auto at = [&](size_t r) { return ps.cells.data() + r * nc; };
+  const auto num = [&](size_t r, int c) { return at(r)[c - 1].key; };
+  sort_rows(
+      order, [&](size_t a, size_t b) { // 名列: 按色相 (相似的挨着; 未定色 = 按 cn 字典序)
+        const float ha = rs[a].hue, hb = rs[b].hue;
+        if (!std::isnan(ha) && !std::isnan(hb))
+          return (ha > hb) - (ha < hb);
+        return rs[a].cn.compare(rs[b].cn);
+      },
+      num);
+  std::vector<size_t> lines; // 钉行之下的画序: 钉行的成分行 R + j, 再其余组内行 r < R
+  if (pin != SIZE_MAX) {
+    for (uint32_t j = ps.kid_at[pin]; j < ps.kid_at[pin + 1]; ++j)
+      lines.push_back(R + j);
+    sort_rows(lines, [&](size_t a, size_t b) { return ps.kids[a - R].name.compare(ps.kids[b - R].name); }, num);
+    for (size_t k = 0; k < nc; ++k)
+      cw[k] = std::max(cw[k], at(pin)[k].text.w);
+  }
+  lines.insert(lines.end(), order.begin(), order.end());
+  for (const size_t r : lines)
+    for (size_t k = 0; k < nc; ++k)
+      cw[k] = std::max(cw[k], at(r)[k].text.w);
+  constexpr ImGuiTreeNodeFlags kNode = ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+  const auto row = [&](size_t r) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    int hov = -1; // 行跨全列: 悬停的数值列
+    if (r >= R) {
+      const PortfolioKid &kd = ps.kids[r - R];
+      const bool sel = ui.pick.stocks.contains(kd.id);
+      ImGui::Indent();
+      if (sel)
+        ImGui::PushStyleColor(ImGuiCol_Text, stock_color(kd.id));
+      ImGui::TreeNodeEx((kd.name + "##k" + std::to_string(r)).c_str(), kNode | ImGuiTreeNodeFlags_Leaf | (sel ? ImGuiTreeNodeFlags_Selected : 0));
+      if (sel)
+        ImGui::PopStyleColor();
+      ImGui::Unindent();
+      if (ImGui::IsItemClicked())
+        toggle_stock(ui, kd.id);
+      hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 1 : -1;
+      name_tip(kd.hover);
+    } else {
+      const PortfolioRow &h = rs[r];
+      const std::string label = h.cn + "##" + h.id;
+      ImGui::PushStyleColor(ImGuiCol_Text, row_color(d, g, r, kTrade));
+      if (tree) {
+        const bool open = r == pin;
+        ImGui::SetNextItemOpen(open, ImGuiCond_Always);
+        ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_OpenOnArrow | (on(r) ? ImGuiTreeNodeFlags_Selected : 0));
+        if (ImGui::IsItemToggledOpen()) {
+          ui.pick.open = open ? std::string{} : h.id;
+          ImGui::SetScrollY(0.f);
+        } else if (ImGui::IsItemClicked()) {
+          click(r);
+        }
+      } else if (ImGui::Selectable(label.c_str(), on(r), ImGuiSelectableFlags_SpanAllColumns)) {
+        click(r);
+      }
+      ImGui::PopStyleColor();
+      hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 1 : -1;
+      name_tip(h.hover);
+    }
+    for (size_t k = 0; k < nc; ++k) {
+      ImGui::TableSetColumnIndex(static_cast<int>(1 + k));
+      const SheetCell &c = at(r)[k];
+      if (std::isfinite(c.rank))
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(c.rank, kValCellA)));
+      draw_cell(c.text, cw[k]);
+    }
+    if (hov >= 0)
+      hover(r, hov);
+  };
+  if (pin != SIZE_MAX) // 冻结行须在 clipper 之前交
+    row(pin);
+  ImGuiListClipper clip;
+  clip.Begin(static_cast<int>(lines.size()));
+  while (clip.Step())
+    for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i)
+      row(lines[static_cast<size_t>(i)]);
+  ImGui::EndTable();
+}
+
+// ---- 当日四列 (TodayCol; 三张右表同一份, 不随区间): 只数 / 总市值 / 换手不着色, 流入按正负着色; 换手 / 流入格悬停看分子分母金额 ----
+const SheetCol kTodayCols[kTodays] = {
+    {"只数", "只数 = 成分只数\n"
+             "• 算法: 成员表的成分计数 (.等 / .加 同一份)\n"
+             "• 数据: 成员表 = 历史末日收盘定 (= 当日 bind 给新浪行情的那份)\n"
+             "• 显示: 整数, 不着色\n"
+             "• 适用: 指数 / 行业 / 概念; 成分行 -; 不随区间"},
+    {"总市值", "总市值 = 成分总市值之和\n"
+               "• 算法: Σ 成分 末日收盘 × 总股本; 当日接上再 × 加权线当日涨跌 (今收 / 前收); 成分行 = 本只 (基本面末日总市值, 当日接上再 × 今收 / 前收)\n"
+               "• 数据: 成员表同只数; 总股本取末日适用\n"
+               "• 显示: 亿 / 万亿, 不着色\n"
+               "• 适用: 指数 / 行业 / 概念 + 成分行; 不随区间"},
+    {"换手", "换手 = 当日换手率\n"
+             "• 算法: 成交额 / 总市值; 成交额 = Σ 成分 当日成交额 (成分行 = 本只), 总市值同上列 (总股本口径, 非流通)\n"
+             "• 数据: 新浪行情日 (盘后 / 重启照样全天); 无新浪行情日 / 当日无成交 → -\n"
+             "• 显示: 百分比两位, 不着色; 悬停格看成交额 / 总市值\n"
+             "• 适用: 指数 / 行业 / 概念 + 成分行; 不随区间"},
+    {"流入", "流入 = 当日资金流入占成交额\n"
+             "• 算法: 净流入 / 成交额; 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法; 成分行 = 本只): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟\n"
+             "• 数据: 新浪行情日分钟根 (快照合成 + 分钟 K 补), 含开收盘集合竞价; 成分之和不加权, 分不出大单\n"
+             "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额\n"
+             "• 适用: 指数 / 行业 / 概念 + 成分行; 不随区间"},
+};
+// 金额 y [亿元] 的显示: ≥ 1 万亿按万亿, 其余按亿 (越大小数越少); 带符号 sign
+std::string yi_text(double y, bool sign = false) {
+  const double a = std::abs(y);
+  char s[32];
+  const char *pm = !sign ? "" : y < 0 ? "-"
+                                      : "+";
+  if (a >= 1e4)
+    std::snprintf(s, sizeof(s), a >= 1e6 ? "%s%.0f万亿" : "%s%.1f万亿", pm, a / 1e4);
+  else
+    std::snprintf(s, sizeof(s), a >= 10 ? "%s%.0f亿" : a >= 1 ? "%s%.1f亿"
+                                                              : "%s%.2f亿",
+                  pm, a);
+  return s;
+}
+// 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线 (总市值当日接上 × 加权线当日涨跌);
+// 成交额 / 流入 = 新浪当日合成的 Day (不看接续); 换手 = 成交额 / 总市值
+SheetToday basket_today(const Database::Feed &f, const PortfolioRow &h) {
+  SheetToday o;
+  if (h.basket < 0 || !f.data || f.data->members.empty())
+    return o;
+  const size_t c = cut_of_line(static_cast<size_t>(h.basket)), eq = basket_line(c, kWeightEq), cap = basket_line(c, kWeightCap);
+  assert(f.data->keys[eq] == eq && f.data->keys[cap] == cap && f.today && f.today->size() == f.data->list.size());
+  const std::vector<Database::Day> &today = *f.today;
+  double w = f.data->weight[cap];
+  if (const Database::Day &t = today[cap]; Database::joins(*f.data->list[cap], t))
+    w *= t.candle.close / t.candle.ref;
+  o.v[kTodayMembers] = f.data->members[eq];
+  o.v[kTodayCap] = w > 0 ? w : kNaN;
+  if (const Database::Day &t = today[static_cast<size_t>(h.basket)]; t.candle.date != 0 && t.candle.amount > 0)
+    o.amount = t.candle.amount / 1e8, o.v[kTodayFlow] = t.flow / t.candle.amount;
+  o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
+  return o;
+}
+// 成分行的源: 基本面档案 (无 → nullptr) + 新浪当日 (未取 / 当日无成交 → nullptr)
+struct KidSrc {
+  const StockInfo *info = nullptr;
+  const Database::Day *day = nullptr;
+};
+KidSrc kid_src(const PortfolioConsToday &ct, const StockInfos &infos, uint32_t id) {
+  KidSrc x;
+  if (id < infos.size() && infos[id].known)
+    x.info = &infos[id];
+  const auto it = std::ranges::lower_bound(ct.ids, id);
+  if (ct.day && it != ct.ids.end() && *it == id)
+    if (const Database::Day &t = (*ct.day)[static_cast<size_t>(it - ct.ids.begin())]; t.candle.date != 0)
+      x.day = &t;
+  return x;
+}
+// 成分行的当日 (SheetToday): 总市值 = 档案末日收盘总市值 (新浪当日接上档案末日再 × 当日涨跌); 成交额 / 流入 = 新浪当日 (本只分钟涨跌法);
+// 换手 = 成交额 / 总市值; 无只数
+SheetToday stock_today(const KidSrc &x) {
+  SheetToday o;
+  double cap = x.info ? x.info->mcap : kNaN;
+  if (x.info && x.day && x.day->prev == x.info->update_date && x.day->candle.ref > 0)
+    cap *= x.day->candle.close / x.day->candle.ref;
+  o.v[kTodayCap] = cap > 0 ? cap : kNaN;
+  if (x.day && x.day->candle.amount > 0)
+    o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->flow / x.day->candle.amount;
+  o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
+  return o;
+}
+// 成分行的近况 (Database::RecentOf: Assets 个股同一份); 无档案 → 不可算
+Database::Recent kid_recent(const KidSrc &x) {
+  if (!x.info)
+    return {};
+  return x.day ? Database::RecentOf(*x.info, x.day->candle, x.day->prev) : Database::RecentOf(*x.info, Database::Candle{}, 0);
+}
+// 成分行第 b 口的收益率 (基本面最新快照 = Assets 估值列的倒数; DY = DY1): 不可算 → 非有限
+double stock_yield(const StockInfo &s, int b) {
+  constexpr float StockInfo::*kMult[kPoolVals] = {&StockInfo::pe_ttm, &StockInfo::pb_mrq, &StockInfo::ps_ttm, &StockInfo::pcf_ttm, nullptr};
+  return b == kValDy ? s.dy1y / 100.0 : 1.0 / (s.*kMult[b]);
+}
+// 成分行: 名 + 悬停 (代码 / 权占比 = 本只权 / 篮子权和 / 行业 / 估值)
+PortfolioKid kid_of(const StockInfos &infos, const Database::Constituent &c, double sum_w) {
+  PortfolioKid k{c.id, stock_name(infos, c.id), {}};
+  const auto num = [](const char *label, double v, const char *fmt) {
+    char s[48];
+    if (std::isfinite(v))
+      std::snprintf(s, sizeof(s), fmt, label, v);
+    else
+      std::snprintf(s, sizeof(s), "%s -", label);
+    return std::string(s);
+  };
+  k.hover = k.name + " " + asset_axis().code(c.id) + "\n• " + num("权占比", 100.0 * c.w / sum_w, "%s %.2f%%");
+  if (c.id < infos.size() && infos[c.id].known) {
+    const StockInfo &s = infos[c.id];
+    k.hover += "\n• 行业 " + (s.ind_name.empty() ? std::string("-") : s.ind_name) + (s.st ? " · ST" : "");
+    k.hover += "\n• " + num("总市值", s.mcap, "%s %.0f亿") + "  " + num("PE", s.pe_ttm, "%s %.1f") + "  " + num("PB", s.pb_mrq, "%s %.2f") + "  " +
+               num("PS", s.ps_ttm, "%s %.2f") + "  " + num("PCF", s.pcf_ttm, "%s %.1f") + "  " + num("DY1", s.dy1y, "%s %.2f%%");
+  }
+  k.hover += "\n• 点 = 叠加 / 取消到日内栏 / FLOW 图";
+  return k;
+}
+// 四列 → out[0, kTodays)
+void today_cells(const SheetToday &t, SheetCell *out) {
+  const ImVec4 &txt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+  const double *v = t.v;
+  out[kTodayMembers] = sheet_cell(v[kTodayMembers], txt, "%.0f", v[kTodayMembers]);
+  out[kTodayCap] = sheet_cell(v[kTodayCap], txt, "%s", yi_text(v[kTodayCap]).c_str());
+  out[kTodayTurn] = sheet_cell(v[kTodayTurn], txt, "%.2f%%", 100.0 * v[kTodayTurn]);
+  out[kTodayFlow] = signed_cell(v[kTodayFlow]);
+}
+// 悬停四列第 k 列 (k 不在 [0, kTodays) = 别的列) → 换手 / 流入的分子分母
+void today_tip(const SheetToday &t, int k) {
+  if (k == kTodayTurn && std::isfinite(t.v[kTodayTurn]))
+    tip("换手 %.2f%% = 成交额 %s / 总市值 %s", 100.0 * t.v[kTodayTurn], yi_text(t.amount).c_str(), yi_text(t.v[kTodayCap]).c_str());
+  else if (k == kTodayFlow && std::isfinite(t.v[kTodayFlow]))
+    tip("流入 %+.2f%% = 净流入 %s / 成交额 %s", 100.0 * t.v[kTodayFlow], yi_text(t.v[kTodayFlow] * t.amount, true).c_str(), yi_text(t.amount).c_str());
+}
+// 篮子行的当日过 f (见 BasketFilter)
+bool passes(const BasketFilter &f, const SheetToday &t) {
+  const auto in = [](double x, double lo, double hi) { return (lo <= 0 && hi <= 0) || (std::isfinite(x) && x >= lo && (hi <= 0 || x <= hi)); };
+  return in(t.v[kTodayMembers], f.n_lo, f.n_hi) && in(t.v[kTodayCap], f.cap_lo, f.cap_hi) &&
+         (f.flow <= 0 || (std::isfinite(t.v[kTodayFlow]) && 100.0 * std::abs(t.v[kTodayFlow]) >= f.flow));
+}
+// 过滤条一项的界 [lo, hi] (0 = 该端不限)
+template <class T>
+struct Bound {
+  T lo, hi;
+};
+// 界的摘要: 不限 / ≥lo / ≤hi / lo~hi (值按 fmt)
+template <class T, class Fmt>
+std::string bound_text(T lo, T hi, const Fmt &fmt) {
+  if (lo > 0 && hi > 0)
+    return fmt(lo) + "~" + fmt(hi);
+  if (lo > 0)
+    return "≥" + fmt(lo);
+  if (hi > 0)
+    return "≤" + fmt(hi);
+  return "不限";
+}
+// 过滤条一项: 按钮 = 名 + 摘要 (设了 → 按下色), 点 = 弹出 预设 (点即设) + 精确输入 (in_fmt; 0 = 不限); hi = nullptr → 只有下限
+template <class T, class Fmt>
+void bound_chip(const char *id, const char *name, T &lo, T *hi, std::initializer_list<Bound<T>> presets, const char *in_fmt, const Fmt &fmt) {
+  const T h = hi ? *hi : T{};
+  const bool on = lo > 0 || h > 0;
+  if (on)
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+  if (ImGui::SmallButton((std::string(name) + " " + bound_text(lo, h, fmt) + "###" + id).c_str()))
+    ImGui::OpenPopup(id);
+  if (on)
+    ImGui::PopStyleColor();
+  if (!ImGui::BeginPopup(id))
+    return;
+  for (const Bound<T> &p : presets)
+    if (ImGui::Selectable(bound_text(p.lo, p.hi, fmt).c_str(), p.lo == lo && p.hi == h)) {
+      lo = p.lo;
+      if (hi)
+        *hi = p.hi;
+    }
+  ImGui::Separator();
+  constexpr ImGuiDataType kType = std::is_integral_v<T> ? ImGuiDataType_S32 : ImGuiDataType_Float;
+  const float w = ImGui::CalcTextSize("0000000").x + 2.0f * ImGui::GetStyle().FramePadding.x;
+  ImGui::TextDisabled("≥");
+  ImGui::SameLine(0, 2);
+  ImGui::SetNextItemWidth(w);
+  ImGui::InputScalar("##lo", kType, &lo, nullptr, nullptr, in_fmt);
+  lo = std::max(lo, T{});
+  if (hi) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("≤");
+    ImGui::SameLine(0, 2);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputScalar("##hi", kType, hi, nullptr, nullptr, in_fmt);
+    *hi = std::max(*hi, T{});
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("(0 = 不限)");
+  ImGui::EndPopup();
+}
+// 篮子组右表的过滤条 (三页同一份): [只数 …] [市值 …] [|流入| …] 列出 / 总数; 改动下帧生效
+void filter_bar(BasketFilter &f, size_t listed, size_t total) {
+  const auto pct = [](float v) {
+    char s[16];
+    std::snprintf(s, sizeof(s), "%g%%", v);
+    return std::string(s);
+  };
+  bound_chip<int>("pf_f_n", "只数", f.n_lo, &f.n_hi, {{0, 0}, {0, 50}, {0, 200}, {0, 500}, {50, 0}, {200, 0}}, "%d",
+                  [](int v) { return std::to_string(v); });
+  ImGui::SameLine(0, 2);
+  bound_chip<float>("pf_f_cap", "市值", f.cap_lo, &f.cap_hi, {{0, 0}, {500, 0}, {2000, 0}, {10000, 0}, {0, 2000}, {0, 10000}}, "%.0f",
+                    [](float v) { return yi_text(v); });
+  ImGui::SameLine(0, 2);
+  bound_chip<float>("pf_f_flow", "|流入|", f.flow, nullptr, {{0, 0}, {1, 0}, {2, 0}, {5, 0}, {10, 0}}, "%.1f", pct);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu/%zu", listed, total);
+  if (ImGui::IsItemHovered())
+    tip("过滤本组的行 (指数 / 行业 / 概念各一份, NAV / VAL / FLOW 三页共用): 只数 / 总市值 [亿元] 在区间内, |资金流入| [%%] ≥ 下限\n"
+        "• 点一项 = 弹出: 预设 (点即设) / 精确输入 (0 = 该端不限); 设了的项按下色\n"
+        "• 设了的条件缺值 (行情未到 / 无新浪行情日) 即不列; 已选中 / 展开的行恒列\n"
+        "• 本处 = 列出 / 总数");
+}
+// 右表的一段列 (三页由段拼成, 同一段三页同一份): 列 + 组内行 / 成分行的格 + 悬停格
+struct Seg {
+  std::vector<SheetCol> cols;
+  std::function<void(size_t, PortfolioSheet &, SheetCell *)> row;                 // 组内行 r → 段内格 out[0, cols)
+  std::function<void(const KidSrc &, size_t, PortfolioSheet &, SheetCell *)> kid; // 成分行 (x = 该股的档案 / 新浪当日, 表行下标) → 段内格
+  std::function<void(const PortfolioSheet &, size_t, int)> tip;                   // 悬停表行 (组内行 / 成分行) 的段内列 k; 空 = 无
+};
+size_t cols_in(const std::vector<Seg> &segs) {
+  size_t n = 0;
+  for (const Seg &s : segs)
+    n += s.cols.size();
+  return n;
+}
+// 名列 + 各段的列
+std::vector<SheetCol> cols_of(const SheetCol &name, const std::vector<Seg> &segs) {
+  std::vector<SheetCol> o{name};
+  for (const Seg &s : segs)
+    o.insert(o.end(), s.cols.begin(), s.cols.end());
+  return o;
+}
+// 页 page 组 g 的格 (ui.sheet[page]): 键 (days / ends 只 FLOW 给) 变 → 该组全部行重填: 当日 + 各段依次填组内行的格;
+// 展开的篮子行的成分 (Tape::cons) 接在组内行之后为成分行, 各段依次填成分行的格
+const PortfolioSheet &sheet_of(PortfolioUIState &ui, const StockInfos &infos, int page, int g, const std::vector<PortfolioRow> &rs,
+                               const std::vector<Seg> &segs, std::vector<misc::Ymd> days, bool ends) {
+  const Database::Feed &f = ui.basket.feed;
+  const PortfolioSheetKey k{g, ui.view.gen, f.data, f.today, ui.pick.open, ui.cons.day, infos.size(), std::move(days), ends, ImGui::GetFontSize(),
+                            ImGui::GetColorU32(ImGuiCol_Text)};
+  ui.sheet[page].update(k, [&](PortfolioSheet &ps) {
+    const size_t R = rs.size(), nc = cols_in(segs);
+    ps.nc = nc;
+    ps.today.clear();
+    ps.kids.clear();
+    ps.kid_at.assign(1, 0);
+    for (const PortfolioRow &h : rs) {
+      ps.today.push_back(basket_today(f, h));
+      if (h.basket >= 0 && h.id == ui.pick.open && f.data && !f.data->lack)
+        for (const Database::Constituent &c : f.data->cons[static_cast<size_t>(h.basket)])
+          ps.kids.push_back(kid_of(infos, c, f.data->weight[static_cast<size_t>(h.basket)]));
+      ps.kid_at.push_back(static_cast<uint32_t>(ps.kids.size()));
+    }
+    std::vector<KidSrc> xs;
+    for (const PortfolioKid &c : ps.kids) {
+      xs.push_back(kid_src(ui.cons, infos, c.id));
+      ps.today.push_back(stock_today(xs.back()));
+    }
+    const size_t n = R + ps.kids.size();
+    ps.flow.assign(n, {});
+    ps.cells.assign(n * nc, {});
+    for (size_t r = 0; r < R; ++r) {
+      SheetCell *out = ps.cells.data() + r * nc;
+      for (const Seg &s : segs)
+        s.row(r, ps, out), out += s.cols.size();
+    }
+    for (size_t j = 0; j < xs.size(); ++j) {
+      SheetCell *out = ps.cells.data() + (R + j) * nc;
+      for (const Seg &s : segs)
+        s.kid(xs[j], R + j, ps, out), out += s.cols.size();
+    }
+  });
+  return ui.sheet[page].val;
+}
+// 组 g 右表列出的行: 篮子组 = 过过滤条的 ∪ 选中的 (on) ∪ 展开的 (表上画过滤条), 其余组全列
+template <class On>
+std::vector<size_t> listing(PortfolioUIState &ui, const PortfolioSheet &ps, const std::vector<PortfolioRow> &rs, int g, const On &on) {
+  std::vector<size_t> o;
+  const size_t n = ps.rows();
+  for (size_t r = 0; r < n; ++r)
+    if (g >= kBasketGroups || on(r) || rs[r].id == ui.pick.open || passes(ui.filter[g], ps.today[r]))
+      o.push_back(r);
+  if (g < kBasketGroups)
+    filter_bar(ui.filter[g], o.size(), n);
+  return o;
+}
+// 页 page 的右表 (三页同一条; 组 = 类别条选中的): 格 (sheet_of) → 列出 (listing) → 画 (sheet: 点行 = 按页的选中方式选 / 取消,
+// 悬停数值格 → 所在段的 tip)
+void table(PortfolioUIState &ui, const StockInfos &infos, const PortfolioDerived &d, int page, const SheetCol &name, const std::vector<Seg> &segs,
+           std::vector<misc::Ymd> days = {}, bool ends = false) {
+  const int g = ui.cat[page];
+  const std::vector<PortfolioRow> &rs = d.rows[g];
+  const auto on = [&](size_t r) { return picked(ui, page, rs[r]); };
+  const PortfolioSheet &ps = sheet_of(ui, infos, page, g, rs, segs, std::move(days), ends);
+  const std::vector<size_t> order = listing(ui, ps, rs, g, on);
+  ImGui::PushID(static_cast<int>(ps.nc)); // 列数可变 (FLOW 随档位)
+  sheet(
+      kPageDefs[page].table, cols_of(name, segs), ui, d, g, order, ps, on, [&](size_t r) { pick(ui, page, rs[r]); },
+      [&](size_t r, int k) {
+        for (const Seg &s : segs) {
+          const int n = static_cast<int>(s.cols.size());
+          if (k < n) {
+            if (s.tip)
+              s.tip(ps, r, k);
+            return;
+          }
+          k -= n;
+        }
+      });
+  ImGui::PopID();
+}
+// 段: 当日四列 (三页同一份)
+Seg today_seg() {
+  return {{std::begin(kTodayCols), std::end(kTodayCols)},
+          [](size_t r, PortfolioSheet &p, SheetCell *out) { today_cells(p.today[r], out); },
+          [](const KidSrc &, size_t row, PortfolioSheet &p, SheetCell *out) { today_cells(p.today[row], out); },
+          [](const PortfolioSheet &p, size_t row, int k) { today_tip(p.today[row], k); }};
+}
+
+// ---- NAV 右图例: 类别条 (指数 / 行业 / 概念 / 因子 / 策略, 一次看一组) + 日内开关; 表 = 该组一行一对线, 点行 = 选中 / 取消 (选中 = 主图画该行全部线, 单条在主图例里再点掉;
+//      选中跨组保留; 选中的篮子行另叠进日内栏). 列 = 中文名 (线色; 悬停看 hover) | 近况 (当日涨幅 | Δ5日线) | 当日四列
+//      | 可成交 | 理想 (区间年化) | 夏普 (可成交列) | 年换手; 近况按正负着色, 末段底色 = 同组同列截面名次 (好绿 → 差红); 表头点排序 (组内) ----
+// 近况段 (不随区间; Database::Recent)
+enum RecentCol : int { kRecentChg,
+                       kRecentMa5 };
+constexpr int kRecents = 2;
+const SheetCol kRecentCols[kRecents] = {
+    {"涨幅", "涨幅 = 当日涨跌幅\n"
+             "• 算法: 最新一日收盘 / 前收 − 1\n"
+             "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 成分行 = Assets 个股同一份 (新浪当日接上 bar1d); 因子 / 策略 = 净值末点\n"
+             "• 显示: 百分比两位, 按正负着色\n"
+             "• 适用: 全部组 + 成分行; 不随区间"},
+    {"Δ5日线", "Δ5日线 = 对 5 日均线的偏离\n"
+               "• 算法: 最新一日收盘 / MA5 (含当日) − 1\n"
+               "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 成分行 = Assets 个股同一份; 因子 / 策略 = 净值末 5 点\n"
+               "• 显示: 百分比两位, 按正负着色\n"
+               "• 适用: 全部组 + 成分行; 不随区间"},
+};
+// 右段 [NavNum]
+constexpr const char *kNavNumFmt[kNavNums] = {"%+.1f%%", "%+.1f%%", "%+.2f", "%.1f倍"};
+const SheetCol kNavNumCols[kNavNums] = {
+    {"可成交", "可成交 = 可成交线区间年化\n"
+               "• 算法: 区间起点归一, 按区间复利年化\n"
+               "• 数据: 篮子 = 标签指数 (收盘封板不建仓 / 平仓顺延); 因子 / 策略 = 有冲击净值\n"
+               "• 显示: 百分比一位, 底色 = 组内名次 (高绿 → 低红)\n"
+               "• 适用: 全部组; 成分行 -; 随区间"},
+    {"理想", "理想 = 理想线区间年化\n"
+             "• 算法: 区间起点归一, 按区间复利年化\n"
+             "• 数据: 篮子 = 价格指数 (成员 / 权重取前一日收盘, 不看可成交); 因子 / 策略 = 无冲击净值\n"
+             "• 显示: 百分比一位, 底色 = 组内名次 (高绿 → 低红)\n"
+             "• 适用: 全部组; 成分行 -; 随区间"},
+    {"夏普", "夏普 = 可成交线区间夏普\n"
+             "• 算法: 区间内日收益 mean / sd × √每年交易日\n"
+             "• 数据: 篮子 = 标签指数; 因子 / 策略 = 有冲击净值\n"
+             "• 显示: 两位小数, 底色 = 组内名次 (高绿 → 低红)\n"
+             "• 适用: 全部组; 成分行 -; 随区间"},
+    {"年换手", "年换手 = 单边年换手\n"
+               "• 算法: 自首次建仓起的日均增仓量 × 每年交易日 (倍/年)\n"
+               "• 数据: 篮子 = 成分增仓 Σ (w − 漂移后上一成分日 w)⁺ (再平衡 + 成分进出); 因子 = G20 多头增仓量; 策略 = 各因子按当日份额加权 (不计因子间对冲)\n"
+               "• 显示: 一位小数 + 倍, 底色 = 组内名次 (低绿 → 高红)\n"
+               "• 适用: 全部组; 成分行 -; 不随区间"},
+};
+const SheetCol kNavName = {"名", "名 = 行名\n"
+                                 "• 算法: 篮子 = 切片名 + .等 (等权) / .加 (总市值加权); 因子 / 策略 = 中文名\n"
+                                 "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
+                                 "• 显示: 字色 = 主图线色 (四组一起按 max(成员重合, 剔全A.加的残差相关) 定色相: 色差 ∝ 不相似; 没算完全灰); 点本列表头 = 按颜色排 (相似的挨着; 没算完按名); 超长截断补 …, 悬停看全名\n"
+                                 "• 成分行: 篮子名前 ▸ 展开 (至多一行), 该行钉在表头下, 其下缩进列出成分 (简称; 默认权降序, 点表头在本篮子内排, 名列按简称);\n"
+                                 "  点 = 叠加 / 取消到日内栏 (字色 = 叠加线色)\n"
+                                 "• 适用: 全部组; 成分行只指数 / 行业 / 概念"};
+void recent_cells(const Database::Recent &x, SheetCell *out) { out[kRecentChg] = signed_cell(x.chg), out[kRecentMa5] = signed_cell(x.ma5); }
+// 段: 近况 (篮子行 = 篮子 Feed; 因子 / 策略 = 可成交线日末; 成分行 = Assets 个股)
+Seg recent_seg(const Database::Feed &f, const std::vector<PortfolioRow> &rs) {
+  return {{std::begin(kRecentCols), std::end(kRecentCols)},
+          [&f, &rs](size_t r, PortfolioSheet &, SheetCell *out) {
+            const PortfolioRow &h = rs[r];
+            recent_cells(h.basket >= 0 ? Database::RecentOf(f, static_cast<size_t>(h.basket)) : recent_of(h.line[kTrade]), out);
+          },
+          [](const KidSrc &x, size_t, PortfolioSheet &, SheetCell *out) { recent_cells(kid_recent(x), out); },
+          {}};
+}
+// 段: NAV 数值列 (组 g 的 PortfolioView::num; 成分行 -)
+Seg num_seg(const PortfolioView &v, int g) {
+  return {{std::begin(kNavNumCols), std::end(kNavNumCols)},
+          [&v, g](size_t r, PortfolioSheet &, SheetCell *out) {
+            for (int k = 0; k < kNavNums; ++k)
+              out[k] = ranked_cell(v.num[g][r][k], kNavNumFmt[k]);
+          },
+          [](const KidSrc &, size_t, PortfolioSheet &, SheetCell *out) {
+            for (int k = 0; k < kNavNums; ++k)
+              out[k] = {num_none()};
+          },
+          {}};
+}
+void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const StockInfos &infos) {
+  button_bar(kRowGroupName, kPageDefs[kPageNav].groups, ui.cat[kPageNav]);
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
+  if (ui.intraday)
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+  const bool flip = ImGui::SmallButton("日内");
+  if (ui.intraday)
+    ImGui::PopStyleColor();
+  if (flip)
+    ui.intraday = !ui.intraday;
+  if (ImGui::IsItemHovered())
+    tip("日内栏开关: 主图上方 (日内 : 主图 = 1 : 2, 上下分) 叠加选中的指数 / 行业 / 概念行的日内收盘线 (同主图线色); 因子 / 策略无日内\n"
+        "• y = 对首日前收的涨跌幅, 横网格的涨跌幅小字标在右内壁; 悬停看十字光标处时刻 / 涨跌幅与该分钟各条读数\n"
+        "• 只选一行: 改画分钟蜡烛 (窄了自动并根) + 现价十字 (虚线, 标涨跌幅 / 时刻)\n"
+        "• 篮子同 Assets: all.bar 库合成历史, 当日由新浪快照合成; 档位 日内 / 2日 … 5日 叠在图左上角");
+  ImGui::SameLine();
+  ImGui::TextColored(kHead, "(点行 = 画)");
+  if (ImGui::IsItemHovered())
+    tip("点行 = 选中 / 取消, 选中 = 主图画该行两条线, 主图例默认只显理想列, 可成交列点图例显 (显隐变了自动重新 fit); 默认不选; 选中换组保留\n"
+        "• 指数 = 各池等权指数 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级 (全A 内切, 总市值加权); 概念 = 东财题材概念 (全A 内切, 总市值加权):\n"
+        "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
+        "    ◦ 理想 = 价格指数 (Assets 篮子同一份: 成员 / 权重取前一日收盘, 点位按前收合成, 不看可成交, 同中证 / 万得口径); 两者之差 = 可成交拖累\n"
+        "• 因子 = 单因子各自的 G20 多头净值: 可成交列 = 有冲击 (它自己的冲击段: Lob 最小金额段 / Bar 固定冲击), 理想列 = 无冲击\n"
+        "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
+        "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
+        "• 指数 / 行业 / 概念表上过滤条 (与 VAL / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
+        "• 指数 / 行业 / 概念行名前 ▸ = 展开成分股 (至多一行, 三页同一份): 该行钉在表头下, 成分接在其下 (列同篮子行, 不能算的 -);\n"
+        "  点成分行 = 叠加到日内栏 / FLOW 图 (至多 64 只)\n"
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
+  const int g = ui.cat[kPageNav];
+  table(ui, infos, d, kPageNav, kNavName, {recent_seg(ui.basket.feed, d.rows[g]), today_seg(), num_seg(v, g)});
+}
+
+// ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 当日四列 | 各口;
+//      各口格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
+// 各口 [PoolVal]: 同一模板, 只换分子 / 负值口径
+const std::array<SheetCol, kPoolVals> kValCols = [] {
+  constexpr const char *num[kPoolVals] = {"归母净利TTM", "归母权益MRQ", "营业总收入TTM", "经营现金流TTM", "近4季报告期税前分红"};
+  constexpr const char *neg[kPoolVals] = {"亏损计负", "负权益计负", "无收入计 0", "负现金流计负", "不分红计 0"};
+  std::array<SheetCol, kPoolVals> o;
+  for (int b = 0; b < kPoolVals; ++b) {
+    char s[1024];
+    std::snprintf(s, sizeof(s),
+                  "%s = %s 倒数 (%s / 总市值) 的估值分位\n"
+                  "• 算法: 区间末日 %s 在过去 N 年 (上方滑条) 窗内的加权分位; 收益率越低越贵 (高 = 贵, ≤ 0 排最贵端)\n"
+                  "• 数据: 分子 = %s (%s); .加 = Σ分子 / Σ总市值, .等 = 成分 %s 的算术平均; 成分 / 财务取当日适用 (无前视)\n"
+                  "• 显示: 分位百分比, 底色 = 组内同口名次 (便宜绿 → 贵红); 绝对值看主图 Band 图例\n"
+                  "• 成分行: 无分位, 显示该股当前 %s (%s; 基本面最新快照, 同 Assets 估值列), 不铺底色, 不随区间; 不可算 → -\n"
+                  "• 适用: 指数 / 行业 / 概念; 随区间末日, 估值史不满 1 年 → -",
+                  kVal[b].name, kVal[b].inv, num[b], kVal[b].name, num[b], neg[b], kVal[b].name, kVal[b].name,
+                  b == kValDy ? "= DY1 近 1 年分红 / 总市值" : (std::string("= 1 / ") + kVal[b].inv).c_str());
+    o[static_cast<size_t>(b)] = {kVal[b].name, s};
+  }
+  return o;
+}();
+const SheetCol kValName = {"名", "名 = 篮子名\n"
+                                 "• 算法: 切片名 + .等 (等权) / .加 (总市值加权)\n"
+                                 "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
+                                 "• 显示: 超长截断补 …, 悬停看全名; 选中行高亮 (主图画它)\n"
+                                 "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 点 = 叠加 / 取消到 NAV 日内栏 / FLOW 图\n"
+                                 "• 适用: 指数 / 行业 / 概念"};
+// 段: 各口估值分位 (组 g 的 PortfolioView::pct; 成分行 = 该股当前收益率, 不铺底色)
+Seg val_seg(const PortfolioView &v, int g) {
+  return {{kValCols.begin(), kValCols.end()},
+          [&v, g](size_t r, PortfolioSheet &, SheetCell *out) {
+            for (int b = 0; b < kPoolVals; ++b)
+              out[b] = ranked_cell(v.pct[g][r][b], "%.0f%%");
+          },
+          [](const KidSrc &x, size_t, PortfolioSheet &, SheetCell *out) {
+            const ImVec4 &txt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            for (int b = 0; b < kPoolVals; ++b) {
+              const double y = x.info ? stock_yield(*x.info, b) : kNaN;
+              out[b] = sheet_cell(y, txt, "%.*f%%", kVal[b].prec, 100.0 * y);
+            }
+          },
+          {}};
+}
+void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const StockInfos &infos) {
+  ImGui::SetNextItemWidth(-FLT_MIN);
+  ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
+  if (ImGui::IsItemHovered())
+    tip("Band 分位的滚动窗长 N: 每日取过去 N 年 (含当日) 的收益率加权分位, 拖动即时重算\n"
+        "• 权重 = 1 - exp(-10 u), u = 1 - 距今 / 窗跨度: 近 ~3/4 窗约等权, 窗尾段快速降到 0 (老点出窗时分位不跳)\n"
+        "• 池估值史不足 N 年时先扩张窗 (权重按实际史长缩放); 不满 1 年不画");
+  button_bar(kRowGroupName, kPageDefs[kPageVal].groups, ui.cat[kPageVal]);
+  ImGui::SameLine();
+  ImGui::TextColored(kHead, "(单选)");
+  if (ImGui::IsItemHovered())
+    tip("类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行选一个: 主图画它的价格 + EP / BP / SP / CP / DY Band; 选中换组保留\n"
+        "• 价格: 全A.加 / 行业 / 概念 = 总市值加权指数 (全A 内切); 全A.等 / 其余池 = 等权指数 (同 NAV 池线)\n"
+        "• 行业成员 = 全A 成分按当日适用 (盘前已知) 的 SW2021 一级行业 (ind_l1) 切; 行业未知的只进全A\n"
+        "• 概念成员 = 全A 成分 ∩ 最近一份东财概念快照的成分 (全史同一份)\n"
+        "• 估值与价格同权重: 个股收益率 = 分子 / 总市值; 加权 = 整体法 Σ分子 / Σ总市值, 等权 = 成分个股收益率的算术平均 (= 等权组合每元的分子)\n"
+        "  分子: EP = 归母净利TTM, BP = 归母权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 近4季报告期税前分红 (亏损 / 负权益 / 负现金流照计为负)\n"
+        "• 成分 = 当日持仓 (同池指数: 上一交易日收盘建仓的池); 市值 = 收盘价 × 当日适用总股本, 财务取当日适用 (无前视)\n"
+        "• 估值分位 = 当日收益率在过去 N 年 (含当日; 上方滑条) 窗内的加权分位 (窗尾降权, 见滑条提示), 收益率越低越贵 (高 = 贵; ≤ 0 排在最贵端), 逐日滚动; 估值史不满 1 年不画\n"
+        "• Band = 价格 × 当日收益率 / q, q = 窗内 5/10/25/50/75/90/95%% 贵度分位的收益率 (与倍数口径的 Band 同一条线);\n"
+        "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
+        "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
+        "• 表上过滤条 (与 NAV / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
+        "• 行名前 ▸ = 展开成分股 (至多一行, 三页同一份; 该行钉在表头下): 各口显示该股当前收益率 (非分位); 点成分行 = 叠加到 NAV 日内栏 / FLOW 图\n"
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
+  table(ui, infos, d, kPageVal, kValName, {today_seg(), val_seg(v, ui.cat[kPageVal])});
+}
+
+// ---- FLOW 右图例: 类别条 (指数 / 行业 / 概念) + 过滤条; 表 = 该组一行一篮子, 点行 = 选中 / 取消 (与 NAV 同一份选中, 左图画选中的).
+//      列 = 中文名 (线色) | 当日四列 | 日轴各日 (MM-DD) 净流入占当日成交额 | 档内合计净流入 (亿) | 合计占比; 按正负着色, 悬停格看净流入 / 成交额; 表头点排序 (组内) ----
+// 列: 名 / 一日 (表头 = 该日 MM-DD, 拼在说明前) / 合计两列
+const SheetCol kFlowNameCol = {"名", "名 = 篮子名\n"
+                                     "• 算法: 切片名 + .等 (等权) / .加 (总市值加权); 资金流不分权重, 同切片两行同成分即同值\n"
+                                     "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
+                                     "• 显示: 字色 = 线色 (同 NAV); 超长截断补 …, 悬停看全名\n"
+                                     "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 点 = 叠加 / 取消到左图 (字色 = 叠加线色)\n"
+                                     "• 适用: 指数 / 行业 / 概念"};
+const std::string kFlowDayTip = " = 该日资金流入占成交额\n"
+                                "• 算法: 净流入 / 成交额; 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法; 成分行 = 本只): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟\n"
+                                "• 数据: 当日 = 新浪快照合成 (实时); 历史日 = all.bar 库 L_1min (其后至基本面末日 = bar1m) 合成; 成分之和不加权;\n"
+                                "  首根 09:31 (开盘集合竞价) / 末根 15:00 (收盘集合竞价) 按图左上角 开收盘 开关计入 (默认不计)\n"
+                                "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额; 该日无分钟根 → -\n"
+                                "• 适用: 指数 / 行业 / 概念; 成分行只当日 (历史日 -, 看左图叠加); 随档位 (日内 / 2日 … 5日)";
+const SheetCol kFlowSumCols[2] = {
+    {"净流入", "净流入 = 档内合计净流入\n"
+               "• 算法: 日轴各日净流入之和 (各日同上列)\n"
+               "• 数据: 同各日列\n"
+               "• 显示: 亿 / 万亿带符号, 按正负着色; 悬停格看成交额\n"
+               "• 适用: 指数 / 行业 / 概念; 成分行只档位 = 日内; 随档位"},
+    {"占比", "占比 = 档内合计净流入占合计成交额\n"
+             "• 算法: Σ 各日净流入 / Σ 各日成交额 (左图占比的分母是近 5 日日均成交额, 两者不同)\n"
+             "• 数据: 同各日列\n"
+             "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额\n"
+             "• 适用: 指数 / 行业 / 概念; 成分行只档位 = 日内; 随档位"},
+};
+// 一段的净流入占成交额 (无根 → NaN)
+double flow_pct(const Database::Flow &x) { return x.amount > 0 ? x.net / x.amount : kNaN; }
+// 段: 日轴各日净流入占比 + 档内合计两列 (篮子行 = Assets 篮子同一份; 成分行只当日); 各行流水记进 p.flow[行] (末项 = 合计; 悬停看金额)
+Seg flow_seg(const Database::BasketState &bs, const std::vector<PortfolioRow> &rs, const std::vector<misc::Ymd> &days) {
+  const size_t nd = days.size();
+  Seg s;
+  for (const misc::Ymd day : days) {
+    char t[16];
+    std::snprintf(t, sizeof(t), "%02d-%02d", day / 100 % 100, day % 100);
+    s.cols.push_back({t, t + kFlowDayTip});
+  }
+  s.cols.insert(s.cols.end(), std::begin(kFlowSumCols), std::end(kFlowSumCols));
+  // 行 row 的各日资金流 x (日轴同序; whole = 各日齐全才有合计) → p.flow[row] + 格
+  const auto fill = [nd](std::vector<Database::Flow> x, bool whole, size_t row, PortfolioSheet &p, SheetCell *out) {
+    x.resize(nd);
+    Database::Flow sum;
+    if (whole)
+      for (const Database::Flow &y : x)
+        sum.net += y.net, sum.amount += y.amount;
+    x.push_back(sum);
+    for (size_t k = 0; k < nd; ++k)
+      out[k] = signed_cell(flow_pct(x[k]));
+    const double net = sum.amount > 0 ? sum.net / 1e8 : kNaN;
+    out[nd] = sheet_cell(net, tint(net, 0.0), "%s", yi_text(net, true).c_str());
+    out[nd + 1] = signed_cell(flow_pct(sum));
+    p.flow[row] = std::move(x);
+  };
+  s.row = [&bs, &rs, &days, fill](size_t r, PortfolioSheet &p, SheetCell *out) {
+    assert(rs[r].basket >= 0);
+    fill(Database::FlowOf(bs, static_cast<size_t>(rs[r].basket), days), true, r, p, out);
+  };
+  s.kid = [&bs, &days, fill, nd](const KidSrc &x, size_t row, PortfolioSheet &p, SheetCell *out) {
+    std::vector<Database::Flow> fl(nd);
+    bool whole = true;
+    for (size_t k = 0; k < nd; ++k)
+      if (x.day && x.day->candle.date == days[k])
+        fl[k] = Database::FlowOf(x.day->bars, bs.flow_ends);
+      else
+        whole = false;
+    fill(std::move(fl), whole, row, p, out);
+  };
+  s.tip = [nd](const PortfolioSheet &p, size_t row, int k) {
+    const Database::Flow &x = p.flow[row][std::min(static_cast<size_t>(k), nd)]; // 合计两列同一段
+    if (x.amount > 0)
+      tip("净流入 %s / 成交额 %s = %+.2f%%", yi_text(x.net / 1e8, true).c_str(), yi_text(x.amount / 1e8).c_str(), 100.0 * x.net / x.amount);
+  };
+  return s;
+}
+void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vector<misc::Ymd> &days, const StockInfos &infos) {
+  button_bar(kRowGroupName, kPageDefs[kPageFlow].groups, ui.cat[kPageFlow]);
+  ImGui::SameLine();
+  ImGui::TextColored(kHead, "(点行 = 画)");
+  if (ImGui::IsItemHovered())
+    tip("点行 = 选中 / 取消, 选中 = 左图画该篮子的累计净流入 (与 NAV 页同一份选中: 这里选的 NAV 主图 / 日内栏也画); 选中换组保留\n"
+        "• 指数 = 各池 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级; 概念 = 东财题材概念 (全A 内切)\n"
+        "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
+        "• 表上过滤条 (与 NAV / VAL 页同一份): 按只数 / 总市值 / |当日资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
+        "• 行名前 ▸ = 展开成分股 (至多一行, 三页同一份; 该行钉在表头下): 资金流只当日; 点成分行 = 叠加到左图 (个股历史 + 新浪当日, 跨日接续)\n"
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
+  table(ui, infos, d, kPageFlow, kFlowNameCol, {today_seg(), flow_seg(ui.basket, d.rows[ui.cat[kPageFlow]], days)}, days, ui.basket.flow_ends);
+}
+
+} // namespace
+
+void RenderPortfolioSheet(PortfolioUIState &ui, int page, const std::vector<misc::Ymd> &flow_days, const StockInfos &infos) {
+  const PortfolioDerived &d = ui.der.val;
+  const PortfolioView &v = ui.view.val;
+  if (page == kPageNav)
+    legend_nav(ui, d, v, infos);
+  else if (page == kPageVal)
+    legend_val(ui, d, v, infos);
+  else
+    legend_flow(ui, d, flow_days, infos);
+}
+
+void SyncPortfolioCons(PortfolioUIState &ui, const Database::QuoteService &q) {
+  const PortfolioDerived &d = ui.der.val;
+  const Database::Feed &f = ui.basket.feed;
+  std::vector<uint32_t> ids;
+  if (const PortfolioAt o = d.at(ui.pick.open); o.g >= 0 && f.data && !f.data->lack) {
+    const PortfolioRow &h = d.rows[o.g][o.r];
+    assert(o.g < kBasketGroups && h.basket >= 0);
+    for (const Database::Constituent &c : f.data->cons[static_cast<size_t>(h.basket)])
+      ids.push_back(c.id);
+  }
+  std::ranges::sort(ids);
+  const Database::QuoteStatus st = q.status();
+  const int64_t at = static_cast<int64_t>(st.date) * 86400 + st.sec;
+  if (ids == ui.cons.ids && at == ui.cons.at && (ui.cons.day || ids.empty()))
+    return;
+  ui.cons.day = ids.empty() ? nullptr : q.today(Database::kStock, ids);
+  ui.cons.ids = std::move(ids);
+  ui.cons.at = at;
+}
+
+} // namespace GUI::Factors

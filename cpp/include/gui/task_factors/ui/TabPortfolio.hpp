@@ -2,7 +2,7 @@
 //   小框 1: 选组合 (<portfolio_dir>/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
 //   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD; 不画个股):
-//   NAV 右表 = 顶部类别条选一组看 (指数 / 行业 / 概念 / 因子 / 策略, 五组同形: 一行一对线, 见 NavGroup), 点行 = 选中 (同 VAL 行高亮; 跨组保留) = 主图画该行两条线, 主图例默认只显理想列;
+//   NAV 右表 = 顶部类别条选一组看 (指数 / 行业 / 概念 / 因子 / 策略, 五组同形: 一行一对线, 见 RowGroup), 点行 = 选中 (同 VAL 行高亮; 跨组保留) = 主图画该行两条线, 主图例默认只显理想列;
 //     默认不选 (空图). 列 = 中文名 (线色; 悬停看名) | 当日涨幅 | Δ5日线 | 只数 | 总市值 | 换手 | 资金流入 | 可成交年化 | 理想年化 | 夏普 (可成交列) | 年换手;
 //     近况两列 (Database::Recent; 篮子行 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点) 按涨跌着色, 不随区间;
 //     只数 / 总市值 (只篮子行) = 当日成员表 (Tape::members / weight): 只数取同切片等权线, 总市值取同切片加权线 (当日接上 × 当日涨跌), 不着色;
@@ -24,7 +24,8 @@
 //     组合策略线 (有冲击 / 无冲击两条) = 各因子独立回测 (PortfolioService 的账 PortfolioBook,
 //     各自的层, 净值引擎 fold_book: 每行开 1/h̄ 一批 (全日平均满仓), 收益在平仓行实现; 可成交 / 顺延在标签里) 的逐行增量等权聚合: 每个交易日在当日有数据的 n 个因子间等分 (按实现日),
 //     因子增量 = 毛收益 − 建仓冲击 − 固定冲击份数 · fixed_impact (占净值), 记在行末 (收益 = 平仓行, 成本 = 建仓行;
-//       已实现口径, 与池指数对齐); 净值 = 同一 x 的增量和逐点复利连乘. 单因子线同式 (权 1) ⇒ 单因子线 ≡ 只含它的组合.
+//       已实现口径, 与池指数对齐); 净值 = 同一格 (日, 行末分钟) 内各因子的增量 (同因子格内先复利) 按份额加和, 逐格复利连乘.
+//       单因子线 / 篮子可成交线同式 (一腿) ⇒ 单因子线 ≡ 只含它的组合.
 //       只算 G20 多头 (无冲击 = 不扣). 成本按 Δw (Stat 契约【换手成本】), 冲击段 = 各因子自己的主段, 不可选:
 //       用了 lob.* 叶 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; 否则固定段, 增仓量 / 平仓量都按 fixed_impact;
 //       年换手 = 自首次建仓起的单边 (倍/年: Σ 增仓量 / 其后交易日数 × 每年交易日; 组合 = 各因子增仓量按当日份额加权, 不计因子间对冲)
@@ -88,7 +89,7 @@ struct PortfolioRange {
   int grab_k0 = 0, grab_k1 = 0; // 按下时两边的月初序号 (平移保持 k1 − k0)
 };
 
-// 页签 (同一个右图例位; 图例宽 / 类别条按页各一份; 页表 kPageDefs 见 TabPortfolio.cpp)
+// 页签 (同一个右图例位; 图例宽 / 类别条按页各一份; 页表 kPageDefs 见 PortfolioCommon.hpp)
 enum PortfolioPage : int { kPageNav,
                            kPageVal,
                            kPageFlow };
@@ -202,7 +203,7 @@ struct PortfolioUIState {
   std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
   std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)
   PortfolioFitKey fit_key;                                                   // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
-  int cat[kPages] = {kNavPool, kGroupPool, kGroupPool};                      // [PortfolioPage] 右表类别条选中组 (NAV = NavGroup; VAL / FLOW = BasketGroup)
+  int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool};                    // [PortfolioPage] 右表类别条选中组 (NAV = RowGroup; VAL / FLOW = BasketGroup)
   BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}}; // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
   bool intraday = true;                                                      // NAV 日内栏
   Database::BasketState basket;                                              // 篮子历史 + 当日 + 叠加的个股 (日内栏 / FLOW / 篮子行近况 / 成分)

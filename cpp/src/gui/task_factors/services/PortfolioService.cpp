@@ -360,7 +360,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return settle(rc);
 }
 
-// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 一本 basket_count 线的账发布 (不扣成本: imp / fix 全 0)
+// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 一本 basket_count 线的账发布 (不扣成本: 无 imp / fix 列)
 bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   TraceN("PortfolioBaskets");
   assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
@@ -379,12 +379,7 @@ bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
     b->dates = j.dm.dates;
     assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == b->dates.size());
     assert(bs.buy.n == bs.index.n && bs.buy.P == bs.index.P);
-    BookLines zero;
-    zero.n = bs.index.n, zero.P = bs.index.P;
-    zero.v.assign(bs.index.v.size(), 0.f);
     b->col[kBookRet] = std::move(bs.index);
-    b->col[kBookImp] = zero;
-    b->col[kBookFix] = std::move(zero);
     b->col[kBookBuy] = std::move(bs.buy);
     for (int m = 0; m < kPoolVals; ++m)
       b->val[m] = std::move(bs.val[m]);

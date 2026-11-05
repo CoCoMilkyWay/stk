@@ -1,5 +1,5 @@
 // PortfolioService — Factors→Portfolio 页的单 worker: 因子组合 (一组合一文件) 里每个因子**独立**回测 + 全部篮子的可成交指数 / 增仓 / 估值.
-//   两者同一种成品 = 账 PortfolioBook (线 × 行的逐行增量, 列 = 毛收益 / 建仓冲击 / 固定份数 / 增仓量): 因子一本一线, 篮子一本 basket_count 线 (不扣成本).
+//   两者同一种成品 = 账 PortfolioBook (线 × 行的逐行增量, 列 = 毛收益 / 建仓冲击 / 固定份数 / 增仓量): 因子一本一线, 篮子一本 basket_count 线 (不扣成本 = 无冲击两列).
 //
 // 组合文件 <config.portfolio_dir>/<name>.json (name = 主干, ValidFactorName):
 //   { "factors": [ { "pool": "all", "level": "5min", "file": "mom30.json", "hold": 30, "sign": -1, "expr": "<具体规范串>" }, … ] }
@@ -92,8 +92,8 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 // ---- 结果 ----
 // 账的列 (fold_book stride 1 = 逐行; 增量占净值): 收益记在平仓行 (hold_exit_row), 成本 / 增仓记在建仓行
 enum BookCol : int { kBookRet,   // 毛收益 (因子 = G20 多头; 篮子 = 可成交指数)
-                     kBookImp,   // 建仓冲击 (篮子 0)
-                     kBookFix,   // 固定冲击份数 (UI × Config::fixed_impact; 篮子 0); 净 = ret − imp − fix · fixed_impact
+                     kBookImp,   // 建仓冲击 (篮子无此列)
+                     kBookFix,   // 固定冲击份数 (UI × Config::fixed_impact; 篮子无此列); 净 = ret − imp − fix · fixed_impact
                      kBookBuy }; // 增仓量 Δw⁺ (UI 折年化单边换手)
 inline constexpr int kBookCols = 4;
 // 一本账 (因子 / 篮子同形): 线 × 行 = [线][T = 日 · S]; 因子一线 (该 hold), 篮子 basket_count 线 (线 = basket_line, shared/Basket.hpp)
@@ -102,13 +102,13 @@ struct PortfolioBook {
   std::vector<misc::Ymd> dates;      // [D] 评估期
   LevelId lv = 0;                    // 层 (每日行数 S)
   int amt = kAmtFixed;               // 冲击段 (amt_name): 因子 = 主段; 篮子不扣成本, 恒 kAmtFixed
-  BookLines col[kBookCols];          // [BookCol][线][T]
+  BookLines col[kBookCols];          // [BookCol][线][T]; 篮子不扣成本: kBookImp / kBookFix 无列 (n = 0)
   std::vector<float> val[kPoolVals]; // [PoolVal][线 · D] 估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值 / 加权 = 整体法收益率; NaN = 当日不可算); 因子空
   std::string error;                 // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
   size_t lines() const { return static_cast<size_t>(col[kBookRet].n); }
-  const float *at(int k, size_t line) const { // [T]
+  const float *at(int k, size_t line) const { // [T]; 无列 → nullptr
     assert(line < lines());
-    return col[k].at(static_cast<int>(line));
+    return col[k].n ? col[k].at(static_cast<int>(line)) : nullptr;
   }
   const float *val_of(size_t line, int m) const { // [D]
     assert(line < lines() && !val[m].empty());

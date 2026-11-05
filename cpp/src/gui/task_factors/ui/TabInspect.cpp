@@ -88,13 +88,15 @@ void fit_on_change(const char *title, ImGuiID key, std::initializer_list<ImAxis>
     ImPlot::SetNextAxisToFit(ax);
 }
 
-// 横轴刻度: 交易日下标 → YYMMDD (user_data = InspectDerived::dates)
+// 横轴刻度: 日末 x = i (第 i − 1 日收; 0 = 起点, 同光标) → 最近点的 YYMMDD (user_data = InspectDerived::dates)
 int date_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   if (dates.empty())
     return std::snprintf(buf, size, "%g", v);
-  const int i = std::clamp(static_cast<int>(std::floor(v)), 0, static_cast<int>(dates.size()) - 1);
-  return std::snprintf(buf, size, "%06d", dates[static_cast<size_t>(i)] % 1000000);
+  const int i = std::clamp(static_cast<int>(std::lround(v)), 0, static_cast<int>(dates.size()));
+  if (i == 0)
+    return std::snprintf(buf, size, "起点");
+  return std::snprintf(buf, size, "%06d", dates[static_cast<size_t>(i) - 1] % 1000000);
 }
 
 // 分层色: 两端两色 (G1 深蓝 / G20 深红), 中心中性灰, 色度 w = 线性底坡 + 两侧反向 tanh 台阶: w = kColRamp·|s| + (1 − kColRamp)·step,
@@ -629,7 +631,7 @@ bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, 
   return changed;
 }
 
-// K 线横轴: 全局行 (日下标 × seg + 行) → "YYMMDD HH:MM" (行末分钟)
+// K 线横轴: 全局行 (日下标 × seg + 行; 蜡烛在整数 x) → 最近一根的 "YYMMDD HH:MM" (行末分钟)
 struct KlineAxis {
   const std::vector<misc::Ymd> *dates = nullptr;
   int seg = 0;
@@ -640,7 +642,7 @@ int minute_formatter(double v, char *buf, int size, void *ud) {
   if (dates.empty())
     return std::snprintf(buf, size, "%g", v);
   const int S = ax.seg, days = static_cast<int>(dates.size());
-  const long long g = std::clamp(static_cast<long long>(std::floor(v)), 0LL, static_cast<long long>(days) * S - 1);
+  const long long g = std::clamp(static_cast<long long>(std::llround(v)), 0LL, static_cast<long long>(days) * S - 1);
   const int d = static_cast<int>(g / S), m = factor::geo_of(S).minute(static_cast<int>(g % S));
   const ClockTime ct = L_1min_to_Clock(static_cast<size_t>(m));
   return std::snprintf(buf, size, "%06d %02d:%02d", dates[static_cast<size_t>(d)] % 1000000, ct.hour, ct.minute);
