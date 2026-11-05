@@ -2,11 +2,11 @@
 //   小框 1: 选组合 (<portfolio_dir>/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
 //   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD; 不画个股):
-//   NAV 右表 = 顶部类别条选一组看 (指数 / 行业 / 因子 / 策略, 四组同形: 一行一对线, 见 NavGroup), 点行 = 选中 (同 VAL 行高亮; 跨组保留) = 主图画该行两条线, 主图例默认只显理想列;
+//   NAV 右表 = 顶部类别条选一组看 (指数 / 行业 / 概念 / 因子 / 策略, 五组同形: 一行一对线, 见 NavGroup), 点行 = 选中 (同 VAL 行高亮; 跨组保留) = 主图画该行两条线, 主图例默认只显理想列;
 //     默认只选全A等权. 列 = 中文名 (线色; 悬停看名) | 当日涨幅 | Δ5日线 | Δ5日量 | 可成交年化 | 理想年化 | 夏普 (可成交列) | 年换手;
-//     近况三列 (Database::Recent; 指数 / 行业 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点, 无量) 按涨跌着色, 不随区间;
+//     近况三列 (Database::Recent; 篮子行 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点, 无量) 按涨跌着色, 不随区间;
 //     其余数值列底色 = 同组同列截面名次 (好绿 → 差红: 年化 / 夏普高好, 年换手低好; 同 VAL 配色); 表头点排序 (组内, 升 → 降 → 原序; VAL 表同)
-//   NAV 日内栏 (类别条旁 "日内" 开关, 默认开): 主图上方占左栏 1/3 高 (日内 : 主图 = 1 : 2), 选中的指数 / 行业行同主图线色叠加日内收盘线
+//   NAV 日内栏 (类别条旁 "日内" 开关, 默认开): 主图上方占左栏 1/3 高 (日内 : 主图 = 1 : 2), 选中的篮子行同主图线色叠加日内收盘线
 //     (Database::RenderBasketIntraday: Assets 篮子同一份, 当日由新浪快照合成; 对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁,
 //      线名中文小字贴线尾, 读数看十字光标); 只选一行 = 同一张图改画分钟蜡烛 + 现价十字 (标涨跌幅 / 时刻)
 //   主图 / 日内栏贴边 (窄内边距, 不标轴名), 图区让给线
@@ -18,16 +18,18 @@
 //       只算 G20 多头 (无冲击 = 不扣). 成本按 Δw (Stat 契约【换手成本】), 冲击段 = 各因子自己的主段, 不可选:
 //       用了 lob.* 叶 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; 否则固定段, 增仓量 / 平仓量都按 fixed_impact;
 //       年换手 = 全评估期单边 (倍/年: Σ 增仓量 / 交易日数 × 每年交易日; 组合 = 各因子增仓量按当日份额加权, 不计因子间对冲)
-//     指数线 / 行业线 = 篮子目录两组 (shared/Basket.hpp basket_group: 各池整体, all 池两条 = 全A加权 (总市值) / 全A等权, 其余池等权 / SW2021 一级, 总市值加权):
+//     篮子线 (指数 / 行业 / 概念) = 篮子目录三组 (shared/Basket.hpp basket_group: 各池整体, all 池两条 = 全A加权 (总市值) / 全A等权, 其余池等权
+//       / SW2021 一级, 总市值加权 / 东财题材概念 (全A 内切, 成分按最近一份快照倒推全史), 总市值加权):
 //       只画因子日并集轴范围内, 当日收盘一点; 每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (价格指数, 不看可成交: Assets 篮子同一份), 两者之差 = 可成交拖累;
 //       年换手 = 全评估期单边 BasketCurve::turn[篮子线] (倍/年, 只池整体有; 指数线本身不扣成本)
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     夏普 = 区间内日收益 (日末净值, 无点的日收益 0) mean / sd × √每年交易日;
 //     派生重算 (新结果到) / 主图例显隐 / 右表选中 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
-//   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用; 行 = NAV 指数 / 行业两组的同一份): 右侧类别条 (指数 / 行业) 选一组, 表格单选一个池或申万一级行业 (全A 内按上一行 ind_l1 切;
-//     默认 = 组合首个因子所在池; 列 = 中文名 (悬停看名) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位, 底色 = 该分位在同组 (池 / 行业) 同口内的截面名次, 便宜绿 → 贵红),
-//     主图 = 该篮子指数 P (全A加权 / 行业 = 总市值加权, 全A等权 / 其余池 = 等权; 区间起点 = 1, 与 NAV 同一切片) + 同权重的滚动 EP / BP / SP / CP / DY Band
+//   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用; 行 = NAV 篮子三组的同一份): 右侧类别条 (指数 / 行业 / 概念) 选一组, 表格单选一个池 / 申万一级行业
+//     (全A 内按上一行 ind_l1 切) / 概念; 默认 = 组合首个因子所在池; 列 = 中文名 (悬停看名) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
+//     底色 = 该分位在同组同口内的截面名次, 便宜绿 → 贵红),
+//     主图 = 该篮子指数 P (全A加权 / 行业 / 概念 = 总市值加权, 全A等权 / 其余池 = 等权; 区间起点 = 1, 与 NAV 同一切片) + 同权重的滚动 EP / BP / SP / CP / DY Band
 //     (默认只开 BP): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
 //     (N = 右图例滑条, 即时重算; 正值窗内 ≡ 倍数口径 P · m_q / m); band 间填色 (最便宜档以下绿 → 最贵档以上红, 低 alpha 渐变), 指数线在上;
 //     不可算 / v ≤ 0 / 窗内有 v ≤ 0 的点断开, q_j ≤ 0 的档单独断开;
@@ -60,13 +62,13 @@ struct PortfolioCurve {
   std::vector<double> x, y;
 };
 
-// 成对线的两条 (一行两条, 同色, 理想列淡): 指数 / 行业 = 可成交 (T+1C 标签指数) / 理想 (价格指数); 因子 / 策略 = 有冲击 / 无冲击.
+// 成对线的两条 (一行两条, 同色, 理想列淡): 篮子 (指数 / 行业 / 概念) = 可成交 (T+1C 标签指数) / 理想 (价格指数); 因子 / 策略 = 有冲击 / 无冲击.
 // 行选中 → 主图例里理想列显、可成交列隐 (点图例再显)
 enum PairLine : int { kTrade,   // 可成交 / 有冲击
                       kIdeal }; // 理想 / 无冲击
 inline constexpr int kPairLines = 2;
 
-// 一行 = 一对线, 全段 (NAV 右表一行; VAL 表一行 = NAV 指数 / 行业行同一份). 主图例列 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (补空格对齐);
+// 一行 = 一对线, 全段 (NAV 右表一行; VAL 表一行 = NAV 篮子行同一份). 主图例列 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (补空格对齐);
 // NAV 右表 = cn | 近况三列 | 两条年化 | 可成交列夏普 | 年换手; en 只在悬停时显示; 排版 / 近况 / 年化 / 夏普在渲染时拼
 //   篮子行: 两条 = BasketCurve 可成交指数 / 价格指数 (Assets 篮子日线) 同一投影到日并集轴 = 前收一点 (范围首日开盘; 源首日无) + 轴上每日收盘一点, 原值
 struct PortfolioRow {
@@ -76,18 +78,20 @@ struct PortfolioRow {
   std::string hover;                                      // 悬停 (en 起头 + 详情)
   double turn = std::numeric_limits<double>::quiet_NaN(); // 年换手 (全评估期单边, 倍/年; NaN = 无)
   bool on = false;                                        // 默认选中
-  int basket = -1;                                        // 指数 / 行业行: 篮子线 basket_line (BasketCurve / 篮子 Feed 同键; 近况 / 日内 / VAL 取它); 其余 −1
+  int basket = -1;                                        // 篮子行: 篮子线 basket_line (BasketCurve / 篮子 Feed 同键; 近况 / 日内 / VAL 取它); 其余 −1
   std::vector<uint32_t> at;                               // 篮子行: [line[kTrade].x] → BasketCurve::dates 下标 (严格升序; 滚动窗看日并集轴以外的全史)
   PortfolioCurve line[kPairLines];
 };
 
-// NAV 四组 (右表类别条 / 主图画序同序, 策略在最上层); 前两组 = 篮子目录两组 (BasketGroup 同序)
+// NAV 五组 (右表类别条 / 主图画序同序, 策略在最上层); 前三组 = 篮子目录三组 (BasketGroup 同序)
 enum NavGroup : int { kNavPool,
                       kNavInd,
+                      kNavConcept,
                       kNavFactor,
                       kNavStrat };
-inline constexpr int kNavGroups = 4;
-static_assert(int{kNavPool} == int{kGroupPool} && int{kNavInd} == int{kGroupInd});
+inline constexpr int kNavGroups = 5;
+static_assert(int{kNavPool} == int{kGroupPool} && int{kNavInd} == int{kGroupInd} && int{kNavConcept} == int{kGroupConcept} &&
+              int{kNavFactor} == kBasketGroups);
 // NAV 右表一行的数值列 (前两列下标 = PairLine)
 enum NavNum : int { kNumTrade,  // 可成交列区间年化
                     kNumIdeal,  // 理想列区间年化
@@ -102,7 +106,7 @@ static_assert(int{kNumTrade} == int{kTrade} && int{kNumIdeal} == int{kIdeal});
 struct PortfolioDerived {
   std::vector<misc::Ymd> dates;                        // 日并集轴 (横轴 day 下标)
   std::vector<PortfolioRow> nav[kNavGroups];           // [NavGroup][行]; on = 只全A等权:
-                                                       //   指数 / 行业 = [basket_group 序] (源没算成也列, 线空); en | cn = cut_code | basket_name, tag = cn
+                                                       //   指数 / 行业 / 概念 = [basket_group 序] (源没算成也列, 线空); en | cn = cut_code | basket_name, tag = cn
                                                        //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key,
                                                        //     en | cn = 因子文件主干 | 中文名, hover = en + 池 层 持有期 冲击段 规范串
                                                        //   策略 = 一行, 组合 G20 多头: 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | G20 多头
@@ -152,7 +156,7 @@ struct PortfolioSlice {
   double x(size_t i) const { return std::max(c->x[j0 + i], x0); }
   double y(size_t i) const { return c->y[j0 + i] / base; }
 };
-// VAL 表格一格: 篮子一口在切片内末个可算点的估值分位 + 它在同组 (池 / 行业) 同口内的截面名次
+// VAL 表格一格: 篮子一口在切片内末个可算点的估值分位 + 它在同组 (池 / 行业 / 概念) 同口内的截面名次
 struct PortfolioCell {
   double pct = std::numeric_limits<double>::quiet_NaN();  // %, 高 = 贵; NaN = 无
   double rank = std::numeric_limits<double>::quiet_NaN(); // ∈ [0, 1] (0 = 最便宜; 组内只一个 = 0.5)
@@ -240,7 +244,7 @@ struct PortfolioUIState {
   float legend_w[2] = {400.0f, 380.0f}; // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
   int cat[2] = {kNavPool, kGroupPool};  // [NAV, VAL] 右表类别条选中组 (NAV = NavGroup; VAL = BasketGroup)
   bool intraday = true;                 // NAV 日内栏
-  Database::BasketState basket;         // 篮子历史 + 当日 (日内栏 / 指数 / 行业行近况)
+  Database::BasketState basket;         // 篮子历史 + 当日 (日内栏 / 篮子行近况)
 };
 
 // GUI 线程每帧 (两页都调): 目录变 → 重列, 当前组合不在了 → 选第一个 (载入内容, content_gen +1)

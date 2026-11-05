@@ -2,12 +2,13 @@
 #include "gui/task_factors/services/FactorsBook.hpp"
 
 #include "factor/Stat/Host.hpp" // h2f
-#include "shared/Basket.hpp"    // kWeights / cut_count / cut_of / basket_line
+#include "shared/Basket.hpp"    // kWeights / cut_count / cut_of / concept_cut / basket_line
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <span>
 
 namespace GUI::Factors {
 
@@ -57,13 +58,16 @@ struct BasketRows {
 
 constexpr PoolMask kAllBit = PoolMask{1} << kAllPool;
 
-// 成员位 m + 行业 ind → 所属篮子逐个 fn(b, bit, k): 池整体 = 成员位含 bit (k = 0); all 内行业 k = 含 kAllBit ∧ ind = k (行业未知的只进篮子 0)
+// 成员位 m + 行业 ind + 所属概念 cs → 所属篮子逐个 fn(b, bit, k): 池整体 = 成员位含 bit (k = 0); all 内行业 k = 含 kAllBit ∧ ind = k (行业未知的只进篮子 0);
+//   all 内概念 = 含 kAllBit (k = 0: 概念成分全期不变, 同篮子即同在 all)
 template <class Fn>
-void each_basket(PoolMask m, uint8_t ind, Fn &&fn) {
+void each_basket(PoolMask m, uint8_t ind, std::span<const uint16_t> cs, Fn &&fn) {
   if (m & kAllBit) {
     fn(size_t{0}, kAllBit, uint8_t{0});
     if (ind > 0)
       fn(static_cast<size_t>(ind), kAllBit, ind);
+    for (const uint16_t k : cs)
+      fn(concept_cut(k), kAllBit, uint8_t{0});
   }
   for (PoolMask r = m & ~kAllBit; r; r &= r - 1) {
     const PoolId p = pool_first(r);
@@ -197,7 +201,7 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
         const size_t d0 = t - t % S; // 当日首行
         num[kValDy] *= d0 > 0 ? static_cast<double>(px[(d0 - 1) * nA + a]) * sh[(d0 - 1) * nA + a] : static_cast<double>(kNaN);
         const double om[kWeights] = {1.0, mc};
-        each_basket(in[i - nA], ind[i], [&](size_t b, PoolMask, uint8_t) {
+        each_basket(in[i - nA], ind[i], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
           for (int m = 0; m < kPoolVals; ++m)
             if (std::isfinite(num[m]))
               for (int w = 0; w < kWeights; ++w) {
@@ -292,7 +296,7 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
   const size_t n = B.sh.n(), A = static_cast<size_t>(B.sh.A);
   assert(B.in.size() == n && B.eo.size() == n && B.lab.m.size() == n && B.close.v.size() == n && "B 未装 (load_b)");
   Baskets o;
-  // 指数的成员码: 池整体 = 成员位本身; 行业 = all 内行业码 ind0 (含 kAllBit 才是 ind_l1, 否则 0)
+  // 指数的成员码: 池整体 / 概念 = 成员位本身; 行业 = all 内行业码 ind0 (含 kAllBit 才是 ind_l1, 否则 0)
   std::vector<uint8_t> ind0(n);
   ex.rows(B.sh.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i)
@@ -303,7 +307,7 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
   const LegPlane *const lab = &B.lab;
   o.index = index_rows(ex, B.sh, hd, &lab, B.eo.data(), cut_count(), kWeights, B.mcap.data(),
                        [&](size_t, size_t i, auto &&put) {
-                         each_basket(in[i], ind0[i], [&](size_t b, PoolMask bit, uint8_t k) {
+                         each_basket(in[i], ind0[i], B.concepts_of(i % A), [&](size_t b, PoolMask bit, uint8_t k) {
                            if (k > 0)
                              put(b, ind0.data() + i, [k](uint8_t v) { return v == k; });
                            else

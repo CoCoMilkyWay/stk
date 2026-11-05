@@ -233,6 +233,7 @@ set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 set(MATH_FAST
     # shared
     shared/Asset.cpp
+    shared/Concept.cpp
     shared/Feature.cpp
     shared/OrdersDay.cpp
     # misc
@@ -302,6 +303,7 @@ set(MATH_PRECISE
     misc/parquet.cpp
     # api
     api/bigquant/client.cpp
+    api/eastmoney/client.cpp
     api/sina/client.cpp
     api/tushare/client.cpp
     # fundamental

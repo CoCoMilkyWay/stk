@@ -1,15 +1,16 @@
-// 篮子 (指数 / 行业) 的历史一路 (见 Kline.hpp): 源 = all Bar 特征库 (请求即重读库清单, 见 shared/FeatureLib.hpp); 与 StockHistory 对仗.
+// 篮子 (指数 / 行业 / 概念) 的历史一路 (见 Kline.hpp): 源 = all Bar 特征库 (请求即重读库清单, 见 shared/FeatureLib.hpp); 与 StockHistory 对仗.
 //
-// 篮子 = shared/Basket.hpp 的篮子表 (切片 × 权重, 与 Factors 可成交指数同一张): 切片 = 全A / 申万一级行业 (全A 内按 ind_l1 切) / 各子池 (池表 feature_pools).
-//   这里是价格指数 (不看可成交): Portfolio 日内栏 / 理想线 / 近况同出于此.
+// 篮子 = shared/Basket.hpp 的篮子表 (切片 × 权重, 与 Factors 可成交指数同一张): 切片 = 全A / 申万一级行业 (全A 内按 ind_l1 切) / 各子池 (池表 feature_pools)
+//   / 概念 (全A 内按概念表切, shared/Concept.hpp). 这里是价格指数 (不看可成交): Portfolio 日内栏 / 理想线 / 近况同出于此.
 // 交易日 D 的成员 / 权重 / 基准一律取库内前一交易日 (D−1) 的 L_1day 收盘行:
-//   成员: 全A = cs_valid, 子池 = pool_<池> > 0.5, 行业 = 全A ∧ ind_l1 = k, 均须收盘价 > 0; 等权 = 1, 加权 = D−1 收盘价 × total_shares (该行 = D 的股本; 缺 → 只进等权).
+//   成员: 全A = cs_valid, 子池 = pool_<池> > 0.5, 行业 = 全A ∧ ind_l1 = k, 概念 = 全A ∧ 在概念表该概念成分里, 均须收盘价 > 0;
+//   等权 = 1, 加权 = D−1 收盘价 × total_shares (该行 = D 的股本; 缺 → 只进等权).
 //   基准 = D−1 行 pre_close (该列行值 = 次日除权后前收, 与新浪昨收同一个量).
 // 日根 = L_1day open_day / high_day / low_day / close_day / amount_day; 点位自库首个落盘日 kBase 起逐日接续 (Fold 按日序串行);
 //   分钟根 = 末 kMinuteDays 个落盘日的 L_1min, 按行 row_slot 并根 (与个股读 bar1m 同一路).
 //   各日文件互不相干 ⇒ 收盘行每批 2 × 线程数日在常驻线程池上一日一任务并行读.
 // 窗: 只留末 kDailyDays 个落盘日的日根 / 末 kMinuteDays 个落盘日的分钟根 (按日期截, 不按根数).
-// 续算: 全表 Book 常驻 worker, 落盘 <库目录>/baskets.bin (头 = 库 A 轴 + 篮子数 + 根布局; 随库清库而没).
+// 续算: 全表 Book 常驻 worker, 落盘 <库目录>/baskets.bin (头 = 库 A 轴 + 概念表指纹 + 篮子数 + 根布局; 随库清库而没).
 //   Book 的已合成日是此刻落盘日的前缀且头对得上 → 只合成其后的新日 (重读其末日收盘行定成员), 否则从库首日重合成;
 //   续算 ≡ 全量 (逐日同一份 Fold, 窗按日期截). 合成了新日才落盘.
 // 补日 (库末日之后至基本面 bar1d / bar1m 末日, 不落盘, 库末日 / 补日 / 点位不变即沿用): 成员 / 池 / 行业 / 股本冻结在库末日收盘行,
@@ -50,7 +51,7 @@ private:
   // 篮子全表的合成进度 (续算点)
   struct Book {
     struct Head {
-      uint64_t magic = 0, hash = 0; // 库 A 轴 hash
+      uint64_t magic = 0, hash = 0, concepts = 0; // 库 A 轴 hash / 概念表指纹
       uint32_t A = 0, baskets = 0;
       uint32_t candle = 0, bars = 0; // 根布局
       bool operator==(const Head &) const = default;

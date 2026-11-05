@@ -55,7 +55,8 @@ void compound(const R *r, size_t n, Put &&put) {
 }
 
 // 篮子 (baskets; 全部池一趟, 各篮子同形): 篮子 = 切片 c ∈ [0, cut_count()) × 权重 w (shared/Basket.hpp), 三样一律以线 basket_line(c, w) 为键.
-//   成分判据 = 成员位 (BPlanes::in): 池整体 = 含该池位, 行业 k = 含 kAllPool 位 ∧ ind_l1 = k (行业未知的只进全A).
+//   成分判据 = 成员位 (BPlanes::in): 池整体 = 含该池位, 行业 k = 含 kAllPool 位 ∧ ind_l1 = k (行业未知的只进全A),
+//   概念 = 含 kAllPool 位 ∧ 在该概念成分里 (BPlanes::cc, 全期同一份).
 //   价格指数 (不看可成交) 在行情侧 (Database::BasketHistory, 同一张篮子表); 这里是可成交指数 + 估值 + 换手
 struct Baskets {
   BookLines index;                   // [basket_line][T] 可成交指数的逐行收益 (stride 1; 净值 = compound, 调用方) = fold_book: 行 t 一批 = 成分 (行 t 成员位合判据 ∧ T+1C
@@ -68,7 +69,7 @@ struct Baskets {
                                      //   股本 / 财务 / 行业是日频盘后列, as-of 读到的本行 = 当日适用; 每口只收该口输入有限的成分 (亏损 / 负权益 / 负现金流照计为负);
                                      //   Σ权 ≤ 0 / 无成分 → NaN
   std::vector<double> turn;          // [basket_line] 池整体 (切片 cut_of(p)) 的每行单边换手 ½ Σ|w_t − w̃_{t−1}| (w̃ = 上一成分行的权按本行收益漂移;
-                                     //   含再平衡 + 成分进出) 沿成分行均值, 首行建仓不计; 行业线 NaN
+                                     //   含再平衡 + 成分进出) 沿成分行均值, 首行建仓不计; 行业 / 概念线 NaN
 };
 // 池篮子输入 B (load_b) → 全部篮子的指数 / 估值 / 换手 (Baskets 注)
 Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B);

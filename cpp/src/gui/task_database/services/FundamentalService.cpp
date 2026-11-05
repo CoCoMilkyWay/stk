@@ -1,6 +1,6 @@
 // Fundamental Service - 基本面数据 sync + AssetInfo 构建
 // 抓取: fundamental::sync::plan<Src>(Round) → 同步道逐任务 sync::run<Src> (月度 parquet / 分钟线日文件, 水位增量, 槽位状态见 fundamental/Store.hpp)
-//   基本面 (bigquant → tushare) 在前, 分钟线 (bigquant.bar1m) 在后
+//   基本面 (bigquant → tushare) 在前, 概念快照 (eastmoney, 当日缺才拉) 居中, 分钟线 (bigquant.bar1m) 在后
 //   与 AuditService 的 audit::plan<Src> → 逐单元 audit::run<Src> 同形: 循环 / 进度 / 取消同走 drive (Drive.hpp)
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days, bar1m_end, pit_end}
 //   stock_days   ← all_trading_days (fundamental::calendar)
@@ -23,6 +23,7 @@
 #include "gui/task_database/services/FundamentalService.hpp"
 
 #include "api/bigquant/client.hpp"
+#include "api/eastmoney/client.hpp"
 #include "api/tushare/client.hpp"
 #include "features/Method/Fundamental.hpp"
 #include "fundamental/Scan.hpp"
@@ -33,6 +34,7 @@
 #include "misc/exec.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
+#include "shared/Concept.hpp"
 #include "shared/Config.hpp"
 
 #include <algorithm>
@@ -1031,6 +1033,29 @@ bool FundamentalService::run(FundamentalRequest &req) {
       lane("bigquant", bq_tasks, run_bq);
     if (!ts_tasks.empty() && go())
       lane("tushare", ts_tasks, run_tu);
+    // 概念快照: 当日缺才拉; 板块名单先按名称留题材, 再逐个拉成分, 够数的收; 取消 = 不落半份
+    if (req.fundamental && go() && concept_last() < misc::today_ymd()) {
+      eastmoney::Client em;
+      job.set_message("同步 eastmoney.concept: 板块名单");
+      std::vector<eastmoney::Board> boards = em.concepts();
+      std::erase_if(boards, [](const eastmoney::Board &b) { return !concept_theme(b.name); });
+      begin(Phase::Loading, boards.size());
+      std::vector<Concept> list;
+      for (eastmoney::Board &b : boards) {
+        if (!go())
+          break;
+        job.set_message("同步 eastmoney.concept: " + b.name);
+        std::vector<std::string> syms = em.members(b.code);
+        if (syms.size() >= kConceptMin)
+          list.push_back({std::move(b.code), std::move(b.name), std::move(syms)});
+        publish(1);
+      }
+      if (go()) {
+        std::sort(list.begin(), list.end(), [](const Concept &x, const Concept &y) { return x.code < y.code; });
+        save_concepts(misc::today_ymd(), list);
+        std::cout << "[eastmoney.concept] " << list.size() << " / " << boards.size() << " concept(s)" << std::endl;
+      }
+    }
     // 分钟线: 基本面之后 (一日一条, 量大耗时长)
     if (!bar1m_tasks.empty() && go())
       lane("bigquant.bar1m", bar1m_tasks, run_bq);

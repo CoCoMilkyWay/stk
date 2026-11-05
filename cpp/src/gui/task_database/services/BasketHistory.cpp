@@ -6,7 +6,7 @@
 #include "misc/fs.hpp"
 #include "misc/snap.hpp"
 #include "shared/AssetAxis.hpp"
-#include "shared/Basket.hpp" // basket_line / basket_count / cut_of / weight_of
+#include "shared/Basket.hpp" // basket_line / basket_count / cut_of / concept_cut / weight_of
 #include "shared/FeatureLib.hpp"
 
 #include <algorithm>
@@ -81,8 +81,10 @@ void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
   }
 }
 
-// 收盘行 r 定次日成员表 (下标 = 库轴): 所属切片各进等权 (1) / 加权 (收盘市值; 缺股本不进)
-void members(const Row &r, size_t A, size_t NP, Members &m) {
+// 收盘行 r 定次日成员表 (下标 = 库轴): 所属切片各进等权 (1) / 加权 (收盘市值; 缺股本不进); 概念随全A
+void members(const Row &r, const PoolAxis &axis, size_t NP, Members &m) {
+  const ConceptTable &ct = concepts();
+  const size_t A = axis.size();
   m.clear();
   for (size_t a = 0; a < A; ++a) {
     const float c = r.px[3][a], cap = c * r.shares[a];
@@ -95,6 +97,8 @@ void members(const Row &r, size_t A, size_t NP, Members &m) {
       put(0);
       if (r.ind[a])
         put(r.ind[a]);
+      for (const uint16_t k : ct.concepts_of(axis.global(a)))
+        put(concept_cut(k));
     }
     for (PoolId p = 1; c > 0 && p < NP; ++p)
       if (r.pool[(p - 1) * A + a])
@@ -154,7 +158,7 @@ bool BasketHistory::run(HistoryRequest &req) {
   if (dates.size() < 2) // 首日只给成员 / 基准, 次日起才有根
     return publish(req, "all.bar 特征库落盘不足 2 日.");
 
-  const Book::Head head{kMagic, lib.axis.hash, static_cast<uint32_t>(lib.axis.size()), static_cast<uint32_t>(basket_count()),
+  const Book::Head head{kMagic, lib.axis.hash, concepts().hash, static_cast<uint32_t>(lib.axis.size()), static_cast<uint32_t>(basket_count()),
                         sizeof(Candle), sizeof(Bars)};
   const auto fits = [&](const Book &b) {
     return b.head == head && !b.dates.empty() && b.dates.size() <= dates.size() && std::equal(b.dates.begin(), b.dates.end(), dates.begin());
@@ -312,7 +316,7 @@ bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const s
       const size_t i = i0 + k;
       const misc::Ymd d = dates[i];
       const Row &prev = rows[k], &cur = rows[1 + k];
-      members(prev, A, NP, mem);
+      members(prev, lib.axis, NP, mem);
       const bool minutes = i + kMinuteDays >= N;
       if (minutes) {
         rd.load_day_columns(d, mcols, mc);
@@ -351,7 +355,7 @@ bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const s
     std::erase_if(kl.minutes, [&](const Bars &b) { return b.date < m_lo; });
     kl.last = dates.back();
   }
-  members(rows[0], A, NP, mem);
+  members(rows[0], lib.axis, NP, mem);
   return true;
 }
 

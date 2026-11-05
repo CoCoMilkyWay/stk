@@ -1,6 +1,6 @@
 // FactorsLoad — 因子评估的特征库装载层 (全部因子服务共用; 只装数据, 根上的统计归 FactorsProbe, 净值 / 篮子归 FactorsBook): 作用域层 (FactorsScope) 之上.
 //   X ↔ Y ↔ B 三侧同一份逐天并行骨架 (read_days, 环境 Io): 叶 LeafId → Leaf (因子输入叶) / Y → YCore (截面门控 + 建仓可成交码) + 标签两侧平面 [hold] /
-//   买入冲击 [amt] / 池篮子 → BPlanes (全部池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业, 一趟装齐, 不缓存); n_full_of 只扫门控出满仓只数;
+//   买入冲击 [amt] / 池篮子 → BPlanes (全部池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业 / 概念, 一趟装齐, 不缓存); n_full_of 只扫门控出满仓只数;
 //   Store = 进程唯一的计算面 (线程池 / 库 / 平面缓存 / 计算权): 平面按 (层, 评估域, 日段, 角色) 逐张缓存, 块 Block = 钉住一组平面的视图 (Store::pin);
 //   y_spec = Y 规格 (持有期 + 探针要的成本段 Segs); labels_of / labels_pick 标签的契约视图 (ry = 块上钉的标签秩, 只 CPU 要; cap = n_full);
 //   stat_scope = 结果的作用域头.
@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <iterator>
 #include <map>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -150,6 +151,9 @@ struct BPlanes {
   std::vector<float> px, shares;     // 本行有成交的 close (不复权; 否则 0) / 总股本 (缺 → NaN)
   std::vector<float> val[kPoolVals]; // [PoolVal] 估值输入 (BCols::val 原值; 缺 → NaN)
   std::vector<uint8_t> ind;          // 行业 ID (SW2021 一级; 0 = 未知 / 缺 / 越界)
+  std::vector<uint32_t> cc_at;       // [A + 1] 资产 a 所属概念 = cc[cc_at[a], cc_at[a + 1]) (概念表下标, 全期同一份)
+  std::vector<uint16_t> cc;
+  std::span<const uint16_t> concepts_of(size_t a) const { return {cc.data() + cc_at[a], cc_at[a + 1] - cc_at[a]}; }
 };
 // 标签的契约视图 (ry = YPlanes::ry: CPU 会话的块钉了标签秩; GPU 的块不钉, stat_open 在显存里自己预处理; cap = n_full)
 factor::stat::Labels labels_of(const YPlanes &y);
@@ -178,7 +182,7 @@ struct Io {
 // Y 列段 = [ts_valid | cs_valid | lb_entry_ok (have 空才读, 进 core)] | 标签 [hd][kLegs] | 盘口段买入冲击 [ad] → labels [hd 序] / costs [ad 序]
 //   (门控取 have 或刚装的 core; ad 只含盘口段);
 // B 列段 = ts_valid cs_valid lb_entry_ok T+1C 标签 [kLegs] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 池列 (日频原料 bar.1d);
-// B 只在 all 池评估域 (assert).
+// B 只在 all 池评估域 (assert); 概念成员不读库, 取概念表 (A 轴 → 全局 id).
 // 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 四个装载同一份进度: prog.begin Loading (日数), 每天 publish(1)
 bool load_x(const Io &io, const Chunk &k, const std::vector<LeafId> &ids, std::vector<Leaf> &out);
 bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LegPlane> &labels,

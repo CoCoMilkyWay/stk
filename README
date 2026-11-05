@@ -32,7 +32,8 @@ stk/
 │   │   │   │                                         #    · 定轴库 axis_lib = 同池 Bar 库 (定池的 A 轴); 随轴库 = 同池 Lob 库 (轴 ⊆ 定轴库轴)
 │   │   │   │                                         #    · 库树 lib_parent (规划 / 断言唯一一份): 随轴库 → 同池定轴库 (同日); 子池定轴库 → all 同档库 (读 D−1); all Bar 为根
 │   │   │   │                                         #      本库日须落在上游库日期轴上 (parent_covers); 规划序 lib_order = 池序 × 档的依赖序 TIER_ORDER (上游先)
-│   │   │   ├── Basket.hpp                            # 📦 篮子表 = 切片 (全A / 申万一级 / 各子池) × 权重 (等权 / 市值加权): 线序 basket_line + 中文名 basket_name; 行情价格指数与 Factors 可成交指数同一张
+│   │   │   ├── Basket.hpp                            # 📦 篮子表 = 切片 (全A / 申万一级 / 各子池 / 概念) × 权重 (等权 / 市值加权): 线序 basket_line + 中文名 basket_name; 行情价格指数与 Factors 可成交指数同一张
+│   │   │   ├── Concept.hpp                           # 📦 概念表: 东财题材概念的成分快照 (output/concept, 一日一份; 名称剔除词 + 成分下限只留题材); 进程内唯一 = 最近一份, 成分倒推全史
 │   │   │   ├── Pool.hpp                              # 📦 pool::Panel 池日频面板 (每池同一形状, 与 fund::Panel 对仗): 本库 A 轴 + 逐日成员 (→ cs_valid) + 轴外
 │   │   │   │                                         #    · 成员: all Bar = 当日活跃 (fund::Panel::live, 与 Fund live 口同一份); 子池 Bar = all Bar 库 D−1 收盘行池列;
 │   │   │   │                                         #      随轴库 = 同池定轴库当日 cs_valid (上游读一律经读端同一 Source 投影)
@@ -197,7 +198,7 @@ stk/
 │   │   │   │   │                                     #      (锁外分块折叠, 不挡 GUI); 两边各一个版本号 ver[Side], GUI 版本变了才拷
 │   │   │   │   │                                     #    · StockHistory: 个股的基本面日线 (cn_stock_real_bar1d 近 2500 日, ref = pre_close) + 分钟 (bar1m 近 4 日, 经 Bar1mDay 按行 row_slot 并根);
 │   │   │   │   │                                     #      未命中的键一遍读齐; 内存 LRU 留近 64 只 (末日未变即命中)
-│   │   │   │   │                                     #    · BasketHistory: 价格指数, 篮子表 = shared/Basket.hpp (切片 全A / 申万一级 / 各子池 × 等权 / 市值加权, 与 Factors 可成交指数同一张), 源 = all.bar 库;
+│   │   │   │   │                                     #    · BasketHistory: 价格指数, 篮子表 = shared/Basket.hpp (切片 全A / 申万一级 / 各子池 / 概念 × 等权 / 市值加权, 与 Factors 可成交指数同一张), 源 = all.bar 库;
 │   │   │   │   │                                     #      D 日成员 / 权重 / 基准 (pre_close) 取 D−1 收盘行; 点位自库首日 kBase 起逐日接续, 日线留近 2500 日 / 日内 (L_1min) 近 4 日 (按日期窗裁);
 │   │   │   │   │                                     #      账本落 <库目录>/baskets.bin, 下次只折新落盘的日 (续算 ≡ 全量);
 │   │   │   │   │                                     #      库末日之后至基本面末日为补日 (不落盘): 成员 / 池 / 行业 / 股本冻结在库末日收盘行, 价取 bar1d / bar1m, 加权权重随 收 / 前收 漂移;
@@ -260,7 +261,7 @@ stk/
 │   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集 (keys_union 并); Pick = 子集下标, labels_pick 取会话持有期子集
 │   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
 │   │   │       │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
-│   │   │       │   │                                 #    · baskets: 全部池 + all 内行业篮子 (shared/Basket.hpp 篮子表) 一趟出可成交指数 / 估值 / 换手 (吃 B); pool_line = 池整体等权 (吃 Y)
+│   │   │       │   │                                 #    · baskets: 全部池 + all 内行业 / 概念篮子 (shared/Basket.hpp 篮子表) 一趟出可成交指数 / 估值 / 换手 (吃 B); pool_line = 池整体等权 (吃 Y)
 │   │   │       │   ├── FactorsProbe.hpp              # 🖥️ 探针层 (一个根的一种输出): RootView / Ctx / Ranks 两后端同形, Probes<P...> 逐钩子 need / open / row / root / finish
 │   │   │       │   │                                 #    · 通用探针 Hold / Cost / Cover / Alpha / IcPdf 四服务共用; 服务私有探针在各自 .cpp
 │   │   │       │   │                                 #    · 原料按块要: need 每块 / need_last 只末块 (alpha 分布); 预算: bytes 每根常驻 / scratch 一根评时暂存
@@ -305,11 +306,11 @@ stk/
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
 │   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Compute / 自动 Inspect / Kline 才发
-│   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 行业线 / 单因子线, 区间条选日段
-│   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 因子 / 策略 (一次一组), 列 = 中文名 (悬停看名) | 当日涨幅 / Δ5日线 / Δ5日量 | 区间年化 / 夏普 / 年换手
-│   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 = basket_group 两组, 可成交 (BasketCurve) + 理想 (Market 篮子价格指数):
-│   │   │                                             #      两源各出日点位线 levels, 同一个 project 投到日并集轴; 近况三列同一核 (QuotesPanel RecentOf); VAL 表行 = 这两组同一份
-│   │   │                                             #    · 日内栏 (默认开): 主图上方, 日内 : 主图 = 1 : 2 (高), 选中的指数 / 行业的日内行情 (Market 篮子; 多行 = 同主图线色叠加, 一行 = 蜡烛 + 现价十字); 主图 / 日内栏贴边; VAL 右表类别条 指数 / 行业
+│   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
+│   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 概念 / 因子 / 策略 (一次一组), 列 = 中文名 (悬停看名) | 当日涨幅 / Δ5日线 / Δ5日量 | 区间年化 / 夏普 / 年换手
+│   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (BasketCurve) + 理想 (Market 篮子价格指数):
+│   │   │                                             #      两源各出日点位线 levels, 同一个 project 投到日并集轴; 近况三列同一核 (QuotesPanel RecentOf); VAL 表行 = 这三组同一份
+│   │   │                                             #    · 日内栏 (默认开): 主图上方, 日内 : 主图 = 1 : 2 (高), 选中篮子行的日内行情 (Market 篮子; 多行 = 同主图线色叠加, 一行 = 蜡烛 + 现价十字); 主图 / 日内栏贴边; VAL 右表类别条 指数 / 行业 / 概念
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
 │   │   │   │ Tasks                                │ Panel:                             │
@@ -438,7 +439,8 @@ stk/
 │   │   ├── api/                                            # 🌐 数据源 API: 纯传输, 不知 Spec / 资产轴; BigQuant / Tushare 两客户端对仗 (query → arrow::Table)
 │   │   │   ├── bigquant/client.hpp                         # 🌐 BigQuant DAI: query(Query{sql, filters, order}) 结果收成一格传回再拆开 (1 cell / 条) / quota
 │   │   │   ├── tushare/client.hpp                          # 🌐 Tushare HTTP: query(Query{api, params, num})
-│   │   │   └── sina/client.hpp                             # 🌐 新浪行情 HTTP (带 Referer, keep-alive + gzip): quotes 批量快照 (≤ 800 只, 含五档) / kline 1 分钟 K (最近 n 根)
+│   │   │   ├── sina/client.hpp                             # 🌐 新浪行情 HTTP (带 Referer, keep-alive + gzip): quotes 批量快照 (≤ 800 只, 含五档) / kline 1 分钟 K (最近 n 根)
+│   │   │   └── eastmoney/client.hpp                        # 🌐 东财行情列表 HTTP (keep-alive, 按代码分页拉齐): concepts 概念板块名单 / members 板块成分 (A 轴码形)
 │   │   ├── fundamental/                                    # 📊 日频基本面数据集: 两数据源同一套; 只单向依赖 api
 │   │   │   ├── Spec.hpp                                    # 📊   表定义 SPECS: Shape × snap × src (Bq / Tu); 静态初始化期全表断言
 │   │   │   ├── Store.hpp                                   # 📊   本地: Catalog (一次目录遍历) + 分片状态 + 拉取计划 + put (时间只经 Now)
@@ -507,6 +509,7 @@ stk/
     │   ├── _meta/<表>.parquet                              # Static / Snapshot 单文件整刷
     │   └── asset_axis.json                                 # A 轴 (资产轴) 码表, 只增不删
     ├── sina/live.bin                                       # 新浪当日分钟 K 缓存 (单文件, 只存行情日一天: 各只的根 / 精确位 / 待补区间 / 累计基线)
+    ├── concept/YYYYMMDD.tsv                                # 东财题材概念快照 (Fundamental 联网同步时拉当日缺的): 一行一概念 = 板块代码 \t 名称 \t 成分码 (逗号分隔)
     ├── doc/                                                # 文档 / 资料 (resources-* 符号链接指向仓库外 ../doc)
     │   ├── resources-raw -> ../../../doc/resources-raw     # 原始资料 (公众号 / paper / report / web)
     │   ├── resources-proc -> ../../../doc/resources-proc   # 加工后 (.stat 重算 + markdown 转换)

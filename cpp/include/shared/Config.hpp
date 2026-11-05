@@ -150,6 +150,7 @@ inline constexpr const char *TUSHARE_TOKEN = "6b5ea435a4626b1eeedefb2115bcf9e84f
 //   BigQuant 数据面: Flight 17010 — 明文 gRPC + Arrow IPC RecordBatch, 零拷贝
 //   Tushare:         HTTP   80    — 明文 JSON POST, 三张事件表
 //   Sina:            HTTP   80    — 明文 GET (须带 Referer), 当日实时快照 + 1 分钟 K
+//   Eastmoney:       HTTP   80    — 明文 GET, 概念板块名单 + 成分 (当日快照)
 //   超时 = 单次连接+读写整体时长; 重试 = RETRY_MAX 次额外重试, 线性间隔
 inline constexpr const char *BIGQUANT_FLIGHT_URI = "grpc+tcp://bigquant.com:17010";
 inline constexpr int BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
@@ -164,6 +165,9 @@ inline constexpr const char *SINA_REFERER = "https://finance.sina.com.cn";
 inline constexpr int SINA_HTTP_TIMEOUT_SECONDS = 5;
 inline constexpr int SINA_HTTP_RETRY_MAX = 2;
 inline constexpr const char *SINA_CACHE = "../../../../output/sina/live.bin"; // 当日分钟 K 缓存 (单文件, 只存行情日一天)
+inline constexpr const char *EASTMONEY_HOST = "push2.eastmoney.com";          // 列表 /api/qt/clist/get
+inline constexpr int EASTMONEY_HTTP_TIMEOUT_SECONDS = 10;
+inline constexpr int EASTMONEY_HTTP_RETRY_MAX = 3;
 
 // ---- 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet, 调度 fundamental::sync::plan) ----
 //   PIPELINE_START_DATE: 数据同步起点 (A 股财报电子化从 2015 起逐渐完整).

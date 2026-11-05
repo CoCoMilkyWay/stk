@@ -1,5 +1,5 @@
-// Fundamental Service - 基本面 + 分钟线数据 sync (BigQuant DAI + Tushare HTTP)
-// 数据落地 = output/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet
+// Fundamental Service - 基本面 + 分钟线数据 sync (BigQuant DAI + Tushare HTTP) + 概念快照 (东财 HTTP)
+// 数据落地 = output/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet; 概念 = output/concept/YYYYMMDD.tsv (shared/Concept.hpp)
 // (fundamental/ 月度分片 + _meta 单文件 + Daily 日文件, 水位增量, 常量见 shared/Config.hpp)
 // AssetInfo 从 parquet 构建内存结构.
 #pragma once
@@ -54,7 +54,7 @@ struct FundamentalState {
 
 struct FundamentalRequest {
   uint64_t seq = 0;         // 请求代 (StateManager 发), 交接原样带回
-  bool fundamental = false; // 联网同步基本面 (BigQuant 日频表 + Tushare)
+  bool fundamental = false; // 联网同步基本面 (BigQuant 日频表 + Tushare) + 概念快照
   bool bar1m = false;       // 联网补齐分钟线 (基本面之后)
 };
 
@@ -71,7 +71,7 @@ struct FundamentalResult {
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::assetinfo (只在 GUI 线程替换)
 //   - worker:   run = 外来写者 parquet 重写 (renative) → sync::plan<Bq> / plan<Tu> (Round)
-//               → 基本面 [drive: bq → ts] → 分钟线 [drive bq.bar1m] → 构建 → post
+//               → 基本面 [drive: bq → ts] → 概念快照 (当日缺才拉) → 分钟线 [drive bq.bar1m] → 构建 → post
 //               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;
 //               state 持 mutex 读

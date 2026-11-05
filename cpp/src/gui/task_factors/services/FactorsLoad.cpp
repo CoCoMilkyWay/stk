@@ -9,6 +9,7 @@
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
 #include "shared/Analysis.hpp"
+#include "shared/Concept.hpp" // concepts (BPlanes::cc)
 
 #include <algorithm>
 #include <bit>
@@ -461,6 +462,14 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
       B.close.v[i] = B.close.m[i] ? B.close.v[i] * f : 0.f;
     }
   });
+  const ConceptTable &ct = concepts();
+  assert(io.dm.rs.axis.size() == A);
+  B.cc_at.assign(A + 1, 0);
+  for (size_t a = 0; a < A; ++a) {
+    const std::span<const uint16_t> ks = ct.concepts_of(io.dm.rs.axis.global(a));
+    B.cc.insert(B.cc.end(), ks.begin(), ks.end());
+    B.cc_at[a + 1] = static_cast<uint32_t>(B.cc.size());
+  }
   return true;
 }
 
