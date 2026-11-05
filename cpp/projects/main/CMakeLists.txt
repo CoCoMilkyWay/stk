@@ -560,6 +560,7 @@ macro(dag_scan)
                 message(FATAL_ERROR "NODE_${node_name} 重复定义 (${scan_rel})")
             endif()
             list(APPEND DAG_NODES ${node_name})
+            set(DAG_NODEFILE_${node_name} "${scan_rel}")
             # 依赖 = 该行里所有 "<Ident>." (先全收, 排序时只认节点名)
             # 单口引用 Up.out(Up.port) / Up.y[Up.port] 另记成 "Up.port" (GUI 依赖解析按口过滤, 不把上游整节点的字段都算进来);
             # 其余形态 (Up.out() / Up.outs() / Up.hist() / Up.y / Up.member) = 整节点
@@ -646,7 +647,8 @@ macro(dag_emit)
     set(DAG_LAST ${dag_prev})
 
     # 节点上游依赖 (仅保留指向真实节点的引用, 过滤掉 tick_data 等源; 去重)
-    # 生成 <tier>::node_deps::TABLE: {node, deps[], count}, 项 = "Up" (整节点) 或 "Up.port" (单口), 供 GUI 特征依赖解析使用
+    # 生成 <tier>::node_deps::TABLE: {node, deps[], count, file}, 项 = "Up" (整节点) 或 "Up.port" (单口), 供 GUI 特征依赖解析使用;
+    # file = 节点所在文件 (include/ 下相对; 节点用时按文件归并). 行序 = 拓扑序 = DAG 节点下标
     set(DAG_GEN_DEP_ARRAYS "")
     set(DAG_GEN_DEP_TABLE "")
     set(dep_idx 0)
@@ -662,7 +664,7 @@ macro(dag_emit)
         list(LENGTH dep_list dep_count)
         dag_join(dep_items ", " "\"" "\"" ${dep_list})
         string(APPEND DAG_GEN_DEP_ARRAYS "  inline constexpr const char* const deps_${dep_idx}[] = {${dep_items}};\n")
-        string(APPEND DAG_GEN_DEP_TABLE "  {\"${node_name}\", deps_${dep_idx}, ${dep_count}},\n")
+        string(APPEND DAG_GEN_DEP_TABLE "  {\"${node_name}\", deps_${dep_idx}, ${dep_count}, \"${DAG_NODEFILE_${node_name}}\"},\n")
         math(EXPR dep_idx "${dep_idx} + 1")
     endforeach()
 

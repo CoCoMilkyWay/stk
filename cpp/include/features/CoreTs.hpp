@@ -40,6 +40,7 @@ class CoreTs {
 public:
   using Store = FeatureStore<T>;
   using Day = typename Store::Day;
+  using Graph = Dag;
   using Label = decltype(Dag::label);
   using LabelRows = typename Label::RowSet;
   static constexpr size_t kMinRingSlots = Label::MIN_RING_SLOTS; // 日环下限 (见 LabelHold)

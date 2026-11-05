@@ -141,6 +141,7 @@ stk/
 │   │   │   ├── feature_pipeline.hpp                  # ⚡ 管线骨架 pipeline<T>: 两档同一份, 档只写源 TierFeed<T>
 │   │   │   │                                         #    · 骨架: 预取 / 时序 (含领养) 循环 + 初始分配 + 初始日环 (负载模拟) + pin 核启动 + 协调线程调参; Core 构造 + asset-day (begin_day → feed → end_day → release) 唯一一份
 │   │   │   │                                         #    · 截面 / 落盘: cs_loop / io_loop (档无关)
+│   │   │   │                                         #    · 节点用时: 每轮约 4096 个 asset-day 抽样, 时序 worker 挂本线程 graph::node_clock (DAG run<> 逐节点计 TSC), 跑完落 node_time.json
 │   │   │   │                                         #    · 档的源 (源日历 / 预取 / 格 cell(sub, d) / Runner::feed + 按日汇总 day_log): src/worker/lob_pipeline.cpp / bar_pipeline.cpp
 │   │   │   │                                         #    · 档入口表 tier_ops_of<T>() → TierOps (<ns>_ops: 单位 / 尾窗 / 源日历 / 快照头 / pipeline), 档 TU 内实例化
 │   │   │   └── feature_workers.hpp                   # ⚡ 特征计算四角色日流水线 + 档入口表 tier_ops(tier); 段间只经 FeatureStore 的日窗握手
@@ -220,6 +221,7 @@ stk/
 │   │   │   │   └── ui/                               # 🖥️ UI
 │   │   │   │       ├── Common.hpp                    # 🖥️ 流式 tab 公共件
 │   │   │   │       ├── TabFeature.hpp                # 🖥️ 特征表: 池 + 档 (bar | lob, 默认 bar) + 层选择, 过滤 + 跨库跨层多选 (同列在不同库各选一次); 预览列按 (档, 层) 取
+│   │   │   │       │                                 #    · Node Time 视图 (与 Features 并列的标签): 当前库本层字段所在文件的节点用时占比 (读 node_time.json)
 │   │   │   │       ├── TabCompute.hpp                # 🖥️ 特征计算: 状态行 (进度条 + 取消 + 自动续算) / 核布局 (两档两栏, 按机器先配) / 库表 (一行一池, bar | lob 两组同构子列: 状态 / 数据初始 / 数据末日 / 天数 / 已落盘 / 未落盘 / 资产 / 轴外 / 操作; 日期列按规划日期轴, 建库前即可见; 池名过滤) / 架构说明 (折叠); 每库 Compute (全量, 先弹窗确认) / Append (续算), 上游库 (lib_parent: lob ← 同池 bar; 子池 bar ← all.bar) 未算完则禁用, 灰按钮悬浮给原因、可用给将算日期段; 数据换进 (同步 / 编码) 后可续算且未判废的库自动依次 Append (不必在本页)
 │   │   │   │       ├── TabOrderFlow.hpp              # 🖥️ 订单流
 │   │   │   │       ├── TabDist.hpp                   # 🖥️ 分布 PDF
@@ -487,6 +489,7 @@ stk/
     │   ├── <pool>/<tier>/lib.json                          # 库清单 (档 / A 轴 / 日期轴 / 轴外资产): 写端规划后落, 读端只读; 无清单 = 未建库
     │   ├── <pool>/<tier>/snapshot.bin                      # 续算快照 (末日各资产时序状态); 库跑完才落
     │   ├── <pool>/<tier>/features.json                     # 特征表预览成品 (每轮落地)
+    │   ├── <pool>/<tier>/node_time.json                    # 节点用时抽样 (每轮 Compute / Append 覆盖): 一节点一行 {node, file, cycles}
     │   ├── <pool>/lob/YYYY/MM/DD/                          # Lob 库 (<pool> = all 或 all Bar 库 pool_<pool> 列的子池; A 轴 = 同池 Bar 库)
     │   │   ├── features_L_sec.bin                          # L_sec (秒频) 一天一个: 头 + 列目录 + 逐列载荷 [T×A]
     │   │   └── features_L_1min.bin                         # L_1min (分钟频) 一天一个: 同上; 两层都逐列自选是否做 T 轴 XOR 差分

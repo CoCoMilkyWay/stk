@@ -4,7 +4,9 @@
 #include "features/FeaturesDefine.hpp" // NODE_COMPUTE / NODE_FLUSH (TIER_DAG)
 #include "misc/date.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
+#include <cstdint>
 #include <iterator>
 #include <string>
 #include <type_traits>
@@ -138,6 +140,15 @@ inline void snap(Ar &ar, N &node) {
   node.template snap<is_day_trigger(Flush)>(ar);
 }
 
+// 节点用时采样 (特征面板 Node Time): 时序 worker 对抽中的 asset-day 把本线程的钟挂到 node_clock, run<>() 逐节点累计 TSC 周期
+// (下标 = DAG 节点下标 = node_deps::TABLE 行); 不挂 = 原路径, 每次 run 只多一个分支. 只计节点 compute / flush, 不碰特征值
+struct NodeClock {
+  static constexpr size_t kMaxNodes = 64;
+  std::array<uint64_t, kMaxNodes> cycles{};
+  uint64_t samples = 0; // 计过的 asset-day 数
+};
+inline thread_local NodeClock *node_clock = nullptr;
+
 // 两档共有的源: 分钟 K + 分钟箱 K + 日 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
 struct Root {
   MinuteData minute_data;                                          // L_1min 输入 (档的重采样器填充: Lob 逐笔 / Bar bar1m)
@@ -163,7 +174,8 @@ static_assert(L_5min + std::size(BIN_DATA) == L_1day + 1);
 //           节点按 NodesGenerated.hpp 的拓扑序每个一层, 一层里只看得到更早的层 —— 输入引用了未排在前面的节点
 //           是编译错误, 构造序 (基类先) 与 run<>() 执行序 (NODES 行序) 因此一定一致. 空基类无运行时开销.
 //   class DAG  声明链末端 + 标签成员 label (回填别的时间行, 不在节点表; 调用在 CoreTs) + 触发域调度:
-//     run<trig>()        对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush()
+//     run<trig>()        对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush(); 本线程挂了 graph::node_clock 则逐节点计时
+//     kNode_<name>       节点下标 (NODES 行序 = node_deps::TABLE 行序); kNodes = node_deps::TABLE (名 / 文件)
 //     at_day_start(date) 设日期 → 日内节点 reset / 日频节点 carry (按行序) → 标签 reset → onDay 域
 //     at_day_end()       盘尾钩子 (目前无事可做; 留给需要收盘结算的特征)
 //     snap(ar)           续算点: 各节点 graph::snap (按行序) → 标签 snap; 与 at_day_start 同表同序
@@ -182,26 +194,48 @@ static_assert(L_5min + std::size(BIN_DATA) == L_1day + 1);
     name.compute();                                \
   if constexpr (NODE_FLUSH(__VA_ARGS__) == trig)   \
     name.flush();
+#define DAG_RUN_NODE_TIMED(name, type, args, ...)                                       \
+  if constexpr (NODE_COMPUTE(__VA_ARGS__) == trig || NODE_FLUSH(__VA_ARGS__) == trig) { \
+    DAG_RUN_NODE(name, type, args, __VA_ARGS__)                                         \
+    const uint64_t u = __builtin_ia32_rdtsc();                                          \
+    clk.cycles[kNode_##name] += u - t;                                                  \
+    t = u;                                                                              \
+  }
+#define DAG_NODE_ID(name, type, args, ...) kNode_##name,
 #define DAG_RESET_NODE(name, type, args, ...) graph::day_start<NODE_FLUSH(__VA_ARGS__)>(name);
 #define DAG_SNAP_NODE(name, type, args, ...) graph::snap<NODE_FLUSH(__VA_ARGS__)>(ar, name);
-#define TIER_DAG(LabelType, ...)                                                                \
-  DAG_CAT(DAG_TIER, _NODES)(DAG_DECLARE_NODE) class DAG : public DAG_CAT(DAG_TIER, _DAG_LAST) { \
-  public:                                                                                       \
-    LabelType label{__VA_ARGS__};                                                               \
-    template <class... Args>                                                                    \
-    explicit DAG(Args &&...args) : DAG_CAT(DAG_TIER, _DAG_LAST)(std::forward<Args>(args)...) {} \
-    template <Trigger trig>                                                                     \
-    [[gnu::always_inline]] inline void run() { DAG_CAT(DAG_TIER, _NODES)(DAG_RUN_NODE) }        \
-    void at_day_start(misc::Ymd date) {                                                         \
-      date_ = date;                                                                             \
-      DAG_CAT(DAG_TIER, _NODES)(DAG_RESET_NODE)                                                 \
-          label.reset();                                                                        \
-      run<Trigger::onDay>();                                                                    \
-    }                                                                                           \
-    void at_day_end() {}                                                                        \
-    template <class Ar>                                                                         \
-    void snap(Ar &ar) {                                                                         \
-      DAG_CAT(DAG_TIER, _NODES)(DAG_SNAP_NODE)                                                  \
-          label.snap(ar);                                                                       \
-    }                                                                                           \
+#define TIER_DAG(LabelType, ...)                                                                 \
+  DAG_CAT(DAG_TIER, _NODES)(DAG_DECLARE_NODE) class DAG : public DAG_CAT(DAG_TIER, _DAG_LAST) {  \
+  public:                                                                                        \
+    LabelType label{__VA_ARGS__};                                                                \
+    enum NodeId : size_t { DAG_CAT(DAG_TIER, _NODES)(DAG_NODE_ID) kNodeCount };                  \
+    static constexpr const auto &kNodes = node_deps::TABLE;                                      \
+    static_assert(std::size(kNodes) == kNodeCount && kNodeCount <= graph::NodeClock::kMaxNodes); \
+    template <class... Args>                                                                     \
+    explicit DAG(Args &&...args) : DAG_CAT(DAG_TIER, _DAG_LAST)(std::forward<Args>(args)...) {}  \
+    template <Trigger trig>                                                                      \
+    [[gnu::always_inline]] inline void run() {                                                   \
+      if (graph::NodeClock *clk = graph::node_clock) [[unlikely]]                                \
+        run_timed<trig>(*clk);                                                                   \
+      else {                                                                                     \
+        DAG_CAT(DAG_TIER, _NODES)(DAG_RUN_NODE)                                                  \
+      }                                                                                          \
+    }                                                                                            \
+    template <Trigger trig>                                                                      \
+    [[gnu::noinline]] void run_timed(graph::NodeClock &clk) {                                    \
+      uint64_t t = __builtin_ia32_rdtsc();                                                       \
+      DAG_CAT(DAG_TIER, _NODES)(DAG_RUN_NODE_TIMED)(void)t;                                      \
+    }                                                                                            \
+    void at_day_start(misc::Ymd date) {                                                          \
+      date_ = date;                                                                              \
+      DAG_CAT(DAG_TIER, _NODES)(DAG_RESET_NODE)                                                  \
+          label.reset();                                                                         \
+      run<Trigger::onDay>();                                                                     \
+    }                                                                                            \
+    void at_day_end() {}                                                                         \
+    template <class Ar>                                                                          \
+    void snap(Ar &ar) {                                                                          \
+      DAG_CAT(DAG_TIER, _NODES)(DAG_SNAP_NODE)                                                   \
+          label.snap(ar);                                                                        \
+    }                                                                                            \
   };

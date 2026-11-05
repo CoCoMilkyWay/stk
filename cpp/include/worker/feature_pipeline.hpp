@@ -1,5 +1,6 @@
 #pragma once
 
+#include "features/GraphNode.hpp" // graph::NodeClock (节点用时抽样)
 #include "features/Storage/FeatureSnap.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
@@ -13,6 +14,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -61,7 +65,35 @@ struct TsRole {
   const FeatureSnap *snap_in;                          // 全量 = nullptr
   std::span<const typename FeatureStore<T>::Day> tail; // 尾窗日句柄 (老 → 新; 全量空)
   std::vector<std::vector<std::byte>> &snap_out;       // [A] 末日记录 (各由处理该资产末日的 worker 写)
+  size_t clock_every;                                  // 节点用时: 每 clock_every 个 asset-day 抽一个 (node_clock_pick)
+  std::vector<graph::NodeClock> &clocks;               // [TS worker] 各自累计, 跑完由 pipeline 合并落盘
 };
+
+// 节点用时抽样: (资产, 日) 散列后按 every 取模, 抽中的 asset-day 在资产 / 日期两向都散开
+inline bool node_clock_pick(size_t asset_id, size_t date_idx, size_t every) {
+  uint64_t h = (static_cast<uint64_t>(asset_id) << 32 | date_idx) + 0x9E3779B97F4A7C15ULL;
+  h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  h = (h ^ (h >> 27)) * 0x94D049BB133111EBULL;
+  return (h ^ (h >> 31)) % every == 0;
+}
+
+// 节点用时落盘 <库目录>/node_time.json (本轮抽样, 覆盖上一轮): 一节点一行 {node, file, cycles}; 特征面板 Node Time 按文件归并
+template <class Dag>
+void write_node_time(const std::string &dir, const graph::NodeClock &clk) {
+  const std::filesystem::path path = std::filesystem::path(dir) / "node_time.json";
+  const std::filesystem::path tmp = path.string() + ".tmp";
+  {
+    std::ofstream f(tmp);
+    assert(f.is_open() && "node_time.json: 临时文件打不开");
+    f << "{\n \"samples\": " << clk.samples << ",\n \"nodes\": [\n";
+    for (size_t i = 0; i < Dag::kNodeCount; ++i)
+      f << "  {\"node\": \"" << Dag::kNodes[i].node << "\", \"file\": \"" << Dag::kNodes[i].file << "\", \"cycles\": " << clk.cycles[i] << "}"
+        << (i + 1 < Dag::kNodeCount ? ",\n" : "\n");
+    f << " ]\n}\n";
+    assert(f.good() && "node_time.json: 写入失败");
+  }
+  std::filesystem::rename(tmp, path);
+}
 
 // 续算点头: 状态指纹 = kSnapSemver (snap 清单口径) + 各层字段表指纹 (张量口径) + 核布局 (sizeof Core)
 template <class T>
@@ -210,13 +242,20 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   // 处理一个 asset-day, 返回源条数. 主循环与领养回填共用 —— 两者只差句柄来自哪一天.
   // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘型标签 (T+N) 跨日回填, 旧日句柄持到结清
   // (见 CoreTs / LabelHold 文件头); 最后一日之后由 finish_all 全部结清.
+  // 抽中的 asset-day 挂本 worker 的节点钟 (只在本 asset-day 内; 领养回填同一路径)
+  graph::NodeClock &clock = role.clocks[static_cast<size_t>(worker_id)];
   auto process_asset_day = [&](size_t asset_id, size_t date_idx, const Day &day) -> size_t {
     ++date_assets_processed;
     CoreOf<T> &core = *cores[asset_id];
+    if (node_clock_pick(asset_id, date_idx, role.clock_every)) {
+      graph::node_clock = &clock;
+      ++clock.samples;
+    }
     core.begin_day(ctx.dates[date_idx], day);
     const size_t work = runner.feed(core, asset_id, date_idx);
     core.end_day(store);
     runner.release();
+    graph::node_clock = nullptr;
     return work;
   };
 
@@ -469,7 +508,11 @@ bool pipeline(const PipelineArgs &args) {
   std::vector<std::vector<std::byte>> snap_out(num_assets);
 
   std::vector<std::unique_ptr<CoreOf<T>>> cores(num_assets);
-  TsRole<T> role{feed, args.fund, args.members, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out};
+  // 节点用时: 本轮约 kClockTarget 个 asset-day 计时 (小轮次全计)
+  constexpr size_t kClockTarget = 4096;
+  const size_t clock_every = std::max<size_t>(1, num_assets * (dates.size() - tail) / kClockTarget);
+  std::vector<graph::NodeClock> clocks(num_ts);
+  TsRole<T> role{feed, args.fund, args.members, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out, clock_every, clocks};
 
   // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
   // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 采样窗 (PROFILE 模式) / 时序调参同样拉取式, 见 FeatureProfile / TsTuner.
@@ -534,6 +577,14 @@ bool pipeline(const PipelineArgs &args) {
   const bool completed = !args.cancel.load(std::memory_order_relaxed);
   if (completed)
     FeatureSnap::write(lib.dir, snap_header<T>(lib, dates.back()), snap_out);
+  graph::NodeClock clock_sum;
+  for (const graph::NodeClock &c : clocks) {
+    clock_sum.samples += c.samples;
+    for (size_t i = 0; i < graph::NodeClock::kMaxNodes; ++i)
+      clock_sum.cycles[i] += c.cycles[i];
+  }
+  if (clock_sum.samples > 0)
+    write_node_time<typename CoreOf<T>::Graph>(lib.dir, clock_sum);
   std::cout << "\n=== Feature Computation (" << tier_name(T::kId) << ") " << (completed ? "Complete" : "Cancelled") << " ===\n"
             << "Processed: " << store.query_io_done() << "/" << dates.size() << " dates\n"
             << std::endl;

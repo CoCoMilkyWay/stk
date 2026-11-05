@@ -16,9 +16,9 @@
 // 落盘字段表 (按层; 行序 = 列序)
 @DAG_GEN_FIELDS@
 
-// 节点上游依赖 (仅真实节点, 拓扑序; GUI 特征依赖解析用). 项 = "Up" 整节点 / "Up.port" 单口 (Up.out(Up.port) 形态)
+// 节点上游依赖 (仅真实节点, 拓扑序 = DAG 节点下标; GUI 特征依赖解析 / 节点用时归并用). 项 = "Up" 整节点 / "Up.port" 单口 (Up.out(Up.port) 形态); file = 节点所在文件
 namespace @DAG_NS@::node_deps {
-  struct NodeDepsEntry { const char* node; const char* const* deps; size_t count; };
+  struct NodeDepsEntry { const char* node; const char* const* deps; size_t count; const char* file; };
 @DAG_GEN_DEP_ARRAYS@
   inline constexpr NodeDepsEntry TABLE[] = {
 @DAG_GEN_DEP_TABLE@  };
