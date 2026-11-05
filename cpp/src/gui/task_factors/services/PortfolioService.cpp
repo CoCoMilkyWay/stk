@@ -282,7 +282,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
     message.clear();
     prune(result.factors, used_, tick_, req.reload);
     if (req.reload || !req.baskets)
-      result.baskets.reset();
+      result.baskets.reset(), result.stocks.reset();
     ++result_gen;
   }
   publish();
@@ -360,7 +360,8 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return settle(rc);
 }
 
-// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 一本 basket_count 线的账发布 (不扣成本: 无 imp / fix 列)
+// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 两本账同发布: 篮子 basket_count 线 (不扣成本: 无 imp / fix 列)
+// + 个股 all 池轴每只一线 (只毛收益; 线 → 全局 id = 评估域池轴)
 bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   TraceN("PortfolioBaskets");
   assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
@@ -370,21 +371,25 @@ bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   const Rc rc = eval_baskets(F, t.scope, j, bs);
   if (!settle(rc))
     return false;
-  auto b = std::make_shared<PortfolioBook>();
-  b->sig = t.sig();
-  b->lv = kBasketLevel;
+  auto b = std::make_shared<PortfolioBook>(), s = std::make_shared<PortfolioBook>();
+  for (PortfolioBook *x : {b.get(), s.get()})
+    x->sig = t.sig(), x->lv = kBasketLevel;
   if (rc != Rc::Ok) {
-    b->error = j.why;
+    b->error = s->error = j.why;
   } else {
-    b->dates = j.dm.dates;
+    b->dates = s->dates = j.dm.dates;
     assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == b->dates.size());
     assert(bs.buy.n == bs.index.n && bs.buy.P == bs.index.P);
+    assert(bs.stock.n == static_cast<int>(j.dm.rs.axis.size()) && bs.stock.P == bs.index.P);
     b->col[kBookRet] = std::move(bs.index);
     b->col[kBookBuy] = std::move(bs.buy);
+    s->col[kBookRet] = std::move(bs.stock);
+    s->ids = j.dm.rs.axis.ids;
+    assert(std::ranges::is_sorted(s->ids) && "池轴 sub → 全局 id 升序 (line_of 二分)");
     for (int m = 0; m < kPoolVals; ++m)
-      b->val[m] = std::move(bs.val[m]);
+      b->val[m] = std::move(bs.val[m]), s->val[m] = std::move(bs.stock_val[m]);
   }
-  put([&](PortfolioResult &r) { r.baskets = std::move(b); });
+  put([&](PortfolioResult &r) { r.baskets = std::move(b), r.stocks = std::move(s); });
   return true;
 }
 

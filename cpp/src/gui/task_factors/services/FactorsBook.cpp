@@ -45,7 +45,7 @@ BookLines fold_book(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int st
 
 namespace {
 
-// 篮子 (Baskets::index / buy / val; pool_line = 单池篮子 0 等权): 成员位行 = 当日池 (D−1 收盘定, 盘中 as-of, 整日常量), 行 t 的收益按上一有效 close 行的成员.
+// 篮子 (Baskets::index / buy / val / stock*; pool_line = 单池篮子 0 等权): 成员位行 = 当日池 (D−1 收盘定, 盘中 as-of, 整日常量), 行 t 的收益按上一有效 close 行的成员.
 //   B 的日频盘后列 (复权因子 / 股本 / 财务 / 行业) 经 as-of 已是当日适用值, 与本行 close 配对.
 //   index_rows 出指数 (fold_book, 标签; 顺延在标签里, 建仓 / 续持按 Stat 契约【仓位感知】); basket_rows 出估值 + 各篮子两权重的逐行收益 / 权和 (BasketRows,
 //   只给增仓漂移; 停牌行不更新 ⇒ 权带到复牌); basket_buy 用它算增仓. 收益成分两者同一份 prev_rows + each_basket (成分格 = 上一有效 close 行合判据).
@@ -139,7 +139,7 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
   return fold_book(ex, sh.seg, x, 1);
 }
 
-// 篮子估值 (Baskets::val, 两权重) + 各篮子逐行收益 / 权和 (rows, 增仓用), 两遍:
+// 篮子估值 (Baskets::val, 两权重) + 各篮子逐行收益 / 权和 (rows, 增仓用) + 个股的收益 / 收益率 (Baskets::stock / stock_val = 每格的个股项本身), 两遍:
 //   1) 资产条带并行, 沿 t 把 B.px 的副本补成上一有效收盘价 (停牌带着);
 //   2) 行并行, 每行一遍 A 轴:
 //      收益成分 = 上一有效 close 行 p (prev) 的成员位 (行业按行 p), 收益 = 后复权 close / 上一有效后复权 close − 1, 权 = 1 / 行 p 总市值 mcap;
@@ -166,7 +166,9 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<i
   });
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
   for (int m = 0; m < kPoolVals; ++m)
-    o.val[m].assign(basket_count() * nT, kNaN);
+    o.val[m].assign(basket_count() * nT, kNaN), o.stock_val[m].assign(nA * nT, kNaN);
+  o.stock.n = B.sh.A, o.stock.P = B.sh.T;
+  o.stock.v.assign(nA * nT, 0.f);
   rows.r.assign(basket_count() * nT, 0.0), rows.w.assign(basket_count() * nT, 0.0);
   ex.rows(B.sh.T, [&](int t0, int t1, int) {
     // 收益 [篮子][Weight][Σ权·r, Σ权]; 估值 [篮子][Weight][PoolVal][Σ权·收益率, Σ权] (收益率 = 分子 / 市值; 权 = 等权 1 / 加权 市值 ⇒ 整体法 Σ分子 / Σ市值)
@@ -180,8 +182,10 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<i
         const size_t i = t * nA + a;
         if (const int32_t q = prev[i]; q >= 0) {
           const size_t p = static_cast<size_t>(q) * nA + a;
+          const double r = close.v[i] / close.v[p] - 1.0;
+          o.stock.v[a * nT + t] = static_cast<float>(r);
           if (in[p]) {
-            const double r = close.v[i] / close.v[p] - 1.0, om[kWeights] = {1.0, mcap[p]};
+            const double om[kWeights] = {1.0, mcap[p]};
             each_basket(in[p], ind[p], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
               for (int w = 0; w < kWeights; ++w) {
                 double *e = xq(b, w);
@@ -190,8 +194,6 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<i
             });
           }
         }
-        if (t == 0 || !in[i - nA])
-          continue;
         const double mc = static_cast<double>(px[i]) * sh[i];
         if (!(mc > 0.0)) // 无价 / 缺股本 (NaN) / 非正
           continue;
@@ -200,6 +202,10 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<i
           num[m] = B.val[m][i];
         const size_t d0 = t - t % S; // 当日首行
         num[kValDy] *= d0 > 0 ? static_cast<double>(px[(d0 - 1) * nA + a]) * sh[(d0 - 1) * nA + a] : static_cast<double>(kNaN);
+        for (int m = 0; m < kPoolVals; ++m)
+          o.stock_val[m][a * nT + t] = static_cast<float>(num[m] / mc);
+        if (t == 0 || !in[i - nA])
+          continue;
         const double om[kWeights] = {1.0, mc};
         each_basket(in[i - nA], ind[i], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
           for (int m = 0; m < kPoolVals; ++m)

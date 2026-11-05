@@ -1,7 +1,7 @@
 // Factors→Portfolio: 因子组合页 + Factors 页 1. 区右侧的两个组合小框.
 //   小框 1: 选组合 (<portfolio_dir>/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
-//   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD; 不画个股):
+//   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD):
 //   NAV 右表 = 顶部类别条选一组看 (指数 / 行业 / 概念 / 因子 / 策略, 五组同形: 一行一对线, 见 RowGroup), 点行 = 选中 (同 VAL 行高亮; 跨组保留) = 主图画该行两条线, 主图例默认只显理想列;
 //     默认不选 (空图). 列 = 中文名 (线色; 悬停看名) | 当日涨幅 | Δ5日线 | 只数 | 总市值 | 换手 | 资金流入 | 可成交年化 | 理想年化 | 夏普 (可成交列) | 年换手;
 //     近况两列 (Database::Recent; 篮子行 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点) 按涨跌着色, 不随区间;
@@ -12,8 +12,9 @@
 //     右栏定宽 (三页同宽, 不随内容): 三页右表同一骨架 (sheet), 列宽按内容最紧 (数值右对齐不补宽, 表头取短名, 名超 kNameCells 格截断补 …),
 //       名列伸满余宽, 内容超宽 → 横滚 (名列钉住);
 //     篮子行可展开 (名前 ▸, 至多一行, 三页同一份): 展开行钉在表头下 (不随滚动), 其下先列成分行 = 历史末日收盘定的成员表 (Tape::cons, 默认权降序,
-//       表头排序时按同列), 再列其余行; 列与篮子行同一张表, 能算的填 (近况 / 总市值 / 换手 / 流入 = 个股新浪当日 + 基本面; VAL 各口 = 该股当前收益率;
-//       FLOW 只当日), 其余 "-"; 名悬停看权占比 / 行业 / 估值; 点成分行 = 叠加 / 取消该股到日内栏 / FLOW 图 (个股历史 + 新浪当日, 线色按 id 定色相);
+//       表头排序时按同列), 再列其余行; 列与篮子行同一张表, 能算的填 (近况 / 总市值 / 换手 / 流入 = 个股新浪当日 + 基本面; VAL 各口 = 该股的 N 年估值分位,
+//       名次在成分之间; FLOW 只当日), 其余 "-"; 名悬停看权占比 / 行业 / 估值; 点成分行 = NAV / FLOW: 叠加 / 取消该股到日内栏 / FLOW 图
+//       (个股历史 + 新浪当日, 线色按 id 定色相), VAL: 选该股为标的 (与篮子行同一个单选);
 //     表头悬停 = 该列说明 (同一格式: 列名 = 全称 + 算法 / 数据 / 显示 / 适用 四行);
 //     其余数值列底色 = 同组同列截面名次 (好绿 → 差红: 年化 / 夏普高好, 年换手低好; 同 VAL 配色); 表头点排序 (组内, 升 → 降 → 原序; 名列按色相; VAL 表同)
 //   NAV 日内栏 (类别条旁 "日内" 开关, 默认开): 主图上方占左栏 1/3 高 (日内 : 主图 = 1 : 2), 选中的篮子行同主图线色叠加日内收盘线, 点中的成分股一并叠加
@@ -38,15 +39,16 @@
 //     年化 / 夏普只数该线在区间内的活跃日 (日末净值, 活跃日内无点的日收益 0): 夏普 = 日收益 mean / sd × √每年交易日;
 //     主图内容 (新结果到 / 区间 / VAL 选中 / 滚动窗) / 页 / log / 主图例显隐 / 右表选中 任一变 → 重新 fit (PortfolioFitKey); 每条可见线在视野内的末点右侧标小字名;
 //     只显示一条线时 (VAL = 价格线) 同日内栏画现价十字: 过视野内末点的横 / 竖虚线 (区间涨跌色), 右壁标区间涨跌, 底壁标日期
-//   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用; 行 = NAV 篮子三组的同一份): 右侧类别条 (指数 / 行业 / 概念) 选一组, 表格单选一个池 / 申万一级行业
-//     (全A 内按上一行 ind_l1 切) / 概念 (再点 = 取消); 默认不选 (空图); 列 = 中文名 (悬停看名) | 只数 | 总市值 | 换手 | 资金流入 (同 NAV) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
+//   页: NAV = 上面的资金曲线; VAL = 估值 (同一布局, 区间 / log 共用; 行 = NAV 篮子三组的同一份): 右侧类别条 (指数 / 行业 / 概念) 选一组, 表格单选一个标的 = 池 / 申万一级行业
+//     (全A 内按上一行 ind_l1 切) / 概念 / 展开行的成分股 (再点 = 取消); 默认不选 (空图); 列 = 中文名 (悬停看名) | 只数 | 总市值 | 换手 | 资金流入 (同 NAV) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
 //     底色 = 该分位在同组同口内的截面名次, 便宜绿 → 贵红),
-//     主图 = 该篮子指数 P (全A.加 / 行业 / 概念 = 总市值加权, 全A.等 / 其余池 = 等权; 区间起点 = 1, 与 NAV 同一切片) + 同权重的滚动 EP / BP / SP / CP / DY Band
+//     主图 = 标的价格 P (篮子 = 可成交指数: 全A.加 / 行业 / 概念 = 总市值加权, 全A.等 / 其余池 = 等权; 成分股 = 后复权收盘; 区间起点 = 1, 与 NAV 同一切片)
+//     + 同口径的滚动 EP / BP / SP / CP / DY Band (篮子 = 同权重, 成分股 = 本只; 篮子与个股同一套: 两本账同一作业出, 见 PortfolioView.hpp)
 //     (默认只开 BP): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
 //     (N = 右图例滑条, 即时重算; 正值窗内 ≡ 倍数口径 P · m_q / m); band 间填色 (最便宜档以下绿 → 最贵档以上红, 低 alpha 渐变), 指数线在上;
 //     不可算 / v ≤ 0 / 窗内有 v ≤ 0 的点断开, q_j ≤ 0 的档单独断开;
 //     绝对估值等值线 (默认关; 很淡的灰, 不进 fit): 倍数 m = 1 / v (PE / PB / PS / PCF / P/D), y_t = P_t · v_t · m,
-//     档 = 该篮子全史倍数区间 (两头剔极端分位) 20 档等分, 不随区间 / 视野变; v ≤ 0 断开; 悬停最近一条高亮 + 提示该档倍数 / 当日倍数 / 指数到该线的涨跌;
+//     档 = 该标的全史倍数区间 (两头剔极端分位) 20 档等分, 不随区间 / 视野变; v ≤ 0 断开; 悬停最近一条高亮 + 提示该档倍数 / 当日倍数 / 指数到该线的涨跌;
 //     主图例 = 左上自绘矩阵 (对仗 Inspect 期限结构): 行 = 口, 列 = 当前收益率 | 当前倍数 | N 年分位 | Band | 等值线, 点色块 / 行头 / 列头开关, 悬停高亮
 //   页 FLOW = 篮子日内资金流 (只这一张图, 不看区间): 左 = 选中篮子行 (NAV 同一份选中) + 点中的成分股的累计净流入叠加 (Database::RenderBasketFlow:
 //     日轴 = 行情日及其前 n − 1 个交易日, n = 档 日内 / 2日 … 5日; 自首日开盘逐分钟累计, 跨日接续; y = 占近 5 日日均成交额 % (默认; 分母盘前已定) / 金额 亿元;
@@ -62,7 +64,6 @@
 #include "imgui.h"                               // ImVec4 (右表格)
 #include "shared/Basket.hpp"                     // kGroupPool / kBasketGroups
 
-#include <array>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -172,7 +173,7 @@ struct PortfolioSheet {
 // 右表行选中 (PortfolioRow::id; 默认空): 属于组合 of, 换组合 → 整份清空
 struct PortfolioPick {
   std::string of;
-  std::set<std::string> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个)
+  std::set<std::string> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个: 篮子行 id / 成分股 stock_key)
   std::string open;                   // 展开的篮子行 (至多一行, 三页同一份; 空 = 无)
   std::set<uint32_t> stocks;          // 点中的成分股 (全局 id; 叠加到日内栏 / FLOW 图; 至多 StockHistory::kKeep 只)
 };
@@ -192,8 +193,8 @@ struct PortfolioUIState {
   bool confirm_delete = false;
   // ---- Portfolio 页 ----
   PortfolioStage<PortfolioDerKey, PortfolioDerived> der;
-  PortfolioStage<PortfolioRollKey, std::array<PortfolioRoll, kPoolVals>> roll; // [PoolVal] 选中篮子的
-  PortfolioStage<PortfolioPctKey, PortfolioPct> pct;                           // VAL 表格各格的末点
+  PortfolioStage<PortfolioRollKey, PortfolioRolls> roll; // VAL 标的的价格线 + 滚动分位
+  PortfolioStage<PortfolioPctKey, PortfolioPct> pct;     // VAL 表格各格的末点
   PortfolioStage<PortfolioViewKey, PortfolioView> view;
   PortfolioStage<PortfolioSheetKey, PortfolioSheet> sheet[kPages]; // [PortfolioPage] 右表格
   PortfolioRange range;

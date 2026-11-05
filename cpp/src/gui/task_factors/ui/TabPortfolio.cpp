@@ -8,7 +8,6 @@
 #include "shared/Basket.hpp" // basket_name
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -132,7 +131,7 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
     ui.log_y = false;
   }
   if (ImGui::IsItemHovered())
-    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL 选中篮子 / 展开的行 / 叠加的成分股 / 区间 (回全段) / log 关");
+    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL 标的 / 展开的行 / 叠加的成分股 / 区间 (回全段) / log 关");
   for (const PortfolioItem &it : ui.items) {
     const auto f = res.factors.find(it.e.key());
     const std::string &why = !it.missing.empty() ? it.missing : f != res.factors.end() ? f->second->error
@@ -329,12 +328,12 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   if (mk)
     SyncPortfolioCons(ui, *mk->quote);
   const std::set<std::string> &one = ui.pick.rows[kPickOne];
-  const PortfolioAt vs = one.empty() ? PortfolioAt{} : d.at(*one.begin()); // VAL 选中篮子行
-  ui.roll.update(PortfolioRollKey{d.basket_gen, ui.band_years, vs},
-                 [&](std::array<PortfolioRoll, kPoolVals> &r) { MakePortfolioRoll(d, vs, ui.band_years, r); });
-  ui.pct.update(PortfolioPctKey{d.basket_gen, ui.band_years, ui.range.d1}, [&](PortfolioPct &p) { MakePortfolioPct(d, ui.range.d1, ui.band_years, p); });
+  const PortfolioPin pin = one.empty() ? PortfolioPin{} : d.pin_of(*one.begin()); // VAL 标的 (篮子行 / 成分股)
+  ui.roll.update(PortfolioRollKey{d.basket_gen, ui.band_years, pin}, [&](PortfolioRolls &r) { MakePortfolioRoll(d, pin, ui.band_years, r); });
+  ui.pct.update(PortfolioPctKey{d.basket_gen, ui.band_years, ui.range.d1, ui.cons.ids},
+                [&](PortfolioPct &p) { MakePortfolioPct(d, ui.range.d1, ui.band_years, ui.cons.ids, p); });
   ui.view.update(PortfolioViewKey{ui.der.gen, ui.roll.gen, ui.pct.gen, ui.range.d0, ui.range.d1},
-                 [&](PortfolioView &vw) { MakePortfolioView(d, ui.range.d0, ui.range.d1, vs, ui.roll.val, ui.pct.val, vw); });
+                 [&](PortfolioView &vw) { MakePortfolioView(d, ui.range.d0, ui.range.d1, pin, ui.roll.val, ui.pct.val, vw); });
 
   ImGui::TextColored(kHead, "Portfolio:");
   ImGui::SameLine();
@@ -388,8 +387,8 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   ImGui::BeginGroup();
   if (ih > 0.0f)
     basket_child("##pf_intra", ImVec2(left, ih), false);
-  RenderPortfolioPlot(ui, vs, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
-  RenderPortfolioRange(ui, vs, nav, ImVec2(left, kBarH));
+  RenderPortfolioPlot(ui, pin, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), infos); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
+  RenderPortfolioRange(ui, pin, nav, ImVec2(left, kBarH));
   ImGui::EndGroup();
   ImGui::SameLine();
   ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);

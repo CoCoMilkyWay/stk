@@ -40,12 +40,13 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kRowGroups, kPickMany, "##pf_nav_tbl"},
     {"VAL",
      "VAL = 估值 (Valuation)\n"
-     "• 右侧单选一个池 / 申万一级行业 / 概念: 主图 = 它的指数 + 估值 Band (全A.加 / 行业 / 概念 = 总市值加权, 全A.等 / 其余池 = 等权)\n"
+     "• 右侧单选一个池 / 申万一级行业 / 概念 / 成分股 (▸ 展开行): 主图 = 它的指数 (成分股 = 后复权收盘) + 估值 Band\n"
+     "  (全A.加 / 行业 / 概念 = 总市值加权, 全A.等 / 其余池 = 等权; 成分股 = 本只)\n"
      "• EP 盈利收益率 (1/PE) / BP 账面市值比 (1/PB) / SP 营收市值比 (1/PS) / CP 现金流收益率 (1/PCF) / DY 股息率\n"
-     "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值; 高 = 便宜, 亏损照计为负, 过 0 连续)\n"
+     "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值, 成分股 = 本只分子 / 总市值; 高 = 便宜, 亏损照计为负, 过 0 连续)\n"
      "• 主图左上图例矩阵: 行 = 口, 列 = 当前收益率 / 倍数 / N 年分位 / Band / 等值线; 点色块开关, 点行头 / 列头开关整行 / 整列\n"
      "• Band = 把过去 N 年的估值分位换算成价格线: 指数落在哪档 = 当前估值在历史里的位置 (绿 = 便宜, 红 = 贵)\n"
-     "• 等值线 = 绝对估值: 倍数 (PE / PB / PS / PCF / P/D = 1 / 收益率) 的价格线, 档 = 该篮子全史倍数区间 (两头各剔 2% 极端) 20 档等分;\n"
+     "• 等值线 = 绝对估值: 倍数 (PE / PB / PS / PCF / P/D = 1 / 收益率) 的价格线, 档 = 该标的全史倍数区间 (两头各剔 2% 极端) 20 档等分;\n"
      "  默认关, 悬停一条 = 高亮 + 看该档倍数 / 当日倍数 / 指数到该线还差多少\n"
      "• 线尾刻度 = 指数末点 +10% / -5% / -10% / -20% / -30% 的点位: 对照 Band 线看还要涨跌多少到哪档; 末点另画现价十字 (同 NAV)\n"
      "• 区间 / log 与 NAV 页共用",
@@ -113,14 +114,17 @@ inline std::string stock_name(const StockInfos &infos, uint32_t id) {
   return asset_axis().code(id);
 }
 
-// 页 page 的右表行选中 (按页表的选中方式; NAV / FLOW 同一份)
+// 页 page 的右表行 / 成分行选中 (按页表的选中方式; NAV / FLOW 同一份): 多选页的成分 = 叠加的个股 (pick.stocks), 单选页的成分 = VAL 标的 (stock_key)
 inline bool picked(const PortfolioUIState &ui, int page, const PortfolioRow &r) { return ui.pick.rows[kPageDefs[page].pick].contains(r.id); }
+inline bool kid_picked(const PortfolioUIState &ui, int page, uint32_t id) {
+  return kPageDefs[page].pick == kPickOne ? ui.pick.rows[kPickOne].contains(stock_key(id)) : ui.pick.stocks.contains(id);
+}
 
 // ---- 图 (PortfolioPlot.cpp) ----
-// 主图 (size 贴边占满): nav → NAV 资金曲线 (右表选中行), 否则 VAL 选中篮子 vs 的价格 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
-void RenderPortfolioPlot(PortfolioUIState &ui, PortfolioAt vs, bool nav, const ImVec2 &size);
-// 区间条 (size): 全段策略线 (nav) / VAL 选中篮子价格线上拖选 ui.range
-void RenderPortfolioRange(PortfolioUIState &ui, PortfolioAt vs, bool nav, const ImVec2 &size);
+// 主图 (size 贴边占满): nav → NAV 资金曲线 (右表选中行), 否则 VAL 标的 pin 的价格 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
+void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioPin &pin, bool nav, const ImVec2 &size, const StockInfos &infos);
+// 区间条 (size): 全段策略线 (nav) / VAL 标的价格线上拖选 ui.range
+void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioPin &pin, bool nav, const ImVec2 &size);
 
 // ---- 右表 (PortfolioSheet.cpp) ----
 // 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW; flow_days = FLOW 日轴 (其余页不看); infos = 成分行名 / 近况 / 估值
