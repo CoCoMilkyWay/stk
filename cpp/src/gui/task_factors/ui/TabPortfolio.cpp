@@ -1463,13 +1463,6 @@ void sort_rows(std::vector<size_t> &order, const Text &text, const Num &num) {
     return desc ? x > y : x < y;
   });
 }
-// 组内原序下标 0..n−1
-std::vector<size_t> iota_n(size_t n) {
-  std::vector<size_t> o(n);
-  for (size_t i = 0; i < n; ++i)
-    o[i] = i;
-  return o;
-}
 // 名格悬停 (首列; 行 Selectable 跨全列, 只认本格) → 提示
 void name_tip(const std::string &s) {
   if (ImGui::IsItemHovered() && ImGui::TableGetHoveredColumn() == 0)
@@ -1510,6 +1503,47 @@ std::array<double, 4> basket_today(const Database::Feed &f, const PortfolioRow &
     o[2] = t.candle.amount / 1e8, o[3] = t.flow / t.candle.amount;
   return o;
 }
+// 篮子行的当日 bt (basket_today) 过 f (见 BasketFilter)
+bool passes(const BasketFilter &f, const std::array<double, 4> &bt) {
+  const auto in = [](double x, double lo, double hi) { return (lo <= 0 && hi <= 0) || (std::isfinite(x) && x >= lo && (hi <= 0 || x <= hi)); };
+  return in(bt[0], f.n_lo, f.n_hi) && in(bt[1], f.cap_lo, f.cap_hi) && (f.flow <= 0 || (std::isfinite(bt[3]) && 100.0 * std::abs(bt[3]) >= f.flow));
+}
+// 篮子组右表的过滤条 (NAV / VAL 同一份): 只数 [≥ lo][≤ hi] 市值 [≥ lo][≤ hi] |流入| [≥] 列出 / 总数; 改动下帧生效. 返回末项右缘 x
+float filter_bar(BasketFilter &f, size_t listed, size_t total) {
+  constexpr int kMaxN = 100000;
+  constexpr float kMaxCap = 1e7f; // 亿元
+  const float fp = 2.0f * ImGui::GetStyle().FramePadding.x;
+  const auto width = [&](const char *widest) { ImGui::SetNextItemWidth(ImGui::CalcTextSize(widest).x + fp); };
+  constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
+  ImGui::TextDisabled("只数");
+  ImGui::SameLine(0, 2);
+  width("≥00000");
+  ImGui::DragInt("##pf_f_n_lo", &f.n_lo, 5.0f, 0, kMaxN, "≥%d", kClamp);
+  ImGui::SameLine(0, 2);
+  width("≤00000");
+  ImGui::DragInt("##pf_f_n_hi", &f.n_hi, 5.0f, 0, kMaxN, f.n_hi > 0 ? "≤%d" : "≤不限", kClamp);
+  ImGui::SameLine();
+  ImGui::TextDisabled("市值");
+  ImGui::SameLine(0, 2);
+  width("≥000000亿");
+  ImGui::DragFloat("##pf_f_cap_lo", &f.cap_lo, 10.0f, 0.f, kMaxCap, "≥%.0f亿", kClamp);
+  ImGui::SameLine(0, 2);
+  width("≤000000亿");
+  ImGui::DragFloat("##pf_f_cap_hi", &f.cap_hi, 10.0f, 0.f, kMaxCap, f.cap_hi > 0 ? "≤%.0f亿" : "≤不限", kClamp);
+  ImGui::SameLine();
+  ImGui::TextDisabled("|流入|");
+  ImGui::SameLine(0, 2);
+  width("≥00.0%");
+  ImGui::DragFloat("##pf_f_flow", &f.flow, 0.1f, 0.f, 100.f, "≥%.1f%%", kClamp);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu/%zu", listed, total);
+  const float x = ImGui::GetItemRectMax().x;
+  if (ImGui::IsItemHovered())
+    tip("过滤本组的行 (指数 / 行业 / 概念各一份, NAV / VAL 两页共用): 只数 / 总市值在区间内 (上限 0 = 不限), |资金流入| ≥ 下限 (0 = 不限)\n"
+        "• 设了的条件缺值 (行情未到 / 无新浪行情日) 即不列; 已选中的行恒列\n"
+        "• 拖动改值, 双击 / Ctrl+点击直接输入; 右侧 = 列出 / 总数");
+  return x;
+}
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v) {
   button_bar(kNavGroupName, kNavGroups, ui.cat[0]);
   ImGui::SameLine();
@@ -1548,7 +1582,20 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 夏普 = 可成交列区间内日收益 mean / sd × √每年交易日\n"
         "• 年换手 = 全评估期单边换手 (倍/年); 策略 = 各因子换手按当日份额加权 (不计因子间对冲); 行业 / 概念无\n"
         "• 底色 = 该列在同组内的名次 (好绿 → 差红; 年化 / 夏普高 = 好, 年换手低 = 好)\n"
+        "• 指数 / 行业 / 概念表上过滤条 (与 VAL 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画的行恒列\n"
         "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
+  // 一行 r = 一对线; 切片 / 名次同下标. 篮子组按过滤条定列出的行 (选中行恒列)
+  const int g = ui.cat[0];
+  const std::vector<PortfolioRow> &rs = d.nav[g];
+  const size_t n = rs.size();
+  std::vector<std::array<double, 4>> bt(n);
+  std::vector<size_t> order;
+  for (size_t r = 0; r < n; ++r) {
+    bt[r] = basket_today(ui.basket.feed, rs[r]);
+    if (g >= kBasketGroups || shown(ui, rs[r]) || passes(ui.filter[g], bt[r]))
+      order.push_back(r);
+  }
+  const float top_x = g < kBasketGroups ? std::max(bar_x, filter_bar(ui.filter[g], order.size(), n)) : bar_x;
   if (!ImGui::BeginTable("##pf_nav_tbl", 1 + kLefts + kNavNums,
                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
                              ImGuiTableFlags_SortTristate))
@@ -1562,18 +1609,13 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     cw[k] = ImGui::CalcTextSize(name).x;
   }
   ImGui::TableHeadersRow();
-  // 一行 r = 一对线; 切片 / 名次同下标
-  const int g = ui.cat[0];
-  const std::vector<PortfolioRow> &rs = d.nav[g];
-  const size_t n = rs.size();
-  std::vector<std::array<double, kLefts>> lc(n); // [行][NavLeft]
+  std::vector<std::array<double, kLefts>> lc(n); // [行][NavLeft] (只填列出的行)
   std::vector<std::array<NumCell, kNavCols>> tc(n);
   const ImVec4 &txt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-  for (size_t r = 0; r < n; ++r) {
+  for (const size_t r : order) {
     const PortfolioRow &h = rs[r];
     const Database::Recent x = h.basket >= 0 ? Database::RecentOf(ui.basket.feed, static_cast<size_t>(h.basket)) : recent_of(h.line[kTrade]);
-    const std::array<double, 4> bt = basket_today(ui.basket.feed, h);
-    lc[r] = {x.chg, x.ma5, bt[0], bt[1], bt[2], bt[3]};
+    lc[r] = {x.chg, x.ma5, bt[r][0], bt[r][1], bt[r][2], bt[r][3]};
     for (int k = 0; k < kNavCols; ++k) {
       const double y = k < kLefts ? lc[r][static_cast<size_t>(k)] : nav_num(d, v, g, r, k - kLefts);
       NumCell &c = tc[r][static_cast<size_t>(k)];
@@ -1592,7 +1634,6 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
       cw[k] = std::max(cw[k], c.w);
     }
   }
-  std::vector<size_t> order = iota_n(n);
   sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return c <= kLefts ? lc[r][static_cast<size_t>(c - 1)] : nav_num(d, v, g, r, c - 1 - kLefts); });
   for (const size_t r : order) {
     const PortfolioRow &h = rs[r];
@@ -1616,7 +1657,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
       draw_cell(tc[r][static_cast<size_t>(k)], cw[k]);
     }
   }
-  ui.legend_w[0] = legend_width(bar_x, end_table());
+  ui.legend_w[0] = legend_width(top_x, end_table());
 }
 
 // ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 各口; 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
@@ -1644,7 +1685,15 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
         "• 表格 = 区间末各口的估值分位 (高 = 贵); 绝对值看主图 Band 图例 / 等值线\n"
         "• 底色 = 该分位在同组 (池之间 / 行业之间 / 概念之间) 同一口内的截面名次: 组内最便宜绿 → 最贵红\n"
+        "• 表上过滤条 (与 NAV 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中行恒列\n"
         "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
+  const int g = ui.cat[1];
+  const std::vector<PortfolioRow> &rs = d.nav[g];
+  std::vector<size_t> order;
+  for (size_t r = 0; r < rs.size(); ++r)
+    if (vs == PortfolioAt{g, r} || passes(ui.filter[g], basket_today(ui.basket.feed, rs[r])))
+      order.push_back(r);
+  const float top_x = std::max(bar_x, filter_bar(ui.filter[g], order.size(), rs.size()));
   if (!ImGui::BeginTable("##pf_val_tbl", 1 + kPoolVals,
                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
                              ImGuiTableFlags_SortTristate))
@@ -1657,17 +1706,14 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     cw[b] = ImGui::CalcTextSize(kVal[b].name).x;
   }
   ImGui::TableHeadersRow();
-  const int g = ui.cat[1];
-  const std::vector<PortfolioRow> &rs = d.nav[g];
-  std::vector<std::array<NumCell, kPoolVals>> tc(rs.size());
-  for (size_t r = 0; r < rs.size(); ++r)
+  std::vector<std::array<NumCell, kPoolVals>> tc(rs.size()); // 只填列出的行
+  for (const size_t r : order)
     for (int b = 0; b < kPoolVals; ++b) {
       const double p = v.cell[g][r][b].pct;
       NumCell &c = tc[r][static_cast<size_t>(b)];
       c = std::isfinite(p) ? num_cell(ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.0f%%", p) : num_none();
       cw[b] = std::max(cw[b], c.w);
     }
-  std::vector<size_t> order = iota_n(rs.size());
   sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return v.cell[g][r][c - 1].pct; });
   for (const size_t r : order) {
     const PortfolioRow &s = rs[r];
@@ -1683,7 +1729,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
       draw_cell(tc[r][static_cast<size_t>(b)], cw[b]);
     }
   }
-  ui.legend_w[1] = legend_width(bar_x, end_table());
+  ui.legend_w[1] = legend_width(top_x, end_table());
 }
 
 } // namespace

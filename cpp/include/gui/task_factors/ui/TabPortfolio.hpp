@@ -7,6 +7,7 @@
 //     近况两列 (Database::Recent; 篮子行 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点) 按涨跌着色, 不随区间;
 //     只数 / 总市值 (只篮子行) = 当日成员表 (Tape::members / weight): 只数取同切片等权线, 总市值取同切片加权线 (当日接上 × 当日涨跌), 不着色;
 //     总资金 / 资金流入 (只篮子行) = 新浪当日 成交额 / 净流入占成交额 (Day::flow, 分钟涨跌法), 流入按正负着色;
+//     篮子组 (指数 / 行业 / 概念) 表上一行过滤条 (BasketFilter, NAV / VAL 共用): 只数 / 总市值区间 + |流入| 下限, 选中行恒列;
 //     两张右表列宽按内容最紧 (数值右对齐不补宽, 表头取短名, 名超 kNameCells 格截断补 …), 右栏宽 = 表格与表上工具行之大者;
 //     其余数值列底色 = 同组同列截面名次 (好绿 → 差红: 年化 / 夏普高好, 年换手低好; 同 VAL 配色); 表头点排序 (组内, 升 → 降 → 原序; VAL 表同)
 //   NAV 日内栏 (类别条旁 "日内" 开关, 默认开): 主图上方占左栏 1/3 高 (日内 : 主图 = 1 : 2), 选中的篮子行同主图线色叠加日内收盘线
@@ -230,6 +231,14 @@ struct PortfolioRange {
   int grab_k0 = 0, grab_k1 = 0; // 按下时两边的月初序号 (平移保持 k1 − k0)
 };
 
+// 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (NAV / VAL 共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);
+// 设了的条件缺值 (未到 / 无新浪行情日) 即不过; 选中行恒列
+struct BasketFilter {
+  int n_lo = 0, n_hi = 0;
+  float cap_lo = 0.f, cap_hi = 0.f;
+  float flow = 0.f;
+};
+
 struct PortfolioUIState {
   // ---- 组合 (小框) ----
   std::string dir;                     // names 对应的目录 (config.portfolio_dir 变 → 重列)
@@ -252,15 +261,16 @@ struct PortfolioUIState {
   std::string val_for;            // val_id 对应的组合 (换组合 → 回默认)
   int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
-  std::map<std::string, bool> show;     // NAV 右表选中行: PortfolioRow::id → 画 (缺 = PortfolioRow::on)
-  std::set<std::string> reveal;         // 待在主图例里回默认显隐的线 ID (行刚选中 / 回默认; 画到时消费; 理想列显, 可成交列隐)
-  std::string vis_key;                  // NAV 行选中已按默认设过的组合 (换组合 → 清掉选中回默认)
-  std::string shown_key;                // 上帧主图各线显隐 (进 fit 键)
-  PortfolioFitKey fit_key;              // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
-  float legend_w[2] = {400.0f, 380.0f}; // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
-  int cat[2] = {kNavPool, kGroupPool};  // [NAV, VAL] 右表类别条选中组 (NAV = NavGroup; VAL = BasketGroup)
-  bool intraday = true;                 // NAV 日内栏
-  Database::BasketState basket;         // 篮子历史 + 当日 (日内栏 / 篮子行近况)
+  std::map<std::string, bool> show;                                          // NAV 右表选中行: PortfolioRow::id → 画 (缺 = PortfolioRow::on)
+  std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中 / 回默认; 画到时消费; 理想列显, 可成交列隐)
+  std::string vis_key;                                                       // NAV 行选中已按默认设过的组合 (换组合 → 清掉选中回默认)
+  std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)
+  PortfolioFitKey fit_key;                                                   // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
+  float legend_w[2] = {400.0f, 380.0f};                                      // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
+  int cat[2] = {kNavPool, kGroupPool};                                       // [NAV, VAL] 右表类别条选中组 (NAV = NavGroup; VAL = BasketGroup)
+  BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}}; // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
+  bool intraday = true;                                                      // NAV 日内栏
+  Database::BasketState basket;                                              // 篮子历史 + 当日 (日内栏 / 篮子行近况)
 };
 
 // GUI 线程每帧 (两页都调): 目录变 → 重列, 当前组合不在了 → 选第一个 (载入内容, content_gen +1)
