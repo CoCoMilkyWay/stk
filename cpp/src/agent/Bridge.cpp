@@ -239,11 +239,22 @@ std::string family_of(const FeatureMetadata &m) {
 }
 // 叶的来源 = 所在档
 Src src_of(const F::FeatCol &c) { return c.tier == TierId::Lob ? Src::Lob : Src::Bar; }
-uint8_t srcs_of(const F::FeatureTable &ft, const std::vector<F::LeafId> &leaves) {
-  uint8_t m = 0;
-  for (const F::LeafId id : leaves)
-    m |= src_bit(src_of(ft.x.leaves[id]));
-  return m;
+
+// 开放给 agent 的叶 (叶名) / 算子 ([kOps 下标]): 叶 = 来源开放且人勾了, 算子 = 人勾了
+struct Opened {
+  std::set<std::string> leaves;
+  std::vector<bool> ops;
+  bool has(const fx::Node &n) const { return n.op >= 0 ? ops[static_cast<size_t>(n.op)] : leaves.contains(n.feat); }
+};
+Opened opened_of(const F::FeatureTable &ft, const Scope &sc) {
+  Opened o;
+  const Open &pick = sc.leaves_of(F::factor_level(ft.lv).name);
+  for (const F::FeatCol &l : ft.x.leaves)
+    if (l.allowed && (sc.srcs() & src_bit(src_of(l))) && pick.has(l.code))
+      o.leaves.insert(l.code);
+  for (const fx::OpInfo &x : fx::kOps)
+    o.ops.push_back(sc.ops.has(x.name));
+  return o;
 }
 
 // TS 叶落盘前套的元素变换 (ts::Tf) 的定义式, 下标 = ts::TfId; CS 叶的变换写在其公式里
@@ -475,8 +486,8 @@ Top top_of(const F::SearchTop &t) {
   return x;
 }
 
-// 一个因子文件 → 本持有期下的结果 (权重按 score 降序, 结局随之定; 可见性按此刻评估期与开放来源 srcs)
-Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, uint8_t srcs, const fs::path &p, int hold, const Fails &fails) {
+// 一个因子文件 → 本持有期下的结果 (权重按 score 降序, 结局随之定; 可见性按此刻评估期与开放的叶 / 算子)
+Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, const Opened &open, const fs::path &p, int hold, const Fails &fails) {
   std::vector<F::FactorRow> rows;
   F::ScanFactorFile(p, ft, rows);
   assert(!rows.empty());
@@ -525,7 +536,8 @@ Result result_of(const F::FeatureTable &ft, const std::optional<F::FactorScope> 
     r.ws.push_back(std::move(x));
   }
   std::stable_sort(r.ws.begin(), r.ws.end(), [](const Weight &a, const Weight &b) { return a.has != b.has ? a.has : a.score > b.score; });
-  r.visible = fresh && r.ops <= kMaxOps && !(srcs_of(ft, leaves) & ~srcs);
+  const bool opened = r0.tmpl.empty() || std::ranges::all_of(ft.reparse(r0.tmpl).nodes, [&](const fx::Node &n) { return n.target || open.has(n); });
+  r.visible = fresh && r.ops <= kMaxOps && opened;
   const bool null = r.ws.empty() ? mk != r0.searched.end() : run; // 搜过无显著 / 权重都 Run 过却无本持有期统计
   r.verdict = !r.error.empty() ? Verdict::Broken : r.best() ? Verdict::Weights
                                                : null       ? Verdict::Null
@@ -541,10 +553,10 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-std::vector<Result> scan(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, uint8_t srcs, const std::string &dir, int hold, const Fails &fails) {
+std::vector<Result> scan(const F::FeatureTable &ft, const std::optional<F::FactorScope> &fsc, const Opened &open, const std::string &dir, int hold, const Fails &fails) {
   std::vector<Result> out;
   for (const fs::path &p : F::list_factor_files(dir))
-    out.push_back(result_of(ft, fsc, srcs, p, hold, fails));
+    out.push_back(result_of(ft, fsc, open, p, hold, fails));
   sort_results(out);
   return out;
 }
@@ -587,7 +599,7 @@ struct Lane {
   }
 };
 
-Context context_of(const SharedData &data, const Scope &sc) {
+Context context_of(const SharedData &data, const Scope &sc, const Opened &open) {
   const std::shared_ptr<const F::FeatureTable> ft = table(data, sc.level);
   Context c;
   c.pool = sc.pool;
@@ -596,26 +608,28 @@ Context context_of(const SharedData &data, const Scope &sc) {
   c.hold = factor::stat::hold_name(sc.hold);
   c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
   const std::optional<F::FactorScope> fsc = fscope_of(data, ft, sc.pool);
-  std::array<bool, kSrcCount> has{}; // [Src] 本层有可作输入的叶
-  std::vector<F::LeafId> opened;     // 开放来源的叶
+  std::array<bool, kSrcCount> has{}, on{}; // [Src] 本层有可作输入的叶 / 有开放的叶
+  std::vector<F::LeafId> opened;           // 开放的叶
   for (size_t i = 0; i < ft->x.leaves.size(); ++i) {
     const F::FeatCol &l = ft->x.leaves[i];
     if (!l.allowed)
       continue;
     const Src src = src_of(l);
     has[static_cast<size_t>(src)] = true;
-    if (!(sc.srcs() & src_bit(src)))
-      continue;
-    opened.push_back(static_cast<F::LeafId>(i));
     const FeatureMetadata &m = meta_of(*ft, l);
     const size_t tf = static_cast<size_t>(m.ts_tf);
     Leaf x{l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m), src};
     x.kin = LeafKin(x.code) + "|" + x.tf;
     x.hay = text::lower(x.code + "\n" + x.name_cn + "\n" + x.formula + "\n" + x.desc + "\n" + x.tf + "\n" + x.family);
-    c.leaves.push_back(std::move(x));
+    if (open.leaves.contains(l.code)) {
+      on[static_cast<size_t>(src)] = true;
+      opened.push_back(static_cast<F::LeafId>(i));
+      c.leaves.push_back(x);
+    }
+    c.all_leaves.push_back(std::move(x));
   }
   for (size_t s = 0; s < kSrcCount; ++s)
-    if (has[s] && (sc.srcs() & src_bit(static_cast<Src>(s))))
+    if (on[s])
       c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(kSrcs[s].name);
   c.has_lob = has[static_cast<size_t>(Src::Lob)];
   const Period base = period_of(fsc, *ft, opened);
@@ -627,10 +641,15 @@ Context context_of(const SharedData &data, const Scope &sc) {
   c.ts_root_d = factor::stat::ts_norm_d(ft->seg);
   c.max_d = factor::kMaxD;
   c.min_mono = factor::search::kMinMono;
-  for (const factor::expr::OpInfo &o : factor::expr::kOps)
-    c.ops.push_back({o.name, o.c_name, factor::expr::operand_tex(o), factor::dom_name(o.out), o.op, o.note});
+  for (size_t i = 0; i < std::size(fx::kOps); ++i) {
+    const fx::OpInfo &o = fx::kOps[i];
+    Op x{o.name, o.c_name, fx::operand_tex(o), factor::dom_name(o.out), o.op, o.note};
+    if (open.ops[i])
+      c.ops.push_back(x);
+    c.all_ops.push_back(std::move(x));
+  }
   c.kline = kline_of(*ft);
-  c.library = scan(*ft, fsc, sc.srcs(), F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
+  c.library = scan(*ft, fsc, open, F::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
   return c;
 }
 
@@ -720,6 +739,7 @@ struct Lab::Impl {
   Scope sc;
   bool test = false;
   std::string dir; // 候选目录
+  Opened open;
   Context ctx;
   std::vector<Result> results;
   Fails fails; // 同作用域跨会话留着
@@ -883,7 +903,7 @@ struct Lab::Impl {
   // 重扫一个文件, 结果表保序
   const Result &refresh(const std::string &f) {
     const auto find = [&] { return std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == f; }); };
-    Result r = result_of(*ft(), fsc(), sc.srcs(), fs::path(dir) / f, sc.hold, fails);
+    Result r = result_of(*ft(), fsc(), open, fs::path(dir) / f, sc.hold, fails);
     if (const auto it = find(); it == results.end())
       results.push_back(std::move(r));
     else
@@ -966,7 +986,7 @@ struct Lab::Impl {
     int sign = 1;
     if (it != results.end()) {
       if (!it->visible) {
-        error = "候选 " + arg + " 对本会话不可见 (统计不在当前评估期上, 或用了未开放来源的叶)";
+        error = "候选 " + arg + " 对本会话不可见 (统计不在当前评估期上, 或用了未开放的叶 / 算子)";
         return false;
       }
       if (const Weight *w = it->best()) {
@@ -995,19 +1015,31 @@ struct Lab::Impl {
     return fx::parse(src, t->lookup(), t->seg, e, error);
   }
 
-  // 式里未开放来源的叶 → 原因; 都开放 = 空
+  // 式里未开放的叶 / 算子 → 原因; 都开放 = 空
   std::string closed(const fx::Expr &e) const {
     const std::shared_ptr<const F::FeatureTable> t = ft();
     std::vector<std::string> seen;
-    std::string out;
+    std::string leaves, ops;
     for (const fx::Node &x : e.nodes) {
-      if (x.op >= 0 || std::find(seen.begin(), seen.end(), x.feat) != seen.end())
+      const std::string name = x.op >= 0 ? fx::kOps[x.op].name : x.feat;
+      if (x.target || open.has(x) || std::find(seen.begin(), seen.end(), name) != seen.end())
         continue;
-      seen.push_back(x.feat);
-      if (const Src s = src_of(*t->x.find(x.feat)); !(sc.srcs() & src_bit(s)))
-        out += (out.empty() ? "" : ", ") + x.feat + " (" + def(s).name + ")";
+      seen.push_back(name);
+      if (x.op >= 0) {
+        ops += (ops.empty() ? "" : ", ") + name;
+        continue;
+      }
+      const Src s = src_of(*t->x.find(x.feat));
+      leaves += (leaves.empty() ? "" : ", ") + name + ((sc.srcs() & src_bit(s)) ? "" : " (" + std::string(def(s).name) + " 来源未开放)");
     }
-    return out.empty() ? out : "用了本会话未开放来源的叶: " + out + "; 开放的来源只有 " + ctx.srcs;
+    if (leaves.empty() && ops.empty())
+      return {};
+    return "用了本会话未开放的" + (leaves.empty() ? "" : " 叶: " + leaves + ";") + (ops.empty() ? "" : " 算子: " + ops + ";") + " 只能用系统提示特征表与算子表里列的";
+  }
+  // 模板里未开放的叶 / 算子 (解析不了 = 空, 由落文件报原因)
+  std::string closed(const std::string &src) const {
+    fx::Expr e;
+    return parse(src, e) ? closed(e) : std::string();
   }
 };
 
@@ -1017,15 +1049,16 @@ Lab::~Lab() = default;
 void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   Impl &I = *p_;
   assert(!I.running && "评估队列忙");
-  const bool same = sc.pool == I.sc.pool && sc.level == I.sc.level && sc.hold == I.sc.hold; // 来源只定叶与可见性, 不碰数据
+  const bool same = sc.pool == I.sc.pool && sc.level == I.sc.level && sc.hold == I.sc.hold; // 来源与开放的叶 / 算子只定上下文与可见性, 不碰数据
   if (!same || test != I.test)
     I.fails.clear();
   I.data = &data;
   I.sc = sc;
   I.test = test;
   I.dir = (fs::path(catalog::dir(sc, test)) / "factors").string();
-  I.ctx = context_of(data, sc);
-  I.results = scan(*I.ft(), I.fsc(), sc.srcs(), I.dir, sc.hold, I.fails);
+  I.open = opened_of(*I.ft(), sc);
+  I.ctx = context_of(data, sc, I.open);
+  I.results = scan(*I.ft(), I.fsc(), I.open, I.dir, sc.hold, I.fails);
   I.ticks.clear();
 }
 
@@ -1043,6 +1076,8 @@ Staged Lab::stage(Cand c) {
     error = "英文名须非空, ≤ 64, 仅 [A-Za-z0-9_]";
   else if (!F::ValidFactorNameCn(x.name_cn))
     error = "中文名须 1..10 个汉字";
+  else if (std::string cl = I.closed(x.expr); !cl.empty())
+    error = std::move(cl);
   else if (const int n = ops_of(*I.ft(), x.expr); n > kMaxOps)
     error = "算子 " + std::to_string(n) + " 个, 超过上限 " + std::to_string(kMaxOps) + " (建议 " + std::to_string(kGoodOps) + " 个左右)";
   else if (const std::string tw = twin_of(*I.ft(), I.results, x.expr); !tw.empty())

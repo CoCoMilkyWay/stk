@@ -718,14 +718,14 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
 }
 
 // 篮子日内叠加的一条: x = 日轴第 k 日 · kSlots + 槽 (并根 = 组中点), y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续)
-//   g = 0: 收盘线; g ≥ 1: 蜡烛 (每根并 g 槽, open / high / low 同 y 口径), 另带现价十字: close / chg = 现价 / 当日涨跌幅 [%], now = 末个有根的槽 x
+//   g = 0: 收盘线; g ≥ 1: 蜡烛 (每根并 g 槽, open / high / low 同 y 口径), 另带现价十字: chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
 struct Overlay {
   std::string name;
   ImVec4 col;
   std::vector<double> x, y;
   int g = 0;
   std::vector<double> open, high, low;
-  double base = 0, close = 0, chg = 0;
+  double chg = 0;
   int now = 0;
 };
 
@@ -749,7 +749,7 @@ void candles(const Overlay &l) {
 // 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 / 蜡烛 (含零线); 刻度区全空 (图框不变), 不画图例:
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格涨跌幅以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
-//   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标 现价 + 当日涨跌幅, 底壁标时刻 (色底黑字).
+//   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标末根涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
 //   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处涨跌幅 + 该处各条读数 (高 → 低). 画完返回图区左上角
 ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size) {
   const int nd = std::max(1, static_cast<int>(days.size()));
@@ -843,7 +843,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
           dl->AddText(font, fs, ImVec2(x + pad.x, y + pad.y), ink, s);
         };
         char buf[48];
-        std::snprintf(buf, sizeof(buf), "%.2f %+.2f%%", one->close, one->chg);
+        std::snprintf(buf, sizeof(buf), "%+.2f%%", one->y.back());
         const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf);
         const float bw = sz.x + 2 * pad.x, bh = sz.y + 2 * pad.y;
         label(buf, right - bw, std::clamp(py - bh * 0.5f, top, bottom - bh));
@@ -890,10 +890,8 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         ImGui::TextColored(l->col, "%s", l->name.c_str());
         ImGui::SameLine();
         ImGui::TextColored(tint(y, 0), "%+.2f%%", y);
-        if (l->g) {
-          const auto px = [&](double v) { return l->base * (1.0 + v / 100.0); };
-          ImGui::Text("开 %.2f  高 %.2f\n低 %.2f  收 %.2f", px(l->open[j]), px(l->high[j]), px(l->low[j]), px(y));
-        }
+        if (l->g)
+          ImGui::Text("开 %+.2f%%  高 %+.2f%%\n低 %+.2f%%  收 %+.2f%%", l->open[j], l->high[j], l->low[j], y);
       }
       ImGui::EndTooltip();
     }
@@ -1014,7 +1012,7 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
     l.name = basket_name(p.b), l.col = ImGui::ColorConvertU32ToFloat4(p.col);
     if (picks.size() == 1) { // 单篮子: 蜡烛 + 现价十字
       const Candle &e = s.bars.back();
-      l.base = base, l.close = e.close, l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
+      l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
       l.now = static_cast<int>(s.x.back());
       l.g = merge(s, nd * kSlots, avail.x);
       for (const Candle &c : s.bars)

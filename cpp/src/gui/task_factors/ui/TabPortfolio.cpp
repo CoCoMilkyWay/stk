@@ -1417,7 +1417,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   if (ImGui::IsItemHovered())
     tip("日内栏开关: 主图上方 (日内 : 主图 = 1 : 2, 上下分) 叠加选中的指数 / 行业行的日内收盘线 (同主图线色); 因子 / 策略无日内\n"
         "• y = 对首日前收的涨跌幅, 横网格的涨跌幅小字标在右内壁; 悬停看十字光标处时刻 / 涨跌幅与该分钟各条读数\n"
-        "• 只选一行: 改画分钟蜡烛 (窄了自动并根) + 现价十字 (虚线, 标现价 / 当日涨跌幅 / 时刻)\n"
+        "• 只选一行: 改画分钟蜡烛 (窄了自动并根) + 现价十字 (虚线, 标涨跌幅 / 时刻)\n"
         "• 篮子同 Assets: all.bar 库合成历史, 当日由新浪快照合成; 档位 日内 / 2日 / 3日 / 4日 叠在图左上角");
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(点行 = 画)");

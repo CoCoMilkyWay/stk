@@ -352,14 +352,14 @@ stk/
 │   │   │   │                                               #    · 结局文本两档 (结果 / 流水 / 界面同一份): Brief 一行 ↔ Detail 多行
 │   │   │   ├── Bridge.hpp                                  # 🤖 与项目的唯一接口面 (实现是 agent 里唯一 include 因子 / 特征 / 服务头的 TU):
 │   │   │   │                                               #    · catalog (无状态): 作用域 pools / levels / holds (持有期限 Search 档) / ready / 会话目录
-│   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (特征叶 (带族 = 节点文件) / 算子表 / K 线叶 / 正式因子库统计) + 候选目录 results
+│   │   │   │                                               #    · Lab (作用域工作区, 无会话也随作用域 bind): 上下文 ctx (开放的特征叶 (带族 = 节点文件; 来源开放且人勾了) / 开放的算子 / K 线叶 / 正式因子库统计) + 候选目录 results
 │   │   │   │                                               #      候选的一生 Cand ─stage→ 候选文件 ─eval→ Result (结局 Verdict) ─adopt (过门槛 Gate)→ 正式因子目录
 │   │   │   │                                               #      四道 Search / Run / Look / Book 同构 (Lane 元组, 下标 = Step), 首次用到才建 (平面经 Store 与 GUI 服务共用); Job = EvalSpec | LookSpec | BookSpec, 结果 Got 同序
 │   │   │   │                                               #      EvalSpec → Eval: 一次一个文件, Search (具体式也走, 定方向) → Run, 评完只重扫它; 无显著而有代表点 → 再 Look 它一次
 │   │   │   │                                               #      LookSpec → Look: LensService, 因子 (候选名 / 具体根式) + 特征式 (+ 本层 K 线叶) → [T][A] 平面 (r16 定向秩 / 特征原值 / K 线 / 门控 / 标签; 行统计 / 尾部 / 两端格)
 │   │   │   │                                               #      BookSpec → Book: ReplayService, 一只票一天里的一段逐笔 → 逐秒盘口与流量 / 大单事件 / 某秒全簿; 不经特征库, 不限评估期
 │   │   │   │                                               #      模板: delta (相对 base 的改动归类) / leaves_of (用到的叶) / parts_miss (功能块覆盖), 只查字段表与模板
-│   │   │   │                                               #      可见 Result::visible: 统计与 Search 结局都在作用域此刻评估期 (span_of) 上且算子不超上限, 才给 agent 看 / 可入库
+│   │   │   │                                               #      可见 Result::visible: 统计与 Search 结局都在作用域此刻评估期 (span_of) 上、叶与算子都开放且算子不超上限, 才给 agent 看 / 可入库
 │   │   │   │                                               #    · worker 协议 Chat ↔ Lab 对仗: 交一件事 (ask ↔ send) → poll 逐个取走 Tick: 进某段 (Think / Write ↔ Search / Run / Look / Book), 末个 End 带结果 (Reply ↔ Got) → live → busy / cancel
 │   │   │   ├── Mine.hpp                                    # 🤖 挖掘会话状态机 (AGENT.md 状态图, 一个 Phase 一个状态: Think (agent 发调用) ↔ Act (系统逐个执行; ask_human 进 Choose 等人), Report); 转移唯一入口 go 兑现 Stop; 无 ImGui
 │   │   │   │                                               #    · update 每帧同样 poll 两个 worker: on(Chat::Tick) ↔ on(Lab::Tick), End → replied(Reply) ↔ settled(Got)
@@ -367,7 +367,7 @@ stk/
 │   │   │   ├── Notes.hpp                                   # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话跨作用域累积; 编号 = 类前缀 + 序号, ref 附议同类已有的; list_notes 成文
 │   │   │   ├── Acts.hpp                                    # 🤖 一个调用的执行, 按执行方分派 (表 下标 = Run): begin → 等 Lab (enter 每段, settle 收结果) / 等人 (answer) → 做完; 回复级约束 RuleMiss; 只经 Desk 读写会话
 │   │   │   │                                               #    · eval_factor 只收本会话 search_leaves 查过定义的叶 (Desk::seen); 带回测的回复须同带至少一个观察调用 (ParseCalls 查)
-│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域: 池 / 层 / 持有期 / 特征来源 bar 恒开 + lob 可选 · 评估期 · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程页: 本会话要求 (可空, 随首条发出, 开会话即折起) + 时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 (随过滤分来源计数) / 算子 / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
+│   │   │   └── ui/TaskAgent.hpp                            # 🤖 左栏 Agent 任务 (只画): Mine (作用域: 池 / 层 / 持有期 / 特征来源 bar 恒开 + lob 可选 · 评估期 · New / Test (自检: 每个工具调一遍, 候选与记录进 global/test, 提交不拷) / Start / Stop / Cancel · 现在在干什么 + 用时 / token 累计 · 过程页: 本会话要求 (可空, 随首条发出, 开会话即折起) + 时间线 (轮 → 调用) · 候选 (因子表 + 各类全局记录, 只读) · 特征 / 算子 (逐行勾开放给 agent 的, 默认全开, 全选 / 全清; 特征随过滤分来源计数) / 工具表) / Config (后端 · 直连 / 代理 · 模型 · CPU / GPU · 入库门槛 · 可否提问 · 提示词)
 │   │   ├── factor/                                         # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                               #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                               #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

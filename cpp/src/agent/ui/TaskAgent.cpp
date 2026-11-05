@@ -20,6 +20,7 @@
 #include <future>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -29,7 +30,8 @@
 
 namespace agent {
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, leaves, ops)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
 
 namespace {
@@ -47,7 +49,7 @@ constexpr ImVec4 kColHead(0.4f, 0.8f, 1.0f, 1.0f);
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
-// Mine / Config 页的选项 (kUiFile 读写同一份字段清单): 作用域 / 连接 / 模型 / 评估后端 / 入库门槛 / 可否提问 (下次 New 生效) + Config 页在看的模板
+// Mine / Config 页的选项 (kUiFile 读写同一份字段清单): 作用域 (含开放的叶 / 算子) / 连接 / 模型 / 评估后端 / 入库门槛 / 可否提问 (下次 New 生效) + Config 页在看的模板
 struct Options {
   Scope sc;
   int backend = 0;
@@ -283,14 +285,16 @@ void session_row(const SharedData &data, State &s) {
   const Options &o = s.opt;
   const bool has_hold = !catalog::holds(data, o.sc.level).empty();
   const bool keyed = has_key(o.backend);
-  const bool has_leaves = m.lab.scope() == o.sc && !m.lab.ctx().leaves.empty();
+  const bool bound = m.lab.scope() == o.sc;
+  const bool has_leaves = bound && !m.lab.ctx().leaves.empty(), has_ops = bound && !m.lab.ctx().ops.empty();
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
-  const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold && has_leaves;
+  const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold && has_leaves && has_ops;
   const char *why_not = !keyed                    ? "所选后端的 key 未填 (config/agent/keys.json)"
                         : !model_ok(s)            ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                        : has_hold && !has_leaves ? "本层没有可作输入的特征叶"
+                        : has_hold && !has_leaves ? "没有开放的特征叶 (本层无叶, 或特征页一个没勾)"
+                        : has_hold && !has_ops    ? "没有开放的算子 (算子页一个没勾)"
                                                   : nullptr;
   const auto begin_session = [&](bool test) {
     if (!catalog::ready(data, o.sc, o.gpu == 1)) {
@@ -1195,63 +1199,140 @@ void notes_table(State &s, const View &v, NoteKind k) {
 }
 
 // ---- 参考: 发给 agent 的特征表 / 算子表 / 工具表 ----
-void leaves_panel(State &s, const Context &c) {
-  const std::vector<Leaf> &leaves = c.leaves;
-  s.leaf_filter.Draw("过滤##leaf", 240);
-  const auto pass = [&](const Leaf &l) { return s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str()); };
-  std::array<int, kSrcCount> all{}, n{}; // [Src] 开放的叶数 / 其中过滤后的
-  for (const Leaf &l : leaves) {
-    ++all[static_cast<size_t>(l.src)];
-    if (pass(l))
-      ++n[static_cast<size_t>(l.src)];
+// 人勾开放 (特征 / 算子页同一份): all = 本表全部键, keys = 要改的; 勾满 = 回到全开 (此后新加的也开), 否则白名单
+Open pick(Open o, const std::vector<std::string> &all, const std::vector<std::string> &keys, bool on) {
+  if (o.all)
+    o = {false, std::set<std::string>(all.begin(), all.end())};
+  for (const std::string &k : keys) {
+    if (on)
+      o.on.insert(k);
+    else
+      o.on.erase(k);
   }
-  std::string counts;
-  for (size_t i = 0; i < kSrcCount; ++i)
-    if (all[i] > 0)
-      counts += (counts.empty() ? "" : " · ") + std::string(kSrcs[i].name) + " " + std::to_string(n[i]);
-  ImGui::SameLine();
-  ImGui::TextDisabled("%s 个叶, 模板里写全名; 悬浮看公式", counts.c_str());
-  if (!begin_table("##leaves", {"叶", "中文名", "说明"}))
-    return;
-  for (const Leaf &l : leaves) {
-    if (!pass(l))
-      continue;
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted(l.code.c_str());
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s", l.formula.c_str());
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted(l.name_cn.c_str());
-    ImGui::TableNextColumn();
-    wrapped(l.desc);
+  if (std::all_of(all.begin(), all.end(), [&](const std::string &k) { return o.on.contains(k); }))
+    o = {};
+  return o;
+}
+// 全选 / 全清 (只动列出的行); 按了 → next
+void pick_bar(const Open &o, const std::vector<std::string> &all, const std::vector<std::string> &shown, bool locked, std::optional<Open> &next) {
+  const char *why = locked ? "会话中不可改; 下次 New 生效" : "只动列出的行 (过滤后); 勾满 = 全开, 此后新加的也开; 否则只开勾了的";
+  ImGui::BeginDisabled(locked);
+  for (const bool on : {true, false}) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton(on ? "全选" : "全清"))
+      next = pick(o, all, shown, on);
+    tip(why);
   }
-  ImGui::EndTable();
+  ImGui::EndDisabled();
+}
+// 一行的开放勾选框; 关着的行字变灰 (到 pick_end)
+void pick_cell(const Open &o, const std::vector<std::string> &all, const std::string &key, bool locked, std::optional<Open> &next) {
+  bool on = o.has(key);
+  ImGui::TableNextColumn();
+  ImGui::BeginDisabled(locked);
+  if (ImGui::Checkbox(("##pick_" + key).c_str(), &on))
+    next = pick(next.value_or(o), all, {key}, on);
+  ImGui::EndDisabled();
+  if (!o.has(key))
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+}
+void pick_end(const Open &o, const std::string &key) {
+  if (!o.has(key))
+    ImGui::PopStyleColor();
 }
 
-void ops_panel(State &s, const Context &c) {
-  const std::vector<Op> &ops = c.ops;
-  s.op_filter.Draw("过滤##op", 240);
-  ImGui::SameLine();
-  ImGui::TextDisabled("%zu 个算子; 悬浮看签名与定义", ops.size());
-  if (!begin_table("##ops", {"算子", "中文名", "输出域", "说明"}))
-    return;
-  for (const Op &o : ops) {
-    if (!s.op_filter.PassFilter((o.name + ' ' + o.name_cn + ' ' + o.note).c_str()))
+// 本层全部叶 (来源未开放的不列), 逐行勾开放给 agent 的
+void leaves_panel(State &s, const Context &c, bool locked) {
+  Scope &sc = s.opt.sc;
+  const Open &open = sc.leaves_of(c.level);
+  s.leaf_filter.Draw("过滤##leaf", 240);
+  const auto pass = [&](const Leaf &l) {
+    return (sc.srcs() & src_bit(l.src)) && s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str());
+  };
+  std::vector<std::string> all, shown;
+  std::array<int, kSrcCount> n{}, on{}; // [Src] 列出的叶 / 其中开放的
+  for (const Leaf &l : c.all_leaves) {
+    all.push_back(l.code);
+    if (!pass(l))
       continue;
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted(o.name.c_str());
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("签名: %s\n定义: %s", o.sig.c_str(), o.tex.c_str());
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted(o.name_cn.c_str());
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted(o.out.c_str());
-    ImGui::TableNextColumn();
-    wrapped(o.note);
+    shown.push_back(l.code);
+    ++n[static_cast<size_t>(l.src)];
+    on[static_cast<size_t>(l.src)] += open.has(l.code);
   }
-  ImGui::EndTable();
+  std::optional<Open> next;
+  pick_bar(open, all, shown, locked, next);
+  std::string counts;
+  for (size_t i = 0; i < kSrcCount; ++i)
+    if (n[i] > 0)
+      counts += (counts.empty() ? "" : " · ") + std::string(kSrcs[i].name) + " " + std::to_string(on[i]) + "/" + std::to_string(n[i]);
+  ImGui::SameLine();
+  ImGui::TextDisabled("开放 / 列出: %s 个叶, 模板里写全名; 悬浮看公式", counts.c_str());
+  if (begin_table("##leaves", {"开放", "叶", "中文名", "说明"})) {
+    for (const Leaf &l : c.all_leaves) {
+      if (!pass(l))
+        continue;
+      ImGui::TableNextRow();
+      pick_cell(open, all, l.code, locked, next);
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(l.code.c_str());
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", l.formula.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(l.name_cn.c_str());
+      ImGui::TableNextColumn();
+      wrapped(l.desc);
+      pick_end(open, l.code);
+    }
+    ImGui::EndTable();
+  }
+  if (!next)
+    return;
+  if (next->all)
+    sc.leaves.erase(c.level);
+  else
+    sc.leaves[c.level] = std::move(*next);
+}
+
+// 全部算子, 逐行勾开放给 agent 的
+void ops_panel(State &s, const Context &c, bool locked) {
+  Open &open = s.opt.sc.ops;
+  s.op_filter.Draw("过滤##op", 240);
+  const auto pass = [&](const Op &o) { return s.op_filter.PassFilter((o.name + ' ' + o.name_cn + ' ' + o.note).c_str()); };
+  std::vector<std::string> all, shown;
+  int on = 0;
+  for (const Op &o : c.all_ops) {
+    all.push_back(o.name);
+    if (!pass(o))
+      continue;
+    shown.push_back(o.name);
+    on += open.has(o.name);
+  }
+  std::optional<Open> next;
+  pick_bar(open, all, shown, locked, next);
+  ImGui::SameLine();
+  ImGui::TextDisabled("开放 / 列出: %d/%zu 个算子; 悬浮看签名与定义", on, shown.size());
+  if (begin_table("##ops", {"开放", "算子", "中文名", "输出域", "说明"})) {
+    for (const Op &o : c.all_ops) {
+      if (!pass(o))
+        continue;
+      ImGui::TableNextRow();
+      pick_cell(open, all, o.name, locked, next);
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(o.name.c_str());
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("签名: %s\n定义: %s", o.sig.c_str(), o.tex.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(o.name_cn.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(o.out.c_str());
+      ImGui::TableNextColumn();
+      wrapped(o.note);
+      pick_end(open, o.name);
+    }
+    ImGui::EndTable();
+  }
+  if (next)
+    open = std::move(*next);
 }
 
 // 工具表 = 系统提示 "工具" 节的同一份 (kTools); ask_human 只在可提问的会话里发给 agent
@@ -1347,11 +1428,11 @@ void render_mine(const SharedData &data, State &s) {
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem("特征")) {
-    leaves_panel(s, v.ctx);
+    leaves_panel(s, v.ctx, m.live());
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem("算子")) {
-    ops_panel(s, v.ctx);
+    ops_panel(s, v.ctx, m.live());
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem("工具")) {
