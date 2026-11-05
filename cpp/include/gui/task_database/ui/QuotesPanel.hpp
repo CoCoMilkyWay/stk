@@ -1,6 +1,8 @@
 // 行情图, 数据 = 历史 Kline + 当日 Day (见 Kline.hpp); 个股 / 篮子同一个 Feed + Sync (键集 → 历史发布 + 当日)
 //   个股 = Assets 右栏: 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
-//   篮子 = Portfolio NAV 日内栏: 键集 = 全部篮子线, 多篮子叠加收盘线 (对首日前收的涨跌幅, 刻度区全空: 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名小字贴线尾; 不画量, 读数看十字光标);
+//   篮子 = Portfolio NAV 日内栏: 键集 = 全部篮子线; 选一个 = 个股图同一套 (价 + 额), 价画分钟蜡烛 + 现价虚线 (同 py/app/tdx:
+//     视野内每根窄于 kMinPx 就按 kSlots 的最小因子 g 并根, 悬停提示标 g 分);
+//     选多个 = 叠加收盘线 (对首日前收的涨跌幅, 刻度区全空: 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名小字贴线尾; 不画量, 读数看十字光标);
 //   近况 (Recent): 键集里一个标的的近况三列 (Portfolio NAV 表). 以下为个股图:
 //   日内价 = 高 / 低单调插值围出的带, 按涨跌染色; 日线价 = 蜡烛 + 均线, 默认 10 年档; 悬停提示只在量图
 //     十字光标随鼠标: 竖线吸附最近一根 (底轴标时刻), 横线在鼠标所在格 (价图左价 / 右涨跌幅, 量图标量 / 额)
@@ -29,6 +31,7 @@ struct QuotesView {
   double drag = std::numeric_limits<double>::quiet_NaN(); // 框选起点 x; NaN = 未在框选
   float drag_px = 0;                                      // 框选起点屏幕 x
   bool cross = false;                                     // 上帧鼠标在价 / 量任一格 (十字竖线两格同画)
+  float px = 0;                                           // 上帧价图区宽 [px] (日内蜡烛并根); 0 = 未画过
 };
 
 // 一个标的的两张图: 档位 + 视野
@@ -59,6 +62,7 @@ struct StockState {
 struct BasketState {
   Feed feed;        // 键集 = 全部篮子线 (下标 = basket_line)
   int intraday = 0; // 日内档 (日内 / 2日 / 3日 / 4日)
+  QuotesView iv;    // 单篮子蜡烛图视野
 };
 
 // 日内叠加的一条: 篮子线 basket_line + 线色 (ImU32)
@@ -85,7 +89,7 @@ Recent RecentOf(const Feed &f, size_t k);
 
 // title = 在画标的的标题 (简称 + 代码)
 void RenderStockPanel(const Market &mk, StockState &st, const std::string &title);
-// picks 各篮子的日内叠加图, 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 源未就绪 / 读取中 → 提示
+// picks 的日内图 (一个 = 蜡烛图, 多个 = 叠加图), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 源未就绪 / 读取中 → 提示
 void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks);
 
 } // namespace GUI::Database
