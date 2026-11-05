@@ -41,13 +41,17 @@ inline std::string cut_code(size_t c) {
 }
 
 // 篮子中文名 = 切片名 + 权重后缀 (.等 = 等权 / .加 = 总市值加权)
-inline std::string basket_name(size_t c, Weight w) {
-  const std::string cut = c == 0               ? std::string("全A")
-                          : c < kAllCuts       ? std::string(fund::SW2021_L1_NAMES[c])
-                          : c < concept_cut(0) ? std::string(pool_def(static_cast<PoolId>(c - kAllCuts + 1)).name_cn)
-                                               : concepts().name[c - concept_cut(0)];
-  return cut + (w == kWeightEq ? ".等" : ".加");
+inline std::string cut_name(size_t c) {
+  if (c == 0)
+    return "全A";
+  if (c < kAllCuts)
+    return std::string(fund::SW2021_L1_NAMES[c]);
+  if (c < concept_cut(0))
+    return pool_def(static_cast<PoolId>(c - kAllCuts + 1)).name_cn;
+  return concepts().name[c - concept_cut(0)];
 }
+inline const char *weight_suffix(Weight w) { return w == kWeightEq ? ".等" : ".加"; }
+inline std::string basket_name(size_t c, Weight w) { return cut_name(c) + weight_suffix(w); }
 inline std::string basket_name(size_t line) { return basket_name(cut_of_line(line), weight_of(line)); }
 
 // 篮子目录 (展示用的三组线): 指数 = 各池整体 (全A 加权 + 等权, 其余池等权), 行业 = 申万一级 (加权), 概念 = 东财题材概念 (加权)

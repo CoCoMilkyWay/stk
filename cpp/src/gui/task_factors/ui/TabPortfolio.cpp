@@ -18,6 +18,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cmath>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -148,6 +149,46 @@ ImPlotPoint contour_pt(int i, void *p) {
   const ContourLine &l = *static_cast<const ContourLine *>(p);
   return {l.x[i], l.u[i] * l.m};
 }
+
+// 行名主体的显示宽上限 (格: ASCII 1, 其余 2): 超出 → 截到 kNameCells − 2 格补 "…" (表 / 图例 / 线尾同用; 全名进悬停)
+constexpr int kNameCells = 14;
+std::string clip_name(const std::string &s) {
+  int w = 0;
+  size_t cut = 0;
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    i += c < 0x80 ? 1 : c < 0xE0 ? 2
+                    : c < 0xF0   ? 3
+                                 : 4;
+    w += c < 0x80 ? 1 : 2;
+    if (w <= kNameCells - 2)
+      cut = i;
+  }
+  return w <= kNameCells ? s : s.substr(0, cut) + "…";
+}
+// 表格数值格 (格式串不补宽): 先排全表量出各列本帧最宽 (含表头), 再右对齐到该宽 ⇒ 列宽恒 = 本帧内容, 可缩
+//   (不能对齐到列宽本身: 列宽是上帧的, 对齐后每格都顶满, 列只涨不缩)
+struct NumCell {
+  char s[24] = "-";
+  ImVec4 col;
+  float w = 0.f;
+};
+NumCell num_cell(const ImVec4 &col, const char *fmt, ...) {
+  NumCell c;
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(c.s, sizeof(c.s), fmt, ap);
+  va_end(ap);
+  c.col = col, c.w = ImGui::CalcTextSize(c.s).x;
+  return c;
+}
+NumCell num_none() { return num_cell(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "-"); }
+void draw_cell(const NumCell &c, float col_w) {
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + col_w - c.w);
+  ImGui::TextColored(c.col, "%s", c.s);
+}
+// 右图例的宽 (NAV / VAL 同一份) = 表格列不截断所需 (end_table) 与表上工具行 (末项在 last_x) 之大者
+float legend_width(float last_x, float table_w) { return std::max(last_x - ImGui::GetWindowPos().x - ImGui::GetStyle().WindowPadding.x, table_w); }
 
 // 右补空格到 px 宽 (等宽字体, 中文占两格: 按实测像素补, 列对齐)
 std::string pad_to(const char *s, float px) {
@@ -430,7 +471,7 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     r.id = it.e.key();
     r.hue = static_cast<int>(q);
     r.en = std::filesystem::path(it.e.file).stem().string();
-    r.cn = it.name_cn;
+    r.cn = clip_name(it.name_cn);
     r.tag = it.name_en + " " + factor::stat::hold_name(f.hold);
     r.hover = r.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + hold_desc(it.e.hold, it.e.lv) +
               "\n• 冲击 " + amt_name(f.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
@@ -476,8 +517,9 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
     for (const size_t line : basket_group(static_cast<BasketGroup>(g))) {
       PortfolioRow r;
       r.id = basket_id(line);
-      r.en = r.hover = cut_code(cut_of_line(line));
-      r.cn = r.tag = basket_name(line);
+      r.en = cut_code(cut_of_line(line));
+      r.hover = r.en + "  " + basket_name(line);
+      r.cn = r.tag = clip_name(cut_name(cut_of_line(line))) + weight_suffix(weight_of(line));
       r.on = line == basket_line(0, kWeightEq);
       r.basket = static_cast<int>(line);
       if (d.baskets && !d.dates.empty()) {
@@ -1435,23 +1477,26 @@ void name_tip(const std::string &s) {
 }
 
 // ---- NAV 右图例: 类别条 (指数 / 行业 / 概念 / 因子 / 策略, 一次看一组) + 日内开关; 表 = 该组一行一对线, 点行 = 选中 / 取消 (选中 = 主图画该行全部线, 单条在主图例里再点掉;
-//      选中跨组保留; 选中的篮子行另叠进日内栏). 列 = 中文名 (线色; 悬停看 hover) | 左段 (当日涨幅 | Δ5日线 | 只数 | 总市值 | 资金流入)
-//      | 可成交 | 理想 (区间年化) | 夏普 (可成交列) | 年换手; 当日涨幅 / Δ5日线 / 资金流入按正负着色, 只数 / 总市值不着色, 其余数值列底色 = 同组同列截面名次
+//      选中跨组保留; 选中的篮子行另叠进日内栏). 列 = 中文名 (线色; 悬停看 hover) | 左段 (当日涨幅 | Δ5日线 | 只数 | 总市值 | 总资金 | 资金流入)
+//      | 可成交 | 理想 (区间年化) | 夏普 (可成交列) | 年换手; 当日涨幅 / Δ5日线 / 资金流入按正负着色, 只数 / 总市值 / 总资金不着色, 其余数值列底色 = 同组同列截面名次
 //      (好绿 → 差红); 表头点排序 (组内) ----
 // 左段列 (不随区间): 近况 (Database::Recent) + 篮子当日 (basket_today)
 enum NavLeft : int { kLeftChg,
                      kLeftMa5,
                      kLeftMembers,
                      kLeftCap,
+                     kLeftAmount,
                      kLeftFlow };
-constexpr int kLefts = 5;
-constexpr const char *kNavLeftName[kLefts] = {"当日涨幅", "Δ5日线", "只数", "总市值", "资金流入"};
-constexpr const char *kNavNumFmt[kNavNums] = {"%+6.1f%%", "%+6.1f%%", "%+5.2f", "%5.1f倍"}; // [NavNum]
-// 篮子行 h 的当日 {只数, 总市值 [亿元], 资金流入 (净流入 / 成交额)}: 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线
-// (总市值当日接上 × 加权线当日涨跌); 资金流入 = 新浪当日合成的 Day::flow (不看接续); 非篮子 / 未到 → NaN
-std::array<double, 3> basket_today(const Database::Feed &f, const PortfolioRow &h) {
+constexpr int kLefts = 6;
+constexpr const char *kNavLeftName[kLefts] = {"涨幅", "Δ5日线", "只数", "总市值", "总资金", "流入"};
+constexpr const char *kNavNumName[kNavNums] = {"可成交", "理想", "夏普", "年换手"};     // [NavNum]
+constexpr const char *kNavNumFmt[kNavNums] = {"%+.1f%%", "%+.1f%%", "%+.2f", "%.1f倍"}; // [NavNum]
+constexpr int kNavCols = kLefts + kNavNums;                                             // 名之后的数值列 (左段 + NavNum)
+// 篮子行 h 的当日 {只数, 总市值 [亿元], 总资金 = 成交额 [亿元], 资金流入 (净流入 / 成交额)}: 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线
+// (总市值当日接上 × 加权线当日涨跌); 总资金 / 资金流入 = 新浪当日合成的 Day (不看接续); 非篮子 / 未到 → NaN
+std::array<double, 4> basket_today(const Database::Feed &f, const PortfolioRow &h) {
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-  std::array<double, 3> o = {kNaN, kNaN, kNaN};
+  std::array<double, 4> o = {kNaN, kNaN, kNaN, kNaN};
   if (h.basket < 0 || !f.data || f.data->members.empty())
     return o;
   const size_t c = cut_of_line(static_cast<size_t>(h.basket)), eq = basket_line(c, kWeightEq), cap = basket_line(c, kWeightCap);
@@ -1462,7 +1507,7 @@ std::array<double, 3> basket_today(const Database::Feed &f, const PortfolioRow &
   o[0] = f.data->members[eq];
   o[1] = v > 0 ? v : kNaN;
   if (const Database::Day &t = f.today[static_cast<size_t>(h.basket)]; t.candle.date != 0 && t.candle.amount > 0)
-    o[2] = t.flow / t.candle.amount;
+    o[2] = t.candle.amount / 1e8, o[3] = t.flow / t.candle.amount;
   return o;
 }
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v) {
@@ -1484,6 +1529,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 篮子同 Assets: all.bar 库合成历史, 当日由新浪快照合成; 档位 日内 / 2日 / 3日 / 4日 叠在图左上角");
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(点行 = 画)");
+  const float bar_x = ImGui::GetItemRectMax().x;
   if (ImGui::IsItemHovered())
     tip("点行 = 选中 / 取消, 选中 = 主图画该行两条线, 主图例默认只显理想列, 可成交列点图例显 (显隐变了自动重新 fit); 默认只选全A.等; 选中换组保留\n"
         "• 指数 = 各池等权指数 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级 (全A 内切, 总市值加权); 概念 = 东财题材概念 (全A 内切, 总市值加权):\n"
@@ -1492,39 +1538,59 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 因子 = 单因子各自的 G20 多头净值: 可成交列 = 有冲击 (它自己的冲击段: Lob 最小金额段 / Bar 固定冲击), 理想列 = 无冲击\n"
         "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
         "• 名 = 切片名 + .等 (等权) / .加 (总市值加权); 指数组同系列 (如 小盘池400 / 200, 全A 两条) 同色系, 尾数小的色重\n"
-        "• 当日涨幅 / Δ5日线 = 最新一日对前收 / 对 MA5 (含当日), 不随区间:\n"
+        "• 涨幅 / Δ5日线 = 最新一日对前收 / 对 MA5 (含当日), 不随区间:\n"
         "    指数 / 行业 / 概念取 Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略取净值日末点\n"
         "• 只数 / 总市值 = 当日成员表 (历史末日收盘定) 的成分只数 / 总市值 (末日收盘市值, 当日接上 × 加权线当日涨跌); 因子 / 策略无\n"
-        "• 资金流入 = 新浪行情日 净流入 / 成交额 (分钟涨跌法): 成分逐只逐分钟, 收 > 上一分钟收 (首分钟对昨收) 该分钟额记流入, < 记流出,\n"
+        "• 总资金 = 新浪行情日 成分成交额之和; 因子 / 策略无\n"
+        "• 流入 = 资金流入: 新浪行情日 净流入 / 成交额 (分钟涨跌法): 成分逐只逐分钟, 收 > 上一分钟收 (首分钟对昨收) 该分钟额记流入, < 记流出,\n"
         "    平 = 随上一分钟; 篮子 = 成分之和 (不加权). 分钟根 = 快照合成 + 分钟 K 补, 盘后 / 重启照样全天; 分不出大单; 因子 / 策略无\n"
         "• 可成交 / 理想两列 = 区间年化 (同一区间起点归一, 按区间复利)\n"
         "• 夏普 = 可成交列区间内日收益 mean / sd × √每年交易日\n"
         "• 年换手 = 全评估期单边换手 (倍/年); 策略 = 各因子换手按当日份额加权 (不计因子间对冲); 行业 / 概念无\n"
         "• 底色 = 该列在同组内的名次 (好绿 → 差红; 年化 / 夏普高 = 好, 年换手低 = 好)\n"
-        "• 悬停中文名看名; 点表头排序 (组内): 升序 → 降序 → 原序");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
   if (!ImGui::BeginTable("##pf_nav_tbl", 1 + kLefts + kNavNums,
                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
                              ImGuiTableFlags_SortTristate))
     return;
   ImGui::TableSetupScrollFreeze(0, 1);
   ImGui::TableSetupColumn("名", ImGuiTableColumnFlags_WidthStretch);
-  for (const char *name : kNavLeftName)
+  float cw[kNavCols]; // [列 − 1] 本帧最宽 (表头起)
+  for (int k = 0; k < kNavCols; ++k) {
+    const char *name = k < kLefts ? kNavLeftName[k] : kNavNumName[k - kLefts];
     ImGui::TableSetupColumn(name);
-  ImGui::TableSetupColumn("可成交");
-  ImGui::TableSetupColumn("理想");
-  ImGui::TableSetupColumn("夏普");
-  ImGui::TableSetupColumn("年换手");
+    cw[k] = ImGui::CalcTextSize(name).x;
+  }
   ImGui::TableHeadersRow();
   // 一行 r = 一对线; 切片 / 名次同下标
   const int g = ui.cat[0];
   const std::vector<PortfolioRow> &rs = d.nav[g];
   const size_t n = rs.size();
   std::vector<std::array<double, kLefts>> lc(n); // [行][NavLeft]
+  std::vector<std::array<NumCell, kNavCols>> tc(n);
+  const ImVec4 &txt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
   for (size_t r = 0; r < n; ++r) {
     const PortfolioRow &h = rs[r];
     const Database::Recent x = h.basket >= 0 ? Database::RecentOf(ui.basket.feed, static_cast<size_t>(h.basket)) : recent_of(h.line[kTrade]);
-    const std::array<double, 3> bt = basket_today(ui.basket.feed, h);
-    lc[r] = {x.chg, x.ma5, bt[0], bt[1], bt[2]};
+    const std::array<double, 4> bt = basket_today(ui.basket.feed, h);
+    lc[r] = {x.chg, x.ma5, bt[0], bt[1], bt[2], bt[3]};
+    for (int k = 0; k < kNavCols; ++k) {
+      const double y = k < kLefts ? lc[r][static_cast<size_t>(k)] : nav_num(d, v, g, r, k - kLefts);
+      NumCell &c = tc[r][static_cast<size_t>(k)];
+      if (!std::isfinite(y))
+        c = num_none();
+      else if (k >= kLefts)
+        c = num_cell(txt, kNavNumFmt[k - kLefts], y);
+      else if (k == kLeftMembers)
+        c = num_cell(txt, "%.0f", y);
+      else if (k == kLeftCap || k == kLeftAmount)
+        c = y >= 1e6 ? num_cell(txt, "%.0f万亿", y / 1e4) : y >= 1e4 ? num_cell(txt, "%.1f万亿", y / 1e4)
+                                                        : y >= 10    ? num_cell(txt, "%.0f亿", y)
+                                                                     : num_cell(txt, "%.1f亿", y);
+      else
+        c = num_cell(tint(y, 0.0), "%+.2f%%", 100.0 * y);
+      cw[k] = std::max(cw[k], c.w);
+    }
   }
   std::vector<size_t> order = iota_n(n);
   sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return c <= kLefts ? lc[r][static_cast<size_t>(c - 1)] : nav_num(d, v, g, r, c - 1 - kLefts); });
@@ -1542,40 +1608,15 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     }
     ImGui::PopStyleColor();
     name_tip(h.hover);
-    for (int k = 0; k < kLefts; ++k) {
+    for (int k = 0; k < kNavCols; ++k) {
       ImGui::TableSetColumnIndex(1 + k);
-      const double x = lc[r][static_cast<size_t>(k)];
-      if (!std::isfinite(x)) {
-        ImGui::TextDisabled("     -");
-        continue;
-      }
-      switch (k) {
-      case kLeftMembers:
-        ImGui::Text("%5.0f", x);
-        break;
-      case kLeftCap:
-        if (x >= 1e4)
-          ImGui::Text("%6.2f万亿", x / 1e4);
-        else
-          ImGui::Text("%6.0f亿", x);
-        break;
-      default:
-        ImGui::TextColored(tint(x, 0.0), "%+6.2f%%", 100.0 * x);
-      }
-    }
-    for (int k = 0; k < kNavNums; ++k) {
-      ImGui::TableSetColumnIndex(1 + kLefts + k);
-      const double x = nav_num(d, v, g, r, k), rk = v.nav_rank[g][r][k];
-      if (!std::isfinite(x)) {
-        ImGui::TextDisabled("     -");
-        continue;
-      }
-      if (std::isfinite(rk))
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(1.0 - rk, kValCellA)));
-      ImGui::Text(kNavNumFmt[k], x);
+      if (k >= kLefts)
+        if (const double rk = v.nav_rank[g][r][k - kLefts]; std::isfinite(rk))
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(1.0 - rk, kValCellA)));
+      draw_cell(tc[r][static_cast<size_t>(k)], cw[k]);
     }
   }
-  ui.legend_w[0] = end_table();
+  ui.legend_w[0] = legend_width(bar_x, end_table());
 }
 
 // ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 各口; 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
@@ -1589,6 +1630,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   button_bar(kNavGroupName, kBasketGroups, ui.cat[1]);
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(单选)");
+  const float bar_x = ImGui::GetItemRectMax().x;
   if (ImGui::IsItemHovered())
     tip("类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行选一个: 主图画它的价格 + EP / BP / SP / CP / DY Band; 选中换组保留\n"
         "• 价格: 全A.加 / 行业 / 概念 = 总市值加权指数 (全A 内切); 全A.等 / 其余池 = 等权指数 (同 NAV 池线)\n"
@@ -1602,18 +1644,29 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
         "• 表格 = 区间末各口的估值分位 (高 = 贵); 绝对值看主图 Band 图例 / 等值线\n"
         "• 底色 = 该分位在同组 (池之间 / 行业之间 / 概念之间) 同一口内的截面名次: 组内最便宜绿 → 最贵红\n"
-        "• 悬停中文名看名; 点表头排序 (组内): 升序 → 降序 → 原序");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
   if (!ImGui::BeginTable("##pf_val_tbl", 1 + kPoolVals,
                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
                              ImGuiTableFlags_SortTristate))
     return;
   ImGui::TableSetupScrollFreeze(0, 1);
   ImGui::TableSetupColumn("名", ImGuiTableColumnFlags_WidthStretch);
-  for (const ValMeta &m : kVal)
-    ImGui::TableSetupColumn(m.name, ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("100%").x);
+  float cw[kPoolVals]; // 本帧最宽 (表头起)
+  for (int b = 0; b < kPoolVals; ++b) {
+    ImGui::TableSetupColumn(kVal[b].name);
+    cw[b] = ImGui::CalcTextSize(kVal[b].name).x;
+  }
   ImGui::TableHeadersRow();
   const int g = ui.cat[1];
   const std::vector<PortfolioRow> &rs = d.nav[g];
+  std::vector<std::array<NumCell, kPoolVals>> tc(rs.size());
+  for (size_t r = 0; r < rs.size(); ++r)
+    for (int b = 0; b < kPoolVals; ++b) {
+      const double p = v.cell[g][r][b].pct;
+      NumCell &c = tc[r][static_cast<size_t>(b)];
+      c = std::isfinite(p) ? num_cell(ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.0f%%", p) : num_none();
+      cw[b] = std::max(cw[b], c.w);
+    }
   std::vector<size_t> order = iota_n(rs.size());
   sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return v.cell[g][r][c - 1].pct; });
   for (const size_t r : order) {
@@ -1625,16 +1678,12 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     name_tip(s.hover);
     for (int b = 0; b < kPoolVals; ++b) {
       ImGui::TableSetColumnIndex(1 + b);
-      const PortfolioCell &c = v.cell[g][r][b];
-      if (!std::isfinite(c.pct)) {
-        ImGui::TextDisabled("   -");
-        continue;
-      }
-      ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(c.rank, kValCellA)));
-      ImGui::Text("%3.0f%%", c.pct);
+      if (const double rk = v.cell[g][r][b].rank; std::isfinite(rk))
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(rk, kValCellA)));
+      draw_cell(tc[r][static_cast<size_t>(b)], cw[b]);
     }
   }
-  ui.legend_w[1] = end_table();
+  ui.legend_w[1] = legend_width(bar_x, end_table());
 }
 
 } // namespace
