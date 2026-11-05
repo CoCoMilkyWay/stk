@@ -141,13 +141,30 @@ inline void snap(Ar &ar, N &node) {
 }
 
 // 节点用时采样 (特征面板 Node Time): 时序 worker 对抽中的 asset-day 把本线程的钟挂到 node_clock, run<>() 逐节点累计 TSC 周期
-// (下标 = DAG 节点下标 = node_deps::TABLE 行); 不挂 = 原路径, 每次 run 只多一个分支. 只计节点 compute / flush, 不碰特征值
+// (下标 = DAG 节点下标 = node_deps::TABLE 行), CoreTs 的标签 / 写张量经 clocked 记进 label / write, 整个 asset-day 记进 total
+// (total − 其余 = 源与调度: 解码 / 订单簿 / 重采样 / 日句柄 ...); 不挂 = 原路径, 每处只多一个分支. 只计时, 不碰特征值
 struct NodeClock {
   static constexpr size_t kMaxNodes = 64;
   std::array<uint64_t, kMaxNodes> cycles{};
+  uint64_t label = 0;   // 标签 (日历 / 逐分钟结算 / 收盘结算)
+  uint64_t write = 0;   // 写张量 (TS 行 + 元列)
+  uint64_t total = 0;   // 整个 asset-day (begin_day → release)
   uint64_t samples = 0; // 计过的 asset-day 数
 };
 inline thread_local NodeClock *node_clock = nullptr;
+
+// 非节点段: 本线程挂了节点钟则 f 的 TSC 周期计入 slot (段内不得再进 run<>, 否则重计)
+template <class F>
+[[gnu::always_inline]] inline void clocked(uint64_t NodeClock::*slot, F &&f) {
+  NodeClock *clk = node_clock;
+  if (!clk) [[likely]] {
+    f();
+    return;
+  }
+  const uint64_t t = __builtin_ia32_rdtsc();
+  f();
+  clk->*slot += __builtin_ia32_rdtsc() - t;
+}
 
 // 两档共有的源: 分钟 K + 分钟箱 K + 日 K + 日频 PIT + 本资产身份. 档的 DAG_Root 继承它, 只加档特有的源 (Lob: TickData)
 struct Root {

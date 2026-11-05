@@ -609,24 +609,36 @@ void daily(const Kline &kl, const Day &today, bool money, Series &s) {
     s.ref = s.bars.back().ref;
 }
 
-// 日内的根 = 末 days 日的分钟 (历史 + 当日, joins 才接), x = 第 k 日 · kSlots + 槽; 分钟根的前收 = 同日日根的; 涨跌基准 = 末日前收
-void intraday(const Kline &kl, const Day &today, int days, bool money, Series &s) {
+// 日内日轴 = 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
+std::vector<misc::Ymd> day_axis(std::span<const misc::Ymd> trading, misc::Ymd date, int n) {
+  if (!date)
+    return {};
+  const auto end = std::lower_bound(trading.begin(), trading.end(), date);
+  std::vector<misc::Ymd> days(end - std::min<std::ptrdiff_t>(n - 1, end - trading.begin()), end);
+  days.push_back(date);
+  return days;
+}
+
+// 日内的根 = 日轴各日的分钟 (历史 + 当日, joins 才接; 某日无源 → 留空), x = 第 k 日 · kSlots + 槽;
+//   分钟根的前收 = 同日日根的; 涨跌基准 = 末个有根日的前收
+void intraday(const Kline &kl, const Day &today, std::span<const misc::Ymd> days, bool money, Series &s) {
   s.intraday = true;
   s.money = money;
-  std::vector<const Bars *> src;
-  for (const Bars &b : kl.minutes)
-    src.push_back(&b);
-  if (joins(kl, today) && today.bars.has.any())
-    src.push_back(&today.bars);
-  const size_t nd = std::min(static_cast<size_t>(days), src.size());
-  for (size_t k = 0; k < nd; ++k) {
-    const Bars &b = *src[src.size() - nd + k];
-    const float ref = ref_of(kl, today, b.date);
-    s.days.push_back(b.date);
+  s.days.assign(days.begin(), days.end());
+  const bool live = joins(kl, today) && today.bars.has.any();
+  for (size_t k = 0; k < days.size(); ++k) {
+    const Bars *b = live && today.bars.date == days[k] ? &today.bars : nullptr;
+    if (!b) {
+      const auto it = std::lower_bound(kl.minutes.begin(), kl.minutes.end(), days[k], [](const Bars &m, misc::Ymd x) { return m.date < x; });
+      if (it == kl.minutes.end() || it->date != days[k])
+        continue;
+      b = &*it;
+    }
+    const float ref = ref_of(kl, today, b->date);
     s.ref = ref;
     for (int j = 0; j < kSlots; ++j)
-      if (b.has[static_cast<size_t>(j)])
-        s.push({b.cell[static_cast<size_t>(j)], b.date, ref}, static_cast<double>(k) * kSlots + j);
+      if (b->has[static_cast<size_t>(j)])
+        s.push({b->cell[static_cast<size_t>(j)], b->date, ref}, static_cast<double>(k) * kSlots + j);
   }
 }
 
@@ -862,7 +874,7 @@ void RenderStockPanel(const Market &mk, StockState &st, const std::string &title
   const Kline &kl = f.data->list.front();
   const Day &today = f.today.front();
   Series is, ds;
-  intraday(kl, today, kIntraDays[st.chart.intraday], false, is);
+  intraday(kl, today, day_axis(mk.quote->trading(), qs.date, kIntraDays[st.chart.intraday]), false, is);
   daily(kl, today, false, ds);
 
   if (!f.want.empty() && f.want.front() != id)
@@ -891,43 +903,34 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
   const QuoteStatus qs = mk.quote->status();
   const Tape &d = *f.data;
   assert(f.today.size() == d.list.size());
-  // 日轴 = 各条分钟日之并的末 n 日; 各条按日落位, 某条缺的日留空 (不挪别的日来顶)
-  std::vector<Series> intra(picks.size());
-  std::vector<misc::Ymd> days;
+  // 日轴 = 行情日及其前 n − 1 个交易日; 各条按日落位, 某条缺的日留空 (当日未接上 → 当日空)
+  const std::vector<misc::Ymd> days = day_axis(mk.quote->trading(), qs.date, kIntraDays[st.intraday]);
+  std::vector<Overlay> ls;
   char note[160] = "";
+  bool gap = false;
   for (size_t i = 0; i < picks.size(); ++i) {
     const BasketPick &p = picks[i];
     assert(p.b < d.list.size() && d.keys[p.b] == p.b);
     const Kline &kl = d.list[p.b];
     const Day &today = f.today[p.b];
-    intraday(kl, today, static_cast<int>(kMinuteDays) + 1, true, intra[i]);
-    days.insert(days.end(), intra[i].days.begin(), intra[i].days.end());
     if (!note[0]) {
+      int n = 0;
       if (joins(kl, today))
-        std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员 / 权重取 %02d-%02d 收盘", qs.sec / 3600, qs.sec / 60 % 60,
-                      qs.sec % 60, kl.last / 100 % 100, kl.last % 100);
-      else if (!gap_note(kl, today, note, sizeof(note)))
-        std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", kl.last / 100 % 100, kl.last % 100);
+        n = std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员取 all.bar %02d-%02d 收盘行", qs.sec / 3600,
+                          qs.sec / 60 % 60, qs.sec % 60, d.basis / 100 % 100, d.basis % 100);
+      else if (!(gap = gap_note(kl, today, note, sizeof(note))))
+        n = std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", d.basis / 100 % 100, d.basis % 100);
+      if (n > 0 && d.basis < kl.last)
+        std::snprintf(note + n, sizeof(note) - static_cast<size_t>(n), " · 其后至 %02d-%02d 由 bar1d / bar1m 补", kl.last / 100 % 100, kl.last % 100);
     }
-  }
-  std::sort(days.begin(), days.end());
-  days.erase(std::unique(days.begin(), days.end()), days.end());
-  days.erase(days.begin(), days.end() - std::min(days.size(), static_cast<size_t>(kIntraDays[st.intraday])));
-  std::vector<Overlay> ls;
-  for (size_t i = 0; i < picks.size() && !days.empty(); ++i) {
-    const Series &s = intra[i];
-    const size_t j0 = static_cast<size_t>(std::lower_bound(s.bars.begin(), s.bars.end(), days.front(), [](const Candle &c, misc::Ymd x) { return c.date < x; }) - s.bars.begin());
-    if (j0 == s.bars.size() || !(s.bars[j0].ref > 0))
+    Series s;
+    intraday(kl, today, days, true, s);
+    if (s.bars.empty() || !(s.bars.front().ref > 0))
       continue;
-    const double base = s.bars[j0].ref;
-    Overlay &l = ls.emplace_back(Overlay{basket_name(picks[i].b), ImGui::ColorConvertU32ToFloat4(picks[i].col), {}, {}});
-    for (size_t j = j0; j < s.bars.size(); ++j) {
-      const Candle &c = s.bars[j];
-      const size_t k = static_cast<size_t>(std::lower_bound(days.begin(), days.end(), c.date) - days.begin());
-      assert(k < days.size() && days[k] == c.date);
-      l.x.push_back(static_cast<double>(k) * kSlots + static_cast<int>(s.x[j]) % kSlots);
+    const double base = s.bars.front().ref;
+    Overlay &l = ls.emplace_back(Overlay{basket_name(p.b), ImGui::ColorConvertU32ToFloat4(p.col), s.x, {}});
+    for (const Candle &c : s.bars)
       l.y.push_back((c.close / base - 1.0) * 100.0);
-    }
   }
   ImGui::PushID("basket");
   const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail());
@@ -939,9 +942,9 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
       f.reload = true;
     if (ImGui::IsItemHovered() && note[0])
       ImGui::SetTooltip("%s", note);
-    if (picks.empty()) {
+    if (picks.empty() || gap) {
       ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4 + ImGui::GetFrameHeightWithSpacing()));
-      ImGui::TextDisabled("在右表选指数 / 行业行");
+      ImGui::TextDisabled("%s", picks.empty() ? "在右表选指数 / 行业行" : note);
     }
   }
   ImGui::PopID();

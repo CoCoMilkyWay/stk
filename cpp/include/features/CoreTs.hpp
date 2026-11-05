@@ -54,8 +54,10 @@ public:
     for (ResamplerMin2Bin &r : min2bin_)
       r.reset();
     if (const float cs = meta_.cs(); cs != 0.0f)
-      [&]<size_t... L>(std::index_sequence<L...>) { (write_cs_valid<L>(cs), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
-    dag_.label.day_begin();
+      graph::clocked(&graph::NodeClock::write, [&] {
+        [&]<size_t... L>(std::index_sequence<L...>) { (write_cs_valid<L>(cs), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
+      });
+    graph::clocked(&graph::NodeClock::label, [&] { dag_.label.day_begin(); });
   }
 
   // 收盘: 末分钟 (收盘集合竞价 → L_1min 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含),
@@ -63,7 +65,7 @@ public:
   // 无数据日照走 (onDay / 255 根空 bar 逐分钟级联收行 / 标签日历), 各节点按自身的无成交约定给值 —— 本类不认识"缺数据", 不特判任何特征
   void end_day(Store &store) {
     advance(TRADE_MINUTES_PER_DAY);
-    dag_.label.day_end(writer(), releaser(store));
+    graph::clocked(&graph::NodeClock::label, [&] { dag_.label.day_end(writer(), releaser(store)); });
     dag_.at_day_end();
     dag_.minute_data.clear();
     for (BinData graph::Root::*b : graph::BIN_DATA)
@@ -168,7 +170,7 @@ private:
       r.accumulate();
     for_each_close<L_1min>(m, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
     if (traded)
-      dag_.label.minute_closed(m, writer());
+      graph::clocked(&graph::NodeClock::label, [&] { dag_.label.minute_closed(m, writer()); });
   }
 
   // 层 LVL 收行 r: 出该层 bar (L_1min 的 bar 已由档重采样器出) → 该层节拍域 → 写整行 + ts_valid (每行都写, L_1min 及以上稠密; 有成交 = ts_valid 非零).
@@ -184,8 +186,10 @@ private:
     if constexpr (T::has(LVL)) {
       constexpr size_t F = field_of<T>(LVL, "ts_valid");
       static_assert(F < T::LEVELS[LVL].field_count, "L_1min 及以上每层必须有 ts_valid 列");
-      fstore::ts_write_row<LVL>(day_, r, asset_id_, dag_);
-      fstore::ts_write<LVL>(day_, r, F, asset_id_, flag);
+      graph::clocked(&graph::NodeClock::write, [&] {
+        fstore::ts_write_row<LVL>(day_, r, asset_id_, dag_);
+        fstore::ts_write<LVL>(day_, r, F, asset_id_, flag);
+      });
     }
   }
 

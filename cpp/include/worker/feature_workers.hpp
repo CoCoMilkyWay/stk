@@ -407,8 +407,15 @@ auto wait_open(const std::atomic<bool> &cancel, ComputeStats::Core &stat, TryOpe
 // 截面: cs_try_open 等本日全部 TS 写完, 逐拍 compute_and_store (实盘同一调用), cs_close 交给 IO.
 // 落盘: io_try_open 等本日截面写完, 逐层落盘, io_close 清零交还 slot, 直到本核的日期刷完.
 // 档无关, 各自 TU 显式实例化两档 (预取 / 时序随档的源进档 TU, 见 feature_pipeline.hpp)
+// 截面用时 (特征面板 Node Time): 每截面核一份, 跑完由 pipeline 合并落盘.
+//   cols[层][列] = CoreCs::col_cycles; total = 各日 begin_day → end_day 的 TSC 周期 (total − Σ列 = 有效集扫描 / 旁读读入 / 节拍调度)
+struct CsClock {
+  std::array<std::vector<uint64_t>, LEVEL_COUNT> cols;
+  uint64_t total = 0;
+  uint64_t days = 0;
+};
 template <class T>
-void cs_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
+void cs_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes, CsClock &clock);
 template <class T>
 void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes);
 

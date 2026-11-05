@@ -77,19 +77,32 @@ inline bool node_clock_pick(size_t asset_id, size_t date_idx, size_t every) {
   return (h ^ (h >> 31)) % every == 0;
 }
 
-// 节点用时落盘 <库目录>/node_time.json (本轮抽样, 覆盖上一轮): 一节点一行 {node, file, cycles}; 特征面板 Node Time 按文件归并
-template <class Dag>
-void write_node_time(const std::string &dir, const graph::NodeClock &clk) {
+// 用时落盘 <库目录>/node_time.json (本轮, 覆盖上一轮), 时序 / 截面两段各自成 100% (不同 worker, 不互比):
+//   ts = 抽样 asset-day 的 {samples, total, label, write, nodes: [{node, file, cycles}]}
+//   cs = 全部截面日的 {days, total, cols: [{level, code, cycles}]} (本档各层 CS 列)
+// 特征面板 Node Time 按文件归并
+template <class T>
+void write_node_time(const std::string &dir, const graph::NodeClock &ts, const CsClock &cs) {
+  using Dag = typename CoreOf<T>::Graph;
   const std::filesystem::path path = std::filesystem::path(dir) / "node_time.json";
   const std::filesystem::path tmp = path.string() + ".tmp";
   {
     std::ofstream f(tmp);
     assert(f.is_open() && "node_time.json: 临时文件打不开");
-    f << "{\n \"samples\": " << clk.samples << ",\n \"nodes\": [\n";
+    f << "{\n \"ts\": {\"samples\": " << ts.samples << ", \"total\": " << ts.total << ", \"label\": " << ts.label << ", \"write\": " << ts.write
+      << ", \"nodes\": [\n";
     for (size_t i = 0; i < Dag::kNodeCount; ++i)
-      f << "  {\"node\": \"" << Dag::kNodes[i].node << "\", \"file\": \"" << Dag::kNodes[i].file << "\", \"cycles\": " << clk.cycles[i] << "}"
+      f << "  {\"node\": \"" << Dag::kNodes[i].node << "\", \"file\": \"" << Dag::kNodes[i].file << "\", \"cycles\": " << ts.cycles[i] << "}"
         << (i + 1 < Dag::kNodeCount ? ",\n" : "\n");
-    f << " ]\n}\n";
+    f << " ]},\n \"cs\": {\"days\": " << cs.days << ", \"total\": " << cs.total << ", \"cols\": [";
+    const char *sep = "\n";
+    for (size_t l = 0; l < LEVEL_COUNT; ++l)
+      for (size_t i = 0; i < cs.cols[l].size(); ++i)
+        if (T::LEVELS[l].fields[i].kind == FeatureDataType::CS) {
+          f << sep << "  {\"level\": " << l << ", \"code\": \"" << T::LEVELS[l].fields[i].code << "\", \"cycles\": " << cs.cols[l][i] << "}";
+          sep = ",\n";
+        }
+    f << "\n ]}\n}\n";
     assert(f.good() && "node_time.json: 写入失败");
   }
   std::filesystem::rename(tmp, path);
@@ -247,15 +260,21 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   auto process_asset_day = [&](size_t asset_id, size_t date_idx, const Day &day) -> size_t {
     ++date_assets_processed;
     CoreOf<T> &core = *cores[asset_id];
-    if (node_clock_pick(asset_id, date_idx, role.clock_every)) {
+    const bool timed = node_clock_pick(asset_id, date_idx, role.clock_every);
+    uint64_t t0 = 0;
+    if (timed) {
       graph::node_clock = &clock;
       ++clock.samples;
+      t0 = __builtin_ia32_rdtsc();
     }
     core.begin_day(ctx.dates[date_idx], day);
     const size_t work = runner.feed(core, asset_id, date_idx);
     core.end_day(store);
     runner.release();
-    graph::node_clock = nullptr;
+    if (timed) {
+      clock.total += __builtin_ia32_rdtsc() - t0;
+      graph::node_clock = nullptr;
+    }
     return work;
   };
 
@@ -512,6 +531,7 @@ bool pipeline(const PipelineArgs &args) {
   constexpr size_t kClockTarget = 4096;
   const size_t clock_every = std::max<size_t>(1, num_assets * (dates.size() - tail) / kClockTarget);
   std::vector<graph::NodeClock> clocks(num_ts);
+  std::vector<CsClock> cs_clocks(num_cs);
   TsRole<T> role{feed, args.fund, args.members, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out, clock_every, clocks};
 
   // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
@@ -548,7 +568,7 @@ bool pipeline(const PipelineArgs &args) {
         launch(id, std::move(name), L.cpus_of(s, i), [&](int w) { ts_loop<T>(ctx(w, stats.ts[static_cast<size_t>(w)]), role); });
         break;
       case ComputeStage::CS:
-        launch(id, std::move(name), L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { cs_loop<T>(ctx(w, stats.cs[lane]), lane, num_cs); });
+        launch(id, std::move(name), L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { cs_loop<T>(ctx(w, stats.cs[lane]), lane, num_cs, cs_clocks[lane]); });
         break;
       case ComputeStage::IO:
         launch(id, std::move(name), L.cpus_of(s, i), [&, lane = static_cast<size_t>(i)](int w) { io_loop<T>(ctx(w, stats.io[lane]), lane, num_io); });
@@ -577,14 +597,27 @@ bool pipeline(const PipelineArgs &args) {
   const bool completed = !args.cancel.load(std::memory_order_relaxed);
   if (completed)
     FeatureSnap::write(lib.dir, snap_header<T>(lib, dates.back()), snap_out);
-  graph::NodeClock clock_sum;
+  graph::NodeClock ts_sum;
   for (const graph::NodeClock &c : clocks) {
-    clock_sum.samples += c.samples;
+    ts_sum.samples += c.samples;
+    ts_sum.label += c.label;
+    ts_sum.write += c.write;
+    ts_sum.total += c.total;
     for (size_t i = 0; i < graph::NodeClock::kMaxNodes; ++i)
-      clock_sum.cycles[i] += c.cycles[i];
+      ts_sum.cycles[i] += c.cycles[i];
   }
-  if (clock_sum.samples > 0)
-    write_node_time<typename CoreOf<T>::Graph>(lib.dir, clock_sum);
+  CsClock cs_sum;
+  for (const CsClock &c : cs_clocks) {
+    cs_sum.total += c.total;
+    cs_sum.days += c.days;
+    for (size_t l = 0; l < LEVEL_COUNT; ++l) {
+      cs_sum.cols[l].resize(std::max(cs_sum.cols[l].size(), c.cols[l].size()), 0);
+      for (size_t i = 0; i < c.cols[l].size(); ++i)
+        cs_sum.cols[l][i] += c.cols[l][i];
+    }
+  }
+  if (ts_sum.samples > 0 || cs_sum.days > 0)
+    write_node_time<T>(lib.dir, ts_sum, cs_sum);
   std::cout << "\n=== Feature Computation (" << tier_name(T::kId) << ") " << (completed ? "Complete" : "Cancelled") << " ===\n"
             << "Processed: " << store.query_io_done() << "/" << dates.size() << " dates\n"
             << std::endl;

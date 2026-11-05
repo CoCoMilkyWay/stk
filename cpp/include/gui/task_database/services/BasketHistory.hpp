@@ -12,8 +12,10 @@
 // 续算: 全表 Book 常驻 worker, 落盘 <库目录>/baskets.bin (头 = 库 A 轴 + 篮子数 + 根布局; 随库清库而没).
 //   Book 的已合成日是此刻落盘日的前缀且头对得上 → 只合成其后的新日 (重读其末日收盘行定成员), 否则从库首日重合成;
 //   续算 ≡ 全量 (逐日同一份 Fold, 窗按日期截). 合成了新日才落盘.
-// 历史末日 = 库末个落盘日. 当日 (之后的行情日): 跑完把末日收盘行定的成员表 (下标 = QuoteService 全市场) 与各篮子末日点位 bind 给 QuoteService,
-//   由它每轮快照合成 (基准 = 新浪昨收); 先 bind 后发布. 发布 = 请求键集 (basket_line) 的子表.
+// 补日 (库末日之后至基本面 bar1d / bar1m 末日, 不落盘, 库末日 / 补日 / 点位不变即沿用): 成员 / 池 / 行业 / 股本冻结在库末日收盘行,
+//   日根 / 基准 = bar1d open … close / amount / pre_close, 分钟根 = bar1m; 加权的权重逐日 × 收 / 前收 (市值随价漂移).
+// 历史末日 = 末个补日 (无补日 = 库末个落盘日). 当日 (之后的行情日): 跑完把末日的成员表 (下标 = QuoteService 全市场) 与各篮子末日点位
+//   bind 给 QuoteService, 由它每轮快照合成 (基准 = 新浪昨收); 先 bind 后发布. 发布 = 请求键集 (basket_line) 的子表 (Book + 补日).
 #pragma once
 
 #include "gui/task_database/services/Kline.hpp"
@@ -60,18 +62,30 @@ private:
     template <class Ar>
     void snap(Ar &ar); // 头之后的部分
   };
+  // Book 末日之后的补日
+  struct Tail {
+    misc::Ymd from = 0;           // Book 末日
+    std::vector<double> base;     // [篮子] Book 末日点位
+    std::vector<misc::Ymd> dates; // 补日 (升序)
+    std::vector<double> level;    // [篮子] 末补日点位
+    std::vector<Kline> list;      // [篮子] 补日的根
+    Members mem;                  // 末补日收盘定的成员表 (库轴)
+  };
 
   static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return x_; }
   bool run(HistoryRequest &req);
   // book_ 合成到 dates 末日; mem = 末日收盘行定的成员表 (库轴). false = 取消 / 判废
   bool extend(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates, Members &mem);
+  // tail_ 补到基本面末日; mem: 入 = Book 末日的成员表, 出 = 末补日的. false = 取消
+  bool fill(const FeatureLib &lib, Members &mem);
   bool publish(const HistoryRequest &req, const char *lack);
 
   const Config &cfg_;
   QuoteService &live_;
   HistoryPub x_;
   Book book_; // worker 私有
+  Tail tail_; // worker 私有
   misc::exec::ForkJoin pool_{static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))};
 };
 

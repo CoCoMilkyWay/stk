@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <numeric>
@@ -198,7 +199,13 @@ public:
       }
       [&]<size_t... L>(std::index_sequence<L...>) { (init_side_<L>(side.id, side.axis.size()), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
     }
+    for (size_t l = 0; l < LEVEL_COUNT; ++l)
+      if (T::has(l))
+        col_cycles_[l].assign(T::LEVELS[l].field_count, 0);
   }
+
+  // 截面列用时 (特征面板 Node Time): [层][列] = 该列 run_one 累计 TSC 周期, 每列每拍都计 (一次 run_one 是整列 O(A) 运算, 两次 rdtsc 可略)
+  const std::array<std::vector<uint64_t>, LEVEL_COUNT> &col_cycles() const { return col_cycles_; }
 
   // day = 本日读写句柄 (store.cs_try_open, 已按日流控: 各层张量整体就绪); prev = 日期轴前一日句柄 (store.cs_prev, 只读 TS 列;
   // 区间首日为空); prev_date = 前一日日期 (旁读承接日; 区间首日 0). end_day 交还
@@ -234,6 +241,7 @@ public:
     constexpr bool kSettle = T::LEVELS[LVL].fields[DST].settle;
 
     static_assert(!(cs::FullAxis<Method> && Method::kNeutral), "全轴方法无中性化上下文");
+    const uint64_t t0 = __builtin_ia32_rdtsc();
     const std::vector<size_t> &idx = cs::FullAxis<Method> ? axis_indices_ : valid_indices_;
     const size_t n = idx.size();
     float *y = input_fp32_.data();
@@ -248,6 +256,7 @@ public:
       Method::apply(y, n);
     }
     scatter_<LVL>(t, DST, idx, y);
+    col_cycles_[LVL][DST] += __builtin_ia32_rdtsc() - t0;
   }
 
 private:
@@ -402,4 +411,5 @@ private:
   int neutral_at_ = -1;                                                                 // 本拍已备上下文的目标盘后性 (-1 = 未备)
   bool neutral_ok_ = false;                                                             // 本拍上下文齐 (无前日 → false)
   const cs::NeutralRank::Ctx neutral_ctx_{logmc_dense_.data(), industry_dense_.data()}; // 向量在 ctor 定长, 指针稳定
+  std::array<std::vector<uint64_t>, LEVEL_COUNT> col_cycles_;                           // [层][列] 截面列用时 (档缺的层空)
 };

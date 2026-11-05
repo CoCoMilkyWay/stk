@@ -85,7 +85,7 @@ Recent RecentOf(const Feed &f, size_t k);
 
 // title = 在画标的的标题 (简称 + 代码)
 void RenderStockPanel(const Market &mk, StockState &st, const std::string &title);
-// picks 各篮子的日内叠加图, 占满当前区域; 源未就绪 / 读取中 → 提示
+// picks 各篮子的日内叠加图, 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 源未就绪 / 读取中 → 提示
 void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks);
 
 } // namespace GUI::Database

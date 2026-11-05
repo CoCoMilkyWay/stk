@@ -80,21 +80,23 @@ private:
     const bool depth_updated = lob.depth_updated;
     if (depth_updated) {
       // 冲击成本: onDepth 之前把上一活跃秒的终簿结算入环 (Depth 尚未覆写), 之后按本次簿做 L_1min 分钟锚定建仓捕获 (写该行冲击成本列)
-      dag_.label.snapshot(t);
+      graph::clocked(&graph::NodeClock::label, [&] { dag_.label.snapshot(t); });
       dag_.run<Trigger::onDepth>();
-      dag_.label.minute_anchored(t, writer());
+      graph::clocked(&graph::NodeClock::label, [&] { dag_.label.minute_anchored(t, writer()); });
     }
 
-    // 逐笔写行, 同秒后一笔覆盖前一笔, 行终值 = 该秒最后一笔后的状态 (事件驱动: 实盘就是边到边写).
-    // 不要攒到秒末 / 日末再批量提交 —— 那是回测专属的形态, 会让回测与实盘走两条路.
-    fstore::ts_write_row<L_sec>(day_, t, asset_id_, dag_);
+    graph::clocked(&graph::NodeClock::write, [&] {
+      // 逐笔写行, 同秒后一笔覆盖前一笔, 行终值 = 该秒最后一笔后的状态 (事件驱动: 实盘就是边到边写).
+      // 不要攒到秒末 / 日末再批量提交 —— 那是回测专属的形态, 会让回测与实盘走两条路.
+      fstore::ts_write_row<L_sec>(day_, t, asset_id_, dag_);
 
-    // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, begin_day 已写)
-    // 盘口价只在 depth_updated 时取 (Depth 每日置 NaN, 首次更新前无簿)
-    meta_.on_tick(t, depth_updated, dag_.MicroPrice.out(),
-                  depth_updated ? dag_.Depth.bid_price[0] : 0.0f,
-                  depth_updated ? dag_.Depth.ask_price[0] : 0.0f, lob.price);
-    fstore::ts_write<L_sec>(day_, t, lob::L_sec_Field::ts_valid, asset_id_, meta_.flag<L_sec>());
+      // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, begin_day 已写)
+      // 盘口价只在 depth_updated 时取 (Depth 每日置 NaN, 首次更新前无簿)
+      meta_.on_tick(t, depth_updated, dag_.MicroPrice.out(),
+                    depth_updated ? dag_.Depth.bid_price[0] : 0.0f,
+                    depth_updated ? dag_.Depth.ask_price[0] : 0.0f, lob.price);
+      fstore::ts_write<L_sec>(day_, t, lob::L_sec_Field::ts_valid, asset_id_, meta_.flag<L_sec>());
+    });
   }
 
   ResamplerTick2Min tick2min_;

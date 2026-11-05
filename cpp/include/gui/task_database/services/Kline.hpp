@@ -3,6 +3,7 @@
 //            历史 (后台读, 带缓存) → Kline                           当日 (新浪, 快照线程每轮) → Day
 //   个股     StockHistory: bar1d 行 + bar1m 行 (Bar1mDay)            QuoteService::today(kStock): 本只的根
 //   篮子     BasketHistory: all.bar L_1day 行 + L_1min 行 → Fold     QuoteService::today(kBasket): bind 的成员表 → Fold
+//            (库末日之后: 冻结的成员表 + bar1d / bar1m → Fold)
 //   个股 / 篮子只差 Fold 一步, 历史 / 当日只差源.
 // 键: 个股 = 全局 id (AssetAxis 下标), 篮子 = basket_line (shared/Basket.hpp). 两路历史同一个请求 (键集) / 发布 (Tape),
 //   当日同一个 today (键集 → Day), 版本各一个 (QuoteStatus::ver).
@@ -129,6 +130,7 @@ struct Tape {
   std::vector<uint32_t> keys;
   std::vector<Kline> list;    // [keys]; 空 = 源未就绪
   const char *lack = nullptr; // 源未就绪的原因 (只篮子有: all.bar 未建 / 落盘不足 2 日)
+  misc::Ymd basis = 0;        // 篮子: 成员 / 池 / 行业 / 股本所取的库末日 (其后至 Kline::last 为基本面补日); 个股 0
 };
 struct HistoryPub : Published {
   uint32_t gen = 0;

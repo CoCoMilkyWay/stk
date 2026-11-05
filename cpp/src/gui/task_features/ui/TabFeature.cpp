@@ -899,7 +899,8 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
 }
 
 // ============================================================================
-// Node Time: 当前库 <库目录>/node_time.json (Compute / Append 时时序 worker 抽样计时, 每轮覆盖) 按节点文件归并
+// Node Time: 当前库 <库目录>/node_time.json (Compute / Append 时计时, 每轮覆盖) 按节点文件归并.
+//   时序 / 截面两段各自成 100% (不同 worker): 时序 = 抽样 asset-day 的节点 + 标签 + 写张量 + 源与调度; 截面 = 逐列 + 调度
 // ============================================================================
 
 struct NodeTimeFile {
@@ -907,12 +908,19 @@ struct NodeTimeFile {
     std::string name, file;
     uint64_t cycles;
   };
+  struct Col {
+    size_t level;
+    std::string code;
+    uint64_t cycles;
+  };
   std::string path;
   std::filesystem::file_time_type mtime{};
   double checked = -1.0; // 上次查 mtime 的时刻 (限速 1s)
   bool ok = false;       // 文件在且已读
-  uint64_t samples = 0;
+  uint64_t ts_samples = 0, ts_total = 0, ts_label = 0, ts_write = 0;
   std::vector<Node> nodes;
+  uint64_t cs_days = 0, cs_total = 0;
+  std::vector<Col> cols;
 };
 
 static void load_node_time(NodeTimeFile &nt, const std::string &path) {
@@ -934,10 +942,19 @@ static void load_node_time(NodeTimeFile &nt, const std::string &path) {
   const nlohmann::json j = nlohmann::json::parse(f);
   nt.mtime = mtime;
   nt.ok = true;
-  nt.samples = j.at("samples").get<uint64_t>();
+  const nlohmann::json &ts = j.at("ts"), &cs = j.at("cs");
+  nt.ts_samples = ts.at("samples").get<uint64_t>();
+  nt.ts_total = ts.at("total").get<uint64_t>();
+  nt.ts_label = ts.at("label").get<uint64_t>();
+  nt.ts_write = ts.at("write").get<uint64_t>();
   nt.nodes.clear();
-  for (const nlohmann::json &n : j.at("nodes"))
+  for (const nlohmann::json &n : ts.at("nodes"))
     nt.nodes.push_back({n.at("node").get<std::string>(), n.at("file").get<std::string>(), n.at("cycles").get<uint64_t>()});
+  nt.cs_days = cs.at("days").get<uint64_t>();
+  nt.cs_total = cs.at("total").get<uint64_t>();
+  nt.cols.clear();
+  for (const nlohmann::json &c : cs.at("cols"))
+    nt.cols.push_back({c.at("level").get<size_t>(), c.at("code").get<std::string>(), c.at("cycles").get<uint64_t>()});
 }
 
 // "features/Node/Bar/TS/Basic/Kline.hpp" → "Bar/TS/Basic/Kline"
@@ -950,82 +967,158 @@ static std::string_view short_node_file(std::string_view f) {
   return f;
 }
 
-// 行 = 本层字段所在文件 (字段表序去重); 占比 = 占本档全部节点用时 (文件的节点可能同时服务别的层, 各层视图不互斥)
-static void render_node_time(SharedData &data, const std::vector<FeatureMetadata> &features) {
-  static NodeTimeFile s_nt;
-  const LibId lib = data.feature.selection.lib();
-  load_node_time(s_nt, (std::filesystem::path(lib_dir(data.config, lib)) / "node_time.json").string());
-  if (!s_nt.ok) {
-    ImGui::TextDisabled("%s 尚无节点用时: Compute / Append 跑完即有 (时序 worker 抽样计时)", lib_name(lib).c_str());
-    return;
-  }
+// 一行 = 一个节点文件 (file 非空) 或一段非节点用时 (file 空, 显示 name); items = 节点 / 截面列 (名, 周期)
+struct NodeTimeRow {
+  std::string_view file;
+  std::string name;
+  uint64_t cycles = 0;
+  std::vector<std::pair<std::string, uint64_t>> items;
+};
 
-  using Node = NodeTimeFile::Node;
-  struct Row {
-    std::string_view file;
-    uint64_t cycles = 0;
-    std::vector<const Node *> nodes;
-  };
-  std::vector<Row> rows;
-  for (const FeatureMetadata &f : features)
-    if (std::none_of(rows.begin(), rows.end(), [&](const Row &r) { return r.file == f.file; }))
-      rows.push_back({f.file});
-  uint64_t total = 0, shown = 0;
-  for (const Node &n : s_nt.nodes) {
-    total += n.cycles;
-    for (Row &r : rows)
-      if (r.file == n.file) {
-        r.cycles += n.cycles;
-        r.nodes.push_back(&n);
-        shown += n.cycles;
-      }
-  }
-  for (Row &r : rows)
-    std::sort(r.nodes.begin(), r.nodes.end(), [](const Node *a, const Node *b) { return a->cycles > b->cycles; });
-  std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) { return a.cycles > b.cycles; });
+static NodeTimeRow &node_time_row(std::vector<NodeTimeRow> &rows, std::string_view file) {
+  for (NodeTimeRow &r : rows)
+    if (!r.file.empty() && r.file == file)
+      return r;
+  return rows.emplace_back(NodeTimeRow{file, std::string(short_node_file(file))});
+}
+
+// 一段的表: 占比 = 周期 / total (本段 100%), 行与 items 按周期降序; items 超宽折行
+static void render_node_time_table(const char *id, const char *item_header, std::vector<NodeTimeRow> &rows, uint64_t total, float height) {
+  for (NodeTimeRow &r : rows)
+    std::sort(r.items.begin(), r.items.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+  std::stable_sort(rows.begin(), rows.end(), [](const NodeTimeRow &a, const NodeTimeRow &b) { return a.cycles > b.cycles; });
   const auto share = [&](uint64_t c) { return total > 0 ? static_cast<float>(static_cast<double>(c) / static_cast<double>(total)) : 0.0f; };
 
-  ImGui::Text("抽样 %llu asset-day", static_cast<unsigned long long>(s_nt.samples));
-  ImGui::SameLine();
-  ImGui::TextDisabled("· 本层相关文件合计 %.1f%% (占本档全部节点用时)", 100.0f * share(shown));
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("计时 = 时序节点 compute / flush 的 TSC 周期 (每轮约 4096 个 asset-day 抽样)\n"
-                      "截面列 / 标签 / 元列不经节点表, 不计 (显示 —)\n"
-                      "文件的节点可能同时服务别的层, 各层视图的占比不互斥");
-
-  if (ImGui::BeginTable("NodeTimeTable", 3,
-                        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
-                        ImVec2(0, ImGui::GetContentRegionAvail().y))) {
-    ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("File");
-    ImGui::TableSetupColumn("Share");
-    ImGui::TableSetupColumn("Nodes", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableHeadersRow();
-    for (const Row &r : rows) {
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      const std::string_view name = short_node_file(r.file);
-      ImGui::TextUnformatted(name.data(), name.data() + name.size());
-      ImGui::TableNextColumn();
-      if (r.nodes.empty()) {
-        ImGui::TextDisabled("—");
-        ImGui::TableNextColumn();
-        continue;
+  if (!ImGui::BeginTable(id, 3,
+                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+                         ImVec2(0, height)))
+    return;
+  ImGui::TableSetupScrollFreeze(0, 1);
+  ImGui::TableSetupColumn("File");
+  ImGui::TableSetupColumn("Share");
+  ImGui::TableSetupColumn(item_header, ImGuiTableColumnFlags_WidthStretch);
+  ImGui::TableHeadersRow();
+  for (const NodeTimeRow &r : rows) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    if (r.file.empty())
+      ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.4f, 1.0f), "%s", r.name.c_str());
+    else
+      ImGui::TextUnformatted(r.name.c_str());
+    ImGui::TableNextColumn();
+    char pct[16];
+    std::snprintf(pct, sizeof(pct), "%.1f%%", 100.0f * share(r.cycles));
+    ImGui::ProgressBar(share(r.cycles), ImVec2(160, 0), pct);
+    ImGui::TableNextColumn();
+    for (size_t i = 0; i < r.items.size(); ++i) {
+      std::snprintf(pct, sizeof(pct), "%.1f%%", 100.0f * share(r.items[i].second));
+      const ImGuiStyle &st = ImGui::GetStyle();
+      const float w = ImGui::CalcTextSize(r.items[i].first.c_str()).x + 4.0f + ImGui::CalcTextSize(pct).x;
+      if (i > 0) {
+        ImGui::SameLine(0.0f, 12.0f);
+        if (ImGui::GetContentRegionAvail().x < w + st.CellPadding.x)
+          ImGui::NewLine();
       }
-      char pct[16];
-      std::snprintf(pct, sizeof(pct), "%.1f%%", 100.0f * share(r.cycles));
-      ImGui::ProgressBar(share(r.cycles), ImVec2(160, 0), pct);
-      ImGui::TableNextColumn();
-      for (size_t i = 0; i < r.nodes.size(); ++i) {
-        if (i > 0)
-          ImGui::SameLine(0.0f, 12.0f);
-        ImGui::Text("%s", r.nodes[i]->name.c_str());
-        ImGui::SameLine(0.0f, 4.0f);
-        ImGui::TextDisabled("%.1f%%", 100.0f * share(r.nodes[i]->cycles));
-      }
+      ImGui::TextUnformatted(r.items[i].first.c_str());
+      ImGui::SameLine(0.0f, 4.0f);
+      ImGui::TextDisabled("%s", pct);
     }
-    ImGui::EndTable();
   }
+  ImGui::EndTable();
+}
+
+// 两段 (时序 / 截面) 各一张表, 各自成 100%. 全部 = 全档文件 + 非节点行 (合计 100%);
+// 只看本层 = 只留本层字段所在文件 / 本层截面列, 去掉非节点行 (占比仍按本段全量, 节点可能同时服务别的层, 各层视图不互斥)
+static void render_node_time(SharedData &data, const Feature &feature) {
+  static NodeTimeFile s_nt;
+  static bool s_level_only = false;
+  const LibId lib = feature.selection.lib();
+  load_node_time(s_nt, (std::filesystem::path(lib_dir(data.config, lib)) / "node_time.json").string());
+  if (!s_nt.ok) {
+    ImGui::TextDisabled("%s 尚无用时: Compute / Append 跑完即有", lib_name(lib).c_str());
+    return;
+  }
+  const auto &meta = feature.meta().features;
+  const size_t level = static_cast<size_t>(feature.selection.selected_level);
+  std::vector<std::string_view> level_files;
+  for (const FeatureMetadata &f : meta[level])
+    if (std::find(level_files.begin(), level_files.end(), f.file) == level_files.end())
+      level_files.push_back(f.file);
+  const auto in_level = [&](std::string_view file) { return std::find(level_files.begin(), level_files.end(), file) != level_files.end(); };
+  std::string_view label_file;
+  for (const auto &fs : meta)
+    for (const FeatureMetadata &f : fs)
+      if (f.data_type == FeatureDataType::LB && label_file.empty())
+        label_file = f.file;
+
+  char toggle[48];
+  std::snprintf(toggle, sizeof(toggle), "只看本层 (%s)", level_name(level));
+  ImGui::Checkbox(toggle, &s_level_only);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("TSC 周期, 时序 / 截面是不同 worker, 两段各自成 100%%\n"
+                      "时序: 每轮约 4096 个 asset-day 抽样, 整个 asset-day 计时, 节点 compute / flush 逐个计,\n"
+                      "      标签 / 写张量单列, 余下 = 源与调度 (解码 / 订单簿 / 重采样 / 日句柄)\n"
+                      "截面: 每列每拍全计, 余下 = 调度 (有效集扫描 / 旁读读入)\n"
+                      "只看本层: 文件的节点可能同时服务别的层, 各层视图不互斥");
+
+  // 时序
+  std::vector<NodeTimeRow> ts_rows;
+  uint64_t ts_named = s_nt.ts_label + s_nt.ts_write, ts_shown = 0;
+  for (const NodeTimeFile::Node &n : s_nt.nodes) {
+    ts_named += n.cycles;
+    if (s_level_only && !in_level(n.file))
+      continue;
+    NodeTimeRow &r = node_time_row(ts_rows, n.file);
+    r.cycles += n.cycles;
+    r.items.emplace_back(n.name, n.cycles);
+  }
+  assert(s_nt.ts_total >= ts_named && "node_time.json: 时序分项之和超过整段");
+  if (!label_file.empty() && (!s_level_only || in_level(label_file))) {
+    NodeTimeRow &r = node_time_row(ts_rows, label_file);
+    r.cycles += s_nt.ts_label;
+    r.items.emplace_back("标签", s_nt.ts_label);
+  }
+  for (const NodeTimeRow &r : ts_rows)
+    ts_shown += r.cycles;
+  if (!s_level_only) {
+    ts_rows.push_back({{}, "写张量 (TS 行 + 元列)", s_nt.ts_write, {}});
+    ts_rows.push_back({{}, "源与调度", s_nt.ts_total - ts_named, {}});
+  }
+
+  // 截面: 列 → 文件 (按 (层, code) 查字段表; 查不到 = 字段表已变而用时是旧轮的, 按 code 单列)
+  std::vector<NodeTimeRow> cs_rows;
+  uint64_t cs_named = 0, cs_shown = 0;
+  for (const NodeTimeFile::Col &c : s_nt.cols) {
+    cs_named += c.cycles;
+    if (s_level_only && c.level != level)
+      continue;
+    const auto &fs = meta[c.level];
+    const auto it = std::find_if(fs.begin(), fs.end(), [&](const FeatureMetadata &f) { return c.code == f.code; });
+    NodeTimeRow &r = it != fs.end() ? node_time_row(cs_rows, it->file) : cs_rows.emplace_back(NodeTimeRow{{}, c.code});
+    r.cycles += c.cycles;
+    r.items.emplace_back(s_level_only ? c.code : c.code + "@" + level_name(c.level), c.cycles);
+    cs_shown += c.cycles;
+  }
+  assert(s_nt.cs_total >= cs_named && "node_time.json: 截面分项之和超过整段");
+  if (!s_level_only)
+    cs_rows.push_back({{}, "调度 (有效集 / 旁读)", s_nt.cs_total - cs_named, {}});
+
+  const auto pct = [](uint64_t c, uint64_t total) { return total > 0 ? 100.0 * static_cast<double>(c) / static_cast<double>(total) : 0.0; };
+  const float line = ImGui::GetFrameHeightWithSpacing();
+  const float ts_height = std::max(6.0f * line, 0.6f * (ImGui::GetContentRegionAvail().y - 2.0f * line));
+
+  char title[128];
+  std::snprintf(title, sizeof(title), "时序 · 抽样 %llu asset-day · %s %.1f%%", static_cast<unsigned long long>(s_nt.ts_samples),
+                s_level_only ? "本层相关合计" : "合计", s_level_only ? pct(ts_shown, s_nt.ts_total) : 100.0);
+  ImGui::SeparatorText(title);
+  render_node_time_table("NodeTimeTs", "Nodes", ts_rows, s_nt.ts_total, ts_height);
+
+  std::snprintf(title, sizeof(title), "截面 · %llu 日 · %s %.1f%%", static_cast<unsigned long long>(s_nt.cs_days),
+                s_level_only ? "本层合计" : "合计", s_level_only ? pct(cs_shown, s_nt.cs_total) : 100.0);
+  ImGui::SeparatorText(title);
+  render_node_time_table("NodeTimeCs", "Columns", cs_rows, s_nt.cs_total, ImGui::GetContentRegionAvail().y);
 }
 
 // ============================================================================
@@ -1096,7 +1189,7 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Node Time")) {
-      render_node_time(data, get_current_level_features(feature));
+      render_node_time(data, feature);
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();

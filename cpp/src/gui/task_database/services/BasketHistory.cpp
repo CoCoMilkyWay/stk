@@ -1,8 +1,12 @@
 #include "gui/task_database/services/BasketHistory.hpp"
 
+#include "features/Bar1mDay.hpp"
 #include "features/Storage/FeatureRead.hpp"
+#include "fundamental/Scan.hpp"
 #include "misc/fs.hpp"
+#include "misc/parquet.hpp"
 #include "misc/snap.hpp"
+#include "shared/AssetAxis.hpp"
 #include "shared/Basket.hpp" // basket_line / basket_count / cut_of
 #include "shared/FeatureLib.hpp"
 
@@ -178,6 +182,8 @@ bool BasketHistory::run(HistoryRequest &req) {
       book_ = {};
     return false;
   }
+  if (!fill(lib, mem))
+    return false;
   if (book_.dates.size() > done) {
     std::vector<std::byte> blob;
     misc::snap::Save ar(blob);
@@ -194,8 +200,99 @@ bool BasketHistory::run(HistoryRequest &req) {
         live.add(w.basket, w.w);
     live.next();
   }
-  live_.bind(std::move(live), book_.level);
+  live_.bind(std::move(live), tail_.level);
   return publish(req, nullptr);
+}
+
+bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
+  static const fundamental::Spec &kDaily = fundamental::spec("cn_stock_real_bar1d");
+  static const std::vector<std::string> kCols = {"open", "high", "low", "close", "volume", "amount", "pre_close"};
+  const fundamental::Catalog cat;
+  const std::vector<fundamental::Shard> &months = cat.shards(kDaily.name), &minutes = cat.shards("bar1m");
+  assert(!months.empty() && !minutes.empty() && "基本面未同步日线 / 分钟");
+  misc::Ymd mark = 0; // 日线水位: 末个非空月分片 (0 行月也落文件)
+  for (size_t k = months.size(); k-- > 0 && mark == 0;)
+    mark = fundamental::mark(kDaily, months[k]);
+  const misc::Ymd from = book_.dates.back(), to = std::min(mark, minutes.back().day);
+  const std::span<const misc::Ymd> trading = live_.trading();
+  const auto lo = std::upper_bound(trading.begin(), trading.end(), from);
+  const std::vector<misc::Ymd> dates(lo, std::max(lo, std::upper_bound(trading.begin(), trading.end(), to)));
+  if (tail_.from == from && tail_.dates == dates && tail_.base == book_.level) {
+    mem = tail_.mem;
+    return true;
+  }
+
+  const size_t A = lib.axis.size(), NB = basket_count(), N = dates.size();
+  tail_ = {from, book_.level, dates, book_.level, std::vector<Kline>(NB), {}};
+  fundamental::Ids ids(fundamental::Ids::Cover::Part);
+  for (size_t a = 0; a < A; ++a)
+    ids.add(asset_axis().code(lib.axis.global(a)));
+  fundamental::Scratch xs;
+  std::vector<Cell> px(N * A); // [补日][库轴]; 无行 → 收 0
+  std::vector<float> pre(N * A, 0.f);
+  std::vector<uint8_t> trade(N * A, 0);
+  for (const fundamental::Shard &sh : months) {
+    if (N == 0 || sh.ym < misc::ym_of(dates.front()) || sh.ym > misc::ym_of(dates.back()))
+      continue;
+    const fundamental::Rows r = xs.open(sh, kDaily, kCols, ids);
+    misc::pq::Col c[7];
+    for (size_t j = 0; j < kCols.size(); ++j)
+      c[j] = r.col(kCols[j]);
+    r.each([&](std::int64_t i, std::uint32_t a, misc::Ymd d) {
+      const auto it = std::lower_bound(dates.begin(), dates.end(), d);
+      if (it == dates.end() || *it != d)
+        return;
+      const size_t q = static_cast<size_t>(it - dates.begin()) * A + a;
+      const float x = c[3].f32(i), vol = c[4].f32(i);
+      px[q] = cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), x, 0, c[5].f32(i));
+      pre[q] = c[6].f32(i);
+      trade[q] = vol > 0 && x > 0;
+    });
+  }
+
+  Fold fold(NB);
+  std::vector<Day> day(NB);
+  Bar1mDay bd;
+  Bars bars; // 一只一日的分钟根
+  for (size_t k = 0; k < N; ++k) {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false;
+    const misc::Ymd d = dates[k];
+    bd.load(cat, ids, xs, d);
+    fold.open(kSlots);
+    for (size_t a = 0; a < A; ++a) {
+      const std::span<const Members::Weight> ws = mem.of(a);
+      if (ws.empty())
+        continue;
+      const size_t q = k * A + a;
+      bars.date = d;
+      bars.has.reset();
+      if (const Bar1m *m = bd.asset(a))
+        for (size_t t = 0; t < TRADE_MINUTES_PER_DAY; ++t)
+          if (m[t].volume > 0 && m[t].close > 0)
+            bars.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, 0, m[t].amount));
+      fold.add({pre[q], trade[q] ? &px[q] : nullptr, &bars}, ws);
+    }
+    fold.finish(d, k ? dates[k - 1] : from, tail_.level, day);
+    for (size_t b = 0; b < NB; ++b) {
+      if (!day[b].candle.date)
+        continue;
+      tail_.list[b].daily.push_back(day[b].candle);
+      tail_.list[b].minutes.push_back(day[b].bars);
+      tail_.level[b] = day[b].candle.close;
+    }
+    for (size_t a = 0; a < A; ++a) {
+      const size_t q = k * A + a;
+      if (!(pre[q] > 0 && px[q].close > 0))
+        continue;
+      const float g = px[q].close / pre[q];
+      for (uint32_t j = mem.at[a]; j < mem.at[a + 1]; ++j)
+        if (static_cast<int>(mem.ws[j].basket % kWeights) == kWeightCap)
+          mem.ws[j].w *= g;
+    }
+  }
+  tail_.mem = mem;
+  return true;
 }
 
 bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates, Members &mem) {
@@ -287,11 +384,23 @@ bool BasketHistory::publish(const HistoryRequest &req, const char *lack) {
   auto out = std::make_shared<Tape>();
   out->keys = req.keys;
   out->lack = lack;
-  if (!lack)
+  if (!lack) {
+    // 窗按 Book 落盘日 + 补日截: 自末往前第 n 日
+    const size_t nb = book_.dates.size(), nt = tail_.dates.size();
+    const auto nth_last = [&](size_t n) { return n <= nt ? tail_.dates[nt - n] : book_.dates[nb - std::min(nb, n - nt)]; };
+    const misc::Ymd d_lo = nth_last(kDailyDays), m_lo = nth_last(kMinuteDays);
+    out->basis = book_.dates.back();
     for (const uint32_t b : req.keys) {
-      assert(b < book_.list.size());
-      out->list.push_back(book_.list[b]);
+      assert(b < book_.list.size() && b < tail_.list.size());
+      Kline &kl = out->list.emplace_back(book_.list[b]);
+      const Kline &t = tail_.list[b];
+      kl.daily.insert(kl.daily.end(), t.daily.begin(), t.daily.end());
+      kl.minutes.insert(kl.minutes.end(), t.minutes.begin(), t.minutes.end());
+      std::erase_if(kl.daily, [&](const Candle &c) { return c.date < d_lo; });
+      std::erase_if(kl.minutes, [&](const Bars &m) { return m.date < m_lo; });
+      kl.last = nt ? tail_.dates.back() : kl.last;
     }
+  }
   std::lock_guard<std::mutex> lock(x_.mutex);
   x_.gen = req.gen;
   x_.data = std::move(out);
