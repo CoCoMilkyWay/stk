@@ -369,7 +369,12 @@ bool BasketHistory::publish(const HistoryRequest &req, const char *lack) {
     const auto nth_last = [&](size_t n) { return n <= nt ? tail_.dates[nt - n] : book_.dates[nb - std::min(nb, n - nt)]; };
     const misc::Ymd d_lo = nth_last(kDailyDays), m_lo = nth_last(kMinuteDays);
     out->basis = book_.dates.back();
+    std::vector<uint32_t> n(basket_count());
+    std::vector<double> w(basket_count());
+    for (const Members::Weight &x : tail_.mem.ws)
+      ++n[x.basket], w[x.basket] += x.w;
     for (const uint32_t b : req.keys) {
+      out->members.push_back(n[b]), out->weight.push_back(w[b]);
       assert(b < book_.list.size() && b < tail_.list.size());
       Kline &kl = out->list.emplace_back(book_.list[b]);
       const Kline &t = tail_.list[b];

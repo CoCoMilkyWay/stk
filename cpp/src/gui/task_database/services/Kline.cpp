@@ -59,13 +59,14 @@ Cell scaled(const double *a, double f) {
 
 } // namespace
 
-Fold::Fold(size_t baskets) : sw_(baskets), acc_(baskets * kCells * kQ) {}
+Fold::Fold(size_t baskets) : sw_(baskets), net_(baskets), acc_(baskets * kCells * kQ) {}
 
 void Fold::open(int slots) {
   assert(slots >= 0 && slots <= kSlots);
   slots_ = slots;
   end_ = -1;
   std::fill(sw_.begin(), sw_.end(), 0.0);
+  std::fill(net_.begin(), net_.end(), 0.0);
   for (size_t b = 0; b < sw_.size(); ++b)
     std::fill_n(acc_.begin() + static_cast<ptrdiff_t>(b * kCells * kQ), cells() * kQ, 0.0);
 }
@@ -77,17 +78,22 @@ void Fold::add(const Leg &g, std::span<const Members::Weight> ws) {
   const double inv = 1.0 / g.base;
   std::array<double, kCells * kQ> r;
   ratio(g.day, inv, 1, r.data());
-  double c = 1;
+  double c = 1, px = g.base, net = 0;
+  int dir = 0;
   for (int s = 0; s < slots_; ++s) {
     const Cell *b = g.bars->has[static_cast<size_t>(s)] ? &g.bars->cell[static_cast<size_t>(s)] : nullptr;
     double *q = r.data() + (1 + static_cast<size_t>(s)) * kQ;
     ratio(b, inv, c, q);
-    if (b)
+    if (b) {
       c = q[3], end_ = std::max(end_, s);
+      dir = b->close > px ? 1 : b->close < px ? -1 : dir;
+      net += dir * b->amount, px = b->close;
+    }
   }
   const size_t n = cells() * kQ;
   for (const Members::Weight &w : ws) {
     sw_[w.basket] += w.w;
+    net_[w.basket] += net;
     double *a = acc_.data() + static_cast<size_t>(w.basket) * kCells * kQ;
     for (size_t j = 0; j < n; j += kQ) {
       for (size_t k = 0; k < 4; ++k)
@@ -109,6 +115,7 @@ void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, st
     const double f = level[b] / sw_[b];
     o.prev = prev;
     o.candle = {scaled(a, f), d, static_cast<float>(level[b])};
+    o.flow = net_[b];
     o.bars.date = d;
     o.bars.has.reset();
     for (int s = 0; s <= end_; ++s)

@@ -16,6 +16,8 @@
 //
 // 篮子合成 (Fold, 历史逐日 / 当日同一份): 点位 = 前日点位 × Σ w · 价 / 基准 / Σ w; 开 / 高 / 低 / 收各自如此
 //   (高 / 低 = 成员高低的加权, 是真实路径的外包); 额 = 成员之和, 量不合成.
+//   净流入 (只合成分钟的日) = 成员各自分钟涨跌法之和 (不加权): 一只逐个有成交的分钟, 收 > 上一分钟收 (首个对基准) → 该分钟额记入,
+//   < → 记出, 平 → 随上一分钟的方向 (之前无方向 = 不计).
 //   基准 = 成员当日前收 (历史 = D−1 行 pre_close, 当日 = 新浪昨收; 同一个交易所前收), 无基准的成员不计;
 //   当日无成交的成员比 1; 分钟缺根沿用其上根收盘, 首根前 = 基准.
 //   逐资产一遍 (资产主序): 一只的分钟根只读一次, 比 × 权散进所属各篮子.
@@ -122,6 +124,7 @@ struct Day {
   misc::Ymd prev = 0; // 前一交易日
   Candle candle;      // 日根 (ref = 前收)
   Bars bars;          // 分钟根
+  double flow = 0;    // 篮子: 净流入 [元] (分钟涨跌法, 见 Fold); 个股 0
 };
 
 inline bool joins(const Kline &k, const Day &d) { return d.candle.date != 0 && d.prev == k.last; }
@@ -153,6 +156,9 @@ struct Tape {
   std::vector<Kline> list;    // [keys]; 空 = 源未就绪
   const char *lack = nullptr; // 源未就绪的原因 (只篮子有: all.bar 未建 / 落盘不足 2 日)
   misc::Ymd basis = 0;        // 篮子: 成员 / 池 / 行业 / 股本所取的库末日 (其后至 Kline::last 为基本面补日); 个股 0
+  // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 (加权线 = 末日收盘总市值 [元]); 个股空
+  std::vector<uint32_t> members;
+  std::vector<double> weight;
 };
 struct HistoryPub : Published {
   uint32_t gen = 0;
@@ -191,7 +197,7 @@ public:
   // slots = 合成前几槽的分钟 (0 = 只合日根; 当日 = 此刻所在根 + 1)
   void open(int slots);
   void add(const Leg &g, std::span<const Members::Weight> ws);
-  // level[b] = 前日点位; 无成员 / 无成交 / 无点位的篮子 out[b].candle.date = 0
+  // level[b] = 前日点位; 无成员 / 无成交 / 无点位的篮子 out[b].candle.date = 0; out[b].flow = 净流入 (只合日根 = 0)
   void finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, std::span<Day> out);
 
 private:
@@ -201,6 +207,7 @@ private:
   int slots_ = 0;
   int end_ = -1;            // 有根的末槽
   std::vector<double> sw_;  // [篮子] Σ w
+  std::vector<double> net_; // [篮子] 净流入
   std::vector<double> acc_; // [篮子][kCells][kQ]
 };
 

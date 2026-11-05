@@ -2,7 +2,7 @@
 //   个股 = Assets 右栏: 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
 //   篮子 = Portfolio NAV 日内栏: 键集 = 全部篮子线, 叠加图 (对首日前收的涨跌幅, 刻度区全空: 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名小字贴线尾;
 //     不画量, 读数看十字光标); 多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 kSlots 的因子并根, 同 py/app/tdx) + 现价十字 (虚线, 标涨跌幅 / 时刻), 版面不变;
-//   近况 (Recent): 键集里一个标的的近况三列 (Portfolio NAV 表). 以下为个股图:
+//   近况 (Recent): 键集里一个标的的近况两列 (Portfolio NAV 表). 以下为个股图:
 //   价 = 实心蜡烛 (实体 = 上一根收 → 本根收, 首根起于前收, 根根首尾相接; 量柱同色), 日内按视野宽并根 (同篮子);
 //     日线另叠均线, 默认 10 年档; 悬停提示只在量图
 //     十字光标随鼠标: 竖线吸附最近一根 (底轴标时刻), 横线在鼠标所在格 (价图左价 / 右涨跌幅, 量图标量 / 额)
@@ -69,17 +69,16 @@ struct BasketPick {
   uint32_t col;
 };
 
-// 近况: 最新一根对前收 / 最新收对 MA5 (含最新一根) / 最新一根额对此前 5 根均额, 各 − 1; 不可算 = NaN
+// 近况: 最新一根对前收 / 最新收对 MA5 (含最新一根), 各 − 1; 不可算 = NaN
 struct Recent {
   double chg = std::numeric_limits<double>::quiet_NaN();
   double ma5 = std::numeric_limits<double>::quiet_NaN();
-  double amt5 = std::numeric_limits<double>::quiet_NaN();
 };
-// 近况的一日: 收 / 前收 / 额 (NaN = 无)
+// 近况的一日: 收 / 前收 (NaN = 无)
 struct Mark {
-  double close, ref, amount;
+  double close, ref;
 };
-inline constexpr size_t kMarks = 6;
+inline constexpr size_t kMarks = 5;
 // 近况核 (标的 / 净值线同一份): m = 新 → 旧, 至多用前 kMarks 日
 Recent RecentOf(std::span<const Mark> m);
 // 键集第 k 个标的的近况: 当日接上取当日, 再接日线末根起; 历史未到 / 源未就绪 → 全 NaN

@@ -161,10 +161,10 @@ Recent StockRecent(const StockInfo *info, const Candle &today, misc::Ymd prev) {
   Mark m[kMarks];
   size_t n = 0;
   if (today.date != 0 && prev == info->update_date)
-    m[n++] = {today.close, today.ref, today.amount};
+    m[n++] = {today.close, today.ref};
   for (const StockInfo::DayClose &c : info->closes)
     if (c.date != 0 && n < kMarks)
-      m[n++] = {c.close, c.ref, kNaN};
+      m[n++] = {c.close, c.ref};
   return RecentOf({m, n});
 }
 

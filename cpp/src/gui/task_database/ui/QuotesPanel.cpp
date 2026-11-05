@@ -989,13 +989,6 @@ Recent RecentOf(std::span<const Mark> m) {
       c += m[i].close;
     r.ma5 = m[0].close / (c / 5) - 1.0;
   }
-  if (n >= 6) {
-    double a = 0;
-    for (size_t i = 1; i < 6; ++i)
-      a += m[i].amount;
-    if (a > 0)
-      r.amt5 = m[0].amount / (a / 5) - 1.0;
-  }
   return r;
 }
 
@@ -1007,7 +1000,7 @@ Recent RecentOf(const Feed &f, size_t k) {
   const Day &today = f.today[k];
   Mark m[kMarks];
   size_t n = 0;
-  const auto put = [&](const Candle &c) { m[n++] = {c.close, c.ref, c.amount}; };
+  const auto put = [&](const Candle &c) { m[n++] = {c.close, c.ref}; };
   if (joins(kl, today))
     put(today.candle);
   for (auto it = kl.daily.rbegin(); it != kl.daily.rend() && n < kMarks; ++it)
