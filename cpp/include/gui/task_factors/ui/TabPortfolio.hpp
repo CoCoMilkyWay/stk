@@ -18,14 +18,14 @@
 //       只算 G20 多头 (无冲击 = 不扣). 成本按 Δw (Stat 契约【换手成本】), 冲击段 = 各因子自己的主段, 不可选:
 //       用了 lob.* 叶 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; 否则固定段, 增仓量 / 平仓量都按 fixed_impact;
 //       年换手 = 全评估期单边 (倍/年: Σ 增仓量 / 交易日数 × 每年交易日; 组合 = 各因子增仓量按当日份额加权, 不计因子间对冲)
-//     池指数线 (日层篮子 0, 每池一条等权; all 池两条 = 全A加权 (总市值) / 全A等权) / 行业线 (all 池篮子 k ≥ 1 = SW2021 一级, 总市值加权):
+//     指数线 / 行业线 = 篮子目录两组 (shared/Basket.hpp basket_group: 各池整体, all 池两条 = 全A加权 (总市值) / 全A等权, 其余池等权 / SW2021 一级, 总市值加权):
 //       只画因子日并集轴范围内, 当日收盘一点; 每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (价格指数, 不看可成交: Assets 篮子同一份), 两者之差 = 可成交拖累;
-//       年换手 = 全评估期单边 PoolCurve::turn[该线权重] (倍/年, 只篮子 0 有; 指数线本身不扣成本)
+//       年换手 = 全评估期单边 BasketCurve::turn[篮子线] (倍/年, 只池整体有; 指数线本身不扣成本)
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     夏普 = 区间内日收益 (日末净值, 无点的日收益 0) mean / sd × √每年交易日;
 //     派生重算 (新结果到) / 主图例显隐 / 右表选中 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
-//   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用): 右侧类别条 (指数 / 行业) 选一组, 表格单选一个池或申万一级行业 (全A 内按上一行 ind_l1 切;
+//   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用; 行 = NAV 指数 / 行业两组的同一份): 右侧类别条 (指数 / 行业) 选一组, 表格单选一个池或申万一级行业 (全A 内按上一行 ind_l1 切;
 //     默认 = 组合首个因子所在池; 列 = 中文名 (悬停看名) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位, 底色 = 该分位在同组 (池 / 行业) 同口内的截面名次, 便宜绿 → 贵红),
 //     主图 = 该篮子指数 P (全A加权 / 行业 = 总市值加权, 全A等权 / 其余池 = 等权; 区间起点 = 1, 与 NAV 同一切片) + 同权重的滚动 EP / BP / SP / CP / DY Band
 //     (默认只开 BP): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
@@ -40,6 +40,7 @@
 #include "gui/task_database/ui/QuotesPanel.hpp"      // BasketState / Recent (NAV 日内栏 + 近况列)
 #include "gui/task_factors/services/FactorsFile.hpp" // FactorRow
 #include "gui/task_factors/services/PortfolioService.hpp"
+#include "shared/Basket.hpp" // kGroupPool / kBasketGroups
 
 #include <algorithm>
 #include <array>
@@ -59,64 +60,64 @@ struct PortfolioCurve {
   std::vector<double> x, y;
 };
 
-// 一条图例线, 全段. 主图例列 = cn | kind | 区间年化 | 区间夏普 | 年换手 (补空格对齐); NAV 右表一行 = 成对线的 cn | 近况三列 | 两口年化 | 行首线夏普 | 年换手;
-// en 只在悬停 (主图例项 / 右表中文名格) 时显示; 排版 / 年化 / 夏普在渲染时拼
-struct PortfolioLine {
-  std::string id;                                         // ImGui ID (###id) / 选中键 (行首线) / 单选键
+// 成对线的两条 (一行两条, 同色, 理想列淡): 指数 / 行业 = 可成交 (T+1C 标签指数) / 理想 (价格指数); 因子 / 策略 = 有冲击 / 无冲击.
+// 行选中 → 主图例里理想列显、可成交列隐 (点图例再显)
+enum PairLine : int { kTrade,   // 可成交 / 有冲击
+                      kIdeal }; // 理想 / 无冲击
+inline constexpr int kPairLines = 2;
+
+// 一行 = 一对线, 全段 (NAV 右表一行; VAL 表一行 = NAV 指数 / 行业行同一份). 主图例列 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (补空格对齐);
+// NAV 右表 = cn | 近况三列 | 两条年化 | 可成交列夏普 | 年换手; en 只在悬停时显示; 排版 / 近况 / 年化 / 夏普在渲染时拼
+//   篮子行: 两条 = BasketCurve 可成交指数 / 价格指数 (Assets 篮子日线) 同一投影到日并集轴 = 前收一点 (范围首日开盘; 源首日无) + 轴上每日收盘一点, 原值
+struct PortfolioRow {
+  std::string id;                                         // 选中键 / VAL 单选键; 线的 ImGui ID = id + 线后缀
   std::string en, cn;                                     // 名 / 中文名
-  std::string kind;                                       // 口径 (指数 / 行业: 可成交 / 理想; 因子 / 策略: 有冲击 / 无冲击)
-  double turn = std::numeric_limits<double>::quiet_NaN(); // 年换手 (NAV 线; 全评估期单边, 倍/年; NaN = 无)
-  std::string tag;                                        // 线尾小字
-  std::string hover;                                      // NAV 悬停 (en 起头 + 详情)
-  bool on = false;                                        // 默认选中 (只看行首线)
-  int basket = -1;                                        // NAV 指数 / 行业行: 篮子线 basket_line (篮子 Feed 键集下标; 理想线 / 近况 / 日内取它); 其余 −1
-  Database::Recent recent;                                // NAV 因子 / 策略行: 净值日末点的近况 (Δ5日量恒 NaN)
-  PortfolioCurve c;
-};
-// 篮子线 (NAV 可成交线 / VAL 篮子同形) = 线 + 它的源: PoolCurve 篮子 k 权重 w 的可成交指数投影到日并集轴
-//   = 前收一点 (范围首日开盘; 源首日无) + 轴上每日收盘一点, 原值 (理想线 = 价格指数同一投影, 源是 Assets 篮子日线)
-struct PortfolioBasket : PortfolioLine {
-  std::shared_ptr<const PoolCurve> pc; // 全史 (滚动窗要看日并集轴以外的历史); 空 = 池没算成 (c 空)
-  size_t k = 0;                        // 篮子号 (0 = 池整体, ≥ 1 = 行业)
-  Weight w = kWeightEq;
-  std::vector<uint32_t> at; // [c.x] → pc->dates 下标 (严格升序)
+  std::string tag;                                        // 线尾小字 (口径后缀另拼)
+  std::string hover;                                      // 悬停 (en 起头 + 详情)
+  double turn = std::numeric_limits<double>::quiet_NaN(); // 年换手 (全评估期单边, 倍/年; NaN = 无)
+  bool on = false;                                        // 默认选中
+  int basket = -1;                                        // 指数 / 行业行: 篮子线 basket_line (BasketCurve / 篮子 Feed 同键; 近况 / 日内 / VAL 取它); 其余 −1
+  std::vector<uint32_t> at;                               // 篮子行: [line[kTrade].x] → BasketCurve::dates 下标 (严格升序; 滚动窗看日并集轴以外的全史)
+  PortfolioCurve line[kPairLines];
 };
 
-// NAV 四组 (右表类别条 / 主图画序同序, 策略在最上层). 每组 = 成对线 [2 · 行]: 偶下标 = 可成交列 (行首, 选中键; 指数 / 行业 = 可成交标签指数, 因子 / 策略 = 有冲击),
-// 奇下标 = 理想列 (指数 / 行业 = 价格指数, 因子 / 策略 = 无冲击; 同色淡线). 行选中 → 主图例里理想列显、可成交列隐 (点图例再显)
+// NAV 四组 (右表类别条 / 主图画序同序, 策略在最上层); 前两组 = 篮子目录两组 (BasketGroup 同序)
 enum NavGroup : int { kNavPool,
                       kNavInd,
                       kNavFactor,
                       kNavStrat };
 inline constexpr int kNavGroups = 4;
-// NAV 右表一行的数值列 (成对线 [2 · 行] / [2 · 行 + 1])
+static_assert(int{kNavPool} == int{kGroupPool} && int{kNavInd} == int{kGroupInd});
+// NAV 右表一行的数值列 (前两列下标 = PairLine)
 enum NavNum : int { kNumTrade,  // 可成交列区间年化
                     kNumIdeal,  // 理想列区间年化
                     kNumSharpe, // 可成交列区间夏普
                     kNumTurn }; // 年换手
 inline constexpr int kNavNums = 4;
+static_assert(int{kNumTrade} == int{kTrade} && int{kNumIdeal} == int{kIdeal});
 
 // Portfolio 页派生 (UI 线程, 结果 / 内容 / fixed_impact 变才重算): 全段. 重算时沿用上一份里没变的:
-//   单因子线 = 同一条 FactorCurve 且日轴 / fixed_impact 不变; 篮子 (池线 + vals) = 各池同一条 PoolCurve、同一份价格指数且日轴不变 (basket_gen 不变).
+//   单因子线 = 同一条 FactorCurve 且日轴 / fixed_impact 不变; 篮子行 = 同一份 BasketCurve、同一份价格指数且日轴不变 (basket_gen 不变).
 //   组合线恒重算 (份额随当日因子数)
 struct PortfolioDerived {
   std::vector<misc::Ymd> dates;                        // 日并集轴 (横轴 day 下标)
-  std::vector<PortfolioLine> nav[kNavGroups];          // [NavGroup][2 · 行] 成对线 (同对年换手同值); on = 只全A等权:
-                                                       //   指数 = [池线序] 篮子 0 (all 池两条 = 全A加权 / 全A等权, 其余池等权); en | cn = 池名 | basket_name
-                                                       //   行业 = [SW2021 一级 1..31] all 池篮子 k (总市值加权, 池没算成也列, 线空); en | cn = sw<ID> | 行业名
-                                                       //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key + kImpactId,
+  std::vector<PortfolioRow> nav[kNavGroups];           // [NavGroup][行]; on = 只全A等权:
+                                                       //   指数 / 行业 = [basket_group 序] (源没算成也列, 线空); en | cn = cut_code | basket_name, tag = cn
+                                                       //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key,
                                                        //     en | cn = 因子文件主干 | 中文名, hover = en + 池 层 持有期 冲击段 规范串
                                                        //   策略 = 一行, 组合 G20 多头: 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | G20 多头
-  std::vector<PortfolioBasket> vals;                   // [feature_pools 序, 只含算成的池; all 池两条 = 全A加权 / 全A等权, 其余池等权] 后接 [SW2021 一级 1..31] (全A 内切, all 池算成才有, 总市值加权);
-                                                       //   价格 / 估值同权重; id = 单选键 (池名 + kWeightId / "sw<ID>"), en | cn = 池名 | basket_name / sw<ID> | 行业名,
-                                                       //   tag = 池名 (all 池 = basket_name) / 行业名
-  size_t n_val_pools = 0;                              // vals 前 n 个是池
   int n_ready = 0, n_error = 0;                        // 已算成 / 算失败的因子数
-  std::vector<std::shared_ptr<const FactorCurve>> src; // [因子行] 单因子线的源 (nav[kNavFactor] 的 [2 · 行])
+  std::vector<std::shared_ptr<const FactorCurve>> src; // [因子行] 单因子线的源 (nav[kNavFactor] 同下标)
   double impact = 0.0;                                 // 单因子线按的 fixed_impact
-  std::vector<std::shared_ptr<const PoolCurve>> pools; // [feature_pools 序] 篮子的源 (没算成 = 空)
+  std::shared_ptr<const BasketCurve> baskets;          // 可成交线 / 估值的源 (没算成 = 空)
   std::shared_ptr<const Database::Tape> prices;        // 理想线的源 (篮子历史 [basket_line]; 未到 / 源未就绪 = 空, 理想线空)
-  uint64_t basket_gen = 0;                             // 篮子重建次数 (滚动分位键)
+  uint64_t basket_gen = 0;                             // 篮子行重建次数 (滚动分位键)
+};
+// 一行的位置 der.nav[g][r] (g < 0 = 无)
+struct PortfolioAt {
+  int g = -1;
+  size_t r = 0;
+  bool operator==(const PortfolioAt &) const = default;
 };
 
 // VAL 滚动 band: 每口收益率 v (EP / BP / SP / CP / DY) 按贵度 −v (升 = 贵) 逐日在过去 N 自然年 (含当日; N = band_years) 窗内取 kBandQs 分位;
@@ -124,7 +125,7 @@ struct PortfolioDerived {
 inline constexpr int kBandYearsDef = 5, kBandYearsMax = 15;
 inline constexpr int kBandQ = 7;
 inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95};
-// 选中篮子一口的滚动分位 [der.vals[vs].c.x] (窗内按距今天数加权, 见 TabPortfolio.cpp roll_w)
+// 选中篮子一口的滚动分位 [该行 at] (窗内按距今天数加权, 见 TabPortfolio.cpp roll_w)
 struct PortfolioRoll {
   std::vector<float> q[kBandQ]; // 窗内贵度 kBandQs 加权分位处的收益率 (便宜 → 贵 = 降序; NaN = 史不满 1 年)
   std::vector<float> pct;       // 当日贵度在窗内的加权分位 (%, 高 = 贵; NaN = 同上 / 当日不可算)
@@ -159,11 +160,11 @@ struct PortfolioCell {
 
 // 区间视图 (派生 / 滚动分位 / 区间变才重算): 与 PortfolioDerived 逐组对仗
 struct PortfolioView {
-  std::vector<PortfolioSlice> nav[kNavGroups], vals;              // [der.nav] / [der.vals]
-  std::vector<std::array<double, kNavNums>> nav_rank[kNavGroups]; // [der.nav 行][NavNum] 同组同列截面名次 ∈ [0, 1] (1 = 最好; NaN = 不可算)
-  std::vector<std::array<PortfolioCell, kPoolVals>> cell;         // [der.vals][PoolVal]
-  std::vector<double> band_x;                                     // 选中篮子切片的 x (各口 band 共用; 未选 → 空)
-  PortfolioBand band[kPoolVals];                                  // [PoolVal] 选中篮子的
+  std::vector<std::array<PortfolioSlice, kPairLines>> nav[kNavGroups];   // [NavGroup][行][PairLine]
+  std::vector<std::array<double, kNavNums>> nav_rank[kNavGroups];        // [NavGroup][行][NavNum] 同组同列截面名次 ∈ [0, 1] (1 = 最好; NaN = 不可算)
+  std::vector<std::array<PortfolioCell, kPoolVals>> cell[kBasketGroups]; // [BasketGroup][行][PoolVal] VAL 表格
+  std::vector<double> band_x;                                            // 选中篮子切片的 x (各口 band 共用; 未选 → 空)
+  PortfolioBand band[kPoolVals];                                         // [PoolVal] 选中篮子的
 };
 
 // 一级派生缓存: 键带上级的 gen → 上级重算, 本级自动失效
@@ -190,8 +191,9 @@ struct PortfolioDerKey {
   bool operator==(const PortfolioDerKey &) const = default;
 };
 struct PortfolioRollKey {
-  uint64_t baskets = 0;  // PortfolioDerived::basket_gen
-  int years = 0, vs = 0; // 窗长 / VAL 选中篮子 (der.vals 下标, −1 = 无)
+  uint64_t baskets = 0; // PortfolioDerived::basket_gen
+  int years = 0;        // 窗长
+  PortfolioAt vs;       // VAL 选中篮子行
   bool operator==(const PortfolioRollKey &) const = default;
 };
 struct PortfolioViewKey {
@@ -226,17 +228,17 @@ struct PortfolioUIState {
   PortfolioStage<PortfolioRollKey, std::array<PortfolioRoll, kPoolVals>> roll; // [PoolVal] 选中篮子的
   PortfolioStage<PortfolioViewKey, PortfolioView> view;
   PortfolioRange range;
-  std::string val_pool;           // VAL 选中篮子 id (空 = 默认: 组合首个因子所在池, 未算出前暂用首个池)
-  std::string val_for;            // val_pool 对应的组合 (换组合 → 回默认)
+  std::string val_id;             // VAL 选中篮子行 id (空 = 默认: 组合首个因子所在池的等权行, 无因子暂用首行)
+  std::string val_for;            // val_id 对应的组合 (换组合 → 回默认)
   int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
-  std::map<std::string, bool> show; // NAV 右表选中行: 行首线 PortfolioLine::id → 画 (缺 = PortfolioLine::on)
-  std::set<std::string> reveal;     // 待在主图例里回默认显隐的线 id (行刚选中 / 回默认; 画到时消费; 理想列显, 可成交列隐)
+  std::map<std::string, bool> show; // NAV 右表选中行: PortfolioRow::id → 画 (缺 = PortfolioRow::on)
+  std::set<std::string> reveal;     // 待在主图例里回默认显隐的线 ID (行刚选中 / 回默认; 画到时消费; 理想列显, 可成交列隐)
   std::string vis_key;              // NAV 行选中已按默认设过的组合 (换组合 → 清掉选中回默认)
   std::string shown_key;            // 上帧各线显隐 + log (变了 → 下帧重新 fit)
   bool refit = false;
   float legend_w[2] = {400.0f, 380.0f}; // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
-  int cat[2] = {kNavPool, 0};           // [NAV, VAL] 右表类别条选中组 (NAV = NavGroup; VAL 0 = 指数 (池) / 1 = 行业)
+  int cat[2] = {kNavPool, kGroupPool};  // [NAV, VAL] 右表类别条选中组 (NAV = NavGroup; VAL = BasketGroup)
   bool intraday = true;                 // NAV 日内栏
   Database::BasketState basket;         // 篮子历史 + 当日 (日内栏 / 指数 / 行业行近况)
 };

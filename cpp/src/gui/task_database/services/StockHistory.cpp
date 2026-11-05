@@ -7,24 +7,16 @@
 #include <algorithm>
 #include <cassert>
 #include <memory>
-#include <string>
 #include <vector>
 
 namespace GUI::Database {
 
 bool StockHistory::run(HistoryRequest &req) {
-  static const fundamental::Spec &kDaily = fundamental::spec("cn_stock_real_bar1d");
-  static const fundamental::Spec &kMinute = fundamental::spec("bar1m");
-  static const std::vector<std::string> kCols = {"open", "high", "low", "close", "volume", "amount", "pre_close"};
   assert(req.keys.size() <= kKeep);
 
   const fundamental::Catalog cat;
-  const std::vector<fundamental::Shard> &months = cat.shards(kDaily.name), &days = cat.shards(kMinute.name);
-  assert(!months.empty() && !days.empty() && "基本面未同步日线 / 分钟");
-  misc::Ymd mark = 0; // 日线水位: 末个非空月分片 (0 行月也落文件)
-  for (size_t k = months.size(); k-- > 0 && mark == 0;)
-    mark = fundamental::mark(kDaily, months[k]);
-  const misc::Ymd last = std::min(mark, days.back().day);
+  const misc::Ymd last = fund_last(cat);
+  const std::vector<fundamental::Shard> &months = cat.shards(kBar1d), &days = cat.shards(kBar1m);
 
   const auto cached = [&](uint32_t id) {
     return std::find_if(keep_.begin(), keep_.end(), [&](const auto &e) { return e.first == id && e.second.last == last; });
@@ -45,27 +37,16 @@ bool StockHistory::run(HistoryRequest &req) {
   std::vector<fundamental::Scratch> xs(T);
   std::vector<Bar1mDay> bd(T);
   const auto read_month = [&](size_t k, size_t tid) {
-    const fundamental::Rows r = xs[tid].open(months[k], kDaily, kCols, ids);
-    misc::pq::Col c[7];
-    for (size_t j = 0; j < kCols.size(); ++j)
-      c[j] = r.col(kCols[j]);
-    r.each([&](std::int64_t i, std::uint32_t j, misc::Ymd d) {
-      const float px = c[3].f32(i), vol = c[4].f32(i);
-      if (vol > 0 && px > 0)
-        month[k * nk + j].push_back({cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), px, vol, c[5].f32(i)), d, c[6].f32(i)});
+    each_daily(xs[tid], months[k], ids, [&](uint32_t j, const Candle &c) {
+      if (traded(c))
+        month[k * nk + j].push_back(c);
     });
   };
   const auto read_minute = [&](size_t q, size_t tid) {
     Bar1mDay &day = bd[tid];
     day.load(cat, ids, xs[tid], days[days.size() - nd + q].day);
-    for (size_t j = 0; j < nk; ++j) {
-      Bars &b = minute[q * nk + j];
-      b.date = day.date;
-      if (const Bar1m *m = day.asset(j))
-        for (size_t t = 0; t < TRADE_MINUTES_PER_DAY; ++t)
-          if (m[t].volume > 0 && m[t].close > 0)
-            b.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, m[t].volume, m[t].amount));
-    }
+    for (size_t j = 0; j < nk; ++j)
+      bars_of(day.asset(j), day.date, minute[q * nk + j]);
   };
 
   // 月分片自末往前一批 2T 片并行读, 每只日根都够 kDailyDays 即停; 分钟日并进首批

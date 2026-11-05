@@ -2,6 +2,7 @@
 #include "gui/task_factors/services/FactorsBook.hpp"
 
 #include "factor/Stat/Host.hpp" // h2f
+#include "shared/Basket.hpp"    // kWeights / cut_count / cut_of / basket_line
 
 #include <algorithm>
 #include <cassert>
@@ -160,9 +161,8 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
       }
   });
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-  for (int w = 0; w < kWeights; ++w)
-    for (int m = 0; m < kPoolVals; ++m)
-      o.val[w][m].assign(nb * nT, kNaN);
+  for (int m = 0; m < kPoolVals; ++m)
+    o.val[m].assign(basket_count() * nT, kNaN);
   for (int w = 0; w < kWeights; ++w)
     rows.r[w].assign(NP * nT, 0.0), rows.w[w].assign(NP * nT, 0.0);
   ex.rows(B.sh.T, [&](int t0, int t1, int) {
@@ -214,7 +214,7 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
         for (int w = 0; w < kWeights; ++w)
           for (int m = 0; m < kPoolVals; ++m)
             if (const double *e = vq(b, w, m); e[1] > 0.0)
-              o.val[w][m][b * nT + t] = static_cast<float>(e[0] / e[1]);
+              o.val[m][basket_line(b, static_cast<Weight>(w)) * nT + t] = static_cast<float>(e[0] / e[1]);
     }
   });
 }
@@ -222,7 +222,7 @@ void pool_baskets(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<
 // 各池整体的换手 (Baskets::turn): 成分行 t 的权 w_t = ω / Σω (等权 ω = 1, 加权 ω = mcap) 对上一成分行漂移后的权 w̃ = w (1 + r) / (1 + R) 的
 //   单边 ½ Σ|w_t − w̃|, 停牌 = 移出 / 复牌 = 移回 (与 pool_baskets 同成分: prev 行成员位含该池位); 首个成分行 (建仓) 不计; 沿成分行均值.
 //   Σ w̃ = 1 ⇒ ½ Σ|·| = ½ (1 + Σ_成分 (|w_t − w̃| − w̃)): 资产条带并行只走成分格, 每线程逐池逐行攒, 按 tid 序归并. rows = pool_baskets 出的
-void pool_turn(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int32_t> &prev, const BasketRows &rows, std::vector<double> (&turn)[kWeights]) {
+void pool_turn(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int32_t> &prev, const BasketRows &rows, std::vector<double> &turn) {
   const factor::check::Plane &close = B.close;
   const PoolMask *in = B.in.data();
   const float *mcap = B.mcap.data();
@@ -267,8 +267,8 @@ void pool_turn(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int
         }
       }
   });
+  turn.assign(basket_count(), std::numeric_limits<double>::quiet_NaN());
   for (int w = 0; w < kWeights; ++w) {
-    turn[w].assign(NP, 0.0);
     for (size_t p = 0; p < NP; ++p) {
       double s = 0.0;
       int n = 0;
@@ -281,7 +281,7 @@ void pool_turn(misc::exec::ForkJoin &ex, const BPlanes &B, const std::vector<int
           x += dev[w][j * NP * nT + at];
         s += 0.5 * (1.0 + x), ++n;
       }
-      turn[w][p] = n > 0 ? s / n : 0.0;
+      turn[basket_line(cut_of(static_cast<PoolId>(p)), static_cast<Weight>(w))] = n > 0 ? s / n : 0.0;
     }
   }
 }

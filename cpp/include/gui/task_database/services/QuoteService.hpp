@@ -65,9 +65,9 @@ public:
   QuoteService(const QuoteService &) = delete;
   QuoteService &operator=(const QuoteService &) = delete;
 
-  const PoolAxis &axis() const { return axis_; }                       // 全市场 (构造后不变, 任意线程)
+  const PoolAxis &axis() const { return axis_; }                  // 全市场 (构造后不变, 任意线程)
   std::span<const misc::Ymd> trading() const { return trading_; } // 交易日升序 (构造后不变, 任意线程)
-  void select(uint32_t id);                      // GUI: 选中标的 (全局 id; ~0u = 无)
+  void select(uint32_t id);                                       // GUI: 选中标的 (全局 id; ~0u = 无)
   QuoteStatus status() const;
   // 篮子成员表 (下标 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后每轮快照一次 (BasketHistory 跑完调)
   void bind(Members m, std::vector<double> level);

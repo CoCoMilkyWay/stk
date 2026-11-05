@@ -1,4 +1,5 @@
 #include "gui/task_database/ui/QuotesPanel.hpp"
+#include "gui/util/Chart.hpp" // kUp / kDn / tint / button_bar / EndTag
 #include "shared/AssetAxis.hpp"
 #include "shared/Basket.hpp"
 
@@ -22,7 +23,6 @@ namespace GUI::Database {
 
 namespace {
 
-constexpr ImVec4 kUp(0.945f, 0.298f, 0.298f, 1.f), kDn(0.416f, 0.600f, 0.333f, 1.f), kFlat(0.80f, 0.80f, 0.80f, 1.f);
 constexpr ImVec4 kRule(0.55f, 0.55f, 0.55f, 0.45f);
 constexpr int kMaN[] = {5, 10, 20};
 constexpr const char *kMaName[] = {"MA5", "MA10", "MA20"};
@@ -44,9 +44,6 @@ constexpr ImVec4 kRefTag(0.55f, 0.55f, 0.55f, 1.f);
 constexpr ImVec4 kGridTag(0.62f, 0.62f, 0.62f, 0.8f);                                     // 叠加图横网格的内标小字
 constexpr float kTagScale = 0.8f, kGridPx = 28.f;                                         // 叠加图内标小字字号 (× 字体) / 横网格约每格像素
 constexpr ImVec4 kCross(0.85f, 0.85f, 0.85f, 1.f), kCrossLine(0.85f, 0.85f, 0.85f, 0.5f); // 十字光标: 标签底 / 线
-
-ImVec4 tint(double v, double ref) { return v > ref ? kUp : v < ref ? kDn
-                                                                   : kFlat; }
 
 // 量 [股] → 手
 int fmt_lots(char *buf, int size, double vol) {
@@ -143,24 +140,6 @@ void tooltip(const Series &s, int i) {
   }
   fmt_lots(vol, sizeof(vol), b.volume);
   ImGui::SetTooltip("%s\n开 %.2f  高 %.2f\n低 %.2f  收 %.2f%s\n量 %s  额 %s", when, b.open, b.high, b.low, b.close, chg, vol, amt);
-}
-
-bool range_bar(const char *const names[], int n, int &cur) {
-  bool changed = false;
-  for (int i = 0; i < n; ++i) {
-    if (i)
-      ImGui::SameLine(0, 2);
-    const bool on = cur == i;
-    if (on)
-      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    if (ImGui::SmallButton(names[i]) && !on) {
-      cur = i;
-      changed = true;
-    }
-    if (on)
-      ImGui::PopStyleColor();
-  }
-  return changed;
 }
 
 // 单调三次 Hermite (PCHIP 斜率): 过每个点, 段内不越出两端值 (不过冲, 平段仍平); 相邻两点间插 kSub 段.
@@ -476,7 +455,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
   }
   if (corner.x >= 0) {
     ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
-    range_bar(ranges, nr, cur);
+    button_bar(ranges, nr, cur);
   }
 }
 
@@ -758,8 +737,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     { // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 线名贴线尾, 右缘不过刻度字列
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImFont *font = ImGui::GetFont();
-      const float fs = ImGui::GetFontSize() * kTagScale, top = ImPlot::GetPlotPos().y, bottom = top + ImPlot::GetPlotSize().y,
-                  right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x - 2.f;
+      const float fs = ImGui::GetFontSize() * kTagScale, top = ImPlot::GetPlotPos().y, right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x - 2.f;
       const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
       float tw = 0;
       for (const double v : yt) {
@@ -773,24 +751,11 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         dl->AddText(font, fs, ImVec2(right - sz.x, y - sz.y >= top ? y - sz.y : y), col, buf);
         tw = std::max(tw, sz.x);
       }
-      struct Tag {
-        ImVec2 at;
-        const Overlay *l;
-      };
-      std::vector<Tag> tags;
+      std::vector<EndTag> tags;
       for (const Overlay &l : ls)
-        if (!l.x.empty()) {
-          const ImVec2 at = ImPlot::PlotToPixels(l.x.back(), l.y.back());
-          const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.f, l.name.c_str()).x;
-          tags.push_back({ImVec2(std::min(at.x + 4.f, right - tw - 6.f - w), at.y), &l});
-        }
-      std::sort(tags.begin(), tags.end(), [](const Tag &a, const Tag &b) { return a.at.y < b.at.y; });
-      for (size_t i = 1; i < tags.size(); ++i)
-        tags[i].at.y = std::max(tags[i].at.y, tags[i - 1].at.y + fs);
-      for (size_t i = tags.size(); i-- > 0;)
-        tags[i].at.y = std::min(tags[i].at.y, i + 1 < tags.size() ? tags[i + 1].at.y - fs : bottom - 0.5f * fs);
-      for (const Tag &t : tags)
-        dl->AddText(font, fs, ImVec2(t.at.x, t.at.y - 0.5f * fs), ImGui::ColorConvertFloat4ToU32(t.l->col), t.l->name.c_str());
+        if (!l.x.empty())
+          tags.push_back({ImPlot::PlotToPixels(l.x.back(), l.y.back()), ImGui::ColorConvertFloat4ToU32(l.col), l.name});
+      draw_end_tags(tags, kTagScale, right - tw - 6.f);
     }
     if (ImPlot::IsPlotHovered()) {
       const ImPlotPoint m = ImPlot::GetPlotMousePos();
@@ -936,7 +901,7 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
   const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail());
   if (corner.x >= 0) {
     ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
-    range_bar(kIntraName, 4, st.intraday);
+    button_bar(kIntraName, 4, st.intraday);
     ImGui::SameLine(0, 8);
     if (ImGui::SmallButton("重载"))
       f.reload = true;

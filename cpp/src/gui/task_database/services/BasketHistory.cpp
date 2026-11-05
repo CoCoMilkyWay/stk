@@ -4,10 +4,9 @@
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/Scan.hpp"
 #include "misc/fs.hpp"
-#include "misc/parquet.hpp"
 #include "misc/snap.hpp"
 #include "shared/AssetAxis.hpp"
-#include "shared/Basket.hpp" // basket_line / basket_count / cut_of
+#include "shared/Basket.hpp" // basket_line / basket_count / cut_of / weight_of
 #include "shared/FeatureLib.hpp"
 
 #include <algorithm>
@@ -104,8 +103,8 @@ void members(const Row &r, size_t A, size_t NP, Members &m) {
   }
 }
 
-// 一只一日的 L_1min → 分钟根 (列序同 mcols); 无成交的行不收
-void read_bars(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) {
+// 一只一日的 L_1min (列序同 mcols) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
+void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) {
   b.date = d;
   b.has.reset();
   for (size_t t = 0; t < level_valid_rows(L_1min); ++t) {
@@ -205,15 +204,8 @@ bool BasketHistory::run(HistoryRequest &req) {
 }
 
 bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
-  static const fundamental::Spec &kDaily = fundamental::spec("cn_stock_real_bar1d");
-  static const std::vector<std::string> kCols = {"open", "high", "low", "close", "volume", "amount", "pre_close"};
   const fundamental::Catalog cat;
-  const std::vector<fundamental::Shard> &months = cat.shards(kDaily.name), &minutes = cat.shards("bar1m");
-  assert(!months.empty() && !minutes.empty() && "基本面未同步日线 / 分钟");
-  misc::Ymd mark = 0; // 日线水位: 末个非空月分片 (0 行月也落文件)
-  for (size_t k = months.size(); k-- > 0 && mark == 0;)
-    mark = fundamental::mark(kDaily, months[k]);
-  const misc::Ymd from = book_.dates.back(), to = std::min(mark, minutes.back().day);
+  const misc::Ymd from = book_.dates.back(), to = fund_last(cat);
   const std::span<const misc::Ymd> trading = live_.trading();
   const auto lo = std::upper_bound(trading.begin(), trading.end(), from);
   const std::vector<misc::Ymd> dates(lo, std::max(lo, std::upper_bound(trading.begin(), trading.end(), to)));
@@ -228,25 +220,14 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
   for (size_t a = 0; a < A; ++a)
     ids.add(asset_axis().code(lib.axis.global(a)));
   fundamental::Scratch xs;
-  std::vector<Cell> px(N * A); // [补日][库轴]; 无行 → 收 0
-  std::vector<float> pre(N * A, 0.f);
-  std::vector<uint8_t> trade(N * A, 0);
-  for (const fundamental::Shard &sh : months) {
+  std::vector<Candle> px(N * A); // [补日][库轴]; 无行 → 收 0
+  for (const fundamental::Shard &sh : cat.shards(kBar1d)) {
     if (N == 0 || sh.ym < misc::ym_of(dates.front()) || sh.ym > misc::ym_of(dates.back()))
       continue;
-    const fundamental::Rows r = xs.open(sh, kDaily, kCols, ids);
-    misc::pq::Col c[7];
-    for (size_t j = 0; j < kCols.size(); ++j)
-      c[j] = r.col(kCols[j]);
-    r.each([&](std::int64_t i, std::uint32_t a, misc::Ymd d) {
-      const auto it = std::lower_bound(dates.begin(), dates.end(), d);
-      if (it == dates.end() || *it != d)
-        return;
-      const size_t q = static_cast<size_t>(it - dates.begin()) * A + a;
-      const float x = c[3].f32(i), vol = c[4].f32(i);
-      px[q] = cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), x, 0, c[5].f32(i));
-      pre[q] = c[6].f32(i);
-      trade[q] = vol > 0 && x > 0;
+    each_daily(xs, sh, ids, [&](uint32_t a, const Candle &c) {
+      const auto it = std::lower_bound(dates.begin(), dates.end(), c.date);
+      if (it != dates.end() && *it == c.date)
+        px[static_cast<size_t>(it - dates.begin()) * A + a] = c;
     });
   }
 
@@ -264,14 +245,9 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
       const std::span<const Members::Weight> ws = mem.of(a);
       if (ws.empty())
         continue;
-      const size_t q = k * A + a;
-      bars.date = d;
-      bars.has.reset();
-      if (const Bar1m *m = bd.asset(a))
-        for (size_t t = 0; t < TRADE_MINUTES_PER_DAY; ++t)
-          if (m[t].volume > 0 && m[t].close > 0)
-            bars.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, 0, m[t].amount));
-      fold.add({pre[q], trade[q] ? &px[q] : nullptr, &bars}, ws);
+      const Candle &c = px[k * A + a];
+      bars_of(bd.asset(a), d, bars);
+      fold.add({c.ref, traded(c) ? &c : nullptr, &bars}, ws);
     }
     fold.finish(d, k ? dates[k - 1] : from, tail_.level, day);
     for (size_t b = 0; b < NB; ++b) {
@@ -282,13 +258,12 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
       tail_.level[b] = day[b].candle.close;
     }
     for (size_t a = 0; a < A; ++a) {
-      const size_t q = k * A + a;
-      if (!(pre[q] > 0 && px[q].close > 0))
+      const Candle &c = px[k * A + a];
+      if (!(c.ref > 0 && c.close > 0))
         continue;
-      const float g = px[q].close / pre[q];
-      for (uint32_t j = mem.at[a]; j < mem.at[a + 1]; ++j)
-        if (static_cast<int>(mem.ws[j].basket % kWeights) == kWeightCap)
-          mem.ws[j].w *= g;
+      for (Members::Weight &w : mem.of(a))
+        if (weight_of(w.basket) == kWeightCap)
+          w.w *= c.close / c.ref;
     }
   }
   tail_.mem = mem;
@@ -352,7 +327,7 @@ bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const s
         const float x = cur.px[3][a];
         const Cell c = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
         if (minutes)
-          read_bars(mc, a, d, bars);
+          bars_of(mc, a, d, bars);
         fold.add({prev.pre[a], cur.trade[a] && x > 0 ? &c : nullptr, minutes ? &bars : nullptr}, ws);
       }
       fold.finish(d, dates[i - 1], book_.level, day);

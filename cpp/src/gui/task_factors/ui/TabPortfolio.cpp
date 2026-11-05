@@ -4,9 +4,10 @@
 #include "features/TimeIndex.hpp"             // TRADE_MINUTES_PER_DAY (横轴每日跨度)
 #include "gui/Tasks.hpp"                      // StatusColor
 #include "gui/task_factors/ui/TabFactors.hpp" // tip / hold_desc
+#include "gui/util/Chart.hpp"                 // tint / button_bar / EndTag
 #include "misc/date.hpp"                      // to_days (滚动窗权重按日历天)
-#include "shared/Basket.hpp"                  // basket_line / basket_name / cut_of
-#include "shared/FeatureLib.hpp"              // feature_pools
+#include "shared/Basket.hpp"                  // basket_group / basket_name / cut_code
+#include "shared/FeatureLib.hpp"              // pool_id
 
 #include "imgui.h"
 #include "implot.h"
@@ -71,20 +72,19 @@ int day_formatter(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
-// NAV 组表 [NavGroup]: 右表类别条名 / 线宽 (策略加粗)
+// NAV 组表 [NavGroup]: 右表类别条名 (前 kBasketGroups 个 = VAL 类别条) / 线宽 (策略加粗)
 constexpr const char *kNavGroupName[kNavGroups] = {"指数", "行业", "因子", "策略"};
 constexpr float kNavWidth[kNavGroups] = {1.0f, 1.0f, 1.0f, 2.0f};
-// VAL 右表类别条: vals 的两组 (池 = [0, n_val_pools), 行业 = 其后)
-constexpr const char *kValGroupName[] = {"指数", "行业"};
-// 近况列的涨跌色 (同 Assets 行情: 涨红 / 跌绿)
-const ImVec4 kUp(0.945f, 0.298f, 0.298f, 1.f), kDn(0.416f, 0.600f, 0.333f, 1.f), kFlat(0.80f, 0.80f, 0.80f, 1.f);
-// 冲击口径表 [kImpacts] (因子 / 策略的成对线): 名 / ID 后缀 / 线尾小字后缀
 const ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f);
-constexpr const char *kImpactName[kImpacts] = {"有冲击", "无冲击"};
-constexpr const char *kImpactId[kImpacts] = {"", "0"};
-constexpr const char *kImpactTag[kImpacts] = {"", " 无冲击"};
-// 池指数线 ID 后缀 [kWeights] (all 池两条; 其余池只画 kWeightEq; 名 = basket_name)
+// 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 指数 / 行业, 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀; 线 ID 后缀 [PairLine]
+constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"有冲击", "无冲击"}};
+constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", " 无冲击"}};
+constexpr const char *kPairId[kPairLines] = {"", "_ideal"};
+int pair_kind(int g) { return g >= kNavFactor; }
+std::string line_id(const PortfolioRow &r, int l) { return r.id + kPairId[l]; }
+// 篮子行 id = pf_ + 切片代码 + 权重后缀 [Weight]
 constexpr const char *kWeightId[kWeights] = {"", "_cap"};
+std::string basket_id(size_t line) { return "pf_" + cut_code(cut_of_line(line)) + kWeightId[weight_of(line)]; }
 // VAL 估值口表 [PoolVal]: 名 / 倍数名 (1 / 收益率, 等值线) / 百分比小数位 (五口同为收益率, 显示 %)
 struct ValMeta {
   const char *name, *inv;
@@ -178,20 +178,19 @@ std::vector<std::string> align_cols(const std::vector<std::array<std::string, N>
   return out;
 }
 
-// NAV 线 i (组 g) 的色 (主图 / 右表同一份): 策略 = kStratCol; 按组序 (指数 → 行业 → 因子) 接着数行取色表 (指数 / 行业色不随组合变); 理想列 = 同色淡
+// NAV 组 g 行 r 线 l 的色 (主图 / 右表 / 日内同一份): 策略 = kStratCol; 按组序 (指数 → 行业 → 因子) 接着数行取色表 (指数 / 行业色不随组合变); 理想列 = 同色淡
 constexpr float kIdealAlpha = 0.5f;
-ImVec4 nav_color(const PortfolioDerived &d, int g, size_t i) {
-  size_t row = i;
+ImVec4 nav_color(const PortfolioDerived &d, int g, size_t r, int l) {
   for (int h = 0; h < g; ++h)
-    row += d.nav[h].size();
-  ImVec4 c = g == kNavStrat ? kStratCol : ImPlot::GetColormapColor(static_cast<int>(row / 2));
-  c.w = i % 2 ? kIdealAlpha : 1.0f;
+    r += d.nav[h].size();
+  ImVec4 c = g == kNavStrat ? kStratCol : ImPlot::GetColormapColor(static_cast<int>(r));
+  c.w = l == kIdeal ? kIdealAlpha : 1.0f;
   return c;
 }
-// NAV 右表行选中 (l = 行首线; 缺 = 默认 PortfolioLine::on)
-bool shown(const PortfolioUIState &ui, const PortfolioLine &l) {
-  const auto it = ui.show.find(l.id);
-  return it != ui.show.end() ? it->second : l.on;
+// NAV 右表行选中 (缺 = 默认 PortfolioRow::on)
+bool shown(const PortfolioUIState &ui, const PortfolioRow &r) {
+  const auto it = ui.show.find(r.id);
+  return it != ui.show.end() ? it->second : r.on;
 }
 
 // src (升序) 各日在 axis (升序) 上的 lower_bound 下标 (双指针)
@@ -207,10 +206,10 @@ std::vector<size_t> days_on(const std::vector<misc::Ymd> &axis, const std::vecto
 }
 
 // ---- 增量流 (组合 / 单因子同一份) ----
-// x 严格升序; d[Impact] = 该时刻实现的净值增量 (占本金)
+// x 严格升序; d[PairLine] = 该时刻实现的净值增量 (占本金; 有冲击 / 无冲击)
 struct Inc {
-  std::vector<double> x, d[kImpacts];
-  // 追加 at 处的增量 r[kImpacts] (at 不降; 同 x 并入末点)
+  std::vector<double> x, d[kPairLines];
+  // 追加 at 处的增量 r[kPairLines] (at 不降; 同 x 并入末点)
   void add(double at, const double *r) {
     assert(x.empty() || at >= x.back());
     if (x.empty() || at != x.back()) {
@@ -218,8 +217,8 @@ struct Inc {
       for (std::vector<double> &v : d)
         v.push_back(0.0);
     }
-    for (int i = 0; i < kImpacts; ++i)
-      d[i].back() += r[i];
+    for (int l = 0; l < kPairLines; ++l)
+      d[l].back() += r[l];
   }
 };
 // 两条增量流按 x 归并, 同 x 相加
@@ -230,9 +229,9 @@ Inc merge(const Inc &a, const Inc &b) {
     const bool ta = j == b.x.size() || (i < a.x.size() && a.x[i] <= b.x[j]);
     const Inc &s = ta ? a : b;
     const size_t k = ta ? i++ : j++;
-    double r[kImpacts];
-    for (int m = 0; m < kImpacts; ++m)
-      r[m] = s.d[m][k];
+    double r[kPairLines];
+    for (int l = 0; l < kPairLines; ++l)
+      r[l] = s.d[l][k];
     o.add(s.x[k], r);
   }
   return o;
@@ -250,14 +249,14 @@ Inc sum_of(std::vector<Inc> v) {
   }
   return std::move(v.front());
 }
-// 增量流的冲击口径 i → 净值线: 起点 (x0, 1) + 每个 x 一点, 逐点复利. 起点取首日开盘前 kStartDx 格: 首行可在开盘点就有增量 (L_1min 行 0 末分钟 = 开盘)
+// 增量流的线 l → 净值线: 起点 (x0, 1) + 每个 x 一点, 逐点复利. 起点取首日开盘前 kStartDx 格: 首行可在开盘点就有增量 (L_1min 行 0 末分钟 = 开盘)
 constexpr double kStartDx = 0.5;
-PortfolioCurve curve_of(const Inc &s, int i, double x0) {
+PortfolioCurve curve_of(const Inc &s, int l, double x0) {
   assert(s.x.empty() || s.x.front() > x0);
   PortfolioCurve c;
   c.x.reserve(s.x.size() + 1), c.y.reserve(s.x.size() + 1);
   c.x.push_back(x0), c.y.push_back(1.0);
-  compound(s.d[i].data(), s.x.size(), [&](size_t k, double l) { c.x.push_back(s.x[k]), c.y.push_back(l); });
+  compound(s.d[l].data(), s.x.size(), [&](size_t k, double y) { c.x.push_back(s.x[k]), c.y.push_back(y); });
   return c;
 }
 // 净值线的近况 (Database::RecentOf 同一核, 无量): 日 = 每日末个点 (起点算首日前一日的日末), 前收 = 前一日的
@@ -289,26 +288,26 @@ Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_imp
     const double k = wt(di[dl]);
     for (int ts = 0; ts < S; ++ts) {
       const size_t t = dl * S + static_cast<size_t>(ts);
-      double r[kImpacts];
-      r[kImpactNet] = (pnl[t] - imp[t] - fix[t] * fixed_impact) * k;
-      r[kImpactGross] = pnl[t] * k;
+      double r[kPairLines];
+      r[kTrade] = (pnl[t] - imp[t] - fix[t] * fixed_impact) * k;
+      r[kIdeal] = pnl[t] * k;
       o.add(static_cast<double>(row_x(dl, ts)), r);
     }
   }
   return o;
 }
 
-// ---- 篮子投影 (可成交线 / VAL = PoolCurve, 理想线 = 价格指数; 同一投影): 源 = 日点位线, 只取日并集轴范围内 = 范围首日开盘一点 (其前一日点位; 源首日无)
+// ---- 篮子投影 (可成交线 = BasketCurve, 理想线 = 价格指数; 同一投影): 源 = 日点位线, 只取日并集轴范围内 = 范围首日开盘一点 (其前一日点位; 源首日无)
 //      + 轴上每日收盘一点; 不在轴上的日只差点位, 收益自然并进下一个轴上的日 ----
 // 日点位线: dates[i] 收盘点位 lv[i]
 struct Levels {
   std::vector<misc::Ymd> dates;
   std::vector<double> lv;
 };
-// PoolCurve 篮子 k 权 w: 日收益复利 (起点 1)
-Levels levels(const PoolCurve &pc, size_t k, Weight w) {
-  Levels s{pc.dates, std::vector<double>(pc.dates.size())};
-  compound(pc.index_of(k, w), s.dates.size(), [&](size_t i, double l) { s.lv[i] = l; });
+// 可成交指数篮子线: 日收益复利 (起点 1)
+Levels levels(const BasketCurve &bc, size_t line) {
+  Levels s{bc.dates, std::vector<double>(bc.dates.size())};
+  compound(bc.index_of(line), s.dates.size(), [&](size_t i, double l) { s.lv[i] = l; });
   return s;
 }
 // 价格指数篮子线: 日线收盘
@@ -333,12 +332,6 @@ std::vector<uint32_t> project(const std::vector<misc::Ymd> &axis, const Levels &
       push(x_of(di[i], kClose), i);
   }
   return at;
-}
-
-// 池 name 算成的篮子 (缺 / 失败 → 空)
-std::shared_ptr<const PoolCurve> pool_of(const PortfolioResult &res, const char *name) {
-  const auto it = res.pools.find(name);
-  return it != res.pools.end() && it->second->error.empty() ? it->second : nullptr;
 }
 
 // 组合 + 单因子 (见头文件): 每因子两条增量流 — 自身 (权 1) → 单因子线; 份额 (权 1 / 当日因子数) → Σ → 组合线. 单因子线 ≡ 只含它的组合.
@@ -393,127 +386,67 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
       }
     const PortfolioItem &it = *its[q];
     const auto kp = keep.find(&f);
-    const Inc own = kp != keep.end() ? Inc{} : inc_of(f, di, fixed_impact, [](size_t) { return 1.0; });
-    for (int i = 0; i < kImpacts; ++i) {
-      PortfolioLine l;
-      l.id = it.e.key() + kImpactId[i];
-      l.en = std::filesystem::path(it.e.file).stem().string();
-      l.cn = it.name_cn;
-      l.kind = kImpactName[i];
-      l.turn = own_buy / static_cast<double>(f.dates.size()) * factor::stat::kDaysPerYear;
-      l.tag = it.name_en + " " + factor::stat::hold_name(f.hold) + kImpactTag[i];
-      l.hover = l.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + hold_desc(it.e.hold, it.e.lv) +
-                "\n• 冲击 " + amt_name(f.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
-      l.c = kp != keep.end() ? std::move(o.nav[kNavFactor][2 * kp->second + static_cast<size_t>(i)].c) : curve_of(own, i, x_of(di.front(), kOpen) - kStartDx);
-      l.recent = recent_of(l.c);
-      d.nav[kNavFactor].push_back(std::move(l));
+    PortfolioRow r;
+    r.id = it.e.key();
+    r.en = std::filesystem::path(it.e.file).stem().string();
+    r.cn = it.name_cn;
+    r.tag = it.name_en + " " + factor::stat::hold_name(f.hold);
+    r.hover = r.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + hold_desc(it.e.hold, it.e.lv) +
+              "\n• 冲击 " + amt_name(f.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
+    r.turn = own_buy / static_cast<double>(f.dates.size()) * factor::stat::kDaysPerYear;
+    if (kp != keep.end()) {
+      for (int l = 0; l < kPairLines; ++l)
+        r.line[l] = std::move(o.nav[kNavFactor][kp->second].line[l]);
+    } else {
+      const Inc own = inc_of(f, di, fixed_impact, [](size_t) { return 1.0; });
+      for (int l = 0; l < kPairLines; ++l)
+        r.line[l] = curve_of(own, l, x_of(di.front(), kOpen) - kStartDx);
     }
+    d.nav[kNavFactor].push_back(std::move(r));
     shares.push_back(inc_of(f, di, fixed_impact, [&](size_t i) { return 1.0 / n_act[i]; }));
   }
   const Inc sum = shares.empty() ? Inc{} : sum_of(std::move(shares));
-  for (int i = 0; i < kImpacts; ++i) {
-    PortfolioLine s;
-    s.id = std::string("pf_strat") + kImpactId[i];
-    s.en = name, s.cn = "G20 多头", s.kind = kImpactName[i];
-    s.tag = name + kImpactTag[i];
-    s.hover = name;
-    if (!d.dates.empty()) {
-      s.c = curve_of(sum, i, x_of(0, kOpen) - kStartDx);
-      s.turn = strat_buy / static_cast<double>(d.dates.size()) * factor::stat::kDaysPerYear;
-      s.recent = recent_of(s.c);
-    }
-    d.nav[kNavStrat].push_back(std::move(s));
+  PortfolioRow s;
+  s.id = "pf_strat";
+  s.en = name, s.cn = "G20 多头";
+  s.tag = s.hover = name;
+  if (!d.dates.empty()) {
+    s.turn = strat_buy / static_cast<double>(d.dates.size()) * factor::stat::kDaysPerYear;
+    for (int l = 0; l < kPairLines; ++l)
+      s.line[l] = curve_of(sum, l, x_of(0, kOpen) - kStartDx);
   }
+  d.nav[kNavStrat].push_back(std::move(s));
 }
 
-// 池线 + VAL 篮子 (见头文件): 可成交 / VAL = PoolCurve 的 PortfolioBasket, 理想 = 价格指数 (prices) 同名篮子线, 同一 project.
-// o = 上一份派生: 各池同一条 PoolCurve、同一份价格指数且日轴不变 → 整份沿用
+// 篮子行 (见头文件): 指数 / 行业两组 = basket_group 两组, 一行两条 = BasketCurve 可成交指数 / 价格指数 (prices) 的同一篮子线, 同一 project.
+// o = 上一份派生: 同一份 BasketCurve、同一份价格指数且日轴不变 → 整份沿用
 void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Database::Tape> &prices, PortfolioDerived &o, PortfolioDerived &d) {
-  for (const PoolDef &pd : feature_pools())
-    d.pools.push_back(pool_of(res, pd.name));
+  d.baskets = res.baskets && res.baskets->error.empty() ? res.baskets : nullptr;
   d.prices = prices && !prices->list.empty() ? prices : nullptr;
-  if (o.basket_gen > 0 && d.pools == o.pools && d.prices == o.prices && d.dates == o.dates) {
-    d.nav[kNavPool] = std::move(o.nav[kNavPool]);
-    d.nav[kNavInd] = std::move(o.nav[kNavInd]);
-    d.vals = std::move(o.vals);
-    d.n_val_pools = o.n_val_pools;
+  if (o.basket_gen > 0 && d.baskets == o.baskets && d.prices == o.prices && d.dates == o.dates) {
+    for (const int g : {kNavPool, kNavInd})
+      d.nav[g] = std::move(o.nav[g]);
     d.basket_gen = o.basket_gen;
     return;
   }
   d.basket_gen = o.basket_gen + 1;
-  const auto basket = [&](std::string id, std::string en, std::string cn, std::string tag, std::shared_ptr<const PoolCurve> pc, size_t k, Weight w) {
-    PortfolioBasket b;
-    b.id = std::move(id), b.en = std::move(en), b.cn = std::move(cn), b.tag = std::move(tag);
-    b.pc = std::move(pc), b.k = k, b.w = w;
-    if (b.pc && !d.dates.empty())
-      b.at = project(d.dates, levels(*b.pc, b.k, b.w), b.c);
-    return b;
-  };
-  // 一行 = 可成交 (PoolCurve 篮子 k 权 w) + 理想 (价格指数篮子线 line; 名 / 悬停 / 年换手同可成交), 右表同一行
-  const auto nav_row = [&](NavGroup g, PortfolioBasket p, size_t line, const std::string &tag) {
-    p.kind = "可成交";
-    p.basket = static_cast<int>(line);
-    PortfolioLine q;
-    q.id = p.id + "_px", q.en = p.en, q.cn = p.cn, q.kind = "理想", q.turn = p.turn, q.tag = tag + " 理想", q.hover = p.hover, q.basket = p.basket;
-    if (d.prices && !d.dates.empty()) {
-      assert(d.prices->keys[line] == line);
-      project(d.dates, levels(d.prices->list[line]), q.c);
-    }
-    d.nav[g].push_back(std::move(p));
-    d.nav[g].push_back(std::move(q));
-  };
-
-  // ---- 池线 (篮子 0): all 池两条 = 全A加权 (kWeightCap) / 全A等权 (kWeightEq), 其余池一条等权; turn = 年换手; 默认只选全A等权 ----
-  for (const PoolId pid : pool_ids()) {
-    const PoolDef &pd = pool_def(pid);
-    const bool all = pid == kAllPool;
-    const std::shared_ptr<const PoolCurve> pc = pool_of(res, pd.name);
-    for (const Weight w : {kWeightCap, kWeightEq}) {
-      if (!all && w != kWeightEq)
-        continue;
-      const std::string cn = basket_name(cut_of(pid), w), tag = all ? cn : pd.name;
-      PortfolioBasket p = basket(std::string("pf_pool_") + pd.name + kWeightId[w], pd.name, cn, tag + " 可成交", pc, 0, w);
-      p.hover = pd.name;
-      p.on = all && w == kWeightEq;
-      if (pc)
-        p.turn = pc->turn[w];
-      nav_row(kNavPool, std::move(p), basket_line(cut_of(pid), w), tag);
-    }
-  }
-  // ---- 行业线: all 池篮子 k ≥ 1 (申万一级, 总市值加权; 同 VAL 行业) ----
-  const std::shared_ptr<const PoolCurve> all = pool_of(res, pool_def(kAllPool).name);
-  for (size_t k = 1; k < kAllCuts; ++k) {
-    char id[8];
-    std::snprintf(id, sizeof(id), "sw%02zu", k);
-    const std::string nm = basket_name(k, kWeightCap);
-    PortfolioBasket p = basket(std::string("pf_ind_") + id, id, nm, nm + " 可成交", all, k, kWeightCap);
-    p.hover = id;
-    nav_row(kNavInd, std::move(p), basket_line(k, kWeightCap), nm);
-  }
-
-  // ---- VAL 篮子: 各池整体 (篮子 0; all 池两条 = 全A加权 / 全A等权, 其余池等权, 同池线) / 申万一级行业 (all 池篮子 k ≥ 1, 总市值加权); 全史估值留在 PoolCurve ----
-  if (d.dates.empty())
-    return;
-  for (const PoolId pid : pool_ids()) {
-    const PoolDef &pd = pool_def(pid);
-    const std::shared_ptr<const PoolCurve> pc = pool_of(res, pd.name);
-    if (!pc)
-      continue;
-    const bool is_all = pid == kAllPool;
-    assert(pc->baskets() == (is_all ? kAllCuts : 1) && static_cast<size_t>(pc->index.P) == pc->dates.size());
-    for (const Weight w : {kWeightCap, kWeightEq})
-      if (is_all || w == kWeightEq) {
-        const std::string cn = basket_name(cut_of(pid), w);
-        d.vals.push_back(basket(std::string(pd.name) + kWeightId[w], pd.name, cn, is_all ? cn : pd.name, pc, 0, w));
+  for (const int g : {kNavPool, kNavInd})
+    for (const size_t line : basket_group(static_cast<BasketGroup>(g))) {
+      PortfolioRow r;
+      r.id = basket_id(line);
+      r.en = r.hover = cut_code(cut_of_line(line));
+      r.cn = r.tag = basket_name(line);
+      r.on = line == basket_line(0, kWeightEq);
+      r.basket = static_cast<int>(line);
+      if (d.baskets && !d.dates.empty()) {
+        r.turn = d.baskets->turn[line];
+        r.at = project(d.dates, levels(*d.baskets, line), r.line[kTrade]);
       }
-  }
-  d.n_val_pools = d.vals.size();
-  if (all)
-    for (size_t k = 1; k < kAllCuts; ++k) {
-      char id[8];
-      std::snprintf(id, sizeof(id), "sw%02zu", k);
-      const std::string nm = basket_name(k, kWeightCap);
-      d.vals.push_back(basket(id, id, nm, nm, all, k, kWeightCap));
+      if (d.prices && !d.dates.empty()) {
+        assert(d.prices->keys[line] == line);
+        project(d.dates, levels(d.prices->list[line]), r.line[kIdeal]);
+      }
+      d.nav[g].push_back(std::move(r));
     }
 }
 
@@ -559,14 +492,6 @@ PortfolioSlice slice_of(const PortfolioCurve &c, double x0, double x1) {
     s.sharpe = static_cast<float>(s1 / n / std::sqrt(var) * std::sqrt(static_cast<double>(factor::stat::kDaysPerYear)));
   return s;
 }
-// 同一组线逐条切片
-template <class L>
-void slice_all(const std::vector<L> &ls, double x0, double x1, std::vector<PortfolioSlice> &o) {
-  o.clear();
-  for (const L &l : ls)
-    o.push_back(slice_of(l.c, x0, x1));
-}
-
 // ---- 估值口径 (roll_of / last_pct 同一份) ----
 // 估值 (EP / BP / SP / CP / DY 收益率) 可算: 有限 (≤ 0 照排, 在最贵端)
 bool val_ok(double r) { return std::isfinite(r); }
@@ -587,13 +512,13 @@ int days_of(misc::Ymd d) { return static_cast<int>(misc::to_days(d).time_since_e
 // 当日 day 的窗跨度 T (日历天; first = 首个可算日)
 int span_of(misc::Ymd day, misc::Ymd first, int years) { return days_of(day) - days_of(std::max(years_before(day, years), first)); }
 
-// 篮子 s 的口 b 的滚动分位 → o [s.c.x]: 窗内可算点按贵度保持有序 (逐日二分插入 / 出窗删除);
+// 篮子行 s 的口 b 的滚动分位 → o [s.at]: 窗内可算点按贵度保持有序 (逐日二分插入 / 出窗删除);
 // 出点日扫两遍窗: 权重和 → 加权分位 = 累计权重首个 ≥ q · 总权重的点 + 当日加权估值分位. 权重按距今天数查表 (T 变才重建)
-void roll_of(const PortfolioBasket &s, int b, int years, PortfolioRoll &o) {
+void roll_of(const BasketCurve &bc, const PortfolioRow &s, int b, int years, PortfolioRoll &o) {
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-  const std::vector<misc::Ymd> &hd = s.pc->dates;
+  const std::vector<misc::Ymd> &hd = bc.dates;
   const size_t n = hd.size(), np = s.at.size();
-  const float *v = s.pc->val_of(s.k, s.w, b);
+  const float *v = bc.val_of(static_cast<size_t>(s.basket), b);
   std::vector<int> dd(n); // 日历天
   for (size_t i = 0; i < n; ++i)
     dd[i] = days_of(hd[i]);
@@ -659,10 +584,10 @@ void roll_of(const PortfolioBasket &s, int b, int years, PortfolioRoll &o) {
   assert(k == np && "at 须升序且落在 hd 内");
 }
 
-// 篮子 s 的口 b 在切片 sl 内末个可算点的估值分位 (NaN = 无): 与 roll_of 的 pct 同一定义, 只一点 → 直接数窗, O(窗)
-double last_pct(const PortfolioBasket &s, const PortfolioSlice &sl, int b, int years) {
-  const std::vector<misc::Ymd> &hd = s.pc->dates;
-  const float *v = s.pc->val_of(s.k, s.w, b);
+// 篮子行 s 的口 b 在切片 sl 内末个可算点的估值分位 (NaN = 无): 与 roll_of 的 pct 同一定义, 只一点 → 直接数窗, O(窗)
+double last_pct(const BasketCurve &bc, const PortfolioRow &s, const PortfolioSlice &sl, int b, int years) {
+  const std::vector<misc::Ymd> &hd = bc.dates;
+  const float *v = bc.val_of(static_cast<size_t>(s.basket), b);
   size_t f = 0; // 首个可算日 (无 → hd.size(), 下面 val_ok 先短路)
   while (f < hd.size() && !val_ok(v[f]))
     ++f;
@@ -704,50 +629,55 @@ double nav_num(const PortfolioDerived &d, const PortfolioView &v, int g, size_t 
   switch (k) {
   case kNumTrade:
   case kNumIdeal:
-    return ann_of(v.nav[g][2 * r + static_cast<size_t>(k)]);
+    return ann_of(v.nav[g][r][k]);
   case kNumSharpe:
-    return v.nav[g][2 * r].sharpe;
+    return v.nav[g][r][kTrade].sharpe;
   default:
-    return d.nav[g][2 * r].turn;
+    return d.nav[g][r].turn;
   }
 }
 
-// 区间视图 (见 PortfolioView). vs = VAL 选中篮子 (der.vals 下标, −1 = 无), roll = 它的滚动分位, years = 窗长
-void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, const std::array<PortfolioRoll, kPoolVals> &roll, PortfolioView &v) {
+// 区间视图 (见 PortfolioView). vs = VAL 选中篮子行, roll = 它的滚动分位, years = 窗长
+void make_view(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs, int years, const std::array<PortfolioRoll, kPoolVals> &roll, PortfolioView &v) {
   const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
   // ---- 各线同一份切片; NAV 右表: 各数值列在同组内的截面名次 (年换手取负: 低 = 好) ----
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   std::array<double, kNavNums> no_rank;
   no_rank.fill(kNaN);
   for (int g = 0; g < kNavGroups; ++g) {
-    slice_all(d.nav[g], x0, x1, v.nav[g]);
-    const size_t n = d.nav[g].size() / 2;
+    const size_t n = d.nav[g].size();
+    v.nav[g].clear();
+    for (const PortfolioRow &r : d.nav[g])
+      v.nav[g].push_back({slice_of(r.line[kTrade], x0, x1), slice_of(r.line[kIdeal], x0, x1)});
     v.nav_rank[g].assign(n, no_rank);
     for (int k = 0; k < kNavNums; ++k) {
       const double s = k == kNumTurn ? -1.0 : 1.0;
       ranks(n, [&](size_t i) { return s * nav_num(d, v, g, i, k); }, [&](size_t i, double r) { v.nav_rank[g][i][k] = r; });
     }
   }
-  slice_all(d.vals, x0, x1, v.vals);
 
-  // ---- VAL 表格: 各篮子各口切片内末个可算点的估值分位 + 同组 (池 / 行业) 同口内的截面名次 ----
-  v.cell.assign(d.vals.size(), {});
-  for (size_t i = 0; i < d.vals.size(); ++i)
+  // ---- VAL 表格: 各篮子行各口切片内末个可算点的估值分位 + 同组同口内的截面名次 ----
+  for (int g = 0; g < kBasketGroups; ++g) {
+    const size_t n = d.nav[g].size();
+    v.cell[g].assign(n, {});
+    if (d.baskets)
+      for (size_t i = 0; i < n; ++i)
+        for (int b = 0; b < kPoolVals; ++b)
+          v.cell[g][i][b].pct = last_pct(*d.baskets, d.nav[g][i], v.nav[g][i][kTrade], b, years);
     for (int b = 0; b < kPoolVals; ++b)
-      v.cell[i][b].pct = last_pct(d.vals[i], v.vals[i], b, years);
-  for (int b = 0; b < kPoolVals; ++b)
-    for (const auto &[g0, g1] : {std::pair{size_t{0}, d.n_val_pools}, std::pair{d.n_val_pools, d.vals.size()}})
-      ranks(g1 - g0, [&](size_t i) { return v.cell[g0 + i][b].pct; }, [&](size_t i, double r) { v.cell[g0 + i][b].rank = r; });
+      ranks(n, [&](size_t i) { return v.cell[g][i][b].pct; }, [&](size_t i, double r) { v.cell[g][i][b].rank = r; });
+  }
 
   // ---- VAL 选中篮子各口 band: 与价格线同一切片, y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
   //      等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 篮子全史倍数区间等分 (levels_of) ----
   v.band_x.clear();
   for (PortfolioBand &bd : v.band)
     bd = {};
-  if (vs < 0)
+  if (vs.g < 0 || !d.baskets)
     return;
-  const PortfolioBasket &s = d.vals[static_cast<size_t>(vs)];
-  const PortfolioSlice &sl = v.vals[static_cast<size_t>(vs)];
+  const BasketCurve &bc = *d.baskets;
+  const PortfolioRow &s = d.nav[vs.g][vs.r];
+  const PortfolioSlice &sl = v.nav[vs.g][vs.r][kTrade];
   const size_t n = sl.size();
   for (size_t i = 0; i < n; ++i)
     v.band_x.push_back(sl.x(i));
@@ -755,11 +685,11 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
     const PortfolioRoll &r = roll[b];
     assert(r.pct.size() == s.at.size());
     PortfolioBand &bd = v.band[b];
-    const float *hv = s.pc->val_of(s.k, s.w, b);
+    const float *hv = bc.val_of(static_cast<size_t>(s.basket), b);
     for (std::vector<double> &y : bd.y)
       y.assign(n, kNaN);
     bd.unit.assign(n, kNaN);
-    bd.levels = levels_of(hv, s.pc->dates.size());
+    bd.levels = levels_of(hv, bc.dates.size());
     size_t last = SIZE_MAX; // 末个有分位的点 (源下标)
     for (size_t i = 0; i < n; ++i) {
       const size_t j = sl.j0 + i;
@@ -789,12 +719,6 @@ void make_view(const PortfolioDerived &d, int d0, int d1, int vs, int years, con
   }
 }
 
-// 线尾小字: 视野内末点的像素位置
-struct EndTag {
-  ImVec2 at;
-  ImU32 col;
-  std::string text;
-};
 // n 点线 (pt(i) = 第 i 点, x 升序) 视野内末点; 无 (或不可算) → false
 template <class Pt>
 bool end_point(const ImPlotRect &lim, size_t n, const Pt &pt, ImPlotPoint &p) {
@@ -821,35 +745,12 @@ void plot_slice(const char *label, const PortfolioSlice &s) {
 void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, const PortfolioSlice &s, ImU32 col, std::string text) {
   push_tag(tags, lim, s.size(), [&](size_t i) { return slice_pt(s, i); }, col, std::move(text));
 }
-constexpr float kTagScale = 0.95f, kTagGap = 4.0f; // 小字字号 (× 字体) / 离末点的间距 (px)
-// 小字占的最宽像素 (含间距 + 右边余量)
-float tags_width(const std::vector<EndTag> &tags) {
-  ImFont *font = ImGui::GetFont();
-  const float fs = ImGui::GetFontSize() * kTagScale;
-  float w = 0.0f;
-  for (const EndTag &t : tags)
-    w = std::max(w, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t.text.c_str()).x);
-  return w + 2.0f * kTagGap;
-}
-// 按像素 y 排开不重叠, 贴点右侧 (出界则左移进图内)
-void draw_tags(std::vector<EndTag> &tags) {
-  std::sort(tags.begin(), tags.end(), [](const EndTag &a, const EndTag &b) { return a.at.y < b.at.y; });
-  ImFont *font = ImGui::GetFont();
-  const float fs = ImGui::GetFontSize() * kTagScale;
-  for (size_t i = 1; i < tags.size(); ++i)
-    tags[i].at.y = std::max(tags[i].at.y, tags[i - 1].at.y + fs);
-  const float right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x;
-  ImDrawList *dl = ImPlot::GetPlotDrawList();
-  ImPlot::PushPlotClipRect();
-  for (const EndTag &t : tags) {
-    const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t.text.c_str());
-    dl->AddText(font, fs, ImVec2(std::min(t.at.x + kTagGap, right - sz.x - 2.0f), t.at.y - 0.5f * sz.y), t.col, t.text.c_str());
-  }
-  ImPlot::PopPlotClipRect();
-}
+constexpr float kTagScale = 0.95f; // 线尾小字 / 刻度字号 (× 字体)
+// 线尾小字右缘 (图区右壁内 2 px)
+float tags_right() { return ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x - 2.0f; }
 constexpr float kMarkTick = 6.0f; // 刻度的短横长 (px)
 // 刻度占的像素宽 (短横 + 字; 无 → 0)
-float marks_width(const std::vector<EndTag> &marks) { return marks.empty() ? 0.0f : tags_width(marks) + kMarkTick; }
+float marks_width(const std::vector<EndTag> &marks) { return marks.empty() ? 0.0f : end_tags_width(marks, kTagScale) + kMarkTick; }
 // 刻度: 真 y 处短横贴点右侧 (同线尾小字, 出界则左移进图内), 字左对齐接在短横后, 按像素 y 排开不重叠
 void draw_marks(std::vector<EndTag> &marks) {
   if (marks.empty())
@@ -1010,23 +911,23 @@ bool pages() {
   return nav;
 }
 
-// ---- NAV 主图: 画右表选中行的两条线, 按组序 (策略在最上层). 主图例 = cn | kind | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###id 定 ID (数值变了不换 item);
+// ---- NAV 主图: 画右表选中行的两条线, 按组序 (策略在最上层). 主图例 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###线 ID 定 ID (数值变了不换 item);
 //      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制回默认显隐一次: 理想列显, 可成交列隐) ----
 void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PlotFrame &pf) {
   struct Draw {
-    const PortfolioLine *l;
+    int g, l;
+    const PortfolioRow *row;
     const PortfolioSlice *s;
     ImVec4 col;
-    float width;
-    bool ideal;
   };
   std::vector<Draw> ds; // 画序, 只含选中行的
   for (int g = 0; g < kNavGroups; ++g)
-    for (size_t i = 0; i < d.nav[g].size(); ++i) {
-      const bool on = shown(ui, d.nav[g][i & ~size_t{1}]);
+    for (size_t r = 0; r < d.nav[g].size(); ++r) {
+      const bool on = shown(ui, d.nav[g][r]);
       pf.shown += on ? '1' : '0';
       if (on)
-        ds.push_back({&d.nav[g][i], &v.nav[g][i], nav_color(d, g, i), kNavWidth[g], i % 2 == 1});
+        for (int l = 0; l < kPairLines; ++l)
+          ds.push_back({g, l, &d.nav[g][r], &v.nav[g][r][l], nav_color(d, g, r, l)});
     }
   std::vector<std::array<std::string, 5>> rows;
   for (const Draw &x : ds) {
@@ -1034,22 +935,22 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
     std::snprintf(ann, sizeof(ann), "(年化=%+5.1f%%)", x.s->ann);
     if (std::isfinite(x.s->sharpe))
       std::snprintf(shp, sizeof(shp), "(夏普=%+5.2f)", x.s->sharpe);
-    if (std::isfinite(x.l->turn))
-      std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", x.l->turn);
-    rows.push_back({x.l->cn, x.l->kind, ann, shp, turn});
+    if (std::isfinite(x.row->turn))
+      std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", x.row->turn);
+    rows.push_back({x.row->cn, kPairName[pair_kind(x.g)][x.l], ann, shp, turn});
   }
   const std::vector<std::string> texts = align_cols(rows);
-  for (size_t r = 0; r < ds.size(); ++r) {
-    const Draw &x = ds[r];
-    const std::string lb = texts[r] + "###" + x.l->id;
-    if (ui.reveal.erase(x.l->id))
-      ImPlot::HideNextItem(!x.ideal, ImPlotCond_Always);
-    ImPlot::SetNextLineStyle(x.col, x.width);
+  for (size_t i = 0; i < ds.size(); ++i) {
+    const Draw &x = ds[i];
+    const std::string id = line_id(*x.row, x.l), lb = texts[i] + "###" + id;
+    if (ui.reveal.erase(id))
+      ImPlot::HideNextItem(x.l == kTrade, ImPlotCond_Always);
+    ImPlot::SetNextLineStyle(x.col, kNavWidth[x.g]);
     plot_slice(lb.c_str(), *x.s);
     if (ImPlot::IsLegendEntryHovered(lb.c_str()))
-      tip("%s", x.l->hover.c_str());
+      tip("%s", x.row->hover.c_str());
     if (pf.item(lb.c_str()))
-      push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.l->tag);
+      push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.row->tag + kPairTag[pair_kind(x.g)][x.l]);
   }
 }
 
@@ -1261,10 +1162,10 @@ void hover_contour(const PortfolioDerived &d, const PortfolioView &v, const Port
 
 // ---- VAL 主图: 选中篮子各口滚动 band (填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关; 不进 fit) + 价格线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) ----
-void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, int vs, PlotFrame &pf) {
+void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PortfolioAt vs, PlotFrame &pf) {
   static ValLegendHl s_hl;
-  const PortfolioBasket &s = d.vals[static_cast<size_t>(vs)];
-  const PortfolioSlice &sl = v.vals[static_cast<size_t>(vs)];
+  const PortfolioRow &s = d.nav[vs.g][vs.r];
+  const PortfolioSlice &sl = v.nav[vs.g][vs.r][kTrade];
   const double *bx = v.band_x.data();
   const int bn = static_cast<int>(v.band_x.size());
   pf.shown += s.id;
@@ -1330,9 +1231,9 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
   val_legend(v, ui.roll.key.years, s_hl);
 }
 
-// ---- 区间条: 全段组合 (有冲击) / VAL 选中篮子价格; 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
+// ---- 区间条: 全段组合 (有冲击) / VAL 选中篮子价格 (可成交指数); 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
 //   左右边 = 竖把手 (拖改起止, 双击拉到头); 段内拖 = 平移 (月数不变); 悬停 / 拖动时把手旁标起止日
-void range_bar(PortfolioUIState &ui, bool nav, int vs, float pw, float bar_h) {
+void range_bar(PortfolioUIState &ui, bool nav, PortfolioAt vs, float pw, float bar_h) {
   const PortfolioDerived &d = ui.der.val;
   PortfolioRange &rg = ui.range;
   const int D = static_cast<int>(d.dates.size());
@@ -1346,8 +1247,8 @@ void range_bar(PortfolioUIState &ui, bool nav, int vs, float pw, float bar_h) {
   if (ui.log_y)
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
   static const PortfolioCurve kNone;
-  const PortfolioCurve &rc = nav ? d.nav[kNavStrat][kImpactNet].c : vs >= 0 ? d.vals[static_cast<size_t>(vs)].c
-                                                                            : kNone;
+  const PortfolioCurve &rc = nav ? d.nav[kNavStrat][0].line[kTrade] : vs.g >= 0 ? d.nav[vs.g][vs.r].line[kTrade]
+                                                                                : kNone;
   ImPlot::SetNextLineStyle(nav ? kStratCol : kValPxCol, 1.0f);
   ImPlot::PlotLine("##pf_range_line", rc.x.data(), rc.y.data(), static_cast<int>(rc.x.size()));
   if (D > 0) {
@@ -1490,20 +1391,6 @@ std::vector<size_t> iota_n(size_t n) {
     o[i] = i;
   return o;
 }
-// 右图例类别条 (NAV / VAL 同一份): 一排小按钮, 选中的按下色; 点 = cur 换组
-void cat_bar(const char *const names[], int n, int &cur) {
-  for (int i = 0; i < n; ++i) {
-    if (i)
-      ImGui::SameLine(0, 2);
-    const bool on = cur == i;
-    if (on)
-      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    if (ImGui::SmallButton(names[i]))
-      cur = i;
-    if (on)
-      ImGui::PopStyleColor();
-  }
-}
 // 名格悬停 (首列; 行 Selectable 跨全列, 只认本格) → 提示
 void name_tip(const std::string &s) {
   if (ImGui::IsItemHovered() && ImGui::TableGetHoveredColumn() == 0)
@@ -1516,7 +1403,7 @@ void name_tip(const std::string &s) {
 constexpr int kRecents = 3;                                                                 // 近况列 [chg, ma5, amt5] (Database::Recent)
 constexpr const char *kNavNumFmt[kNavNums] = {"%+6.1f%%", "%+6.1f%%", "%+5.2f", "%5.1f倍"}; // [NavNum]
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v) {
-  cat_bar(kNavGroupName, kNavGroups, ui.cat[0]);
+  button_bar(kNavGroupName, kNavGroups, ui.cat[0]);
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -1561,28 +1448,29 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TableSetupColumn("夏普");
   ImGui::TableSetupColumn("年换手");
   ImGui::TableHeadersRow();
-  // 一行 r = 成对线 [2r] (行首, 选中键) / [2r + 1]; 切片 / 名次同下标
+  // 一行 r = 一对线; 切片 / 名次同下标
   const int g = ui.cat[0];
-  const std::vector<PortfolioLine> &ls = d.nav[g];
-  const size_t n = ls.size() / 2;
+  const std::vector<PortfolioRow> &rs = d.nav[g];
+  const size_t n = rs.size();
   std::vector<std::array<double, kRecents>> rc(n);
   for (size_t r = 0; r < n; ++r) {
-    const PortfolioLine &h = ls[2 * r];
-    const Database::Recent x = h.basket >= 0 ? Database::RecentOf(ui.basket.feed, static_cast<size_t>(h.basket)) : h.recent;
+    const PortfolioRow &h = rs[r];
+    const Database::Recent x = h.basket >= 0 ? Database::RecentOf(ui.basket.feed, static_cast<size_t>(h.basket)) : recent_of(h.line[kTrade]);
     rc[r] = {x.chg, x.ma5, x.amt5};
   }
   std::vector<size_t> order = iota_n(n);
-  sort_rows(order, [&](size_t r) { return std::string_view(ls[2 * r].cn); }, [&](size_t r, int c) { return c <= kRecents ? rc[r][static_cast<size_t>(c - 1)] : nav_num(d, v, g, r, c - 1 - kRecents); });
+  sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return c <= kRecents ? rc[r][static_cast<size_t>(c - 1)] : nav_num(d, v, g, r, c - 1 - kRecents); });
   for (const size_t r : order) {
-    const PortfolioLine &h = ls[2 * r];
+    const PortfolioRow &h = rs[r];
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     const bool on = shown(ui, h);
-    ImGui::PushStyleColor(ImGuiCol_Text, nav_color(d, g, 2 * r));
+    ImGui::PushStyleColor(ImGuiCol_Text, nav_color(d, g, r, kTrade));
     if (ImGui::Selectable((h.cn + "##pfl_" + h.id).c_str(), on, ImGuiSelectableFlags_SpanAllColumns)) {
       ui.show[h.id] = !on;
       if (!on)
-        ui.reveal.insert(h.id), ui.reveal.insert(ls[2 * r + 1].id);
+        for (int l = 0; l < kPairLines; ++l)
+          ui.reveal.insert(line_id(h, l));
     }
     ImGui::PopStyleColor();
     name_tip(h.hover);
@@ -1593,10 +1481,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         ImGui::TextDisabled("     -");
         continue;
       }
-      const ImVec4 c = k == 2 ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : x > 0 ? kUp
-                                                                      : x < 0   ? kDn
-                                                                                : kFlat;
-      ImGui::TextColored(c, "%+6.2f%%", 100.0 * x);
+      ImGui::TextColored(k == 2 ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : tint(x, 0.0), "%+6.2f%%", 100.0 * x);
     }
     for (int k = 0; k < kNavNums; ++k) {
       ImGui::TableSetColumnIndex(1 + kRecents + k);
@@ -1614,14 +1499,14 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
 }
 
 // ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 各口; 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
-void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, int vs) {
+void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PortfolioAt vs) {
   ImGui::SetNextItemWidth(-FLT_MIN);
   ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
   if (ImGui::IsItemHovered())
     tip("Band 分位的滚动窗长 N: 每日取过去 N 年 (含当日) 的收益率加权分位, 拖动即时重算\n"
         "• 权重 = 1 - exp(-10 u), u = 1 - 距今 / 窗跨度: 近 ~3/4 窗约等权, 窗尾段快速降到 0 (老点出窗时分位不跳)\n"
         "• 池估值史不足 N 年时先扩张窗 (权重按实际史长缩放); 不满 1 年不画");
-  cat_bar(kValGroupName, 2, ui.cat[1]);
+  button_bar(kNavGroupName, kBasketGroups, ui.cat[1]);
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(单选)");
   if (ImGui::IsItemHovered())
@@ -1646,20 +1531,20 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   for (const ValMeta &m : kVal)
     ImGui::TableSetupColumn(m.name, ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("100%").x);
   ImGui::TableHeadersRow();
-  const size_t g0 = ui.cat[1] == 0 ? 0 : d.n_val_pools, g1 = ui.cat[1] == 0 ? d.n_val_pools : d.vals.size();
-  std::vector<size_t> order = iota_n(g1 - g0);
-  sort_rows(order, [&](size_t i) { return std::string_view(d.vals[g0 + i].cn); }, [&](size_t i, int c) { return v.cell[g0 + i][c - 1].pct; });
-  for (const size_t o : order) {
-    const size_t i = g0 + o;
-    const PortfolioBasket &s = d.vals[i];
+  const int g = ui.cat[1];
+  const std::vector<PortfolioRow> &rs = d.nav[g];
+  std::vector<size_t> order = iota_n(rs.size());
+  sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return v.cell[g][r][c - 1].pct; });
+  for (const size_t r : order) {
+    const PortfolioRow &s = rs[r];
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    if (ImGui::Selectable((s.cn + "##pfv" + std::to_string(i)).c_str(), vs == static_cast<int>(i), ImGuiSelectableFlags_SpanAllColumns))
-      ui.val_pool = s.id;
-    name_tip(s.en);
+    if (ImGui::Selectable((s.cn + "##pfv_" + s.id).c_str(), vs == PortfolioAt{g, r}, ImGuiSelectableFlags_SpanAllColumns))
+      ui.val_id = s.id;
+    name_tip(s.hover);
     for (int b = 0; b < kPoolVals; ++b) {
       ImGui::TableSetColumnIndex(1 + b);
-      const PortfolioCell &c = v.cell[i][b];
+      const PortfolioCell &c = v.cell[g][r][b];
       if (!std::isfinite(c.pct)) {
         ImGui::TextDisabled("   -");
         continue;
@@ -1838,28 +1723,29 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
       ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
     refit = true;
   });
-  // VAL 选中篮子: 换组合 → 回默认 (组合首个因子所在池; 它还没算出 → 暂用首个池, 不记)
+  // VAL 选中篮子行: 换组合 → 回默认 (组合首个因子所在池的等权行; 无因子 → 暂用首行, 不记)
   if (ui.val_for != ui.name)
-    ui.val_for = ui.name, ui.val_pool.clear();
-  const auto val_of = [&](const std::string &id) {
-    for (size_t i = 0; i < d.vals.size(); ++i)
-      if (d.vals[i].id == id)
-        return static_cast<int>(i);
-    return -1;
+    ui.val_for = ui.name, ui.val_id.clear();
+  const auto val_at = [&](const std::string &id) {
+    for (int g = 0; g < kBasketGroups; ++g)
+      for (size_t r = 0; r < d.nav[g].size(); ++r)
+        if (d.nav[g][r].id == id)
+          return PortfolioAt{g, r};
+    return PortfolioAt{};
   };
-  int vs = val_of(ui.val_pool);
-  if (vs < 0) {
+  PortfolioAt vs = val_at(ui.val_id);
+  if (vs.g < 0) {
     const auto first = std::find_if(ui.items.begin(), ui.items.end(), [](const PortfolioItem &it) { return it.missing.empty(); });
-    vs = first != ui.items.end() ? val_of(first->e.pool) : -1;
-    if (vs >= 0)
-      ui.val_pool = d.vals[static_cast<size_t>(vs)].id;
-    else if (!d.vals.empty())
-      vs = 0;
+    vs = first != ui.items.end() ? val_at(basket_id(basket_line(cut_of(pool_id(first->e.pool)), kWeightEq))) : PortfolioAt{};
+    if (vs.g >= 0)
+      ui.val_id = d.nav[vs.g][vs.r].id;
+    else if (!d.nav[kNavPool].empty())
+      vs = {kNavPool, 0};
   }
   ui.roll.update(PortfolioRollKey{d.basket_gen, ui.band_years, vs}, [&](std::array<PortfolioRoll, kPoolVals> &r) {
     for (int b = 0; b < kPoolVals; ++b)
-      if (vs >= 0)
-        roll_of(d.vals[static_cast<size_t>(vs)], b, ui.band_years, r[b]);
+      if (vs.g >= 0 && d.baskets)
+        roll_of(*d.baskets, d.nav[vs.g][vs.r], b, ui.band_years, r[b]);
       else
         r[b] = {};
   });
@@ -1882,12 +1768,13 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     set_vis = ui.name != ui.vis_key;
     ui.vis_key = ui.name;
     if (set_vis)
-      for (const std::vector<PortfolioLine> &ls : d.nav)
-        for (const PortfolioLine &l : ls)
-          ui.show.erase(l.id), ui.reveal.insert(l.id);
+      for (const std::vector<PortfolioRow> &rs : d.nav)
+        for (const PortfolioRow &r : rs) {
+          ui.show.erase(r.id);
+          for (int l = 0; l < kPairLines; ++l)
+            ui.reveal.insert(line_id(r, l));
+        }
   }
-  if (refit || set_vis)
-    ImPlot::SetNextAxesToFit();
   constexpr float kBarH = 90.0f, kLegendMaxFrac = 0.5f; // 右图例最多占整宽的比例 (再宽表格自己截)
   const ImGuiStyle &st = ImGui::GetStyle();
   const ImVec2 av = ImGui::GetContentRegionAvail();
@@ -1903,9 +1790,9 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     if (mk) {
       std::vector<Database::BasketPick> picks;
       for (const int g : {kNavPool, kNavInd})
-        for (size_t i = 0; i < d.nav[g].size(); i += 2)
-          if (const PortfolioLine &h = d.nav[g][i]; h.basket >= 0 && shown(ui, h))
-            picks.push_back({static_cast<size_t>(h.basket), ImGui::ColorConvertFloat4ToU32(nav_color(d, g, i))});
+        for (size_t r = 0; r < d.nav[g].size(); ++r)
+          if (const PortfolioRow &h = d.nav[g][r]; shown(ui, h))
+            picks.push_back({static_cast<size_t>(h.basket), ImGui::ColorConvertFloat4ToU32(nav_color(d, g, r, kTrade))});
       Database::RenderBasketIntraday(*mk, ui.basket, picks);
     } else {
       ImGui::TextDisabled("行情等基本面就绪…");
@@ -1914,6 +1801,8 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   }
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
+  if (refit || set_vis) // 只作用于紧接的 BeginPlot: 须在日内栏之后
+    ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), nav ? ImPlotFlags_None : ImPlotFlags_NoLegend)) {
     // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin);
@@ -1928,7 +1817,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}};
     if (nav)
       plot_nav(ui, d, v, pf);
-    else if (vs >= 0)
+    else if (vs.g >= 0)
       plot_val(ui, d, v, vs, pf);
     pf.shown += ui.log_y ? 'L' : 'l';
     if (pf.shown != ui.shown_key) {
@@ -1937,12 +1826,12 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     }
     // 本帧 fit (自动 / 双击): x 右端再扩一段, 让区间末点右侧留出线尾小字 / 刻度 (同贴末点, 取宽者) 的宽度
     if (ImPlot::FitThisFrame() && !pf.tags.empty() && ui.range.d1 > ui.range.d0) {
-      const float tw = std::max(tags_width(pf.tags), marks_width(pf.marks)), W = ImPlot::GetPlotSize().x;
+      const float tw = std::max(end_tags_width(pf.tags, kTagScale), marks_width(pf.marks)), W = ImPlot::GetPlotSize().x;
       const double x0 = x_of(static_cast<size_t>(ui.range.d0), kOpen), x1 = x_of(static_cast<size_t>(ui.range.d1), kOpen);
       if (W > 2.0f * tw)
         ImPlot::FitPointX(x1 + (x1 - x0) * tw / (W - tw));
     }
-    draw_tags(pf.tags);
+    draw_end_tags(pf.tags, kTagScale, tags_right());
     draw_marks(pf.marks);
     ImPlot::EndPlot();
   }

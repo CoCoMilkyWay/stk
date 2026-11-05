@@ -19,6 +19,7 @@
 //   基准 = 成员当日前收 (历史 = D−1 行 pre_close, 当日 = 新浪昨收; 同一个交易所前收), 无基准的成员不计;
 //   当日无成交的成员比 1; 分钟缺根沿用其上根收盘, 首根前 = 基准.
 //   逐资产一遍 (资产主序): 一只的分钟根只读一次, 比 × 权散进所属各篮子.
+// 基本面源 (个股历史 / 篮子补日同一读法): 日根 = bar1d 行 (ref = pre_close), 分钟根 = bar1m 行按 row_slot 并根; 历史末日 = 两表水位之小.
 #pragma once
 
 #include "features/TimeIndex.hpp"
@@ -30,9 +31,18 @@
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
+
+struct Bar1m;
+namespace fundamental {
+class Catalog;
+class Ids;
+class Scratch;
+struct Shard;
+} // namespace fundamental
 
 namespace GUI::Database {
 
@@ -69,6 +79,8 @@ struct Cell {
 constexpr Cell cell(float o, float h, float l, float c, double v, double a) {
   return {o > 0 ? o : c, h > 0 ? h : c, l > 0 ? l : c, c, v, a};
 }
+// 有成交: 量与收皆正
+constexpr bool traded(const Cell &c) { return c.volume > 0 && c.close > 0; }
 
 // 一根带日: 日根 / 绘图的分钟根; ref = 所在日前收 (0 = 无)
 struct Candle : Cell {
@@ -114,6 +126,16 @@ struct Day {
 
 inline bool joins(const Kline &k, const Day &d) { return d.candle.date != 0 && d.prev == k.last; }
 
+// ---- 基本面源 ----
+inline constexpr const char *kBar1d = "cn_stock_real_bar1d", *kBar1m = "bar1m";
+// 历史末日 = bar1d 水位 (末个非空月分片; 0 行月也落文件) ∧ bar1m 末日; 未同步 → assert
+misc::Ymd fund_last(const fundamental::Catalog &cat);
+// bar1d 一张月分片逐行 f(id, 日根): ref = pre_close; 无成交的行照给 (traded 判)
+void each_daily(fundamental::Scratch &xs, const fundamental::Shard &sh, const fundamental::Ids &ids,
+                const std::function<void(uint32_t, const Candle &)> &f);
+// bar1m 一只一日 (Bar1mDay::asset; nullptr = 无 bar) → 分钟根: 无成交的行不收
+void bars_of(const Bar1m *m, misc::Ymd d, Bars &b);
+
 // 标的两种
 enum Side : int { kStock,
                   kBasket };
@@ -151,6 +173,7 @@ struct Members {
   void next() { at.push_back(static_cast<uint32_t>(ws.size())); } // 收一只
   size_t assets() const { return at.size() - 1; }
   std::span<const Weight> of(size_t a) const { return {ws.data() + at[a], ws.data() + at[a + 1]}; }
+  std::span<Weight> of(size_t a) { return {ws.data() + at[a], ws.data() + at[a + 1]}; }
 };
 
 // 一只一日 (合成的输入), 两源各自填

@@ -1,4 +1,4 @@
-// PortfolioService — Factors→Portfolio 页的单 worker: 因子组合 (一组合一文件) 里每个因子**独立**回测 + 各池等权指数.
+// PortfolioService — Factors→Portfolio 页的单 worker: 因子组合 (一组合一文件) 里每个因子**独立**回测 + 全部篮子的可成交指数 / 估值 / 换手.
 //
 // 组合文件 <config.portfolio_dir>/<name>.json (name = 主干, ValidFactorName):
 //   { "factors": [ { "pool": "all", "level": "5min", "file": "mom30.json", "hold": 30, "sign": -1, "expr": "<具体规范串>" }, … ] }
@@ -11,11 +11,11 @@
 //   G20 多头, 每批 1/h̄, 平仓行实现; 可成交 / 顺延在标签里) → FactorCurve 逐行出参线.
 //   成本按 Δw (契约【换手成本】), 取主段 (y_spec Segs::First: 首个盘口段, 无则固定段): 盘口段 = 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 固定段 =
 //   增仓量 / 平仓量各付 fixed_impact (固定量 UI 乘). 净值 / 聚合 (等权, 日并集轴) 在 UI 现算.
-// 池篮子: 全部池一个作业 (FactorsEngine eval_baskets, 与 eval_job 平级), 在 kBasketLevel 的 all 池评估域 (全轴; 不走森林): load_b 一趟读齐各池成员位 (池列) + T+1C 标签 + 原料 → baskets 一趟扫完
-//   (FactorsBook) → 按池切进 PoolCurve: 各池整体 + 申万一级行业 (all 内切) 两权重可成交指数日收益 (净值引擎 fold_book) + 两权重估值 EP / BP / SP / CP / DY
-//   (等权 = 个股收益率均值, 加权 = 整体法收益率; 滚动分位 band 在 UI 按可调窗长现算) + 池整体年化单边换手.
+// 篮子: 全部篮子一个作业 (FactorsEngine eval_baskets, 与 eval_job 平级), 在 kBasketLevel 的 all 池评估域 (全轴; 不走森林): load_b 一趟读齐各池成员位 (池列) + T+1C 标签 + 原料 → baskets 一趟扫完
+//   (FactorsBook) → 一份 BasketCurve (键 basket_line, 与行情侧价格指数同一张篮子表): 各池整体 + 申万一级行业 (all 内切) 两权重可成交指数日收益 (净值引擎 fold_book)
+//   + 估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率; 滚动分位 band 在 UI 按可调窗长现算) + 池整体年化单边换手.
 // 缓存: 因子按 FactorTask::key 存, 曲线记算时的 sig (变了重算), 只算缺的 (加一个因子只算它); 请求外的 (换组合 / 删条目) 按上次被请求的先后留到总量上限
-//   (切回不重算); 池篮子整份存, reload 才重算.
+//   (切回不重算); 篮子整份存, reload 才重算.
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑 (缓存已算的不丢); UI 持 mutex 读 result
 // (shared_ptr 拷出即放锁). 进度: Loading 期 done/total = 天; Running 期 = 算子节点 + 收尾; 第几个因子走 jobs_done / jobs_total.
@@ -23,9 +23,9 @@
 
 #include "factor/Stat/Contract.hpp"
 #include "gui/task_factors/services/FactorsBook.hpp"   // BookLines / Baskets / compound
-#include "gui/task_factors/services/FactorsTable.hpp"  // FactorScope / FactorRef / kWeights
+#include "gui/task_factors/services/FactorsTable.hpp"  // FactorScope / FactorRef / kPoolVals
 #include "gui/task_factors/services/FactorsWorker.hpp" // FactorWorker
-#include "shared/Basket.hpp"                           // Weight / basket_line / kAllCuts
+#include "shared/Basket.hpp"                           // basket_line / basket_count
 
 #include <atomic>
 #include <cassert>
@@ -67,11 +67,6 @@ struct PortfolioItem {
 };
 void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
 
-// ---- 线的轴: 组合线 (G20 多头, 扣其换手成本) = 冲击 Impact; 池线 = 权重 Weight (FactorsTable.hpp; Service 出毛序列, UI 组线) ----
-enum Impact : int { kImpactNet,     // 有冲击
-                    kImpactGross }; // 无冲击
-inline constexpr int kImpacts = 2;
-
 // ---- 请求 ----
 struct FactorTask {  // 一个有效条目 = 一个因子 (FactorRef, 与 Inspect 请求同一份) + 持有期
   std::string key;   // PortfolioEntry::key
@@ -80,17 +75,17 @@ struct FactorTask {  // 一个有效条目 = 一个因子 (FactorRef, 与 Inspec
   int hold = 0;
   std::string sig() const { return key + "|" + std::to_string(scope.max_impact); } // 买入冲击封顶变了重算
 };
-inline constexpr LevelId kBasketLevel = level_of(L_1day); // 池篮子的层 (PoolCurve 按日)
-struct PoolTask {                                         // 全部池的篮子 (一个作业)
+inline constexpr LevelId kBasketLevel = level_of(L_1day); // 篮子的层 (BasketCurve 按日)
+struct BasketTask {                                       // 全部篮子 (一个作业)
   FactorScope scope;                                      // (all, kBasketLevel)
 };
 struct PortfolioRequest {
   std::vector<FactorTask> factors;
-  std::optional<PoolTask> pools; // 有因子才带 (all 标签库已建)
-  bool reload = false;           // 弃缓存全部重算 (特征库重算过 / 手动 Recompute)
-  std::string sig() const;       // 内容签名 (不含 reload): 没变就不发请求, 不打断在跑的
+  std::optional<BasketTask> baskets; // 有因子才带 (all 标签库已建)
+  bool reload = false;               // 弃缓存全部重算 (特征库重算过 / 手动 Recompute)
+  std::string sig() const;           // 内容签名 (不含 reload): 没变就不发请求, 不打断在跑的
 };
-// 资产轴须已就绪 (断言). 作用域建不成 (标签库未建) 的条目 → items[i].missing 置上, 不进请求. gpu = 因子线的后端 (池篮子无森林, 恒宿主)
+// 资产轴须已就绪 (断言). 作用域建不成 (标签库未建) 的条目 → items[i].missing 置上, 不进请求. gpu = 因子线的后端 (篮子无森林, 恒宿主)
 void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::vector<PortfolioItem> &items, bool reload, bool gpu, PortfolioRequest &req);
 
 // ---- 结果 ----
@@ -99,7 +94,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
 enum CurveLine : int { kCurvePnl, // 毛收益
                        kCurveImp, // 建仓冲击
                        kCurveFix, // 固定冲击份数 (UI × Config::fixed_impact); 净 = pnl − imp − fix · fixed_impact
-                       kCurveBuy, // 增仓量 Δw⁺ (建仓行; UI 折年化单边换手, 同 PoolCurve::turn)
+                       kCurveBuy, // 增仓量 Δw⁺ (建仓行; UI 折年化单边换手, 同 BasketCurve::turn)
                        kCurveLines };
 struct FactorCurve {
   std::string sig;              // 算时的 FactorTask::sig
@@ -111,26 +106,25 @@ struct FactorCurve {
   std::string error; // 非空 = 没算成 (作用域无数据 / 叶值域越界), 其余空
   const float *nav_at(int line) const { return nav.at(line); }
 };
-// 一个池的篮子 (从 Baskets 按池切出): 篮子 0 = 池整体; all 池另有 k = 1..kAllCuts−1 = SW2021 一级行业 (全A 内切)
-struct PoolCurve {
-  std::vector<misc::Ymd> dates;                // [nd] 评估期
-  BookLines index;                             // [nk · kWeights][nd] 篮子可成交指数的日收益 (nk = baskets(); 线序 basket_line; UI compound 成点位)
-  std::vector<float> val[kWeights][kPoolVals]; // [Weight][PoolVal][nk · nd] 篮子估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值 / 加权 = 整体法收益率; NaN = 当日不可算)
-  double turn[kWeights] = {};                  // [Weight] 篮子 0 年化单边换手 (倍; Baskets::turn × 每年行数; 再平衡 + 成分进出, 停牌 = 移出再移回)
-  std::string error;
-  size_t baskets() const { return static_cast<size_t>(index.n / kWeights); } // all 池 = kAllCuts, 其余池 = 1
-  const float *index_of(size_t k, Weight w) const {                          // 篮子 k 的日收益 [nd]
-    assert(k < baskets());
-    return index.at(static_cast<int>(basket_line(k, w)));
+// 全部篮子 (= Baskets 按日; 线 = basket_line, shared/Basket.hpp)
+struct BasketCurve {
+  std::vector<misc::Ymd> dates;              // [nd] 评估期
+  BookLines index;                           // [basket_line][nd] 可成交指数的日收益 (UI compound 成点位)
+  std::vector<float> val[kPoolVals];         // [PoolVal][basket_line · nd] 估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值 / 加权 = 整体法收益率; NaN = 当日不可算)
+  std::vector<double> turn;                  // [basket_line] 年化单边换手 (倍; Baskets::turn × 每年行数; 再平衡 + 成分进出, 停牌 = 移出再移回); 非池整体 NaN
+  std::string error;                         // 非空 = 没算成, 其余空
+  const float *index_of(size_t line) const { // [nd]
+    assert(line < basket_count());
+    return index.at(static_cast<int>(line));
   }
-  const float *val_of(size_t k, int w, int m) const {
-    assert(k < baskets());
-    return val[w][m].data() + k * dates.size();
+  const float *val_of(size_t line, int m) const { // [nd]
+    assert(line < basket_count());
+    return val[m].data() + line * dates.size();
   }
 };
 struct PortfolioResult {
   std::map<std::string, std::shared_ptr<const FactorCurve>> factors; // FactorTask::key →
-  std::map<std::string, std::shared_ptr<const PoolCurve>> pools;     // 池名 → (全部池同一趟算出)
+  std::shared_ptr<const BasketCurve> baskets;                        // 空 = 未算
 };
 
 class PortfolioService : public FactorWorker<PortfolioService, PortfolioRequest> {
@@ -144,14 +138,14 @@ public:
   // UI 持 mutex 读
   PortfolioResult result;
   uint64_t result_gen = 0;                      // result 每变一次 +1 (UI 派生缓存键)
-  std::atomic<int> jobs_done{0}, jobs_total{0}; // 本轮要算的 (因子 + 池篮子一个)
+  std::atomic<int> jobs_done{0}, jobs_total{0}; // 本轮要算的 (因子 + 篮子一个)
 
 private:
   static constexpr Phase kStart = Phase::Loading;
   bool run(PortfolioRequest &req);
-  // 一张森林的待算条目 (同层同池, 按 (串, 框架) 排好, 同串必同框架): 根评完逐条发布 / 池篮子: 全部池一次发布. false = 取消 / 判废
+  // 一张森林的待算条目 (同层同池, 按 (串, 框架) 排好, 同串必同框架): 根评完逐条发布 / 篮子: 全部一次发布. false = 取消 / 判废
   bool eval(const std::vector<const FactorTask *> &ts, FactorFlow &F);
-  bool eval(const PoolTask &t, FactorFlow &F);
+  bool eval(const BasketTask &t, FactorFlow &F);
   void put(const std::string &key, std::shared_ptr<FactorCurve> c);
 
   // worker 私有: 因子缓存的新旧 (key → 上次被请求的 tick_)

@@ -982,52 +982,153 @@ static NodeTimeRow &node_time_row(std::vector<NodeTimeRow> &rows, std::string_vi
   return rows.emplace_back(NodeTimeRow{file, std::string(short_node_file(file))});
 }
 
-// 一段的表: 占比 = 周期 / total (本段 100%), 行与 items 按周期降序; items 超宽折行
-static void render_node_time_table(const char *id, const char *item_header, std::vector<NodeTimeRow> &rows, uint64_t total, float height) {
+// 一段一条通栏堆叠条 + 图例: 色块宽 = 周期 / total (只看本层时余下留空), 行与 items 按周期降序.
+//   一个文件一个色系 (文件行按序取黄金角色相, 非节点行灰), 文件内节点 / 列由亮到暗; 色块放得下就写名字 (+ 占比).
+//   悬停色块 / 图例 → 该文件高亮 (其余变暗) + 明细浮窗; 图例画在条之后, 条用上一帧的图例悬停
+static void render_node_time_bar(const char *id, std::vector<NodeTimeRow> &rows, uint64_t total) {
   for (NodeTimeRow &r : rows)
     std::sort(r.items.begin(), r.items.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
   std::stable_sort(rows.begin(), rows.end(), [](const NodeTimeRow &a, const NodeTimeRow &b) { return a.cycles > b.cycles; });
   const auto share = [&](uint64_t c) { return total > 0 ? static_cast<float>(static_cast<double>(c) / static_cast<double>(total)) : 0.0f; };
 
-  if (!ImGui::BeginTable(id, 3,
-                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
-                         ImVec2(0, height)))
-    return;
-  ImGui::TableSetupScrollFreeze(0, 1);
-  ImGui::TableSetupColumn("File");
-  ImGui::TableSetupColumn("Share");
-  ImGui::TableSetupColumn(item_header, ImGuiTableColumnFlags_WidthStretch);
-  ImGui::TableHeadersRow();
-  for (const NodeTimeRow &r : rows) {
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    if (r.file.empty())
-      ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.4f, 1.0f), "%s", r.name.c_str());
-    else
-      ImGui::TextUnformatted(r.name.c_str());
-    ImGui::TableNextColumn();
-    char pct[16];
-    std::snprintf(pct, sizeof(pct), "%.1f%%", 100.0f * share(r.cycles));
-    ImGui::ProgressBar(share(r.cycles), ImVec2(160, 0), pct);
-    ImGui::TableNextColumn();
-    for (size_t i = 0; i < r.items.size(); ++i) {
-      std::snprintf(pct, sizeof(pct), "%.1f%%", 100.0f * share(r.items[i].second));
-      const ImGuiStyle &st = ImGui::GetStyle();
-      const float w = ImGui::CalcTextSize(r.items[i].first.c_str()).x + 4.0f + ImGui::CalcTextSize(pct).x;
-      if (i > 0) {
-        ImGui::SameLine(0.0f, 12.0f);
-        if (ImGui::GetContentRegionAvail().x < w + st.CellPadding.x)
-          ImGui::NewLine();
+  std::vector<float> hue(rows.size());
+  for (size_t r = 0, k = 0; r < rows.size(); ++r)
+    hue[r] = rows[r].file.empty() ? -1.0f : std::fmod(0.61803398875f * static_cast<float>(k++), 1.0f);
+  const auto color = [&](size_t r, size_t j, float alpha) {
+    const size_t n = rows[r].items.size();
+    const float v = 0.92f - (n > 1 ? 0.38f * static_cast<float>(j) / static_cast<float>(n - 1) : 0.0f);
+    float cr, cg, cb;
+    ImGui::ColorConvertHSVtoRGB(std::max(hue[r], 0.0f), hue[r] < 0.0f ? 0.0f : 0.55f, hue[r] < 0.0f ? v * 0.75f : v, cr, cg, cb);
+    return ImGui::GetColorU32(ImVec4(cr, cg, cb, alpha));
+  };
+  const auto tooltip = [&](size_t r, size_t hot_item) {
+    ImGui::BeginTooltip();
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color(r, 0, 1.0f)), "%s", rows[r].name.c_str());
+    ImGui::SameLine();
+    ImGui::Text("%.1f%%", 100.0f * share(rows[r].cycles));
+    if (!rows[r].file.empty())
+      ImGui::TextDisabled("%s", std::string(rows[r].file).c_str());
+    if (!rows[r].items.empty())
+      ImGui::Separator();
+    for (size_t j = 0; j < rows[r].items.size(); ++j) {
+      const auto &[name, cycles] = rows[r].items[j];
+      ImGui::PushID(static_cast<int>(j));
+      ImGui::ColorButton("##sw", ImGui::ColorConvertU32ToFloat4(color(r, j, 1.0f)), ImGuiColorEditFlags_NoTooltip, ImVec2(10, 10));
+      ImGui::PopID();
+      ImGui::SameLine();
+      if (j == hot_item)
+        ImGui::Text("%s  %.1f%%", name.c_str(), 100.0f * share(cycles));
+      else
+        ImGui::TextDisabled("%s  %.1f%%", name.c_str(), 100.0f * share(cycles));
+    }
+    ImGui::EndTooltip();
+  };
+
+  ImGuiStorage *storage = ImGui::GetStateStorage();
+  ImGui::PushID(id);
+  const ImGuiID hot_id = ImGui::GetID("hot");
+  ImGui::PopID();
+  const int legend_hot = storage->GetInt(hot_id, -1);
+  int hot = -1;
+
+  // 条: 色块 = (文件行 r, item j; 无 items 的行一块)
+  struct Seg {
+    size_t r, j;
+    float x0, x1;
+  };
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetFrameHeight() * 1.4f;
+  ImGui::InvisibleButton(id, ImVec2(W, H));
+  const bool bar_hovered = ImGui::IsItemHovered();
+  std::vector<Seg> segs;
+  std::vector<std::pair<float, float>> spans(rows.size()); // 文件行的横向范围
+  double acc = 0.0;
+  const auto x_at = [&](double c) { return p0.x + (total > 0 ? static_cast<float>(c / static_cast<double>(total)) * W : 0.0f); };
+  for (size_t r = 0; r < rows.size(); ++r) {
+    spans[r].first = x_at(acc);
+    if (rows[r].items.empty()) {
+      segs.push_back({r, 0, x_at(acc), x_at(acc + static_cast<double>(rows[r].cycles))});
+      acc += static_cast<double>(rows[r].cycles);
+    }
+    for (size_t j = 0; j < rows[r].items.size(); ++j) {
+      segs.push_back({r, j, x_at(acc), x_at(acc + static_cast<double>(rows[r].items[j].second))});
+      acc += static_cast<double>(rows[r].items[j].second);
+    }
+    spans[r].second = x_at(acc);
+  }
+  size_t hot_seg = SIZE_MAX;
+  if (bar_hovered)
+    for (size_t k = 0; k < segs.size(); ++k)
+      if (ImGui::GetIO().MousePos.x >= segs[k].x0 && ImGui::GetIO().MousePos.x < segs[k].x1) {
+        hot_seg = k;
+        hot = static_cast<int>(segs[k].r);
       }
-      ImGui::TextUnformatted(r.items[i].first.c_str());
-      ImGui::SameLine(0.0f, 4.0f);
-      ImGui::TextDisabled("%s", pct);
+  const int lit = hot >= 0 ? hot : legend_hot;
+
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const float y0 = p0.y, y1 = p0.y + H;
+  dl->AddRectFilled(ImVec2(p0.x, y0), ImVec2(p0.x + W, y1), ImGui::GetColorU32(ImGuiCol_FrameBg));
+  const ImU32 ink = IM_COL32(20, 20, 20, 255), gap = ImGui::GetColorU32(ImGuiCol_WindowBg);
+  for (const Seg &s : segs) {
+    const bool dim = lit >= 0 && static_cast<int>(s.r) != lit;
+    dl->AddRectFilled(ImVec2(s.x0, y0), ImVec2(s.x1, y1), color(s.r, s.j, dim ? 0.25f : 1.0f));
+    if (dim)
+      continue;
+    const std::string &name = rows[s.r].items.empty() ? rows[s.r].name : rows[s.r].items[s.j].first;
+    const uint64_t c = rows[s.r].items.empty() ? rows[s.r].cycles : rows[s.r].items[s.j].second;
+    char text[160];
+    std::snprintf(text, sizeof(text), "%s %.1f%%", name.c_str(), 100.0f * share(c));
+    const char *shown = ImGui::CalcTextSize(text).x + 8.0f <= s.x1 - s.x0 ? text : ImGui::CalcTextSize(name.c_str()).x + 8.0f <= s.x1 - s.x0 ? name.c_str()
+                                                                                                                                             : nullptr;
+    if (shown)
+      dl->AddText(ImVec2(s.x0 + 4.0f, y0 + 0.5f * (H - ImGui::GetTextLineHeight())), ink, shown);
+  }
+  for (size_t r = 1; r < rows.size(); ++r)
+    dl->AddLine(ImVec2(spans[r].first, y0), ImVec2(spans[r].first, y1), gap, 2.0f);
+  if (lit >= 0)
+    dl->AddRect(ImVec2(spans[static_cast<size_t>(lit)].first, y0), ImVec2(spans[static_cast<size_t>(lit)].second, y1), IM_COL32(255, 255, 255, 230), 0.0f, 0, 2.0f);
+  if (const float x = x_at(acc); x + 8.0f < p0.x + W) {
+    char rest[48];
+    std::snprintf(rest, sizeof(rest), "其余 %.1f%%", 100.0f * (1.0f - share(static_cast<uint64_t>(acc))));
+    if (ImGui::CalcTextSize(rest).x + 8.0f <= p0.x + W - x)
+      dl->AddText(ImVec2(x + 4.0f, y0 + 0.5f * (H - ImGui::GetTextLineHeight())), ImGui::GetColorU32(ImGuiCol_TextDisabled), rest);
+  }
+  if (hot_seg != SIZE_MAX)
+    tooltip(segs[hot_seg].r, rows[segs[hot_seg].r].items.empty() ? SIZE_MAX : segs[hot_seg].j);
+
+  // 图例: 色块 + 文件名 + 占比, 超宽折行
+  for (size_t r = 0; r < rows.size(); ++r) {
+    char pct[16];
+    std::snprintf(pct, sizeof(pct), "%.1f%%", 100.0f * share(rows[r].cycles));
+    const float sq = ImGui::GetTextLineHeight();
+    const ImGuiStyle &st = ImGui::GetStyle();
+    const float w = sq + ImGui::CalcTextSize(rows[r].name.c_str()).x + ImGui::CalcTextSize(pct).x + 2.0f * st.ItemInnerSpacing.x;
+    if (r > 0) {
+      ImGui::SameLine(0.0f, 14.0f);
+      if (ImGui::GetContentRegionAvail().x < w)
+        ImGui::NewLine();
+    }
+    const bool dim = lit >= 0 && static_cast<int>(r) != lit;
+    ImGui::PushID(static_cast<int>(r));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, dim ? 0.4f : 1.0f);
+    ImGui::BeginGroup();
+    ImGui::ColorButton("##sw", ImGui::ColorConvertU32ToFloat4(color(r, 0, 1.0f)), ImGuiColorEditFlags_NoTooltip, ImVec2(sq, sq));
+    ImGui::SameLine(0.0f, st.ItemInnerSpacing.x);
+    ImGui::TextUnformatted(rows[r].name.c_str());
+    ImGui::SameLine(0.0f, st.ItemInnerSpacing.x);
+    ImGui::TextDisabled("%s", pct);
+    ImGui::EndGroup();
+    ImGui::PopStyleVar();
+    ImGui::PopID();
+    if (ImGui::IsItemHovered()) {
+      hot = static_cast<int>(r);
+      tooltip(r, SIZE_MAX);
     }
   }
-  ImGui::EndTable();
+  storage->SetInt(hot_id, hot);
 }
 
-// 两段 (时序 / 截面) 各一张表, 各自成 100%. 全部 = 全档文件 + 非节点行 (合计 100%);
+// 两段 (时序 / 截面) 各一条堆叠条, 各自成 100%. 全部 = 全档文件 + 非节点行 (合计 100%);
 // 只看本层 = 只留本层字段所在文件 / 本层截面列, 去掉非节点行 (占比仍按本段全量, 节点可能同时服务别的层, 各层视图不互斥)
 static void render_node_time(SharedData &data, const Feature &feature) {
   static NodeTimeFile s_nt;
@@ -1106,19 +1207,16 @@ static void render_node_time(SharedData &data, const Feature &feature) {
     cs_rows.push_back({{}, "调度 (有效集 / 旁读)", s_nt.cs_total - cs_named, {}});
 
   const auto pct = [](uint64_t c, uint64_t total) { return total > 0 ? 100.0 * static_cast<double>(c) / static_cast<double>(total) : 0.0; };
-  const float line = ImGui::GetFrameHeightWithSpacing();
-  const float ts_height = std::max(6.0f * line, 0.6f * (ImGui::GetContentRegionAvail().y - 2.0f * line));
-
   char title[128];
   std::snprintf(title, sizeof(title), "时序 · 抽样 %llu asset-day · %s %.1f%%", static_cast<unsigned long long>(s_nt.ts_samples),
                 s_level_only ? "本层相关合计" : "合计", s_level_only ? pct(ts_shown, s_nt.ts_total) : 100.0);
   ImGui::SeparatorText(title);
-  render_node_time_table("NodeTimeTs", "Nodes", ts_rows, s_nt.ts_total, ts_height);
+  render_node_time_bar("##node_time_ts", ts_rows, s_nt.ts_total);
 
   std::snprintf(title, sizeof(title), "截面 · %llu 日 · %s %.1f%%", static_cast<unsigned long long>(s_nt.cs_days),
                 s_level_only ? "本层合计" : "合计", s_level_only ? pct(cs_shown, s_nt.cs_total) : 100.0);
   ImGui::SeparatorText(title);
-  render_node_time_table("NodeTimeCs", "Columns", cs_rows, s_nt.cs_total, ImGui::GetContentRegionAvail().y);
+  render_node_time_bar("##node_time_cs", cs_rows, s_nt.cs_total);
 }
 
 // ============================================================================

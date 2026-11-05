@@ -4,7 +4,7 @@
 #include "gui/task_factors/services/FactorsEngine.hpp" // with_engine / eval_job / eval_baskets / Probes / LinesP / group_abs
 #include "gui/task_factors/services/FactorsFile.hpp"   // ValidFactorName / FactorRow / ScanFactorFile
 #include "misc/profiler.hpp"
-#include "shared/FeatureLib.hpp" // feature_pools
+#include "shared/FeatureLib.hpp" // pool_def
 #include "shared/SharedData.hpp"
 
 #include "nlohmann/json.hpp"
@@ -166,17 +166,17 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
   }
   if (req.factors.empty())
     return;
-  PoolTask p;
-  if (MakeFactorScope(data, table_of(tables, data.feature, kBasketLevel), pool_def(kAllPool).name, /*gpu=*/false, p.scope))
-    req.pools = std::move(p);
+  BasketTask b;
+  if (MakeFactorScope(data, table_of(tables, data.feature, kBasketLevel), pool_def(kAllPool).name, /*gpu=*/false, b.scope))
+    req.baskets = std::move(b);
 }
 
 std::string PortfolioRequest::sig() const {
   std::string s;
   for (const FactorTask &t : factors)
     s += t.sig() + "\n";
-  if (pools)
-    s += "pools\n";
+  if (baskets)
+    s += "baskets\n";
   return s;
 }
 
@@ -274,8 +274,8 @@ bool PortfolioService::run(PortfolioRequest &req) {
     std::lock_guard<std::mutex> lock(mutex);
     message.clear();
     prune(result.factors, used_, tick_, req.reload);
-    if (req.reload || !req.pools)
-      result.pools.clear();
+    if (req.reload || !req.baskets)
+      result.baskets.reset();
     ++result_gen;
   }
   publish();
@@ -287,9 +287,9 @@ bool PortfolioService::run(PortfolioRequest &req) {
     groups[group_of(*t)].push_back(t);
   for (auto &[g, ts] : groups)
     std::sort(ts.begin(), ts.end(), [](const FactorTask *a, const FactorTask *b) { return std::tie(a->f.expr, a->f.frame, a->f.dir) < std::tie(b->f.expr, b->f.frame, b->f.dir); });
-  const bool todo_p = req.pools && result.pools.empty();
+  const bool todo_b = req.baskets && !result.baskets;
   jobs_done.store(0, std::memory_order_relaxed);
-  jobs_total.store(static_cast<int>(todo_f.size()) + todo_p, std::memory_order_relaxed);
+  jobs_total.store(static_cast<int>(todo_f.size()) + todo_b, std::memory_order_relaxed);
   const bool ok = [&] {
     Lease l(F);
     if (!l)
@@ -299,7 +299,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
     for (const auto &[g, ts] : groups)
       if (!eval(ts, F))
         return false;
-    return !todo_p || eval(*req.pools, F);
+    return !todo_b || eval(*req.baskets, F);
   }();
   F.end();
   return ok;
@@ -350,46 +350,33 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return settle(rc);
 }
 
-// 池篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 按池切进 PoolCurve, 全部池一次发布
-bool PortfolioService::eval(const PoolTask &t, FactorFlow &F) {
-  TraceN("PortfolioPool");
+// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 一份 BasketCurve 发布
+bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
+  TraceN("PortfolioBaskets");
   const FeatureTable &ft = *t.scope.ft;
-  assert(ft.lv == kBasketLevel && "PoolCurve 按日");
+  assert(ft.lv == kBasketLevel && "BasketCurve 按日");
   Job j;
   j.who = "Portfolio";
   Baskets bs;
   const Rc rc = eval_baskets(F, t.scope, j, bs);
   if (!settle(rc))
     return false;
-  std::map<std::string, std::shared_ptr<const PoolCurve>> out;
+  auto c = std::make_shared<BasketCurve>();
   if (rc != Rc::Ok) {
-    for (const PoolDef &d : feature_pools()) {
-      auto c = std::make_shared<PoolCurve>();
-      c->error = j.why;
-      out[d.name] = std::move(c);
-    }
+    c->error = j.why;
   } else {
-    const std::vector<misc::Ymd> &dates = j.dm.dates;
-    const size_t nd = dates.size();
-    assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == nd);
-    for (const PoolId p : pool_ids()) {
-      const size_t b0 = cut_of(p), nk = p == kAllPool ? kAllCuts : 1;
-      auto c = std::make_shared<PoolCurve>();
-      c->dates = dates;
-      c->index = bs.index.slice(static_cast<int>(basket_line(b0, kWeightEq)), static_cast<int>(nk) * kWeights);
-      for (int w = 0; w < kWeights; ++w)
-        c->turn[w] = bs.turn[w][p] * factor::stat::kDaysPerYear * ft.seg;
-      for (int w = 0; w < kWeights; ++w)
-        for (int m = 0; m < kPoolVals; ++m) {
-          const auto v0 = bs.val[w][m].begin() + static_cast<ptrdiff_t>(b0 * nd);
-          c->val[w][m].assign(v0, v0 + static_cast<ptrdiff_t>(nk * nd));
-        }
-      out[pool_def(p).name] = std::move(c);
-    }
+    c->dates = j.dm.dates;
+    assert(bs.index.n == static_cast<int>(basket_count()) && static_cast<size_t>(bs.index.P) == c->dates.size());
+    c->index = std::move(bs.index);
+    for (int m = 0; m < kPoolVals; ++m)
+      c->val[m] = std::move(bs.val[m]);
+    c->turn = std::move(bs.turn);
+    for (double &x : c->turn)
+      x *= factor::stat::kDaysPerYear * ft.seg;
   }
   {
     std::lock_guard<std::mutex> lock(mutex);
-    result.pools = std::move(out);
+    result.baskets = std::move(c);
     ++result_gen;
   }
   jobs_done.fetch_add(1, std::memory_order_relaxed);

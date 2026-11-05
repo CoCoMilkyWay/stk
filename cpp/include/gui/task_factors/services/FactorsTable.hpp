@@ -150,7 +150,7 @@ struct XCols {
   const FeatCol *find(std::string_view code) const;                     // 不在 → nullptr
   std::vector<LeafId> ids(const std::vector<std::string> &codes) const; // 须都在
 };
-// 池估值五口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; FactorsLoad load_b → PoolCurve → Portfolio VAL 页):
+// 池估值五口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; FactorsLoad load_b → Baskets → Portfolio VAL 页):
 // EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续)
 enum PoolVal : int { kValEp,
                      kValBp,
