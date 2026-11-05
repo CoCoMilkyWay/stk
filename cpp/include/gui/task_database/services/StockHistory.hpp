@@ -1,6 +1,7 @@
 // 个股的历史一路 (见 Kline.hpp): 键集 (全局 id) 的基本面历史, 最新请求覆盖旧的 (gui/util/Service.hpp); 与 BasketHistory 对仗.
 //   日线 = cn_stock_real_bar1d 最近 kDailyDays 个交易日 (月分片自末往前成批并行读到够), ref = pre_close;
-//   分钟 = bar1m 最近 kMinuteDays 个交易日文件, 经 Bar1mDay 落到 L_1min 行后按行 row_slot 并根 (与篮子读 L_1min 同一路).
+//   分钟 = bar1m 最近 kMinuteDays 个交易日文件, 经 Bar1mDay 落到 L_1min 行后按行 row_slot 并根 (与篮子读 L_1min 同一路);
+//     各根带本只净流入 (net_flow, 基准 = 同日日根前收).
 //   分片单 row group 无从下推, 读一只 = 解全市场的片; 耗时全在解码, 故全部分片在常驻线程池上一片一任务并行, 缺的键一趟读齐.
 //   不复权, 无成交的行 / 根不收.
 //   历史末日 = 两表落盘水位之小 (全市场口径, 不看本只有无成交).
@@ -12,6 +13,7 @@
 #include "misc/exec.hpp"
 
 #include <algorithm>
+#include <memory>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -36,7 +38,7 @@ private:
   bool run(HistoryRequest &req);
 
   HistoryPub x_;
-  std::vector<std::pair<uint32_t, Kline>> keep_; // worker 私有: (全局 id, 历史), 新近在后
+  std::vector<std::pair<uint32_t, std::shared_ptr<const Kline>>> keep_; // worker 私有: (全局 id, 历史 (与发布共享)), 新近在后
   misc::exec::ForkJoin pool_{static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))};
 };
 

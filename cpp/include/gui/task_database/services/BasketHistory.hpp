@@ -17,7 +17,8 @@
 //   日根 / 基准 = bar1d open … close / amount / pre_close, 分钟根 = bar1m; 加权的权重逐日 × 收 / 前收 (市值随价漂移).
 // 历史末日 = 末个补日 (无补日 = 库末个落盘日). 当日 (之后的行情日): 跑完把末日的成员表 (下标 = QuoteService 全市场) 与各篮子末日点位
 //   bind 给 QuoteService, 由它每轮快照合成 (基准 = 新浪昨收); 先 bind 后发布. 发布 = 请求键集 (basket_line) 的子表 (Book + 补日)
-//   + 该成员表各篮子的只数 / Σ 权 (Tape::members / weight) + 键集两两的成员重合 (Tape::overlap).
+//   + 该成员表各篮子的只数 / Σ 权 (Tape::members / weight) / 成分 (Tape::cons, Portfolio 右表展开) + 键集两两的成员重合 (Tape::overlap).
+//   无补日 → 子表与 Book 共享各篮子的 Kline (不拷; Book 改前先独占, 见 own); 有补日 → 逐篮子拼一份.
 #pragma once
 
 #include "gui/task_database/services/Kline.hpp"
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -58,9 +60,9 @@ private:
       bool operator==(const Head &) const = default;
     };
     Head head;
-    std::vector<misc::Ymd> dates; // 已合成的落盘日 (首日只定成员 / 基准, 无根)
-    std::vector<double> level;    // [篮子] 末日点位
-    std::vector<Kline> list;      // [篮子]
+    std::vector<misc::Ymd> dates;             // 已合成的落盘日 (首日只定成员 / 基准, 无根)
+    std::vector<double> level;                // [篮子] 末日点位
+    std::vector<std::shared_ptr<Kline>> list; // [篮子] (可能与发布共享)
     template <class Ar>
     void snap(Ar &ar); // 头之后的部分
   };
@@ -81,7 +83,8 @@ private:
   bool extend(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates, Members &mem);
   // tail_ 补到基本面末日; mem: 入 = Book 末日的成员表, 出 = 末补日的. false = 取消
   bool fill(const FeatureLib &lib, Members &mem);
-  bool publish(const HistoryRequest &req, const char *lack);
+  // lack 空 → axis = 成员表的库轴 (成分的全局 id)
+  bool publish(const HistoryRequest &req, const char *lack, const PoolAxis *axis = nullptr);
 
   const Config &cfg_;
   QuoteService &live_;

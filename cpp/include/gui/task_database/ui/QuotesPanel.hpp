@@ -3,7 +3,8 @@
 //   篮子 = Portfolio NAV 日内栏: 键集 = 全部篮子线, 叠加图 (对首日前收的涨跌幅, 刻度区全空: 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名小字贴线尾;
 //     不画量, 读数看十字光标); 多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 kSlots 的因子并根, 同 py/app/tdx) + 现价十字 (虚线, 标涨跌幅 / 时刻), 版面不变;
 //     Portfolio FLOW 页 = 同一叠加图, y = 自日轴首日开盘起逐分钟累计的净流入 (Bars::net; 占近 5 日日均成交额 % / 金额 亿元);
-//   近况 (Recent): 键集里一个标的的近况两列 (Portfolio NAV 表). 以下为个股图:
+//     叠加的条可含个股 (Portfolio 右表点中的成分股: 个股历史 + 新浪当日, 与篮子同一画法);
+//   近况 (Recent): 一个标的的近况两列 (Portfolio 右表 / Assets 表). 以下为个股图:
 //   价 = 实心蜡烛 (实体 = 上一根收 → 本根收, 首根起于前收, 根根首尾相接; 量柱同色), 日内按视野宽并根 (同篮子);
 //     日线另叠均线, 默认 10 年档; 悬停提示只在量图
 //     十字光标随鼠标: 竖线吸附最近一根 (底轴标时刻), 横线在鼠标所在格 (价图左价 / 右涨跌幅, 量图标量 / 额)
@@ -14,6 +15,7 @@
 #pragma once
 
 #include "gui/task_database/services/Market.hpp"
+#include "shared/AssetInfo.hpp" // StockInfo (个股近况)
 
 #include <cstdint>
 #include <limits>
@@ -43,15 +45,15 @@ struct ChartState {
 
 // 一路行情的 UI 端 (个股 / 篮子同形): 键集 → 历史发布 + 当日
 struct Feed {
-  std::vector<uint32_t> want;       // 末次请求的键集
-  bool reload = false;              // 下帧照原键集重发
-  uint32_t gen = 0;                 // 末次请求代
-  uint32_t shown = 0;               // 在画的发布的请求代 (视野复位键)
-  std::shared_ptr<const Tape> data; // 在画的历史 (末次请求的到齐才换; keys = 在画的键集)
-  std::vector<Day> today;           // [data->keys] 当日
-  uint64_t ver = ~0ull;             // 已拷的当日版本 (QuoteStatus::ver); ~0 = 待拷
+  std::vector<uint32_t> want;                    // 末次请求的键集
+  bool reload = false;                           // 下帧照原键集重发
+  uint32_t gen = 0;                              // 末次请求代
+  uint32_t shown = 0;                            // 在画的发布的请求代 (视野复位键)
+  std::shared_ptr<const Tape> data;              // 在画的历史 (末次请求的到齐才换; keys = 在画的键集)
+  std::shared_ptr<const std::vector<Day>> today; // [data->keys] 当日 (只读; 篮子 = 与服务共享的那份)
+  uint64_t ver = ~0ull;                          // 已取的当日版本 (QuoteStatus::ver); ~0 = 待取
 };
-// 每帧: 键集变 / reload → 发请求 (个股另 select 给新浪); 末次请求的发布到齐 → 整体换上; 当日版本变 → 拷
+// 每帧: 键集变 / reload / 被同路别的 Feed 覆盖 → 发请求 (个股另 select 给新浪); 末次请求的发布到齐 → 整体换上; 当日版本变 → 取
 void Sync(Market &mk, Side s, std::span<const uint32_t> want, Feed &f);
 
 struct StockState {
@@ -61,16 +63,19 @@ struct StockState {
 
 struct BasketState {
   Feed feed;              // 键集 = 全部篮子线 (下标 = basket_line)
+  Feed stocks;            // 键集 = 叠加的个股 (全局 id; 与 Assets 同一路个股历史)
   int intraday = 0;       // 日内档 (日内 / 2日 … 5日)
   int flow = 0;           // 资金流档 (同日内档)
   int flow_unit = 0;      // 资金流 y: 0 = 占近 5 日日均成交额 [%], 1 = 金额 [亿元]
   bool flow_ends = false; // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
 };
 
-// 日内叠加的一条: 篮子线 basket_line + 线色 (ImU32)
-struct BasketPick {
-  size_t b;
+// 叠加的一条: 篮子 (key = basket_line, 源 = BasketState::feed) / 个股 (key = 全局 id, 源 = BasketState::stocks) + 线色 (ImU32) + 线名
+struct OverlayPick {
+  Side side;
+  uint32_t key;
   uint32_t col;
+  std::string name;
 };
 
 // 近况: 最新一根对前收 / 最新收对 MA5 (含最新一根), 各 − 1; 不可算 = NaN
@@ -87,19 +92,23 @@ inline constexpr size_t kMarks = 5;
 Recent RecentOf(std::span<const Mark> m);
 // 键集第 k 个标的的近况: 当日接上取当日, 再接日线末根起; 历史未到 / 源未就绪 → 全 NaN
 Recent RecentOf(const Feed &f, size_t k);
+// 个股近况 (不读历史): 新浪当日日根接得上 (其前一交易日 prev = 本只 bar1d 水位) 取当日, 再接 bar1d 最近几个有成交日 (StockInfo::closes)
+Recent RecentOf(const StockInfo &info, const Candle &today, misc::Ymd prev);
 
 // title = 在画标的的标题 (简称 + 代码)
 void RenderStockPanel(const Market &mk, StockState &st, const std::string &title);
-// picks 各篮子的日内叠加图 (一个 = 蜡烛), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 源未就绪 / 读取中 → 提示
-void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks);
-// picks 各篮子的累计净流入叠加图 (日轴 = FlowDays, 跨日接续; 档位 / 口径 / 开收盘开关叠在左上角), 其余同 RenderBasketIntraday
-void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks);
+// picks 各条的日内叠加图 (一条 = 蜡烛), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 篮子源未就绪 / 读取中 → 提示; 个股历史未到的条不画
+void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<OverlayPick> &picks);
+// picks 各条的累计净流入叠加图 (日轴 = FlowDays, 跨日接续; 档位 / 口径 / 开收盘开关叠在左上角), 其余同 RenderBasketIntraday
+void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<OverlayPick> &picks);
 // 资金流档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
 std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st);
 // 一段的资金流 [元]: 净流入 (分钟涨跌法, 见 Fold) / 成交额; amount 0 = 无根
 struct Flow {
   double net = 0, amount = 0;
 };
+// 一日分钟根的资金流 (首 / 末根按 ends)
+Flow FlowOf(const Bars &b, bool ends);
 // 键集第 k 个篮子在 days 各日的资金流 (当日接上取当日, 否则历史分钟根; 首 / 末根按 st.flow_ends); 历史未到 / 源未就绪 → 空
 std::vector<Flow> FlowOf(const BasketState &st, size_t k, std::span<const misc::Ymd> days);
 

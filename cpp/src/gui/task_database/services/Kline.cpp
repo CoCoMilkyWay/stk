@@ -42,6 +42,21 @@ void bars_of(const Bar1m *m, misc::Ymd d, Bars &b) {
       b.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, m[t].volume, m[t].amount));
 }
 
+double net_flow(Bars &b, float base) {
+  b.net.fill(0);
+  if (!(base > 0))
+    return 0;
+  double px = base, sum = 0;
+  int dir = 0;
+  for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
+    if (b.has[s]) {
+      const Cell &c = b.cell[s];
+      dir = tick_dir(c.close, px, dir);
+      b.net[s] = dir * c.amount, sum += b.net[s], px = c.close;
+    }
+  return sum;
+}
+
 namespace {
 
 // 一根 → 一格的比 (价 / 基准) + 额, 净流入待填 0; 无根 → 平于 at, 额 0
@@ -62,46 +77,66 @@ Cell scaled(const double *a, double f) {
 
 Fold::Fold(size_t baskets) : sw_(baskets), acc_(baskets * kCells * kQ) {}
 
-void Fold::open(int slots) {
-  assert(slots >= 0 && slots <= kSlots);
-  slots_ = slots;
-  end_ = -1;
+void Fold::open(int from, int freeze, int slots) {
+  assert(0 <= from && from <= freeze && freeze <= slots && slots <= kSlots);
+  assert((from == 0 || from == freeze_) && "Fold: 增量只从上一轮的冻结线接着");
+  if (from == 0)
+    fend_ = -1;
+  from_ = from, freeze_ = freeze, slots_ = slots;
+  end_ = fend_;
   std::fill(sw_.begin(), sw_.end(), 0.0);
-  for (size_t b = 0; b < sw_.size(); ++b)
-    std::fill_n(acc_.begin() + static_cast<ptrdiff_t>(b * kCells * kQ), cells() * kQ, 0.0);
+  for (size_t b = 0; b < sw_.size(); ++b) {
+    double *a = acc_.data() + b * kCells * kQ;
+    std::fill_n(a, kQ, 0.0);
+    std::fill(a + (1 + static_cast<size_t>(from)) * kQ, a + cells() * kQ, 0.0);
+  }
 }
 
-void Fold::add(const Leg &g, std::span<const Members::Weight> ws) {
+bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
   assert((g.bars != nullptr) == (slots_ > 0) && "Fold: 合成分钟的日每只都给分钟根");
-  if (ws.empty() || !(g.base > 0))
-    return;
-  const double inv = 1.0 / g.base;
+  const float base = ws.empty() || !(g.base > 0) ? 0.f : g.base;
+  if (from_ == 0)
+    k = {base, 0, 1, base, 0};
+  else if (k.base != base)
+    return false;
+  if (!(base > 0))
+    return true;
+  const double inv = 1.0 / base;
   std::array<double, kCells * kQ> r;
   ratio(g.day, inv, 1, r.data());
-  double c = 1, px = g.base, net = 0;
-  int dir = 0;
-  for (int s = 0; s < slots_; ++s) {
+  double c = k.c, px = k.px, net = k.net;
+  int dir = k.dir;
+  for (int s = from_; s < slots_; ++s) {
+    if (s == freeze_)
+      k = {base, dir, c, px, net};
     const Cell *b = g.bars->has[static_cast<size_t>(s)] ? &g.bars->cell[static_cast<size_t>(s)] : nullptr;
     double *q = r.data() + (1 + static_cast<size_t>(s)) * kQ;
     ratio(b, inv, c, q);
     if (b) {
       c = q[3], end_ = std::max(end_, s);
-      dir = b->close > px ? 1 : b->close < px ? -1
-                                              : dir;
+      if (s < freeze_)
+        fend_ = std::max(fend_, s);
+      dir = tick_dir(b->close, px, dir);
       q[5] = dir * b->amount, net += q[5], px = b->close;
     }
   }
+  if (freeze_ == slots_)
+    k = {base, dir, c, px, net};
   r[5] = net;
-  const size_t n = cells() * kQ;
+  const size_t j0 = (1 + static_cast<size_t>(from_)) * kQ, n = cells() * kQ;
   for (const Members::Weight &w : ws) {
     sw_[w.basket] += w.w;
     double *a = acc_.data() + static_cast<size_t>(w.basket) * kCells * kQ;
-    for (size_t j = 0; j < n; j += kQ) {
-      for (size_t k = 0; k < 4; ++k)
-        a[j + k] += w.w * r[j + k];
+    const auto put = [&](size_t j) {
+      for (size_t i = 0; i < 4; ++i)
+        a[j + i] += w.w * r[j + i];
       a[j + 4] += r[j + 4], a[j + 5] += r[j + 5];
-    }
+    };
+    put(0);
+    for (size_t j = j0; j < n; j += kQ)
+      put(j);
   }
+  return true;
 }
 
 void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, std::span<Day> out) {

@@ -130,6 +130,13 @@ void items(Ar &ar, std::vector<T> &v) {
     ar(x);
 }
 
+// Book 的一条改前先独占 (发布还持有着就复制一份)
+Kline &own(std::shared_ptr<Kline> &p) {
+  if (p.use_count() > 1)
+    p = std::make_shared<Kline>(*p);
+  return *p;
+}
+
 } // namespace
 
 template <class Ar>
@@ -140,7 +147,10 @@ void BasketHistory::Book::snap(Ar &ar) {
   ar(n);
   if constexpr (Ar::kLoad)
     list.resize(n);
-  for (Kline &k : list) {
+  for (std::shared_ptr<Kline> &p : list) {
+    if constexpr (Ar::kLoad)
+      p = std::make_shared<Kline>();
+    Kline &k = *p;
     ar(k.last);
     items(ar, k.daily);
     items(ar, k.minutes);
@@ -175,8 +185,11 @@ bool BasketHistory::run(HistoryRequest &req) {
         assert(ar.done() && "baskets.bin: 文件尾有多余字节");
       }
     }
-    if (!fits(book_))
-      book_ = {head, {dates.front()}, std::vector<double>(head.baskets, kBase), std::vector<Kline>(head.baskets)};
+    if (!fits(book_)) {
+      book_ = {head, {dates.front()}, std::vector<double>(head.baskets, kBase), {}};
+      for (uint32_t b = 0; b < head.baskets; ++b)
+        book_.list.push_back(std::make_shared<Kline>());
+    }
   }
 
   const size_t done = book_.dates.size();
@@ -205,7 +218,7 @@ bool BasketHistory::run(HistoryRequest &req) {
     live.next();
   }
   live_.bind(std::move(live), tail_.level);
-  return publish(req, nullptr);
+  return publish(req, nullptr, &lib.axis);
 }
 
 bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
@@ -339,7 +352,7 @@ bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const s
       for (size_t b = 0; b < NB; ++b) {
         if (!day[b].candle.date)
           continue;
-        Kline &kl = book_.list[b];
+        Kline &kl = own(book_.list[b]);
         kl.daily.push_back(day[b].candle);
         if (minutes)
           kl.minutes.push_back(day[b].bars);
@@ -351,20 +364,23 @@ bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const s
   }
 
   const misc::Ymd d_lo = dates[N > kDailyDays ? N - kDailyDays : 0], m_lo = dates[N > kMinuteDays ? N - kMinuteDays : 0];
-  for (Kline &kl : book_.list) {
-    std::erase_if(kl.daily, [&](const Candle &c) { return c.date < d_lo; });
-    std::erase_if(kl.minutes, [&](const Bars &b) { return b.date < m_lo; });
-    kl.last = dates.back();
-  }
+  if (i_lo < N) // 无新日 → 窗与末日不变, 不动 (免得复制发布还持有着的)
+    for (std::shared_ptr<Kline> &p : book_.list) {
+      Kline &kl = own(p);
+      std::erase_if(kl.daily, [&](const Candle &c) { return c.date < d_lo; });
+      std::erase_if(kl.minutes, [&](const Bars &b) { return b.date < m_lo; });
+      kl.last = dates.back();
+    }
   members(rows[0], lib.axis, NP, mem);
   return true;
 }
 
-bool BasketHistory::publish(const HistoryRequest &req, const char *lack) {
+bool BasketHistory::publish(const HistoryRequest &req, const char *lack, const PoolAxis *axis) {
   auto out = std::make_shared<Tape>();
   out->keys = req.keys;
   out->lack = lack;
   if (!lack) {
+    assert(axis && axis->size() == tail_.mem.assets());
     // 窗按 Book 落盘日 + 补日截: 自末往前第 n 日
     const size_t nb = book_.dates.size(), nt = tail_.dates.size();
     const auto nth_last = [&](size_t n) { return n <= nt ? tail_.dates[nt - n] : book_.dates[nb - std::min(nb, n - nt)]; };
@@ -379,16 +395,21 @@ bool BasketHistory::publish(const HistoryRequest &req, const char *lack) {
     for (size_t k = 0; k < K; ++k)
       at[req.keys[k]] = k;
     std::vector<double> dot(K * K);
-    std::vector<std::pair<size_t, double>> on; // 一只所属的在请求里的篮子 (keys 下标, 权)
+    std::vector<std::pair<size_t, double>> on;      // 一只所属的在请求里的篮子 (keys 下标, 权)
+    std::vector<std::pair<size_t, Constituent>> cs; // (keys 下标, 成分)
     for (size_t a = 0; a < tail_.mem.assets(); ++a) {
       on.clear();
       for (const Members::Weight &x : tail_.mem.of(a))
-        if (at[x.basket] < K)
+        if (at[x.basket] < K) {
           on.emplace_back(at[x.basket], x.w);
+          cs.push_back({at[x.basket], {axis->global(a), x.w}});
+        }
       for (const auto &[i, wi] : on)
         for (const auto &[j, wj] : on)
           dot[i * K + j] += wi * wj;
     }
+    std::stable_sort(cs.begin(), cs.end(), [](const auto &p, const auto &q) { return p.second.w > q.second.w; });
+    out->cons = bucket(K, cs, [](const auto &p) { return p.first; }, [](const auto &p) { return p.second; });
     out->overlap.resize(K * K);
     for (size_t i = 0; i < K; ++i)
       for (size_t j = 0; j < K; ++j) {
@@ -398,13 +419,18 @@ bool BasketHistory::publish(const HistoryRequest &req, const char *lack) {
     for (const uint32_t b : req.keys) {
       out->members.push_back(n[b]), out->weight.push_back(w[b]);
       assert(b < book_.list.size() && b < tail_.list.size());
-      Kline &kl = out->list.emplace_back(book_.list[b]);
+      if (nt == 0) { // Book 已按同一个窗截过
+        out->list.push_back(book_.list[b]);
+        continue;
+      }
+      auto kl = std::make_shared<Kline>(*book_.list[b]);
       const Kline &t = tail_.list[b];
-      kl.daily.insert(kl.daily.end(), t.daily.begin(), t.daily.end());
-      kl.minutes.insert(kl.minutes.end(), t.minutes.begin(), t.minutes.end());
-      std::erase_if(kl.daily, [&](const Candle &c) { return c.date < d_lo; });
-      std::erase_if(kl.minutes, [&](const Bars &m) { return m.date < m_lo; });
-      kl.last = nt ? tail_.dates.back() : kl.last;
+      kl->daily.insert(kl->daily.end(), t.daily.begin(), t.daily.end());
+      kl->minutes.insert(kl->minutes.end(), t.minutes.begin(), t.minutes.end());
+      std::erase_if(kl->daily, [&](const Candle &c) { return c.date < d_lo; });
+      std::erase_if(kl->minutes, [&](const Bars &m) { return m.date < m_lo; });
+      kl->last = tail_.dates.back();
+      out->list.push_back(std::move(kl));
     }
   }
   std::lock_guard<std::mutex> lock(x_.mutex);

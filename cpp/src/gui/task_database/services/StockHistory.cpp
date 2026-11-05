@@ -19,7 +19,7 @@ bool StockHistory::run(HistoryRequest &req) {
   const std::vector<fundamental::Shard> &months = cat.shards(kBar1d), &days = cat.shards(kBar1m);
 
   const auto cached = [&](uint32_t id) {
-    return std::find_if(keep_.begin(), keep_.end(), [&](const auto &e) { return e.first == id && e.second.last == last; });
+    return std::find_if(keep_.begin(), keep_.end(), [&](const auto &e) { return e.first == id && e.second->last == last; });
   };
   fundamental::Ids ids(fundamental::Ids::Cover::Part);
   std::vector<uint32_t> miss; // [ids 下标] 全局 id
@@ -76,10 +76,13 @@ bool StockHistory::run(HistoryRequest &req) {
     if (kl.daily.size() > kDailyDays)
       kl.daily.erase(kl.daily.begin(), kl.daily.end() - kDailyDays);
     for (size_t q = 0; q < nd; ++q)
-      if (minute[q * nk + j].has.any())
-        kl.minutes.push_back(minute[q * nk + j]);
+      if (Bars &m = minute[q * nk + j]; m.has.any()) {
+        const auto it = std::lower_bound(kl.daily.begin(), kl.daily.end(), m.date, [](const Candle &c, misc::Ymd d) { return c.date < d; });
+        net_flow(m, it != kl.daily.end() && it->date == m.date ? it->ref : 0.f);
+        kl.minutes.push_back(m);
+      }
     std::erase_if(keep_, [&](const auto &e) { return e.first == miss[j]; });
-    keep_.emplace_back(miss[j], std::move(kl));
+    keep_.emplace_back(miss[j], std::make_shared<const Kline>(std::move(kl)));
   }
 
   auto out = std::make_shared<Tape>();

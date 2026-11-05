@@ -154,25 +154,11 @@ struct Row {
   Recent rc;
 };
 
-// 近况: 新浪当日接得上 (其前一交易日 = 本只 bar1d 水位) 取当日, 再接 bar1d 最近几个有成交日
-Recent StockRecent(const StockInfo *info, const Candle &today, misc::Ymd prev) {
-  if (!info)
-    return {};
-  Mark m[kMarks];
-  size_t n = 0;
-  if (today.date != 0 && prev == info->update_date)
-    m[n++] = {today.close, today.ref};
-  for (const StockInfo::DayClose &c : info->closes)
-    if (c.date != 0 && n < kMarks)
-      m[n++] = {c.close, c.ref};
-  return RecentOf({m, n});
-}
-
 Row MakeRow(const Asset &asset, const StockInfos &stock_info, const AssetsToday &today, size_t id) {
   assert(id < today.day.size());
   const AssetItem &a = asset.items[id];
   const StockInfo *info = FindStockInfo(a, stock_info);
-  return {a, info, asset.asset_stats[id], StockRecent(info, today.day[id], today.prev)};
+  return {a, info, asset.asset_stats[id], info ? RecentOf(*info, today.day[id], today.prev) : Recent{}};
 }
 
 // 市场缩写 交易所.板块

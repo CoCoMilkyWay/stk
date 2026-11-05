@@ -8,7 +8,7 @@
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
 //   Portfolio: 因子组合 (<portfolio_dir>/<name>.json; 在 Factors 页 1. 区右侧两小框选 / 编辑) 的等权组合曲线 + 池指数. 跨池跨层,
 //     与页顶池 / 层无关 (换层不重建); 组合内容变 / 因子重扫后重解析, 有效条目变才发请求 (PortfolioService 只算新增的因子).
-//     NAV 的日内栏 / 近况列取 Market (与 Assets 共用的新浪行情 + 篮子历史), AssetInfo 建好才起.
+//     NAV 的日内栏 / 近况列取 Market (与 Assets 共用的新浪行情 + 篮子历史 + 个股历史 (叠加的成分股)), AssetInfo 建好才起.
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_database/services/Market.hpp"
@@ -37,6 +37,7 @@
 #include <numeric>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -472,9 +473,12 @@ TaskHandle CreateFactorsTask(std::shared_ptr<Database::Market> market) {
           return k;
         }();
         Database::Sync(*state->market, Database::kBasket, lines, state->portfolio_ui.basket.feed);
+        const std::set<uint32_t> &stocks = state->portfolio_ui.pick.stocks;
+        Database::Sync(*state->market, Database::kStock, std::vector<uint32_t>(stocks.begin(), stocks.end()), state->portfolio_ui.basket.stocks);
         mk = state->market.get();
       }
-      const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.fixed_impact, mk);
+      const int action =
+          Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.fixed_impact, mk, data.assetinfo.stocks);
       if (action == -1)
         state->portfolio_service->RequestCancel();
       portfolio_reload = action == 1;

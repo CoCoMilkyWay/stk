@@ -1,7 +1,6 @@
 #include "gui/task_database/ui/QuotesPanel.hpp"
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / button_bar / EndTag
 #include "shared/AssetAxis.hpp"
-#include "shared/Basket.hpp"
 
 #include "imgui.h"
 #include "implot.h"
@@ -854,12 +853,12 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   return corner;
 }
 
-// 收历史发布: 末次请求的发布到齐 → 整体换上, 当日待重拷; 到齐前照留在画的
-void pull(const HistoryPub &x, Feed &f) {
+// 收历史发布: 末次请求的发布到齐 → 整体换上, 当日待重拷; 到齐前照留在画的. 返回 = 发布代新于末次请求 (被别的 Feed 覆盖)
+bool pull(const HistoryPub &x, Feed &f) {
   std::lock_guard<std::mutex> lock(x.mutex);
-  if (x.gen != f.gen || x.data == f.data)
-    return;
-  f.data = x.data, f.shown = f.gen, f.ver = ~0ull;
+  if (x.gen == f.gen && x.data != f.data)
+    f.data = x.data, f.shown = f.gen, f.ver = ~0ull;
+  return x.gen > f.gen;
 }
 
 // 篮子图的前置: 源未就绪 / 读取中 → 画提示, false
@@ -875,7 +874,7 @@ bool basket_ready(const Market &mk, Feed &f) {
     ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
     return false;
   }
-  assert(f.today.size() == f.data->list.size());
+  assert(f.today && f.today->size() == f.data->list.size());
   return true;
 }
 
@@ -891,6 +890,28 @@ bool basket_note(const Tape &d, const Kline &kl, const Day &today, const QuoteSt
   if (n > 0 && d.basis < kl.last)
     std::snprintf(note + n, size - static_cast<size_t>(n), " · 其后至 %02d-%02d 由 bar1d / bar1m 补", kl.last / 100 % 100, kl.last % 100);
   return gap;
+}
+
+// 叠加一条的源: 篮子 = 篮子历史 [basket_line] + 当日; 个股 = 叠加个股的历史 + 当日 (未到 → kl 空)
+struct Source {
+  const Kline *kl = nullptr;
+  const Day *today = nullptr;
+};
+Source source_of(const BasketState &st, const OverlayPick &p) {
+  if (p.side == kBasket) {
+    const Tape &d = *st.feed.data;
+    assert(p.key < d.list.size() && d.keys[p.key] == p.key);
+    return {d.list[p.key].get(), &(*st.feed.today)[p.key]};
+  }
+  const Feed &f = st.stocks;
+  if (!f.data || !f.today)
+    return {};
+  const auto it = std::find(f.data->keys.begin(), f.data->keys.end(), p.key);
+  if (it == f.data->keys.end())
+    return {};
+  const size_t k = static_cast<size_t>(it - f.data->keys.begin());
+  assert(f.today->size() == f.data->keys.size());
+  return {f.data->list[k].get(), &(*f.today)[k]};
 }
 
 // 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再 "重载" (悬停看 note); hint 非空 → 下一行提示
@@ -914,22 +935,22 @@ void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *
 } // namespace
 
 void Sync(Market &mk, Side s, std::span<const uint32_t> want, Feed &f) {
-  if (f.reload || !std::ranges::equal(want, f.want)) {
+  const bool lost = pull(mk.history(s), f) && !f.want.empty(); // 空键集被覆盖不必重发
+  if (lost || f.reload || !std::ranges::equal(want, f.want)) {
     f.reload = false;
     f.want.assign(want.begin(), want.end());
-    mk.request(s, {++f.gen, f.want});
+    f.gen = ++mk.gen[s];
+    mk.request(s, {f.gen, f.want});
     if (s == kStock)
       mk.quote->select(f.want.empty() ? ~0u : f.want.front());
   }
-  pull(mk.history(s), f);
   if (!f.data || f.data->list.empty())
     return;
   const uint64_t ver = mk.quote->status().ver[s];
   if (ver == f.ver)
     return;
   f.ver = ver;
-  f.today.resize(f.data->keys.size());
-  mk.quote->today(s, f.data->keys, f.today);
+  f.today = mk.quote->today(s, f.data->keys);
 }
 
 void RenderStockPanel(const Market &mk, StockState &st, const std::string &title) {
@@ -948,10 +969,10 @@ void RenderStockPanel(const Market &mk, StockState &st, const std::string &title
     ImGui::TextWrapped(f.want.empty() ? "点表格中的一行查看行情." : "读取历史…");
     return;
   }
-  assert(f.today.size() == 1);
+  assert(f.today && f.today->size() == 1);
   const uint32_t id = f.data->keys.front();
-  const Kline &kl = f.data->list.front();
-  const Day &today = f.today.front();
+  const Kline &kl = *f.data->list.front();
+  const Day &today = f.today->front();
   Series is, ds;
   intraday(kl, today, day_axis(mk.quote->trading(), qs.date, kIntraDays[st.chart.intraday]), false, is);
   daily(kl, today, false, ds);
@@ -966,7 +987,7 @@ void RenderStockPanel(const Market &mk, StockState &st, const std::string &title
   charts("stock", is, ds, static_cast<uint64_t>(f.shown) << 32, st.chart, mk.quote->book(id), qs.date);
 }
 
-void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks) {
+void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
   Feed &f = st.feed;
   if (!basket_ready(mk, f))
     return;
@@ -979,22 +1000,23 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
   std::vector<Overlay> ls;
   char note[160] = "";
   bool gap = false;
-  for (size_t i = 0; i < picks.size(); ++i) {
-    const BasketPick &p = picks[i];
-    assert(p.b < d.list.size() && d.keys[p.b] == p.b);
-    const Kline &kl = d.list[p.b];
-    const Day &today = f.today[p.b];
-    if (!note[0])
+  for (const OverlayPick &p : picks) {
+    const Source src = source_of(st, p);
+    if (!src.kl)
+      continue;
+    const Kline &kl = *src.kl;
+    const Day &today = *src.today;
+    if (!note[0] && p.side == kBasket)
       gap = basket_note(d, kl, today, qs, note, sizeof(note));
     Series s;
-    intraday(kl, today, days, true, s);
+    intraday(kl, today, days, p.side == kBasket, s);
     if (s.bars.empty() || !(s.bars.front().ref > 0))
       continue;
     const double base = s.bars.front().ref;
     const auto pct = [&](double v) { return (v / base - 1.0) * 100.0; };
     Overlay &l = ls.emplace_back();
-    l.name = basket_name(p.b), l.col = ImGui::ColorConvertU32ToFloat4(p.col);
-    if (picks.size() == 1) { // 单篮子: 蜡烛 + 现价十字
+    l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
+    if (picks.size() == 1) { // 单条: 蜡烛 + 现价十字
       const Candle &e = s.bars.back();
       l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
       l.now = static_cast<int>(s.x.back());
@@ -1012,13 +1034,13 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
   }
   ImGui::PushID("basket");
   const ImVec2 corner = plot_overlay(ls, days, avail, "%");
-  overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行" : gap ? note
-                                                                                      : nullptr,
+  overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
+                                                                                                : nullptr,
                 [&] { button_bar(kIntraName, kIntras, st.intraday); });
   ImGui::PopID();
 }
 
-void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks) {
+void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
   Feed &f = st.feed;
   if (!basket_ready(mk, f))
     return;
@@ -1029,17 +1051,19 @@ void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<Baske
   std::vector<Overlay> ls;
   char note[160] = "";
   bool gap = false;
-  for (const BasketPick &p : picks) {
-    assert(p.b < d.list.size() && d.keys[p.b] == p.b);
-    const Kline &kl = d.list[p.b];
-    const Day &today = f.today[p.b];
-    if (!note[0])
+  for (const OverlayPick &p : picks) {
+    const Source src = source_of(st, p);
+    if (!src.kl)
+      continue;
+    const Kline &kl = *src.kl;
+    const Day &today = *src.today;
+    if (!note[0] && p.side == kBasket)
       gap = basket_note(d, kl, today, qs, note, sizeof(note));
     const double unit = share ? flow_ref(kl) / 100.0 : 1e8; // y = 累计净流入 / unit
     if (!(unit > 0))
       continue;
     Overlay l;
-    l.name = basket_name(p.b), l.col = ImGui::ColorConvertU32ToFloat4(p.col);
+    l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
     double net = 0;
     for (size_t k = 0; k < days.size(); ++k)
       if (const Bars *b = bars_on(kl, today, days[k]))
@@ -1054,8 +1078,8 @@ void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<Baske
   }
   ImGui::PushID("flow");
   const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail(), share ? "%" : "亿");
-  overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行" : gap ? note
-                                                                                      : nullptr,
+  overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
+                                                                                                : nullptr,
                 [&] {
                   button_bar(kIntraName, kIntras, st.flow);
                   ImGui::SameLine(0, 8);
@@ -1082,17 +1106,23 @@ std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st) {
   return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.flow]);
 }
 
+Flow FlowOf(const Bars &b, bool ends) {
+  Flow o;
+  for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
+    if (flow_slot(b, j, ends))
+      o.net += b.net[j], o.amount += b.cell[j].amount;
+  return o;
+}
+
 std::vector<Flow> FlowOf(const BasketState &st, size_t k, std::span<const misc::Ymd> days) {
   const Feed &f = st.feed;
   if (!f.data || k >= f.data->list.size())
     return {};
-  assert(f.today.size() == f.data->list.size());
+  assert(f.today && f.today->size() == f.data->list.size());
   std::vector<Flow> o(days.size());
   for (size_t i = 0; i < days.size(); ++i)
-    if (const Bars *b = bars_on(f.data->list[k], f.today[k], days[i]))
-      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
-        if (flow_slot(*b, j, st.flow_ends))
-          o[i].net += b->net[j], o[i].amount += b->cell[j].amount;
+    if (const Bars *b = bars_on(*f.data->list[k], (*f.today)[k], days[i]))
+      o[i] = FlowOf(*b, st.flow_ends);
   return o;
 }
 
@@ -1113,9 +1143,9 @@ Recent RecentOf(std::span<const Mark> m) {
 Recent RecentOf(const Feed &f, size_t k) {
   if (!f.data || k >= f.data->list.size())
     return {};
-  assert(f.today.size() == f.data->list.size());
-  const Kline &kl = f.data->list[k];
-  const Day &today = f.today[k];
+  assert(f.today && f.today->size() == f.data->list.size());
+  const Kline &kl = *f.data->list[k];
+  const Day &today = (*f.today)[k];
   Mark m[kMarks];
   size_t n = 0;
   const auto put = [&](const Candle &c) { m[n++] = {c.close, c.ref}; };
@@ -1123,6 +1153,17 @@ Recent RecentOf(const Feed &f, size_t k) {
     put(today.candle);
   for (auto it = kl.daily.rbegin(); it != kl.daily.rend() && n < kMarks; ++it)
     put(*it);
+  return RecentOf({m, n});
+}
+
+Recent RecentOf(const StockInfo &info, const Candle &today, misc::Ymd prev) {
+  Mark m[kMarks];
+  size_t n = 0;
+  if (today.date != 0 && prev == info.update_date)
+    m[n++] = {today.close, today.ref};
+  for (const StockInfo::DayClose &c : info.closes)
+    if (c.date != 0 && n < kMarks)
+      m[n++] = {c.close, c.ref};
   return RecentOf({m, n});
 }
 

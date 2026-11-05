@@ -205,21 +205,21 @@ stk/
 │   │   │   │   │   ├── AssetLoader.hpp               # 🖥️ A 轴物化: AssetInfo::codes (cn_stock_basic_info 全量, 含退市, 不含基金) → AssetAxis → Asset::items (下标 = asset_id)
 │   │   │   │   │   ├── Kline.hpp                     # 🖥️ 行情公共件 (Assets 个股 / Portfolio 篮子), 两边 Side (个股 / 篮子) × 历史 (Kline) / 当日 (Day) 四路同一套类型: 个股 / 篮子只差 Fold 一步, 历史 / 当日只差源
 │   │   │   │   │   │                                 #    · 键 = 个股全局 id / 篮子 basket_line; 两边同一个请求 HistoryRequest (键集) / 发布 HistoryPub (Tape: [键] Kline, 源未就绪带 lack)
-│   │   │   │   │   │                                 #    · 分钟根 Bars (240 槽稠密, 竞价并入首根; 篮子另带逐根净流入 net); 槽代数 label_slot / sec_slot / row_slot (三种时间坐标 → 槽); 日根自带前收 ref, 涨跌一律对 ref
+│   │   │   │   │   │                                 #    · 分钟根 Bars (240 槽稠密, 竞价并入首根; 逐根净流入 net: 篮子 = 成员之和, 个股 = 本只 net_flow); 槽代数 label_slot / sec_slot / row_slot (三种时间坐标 → 槽); 日根自带前收 ref, 涨跌一律对 ref
 │   │   │   │   │   │                                 #    · 篮子合成核 Fold (历史逐日 / 当日同一份): 资产主序成员表 Members (CSR), 逐资产一遍散进所属各篮子 (点位 + 分钟涨跌法净流入); 当日接续 ⇔ 前一交易日 = 历史末日
 │   │   │   │   │   │                                 #    · 基本面源 (个股历史 / 篮子补日同一读法): fund_last (bar1d 水位 ∧ bar1m 末日) / each_daily (bar1d 月分片 → 日根) / bars_of (bar1m → 分钟根)
 │   │   │   │   │   ├── QuoteService.hpp              # 🖥️ 新浪全市场当日行情 (首次进 Assets / Portfolio 才起)
-│   │   │   │   │   │                                 #    · 快照每 3s 一轮合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
+│   │   │   │   │   │                                 #    · 快照每 3s 一轮 (全市场 ~8 批, 一批一条连接并发) 合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
 │   │   │   │   │   │                                 #    · 当日落 output/sina/live.bin (每 5 分钟 + 退出), 重启 = 一次断档, 只补停机期间有成交的只
 │   │   │   │   │   │                                 #    · 全市场 = 全局轴子集 (PoolAxis, 对外全局 id); today(Side, 键集) 两边当日同一接口 + book(id) 五档
-│   │   │   │   │   │                                 #    · 篮子当日 = BasketHistory 给的成员表每轮快照后合成 (锁外分块折叠, 不挡 GUI); 两边各一个版本号 ver[Side], GUI 版本变了才拷
+│   │   │   │   │   │                                 #    · 篮子当日 = BasketHistory 给的成员表在当日有变的每轮快照后合成 (锁外分块折叠, 不挡 GUI): 增量, 冻结线 (定稿且无待补) 之前的槽只合一次, 每轮只合其后几槽
 │   │   │   │   │   ├── StockHistory.hpp              # 🖥️ 个股历史: 基本面日线 (cn_stock_real_bar1d 近 2500 日, ref = pre_close) + 分钟 (bar1m 近 5 日, 经 Bar1mDay 按行 row_slot 并根)
 │   │   │   │   │   │                                 #    · 未命中的键一遍读齐; 内存 LRU 留近 64 只 (末日未变即命中)
 │   │   │   │   │   ├── BasketHistory.hpp             # 🖥️ 篮子历史 (价格指数): 篮子表 = shared/Basket.hpp (切片 全A / 申万一级 / 各子池 / 概念 × 等权 / 市值加权, 与 Factors 可成交指数同一张), 源 = all.bar 库
 │   │   │   │   │   │                                 #    · D 日成员 / 权重 / 基准 (pre_close) 取 D−1 收盘行; 点位自库首日 kBase 起逐日接续, 日线留近 2500 日 / 日内 (L_1min) 近 5 日 (按日期窗裁)
 │   │   │   │   │   │                                 #    · 账本落 <库目录>/baskets.bin, 下次只折新落盘的日 (续算 ≡ 全量)
 │   │   │   │   │   │                                 #    · 库末日之后至基本面末日为补日 (不落盘): 成员 / 池 / 行业 / 股本冻结在库末日收盘行, 价取 bar1d / bar1m, 加权权重随 收 / 前收 漂移
-│   │   │   │   │   │                                 #    · 跑完把末日成员表 + 点位交给 Quote, 之后的行情日由它合成; Assets 篮子 / Portfolio 理想线 / 近况 / FLOW 同出于此; 发布另带末日成员表两两的权重余弦 (Portfolio 配色的成员重合)
+│   │   │   │   │   │                                 #    · 跑完把末日成员表 + 点位交给 Quote, 之后的行情日由它合成; Assets 篮子 / Portfolio 理想线 / 近况 / FLOW 同出于此; 发布另带末日成员表两两的权重余弦 (Portfolio 配色的成员重合) 与各篮子成分 (Portfolio 右表展开)
 │   │   │   │   │   └── Market.hpp                    # 🖥️ Quote + StockHistory + BasketHistory 一份, request / history 按 Side 分派; Assets / Portfolio 共用 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
 │   │   │   │   └── ui/                               # 🖥️ UI
 │   │   │   │       ├── TabFundamental.hpp            # 🖥️ 数据源状态与同步入口: 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 各道同步状态 [状态] 本轮 @ 时刻
@@ -233,9 +233,9 @@ stk/
 │   │   │   │       │                                 #    · 取值 / 文本 / 画格 + 类型 (文本 / 分类 / 数值) + 好坏口径 (估值序 / 越高越好), 排序 (NaN 恒末) / 截面色 / 截面分析都只读它
 │   │   │   │       │                                 #    · 列序 Code | Name | Mkt (交易所.板块) | 当日涨幅 | Δ5日线 | Ind | 估值 | Cap | ST | DL | Listed | 逐笔统计
 │   │   │   │       │                                 #    · 近况两列 = 新浪当日日根 (快照时刻变才重取) 接 StockInfo::closes (bar1d 最近几个有成交日), RecentOf 同 Portfolio
-│   │   │   │       ├── QuotesPanel.hpp               # 🖥️ 行情图: 两边同一个 Feed + Sync (键集变 → 请求; 发布到齐 → 换上; 当日版本变 → 拷); 近况 RecentOf (标的 / 净值线同一核)
+│   │   │   │       ├── QuotesPanel.hpp               # 🖥️ 行情图: 两边同一个 Feed + Sync (键集变 → 请求; 发布到齐 → 换上; 当日版本变 → 取); 近况 RecentOf (标的 / 净值线同一核)
 │   │   │   │       │                                 #    · 个股 = Assets 日内 + 日线 (实心蜡烛: 实体 = 上一根收 → 本根收, 首根起于前收; 日内窄了并根)
-│   │   │   │       │                                 #    · 篮子 = Portfolio 日内栏叠加图 (对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名中文小字贴线尾, 不画量, 读数看十字光标)
+│   │   │   │       │                                 #    · 篮子 = Portfolio 日内栏叠加图 (篮子 + 成分股混叠 OverlayPick; 对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名中文小字贴线尾, 不画量, 读数看十字光标)
 │   │   │   │       │                                 #      多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 240 的因子并根, 同 py/app/tdx) + 现价十字; 档位按钮 (日内 / 2日 … 5日) 叠在各图左上角
 │   │   │   │       │                                 #    · 资金流 = Portfolio FLOW 页同一叠加图: 自日轴首日开盘逐分钟累计净流入 (跨日接续), y = 占近 5 日日均成交额 % / 金额 亿元
 │   │   │   │       └── CrossSectionAnalysis.hpp      # 🖥️ 截面分析 (TabAssets Statistics): 数值列 去两端 5% 统计 / 直方图 / 首尾排名 / 按板块分组; 分类列 计数 / 按板块分组
@@ -334,12 +334,14 @@ stk/
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
 │   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Compute / 自动 Inspect / Kline 才发
-│   │   │           ├── PortfolioView.hpp             # 🖥️ 组合 tab 的纯计算层 (无 ImGui): 派生 (行 / 线 / 色相) → 滚动分位 (估值分位 + 等值线档) → 视图 (区间切片 / 名次), 三级各一个 MakePortfolio* 入口
+│   │   │           ├── PortfolioView.hpp             # 🖥️ 组合 tab 的纯计算层 (无 ImGui): 派生 (行 / 线 / 色相) → 滚动分位 (估值分位 + 等值线档) / 末点分位 (VAL 表格, 不随区间起点) → 视图 (区间切片 / 名次), 各级一个 MakePortfolio* 入口
 │   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
 │   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 概念 / 因子 / 策略 (一次一组), 列 = 中文名 (切片名.等 / .加; 线色 = 指数 / 行业 / 概念 / 因子一起按 max(当日成员重合, 剔全A.加的残差相关) 定 OKLCH 色相, 色差 ∝ 不相似, 没算完全灰; 名列排序 = 按色相) | 当日涨幅 / Δ5日线 / 只数 / 总市值 / 换手 (新浪当日成交额占总市值) / 资金流入 (新浪当日分钟涨跌法净流入占成交额; 两列悬停看金额) | 区间年化 / 夏普 / 年换手
 │   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (BasketCurve) + 理想 (Market 篮子价格指数):
 │   │   │                                             #      两源各出日点位线 levels, 同一个 project 投到日并集轴; 近况两列同一核 (QuotesPanel RecentOf); VAL 表行 = 这三组同一份, 列 = 只数 / 总市值 / 换手 / 资金流入 (同 NAV) | 各口估值分位
 │   │   │                                             #      三组各一份过滤条 (NAV / VAL / FLOW 共用): 只数 / 总市值区间 + |资金流入| 下限, 默认 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%; 选中行恒列
+│   │   │                                             #      三组的行名前 ▸ 展开成分股 (三页同一份; 成员表 = Tape::cons, 权降序): 成分行与篮子行同列, 能算的填 (近况 / 总市值 / 换手 / 流入; VAL 各口 = 当前收益率; FLOW 只当日), 其余 -;
+│   │   │                                             #      点成分行 = 叠加该股到日内栏 / FLOW 图 (个股历史 + 新浪当日, 与 Assets 同一路; 至多 64 只)
 │   │   │                                             #    · 日内栏 (默认开): 主图上方, 日内 : 主图 = 1 : 2 (高), 选中篮子行的日内行情 (Market 篮子; 多行 = 同主图线色叠加, 一行 = 蜡烛 + 现价十字); 主图 / 日内栏贴边; VAL 右表类别条 指数 / 行业 / 概念
 │   │   │                                             #    · FLOW 页 (与 NAV / VAL 并列, 只一张图): 选中篮子行 (NAV 同一份选中) 日内 / 2日 … 5日的逐分钟累计净流入 (分钟涨跌法, 跨日接续, 当日随新浪快照动),
 │   │   │                                             #      y = 占近 5 日日均成交额 % (默认; 分母盘前已定, 开盘即稳) / 金额 亿元; 开收盘开关 (默认关) 计入首根 (开盘集合竞价) / 末根 (收盘集合竞价); 右表类别条 指数 / 行业 / 概念, 列 = 只数 / 总市值 / 换手 / 资金流入 (同 NAV) | 各日净流入占成交额 | 档内合计净流入 | 合计占比

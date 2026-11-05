@@ -1,10 +1,12 @@
 // 行情的当日一路 (见 Kline.hpp): 新浪全市场内存缓存当天, 个股 / 篮子的当日同出于此 (today(Side, 键集)).
-//   个股当日 = 本只的根 (五档另取 book); 篮子当日 = bind 的成员表每轮快照后在快照线程合成一次 (Fold, 只合到此刻所在根).
+//   个股当日 = 本只的根 (五档另取 book); 篮子当日 = bind 的成员表在快照线程合成 (Fold, 只合到此刻所在根), 当日有变才合.
+//   增量合成: 冻结线 = min(定稿线 + 1, 各只待补区间起点) 之前的槽不会再变, 只合一次 (Folding 跨轮持有累加与各只接续);
+//     每轮只合日根与冻结线之后的几槽. 冻结段被改写 (快照 / 补根落在冻结线前) 或冻结线回退 (新标待补) → 从头合一次.
 //   合成不持 mu_ 整趟: 成员表是不可变快照 (Basis), 逐 kFoldChunk 只持 mu_ 读一段, 末了持 mu_ 换上 (其间换日 / 重 bind → 弃).
-//   两张当日表各一个版本号 (QuoteStatus::ver), GUI 见版本变了才拷.
+//   两张当日表各一个版本号 (QuoteStatus::ver); 篮子表整份不可变发布 (shared_ptr), GUI 版本变了只换指针.
 //
 // 当日 1 分钟 K, 两路取数 (见 api/sina/client.hpp):
-//   快照 (hq.sinajs.cn 一次 800 只, 全市场 ~8 次串行 ~1.6s): 盘中每 kTick 一轮 (交易所快照 3s 一档), 盘外每 kIdleTick.
+//   快照 (hq.sinajs.cn 一次 800 只, 全市场 ~8 批, 一批一条连接并发): 盘中每 kTick 一轮 (交易所快照 3s 一档), 盘外每 kIdleTick.
 //     逐只按累计量 / 额差分合成当日分钟 K, 槽 = 该快照时刻所在的根 (竞价并入首根, 午休并入 11:30, 15:01 后的盘后交易不计):
 //     量 / 额 / 收精确 (快照边界上的量可能落到相邻根); 开 = 本根首个成交快照的现价; 高 / 低 = 采样现价, 日内新高 / 新低落在本根时恰为该值.
 //   分钟 K (quotes.sina.cn 一只一请求 ~170ms, kFillers 路并发) 只补快照没盯住的根. 每只一个待补区间 [lo, hi] (多段取并包), 三个来源:
@@ -19,8 +21,8 @@
 //   落盘 config::SINA_CACHE: 单文件存行情日全部 Track (Track::snap 一份清单读写) + 末轮快照时刻, 有变化时每 kSave 与析构各写一次.
 //     换日 (含启动首轮) 先读同日缓存 —— 停机那段即一次断档, 照断档规则只补其间有成交的只; 收盘后重启零请求.
 //   全市场 = 构造时给定的全局轴子集 (PoolAxis; 对外一律全局 id, 内部下标 = sub, 新浪码由轴码派生); 前一交易日取自构造时给定的交易日历;
-//   线程: 快照 1 + 分钟 K kFillers, 随对象.
-// 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收.
+//   线程: 快照 1 (每批一路并发) + 分钟 K kFillers, 随对象.
+// 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收; 个股的净流入 = 本只分钟涨跌法 (net_flow).
 #pragma once
 
 #include "api/sina/client.hpp"
@@ -34,6 +36,7 @@
 #include <cstdint>
 #include <ctime>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -72,10 +75,11 @@ public:
   std::span<const misc::Ymd> trading() const { return trading_; } // 交易日升序 (构造后不变, 任意线程)
   void select(uint32_t id);                                       // GUI: 选中标的 (全局 id; ~0u = 无)
   QuoteStatus status() const;
-  // 篮子成员表 (下标 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后每轮快照一次 (BasketHistory 跑完调)
+  // 篮子成员表 (下标 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后当日有变的每轮快照后一次 (BasketHistory 跑完调)
   void bind(Members m, std::vector<double> level);
-  // GUI: 键集的当日, out[k] ↔ keys[k]; 个股不在全市场 / 当日无成交、篮子未合成 / 成员无成交 → candle.date 0
-  void today(Side s, std::span<const uint32_t> keys, std::span<Day> out) const;
+  // GUI: 键集的当日 (只读), [k] ↔ keys[k]; 个股不在全市场 / 当日无成交、篮子未合成 / 成员无成交 → candle.date 0.
+  //   篮子键集须是全表 (keys[k] = k): 给末次合成的那份, 不拷
+  std::shared_ptr<const std::vector<Day>> today(Side s, std::span<const uint32_t> keys) const;
   // GUI: 个股键集的当日日根 (today 不带分钟根), out[k] ↔ keys[k], 无 → date 0 (同 today); 返回 = 行情日的前一交易日
   misc::Ymd candles(std::span<const uint32_t> keys, std::span<Candle> out) const;
   // GUI: 个股 id 的最新快照 (五档); 不在全市场 / 未收到 → sym 空
@@ -112,6 +116,14 @@ private:
     Members members;
     std::vector<double> level;
   };
+  // 篮子当日的增量合成 (fold_mu_): 同一 (成员表, 行情日) 内跨轮持有; 槽 [0, frozen) 已定稿, 累加在 fold 里
+  struct Folding {
+    std::shared_ptr<const Basis> basis;
+    misc::Ymd date = 0;
+    std::unique_ptr<Fold> fold;
+    std::vector<Fold::Carry> carry; // [sub] 冻结线处的接续
+    int frozen = 0;
+  };
 
   void poll();
   void fill();
@@ -144,10 +156,13 @@ private:
   int sec_ = 0;          // 行情日最新快照时刻 (断档判据的上轮时刻)
   size_t bytes_ = 0;     // 盘上缓存 (QuoteStatus::bytes / saved)
   std::time_t saved_ = 0;
-  std::shared_ptr<const Basis> basis_; // 空 = 未 bind
-  std::vector<Day> baskets_;           // [篮子] 当日 (末次合成; 空 = 未合成)
+  std::shared_ptr<const Basis> basis_;              // 空 = 未 bind
+  std::shared_ptr<const std::vector<Day>> baskets_; // [篮子] 当日 (末次合成, 整份不可变; 空 = 未合成)
+  bool dirty_ = false;                              // 上次合成后当日有变 (快照 / 补根 / 换日 / bind)
+  int touched_ = kSlots;                            // 上次合成后改写过根的最早槽
   PerSide<uint64_t> ver_ = {};
   std::mutex fold_mu_; // 合成一次一趟 (快照线程 / bind 的调用方)
+  Folding folding_;    // fold_mu_
 
   std::thread poll_;
   std::vector<std::thread> fillers_;

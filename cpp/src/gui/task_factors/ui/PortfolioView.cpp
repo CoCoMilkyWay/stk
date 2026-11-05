@@ -447,7 +447,7 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
       }
       if (d.prices && !d.dates.empty()) {
         assert(d.prices->keys[line] == line);
-        project(d.dates, levels(d.prices->list[line]), r.line[kIdeal]);
+        project(d.dates, levels(*d.prices->list[line]), r.line[kIdeal]);
       }
       d.nav[g].push_back(std::move(r));
     }
@@ -603,14 +603,14 @@ void roll_of(const BasketCurve &bc, const PortfolioRow &s, int b, int years, Por
   assert(k == np && "at 须升序且落在 hd 内");
 }
 
-// 篮子行 s 的口 b 在切片 sl 内末个可算点的估值分位 (NaN = 无): 与 roll_of 的 pct 同一定义, 只一点 → 直接数窗, O(窗)
-double last_pct(const BasketCurve &bc, const PortfolioRow &s, const PortfolioSlice &sl, int b, int years) {
+// 篮子行 s 的口 b 在源点 [0, j1) 内末个可算点及其估值分位: 与 roll_of 的 pct 同一定义, 只一点 → 直接数窗, O(窗)
+PortfolioLastPct last_pct(const BasketCurve &bc, const PortfolioRow &s, size_t j1, int b, int years) {
   const std::vector<misc::Ymd> &hd = bc.dates;
   const float *v = bc.val_of(static_cast<size_t>(s.basket), b);
   size_t f = 0; // 首个可算日 (无 → hd.size(), 下面 val_ok 先短路)
   while (f < hd.size() && !val_ok(v[f]))
     ++f;
-  for (size_t j = sl.j1; j > sl.j0; --j) {
+  for (size_t j = j1; j > 0; --j) {
     const size_t t = s.at[j - 1];
     if (!val_ok(v[t]) || hd[f] > years_before(hd[t], 1))
       continue;
@@ -622,9 +622,9 @@ double last_pct(const BasketCurve &bc, const PortfolioRow &s, const PortfolioSli
         const double x = roll_w(d - days_of(hd[u]), T);
         w += x, le += dear_of(v[u]) <= m ? x : 0.0;
       }
-    return pct_of(le, w);
+    return {j - 1, pct_of(le, w)};
   }
-  return std::numeric_limits<double>::quiet_NaN();
+  return {};
 }
 
 // 截面名次 (NAV 数值列 / VAL 格同一份): 组内 n 格 at(i) 的 x 在有限值里排名 → rank ∈ [0, 1] (并列取中; 只一个 = 0.5);
@@ -667,8 +667,24 @@ void MakePortfolioRoll(const PortfolioDerived &d, PortfolioAt vs, int years, std
       r[b] = {};
 }
 
-void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs, int years, const std::array<PortfolioRoll, kPoolVals> &roll,
-                       PortfolioView &v) {
+void MakePortfolioPct(const PortfolioDerived &d, int d1, int years, PortfolioPct &p) {
+  const double x1 = x_of(static_cast<size_t>(d1), kOpen);
+  for (int g = 0; g < kBasketGroups; ++g) {
+    const std::vector<PortfolioRow> &rs = d.nav[g];
+    p[g].assign(rs.size(), {});
+    if (!d.baskets)
+      continue;
+    for (size_t i = 0; i < rs.size(); ++i) {
+      const std::vector<double> &x = rs[i].line[kTrade].x;
+      const size_t j1 = static_cast<size_t>(std::lower_bound(x.begin(), x.end(), x1) - x.begin()); // = 切片的 j1
+      for (int b = 0; b < kPoolVals; ++b)
+        p[g][i][b] = last_pct(*d.baskets, rs[i], j1, b, years);
+    }
+  }
+}
+
+void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs, const std::array<PortfolioRoll, kPoolVals> &roll,
+                       const PortfolioPct &pct, PortfolioView &v) {
   const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
   // ---- 各线同一份切片; NAV 右表: 各数值列 + 同组同列名次 ----
   for (int g = 0; g < kNavGroups; ++g) {
@@ -687,14 +703,17 @@ void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs
       rank_col(n, kNavGood[k], [&](size_t i) -> Ranked & { return v.num[g][i][k]; });
   }
 
-  // ---- VAL 表格: 各篮子行各口切片内末个可算点的估值分位 + 同组同口名次 (分位低 = 便宜 = 好) ----
+  // ---- VAL 表格: 各篮子行各口切片内末个可算点的估值分位 (= 区间末之前的末点落在切片内) + 同组同口名次 (分位低 = 便宜 = 好) ----
   for (int g = 0; g < kBasketGroups; ++g) {
     const size_t n = d.nav[g].size();
+    assert(pct[g].size() == n);
     v.pct[g].assign(n, {});
-    if (d.baskets)
-      for (size_t i = 0; i < n; ++i)
-        for (int b = 0; b < kPoolVals; ++b)
-          v.pct[g][i][b].x = last_pct(*d.baskets, d.nav[g][i], v.nav[g][i][kTrade], b, years);
+    for (size_t i = 0; i < n; ++i) {
+      const PortfolioSlice &sl = v.nav[g][i][kTrade];
+      for (int b = 0; b < kPoolVals; ++b)
+        if (const PortfolioLastPct &lp = pct[g][i][b]; sl.size() > 0 && lp.j != SIZE_MAX && lp.j >= sl.j0)
+          v.pct[g][i][b].x = lp.pct;
+    }
     for (int b = 0; b < kPoolVals; ++b)
       rank_col(n, -1, [&](size_t i) -> Ranked & { return v.pct[g][i][b]; });
   }

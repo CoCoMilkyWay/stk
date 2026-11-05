@@ -1,5 +1,6 @@
 #include "gui/task_database/services/QuoteService.hpp"
 
+#include "misc/exec.hpp"
 #include "misc/fs.hpp"
 #include "misc/profiler.hpp"
 #include "misc/snap.hpp"
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <utility>
 
 namespace GUI::Database {
 
@@ -123,21 +125,24 @@ void QuoteService::bind(Members m, std::vector<double> level) {
   {
     std::lock_guard<std::mutex> lock(mu_);
     basis_ = std::make_shared<const Basis>(Basis{std::move(m), std::move(level)});
+    dirty_ = true;
   }
   fold();
 }
 
-void QuoteService::today(Side s, std::span<const uint32_t> keys, std::span<Day> out) const {
-  assert(keys.size() == out.size());
+std::shared_ptr<const std::vector<Day>> QuoteService::today(Side s, std::span<const uint32_t> keys) const {
   std::lock_guard<std::mutex> lock(mu_);
+  if (s == kBasket) {
+    for (size_t k = 0; k < keys.size(); ++k)
+      assert(keys[k] == k && "QuoteService::today: 篮子键集须是全表");
+    if (!baskets_)
+      return std::make_shared<const std::vector<Day>>(keys.size());
+    assert(baskets_->size() == keys.size() && "QuoteService::today: 篮子键集与成员表的篮子数不符");
+    return baskets_;
+  }
+  auto out = std::make_shared<std::vector<Day>>(keys.size());
   for (size_t k = 0; k < keys.size(); ++k) {
-    Day &o = out[k];
-    o.candle.date = 0;
-    if (s == kBasket) {
-      if (keys[k] < baskets_.size())
-        o = baskets_[keys[k]];
-      continue;
-    }
+    Day &o = (*out)[k];
     const size_t i = axis_.sub_of(keys[k]);
     if (i == axis_.size() || !traded(last_[i]))
       continue;
@@ -145,7 +150,9 @@ void QuoteService::today(Side s, std::span<const uint32_t> keys, std::span<Day> 
     o.candle = {candle_of(last_[i]), date_, last_[i].last_close};
     o.bars = tracks_[i].bars;
     o.bars.date = date_;
+    o.flow = net_flow(o.bars, o.candle.ref);
   }
+  return out;
 }
 
 misc::Ymd QuoteService::candles(std::span<const uint32_t> keys, std::span<Candle> out) const {
@@ -170,29 +177,56 @@ void QuoteService::fold() {
   std::lock_guard<std::mutex> hold(fold_mu_);
   std::shared_ptr<const Basis> b;
   misc::Ymd date, prev;
-  int slots;
+  int slots, freeze, touched;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (!basis_ || date_ == 0)
+    if (!basis_ || date_ == 0 || !dirty_)
       return;
+    dirty_ = false;
     b = basis_, date = date_, prev = prev_;
     slots = std::max(live_slot(), sec_slot(sec_)) + 1;
+    freeze = std::min(settled() + 1, slots);
+    if (date_ > fund_end_) // 待补的根还会被分钟 K 改写
+      for (const Track &t : tracks_)
+        if (t.lo <= t.hi)
+          freeze = std::min(freeze, t.lo);
+    touched = std::exchange(touched_, kSlots);
   }
-  Fold f(b->level.size());
-  f.open(slots);
   const uint32_t n = static_cast<uint32_t>(syms_.size());
-  for (uint32_t i0 = 0; i0 < n; i0 += kFoldChunk) {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (date_ != date)
-      return;
-    for (uint32_t i = i0, i1 = std::min(i0 + kFoldChunk, n); i < i1; ++i) {
-      const sina::Quote &q = last_[i];
-      const Cell k = candle_of(q);
-      f.add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, b->members.of(i));
+  Folding &g = folding_;
+  if (g.basis != b || g.date != date)
+    g = {b, date, std::make_unique<Fold>(b->level.size()), std::vector<Fold::Carry>(n), 0};
+  if (touched < g.frozen || freeze < g.frozen)
+    g.frozen = 0;
+  enum { kDone,
+         kRebase,
+         kGone };
+  const auto pass = [&](int from) {
+    g.fold->open(from, freeze, slots);
+    for (uint32_t i0 = 0; i0 < n; i0 += kFoldChunk) {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (date_ != date)
+        return kGone;
+      for (uint32_t i = i0, i1 = std::min(i0 + kFoldChunk, n); i < i1; ++i) {
+        const sina::Quote &q = last_[i];
+        const Cell k = candle_of(q);
+        if (!g.fold->add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, b->members.of(i), g.carry[i]))
+          return kRebase;
+      }
     }
+    return kDone;
+  };
+  auto r = pass(g.frozen);
+  if (r == kRebase)
+    r = pass(0);
+  if (r == kGone) {
+    g = {};
+    return;
   }
-  std::vector<Day> out(b->level.size());
-  f.finish(date, prev, b->level, out);
+  assert(r == kDone);
+  g.frozen = freeze;
+  auto out = std::make_shared<std::vector<Day>>(b->level.size());
+  g.fold->finish(date, prev, b->level, *out);
   std::lock_guard<std::mutex> lock(mu_);
   if (date_ != date || basis_ != b)
     return;
@@ -205,19 +239,25 @@ void QuoteService::fold() {
 // ---------------------------------------------------------------------------
 void QuoteService::poll() {
   TraceThread("SinaPoll");
-  sina::Client c(::config::SINA_HQ_HOST);
-  std::vector<std::string> chunk;
+  std::vector<std::vector<std::string>> chunks; // 一批一路: 各自一条连接
+  for (size_t a = 0; a < syms_.size(); a += sina::kQuoteMax)
+    chunks.emplace_back(syms_.begin() + static_cast<ptrdiff_t>(a),
+                        syms_.begin() + static_cast<ptrdiff_t>(std::min(syms_.size(), a + sina::kQuoteMax)));
+  const int batches = static_cast<int>(chunks.size());
+  std::deque<sina::Client> clients;
+  for (int k = 0; k < batches; ++k)
+    clients.emplace_back(::config::SINA_HQ_HOST);
+  misc::exec::ForkJoin ex(batches);
+  std::vector<std::vector<sina::Quote>> parts(chunks.size());
   std::vector<sina::Quote> qs;
   std::vector<std::byte> blob;
   auto saved = std::chrono::steady_clock::now();
   while (true) {
     const auto t0 = std::chrono::steady_clock::now();
+    ex.tasks(batches, [&](int k, int) { parts[static_cast<size_t>(k)] = clients[static_cast<size_t>(k)].quotes(chunks[static_cast<size_t>(k)]); });
     qs.clear();
-    for (size_t a = 0; a < syms_.size(); a += sina::kQuoteMax) {
-      chunk.assign(syms_.begin() + a, syms_.begin() + std::min(syms_.size(), a + sina::kQuoteMax));
-      std::vector<sina::Quote> part = c.quotes(chunk);
+    for (std::vector<sina::Quote> &part : parts)
       std::move(part.begin(), part.end(), std::back_inserter(qs));
-    }
     misc::Ymd d = 0;
     for (const sina::Quote &q : qs)
       d = std::max(d, q.date);
@@ -235,6 +275,7 @@ void QuoteService::poll() {
           t = Track{};
         todo_.clear();
         sec_ = 0;
+        dirty_ = true;
         load();
       }
       int cur = 0;
@@ -248,7 +289,10 @@ void QuoteService::poll() {
         if (q.date != date_) // 停牌等: 只留快照
           continue;
         sec_ = std::max(sec_, q.sec);
-        changed_ = tracks_[i].absorb(q, gap) || changed_;
+        if (tracks_[i].absorb(q, gap)) {
+          changed_ = dirty_ = true;
+          touched_ = std::min(touched_, sec_slot(q.sec));
+        }
       }
       ++ver_[kStock];
       schedule();
@@ -373,7 +417,8 @@ void QuoteService::fill() {
     t.merge(lo, settled(), date_, bars);
     ++fetched_;
     ++ver_[kStock];
-    changed_ = true;
+    changed_ = dirty_ = true;
+    touched_ = std::min(touched_, lo);
   }
 }
 

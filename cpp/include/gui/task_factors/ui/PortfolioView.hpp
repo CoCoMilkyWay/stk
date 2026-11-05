@@ -1,6 +1,7 @@
 // Factors→Portfolio 页的派生层 (GUI 线程, 只算不画): PortfolioService 的结果 + 行情侧价格指数 → 三级缓存, TabPortfolio 只读末级画
-//   派生 PortfolioDerived (结果 / 内容 / fixed_impact 变) → 滚动分位 PortfolioRoll (VAL 选中篮子 / 窗长变) → 区间视图 PortfolioView (区间变)
-//   三级各一个入口 MakePortfolio{Derived, Roll, View}; 各级的键带上级的 gen (PortfolioStage): 上级重算 → 下级自动重算
+//   派生 PortfolioDerived (结果 / 内容 / fixed_impact 变) → 二级两份: 滚动分位 PortfolioRoll (VAL 选中篮子 / 窗长变)
+//   + 末点分位 PortfolioPct (窗长 / 区间末变; 不随区间起点) → 区间视图 PortfolioView (区间变)
+//   各级一个入口 MakePortfolio{Derived, Roll, Pct, View}; 各级的键带上级的 gen (PortfolioStage): 上级重算 → 下级自动重算
 #pragma once
 
 #include "features/TimeIndex.hpp"               // TRADE_MINUTES_PER_DAY (横轴每日跨度)
@@ -112,6 +113,12 @@ struct PortfolioRoll {
   std::vector<uint8_t> band;    // 当日 band 可画 (窗内可算点收益率全 > 0, 价格全有解; 分位照算不受限)
   std::vector<double> levels;   // 等值线倍数 (升序, kContours 档); 空 = 全史不可算
 };
+// 二级 (另一份): 篮子各行各口截至区间末的末个可算点 (VAL 表格; 视图按区间起点取舍: 点在区间内才用)
+struct PortfolioLastPct {
+  size_t j = SIZE_MAX;                                   // 该点 [line[kTrade] 下标]; SIZE_MAX = 无
+  double pct = std::numeric_limits<double>::quiet_NaN(); // 估值分位 (%, 高 = 贵; 同 PortfolioRoll::pct 的定义)
+};
+using PortfolioPct = std::array<std::vector<std::array<PortfolioLastPct, kPoolVals>>, kBasketGroups>; // [BasketGroup][行][PoolVal]
 
 // 三级: 区间视图 (派生 / 滚动分位 / 区间变才重算), 与 PortfolioDerived 逐组对仗
 // 曲线 c 在 [x0, x1) 的切片 (不拷数据): 源点 [j0, j1) = 区间前末点 (无则自身首点) + 区间内各点, 首点 x 钉到 x0, y / base (base = c.y[j0]) → 起点 1
@@ -175,9 +182,15 @@ struct PortfolioRollKey {
   PortfolioAt vs;       // VAL 选中篮子行
   bool operator==(const PortfolioRollKey &) const = default;
 };
+struct PortfolioPctKey {
+  uint64_t baskets = 0; // PortfolioDerived::basket_gen
+  int years = 0;        // 窗长
+  int d1 = 0;           // 区间末
+  bool operator==(const PortfolioPctKey &) const = default;
+};
 struct PortfolioViewKey {
-  uint64_t der = 0, roll = 0; // 派生 gen / 滚动分位 gen
-  int d0 = 0, d1 = 0;         // 区间
+  uint64_t der = 0, roll = 0, pct = 0; // 派生 gen / 滚动分位 gen / 末点分位 gen
+  int d0 = 0, d1 = 0;                  // 区间
   bool operator==(const PortfolioViewKey &) const = default;
 };
 
@@ -186,8 +199,10 @@ void MakePortfolioDerived(const std::vector<PortfolioItem> &items, const std::st
                           const std::shared_ptr<const Database::Tape> &prices, double fixed_impact, PortfolioDerived &d);
 // 二级: VAL 选中篮子行 vs 各口 [PoolVal], 窗长 years; 未选 / 篮子没算成 → 空
 void MakePortfolioRoll(const PortfolioDerived &d, PortfolioAt vs, int years, std::array<PortfolioRoll, kPoolVals> &r);
-// 三级: 区间 [d0, d1) (日并集轴下标); vs / years / roll = 二级的
-void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs, int years, const std::array<PortfolioRoll, kPoolVals> &roll,
-                       PortfolioView &v);
+// 二级: 区间末 d1 (日并集轴下标) 之前各篮子行各口的末个可算点, 窗长 years; 篮子没算成 → 各格无
+void MakePortfolioPct(const PortfolioDerived &d, int d1, int years, PortfolioPct &p);
+// 三级: 区间 [d0, d1) (日并集轴下标); vs / roll / pct = 二级的
+void MakePortfolioView(const PortfolioDerived &d, int d0, int d1, PortfolioAt vs, const std::array<PortfolioRoll, kPoolVals> &roll,
+                       const PortfolioPct &pct, PortfolioView &v);
 
 } // namespace GUI::Factors
