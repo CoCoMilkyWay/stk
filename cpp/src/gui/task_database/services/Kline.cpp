@@ -86,7 +86,8 @@ void Fold::add(const Leg &g, std::span<const Members::Weight> ws) {
     ratio(b, inv, c, q);
     if (b) {
       c = q[3], end_ = std::max(end_, s);
-      dir = b->close > px ? 1 : b->close < px ? -1 : dir;
+      dir = b->close > px ? 1 : b->close < px ? -1
+                                              : dir;
       net += dir * b->amount, px = b->close;
     }
   }
