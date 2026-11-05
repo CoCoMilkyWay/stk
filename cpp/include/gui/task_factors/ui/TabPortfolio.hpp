@@ -3,7 +3,7 @@
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
 //   Portfolio 页 (对仗 OrderFlow 图 2 的横轴: x = 日下标 · 255 + 行末分钟, 刻度只到日 YY/MM/DD; 不画个股):
 //   NAV 右表 = 顶部类别条选一组看 (指数 / 行业 / 概念 / 因子 / 策略, 五组同形: 一行一对线, 见 NavGroup), 点行 = 选中 (同 VAL 行高亮; 跨组保留) = 主图画该行两条线, 主图例默认只显理想列;
-//     默认只选全A.等. 列 = 中文名 (线色; 悬停看名) | 当日涨幅 | Δ5日线 | 只数 | 总市值 | 换手 | 资金流入 | 可成交年化 | 理想年化 | 夏普 (可成交列) | 年换手;
+//     默认不选 (空图). 列 = 中文名 (线色; 悬停看名) | 当日涨幅 | Δ5日线 | 只数 | 总市值 | 换手 | 资金流入 | 可成交年化 | 理想年化 | 夏普 (可成交列) | 年换手;
 //     近况两列 (Database::Recent; 篮子行 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点) 按涨跌着色, 不随区间;
 //     只数 / 总市值 (只篮子行) = 当日成员表 (Tape::members / weight): 只数取同切片等权线, 总市值取同切片加权线 (当日接上 × 当日涨跌), 不着色;
 //     换手 / 资金流入 (只篮子行) = 新浪当日 成交额占总市值 / 净流入占成交额 (Day::flow, 分钟涨跌法), 流入按正负着色, 悬停格看分子分母金额;
@@ -32,7 +32,7 @@
 //     夏普 = 区间内日收益 (日末净值, 无点的日收益 0) mean / sd × √每年交易日;
 //     主图内容 (新结果到 / 区间 / VAL 选中 / 滚动窗) / 页 / log / 主图例显隐 / 右表选中 任一变 → 重新 fit (PortfolioFitKey); 每条可见线在视野内的末点右侧标小字名
 //   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用; 行 = NAV 篮子三组的同一份): 右侧类别条 (指数 / 行业 / 概念) 选一组, 表格单选一个池 / 申万一级行业
-//     (全A 内按上一行 ind_l1 切) / 概念; 默认 = 组合首个因子所在池; 列 = 中文名 (悬停看名) | 只数 | 总市值 | 换手 | 资金流入 (同 NAV) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
+//     (全A 内按上一行 ind_l1 切) / 概念 (再点 = 取消); 默认不选 (空图); 列 = 中文名 (悬停看名) | 只数 | 总市值 | 换手 | 资金流入 (同 NAV) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
 //     底色 = 该分位在同组同口内的截面名次, 便宜绿 → 贵红),
 //     主图 = 该篮子指数 P (全A.加 / 行业 / 概念 = 总市值加权, 全A.等 / 其余池 = 等权; 区间起点 = 1, 与 NAV 同一切片) + 同权重的滚动 EP / BP / SP / CP / DY Band
 //     (默认只开 BP): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
@@ -57,7 +57,6 @@
 #include <array>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -86,7 +85,6 @@ struct PortfolioRow {
   std::string tag;                                        // 线尾小字 (口径后缀另拼)
   std::string hover;                                      // 悬停 (en 起头 + 详情)
   double turn = std::numeric_limits<double>::quiet_NaN(); // 年换手 (全评估期单边, 倍/年; NaN = 无)
-  bool on = false;                                        // 默认选中
   float hue = std::numeric_limits<float>::quiet_NaN();    // 色相 ∈ [0, 1) (指数 / 行业 / 概念 / 因子四组一起按相似度定, 见 PortfolioDerived::nav); NaN = 未定 (灰); 策略不取
   int basket = -1;                                        // 篮子行: 篮子线 basket_line (BasketCurve / 篮子 Feed 同键; 近况 / 日内 / VAL 取它); 其余 −1
   std::vector<uint32_t> at;                               // 篮子行: [line[kTrade].x] → BasketCurve::dates 下标 (严格升序; 滚动窗看日并集轴以外的全史)
@@ -115,7 +113,7 @@ static_assert(int{kNumTrade} == int{kTrade} && int{kNumIdeal} == int{kIdeal});
 //   组合线恒重算 (份额随当日因子数)
 struct PortfolioDerived {
   std::vector<misc::Ymd> dates;                        // 日并集轴 (横轴 day 下标)
-  std::vector<PortfolioRow> nav[kNavGroups];           // [NavGroup][行]; on = 只全A.等:
+  std::vector<PortfolioRow> nav[kNavGroups];           // [NavGroup][行]:
                                                        //   指数 / 行业 / 概念 = [basket_group 序] (源没算成也列, 线空); en = cut_code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
                                                        //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key,
                                                        //     en | cn = 因子文件主干 | 中文名 (超长截断), hover = en + 全名 + 池 层 持有期 冲击段 规范串
@@ -267,13 +265,13 @@ struct PortfolioUIState {
   PortfolioStage<PortfolioRollKey, std::array<PortfolioRoll, kPoolVals>> roll; // [PoolVal] 选中篮子的
   PortfolioStage<PortfolioViewKey, PortfolioView> view;
   PortfolioRange range;
-  std::string val_id;             // VAL 选中篮子行 id (空 = 默认: 组合首个因子所在池的等权行, 无因子暂用首行)
-  std::string val_for;            // val_id 对应的组合 (换组合 → 回默认)
+  std::string val_id;             // VAL 选中篮子行 id (空 = 不选)
+  std::string val_for;            // val_id 对应的组合 (换组合 → 清掉)
   int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
-  std::map<std::string, bool> show;                                          // NAV 右表选中行: PortfolioRow::id → 画 (缺 = PortfolioRow::on)
-  std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中 / 回默认; 画到时消费; 理想列显, 可成交列隐)
-  std::string vis_key;                                                       // NAV 行选中已按默认设过的组合 (换组合 → 清掉选中回默认)
+  std::set<std::string> show;                                                // NAV 右表选中行 (FLOW 同一份) 的 PortfolioRow::id; 默认空
+  std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
+  std::string vis_key;                                                       // NAV 行选中所属的组合 (换组合 → 清掉选中)
   std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)
   PortfolioFitKey fit_key;                                                   // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
   float legend_w[kPages] = {400.0f, 380.0f, 380.0f};                         // [PortfolioPage] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)

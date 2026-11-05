@@ -5,13 +5,11 @@
 #include "gui/Tasks.hpp"                      // StatusColor
 #include "gui/task_factors/ui/TabFactors.hpp" // tip / hold_desc
 #include "gui/util/Chart.hpp"                 // tint / button_bar / EndTag
-#include "misc/date.hpp"                      // to_days (滚动窗权重按日历天)
-#include "shared/Basket.hpp"                  // basket_group / basket_name / cut_code
-#include "shared/FeatureLib.hpp"              // pool_id
-
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h" // GetItem (主图例显隐 / 池线色)
+#include "misc/date.hpp"     // to_days (滚动窗权重按日历天)
+#include "shared/Basket.hpp" // basket_group / basket_name / cut_code
 
 #include <algorithm>
 #include <array>
@@ -24,6 +22,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <ranges>
 #include <set>
@@ -405,10 +404,15 @@ void paint(PortfolioDerived &d) {
   for (size_t i = 0; i < n; ++i)
     rs[i]->hue = span > 0 ? kArc * static_cast<float>(t[at[i]] / span) : 0.0f;
 }
-// NAV 右表行选中 (缺 = 默认 PortfolioRow::on)
-bool shown(const PortfolioUIState &ui, const PortfolioRow &r) {
-  const auto it = ui.show.find(r.id);
-  return it != ui.show.end() ? it->second : r.on;
+// NAV 右表行选中 (FLOW 同一份)
+bool shown(const PortfolioUIState &ui, const PortfolioRow &r) { return ui.show.contains(r.id); }
+// 点行: 选中 ↔ 取消; 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
+void toggle(PortfolioUIState &ui, const PortfolioRow &r) {
+  if (ui.show.erase(r.id))
+    return;
+  ui.show.insert(r.id);
+  for (int l = 0; l < kPairLines; ++l)
+    ui.reveal.insert(line_id(r, l));
 }
 
 // src (升序) 各日在 axis (升序) 上的 lower_bound 下标 (双指针)
@@ -656,7 +660,6 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
       r.en = cut_code(cut_of_line(line));
       r.hover = r.en + "  " + basket_name(line);
       r.cn = r.tag = clip_name(cut_name(cut_of_line(line))) + weight_suffix(weight_of(line));
-      r.on = line == basket_line(0, kWeightEq);
       r.basket = static_cast<int>(line);
       if (d.baskets && !d.dates.empty()) {
         r.turn = d.baskets->turn[line];
@@ -1086,13 +1089,13 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
   }
   ImGui::SameLine();
   if (ImGui::Button("Clear", ImVec2(60, 0))) {
-    ui.vis_key.clear(); // NAV 行选中 + 主图例显隐回默认 (见 RenderTabPortfolio)
+    ui.show.clear();
     ui.val_id.clear();
     ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(d.dates.size())};
     ui.log_y = false;
   }
   if (ImGui::IsItemHovered())
-    tip("清掉全部选择, 图回默认: NAV 行选中 (回只选全A.等) + 主图例显隐 / VAL 选中篮子 / 区间 (回全段) / log 关");
+    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL 选中篮子 / 区间 (回全段) / log 关");
   for (const PortfolioItem &it : ui.items) {
     const auto f = res.factors.find(it.e.key());
     const std::string &why = !it.missing.empty() ? it.missing : f != res.factors.end() ? f->second->error
@@ -1114,7 +1117,7 @@ int pages() {
           "• 池指数线 = 各池等权指数 (all 池拆 全A.等 / 全A.加); 行业线 = 申万一级 / 概念线 = 东财题材概念 (全A 内切, 总市值加权)\n"
           "• 单因子线 = 各自的 G20 多头净值\n"
           "• 每条成对: 可成交 (篮子 = 标签指数, 收盘封板不建仓 / 平仓顺延; 因子 / 策略 = 扣换手冲击) + 理想 (篮子 = 后复权收盘价指数; 因子 / 策略 = 无冲击; 同色淡线)\n"
-          "• 默认只画全A.等; 右侧类别条选一组 (指数 / 行业 / 概念 / 因子 / 策略), 点行选中 = 画该行两条, 主图例默认只显理想, 可成交点图例显; 显隐变了自动重新 fit\n"
+          "• 默认不画 (空图); 右侧类别条选一组 (指数 / 行业 / 概念 / 因子 / 策略), 点行选中 = 画该行两条, 主图例默认只显理想, 可成交点图例显; 显隐变了自动重新 fit\n"
           "• 日内 (右侧开关, 默认开): 主图上方画选中的指数 / 行业 / 概念的日内行情 (多行 = 同主图线色叠加; 一行 = 蜡烛 + 现价十字)\n"
           "• 底部区间条选日段: 各线在区间起点归一 = 1, 年化按区间复利");
     if (nav_open)
@@ -1843,7 +1846,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TextColored(kHead, "(点行 = 画)");
   const float bar_x = ImGui::GetItemRectMax().x;
   if (ImGui::IsItemHovered())
-    tip("点行 = 选中 / 取消, 选中 = 主图画该行两条线, 主图例默认只显理想列, 可成交列点图例显 (显隐变了自动重新 fit); 默认只选全A.等; 选中换组保留\n"
+    tip("点行 = 选中 / 取消, 选中 = 主图画该行两条线, 主图例默认只显理想列, 可成交列点图例显 (显隐变了自动重新 fit); 默认不选; 选中换组保留\n"
         "• 指数 = 各池等权指数 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级 (全A 内切, 总市值加权); 概念 = 东财题材概念 (全A 内切, 总市值加权):\n"
         "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
         "    ◦ 理想 = 价格指数 (Assets 篮子同一份: 成员 / 权重取前一日收盘, 点位按前收合成, 不看可成交, 同中证 / 万得口径); 两者之差 = 可成交拖累\n"
@@ -1908,12 +1911,8 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TableSetColumnIndex(0);
     const bool on = shown(ui, h);
     ImGui::PushStyleColor(ImGuiCol_Text, nav_color(d, g, r, kTrade));
-    if (ImGui::Selectable((h.cn + "##pfl_" + h.id).c_str(), on, ImGuiSelectableFlags_SpanAllColumns)) {
-      ui.show[h.id] = !on;
-      if (!on)
-        for (int l = 0; l < kPairLines; ++l)
-          ui.reveal.insert(line_id(h, l));
-    }
+    if (ImGui::Selectable((h.cn + "##pfl_" + h.id).c_str(), on, ImGuiSelectableFlags_SpanAllColumns))
+      toggle(ui, h);
     ImGui::PopStyleColor();
     const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 1 : -1; // 行 Selectable 跨全列: 悬停的数值列
     name_tip(h.hover);
@@ -2026,7 +2025,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TableSetColumnIndex(0);
     ImGui::PushStyleColor(ImGuiCol_Text, nav_color(d, g, r, kTrade));
     if (ImGui::Selectable((s.cn + "##pfv_" + s.id).c_str(), vs == PortfolioAt{g, r}, ImGuiSelectableFlags_SpanAllColumns))
-      ui.val_id = s.id;
+      ui.val_id = vs == PortfolioAt{g, r} ? std::string{} : s.id;
     ImGui::PopStyleColor();
     const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 1 : -1; // 行 Selectable 跨全列: 悬停的数值列
     name_tip(s.hover);
@@ -2155,12 +2154,8 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
     ImGui::TableSetColumnIndex(0);
     const bool on = shown(ui, h);
     ImGui::PushStyleColor(ImGuiCol_Text, nav_color(d, g, r, kTrade));
-    if (ImGui::Selectable((h.cn + "##pff_" + h.id).c_str(), on, ImGuiSelectableFlags_SpanAllColumns)) {
-      ui.show[h.id] = !on;
-      if (!on)
-        for (int l = 0; l < kPairLines; ++l)
-          ui.reveal.insert(line_id(h, l));
-    }
+    if (ImGui::Selectable((h.cn + "##pff_" + h.id).c_str(), on, ImGuiSelectableFlags_SpanAllColumns))
+      toggle(ui, h);
     ImGui::PopStyleColor();
     const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 1 : -1; // 行 Selectable 跨全列: 悬停的数值列
     name_tip(h.hover);
@@ -2341,25 +2336,14 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     if (dv.dates != old) // 日轴变 → 区间回全段
       ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
   });
-  // VAL 选中篮子行: 换组合 → 回默认 (组合首个因子所在池的等权行; 无因子 → 暂用首行, 不记)
+  // VAL 选中篮子行 (空 = 不选): 换组合 → 清掉
   if (ui.val_for != ui.name)
     ui.val_for = ui.name, ui.val_id.clear();
-  const auto val_at = [&](const std::string &id) {
-    for (int g = 0; g < kBasketGroups; ++g)
-      for (size_t r = 0; r < d.nav[g].size(); ++r)
-        if (d.nav[g][r].id == id)
-          return PortfolioAt{g, r};
-    return PortfolioAt{};
-  };
-  PortfolioAt vs = val_at(ui.val_id);
-  if (vs.g < 0) {
-    const auto first = std::find_if(ui.items.begin(), ui.items.end(), [](const PortfolioItem &it) { return it.missing.empty(); });
-    vs = first != ui.items.end() ? val_at(basket_id(basket_line(cut_of(pool_id(first->e.pool)), kWeightEq))) : PortfolioAt{};
-    if (vs.g >= 0)
-      ui.val_id = d.nav[vs.g][vs.r].id;
-    else if (!d.nav[kNavPool].empty())
-      vs = {kNavPool, 0};
-  }
+  PortfolioAt vs;
+  for (int g = 0; g < kBasketGroups; ++g)
+    for (size_t r = 0; r < d.nav[g].size(); ++r)
+      if (d.nav[g][r].id == ui.val_id)
+        vs = {g, r};
   ui.roll.update(PortfolioRollKey{d.basket_gen, ui.band_years, vs}, [&](std::array<PortfolioRoll, kPoolVals> &r) {
     for (int b = 0; b < kPoolVals; ++b)
       if (vs.g >= 0 && d.baskets)
@@ -2382,15 +2366,8 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const bool nav = page == kPageNav;
 
   // ---- 图: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (plot_nav ↔ plot_val) / 区间条 自上而下, FLOW = 只一张资金流图; 最右 = 图例 (legend_nav ↔ legend_val ↔ legend_flow) ----
-  if (page != kPageVal && ui.name != ui.vis_key) { // NAV 行选中 (FLOW 同一份) 回默认 (换组合), 其线在主图例里回默认显隐
-    ui.vis_key = ui.name;
-    for (const std::vector<PortfolioRow> &rs : d.nav)
-      for (const PortfolioRow &r : rs) {
-        ui.show.erase(r.id);
-        for (int l = 0; l < kPairLines; ++l)
-          ui.reveal.insert(line_id(r, l));
-      }
-  }
+  if (ui.name != ui.vis_key) // 换组合 → NAV 行选中 (FLOW 同一份) 清掉
+    ui.vis_key = ui.name, ui.show.clear();
   constexpr float kBarH = 90.0f, kLegendMaxFrac = 0.5f; // 右图例最多占整宽的比例 (再宽表格自己截)
   const ImGuiStyle &st = ImGui::GetStyle();
   const ImVec2 av = ImGui::GetContentRegionAvail();
