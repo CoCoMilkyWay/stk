@@ -93,8 +93,7 @@ struct ValMeta {
   int prec;
 };
 constexpr ValMeta kVal[kPoolVals] = {{"EP", "PE", 2}, {"BP", "PB", 1}, {"SP", "PS", 1}, {"CP", "PCF", 2}, {"DY", "P/D", 2}};
-// VAL 线表: 价格线色; band 填色 / 线 / 线尾刻度 / 右表格底色的 alpha
-const ImVec4 kValPxCol(0.95f, 0.95f, 0.95f, 1.0f);
+// VAL 线表 (价格线色 = 该篮子行的 nav_color): band 填色 / 线 / 线尾刻度 / 右表格底色的 alpha
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f, kValCellA = 0.45f;
 // VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 band 线看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
 struct ValMark {
@@ -1008,7 +1007,7 @@ struct PlotFrame {
   }
 };
 
-// ---- 头: 组合 / 成本 / Recompute / Cancel / 状态 + 失效 / 失败条目原因. 返回 1 = Recompute, -1 = Cancel, 0 = 无 ----
+// ---- 头: 组合 / 成本 / Recompute / Cancel / 状态 / Clear (选择与图回默认) + 失效 / 失败条目原因. 返回 1 = Recompute, -1 = Cancel, 0 = 无 ----
 int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioResult &res, const std::string &message,
          double fixed_impact) {
   int action = 0;
@@ -1085,6 +1084,15 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
+  ImGui::SameLine();
+  if (ImGui::Button("Clear", ImVec2(60, 0))) {
+    ui.vis_key.clear(); // NAV 行选中 + 主图例显隐回默认 (见 RenderTabPortfolio)
+    ui.val_id.clear();
+    ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(d.dates.size())};
+    ui.log_y = false;
+  }
+  if (ImGui::IsItemHovered())
+    tip("清掉全部选择, 图回默认: NAV 行选中 (回只选全A.等) + 主图例显隐 / VAL 选中篮子 / 区间 (回全段) / log 关");
   for (const PortfolioItem &it : ui.items) {
     const auto f = res.factors.find(it.e.key());
     const std::string &why = !it.missing.empty() ? it.missing : f != res.factors.end() ? f->second->error
@@ -1445,7 +1453,7 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
     assert(it);
     on[b] = it->Show;
   }
-  ImPlot::SetNextLineStyle(kValPxCol, 2.0f);
+  ImPlot::SetNextLineStyle(nav_color(d, vs.g, vs.r, kTrade), 2.0f);
   plot_slice("##pf_val_px", sl);
   if (const ImPlotItem *it = pf.item("##pf_val_px")) {
     push_tag(pf.tags, pf.lim, sl, it->Color, s.tag);
@@ -1479,7 +1487,7 @@ void range_bar(PortfolioUIState &ui, bool nav, PortfolioAt vs, float pw, float b
   static const PortfolioCurve kNone;
   const PortfolioCurve &rc = nav ? d.nav[kNavStrat][0].line[kTrade] : vs.g >= 0 ? d.nav[vs.g][vs.r].line[kTrade]
                                                                                 : kNone;
-  ImPlot::SetNextLineStyle(nav ? kStratCol : kValPxCol, 1.0f);
+  ImPlot::SetNextLineStyle(nav || vs.g < 0 ? kStratCol : nav_color(d, vs.g, vs.r, kTrade), 1.0f);
   ImPlot::PlotLine("##pf_range_line", rc.x.data(), rc.y.data(), static_cast<int>(rc.x.size()));
   if (D > 0) {
     std::vector<int> ms; // 吸附点 = 月初下标, 末尾补 D
@@ -1591,19 +1599,20 @@ float end_table() {
   return t->ColumnsAutoFitWidth + ImGui::GetStyle().ScrollbarSize;
 }
 
-// 右图例表头排序 (NAV / VAL 同一份; 三态: 升 → 降 → 色序): order (rs 的组内下标) 按当前排序列重排;
-// 首列 (中文名) 按 cn 字典序, 其余按 num(i, 列), 不可算的恒在末; 未排 = 色相序 (相似的挨着; 未定色保持组内序)
+// 右图例表头排序 (NAV / VAL 同一份; 三态: 升 → 降 → 原序): order (rs 的组内下标) 按当前排序列重排;
+// 首列 (中文名) 按色相 (相似的挨着; 未定色 = 按 cn 字典序), 其余按 num(i, 列), 不可算的恒在末
 template <class Num>
 void sort_rows(std::vector<size_t> &order, const std::vector<PortfolioRow> &rs, const Num &num) {
   const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
-  if (!ss || ss->SpecsCount == 0) {
-    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return rs[a].hue < rs[b].hue; });
+  if (!ss || ss->SpecsCount == 0)
     return;
-  }
   const int c = ss->Specs[0].ColumnIndex;
   const bool desc = ss->Specs[0].SortDirection == ImGuiSortDirection_Descending;
   std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
     if (c == 0) {
+      const float ha = rs[a].hue, hb = rs[b].hue;
+      if (!std::isnan(ha) && !std::isnan(hb))
+        return desc ? ha > hb : ha < hb;
       const int r = rs[a].cn.compare(rs[b].cn);
       return desc ? r > 0 : r < 0;
     }
@@ -1637,35 +1646,14 @@ void headers_row(const std::string *tips, int n) {
 //      选中跨组保留; 选中的篮子行另叠进日内栏). 列 = 中文名 (线色; 悬停看 hover) | 左段 (当日涨幅 | Δ5日线 | 只数 | 总市值 | 换手 | 资金流入)
 //      | 可成交 | 理想 (区间年化) | 夏普 (可成交列) | 年换手; 当日涨幅 / Δ5日线 / 资金流入按正负着色, 只数 / 总市值 / 换手不着色, 其余数值列底色 = 同组同列截面名次
 //      (好绿 → 差红); 换手 / 资金流入格悬停看分子分母金额; 表头点排序 (组内) ----
-// 左段列 (不随区间): 近况 (Database::Recent) + 篮子当日 (basket_today)
-enum NavLeft : int { kLeftChg,
-                     kLeftMa5,
-                     kLeftMembers,
-                     kLeftCap,
-                     kLeftTurn,
-                     kLeftFlow };
-constexpr int kLefts = 6;
-constexpr const char *kNavLeftName[kLefts] = {"涨幅", "Δ5日线", "只数", "总市值", "换手", "流入"};
-constexpr const char *kNavNumName[kNavNums] = {"可成交", "理想", "夏普", "年换手"};     // [NavNum]
-constexpr const char *kNavNumFmt[kNavNums] = {"%+.1f%%", "%+.1f%%", "%+.2f", "%.1f倍"}; // [NavNum]
-constexpr int kNavCols = kLefts + kNavNums;                                             // 名之后的数值列 (左段 + NavNum)
-// [列] 表头悬停说明 (名 + kNavLeftName + kNavNumName)
-const std::string kNavTip[1 + kNavCols] = {
-    "名 = 行名\n"
-    "• 算法: 篮子 = 切片名 + .等 (等权) / .加 (总市值加权); 因子 / 策略 = 中文名\n"
-    "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
-    "• 显示: 字色 = 主图线色 (四组一起按 max(成员重合, 剔全A.加的残差相关) 定色相: 色差 ∝ 不相似; 没算完全灰), 未排序时按色序 (相似的挨着); 超长截断补 …, 悬停看全名\n"
-    "• 适用: 全部组",
-    "涨幅 = 当日涨跌幅\n"
-    "• 算法: 最新一日收盘 / 前收 − 1\n"
-    "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略 = 净值末点\n"
-    "• 显示: 百分比两位, 按正负着色\n"
-    "• 适用: 全部组; 不随区间",
-    "Δ5日线 = 对 5 日均线的偏离\n"
-    "• 算法: 最新一日收盘 / MA5 (含当日) − 1\n"
-    "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略 = 净值末 5 点\n"
-    "• 显示: 百分比两位, 按正负着色\n"
-    "• 适用: 全部组; 不随区间",
+// 篮子当日四列 (三页右表同一份, 不随区间; 值 = today_vals(basket_today)): 只数 / 总市值 / 换手不着色, 流入按正负着色; 换手 / 流入格悬停看分子分母金额
+enum TodayCol : int { kTodayMembers,
+                      kTodayCap,
+                      kTodayTurn,
+                      kTodayFlow };
+constexpr int kTodays = 4;
+constexpr const char *kTodayName[kTodays] = {"只数", "总市值", "换手", "流入"};
+const std::string kTodayTip[kTodays] = {
     "只数 = 成分只数\n"
     "• 算法: 成员表的成分计数 (.等 / .加 同一份)\n"
     "• 数据: 成员表 = 历史末日收盘定 (= 当日 bind 给新浪行情的那份)\n"
@@ -1681,11 +1669,41 @@ const std::string kNavTip[1 + kNavCols] = {
     "• 数据: 新浪行情日 (盘后 / 重启照样全天); 无新浪行情日 → -\n"
     "• 显示: 百分比两位, 不着色; 悬停格看成交额 / 总市值\n"
     "• 适用: 指数 / 行业 / 概念; 不随区间",
-    "流入 = 资金流入占成交额\n"
+    "流入 = 当日资金流入占成交额\n"
     "• 算法: 净流入 / 成交额; 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟\n"
-    "• 数据: 新浪行情日分钟根 (快照合成 + 分钟 K 补); 成分之和不加权, 分不出大单\n"
+    "• 数据: 新浪行情日分钟根 (快照合成 + 分钟 K 补), 含开收盘集合竞价; 成分之和不加权, 分不出大单\n"
     "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额\n"
     "• 适用: 指数 / 行业 / 概念; 不随区间",
+};
+// NAV 左段列 (不随区间): 近况 (Database::Recent) + 篮子当日四列
+enum NavLeft : int { kLeftChg,
+                     kLeftMa5 };
+constexpr int kRecents = 2, kLefts = kRecents + kTodays;
+constexpr const char *kRecentName[kRecents] = {"涨幅", "Δ5日线"};
+constexpr const char *kNavNumName[kNavNums] = {"可成交", "理想", "夏普", "年换手"};     // [NavNum]
+constexpr const char *kNavNumFmt[kNavNums] = {"%+.1f%%", "%+.1f%%", "%+.2f", "%.1f倍"}; // [NavNum]
+constexpr int kNavCols = kLefts + kNavNums;                                             // 名之后的数值列 (左段 + NavNum)
+// [列] 表头悬停说明 (名 + kRecentName + kTodayName + kNavNumName)
+const std::string kNavTip[1 + kNavCols] = {
+    "名 = 行名\n"
+    "• 算法: 篮子 = 切片名 + .等 (等权) / .加 (总市值加权); 因子 / 策略 = 中文名\n"
+    "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
+    "• 显示: 字色 = 主图线色 (四组一起按 max(成员重合, 剔全A.加的残差相关) 定色相: 色差 ∝ 不相似; 没算完全灰); 点本列表头 = 按颜色排 (相似的挨着; 没算完按名); 超长截断补 …, 悬停看全名\n"
+    "• 适用: 全部组",
+    "涨幅 = 当日涨跌幅\n"
+    "• 算法: 最新一日收盘 / 前收 − 1\n"
+    "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略 = 净值末点\n"
+    "• 显示: 百分比两位, 按正负着色\n"
+    "• 适用: 全部组; 不随区间",
+    "Δ5日线 = 对 5 日均线的偏离\n"
+    "• 算法: 最新一日收盘 / MA5 (含当日) − 1\n"
+    "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略 = 净值末 5 点\n"
+    "• 显示: 百分比两位, 按正负着色\n"
+    "• 适用: 全部组; 不随区间",
+    kTodayTip[kTodayMembers],
+    kTodayTip[kTodayCap],
+    kTodayTip[kTodayTurn],
+    kTodayTip[kTodayFlow],
     "可成交 = 可成交线区间年化\n"
     "• 算法: 区间起点归一, 按区间复利年化\n"
     "• 数据: 篮子 = 标签指数 (收盘封板不建仓 / 平仓顺延); 因子 / 策略 = 有冲击净值\n"
@@ -1737,6 +1755,31 @@ std::array<double, 4> basket_today(const Database::Feed &f, const PortfolioRow &
   if (const Database::Day &t = f.today[static_cast<size_t>(h.basket)]; t.candle.date != 0 && t.candle.amount > 0)
     o[2] = t.candle.amount / 1e8, o[3] = t.flow / t.candle.amount;
   return o;
+}
+// 篮子当日 bt → 四列值 [TodayCol] (换手 = 成交额 / 总市值)
+std::array<double, kTodays> today_vals(const std::array<double, 4> &bt) { return {bt[0], bt[1], bt[2] / bt[1], bt[3]}; }
+// 四列第 k 列值 y 的格
+NumCell today_cell(int k, double y) {
+  const ImVec4 &txt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+  if (!std::isfinite(y))
+    return num_none();
+  switch (k) {
+  case kTodayMembers:
+    return num_cell(txt, "%.0f", y);
+  case kTodayCap:
+    return num_cell(txt, "%s", yi_text(y).c_str());
+  case kTodayTurn:
+    return num_cell(txt, "%.2f%%", 100.0 * y);
+  default:
+    return num_cell(tint(y, 0.0), "%+.2f%%", 100.0 * y);
+  }
+}
+// 悬停四列第 k 列 (k 不在 [0, kTodays) = 别的列) → 换手 / 流入的分子分母
+void today_tip(int k, const std::array<double, 4> &bt) {
+  if (const double t = bt[2] / bt[1]; k == kTodayTurn && std::isfinite(t))
+    tip("换手 %.2f%% = 成交额 %s / 总市值 %s", 100.0 * t, yi_text(bt[2]).c_str(), yi_text(bt[1]).c_str());
+  else if (k == kTodayFlow && std::isfinite(bt[3]))
+    tip("流入 %+.2f%% = 净流入 %s / 成交额 %s", 100.0 * bt[3], yi_text(bt[3] * bt[2], true).c_str(), yi_text(bt[2]).c_str());
 }
 // 篮子行的当日 bt (basket_today) 过 f (见 BasketFilter)
 bool passes(const BasketFilter &f, const std::array<double, 4> &bt) {
@@ -1808,7 +1851,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 指数 / 行业 / 概念表上过滤条 (与 VAL / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画的行恒列\n"
-        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 色序 (相似的挨着)");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
   // 一行 r = 一对线; 切片 / 名次同下标. 篮子组按过滤条定列出的行 (选中行恒列)
   const int g = ui.cat[kPageNav];
   const std::vector<PortfolioRow> &rs = d.nav[g];
@@ -1829,7 +1872,8 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   ImGui::TableSetupColumn("名", ImGuiTableColumnFlags_WidthStretch);
   float cw[kNavCols]; // [列 − 1] 本帧最宽 (表头起)
   for (int k = 0; k < kNavCols; ++k) {
-    const char *name = k < kLefts ? kNavLeftName[k] : kNavNumName[k - kLefts];
+    const char *name = k < kRecents ? kRecentName[k] : k < kLefts ? kTodayName[k - kRecents]
+                                                                  : kNavNumName[k - kLefts];
     ImGui::TableSetupColumn(name);
     cw[k] = ImGui::CalcTextSize(name).x;
   }
@@ -1840,20 +1884,18 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   for (const size_t r : order) {
     const PortfolioRow &h = rs[r];
     const Database::Recent x = h.basket >= 0 ? Database::RecentOf(ui.basket.feed, static_cast<size_t>(h.basket)) : recent_of(h.line[kTrade]);
-    lc[r] = {x.chg, x.ma5, bt[r][0], bt[r][1], bt[r][2] / bt[r][1], bt[r][3]};
+    const std::array<double, kTodays> tv = today_vals(bt[r]);
+    lc[r] = {x.chg, x.ma5};
+    std::copy(tv.begin(), tv.end(), lc[r].begin() + kRecents);
     for (int k = 0; k < kNavCols; ++k) {
       const double y = k < kLefts ? lc[r][static_cast<size_t>(k)] : nav_num(d, v, g, r, k - kLefts);
       NumCell &c = tc[r][static_cast<size_t>(k)];
-      if (!std::isfinite(y))
+      if (k >= kRecents && k < kLefts)
+        c = today_cell(k - kRecents, y);
+      else if (!std::isfinite(y))
         c = num_none();
       else if (k >= kLefts)
         c = num_cell(txt, kNavNumFmt[k - kLefts], y);
-      else if (k == kLeftMembers)
-        c = num_cell(txt, "%.0f", y);
-      else if (k == kLeftCap)
-        c = num_cell(txt, "%s", yi_text(y).c_str());
-      else if (k == kLeftTurn)
-        c = num_cell(txt, "%.2f%%", 100.0 * y);
       else
         c = num_cell(tint(y, 0.0), "%+.2f%%", 100.0 * y);
       cw[k] = std::max(cw[k], c.w);
@@ -1882,21 +1924,18 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
           ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(1.0 - rk, kValCellA)));
       draw_cell(tc[r][static_cast<size_t>(k)], cw[k]);
     }
-    const std::array<double, 4> &b = bt[r];
-    if (const double t = lc[r][static_cast<size_t>(kLeftTurn)]; hov == kLeftTurn && std::isfinite(t))
-      tip("换手 %.2f%% = 成交额 %s / 总市值 %s", 100.0 * t, yi_text(b[2]).c_str(), yi_text(b[1]).c_str());
-    else if (hov == kLeftFlow && std::isfinite(b[3]))
-      tip("流入 %+.2f%% = 净流入 %s / 成交额 %s", 100.0 * b[3], yi_text(b[3] * b[2], true).c_str(), yi_text(b[2]).c_str());
+    today_tip(hov - kRecents, bt[r]);
   }
   ui.legend_w[kPageNav] = legend_width(top_x, end_table());
 }
 
-// ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 各口; 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
-// [列] 表头悬停说明 (名 + kVal); 各口同一模板, 只换分子 / 负值口径
-const std::array<std::string, 1 + kPoolVals> kValTip = [] {
+// ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 当日四列 | 各口; 各口格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
+// [列] 表头悬停说明 (名 + kTodayName + kVal); 各口同一模板, 只换分子 / 负值口径
+const std::array<std::string, 1 + kTodays + kPoolVals> kValTip = [] {
   constexpr const char *num[kPoolVals] = {"归母净利TTM", "归母权益MRQ", "营业总收入TTM", "经营现金流TTM", "近4季报告期税前分红"}; // [PoolVal]
   constexpr const char *neg[kPoolVals] = {"亏损计负", "负权益计负", "无收入计 0", "负现金流计负", "不分红计 0"};                  // [PoolVal]
-  std::array<std::string, 1 + kPoolVals> o;
+  std::array<std::string, 1 + kTodays + kPoolVals> o;
+  std::copy(std::begin(kTodayTip), std::end(kTodayTip), o.begin() + 1);
   o[0] = "名 = 篮子名\n"
          "• 算法: 切片名 + .等 (等权) / .加 (总市值加权)\n"
          "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
@@ -1911,7 +1950,7 @@ const std::array<std::string, 1 + kPoolVals> kValTip = [] {
                   "• 显示: 分位百分比, 底色 = 组内同口名次 (便宜绿 → 贵红); 绝对值看主图 Band 图例\n"
                   "• 适用: 指数 / 行业 / 概念; 随区间末日, 估值史不满 1 年 → -",
                   kVal[b].name, kVal[b].inv, num[b], kVal[b].name, num[b], neg[b], kVal[b].name);
-    o[static_cast<size_t>(b + 1)] = s;
+    o[static_cast<size_t>(1 + kTodays + b)] = s;
   }
   return o;
 }();
@@ -1939,55 +1978,73 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (与 NAV / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中行恒列\n"
-        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 色序 (相似的挨着)");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
   const int g = ui.cat[kPageVal];
   const std::vector<PortfolioRow> &rs = d.nav[g];
+  const size_t n = rs.size();
+  std::vector<std::array<double, 4>> bt(n);
   std::vector<size_t> order;
-  for (size_t r = 0; r < rs.size(); ++r)
-    if (vs == PortfolioAt{g, r} || passes(ui.filter[g], basket_today(ui.basket.feed, rs[r])))
+  for (size_t r = 0; r < n; ++r) {
+    bt[r] = basket_today(ui.basket.feed, rs[r]);
+    if (vs == PortfolioAt{g, r} || passes(ui.filter[g], bt[r]))
       order.push_back(r);
-  const float top_x = std::max(bar_x, filter_bar(ui.filter[g], order.size(), rs.size()));
-  if (!ImGui::BeginTable("##pf_val_tbl", 1 + kPoolVals,
+  }
+  const float top_x = std::max(bar_x, filter_bar(ui.filter[g], order.size(), n));
+  constexpr int kCols = kTodays + kPoolVals; // 名之后: 当日四列 + 各口
+  if (!ImGui::BeginTable("##pf_val_tbl", 1 + kCols,
                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
                              ImGuiTableFlags_SortTristate))
     return;
   ImGui::TableSetupScrollFreeze(0, 1);
   ImGui::TableSetupColumn("名", ImGuiTableColumnFlags_WidthStretch);
-  float cw[kPoolVals]; // 本帧最宽 (表头起)
-  for (int b = 0; b < kPoolVals; ++b) {
-    ImGui::TableSetupColumn(kVal[b].name);
-    cw[b] = ImGui::CalcTextSize(kVal[b].name).x;
+  float cw[kCols]; // [列 − 1] 本帧最宽 (表头起)
+  for (int k = 0; k < kCols; ++k) {
+    const char *name = k < kTodays ? kTodayName[k] : kVal[k - kTodays].name;
+    ImGui::TableSetupColumn(name);
+    cw[k] = ImGui::CalcTextSize(name).x;
   }
-  headers_row(kValTip.data(), 1 + kPoolVals);
-  std::vector<std::array<NumCell, kPoolVals>> tc(rs.size()); // 只填列出的行
-  for (const size_t r : order)
-    for (int b = 0; b < kPoolVals; ++b) {
-      const double p = v.cell[g][r][b].pct;
-      NumCell &c = tc[r][static_cast<size_t>(b)];
-      c = std::isfinite(p) ? num_cell(ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.0f%%", p) : num_none();
-      cw[b] = std::max(cw[b], c.w);
+  headers_row(kValTip.data(), 1 + kCols);
+  std::vector<std::array<double, kTodays>> tv(n); // 只填列出的行
+  std::vector<std::array<NumCell, kCols>> tc(n);
+  for (const size_t r : order) {
+    tv[r] = today_vals(bt[r]);
+    for (int k = 0; k < kCols; ++k) {
+      NumCell &c = tc[r][static_cast<size_t>(k)];
+      if (k < kTodays) {
+        c = today_cell(k, tv[r][static_cast<size_t>(k)]);
+      } else {
+        const double p = v.cell[g][r][k - kTodays].pct;
+        c = std::isfinite(p) ? num_cell(ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.0f%%", p) : num_none();
+      }
+      cw[k] = std::max(cw[k], c.w);
     }
-  sort_rows(order, rs, [&](size_t r, int c) { return v.cell[g][r][c - 1].pct; });
+  }
+  sort_rows(order, rs, [&](size_t r, int c) { return c <= kTodays ? tv[r][static_cast<size_t>(c - 1)] : v.cell[g][r][c - 1 - kTodays].pct; });
   for (const size_t r : order) {
     const PortfolioRow &s = rs[r];
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
+    ImGui::PushStyleColor(ImGuiCol_Text, nav_color(d, g, r, kTrade));
     if (ImGui::Selectable((s.cn + "##pfv_" + s.id).c_str(), vs == PortfolioAt{g, r}, ImGuiSelectableFlags_SpanAllColumns))
       ui.val_id = s.id;
+    ImGui::PopStyleColor();
+    const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 1 : -1; // 行 Selectable 跨全列: 悬停的数值列
     name_tip(s.hover);
-    for (int b = 0; b < kPoolVals; ++b) {
-      ImGui::TableSetColumnIndex(1 + b);
-      if (const double rk = v.cell[g][r][b].rank; std::isfinite(rk))
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(rk, kValCellA)));
-      draw_cell(tc[r][static_cast<size_t>(b)], cw[b]);
+    for (int k = 0; k < kCols; ++k) {
+      ImGui::TableSetColumnIndex(1 + k);
+      if (k >= kTodays)
+        if (const double rk = v.cell[g][r][k - kTodays].rank; std::isfinite(rk))
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(rk, kValCellA)));
+      draw_cell(tc[r][static_cast<size_t>(k)], cw[k]);
     }
+    today_tip(hov, bt[r]);
   }
   ui.legend_w[kPageVal] = legend_width(top_x, end_table());
 }
 
 // ---- FLOW 右图例: 类别条 (指数 / 行业 / 概念) + 过滤条; 表 = 该组一行一篮子, 点行 = 选中 / 取消 (与 NAV 同一份选中, 左图画选中的).
-//      列 = 中文名 (线色) | 日轴各日 (MM-DD) 净流入占当日成交额 | 档内合计净流入 (亿) | 合计占比; 按正负着色, 悬停格看净流入 / 成交额; 表头点排序 (组内) ----
-// 表头悬停说明: 名 / 一日 (表头 = 该日 MM-DD, 拼在说明前) / 合计两列
+//      列 = 中文名 (线色) | 当日四列 | 日轴各日 (MM-DD) 净流入占当日成交额 | 档内合计净流入 (亿) | 合计占比; 按正负着色, 悬停格看净流入 / 成交额; 表头点排序 (组内) ----
+// 表头悬停说明: 名 / 一日 (表头 = 该日 MM-DD, 拼在说明前) / 合计两列 (当日四列 = kTodayTip)
 const std::string kFlowNameTip = "名 = 篮子名\n"
                                  "• 算法: 切片名 + .等 (等权) / .加 (总市值加权); 资金流不分权重, 同切片两行同成分即同值\n"
                                  "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
@@ -2021,14 +2078,17 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
         "• 指数 = 各池 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级; 概念 = 东财题材概念 (全A 内切)\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (与 NAV / VAL 页同一份): 按只数 / 总市值 / |当日资金流入| 筛本组的行, 已画的行恒列\n"
-        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 色序 (相似的挨着)");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
   const int g = ui.cat[kPageFlow];
   const std::vector<PortfolioRow> &rs = d.nav[g];
-  const size_t n = rs.size(), nd = days.size(), nc = nd + 2; // 名之后: 各日 + 合计两列
+  const size_t n = rs.size(), nd = days.size(), nf = nd + 2, nc = kTodays + nf; // 名之后: 当日四列 + 各日 + 合计两列
+  std::vector<std::array<double, 4>> bt(n);
   std::vector<size_t> order;
-  for (size_t r = 0; r < n; ++r)
-    if (shown(ui, rs[r]) || passes(ui.filter[g], basket_today(ui.basket.feed, rs[r])))
+  for (size_t r = 0; r < n; ++r) {
+    bt[r] = basket_today(ui.basket.feed, rs[r]);
+    if (shown(ui, rs[r]) || passes(ui.filter[g], bt[r]))
       order.push_back(r);
+  }
   const float top_x = std::max(bar_x, filter_bar(ui.filter[g], order.size(), n));
   ImGui::PushID(static_cast<int>(nd)); // 列数随档位
   if (!ImGui::BeginTable("##pf_flow_tbl", static_cast<int>(1 + nc),
@@ -2041,28 +2101,34 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
   ImGui::TableSetupColumn("名", ImGuiTableColumnFlags_WidthStretch);
   std::vector<std::string> names(nc), tips(1 + nc);
   tips[0] = kFlowNameTip;
+  for (int k = 0; k < kTodays; ++k)
+    names[static_cast<size_t>(k)] = kTodayName[k], tips[static_cast<size_t>(1 + k)] = kTodayTip[k];
   for (size_t k = 0; k < nd; ++k) {
     char s[16];
     std::snprintf(s, sizeof(s), "%02d-%02d", days[k] / 100 % 100, days[k] % 100);
-    names[k] = s, tips[1 + k] = s + kFlowDayTip;
+    names[kTodays + k] = s, tips[1 + kTodays + k] = s + kFlowDayTip;
   }
-  names[nd] = "净流入", names[nd + 1] = "占比";
-  tips[1 + nd] = kFlowSumTip[0], tips[2 + nd] = kFlowSumTip[1];
+  names[kTodays + nd] = "净流入", names[kTodays + nd + 1] = "占比";
+  tips[1 + kTodays + nd] = kFlowSumTip[0], tips[2 + kTodays + nd] = kFlowSumTip[1];
   std::vector<float> cw(nc); // 本帧最宽 (表头起)
   for (size_t k = 0; k < nc; ++k) {
     ImGui::TableSetupColumn(names[k].c_str());
     cw[k] = ImGui::CalcTextSize(names[k].c_str()).x;
   }
   headers_row(tips.data(), static_cast<int>(1 + nc));
-  // [行][列]: 各日 + 合计的 净流入 / 成交额 (只填列出的行); 格值 = 占比 (合计净流入列 = 金额 [亿元])
+  // [行][各日 + 合计两列]: 净流入 / 成交额 (只填列出的行); 格值 = 占比 (合计净流入列 = 金额 [亿元])
   std::vector<std::vector<Database::Flow>> fl(n);
+  std::vector<std::array<double, kTodays>> tv(n);
   std::vector<std::vector<NumCell>> tc(n);
-  const auto value = [&](size_t r, size_t k) {
-    const Database::Flow &x = fl[r][k];
-    return k == nd ? (x.amount > 0 ? x.net / 1e8 : kNaN) : x.amount > 0 ? x.net / x.amount
-                                                                        : kNaN;
+  const auto value = [&](size_t r, size_t k) { // k = 名之后的列
+    if (k < kTodays)
+      return tv[r][k];
+    const Database::Flow &x = fl[r][k - kTodays];
+    return k - kTodays == nd ? (x.amount > 0 ? x.net / 1e8 : kNaN) : x.amount > 0 ? x.net / x.amount
+                                                                                  : kNaN;
   };
   for (const size_t r : order) {
+    tv[r] = today_vals(bt[r]);
     std::vector<Database::Flow> &x = fl[r];
     assert(rs[r].basket >= 0);
     x = Database::FlowOf(ui.basket, static_cast<size_t>(rs[r].basket), days);
@@ -2075,8 +2141,10 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
     for (size_t k = 0; k < nc; ++k) {
       const double y = value(r, k);
       NumCell &c = tc[r][k];
-      c = !std::isfinite(y) ? num_none() : k == nd ? num_cell(tint(y, 0.0), "%s", yi_text(y, true).c_str())
-                                                   : num_cell(tint(y, 0.0), "%+.2f%%", 100.0 * y);
+      c = k < kTodays         ? today_cell(static_cast<int>(k), y)
+          : !std::isfinite(y) ? num_none()
+          : k - kTodays == nd ? num_cell(tint(y, 0.0), "%s", yi_text(y, true).c_str())
+                              : num_cell(tint(y, 0.0), "%+.2f%%", 100.0 * y);
       cw[k] = std::max(cw[k], c.w);
     }
   }
@@ -2100,8 +2168,9 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
       ImGui::TableSetColumnIndex(static_cast<int>(1 + k));
       draw_cell(tc[r][k], cw[k]);
     }
-    if (hov >= 0 && fl[r][static_cast<size_t>(hov)].amount > 0) {
-      const Database::Flow &x = fl[r][static_cast<size_t>(hov)];
+    today_tip(hov, bt[r]);
+    if (const int f = hov - kTodays; f >= 0 && fl[r][static_cast<size_t>(f)].amount > 0) {
+      const Database::Flow &x = fl[r][static_cast<size_t>(f)];
       tip("净流入 %s / 成交额 %s = %+.2f%%", yi_text(x.net / 1e8, true).c_str(), yi_text(x.amount / 1e8).c_str(), 100.0 * x.net / x.amount);
     }
   }
