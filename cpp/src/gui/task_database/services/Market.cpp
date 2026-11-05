@@ -31,7 +31,7 @@ void Market::start(const SharedData &data) {
       trading.push_back(d.date);
   quote = std::make_unique<QuoteService>(pool_axis(std::move(ids)), data.assetinfo.bar1m_end, std::move(trading));
   stock = std::make_unique<StockHistory>();
-  basket = std::make_unique<BasketHistory>(*quote);
+  basket = std::make_unique<BasketHistory>(data.config, *quote);
 }
 
 } // namespace GUI::Database

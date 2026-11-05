@@ -114,53 +114,79 @@ void QuoteService::select(uint32_t id) {
 
 QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
-  return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_, stock_ver_, basket_ver_};
+  return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_, ver_};
 }
 
 void QuoteService::bind(Members m, std::vector<double> level) {
-  std::lock_guard<std::mutex> lock(mu_);
   assert(m.assets() == axis_.size() && !level.empty());
-  members_ = std::move(m);
-  level_ = std::move(level);
-  fold_ = Fold(level_.size());
-  baskets_.assign(level_.size(), Day{});
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    basis_ = std::make_shared<const Basis>(Basis{std::move(m), std::move(level)});
+  }
   fold();
 }
 
-void QuoteService::today(uint32_t id, Day &out, sina::Quote &q) const {
-  const size_t i = axis_.sub_of(id);
-  out.candle.date = 0;
-  if (i == axis_.size()) {
-    q = {};
-    return;
-  }
+void QuoteService::today(Side s, std::span<const uint32_t> keys, std::span<Day> out) const {
+  assert(keys.size() == out.size());
   std::lock_guard<std::mutex> lock(mu_);
-  q = last_[i];
-  if (!traded(q))
-    return;
-  out.prev = prev_;
-  out.candle = {candle_of(q), date_, q.last_close};
-  out.bars = tracks_[i].bars;
-  out.bars.date = date_;
+  for (size_t k = 0; k < keys.size(); ++k) {
+    Day &o = out[k];
+    o.candle.date = 0;
+    if (s == kBasket) {
+      if (keys[k] < baskets_.size())
+        o = baskets_[keys[k]];
+      continue;
+    }
+    const size_t i = axis_.sub_of(keys[k]);
+    if (i == axis_.size() || !traded(last_[i]))
+      continue;
+    o.prev = prev_;
+    o.candle = {candle_of(last_[i]), date_, last_[i].last_close};
+    o.bars = tracks_[i].bars;
+    o.bars.date = date_;
+  }
 }
 
-void QuoteService::today(std::span<Day> out) const {
+sina::Quote QuoteService::book(uint32_t id) const {
+  const size_t i = axis_.sub_of(id);
+  if (i == axis_.size())
+    return {};
   std::lock_guard<std::mutex> lock(mu_);
-  assert(out.size() == baskets_.size());
-  std::copy(baskets_.begin(), baskets_.end(), out.begin());
+  return last_[i];
 }
 
 void QuoteService::fold() {
-  ++basket_ver_;
-  if (level_.empty() || date_ == 0)
-    return;
-  fold_.open(std::max(live_slot(), sec_slot(sec_)) + 1);
-  for (uint32_t i = 0; i < syms_.size(); ++i) {
-    const sina::Quote &q = last_[i];
-    const Cell k = candle_of(q);
-    fold_.add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, members_.of(i));
+  std::lock_guard<std::mutex> hold(fold_mu_);
+  std::shared_ptr<const Basis> b;
+  misc::Ymd date, prev;
+  int slots;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!basis_ || date_ == 0)
+      return;
+    b = basis_, date = date_, prev = prev_;
+    slots = std::max(live_slot(), sec_slot(sec_)) + 1;
   }
-  fold_.finish(date_, prev_, level_, baskets_);
+  Fold f(b->level.size());
+  f.open(slots);
+  const uint32_t n = static_cast<uint32_t>(syms_.size());
+  for (uint32_t i0 = 0; i0 < n; i0 += kFoldChunk) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (date_ != date)
+      return;
+    for (uint32_t i = i0, i1 = std::min(i0 + kFoldChunk, n); i < i1; ++i) {
+      const sina::Quote &q = last_[i];
+      const Cell k = candle_of(q);
+      f.add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, b->members.of(i));
+    }
+  }
+  std::vector<Day> out(b->level.size());
+  f.finish(date, prev, b->level, out);
+  std::lock_guard<std::mutex> lock(mu_);
+  if (date_ != date || basis_ != b)
+    return;
+  baskets_ = std::move(out);
+  ++ver_[kBasket];
 }
 
 // ---------------------------------------------------------------------------
@@ -213,8 +239,7 @@ void QuoteService::poll() {
         sec_ = std::max(sec_, q.sec);
         changed_ = tracks_[i].absorb(q, gap) || changed_;
       }
-      ++stock_ver_;
-      fold();
+      ++ver_[kStock];
       schedule();
       if (changed_ && t0 - saved >= std::chrono::seconds(kSave)) {
         blob = serialize();
@@ -223,6 +248,7 @@ void QuoteService::poll() {
       }
     }
     cv_.notify_all();
+    fold();
     if (!blob.empty()) {
       misc::atomic_write(::config::SINA_CACHE, reinterpret_cast<const char *>(blob.data()), blob.size());
       blob.clear();
@@ -333,7 +359,7 @@ void QuoteService::fill() {
     t.fill = Fill::Idle;
     t.merge(lo, settled(), date_, bars);
     ++fetched_;
-    ++stock_ver_;
+    ++ver_[kStock];
     changed_ = true;
   }
 }

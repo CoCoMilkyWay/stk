@@ -47,7 +47,7 @@ std::map<std::string, std::pair<std::int64_t, std::int64_t>> group_n(const std::
   return out;
 }
 
-// 表当前冻结的月数 (覆盖率分母; Daily: 含冻结日的月; 与 audit::plan 同一来源)
+// 表当前冻结的月数 (覆盖率分母; Month / Daily 同为关月; 与 audit::plan 同一来源)
 std::size_t frozen_months(const Spec &s, const Round &r) {
   std::set<misc::Ym> months;
   for (const Slot &sl : fundamental::frozen(s, r))

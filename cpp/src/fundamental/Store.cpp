@@ -99,12 +99,10 @@ Window window(const Spec &s, Ym m, const Now &now) {
   return {std::max(misc::first_day(m), start), closed(m, now.today) ? misc::last_day(m) : std::min(misc::last_day(m), hz)};
 }
 
-// sh = 该分片 (nullptr = 盘上没有); Month: m = 分片月, Meta: m = 0
+// sh = 该分片 (nullptr = 盘上没有); Month: m = 分片月, Daily: m = 该日所属月, Meta: m = 0
 State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
   if (!sh)
     return State::Missing;
-  if (s.shape == Shape::Daily)
-    return State::Frozen; // 只拉到 horizon (昨天) ⇒ 落盘即整日
   if (s.shape == Shape::Meta) {
     const Ymd hz = horizon(s.avail_hour, now);
     const bool fresh = s.vd.empty() ? sh->mtime >= local_at(hz, s.avail_hour) : mark(s, *sh) >= hz;
@@ -112,6 +110,8 @@ State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
   }
   if (!closed(m, now.today))
     return State::Open;
+  if (s.shape == Shape::Daily)
+    return State::Frozen; // 日文件只拉到 horizon (昨天) ⇒ 落盘即整日, 无半月文件
   // 冻结 = 写盘日 ≥ 月末 + lookback: 写盘时该月已出 lookback 窗口, "整月行 + 全部回填" 才都已入盘
   return write_date(*sh) >= misc::add_days(misc::last_day(m), ::config::PIPELINE_LOOKBACK_DAYS) ? State::Frozen
                                                                                                 : State::Stale;
@@ -323,8 +323,8 @@ std::vector<Slot> frozen(const Spec &s, const Round &r) {
 std::string slot_key(const Spec &s, const Slot &sl) { return group_key(slot_grain(s), sl.w.lo); }
 
 std::optional<Task> todo(const Spec &s, const Slot &sl) {
-  if (sl.st == State::Frozen)
-    return std::nullopt;
+  if (sl.st == State::Frozen || (sl.st == State::Open && s.shape == Shape::Daily))
+    return std::nullopt; // Daily 开放日: 整日文件已入盘
   Task t = whole(s, sl);
   const Ymd w = sl.st == State::Open ? mark(s, *sl.sh) : 0; // 水位; 0 = 整段覆盖 (Missing / Stale / 0 行文件)
   if (w != 0) {

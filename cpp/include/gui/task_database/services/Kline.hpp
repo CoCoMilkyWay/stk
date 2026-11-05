@@ -1,9 +1,11 @@
-// Assets 行情公共件: 个股 / 篮子 × 历史 (Kline) / 当日 (Day) 四路同一套类型 + 槽代数 + 篮子合成核
+// 行情公共件: 个股 / 篮子 (Side) × 历史 (Kline) / 当日 (Day) 四路同一套类型 + 槽代数 + 篮子合成核
 //
-//            历史 (落盘, 后台读一次) → Kline                         当日 (新浪, 快照线程每轮) → Day
-//   个股     StockHistory: bar1d 行 + bar1m 行 (Bar1mDay)            QuoteService::today(id): 本只的根
-//   篮子     BasketHistory: all.bar L_1day 行 + L_1min 行 → Fold     QuoteService::today(篮子): bind 的成员表 → Fold
+//            历史 (后台读, 带缓存) → Kline                           当日 (新浪, 快照线程每轮) → Day
+//   个股     StockHistory: bar1d 行 + bar1m 行 (Bar1mDay)            QuoteService::today(kStock): 本只的根
+//   篮子     BasketHistory: all.bar L_1day 行 + L_1min 行 → Fold     QuoteService::today(kBasket): bind 的成员表 → Fold
 //   个股 / 篮子只差 Fold 一步, 历史 / 当日只差源.
+// 键: 个股 = 全局 id (AssetAxis 下标), 篮子 = basket_line (shared/Basket.hpp). 两路历史同一个请求 (键集) / 发布 (Tape),
+//   当日同一个 today (键集 → Day), 版本各一个 (QuoteStatus::ver).
 //
 // 分钟槽: 一交易日 kSlots = 240 根, 槽 s 的标号 (bar 结束分钟) = 09:31 … 11:30, 13:01 … 15:00 (新浪 / bar1m / L_1min 同一标号);
 //   开盘集合竞价并入首根. 时间坐标 → 槽只经槽代数 (label_slot / sec_slot / row_slot); 各源按时间序 add ⇒ 竞价先于首根.
@@ -111,11 +113,26 @@ struct Day {
 
 inline bool joins(const Kline &k, const Day &d) { return d.candle.date != 0 && d.prev == k.last; }
 
-// 历史一路的发布 (两个历史服务同形)
-template <class T>
+// 标的两种
+enum Side : int { kStock,
+                  kBasket };
+inline constexpr int kSides = 2;
+template <class X>
+using PerSide = std::array<X, kSides>;
+
+// 一路历史的请求 / 发布 (两种同形): 键集 → 各键的历史, 同序
+struct HistoryRequest {
+  uint32_t gen = 0;
+  std::vector<uint32_t> keys;
+};
+struct Tape {
+  std::vector<uint32_t> keys;
+  std::vector<Kline> list;    // [keys]; 空 = 源未就绪
+  const char *lack = nullptr; // 源未就绪的原因 (只篮子有: all.bar 未建 / 落盘不足 2 日)
+};
 struct HistoryPub : Published {
   uint32_t gen = 0;
-  std::shared_ptr<const T> data;
+  std::shared_ptr<const Tape> data;
 };
 
 // 篮子成员表, 资产主序 (CSR): 资产 a 的所属篮子 = of(a); 下标 a = 源的轴 (all.bar 库轴 / 新浪全市场)

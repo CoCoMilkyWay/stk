@@ -1,18 +1,16 @@
-// 行情图, 数据 = 历史 Kline + 当日 Day (见 Kline.hpp)
-//   个股 = Assets 右栏: StockHistory + QuoteService::today(id), 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
-//   篮子 = Portfolio NAV 日内栏: BasketHistory + QuoteService::today(篮子), 多篮子叠加收盘线 (对首日前收的涨跌幅, 刻度区全空: 横网格涨跌幅小字内标在右壁; 不画量, 读数看十字光标);
-//     另给 NAV 表的近况三列 (Recent). 以下为个股图:
+// 行情图, 数据 = 历史 Kline + 当日 Day (见 Kline.hpp); 个股 / 篮子同一个 Feed + Sync (键集 → 历史发布 + 当日)
+//   个股 = Assets 右栏: 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
+//   篮子 = Portfolio NAV 日内栏: 键集 = 全部篮子线, 多篮子叠加收盘线 (对首日前收的涨跌幅, 刻度区全空: 横网格涨跌幅小字内标在右壁; 不画量, 读数看十字光标);
+//   近况 (Recent): 键集里一个标的的近况三列 (Portfolio NAV 表). 以下为个股图:
 //   日内价 = 高 / 低单调插值围出的带, 按涨跌染色; 日线价 = 蜡烛 + 均线, 默认 10 年档; 悬停提示只在量图
 //     十字光标随鼠标: 竖线吸附最近一根 (底轴标时刻), 横线在鼠标所在格 (价图左价 / 右涨跌幅, 量图标量 / 额)
 //   两图各一份视野: 换标的 / 换档 / 根数变 / 双击 → 复位到该档窗口; 左键拖动 = 框选 x 段放大; y 恒随视野内的根贴合
 //     日线滚轮 = 只缩放 x, 右端恒锚在最新一根; 日内不滚. 现价线左标价 / 右标当日涨跌幅, 日内另有前收线 (左价 / 右 0%)
 //   版面恒定: 标题 / 注恒两行, 各轴刻度区按最大标签框定尺 (右轴无基准也留, 标签随出随没不撑), 图框只随窗口变; 换标的 = 新历史到齐才整体换上, 其间照画旧的
-// 每帧先 Sync (发请求 / 收发布 / 当日版本变了才拷), 再画; 个股 / 篮子同一个 Feed + pull
+// 每帧先 Sync (键集变 → 发请求 / 收发布 / 当日版本变了才拷), 再画
 #pragma once
 
 #include "gui/task_database/services/Market.hpp"
-#include "shared/Asset.hpp"
-#include "shared/AssetInfo.hpp"
 
 #include <cstdint>
 #include <limits>
@@ -20,8 +18,6 @@
 #include <span>
 #include <string>
 #include <vector>
-
-struct Config;
 
 namespace GUI::Database {
 
@@ -42,39 +38,30 @@ struct ChartState {
   QuotesView iv, dv; // 日内 / 日线 视野
 };
 
-// 历史发布 + 当日版本 (个股 / 篮子同形)
-template <class T>
+// 一路行情的 UI 端 (个股 / 篮子同形): 键集 → 历史发布 + 当日
 struct Feed {
-  uint32_t gen = 0;              // 末次历史请求代
-  uint32_t shown = 0;            // 在画的发布的请求代 (视野复位键)
-  std::shared_ptr<const T> data; // 在画的历史发布 (末次请求的到齐才换)
-  uint64_t ver = ~0ull;          // 已拷的当日版本 (QuoteStatus); ~0 = 待拷
+  std::vector<uint32_t> want;       // 末次请求的键集
+  bool reload = false;              // 下帧照原键集重发
+  uint32_t gen = 0;                 // 末次请求代
+  uint32_t shown = 0;               // 在画的发布的请求代 (视野复位键)
+  std::shared_ptr<const Tape> data; // 在画的历史 (末次请求的到齐才换; keys = 在画的键集)
+  std::vector<Day> today;           // [data->keys] 当日
+  uint64_t ver = ~0ull;             // 已拷的当日版本 (QuoteStatus::ver); ~0 = 待拷
 };
-
-struct StockPick {
-  std::string code;  // "600000.SH"; 空 = 未选
-  std::string title; // 简称 + 代码
-  uint32_t id = ~0u; // 全局 id
-};
+// 每帧: 键集变 / reload → 发请求 (个股另 select 给新浪); 末次请求的发布到齐 → 整体换上; 当日版本变 → 拷
+void Sync(Market &mk, Side s, std::span<const uint32_t> want, Feed &f);
 
 struct StockState {
-  StockPick want;    // 末次请求的标的
-  StockPick shown;   // 在画的标的 (= feed.data 的标的)
-  Feed<Kline> feed;  // StockHistory
-  Day today;         // shown 的当日
-  sina::Quote quote; // shown 的最新快照
+  Feed feed; // 键集 = {选中标的} / 空
   ChartState chart;
 };
 
 struct BasketState {
-  bool want = true;       // 待发请求 (首次进页 / 重载)
-  bool missing = false;   // all Bar 库未建
-  Feed<Baskets> feed;     // BasketHistory
-  std::vector<Day> today; // [篮子] 当日
-  int intraday = 0;       // 日内档 (日内 / 2日 / 3日 / 4日)
+  Feed feed;        // 键集 = 全部篮子线 (下标 = basket_line)
+  int intraday = 0; // 日内档 (日内 / 2日 / 3日 / 4日)
 };
 
-// 日内叠加的一条: 篮子 (Baskets::list 下标 = basket_line) + 线色 (ImU32)
+// 日内叠加的一条: 篮子线 basket_line + 线色 (ImU32)
 struct BasketPick {
   size_t b;
   uint32_t col;
@@ -90,15 +77,15 @@ struct Recent {
 struct Mark {
   double close, ref, amount;
 };
-// 近况核 (篮子 / 净值线同一份): m = 新 → 旧, 至多用前 6 日
+inline constexpr size_t kMarks = 6;
+// 近况核 (标的 / 净值线同一份): m = 新 → 旧, 至多用前 kMarks 日
 Recent RecentOf(std::span<const Mark> m);
+// 键集第 k 个标的的近况: 当日接上取当日, 再接日线末根起; 历史未到 / 源未就绪 → 全 NaN
+Recent RecentOf(const Feed &f, size_t k);
 
-void SyncStock(Market &mk, const AssetItem *asset, const StockInfo *info, StockState &st);
-void SyncBaskets(Market &mk, const Config &cfg, BasketState &st);
-
-void RenderStockPanel(const Market &mk, StockState &st);
-// picks 各篮子的日内叠加图, 占满当前区域; 库未建 / 读取中 → 提示
+// title = 在画标的的标题 (简称 + 代码)
+void RenderStockPanel(const Market &mk, StockState &st, const std::string &title);
+// picks 各篮子的日内叠加图, 占满当前区域; 源未就绪 / 读取中 → 提示
 void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks);
-Recent BasketRecent(const BasketState &st, size_t b); // 当日接上取当日, 否则日线末根起; 历史未到 → 全 NaN
 
 } // namespace GUI::Database

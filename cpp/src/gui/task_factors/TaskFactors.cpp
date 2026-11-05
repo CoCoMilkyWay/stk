@@ -12,7 +12,7 @@
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_database/services/Market.hpp"
-#include "gui/task_database/ui/QuotesPanel.hpp" // SyncBaskets
+#include "gui/task_database/ui/QuotesPanel.hpp" // Sync
 #include "gui/task_factors/services/InspectService.hpp"
 #include "gui/task_factors/services/KlineService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
@@ -23,6 +23,7 @@
 #include "gui/task_factors/ui/TabInspect.hpp"
 #include "gui/task_factors/ui/TabOperators.hpp"
 #include "gui/task_factors/ui/TabPortfolio.hpp"
+#include "shared/Basket.hpp"     // basket_count (Portfolio 篮子键集)
 #include "shared/FeatureLib.hpp" // feature_pools (页顶池选择)
 #include "shared/SharedData.hpp" // config.factor_dir / 池 / 日期区间, feature.metadata, asset.items
 
@@ -33,6 +34,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -464,7 +466,12 @@ TaskHandle CreateFactorsTask(std::shared_ptr<Database::Market> market) {
       const Database::Market *mk = nullptr;
       if (data.taskstate.database.all_json_ready) {
         state->market->start(data);
-        Database::SyncBaskets(*state->market, data.config, state->portfolio_ui.basket);
+        static const std::vector<uint32_t> lines = [] { // 全部篮子线
+          std::vector<uint32_t> k(basket_count());
+          std::iota(k.begin(), k.end(), 0u);
+          return k;
+        }();
+        Database::Sync(*state->market, Database::kBasket, lines, state->portfolio_ui.basket.feed);
         mk = state->market.get();
       }
       const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.fixed_impact, mk);

@@ -2,33 +2,46 @@
 
 #include "features/Bar1mDay.hpp"
 #include "fundamental/Scan.hpp"
+#include "shared/AssetAxis.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace GUI::Database {
 
-bool StockHistory::run(StockRequest &req) {
+bool StockHistory::run(HistoryRequest &req) {
   static const fundamental::Spec &kDaily = fundamental::spec("cn_stock_real_bar1d");
   static const fundamental::Spec &kMinute = fundamental::spec("bar1m");
   static const std::vector<std::string> kCols = {"open", "high", "low", "close", "volume", "amount", "pre_close"};
+  assert(req.keys.size() <= kKeep);
 
   const fundamental::Catalog cat;
-  fundamental::Ids ids(fundamental::Ids::Cover::Part);
-  const uint32_t id = ids.add(req.code);
   const std::vector<fundamental::Shard> &months = cat.shards(kDaily.name), &days = cat.shards(kMinute.name);
   assert(!months.empty() && !days.empty() && "基本面未同步日线 / 分钟");
-
-  auto out = std::make_shared<Kline>();
   misc::Ymd mark = 0; // 日线水位: 末个非空月分片 (0 行月也落文件)
   for (size_t k = months.size(); k-- > 0 && mark == 0;)
     mark = fundamental::mark(kDaily, months[k]);
-  out->last = std::min(mark, days.back().day);
+  const misc::Ymd last = std::min(mark, days.back().day);
+
+  const auto cached = [&](uint32_t id) {
+    return std::find_if(keep_.begin(), keep_.end(), [&](const auto &e) { return e.first == id && e.second.last == last; });
+  };
+  fundamental::Ids ids(fundamental::Ids::Cover::Part);
+  std::vector<uint32_t> miss; // [ids 下标] 全局 id
+  for (const uint32_t id : req.keys)
+    if (cached(id) == keep_.end() && std::find(miss.begin(), miss.end(), id) == miss.end()) {
+      [[maybe_unused]] const uint32_t j = ids.add(asset_axis().code(id));
+      assert(j == miss.size());
+      miss.push_back(id);
+    }
 
   // 一个任务 = 一个分片 (月 / 分钟日), 各写各的格; 暂存按线程
-  const size_t nd = std::min(days.size(), kMinuteDays), T = static_cast<size_t>(pool_.threads());
-  std::vector<std::vector<Candle>> month(months.size());
-  std::vector<Bars> minute(nd);
+  const size_t nk = miss.size(), nd = std::min(days.size(), kMinuteDays), T = static_cast<size_t>(pool_.threads());
+  std::vector<std::vector<Candle>> month(months.size() * nk); // [月][键]
+  std::vector<Bars> minute(nd * nk);                          // [日][键]
   std::vector<fundamental::Scratch> xs(T);
   std::vector<Bar1mDay> bd(T);
   const auto read_month = [&](size_t k, size_t tid) {
@@ -36,26 +49,29 @@ bool StockHistory::run(StockRequest &req) {
     misc::pq::Col c[7];
     for (size_t j = 0; j < kCols.size(); ++j)
       c[j] = r.col(kCols[j]);
-    r.each([&](std::int64_t i, std::uint32_t, misc::Ymd d) {
+    r.each([&](std::int64_t i, std::uint32_t j, misc::Ymd d) {
       const float px = c[3].f32(i), vol = c[4].f32(i);
       if (vol > 0 && px > 0)
-        month[k].push_back({cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), px, vol, c[5].f32(i)), d, c[6].f32(i)});
+        month[k * nk + j].push_back({cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), px, vol, c[5].f32(i)), d, c[6].f32(i)});
     });
   };
-  const auto read_minute = [&](size_t j, size_t tid) {
+  const auto read_minute = [&](size_t q, size_t tid) {
     Bar1mDay &day = bd[tid];
-    day.load(cat, ids, xs[tid], days[days.size() - nd + j].day);
-    Bars &b = minute[j];
-    b.date = day.date;
-    if (const Bar1m *m = day.asset(id))
-      for (size_t t = 0; t < TRADE_MINUTES_PER_DAY; ++t)
-        if (m[t].volume > 0 && m[t].close > 0)
-          b.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, m[t].volume, m[t].amount));
+    day.load(cat, ids, xs[tid], days[days.size() - nd + q].day);
+    for (size_t j = 0; j < nk; ++j) {
+      Bars &b = minute[q * nk + j];
+      b.date = day.date;
+      if (const Bar1m *m = day.asset(j))
+        for (size_t t = 0; t < TRADE_MINUTES_PER_DAY; ++t)
+          if (m[t].volume > 0 && m[t].close > 0)
+            b.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, m[t].volume, m[t].amount));
+    }
   };
 
-  // 月分片自末往前一批 2T 片并行读, 本只日根够 kDailyDays 即停; 分钟日并进首批
-  size_t lo = months.size(), got = 0; // [lo, end) 已读
-  for (size_t extra = nd; lo > 0 && got < kDailyDays; extra = 0) {
+  // 月分片自末往前一批 2T 片并行读, 每只日根都够 kDailyDays 即停; 分钟日并进首批
+  std::vector<size_t> got(nk, 0);
+  size_t lo = months.size(); // [lo, end) 已读
+  for (size_t extra = nd; nk > 0 && lo > 0 && *std::min_element(got.begin(), got.end()) < kDailyDays; extra = 0) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
     const size_t hi = lo, n = std::min(lo, 2 * T);
@@ -65,18 +81,36 @@ bool StockHistory::run(StockRequest &req) {
       u < n ? read_month(hi - 1 - u, static_cast<size_t>(tid)) : read_minute(u - n, static_cast<size_t>(tid));
     });
     for (size_t k = lo; k < hi; ++k)
-      got += month[k].size();
+      for (size_t j = 0; j < nk; ++j)
+        got[j] += month[k * nk + j].size();
   }
 
-  out->daily.reserve(got);
-  for (size_t k = lo; k < months.size(); ++k)
-    out->daily.insert(out->daily.end(), month[k].begin(), month[k].end());
-  std::sort(out->daily.begin(), out->daily.end(), [](const Candle &a, const Candle &b) { return a.date < b.date; });
-  if (out->daily.size() > kDailyDays)
-    out->daily.erase(out->daily.begin(), out->daily.end() - kDailyDays);
-  for (const Bars &b : minute)
-    if (b.has.any())
-      out->minutes.push_back(b);
+  for (size_t j = 0; j < nk; ++j) {
+    Kline kl;
+    kl.last = last;
+    kl.daily.reserve(got[j]);
+    for (size_t k = lo; k < months.size(); ++k)
+      kl.daily.insert(kl.daily.end(), month[k * nk + j].begin(), month[k * nk + j].end());
+    std::sort(kl.daily.begin(), kl.daily.end(), [](const Candle &a, const Candle &b) { return a.date < b.date; });
+    if (kl.daily.size() > kDailyDays)
+      kl.daily.erase(kl.daily.begin(), kl.daily.end() - kDailyDays);
+    for (size_t q = 0; q < nd; ++q)
+      if (minute[q * nk + j].has.any())
+        kl.minutes.push_back(minute[q * nk + j]);
+    std::erase_if(keep_, [&](const auto &e) { return e.first == miss[j]; });
+    keep_.emplace_back(miss[j], std::move(kl));
+  }
+
+  auto out = std::make_shared<Tape>();
+  out->keys = req.keys;
+  for (const uint32_t id : req.keys) {
+    const auto it = cached(id);
+    assert(it != keep_.end());
+    out->list.push_back(it->second);
+    std::rotate(it, it + 1, keep_.end());
+  }
+  if (keep_.size() > kKeep)
+    keep_.erase(keep_.begin(), keep_.end() - kKeep);
 
   std::lock_guard<std::mutex> lock(x_.mutex);
   x_.gen = req.gen;

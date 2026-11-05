@@ -41,7 +41,7 @@
 //         只有 Asset 级再读一次, 且只解所查列. 清点 (Inv) 是逐日基格的副产品
 //
 // 只核 frozen 的槽 (State::Frozen): 开放月 / 待重拉月本地本就落后.
-// Daily: 冻结日按所属月成组, 与 Month 同一份月级指纹; finest = Day (日文件无 Splice), 不下钻 Asset.
+// Daily: 关月的日槽按所属月成组, 与 Month 同一份月级指纹 (冻结月同为关月); finest = Day (日文件无 Splice), 不下钻 Asset.
 // Meta (_meta 日级整刷) 不核. SQL 与 fetch 同一个 select (Remote.hpp); 指纹列 = 远端 schema 去掉 Spec::drop.
 // 列型 (Real / Int / Ts / Str) 一型一行: 远端 SQL 求和式与本地逐值整数相邻成对.
 // ============================================================================

@@ -68,7 +68,7 @@ struct PortfolioLine {
   std::string tag;                                        // 线尾小字
   std::string hover;                                      // NAV 悬停 (en 起头 + 详情)
   bool on = false;                                        // 默认选中 (只看行首线)
-  int basket = -1;                                        // NAV 指数 / 行业行: 篮子线 basket_line (Assets 篮子 Baskets::list 下标; 理想线 / 近况 / 日内取它); 其余 −1
+  int basket = -1;                                        // NAV 指数 / 行业行: 篮子线 basket_line (篮子 Feed 键集下标; 理想线 / 近况 / 日内取它); 其余 −1
   Database::Recent recent;                                // NAV 因子 / 策略行: 净值日末点的近况 (Δ5日量恒 NaN)
   PortfolioCurve c;
 };
@@ -114,7 +114,7 @@ struct PortfolioDerived {
   std::vector<std::shared_ptr<const FactorCurve>> src; // [因子行] 单因子线的源 (nav[kNavFactor] 的 [2 · 行])
   double impact = 0.0;                                 // 单因子线按的 fixed_impact
   std::vector<std::shared_ptr<const PoolCurve>> pools; // [feature_pools 序] 篮子的源 (没算成 = 空)
-  std::shared_ptr<const Database::Baskets> prices;     // 理想线的源 (Assets 篮子历史; 未到 / 落盘不足 = 空, 理想线空)
+  std::shared_ptr<const Database::Tape> prices;        // 理想线的源 (篮子历史 [basket_line]; 未到 / 源未就绪 = 空, 理想线空)
   uint64_t basket_gen = 0;                             // 篮子重建次数 (滚动分位键)
 };
 
@@ -244,7 +244,7 @@ struct PortfolioUIState {
 void SyncPortfolioDir(PortfolioUIState &ui, const std::string &dir);
 // Factors 页 1. 区右侧两框. view_row = Factors 表高光行 (nullptr = 无); (pool, lv, hold) = Factors 页当前池 / 层 / Hold
 void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, LevelId lv, int hold);
-// mk = 行情 (已起, ui.basket 本帧已 SyncBaskets; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况空着). 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
+// mk = 行情 (已起, ui.basket 本帧已 Sync; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况空着). 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed_impact, const Database::Market *mk);
 
 } // namespace GUI::Factors

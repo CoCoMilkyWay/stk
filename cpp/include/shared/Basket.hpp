@@ -28,3 +28,4 @@ inline std::string basket_name(size_t c, Weight w) {
     return std::string(fund::SW2021_L1_NAMES[c]) + (w == kWeightEq ? "等权" : "");
   return std::string(pool_def(static_cast<PoolId>(c - kAllCuts + 1)).name_cn) + (w == kWeightCap ? "加权" : "");
 }
+inline std::string basket_name(size_t line) { return basket_name(line / kWeights, static_cast<Weight>(line % kWeights)); }

@@ -1,6 +1,7 @@
-// Assets 行情的当日一路 (见 Kline.hpp): 新浪全市场内存缓存当天, 个股 / 篮子的当日同出于此 (today 两个重载).
-//   个股当日 = 本只的根 + 最新快照; 篮子当日 = bind 的成员表每轮快照后在快照线程合成一次 (Fold, 只合到此刻所在根).
-//   两张当日表各一个版本号 (QuoteStatus), GUI 见版本变了才拷.
+// 行情的当日一路 (见 Kline.hpp): 新浪全市场内存缓存当天, 个股 / 篮子的当日同出于此 (today(Side, 键集)).
+//   个股当日 = 本只的根 (五档另取 book); 篮子当日 = bind 的成员表每轮快照后在快照线程合成一次 (Fold, 只合到此刻所在根).
+//   合成不持 mu_ 整趟: 成员表是不可变快照 (Basis), 逐 kFoldChunk 只持 mu_ 读一段, 末了持 mu_ 换上 (其间换日 / 重 bind → 弃).
+//   两张当日表各一个版本号 (QuoteStatus::ver), GUI 见版本变了才拷.
 //
 // 当日 1 分钟 K, 两路取数 (见 api/sina/client.hpp):
 //   快照 (hq.sinajs.cn 一次 800 只, 全市场 ~8 次串行 ~1.6s): 盘中每 kTick 一轮 (交易所快照 3s 一档), 盘外每 kIdleTick.
@@ -42,12 +43,12 @@
 namespace GUI::Database {
 
 struct QuoteStatus {
-  misc::Ymd date = 0;                     // 行情日
-  int sec = 0;                            // 全市场最新快照时刻
-  size_t pending = 0;                     // 待取 / 在取的分钟 K
-  size_t fetched = 0;                     // 已取的分钟 K
-  bool fill = false;                      // 行情日 > fund_end (取分钟 K)
-  uint64_t stock_ver = 0, basket_ver = 0; // 当日表版本: 个股 (每轮快照 / 每次补根 +1) / 篮子 (每次合成 +1)
+  misc::Ymd date = 0;         // 行情日
+  int sec = 0;                // 全市场最新快照时刻
+  size_t pending = 0;         // 待取 / 在取的分钟 K
+  size_t fetched = 0;         // 已取的分钟 K
+  bool fill = false;          // 行情日 > fund_end (取分钟 K)
+  PerSide<uint64_t> ver = {}; // 当日表版本: 个股 (每轮快照 / 每次补根 +1) / 篮子 (每次合成 +1)
 };
 
 class QuoteService {
@@ -57,6 +58,7 @@ public:
   static constexpr int kGap = 10;                 // 断档判据: 两轮快照间连续竞价时长 [s]
   static constexpr int kSave = 300;               // 落盘间隔 [s]
   static constexpr int kFillers = 32;             // 分钟 K 并发 (实测 32 路 ~175 次/s, 全市场 ~35s)
+  static constexpr uint32_t kFoldChunk = 256;     // 篮子合成每段只数 (持 mu_ 的粒度)
 
   QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
   ~QuoteService();
@@ -68,10 +70,10 @@ public:
   QuoteStatus status() const;
   // 篮子成员表 (下标 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后每轮快照一次 (BasketHistory 跑完调)
   void bind(Members m, std::vector<double> level);
-  // GUI: 标的 id (全局) 的当日 + 最新快照 (不在全市场 / 未收到 → q.sym 空)
-  void today(uint32_t id, Day &out, sina::Quote &q) const;
-  // GUI: 各篮子当日 (末次合成); out.size() = bind 的篮子数
-  void today(std::span<Day> out) const;
+  // GUI: 键集的当日, out[k] ↔ keys[k]; 个股不在全市场 / 当日无成交、篮子未合成 / 成员无成交 → candle.date 0
+  void today(Side s, std::span<const uint32_t> keys, std::span<Day> out) const;
+  // GUI: 个股 id 的最新快照 (五档); 不在全市场 / 未收到 → sym 空
+  sina::Quote book(uint32_t id) const;
 
 private:
   enum class Fill : uint8_t { Idle,
@@ -99,11 +101,17 @@ private:
     }
   };
 
+  // bind 的成员表 + 前日点位 (不可变, 合成期间整份持有)
+  struct Basis {
+    Members members;
+    std::vector<double> level;
+  };
+
   void poll();
   void fill();
+  void fold(); // 篮子当日合成 → baskets_; 不持 mu_ 调
   // 以下须持 mu_
   void schedule();
-  void fold(); // 篮子当日合成 → baskets_
   int settled() const;
   int live_slot() const;
   bool traded(const sina::Quote &q) const { return q.date == date_ && q.volume > 0 && q.price > 0; }
@@ -126,13 +134,12 @@ private:
   std::deque<uint32_t> todo_;
   uint32_t sel_ = ~0u;
   size_t inflight_ = 0, fetched_ = 0;
-  bool changed_ = false;      // 上次落盘后 tracks_ 变过
-  int sec_ = 0;               // 行情日最新快照时刻 (断档判据的上轮时刻)
-  Members members_;           // bind 的成员表
-  std::vector<double> level_; // [篮子] 前日点位; 空 = 未 bind
-  Fold fold_{0};
-  std::vector<Day> baskets_; // [篮子] 当日
-  uint64_t stock_ver_ = 0, basket_ver_ = 0;
+  bool changed_ = false;               // 上次落盘后 tracks_ 变过
+  int sec_ = 0;                        // 行情日最新快照时刻 (断档判据的上轮时刻)
+  std::shared_ptr<const Basis> basis_; // 空 = 未 bind
+  std::vector<Day> baskets_;           // [篮子] 当日 (末次合成; 空 = 未合成)
+  PerSide<uint64_t> ver_ = {};
+  std::mutex fold_mu_; // 合成一次一趟 (快照线程 / bind 的调用方)
 
   std::thread poll_;
   std::vector<std::thread> fillers_;

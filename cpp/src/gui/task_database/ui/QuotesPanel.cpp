@@ -1,4 +1,6 @@
 #include "gui/task_database/ui/QuotesPanel.hpp"
+#include "shared/AssetAxis.hpp"
+#include "shared/Basket.hpp"
 
 #include "imgui.h"
 #include "implot.h"
@@ -681,7 +683,7 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
 
 // 篮子日内叠加的一条: 收盘线, y = 对首日前收的涨跌幅 [%] (各条同一零点, 跨日接续)
 struct Overlay {
-  const char *name;
+  std::string name;
   ImVec4 col;
   std::vector<double> x, y;
 };
@@ -763,7 +765,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         ImGui::Text("%02d-%02d %02d:%02d", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60);
       ImGui::TextDisabled("光标 %+.2f%%", m.y);
       for (const auto &[y, l] : at) {
-        ImGui::TextColored(l->col, "%s", l->name);
+        ImGui::TextColored(l->col, "%s", l->name.c_str());
         ImGui::SameLine();
         ImGui::TextColored(tint(y, 0), "%+.2f%%", y);
       }
@@ -775,59 +777,36 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   return corner;
 }
 
-// 收历史发布: 末次请求的发布到齐 → 整体换上 (true), 当日待重拷; 到齐前照留在画的
-template <class T>
-bool pull(const HistoryPub<T> &x, Feed<T> &f) {
+// 收历史发布: 末次请求的发布到齐 → 整体换上, 当日待重拷; 到齐前照留在画的
+void pull(const HistoryPub &x, Feed &f) {
   std::lock_guard<std::mutex> lock(x.mutex);
   if (x.gen != f.gen || x.data == f.data)
-    return false;
+    return;
   f.data = x.data, f.shown = f.gen, f.ver = ~0ull;
-  return true;
 }
 
 } // namespace
 
-void SyncStock(Market &mk, const AssetItem *asset, const StockInfo *info, StockState &st) {
-  const std::string code = asset ? asset->code_ex() : std::string();
-  if (code != st.want.code) {
-    st.want = {code, (info && !info->name.empty() ? info->name : std::string("-")) + "  " + code,
-               asset ? static_cast<uint32_t>(asset->asset_id) : ~0u};
-    ++st.feed.gen;
-    if (asset)
-      mk.stock->Request({st.feed.gen, code});
-    mk.quote->select(st.want.id);
+void Sync(Market &mk, Side s, std::span<const uint32_t> want, Feed &f) {
+  if (f.reload || !std::ranges::equal(want, f.want)) {
+    f.reload = false;
+    f.want.assign(want.begin(), want.end());
+    mk.request(s, {++f.gen, f.want});
+    if (s == kStock)
+      mk.quote->select(f.want.empty() ? ~0u : f.want.front());
   }
-  if (pull(mk.stock->published(), st.feed))
-    st.shown = st.want;
-  if (st.shown.code.empty())
+  pull(mk.history(s), f);
+  if (!f.data || f.data->list.empty())
     return;
-  const uint64_t ver = mk.quote->status().stock_ver;
-  if (ver == st.feed.ver)
+  const uint64_t ver = mk.quote->status().ver[s];
+  if (ver == f.ver)
     return;
-  st.feed.ver = ver;
-  mk.quote->today(st.shown.id, st.today, st.quote);
+  f.ver = ver;
+  f.today.resize(f.data->keys.size());
+  mk.quote->today(s, f.data->keys, f.today);
 }
 
-void SyncBaskets(Market &mk, const Config &cfg, BasketState &st) {
-  if (st.want) {
-    st.want = false;
-    FeatureLib lib = load_lib(cfg, kAllBar);
-    st.missing = !lib.ready();
-    if (!st.missing)
-      mk.basket->Request({++st.feed.gen, std::move(lib)});
-  }
-  pull(mk.basket->published(), st.feed);
-  if (!st.feed.data || st.feed.data->list.empty())
-    return;
-  const uint64_t ver = mk.quote->status().basket_ver;
-  if (ver == st.feed.ver)
-    return;
-  st.feed.ver = ver;
-  st.today.resize(st.feed.data->list.size());
-  mk.quote->today(st.today);
-}
-
-void RenderStockPanel(const Market &mk, StockState &st) {
+void RenderStockPanel(const Market &mk, StockState &st, const std::string &title) {
   const QuoteStatus qs = mk.quote->status();
   char note[160];
   if (qs.date == 0)
@@ -837,64 +816,68 @@ void RenderStockPanel(const Market &mk, StockState &st) {
                   qs.fetched, qs.pending);
   else
     std::snprintf(note, sizeof(note), "新浪 %02d:%02d:%02d · 当日分钟由 bar1m 给", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60);
-  if (st.shown.code.empty()) {
+  const Feed &f = st.feed;
+  if (!f.data || f.data->keys.empty()) {
     ImGui::TextDisabled("%s", note);
-    ImGui::TextWrapped(st.want.code.empty() ? "点表格中的一行查看行情." : "读取历史…");
+    ImGui::TextWrapped(f.want.empty() ? "点表格中的一行查看行情." : "读取历史…");
     return;
   }
-  const Kline &kl = *st.feed.data;
+  assert(f.today.size() == 1);
+  const uint32_t id = f.data->keys.front();
+  const Kline &kl = f.data->list.front();
+  const Day &today = f.today.front();
   Series is, ds;
-  intraday(kl, st.today, kIntraDays[st.chart.intraday], false, is);
-  daily(kl, st.today, false, ds);
+  intraday(kl, today, kIntraDays[st.chart.intraday], false, is);
+  daily(kl, today, false, ds);
 
-  if (st.want.code != st.shown.code)
-    std::snprintf(note, sizeof(note), "读取 %s 历史…", st.want.code.c_str());
-  else if (mk.quote->axis().sub_of(st.shown.id) == mk.quote->axis().size())
+  if (!f.want.empty() && f.want.front() != id)
+    std::snprintf(note, sizeof(note), "读取 %s 历史…", asset_axis().code(f.want.front()).c_str());
+  else if (mk.quote->axis().sub_of(id) == mk.quote->axis().size())
     std::snprintf(note, sizeof(note), "不在新浪全市场");
   else
-    gap_note(kl, st.today, note, sizeof(note));
-  header(st.shown.title.c_str(), kl, st.today, note);
-  charts("stock", is, ds, static_cast<uint64_t>(st.feed.shown) << 32, st.chart, st.quote, qs.date);
+    gap_note(kl, today, note, sizeof(note));
+  header(title.c_str(), kl, today, note);
+  charts("stock", is, ds, static_cast<uint64_t>(f.shown) << 32, st.chart, mk.quote->book(id), qs.date);
 }
 
 void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks) {
-  if (st.missing || (st.feed.data && st.feed.data->list.empty())) {
-    ImGui::TextWrapped(st.missing ? "指数 / 行业由 all.bar 特征库合成: 先在 Features → Compute 算好 all 池的 Bar 库."
-                                  : "all.bar 特征库落盘不足 2 日.");
+  Feed &f = st.feed;
+  if (f.data && f.data->lack) {
+    ImGui::TextWrapped("%s", f.data->lack);
     if (ImGui::SmallButton("重载"))
-      st.want = true;
+      f.reload = true;
     return;
   }
-  if (!st.feed.data) {
-    const BasketKline &x = mk.basket->published();
+  if (!f.data) {
+    const HistoryPub &x = mk.history(kBasket);
     ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
     return;
   }
   const QuoteStatus qs = mk.quote->status();
-  const Baskets &d = *st.feed.data;
-  assert(st.today.size() == d.list.size());
+  const Tape &d = *f.data;
+  assert(f.today.size() == d.list.size());
   std::vector<Overlay> ls;
   std::vector<misc::Ymd> days;
   char note[160] = "";
   for (const BasketPick &p : picks) {
-    assert(p.b < d.list.size());
-    const Basket &bk = d.list[p.b];
-    const Day &today = st.today[p.b];
+    assert(p.b < d.list.size() && d.keys[p.b] == p.b);
+    const Kline &kl = d.list[p.b];
+    const Day &today = f.today[p.b];
     Series intra;
-    intraday(bk.kline, today, kIntraDays[st.intraday], true, intra);
+    intraday(kl, today, kIntraDays[st.intraday], true, intra);
     if (!note[0]) {
-      if (joins(bk.kline, today))
+      if (joins(kl, today))
         std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员 / 权重取 %02d-%02d 收盘", qs.sec / 3600, qs.sec / 60 % 60,
-                      qs.sec % 60, bk.kline.last / 100 % 100, bk.kline.last % 100);
-      else if (!gap_note(bk.kline, today, note, sizeof(note)))
-        std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", bk.kline.last / 100 % 100, bk.kline.last % 100);
+                      qs.sec % 60, kl.last / 100 % 100, kl.last % 100);
+      else if (!gap_note(kl, today, note, sizeof(note)))
+        std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", kl.last / 100 % 100, kl.last % 100);
     }
     if (intra.days.size() > days.size())
       days = intra.days;
     const double base = intra.bars.empty() ? 0.0 : intra.bars.front().ref;
     if (!(base > 0))
       continue;
-    Overlay &l = ls.emplace_back(Overlay{bk.name.c_str(), ImGui::ColorConvertU32ToFloat4(p.col), std::move(intra.x), {}});
+    Overlay &l = ls.emplace_back(Overlay{basket_name(p.b), ImGui::ColorConvertU32ToFloat4(p.col), std::move(intra.x), {}});
     for (const Candle &c : intra.bars)
       l.y.push_back((c.close / base - 1.0) * 100.0);
   }
@@ -905,7 +888,7 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
     range_bar(kIntraName, 4, st.intraday);
     ImGui::SameLine(0, 8);
     if (ImGui::SmallButton("重载"))
-      st.want = true;
+      f.reload = true;
     if (ImGui::IsItemHovered() && note[0])
       ImGui::SetTooltip("%s", note);
     if (picks.empty()) {
@@ -937,18 +920,18 @@ Recent RecentOf(std::span<const Mark> m) {
   return r;
 }
 
-Recent BasketRecent(const BasketState &st, size_t b) {
-  if (!st.feed.data || b >= st.feed.data->list.size())
+Recent RecentOf(const Feed &f, size_t k) {
+  if (!f.data || k >= f.data->list.size())
     return {};
-  assert(st.today.size() == st.feed.data->list.size());
-  const Kline &kl = st.feed.data->list[b].kline;
-  const Day &today = st.today[b];
-  Mark m[6];
+  assert(f.today.size() == f.data->list.size());
+  const Kline &kl = f.data->list[k];
+  const Day &today = f.today[k];
+  Mark m[kMarks];
   size_t n = 0;
   const auto put = [&](const Candle &c) { m[n++] = {c.close, c.ref, c.amount}; };
   if (joins(kl, today))
     put(today.candle);
-  for (auto it = kl.daily.rbegin(); it != kl.daily.rend() && n < std::size(m); ++it)
+  for (auto it = kl.daily.rbegin(); it != kl.daily.rend() && n < kMarks; ++it)
     put(*it);
   return RecentOf({m, n});
 }

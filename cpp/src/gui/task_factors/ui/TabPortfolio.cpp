@@ -263,7 +263,7 @@ PortfolioCurve curve_of(const Inc &s, int i, double x0) {
 // 净值线的近况 (Database::RecentOf 同一核, 无量): 日 = 每日末个点 (起点算首日前一日的日末), 前收 = 前一日的
 Database::Recent recent_of(const PortfolioCurve &c) {
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-  double e[6]; // 新 → 旧
+  double e[Database::kMarks]; // 新 → 旧
   size_t n = 0;
   double day = -1.0;
   for (size_t i = c.x.size(); i-- > 0 && n < std::size(e);)
@@ -298,37 +298,41 @@ Inc inc_of(const FactorCurve &f, const std::vector<size_t> &di, double fixed_imp
   return o;
 }
 
-// ---- 篮子投影 (可成交线 / VAL = PoolCurve, 理想线 = 价格指数; 同一投影): 只取日并集轴范围内 = 范围首日开盘一点 (其前一日点位) + 轴上每日收盘一点;
-//      不在轴上的日只差点位, 收益自然并进下一个轴上的日 ----
-void project(const std::vector<misc::Ymd> &axis, PortfolioBasket &b) {
-  const std::vector<misc::Ymd> &src = b.pc->dates;
-  std::vector<double> v(src.size()); // 篮子点位 (日收益复利, 起点 1)
-  compound(b.pc->index_of(b.k, b.w), src.size(), [&](size_t i, double l) { v[i] = l; });
-  const std::vector<size_t> di = days_on(axis, src);
-  const auto push = [&](double x, size_t i) { b.c.x.push_back(x), b.c.y.push_back(v[i]), b.at.push_back(static_cast<uint32_t>(i)); };
-  for (size_t i = 0; i < src.size(); ++i) {
-    if (src[i] < axis.front() || src[i] > axis.back())
+// ---- 篮子投影 (可成交线 / VAL = PoolCurve, 理想线 = 价格指数; 同一投影): 源 = 日点位线, 只取日并集轴范围内 = 范围首日开盘一点 (其前一日点位; 源首日无)
+//      + 轴上每日收盘一点; 不在轴上的日只差点位, 收益自然并进下一个轴上的日 ----
+// 日点位线: dates[i] 收盘点位 lv[i]
+struct Levels {
+  std::vector<misc::Ymd> dates;
+  std::vector<double> lv;
+};
+// PoolCurve 篮子 k 权 w: 日收益复利 (起点 1)
+Levels levels(const PoolCurve &pc, size_t k, Weight w) {
+  Levels s{pc.dates, std::vector<double>(pc.dates.size())};
+  compound(pc.index_of(k, w), s.dates.size(), [&](size_t i, double l) { s.lv[i] = l; });
+  return s;
+}
+// 价格指数篮子线: 日线收盘
+Levels levels(const Database::Kline &kl) {
+  Levels s;
+  for (const Database::Candle &e : kl.daily)
+    s.dates.push_back(e.date), s.lv.push_back(e.close);
+  return s;
+}
+// → c (须空); 返回 [c.x] → s.dates 下标 (严格升序)
+std::vector<uint32_t> project(const std::vector<misc::Ymd> &axis, const Levels &s, PortfolioCurve &c) {
+  assert(c.x.empty() && !axis.empty());
+  std::vector<uint32_t> at;
+  const std::vector<size_t> di = days_on(axis, s.dates);
+  const auto push = [&](double x, size_t i) { c.x.push_back(x), c.y.push_back(s.lv[i]), at.push_back(static_cast<uint32_t>(i)); };
+  for (size_t i = 0; i < s.dates.size(); ++i) {
+    if (s.dates[i] < axis.front() || s.dates[i] > axis.back())
       continue;
-    if (b.at.empty() && i > 0)
+    if (at.empty() && i > 0)
       push(x_of(di[i], kOpen), i - 1);
-    if (axis[di[i]] == src[i])
+    if (axis[di[i]] == s.dates[i])
       push(x_of(di[i], kClose), i);
   }
-}
-PortfolioCurve project(const std::vector<misc::Ymd> &axis, const Database::Kline &k) {
-  PortfolioCurve c;
-  size_t j = 0;
-  for (const Database::Candle &e : k.daily) {
-    if (e.date < axis.front() || e.date > axis.back())
-      continue;
-    while (axis[j] < e.date)
-      ++j;
-    if (c.x.empty())
-      c.x.push_back(x_of(j, kOpen)), c.y.push_back(e.ref);
-    if (axis[j] == e.date)
-      c.x.push_back(x_of(j, kClose)), c.y.push_back(e.close);
-  }
-  return c;
+  return at;
 }
 
 // 池 name 算成的篮子 (缺 / 失败 → 空)
@@ -424,7 +428,7 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
 
 // 池线 + VAL 篮子 (见头文件): 可成交 / VAL = PoolCurve 的 PortfolioBasket, 理想 = 价格指数 (prices) 同名篮子线, 同一 project.
 // o = 上一份派生: 各池同一条 PoolCurve、同一份价格指数且日轴不变 → 整份沿用
-void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Database::Baskets> &prices, PortfolioDerived &o, PortfolioDerived &d) {
+void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Database::Tape> &prices, PortfolioDerived &o, PortfolioDerived &d) {
   for (const PoolDef &pd : feature_pools())
     d.pools.push_back(pool_of(res, pd.name));
   d.prices = prices && !prices->list.empty() ? prices : nullptr;
@@ -442,7 +446,7 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
     b.id = std::move(id), b.en = std::move(en), b.cn = std::move(cn), b.tag = std::move(tag);
     b.pc = std::move(pc), b.k = k, b.w = w;
     if (b.pc && !d.dates.empty())
-      project(d.dates, b);
+      b.at = project(d.dates, levels(*b.pc, b.k, b.w), b.c);
     return b;
   };
   // 一行 = 可成交 (PoolCurve 篮子 k 权 w) + 理想 (价格指数篮子线 line; 名 / 悬停 / 年换手同可成交), 右表同一行
@@ -451,8 +455,10 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
     p.basket = static_cast<int>(line);
     PortfolioLine q;
     q.id = p.id + "_px", q.en = p.en, q.cn = p.cn, q.kind = "理想", q.turn = p.turn, q.tag = tag + " 理想", q.hover = p.hover, q.basket = p.basket;
-    if (d.prices && !d.dates.empty())
-      q.c = project(d.dates, d.prices->list[line].kline);
+    if (d.prices && !d.dates.empty()) {
+      assert(d.prices->keys[line] == line);
+      project(d.dates, levels(d.prices->list[line]), q.c);
+    }
     d.nav[g].push_back(std::move(p));
     d.nav[g].push_back(std::move(q));
   };
@@ -512,7 +518,7 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
 }
 
 void derive(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-            const std::shared_ptr<const Database::Baskets> &prices, double fixed_impact, PortfolioDerived &d) {
+            const std::shared_ptr<const Database::Tape> &prices, double fixed_impact, PortfolioDerived &d) {
   PortfolioDerived o = std::move(d);
   d = PortfolioDerived{};
   derive_factors(items, name, res, fixed_impact, o, d);
@@ -1562,7 +1568,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   std::vector<std::array<double, kRecents>> rc(n);
   for (size_t r = 0; r < n; ++r) {
     const PortfolioLine &h = ls[2 * r];
-    const Database::Recent x = h.basket >= 0 ? Database::BasketRecent(ui.basket, static_cast<size_t>(h.basket)) : h.recent;
+    const Database::Recent x = h.basket >= 0 ? Database::RecentOf(ui.basket.feed, static_cast<size_t>(h.basket)) : h.recent;
     rc[r] = {x.chg, x.ma5, x.amt5};
   }
   std::vector<size_t> order = iota_n(n);

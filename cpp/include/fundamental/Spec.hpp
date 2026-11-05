@@ -46,7 +46,7 @@ enum class Shape { Month,
 //
 // Month / Meta × Snap 四种皆合法; 另有 (SPECS 静态初始化期逐行断言):
 //   vd 空 ⇒ Meta·All;  Tu ⇒ Month·All;  Bq{Partition} ⇒ vd == "date" (服务端分区列)
-//   Daily ⇒ Bq{Partition}·All·avail_hour=24 (日文件落盘即冻结, 只拉到昨天才保证整日完整)
+//   Daily ⇒ Bq{Partition}·All·avail_hour=24 (日文件落盘即整日, 只拉到昨天才保证整日完整)
 enum class Snap { All,
                   Day };
 
