@@ -36,12 +36,11 @@ constexpr int kDailySpan[] = {5, 22, 250, 2500}; // 交易日
 constexpr const char *kDailyName[] = {"周", "月", "年", "10年"};
 static_assert(kDailySpan[3] <= static_cast<int>(kDailyDays));
 constexpr const char *kHours[] = {"09:30", "10:30", "11:30/13:00", "14:00", "15:00"};
-constexpr double kBody = 0.35;                 // 蜡烛 / 量柱半宽 [槽]
-constexpr float kMinPx = 3.f;                  // 日内蜡烛每根最窄 [px] (窄了并根)
-constexpr float kDashOn = 4.f, kDashOff = 3.f; // 现价虚线: 实 / 空 [px]
-constexpr double kMinSpan = 5;                 // 视野至少几根 (框选 / 滚轮)
-constexpr double kWheel = 0.8;                 // 滚轮一格视野宽 × kWheel (向前 = 放大)
-constexpr float kDragPx = 4.f;                 // 框选生效的最小拖动 [px]
+constexpr double kBody = 0.35; // 蜡烛 / 量柱半宽 [槽]
+constexpr float kMinPx = 3.f;  // 日内蜡烛每根最窄 [px] (窄了并根)
+constexpr double kMinSpan = 5; // 视野至少几根 (框选 / 滚轮)
+constexpr double kWheel = 0.8; // 滚轮一格视野宽 × kWheel (向前 = 放大)
+constexpr float kDragPx = 4.f; // 框选生效的最小拖动 [px]
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr ImVec4 kRefTag(0.55f, 0.55f, 0.55f, 1.f);
 constexpr ImVec4 kGridTag(0.62f, 0.62f, 0.62f, 0.8f);                                     // 叠加图横网格的内标小字
@@ -190,16 +189,6 @@ int merge(Series &s, double span, float px) {
   s.bars.resize(n);
   s.x.resize(n);
   return g;
-}
-
-// 一段横 / 竖虚线 [px] (kDashOn 实 / kDashOff 空)
-void dash(ImDrawList *dl, ImVec2 a, const ImVec2 &b, ImU32 col) {
-  const float len = std::abs(b.x - a.x) + std::abs(b.y - a.y);
-  const ImVec2 u((b.x - a.x) / len, (b.y - a.y) / len);
-  for (float t = 0; t < len; t += kDashOn + kDashOff) {
-    const float e = std::min(t + kDashOn, len);
-    dl->AddLine(ImVec2(a.x + u.x * t, a.y + u.y * t), ImVec2(a.x + u.x * e, a.y + u.y * e), col);
-  }
 }
 
 // 价 (蜡烛 + 前收 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 量, x 联动. 日内按视野宽并根 (merge). key 变 / 双击 → 视野复位到档窗口 [win_lo, win_hi];
@@ -769,7 +758,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImFont *font = ImGui::GetFont();
       const ImVec2 pos = ImPlot::GetPlotPos(), psz = ImPlot::GetPlotSize();
-      const float fs = ImGui::GetFontSize() * kTagScale, top = pos.y, bottom = pos.y + psz.y, right = pos.x + psz.x - 2.f;
+      const float fs = ImGui::GetFontSize() * kTagScale, top = pos.y, right = pos.x + psz.x - 2.f;
       const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
       float tw = 0;
       for (const double v : yt) {
@@ -784,29 +773,16 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         tw = std::max(tw, sz.x);
       }
       if (one) {
-        const ImU32 cu = ImGui::ColorConvertFloat4ToU32(tint(one->chg, 0)), ink = IM_COL32(17, 17, 17, 255);
-        const ImVec2 p = ImPlot::PlotToPixels(one->x.back(), one->y.back()), pad(2.f, 1.f);
-        const float px = std::round(p.x) + 0.5f, py = std::round(p.y) + 0.5f;
-        dash(dl, ImVec2(pos.x, py), ImVec2(pos.x + psz.x, py), cu);
-        dash(dl, ImVec2(px, top), ImVec2(px, bottom), cu);
-        const auto label = [&](const char *s, float x, float y) { // (x, y) = 底框左上角
-          const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, s);
-          dl->AddRectFilled(ImVec2(x, y), ImVec2(x + sz.x + 2 * pad.x, y + sz.y + 2 * pad.y), cu);
-          dl->AddText(font, fs, ImVec2(x + pad.x, y + pad.y), ink, s);
-        };
-        char buf[48];
-        std::snprintf(buf, sizeof(buf), "%+.2f%%", one->y.back());
-        const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf);
-        const float bw = sz.x + 2 * pad.x, bh = sz.y + 2 * pad.y;
-        label(buf, right - bw, std::clamp(py - bh * 0.5f, top, bottom - bh));
-        tw = std::max(tw, bw);
+        char y[24], x[24];
+        std::snprintf(y, sizeof(y), "%+.2f%%", one->y.back());
         const int k = one->now / kSlots, mn = slot_label(one->now % kSlots);
         if (nd > 1 && static_cast<size_t>(k) < days.size())
-          std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60);
+          std::snprintf(x, sizeof(x), "%02d-%02d %02d:%02d", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60);
         else
-          std::snprintf(buf, sizeof(buf), "%02d:%02d", mn / 60, mn % 60);
-        const float tw2 = font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf).x + 2 * pad.x;
-        label(buf, std::clamp(px - tw2 * 0.5f, pos.x, pos.x + psz.x - tw2), bottom - bh);
+          std::snprintf(x, sizeof(x), "%02d:%02d", mn / 60, mn % 60);
+        const NowCross c{ImPlot::PlotToPixels(one->x.back(), one->y.back()), ImGui::ColorConvertFloat4ToU32(tint(one->chg, 0)), y, x};
+        draw_now_cross(c, kTagScale, right);
+        tw = std::max(tw, now_cross_width(c, kTagScale));
       }
       std::vector<EndTag> tags;
       for (const Overlay &l : ls)

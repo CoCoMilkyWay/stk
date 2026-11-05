@@ -1,12 +1,13 @@
 #pragma once
 
-// 图表公共件 (Assets 行情 / Portfolio 净值同一份): 涨跌色, 档位按钮条, 线尾小字
+// 图表公共件 (Assets 行情 / Portfolio 净值同一份): 涨跌色, 档位按钮条, 线尾小字, 现价十字
 
 #include "imgui.h"
 #include "implot.h"
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -67,6 +68,51 @@ inline void draw_end_tags(std::vector<EndTag> &tags, float scale, float right) {
     const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t.text.c_str());
     dl->AddText(font, fs, ImVec2(std::min(t.at.x + kTagGap, right - sz.x), t.at.y - 0.5f * sz.y), t.col, t.text.c_str());
   }
+  ImPlot::PopPlotClipRect();
+}
+
+// 一段横 / 竖虚线 [px] (kDashOn 实 / kDashOff 空)
+inline constexpr float kDashOn = 4.f, kDashOff = 3.f;
+inline void dash(ImDrawList *dl, ImVec2 a, const ImVec2 &b, ImU32 col) {
+  const float len = std::abs(b.x - a.x) + std::abs(b.y - a.y);
+  const ImVec2 u((b.x - a.x) / len, (b.y - a.y) / len);
+  for (float t = 0; t < len; t += kDashOn + kDashOff) {
+    const float e = std::min(t + kDashOn, len);
+    dl->AddLine(ImVec2(a.x + u.x * t, a.y + u.y * t), ImVec2(a.x + u.x * e, a.y + u.y * e), col);
+  }
+}
+
+// 现价十字: 过末点 at [px] 的横 / 竖虚线 (色 col), 右壁标读数 y, 底壁标时刻 x (色底黑字)
+struct NowCross {
+  ImVec2 at;
+  ImU32 col;
+  std::string y, x;
+};
+inline constexpr ImVec2 kCrossPad(2.f, 1.f); // 标签框内边距
+// 右壁标签占的宽 (字号 = 字体 × scale)
+inline float now_cross_width(const NowCross &c, float scale) {
+  return ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize() * scale, FLT_MAX, 0.f, c.y.c_str()).x + 2 * kCrossPad.x;
+}
+// 当前图内画十字; 右壁标签右缘 = right
+inline void draw_now_cross(const NowCross &c, float scale, float right) {
+  ImDrawList *dl = ImPlot::GetPlotDrawList();
+  ImFont *font = ImGui::GetFont();
+  const float fs = ImGui::GetFontSize() * scale;
+  const ImVec2 pos = ImPlot::GetPlotPos(), psz = ImPlot::GetPlotSize();
+  const float top = pos.y, bottom = pos.y + psz.y, px = std::round(c.at.x) + 0.5f, py = std::round(c.at.y) + 0.5f;
+  const ImU32 ink = IM_COL32(17, 17, 17, 255);
+  ImPlot::PushPlotClipRect();
+  dash(dl, ImVec2(pos.x, py), ImVec2(pos.x + psz.x, py), c.col);
+  dash(dl, ImVec2(px, top), ImVec2(px, bottom), c.col);
+  const auto label = [&](const std::string &s, float x, float y) { // (x, y) = 底框左上角
+    const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, s.c_str());
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + sz.x + 2 * kCrossPad.x, y + sz.y + 2 * kCrossPad.y), c.col);
+    dl->AddText(font, fs, ImVec2(x + kCrossPad.x, y + kCrossPad.y), ink, s.c_str());
+  };
+  const float bw = now_cross_width(c, scale), bh = fs + 2 * kCrossPad.y;
+  label(c.y, right - bw, std::clamp(py - bh * 0.5f, top, bottom - bh));
+  const float tw = font->CalcTextSizeA(fs, FLT_MAX, 0.f, c.x.c_str()).x + 2 * kCrossPad.x;
+  label(c.x, std::clamp(px - tw * 0.5f, pos.x, pos.x + psz.x - tw), bottom - bh);
   ImPlot::PopPlotClipRect();
 }
 
