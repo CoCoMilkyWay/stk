@@ -772,7 +772,7 @@ void draw_marks(std::vector<EndTag> &marks) {
   ImPlot::PopPlotClipRect();
 }
 
-// 主图一帧的公共件 (NAV / VAL 同一份): 小字筛选视野 + 线尾小字 + 线尾刻度 (VAL) + 显隐签名 (与上帧不同 → 下帧重新 fit)
+// 主图一帧的公共件 (NAV / VAL 同一份): 小字筛选视野 + 线尾小字 + 线尾刻度 (VAL) + 显隐签名 (下帧进 fit 键)
 struct PlotFrame {
   ImPlotRect lim;
   std::vector<EndTag> tags;
@@ -922,13 +922,10 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
   };
   std::vector<Draw> ds; // 画序, 只含选中行的
   for (int g = 0; g < kNavGroups; ++g)
-    for (size_t r = 0; r < d.nav[g].size(); ++r) {
-      const bool on = shown(ui, d.nav[g][r]);
-      pf.shown += on ? '1' : '0';
-      if (on)
+    for (size_t r = 0; r < d.nav[g].size(); ++r)
+      if (shown(ui, d.nav[g][r]))
         for (int l = 0; l < kPairLines; ++l)
           ds.push_back({g, l, &d.nav[g][r], &v.nav[g][r][l], nav_color(d, g, r, l)});
-    }
   std::vector<std::array<std::string, 5>> rows;
   for (const Draw &x : ds) {
     char ann[48], shp[48] = "", turn[48] = "";
@@ -1168,7 +1165,6 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
   const PortfolioSlice &sl = v.nav[vs.g][vs.r][kTrade];
   const double *bx = v.band_x.data();
   const int bn = static_cast<int>(v.band_x.size());
-  pf.shown += s.id;
   for (int b = 0; b < kPoolVals; ++b) {
     const PortfolioBand &bd = v.band[b];
     const std::string lbs = val_item(kLgBand, b);
@@ -1299,10 +1295,7 @@ void range_bar(PortfolioUIState &ui, bool nav, PortfolioAt vs, float pw, float b
       k1 = K;
     if (k1 <= k0)
       k1 = std::min(k0 + 1, K), k0 = k1 - 1;
-    if (ms[k0] != rg.d0 || ms[k1] != rg.d1) {
-      rg.d0 = ms[k0], rg.d1 = ms[k1];
-      ui.refit = true;
-    }
+    rg.d0 = ms[k0], rg.d1 = ms[k1];
     const int act = rg.drag != 0 ? rg.drag : over;
     if (act == 1 || act == 2)
       ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -1713,17 +1706,13 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     message = svc.message;
   }
   PortfolioDerived &d = ui.der.val;
-  bool refit = ui.refit;
-  ui.refit = false;
 
   // ---- 三级缓存: 派生 → 滚动分位 (键 = 篮子代) → 视图 (键 = 派生 gen + 滚动分位 gen): 上级重算 → 下级自动重算 ----
-  // 派生重算 → 重新 fit: 因子线 / 池线先后到, 后到的线也要进 y 范围与线尾小字留白
   ui.der.update(PortfolioDerKey{gen, ui.items_gen, ui.basket.feed.shown, fixed_impact}, [&](PortfolioDerived &dv) {
     const std::vector<misc::Ymd> old = dv.dates;
     derive(ui.items, ui.name, res, ui.basket.feed.data, fixed_impact, dv);
     if (dv.dates != old) // 日轴变 → 区间回全段
       ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
-    refit = true;
   });
   // VAL 选中篮子行: 换组合 → 回默认 (组合首个因子所在池的等权行; 无因子 → 暂用首行, 不记)
   if (ui.val_for != ui.name)
@@ -1765,17 +1754,14 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const bool nav = pages();
 
   // ---- 图: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (plot_nav ↔ plot_val) / 区间条 自上而下; 最右 = 图例 (legend_nav ↔ legend_val) ----
-  bool set_vis = false; // NAV 行选中回默认 (换组合), 其线在主图例里回默认显隐
-  if (nav) {
-    set_vis = ui.name != ui.vis_key;
+  if (nav && ui.name != ui.vis_key) { // NAV 行选中回默认 (换组合), 其线在主图例里回默认显隐
     ui.vis_key = ui.name;
-    if (set_vis)
-      for (const std::vector<PortfolioRow> &rs : d.nav)
-        for (const PortfolioRow &r : rs) {
-          ui.show.erase(r.id);
-          for (int l = 0; l < kPairLines; ++l)
-            ui.reveal.insert(line_id(r, l));
-        }
+    for (const std::vector<PortfolioRow> &rs : d.nav)
+      for (const PortfolioRow &r : rs) {
+        ui.show.erase(r.id);
+        for (int l = 0; l < kPairLines; ++l)
+          ui.reveal.insert(line_id(r, l));
+      }
   }
   constexpr float kBarH = 90.0f, kLegendMaxFrac = 0.5f; // 右图例最多占整宽的比例 (再宽表格自己截)
   const ImGuiStyle &st = ImGui::GetStyle();
@@ -1803,9 +1789,15 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   }
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
-  if (refit || set_vis) // 只作用于紧接的 BeginPlot: 须在日内栏之后
+  PortfolioFitKey fk{ui.view.gen, nav, ui.log_y, {}, ui.shown_key};
+  if (nav)
+    for (const std::vector<PortfolioRow> &rs : d.nav)
+      for (const PortfolioRow &r : rs)
+        fk.rows += shown(ui, r) ? '1' : '0';
+  if (fk != ui.fit_key) // 只作用于紧接的 BeginPlot: 须在日内栏之后
     ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), nav ? ImPlotFlags_None : ImPlotFlags_NoLegend)) {
+    ui.fit_key = fk;
     // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin);
     ImPlot::SetupAxisFormat(ImAxis_X1, day_formatter, &d.dates);
@@ -1821,11 +1813,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
       plot_nav(ui, d, v, pf);
     else if (vs.g >= 0)
       plot_val(ui, d, v, vs, pf);
-    pf.shown += ui.log_y ? 'L' : 'l';
-    if (pf.shown != ui.shown_key) {
-      ui.shown_key = std::move(pf.shown);
-      ui.refit = true;
-    }
+    ui.shown_key = std::move(pf.shown);
     // 本帧 fit (自动 / 双击): x 右端再扩一段, 让区间末点右侧留出线尾小字 / 刻度 (同贴末点, 取宽者) 的宽度
     if (ImPlot::FitThisFrame() && !pf.tags.empty() && ui.range.d1 > ui.range.d0) {
       const float tw = std::max(end_tags_width(pf.tags, kTagScale), marks_width(pf.marks)), W = ImPlot::GetPlotSize().x;

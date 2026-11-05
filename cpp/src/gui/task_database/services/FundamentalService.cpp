@@ -2,7 +2,7 @@
 // 抓取: fundamental::sync::plan<Src>(Round) → 同步道逐任务 sync::run<Src> (月度 parquet / 分钟线日文件, 水位增量, 槽位状态见 fundamental/Store.hpp)
 //   基本面 (bigquant → tushare) 在前, 概念快照 (eastmoney, 当日缺才拉) 居中, 分钟线 (bigquant.bar1m) 在后
 //   与 AuditService 的 audit::plan<Src> → 逐单元 audit::run<Src> 同形: 循环 / 进度 / 取消同走 drive (Drive.hpp)
-//   四道 (kLaneTag) 同一套展示字段 state.lanes: 排队 / 在跑 / 完成 / 取消 + 计步 / 行数 / 收尾时刻 + 落盘汇总
+//   四道 (kLaneTag) 同一套展示字段 state.lanes: 排队 / 在跑 / 完成 / 取消 + 计步 / 行数 / 收尾时刻
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days, bar1m_end, pit_end}
 //   stock_days   ← all_trading_days (fundamental::calendar)
 //   bar1m_end    ← bar1m 末个分片日
@@ -125,46 +125,28 @@ std::string mtime_str(std::filesystem::file_time_type t) {
   return short_time(std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(t)));
 }
 
-// 一组分片 → 落盘状态. _meta 单文件片: 不计 months / 最新分片
-TableFileStat stat_of(std::string name, const std::vector<const fundamental::Shard *> &shards) {
+// 一张表的分片 → 落盘状态. _meta 单文件片: 不计 months / 最新分片
+TableFileStat stat_of(std::string name, const std::vector<fundamental::Shard> &shards) {
   TableFileStat st;
   st.name = std::move(name);
   if (shards.empty())
     return st;
-  auto newest = shards.front()->mtime;
-  for (const fundamental::Shard *sh : shards) {
-    st.bytes += sh->bytes;
-    if (sh->ym != 0) {
+  auto newest = shards.front().mtime;
+  for (const fundamental::Shard &sh : shards) {
+    st.bytes += sh.bytes;
+    if (sh.ym != 0) {
       ++st.months;
-      st.last_month = std::max(st.last_month, sh->ym);
-      st.last_day = std::max(st.last_day, sh->day);
+      st.last_month = std::max(st.last_month, sh.ym);
+      st.last_day = std::max(st.last_day, sh.day);
     }
-    newest = std::max(newest, sh->mtime);
+    newest = std::max(newest, sh.mtime);
   }
   st.mtime = mtime_str(newest);
   return st;
 }
 
-// 盘上清点: 逐表落盘状态 (Fundamental 页逐表列出用) + 各道汇总 (只计 SPECS 在册的表)
-struct Disk {
-  std::vector<TableFileStat> tables;
-  TableFileStat lanes[kLanes];
-};
-
-Disk collect_disk(const Catalog &cat) {
-  Disk out;
-  out.tables.reserve(cat.all().size());
-  for (const auto &[name, shards] : cat.all()) {
-    std::vector<const fundamental::Shard *> ps;
-    for (const fundamental::Shard &sh : shards)
-      ps.push_back(&sh);
-    out.tables.push_back(stat_of(name, ps));
-  }
-  std::vector<const fundamental::Shard *> by_lane[kLanes];
-  for (const fundamental::Spec &s : fundamental::SPECS)
-    for (const fundamental::Shard &sh : cat.shards(s.name))
-      by_lane[lane_of(s)].push_back(&sh);
-  // 概念快照 YYYYMMDD.tsv 记成日分片
+// 概念快照 YYYYMMDD.tsv 记成日分片
+TableFileStat concept_stat() {
   std::vector<fundamental::Shard> snaps;
   if (std::filesystem::exists(concept_dir()))
     for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(concept_dir()))
@@ -173,11 +155,7 @@ Disk collect_disk(const Catalog &cat) {
         assert(d > 0 && "concept: 快照文件名不是 YYYYMMDD.tsv");
         snaps.push_back({misc::ym_of(d), e.path(), e.file_size(), e.last_write_time(), d});
       }
-  for (const fundamental::Shard &sh : snaps)
-    by_lane[kLaneConcept].push_back(&sh);
-  for (std::size_t l = 0; l < kLanes; ++l)
-    out.lanes[l] = stat_of(kLaneTag[l], by_lane[l]);
-  return out;
+  return stat_of(kConceptTable, snaps);
 }
 
 // worker 一轮的写口 + 产物: 计步走进度面 (svc 即 Published), 阶段说明持 svc.mutex 写进 svc.state
@@ -1013,12 +991,6 @@ std::string short_time(std::time_t t) {
   return buf;
 }
 
-Lane lane_of(const fundamental::Spec &s) {
-  if (fundamental::from<fundamental::Tu>(s))
-    return kLaneTu;
-  return s.shape == fundamental::Shape::Daily ? kLaneBar1m : kLaneBq;
-}
-
 const TableFileStat *FundamentalState::find_table(const std::string &name) const {
   for (const TableFileStat &t : tables)
     if (t.name == name)
@@ -1069,6 +1041,11 @@ bool FundamentalService::run(FundamentalRequest &req) {
     for (std::size_t l = 0; l < kLanes; ++l)
       if (on[l])
         mark(Lane(l), [n = total[l]](LaneStat &s) { s.run = LaneRun::Queued, s.total = n, s.done = 0, s.rows = 0; });
+    auto set_syncing = [this](std::string table) {
+      std::lock_guard lk(mutex);
+      state.syncing = std::move(table);
+      publish();
+    };
     auto lane = [&](Lane l, auto &&body) {
       if (!on[l])
         return;
@@ -1079,6 +1056,7 @@ bool FundamentalService::run(FundamentalRequest &req) {
         mark(l, [](LaneStat &s) { s.run = LaneRun::Syncing; });
         begin(Phase::Loading, total[l]);
         o = body();
+        set_syncing({});
       }
       mark(l, [o](LaneStat &s) {
         s.run = o == Outcome::Done ? LaneRun::Done : LaneRun::Cancelled;
@@ -1090,6 +1068,7 @@ bool FundamentalService::run(FundamentalRequest &req) {
       lane(l, [&] {
         const std::string tag = kLaneTag[l];
         return drive(*this, cancel_, tag + ".sync", ts, [&job, &tag](const std::string &s) { job.set_message("同步 " + tag + ": " + s); }, [&](const fundamental::Task &t) {
+                       set_syncing(t.spec->name);
                        const std::int64_t rows = fetch(t);
                        step(l, rows);
                        return std::to_string(rows) + " rows"; });
@@ -1114,6 +1093,7 @@ bool FundamentalService::run(FundamentalRequest &req) {
     tasks(kLaneTu, ts_tasks, run_tu);
     // 概念快照: 当日缺才拉; 板块名单 (名称 → 代码) + 全 A 个股所属概念 (名称) 反排成各板块成分, 题材且够数的收
     lane(kLaneConcept, [&] {
+      set_syncing(kConceptTable);
       eastmoney::Client em;
       job.set_message("同步 eastmoney.concept: 板块名单");
       std::vector<eastmoney::Board> boards = em.concepts();
@@ -1151,12 +1131,15 @@ bool FundamentalService::run(FundamentalRequest &req) {
   FundamentalResult out;
   out.seq = req.seq;
   out.ok = build_asset_info(job, cat);
-  Disk disk = collect_disk(cat);
+  std::vector<TableFileStat> tables;
+  tables.reserve(cat.all().size());
+  for (const auto &[name, shards] : cat.all())
+    tables.push_back(stat_of(name, shards));
+  TableFileStat concept_files = concept_stat();
   {
     std::lock_guard lk(mutex);
-    state.tables = std::move(disk.tables);
-    for (std::size_t l = 0; l < kLanes; ++l)
-      state.lanes[l].disk = std::move(disk.lanes[l]);
+    state.tables = std::move(tables);
+    state.concept_files = std::move(concept_files);
     if (out.ok) {
       state.stock_count = job.st.stock_count;
       state.factor_stock_count = job.st.factor_stock_count;

@@ -25,7 +25,7 @@
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     夏普 = 区间内日收益 (日末净值, 无点的日收益 0) mean / sd × √每年交易日;
-//     派生重算 (新结果到) / 主图例显隐 / 右表选中 / log / 区间 任一变 → 重新 fit; 每条可见线在视野内的末点右侧标小字名
+//     主图内容 (新结果到 / 区间 / VAL 选中 / 滚动窗) / 页 / log / 主图例显隐 / 右表选中 任一变 → 重新 fit (PortfolioFitKey); 每条可见线在视野内的末点右侧标小字名
 //   页: NAV = 上面的资金曲线; VAL = 池估值 (同一布局, 区间 / log 共用; 行 = NAV 篮子三组的同一份): 右侧类别条 (指数 / 行业 / 概念) 选一组, 表格单选一个池 / 申万一级行业
 //     (全A 内按上一行 ind_l1 切) / 概念; 默认 = 组合首个因子所在池; 列 = 中文名 (悬停看名) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
 //     底色 = 该分位在同组同口内的截面名次, 便宜绿 → 贵红),
@@ -205,6 +205,14 @@ struct PortfolioViewKey {
   int d0 = 0, d1 = 0;         // 区间
   bool operator==(const PortfolioViewKey &) const = default;
 };
+// 主图 fit 键: 主图画的全部内容 (视图 gen 已含派生 / 滚动分位 / 区间) + 页 + log + NAV 右表选中 + 上帧主图例各线显隐; 与上次 fit 的不同 → 本帧 fit
+struct PortfolioFitKey {
+  uint64_t view = 0; // 视图 gen
+  bool nav = true, log = false;
+  std::string rows;  // NAV 各行选中 (VAL 空)
+  std::string shown; // 上帧主图例各线显隐
+  bool operator==(const PortfolioFitKey &) const = default;
+};
 
 // 区间条: [d0, d1) (der.dates 下标; 两边在月初 / 末尾; 日轴变 → 全段) + 拖动态
 struct PortfolioRange {
@@ -236,11 +244,11 @@ struct PortfolioUIState {
   std::string val_for;            // val_id 对应的组合 (换组合 → 回默认)
   int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
-  std::map<std::string, bool> show; // NAV 右表选中行: PortfolioRow::id → 画 (缺 = PortfolioRow::on)
-  std::set<std::string> reveal;     // 待在主图例里回默认显隐的线 ID (行刚选中 / 回默认; 画到时消费; 理想列显, 可成交列隐)
-  std::string vis_key;              // NAV 行选中已按默认设过的组合 (换组合 → 清掉选中回默认)
-  std::string shown_key;            // 上帧各线显隐 + log (变了 → 下帧重新 fit)
-  bool refit = false;
+  std::map<std::string, bool> show;     // NAV 右表选中行: PortfolioRow::id → 画 (缺 = PortfolioRow::on)
+  std::set<std::string> reveal;         // 待在主图例里回默认显隐的线 ID (行刚选中 / 回默认; 画到时消费; 理想列显, 可成交列隐)
+  std::string vis_key;                  // NAV 行选中已按默认设过的组合 (换组合 → 清掉选中回默认)
+  std::string shown_key;                // 上帧主图各线显隐 (进 fit 键)
+  PortfolioFitKey fit_key;              // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
   float legend_w[2] = {400.0f, 380.0f}; // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
   int cat[2] = {kNavPool, kGroupPool};  // [NAV, VAL] 右表类别条选中组 (NAV = NavGroup; VAL = BasketGroup)
   bool intraday = true;                 // NAV 日内栏

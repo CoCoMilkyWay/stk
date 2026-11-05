@@ -14,10 +14,6 @@
 #include <string>
 #include <vector>
 
-namespace fundamental {
-struct Spec;
-} // namespace fundamental
-
 namespace GUI::Database {
 
 // 单表本地落盘状态 — 工作线程由 fundamental::Catalog 得到, 渲染帧只读不做 IO.
@@ -35,15 +31,14 @@ struct TableFileStat {
 std::string short_time(std::time_t t); // "MM-DD HH:MM" (本地时区)
 
 // 同步道 = 一个接口的一类数据; 道序即 Update 的执行序, 日志 tag = kLaneTag
-//   Fundamental 页 Sources 表一道一行 (新浪当日一路殿后, 同列对仗)
+//   Fundamental 页各源分表的表头逐道列出 (BigQuant 两道: 基本面 / 分钟线)
 enum Lane : std::size_t { kLaneBq,
                           kLaneTu,
                           kLaneConcept,
                           kLaneBar1m,
                           kLanes };
 inline constexpr const char *kLaneTag[kLanes] = {"bigquant", "tushare", "eastmoney.concept", "bigquant.bar1m"};
-// 表所在的道 (Bq 日频表 / Tu / Bq Daily)
-Lane lane_of(const fundamental::Spec &s);
+inline constexpr const char *kConceptTable = "concept"; // 东财分表的表名 (概念快照)
 
 // 一道最近一次联网同步: Idle = 本进程未联网同步过; Queued = 本轮排在前道之后
 enum class LaneRun : std::uint8_t { Idle,
@@ -57,7 +52,6 @@ struct LaneStat {
   std::size_t total = 0, done = 0; // 计划项 / 已完成项; total 0 = 已到水位 (概念: 当日已有)
   std::int64_t rows = 0;           // 落盘行数 (概念: 收进快照的概念数)
   std::string time;                // 收尾时刻 "MM-DD HH:MM"
-  TableFileStat disk;              // 本道全部文件汇总 (随每轮重扫; 口径同单表, 最新分片 = 各表之最; 概念快照记日分片)
 };
 
 // 展示字段 (worker 持 mutex 写, UI 持 mutex 读); 阶段与计步在进度面上
@@ -80,7 +74,9 @@ struct FundamentalState {
 
   // 逐表落盘状态 (构建失败也填 — 正是要看清哪张表缺)
   std::vector<TableFileStat> tables;
+  TableFileStat concept_files; // 概念快照 (output/concept, 一份 = 一个日分片); 无快照 → months 0
   LaneStat lanes[kLanes];
+  std::string syncing; // 在拉的表 (spec.name / kConceptTable); 空 = 无
 
   // tables 里 name == 的那条; 缺失返回 nullptr
   const TableFileStat *find_table(const std::string &name) const;
