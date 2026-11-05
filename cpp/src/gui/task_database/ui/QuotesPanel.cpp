@@ -28,8 +28,11 @@ constexpr int kMaN[] = {5, 10, 20};
 constexpr const char *kMaName[] = {"MA5", "MA10", "MA20"};
 constexpr ImVec4 kMaCol[] = {ImVec4(0.843f, 0.729f, 0.490f, 1.f), ImVec4(0.306f, 0.788f, 0.690f, 1.f),
                              ImVec4(0.773f, 0.525f, 0.753f, 1.f)};
-constexpr int kIntraDays[] = {1, 2, 3, 4};
-constexpr const char *kIntraName[] = {"日内", "2日", "3日", "4日"};
+constexpr int kIntras = 5;
+constexpr int kIntraDays[kIntras] = {1, 2, 3, 4, 5};
+constexpr const char *kIntraName[kIntras] = {"日内", "2日", "3日", "4日", "5日"};
+static_assert(kIntraDays[kIntras - 1] <= static_cast<int>(kMinuteDays));
+constexpr const char *kFlowUnitName[] = {"占比", "金额"};
 constexpr int kDailySpan[] = {5, 22, 250, 2500}; // 交易日
 constexpr const char *kDailyName[] = {"周", "月", "年", "10年"};
 static_assert(kDailySpan[3] <= static_cast<int>(kDailyDays));
@@ -582,21 +585,24 @@ std::vector<misc::Ymd> day_axis(std::span<const misc::Ymd> trading, misc::Ymd da
   return days;
 }
 
+// d 日的分钟根: 当日 (joins 且有根) / 历史; 无 → nullptr
+const Bars *bars_on(const Kline &kl, const Day &today, misc::Ymd d) {
+  if (joins(kl, today) && today.bars.has.any() && today.bars.date == d)
+    return &today.bars;
+  const auto it = std::lower_bound(kl.minutes.begin(), kl.minutes.end(), d, [](const Bars &m, misc::Ymd x) { return m.date < x; });
+  return it != kl.minutes.end() && it->date == d ? &*it : nullptr;
+}
+
 // 日内的根 = 日轴各日的分钟 (历史 + 当日, joins 才接; 某日无源 → 留空), x = 第 k 日 · kSlots + 槽;
 //   分钟根的前收 = 同日日根的; 涨跌基准 = 末个有根日的前收
 void intraday(const Kline &kl, const Day &today, std::span<const misc::Ymd> days, bool money, Series &s) {
   s.intraday = true;
   s.money = money;
   s.days.assign(days.begin(), days.end());
-  const bool live = joins(kl, today) && today.bars.has.any();
   for (size_t k = 0; k < days.size(); ++k) {
-    const Bars *b = live && today.bars.date == days[k] ? &today.bars : nullptr;
-    if (!b) {
-      const auto it = std::lower_bound(kl.minutes.begin(), kl.minutes.end(), days[k], [](const Bars &m, misc::Ymd x) { return m.date < x; });
-      if (it == kl.minutes.end() || it->date != days[k])
-        continue;
-      b = &*it;
-    }
+    const Bars *b = bars_on(kl, today, days[k]);
+    if (!b)
+      continue;
     const float ref = ref_of(kl, today, b->date);
     s.ref = ref;
     for (int j = 0; j < kSlots; ++j)
@@ -628,7 +634,7 @@ void header(const char *title, const Kline &kl, const Day &today, const char *no
 void plot_intraday(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
   const int nd = static_cast<int>(s.days.size());
   const uint64_t key = id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
-  plot_chart(name, s, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, size, kIntraName, 4, st.intraday, false);
+  plot_chart(name, s, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, size, kIntraName, kIntras, st.intraday, false);
 }
 // 日线档窗口右端 = 最新一根; 不足一档的历史靠右, 左侧留空
 void plot_daily(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
@@ -681,11 +687,11 @@ void candles(const Overlay &l) {
 }
 
 // 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 / 蜡烛 (含零线); 刻度区全空 (图框不变), 不画图例:
-//   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格涨跌幅以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
+//   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格 y 值 (带单位 unit) 以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
 //   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标末根涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
-//   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处涨跌幅 + 该处各条读数 (高 → 低). 画完返回图区左上角
-ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size) {
+//   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低). 画完返回图区左上角
+ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit) {
   const int nd = std::max(1, static_cast<int>(days.size()));
   const Overlay *one = nullptr; // 蜡烛条
   double lo = 0, hi = 0;
@@ -757,9 +763,9 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       for (const double v : yt) {
         char buf[16];
         if (v == 0)
-          std::snprintf(buf, sizeof(buf), "0%%");
+          std::snprintf(buf, sizeof(buf), "0%s", unit);
         else
-          std::snprintf(buf, sizeof(buf), "%+.*f%%", prec, v);
+          std::snprintf(buf, sizeof(buf), "%+.*f%s", prec, v, unit);
         const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf);
         const float y = ImPlot::PlotToPixels(0.0, v).y;
         dl->AddText(font, fs, ImVec2(right - sz.x, y - sz.y >= top ? y - sz.y : y), col, buf);
@@ -818,12 +824,12 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       ImGui::BeginTooltip();
       if (static_cast<size_t>(k) < days.size())
         ImGui::Text("%02d-%02d %02d:%02d%s", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60, per);
-      ImGui::TextDisabled("光标 %+.2f%%", m.y);
+      ImGui::TextDisabled("光标 %+.2f%s", m.y, unit);
       for (const auto &[j, l] : at) {
         const double y = l->y[j];
         ImGui::TextColored(l->col, "%s", l->name.c_str());
         ImGui::SameLine();
-        ImGui::TextColored(tint(y, 0), "%+.2f%%", y);
+        ImGui::TextColored(tint(y, 0), "%+.2f%s", y, unit);
         if (l->g)
           ImGui::Text("前 %+.2f%%  高 %+.2f%%\n低 %+.2f%%  收 %+.2f%%", l->open[j], l->high[j], l->low[j], y);
       }
@@ -841,6 +847,55 @@ void pull(const HistoryPub &x, Feed &f) {
   if (x.gen != f.gen || x.data == f.data)
     return;
   f.data = x.data, f.shown = f.gen, f.ver = ~0ull;
+}
+
+// 篮子图的前置: 源未就绪 / 读取中 → 画提示, false
+bool basket_ready(const Market &mk, Feed &f) {
+  if (f.data && f.data->lack) {
+    ImGui::TextWrapped("%s", f.data->lack);
+    if (ImGui::SmallButton("重载"))
+      f.reload = true;
+    return false;
+  }
+  if (!f.data) {
+    const HistoryPub &x = mk.history(kBasket);
+    ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
+    return false;
+  }
+  assert(f.today.size() == f.data->list.size());
+  return true;
+}
+
+// 篮子图的来源注 (按首条在画的篮子): 当日合成 / all.bar 截至 + 补日; 当日没接上 → gap_note, 返回 true
+bool basket_note(const Tape &d, const Kline &kl, const Day &today, const QuoteStatus &qs, char *note, size_t size) {
+  int n = 0;
+  bool gap = false;
+  if (joins(kl, today))
+    n = std::snprintf(note, size, "当日由新浪快照合成 %02d:%02d:%02d · 成员取 all.bar %02d-%02d 收盘行", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60,
+                      d.basis / 100 % 100, d.basis % 100);
+  else if (!(gap = gap_note(kl, today, note, size)))
+    n = std::snprintf(note, size, "all.bar 截至 %02d-%02d", d.basis / 100 % 100, d.basis % 100);
+  if (n > 0 && d.basis < kl.last)
+    std::snprintf(note + n, size - static_cast<size_t>(n), " · 其后至 %02d-%02d 由 bar1d / bar1m 补", kl.last / 100 % 100, kl.last % 100);
+  return gap;
+}
+
+// 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再 "重载" (悬停看 note); hint 非空 → 下一行提示
+template <class Tools>
+void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *hint, const Tools &bars) {
+  if (corner.x < 0)
+    return;
+  ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
+  bars();
+  ImGui::SameLine(0, 8);
+  if (ImGui::SmallButton("重载"))
+    f.reload = true;
+  if (ImGui::IsItemHovered() && note[0])
+    ImGui::SetTooltip("%s", note);
+  if (hint) {
+    ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4 + ImGui::GetFrameHeightWithSpacing()));
+    ImGui::TextDisabled("%s", hint);
+  }
 }
 
 } // namespace
@@ -900,20 +955,10 @@ void RenderStockPanel(const Market &mk, StockState &st, const std::string &title
 
 void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks) {
   Feed &f = st.feed;
-  if (f.data && f.data->lack) {
-    ImGui::TextWrapped("%s", f.data->lack);
-    if (ImGui::SmallButton("重载"))
-      f.reload = true;
+  if (!basket_ready(mk, f))
     return;
-  }
-  if (!f.data) {
-    const HistoryPub &x = mk.history(kBasket);
-    ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
-    return;
-  }
   const QuoteStatus qs = mk.quote->status();
   const Tape &d = *f.data;
-  assert(f.today.size() == d.list.size());
   // 日轴 = 行情日及其前 n − 1 个交易日; 各条按日落位, 某条缺的日留空 (当日未接上 → 当日空)
   const std::vector<misc::Ymd> days = day_axis(mk.quote->trading(), qs.date, kIntraDays[st.intraday]);
   const int nd = std::max(1, static_cast<int>(days.size()));
@@ -926,16 +971,8 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
     assert(p.b < d.list.size() && d.keys[p.b] == p.b);
     const Kline &kl = d.list[p.b];
     const Day &today = f.today[p.b];
-    if (!note[0]) {
-      int n = 0;
-      if (joins(kl, today))
-        n = std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员取 all.bar %02d-%02d 收盘行", qs.sec / 3600,
-                          qs.sec / 60 % 60, qs.sec % 60, d.basis / 100 % 100, d.basis % 100);
-      else if (!(gap = gap_note(kl, today, note, sizeof(note))))
-        n = std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", d.basis / 100 % 100, d.basis % 100);
-      if (n > 0 && d.basis < kl.last)
-        std::snprintf(note + n, sizeof(note) - static_cast<size_t>(n), " · 其后至 %02d-%02d 由 bar1d / bar1m 补", kl.last / 100 % 100, kl.last % 100);
-    }
+    if (!note[0])
+      gap = basket_note(d, kl, today, qs, note, sizeof(note));
     Series s;
     intraday(kl, today, days, true, s);
     if (s.bars.empty() || !(s.bars.front().ref > 0))
@@ -961,21 +998,71 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
       l.y.push_back(pct(c.close));
   }
   ImGui::PushID("basket");
-  const ImVec2 corner = plot_overlay(ls, days, avail);
-  if (corner.x >= 0) {
-    ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
-    button_bar(kIntraName, 4, st.intraday);
-    ImGui::SameLine(0, 8);
-    if (ImGui::SmallButton("重载"))
-      f.reload = true;
-    if (ImGui::IsItemHovered() && note[0])
-      ImGui::SetTooltip("%s", note);
-    if (picks.empty() || gap) {
-      ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4 + ImGui::GetFrameHeightWithSpacing()));
-      ImGui::TextDisabled("%s", picks.empty() ? "在右表选指数 / 行业行" : note);
-    }
-  }
+  const ImVec2 corner = plot_overlay(ls, days, avail, "%");
+  overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行" : gap ? note
+                                                                                      : nullptr,
+                [&] { button_bar(kIntraName, kIntras, st.intraday); });
   ImGui::PopID();
+}
+
+void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks) {
+  Feed &f = st.feed;
+  if (!basket_ready(mk, f))
+    return;
+  const QuoteStatus qs = mk.quote->status();
+  const Tape &d = *f.data;
+  const std::vector<misc::Ymd> days = FlowDays(mk, st);
+  const bool share = st.flow_unit == 0;
+  std::vector<Overlay> ls;
+  char note[160] = "";
+  bool gap = false;
+  for (const BasketPick &p : picks) {
+    assert(p.b < d.list.size() && d.keys[p.b] == p.b);
+    const Kline &kl = d.list[p.b];
+    const Day &today = f.today[p.b];
+    if (!note[0])
+      gap = basket_note(d, kl, today, qs, note, sizeof(note));
+    Overlay l;
+    l.name = basket_name(p.b), l.col = ImGui::ColorConvertU32ToFloat4(p.col);
+    double net = 0, amount = 0;
+    for (size_t k = 0; k < days.size(); ++k)
+      if (const Bars *b = bars_on(kl, today, days[k]))
+        for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
+          if (b->has[j]) {
+            net += b->net[j], amount += b->cell[j].amount;
+            l.x.push_back(static_cast<double>(k * kSlots + j));
+            l.y.push_back(share ? (amount > 0 ? net / amount * 100.0 : 0.0) : net / 1e8);
+          }
+    if (!l.x.empty())
+      ls.push_back(std::move(l));
+  }
+  ImGui::PushID("flow");
+  const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail(), share ? "%" : "亿");
+  overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行" : gap ? note
+                                                                                      : nullptr,
+                [&] {
+                  button_bar(kIntraName, kIntras, st.flow);
+                  ImGui::SameLine(0, 8);
+                  button_bar(kFlowUnitName, 2, st.flow_unit);
+                });
+  ImGui::PopID();
+}
+
+std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st) {
+  return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.flow]);
+}
+
+std::vector<Flow> FlowOf(const Feed &f, size_t k, std::span<const misc::Ymd> days) {
+  if (!f.data || k >= f.data->list.size())
+    return {};
+  assert(f.today.size() == f.data->list.size());
+  std::vector<Flow> o(days.size());
+  for (size_t i = 0; i < days.size(); ++i)
+    if (const Bars *b = bars_on(f.data->list[k], f.today[k], days[i]))
+      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
+        if (b->has[j])
+          o[i].net += b->net[j], o[i].amount += b->cell[j].amount;
+  return o;
 }
 
 Recent RecentOf(std::span<const Mark> m) {

@@ -2,6 +2,7 @@
 //   个股 = Assets 右栏: 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
 //   篮子 = Portfolio NAV 日内栏: 键集 = 全部篮子线, 叠加图 (对首日前收的涨跌幅, 刻度区全空: 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名小字贴线尾;
 //     不画量, 读数看十字光标); 多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 kSlots 的因子并根, 同 py/app/tdx) + 现价十字 (虚线, 标涨跌幅 / 时刻), 版面不变;
+//     Portfolio FLOW 页 = 同一叠加图, y = 自日轴首日开盘起逐分钟累计的净流入 (Bars::net; 占同段累计成交额 % / 金额 亿元);
 //   近况 (Recent): 键集里一个标的的近况两列 (Portfolio NAV 表). 以下为个股图:
 //   价 = 实心蜡烛 (实体 = 上一根收 → 本根收, 首根起于前收, 根根首尾相接; 量柱同色), 日内按视野宽并根 (同篮子);
 //     日线另叠均线, 默认 10 年档; 悬停提示只在量图
@@ -35,7 +36,7 @@ struct QuotesView {
 
 // 一个标的的两张图: 档位 + 视野
 struct ChartState {
-  int intraday = 0;  // 日内档 (日内 / 2日 / 3日 / 4日)
+  int intraday = 0;  // 日内档 (日内 / 2日 … 5日)
   int daily = 3;     // 日线档 (周 / 月 / 年 / 10年)
   QuotesView iv, dv; // 日内 / 日线 视野
 };
@@ -59,8 +60,10 @@ struct StockState {
 };
 
 struct BasketState {
-  Feed feed;        // 键集 = 全部篮子线 (下标 = basket_line)
-  int intraday = 0; // 日内档 (日内 / 2日 / 3日 / 4日)
+  Feed feed;         // 键集 = 全部篮子线 (下标 = basket_line)
+  int intraday = 0;  // 日内档 (日内 / 2日 … 5日)
+  int flow = 0;      // 资金流档 (同日内档)
+  int flow_unit = 0; // 资金流 y: 0 = 占累计成交额 [%], 1 = 金额 [亿元]
 };
 
 // 日内叠加的一条: 篮子线 basket_line + 线色 (ImU32)
@@ -88,5 +91,15 @@ Recent RecentOf(const Feed &f, size_t k);
 void RenderStockPanel(const Market &mk, StockState &st, const std::string &title);
 // picks 各篮子的日内叠加图 (一个 = 蜡烛), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 源未就绪 / 读取中 → 提示
 void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks);
+// picks 各篮子的累计净流入叠加图 (日轴 = FlowDays, 跨日接续; 档位 / 口径按钮叠在左上角), 其余同 RenderBasketIntraday
+void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<BasketPick> &picks);
+// 资金流档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
+std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st);
+// 一段的资金流 [元]: 净流入 (分钟涨跌法, 见 Fold) / 成交额; amount 0 = 无根
+struct Flow {
+  double net = 0, amount = 0;
+};
+// 键集第 k 个篮子在 days 各日的资金流 (当日接上取当日, 否则历史分钟根); 历史未到 / 源未就绪 → 空
+std::vector<Flow> FlowOf(const Feed &f, size_t k, std::span<const misc::Ymd> days);
 
 } // namespace GUI::Database

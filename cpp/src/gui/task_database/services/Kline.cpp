@@ -44,12 +44,13 @@ void bars_of(const Bar1m *m, misc::Ymd d, Bars &b) {
 
 namespace {
 
-// 一根 → 一格的比 (价 / 基准) + 额; 无根 → 平于 at, 额 0
+// 一根 → 一格的比 (价 / 基准) + 额, 净流入待填 0; 无根 → 平于 at, 额 0
 void ratio(const Cell *c, double inv, double at, double *q) {
   if (c)
     q[0] = c->open * inv, q[1] = c->high * inv, q[2] = c->low * inv, q[3] = c->close * inv, q[4] = c->amount;
   else
     q[0] = q[1] = q[2] = q[3] = at, q[4] = 0;
+  q[5] = 0;
 }
 
 // 一格 (比 × 权之和) → 一根 (× f = 前日点位 / Σ w)
@@ -59,14 +60,13 @@ Cell scaled(const double *a, double f) {
 
 } // namespace
 
-Fold::Fold(size_t baskets) : sw_(baskets), net_(baskets), acc_(baskets * kCells * kQ) {}
+Fold::Fold(size_t baskets) : sw_(baskets), acc_(baskets * kCells * kQ) {}
 
 void Fold::open(int slots) {
   assert(slots >= 0 && slots <= kSlots);
   slots_ = slots;
   end_ = -1;
   std::fill(sw_.begin(), sw_.end(), 0.0);
-  std::fill(net_.begin(), net_.end(), 0.0);
   for (size_t b = 0; b < sw_.size(); ++b)
     std::fill_n(acc_.begin() + static_cast<ptrdiff_t>(b * kCells * kQ), cells() * kQ, 0.0);
 }
@@ -88,18 +88,18 @@ void Fold::add(const Leg &g, std::span<const Members::Weight> ws) {
       c = q[3], end_ = std::max(end_, s);
       dir = b->close > px ? 1 : b->close < px ? -1
                                               : dir;
-      net += dir * b->amount, px = b->close;
+      q[5] = dir * b->amount, net += q[5], px = b->close;
     }
   }
+  r[5] = net;
   const size_t n = cells() * kQ;
   for (const Members::Weight &w : ws) {
     sw_[w.basket] += w.w;
-    net_[w.basket] += net;
     double *a = acc_.data() + static_cast<size_t>(w.basket) * kCells * kQ;
     for (size_t j = 0; j < n; j += kQ) {
       for (size_t k = 0; k < 4; ++k)
         a[j + k] += w.w * r[j + k];
-      a[j + 4] += r[j + 4];
+      a[j + 4] += r[j + 4], a[j + 5] += r[j + 5];
     }
   }
 }
@@ -116,11 +116,14 @@ void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, st
     const double f = level[b] / sw_[b];
     o.prev = prev;
     o.candle = {scaled(a, f), d, static_cast<float>(level[b])};
-    o.flow = net_[b];
+    o.flow = a[5];
     o.bars.date = d;
     o.bars.has.reset();
-    for (int s = 0; s <= end_; ++s)
-      o.bars.add(s, scaled(a + (1 + static_cast<size_t>(s)) * kQ, f));
+    for (int s = 0; s <= end_; ++s) {
+      const double *q = a + (1 + static_cast<size_t>(s)) * kQ;
+      o.bars.add(s, scaled(q, f));
+      o.bars.net[static_cast<size_t>(s)] = q[5];
+    }
   }
 }
 

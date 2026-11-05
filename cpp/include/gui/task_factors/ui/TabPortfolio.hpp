@@ -7,7 +7,7 @@
 //     近况两列 (Database::Recent; 篮子行 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点) 按涨跌着色, 不随区间;
 //     只数 / 总市值 (只篮子行) = 当日成员表 (Tape::members / weight): 只数取同切片等权线, 总市值取同切片加权线 (当日接上 × 当日涨跌), 不着色;
 //     换手 / 资金流入 (只篮子行) = 新浪当日 成交额占总市值 / 净流入占成交额 (Day::flow, 分钟涨跌法), 流入按正负着色, 悬停格看分子分母金额;
-//     篮子组 (指数 / 行业 / 概念) 表上一行过滤条 (BasketFilter, NAV / VAL 共用): 只数 / 总市值区间 + |流入| 下限, 选中行恒列;
+//     篮子组 (指数 / 行业 / 概念) 表上一行过滤条 (BasketFilter, 三页共用): 只数 / 总市值区间 + |流入| 下限, 选中行恒列;
 //     两张右表列宽按内容最紧 (数值右对齐不补宽, 表头取短名, 名超 kNameCells 格截断补 …), 右栏宽 = 表格与表上工具行之大者;
 //     表头悬停 = 该列说明 (同一格式: 列名 = 全称 + 算法 / 数据 / 显示 / 适用 四行);
 //     其余数值列底色 = 同组同列截面名次 (好绿 → 差红: 年化 / 夏普高好, 年换手低好; 同 VAL 配色); 表头点排序 (组内, 升 → 降 → 原序; VAL 表同)
@@ -41,10 +41,13 @@
 //     绝对估值等值线 (默认关; 很淡的灰, 不进 fit): 倍数 m = 1 / v (PE / PB / PS / PCF / P/D), y_t = P_t · v_t · m,
 //     档 = 该篮子全史倍数区间 (两头剔极端分位) 20 档等分, 不随区间 / 视野变; v ≤ 0 断开; 悬停最近一条高亮 + 提示该档倍数 / 当日倍数 / 指数到该线的涨跌;
 //     主图例 = 左上自绘矩阵 (对仗 Inspect 期限结构): 行 = 口, 列 = 当前收益率 | 当前倍数 | N 年分位 | Band | 等值线, 点色块 / 行头 / 列头开关, 悬停高亮
+//   页 FLOW = 篮子日内资金流 (只这一张图, 不看区间): 左 = 选中篮子行 (NAV 同一份选中) 的累计净流入叠加 (Database::RenderBasketFlow:
+//     日轴 = 行情日及其前 n − 1 个交易日, n = 档 日内 / 2日 … 5日; 自首日开盘逐分钟累计, 跨日接续; y = 占累计成交额 % (默认) / 金额 亿元; 当日随新浪快照动);
+//     右表 = 类别条 (指数 / 行业 / 概念) + 过滤条 + 点行选中; 列 = 中文名 | 日轴各日净流入占当日成交额 | 档内合计净流入 | 合计占比 (按正负着色, 悬停格看金额)
 #pragma once
 
 #include "gui/task_database/services/Market.hpp"
-#include "gui/task_database/ui/QuotesPanel.hpp"      // BasketState / Recent (NAV 日内栏 + 近况列)
+#include "gui/task_database/ui/QuotesPanel.hpp"      // BasketState / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
 #include "gui/task_factors/services/FactorsFile.hpp" // FactorRow
 #include "gui/task_factors/services/PortfolioService.hpp"
 #include "shared/Basket.hpp" // kGroupPool / kBasketGroups
@@ -83,8 +86,7 @@ struct PortfolioRow {
   std::string hover;                                      // 悬停 (en 起头 + 详情)
   double turn = std::numeric_limits<double>::quiet_NaN(); // 年换手 (全评估期单边, 倍/年; NaN = 无)
   bool on = false;                                        // 默认选中
-  int hue = 0;                                            // 色号 = 相似簇 (指数 / 行业 / 概念 / 因子四组一起聚, 见 PortfolioDerived::nav); 策略不取
-  float light = 0.f;                                      // 簇内的淡化 ∈ [0, 1) (0 = 最重: 向白混)
+  float hue = 0.f;                                        // 色相 ∈ [0, 1) (指数 / 行业 / 概念 / 因子四组一起按相似度定, 见 PortfolioDerived::nav); 策略不取
   int basket = -1;                                        // 篮子行: 篮子线 basket_line (BasketCurve / 篮子 Feed 同键; 近况 / 日内 / VAL 取它); 其余 −1
   std::vector<uint32_t> at;                               // 篮子行: [line[kTrade].x] → BasketCurve::dates 下标 (严格升序; 滚动窗看日并集轴以外的全史)
   PortfolioCurve line[kPairLines];
@@ -117,7 +119,7 @@ struct PortfolioDerived {
                                                        //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头 (与组合同式); id = PortfolioEntry::key,
                                                        //     en | cn = 因子文件主干 | 中文名 (超长截断), hover = en + 全名 + 池 层 持有期 冲击段 规范串
                                                        //   策略 = 一行, 组合 G20 多头: 首日开盘前 1 + 每个有增量的 x; en | cn = 组合名 | G20 多头
-                                                       //   色: 策略外四组的行一起按相似度 s = max(成员重合, 残差相关) 聚成色表色数个簇, 一簇一色号, 簇内按树叶序淡化;
+                                                       //   色: 策略外四组的行一起按相似度 s = max(成员重合, 残差相关) Ward 聚簇, 一簇占色环一段, 簇内按树叶序铺开 (定亮定艳);
                                                        //     成员重合 = Tape::overlap (只篮子之间), 残差相关 = 理想线末段日收益对全A.加回归的残差相关
   int n_ready = 0, n_error = 0;                        // 已算成 / 算失败的因子数
   std::vector<std::shared_ptr<const FactorCurve>> src; // [因子行] 单因子线的源 (nav[kNavFactor] 同下标)
@@ -231,7 +233,13 @@ struct PortfolioRange {
   int grab_k0 = 0, grab_k1 = 0; // 按下时两边的月初序号 (平移保持 k1 − k0)
 };
 
-// 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (NAV / VAL 共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);
+// 页签 (同一个右图例位; 图例宽 / 类别条按页各一份)
+enum PortfolioPage : int { kPageNav,
+                           kPageVal,
+                           kPageFlow };
+inline constexpr int kPages = 3;
+
+// 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (三页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);
 // 设了的条件缺值 (未到 / 无新浪行情日) 即不过; 选中行恒列
 struct BasketFilter {
   int n_lo = 0, n_hi = 0;
@@ -266,11 +274,11 @@ struct PortfolioUIState {
   std::string vis_key;                                                       // NAV 行选中已按默认设过的组合 (换组合 → 清掉选中回默认)
   std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)
   PortfolioFitKey fit_key;                                                   // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
-  float legend_w[2] = {400.0f, 380.0f};                                      // [NAV, VAL] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
-  int cat[2] = {kNavPool, kGroupPool};                                       // [NAV, VAL] 右表类别条选中组 (NAV = NavGroup; VAL = BasketGroup)
+  float legend_w[kPages] = {400.0f, 380.0f, 380.0f};                         // [PortfolioPage] 右图例表格不截断所需的宽 (上帧 EndTable 量的; 本帧右图例按它定宽)
+  int cat[kPages] = {kNavPool, kGroupPool, kGroupPool};                      // [PortfolioPage] 右表类别条选中组 (NAV = NavGroup; VAL / FLOW = BasketGroup)
   BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}}; // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
   bool intraday = true;                                                      // NAV 日内栏
-  Database::BasketState basket;                                              // 篮子历史 + 当日 (日内栏 / 篮子行近况)
+  Database::BasketState basket;                                              // 篮子历史 + 当日 (日内栏 / FLOW / 篮子行近况)
 };
 
 // GUI 线程每帧 (两页都调): 目录变 → 重列, 当前组合不在了 → 选第一个 (载入内容, content_gen +1)
