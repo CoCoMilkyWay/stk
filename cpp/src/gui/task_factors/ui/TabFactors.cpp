@@ -165,7 +165,8 @@ bool contains_ci(std::string_view hay, std::string_view needle) {
 }
 
 // 换本层算子, 槽内原有内容保留: 原是算子 → 子槽逐位对应 (多出的截掉, 不够的补空; N 元留 2..kLrN 元); 原是叶 → 进第一元.
-// 参数取默认表; N 元的 h 默认自由 (随所搜持有期). 子槽值域不在这里查 (下拉只按本槽 need 过滤), 交给每帧 parse 即时校验标红
+// 参数取默认表; N 元回归的 h 默认自由 (随所搜持有期), N 元定权的 w 默认自由 (取消自由时从等权起).
+// 子槽值域不在这里查 (下拉只按本槽 need 过滤), 交给每帧 parse 即时校验标红
 void set_op(BuildNode &n, int op, int seg) {
   std::vector<BuildNode> args;
   if (n.op >= 0) {
@@ -189,6 +190,10 @@ void set_op(BuildNode &n, int op, int seg) {
   if (factor::expr::declares(o.params, "h")) {
     n.p.h = factor::stat::hold_close(1);
     n.free = factor::expr::kFreeH;
+  }
+  if (factor::expr::declares(o.params, "w")) {
+    std::fill(n.p.w, n.p.w + factor::kLrN, 1.f);
+    n.free = factor::expr::kFreeW;
   }
 }
 
@@ -258,6 +263,17 @@ void to_source(const BuildNode &n, std::string &s, bool &complete) {
     sep();
     s += (n.free & factor::expr::kFreeH) ? std::string("h") : "h=" + factor::stat::hold_token(n.p.h);
   }
+  if (factor::expr::declares(o.params, "w")) {
+    sep();
+    if (n.free & factor::expr::kFreeW) {
+      s += 'w';
+    } else {
+      s += "w=[";
+      for (size_t a = 0; a < n.args.size(); ++a)
+        s += (a ? ", " : "") + factor::expr::k_text(n.p.w[a]);
+      s += ']';
+    }
+  }
   s += ')';
 }
 
@@ -277,6 +293,8 @@ void from_expr(const factor::expr::Expr &e, int i, int seg, BuildNode &n) {
     n.p.k2 = x.p.k2;
   if (!(x.free & factor::expr::kFreeH))
     n.p.h = x.p.h;
+  if (!(x.free & factor::expr::kFreeW))
+    std::copy(x.p.w, x.p.w + x.n_args, n.p.w);
   n.free = x.free;
   int na = 0; // 特征元数 (目标叶不进构建器, 由 h 推出)
   while (na < x.n_args && !e.nodes[static_cast<size_t>(x.args[na])].target)
@@ -463,11 +481,29 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
       if (ImGui::IsItemHovered())
         tip("回归目标: 该持有期做多收益的截面秩");
     }
+    if (factor::expr::declares(o.params, "w")) {
+      const bool f = free_box("##fw", factor::expr::kFreeW, "勾上 = 各元的权都由 Search 搜");
+      ImGui::BeginDisabled(f);
+      for (size_t a = 0; a < n.args.size(); ++a) {
+        ImGui::PushID(static_cast<int>(a));
+        ImGui::SameLine(0, a ? 4 : 2);
+        ImGui::SetNextItemWidth(50);
+        ImGui::InputFloat("##w", &n.p.w[a], 0.f, 0.f, "%g");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          tip("%s 的权", kNaryNames[a]);
+        ImGui::PopID();
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine(0, 2);
+      ImGui::TextUnformatted("w");
+    }
     if (factor::expr::nary(o)) {
       ImGui::SameLine();
       ImGui::BeginDisabled(n.args.size() >= static_cast<size_t>(factor::kLrN));
-      if (ImGui::SmallButton("+"))
+      if (ImGui::SmallButton("+")) {
         n.args.emplace_back();
+        n.p.w[n.args.size() - 1] = 1.f;
+      }
       ImGui::EndDisabled();
       ImGui::SameLine(0, 2);
       ImGui::BeginDisabled(n.args.size() <= 2);

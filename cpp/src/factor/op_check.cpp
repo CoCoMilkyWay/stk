@@ -91,12 +91,12 @@ template <class Str, class C, bool IS_CS>
 void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
   const factor::expr::OpInfo &o = factor::expr::kOps[op];
   const char *name = o.name;
-  const int T = rows_of(rep, S), NI = n_in_of(o.arity);
+  const int T = rows_of(rep, S), NI = n_in_of(o.t, o.arity);
   const std::string nm = name;
   const bool sweep_d = std::strchr(o.params, 'd') != nullptr;
   const int ds[] = {1, 5, 20, S, S + 60};
   constexpr int kNd = static_cast<int>(sizeof(ds) / sizeof(ds[0]));
-  const bool sweep_h = factor::has_h(o.arity);
+  const bool sweep_h = factor::has_h(o.t, o.arity);
   const int hs[] = {factor::stat::hold_close(1), S > 1 ? 2 * factor::geo_of(S).N : factor::stat::hold_open(1)};
   constexpr int kNh = static_cast<int>(sizeof(hs) / sizeof(hs[0]));
 
@@ -116,6 +116,7 @@ void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
       p.d = sweep_d ? ds[ci % kNd] : 1;
       p.h = sweep_h ? hs[ci / kNd] : 0;
       set_k(nm, p, S);
+      set_w(p);
 
       Plane ref, got;
       if constexpr (IS_CS) {
@@ -179,7 +180,7 @@ int gen_tree(std::vector<GenNode> &pool, std::mt19937 &rng, int depth, int S) {
     std::vector<int> r;
     for (int i = 0; i < factor::expr::kOpCount; ++i) {
       const factor::expr::OpInfo &o = factor::expr::kOps[i];
-      const int k = o.arity == factor::kNary       ? -1 // N 元回归要标签叶, 不进随机树
+      const int k = o.arity == factor::kNary       ? -1 // N 元 (元数由表达式定) 不进随机树
                     : factor::detail::pointwise(i) ? 0
                                                    : (o.a == factor::A::SELF ? 1 : (o.a == factor::A::ALL ? 2 : -1));
       if (k == kind)

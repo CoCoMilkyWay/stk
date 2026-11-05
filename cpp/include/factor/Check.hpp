@@ -194,9 +194,12 @@ inline Gen gen_of(Dom d) {
   assert(false && "该 Dom 作输入尚无造数: 在 gen_of 补一支");
   return Gen::NORM;
 }
-// 对拍里的输入数: 定元 = 元数; N 元 = kNaryIn 个特征元 + 回归目标
+// 对拍里的输入数: 定元 = 元数; N 元 = kNaryIn 个特征元 (+ 回归目标)
 inline constexpr int kNaryIn = 3;
-inline int n_in_of(int arity) { return arity == kNary ? kNaryIn + 1 : arity; }
+inline int n_in_of(T t, int arity) { return arity == kNary ? kNaryIn + (has_h(t, arity) ? 1 : 0) : arity; }
+// N 元定权的对拍权: 正负相间且量级不等 (元序 / 符号 / 比例错了都现形)
+inline constexpr float kWParams[kNaryIn] = {1.f, -0.5f, 0.25f};
+inline void set_w(Param &p) { std::copy(kWParams, kWParams + kNaryIn, p.w); }
 // 第 s 个输入的配方: 定元按 in[s]; N 元特征元按 in[0], 末元 (回归目标 = 收益标签) 按 RET
 inline Gen gen_at(const Dom (&in)[3], int arity, int s) {
   if (arity != kNary)

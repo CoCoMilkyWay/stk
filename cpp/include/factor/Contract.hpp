@@ -10,10 +10,12 @@
 //                   EXTREME 极值及 arg 族 (半群不可逆) / ORDER 序统计 / RECUR 递推
 //   类型约束 (非归约核不消费集合, 部分格子空): MAP ⇒ POINT×SELF; SHIFT ⇒ SELF 纯滞后 (不看整窗);
 //   RECUR ⇔ EXPO 一一绑定; 归约核 (MOMENT / EXTREME / ORDER) 与窗/域自由组合. 复合算子标主导 (最重) 一级.
-//   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀), 外加 N 元回归 ROLL×ALL (CsLinRankRoll);
+//   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀), 外加 N 元 {POINT, ROLL}×ALL (CsLinRank*);
 //   十字外 (如 EXPAND×GROUP 段内组均值) 是合法格子, 留待将来, 命名按计算顺序 TsCs<核> / CsTs<核>.
-//   【N 元回归】元数 N (kNary) 的算子: 2..kMaxIn−1 个特征元 + 末元回归目标 (h 持有期的做多标签, 表达式不写, 解析时补);
-//     窗 = 行 t 收盘时**已实现**的最近 d 个标签行 (stat::label_known), 截面秩化后池化岭回归, 输出拟合值 (见 OpTable 该行).
+//   【N 元】元数 N (kNary) 的算子: 2..kLrN 个特征元, 各元取池内截面秩 x̃ = pct − 1/2, 输出 Σ w_i·x̃_i (任一元无效 → 无效).
+//     定权 POINT (CsLinRankFix): w = 参数 w, 一元一个, 逐行无状态.
+//   【N 元回归】ROLL (CsLinRankRoll): 特征元后接末元回归目标 (h 持有期的做多标签, 表达式不写, 解析时补);
+//     窗 = 行 t 收盘时**已实现**的最近 d 个标签行 (stat::label_known), 截面秩化后池化岭回归出 w (见 OpTable 该行).
 //   CPU / GPU 具体怎么算 (逐格融合 / scan / van Herk / 直方图 …) 是后端私事, 不进表不进分类.
 //
 //   【三后端】同名 struct, 三处**完全独立**实现, 不共享一行算法代码 (否则对拍空转):
@@ -113,12 +115,17 @@
 
 namespace factor {
 
+inline constexpr int kMaxIn = 8;        // 算子输入上限 (N 元回归: 至多 kLrN 个特征元 + 末元回归目标)
+inline constexpr int kNary = -1;        // OpTable 元数列的 N 元 (元数由表达式定)
+inline constexpr int kLrN = kMaxIn - 1; // N 元的特征元上限
+
 // ---- 运行期参数 (每个算子只读 OpTable 里声明的字段) ----
 struct Param {
-  int d = 0;      // 窗长 / 滞后 (期 = 本层的行)
-  float k = 0.f;  // 阈值 / 桶数 / EMA 系数 / 分位 / 岭强度
-  float k2 = 0.f; // 第二阈值 (TodMask 上界)
-  int h = 0;      // 回归目标的持有期键 (stat 持有期键; 只 N 元回归)
+  int d = 0;          // 窗长 / 滞后 (期 = 本层的行)
+  float k = 0.f;      // 阈值 / 桶数 / EMA 系数 / 分位 / 岭强度
+  float k2 = 0.f;     // 第二阈值 (TodMask 上界)
+  int h = 0;          // 回归目标的持有期键 (stat 持有期键; 只 N 元回归)
+  float w[kLrN] = {}; // 各特征元的权 (前 N 个有效; 只 N 元定权)
 };
 
 // ---- 常量 ----
@@ -174,8 +181,6 @@ struct Out {
   float *v = nullptr;
   uint8_t *m = nullptr;
 };
-inline constexpr int kMaxIn = 8; // 算子输入上限 (N 元: 至多 kMaxIn − 1 个特征元 + 末元回归目标)
-inline constexpr int kNary = -1; // OpTable 元数列的 N 元 (元数由表达式定)
 struct Call {
   In x, y, z;                 // = xs 前三元 (定元算子读这三个名字; 元数不到的槽为空)
   In xs[kMaxIn];              // 输入表 (前 n 个有效; N 元算子读它)
@@ -359,7 +364,7 @@ inline constexpr const char *dom_tex(Dom d) {
 #define OP_IN3(a, b, c) {factor::Dom::a, factor::Dom::b, factor::Dom::c}
 #define OP_INN(a) {factor::Dom::a}
 
-// ---- 参数域 (OpTable k 列): k 的值域按算子声明; d 由 T 窗决定 (ROLL 必有且仅 ROLL 有), k2 只随 TOD, h 只随 N 元 ----
+// ---- 参数域 (OpTable k 列): k 的值域按算子声明; d 由 T 窗决定 (ROLL 必有且仅 ROLL 有), k2 只随 TOD, h / w 只随 N 元 (ROLL / POINT) ----
 //   参数集合因此完全由 (T, KDom, 元数) 推出 (params_str), 表里不单列参数名
 enum class KDom { NONE,          // 无 k
                   ANY,           // k ∈ ℝ
@@ -373,10 +378,13 @@ enum class KDom { NONE,          // 无 k
 inline constexpr bool has_d(T t) { return t == T::ROLL; }
 inline constexpr bool has_k(KDom k) { return k != KDom::NONE; }
 inline constexpr bool has_k2(KDom k) { return k == KDom::TOD; }
-inline constexpr bool has_h(int arity) { return arity == kNary; }
+inline constexpr bool has_h(T t, int arity) { return arity == kNary && t == T::ROLL; }
+inline constexpr bool has_w(T t, int arity) { return arity == kNary && t == T::POINT; }
 inline constexpr const char *params_str(T t, KDom k, int arity) {
-  if (has_h(arity))
-    return "d,k,h"; // N 元回归恒 ROLL × 有 k (Expr table_consistent)
+  if (has_h(t, arity))
+    return "d,k,h"; // N 元回归恒有 k (Expr table_consistent)
+  if (has_w(t, arity))
+    return "w"; // N 元定权恒无 k (同上)
   if (has_d(t))
     return has_k(k) ? "d,k" : "d";
   return has_k2(k) ? "k,k2" : (has_k(k) ? "k" : "");
@@ -549,7 +557,6 @@ inline float bin_center(int b, float lo, float hi) {
 // ---- N 元回归 (CsLinRankRoll; 三后端共用) ----
 //   一行的矩 = 样本格上 x̃ x̃ᵀ 的上三角 (按行展开, n(n+1)/2 个) 接 Σ x̃ r̃ (n 个), 共 lr_moms(n) 个 double; 窗内各行矩相加即池化.
 //   岭解 (G + k·(tr G / n)·I) w = b (Cholesky); tr G = 0 (窗内无样本) → w = 0
-inline constexpr int kLrN = kMaxIn - 1; // 特征元上限
 FACTOR_HD constexpr int lr_moms(int n) { return n * (n + 3) / 2; }
 FACTOR_HD constexpr int lr_ix(int i, int j, int n) { return i * n - i * (i - 1) / 2 + j - i; } // G[i][j] (i ≤ j) 的下标
 inline constexpr int kLrMoms = lr_moms(kLrN);

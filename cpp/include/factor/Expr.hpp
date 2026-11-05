@@ -6,22 +6,24 @@
 //   语法 (前缀函数式; 算子名 = OpTable e_name, 特征 = 限定名, 参数命名):
 //     expr    := Op '(' [expr {',' expr}] {',' param} ')' | feature
 //     feature := ident {'.' [A-Za-z0-9_]+}      (限定名整串交 FeatureLookup::feat 解释, 如 档.层.列)
-//     param   := key '=' number | 'h' '=' hold | key          key := 'd' | 'k' | 'k2' | 'h'
+//     param   := key '=' number | 'h' '=' hold | 'w' '=' '[' number {',' number} ']' | key      key := 'd' | 'k' | 'k2' | 'h' | 'w'
 //     hold    := 标签列名 token (5m / close / t1o / t2c …, stat::hold_parse)
 //   d / TOD 的单位是因子层的行 (Contract【层几何】, parse 收 seg)
 //   例:  CsRank(TsMeanRoll(TsLog(bar.5m.amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(lob.1m.amt), d))
 //        CsRank(CsLinRankRoll(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, d=60, k=0.1, h=t1c))
+//        CsRank(CsLinRankFix(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, w=[-1, 0.5, 0.5]))
 //   规矩:
-//     序列参数在前 (个数 = 元数; N 元算子 2..kMaxIn−1 个), 命名参数在后 (= OpTable 参数列声明的全部字段, 不多不少, 无隐含默认)
+//     序列参数在前 (个数 = 元数; N 元算子 2..kLrN 个), 命名参数在后 (= OpTable 参数列声明的全部字段, 不多不少, 无隐含默认)
+//     N 元定权的 w 一元一个, 个数 = 特征元数; 裸 w = 全部分量自由.
 //     N 元回归的目标 (h 持有期的做多标签列) 不写: h 具体时由 FeatureLookup::label 查出, 作末元叶 (Node::target) 补进树,
 //       不进规范串 (h 已说明它); h 自由时没有这一叶 —— Search 先把 h 落到所搜持有期再解析 (bind_hold), h 不作搜索维.
 //     裸键名 (无 '=') = **自由参数** (Node::free 位): 值待参数搜索定, 同名裸键各节点独立, 不编号.
 //       含自由参数的树是**模板** (is_template), 只能进 Search (Search/Space.hpp 的槽 = 自由参数, 写数字的不搜); 评估 / Dag 只接具体树.
 //       自由参数在树里带一个合法占位值 (free_value), 只为 check_params / 规范串往返, 无业务含义; 规范串里仍打裸键名.
 //     无标量常量元 (OpTable 无常量输入; 阈值一律走 k)
-//     PascalCase 算子 / snake_case 特征, 大小写敏感, 词法上无歧义 (裸 d / k / k2 / h 是参数关键字, 不作特征名)
+//     PascalCase 算子 / snake_case 特征, 大小写敏感, 词法上无歧义 (裸 d / k / k2 / h / w 是参数关键字, 不作特征名)
 //   静态校验 (parse 内一次做完):
-//     算子在 OpTable / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 OpTable k域 列; h 本层合法且有标签列) /
+//     算子在 OpTable / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 OpTable k域 列; h 本层合法且有标签列; w 有限) /
 //     特征存在且可作输入 (LB 标签 / META 门控列不许: 前视) / 逐元值域: 父算子该元 in 为严格域 (INT, 即组 id) 时
 //     子算子 out ⊆ in (OpTable in / out 列; 特征叶放行 —— 其整数性与 [0, kMaxGroup) 值域在 eval 前按数据查)
 //   类型信息只读 OpTable 的 (k域, in, out) 列, 本头不点任何算子名 (根归一算子集除外: 那是口径定义, 不是类型)
@@ -80,7 +82,7 @@ constexpr int op_index(std::string_view name) {
   return -1;
 }
 
-// 参数列是否声明了 key ("d" / "k" / "k2"; 逗号分隔, 无空格)
+// 参数列是否声明了 key ("d" / "k" / "k2" / "h" / "w"; 逗号分隔, 无空格)
 constexpr bool declares(const char *params, std::string_view key) {
   std::string_view s(params);
   while (!s.empty()) {
@@ -98,14 +100,15 @@ constexpr bool declares(const char *params, std::string_view key) {
 // ---- 参数值域 (d 上限 kMaxD 见 Contract.hpp) ----
 
 // 表的静态一致性: TOD 只许 0 元 POINT (t_D 是隐含输入); GROUP 域的组 id 元 (末元) 必须要求 INT;
-// N 元只许 ROLL × ALL × GT0 (窗 d / 岭强度 k / 持有期 h), 特征元不是组 id / 广播
+// N 元只许 ALL 域, 特征元不是组 id / 广播; 回归 ROLL × GT0 (窗 d / 岭强度 k / 持有期 h), 定权 POINT × NONE (权 w)
 constexpr bool table_consistent() {
   for (int i = 0; i < kOpCount; ++i) {
     const OpInfo &o = kOps[i];
     if (o.kdom == KDom::TOD && !(o.arity == 0 && o.t == T::POINT))
       return false;
     if (nary(o)) {
-      if (!(o.t == T::ROLL && o.a == A::ALL && o.kdom == KDom::GT0 && o.in[0] != Dom::INT && o.in[0] != Dom::BCAST))
+      if (!(o.a == A::ALL && o.in[0] != Dom::INT && o.in[0] != Dom::BCAST &&
+            ((o.t == T::ROLL && o.kdom == KDom::GT0) || (o.t == T::POINT && o.kdom == KDom::NONE))))
         return false;
       continue;
     }
@@ -154,8 +157,12 @@ inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
   assert(is_seg(seg));
   if (has_d(o.t) && (p.d < 1 || p.d > kMaxD))
     return "d 须为 1..kMaxD (255 行) 的整数; 更长的窗口请降到更粗的层上做";
-  if (has_h(o.arity) && !(stat::hold_key_ok(p.h) && stat::hold_ok(p.h, geo_of(seg))))
+  if (has_h(o.t, o.arity) && !(stat::hold_key_ok(p.h) && stat::hold_ok(p.h, geo_of(seg))))
     return "h 须为本层合法的持有期 (日内持有期须为本层行宽的整倍数)";
+  if (has_w(o.t, o.arity))
+    for (const float w : p.w)
+      if (!std::isfinite(w))
+        return "w 的分量须有限";
   if (has_k(o.kdom)) {
     const float k = p.k;
     if (!std::isfinite(k))
@@ -197,15 +204,20 @@ inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
   return nullptr;
 }
 
-// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = seg, h = 次日收盘, 只动该键)
+// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = seg, h = 次日收盘, w = 全 1, 只动该键)
 inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg) {
   if (key == "d") {
     p.d = 1;
     return;
   }
   if (key == "h") {
-    assert(has_h(o.arity));
+    assert(has_h(o.t, o.arity));
     p.h = stat::hold_close(1);
+    return;
+  }
+  if (key == "w") {
+    assert(has_w(o.t, o.arity));
+    std::fill(p.w, p.w + kLrN, 1.f);
     return;
   }
   if (key == "k2") {
@@ -240,7 +252,7 @@ inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg)
 
 // 签名 LaTeX (GUI Operators 表 operand 列 / operators.json operand 键), 从表列生成:
 //   序列元 x, y, z 按 in 值域, 相邻同域合并 ("x, y \in ℝ"); 再参数 d{=}⟨d⟩ ∈ ℤ₊ / k{=}⟨k⟩ ∈ k域 (TOD 整段自带 k, k2);
-//   N 元写 x_1, \dots, x_N; 末加 h{=}⟨h⟩; 元与参数间 ";\; ", 占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ 由 GUI 换成本轮实际值
+//   N 元写 x_1, \dots, x_N; 末加 h{=}⟨h⟩ (回归) / w{=}⟨w⟩ (定权); 元与参数间 ";\; ", 占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ ⟨w⟩ 由 GUI 换成本轮实际值
 inline std::string operand_tex(const OpInfo &o) {
   static constexpr const char *kVar[3] = {"x", "y", "z"};
   std::string s;
@@ -278,27 +290,32 @@ inline std::string operand_tex(const OpInfo &o) {
     s += R"tex(k{=}⟨k⟩ \in )tex";
     s += kdom_tex(o.kdom);
   }
-  if (has_h(o.arity)) {
+  if (has_h(o.t, o.arity)) {
     sep();
     s += R"tex(h{=}⟨h⟩)tex";
+  }
+  if (has_w(o.t, o.arity)) {
+    sep();
+    s += R"tex(w{=}⟨w⟩ \in \mathbb{R}^N)tex";
   }
   return s;
 }
 
 // ---- 树 ----
-inline constexpr uint8_t kFreeD = 1, kFreeK = 2, kFreeK2 = 4, kFreeH = 8; // Node::free 位
+inline constexpr uint8_t kFreeD = 1, kFreeK = 2, kFreeK2 = 4, kFreeH = 8, kFreeW = 16; // Node::free 位
 inline constexpr uint8_t free_bit(std::string_view key) { return key == "d" ? kFreeD : key == "k" ? kFreeK
                                                                                    : key == "k2"  ? kFreeK2
-                                                                                                  : kFreeH; }
+                                                                                   : key == "h"   ? kFreeH
+                                                                                                  : kFreeW; }
 
 struct Node {
   int op = -1;         // kOps 下标; -1 = 特征叶
   std::string feat;    // 叶: 特征 code
   bool target = false; // 叶: N 元回归的目标 (标签列; 规范串不写, 由父节点 h 推出)
   int args[kMaxIn];    // 子节点下标 (前 n_args 个有效)
-  int n_args = 0;      // 子节点数 (定元 = arity; N 元 = 特征元数 + 1 个目标叶, h 自由时无目标叶)
+  int n_args = 0;      // 子节点数 (定元 = arity; N 元 = 特征元数, 回归另加 1 个目标叶 (h 自由时无))
   Param p;             // 本节点参数 (只有 OpTable 声明的字段有意义; 自由参数处是占位值)
-  uint8_t free = 0;    // 自由参数位 (kFreeD / kFreeK / kFreeK2 / kFreeH); 非 0 ⇒ 模板
+  uint8_t free = 0;    // 自由参数位 (kFreeD / kFreeK / kFreeK2 / kFreeH / kFreeW); 非 0 ⇒ 模板
   Node() { std::fill(args, args + kMaxIn, -1); }
 };
 
@@ -337,7 +354,7 @@ inline bool arg_ok(const Node &child, const OpInfo &parent, int slot) {
   return child.op < 0 || !dom_strict(in) || dom_sub(kOps[child.op].out, in);
 }
 // ---- 序列化 ----
-// k / k2 在规范串里的写法 (唯一一处); kv_of = 值经规范串往返 (写出再解析) 后的 float. 程序落值 (Search) 先过它,
+// k / k2 / w 分量在规范串里的写法 (唯一一处); kv_of = 值经规范串往返 (写出再解析) 后的 float. 程序落值 (Search) 先过它,
 // 树上的值与解析规范串所得逐位相同 ⇒ 评过的就是落盘的
 inline std::string k_text(double v) {
   char buf[32];
@@ -346,7 +363,7 @@ inline std::string k_text(double v) {
 }
 inline float kv_of(double v) { return static_cast<float>(std::strtod(k_text(static_cast<float>(v)).c_str(), nullptr)); }
 namespace detail {
-// 项之间 ", " 分隔: 序列参数 (不含目标叶) → d → k → k2 → h (与 OpTable operand 列同序)
+// 项之间 ", " 分隔: 序列参数 (不含目标叶) → d → k → k2 → h → w (与 OpTable operand 列同序)
 inline void sep(std::string &s, bool &first) {
   if (!first)
     s += ", ";
@@ -385,6 +402,17 @@ inline void to_string_rec(const Expr &e, int i, std::string &s) {
   if (declares(o.params, "h")) {
     sep(s, first);
     s += (n.free & kFreeH) ? std::string("h") : "h=" + stat::hold_token(n.p.h);
+  }
+  if (declares(o.params, "w")) {
+    sep(s, first);
+    if (n.free & kFreeW) {
+      s += 'w';
+    } else {
+      s += "w=[";
+      for (int a = 0; a < n.n_args; ++a)
+        s += (a ? ", " : "") + k_text(n.p.w[a]);
+      s += ']';
+    }
   }
   s += ')';
 }
@@ -428,6 +456,8 @@ inline bool instance_of(const Expr &t, const Expr &x) {
     if (declares(o.params, "k2") && !(a.free & kFreeK2) && a.p.k2 != b.p.k2)
       return false;
     if (declares(o.params, "h") && !(a.free & kFreeH) && a.p.h != b.p.h)
+      return false;
+    if (declares(o.params, "w") && !(a.free & kFreeW) && !std::equal(a.p.w, a.p.w + a.n_args, b.p.w))
       return false;
   }
   return true;
@@ -559,7 +589,7 @@ private:
     out = s_.substr(b, i_ - b);
     return i_ > b;
   }
-  // 前视: 下一个项是命名参数吗 = "ident ws '='" 或裸参数关键字 d / k / k2 / h (后面不是 '(')
+  // 前视: 下一个项是命名参数吗 = "ident ws '='" 或裸参数关键字 d / k / k2 / h / w (后面不是 '(')
   bool lookahead_param() {
     const size_t save = i_;
     std::string_view id;
@@ -567,9 +597,9 @@ private:
     i_ = save;
     return r;
   }
-  static bool is_param_key(std::string_view id) { return id == "d" || id == "k" || id == "k2" || id == "h"; }
+  static bool is_param_key(std::string_view id) { return id == "d" || id == "k" || id == "k2" || id == "h" || id == "w"; }
   static bool is_num0(char c) { return (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'; }
-  static constexpr const char *kKeysHint = "参数键只有 d / k / k2 / h, 不同节点的同名裸键各自独立, 不必编号";
+  static constexpr const char *kKeysHint = "参数键只有 d / k / k2 / h / w, 不同节点的同名裸键各自独立, 不必编号";
   // pos 处多出的序列项像什么写错了 (数字 = 参数没写键; 无点的名字 = 编了号的参数键); 都不像 → 空
   std::string stray(size_t pos) {
     const size_t save = i_;
@@ -632,8 +662,8 @@ private:
     }
     e_.n_ops++;
     int n_args = 0;
-    const int max_args = nary(o) ? kMaxIn - 1 : o.arity; // N 元留一槽给目标叶
-    bool got_d = false, got_k = false, got_k2 = false, got_h = false, seen_param = false;
+    const int max_args = nary(o) ? kLrN : o.arity; // N 元回归的目标叶另占末槽
+    bool got_d = false, got_k = false, got_k2 = false, got_h = false, got_w = false, seen_param = false;
     Param p;
     uint8_t free = 0;
     if (!eat(')')) {
@@ -648,7 +678,8 @@ private:
             return fail(pos, std::string(o.name) + " 不声明参数 " + std::string(key) + (o.params[0] ? " (声明: " + std::string(o.params) + "; " + kKeysHint + ")" : " (无参数)"));
           bool &got = key == "d" ? got_d : key == "k" ? got_k
                                        : key == "k2"  ? got_k2
-                                                      : got_h;
+                                       : key == "h"   ? got_h
+                                                      : got_w;
           if (got)
             return fail(pos, "参数 " + std::string(key) + " 重复");
           got = true;
@@ -660,6 +691,22 @@ private:
             const size_t pt = (skip_ws(), i_);
             if (!hold_tok(tok) || !stat::hold_parse(tok, p.h))
               return fail(pt, "h 须为持有期 token (标签列名写法: 5m / close / t1o / t1c …)");
+          } else if (key == "w") { // 序列参数已收齐 (命名参数在后), n_args = 特征元数
+            if (!eat('['))
+              return fail(i_, "w 写成 w=[数字, …], 一元一个权");
+            int nw = 0;
+            do {
+              double v = 0;
+              if (!number(v))
+                return fail(i_, "w 的分量须为数字");
+              if (nw == n_args)
+                return fail(i_, "w 的个数须 = 特征元数 " + std::to_string(n_args));
+              p.w[nw++] = static_cast<float>(v);
+            } while (eat(','));
+            if (!eat(']'))
+              return fail(i_, "期望 ',' 或 ']'");
+            if (nw != n_args)
+              return fail(pos, "w 给了 " + std::to_string(nw) + " 个, 须 = 特征元数 " + std::to_string(n_args));
           } else if (double v = 0; !number(v)) {
             return fail(i_, "参数 " + std::string(key) + " 须为数字");
           } else if (key == "d") {
@@ -698,6 +745,8 @@ private:
       return fail(pos0, std::string(o.name) + " 缺参数 k2");
     if (declares(o.params, "h") && !got_h)
       return fail(pos0, std::string(o.name) + " 缺参数 h");
+    if (declares(o.params, "w") && !got_w)
+      return fail(pos0, std::string(o.name) + " 缺参数 w");
     if (const char *why = check_params(o, p, seg_))
       return fail(pos0, std::string(o.name) + ": " + why);
     for (int s = 0; s < n_args; ++s) { // 值域: 子.out ⊆ 本元.in (OpTable in / out 列, 逐元同一规则)
@@ -706,7 +755,7 @@ private:
         return fail(pos0, std::string(o.name) + " 第 " + std::to_string(s + 1) + " 元要求 " + dom_name(in_of(o, s)) + ", 而 " + kOps[c.op].name +
                               " 输出 " + dom_name(kOps[c.op].out));
     }
-    if (nary(o) && !(free & kFreeH)) { // 目标叶: 末元 (前序里排在全部特征子树之后)
+    if (has_h(o.t, o.arity) && !(free & kFreeH)) { // 目标叶: 末元 (前序里排在全部特征子树之后)
       std::string code = fl_.label(p.h);
       if (code.empty())
         return fail(pos0, std::string(o.name) + ": 本层没有 h=" + stat::hold_token(p.h) + " 的做多标签列");

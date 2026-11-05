@@ -432,7 +432,31 @@ private:
   std::vector<int> n_, q_;
 };
 
-// =========================== N 元回归 ===========================
+// =========================== N 元 ===========================
+
+// xs[0..n) 特征元, 权 p.w[0..n) (Contract【N 元】). 逐行无状态
+struct CsLinRankFix {
+  CS_SIG {
+    assert(c.g && c.o.v && c.o.m && c.n >= 2 && c.n <= kLrN && 0 <= t && t < c.T && "CS 必带池掩码 g; 至少 2 个特征元");
+    const int n = c.n, A = c.A;
+    const size_t r = static_cast<size_t>(t) * A;
+    for (int i = 0; i < n; ++i)
+      detail::hist_of(h_[i], buf_, c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
+    for (int a = 0; a < A; ++a) {
+      bool ok = true;
+      double v = 0.0;
+      for (int i = 0; i < n; ++i) {
+        ok = ok && c.xs[i].m[r + a];
+        v += static_cast<double>(c.p.w[i]) * (static_cast<double>(h_[i].rank(c.xs[i].v[r + a])) - 0.5);
+      }
+      detail::put(c.o.v + r, c.o.m + r, a, mk(v, ok));
+    }
+  }
+
+private:
+  stream::Hist h_[kLrN];
+  std::vector<float> buf_;
+};
 
 // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】). 自 t = 0 逐行顺序推: 行 t 新实现的标签行 s
 // 读 Call 第 s 行算一次矩入环 (环 = 最近 d 个标签行), 窗和每步按 s 升序从环现加 (不做增减, 无漂移)

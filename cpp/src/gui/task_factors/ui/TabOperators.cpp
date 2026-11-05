@@ -29,7 +29,8 @@ namespace {
 // 表内公式字号 (特征表悬停用 32, 表格行内要小一号)
 constexpr float kFormulaTextSize = 18.0f;
 
-// 逐个走 OpTable 参数列 ("d,k" 等) 的字段, 取本轮实际值: fn(name, value). 只允许 d / k / k2 / h (h = 持有期键)
+// 逐个走 OpTable 参数列 ("d,k" 等) 的字段, 取本轮实际值: fn(name, value). 只允许 d / k / k2 / h / w (h = 持有期键;
+// w 按对拍的 kNaryIn 个特征元拆成 w1.. 逐个给)
 template <class Fn>
 void for_each_param(const OperatorRow &r, Fn &&fn) {
   const char *p = r.params;
@@ -44,28 +45,43 @@ void for_each_param(const OperatorRow &r, Fn &&fn) {
       fn("k2", static_cast<double>(r.param.k2));
     else if (tok_len == 1 && p[0] == 'h')
       fn("h", static_cast<double>(r.param.h));
+    else if (tok_len == 1 && p[0] == 'w')
+      for (int i = 0; i < factor::check::kNaryIn; ++i) {
+        char name[8];
+        std::snprintf(name, sizeof(name), "w%d", i + 1);
+        fn(name, static_cast<double>(r.param.w[i]));
+      }
     else
-      assert(false && "OpTable 参数列只允许 d / k / k2 / h");
+      assert(false && "OpTable 参数列只允许 d / k / k2 / h / w");
     p = q ? q + 1 : p + tok_len;
   }
 }
 
-// operand 列: OpTable 模板 (LaTeX) 里的占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ → 本轮实际参数值 (h 写持有期 token).
+// operand 列: OpTable 模板 (LaTeX) 里的占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ ⟨w⟩ → 本轮实际参数值 (h 写持有期 token, w 写向量 (w1, w2, …)).
 // 参数列声明的字段必须都有占位符, 且替换后不得残留 (表与模板不齐 = OpTable 的 bug)
 std::string subst_operand(const OperatorRow &r) {
-  std::string s = r.operand;
-  for_each_param(r, [&](const char *name, double v) {
-    char tok[16], val[32];
+  std::string s = r.operand, wv;
+  const auto put = [&](const char *name, const std::string &val) {
+    char tok[16];
     std::snprintf(tok, sizeof(tok), "⟨%s⟩", name);
-    if (std::strcmp(name, "h") == 0)
-      std::snprintf(val, sizeof(val), "\\mathrm{%s}", factor::stat::hold_token(r.param.h).c_str());
-    else
-      std::snprintf(val, sizeof(val), "%g", v);
     size_t pos = s.find(tok);
     assert(pos != std::string::npos && "OpTable operand 列缺该参数的占位符");
     for (; pos != std::string::npos; pos = s.find(tok, pos))
       s.replace(pos, std::strlen(tok), val);
+  };
+  for_each_param(r, [&](const char *name, double v) {
+    char val[32];
+    if (std::strcmp(name, "h") == 0)
+      std::snprintf(val, sizeof(val), "\\mathrm{%s}", factor::stat::hold_token(r.param.h).c_str());
+    else
+      std::snprintf(val, sizeof(val), "%g", v);
+    if (name[0] == 'w')
+      wv += (wv.empty() ? "(" : ", ") + std::string(val);
+    else
+      put(name, val);
   });
+  if (!wv.empty())
+    put("w", wv + ")");
   assert(s.find("⟨") == std::string::npos && "operand 占位符未被参数列覆盖");
   return s;
 }
@@ -398,8 +414,8 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• 没过 → 红 FAIL + Δ, 不显示时间\n"
         "• 比 cpu 慢 → ms 标红",
         // operand
-        "签名: 自变量在前, 参数在后 (x, y, z → d → k → k2)\n"
-        "• x y z  输入序列 (值 + 有效位), 值域 = in 列\n"
+        "签名: 自变量在前, 参数在后 (x, y, z → d → k → k2 → h → w)\n"
+        "• x y z  输入序列 (值 + 有效位), 值域 = in 列; N 元写 x_1..x_N (对拍取 3 元)\n"
         "• t_D    段内分钟位置 (仅 TodMask)\n"
         "• d      窗长 / 滞后 (分钟)\n"
         "    ◦ 仅 T = ROLL; 值取 Check.hpp kDParams\n"
@@ -407,6 +423,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "    ◦ 仅 k域 ≠ NONE; 值取 kKParams\n"
         "• k2     第二阈值\n"
         "    ◦ 仅 k域 = TOD\n"
+        "• h      回归目标的持有期\n"
+        "    ◦ 仅 N 元 × ROLL; 取 T+1 收盘\n"
+        "• w      各特征元的权\n"
+        "    ◦ 仅 N 元 × POINT; 值取 kWParams\n"
         "• = 号后是本轮实际值\n"
         "• in 为严格域 (INT) 时 parser 要求上游 out ⊆ in; 其余 in 只是语义声明",
         // out
@@ -617,7 +637,7 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
     const size_t n = svc.rows.size();
     for (size_t i = 0; i < n; ++i) {
       const OperatorRow &r = svc.rows[i];
-      // 键序 = 表格列序 (operand 落原始模板, 占位符 ⟨d⟩⟨k⟩⟨k2⟩; 实际值在 params 键)
+      // 键序 = 表格列序 (operand 落原始模板, 占位符 ⟨d⟩⟨k⟩⟨k2⟩⟨h⟩⟨w⟩; 实际值在 params 键, w 拆成 w1..)
       nlohmann::ordered_json j;
       j["idx"] = i;
       j["e_name"] = r.e_name;

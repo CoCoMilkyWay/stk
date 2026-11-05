@@ -165,7 +165,7 @@ std::string eval_miss(const Call &c, Desk &d, Delta &dl) {
   case Change::Same:
     return at + ": 回测结果必同";
   case Change::Params:
-    return at + ": 参数交给 Search, 要搜的写裸键 d / k / k2";
+    return at + ": 参数交给 Search, 要搜的写裸键 d / k / k2 / w";
   case Change::Multi:
     return at + ": 一个变体只改一处, 才看得出这一处的好坏; 拆成几个变体";
   default:

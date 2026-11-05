@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS* 全 16 个; 语义契约见 factor/Contract.hpp)
+// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS* 全 17 个; 语义契约见 factor/Contract.hpp)
 // =============================================================================
 //   定位: 因子挖掘无 GPU 时的 fallback —— 整张量批量直算, 吞吐必须 ≥ stream.
 //   独立第二实现: 除 Contract.hpp (共享数学件: mk/spread/den_ok/pct_of/probit/分桶规则) 外
@@ -659,7 +659,37 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
   }
 };
 
-// ===== N 元回归 =====
+// ===== N 元 =====
+
+struct CsLinRankFix { // xs[0..n) 特征元, 权 p.w[0..n) (Contract【N 元】); 行缓冲 v[A] 按元序累加 Σ w_i x̃_i
+  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<double>(static_cast<size_t>(c.A))}; }
+  CP_SCRATCH
+  CP_SIG {
+    CP_UNPACK;
+    assert(c.n >= 2 && c.n <= kLrN && "至少 2 个特征元");
+    Bump bp{static_cast<char *>(ws)};
+    double *const v = std::get<0>(carve(bp, c));
+    const int n = c.n;
+    detail::Hist h;
+    for (int t = rg.lo; t < rg.hi; ++t) {
+      const size_t r = static_cast<size_t>(t) * A;
+      std::fill_n(v, A, 0.0);
+      for (int i = 0; i < n; ++i) {
+        const In &x = c.xs[i];
+        const double wi = static_cast<double>(p.w[i]);
+        h.build(x.v + r, x.m + r, g + r, A);
+        for (int a = 0; a < A; ++a)
+          v[a] += wi * (static_cast<double>(h.rank(x.v[r + a])) - 0.5);
+      }
+      for (int a = 0; a < A; ++a) {
+        bool ok = true;
+        for (int i = 0; i < n; ++i)
+          ok = ok && c.xs[i].m[r + a];
+        detail::put(ov, om, r + a, v[a], ok);
+      }
+    }
+  }
+};
 
 struct CsLinRankRoll { // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】)
   // 行 [lo, hi) 先补满首行窗 (u(lo) 往前 d 个标签行), 之后每行只算新实现的标签行; 窗和每行按 s 升序从环现加 (无漂移).

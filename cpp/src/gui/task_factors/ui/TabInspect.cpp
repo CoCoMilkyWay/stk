@@ -1515,7 +1515,7 @@ void expr_text(std::string_view s) {
     } else if (ch == ')') {
       depth = std::max(0, depth - 1);
       one(s.substr(i++, 1), kExParen[depth % std::size(kExParen)]);
-    } else if (ch == ',' || ch == '=') {
+    } else if (ch == ',' || ch == '=' || ch == '[' || ch == ']') {
       one(s.substr(i++, 1), dim);
     } else if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_') {
       size_t j = i;
@@ -1537,7 +1537,7 @@ void expr_text(std::string_view s) {
         }
         if (one(tok, c) && oi >= 0)
           tip("%s  %s\n%s", factor::expr::kOps[oi].name, factor::expr::kOps[oi].c_name, factor::expr::kOps[oi].note);
-      } else if (tok == "d" || tok == "k" || tok == "k2") { // 参数键; 后面不跟 '=' = 自由参数
+      } else if (tok == "d" || tok == "k" || tok == "k2" || tok == "w") { // 参数键; 后面不跟 '=' = 自由参数
         if (one(tok, nx == '=' ? kExKey : kExFree) && nx != '=')
           tip("自由参数 %.*s: 值待 Search 定", static_cast<int>(tok.size()), tok.data());
       } else if (const size_t dot = tok.rfind('.'); dot != std::string_view::npos) { // 特征 档.层.列
@@ -1556,7 +1556,7 @@ void expr_text(std::string_view s) {
       i = j;
     } else { // 其余整段 (到下一个结构字符) 原色, 不拆 UTF-8
       size_t j = i + 1;
-      while (j < n && std::string_view(" (),=").find(s[j]) == std::string_view::npos)
+      while (j < n && std::string_view(" (),=[]").find(s[j]) == std::string_view::npos)
         ++j;
       one(s.substr(i, j - i), text);
       i = j;

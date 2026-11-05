@@ -24,7 +24,7 @@ struct BuildNode {
   std::string feat;            // 叶: 特征 code (空 = 未选)
   std::vector<BuildNode> args; // 算子: arity 个子槽
   factor::Param p;             // 算子参数 (选中时按 Check.hpp 默认表填, 之后手改)
-  uint8_t free = 0;            // 自由参数位 (expr::kFreeD / K / K2): 源串打裸键名, 由 Search 搜
+  uint8_t free = 0;            // 自由参数位 (expr::kFreeD / K / K2 / H / W): 源串打裸键名, 由 Search 搜
 };
 
 // 一次 Search 的对象: 模板行 + 持有期键 (search_hold) + 落盘前是否清空文件全部 weights (SearchSpec::fresh)

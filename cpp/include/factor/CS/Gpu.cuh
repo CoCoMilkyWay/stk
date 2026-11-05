@@ -780,8 +780,9 @@ struct CsGroupResid {
   FACTOR_CS_RUN()
 };
 
-// ---- N 元回归 (1) ----
-//   xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】). 两核, 工作区 = 每标签行一个矩向量 [T][M] double:
+// ---- N 元 (2) ----
+//   定权 (Contract【N 元】): 一核一行一 block, 行 t 各特征直方图 → 逐资产 Σ p.w_i x̃_i.
+//   回归: xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】). 两核, 工作区 = 每标签行一个矩向量 [T][M] double:
 //     核 1 一行一 block: 行 s 的 n+1 张直方图 → 逐资产 x̃ 累矩 (线程内 double) → 逐矩块归约 (cub 固定序, 确定);
 //     核 2 一行一 block: 线程 0 求 u(t) → 窗和 (G = kCB / M 组, 组 g 按 s ≡ g 跨步累, 再按组序合并, 确定) → 线程 0 岭解 →
 //     行 t 各特征直方图 → 输出拟合值
@@ -811,6 +812,25 @@ __device__ inline void lr_hists(LrSh &sh, const LrArgs &a, int ne, const uint8_t
     rok[i] = cnt[i] >= 1 && dev::spread(lo[i], hi[i]);
     if (rok[i])
       hist_row(sh, g, A, lo[i], hi[i], sh.cb[i], sh.pre[i]);
+  }
+}
+
+__global__ void lr_wsum(const LrArgs a, const uint8_t *gm, float *ov, uint8_t *om, int A, Param p) {
+  __shared__ LrSh sh;
+  const int n = a.n, base = blockIdx.x * A;
+  int cnt[kMaxIn];
+  float lo[kMaxIn], hi[kMaxIn];
+  bool rok[kMaxIn];
+  lr_hists(sh, a, n, gm, base, A, cnt, lo, hi, rok);
+  for (int c = threadIdx.x; c < A; c += kCB) {
+    const int i = base + c;
+    bool ok = true;
+    double v = 0.0;
+    for (int j = 0; j < n; ++j) {
+      ok = ok && a.x[j].m[i];
+      v += static_cast<double>(p.w[j]) * (static_cast<double>(row_pct(sh.cb[j], sh.pre[j], cnt[j], lo[j], hi[j], rok[j], a.x[j].v[i])) - 0.5);
+    }
+    dev::store(ov, om, i, static_cast<float>(v), ok);
   }
 }
 
@@ -896,6 +916,20 @@ __global__ void lr_fit(const LrArgs a, const uint8_t *gm, float *ov, uint8_t *om
 }
 
 } // namespace k
+
+struct CsLinRankFix {
+  static size_t scratch(const Call &) { return 0; }
+  static void run(const Call &c, void *, cudaStream_t stream) {
+    assert(c.g != nullptr && c.o.v && c.o.m && c.A >= 1 && static_cast<long long>(c.T) * c.A < (1LL << 31));
+    assert(c.n >= 2 && c.n <= kLrN && "至少 2 个特征元");
+    k::LrArgs a;
+    for (int i = 0; i < c.n; ++i)
+      a.x[i] = c.xs[i];
+    a.n = c.n;
+    k::lr_wsum<<<c.T, kCB, 0, stream>>>(a, c.g, c.o.v, c.o.m, c.A, c.p);
+    FACTOR_CUDA_OK(cudaGetLastError());
+  }
+};
 
 struct CsLinRankRoll {
   static size_t scratch(const Call &c) { return static_cast<size_t>(c.T) * lr_moms(c.n - 1) * sizeof(double); }

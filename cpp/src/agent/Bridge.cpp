@@ -106,7 +106,8 @@ bool same_params(const fx::Node &a, const fx::Node &b) {
   const fx::OpInfo &o = fx::kOps[a.op];
   return a.free == b.free && (!fx::declares(o.params, "d") || (a.free & fx::kFreeD) || a.p.d == b.p.d) &&
          (!fx::declares(o.params, "k") || (a.free & fx::kFreeK) || a.p.k == b.p.k) && (!fx::declares(o.params, "k2") || (a.free & fx::kFreeK2) || a.p.k2 == b.p.k2) &&
-         (!fx::declares(o.params, "h") || (a.free & fx::kFreeH) || a.p.h == b.p.h);
+         (!fx::declares(o.params, "h") || (a.free & fx::kFreeH) || a.p.h == b.p.h) &&
+         (!fx::declares(o.params, "w") || (a.free & fx::kFreeW) || std::equal(a.p.w, a.p.w + a.n_args, b.p.w));
 }
 
 // p 有一元的子式 = s
@@ -211,7 +212,7 @@ bool concrete(const F::FeatureTable &ft, const std::string &src, factor::expr::E
   if (!factor::expr::parse(src, ft.lookup(), ft.seg, e, error))
     return false;
   if (e.is_template()) {
-    error = "含自由参数 (裸 d / k / k2 / h): 观察只接具体式, 参数写成数字 (h 写持有期 token)";
+    error = "含自由参数 (裸 d / k / k2 / h / w): 观察只接具体式, 参数写成数字 (h 写持有期 token, w 写 [数字, …])";
     return false;
   }
   return true;
@@ -406,8 +407,10 @@ Surface surface_of(const F::FeatureTable &ft, const F::SearchResult &r) {
     p.st = {c.sc.mono, c.sc.ls, c.sc.ric};
     for (const sp::Slot &x : slots) {
       const auto &q = e.nodes[static_cast<size_t>(x.node)].p;
-      p.v.push_back(x.key == sp::Key::D ? static_cast<double>(q.d) : x.key == sp::Key::K ? q.k
-                                                                                         : q.k2);
+      p.v.push_back(x.key == sp::Key::D    ? static_cast<double>(q.d)
+                    : x.key == sp::Key::K  ? q.k
+                    : x.key == sp::Key::K2 ? q.k2
+                                           : q.w[x.wi]);
     }
     s.pts.push_back(std::move(p));
   }

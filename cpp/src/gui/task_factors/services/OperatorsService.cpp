@@ -92,13 +92,16 @@ double ms_since(Clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
-// 本轮实际参数: 参数列含 d 才吃默认窗长表 (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams; h (N 元) = T+1 收盘
+// 本轮实际参数: 参数列含 d 才吃默认窗长表 (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams; h (N 元回归) = T+1 收盘;
+// w (N 元定权) 按 Check.hpp kWParams
 factor::Param param_of(const OperatorRow &row) {
   factor::Param p;
   p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.e_name) : 1;
   factor::check::set_k(row.e_name, p, factor::kSegMax);
   if (factor::expr::declares(row.params, "h"))
     p.h = factor::stat::hold_close(1);
+  if (factor::expr::declares(row.params, "w"))
+    factor::check::set_w(p);
   return p;
 }
 
@@ -110,7 +113,7 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   const int op = factor::expr::op_index(nm);
   assert(op >= 0);
   const factor::expr::OpInfo &o = factor::expr::kOps[op];
-  const int NI = n_in_of(o.arity);
+  const int NI = n_in_of(o.t, o.arity);
   assert(NI <= RoundCtx::kSlots);
   Data d;
   d.T = R.rq.times, d.A = R.rq.A, d.n = NI;
