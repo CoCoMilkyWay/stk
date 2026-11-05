@@ -148,6 +148,16 @@ void QuoteService::today(Side s, std::span<const uint32_t> keys, std::span<Day> 
   }
 }
 
+misc::Ymd QuoteService::candles(std::span<const uint32_t> keys, std::span<Candle> out) const {
+  assert(keys.size() == out.size());
+  std::lock_guard<std::mutex> lock(mu_);
+  for (size_t k = 0; k < keys.size(); ++k) {
+    const size_t i = axis_.sub_of(keys[k]);
+    out[k] = i == axis_.size() || !traded(last_[i]) ? Candle{} : Candle{candle_of(last_[i]), date_, last_[i].last_close};
+  }
+  return prev_;
+}
+
 sina::Quote QuoteService::book(uint32_t id) const {
   const size_t i = axis_.sub_of(id);
   if (i == axis_.size())

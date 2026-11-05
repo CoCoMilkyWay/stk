@@ -76,6 +76,8 @@ public:
   void bind(Members m, std::vector<double> level);
   // GUI: 键集的当日, out[k] ↔ keys[k]; 个股不在全市场 / 当日无成交、篮子未合成 / 成员无成交 → candle.date 0
   void today(Side s, std::span<const uint32_t> keys, std::span<Day> out) const;
+  // GUI: 个股键集的当日日根 (today 不带分钟根), out[k] ↔ keys[k], 无 → date 0 (同 today); 返回 = 行情日的前一交易日
+  misc::Ymd candles(std::span<const uint32_t> keys, std::span<Candle> out) const;
   // GUI: 个股 id 的最新快照 (五档); 不在全市场 / 未收到 → sym 空
   sina::Quote book(uint32_t id) const;
 

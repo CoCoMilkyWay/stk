@@ -1,4 +1,5 @@
 // Tab Assets - 资产表 (列定义一张表: 取值 / 排序 / 截面色 / 截面分析同源) + 右栏 Quotes / Statistics
+//   近况列 (当日涨幅 / Δ5日线) = Portfolio NAV 表同一核 RecentOf: 新浪当日接上 bar1d 最近几个有成交日
 
 #pragma once
 
@@ -26,11 +27,19 @@ struct AssetsFilter {
   bool operator==(const AssetsFilter &) const = default;
 };
 
+// 新浪当日日根 (近况列的当日段): 行情日 / 快照时刻变了才重取
+struct AssetsToday {
+  std::vector<Candle> day; // [asset_id]; date 0 = 无
+  misc::Ymd prev = 0;      // 行情日的前一交易日
+  int64_t at = -1;         // 行情日 · 快照时刻
+};
+
 // 视图的输入: 任一变 → 重建
 struct AssetsViewKey {
   uint64_t generation = 0; // Asset::generation
   size_t assets = 0;       // Asset::items.size()
   size_t infos = 0;        // stock_info.size() (基本面首次载入)
+  int64_t today = -1;      // AssetsToday::at (近况列随快照重排)
   int sort_column = -1;
   bool sort_ascending = true;
   AssetsFilter filter;
@@ -72,6 +81,7 @@ struct AssetsState {
   float table_split_ratio = 0.65f; // 左右分栏比 (0-1)
   StockState stock;
 
+  AssetsToday today;
   AssetsView view;
 };
 

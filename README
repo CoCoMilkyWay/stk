@@ -186,34 +186,58 @@ stk/
 │   │   │   ├── task_database/                        # 🖥️ 数据库管理
 │   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
-│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager / Quote / StockHistory / BasketHistory / Market; Drive = 同步 / 核对共用的逐项驱动骨架
-│   │   │   │   │                                     #    · Audit: 远端 ↔ 本地冻结月核对 + 修复
-│   │   │   │   │                                     #    · Kline: 行情公共件 (Assets 个股 / Portfolio 篮子), 两边 Side (个股 / 篮子) × 历史 (Kline) / 当日 (Day) 四路同一套类型: 个股 / 篮子只差 Fold 一步, 历史 / 当日只差源
-│   │   │   │   │                                     #      键 = 个股全局 id / 篮子 basket_line; 两边同一个请求 HistoryRequest (键集) / 发布 HistoryPub (Tape: [键] Kline, 源未就绪带 lack)
-│   │   │   │   │                                     #      分钟根 Bars (240 槽稠密, 竞价并入首根); 槽代数 label_slot / sec_slot / row_slot (三种时间坐标 → 槽); 日根自带前收 ref, 涨跌一律对 ref
-│   │   │   │   │                                     #      篮子合成核 Fold (历史逐日 / 当日同一份): 资产主序成员表 Members (CSR), 逐资产一遍散进所属各篮子; 当日接续 ⇔ 前一交易日 = 历史末日
-│   │   │   │   │                                     #      基本面源 (个股历史 / 篮子补日同一读法): fund_last (bar1d 水位 ∧ bar1m 末日) / each_daily (bar1d 月分片 → 日根) / bars_of (bar1m → 分钟根)
-│   │   │   │   │                                     #    · Quote: 新浪全市场当日行情 (首次进 Assets / Portfolio 才起); 快照每 3s 一轮合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
-│   │   │   │   │                                     #      当日落 output/sina/live.bin (每 5 分钟 + 退出), 重启 = 一次断档, 只补停机期间有成交的只
-│   │   │   │   │                                     #      全市场 = 全局轴子集 (PoolAxis, 对外全局 id); today(Side, 键集) 两边当日同一接口 + book(id) 五档; 篮子当日 = BasketHistory 给的成员表每轮快照后合成
-│   │   │   │   │                                     #      (锁外分块折叠, 不挡 GUI); 两边各一个版本号 ver[Side], GUI 版本变了才拷
-│   │   │   │   │                                     #    · StockHistory: 个股的基本面日线 (cn_stock_real_bar1d 近 2500 日, ref = pre_close) + 分钟 (bar1m 近 4 日, 经 Bar1mDay 按行 row_slot 并根);
-│   │   │   │   │                                     #      未命中的键一遍读齐; 内存 LRU 留近 64 只 (末日未变即命中)
-│   │   │   │   │                                     #    · BasketHistory: 价格指数, 篮子表 = shared/Basket.hpp (切片 全A / 申万一级 / 各子池 / 概念 × 等权 / 市值加权, 与 Factors 可成交指数同一张), 源 = all.bar 库;
-│   │   │   │   │                                     #      D 日成员 / 权重 / 基准 (pre_close) 取 D−1 收盘行; 点位自库首日 kBase 起逐日接续, 日线留近 2500 日 / 日内 (L_1min) 近 4 日 (按日期窗裁);
-│   │   │   │   │                                     #      账本落 <库目录>/baskets.bin, 下次只折新落盘的日 (续算 ≡ 全量);
-│   │   │   │   │                                     #      库末日之后至基本面末日为补日 (不落盘): 成员 / 池 / 行业 / 股本冻结在库末日收盘行, 价取 bar1d / bar1m, 加权权重随 收 / 前收 漂移;
-│   │   │   │   │                                     #      跑完把末日成员表 + 点位交给 Quote, 之后的行情日由它合成.
-│   │   │   │   │                                     #      Assets 篮子 / Portfolio 理想线 / 近况同出于此
-│   │   │   │   │                                     #    · Market: Quote + StockHistory + BasketHistory 一份, request / history 按 Side 分派; Assets / Portfolio 共用 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
-│   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (数据源同步 / 核对) / TabEncode / TabAssets / TabDates (日历) / CrossSectionAnalysis / QuotesPanel
-│   │   │   │                                         #    · TabFundamental: 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 各道同步状态 [状态] 本轮 @ 时刻
-│   │   │   │                                         #      Update 四道 bigquant → tushare → eastmoney.concept → bigquant.bar1m (道序即执行序, 日志 tag 同名); sina.live = Quote 常驻轮询
-│   │   │   │                                         #    · TabAssets: 左栏 个股 (过滤条 + 资产表); 右栏 Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析); 列定义一张表 kCols:
-│   │   │   │                                         #      取值 / 文本 / 画格 + 类型 (文本 / 分类 / 数值) + 好坏口径 (估值序 / 越高越好), 排序 (NaN 恒末) / 截面色 / 截面分析都只读它
-│   │   │   │                                         #    · QuotesPanel: 两边同一个 Feed + Sync (键集变 → 请求; 发布到齐 → 换上; 当日版本变 → 拷); 近况 RecentOf (标的 / 净值线同一核)
-│   │   │   │                                         #      个股 = Assets 日内 + 日线 (实心蜡烛: 实体 = 上一根收 → 本根收, 首根起于前收; 日内窄了并根); 篮子 = Portfolio 日内栏叠加图 (对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁,
-│   │   │   │                                         #      线名中文小字贴线尾, 不画量, 读数看十字光标): 多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 240 的因子并根, 同 py/app/tdx) + 现价十字; 档位按钮叠在各图左上角
+│   │   │   │   ├── services/                         # 🖥️ 服务层
+│   │   │   │   │   ├── StateManager.hpp              # 🖥️ 流水线编排 (GUI 线程): 四个 worker (基本面 / 扫描 / 编码 / 核对) 各一条通道, 请求带递增请求代, 陈旧交接件丢弃
+│   │   │   │   │   │                                 #    · 共享状态 (assetinfo / asset.items / 扫描产物) 只在帧首 tick 换进, 时机保证无 worker 在读; 特征计算在飞 = 冻结 (件留邮箱, 不发编码)
+│   │   │   │   │   │                                 #    · 唯一刷新链 refresh: 同步 → AssetInfo / items 重建 → 覆盖扫描 (启动 / Update / 修复收尾同走); 解锁序 基本面 → Encode → Assets / Dates
+│   │   │   │   │   ├── FundamentalService.hpp        # 🖥️ 基本面 + 分钟线同步 (BigQuant DAI / Tushare) + 概念快照 (东财) → 构建 AssetInfo 交 StateManager
+│   │   │   │   │   │                                 #    · 落地 output/fundamental/YYYY-MM/*.parquet (月分片 + _meta 单文件 + bar1m 日文件, 水位增量) / output/concept/YYYYMMDD.tsv
+│   │   │   │   │   │                                 #    · 四道依次 drive; 两开关皆关 ⇒ 零网络本地构建; 取消只跳过余下同步任务, 构建照常
+│   │   │   │   │   │                                 #    · 状态: 逐表落盘 / 各道进退 / BigQuant 周配额 (每轮开头 preflight, 每个 BigQuant 任务后再取)
+│   │   │   │   │   ├── AuditService.hpp              # 🖥️ 核对: BigQuant 远端 ↔ 本地冻结月分片一致性核对 + 逐表修复
+│   │   │   │   │   │                                 #    · Load 读账本统计 (零网络) / Audit 月扫描 → 不一致月逐级定位到 日 / 资产 (只报告) / Repair 差异键 → 整槽 Replace / 日·资产 Splice → 只复核这些月
+│   │   │   │   │   │                                 #    · 账本 output/fundamental/_audit/<表>.tsv (每月留最近一次, 分片重写即作废); Repair 收尾 StateManager 重建 AssetInfo
+│   │   │   │   │   ├── Drive.hpp                     # 🖥️ 逐项驱动骨架 drive (同步 sync::Task / 核对 audit::Unit 共用): 取消 / 计步 / 日志只写一次; 在飞的一项不可中断
+│   │   │   │   │   ├── ScanService.hpp               # 🖥️ L2 binary / archive 扫盘 + 回测区间覆盖检查: 待编码 = archive 有 binary 无; raw 缺口 = 两者皆无 (编码补不上, 不影响状态)
+│   │   │   │   │   │                                 #    · RescanStorage 逐日重扫 / RecomputeCoverage 只用扫描缓存重算; 扫盘 / 覆盖统计各一个常驻执行器
+│   │   │   │   │   ├── EncodingService.hpp           # 🖥️ 编码: CSV 归档 → L2 逐笔二进制 (按天流水: producer 列举 → worker 并行解码); 收尾 StateManager 重扫
+│   │   │   │   │   │                                 #    · FileCheckService: 归档格式 / 结构 / 完整性核查 (顺序探测, 单盘)
+│   │   │   │   │   ├── AssetLoader.hpp               # 🖥️ A 轴物化: AssetInfo::codes (cn_stock_basic_info 全量, 含退市, 不含基金) → AssetAxis → Asset::items (下标 = asset_id)
+│   │   │   │   │   ├── Kline.hpp                     # 🖥️ 行情公共件 (Assets 个股 / Portfolio 篮子), 两边 Side (个股 / 篮子) × 历史 (Kline) / 当日 (Day) 四路同一套类型: 个股 / 篮子只差 Fold 一步, 历史 / 当日只差源
+│   │   │   │   │   │                                 #    · 键 = 个股全局 id / 篮子 basket_line; 两边同一个请求 HistoryRequest (键集) / 发布 HistoryPub (Tape: [键] Kline, 源未就绪带 lack)
+│   │   │   │   │   │                                 #    · 分钟根 Bars (240 槽稠密, 竞价并入首根); 槽代数 label_slot / sec_slot / row_slot (三种时间坐标 → 槽); 日根自带前收 ref, 涨跌一律对 ref
+│   │   │   │   │   │                                 #    · 篮子合成核 Fold (历史逐日 / 当日同一份): 资产主序成员表 Members (CSR), 逐资产一遍散进所属各篮子; 当日接续 ⇔ 前一交易日 = 历史末日
+│   │   │   │   │   │                                 #    · 基本面源 (个股历史 / 篮子补日同一读法): fund_last (bar1d 水位 ∧ bar1m 末日) / each_daily (bar1d 月分片 → 日根) / bars_of (bar1m → 分钟根)
+│   │   │   │   │   ├── QuoteService.hpp              # 🖥️ 新浪全市场当日行情 (首次进 Assets / Portfolio 才起)
+│   │   │   │   │   │                                 #    · 快照每 3s 一轮合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
+│   │   │   │   │   │                                 #    · 当日落 output/sina/live.bin (每 5 分钟 + 退出), 重启 = 一次断档, 只补停机期间有成交的只
+│   │   │   │   │   │                                 #    · 全市场 = 全局轴子集 (PoolAxis, 对外全局 id); today(Side, 键集) 两边当日同一接口 + book(id) 五档
+│   │   │   │   │   │                                 #    · 篮子当日 = BasketHistory 给的成员表每轮快照后合成 (锁外分块折叠, 不挡 GUI); 两边各一个版本号 ver[Side], GUI 版本变了才拷
+│   │   │   │   │   ├── StockHistory.hpp              # 🖥️ 个股历史: 基本面日线 (cn_stock_real_bar1d 近 2500 日, ref = pre_close) + 分钟 (bar1m 近 4 日, 经 Bar1mDay 按行 row_slot 并根)
+│   │   │   │   │   │                                 #    · 未命中的键一遍读齐; 内存 LRU 留近 64 只 (末日未变即命中)
+│   │   │   │   │   ├── BasketHistory.hpp             # 🖥️ 篮子历史 (价格指数): 篮子表 = shared/Basket.hpp (切片 全A / 申万一级 / 各子池 / 概念 × 等权 / 市值加权, 与 Factors 可成交指数同一张), 源 = all.bar 库
+│   │   │   │   │   │                                 #    · D 日成员 / 权重 / 基准 (pre_close) 取 D−1 收盘行; 点位自库首日 kBase 起逐日接续, 日线留近 2500 日 / 日内 (L_1min) 近 4 日 (按日期窗裁)
+│   │   │   │   │   │                                 #    · 账本落 <库目录>/baskets.bin, 下次只折新落盘的日 (续算 ≡ 全量)
+│   │   │   │   │   │                                 #    · 库末日之后至基本面末日为补日 (不落盘): 成员 / 池 / 行业 / 股本冻结在库末日收盘行, 价取 bar1d / bar1m, 加权权重随 收 / 前收 漂移
+│   │   │   │   │   │                                 #    · 跑完把末日成员表 + 点位交给 Quote, 之后的行情日由它合成; Assets 篮子 / Portfolio 理想线 / 近况同出于此
+│   │   │   │   │   └── Market.hpp                    # 🖥️ Quote + StockHistory + BasketHistory 一份, request / history 按 Side 分派; Assets / Portfolio 共用 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
+│   │   │   │   └── ui/                               # 🖥️ UI
+│   │   │   │       ├── TabFundamental.hpp            # 🖥️ 数据源状态与同步入口: 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 各道同步状态 [状态] 本轮 @ 时刻
+│   │   │   │       │                                 #    · Update 四道 bigquant → tushare → eastmoney.concept → bigquant.bar1m (道序即执行序, 日志 tag 同名); sina.live = Quote 常驻轮询
+│   │   │   │       │                                 #    · 基本面状态卡 (股票数 / 日历 / D 轴范围 / BigQuant 周配额) + Audit 区 (逐表核对汇总, 每表 audit / sync 小按钮)
+│   │   │   │       ├── TabEncode.hpp                 # 🖥️ L2 编码: Coverage Check 覆盖结论 + File Check + 编码 (worker 数 / 跳过已有; 未过 File Check 需"风险自负"确认) + 全屏进度
+│   │   │   │       │                                 #    · Asset Summary 三页签: Archives / Orders (按资产的缺失表) / By Date (同一批缺口按日期归堆, 只出这批日期真出现过的判据列)
+│   │   │   │       │                                 #    · 表视图 = 过滤 + 排序后的行序, 统计代数 / 排序规则变才重建
+│   │   │   │       ├── TabDates.hpp                  # 🖥️ 交易日历格: 按 AssetInfo::days 逐日一格, 四层可开关 (除权除息 黄 (按当日事件数定 alpha) / 节假日 紫 / 回测区间 绿 / L2 覆盖 蓝) + 完整度边框
+│   │   │   │       ├── TabAssets.hpp                 # 🖥️ 左栏 个股 (过滤条 + 资产表); 右栏 Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析); 列定义一张表 kCols:
+│   │   │   │       │                                 #    · 取值 / 文本 / 画格 + 类型 (文本 / 分类 / 数值) + 好坏口径 (估值序 / 越高越好), 排序 (NaN 恒末) / 截面色 / 截面分析都只读它
+│   │   │   │       │                                 #    · 列序 Code | Name | Mkt (交易所.板块) | 当日涨幅 | Δ5日线 | Ind | 估值 | Cap | ST | DL | Listed | 逐笔统计
+│   │   │   │       │                                 #    · 近况两列 = 新浪当日日根 (快照时刻变才重取) 接 StockInfo::closes (bar1d 最近几个有成交日), RecentOf 同 Portfolio
+│   │   │   │       ├── QuotesPanel.hpp               # 🖥️ 行情图: 两边同一个 Feed + Sync (键集变 → 请求; 发布到齐 → 换上; 当日版本变 → 拷); 近况 RecentOf (标的 / 净值线同一核)
+│   │   │   │       │                                 #    · 个股 = Assets 日内 + 日线 (实心蜡烛: 实体 = 上一根收 → 本根收, 首根起于前收; 日内窄了并根)
+│   │   │   │       │                                 #    · 篮子 = Portfolio 日内栏叠加图 (对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名中文小字贴线尾, 不画量, 读数看十字光标)
+│   │   │   │       │                                 #      多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 240 的因子并根, 同 py/app/tdx) + 现价十字; 档位按钮叠在各图左上角
+│   │   │   │       └── CrossSectionAnalysis.hpp      # 🖥️ 截面分析 (TabAssets Statistics): 数值列 去两端 5% 统计 / 直方图 / 首尾排名 / 按板块分组; 分类列 计数 / 按板块分组
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
 │   │   │   │   ├── services/                         # 🖥️ 服务层

@@ -8,6 +8,7 @@
 #include "misc/date.hpp"
 #include "shared/AssetEvent.hpp"
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +22,13 @@
 
 struct StockInfo {
   static constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+  static constexpr std::size_t kCloses = 5;
+
+  // 一个有成交日的收 / 前收 (不复权真价; ref 0 = 无)
+  struct DayClose {
+    misc::Ymd date = 0; // 0 = 无
+    float close = 0, ref = 0;
+  };
 
   // 静态字段 (cn_stock_basic_info + cn_stock_industry_component)
   bool known = false;     // cn_stock_basic_info 有此代码 (A 轴 append-only, 可含档案不再收录的代码)
@@ -33,6 +41,7 @@ struct StockInfo {
   // 日频字段 (cn_stock_real_bar1d / cn_stock_status 每股最新行)
   misc::Ymd update_date = 0;                       // 最新行 (含停牌日) = 数据水位
   float volume = kNaN, amount = kNaN, turn = kNaN; // 最新有效报价行; 全区间无成交 → NaN
+  std::array<DayClose, kCloses> closes{};          // 最近 kCloses 个有效报价行, 新 → 旧 (近况列的历史段)
   int st = 0;                                      // cn_stock_status.st_status 原值: 0=正常 1=ST 2=*ST
   bool suspended = false;                          // 最新状态行停牌
 
