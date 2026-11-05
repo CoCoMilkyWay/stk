@@ -334,6 +334,7 @@ stk/
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
 │   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Compute / 自动 Inspect / Kline 才发
+│   │   │           ├── PortfolioView.hpp             # 🖥️ 组合 tab 的纯计算层 (无 ImGui): 派生 (行 / 线 / 色相) → 滚动分位 (估值分位 + 等值线档) → 视图 (区间切片 / 名次), 三级各一个 MakePortfolio* 入口
 │   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
 │   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 概念 / 因子 / 策略 (一次一组), 列 = 中文名 (切片名.等 / .加; 线色 = 指数 / 行业 / 概念 / 因子一起按 max(当日成员重合, 剔全A.加的残差相关) 定 OKLCH 色相, 色差 ∝ 不相似, 没算完全灰; 名列排序 = 按色相) | 当日涨幅 / Δ5日线 / 只数 / 总市值 / 换手 (新浪当日成交额占总市值) / 资金流入 (新浪当日分钟涨跌法净流入占成交额; 两列悬停看金额) | 区间年化 / 夏普 / 年换手
 │   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (BasketCurve) + 理想 (Market 篮子价格指数):
