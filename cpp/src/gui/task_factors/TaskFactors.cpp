@@ -8,8 +8,11 @@
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Compute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
 //   Portfolio: 因子组合 (<portfolio_dir>/<name>.json; 在 Factors 页 1. 区右侧两小框选 / 编辑) 的等权组合曲线 + 池指数. 跨池跨层,
 //     与页顶池 / 层无关 (换层不重建); 组合内容变 / 因子重扫后重解析, 有效条目变才发请求 (PortfolioService 只算新增的因子).
+//     NAV 的日内栏 / 近况列取 Market (与 Assets 共用的新浪行情 + 篮子历史), AssetInfo 建好才起.
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/Tasks.hpp"
+#include "gui/task_database/services/Market.hpp"
+#include "gui/task_database/ui/QuotesPanel.hpp" // SyncBaskets
 #include "gui/task_factors/services/InspectService.hpp"
 #include "gui/task_factors/services/KlineService.hpp"
 #include "gui/task_factors/services/OperatorsService.hpp"
@@ -33,6 +36,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GUI::Tasks {
@@ -74,10 +78,11 @@ struct TaskFactorsState {
   // 组合 (与层无关, 换层不重建; 首次进 Factors / Inspect / Portfolio 页建)
   std::unique_ptr<Factors::PortfolioService> portfolio_service;
   Factors::PortfolioUIState portfolio_ui;
-  uint64_t portfolio_gen = ~0ull;        // 已解析的 portfolio_ui.content_gen
-  bool portfolio_dirty = false;          // 解析过, 请求还没发 (资产轴未就绪时挂着)
-  std::string portfolio_sig;             // 上次请求的内容签名
-  Phase portfolio_prev_fs = Phase::Idle; // 因子服务进 Done (因子文件可能改了) → 重解析
+  uint64_t portfolio_gen = ~0ull;           // 已解析的 portfolio_ui.content_gen
+  bool portfolio_dirty = false;             // 解析过, 请求还没发 (资产轴未就绪时挂着)
+  std::string portfolio_sig;                // 上次请求的内容签名
+  Phase portfolio_prev_fs = Phase::Idle;    // 因子服务进 Done (因子文件可能改了) → 重解析
+  std::shared_ptr<Database::Market> market; // 与 Database 任务共用 (Portfolio 页才起)
 };
 
 // 特征面板选择的层对应的因子层; 不是因子层 (L_sec) = 空
@@ -169,8 +174,9 @@ static Factors::FactorsUIContext factors_context(const SharedData &data, std::sh
   return c;
 }
 
-TaskHandle CreateFactorsTask() {
+TaskHandle CreateFactorsTask(std::shared_ptr<Database::Market> market) {
   auto state = std::make_shared<TaskFactorsState>();
+  state->market = std::move(market);
 
   TaskHandle handle;
   handle.name = "Factors";
@@ -455,7 +461,13 @@ TaskHandle CreateFactorsTask() {
       break;
     }
     case TAB_PORTFOLIO: {
-      const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.fixed_impact);
+      const Database::Market *mk = nullptr;
+      if (data.taskstate.database.all_json_ready) {
+        state->market->start(data);
+        Database::SyncBaskets(*state->market->quote, *state->market->basket, data.config, state->portfolio_ui.basket);
+        mk = state->market.get();
+      }
+      const int action = Factors::RenderTabPortfolio(*state->portfolio_service, state->portfolio_ui, data.config.fixed_impact, mk);
       if (action == -1)
         state->portfolio_service->RequestCancel();
       portfolio_reload = action == 1;

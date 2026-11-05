@@ -1,6 +1,7 @@
 #include "gui/Tasks.hpp"
 #include "agent/ui/TaskAgent.hpp"
 #include "gui/task_database/TaskDatabase.hpp"
+#include "gui/task_database/services/Market.hpp"
 #include "gui/task_factors/TaskFactors.hpp"
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/task_settings/TaskSettings.hpp"
@@ -10,6 +11,7 @@
 #include "shared/SharedData.hpp"
 
 #include <cassert>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -125,11 +127,12 @@ TaskTree CreateAllTasks(SharedData &data) {
   TaskTree tree;
   tree.tasks.reserve(7);
 
+  const auto market = std::make_shared<Database::Market>(); // Assets / Portfolio 共用的行情
   tree.tasks.push_back(Tasks::CreateSettingsTask());
   tree.tasks.push_back(Tasks::CreateSystemInfoTask());
-  tree.tasks.push_back(Tasks::CreateDatabaseTask());
+  tree.tasks.push_back(Tasks::CreateDatabaseTask(market));
   tree.tasks.push_back(Tasks::CreateFeaturesTask());
-  tree.tasks.push_back(Tasks::CreateFactorsTask());
+  tree.tasks.push_back(Tasks::CreateFactorsTask(market));
   tree.tasks.push_back(::agent::CreateAgentTask());
   tree.tasks.push_back(Tasks::CreateToolsTask());
 

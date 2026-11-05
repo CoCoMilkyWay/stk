@@ -699,8 +699,7 @@ struct FnWMean {
   }
 };
 
-// ---- TsWmaRoll: w = i+1 (窗内下标, 最旧 = 0) → Σ(w·x) = Σ(s·x) − (t−d)·Σx, Σw = Σs − (t−d)·n ----
-//      s 用**块内**行号 (|s| ≤ C+d): 用全局行号会让 Σ(s·x) ~ 4.6e6 与 (t−d)Σx 抵消掉 2 位有效数字
+// ---- TsWmaRoll: w = i+1, i = 窗内下标 (进窗恒 d−1, 出窗恒 −1, 每进一格整体 −1) → Σ(w·x) = Σ(i·x) + Σx, Σw = Σi + n ----
 struct FnWma {
   static constexpr int kArity = 1;
   static constexpr bool kSpread = false;
@@ -710,10 +709,8 @@ struct FnWma {
     double sx, ss, ssx;
   }; // n, 上次进窗的块内坐标, Σx, Σi, Σ(i·x); i 是**窗内**下标 (随窗滑动重基)
   FACTOR_TS_PRE_NONE
-  __device__ static void init(St &s, const Param &) { s = St{0, kNoBase, 0.f, 0.f, 0.f}; }
-  // 下标绝不能用块内坐标 li (最大 239) 再在 emit 里减掉窗左端: Σ(li·x) 与 o·Σx 同阶相消,
-  // d=1 时就是 239x−238x, fp32 有效位直接掉 2~3 位. 所以每次进窗把已有成员的下标整体下移,
-  // 使"刚进窗的元素" 恒为 i = d−1, "正在出窗的元素" 恒为 i = −1 → 所有下标幅度 O(d).
+  __device__ static void init(St &s, const Param &) { s = St{0, kNoBase, 0.0, 0.0, 0.0}; }
+  // 下标幅度须保持 O(d): 大下标的 Σ(i·x) 与平移项同阶相消, 会掉 fp32 有效位
   __device__ static void upd(St &s, DVal x, DVal, int li, int w, const Ref &, const Param &p) {
     float fi = -1.f; // 出窗元素的窗内下标恒为 −1
     if (w > 0) {
@@ -739,7 +736,7 @@ struct FnWma {
   }
 };
 
-// ---- TsSlopeRoll: x 对窗内下标 i = 0..d−1 的 OLS 斜率 (下标矩同样由 Σs/Σs²/Σ(s·x) 线性组合出来) ----
+// ---- TsSlopeRoll: x 对窗内下标 i = 0..d−1 的 OLS 斜率 (下标矩 Σi / Σi² / Σ(i·x) 随窗平移维护) ----
 //      下标两两不同 ⇒ n ≥ 2 时 Σ(i−ī)² ≥ 1/2, 无需退化判据
 struct FnSlope {
   static constexpr int kArity = 1;
@@ -750,7 +747,7 @@ struct FnSlope {
     double sx, ss, sss, ssx;
   }; // Σi / Σi² / Σ(i·x) 同样用随窗滑动的窗内下标 i, 避免块内坐标的同阶相消
   FACTOR_TS_PRE_NONE
-  __device__ static void init(St &s, const Param &) { s = St{0, kNoBase, 0.f, 0.f, 0.f, 0.f}; }
+  __device__ static void init(St &s, const Param &) { s = St{0, kNoBase, 0.0, 0.0, 0.0, 0.0}; }
   __device__ static void upd(St &s, DVal x, DVal, int li, int w, const Ref &, const Param &p) {
     float fi = -1.f;
     if (w > 0) {

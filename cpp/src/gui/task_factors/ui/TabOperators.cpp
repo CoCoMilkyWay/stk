@@ -318,12 +318,12 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     ImGui::TableSetupColumn("T", ImGuiTableColumnFlags_WidthFixed);                                       // 4
     ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthFixed);                                       // 5
     ImGui::TableSetupColumn("Kernel", ImGuiTableColumnFlags_WidthFixed);                                  // 6
-    ImGui::TableSetupColumn("operand", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 7
-    ImGui::TableSetupColumn("out", ImGuiTableColumnFlags_WidthFixed);                                     // 8
-    ImGui::TableSetupColumn("operator", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 9
-    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                               // 10
-    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 11
-    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 12
+    ImGui::TableSetupColumn("Stream ms", ImGuiTableColumnFlags_WidthFixed);                               // 7
+    ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 8
+    ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed);                                  // 9
+    ImGui::TableSetupColumn("operand", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);  // 10
+    ImGui::TableSetupColumn("out", ImGuiTableColumnFlags_WidthFixed);                                     // 11
+    ImGui::TableSetupColumn("operator", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 12
     ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);     // 13
     ImGui::TableSetupScrollFreeze(0, 1);
 
@@ -335,8 +335,8 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
     }
 
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    const char *headers[kNumCols] = {"#", "e_name", "c_name", "Ar", "T", "A", "Kernel", "operand", "out", "operator",
-                                     "Stream ms", "CPU ms", "GPU ms", "Note"};
+    const char *headers[kNumCols] = {"#", "e_name", "c_name", "Ar", "T", "A", "Kernel", "Stream ms", "CPU ms", "GPU ms",
+                                     "operand", "out", "operator", "Note"};
     const char *tooltips[kNumCols] = {
         // #
         "全局 idx (= operators.json 的 idx, code / UI 共用)\n"
@@ -378,6 +378,25 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• RECUR    递推\n"
         "• 复合算子标最重一级\n"
         "• 详见 factor/Contract.hpp【分类】",
+        // Stream ms
+        "stream (实盘路径, 逐资产逐点 push) 的 wall time\n"
+        "• OpTable 算子的 golden: 正确性基准 + 耗时上界\n"
+        "• 评估算子无此后端 → n/a",
+        // CPU ms
+        "cpu 整张量批算的 wall time (不含造数)\n"
+        "• 对拍 cpu_chk\n"
+        "    ◦ OpTable 对 stream: 掩码相等, |Δ| ≤ 1e-5 + 1e-4·max\n"
+        "    ◦ Search 对 Stat CPU (+ 分块 ≡ 整块)\n"
+        "    ◦ Stat 自身即 golden\n"
+        "• 没过 → 红 FAIL + Δ, 不显示时间\n"
+        "• 比 stream 慢 → ms 标红 (要求 stream ≥ cpu ≥ gpu)",
+        // GPU ms
+        "GPU 纯 kernel 耗时 (cudaEvent, 已热身; 不含 cudaMalloc / H2D / D2H)\n"
+        "• 对拍 gpu_chk: gpu 对 cpu\n"
+        "    ◦ OpTable: |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 高阶矩放宽)\n"
+        "    ◦ 评估算子: |Δ| ≤ 1e-5 + 1e-4·max\n"
+        "• 没过 → 红 FAIL + Δ, 不显示时间\n"
+        "• 比 cpu 慢 → ms 标红",
         // operand
         "签名: 自变量在前, 参数在后 (x, y, z → d → k → k2)\n"
         "• x y z  输入序列 (值 + 有效位), 值域 = in 列\n"
@@ -410,25 +429,6 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• pct(v; S)  并列均秩 pct rank ∈ [0,1]; Q_p(S) p 分位; Φ⁻¹ 正态分位; G(a) 组\n"
         "• 只计有效样本\n"
         "• 序统计族三后端同用 256 桶近似",
-        // Stream ms
-        "stream (实盘路径, 逐资产逐点 push) 的 wall time\n"
-        "• OpTable 算子的 golden: 正确性基准 + 耗时上界\n"
-        "• 评估算子无此后端 → n/a",
-        // CPU ms
-        "cpu 整张量批算的 wall time (不含造数)\n"
-        "• 对拍 cpu_chk\n"
-        "    ◦ OpTable 对 stream: 掩码相等, |Δ| ≤ 1e-5 + 1e-4·max\n"
-        "    ◦ Search 对 Stat CPU (+ 分块 ≡ 整块)\n"
-        "    ◦ Stat 自身即 golden\n"
-        "• 没过 → 红 FAIL + Δ, 不显示时间\n"
-        "• 比 stream 慢 → ms 标红 (要求 stream ≥ cpu ≥ gpu)",
-        // GPU ms
-        "GPU 纯 kernel 耗时 (cudaEvent, 已热身; 不含 cudaMalloc / H2D / D2H)\n"
-        "• 对拍 gpu_chk: gpu 对 cpu\n"
-        "    ◦ OpTable: |Δ| ≤ 1e-3 + 1e-3·max (CsNormRank / 高阶矩放宽)\n"
-        "    ◦ 评估算子: |Δ| ≤ 1e-5 + 1e-4·max\n"
-        "• 没过 → 红 FAIL + Δ, 不显示时间\n"
-        "• 比 cpu 慢 → ms 标红",
         // Note
         "用途与选型一句话 (给 agent 检索)\n"
         "• 写: 量什么; 怎么用 / 配什么\n"
@@ -479,17 +479,17 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         case 6:
           cmp = (int)ra.kern - (int)rb.kern;
           break;
-        case 8:
-          cmp = (int)ra.out - (int)rb.out;
-          break;
-        case 10:
+        case 7:
           cmp = cmp3(sort_ms(ra, ra.stream_ms), sort_ms(rb, rb.stream_ms));
           break;
-        case 11:
+        case 8:
           cmp = cmp3(sort_ms_chk(ra, ra.cpu_ms, ra.cpu_chk), sort_ms_chk(rb, rb.cpu_ms, rb.cpu_chk));
           break;
-        case 12:
+        case 9:
           cmp = cmp3(sort_ms_chk(ra, ra.gpu_ms, ra.gpu_chk), sort_ms_chk(rb, rb.gpu_ms, rb.gpu_chk));
+          break;
+        case 11:
+          cmp = (int)ra.out - (int)rb.out;
           break;
         }
         return ui.sort_ascending ? cmp < 0 : cmp > 0;
@@ -534,28 +534,28 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       ImGui::TableSetColumnIndex(6);
       ImGui::TextUnformatted(cls_kern(r));
       ImGui::TableSetColumnIndex(7);
+      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据 (评估算子无 stream → n/a)
+      ImGui::TableSetColumnIndex(8);
+      render_time_cell(r, r.cpu_ms, &r.cpu_chk, r.stream_ms >= 0 && r.cpu_ms > r.stream_ms);
+      ImGui::TableSetColumnIndex(9);
+      render_time_cell(r, r.gpu_ms, &r.gpu_chk, r.gpu_ms > r.cpu_ms);
+      ImGui::TableSetColumnIndex(10);
       if (tex::TeXRender *render = Latex::Get(s_operand[idx].c_str(), kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
       else
         ImGui::TextUnformatted(s_operand[idx].c_str()); // 解析失败回退原文
-      ImGui::TableSetColumnIndex(8);
+      ImGui::TableSetColumnIndex(11);
       if (tex::TeXRender *render = Latex::Get(factor::dom_tex(r.out), kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
       else
         ImGui::TextUnformatted(factor::dom_name(r.out)); // 解析失败回退枚举名
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", factor::dom_name(r.out));
-      ImGui::TableSetColumnIndex(9);
+      ImGui::TableSetColumnIndex(12);
       if (tex::TeXRender *render = Latex::Get(r.op, kFormulaTextSize))
         Latex::Draw(render, ImGui::GetTextLineHeight());
       else
         ImGui::TextUnformatted(r.op); // 解析失败回退原文
-      ImGui::TableSetColumnIndex(10);
-      render_time_cell(r, r.stream_ms, nullptr, false); // golden: 无对拍, 无快慢判据 (评估算子无 stream → n/a)
-      ImGui::TableSetColumnIndex(11);
-      render_time_cell(r, r.cpu_ms, &r.cpu_chk, r.stream_ms >= 0 && r.cpu_ms > r.stream_ms);
-      ImGui::TableSetColumnIndex(12);
-      render_time_cell(r, r.gpu_ms, &r.gpu_chk, r.gpu_ms > r.cpu_ms);
       ImGui::TableSetColumnIndex(13);
       if (r.note[0] == '\0')
         ImGui::TextDisabled("-");

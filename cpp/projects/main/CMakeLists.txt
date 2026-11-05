@@ -324,6 +324,7 @@ set(MATH_PRECISE
     gui/task_database/services/BasketHistory.cpp
     gui/task_database/services/FundamentalService.cpp
     gui/task_database/services/Kline.cpp
+    gui/task_database/services/Market.cpp
     gui/task_database/services/QuoteService.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp

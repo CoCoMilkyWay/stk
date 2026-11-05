@@ -1,6 +1,7 @@
-// Assets 右栏行情: 个股 / 篮子同一套两图 (日内 / 日线, 布局与配色同 py/app/tdx 行情页), 数据 = 历史 Kline + 当日 Day (见 Kline.hpp)
-//   个股 = StockHistory + QuoteService::today(i), 日内右挂盘口 (当日最新快照五档);
-//   篮子 = BasketHistory + QuoteService::today(篮子), 左栏另有篮子列表, 量柱 = 成交额.
+// 行情图, 数据 = 历史 Kline + 当日 Day (见 Kline.hpp)
+//   个股 = Assets 右栏: StockHistory + QuoteService::today(i), 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
+//   篮子 = Portfolio NAV 日内栏: BasketHistory + QuoteService::today(篮子), 多篮子叠加收盘线 (对首日前收的涨跌幅, 不标刻度 / 不画量, 读数看十字光标);
+//     另给 NAV 表的近况三列 (Recent). 以下为个股图:
 //   日内价 = 高 / 低单调插值围出的带, 按涨跌染色; 日线价 = 蜡烛 + 均线, 默认 10 年档; 悬停提示只在量图
 //     十字光标随鼠标: 竖线吸附最近一根 (底轴标时刻), 横线在鼠标所在格 (价图左价 / 右涨跌幅, 量图标量 / 额)
 //   两图各一份视野: 换标的 / 换档 / 根数变 / 双击 → 复位到该档窗口; 左键拖动 = 框选 x 段放大; y 恒随视野内的根贴合
@@ -71,15 +72,28 @@ struct BasketState {
   bool missing = false;   // all Bar 库未建
   Feed<Baskets> feed;     // BasketHistory
   std::vector<Day> today; // [篮子] 当日
-  int sel[2] = {-1, -1};  // 指数 / 行业 页选中的篮子 (Baskets::list 下标)
-  ChartState chart;
+  int intraday = 0;       // 日内档 (日内 / 2日 / 3日 / 4日)
+};
+
+// 日内叠加的一条: 篮子 (Baskets::list 下标) + 线色 (ImU32)
+struct BasketPick {
+  size_t b;
+  uint32_t col;
+};
+
+// 近况: 最新一根 (当日接上取当日, 否则日线末根) 对前收 / 最新收对 MA5 (含最新一根) / 最新一根额对此前 5 根均额, 各 − 1; 不可算 = NaN
+struct Recent {
+  double chg = std::numeric_limits<double>::quiet_NaN();
+  double ma5 = std::numeric_limits<double>::quiet_NaN();
+  double amt5 = std::numeric_limits<double>::quiet_NaN();
 };
 
 void SyncStock(QuoteService &live, StockHistory &hist, const AssetItem *asset, const StockInfo *info, StockState &st);
 void SyncBaskets(const QuoteService &live, BasketHistory &hist, const Config &cfg, BasketState &st);
 
 void RenderStockPanel(const QuoteService &live, StockState &st);
-void RenderBasketPanel(const QuoteService &live, BasketState &st, int page); // page 0 = 指数, 1 = 行业
-bool RenderBasketList(const BasketHistory &hist, BasketState &st, int page); // 点中一行 → true
+// picks 各篮子的日内叠加图, 占满当前区域; 库未建 / 读取中 → 提示
+void RenderBasketIntraday(const QuoteService &live, const BasketHistory &hist, BasketState &st, const std::vector<BasketPick> &picks);
+Recent BasketRecent(const BasketState &st, size_t b); // 历史未到 → 全 NaN
 
 } // namespace GUI::Database

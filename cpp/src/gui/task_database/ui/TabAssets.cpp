@@ -1303,9 +1303,7 @@ void RenderTabAssets(
     const StockInfoMap &stock_info,
     AssetsState &assets_state,
     QuoteService &live,
-    StockHistory &stock,
-    BasketHistory &basket,
-    const Config &cfg) {
+    StockHistory &stock) {
 
   const std::vector<AssetItem> &assets = asset.items;
 
@@ -1325,38 +1323,21 @@ void RenderTabAssets(
   // Calculate left table width
   float left_width = assets_state.show_right_panel ? window_width * assets_state.table_split_ratio : window_width;
 
-  // Left: 个股 (过滤条 + 数据表) / 指数 / 行业
+  // Left: 过滤条 + 数据表
   ImGui::BeginChild("LeftTable", ImVec2(left_width, window_height), true,
                     ImGuiWindowFlags_HorizontalScrollbar);
-  if (ImGui::BeginTabBar("##LeftList")) {
-    if (ImGui::BeginTabItem("个股")) {
-      assets_state.list = 0;
-      RenderFilterBar(assets_state, assets_state.view.rows.size(), assets.size(), assets, stock_info);
-      ImGui::Spacing();
-      RenderDataTable(asset, stock_info, assets_state);
-      ImGui::EndTabItem();
-    }
-    for (int page = 0; page < 2; ++page)
-      if (ImGui::BeginTabItem(page ? "行业" : "指数")) {
-        assets_state.list = 1 + page;
-        SyncBaskets(live, basket, cfg, assets_state.basket);
-        if (RenderBasketList(basket, assets_state.basket, page))
-          assets_state.show_right_panel = true;
-        ImGui::EndTabItem();
-      }
-    ImGui::EndTabBar();
-  }
+  RenderFilterBar(assets_state, assets_state.view.rows.size(), assets.size(), assets, stock_info);
+  ImGui::Spacing();
+  RenderDataTable(asset, stock_info, assets_state);
   ImGui::EndChild();
 
-  // Right: 篮子走势 / 个股 Quotes / Statistics
+  // Right: Quotes / Statistics
   if (assets_state.show_right_panel) {
     ImGui::SameLine();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
     ImGui::BeginChild("RightPanel", ImVec2(0, window_height), true);
     ImGui::PopStyleVar();
-    if (assets_state.list > 0)
-      RenderBasketPanel(live, assets_state.basket, assets_state.list - 1);
-    else if (ImGui::BeginTabBar("##RightPanel")) {
+    if (ImGui::BeginTabBar("##RightPanel")) {
       if (ImGui::BeginTabItem("Quotes")) {
         assets_state.quotes_page = true;
         const int sel = assets_state.selected_asset;

@@ -30,6 +30,9 @@ struct Basket {
 struct Baskets {
   std::vector<Basket> list; // 指数在前, 行业在后; 落盘不足 2 日 → 空
 };
+// 篮子序 (Baskets::list 下标): 全A 等权 0, 全A 加权 1, 子池 p → 1 + p, 行业 k (SW2021 一级, ≥ 1) → 池数 + k
+inline size_t pool_basket(PoolId p, bool cap) { return p == kAllPool ? (cap ? 1 : 0) : 1 + p; }
+inline size_t industry_basket(size_t k) { return pool_count() + k; }
 
 struct BasketRequest {
   uint32_t gen = 0;

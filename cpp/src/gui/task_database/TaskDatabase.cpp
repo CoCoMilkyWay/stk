@@ -1,10 +1,9 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_database/services/AuditService.hpp"
-#include "gui/task_database/services/BasketHistory.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
-#include "gui/task_database/services/QuoteService.hpp"
+#include "gui/task_database/services/Market.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/task_database/services/StockHistory.hpp"
@@ -20,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GUI::Tasks {
@@ -36,10 +36,9 @@ private:
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<StateManager> state_mgr_;
-  // Assets 行情: 首次画 Assets 页才起 (之前不碰网络); 篮子历史读 quote_svc_ 的码表并向它 bind 成员表, 后建先拆
-  std::unique_ptr<QuoteService> quote_svc_;
+  // Assets 行情: 首次画 Assets 页才起 (之前不碰网络); 新浪当日与 Portfolio 共用
+  std::shared_ptr<Market> market_;
   std::unique_ptr<StockHistory> stock_svc_;
-  std::unique_ptr<BasketHistory> basket_svc_;
 
   // UI state
   FundamentalTabState fundamental_state_;
@@ -51,11 +50,10 @@ private:
   bool is_expanded_ = false;
   bool initialized_ = false;
   SharedData *data_ = nullptr; // Pointer to shared data
-  Config *config_ = nullptr;   // Pointer to config for accessing backtest dates
   std::string config_dir_ = "../../config";
 
 public:
-  DatabaseTask() = default;
+  explicit DatabaseTask(std::shared_ptr<Market> market) : market_(std::move(market)) {}
 
   const char *GetName() const {
     return "Database";
@@ -68,7 +66,6 @@ public:
     if (initialized_)
       return;
     data_ = &data;
-    config_ = &data.config;
     InitializeServices(data);
     initialized_ = true;
   }
@@ -322,31 +319,15 @@ private:
   }
 
   void DrawTabAssets() {
-    const StockInfoMap &stock_info = data_->assetinfo.get_stock_info();
-    if (!quote_svc_) { // 全市场 = 在市股, 键 "sh.600000" → 新浪 "sh600000"
-      std::vector<std::string> syms;
-      for (const auto &[key, info] : stock_info)
-        if (!info.out_date) {
-          const size_t dot = key.find('.');
-          assert(dot != std::string::npos);
-          syms.push_back(key.substr(0, dot) + key.substr(dot + 1));
-        }
-      std::vector<misc::Ymd> trading;
-      for (const CalendarDay &d : data_->assetinfo.get_stock_days())
-        if (d.trading)
-          trading.push_back(d.date);
-      quote_svc_ = std::make_unique<QuoteService>(std::move(syms), data_->assetinfo.bar1m_end, std::move(trading));
+    market_->start(*data_);
+    if (!stock_svc_)
       stock_svc_ = std::make_unique<StockHistory>();
-      basket_svc_ = std::make_unique<BasketHistory>(*quote_svc_);
-    }
     RenderTabAssets(
         data_->asset,
-        stock_info,
+        data_->assetinfo.get_stock_info(),
         assets_state_,
-        *quote_svc_,
-        *stock_svc_,
-        *basket_svc_,
-        *config_);
+        *market_->quote,
+        *stock_svc_);
   }
 
   void DrawTabDates() {
@@ -370,8 +351,8 @@ private:
 
 } // namespace
 
-TaskHandle CreateDatabaseTask() {
-  auto instance = std::make_shared<DatabaseTask>();
+TaskHandle CreateDatabaseTask(std::shared_ptr<Market> market) {
+  auto instance = std::make_shared<DatabaseTask>(std::move(market));
 
   TaskHandle handle;
   handle.name = instance->GetName();

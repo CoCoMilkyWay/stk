@@ -34,12 +34,12 @@ struct RoundCtx; // 一轮的常驻件 (输入缓存 / 输出缓冲 / GPU 会话
 
 // 页面参数: 张量形状 [times × A]. times = 时间轴长度 (期 = 分钟, 以后可选秒), 必须整段
 // (段 = 交易日 = kSegMax 分钟 (L_1min 层), 段界对齐是 EXPAND 的前提, UI 负责取整).
-// 默认 25500 (= 100 段) × 1000.
+// 默认 2550 (= 10 段) × 500.
 // d/k 每算子自带默认 (Check.hpp kDParams / kKParams); seed 由 Request() 取时间戳
 // (不做复现, 同一轮内所有算子共享同一张量).
 struct OperatorsRequest {
-  int times = 100 * factor::kSegMax;
-  int A = 1000;
+  int times = 10 * factor::kSegMax;
+  int A = 500;
   unsigned seed = 1; // Request() 时间戳填充, UI 不编辑
 };
 

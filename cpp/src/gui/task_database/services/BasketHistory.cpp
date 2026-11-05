@@ -69,22 +69,22 @@ void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
   }
 }
 
-// 收盘行 r 定次日成员表 (下标 = 池轴). 篮子序: 全A 等权 0, 全A 加权 1, 子池 p → 1 + p, 行业 k → NP + k
+// 收盘行 r 定次日成员表 (下标 = 池轴; 篮子序见 pool_basket / industry_basket)
 void members(const Row &r, size_t A, size_t NP, Members &m) {
   m.clear();
   for (size_t a = 0; a < A; ++a) {
     const float c = r.px[3][a], cap = c * r.shares[a];
     if (c > 0 && r.live[a]) {
-      m.add(0, 1.f);
+      m.add(static_cast<uint32_t>(pool_basket(kAllPool, false)), 1.f);
       if (cap > 0) {
-        m.add(1, cap);
+        m.add(static_cast<uint32_t>(pool_basket(kAllPool, true)), cap);
         if (r.ind[a])
-          m.add(static_cast<uint32_t>(NP + r.ind[a]), cap);
+          m.add(static_cast<uint32_t>(industry_basket(r.ind[a])), cap);
       }
     }
-    for (size_t p = 1; c > 0 && p < NP; ++p)
+    for (PoolId p = 1; c > 0 && p < NP; ++p)
       if (r.pool[(p - 1) * A + a])
-        m.add(static_cast<uint32_t>(1 + p), 1.f);
+        m.add(static_cast<uint32_t>(pool_basket(p, false)), 1.f);
     m.next();
   }
 }
@@ -139,12 +139,12 @@ bool BasketHistory::run(BasketRequest &req) {
   mc.preallocate(A, L_1min, mcols.size());
 
   out->list.resize(NB);
-  out->list[0].name = "全A等权";
-  out->list[1].name = "全A加权";
+  out->list[pool_basket(kAllPool, false)].name = "全A等权";
+  out->list[pool_basket(kAllPool, true)].name = "全A加权";
   for (PoolId p = 1; p < NP; ++p)
-    out->list[1 + p].name = pool_def(p).name_cn;
+    out->list[pool_basket(p, false)].name = pool_def(p).name_cn;
   for (size_t k = 1; k < fund::SW2021_L1_COUNT; ++k) {
-    Basket &b = out->list[NP + k];
+    Basket &b = out->list[industry_basket(k)];
     b.name = fund::SW2021_L1_NAMES[k];
     b.industry = true;
   }

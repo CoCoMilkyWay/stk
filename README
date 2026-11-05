@@ -179,20 +179,21 @@ stk/
 │   │   │   ├── task_database/                        # 🖥️ 数据库管理
 │   │   │   │   ├── TaskDatabase.hpp                  # 🖥️ 数据库任务主界面
 │   │   │   │   ├── models/SharedTypes.hpp            # 🖥️ 数据模型
-│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager / Quote / StockHistory / BasketHistory; Drive = 同步 / 核对共用的逐项驱动骨架
+│   │   │   │   ├── services/                         # 🖥️ 服务层: AssetLoader / Encoding / Fundamental / Audit / Scan / StateManager / Quote / StockHistory / BasketHistory / Market; Drive = 同步 / 核对共用的逐项驱动骨架
 │   │   │   │   │                                     #    · Audit: 远端 ↔ 本地冻结月核对 + 修复
-│   │   │   │   │                                     #    · Kline: Assets 行情公共件, 个股 / 篮子 × 历史 (Kline) / 当日 (Day) 四路同一套类型: 个股 / 篮子只差 Fold 一步, 历史 / 当日只差源
+│   │   │   │   │                                     #    · Kline: 行情公共件 (Assets 个股 / Portfolio 篮子), 个股 / 篮子 × 历史 (Kline) / 当日 (Day) 四路同一套类型: 个股 / 篮子只差 Fold 一步, 历史 / 当日只差源
 │   │   │   │   │                                     #      分钟根 Bars (240 槽稠密, 竞价并入首根); 槽代数 label_slot / sec_slot / row_slot (三种时间坐标 → 槽); 日根自带前收 ref, 涨跌一律对 ref
 │   │   │   │   │                                     #      篮子合成核 Fold (历史逐日 / 当日同一份): 资产主序成员表 Members (CSR), 逐资产一遍散进所属各篮子; 当日接续 ⇔ 前一交易日 = 历史末日
-│   │   │   │   │                                     #    · Quote: 新浪全市场当日行情 (首次进 Assets 才起); 快照每 3s 一轮合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
+│   │   │   │   │                                     #    · Quote: 新浪全市场当日行情 (首次进 Assets / Portfolio 才起); 快照每 3s 一轮合成分钟 K, 分钟 K 接口只补快照没盯住的根 (每只一个待补区间)
 │   │   │   │   │                                     #      当日落 output/sina/live.bin (每 5 分钟 + 退出), 重启 = 一次断档, 只补停机期间有成交的只
 │   │   │   │   │                                     #      today(i) 个股当日 ↔ today(篮子) 篮子当日 (bind 的成员表每轮快照后在快照线程合成); 两表各一个版本号, GUI 版本变了才拷
 │   │   │   │   │                                     #    · StockHistory: 选中个股的基本面日线 (cn_stock_real_bar1d 近 2500 日, ref = pre_close) + 分钟 (bar1m 近 4 日, 经 Bar1mDay 按行 row_slot 并根)
 │   │   │   │   │                                     #    · BasketHistory: 指数 (全A 等权 / 市值加权 + 各子池等权) / 申万一级行业 (市值加权) 篮子, 须 all Bar 库已算; D 日成员 / 权重 / 基准 (pre_close) 取 D−1 收盘行
 │   │   │   │   │                                     #      日线读 L_1day (近 2500 日), 日内读 L_1min (近 4 日); 跑完把库末日成员表 bind 给 Quote, 库末日之后的行情日由它合成
+│   │   │   │   │                                     #    · Market: Quote + BasketHistory 一份, Assets / Portfolio 共用 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
 │   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (基本面同步) / TabEncode / TabAssets / TabDates (日历) / CrossSectionAnalysis / QuotesPanel
-│   │   │   │                                         #    · TabAssets: 左栏 个股 (过滤条 + 资产表) / 指数 / 行业 (篮子表: 点位 / 涨幅 / 成交额 / 成分);
-│   │   │   │                                         #      右栏 个股 = Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析); 篮子 = 日内 + 日线 (量柱 = 成交额), 档位按钮叠在各图左上角
+│   │   │   │                                         #    · TabAssets: 左栏 个股 (过滤条 + 资产表); 右栏 Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析)
+│   │   │   │                                         #    · QuotesPanel: 个股 = Assets 日内 + 日线; 篮子 = Portfolio 日内栏多篮子叠加收盘线 (对首日前收的涨跌幅, 不标刻度 / 不画量, 读数看十字光标); 档位按钮叠在各图左上角
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
 │   │   │   │   ├── services/                         # 🖥️ 服务层
@@ -218,7 +219,7 @@ stk/
 │   │   │       │                                     #    · Operators: 算子表, 三后端对拍 (合成张量, 不依赖特征库)
 │   │   │       │                                     #    · Factors: 因子表, Run 评估 / Search 参数搜索
 │   │   │       │                                     #    · Inspect: 单因子深看
-│   │   │       │                                     #    · Portfolio: 因子组合 (一组合一文件, 跨池跨层) 等权组合净值 + 池指数
+│   │   │       │                                     #    · Portfolio: 因子组合 (一组合一文件, 跨池跨层) 等权组合净值 + 池指数 / 行业 + 日内行情
 │   │   │       ├── TaskFactors.hpp                   # 🖥️ 因子任务主界面 (四子页)
 │   │   │       ├── services/
 │   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
@@ -287,7 +288,9 @@ stk/
 │   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
 │   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); Portfolio 写 hold_desc 文本, 同一份 hold_points
 │   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Compute / 自动 Inspect / Kline 才发
-│   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 单因子线, 区间条选日段
+│   │   │           └── TabPortfolio.hpp              # 🖥️ 组合 tab: 组合线 (增量等权聚合, 逐点复利) / 池指数线 / 行业线 / 单因子线, 区间条选日段
+│   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 因子 / 策略 (一次一组), 列 = 中文名 (悬停看名) | 当日涨幅 / Δ5日线 / Δ5日量 | 区间年化 / 夏普 / 年换手
+│   │   │                                             #    · 日内栏 (默认开): 主图 : 日内 = 2 : 1, 选中的指数 / 行业同主图线色叠加日内行情 (Market 篮子); 主图 / 日内栏贴边; VAL 右表类别条 指数 / 行业
 │   │   │   GUI布局:
 │   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
 │   │   │   │ Tasks                                │ Panel:                             │
