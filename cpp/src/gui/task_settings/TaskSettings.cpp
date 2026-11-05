@@ -229,7 +229,7 @@ private:
         ImGui::Text("开始日期");
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip("回测日历 (L2 编码 / Lob 库) 起始日 (YYYY-MM-DD).\n"
-                            "末日由数据定: 编码到末个 L2 日, Lob 库到末个已编码日, all 库到末个 bar1m 日.");
+                            "末日由数据定: 编码到末个 L2 日, Lob 库到首个待编码日之前, all 库到分钟线与基本面都齐的末日.");
         }
         ImGui::TableNextColumn();
         if (DrawDatePicker("##start", "start_date_picker", cfg.start_date_buf, sizeof(cfg.start_date_buf), start_picker)) {

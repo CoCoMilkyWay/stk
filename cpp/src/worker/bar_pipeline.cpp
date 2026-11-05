@@ -17,20 +17,22 @@
 
 // 硬源: 预取线程把日 d 的 bar1m 分片解码进源格 cells[store.feed_cell(d)], TS 等 pf_ready(d) 后读.
 //   源格随源窗定址 (见 StoreRing): 日 d 的格交给下一个进窗日时 d 已全员计满 (再无读者); 源窗扩格的新格首次备源时才建.
-//   日期轴止于末个 bar1m 日 (source_dates), 轴内每日都须有分片, 构造时断言.
+//   日期轴不越过末个 bar1m 日 (source_dates), 轴内每日都须有分片, 构造时断言.
 template <>
 struct TierFeed<bar::Tier> {
   using Core = CoreBar;
   static constexpr bool kHardFeed = true;
   static constexpr const char *kUnit = "bar";
 
-  // 源日历: 交易日 [PIPELINE_START_DATE, assetinfo.bar1m_end]; Fund 收盘推进到次日盘前 ⇒ 还须早于日历末个交易日 (日历截到 today)
+  // 源日历: 交易日 [PIPELINE_START_DATE, min(assetinfo.bar1m_end, assetinfo.pit_end)] —— 分钟线与基本面 (行 D 所需的
+  //   D 盘后 / D+1 盘前表, 见 fund::last_day) 都齐的日才进库
   static std::vector<misc::Ymd> source_dates(const SharedData &data) {
     const StockDaysVec &days = data.assetinfo.get_stock_days();
-    assert(!days.empty() && days.back().trading && "交易日历未就绪 / 末行不是交易日");
+    assert(!days.empty() && "交易日历未就绪");
+    const misc::Ymd end = std::min(data.assetinfo.bar1m_end, data.assetinfo.pit_end);
     std::vector<misc::Ymd> dates;
     for (const CalendarDay &day : days)
-      if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= data.assetinfo.bar1m_end && day.date < days.back().date)
+      if (day.trading && day.date >= ::config::PIPELINE_START_DATE && day.date <= end)
         dates.push_back(day.date);
     return dates;
   }

@@ -104,6 +104,16 @@
 # Bar/TS/Basic/Momentum 日频动量
 - `ret_20d`: 后复权 20 日收益.
 
+# Bar/TS/Basic/Intraday 日内位置与短窗收益
+- bar.1m `ret_lag{5,15,30}`: 现价相对 5 / 15 / 30 分钟前 (早于当日首行的基准 = 前收); `ret_open` 开盘至今; `gap_open` 隔夜缺口 (开盘后日内恒定).
+- `pos_intra` 现价在当日至今高低区间的位置 (0 = 低点, 1 = 高点); `rebound_intra` 离日内低点涨幅 (≥ 0); `pullback_intra` 离日内高点跌幅 (≤ 0).
+- 坑: 三个位置量任两个定出第三个, 不必同入一式; 首笔成交前 NaN; 一字板 `pos_intra` NaN.
+
+# Bar/TS/Basic/MovingAverage 均线偏离 / 高低分位 (5 分钟箱)
+- `ma_dev_{5,25,100}d`: 后复权现价相对 5 / 25 / 100 日均线 (5 分钟箱滚 N×49 箱) 的偏离.
+- `hl_pos_{5,25,100}d`: 现价在近 N 日 5 日均线最高 / 最低之间的位置 (0 = 低点, 1 = 高点, 可越出 [0, 1]); 高低取在均线上, 不受插针影响.
+- 坑: 窗未满 (上市 / 库首日后 N 日内) NaN; 停牌日按携带价照常占格.
+
 # Bar/TS/Fund/Fund 日频基本面与风格
 - 盘中各行读到的是前一交易日收盘后的值 (日内不变). 价格限制 `lim_up` / `lim_dn` / `pre_close` / `adj_factor` 读到的就是当日适用值.
 - 品类: 状态 (`ind_l1` 一级行业 id、`list_age`、`is_margin`、`is_susp`、`is_new`、`st_*`), 股本, 两融 (`rz_*` / `rq_*`), 财务三表 (`bs_*` MRQ; `pl_*` / `cf_*` 分单季 `_q` / 滚动 `_ttm` / 上年 `_lyr`; `roe_ttm` / `roa_ttm` / `dy_ttm` / `cfo_chg_ttm` / `cfo_yoy_ttm` / `*_yoy` / `days_since_report`), 行情风格 (`ret_12_1`, `ret_1m`, `turn` = 20 日均换手 / 250 日均换手, `ivol`, `resvol`, `beta`, `trend`).

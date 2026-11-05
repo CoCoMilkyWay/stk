@@ -1,8 +1,9 @@
 #pragma once
 
 // 特征库 = 池 × 档 + A 轴 + 目录 + 日期轴. 目录 <feature_dir>/<池>/<档> (lib_dir); 每池两档对称, 各自一库:
-//   Bar (bar1m + 基本面)  交易日 [PIPELINE_START_DATE, 末个 bar1m 日]
-//   Lob (逐笔 → 订单簿)   回测日历 ≤ 末个已编码日, 落在同池 Bar 库日期轴上的日
+//   Bar (bar1m + 基本面)  交易日 [PIPELINE_START_DATE, min(末个 bar1m 日, fund::last_day)]
+//   Lob (逐笔 → 订单簿)   回测日历 ≤ 末个已编码日、止于首个待编码日之前, 落在同池 Bar 库日期轴上的日
+//   源缺尾日 → 库停在源齐处, 数据入盘后再追加 (追加不改已落盘行)
 //   库树 (lib_parent): 每库至多一个上游, 本库日期轴 ⊆ 上游日期轴, 上游落盘齐才可算. 末日随数据走, 各库首末日只在清单里 (重算即前移).
 //   A 轴 + 逐日成员每库一份 (shared/Pool.hpp), 池由定轴库 (同池定轴档 tier_base 的库 = Bar) 定:
 //     定轴库  A 轴 = 池的自然轴 (续算 = 旧清单轴); 成员 all = 当日活跃 (Fund live), 子池 = 上游 all Bar 库池列 pool_<池> (D−1 收盘行)

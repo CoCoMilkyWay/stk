@@ -22,13 +22,16 @@ struct TierFeed<lob::Tier> {
   static constexpr bool kHardFeed = false;
   static constexpr const char *kUnit = "单";
 
-  // 源日历: 回测日历 ≤ 末个已编码日 (中间缺编码的日也在轴内, 落默认张量)
+  // 源日历: 回测日历 ≤ 末个已编码日, 止于首个待编码日之前 (有归档未编码 ⇒ 数据将至, 不落默认张量;
+  //   raw 缺口日 = 无源可编, 在轴内落默认张量)
   static std::vector<misc::Ymd> source_dates(const SharedData &data) {
     assert(data.asset.backtest.start == data.config.start_date && "回测日历与配置起点不符 (改配置后没重算覆盖?)");
     std::vector<misc::Ymd> dates;
-    for (const Asset::BacktestDay &day : data.asset.backtest.days)
-      if (day.date <= data.asset.binary.max_date)
-        dates.push_back(day.date);
+    for (const Asset::BacktestDay &day : data.asset.backtest.days) {
+      if (day.date > data.asset.binary.max_date || day.pending())
+        break;
+      dates.push_back(day.date);
+    }
     return dates;
   }
 

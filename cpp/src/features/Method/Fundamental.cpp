@@ -1572,7 +1572,52 @@ inline int first_d_of_year(const Axes &axes, int y) { return axes.lower(y * 1000
 
 std::vector<std::uint8_t> univ_mask(const Data &data); // 定义在 State 之后
 
+// Panel 读的各表 → L_1day 行 D (= D+1 盘前态) 要它本地齐到的数据日 (cutoff 见 GridScan / EventScan; dense 见 fundamental::covered)
+enum class Need : std::uint8_t {
+  Day,  // D: CUTOFF=-1 网格 (D 日盘后) / 静态档案
+  Eve,  // D+1 前一日历日: CUTOFF=-1 事件 (Floor 到交易日, 停市日可见的事件落 D+1 之前的行)
+  Next, // D+1: CUTOFF=0 网格 (D+1 盘前可知)
+};
+struct Source {
+  std::string_view table;
+  bool dense;
+  Need need;
+};
+constexpr Source kSources[] = {
+    {"cn_stock_basic_info", false, Need::Day},
+    {"cn_stock_real_bar1d", true, Need::Next},
+    {"cn_stock_shares", true, Need::Next},
+    {"cn_stock_limit_price", true, Need::Next},
+    {"cn_stock_status", true, Need::Next},
+    {"cn_stock_margin_trading_detail", true, Need::Day},
+    {"cn_stock_financial_ttm_shift", false, Need::Eve},
+    {"cn_stock_financial_balance_general_pit", false, Need::Eve},
+    {"cn_stock_financial_income_general_pit", false, Need::Eve},
+    {"cn_stock_financial_cashflow_general_pit", false, Need::Eve},
+    {"cn_stock_financial_notes_shift", false, Need::Eve},
+    {"cn_stock_dividend", false, Need::Eve},
+    {"forecast", false, Need::Eve},
+    {"cn_stock_industry_component", false, Need::Eve},
+    {"cn_stock_industry_change", false, Need::Eve},
+};
+
 } // namespace
+
+Ymd last_day(const fundamental::Catalog &cat, std::span<const Ymd> cal) {
+  Ymd cov[std::size(kSources)];
+  for (std::size_t k = 0; k < std::size(kSources); ++k)
+    cov[k] = fundamental::covered(fundamental::spec(kSources[k].table), cat, kSources[k].dense);
+  for (std::size_t i = cal.size(); i-- > 1;) {
+    const Ymd d = cal[i - 1], next = cal[i], eve = misc::add_days(next, -1);
+    bool ok = true;
+    for (std::size_t k = 0; k < std::size(kSources); ++k)
+      ok = ok && cov[k] >= (kSources[k].need == Need::Day ? d : kSources[k].need == Need::Eve ? eve
+                                                                                              : next);
+    if (ok)
+      return d;
+  }
+  return 0;
+}
 
 // ============================================================================
 // Panel
@@ -1618,12 +1663,13 @@ void Panel::build(const std::vector<Ymd> &dates) {
   const int n_a = axes.n_a();
   const int n_d = axes.n_d();
 
-  // ---- 回测日必须全部命中交易日历, 且有次日 (Fund 收盘推进到 d+1); 首回测日决定网格切片起点 ----
+  // ---- 回测日必须全部命中交易日历, 且不晚于基本面齐备的末日 (含次日在轴内); 首回测日决定网格切片起点 ----
+  const Ymd end = last_day(cat, axes.dates);
   int first_d = n_d;
   for (const Ymd s : dates) {
     const int d = axes.exact(s);
     assert(d >= 0 && "回测日不在交易日历里");
-    assert(d + 1 < n_d && "库日无次日交易日 (末日须早于日历末个交易日)");
+    assert(s <= end && "库日晚于基本面齐备的末日 (L_1day 行所需的 D 盘后 / D+1 盘前表未入盘)");
     first_d = std::min(first_d, d);
   }
   const int g0 = std::max(0, first_d - 15); // 网格切片起点: 首回测日前留 15 日 (trading_st 连续 15 日计数)

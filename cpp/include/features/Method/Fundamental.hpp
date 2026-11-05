@@ -18,7 +18,8 @@
 //   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / shares.total 收盘口 (收盘市值) / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast / 行情派生
 //   cutoff=0  (T 盘前可知): status(st/susp), shares, limit_price, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
 //   涨跌停价: row T 即 "T 当日适用涨跌停" (由 pre_close(T) 推出), 直接配盘中实时价判触板.
-//   D 轴 = 交易日历截到 today (Fund 收盘推进到 d+1 ⇒ 库末日须早于日历末个交易日, 其次日在轴内).
+//   D 轴 = 交易日历截到 today. 库末日 ≤ last_day: 行 D 所读各表本地已齐到 D 盘后 / D+1 盘前, 且 D+1 在轴内
+//   (Fund 收盘推进到 d+1). 缺尾日的表不默认补 (status 缺行 = 非 ST / 两融缺行 = 非标的, 会被库追加落盘), 库止于源齐处.
 //   三表 raw (qmt 无): 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
 //
 // fast-math 契约: 输出行被 -ffast-math TU (Valuation 节点/CoreLob) 盲算消费 — 只做算术 (NaN 硬件透传) 与
@@ -34,6 +35,10 @@
 #include <span>
 #include <string_view>
 #include <vector>
+
+namespace fundamental {
+class Catalog;
+}
 
 namespace fund {
 
@@ -89,6 +94,10 @@ inline Board board_of(std::string_view code) {
       return kBoardChiNext;
   return kBoardUnknown;
 }
+
+// 库可算到的末日: 最晚的交易日 D, 使行 D (= D+1 盘前态) 所读各表本地都已齐到所需数据日 (逐表见 .cpp kSources),
+// 且 D+1 在 cal 内. cal = 交易日历 (升序, 截到 today); 无 → 0. Bar 源日历截到此日, Panel::build 断言
+misc::Ymd last_day(const fundamental::Catalog &cat, std::span<const misc::Ymd> cal);
 
 struct Data;  // 轴 / meta / 网格切片 / 事件链 (定义在 .cpp)
 struct State; // Stream 内部状态 (定义在 .cpp)

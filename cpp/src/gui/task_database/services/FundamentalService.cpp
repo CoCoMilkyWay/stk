@@ -2,9 +2,10 @@
 // 抓取: fundamental::sync::plan<Src>(Round) → 同步道逐任务 sync::run<Src> (月度 parquet / 分钟线日文件, 水位增量, 槽位状态见 fundamental/Store.hpp)
 //   基本面 (bigquant → tushare) 在前, 分钟线 (bigquant.bar1m) 在后
 //   与 AuditService 的 audit::plan<Src> → 逐单元 audit::run<Src> 同形: 循环 / 进度 / 取消同走 drive (Drive.hpp)
-// 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days, bar1m_end}
+// 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days, bar1m_end, pit_end}
 //   stock_days   ← all_trading_days (fundamental::calendar)
-//   bar1m_end    ← bar1m 末个分片日 (Bar 档源末日)
+//   bar1m_end    ← bar1m 末个分片日
+//   pit_end      ← fund::last_day (Fund 各源齐备的末个库日); Bar 档源末日 = min(bar1m_end, pit_end)
 //   stock_info   ← cn_stock_basic_info (_meta) + cn_stock_instruments (PIT 简称)
 //                  + cn_stock_industry_component (最新快照)
 //                  + cn_stock_real_bar1d (最新行 + 最新有效报价行) + cn_stock_status
@@ -23,6 +24,7 @@
 
 #include "api/bigquant/client.hpp"
 #include "api/tushare/client.hpp"
+#include "features/Method/Fundamental.hpp"
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
 #include "gui/task_database/services/Drive.hpp"
@@ -425,6 +427,7 @@ bool build_asset_info(Job &job, const Catalog &cat) {
   {
     const std::vector<fundamental::Shard> &bar1m = cat.shards("bar1m");
     job.assetinfo.bar1m_end = bar1m.empty() ? 0 : bar1m.back().day;
+    job.assetinfo.pit_end = fund::last_day(cat, trading);
   }
 
   // ---- 简称 ← cn_stock_instruments 最新快照 (逐日 PIT 简称) ----

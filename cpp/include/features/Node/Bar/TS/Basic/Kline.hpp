@@ -1,7 +1,7 @@
 #pragma once
 
 // Bar 档分钟 K + 分钟箱 K + 日 K (bar1m 不复权, 节点类见 Node/Common/Basic/Kline.hpp; 日 K = 整日箱, 读 day_data). 成交量 / 额见 Trade.hpp.
-// 后复权价不落盘 (标签在节点内现乘复权比; GUI 篮子漂移用 close_day × adj_factor 现算); 日层 CloseAdjDay 只作 Momentum 的输入
+// 后复权价不落盘 (标签在节点内现乘复权比; GUI 篮子漂移用 close_day × adj_factor 现算); CloseAdj5min / CloseAdjDay 只作 MovingAverage / Momentum 的输入
 #include "features/Node/Common/Basic/Kline.hpp"
 
 #define NODE_Kline(N) N(Kline, (Kline), (minute_data, Fund.out(Fund.pre_close)), onMinute)
@@ -11,6 +11,7 @@
 #define NODE_Kline60min(N) N(Kline60min, (KlineT<BinData>), (min60_data, Fund.out(Fund.pre_close)), on60Min)
 #define NODE_KlineDay(N) N(KlineDay, (KlineT<BinData>), (day_data, Fund.out(Fund.pre_close)), onClose)
 
+#define NODE_CloseAdj5min(N) N(CloseAdj5min, (AdjClose), (Kline5min.out(Kline5min.close), Fund.out(Fund.adj_ratio)), on5Min)
 #define NODE_CloseAdjDay(N) N(CloseAdjDay, (AdjClose), (KlineDay.out(KlineDay.close), Fund.out(Fund.adj_ratio)), onClose)
 
 #define FIELDS_L_1min_Kline(X, CAT1)                                                                             \

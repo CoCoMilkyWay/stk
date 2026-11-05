@@ -26,7 +26,8 @@
 //     日历派生 (list_age / delist_age / is_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
 //     行情派生 (ret_12_1 / ret_1m / turn / ivol / resvol / beta / trend; 全市场预计算, 见 Method/Fundamental.hpp)   T 收盘后  −1   T ≤ D
 //   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_1day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
-//   库末日的 D+1 须在 D 轴内 (D 轴截到 today ⇒ 末日早于日历末个交易日; ComputeService 规划, fund::Panel::build 断言).
+//   库末日 ≤ fund::last_day: 上表各源本地已齐到行 D 所需的数据日 (D 盘后 / D+1 盘前), D+1 在 D 轴内
+//   (Bar 源日历截到此日, fund::Panel::build 断言). 源缺尾日则库停在源齐处, 数据入盘后再追加.
 //
 // 【fast-math 契约】本文件不做 isnan/isfinite (状态机在 precise-math TU 里), y 只被下游算术消费, NaN 硬件透传.
 // =============================================================================

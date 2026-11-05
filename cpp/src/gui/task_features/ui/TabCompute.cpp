@@ -306,8 +306,8 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   hover_tip("库 = 池 × 档, 每池两档各一库:\n"
-            "• bar = bar1m + 基本面, %s 起至末个 bar1m 日\n"
-            "• lob = 订单簿还原, %s 起的已编码日 (取同池 bar 日期轴上的日)\n"
+            "• bar = bar1m + 基本面, %s 起至分钟线与基本面都齐的末日 (基本面: 行 D 所需的 D 盘后 / D+1 盘前表已入盘)\n"
+            "• lob = 订单簿还原, %s 起的已编码日, 止于首个待编码日之前 (取同池 bar 日期轴上的日)\n"
             "• 资产轴: all.bar = 全部标的; 其余 = 本库日期段内进过池的标的 (lob 只看自己的回测段, ⊆ 同池 bar 轴)\n"
             "• 成员: all = 当日活跃 (全市场); 子池 bar = all.bar D−1 收盘 pool_* 列; lob = 同池 bar 当日 cs_valid\n"
             "• 上游: lob ← 同池 bar (成员 + 截面旁读); 子池 bar ← all.bar. 上游库未落盘齐则本库不可算\n"

@@ -682,7 +682,7 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
   ImGui::PopID();
 }
 
-// 篮子日内叠加的一条: 收盘线, y = 对首日前收的涨跌幅 [%] (各条同一零点, 跨日接续)
+// 篮子日内叠加的一条: 收盘线, x = 日轴第 k 日 · kSlots + 槽, y = 对本条在日轴内首日前收的涨跌幅 [%] (各条同一零点, 跨日接续)
 struct Overlay {
   std::string name;
   ImVec4 col;
@@ -891,15 +891,17 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
   const QuoteStatus qs = mk.quote->status();
   const Tape &d = *f.data;
   assert(f.today.size() == d.list.size());
-  std::vector<Overlay> ls;
+  // 日轴 = 各条分钟日之并的末 n 日; 各条按日落位, 某条缺的日留空 (不挪别的日来顶)
+  std::vector<Series> intra(picks.size());
   std::vector<misc::Ymd> days;
   char note[160] = "";
-  for (const BasketPick &p : picks) {
+  for (size_t i = 0; i < picks.size(); ++i) {
+    const BasketPick &p = picks[i];
     assert(p.b < d.list.size() && d.keys[p.b] == p.b);
     const Kline &kl = d.list[p.b];
     const Day &today = f.today[p.b];
-    Series intra;
-    intraday(kl, today, kIntraDays[st.intraday], true, intra);
+    intraday(kl, today, static_cast<int>(kMinuteDays) + 1, true, intra[i]);
+    days.insert(days.end(), intra[i].days.begin(), intra[i].days.end());
     if (!note[0]) {
       if (joins(kl, today))
         std::snprintf(note, sizeof(note), "当日由新浪快照合成 %02d:%02d:%02d · 成员 / 权重取 %02d-%02d 收盘", qs.sec / 3600, qs.sec / 60 % 60,
@@ -907,14 +909,25 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
       else if (!gap_note(kl, today, note, sizeof(note)))
         std::snprintf(note, sizeof(note), "all.bar 截至 %02d-%02d", kl.last / 100 % 100, kl.last % 100);
     }
-    if (intra.days.size() > days.size())
-      days = intra.days;
-    const double base = intra.bars.empty() ? 0.0 : intra.bars.front().ref;
-    if (!(base > 0))
+  }
+  std::sort(days.begin(), days.end());
+  days.erase(std::unique(days.begin(), days.end()), days.end());
+  days.erase(days.begin(), days.end() - std::min(days.size(), static_cast<size_t>(kIntraDays[st.intraday])));
+  std::vector<Overlay> ls;
+  for (size_t i = 0; i < picks.size() && !days.empty(); ++i) {
+    const Series &s = intra[i];
+    const size_t j0 = static_cast<size_t>(std::lower_bound(s.bars.begin(), s.bars.end(), days.front(), [](const Candle &c, misc::Ymd x) { return c.date < x; }) - s.bars.begin());
+    if (j0 == s.bars.size() || !(s.bars[j0].ref > 0))
       continue;
-    Overlay &l = ls.emplace_back(Overlay{basket_name(p.b), ImGui::ColorConvertU32ToFloat4(p.col), std::move(intra.x), {}});
-    for (const Candle &c : intra.bars)
+    const double base = s.bars[j0].ref;
+    Overlay &l = ls.emplace_back(Overlay{basket_name(picks[i].b), ImGui::ColorConvertU32ToFloat4(picks[i].col), {}, {}});
+    for (size_t j = j0; j < s.bars.size(); ++j) {
+      const Candle &c = s.bars[j];
+      const size_t k = static_cast<size_t>(std::lower_bound(days.begin(), days.end(), c.date) - days.begin());
+      assert(k < days.size() && days[k] == c.date);
+      l.x.push_back(static_cast<double>(k) * kSlots + static_cast<int>(s.x[j]) % kSlots);
       l.y.push_back((c.close / base - 1.0) * 100.0);
+    }
   }
   ImGui::PushID("basket");
   const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail());

@@ -39,6 +39,12 @@ Ymd horizon(int avail_hour, const Now &now) {
 
 Ymd write_date(const Shard &sh) { return ymd_of(local_tm(sh.mtime)); }
 
+// 分片末次写盘时的 horizon = 该次同步已拉到的日
+Ymd synced(const Spec &s, const Shard &sh) {
+  const std::tm tm = local_tm(sh.mtime);
+  return horizon(s.avail_hour, {sh.mtime, ymd_of(tm), tm.tm_hour});
+}
+
 // 本地 d 日 hour 点 → file_clock (与 Shard::mtime 同钟); hour = 24 → 次日 0 点 (mktime 归一)
 fs::file_time_type local_at(Ymd d, int hour) {
   std::tm tm{};
@@ -343,6 +349,29 @@ Task whole(const Spec &s, const Slot &sl) { return {&s, sl.ym, sl.w}; }
 Ymd mark(const Spec &s, const Shard &sh) {
   assert(!s.vd.empty() && "mark: vd 空的表无水位");
   return pq::max_yyyymmdd(sh.path, s.vd);
+}
+
+Ymd covered(const Spec &s, const Catalog &cat, bool dense) {
+  assert(s.shape != Shape::Daily && "covered: Daily 表按日文件判");
+  if (s.shape == Shape::Meta) {
+    assert(!dense && "covered: Meta 无逐日行");
+    const Shard *sh = cat.find(s.name, 0);
+    return !sh ? 0 : s.vd.empty() ? synced(s, *sh)
+                                  : mark(s, *sh);
+  }
+  Ymd out = 0;
+  for (Ym m = misc::ym_of(::config::PIPELINE_START_DATE);; m = misc::next_ym(m)) {
+    const Shard *sh = cat.find(s.name, m);
+    if (!sh)
+      return out;
+    const Ymd end = misc::last_day(m);
+    if (synced(s, *sh) >= end || (s.snap == Snap::Day && mark(s, *sh) > 0)) {
+      out = end;
+      continue;
+    }
+    const Ymd c = dense ? mark(s, *sh) : std::max(mark(s, *sh), synced(s, *sh));
+    return std::max(out, std::min(c, end));
+  }
 }
 
 std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::string> &cols,
