@@ -1447,7 +1447,7 @@ enum NavLeft : int { kLeftChg,
 constexpr int kLefts = 5;
 constexpr const char *kNavLeftName[kLefts] = {"当日涨幅", "Δ5日线", "只数", "总市值", "资金流入"};
 constexpr const char *kNavNumFmt[kNavNums] = {"%+6.1f%%", "%+6.1f%%", "%+5.2f", "%5.1f倍"}; // [NavNum]
-// 篮子行 h 的当日 {只数, 总市值 [元], 资金流入 (净流入 / 成交额)}: 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线
+// 篮子行 h 的当日 {只数, 总市值 [亿元], 资金流入 (净流入 / 成交额)}: 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线
 // (总市值当日接上 × 加权线当日涨跌); 资金流入 = 新浪当日合成的 Day::flow (不看接续); 非篮子 / 未到 → NaN
 std::array<double, 3> basket_today(const Database::Feed &f, const PortfolioRow &h) {
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -1554,10 +1554,10 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         ImGui::Text("%5.0f", x);
         break;
       case kLeftCap:
-        if (x >= 1e12)
-          ImGui::Text("%6.2f万亿", x / 1e12);
+        if (x >= 1e4)
+          ImGui::Text("%6.2f万亿", x / 1e4);
         else
-          ImGui::Text("%6.0f亿", x / 1e8);
+          ImGui::Text("%6.0f亿", x);
         break;
       default:
         ImGui::TextColored(tint(x, 0.0), "%+6.2f%%", 100.0 * x);

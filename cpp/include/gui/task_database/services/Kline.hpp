@@ -156,7 +156,7 @@ struct Tape {
   std::vector<Kline> list;    // [keys]; 空 = 源未就绪
   const char *lack = nullptr; // 源未就绪的原因 (只篮子有: all.bar 未建 / 落盘不足 2 日)
   misc::Ymd basis = 0;        // 篮子: 成员 / 池 / 行业 / 股本所取的库末日 (其后至 Kline::last 为基本面补日); 个股 0
-  // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 (加权线 = 末日收盘总市值 [元]); 个股空
+  // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 (加权线 = 末日收盘总市值 [亿元]: 股本 total_shares 以亿股计); 个股空
   std::vector<uint32_t> members;
   std::vector<double> weight;
 };
