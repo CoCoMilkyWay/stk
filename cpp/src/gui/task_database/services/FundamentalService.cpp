@@ -2,6 +2,7 @@
 // 抓取: fundamental::sync::plan<Src>(Round) → 同步道逐任务 sync::run<Src> (月度 parquet / 分钟线日文件, 水位增量, 槽位状态见 fundamental/Store.hpp)
 //   基本面 (bigquant → tushare) 在前, 概念快照 (eastmoney, 当日缺才拉) 居中, 分钟线 (bigquant.bar1m) 在后
 //   与 AuditService 的 audit::plan<Src> → 逐单元 audit::run<Src> 同形: 循环 / 进度 / 取消同走 drive (Drive.hpp)
+//   四道 (kLaneTag) 同一套展示字段 state.lanes: 排队 / 在跑 / 完成 / 取消 + 计步 / 行数 / 收尾时刻 + 落盘汇总
 // 构建: parquet → AssetInfo{stock_info, stock_factor, stock_days, bar1m_end, pit_end}
 //   stock_days   ← all_trading_days (fundamental::calendar)
 //   bar1m_end    ← bar1m 末个分片日
@@ -46,6 +47,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -119,32 +121,62 @@ std::string now_str() {
   return std::string(buf);
 }
 
-// Catalog → 逐表落盘状态 (Fundamental 页逐表列出用). _meta 单文件表: months 恒 0, last_month 恒 0.
-std::vector<TableFileStat> collect_table_stats(const Catalog &cat) {
-  std::vector<TableFileStat> out;
-  out.reserve(cat.all().size());
-  for (const auto &[name, shards] : cat.all()) {
-    TableFileStat st;
-    st.name = name;
-    auto newest = shards.front().mtime;
-    for (const fundamental::Shard &sh : shards) {
-      st.bytes += sh.bytes;
-      if (sh.ym != 0) {
-        ++st.months;
-        st.last_month = sh.ym; // (ym, 日) 升序 ⇒ 末个即最新
-        st.last_day = sh.day;
-      }
-      newest = std::max(newest, sh.mtime);
+std::string mtime_str(std::filesystem::file_time_type t) {
+  return short_time(std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(t)));
+}
+
+// 一组分片 → 落盘状态. _meta 单文件片: 不计 months / 最新分片
+TableFileStat stat_of(std::string name, const std::vector<const fundamental::Shard *> &shards) {
+  TableFileStat st;
+  st.name = std::move(name);
+  if (shards.empty())
+    return st;
+  auto newest = shards.front()->mtime;
+  for (const fundamental::Shard *sh : shards) {
+    st.bytes += sh->bytes;
+    if (sh->ym != 0) {
+      ++st.months;
+      st.last_month = std::max(st.last_month, sh->ym);
+      st.last_day = std::max(st.last_day, sh->day);
     }
-    const std::time_t t = std::chrono::system_clock::to_time_t(
-        std::chrono::clock_cast<std::chrono::system_clock>(newest));
-    const std::tm tm_buf = safe_localtime(&t);
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", tm_buf.tm_mon + 1,
-                  tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min);
-    st.mtime = buf;
-    out.push_back(std::move(st));
+    newest = std::max(newest, sh->mtime);
   }
+  st.mtime = mtime_str(newest);
+  return st;
+}
+
+// 盘上清点: 逐表落盘状态 (Fundamental 页逐表列出用) + 各道汇总 (只计 SPECS 在册的表)
+struct Disk {
+  std::vector<TableFileStat> tables;
+  TableFileStat lanes[kLanes];
+};
+
+Disk collect_disk(const Catalog &cat) {
+  Disk out;
+  out.tables.reserve(cat.all().size());
+  for (const auto &[name, shards] : cat.all()) {
+    std::vector<const fundamental::Shard *> ps;
+    for (const fundamental::Shard &sh : shards)
+      ps.push_back(&sh);
+    out.tables.push_back(stat_of(name, ps));
+  }
+  std::vector<const fundamental::Shard *> by_lane[kLanes];
+  for (const fundamental::Spec &s : fundamental::SPECS)
+    for (const fundamental::Shard &sh : cat.shards(s.name))
+      by_lane[lane_of(s)].push_back(&sh);
+  // 概念快照 YYYYMMDD.tsv 记成日分片
+  std::vector<fundamental::Shard> snaps;
+  if (std::filesystem::exists(concept_dir()))
+    for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(concept_dir()))
+      if (e.path().extension() == ".tsv") {
+        const Ymd d = misc::parse_ymd(e.path().stem().string());
+        assert(d > 0 && "concept: 快照文件名不是 YYYYMMDD.tsv");
+        snaps.push_back({misc::ym_of(d), e.path(), e.file_size(), e.last_write_time(), d});
+      }
+  for (const fundamental::Shard &sh : snaps)
+    by_lane[kLaneConcept].push_back(&sh);
+  for (std::size_t l = 0; l < kLanes; ++l)
+    out.lanes[l] = stat_of(kLaneTag[l], by_lane[l]);
   return out;
 }
 
@@ -973,6 +1005,20 @@ bool build_asset_info(Job &job, const Catalog &cat) {
 
 } // namespace
 
+std::string short_time(std::time_t t) {
+  const std::tm tm_buf = safe_localtime(&t);
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", tm_buf.tm_mon + 1,
+                tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min);
+  return buf;
+}
+
+Lane lane_of(const fundamental::Spec &s) {
+  if (fundamental::from<fundamental::Tu>(s))
+    return kLaneTu;
+  return s.shape == fundamental::Shape::Daily ? kLaneBar1m : kLaneBq;
+}
+
 const TableFileStat *FundamentalState::find_table(const std::string &name) const {
   for (const TableFileStat &t : tables)
     if (t.name == name)
@@ -1010,33 +1056,65 @@ bool FundamentalService::run(FundamentalRequest &req) {
     const Tasks bq_tasks = req.fundamental ? fundamental::sync::plan<fundamental::Bq>(round, daily(false)) : Tasks{};
     const Tasks ts_tasks = req.fundamental ? fundamental::sync::plan<fundamental::Tu>(round) : Tasks{};
     const Tasks bar1m_tasks = req.bar1m ? fundamental::sync::plan<fundamental::Bq>(round, daily(true)) : Tasks{};
-    // 同步道, 道序即执行序 (同一 drive; 与 AuditService 逐单元 audit::run 同形); BigQuant 每任务后重取配额 (不耗配额)
-    std::optional<tushare::Client> ts;
+    // 同步道, 道序即执行序 (任务道同一 drive; 与 AuditService 逐单元 audit::run 同形); 概念快照 = 板块名单 + 个股所属概念两步
+    const bool on[kLanes] = {req.fundamental, req.fundamental, req.fundamental, req.bar1m};
+    const std::size_t total[kLanes] = {bq_tasks.size(), ts_tasks.size(),
+                                       concept_last() < misc::today_ymd() ? std::size_t{2} : 0, bar1m_tasks.size()};
+    // 道的展示字段持锁写: 本轮开道 → 排队; 轮到 → 在跑 (逐项计步 / 行数) → 完成 / 取消 (轮到时已取消 = 整道取消)
+    auto mark = [this](Lane l, auto &&fn) {
+      std::lock_guard lk(mutex);
+      fn(state.lanes[l]);
+      publish();
+    };
+    for (std::size_t l = 0; l < kLanes; ++l)
+      if (on[l])
+        mark(Lane(l), [n = total[l]](LaneStat &s) { s.run = LaneRun::Queued, s.total = n, s.done = 0, s.rows = 0; });
+    auto lane = [&](Lane l, auto &&body) {
+      if (!on[l])
+        return;
+      Outcome o = Outcome::Cancelled;
+      if (total[l] == 0)
+        o = Outcome::Done;
+      else if (go()) {
+        mark(l, [](LaneStat &s) { s.run = LaneRun::Syncing; });
+        begin(Phase::Loading, total[l]);
+        o = body();
+      }
+      mark(l, [o](LaneStat &s) {
+        s.run = o == Outcome::Done ? LaneRun::Done : LaneRun::Cancelled;
+        s.time = short_time(std::time(nullptr));
+      });
+    };
+    auto step = [&](Lane l, std::int64_t rows) { mark(l, [rows](LaneStat &s) { ++s.done, s.rows += rows; }); };
+    auto tasks = [&](Lane l, const Tasks &ts, const std::function<std::int64_t(const fundamental::Task &)> &fetch) {
+      lane(l, [&] {
+        const std::string tag = kLaneTag[l];
+        return drive(*this, cancel_, tag + ".sync", ts, [&job, &tag](const std::string &s) { job.set_message("同步 " + tag + ": " + s); }, [&](const fundamental::Task &t) {
+                       const std::int64_t rows = fetch(t);
+                       step(l, rows);
+                       return std::to_string(rows) + " rows"; });
+      });
+    };
+    // BigQuant 每任务后重取配额 (不耗配额)
+    std::optional<tushare::Client> tu;
     auto run_bq = [&](const fundamental::Task &t) {
       const std::int64_t rows = fundamental::sync::run<fundamental::Bq>(bq, t);
       job.quota = bq.quota();
       show_quota();
-      return std::to_string(rows) + " rows";
+      return rows;
     };
     auto run_tu = [&](const fundamental::Task &t) {
-      if (!ts)
-        ts.emplace();
-      return std::to_string(fundamental::sync::run<fundamental::Tu>(*ts, t)) + " rows";
-    };
-    auto lane = [&](const std::string &tag, const Tasks &tasks, const std::function<std::string(const fundamental::Task &)> &step) {
-      begin(Phase::Loading, tasks.size());
-      drive(*this, cancel_, tag + ".sync", tasks, [&job, &tag](const std::string &s) { job.set_message("同步 " + tag + ": " + s); }, step);
+      if (!tu)
+        tu.emplace();
+      return fundamental::sync::run<fundamental::Tu>(*tu, t);
     };
     std::cout << "[sync] from " << config::PIPELINE_START_DATE << " (lookback=" << config::PIPELINE_LOOKBACK_DAYS
               << "d, dedup=" << config::PIPELINE_DEDUP_WINDOW_SECONDS << "s)" << std::endl;
-    if (!bq_tasks.empty() && go())
-      lane("bigquant", bq_tasks, run_bq);
-    if (!ts_tasks.empty() && go())
-      lane("tushare", ts_tasks, run_tu);
+    tasks(kLaneBq, bq_tasks, run_bq);
+    tasks(kLaneTu, ts_tasks, run_tu);
     // 概念快照: 当日缺才拉; 板块名单 (名称 → 代码) + 全 A 个股所属概念 (名称) 反排成各板块成分, 题材且够数的收
-    if (req.fundamental && go() && concept_last() < misc::today_ymd()) {
+    lane(kLaneConcept, [&] {
       eastmoney::Client em;
-      begin(Phase::Loading, 2);
       job.set_message("同步 eastmoney.concept: 板块名单");
       std::vector<eastmoney::Board> boards = em.concepts();
       std::unordered_map<std::string_view, size_t> by_name;
@@ -1044,6 +1122,7 @@ bool FundamentalService::run(FundamentalRequest &req) {
         const bool fresh = by_name.emplace(boards[k].name, k).second;
         assert(fresh && "eastmoney: 板块名称重复");
       }
+      step(kLaneConcept, 0);
       publish(1);
       job.set_message("同步 eastmoney.concept: 个股所属概念");
       std::vector<std::vector<std::string>> syms(boards.size());
@@ -1053,7 +1132,6 @@ bool FundamentalService::run(FundamentalRequest &req) {
           assert(it != by_name.end() && "eastmoney: 个股所属概念不在板块名单");
           syms[it->second].push_back(s.sym);
         }
-      publish(1);
       std::vector<Concept> list;
       for (size_t k = 0; k < boards.size(); ++k)
         if (concept_theme(boards[k].name) && syms[k].size() >= kConceptMin)
@@ -1061,19 +1139,24 @@ bool FundamentalService::run(FundamentalRequest &req) {
       std::sort(list.begin(), list.end(), [](const Concept &x, const Concept &y) { return x.code < y.code; });
       save_concepts(misc::today_ymd(), list);
       std::cout << "[eastmoney.concept] " << list.size() << " / " << boards.size() << " concept(s)" << std::endl;
-    }
+      step(kLaneConcept, static_cast<std::int64_t>(list.size()));
+      publish(1);
+      return Outcome::Done;
+    });
     // 分钟线: 基本面之后 (一日一条, 量大耗时长)
-    if (!bar1m_tasks.empty() && go())
-      lane("bigquant.bar1m", bar1m_tasks, run_bq);
+    tasks(kLaneBar1m, bar1m_tasks, run_bq);
   }
   // 同步之后再扫盘, 数字反映本轮落盘结果 (构建失败也清点 — 正是要看清哪张表缺)
   const Catalog cat;
   FundamentalResult out;
   out.seq = req.seq;
   out.ok = build_asset_info(job, cat);
+  Disk disk = collect_disk(cat);
   {
     std::lock_guard lk(mutex);
-    state.tables = collect_table_stats(cat);
+    state.tables = std::move(disk.tables);
+    for (std::size_t l = 0; l < kLanes; ++l)
+      state.lanes[l].disk = std::move(disk.lanes[l]);
     if (out.ok) {
       state.stock_count = job.st.stock_count;
       state.factor_stock_count = job.st.factor_stock_count;

@@ -277,6 +277,7 @@ private:
     const bool auditing = state_mgr_->auditing();
     const bool disable_audit = busy || auditing || !(data_->config.sync_fundamental || data_->config.sync_bar1m);
     const TaskStatus fstatus = FundamentalStatus();
+    const QuoteStatus sina = market_->quote ? market_->quote->status() : QuoteStatus{};
 
     {
       // 展示字段持锁读 (worker 只短锁写)
@@ -285,6 +286,7 @@ private:
           fundamental_svc_->state,
           *fundamental_svc_,
           fstatus,
+          market_->quote ? &sina : nullptr,
           &update_clicked,
           &update_cancel_clicked,
           busy || auditing,

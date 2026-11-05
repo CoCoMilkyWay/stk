@@ -205,7 +205,9 @@ stk/
 │   │   │   │   │                                     #      跑完把末日成员表 + 点位交给 Quote, 之后的行情日由它合成.
 │   │   │   │   │                                     #      Assets 篮子 / Portfolio 理想线 / 近况同出于此
 │   │   │   │   │                                     #    · Market: Quote + StockHistory + BasketHistory 一份, request / history 按 Side 分派; Assets / Portfolio 共用 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
-│   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (基本面同步) / TabEncode / TabAssets / TabDates (日历) / CrossSectionAnalysis / QuotesPanel
+│   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (数据源同步 / 核对) / TabEncode / TabAssets / TabDates (日历) / CrossSectionAnalysis / QuotesPanel
+│   │   │   │                                         #    · TabFundamental: 源表一源一行, 列同形 (源 / 内容 / 更新 / 状态 / 本轮 / 最新分片 / 分片 / 体积 / 最后落盘 / 最近同步):
+│   │   │   │                                         #      Update 四道 bigquant → tushare → eastmoney.concept → bigquant.bar1m (道序即执行序, 日志 tag 同名) + sina.live (Quote 常驻轮询)
 │   │   │   │                                         #    · TabAssets: 左栏 个股 (过滤条 + 资产表); 右栏 Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析); 列定义一张表 kCols:
 │   │   │   │                                         #      取值 / 文本 / 画格 + 类型 (文本 / 分类 / 数值) + 好坏口径 (估值序 / 越高越好), 排序 (NaN 恒末) / 截面色 / 截面分析都只读它
 │   │   │   │                                         #    · QuotesPanel: 两边同一个 Feed + Sync (键集变 → 请求; 发布到齐 → 换上; 当日版本变 → 拷); 近况 RecentOf (标的 / 净值线同一核)

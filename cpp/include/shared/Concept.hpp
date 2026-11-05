@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,6 +23,8 @@ struct Concept {
 
 // 题材 (名称不命中剔除词)
 bool concept_theme(std::string_view name);
+// 快照目录 output/concept
+std::filesystem::path concept_dir();
 // 最近一份快照日 (0 = 无)
 misc::Ymd concept_last();
 // 当日快照落盘 (list 按板块代码升序, 各自成分 ≥ kConceptMin)

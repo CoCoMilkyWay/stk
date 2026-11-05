@@ -32,6 +32,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <deque>
 #include <mutex>
 #include <span>
@@ -49,6 +50,8 @@ struct QuoteStatus {
   size_t fetched = 0;         // 已取的分钟 K
   bool fill = false;          // 行情日 > fund_end (取分钟 K)
   PerSide<uint64_t> ver = {}; // 当日表版本: 个股 (每轮快照 / 每次补根 +1) / 篮子 (每次合成 +1)
+  size_t bytes = 0;           // 盘上缓存 (末次读入 / 写出) 字节; 0 = 无
+  std::time_t saved = 0;      // 盘上缓存的落盘时刻
 };
 
 class QuoteService {
@@ -135,8 +138,10 @@ private:
   std::deque<uint32_t> todo_;
   uint32_t sel_ = ~0u;
   size_t inflight_ = 0, fetched_ = 0;
-  bool changed_ = false;               // 上次落盘后 tracks_ 变过
-  int sec_ = 0;                        // 行情日最新快照时刻 (断档判据的上轮时刻)
+  bool changed_ = false; // 上次落盘后 tracks_ 变过
+  int sec_ = 0;          // 行情日最新快照时刻 (断档判据的上轮时刻)
+  size_t bytes_ = 0;     // 盘上缓存 (QuoteStatus::bytes / saved)
+  std::time_t saved_ = 0;
   std::shared_ptr<const Basis> basis_; // 空 = 未 bind
   std::vector<Day> baskets_;           // [篮子] 当日 (末次合成; 空 = 未合成)
   PerSide<uint64_t> ver_ = {};

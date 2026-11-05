@@ -37,8 +37,7 @@ std::uint64_t fnv_append(std::uint64_t h, std::string_view s) {
   return h * kFnvPrime;
 }
 
-std::filesystem::path dir() { return misc::git_root() / "output" / "concept"; }
-std::filesystem::path file_of(misc::Ymd d) { return dir() / (misc::dense(d) + ".tsv"); }
+std::filesystem::path file_of(misc::Ymd d) { return concept_dir() / (misc::dense(d) + ".tsv"); }
 
 // s 按 sep 切开逐段 fn
 template <class Fn>
@@ -58,11 +57,13 @@ bool concept_theme(std::string_view name) {
   return std::none_of(std::begin(kDrop), std::end(kDrop), [&](std::string_view w) { return name.find(w) != std::string_view::npos; });
 }
 
+std::filesystem::path concept_dir() { return misc::git_root() / "output" / "concept"; }
+
 misc::Ymd concept_last() {
   misc::Ymd last = 0;
-  if (!std::filesystem::exists(dir()))
+  if (!std::filesystem::exists(concept_dir()))
     return last;
-  for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(dir()))
+  for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(concept_dir()))
     if (e.path().extension() == ".tsv") {
       const misc::Ymd d = misc::parse_ymd(e.path().stem().string());
       assert(d > 0 && "concept: 快照文件名不是 YYYYMMDD.tsv");

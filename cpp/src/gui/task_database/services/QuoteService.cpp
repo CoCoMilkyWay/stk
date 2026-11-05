@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 
@@ -114,7 +115,7 @@ void QuoteService::select(uint32_t id) {
 
 QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
-  return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_, ver_};
+  return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_, ver_, bytes_, saved_};
 }
 
 void QuoteService::bind(Members m, std::vector<double> level) {
@@ -251,6 +252,8 @@ void QuoteService::poll() {
     fold();
     if (!blob.empty()) {
       misc::atomic_write(::config::SINA_CACHE, reinterpret_cast<const char *>(blob.data()), blob.size());
+      std::lock_guard<std::mutex> lock(mu_);
+      bytes_ = blob.size(), saved_ = std::time(nullptr);
       blob.clear();
     }
     std::unique_lock<std::mutex> lock(mu_);
@@ -411,6 +414,9 @@ void QuoteService::load() {
   if (!f)
     return;
   const std::vector<char> blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  bytes_ = blob.size();
+  saved_ = std::chrono::system_clock::to_time_t(
+      std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(::config::SINA_CACHE)));
   misc::snap::Load ar(std::as_bytes(std::span(blob)));
   Head h;
   ar(h);

@@ -1,7 +1,9 @@
-// Tab Fundamental - 基本面数据源 (BigQuant + Tushare) 状态与同步入口
+// Tab Fundamental - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
 // 数据落地 = output/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/<表>/YYYY-MM-DD.parquet (Daily)
-//   (水位增量, 常量见 shared/Config.hpp);
+//   (水位增量, 常量见 shared/Config.hpp) + output/concept/YYYYMMDD.tsv + output/sina/live.bin;
 // AssetInfo 由 FundamentalService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
+//
+// 源表一源一行, 列同形: Update 四道 (FundamentalState::lanes, 道序即执行序) + 新浪当日 (QuoteStatus, 常驻轮询).
 //
 // 逐表清单的两半信息各有出处, 谁也不抄谁:
 //   静态元描述 (增量键 / 抓法 / 就绪 / 说明) — 直接遍历 fundamental::SPECS
@@ -17,6 +19,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 namespace GUI::Database {
@@ -281,6 +284,122 @@ void table_row(const fundamental::Spec &spec, bool scanned, const TableFileStat 
   ImGui::TextUnformatted(spec.desc.c_str());
 }
 
+// 源表一行: 源 | 内容 | 更新 | 状态 | 本轮 | 落盘汇总 (同单表口径: 最新分片 / 分片 / 体积 / 最后落盘) | 最近同步
+void source_row(const char *tag, const std::string &content, const std::string &cadence, const TaskStatus &st,
+                const std::string &round, const TableFileStat &disk, const std::string &synced) {
+  const auto text_or_dash = [](const std::string &s) {
+    if (s.empty())
+      ImGui::TextDisabled("-");
+    else
+      ImGui::TextUnformatted(s.c_str());
+  };
+  ImGui::TableNextRow();
+  ImGui::TableNextColumn();
+  ImGui::TextUnformatted(tag);
+  ImGui::TableNextColumn();
+  ImGui::TextUnformatted(content.c_str());
+  ImGui::TableNextColumn();
+  ImGui::TextUnformatted(cadence.c_str());
+  ImGui::TableNextColumn();
+  if (st.kind == TaskStatus::Kind::None)
+    ImGui::TextDisabled("-");
+  else
+    ImGui::TextColored(StatusColor(st.kind), "%s", st.text.c_str());
+  ImGui::TableNextColumn();
+  text_or_dash(round);
+  ImGui::TableNextColumn();
+  text_or_dash(disk.last_day ? misc::dash(disk.last_day) : misc::dash_ym(disk.last_month));
+  ImGui::TableNextColumn();
+  text_or_dash(disk.months ? std::to_string(disk.months) : "");
+  ImGui::TableNextColumn();
+  if (disk.bytes)
+    text_bytes(disk.bytes);
+  else
+    ImGui::TextDisabled("-");
+  ImGui::TableNextColumn();
+  text_or_dash(disk.mtime);
+  ImGui::TableNextColumn();
+  text_or_dash(synced);
+}
+
+// 数据源: Update 四道 (道序即执行序) + 新浪当日 (常驻轮询) 同列对仗
+void sources_section(const FundamentalState &state, const QuoteStatus *sina) {
+  struct Desc {
+    const char *content, *cadence;
+  };
+  static constexpr Desc kDesc[kLanes] = {
+      {"基本面表", "Update · 水位增量"},
+      {"事件表", "Update · 水位增量"},
+      {"题材概念快照", "Update · 当日缺才拉"},
+      {"分钟线", "Update · 逐日, 基本面之后"},
+  };
+  std::size_t tables[kLanes] = {};
+  for (const fundamental::Spec &spec : fundamental::SPECS)
+    ++tables[lane_of(spec)];
+
+  constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                     ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
+  if (!ImGui::BeginTable("FundSources", 10, kFlags))
+    return;
+  for (const char *h : {"源", "内容", "更新", "状态", "本轮", "最新分片", "分片", "体积", "最后落盘", "最近同步"})
+    ImGui::TableSetupColumn(h);
+  ImGui::TableHeadersRow();
+
+  for (std::size_t l = 0; l < kLanes; ++l) {
+    const LaneStat &s = state.lanes[l];
+    TaskStatus st;
+    std::string round;
+    switch (s.run) {
+    case LaneRun::Idle:
+      break;
+    case LaneRun::Queued:
+      st = {TaskStatus::Kind::Muted, "waiting"};
+      break;
+    case LaneRun::Syncing:
+      st = {TaskStatus::Kind::Busy, "syncing"};
+      break;
+    case LaneRun::Done:
+      st = {TaskStatus::Kind::Ready, "done"};
+      break;
+    case LaneRun::Cancelled:
+      st = {TaskStatus::Kind::Muted, "cancelled"};
+      break;
+    }
+    if (s.run != LaneRun::Idle)
+      round = s.total == 0 ? (l == kLaneConcept ? "当日已有" : "已到水位")
+                           : std::to_string(s.done) + "/" + std::to_string(s.total) + " · " + fmt_count(s.rows) + " rows";
+    std::string content = kDesc[l].content;
+    if (tables[l] > 1)
+      content += " ×" + std::to_string(tables[l]);
+    source_row(kLaneTag[l], content, kDesc[l].cadence, st, round, s.disk, s.time);
+  }
+
+  // 新浪: 快照每轮全市场; 分钟 K 只补快照没盯住的根 (行情日已入 bar1m 则不补); 盘上缓存只存行情日一天
+  char cadence[64];
+  std::snprintf(cadence, sizeof(cadence), "Assets / Portfolio 起 · 快照 %ds / %ds", QuoteService::kTick,
+                QuoteService::kIdleTick);
+  if (!sina) {
+    source_row("sina.live", "当日行情", cadence, {}, "未起", {}, "");
+  } else {
+    const std::size_t req = sina->fetched + sina->pending;
+    const TaskStatus st = sina->pending > 0 ? TaskStatus{TaskStatus::Kind::Busy, "syncing"}
+                                            : TaskStatus{TaskStatus::Kind::Muted, "live"};
+    const std::string round = !sina->fill ? "只快照 (行情日已入 bar1m)"
+                                          : std::to_string(sina->fetched) + "/" + std::to_string(req) + " · 分钟 K 补根";
+    TableFileStat disk;
+    disk.months = sina->bytes > 0;
+    disk.last_day = sina->date;
+    disk.bytes = sina->bytes;
+    disk.mtime = sina->saved ? short_time(sina->saved) : "";
+    char synced[32] = "";
+    if (sina->date)
+      std::snprintf(synced, sizeof(synced), "%02d-%02d %02d:%02d", sina->date / 100 % 100, sina->date % 100,
+                    sina->sec / 3600, sina->sec / 60 % 60);
+    source_row("sina.live", "当日行情", cadence, st, round, disk, synced);
+  }
+  ImGui::EndTable();
+}
+
 // 数据集总量 (只统计 SPECS 里在册的表, 目录里的历史遗留文件不计)
 struct Totals {
   std::size_t listed = 0;
@@ -420,6 +539,7 @@ void RenderTabFundamental(
     const FundamentalState &state,
     const Progress &progress,
     const TaskStatus &status,
+    const QuoteStatus *sina,
     bool *update_clicked,
     bool *update_cancel_clicked,
     bool disable_update_controls,
@@ -440,7 +560,7 @@ void RenderTabFundamental(
                      audit_progress.total.load(std::memory_order_relaxed)};
 
   ImGui::Spacing();
-  ImGui::SeparatorText("Fundamental Data (BigQuant DAI + Tushare)");
+  ImGui::SeparatorText("Data Sources (BigQuant DAI · Tushare · 东财 · 新浪)");
 
   // 状态行
   ImGui::Text("Status:");
@@ -453,6 +573,10 @@ void RenderTabFundamental(
   // 阶段: scanning 外来写者重写 / loading 同步 (计步 = 任务) / running 构建 (计步 = 分片)
   if (running)
     progress_bar(progress, PhaseName(phase));
+
+  ImGui::Spacing();
+  sources_section(state, sina);
+  ImGui::Spacing();
 
   // BigQuant 周配额余额 (配色阈值与 bigquant::preflight 终端输出一致)
   ImGui::Text("BigQuant 本周配额:");
@@ -506,8 +630,9 @@ void RenderTabFundamental(
       *update_clicked = true;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("pending 判定 → BigQuant/Tushare 水位增量同步 → 重建 AssetInfo\n"
-                        "已到水位时零网络, 秒级完成");
+      ImGui::SetTooltip("pending 判定 → 依次同步 bigquant / tushare (水位增量) → eastmoney.concept (当日缺才拉)\n"
+                        "→ bigquant.bar1m (逐日) → 重建 AssetInfo\n"
+                        "已到水位时零网络, 秒级完成; 新浪当日不在其中 (Assets / Portfolio 起后常驻轮询)");
     }
   }
 
