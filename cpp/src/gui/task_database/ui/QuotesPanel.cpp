@@ -718,7 +718,8 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
 }
 
 // 篮子日内叠加的一条: x = 日轴第 k 日 · kSlots + 槽 (并根 = 组中点), y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续)
-//   g = 0: 收盘线; g ≥ 1: 蜡烛 (每根并 g 槽, open / high / low 同 y 口径), 另带现价十字: chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
+//   g = 0: 收盘线; g ≥ 1: 蜡烛 (每根并 g 槽; 实体 = 上一根收 → 本根收, 首根起于首日前收 = 0, 根根首尾相接; open = 实体起点,
+//     high / low 同 y 口径并包住实体), 另带现价十字: chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
 struct Overlay {
   std::string name;
   ImVec4 col;
@@ -729,7 +730,7 @@ struct Overlay {
   int now = 0;
 };
 
-// 一条的蜡烛: 实心, 涨红跌绿 (收 vs 开), 体至少 1 px
+// 一条的蜡烛: 实心, 涨红跌绿 (收 vs 上一根收), 体至少 1 px
 void candles(const Overlay &l) {
   if (!ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend))
     return;
@@ -891,7 +892,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         ImGui::SameLine();
         ImGui::TextColored(tint(y, 0), "%+.2f%%", y);
         if (l->g)
-          ImGui::Text("开 %+.2f%%  高 %+.2f%%\n低 %+.2f%%  收 %+.2f%%", l->open[j], l->high[j], l->low[j], y);
+          ImGui::Text("前 %+.2f%%  高 %+.2f%%\n低 %+.2f%%  收 %+.2f%%", l->open[j], l->high[j], l->low[j], y);
       }
       ImGui::EndTooltip();
     }
@@ -1015,8 +1016,12 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
       l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
       l.now = static_cast<int>(s.x.back());
       l.g = merge(s, nd * kSlots, avail.x);
-      for (const Candle &c : s.bars)
-        l.open.push_back(pct(c.open)), l.high.push_back(pct(c.high)), l.low.push_back(pct(c.low));
+      double prev = 0;
+      for (const Candle &c : s.bars) {
+        const double y = pct(c.close);
+        l.open.push_back(prev), l.high.push_back(std::max({pct(c.high), prev, y})), l.low.push_back(std::min({pct(c.low), prev, y}));
+        prev = y;
+      }
     }
     l.x = s.x;
     for (const Candle &c : s.bars)
