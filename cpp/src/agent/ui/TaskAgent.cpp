@@ -69,7 +69,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
 Mine::Setup setup_of(const Options &o) {
-  return {o.sc, o.gate, o.gpu == 1, o.ask, false, {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model, {}}};
+  return {o.sc, o.gate, o.gpu == 1, o.ask, false, {}, {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model, {}}};
 }
 
 // 模型嗅探: 每后端一个后台 GET models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
@@ -121,6 +121,9 @@ struct State {
   Phase seen_phase = Phase::None; // 刚进 Choose: 切到过程页一次
   size_t flow_rounds = 0;         // 过程页上一帧画过的轮数
   std::string message;
+  // 本会话要求 (只随下次 New / Test 发, 不落 kUiFile); fold_remark = 刚开会话, 下一帧把它折起
+  std::string remark;
+  bool fold_remark = false;
   // 过程页的跟随: pinned = 钉在底部跟新内容 (人往上滚 / 点开合即放开, 回到底部再钉); jump = 点了状态行, 跳到当前轮
   bool pinned = true, jump = false;
   float flow_y = 0.0f; // 上一帧的滚动位置
@@ -183,6 +186,11 @@ void save_ui(State &s) {
     return;
   misc::atomic_write(kUiFile, text.data(), text.size());
   s.opt_saved = std::move(text);
+}
+
+std::string_view trim(std::string_view s) {
+  const size_t b = s.find_first_not_of(" \t\r\n");
+  return b == std::string_view::npos ? std::string_view() : s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
 }
 
 // ---- std::string 输入框 (imgui 缓冲随串扩) ----
@@ -292,7 +300,9 @@ void session_row(const SharedData &data, State &s) {
     s.message.clear();
     Mine::Setup st = setup_of(o);
     st.test = test;
+    st.remark = trim(s.remark);
     m.open(data, std::move(st));
+    s.fold_remark = true;
   };
   ImGui::BeginDisabled(!can_new);
   if (ImGui::Button("New", ImVec2(60, 0)))
@@ -374,10 +384,6 @@ ImVec4 color(TaskStatus::Kind k) {
   return c;
 }
 
-std::string_view trim(std::string_view s) {
-  const size_t b = s.find_first_not_of(" \t\r");
-  return b == std::string_view::npos ? std::string_view() : s.substr(b, s.find_last_not_of(" \t\r") - b + 1);
-}
 // 思考在想什么: 末个独占一行的 **小标题** / # 标题; 没有则 (live) 末个非空行的开头
 constexpr size_t kTopicChars = 48;
 std::string topic(std::string_view s, bool live) {
@@ -1280,7 +1286,27 @@ void tools_panel(State &s) {
   ImGui::EndTable();
 }
 
-// 过程 (全宽时间线) / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定); 刚进 Choose 切回过程并滚到底 (问题在那)
+// 本会话要求: 过程页顶的折叠块 (默认展开, 开会话即折起; 折起时悬浮看全文). 会话中只读 = 已随首条发出的那份; 其余时候编辑下次 New / Test 要发的
+void remark_panel(State &s, const Mine &m) {
+  const bool live = m.live();
+  const std::string &text = live ? m.setup.remark : s.remark;
+  if (s.fold_remark)
+    ImGui::SetNextItemOpen(false, ImGuiCond_Always), s.fold_remark = false;
+  const std::string label = "本会话要求 · " + (text.empty() ? std::string("无") : chars(text)) + "###remark";
+  if (!ImGui::CollapsingHeader(label.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (!text.empty())
+      tip_long(text);
+    return;
+  }
+  if (live) {
+    text.empty() ? wrapped_dim("(无)") : wrapped(text);
+    return;
+  }
+  ImGui::TextDisabled("只对下一段会话: 附在首条消息 (自检会话的首条) 末尾发给 agent, 不改模板; 例: 着重测试某些算子 / 特征, 或交代这次的背景");
+  input_multiline("##remark", s.remark, ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * 4));
+}
+
+// 过程 (本会话要求 + 全宽时间线) / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定); 刚进 Choose 切回过程并滚到底 (问题在那)
 void render_mine(const SharedData &data, State &s) {
   Mine &m = *s.mine;
   scope_row(data, s, m.live());
@@ -1296,6 +1322,7 @@ void render_mine(const SharedData &data, State &s) {
   if (!ImGui::BeginTabBar("##mine_tabs"))
     return;
   if (ImGui::BeginTabItem("过程###flow", nullptr, to_choose || s.jump ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
+    remark_panel(s, m);
     timeline_panel(s, m, f, to_choose);
     ImGui::EndTabItem();
   }

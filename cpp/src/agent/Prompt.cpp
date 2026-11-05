@@ -63,6 +63,11 @@ std::string cell(std::string_view s) { // 表格单元: 竖线转义, 换行压�
 
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
 
+// 首条 / 自检首条末尾的本会话要求 (空 = 不出这一节)
+std::string remark_text(const std::string &r) {
+  return r.empty() ? "" : "\n## 研究员对本会话的要求\n\n" + r + "\n\n只对这一段会话; 与上文的做法冲突处以它为准, 回复协议与会话约束照旧.\n";
+}
+
 int visible(const std::vector<Result> &rs) {
   return static_cast<int>(std::count_if(rs.begin(), rs.end(), [](const Result &r) { return r.visible; }));
 }
@@ -484,8 +489,9 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"ops", ops}});
 }
 
-Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask) {
+Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark) {
   return fill(Msg::First, {{"hold", c.hold},
+                           {"remark", remark_text(remark)},
                            {"max_calls", std::to_string(kMaxCalls)},
                            {"tried", std::to_string(tried)},
                            {"library", std::to_string(visible(c.library))},
@@ -494,12 +500,13 @@ Message FirstMessage(const Context &c, int tried, const std::string &notes, bool
                                          : "自己定下要做的那一个因子 (新起, 或从已试候选 / 正式库里挑) 和方向"}});
 }
 
-Message TestMessage(bool ask) {
+Message TestMessage(bool ask, const std::string &remark) {
   std::string tools;
   for (const ToolDef &d : Tools())
     if (d.id != Tool::AskHuman || ask)
       tools += (tools.empty() ? "" : ", ") + std::string(d.name);
   return fill(Msg::Test, {{"tools", tools},
+                          {"remark", remark_text(remark)},
                           {"max_calls", std::to_string(kMaxCalls)},
                           {"ask", ask ? "ask_human 也要测: 问 1 道题 (例: 先测哪类工具), 研究员答完再接着测"
                                       : "本会话没有 ask_human, 不测它"}});

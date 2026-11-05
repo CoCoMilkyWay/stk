@@ -13,3 +13,4 @@
 - **起点**: 起点因子的分层 / 交割单 / 成分 (view_layers / view_trades / view_explain)
 
 之后看到值得解释的现象 → hypothesize 写下机制与预测 (expect / refute) → 观察检验 → judge 为支持 → 才开始回测. 回测是检验假设的实验, 看它说明了什么, 不追指标.
+{{remark}}

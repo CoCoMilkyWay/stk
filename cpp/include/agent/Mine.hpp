@@ -44,9 +44,10 @@ struct Desk {
     Scope sc;
     Gate gate;
     bool gpu = false;
-    bool ask = true;   // agent 可用 ask_human 向人提一次问
-    bool test = false; // 自检: 首条换成 test (每个工具调一遍); 候选 / 日志 / 全局记录进 global/test 目录, submit_factor 只查门槛不拷
-    llm::Options llm;  // system 由 open 填
+    bool ask = true;    // agent 可用 ask_human 向人提一次问
+    bool test = false;  // 自检: 首条换成 test (每个工具调一遍); 候选 / 日志 / 全局记录进 global/test 目录, submit_factor 只查门槛不拷
+    std::string remark; // 研究员对本会话的要求 / 说明 (空 = 无): 附在首条 (自检的首条) 末尾, 不进系统提示
+    llm::Options llm;   // system 由 open 填
   };
   // 计数 (+= 累加): calls = 各工具开始执行的次数; fails = 其中没做成的 (结果标 "没做成"); verdicts = eval_factor 的结局 (没落文件 = Unstaged); adopted = submit_factor 入库
   struct Tally {

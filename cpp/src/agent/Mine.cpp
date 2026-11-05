@@ -67,8 +67,9 @@ void Mine::open(const SharedData &data, Setup s) {
                           {"gate", {{"mono", setup.gate.mono}, {"ric", setup.gate.ric}}},
                           {"ask", setup.ask},
                           {"test", setup.test},
-                          {"tried", tried}});
-  ask(setup.test ? TestMessage(setup.ask) : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask));
+                          {"tried", tried},
+                          {"remark", setup.remark}});
+  ask(setup.test ? TestMessage(setup.ask, setup.remark) : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
 }
 
 void Mine::start() {
@@ -337,7 +338,7 @@ std::string Mine::report_of(const std::string &why) const {
   const Tally &c = total.tally;
   std::string r = std::string(setup.test ? "# 自检报告\n\n- 自检会话: 候选 / 日志 / 全局记录在 global/test 目录, 提交只查门槛不拷进正式库" : "# 结束报告\n") + "\n- 结束原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
                   std::to_string(c.n(Cat::Look)) + ", 查研报 " + std::to_string(c.n(Run::Docs)) + ", 假设 " + std::to_string(c.n(Tool::Hypothesize)) + ", 判定 " + std::to_string(c.n(Tool::Judge)) +
-                  ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n\n";
+                  ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n" + (setup.remark.empty() ? "" : "- 本会话要求: " + setup.remark + "\n") + "\n";
   std::string in, out;
   for (size_t i = 0; i < timeline.size(); ++i)
     for (const Act &a : timeline[i].acts)

@@ -985,7 +985,7 @@ bool pages() {
           "• 单因子线 = 各自的 G20 多头净值\n"
           "• 每条成对: 可成交 (指数 / 行业 = 标签指数, 收盘封板不建仓 / 平仓顺延; 因子 / 策略 = 扣换手冲击) + 理想 (指数 / 行业 = 后复权收盘价指数; 因子 / 策略 = 无冲击; 同色淡线)\n"
           "• 默认只画全A等权; 右侧类别条选一组 (指数 / 行业 / 因子 / 策略), 点行选中 = 画该行两条, 主图例默认只显理想, 可成交点图例显; 显隐变了自动重新 fit\n"
-          "• 日内 (右侧开关, 默认开): 主图与右表之间叠加选中的指数 / 行业的日内行情 (同主图线色)\n"
+          "• 日内 (右侧开关, 默认开): 主图上方叠加选中的指数 / 行业的日内行情 (同主图线色)\n"
           "• 底部区间条选日段: 各线在区间起点归一 = 1, 年化按区间复利");
     if (nav_open)
       ImGui::EndTabItem();
@@ -1528,7 +1528,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   if (flip)
     ui.intraday = !ui.intraday;
   if (ImGui::IsItemHovered())
-    tip("日内栏开关: 主图与本表之间 (主图 : 日内 = 2 : 1) 叠加选中的指数 / 行业行的日内收盘线 (同主图线色); 因子 / 策略无日内\n"
+    tip("日内栏开关: 主图上方 (日内 : 主图 = 1 : 2, 上下分) 叠加选中的指数 / 行业行的日内收盘线 (同主图线色); 因子 / 策略无日内\n"
         "• y = 对首日前收的涨跌幅, 横网格的涨跌幅小字标在右内壁; 悬停看十字光标处时刻 / 涨跌幅与该分钟各条读数\n"
         "• 篮子同 Assets: all.bar 库合成历史, 当日由新浪快照合成; 档位 日内 / 2日 / 3日 / 4日 叠在图左上角");
   ImGui::SameLine();
@@ -1876,7 +1876,7 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const int action = head(svc, ui, d, res, message, fixed_impact);
   const bool nav = pages();
 
-  // ---- 图: 左 = 主图 (plot_nav ↔ plot_val) / 区间条; NAV 开日内 → 主图右侧切 1/3 画日内; 最右 = 图例 (legend_nav ↔ legend_val) ----
+  // ---- 图: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (plot_nav ↔ plot_val) / 区间条 自上而下; 最右 = 图例 (legend_nav ↔ legend_val) ----
   bool set_vis = false; // NAV 行选中回默认 (换组合), 其线在主图例里回默认显隐
   if (nav) {
     set_vis = ui.name != ui.vis_key;
@@ -1893,12 +1893,28 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const ImVec2 av = ImGui::GetContentRegionAvail();
   const float lw = std::min(ui.legend_w[nav ? 0 : 1] + 2.0f * (st.WindowPadding.x + st.ChildBorderSize), av.x * kLegendMaxFrac);
   const float left = av.x - lw - st.ItemSpacing.x;
-  const float iw = nav && ui.intraday ? std::floor((left - st.ItemSpacing.x) / 3.0f) : 0.0f;
-  const float pw = iw > 0.0f ? left - iw - st.ItemSpacing.x : left;
+  const float ph = av.y - kBarH - st.ItemSpacing.y;
+  const float ih = nav && ui.intraday ? std::floor((ph - st.ItemSpacing.y) / 3.0f) : 0.0f;
   ImGui::BeginGroup();
+  if (ih > 0.0f) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::BeginChild("##pf_intra", ImVec2(left, ih));
+    ImGui::PopStyleVar();
+    if (mk) {
+      std::vector<Database::BasketPick> picks;
+      for (const int g : {kNavPool, kNavInd})
+        for (size_t i = 0; i < d.nav[g].size(); i += 2)
+          if (const PortfolioLine &h = d.nav[g][i]; h.basket >= 0 && shown(ui, h))
+            picks.push_back({static_cast<size_t>(h.basket), ImGui::ColorConvertFloat4ToU32(nav_color(d, g, i))});
+      Database::RenderBasketIntraday(*mk, ui.basket, picks);
+    } else {
+      ImGui::TextDisabled("行情等基本面就绪…");
+    }
+    ImGui::EndChild();
+  }
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
-  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", ImVec2(pw, av.y - kBarH - st.ItemSpacing.y), nav ? ImPlotFlags_None : ImPlotFlags_NoLegend)) {
+  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), nav ? ImPlotFlags_None : ImPlotFlags_NoLegend)) {
     // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin);
     ImPlot::SetupAxisFormat(ImAxis_X1, day_formatter, &d.dates);
@@ -1931,26 +1947,8 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ImPlot::EndPlot();
   }
   ImPlot::PopStyleVar(2);
-  range_bar(ui, nav, vs, pw, kBarH);
+  range_bar(ui, nav, vs, left, kBarH);
   ImGui::EndGroup();
-
-  if (iw > 0.0f) {
-    ImGui::SameLine();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("##pf_intra", ImVec2(iw, av.y));
-    ImGui::PopStyleVar();
-    if (mk) {
-      std::vector<Database::BasketPick> picks;
-      for (const int g : {kNavPool, kNavInd})
-        for (size_t i = 0; i < d.nav[g].size(); i += 2)
-          if (const PortfolioLine &h = d.nav[g][i]; h.basket >= 0 && shown(ui, h))
-            picks.push_back({static_cast<size_t>(h.basket), ImGui::ColorConvertFloat4ToU32(nav_color(d, g, i))});
-      Database::RenderBasketIntraday(*mk, ui.basket, picks);
-    } else {
-      ImGui::TextDisabled("行情等基本面就绪…");
-    }
-    ImGui::EndChild();
-  }
 
   ImGui::SameLine();
   ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
