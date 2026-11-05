@@ -1468,25 +1468,108 @@ void name_tip(const std::string &s) {
   if (ImGui::IsItemHovered() && ImGui::TableGetHoveredColumn() == 0)
     tip("%s", s.c_str());
 }
+// 表头行 (同 TableHeadersRow) + 悬停第 c 列表头 → tips[c]. 各列说明同一格式: "列名 = 全称" + 算法 / 数据 / 显示 / 适用 四行
+void headers_row(const std::string *tips, int n) {
+  assert(n == ImGui::TableGetColumnCount());
+  ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+  for (int c = 0; c < n; ++c) {
+    if (!ImGui::TableSetColumnIndex(c))
+      continue;
+    ImGui::PushID(c);
+    ImGui::TableHeader(ImGui::TableGetColumnName(c));
+    ImGui::PopID();
+    if (ImGui::IsItemHovered())
+      tip("%s", tips[c].c_str());
+  }
+}
 
 // ---- NAV 右图例: 类别条 (指数 / 行业 / 概念 / 因子 / 策略, 一次看一组) + 日内开关; 表 = 该组一行一对线, 点行 = 选中 / 取消 (选中 = 主图画该行全部线, 单条在主图例里再点掉;
-//      选中跨组保留; 选中的篮子行另叠进日内栏). 列 = 中文名 (线色; 悬停看 hover) | 左段 (当日涨幅 | Δ5日线 | 只数 | 总市值 | 总资金 | 资金流入)
-//      | 可成交 | 理想 (区间年化) | 夏普 (可成交列) | 年换手; 当日涨幅 / Δ5日线 / 资金流入按正负着色, 只数 / 总市值 / 总资金不着色, 其余数值列底色 = 同组同列截面名次
-//      (好绿 → 差红); 表头点排序 (组内) ----
+//      选中跨组保留; 选中的篮子行另叠进日内栏). 列 = 中文名 (线色; 悬停看 hover) | 左段 (当日涨幅 | Δ5日线 | 只数 | 总市值 | 换手 | 资金流入)
+//      | 可成交 | 理想 (区间年化) | 夏普 (可成交列) | 年换手; 当日涨幅 / Δ5日线 / 资金流入按正负着色, 只数 / 总市值 / 换手不着色, 其余数值列底色 = 同组同列截面名次
+//      (好绿 → 差红); 换手 / 资金流入格悬停看分子分母金额; 表头点排序 (组内) ----
 // 左段列 (不随区间): 近况 (Database::Recent) + 篮子当日 (basket_today)
 enum NavLeft : int { kLeftChg,
                      kLeftMa5,
                      kLeftMembers,
                      kLeftCap,
-                     kLeftAmount,
+                     kLeftTurn,
                      kLeftFlow };
 constexpr int kLefts = 6;
-constexpr const char *kNavLeftName[kLefts] = {"涨幅", "Δ5日线", "只数", "总市值", "总资金", "流入"};
+constexpr const char *kNavLeftName[kLefts] = {"涨幅", "Δ5日线", "只数", "总市值", "换手", "流入"};
 constexpr const char *kNavNumName[kNavNums] = {"可成交", "理想", "夏普", "年换手"};     // [NavNum]
 constexpr const char *kNavNumFmt[kNavNums] = {"%+.1f%%", "%+.1f%%", "%+.2f", "%.1f倍"}; // [NavNum]
 constexpr int kNavCols = kLefts + kNavNums;                                             // 名之后的数值列 (左段 + NavNum)
-// 篮子行 h 的当日 {只数, 总市值 [亿元], 总资金 = 成交额 [亿元], 资金流入 (净流入 / 成交额)}: 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线
-// (总市值当日接上 × 加权线当日涨跌); 总资金 / 资金流入 = 新浪当日合成的 Day (不看接续); 非篮子 / 未到 → NaN
+// [列] 表头悬停说明 (名 + kNavLeftName + kNavNumName)
+const std::string kNavTip[1 + kNavCols] = {
+    "名 = 行名\n"
+    "• 算法: 篮子 = 切片名 + .等 (等权) / .加 (总市值加权); 因子 / 策略 = 中文名\n"
+    "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
+    "• 显示: 字色 = 主图线色 (指数组同系列同色系, 尾数小的色重); 超长截断补 …, 悬停看全名\n"
+    "• 适用: 全部组",
+    "涨幅 = 当日涨跌幅\n"
+    "• 算法: 最新一日收盘 / 前收 − 1\n"
+    "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略 = 净值末点\n"
+    "• 显示: 百分比两位, 按正负着色\n"
+    "• 适用: 全部组; 不随区间",
+    "Δ5日线 = 对 5 日均线的偏离\n"
+    "• 算法: 最新一日收盘 / MA5 (含当日) − 1\n"
+    "• 数据: 篮子 = Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略 = 净值末 5 点\n"
+    "• 显示: 百分比两位, 按正负着色\n"
+    "• 适用: 全部组; 不随区间",
+    "只数 = 成分只数\n"
+    "• 算法: 成员表的成分计数 (.等 / .加 同一份)\n"
+    "• 数据: 成员表 = 历史末日收盘定 (= 当日 bind 给新浪行情的那份)\n"
+    "• 显示: 整数, 不着色\n"
+    "• 适用: 指数 / 行业 / 概念; 不随区间",
+    "总市值 = 成分总市值之和\n"
+    "• 算法: Σ 成分 末日收盘 × 总股本; 当日接上再 × 加权线当日涨跌 (今收 / 前收)\n"
+    "• 数据: 成员表同只数; 总股本取末日适用\n"
+    "• 显示: 亿 / 万亿, 不着色\n"
+    "• 适用: 指数 / 行业 / 概念; 不随区间",
+    "换手 = 当日换手率\n"
+    "• 算法: 成交额 / 总市值; 成交额 = Σ 成分 当日成交额, 总市值同上列 (总股本口径, 非流通)\n"
+    "• 数据: 新浪行情日 (盘后 / 重启照样全天); 无新浪行情日 → -\n"
+    "• 显示: 百分比两位, 不着色; 悬停格看成交额 / 总市值\n"
+    "• 适用: 指数 / 行业 / 概念; 不随区间",
+    "流入 = 资金流入占成交额\n"
+    "• 算法: 净流入 / 成交额; 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟\n"
+    "• 数据: 新浪行情日分钟根 (快照合成 + 分钟 K 补); 成分之和不加权, 分不出大单\n"
+    "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额\n"
+    "• 适用: 指数 / 行业 / 概念; 不随区间",
+    "可成交 = 可成交线区间年化\n"
+    "• 算法: 区间起点归一, 按区间复利年化\n"
+    "• 数据: 篮子 = 标签指数 (收盘封板不建仓 / 平仓顺延); 因子 / 策略 = 有冲击净值\n"
+    "• 显示: 百分比一位, 底色 = 组内名次 (高绿 → 低红)\n"
+    "• 适用: 全部组; 随区间",
+    "理想 = 理想线区间年化\n"
+    "• 算法: 区间起点归一, 按区间复利年化\n"
+    "• 数据: 篮子 = 价格指数 (成员 / 权重取前一日收盘, 不看可成交); 因子 / 策略 = 无冲击净值\n"
+    "• 显示: 百分比一位, 底色 = 组内名次 (高绿 → 低红)\n"
+    "• 适用: 全部组; 随区间",
+    "夏普 = 可成交线区间夏普\n"
+    "• 算法: 区间内日收益 mean / sd × √每年交易日\n"
+    "• 数据: 篮子 = 标签指数; 因子 / 策略 = 有冲击净值\n"
+    "• 显示: 两位小数, 底色 = 组内名次 (高绿 → 低红)\n"
+    "• 适用: 全部组; 随区间",
+    "年换手 = 单边年换手\n"
+    "• 算法: 全评估期日均单边换手 × 每年交易日 (倍/年)\n"
+    "• 数据: 指数 = 池整体 ½ Σ|w − 漂移后上日 w| (再平衡 + 成分进出); 因子 = G20 多头买入额; 策略 = 各因子按当日份额加权 (不计因子间对冲)\n"
+    "• 显示: 一位小数 + 倍, 底色 = 组内名次 (低绿 → 高红)\n"
+    "• 适用: 指数 / 因子 / 策略; 不随区间",
+};
+// 金额 y [亿元] 的显示: ≥ 1 万亿按万亿, 其余按亿 (越大小数越少); 带符号 sign
+std::string yi_text(double y, bool sign = false) {
+  const double a = std::abs(y);
+  char s[32];
+  const char *pm = !sign ? "" : y < 0 ? "-" : "+";
+  if (a >= 1e4)
+    std::snprintf(s, sizeof(s), a >= 1e6 ? "%s%.0f万亿" : "%s%.1f万亿", pm, a / 1e4);
+  else
+    std::snprintf(s, sizeof(s), a >= 10 ? "%s%.0f亿" : a >= 1 ? "%s%.1f亿" : "%s%.2f亿", pm, a);
+  return s;
+}
+// 篮子行 h 的当日 {只数, 总市值 [亿元], 成交额 [亿元], 资金流入 (净流入 / 成交额)}: 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线
+// (总市值当日接上 × 加权线当日涨跌); 成交额 / 资金流入 = 新浪当日合成的 Day (不看接续); 非篮子 / 未到 → NaN
 std::array<double, 4> basket_today(const Database::Feed &f, const PortfolioRow &h) {
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   std::array<double, 4> o = {kNaN, kNaN, kNaN, kNaN};
@@ -1571,17 +1654,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "    ◦ 理想 = 价格指数 (Assets 篮子同一份: 成员 / 权重取前一日收盘, 点位按前收合成, 不看可成交, 同中证 / 万得口径); 两者之差 = 可成交拖累\n"
         "• 因子 = 单因子各自的 G20 多头净值: 可成交列 = 有冲击 (它自己的冲击段: Lob 最小金额段 / Bar 固定冲击), 理想列 = 无冲击\n"
         "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
-        "• 名 = 切片名 + .等 (等权) / .加 (总市值加权); 指数组同系列 (如 小盘池400 / 200, 全A 两条) 同色系, 尾数小的色重\n"
-        "• 涨幅 / Δ5日线 = 最新一日对前收 / 对 MA5 (含当日), 不随区间:\n"
-        "    指数 / 行业 / 概念取 Assets 篮子 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 因子 / 策略取净值日末点\n"
-        "• 只数 / 总市值 = 当日成员表 (历史末日收盘定) 的成分只数 / 总市值 (末日收盘市值, 当日接上 × 加权线当日涨跌); 因子 / 策略无\n"
-        "• 总资金 = 新浪行情日 成分成交额之和; 因子 / 策略无\n"
-        "• 流入 = 资金流入: 新浪行情日 净流入 / 成交额 (分钟涨跌法): 成分逐只逐分钟, 收 > 上一分钟收 (首分钟对昨收) 该分钟额记流入, < 记流出,\n"
-        "    平 = 随上一分钟; 篮子 = 成分之和 (不加权). 分钟根 = 快照合成 + 分钟 K 补, 盘后 / 重启照样全天; 分不出大单; 因子 / 策略无\n"
-        "• 可成交 / 理想两列 = 区间年化 (同一区间起点归一, 按区间复利)\n"
-        "• 夏普 = 可成交列区间内日收益 mean / sd × √每年交易日\n"
-        "• 年换手 = 全评估期单边换手 (倍/年); 策略 = 各因子换手按当日份额加权 (不计因子间对冲); 行业 / 概念无\n"
-        "• 底色 = 该列在同组内的名次 (好绿 → 差红; 年化 / 夏普高 = 好, 年换手低 = 好)\n"
+        "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 指数 / 行业 / 概念表上过滤条 (与 VAL 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画的行恒列\n"
         "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
   // 一行 r = 一对线; 切片 / 名次同下标. 篮子组按过滤条定列出的行 (选中行恒列)
@@ -1608,14 +1681,14 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TableSetupColumn(name);
     cw[k] = ImGui::CalcTextSize(name).x;
   }
-  ImGui::TableHeadersRow();
+  headers_row(kNavTip, 1 + kNavCols);
   std::vector<std::array<double, kLefts>> lc(n); // [行][NavLeft] (只填列出的行)
   std::vector<std::array<NumCell, kNavCols>> tc(n);
   const ImVec4 &txt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
   for (const size_t r : order) {
     const PortfolioRow &h = rs[r];
     const Database::Recent x = h.basket >= 0 ? Database::RecentOf(ui.basket.feed, static_cast<size_t>(h.basket)) : recent_of(h.line[kTrade]);
-    lc[r] = {x.chg, x.ma5, bt[r][0], bt[r][1], bt[r][2], bt[r][3]};
+    lc[r] = {x.chg, x.ma5, bt[r][0], bt[r][1], bt[r][2] / bt[r][1], bt[r][3]};
     for (int k = 0; k < kNavCols; ++k) {
       const double y = k < kLefts ? lc[r][static_cast<size_t>(k)] : nav_num(d, v, g, r, k - kLefts);
       NumCell &c = tc[r][static_cast<size_t>(k)];
@@ -1625,10 +1698,10 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         c = num_cell(txt, kNavNumFmt[k - kLefts], y);
       else if (k == kLeftMembers)
         c = num_cell(txt, "%.0f", y);
-      else if (k == kLeftCap || k == kLeftAmount)
-        c = y >= 1e6 ? num_cell(txt, "%.0f万亿", y / 1e4) : y >= 1e4 ? num_cell(txt, "%.1f万亿", y / 1e4)
-                                                        : y >= 10    ? num_cell(txt, "%.0f亿", y)
-                                                                     : num_cell(txt, "%.1f亿", y);
+      else if (k == kLeftCap)
+        c = num_cell(txt, "%s", yi_text(y).c_str());
+      else if (k == kLeftTurn)
+        c = num_cell(txt, "%.2f%%", 100.0 * y);
       else
         c = num_cell(tint(y, 0.0), "%+.2f%%", 100.0 * y);
       cw[k] = std::max(cw[k], c.w);
@@ -1648,6 +1721,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
           ui.reveal.insert(line_id(h, l));
     }
     ImGui::PopStyleColor();
+    const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 1 : -1; // 行 Selectable 跨全列: 悬停的数值列
     name_tip(h.hover);
     for (int k = 0; k < kNavCols; ++k) {
       ImGui::TableSetColumnIndex(1 + k);
@@ -1656,11 +1730,39 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
           ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(1.0 - rk, kValCellA)));
       draw_cell(tc[r][static_cast<size_t>(k)], cw[k]);
     }
+    const std::array<double, 4> &b = bt[r];
+    if (const double t = lc[r][static_cast<size_t>(kLeftTurn)]; hov == kLeftTurn && std::isfinite(t))
+      tip("换手 %.2f%% = 成交额 %s / 总市值 %s", 100.0 * t, yi_text(b[2]).c_str(), yi_text(b[1]).c_str());
+    else if (hov == kLeftFlow && std::isfinite(b[3]))
+      tip("流入 %+.2f%% = 净流入 %s / 成交额 %s", 100.0 * b[3], yi_text(b[3] * b[2], true).c_str(), yi_text(b[2]).c_str());
   }
   ui.legend_w[0] = legend_width(top_x, end_table());
 }
 
 // ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 各口; 格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
+// [列] 表头悬停说明 (名 + kVal); 各口同一模板, 只换分子 / 负值口径
+const std::array<std::string, 1 + kPoolVals> kValTip = [] {
+  constexpr const char *num[kPoolVals] = {"归母净利TTM", "归母权益MRQ", "营业总收入TTM", "经营现金流TTM", "近4季报告期税前分红"}; // [PoolVal]
+  constexpr const char *neg[kPoolVals] = {"亏损计负", "负权益计负", "无收入计 0", "负现金流计负", "不分红计 0"};               // [PoolVal]
+  std::array<std::string, 1 + kPoolVals> o;
+  o[0] = "名 = 篮子名\n"
+         "• 算法: 切片名 + .等 (等权) / .加 (总市值加权)\n"
+         "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
+         "• 显示: 超长截断补 …, 悬停看全名; 选中行高亮 (主图画它)\n"
+         "• 适用: 指数 / 行业 / 概念";
+  for (int b = 0; b < kPoolVals; ++b) {
+    char s[1024];
+    std::snprintf(s, sizeof(s),
+                  "%s = %s 倒数 (%s / 总市值) 的估值分位\n"
+                  "• 算法: 区间末日 %s 在过去 N 年 (上方滑条) 窗内的加权分位; 收益率越低越贵 (高 = 贵, ≤ 0 排最贵端)\n"
+                  "• 数据: 分子 = %s (%s); .加 = Σ分子 / Σ总市值, .等 = 成分 %s 的算术平均; 成分 / 财务取当日适用 (无前视)\n"
+                  "• 显示: 分位百分比, 底色 = 组内同口名次 (便宜绿 → 贵红); 绝对值看主图 Band 图例\n"
+                  "• 适用: 指数 / 行业 / 概念; 随区间末日, 估值史不满 1 年 → -",
+                  kVal[b].name, kVal[b].inv, num[b], kVal[b].name, num[b], neg[b], kVal[b].name);
+    o[static_cast<size_t>(b + 1)] = s;
+  }
+  return o;
+}();
 void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PortfolioAt vs) {
   ImGui::SetNextItemWidth(-FLT_MIN);
   ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
@@ -1683,8 +1785,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 估值分位 = 当日收益率在过去 N 年 (含当日; 上方滑条) 窗内的加权分位 (窗尾降权, 见滑条提示), 收益率越低越贵 (高 = 贵; ≤ 0 排在最贵端), 逐日滚动; 估值史不满 1 年不画\n"
         "• Band = 价格 × 当日收益率 / q, q = 窗内 5/10/25/50/75/90/95%% 贵度分位的收益率 (与倍数口径的 Band 同一条线);\n"
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
-        "• 表格 = 区间末各口的估值分位 (高 = 贵); 绝对值看主图 Band 图例 / 等值线\n"
-        "• 底色 = 该分位在同组 (池之间 / 行业之间 / 概念之间) 同一口内的截面名次: 组内最便宜绿 → 最贵红\n"
+        "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (与 NAV 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中行恒列\n"
         "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
   const int g = ui.cat[1];
@@ -1705,7 +1806,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ImGui::TableSetupColumn(kVal[b].name);
     cw[b] = ImGui::CalcTextSize(kVal[b].name).x;
   }
-  ImGui::TableHeadersRow();
+  headers_row(kValTip.data(), 1 + kPoolVals);
   std::vector<std::array<NumCell, kPoolVals>> tc(rs.size()); // 只填列出的行
   for (const size_t r : order)
     for (int b = 0; b < kPoolVals; ++b) {
