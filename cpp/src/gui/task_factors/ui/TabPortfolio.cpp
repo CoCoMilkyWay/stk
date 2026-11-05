@@ -27,8 +27,6 @@
 #include <numeric>
 #include <ranges>
 #include <set>
-#include <string_view>
-
 namespace GUI::Factors {
 
 namespace {
@@ -222,7 +220,7 @@ std::vector<std::string> align_cols(const std::vector<std::array<std::string, N>
   return out;
 }
 
-// OKLCH (感知均匀: 同 L / C 换色相亮度、艳度不变) → sRGB, 出色域的分量截到 [0, 1]
+// OKLCH (感知均匀: 同 L / C 的色环上两色的感知距离 = OKLab 弦长, 小角度 ∝ 色相差) → sRGB; 分量截到 [0, 1] 只吸收舍入
 ImVec4 oklch(float L, float C, float hue) {
   const float h = 2.0f * IM_PI * hue, a = C * std::cos(h), b = C * std::sin(h);
   const float l = std::pow(L + 0.3963377774f * a + 0.2158037573f * b, 3.0f), m = std::pow(L - 0.1055613458f * a - 0.0638541728f * b, 3.0f),
@@ -234,21 +232,22 @@ ImVec4 oklch(float L, float C, float hue) {
   return {gamma(4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s), gamma(-1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s),
           gamma(-0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s), 1.0f};
 }
-// NAV 组 g 行 r 线 l 的色 (主图 / 右表 / 日内同一份): 策略 = kStratCol, 其余 = 行色相 (见 paint) 的定亮定艳色; 理想列 = 同色淡
+// NAV 组 g 行 r 线 l 的色 (主图 / 右表 / 日内同一份): 策略 = kStratCol, 其余 = 行色相 (见 paint) 的定亮定艳色, 未定色 = 同亮度灰; 理想列 = 同色淡
 constexpr float kIdealAlpha = 0.5f;
-constexpr float kRowL = 0.78f, kRowC = 0.14f; // 行色的 OKLCH 亮度 / 艳度
+constexpr float kRowL = 0.75f, kRowC = 0.125f; // 行色的 OKLCH 亮度 / 艳度: 该亮度下整环都在 sRGB 色域内的艳度上限附近 (环不被截变形)
 ImVec4 nav_color(const PortfolioDerived &d, int g, size_t r, int l) {
-  ImVec4 c = g == kNavStrat ? kStratCol : oklch(kRowL, kRowC, d.nav[g][r].hue);
+  const float hue = d.nav[g][r].hue;
+  ImVec4 c = g == kNavStrat ? kStratCol : std::isnan(hue) ? oklch(kRowL, 0.0f, 0.0f)
+                                                          : oklch(kRowL, kRowC, hue);
   c.w = l == kIdeal ? kIdealAlpha : 1.0f;
   return c;
 }
 
-// ---- 行配色 (策略外四组一起, 见 PortfolioDerived::nav): 相似度 s = max(成员重合, 残差相关), 平方距离 2 (1 − s) 上 Ward 聚类切成 kClusters 簇;
-//      色环均分 kClusters 段, 簇按全树叶序占段, 簇内按叶序铺开段内前 kClusterSpan (余下留作簇间隔) ----
-constexpr size_t kSimDays = 60;      // 残差相关取日并集轴末几日的日收益
-constexpr size_t kSimMin = 20;       // 两行共同有收益的日数下限 (不足 → 相关记 0)
-constexpr size_t kClusters = 12;     // 簇数 (色环段数)
-constexpr float kClusterSpan = 0.6f; // 簇内色相铺开占段宽的比例
+// ---- 行配色 (策略外四组一起, 见 PortfolioDerived::nav): 相似度 s = max(成员重合, 残差相关), 平方距离 2 (1 − s) 上 Ward 树定叶序;
+//      叶序相邻两行的色相差 ∝ 它们在树上分开处两侧的平均距离 (1 − s), 累加后铺满色环的前 kArc (首尾不相接) ----
+constexpr size_t kSimDays = 60; // 残差相关取日并集轴末几日的日收益
+constexpr size_t kSimMin = 20;  // 两行共同有收益的日数下限 (不足 → 相关记 0)
+constexpr float kArc = 0.85f;   // 色相铺开的弧长 (整环 = 1)
 
 // 线 c 在日并集轴 [lo, lo + n) 各日的日收益 (日末值逐日比 − 1): 无点的日沿用前一日末值 (lo 前的末点起), 不可算 = NaN
 std::vector<double> rets_of(const PortfolioCurve &c, size_t lo, size_t n) {
@@ -330,7 +329,7 @@ std::vector<Merge> ward_linkage(std::vector<double> &dist, size_t n) {
   return ms;
 }
 
-// 策略外四组各行定色相: 前 n − kClusters 次合并成簇, 簇按全树叶序首现编号占色环段, 簇内按叶序铺开
+// 策略外四组各行定色相 (见上); 因子没到齐 / 价格指数未就绪 / 日轴不足两日 → 全不定色 (灰, 免得边算边跳)
 void paint(PortfolioDerived &d) {
   std::vector<PortfolioRow *> rs;
   size_t mkt = SIZE_MAX; // 全A.加 (残差的基准)
@@ -339,69 +338,73 @@ void paint(PortfolioDerived &d) {
       if (r.basket == static_cast<int>(basket_line(0, kWeightCap)))
         mkt = rs.size();
       rs.push_back(&r);
+      r.hue = std::numeric_limits<float>::quiet_NaN();
     }
   const size_t n = rs.size(), D = d.dates.size();
   assert(mkt < n);
+  if (d.n_wait > 0 || !d.prices || D < 2)
+    return;
 
-  std::vector<std::vector<double>> res(n); // [行] 残差日收益 (日轴不足两日 = 空)
-  if (D > 1) {
-    const size_t T = std::min(kSimDays, D - 1), lo = D - T;
-    const std::vector<double> m = rets_of(rs[mkt]->line[kIdeal], lo, T);
-    for (size_t i = 0; i < n; ++i) {
-      res[i] = rets_of(rs[i]->line[kIdeal], lo, T);
-      residual(res[i], m);
-    }
-    std::fill(res[mkt].begin(), res[mkt].end(), kNaN); // 自身对自身回归无残差
+  const size_t T = std::min(kSimDays, D - 1), lo = D - T;
+  const std::vector<double> m = rets_of(rs[mkt]->line[kIdeal], lo, T);
+  std::vector<std::vector<double>> res(n); // [行] 残差日收益
+  for (size_t i = 0; i < n; ++i) {
+    res[i] = rets_of(rs[i]->line[kIdeal], lo, T);
+    residual(res[i], m);
   }
-  const size_t K = d.prices ? d.prices->keys.size() : 0;
-  assert(!d.prices || d.prices->overlap.size() == K * K);
-  std::vector<double> dist(n * n, 0.0);
+  std::fill(res[mkt].begin(), res[mkt].end(), kNaN); // 自身对自身回归无残差
+  const size_t K = d.prices->keys.size();
+  assert(d.prices->overlap.size() == K * K);
+  std::vector<double> far(n * n, 0.0); // [行 × 行] 1 − s
   for (size_t i = 0; i < n; ++i)
     for (size_t j = i + 1; j < n; ++j) {
       double s = corr(res[i], res[j]);
-      if (K > 0 && rs[i]->basket >= 0 && rs[j]->basket >= 0)
+      if (rs[i]->basket >= 0 && rs[j]->basket >= 0)
         s = std::max(s, static_cast<double>(d.prices->overlap[static_cast<size_t>(rs[i]->basket) * K + static_cast<size_t>(rs[j]->basket)]));
-      dist[i * n + j] = dist[j * n + i] = 2.0 * (1.0 - s);
+      far[i * n + j] = far[j * n + i] = 1.0 - s;
     }
 
-  const std::vector<Merge> ms = ward_linkage(dist, n);
-  const size_t cut = n - std::min(n, kClusters);
-  std::vector<size_t> up(n), node(n), label(n); // 并查集 / 根所在的树结点 (< n = 叶) / 簇 (= 切时的根)
+  // Ward 树: 结点 < n = 叶, n + k = 第 k 次合并; 子先于父 ⇒ 按号自底向上数叶数, 自顶向下定各结点叶段起点 (叶序 = 先左子后右子)
+  std::vector<double> sq(n * n);
+  std::transform(far.begin(), far.end(), sq.begin(), [](double x) { return 2.0 * x; });
+  const std::vector<Merge> ms = ward_linkage(sq, n);
+  std::vector<size_t> up(n), node(n);
   std::iota(up.begin(), up.end(), 0), std::iota(node.begin(), node.end(), 0);
   const auto find = [&](size_t x) {
     while (up[x] != x)
       x = up[x] = up[up[x]];
     return x;
   };
-  std::vector<std::array<size_t, 2>> kids; // [树结点 − n] 两子
-  for (size_t k = 0;; ++k) {
-    if (k == cut)
-      for (size_t i = 0; i < n; ++i)
-        label[i] = find(i);
-    if (k == ms.size())
-      break;
-    const size_t a = find(ms[k].a), b = find(ms[k].b);
+  std::vector<std::array<size_t, 2>> kids; // [结点 − n] 两子
+  for (const Merge &mg : ms) {
+    const size_t a = find(mg.a), b = find(mg.b);
     kids.push_back({node[a], node[b]});
-    up[a] = b, node[b] = n + k;
+    up[a] = b, node[b] = n + kids.size() - 1;
   }
-  std::vector<size_t> st{node[find(0)]}, cnt(n, 0), pos(n);
-  std::vector<int> seg(n, -1); // [簇] 色环段
-  int segs = 0;
-  while (!st.empty()) {
-    const size_t x = st.back();
-    st.pop_back();
-    if (x >= n) {
-      st.push_back(kids[x - n][1]), st.push_back(kids[x - n][0]);
-      continue;
-    }
-    if (seg[label[x]] < 0)
-      seg[label[x]] = segs++;
-    pos[x] = cnt[label[x]]++;
+  const size_t N = 2 * n - 1;
+  std::vector<size_t> cnt(N, 1), at(N, 0); // [结点] 叶数 / 叶段起点
+  for (size_t x = n; x < N; ++x)
+    cnt[x] = cnt[kids[x - n][0]] + cnt[kids[x - n][1]];
+  for (size_t x = N; x-- > n;)
+    at[kids[x - n][0]] = at[x], at[kids[x - n][1]] = at[x] + cnt[kids[x - n][0]];
+  std::vector<size_t> leaf(n); // [叶序] 行
+  for (size_t i = 0; i < n; ++i)
+    leaf[at[i]] = i;
+  // 叶序第 k / k + 1 行之间的间隔 = 在 k + 1 处分开左右两子的那个结点的两侧平均 1 − s (各对行只在其最近公共祖先处算一次, 共 O(n²))
+  std::vector<double> t(n, 0.0); // [叶序] 累加位置
+  for (size_t x = n; x < N; ++x) {
+    const size_t l0 = at[x], l1 = l0 + cnt[kids[x - n][0]], l2 = l0 + cnt[x];
+    double sum = 0;
+    for (size_t p = l0; p < l1; ++p)
+      for (size_t q = l1; q < l2; ++q)
+        sum += far[leaf[p] * n + leaf[q]];
+    t[l1] = sum / static_cast<double>((l1 - l0) * (l2 - l1));
   }
-  for (size_t i = 0; i < n; ++i) {
-    const float u = (static_cast<float>(pos[i]) + 0.5f) / static_cast<float>(cnt[label[i]]);
-    rs[i]->hue = (static_cast<float>(seg[label[i]]) + kClusterSpan * u) / static_cast<float>(segs);
-  }
+  for (size_t k = 1; k < n; ++k)
+    t[k] += t[k - 1];
+  const double span = t[n - 1];
+  for (size_t i = 0; i < n; ++i)
+    rs[i]->hue = span > 0 ? kArc * static_cast<float>(t[at[i]] / span) : 0.0f;
 }
 // NAV 右表行选中 (缺 = 默认 PortfolioRow::on)
 bool shown(const PortfolioUIState &ui, const PortfolioRow &r) {
@@ -559,8 +562,10 @@ void derive_factors(const std::vector<PortfolioItem> &items, const std::string &
     if (!it.missing.empty())
       continue;
     const auto f = res.factors.find(it.e.key());
-    if (f == res.factors.end())
+    if (f == res.factors.end()) {
+      ++d.n_wait;
       continue;
+    }
     if (!f->second->error.empty()) {
       ++d.n_error;
       continue;
@@ -1127,7 +1132,8 @@ int pages() {
       tip("FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念的日内净流入, 当日随新浪快照实时动\n"
           "• 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟; 成分之和不加权, 分不出大单\n"
           "• 左图 = 右表选中行 (与 NAV 页同一份选中) 自日轴首日开盘起逐分钟累计的净流入, 跨日接续; 档位 日内 / 2日 … 5日 叠在图左上角\n"
-          "• y 口径 (图左上角切): 占比 = 累计净流入 / 同段累计成交额 (默认, 跨篮子可比) / 金额 = 累计净流入 (亿元)\n"
+          "• y 口径 (图左上角切): 占比 = 累计净流入 / 近 5 日日均成交额 (默认; 分母盘前已定, 开盘即稳, 跨篮子可比) / 金额 = 累计净流入 (亿元)\n"
+          "• 开收盘 (图左上角开关, 默认关): 计入首根 09:31 (开盘集合竞价并入) / 末根 15:00 (收盘集合竞价); 关 = 两根的额与净流入都不计 (图与右表同一开关)\n"
           "• 右表: 日轴各日的净流入占当日成交额 + 档内合计; 过滤条与 NAV / VAL 页同一份\n"
           "• 历史日 = all.bar 库 L_1min (其后至基本面末日 = bar1m) 合成, 当日 = 新浪快照合成; 不看区间条");
     if (flow_open) {
@@ -1585,18 +1591,20 @@ float end_table() {
   return t->ColumnsAutoFitWidth + ImGui::GetStyle().ScrollbarSize;
 }
 
-// 右图例表头排序 (NAV / VAL 同一份; 三态: 升 → 降 → 原序): order (组内原序下标) 按当前排序列重排;
-// 首列 (中文名) 按 text(i) 字典序, 其余按 num(i, 列), 不可算的恒在末
-template <class Text, class Num>
-void sort_rows(std::vector<size_t> &order, const Text &text, const Num &num) {
+// 右图例表头排序 (NAV / VAL 同一份; 三态: 升 → 降 → 色序): order (rs 的组内下标) 按当前排序列重排;
+// 首列 (中文名) 按 cn 字典序, 其余按 num(i, 列), 不可算的恒在末; 未排 = 色相序 (相似的挨着; 未定色保持组内序)
+template <class Num>
+void sort_rows(std::vector<size_t> &order, const std::vector<PortfolioRow> &rs, const Num &num) {
   const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
-  if (!ss || ss->SpecsCount == 0)
+  if (!ss || ss->SpecsCount == 0) {
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return rs[a].hue < rs[b].hue; });
     return;
+  }
   const int c = ss->Specs[0].ColumnIndex;
   const bool desc = ss->Specs[0].SortDirection == ImGuiSortDirection_Descending;
   std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
     if (c == 0) {
-      const int r = text(a).compare(text(b));
+      const int r = rs[a].cn.compare(rs[b].cn);
       return desc ? r > 0 : r < 0;
     }
     const double x = num(a, c), y = num(b, c);
@@ -1646,7 +1654,7 @@ const std::string kNavTip[1 + kNavCols] = {
     "名 = 行名\n"
     "• 算法: 篮子 = 切片名 + .等 (等权) / .加 (总市值加权); 因子 / 策略 = 中文名\n"
     "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
-    "• 显示: 字色 = 主图线色 (四组一起按 max(成员重合, 剔全A.加的残差相关) 聚簇: 同簇占色环一段, 簇间留空); 超长截断补 …, 悬停看全名\n"
+    "• 显示: 字色 = 主图线色 (四组一起按 max(成员重合, 剔全A.加的残差相关) 定色相: 色差 ∝ 不相似; 没算完全灰), 未排序时按色序 (相似的挨着); 超长截断补 …, 悬停看全名\n"
     "• 适用: 全部组",
     "涨幅 = 当日涨跌幅\n"
     "• 算法: 最新一日收盘 / 前收 − 1\n"
@@ -1800,7 +1808,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 指数 / 行业 / 概念表上过滤条 (与 VAL / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画的行恒列\n"
-        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 色序 (相似的挨着)");
   // 一行 r = 一对线; 切片 / 名次同下标. 篮子组按过滤条定列出的行 (选中行恒列)
   const int g = ui.cat[kPageNav];
   const std::vector<PortfolioRow> &rs = d.nav[g];
@@ -1851,7 +1859,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
       cw[k] = std::max(cw[k], c.w);
     }
   }
-  sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return c <= kLefts ? lc[r][static_cast<size_t>(c - 1)] : nav_num(d, v, g, r, c - 1 - kLefts); });
+  sort_rows(order, rs, [&](size_t r, int c) { return c <= kLefts ? lc[r][static_cast<size_t>(c - 1)] : nav_num(d, v, g, r, c - 1 - kLefts); });
   for (const size_t r : order) {
     const PortfolioRow &h = rs[r];
     ImGui::TableNextRow();
@@ -1931,7 +1939,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (与 NAV / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中行恒列\n"
-        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 色序 (相似的挨着)");
   const int g = ui.cat[kPageVal];
   const std::vector<PortfolioRow> &rs = d.nav[g];
   std::vector<size_t> order;
@@ -1959,7 +1967,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
       c = std::isfinite(p) ? num_cell(ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.0f%%", p) : num_none();
       cw[b] = std::max(cw[b], c.w);
     }
-  sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return v.cell[g][r][c - 1].pct; });
+  sort_rows(order, rs, [&](size_t r, int c) { return v.cell[g][r][c - 1].pct; });
   for (const size_t r : order) {
     const PortfolioRow &s = rs[r];
     ImGui::TableNextRow();
@@ -1987,7 +1995,8 @@ const std::string kFlowNameTip = "名 = 篮子名\n"
                                  "• 适用: 指数 / 行业 / 概念";
 const std::string kFlowDayTip = " = 该日资金流入占成交额\n"
                                 "• 算法: 净流入 / 成交额; 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟\n"
-                                "• 数据: 当日 = 新浪快照合成 (实时); 历史日 = all.bar 库 L_1min (其后至基本面末日 = bar1m) 合成; 成分之和不加权\n"
+                                "• 数据: 当日 = 新浪快照合成 (实时); 历史日 = all.bar 库 L_1min (其后至基本面末日 = bar1m) 合成; 成分之和不加权;\n"
+                                "  首根 09:31 (开盘集合竞价) / 末根 15:00 (收盘集合竞价) 按图左上角 开收盘 开关计入 (默认不计)\n"
                                 "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额; 该日无分钟根 → -\n"
                                 "• 适用: 指数 / 行业 / 概念; 随档位 (日内 / 2日 … 5日)";
 const std::string kFlowSumTip[2] = {
@@ -1997,7 +2006,7 @@ const std::string kFlowSumTip[2] = {
     "• 显示: 亿 / 万亿带符号, 按正负着色; 悬停格看成交额\n"
     "• 适用: 指数 / 行业 / 概念; 随档位",
     "占比 = 档内合计净流入占合计成交额\n"
-    "• 算法: Σ 各日净流入 / Σ 各日成交额 (= 左图占比口径末点)\n"
+    "• 算法: Σ 各日净流入 / Σ 各日成交额 (左图占比的分母是近 5 日日均成交额, 两者不同)\n"
     "• 数据: 同各日列\n"
     "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额\n"
     "• 适用: 指数 / 行业 / 概念; 随档位",
@@ -2012,7 +2021,7 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
         "• 指数 = 各池 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级; 概念 = 东财题材概念 (全A 内切)\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (与 NAV / VAL 页同一份): 按只数 / 总市值 / |当日资金流入| 筛本组的行, 已画的行恒列\n"
-        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
+        "• 列宽按内容最紧; 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 色序 (相似的挨着)");
   const int g = ui.cat[kPageFlow];
   const std::vector<PortfolioRow> &rs = d.nav[g];
   const size_t n = rs.size(), nd = days.size(), nc = nd + 2; // 名之后: 各日 + 合计两列
@@ -2056,7 +2065,7 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
   for (const size_t r : order) {
     std::vector<Database::Flow> &x = fl[r];
     assert(rs[r].basket >= 0);
-    x = Database::FlowOf(ui.basket.feed, static_cast<size_t>(rs[r].basket), days);
+    x = Database::FlowOf(ui.basket, static_cast<size_t>(rs[r].basket), days);
     x.resize(nd);
     Database::Flow sum;
     for (const Database::Flow &y : x)
@@ -2071,7 +2080,7 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
       cw[k] = std::max(cw[k], c.w);
     }
   }
-  sort_rows(order, [&](size_t r) { return std::string_view(rs[r].cn); }, [&](size_t r, int c) { return value(r, static_cast<size_t>(c - 1)); });
+  sort_rows(order, rs, [&](size_t r, int c) { return value(r, static_cast<size_t>(c - 1)); });
   for (const size_t r : order) {
     const PortfolioRow &h = rs[r];
     ImGui::TableNextRow();

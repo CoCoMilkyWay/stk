@@ -593,6 +593,19 @@ const Bars *bars_on(const Kline &kl, const Day &today, misc::Ymd d) {
   return it != kl.minutes.end() && it->date == d ? &*it : nullptr;
 }
 
+// 资金流计入槽 j: 有根, 且首根 (开盘集合竞价并入) / 末根 (收盘集合竞价) 只在 ends 时计
+bool flow_slot(const Bars &b, size_t j, bool ends) { return b.has[j] && (ends || (j != 0 && j != static_cast<size_t>(kSlots) - 1)); }
+
+// 资金流占比的分母: 历史日线末 kFlowRefDays 根 (新浪当日不算) 的日均成交额 [元]; 盘前已定, 开盘起即稳. 无 → 0
+constexpr size_t kFlowRefDays = 5;
+double flow_ref(const Kline &kl) {
+  const size_t n = std::min(kl.daily.size(), kFlowRefDays);
+  double s = 0;
+  for (size_t i = kl.daily.size() - n; i < kl.daily.size(); ++i)
+    s += kl.daily[i].amount;
+  return n ? s / static_cast<double>(n) : 0.0;
+}
+
 // 日内的根 = 日轴各日的分钟 (历史 + 当日, joins 才接; 某日无源 → 留空), x = 第 k 日 · kSlots + 槽;
 //   分钟根的前收 = 同日日根的; 涨跌基准 = 末个有根日的前收
 void intraday(const Kline &kl, const Day &today, std::span<const misc::Ymd> days, bool money, Series &s) {
@@ -1022,16 +1035,19 @@ void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<Baske
     const Day &today = f.today[p.b];
     if (!note[0])
       gap = basket_note(d, kl, today, qs, note, sizeof(note));
+    const double unit = share ? flow_ref(kl) / 100.0 : 1e8; // y = 累计净流入 / unit
+    if (!(unit > 0))
+      continue;
     Overlay l;
     l.name = basket_name(p.b), l.col = ImGui::ColorConvertU32ToFloat4(p.col);
-    double net = 0, amount = 0;
+    double net = 0;
     for (size_t k = 0; k < days.size(); ++k)
       if (const Bars *b = bars_on(kl, today, days[k]))
         for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
-          if (b->has[j]) {
-            net += b->net[j], amount += b->cell[j].amount;
+          if (flow_slot(*b, j, st.flow_ends)) {
+            net += b->net[j];
             l.x.push_back(static_cast<double>(k * kSlots + j));
-            l.y.push_back(share ? (amount > 0 ? net / amount * 100.0 : 0.0) : net / 1e8);
+            l.y.push_back(net / unit);
           }
     if (!l.x.empty())
       ls.push_back(std::move(l));
@@ -1044,6 +1060,20 @@ void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<Baske
                   button_bar(kIntraName, kIntras, st.flow);
                   ImGui::SameLine(0, 8);
                   button_bar(kFlowUnitName, 2, st.flow_unit);
+                  ImGui::SameLine(0, 8);
+                  if (st.flow_ends)
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                  const bool flip = ImGui::SmallButton("开收盘");
+                  if (st.flow_ends)
+                    ImGui::PopStyleColor();
+                  if (flip)
+                    st.flow_ends = !st.flow_ends;
+                  if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("计入开盘 / 收盘的资金流 (默认不计; 图与右表同一开关)\n"
+                                      "• 开盘 = 首根 09:31 (集合竞价并入, 与 09:30 那分钟分不开)\n"
+                                      "• 收盘 = 末根 15:00 (收盘集合竞价)\n"
+                                      "• 两根成交额大、方向只看对前一价的涨跌, 易把全日累计带偏 (关 = 曲线自开盘贴 0 轴起步)\n"
+                                      "• 占比 = 累计净流入 / 近 5 日日均成交额 (不含当日, 盘前已定: 开盘即稳, 跨篮子可比)");
                 });
   ImGui::PopID();
 }
@@ -1052,7 +1082,8 @@ std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st) {
   return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.flow]);
 }
 
-std::vector<Flow> FlowOf(const Feed &f, size_t k, std::span<const misc::Ymd> days) {
+std::vector<Flow> FlowOf(const BasketState &st, size_t k, std::span<const misc::Ymd> days) {
+  const Feed &f = st.feed;
   if (!f.data || k >= f.data->list.size())
     return {};
   assert(f.today.size() == f.data->list.size());
@@ -1060,7 +1091,7 @@ std::vector<Flow> FlowOf(const Feed &f, size_t k, std::span<const misc::Ymd> day
   for (size_t i = 0; i < days.size(); ++i)
     if (const Bars *b = bars_on(f.data->list[k], f.today[k], days[i]))
       for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
-        if (b->has[j])
+        if (flow_slot(*b, j, st.flow_ends))
           o[i].net += b->net[j], o[i].amount += b->cell[j].amount;
   return o;
 }
