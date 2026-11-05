@@ -193,7 +193,7 @@ stk/
 │   │   │   │   │                                     #    · Market: Quote + BasketHistory 一份, Assets / Portfolio 共用 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
 │   │   │   │   └── ui/                               # 🖥️ UI: TabFundamental (基本面同步) / TabEncode / TabAssets / TabDates (日历) / CrossSectionAnalysis / QuotesPanel
 │   │   │   │                                         #    · TabAssets: 左栏 个股 (过滤条 + 资产表); 右栏 Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析)
-│   │   │   │                                         #    · QuotesPanel: 个股 = Assets 日内 + 日线; 篮子 = Portfolio 日内栏多篮子叠加收盘线 (对首日前收的涨跌幅, 不标刻度 / 不画量, 读数看十字光标); 档位按钮叠在各图左上角
+│   │   │   │                                         #    · QuotesPanel: 个股 = Assets 日内 + 日线; 篮子 = Portfolio 日内栏多篮子叠加收盘线 (对首日前收的涨跌幅, 横网格涨跌幅小字内标在右壁, 不画量, 读数看十字光标); 档位按钮叠在各图左上角
 │   │   │   ├── task_features/                        # 🖥️ 特征计算管理
 │   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面
 │   │   │   │   ├── services/                         # 🖥️ 服务层

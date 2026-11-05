@@ -1,6 +1,6 @@
 // 行情图, 数据 = 历史 Kline + 当日 Day (见 Kline.hpp)
 //   个股 = Assets 右栏: StockHistory + QuoteService::today(i), 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
-//   篮子 = Portfolio NAV 日内栏: BasketHistory + QuoteService::today(篮子), 多篮子叠加收盘线 (对首日前收的涨跌幅, 不标刻度 / 不画量, 读数看十字光标);
+//   篮子 = Portfolio NAV 日内栏: BasketHistory + QuoteService::today(篮子), 多篮子叠加收盘线 (对首日前收的涨跌幅, 刻度区全空: 横网格涨跌幅小字内标在右壁; 不画量, 读数看十字光标);
 //     另给 NAV 表的近况三列 (Recent). 以下为个股图:
 //   日内价 = 高 / 低单调插值围出的带, 按涨跌染色; 日线价 = 蜡烛 + 均线, 默认 10 年档; 悬停提示只在量图
 //     十字光标随鼠标: 竖线吸附最近一根 (底轴标时刻), 横线在鼠标所在格 (价图左价 / 右涨跌幅, 量图标量 / 额)

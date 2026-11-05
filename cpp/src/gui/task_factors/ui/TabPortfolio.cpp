@@ -1502,7 +1502,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     ui.intraday = !ui.intraday;
   if (ImGui::IsItemHovered())
     tip("日内栏开关: 主图与本表之间 (主图 : 日内 = 2 : 1) 叠加选中的指数 / 行业行的日内收盘线 (同主图线色); 因子 / 策略无日内\n"
-        "• y = 对首日前收的涨跌幅, 不标刻度: 悬停看十字光标处时刻 / 涨跌幅与该分钟各条读数\n"
+        "• y = 对首日前收的涨跌幅, 横网格的涨跌幅小字标在右内壁; 悬停看十字光标处时刻 / 涨跌幅与该分钟各条读数\n"
         "• 篮子同 Assets: all.bar 库合成历史, 当日由新浪快照合成; 档位 日内 / 2日 / 3日 / 4日 叠在图左上角");
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(点行 = 画)");

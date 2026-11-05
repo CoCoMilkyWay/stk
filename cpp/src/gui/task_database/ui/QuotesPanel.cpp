@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -38,6 +39,7 @@ constexpr double kWheel = 0.8; // 滚轮一格视野宽 × kWheel (向前 = 放�
 constexpr float kDragPx = 4.f; // 框选生效的最小拖动 [px]
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr ImVec4 kRefTag(0.55f, 0.55f, 0.55f, 1.f);
+constexpr ImVec4 kGridTag(0.62f, 0.62f, 0.62f, 0.8f);                                     // 叠加图横网格的内标小字
 constexpr ImVec4 kCross(0.85f, 0.85f, 0.85f, 1.f), kCrossLine(0.85f, 0.85f, 0.85f, 0.5f); // 十字光标: 标签底 / 线
 
 ImVec4 tint(double v, double ref) { return v > ref ? kUp : v < ref ? kDn
@@ -673,7 +675,7 @@ struct Overlay {
   std::vector<double> x, y;
 };
 
-// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 (含零线); 两轴不标刻度 (网格照留), 不画图例.
+// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 (含零线); 刻度区全空 (x 只留网格, y 网格的涨跌幅以小字内标在右壁), 不画图例.
 //   十字光标: 竖线吸附到分钟, 横线随鼠标; 提示 = 时刻 + 光标处涨跌幅 + 该分钟各条读数 (高 → 低). 画完返回图区左上角
 ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size) {
   const int nd = std::max(1, static_cast<int>(days.size()));
@@ -713,6 +715,22 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
       ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
       ImGui::PopID();
+    }
+    { // 横网格的涨跌幅: 小字贴图区右内壁, 压在线上方 (不进刻度区, 图框不变)
+      ImDrawList *dl = ImPlot::GetPlotDrawList();
+      const float fs = ImGui::GetFontSize() * 0.8f, right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x - 2.f,
+                  top = ImPlot::GetPlotPos().y;
+      const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
+      for (const ImPlotTick &t : ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].Ticker.Ticks) {
+        if (!t.Major)
+          continue;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%+.1f%%", t.PlotPos);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.f, buf);
+        const float y = ImPlot::PlotToPixels(0.0, t.PlotPos).y - sz.y;
+        if (y >= top)
+          dl->AddText(ImGui::GetFont(), fs, ImVec2(right - sz.x, y), col, buf);
+      }
     }
     if (ImPlot::IsPlotHovered()) {
       const ImPlotPoint m = ImPlot::GetPlotMousePos();
