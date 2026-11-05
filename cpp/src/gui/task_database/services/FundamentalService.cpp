@@ -1033,28 +1033,34 @@ bool FundamentalService::run(FundamentalRequest &req) {
       lane("bigquant", bq_tasks, run_bq);
     if (!ts_tasks.empty() && go())
       lane("tushare", ts_tasks, run_tu);
-    // 概念快照: 当日缺才拉; 板块名单先按名称留题材, 再逐个拉成分, 够数的收; 取消 = 不落半份
+    // 概念快照: 当日缺才拉; 板块名单 (名称 → 代码) + 全 A 个股所属概念 (名称) 反排成各板块成分, 题材且够数的收
     if (req.fundamental && go() && concept_last() < misc::today_ymd()) {
       eastmoney::Client em;
+      begin(Phase::Loading, 2);
       job.set_message("同步 eastmoney.concept: 板块名单");
       std::vector<eastmoney::Board> boards = em.concepts();
-      std::erase_if(boards, [](const eastmoney::Board &b) { return !concept_theme(b.name); });
-      begin(Phase::Loading, boards.size());
+      std::unordered_map<std::string_view, size_t> by_name;
+      for (size_t k = 0; k < boards.size(); ++k) {
+        const bool fresh = by_name.emplace(boards[k].name, k).second;
+        assert(fresh && "eastmoney: 板块名称重复");
+      }
+      publish(1);
+      job.set_message("同步 eastmoney.concept: 个股所属概念");
+      std::vector<std::vector<std::string>> syms(boards.size());
+      for (const eastmoney::Stock &s : em.stocks())
+        for (const std::string &c : s.concepts) {
+          const auto it = by_name.find(c);
+          assert(it != by_name.end() && "eastmoney: 个股所属概念不在板块名单");
+          syms[it->second].push_back(s.sym);
+        }
+      publish(1);
       std::vector<Concept> list;
-      for (eastmoney::Board &b : boards) {
-        if (!go())
-          break;
-        job.set_message("同步 eastmoney.concept: " + b.name);
-        std::vector<std::string> syms = em.members(b.code);
-        if (syms.size() >= kConceptMin)
-          list.push_back({std::move(b.code), std::move(b.name), std::move(syms)});
-        publish(1);
-      }
-      if (go()) {
-        std::sort(list.begin(), list.end(), [](const Concept &x, const Concept &y) { return x.code < y.code; });
-        save_concepts(misc::today_ymd(), list);
-        std::cout << "[eastmoney.concept] " << list.size() << " / " << boards.size() << " concept(s)" << std::endl;
-      }
+      for (size_t k = 0; k < boards.size(); ++k)
+        if (concept_theme(boards[k].name) && syms[k].size() >= kConceptMin)
+          list.push_back({std::move(boards[k].code), std::move(boards[k].name), std::move(syms[k])});
+      std::sort(list.begin(), list.end(), [](const Concept &x, const Concept &y) { return x.code < y.code; });
+      save_concepts(misc::today_ymd(), list);
+      std::cout << "[eastmoney.concept] " << list.size() << " / " << boards.size() << " concept(s)" << std::endl;
     }
     // 分钟线: 基本面之后 (一日一条, 量大耗时长)
     if (!bar1m_tasks.empty() && go())

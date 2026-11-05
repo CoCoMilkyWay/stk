@@ -440,7 +440,7 @@ stk/
 │   │   │   ├── bigquant/client.hpp                         # 🌐 BigQuant DAI: query(Query{sql, filters, order}) 结果收成一格传回再拆开 (1 cell / 条) / quota
 │   │   │   ├── tushare/client.hpp                          # 🌐 Tushare HTTP: query(Query{api, params, num})
 │   │   │   ├── sina/client.hpp                             # 🌐 新浪行情 HTTP (带 Referer, keep-alive + gzip): quotes 批量快照 (≤ 800 只, 含五档) / kline 1 分钟 K (最近 n 根)
-│   │   │   └── eastmoney/client.hpp                        # 🌐 东财行情列表 HTTP (keep-alive, 按代码分页拉齐): concepts 概念板块名单 / members 板块成分 (A 轴码形)
+│   │   │   └── eastmoney/client.hpp                        # 🌐 东财行情列表 HTTP (keep-alive, 按代码分页拉齐): concepts 概念板块名单 / stocks 全 A 个股所属概念 (A 轴码形)
 │   │   ├── fundamental/                                    # 📊 日频基本面数据集: 两数据源同一套; 只单向依赖 api
 │   │   │   ├── Spec.hpp                                    # 📊   表定义 SPECS: Shape × snap × src (Bq / Tu); 静态初始化期全表断言
 │   │   │   ├── Store.hpp                                   # 📊   本地: Catalog (一次目录遍历) + 分片状态 + 拉取计划 + put (时间只经 Now)
