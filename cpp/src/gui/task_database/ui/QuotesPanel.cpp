@@ -12,7 +12,6 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <initializer_list>
 #include <limits>
 #include <mutex>
@@ -87,12 +86,10 @@ void pin_axes(bool x) {
     pin(ImAxis_X1, {"00-00 00:00", "0000-00-00"});
 }
 
-// 一张图的根: 日内 x = 第 k 日 · kSlots + 槽 (无成交的槽留空; 并根 = 组中点); 日线 x = 下标
+// 一张图的根: 日内 x = 第 k 日 · kSlots + 槽 (无成交的槽留空); 日线 x = 下标
 struct Series {
   bool intraday = false;
-  bool candle = false; // 日内画蜡烛 (视野内按宽并根) + 现价虚线; 否则日内 = 高低带
-  bool money = false;  // 量柱 = 成交额 (篮子: 量不合成)
-  int g = 1;           // 一根并的槽数 (日内蜡烛; 其余 1)
+  bool money = false; // 量柱 = 成交额 (篮子: 量不合成)
   std::vector<Candle> bars;
   std::vector<double> x;
   std::vector<misc::Ymd> days; // 日内各日
@@ -121,11 +118,11 @@ int nearest(const Series &s, double at) {
   return i;
 }
 
-// 第 i 根的时刻: 日内 "MM-DD HH:MM" (末槽 = x 除 kSlots 的余), 日线 "YYYY-MM-DD"
+// 第 i 根的时刻: 日内 "MM-DD HH:MM" (槽 = x 除 kSlots 的余), 日线 "YYYY-MM-DD"
 void fmt_when(char *buf, int size, const Series &s, size_t i) {
   const misc::Ymd d = s.bars[i].date;
   if (s.intraday) {
-    const int m = slot_label(static_cast<int>(std::lround(s.x[i] + (s.g - 1) * 0.5)) % kSlots);
+    const int m = slot_label(static_cast<int>(s.x[i]) % kSlots);
     std::snprintf(buf, size, "%02d-%02d %02d:%02d", d / 100 % 100, d % 100, m / 60, m % 60);
   } else {
     std::snprintf(buf, size, "%s", misc::dash(d).c_str());
@@ -134,10 +131,8 @@ void fmt_when(char *buf, int size, const Series &s, size_t i) {
 
 void tooltip(const Series &s, int i) {
   const Candle &b = s.bars[static_cast<size_t>(i)];
-  char when[48], vol[32], amt[32], chg[48] = "";
+  char when[32], vol[32], amt[32], chg[48] = "";
   fmt_when(when, sizeof(when), s, static_cast<size_t>(i));
-  if (s.g > 1)
-    std::snprintf(when + std::strlen(when), sizeof(when) - std::strlen(when), " (%d分)", s.g);
   if (b.ref > 0)
     std::snprintf(chg, sizeof(chg), "\n涨跌 %+.2f  %+.2f%%", b.close - b.ref, (b.close / b.ref - 1.0) * 100.0);
   fmt_amount(amt, sizeof(amt), b.amount);
@@ -213,15 +208,14 @@ void band(const Series &s, int a, int b) {
   }
 }
 
-// 日内蜡烛并根 (同 py/app/tdx): g = 视野 span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子;
-//   同日每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加), x = 组中点
-void merge(Series &s, double span, float px) {
+// 日内蜡烛并根 (同 py/app/tdx): g = span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子;
+//   同日每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加), x = 组中点. 返回 g
+int merge(Series &s, double span, float px) {
   int g = 1;
   while (g < kSlots && (kSlots % g || px * g < kMinPx * span))
     ++g;
-  s.g = g;
   if (g == 1)
-    return;
+    return g;
   size_t n = 0;
   long key = -1;
   for (size_t i = 0; i < s.bars.size(); ++i) {
@@ -243,34 +237,31 @@ void merge(Series &s, double span, float px) {
   }
   s.bars.resize(n);
   s.x.resize(n);
+  return g;
 }
 
-// 价图区内一道水平虚线 (kDashOn 实 / kDashOff 空); 出了 y 视野不画
-void dash_h(double y, const ImVec4 &c) {
-  const ImVec2 pos = ImPlot::GetPlotPos(), sz = ImPlot::GetPlotSize();
-  const float py = std::round(ImPlot::PlotToPixels(0.0, y).y) + 0.5f, x1 = pos.x + sz.x;
-  if (py < pos.y || py > pos.y + sz.y)
-    return;
-  ImDrawList *dl = ImPlot::GetPlotDrawList();
-  const ImU32 col = ImGui::ColorConvertFloat4ToU32(c);
-  for (float x = pos.x; x < x1; x += kDashOn + kDashOff)
-    dl->AddLine(ImVec2(x, py), ImVec2(std::min(x + kDashOn, x1), py), col);
+// 一段横 / 竖虚线 [px] (kDashOn 实 / kDashOff 空)
+void dash(ImDrawList *dl, ImVec2 a, const ImVec2 &b, ImU32 col) {
+  const float len = std::abs(b.x - a.x) + std::abs(b.y - a.y);
+  const ImVec2 u((b.x - a.x) / len, (b.y - a.y) / len);
+  for (float t = 0; t < len; t += kDashOn + kDashOff) {
+    const float e = std::min(t + kDashOn, len);
+    dl->AddLine(ImVec2(a.x + u.x * t, a.y + u.y * t), ImVec2(a.x + u.x * e, a.y + u.y * e), col);
+  }
 }
 
-// 价 (日内高低带 / 蜡烛 + 前收 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 量, x 联动. key 变 / 双击 → 视野复位到档窗口 [win_lo, win_hi];
+// 价 (日内高低带 / 日线蜡烛 + 前收 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 量, x 联动. key 变 / 双击 → 视野复位到档窗口 [win_lo, win_hi];
 //   左键拖动 = 框选 x 段放大; wheel → 滚轮只缩放 x, 右端锚在 win_hi (最新一根); y 恒随视野内的根贴合.
 //   视野的改动在下一帧生效 (本帧已设给 ImPlot).
-// 档位按钮叠在价图左上角 (在图之后提交, 抢得到悬停). 画完光标停在按钮行末, 调用方显式定位下一块; 返回价图区左上角 (未画 = (−1, −1))
-ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_t key, QuotesView &v, const ImVec2 &size,
-                  const char *const ranges[], int nr, int &cur, bool wheel) {
+// 档位按钮叠在价图左上角 (在图之后提交, 抢得到悬停). 画完光标停在按钮处, 调用方显式定位下一块
+void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_t key, QuotesView &v, const ImVec2 &size,
+                const char *const ranges[], int nr, int &cur, bool wheel) {
+  const int n = static_cast<int>(s.bars.size());
   const bool reset = v.key != key;
   if (reset) {
     v.key = key;
     v.lo = win_lo, v.hi = win_hi, v.drag = kNaN;
   }
-  if (s.candle)
-    merge(s, v.hi - v.lo, v.px > 0 ? v.px : size.x);
-  const int n = static_cast<int>(s.bars.size());
   const int w0 = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), v.lo) - s.x.begin());
   const int w1 = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), v.hi) - s.x.begin());
   double lo = std::numeric_limits<double>::max(), hi = -lo, vmax = 0;
@@ -313,8 +304,8 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
       ImPlot::SetupAxisFormat(ImAxis_X1, day_tick, &s);
   };
   const auto visible = [&](const ImPlotRect &lim, int &a, int &b) {
-    a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - s.g) - s.x.begin());
-    b = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), lim.X.Max + s.g) - s.x.begin());
+    a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - 1.0) - s.x.begin());
+    b = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), lim.X.Max + 1.0) - s.x.begin());
   };
   // 每格: 收悬停 / 鼠标 x (价图坐标), 占住滚轮 (不滚外层窗口); 框选中两格同画选区.
   //   十字光标 (非框选时): 竖线吸附到最近一根, 鼠标在两格任一 (上帧) 即两格同画; 返回 = 本格画横线 (鼠标在本格)
@@ -355,7 +346,7 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotBorderSize, 0.f);
   if (!ImPlot::BeginSubplots(id, 2, 1, size, ImPlotSubplotFlags_NoTitle | ImPlotSubplotFlags_NoMenus | ImPlotSubplotFlags_LinkCols, v.rows)) {
     ImPlot::PopStyleVar(3);
-    return ImVec2(-1, -1);
+    return;
   }
 
   ImVec2 corner(-1, -1); // 价图区左上角
@@ -370,7 +361,6 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
     pin_axes(false);
     ImPlot::SetupFinish();
     corner = ImPlot::GetPlotPos();
-    v.px = ImPlot::GetPlotSize().x;
     const ImPlotRect lim = ImPlot::GetPlotLimits();
     // 水平线的两端标签: 左 = 价, 右 = 对前收的涨跌幅 (右轴同一基准)
     const auto tags = [&](double y, const ImVec4 &c) {
@@ -405,7 +395,7 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
       ImPlot::SetNextLineStyle(kMaCol[k], 1.f);
       ImPlot::PlotLine(kMaName[k], s.x.data() + (n - m), ma.data() + (n - m), m, ImPlotItemFlags_NoFit);
     }
-    if (n > 0 && ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend)) { // 日内 = 高低带 (candle → 蜡烛); 日线 = 蜡烛 (阳线空心 / 阴线实心)
+    if (n > 0 && ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend)) { // 日内 = 高低带; 日线 = 蜡烛 (阳线空心 / 阴线实心)
       if (ImPlot::FitThisFrame())
         for (int i = 0; i < n; ++i) {
           ImPlot::FitPoint(ImPlotPoint(s.x[i], s.bars[static_cast<size_t>(i)].low));
@@ -414,14 +404,14 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       int a, b;
       visible(lim, a, b);
-      if (s.intraday && !s.candle)
+      if (s.intraday)
         band(s, std::max(0, a - 2), std::min(n, b + 2)); // 多带两根: 视野内各点的斜率取到真邻点
       else
         for (int i = a; i < b; ++i) {
           const Candle &k = s.bars[static_cast<size_t>(i)];
           const ImU32 col = ImGui::ColorConvertFloat4ToU32(k.close >= k.open ? kUp : kDn);
           dl->AddLine(ImPlot::PlotToPixels(s.x[i], k.low), ImPlot::PlotToPixels(s.x[i], k.high), col);
-          ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody * s.g, k.open), p1 = ImPlot::PlotToPixels(s.x[i] + kBody * s.g, k.close);
+          ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody, k.open), p1 = ImPlot::PlotToPixels(s.x[i] + kBody, k.close);
           if (std::abs(p1.y - p0.y) < 1.f) {
             const float mid = (p0.y + p1.y) * 0.5f;
             p0.y = mid - 0.5f, p1.y = mid + 0.5f;
@@ -436,12 +426,8 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
     if (n > 0) {
       const double last = s.bars.back().close;
       const ImVec4 c = tint(last, s.ref > 0 ? s.ref : last);
-      if (s.candle) {
-        dash_h(last, ImVec4(c.x, c.y, c.z, 0.85f));
-      } else {
-        ImPlot::SetNextLineStyle(ImVec4(c.x, c.y, c.z, 0.55f), 1.f);
-        ImPlot::PlotInfLines("##last", &last, 1, ImPlotInfLinesFlags_Horizontal);
-      }
+      ImPlot::SetNextLineStyle(ImVec4(c.x, c.y, c.z, 0.55f), 1.f);
+      ImPlot::PlotInfLines("##last", &last, 1, ImPlotInfLinesFlags_Horizontal);
       tags(last, c);
     }
     if (input(true)) { // 十字横线: 左标价 / 右标涨跌幅
@@ -469,7 +455,7 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
       for (int i = a; i < b; ++i) {
         const Candle &k = s.bars[static_cast<size_t>(i)];
         const ImVec4 c = k.close >= k.open ? kUp : kDn;
-        const ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody * s.g, s.vol(k)), p1 = ImPlot::PlotToPixels(s.x[i] + kBody * s.g, 0.0);
+        const ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody, s.vol(k)), p1 = ImPlot::PlotToPixels(s.x[i] + kBody, 0.0);
         dl->AddRectFilled(ImVec2(std::min(p0.x, p1.x), p0.y), ImVec2(std::max(p0.x, p1.x) + 1.f, p1.y),
                           ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.75f)));
       }
@@ -515,7 +501,6 @@ ImVec2 plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint6
     ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
     button_bar(ranges, nr, cur);
   }
-  return corner;
 }
 
 // 一档金额 [元] → "XX万" / "X.XX亿"
@@ -732,23 +717,54 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
   ImGui::PopID();
 }
 
-// 篮子日内叠加的一条: 收盘线, x = 日轴第 k 日 · kSlots + 槽, y = 对本条在日轴内首日前收的涨跌幅 [%] (各条同一零点, 跨日接续)
+// 篮子日内叠加的一条: x = 日轴第 k 日 · kSlots + 槽 (并根 = 组中点), y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续)
+//   g = 0: 收盘线; g ≥ 1: 蜡烛 (每根并 g 槽, open / high / low 同 y 口径), 另带现价十字: close / chg = 现价 / 当日涨跌幅 [%], now = 末个有根的槽 x
 struct Overlay {
   std::string name;
   ImVec4 col;
   std::vector<double> x, y;
+  int g = 0;
+  std::vector<double> open, high, low;
+  double base = 0, close = 0, chg = 0;
+  int now = 0;
 };
 
-// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 (含零线); 刻度区全空 (图框不变), 不画图例:
+// 一条的蜡烛: 实心, 涨红跌绿 (收 vs 开), 体至少 1 px
+void candles(const Overlay &l) {
+  if (!ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend))
+    return;
+  ImDrawList *dl = ImPlot::GetPlotDrawList();
+  for (size_t i = 0; i < l.x.size(); ++i) {
+    const ImU32 col = ImGui::ColorConvertFloat4ToU32(l.y[i] >= l.open[i] ? kUp : kDn);
+    const float cx = std::round(ImPlot::PlotToPixels(l.x[i], 0.0).x) + 0.5f;
+    const float x0 = ImPlot::PlotToPixels(l.x[i] - kBody * l.g, 0.0).x, x1 = ImPlot::PlotToPixels(l.x[i] + kBody * l.g, 0.0).x;
+    const float yo = ImPlot::PlotToPixels(0.0, l.open[i]).y, yc = ImPlot::PlotToPixels(0.0, l.y[i]).y;
+    dl->AddLine(ImVec2(cx, ImPlot::PlotToPixels(0.0, l.high[i]).y), ImVec2(cx, ImPlot::PlotToPixels(0.0, l.low[i]).y), col);
+    const float y0 = std::min(yo, yc), y1 = std::max(std::max(yo, yc), y0 + 1.f);
+    dl->AddRectFilled(ImVec2(std::min(x0, cx - 0.5f), y0), ImVec2(std::max(x1, cx + 0.5f), y1), col);
+  }
+  ImPlot::EndItem();
+}
+
+// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 / 蜡烛 (含零线); 刻度区全空 (图框不变), 不画图例:
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格涨跌幅以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
-//   十字光标: 竖线吸附到分钟, 横线随鼠标; 提示 = 时刻 + 光标处涨跌幅 + 该分钟各条读数 (高 → 低). 画完返回图区左上角
+//   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标 现价 + 当日涨跌幅, 底壁标时刻 (色底黑字).
+//   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处涨跌幅 + 该处各条读数 (高 → 低). 画完返回图区左上角
 ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size) {
   const int nd = std::max(1, static_cast<int>(days.size()));
+  const Overlay *one = nullptr; // 蜡烛条
   double lo = 0, hi = 0;
-  for (const Overlay &l : ls)
+  for (const Overlay &l : ls) {
+    if (l.g)
+      one = &l;
     for (const double y : l.y)
       lo = std::min(lo, y), hi = std::max(hi, y);
+    for (const double y : l.low)
+      lo = std::min(lo, y);
+    for (const double y : l.high)
+      hi = std::max(hi, y);
+  }
   const double pad = std::max(hi - lo, 0.2) * 0.04, ylo = lo - pad, yhi = hi + pad;
   const double raw = (yhi - ylo) / std::max(2.0, std::floor(static_cast<double>(size.y / kGridPx))), e = std::floor(std::log10(raw)), m = raw / std::pow(10.0, e);
   const double nice = m <= 1 ? 1 : m <= 2 ? 2
@@ -789,14 +805,19 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     ImPlot::PlotInfLines("##ref", &zero, 1, ImPlotInfLinesFlags_Horizontal);
     for (size_t i = 0; i < ls.size(); ++i) {
       ImGui::PushID(static_cast<int>(i));
-      ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
-      ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
+      if (ls[i].g) {
+        candles(ls[i]);
+      } else {
+        ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
+        ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
+      }
       ImGui::PopID();
     }
-    { // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 线名贴线尾, 右缘不过刻度字列
+    { // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 现价十字; 线名贴线尾, 右缘不过刻度字列
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImFont *font = ImGui::GetFont();
-      const float fs = ImGui::GetFontSize() * kTagScale, top = ImPlot::GetPlotPos().y, right = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x - 2.f;
+      const ImVec2 pos = ImPlot::GetPlotPos(), psz = ImPlot::GetPlotSize();
+      const float fs = ImGui::GetFontSize() * kTagScale, top = pos.y, bottom = pos.y + psz.y, right = pos.x + psz.x - 2.f;
       const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
       float tw = 0;
       for (const double v : yt) {
@@ -810,6 +831,31 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         dl->AddText(font, fs, ImVec2(right - sz.x, y - sz.y >= top ? y - sz.y : y), col, buf);
         tw = std::max(tw, sz.x);
       }
+      if (one) {
+        const ImU32 cu = ImGui::ColorConvertFloat4ToU32(tint(one->chg, 0)), ink = IM_COL32(17, 17, 17, 255);
+        const ImVec2 p = ImPlot::PlotToPixels(one->x.back(), one->y.back()), pad(2.f, 1.f);
+        const float px = std::round(p.x) + 0.5f, py = std::round(p.y) + 0.5f;
+        dash(dl, ImVec2(pos.x, py), ImVec2(pos.x + psz.x, py), cu);
+        dash(dl, ImVec2(px, top), ImVec2(px, bottom), cu);
+        const auto label = [&](const char *s, float x, float y) { // (x, y) = 底框左上角
+          const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, s);
+          dl->AddRectFilled(ImVec2(x, y), ImVec2(x + sz.x + 2 * pad.x, y + sz.y + 2 * pad.y), cu);
+          dl->AddText(font, fs, ImVec2(x + pad.x, y + pad.y), ink, s);
+        };
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%.2f %+.2f%%", one->close, one->chg);
+        const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf);
+        const float bw = sz.x + 2 * pad.x, bh = sz.y + 2 * pad.y;
+        label(buf, right - bw, std::clamp(py - bh * 0.5f, top, bottom - bh));
+        tw = std::max(tw, bw);
+        const int k = one->now / kSlots, mn = slot_label(one->now % kSlots);
+        if (nd > 1 && static_cast<size_t>(k) < days.size())
+          std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60);
+        else
+          std::snprintf(buf, sizeof(buf), "%02d:%02d", mn / 60, mn % 60);
+        const float tw2 = font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf).x + 2 * pad.x;
+        label(buf, std::clamp(px - tw2 * 0.5f, pos.x, pos.x + psz.x - tw2), bottom - bh);
+      }
       std::vector<EndTag> tags;
       for (const Overlay &l : ls)
         if (!l.x.empty())
@@ -818,27 +864,36 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     }
     if (ImPlot::IsPlotHovered()) {
       const ImPlotPoint m = ImPlot::GetPlotMousePos();
-      const double x = std::clamp(std::round(m.x), 0.0, nd * kSlots - 1.0);
+      const int g = one ? one->g : 1, grp = static_cast<int>(std::clamp(std::round(m.x), 0.0, nd * kSlots - 1.0)) / g;
+      const double x = static_cast<double>(grp * g) + (g - 1) * 0.5; // 同 merge 的组中点
       ImPlot::SetNextLineStyle(kCrossLine, 1.f);
       ImPlot::PlotInfLines("##cx", &x, 1);
       ImPlot::SetNextLineStyle(kCrossLine, 1.f);
       ImPlot::PlotInfLines("##cy", &m.y, 1, ImPlotInfLinesFlags_Horizontal);
-      const int k = static_cast<int>(x) / kSlots, mn = slot_label(static_cast<int>(x) % kSlots);
-      std::vector<std::pair<double, const Overlay *>> at;
+      const int end = grp * g + g - 1, k = end / kSlots, mn = slot_label(end % kSlots);
+      std::vector<std::pair<size_t, const Overlay *>> at;
       for (const Overlay &l : ls) {
         const auto it = std::lower_bound(l.x.begin(), l.x.end(), x);
         if (it != l.x.end() && *it == x)
-          at.emplace_back(l.y[static_cast<size_t>(it - l.x.begin())], &l);
+          at.emplace_back(static_cast<size_t>(it - l.x.begin()), &l);
       }
-      std::sort(at.begin(), at.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+      std::sort(at.begin(), at.end(), [](const auto &a, const auto &b) { return a.second->y[a.first] > b.second->y[b.first]; });
+      char per[16] = "";
+      if (g > 1)
+        std::snprintf(per, sizeof(per), " (%d分)", g);
       ImGui::BeginTooltip();
       if (static_cast<size_t>(k) < days.size())
-        ImGui::Text("%02d-%02d %02d:%02d", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60);
+        ImGui::Text("%02d-%02d %02d:%02d%s", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60, per);
       ImGui::TextDisabled("光标 %+.2f%%", m.y);
-      for (const auto &[y, l] : at) {
+      for (const auto &[j, l] : at) {
+        const double y = l->y[j];
         ImGui::TextColored(l->col, "%s", l->name.c_str());
         ImGui::SameLine();
         ImGui::TextColored(tint(y, 0), "%+.2f%%", y);
+        if (l->g) {
+          const auto px = [&](double v) { return l->base * (1.0 + v / 100.0); };
+          ImGui::Text("开 %.2f  高 %.2f\n低 %.2f  收 %.2f", px(l->open[j]), px(l->high[j]), px(l->low[j]), px(y));
+        }
       }
       ImGui::EndTooltip();
     }
@@ -929,8 +984,9 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
   assert(f.today.size() == d.list.size());
   // 日轴 = 行情日及其前 n − 1 个交易日; 各条按日落位, 某条缺的日留空 (当日未接上 → 当日空)
   const std::vector<misc::Ymd> days = day_axis(mk.quote->trading(), qs.date, kIntraDays[st.intraday]);
+  const int nd = std::max(1, static_cast<int>(days.size()));
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
   std::vector<Overlay> ls;
-  Series one; // 单篮子: 蜡烛图
   char note[160] = "";
   bool gap = false;
   for (size_t i = 0; i < picks.size(); ++i) {
@@ -950,34 +1006,29 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<B
     }
     Series s;
     intraday(kl, today, days, true, s);
-    if (picks.size() == 1) {
-      one = std::move(s);
-      one.candle = true;
-      continue;
-    }
     if (s.bars.empty() || !(s.bars.front().ref > 0))
       continue;
     const double base = s.bars.front().ref;
-    Overlay &l = ls.emplace_back(Overlay{basket_name(p.b), ImGui::ColorConvertU32ToFloat4(p.col), s.x, {}});
+    const auto pct = [&](double v) { return (v / base - 1.0) * 100.0; };
+    Overlay &l = ls.emplace_back();
+    l.name = basket_name(p.b), l.col = ImGui::ColorConvertU32ToFloat4(p.col);
+    if (picks.size() == 1) { // 单篮子: 蜡烛 + 现价十字
+      const Candle &e = s.bars.back();
+      l.base = base, l.close = e.close, l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
+      l.now = static_cast<int>(s.x.back());
+      l.g = merge(s, nd * kSlots, avail.x);
+      for (const Candle &c : s.bars)
+        l.open.push_back(pct(c.open)), l.high.push_back(pct(c.high)), l.low.push_back(pct(c.low));
+    }
+    l.x = s.x;
     for (const Candle &c : s.bars)
-      l.y.push_back((c.close / base - 1.0) * 100.0);
+      l.y.push_back(pct(c.close));
   }
   ImGui::PushID("basket");
-  ImVec2 corner;
-  if (picks.size() == 1) {
-    const int nd = static_cast<int>(days.size());
-    const uint64_t key = static_cast<uint64_t>(f.shown) << 32 | static_cast<uint64_t>(picks.front().b) << 24 |
-                         static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
-    corner = plot_chart("##one", one, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, ImGui::GetContentRegionAvail(), kIntraName, 4,
-                        st.intraday, false);
-  } else {
-    corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail());
-    if (corner.x >= 0) {
-      ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
-      button_bar(kIntraName, 4, st.intraday);
-    }
-  }
+  const ImVec2 corner = plot_overlay(ls, days, avail);
   if (corner.x >= 0) {
+    ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
+    button_bar(kIntraName, 4, st.intraday);
     ImGui::SameLine(0, 8);
     if (ImGui::SmallButton("重载"))
       f.reload = true;
