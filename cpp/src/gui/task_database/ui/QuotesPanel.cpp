@@ -34,8 +34,7 @@ constexpr int kDailySpan[] = {5, 22, 250, 2500}; // 交易日
 constexpr const char *kDailyName[] = {"周", "月", "年", "10年"};
 static_assert(kDailySpan[3] <= static_cast<int>(kDailyDays));
 constexpr const char *kHours[] = {"09:30", "10:30", "11:30/13:00", "14:00", "15:00"};
-constexpr double kBody = 0.35;                 // 蜡烛 / 量柱半宽 [根]
-constexpr int kSub = 4;                        // 日内高低线相邻两根间的插值段数
+constexpr double kBody = 0.35;                 // 蜡烛 / 量柱半宽 [槽]
 constexpr float kMinPx = 3.f;                  // 日内蜡烛每根最窄 [px] (窄了并根)
 constexpr float kDashOn = 4.f, kDashOff = 3.f; // 现价虚线: 实 / 空 [px]
 constexpr double kMinSpan = 5;                 // 视野至少几根 (框选 / 滚轮)
@@ -86,7 +85,7 @@ void pin_axes(bool x) {
     pin(ImAxis_X1, {"00-00 00:00", "0000-00-00"});
 }
 
-// 一张图的根: 日内 x = 第 k 日 · kSlots + 槽 (无成交的槽留空); 日线 x = 下标
+// 一张图的根: 日内 x = 第 k 日 · kSlots + 槽 (无成交的槽留空; 并根 = 组中点, 每根 g 槽); 日线 x = 下标
 struct Series {
   bool intraday = false;
   bool money = false; // 量柱 = 成交额 (篮子: 量不合成)
@@ -94,11 +93,15 @@ struct Series {
   std::vector<double> x;
   std::vector<misc::Ymd> days; // 日内各日
   double ref = 0;              // 涨跌幅轴基准 (末日前收); 0 = 无
+  int g = 1;
   void push(const Candle &b, double at) {
     bars.push_back(b);
     x.push_back(at);
   }
   double vol(const Candle &b) const { return money ? b.amount : b.volume; }
+  // 第 i 根实体起点 = 上一根收 (根根首尾相接); 首根 = 前收 (无 → 开)
+  double from(size_t i) const { return i ? bars[i - 1].close : bars[0].ref > 0 ? bars[0].ref
+                                                                               : bars[0].open; }
 };
 
 int day_tick(double v, char *buf, int size, void *ud) {
@@ -118,11 +121,11 @@ int nearest(const Series &s, double at) {
   return i;
 }
 
-// 第 i 根的时刻: 日内 "MM-DD HH:MM" (槽 = x 除 kSlots 的余), 日线 "YYYY-MM-DD"
+// 第 i 根的时刻: 日内 "MM-DD HH:MM" (槽 = 组末槽除 kSlots 的余), 日线 "YYYY-MM-DD"
 void fmt_when(char *buf, int size, const Series &s, size_t i) {
   const misc::Ymd d = s.bars[i].date;
   if (s.intraday) {
-    const int m = slot_label(static_cast<int>(s.x[i]) % kSlots);
+    const int m = slot_label(static_cast<int>(s.x[i] + (s.g - 1) * 0.5) % kSlots);
     std::snprintf(buf, size, "%02d-%02d %02d:%02d", d / 100 % 100, d % 100, m / 60, m % 60);
   } else {
     std::snprintf(buf, size, "%s", misc::dash(d).c_str());
@@ -144,68 +147,15 @@ void tooltip(const Series &s, int i) {
   ImGui::SetTooltip("%s\n开 %.2f  高 %.2f\n低 %.2f  收 %.2f%s\n量 %s  额 %s", when, b.open, b.high, b.low, b.close, chg, vol, amt);
 }
 
-// 单调三次 Hermite (PCHIP 斜率): 过每个点, 段内不越出两端值 (不过冲, 平段仍平); 相邻两点间插 kSub 段.
-//   out 依次 = 各段 kSub 个起点 + 末点, 共 (n − 1) · kSub + 1 个
-void pchip(const std::vector<double> &x, const std::vector<double> &y, std::vector<double> &out) {
-  const size_t n = x.size();
-  assert(n > 0 && y.size() == n);
-  out.clear();
-  std::vector<double> d(n - 1), m(n);
-  for (size_t i = 0; i + 1 < n; ++i)
-    d[i] = (y[i + 1] - y[i]) / (x[i + 1] - x[i]);
-  for (size_t i = 1; i + 1 < n; ++i) {
-    const double h0 = x[i] - x[i - 1], h1 = x[i + 1] - x[i], w0 = 2 * h1 + h0, w1 = h1 + 2 * h0;
-    m[i] = d[i - 1] * d[i] > 0 ? (w0 + w1) / (w0 / d[i - 1] + w1 / d[i]) : 0.0;
-  }
-  if (n > 1)
-    m[0] = d[0], m[n - 1] = d[n - 2];
-  for (size_t i = 0; i + 1 < n; ++i) {
-    const double h = x[i + 1] - x[i];
-    for (int k = 0; k < kSub; ++k) {
-      const double t = static_cast<double>(k) / kSub, t2 = t * t, t3 = t2 * t;
-      out.push_back((2 * t3 - 3 * t2 + 1) * y[i] + (t3 - 2 * t2 + t) * h * m[i] + (3 * t2 - 2 * t3) * y[i + 1] + (t3 - t2) * h * m[i + 1]);
-    }
-  }
-  out.push_back(y[n - 1]);
-}
-
-// 日内 [a, b) 根: 高 / 低两条插值线围出的带 (上下沿同色描边), 按 带中线 vs 前收 染涨跌色 (无前收 → 平色); 逐日成段, 跨日不连
-void band(const Series &s, int a, int b) {
-  ImDrawList *dl = ImPlot::GetPlotDrawList();
-  const auto color = [&](double mid) {
-    const ImVec4 c = s.ref > 0 ? tint(mid, s.ref) : kFlat;
-    return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.85f));
-  };
-  std::vector<double> x, h, l, xs, hs, ls;
-  std::vector<ImVec2> ph, pl;
-  for (int i = a; i < b;) {
-    const int day = static_cast<int>(s.x[i]) / kSlots;
-    x.clear(), h.clear(), l.clear();
-    for (; i < b && static_cast<int>(s.x[i]) / kSlots == day; ++i) {
-      const Candle &k = s.bars[static_cast<size_t>(i)];
-      x.push_back(s.x[i]), h.push_back(k.high), l.push_back(k.low);
-    }
-    pchip(x, x, xs); // x 自身过 pchip = 线性等分
-    pchip(x, h, hs);
-    pchip(x, l, ls);
-    ph.resize(xs.size()), pl.resize(xs.size());
-    for (size_t j = 0; j < xs.size(); ++j)
-      ph[j] = ImPlot::PlotToPixels(xs[j], hs[j]), pl[j] = ImPlot::PlotToPixels(xs[j], ls[j]);
-    if (xs.size() == 1) { // 孤根: 一道竖线
-      dl->AddLine(ph[0], pl[0], color((hs[0] + ls[0]) * 0.5));
-      continue;
-    }
-    const ImDrawListFlags flags = dl->Flags;
-    dl->Flags &= ~ImDrawListFlags_AntiAliasedFill; // 相邻四边形的抗锯齿边会叠出竖纹
-    for (size_t j = 0; j + 1 < xs.size(); ++j)
-      dl->AddQuadFilled(ph[j], ph[j + 1], pl[j + 1], pl[j], color((hs[j] + hs[j + 1] + ls[j] + ls[j + 1]) * 0.25));
-    dl->Flags = flags;
-    for (size_t j = 0; j + 1 < xs.size(); ++j) { // 上下沿描同色边: 带窄于一像素处不断
-      const ImU32 c = color((hs[j] + hs[j + 1] + ls[j] + ls[j + 1]) * 0.25);
-      dl->AddLine(ph[j], ph[j + 1], c);
-      dl->AddLine(pl[j], pl[j + 1], c);
-    }
-  }
+// 一根实心蜡烛 (当前轴坐标): 实体 from → close, 涨红跌绿 (close vs from), 体至少 1 px; 影线 low → high, 半宽 half
+void candle(ImDrawList *dl, double x, double half, double from, double high, double low, double close) {
+  const ImU32 col = ImGui::ColorConvertFloat4ToU32(close >= from ? kUp : kDn);
+  const float cx = std::round(ImPlot::PlotToPixels(x, 0.0).x) + 0.5f;
+  const float x0 = ImPlot::PlotToPixels(x - half, 0.0).x, x1 = ImPlot::PlotToPixels(x + half, 0.0).x;
+  const float yo = ImPlot::PlotToPixels(0.0, from).y, yc = ImPlot::PlotToPixels(0.0, close).y;
+  dl->AddLine(ImVec2(cx, ImPlot::PlotToPixels(0.0, high).y), ImVec2(cx, ImPlot::PlotToPixels(0.0, low).y), col);
+  const float y0 = std::min(yo, yc), y1 = std::max(std::max(yo, yc), y0 + 1.f);
+  dl->AddRectFilled(ImVec2(std::min(x0, cx - 0.5f), y0), ImVec2(std::max(x1, cx + 0.5f), y1), col);
 }
 
 // 日内蜡烛并根 (同 py/app/tdx): g = span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子;
@@ -250,24 +200,27 @@ void dash(ImDrawList *dl, ImVec2 a, const ImVec2 &b, ImU32 col) {
   }
 }
 
-// 价 (日内高低带 / 日线蜡烛 + 前收 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 量, x 联动. key 变 / 双击 → 视野复位到档窗口 [win_lo, win_hi];
+// 价 (蜡烛 + 前收 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 量, x 联动. 日内按视野宽并根 (merge). key 变 / 双击 → 视野复位到档窗口 [win_lo, win_hi];
 //   左键拖动 = 框选 x 段放大; wheel → 滚轮只缩放 x, 右端锚在 win_hi (最新一根); y 恒随视野内的根贴合.
 //   视野的改动在下一帧生效 (本帧已设给 ImPlot).
 // 档位按钮叠在价图左上角 (在图之后提交, 抢得到悬停). 画完光标停在按钮处, 调用方显式定位下一块
 void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_t key, QuotesView &v, const ImVec2 &size,
                 const char *const ranges[], int nr, int &cur, bool wheel) {
-  const int n = static_cast<int>(s.bars.size());
   const bool reset = v.key != key;
   if (reset) {
     v.key = key;
     v.lo = win_lo, v.hi = win_hi, v.drag = kNaN;
   }
+  if (s.intraday)
+    s.g = merge(s, v.hi - v.lo, size.x);
+  const int n = static_cast<int>(s.bars.size());
   const int w0 = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), v.lo) - s.x.begin());
   const int w1 = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), v.hi) - s.x.begin());
   double lo = std::numeric_limits<double>::max(), hi = -lo, vmax = 0;
   for (int i = w0; i < w1; ++i) {
     const Candle &b = s.bars[static_cast<size_t>(i)];
-    lo = std::min<double>(lo, b.low), hi = std::max<double>(hi, b.high), vmax = std::max(vmax, s.vol(b));
+    const double f = s.from(static_cast<size_t>(i));
+    lo = std::min({lo, static_cast<double>(b.low), f}), hi = std::max({hi, static_cast<double>(b.high), f}), vmax = std::max(vmax, s.vol(b));
   }
   if (w0 >= w1)
     lo = hi = s.ref > 0 ? s.ref : 1.0;
@@ -304,8 +257,8 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       ImPlot::SetupAxisFormat(ImAxis_X1, day_tick, &s);
   };
   const auto visible = [&](const ImPlotRect &lim, int &a, int &b) {
-    a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - 1.0) - s.x.begin());
-    b = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), lim.X.Max + 1.0) - s.x.begin());
+    a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - s.g) - s.x.begin());
+    b = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), lim.X.Max + s.g) - s.x.begin());
   };
   // 每格: 收悬停 / 鼠标 x (价图坐标), 占住滚轮 (不滚外层窗口); 框选中两格同画选区.
   //   十字光标 (非框选时): 竖线吸附到最近一根, 鼠标在两格任一 (上帧) 即两格同画; 返回 = 本格画横线 (鼠标在本格)
@@ -395,7 +348,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       ImPlot::SetNextLineStyle(kMaCol[k], 1.f);
       ImPlot::PlotLine(kMaName[k], s.x.data() + (n - m), ma.data() + (n - m), m, ImPlotItemFlags_NoFit);
     }
-    if (n > 0 && ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend)) { // 日内 = 高低带; 日线 = 蜡烛 (阳线空心 / 阴线实心)
+    if (n > 0 && ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend)) {
       if (ImPlot::FitThisFrame())
         for (int i = 0; i < n; ++i) {
           ImPlot::FitPoint(ImPlotPoint(s.x[i], s.bars[static_cast<size_t>(i)].low));
@@ -404,23 +357,10 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       int a, b;
       visible(lim, a, b);
-      if (s.intraday)
-        band(s, std::max(0, a - 2), std::min(n, b + 2)); // 多带两根: 视野内各点的斜率取到真邻点
-      else
-        for (int i = a; i < b; ++i) {
-          const Candle &k = s.bars[static_cast<size_t>(i)];
-          const ImU32 col = ImGui::ColorConvertFloat4ToU32(k.close >= k.open ? kUp : kDn);
-          dl->AddLine(ImPlot::PlotToPixels(s.x[i], k.low), ImPlot::PlotToPixels(s.x[i], k.high), col);
-          ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody, k.open), p1 = ImPlot::PlotToPixels(s.x[i] + kBody, k.close);
-          if (std::abs(p1.y - p0.y) < 1.f) {
-            const float mid = (p0.y + p1.y) * 0.5f;
-            p0.y = mid - 0.5f, p1.y = mid + 0.5f;
-          }
-          if (k.close >= k.open)
-            dl->AddRect(ImVec2(std::min(p0.x, p1.x), std::min(p0.y, p1.y)), ImVec2(std::max(p0.x, p1.x), std::max(p0.y, p1.y)), col);
-          else
-            dl->AddRectFilled(ImVec2(std::min(p0.x, p1.x), std::min(p0.y, p1.y)), ImVec2(std::max(p0.x, p1.x), std::max(p0.y, p1.y)), col);
-        }
+      for (int i = a; i < b; ++i) {
+        const Candle &k = s.bars[static_cast<size_t>(i)];
+        candle(dl, s.x[i], kBody * s.g, s.from(static_cast<size_t>(i)), k.high, k.low, k.close);
+      }
       ImPlot::EndItem();
     }
     if (n > 0) {
@@ -454,8 +394,8 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       visible(ImPlot::GetPlotLimits(), a, b);
       for (int i = a; i < b; ++i) {
         const Candle &k = s.bars[static_cast<size_t>(i)];
-        const ImVec4 c = k.close >= k.open ? kUp : kDn;
-        const ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody, s.vol(k)), p1 = ImPlot::PlotToPixels(s.x[i] + kBody, 0.0);
+        const ImVec4 c = k.close >= s.from(static_cast<size_t>(i)) ? kUp : kDn;
+        const ImVec2 p0 = ImPlot::PlotToPixels(s.x[i] - kBody * s.g, s.vol(k)), p1 = ImPlot::PlotToPixels(s.x[i] + kBody * s.g, 0.0);
         dl->AddRectFilled(ImVec2(std::min(p0.x, p1.x), p0.y), ImVec2(std::max(p0.x, p1.x) + 1.f, p1.y),
                           ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.75f)));
       }
@@ -730,20 +670,13 @@ struct Overlay {
   int now = 0;
 };
 
-// 一条的蜡烛: 实心, 涨红跌绿 (收 vs 上一根收), 体至少 1 px
+// 一条的蜡烛
 void candles(const Overlay &l) {
   if (!ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend))
     return;
   ImDrawList *dl = ImPlot::GetPlotDrawList();
-  for (size_t i = 0; i < l.x.size(); ++i) {
-    const ImU32 col = ImGui::ColorConvertFloat4ToU32(l.y[i] >= l.open[i] ? kUp : kDn);
-    const float cx = std::round(ImPlot::PlotToPixels(l.x[i], 0.0).x) + 0.5f;
-    const float x0 = ImPlot::PlotToPixels(l.x[i] - kBody * l.g, 0.0).x, x1 = ImPlot::PlotToPixels(l.x[i] + kBody * l.g, 0.0).x;
-    const float yo = ImPlot::PlotToPixels(0.0, l.open[i]).y, yc = ImPlot::PlotToPixels(0.0, l.y[i]).y;
-    dl->AddLine(ImVec2(cx, ImPlot::PlotToPixels(0.0, l.high[i]).y), ImVec2(cx, ImPlot::PlotToPixels(0.0, l.low[i]).y), col);
-    const float y0 = std::min(yo, yc), y1 = std::max(std::max(yo, yc), y0 + 1.f);
-    dl->AddRectFilled(ImVec2(std::min(x0, cx - 0.5f), y0), ImVec2(std::max(x1, cx + 0.5f), y1), col);
-  }
+  for (size_t i = 0; i < l.x.size(); ++i)
+    candle(dl, l.x[i], kBody * l.g, l.open[i], l.high[i], l.low[i], l.y[i]);
   ImPlot::EndItem();
 }
 
