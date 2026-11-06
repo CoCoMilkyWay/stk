@@ -1,12 +1,14 @@
 // app.js — CTA 轨迹前端: 收集选项 + 视窗 → GET /api/run (cta_trace 现算 / 聚合) → 画; 本文件不做任何计算
 //   主图: 收盘线 + band (中线 / 上下沿 / 档线) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
-//   x = 有效根下标 (连续, 无休市空档); 框选放大即按新视窗重取, 双击回全期; 纵轴范围随视窗由后端给, x / y 同步
+//   x = 有效根下标 (连续, 无休市空档); 框选矩形放大 (x / y 一起, plotly 原生), 横轴视窗一变就按新视窗重取数据;
+//   双击还原不走 plotly 原生 (它会先按旧数据定一次范围), 取回全期数据后一次画好
 const $ = (id) => document.getElementById(id);
 const UP = "#d62728",
   DOWN = "#2ca02c",
   BAND = "rgba(31,119,180,0.8)";
 let META = null;
 let view = [0, 0]; // 视窗 [lo, hi) 有效根下标; hi = 0 即到末根
+let rev = 0; // 还原次数, 进 uirevision
 
 const dash = (d) => {
   const s = String(d);
@@ -264,21 +266,13 @@ function draw(d) {
       margin: { l: 55, r: 55, t: 48, b: 40 },
       hovermode: "x",
       dragmode: "zoom",
+      uirevision: `${$("asset").value}/${rev}`, // 变了 = 按新数据自动定范围 (全期); 不变 = 保留用户的缩放
       title: {
         text: `${A.name} ${A.code} | ${$("kind").value} ${paramText()}${trail} | ${lab[0]} … ${lab[m - 1]} | ${res}`,
         font: { size: 12 },
       },
-      xaxis: {
-        range: [d.lo - 0.5, d.hi - 0.5],
-        tickvals: tv,
-        ticktext: tt,
-      },
-      yaxis: {
-        domain: [0.32, 1],
-        title: { text: "价" },
-        range: d.yp,
-        fixedrange: true,
-      },
+      xaxis: { tickvals: tv, ticktext: tt },
+      yaxis: { domain: [0.32, 1], title: { text: "价" } },
       yaxis2: {
         domain: [0, 0.26],
         range: [0, 1.05],
@@ -292,22 +286,28 @@ function draw(d) {
         type: "log",
         title: { text: "全期净值" },
         showgrid: false,
-        range: d.yn,
-        fixedrange: true,
       },
       legend: { orientation: "h", x: 0, y: 1.04, font: { size: 11 } },
     },
-    { responsive: true },
+    {
+      responsive: true,
+      doubleClick: false,
+      modeBarButtonsToRemove: ["autoScale2d", "resetScale2d"],
+    },
   );
   if (!bound) {
     $("chart").on("plotly_relayout", (e) => {
-      if (e["xaxis.autorange"]) view = [0, 0];
-      else if ("xaxis.range[0]" in e)
-        view = [
-          Math.max(0, Math.round(e["xaxis.range[0]"] + 0.5)),
-          Math.max(1, Math.round(e["xaxis.range[1]"] + 0.5)),
-        ];
-      else return;
+      if (!("xaxis.range[0]" in e)) return;
+      view = [
+        Math.max(0, Math.round(e["xaxis.range[0]"] + 0.5)),
+        Math.max(1, Math.round(e["xaxis.range[1]"] + 0.5)),
+      ];
+      schedule();
+    });
+    // 还原: 先取全期数据, 到了再以新 uirevision 一次画好
+    $("chart").addEventListener("dblclick", () => {
+      view = [0, 0];
+      rev++;
       schedule();
     });
     bound = true;

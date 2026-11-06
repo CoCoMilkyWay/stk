@@ -3,7 +3,7 @@
 //   接口: GET /api/meta → 全部资产 (名 / 码 / 测试集) + 模型表 (参数轴 + 网格取值) + 每日根数
 //         GET /api/run?a=资产&kind=模型&p=参数 (逗号分隔, 轴序)&trail=吊灯 k (0 = 不叠)&cost=单边费率&vol=目标年化波动&buffer=不交易带
 //                     &lo=&hi=视窗 [lo, hi) (有效根下标, hi = 0 即到末根)&px=视窗最多几点
-//           → 全期指标 (策略 / 持有) + 视窗纵轴范围 + 视窗逐点 (每 step 根取末根: 收 / band 中线与半宽 / 仓位 / 全期净值 / 持有净值)
+//           → 全期指标 (策略 / 持有) + 视窗逐点 (每 step 根取末根: 收 / band 中线与半宽 / 仓位 / 全期净值 / 持有净值)
 //   配置不变只换视窗时不重算; 视窗根数 ≤ px 时 step = 1 (逐根)
 #include "Http.hpp"
 #include "Kinds.hpp"
@@ -184,23 +184,10 @@ std::string run(State &s, const Panel &panel, const Query &q) {
   const auto time = [&](size_t i) { return panel.time[se.t[i]]; };
   const auto hold = [&](size_t i) { return se.bar[i].c / se.bar[0].c; };
 
-  // 视窗内的纵轴范围: 价 = 收 + band 上下沿 (线性, 上下各留 3%); 净值 = 策略 + 持有 (log10, 各留 5%)
-  double plo = INFINITY, phi = -INFINITY, nlo = INFINITY, nhi = -INFINITY;
-  for (size_t k = 0; k < nb; ++k) {
-    const size_t i = last(k);
-    plo = std::min<double>(plo, se.bar[i].c), phi = std::max<double>(phi, se.bar[i].c);
-    if (std::isfinite(s.mid[i]))
-      plo = std::min(plo, s.mid[i] - s.half[i]), phi = std::max(phi, s.mid[i] + s.half[i]);
-    nlo = std::min({nlo, s.nav[i], static_cast<double>(hold(i))}), nhi = std::max({nhi, s.nav[i], static_cast<double>(hold(i))});
-  }
-  const double pp = std::max(phi - plo, phi * 1e-3) * 0.03, np = std::max(std::log10(nhi / nlo), 1e-3) * 0.05;
-
   std::string o = "{\"n\":" + std::to_string(n) + ",\"lo\":" + std::to_string(lo) + ",\"hi\":" + std::to_string(hi) + ",\"step\":" + std::to_string(step);
   o += ",\"first\":" + std::to_string(ymd_of(time(0))) + ",\"last\":" + std::to_string(ymd_of(time(n - 1))) + ',';
   stat(o, "stat", s.st), o += ',', stat(o, "hold", s.sh);
-  o += ",\"yp\":[", num(o, plo - pp), o += ',', num(o, phi + pp);
-  o += "],\"yn\":[", num(o, std::log10(nlo) - np), o += ',', num(o, std::log10(nhi) + np);
-  o += "],\"v\":{";
+  o += ",\"v\":{";
   arr(o, "i", nb, beg), o += ',';
   arr(o, "t", nb, [&](size_t k) { return time(last(k)); }), o += ',';
   arr(o, "c", nb, [&](size_t k) { return se.bar[last(k)].c; }), o += ',';
