@@ -2,7 +2,7 @@
 # plot.py — 测试台结果弹窗 (plotly, 浏览器打开)
 #   bench_<freq>.tsv → 结果网格: 每测试集一行 = 排行表 | 夏普 vs 下跌捕获 (磨损) | band 曲面 (中线/宽度 × n, 其余参数取均值) | 平原顶处 k × N/h 切面
 #   trace_<freq>.tsv → 轨迹: 随机资产一窗的 K 线 + band (中线 / 上下沿 / 档线) + 调仓点; 下方仓位 + 窗内净值 (策略 vs 持有)
-#   python3 cta/plot.py [1d|1m]; run.py 跑完测试台自动调用
+#   python3 cta/plot.py [1m|1d]; run.py 跑完测试台自动调用
 
 import csv
 import os
@@ -397,7 +397,7 @@ def trace_fig(rows, freq):
 
 
 def main():
-    freq = sys.argv[1] if len(sys.argv) > 1 else "1d"
+    freq = sys.argv[1] if len(sys.argv) > 1 else "1m"
     pio.write_html(
         bench_fig(read(os.path.join(DATA, f"bench_{freq}.tsv")), freq),
         os.path.join(DATA, f"bench_{freq}.html"),

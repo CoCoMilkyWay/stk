@@ -24,7 +24,7 @@
 #   条款只认当日的，跨日即换成当日落盘的；调仓页订阅时当日还没有即后台拉（每天自动至多一次，失败了等人点）。
 #   执行 = 当日条款还没有即先拉 → 刷新 → 还有挂单即停（免得重复下单、冻结的钱券没算进试算）→ 试算 → 卖单逐只闪电卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 →
 #   融资单逐只闪电融资买入 → 现金单逐只闪电买入 → 刷新。
-#   每单 order.ORDERS.place，任一步失败即停（已下的单不撤）。
+#   每单 order.ORDERS.place，任一步失败即停（已下的单不撤）；卖单、买单各一整批占着界面（ui.UI）连下，其间不插刷新。
 
 import collections
 import math
@@ -35,7 +35,7 @@ import time
 from mem.common import BJ, BUY, SELL, sec
 from mem.tables import NO_FLOW
 
-from . import ROOT, book, credit
+from . import ROOT, book, credit, ui
 from .feed import Feed, Jobs, Journal, err
 from .hub import HUB
 from .order import ORDERS
@@ -530,15 +530,17 @@ class Rebal:
             want = collections.Counter(
                 {o["code"]: by.get(o["code"], NO_FLOW)["traded"][SELL] for o in sells}
             )
-            for o in sells:
-                want[o["code"]] += self._place(log, o)["qty"]
+            with ui.UI("调仓"):
+                for o in sells:
+                    want[o["code"]] += self._place(log, o)["qty"]
             self._fills(log, dict(want))
             with self.feed:
                 self.cfg = {**self.cfg, "sells": {}}
             p = self._plan(log)
-        for o in p["orders"]:
-            assert o["s"] == BUY, f"去掉卖出后试算仍有卖单：{o}"
-            self._place(log, o)
+        with ui.UI("调仓"):
+            for o in p["orders"]:
+                assert o["s"] == BUY, f"去掉卖出后试算仍有卖单：{o}"
+                self._place(log, o)
         self._sync(log)
 
 

@@ -11,20 +11,22 @@ SHIM = Shim()
 
 
 class Gate:
-    """客户端界面自动化（刷新 / 下单 / 两融条款）一次只许一路：with UI(名): …；who 为占着的那路（None = 空闲）。"""
+    """客户端界面自动化（刷新 / 下单 / 两融条款 / 调仓）一次只许一路：with UI(名): …；who 为占着的那路（None = 空闲）。
+    同一线程可重入（调仓整批占着，逐单再进），who 记最外层。"""
 
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.who = None
 
     @contextlib.contextmanager
     def __call__(self, who):
         with self.lock:
-            self.who = who
+            outer = self.who
+            self.who = outer or who
             try:
                 yield
             finally:
-                self.who = None
+                self.who = outer
 
 
 UI = Gate()

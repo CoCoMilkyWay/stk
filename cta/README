@@ -5,16 +5,17 @@
 
 ```
 cta/
-├── run.py                 # 🚀 启动器: 构建 cta_bench → 跑 → plot.py; python3 cta/run.py [--freq 1m] [--sets ind] [--models band] [--roll 250] [--cost 0.0015] …
+├── run.py                 # 🚀 启动器: 构建 cta_bench → 跑 → plot.py; python3 cta/run.py [--sets ind] [--models band,tsmom] [--roll 500] [--cost 0.0015] …
 ├── plot.py                # 📊 plotly 弹窗 (浏览器): 结果网格 (每测试集: 排行表 | 夏普 vs 下跌捕获 | band 曲面 | 平原顶切面)
 │                          #    + band 轨迹 (随机资产一窗: K 线 + 中线 / 上下沿 / 档线 + 加减仓点, 下方仓位与窗内净值 vs 持有)
 ├── CMakeLists.txt         # 🏗️ CMake (C++23, 断言常开); CTA_DIR = 本目录 (库落 data/, 源在 ../output)
 ├── src/
 │   ├── main.cpp           # 🚀 测试台 cta_bench: 模型 × 参数网格 × 测试集, 逐资产回测 → 等权组合 + 跨资产中位数
 │   │                      #    · 流程: sync 合成 CTA 库到 all.bar 末日 → 按 freq 开面板 → 每测试集 × 每配置一个任务 (多线程)
-│   │                      #    · 参数: --freq 1d|1m / --sets idx,ind,concept / --models (空 = 全部) / --cost 单边费率 / --vol 目标年化波动 (0 = 不调)
+│   │                      #    · 参数: --freq 1m (默认) | 1d / --sets idx,ind,concept / --models (默认 band, 空 = 全部) / --cost 单边费率 / --vol 目标年化波动 (0 = 不调)
 │   │                      #            / --buffer 不交易带 / --stop close|intra / --top 排行条数 / --expo 排行的平均仓位下限
-│   │                      #            / --roll 滚动调参窗 (日, 0 = 关) / --refit 重拟间隔 (日) / --trace 每测试集轨迹资产数 (0 = 不出)
+│   │                      #            / --roll 滚动调参窗 (日, 默认 250, 须 ≥ 一年; 0 = 关) / --refit 重拟间隔 (日) / --trace 每测试集轨迹资产数 (0 = 不出)
+│   │                      #            / --assets 每测试集抽样资产数 (默认 50, 固定种子; 0 = 全部)
 │   │                      #    · 模型表 kKinds: 名 + 参数轴 (数值 / 类别) + 组合约束 + 是否另叠 Trail 各跑一份; 参数 / 方差比周期的单位都是根 (1m = 分钟), band 的 n 以日计
 │   │                      #    · 平原: 网格上的夏普曲面取邻域均值 (数值轴下标差 ≤ 1, 类别轴相同), 平原顶 = 邻域均值最高点
 │   │                      #    · 滚动调参: 每 refit 日以前 W 日各资产夏普均值拟曲面 → 平原顶参数用到下一期 (候选同跑常热, 切换计成本); 前 W 日空仓
@@ -31,7 +32,7 @@ cta/
 │   ├── Panel.hpp          # 📦 面板: CTA 库一个频率的 mmap 只读映射, 资产 B × 时间 T 的根 [开 高 低 收 额]; time = YYYYMMDD / YYYYMMDDHHMM
 │   ├── Model.hpp          # 🧮 单资产只做多模型: 逐根收盘看本根 → Order (目标仓位 [0, 1] 按本根收盘调到 + 此后的止损价)
 │   │                      #    · 递推件: Ema / RollMax · RollMin (单调队列) / Lag / Atr / Vol / Dev (长期偏离 = 慢变量) / KamaLine (自适应均线)
-│   │                      #    · band 部件: 中线 ema / kama / mid (唐奇安中线), 宽度 vol (σ√n) / rng (唐奇安半宽) / dev (偏离中线均方根)
+│   │                      #    · band 部件: 中线 kama / mid (唐奇安中线), 宽度 vol (σ√n) / rng (唐奇安半宽) / dev (偏离中线均方根)
 │   │                      #    · Band 带宽网格: z = (收 − 中线) / (k · 宽度) 在 [−1, +1] 内线性分 N 档仓位, 破网即空 / 满, 档内滞回 h; 参数 c w n k N h
 │   │                      #    · 趋势: Ma 双均线 / TsMom 时序动量 / Ens 多周期动量集成 / Kama 自适应均线 / Donchian 唐奇安 / Chandelier 吊灯止损
 │   │                      #    · 抄底 / 回归: Rebound 右侧抄底 (回撤够深待命, 突破入场) / Revert 长周期均值回归 / Gate 慢变量定区间 + 快变量择时

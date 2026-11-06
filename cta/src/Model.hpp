@@ -142,19 +142,12 @@ struct KamaLine {
 // ---- band 部件 (价格单位, 周期 n 根) ----
 //   磨损 ≈ band 在震荡里的漂移: band 不动时仓位只是价格的函数, 区间内来回毛收益为零; 故中线要震荡不动、趋势紧跟, 宽度要慢变
 
-inline constexpr const char *kCenters[] = {"ema", "kama", "mid"}, *kWidths[] = {"vol", "rng", "dev"};
+inline constexpr const char *kCenters[] = {"kama", "mid"}, *kWidths[] = {"vol", "rng", "dev"};
 
 struct Center {
   virtual ~Center() = default;
   virtual void push(const Bar &b) = 0;
   virtual double v() const = 0;
-};
-
-struct EmaCenter : Center {
-  Ema e;
-  explicit EmaCenter(long n) : e(static_cast<double>(n)) {}
-  void push(const Bar &b) override { e.push(b.c); }
-  double v() const override { return e.v; }
 };
 
 // ER 窗口与慢跨度都取 n: 震荡时等效跨度 ~ n² / 2
@@ -211,9 +204,8 @@ struct DevWidth : Width {
 
 inline std::unique_ptr<Center> center_of(int kind, long n) {
   switch (kind) {
-  case 0: return std::make_unique<EmaCenter>(n);
-  case 1: return std::make_unique<KamaCenter>(n);
-  case 2: return std::make_unique<MidCenter>(n);
+  case 0: return std::make_unique<KamaCenter>(n);
+  case 1: return std::make_unique<MidCenter>(n);
   }
   assert(false && "中线种类");
   return nullptr;

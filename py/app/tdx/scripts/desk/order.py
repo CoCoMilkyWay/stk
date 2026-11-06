@@ -1,18 +1,18 @@
 # desk/order — 下单（闪电下单窗 UI 自动化）。
 # 一步一函数，ORDER 即流程也即前端步骤条；每步 (o 本单上下文) → 该单要更新的字段：
 #   行情  按盘口定委托价
-#   切换  图表切到该只（闪电窗只认图表当前证券）：向主窗投代码按键 + 回车（键盘精灵）
+#   切换  图表切到该只（闪电窗只认图表当前证券）：向视图投代码按键，键盘精灵筛出该只后选中、回车
 #   开窗  主窗 WM_COMMAND 打开闪电窗
-#   填单  窗内证券代码再核一遍，填价格 / 数量
+#   填单  窗内证券代码再核一遍，填价格 / 数量（数量单位为元即按额：只收整数元，客户端按价折股、向下取整步长，以预估股数核对）
 #   确认  点提交，「…交易确认」框核对正文（代码 / 价格 / 数量）
-#   回报  点 7015，「提示」框读回报（成功含合同号）点 7015 关掉
+#   回报  点 7015，「提示」框读回报（成功含合同号）点 7015 关掉，等各框与闪电窗都关了
 # 开窗 / 确认 / 回报同形：做一个动作，等它弹出的那个对话框（_popup）。
 # 一次只跑一单（feed.Jobs），逐步推状态；任一步不符或超时即停在那一步，已弹出的窗口留给人工处理。
 # 证券 sec = common.sec：持仓行（console 下单）或两融条款里的（调仓买新标的）。
-# submit 后台跑（持仓页按钮），place 当前线程跑完回该单（调仓逐单）。
+# submit 后台跑（持仓页按钮），成功后按 HUB.kick 定点刷新；place 当前线程跑完回该单（调仓逐单），不刷新，由调仓整批下完再刷。
 
+import math
 import re
-import time
 import types
 
 from mem.common import BUY, SELL, sec
@@ -25,6 +25,10 @@ from .ui import SHIM, UI
 WM_KEYDOWN, WM_KEYUP, WM_COMMAND = 0x100, 0x101, 0x111
 VK_RETURN, SC_RETURN = 0x0D, 0x1C
 WM_MDIGETACTIVE = 0x229
+LB_SETCURSEL, LB_GETTOPINDEX = 0x186, 0x18E
+# 键盘精灵：标题、输入框 / 候选列表 id；候选每项「代码  名称  市场」
+SPIRIT, SPIRIT_EDIT, SPIRIT_LIST = "Tdx", 1024, 1026
+SPIRIT_IDLE = 10  # 投键前等界面线程缓过来最长几秒
 # MFC AFX_IDW_PANE_FIRST：主框架下的 MDIClient、MDI 子窗下的视图都是这个 id
 AFX_PANE = 59648
 MAIN_WND = "class=TdxW_MainFrame_Class"
@@ -41,6 +45,8 @@ FLASH = {
 CONFIRM_TITLES = ("买入交易确认", "卖出交易确认", "交易确认")
 RESULT_TITLE = "提示"
 MSG_TEXT, MSG_YES = 7013, 7015  # 确认框 / 回报框：正文 Static、确认按钮
+EST = 8915  # 闪电窗按额时的「预估金额:…(N股)」
+EST_RE = re.compile(r"\((\d+)股\)$")
 ORDER_CAP = 5  # 留、推的最近单数
 
 
@@ -117,43 +123,67 @@ def _bare(s):
     return "".join(s.split())
 
 
+def _pick(c, code, name):
+    """键盘精灵 c 输入框恰为 code、候选里代码与名称都对上的那项 → [列表序号]（候选只给可见项，加上顶项序号）；
+    还没筛出即 []。"""
+    if ui.text(c["edit"]) != code:
+        return []
+    items = SHIM("detail", c["list"])[0]["items"]
+    hits = [
+        i
+        for i, it in enumerate(items)
+        if it[5].split()[:1] == [code] and _bare(name) in _bare(it[5])
+    ]
+    assert len(hits) <= 1, f"键盘精灵候选里 {code} {name} 有 {len(hits)} 项"
+    top = SHIM("send", c["list"], LB_GETTOPINDEX, 0, 0)[0]["ret"]
+    return [top + i for i in hits]
+
+
 def _goto(main, code, name):
     """图表切到 code：主窗标题已是「…-名称]」即跳过，否则向活动 MDI 子窗的视图投代码按键
-    （键盘精灵由视图处理，投给主框架不经过它），等精灵弹出后向其输入框投回车，再等标题换过来。"""
+    （键盘精灵由视图处理，投给主框架不经过它），等精灵（标题 SPIRIT 的新窗）弹出、输入框恰为 code、
+    候选筛出该只，选中该项后向输入框投回车，再等标题换过来。"""
     want = _bare(f"-{name}]")
     if _bare(ui.title(main)).endswith(want):
         return
     mdi = ui.ctls(main, {"mdi": AFX_PANE})["mdi"]
     child = f"0x{SHIM('send', mdi, WM_MDIGETACTIVE, 0, 0)[0]['ret'] & 0xFFFFFFFF:08x}"
     view = ui.ctls(child, {"view": AFX_PANE})["view"]
+    # 经界面线程读一次（上一单刚提交时界面线程忙一阵），等它缓过来再投键
+    ui.text(view, SPIRIT_IDLE)
     before = _tops()
     for ch in code:
         # 数字键扫描码 1..9→2..10、0→11
         _press(view, ord(ch), 11 if ch == "0" else int(ch) + 1)
     spirit = ui.wait(
-        f"键盘精灵弹出（已向「{ui.title(child)}」视图 {view} 投 {code}）",
-        lambda: next((h for h in _tops() if h not in before), None),
+        lambda: f"键盘精灵弹出（已向「{ui.title(child)}」视图 {view} 投 {code}），期间新窗口："
+        + ("、".join(f"「{n['title']}」" for h, n in _tops().items() if h not in before) or "无"),
+        lambda: next(
+            (h for h, n in _tops().items() if h not in before and n["title"] == SPIRIT),
+            None,
+        ),
+        3,
+    )
+    c = ui.ctls(spirit, {"edit": SPIRIT_EDIT, "list": SPIRIT_LIST})
+    (at,) = ui.wait(
+        lambda: f"键盘精灵筛出 {code} {name}，输入「{ui.text(c['edit'])}」",
+        lambda: _pick(c, code, name),
         1,
     )
-    # 精灵按输入筛候选，留出时间再回车
-    time.sleep(0.3)
-    edits = [
-        n["hwnd"]
-        for n in SHIM("enum", spirit)
-        if n["depth"] == 1 and n["class"] == "Edit"
-    ]
-    _press(edits[0] if len(edits) == 1 else spirit, VK_RETURN, SC_RETURN)
+    SHIM("send", c["list"], LB_SETCURSEL, at, 0)
+    _press(c["edit"], VK_RETURN, SC_RETURN)
     ui.wait(
-        lambda: f"主窗切到「{name}」，现为「{ui.title(main)}」",
+        lambda: f"主窗切到「{name}」，现为「{ui.title(main)}」"
+        + ("（键盘精灵还开着）" if spirit in _tops() else ""),
         lambda: _bare(ui.title(main)).endswith(want),
         3,
     )
 
 
 def _settext(h, s):
+    """写入后客户端的 EN_CHANGE 处理会先改写一下，等读回恰为 s。"""
     assert SHIM("settext", h, s)[0]["ret"], f"写 {h} 失败"
-    got = ui.text(h)
-    assert got == s, f"写入 {s!r} 后读回 {got!r}"
+    ui.wait(lambda: f"写入 {s!r} 后读回 {ui.text(h)!r}", lambda: ui.text(h) == s, 1)
 
 
 def _field(body, pat, what):
@@ -205,7 +235,17 @@ def _form(o):
     cap = _max_qty(c["max"])
     cap = min(cap, int(cap0 * float(dflt) / float(o.px_s)) if o.s == BUY else cap0)
     o.n = _order_qty(o, float(o.px_s), cap)
-    _settext(c["qty"], str(o.n) if unit == "股" else f"{o.n * float(o.px_s):.2f}")
+    if unit == "股":
+        _settext(c["qty"], str(o.n))
+    else:
+        # 向上取整到元：多出的不足一股，折回恰为 n 股
+        _settext(c["qty"], str(math.ceil(round(o.n * float(o.px_s), 2))))
+        est = ui.ctls(o.dlg, {"est": EST})["est"]
+        ui.wait(
+            lambda: f"预估 {o.n} 股，现为「{ui.text(est)}」",
+            lambda: (m := EST_RE.search(ui.text(est))) and int(m.group(1)) == o.n,
+            1,
+        )
     return {
         "detail": f"{o.n}股 @ {o.px_s}（最大 {cap}）",
         "qty": o.n,
@@ -227,10 +267,19 @@ def _confirm(o):
 
 
 def _reply(o):
+    """读回报、点掉；等回报框、确认框、闪电窗都关了才算完（下一单紧接着敲代码，键盘精灵要落在主窗上）。"""
     res = _popup((RESULT_TITLE,), 10, lambda: ui.command(o.box, MSG_YES))
     body = _body(res)
     ui.command(res, MSG_YES)
     assert "合同号" in body, f"委托未成功：{body}"
+    ui.wait(
+        lambda: "回报框 / 确认框 / 闪电窗关掉，还开着："
+        + "、".join(
+            f"「{n['title']}」" for h, n in _tops().items() if h in (res, o.box, o.dlg)
+        ),
+        lambda: not {res, o.box, o.dlg} & _tops().keys(),
+        3,
+    )
     return {"msg": body}
 
 
@@ -280,13 +329,14 @@ class Orders:
         )
         return job, o
 
-    def _steps(self, o):
+    def _steps(self, o, kick):
         def run(job):
             with UI("下单"):
                 for at, (_, step) in enumerate(ORDER):
                     self.jobs.put(job, at=at)
                     self.jobs.put(job, **step(o))
-            HUB.kick()
+            if kick:
+                HUB.kick()
 
         return run
 
@@ -295,12 +345,12 @@ class Orders:
         job, o = self._new(
             HUB.held(b["code"]), int(b["s"]), int(b["size"]), 0, b["px"], b["credit"]
         )
-        return self.jobs.spawn(job, self._steps(o))
+        return self.jobs.spawn(job, self._steps(o, True))
 
     def place(self, x, s, qty, mode, credit):
         """当前线程跑完 qty 股一单 → 该单（state ok / err，填单后带 qty / px；成交另看成交表）。"""
         job, o = self._new(x, s, 0, qty, mode, credit)
-        return self.jobs.run(job, self._steps(o))
+        return self.jobs.run(job, self._steps(o, False))
 
 
 ORDERS = Orders()

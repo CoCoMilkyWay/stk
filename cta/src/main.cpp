@@ -1,11 +1,12 @@
 // cta_bench — 只做多 CTA 测试台: 模型 × 参数网格 × 测试集 (篮子表的 set), 逐资产回测 → 等权组合 + 跨资产中位数
-//   用法: cta_bench [--freq 1d|1m] [--sets idx,ind,concept] [--models ma,tsmom,…] [--cost 0.001] [--vol 0] [--buffer 0]
-//                   [--stop close|intra] [--top 15] [--expo 0.2] [--roll 0] [--refit 20] [--trace 4]
+//   用法: cta_bench [--freq 1m|1d] [--sets idx,ind,concept] [--models band (空 = 全部)] [--cost 0.001] [--vol 0] [--buffer 0]
+//                   [--stop close|intra] [--top 15] [--expo 0.2] [--roll 250] [--refit 20] [--trace 4] [--assets 50]
+//   每测试集固定种子随机抽 assets 只 (0 = 全部; 不足 kMinDays 的跳过不计)
 //   先把 CTA 库 (cta/data, Db.hpp) 合成到 all.bar 特征库末日, 再按 freq 取面板; 模型参数 / 方差比周期的单位都是根 (1m = 分钟), band 的 n 以日计
 //   终端: 各测试集先给方差比 VR(k) (各资产中位数: 哪些周期有趋势 / 均值回归), 再按组合夏普排行 (+ 基准 hold),
 //         末尾各模型网格汇总 (最优 / 平原顶 / 网格均值); cta/data/bench_<freq>.tsv = 全部行
 //   平原: 参数网格上的夏普曲面按邻域 (数值轴下标差 ≤ 1, 类别轴相同) 取均值, 平原顶 = 邻域均值最高的点 (不挑孤立尖峰)
-//   滚动调参 (--roll W 日 > 0): 每 refit 日, 用前 W 日各资产 (样本) 的夏普均值拟一张曲面, 取平原顶参数用到下一个 refit 日; 前 W 日空仓
+//   滚动调参 (--roll W 日, ≥ 一年; 0 = 关): 每 refit 日, 用前 W 日 (向上取整到 refit 的倍数) 各资产 (样本) 的夏普均值拟一张曲面, 取平原顶参数用到下一个 refit 日; 前 W 日空仓
 //   轨迹 (--trace N > 0, 需含 band): 各测试集 band 平原顶, 随机 N 只资产各一窗 (1d 250 日 / 1m 5 日) → cta/data/trace_<freq>.tsv (plot.py 画)
 //   排行与最优只取平均仓位中位数 ≥ expo 的: 几乎不开仓的配置夏普没有可比性
 //   列: SR / CAGR / MDD = 测试集等权组合 (逐根等权各资产净收益, 空仓部分计现金), SR1 / SR2 = 组合前 / 后半段夏普;
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -34,7 +36,7 @@ using P = std::vector<float>;
 struct Axis {
   const char *name;
   std::vector<float> v;
-  std::vector<const char *> label = {}; // 非空 = 类别轴 (取值 = 下标, 平原不跨类别平滑)
+  std::vector<const char *> label = {}; // 非空 = 类别轴 (label[i] 对应 v[i], 平原不跨类别平滑)
 };
 
 // ok / make 的第二参 = 每日根数
@@ -47,6 +49,8 @@ struct Kind {
 };
 
 constexpr float kTrail = 3;
+constexpr unsigned kSeed = 1;                                                                                                     // 资产抽样: 固定种子, 各次运行同一批
+constexpr size_t kMinRoll = 250;                                                                                                  // 滚动调参窗下限 (日) = 一年
 constexpr size_t kMinDays = 500;                                                                                                  // 资产有效根数下限 = 这么多日的根
 const std::vector<size_t> kVrLags[] = {{2, 3, 5, 10, 20, 40, 60, 120, 250}, {2, 5, 15, 30, 60, 120, 240, 480, 1200, 2400, 4800}}; // 1d / 1m
 
@@ -71,8 +75,8 @@ const Kind kKinds[] = {
      [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Revert>(p[0], p[1]); }, false},
     {"gate", {{"L", {60, 120, 250}}, {"g", {-1, -0.5, 0}}, {"f", {5, 10, 20}}, {"h", {0, 0.25, 0.5}}}, nullptr,
      [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Gate>(p[0], p[1], p[2], p[3]); }, false},
-    {"band", {{"c", {0, 1, 2}, {kCenters[0], kCenters[1], kCenters[2]}}, {"w", {0, 1, 2}, {kWidths[0], kWidths[1], kWidths[2]}},
-              {"n", {0.5, 1, 2, 5, 10, 20, 60, 120}}, {"k", {0.25, 0.5, 1, 2}}, {"N", {1, 4}}, {"h", {0, 0.5}}},
+    {"band", {{"c", {0, 1}, {kCenters[0], kCenters[1]}}, {"w", {0, 1, 2}, {kWidths[0], kWidths[1], kWidths[2]}},
+              {"n", {0.5, 2, 10, 60, 120}}, {"k", {0.25, 0.5, 1, 2}}, {"N", {1, 4}}, {"h", {0, 0.5}}},
      [](const P &p, double S) { return p[2] * S >= 5; },
      [](const P &p, double S) -> std::unique_ptr<Model> {
        return std::make_unique<Band>(static_cast<int>(p[0]), static_cast<int>(p[1]), std::lround(p[2] * S), p[3], static_cast<int>(p[4]), p[5]);
@@ -181,6 +185,7 @@ struct Universe {
   std::vector<double> hold_sr = {}; // [资产] 买入持有夏普
   std::vector<std::string> names = {};
   size_t lo = 0, hi = 0, mid = 0; // 张量时间段 [lo, hi], 前后半段分界
+  size_t total = 0;               // 测试集资产数 (抽样前)
   size_t skipped = 0;             // 有效根数不足 kMinBars 的
   // 滚动调参的块 (refit 日一块, 自 lo 所在日起): 块数 + [资产][块] 根数前缀和
   size_t S = 1, R = 0, nb = 0;
@@ -364,20 +369,41 @@ std::vector<std::string> split(const std::string &s) {
   return out;
 }
 
-void parallel(size_t n, const std::function<void(size_t)> &f) {
-  std::atomic<size_t> next{0};
-  std::vector<std::jthread> ws;
-  for (unsigned i = 0; i < std::max(1u, std::thread::hardware_concurrency()); ++i)
-    ws.emplace_back([&] {
-      for (size_t k; (k = next++) < n;)
-        f(k);
+// 多线程跑 n 个任务; stderr 每秒刷一行进度 (完成 / 总数, 已用, 预计剩余)
+void parallel(const char *what, size_t n, const std::function<void(size_t)> &f) {
+  std::atomic<size_t> next{0}, done{0};
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto show = [&] {
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const size_t d = done;
+    std::fprintf(stderr, "\r  %s %zu / %zu (%.0f%%) | 已用 %.0fs, 剩 ~%.0fs   ", what, d, n, n ? 100.0 * static_cast<double>(d) / static_cast<double>(n) : 100.0, s,
+                 d ? s * static_cast<double>(n - d) / static_cast<double>(d) : 0.0);
+  };
+  {
+    std::jthread mon([&](std::stop_token st) {
+      for (int i = 0; !st.stop_requested(); ++i) {
+        if (i % 10 == 0)
+          show();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
     });
+    std::vector<std::jthread> ws;
+    for (unsigned i = 0; i < std::max(1u, std::thread::hardware_concurrency()); ++i)
+      ws.emplace_back([&] {
+        for (size_t k; (k = next++) < n;)
+          f(k), ++done;
+      });
+    for (std::jthread &w : ws)
+      w.join();
+  }
+  show();
+  std::fputc('\n', stderr);
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
-  std::map<std::string, std::string> arg = {{"freq", "1d"}, {"sets", "idx,ind,concept"}, {"models", ""}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"stop", "close"}, {"top", "15"}, {"expo", "0.2"}, {"roll", "0"}, {"refit", "20"}, {"trace", "4"}};
+  std::map<std::string, std::string> arg = {{"freq", "1m"}, {"sets", "idx,ind,concept"}, {"models", "band"}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"stop", "close"}, {"top", "15"}, {"expo", "0.2"}, {"roll", "250"}, {"refit", "20"}, {"trace", "4"}, {"assets", "50"}};
   assert(argc % 2 == 1 && "参数须成对: --键 值");
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string k = argv[i];
@@ -400,15 +426,24 @@ int main(int argc, char **argv) {
   const size_t top = std::stoul(arg["top"]);
   const double expo = std::stod(arg["expo"]);
   const size_t W = std::stoul(arg["roll"]), R = std::stoul(arg["refit"]);
-  assert(R > 0 && W % R == 0 && "--roll 须为 --refit 的整数倍");
+  assert(R > 0 && "--refit 须 > 0");
+  const size_t Wb = (W + R - 1) / R; // 滚动窗块数 (向上取整)
+  assert((W == 0 || W >= kMinRoll) && "--roll 须 ≥ 一年");
+  const size_t cap = std::stoul(arg["assets"]);
 
   std::vector<Universe> us;
   for (const std::string &name : split(arg["sets"])) {
     Universe u{name};
     u.lo = panel.T, u.hi = 0, u.S = panel.S, u.R = R;
-    for (size_t b = 0; b < panel.B; ++b) {
-      if (panel.assets[b].set != name)
-        continue;
+    std::vector<size_t> pool;
+    for (size_t b = 0; b < panel.B; ++b)
+      if (panel.assets[b].set == name)
+        pool.push_back(b);
+    u.total = pool.size();
+    std::shuffle(pool.begin(), pool.end(), std::mt19937(kSeed));
+    for (const size_t b : pool) {
+      if (cap > 0 && u.series.size() == cap)
+        break;
       Series se = series_of(panel, b);
       if (se.bar.size() < kMinDays * panel.S) {
         ++u.skipped;
@@ -418,12 +453,14 @@ int main(int argc, char **argv) {
       u.hold_sr.push_back(stat_of(se, simulate(se, h, setup), setup).sharpe);
       u.lo = std::min<size_t>(u.lo, se.t.front()), u.hi = std::max<size_t>(u.hi, se.t.back());
       u.series.push_back(std::move(se)), u.names.push_back(panel.assets[b].name);
+      std::fprintf(stderr, "\r  载入 %s %zu / %zu   ", name.c_str(), u.series.size(), cap > 0 ? std::min(cap, u.total) : u.total);
     }
+    std::fputc('\n', stderr);
     assert(!u.series.empty() && "测试集为空");
     u.mid = (u.lo + u.hi + 1) / 2;
     if (W > 0) {
       u.nb = u.block_of(u.hi) + 1;
-      assert(u.nb > W / R && "样本短于滚动窗");
+      assert(u.nb > Wb && "样本短于滚动窗");
       for (const Series &se : u.series) {
         std::vector<double> c(u.nb, 0);
         for (const uint32_t t : se.t)
@@ -441,7 +478,7 @@ int main(int argc, char **argv) {
     for (size_t j = 0; j < specs.size(); ++j)
       tasks.emplace_back(i, j);
   std::vector<Row> rows(tasks.size());
-  parallel(tasks.size(), [&](size_t k) {
+  parallel("回测", tasks.size(), [&](size_t k) {
     const Spec &sp = specs[tasks[k].second];
     rows[k] = evaluate(us[tasks[k].first], [&](size_t) { return make(sp, S); }, setup, panel.T, W > 0 && sp.kind > 0);
     rows[k].model = name_of(sp), rows[k].params = params_of(sp);
@@ -458,12 +495,14 @@ int main(int argc, char **argv) {
             ro.ids.push_back(j), rs.push_back(&rows[i * specs.size() + j]);
         if (ro.ids.size() < 2)
           continue;
-        ro.pick = roll_pick(us[i], rs, near_of(specs, ro.ids), W / R);
+        std::fprintf(stderr, "\r  拟曲面 %s / %s   ", us[i].name.c_str(), kKinds[k].name);
+        ro.pick = roll_pick(us[i], rs, near_of(specs, ro.ids), Wb);
         rolls.push_back(std::move(ro));
       }
+    std::fputc('\n', stderr);
     for (Row &r : rows)
       r.blk = {};
-    parallel(rolls.size(), [&](size_t k) {
+    parallel("滚动调参", rolls.size(), [&](size_t k) {
       Roll &ro = rolls[k];
       const Universe &u = us[ro.set];
       std::vector<int> pos(ro.ids.size(), -1);
@@ -486,7 +525,7 @@ int main(int argc, char **argv) {
           },
           setup, panel.T, false);
       ro.row.model = std::string(kKinds[ro.kind].name) + "@roll";
-      ro.row.params = "W=" + std::to_string(W) + ",R=" + std::to_string(R);
+      ro.row.params = "W=" + std::to_string(Wb * R) + ",R=" + std::to_string(R);
     });
   }
 
@@ -498,7 +537,7 @@ int main(int argc, char **argv) {
   std::vector<std::pair<size_t, size_t>> traces; // (测试集, band 平原顶 spec)
   for (size_t i = 0; i < us.size(); ++i) {
     const Universe &u = us[i];
-    std::printf("\n== %s: %zu 只 (不足 %zu 日略 %zu) | %s … %s ==\n  VR", u.name.c_str(), u.series.size(), kMinDays, u.skipped,
+    std::printf("\n== %s: %zu / %zu 只 (不足 %zu 日略 %zu) | %s … %s ==\n  VR", u.name.c_str(), u.series.size(), u.total, kMinDays, u.skipped,
                 date_of(panel.time[u.lo]).c_str(), date_of(panel.time[u.hi]).c_str());
     for (const size_t k : kVrLags[panel.S > 1]) {
       std::vector<double> v;
@@ -558,7 +597,7 @@ int main(int argc, char **argv) {
 
     if (W == 0)
       continue;
-    std::printf("\n  滚动调参 (窗 %zu 日, 每 %zu 日重拟; 前 %zu 日空仓)\n", W, R, W);
+    std::printf("\n  滚动调参 (窗 %zu 日, 每 %zu 日重拟; 前 %zu 日空仓)\n", Wb * R, R, Wb * R);
     print_head();
     for (const Roll &ro : rolls) {
       if (ro.set != i)

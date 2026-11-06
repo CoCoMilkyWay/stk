@@ -21,6 +21,7 @@
 import os
 import re
 import subprocess
+import threading
 import time
 from collections import namedtuple
 
@@ -28,6 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PASS_FILE = os.path.join(HERE, os.pardir, ".sudo_pass")  # 本地 sudo 密码，已 gitignore
 PTRACE_SCOPE = "/proc/sys/kernel/yama/ptrace_scope"
 MAX_REGION = 400 * 1024 * 1024  # 跳过超大段（映射文件等），只扫堆
+SEEN_CAP = 256  # 活动块读法记住的块数（客户端每重查一次多一块，旧块一分钟内即释放）
 NUM_RE = re.compile(r"-?\d+(\.\d+)?")
 
 # 编码，各表与上层同用：方向即符号；沪深标志 → 代码前缀（新浪同用）；证券 = 标识三字段
@@ -243,18 +245,35 @@ def _equal(t, tables):
 
 
 def live(tag):
-    """活动块：客户端在用的那块表头标签为 tag、全进程唯一（一块都没有即还没查过，不选、不算错）。
-    same 按址复读比字节（约 0.03ms，可高频）；rescan 先扫上次所在段，段内不恰为一块再全量（唯一性校验随之回到全进程）。"""
+    """活动块：客户端在用的那块表头标签为 tag（一块都没有即还没查过，不选、不算错）。
+    客户端重查即另写一块，旧块要过几秒到几十秒才释放，其间同标签的有几块、内容不一：
+    记下扫到过的各块（最近 SEEN_CAP 块；只扫上次所在段时也只添不删），没见过的即新冒出的、为在用的；
+    没有新冒出的即仍是上次选的那块；几块内容相同取一块。
+    头一次扫就有几块不一、或新冒出的不止一种内容，定不出即 assert（旧块释放后自愈）。
+    same 按址复读比字节（约 0.03ms，可高频）；rescan 先扫上次所在段，段内不恰为一块再全量。"""
+    lock = threading.Lock()
+    # 扫到过的同标签各块（dict 当有序集）、上次选中的那块
+    seen, cur = {}, None
 
     def mine(hits):
         return [h for h in hits if h.tag == tag]
 
     def choose(t, hits):
+        nonlocal cur
         got = mine(hits)
-        assert (
-            len(got) == 1 or not hits
-        ), f"{t.name}活动块应唯一，实得 {len(got)}（共 {len(hits)} 份），客户端行为已变或正在刷新"
-        return got
+        assert got or not hits, f"{t.name}共 {len(hits)} 份，没有活动块（标签 {tag!r}）"
+        with lock:
+            if len({h.body for h in got}) > 1:
+                got = [h for h in got if h not in seen] or [h for h in got if h == cur]
+            assert len({h.body for h in got}) == 1 or not hits, (
+                f"{t.name}活动块 {len(mine(hits))} 块内容不一，定不出在用的（等旧块释放）"
+            )
+            for h in mine(hits):
+                seen[h] = None
+            for h in list(seen)[: max(0, len(seen) - SEEN_CAP)]:
+                del seen[h]
+            cur = got[0] if got else None
+        return got[:1]
 
     def same(snap):
         return all(reread(snap.table, snap.pid, h) == h.body for h in snap.mark)
