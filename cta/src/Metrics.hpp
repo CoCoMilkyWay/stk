@@ -12,10 +12,10 @@
 #include <vector>
 
 struct Stat {
-  double years = 0, cagr = 0, vol = 0, sharpe = 0, mdd = 0;
-  double expo = 0, turn = 0, cost = 0;              // 平均仓位 / 年换手 (单边) / 年成本
-  double up = 0, dn = 0, edge = 0;                  // 上涨 / 下跌捕获, 两者之差
-  double trades = 0, win = 0, payoff = 0, hold = 0; // 年在场段数 / 胜率 / 盈亏比 (均盈 / 均亏) / 平均在场根数
+  double years = 0, cagr = 0, vol = 0, sharpe = 0, sortino = 0, mdd = 0; // 索提诺 = 均值 / 下行波动 √E[min(r, 0)²]
+  double expo = 0, turn = 0, cost = 0;                                   // 平均仓位 / 年换手 (单边) / 年成本
+  double up = 0, dn = 0, edge = 0;                                       // 上涨 / 下跌捕获, 两者之差
+  double trades = 0, win = 0, payoff = 0, hold = 0;                      // 年在场段数 / 胜率 / 盈亏比 (均盈 / 均亏) / 平均在场根数
 };
 
 // 字段表: 轨迹 JSON / 测试台中位数 / bench.tsv 共用
@@ -23,21 +23,22 @@ struct Metric {
   const char *key;
   double Stat::*v;
 };
-inline constexpr Metric kStat[] = {{"sr", &Stat::sharpe}, {"cagr", &Stat::cagr}, {"vol", &Stat::vol}, {"mdd", &Stat::mdd}, {"expo", &Stat::expo}, {"turn", &Stat::turn}, {"cost", &Stat::cost}, {"up", &Stat::up}, {"dn", &Stat::dn}, {"edge", &Stat::edge}, {"trades", &Stat::trades}, {"win", &Stat::win}, {"payoff", &Stat::payoff}, {"hold", &Stat::hold}};
+inline constexpr Metric kStat[] = {{"sr", &Stat::sharpe}, {"so", &Stat::sortino}, {"cagr", &Stat::cagr}, {"vol", &Stat::vol}, {"mdd", &Stat::mdd}, {"expo", &Stat::expo}, {"turn", &Stat::turn}, {"cost", &Stat::cost}, {"up", &Stat::up}, {"dn", &Stat::dn}, {"edge", &Stat::edge}, {"trades", &Stat::trades}, {"win", &Stat::win}, {"payoff", &Stat::payoff}, {"hold", &Stat::hold}};
 
 inline Stat returns_stat(std::span<const double> r, double bpy) {
   Stat s;
   const double n = static_cast<double>(r.size());
   s.years = n / bpy;
-  double sum = 0, sq = 0, nav = 1, peak = 1;
+  double sum = 0, sq = 0, dq = 0, nav = 1, peak = 1;
   for (const double x : r) {
-    sum += x, sq += x * x;
+    sum += x, sq += x * x, dq += std::min(x, 0.0) * std::min(x, 0.0);
     nav *= 1 + x, peak = std::max(peak, nav);
     s.mdd = std::min(s.mdd, nav / peak - 1);
   }
-  const double mean = sum / n, sd = std::sqrt(std::max(0.0, sq / n - mean * mean));
+  const double mean = sum / n, sd = std::sqrt(std::max(0.0, sq / n - mean * mean)), dd = std::sqrt(dq / n);
   s.vol = sd * std::sqrt(bpy);
   s.sharpe = sd > 0 ? mean / sd * std::sqrt(bpy) : 0;
+  s.sortino = dd > 0 ? mean / dd * std::sqrt(bpy) : 0;
   s.cagr = std::pow(nav, 1 / s.years) - 1;
   return s;
 }

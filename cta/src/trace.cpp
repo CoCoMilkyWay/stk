@@ -1,12 +1,11 @@
-// cta_trace — 分钟线单配置交互轨迹 (后端): 浏览器里选资产 (idx / ind / concept) / 模型 / 参数, 每次现算一个配置的全期
+// cta_trace — 分钟线单配置交互轨迹 (后端): 浏览器里选资产 (idx / ind / concept) / band 参数, 每次现算一个配置的全期
 //   用法: cta_trace [端口 8766]; 计算全在这里 (模型 + 回测 + 指标 + 视窗聚合), 前端 cta/web 只画
-//   接口: GET /api/meta → 全部资产 (名 / 码 / 测试集) + 模型表 (参数轴 + 网格取值) + 每日根数
-//         GET /api/run?a=资产&kind=模型&p=参数 (逗号分隔, 轴序)&trail=吊灯 k (0 = 不叠)&cost=单边费率&vol=目标年化波动&buffer=不交易带
+//   接口: GET /api/meta → 全部资产 (名 / 码 / 测试集) + 参数轴 (网格取值) + 每日根数
+//         GET /api/run?a=资产&p=参数 (逗号分隔, 轴序)&cost=单边费率&vol=目标年化波动&buffer=不交易带
 //                     &lo=&hi=视窗 [lo, hi) (有效根下标, hi = 0 即到末根)&px=视窗最多几点
-//           → 全期指标 (策略 / 持有) + 视窗逐点 (每 step 根取末根: 收 / 上线 / 下线 / 仓位 / 全期净值 / 持有净值)
+//           → 全期指标 (策略 / 持有) + 视窗逐点 (每 step 根取末根: 收 / 上线 / 下线 / 吊灯线 / 仓位 / 全期净值 / 持有净值)
 //   配置不变只换视窗时不重算; 视窗根数 ≤ px 时 step = 1 (逐根)
 #include "Http.hpp"
-#include "Kinds.hpp"
 #include "Metrics.hpp"
 
 #include <algorithm>
@@ -29,7 +28,7 @@ struct State {
   std::string key;
   Run rs;
   Stat st, sh;
-  Col up, dn;
+  Col up, dn, stop;
   std::vector<double> nav;
 };
 
@@ -88,21 +87,15 @@ std::string meta(const Panel &panel) {
     o += b ? ",{" : "{";
     o += "\"name\":", str(o, a.name), o += ",\"code\":", str(o, a.code), o += ",\"set\":", str(o, a.set), o += '}';
   }
-  o += "],\"kinds\":[";
-  for (size_t k = 0; k < std::size(kKinds); ++k) {
-    const Kind &K = kKinds[k];
-    o += k ? ",{" : "{";
-    o += "\"name\":", str(o, K.name), o += ",\"axes\":[";
-    for (size_t a = 0; a < K.grid.size(); ++a) {
-      const Axis &x = K.grid[a];
-      o += a ? ",{" : "{";
-      o += "\"name\":", str(o, x.name), o += ',';
-      arr(o, "values", x.v.size(), [&](size_t i) { return x.v[i]; });
-      o += ",\"labels\":[";
-      for (size_t i = 0; i < x.label.size(); ++i)
-        o += i ? "," : "", str(o, x.label[i]);
-      o += "]}";
-    }
+  o += "],\"axes\":[";
+  for (size_t a = 0; a < std::size(kAxes); ++a) {
+    const Axis &x = kAxes[a];
+    o += a ? ",{" : "{";
+    o += "\"name\":", str(o, x.name), o += ',';
+    arr(o, "values", x.v.size(), [&](size_t i) { return x.v[i]; });
+    o += ",\"labels\":[";
+    for (size_t i = 0; i < x.label.size(); ++i)
+      o += i ? "," : "", str(o, x.label[i]);
     o += "]}";
   }
   return o + "]}";
@@ -118,7 +111,7 @@ std::vector<float> floats(const std::string &s) {
 
 void compute(State &s, const Panel &panel, const Query &q) {
   std::string key;
-  for (const char *k : {"a", "kind", "p", "trail", "cost", "vol", "buffer"})
+  for (const char *k : {"a", "p", "cost", "vol", "buffer"})
     key += q.at(k), key += '|';
   if (key == s.key)
     return;
@@ -128,22 +121,17 @@ void compute(State &s, const Panel &panel, const Query &q) {
     s.se = series_of(panel, a), s.a = a;
     assert(s.se.c.size() > 1 && "资产无数据");
   }
-  const auto kind = std::find_if(std::begin(kKinds), std::end(kKinds), [&](const Kind &K) { return q.at("kind") == K.name; });
-  assert(kind != std::end(kKinds) && "未知模型");
   const P p = floats(q.at("p"));
-  assert(p.size() == kind->grid.size() && "参数个数与参数轴不符");
-  const float k = std::stof(q.at("trail"));
+  assert(p.size() == std::size(kAxes) && "参数个数与参数轴不符");
 
   Setup u;
   u.cost = std::stod(q.at("cost")), u.vol = std::stod(q.at("vol")), u.buffer = std::stod(q.at("buffer"));
   u.bpy = panel.bars_per_year;
   Tape t(s.se);
-  Sig g = kind->rule(t, to_bars(*kind, p, static_cast<double>(panel.S)));
-  if (k > 0)
-    g = trail(t, std::move(g), k);
+  Sig g = rule(t, to_bars(p, static_cast<double>(panel.S)));
   s.rs = simulate(t, std::move(g.w), u);
-  s.st = stat_of(t, s.rs, u), s.sh = stat_of(t, simulate(t, hold(t).w, u), u);
-  s.up = std::move(g.up), s.dn = std::move(g.dn);
+  s.st = stat_of(t, s.rs, u), s.sh = stat_of(t, simulate(t, hold(t), u), u);
+  s.up = std::move(g.up), s.dn = std::move(g.dn), s.stop = std::move(g.stop);
   s.nav.resize(s.rs.r.size());
   double nav = 1;
   for (size_t i = 0; i < s.nav.size(); ++i)
@@ -176,6 +164,7 @@ std::string run(State &s, const Panel &panel, const Query &q) {
   arr(o, "c", nb, [&](size_t k) { return se.c[last(k)]; }), o += ',';
   arr(o, "up", nb, [&](size_t k) { return s.up[last(k)]; }), o += ',';
   arr(o, "dn", nb, [&](size_t k) { return s.dn[last(k)]; }), o += ',';
+  arr(o, "stop", nb, [&](size_t k) { return s.stop[last(k)]; }), o += ',';
   arr(o, "w", nb, [&](size_t k) { return s.rs.w[last(k)]; }), o += ',';
   arr(o, "nav", nb, [&](size_t k) { return s.nav[last(k)]; }), o += ',';
   arr(o, "hold", nb, [&](size_t k) { return held(last(k)); });

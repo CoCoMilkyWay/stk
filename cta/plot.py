@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # plot.py — 测试台结果弹窗 (plotly, 浏览器打开)
-#   bench_<freq>.tsv → 结果网格: 每测试集一行 = 排行表 | 夏普 vs 下跌捕获 (磨损) | band 曲面 (中线/宽度 × n, 其余参数取均值) | 平原顶处 k × N/h 切面
+#   bench_<freq>.tsv → 结果网格: 每测试集一行 = 排行表 | 夏普 vs 下跌捕获 (磨损) | band 曲面 (中线/宽度 × n, 其余参数取均值) | 平原顶处 k × 映射/N/h 切面
 #   python3 cta/plot.py [1m|1d]; run.py (APP = bench) 跑完测试台自动调用
 
 import csv
@@ -49,7 +49,7 @@ def bench_fig(rows, freq):
             f"{s}: 排行 (仓位 ≥ {EXPO}, ◆ = 平原顶)",
             f"{s}: 夏普 vs 下跌捕获 (磨损)",
             f"{s}: band 曲面 (其余参数均值, × = 平原顶)",
-            f"{s}: 平原顶处 k × N/h",
+            f"{s}: 平原顶处 k × 映射/N/h",
         ]
     fig = make_subplots(
         rows=len(sets),
@@ -181,9 +181,13 @@ def bench_fig(rows, freq):
             for r, q in band
             if (q["c"], q["w"], q["n"]) == (p["c"], p["w"], p["n"])
         ]
+
+        def mnh(q):
+            return f'{q["m"]},N={q["N"]},h={q["h"]}'
+
         ks = sorted({q["k"] for _, q in sl}, key=float)
-        nh = list(dict.fromkeys(f'N={q["N"]},h={q["h"]}' for _, q in sl))
-        zz = {(q["k"], f'N={q["N"]},h={q["h"]}'): r["sr"] for r, q in sl}
+        nh = list(dict.fromkeys(mnh(q) for _, q in sl))
+        zz = {(q["k"], mnh(q)): r["sr"] for r, q in sl}
         fig.add_trace(
             go.Heatmap(
                 x=nh,
@@ -200,7 +204,7 @@ def bench_fig(rows, freq):
         )
         fig.add_trace(
             go.Scatter(
-                x=[f'N={p["N"]},h={p["h"]}'],
+                x=[mnh(p)],
                 y=[f'k={p["k"]}'],
                 mode="markers",
                 marker=dict(symbol="x", size=16, color="black"),

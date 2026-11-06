@@ -1,5 +1,5 @@
 // app.js — CTA 轨迹前端: 收集选项 + 视窗 → GET /api/run (cta_trace 现算 / 聚合) → 画; 本文件不做任何计算
-//   主图: 收盘线 + 上线 / 下线 (收破上线入场 / 满仓, 收破下线出场 / 空仓; band 另画中线与档线) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
+//   主图: 收盘线 + 上线 / 下线 + 中线 + 档线 (grid / fade) 或吊灯线 (chase) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
 //   x = 有效根下标 (连续, 无休市空档); 框选矩形放大 (x / y 一起, plotly 原生), 横轴视窗一变就按新视窗重取数据;
 //   双击还原不走 plotly 原生 (它会先按旧数据定一次范围), 取回全期数据后一次画好
 const $ = (id) => document.getElementById(id);
@@ -19,12 +19,12 @@ const minute = (t) => {
   return `${dash(s.slice(0, 8))} ${s.slice(8, 10)}:${s.slice(10, 12)}`;
 };
 
-const kind = () => META.kinds.find((k) => k.name === $("kind").value);
 const fields = () => [...$("params").querySelectorAll("[data-i]")];
+const field = (name) => fields()[META.axes.findIndex((a) => a.name === name)];
 
 function renderParams() {
-  $("params").innerHTML = kind()
-    .axes.map((a, i) => {
+  $("params").innerHTML = META.axes
+    .map((a, i) => {
       if (a.labels.length)
         return `<label>${a.name} <select data-i="${i}">${a.labels.map((l, j) => `<option value="${a.values[j]}">${l}</option>`).join("")}</select></label>`;
       const mid = a.values[Math.floor(a.values.length / 2)];
@@ -62,7 +62,7 @@ function renderAssets() {
 const paramText = () =>
   fields()
     .map((e, i) => {
-      const a = kind().axes[i];
+      const a = META.axes[i];
       return `${a.name}=${a.labels.length ? e.selectedOptions[0].text : e.value}`;
     })
     .join(", ");
@@ -70,11 +70,9 @@ const paramText = () =>
 function query() {
   return new URLSearchParams({
     a: $("asset").value,
-    kind: $("kind").value,
     p: fields()
       .map((e) => e.value)
       .join(","),
-    trail: $("trail").value || 0,
     cost: ($("cost").value || 0) / 1e4,
     vol: $("vol").value || 0,
     buffer: $("buffer").value || 0,
@@ -153,39 +151,33 @@ function draw(d) {
       line: { color: "#333", width: 1 },
     },
   ];
-  const one = v.up.every((y, k) => y === v.dn[k]),
-    grid = kind().axes.findIndex((a) => a.name === "N");
-  if (one && v.up.some((y) => y != null))
+  traces.push({
+    x,
+    y: v.dn,
+    name: "下线",
+    line: { color: DOWN, width: 1 },
+  });
+  traces.push({
+    x,
+    y: v.up,
+    name: "上线",
+    line: { color: UP, width: 1 },
+    fill: "tonexty",
+    fillcolor: "rgba(31,119,180,0.07)",
+  });
+  const at = (z) =>
+    v.dn.map((d, k) =>
+      d == null || v.up[k] == null ? null : d + z * (v.up[k] - d),
+    );
+  if (field("m").selectedOptions[0].text === "chase")
     traces.push({
       x,
-      y: v.up,
-      name: "上 / 下线",
-      line: { color: BAND, width: 1.3 },
+      y: v.stop,
+      name: "吊灯线",
+      line: { color: BAND, width: 1.3, dash: "dash" },
     });
-  if (!one) {
-    traces.push({
-      x,
-      y: v.dn,
-      name: "下线",
-      line: { color: DOWN, width: 1 },
-    });
-    traces.push({
-      x,
-      y: v.up,
-      name: "上线",
-      line: { color: UP, width: 1 },
-      ...(grid >= 0 && {
-        fill: "tonexty",
-        fillcolor: "rgba(31,119,180,0.07)",
-      }),
-    });
-  }
-  if (!one && grid >= 0) {
-    const at = (z) =>
-      v.dn.map((d, k) =>
-        d == null || v.up[k] == null ? null : d + z * (v.up[k] - d),
-      );
-    const N = Number(fields()[grid].value);
+  else {
+    const N = Number(field("N").value);
     for (let j = 1; j < N; j++)
       traces.push({
         x,
@@ -194,13 +186,13 @@ function draw(d) {
         line: { color: "gray", width: 0.6, dash: "dot" },
         showlegend: false,
       });
-    traces.push({
-      x,
-      y: at(0.5),
-      name: "中线",
-      line: { color: "orange", width: 1.3 },
-    });
   }
+  traces.push({
+    x,
+    y: at(0.5),
+    name: "中线",
+    line: { color: "orange", width: 1.3 },
+  });
 
   const prev = (k) => (k ? v.w[k - 1] : v.w0);
   const up = [],
@@ -258,7 +250,6 @@ function draw(d) {
     tt.push(daysOnly ? lab[k].slice(0, 10) : lab[k].slice(5));
   }
   const A = META.assets[$("asset").value],
-    trail = Number($("trail").value) > 0 ? ` + 吊灯 k=${$("trail").value}` : "",
     res =
       d.step === 1
         ? `逐根, 加 ${up.length} 次 / 减 ${dn.length} 次`
@@ -272,7 +263,7 @@ function draw(d) {
       dragmode: "zoom",
       uirevision: `${$("asset").value}/${rev}`, // 变了 = 按新数据自动定范围 (全期); 不变 = 保留用户的缩放
       title: {
-        text: `${A.name} ${A.code} | ${$("kind").value} ${paramText()}${trail} | ${lab[0]} … ${lab[m - 1]} | ${res}`,
+        text: `${A.name} ${A.code} | band ${paramText()} | ${lab[0]} … ${lab[m - 1]} | ${res}`,
         font: { size: 12 },
       },
       xaxis: { tickvals: tv, ticktext: tt },
@@ -322,10 +313,6 @@ function draw(d) {
 
 (async () => {
   META = await (await fetch("/api/meta")).json();
-  $("kind").innerHTML = META.kinds
-    .map((k) => `<option>${k.name}</option>`)
-    .join("");
-  $("kind").value = "band";
   renderParams();
   renderAssets();
   $("filter").addEventListener("input", () => {
@@ -333,7 +320,6 @@ function draw(d) {
   });
   $("side").addEventListener("change", (e) => {
     if (e.target.id === "filter") return;
-    if (e.target.id === "kind") renderParams();
     if (e.target.id === "set") renderAssets();
     if (e.target.id === "set" || e.target.id === "asset") view = [0, 0];
     schedule();
