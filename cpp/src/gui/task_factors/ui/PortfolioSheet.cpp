@@ -586,7 +586,7 @@ Seg recent_seg(const Database::Feed &f) {
           [&f](const RowSrc &x, size_t, PortfolioSheet &, SheetCell *out) { recent_cells(recent_row(f, x), out); },
           {}};
 }
-// 段: NAV 数值列 (PortfolioView::num) 里的 ks 列 (NAV = 全部, VAL = 夏普, CTA = 理想 / 夏普)
+// 段: NAV 数值列 (PortfolioView::num) 里的 ks 列 (NAV / VAL = 全部, CTA = 理想 / 夏普)
 Seg num_seg(const PortfolioView &v, std::vector<int> ks = {kNumTrade, kNumIdeal, kNumSharpe, kNumTurn}) {
   Seg s;
   for (const int k : ks)
@@ -631,7 +631,7 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
   table(ui, infos, d, kPageNav, kNavName, {recent_seg(ui.basket.feed), today_seg(), num_seg(v)});
 }
 
-// ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 只数 | 总市值 | 涨幅 | Δ5日线 | 夏普 | 各口;
+// ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 只数 | 总市值 | 可成交 | 理想 | 夏普 | 年换手 | 各口;
 //      各口格 = 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 表头点排序 (组内) ----
 // 各口 [PoolVal]: 同一模板, 只换分子 / 负值口径
 const std::array<SheetCol, kPoolVals> kValCols = [] {
@@ -692,7 +692,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
         "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 各口 = 该股本只的估值分位 (底色 = 成分之间名次); 点成分行 = 选该股\n"
         "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
-  table(ui, infos, d, kPageVal, kValName, {today_seg(kTodayTurn), recent_seg(ui.basket.feed), num_seg(v, {kNumSharpe}), val_seg(v)});
+  table(ui, infos, d, kPageVal, kValName, {today_seg(kTodayTurn), num_seg(v), val_seg(v)});
 }
 
 // ---- FLOW 右图例: 类别条 (指数 / 行业 / 概念) + 过滤条; 表 = 该组一行一篮子, 点行 = 选中 / 取消 (与 NAV 同一份选中, 左图画选中的).
