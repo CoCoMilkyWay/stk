@@ -1,17 +1,17 @@
 // cta_bench — 只做多 CTA 测试台: 模型 × 参数网格 × 测试集 (篮子表的 set), 逐资产回测 → 等权组合 + 跨资产中位数
 //   用法: cta_bench [--freq 1m|1d] [--sets idx,ind,concept] [--models band (空 = 全部)] [--cost 0.001] [--vol 0] [--buffer 0]
-//                   [--stop close|intra] [--top 15] [--expo 0.2] [--roll 250] [--refit 20] [--trace 4] [--assets 50]
+//                   [--stop close|intra] [--top 15] [--expo 0.2] [--roll 250] [--refit 20] [--assets 50]
 //   每测试集固定种子随机抽 assets 只 (0 = 全部; 不足 kMinDays 的跳过不计)
 //   先把 CTA 库 (cta/data, Db.hpp) 合成到 all.bar 特征库末日, 再按 freq 取面板; 模型参数 / 方差比周期的单位都是根 (1m = 分钟), band 的 n 以日计
 //   终端: 各测试集先给方差比 VR(k) (各资产中位数: 哪些周期有趋势 / 均值回归), 再按组合夏普排行 (+ 基准 hold),
 //         末尾各模型网格汇总 (最优 / 平原顶 / 网格均值); cta/data/bench_<freq>.tsv = 全部行
 //   平原: 参数网格上的夏普曲面按邻域 (数值轴下标差 ≤ 1, 类别轴相同) 取均值, 平原顶 = 邻域均值最高的点 (不挑孤立尖峰)
 //   滚动调参 (--roll W 日, ≥ 一年; 0 = 关): 每 refit 日, 用前 W 日 (向上取整到 refit 的倍数) 各资产 (样本) 的夏普均值拟一张曲面, 取平原顶参数用到下一个 refit 日; 前 W 日空仓
-//   轨迹 (--trace N > 0, 需含 band): 各测试集 band 平原顶, 随机 N 只资产各一窗 (1d 250 日 / 1m 5 日) → cta/data/trace_<freq>.tsv (plot.py 画)
 //   排行与最优只取平均仓位中位数 ≥ expo 的: 几乎不开仓的配置夏普没有可比性
 //   列: SR / CAGR / MDD = 测试集等权组合 (逐根等权各资产净收益, 空仓部分计现金), SR1 / SR2 = 组合前 / 后半段夏普;
 //       mSR = 各资产夏普中位数, mΔSR = 各资产 (夏普 − 自身买入持有夏普) 中位数, beat = 夏普胜过买入持有的资产占比;
 //       Up / Dn / Edge / Expo / Turn / Tr/y / Win / Pay / Hold = 各资产中位数 (Metrics.hpp)
+#include "Kinds.hpp"
 #include "Metrics.hpp"
 
 #include <algorithm>
@@ -22,7 +22,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <numeric>
 #include <random>
 #include <string>
 #include <thread>
@@ -31,58 +30,10 @@
 
 namespace {
 
-using P = std::vector<float>;
-
-struct Axis {
-  const char *name;
-  std::vector<float> v;
-  std::vector<const char *> label = {}; // 非空 = 类别轴 (label[i] 对应 v[i], 平原不跨类别平滑)
-};
-
-// ok / make 的第二参 = 每日根数
-struct Kind {
-  const char *name;
-  std::vector<Axis> grid;
-  bool (*ok)(const P &, double); // 组合约束 (nullptr = 全要)
-  std::unique_ptr<Model> (*make)(const P &, double);
-  bool trail; // 另叠 Trail 外挂 (k = kTrail) 各跑一份
-};
-
-constexpr float kTrail = 3;
 constexpr unsigned kSeed = 1;                                                                                                     // 资产抽样: 固定种子, 各次运行同一批
 constexpr size_t kMinRoll = 250;                                                                                                  // 滚动调参窗下限 (日) = 一年
 constexpr size_t kMinDays = 500;                                                                                                  // 资产有效根数下限 = 这么多日的根
 const std::vector<size_t> kVrLags[] = {{2, 3, 5, 10, 20, 40, 60, 120, 250}, {2, 5, 15, 30, 60, 120, 240, 480, 1200, 2400, 4800}}; // 1d / 1m
-
-// clang-format off
-const Kind kKinds[] = {
-    {"hold", {}, nullptr, [](const P &, double) -> std::unique_ptr<Model> { return std::make_unique<Hold>(); }, false},
-    {"ma", {{"fast", {5, 10, 20}}, {"slow", {20, 40, 60, 120, 250}}}, [](const P &p, double) { return 2 * p[0] <= p[1]; },
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Ma>(p[0], p[1]); }, true},
-    {"tsmom", {{"L", {10, 20, 40, 60, 120, 250}}}, nullptr,
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<TsMom>(p[0]); }, true},
-    {"ens", {{"lo", {5, 10, 20}}}, nullptr,
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Ens>(p[0]); }, true},
-    {"kama", {{"n", {10, 20}}, {"slow", {30, 60}}}, nullptr,
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Kama>(p[0], p[1]); }, true},
-    {"donchian", {{"n", {20, 40, 60, 120}}, {"m", {10, 20, 40}}}, [](const P &p, double) { return p[1] < p[0]; },
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Donchian>(p[0], p[1]); }, false},
-    {"chandelier", {{"n", {10, 20, 60}}, {"k", {2, 3, 4, 5}}}, nullptr,
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Chandelier>(p[0], p[1]); }, false},
-    {"rebound", {{"d", {0.5, 1, 1.5}}, {"n", {5, 10, 20}}, {"k", {2, 3, 4}}}, nullptr,
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Rebound>(p[0], p[1], p[2]); }, false},
-    {"revert", {{"L", {60, 120, 250}}, {"g", {0.5, 1, 1.5}}}, nullptr,
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Revert>(p[0], p[1]); }, false},
-    {"gate", {{"L", {60, 120, 250}}, {"g", {-1, -0.5, 0}}, {"f", {5, 10, 20}}, {"h", {0, 0.25, 0.5}}}, nullptr,
-     [](const P &p, double) -> std::unique_ptr<Model> { return std::make_unique<Gate>(p[0], p[1], p[2], p[3]); }, false},
-    {"band", {{"c", {0, 1}, {kCenters[0], kCenters[1]}}, {"w", {0, 1, 2}, {kWidths[0], kWidths[1], kWidths[2]}},
-              {"n", {0.5, 2, 10, 60, 120}}, {"k", {0.25, 0.5, 1, 2}}, {"N", {1, 4}}, {"h", {0, 0.5}}},
-     [](const P &p, double S) { return p[2] * S >= 5; },
-     [](const P &p, double S) -> std::unique_ptr<Model> {
-       return std::make_unique<Band>(static_cast<int>(p[0]), static_cast<int>(p[1]), std::lround(p[2] * S), p[3], static_cast<int>(p[4]), p[5]);
-     }, false},
-};
-// clang-format on
 
 struct Spec {
   size_t kind;
@@ -183,10 +134,9 @@ struct Universe {
   std::string name;
   std::vector<Series> series = {};
   std::vector<double> hold_sr = {}; // [资产] 买入持有夏普
-  std::vector<std::string> names = {};
-  size_t lo = 0, hi = 0, mid = 0; // 张量时间段 [lo, hi], 前后半段分界
-  size_t total = 0;               // 测试集资产数 (抽样前)
-  size_t skipped = 0;             // 有效根数不足 kMinBars 的
+  size_t lo = 0, hi = 0, mid = 0;   // 张量时间段 [lo, hi], 前后半段分界
+  size_t total = 0;                 // 测试集资产数 (抽样前)
+  size_t skipped = 0;               // 有效根数不足 kMinBars 的
   // 滚动调参的块 (refit 日一块, 自 lo 所在日起): 块数 + [资产][块] 根数前缀和
   size_t S = 1, R = 0, nb = 0;
   std::vector<std::vector<double>> cnt = {};
@@ -323,23 +273,6 @@ struct Roll {
   Row row = {};
 };
 
-// 轨迹: 逐根记下 band 中线 / 半宽 (非 Band = NaN)
-class Probe : public Model {
-  Model &m_;
-  const Band *b_;
-
-public:
-  std::vector<double> mid, half;
-  explicit Probe(Model &m) : m_(m), b_(dynamic_cast<const Band *>(&m)) {}
-  Order step(const Bar &b, float held) override {
-    const Order o = m_.step(b, held);
-    mid.push_back(b_ ? b_->mid() : kNaN), half.push_back(b_ ? b_->half() : kNaN);
-    return o;
-  }
-};
-
-constexpr size_t kTraceDays[] = {250, 5}; // 轨迹窗: 1d / 1m
-
 std::string date_of(int64_t t) {
   const int d = ymd_of(t);
   char buf[16];
@@ -403,7 +336,7 @@ void parallel(const char *what, size_t n, const std::function<void(size_t)> &f) 
 } // namespace
 
 int main(int argc, char **argv) {
-  std::map<std::string, std::string> arg = {{"freq", "1m"}, {"sets", "idx,ind,concept"}, {"models", "band"}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"stop", "close"}, {"top", "15"}, {"expo", "0.2"}, {"roll", "250"}, {"refit", "20"}, {"trace", "4"}, {"assets", "50"}};
+  std::map<std::string, std::string> arg = {{"freq", "1m"}, {"sets", "idx,ind,concept"}, {"models", "band"}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"stop", "close"}, {"top", "15"}, {"expo", "0.2"}, {"roll", "250"}, {"refit", "20"}, {"assets", "50"}};
   assert(argc % 2 == 1 && "参数须成对: --键 值");
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string k = argv[i];
@@ -452,7 +385,7 @@ int main(int argc, char **argv) {
       Hold h;
       u.hold_sr.push_back(stat_of(se, simulate(se, h, setup), setup).sharpe);
       u.lo = std::min<size_t>(u.lo, se.t.front()), u.hi = std::max<size_t>(u.hi, se.t.back());
-      u.series.push_back(std::move(se)), u.names.push_back(panel.assets[b].name);
+      u.series.push_back(std::move(se));
       std::fprintf(stderr, "\r  载入 %s %zu / %zu   ", name.c_str(), u.series.size(), cap > 0 ? std::min(cap, u.total) : u.total);
     }
     std::fputc('\n', stderr);
@@ -533,8 +466,7 @@ int main(int argc, char **argv) {
   const std::string roll = W > 0 ? std::to_string(W) + " 日 / 每 " + std::to_string(R) + " 日" : "关";
   std::printf("CTA bench %s: %zu 配置 | 成本 %.1fbp | 目标波动 %s | 不交易带 %g | 止损 %s | 滚动调参 %s | 每年 %.0f 根 | 排行仓位 ≥ %g\n", arg["freq"].c_str(),
               specs.size(), setup.cost * 1e4, vol.c_str(), setup.buffer, arg["stop"].c_str(), roll.c_str(), setup.bpy, expo);
-  std::vector<char> flat_of(rows.size(), 0);     // 平原顶行
-  std::vector<std::pair<size_t, size_t>> traces; // (测试集, band 平原顶 spec)
+  std::vector<char> flat_of(rows.size(), 0); // 平原顶行
   for (size_t i = 0; i < us.size(); ++i) {
     const Universe &u = us[i];
     std::printf("\n== %s: %zu / %zu 只 (不足 %zu 日略 %zu) | %s … %s ==\n  VR", u.name.c_str(), u.series.size(), u.total, kMinDays, u.skipped,
@@ -588,8 +520,6 @@ int main(int argc, char **argv) {
       const bool f = flat < ids.size();
       if (f)
         flat_of[i * specs.size() + ids[flat]] = 1;
-      if (f && m == "band")
-        traces.emplace_back(i, ids[flat]);
       std::printf("  %-16s %3.0f  %-36s %6.2f  %-36s %6.2f %6.2f %6.2f %6.2f %5.0f%% %5.2f %5.2f %+5.2f\n", m.c_str(), n,
                   best ? best->params.c_str() : "-", best ? best->port.sharpe : kNaN, f ? rs[ids[flat]].params.c_str() : "-",
                   f ? rs[ids[flat]].port.sharpe : kNaN, f ? sm[flat] : kNaN, ssr / n, dsr / n, 100 * beat / n, up / n, dn / n, edge / n);
@@ -632,40 +562,4 @@ int main(int argc, char **argv) {
   }
   std::fclose(f);
   std::printf("\n全部 %zu 行 → %s\n", all.size(), out.c_str());
-
-  // 轨迹: 各测试集 band 平原顶, 随机 trace 只资产各取随机一窗 (起点不早于序列 1/5, 避开预热)
-  const size_t ntr = std::stoul(arg["trace"]);
-  const std::string tout = dir + "/trace_" + arg["freq"] + ".tsv";
-  std::remove(tout.c_str());
-  if (ntr == 0 || traces.empty())
-    return 0;
-  std::FILE *g = std::fopen(tout.c_str(), "w");
-  assert(g && "trace.tsv: 写不了");
-  std::fprintf(g, "set\tasset\tparams\ttime\to\th\tl\tc\tmid\thalf\tw\tr\n");
-  std::mt19937 rng(std::random_device{}());
-  const size_t L = kTraceDays[panel.S > 1] * panel.S;
-  for (const auto &[i, j] : traces) {
-    const Universe &u = us[i];
-    std::vector<size_t> pool(u.series.size());
-    std::iota(pool.begin(), pool.end(), 0);
-    std::shuffle(pool.begin(), pool.end(), rng);
-    pool.resize(std::min(ntr, pool.size()));
-    for (const size_t a : pool) {
-      const Series &se = u.series[a];
-      const std::unique_ptr<Model> m = make(specs[j], S);
-      Probe pr(*m);
-      const Run run = simulate(se, pr, setup);
-      const size_t n = se.bar.size();
-      assert(n / 5 + L <= n && "序列短于轨迹窗");
-      const size_t s0 = std::uniform_int_distribution<size_t>(n / 5, n - L)(rng);
-      const std::string params = params_of(specs[j]);
-      for (size_t k = s0; k < s0 + L; ++k) {
-        const Bar &b = se.bar[k];
-        std::fprintf(g, "%s\t%s\t%s\t%lld\t%g\t%g\t%g\t%g\t%g\t%g\t%g\t%g\n", u.name.c_str(), u.names[a].c_str(), params.c_str(),
-                     static_cast<long long>(panel.time[se.t[k]]), b.o, b.h, b.l, b.c, pr.mid[k], pr.half[k], run.w[k], run.r[k]);
-      }
-    }
-  }
-  std::fclose(g);
-  std::printf("轨迹 %zu 测试集 × %zu 只 → %s\n", traces.size(), ntr, tout.c_str());
 }

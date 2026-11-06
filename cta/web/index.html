@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>CTA 轨迹</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        font:
+          13px system-ui,
+          sans-serif;
+        display: flex;
+        height: 100vh;
+      }
+      #side {
+        width: 290px;
+        padding: 10px;
+        overflow-y: auto;
+        border-right: 1px solid #ddd;
+        box-sizing: border-box;
+        flex: none;
+      }
+      #main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      #over {
+        height: 230px;
+        flex: none;
+      }
+      #win {
+        flex: 1;
+        min-height: 0;
+      }
+      fieldset {
+        border: 1px solid #ddd;
+        margin: 0 0 8px;
+        padding: 6px 8px;
+      }
+      legend {
+        color: #555;
+      }
+      label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin: 3px 0;
+        gap: 6px;
+      }
+      label input,
+      label select {
+        width: 130px;
+      }
+      .row {
+        display: flex;
+        gap: 4px;
+        margin-top: 4px;
+      }
+      .row button {
+        flex: 1;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 12px;
+      }
+      td,
+      th {
+        padding: 1px 4px;
+        text-align: right;
+      }
+      th:first-child,
+      td:first-child {
+        text-align: left;
+        color: #555;
+      }
+      #busy {
+        color: #b00;
+        font-weight: normal;
+      }
+      .hint {
+        color: #888;
+        font-size: 11px;
+        margin-top: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="side">
+      <fieldset>
+        <legend>资产 (启动时随机挑)</legend>
+        <select id="asset" style="width: 100%"></select>
+      </fieldset>
+      <fieldset>
+        <legend>模型</legend>
+        <label
+          >模型
+          <select id="kind"></select
+        ></label>
+        <div id="params"></div>
+        <label
+          >吊灯外挂 k (0 = 不叠)
+          <input id="trail" type="number" step="0.5" min="0" value="0"
+        /></label>
+        <div class="hint">
+          参数以根 (分钟) 计, band 的 n 以日计; 下拉提示是测试台网格取值,
+          可填任意值
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>引擎</legend>
+        <label
+          >单边费率 (bp)
+          <input id="cost" type="number" step="1" min="0" value="10"
+        /></label>
+        <label
+          >止损判据
+          <select id="stop">
+            <option value="close">收盘</option>
+            <option value="intra">盘中</option>
+          </select></label
+        >
+        <label
+          >目标年化波动 (0 = 不调)
+          <input id="vol" type="number" step="0.05" min="0" value="0"
+        /></label>
+        <label
+          >不交易带
+          <input id="buffer" type="number" step="0.05" min="0" value="0"
+        /></label>
+      </fieldset>
+      <fieldset>
+        <legend>窗口</legend>
+        <label>起日 <input id="from" type="date" /></label>
+        <label
+          >交易日数 <input id="days" type="number" min="1" max="60" value="5"
+        /></label>
+        <div class="row">
+          <button id="prev">◀ 前一窗</button><button id="rand">随机</button
+          ><button id="next">后一窗 ▶</button>
+        </div>
+        <div class="hint">点上方全期图跳到该日; 键盘 ← / → 翻窗</div>
+      </fieldset>
+      <fieldset>
+        <legend>全期指标 <span id="busy"></span></legend>
+        <table id="stats"></table>
+      </fieldset>
+    </div>
+    <div id="main">
+      <div id="over"></div>
+      <div id="win"></div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

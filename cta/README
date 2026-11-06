@@ -1,22 +1,29 @@
 ```
-入口: cta/run.py ──► CMake (Ninja, clang++) ──► build/cta_bench (参数原样转交) ──► plot.py (plotly 弹窗)
+入口: cta/run.py ──► CMake (Ninja, clang++) ──► APP = trace: build/cta_trace (浏览器交互, 后端现算)
+                                            └► APP = bench: build/cta_bench (参数原样转交) ──► plot.py (plotly 弹窗)
 数据源 (只读): ../output/features/all/bar (all.bar 特征库) + ../output/concept/*.tsv (最近一份概念快照)
 ```
 
 ```
 cta/
-├── run.py                 # 🚀 启动器: 构建 cta_bench → 跑 → plot.py; python3 cta/run.py [--sets ind] [--models band,tsmom] [--roll 500] [--cost 0.0015] …
-├── plot.py                # 📊 plotly 弹窗 (浏览器): 结果网格 (每测试集: 排行表 | 夏普 vs 下跌捕获 | band 曲面 | 平原顶切面)
-│                          #    + band 轨迹 (随机资产一窗: K 线 + 中线 / 上下沿 / 档线 + 加减仓点, 下方仓位与窗内净值 vs 持有)
-├── CMakeLists.txt         # 🏗️ CMake (C++23, 断言常开); CTA_DIR = 本目录 (库落 data/, 源在 ../output)
+├── run.py                 # 🚀 启动器: 构建 → 按 APP 跑; trace: python3 cta/run.py [端口] / bench: python3 cta/run.py [--sets ind] [--models band,tsmom] [--roll 500] …
+├── plot.py                # 📊 测试台结果弹窗 (plotly, 浏览器): 每测试集一行 = 排行表 | 夏普 vs 下跌捕获 | band 曲面 | 平原顶切面
+├── CMakeLists.txt         # 🏗️ CMake (C++23, 断言常开); CTA_DIR = 本目录 (库落 data/, 源在 ../output, 前端在 web/)
+├── web/                   # 🖥️ cta_trace 前端 (plotly.js): 只收集选项、请求、画图, 不做计算
+│   ├── index.html         #    · 侧栏: 资产 / 模型 + 参数 (下拉提示 = 网格取值) / 吊灯外挂 / 引擎 (费率 / 止损 / 波动定仓 / 不交易带) / 窗口 + 全期指标 (策略 vs 持有)
+│   └── app.js             #    · 上: 全期日线 (策略 vs 持有净值 + 日均仓位, 点击跳窗); 下: 窗口逐根 K 线 + band 中线 / 上下沿 / 档线 + 止损 + 加减仓点, 底部仓位与窗内净值
 ├── src/
+│   ├── trace.cpp          # 🔍 交互轨迹 cta_trace (1m): 启动随机挑 10 只够长的资产, 起本地 HTTP 并打开浏览器; 每次请求现算一个配置
+│   │                      #    · GET /api/meta → 资产 + 模型表 (参数轴 + 网格取值); GET /api/run → 全期指标 + 全期日线概览 + 窗口逐根 (K 线 / band / 生效止损 / 仓位 / 净值)
+│   ├── Http.hpp           # 🌐 最小 HTTP 服务: 127.0.0.1 单线程, 只收 GET, 路径 + 查询串交给处理函数
+│   ├── Kinds.hpp          # 📋 模型表 kKinds (测试台与轨迹共用): 名 + 参数轴 (数值 / 类别) + 组合约束 + make + 是否另叠 Trail
 │   ├── main.cpp           # 🚀 测试台 cta_bench: 模型 × 参数网格 × 测试集, 逐资产回测 → 等权组合 + 跨资产中位数
 │   │                      #    · 流程: sync 合成 CTA 库到 all.bar 末日 → 按 freq 开面板 → 每测试集 × 每配置一个任务 (多线程)
 │   │                      #    · 参数: --freq 1m (默认) | 1d / --sets idx,ind,concept / --models (默认 band, 空 = 全部) / --cost 单边费率 / --vol 目标年化波动 (0 = 不调)
 │   │                      #            / --buffer 不交易带 / --stop close|intra / --top 排行条数 / --expo 排行的平均仓位下限
-│   │                      #            / --roll 滚动调参窗 (日, 默认 250, 须 ≥ 一年; 0 = 关) / --refit 重拟间隔 (日) / --trace 每测试集轨迹资产数 (0 = 不出)
+│   │                      #            / --roll 滚动调参窗 (日, 默认 250, 须 ≥ 一年; 0 = 关) / --refit 重拟间隔 (日)
 │   │                      #            / --assets 每测试集抽样资产数 (默认 50, 固定种子; 0 = 全部)
-│   │                      #    · 模型表 kKinds: 名 + 参数轴 (数值 / 类别) + 组合约束 + 是否另叠 Trail 各跑一份; 参数 / 方差比周期的单位都是根 (1m = 分钟), band 的 n 以日计
+│   │                      #    · 参数 / 方差比周期的单位都是根 (1m = 分钟), band 的 n 以日计; 叠 Trail 的模型另跑一份
 │   │                      #    · 平原: 网格上的夏普曲面取邻域均值 (数值轴下标差 ≤ 1, 类别轴相同), 平原顶 = 邻域均值最高点
 │   │                      #    · 滚动调参: 每 refit 日以前 W 日各资产夏普均值拟曲面 → 平原顶参数用到下一期 (候选同跑常热, 切换计成本); 前 W 日空仓
 │   │                      #    · 终端: 各测试集方差比 VR(k) (哪些周期有趋势 / 均值回归) → 按组合夏普排行 (+ 基准 hold) → 各模型网格汇总 (最优 / 平原顶 / 网格均值) → 滚动调参 (选中统计 + 当前参数)
@@ -42,13 +49,12 @@ cta/
 │   │                      #    · 仓位层 (模型之后): 波动率定仓 w · min(1, 目标 / σ̂) → 不交易带; 成本 = 单边费率 × 换手
 │   └── Metrics.hpp        # 📐 指标: 收益统计 (SR / CAGR / MDD, 组合与单资产同一份) + 择时捕获 up / dn / edge + 交易统计 (胜率 / 盈亏比 / 持有) + 方差比 VR(k)
 │                          #    · up / dn = 资产涨 / 跌的根上策略毛收益占比: 满仓 = 1, 随机择时 ≈ 平均仓位; edge = up − dn = 择时本身挣的
-├── build/cta_bench        # 🎯 可执行文件
+├── build/                 # 🎯 可执行文件 cta_trace / cta_bench
 └── data/                  # 📁 CTA 库 (gitignore)
     ├── head.bin           # 头 (键 = 库轴 / 概念 / 子池 / 两层字段表指纹 / 库首日) + 已合成日 + 末日点位; 键对得上且已合成日是库落盘日前缀 → 续算, 否则从头
     ├── 1d.bin             # f32 [D][B][开 高 低 收 额]; 无根 = NaN
     ├── 1m.bin             # f32 [D][B][240 槽][开 高 低 收 额]
-    ├── bench_<freq>.tsv   # 测试台全部行 (测试集 × 配置; plateau = 平原顶) → bench_<freq>.html
-    └── trace_<freq>.tsv   # band 平原顶的随机轨迹 (--trace 只/测试集; 1d 250 日 / 1m 5 日一窗) → trace_<freq>.html
+    └── bench_<freq>.tsv   # 测试台全部行 (测试集 × 配置; plateau = 平原顶) → bench_<freq>.html
 ```
 
 # ================================================
@@ -67,5 +73,5 @@ cta/
 # ================================================
 #
 #   1. Model.hpp 加一个 Model 子类: step(本根, 实际仓位) → Order; 窗口以根计, 递推件复用现有的
-#   2. main.cpp kKinds 加一行: 名 + 参数轴 (数值 / 类别) + 组合约束 (可空) + make + 是否另叠 Trail; 平原与滚动调参自动覆盖
-#   3. 其他文件不动; --models <名> 单跑
+#   2. Kinds.hpp kKinds 加一行: 名 + 参数轴 (数值 / 类别) + 组合约束 (可空) + make + 是否另叠 Trail; 平原、滚动调参与轨迹界面自动覆盖
+#   3. 其他文件不动; 轨迹界面里选它看, 或 bench --models <名> 单跑
