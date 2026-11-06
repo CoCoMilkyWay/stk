@@ -1085,8 +1085,9 @@ void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<Overl
   ImGui::PopID();
 }
 
-std::vector<misc::Ymd> FlowDays(const Market &mk, int n) { return day_axis(mk.quote->trading(), mk.quote->status().date, n); }
-std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st) { return FlowDays(mk, kIntraDays[st.flow]); }
+std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st) {
+  return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.flow]);
+}
 
 Flow FlowOf(const Bars &b, bool ends) {
   Flow o;

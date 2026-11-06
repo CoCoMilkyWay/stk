@@ -127,9 +127,7 @@ void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav
 void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name, const ImVec2 &plots_size, float panel_w);
 
 // ---- 右表 (PortfolioSheet.cpp) ----
-// VAL 右表资金流列的日数 (行情日及其前 kValFlowDays − 1 个交易日)
-inline constexpr int kValFlowDays = 5;
-// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW / CTA; flow_days = 资金流日轴 (FLOW = 档位, VAL = 近 kValFlowDays 日; 其余页不看); infos = 成分行的近况 / 当日
+// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW / CTA; flow_days = FLOW 日轴 (其余页不看); infos = 成分行的近况 / 当日
 void RenderPortfolioSheet(PortfolioUIState &ui, int page, const std::vector<misc::Ymd> &flow_days, const StockInfos &infos);
 // 成分行在新浪当日的根 (ui.cons): 成分集 / 行情日 · 快照时刻变了才重取
 void SyncPortfolioCons(PortfolioUIState &ui, const Database::QuoteService &q);

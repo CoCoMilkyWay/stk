@@ -101,9 +101,7 @@ void RenderStockPanel(const Market &mk, StockState &st, const std::string &title
 void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<OverlayPick> &picks);
 // picks 各条的累计净流入叠加图 (日轴 = FlowDays, 跨日接续; 档位 / 口径 / 开收盘开关叠在左上角), 其余同 RenderBasketIntraday
 void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<OverlayPick> &picks);
-// 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
-std::vector<misc::Ymd> FlowDays(const Market &mk, int n);
-// 资金流档的日轴 (n = 该档日数)
+// 资金流档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
 std::vector<misc::Ymd> FlowDays(const Market &mk, const BasketState &st);
 // 一段的资金流 [元]: 净流入 (分钟涨跌法, 见 Fold) / 成交额; amount 0 = 无根
 struct Flow {

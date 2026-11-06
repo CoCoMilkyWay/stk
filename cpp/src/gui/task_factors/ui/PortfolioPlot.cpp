@@ -757,13 +757,6 @@ void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav
       label(rx, s1, t1);
     }
     ImPlot::PopPlotClipRect();
-    if (act != 0)
-      tip("区间 %d/%02d/%02d ~ %d/%02d/%02d (%d 日)\n"
-          "• 拖左右把手改起止 (吸附到月初), 拖段内平移 (日数不变)\n"
-          "• 双击把手 = 拉到头, 双击段内 = 回全段\n"
-          "• VAL 主图左键横向框选 = 改区间 (任意日), 双击主图 = 回全段",
-          d.dates[rg.d0] / 10000, d.dates[rg.d0] / 100 % 100, d.dates[rg.d0] % 100, d.dates[rg.d1 - 1] / 10000, d.dates[rg.d1 - 1] / 100 % 100,
-          d.dates[rg.d1 - 1] % 100, rg.d1 - rg.d0);
   }
   ImPlot::EndPlot();
 }

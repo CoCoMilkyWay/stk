@@ -244,10 +244,6 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     }
     track();
     c.boxing = ImPlot::IsPlotSelected();
-    if (hover >= 0 && ImPlot::IsPlotHovered()) {
-      const size_t i = static_cast<size_t>(hover);
-      ImGui::SetTooltip("%s\n收 %.3f  仓 %.2f\n上 %.3f  下 %.3f", when(r, i).c_str(), se.c[i], w[i], tr.sig.band.up[i], tr.sig.band.dn[i]);
-    }
     ImPlot::EndPlot();
   }
 
@@ -261,10 +257,6 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.5f);
     ImPlot::PlotLine("策略净值", xs.data(), nav.data(), static_cast<int>(xs.size()));
     track();
-    if (hover >= 0 && ImPlot::IsPlotHovered()) {
-      const size_t i = static_cast<size_t>(hover);
-      ImGui::SetTooltip("%s\n仓 %.2f\n策略 %.3f  持有 %.3f", when(r, i).c_str(), w[i], tr.strat.nav[i], tr.hold.nav[i]);
-    }
     ImPlot::EndPlot();
   }
   ImPlot::PopStyleVar(2);
