@@ -54,7 +54,7 @@ inline Stat stat_of(const Series &se, const Run &run, const Setup &u) {
   double nw = 0, sw = 0, nl = 0, sl = 0, bars = 0;
   for (const Trade &t : run.trades) {
     (t.ret > 0 ? nw : nl) += 1, (t.ret > 0 ? sw : sl) += t.ret;
-    bars += static_cast<double>(t.i1 - t.i0 + 1);
+    bars += static_cast<double>(t.i1 - t.i0);
   }
   const double nt = nw + nl;
   s.trades = nt / s.years;

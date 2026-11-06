@@ -135,6 +135,7 @@ def _merge(mg, co):
 def pull(log, live):
     """客户端重查两融条款、落盘当日一份（删旧的）→ {代码: Term}；log(kind, **kw) 记进度、live(**kw) 报实时进度。"""
     with ui.UI("两融条款"):
+        ui.show_bar()
         mg, co = (_full(log, live, *p) for p in PAGES)
         ui.click_tool("持仓")
     terms = _merge(mg, co)

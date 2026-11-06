@@ -21,7 +21,8 @@
 #     杠杆 = 总资产 / 净资产，维持担保比例 = 总资产 / 负债。现总资产 = 读时现金 + 现持仓市值。
 # 账户取自持仓推送的 State（刷新一轮里接在持仓之后查），试算有什么用什么，账户新旧由持仓页进度标出。
 # 后台事务一次一件（拉条款 / 执行，feed.Jobs），状态与日志（feed.Journal，logs/reb-<时刻>.jsonl）推给页面：
-#   执行 = 刷新 → 还有挂单即停（免得重复下单、冻结的钱券没算进试算）→ 试算 → 卖单逐只闪电卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 →
+#   条款只认当日的，跨日即换成当日落盘的；调仓页订阅时当日还没有即后台拉（每天自动至多一次，失败了等人点）。
+#   执行 = 当日条款还没有即先拉 → 刷新 → 还有挂单即停（免得重复下单、冻结的钱券没算进试算）→ 试算 → 卖单逐只闪电卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 →
 #   融资单逐只闪电融资买入 → 现金单逐只闪电买入 → 刷新。
 #   每单 order.ORDERS.place，任一步失败即停（已下的单不撤）。
 
@@ -316,7 +317,8 @@ def plan(st, terms, codes, cfg):
 
 class Rebal:
     def __init__(self):
-        # 以下各项由后台事务与配置修改改写，同在 feed 内
+        # 以下各项由后台事务与配置修改改写，同在 feed 内；terms 为 day 那天的，auto 为上次自动拉条款的日子
+        self.day, self.auto = time.strftime("%Y%m%d"), None
         self.terms = credit.load()
         names = lists()
         self.cfg = {
@@ -346,9 +348,28 @@ class Rebal:
         }
 
     def frames(self):
-        """SSE：订阅期间持仓循环转着（试算跟它的帧走）。"""
+        """SSE：订阅期间持仓循环转着（试算跟它的帧走）；当日条款还没有、今天也还没自动拉过即后台拉。"""
+        self._today()
+        with self.feed:
+            j = self.jobs.last()
+            if (
+                self.terms is None
+                and self.auto != self.day
+                and not (j and j["state"] == "run")
+            ):
+                self.auto = self.day
+                self.pull({})
         with HUB.sub():
             yield from self.feed.watch()
+
+    def _today(self):
+        """跨日即把条款换成当日落盘的（还没拉过为 None）。"""
+        day = time.strftime("%Y%m%d")
+        if day == self.day:
+            return
+        with self.feed:
+            self.day, self.terms = day, credit.load()
+        self._watch()
 
     def _watch(self):
         """名单里可买的（试算要其行情）并进持仓页那一路行情。"""
@@ -363,6 +384,7 @@ class Rebal:
 
     def _calc(self, st):
         """重算试算、推帧（持仓循环的 hook，也在配置 / 账户 / 条款变后调）。"""
+        self._today()
         if self.terms is None:
             p = {"wait": "当日两融条款还没拉（更新两融名单）"}
         elif st.acct is None:
@@ -489,6 +511,9 @@ class Rebal:
             time.sleep(FILL_GAP)
 
     def _run(self, log):
+        self._today()
+        if self.terms is None:
+            self._pull(log)
         self._sync(log)
         hang = HUB.state().orders.rows
         assert not hang, (

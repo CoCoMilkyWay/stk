@@ -406,10 +406,11 @@ th.sortable:hover {
   color: var(--fg);
 }
 
-/* 持仓页：工具栏按 数据 / 下单 / 调仓 分组，各组上一排控件（ctl）、下几行状态（st），提示行空着即不占地 */
+/* 持仓页：工具栏 数据 / 下单 / 调仓 三组同排、不折行；前两组宽随控件排、调仓组占满余下，
+   各组上一排控件（ctl）、下接状态（st），整个工具栏的位置与高度不随内容变 */
 .bar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
   gap: 6px;
   margin-bottom: 6px;
 }
@@ -417,8 +418,8 @@ th.sortable:hover {
 .grp {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 4px;
+  min-width: 0;
   margin: 0;
   padding: 2px 8px 5px;
   border: 1px solid var(--line);
@@ -431,8 +432,24 @@ th.sortable:hover {
   gap: 6px;
 }
 
-.grp .st {
+/* 状态行：定 --n 行高、空着也占地；不参与定宽（contain），超长截断，悬停看全文（core.js tipAt） */
+.st {
+  height: calc(var(--n, 1) * 1.5em);
+  contain: inline-size;
+  overflow: hidden;
   font-variant-numeric: tabular-nums;
+}
+
+.st,
+.st > div {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#termsSt {
+  width: 9em;
+  white-space: nowrap;
 }
 
 .grp legend {
@@ -456,6 +473,10 @@ button:disabled {
   margin-bottom: 4px;
 }
 
+#acctTbl td.num {
+  min-width: 7em;
+}
+
 #acctTbl th:first-child,
 #acctTbl td:first-child {
   color: var(--mut);
@@ -472,12 +493,6 @@ button:disabled {
 
 .priv #posTbl tfoot td:first-child {
   filter: none;
-}
-
-#acctTbl:empty,
-#posInfo:empty,
-.grp .st:empty {
-  display: none;
 }
 
 tfoot td {
@@ -568,6 +583,17 @@ summary {
   cursor: default;
 }
 
+/* 试算未出时卖出各列的占位，与有试算时同宽 */
+.sell-ph {
+  display: inline-block;
+  width: 80px;
+}
+
+.sell-lbl {
+  display: inline-block;
+  min-width: 5em;
+}
+
 button.ord {
   padding: 0 4px;
   font-size: 11px;
@@ -587,7 +613,8 @@ button.ord {
   border-radius: 4px;
   padding: 3px 6px;
   font-size: 12px;
-  white-space: pre;
+  white-space: pre-wrap;
+  max-width: 80vw;
 }
 
 .kv {

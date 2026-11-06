@@ -33,6 +33,8 @@ WM_VSCROLL, WM_COMMAND, SB_PAGEDOWN, SB_TOP = 0x115, 0x111, 3, 6
 TOOLBAR = {"class": "MHPToolBar", "title": "MainViewBar"}
 # 交易栏左侧功能树（查询 / 资产分析 / …），右侧为所选功能的页；树项只认真实光标处的点击，clickat 会钉光标
 FUNC_TREE = ("SysTreeView32", 59653)
+# 主窗顶栏的「交易」：交易栏收起（整个停靠条高 0、功能树与 MainViewBar 都不可见）时点它展开
+TRADE_NAV = {"class": "AfxWnd100", "text": "交易"}
 # 查询页：列表上方「第1--N条」/「共N条」、「查询全部」按钮
 PAGE_COUNT, PAGE_ALL = 166, 454
 COUNT_RE = re.compile(r"(?:第1--|共)(\d+)条")
@@ -48,8 +50,7 @@ def attach():
 
 
 def post(h, msg, wp, lp=0):
-    assert SHIM("post", h, msg, wp, lp)[
-        0]["ret"], f"PostMessage {h} {msg:#x} 失败"
+    assert SHIM("post", h, msg, wp, lp)[0]["ret"], f"PostMessage {h} {msg:#x} 失败"
 
 
 def title(h):
@@ -80,8 +81,9 @@ def wait(what, fn, timeout):
     """what 可为可调用（超时时才求值，好报出当时的状态）。"""
     end = time.monotonic() + timeout
     while not (r := fn()):
-        assert time.monotonic(
-        ) < end, f"{timeout}s 内未等到{what() if callable(what) else what}"
+        assert (
+            time.monotonic() < end
+        ), f"{timeout}s 内未等到{what() if callable(what) else what}"
         time.sleep(0.05)
     return r
 
@@ -114,12 +116,24 @@ def click_tool(text):
     return click_text({**TOOLBAR, "text": text})
 
 
+def _func_trees():
+    cls, cid = FUNC_TREE
+    return [
+        n for n in SHIM("tree") if n["vis"] and n["class"] == cls and n["id"] == cid
+    ]
+
+
+def show_bar():
+    """交易栏收起了即点顶栏「交易」，等功能树出来。用交易栏（页签 / 刷新 / 功能树）的事务开头各调一次。"""
+    if not _func_trees():
+        click_text(TRADE_NAV)
+        wait("点顶栏「交易」后交易栏展开", _func_trees, 5)
+
+
 def click_func(name):
     """点交易功能树上的 name：树只给可见项，滚到顶后逐页往下找，翻不动即到底。"""
-    cls, cid = FUNC_TREE
-    trees = [n for n in SHIM("tree") if n["vis"]
-             and n["class"] == cls and n["id"] == cid]
-    assert len(trees) == 1, f"交易功能树命中 {len(trees)} 个（交易栏未展开？）"
+    trees = _func_trees()
+    assert len(trees) == 1, f"交易功能树命中 {len(trees)} 个"
     t = trees[0]
     SHIM("send", t["hwnd"], WM_VSCROLL, SB_TOP, 0)
     seen = None
@@ -128,7 +142,12 @@ def click_func(name):
         hits = [it for it in items if it[5] == name]
         if hits:
             l, tp, r, b = hits[0][:4]
-            return SHIM("clickat", t["hwnd"], t["rect"][0] + (l + r) // 2, t["rect"][1] + (tp + b) // 2)
+            return SHIM(
+                "clickat",
+                t["hwnd"],
+                t["rect"][0] + (l + r) // 2,
+                t["rect"][1] + (tp + b) // 2,
+            )
         names = [it[5] for it in items]
         assert names != seen, f"交易功能树里没有「{name}」"
         seen = names
@@ -151,9 +170,17 @@ def _pages(timeout):
 def _cols(dlg, timeout):
     """查询页列表的表头各列名。detail 在界面线程里只等 3s，先 gettext（一直等）把卡顿等过去。"""
     text(dlg, timeout)
-    hdr = [n["hwnd"]
-           for n in SHIM("tree", dlg, timeout=timeout) if n["vis"] and n["class"] == "SysHeader32"]
-    return [it[5] for h in hdr for it in SHIM("detail", h, timeout=timeout)[0]["items"] if len(it) > 5]
+    hdr = [
+        n["hwnd"]
+        for n in SHIM("tree", dlg, timeout=timeout)
+        if n["vis"] and n["class"] == "SysHeader32"
+    ]
+    return [
+        it[5]
+        for h in hdr
+        for it in SHIM("detail", h, timeout=timeout)[0]["items"]
+        if len(it) > 5
+    ]
 
 
 def open_page(func, col, timeout=180):
@@ -161,8 +188,7 @@ def open_page(func, col, timeout=180):
     click_func(func)
     return wait(
         f"「{func}」页（表头含「{col}」）",
-        lambda: next((d for d in _pages(timeout)
-                     if col in _cols(d, timeout)), None),
+        lambda: next((d for d in _pages(timeout) if col in _cols(d, timeout)), None),
         timeout,
     )
 
@@ -173,8 +199,10 @@ def count_label(dlg):
 
 
 def page_count(lbl, timeout=5):
-    """条数标签 lbl 上的列表条数（「第1--N条」/「共N条」）；客户端卡着时 gettext 一直等到它缓过来。"""
+    """条数标签 lbl 上的列表条数（「第1--N条」/「共N条」），重查中标签清空回 None；客户端卡着时 gettext 一直等到它缓过来。"""
     t = text(lbl, timeout)
+    if not t:
+        return None
     m = COUNT_RE.fullmatch(t)
     assert m, f"条数标签读到 {t!r}"
     return int(m.group(1))

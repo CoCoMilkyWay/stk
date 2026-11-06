@@ -1,8 +1,9 @@
 #pragma once
 
-// 单资产时序模型 (只做多): 逐根收盘后看本根, 给下一根的单 Order; 窗口一律以根计 (日线 / 分钟同一套)
+// 单资产时序模型 (只做多): 逐根收盘看本根, 出单 Order (按本根收盘价调仓); 窗口一律以根计 (日线 / 分钟同一套)
 //   模型 = 入场 / 持有判据 + 可选止损价; 成交 / 仓位层 / 成本归 Engine
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <deque>
 #include <functional>
@@ -15,8 +16,8 @@ struct Bar {
 };
 
 struct Order {
-  float w = 0;    // 目标仓位 [0, 1]: 下一根开盘调到
-  float stop = 0; // 止损价 (0 = 无): 触发即清仓, 判据 / 成交价见 Engine
+  float w = 0;    // 目标仓位 [0, 1]: 本根收盘调到
+  float stop = 0; // 止损价 (0 = 无): 下一根起触发即清仓, 判据 / 成交价见 Engine
 };
 
 class Model {
@@ -112,6 +113,122 @@ struct Dev {
   }
 };
 
+// 考夫曼自适应均线: 效率比 ER = |c − c_n 根前| / 近 n 根 Σ|Δc|; 平滑系数 (ER · (2/3 − α_slow) + α_slow)², α_slow = 2 / (slow + 1)
+//   震荡 (ER → 0) 时均线几乎不动, 趋势 (ER → 1) 时贴近价格; 满 n 根前 v = 收
+struct KamaLine {
+  long n;
+  double slow, sum = 0, v = 0;
+  Lag c, d;
+  KamaLine(long n, double slow) : n(n), slow(2 / (slow + 1)), c(n), d(n) {}
+  void push(float x) {
+    if (c.has(0)) {
+      const double dd = std::fabs(x - c.ago(0));
+      d.push(static_cast<float>(dd));
+      sum += dd;
+      if (d.has(n))
+        sum -= d.ago(n);
+    }
+    c.push(x);
+    if (!ready()) {
+      v = x;
+      return;
+    }
+    const double er = sum > 0 ? std::fabs(x - c.ago(n)) / sum : 0, sc = er * (2 / 3.0 - slow) + slow;
+    v += sc * sc * (x - v);
+  }
+  bool ready() const { return c.has(n); }
+};
+
+// ---- band 部件 (价格单位, 周期 n 根) ----
+//   磨损 ≈ band 在震荡里的漂移: band 不动时仓位只是价格的函数, 区间内来回毛收益为零; 故中线要震荡不动、趋势紧跟, 宽度要慢变
+
+inline constexpr const char *kCenters[] = {"ema", "kama", "mid"}, *kWidths[] = {"vol", "rng", "dev"};
+
+struct Center {
+  virtual ~Center() = default;
+  virtual void push(const Bar &b) = 0;
+  virtual double v() const = 0;
+};
+
+struct EmaCenter : Center {
+  Ema e;
+  explicit EmaCenter(long n) : e(static_cast<double>(n)) {}
+  void push(const Bar &b) override { e.push(b.c); }
+  double v() const override { return e.v; }
+};
+
+// ER 窗口与慢跨度都取 n: 震荡时等效跨度 ~ n² / 2
+struct KamaCenter : Center {
+  KamaLine k;
+  explicit KamaCenter(long n) : k(n, static_cast<double>(n)) {}
+  void push(const Bar &b) override { k.push(b.c); }
+  double v() const override { return k.v; }
+};
+
+// 唐奇安中线 (近 n 根最高 + 最低) / 2: 区间内呈台阶
+struct MidCenter : Center {
+  RollMax hi;
+  RollMin lo;
+  explicit MidCenter(long n) : hi(n), lo(n) {}
+  void push(const Bar &b) override { hi.push(b.h), lo.push(b.l); }
+  double v() const override { return (hi.top() + lo.top()) / 2.0; }
+};
+
+struct Width {
+  virtual ~Width() = default;
+  virtual void push(const Bar &b, double center) = 0;
+  virtual double v() const = 0;
+};
+
+// n 根收益的波动: σ_bar · √n · 收 (σ_bar 跨度 n)
+struct VolWidth : Width {
+  Vol s;
+  double rn, c = 0;
+  explicit VolWidth(long n) : s(static_cast<double>(n)), rn(std::sqrt(static_cast<double>(n))) {}
+  void push(const Bar &b, double) override { s.push(b.c), c = b.c; }
+  double v() const override { return s.v() * rn * c; }
+};
+
+// 唐奇安半宽 (近 n 根最高 − 最低) / 2
+struct RngWidth : Width {
+  RollMax hi;
+  RollMin lo;
+  explicit RngWidth(long n) : hi(n), lo(n) {}
+  void push(const Bar &b, double) override { hi.push(b.h), lo.push(b.l); }
+  double v() const override { return (hi.top() - lo.top()) / 2.0; }
+};
+
+// 偏离中线的均方根: √EMA_n((收 − 中线)²) (布林式)
+struct DevWidth : Width {
+  Ema e;
+  explicit DevWidth(long n) : e(static_cast<double>(n)) {}
+  void push(const Bar &b, double center) override {
+    const double d = b.c - center;
+    e.push(d * d);
+  }
+  double v() const override { return std::sqrt(e.v); }
+};
+
+inline std::unique_ptr<Center> center_of(int kind, long n) {
+  switch (kind) {
+  case 0: return std::make_unique<EmaCenter>(n);
+  case 1: return std::make_unique<KamaCenter>(n);
+  case 2: return std::make_unique<MidCenter>(n);
+  }
+  assert(false && "中线种类");
+  return nullptr;
+}
+
+inline std::unique_ptr<Width> width_of(int kind, long n) {
+  switch (kind) {
+  case 0: return std::make_unique<VolWidth>(n);
+  case 1: return std::make_unique<RngWidth>(n);
+  case 2: return std::make_unique<DevWidth>(n);
+  }
+  assert(false && "宽度种类");
+  return nullptr;
+}
+
 // ---- 模型 ----
 
 // 买入持有 (基准)
@@ -167,31 +284,15 @@ public:
   }
 };
 
-// 考夫曼自适应均线: 效率比 ER = |c − c_n 根前| / 近 n 根 Σ|Δc|; 平滑系数 (ER · (2/3 − α_slow) + α_slow)², α_slow = 2 / (slow + 1)
-//   震荡 (ER → 0) 时均线几乎不动, 趋势 (ER → 1) 时贴近价格; 持有: 收 > KAMA
+// 考夫曼自适应均线 (KamaLine): 收 > KAMA 持有
 class Kama : public Model {
-  long n_;
-  double slow_, sum_ = 0, k_ = 0;
-  Lag c_, d_;
+  KamaLine k_;
 
 public:
-  Kama(float n, float slow) : n_(static_cast<long>(n)), slow_(2 / (slow + 1.0)), c_(n_), d_(n_) {}
+  Kama(float n, float slow) : k_(static_cast<long>(n), slow) {}
   Order step(const Bar &b, float) override {
-    if (c_.has(0)) {
-      const double dd = std::fabs(b.c - c_.ago(0));
-      d_.push(static_cast<float>(dd));
-      sum_ += dd;
-      if (d_.has(n_))
-        sum_ -= d_.ago(n_);
-    }
-    c_.push(b.c);
-    if (!c_.has(n_)) {
-      k_ = b.c;
-      return {};
-    }
-    const double er = sum_ > 0 ? std::fabs(b.c - c_.ago(n_)) / sum_ : 0, sc = er * (2 / 3.0 - slow_) + slow_;
-    k_ += sc * sc * (b.c - k_);
-    return {b.c > k_ ? 1.f : 0.f, 0};
+    k_.push(b.c);
+    return {k_.ready() && b.c > k_.v ? 1.f : 0.f, 0};
   }
 };
 
@@ -296,6 +397,38 @@ public:
     const double s = dev_.vol.v() * std::sqrt(static_cast<double>(f_)), m = s > 0 ? std::log(b.c / c_.ago(f_)) / s : 0;
     on_ = on_ ? m >= -h_ : m > h_;
     return {on_ && dev_.v(b.c) > g_ ? 1.f : 0.f, 0};
+  }
+};
+
+// 带宽网格: z = (收 − 中线) / (k · 宽度), 仓位按 z 在 [−1, +1] 内线性分 N 档; z ≤ −1 空仓, z ≥ +1 满仓 (破网即到位)
+//   网格只平滑仓位变动: 离当前档超过 0.5 + h 档才换档 (N = 1: h = 0 即穿中线进出, h = 0.5 即上沿入 / 下沿出)
+class Band : public Model {
+  std::unique_ptr<Center> c_;
+  std::unique_ptr<Width> w_;
+  long n_, t_ = 0;
+  double k_, h_;
+  int N_, L_ = 0;
+
+public:
+  Band(int center, int width, long n, double k, int N, double h) : c_(center_of(center, n)), w_(width_of(width, n)), n_(n), k_(k), h_(h), N_(N) {
+    assert(n > 0 && k > 0 && N > 0 && h >= 0 && h <= 0.5 && "band 参数");
+  }
+  double mid() const { return c_->v(); }
+  double half() const { return k_ * w_->v(); } // 中线到上 / 下沿
+  Order step(const Bar &b, float) override {
+    c_->push(b);
+    w_->push(b, c_->v());
+    const double w = k_ * w_->v();
+    if (++t_ < n_ || !(w > 0))
+      return {};
+    const double q = std::clamp((b.c - c_->v()) / w + 1, 0.0, 2.0) / 2 * N_;
+    if (q >= N_)
+      L_ = N_;
+    else if (q <= 0)
+      L_ = 0;
+    else if (std::fabs(q - L_) > 0.5 + h_)
+      L_ = static_cast<int>(std::lround(q));
+    return {static_cast<float>(L_) / static_cast<float>(N_), 0};
   }
 };
 

@@ -198,15 +198,24 @@ function table(
       "</tr>";
   tipAt();
 }
-// 悬停提示：鼠标下最近的 [data-tip] 的文字浮在鼠标旁；元素整个重绘了也按鼠标位置重取，不随重绘消失；
-// 隐私下 .pv 里（表头除外）不出
+// 悬停提示：鼠标下最近的 [data-tip] 的文字浮在鼠标旁；不在其内而在截断了的状态行（.st）上即出该行全文；
+// 元素整个重绘了也按鼠标位置重取，不随重绘消失；隐私下 .pv 里（表头除外）不出，含 .pv 的状态行也不出
 const TIP = { x: -1, y: -1 };
+const clipped = (st) =>
+  st.scrollHeight > st.clientHeight ||
+  [st, ...st.children].some((e) => e.scrollWidth > e.clientWidth);
 function tipAt() {
-  const el = document.elementFromPoint(TIP.x, TIP.y)?.closest("[data-tip]");
+  const at = document.elementFromPoint(TIP.x, TIP.y);
+  const el = at?.closest("[data-tip]");
+  const st = !el && at?.closest(".st");
   const t = $("tip");
-  t.hidden = !el || (!!el.closest(".priv .pv") && !el.closest("thead"));
+  t.hidden = el
+    ? !!el.closest(".priv .pv") && !el.closest("thead")
+    : !st ||
+      !clipped(st) ||
+      (document.body.classList.contains("priv") && !!st.querySelector(".pv"));
   if (t.hidden) return;
-  t.textContent = el.dataset.tip;
+  t.textContent = el ? el.dataset.tip : st.innerText;
   t.style.left = Math.min(TIP.x + 12, innerWidth - t.offsetWidth - 4) + "px";
   t.style.top =
     (TIP.y + 16 + t.offsetHeight > innerHeight

@@ -121,7 +121,7 @@ const sellLblCol = (head, i, foot) => [
   head,
   viaHold(
     (h) => `<span class="sell-lbl">${sellLbl(h, rebSell(h))[i]}</span>`,
-    "",
+    '<span class="sell-lbl"></span>',
   ),
   null,
   "num",
@@ -137,7 +137,7 @@ const SELL_COLS = [
         `<div class="sell${sellSnap(h, h.avail) ? "" : " dis"}" data-code="${h.code}" data-n="${n}">` +
         `<div class="trk"><b style="width:${w}"></b><i style="left:${w}"></i></div></div>`
       );
-    }, ""),
+    }, '<span class="sell-ph"></span>'),
     viaHold((h) => rebSell(h) * h.px),
   ],
   sellLblCol(
@@ -267,7 +267,7 @@ function onReb(r) {
     $("rebInfo").innerHTML = p?.err
       ? `<span class="off">✗ ${esc(p.err)}</span>`
       : esc(p?.wait ?? "（等试算）");
-    $("acctTbl").innerHTML = "";
+    acctTbl(null);
     $("rebTgt").tBodies[0].innerHTML = "";
     return;
   }
@@ -278,7 +278,7 @@ function onReb(r) {
     ` · 卖后现金 ${pv(w2(p.after_sell.C))} / 可用保证金 ${pv(w2(p.after_sell.X))}`;
   table("#rebTgt", REB_TGT, p.targets);
 }
-// 账户对照：现 / 调仓后 两行，调仓后与现不同的格标色；数值格隐私下遮
+// 账户对照：现 / 调仓后 两行，调仓后与现不同的格标色；数值格隐私下遮；试算未出（p 为 null）各格「—」占位
 const ACCT = [
   ["总资产", "assets", w2],
   ["净资产", "net", w2],
@@ -293,13 +293,14 @@ function acctTbl(p) {
   const row = (name, x, chg) =>
     `<tr><td>${name}</td>` +
     ACCT.map(([, k, f]) => {
-      const v = f(x[k]);
+      const v = x ? f(x[k]) : "";
       const c = chg && x[k] != null && v !== f(p.now[k]) ? " chg" : "";
       return `<td class="num pv${c}">${v || "—"}</td>`;
     }).join("") +
     "</tr>";
   $("acctTbl").innerHTML =
     `<tr><th></th>${ACCT.map(([h]) => `<th class="num">${h}</th>`).join("")}</tr>` +
-    row("现", p.now, false) +
-    row("调仓后", p.exp, true);
+    row("现", p?.now, false) +
+    row("调仓后", p?.exp, !!p);
 }
+acctTbl(null);

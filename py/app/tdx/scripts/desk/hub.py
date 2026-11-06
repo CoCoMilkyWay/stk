@@ -245,6 +245,7 @@ class Hub:
         with ui.UI("刷新"):
             with self.lock:
                 self._load()
+            ui.show_bar()
             for _ in range(SYNC_TRIES):
                 self._steps(REFRESH[:PAIRED])
                 if board.synced(self.st):

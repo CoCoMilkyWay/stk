@@ -63,11 +63,11 @@ const stepOf = (j, i) =>
       : j.state === "err"
         ? "err"
         : "run";
-// 只列进行中的与最近 ORD_KEEP 单
-const ORD_KEEP = 3;
+// 只列最近 ORD_KEEP 单（jobs 新在前，进行中的总是最新那单），即状态行的行数
+const ORD_KEEP = 2;
 function onOrd(jobs) {
   $("ordInfo").innerHTML = jobs
-    .filter((j, i) => j.state === "run" || i >= jobs.length - ORD_KEEP)
+    .slice(0, ORD_KEEP)
     .map((j) => {
       const steps = j.steps
         .map((s, i) => paint(STEP_COLOR[stepOf(j, i)], s))
@@ -181,7 +181,7 @@ const IDX_COLS = [
   ["现价", (r) => fmt(r.quote.price), (r) => r.quote.price, "num"],
   ["涨幅%", (r) => fmtPnl(idxChg(r)), idxChg, "num"],
 ];
-// 持仓表上方的提示行：无持仓、持仓表里没有的代码的挂单（合计在表尾，成交与挂单在状态列），没有即不占地
+// 持仓表上方的提示行：无持仓、持仓表里没有的代码的挂单（合计在表尾，成交与挂单在状态列），没有即空着
 function posInfo(r) {
   const held = new Set(r.rows.map((p) => p.code));
   const stray = (r.orders ?? []).filter((o) => !held.has(o.code));
@@ -242,21 +242,20 @@ const flowCol = (r) =>
         .map(([k, f]) => `${f.mark}${r[k]?.length ?? "-"}`)
         .join(" "),
   ]);
-// 数据栏的状态行：先是常在的各样（后端 steps [字段, 名称]）读于几时、最近一帧 f 的行情时刻与 pid，
-// 再是时有时无的：正做哪样（或等界面）、上轮失败、账户是否读于持仓变动前
+// 数据栏的两行状态：首行常在的各样（后端 steps [字段, 名称]）读于几时、最近一帧 f 的行情时刻与 pid；
+// 次行时有时无的：正做哪样（或等界面）、上轮失败、账户是否读于持仓变动前，都没有即「空闲」
 function progTxt(g, f) {
   const at = g.steps.map(([k, n]) => `${n} ${g.at[k] ?? "—"}`).join(" · ");
-  return [
-    `读于 ${at}`,
-    `行情 ${f?.time || "—"}`,
-    `pid ${f?.pid ?? "—"}`,
+  const now = [
     g.step && paint("var(--hot)", `刷新中：${esc(g.step)}…`),
     g.err && `<span class="off" data-tip="${esc(g.err)}">✗ 上轮刷新失败</span>`,
     g.acct_stale &&
       '<span class="off" data-tip="新一轮还没查到信用账户，调仓试算的现金与负债是旧的">账户读于持仓变动前</span>',
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  ].filter(Boolean);
+  return (
+    `<div>读于 ${at} · 行情 ${f?.time || "—"} · pid ${f?.pid ?? "—"}</div>` +
+    `<div>${now.join(" · ") || "空闲"}</div>`
+  );
 }
 const refreshPos = async () => fail("posProg", await post("/api/refresh"));
 const refreshEvery = async (s) =>
