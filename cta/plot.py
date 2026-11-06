@@ -69,7 +69,7 @@ def bench_fig(rows, freq):
 
         hold = next(r for r in rs if r["model"] == "hold")
         tab = [hold] + sorted(
-            (r for r in rs if r["model"] != "hold" and r["expo"] >= EXPO),
+            (r for r in rs if r["model"] != "hold" and r["m_expo"] >= EXPO),
             key=lambda r: -r["sr"],
         )[:TOP]
         cols = [
@@ -78,12 +78,17 @@ def bench_fig(rows, freq):
             ("SR", "sr"),
             ("CAGR", "cagr"),
             ("MDD", "mdd"),
-            ("Dn", "dn"),
-            ("Edge", "edge"),
-            ("Expo", "expo"),
-            ("Turn", "turn"),
+            ("Dn", "m_dn"),
+            ("Edge", "m_edge"),
+            ("Expo", "m_expo"),
+            ("Turn", "m_turn"),
         ]
-        fmt = {"cagr": "{:.1%}", "mdd": "{:.1%}", "edge": "{:+.2f}", "turn": "{:.1f}"}
+        fmt = {
+            "cagr": "{:.1%}",
+            "mdd": "{:.1%}",
+            "m_edge": "{:+.2f}",
+            "m_turn": "{:.1f}",
+        }
 
         def cell(r, k):
             if k == "model":
@@ -110,7 +115,7 @@ def bench_fig(rows, freq):
         for m, g in by.items():
             fig.add_trace(
                 go.Scatter(
-                    x=[r["dn"] for r in g],
+                    x=[r["m_dn"] for r in g],
                     y=[r["sr"] for r in g],
                     mode="markers",
                     name=m,

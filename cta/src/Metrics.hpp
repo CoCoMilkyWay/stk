@@ -3,11 +3,11 @@
 // 指标: 收益序列统计 (组合 / 单资产同一份) + 单资产的择时 / 交易统计 + 方差比
 //   择时 = 上涨捕获 up / 下跌捕获 dn (毛, 不含成本): 资产逐根收益 a 为正的根上 Σ 策略毛收益 / Σ a, 为负的同理
 //     全程满仓 up = dn = 1; 随机择时 (平均仓位 e) up ≈ dn ≈ e; edge = up − dn = 择时本身挣的, dn = 磨损 (承受的下跌), 成本另计
+//   在场段 = 仓位 > 0 的连续根 (建仓根到清仓根, 均为收盘), 段收益 = 段内 Π(1 + 净) − 1
 #include "Engine.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <span>
 #include <vector>
 
@@ -18,44 +18,59 @@ struct Stat {
   double trades = 0, win = 0, payoff = 0, hold = 0; // 年在场段数 / 胜率 / 盈亏比 (均盈 / 均亏) / 平均在场根数
 };
 
-inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+// 字段表: 轨迹 JSON / 测试台中位数 / bench.tsv 共用
+struct Metric {
+  const char *key;
+  double Stat::*v;
+};
+inline constexpr Metric kStat[] = {{"sr", &Stat::sharpe}, {"cagr", &Stat::cagr}, {"vol", &Stat::vol}, {"mdd", &Stat::mdd}, {"expo", &Stat::expo}, {"turn", &Stat::turn}, {"cost", &Stat::cost}, {"up", &Stat::up}, {"dn", &Stat::dn}, {"edge", &Stat::edge}, {"trades", &Stat::trades}, {"win", &Stat::win}, {"payoff", &Stat::payoff}, {"hold", &Stat::hold}};
 
 inline Stat returns_stat(std::span<const double> r, double bpy) {
   Stat s;
   const double n = static_cast<double>(r.size());
   s.years = n / bpy;
-  double sum = 0, sq = 0, lg = 0, nav = 1, peak = 1;
+  double sum = 0, sq = 0, nav = 1, peak = 1;
   for (const double x : r) {
-    sum += x, sq += x * x, lg += std::log1p(x);
+    sum += x, sq += x * x;
     nav *= 1 + x, peak = std::max(peak, nav);
     s.mdd = std::min(s.mdd, nav / peak - 1);
   }
   const double mean = sum / n, sd = std::sqrt(std::max(0.0, sq / n - mean * mean));
   s.vol = sd * std::sqrt(bpy);
   s.sharpe = sd > 0 ? mean / sd * std::sqrt(bpy) : 0;
-  s.cagr = std::expm1(lg / s.years);
+  s.cagr = std::pow(nav, 1 / s.years) - 1;
   return s;
 }
 
-inline Stat stat_of(const Series &se, const Run &run, const Setup &u) {
+inline Stat stat_of(const Tape &t, const Run &run, const Setup &u) {
   Stat s = returns_stat(run.r, u.bpy);
-  const size_t n = run.r.size();
+  const size_t n = t.n;
   double expo = 0, ua = 0, ug = 0, da = 0, dg = 0;
   for (size_t i = 0; i < n; ++i) {
+    const double a = t.a[i];
     expo += run.w[i];
-    if (i == 0)
-      continue;
-    const double a = se.bar[i].c / se.bar[i - 1].c - 1;
-    (a > 0 ? ua : da) += a, (a > 0 ? ug : dg) += run.gross[i];
+    (a > 0 ? ua : da) += a, (a > 0 ? ug : dg) += run.g[i];
   }
   s.expo = expo / static_cast<double>(n);
   s.turn = run.turn / s.years, s.cost = s.turn * u.cost;
   s.up = ua > 0 ? ug / ua : kNaN, s.dn = da < 0 ? dg / da : kNaN, s.edge = s.up - s.dn;
-  double nw = 0, sw = 0, nl = 0, sl = 0, bars = 0;
-  for (const Trade &t : run.trades) {
-    (t.ret > 0 ? nw : nl) += 1, (t.ret > 0 ? sw : sl) += t.ret;
-    bars += static_cast<double>(t.i1 - t.i0);
+  double nw = 0, sw = 0, nl = 0, sl = 0, bars = 0, nav = 1;
+  size_t i0 = n; // 在场段建仓根 (n = 不在场)
+  const auto seal = [&](size_t i1) {
+    const double x = nav - 1;
+    (x > 0 ? nw : nl) += 1, (x > 0 ? sw : sl) += x;
+    bars += static_cast<double>(i1 - i0);
+  };
+  for (size_t i = 0; i < n; ++i) {
+    if (i0 == n && run.w[i] > 0)
+      i0 = i, nav = 1;
+    if (i0 < n)
+      nav *= 1 + run.r[i];
+    if (i0 < n && run.w[i] == 0)
+      seal(i), i0 = n;
   }
+  if (i0 < n)
+    seal(n - 1);
   const double nt = nw + nl;
   s.trades = nt / s.years;
   s.win = nt > 0 ? nw / nt : kNaN;
@@ -66,12 +81,12 @@ inline Stat stat_of(const Series &se, const Run &run, const Setup &u) {
 
 // 方差比 VR(k) = Var(k 根对数收益和) / (k · Var(单根)), 重叠窗: > 1 = 该周期上有趋势 (正自相关), < 1 = 均值回归
 inline double variance_ratio(const Series &se, size_t k) {
-  const size_t n = se.bar.size();
+  const size_t n = se.c.size();
   if (n <= 2 * k + 1)
     return kNaN;
   std::vector<double> lp(n); // 对数价
   for (size_t i = 0; i < n; ++i)
-    lp[i] = std::log(se.bar[i].c);
+    lp[i] = std::log(se.c[i]);
   const auto var = [&](size_t h) {
     double s = 0, q = 0;
     for (size_t i = h; i < n; ++i) {

@@ -3,7 +3,7 @@
 //   接口: GET /api/meta → 全部资产 (名 / 码 / 测试集) + 模型表 (参数轴 + 网格取值) + 每日根数
 //         GET /api/run?a=资产&kind=模型&p=参数 (逗号分隔, 轴序)&trail=吊灯 k (0 = 不叠)&cost=单边费率&vol=目标年化波动&buffer=不交易带
 //                     &lo=&hi=视窗 [lo, hi) (有效根下标, hi = 0 即到末根)&px=视窗最多几点
-//           → 全期指标 (策略 / 持有) + 视窗逐点 (每 step 根取末根: 收 / band 中线与半宽 / 仓位 / 全期净值 / 持有净值)
+//           → 全期指标 (策略 / 持有) + 视窗逐点 (每 step 根取末根: 收 / 上线 / 下线 / 仓位 / 全期净值 / 持有净值)
 //   配置不变只换视窗时不重算; 视窗根数 ≤ px 时 step = 1 (逐根)
 #include "Http.hpp"
 #include "Kinds.hpp"
@@ -15,28 +15,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
-#include <memory>
 #include <sstream>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 namespace {
-
-// 逐根记下 band 中线 / 半宽 (非 Band = NaN)
-class Probe : public Model {
-  Model &m_;
-  const Band *b_;
-
-public:
-  std::vector<double> mid, half;
-  Probe(Model &m, const Band *b) : m_(m), b_(b) {}
-  float step(const Bar &b) override {
-    const float w = m_.step(b);
-    mid.push_back(b_ ? b_->mid() : kNaN), half.push_back(b_ ? b_->half() : kNaN);
-    return w;
-  }
-};
 
 // 当前资产 + 当前配置的全期结果
 struct State {
@@ -45,7 +29,8 @@ struct State {
   std::string key;
   Run rs;
   Stat st, sh;
-  std::vector<double> mid, half, nav;
+  Col up, dn;
+  std::vector<double> nav;
 };
 
 // ---- JSON 拼接 ----
@@ -87,12 +72,11 @@ void arr(std::string &o, const char *key, size_t n, F f) {
 
 void stat(std::string &o, const char *key, const Stat &s) {
   o += '"', o += key, o += "\":{";
-  const std::pair<const char *, double> kv[] = {{"sr", s.sharpe}, {"cagr", s.cagr}, {"vol", s.vol}, {"mdd", s.mdd}, {"expo", s.expo}, {"turn", s.turn}, {"cost", s.cost}, {"up", s.up}, {"dn", s.dn}, {"edge", s.edge}, {"trades", s.trades}, {"win", s.win}, {"payoff", s.payoff}, {"hold", s.hold}};
-  for (size_t i = 0; i < std::size(kv); ++i) {
+  for (size_t i = 0; i < std::size(kStat); ++i) {
     if (i)
       o += ',';
-    o += '"', o += kv[i].first, o += "\":";
-    num(o, kv[i].second);
+    o += '"', o += kStat[i].key, o += "\":";
+    num(o, s.*kStat[i].v);
   }
   o += '}';
 }
@@ -142,25 +126,24 @@ void compute(State &s, const Panel &panel, const Query &q) {
   assert(a < panel.B && "资产下标");
   if (a != s.a) {
     s.se = series_of(panel, a), s.a = a;
-    assert(s.se.bar.size() > 1 && "资产无数据");
+    assert(s.se.c.size() > 1 && "资产无数据");
   }
   const auto kind = std::find_if(std::begin(kKinds), std::end(kKinds), [&](const Kind &K) { return q.at("kind") == K.name; });
   assert(kind != std::end(kKinds) && "未知模型");
   const P p = floats(q.at("p"));
   assert(p.size() == kind->grid.size() && "参数个数与参数轴不符");
-  const float trail = std::stof(q.at("trail"));
+  const float k = std::stof(q.at("trail"));
 
   Setup u;
   u.cost = std::stod(q.at("cost")), u.vol = std::stod(q.at("vol")), u.buffer = std::stod(q.at("buffer"));
   u.bpy = panel.bars_per_year;
-  std::unique_ptr<Model> base = kind->make(p, static_cast<double>(panel.S));
-  const Band *band = dynamic_cast<const Band *>(base.get());
-  const std::unique_ptr<Model> m = trail > 0 ? std::make_unique<Trail>(std::move(base), trail) : std::move(base);
-  Probe pr(*m, band);
-  s.rs = simulate(s.se, pr, u);
-  Hold hold;
-  s.st = stat_of(s.se, s.rs, u), s.sh = stat_of(s.se, simulate(s.se, hold, u), u);
-  s.mid = std::move(pr.mid), s.half = std::move(pr.half);
+  Tape t(s.se);
+  Sig g = kind->rule(t, to_bars(*kind, p, static_cast<double>(panel.S)));
+  if (k > 0)
+    g = trail(t, std::move(g), k);
+  s.rs = simulate(t, std::move(g.w), u);
+  s.st = stat_of(t, s.rs, u), s.sh = stat_of(t, simulate(t, hold(t).w, u), u);
+  s.up = std::move(g.up), s.dn = std::move(g.dn);
   s.nav.resize(s.rs.r.size());
   double nav = 1;
   for (size_t i = 0; i < s.nav.size(); ++i)
@@ -172,7 +155,7 @@ void compute(State &s, const Panel &panel, const Query &q) {
 std::string run(State &s, const Panel &panel, const Query &q) {
   compute(s, panel, q);
   const Series &se = s.se;
-  const size_t n = se.bar.size(), px = std::stoul(q.at("px"));
+  const size_t n = se.c.size(), px = std::stoul(q.at("px"));
   assert(px > 0 && "px");
   size_t lo = std::min<size_t>(std::stoul(q.at("lo")), n - 1), hi = std::stoul(q.at("hi"));
   hi = hi == 0 || hi > n ? n : std::max(hi, lo + 1);
@@ -182,7 +165,7 @@ std::string run(State &s, const Panel &panel, const Query &q) {
   const auto beg = [&](size_t k) { return lo + k * step; };
   const auto last = [&](size_t k) { return std::min(hi, lo + (k + 1) * step) - 1; };
   const auto time = [&](size_t i) { return panel.time[se.t[i]]; };
-  const auto hold = [&](size_t i) { return se.bar[i].c / se.bar[0].c; };
+  const auto held = [&](size_t i) { return se.c[i] / se.c[0]; };
 
   std::string o = "{\"n\":" + std::to_string(n) + ",\"lo\":" + std::to_string(lo) + ",\"hi\":" + std::to_string(hi) + ",\"step\":" + std::to_string(step);
   o += ",\"first\":" + std::to_string(ymd_of(time(0))) + ",\"last\":" + std::to_string(ymd_of(time(n - 1))) + ',';
@@ -190,12 +173,12 @@ std::string run(State &s, const Panel &panel, const Query &q) {
   o += ",\"v\":{";
   arr(o, "i", nb, beg), o += ',';
   arr(o, "t", nb, [&](size_t k) { return time(last(k)); }), o += ',';
-  arr(o, "c", nb, [&](size_t k) { return se.bar[last(k)].c; }), o += ',';
-  arr(o, "mid", nb, [&](size_t k) { return s.mid[last(k)]; }), o += ',';
-  arr(o, "half", nb, [&](size_t k) { return s.half[last(k)]; }), o += ',';
+  arr(o, "c", nb, [&](size_t k) { return se.c[last(k)]; }), o += ',';
+  arr(o, "up", nb, [&](size_t k) { return s.up[last(k)]; }), o += ',';
+  arr(o, "dn", nb, [&](size_t k) { return s.dn[last(k)]; }), o += ',';
   arr(o, "w", nb, [&](size_t k) { return s.rs.w[last(k)]; }), o += ',';
   arr(o, "nav", nb, [&](size_t k) { return s.nav[last(k)]; }), o += ',';
-  arr(o, "hold", nb, [&](size_t k) { return hold(last(k)); });
+  arr(o, "hold", nb, [&](size_t k) { return held(last(k)); });
   o += ",\"w0\":", num(o, lo > 0 ? s.rs.w[lo - 1] : 0);
   return o + "}}";
 }

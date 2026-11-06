@@ -1,5 +1,5 @@
 // app.js — CTA 轨迹前端: 收集选项 + 视窗 → GET /api/run (cta_trace 现算 / 聚合) → 画; 本文件不做任何计算
-//   主图: 收盘线 + band (中线 / 上下沿 / 档线) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
+//   主图: 收盘线 + 上线 / 下线 (收破上线入场 / 满仓, 收破下线出场 / 空仓; band 另画中线与档线) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
 //   x = 有效根下标 (连续, 无休市空档); 框选矩形放大 (x / y 一起, plotly 原生), 横轴视窗一变就按新视窗重取数据;
 //   双击还原不走 plotly 原生 (它会先按旧数据定一次范围), 取回全期数据后一次画好
 const $ = (id) => document.getElementById(id);
@@ -149,46 +149,54 @@ function draw(d) {
     {
       x,
       y: v.c,
-      text: lab,
       name: "收",
       line: { color: "#333", width: 1 },
-      hovertemplate: "%{text}<br>收 %{y}<extra></extra>",
     },
   ];
-  if (v.mid.some((y) => y != null)) {
+  const one = v.up.every((y, k) => y === v.dn[k]),
+    grid = kind().axes.findIndex((a) => a.name === "N");
+  if (one && v.up.some((y) => y != null))
+    traces.push({
+      x,
+      y: v.up,
+      name: "上 / 下线",
+      line: { color: BAND, width: 1.3 },
+    });
+  if (!one) {
+    traces.push({
+      x,
+      y: v.dn,
+      name: "下线",
+      line: { color: DOWN, width: 1 },
+    });
+    traces.push({
+      x,
+      y: v.up,
+      name: "上线",
+      line: { color: UP, width: 1 },
+      ...(grid >= 0 && {
+        fill: "tonexty",
+        fillcolor: "rgba(31,119,180,0.07)",
+      }),
+    });
+  }
+  if (!one && grid >= 0) {
     const at = (z) =>
-      v.mid.map((c, k) => (c == null ? null : c + z * v.half[k]));
-    traces.push({
-      x,
-      y: at(-1),
-      name: "下沿",
-      line: { color: BAND, width: 1 },
-      hoverinfo: "skip",
-    });
-    traces.push({
-      x,
-      y: at(1),
-      name: "上沿",
-      line: { color: BAND, width: 1 },
-      fill: "tonexty",
-      fillcolor: "rgba(31,119,180,0.07)",
-      hoverinfo: "skip",
-    });
-    const N = Number(
-      fields()[kind().axes.findIndex((a) => a.name === "N")].value,
-    );
+      v.dn.map((d, k) =>
+        d == null || v.up[k] == null ? null : d + z * (v.up[k] - d),
+      );
+    const N = Number(fields()[grid].value);
     for (let j = 1; j < N; j++)
       traces.push({
         x,
-        y: at(-1 + (2 * j) / N),
+        y: at(j / N),
         name: `档 ${j}/${N}`,
         line: { color: "gray", width: 0.6, dash: "dot" },
-        hoverinfo: "skip",
         showlegend: false,
       });
     traces.push({
       x,
-      y: v.mid,
+      y: at(0.5),
       name: "中线",
       line: { color: "orange", width: 1.3 },
     });
@@ -213,10 +221,6 @@ function draw(d) {
       size: idx.map((k) => 7 + 14 * Math.abs(v.w[k] - prev(k))),
       line: { width: 0.5, color: "black" },
     },
-    text: idx.map(
-      (k) => `${lab[k]} ${prev(k).toFixed(2)} → ${v.w[k].toFixed(2)}`,
-    ),
-    hovertemplate: (isUp ? "加仓" : "减仓") + " %{text}<extra></extra>",
   });
   traces.push(mark(up, true), mark(dn, false));
 
@@ -264,7 +268,7 @@ function draw(d) {
     traces,
     {
       margin: { l: 55, r: 55, t: 48, b: 40 },
-      hovermode: "x",
+      hovermode: false,
       dragmode: "zoom",
       uirevision: `${$("asset").value}/${rev}`, // 变了 = 按新数据自动定范围 (全期); 不变 = 保留用户的缩放
       title: {
@@ -304,8 +308,8 @@ function draw(d) {
       ];
       schedule();
     });
-    // 还原: 先取全期数据, 到了再以新 uirevision 一次画好
-    $("chart").addEventListener("dblclick", () => {
+    // 还原: 先取全期数据, 到了再以新 uirevision 一次画好 (双击由 plotly 判定, 拖拽层吞掉了原生 dblclick)
+    $("chart").on("plotly_doubleclick", () => {
       view = [0, 0];
       rev++;
       schedule();

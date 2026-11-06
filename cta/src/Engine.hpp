@@ -1,12 +1,13 @@
 #pragma once
 
-// 单资产回测: 模型逐根看收盘给目标仓位, 即按收盘价调到 (冲击计入费率)
-//   每根收益 = p · (收 / 前收 − 1) − 单边费率 × |w − p|; p = 前根收盘调到的仓位, w = 本根收盘调到的
+// 单资产回测: 目标仓位列 → 仓位层 → 逐根损益; 仓位按本根收盘价调到 (冲击计入费率)
+//   每根毛收益 g = p · a, 净 r = g − 单边费率 × |w − p|; p = 前根收盘调到的仓位, w = 本根收盘调到的, a = 资产本根收益
 //   仓位层 (模型之后): 波动率定仓 w · min(1, 目标 / σ̂) → 不交易带 (两边都持仓且 |Δw| < 带宽 不调)
 #include "Model.hpp"
 #include "Panel.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -18,12 +19,6 @@ struct Setup {
   double bpy = 244;    // 每年根数
 };
 
-// 一个资产的有效根 (跳过无数据的根)
-struct Series {
-  std::vector<Bar> bar;
-  std::vector<uint32_t> t; // [i] → 张量时间下标
-};
-
 inline Series series_of(const Panel &p, size_t b) {
   Series s;
   for (size_t t = 0; t < p.T; ++t) {
@@ -32,60 +27,33 @@ inline Series series_of(const Panel &p, size_t b) {
     if (!(c > 0))
       continue;
     const auto ok = [&](float v) { return v > 0 ? v : c; };
-    s.bar.push_back({ok(x[kOpen]), std::max(ok(x[kHigh]), c), std::min(ok(x[kLow]), c), c});
+    s.h.push_back(std::max(ok(x[kHigh]), c)), s.l.push_back(std::min(ok(x[kLow]), c)), s.c.push_back(c);
     s.t.push_back(static_cast<uint32_t>(t));
   }
   return s;
 }
 
-// 一段在场: 建仓根 / 清仓根 (序列下标, 均为收盘) + 段内净收益 (复利, 含两头成本)
-struct Trade {
-  size_t i0, i1;
-  double ret;
-};
-
 struct Run {
-  std::vector<double> r;     // [n] 每根净收益 (根 0 = 0)
-  std::vector<double> gross; // [n] 每根毛收益
-  std::vector<float> w;      // [n] 每根收盘调到的仓位
-  std::vector<Trade> trades;
-  double turn = 0; // Σ 换手
+  Col w;                    // [n] 每根收盘调到的仓位
+  std::vector<double> g, r; // [n] 每根毛 / 净收益
+  double turn = 0;          // Σ 换手
 };
 
-inline Run simulate(const Series &s, Model &m, const Setup &u) {
-  const size_t n = s.bar.size();
-  Run run;
-  run.r.assign(n, 0), run.gross.assign(n, 0), run.w.assign(n, 0);
-  Vol vol(kVolSpan);
+inline Run simulate(Tape &t, Col w, const Setup &u) {
+  assert(w.size() == t.n && "仓位列长度");
+  const Col &a = t.a, &s = t.vol(kVolSpan);
   const double target = u.vol / std::sqrt(u.bpy); // 每根目标波动
-  float p = 0;                                    // 持仓
-  double nav = 1;                                 // 在场段累计
-  size_t i0 = n;                                  // 在场段建仓根 (n = 不在场)
-  for (size_t i = 0; i < n; ++i) {
-    const Bar &b = s.bar[i];
-    double r = 0;
-    if (p > 0) {
-      r = run.gross[i] = p * (b.c / s.bar[i - 1].c - 1);
-      nav *= 1 + r;
-    }
-    vol.push(b.c);
-    float w = m.step(b);
-    if (u.vol > 0 && vol.v() > 0)
-      w *= static_cast<float>(std::min(1.0, target / vol.v()));
-    if (p > 0 && w > 0 && std::fabs(w - p) < u.buffer)
-      w = p;
-    const double dw = std::fabs(w - p);
-    r -= u.cost * dw, run.turn += dw;
-    if (i0 == n && w > 0)
-      i0 = i, nav = 1;
-    if (i0 < n)
-      nav *= 1 - u.cost * dw;
-    if (i0 < n && w == 0)
-      run.trades.push_back({i0, i, nav - 1}), i0 = n;
-    p = w;
-    run.r[i] = r, run.w[i] = p;
+  Run run{std::move(w), std::vector<double>(t.n), std::vector<double>(t.n)};
+  float p = 0; // 持仓
+  for (size_t i = 0; i < t.n; ++i) {
+    float x = run.w[i];
+    if (u.vol > 0 && s[i] > 0)
+      x *= static_cast<float>(std::min(1.0, target / s[i]));
+    if (p > 0 && x > 0 && std::fabs(x - p) < u.buffer)
+      x = p;
+    const double dw = std::fabs(x - p);
+    run.g[i] = p * a[i], run.r[i] = run.g[i] - u.cost * dw, run.turn += dw;
+    run.w[i] = p = x;
   }
-  if (i0 < n)
-    run.trades.push_back({i0, n - 1, nav - 1});
   return run;
 }
