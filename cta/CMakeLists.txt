@@ -7,7 +7,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Threads REQUIRED)
 
-# 断言常开 (不设 NDEBUG)
+# 断言常开 (不设 NDEBUG); CTA_DIR = 本目录 (库落 data/, 源在 ../output)
 add_executable(cta_bench src/main.cpp)
+target_compile_definitions(cta_bench PRIVATE CTA_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(cta_bench PRIVATE -O2 -march=native -g -Wall -Wextra)
 target_link_libraries(cta_bench PRIVATE Threads::Threads)

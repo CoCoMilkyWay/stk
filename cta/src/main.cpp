@@ -1,8 +1,9 @@
-// cta_bench — 只做多 CTA 测试台: 模型 × 参数网格 × 测试集 (assets.tsv 的 set 列), 逐资产回测 → 等权组合 + 跨资产中位数
-//   用法: cta_bench --dir <张量目录> [--sets idx,ind,concept] [--models ma,tsmom,…] [--cost 0.001] [--vol 0] [--buffer 0]
+// cta_bench — 只做多 CTA 测试台: 模型 × 参数网格 × 测试集 (篮子表的 set), 逐资产回测 → 等权组合 + 跨资产中位数
+//   用法: cta_bench [--freq 1d|1m] [--sets idx,ind,concept] [--models ma,tsmom,…] [--cost 0.001] [--vol 0] [--buffer 0]
 //                   [--stop close|intra] [--top 15] [--expo 0.2]
+//   先把 CTA 库 (cta/data, Db.hpp) 合成到 all.bar 特征库末日, 再按 freq 取面板; 模型参数 / 方差比周期的单位都是根 (1m = 分钟)
 //   终端: 各测试集先给方差比 VR(k) (各资产中位数: 哪些周期有趋势 / 均值回归), 再按组合夏普排行 (+ 基准 hold),
-//         末尾各模型网格汇总 (最优 / 网格均值: 参数稳健看均值); <张量目录>/bench.tsv = 全部行
+//         末尾各模型网格汇总 (最优 / 网格均值: 参数稳健看均值); cta/data/bench_<freq>.tsv = 全部行
 //   排行与最优只取平均仓位中位数 ≥ expo 的: 几乎不开仓的配置夏普没有可比性
 //   列: SR / CAGR / MDD = 测试集等权组合 (逐根等权各资产净收益, 空仓部分计现金), SR1 / SR2 = 组合前 / 后半段夏普;
 //       mSR = 各资产夏普中位数, mΔSR = 各资产 (夏普 − 自身买入持有夏普) 中位数, beat = 夏普胜过买入持有的资产占比;
@@ -33,8 +34,8 @@ struct Kind {
 };
 
 constexpr float kTrail = 3;
-constexpr size_t kMinBars = 500; // 资产有效根数下限
-constexpr size_t kVrLags[] = {2, 3, 5, 10, 20, 40, 60, 120, 250};
+constexpr size_t kMinDays = 500;                                                                                                  // 资产有效根数下限 = 这么多日的根
+const std::vector<size_t> kVrLags[] = {{2, 3, 5, 10, 20, 40, 60, 120, 250}, {2, 5, 15, 30, 60, 120, 240, 480, 1200, 2400, 4800}}; // 1d / 1m
 
 // clang-format off
 const Kind kKinds[] = {
@@ -204,22 +205,20 @@ std::vector<std::string> split(const std::string &s) {
 } // namespace
 
 int main(int argc, char **argv) {
-  std::map<std::string, std::string> arg = {{"sets", "idx,ind,concept"}, {"models", ""}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"stop", "close"}, {"top", "15"}, {"expo", "0.2"}};
-  std::string dir;
+  std::map<std::string, std::string> arg = {{"freq", "1d"}, {"sets", "idx,ind,concept"}, {"models", ""}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"stop", "close"}, {"top", "15"}, {"expo", "0.2"}};
+  assert(argc % 2 == 1 && "参数须成对: --键 值");
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string k = argv[i];
-    assert(k.starts_with("--") && "参数须成对: --键 值");
-    if (k == "--dir")
-      dir = argv[i + 1];
-    else {
-      assert(arg.contains(k.substr(2)) && "未知参数");
-      arg[k.substr(2)] = argv[i + 1];
-    }
+    assert(k.starts_with("--") && arg.contains(k.substr(2)) && "未知参数");
+    arg[k.substr(2)] = argv[i + 1];
   }
-  assert(!dir.empty() && "缺 --dir <张量目录>");
   assert((arg["stop"] == "close" || arg["stop"] == "intra") && "--stop close | intra");
 
-  const Panel panel = load_panel(dir);
+  const std::string root = std::string(CTA_DIR) + "/..", dir = std::string(CTA_DIR) + "/data";
+  const Lib lib = open_lib(root + "/output/features/all/bar");
+  const Table table = make_table(lib, root + "/output/concept");
+  sync(lib, table, dir);
+  const Panel panel = open_panel(dir, table, arg["freq"]);
   Setup setup;
   setup.cost = std::stod(arg["cost"]), setup.vol = std::stod(arg["vol"]), setup.buffer = std::stod(arg["buffer"]);
   setup.stop = arg["stop"] == "close" ? Stop::Close : Stop::Intra;
@@ -236,7 +235,7 @@ int main(int argc, char **argv) {
       if (panel.assets[b].set != name)
         continue;
       Series se = series_of(panel, b);
-      if (se.bar.size() < kMinBars) {
+      if (se.bar.size() < kMinDays * panel.S) {
         ++u.skipped;
         continue;
       }
@@ -266,13 +265,13 @@ int main(int argc, char **argv) {
   }
 
   const std::string vol = setup.vol > 0 ? std::to_string(static_cast<int>(setup.vol * 100)) + "%" : "关";
-  std::printf("CTA bench: %zu 配置 | 成本 %.1fbp | 目标波动 %s | 不交易带 %g | 止损 %s | 每年 %.0f 根 | 排行仓位 ≥ %g\n", specs.size(), setup.cost * 1e4,
-              vol.c_str(), setup.buffer, arg["stop"].c_str(), setup.bpy, expo);
+  std::printf("CTA bench %s: %zu 配置 | 成本 %.1fbp | 目标波动 %s | 不交易带 %g | 止损 %s | 每年 %.0f 根 | 排行仓位 ≥ %g\n", arg["freq"].c_str(), specs.size(),
+              setup.cost * 1e4, vol.c_str(), setup.buffer, arg["stop"].c_str(), setup.bpy, expo);
   for (size_t i = 0; i < us.size(); ++i) {
     const Universe &u = us[i];
-    std::printf("\n== %s: %zu 只 (不足 %zu 根略 %zu) | %s … %s ==\n  VR", u.name.c_str(), u.series.size(), kMinBars, u.skipped,
+    std::printf("\n== %s: %zu 只 (不足 %zu 日略 %zu) | %s … %s ==\n  VR", u.name.c_str(), u.series.size(), kMinDays, u.skipped,
                 date_of(panel.time[u.lo]).c_str(), date_of(panel.time[u.hi]).c_str());
-    for (const size_t k : kVrLags) {
+    for (const size_t k : kVrLags[panel.S > 1]) {
       std::vector<double> v;
       for (const Series &se : u.series)
         v.push_back(variance_ratio(se, k));
@@ -288,7 +287,7 @@ int main(int argc, char **argv) {
     print_row(*rs.front()); // hold
     std::vector<const Row *> by;
     for (const Row *r : rs)
-      if (r->med.expo >= expo)
+      if (r != rs.front() && r->med.expo >= expo)
         by.push_back(r);
     std::stable_sort(by.begin(), by.end(), [](const Row *a, const Row *b) { return a->port.sharpe > b->port.sharpe; });
     for (size_t k = 0; k < std::min(top, by.size()); ++k)
@@ -315,7 +314,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  const std::string out = dir + "/bench.tsv";
+  const std::string out = dir + "/bench_" + arg["freq"] + ".tsv";
   std::FILE *f = std::fopen(out.c_str(), "w");
   assert(f && "bench.tsv: 写不了");
   std::fprintf(f, "set\tmodel\tparams\tsr\tcagr\tvol\tmdd\tsr1\tsr2\tm_sr\tm_dsr\tbeat\tm_mdd\tup\tdn\tedge\texpo\tturn\ttrades\twin\tpayoff\thold\n");
