@@ -1,11 +1,15 @@
 #pragma once
 
-// 单资产只做多 band 模型, 列式: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 带 Band (上线 / 下线) → 仓位 Pos (目标仓位 [0, 1], 按本根收盘价调到)
+// 单资产只做多 band 模型: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 信号核 Signal 逐根出一刀 Cut (上线 / 下线 + 目标仓位 [0, 1], 按本根收盘价调到)
 //   列 = 逐根一个量, 因果 ([i] 只看 ≤ i 的根); 窗口一律以根计 (日线 / 分钟同一套)
 //   未就绪 = NaN: 比较恒假, 预热期不入也不出
-//   指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean / half / sub / mul / root; 原料列 = 高 / 低 / 收 / 对数收益 / 真实波幅
-//   三组部件, 每组选一个模型 + 该模型自己的参数: 中线 (ema / kama / mid) · 带 (vol / rng / dev / atr, 上线 / 下线 = 中线 ± k · 半宽) · 分层 (grid / fade / chase)
-//     中线与半宽对仗: ema ↔ atr (EMA) · mid ↔ rng (近 n 根最高 ± 最低) · kama ↔ vol / dev (均方根)
+//   指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean / half / sub / walk; 原料列 = 高 / 低 / 收 / 对数收益 / 对数真实波幅
+//   三组部件, 每组选一个模型 + 该模型自己的参数: 中线 (ema / kama / mid) · 带 (vol / atr / dev / rng, 上线 / 下线 = 中线 ± k · 半宽) · 分层 (grid / fade / chase)
+//     半宽 = 源 × 量法:     收盘           高低
+//              步长 · √n    vol            atr      (收 · √n · 均方根: 对数收益 / 对数真实波幅)
+//              窗内离散     dev            rng      (收盘偏离中线的均方根 / 近 n 根最高最低的半差)
+//     中线同按源: 收盘 ema / kama, 高低 mid; mid ↔ rng = 同一对 (近 n 根最高, 最低) 的均值 / 半差
+//   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根核 (信号 / 仓位层 / 目标 / 损益, 状态在核里, 不落列) → 轨迹列 Cuts
 //   成交 / 仓位层 / 成本归 Engine
 #include <algorithm>
 #include <array>
@@ -21,7 +25,6 @@
 namespace cta {
 
 using Col = std::vector<float>;
-using P = std::vector<float>; // 一个部件模型的参数 (轴序)
 
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 inline constexpr size_t kVolSpan = 60;
@@ -132,8 +135,7 @@ class Tape {
                             Mean,
                             Half,
                             Sub,
-                            Mul,
-                            Root };
+                            Walk };
   struct Key {
     Op op;
     uintptr_t x, y; // 源列地址 (无 = 0)
@@ -172,21 +174,22 @@ class Tape {
       o[i] = static_cast<float>(std::log(static_cast<double>(c[i]) / c[i - 1]));
     return o;
   }
-  static Col ranges(const Col &h, const Col &l, const Col &c) {
-    Col o(c.size());
-    for (size_t i = 0; i < c.size(); ++i)
-      o[i] = i ? std::max(h[i], c[i - 1]) - std::min(l[i], c[i - 1]) : h[i] - l[i];
+  static Col spans(const Col &h, const Col &l, const Col &c) {
+    Col o(c.size(), kNaN);
+    for (size_t i = 1; i < c.size(); ++i)
+      o[i] = static_cast<float>(std::log(static_cast<double>(std::max(h[i], c[i - 1])) / std::min(l[i], c[i - 1])));
     return o;
   }
 
 public:
   const size_t n;
   const Col &h, &l, &c; // 高 / 低 / 收
-  const Col a, lr;      // 逐根收益 (根 0 = 0) / 对数收益 (根 0 = NaN)
-  const Col tr, vol;    // 真实波幅 max(高, 前收) − min(低, 前收) / 每根波动 σ̂ (近 kVolSpan 根对数收益均方根)
+  const Col a;          // 逐根收益 (根 0 = 0)
+  const Col lr, lt;     // 对数收益 ln(收 / 前收) / 对数真实波幅 ln(max(高, 前收) / min(低, 前收)) (根 0 = NaN)
+  const Col vol;        // 每根波动 σ̂ (近 kVolSpan 根对数收益均方根)
 
   explicit Tape(const Series &s)
-      : n(s.c.size()), h(s.h), l(s.l), c(s.c), a(returns(c)), lr(logs(c)), tr(ranges(h, l, c)), vol(rms_of(lr, kVolSpan)) {}
+      : n(s.c.size()), h(s.h), l(s.l), c(s.c), a(returns(c)), lr(logs(c)), lt(spans(h, l, c)), vol(rms_of(lr, kVolSpan)) {}
   Tape(const Tape &) = delete;
   Tape &operator=(const Tape &) = delete;
 
@@ -217,23 +220,17 @@ public:
   const Col &sub(const Col &x, const Col &y) {
     return memo(Op::Sub, &x, &y, 0, 0, [&] { return zip(x, y, [](float p, float q) { return p - q; }); });
   }
-  const Col &mul(const Col &x, const Col &y) {
-    return memo(Op::Mul, &x, &y, 0, 0, [&] { return zip(x, y, [](float p, float q) { return p * q; }); });
-  }
-  const Col &root(const Col &x, size_t k) { // x · √k
-    return memo(Op::Root, &x, nullptr, k, 0, [&] {
+  const Col &walk(const Col &x, size_t k) { // x · 收 · √k: 每根相对波动 → k 根随机游走的价格宽度
+    return memo(Op::Walk, &x, nullptr, k, 0, [&] {
       const float r = std::sqrt(static_cast<float>(k));
-      Col o = x;
-      for (float &v : o)
-        v *= r;
-      return o;
+      return zip(x, c, [r](float p, float q) { return p * q * r; });
     });
   }
 };
 
 // ---- 部件与参数 ----
 //   三组部件, 每组选一个模型; 各模型自带参数轴 (网格取值); 单值轴 = 固定参数, 自动优化不动它, 要换就改这里
-//   以日计的轴经 to_bars 乘每日根数, 模型函数拿到的都是根
+//   以日计的轴乘每日根数 (Grid::p), 模型拿到的都是根
 
 enum : size_t { kCenter, // 中线
                 kBand,   // 带
@@ -245,9 +242,9 @@ enum : size_t { kEma,
                 kKama,
                 kMid }; // 中线
 enum : size_t { kVol,
-                kRng,
+                kAtr,
                 kDev,
-                kAtr }; // 带
+                kRng }; // 带
 enum : size_t { kGrid,
                 kFade,
                 kChase }; // 分层
@@ -259,51 +256,40 @@ struct Axis {
 };
 
 struct Kind {
-  const char *name;
+  const char *name, *tip;
   std::vector<Axis> axes;
 };
 
 struct Part {
-  const char *name, *title;
+  const char *name, *title, *tip;
   std::vector<Kind> kinds;
 };
+
+using Kinds = std::array<size_t, kNP>; // 各组所选模型 (kParts[组].kinds 下标)
+using P = std::vector<float>;          // 一个部件模型的参数 (轴序, 以根计)
 
 inline const std::vector<Axis> kBandAxes = {{"n", {1, 5, 20}, true}, {"k", {0.5, 1, 2}}}; // 带: 周期 + 半宽倍数
 inline const std::vector<Axis> kLayerAxes = {{"N", {20}}, {"h", {0, 0.1}}};               // 分层: 层数 (固定) + 滞回
 
 // clang-format off
 inline const Part kParts[kNP] = {
-    {"c", "中线", {{"ema", {{"n", {1, 5, 20, 60}, true}}},
-                   {"kama", {{"n", {1, 5, 20}, true}, {"L", {20, 60}, true}}},
-                   {"mid", {{"n", {1, 5, 20, 60}, true}}}}},
-    {"w", "带", {{"vol", kBandAxes}, {"rng", kBandAxes}, {"dev", kBandAxes}, {"atr", kBandAxes}}},
-    {"m", "分层", {{"grid", kLayerAxes}, {"fade", kLayerAxes}, {"chase", {}}}},
+    {"c", "中线", "中线 (周期 n)", {
+        {"ema", "指数均线, 跟得最匀", {{"n", {1, 5, 20, 60}, true}}},
+        {"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度", {{"n", {1, 5, 20}, true}, {"L", {20, 60}, true}}},
+        {"mid", "唐奇安中线 = 近 n 根 (最高 + 最低) / 2, 区间内呈台阶", {{"n", {1, 5, 20, 60}, true}}}}},
+    {"w", "带", "上线 / 下线 = 中线 ± k · 半宽; 半宽 (周期 n) = 源 (收盘 / 高低) × 量法 (步长 · √n / 窗内离散)", {
+        {"vol", "收 · √n · 对数收益的均方根", kBandAxes},
+        {"atr", "收 · √n · 对数真实波幅的均方根 (含跳空与盘中振幅)", kBandAxes},
+        {"dev", "收盘偏离中线的均方根 (布林式)", kBandAxes},
+        {"rng", "唐奇安半宽 = 近 n 根 (最高 − 最低) / 2", kBandAxes}}},
+    {"m", "分层", "目标仓位 [0, 1], 按本根收盘调到", {
+        {"grid", "收在 [下线, 上线] 的位置线性分 N 层, 越高越满; 离当前层超过 0.5 + h · N 层才换层 (h 占通道全宽)", kLayerAxes},
+        {"fade", "grid 反向: 越低越满", kLayerAxes},
+        {"chase", "收破上线入场, 跌破吊灯线 (在场以来最高 − 通道全宽) 出场", {}}}},
 };
 // clang-format on
 
-// 一个配置: 各组的模型下标 + 该模型的参数
-struct Cfg {
-  std::array<size_t, kNP> k{};
-  std::array<P, kNP> p{};
-};
-
-inline const Axis &axis_of(size_t part, size_t kind, size_t i) { return kParts[part].kinds[kind].axes[i]; }
-
-// 轴单位 → 根: 以日计的轴乘每日根数 S
-inline Cfg to_bars(Cfg g, double S) {
-  for (size_t j = 0; j < kNP; ++j) {
-    assert(g.p[j].size() == kParts[j].kinds[g.k[j]].axes.size() && "参数个数与参数轴不符");
-    for (size_t i = 0; i < g.p[j].size(); ++i)
-      if (axis_of(j, g.k[j], i).day)
-        g.p[j][i] *= static_cast<float>(S);
-  }
-  return g;
-}
-
-// 组合约束 (以根计): 中线 / 带的周期 ≥ 5 根
-inline bool admit(const Cfg &g) { return g.p[kCenter][0] >= 5 && g.p[kBand][0] >= 5; }
-
-// ---- 中线 / 带 ----
+// ---- 中线 / 半宽 (取列) ----
 
 // 中线 (周期 k 根): ema (跟得最匀) / kama (k = ER 窗, L = 震荡跨度) / mid (唐奇安中线, 区间内呈台阶)
 inline const Col &center(Tape &t, size_t kind, const P &p) {
@@ -320,46 +306,62 @@ inline const Col &center(Tape &t, size_t kind, const P &p) {
   std::unreachable();
 }
 
-// 带半宽 (价格单位, 周期 k 根): vol (σ · 收 · √k) / rng (唐奇安半宽) / dev (偏离中线 m 的均方根, 布林式) / atr (ATR · √k, 含跳空与盘中振幅)
+// 带半宽 (价格单位, 周期 k 根): vol ↔ atr (收 · √k · 均方根 对数收益 / 对数真实波幅) · dev ↔ rng (偏离中线 m 的均方根 / 唐奇安半宽)
 inline const Col &width(Tape &t, size_t kind, const P &p, const Col &m) {
   const size_t k = len(p[0]);
   switch (kind) {
   case kVol:
-    return t.root(t.mul(t.rms(t.lr, k), t.c), k);
-  case kRng:
-    return t.half(t.top(t.h, k), t.bot(t.l, k));
+    return t.walk(t.rms(t.lr, k), k);
+  case kAtr:
+    return t.walk(t.rms(t.lt, k), k);
   case kDev:
     return t.rms(t.sub(t.c, m), k);
-  case kAtr:
-    return t.root(t.ema(t.tr, k), k);
+  case kRng:
+    return t.half(t.top(t.h, k), t.bot(t.l, k));
   }
   assert(false && "带模型");
   std::unreachable();
 }
 
-// 带: 上线 / 下线 (未就绪 = NaN)
-struct Band {
-  Col up, dn;
+// 一个配置所读的指标列: 中线 + 半宽 (Tape 缓存里的列)
+struct Src {
+  const Col *m, *s;
 };
 
-// 仓位: 目标仓位 + 吊灯线 (判本根用的; 无 = NaN)
-struct Pos {
-  Col w, stop;
+inline Src src_of(Tape &t, const Kinds &k, const P &pm, const P &ps) {
+  const Col &m = center(t, k[kCenter], pm);
+  return {&m, &width(t, k[kBand], ps, m)};
+}
+
+// ---- 信号核 ----
+
+// 一刀 = 一根的信号: 上线 / 下线 (未就绪 = NaN) + 目标仓位 + 吊灯线 (chase 在场时判本根用的; 否则 NaN)
+struct Cut {
+  float up = kNaN, dn = kNaN, w = 0, stop = kNaN;
 };
 
-// ---- 分层 ----
+// 一条轨迹的刀 (列, 与 Cut 同字段)
+struct Cuts {
+  Col up, dn, w, stop;
+  Cuts() = default;
+  explicit Cuts(size_t n) : up(n, kNaN), dn(n, kNaN), w(n, 0), stop(n, kNaN) {}
+  void put(size_t i, const Cut &x) { up[i] = x.up, dn[i] = x.dn, w[i] = x.w, stop[i] = x.stop; }
+};
 
-// 分层: 收在 [下线, 上线] 内的位置线性分 N 层 (fade 反向: 越低越满); 破网即到位; 通道未就绪 = 空仓
+// 分层核 (逐根, 同一形状): 读刀 x 的上线 / 下线 + 本根收 c / 高 hi, 写目标仓位 w / 吊灯线 stop
+
+// grid / fade: 收在 [下线, 上线] 内的位置线性分 N 层 (fade 反向: 越低越满); 破网即到位; 通道未就绪 = 空仓
 //   层只平滑仓位变动: 离当前层超过 0.5 + h · N 层才换层 (h 以通道全宽计, 带内小幅来回不动仓)
-inline Pos grid(const Tape &t, const Band &b, int N, float h, bool fade) {
-  assert(N > 0 && h >= 0 && "分层参数");
-  Pos o{Col(t.n, 0), Col(t.n, kNaN)};
-  int L = 0;
-  for (size_t i = 0; i < t.n; ++i) {
-    if (!(b.up[i] > b.dn[i])) {
+struct Ladder {
+  int N;
+  float h;
+  bool fade;
+  int L = 0; // 当前层
+  void operator()(Cut &x, float c, float) {
+    if (!(x.up > x.dn)) {
       L = 0;
     } else {
-      const double x = std::clamp((t.c[i] - b.dn[i]) / static_cast<double>(b.up[i] - b.dn[i]), 0.0, 1.0), q = (fade ? 1 - x : x) * N;
+      const double y = std::clamp((c - x.dn) / static_cast<double>(x.up - x.dn), 0.0, 1.0), q = (fade ? 1 - y : y) * N;
       if (q >= N)
         L = N;
       else if (q <= 0)
@@ -367,76 +369,56 @@ inline Pos grid(const Tape &t, const Band &b, int N, float h, bool fade) {
       else if (std::fabs(q - L) > 0.5 + h * N)
         L = static_cast<int>(std::lround(q));
     }
-    o.w[i] = static_cast<float>(L) / static_cast<float>(N);
+    x.w = static_cast<float>(L) / static_cast<float>(N);
   }
-  return o;
-}
+};
 
-// 突破 + 吊灯: 收 > 上线入场; 在场时收 ≤ 吊灯线出场 (同根先出后入)
+// chase: 收 > 上线入场; 在场时收 ≤ 吊灯线出场 (同根先出后入)
 //   吊灯线 = 在场以来最高价 − 通道全宽 (上线 − 下线), 本根判的是上根的线; 入场时即在下线之上
-inline Pos chase(const Tape &t, const Band &b) {
-  Pos o{Col(t.n, 0), Col(t.n, kNaN)};
+struct Chase {
   bool on = false;
   float top = 0, line = kNaN;
-  for (size_t i = 0; i < t.n; ++i) {
+  void operator()(Cut &x, float c, float hi) {
     if (on)
-      o.stop[i] = line;
-    const bool stay = on && !(t.c[i] <= line);
-    on = stay || t.c[i] > b.up[i];
+      x.stop = line;
+    const bool stay = on && !(c <= line);
+    on = stay || c > x.up;
     if (on) {
-      top = stay ? std::max(top, t.h[i]) : t.h[i];
-      line = top - (b.up[i] - b.dn[i]);
+      top = stay ? std::max(top, hi) : hi;
+      line = top - (x.up - x.dn);
     }
-    o.w[i] = on;
+    x.w = on;
   }
-  return o;
-}
+};
 
-// 分层模型: grid / fade [N, h] · chase
-inline Pos layer(const Tape &t, size_t kind, const P &p, const Band &b) {
+// 信号核: 一个配置逐根出一刀; 上线 / 下线 = 中线 ± k · 半宽 → 分层核 (只读 Tape, 状态在分层核里)
+template <class Layer>
+struct Signal {
+  const Tape &t;
+  const Col &m, &s;
+  float k;
+  Layer layer;
+  Cut operator()(size_t i) {
+    Cut x{m[i] + k * s[i], m[i] - k * s[i]};
+    layer(x, t.c[i], t.h[i]);
+    return x;
+  }
+};
+
+// 分层模型 kind (参数 p) 的核交给 f: grid / fade [N, h] → Ladder · chase → Chase (分派一次, 逐根循环在 f 里内联)
+template <class F>
+void with_layer(size_t kind, const P &p, F &&f) {
+  assert((kind == kChase || (p[0] >= 1 && p[1] >= 0)) && "分层参数");
   switch (kind) {
   case kGrid:
-    return grid(t, b, static_cast<int>(p[0]), p[1], false);
+    return f(Ladder{static_cast<int>(p[0]), p[1], false});
   case kFade:
-    return grid(t, b, static_cast<int>(p[0]), p[1], true);
+    return f(Ladder{static_cast<int>(p[0]), p[1], true});
   case kChase:
-    return chase(t, b);
+    return f(Chase{});
   }
   assert(false && "分层模型");
   std::unreachable();
 }
-
-// ---- 配置 ----
-
-// 一个配置在一个资产上: 带 + 仓位
-struct Sig {
-  Band band;
-  Pos pos;
-};
-
-// 一个配置所读的指标列: 中线 + 半宽 (Tape 缓存里的列)
-struct Src {
-  const Col *m, *s;
-};
-
-inline Src src_of(Tape &t, const Cfg &g) {
-  const Col &m = center(t, g.k[kCenter], g.p[kCenter]);
-  return {&m, &width(t, g.k[kBand], g.p[kBand], m)};
-}
-
-// 上线 / 下线 = 中线 ± k · 半宽, 再按分层给仓位 (只读 Tape)
-inline Sig sig_of(const Tape &t, const Cfg &g, const Src &x) {
-  const float k = g.p[kBand][1];
-  assert(k > 0 && "带半宽倍数");
-  const Col &m = *x.m, &s = *x.s;
-  Band b{Col(t.n), Col(t.n)};
-  for (size_t i = 0; i < t.n; ++i)
-    b.up[i] = m[i] + k * s[i], b.dn[i] = m[i] - k * s[i];
-  Pos p = layer(t, g.k[kLayer], g.p[kLayer], b);
-  return {std::move(b), std::move(p)};
-}
-
-// 买入持有 (基准)
-inline Col hold(const Tape &t) { return Col(t.n, 1); }
 
 } // namespace cta

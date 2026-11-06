@@ -9,7 +9,6 @@
 #include "misc/date.hpp" // dash
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cfloat>
 #include <cmath>
@@ -86,7 +85,7 @@ void shaded(const char *label, const std::vector<double> &xs, const std::vector<
   }
 }
 
-// 有效根 i 所在的选参段: specs 下标 (−1 = 空仓) + 段起根
+// 有效根 i 所在的选参段: grid.at 下标 (−1 = 空仓) + 段起根
 std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
   const auto it = std::upper_bound(tr.seg.begin(), tr.seg.end(), i, [](size_t v, const std::pair<size_t, int> &s) { return v < s.first; });
   assert(it != tr.seg.begin());
@@ -116,7 +115,7 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
   for (size_t k = 0; k < at.size(); ++k)
     xs[k] = static_cast<double>(at[k]);
   const cta::Col &w = tr.strat.run.w;
-  const std::vector<double> close = take(se.c), up = take(tr.sig.band.up), dn = take(tr.sig.band.dn), nav = take(tr.strat.nav), hold = take(tr.hold.nav);
+  const std::vector<double> close = take(se.c), up = take(tr.cut.up), dn = take(tr.cut.dn), nav = take(tr.strat.nav), hold = take(tr.hold.nav);
   std::vector<double> mid(at.size()), wm(at.size()); // wm = 每点所代表的 step 根的平均仓位 (底色)
   for (size_t k = 0; k < at.size(); ++k) {
     mid[k] = (up[k] + dn[k]) / 2;
@@ -207,9 +206,9 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     shaded("带", xs, dn, up, kMidCol);
     if (r.spec.kind[cta::kLayer] == cta::kChase) {
       ImPlot::SetNextLineStyle(kStopCol, 1.0f);
-      ImPlot::PlotLine("吊灯线", xs.data(), take(tr.sig.pos.stop).data(), static_cast<int>(xs.size()));
+      ImPlot::PlotLine("吊灯线", xs.data(), take(tr.cut.stop).data(), static_cast<int>(xs.size()));
     } else {
-      const int N = static_cast<int>(tr.grid.specs.front().g.p[cta::kLayer][0]);
+      const int N = static_cast<int>(tr.grid.p(0, cta::kLayer)[0]);
       std::vector<double> y(xs.size());
       for (int j = 1; j < N; ++j) {
         for (size_t k = 0; k < xs.size(); ++k)
@@ -333,12 +332,12 @@ void stat_table(const CtaResult &r) {
   ImGui::EndTable();
 }
 
-// 光标处 (−1 = 末根) 所在选参段 → at = 所用配置 (空仓 = nullptr); 返回段说明
-std::string cursor_at(const CtaResult &r, int cursor, const cta::Spec *&at) {
+// 光标处 (−1 = 末根) 所在选参段 → at = 所用配置的轴下标 (空仓 = nullptr); 返回段说明
+std::string cursor_at(const CtaResult &r, int cursor, const cta::At *&at) {
   const size_t n = r.se->c.size(), i = cursor >= 0 ? static_cast<size_t>(cursor) : n - 1;
   const auto [x, from] = seg_at(r.tr, i);
   const std::string head = cursor >= 0 ? "光标 " + when(r, i) : "末根";
-  at = x < 0 ? nullptr : &r.tr.grid.specs[static_cast<size_t>(x)];
+  at = x < 0 ? nullptr : &r.tr.grid.at[static_cast<size_t>(x)];
   return head + (x < 0 ? ": 空仓 (滚动窗未满 / 窗内数据不足)" : ": 自 " + misc::dash(day_of(r, from)) + " 起用");
 }
 
@@ -395,9 +394,9 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
         cta::kMinRoll);
   hint("各组只选模型, 参数每日以前 W 日的网格曲面最高点选出");
 
-  const cta::Spec *at = nullptr;
+  const cta::At *at = nullptr;
   const std::string where = r ? cursor_at(*r, c.cursor, at) : std::string{};
-  const std::array<size_t, cta::kNP> &shown = r ? r->spec.kind : sp.kind; // 灰显参数按结果的模型
+  const cta::Kinds &shown = r ? r->spec.kind : sp.kind; // 灰显参数按结果的模型
   for (size_t j = 0, a = 0; j < cta::kNP; ++j) {
     const cta::Part &p = cta::kParts[j];
     ImGui::SeparatorText(p.title);
@@ -409,18 +408,19 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
           sp.kind[j] = k;
       ImGui::EndCombo();
     }
-    if (ImGui::IsItemHovered())
-      tip(j == cta::kCenter ? "中线: ema = 指数均线 (跟得最匀) / kama = 考夫曼自适应 (n = 效率比窗, L = 震荡跨度) / mid = 唐奇安中线 (区间内呈台阶)"
-          : j == cta::kBand ? "带: 上线 / 下线 = 中线 ± k · 半宽; 半宽 (周期 n): vol = 波动率 σ · √n · 收 / rng = 唐奇安半宽 / dev = 偏离中线的均方根 (布林式) / atr = ATR · √n"
-                            : "分层: grid = 收在 [下线, 上线] 的位置线性分 N 层, 越高越满; fade = 反向, 越低越满 (层内滞回 h 占通道全宽);\n"
-                              "chase = 收破上线入场, 跌破吊灯线 (在场以来最高 − 通道全宽) 出场");
+    if (ImGui::IsItemHovered()) {
+      std::string s = std::string(p.title) + ": " + p.tip;
+      for (const cta::Kind &k : p.kinds)
+        s += std::string("\n• ") + k.name + " = " + k.tip;
+      tip("%s", s.c_str());
+    }
     for (const cta::Axis &ax : p.kinds[shown[j]].axes) {
       char s[32];
       std::snprintf(s, sizeof(s), "%s%s", ax.name, ax.day ? " (日)" : "");
       ImGui::TextUnformatted(s);
       ImGui::SameLine(x0 + lw);
       if (at)
-        ImGui::TextDisabled("%g", ax.v[at->at[a]]);
+        ImGui::TextDisabled("%g", ax.v[(*at)[a]]);
       else
         ImGui::TextDisabled("-");
       ++a;

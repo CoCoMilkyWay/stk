@@ -11,7 +11,6 @@
 #include "misc/exec.hpp"
 #include "shared/Progress.hpp"
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -23,7 +22,7 @@ namespace GUI::Factors {
 
 // 模型与回测设定 (UI 编辑, 进请求)
 struct CtaSpec {
-  std::array<size_t, cta::kNP> kind{};        // [部件] 所选模型 (cta::kParts[j].kinds 下标)
+  cta::Kinds kind{};                          // [部件] 所选模型 (cta::kParts[j].kinds 下标)
   int roll = static_cast<int>(cta::kMinRoll); // 滚动窗 (日, ≥ kMinRoll)
   float cost_bp = 10;                         // 单边费率 [bp]
   float vol = 0;                              // 目标年化波动 (0 = 不调)
@@ -49,7 +48,6 @@ struct CtaResult {
   std::vector<misc::Ymd> dates;          // 日轴: 有效根的日下标 = t / kSlots
   std::shared_ptr<const cta::Series> se; // 有效根
   cta::Track tr;                         // [有效根] 轨迹 (策略 / 持有两本账)
-  double bpy = 0;                        // 每年根数
 };
 
 class CtaService : public Service<CtaService, CtaRequest>, public Published {

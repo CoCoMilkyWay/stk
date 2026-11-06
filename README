@@ -319,9 +319,10 @@ stk/
 │   │   │       │   │                                 #    · 结果一律是账 PortfolioBook (线键 keys + 四列 = 毛收益 / 冲击 / 固定份数 / 增仓量, 各 [线][行]): 因子 = 一线 (键 0); 篮子 = basket_line 条线 (不扣成本: 只毛收益 / 增仓量两列) + 估值; 个股 = all 池轴每只一线 (键 = 全局 id; 只毛收益一列 = 后复权日收益) + 本只估值, 与篮子账同一作业同日轴
 │   │   │       │   │                                 #    · BasketTask 全部篮子日层一个作业 (eval_baskets: open_job → load_b → baskets); 因子按条目缓存, 只算新增 (换组合留着, 按最近被请求限总量), 根评完即逐条发布
 │   │   │       │   ├── CtaService.hpp                # 🖥️ Portfolio CTA 页: 选中的一个标的 (篮子线 / 个股) → 1 分钟后复权价 → cta/Trace.hpp 滚动调参全期轨迹; 标的序列留最近几个 (只改设定不重读)
-│   │   │       │   ├── CtaLib.hpp                    # 🖥️ CTA 价格库: basket_group 三组线 + 库轴全部个股, 一趟过日合成落 <all.bar 库目录>/cta/, 之后只补新日 (CTA 页首次打开即备)
-│   │   │       │   │                                 #    · 篮子: 源 / 口径 = BasketRow + Fold (同 BasketHistory); 一日按线程合成到 "前日点位 = 1", 再按日序接续
-│   │   │       │   │                                 #    · 个股: 库存原价 (f16 原样) × 后复权因子 (首个有根日 1 起, 逢除权乘 参考价 / 前收); 有效根时间格 = 日下标 · 240 + 槽
+│   │   │       │   ├── CtaLib.hpp                    # 🖥️ CTA 价格库: 两侧 (库轴全部个股 / basket_group 三组线) 一趟过日合成落 <all.bar 库目录>/cta/, 之后只补新日 (CTA 页首次打开即备)
+│   │   │       │   │                                 #    · 两侧同一种记录 (一行一日 = 因子 + 分钟价) 与同一条因子链 (首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收); 读口 series(侧, 键)
+│   │   │       │   │                                 #    · 个股: 价 = 库存原价 (f16 原样), 前收 = D−1 行前收 ⇒ 因子 = 后复权; 篮子: 价 = BasketRow + Fold 日内点位 (前日收 = 1, f32), 前收 = 1 ⇒ 因子 = 点位接续
+│   │   │       │   │                                 #    · 有效根 = 价 × 因子, 时间格 = 日下标 · 240 + 槽
 │   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
 │   │   │       │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
 │   │   │       │   │                                 #    · 落地列 = 指定资产一列, 或评估期内进过池的资产; 另落门控 / 标签 / 逐行池内标签均值; 两端格与 Row::grp 同一份判据 (label_row 逐格扩展)
@@ -482,17 +483,21 @@ stk/
 │   │   │       ├── Gpu.cuh                                 # 🧬   GPU 后端: 一 warp 一候选
 │   │   │       └── Check.hpp                               # 🧬   对拍公共件 (参考 = Stat CPU)
 │   │   ├── cta/                                            # 📈 CTA 单资产只做多 band 择时 (header-only 纯计算; Portfolio CTA 页的模型层)
-│   │   │   ├── Model.hpp                                   # 📈   列式模型: 有效根 Series (+ 日轴 Days, CSR) → 指标列缓存 Tape (同资产各配置共用) → 带 Band (上 / 下线) → 仓位 Pos (目标仓位 [0, 1], 按本根收盘调到); 列因果, 未就绪 = NaN
-│   │   │   │                                               #      · 指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean / half / sub / mul / root; 原料列 = 高 / 低 / 收 / 对数收益 / 真实波幅; 键 = 算子 + 源列 + 窗
-│   │   │   │                                               #      · 三组部件各选一个模型: 中线 center (ema / kama / mid) ↔ 带半宽 width (vol / rng / dev / atr; 上 / 下线 = 中线 ± k · 半宽) → 分层 layer (grid / fade: N 层 + 层内滞回 h · chase: 突破 + 吊灯)
-│   │   │   │                                               #      · 部件表 kParts: 组 → 模型 (具名下标) → 参数轴 (网格取值; 以日计的轴乘每日根数; 单值轴 = 固定) + 组合约束 admit; hold = 买入持有
-│   │   │   │                                               #      · 一个配置: src_of 从 Tape 取中线 / 半宽列 (取齐后 Tape 只读) → sig_of 出 Sig = Band + Pos (可并行)
-│   │   │   ├── Engine.hpp                                  # 📈   回测: 仓位层 position (波动率定仓 w · min(1, 目标 / σ̂) → 不交易带) ↔ 损益 pnl (逐根毛 / 净, 净 = 毛 − 单边费率 × 换手); simulate = pnl ∘ position
-│   │   │   ├── Tune.hpp                                    # 📈   调参: 优化目标 行情分割质量 (逐根两项, 累成日前缀 Terms, 窗 = 前缀差) + 参数网格 Grid (网格 specs + 岭回归曲面 ridge: 二次项, 平滑矩阵只看网格, best = argmax H y)
+│   │   │   │                                               #    列只在两端: Tape 指标列 (取齐后只读) → 逐根核 (状态在核里, 不落中间列) → 轨迹列 Cuts
+│   │   │   │                                               #      信号 Signal (带 → 分层) ─刀 Cut→ 仓位层 Size ─实际仓位→ 目标 Split (评分) ↔ 损益 Pnl (回测)
+│   │   │   ├── Model.hpp                                   # 📈   模型: 有效根 Series (+ 日轴 Days, CSR) → 指标列缓存 Tape (同资产各配置共用) → 信号核 Signal 逐根出一刀 Cut (上 / 下线 + 目标仓位 [0, 1], 按本根收盘调到); 列因果, 未就绪 = NaN
+│   │   │   │                                               #      · 指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean / half / sub / walk; 原料列 = 高 / 低 / 收 / 对数收益 / 对数真实波幅; 键 = 算子 + 源列 + 窗
+│   │   │   │                                               #      · 三组部件各选一个模型: 中线 center (ema / kama / mid) ↔ 带半宽 width (上 / 下线 = 中线 ± k · 半宽) → 分层核 (grid / fade → Ladder: N 层 + 层内滞回 h · chase → Chase: 突破 + 吊灯)
+│   │   │   │                                               #      · 半宽 = 源 × 量法: 步长 · √n (收盘 vol / 高低 atr: 收 · √n · 均方根) · 窗内离散 (收盘 dev / 高低 rng); 中线同按源 (收盘 ema / kama, 高低 mid; mid ↔ rng 同一对最高最低)
+│   │   │   │                                               #      · 部件表 kParts: 组 → 模型 (具名下标, 自带说明) → 参数轴 (网格取值; 以日计的轴乘每日根数; 单值轴 = 固定)
+│   │   │   ├── Engine.hpp                                  # 📈   回测, 两个逐根核: 仓位层 Size (波动率定仓 w · min(1, 目标 / σ̂) → 不交易带) ↔ 损益 Pnl (逐根毛 / 净, 净 = 毛 − 单边费率 × 换手); simulate = 目标仓位列过 Size → Pnl
+│   │   │   ├── Tune.hpp                                    # 📈   调参: 目标核 Split 行情分割质量 (逐根两项, 累成日前缀 Terms, 窗 = 前缀差) + 参数网格 Grid (一点 = 轴下标 At, 参数由它查; 岭回归曲面: 二次项, best = argmax X (Z y), Z 只看网格)
 │   │   │   │                                               #      · 行情分割质量 = 带把行情切成带外趋势段与带内震荡段的好坏 = (带外顺向 − 带内来回 − 费率 × 换手) / 总振幅, 对数价单位; 带内来回在分层仓位坐标里量, 单边穿过不罚
-│   │   │   ├── Metrics.hpp                                 # 📈   指标: 收益统计 (夏普 / 索提诺 / 年化 / 回撤) + 择时捕获 up / dn / edge (满仓 = 1, 随机择时 ≈ 平均仓位) + 在场段 (胜率 / 盈亏比 / 持有); 一本账 Book = 回测 + 指标 + 净值
-│   │   │   └── Trace.hpp                                   # 📈   滚动调参全期轨迹 trace (只用本资产): 取列 (串行) → 评分遍 (网格逐配置, 并行) → 每日以前 W 日拟曲面取最高点用到当日 (前 W 日空仓) → 拼接遍 (选中过的配置, 并行) → 回测 (切换计成本)
-│   │   │   │                                               #      · 轨迹 Track = 网格 + 选参段 + 拼成的 Sig + 两本账 (策略 / 买入持有)
+│   │   │   │                                               #      · Grid::src 取列 (写 Tape, 串行) ↔ Grid::signal 出信号核 (读 Tape, 并行)
+│   │   │   ├── Metrics.hpp                                 # 📈   指标: 收益统计 (夏普 / 索提诺 / 年化 / 回撤) + 择时捕获 up / dn / edge (满仓 = 1, 随机择时 ≈ 平均仓位) + 在场段 (胜率 / 盈亏比 / 持有); 一本账 Book = 目标仓位列 → 回测 + 指标 + 净值
+│   │   │   └── Trace.hpp                                   # 📈   滚动调参全期轨迹 trace (只用本资产): 取列 (串行) → 评分遍 (网格逐配置 Signal → Size → Split, 并行) → 每日以前 W 日拟曲面取最高点用到当日 (前 W 日空仓)
+│   │   │   │                                               #      → 拼接遍 (选中过的配置 Signal 跑到末个选中日, 选中日的刀写进 Cuts, 并行) → 回测 (切换计成本)
+│   │   │   │                                               #      · 轨迹 Track = 网格 + 选参段 + 拼成的 Cuts + 两本账 (策略 / 买入持有)
 │   │   ├── math/                                           # 📐 distribution / normalize / sample / spectral / stationary / timeseries / autoencoder / model
 │   │   │   ├── Step.hpp                                    # 📐 变换步元数据 / 定义 (ParamMeta / StepDef → Step, 编译期注册)
 │   │   │   ├── sample/ResamplerTick2Min / ResamplerBar2Min # 📐 两档重采样器: 逐笔 / bar1m → 稠密分钟 K (255 根; 无成交分钟用携带价补齐)
@@ -571,10 +576,10 @@ stk/
     │   │   └── features_L_1min.bin                         # L_1min (分钟频) 一天一个: 同上; 两层都逐列自选是否做 T 轴 XOR 差分
     │   ├── <pool>/bar/YYYY/MM/DD/features_L_*.bin          # Bar 库 (L_1min + 分钟箱层 + L_1day; 目录名 all 保留给全市场)
     │   ├── all/bar/baskets.bin                             # 价格指数账本 (BasketHistory: 已折日 / 点位 / 各篮子日线 + 日内; 头对不上 / 日期非库前缀 → 重折)
-    │   └── all/bar/cta/                                    # CTA 价格库 (CtaLib: 篮子三组线 + 全部个股的 1 分钟价, 续算只追加; 库全量重算随库目录删)
-    │       ├── head.bin                                    # 头 (库轴 / 概念 / 线表 / 库首日) + 已合成日 + 篮子末日点位 + 个股因子 / 参考价; 对得上、两文件够长且已合成日是库落盘日前缀 → 续算, 否则从头
-    │       ├── 1m.bin                                      # 篮子: f32 [D][B][240 槽][高 低 收]; 无根 = NaN
-    │       └── stock.bin                                   # 个股: [D][A] {f64 后复权因子 (0 = 当日无根), f16 [240 槽][高 低 收] 原价}
+    │   └── all/bar/cta/                                    # CTA 价格库 (CtaLib: 全部个股 + 篮子三组线的 1 分钟价, 续算只追加; 库全量重算随库目录删)
+    │       ├── head.bin                                    # 头 (概念 / 库首日) + 两侧键表 + 已合成日 + 两侧因子链 (末日因子 / 参考价); 对得上、两文件够长且已合成日是库落盘日前缀 → 续算, 否则清目录从头
+    │       ├── stock.bin                                   # 个股: [D][A] {f64 后复权因子 (0 = 当日无根), f16 [240 槽][高 低 收] 原价}
+    │       └── basket.bin                                  # 篮子: [D][B] {f64 前日点位 (0 = 当日无根), f32 [240 槽][高 低 收] 日内点位 (前日收 = 1)}
     ├── fundamental/                                        # 日频基本面 (表清单见 DataBase → Fundamental)
     │   ├── YYYY-MM/<表>.parquet                            # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
     │   ├── YYYY-MM/bar1m/YYYY-MM-DD.parquet                # 分钟 K 日分片 (Bar 档 TS 输入, 不复权)
