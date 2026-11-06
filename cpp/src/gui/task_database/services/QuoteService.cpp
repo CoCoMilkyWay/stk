@@ -378,7 +378,7 @@ void QuoteService::schedule() {
   }
   for (uint32_t i = 0; i < tracks_.size(); ++i) {
     Track &t = tracks_[i];
-    if (t.fill == Fill::Idle && t.lo <= t.hi && (i == sel_ ? t.lo <= st : t.hi <= st)) {
+    if (t.fill == Fill::Idle && t.lo <= t.hi && (i == sel_ ? t.lo <= st : t.hi <= st || t.lo + kLag <= st)) {
       t.fill = Fill::Queued;
       i == sel_ ? todo_.push_front(i) : todo_.push_back(i);
     }
