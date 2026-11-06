@@ -4,11 +4,13 @@
 //   择时 = 上涨捕获 up / 下跌捕获 dn (毛, 不含成本): 资产逐根收益 a 为正的根上 Σ 策略毛收益 / Σ a, 为负的同理
 //     全程满仓 up = dn = 1; 随机择时 (平均仓位 e) up ≈ dn ≈ e; edge = up − dn = 择时本身挣的, dn = 磨损 (承受的下跌), 成本另计
 //   在场段 = 仓位 > 0 的连续根 (建仓根到清仓根, 均为收盘), 段收益 = 段内 Π(1 + 净) − 1
+//   一本账 Book = 回测 + 全期指标 + 净值 (策略 / 买入持有同一份)
 #include "cta/Engine.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace cta {
@@ -73,6 +75,22 @@ inline Stat stat_of(const Tape &t, const Run &run, const Setup &u) {
   s.payoff = nw > 0 && nl > 0 && sl < 0 ? (sw / nw) / (-sl / nl) : kNaN;
   s.hold = nt > 0 ? bars / nt : kNaN;
   return s;
+}
+
+// 一本账: 回测 + 全期指标 + 净值
+struct Book {
+  Run run;
+  Stat st;
+  std::vector<double> nav; // [根] Π(1 + 净)
+};
+
+inline Book book_of(const Tape &t, Run run, const Setup &u) {
+  Book b{std::move(run), {}, std::vector<double>(t.n)};
+  b.st = stat_of(t, b.run, u);
+  double v = 1;
+  for (size_t i = 0; i < t.n; ++i)
+    b.nav[i] = v *= 1 + b.run.r[i];
+  return b;
 }
 
 } // namespace cta

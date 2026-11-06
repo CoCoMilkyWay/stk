@@ -35,12 +35,13 @@
 //       只画因子日并集轴范围内: 范围首日开盘前一点 (前收) + 每日收盘一点; 每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (价格指数, 不看可成交:
 //       Assets 篮子同一份), 两者之差 = 可成交拖累; 年换手 = 篮子账的增仓量同式 (成分再平衡 + 进出; 指数线本身不扣成本)
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
-//     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手 / 段内平移, 拖动中吸附到月初即生效, 把手旁标起止日), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
+//     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手吸附到月初 / 段内按日平移, 拖动中即生效, 把手旁标起止日; 双击段内回全段), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
 //     年化 / 夏普只数该线在区间内的活跃日 (日末净值, 活跃日内无点的日收益 0): 夏普 = 日收益 mean / sd × √每年交易日;
 //     主图内容 (新结果到 / 区间 / VAL 选中 / 滚动窗) / 页 / log / 主图例显隐 / 右表选中 任一变 → 重新 fit (PortfolioFitKey); 每条可见线在视野内的末点右侧标小字名;
 //     只显示一条线时 (VAL = 价格线) 同日内栏画现价十字: 过视野内末点的横 / 竖虚线 (区间涨跌色), 右壁标区间涨跌, 底壁标日期
 //   页: NAV = 上面的资金曲线; VAL = 估值 (同一布局, 区间 / log 共用; 行 = NAV 篮子三组的同一份): 右侧类别条 (指数 / 行业 / 概念) 选一组, 表格单选一个标的 = 池 / 申万一级行业
-//     (全A 内按上一行 ind_l1 切) / 概念 / 展开行的成分股 (再点 = 取消); 默认不选 (空图); 列 = 中文名 (悬停看名) | 只数 | 总市值 | 换手 | 资金流入 (同 NAV) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
+//     (全A 内按上一行 ind_l1 切) / 概念 / 展开行的成分股 (再点 = 取消); 默认不选 (空图); 列 = 中文名 (悬停看名) | 只数 | 总市值 (同 NAV) | 当日涨幅 (同 NAV 近况)
+//     | 5日流入 (行情日及其前 4 个交易日的净流入占成交额, 同 FLOW 5日档合计占比) | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
 //     底色 = 该分位在同组同口内的截面名次, 便宜绿 → 贵红),
 //     主图 = 标的可成交线 P (篮子 = 可成交指数: 全A.加 / 行业 / 概念 = 总市值加权, 全A.等 / 其余池 = 等权; 成分股 = 后复权收盘; 区间起点 = 1, 与 NAV 同一切片)
 //     + 同口径的滚动 EP / BP / SP / CP / DY Band (篮子 = 同权重, 成分股 = 本只; 篮子与个股同一套: 两本账同一作业出, 见 PortfolioView.hpp)
@@ -49,7 +50,8 @@
 //     不可算 / v ≤ 0 / 窗内有 v ≤ 0 的点断开, q_j ≤ 0 的档单独断开;
 //     绝对估值等值线 (默认关; 很淡的灰, 不进 fit): 倍数 m = 1 / v (PE / PB / PS / PCF / P/D), y_t = P_t · v_t · m,
 //     档 = 该标的全史倍数区间 (两头剔极端分位) 20 档等分, 不随区间 / 视野变; v ≤ 0 断开; 悬停最近一条高亮 + 提示该档倍数 / 当日倍数 / 指数到该线的涨跌;
-//     主图例 = 左上自绘矩阵 (对仗 Inspect 期限结构): 行 = 口, 列 = 当前收益率 | 当前倍数 | N 年分位 | Band | 等值线, 点色块 / 行头 / 列头开关, 悬停高亮
+//     主图例 = 左上自绘矩阵 (对仗 Inspect 期限结构): 行 = 口, 列 = 当前收益率 | 当前倍数 | N 年分位 | Band | 等值线, 点色块 / 行头 / 列头开关, 悬停高亮;
+//     主图恒贴合: x = 区间, y 只看价格线 (上限 = 最高点 + 20%, band 再高也不撑); 不平移 / 缩放, 左键横向框选 = 区间改成该段 (任意日, 区间条同一份), 双击 = 回全段
 //   页 FLOW = 篮子日内资金流 (只这一张图, 不看区间): 左 = 选中的篮子行 / 成分行 (NAV 同一份选中) 的累计净流入叠加 (Database::RenderBasketFlow:
 //     日轴 = 行情日及其前 n − 1 个交易日, n = 档 日内 / 2日 … 5日; 自首日开盘逐分钟累计, 跨日接续; y = 占近 5 日日均成交额 % (默认; 分母盘前已定) / 金额 亿元;
 //     开收盘开关 (默认关) = 计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价), 图与右表同一份; 当日随新浪快照动);
@@ -90,12 +92,14 @@ struct PortfolioFitKey {
   bool operator==(const PortfolioFitKey &) const = default;
 };
 
-// 区间条: [d0, d1) (der.dates 下标; 两边在月初 / 末尾; 日轴变 → 全段) + 拖动态
+// 区间条: [d0, d1) (der.dates 下标; 把手吸附月初 / 末尾, VAL 主图框选任意日; 日轴变 → 全段) + 拖动态
 struct PortfolioRange {
   int d0 = 0, d1 = 0;
   int drag = 0;                 // 拖动中: 0 无 / 1 左把手 / 2 右把手 / 3 段内平移
   double grab_day = 0.0;        // 按下时鼠标所在日 (平移按与它的差算)
-  int grab_k0 = 0, grab_k1 = 0; // 按下时两边的月初序号 (平移保持 k1 − k0)
+  int grab_d0 = 0, grab_d1 = 0; // 按下时的 [d0, d1) (平移保持日数)
+  bool zooming = false;         // VAL 主图横向框选中
+  double zoom_x = 0.0;          // 框选按下处的 x
 };
 
 // 页签 (同一个右图例位; 图例宽 / 类别条按页各一份; 页表 kPageDefs 见 PortfolioCommon.hpp)
@@ -143,7 +147,7 @@ struct SheetCell {
   double key = std::numeric_limits<double>::quiet_NaN();  // 排序键 (不可算 = NaN, 恒末)
   double rank = std::numeric_limits<double>::quiet_NaN(); // 底色 = 同组同列名次 (Ranked::rank: 0 = 好 绿 → 1 = 差 红); NaN = 不铺
 };
-// 当日四列 (三张右表同一份, 不随区间)
+// 当日四列 (NAV / FLOW 右表全四列, VAL 只数 / 总市值; 不随区间)
 enum TodayCol : int { kTodayMembers,
                       kTodayCap,
                       kTodayTurn,
@@ -169,8 +173,8 @@ struct PortfolioSheetKey {
   std::shared_ptr<const std::vector<Database::Day>> today; // 篮子当日 (近况 / 当日四列 / 资金流当日)
   std::shared_ptr<const std::vector<Database::Day>> cons;  // 成分当日 (PortfolioConsToday::day)
   size_t infos = 0;                                        // 基本面档案数 (首次载入)
-  std::vector<misc::Ymd> days;                             // FLOW 日轴 (其余页空)
-  bool ends = false;                                       // FLOW 计入开收盘
+  std::vector<misc::Ymd> days;                             // 资金流日轴 (FLOW / VAL; 其余页空)
+  bool ends = false;                                       // 资金流计入开收盘
   float font = 0.f;                                        // 字号 (格宽)
   uint32_t ink = 0;                                        // 字色 (主题)
   bool operator==(const PortfolioSheetKey &) const = default;
@@ -180,7 +184,7 @@ struct PortfolioSheet {
   std::vector<PortfolioAt> at;                   // [表行] 行: 组内行 [0, R) + 展开行在本组时其下的成分行 (成分组前 n_cons 行)
   std::vector<SheetCell> cells;                  // [表行][nc]
   std::vector<SheetToday> today;                 // [表行] 当日 (过滤条 / 悬停)
-  std::vector<std::vector<Database::Flow>> flow; // FLOW: [表行][日轴各日 + 合计] (悬停)
+  std::vector<std::vector<Database::Flow>> flow; // [表行] 资金流 (悬停): FLOW = [日轴各日 + 合计], VAL = [近 5 日合计]
 };
 
 // 行选中 (PortfolioRow::id → 行情键; 默认空): 属于组合 of, 换组合 → 整份清空

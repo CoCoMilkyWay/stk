@@ -86,6 +86,8 @@ int pair_kind(const PortfolioRow &r) { return !r.q.ok(); }
 
 // VAL 线表 (标的线色 = 该行的 row_color): band 填色 / 线 / 线尾刻度的 alpha
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f;
+// VAL 主图 y 上限 = 价格线最高点 × (1 + kValHeadroom) (band 不进 fit)
+constexpr double kValHeadroom = 0.2;
 // VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 band 线看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
 struct ValMark {
   double r, u;
@@ -473,9 +475,46 @@ void hover_contour(const PortfolioDerived &d, const PortfolioView &v, const Port
       vm.name, vm.inv, m, vm.name, y_line, day / 10000, day / 100 % 100, day % 100, hu * m, px, vm.inv, now, vm.name, y_now, 100.0 * (m / now - 1.0));
 }
 
+// VAL 横向框选: 左键拖出一段 x (竖带示意) → 松手 = 区间改成该段覆盖的日 [d0, d1) (区间条同一份, 主图随之贴合); 双击 = 区间回全段; 图例矩阵上不起
+constexpr float kZoomMin = 4.0f; // 框选生效的最小宽 (px)
+void zoom_x(PortfolioRange &rg, int D, const ImRect &legend) {
+  assert(D > 0);
+  const ImVec2 mp = ImGui::GetMousePos();
+  if (ImPlot::IsPlotHovered() && !legend.Contains(mp)) {
+    if (ImGui::IsMouseDoubleClicked(0)) {
+      rg.d0 = 0, rg.d1 = D, rg.zooming = false;
+      return;
+    }
+    if (ImGui::IsMouseClicked(0))
+      rg.zooming = true, rg.zoom_x = ImPlot::GetPlotMousePos().x;
+  }
+  if (!rg.zooming)
+    return;
+  const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
+  const float p0 = ImPlot::PlotToPixels(ImPlotPoint(rg.zoom_x, 1.0)).x;
+  const float a = std::clamp(std::min(p0, mp.x), pp.x, pp.x + ps.x), b = std::clamp(std::max(p0, mp.x), pp.x, pp.x + ps.x);
+  if (ImGui::IsMouseDown(0)) {
+    ImDrawList &dl = *ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    dl.AddRectFilled(ImVec2(a, pp.y), ImVec2(b, pp.y + ps.y), IM_COL32(102, 204, 255, 40));
+    for (const float x : {a, b})
+      dl.AddLine(ImVec2(x, pp.y), ImVec2(x, pp.y + ps.y), IM_COL32(102, 204, 255, 160));
+    ImPlot::PopPlotClipRect();
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    return;
+  }
+  rg.zooming = false;
+  if (b - a < kZoomMin)
+    return;
+  const auto day = [&](float px) { return static_cast<int>(std::floor(ImPlot::PixelsToPlot(px, pp.y).x / static_cast<double>(kDayW))); };
+  rg.d0 = std::clamp(day(a), 0, D - 1);
+  rg.d1 = std::clamp(day(b) + 1, rg.d0 + 1, D);
+}
+
 // ---- VAL 主图: 标的各口滚动 band (填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
-//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关; 不进 fit) + 标的可成交线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) ----
-void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const PortfolioAt &pin, PlotFrame &pf) {
+//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的可成交线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
+//      只价格线进 fit (y 上限另抬 kValHeadroom), band / 等值线都不进 ----
+void plot_val(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const PortfolioAt &pin, PlotFrame &pf) {
   static ValLegendHl s_hl;
   const PortfolioSlice &sl = v.slice[pin.g][pin.r][kTrade];
   const double *bx = v.band_x.data();
@@ -487,7 +526,7 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
     const float hw = s_hl.at(b, kLgBand) ? kHiScale : 1.0f;
     if (b != kValBp)
       ImPlot::HideNextItem(true, ImPlotCond_Once);
-    // 色块 c ∈ [0, kBandQ]: 0 = 最便宜档以下 (到图底), kBandQ = 最贵档以上 (到图顶; 两头不进 fit), 其余 = 相邻两档之间
+    // 色块 c ∈ [0, kBandQ]: 0 = 最便宜档以下 (到图底), kBandQ = 最贵档以上 (到图顶), 其余 = 相邻两档之间
     for (const auto &[i0, i1] : bd.segs) {
       const int n = i1 - i0;
       const double *x = bx + i0;
@@ -498,16 +537,15 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
         else if (c == kBandQ)
           ImPlot::PlotShaded(lb, x, bd.y[kBandQ - 1].data() + i0, n, HUGE_VAL, ImPlotItemFlags_NoFit);
         else
-          ImPlot::PlotShaded(lb, x, bd.y[c - 1].data() + i0, bd.y[c].data() + i0, n);
+          ImPlot::PlotShaded(lb, x, bd.y[c - 1].data() + i0, bd.y[c].data() + i0, n, ImPlotItemFlags_NoFit);
       }
     }
     for (int j = 0; j < kBandQ; ++j) {
       ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), (j == kBandQ / 2 ? 1.5f : 1.0f) * hw);
-      ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags_SkipNaN);
+      ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags{ImPlotLineFlags_SkipNaN} | ImPlotItemFlags_NoFit);
     }
-    pf.item(lb);
   }
-  // 等值线: 每档一条 (同一 item; 无档也登记). 开关不记进 pf.shown (不进 fit, 不必重新 fit)
+  // 等值线: 每档一条 (同一 item; 无档也登记)
   bool on[kPoolVals];
   for (int b = 0; b < kPoolVals; ++b) {
     const std::vector<double> &lv = v.band[b].levels;
@@ -528,6 +566,14 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
   }
   ImPlot::SetNextLineStyle(row_color(d, pin, kTrade), 2.0f);
   plot_slice("##pf_val_px", sl);
+  if (ImPlot::FitThisFrame()) {
+    double hi = -HUGE_VAL;
+    for (size_t i = 0; i < sl.size(); ++i)
+      if (const double y = sl.y(i); std::isfinite(y))
+        hi = std::max(hi, y);
+    if (std::isfinite(hi))
+      ImPlot::FitPointY(hi * (1.0 + kValHeadroom));
+  }
   if (const ImPlotItem *it = pf.item("##pf_val_px")) {
     push_tag(pf.tags, pf.lim, sl, it->Color, d.row(pin).tag);
     pf.lines.push_back(&sl);
@@ -541,14 +587,17 @@ void plot_val(const PortfolioUIState &ui, const PortfolioDerived &d, const Portf
   }
   hover_contour(d, v, sl, on, s_hl.box);
   val_legend(v, ui.roll.key.years, s_hl);
+  zoom_x(ui.range, static_cast<int>(d.dates.size()), s_hl.box);
 }
 
 } // namespace
 
-// ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); fit 键变 → 本帧 fit, x 右端留出线尾小字 / 刻度 / 十字标签 ----
+// ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); NAV = fit 键变 → 本帧 fit, VAL = 恒贴合 (不平移 / 缩放, 视野只随区间);
+//      x 右端留出线尾小字 / 刻度 / 十字标签 ----
 void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size) {
   const PortfolioDerived &d = ui.der.val;
   const PortfolioView &v = ui.view.val;
+  const PortfolioRange rg = ui.range;                             // 视图所切的区间 (VAL 框选本帧改 ui.range, 下帧才进视图)
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
   PortfolioFitKey fk{ui.view.gen, nav, ui.log_y, {}, ui.shown_key};
@@ -558,10 +607,11 @@ void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav,
         fk.rows += picked(ui, kPageNav, r) ? '1' : '0';
   if (fk != ui.fit_key)
     ImPlot::SetNextAxesToFit();
-  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, nav ? ImPlotFlags_None : ImPlotFlags_NoLegend)) {
+  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, nav ? ImPlotFlags_None : ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
     ui.fit_key = fk;
     // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
-    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin);
+    const ImPlotAxisFlags fit = nav ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
+    ImPlot::SetupAxes(nullptr, nullptr, fit, fit | (ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin));
     setup_day_axis(d.dates);
     if (ui.log_y)
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
@@ -580,9 +630,9 @@ void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav,
     const bool crossed = now_cross(pf, d.dates, cross);
     const float cw = crossed ? now_cross_width(cross, kTagScale) + kTagGap : 0.0f; // 十字右壁标签占的宽 (小字 / 刻度让开)
     // 本帧 fit (自动 / 双击): x 右端再扩一段, 让区间末点右侧留出线尾小字 / 刻度 (同贴末点, 取宽者) + 十字标签的宽度
-    if (ImPlot::FitThisFrame() && !pf.tags.empty() && ui.range.d1 > ui.range.d0) {
+    if (ImPlot::FitThisFrame() && !pf.tags.empty() && rg.d1 > rg.d0) {
       const float tw = std::max(end_tags_width(pf.tags, kTagScale), marks_width(pf.marks)) + cw, W = ImPlot::GetPlotSize().x;
-      const double x0 = x_of(static_cast<size_t>(ui.range.d0), kOpen), x1 = x_of(static_cast<size_t>(ui.range.d1), kOpen);
+      const double x0 = x_of(static_cast<size_t>(rg.d0), kOpen), x1 = x_of(static_cast<size_t>(rg.d1), kOpen);
       if (W > 2.0f * tw)
         ImPlot::FitPointX(x1 + (x1 - x0) * tw / (W - tw));
     }
@@ -595,8 +645,9 @@ void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav,
   ImPlot::PopStyleVar(2);
 }
 
-// ---- 区间条: 全段组合 (有冲击) / VAL 标的可成交线 (可成交指数 / 后复权收盘); 选段 [d0, d1) 两边吸附到月初 (每月首个交易日; 右边 = 下月月初 / 末尾), 拖动中即吸附即生效 ----
-//   左右边 = 竖把手 (拖改起止, 双击拉到头); 段内拖 = 平移 (月数不变); 悬停 / 拖动时把手旁标起止日
+// ---- 区间条: 全段组合 (有冲击) / VAL 标的可成交线 (可成交指数 / 后复权收盘); 选段 [d0, d1), 拖动中即生效 ----
+//   左右边 = 竖把手 (拖改起止, 吸附到月初 = 每月首个交易日, 右边 = 下月月初 / 末尾; 双击拉到头); 段内拖 = 平移 (日数不变), 段内双击 = 回全段;
+//   VAL 主图横向框选同改它 (任意日); 悬停 / 拖动时把手旁标起止日
 void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size) {
   const PortfolioDerived &d = ui.der.val;
   PortfolioRange &rg = ui.range;
@@ -642,28 +693,27 @@ void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav
                                             : (mp.x > x0 && mp.x < x1)       ? 3
                                                                              : 0;
     }
-    int k0 = near_k(rg.d0, 0, K), k1 = near_k(rg.d1, 0, K);
-    if (k1 <= k0) // 保 0 ≤ k0 < k1 ≤ K (下面按边拖的取值范围要它)
-      k1 = std::min(k0 + 1, K), k0 = k1 - 1;
-    if (rg.drag == 0 && over != 0 && ImGui::IsMouseClicked(0))
-      rg.drag = over, rg.grab_day = mday, rg.grab_k0 = k0, rg.grab_k1 = k1;
+    assert(0 <= rg.d0 && rg.d0 < rg.d1 && rg.d1 <= D);
+    if (over != 0 && ImGui::IsMouseDoubleClicked(0)) { // 左 / 右把手 = 该边拉到头, 段内 = 回全段
+      if (over != 2)
+        rg.d0 = 0;
+      if (over != 1)
+        rg.d1 = D;
+    } else if (rg.drag == 0 && over != 0 && ImGui::IsMouseClicked(0)) {
+      rg.drag = over, rg.grab_day = mday, rg.grab_d0 = rg.d0, rg.grab_d1 = rg.d1;
+    }
     if (rg.drag != 0 && !ImGui::IsMouseDown(0))
       rg.drag = 0;
-    if (rg.drag == 1)
-      k0 = near_k(mday, 0, k1 - 1);
-    else if (rg.drag == 2)
-      k1 = near_k(mday, k0 + 1, K);
-    else if (rg.drag == 3) {
-      const int w = rg.grab_k1 - rg.grab_k0;
-      k0 = near_k(ms[rg.grab_k0] + (mday - rg.grab_day), 0, K - w), k1 = k0 + w;
+    if (rg.drag == 1) { // 左边取 < d1 的月初
+      const int hi = static_cast<int>(std::ranges::lower_bound(ms, rg.d1) - ms.begin()) - 1;
+      rg.d0 = ms[near_k(mday, 0, hi)];
+    } else if (rg.drag == 2) { // 右边取 > d0 的月初 / 末尾
+      const int lo = static_cast<int>(std::ranges::upper_bound(ms, rg.d0) - ms.begin());
+      rg.d1 = ms[near_k(mday, lo, K)];
+    } else if (rg.drag == 3) {
+      const int w = rg.grab_d1 - rg.grab_d0;
+      rg.d0 = std::clamp(rg.grab_d0 + static_cast<int>(std::lround(mday - rg.grab_day)), 0, D - w), rg.d1 = rg.d0 + w;
     }
-    if (over == 1 && ImGui::IsMouseDoubleClicked(0))
-      k0 = 0;
-    if (over == 2 && ImGui::IsMouseDoubleClicked(0))
-      k1 = K;
-    if (k1 <= k0)
-      k1 = std::min(k0 + 1, K), k0 = k1 - 1;
-    rg.d0 = ms[k0], rg.d1 = ms[k1];
     const int act = rg.drag != 0 ? rg.drag : over;
     if (act == 1 || act == 2)
       ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -709,8 +759,9 @@ void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav
     ImPlot::PopPlotClipRect();
     if (act != 0)
       tip("区间 %d/%02d/%02d ~ %d/%02d/%02d (%d 日)\n"
-          "• 拖左右把手改起止, 拖段内平移 (月数不变); 吸附到月初\n"
-          "• 双击把手 = 拉到头",
+          "• 拖左右把手改起止 (吸附到月初), 拖段内平移 (日数不变)\n"
+          "• 双击把手 = 拉到头, 双击段内 = 回全段\n"
+          "• VAL 主图左键横向框选 = 改区间 (任意日), 双击主图 = 回全段",
           d.dates[rg.d0] / 10000, d.dates[rg.d0] / 100 % 100, d.dates[rg.d0] % 100, d.dates[rg.d1 - 1] / 10000, d.dates[rg.d1 - 1] / 100 % 100,
           d.dates[rg.d1 - 1] % 100, rg.d1 - rg.d0);
   }

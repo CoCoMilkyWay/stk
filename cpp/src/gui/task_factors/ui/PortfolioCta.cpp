@@ -115,20 +115,21 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
   std::vector<double> xs(at.size());
   for (size_t k = 0; k < at.size(); ++k)
     xs[k] = static_cast<double>(at[k]);
-  const std::vector<double> close = take(se.c), up = take(tr.up), dn = take(tr.dn), nav = take(tr.nav);
-  std::vector<double> mid(at.size()), hold(at.size()), wm(at.size()); // wm = 每点所代表的 step 根的平均仓位 (底色)
+  const cta::Col &w = tr.strat.run.w;
+  const std::vector<double> close = take(se.c), up = take(tr.sig.band.up), dn = take(tr.sig.band.dn), nav = take(tr.strat.nav), hold = take(tr.hold.nav);
+  std::vector<double> mid(at.size()), wm(at.size()); // wm = 每点所代表的 step 根的平均仓位 (底色)
   for (size_t k = 0; k < at.size(); ++k) {
-    mid[k] = (up[k] + dn[k]) / 2, hold[k] = se.c[at[k]] / se.c[0];
+    mid[k] = (up[k] + dn[k]) / 2;
     const size_t b = at[k] / step * step;
     for (size_t i = b; i <= at[k]; ++i)
-      wm[k] += tr.rs.w[i];
+      wm[k] += w[i];
     wm[k] /= static_cast<double>(at[k] - b + 1);
   }
 
   // 视野内逐根的加 / 减仓 (只 step = 1 标)
   const size_t lo = static_cast<size_t>(std::clamp(std::ceil(c.x0), 0.0, static_cast<double>(n - 1)));
   const size_t hi = static_cast<size_t>(std::clamp(std::floor(c.x1), 0.0, static_cast<double>(n - 1)));
-  const auto dw = [&](size_t i) { return tr.rs.w[i] - (i ? tr.rs.w[i - 1] : 0.0f); };
+  const auto dw = [&](size_t i) { return w[i] - (i ? w[i - 1] : 0.0f); };
   int adds = 0, cuts = 0;
   if (step == 1)
     for (size_t i = lo; i <= hi; ++i)
@@ -204,12 +205,11 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
       ImPlot::PopPlotClipRect();
     }
     shaded("带", xs, dn, up, kMidCol);
-    const int layer = static_cast<int>(r.spec.kind[cta::kLayer]);
-    if (layer == 2) {
+    if (r.spec.kind[cta::kLayer] == cta::kChase) {
       ImPlot::SetNextLineStyle(kStopCol, 1.0f);
-      ImPlot::PlotLine("吊灯线", xs.data(), take(tr.stop).data(), static_cast<int>(xs.size()));
+      ImPlot::PlotLine("吊灯线", xs.data(), take(tr.sig.pos.stop).data(), static_cast<int>(xs.size()));
     } else {
-      const int N = static_cast<int>(tr.specs.front().g.p[cta::kLayer][0]);
+      const int N = static_cast<int>(tr.grid.specs.front().g.p[cta::kLayer][0]);
       std::vector<double> y(xs.size());
       for (int j = 1; j < N; ++j) {
         for (size_t k = 0; k < xs.size(); ++k)
@@ -246,7 +246,7 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     c.boxing = ImPlot::IsPlotSelected();
     if (hover >= 0 && ImPlot::IsPlotHovered()) {
       const size_t i = static_cast<size_t>(hover);
-      ImGui::SetTooltip("%s\n收 %.3f  仓 %.2f\n上 %.3f  下 %.3f", when(r, i).c_str(), se.c[i], tr.rs.w[i], tr.up[i], tr.dn[i]);
+      ImGui::SetTooltip("%s\n收 %.3f  仓 %.2f\n上 %.3f  下 %.3f", when(r, i).c_str(), se.c[i], w[i], tr.sig.band.up[i], tr.sig.band.dn[i]);
     }
     ImPlot::EndPlot();
   }
@@ -263,7 +263,7 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     track();
     if (hover >= 0 && ImPlot::IsPlotHovered()) {
       const size_t i = static_cast<size_t>(hover);
-      ImGui::SetTooltip("%s\n仓 %.2f\n策略 %.3f  持有 %.3f", when(r, i).c_str(), tr.rs.w[i], tr.nav[i], se.c[i] / se.c[0]);
+      ImGui::SetTooltip("%s\n仓 %.2f\n策略 %.3f  持有 %.3f", when(r, i).c_str(), w[i], tr.strat.nav[i], tr.hold.nav[i]);
     }
     ImPlot::EndPlot();
   }
@@ -329,13 +329,13 @@ void stat_table(const CtaResult &r) {
     ImGui::TextUnformatted(x.name);
     if (ImGui::IsItemHovered())
       tip("%s = %s", x.name, x.tip);
-    for (const cta::Stat *s : {&r.tr.st, &r.tr.sh}) {
+    for (const cta::Stat *s : {&r.tr.strat.st, &r.tr.hold.st}) {
       ImGui::TableNextColumn();
       const double v = s->*x.f;
       char t[32] = "-";
       if (std::isfinite(v))
         std::snprintf(t, sizeof(t), x.fmt, v * x.mul);
-      right(t, s == &r.tr.sh);
+      right(t, s == &r.tr.hold.st);
     }
   }
   ImGui::EndTable();
@@ -346,7 +346,7 @@ std::string cursor_at(const CtaResult &r, int cursor, const cta::Spec *&at) {
   const size_t n = r.se->c.size(), i = cursor >= 0 ? static_cast<size_t>(cursor) : n - 1;
   const auto [x, from] = seg_at(r.tr, i);
   const std::string head = cursor >= 0 ? "光标 " + when(r, i) : "末根";
-  at = x < 0 ? nullptr : &r.tr.specs[static_cast<size_t>(x)];
+  at = x < 0 ? nullptr : &r.tr.grid.specs[static_cast<size_t>(x)];
   return head + (x < 0 ? ": 空仓 (滚动窗未满 / 窗内数据不足)" : ": 自 " + misc::dash(day_of(r, from)) + " 起用");
 }
 

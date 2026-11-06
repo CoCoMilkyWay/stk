@@ -48,7 +48,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 等值线 = 绝对估值: 倍数 (PE / PB / PS / PCF / P/D = 1 / 收益率) 的价格线, 档 = 该标的全史倍数区间 (两头各剔 2% 极端) 20 档等分;\n"
      "  默认关, 悬停一条 = 高亮 + 看该档倍数 / 当日倍数 / 指数到该线还差多少\n"
      "• 线尾刻度 = 指数末点 +10% / -5% / -10% / -20% / -30% 的点位: 对照 Band 线看还要涨跌多少到哪档; 末点另画现价十字 (同 NAV)\n"
-     "• 区间 / log 与 NAV 页共用",
+     "• y 只贴合指数 (上限 = 区间内最高点 + 20%), 高出的 Band 不撑图\n"
+     "• 主图左键横向框选 = 放大到该段 (区间条同步), 双击 = 回全段; 区间 / log 与 NAV 页共用",
      kBasketGroups, kPickOne, "##pf_val_tbl"},
     {"FLOW",
      "FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念的日内净流入, 当日随新浪快照实时动\n"
@@ -126,7 +127,9 @@ void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav
 void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name, const ImVec2 &plots_size, float panel_w);
 
 // ---- 右表 (PortfolioSheet.cpp) ----
-// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW / CTA; flow_days = FLOW 日轴 (其余页不看); infos = 成分行的近况 / 当日
+// VAL 右表资金流列的日数 (行情日及其前 kValFlowDays − 1 个交易日)
+inline constexpr int kValFlowDays = 5;
+// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW / CTA; flow_days = 资金流日轴 (FLOW = 档位, VAL = 近 kValFlowDays 日; 其余页不看); infos = 成分行的近况 / 当日
 void RenderPortfolioSheet(PortfolioUIState &ui, int page, const std::vector<misc::Ymd> &flow_days, const StockInfos &infos);
 // 成分行在新浪当日的根 (ui.cons): 成分集 / 行情日 · 快照时刻变了才重取
 void SyncPortfolioCons(PortfolioUIState &ui, const Database::QuoteService &q);

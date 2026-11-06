@@ -48,7 +48,7 @@ struct CtaResult {
   std::string lack;                      // 算不了的原因 (空 = 有轨迹)
   std::vector<misc::Ymd> dates;          // 日轴: 有效根的日下标 = t / kSlots
   std::shared_ptr<const cta::Series> se; // 有效根
-  cta::Track tr;                         // [有效根] 轨迹
+  cta::Track tr;                         // [有效根] 轨迹 (策略 / 持有两本账)
   double bpy = 0;                        // 每年根数
 };
 
@@ -65,7 +65,7 @@ public:
 private:
   static constexpr Phase kStart = Phase::Loading;
   static constexpr size_t kKeep = 4; // 留在内存的标的序列数
-  static constexpr int kThreads = 8; // 合成线程 (每线程一日的分钟读 + 篮子累加 + 个股原价, 数十 MB)
+  static constexpr int kThreads = 8; // 合成 / 网格线程 (合成: 每线程一日的分钟读 + 篮子累加 + 个股原价, 数十 MB; 网格: 每线程一个配置的几条根列)
   Progress &board() { return *this; }
   bool run(CtaRequest &req);
   bool publish(const CtaRequest &req, std::string lack, std::shared_ptr<CtaResult> out = nullptr);

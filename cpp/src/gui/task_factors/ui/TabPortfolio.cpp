@@ -399,7 +399,7 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
   ImGui::EndGroup();
   ImGui::SameLine();
   ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
-  RenderPortfolioSheet(ui, page, {}, infos);
+  RenderPortfolioSheet(ui, page, !nav && mk ? Database::FlowDays(*mk, kValFlowDays) : std::vector<misc::Ymd>{}, infos);
   ImGui::EndChild();
   return action;
 }
