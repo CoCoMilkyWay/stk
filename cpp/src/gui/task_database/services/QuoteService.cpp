@@ -117,7 +117,9 @@ void QuoteService::select(uint32_t id) {
 
 QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
-  return {date_, sec_, todo_.size() + inflight_, fetched_, date_ > fund_end_, ver_, bytes_, saved_};
+  const bool fill = date_ > fund_end_;
+  const size_t gaps = fill ? static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.lo <= t.hi; })) : 0;
+  return {date_, sec_, todo_.size() + inflight_, fetched_, gaps, fill, ver_, bytes_, saved_};
 }
 
 void QuoteService::bind(Members m, std::vector<double> level) {

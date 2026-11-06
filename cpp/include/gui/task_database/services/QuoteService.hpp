@@ -52,6 +52,7 @@ struct QuoteStatus {
   int sec = 0;                // 全市场最新快照时刻
   size_t pending = 0;         // 待取 / 在取的分钟 K
   size_t fetched = 0;         // 已取的分钟 K
+  size_t gaps = 0;            // 有待补区间的只 (含等定稿的; 补齐前其缺根按上根收 / 前收持平); 不取分钟 K 的日恒 0
   bool fill = false;          // 行情日 > fund_end (取分钟 K)
   PerSide<uint64_t> ver = {}; // 当日表版本: 个股 (每轮快照 / 每次补根 +1) / 篮子 (每次合成 +1)
   size_t bytes = 0;           // 盘上缓存 (末次读入 / 写出) 字节; 0 = 无
@@ -65,7 +66,7 @@ public:
   static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
   static constexpr int kGap = 10;                      // 断档判据: 两轮快照间连续竞价时长 [s]
   static constexpr int kSave = 300;                    // 落盘间隔 [s]
-  static constexpr int kFillers = 32;                  // 分钟 K 并发 (实测 32 路 ~175 次/s, 全市场 ~35s)
+  static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
   static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段只数 (持 mu_ 的粒度)
 
   QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);

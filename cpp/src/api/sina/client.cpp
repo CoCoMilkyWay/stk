@@ -101,9 +101,8 @@ std::string Client::get(const std::string &target) {
       return enc.empty() ? std::move(res.body()) : gunzip(res.body());
     } catch (const boost::system::system_error &e) {
       stream_.reset();
-      std::cerr << "[sina] transient error (attempt " << (attempt + 1) << "/" << (::config::SINA_HTTP_RETRY_MAX + 1)
-                << ") " << host_ << ": " << e.what() << std::endl;
-      assert(attempt < ::config::SINA_HTTP_RETRY_MAX);
+      std::cerr << "[sina] transient error (attempt " << (attempt + 1) << ") " << host_ << ": " << e.what()
+                << std::endl;
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   }

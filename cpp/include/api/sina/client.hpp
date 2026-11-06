@@ -40,7 +40,7 @@ struct Bar {
 
 // 新浪行情 HTTP 客户端 — 与 bigquant / tushare::Client 对仗: 纯传输, 不知资产轴与缓存.
 //   一个对象 = 一条 keep-alive 连接 (单线程用; 并发 = 每线程一个对象). 闲置超 kIdle 先重建 (对端会关闲连接),
-//   要 gzip (批量快照 99K→29K、240 根分钟线 30K→5K). 网络瞬抖重建连接重试 (预算见 config), 用尽 / 回包不符 → assert.
+//   要 gzip (批量快照 99K→29K、240 根分钟线 30K→5K). 网络瞬抖重建连接隔 1s 无限重试; 回包不符 → assert.
 class Client {
 public:
   explicit Client(std::string host); // config::SINA_HQ_HOST / SINA_KLINE_HOST

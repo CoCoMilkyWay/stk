@@ -163,7 +163,6 @@ inline constexpr const char *SINA_HQ_HOST = "hq.sinajs.cn";      // 批量快照
 inline constexpr const char *SINA_KLINE_HOST = "quotes.sina.cn"; // 1 分钟 K getKLineData
 inline constexpr const char *SINA_REFERER = "https://finance.sina.com.cn";
 inline constexpr int SINA_HTTP_TIMEOUT_SECONDS = 5;
-inline constexpr int SINA_HTTP_RETRY_MAX = 2;
 inline constexpr const char *SINA_CACHE = "../../../../output/sina/live.bin"; // 当日分钟 K 缓存 (单文件, 只存行情日一天)
 inline constexpr const char *EASTMONEY_HOST = "push2.eastmoney.com";          // 列表 /api/qt/clist/get
 inline constexpr int EASTMONEY_HTTP_TIMEOUT_SECONDS = 10;

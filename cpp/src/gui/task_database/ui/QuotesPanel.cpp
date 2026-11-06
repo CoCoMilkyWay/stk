@@ -890,9 +890,10 @@ Source source_of(const BasketState &st, const OverlayPick &p) {
   return {f.data->list[k].get(), &(*f.today)[k]};
 }
 
-// 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再 "重载" (悬停看 note); hint 非空 → 下一行提示
+// 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再 "重载" (悬停看 note), 当日分钟未补齐时行尾小字待补只数;
+//   hint 非空 → 下一行提示
 template <class Tools>
-void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *hint, const Tools &bars) {
+void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *hint, const QuoteStatus &qs, const Tools &bars) {
   if (corner.x < 0)
     return;
   ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4));
@@ -902,6 +903,12 @@ void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *
     f.reload = true;
   if (ImGui::IsItemHovered() && note[0])
     ImGui::SetTooltip("%s", note);
+  if (qs.gaps) {
+    ImGui::SameLine(0, 8);
+    ImGui::TextDisabled("补取 %zu", qs.gaps);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("当日分钟补取中: %zu 只待补 (已取 %zu)\n未补齐的分钟暂按前收持平, 曲线随补取更新", qs.gaps, qs.fetched);
+  }
   if (hint) {
     ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4 + ImGui::GetFrameHeightWithSpacing()));
     ImGui::TextDisabled("%s", hint);
@@ -1012,7 +1019,7 @@ void RenderBasketIntraday(const Market &mk, BasketState &st, const std::vector<O
   const ImVec2 corner = plot_overlay(ls, days, avail, "%");
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
-                [&] { button_bar(kIntraName, kIntras, st.intraday); });
+                qs, [&] { button_bar(kIntraName, kIntras, st.intraday); });
   ImGui::PopID();
 }
 
@@ -1056,7 +1063,7 @@ void RenderBasketFlow(const Market &mk, BasketState &st, const std::vector<Overl
   const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail(), share ? "%" : "亿");
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
-                [&] {
+                qs, [&] {
                   button_bar(kIntraName, kIntras, st.flow);
                   ImGui::SameLine(0, 8);
                   button_bar(kFlowUnitName, 2, st.flow_unit);
