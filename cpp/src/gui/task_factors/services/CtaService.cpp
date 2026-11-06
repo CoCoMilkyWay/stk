@@ -62,17 +62,18 @@ bool CtaService::run(CtaRequest &req) {
 
   constexpr size_t S = Database::kSlots;
   const size_t W = static_cast<size_t>(sp.roll), nd = cta::days_of(*se, S).size();
-  if (se->c.size() < 2 || nd <= W)
-    return publish(req, "有效根只跨 " + std::to_string(nd) + " 日, 须长于滚动窗 " + std::to_string(W) + " 日.");
+  if (nd < 2)
+    return publish(req, "有效根只跨 " + std::to_string(nd) + " 日, 至少 2 日.");
   auto out = std::make_shared<CtaResult>();
   out->dates = std::move(dates);
   out->se = se;
   const double years = static_cast<double>((misc::to_days(out->dates.back()) - misc::to_days(out->dates.front())).count() + 1) / 365.25;
-  const cta::Setup u{sp.cost_bp * 1e-4, sp.vol, sp.buffer, static_cast<double>(out->dates.size() * S) / years};
+  const cta::Setup u{sp.commission_bp * 1e-4, sp.stamp_bp * 1e-4, sp.impact_bp * 1e-4, sp.vol, sp.buffer,
+                     static_cast<double>(out->dates.size() * S) / years};
   cta::Grid grid = cta::grid_of(S, sp.kind);
   begin(Phase::Running, grid.at.size());
   const bool done = cta::trace(
-      *se, std::move(grid), W, u, pool_, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); },
+      *se, std::move(grid), sp.goal, W, u, pool_, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); },
       [&] { Progress::publish(1); });
   return done && publish(req, {}, std::move(out));
 }

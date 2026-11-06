@@ -1,13 +1,12 @@
 #pragma once
 
-// 调参: 优化目标 (逐根核 Split, 累成日前缀取窗) + 参数网格 Grid (网格 + 其上的岭回归曲面)
+// 调参: 优化目标 (模型表 kGoals; split = 逐根核 Split, 累成日前缀取窗) + 参数网格 Grid (网格 + 其上的岭回归曲面)
 //   网格 = 各组所选模型参数轴的全部组合; 一点 = 各轴取值下标 At, 以根计的参数由它查 (Grid::p)
-//   每日重拟: 窗 = 前 W 日, 参数逐日微调不跳变
+//   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding), 参数逐日微调不跳变
 //   岭回归曲面 (一组模型的网格上): 特征 = 各多值参数轴的下标坐标 u ∈ [−1, 1] 的二次项 (u, u² (≥ 3 值的轴), 两两 u · u'), 去均值 → X [n][d];
 //     ŷ = ȳ + X (XᵀX + λ · n · I)⁻¹ Xᵀ (y − ȳ) = ȳ + X Z y (X 去均值 ⇒ Z · 1 = 0); Z [d][n] 只看网格, 预先算好; 拟合最高点 = 平原顶
-#include "cta/Model.hpp"
+#include "cta/Engine.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -18,8 +17,20 @@ namespace cta {
 inline constexpr size_t kMinRoll = 250; // 滚动调参窗下限 (日) = 一年
 inline constexpr double kRidge = 1;     // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
 
-// 优化目标 = 行情分割质量: 带把行情切成带外的趋势段与带内的震荡段, 切得好 = 趋势吃满、震荡不挨打、换手少
-//   逐根两项 [a, b] = [净顺向, 振幅] (见 Split), 一段的分数 = Σa / Σb; 1 ≈ 走过的路程全部顺向吃到
+// 优化目标: 选一个模型 (下标同 kGoals), 逐根核出两项 [a, b], 一段的分数 = Σa / Σb
+enum : size_t { kSplit };
+
+struct Goal {
+  const char *name, *tip;
+};
+
+inline const Goal kGoals[] = {
+    {"split", "行情分割质量: 带把行情切成带外的趋势段与带内的震荡段, 切得好 = 趋势吃满、震荡不挨打、换手少; "
+              "分数 = (带外顺向 − 带内来回 − 成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 带内来回在分层仓位坐标里量, 单边穿过带不罚; "
+              "成本 = 佣金 + 印花税 + 冲击 + 跳空, 与回测同一份"},
+};
+
+// split = 行情分割质量: 逐根两项 [a, b] = [净顺向, 振幅] (见 Split)
 
 // 一段的目标值
 inline double score(double a, double b) { return b > 0 ? a / b : 0; }
@@ -28,35 +39,35 @@ inline double score(double a, double b) { return b > 0 ? a / b : 0; }
 struct Terms {
   std::vector<double> a, b;
   double over(size_t d0, size_t d1) const { return score(a[d1] - a[d0], b[d1] - b[d0]); }
+  bool live(size_t d0, size_t d1) const { return b[d1] > b[d0]; } // 段内有带就绪的根
 };
 
 // 目标核 (逐根, 与损益核 Pnl 对仗): 一刀 x + 实际仓位 w (仓位层之后) → 两项; seal 收一日进前缀
-//   净顺向 = 带外顺向 − 带内来回 − 费率 × 换手, 振幅 = |对数涨跌|; 都是对数价 (≈ 满仓收益) 单位, 带就绪 (0 < 下线 < 上线, 本根与前根) 才计
-//     带外顺向: 前根在上线之上 → +对数涨跌, 在下线之下 → −对数涨跌 (随机游走期望 0); 前根在带内、本根破线 → 越线那截记正
-//     带内来回: 带内位置 y = (收 − 下线) / (上线 − 下线) ∈ [0, 1] (分层的仓位坐标; 每层仓位相同), 一步的带内路程 = |Δy| · ln(上线 / 下线),
-//               y 含带本身的漂移; 一段 = y 离开边界到再碰边界 (或带失效), 来回 = 段内路程 − |段内净位移|, 单边穿过带不罚
-//     换手: |Δw| × 单边费率, 窄带的代价
+//   净顺向 = 带外顺向 − 带内来回 − 成本, 振幅 = |对数涨跌|; 都是对数价 (≈ 满仓收益) 单位, 带就绪 (0 < 下线 < 中线 < 上线, 本根与前根) 才计
+//     带外顺向: 前根在上线之上 (满多) → +对数涨跌, 在下线之下 (满空) → −对数涨跌 (随机游走期望 0); 前根在带内、本根破线 → 越线那截记正
+//     带内来回: 带内位置 s = 分层的仓位坐标 pos ∈ [−1, 1] (等差按价格 / 等比按对数价; 每层仓位相同), 一步的带内路程 = |Δs| / 2 · ln(上线 / 下线),
+//               s 含带本身的漂移; 一段 = s 离开边界到再碰边界 (或带失效), 来回 = 段内路程 − |段内净位移|, 单边穿过带不罚
+//     成本: 佣金 + 印花税 + 冲击 + 跳空 (costs_of, 与回测 Pnl 同一份), 窄带的代价
 struct Split {
   const Tape &t;
-  const double cost;
+  const Setup &u;
+  const Ladder m;               // 分层: 仓位坐标 (等差 / 等比) + 层线
   Terms acc;                    // 日前缀
   Cut q;                        // 前根的刀 (起始 = 未就绪)
   float p = 0;                  // 前根实际仓位
   double net = 0, a = 0, b = 0; // 当前带内段净位移 / 本日两项
 
-  Split(const Tape &t, double cost, size_t nd) : t(t), cost(cost) {
+  Split(const Tape &t, const Setup &u, const Ladder &m, size_t nd) : t(t), u(u), m(m) {
     acc.a.reserve(nd + 1), acc.b.reserve(nd + 1);
     acc.a.push_back(0), acc.b.push_back(0);
   }
-  static bool ok(const Cut &x) { return x.dn > 0 && x.up > x.dn; }
-  static double pos(float c, const Cut &x) { return std::clamp((static_cast<double>(c) - x.dn) / (x.up - x.dn), 0.0, 1.0); }
 
   void operator()(size_t i, const Cut &x, float w) {
-    a -= cost * std::fabs(w - p);
+    a -= costs_of(u, m, t.c[i ? i - 1 : 0], t.c[i], q.w, x, p, w).sum();
     p = w;
     const Cut z = q;
     q = x;
-    if (!ok(z) || !ok(x)) {
+    if (!ready(z) || !ready(x)) {
       a += std::fabs(net), net = 0;
       return;
     }
@@ -72,10 +83,10 @@ struct Split {
         a += std::log(static_cast<double>(c) / x.up);
       else if (c < x.dn)
         a += std::log(static_cast<double>(x.dn) / c);
-      const double dy = (pos(c, x) - pos(c0, z)) * std::log(static_cast<double>(x.up) / x.dn);
-      a -= std::fabs(dy), net += dy;
+      const double ds = (pos(m.geo, c, x) - pos(m.geo, c0, z)) / 2 * std::log(static_cast<double>(x.up) / x.dn);
+      a -= std::fabs(ds), net += ds;
     }
-    if (const double y = pos(c, x); y <= 0 || y >= 1)
+    if (std::fabs(pos(m.geo, c, x)) >= 1)
       a += std::fabs(net), net = 0;
   }
   void seal() {
@@ -83,6 +94,12 @@ struct Split {
     a = b = 0;
   }
 };
+
+// 优化目标 goal 的核 (分层 m 定仓位坐标与层线): split → Split
+inline Split goal_of(size_t goal, const Tape &t, const Setup &u, const Ladder &m, size_t nd) {
+  assert(goal == kSplit && "优化目标");
+  return Split(t, u, m, nd);
+}
 
 // 网格的一点: 各组所选模型的参数轴取值下标, 按组序拼成一条
 using At = std::vector<size_t>;
@@ -226,12 +243,11 @@ struct Grid {
   }
   // 配置 x 所读的指标列 (取进 Tape, 串行)
   Src src(Tape &t, size_t x) const { return src_of(t, kinds, p(x, kCenter), p(x, kBand)); }
-  // 配置 x 的信号核 Signal<Ladder | Chase> 交给 f (只读 Tape, 可并行)
-  template <class F>
-  void signal(const Tape &t, size_t x, const Src &s, F &&f) const {
+  // 配置 x 的信号核 (只读 Tape, 可并行)
+  Signal signal(const Tape &t, size_t x, const Src &s) const {
     const float k = p(x, kBand)[1];
     assert(k > 0 && "带半宽倍数");
-    with_layer(kinds[kLayer], p(x, kLayer), [&](auto layer) { f(Signal<decltype(layer)>{t, *s.m, *s.s, k, layer}); });
+    return {t, *s.m, *s.s, k, ladder_of(kinds[kLayer], p(x, kLayer))};
   }
 };
 
