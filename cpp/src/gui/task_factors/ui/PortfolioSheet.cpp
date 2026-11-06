@@ -778,24 +778,35 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
   table(ui, infos, d, kPageFlow, kFlowNameCol, {today_seg(), flow_seg(ui.basket, days)}, days, ui.basket.flow_ends);
 }
 
-// ---- CTA 右图例: 类别条 (指数 / 行业 / 概念) + 过滤条; 表 = 该组一行一篮子, 点行 = 选为回测标的 (与 VAL 同一份单选). 列 = 中文名 | 当日四列 ----
+// ---- CTA 右图例: 类别条 (指数 / 行业 / 概念) + 过滤条; 表 = 该组一行一篮子, 点行 = 选为回测标的 (与 VAL 同一份单选). 列 = 中文名 | 理想 | 夏普 (同 NAV) ----
 const SheetCol kCtaName = {"名", "名 = 篮子名\n"
                                  "• 算法: 切片名 + .等 (等权) / .加 (总市值加权)\n"
                                  "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念; 回测价格 = all.bar 库合成的 1 分钟点位 (同 Assets 篮子口径)\n"
                                  "• 显示: 超长截断补 …, 悬停看全名; 选中行高亮 (左图回测它)\n"
                                  "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 点成分行 = 回测该股 (后复权 1 分钟价)\n"
                                  "• 适用: 指数 / 行业 / 概念"};
-void legend_cta(PortfolioUIState &ui, const PortfolioDerived &d, const StockInfos &infos) {
+// 段: NAV 数值列里的 理想 / 夏普
+Seg cta_seg(const PortfolioView &v) {
+  static constexpr int ks[] = {kNumIdeal, kNumSharpe};
+  return {{kNavNumCols[kNumIdeal], kNavNumCols[kNumSharpe]},
+          [&v](const RowSrc &x, size_t, PortfolioSheet &, SheetCell *out) {
+            for (const int k : ks)
+              *out++ = ranked_cell(v.num[x.at.g][x.at.r][k], kNavNumFmt[k]);
+          },
+          {}};
+}
+void legend_cta(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const StockInfos &infos) {
   button_bar(kRowGroupName, kPageDefs[kPageCta].groups, ui.cat[kPageCta]);
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(单选)");
   if (ImGui::IsItemHovered())
     tip("类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行 / 成分行选一个 = 左图回测它 (与 VAL 页同一份选中); 再点 = 取消\n"
-        "• 篮子价格 = all.bar 库逐日合成 (成员 / 权重 / 基准取前一日收盘, 同 Assets 篮子), 存在库目录 cta/ 下续算; 首次要合成全库, 之后只补新日\n"
-        "• 成分股价格 = 同一合成 (单成员, 基准 = 前收 ⇒ 后复权), 不落盘, 最近几只留在内存\n"
+        "• 篮子价格 = all.bar 库逐日合成 (成员 / 权重 / 基准取前一日收盘, 同 Assets 篮子); 成分股价格 = 库存原价 × 后复权因子\n"
+        "• 两者首次打开本页一趟合成, 存在库目录 cta/ 下, 之后只补新日\n"
+        "• 理想 / 夏普 = NAV 页同名列 (随 NAV 区间), 供挑标的参考; 悬停表头看算法\n"
         "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
         "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
-  table(ui, infos, d, kPageCta, kCtaName, {today_seg()});
+  table(ui, infos, d, kPageCta, kCtaName, {cta_seg(v)});
 }
 
 } // namespace
@@ -810,7 +821,7 @@ void RenderPortfolioSheet(PortfolioUIState &ui, int page, const std::vector<misc
   else if (page == kPageFlow)
     legend_flow(ui, d, flow_days, infos);
   else
-    legend_cta(ui, d, infos);
+    legend_cta(ui, d, v, infos);
 }
 
 void SyncPortfolioCons(PortfolioUIState &ui, const Database::QuoteService &q) {

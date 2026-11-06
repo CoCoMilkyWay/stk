@@ -121,8 +121,8 @@ void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav,
 void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size);
 
 // ---- CTA 页 (PortfolioCta.cpp) ----
-// 标的 (kPickOne) / 设定变 → 发请求; 画 size 内: 左 = 两图, 右 = 中栏 (设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
-void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name, const ImVec2 &size);
+// 标的 (kPickOne) / 设定变 → 发请求; 画两图 (plots_size) + 其右中栏 (宽 panel_w, 同高: 设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
+void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name, const ImVec2 &plots_size, float panel_w);
 
 // ---- 右表 (PortfolioSheet.cpp) ----
 // 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW / CTA; flow_days = FLOW 日轴 (其余页不看); infos = 成分行的近况 / 当日

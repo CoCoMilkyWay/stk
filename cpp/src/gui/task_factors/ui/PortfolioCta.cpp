@@ -1,4 +1,4 @@
-// Factors→Portfolio CTA 页: 左 = 两图 (价格与带 / 仓位与净值, 共一条 x), 右 = 中栏 (设定 / 光标处参数 / 全期指标) — 见 TabPortfolio.hpp
+// Factors→Portfolio CTA 页: 左 = 两图 (价格与带 / 仓位与净值, 共一条 x), 其右 = 中栏 (设定 / 光标处参数 / 全期指标; 与右表分右栏) — 见 TabPortfolio.hpp
 #include "gui/task_factors/ui/PortfolioCommon.hpp"
 
 #include "gui/Tasks.hpp"                      // StatusColor
@@ -26,8 +26,7 @@ namespace GUI::Factors {
 namespace {
 
 constexpr size_t kS = Database::kSlots;
-constexpr float kPanelCells = 40.0f; // 中栏宽 (字符格)
-constexpr float kPriceFrac = 0.62f;  // 上图占两图高的比例
+constexpr float kPriceFrac = 0.62f; // 上图占两图高的比例
 constexpr const char *kTargetName[cta::kTargets] = {"夏普", "索提诺", "带质量"};
 constexpr ImVec4 kMidCol(1.0f, 0.6f, 0.2f, 1.0f), kStopCol(0.55f, 0.65f, 1.0f, 1.0f), kPosCol(0.58f, 0.40f, 0.74f, 1.0f), kHoldCol(0.6f, 0.6f, 0.6f, 1.0f);
 
@@ -408,7 +407,7 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
 
 } // namespace
 
-void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name, const ImVec2 &size) {
+void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name, const ImVec2 &plots_size, float panel_w) {
   CtaUIState &c = ui.cta;
   const std::map<std::string, PortfolioQuote> &one = ui.pick.rows[kPickOne];
   const PortfolioQuote q = one.empty() ? PortfolioQuote{} : one.begin()->second;
@@ -427,11 +426,8 @@ void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name,
   const bool mine = q.ok() && r && r->side == q.side && r->key == q.key; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;
 
-  const ImGuiStyle &st = ImGui::GetStyle();
-  const float pw = kPanelCells * ImGui::CalcTextSize("0").x + 2.0f * (st.WindowPadding.x + st.ChildBorderSize);
-  const ImVec2 gs(size.x - pw - st.ItemSpacing.x, size.y);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-  ImGui::BeginChild("##cta_plots", gs);
+  ImGui::BeginChild("##cta_plots", plots_size);
   ImGui::PopStyleVar();
   if (!q.ok())
     ImGui::TextDisabled("右表单选一个指数 / 行业 / 概念 / 成分股 (与 VAL 同一份选中)");
@@ -441,7 +437,7 @@ void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name,
     ImGui::TextDisabled("计算中…");
   ImGui::EndChild();
   ImGui::SameLine();
-  ImGui::BeginChild("##cta_panel", ImVec2(pw, size.y), ImGuiChildFlags_Borders);
+  ImGui::BeginChild("##cta_panel", ImVec2(panel_w, plots_size.y), ImGuiChildFlags_Borders);
   panel(svc, c, show, mine ? r->lack : std::string{});
   ImGui::EndChild();
 }

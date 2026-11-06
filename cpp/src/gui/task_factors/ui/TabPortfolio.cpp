@@ -346,7 +346,7 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
   const int page = pages();
   const bool nav = page == kPageNav;
 
-  // ---- 布局: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (NAV ↔ VAL) / 区间条 自上而下, FLOW = 只一张资金流图, CTA = 两图 + 中栏; 最右 = 右图例 (各页同宽) ----
+  // ---- 布局: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (NAV ↔ VAL) / 区间条 自上而下, FLOW = 只一张资金流图, CTA = 只两图; 最右 = 右图例 (各页同宽; CTA = 中栏与右表各半) ----
   constexpr float kBarH = 90.0f, kLegendCells = 100.0f, kLegendMaxFrac = 0.5f; // 右图例定宽 (各页同宽: 字符格数, 表格超宽横滚) / 至多占整宽的比例
   const ImGuiStyle &st = ImGui::GetStyle();
   const ImVec2 av = ImGui::GetContentRegionAvail();
@@ -383,9 +383,10 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
     return action;
   }
   if (page == kPageCta) {
-    RenderPortfolioCta(cta, ui, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y));
+    const float pw = std::floor((lw - st.ItemSpacing.x) / 2.0f);
+    RenderPortfolioCta(cta, ui, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
     ImGui::SameLine();
-    ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##pf_flegend", ImVec2(lw - pw - st.ItemSpacing.x, av.y), ImGuiChildFlags_Borders);
     RenderPortfolioSheet(ui, page, {}, infos);
     ImGui::EndChild();
     return action;
