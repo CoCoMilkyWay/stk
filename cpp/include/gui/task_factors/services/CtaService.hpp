@@ -24,7 +24,6 @@ namespace GUI::Factors {
 // 模型与回测设定 (UI 编辑, 进请求)
 struct CtaSpec {
   std::array<size_t, cta::kNP> kind{};        // [部件] 所选模型 (cta::kParts[j].kinds 下标)
-  int target = cta::kSharpe;                  // cta::Target
   int roll = static_cast<int>(cta::kMinRoll); // 滚动窗 (日, ≥ kMinRoll)
   float cost_bp = 10;                         // 单边费率 [bp]
   float vol = 0;                              // 目标年化波动 (0 = 不调)

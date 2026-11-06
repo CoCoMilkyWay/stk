@@ -18,44 +18,26 @@ namespace cta {
 inline constexpr size_t kMinRoll = 250; // 滚动调参窗下限 (日) = 一年
 inline constexpr double kRidge = 1;     // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
 
-// 优化目标 (模型), 逐根两项 [a, b] 求和后成分数:
-//   sharpe  [r, r²]          → 均值 / 标准差
-//   sortino [r, min(r, 0)²]  → 均值 / 下行波动
-//   band    [带质量, 振幅]    → Σ带质量 / Σ振幅 (带质量见 terms)
-enum Target : int { kSharpe,
-                    kSortino,
-                    kQuality };
-inline constexpr int kTargets = 3;
+// 优化目标 = 行情分割质量: 带把行情切成带外的趋势段与带内的震荡段, 切得好 = 趋势吃满、震荡不挨打、换手少
+//   逐根两项 [a, b] = [净顺向, 振幅] (见 terms), 一段的分数 = Σa / Σb; 1 ≈ 走过的路程全部顺向吃到
 
-// 一段 n 根的目标值 (不年化): Σa, Σb 由前缀和相减得
-inline double score(Target tg, double a, double b, double n) {
-  if (tg == kQuality)
-    return b > 0 ? a / b : 0;
-  const double mean = a / n, d = tg == kSharpe ? b / n - mean * mean : b / n;
-  return d > 0 ? mean / std::sqrt(d) : 0;
-}
+// 一段的目标值: Σa, Σb 由前缀和相减得
+inline double score(double a, double b) { return b > 0 ? a / b : 0; }
 
 struct Terms {
   std::vector<double> a, b; // [n]
 };
 
-// 一个配置在一个资产上的逐根目标项; band 要该配置的上线 / 下线 (g), 收益类只看 run
-//   band: 带质量 = 带外顺向 − 带内来回 − 费率 × 换手, 振幅 = |对数涨跌|; 都是对数价 (≈ 满仓收益) 单位, 带就绪 (0 < 下线 < 上线, 本根与前根) 才计
+// 一个配置在一个资产上的逐根目标项; g = 该配置的上线 / 下线, run = 其回测 (取实际仓位)
+//   净顺向 = 带外顺向 − 带内来回 − 费率 × 换手, 振幅 = |对数涨跌|; 都是对数价 (≈ 满仓收益) 单位, 带就绪 (0 < 下线 < 上线, 本根与前根) 才计
 //     带外顺向: 前根在上线之上 → +对数涨跌, 在下线之下 → −对数涨跌 (随机游走期望 0); 前根在带内、本根破线 → 越线那截记正
 //     带内来回: 带内位置 x = (收 − 下线) / (上线 − 下线) ∈ [0, 1] (分层的仓位坐标; 每层仓位相同), 一步的带内路程 = |Δx| · ln(上线 / 下线),
 //               x 含带本身的漂移; 一段 = x 离开边界到再碰边界 (或带失效), 来回 = 段内路程 − |段内净位移|, 单边穿过带不罚
 //     换手: 实际仓位 (仓位层之后) 的 |Δw| × 单边费率, 窄带的代价
-inline Terms terms(Target tg, const Tape &t, const Sig &g, const Run &run, double cost) {
+inline Terms terms(const Tape &t, const Sig &g, const Run &run, double cost) {
   const size_t n = t.n;
   Terms o{std::vector<double>(n, 0), std::vector<double>(n, 0)};
-  if (tg != kQuality) {
-    for (size_t i = 0; i < n; ++i) {
-      const double r = run.r[i], q = tg == kSharpe ? r : std::min(r, 0.0);
-      o.a[i] = r, o.b[i] = q * q;
-    }
-    return o;
-  }
-  assert(g.up.size() == n && g.dn.size() == n && "band 目标: 上线 / 下线");
+  assert(g.up.size() == n && g.dn.size() == n && run.w.size() == n && "分割质量: 上线 / 下线 / 仓位");
   const Col &c = t.c, &up = g.up, &dn = g.dn;
   const auto ok = [&](size_t i) { return dn[i] > 0 && up[i] > dn[i]; };
   const auto pos = [&](size_t i) { return std::clamp((static_cast<double>(c[i]) - dn[i]) / (up[i] - dn[i]), 0.0, 1.0); };

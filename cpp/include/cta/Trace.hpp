@@ -29,7 +29,7 @@ inline size_t days_of(const Series &se, size_t S) { return se.t.empty() ? 0 : se
 // se = 有效根 (t = 日下标 · S + 槽), 须跨过 W 日以上; kind = 各组模型; W = 滚动窗 (日, ≥ kMinRoll)
 // stop() → true = 放弃 (返回 false); tick() 每算完一个网格配置 (共 specs_of(S, kind).size() 个)
 template <class Stop, class Tick>
-bool trace(const Series &se, size_t S, const std::array<size_t, kNP> &kind, Target tg, size_t W, const Setup &u, Track &out, Stop stop, Tick tick) {
+bool trace(const Series &se, size_t S, const std::array<size_t, kNP> &kind, size_t W, const Setup &u, Track &out, Stop stop, Tick tick) {
   const size_t n = se.c.size(), d0 = se.t[0] / S, nd = days_of(se, S);
   assert(n > 1 && W >= kMinRoll && nd > W && "样本须长于滚动窗");
   const auto day = [&](size_t i) { return se.t[i] / S - d0; }; // 自首根所在日起
@@ -48,7 +48,7 @@ bool trace(const Series &se, size_t S, const std::array<size_t, kNP> &kind, Targ
     if (stop())
       return false;
     const Sig g = band(t, x.g);
-    acc.push_back(day_sums(terms(tg, t, g, simulate(t, g.w, u), u.cost), nd, day));
+    acc.push_back(day_sums(terms(t, g, simulate(t, g.w, u), u.cost), nd, day));
     tick();
   }
   std::vector<int> pick(nd, -1); // [日] → specs 下标
@@ -60,7 +60,7 @@ bool trace(const Series &se, size_t S, const std::array<size_t, kNP> &kind, Targ
     if (m < min_n)
       continue;
     for (size_t x = 0; x < y.size(); ++x)
-      y[x] = score(tg, win(acc[x], 0), win(acc[x], 1), m);
+      y[x] = score(win(acc[x], 0), win(acc[x], 1));
     const std::vector<double> f = rg.fit(y);
     pick[d] = static_cast<int>(std::max_element(f.begin(), f.end()) - f.begin());
   }

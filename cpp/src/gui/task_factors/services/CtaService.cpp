@@ -25,7 +25,7 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 
 bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
-  assert(sp.roll >= static_cast<int>(cta::kMinRoll) && sp.target >= 0 && sp.target < cta::kTargets);
+  assert(sp.roll >= static_cast<int>(cta::kMinRoll));
   const FeatureLib lib = load_lib(cfg_, kAllBar);
   if (!lib.ready())
     return publish(req, "CTA 价格由 all.bar 特征库合成: 先在 Features → Compute 算好 all 池的 Bar 库.");
@@ -77,7 +77,7 @@ bool CtaService::run(CtaRequest &req) {
   const cta::Setup u{sp.cost_bp * 1e-4, sp.vol, sp.buffer, out->bpy};
   begin(Phase::Running, cta::specs_of(static_cast<double>(S), sp.kind).size());
   const bool done = cta::trace(
-      *se, S, sp.kind, static_cast<cta::Target>(sp.target), W, u, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); },
+      *se, S, sp.kind, W, u, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); },
       [&] { Progress::publish(1); });
   return done && publish(req, {}, std::move(out));
 }

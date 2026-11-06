@@ -112,10 +112,13 @@ inline constexpr int kPicks = 2;
 // CTA 页: 设定 (进请求; 标的 = kPickOne 那一行) + 两图同一 x 视野 + 光标
 struct CtaUIState {
   CtaSpec spec;
-  CtaRequest sent;       // 上次发出的 (gen 0 = 未发)
-  bool editing = false;  // 数值框编辑中 (spec 未定, 不发请求)
-  uint32_t fitted = 0;   // x 视野已归位到的结果代
+  CtaRequest sent;                             // 上次发出的 (gen 0 = 未发)
+  bool editing = false;                        // 数值框编辑中 (spec 未定, 不发请求)
+  Database::Side fit_side = Database::kBasket; // x 视野所属的标的 (fit_side, fit_key): 换标的即回全段, 只改设定保留缩放
+  uint32_t fit_key = kCtaNone;
   double x0 = 0, x1 = 1; // 两图 x 视野 (有效根下标)
+  bool fit_y = true;     // 价格轴跟随视野内数据 (框选放大后 = 用框的 y)
+  bool boxing = false;   // 价格图上框选进行中
   int cursor = -1;       // 光标所在有效根 (−1 = 不在图上: 读数取末根)
 };
 
