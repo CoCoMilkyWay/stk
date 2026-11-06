@@ -296,7 +296,7 @@ inline Sig chase(const Tape &t, Col up, Col dn) {
 inline Col hold(const Tape &t) { return Col(t.n, 1); }
 
 // ---- 部件与参数 (测试台与轨迹共用) ----
-//   三组部件, 每组选一个模型; 各模型自带参数轴 (网格取值); 单值轴 = 固定参数, 自动优化不动它, 要换就改这里或在轨迹界面填
+//   三组部件, 每组选一个模型; 各模型自带参数轴 (网格取值); 单值轴 = 固定参数, 自动优化不动它, 要换就改这里
 //   以日计的轴经 to_bars 乘每日根数, 模型函数拿到的都是根
 
 enum : size_t { kCenter, // 中线

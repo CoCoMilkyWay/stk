@@ -26,6 +26,13 @@
         display: flex;
         flex-direction: column;
         min-width: 0;
+        position: relative;
+      }
+      #cursor {
+        position: absolute;
+        display: none;
+        border-left: 1px dashed #888;
+        pointer-events: none;
       }
       #chart {
         flex: 1;
@@ -49,6 +56,11 @@
       label input,
       label select {
         width: 130px;
+      }
+      label input:disabled {
+        color: #777;
+        background: #f0f0f0;
+        border: 1px solid #ddd;
       }
       #asset {
         width: 100%;
@@ -96,10 +108,30 @@
         /></label>
         <select id="asset" size="8"></select>
       </fieldset>
+      <fieldset>
+        <legend>优化目标</legend>
+        <label
+          >目标
+          <select id="target">
+            <option value="sharpe">夏普</option>
+            <option value="sortino">索提诺</option>
+            <option value="band">带质量</option>
+          </select></label
+        >
+        <label
+          >滚动窗 (日, ≥ 250)
+          <input id="roll" type="number" step="1" min="250" value="250"
+        /></label>
+        <div class="hint">
+          每日重拟; 带质量 = (带外顺向 − 带内来回 − 费率 × 换手) / 总振幅
+        </div>
+      </fieldset>
       <div id="parts"></div>
+      <div class="hint" id="at"></div>
       <div class="hint">
-        周期轴以日计; k = 半宽倍数, N = 层数, h = 层内滞回 (占通道全宽);
-        下拉提示是测试台网格取值, 可填任意值
+        各组只选模型; 参数由优化目标滚动选出 (本资产前 W 日的网格曲面,
+        岭回归后取最高点), 灰显的是图上光标处所用的; 周期轴以日计; k = 半宽倍数,
+        N = 层数, h = 层内滞回 (占通道全宽)
       </div>
       <fieldset>
         <legend>引擎</legend>
@@ -121,12 +153,14 @@
         <div class="hint" id="span"></div>
         <table id="stats"></table>
         <div class="hint">
-          图上框选放大 (后端按视窗重新聚合, 逐根时标加减仓), 双击回全期
+          图上框选放大 (后端按视窗重新聚合, 逐根时标加减仓), 双击回全期;
+          鼠标所在处即光标
         </div>
       </fieldset>
     </div>
     <div id="main">
       <div id="chart"></div>
+      <div id="cursor"></div>
     </div>
     <script src="app.js"></script>
   </body>

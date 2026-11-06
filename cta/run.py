@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # run.py — CTA 启动器: 构建 (CMake + Ninja, clang) → 按 APP 跑
-#   APP = "trace": cta_trace 交互轨迹 (浏览器选资产 / band 参数, 后端现算); python3 cta/run.py [端口]
+#   APP = "trace": cta_trace 交互轨迹 (浏览器选资产 / band 模型 + 优化目标, 后端滚动调参现算); python3 cta/run.py [端口]
 #   APP = "bench": cta_bench 测试台 (参数原样转交, 见 src/main.cpp 文件头) → plot.py 弹窗; python3 cta/run.py [--sets ind] [--roll 500] …
 
 import os

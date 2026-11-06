@@ -1,14 +1,17 @@
-// app.js — CTA 轨迹前端: 收集选项 + 视窗 → GET /api/run (cta_trace 现算 / 聚合) → 画; 本文件不做任何计算
+// app.js — CTA 轨迹前端: 收集选项 (模型 + 优化目标) + 视窗 → GET /api/run (cta_trace 滚动调参 / 现算 / 聚合) → 画; 本文件不做任何计算
 //   主图: 收盘线 + 上线 / 下线 + 中线 + 层线 (grid / fade) 或吊灯线 (chase) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
 //   x = 有效根下标 (连续, 无休市空档); 框选矩形放大 (x / y 一起, plotly 原生), 横轴视窗一变就按新视窗重取数据;
 //   双击还原不走 plotly 原生 (它会先按旧数据定一次范围), 取回全期数据后一次画好
+//   光标 = 鼠标所在根 (竖线): 侧栏灰显该根所在选参段的参数; 鼠标离开图 = 末根
 const $ = (id) => document.getElementById(id);
 const UP = "#d62728",
   DOWN = "#2ca02c",
   BAND = "rgba(31,119,180,0.8)";
 let META = null;
+let D = null; // 最近一次 /api/run
 let view = [0, 0]; // 视窗 [lo, hi) 有效根下标; hi = 0 即到末根
 let rev = 0; // 还原次数, 进 uirevision
+let cur = null; // 光标根下标; null = 末根
 
 const dash = (d) => {
   const s = String(d);
@@ -19,12 +22,11 @@ const minute = (t) => {
   return `${dash(s.slice(0, 8))} ${s.slice(8, 10)}:${s.slice(10, 12)}`;
 };
 
-// 部件 pt 的当前模型 / 参数输入框
+// 部件 pt 的当前模型 / 参数显示框
 const kindOf = (pt) => pt.kinds.find((k) => k.name === $(`k_${pt.name}`).value);
 const fields = (pt) => [...$(`p_${pt.name}`).querySelectorAll("input")];
 const part = (name) => META.parts.find((pt) => pt.name === name);
-const value = (pt, axis) =>
-  Number(fields(pt)[kindOf(pt).axes.findIndex((a) => a.name === axis)].value);
+const models = () => META.parts.map((pt) => kindOf(pt).name).join(" | ");
 
 function renderParts() {
   $("parts").innerHTML = META.parts
@@ -40,15 +42,51 @@ function renderParts() {
 
 function renderParams(pt) {
   $(`p_${pt.name}`).innerHTML = kindOf(pt)
-    .axes.map((a, i) => {
-      const id = `dl_${pt.name}${i}`,
-        mid = a.values[Math.floor(a.values.length / 2)];
-      return (
-        `<label>${a.name}${a.day ? " (日)" : ""} <input type="number" step="any" value="${mid}" list="${id}">` +
-        `<datalist id="${id}">${a.values.map((v) => `<option value="${v}">`).join("")}</datalist></label>`
-      );
-    })
+    .axes.map(
+      (a) =>
+        `<label>${a.name}${a.day ? " (日)" : ""} <input disabled value="–"></label>`,
+    )
     .join("");
+}
+
+// 光标处 (cur) 所在选参段的参数 → 灰显框
+function showAt() {
+  if (!D) return;
+  const i = cur ?? D.n - 1;
+  let k = 0;
+  while (k + 1 < D.seg.length && D.seg[k + 1].i <= i) k++;
+  const g = D.seg[k];
+  META.parts.forEach((pt, j) =>
+    fields(pt).forEach((e, x) => (e.value = g.p ? g.p[j][x] : "–")),
+  );
+  const v = D.v,
+    p = Math.min(v.t.length - 1, Math.max(0, Math.floor((i - D.lo) / D.step)));
+  $("at").textContent =
+    (cur == null ? "末根" : `光标 ${minute(v.t[p])}`) +
+    (g.p ? `: 自 ${dash(g.t)} 起用` : ": 空仓 (窗内数据不足)");
+}
+
+function moveCursor(e) {
+  const c = $("chart"),
+    L = c._fullLayout;
+  if (!D || !L) return;
+  const s = L._size,
+    px = e.clientX - c.getBoundingClientRect().left - s.l;
+  if (px < 0 || px > s.w) return leaveCursor();
+  Object.assign($("cursor").style, {
+    display: "block",
+    left: `${s.l + px}px`,
+    top: `${s.t}px`,
+    height: `${s.h}px`,
+  });
+  cur = Math.max(0, Math.min(D.n - 1, Math.round(L.xaxis.p2d(px))));
+  showAt();
+}
+
+function leaveCursor() {
+  $("cursor").style.display = "none";
+  cur = null;
+  showAt();
 }
 
 // 按测试集 + 筛选串列资产, 尽量保留当前选中; 返回选中是否变了
@@ -73,27 +111,14 @@ function renderAssets() {
   return $("asset").value !== cur;
 }
 
-// 配置的显示串: 各组 模型(轴=值, …)
-const paramText = () =>
-  META.parts
-    .map((pt) => {
-      const K = kindOf(pt),
-        p = fields(pt).map((e, i) => `${K.axes[i].name}=${e.value}`);
-      return p.length ? `${K.name}(${p.join(",")})` : K.name;
-    })
-    .join(" | ");
-
 function query() {
   const parts = {};
-  for (const pt of META.parts) {
-    parts[pt.name] = kindOf(pt).name;
-    parts[pt.name + "p"] = fields(pt)
-      .map((e) => e.value)
-      .join(",");
-  }
+  for (const pt of META.parts) parts[pt.name] = kindOf(pt).name;
   return new URLSearchParams({
     a: $("asset").value,
     ...parts,
+    target: $("target").value,
+    roll: $("roll").value,
     cost: ($("cost").value || 0) / 1e4,
     vol: $("vol").value || 0,
     buffer: $("buffer").value || 0,
@@ -121,8 +146,10 @@ async function run() {
   if (my !== seq) return;
   $("busy").textContent = `${Math.round(performance.now() - t0)} ms`;
   $("span").textContent = `${dash(d.first)} … ${dash(d.last)}, ${d.n} 根`;
+  D = d;
   drawStats(d);
   draw(d);
+  showAt();
 }
 
 // ---- 画 ----
@@ -200,7 +227,9 @@ function draw(d) {
       line: { color: BAND, width: 1.3, dash: "dash" },
     });
   else {
-    const N = value(layer, "N");
+    const ax = kindOf(layer).axes.find((a) => a.name === "N");
+    console.assert(ax.values.length === 1, "层数 N 须为单值轴");
+    const N = ax.values[0];
     for (let j = 1; j < N; j++)
       traces.push({
         x,
@@ -286,7 +315,7 @@ function draw(d) {
       dragmode: "zoom",
       uirevision: `${$("asset").value}/${rev}`, // 变了 = 按新数据自动定范围 (全期); 不变 = 保留用户的缩放
       title: {
-        text: `${A.name} ${A.code} | band ${paramText()} | ${lab[0]} … ${lab[m - 1]} | ${res}`,
+        text: `${A.name} ${A.code} | band ${models()} @ ${$("target").value}, W=${$("roll").value} | ${lab[0]} … ${lab[m - 1]} | ${res}`,
         font: { size: 12 },
       },
       xaxis: { tickvals: tv, ticktext: tt },
@@ -338,6 +367,8 @@ function draw(d) {
   META = await (await fetch("/api/meta")).json();
   renderParts();
   renderAssets();
+  $("chart").addEventListener("mousemove", moveCursor);
+  $("chart").addEventListener("mouseleave", leaveCursor);
   $("filter").addEventListener("input", () => {
     if (renderAssets()) ((view = [0, 0]), schedule());
   });
