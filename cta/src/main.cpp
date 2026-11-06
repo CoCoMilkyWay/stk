@@ -1,6 +1,6 @@
 // cta_bench — 只做多 CTA 测试台: 模型 × 参数网格 × 测试集 (篮子表的 set), 逐资产回测 → 等权组合 + 跨资产中位数
 //   用法: cta_bench [--freq 1m|1d] [--sets idx,ind,concept] [--models band (空 = 全部)] [--cost 0.001] [--vol 0] [--buffer 0]
-//                   [--stop close|intra] [--top 15] [--expo 0.2] [--roll 250] [--refit 20] [--assets 50]
+//                   [--top 15] [--expo 0.2] [--roll 250] [--refit 20] [--assets 50]
 //   每测试集固定种子随机抽 assets 只 (0 = 全部; 不足 kMinDays 的跳过不计)
 //   先把 CTA 库 (cta/data, Db.hpp) 合成到 all.bar 特征库末日, 再按 freq 取面板; 模型参数 / 方差比周期的单位都是根 (1m = 分钟), band 的 n 以日计
 //   终端: 各测试集先给方差比 VR(k) (各资产中位数: 哪些周期有趋势 / 均值回归), 再按组合夏普排行 (+ 基准 hold),
@@ -239,29 +239,23 @@ std::vector<int> roll_pick(const Universe &u, const std::vector<const Row *> &ro
   return pick;
 }
 
-// 滚动调参的执行: 候选配置逐根同跑 (状态常热), 取当根选中者的单; 切换的换手照常计成本
-//   未选中者 (或刚切入者) 以自身上根目标仓位当持仓
+// 滚动调参的执行: 候选配置逐根同跑 (状态常热), 取当根选中者的仓位; 切换的换手照常计成本
 class Switch : public Model {
   std::vector<std::unique_ptr<Model>> m_;
-  std::vector<float> last_;
   std::vector<int> pick_; // [根] → m_ 下标 (−1 = 空仓)
   size_t i_ = 0;
-  int prev_ = -1;
 
 public:
-  Switch(std::vector<std::unique_ptr<Model>> m, std::vector<int> pick) : m_(std::move(m)), last_(m_.size(), 0), pick_(std::move(pick)) {}
-  Order step(const Bar &b, float held) override {
+  Switch(std::vector<std::unique_ptr<Model>> m, std::vector<int> pick) : m_(std::move(m)), pick_(std::move(pick)) {}
+  float step(const Bar &b) override {
     const int k = pick_[i_++];
-    Order o;
+    float w = 0;
     for (size_t j = 0; j < m_.size(); ++j) {
-      const bool on = static_cast<int>(j) == k;
-      const Order x = m_[j]->step(b, on && k == prev_ ? held : last_[j]);
-      last_[j] = x.w;
-      if (on)
-        o = x;
+      const float x = m_[j]->step(b);
+      if (static_cast<int>(j) == k)
+        w = x;
     }
-    prev_ = k;
-    return o;
+    return w;
   }
 };
 
@@ -336,14 +330,13 @@ void parallel(const char *what, size_t n, const std::function<void(size_t)> &f) 
 } // namespace
 
 int main(int argc, char **argv) {
-  std::map<std::string, std::string> arg = {{"freq", "1m"}, {"sets", "idx,ind,concept"}, {"models", "band"}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"stop", "close"}, {"top", "15"}, {"expo", "0.2"}, {"roll", "250"}, {"refit", "20"}, {"assets", "50"}};
+  std::map<std::string, std::string> arg = {{"freq", "1m"}, {"sets", "idx,ind,concept"}, {"models", "band"}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"top", "15"}, {"expo", "0.2"}, {"roll", "250"}, {"refit", "20"}, {"assets", "50"}};
   assert(argc % 2 == 1 && "参数须成对: --键 值");
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string k = argv[i];
     assert(k.starts_with("--") && arg.contains(k.substr(2)) && "未知参数");
     arg[k.substr(2)] = argv[i + 1];
   }
-  assert((arg["stop"] == "close" || arg["stop"] == "intra") && "--stop close | intra");
 
   const std::string root = std::string(CTA_DIR) + "/..", dir = std::string(CTA_DIR) + "/data";
   const Lib lib = open_lib(root + "/output/features/all/bar");
@@ -352,7 +345,6 @@ int main(int argc, char **argv) {
   const Panel panel = open_panel(dir, table, arg["freq"]);
   Setup setup;
   setup.cost = std::stod(arg["cost"]), setup.vol = std::stod(arg["vol"]), setup.buffer = std::stod(arg["buffer"]);
-  setup.stop = arg["stop"] == "close" ? Stop::Close : Stop::Intra;
   setup.bpy = panel.bars_per_year;
   const double S = static_cast<double>(panel.S);
   const std::vector<Spec> specs = specs_of(split(arg["models"]), S);
@@ -464,8 +456,8 @@ int main(int argc, char **argv) {
 
   const std::string vol = setup.vol > 0 ? std::to_string(static_cast<int>(setup.vol * 100)) + "%" : "关";
   const std::string roll = W > 0 ? std::to_string(W) + " 日 / 每 " + std::to_string(R) + " 日" : "关";
-  std::printf("CTA bench %s: %zu 配置 | 成本 %.1fbp | 目标波动 %s | 不交易带 %g | 止损 %s | 滚动调参 %s | 每年 %.0f 根 | 排行仓位 ≥ %g\n", arg["freq"].c_str(),
-              specs.size(), setup.cost * 1e4, vol.c_str(), setup.buffer, arg["stop"].c_str(), roll.c_str(), setup.bpy, expo);
+  std::printf("CTA bench %s: %zu 配置 | 成本 %.1fbp | 目标波动 %s | 不交易带 %g | 滚动调参 %s | 每年 %.0f 根 | 排行仓位 ≥ %g\n", arg["freq"].c_str(),
+              specs.size(), setup.cost * 1e4, vol.c_str(), setup.buffer, roll.c_str(), setup.bpy, expo);
   std::vector<char> flat_of(rows.size(), 0); // 平原顶行
   for (size_t i = 0; i < us.size(); ++i) {
     const Universe &u = us[i];

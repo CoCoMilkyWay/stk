@@ -27,11 +27,7 @@
         flex-direction: column;
         min-width: 0;
       }
-      #over {
-        height: 230px;
-        flex: none;
-      }
-      #win {
+      #chart {
         flex: 1;
         min-height: 0;
       }
@@ -54,13 +50,8 @@
       label select {
         width: 130px;
       }
-      .row {
-        display: flex;
-        gap: 4px;
-        margin-top: 4px;
-      }
-      .row button {
-        flex: 1;
+      #asset {
+        width: 100%;
       }
       table {
         border-collapse: collapse;
@@ -91,8 +82,19 @@
   <body>
     <div id="side">
       <fieldset>
-        <legend>资产 (启动时随机挑)</legend>
-        <select id="asset" style="width: 100%"></select>
+        <legend>资产</legend>
+        <label
+          >测试集
+          <select id="set">
+            <option value="idx">指数</option>
+            <option value="ind">行业</option>
+            <option value="concept">概念</option>
+          </select></label
+        >
+        <label
+          >筛选 <input id="filter" type="search" placeholder="名 / 码"
+        /></label>
+        <select id="asset" size="8"></select>
       </fieldset>
       <fieldset>
         <legend>模型</legend>
@@ -117,13 +119,6 @@
           <input id="cost" type="number" step="1" min="0" value="10"
         /></label>
         <label
-          >止损判据
-          <select id="stop">
-            <option value="close">收盘</option>
-            <option value="intra">盘中</option>
-          </select></label
-        >
-        <label
           >目标年化波动 (0 = 不调)
           <input id="vol" type="number" step="0.05" min="0" value="0"
         /></label>
@@ -133,25 +128,16 @@
         /></label>
       </fieldset>
       <fieldset>
-        <legend>窗口</legend>
-        <label>起日 <input id="from" type="date" /></label>
-        <label
-          >交易日数 <input id="days" type="number" min="1" max="60" value="5"
-        /></label>
-        <div class="row">
-          <button id="prev">◀ 前一窗</button><button id="rand">随机</button
-          ><button id="next">后一窗 ▶</button>
-        </div>
-        <div class="hint">点上方全期图跳到该日; 键盘 ← / → 翻窗</div>
-      </fieldset>
-      <fieldset>
         <legend>全期指标 <span id="busy"></span></legend>
+        <div class="hint" id="span"></div>
         <table id="stats"></table>
+        <div class="hint">
+          图上框选放大 (后端按视窗重新聚合, 逐根时标加减仓), 双击回全期
+        </div>
       </fieldset>
     </div>
     <div id="main">
-      <div id="over"></div>
-      <div id="win"></div>
+      <div id="chart"></div>
     </div>
     <script src="app.js"></script>
   </body>

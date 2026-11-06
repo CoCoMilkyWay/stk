@@ -1,7 +1,7 @@
 #pragma once
 
-// 单资产时序模型 (只做多): 逐根收盘看本根, 出单 Order (按本根收盘价调仓); 窗口一律以根计 (日线 / 分钟同一套)
-//   模型 = 入场 / 持有判据 + 可选止损价; 成交 / 仓位层 / 成本归 Engine
+// 单资产时序模型 (只做多): 逐根看本根收盘, 给目标仓位 [0, 1] (按本根收盘价调到); 窗口一律以根计 (日线 / 分钟同一套)
+//   入场 / 出场都只看收盘; 成交 / 仓位层 / 成本归 Engine
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -15,16 +15,10 @@ struct Bar {
   float o, h, l, c;
 };
 
-struct Order {
-  float w = 0;    // 目标仓位 [0, 1]: 本根收盘调到
-  float stop = 0; // 止损价 (0 = 无): 下一根起触发即清仓, 判据 / 成交价见 Engine
-};
-
 class Model {
 public:
   virtual ~Model() = default;
-  // held = 本根收盘后的实际仓位 (本根被止损 = 0)
-  virtual Order step(const Bar &b, float held) = 0;
+  virtual float step(const Bar &b) = 0;
 };
 
 // ---- 递推件 ----
@@ -204,8 +198,10 @@ struct DevWidth : Width {
 
 inline std::unique_ptr<Center> center_of(int kind, long n) {
   switch (kind) {
-  case 0: return std::make_unique<KamaCenter>(n);
-  case 1: return std::make_unique<MidCenter>(n);
+  case 0:
+    return std::make_unique<KamaCenter>(n);
+  case 1:
+    return std::make_unique<MidCenter>(n);
   }
   assert(false && "中线种类");
   return nullptr;
@@ -213,9 +209,12 @@ inline std::unique_ptr<Center> center_of(int kind, long n) {
 
 inline std::unique_ptr<Width> width_of(int kind, long n) {
   switch (kind) {
-  case 0: return std::make_unique<VolWidth>(n);
-  case 1: return std::make_unique<RngWidth>(n);
-  case 2: return std::make_unique<DevWidth>(n);
+  case 0:
+    return std::make_unique<VolWidth>(n);
+  case 1:
+    return std::make_unique<RngWidth>(n);
+  case 2:
+    return std::make_unique<DevWidth>(n);
   }
   assert(false && "宽度种类");
   return nullptr;
@@ -226,7 +225,7 @@ inline std::unique_ptr<Width> width_of(int kind, long n) {
 // 买入持有 (基准)
 class Hold : public Model {
 public:
-  Order step(const Bar &, float) override { return {1, 0}; }
+  float step(const Bar &) override { return 1; }
 };
 
 // 双均线: EMA(fast) > EMA(slow) 持有
@@ -236,9 +235,9 @@ class Ma : public Model {
 
 public:
   Ma(float fast, float slow) : f_(fast), s_(slow), warm_(static_cast<long>(slow)) {}
-  Order step(const Bar &b, float) override {
+  float step(const Bar &b) override {
     f_.push(b.c), s_.push(b.c);
-    return {++t_ >= warm_ && f_.v > s_.v ? 1.f : 0.f, 0};
+    return ++t_ >= warm_ && f_.v > s_.v ? 1.f : 0.f;
   }
 };
 
@@ -249,9 +248,9 @@ class TsMom : public Model {
 
 public:
   explicit TsMom(float L) : c_(static_cast<long>(L)), L_(static_cast<long>(L)) {}
-  Order step(const Bar &b, float) override {
+  float step(const Bar &b) override {
     c_.push(b.c);
-    return {c_.has(L_) && b.c > c_.ago(L_) ? 1.f : 0.f, 0};
+    return c_.has(L_) && b.c > c_.ago(L_) ? 1.f : 0.f;
   }
 };
 
@@ -265,14 +264,14 @@ public:
     for (long j = 0; j < 5; ++j)
       ls_.push_back(static_cast<long>(lo) << j);
   }
-  Order step(const Bar &b, float) override {
+  float step(const Bar &b) override {
     c_.push(b.c);
     if (!c_.has(ls_.back()))
-      return {};
+      return 0;
     int up = 0;
     for (const long L : ls_)
       up += b.c > c_.ago(L);
-    return {static_cast<float>(up) / static_cast<float>(ls_.size()), 0};
+    return static_cast<float>(up) / static_cast<float>(ls_.size());
   }
 };
 
@@ -282,13 +281,13 @@ class Kama : public Model {
 
 public:
   Kama(float n, float slow) : k_(static_cast<long>(n), slow) {}
-  Order step(const Bar &b, float) override {
+  float step(const Bar &b) override {
     k_.push(b.c);
-    return {k_.ready() && b.c > k_.v ? 1.f : 0.f, 0};
+    return k_.ready() && b.c > k_.v ? 1.f : 0.f;
   }
 };
 
-// 唐奇安通道 (海龟): 收破前 n 根最高价入场; 止损 = 近 m 根最低价
+// 唐奇安通道 (海龟): 收破前 n 根最高价入场; 收 ≤ 前 m 根最低价出场
 class Donchian : public Model {
   RollMax hi_;
   RollMin lo_;
@@ -296,48 +295,49 @@ class Donchian : public Model {
 
 public:
   Donchian(float n, float m) : hi_(static_cast<long>(n)), lo_(static_cast<long>(m)) {}
-  Order step(const Bar &b, float held) override {
-    in_ = in_ && held > 0;
+  float step(const Bar &b) override {
+    in_ = in_ && b.c > lo_.top();
     const bool brk = hi_.full() && b.c > hi_.top();
     hi_.push(b.h), lo_.push(b.l);
     in_ = in_ || brk;
-    return in_ ? Order{1, lo_.top()} : Order{};
+    return in_ ? 1.f : 0.f;
   }
 };
 
-// 吊灯止损: 收破前 n 根最高价入场; 止损 = 入场以来最高价 − k · ATR
+// 吊灯: 收破前 n 根最高价入场; 收 ≤ 出场线 (上根的 入场以来最高价 − k · ATR) 出场
 class Chandelier : public Model {
   RollMax hi_;
   Atr atr_{kAtrSpan};
-  float k_, top_ = 0;
+  float k_, top_ = 0, exit_ = 0;
   bool in_ = false;
 
 public:
   Chandelier(float n, float k) : hi_(static_cast<long>(n)), k_(k) {}
-  Order step(const Bar &b, float held) override {
-    in_ = in_ && held > 0;
+  float step(const Bar &b) override {
+    in_ = in_ && b.c > exit_;
     const bool brk = hi_.full() && b.c > hi_.top();
     hi_.push(b.h), atr_.push(b);
     top_ = in_ ? std::max(top_, b.h) : b.h;
     in_ = in_ || brk;
-    return in_ ? Order{1, static_cast<float>(top_ - k_ * atr_.v())} : Order{};
+    exit_ = static_cast<float>(top_ - k_ * atr_.v());
+    return in_ ? 1.f : 0.f;
   }
 };
 
 // 右侧抄底: 收自前 kPeak 根最高收的对数回撤 ≥ d · σ_bar · √kPeak → 待命; 待命中收破前 n 根最高价 → 入场;
-//   止损 = 入场以来最高价 − k · ATR; 出场后回到看回撤 (仍够深 = 当根即待命)
+//   收 ≤ 出场线 (上根的 入场以来最高价 − k · ATR) 出场, 之后回到看回撤 (仍够深 = 当根即待命)
 class Rebound : public Model {
   static constexpr long kPeak = 250;
   RollMax peak_{kPeak}, hi_;
   Vol vol_{kVolSpan};
   Atr atr_{kAtrSpan};
-  float d_, k_, top_ = 0;
+  float d_, k_, top_ = 0, exit_ = 0;
   bool armed_ = false, in_ = false;
 
 public:
   Rebound(float d, float n, float k) : hi_(static_cast<long>(n)), d_(d), k_(k) {}
-  Order step(const Bar &b, float held) override {
-    in_ = in_ && held > 0;
+  float step(const Bar &b) override {
+    in_ = in_ && b.c > exit_;
     const bool brk = hi_.full() && b.c > hi_.top();
     hi_.push(b.h), peak_.push(b.c), vol_.push(b.c), atr_.push(b);
     if (in_) {
@@ -348,7 +348,8 @@ public:
       if (armed_ && brk)
         in_ = true, armed_ = false, top_ = b.h;
     }
-    return in_ ? Order{1, static_cast<float>(top_ - k_ * atr_.v())} : Order{};
+    exit_ = static_cast<float>(top_ - k_ * atr_.v());
+    return in_ ? 1.f : 0.f;
   }
 };
 
@@ -360,13 +361,13 @@ class Revert : public Model {
 
 public:
   Revert(float L, float g) : dev_(static_cast<long>(L)), g_(g) {}
-  Order step(const Bar &b, float) override {
+  float step(const Bar &b) override {
     dev_.push(b.c);
     if (!dev_.ready())
-      return {};
+      return 0;
     const double v = dev_.v(b.c);
     in_ = in_ ? v >= 0 : v > g_;
-    return {in_ ? 1.f : 0.f, 0};
+    return in_ ? 1.f : 0.f;
   }
 };
 
@@ -382,13 +383,13 @@ class Gate : public Model {
 
 public:
   Gate(float L, float g, float f, float h) : dev_(static_cast<long>(L)), c_(static_cast<long>(f)), f_(static_cast<long>(f)), g_(g), h_(h) {}
-  Order step(const Bar &b, float) override {
+  float step(const Bar &b) override {
     dev_.push(b.c), c_.push(b.c);
     if (!dev_.ready() || !c_.has(f_))
-      return {};
+      return 0;
     const double s = dev_.vol.v() * std::sqrt(static_cast<double>(f_)), m = s > 0 ? std::log(b.c / c_.ago(f_)) / s : 0;
     on_ = on_ ? m >= -h_ : m > h_;
-    return {on_ && dev_.v(b.c) > g_ ? 1.f : 0.f, 0};
+    return on_ && dev_.v(b.c) > g_ ? 1.f : 0.f;
   }
 };
 
@@ -407,12 +408,12 @@ public:
   }
   double mid() const { return c_->v(); }
   double half() const { return k_ * w_->v(); } // 中线到上 / 下沿
-  Order step(const Bar &b, float) override {
+  float step(const Bar &b) override {
     c_->push(b);
     w_->push(b, c_->v());
     const double w = k_ * w_->v();
     if (++t_ < n_ || !(w > 0))
-      return {};
+      return 0;
     const double q = std::clamp((b.c - c_->v()) / w + 1, 0.0, 2.0) / 2 * N_;
     if (q >= N_)
       L_ = N_;
@@ -420,33 +421,31 @@ public:
       L_ = 0;
     else if (std::fabs(q - L_) > 0.5 + h_)
       L_ = static_cast<int>(std::lround(q));
-    return {static_cast<float>(L_) / static_cast<float>(N_), 0};
+    return static_cast<float>(L_) / static_cast<float>(N_);
   }
 };
 
-// 吊灯止损外挂: 任一模型持仓期间叠加 入场以来最高价 − k · ATR 的止损 (取两者高者); 被止损后须底层模型先给 0 才再入场
+// 吊灯外挂: 任一模型持仓期间, 收 ≤ 出场线 (上根的 入场以来最高价 − k · ATR) 即清仓; 之后须底层模型先给 0 才再入场
 class Trail : public Model {
   std::unique_ptr<Model> m_;
   Atr atr_{kAtrSpan};
-  float k_, top_ = 0, last_ = 0;
+  float k_, top_ = 0, exit_ = 0;
   bool armed_ = true, in_ = false;
 
 public:
   Trail(std::unique_ptr<Model> m, float k) : m_(std::move(m)), k_(k) {}
-  Order step(const Bar &b, float held) override {
-    if (last_ > 0 && held == 0)
-      armed_ = false;
-    Order o = m_->step(b, held);
+  float step(const Bar &b) override {
+    const bool hit = in_ && b.c <= exit_;
+    const float w = m_->step(b);
     atr_.push(b);
-    armed_ = armed_ || o.w == 0;
-    if (!armed_ || o.w == 0) {
-      in_ = false, last_ = 0;
-      return {};
+    armed_ = (armed_ && !hit) || w == 0;
+    if (!armed_ || w == 0) {
+      in_ = false;
+      return 0;
     }
     top_ = in_ ? std::max(top_, b.h) : b.h;
     in_ = true;
-    o.stop = std::max(o.stop, static_cast<float>(top_ - k_ * atr_.v()));
-    last_ = o.w;
-    return o;
+    exit_ = static_cast<float>(top_ - k_ * atr_.v());
+    return w;
   }
 };

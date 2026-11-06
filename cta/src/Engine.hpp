@@ -1,11 +1,7 @@
 #pragma once
 
-// 单资产回测: 收盘出单即按收盘价调仓 (冲击计入费率)
-//   止损两种判据 (Stop):
-//     Close = 收 ≤ 止损价 → 本根收盘清仓 (收盘竞价); 篮子的高 / 低是成员高低的加权外包, 比真实路径宽, 按低价判会多触发
-//     Intra = 低 ≤ 止损价 → 盘中在 min(开, 止损价) 清仓 (跳空穿价 = 开盘价)
-//   每根收益 = p · (出价 / 前收 − 1) − 成本; p = 前根收盘调到的仓位, 出价 = 收 (Intra 止损 = 止损成交价)
-//   成本 = 单边费率 × 换手 (收盘调仓 |w − p| + 止损清仓 p)
+// 单资产回测: 模型逐根看收盘给目标仓位, 即按收盘价调到 (冲击计入费率)
+//   每根收益 = p · (收 / 前收 − 1) − 单边费率 × |w − p|; p = 前根收盘调到的仓位, w = 本根收盘调到的
 //   仓位层 (模型之后): 波动率定仓 w · min(1, 目标 / σ̂) → 不交易带 (两边都持仓且 |Δw| < 带宽 不调)
 #include "Model.hpp"
 #include "Panel.hpp"
@@ -15,15 +11,11 @@
 #include <cstdint>
 #include <vector>
 
-enum class Stop { Close,
-                  Intra };
-
 struct Setup {
   double cost = 0.001; // 单边费率
   double vol = 0;      // 目标年化波动 (0 = 不调)
   double buffer = 0;   // 不交易带宽
-  Stop stop = Stop::Close;
-  double bpy = 244; // 每年根数
+  double bpy = 244;    // 每年根数
 };
 
 // 一个资产的有效根 (跳过无数据的根)
@@ -66,27 +58,18 @@ inline Run simulate(const Series &s, Model &m, const Setup &u) {
   run.r.assign(n, 0), run.gross.assign(n, 0), run.w.assign(n, 0);
   Vol vol(kVolSpan);
   const double target = u.vol / std::sqrt(u.bpy); // 每根目标波动
-  Order o;
-  float p = 0;    // 持仓
-  double nav = 1; // 在场段累计
-  size_t i0 = n;  // 在场段建仓根 (n = 不在场)
+  float p = 0;                                    // 持仓
+  double nav = 1;                                 // 在场段累计
+  size_t i0 = n;                                  // 在场段建仓根 (n = 不在场)
   for (size_t i = 0; i < n; ++i) {
     const Bar &b = s.bar[i];
     double r = 0;
     if (p > 0) {
-      const bool hit = o.stop > 0 && (u.stop == Stop::Close ? b.c <= o.stop : b.l <= o.stop);
-      const double x = !hit || u.stop == Stop::Close ? b.c : std::min(b.o, o.stop);
-      run.gross[i] = p * (x / s.bar[i - 1].c - 1);
-      r = run.gross[i] - (hit ? u.cost * p : 0);
+      r = run.gross[i] = p * (b.c / s.bar[i - 1].c - 1);
       nav *= 1 + r;
-      if (hit) {
-        run.turn += p;
-        run.trades.push_back({i0, i, nav - 1}), i0 = n, p = 0;
-      }
     }
     vol.push(b.c);
-    o = m.step(b, p);
-    float w = o.w;
+    float w = m.step(b);
     if (u.vol > 0 && vol.v() > 0)
       w *= static_cast<float>(std::min(1.0, target / vol.v()));
     if (p > 0 && w > 0 && std::fabs(w - p) < u.buffer)

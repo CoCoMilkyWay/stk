@@ -1,20 +1,21 @@
-// cta_trace — 分钟线单配置交互轨迹 (后端): 启动随机挑 kPick 只资产, 浏览器里选资产 / 模型 / 参数 / 窗口, 每次现算一个配置
-//   用法: cta_trace [端口 8766]; 计算全在这里 (模型 + 回测 + 指标 + 下采样), 前端 cta/web 只画
-//   接口: GET /api/meta → 资产 (名 / 测试集 / 首末日) + 模型表 (参数轴 + 网格取值) + 每日根数
-//         GET /api/run?a=资产&kind=模型&p=参数 (逗号分隔, 轴序)&trail=吊灯 k (0 = 不叠)&cost=单边费率&stop=close|intra&vol=目标年化波动&buffer=不交易带
-//                     &from=YYYYMMDD&days=窗口日数
-//           → 全期指标 (策略 / 持有) + 全期日线概览 (日末收 / 策略净值 / 持有净值 / 日均仓位) + 窗口逐根 (K 线 / band 中线与半宽 / 生效止损 / 仓位 / 窗内净值)
+// cta_trace — 分钟线单配置交互轨迹 (后端): 浏览器里选资产 (idx / ind / concept) / 模型 / 参数, 每次现算一个配置的全期
+//   用法: cta_trace [端口 8766]; 计算全在这里 (模型 + 回测 + 指标 + 视窗聚合), 前端 cta/web 只画
+//   接口: GET /api/meta → 全部资产 (名 / 码 / 测试集) + 模型表 (参数轴 + 网格取值) + 每日根数
+//         GET /api/run?a=资产&kind=模型&p=参数 (逗号分隔, 轴序)&trail=吊灯 k (0 = 不叠)&cost=单边费率&vol=目标年化波动&buffer=不交易带
+//                     &lo=&hi=视窗 [lo, hi) (有效根下标, hi = 0 即到末根)&px=视窗最多几点
+//           → 全期指标 (策略 / 持有) + 视窗纵轴范围 + 视窗逐点 (每 step 根取末根: 收 / band 中线与半宽 / 仓位 / 全期净值 / 持有净值)
+//   配置不变只换视窗时不重算; 视窗根数 ≤ px 时 step = 1 (逐根)
 #include "Http.hpp"
 #include "Kinds.hpp"
 #include "Metrics.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
-#include <random>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -22,26 +23,29 @@
 
 namespace {
 
-constexpr size_t kPick = 10, kMinDays = 500; // 挑几只 / 有效根数下限 = 这么多日的根
-
-// 逐根记下 band 中线 / 半宽 (非 Band = NaN) 与模型给的止损价
+// 逐根记下 band 中线 / 半宽 (非 Band = NaN)
 class Probe : public Model {
   Model &m_;
   const Band *b_;
 
 public:
-  std::vector<double> mid, half, stop;
+  std::vector<double> mid, half;
   Probe(Model &m, const Band *b) : m_(m), b_(b) {}
-  Order step(const Bar &b, float held) override {
-    const Order o = m_.step(b, held);
-    mid.push_back(b_ ? b_->mid() : kNaN), half.push_back(b_ ? b_->half() : kNaN), stop.push_back(o.stop > 0 ? o.stop : kNaN);
-    return o;
+  float step(const Bar &b) override {
+    const float w = m_.step(b);
+    mid.push_back(b_ ? b_->mid() : kNaN), half.push_back(b_ ? b_->half() : kNaN);
+    return w;
   }
 };
 
-struct Pick {
-  const Asset *asset;
+// 当前资产 + 当前配置的全期结果
+struct State {
+  size_t a = SIZE_MAX;
   Series se;
+  std::string key;
+  Run rs;
+  Stat st, sh;
+  std::vector<double> mid, half, nav;
 };
 
 // ---- JSON 拼接 ----
@@ -66,7 +70,7 @@ void str(std::string &o, const std::string &s) {
   o += '"';
 }
 
-// f 返回整数 (日期 / 时刻) 原样写, 浮点走 num
+// f 返回整数 (下标 / 时刻) 原样写, 浮点走 num
 template <class F>
 void arr(std::string &o, const char *key, size_t n, F f) {
   o += '"', o += key, o += "\":[";
@@ -93,13 +97,12 @@ void stat(std::string &o, const char *key, const Stat &s) {
   o += '}';
 }
 
-std::string meta(const std::vector<Pick> &picks, const Panel &panel) {
+std::string meta(const Panel &panel) {
   std::string o = "{\"bpd\":" + std::to_string(panel.S) + ",\"assets\":[";
-  for (size_t i = 0; i < picks.size(); ++i) {
-    const Pick &p = picks[i];
-    o += i ? ",{" : "{";
-    o += "\"name\":", str(o, p.asset->name), o += ",\"code\":", str(o, p.asset->code), o += ",\"set\":", str(o, p.asset->set);
-    o += ",\"first\":" + std::to_string(ymd_of(panel.time[p.se.t.front()])) + ",\"last\":" + std::to_string(ymd_of(panel.time[p.se.t.back()])) + "}";
+  for (size_t b = 0; b < panel.B; ++b) {
+    const Asset &a = panel.assets[b];
+    o += b ? ",{" : "{";
+    o += "\"name\":", str(o, a.name), o += ",\"code\":", str(o, a.code), o += ",\"set\":", str(o, a.set), o += '}';
   }
   o += "],\"kinds\":[";
   for (size_t k = 0; k < std::size(kKinds); ++k) {
@@ -129,10 +132,18 @@ std::vector<float> floats(const std::string &s) {
   return v;
 }
 
-std::string run(const std::vector<Pick> &picks, const Panel &panel, const Query &q) {
+void compute(State &s, const Panel &panel, const Query &q) {
+  std::string key;
+  for (const char *k : {"a", "kind", "p", "trail", "cost", "vol", "buffer"})
+    key += q.at(k), key += '|';
+  if (key == s.key)
+    return;
   const size_t a = std::stoul(q.at("a"));
-  assert(a < picks.size() && "资产下标");
-  const Series &se = picks[a].se;
+  assert(a < panel.B && "资产下标");
+  if (a != s.a) {
+    s.se = series_of(panel, a), s.a = a;
+    assert(s.se.bar.size() > 1 && "资产无数据");
+  }
   const auto kind = std::find_if(std::begin(kKinds), std::end(kKinds), [&](const Kind &K) { return q.at("kind") == K.name; });
   assert(kind != std::end(kKinds) && "未知模型");
   const P p = floats(q.at("p"));
@@ -141,68 +152,64 @@ std::string run(const std::vector<Pick> &picks, const Panel &panel, const Query 
 
   Setup u;
   u.cost = std::stod(q.at("cost")), u.vol = std::stod(q.at("vol")), u.buffer = std::stod(q.at("buffer"));
-  assert((q.at("stop") == "close" || q.at("stop") == "intra") && "stop: close | intra");
-  u.stop = q.at("stop") == "close" ? Stop::Close : Stop::Intra;
   u.bpy = panel.bars_per_year;
-
   std::unique_ptr<Model> base = kind->make(p, static_cast<double>(panel.S));
   const Band *band = dynamic_cast<const Band *>(base.get());
   const std::unique_ptr<Model> m = trail > 0 ? std::make_unique<Trail>(std::move(base), trail) : std::move(base);
   Probe pr(*m, band);
-  const Run rs = simulate(se, pr, u);
+  s.rs = simulate(s.se, pr, u);
   Hold hold;
-  const Run rh = simulate(se, hold, u);
-  const size_t n = se.bar.size();
-  const auto day = [&](size_t i) { return ymd_of(panel.time[se.t[i]]); };
+  s.st = stat_of(s.se, s.rs, u), s.sh = stat_of(s.se, simulate(s.se, hold, u), u);
+  s.mid = std::move(pr.mid), s.half = std::move(pr.half);
+  s.nav.resize(s.rs.r.size());
+  double nav = 1;
+  for (size_t i = 0; i < s.nav.size(); ++i)
+    s.nav[i] = nav *= 1 + s.rs.r[i];
+  s.key = key;
+}
 
-  // 全期日线概览: 每日末根的收 / 净值, 日均仓位
-  std::vector<int> od;
-  std::vector<double> oc, onav, ohold, oexpo;
-  double nav = 1, wsum = 0, wn = 0;
-  for (size_t i = 0; i < n; ++i) {
-    nav *= 1 + rs.r[i], wsum += rs.w[i], wn += 1;
-    if (i + 1 == n || day(i + 1) != day(i)) {
-      od.push_back(day(i)), oc.push_back(se.bar[i].c), onav.push_back(nav), ohold.push_back(se.bar[i].c / se.bar[0].c), oexpo.push_back(wsum / wn);
-      wsum = wn = 0;
-    }
+// 视窗 [lo, hi) 按 step 根一点 (起点对齐到 step 的倍数), 每点取点内末根
+std::string run(State &s, const Panel &panel, const Query &q) {
+  compute(s, panel, q);
+  const Series &se = s.se;
+  const size_t n = se.bar.size(), px = std::stoul(q.at("px"));
+  assert(px > 0 && "px");
+  size_t lo = std::min<size_t>(std::stoul(q.at("lo")), n - 1), hi = std::stoul(q.at("hi"));
+  hi = hi == 0 || hi > n ? n : std::max(hi, lo + 1);
+  const size_t step = (hi - lo + px - 1) / px;
+  lo -= lo % step;
+  const size_t nb = (hi - lo + step - 1) / step;
+  const auto beg = [&](size_t k) { return lo + k * step; };
+  const auto last = [&](size_t k) { return std::min(hi, lo + (k + 1) * step) - 1; };
+  const auto time = [&](size_t i) { return panel.time[se.t[i]]; };
+  const auto hold = [&](size_t i) { return se.bar[i].c / se.bar[0].c; };
+
+  // 视窗内的纵轴范围: 价 = 收 + band 上下沿 (线性, 上下各留 3%); 净值 = 策略 + 持有 (log10, 各留 5%)
+  double plo = INFINITY, phi = -INFINITY, nlo = INFINITY, nhi = -INFINITY;
+  for (size_t k = 0; k < nb; ++k) {
+    const size_t i = last(k);
+    plo = std::min<double>(plo, se.bar[i].c), phi = std::max<double>(phi, se.bar[i].c);
+    if (std::isfinite(s.mid[i]))
+      plo = std::min(plo, s.mid[i] - s.half[i]), phi = std::max(phi, s.mid[i] + s.half[i]);
+    nlo = std::min({nlo, s.nav[i], static_cast<double>(hold(i))}), nhi = std::max({nhi, s.nav[i], static_cast<double>(hold(i))});
   }
+  const double pp = std::max(phi - plo, phi * 1e-3) * 0.03, np = std::max(std::log10(nhi / nlo), 1e-3) * 0.05;
 
-  // 窗口: from 起 (含) 的 days 个交易日
-  const int from = std::stoi(q.at("from"));
-  const size_t days = std::stoul(q.at("days"));
-  size_t i0 = 0;
-  while (i0 + 1 < n && day(i0) < from)
-    ++i0;
-  size_t i1 = i0;
-  for (size_t nd = 0; i1 < n; ++i1)
-    if ((i1 == i0 || day(i1) != day(i1 - 1)) && ++nd > days)
-      break;
-  const size_t L = i1 - i0;
-  std::vector<double> wnav(L);
-  for (size_t k = 0; k < L; ++k)
-    wnav[k] = k ? wnav[k - 1] * (1 + rs.r[i0 + k]) : 1;
-
-  std::string o = "{";
-  stat(o, "stat", stat_of(se, rs, u)), o += ',', stat(o, "hold", stat_of(se, rh, u));
-  o += ",\"over\":{";
-  arr(o, "t", od.size(), [&](size_t i) { return od[i]; }), o += ',';
-  arr(o, "c", oc.size(), [&](size_t i) { return oc[i]; }), o += ',';
-  arr(o, "nav", onav.size(), [&](size_t i) { return onav[i]; }), o += ',';
-  arr(o, "hold", ohold.size(), [&](size_t i) { return ohold[i]; }), o += ',';
-  arr(o, "expo", oexpo.size(), [&](size_t i) { return oexpo[i]; });
-  o += "},\"win\":{";
-  arr(o, "t", L, [&](size_t k) { return panel.time[se.t[i0 + k]]; }), o += ',';
-  arr(o, "o", L, [&](size_t k) { return se.bar[i0 + k].o; }), o += ',';
-  arr(o, "h", L, [&](size_t k) { return se.bar[i0 + k].h; }), o += ',';
-  arr(o, "l", L, [&](size_t k) { return se.bar[i0 + k].l; }), o += ',';
-  arr(o, "c", L, [&](size_t k) { return se.bar[i0 + k].c; }), o += ',';
-  arr(o, "mid", L, [&](size_t k) { return pr.mid[i0 + k]; }), o += ',';
-  arr(o, "half", L, [&](size_t k) { return pr.half[i0 + k]; }), o += ',';
-  // 本根生效的止损 = 上根收盘出单时给的 (上根持仓才有)
-  arr(o, "stop", L, [&](size_t k) { const size_t i = i0 + k; return i > 0 && rs.w[i - 1] > 0 ? pr.stop[i - 1] : kNaN; }), o += ',';
-  arr(o, "w", L, [&](size_t k) { return rs.w[i0 + k]; }), o += ',';
-  arr(o, "nav", L, [&](size_t k) { return wnav[k]; });
-  o += ",\"w0\":", num(o, i0 > 0 ? rs.w[i0 - 1] : 0);
+  std::string o = "{\"n\":" + std::to_string(n) + ",\"lo\":" + std::to_string(lo) + ",\"hi\":" + std::to_string(hi) + ",\"step\":" + std::to_string(step);
+  o += ",\"first\":" + std::to_string(ymd_of(time(0))) + ",\"last\":" + std::to_string(ymd_of(time(n - 1))) + ',';
+  stat(o, "stat", s.st), o += ',', stat(o, "hold", s.sh);
+  o += ",\"yp\":[", num(o, plo - pp), o += ',', num(o, phi + pp);
+  o += "],\"yn\":[", num(o, std::log10(nlo) - np), o += ',', num(o, std::log10(nhi) + np);
+  o += "],\"v\":{";
+  arr(o, "i", nb, beg), o += ',';
+  arr(o, "t", nb, [&](size_t k) { return time(last(k)); }), o += ',';
+  arr(o, "c", nb, [&](size_t k) { return se.bar[last(k)].c; }), o += ',';
+  arr(o, "mid", nb, [&](size_t k) { return s.mid[last(k)]; }), o += ',';
+  arr(o, "half", nb, [&](size_t k) { return s.half[last(k)]; }), o += ',';
+  arr(o, "w", nb, [&](size_t k) { return s.rs.w[last(k)]; }), o += ',';
+  arr(o, "nav", nb, [&](size_t k) { return s.nav[last(k)]; }), o += ',';
+  arr(o, "hold", nb, [&](size_t k) { return hold(last(k)); });
+  o += ",\"w0\":", num(o, lo > 0 ? s.rs.w[lo - 1] : 0);
   return o + "}}";
 }
 
@@ -231,30 +238,15 @@ int main(int argc, char **argv) {
   sync(lib, table, dir);
   const Panel panel = open_panel(dir, table, "1m");
 
-  std::vector<size_t> pool(panel.B);
-  for (size_t b = 0; b < panel.B; ++b)
-    pool[b] = b;
-  std::shuffle(pool.begin(), pool.end(), std::mt19937(std::random_device{}()));
-  std::vector<Pick> picks;
-  for (const size_t b : pool) {
-    if (picks.size() == kPick)
-      break;
-    Series se = series_of(panel, b);
-    if (se.bar.size() >= kMinDays * panel.S)
-      picks.push_back({&panel.assets[b], std::move(se)});
-    std::fprintf(stderr, "\r  载入 %zu / %zu   ", picks.size(), kPick);
-  }
-  std::fputc('\n', stderr);
-  assert(!picks.empty() && "没有够长的资产");
-
-  const std::string meta_json = meta(picks, panel);
+  const std::string meta_json = meta(panel);
+  State st;
   serve(
       port,
       [&](const std::string &path, const Query &q) -> Reply {
         if (path == "/api/meta")
           return {"application/json; charset=utf-8", meta_json};
         if (path == "/api/run")
-          return {"application/json; charset=utf-8", run(picks, panel, q)};
+          return {"application/json; charset=utf-8", run(st, panel, q)};
         return file(path);
       },
       [&] {
